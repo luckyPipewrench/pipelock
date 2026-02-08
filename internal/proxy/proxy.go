@@ -322,7 +322,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck // response body
 
 	// Limit response body size
 	maxBytes := int64(cfg.FetchProxy.MaxResponseMB) * 1024 * 1024

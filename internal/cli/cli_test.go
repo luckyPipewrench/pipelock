@@ -91,7 +91,7 @@ fetch_proxy:
   listen: "127.0.0.1:9999"
   timeout_seconds: 15
 `
-	if err := os.WriteFile(cfgPath, []byte(yaml), 0644); err != nil {
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -111,7 +111,7 @@ func TestCheckCmd_InvalidConfig(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "bad.yaml")
 
-	if err := os.WriteFile(cfgPath, []byte("{{invalid yaml}}"), 0644); err != nil {
+	if err := os.WriteFile(cfgPath, []byte("{{invalid yaml}}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -225,7 +225,7 @@ func TestGenerateCmd_OutputToFile(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	data, err := os.ReadFile(outPath)
+	data, err := os.ReadFile(outPath) //nolint:gosec // G304: test reads its own temp file
 	if err != nil {
 		t.Fatalf("expected output file to exist: %v", err)
 	}
@@ -268,7 +268,7 @@ func TestLogsCmd_NonexistentFile(t *testing.T) {
 func TestLogsCmd_EmptyFile(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "empty.log")
-	if err := os.WriteFile(logPath, []byte(""), 0644); err != nil {
+	if err := os.WriteFile(logPath, []byte(""), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -292,7 +292,7 @@ func TestLogsCmd_WithFilter(t *testing.T) {
 {"event":"blocked","url":"https://evil.com"}
 {"event":"allowed","url":"https://safe.com"}
 `
-	if err := os.WriteFile(logPath, []byte(lines), 0644); err != nil {
+	if err := os.WriteFile(logPath, []byte(lines), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -323,7 +323,7 @@ func TestLogsCmd_WithLast(t *testing.T) {
 {"event":"allowed","url":"https://second.com"}
 {"event":"allowed","url":"https://third.com"}
 `
-	if err := os.WriteFile(logPath, []byte(lines), 0644); err != nil {
+	if err := os.WriteFile(logPath, []byte(lines), 0o600); err != nil {
 		t.Fatal(err)
 	}
 

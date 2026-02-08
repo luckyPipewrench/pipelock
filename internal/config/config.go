@@ -11,6 +11,22 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// Mode constants for Pipelock operating modes.
+const (
+	ModeStrict   = "strict"
+	ModeBalanced = "balanced"
+	ModeAudit    = "audit"
+)
+
+// Output/format constants for configuration defaults.
+const (
+	DefaultListen    = "127.0.0.1:8888"
+	DefaultLogFormat = "json"
+	DefaultLogOutput = "stdout"
+	OutputFile       = "file"
+	OutputBoth       = "both"
+)
+
 // Config is the top-level Pipelock configuration.
 type Config struct {
 	Version          int              `yaml:"version"`
@@ -95,7 +111,7 @@ type LoggingConfig struct {
 
 // Load reads, parses, defaults, and validates a Pipelock config file.
 func Load(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // G304: path from caller
 	if err != nil {
 		return nil, fmt.Errorf("reading config %s: %w", path, err)
 	}
@@ -120,10 +136,10 @@ func (c *Config) ApplyDefaults() {
 		c.Version = 1
 	}
 	if c.Mode == "" {
-		c.Mode = "balanced"
+		c.Mode = ModeBalanced
 	}
 	if c.FetchProxy.Listen == "" {
-		c.FetchProxy.Listen = "127.0.0.1:8888"
+		c.FetchProxy.Listen = DefaultListen
 	}
 	if c.FetchProxy.TimeoutSeconds <= 0 {
 		c.FetchProxy.TimeoutSeconds = 30
@@ -144,10 +160,10 @@ func (c *Config) ApplyDefaults() {
 		c.FetchProxy.Monitoring.MaxReqPerMinute = 60
 	}
 	if c.Logging.Format == "" {
-		c.Logging.Format = "json"
+		c.Logging.Format = DefaultLogFormat
 	}
 	if c.Logging.Output == "" {
-		c.Logging.Output = "stdout"
+		c.Logging.Output = DefaultLogOutput
 	}
 	if c.ResponseScanning.Enabled && c.ResponseScanning.Action == "" {
 		c.ResponseScanning.Action = "warn" //nolint:goconst // config action value
@@ -172,31 +188,31 @@ func (c *Config) ApplyDefaults() {
 // Validate checks the config for errors. Must be called after ApplyDefaults.
 func (c *Config) Validate() error {
 	switch c.Mode {
-	case "strict", "balanced", "audit":
+	case ModeStrict, ModeBalanced, ModeAudit:
 		// valid
 	default:
 		return fmt.Errorf("invalid mode %q: must be strict, balanced, or audit", c.Mode)
 	}
 
-	if c.Mode == "strict" && len(c.APIAllowlist) == 0 {
+	if c.Mode == ModeStrict && len(c.APIAllowlist) == 0 {
 		return fmt.Errorf("strict mode requires at least one domain in api_allowlist")
 	}
 
 	switch c.Logging.Format {
-	case "json", "text":
+	case DefaultLogFormat, "text":
 		// valid
 	default:
 		return fmt.Errorf("invalid logging format %q: must be json or text", c.Logging.Format)
 	}
 
 	switch c.Logging.Output {
-	case "stdout", "file", "both":
+	case DefaultLogOutput, OutputFile, OutputBoth:
 		// valid
 	default:
 		return fmt.Errorf("invalid logging output %q: must be stdout, file, or both", c.Logging.Output)
 	}
 
-	if (c.Logging.Output == "file" || c.Logging.Output == "both") && c.Logging.File == "" {
+	if (c.Logging.Output == OutputFile || c.Logging.Output == OutputBoth) && c.Logging.File == "" {
 		return fmt.Errorf("logging.file is required when output is %q", c.Logging.Output)
 	}
 
@@ -272,7 +288,7 @@ func (c *Config) Validate() error {
 func Defaults() *Config {
 	cfg := &Config{
 		Version: 1,
-		Mode:    "balanced",
+		Mode:    ModeBalanced,
 		APIAllowlist: []string{
 			"*.anthropic.com",
 			"*.openai.com",
@@ -286,7 +302,7 @@ func Defaults() *Config {
 			"registry.npmjs.org",
 		},
 		FetchProxy: FetchProxy{
-			Listen:         "127.0.0.1:8888",
+			Listen:         DefaultListen,
 			TimeoutSeconds: 30,
 			MaxResponseMB:  10,
 			UserAgent:      "Pipelock Fetch/1.0",
@@ -334,8 +350,8 @@ func Defaults() *Config {
 			},
 		},
 		Logging: LoggingConfig{
-			Format:         "json",
-			Output:         "stdout",
+			Format:         DefaultLogFormat,
+			Output:         DefaultLogOutput,
 			IncludeAllowed: true,
 			IncludeBlocked: true,
 		},

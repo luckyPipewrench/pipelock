@@ -4,6 +4,7 @@
 package scanner
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"math"
@@ -200,7 +201,7 @@ func (s *Scanner) checkSSRF(hostname string) Result {
 
 	// Resolve hostname to IP for SSRF check.
 	// Fail closed: if we can't resolve DNS, we can't verify the IP is safe.
-	ips, err := net.LookupHost(hostname)
+	ips, err := net.DefaultResolver.LookupHost(context.TODO(), hostname)
 	if err != nil {
 		return Result{
 			Allowed: false,
@@ -438,7 +439,7 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 }
 
 // ShannonEntropy calculates the Shannon entropy of a string in bits per character.
-// English text: ~3.5-4.0, base64: ~5.5-6.0, hex: ~4.0, encrypted: ~7.5-8.0
+// English text: ~3.5-4.0, base64: ~5.5-6.0, hex: ~4.0, encrypted: ~7.5-8.0.
 func ShannonEntropy(s string) float64 {
 	if len(s) == 0 {
 		return 0

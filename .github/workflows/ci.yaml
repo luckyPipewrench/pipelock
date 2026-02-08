@@ -48,7 +48,6 @@ jobs:
         uses: golangci/golangci-lint-action@v7
         with:
           version: latest
-          only-new-issues: true
 
   build:
     runs-on: ubuntu-latest

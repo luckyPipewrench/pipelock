@@ -33,11 +33,11 @@ Examples:
 				return fmt.Errorf("--file is required (specify the audit log file path)")
 			}
 
-			f, err := os.Open(logFile)
+			f, err := os.Open(logFile) //nolint:gosec // G304: path from user flag
 			if err != nil {
 				return fmt.Errorf("opening log file: %w", err)
 			}
-			defer f.Close()
+			defer f.Close() //nolint:errcheck // read-only file
 
 			var lines []string
 			sc := bufio.NewScanner(f)

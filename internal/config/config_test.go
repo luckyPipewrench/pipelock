@@ -9,13 +9,13 @@ import (
 func TestDefaults(t *testing.T) {
 	cfg := Defaults()
 
-	if cfg.Mode != "balanced" {
+	if cfg.Mode != ModeBalanced {
 		t.Errorf("expected mode balanced, got %s", cfg.Mode)
 	}
 	if cfg.Version != 1 {
 		t.Errorf("expected version 1, got %d", cfg.Version)
 	}
-	if cfg.FetchProxy.Listen != "127.0.0.1:8888" {
+	if cfg.FetchProxy.Listen != DefaultListen {
 		t.Errorf("expected listen 127.0.0.1:8888, got %s", cfg.FetchProxy.Listen)
 	}
 	if cfg.FetchProxy.TimeoutSeconds != 30 {
@@ -49,7 +49,7 @@ func TestValidate_InvalidMode(t *testing.T) {
 
 func TestValidate_StrictModeRequiresAllowlist(t *testing.T) {
 	cfg := Defaults()
-	cfg.Mode = "strict"
+	cfg.Mode = ModeStrict
 	cfg.APIAllowlist = nil
 	if err := cfg.Validate(); err == nil {
 		t.Error("expected error for strict mode with empty allowlist")
@@ -235,7 +235,7 @@ mode: audit
 }
 
 func TestValidate_AllModes(t *testing.T) {
-	for _, mode := range []string{"strict", "balanced", "audit"} {
+	for _, mode := range []string{ModeStrict, ModeBalanced, ModeAudit} {
 		cfg := Defaults()
 		cfg.Mode = mode
 		if err := cfg.Validate(); err != nil {
@@ -332,7 +332,7 @@ func TestValidate_EmptyInternalCIDRs(t *testing.T) {
 func TestApplyDefaults_DoesNotOverwriteExistingValues(t *testing.T) {
 	cfg := &Config{
 		Version: 2,
-		Mode:    "strict",
+		Mode:    ModeStrict,
 		FetchProxy: FetchProxy{
 			Listen:         "0.0.0.0:9999",
 			TimeoutSeconds: 60,
@@ -345,7 +345,7 @@ func TestApplyDefaults_DoesNotOverwriteExistingValues(t *testing.T) {
 	if cfg.Version != 2 {
 		t.Errorf("expected version 2, got %d", cfg.Version)
 	}
-	if cfg.Mode != "strict" {
+	if cfg.Mode != ModeStrict {
 		t.Errorf("expected mode strict, got %s", cfg.Mode)
 	}
 	if cfg.FetchProxy.Listen != "0.0.0.0:9999" {
@@ -435,7 +435,7 @@ func TestValidate_AllDLPPatternsCompile(t *testing.T) {
 
 func TestValidate_StrictModeWithAllowlist(t *testing.T) {
 	cfg := Defaults()
-	cfg.Mode = "strict"
+	cfg.Mode = ModeStrict
 	// Defaults() includes an allowlist, so this should pass
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("strict mode with allowlist should validate: %v", err)

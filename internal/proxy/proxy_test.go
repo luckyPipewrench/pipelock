@@ -68,13 +68,34 @@ func TestHealthEndpoint(t *testing.T) {
 		t.Errorf("expected 200, got %d", w.Code)
 	}
 
-	var resp map[string]string
+	var resp map[string]any
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("expected valid JSON: %v", err)
 	}
 
 	if resp["status"] != "healthy" {
-		t.Errorf("expected status=healthy, got %s", resp["status"])
+		t.Errorf("expected status=healthy, got %v", resp["status"])
+	}
+	if resp["version"] == nil || resp["version"] == "" {
+		t.Error("expected non-empty version")
+	}
+	if resp["mode"] != "balanced" {
+		t.Errorf("expected mode=balanced, got %v", resp["mode"])
+	}
+	if _, ok := resp["uptime_seconds"].(float64); !ok {
+		t.Errorf("expected uptime_seconds as float64, got %T", resp["uptime_seconds"])
+	}
+	if _, ok := resp["dlp_patterns"].(float64); !ok {
+		t.Errorf("expected dlp_patterns as number, got %T", resp["dlp_patterns"])
+	}
+	if _, ok := resp["response_scan_enabled"].(bool); !ok {
+		t.Errorf("expected response_scan_enabled as bool, got %T", resp["response_scan_enabled"])
+	}
+	if _, ok := resp["git_protection_enabled"].(bool); !ok {
+		t.Errorf("expected git_protection_enabled as bool, got %T", resp["git_protection_enabled"])
+	}
+	if _, ok := resp["rate_limit_enabled"].(bool); !ok {
+		t.Errorf("expected rate_limit_enabled as bool, got %T", resp["rate_limit_enabled"])
 	}
 }
 
@@ -365,15 +386,15 @@ func TestHealthEndpoint_Format(t *testing.T) {
 	mux.HandleFunc("/health", p.handleHealth)
 	mux.ServeHTTP(w, req)
 
-	var resp map[string]string
+	var resp map[string]any
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("expected valid JSON: %v", err)
 	}
 
-	if resp["version"] == "" {
+	if resp["version"] == nil || resp["version"] == "" {
 		t.Error("expected version in health response")
 	}
-	if resp["mode"] == "" {
+	if resp["mode"] == nil || resp["mode"] == "" {
 		t.Error("expected mode in health response")
 	}
 }

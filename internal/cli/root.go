@@ -5,8 +5,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Version is set at build time via ldflags.
-var Version = "0.1.0-dev"
+// Build metadata, set at build time via ldflags. Defaults are used when
+// building with plain "go build" (without the Makefile).
+var (
+	Version   = "0.1.0-dev"
+	BuildDate = "unknown"
+	GitCommit = "unknown"
+	GoVersion = "unknown"
+)
 
 // Execute runs the root command.
 func Execute() error {
@@ -40,6 +46,7 @@ Quick start:
 		checkCmd(),
 		generateCmd(),
 		gitCmd(),
+		versionCmd(),
 	)
 
 	return cmd

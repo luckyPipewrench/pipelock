@@ -50,7 +50,7 @@ go install github.com/luckyPipewrench/pipelock/cmd/pipelock@latest
 # Start the fetch proxy with default settings
 pipelock run
 
-# Start with a config file
+# Start with a config file (supports hot-reload on file change or SIGHUP)
 pipelock run --config pipelock.yaml
 
 # Validate your config
@@ -61,6 +61,9 @@ pipelock check --url "https://pastebin.com/raw/abc123"
 
 # Generate a config from a preset
 pipelock generate config --preset balanced --output pipelock.yaml
+
+# Show version and build info
+pipelock version
 ```
 
 ## Three Modes
@@ -104,11 +107,13 @@ fetch_proxy:
   monitoring:
     entropy_threshold: 4.5      # flag high-entropy URL segments
     max_url_length: 2048
+    max_requests_per_minute: 60 # per-domain rate limit
     blocklist:
       - "*.pastebin.com"        # known exfiltration targets
       - "*.transfer.sh"
 
 dlp:
+  scan_env: true                # detect env variable leaks in URLs
   patterns:
     - name: "Anthropic API Key"
       regex: 'sk-ant-[a-zA-Z0-9\-_]{20,}'
@@ -116,6 +121,18 @@ dlp:
     - name: "AWS Access Key"
       regex: 'AKIA[0-9A-Z]{16}'
       severity: critical
+
+response_scanning:
+  enabled: true
+  action: warn                  # block, strip, or warn
+  patterns:
+    - name: "Prompt Injection"
+      regex: '(?i)(ignore|disregard)\s+(all\s+)?(previous|prior)\s+(instructions|prompts)'
+
+git_protection:
+  enabled: false
+  allowed_branches: ["feature/*", "fix/*", "main"]
+  pre_push_scan: true
 ```
 
 Three presets are included: `configs/strict.yaml`, `configs/balanced.yaml`, `configs/audit.yaml`.
@@ -126,9 +143,29 @@ The fetch proxy scans every URL before fetching:
 
 1. **SSRF protection** — blocks requests to internal/private IPs (169.254.x.x, 10.x.x.x, etc.)
 2. **Domain blocklist** — blocks known exfiltration targets (pastebin, transfer.sh, etc.)
-3. **DLP patterns** — regex matching for API keys, tokens, and secrets in URLs
-4. **Entropy analysis** — Shannon entropy scoring flags encoded/encrypted data in URL segments
-5. **URL length limits** — unusually long URLs suggest data exfiltration
+3. **Rate limiting** — per-domain sliding window rate limits
+4. **DLP patterns** — regex matching for API keys, tokens, and secrets in URLs
+5. **Environment variable leak detection** — checks for high-entropy env var values in URLs (raw + base64-encoded)
+6. **Entropy analysis** — Shannon entropy scoring flags encoded/encrypted data in URL segments
+7. **URL length limits** — unusually long URLs suggest data exfiltration
+
+## Response Scanning
+
+Fetched page content is scanned for prompt injection patterns before being returned to the agent:
+
+- **Prompt injection** — "ignore previous instructions" and variants
+- **System/role overrides** — attempts to hijack system prompts
+- **Jailbreak attempts** — DAN mode, developer mode, etc.
+
+Three actions: `block` (reject the response), `strip` (redact matched text), `warn` (log and pass through).
+
+## Multi-Agent Support
+
+When multiple agents share one Pipelock proxy, each identifies itself via the `X-Pipelock-Agent` header (or `?agent=` query parameter). The agent name appears in every audit log entry and in the JSON response, enabling per-agent filtering and monitoring.
+
+```bash
+curl -H "X-Pipelock-Agent: my-bot" "http://localhost:8888/fetch?url=https://example.com"
+```
 
 ## Fetch Proxy API
 
@@ -136,20 +173,56 @@ The fetch proxy scans every URL before fetching:
 # Fetch a URL (returns extracted text content)
 curl "http://localhost:8888/fetch?url=https://example.com"
 
-# Health check
+# Health check (includes uptime, feature flags, DLP pattern count)
 curl "http://localhost:8888/health"
+
+# Prometheus metrics
+curl "http://localhost:8888/metrics"
+
+# JSON stats (top blocked domains, scanner hits, block rate)
+curl "http://localhost:8888/stats"
+
+# Version and build info
+pipelock version
 ```
 
-Response format:
+Fetch response format:
 ```json
 {
   "url": "https://example.com",
+  "agent": "my-bot",
   "status_code": 200,
   "content_type": "text/html",
   "title": "Example Domain",
   "content": "This domain is for use in illustrative examples...",
   "blocked": false
 }
+```
+
+Health response format:
+```json
+{
+  "status": "healthy",
+  "version": "0.2.0",
+  "mode": "balanced",
+  "uptime_seconds": 3600.5,
+  "dlp_patterns": 8,
+  "response_scan_enabled": true,
+  "git_protection_enabled": false,
+  "rate_limit_enabled": true
+}
+```
+
+## Git Protection
+
+Pipelock includes git-aware security commands for scanning diffs and installing pre-push hooks:
+
+```bash
+# Scan a git diff for secrets
+pipelock git scan-diff --config pipelock.yaml
+
+# Install pre-push hook that scans outgoing commits
+pipelock git install-hooks --config pipelock.yaml
 ```
 
 ## Docker
@@ -159,16 +232,33 @@ docker build -t pipelock .
 docker run -p 8888:8888 pipelock run
 ```
 
+## Building
+
+```bash
+# Build with version metadata
+make build
+
+# Run tests
+make test
+
+# Lint
+make lint
+```
+
+The Makefile injects build metadata (version, date, commit, Go version) via ldflags.
+
 ## Project Structure
 
 ```
 cmd/pipelock/          CLI entry point
 internal/
-  cli/                 Cobra commands (run, logs, check, generate)
-  config/              YAML config loading, validation, defaults
-  scanner/             URL scanning (blocklist, DLP, entropy, SSRF)
+  cli/                 Cobra commands (run, check, generate, logs, git, version)
+  config/              YAML config loading, validation, defaults, hot-reload
+  scanner/             URL scanning (SSRF, blocklist, rate limit, DLP, entropy)
   audit/               Structured JSON audit logging (zerolog)
-  proxy/               Fetch proxy HTTP server (go-readability)
+  proxy/               Fetch proxy HTTP server (go-readability, agent ID)
+  metrics/             Prometheus metrics + JSON stats endpoint
+  gitprotect/          Git-aware security (diff scanning, branch validation, hooks)
 configs/               Preset config files (strict, balanced, audit)
 ```
 

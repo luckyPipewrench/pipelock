@@ -29,7 +29,7 @@ import (
 type contextKey int
 
 const (
-	ctxKeyClientIP  contextKey = iota
+	ctxKeyClientIP contextKey = iota
 	ctxKeyRequestID
 	ctxKeyAgent
 )
@@ -48,6 +48,7 @@ type Proxy struct {
 	metrics    *metrics.Metrics
 	client     *http.Client
 	server     *http.Server
+	startTime  time.Time
 	reloadMu   sync.Mutex // serializes Reload calls
 }
 
@@ -78,8 +79,9 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 	}
 
 	p := &Proxy{
-		logger:  logger,
-		metrics: m,
+		logger:    logger,
+		metrics:   m,
+		startTime: time.Now(),
 	}
 	p.cfgPtr.Store(cfg)
 	p.scannerPtr.Store(sc)
@@ -348,12 +350,30 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleHealth returns proxy health status.
+// healthResponse is the JSON response returned by the /health endpoint.
+type healthResponse struct {
+	Status               string  `json:"status"`
+	Version              string  `json:"version"`
+	Mode                 string  `json:"mode"`
+	UptimeSeconds        float64 `json:"uptime_seconds"`
+	DLPPatterns          int     `json:"dlp_patterns"`
+	ResponseScanEnabled  bool    `json:"response_scan_enabled"`
+	GitProtectionEnabled bool    `json:"git_protection_enabled"`
+	RateLimitEnabled     bool    `json:"rate_limit_enabled"`
+}
+
+// handleHealth returns proxy health status including uptime and feature flags.
 func (p *Proxy) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{
-		"status":  "healthy",
-		"version": Version,
-		"mode":    p.cfgPtr.Load().Mode,
+	cfg := p.cfgPtr.Load()
+	writeJSON(w, http.StatusOK, healthResponse{
+		Status:               "healthy",
+		Version:              Version,
+		Mode:                 cfg.Mode,
+		UptimeSeconds:        time.Since(p.startTime).Seconds(),
+		DLPPatterns:          len(cfg.DLP.Patterns),
+		ResponseScanEnabled:  cfg.ResponseScanning.Enabled,
+		GitProtectionEnabled: cfg.GitProtection.Enabled,
+		RateLimitEnabled:     cfg.FetchProxy.Monitoring.MaxReqPerMinute > 0,
 	})
 }
 

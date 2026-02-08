@@ -1,5 +1,5 @@
 # Binaries
-pipelock
+/pipelock
 *.exe
 *.exe~
 *.dll

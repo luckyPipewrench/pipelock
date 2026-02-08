@@ -138,6 +138,19 @@ func (l *Logger) LogAnomaly(method, url, reason, clientIP, requestID string, sco
 		Msg("anomaly detected")
 }
 
+// LogResponseScan logs a response content scan that found prompt injection patterns.
+func (l *Logger) LogResponseScan(url, clientIP, requestID, action string, matchCount int, patternNames []string) {
+	l.zl.Warn().
+		Str("event", "response_scan").
+		Str("url", url).
+		Str("client_ip", clientIP).
+		Str("request_id", requestID).
+		Str("action", action).
+		Int("match_count", matchCount).
+		Strs("patterns", patternNames).
+		Msg("response scan detected prompt injection")
+}
+
 // LogRedirect logs a redirect hop in the chain.
 func (l *Logger) LogRedirect(originalURL, redirectURL, clientIP, requestID string, hop int) {
 	l.zl.Info().

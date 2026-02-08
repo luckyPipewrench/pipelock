@@ -153,7 +153,7 @@ logging:
 `
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(path, []byte(yaml), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -182,7 +182,7 @@ func TestLoad_FileNotFound(t *testing.T) {
 func TestLoad_InvalidYAML(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bad.yaml")
-	if err := os.WriteFile(path, []byte("{{invalid yaml}}"), 0644); err != nil {
+	if err := os.WriteFile(path, []byte("{{invalid yaml}}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -199,7 +199,7 @@ mode: invalid_mode
 `
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(path, []byte(yaml), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -216,7 +216,7 @@ mode: audit
 `
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(path, []byte(yaml), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -372,7 +372,7 @@ extra_section:
 `
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(path, []byte(yaml), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -392,7 +392,7 @@ mode: audit
 `
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(path, []byte(yaml), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -469,7 +469,7 @@ dlp:
 `
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(path, []byte(yaml), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -500,7 +500,7 @@ fetch_proxy:
 `
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(path, []byte(yaml), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -545,5 +545,146 @@ func TestValidate_TextFormat(t *testing.T) {
 	cfg.Logging.Format = "text"
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("text format should validate: %v", err)
+	}
+}
+
+// --- Response Scanning Tests ---
+
+func TestDefaults_ResponseScanningEnabled(t *testing.T) {
+	cfg := Defaults()
+	if !cfg.ResponseScanning.Enabled {
+		t.Error("expected response scanning enabled by default")
+	}
+	if cfg.ResponseScanning.Action != "warn" { //nolint:goconst // test assertion
+		t.Errorf("expected default action warn, got %s", cfg.ResponseScanning.Action)
+	}
+	if len(cfg.ResponseScanning.Patterns) != 5 {
+		t.Errorf("expected 5 default response patterns, got %d", len(cfg.ResponseScanning.Patterns))
+	}
+}
+
+func TestValidate_ResponseScanningValidActions(t *testing.T) {
+	for _, action := range []string{"strip", "warn", "block"} {
+		cfg := Defaults()
+		cfg.ResponseScanning.Action = action
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("action %q should validate, got: %v", action, err)
+		}
+	}
+}
+
+func TestValidate_ResponseScanningInvalidAction(t *testing.T) {
+	cfg := Defaults()
+	cfg.ResponseScanning.Action = "delete"
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for invalid response scanning action")
+	}
+}
+
+func TestValidate_ResponseScanningInvalidRegex(t *testing.T) {
+	cfg := Defaults()
+	cfg.ResponseScanning.Patterns = []ResponseScanPattern{
+		{Name: "bad", Regex: "[invalid"},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for invalid response scanning regex")
+	}
+}
+
+func TestValidate_ResponseScanningMissingName(t *testing.T) {
+	cfg := Defaults()
+	cfg.ResponseScanning.Patterns = []ResponseScanPattern{
+		{Name: "", Regex: "test"},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for response scanning pattern without name")
+	}
+}
+
+func TestValidate_ResponseScanningMissingRegex(t *testing.T) {
+	cfg := Defaults()
+	cfg.ResponseScanning.Patterns = []ResponseScanPattern{
+		{Name: "test", Regex: ""},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for response scanning pattern without regex")
+	}
+}
+
+func TestValidate_ResponseScanningDisabledSkipsValidation(t *testing.T) {
+	cfg := Defaults()
+	cfg.ResponseScanning.Enabled = false
+	cfg.ResponseScanning.Action = "invalid"
+	cfg.ResponseScanning.Patterns = []ResponseScanPattern{
+		{Name: "bad", Regex: "[invalid"},
+	}
+	// When disabled, validation should be skipped
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("disabled response scanning should skip validation, got: %v", err)
+	}
+}
+
+func TestApplyDefaults_ResponseScanningActionDefault(t *testing.T) {
+	cfg := &Config{}
+	cfg.ResponseScanning.Enabled = true
+	cfg.ApplyDefaults()
+	if cfg.ResponseScanning.Action != "warn" { //nolint:goconst // test assertion
+		t.Errorf("expected default action warn, got %s", cfg.ResponseScanning.Action)
+	}
+}
+
+func TestApplyDefaults_ResponseScanningActionPreserved(t *testing.T) {
+	cfg := &Config{}
+	cfg.ResponseScanning.Enabled = true
+	cfg.ResponseScanning.Action = "block" //nolint:goconst // test assertion
+	cfg.ApplyDefaults()
+	if cfg.ResponseScanning.Action != "block" {
+		t.Errorf("expected action block preserved, got %s", cfg.ResponseScanning.Action)
+	}
+}
+
+func TestApplyDefaults_ResponseScanningDisabledNoActionDefault(t *testing.T) {
+	cfg := &Config{}
+	cfg.ResponseScanning.Enabled = false
+	cfg.ApplyDefaults()
+	if cfg.ResponseScanning.Action != "" {
+		t.Errorf("expected empty action when disabled, got %s", cfg.ResponseScanning.Action)
+	}
+}
+
+func TestLoad_WithResponseScanning(t *testing.T) {
+	yaml := `
+version: 1
+mode: balanced
+api_allowlist:
+  - "*.example.com"
+response_scanning:
+  enabled: true
+  action: strip
+  patterns:
+    - name: "Test Pattern"
+      regex: '(?i)test\s+injection'
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.ResponseScanning.Enabled {
+		t.Error("expected response scanning enabled")
+	}
+	if cfg.ResponseScanning.Action != "strip" {
+		t.Errorf("expected action strip, got %s", cfg.ResponseScanning.Action)
+	}
+	if len(cfg.ResponseScanning.Patterns) != 1 {
+		t.Fatalf("expected 1 pattern, got %d", len(cfg.ResponseScanning.Patterns))
+	}
+	if cfg.ResponseScanning.Patterns[0].Name != "Test Pattern" {
+		t.Errorf("expected pattern name 'Test Pattern', got %s", cfg.ResponseScanning.Patterns[0].Name)
 	}
 }

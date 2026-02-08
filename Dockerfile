@@ -7,7 +7,9 @@ RUN go mod download
 
 COPY . .
 ARG VERSION=0.1.0-dev
-RUN CGO_ENABLED=0 GOOS=linux go build \
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -ldflags "-s -w -X github.com/luckyPipewrench/pipelock/internal/cli.Version=${VERSION} \
               -X github.com/luckyPipewrench/pipelock/internal/proxy.Version=${VERSION}" \
     -o /pipelock ./cmd/pipelock

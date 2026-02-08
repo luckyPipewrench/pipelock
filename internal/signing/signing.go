@@ -7,7 +7,6 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -64,10 +63,11 @@ func VerifyFile(path, sigPath string, pubKey ed25519.PublicKey) error {
 }
 
 // SaveSignature writes a base64-encoded signature to a .sig file.
-// Uses atomic temp+rename to prevent corruption.
+// Uses atomic temp+rename to prevent corruption. Permissions are 0o644
+// because signatures are public data used for verification.
 func SaveSignature(sig []byte, path string) error {
 	encoded := base64.StdEncoding.EncodeToString(sig) + "\n"
-	return atomicWrite(path, []byte(encoded), 0o600)
+	return atomicWrite(path, []byte(encoded), 0o644)
 }
 
 // LoadSignature reads and decodes a base64-encoded .sig file.
@@ -80,6 +80,9 @@ func LoadSignature(path string) ([]byte, error) {
 	sig, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(data)))
 	if err != nil {
 		return nil, fmt.Errorf("decoding signature: %w", err)
+	}
+	if len(sig) != ed25519.SignatureSize {
+		return nil, fmt.Errorf("invalid signature length: got %d, want %d", len(sig), ed25519.SignatureSize)
 	}
 	return sig, nil
 }
@@ -187,13 +190,4 @@ func LoadPrivateKeyFile(path string) (ed25519.PrivateKey, error) {
 		return nil, fmt.Errorf("reading private key: %w", err)
 	}
 	return DecodePrivateKey(string(data))
-}
-
-// SignReader reads all data from r and produces an Ed25519 signature.
-func SignReader(r io.Reader, privKey ed25519.PrivateKey) ([]byte, error) {
-	data, err := io.ReadAll(r)
-	if err != nil {
-		return nil, fmt.Errorf("reading data to sign: %w", err)
-	}
-	return ed25519.Sign(privKey, data), nil
 }

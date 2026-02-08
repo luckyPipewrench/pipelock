@@ -1,6 +1,7 @@
 package signing
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"encoding/base64"
 	"os"
@@ -173,7 +174,7 @@ func TestSaveLoadSignature_RoundTrip(t *testing.T) {
 		t.Fatalf("LoadSignature() error: %v", err)
 	}
 
-	if !equal(sig, loaded) {
+	if !bytes.Equal(sig, loaded) {
 		t.Fatal("loaded signature does not match saved signature")
 	}
 }
@@ -190,8 +191,8 @@ func TestSaveSignature_Permissions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
-		t.Errorf("signature permissions = %04o, want 0600", info.Mode().Perm())
+	if info.Mode().Perm() != 0o644 {
+		t.Errorf("signature permissions = %04o, want 0644", info.Mode().Perm())
 	}
 }
 
@@ -217,7 +218,7 @@ func TestEncodeDecodePublicKey_RoundTrip(t *testing.T) {
 		t.Fatalf("DecodePublicKey() error: %v", err)
 	}
 
-	if !equal(pub, decoded) {
+	if !bytes.Equal(pub, decoded) {
 		t.Fatal("decoded public key does not match original")
 	}
 }
@@ -231,7 +232,7 @@ func TestEncodeDecodePrivateKey_RoundTrip(t *testing.T) {
 		t.Fatalf("DecodePrivateKey() error: %v", err)
 	}
 
-	if !equal(priv, decoded) {
+	if !bytes.Equal(priv, decoded) {
 		t.Fatal("decoded private key does not match original")
 	}
 }
@@ -294,7 +295,7 @@ func TestSaveLoadPublicKeyFile_RoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !equal(pub, loaded) {
+	if !bytes.Equal(pub, loaded) {
 		t.Fatal("loaded key does not match saved key")
 	}
 }
@@ -314,7 +315,7 @@ func TestSaveLoadPrivateKeyFile_RoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !equal(priv, loaded) {
+	if !bytes.Equal(priv, loaded) {
 		t.Fatal("loaded key does not match saved key")
 	}
 }
@@ -357,14 +358,18 @@ func TestSavePublicKeyFile_Permissions(t *testing.T) {
 	}
 }
 
-func equal(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
+func TestLoadSignature_WrongLength(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "truncated.sig")
+
+	// Write a valid base64 string but with wrong decoded length (not 64 bytes).
+	short := base64.StdEncoding.EncodeToString([]byte("too short"))
+	if err := os.WriteFile(path, []byte(short), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
+
+	_, err := LoadSignature(path)
+	if err == nil {
+		t.Fatal("expected error for wrong signature length")
 	}
-	return true
 }

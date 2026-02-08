@@ -2,6 +2,7 @@ package signing
 
 import (
 	"crypto/ed25519"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -66,42 +67,20 @@ func ValidateAgentName(name string) error {
 }
 
 // GenerateAgent creates a new Ed25519 key pair for an agent.
-// Returns an error if keys already exist (caller should check AgentExists first
-// or pass force=true through the CLI).
+// Returns an error if keys already exist unless force is true.
 func (k *Keystore) GenerateAgent(name string) (ed25519.PublicKey, error) {
-	if err := ValidateAgentName(name); err != nil {
-		return nil, err
-	}
-
-	dir := k.agentDir(name)
 	if k.AgentExists(name) {
 		return nil, fmt.Errorf("keys already exist for agent %q (use --force to overwrite)", name)
 	}
-
-	if err := os.MkdirAll(dir, dirPermission); err != nil {
-		return nil, fmt.Errorf("creating agent directory: %w", err)
-	}
-
-	pub, priv, err := GenerateKeyPair()
-	if err != nil {
-		return nil, err
-	}
-
-	privPath := filepath.Join(dir, privateKeyFile)
-	pubPath := filepath.Join(dir, publicKeyFile)
-
-	if err := SavePrivateKey(priv, privPath); err != nil {
-		return nil, fmt.Errorf("saving private key: %w", err)
-	}
-	if err := SavePublicKey(pub, pubPath); err != nil {
-		return nil, fmt.Errorf("saving public key: %w", err)
-	}
-
-	return pub, nil
+	return k.generateAgent(name)
 }
 
 // ForceGenerateAgent creates a new key pair, overwriting any existing keys.
 func (k *Keystore) ForceGenerateAgent(name string) (ed25519.PublicKey, error) {
+	return k.generateAgent(name)
+}
+
+func (k *Keystore) generateAgent(name string) (ed25519.PublicKey, error) {
 	if err := ValidateAgentName(name); err != nil {
 		return nil, err
 	}
@@ -131,24 +110,36 @@ func (k *Keystore) ForceGenerateAgent(name string) (ed25519.PublicKey, error) {
 
 // LoadPrivateKey loads an agent's private key from the keystore.
 func (k *Keystore) LoadPrivateKey(name string) (ed25519.PrivateKey, error) {
+	if err := ValidateAgentName(name); err != nil {
+		return nil, err
+	}
 	path := filepath.Join(k.agentDir(name), privateKeyFile)
 	return LoadPrivateKeyFile(path)
 }
 
 // LoadPublicKey loads an agent's own public key from the keystore.
 func (k *Keystore) LoadPublicKey(name string) (ed25519.PublicKey, error) {
+	if err := ValidateAgentName(name); err != nil {
+		return nil, err
+	}
 	path := filepath.Join(k.agentDir(name), publicKeyFile)
 	return LoadPublicKeyFile(path)
 }
 
 // TrustKey copies a public key file into trusted_keys/<name>.pub.
+// Reads the file once, validates the key from memory, then writes.
 func (k *Keystore) TrustKey(name, pubKeyPath string) error {
 	if err := ValidateAgentName(name); err != nil {
 		return err
 	}
 
-	// Validate the key file before copying.
-	if _, err := LoadPublicKeyFile(pubKeyPath); err != nil {
+	data, err := os.ReadFile(pubKeyPath) //nolint:gosec // G304: caller controls path
+	if err != nil {
+		return fmt.Errorf("reading public key: %w", err)
+	}
+
+	// Validate the key from the data we already read.
+	if _, err := DecodePublicKey(string(data)); err != nil {
 		return fmt.Errorf("invalid public key file: %w", err)
 	}
 
@@ -157,31 +148,40 @@ func (k *Keystore) TrustKey(name, pubKeyPath string) error {
 		return fmt.Errorf("creating trusted keys directory: %w", err)
 	}
 
-	data, err := os.ReadFile(pubKeyPath) //nolint:gosec // G304: caller controls path
-	if err != nil {
-		return fmt.Errorf("reading public key: %w", err)
-	}
-
 	dest := k.trustedKeyPath(name)
 	return atomicWrite(dest, data, 0o644)
 }
 
 // LoadTrustedKey loads a trusted agent's public key.
 func (k *Keystore) LoadTrustedKey(name string) (ed25519.PublicKey, error) {
+	if err := ValidateAgentName(name); err != nil {
+		return nil, err
+	}
 	return LoadPublicKeyFile(k.trustedKeyPath(name))
 }
 
 // ResolvePublicKey looks up a public key by agent name, checking the agent's
-// own keys first, then trusted keys.
+// own keys first, then trusted keys. Only falls through to trusted keys when
+// the agent's own key file is not found.
 func (k *Keystore) ResolvePublicKey(name string) (ed25519.PublicKey, error) {
-	if pub, err := k.LoadPublicKey(name); err == nil {
+	if err := ValidateAgentName(name); err != nil {
+		return nil, err
+	}
+	pub, err := k.LoadPublicKey(name)
+	if err == nil {
 		return pub, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("loading public key for agent %q: %w", name, err)
 	}
 	return k.LoadTrustedKey(name)
 }
 
-// AgentExists returns whether keys exist for the given agent.
+// AgentExists returns whether a private key exists for the given agent.
 func (k *Keystore) AgentExists(name string) bool {
+	if ValidateAgentName(name) != nil {
+		return false
+	}
 	privPath := filepath.Join(k.agentDir(name), privateKeyFile)
 	_, err := os.Stat(privPath)
 	return err == nil

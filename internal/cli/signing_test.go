@@ -13,7 +13,7 @@ func TestKeygenCmd_Basic(t *testing.T) {
 	dir := t.TempDir()
 
 	cmd := rootCmd()
-	cmd.SetArgs([]string{"keygen", "alice", "--dir", dir})
+	cmd.SetArgs([]string{"keygen", "alice", "--keystore", dir})
 	buf := &strings.Builder{}
 	cmd.SetOut(buf)
 
@@ -37,14 +37,14 @@ func TestKeygenCmd_AlreadyExists(t *testing.T) {
 	dir := t.TempDir()
 
 	cmd1 := rootCmd()
-	cmd1.SetArgs([]string{"keygen", "alice", "--dir", dir})
+	cmd1.SetArgs([]string{"keygen", "alice", "--keystore", dir})
 	cmd1.SetOut(&strings.Builder{})
 	if err := cmd1.Execute(); err != nil {
 		t.Fatal(err)
 	}
 
 	cmd2 := rootCmd()
-	cmd2.SetArgs([]string{"keygen", "alice", "--dir", dir})
+	cmd2.SetArgs([]string{"keygen", "alice", "--keystore", dir})
 	cmd2.SetOut(&strings.Builder{})
 	if err := cmd2.Execute(); err == nil {
 		t.Fatal("expected error for duplicate keygen")
@@ -55,14 +55,14 @@ func TestKeygenCmd_Force(t *testing.T) {
 	dir := t.TempDir()
 
 	cmd1 := rootCmd()
-	cmd1.SetArgs([]string{"keygen", "alice", "--dir", dir})
+	cmd1.SetArgs([]string{"keygen", "alice", "--keystore", dir})
 	cmd1.SetOut(&strings.Builder{})
 	if err := cmd1.Execute(); err != nil {
 		t.Fatal(err)
 	}
 
 	cmd2 := rootCmd()
-	cmd2.SetArgs([]string{"keygen", "alice", "--dir", dir, "--force"})
+	cmd2.SetArgs([]string{"keygen", "alice", "--keystore", dir, "--force"})
 	buf := &strings.Builder{}
 	cmd2.SetOut(buf)
 	if err := cmd2.Execute(); err != nil {
@@ -99,7 +99,7 @@ func TestSignCmd_Basic(t *testing.T) {
 	}
 
 	cmd := rootCmd()
-	cmd.SetArgs([]string{"sign", testFile, "--agent", "alice", "--dir", dir})
+	cmd.SetArgs([]string{"sign", testFile, "--agent", "alice", "--keystore", dir})
 	buf := &strings.Builder{}
 	cmd.SetOut(buf)
 
@@ -152,7 +152,7 @@ func TestSignCmd_EnvAgent(t *testing.T) {
 	t.Setenv("PIPELOCK_AGENT", "envbot")
 
 	cmd := rootCmd()
-	cmd.SetArgs([]string{"sign", testFile, "--dir", dir})
+	cmd.SetArgs([]string{"sign", testFile, "--keystore", dir})
 	buf := &strings.Builder{}
 	cmd.SetOut(buf)
 
@@ -179,7 +179,7 @@ func TestVerifyCmd_Valid(t *testing.T) {
 
 	// Sign.
 	signC := rootCmd()
-	signC.SetArgs([]string{"sign", testFile, "--agent", "alice", "--dir", dir})
+	signC.SetArgs([]string{"sign", testFile, "--agent", "alice", "--keystore", dir})
 	signC.SetOut(&strings.Builder{})
 	if err := signC.Execute(); err != nil {
 		t.Fatal(err)
@@ -187,7 +187,7 @@ func TestVerifyCmd_Valid(t *testing.T) {
 
 	// Verify.
 	verifyC := rootCmd()
-	verifyC.SetArgs([]string{"verify", testFile, "--agent", "alice", "--dir", dir})
+	verifyC.SetArgs([]string{"verify", testFile, "--agent", "alice", "--keystore", dir})
 	buf := &strings.Builder{}
 	verifyC.SetOut(buf)
 
@@ -214,7 +214,7 @@ func TestVerifyCmd_TamperedFile(t *testing.T) {
 
 	// Sign.
 	signC := rootCmd()
-	signC.SetArgs([]string{"sign", testFile, "--agent", "alice", "--dir", dir})
+	signC.SetArgs([]string{"sign", testFile, "--agent", "alice", "--keystore", dir})
 	signC.SetOut(&strings.Builder{})
 	if err := signC.Execute(); err != nil {
 		t.Fatal(err)
@@ -227,7 +227,7 @@ func TestVerifyCmd_TamperedFile(t *testing.T) {
 
 	// Verify should fail.
 	verifyC := rootCmd()
-	verifyC.SetArgs([]string{"verify", testFile, "--agent", "alice", "--dir", dir})
+	verifyC.SetArgs([]string{"verify", testFile, "--agent", "alice", "--keystore", dir})
 	buf := &strings.Builder{}
 	verifyC.SetOut(buf)
 
@@ -253,7 +253,7 @@ func TestVerifyCmd_MissingSig(t *testing.T) {
 	}
 
 	cmd := rootCmd()
-	cmd.SetArgs([]string{"verify", testFile, "--agent", "alice", "--dir", dir})
+	cmd.SetArgs([]string{"verify", testFile, "--agent", "alice", "--keystore", dir})
 	cmd.SetOut(&strings.Builder{})
 
 	if err := cmd.Execute(); err == nil {
@@ -279,7 +279,7 @@ func TestVerifyCmd_WrongAgent(t *testing.T) {
 
 	// Sign as alice.
 	signC := rootCmd()
-	signC.SetArgs([]string{"sign", testFile, "--agent", "alice", "--dir", dir})
+	signC.SetArgs([]string{"sign", testFile, "--agent", "alice", "--keystore", dir})
 	signC.SetOut(&strings.Builder{})
 	if err := signC.Execute(); err != nil {
 		t.Fatal(err)
@@ -287,7 +287,7 @@ func TestVerifyCmd_WrongAgent(t *testing.T) {
 
 	// Verify as bob should fail.
 	verifyC := rootCmd()
-	verifyC.SetArgs([]string{"verify", testFile, "--agent", "bob", "--dir", dir})
+	verifyC.SetArgs([]string{"verify", testFile, "--agent", "bob", "--keystore", dir})
 	verifyC.SetOut(&strings.Builder{})
 
 	if err := verifyC.Execute(); err == nil {
@@ -305,7 +305,7 @@ func TestTrustCmd_Basic(t *testing.T) {
 	pubKeyPath := ks.PublicKeyPath("remote")
 
 	cmd := rootCmd()
-	cmd.SetArgs([]string{"trust", "remote", pubKeyPath, "--dir", dir})
+	cmd.SetArgs([]string{"trust", "remote", pubKeyPath, "--keystore", dir})
 	buf := &strings.Builder{}
 	cmd.SetOut(buf)
 
@@ -331,7 +331,7 @@ func TestTrustCmd_InvalidKeyFile(t *testing.T) {
 	}
 
 	cmd := rootCmd()
-	cmd.SetArgs([]string{"trust", "bad-agent", badFile, "--dir", dir})
+	cmd.SetArgs([]string{"trust", "bad-agent", badFile, "--keystore", dir})
 	cmd.SetOut(&strings.Builder{})
 
 	if err := cmd.Execute(); err == nil {
@@ -345,7 +345,7 @@ func TestSignVerify_EndToEnd(t *testing.T) {
 
 	// Generate key pair.
 	keygenC := rootCmd()
-	keygenC.SetArgs([]string{"keygen", "test-agent", "--dir", ksDir})
+	keygenC.SetArgs([]string{"keygen", "test-agent", "--keystore", ksDir})
 	keygenC.SetOut(&strings.Builder{})
 	if err := keygenC.Execute(); err != nil {
 		t.Fatal(err)
@@ -359,7 +359,7 @@ func TestSignVerify_EndToEnd(t *testing.T) {
 
 	// Sign.
 	signC := rootCmd()
-	signC.SetArgs([]string{"sign", testFile, "--agent", "test-agent", "--dir", ksDir})
+	signC.SetArgs([]string{"sign", testFile, "--agent", "test-agent", "--keystore", ksDir})
 	signC.SetOut(&strings.Builder{})
 	if err := signC.Execute(); err != nil {
 		t.Fatal(err)
@@ -367,7 +367,7 @@ func TestSignVerify_EndToEnd(t *testing.T) {
 
 	// Verify (should pass).
 	verifyC := rootCmd()
-	verifyC.SetArgs([]string{"verify", testFile, "--agent", "test-agent", "--dir", ksDir})
+	verifyC.SetArgs([]string{"verify", testFile, "--agent", "test-agent", "--keystore", ksDir})
 	verifyBuf := &strings.Builder{}
 	verifyC.SetOut(verifyBuf)
 	if err := verifyC.Execute(); err != nil {
@@ -382,10 +382,59 @@ func TestSignVerify_EndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	verifyC2 := rootCmd()
-	verifyC2.SetArgs([]string{"verify", testFile, "--agent", "test-agent", "--dir", ksDir})
+	verifyC2.SetArgs([]string{"verify", testFile, "--agent", "test-agent", "--keystore", ksDir})
 	verifyC2.SetOut(&strings.Builder{})
 	if err := verifyC2.Execute(); err == nil {
 		t.Fatal("expected verification failure after tampering")
+	}
+}
+
+func TestVerifyCmd_CustomSigPath(t *testing.T) {
+	dir := t.TempDir()
+
+	ks := signing.NewKeystore(dir)
+	if _, err := ks.GenerateAgent("alice"); err != nil {
+		t.Fatal(err)
+	}
+
+	testFile := filepath.Join(t.TempDir(), "test.txt")
+	if err := os.WriteFile(testFile, []byte("custom sig path\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Sign (creates test.txt.sig next to the file).
+	signC := rootCmd()
+	signC.SetArgs([]string{"sign", testFile, "--agent", "alice", "--keystore", dir})
+	signC.SetOut(&strings.Builder{})
+	if err := signC.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Move sig to a custom location.
+	customSig := filepath.Join(t.TempDir(), "custom.sig")
+	data, err := os.ReadFile(testFile + ".sig") //nolint:gosec // test path
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(customSig, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Remove the default .sig so verify must use --sig.
+	if err := os.Remove(testFile + ".sig"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify with --sig flag.
+	verifyC := rootCmd()
+	verifyC.SetArgs([]string{"verify", testFile, "--agent", "alice", "--keystore", dir, "--sig", customSig})
+	buf := &strings.Builder{}
+	verifyC.SetOut(buf)
+
+	if err := verifyC.Execute(); err != nil {
+		t.Fatalf("verify with --sig flag error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "OK") {
+		t.Errorf("expected OK, got: %s", buf.String())
 	}
 }
 

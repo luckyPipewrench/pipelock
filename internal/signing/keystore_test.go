@@ -1,6 +1,7 @@
 package signing
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -54,7 +55,7 @@ func TestKeystoreForceGenerateAgent(t *testing.T) {
 	}
 
 	// Keys should be different (crypto/rand).
-	if equal(pub1, pub2) {
+	if bytes.Equal(pub1, pub2) {
 		t.Fatal("forced regeneration produced identical key")
 	}
 }
@@ -71,7 +72,7 @@ func TestKeystoreLoadKeys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadPublicKey() error: %v", err)
 	}
-	if !equal(pub, loadedPub) {
+	if !bytes.Equal(pub, loadedPub) {
 		t.Fatal("loaded public key does not match generated key")
 	}
 
@@ -113,7 +114,7 @@ func TestKeystoreTrustKey(t *testing.T) {
 	}
 
 	original, _ := ks.LoadPublicKey("remote-agent")
-	if !equal(trusted, original) {
+	if !bytes.Equal(trusted, original) {
 		t.Fatal("trusted key does not match original")
 	}
 }
@@ -154,7 +155,7 @@ func TestKeystoreResolvePublicKey_OwnKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolvePublicKey() error: %v", err)
 	}
-	if !equal(pub, resolved) {
+	if !bytes.Equal(pub, resolved) {
 		t.Fatal("resolved key does not match own key")
 	}
 }
@@ -287,6 +288,8 @@ func TestValidateAgentName(t *testing.T) {
 		{"has spaces", true},
 		{"has/slash", true},
 		{"special@char", true},
+		// 65-char valid name fails because SanitizeAgentName truncates to 64.
+		{"abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz01234", true},
 	}
 
 	for _, tt := range tests {
@@ -307,6 +310,8 @@ func TestSanitizeAgentName(t *testing.T) {
 		{"alice", "alice"},
 		{"has spaces", "has_spaces"},
 		{"special@char!", "special_char_"},
+		// 70-char input should truncate to 64.
+		{"abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz01234567890", "abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz01"},
 	}
 
 	for _, tt := range tests {
@@ -316,5 +321,53 @@ func TestSanitizeAgentName(t *testing.T) {
 				t.Errorf("SanitizeAgentName(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestKeystoreResolvePublicKey_CorruptedKey(t *testing.T) {
+	ks := NewKeystore(t.TempDir())
+
+	// Generate a valid agent, then corrupt the public key file.
+	if _, err := ks.GenerateAgent("corrupt"); err != nil {
+		t.Fatal(err)
+	}
+	pubPath := ks.PublicKeyPath("corrupt")
+	if err := os.WriteFile(pubPath, []byte("garbage"), 0o600); err != nil { //nolint:gosec // test path
+		t.Fatal(err)
+	}
+
+	// ResolvePublicKey should return the corruption error, not silently
+	// fall through to trusted keys (which also don't exist).
+	_, err := ks.ResolvePublicKey("corrupt")
+	if err == nil {
+		t.Fatal("expected error for corrupted key")
+	}
+}
+
+func TestKeystoreLoadPrivateKey_PathTraversal(t *testing.T) {
+	ks := NewKeystore(t.TempDir())
+
+	// Attempting to load with path traversal characters should fail validation.
+	_, err := ks.LoadPrivateKey("../../etc/shadow")
+	if err == nil {
+		t.Fatal("expected error for path traversal agent name")
+	}
+}
+
+func TestKeystoreLoadPublicKey_PathTraversal(t *testing.T) {
+	ks := NewKeystore(t.TempDir())
+
+	_, err := ks.LoadPublicKey("../../../tmp/evil")
+	if err == nil {
+		t.Fatal("expected error for path traversal agent name")
+	}
+}
+
+func TestKeystoreLoadTrustedKey_PathTraversal(t *testing.T) {
+	ks := NewKeystore(t.TempDir())
+
+	_, err := ks.LoadTrustedKey("../../exploit")
+	if err == nil {
+		t.Fatal("expected error for path traversal agent name")
 	}
 }

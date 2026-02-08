@@ -39,6 +39,7 @@ Quick start:
 		logsCmd(),
 		checkCmd(),
 		generateCmd(),
+		gitCmd(),
 	)
 
 	return cmd

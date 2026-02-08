@@ -128,7 +128,6 @@ func (c *Config) ApplyDefaults() {
 			"::1/128",
 			"fc00::/7",
 			"fe80::/10",
-			"::ffff:0:0/96",
 		}
 	}
 }
@@ -258,7 +257,6 @@ func Defaults() *Config {
 			"::1/128",
 			"fc00::/7",
 			"fe80::/10",
-			"::ffff:0:0/96",
 		},
 	}
 	return cfg

@@ -49,7 +49,7 @@ dlp:
       regex: 'sk-ant-[a-zA-Z0-9\-_]{20,}'
       severity: critical
     - name: "OpenAI API Key"
-      regex: 'sk-[a-zA-Z0-9]{20,}'
+      regex: 'sk-proj-[a-zA-Z0-9]{20,}'
       severity: critical
     - name: "GitHub Token"
       regex: 'gh[ps]_[A-Za-z0-9_]{36,}'
@@ -68,7 +68,7 @@ dlp:
       severity: critical
     - name: "Social Security Number"
       regex: '\b\d{3}-\d{2}-\d{4}\b'
-      severity: high
+      severity: low
 
 logging:
   format: json

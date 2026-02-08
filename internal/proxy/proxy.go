@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	readability "github.com/go-shiori/go-readability"
@@ -21,6 +22,17 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
+
+// contextKey is used for storing per-request values in context.
+type contextKey int
+
+const (
+	ctxKeyClientIP  contextKey = iota
+	ctxKeyRequestID
+)
+
+// requestCounter provides monotonic request IDs.
+var requestCounter atomic.Uint64
 
 // Version is set at build time via ldflags.
 var Version = "0.1.0-dev"
@@ -70,10 +82,19 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner) *Proxy {
 				if len(via) >= 5 {
 					return fmt.Errorf("too many redirects (max 5)")
 				}
+				originalURL := via[0].URL.String()
+				redirectURL := req.URL.String()
+				clientIP, _ := req.Context().Value(ctxKeyClientIP).(string)
+				requestID, _ := req.Context().Value(ctxKeyRequestID).(string)
+				logger.LogRedirect(originalURL, redirectURL, clientIP, requestID, len(via))
 				// Scan each redirect URL through the scanner
-				result := sc.Scan(req.URL.String())
+				result := sc.Scan(redirectURL)
 				if !result.Allowed {
-					return fmt.Errorf("redirect blocked: %s", result.Reason)
+					if cfg.EnforceEnabled() {
+						logger.LogBlocked("GET", redirectURL, "redirect", fmt.Sprintf("redirect from %s blocked: %s", originalURL, result.Reason), clientIP, requestID)
+						return fmt.Errorf("redirect blocked: %s", result.Reason)
+					}
+					logger.LogAnomaly("GET", redirectURL, fmt.Sprintf("[audit] redirect from %s: %s", originalURL, result.Reason), clientIP, requestID, result.Score)
 				}
 				return nil
 			},
@@ -110,7 +131,7 @@ func (p *Proxy) Start(ctx context.Context) error {
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			if err := p.server.Shutdown(shutdownCtx); err != nil {
-				p.logger.LogError("SHUTDOWN", p.config.FetchProxy.Listen, err)
+				p.logger.LogError("SHUTDOWN", p.config.FetchProxy.Listen, "", "", err)
 			}
 		case <-done:
 		}
@@ -129,6 +150,11 @@ func (p *Proxy) Start(ctx context.Context) error {
 // handleFetch processes URL fetch requests.
 func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
+	clientIP := r.RemoteAddr
+	if host, _, err := net.SplitHostPort(clientIP); err == nil {
+		clientIP = host
+	}
+	requestID := fmt.Sprintf("req-%d", requestCounter.Add(1))
 
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, FetchResponse{
@@ -161,19 +187,28 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// Scan URL through all scanners
 	result := p.scanner.Scan(targetURL)
 	if !result.Allowed {
-		p.logger.LogBlocked("GET", targetURL, result.Scanner, result.Reason)
-		writeJSON(w, http.StatusForbidden, FetchResponse{
-			URL:         targetURL,
-			Blocked:     true,
-			BlockReason: result.Reason,
-		})
-		return
+		if p.config.EnforceEnabled() {
+			p.logger.LogBlocked("GET", targetURL, result.Scanner, result.Reason, clientIP, requestID)
+			writeJSON(w, http.StatusForbidden, FetchResponse{
+				URL:         targetURL,
+				Blocked:     true,
+				BlockReason: result.Reason,
+			})
+			return
+		}
+		// Audit mode: log anomaly but allow through
+		p.logger.LogAnomaly("GET", targetURL, fmt.Sprintf("[audit] %s: %s", result.Scanner, result.Reason), clientIP, requestID, result.Score)
 	}
 
-	// Fetch the URL
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, targetURL, nil)
+	// Record successful scan for rate limiting
+	p.scanner.RecordRequest(strings.ToLower(parsed.Hostname()))
+
+	// Fetch the URL — attach clientIP/requestID to context for redirect logging
+	ctx := context.WithValue(r.Context(), ctxKeyClientIP, clientIP)
+	ctx = context.WithValue(ctx, ctxKeyRequestID, requestID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
 	if err != nil {
-		p.logger.LogError("GET", targetURL, err)
+		p.logger.LogError("GET", targetURL, clientIP, requestID, err)
 		writeJSON(w, http.StatusInternalServerError, FetchResponse{
 			URL:   targetURL,
 			Error: fmt.Sprintf("creating request: %v", err),
@@ -186,7 +221,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := p.client.Do(req)
 	if err != nil {
-		p.logger.LogError("GET", targetURL, err)
+		p.logger.LogError("GET", targetURL, clientIP, requestID, err)
 		writeJSON(w, http.StatusBadGateway, FetchResponse{
 			URL:   targetURL,
 			Error: fmt.Sprintf("fetch failed: %v", err),
@@ -199,7 +234,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	maxBytes := int64(p.config.FetchProxy.MaxResponseMB) * 1024 * 1024
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes))
 	if err != nil {
-		p.logger.LogError("GET", targetURL, err)
+		p.logger.LogError("GET", targetURL, clientIP, requestID, err)
 		writeJSON(w, http.StatusBadGateway, FetchResponse{
 			URL:   targetURL,
 			Error: fmt.Sprintf("reading response: %v", err),
@@ -215,7 +250,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	if strings.Contains(contentType, "text/html") || strings.Contains(contentType, "application/xhtml") {
 		article, err := readability.FromReader(strings.NewReader(content), parsed)
 		if err != nil {
-			p.logger.LogAnomaly("GET", targetURL, fmt.Sprintf("readability extraction failed: %v", err), 0.3)
+			p.logger.LogAnomaly("GET", targetURL, fmt.Sprintf("readability extraction failed: %v", err), clientIP, requestID, 0.3)
 		} else if article.TextContent != "" {
 			title = article.Title
 			content = article.TextContent
@@ -223,7 +258,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	duration := time.Since(start)
-	p.logger.LogAllowed("GET", targetURL, resp.StatusCode, len(body), duration)
+	p.logger.LogAllowed("GET", targetURL, clientIP, requestID, resp.StatusCode, len(body), duration)
 
 	writeJSON(w, http.StatusOK, FetchResponse{
 		URL:         targetURL,

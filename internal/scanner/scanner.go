@@ -4,10 +4,12 @@
 package scanner
 
 import (
+	"encoding/base64"
 	"fmt"
 	"math"
 	"net"
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
 
@@ -30,6 +32,8 @@ type Scanner struct {
 	entropyMinLen    int
 	maxURLLength     int
 	internalCIDRs    []*net.IPNet
+	rateLimiter      *RateLimiter
+	envSecrets       []string // filtered high-entropy env var values
 }
 
 type compiledPattern struct {
@@ -47,6 +51,11 @@ func New(cfg *config.Config) *Scanner {
 		entropyThreshold: cfg.FetchProxy.Monitoring.EntropyThreshold,
 		entropyMinLen:    20,
 		maxURLLength:     cfg.FetchProxy.Monitoring.MaxURLLength,
+	}
+
+	// Initialize rate limiter if enabled
+	if cfg.FetchProxy.Monitoring.MaxReqPerMinute > 0 {
+		s.rateLimiter = NewRateLimiter(cfg.FetchProxy.Monitoring.MaxReqPerMinute)
 	}
 
 	// Compile DLP patterns — must succeed since config.Validate checks these
@@ -71,11 +80,32 @@ func New(cfg *config.Config) *Scanner {
 		s.internalCIDRs = append(s.internalCIDRs, ipNet)
 	}
 
+	// Extract high-entropy environment variables for leak detection
+	if cfg.DLP.ScanEnv {
+		s.envSecrets = extractEnvSecrets()
+	}
+
 	return s
 }
 
+// Close releases scanner resources, including stopping the rate limiter
+// cleanup goroutine. Safe to call multiple times.
+func (s *Scanner) Close() {
+	if s.rateLimiter != nil {
+		s.rateLimiter.Close()
+	}
+}
+
+// RecordRequest records a request timestamp for rate limiting.
+// Call this AFTER Scan() returns Allowed=true and the request will be fetched.
+func (s *Scanner) RecordRequest(hostname string) {
+	if s.rateLimiter != nil {
+		s.rateLimiter.Record(hostname)
+	}
+}
+
 // Scan checks a URL against all scanners and returns the result.
-// It runs blocklist, SSRF, URL length, DLP, and entropy checks in order.
+// It runs scheme, SSRF, blocklist, rate limit, URL length, DLP, and entropy checks in order.
 func (s *Scanner) Scan(rawURL string) Result {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
@@ -105,7 +135,12 @@ func (s *Scanner) Scan(rawURL string) Result {
 		return result
 	}
 
-	// 4. URL length check
+	// 4. Rate limit check (per-domain)
+	if result := s.checkRateLimit(hostname); !result.Allowed {
+		return result
+	}
+
+	// 5. URL length check
 	if s.maxURLLength > 0 && len(rawURL) > s.maxURLLength {
 		return Result{
 			Allowed: false,
@@ -115,12 +150,12 @@ func (s *Scanner) Scan(rawURL string) Result {
 		}
 	}
 
-	// 5. DLP pattern matching on path + query
+	// 6. DLP pattern matching on path + query
 	if result := s.checkDLP(parsed); !result.Allowed {
 		return result
 	}
 
-	// 6. Entropy check on path segments and query values
+	// 7. Entropy check on path segments and query values
 	if result := s.checkEntropy(parsed); !result.Allowed {
 		return result
 	}
@@ -186,6 +221,24 @@ func (s *Scanner) checkBlocklist(hostname string) Result {
 	return Result{Allowed: true}
 }
 
+// checkRateLimit enforces per-domain rate limiting using a sliding window.
+func (s *Scanner) checkRateLimit(hostname string) Result {
+	if s.rateLimiter == nil {
+		return Result{Allowed: true}
+	}
+
+	if !s.rateLimiter.IsAllowed(hostname) {
+		return Result{
+			Allowed: false,
+			Reason:  fmt.Sprintf("rate limit exceeded for %s", hostname),
+			Scanner: "ratelimit",
+			Score:   0.7,
+		}
+	}
+
+	return Result{Allowed: true}
+}
+
 // checkDLP runs DLP regex patterns against URL path and query parameters.
 // All targets are URL-decoded before matching to prevent encoding bypass
 // (e.g., %20 instead of space evading a regex that expects \s).
@@ -222,7 +275,82 @@ func (s *Scanner) checkDLP(parsed *url.URL) Result {
 		}
 	}
 
+	// Check for environment variable leaks
+	if result := s.checkEnvLeak(parsed); !result.Allowed {
+		return result
+	}
+
 	return Result{Allowed: true}
+}
+
+// checkEnvLeak scans for environment variable values in the URL.
+// Checks both raw and base64-encoded versions to catch common exfiltration patterns.
+// Never logs the actual secret values to prevent accidental exposure.
+func (s *Scanner) checkEnvLeak(parsed *url.URL) Result {
+	if len(s.envSecrets) == 0 {
+		return Result{Allowed: true}
+	}
+
+	fullURL := parsed.String()
+
+	for _, secret := range s.envSecrets {
+		if strings.Contains(fullURL, secret) {
+			return Result{
+				Allowed: false,
+				Reason:  "environment variable leak detected",
+				Scanner: "dlp",
+				Score:   1.0,
+			}
+		}
+
+		encoded := base64.StdEncoding.EncodeToString([]byte(secret))
+		if strings.Contains(fullURL, encoded) {
+			return Result{
+				Allowed: false,
+				Reason:  "environment variable leak detected (base64-encoded)",
+				Scanner: "dlp",
+				Score:   1.0,
+			}
+		}
+
+		encodedURL := base64.URLEncoding.EncodeToString([]byte(secret))
+		if encodedURL != encoded && strings.Contains(fullURL, encodedURL) {
+			return Result{
+				Allowed: false,
+				Reason:  "environment variable leak detected (base64url-encoded)",
+				Scanner: "dlp",
+				Score:   1.0,
+			}
+		}
+	}
+
+	return Result{Allowed: true}
+}
+
+// extractEnvSecrets filters environment variables for likely secrets.
+// Returns values >16 chars with Shannon entropy >3.0.
+func extractEnvSecrets() []string {
+	const minLen = 16
+	const minEntropy = 3.0
+
+	var secrets []string
+	for _, env := range os.Environ() {
+		parts := strings.SplitN(env, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+
+		value := parts[1]
+		if len(value) < minLen {
+			continue
+		}
+
+		if ShannonEntropy(value) > minEntropy {
+			secrets = append(secrets, value)
+		}
+	}
+
+	return secrets
 }
 
 // checkEntropy calculates Shannon entropy on URL path segments and query values.

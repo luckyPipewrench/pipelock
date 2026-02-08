@@ -28,7 +28,7 @@ Examples:
   pipelock logs --file pipelock-audit.log --last 20
   pipelock logs --file pipelock-audit.log --filter blocked
   pipelock logs --file pipelock-audit.log -f`,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			if logFile == "" {
 				return fmt.Errorf("--file is required (specify the audit log file path)")
 			}
@@ -58,7 +58,7 @@ Examples:
 			}
 
 			for _, line := range lines {
-				fmt.Println(line)
+				cmd.Println(line)
 			}
 
 			if follow {
@@ -78,7 +78,7 @@ Examples:
 					if filter != "" && !matchFilter(line, filter) {
 						continue
 					}
-					fmt.Println(line)
+					cmd.Println(line)
 				}
 			}
 

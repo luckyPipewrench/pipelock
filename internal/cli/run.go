@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"os/signal"
@@ -33,7 +32,7 @@ Examples:
   pipelock run                                       # standalone proxy
   pipelock run --config pipelock.yaml                # with config file (hot-reload)
   pipelock run --mode strict --listen 0.0.0.0:9999   # override mode and listen address`,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) error { //nolint:revive // args used via ArgsLenAtDash
 			// Load config
 			var cfg *config.Config
 			var err error
@@ -79,9 +78,10 @@ Examples:
 			m := metrics.New()
 			p := proxy.New(cfg, logger, sc, m)
 
-			// Context with signal handling for graceful shutdown
+			// Context with signal handling for graceful shutdown.
+			// Uses cmd.Context() as parent so tests can inject a cancellable context.
 			ctx, cancel := signal.NotifyContext(
-				context.Background(),
+				cmd.Context(),
 				syscall.SIGINT,
 				syscall.SIGTERM,
 			)

@@ -1,26 +1,18 @@
 package cli
 
 import (
-	"io"
-	"os"
 	"strings"
 	"testing"
 )
 
 func TestVersionCmd(t *testing.T) {
-	r, w, _ := os.Pipe()
-	origStdout := os.Stdout
-	os.Stdout = w
-
 	cmd := versionCmd()
+
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
 	cmd.Run(cmd, nil)
 
-	_ = w.Close()
-	os.Stdout = origStdout
-
-	out, _ := io.ReadAll(r)
-	output := string(out)
-
+	output := buf.String()
 	if !strings.Contains(output, "pipelock version") {
 		t.Errorf("expected 'pipelock version' in output, got: %s", output)
 	}
@@ -36,19 +28,13 @@ func TestVersionCmd(t *testing.T) {
 }
 
 func TestVersionCmd_ContainsVersion(t *testing.T) {
-	r, w, _ := os.Pipe()
-	origStdout := os.Stdout
-	os.Stdout = w
-
 	cmd := versionCmd()
+
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
 	cmd.Run(cmd, nil)
 
-	_ = w.Close()
-	os.Stdout = origStdout
-
-	out, _ := io.ReadAll(r)
-	output := string(out)
-
+	output := buf.String()
 	if !strings.Contains(output, Version) {
 		t.Errorf("expected output to contain version %q, got: %s", Version, output)
 	}

@@ -44,7 +44,7 @@ Available presets:
 Examples:
   pipelock generate config --preset balanced
   pipelock generate config --preset strict --output pipelock.yaml`,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			var cfg *config.Config
 
 			switch preset {
@@ -71,7 +71,7 @@ Examples:
 				}
 				fmt.Fprintf(os.Stderr, "Config written to %s\n", output)
 			} else {
-				fmt.Print(header + string(data))
+				cmd.Print(header + string(data))
 			}
 
 			return nil

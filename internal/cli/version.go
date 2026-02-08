@@ -1,8 +1,6 @@
 package cli
 
 import (
-	"fmt"
-
 	"github.com/spf13/cobra"
 )
 
@@ -14,11 +12,11 @@ func versionCmd() *cobra.Command {
 
 The build metadata is injected via ldflags when building with "make build".
 When building with plain "go build", default values are shown.`,
-		Run: func(_ *cobra.Command, _ []string) {
-			fmt.Printf("pipelock version %s\n", Version)
-			fmt.Printf("  build date: %s\n", BuildDate)
-			fmt.Printf("  git commit: %s\n", GitCommit)
-			fmt.Printf("  go version: %s\n", GoVersion)
+		Run: func(cmd *cobra.Command, _ []string) {
+			cmd.Printf("pipelock version %s\n", Version)
+			cmd.Printf("  build date: %s\n", BuildDate)
+			cmd.Printf("  git commit: %s\n", GitCommit)
+			cmd.Printf("  go version: %s\n", GoVersion)
 		},
 	}
 }

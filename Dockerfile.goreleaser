@@ -1,0 +1,13 @@
+# Used by GoReleaser — copies the pre-built binary instead of building from source.
+# For local/manual builds, use the main Dockerfile instead.
+FROM alpine:3.21 AS certs
+RUN apk add --no-cache ca-certificates
+
+FROM scratch
+COPY --from=certs /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+COPY pipelock /pipelock
+
+EXPOSE 8888
+
+ENTRYPOINT ["/pipelock"]
+CMD ["run"]

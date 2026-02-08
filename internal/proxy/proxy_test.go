@@ -732,6 +732,109 @@ func TestStatsEndpoint(t *testing.T) {
 	}
 }
 
+// --- Agent Identification Tests ---
+
+func TestFetchEndpoint_AgentHeader(t *testing.T) {
+	p, backend := setupTestProxy(t)
+	defer backend.Close()
+
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/text", nil)
+	req.Header.Set(AgentHeader, "test-bot")
+	w := httptest.NewRecorder()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp FetchResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+	if resp.Agent != "test-bot" {
+		t.Errorf("expected agent=test-bot, got %q", resp.Agent)
+	}
+}
+
+func TestFetchEndpoint_AgentQueryParam(t *testing.T) {
+	p, backend := setupTestProxy(t)
+	defer backend.Close()
+
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/text&agent=query-agent", nil)
+	w := httptest.NewRecorder()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp FetchResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+	if resp.Agent != "query-agent" {
+		t.Errorf("expected agent=query-agent, got %q", resp.Agent)
+	}
+}
+
+func TestFetchEndpoint_AgentDefaultAnonymous(t *testing.T) {
+	p, backend := setupTestProxy(t)
+	defer backend.Close()
+
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/text", nil)
+	w := httptest.NewRecorder()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp FetchResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+	if resp.Agent != "anonymous" { //nolint:goconst // test value
+		t.Errorf("expected agent=anonymous, got %q", resp.Agent)
+	}
+}
+
+func TestFetchEndpoint_AgentOnBlocked(t *testing.T) {
+	p, backend := setupTestProxy(t)
+	defer backend.Close()
+
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url=https://pastebin.com/raw/abc", nil)
+	req.Header.Set(AgentHeader, "blocked-agent")
+	w := httptest.NewRecorder()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", w.Code)
+	}
+
+	var resp FetchResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+	if resp.Agent != "blocked-agent" {
+		t.Errorf("expected agent=blocked-agent on blocked response, got %q", resp.Agent)
+	}
+	if !resp.Blocked {
+		t.Error("expected blocked=true")
+	}
+}
+
 func TestProxy_StartAndShutdown(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.Listen = "127.0.0.1:0" // random port

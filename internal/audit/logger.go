@@ -193,6 +193,17 @@ func (l *Logger) LogShutdown(reason string) {
 		Msg("pipelock stopping")
 }
 
+// With returns a sub-logger that includes the given key-value pair in every
+// log entry. The sub-logger shares the parent's file handle and config but
+// does NOT own the file — only the root logger should be Close()'d.
+func (l *Logger) With(key, value string) *Logger {
+	return &Logger{
+		zl:             l.zl.With().Str(key, value).Logger(),
+		includeAllowed: l.includeAllowed,
+		includeBlocked: l.includeBlocked,
+	}
+}
+
 // Close cleans up the logger, flushing and closing any open file handles.
 // Close is idempotent and safe to call multiple times.
 func (l *Logger) Close() {

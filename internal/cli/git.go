@@ -52,9 +52,13 @@ Examples:
 				return err
 			}
 
-			diffData, err := io.ReadAll(os.Stdin)
+			const maxDiffSize = 100 * 1024 * 1024 // 100 MB
+			diffData, err := io.ReadAll(io.LimitReader(os.Stdin, maxDiffSize+1))
 			if err != nil {
 				return fmt.Errorf("reading diff from stdin: %w", err)
+			}
+			if len(diffData) > maxDiffSize {
+				return fmt.Errorf("diff exceeds maximum size of %d bytes", maxDiffSize)
 			}
 
 			if len(diffData) == 0 {

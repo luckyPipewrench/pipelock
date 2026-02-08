@@ -1,6 +1,7 @@
 package scanner
 
 import (
+	"net"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -905,5 +906,57 @@ func TestShannonEntropy_Base64Chars(t *testing.T) {
 	e := ShannonEntropy("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/")
 	if e < 5.9 || e > 6.1 {
 		t.Errorf("expected entropy ~6.0 for base64 alphabet, got %f", e)
+	}
+}
+
+// --- DLP bypass via malformed percent-encoding ---
+
+func TestScan_DLPCatchesMalformedPercentEncoding(t *testing.T) {
+	s := New(testConfig())
+
+	// Malformed %ZZ should not bypass DLP — raw query is scanned as fallback
+	result := s.Scan("https://example.com/api?key=AKIAIOSFODNN7EXAMPLE&junk=%ZZ")
+	if result.Allowed {
+		t.Error("expected DLP to catch AWS key even with malformed percent-encoding in query")
+	}
+	if result.Scanner != "dlp" {
+		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	}
+}
+
+// --- IsInternalIP tests ---
+
+func TestIsInternalIP_MatchesConfiguredCIDR(t *testing.T) {
+	cfg := testConfig()
+	cfg.Internal = []string{"10.0.0.0/8", "127.0.0.0/8"}
+	s := New(cfg)
+
+	tests := []struct {
+		ip       string
+		internal bool
+	}{
+		{"10.0.0.1", true},
+		{"10.255.255.255", true},
+		{"127.0.0.1", true},
+		{"8.8.8.8", false},
+		{"192.168.1.1", false},
+	}
+
+	for _, tt := range tests {
+		ip := net.ParseIP(tt.ip)
+		got := s.IsInternalIP(ip)
+		if got != tt.internal {
+			t.Errorf("IsInternalIP(%s) = %v, want %v", tt.ip, got, tt.internal)
+		}
+	}
+}
+
+func TestIsInternalIP_DisabledReturnsAlwaysFalse(t *testing.T) {
+	cfg := testConfig()
+	cfg.Internal = nil
+	s := New(cfg)
+
+	if s.IsInternalIP(net.ParseIP("127.0.0.1")) {
+		t.Error("expected false when SSRF is disabled")
 	}
 }

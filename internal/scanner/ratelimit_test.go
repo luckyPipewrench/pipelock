@@ -65,6 +65,31 @@ func TestRateLimiter_SlidingWindowEviction(t *testing.T) {
 	}
 }
 
+func TestRateLimiter_WindowRollover(t *testing.T) {
+	rl := NewRateLimiter(2)
+	defer rl.Close()
+
+	// Fill to limit
+	rl.Record("example.com")
+	rl.Record("example.com")
+	if rl.IsAllowed("example.com") {
+		t.Fatal("expected blocked after hitting limit")
+	}
+
+	// Replace timestamps with ones older than the 1-minute window
+	rl.mu.Lock()
+	rl.requests["example.com"] = []time.Time{
+		time.Now().Add(-61 * time.Second),
+		time.Now().Add(-62 * time.Second),
+	}
+	rl.mu.Unlock()
+
+	// After window expires, domain should be unblocked
+	if !rl.IsAllowed("example.com") {
+		t.Error("expected allowed after window rollover")
+	}
+}
+
 func TestRateLimiter_ConcurrentAccess(t *testing.T) {
 	rl := NewRateLimiter(1000)
 	defer rl.Close()

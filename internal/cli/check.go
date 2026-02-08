@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -9,6 +10,9 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
+
+// ErrURLBlocked is returned when pipelock check --url detects a blocked URL.
+var ErrURLBlocked = errors.New("url blocked")
 
 func checkCmd() *cobra.Command {
 	var configFile string
@@ -59,6 +63,10 @@ Examples:
 					fmt.Printf("  Reason:  %s\n", result.Reason)
 				}
 				fmt.Printf("  Score:   %.2f\n", result.Score)
+
+				if !result.Allowed {
+					return ErrURLBlocked
+				}
 			}
 
 			return nil

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -138,6 +139,53 @@ func TestCheckCmd_NonexistentConfig(t *testing.T) {
 	err := cmd.Execute()
 	if err == nil {
 		t.Error("expected error for nonexistent config file")
+	}
+}
+
+func TestCheckCmd_URLAllowed(t *testing.T) {
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"check", "--url", "https://example.com"})
+
+	err := cmd.Execute()
+	_ = w.Close()
+	os.Stdout = old
+
+	if err != nil {
+		t.Fatalf("expected no error for allowed URL, got: %v", err)
+	}
+
+	out, _ := io.ReadAll(r)
+	if !strings.Contains(string(out), "ALLOWED") {
+		t.Errorf("expected ALLOWED in output, got: %q", string(out))
+	}
+}
+
+func TestCheckCmd_URLBlocked(t *testing.T) {
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"check", "--url", "https://pastebin.com/raw/abc123"})
+
+	err := cmd.Execute()
+	_ = w.Close()
+	os.Stdout = old
+
+	if err == nil {
+		t.Fatal("expected error for blocked URL")
+	}
+	if !errors.Is(err, ErrURLBlocked) {
+		t.Errorf("expected ErrURLBlocked, got: %v", err)
+	}
+
+	out, _ := io.ReadAll(r)
+	if !strings.Contains(string(out), "BLOCKED") {
+		t.Errorf("expected BLOCKED in output, got: %q", string(out))
 	}
 }
 

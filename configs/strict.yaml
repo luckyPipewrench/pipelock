@@ -74,7 +74,7 @@ response_scanning:
     - name: "System Override"
       regex: '(?im)^\s*system\s*:'
     - name: "Role Override"
-      regex: '(?i)you\s+are\s+(now|a)\s+'
+      regex: '(?i)you\s+are\s+(now\s+)?(a\s+)?(DAN|evil|unrestricted|jailbroken|unfiltered)'
     - name: "New Instructions"
       regex: '(?i)(new|updated|revised)\s+(instructions|directives|rules|prompt)'
     - name: "Jailbreak Attempt"

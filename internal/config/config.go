@@ -328,7 +328,7 @@ func Defaults() *Config {
 			Patterns: []ResponseScanPattern{
 				{Name: "Prompt Injection", Regex: `(?i)(ignore|disregard|forget)\s+(all\s+)?(previous|prior|above)\s+(instructions|prompts|rules|context)`},
 				{Name: "System Override", Regex: `(?im)^\s*system\s*:`},
-				{Name: "Role Override", Regex: `(?i)you\s+are\s+(now|a)\s+`},
+				{Name: "Role Override", Regex: `(?i)you\s+are\s+(now\s+)?(a\s+)?(DAN|evil|unrestricted|jailbroken|unfiltered)`},
 				{Name: "New Instructions", Regex: `(?i)(new|updated|revised)\s+(instructions|directives|rules|prompt)`},
 				{Name: "Jailbreak Attempt", Regex: `(?i)(DAN|developer\s+mode|sudo\s+mode|unrestricted\s+mode)`},
 			},

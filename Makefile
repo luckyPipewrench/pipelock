@@ -11,7 +11,7 @@ LDFLAGS := -ldflags "-s -w \
 	-X $(MODULE)/internal/cli.GoVersion=$(GO_VERSION) \
 	-X $(MODULE)/internal/proxy.Version=$(VERSION)"
 
-.PHONY: build test lint clean docker install fmt vet
+.PHONY: build test lint clean docker install fmt vet tidy-check
 
 build:
 	go build $(LDFLAGS) -o $(BINARY) ./cmd/pipelock
@@ -36,6 +36,10 @@ vet:
 lint: vet
 	@which golangci-lint > /dev/null 2>&1 || echo "golangci-lint not installed, skipping"
 	@which golangci-lint > /dev/null 2>&1 && golangci-lint run || true
+
+tidy-check:
+	go mod tidy
+	git diff --exit-code go.mod go.sum
 
 clean:
 	rm -f $(BINARY) coverage.out coverage.html

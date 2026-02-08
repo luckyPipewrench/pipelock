@@ -1,5 +1,9 @@
 # Pipelock
 
+[![CI](https://github.com/luckyPipewrench/pipelock/actions/workflows/ci.yaml/badge.svg)](https://github.com/luckyPipewrench/pipelock/actions/workflows/ci.yaml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/luckyPipewrench/pipelock)](https://goreportcard.com/report/github.com/luckyPipewrench/pipelock)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+
 **Security harness for AI agents.** Controls what your agent can access on the network, preventing credential exfiltration while preserving web browsing capability.
 
 ## The Problem
@@ -224,6 +228,8 @@ pipelock git scan-diff --config pipelock.yaml
 # Install pre-push hook that scans outgoing commits
 pipelock git install-hooks --config pipelock.yaml
 ```
+
+> **Note:** Branch glob patterns use Go's `filepath.Match`, which only supports single-level wildcards. `feature/*` matches `feature/login` but **not** `feature/login/oauth`. Use flat branch naming or multiple patterns if needed.
 
 ## Docker
 

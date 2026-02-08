@@ -95,10 +95,11 @@ func strictPreset() *config.Config {
 func auditPreset() *config.Config {
 	cfg := config.Defaults()
 	cfg.Mode = "audit"
-	// Audit mode: log everything but block nothing
-	cfg.FetchProxy.Monitoring.Blocklist = nil
-	cfg.FetchProxy.Monitoring.EntropyThreshold = 0 // disabled
-	cfg.DLP.Patterns = nil                         // no DLP blocking
+	// Audit mode: detect and log everything but never block.
+	// All DLP patterns, blocklists, and entropy checks stay active for
+	// visibility — enforce=false makes them log-only.
+	enforce := false
+	cfg.Enforce = &enforce
 	cfg.Logging.IncludeAllowed = true
 	cfg.Logging.IncludeBlocked = true
 	return cfg

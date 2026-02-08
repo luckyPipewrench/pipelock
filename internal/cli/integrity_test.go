@@ -852,6 +852,46 @@ func TestIntegrityCheck_VerifyWrongAgent(t *testing.T) {
 	}
 }
 
+func TestIntegrityInit_SignWithoutAgent(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, dir, "file.txt", "content\n")
+
+	t.Setenv("PIPELOCK_AGENT", "")
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"integrity", "init", dir, "--sign"})
+	cmd.SetOut(&strings.Builder{})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when --sign used without --agent")
+	}
+}
+
+func TestIntegrityCheck_VerifyWithoutAgent(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, dir, "file.txt", "content\n")
+
+	// Init without signing first.
+	initCmd := rootCmd()
+	initCmd.SetArgs([]string{"integrity", "init", dir})
+	initCmd.SetOut(&strings.Builder{})
+	if err := initCmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("PIPELOCK_AGENT", "")
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"integrity", "check", dir, "--verify"})
+	cmd.SetOut(&strings.Builder{})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when --verify used without --agent")
+	}
+}
+
 func writeTestFile(t *testing.T, dir, name, content string) {
 	t.Helper()
 	full := filepath.Join(dir, name)

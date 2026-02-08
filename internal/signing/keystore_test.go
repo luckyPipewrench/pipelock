@@ -288,6 +288,8 @@ func TestValidateAgentName(t *testing.T) {
 		{"has spaces", true},
 		{"has/slash", true},
 		{"special@char", true},
+		// 65-char valid name fails because SanitizeAgentName truncates to 64.
+		{"abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz01234", true},
 	}
 
 	for _, tt := range tests {
@@ -308,6 +310,8 @@ func TestSanitizeAgentName(t *testing.T) {
 		{"alice", "alice"},
 		{"has spaces", "has_spaces"},
 		{"special@char!", "special_char_"},
+		// 70-char input should truncate to 64.
+		{"abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz01234567890", "abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz01"},
 	}
 
 	for _, tt := range tests {

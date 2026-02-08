@@ -389,6 +389,55 @@ func TestSignVerify_EndToEnd(t *testing.T) {
 	}
 }
 
+func TestVerifyCmd_CustomSigPath(t *testing.T) {
+	dir := t.TempDir()
+
+	ks := signing.NewKeystore(dir)
+	if _, err := ks.GenerateAgent("alice"); err != nil {
+		t.Fatal(err)
+	}
+
+	testFile := filepath.Join(t.TempDir(), "test.txt")
+	if err := os.WriteFile(testFile, []byte("custom sig path\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Sign (creates test.txt.sig next to the file).
+	signC := rootCmd()
+	signC.SetArgs([]string{"sign", testFile, "--agent", "alice", "--keystore", dir})
+	signC.SetOut(&strings.Builder{})
+	if err := signC.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Move sig to a custom location.
+	customSig := filepath.Join(t.TempDir(), "custom.sig")
+	data, err := os.ReadFile(testFile + ".sig") //nolint:gosec // test path
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(customSig, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Remove the default .sig so verify must use --sig.
+	if err := os.Remove(testFile + ".sig"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify with --sig flag.
+	verifyC := rootCmd()
+	verifyC.SetArgs([]string{"verify", testFile, "--agent", "alice", "--keystore", dir, "--sig", customSig})
+	buf := &strings.Builder{}
+	verifyC.SetOut(buf)
+
+	if err := verifyC.Execute(); err != nil {
+		t.Fatalf("verify with --sig flag error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "OK") {
+		t.Errorf("expected OK, got: %s", buf.String())
+	}
+}
+
 func TestKeygenCmd_RegisteredInHelp(t *testing.T) {
 	cmd := rootCmd()
 	cmd.SetArgs([]string{"--help"})

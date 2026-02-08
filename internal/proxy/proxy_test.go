@@ -12,6 +12,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -46,7 +47,7 @@ func setupTestProxy(t *testing.T) (*Proxy, *httptest.Server) {
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
-	p := New(cfg, logger, sc)
+	p := New(cfg, logger, sc, metrics.New())
 
 	return p, backend
 }
@@ -339,7 +340,7 @@ func TestFetchEndpoint_BackendError(t *testing.T) {
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
-	p := New(cfg, logger, sc)
+	p := New(cfg, logger, sc, metrics.New())
 
 	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/broken", nil)
 	w := httptest.NewRecorder()
@@ -464,7 +465,7 @@ func setupResponseScanProxy(t *testing.T, action string) (*Proxy, *httptest.Serv
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
-	p := New(cfg, logger, sc)
+	p := New(cfg, logger, sc, metrics.New())
 
 	return p, backend
 }
@@ -653,7 +654,7 @@ func TestFetchEndpoint_ResponseScan_Disabled(t *testing.T) {
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
-	p := New(cfg, logger, sc)
+	p := New(cfg, logger, sc, metrics.New())
 
 	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/", nil)
 	w := httptest.NewRecorder()
@@ -676,6 +677,61 @@ func TestFetchEndpoint_ResponseScan_Disabled(t *testing.T) {
 	}
 }
 
+// --- Metrics Integration Tests ---
+
+func TestMetricsEndpoint(t *testing.T) {
+	p, backend := setupTestProxy(t)
+	defer backend.Close()
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", p.metrics.PrometheusHandler())
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "text/plain") {
+		t.Errorf("expected text/plain content type, got %s", ct)
+	}
+}
+
+func TestStatsEndpoint(t *testing.T) {
+	p, backend := setupTestProxy(t)
+	defer backend.Close()
+
+	// Make a request first so stats are non-zero
+	fetchReq := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/text", nil)
+	fetchW := httptest.NewRecorder()
+	fetchMux := http.NewServeMux()
+	fetchMux.HandleFunc("/fetch", p.handleFetch)
+	fetchMux.ServeHTTP(fetchW, fetchReq)
+
+	req := httptest.NewRequest(http.MethodGet, "/stats", nil)
+	w := httptest.NewRecorder()
+	p.metrics.StatsHandler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("expected application/json, got %s", ct)
+	}
+
+	var stats map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &stats); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+	if _, ok := stats["uptime_seconds"]; !ok {
+		t.Error("expected uptime_seconds in stats")
+	}
+	if _, ok := stats["requests"]; !ok {
+		t.Error("expected requests in stats")
+	}
+}
+
 func TestProxy_StartAndShutdown(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.Listen = "127.0.0.1:0" // random port
@@ -683,7 +739,7 @@ func TestProxy_StartAndShutdown(t *testing.T) {
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
-	p := New(cfg, logger, sc)
+	p := New(cfg, logger, sc, metrics.New())
 
 	ctx, cancel := context.WithCancel(context.Background())
 

@@ -20,6 +20,7 @@ import (
 	readability "github.com/go-shiori/go-readability"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -42,6 +43,7 @@ type Proxy struct {
 	config  *config.Config
 	logger  *audit.Logger
 	scanner *scanner.Scanner
+	metrics *metrics.Metrics
 	client  *http.Client
 	server  *http.Server
 }
@@ -59,7 +61,7 @@ type FetchResponse struct {
 }
 
 // New creates a new fetch proxy from config.
-func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner) *Proxy {
+func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metrics.Metrics) *Proxy {
 	transport := &http.Transport{
 		DialContext: (&net.Dialer{
 			Timeout:   10 * time.Second,
@@ -75,6 +77,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner) *Proxy {
 		config:  cfg,
 		logger:  logger,
 		scanner: sc,
+		metrics: m,
 		client: &http.Client{
 			Transport: transport,
 			Timeout:   time.Duration(cfg.FetchProxy.TimeoutSeconds) * time.Second,
@@ -109,6 +112,8 @@ func (p *Proxy) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/fetch", p.handleFetch)
 	mux.HandleFunc("/health", p.handleHealth)
+	mux.Handle("/metrics", p.metrics.PrometheusHandler())
+	mux.HandleFunc("/stats", p.metrics.StatsHandler())
 
 	p.server = &http.Server{
 		Addr:    p.config.FetchProxy.Listen,
@@ -189,6 +194,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	if !result.Allowed {
 		if p.config.EnforceEnabled() {
 			p.logger.LogBlocked("GET", targetURL, result.Scanner, result.Reason, clientIP, requestID)
+			p.metrics.RecordBlocked(parsed.Hostname(), result.Scanner, time.Since(start))
 			writeJSON(w, http.StatusForbidden, FetchResponse{
 				URL:         targetURL,
 				Blocked:     true,
@@ -283,6 +289,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	duration := time.Since(start)
+	p.metrics.RecordAllowed(duration)
 	p.logger.LogAllowed("GET", targetURL, clientIP, requestID, resp.StatusCode, len(body), duration)
 
 	writeJSON(w, http.StatusOK, FetchResponse{

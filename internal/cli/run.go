@@ -11,6 +11,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -68,9 +69,10 @@ Examples:
 			}
 			defer logger.Close()
 
-			// Set up scanner and proxy
+			// Set up scanner, metrics, and proxy
 			sc := scanner.New(cfg)
-			p := proxy.New(cfg, logger, sc)
+			m := metrics.New()
+			p := proxy.New(cfg, logger, sc, m)
 
 			// Context with signal handling for graceful shutdown
 			ctx, cancel := signal.NotifyContext(
@@ -85,6 +87,7 @@ Examples:
 			fmt.Fprintf(os.Stderr, "  Listen: %s\n", cfg.FetchProxy.Listen)
 			fmt.Fprintf(os.Stderr, "  Fetch:  http://%s/fetch?url=<url>\n", cfg.FetchProxy.Listen)
 			fmt.Fprintf(os.Stderr, "  Health: http://%s/health\n", cfg.FetchProxy.Listen)
+			fmt.Fprintf(os.Stderr, "  Stats:  http://%s/stats\n", cfg.FetchProxy.Listen)
 
 			// Check for agent command after --
 			dashIdx := cmd.ArgsLenAtDash()

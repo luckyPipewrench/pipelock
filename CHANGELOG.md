@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-02-08
+
 ### Changed
 - CLI commands write to `cmd.OutOrStdout()` instead of `os.Stdout` (cobra-idiomatic)
 - `run` command uses `cmd.Context()` as signal parent for testability
@@ -17,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Base64url environment variable leak detection test
 - Rate limiter window rollover test
 - Healthcheck command test against running server
+- 363 tests passing with `-race`
 
 ## [0.1.0] - 2026-02-08
 

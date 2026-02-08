@@ -47,6 +47,7 @@ Quick start:
 		generateCmd(),
 		gitCmd(),
 		versionCmd(),
+		healthcheckCmd(),
 	)
 
 	return cmd

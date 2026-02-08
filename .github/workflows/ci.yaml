@@ -32,6 +32,17 @@ jobs:
       - name: Run tests
         run: go test -race -count=1 -v ./...
 
+      - name: Generate coverage
+        if: matrix.go-version == '1.24'
+        run: go test -race -coverprofile=coverage.out ./...
+
+      - name: Upload coverage
+        if: matrix.go-version == '1.24'
+        uses: codecov/codecov-action@v5
+        with:
+          files: ./coverage.out
+          fail_ci_if_error: false
+
   lint:
     runs-on: ubuntu-latest
     steps:

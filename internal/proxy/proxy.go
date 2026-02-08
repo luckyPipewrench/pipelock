@@ -86,7 +86,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner) *Proxy {
 				redirectURL := req.URL.String()
 				clientIP, _ := req.Context().Value(ctxKeyClientIP).(string)
 				requestID, _ := req.Context().Value(ctxKeyRequestID).(string)
-				logger.LogRedirect(originalURL, redirectURL, len(via))
+				logger.LogRedirect(originalURL, redirectURL, clientIP, requestID, len(via))
 				// Scan each redirect URL through the scanner
 				result := sc.Scan(redirectURL)
 				if !result.Allowed {

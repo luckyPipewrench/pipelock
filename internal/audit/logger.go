@@ -139,11 +139,13 @@ func (l *Logger) LogAnomaly(method, url, reason, clientIP, requestID string, sco
 }
 
 // LogRedirect logs a redirect hop in the chain.
-func (l *Logger) LogRedirect(originalURL, redirectURL string, hop int) {
+func (l *Logger) LogRedirect(originalURL, redirectURL, clientIP, requestID string, hop int) {
 	l.zl.Info().
 		Str("event", "redirect").
 		Str("original_url", originalURL).
 		Str("redirect_url", redirectURL).
+		Str("client_ip", clientIP).
+		Str("request_id", requestID).
 		Int("hop", hop).
 		Msg("redirect followed")
 }

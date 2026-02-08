@@ -55,7 +55,7 @@ func TestNewNop(t *testing.T) {
 	logger.LogAnomaly("GET", "https://sus.com", "high entropy", "127.0.0.1", "req-4", 0.9)
 	logger.LogStartup(":8888", "balanced")
 	logger.LogShutdown("test")
-	logger.LogRedirect("https://a.com", "https://b.com", 1)
+	logger.LogRedirect("https://a.com", "https://b.com", "127.0.0.1", "req-6", 1)
 	logger.Close()
 }
 
@@ -293,6 +293,9 @@ func TestLogAnomaly_JSONFormat(t *testing.T) {
 	if entry["client_ip"] != "10.0.0.1" {
 		t.Errorf("expected client_ip=10.0.0.1, got %v", entry["client_ip"])
 	}
+	if entry["request_id"] != "req-5" {
+		t.Errorf("expected request_id=req-5, got %v", entry["request_id"])
+	}
 }
 
 func TestNew_BothOutput(t *testing.T) {
@@ -514,7 +517,7 @@ func TestLogRedirect_JSONFormat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogRedirect("https://example.com", "https://www.example.com", 1)
+	logger.LogRedirect("https://example.com", "https://www.example.com", "10.0.0.1", "req-7", 1)
 	logger.Close()
 
 	data, _ := os.ReadFile(path)
@@ -535,5 +538,11 @@ func TestLogRedirect_JSONFormat(t *testing.T) {
 	hop, ok := entry["hop"].(float64)
 	if !ok || hop != 1 {
 		t.Errorf("expected hop=1, got %v", entry["hop"])
+	}
+	if entry["client_ip"] != "10.0.0.1" {
+		t.Errorf("expected client_ip=10.0.0.1, got %v", entry["client_ip"])
+	}
+	if entry["request_id"] != "req-7" {
+		t.Errorf("expected request_id=req-7, got %v", entry["request_id"])
 	}
 }

@@ -19,6 +19,7 @@ import (
 func runCmd() *cobra.Command {
 	var configFile string
 	var mode string
+	var listen string
 
 	cmd := &cobra.Command{
 		Use:   "run [flags] [-- <command> [args...]]",
@@ -47,13 +48,17 @@ Examples:
 				cfg = config.Defaults()
 			}
 
-			// Override mode from flag if provided
+			// Override flags if provided
 			if cmd.Flags().Changed("mode") {
 				cfg.Mode = mode
-				cfg.ApplyDefaults()
-				if err := cfg.Validate(); err != nil {
-					return fmt.Errorf("invalid config: %w", err)
-				}
+			}
+			if cmd.Flags().Changed("listen") {
+				cfg.FetchProxy.Listen = listen
+			}
+
+			cfg.ApplyDefaults()
+			if err := cfg.Validate(); err != nil {
+				return fmt.Errorf("invalid config: %w", err)
 			}
 
 			// Set up audit logger
@@ -136,6 +141,7 @@ Examples:
 
 	cmd.Flags().StringVarP(&configFile, "config", "c", "", "config file path")
 	cmd.Flags().StringVarP(&mode, "mode", "m", "balanced", "operating mode: strict, balanced, audit")
+	cmd.Flags().StringVarP(&listen, "listen", "l", "", "listen address (default 127.0.0.1:8888)")
 
 	return cmd
 }

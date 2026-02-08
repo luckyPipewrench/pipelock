@@ -394,3 +394,45 @@ func TestMatchFilter_NonJSON(t *testing.T) {
 		t.Error("expected no match when substring not present")
 	}
 }
+
+func TestHealthcheckCmd_NoServer(t *testing.T) {
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"healthcheck", "--addr", "127.0.0.1:19999"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Error("expected error when no server is running")
+	}
+}
+
+func TestHealthcheckCmd_RegisteredInHelp(t *testing.T) {
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"--help"})
+
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(buf.String(), "healthcheck") {
+		t.Error("expected help output to list 'healthcheck' command")
+	}
+}
+
+func TestRunCmd_ListenFlag(t *testing.T) {
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"run", "--help"})
+
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(buf.String(), "--listen") {
+		t.Error("expected run --help to show --listen flag")
+	}
+}

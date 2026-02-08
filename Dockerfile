@@ -28,5 +28,8 @@ COPY --from=builder /pipelock /pipelock
 
 EXPOSE 8888
 
+HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
+  CMD ["/pipelock", "healthcheck"]
+
 ENTRYPOINT ["/pipelock"]
-CMD ["run"]
+CMD ["run", "--listen", "0.0.0.0:8888"]

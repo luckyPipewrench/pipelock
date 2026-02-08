@@ -39,9 +39,12 @@ func (r *Reloader) Changes() <-chan *Config {
 }
 
 // Start watches the config file and listens for SIGHUP. It blocks until
-// ctx is cancelled or Close is called. Reload errors are returned via the
-// error channel; the old config remains active.
+// ctx is cancelled or Close is called. When Start returns, the onChange
+// channel is closed. Reload failures are logged to stderr via tryReload;
+// the old config remains active.
 func (r *Reloader) Start(ctx context.Context) error {
+	defer close(r.onChange)
+
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		return fmt.Errorf("creating file watcher: %w", err)

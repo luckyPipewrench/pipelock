@@ -113,12 +113,17 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 
 // Reload atomically swaps the config and scanner for hot-reload support.
 // The old scanner is closed to release its rate limiter goroutine.
+//
+// Note: HTTP client timeouts, transport settings, and server listen address
+// are set at construction in New()/Start() and are NOT updated by Reload.
+// Only config values read per-request (mode, enforce, user-agent, blocklists,
+// DLP patterns, response scanning, etc.) take effect immediately.
 func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
 	p.reloadMu.Lock()
 	defer p.reloadMu.Unlock()
 
-	old := p.scannerPtr.Swap(sc)
 	p.cfgPtr.Store(cfg)
+	old := p.scannerPtr.Swap(sc)
 
 	if old != nil {
 		old.Close()

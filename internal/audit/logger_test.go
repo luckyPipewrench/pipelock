@@ -580,6 +580,80 @@ func TestLogResponseScan_StripAction(t *testing.T) {
 	}
 }
 
+func TestLogger_With(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sub := logger.With("agent", "test-bot")
+	sub.LogAllowed("GET", "https://example.com", "10.0.0.1", "req-1", 200, 100, time.Millisecond)
+	logger.Close()
+
+	data, _ := os.ReadFile(path) //nolint:gosec // test reads its own temp file
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+
+	if entry["agent"] != "test-bot" {
+		t.Errorf("expected agent=test-bot, got %v", entry["agent"])
+	}
+	if entry["event"] != "allowed" {
+		t.Errorf("expected event=allowed, got %v", entry["event"])
+	}
+	if entry["component"] != "pipelock" {
+		t.Errorf("expected component=pipelock inherited, got %v", entry["component"])
+	}
+}
+
+func TestLogger_With_DoesNotAffectParent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_ = logger.With("agent", "child-bot")
+	logger.LogAllowed("GET", "https://example.com", "10.0.0.1", "req-1", 200, 100, time.Millisecond)
+	logger.Close()
+
+	data, _ := os.ReadFile(path) //nolint:gosec // test reads its own temp file
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+
+	if _, ok := entry["agent"]; ok {
+		t.Error("expected parent logger not to have agent field")
+	}
+}
+
+func TestLogger_With_InheritsConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	// includeAllowed=false — sub-logger should inherit this
+	logger, err := New("json", "file", path, false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sub := logger.With("agent", "test-bot")
+	sub.LogAllowed("GET", "https://example.com", "10.0.0.1", "req-1", 200, 100, time.Millisecond)
+	logger.Close()
+
+	data, _ := os.ReadFile(path) //nolint:gosec // test reads its own temp file
+	if len(bytes.TrimSpace(data)) > 0 {
+		t.Error("expected sub-logger to inherit includeAllowed=false and suppress allowed events")
+	}
+}
+
 func TestLogRedirect_JSONFormat(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.log")

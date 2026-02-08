@@ -14,11 +14,18 @@ import (
 type Config struct {
 	Version      int           `yaml:"version"`
 	Mode         string        `yaml:"mode"` // strict, balanced, audit
+	Enforce      *bool         `yaml:"enforce"` // nil = true (default); false = detect & log without blocking
 	APIAllowlist []string      `yaml:"api_allowlist"`
 	FetchProxy   FetchProxy    `yaml:"fetch_proxy"`
 	DLP          DLP           `yaml:"dlp"`
 	Logging      LoggingConfig `yaml:"logging"`
 	Internal     []string      `yaml:"internal"`
+}
+
+// EnforceEnabled returns whether blocking is enabled.
+// Defaults to true when Enforce is nil (not set in config).
+func (c *Config) EnforceEnabled() bool {
+	return c.Enforce == nil || *c.Enforce
 }
 
 // FetchProxy configures the unprivileged fetch proxy.
@@ -233,13 +240,13 @@ func Defaults() *Config {
 			ScanEnv: true,
 			Patterns: []DLPPattern{
 				{Name: "Anthropic API Key", Regex: `sk-ant-[a-zA-Z0-9\-_]{20,}`, Severity: "critical"},
-				{Name: "OpenAI API Key", Regex: `sk-[a-zA-Z0-9]{20,}`, Severity: "critical"},
+				{Name: "OpenAI API Key", Regex: `sk-proj-[a-zA-Z0-9]{20,}`, Severity: "critical"},
 				{Name: "GitHub Token", Regex: `gh[ps]_[A-Za-z0-9_]{36,}`, Severity: "critical"},
 				{Name: "Slack Token", Regex: `xox[bpras]-[0-9a-zA-Z-]+`, Severity: "critical"},
 				{Name: "AWS Access Key", Regex: `AKIA[0-9A-Z]{16}`, Severity: "critical"},
 				{Name: "Discord Bot Token", Regex: `[MN][A-Za-z0-9]{23,}\.[A-Za-z0-9\-_]{6}\.[A-Za-z0-9\-_]{27,}`, Severity: "critical"},
 				{Name: "Private Key Header", Regex: `-----BEGIN\s+(RSA\s+|EC\s+|DSA\s+)?PRIVATE\s+KEY-----`, Severity: "critical"},
-				{Name: "Social Security Number", Regex: `\b\d{3}-\d{2}-\d{4}\b`, Severity: "high"},
+				{Name: "Social Security Number", Regex: `\b\d{3}-\d{2}-\d{4}\b`, Severity: "low"},
 			},
 		},
 		Logging: LoggingConfig{

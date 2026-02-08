@@ -584,9 +584,21 @@ func TestScan_DLPPrivateKey(t *testing.T) {
 
 func TestScan_DLPOpenAIKey(t *testing.T) {
 	s := New(testConfig())
-	result := s.Scan("https://example.com/api?key=sk-abcdefghijklmnopqrstuvwxyz")
+	result := s.Scan("https://example.com/api?key=sk-proj-abcdefghijklmnopqrstuvwxyz")
 	if result.Allowed {
 		t.Error("expected DLP to catch OpenAI key")
+	}
+}
+
+func TestScan_DLPOpenAIKey_OldFormatNotMatched(t *testing.T) {
+	s := New(testConfig())
+	// Old sk- prefix without proj- should NOT be caught (too broad)
+	result := s.Scan("https://example.com/api?key=sk-abcdefghijklmnopqrstuvwxyz")
+	if !result.Allowed {
+		// May still be caught by entropy, check it's not DLP
+		if result.Scanner == "dlp" {
+			t.Error("expected old sk- prefix NOT to trigger DLP (too broad)")
+		}
 	}
 }
 

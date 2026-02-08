@@ -49,12 +49,13 @@ func TestNew_FileOutputMissingPath(t *testing.T) {
 func TestNewNop(t *testing.T) {
 	logger := NewNop()
 	// Should not panic
-	logger.LogAllowed("GET", "https://example.com", 200, 1024, time.Second)
-	logger.LogBlocked("GET", "https://evil.com", "blocklist", "domain blocked")
-	logger.LogError("GET", "https://fail.com", os.ErrNotExist)
-	logger.LogAnomaly("GET", "https://sus.com", "high entropy", 0.9)
+	logger.LogAllowed("GET", "https://example.com", "127.0.0.1", "req-1", 200, 1024, time.Second)
+	logger.LogBlocked("GET", "https://evil.com", "blocklist", "domain blocked", "127.0.0.1", "req-2")
+	logger.LogError("GET", "https://fail.com", "127.0.0.1", "req-3", os.ErrNotExist)
+	logger.LogAnomaly("GET", "https://sus.com", "high entropy", "127.0.0.1", "req-4", 0.9)
 	logger.LogStartup(":8888", "balanced")
 	logger.LogShutdown("test")
+	logger.LogRedirect("https://a.com", "https://b.com", 1)
 	logger.Close()
 }
 
@@ -67,7 +68,7 @@ func TestLogAllowed_Filtering(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogAllowed("GET", "https://example.com", 200, 1024, time.Second)
+	logger.LogAllowed("GET", "https://example.com", "127.0.0.1", "req-1", 200, 1024, time.Second)
 	logger.Close()
 
 	data, _ := os.ReadFile(path)
@@ -85,7 +86,7 @@ func TestLogBlocked_Filtering(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogBlocked("GET", "https://evil.com", "blocklist", "domain blocked")
+	logger.LogBlocked("GET", "https://evil.com", "blocklist", "domain blocked", "127.0.0.1", "req-1")
 	logger.Close()
 
 	data, _ := os.ReadFile(path)
@@ -102,7 +103,7 @@ func TestLogAllowed_JSONFormat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogAllowed("GET", "https://example.com", 200, 1024, time.Second)
+	logger.LogAllowed("GET", "https://example.com", "10.0.0.5", "req-42", 200, 1024, time.Second)
 	logger.Close()
 
 	data, _ := os.ReadFile(path)
@@ -125,6 +126,12 @@ func TestLogAllowed_JSONFormat(t *testing.T) {
 	if entry["method"] != "GET" {
 		t.Errorf("expected method=GET, got %v", entry["method"])
 	}
+	if entry["client_ip"] != "10.0.0.5" {
+		t.Errorf("expected client_ip=10.0.0.5, got %v", entry["client_ip"])
+	}
+	if entry["request_id"] != "req-42" {
+		t.Errorf("expected request_id=req-42, got %v", entry["request_id"])
+	}
 }
 
 func TestLogBlocked_JSONFormat(t *testing.T) {
@@ -135,7 +142,7 @@ func TestLogBlocked_JSONFormat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogBlocked("GET", "https://evil.com", "blocklist", "domain in blocklist")
+	logger.LogBlocked("GET", "https://evil.com", "blocklist", "domain in blocklist", "192.168.1.1", "req-7")
 	logger.Close()
 
 	data, _ := os.ReadFile(path)
@@ -153,6 +160,12 @@ func TestLogBlocked_JSONFormat(t *testing.T) {
 	if entry["reason"] != "domain in blocklist" {
 		t.Errorf("expected reason='domain in blocklist', got %v", entry["reason"])
 	}
+	if entry["client_ip"] != "192.168.1.1" {
+		t.Errorf("expected client_ip=192.168.1.1, got %v", entry["client_ip"])
+	}
+	if entry["request_id"] != "req-7" {
+		t.Errorf("expected request_id=req-7, got %v", entry["request_id"])
+	}
 }
 
 func TestLogError_IncludesError(t *testing.T) {
@@ -163,7 +176,7 @@ func TestLogError_IncludesError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogError("GET", "https://fail.com", os.ErrNotExist)
+	logger.LogError("GET", "https://fail.com", "10.0.0.1", "req-9", os.ErrNotExist)
 	logger.Close()
 
 	data, _ := os.ReadFile(path)
@@ -177,6 +190,9 @@ func TestLogError_IncludesError(t *testing.T) {
 	}
 	if entry["error"] == nil || entry["error"] == "" {
 		t.Error("expected error field to be populated")
+	}
+	if entry["client_ip"] != "10.0.0.1" {
+		t.Errorf("expected client_ip=10.0.0.1, got %v", entry["client_ip"])
 	}
 }
 
@@ -252,7 +268,7 @@ func TestLogAnomaly_JSONFormat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogAnomaly("GET", "https://sus.com/data", "high entropy segment", 0.85)
+	logger.LogAnomaly("GET", "https://sus.com/data", "high entropy segment", "10.0.0.1", "req-5", 0.85)
 	logger.Close()
 
 	data, _ := os.ReadFile(path)
@@ -273,6 +289,9 @@ func TestLogAnomaly_JSONFormat(t *testing.T) {
 	score, ok := entry["score"].(float64)
 	if !ok || score < 0.84 || score > 0.86 {
 		t.Errorf("expected score ~0.85, got %v", entry["score"])
+	}
+	if entry["client_ip"] != "10.0.0.1" {
+		t.Errorf("expected client_ip=10.0.0.1, got %v", entry["client_ip"])
 	}
 }
 
@@ -324,7 +343,7 @@ func TestLogAllowed_IncludesAllFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogAllowed("GET", "https://example.com/page", 200, 5000, 150*time.Millisecond)
+	logger.LogAllowed("GET", "https://example.com/page", "10.0.0.5", "req-100", 200, 5000, 150*time.Millisecond)
 	logger.Close()
 
 	data, _ := os.ReadFile(path)
@@ -334,10 +353,12 @@ func TestLogAllowed_IncludesAllFields(t *testing.T) {
 	}
 
 	checks := map[string]any{
-		"event":     "allowed",
-		"method":    "GET",
-		"url":       "https://example.com/page",
-		"component": "pipelock",
+		"event":      "allowed",
+		"method":     "GET",
+		"url":        "https://example.com/page",
+		"component":  "pipelock",
+		"client_ip":  "10.0.0.5",
+		"request_id": "req-100",
 	}
 	for key, want := range checks {
 		if entry[key] != want {
@@ -370,7 +391,7 @@ func TestLogBlocked_IncludesAllFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogBlocked("GET", "https://evil.com/exfil", "blocklist", "domain in blocklist: evil.com")
+	logger.LogBlocked("GET", "https://evil.com/exfil", "blocklist", "domain in blocklist: evil.com", "192.168.1.1", "req-50")
 	logger.Close()
 
 	data, _ := os.ReadFile(path)
@@ -380,12 +401,14 @@ func TestLogBlocked_IncludesAllFields(t *testing.T) {
 	}
 
 	checks := map[string]any{
-		"event":     "blocked",
-		"method":    "GET",
-		"url":       "https://evil.com/exfil",
-		"scanner":   "blocklist",
-		"reason":    "domain in blocklist: evil.com",
-		"component": "pipelock",
+		"event":      "blocked",
+		"method":     "GET",
+		"url":        "https://evil.com/exfil",
+		"scanner":    "blocklist",
+		"reason":     "domain in blocklist: evil.com",
+		"component":  "pipelock",
+		"client_ip":  "192.168.1.1",
+		"request_id": "req-50",
 	}
 	for key, want := range checks {
 		if entry[key] != want {
@@ -402,7 +425,7 @@ func TestLogError_IncludesAllFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogError("GET", "https://fail.com", os.ErrPermission)
+	logger.LogError("GET", "https://fail.com", "10.0.0.1", "req-77", os.ErrPermission)
 	logger.Close()
 
 	data, _ := os.ReadFile(path)
@@ -416,6 +439,12 @@ func TestLogError_IncludesAllFields(t *testing.T) {
 	}
 	if entry["component"] != "pipelock" {
 		t.Errorf("expected component=pipelock, got %v", entry["component"])
+	}
+	if entry["client_ip"] != "10.0.0.1" {
+		t.Errorf("expected client_ip=10.0.0.1, got %v", entry["client_ip"])
+	}
+	if entry["request_id"] != "req-77" {
+		t.Errorf("expected request_id=req-77, got %v", entry["request_id"])
 	}
 }
 
@@ -455,10 +484,10 @@ func TestLogger_MultipleEvents(t *testing.T) {
 	}
 
 	logger.LogStartup(":8888", "balanced")
-	logger.LogAllowed("GET", "https://a.com", 200, 100, time.Millisecond)
-	logger.LogBlocked("GET", "https://b.com", "dlp", "secret found")
-	logger.LogError("GET", "https://c.com", os.ErrNotExist)
-	logger.LogAnomaly("GET", "https://d.com", "weird", 0.5)
+	logger.LogAllowed("GET", "https://a.com", "10.0.0.1", "req-1", 200, 100, time.Millisecond)
+	logger.LogBlocked("GET", "https://b.com", "dlp", "secret found", "10.0.0.1", "req-2")
+	logger.LogError("GET", "https://c.com", "10.0.0.1", "req-3", os.ErrNotExist)
+	logger.LogAnomaly("GET", "https://d.com", "weird", "10.0.0.1", "req-4", 0.5)
 	logger.LogShutdown("done")
 	logger.Close()
 
@@ -474,5 +503,37 @@ func TestLogger_MultipleEvents(t *testing.T) {
 		if err := json.Unmarshal([]byte(line), &entry); err != nil {
 			t.Errorf("line %d is not valid JSON: %v", i, err)
 		}
+	}
+}
+
+func TestLogRedirect_JSONFormat(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogRedirect("https://example.com", "https://www.example.com", 1)
+	logger.Close()
+
+	data, _ := os.ReadFile(path)
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+
+	if entry["event"] != "redirect" {
+		t.Errorf("expected event=redirect, got %v", entry["event"])
+	}
+	if entry["original_url"] != "https://example.com" {
+		t.Errorf("expected original_url, got %v", entry["original_url"])
+	}
+	if entry["redirect_url"] != "https://www.example.com" {
+		t.Errorf("expected redirect_url, got %v", entry["redirect_url"])
+	}
+	hop, ok := entry["hop"].(float64)
+	if !ok || hop != 1 {
+		t.Errorf("expected hop=1, got %v", entry["hop"])
 	}
 }

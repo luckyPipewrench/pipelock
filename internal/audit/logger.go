@@ -81,7 +81,7 @@ func NewNop() *Logger {
 }
 
 // LogAllowed logs a successful, allowed request.
-func (l *Logger) LogAllowed(method, url string, statusCode, sizeBytes int, duration time.Duration) {
+func (l *Logger) LogAllowed(method, url, clientIP, requestID string, statusCode, sizeBytes int, duration time.Duration) {
 	if !l.includeAllowed {
 		return
 	}
@@ -89,6 +89,8 @@ func (l *Logger) LogAllowed(method, url string, statusCode, sizeBytes int, durat
 		Str("event", string(EventAllowed)).
 		Str("method", method).
 		Str("url", url).
+		Str("client_ip", clientIP).
+		Str("request_id", requestID).
 		Int("status_code", statusCode).
 		Int("size_bytes", sizeBytes).
 		Dur("duration_ms", duration).
@@ -96,7 +98,7 @@ func (l *Logger) LogAllowed(method, url string, statusCode, sizeBytes int, durat
 }
 
 // LogBlocked logs a blocked request with the reason.
-func (l *Logger) LogBlocked(method, url, scanner, reason string) {
+func (l *Logger) LogBlocked(method, url, scanner, reason, clientIP, requestID string) {
 	if !l.includeBlocked {
 		return
 	}
@@ -104,30 +106,46 @@ func (l *Logger) LogBlocked(method, url, scanner, reason string) {
 		Str("event", string(EventBlocked)).
 		Str("method", method).
 		Str("url", url).
+		Str("client_ip", clientIP).
+		Str("request_id", requestID).
 		Str("scanner", scanner).
 		Str("reason", reason).
 		Msg("request blocked")
 }
 
 // LogError logs a fetch error.
-func (l *Logger) LogError(method, url string, err error) {
+func (l *Logger) LogError(method, url, clientIP, requestID string, err error) {
 	l.zl.Error().
 		Str("event", string(EventError)).
 		Str("method", method).
 		Str("url", url).
+		Str("client_ip", clientIP).
+		Str("request_id", requestID).
 		Err(err).
 		Msg("request error")
 }
 
 // LogAnomaly logs suspicious but not blocked activity.
-func (l *Logger) LogAnomaly(method, url, reason string, score float64) {
+func (l *Logger) LogAnomaly(method, url, reason, clientIP, requestID string, score float64) {
 	l.zl.Warn().
 		Str("event", string(EventAnomaly)).
 		Str("method", method).
 		Str("url", url).
+		Str("client_ip", clientIP).
+		Str("request_id", requestID).
 		Str("reason", reason).
 		Float64("score", score).
 		Msg("anomaly detected")
+}
+
+// LogRedirect logs a redirect hop in the chain.
+func (l *Logger) LogRedirect(originalURL, redirectURL string, hop int) {
+	l.zl.Info().
+		Str("event", "redirect").
+		Str("original_url", originalURL).
+		Str("redirect_url", redirectURL).
+		Int("hop", hop).
+		Msg("redirect followed")
 }
 
 // LogStartup logs that the proxy has started.

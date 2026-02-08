@@ -1,11 +1,12 @@
 # Pipelock config — audit preset
-# No restrictions. Log everything. For evaluation.
+# Detects anomalies and logs them, but never blocks. For evaluation.
 #
 # Use this for: understanding what your agent does before enforcing
 # restrictions. See what domains it contacts, what URLs it fetches.
 
 version: 1
 mode: audit
+enforce: false
 
 api_allowlist: []
 
@@ -15,15 +16,44 @@ fetch_proxy:
   max_response_mb: 10
   user_agent: "Pipelock Fetch/1.0"
   monitoring:
-    max_url_length: 0
-    # 0 = disabled (audit mode logs everything, blocks nothing)
-    entropy_threshold: 0
+    max_url_length: 2048
+    entropy_threshold: 4.5
     max_requests_per_minute: 0
-    blocklist: []
+    blocklist:
+      - "*.pastebin.com"
+      - "*.hastebin.com"
+      - "*.paste.ee"
+      - "*.transfer.sh"
+      - "*.file.io"
+      - "*.requestbin.com"
 
 dlp:
-  scan_env: false
-  patterns: []
+  scan_env: true
+  patterns:
+    - name: "Anthropic API Key"
+      regex: 'sk-ant-[a-zA-Z0-9\-_]{20,}'
+      severity: critical
+    - name: "OpenAI API Key"
+      regex: 'sk-proj-[a-zA-Z0-9]{20,}'
+      severity: critical
+    - name: "GitHub Token"
+      regex: 'gh[ps]_[A-Za-z0-9_]{36,}'
+      severity: critical
+    - name: "Slack Token"
+      regex: 'xox[bpras]-[0-9a-zA-Z-]+'
+      severity: critical
+    - name: "AWS Access Key"
+      regex: 'AKIA[0-9A-Z]{16}'
+      severity: critical
+    - name: "Discord Bot Token"
+      regex: '[MN][A-Za-z0-9]{23,}\.[A-Za-z0-9\-_]{6}\.[A-Za-z0-9\-_]{27,}'
+      severity: critical
+    - name: "Private Key Header"
+      regex: '-----BEGIN\s+(RSA\s+|EC\s+|DSA\s+)?PRIVATE\s+KEY-----'
+      severity: critical
+    - name: "Social Security Number"
+      regex: '\b\d{3}-\d{2}-\d{4}\b'
+      severity: low
 
 logging:
   format: json

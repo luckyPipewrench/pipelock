@@ -101,9 +101,17 @@ Examples:
 
 				go func() {
 					for newCfg := range reloader.Changes() {
-						newSc := scanner.New(newCfg)
-						p.Reload(newCfg, newSc)
-						logger.LogConfigReload("success", fmt.Sprintf("mode=%s", newCfg.Mode))
+						func() {
+							defer func() {
+								if r := recover(); r != nil {
+									logger.LogError("CONFIG_RELOAD", configFile, "", "",
+										fmt.Errorf("scanner construction panic: %v", r))
+								}
+							}()
+							newSc := scanner.New(newCfg)
+							p.Reload(newCfg, newSc)
+							logger.LogConfigReload("success", fmt.Sprintf("mode=%s", newCfg.Mode))
+						}()
 					}
 				}()
 			}

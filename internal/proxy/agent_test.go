@@ -43,3 +43,49 @@ func TestExtractAgent_DefaultAnonymous(t *testing.T) {
 		t.Errorf("expected anonymous, got %s", got)
 	}
 }
+
+func TestExtractAgent_SanitizesSpecialChars(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url=https://example.com", nil)
+	req.Header.Set(AgentHeader, "evil\nagent\": {\"inject\":true}")
+
+	got := ExtractAgent(req)
+	// Newline, quotes, colon, space, braces all become underscores
+	if got != "evil_agent_____inject__true_" { //nolint:goconst // test value
+		t.Errorf("expected sanitized agent name, got %q", got)
+	}
+}
+
+func TestExtractAgent_TruncatesLongNames(t *testing.T) {
+	long := ""
+	for i := 0; i < 200; i++ {
+		long += "a"
+	}
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url=https://example.com", nil)
+	req.Header.Set(AgentHeader, long)
+
+	got := ExtractAgent(req)
+	if len(got) != maxAgentNameLen {
+		t.Errorf("expected length %d, got %d", maxAgentNameLen, len(got))
+	}
+}
+
+func TestExtractAgent_WhitespaceBecomesUnderscores(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url=https://example.com", nil)
+	req.Header.Set(AgentHeader, "   ")
+
+	got := ExtractAgent(req)
+	// Spaces become underscores, so should be "___"
+	if got != "___" {
+		t.Errorf("expected ___, got %q", got)
+	}
+}
+
+func TestExtractAgent_AllowsDots(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url=https://example.com", nil)
+	req.Header.Set(AgentHeader, "claude-code.v2")
+
+	got := ExtractAgent(req)
+	if got != "claude-code.v2" {
+		t.Errorf("expected claude-code.v2, got %q", got)
+	}
+}

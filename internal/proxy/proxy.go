@@ -67,17 +67,6 @@ type FetchResponse struct {
 
 // New creates a new fetch proxy from config.
 func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metrics.Metrics) *Proxy {
-	transport := &http.Transport{
-		DialContext: (&net.Dialer{
-			Timeout:   10 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: time.Duration(cfg.FetchProxy.TimeoutSeconds) * time.Second,
-		MaxIdleConns:          100,
-		IdleConnTimeout:       90 * time.Second,
-	}
-
 	p := &Proxy{
 		logger:    logger,
 		metrics:   m,
@@ -85,6 +74,59 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 	}
 	p.cfgPtr.Store(cfg)
 	p.scannerPtr.Store(sc)
+
+	dialer := &net.Dialer{
+		Timeout:   10 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}
+
+	transport := &http.Transport{
+		// Custom DialContext pins DNS resolution to prevent DNS rebinding SSRF.
+		// Without this, an attacker could return a safe IP during scanning but
+		// a private IP when the HTTP client re-resolves at connection time.
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, err
+			}
+
+			// If the host is already an IP, check it and dial directly.
+			if ip := net.ParseIP(host); ip != nil {
+				if currentSc := p.scannerPtr.Load(); currentSc.IsInternalIP(ip) {
+					return nil, fmt.Errorf("SSRF blocked: connection to internal IP %s", host)
+				}
+				return dialer.DialContext(ctx, network, addr)
+			}
+
+			// Resolve DNS and validate every IP before connecting.
+			ips, err := net.DefaultResolver.LookupHost(ctx, host)
+			if err != nil {
+				return nil, err
+			}
+
+			if len(ips) == 0 {
+				return nil, fmt.Errorf("SSRF blocked: DNS returned no addresses for %s", host)
+			}
+
+			currentSc := p.scannerPtr.Load()
+			for _, ipStr := range ips {
+				ip := net.ParseIP(ipStr)
+				if ip == nil {
+					return nil, fmt.Errorf("SSRF blocked: unparseable IP %q from DNS for %s", ipStr, host)
+				}
+				if currentSc.IsInternalIP(ip) {
+					return nil, fmt.Errorf("SSRF blocked: %s resolves to internal IP %s", host, ipStr)
+				}
+			}
+
+			// Connect to the first validated IP.
+			return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0], port))
+		},
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: time.Duration(cfg.FetchProxy.TimeoutSeconds) * time.Second,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+	}
 
 	p.client = &http.Client{
 		Transport: transport,

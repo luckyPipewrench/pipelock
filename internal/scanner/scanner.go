@@ -104,6 +104,17 @@ func New(cfg *config.Config) *Scanner {
 	return s
 }
 
+// IsInternalIP checks whether the given IP falls within any configured
+// internal CIDR. Returns false when SSRF protection is disabled (no CIDRs).
+func (s *Scanner) IsInternalIP(ip net.IP) bool {
+	for _, cidr := range s.internalCIDRs {
+		if cidr.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
 // Close releases scanner resources, including stopping the rate limiter
 // cleanup goroutine. Safe to call multiple times.
 func (s *Scanner) Close() {
@@ -262,7 +273,11 @@ func (s *Scanner) checkDLP(parsed *url.URL) Result {
 	// parsed.Path is already URL-decoded by Go's url.Parse.
 	// For query strings, decode the full string to catch secrets split
 	// across key=value boundaries, then also check individual decoded values.
-	decodedQuery, _ := url.QueryUnescape(parsed.RawQuery)
+	decodedQuery, err := url.QueryUnescape(parsed.RawQuery)
+	if err != nil {
+		// Malformed percent-encoding — scan the raw query to prevent bypass.
+		decodedQuery = parsed.RawQuery
+	}
 
 	targets := []string{
 		parsed.Path,

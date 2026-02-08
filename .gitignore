@@ -1,0 +1,42 @@
+# Binaries
+pipelock
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/bin/
+/dist/
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+coverage.html
+
+# Go workspace
+go.work
+go.work.sum
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Audit logs (don't commit real logs)
+*.log
+pipelock-audit.log
+
+# Environment files
+.env
+.env.*
+
+# Claude Code
+.claude/

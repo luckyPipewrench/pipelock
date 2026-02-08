@@ -1,0 +1,43 @@
+# Pipelock config — audit preset
+# No restrictions. Log everything. For evaluation.
+#
+# Use this for: understanding what your agent does before enforcing
+# restrictions. See what domains it contacts, what URLs it fetches.
+
+version: 1
+mode: audit
+
+api_allowlist: []
+
+fetch_proxy:
+  listen: "127.0.0.1:8888"
+  timeout_seconds: 30
+  max_response_mb: 10
+  user_agent: "Pipelock Fetch/1.0"
+  monitoring:
+    max_url_length: 0
+    # 0 = disabled (audit mode logs everything, blocks nothing)
+    entropy_threshold: 0
+    max_requests_per_minute: 0
+    blocklist: []
+
+dlp:
+  scan_env: false
+  patterns: []
+
+logging:
+  format: json
+  output: stdout
+  include_allowed: true
+  include_blocked: true
+
+internal:
+  - "127.0.0.0/8"
+  - "10.0.0.0/8"
+  - "172.16.0.0/12"
+  - "192.168.0.0/16"
+  - "169.254.0.0/16"
+  - "::1/128"
+  - "fc00::/7"
+  - "fe80::/10"
+  - "::ffff:0:0/96"

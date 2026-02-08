@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -58,7 +59,8 @@ func Load(path string) (*Manifest, error) {
 	return &m, nil
 }
 
-// Save writes the manifest to disk with restrictive permissions.
+// Save atomically writes the manifest to disk with restrictive permissions.
+// It writes to a temporary file and renames to prevent corruption on crash.
 func (m *Manifest) Save(path string) error {
 	data, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
@@ -67,7 +69,29 @@ func (m *Manifest) Save(path string) error {
 
 	data = append(data, '\n')
 
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".manifest-*.tmp")
+	if err != nil {
+		return fmt.Errorf("creating temp file: %w", err)
+	}
+	tmpName := tmp.Name()
+
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()        //nolint:errcheck,gosec // cleanup
+		os.Remove(tmpName) //nolint:errcheck,gosec // cleanup
+		return fmt.Errorf("writing manifest: %w", err)
+	}
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()        //nolint:errcheck,gosec // cleanup
+		os.Remove(tmpName) //nolint:errcheck,gosec // cleanup
+		return fmt.Errorf("setting manifest permissions: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName) //nolint:errcheck,gosec // cleanup
+		return fmt.Errorf("closing temp file: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		os.Remove(tmpName) //nolint:errcheck,gosec // cleanup
 		return fmt.Errorf("writing manifest: %w", err)
 	}
 

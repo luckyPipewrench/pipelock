@@ -198,8 +198,14 @@ func validateExcludes(excludes []string) error {
 	return nil
 }
 
-// matchDoublestar handles "**" glob patterns.
+// matchDoublestar handles "**" glob patterns. Only a single "**" segment is
+// supported (e.g. "dir/**", "**/name"). Patterns with multiple "**" segments
+// (e.g. "a/**/b/**/c") return false.
 func matchDoublestar(pattern, relPath string) bool {
+	if strings.Count(pattern, "**") > 1 {
+		return false
+	}
+
 	parts := strings.SplitN(pattern, "**", 2)
 	if len(parts) != 2 {
 		return false

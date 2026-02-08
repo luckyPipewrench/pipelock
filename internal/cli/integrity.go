@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -67,7 +68,8 @@ Examples:
 				return fmt.Errorf("checking for existing manifest: %w", statErr)
 			}
 
-			m, err := integrity.Generate(dir, excludes)
+			allExcludes := appendManifestExclude(excludes, mPath, dir)
+			m, err := integrity.Generate(dir, allExcludes)
 			if err != nil {
 				return err
 			}
@@ -77,7 +79,7 @@ Examples:
 			}
 
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(),
-				"Manifest created: %s (%d files)\n", mPath, len(m.Files))
+				"Manifest created: %s (%d %s)\n", mPath, len(m.Files), pluralFile(len(m.Files)))
 			return nil
 		},
 	}
@@ -115,6 +117,10 @@ Examples:
 			if err != nil {
 				return fmt.Errorf("loading manifest: %w", err)
 			}
+
+			// Ensure the manifest file itself is excluded from the check,
+			// even when using a custom --manifest path inside the workspace.
+			m.Excludes = appendManifestExclude(m.Excludes, mPath, dir)
 
 			violations, err := integrity.Check(dir, m)
 			if err != nil {
@@ -231,7 +237,8 @@ Examples:
 				useExcludes = excludes
 			}
 
-			m, err := integrity.Generate(dir, useExcludes)
+			allExcludes := appendManifestExclude(useExcludes, mPath, dir)
+			m, err := integrity.Generate(dir, allExcludes)
 			if err != nil {
 				return err
 			}
@@ -244,7 +251,7 @@ Examples:
 			}
 
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(),
-				"Manifest updated: %s (%d files)\n", mPath, len(m.Files))
+				"Manifest updated: %s (%d %s)\n", mPath, len(m.Files), pluralFile(len(m.Files)))
 			return nil
 		},
 	}
@@ -285,4 +292,32 @@ func resolveManifestPath(explicit, dir string) string {
 		return explicit
 	}
 	return filepath.Join(dir, integrity.DefaultManifestFile)
+}
+
+// appendManifestExclude adds the manifest's relative path to the excludes list
+// if the manifest resides inside the workspace directory and has a non-default
+// name. The default manifest name is already handled by alwaysExcluded.
+func appendManifestExclude(excludes []string, manifestPath, dir string) []string {
+	rel, err := filepath.Rel(dir, manifestPath)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return excludes
+	}
+	rel = filepath.ToSlash(rel)
+	// The default manifest name is already in alwaysExcluded — skip it.
+	if rel == integrity.DefaultManifestFile {
+		return excludes
+	}
+	for _, e := range excludes {
+		if e == rel {
+			return excludes
+		}
+	}
+	return append(excludes, rel)
+}
+
+func pluralFile(n int) string {
+	if n == 1 {
+		return "file"
+	}
+	return "files"
 }

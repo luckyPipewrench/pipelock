@@ -42,8 +42,8 @@ func TestIntegrityInit_Basic(t *testing.T) {
 	}
 
 	output := buf.String()
-	if !strings.Contains(output, "1 files") {
-		t.Errorf("expected '1 files' in output, got: %q", output)
+	if !strings.Contains(output, "1 file") {
+		t.Errorf("expected '1 file' in output, got: %q", output)
 	}
 
 	// Verify manifest was created.
@@ -74,6 +74,35 @@ func TestIntegrityInit_CustomManifestPath(t *testing.T) {
 	}
 }
 
+func TestIntegrityCheck_CustomManifestInsideWorkspace(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, dir, "file.txt", "content\n")
+
+	mPath := filepath.Join(dir, "custom-manifest.json")
+
+	// Init with custom manifest inside workspace.
+	initCmd := rootCmd()
+	initCmd.SetArgs([]string{"integrity", "init", dir, "--manifest", mPath})
+	initCmd.SetOut(&strings.Builder{})
+	if err := initCmd.Execute(); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	// Check should not report the custom manifest as an "ADDED" violation.
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"integrity", "check", dir, "--manifest", mPath})
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("expected clean check, got error: %v\noutput: %s", err, buf.String())
+	}
+
+	if !strings.Contains(buf.String(), "All files match") {
+		t.Errorf("expected clean check, got: %q", buf.String())
+	}
+}
+
 func TestIntegrityInit_WithExcludes(t *testing.T) {
 	dir := t.TempDir()
 	writeTestFile(t, dir, "keep.txt", "keep\n")
@@ -89,8 +118,8 @@ func TestIntegrityInit_WithExcludes(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !strings.Contains(buf.String(), "1 files") {
-		t.Errorf("expected '1 files' in output, got: %q", buf.String())
+	if !strings.Contains(buf.String(), "1 file") {
+		t.Errorf("expected '1 file' in output, got: %q", buf.String())
 	}
 }
 

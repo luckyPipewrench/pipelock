@@ -27,7 +27,7 @@ type Violation struct {
 }
 
 // alwaysExcluded are basenames that are always skipped during directory walks.
-var alwaysExcluded = []string{".git", DefaultManifestFile}
+var alwaysExcluded = []string{".git", DefaultManifestFile, DefaultManifestFile + ".sig"}
 
 // Generate walks a directory tree and produces a new manifest.
 func Generate(dir string, excludes []string) (*Manifest, error) {

@@ -47,6 +47,10 @@ Quick start:
 		generateCmd(),
 		gitCmd(),
 		integrityCmd(),
+		keygenCmd(),
+		signCmd(),
+		verifyCmd(),
+		trustCmd(),
 		versionCmd(),
 		healthcheckCmd(),
 	)

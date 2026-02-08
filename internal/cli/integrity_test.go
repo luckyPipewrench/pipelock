@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/integrity"
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 func TestIntegrityCmd_RegisteredInHelp(t *testing.T) {
@@ -623,6 +624,231 @@ func TestIntegrityCmd_DefaultsToCurrentDir(t *testing.T) {
 
 	if !strings.Contains(buf.String(), "[directory]") {
 		t.Error("expected [directory] in help output")
+	}
+}
+
+func TestIntegrityInit_WithSign(t *testing.T) {
+	dir := t.TempDir()
+	ksDir := t.TempDir()
+	writeTestFile(t, dir, "file.txt", "content\n")
+
+	// Generate agent key.
+	ks := signing.NewKeystore(ksDir)
+	if _, err := ks.GenerateAgent("test-agent"); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{
+		"integrity", "init", dir,
+		"--sign", "--agent", "test-agent", "--keystore", ksDir,
+	})
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init --sign error: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "1 file") {
+		t.Errorf("expected '1 file' in output, got: %q", output)
+	}
+	if !strings.Contains(output, "signed") || !strings.Contains(output, "test-agent") {
+		t.Errorf("expected signing confirmation in output, got: %q", output)
+	}
+
+	// Verify .sig file was created.
+	mPath := filepath.Join(dir, integrity.DefaultManifestFile)
+	sigPath := mPath + signing.SigExtension
+	if _, err := os.Stat(sigPath); err != nil {
+		t.Errorf("signature file not created: %v", err)
+	}
+}
+
+func TestIntegrityCheck_WithVerify(t *testing.T) {
+	dir := t.TempDir()
+	ksDir := t.TempDir()
+	writeTestFile(t, dir, "file.txt", "content\n")
+
+	ks := signing.NewKeystore(ksDir)
+	if _, err := ks.GenerateAgent("test-agent"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Init and sign.
+	initCmd := rootCmd()
+	initCmd.SetArgs([]string{
+		"integrity", "init", dir,
+		"--sign", "--agent", "test-agent", "--keystore", ksDir,
+	})
+	initCmd.SetOut(&strings.Builder{})
+	if err := initCmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Check with verify — should pass.
+	cmd := rootCmd()
+	cmd.SetArgs([]string{
+		"integrity", "check", dir,
+		"--verify", "--agent", "test-agent", "--keystore", ksDir,
+	})
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("check --verify error: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "verified") {
+		t.Errorf("expected signature verified message, got: %q", output)
+	}
+	if !strings.Contains(output, "All files match") {
+		t.Errorf("expected clean check, got: %q", output)
+	}
+}
+
+func TestIntegrityCheck_VerifyTamperedManifest(t *testing.T) {
+	dir := t.TempDir()
+	ksDir := t.TempDir()
+	writeTestFile(t, dir, "file.txt", "content\n")
+
+	ks := signing.NewKeystore(ksDir)
+	if _, err := ks.GenerateAgent("test-agent"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Init and sign.
+	initCmd := rootCmd()
+	initCmd.SetArgs([]string{
+		"integrity", "init", dir,
+		"--sign", "--agent", "test-agent", "--keystore", ksDir,
+	})
+	initCmd.SetOut(&strings.Builder{})
+	if err := initCmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Tamper with the manifest file by appending data.
+	mPath := filepath.Join(dir, integrity.DefaultManifestFile)
+	data, err := os.ReadFile(mPath) //nolint:gosec // test path
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(mPath, append(data, []byte("\n// tampered")...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Check with verify — should fail signature verification.
+	cmd := rootCmd()
+	cmd.SetArgs([]string{
+		"integrity", "check", dir,
+		"--verify", "--agent", "test-agent", "--keystore", ksDir,
+	})
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("expected error for tampered manifest signature")
+	}
+}
+
+func TestIntegrityUpdate_WithSign(t *testing.T) {
+	dir := t.TempDir()
+	ksDir := t.TempDir()
+	writeTestFile(t, dir, "file.txt", "original\n")
+
+	ks := signing.NewKeystore(ksDir)
+	if _, err := ks.GenerateAgent("test-agent"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Init without signing.
+	initCmd := rootCmd()
+	initCmd.SetArgs([]string{"integrity", "init", dir})
+	initCmd.SetOut(&strings.Builder{})
+	if err := initCmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Modify file.
+	writeTestFile(t, dir, "file.txt", "changed\n")
+
+	// Update with signing.
+	cmd := rootCmd()
+	cmd.SetArgs([]string{
+		"integrity", "update", dir,
+		"--sign", "--agent", "test-agent", "--keystore", ksDir,
+	})
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("update --sign error: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "updated") {
+		t.Errorf("expected 'updated' in output, got: %q", output)
+	}
+	if !strings.Contains(output, "signed") {
+		t.Errorf("expected signing confirmation in output, got: %q", output)
+	}
+
+	// Verify the signature is valid.
+	mPath := filepath.Join(dir, integrity.DefaultManifestFile)
+	sigPath := mPath + signing.SigExtension
+	if _, err := os.Stat(sigPath); err != nil {
+		t.Errorf("signature file not created: %v", err)
+	}
+
+	// Check with verify should pass.
+	checkCmd := rootCmd()
+	checkCmd.SetArgs([]string{
+		"integrity", "check", dir,
+		"--verify", "--agent", "test-agent", "--keystore", ksDir,
+	})
+	checkCmd.SetOut(&strings.Builder{})
+	if err := checkCmd.Execute(); err != nil {
+		t.Fatalf("check --verify after update: %v", err)
+	}
+}
+
+func TestIntegrityCheck_VerifyWrongAgent(t *testing.T) {
+	dir := t.TempDir()
+	ksDir := t.TempDir()
+	writeTestFile(t, dir, "file.txt", "content\n")
+
+	ks := signing.NewKeystore(ksDir)
+	if _, err := ks.GenerateAgent("alice"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ks.GenerateAgent("bob"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Init and sign as alice.
+	initCmd := rootCmd()
+	initCmd.SetArgs([]string{
+		"integrity", "init", dir,
+		"--sign", "--agent", "alice", "--keystore", ksDir,
+	})
+	initCmd.SetOut(&strings.Builder{})
+	if err := initCmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Check with verify as bob — should fail.
+	cmd := rootCmd()
+	cmd.SetArgs([]string{
+		"integrity", "check", dir,
+		"--verify", "--agent", "bob", "--keystore", ksDir,
+	})
+	cmd.SetOut(&strings.Builder{})
+
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("expected error when verifying with wrong agent's key")
 	}
 }
 

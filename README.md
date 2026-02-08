@@ -52,8 +52,11 @@ BALANCED MODE (default):
 ## Quick Start
 
 ```bash
-# Install
+# Install from source
 go install github.com/luckyPipewrench/pipelock/cmd/pipelock@latest
+
+# Or pull the Docker image
+docker pull ghcr.io/luckypipewrench/pipelock:latest
 
 # Start the fetch proxy with default settings
 pipelock run
@@ -69,6 +72,9 @@ pipelock check --url "https://pastebin.com/raw/abc123"
 
 # Generate a config from a preset
 pipelock generate config --preset balanced --output pipelock.yaml
+
+# Generate a Docker Compose file for network-isolated deployment
+pipelock generate docker-compose --agent claude-code -o docker-compose.yaml
 
 # Show version and build info
 pipelock version
@@ -102,6 +108,7 @@ What each mode prevents, detects, or logs:
 ```yaml
 version: 1
 mode: balanced
+enforce: true              # set false for audit mode (log without blocking)
 
 api_allowlist:
   - "*.anthropic.com"
@@ -112,16 +119,18 @@ api_allowlist:
 fetch_proxy:
   listen: "127.0.0.1:8888"
   timeout_seconds: 30
+  max_response_mb: 10        # max fetched response body size
+  user_agent: "Pipelock Fetch/1.0"
   monitoring:
-    entropy_threshold: 4.5      # flag high-entropy URL segments
+    entropy_threshold: 4.5   # flag high-entropy URL segments
     max_url_length: 2048
-    max_requests_per_minute: 60 # per-domain rate limit
+    max_requests_per_minute: 60  # per-domain rate limit
     blocklist:
-      - "*.pastebin.com"        # known exfiltration targets
+      - "*.pastebin.com"    # known exfiltration targets
       - "*.transfer.sh"
 
 dlp:
-  scan_env: true                # detect env variable leaks in URLs
+  scan_env: true             # detect env variable leaks in URLs
   patterns:
     - name: "Anthropic API Key"
       regex: 'sk-ant-[a-zA-Z0-9\-_]{20,}'
@@ -132,10 +141,27 @@ dlp:
 
 response_scanning:
   enabled: true
-  action: warn                  # block, strip, or warn
+  action: warn               # block, strip, or warn
   patterns:
     - name: "Prompt Injection"
       regex: '(?i)(ignore|disregard)\s+(all\s+)?(previous|prior)\s+(instructions|prompts)'
+
+logging:
+  format: json
+  output: stdout             # or a file path
+  include_allowed: true
+  include_blocked: true
+
+# SSRF protection: internal CIDRs to block (omit to disable)
+internal:
+  - "127.0.0.0/8"
+  - "10.0.0.0/8"
+  - "172.16.0.0/12"
+  - "192.168.0.0/16"
+  - "169.254.0.0/16"
+  - "::1/128"
+  - "fc00::/7"
+  - "fe80::/10"
 
 git_protection:
   enabled: false
@@ -145,11 +171,13 @@ git_protection:
 
 Three presets are included: `configs/strict.yaml`, `configs/balanced.yaml`, `configs/audit.yaml`.
 
+Generate one with: `pipelock generate config --preset balanced --output pipelock.yaml`
+
 ## URL Scanning
 
 The fetch proxy scans every URL before fetching:
 
-1. **SSRF protection** — blocks requests to internal/private IPs (169.254.x.x, 10.x.x.x, etc.)
+1. **SSRF protection** — blocks requests to internal/private IPs (169.254.x.x, 10.x.x.x, etc.) with DNS rebinding prevention
 2. **Domain blocklist** — blocks known exfiltration targets (pastebin, transfer.sh, etc.)
 3. **Rate limiting** — per-domain sliding window rate limits
 4. **DLP patterns** — regex matching for API keys, tokens, and secrets in URLs
@@ -165,7 +193,10 @@ Fetched page content is scanned for prompt injection patterns before being retur
 - **System/role overrides** — attempts to hijack system prompts
 - **Jailbreak attempts** — DAN mode, developer mode, etc.
 
-Three actions: `block` (reject the response), `strip` (redact matched text), `warn` (log and pass through).
+Three actions:
+- `block` — reject the response entirely (403)
+- `strip` — redact matched text with `[REDACTED:<pattern-name>]` markers and return the rest
+- `warn` — log the detection and pass content through unmodified
 
 ## Multi-Agent Support
 
@@ -174,6 +205,8 @@ When multiple agents share one Pipelock proxy, each identifies itself via the `X
 ```bash
 curl -H "X-Pipelock-Agent: my-bot" "http://localhost:8888/fetch?url=https://example.com"
 ```
+
+Agent names are sanitized to `[a-zA-Z0-9._-]` and truncated to 64 characters.
 
 ## Fetch Proxy API
 
@@ -211,7 +244,7 @@ Health response format:
 ```json
 {
   "status": "healthy",
-  "version": "0.2.0",
+  "version": "0.1.0",
   "mode": "balanced",
   "uptime_seconds": 3600.5,
   "dlp_patterns": 8,
@@ -221,26 +254,72 @@ Health response format:
 }
 ```
 
+Stats response format:
+```json
+{
+  "uptime_seconds": 3600.5,
+  "requests": {
+    "total": 150,
+    "allowed": 142,
+    "blocked": 8,
+    "block_rate": 0.053
+  },
+  "top_blocked_domains": [
+    {"name": "pastebin.com", "count": 5},
+    {"name": "transfer.sh", "count": 3}
+  ],
+  "top_scanners": [
+    {"name": "blocklist", "count": 5},
+    {"name": "dlp", "count": 3}
+  ]
+}
+```
+
 ## Git Protection
 
 Pipelock includes git-aware security commands for scanning diffs and installing pre-push hooks:
 
 ```bash
-# Scan a git diff for secrets
-pipelock git scan-diff --config pipelock.yaml
+# Scan a git diff for secrets (reads from stdin)
+git diff HEAD~1 | pipelock git scan-diff
+git diff --cached | pipelock git scan-diff --config pipelock.yaml
 
 # Install pre-push hook that scans outgoing commits
-pipelock git install-hooks --config pipelock.yaml
+pipelock git install-hooks
+pipelock git install-hooks --config pipelock.yaml --force
 ```
 
 > **Note:** Branch glob patterns use Go's `filepath.Match`, which only supports single-level wildcards. `feature/*` matches `feature/login` but **not** `feature/login/oauth`. Use flat branch naming or multiple patterns if needed.
 
 ## Docker
 
+### Pull from GHCR
+
+```bash
+docker pull ghcr.io/luckypipewrench/pipelock:latest
+docker run -p 8888:8888 ghcr.io/luckypipewrench/pipelock:latest
+```
+
+### Build locally
+
 ```bash
 docker build -t pipelock .
-docker run -p 8888:8888 pipelock run
+docker run -p 8888:8888 pipelock
 ```
+
+### Docker Compose (network-isolated agent)
+
+Generate a Docker Compose file that runs your agent in a network-isolated container with Pipelock as the only internet gateway:
+
+```bash
+# Supported agents: claude-code, aider, openhands, custom
+pipelock generate docker-compose --agent claude-code -o docker-compose.yaml
+docker compose up
+```
+
+The generated compose file creates two containers:
+- **pipelock** — the fetch proxy with full internet access
+- **agent** — your AI agent on an internal-only network, can only reach pipelock
 
 ## Building
 
@@ -253,6 +332,9 @@ make test
 
 # Lint
 make lint
+
+# Build Docker image
+make docker
 ```
 
 The Makefile injects build metadata (version, date, commit, Go version) via ldflags.
@@ -262,11 +344,11 @@ The Makefile injects build metadata (version, date, commit, Go version) via ldfl
 ```
 cmd/pipelock/          CLI entry point
 internal/
-  cli/                 Cobra commands (run, check, generate, logs, git, version)
-  config/              YAML config loading, validation, defaults, hot-reload
-  scanner/             URL scanning (SSRF, blocklist, rate limit, DLP, entropy)
+  cli/                 Cobra commands (run, check, generate, logs, git, version, healthcheck)
+  config/              YAML config loading, validation, defaults, hot-reload (fsnotify)
+  scanner/             URL scanning (SSRF, blocklist, rate limit, DLP, entropy, env leak)
   audit/               Structured JSON audit logging (zerolog)
-  proxy/               Fetch proxy HTTP server (go-readability, agent ID)
+  proxy/               Fetch proxy HTTP server (go-readability, agent ID, DNS pinning)
   metrics/             Prometheus metrics + JSON stats endpoint
   gitprotect/          Git-aware security (diff scanning, branch validation, hooks)
 configs/               Preset config files (strict, balanced, audit)

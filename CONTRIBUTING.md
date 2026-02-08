@@ -27,7 +27,7 @@ make test
 
 ## Code Style
 
-- Standard `gofmt` formatting
+- `gofumpt` formatting (stricter `gofmt`)
 - Error wrapping with context: `fmt.Errorf("doing thing: %w", err)`
 - Table-driven tests where applicable
 - Clear variable names — readability over cleverness

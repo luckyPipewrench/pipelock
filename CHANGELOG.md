@@ -5,41 +5,36 @@ All notable changes to Pipelock will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.0] - 2026-02-08
+## [Unreleased]
+
+## [0.1.0] - 2026-02-08
 
 ### Added
-- **Response scanning**: fetched page content is scanned for prompt injection patterns (block/strip/warn actions)
-- **Git protection**: `pipelock git scan-diff` and `pipelock git install-hooks` commands for scanning diffs and pre-push hooks
-- **Prometheus metrics**: `/metrics` endpoint with `pipelock_requests_total`, `pipelock_scanner_hits_total`, `pipelock_request_duration_seconds`
-- **JSON stats**: `/stats` endpoint with top blocked domains, scanner hits, block rate, uptime
-- **Multi-agent support**: `X-Pipelock-Agent` header identifies calling agents; agent name included in all audit logs and fetch responses
-- **Config hot-reload**: file changes detected via fsnotify, manual reload via SIGHUP (when using `--config`)
-- **Version subcommand**: `pipelock version` shows version, build date, git commit, Go version
-- **Enhanced /health endpoint**: now includes `uptime_seconds`, `dlp_patterns`, `response_scan_enabled`, `git_protection_enabled`, `rate_limit_enabled`
-- **Per-domain rate limiting**: sliding window rate limits with configurable `max_requests_per_minute`
-- **Environment variable leak detection**: scans URLs for high-entropy env var values (raw + base64-encoded)
-- **Build metadata**: Makefile injects build date, git commit, and Go version via ldflags
-
-### Fixed
-- Scanner resource cleanup: rate limiter goroutine is now properly stopped on shutdown
-
-## [0.1.0] - 2026-02-07
-
-### Added
-- Fetch proxy server with `/fetch` and `/health` endpoints
-- URL scanning pipeline: scheme check, SSRF protection, domain blocklist, URL length, DLP regex, Shannon entropy
-- SSRF protection with configurable CIDR ranges (IPv4 + IPv6), fail-closed DNS resolution
+- Fetch proxy server with `/fetch`, `/health`, `/metrics`, and `/stats` endpoints
+- URL scanning pipeline: scheme check, SSRF protection, domain blocklist, rate limiting, URL length, DLP regex, Shannon entropy
+- SSRF protection with configurable CIDR ranges (IPv4 + IPv6), fail-closed DNS resolution, DNS rebinding prevention via pinned DialContext
 - DLP pattern matching for API keys, tokens, secrets (Anthropic, OpenAI, GitHub, Slack, AWS, Discord, private keys, SSNs)
 - Shannon entropy analysis for detecting encoded/encrypted data in URL segments
+- Environment variable leak detection: scans URLs for high-entropy env var values (raw + base64-encoded)
 - Domain blocklist with wildcard support (`*.pastebin.com`)
-- Structured JSON audit logging via zerolog (allowed, blocked, error, anomaly events)
+- Per-domain rate limiting with sliding window and configurable `max_requests_per_minute`
+- Response scanning: fetched page content scanned for prompt injection patterns (block/strip/warn actions)
+- Multi-agent support: `X-Pipelock-Agent` header identifies calling agents; agent name included in audit logs and fetch responses
+- Agent name sanitization to prevent log injection
+- Structured JSON audit logging via zerolog (allowed, blocked, error, anomaly, redirect events)
 - YAML configuration with validation and sensible defaults
+- Config hot-reload via fsnotify file watching and SIGHUP signal (when using `--config`)
+- Hot-reload panic recovery: invalid config reloads are caught and logged without crashing the proxy
 - Three operating modes: strict, balanced (default), audit
-- CLI commands: `run`, `check`, `generate config`, `logs`
+- CLI commands: `run`, `check`, `generate config`, `generate docker-compose`, `logs`, `git scan-diff`, `git install-hooks`, `version`, `healthcheck`
 - Config presets: `configs/balanced.yaml`, `configs/strict.yaml`, `configs/audit.yaml`
+- Docker Compose generation for network-isolated agent deployments (`pipelock generate docker-compose`)
 - HTML content extraction via go-readability
 - Redirect following with per-hop URL scanning (max 5 redirects)
 - Graceful shutdown on SIGINT/SIGTERM
-- Docker support (scratch-based image, ~15MB)
-- GitHub Actions CI (Go 1.23 + 1.24, race detector, vet)
-- 165 tests with `-race`
+- Prometheus metrics: `pipelock_requests_total`, `pipelock_scanner_hits_total`, `pipelock_request_duration_seconds`
+- JSON stats endpoint: top blocked domains, scanner hits, block rate, uptime
+- Build metadata injection via ldflags (version, date, commit, Go version)
+- Docker support: scratch-based image (~15MB), multi-arch (amd64/arm64), GHCR via GoReleaser
+- GitHub Actions CI (Go 1.24 + 1.25, race detector, vet)
+- 345 tests with `-race`

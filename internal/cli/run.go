@@ -22,18 +22,17 @@ func runCmd() *cobra.Command {
 	var listen string
 
 	cmd := &cobra.Command{
-		Use:   "run [flags] [-- <command> [args...]]",
+		Use:   "run [flags]",
 		Short: "Start the Pipelock fetch proxy",
 		Long: `Start the fetch proxy server that scans and fetches URLs on behalf of agents.
 
-In standalone mode (no command after --), the proxy runs until interrupted.
-When a command is provided after --, the proxy starts, then execs the command
-with PIPELOCK_FETCH_URL set in the environment.
+The proxy runs until interrupted (SIGINT/SIGTERM). When started with --config,
+file changes and SIGHUP signals trigger a hot-reload of config and scanner.
 
 Examples:
   pipelock run                                       # standalone proxy
-  pipelock run --config pipelock.yaml                # with config file
-  pipelock run --mode strict -- python my_agent.py   # with agent command`,
+  pipelock run --config pipelock.yaml                # with config file (hot-reload)
+  pipelock run --mode strict --listen 0.0.0.0:9999   # override mode and listen address`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Load config
 			var cfg *config.Config

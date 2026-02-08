@@ -1,0 +1,370 @@
+package signing
+
+import (
+	"crypto/ed25519"
+	"encoding/base64"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestGenerateKeyPair(t *testing.T) {
+	pub, priv, err := GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair() error: %v", err)
+	}
+	if len(pub) != ed25519.PublicKeySize {
+		t.Errorf("public key length = %d, want %d", len(pub), ed25519.PublicKeySize)
+	}
+	if len(priv) != ed25519.PrivateKeySize {
+		t.Errorf("private key length = %d, want %d", len(priv), ed25519.PrivateKeySize)
+	}
+}
+
+func TestSignVerify_RoundTrip(t *testing.T) {
+	pub, priv, err := GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	data := []byte("hello world")
+	sig := ed25519.Sign(priv, data)
+
+	if !ed25519.Verify(pub, data, sig) {
+		t.Fatal("valid signature rejected")
+	}
+}
+
+func TestSignVerify_WrongKey(t *testing.T) {
+	_, priv1, _ := GenerateKeyPair()
+	pub2, _, _ := GenerateKeyPair()
+
+	data := []byte("hello world")
+	sig := ed25519.Sign(priv1, data)
+
+	if ed25519.Verify(pub2, data, sig) {
+		t.Fatal("signature verified with wrong key")
+	}
+}
+
+func TestSignVerify_TamperedData(t *testing.T) {
+	pub, priv, _ := GenerateKeyPair()
+
+	data := []byte("original content")
+	sig := ed25519.Sign(priv, data)
+
+	tampered := []byte("tampered content")
+	if ed25519.Verify(pub, tampered, sig) {
+		t.Fatal("signature verified on tampered data")
+	}
+}
+
+func TestSignFile_RoundTrip(t *testing.T) {
+	pub, priv, _ := GenerateKeyPair()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.txt")
+	if err := os.WriteFile(path, []byte("file content\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	sig, err := SignFile(path, priv)
+	if err != nil {
+		t.Fatalf("SignFile() error: %v", err)
+	}
+
+	sigPath := path + SigExtension
+	if err := SaveSignature(sig, sigPath); err != nil {
+		t.Fatalf("SaveSignature() error: %v", err)
+	}
+
+	if err := VerifyFile(path, sigPath, pub); err != nil {
+		t.Fatalf("VerifyFile() error: %v", err)
+	}
+}
+
+func TestSignFile_DefaultSigPath(t *testing.T) {
+	pub, priv, _ := GenerateKeyPair()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "data.bin")
+	if err := os.WriteFile(path, []byte("binary data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	sig, err := SignFile(path, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveSignature(sig, path+SigExtension); err != nil {
+		t.Fatal(err)
+	}
+
+	// Empty sigPath should default to path + .sig
+	if err := VerifyFile(path, "", pub); err != nil {
+		t.Fatalf("VerifyFile with default sig path: %v", err)
+	}
+}
+
+func TestVerifyFile_TamperedFile(t *testing.T) {
+	pub, priv, _ := GenerateKeyPair()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.txt")
+	if err := os.WriteFile(path, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	sig, err := SignFile(path, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sigPath := path + SigExtension
+	if err := SaveSignature(sig, sigPath); err != nil {
+		t.Fatal(err)
+	}
+
+	// Tamper with the file
+	if err := os.WriteFile(path, []byte("tampered"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := VerifyFile(path, sigPath, pub); err == nil {
+		t.Fatal("expected verification failure on tampered file")
+	}
+}
+
+func TestVerifyFile_MissingSig(t *testing.T) {
+	pub, _, _ := GenerateKeyPair()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.txt")
+	if err := os.WriteFile(path, []byte("content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := VerifyFile(path, "", pub); err == nil {
+		t.Fatal("expected error for missing signature file")
+	}
+}
+
+func TestSignFile_Nonexistent(t *testing.T) {
+	_, priv, _ := GenerateKeyPair()
+	_, err := SignFile("/nonexistent/file.txt", priv)
+	if err == nil {
+		t.Fatal("expected error for nonexistent file")
+	}
+}
+
+func TestSaveLoadSignature_RoundTrip(t *testing.T) {
+	_, priv, _ := GenerateKeyPair()
+	data := []byte("test data")
+	sig := ed25519.Sign(priv, data)
+
+	dir := t.TempDir()
+	sigPath := filepath.Join(dir, "test.sig")
+
+	if err := SaveSignature(sig, sigPath); err != nil {
+		t.Fatalf("SaveSignature() error: %v", err)
+	}
+
+	loaded, err := LoadSignature(sigPath)
+	if err != nil {
+		t.Fatalf("LoadSignature() error: %v", err)
+	}
+
+	if !equal(sig, loaded) {
+		t.Fatal("loaded signature does not match saved signature")
+	}
+}
+
+func TestSaveSignature_Permissions(t *testing.T) {
+	dir := t.TempDir()
+	sigPath := filepath.Join(dir, "test.sig")
+
+	if err := SaveSignature([]byte("fake-sig"), sigPath); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := os.Stat(sigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("signature permissions = %04o, want 0600", info.Mode().Perm())
+	}
+}
+
+func TestLoadSignature_InvalidBase64(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bad.sig")
+	if err := os.WriteFile(path, []byte("not-valid-base64!!!"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadSignature(path)
+	if err == nil {
+		t.Fatal("expected error for invalid base64")
+	}
+}
+
+func TestEncodeDecodePublicKey_RoundTrip(t *testing.T) {
+	pub, _, _ := GenerateKeyPair()
+
+	encoded := EncodePublicKey(pub)
+	decoded, err := DecodePublicKey(encoded)
+	if err != nil {
+		t.Fatalf("DecodePublicKey() error: %v", err)
+	}
+
+	if !equal(pub, decoded) {
+		t.Fatal("decoded public key does not match original")
+	}
+}
+
+func TestEncodeDecodePrivateKey_RoundTrip(t *testing.T) {
+	_, priv, _ := GenerateKeyPair()
+
+	encoded := EncodePrivateKey(priv)
+	decoded, err := DecodePrivateKey(encoded)
+	if err != nil {
+		t.Fatalf("DecodePrivateKey() error: %v", err)
+	}
+
+	if !equal(priv, decoded) {
+		t.Fatal("decoded private key does not match original")
+	}
+}
+
+func TestDecodePublicKey_InvalidFormat(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"empty", ""},
+		{"no header", base64.StdEncoding.EncodeToString(make([]byte, 32))},
+		{"wrong header", "wrong-header\n" + base64.StdEncoding.EncodeToString(make([]byte, 32))},
+		{"bad base64", publicKeyHeader + "\nnot-base64!!!"},
+		{"wrong length", publicKeyHeader + "\n" + base64.StdEncoding.EncodeToString(make([]byte, 16))},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := DecodePublicKey(tt.input)
+			if err == nil {
+				t.Fatalf("expected error for input %q", tt.name)
+			}
+		})
+	}
+}
+
+func TestDecodePrivateKey_InvalidFormat(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"empty", ""},
+		{"wrong header", "wrong-header\n" + base64.StdEncoding.EncodeToString(make([]byte, 64))},
+		{"bad base64", privateKeyHeader + "\nnot-base64!!!"},
+		{"wrong length", privateKeyHeader + "\n" + base64.StdEncoding.EncodeToString(make([]byte, 16))},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := DecodePrivateKey(tt.input)
+			if err == nil {
+				t.Fatalf("expected error for input %q", tt.name)
+			}
+		})
+	}
+}
+
+func TestSaveLoadPublicKeyFile_RoundTrip(t *testing.T) {
+	pub, _, _ := GenerateKeyPair()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.pub")
+
+	if err := SavePublicKey(pub, path); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := LoadPublicKeyFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !equal(pub, loaded) {
+		t.Fatal("loaded key does not match saved key")
+	}
+}
+
+func TestSaveLoadPrivateKeyFile_RoundTrip(t *testing.T) {
+	_, priv, _ := GenerateKeyPair()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.key")
+
+	if err := SavePrivateKey(priv, path); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := LoadPrivateKeyFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !equal(priv, loaded) {
+		t.Fatal("loaded key does not match saved key")
+	}
+}
+
+func TestSavePrivateKeyFile_Permissions(t *testing.T) {
+	_, priv, _ := GenerateKeyPair()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.key")
+
+	if err := SavePrivateKey(priv, path); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("private key permissions = %04o, want 0600", info.Mode().Perm())
+	}
+}
+
+func TestSavePublicKeyFile_Permissions(t *testing.T) {
+	pub, _, _ := GenerateKeyPair()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.pub")
+
+	if err := SavePublicKey(pub, path); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o644 {
+		t.Errorf("public key permissions = %04o, want 0644", info.Mode().Perm())
+	}
+}
+
+func equal(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}

@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/integrity"
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 // ErrIntegrityViolation is returned when pipelock integrity check finds violations.
@@ -41,6 +42,9 @@ Examples:
 func integrityInitCmd() *cobra.Command {
 	var manifestPath string
 	var excludes []string
+	var signManifest bool
+	var agentName string
+	var keystoreDir string
 
 	cmd := &cobra.Command{
 		Use:   "init [directory]",
@@ -53,7 +57,8 @@ The manifest is saved as .integrity-manifest.json in the target directory by def
 Examples:
   pipelock integrity init .
   pipelock integrity init /path/to/workspace --exclude "*.log" --exclude "tmp/**"
-  pipelock integrity init . --manifest /secure/location/manifest.json`,
+  pipelock integrity init . --manifest /secure/location/manifest.json
+  pipelock integrity init . --sign --agent claude-code`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dir, err := resolveDir(args)
@@ -78,20 +83,33 @@ Examples:
 				return err
 			}
 
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(),
+			out := cmd.OutOrStdout()
+			_, _ = fmt.Fprintf(out,
 				"Manifest created: %s (%d %s)\n", mPath, len(m.Files), pluralFile(len(m.Files)))
+
+			if signManifest {
+				if err := signManifestFile(mPath, agentName, keystoreDir, out); err != nil {
+					return err
+				}
+			}
 			return nil
 		},
 	}
 
 	cmd.Flags().StringVar(&manifestPath, "manifest", "", "manifest file path (default: .integrity-manifest.json in target dir)")
 	cmd.Flags().StringArrayVar(&excludes, "exclude", nil, "glob patterns to exclude (repeatable)")
+	cmd.Flags().BoolVar(&signManifest, "sign", false, "sign the manifest with an agent key")
+	cmd.Flags().StringVar(&agentName, "agent", "", "agent name for signing (or set PIPELOCK_AGENT)")
+	cmd.Flags().StringVar(&keystoreDir, "keystore", "", "keystore directory (default ~/.pipelock)")
 	return cmd
 }
 
 func integrityCheckCmd() *cobra.Command {
 	var manifestPath string
 	var jsonOutput bool
+	var verifySignature bool
+	var agentName string
+	var keystoreDir string
 
 	cmd := &cobra.Command{
 		Use:   "check [directory]",
@@ -101,10 +119,13 @@ integrity manifest. Reports any modified, added, or removed files.
 
 Returns a non-zero exit code if violations are found or an error occurs.
 
+Use --verify to validate the manifest's Ed25519 signature before trusting it.
+
 Examples:
   pipelock integrity check /path/to/workspace
   pipelock integrity check . --json
-  pipelock integrity check . --manifest /secure/location/manifest.json`,
+  pipelock integrity check . --manifest /secure/location/manifest.json
+  pipelock integrity check . --verify --agent claude-code`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dir, err := resolveDir(args)
@@ -113,6 +134,15 @@ Examples:
 			}
 
 			mPath := resolveManifestPath(manifestPath, dir)
+			out := cmd.OutOrStdout()
+
+			// Verify the manifest signature before trusting its contents.
+			if verifySignature {
+				if err := verifyManifestFile(mPath, agentName, keystoreDir, out); err != nil {
+					return err
+				}
+			}
+
 			m, err := integrity.Load(mPath)
 			if err != nil {
 				return fmt.Errorf("loading manifest: %w", err)
@@ -126,8 +156,6 @@ Examples:
 			if err != nil {
 				return err
 			}
-
-			out := cmd.OutOrStdout()
 
 			// Sort violations for deterministic output.
 			sort.Slice(violations, func(i, j int) bool {
@@ -153,6 +181,9 @@ Examples:
 
 	cmd.Flags().StringVar(&manifestPath, "manifest", "", "manifest file path (default: .integrity-manifest.json in target dir)")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "output results as JSON")
+	cmd.Flags().BoolVar(&verifySignature, "verify", false, "verify manifest signature before checking")
+	cmd.Flags().StringVar(&agentName, "agent", "", "agent name for signature verification (or set PIPELOCK_AGENT)")
+	cmd.Flags().StringVar(&keystoreDir, "keystore", "", "keystore directory (default ~/.pipelock)")
 	return cmd
 }
 
@@ -203,6 +234,9 @@ func writeTextCheck(out io.Writer, violations []integrity.Violation) {
 func integrityUpdateCmd() *cobra.Command {
 	var manifestPath string
 	var excludes []string
+	var signManifest bool
+	var agentName string
+	var keystoreDir string
 
 	cmd := &cobra.Command{
 		Use:   "update [directory]",
@@ -215,7 +249,8 @@ Otherwise, the existing excludes are preserved.
 
 Examples:
   pipelock integrity update /path/to/workspace
-  pipelock integrity update . --exclude "*.log" --exclude "tmp/**"`,
+  pipelock integrity update . --exclude "*.log" --exclude "tmp/**"
+  pipelock integrity update . --sign --agent claude-code`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dir, err := resolveDir(args)
@@ -250,14 +285,24 @@ Examples:
 				return err
 			}
 
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(),
+			out := cmd.OutOrStdout()
+			_, _ = fmt.Fprintf(out,
 				"Manifest updated: %s (%d %s)\n", mPath, len(m.Files), pluralFile(len(m.Files)))
+
+			if signManifest {
+				if err := signManifestFile(mPath, agentName, keystoreDir, out); err != nil {
+					return err
+				}
+			}
 			return nil
 		},
 	}
 
 	cmd.Flags().StringVar(&manifestPath, "manifest", "", "manifest file path (default: .integrity-manifest.json in target dir)")
 	cmd.Flags().StringArrayVar(&excludes, "exclude", nil, "glob patterns to exclude (repeatable, replaces existing)")
+	cmd.Flags().BoolVar(&signManifest, "sign", false, "sign the manifest with an agent key")
+	cmd.Flags().StringVar(&agentName, "agent", "", "agent name for signing (or set PIPELOCK_AGENT)")
+	cmd.Flags().StringVar(&keystoreDir, "keystore", "", "keystore directory (default ~/.pipelock)")
 	return cmd
 }
 
@@ -303,16 +348,24 @@ func appendManifestExclude(excludes []string, manifestPath, dir string) []string
 		return excludes
 	}
 	rel = filepath.ToSlash(rel)
-	// The default manifest name is already in alwaysExcluded — skip it.
+	// The default manifest name and its .sig companion are already in alwaysExcluded.
 	if rel == integrity.DefaultManifestFile {
 		return excludes
 	}
-	for _, e := range excludes {
-		if e == rel {
-			return excludes
+	// For custom manifest paths, exclude both the manifest and its .sig companion.
+	for _, p := range []string{rel, rel + ".sig"} {
+		found := false
+		for _, e := range excludes {
+			if e == p {
+				found = true
+				break
+			}
+		}
+		if !found {
+			excludes = append(excludes, p)
 		}
 	}
-	return append(excludes, rel)
+	return excludes
 }
 
 func pluralFile(n int) string {
@@ -320,4 +373,62 @@ func pluralFile(n int) string {
 		return "file"
 	}
 	return "files"
+}
+
+// signManifestFile signs a manifest file and saves the detached signature.
+func signManifestFile(mPath, agentName, keystoreDir string, out io.Writer) error {
+	agent, err := resolveAgentName(agentName)
+	if err != nil {
+		return err
+	}
+
+	dir, err := resolveKeystoreDir(keystoreDir)
+	if err != nil {
+		return err
+	}
+	ks := signing.NewKeystore(dir)
+
+	privKey, err := ks.LoadPrivateKey(agent)
+	if err != nil {
+		return fmt.Errorf("loading key for agent %q: %w", agent, err)
+	}
+
+	sig, err := signing.SignFile(mPath, privKey)
+	if err != nil {
+		return fmt.Errorf("signing manifest: %w", err)
+	}
+
+	sigPath := mPath + signing.SigExtension
+	if err := signing.SaveSignature(sig, sigPath); err != nil {
+		return fmt.Errorf("saving manifest signature: %w", err)
+	}
+
+	_, _ = fmt.Fprintf(out, "Manifest signed by agent %q\n", agent)
+	return nil
+}
+
+// verifyManifestFile verifies a manifest's detached signature.
+func verifyManifestFile(mPath, agentName, keystoreDir string, out io.Writer) error {
+	agent, err := resolveAgentName(agentName)
+	if err != nil {
+		return err
+	}
+
+	dir, err := resolveKeystoreDir(keystoreDir)
+	if err != nil {
+		return err
+	}
+	ks := signing.NewKeystore(dir)
+
+	pubKey, err := ks.ResolvePublicKey(agent)
+	if err != nil {
+		return fmt.Errorf("loading key for agent %q: %w", agent, err)
+	}
+
+	if err := signing.VerifyFile(mPath, "", pubKey); err != nil {
+		return fmt.Errorf("manifest signature verification failed: %w", err)
+	}
+
+	_, _ = fmt.Fprintf(out, "Manifest signature verified (agent: %s)\n", agent)
+	return nil
 }

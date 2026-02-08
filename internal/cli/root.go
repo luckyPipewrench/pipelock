@@ -46,6 +46,7 @@ Quick start:
 		checkCmd(),
 		generateCmd(),
 		gitCmd(),
+		integrityCmd(),
 		versionCmd(),
 		healthcheckCmd(),
 	)

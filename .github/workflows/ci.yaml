@@ -32,9 +32,27 @@ jobs:
       - name: Run tests
         run: go test -race -count=1 -v ./...
 
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.24'
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: latest
+          only-new-issues: true
+
   build:
     runs-on: ubuntu-latest
-    needs: test
+    needs: [test, lint]
     steps:
       - uses: actions/checkout@v6
         with:

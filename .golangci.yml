@@ -27,7 +27,5 @@ formatters:
     - gofumpt
 
 issues:
-  exclude-dirs:
-    - vendor
   max-issues-per-linter: 50
   max-same-issues: 5

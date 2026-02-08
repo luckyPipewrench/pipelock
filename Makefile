@@ -41,4 +41,8 @@ clean:
 	rm -f $(BINARY) coverage.out coverage.html
 
 docker:
-	docker build -t $(BINARY):$(VERSION) -t $(BINARY):latest .
+	docker build \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg BUILD_DATE=$(BUILD_DATE) \
+		--build-arg GIT_COMMIT=$(GIT_COMMIT) \
+		-t $(BINARY):$(VERSION) -t $(BINARY):latest .

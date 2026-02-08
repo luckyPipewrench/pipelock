@@ -1,0 +1,68 @@
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: pipelock
+    main: ./cmd/pipelock
+    binary: pipelock
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/luckyPipewrench/pipelock/internal/cli.Version={{.Version}}
+      - -X github.com/luckyPipewrench/pipelock/internal/proxy.Version={{.Version}}
+
+archives:
+  - format: tar.gz
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- .Arch }}
+
+checksum:
+  name_template: 'checksums.txt'
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+
+dockers:
+  - image_templates:
+      - "ghcr.io/luckypipewrench/pipelock:{{ .Version }}-amd64"
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/amd64"
+    dockerfile: Dockerfile
+
+  - image_templates:
+      - "ghcr.io/luckypipewrench/pipelock:{{ .Version }}-arm64"
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/arm64"
+    goarch: arm64
+    dockerfile: Dockerfile
+
+docker_manifests:
+  - name_template: "ghcr.io/luckypipewrench/pipelock:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/luckypipewrench/pipelock:{{ .Version }}-amd64"
+      - "ghcr.io/luckypipewrench/pipelock:{{ .Version }}-arm64"
+
+  - name_template: "ghcr.io/luckypipewrench/pipelock:latest"
+    image_templates:
+      - "ghcr.io/luckypipewrench/pipelock:{{ .Version }}-amd64"
+      - "ghcr.io/luckypipewrench/pipelock:{{ .Version }}-arm64"

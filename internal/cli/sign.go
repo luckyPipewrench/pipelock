@@ -61,7 +61,7 @@ Examples:
 		},
 	}
 
-	cmd.Flags().StringVar(&keystoreDir, "dir", "", "keystore directory (default ~/.pipelock)")
+	cmd.Flags().StringVar(&keystoreDir, "keystore", "", "keystore directory (default ~/.pipelock)")
 	cmd.Flags().StringVar(&agent, "agent", "", "agent name (or set PIPELOCK_AGENT)")
 	return cmd
 }
@@ -114,18 +114,22 @@ Examples:
 		},
 	}
 
-	cmd.Flags().StringVar(&keystoreDir, "dir", "", "keystore directory (default ~/.pipelock)")
+	cmd.Flags().StringVar(&keystoreDir, "keystore", "", "keystore directory (default ~/.pipelock)")
 	cmd.Flags().StringVar(&agent, "agent", "", "agent name (or set PIPELOCK_AGENT)")
 	cmd.Flags().StringVar(&sigPath, "sig", "", "signature file path (default <file>.sig)")
 	return cmd
 }
 
 func resolveAgentName(explicit string) (string, error) {
-	if explicit != "" {
-		return explicit, nil
+	name := explicit
+	if name == "" {
+		name = os.Getenv("PIPELOCK_AGENT")
 	}
-	if env := os.Getenv("PIPELOCK_AGENT"); env != "" {
-		return env, nil
+	if name == "" {
+		return "", fmt.Errorf("agent name required: use --agent or set PIPELOCK_AGENT")
 	}
-	return "", fmt.Errorf("agent name required: use --agent or set PIPELOCK_AGENT")
+	if err := signing.ValidateAgentName(name); err != nil {
+		return "", err
+	}
+	return name, nil
 }

@@ -33,11 +33,10 @@ Examples:
 			}
 			ks := signing.NewKeystore(dir)
 
-			var pub []byte
 			if force {
-				pub, err = ks.ForceGenerateAgent(name)
+				_, err = ks.ForceGenerateAgent(name)
 			} else {
-				pub, err = ks.GenerateAgent(name)
+				_, err = ks.GenerateAgent(name)
 			}
 			if err != nil {
 				return err
@@ -47,13 +46,11 @@ Examples:
 			_, _ = fmt.Fprintf(out, "Key pair generated for agent %q\n", name)
 			_, _ = fmt.Fprintf(out, "Public key: %s\n", pubPath)
 			_, _ = fmt.Fprintf(out, "Share with: pipelock trust %s %s\n", name, pubPath)
-
-			_ = pub // key returned for programmatic use
 			return nil
 		},
 	}
 
-	cmd.Flags().StringVar(&keystoreDir, "dir", "", "keystore directory (default ~/.pipelock)")
+	cmd.Flags().StringVar(&keystoreDir, "keystore", "", "keystore directory (default ~/.pipelock)")
 	cmd.Flags().BoolVar(&force, "force", false, "overwrite existing keys")
 	return cmd
 }

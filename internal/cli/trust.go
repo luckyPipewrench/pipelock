@@ -44,6 +44,6 @@ Examples:
 		},
 	}
 
-	cmd.Flags().StringVar(&keystoreDir, "dir", "", "keystore directory (default ~/.pipelock)")
+	cmd.Flags().StringVar(&keystoreDir, "keystore", "", "keystore directory (default ~/.pipelock)")
 	return cmd
 }

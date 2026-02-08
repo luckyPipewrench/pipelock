@@ -3,6 +3,7 @@ module github.com/luckyPipewrench/pipelock
 go 1.24.0
 
 require (
+	github.com/fsnotify/fsnotify v1.9.0
 	github.com/go-shiori/go-readability v0.0.0-20251205110129-5db1dc9836f0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/rs/zerolog v1.34.0

@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -40,12 +41,13 @@ var Version = "0.1.0-dev"
 
 // Proxy is the Pipelock fetch proxy server.
 type Proxy struct {
-	config  *config.Config
-	logger  *audit.Logger
-	scanner *scanner.Scanner
-	metrics *metrics.Metrics
-	client  *http.Client
-	server  *http.Server
+	cfgPtr     atomic.Pointer[config.Config]
+	scannerPtr atomic.Pointer[scanner.Scanner]
+	logger     *audit.Logger
+	metrics    *metrics.Metrics
+	client     *http.Client
+	server     *http.Server
+	reloadMu   sync.Mutex // serializes Reload calls
 }
 
 // FetchResponse is the JSON response returned by the /fetch endpoint.
@@ -74,41 +76,65 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 	}
 
 	p := &Proxy{
-		config:  cfg,
 		logger:  logger,
-		scanner: sc,
 		metrics: m,
-		client: &http.Client{
-			Transport: transport,
-			Timeout:   time.Duration(cfg.FetchProxy.TimeoutSeconds) * time.Second,
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				if len(via) >= 5 {
-					return fmt.Errorf("too many redirects (max 5)")
+	}
+	p.cfgPtr.Store(cfg)
+	p.scannerPtr.Store(sc)
+
+	p.client = &http.Client{
+		Transport: transport,
+		Timeout:   time.Duration(cfg.FetchProxy.TimeoutSeconds) * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return fmt.Errorf("too many redirects (max 5)")
+			}
+			originalURL := via[0].URL.String()
+			redirectURL := req.URL.String()
+			clientIP, _ := req.Context().Value(ctxKeyClientIP).(string)
+			requestID, _ := req.Context().Value(ctxKeyRequestID).(string)
+			logger.LogRedirect(originalURL, redirectURL, clientIP, requestID, len(via))
+			// Scan each redirect URL through the current scanner
+			currentCfg := p.cfgPtr.Load()
+			currentScanner := p.scannerPtr.Load()
+			result := currentScanner.Scan(redirectURL)
+			if !result.Allowed {
+				if currentCfg.EnforceEnabled() {
+					logger.LogBlocked("GET", redirectURL, "redirect", fmt.Sprintf("redirect from %s blocked: %s", originalURL, result.Reason), clientIP, requestID)
+					return fmt.Errorf("redirect blocked: %s", result.Reason)
 				}
-				originalURL := via[0].URL.String()
-				redirectURL := req.URL.String()
-				clientIP, _ := req.Context().Value(ctxKeyClientIP).(string)
-				requestID, _ := req.Context().Value(ctxKeyRequestID).(string)
-				logger.LogRedirect(originalURL, redirectURL, clientIP, requestID, len(via))
-				// Scan each redirect URL through the scanner
-				result := sc.Scan(redirectURL)
-				if !result.Allowed {
-					if cfg.EnforceEnabled() {
-						logger.LogBlocked("GET", redirectURL, "redirect", fmt.Sprintf("redirect from %s blocked: %s", originalURL, result.Reason), clientIP, requestID)
-						return fmt.Errorf("redirect blocked: %s", result.Reason)
-					}
-					logger.LogAnomaly("GET", redirectURL, fmt.Sprintf("[audit] redirect from %s: %s", originalURL, result.Reason), clientIP, requestID, result.Score)
-				}
-				return nil
-			},
+				logger.LogAnomaly("GET", redirectURL, fmt.Sprintf("[audit] redirect from %s: %s", originalURL, result.Reason), clientIP, requestID, result.Score)
+			}
+			return nil
 		},
 	}
 	return p
 }
 
+// Reload atomically swaps the config and scanner for hot-reload support.
+// The old scanner is closed to release its rate limiter goroutine.
+//
+// Note: HTTP client timeouts, transport settings, and server listen address
+// are set at construction in New()/Start() and are NOT updated by Reload.
+// Only config values read per-request (mode, enforce, user-agent, blocklists,
+// DLP patterns, response scanning, etc.) take effect immediately.
+func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
+	p.reloadMu.Lock()
+	defer p.reloadMu.Unlock()
+
+	p.cfgPtr.Store(cfg)
+	old := p.scannerPtr.Swap(sc)
+
+	if old != nil {
+		old.Close()
+	}
+}
+
 // Start starts the fetch proxy HTTP server. It blocks until the context
 // is cancelled or the server encounters a fatal error.
 func (p *Proxy) Start(ctx context.Context) error {
+	cfg := p.cfgPtr.Load()
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/fetch", p.handleFetch)
 	mux.HandleFunc("/health", p.handleHealth)
@@ -116,13 +142,13 @@ func (p *Proxy) Start(ctx context.Context) error {
 	mux.HandleFunc("/stats", p.metrics.StatsHandler())
 
 	p.server = &http.Server{
-		Addr:    p.config.FetchProxy.Listen,
+		Addr:    cfg.FetchProxy.Listen,
 		Handler: mux,
-		BaseContext: func(l net.Listener) context.Context {
+		BaseContext: func(_ net.Listener) context.Context {
 			return ctx
 		},
 		ReadTimeout:  10 * time.Second,
-		WriteTimeout: time.Duration(p.config.FetchProxy.TimeoutSeconds+10) * time.Second,
+		WriteTimeout: time.Duration(cfg.FetchProxy.TimeoutSeconds+10) * time.Second,
 		IdleTimeout:  120 * time.Second,
 	}
 
@@ -136,13 +162,13 @@ func (p *Proxy) Start(ctx context.Context) error {
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			if err := p.server.Shutdown(shutdownCtx); err != nil {
-				p.logger.LogError("SHUTDOWN", p.config.FetchProxy.Listen, "", "", err)
+				p.logger.LogError("SHUTDOWN", cfg.FetchProxy.Listen, "", "", err)
 			}
 		case <-done:
 		}
 	}()
 
-	p.logger.LogStartup(p.config.FetchProxy.Listen, p.config.Mode)
+	p.logger.LogStartup(cfg.FetchProxy.Listen, cfg.Mode)
 
 	err := p.server.ListenAndServe()
 	close(done) // unblock shutdown goroutine if server failed immediately
@@ -155,6 +181,9 @@ func (p *Proxy) Start(ctx context.Context) error {
 // handleFetch processes URL fetch requests.
 func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
+	cfg := p.cfgPtr.Load()
+	sc := p.scannerPtr.Load()
+
 	clientIP := r.RemoteAddr
 	if host, _, err := net.SplitHostPort(clientIP); err == nil {
 		clientIP = host
@@ -190,9 +219,9 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Scan URL through all scanners
-	result := p.scanner.Scan(targetURL)
+	result := sc.Scan(targetURL)
 	if !result.Allowed {
-		if p.config.EnforceEnabled() {
+		if cfg.EnforceEnabled() {
 			p.logger.LogBlocked("GET", targetURL, result.Scanner, result.Reason, clientIP, requestID)
 			p.metrics.RecordBlocked(parsed.Hostname(), result.Scanner, time.Since(start))
 			writeJSON(w, http.StatusForbidden, FetchResponse{
@@ -207,7 +236,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Record successful scan for rate limiting
-	p.scanner.RecordRequest(strings.ToLower(parsed.Hostname()))
+	sc.RecordRequest(strings.ToLower(parsed.Hostname()))
 
 	// Fetch the URL — attach clientIP/requestID to context for redirect logging
 	ctx := context.WithValue(r.Context(), ctxKeyClientIP, clientIP)
@@ -222,7 +251,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	req.Header.Set("User-Agent", p.config.FetchProxy.UserAgent)
+	req.Header.Set("User-Agent", cfg.FetchProxy.UserAgent)
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain,*/*;q=0.8")
 
 	resp, err := p.client.Do(req)
@@ -237,7 +266,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 
 	// Limit response body size
-	maxBytes := int64(p.config.FetchProxy.MaxResponseMB) * 1024 * 1024
+	maxBytes := int64(cfg.FetchProxy.MaxResponseMB) * 1024 * 1024
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes))
 	if err != nil {
 		p.logger.LogError("GET", targetURL, clientIP, requestID, err)
@@ -264,14 +293,14 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Response scanning: check fetched content for prompt injection
-	if p.scanner.ResponseScanningEnabled() {
-		scanResult := p.scanner.ScanResponse(content)
+	if sc.ResponseScanningEnabled() {
+		scanResult := sc.ScanResponse(content)
 		if !scanResult.Clean {
 			patternNames := make([]string, len(scanResult.Matches))
 			for i, m := range scanResult.Matches {
 				patternNames[i] = m.PatternName
 			}
-			switch p.scanner.ResponseAction() {
+			switch sc.ResponseAction() {
 			case "block":
 				reason := fmt.Sprintf("response contains prompt injection: %s", strings.Join(patternNames, ", "))
 				p.logger.LogBlocked("GET", targetURL, "response_scan", reason, clientIP, requestID)
@@ -283,7 +312,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			case "warn":
 				p.logger.LogResponseScan(targetURL, clientIP, requestID, "warn", len(scanResult.Matches), patternNames)
 			default:
-				p.logger.LogResponseScan(targetURL, clientIP, requestID, p.scanner.ResponseAction(), len(scanResult.Matches), patternNames)
+				p.logger.LogResponseScan(targetURL, clientIP, requestID, sc.ResponseAction(), len(scanResult.Matches), patternNames)
 			}
 		}
 	}
@@ -307,7 +336,7 @@ func (p *Proxy) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{
 		"status":  "healthy",
 		"version": Version,
-		"mode":    p.config.Mode,
+		"mode":    p.cfgPtr.Load().Mode,
 	})
 }
 

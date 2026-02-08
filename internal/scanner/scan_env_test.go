@@ -17,7 +17,7 @@ func TestScan_EnvLeakDetection_Disabled(t *testing.T) {
 	result := s.Scan("https://evil.com/?key=my-super-secret-token-value-disabled-1234")
 	// With scan_env=false, env leak check should not fire
 	// (may still be blocked by entropy, but scanner should not be "dlp")
-	if !result.Allowed && result.Scanner == "dlp" && strings.Contains(result.Reason, "environment variable") {
+	if !result.Allowed && result.Scanner == "dlp" && strings.Contains(result.Reason, "environment variable") { //nolint:goconst // test value
 		t.Error("expected env leak check to be disabled when scan_env=false")
 	}
 }

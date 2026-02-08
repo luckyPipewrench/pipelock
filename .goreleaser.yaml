@@ -43,18 +43,20 @@ changelog:
 dockers:
   - image_templates:
       - "ghcr.io/luckypipewrench/pipelock:{{ .Version }}-amd64"
+    ids: [pipelock]
     use: buildx
     build_flag_templates:
       - "--platform=linux/amd64"
-    dockerfile: Dockerfile
+    dockerfile: Dockerfile.goreleaser
 
   - image_templates:
       - "ghcr.io/luckypipewrench/pipelock:{{ .Version }}-arm64"
+    ids: [pipelock]
     use: buildx
     build_flag_templates:
       - "--platform=linux/arm64"
     goarch: arm64
-    dockerfile: Dockerfile
+    dockerfile: Dockerfile.goreleaser
 
 docker_manifests:
   - name_template: "ghcr.io/luckypipewrench/pipelock:{{ .Version }}"

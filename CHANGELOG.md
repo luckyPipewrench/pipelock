@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- CLI commands write to `cmd.OutOrStdout()` instead of `os.Stdout` (cobra-idiomatic)
+- `run` command uses `cmd.Context()` as signal parent for testability
+
+### Added
+- Run command integration test (config loading, flag overrides, health check, graceful shutdown)
+- Docker Compose YAML syntax validation test (all agent templates parsed via `yaml.Unmarshal`)
+- Base64url environment variable leak detection test
+- Rate limiter window rollover test
+- Healthcheck command test against running server
+
 ## [0.1.0] - 2026-02-08
 
 ### Added

@@ -79,9 +79,6 @@ func composeTemplate(agentType string) (string, error) {
 	b.WriteString(composeServices())
 	b.WriteString(composePipelockService())
 	b.WriteString(agentService)
-	if agentType == "claude-code" {
-		b.WriteString("\nvolumes:\n  claude-cache:\n")
-	}
 	return b.String(), nil
 }
 
@@ -165,20 +162,28 @@ func genericAgentService() string {
 
 func claudeCodeAgentService() string {
 	return `  claude-code:
-    image: node:22-slim
+    # Build a custom image with claude-code pre-installed.
+    # The internal network has no internet, so npx can't download packages.
+    #
+    # Example Dockerfile.claude-code:
+    #   FROM node:22-slim
+    #   RUN npm install -g @anthropic-ai/claude-code
+    #   WORKDIR /workspace
+    #   ENTRYPOINT ["claude"]
+    build:
+      context: .
+      dockerfile: Dockerfile.claude-code
     container_name: claude-code
     stdin_open: true
     tty: true
     working_dir: /workspace
     networks:
       - pipelock-internal    # Can ONLY reach pipelock — no internet
-    entrypoint: ["npx", "@anthropic-ai/claude-code"]
     environment:
       - PIPELOCK_FETCH_URL=http://pipelock:8888/fetch
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
     volumes:
       - ./workspace:/workspace
-      - claude-cache:/root/.npm
     depends_on:
       pipelock:
         condition: service_healthy
@@ -198,6 +203,10 @@ func openhandsAgentService() string {
       - PIPELOCK_FETCH_URL=http://pipelock:8888/fetch
       - LLM_API_KEY=${ANTHROPIC_API_KEY}
       - SANDBOX_NETWORK_MODE=none
+      # Route OpenHands HTTP traffic through pipelock:
+      - http_proxy=http://pipelock:8888
+      - https_proxy=http://pipelock:8888
+      - no_proxy=localhost,127.0.0.1
     volumes:
       - ./workspace:/workspace
     depends_on:

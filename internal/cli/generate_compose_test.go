@@ -54,9 +54,9 @@ func TestGenerateDockerCompose_GenericTemplate(t *testing.T) {
 	if !strings.Contains(tmpl, "build: .") {
 		t.Error("expected build context placeholder in generic template")
 	}
-	// Should NOT include volumes section (no named volumes)
-	if strings.Contains(tmpl, "volumes:\n  claude-cache:") {
-		t.Error("generic template should not include claude-cache volume")
+	// Should NOT include claude-code specific content
+	if strings.Contains(tmpl, "Dockerfile.claude-code") {
+		t.Error("generic template should not include claude-code Dockerfile")
 	}
 }
 
@@ -66,8 +66,8 @@ func TestGenerateDockerCompose_ClaudeCodeTemplate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !strings.Contains(tmpl, "node:22-slim") {
-		t.Error("expected node:22-slim base image")
+	if !strings.Contains(tmpl, "Dockerfile.claude-code") {
+		t.Error("expected Dockerfile.claude-code build reference")
 	}
 	if !strings.Contains(tmpl, "stdin_open: true") {
 		t.Error("expected stdin_open for interactive TTY")
@@ -76,10 +76,7 @@ func TestGenerateDockerCompose_ClaudeCodeTemplate(t *testing.T) {
 		t.Error("expected tty for interactive TTY")
 	}
 	if !strings.Contains(tmpl, "@anthropic-ai/claude-code") {
-		t.Error("expected claude-code entrypoint")
-	}
-	if !strings.Contains(tmpl, "claude-cache:") {
-		t.Error("expected claude-cache volume for npm cache")
+		t.Error("expected claude-code install reference in comments")
 	}
 }
 
@@ -97,6 +94,12 @@ func TestGenerateDockerCompose_OpenhandsTemplate(t *testing.T) {
 	}
 	if !strings.Contains(tmpl, "SANDBOX_NETWORK_MODE=none") {
 		t.Error("expected sandbox network mode none for openhands")
+	}
+	if !strings.Contains(tmpl, "http_proxy=http://pipelock:8888") {
+		t.Error("expected http_proxy env var for openhands")
+	}
+	if !strings.Contains(tmpl, "https_proxy=http://pipelock:8888") {
+		t.Error("expected https_proxy env var for openhands")
 	}
 }
 
@@ -138,19 +141,14 @@ func TestGenerateDockerCompose_PipelockListenAddress(t *testing.T) {
 }
 
 func TestGenerateDockerComposeCmd_Stdout(t *testing.T) {
-	old := os.Stdout
-	r, w, _ := os.Pipe()
-	os.Stdout = w
-
 	cmd := rootCmd()
 	cmd.SetArgs([]string{"generate", "docker-compose"})
+
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
 	cmd.SetErr(&strings.Builder{})
 
-	err := cmd.Execute()
-	_, _ = w.Close(), r.Close()
-	os.Stdout = old
-
-	if err != nil {
+	if err := cmd.Execute(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

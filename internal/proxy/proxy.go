@@ -104,10 +104,17 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 				return nil, err
 			}
 
+			if len(ips) == 0 {
+				return nil, fmt.Errorf("SSRF blocked: DNS returned no addresses for %s", host)
+			}
+
 			currentSc := p.scannerPtr.Load()
 			for _, ipStr := range ips {
 				ip := net.ParseIP(ipStr)
-				if ip != nil && currentSc.IsInternalIP(ip) {
+				if ip == nil {
+					return nil, fmt.Errorf("SSRF blocked: unparseable IP %q from DNS for %s", ipStr, host)
+				}
+				if currentSc.IsInternalIP(ip) {
 					return nil, fmt.Errorf("SSRF blocked: %s resolves to internal IP %s", host, ipStr)
 				}
 			}

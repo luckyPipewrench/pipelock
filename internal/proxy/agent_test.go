@@ -69,7 +69,7 @@ func TestExtractAgent_TruncatesLongNames(t *testing.T) {
 	}
 }
 
-func TestExtractAgent_AllSpecialCharsBecomesAnonymous(t *testing.T) {
+func TestExtractAgent_WhitespaceBecomesUnderscores(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/fetch?url=https://example.com", nil)
 	req.Header.Set(AgentHeader, "   ")
 

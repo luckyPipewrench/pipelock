@@ -1,0 +1,12 @@
+---
+layout: default
+---
+<small><a href="{{ '/' | relative_url }}">&larr; Back to all posts</a></small>
+
+<h1>{{ page.title }}</h1>
+<p><small>{{ page.date | date: "%B %d, %Y" }} &mdash; {{ page.author | default: site.author.name }}</small></p>
+
+{{ content }}
+
+<hr>
+<p><small><a href="{{ '/' | relative_url }}">&larr; Back to all posts</a> | <a href="https://github.com/luckyPipewrench/pipelock">Pipelock on GitHub</a></small></p>

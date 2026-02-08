@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- File integrity monitoring for agent workspaces (`pipelock integrity init|check|update`)
+- SHA256 manifest generation with glob exclusion patterns (`**` doublestar support)
+- Integrity check reports: modified, added, and removed file detection
+- JSON output mode for integrity checks (`--json` flag)
+- Custom manifest path support (`--manifest` flag)
+- Atomic manifest writes (temp file + rename) to prevent corruption
+- Manifest version validation and nil-files guard on load
+- GitHub Pages blog at luckypipewrench.github.io/pipelock
+
+### Removed
+- Stale Phase 1.5 planning doc (planning docs live outside the repo)
+
 ## [0.1.1] - 2026-02-08
 
 ### Changed

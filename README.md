@@ -12,6 +12,8 @@
 
 **Security harness for AI agents.** Controls what your agent can access on the network, preventing credential exfiltration while preserving web browsing capability.
 
+[Blog](https://luckypipewrench.github.io/pipelock/) | [GitHub](https://github.com/luckyPipewrench/pipelock)
+
 ## The Problem
 
 AI agents increasingly run with shell access, API keys in environment variables, and unrestricted internet access. If an agent is compromised — through prompt injection, jailbreak, or a bug — it can exfiltrate secrets with a single HTTP request.
@@ -277,6 +279,30 @@ Stats response format:
 }
 ```
 
+## File Integrity Monitoring
+
+Pipelock monitors agent workspace directories for unauthorized changes — detecting modified, added, or removed files. This is the first layer of defense against [lateral movement in multi-agent systems](https://luckypipewrench.github.io/pipelock/blog/2026/02/08/lateral-movement-multi-agent-llm/).
+
+```bash
+# Generate a manifest of all files in the workspace
+pipelock integrity init ./workspace --exclude "logs/**" --exclude "temp/**"
+
+# Check for unauthorized changes
+pipelock integrity check ./workspace
+# Exit 0 = clean, non-zero = violations found
+
+# Machine-readable output
+pipelock integrity check ./workspace --json
+
+# Re-hash after reviewing and approving changes
+pipelock integrity update ./workspace
+
+# Store manifest outside the workspace for extra security
+pipelock integrity init ./workspace --manifest /secure/location/manifest.json
+```
+
+The manifest records SHA256 hashes for every file. The check command reports modified files (content changed), added files (unexpected new files), and removed files (expected files missing from disk).
+
 ## Git Protection
 
 Pipelock includes git-aware security commands for scanning diffs and installing pre-push hooks:
@@ -346,14 +372,16 @@ The Makefile injects build metadata (version, date, commit, Go version) via ldfl
 ```
 cmd/pipelock/          CLI entry point
 internal/
-  cli/                 Cobra commands (run, check, generate, logs, git, version, healthcheck)
+  cli/                 Cobra commands (run, check, generate, logs, git, integrity, version)
   config/              YAML config loading, validation, defaults, hot-reload (fsnotify)
   scanner/             URL scanning (SSRF, blocklist, rate limit, DLP, entropy, env leak)
   audit/               Structured JSON audit logging (zerolog)
   proxy/               Fetch proxy HTTP server (go-readability, agent ID, DNS pinning)
   metrics/             Prometheus metrics + JSON stats endpoint
   gitprotect/          Git-aware security (diff scanning, branch validation, hooks)
+  integrity/           File integrity monitoring (SHA256 manifests, check/diff, exclusions)
 configs/               Preset config files (strict, balanced, audit)
+blog/                  GitHub Pages blog (Jekyll)
 ```
 
 ## Credits

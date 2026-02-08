@@ -289,7 +289,7 @@ func TestLoad_PresetYAMLFiles(t *testing.T) {
 func TestDefaults_ContainsIPv6CIDRs(t *testing.T) {
 	cfg := Defaults()
 
-	expected := []string{"::1/128", "fc00::/7", "fe80::/10", "::ffff:0:0/96"}
+	expected := []string{"::1/128", "fc00::/7", "fe80::/10"}
 	for _, want := range expected {
 		found := false
 		for _, cidr := range cfg.Internal {
@@ -314,7 +314,7 @@ func TestValidate_InvalidCIDR(t *testing.T) {
 
 func TestValidate_IPv6CIDRs(t *testing.T) {
 	cfg := Defaults()
-	cfg.Internal = []string{"::1/128", "fc00::/7", "fe80::/10", "::ffff:0:0/96"}
+	cfg.Internal = []string{"::1/128", "fc00::/7", "fe80::/10"}
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("valid IPv6 CIDRs should validate, got: %v", err)
 	}

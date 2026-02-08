@@ -27,7 +27,7 @@ Examples:
   pipelock check --config pipelock.yaml
   pipelock check --config pipelock.yaml --url https://example.com
   pipelock check --url https://pastebin.com/raw/abc123`,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			// Load and validate config
 			var cfg *config.Config
 			if configFile != "" {
@@ -37,32 +37,32 @@ Examples:
 					fmt.Fprintf(os.Stderr, "Config validation FAILED: %v\n", err)
 					return err
 				}
-				fmt.Println("Config validation: OK")
-				fmt.Printf("  Mode:           %s\n", cfg.Mode)
-				fmt.Printf("  Listen:         %s\n", cfg.FetchProxy.Listen)
-				fmt.Printf("  API allowlist:  %d domains\n", len(cfg.APIAllowlist))
-				fmt.Printf("  Blocklist:      %d patterns\n", len(cfg.FetchProxy.Monitoring.Blocklist))
-				fmt.Printf("  DLP patterns:   %d rules\n", len(cfg.DLP.Patterns))
-				fmt.Printf("  Entropy thresh: %.1f bits\n", cfg.FetchProxy.Monitoring.EntropyThreshold)
-				fmt.Printf("  Max URL length: %d chars\n", cfg.FetchProxy.Monitoring.MaxURLLength)
+				cmd.Println("Config validation: OK")
+				cmd.Printf("  Mode:           %s\n", cfg.Mode)
+				cmd.Printf("  Listen:         %s\n", cfg.FetchProxy.Listen)
+				cmd.Printf("  API allowlist:  %d domains\n", len(cfg.APIAllowlist))
+				cmd.Printf("  Blocklist:      %d patterns\n", len(cfg.FetchProxy.Monitoring.Blocklist))
+				cmd.Printf("  DLP patterns:   %d rules\n", len(cfg.DLP.Patterns))
+				cmd.Printf("  Entropy thresh: %.1f bits\n", cfg.FetchProxy.Monitoring.EntropyThreshold)
+				cmd.Printf("  Max URL length: %d chars\n", cfg.FetchProxy.Monitoring.MaxURLLength)
 			} else {
 				cfg = config.Defaults()
-				fmt.Println("Using default config (no --config specified)")
+				cmd.Println("Using default config (no --config specified)")
 			}
 
 			// Optionally scan a URL
 			if scanURL != "" {
-				fmt.Printf("\nScanning URL: %s\n", scanURL)
+				cmd.Printf("\nScanning URL: %s\n", scanURL)
 				sc := scanner.New(cfg)
 				result := sc.Scan(scanURL)
 				if result.Allowed {
-					fmt.Println("  Result:  ALLOWED")
+					cmd.Println("  Result:  ALLOWED")
 				} else {
-					fmt.Println("  Result:  BLOCKED")
-					fmt.Printf("  Scanner: %s\n", result.Scanner)
-					fmt.Printf("  Reason:  %s\n", result.Reason)
+					cmd.Println("  Result:  BLOCKED")
+					cmd.Printf("  Scanner: %s\n", result.Scanner)
+					cmd.Printf("  Reason:  %s\n", result.Reason)
 				}
-				fmt.Printf("  Score:   %.2f\n", result.Score)
+				cmd.Printf("  Score:   %.2f\n", result.Score)
 
 				if !result.Allowed {
 					return ErrURLBlocked

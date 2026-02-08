@@ -1,14 +1,19 @@
 package cli
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRootCmd_Version(t *testing.T) {
@@ -58,25 +63,18 @@ func TestRootCmd_Help(t *testing.T) {
 }
 
 func TestCheckCmd_DefaultConfig(t *testing.T) {
-	old := os.Stdout
-	r, w, _ := os.Pipe()
-	os.Stdout = w
-
 	cmd := rootCmd()
 	cmd.SetArgs([]string{"check"})
 
-	err := cmd.Execute()
-	w.Close()
-	os.Stdout = old
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
 
-	if err != nil {
+	if err := cmd.Execute(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	out, _ := io.ReadAll(r)
-	output := string(out)
-	if !strings.Contains(output, "default config") {
-		t.Errorf("expected output to mention default config, got: %q", output)
+	if !strings.Contains(buf.String(), "default config") {
+		t.Errorf("expected output to mention default config, got: %q", buf.String())
 	}
 }
 
@@ -145,39 +143,30 @@ func TestCheckCmd_NonexistentConfig(t *testing.T) {
 }
 
 func TestCheckCmd_URLAllowed(t *testing.T) {
-	old := os.Stdout
-	r, w, _ := os.Pipe()
-	os.Stdout = w
-
 	cmd := rootCmd()
 	cmd.SetArgs([]string{"check", "--url", "https://example.com"})
 
-	err := cmd.Execute()
-	_ = w.Close()
-	os.Stdout = old
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
 
-	if err != nil {
+	if err := cmd.Execute(); err != nil {
 		t.Fatalf("expected no error for allowed URL, got: %v", err)
 	}
 
-	out, _ := io.ReadAll(r)
-	if !strings.Contains(string(out), "ALLOWED") {
-		t.Errorf("expected ALLOWED in output, got: %q", string(out))
+	if !strings.Contains(buf.String(), "ALLOWED") {
+		t.Errorf("expected ALLOWED in output, got: %q", buf.String())
 	}
 }
 
 func TestCheckCmd_URLBlocked(t *testing.T) {
-	old := os.Stdout
-	r, w, _ := os.Pipe()
-	os.Stdout = w
-
 	cmd := rootCmd()
 	cmd.SetArgs([]string{"check", "--url", "https://pastebin.com/raw/abc123"})
 
-	err := cmd.Execute()
-	_ = w.Close()
-	os.Stdout = old
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(&strings.Builder{})
 
+	err := cmd.Execute()
 	if err == nil {
 		t.Fatal("expected error for blocked URL")
 	}
@@ -185,9 +174,8 @@ func TestCheckCmd_URLBlocked(t *testing.T) {
 		t.Errorf("expected ErrURLBlocked, got: %v", err)
 	}
 
-	out, _ := io.ReadAll(r)
-	if !strings.Contains(string(out), "BLOCKED") {
-		t.Errorf("expected BLOCKED in output, got: %q", string(out))
+	if !strings.Contains(buf.String(), "BLOCKED") {
+		t.Errorf("expected BLOCKED in output, got: %q", buf.String())
 	}
 }
 
@@ -308,26 +296,17 @@ func TestLogsCmd_WithFilter(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Commands print to os.Stdout via fmt.Println, so capture it
-	old := os.Stdout
-	r, w, _ := os.Pipe()
-	os.Stdout = w
-
 	cmd := rootCmd()
 	cmd.SetArgs([]string{"logs", "--file", logPath, "--filter", "blocked"})
-	cmd.SetErr(os.Stderr)
 
-	err := cmd.Execute()
-	w.Close()
-	os.Stdout = old
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
 
-	if err != nil {
+	if err := cmd.Execute(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	out, _ := io.ReadAll(r)
-	output := string(out)
-
+	output := buf.String()
 	if !strings.Contains(output, "evil.com") {
 		t.Errorf("expected blocked entry in output, got: %q", output)
 	}
@@ -348,25 +327,17 @@ func TestLogsCmd_WithLast(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	old := os.Stdout
-	r, w, _ := os.Pipe()
-	os.Stdout = w
-
 	cmd := rootCmd()
 	cmd.SetArgs([]string{"logs", "--file", logPath, "--last", "1"})
-	cmd.SetErr(os.Stderr)
 
-	err := cmd.Execute()
-	w.Close()
-	os.Stdout = old
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
 
-	if err != nil {
+	if err := cmd.Execute(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	out, _ := io.ReadAll(r)
-	output := string(out)
-
+	output := buf.String()
 	if !strings.Contains(output, "third.com") {
 		t.Errorf("expected last entry in output, got: %q", output)
 	}
@@ -437,6 +408,114 @@ func TestHealthcheckCmd_RegisteredInHelp(t *testing.T) {
 
 	if !strings.Contains(buf.String(), "healthcheck") {
 		t.Error("expected help output to list 'healthcheck' command")
+	}
+}
+
+func TestRunCmd_Integration(t *testing.T) {
+	// Find a free port
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+
+	// Write a balanced config; the --mode flag will override to strict
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "test.yaml")
+	logPath := filepath.Join(dir, "audit.log")
+	cfgContent := fmt.Sprintf(`version: 1
+mode: balanced
+api_allowlist:
+  - "*.anthropic.com"
+fetch_proxy:
+  listen: "%s"
+  timeout_seconds: 10
+logging:
+  format: json
+  output: file
+  file: "%s"
+`, addr, logPath)
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Inject a cancellable context so we can shut down the server
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cmd := rootCmd()
+	cmd.SetContext(ctx)
+	cmd.SetArgs([]string{"run", "--config", cfgPath, "--mode", "strict"})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- cmd.Execute()
+	}()
+
+	// Poll /health until the proxy is ready
+	client := &http.Client{Timeout: time.Second}
+	healthURL := "http://" + addr + "/health"
+	deadline := time.Now().Add(5 * time.Second)
+	var healthy bool
+	for time.Now().Before(deadline) {
+		// Check if the command already exited with an error
+		select {
+		case err := <-errCh:
+			cancel()
+			t.Fatalf("run command exited early: %v", err)
+		default:
+		}
+
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+		resp, err := client.Do(req)
+		if err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				healthy = true
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !healthy {
+		cancel()
+		t.Fatal("proxy did not become healthy within timeout")
+	}
+
+	// Verify the health response shows the flag override (strict, not balanced)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		cancel()
+		t.Fatalf("health request failed: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	var health map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&health); err != nil {
+		cancel()
+		t.Fatalf("decoding health response: %v", err)
+	}
+	if health["mode"] != "strict" {
+		t.Errorf("expected mode=strict (flag override), got %v", health["mode"])
+	}
+	if health["status"] != "healthy" {
+		t.Errorf("expected status=healthy, got %v", health["status"])
+	}
+
+	// Trigger graceful shutdown
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Errorf("unexpected run error: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("run command did not shut down within timeout")
 	}
 }
 

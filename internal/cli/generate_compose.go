@@ -30,7 +30,7 @@ Examples:
   pipelock generate docker-compose
   pipelock generate docker-compose --agent claude-code
   pipelock generate docker-compose --agent openhands -o docker-compose.yaml`,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			tmpl, err := composeTemplate(agentType)
 			if err != nil {
 				return err
@@ -46,7 +46,7 @@ Examples:
 				fmt.Fprintf(os.Stderr, "  2. Create a .env file with your API key:  echo 'ANTHROPIC_API_KEY=sk-ant-...' > .env\n")
 				fmt.Fprintf(os.Stderr, "  3. Start the stack:  docker compose up\n")
 			} else {
-				fmt.Print(tmpl)
+				cmd.Print(tmpl)
 			}
 
 			return nil

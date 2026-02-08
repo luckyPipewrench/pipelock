@@ -614,6 +614,31 @@ func TestFetchEndpoint_ResponseScan_BlockJailbreak(t *testing.T) {
 	}
 }
 
+func TestFetchEndpoint_ResponseScan_MultiInjection(t *testing.T) {
+	p, backend := setupResponseScanProxy(t, "block")
+	defer backend.Close()
+
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/multi-injection", nil)
+	w := httptest.NewRecorder()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403 for multi-injection, got %d", w.Code)
+	}
+
+	var resp FetchResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+
+	if !resp.Blocked {
+		t.Error("expected blocked=true for multi-injection")
+	}
+}
+
 func TestFetchEndpoint_ResponseScan_Disabled(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")

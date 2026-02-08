@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -149,8 +150,17 @@ func findGitDir() (string, error) {
 
 	for {
 		gitPath := filepath.Join(dir, ".git")
-		if info, err := os.Stat(gitPath); err == nil && info.IsDir() {
-			return gitPath, nil
+		info, err := os.Stat(gitPath)
+		if err == nil {
+			if info.IsDir() {
+				return gitPath, nil
+			}
+			// .git is a file (worktree/submodule): parse "gitdir: <path>"
+			resolved, err := resolveGitFile(gitPath, dir)
+			if err != nil {
+				return "", err
+			}
+			return resolved, nil
 		}
 
 		parent := filepath.Dir(dir)
@@ -159,4 +169,26 @@ func findGitDir() (string, error) {
 		}
 		dir = parent
 	}
+}
+
+// resolveGitFile reads a .git file (used by worktrees/submodules) and
+// returns the absolute path to the actual git directory.
+func resolveGitFile(gitFilePath, baseDir string) (string, error) {
+	data, err := os.ReadFile(gitFilePath) //nolint:gosec // reading .git pointer file
+	if err != nil {
+		return "", fmt.Errorf("reading .git file: %w", err)
+	}
+	content := strings.TrimSpace(string(data))
+	if !strings.HasPrefix(content, "gitdir: ") {
+		return "", fmt.Errorf("invalid .git file: expected 'gitdir: <path>', got %q", content)
+	}
+	gitdir := strings.TrimPrefix(content, "gitdir: ")
+	if !filepath.IsAbs(gitdir) {
+		gitdir = filepath.Join(baseDir, gitdir)
+	}
+	gitdir = filepath.Clean(gitdir)
+	if info, err := os.Stat(gitdir); err != nil || !info.IsDir() {
+		return "", fmt.Errorf("gitdir path %q does not exist or is not a directory", gitdir)
+	}
+	return gitdir, nil
 }

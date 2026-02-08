@@ -33,11 +33,25 @@ func TestGeneratePrePushHook_WithConfigPath(t *testing.T) {
 }
 
 func TestGeneratePrePushHook_BinaryQuoted(t *testing.T) {
-	// Binary with spaces should be safely quoted
+	// Binary with spaces should be safely single-quoted (POSIX shell)
 	hook := GeneratePrePushHook("/path/to/my pipelock", "")
-	// Go %q format wraps in double quotes and escapes
-	if !strings.Contains(hook, `"/path/to/my pipelock"`) {
-		t.Error("binary path with spaces should be quoted")
+	if !strings.Contains(hook, `'/path/to/my pipelock'`) {
+		t.Errorf("binary path with spaces should be single-quoted, got:\n%s", hook)
+	}
+}
+
+func TestGeneratePrePushHook_SingleQuoteEscaped(t *testing.T) {
+	// Binary with single quotes should be safely escaped
+	hook := GeneratePrePushHook("pipe'lock", "")
+	if !strings.Contains(hook, `'pipe'"'"'lock'`) {
+		t.Errorf("single quotes in binary should be escaped, got:\n%s", hook)
+	}
+}
+
+func TestGeneratePrePushHook_ConfigQuoted(t *testing.T) {
+	hook := GeneratePrePushHook("pipelock", "/path/to/my config.yaml")
+	if !strings.Contains(hook, `'/path/to/my config.yaml'`) {
+		t.Errorf("config path with spaces should be single-quoted, got:\n%s", hook)
 	}
 }
 

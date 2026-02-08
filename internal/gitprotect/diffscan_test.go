@@ -2,6 +2,7 @@ package gitprotect
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -58,8 +59,14 @@ diff --git a/b.go b/b.go
 	if len(result) != 2 {
 		t.Fatalf("expected 2 files, got %d", len(result))
 	}
+	if len(result["a.go"]) == 0 {
+		t.Fatal("expected at least 1 added line in a.go")
+	}
 	if result["a.go"][0].content != "var x = 1" {
 		t.Errorf("a.go content mismatch: %q", result["a.go"][0].content)
+	}
+	if len(result["b.go"]) == 0 {
+		t.Fatal("expected at least 1 added line in b.go")
 	}
 	if result["b.go"][0].content != "var y = 2" {
 		t.Errorf("b.go content mismatch: %q", result["b.go"][0].content)
@@ -306,19 +313,10 @@ func TestFormatFindings_WithFindings(t *testing.T) {
 	if result == "" {
 		t.Fatal("expected non-empty output")
 	}
-	if !stringContains(result, "Found 1 secret(s)") {
+	if !strings.Contains(result, "Found 1 secret(s)") {
 		t.Errorf("expected count in output, got %q", result)
 	}
-	if !stringContains(result, "main.go:10") {
+	if !strings.Contains(result, "main.go:10") {
 		t.Errorf("expected file:line in output, got %q", result)
 	}
-}
-
-func stringContains(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }

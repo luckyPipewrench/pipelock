@@ -12,11 +12,14 @@ import (
 // EventType describes the kind of audit event.
 type EventType string
 
+// Event type constants for structured audit log entries.
 const (
-	EventAllowed EventType = "allowed"
-	EventBlocked EventType = "blocked"
-	EventError   EventType = "error"
-	EventAnomaly EventType = "anomaly"
+	EventAllowed      EventType = "allowed"
+	EventBlocked      EventType = "blocked"
+	EventError        EventType = "error"
+	EventAnomaly      EventType = "anomaly"
+	EventResponseScan EventType = "response_scan"
+	EventRedirect     EventType = "redirect"
 )
 
 // Logger handles structured audit logging using zerolog.
@@ -141,7 +144,7 @@ func (l *Logger) LogAnomaly(method, url, reason, clientIP, requestID string, sco
 // LogResponseScan logs a response content scan that found prompt injection patterns.
 func (l *Logger) LogResponseScan(url, clientIP, requestID, action string, matchCount int, patternNames []string) {
 	l.zl.Warn().
-		Str("event", "response_scan").
+		Str("event", string(EventResponseScan)).
 		Str("url", url).
 		Str("client_ip", clientIP).
 		Str("request_id", requestID).
@@ -154,7 +157,7 @@ func (l *Logger) LogResponseScan(url, clientIP, requestID, action string, matchC
 // LogRedirect logs a redirect hop in the chain.
 func (l *Logger) LogRedirect(originalURL, redirectURL, clientIP, requestID string, hop int) {
 	l.zl.Info().
-		Str("event", "redirect").
+		Str("event", string(EventRedirect)).
 		Str("original_url", originalURL).
 		Str("redirect_url", redirectURL).
 		Str("client_ip", clientIP).

@@ -268,6 +268,49 @@ func TestInstallHooksCmd_NoGitDir(t *testing.T) {
 	}
 }
 
+func TestInstallHooksCmd_GitFile_Worktree(t *testing.T) {
+	// Simulate a git worktree where .git is a file pointing to the real gitdir
+	dir := t.TempDir()
+	realGitDir := filepath.Join(dir, "real-gitdir")
+	if err := os.MkdirAll(realGitDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	worktreeDir := filepath.Join(dir, "worktree")
+	if err := os.MkdirAll(worktreeDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	// Write .git file that points to the real gitdir
+	gitFile := filepath.Join(worktreeDir, ".git")
+	if err := os.WriteFile(gitFile, []byte("gitdir: "+realGitDir+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	oldDir, _ := os.Getwd()
+	_ = os.Chdir(worktreeDir)
+	defer func() { _ = os.Chdir(oldDir) }()
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"git", "install-hooks"})
+
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error for worktree .git file: %v", err)
+	}
+
+	hookPath := filepath.Join(realGitDir, "hooks", "pre-push")
+	data, err := os.ReadFile(hookPath) //nolint:gosec // test reads its own temp file
+	if err != nil {
+		t.Fatalf("hook file not created in worktree gitdir: %v", err)
+	}
+	if !strings.Contains(string(data), "scan-diff") {
+		t.Error("hook should contain scan-diff command")
+	}
+}
+
 func TestInstallHooksCmd_WithConfig(t *testing.T) {
 	dir := t.TempDir()
 	gitDir := filepath.Join(dir, ".git")

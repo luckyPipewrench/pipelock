@@ -276,6 +276,8 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				p.logger.LogResponseScan(targetURL, clientIP, requestID, "strip", len(scanResult.Matches), patternNames)
 			case "warn":
 				p.logger.LogResponseScan(targetURL, clientIP, requestID, "warn", len(scanResult.Matches), patternNames)
+			default:
+				p.logger.LogResponseScan(targetURL, clientIP, requestID, p.scanner.ResponseAction(), len(scanResult.Matches), patternNames)
 			}
 		}
 	}

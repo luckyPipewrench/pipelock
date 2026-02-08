@@ -56,7 +56,7 @@ jobs:
           go-version: '1.24'
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v7
+        uses: golangci/golangci-lint-action@v9
         with:
           version: latest
 

@@ -1,0 +1,29 @@
+title: Pipelock Blog
+description: Security for AI agent systems — research, tools, and practical guidance.
+url: https://luckypipewrench.github.io
+baseurl: /pipelock
+
+permalink: /blog/:year/:month/:day/:title/
+
+markdown: kramdown
+highlighter: rouge
+
+remote_theme: pages-themes/hacker@v0.2.0
+plugins:
+  - jekyll-remote-theme
+
+exclude:
+  - Gemfile
+  - Gemfile.lock
+  - README.md
+
+defaults:
+  - scope:
+      path: "_posts"
+      type: "posts"
+    values:
+      layout: "post"
+
+author:
+  name: Josh Waldrep
+  url: https://github.com/luckyPipewrench

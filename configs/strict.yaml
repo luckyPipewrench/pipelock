@@ -65,6 +65,21 @@ dlp:
       regex: '-----BEGIN\s+(RSA\s+|EC\s+|DSA\s+)?PRIVATE\s+KEY-----'
       severity: critical
 
+response_scanning:
+  enabled: true
+  action: block
+  patterns:
+    - name: "Prompt Injection"
+      regex: '(?i)(ignore|disregard|forget)\s+(all\s+)?(previous|prior|above)\s+(instructions|prompts|rules|context)'
+    - name: "System Override"
+      regex: '(?im)^\s*system\s*:'
+    - name: "Role Override"
+      regex: '(?i)you\s+are\s+(now|a)\s+'
+    - name: "New Instructions"
+      regex: '(?i)(new|updated|revised)\s+(instructions|directives|rules|prompt)'
+    - name: "Jailbreak Attempt"
+      regex: '(?i)(DAN|developer\s+mode|sudo\s+mode|unrestricted\s+mode)'
+
 logging:
   format: json
   output: stdout

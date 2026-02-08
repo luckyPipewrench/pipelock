@@ -56,6 +56,7 @@ func TestNewNop(t *testing.T) {
 	logger.LogStartup(":8888", "balanced")
 	logger.LogShutdown("test")
 	logger.LogRedirect("https://a.com", "https://b.com", "127.0.0.1", "req-6", 1)
+	logger.LogResponseScan("https://example.com", "127.0.0.1", "req-8", "warn", 2, []string{"Prompt Injection", "Jailbreak Attempt"})
 	logger.Close()
 }
 
@@ -506,6 +507,76 @@ func TestLogger_MultipleEvents(t *testing.T) {
 		if err := json.Unmarshal([]byte(line), &entry); err != nil {
 			t.Errorf("line %d is not valid JSON: %v", i, err)
 		}
+	}
+}
+
+func TestLogResponseScan_JSONFormat(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogResponseScan("https://example.com/page", "10.0.0.1", "req-10", "warn", 2, []string{"Prompt Injection", "Jailbreak Attempt"})
+	logger.Close()
+
+	data, _ := os.ReadFile(path) //nolint:gosec // test reads its own temp file
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+
+	if entry["event"] != "response_scan" {
+		t.Errorf("expected event=response_scan, got %v", entry["event"])
+	}
+	if entry["url"] != "https://example.com/page" {
+		t.Errorf("expected url, got %v", entry["url"])
+	}
+	if entry["client_ip"] != "10.0.0.1" {
+		t.Errorf("expected client_ip=10.0.0.1, got %v", entry["client_ip"])
+	}
+	if entry["request_id"] != "req-10" {
+		t.Errorf("expected request_id=req-10, got %v", entry["request_id"])
+	}
+	if entry["action"] != "warn" {
+		t.Errorf("expected action=warn, got %v", entry["action"])
+	}
+	matchCount, ok := entry["match_count"].(float64)
+	if !ok || matchCount != 2 {
+		t.Errorf("expected match_count=2, got %v", entry["match_count"])
+	}
+	patterns, ok := entry["patterns"].([]any)
+	if !ok || len(patterns) != 2 {
+		t.Errorf("expected 2 patterns, got %v", entry["patterns"])
+	}
+	if entry["component"] != "pipelock" {
+		t.Errorf("expected component=pipelock, got %v", entry["component"])
+	}
+}
+
+func TestLogResponseScan_StripAction(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogResponseScan("https://example.com/page", "10.0.0.1", "req-11", "strip", 1, []string{"System Override"})
+	logger.Close()
+
+	data, _ := os.ReadFile(path) //nolint:gosec // test reads its own temp file
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+
+	if entry["event"] != "response_scan" {
+		t.Errorf("expected event=response_scan, got %v", entry["event"])
+	}
+	if entry["action"] != "strip" {
+		t.Errorf("expected action=strip, got %v", entry["action"])
 	}
 }
 

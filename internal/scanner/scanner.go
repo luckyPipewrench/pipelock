@@ -34,6 +34,9 @@ type Scanner struct {
 	internalCIDRs    []*net.IPNet
 	rateLimiter      *RateLimiter
 	envSecrets       []string // filtered high-entropy env var values
+	responsePatterns []*compiledPattern
+	responseAction   string
+	responseEnabled  bool
 }
 
 type compiledPattern struct {
@@ -83,6 +86,19 @@ func New(cfg *config.Config) *Scanner {
 	// Extract high-entropy environment variables for leak detection
 	if cfg.DLP.ScanEnv {
 		s.envSecrets = extractEnvSecrets()
+	}
+
+	// Compile response scanning patterns — must succeed since config.Validate checks these
+	if cfg.ResponseScanning.Enabled {
+		s.responseEnabled = true
+		s.responseAction = cfg.ResponseScanning.Action
+		for _, p := range cfg.ResponseScanning.Patterns {
+			re, err := regexp.Compile(p.Regex)
+			if err != nil {
+				panic(fmt.Sprintf("BUG: response pattern %q failed after validation: %v", p.Name, err))
+			}
+			s.responsePatterns = append(s.responsePatterns, &compiledPattern{name: p.Name, re: re})
+		}
 	}
 
 	return s

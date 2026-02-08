@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"regexp"
 
 	"gopkg.in/yaml.v3"
@@ -12,14 +13,37 @@ import (
 
 // Config is the top-level Pipelock configuration.
 type Config struct {
-	Version      int           `yaml:"version"`
-	Mode         string        `yaml:"mode"` // strict, balanced, audit
-	Enforce      *bool         `yaml:"enforce"` // nil = true (default); false = detect & log without blocking
-	APIAllowlist []string      `yaml:"api_allowlist"`
-	FetchProxy   FetchProxy    `yaml:"fetch_proxy"`
-	DLP          DLP           `yaml:"dlp"`
-	Logging      LoggingConfig `yaml:"logging"`
-	Internal     []string      `yaml:"internal"`
+	Version          int              `yaml:"version"`
+	Mode             string           `yaml:"mode"`    // strict, balanced, audit
+	Enforce          *bool            `yaml:"enforce"` // nil = true (default); false = detect & log without blocking
+	APIAllowlist     []string         `yaml:"api_allowlist"`
+	FetchProxy       FetchProxy       `yaml:"fetch_proxy"`
+	DLP              DLP              `yaml:"dlp"`
+	ResponseScanning ResponseScanning `yaml:"response_scanning"`
+	GitProtection    GitProtection    `yaml:"git_protection"`
+	Logging          LoggingConfig    `yaml:"logging"`
+	Internal         []string         `yaml:"internal"`
+}
+
+// ResponseScanning configures scanning of fetched page content for prompt injection.
+type ResponseScanning struct {
+	Enabled  bool                  `yaml:"enabled"`
+	Action   string                `yaml:"action"` // strip, warn, block
+	Patterns []ResponseScanPattern `yaml:"patterns"`
+}
+
+// ResponseScanPattern is a named regex pattern for detecting prompt injection in responses.
+type ResponseScanPattern struct {
+	Name  string `yaml:"name"`
+	Regex string `yaml:"regex"`
+}
+
+// GitProtection configures git-aware security features.
+type GitProtection struct {
+	Enabled         bool     `yaml:"enabled"`
+	AllowedBranches []string `yaml:"allowed_branches"`
+	BlockedCommands []string `yaml:"blocked_commands"`
+	PrePushScan     bool     `yaml:"pre_push_scan"`
 }
 
 // EnforceEnabled returns whether blocking is enabled.
@@ -125,6 +149,12 @@ func (c *Config) ApplyDefaults() {
 	if c.Logging.Output == "" {
 		c.Logging.Output = "stdout"
 	}
+	if c.ResponseScanning.Enabled && c.ResponseScanning.Action == "" {
+		c.ResponseScanning.Action = "warn" //nolint:goconst // config action value
+	}
+	if c.GitProtection.Enabled && len(c.GitProtection.AllowedBranches) == 0 {
+		c.GitProtection.AllowedBranches = []string{"feature/*", "fix/*", "main", "master"}
+	}
 	if len(c.Internal) == 0 {
 		c.Internal = []string{
 			"127.0.0.0/8",
@@ -190,6 +220,44 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// Validate response scanning config
+	if c.ResponseScanning.Enabled {
+		switch c.ResponseScanning.Action {
+		case "strip", "warn", "block": //nolint:goconst // config action values
+			// valid
+		default:
+			return fmt.Errorf("invalid response_scanning action %q: must be strip, warn, or block", c.ResponseScanning.Action)
+		}
+		for _, p := range c.ResponseScanning.Patterns {
+			if p.Name == "" {
+				return fmt.Errorf("response scanning pattern missing name")
+			}
+			if p.Regex == "" {
+				return fmt.Errorf("response scanning pattern %q missing regex", p.Name)
+			}
+			if _, err := regexp.Compile(p.Regex); err != nil {
+				return fmt.Errorf("response scanning pattern %q has invalid regex: %w", p.Name, err)
+			}
+		}
+	}
+
+	// Validate git protection config
+	if c.GitProtection.Enabled {
+		for _, pattern := range c.GitProtection.AllowedBranches {
+			if pattern == "" {
+				return fmt.Errorf("empty allowed_branches pattern")
+			}
+			if _, err := filepath.Match(pattern, "test"); err != nil {
+				return fmt.Errorf("invalid allowed_branches glob pattern %q: %w", pattern, err)
+			}
+		}
+		for _, cmd := range c.GitProtection.BlockedCommands {
+			if cmd == "" {
+				return fmt.Errorf("empty blocked_commands entry")
+			}
+		}
+	}
+
 	// Validate internal CIDRs are parseable
 	for _, cidr := range c.Internal {
 		if _, _, err := net.ParseCIDR(cidr); err != nil {
@@ -247,6 +315,22 @@ func Defaults() *Config {
 				{Name: "Discord Bot Token", Regex: `[MN][A-Za-z0-9]{23,}\.[A-Za-z0-9\-_]{6}\.[A-Za-z0-9\-_]{27,}`, Severity: "critical"},
 				{Name: "Private Key Header", Regex: `-----BEGIN\s+(RSA\s+|EC\s+|DSA\s+)?PRIVATE\s+KEY-----`, Severity: "critical"},
 				{Name: "Social Security Number", Regex: `\b\d{3}-\d{2}-\d{4}\b`, Severity: "low"},
+			},
+		},
+		GitProtection: GitProtection{
+			Enabled:         false,
+			AllowedBranches: []string{"feature/*", "fix/*", "main", "master"},
+			PrePushScan:     true,
+		},
+		ResponseScanning: ResponseScanning{
+			Enabled: true,
+			Action:  "warn",
+			Patterns: []ResponseScanPattern{
+				{Name: "Prompt Injection", Regex: `(?i)(ignore|disregard|forget)\s+(all\s+)?(previous|prior|above)\s+(instructions|prompts|rules|context)`},
+				{Name: "System Override", Regex: `(?im)^\s*system\s*:`},
+				{Name: "Role Override", Regex: `(?i)you\s+are\s+(now|a)\s+`},
+				{Name: "New Instructions", Regex: `(?i)(new|updated|revised)\s+(instructions|directives|rules|prompt)`},
+				{Name: "Jailbreak Attempt", Regex: `(?i)(DAN|developer\s+mode|sudo\s+mode|unrestricted\s+mode)`},
 			},
 		},
 		Logging: LoggingConfig{

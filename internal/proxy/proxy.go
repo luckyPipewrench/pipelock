@@ -257,6 +257,31 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Response scanning: check fetched content for prompt injection
+	if p.scanner.ResponseScanningEnabled() {
+		scanResult := p.scanner.ScanResponse(content)
+		if !scanResult.Clean {
+			patternNames := make([]string, len(scanResult.Matches))
+			for i, m := range scanResult.Matches {
+				patternNames[i] = m.PatternName
+			}
+			switch p.scanner.ResponseAction() {
+			case "block":
+				reason := fmt.Sprintf("response contains prompt injection: %s", strings.Join(patternNames, ", "))
+				p.logger.LogBlocked("GET", targetURL, "response_scan", reason, clientIP, requestID)
+				writeJSON(w, http.StatusForbidden, FetchResponse{URL: targetURL, Blocked: true, BlockReason: reason})
+				return
+			case "strip":
+				content = scanResult.TransformedContent
+				p.logger.LogResponseScan(targetURL, clientIP, requestID, "strip", len(scanResult.Matches), patternNames)
+			case "warn":
+				p.logger.LogResponseScan(targetURL, clientIP, requestID, "warn", len(scanResult.Matches), patternNames)
+			default:
+				p.logger.LogResponseScan(targetURL, clientIP, requestID, p.scanner.ResponseAction(), len(scanResult.Matches), patternNames)
+			}
+		}
+	}
+
 	duration := time.Since(start)
 	p.logger.LogAllowed("GET", targetURL, clientIP, requestID, resp.StatusCode, len(body), duration)
 

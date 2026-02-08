@@ -71,6 +71,7 @@ Examples:
 
 			// Set up scanner, metrics, and proxy
 			sc := scanner.New(cfg)
+			defer sc.Close()
 			m := metrics.New()
 			p := proxy.New(cfg, logger, sc, m)
 
@@ -82,12 +83,35 @@ Examples:
 			)
 			defer cancel()
 
+			// Start config hot-reload if a config file is provided
+			if configFile != "" {
+				reloader := config.NewReloader(configFile)
+				defer reloader.Close()
+
+				go func() {
+					if err := reloader.Start(ctx); err != nil {
+						logger.LogError("CONFIG_RELOAD", configFile, "", "", err)
+					}
+				}()
+
+				go func() {
+					for newCfg := range reloader.Changes() {
+						newSc := scanner.New(newCfg)
+						p.Reload(newCfg, newSc)
+						logger.LogConfigReload("success", fmt.Sprintf("mode=%s", newCfg.Mode))
+					}
+				}()
+			}
+
 			fmt.Fprintf(os.Stderr, "Pipelock v%s starting\n", Version)
 			fmt.Fprintf(os.Stderr, "  Mode:   %s\n", cfg.Mode)
 			fmt.Fprintf(os.Stderr, "  Listen: %s\n", cfg.FetchProxy.Listen)
 			fmt.Fprintf(os.Stderr, "  Fetch:  http://%s/fetch?url=<url>\n", cfg.FetchProxy.Listen)
 			fmt.Fprintf(os.Stderr, "  Health: http://%s/health\n", cfg.FetchProxy.Listen)
 			fmt.Fprintf(os.Stderr, "  Stats:  http://%s/stats\n", cfg.FetchProxy.Listen)
+			if configFile != "" {
+				fmt.Fprintf(os.Stderr, "  Config: %s (hot-reload enabled, SIGHUP to reload)\n", configFile)
+			}
 
 			// Check for agent command after --
 			dashIdx := cmd.ArgsLenAtDash()

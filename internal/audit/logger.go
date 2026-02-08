@@ -20,6 +20,7 @@ const (
 	EventAnomaly      EventType = "anomaly"
 	EventResponseScan EventType = "response_scan"
 	EventRedirect     EventType = "redirect"
+	EventConfigReload EventType = "config_reload"
 )
 
 // Logger handles structured audit logging using zerolog.
@@ -164,6 +165,15 @@ func (l *Logger) LogRedirect(originalURL, redirectURL, clientIP, requestID strin
 		Str("request_id", requestID).
 		Int("hop", hop).
 		Msg("redirect followed")
+}
+
+// LogConfigReload logs a configuration reload event.
+func (l *Logger) LogConfigReload(status, detail string) {
+	l.zl.Info().
+		Str("event", string(EventConfigReload)).
+		Str("status", status).
+		Str("detail", detail).
+		Msg("configuration reloaded")
 }
 
 // LogStartup logs that the proxy has started.

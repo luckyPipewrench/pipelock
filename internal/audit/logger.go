@@ -45,7 +45,7 @@ func New(format, output, filePath string, includeAllowed, includeBlocked bool) (
 
 	var fileHandle *os.File
 	if output == "file" || output == "both" {
-		f, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+		f, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600) //nolint:gosec // G304: path validated by config layer
 		if err != nil {
 			return nil, err
 		}

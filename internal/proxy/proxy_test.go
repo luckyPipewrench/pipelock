@@ -24,19 +24,19 @@ func setupTestProxy(t *testing.T) (*Proxy, *httptest.Server) {
 		switch r.URL.Path {
 		case "/html":
 			w.Header().Set("Content-Type", "text/html")
-			fmt.Fprint(w, `<html><head><title>Test Page</title></head><body><p>Hello world</p></body></html>`)
+			_, _ = fmt.Fprint(w, `<html><head><title>Test Page</title></head><body><p>Hello world</p></body></html>`)
 		case "/json":
 			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(w, `{"message":"hello"}`)
+			_, _ = fmt.Fprint(w, `{"message":"hello"}`)
 		case "/text":
 			w.Header().Set("Content-Type", "text/plain")
-			fmt.Fprint(w, "Hello world")
+			_, _ = fmt.Fprint(w, "Hello world")
 		case "/slow":
 			time.Sleep(5 * time.Second)
-			fmt.Fprint(w, "too slow")
+			_, _ = fmt.Fprint(w, "too slow")
 		default:
 			w.WriteHeader(http.StatusNotFound)
-			fmt.Fprint(w, "not found")
+			_, _ = fmt.Fprint(w, "not found")
 		}
 	}))
 
@@ -56,7 +56,7 @@ func TestHealthEndpoint(t *testing.T) {
 	p, backend := setupTestProxy(t)
 	defer backend.Close()
 
-	req := httptest.NewRequest("GET", "/health", nil)
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	w := httptest.NewRecorder()
 
 	// Manually call the handler
@@ -122,7 +122,7 @@ func TestFetchEndpoint_Success(t *testing.T) {
 	if resp.Blocked {
 		t.Error("expected not blocked")
 	}
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		t.Errorf("expected status_code=200, got %d", resp.StatusCode)
 	}
 	if resp.Content == "" {
@@ -134,7 +134,7 @@ func TestFetchEndpoint_MissingURL(t *testing.T) {
 	p, backend := setupTestProxy(t)
 	defer backend.Close()
 
-	req := httptest.NewRequest("GET", "/fetch", nil)
+	req := httptest.NewRequest(http.MethodGet, "/fetch", nil)
 	w := httptest.NewRecorder()
 
 	mux := http.NewServeMux()
@@ -150,7 +150,7 @@ func TestFetchEndpoint_InvalidScheme(t *testing.T) {
 	p, backend := setupTestProxy(t)
 	defer backend.Close()
 
-	req := httptest.NewRequest("GET", "/fetch?url=ftp://example.com/file", nil)
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url=ftp://example.com/file", nil)
 	w := httptest.NewRecorder()
 
 	mux := http.NewServeMux()
@@ -166,7 +166,7 @@ func TestFetchEndpoint_BlockedDomain(t *testing.T) {
 	p, backend := setupTestProxy(t)
 	defer backend.Close()
 
-	req := httptest.NewRequest("GET", "/fetch?url=https://pastebin.com/raw/abc", nil)
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url=https://pastebin.com/raw/abc", nil)
 	w := httptest.NewRecorder()
 
 	mux := http.NewServeMux()
@@ -194,7 +194,7 @@ func TestFetchEndpoint_PostNotAllowed(t *testing.T) {
 	p, backend := setupTestProxy(t)
 	defer backend.Close()
 
-	req := httptest.NewRequest("POST", "/fetch?url=https://example.com", nil)
+	req := httptest.NewRequest(http.MethodPost, "/fetch?url=https://example.com", nil)
 	w := httptest.NewRecorder()
 
 	mux := http.NewServeMux()
@@ -303,7 +303,7 @@ func TestFetchEndpoint_NotFound(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("expected valid JSON: %v", err)
 	}
-	if resp.StatusCode != 404 {
+	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("expected status_code=404 from backend, got %d", resp.StatusCode)
 	}
 }
@@ -312,7 +312,7 @@ func TestFetchEndpoint_InvalidURL(t *testing.T) {
 	p, backend := setupTestProxy(t)
 	defer backend.Close()
 
-	req := httptest.NewRequest("GET", "/fetch?url=not-a-valid-url", nil)
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url=not-a-valid-url", nil)
 	w := httptest.NewRecorder()
 
 	mux := http.NewServeMux()
@@ -344,14 +344,14 @@ func TestFetchEndpoint_ResponseContentType(t *testing.T) {
 
 func TestFetchEndpoint_BackendError(t *testing.T) {
 	// Create a backend that immediately closes connections
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		hj, ok := w.(http.Hijacker)
 		if !ok {
-			w.WriteHeader(500)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 		conn, _, _ := hj.Hijack()
-		conn.Close()
+		_ = conn.Close()
 	}))
 	defer backend.Close()
 
@@ -379,7 +379,7 @@ func TestHealthEndpoint_Format(t *testing.T) {
 	p, backend := setupTestProxy(t)
 	defer backend.Close()
 
-	req := httptest.NewRequest("GET", "/health", nil)
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	w := httptest.NewRecorder()
 
 	mux := http.NewServeMux()
@@ -403,7 +403,7 @@ func TestFetchEndpoint_HeadNotAllowed(t *testing.T) {
 	p, backend := setupTestProxy(t)
 	defer backend.Close()
 
-	req := httptest.NewRequest("HEAD", "/fetch?url=https://example.com", nil)
+	req := httptest.NewRequest(http.MethodHead, "/fetch?url=https://example.com", nil)
 	w := httptest.NewRecorder()
 
 	mux := http.NewServeMux()
@@ -419,7 +419,7 @@ func TestFetchEndpoint_PutNotAllowed(t *testing.T) {
 	p, backend := setupTestProxy(t)
 	defer backend.Close()
 
-	req := httptest.NewRequest("PUT", "/fetch?url=https://example.com", nil)
+	req := httptest.NewRequest(http.MethodPut, "/fetch?url=https://example.com", nil)
 	w := httptest.NewRecorder()
 
 	mux := http.NewServeMux()
@@ -435,7 +435,7 @@ func TestFetchEndpoint_DeleteNotAllowed(t *testing.T) {
 	p, backend := setupTestProxy(t)
 	defer backend.Close()
 
-	req := httptest.NewRequest("DELETE", "/fetch?url=https://example.com", nil)
+	req := httptest.NewRequest(http.MethodDelete, "/fetch?url=https://example.com", nil)
 	w := httptest.NewRecorder()
 
 	mux := http.NewServeMux()

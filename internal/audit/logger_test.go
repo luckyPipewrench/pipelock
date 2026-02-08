@@ -34,7 +34,7 @@ func TestNew_FileOutput(t *testing.T) {
 		t.Fatalf("log file not created: %v", err)
 	}
 	perm := info.Mode().Perm()
-	if perm != 0600 {
+	if perm != 0o600 {
 		t.Errorf("expected file permissions 0600, got %o", perm)
 	}
 }
@@ -46,7 +46,7 @@ func TestNew_FileOutputMissingPath(t *testing.T) {
 	}
 }
 
-func TestNewNop(t *testing.T) {
+func TestNewNop(_ *testing.T) {
 	logger := NewNop()
 	// Should not panic
 	logger.LogAllowed("GET", "https://example.com", "127.0.0.1", "req-1", 200, 1024, time.Second)
@@ -72,7 +72,7 @@ func TestLogAllowed_Filtering(t *testing.T) {
 	logger.LogAllowed("GET", "https://example.com", "127.0.0.1", "req-1", 200, 1024, time.Second)
 	logger.Close()
 
-	data, _ := os.ReadFile(path)
+	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
 	if strings.Contains(string(data), "allowed") {
 		t.Error("expected allowed event to be filtered out")
 	}
@@ -90,7 +90,7 @@ func TestLogBlocked_Filtering(t *testing.T) {
 	logger.LogBlocked("GET", "https://evil.com", "blocklist", "domain blocked", "127.0.0.1", "req-1")
 	logger.Close()
 
-	data, _ := os.ReadFile(path)
+	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
 	if strings.Contains(string(data), "blocked") {
 		t.Error("expected blocked event to be filtered out")
 	}
@@ -107,7 +107,7 @@ func TestLogAllowed_JSONFormat(t *testing.T) {
 	logger.LogAllowed("GET", "https://example.com", "10.0.0.5", "req-42", 200, 1024, time.Second)
 	logger.Close()
 
-	data, _ := os.ReadFile(path)
+	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
 	if len(lines) == 0 {
 		t.Fatal("expected at least one log line")
@@ -146,7 +146,7 @@ func TestLogBlocked_JSONFormat(t *testing.T) {
 	logger.LogBlocked("GET", "https://evil.com", "blocklist", "domain in blocklist", "192.168.1.1", "req-7")
 	logger.Close()
 
-	data, _ := os.ReadFile(path)
+	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
 	var entry map[string]any
 	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
 		t.Fatalf("expected valid JSON: %v", err)
@@ -180,7 +180,7 @@ func TestLogError_IncludesError(t *testing.T) {
 	logger.LogError("GET", "https://fail.com", "10.0.0.1", "req-9", os.ErrNotExist)
 	logger.Close()
 
-	data, _ := os.ReadFile(path)
+	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
 	var entry map[string]any
 	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
 		t.Fatalf("expected valid JSON: %v", err)
@@ -192,7 +192,7 @@ func TestLogError_IncludesError(t *testing.T) {
 	if entry["error"] == nil || entry["error"] == "" {
 		t.Error("expected error field to be populated")
 	}
-	if entry["client_ip"] != "10.0.0.1" {
+	if entry["client_ip"] != "10.0.0.1" { //nolint:goconst // test value
 		t.Errorf("expected client_ip=10.0.0.1, got %v", entry["client_ip"])
 	}
 }
@@ -222,7 +222,7 @@ func TestLogStartup(t *testing.T) {
 	logger.LogStartup(":8888", "balanced")
 	logger.Close()
 
-	data, _ := os.ReadFile(path)
+	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
 	var entry map[string]any
 	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
 		t.Fatalf("expected valid JSON: %v", err)
@@ -247,7 +247,7 @@ func TestLogShutdown_JSONFormat(t *testing.T) {
 	logger.LogShutdown("test complete")
 	logger.Close()
 
-	data, _ := os.ReadFile(path)
+	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
 	var entry map[string]any
 	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
 		t.Fatalf("expected valid JSON: %v", err)
@@ -272,7 +272,7 @@ func TestLogAnomaly_JSONFormat(t *testing.T) {
 	logger.LogAnomaly("GET", "https://sus.com/data", "high entropy segment", "10.0.0.1", "req-5", 0.85)
 	logger.Close()
 
-	data, _ := os.ReadFile(path)
+	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
 	var entry map[string]any
 	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
 		t.Fatalf("expected valid JSON: %v", err)
@@ -312,7 +312,7 @@ func TestNew_BothOutput(t *testing.T) {
 	logger.Close()
 
 	// Verify file was written
-	data, _ := os.ReadFile(path)
+	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
 	if len(data) == 0 {
 		t.Error("expected log file to have content with 'both' output")
 	}
@@ -350,7 +350,7 @@ func TestLogAllowed_IncludesAllFields(t *testing.T) {
 	logger.LogAllowed("GET", "https://example.com/page", "10.0.0.5", "req-100", 200, 5000, 150*time.Millisecond)
 	logger.Close()
 
-	data, _ := os.ReadFile(path)
+	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
 	var entry map[string]any
 	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
 		t.Fatalf("expected valid JSON: %v", err)
@@ -398,7 +398,7 @@ func TestLogBlocked_IncludesAllFields(t *testing.T) {
 	logger.LogBlocked("GET", "https://evil.com/exfil", "blocklist", "domain in blocklist: evil.com", "192.168.1.1", "req-50")
 	logger.Close()
 
-	data, _ := os.ReadFile(path)
+	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
 	var entry map[string]any
 	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
 		t.Fatalf("expected valid JSON: %v", err)
@@ -432,7 +432,7 @@ func TestLogError_IncludesAllFields(t *testing.T) {
 	logger.LogError("GET", "https://fail.com", "10.0.0.1", "req-77", os.ErrPermission)
 	logger.Close()
 
-	data, _ := os.ReadFile(path)
+	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
 	var entry map[string]any
 	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
 		t.Fatalf("expected valid JSON: %v", err)
@@ -441,10 +441,10 @@ func TestLogError_IncludesAllFields(t *testing.T) {
 	if entry["event"] != "error" {
 		t.Errorf("expected event=error, got %v", entry["event"])
 	}
-	if entry["component"] != "pipelock" {
+	if entry["component"] != "pipelock" { //nolint:goconst // test value
 		t.Errorf("expected component=pipelock, got %v", entry["component"])
 	}
-	if entry["client_ip"] != "10.0.0.1" {
+	if entry["client_ip"] != "10.0.0.1" { //nolint:goconst // test value
 		t.Errorf("expected client_ip=10.0.0.1, got %v", entry["client_ip"])
 	}
 	if entry["request_id"] != "req-77" {
@@ -452,7 +452,7 @@ func TestLogError_IncludesAllFields(t *testing.T) {
 	}
 }
 
-func TestNewNop_CloseIsSafe(t *testing.T) {
+func TestNewNop_CloseIsSafe(_ *testing.T) {
 	logger := NewNop()
 	// Multiple closes should be safe
 	logger.Close()
@@ -473,7 +473,7 @@ func TestLogger_FilePermissions(t *testing.T) {
 
 	info, _ := os.Stat(path)
 	perm := info.Mode().Perm()
-	if perm != 0600 {
+	if perm != 0o600 {
 		t.Errorf("expected log file permissions 0600, got %o", perm)
 	}
 }
@@ -495,7 +495,7 @@ func TestLogger_MultipleEvents(t *testing.T) {
 	logger.LogShutdown("done")
 	logger.Close()
 
-	data, _ := os.ReadFile(path)
+	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
 	if len(lines) != 6 {
 		t.Errorf("expected 6 log lines, got %d", len(lines))
@@ -665,7 +665,7 @@ func TestLogRedirect_JSONFormat(t *testing.T) {
 	logger.LogRedirect("https://example.com", "https://www.example.com", "10.0.0.1", "req-7", 1)
 	logger.Close()
 
-	data, _ := os.ReadFile(path)
+	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
 	var entry map[string]any
 	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
 		t.Fatalf("expected valid JSON: %v", err)

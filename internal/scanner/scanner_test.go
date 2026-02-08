@@ -80,7 +80,7 @@ func TestScan_BlocksDLPPatterns(t *testing.T) {
 		if result.Allowed {
 			t.Errorf("expected %s to be blocked (DLP: %s)", tt.url, tt.pattern)
 		}
-		if result.Scanner != "dlp" {
+		if result.Scanner != "dlp" { //nolint:goconst // test value
 			t.Errorf("expected scanner=dlp for %s, got %s", tt.url, result.Scanner)
 		}
 	}
@@ -95,7 +95,7 @@ func TestScan_BlocksHighEntropySegments(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected high-entropy URL to be blocked")
 	}
-	if result.Scanner != "entropy" {
+	if result.Scanner != "entropy" { //nolint:goconst // test value
 		t.Errorf("expected scanner=entropy, got %s", result.Scanner)
 	}
 }
@@ -198,7 +198,7 @@ func TestScan_DLPChecksQueryValues(t *testing.T) {
 	s := New(testConfig())
 
 	// AWS key in query parameter value
-	url := "https://api.example.com/data?access_key=AKIAIOSFODNN7EXAMPLE"
+	url := "https://api.example.com/data?access_key=AKIAIOSFODNN7EXAMPLE" //nolint:gosec // G101: test fake key
 	result := s.Scan(url)
 	if result.Allowed {
 		t.Error("expected DLP to catch AWS key in query value")
@@ -573,7 +573,7 @@ func TestScan_DLPSlackToken(t *testing.T) {
 	}
 }
 
-func TestScan_DLPPrivateKey(t *testing.T) {
+func TestScan_DLPPrivateKey(_ *testing.T) {
 	s := New(testConfig())
 	// Private key header in query (URL-encoded scenario)
 	result := s.Scan("https://example.com/api?data=-----BEGIN%20PRIVATE%20KEY-----")

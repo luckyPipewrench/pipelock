@@ -90,7 +90,7 @@ func TestRateLimiter_WindowRollover(t *testing.T) {
 	}
 }
 
-func TestRateLimiter_ConcurrentAccess(t *testing.T) {
+func TestRateLimiter_ConcurrentAccess(_ *testing.T) {
 	rl := NewRateLimiter(1000)
 	defer rl.Close()
 
@@ -143,7 +143,7 @@ func TestRateLimiter_CleanupKeepsRecentEntries(t *testing.T) {
 	}
 }
 
-func TestRateLimiter_CloseIsIdempotent(t *testing.T) {
+func TestRateLimiter_CloseIsIdempotent(_ *testing.T) {
 	rl := NewRateLimiter(10)
 	rl.Close()
 	rl.Close() // should not panic
@@ -204,7 +204,7 @@ func TestScanner_Scan_RateLimitIntegration(t *testing.T) {
 	}
 }
 
-func TestScanner_RecordRequest_NilRateLimiter(t *testing.T) {
+func TestScanner_RecordRequest_NilRateLimiter(_ *testing.T) {
 	cfg := testConfig()
 	cfg.FetchProxy.Monitoring.MaxReqPerMinute = 0
 	s := New(cfg)
@@ -213,7 +213,7 @@ func TestScanner_RecordRequest_NilRateLimiter(t *testing.T) {
 	s.RecordRequest("example.com")
 }
 
-func TestScanner_Close_NilRateLimiter(t *testing.T) {
+func TestScanner_Close_NilRateLimiter(_ *testing.T) {
 	cfg := testConfig()
 	cfg.FetchProxy.Monitoring.MaxReqPerMinute = 0
 	s := New(cfg)

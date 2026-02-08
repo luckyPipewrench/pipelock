@@ -856,6 +856,493 @@ func TestFetchEndpoint_AgentOnBlocked(t *testing.T) {
 	}
 }
 
+// --- Redirect Scanning Tests ---
+
+func TestFetchEndpoint_RedirectToBlockedDomain(t *testing.T) {
+	// Backend redirects to a blocklisted domain — should be caught by CheckRedirect
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Redirect(w, &http.Request{}, "https://pastebin.com/raw/abc", http.StatusFound)
+	}))
+	defer backend.Close()
+
+	cfg := config.Defaults()
+	cfg.FetchProxy.TimeoutSeconds = 5
+	cfg.Internal = nil
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	p := New(cfg, logger, sc, metrics.New())
+
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/start", nil)
+	w := httptest.NewRecorder()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+	mux.ServeHTTP(w, req)
+
+	// The redirect to pastebin.com is blocked → client.Do returns error → 502
+	if w.Code != http.StatusBadGateway {
+		t.Errorf("expected 502 for redirect-to-blocked, got %d", w.Code)
+	}
+
+	var resp FetchResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+	if !strings.Contains(resp.Error, "redirect blocked") {
+		t.Errorf("expected 'redirect blocked' in error, got %q", resp.Error)
+	}
+}
+
+func TestFetchEndpoint_RedirectToDLPMatch(t *testing.T) {
+	// Backend redirects to a URL containing a DLP pattern (AWS key)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Redirect(w, &http.Request{}, "https://example.com/api?key=AKIAIOSFODNN7EXAMPLE", http.StatusFound)
+	}))
+	defer backend.Close()
+
+	cfg := config.Defaults()
+	cfg.FetchProxy.TimeoutSeconds = 5
+	cfg.Internal = nil
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	p := New(cfg, logger, sc, metrics.New())
+
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/start", nil)
+	w := httptest.NewRecorder()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadGateway {
+		t.Errorf("expected 502 for redirect-to-DLP-match, got %d", w.Code)
+	}
+
+	var resp FetchResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+	if !strings.Contains(resp.Error, "redirect blocked") {
+		t.Errorf("expected 'redirect blocked' in error, got %q", resp.Error)
+	}
+}
+
+func TestFetchEndpoint_RedirectChainExceedsMax(t *testing.T) {
+	// Backend chains redirects to itself, exceeding the 5-redirect limit
+	var redirectCount int
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirectCount++
+		http.Redirect(w, r, r.URL.Path+"x", http.StatusFound)
+	}))
+	defer backend.Close()
+
+	cfg := config.Defaults()
+	cfg.FetchProxy.TimeoutSeconds = 5
+	cfg.Internal = nil
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	p := New(cfg, logger, sc, metrics.New())
+
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/a", nil)
+	w := httptest.NewRecorder()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadGateway {
+		t.Errorf("expected 502 for too-many-redirects, got %d", w.Code)
+	}
+
+	var resp FetchResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+	if !strings.Contains(resp.Error, "too many redirects") {
+		t.Errorf("expected 'too many redirects' in error, got %q", resp.Error)
+	}
+}
+
+func TestFetchEndpoint_RedirectInAuditMode(t *testing.T) {
+	// In audit mode, a redirect to a DLP-triggering URL should be allowed through
+	// (logged as anomaly, not blocked). The redirect target points back to the
+	// backend so the request succeeds — proving audit mode didn't block the redirect.
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/final" { //nolint:goconst // test path
+			w.Header().Set("Content-Type", "text/plain")
+			_, _ = fmt.Fprint(w, "reached through audit redirect")
+			return
+		}
+		// Redirect to self with a DLP-triggering AWS key in the query
+		http.Redirect(w, r, "/final?key=AKIAIOSFODNN7EXAMPLE", http.StatusFound)
+	}))
+	defer backend.Close()
+
+	cfg := config.Defaults()
+	cfg.FetchProxy.TimeoutSeconds = 5
+	cfg.Internal = nil
+	enforce := false
+	cfg.Enforce = &enforce
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	p := New(cfg, logger, sc, metrics.New())
+
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/start", nil)
+	w := httptest.NewRecorder()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+	mux.ServeHTTP(w, req)
+
+	// Audit mode: redirect is allowed through despite DLP match
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 in audit mode (redirect allowed), got %d", w.Code)
+	}
+
+	var resp FetchResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+	if resp.Blocked {
+		t.Error("audit mode should not block — expected blocked=false")
+	}
+	if !strings.Contains(resp.Content, "reached through audit redirect") {
+		t.Errorf("expected content from final redirect target, got %q", resp.Content)
+	}
+}
+
+func TestFetchEndpoint_RedirectInEnforceMode_Blocks(t *testing.T) {
+	// Same setup as audit mode test above, but with enforce=true.
+	// The redirect to a DLP-triggering URL should be blocked.
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/final" {
+			w.Header().Set("Content-Type", "text/plain")
+			_, _ = fmt.Fprint(w, "should not reach here")
+			return
+		}
+		http.Redirect(w, r, "/final?key=AKIAIOSFODNN7EXAMPLE", http.StatusFound)
+	}))
+	defer backend.Close()
+
+	cfg := config.Defaults()
+	cfg.FetchProxy.TimeoutSeconds = 5
+	cfg.Internal = nil
+	// enforce=nil defaults to true
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	p := New(cfg, logger, sc, metrics.New())
+
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/start", nil)
+	w := httptest.NewRecorder()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+	mux.ServeHTTP(w, req)
+
+	// Enforce mode: redirect is blocked
+	if w.Code != http.StatusBadGateway {
+		t.Errorf("expected 502 for blocked redirect in enforce mode, got %d", w.Code)
+	}
+
+	var resp FetchResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+	if !strings.Contains(resp.Error, "redirect blocked") {
+		t.Errorf("expected 'redirect blocked' in error, got %q", resp.Error)
+	}
+}
+
+func TestFetchEndpoint_RedirectToSafeURL(t *testing.T) {
+	// Backend redirects to itself at a different path — should succeed
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/final" {
+			w.Header().Set("Content-Type", "text/plain")
+			_, _ = fmt.Fprint(w, "redirected content")
+			return
+		}
+		http.Redirect(w, r, "/final", http.StatusFound)
+	}))
+	defer backend.Close()
+
+	cfg := config.Defaults()
+	cfg.FetchProxy.TimeoutSeconds = 5
+	cfg.Internal = nil
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	p := New(cfg, logger, sc, metrics.New())
+
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/start", nil)
+	w := httptest.NewRecorder()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 for safe redirect, got %d", w.Code)
+	}
+
+	var resp FetchResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+	if resp.Blocked {
+		t.Error("expected safe redirect not to be blocked")
+	}
+	if !strings.Contains(resp.Content, "redirected content") {
+		t.Errorf("expected redirected content, got %q", resp.Content)
+	}
+}
+
+// --- Audit Mode (enforce=false) Tests ---
+
+func TestFetchEndpoint_AuditMode_AllowsBlockedURL(t *testing.T) {
+	// In audit mode, a URL matching the blocklist should still be fetched
+	// (logged as anomaly, not blocked).
+	// Use a backend URL with a DLP match rather than a real blocked domain,
+	// so the backend can actually serve the request.
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = fmt.Fprint(w, "sensitive but allowed in audit mode")
+	}))
+	defer backend.Close()
+
+	cfg := config.Defaults()
+	cfg.FetchProxy.TimeoutSeconds = 5
+	cfg.Internal = nil
+	enforce := false
+	cfg.Enforce = &enforce
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	p := New(cfg, logger, sc, metrics.New())
+
+	// URL with AWS key triggers DLP but audit mode lets it through
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/data?key=AKIAIOSFODNN7EXAMPLE", nil)
+	w := httptest.NewRecorder()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 in audit mode, got %d", w.Code)
+	}
+
+	var resp FetchResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+	if resp.Blocked {
+		t.Error("audit mode should not block — expected blocked=false")
+	}
+	if resp.Content == "" {
+		t.Error("expected content to be returned in audit mode")
+	}
+}
+
+func TestFetchEndpoint_AuditMode_EnforceTrue_Blocks(t *testing.T) {
+	// Confirm that the same DLP-triggering URL IS blocked when enforce=true (default)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = fmt.Fprint(w, "should not reach here")
+	}))
+	defer backend.Close()
+
+	cfg := config.Defaults()
+	cfg.FetchProxy.TimeoutSeconds = 5
+	cfg.Internal = nil
+	// enforce=nil defaults to true
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	p := New(cfg, logger, sc, metrics.New())
+
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/data?key=AKIAIOSFODNN7EXAMPLE", nil)
+	w := httptest.NewRecorder()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403 in enforce mode, got %d", w.Code)
+	}
+
+	var resp FetchResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+	if !resp.Blocked {
+		t.Error("enforce mode should block — expected blocked=true")
+	}
+}
+
+// --- Hot-Reload Integration Tests ---
+
+func TestProxy_Reload_SwapsConfig(t *testing.T) {
+	// After Reload, subsequent requests should use the new config/scanner.
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = fmt.Fprint(w, "hello")
+	}))
+	defer backend.Close()
+
+	cfg := config.Defaults()
+	cfg.FetchProxy.TimeoutSeconds = 5
+	cfg.Internal = nil
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	m := metrics.New()
+	p := New(cfg, logger, sc, m)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+	mux.HandleFunc("/health", p.handleHealth)
+
+	// Verify initial mode via /health
+	hReq := httptest.NewRequest(http.MethodGet, "/health", nil)
+	hW := httptest.NewRecorder()
+	mux.ServeHTTP(hW, hReq)
+
+	var health healthResponse
+	if err := json.Unmarshal(hW.Body.Bytes(), &health); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+	if health.Mode != "balanced" {
+		t.Fatalf("expected initial mode=balanced, got %s", health.Mode)
+	}
+
+	// Reload with strict mode
+	newCfg := config.Defaults()
+	newCfg.Mode = "strict"
+	newCfg.FetchProxy.TimeoutSeconds = 5
+	newCfg.Internal = nil
+	newSc := scanner.New(newCfg)
+	p.Reload(newCfg, newSc)
+
+	// Verify mode changed
+	hReq2 := httptest.NewRequest(http.MethodGet, "/health", nil)
+	hW2 := httptest.NewRecorder()
+	mux.ServeHTTP(hW2, hReq2)
+
+	var health2 healthResponse
+	if err := json.Unmarshal(hW2.Body.Bytes(), &health2); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+	if health2.Mode != "strict" {
+		t.Errorf("expected mode=strict after reload, got %s", health2.Mode)
+	}
+}
+
+func TestProxy_Reload_NewScannerTakesEffect(t *testing.T) {
+	// After reloading with a scanner that has a custom blocklist,
+	// previously-allowed domains should be blocked.
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = fmt.Fprint(w, "content")
+	}))
+	defer backend.Close()
+
+	cfg := config.Defaults()
+	cfg.FetchProxy.TimeoutSeconds = 5
+	cfg.Internal = nil
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	m := metrics.New()
+	p := New(cfg, logger, sc, m)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+
+	// First request: example.com should be allowed (not in default blocklist)
+	req1 := httptest.NewRequest(http.MethodGet, "/fetch?url=https://example.com/page", nil)
+	w1 := httptest.NewRecorder()
+	mux.ServeHTTP(w1, req1)
+	// This will 502 (can't reach example.com from test) but should NOT be 403
+	if w1.Code == http.StatusForbidden {
+		t.Fatal("example.com should not be blocked before reload")
+	}
+
+	// Reload with example.com in the blocklist
+	newCfg := config.Defaults()
+	newCfg.FetchProxy.TimeoutSeconds = 5
+	newCfg.Internal = nil
+	newCfg.FetchProxy.Monitoring.Blocklist = append(newCfg.FetchProxy.Monitoring.Blocklist, "*.example.com")
+	newSc := scanner.New(newCfg)
+	p.Reload(newCfg, newSc)
+
+	// Second request: example.com should now be blocked
+	req2 := httptest.NewRequest(http.MethodGet, "/fetch?url=https://example.com/page", nil)
+	w2 := httptest.NewRecorder()
+	mux.ServeHTTP(w2, req2)
+
+	if w2.Code != http.StatusForbidden {
+		t.Errorf("expected 403 after reload with example.com in blocklist, got %d", w2.Code)
+	}
+
+	var resp FetchResponse
+	if err := json.Unmarshal(w2.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+	if !resp.Blocked {
+		t.Error("expected blocked=true after reload")
+	}
+}
+
+func TestProxy_Reload_ConcurrentRequestsSafe(_ *testing.T) {
+	// Verify that calling Reload while requests are in-flight doesn't race.
+	// Run with -race to detect data races.
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = fmt.Fprint(w, "ok")
+	}))
+	defer backend.Close()
+
+	cfg := config.Defaults()
+	cfg.FetchProxy.TimeoutSeconds = 5
+	cfg.Internal = nil
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	m := metrics.New()
+	p := New(cfg, logger, sc, m)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+
+	// Fire requests concurrently while reloading
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 20; i++ {
+			newCfg := config.Defaults()
+			newCfg.FetchProxy.TimeoutSeconds = 5
+			newCfg.Internal = nil
+			newSc := scanner.New(newCfg)
+			p.Reload(newCfg, newSc)
+		}
+	}()
+
+	for i := 0; i < 20; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/text", nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		// We don't assert status — just verifying no race/panic
+	}
+
+	<-done
+}
+
 func TestProxy_StartAndShutdown(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.Listen = "127.0.0.1:0" // random port

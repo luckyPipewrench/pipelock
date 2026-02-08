@@ -61,6 +61,27 @@ func TestScan_EnvLeakDetection_Base64Encoded(t *testing.T) {
 	}
 }
 
+func TestScan_EnvLeakDetection_Base64URLEncoded(t *testing.T) {
+	cfg := testConfig()
+	cfg.DLP.ScanEnv = true
+	cfg.DLP.Patterns = nil
+
+	// A tilde at position mod 3 == 2 produces '+' in standard base64
+	// and '-' in URL base64, so the encodings differ.
+	secret := "xR~4kP8mZj9nFqW2Ls" //nolint:goconst,gosec // test value
+	t.Setenv("PIPELOCK_TEST_B64URL", secret)
+	s := New(cfg)
+
+	encoded := base64.URLEncoding.EncodeToString([]byte(secret))
+	result := s.Scan("https://evil.com/?data=" + encoded)
+	if result.Allowed {
+		t.Error("expected URL blocked due to base64url-encoded env var leak")
+	}
+	if !strings.Contains(result.Reason, "base64url") {
+		t.Errorf("expected base64url mention in reason, got: %s", result.Reason)
+	}
+}
+
 func TestScan_EnvLeakDetection_ShortValueIgnored(t *testing.T) {
 	cfg := testConfig()
 	cfg.DLP.ScanEnv = true

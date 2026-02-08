@@ -3,6 +3,8 @@ package cli
 import (
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -402,6 +404,23 @@ func TestHealthcheckCmd_NoServer(t *testing.T) {
 	err := cmd.Execute()
 	if err == nil {
 		t.Error("expected error when no server is running")
+	}
+}
+
+func TestHealthcheckCmd_Healthy(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	// Extract host:port from "http://127.0.0.1:PORT"
+	addr := strings.TrimPrefix(srv.URL, "http://")
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"healthcheck", "--addr", addr})
+
+	if err := cmd.Execute(); err != nil {
+		t.Errorf("expected healthcheck to succeed against running server, got: %v", err)
 	}
 }
 

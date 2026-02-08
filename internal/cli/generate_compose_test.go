@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestGenerateDockerCompose_AllAgentTypes(t *testing.T) {
@@ -211,6 +213,34 @@ func TestGenerateDockerComposeCmd_Help(t *testing.T) {
 	}
 	if !strings.Contains(output, "openhands") {
 		t.Error("expected openhands in help")
+	}
+}
+
+func TestGenerateDockerCompose_ValidYAML(t *testing.T) {
+	for _, agent := range []string{"generic", "claude-code", "openhands"} {
+		t.Run(agent, func(t *testing.T) {
+			tmpl, err := composeTemplate(agent)
+			if err != nil {
+				t.Fatalf("composeTemplate(%q) error: %v", agent, err)
+			}
+
+			var parsed map[string]any
+			if err := yaml.Unmarshal([]byte(tmpl), &parsed); err != nil {
+				t.Fatalf("YAML parse error for %q template: %v", agent, err)
+			}
+
+			// Verify top-level keys
+			if _, ok := parsed["networks"]; !ok {
+				t.Error("expected top-level 'networks' key")
+			}
+			services, ok := parsed["services"].(map[string]any)
+			if !ok {
+				t.Fatal("expected top-level 'services' key with map value")
+			}
+			if _, ok := services["pipelock"]; !ok {
+				t.Error("expected 'pipelock' service")
+			}
+		})
 	}
 }
 

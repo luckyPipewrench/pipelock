@@ -1,8 +1,8 @@
 # Phase 1.5: CodeQL, Lint Cleanup, Code Coverage
 
 **Date:** 2026-02-08
-**Status:** In progress
-**PRs:** #28 (lint cleanup), #29 (CodeQL + Codecov)
+**Status:** Complete (v0.1.2)
+**PRs:** #28 (lint cleanup), #29 (CodeQL + Codecov) — both merged
 
 ## Context
 

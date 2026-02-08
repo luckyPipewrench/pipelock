@@ -18,10 +18,12 @@ func generateCmd() *cobra.Command {
 
 Examples:
   pipelock generate config --preset balanced
-  pipelock generate config --preset strict --output pipelock.yaml`,
+  pipelock generate config --preset strict --output pipelock.yaml
+  pipelock generate docker-compose --agent claude-code -o docker-compose.yaml`,
 	}
 
 	cmd.AddCommand(generateConfigCmd())
+	cmd.AddCommand(generateDockerComposeCmd())
 	return cmd
 }
 

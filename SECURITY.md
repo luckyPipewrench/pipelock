@@ -25,6 +25,9 @@ Include:
 The following are in scope:
 - Bypass of URL scanning (blocklist, DLP, entropy)
 - SSRF vulnerabilities in the fetch proxy
+- Bypass of MCP response scanning (prompt injection evasion)
+- Ed25519 signature forgery or verification bypass
+- Integrity monitoring bypass (undetected file modification)
 - Audit log injection or tampering
 - Config parsing vulnerabilities
 - Privilege escalation in network restriction mode

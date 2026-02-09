@@ -15,7 +15,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Custom manifest path support (`--manifest` flag)
 - Atomic manifest writes (temp file + rename) to prevent corruption
 - Manifest version validation and nil-files guard on load
+- Ed25519 signing for file and manifest verification (`pipelock keygen|sign|verify|trust`)
+- Key storage under `~/.pipelock/` with versioned format headers
+- Trusted key management for inter-agent signature verification
+- Path traversal protection in keystore operations
+- MCP JSON-RPC 2.0 response scanning for prompt injection (`pipelock mcp scan`)
+- MCP scanning: text extraction from content blocks, split-injection detection via concatenation
+- MCP scanning: `--json` output mode (one verdict per line) and `--config` flag
+- Security fix: `json.RawMessage` null bypass prevention (result always scanned regardless of error field)
+- JSON tags on `scanner.ResponseMatch` for consistent snake_case output
 - GitHub Pages blog at luckypipewrench.github.io/pipelock
+- ~500 tests passing with `-race`
 
 ### Removed
 - Stale Phase 1.5 planning doc (planning docs live outside the repo)

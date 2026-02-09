@@ -469,6 +469,99 @@ func TestGenerate_NoPathTraversal(t *testing.T) {
 	}
 }
 
+func TestMatchDoublestar_MultipleStars(t *testing.T) {
+	// Patterns with more than one "**" segment return false.
+	if matchDoublestar("a/**/b/**/c", "a/x/b/y/c") {
+		t.Error("expected false for multiple ** segments")
+	}
+}
+
+func TestMatchDoublestar_PrefixWithSuffix(t *testing.T) {
+	// Pattern like "src/**/*.go" should match files under src/.
+	tests := []struct {
+		pattern string
+		path    string
+		want    bool
+	}{
+		{"src/**/*.go", "src/main.go", true},
+		{"src/**/*.go", "src/pkg/util.go", true},
+		{"src/**/*.go", "src/readme.md", false},
+		{"src/**/*.go", "other/main.go", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.pattern+"_"+tt.path, func(t *testing.T) {
+			got := matchDoublestar(tt.pattern, tt.path)
+			if got != tt.want {
+				t.Errorf("matchDoublestar(%q, %q) = %v, want %v",
+					tt.pattern, tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMatchDoublestar_ExactPrefix(t *testing.T) {
+	// When relPath exactly equals the prefix (no trailing slash).
+	if !matchDoublestar("vendor/**", "vendor/anything") {
+		t.Error("expected true for path under vendor/")
+	}
+}
+
+func TestGenerate_UnreadableFile(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "readable.txt", "ok\n")
+
+	// Create a subdirectory that's unreadable.
+	unreadable := filepath.Join(dir, "secret")
+	if err := os.MkdirAll(unreadable, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, dir, "secret/data.txt", "hidden\n")
+	if err := os.Chmod(unreadable, 0o000); err != nil { //nolint:gosec // test: intentionally restricting permissions
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(unreadable, 0o700) }) //nolint:errcheck,gosec // best-effort cleanup
+
+	_, err := Generate(dir, nil)
+	if err == nil {
+		t.Fatal("expected error for unreadable directory")
+	}
+}
+
+func TestGenerate_HashFileError(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "readable.txt", "ok\n")
+
+	// Create a file that WalkDir finds but HashFile can't open.
+	unreadable := filepath.Join(dir, "noperm.txt")
+	if err := os.WriteFile(unreadable, []byte("secret"), 0o000); err != nil { //nolint:gosec // test: intentionally restricting permissions
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(unreadable, 0o600) }) //nolint:errcheck,gosec // best-effort cleanup
+
+	_, err := Generate(dir, nil)
+	if err == nil {
+		t.Fatal("expected error for unreadable file")
+	}
+}
+
+func TestGenerate_ExcludeDirectory(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "keep.txt", "keep\n")
+	mkdirAll(t, dir, "logs/archive")
+	writeFile(t, dir, "logs/app.log", "log\n")
+	writeFile(t, dir, "logs/archive/old.log", "old\n")
+
+	// Exclude with path-based glob (directory + file pattern).
+	m, err := Generate(dir, []string{"logs/**"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(m.Files) != 1 {
+		t.Fatalf("expected 1 file, got %d: %v", len(m.Files), fileNames(m))
+	}
+}
+
 func TestGenerate_InvalidExcludePattern(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "file.txt", "content\n")
@@ -492,6 +585,51 @@ func TestGenerate_PathSeparators(t *testing.T) {
 	// Manifest keys should always use forward slashes.
 	if _, ok := m.Files["sub/file.txt"]; !ok {
 		t.Errorf("expected forward-slash path, got keys: %v", fileNames(m))
+	}
+}
+
+func TestCheck_GenerateError(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "file.txt", "content\n")
+
+	m, err := Generate(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Make the directory unreadable so Check's internal Generate fails.
+	if err := os.Chmod(dir, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(dir, 0o700) }) //nolint:errcheck,gosec // best-effort cleanup
+
+	_, err = Check(dir, m)
+	if err == nil {
+		t.Fatal("expected error when directory becomes unreadable")
+	}
+}
+
+func TestValidateExcludes_PureDoublestar(t *testing.T) {
+	// A pattern of just "**" should be valid (cleaned to empty string → skip).
+	if err := validateExcludes([]string{"**"}); err != nil {
+		t.Errorf("expected no error for **, got: %v", err)
+	}
+}
+
+func TestValidateExcludes_Valid(t *testing.T) {
+	patterns := []string{"*.log", "vendor/**", "**/*.tmp", "dir/*.txt"}
+	if err := validateExcludes(patterns); err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+}
+
+func TestMatchExclude_PathGlob(t *testing.T) {
+	// Path glob with a slash matches against full relative path.
+	if !matchExclude("config/secret.yaml", "config/secret.yaml") {
+		t.Error("expected exact path match")
+	}
+	if matchExclude("config/secret.yaml", "other/secret.yaml") {
+		t.Error("expected no match for different path")
 	}
 }
 

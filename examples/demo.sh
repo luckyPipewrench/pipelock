@@ -30,18 +30,22 @@ run() {
     echo ""
 }
 
-TMPDIR=$(mktemp -d)
-trap 'rm -rf "$TMPDIR"' EXIT
+DEMO_TMPDIR=$(mktemp -d)
+trap 'rm -rf "$DEMO_TMPDIR"' EXIT
 
 # --- Setup ---
 
 step "Setup: generate a balanced config"
-run pipelock generate config --preset balanced -o "$TMPDIR/pipelock.yaml"
+run pipelock generate config --preset balanced -o "$DEMO_TMPDIR/pipelock.yaml"
 
 step "Setup: start the fetch proxy in the background"
-pipelock run --config "$TMPDIR/pipelock.yaml" &
+pipelock run --config "$DEMO_TMPDIR/pipelock.yaml" &
 PROXY_PID=$!
-sleep 1
+sleep 2
+if ! curl -sf http://localhost:8888/health > /dev/null 2>&1; then
+    echo -e "${RED}ERROR: Proxy failed to start on :8888 (port in use?)${RESET}" >&2
+    exit 1
+fi
 echo -e "${GREEN}Proxy running on :8888 (PID $PROXY_PID)${RESET}"
 echo ""
 
@@ -49,8 +53,7 @@ echo ""
 
 step "Demo 1: DLP catches an API key in a URL"
 echo "An agent tries to fetch a URL containing an AWS access key..."
-run curl -s "http://localhost:8888/fetch?url=https://example.com/page?token=AKIAIOSFODNN7EXAMPLE" | python3 -m json.tool 2>/dev/null || \
-run curl -s "http://localhost:8888/fetch?url=https://example.com/page?token=AKIAIOSFODNN7EXAMPLE"
+run curl -s -G --data-urlencode "url=https://example.com/page?token=AKIAIOSFODNN7EXAMPLE" "http://localhost:8888/fetch"
 echo -e "${RED}^ Blocked! The DLP scanner detected the AWS key pattern.${RESET}"
 
 # --- Demo 2: Domain blocklist ---
@@ -72,26 +75,26 @@ echo -e "${GREEN}^ Allowed. Clean URL, no secrets, not blocklisted.${RESET}"
 # --- Demo 4: Integrity monitoring ---
 
 step "Demo 4: Workspace integrity detects tampering"
-mkdir -p "$TMPDIR/workspace"
-echo "legitimate code" > "$TMPDIR/workspace/app.py"
-echo "config data" > "$TMPDIR/workspace/config.yaml"
+mkdir -p "$DEMO_TMPDIR/workspace"
+echo "legitimate code" > "$DEMO_TMPDIR/workspace/app.py"
+echo "config data" > "$DEMO_TMPDIR/workspace/config.yaml"
 
 echo "Initialize integrity manifest..."
-run pipelock integrity init "$TMPDIR/workspace" --manifest "$TMPDIR/manifest.json"
+run pipelock integrity init "$DEMO_TMPDIR/workspace" --manifest "$DEMO_TMPDIR/manifest.json"
 
 echo "Simulate tampering: modify a file..."
-echo "malicious payload" >> "$TMPDIR/workspace/app.py"
+echo "malicious payload" >> "$DEMO_TMPDIR/workspace/app.py"
 
 echo "Check integrity..."
-run pipelock integrity check "$TMPDIR/workspace" --manifest "$TMPDIR/manifest.json"
+run pipelock integrity check "$DEMO_TMPDIR/workspace" --manifest "$DEMO_TMPDIR/manifest.json"
 echo -e "${RED}^ Detected! The modified file was caught by integrity checking.${RESET}"
 
 # --- Demo 5: Git diff scanning ---
 
 step "Demo 5: Git diff scanning catches secrets"
 echo "Scanning a diff that contains a secret..."
-echo '+ANTHROPIC_API_KEY=sk-ant-api03-FAKEFAKEFAKEFAKEFAKE' | \
-    run pipelock git scan-diff --config "$TMPDIR/pipelock.yaml"
+printf 'diff --git a/.env b/.env\n--- /dev/null\n+++ b/.env\n@@ -0,0 +1 @@\n+ANTHROPIC_API_KEY=sk-ant-api03-FAKEFAKEFAKEFAKEFAKE\n' | \
+    run pipelock git scan-diff --config "$DEMO_TMPDIR/pipelock.yaml"
 echo -e "${RED}^ Caught! The secret was detected in the diff.${RESET}"
 
 # --- Cleanup ---

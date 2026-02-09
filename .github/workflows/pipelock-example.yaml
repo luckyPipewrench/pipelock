@@ -2,6 +2,9 @@
 # and verify workspace integrity before deploying AI agent tasks.
 #
 # Copy this to your repo's .github/workflows/ and adjust as needed.
+#
+# Prerequisites: add a pipelock.yaml to your repo root.
+# Generate one with: pipelock generate config --preset balanced -o pipelock.yaml
 
 name: Pipelock Security Scan
 

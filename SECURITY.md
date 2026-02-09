@@ -6,7 +6,7 @@ If you discover a security vulnerability in Pipelock, please report it responsib
 
 **Do NOT open a public GitHub issue for security vulnerabilities.**
 
-Instead, please email: **security@pipelab.org**
+Instead, please use **[GitHub Security Advisories](https://github.com/luckyPipewrench/pipelock/security/advisories/new)** to report vulnerabilities privately.
 
 Include:
 - Description of the vulnerability

@@ -42,9 +42,8 @@ an individual is officially representing the community in public spaces.
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
-reported to the project maintainer via [GitHub Security Advisories](https://github.com/luckyPipewrench/pipelock/security/advisories/new)
-or by opening a GitHub issue. All complaints will be reviewed and investigated
-promptly and fairly.
+reported to the project maintainer by [opening a GitHub issue](https://github.com/luckyPipewrench/pipelock/issues/new).
+All complaints will be reviewed and investigated promptly and fairly.
 
 ## Attribution
 

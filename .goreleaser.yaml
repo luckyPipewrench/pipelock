@@ -43,6 +43,25 @@ changelog:
       - '^test:'
       - '^chore:'
 
+brews:
+  - repository:
+      owner: luckyPipewrench
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.GITHUB_TOKEN }}"
+    homepage: "https://github.com/luckyPipewrench/pipelock"
+    description: "Security harness for AI agents"
+    license: "Apache-2.0"
+    folder: Formula
+    commit_author:
+      name: goreleaserbot
+      email: bot@goreleaser.com
+    commit_msg_template: "Brew formula update for {{ .ProjectName }} version {{ .Tag }}"
+    install: |
+      bin.install "pipelock"
+    test: |
+      system "#{bin}/pipelock", "version"
+
 dockers:
   - image_templates:
       - "ghcr.io/luckypipewrench/pipelock:{{ .Version }}-amd64"

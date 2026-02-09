@@ -1,0 +1,42 @@
+# Example workflow: use Pipelock in your CI pipeline to scan for secrets
+# and verify workspace integrity before deploying AI agent tasks.
+#
+# Copy this to your repo's .github/workflows/ and adjust as needed.
+
+name: Pipelock Security Scan
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # needed for git diff
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Install Pipelock
+        run: go install github.com/luckyPipewrench/pipelock/cmd/pipelock@latest
+
+      - name: Validate config
+        run: pipelock check --config pipelock.yaml
+
+      - name: Scan PR diff for secrets
+        run: git diff origin/main...HEAD | pipelock git scan-diff --config pipelock.yaml
+
+      - name: Check workspace integrity
+        run: |
+          # Initialize manifest on first run, check on subsequent runs
+          if [ -f .pipelock-manifest.json ]; then
+            pipelock integrity check . --manifest .pipelock-manifest.json
+          else
+            echo "No manifest found — skipping integrity check"
+            echo "Run 'pipelock integrity init . --manifest .pipelock-manifest.json' to create one"
+          fi

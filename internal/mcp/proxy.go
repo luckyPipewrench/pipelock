@@ -33,7 +33,6 @@ func ForwardScanned(r io.Reader, w io.Writer, logW io.Writer, sc *scanner.Scanne
 		}
 
 		verdict := ScanResponse(line, sc)
-		verdict.Line = lineNum
 
 		// Clean or parse error: forward as-is.
 		// Parse errors are the server's problem — we pass them through.

@@ -311,6 +311,210 @@ func TestInstallHooksCmd_GitFile_Worktree(t *testing.T) {
 	}
 }
 
+func TestInstallHooksCmd_WithBinary(t *testing.T) {
+	dir := t.TempDir()
+	gitDir := filepath.Join(dir, ".git")
+	if err := os.MkdirAll(gitDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	oldDir, _ := os.Getwd()
+	_ = os.Chdir(dir)
+	defer func() { _ = os.Chdir(oldDir) }()
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"git", "install-hooks", "--binary", "/usr/local/bin/pipelock"})
+
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	hookPath := filepath.Join(gitDir, "hooks", "pre-push")
+	data, _ := os.ReadFile(hookPath) //nolint:gosec // test reads its own temp file
+	if !strings.Contains(string(data), "/usr/local/bin/pipelock") {
+		t.Error("hook should contain the custom binary path")
+	}
+}
+
+func TestResolveGitFile_InvalidContent(t *testing.T) {
+	dir := t.TempDir()
+	gitFilePath := filepath.Join(dir, ".git")
+
+	// Write a .git file without the "gitdir: " prefix.
+	if err := os.WriteFile(gitFilePath, []byte("not a valid git pointer\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := resolveGitFile(gitFilePath, dir)
+	if err == nil {
+		t.Fatal("expected error for invalid .git file content")
+	}
+	if !strings.Contains(err.Error(), "invalid .git file") {
+		t.Errorf("expected 'invalid .git file' error, got: %v", err)
+	}
+}
+
+func TestResolveGitFile_NonexistentGitdir(t *testing.T) {
+	dir := t.TempDir()
+	gitFilePath := filepath.Join(dir, ".git")
+
+	// Write a .git file pointing to a nonexistent directory.
+	if err := os.WriteFile(gitFilePath, []byte("gitdir: /nonexistent/gitdir/path\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := resolveGitFile(gitFilePath, dir)
+	if err == nil {
+		t.Fatal("expected error for nonexistent gitdir path")
+	}
+	if !strings.Contains(err.Error(), "does not exist") {
+		t.Errorf("expected 'does not exist' error, got: %v", err)
+	}
+}
+
+func TestResolveGitFile_RelativePath(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create a real gitdir directory at a relative path.
+	realGitDir := filepath.Join(dir, "sub", "real-gitdir")
+	if err := os.MkdirAll(realGitDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	gitFilePath := filepath.Join(dir, ".git")
+	// Write a .git file with a relative path.
+	if err := os.WriteFile(gitFilePath, []byte("gitdir: sub/real-gitdir\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := resolveGitFile(gitFilePath, dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != realGitDir {
+		t.Errorf("expected %q, got %q", realGitDir, result)
+	}
+}
+
+func TestResolveGitFile_AbsolutePath(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create a real gitdir directory at an absolute path.
+	realGitDir := filepath.Join(dir, "absolute-gitdir")
+	if err := os.MkdirAll(realGitDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	gitFilePath := filepath.Join(dir, ".git")
+	// Write a .git file with an absolute path.
+	if err := os.WriteFile(gitFilePath, []byte("gitdir: "+realGitDir+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := resolveGitFile(gitFilePath, dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != realGitDir {
+		t.Errorf("expected %q, got %q", realGitDir, result)
+	}
+}
+
+func TestResolveGitFile_PointsToFile(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create a regular file (not a directory) where the gitdir should be.
+	notADir := filepath.Join(dir, "not-a-dir")
+	if err := os.WriteFile(notADir, []byte("just a file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	gitFilePath := filepath.Join(dir, ".git-pointer")
+	if err := os.WriteFile(gitFilePath, []byte("gitdir: "+notADir+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := resolveGitFile(gitFilePath, dir)
+	if err == nil {
+		t.Fatal("expected error when gitdir points to a file, not a directory")
+	}
+	if !strings.Contains(err.Error(), "not a directory") {
+		t.Errorf("expected 'not a directory' error, got: %v", err)
+	}
+}
+
+func TestScanDiffCmd_WithConfigFile(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "pipelock.yaml")
+
+	yaml := `
+version: 1
+mode: balanced
+api_allowlist:
+  - "*.anthropic.com"
+fetch_proxy:
+  listen: "127.0.0.1:9999"
+  timeout_seconds: 15
+`
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	diff := `diff --git a/main.go b/main.go
+--- a/main.go
++++ b/main.go
+@@ -1,2 +1,3 @@
+ package main
++import "fmt"
+
+`
+	r, w, _ := os.Pipe()
+	_, _ = w.WriteString(diff)
+	_ = w.Close()
+
+	oldStdin := os.Stdin
+	os.Stdin = r
+	defer func() { os.Stdin = oldStdin }()
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"git", "scan-diff", "--config", cfgPath})
+
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+
+	err := cmd.Execute()
+	if err != nil {
+		t.Fatalf("expected no error for clean diff with config, got: %v", err)
+	}
+}
+
+func TestScanDiffCmd_InvalidConfig(t *testing.T) {
+	r, w, _ := os.Pipe()
+	_, _ = w.WriteString("some diff\n")
+	_ = w.Close()
+
+	oldStdin := os.Stdin
+	os.Stdin = r
+	defer func() { os.Stdin = oldStdin }()
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"git", "scan-diff", "--config", "/nonexistent/config.yaml"})
+
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for nonexistent config")
+	}
+}
+
 func TestInstallHooksCmd_WithConfig(t *testing.T) {
 	dir := t.TempDir()
 	gitDir := filepath.Join(dir, ".git")

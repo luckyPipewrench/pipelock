@@ -534,3 +534,351 @@ func TestRunCmd_ListenFlag(t *testing.T) {
 		t.Error("expected run --help to show --listen flag")
 	}
 }
+
+func TestExecute(t *testing.T) {
+	// Execute() just delegates to rootCmd().Execute(). Running with no args
+	// prints help and succeeds.
+	err := Execute()
+	if err != nil {
+		t.Fatalf("Execute() with no args should succeed, got: %v", err)
+	}
+}
+
+func TestRunCmd_InvalidConfig(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "bad.yaml")
+	if err := os.WriteFile(cfgPath, []byte("{{invalid yaml}}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately — we don't want the server to start
+
+	cmd := rootCmd()
+	cmd.SetContext(ctx)
+	cmd.SetArgs([]string{"run", "--config", cfgPath})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for invalid config")
+	}
+	if !strings.Contains(err.Error(), "loading config") {
+		t.Errorf("expected 'loading config' error, got: %v", err)
+	}
+}
+
+func TestRunCmd_NonexistentConfig(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	cmd := rootCmd()
+	cmd.SetContext(ctx)
+	cmd.SetArgs([]string{"run", "--config", "/nonexistent/pipelock.yaml"})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for nonexistent config")
+	}
+}
+
+func TestRunCmd_InvalidMode(t *testing.T) {
+	// Create a valid config file first, then override mode with an invalid one.
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "test.yaml")
+	logPath := filepath.Join(dir, "audit.log")
+
+	cfgContent := fmt.Sprintf(`version: 1
+mode: balanced
+api_allowlist:
+  - "*.anthropic.com"
+fetch_proxy:
+  listen: "127.0.0.1:0"
+  timeout_seconds: 10
+logging:
+  format: json
+  output: file
+  file: "%s"
+`, logPath)
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	cmd := rootCmd()
+	cmd.SetContext(ctx)
+	cmd.SetArgs([]string{"run", "--config", cfgPath, "--mode", "invalid-mode"})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for invalid mode")
+	}
+	if !strings.Contains(err.Error(), "invalid config") {
+		t.Errorf("expected 'invalid config' error, got: %v", err)
+	}
+}
+
+func TestRunCmd_ListenFlagOverride(t *testing.T) {
+	// Find a free port
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cmd := rootCmd()
+	cmd.SetContext(ctx)
+	cmd.SetArgs([]string{"run", "--listen", addr})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- cmd.Execute()
+	}()
+
+	// Poll /health until the proxy is ready
+	client := &http.Client{Timeout: time.Second}
+	healthURL := "http://" + addr + "/health"
+	deadline := time.Now().Add(5 * time.Second)
+	var healthy bool
+	for time.Now().Before(deadline) {
+		select {
+		case err := <-errCh:
+			cancel()
+			t.Fatalf("run command exited early: %v", err)
+		default:
+		}
+
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+		resp, err := client.Do(req)
+		if err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				healthy = true
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !healthy {
+		cancel()
+		t.Fatal("proxy did not become healthy within timeout")
+	}
+
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Errorf("unexpected run error: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("run command did not shut down within timeout")
+	}
+}
+
+func TestHealthcheckCmd_Unhealthy(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	addr := strings.TrimPrefix(srv.URL, "http://")
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"healthcheck", "--addr", addr})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Error("expected error for unhealthy server")
+	}
+	if !strings.Contains(err.Error(), "unhealthy") {
+		t.Errorf("expected 'unhealthy' in error, got: %v", err)
+	}
+}
+
+func TestLogsCmd_FilterWithNoMatch(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "test.log")
+
+	lines := `{"event":"allowed","url":"https://example.com"}
+{"event":"allowed","url":"https://safe.com"}
+`
+	if err := os.WriteFile(logPath, []byte(lines), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"logs", "--file", logPath, "--filter", "blocked"})
+
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := buf.String()
+	if strings.TrimSpace(output) != "" {
+		t.Errorf("expected empty output when no lines match filter, got: %q", output)
+	}
+}
+
+func TestLogsCmd_FilterAndLast(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "test.log")
+
+	lines := `{"event":"blocked","url":"https://evil1.com"}
+{"event":"allowed","url":"https://safe.com"}
+{"event":"blocked","url":"https://evil2.com"}
+{"event":"blocked","url":"https://evil3.com"}
+`
+	if err := os.WriteFile(logPath, []byte(lines), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"logs", "--file", logPath, "--filter", "blocked", "--last", "1"})
+
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "evil3.com") {
+		t.Errorf("expected last blocked entry in output, got: %q", output)
+	}
+	if strings.Contains(output, "evil1.com") {
+		t.Error("expected earlier entries to be excluded")
+	}
+}
+
+func TestMatchFilter_JSONNoEventField(t *testing.T) {
+	// JSON that parses successfully but has no "event" field.
+	line := `{"url":"https://example.com","status":200}`
+
+	if matchFilter(line, "allowed") {
+		t.Error("expected no match when JSON has no event field")
+	}
+}
+
+func TestMatchFilter_JSONEventWrongType(t *testing.T) {
+	// JSON with "event" field that is not a string.
+	line := `{"event":42,"url":"https://example.com"}`
+
+	if matchFilter(line, "42") {
+		t.Error("expected no match when event field is not a string")
+	}
+}
+
+func TestGenerateCmd_OutputToStdout(t *testing.T) {
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"generate", "config", "--preset", "strict"})
+
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(&strings.Builder{})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "strict") {
+		t.Errorf("expected output to mention strict preset, got: %q", output)
+	}
+}
+
+func TestGenerateDockerCompose_OpenhandsToStdout(t *testing.T) {
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"generate", "docker-compose", "--agent", "openhands"})
+
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(&strings.Builder{})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "openhands") {
+		t.Errorf("expected output to contain openhands, got: %q", output)
+	}
+}
+
+func TestResolveAgentName_InvalidName(t *testing.T) {
+	// Ensure PIPELOCK_AGENT env var is clear.
+	t.Setenv("PIPELOCK_AGENT", "")
+
+	// Test with explicitly empty name (no flag, no env).
+	_, err := resolveAgentName("")
+	if err == nil {
+		t.Fatal("expected error for empty agent name")
+	}
+	if !strings.Contains(err.Error(), "agent name required") {
+		t.Errorf("expected 'agent name required' error, got: %v", err)
+	}
+}
+
+func TestResolveKeystoreDir_ExplicitPath(t *testing.T) {
+	dir := t.TempDir()
+
+	result, err := resolveKeystoreDir(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != dir {
+		t.Errorf("expected %q, got %q", dir, result)
+	}
+}
+
+func TestResolveKeystoreDir_Default(t *testing.T) {
+	// When no explicit dir is given, it should use the default path.
+	result, err := resolveKeystoreDir("")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == "" {
+		t.Error("expected non-empty default keystore path")
+	}
+}
+
+func TestResolveAgentName_ValidEnvVar(t *testing.T) {
+	t.Setenv("PIPELOCK_AGENT", "my-agent")
+
+	name, err := resolveAgentName("")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if name != "my-agent" {
+		t.Errorf("expected 'my-agent', got %q", name)
+	}
+}
+
+func TestResolveAgentName_FlagOverridesEnv(t *testing.T) {
+	t.Setenv("PIPELOCK_AGENT", "env-agent")
+
+	name, err := resolveAgentName("flag-agent")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if name != "flag-agent" {
+		t.Errorf("expected 'flag-agent', got %q", name)
+	}
+}

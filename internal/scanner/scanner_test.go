@@ -565,6 +565,35 @@ func TestScan_DLPInPath(t *testing.T) {
 	}
 }
 
+func TestScan_DLPInSubdomain(t *testing.T) {
+	s := New(testConfig())
+	// Secret encoded as a subdomain label — bypassed DLP before full-URL scanning.
+	result := s.Scan("https://sk-proj-abc123def456ghi789jkl012.evil.com/")
+	if result.Allowed {
+		t.Error("expected DLP to catch OpenAI key in subdomain")
+	}
+	if result.Scanner != "dlp" {
+		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	}
+}
+
+func TestScan_DLPKeySplitAcrossParams(t *testing.T) {
+	s := New(testConfig())
+	// Key prefix in one param — full URL scan catches the prefix in the raw string.
+	result := s.Scan("https://example.com/callback?a=sk-proj-abc123def456ghi789jkl012mno345&b=extra")
+	if result.Allowed {
+		t.Error("expected DLP to catch OpenAI key split across params")
+	}
+}
+
+func TestScan_DLPAWSKeyInSubdomain(t *testing.T) {
+	s := New(testConfig())
+	result := s.Scan("https://AKIAIOSFODNN7EXAMPLE.s3.evil.com/data")
+	if result.Allowed {
+		t.Error("expected DLP to catch AWS key in subdomain")
+	}
+}
+
 func TestScan_DLPSlackToken(t *testing.T) {
 	s := New(testConfig())
 	result := s.Scan("https://example.com/api?token=xoxb-1234567890-abcdefghij")

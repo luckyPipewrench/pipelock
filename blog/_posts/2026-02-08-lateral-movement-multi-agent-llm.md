@@ -89,7 +89,7 @@ pipelock integrity update ./workspace
 
 The manifest stores SHA256 hashes for every protected file. When an agent starts up, it checks that config files, skill definitions, and identity files haven't been changed outside of a normal workflow.
 
-This doesn't stop every lateral movement attack. A compromised agent can still write to files that aren't in the manifest, and we need signing (coming next) to verify who actually made a change. But it catches the most dangerous thing: someone (or something) quietly editing the files that control how your agents behave.
+This doesn't stop every lateral movement attack. A compromised agent can still write to files that aren't in the manifest, and we need signing to verify who actually made a change. But it catches the most dangerous thing: someone (or something) quietly editing the files that control how your agents behave.
 
 ### Now available
 

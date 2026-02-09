@@ -652,6 +652,117 @@ func TestApplyDefaults_ResponseScanningDisabledNoActionDefault(t *testing.T) {
 	}
 }
 
+// --- EnforceEnabled Tests ---
+
+func TestEnforceEnabled_NilDefaultsTrue(t *testing.T) {
+	cfg := &Config{} // Enforce is nil by default
+	if !cfg.EnforceEnabled() {
+		t.Error("expected EnforceEnabled() == true when Enforce is nil")
+	}
+}
+
+func TestEnforceEnabled_ExplicitTrue(t *testing.T) {
+	v := true
+	cfg := &Config{Enforce: &v}
+	if !cfg.EnforceEnabled() {
+		t.Error("expected EnforceEnabled() == true when Enforce is explicitly true")
+	}
+}
+
+func TestEnforceEnabled_ExplicitFalse(t *testing.T) {
+	v := false
+	cfg := &Config{Enforce: &v}
+	if cfg.EnforceEnabled() {
+		t.Error("expected EnforceEnabled() == false when Enforce is explicitly false")
+	}
+}
+
+// --- Git Protection Validation Tests ---
+
+func TestValidate_GitProtectionEnabled(t *testing.T) {
+	cfg := Defaults()
+	cfg.GitProtection.Enabled = true
+	cfg.GitProtection.AllowedBranches = []string{"main", "feature/*"}
+	cfg.GitProtection.BlockedCommands = []string{"push --force"}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("valid git protection config should validate, got: %v", err)
+	}
+}
+
+func TestValidate_GitProtectionEmptyAllowedBranch(t *testing.T) {
+	cfg := Defaults()
+	cfg.GitProtection.Enabled = true
+	cfg.GitProtection.AllowedBranches = []string{"main", ""}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for empty allowed_branches pattern")
+	}
+}
+
+func TestValidate_GitProtectionInvalidGlob(t *testing.T) {
+	cfg := Defaults()
+	cfg.GitProtection.Enabled = true
+	cfg.GitProtection.AllowedBranches = []string{"[invalid"}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for invalid allowed_branches glob pattern")
+	}
+}
+
+func TestValidate_GitProtectionEmptyBlockedCommand(t *testing.T) {
+	cfg := Defaults()
+	cfg.GitProtection.Enabled = true
+	cfg.GitProtection.AllowedBranches = []string{"main"}
+	cfg.GitProtection.BlockedCommands = []string{"push --force", ""}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for empty blocked_commands entry")
+	}
+}
+
+func TestValidate_GitProtectionDisabledSkipsValidation(t *testing.T) {
+	cfg := Defaults()
+	cfg.GitProtection.Enabled = false
+	cfg.GitProtection.AllowedBranches = []string{"[invalid"}
+	cfg.GitProtection.BlockedCommands = []string{""}
+	// When disabled, validation should be skipped
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("disabled git protection should skip validation, got: %v", err)
+	}
+}
+
+// --- ApplyDefaults Git Protection Tests ---
+
+func TestApplyDefaults_GitProtectionEnabledDefaultsBranches(t *testing.T) {
+	cfg := &Config{}
+	cfg.GitProtection.Enabled = true
+	cfg.ApplyDefaults()
+	if len(cfg.GitProtection.AllowedBranches) == 0 {
+		t.Error("expected default allowed_branches when git protection enabled")
+	}
+}
+
+func TestApplyDefaults_GitProtectionEnabledPreservesBranches(t *testing.T) {
+	cfg := &Config{}
+	cfg.GitProtection.Enabled = true
+	cfg.GitProtection.AllowedBranches = []string{"develop"}
+	cfg.ApplyDefaults()
+	if len(cfg.GitProtection.AllowedBranches) != 1 || cfg.GitProtection.AllowedBranches[0] != "develop" {
+		t.Errorf("expected preserved allowed_branches, got %v", cfg.GitProtection.AllowedBranches)
+	}
+}
+
+func TestApplyDefaults_MonitoringDefaults(t *testing.T) {
+	cfg := &Config{}
+	cfg.ApplyDefaults()
+	if cfg.FetchProxy.Monitoring.MaxURLLength != 2048 {
+		t.Errorf("expected default max URL length 2048, got %d", cfg.FetchProxy.Monitoring.MaxURLLength)
+	}
+	if cfg.FetchProxy.Monitoring.EntropyThreshold != 4.5 {
+		t.Errorf("expected default entropy threshold 4.5, got %f", cfg.FetchProxy.Monitoring.EntropyThreshold)
+	}
+	if cfg.FetchProxy.Monitoring.MaxReqPerMinute != 60 {
+		t.Errorf("expected default max req/min 60, got %d", cfg.FetchProxy.Monitoring.MaxReqPerMinute)
+	}
+}
+
 func TestLoad_WithResponseScanning(t *testing.T) {
 	yaml := `
 version: 1

@@ -438,6 +438,66 @@ func TestVerifyCmd_CustomSigPath(t *testing.T) {
 	}
 }
 
+func TestSignCmd_NonexistentFile(t *testing.T) {
+	dir := t.TempDir()
+
+	ks := signing.NewKeystore(dir)
+	if _, err := ks.GenerateAgent("alice"); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"sign", "/nonexistent/file.txt", "--agent", "alice", "--keystore", dir})
+	cmd.SetOut(&strings.Builder{})
+
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("expected error for nonexistent file")
+	}
+}
+
+func TestSignCmd_BadAgent(t *testing.T) {
+	dir := t.TempDir()
+
+	testFile := filepath.Join(t.TempDir(), "test.txt")
+	if err := os.WriteFile(testFile, []byte("content\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"sign", testFile, "--agent", "nonexistent-agent", "--keystore", dir})
+	cmd.SetOut(&strings.Builder{})
+
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("expected error for nonexistent agent")
+	}
+}
+
+func TestVerifyCmd_NoAgent(t *testing.T) {
+	testFile := filepath.Join(t.TempDir(), "test.txt")
+	if err := os.WriteFile(testFile, []byte("content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("PIPELOCK_AGENT", "")
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"verify", testFile})
+	cmd.SetOut(&strings.Builder{})
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("expected error when no agent specified for verify")
+	}
+}
+
+func TestTrustCmd_NoArgs(t *testing.T) {
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"trust"})
+	cmd.SetOut(&strings.Builder{})
+	cmd.SetErr(&strings.Builder{})
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("expected error for missing args on trust")
+	}
+}
+
 func TestKeygenCmd_RegisteredInHelp(t *testing.T) {
 	cmd := rootCmd()
 	cmd.SetArgs([]string{"--help"})

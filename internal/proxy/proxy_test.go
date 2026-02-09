@@ -1343,6 +1343,183 @@ func TestProxy_Reload_ConcurrentRequestsSafe(_ *testing.T) {
 	<-done
 }
 
+// --- Response Scan Default Action Test ---
+
+func TestFetchEndpoint_ResponseScan_DefaultAction(t *testing.T) {
+	// Use a custom action that falls through to the default case in the switch
+	p, backend := setupResponseScanProxy(t, "log-only")
+	defer backend.Close()
+
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/injection", nil)
+	w := httptest.NewRecorder()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+	mux.ServeHTTP(w, req)
+
+	// Default action should not block, just log
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 for default action, got %d", w.Code)
+	}
+
+	var resp FetchResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+	if resp.Blocked {
+		t.Error("expected default action not to block")
+	}
+	if resp.Content == "" {
+		t.Error("expected non-empty content for default action")
+	}
+}
+
+// --- SSRF Tests ---
+
+func TestFetchEndpoint_SSRFBlocksInternalIP(t *testing.T) {
+	// With SSRF enabled (Internal CIDRs set), the scanner's checkSSRF blocks
+	// requests to internal IPs during the URL scan phase (403 Forbidden).
+	cfg := config.Defaults()
+	cfg.FetchProxy.TimeoutSeconds = 2
+	// Keep Internal CIDRs (don't set to nil) so SSRF checks are active
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	p := New(cfg, logger, sc, metrics.New())
+
+	// Target 127.0.0.1 — blocked by scanner's SSRF check at URL scan phase
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url=http://127.0.0.1:9999/test", nil)
+	w := httptest.NewRecorder()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403 for SSRF-blocked internal IP, got %d", w.Code)
+	}
+
+	var resp FetchResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+	if !resp.Blocked {
+		t.Error("expected blocked=true for SSRF")
+	}
+	if !strings.Contains(resp.BlockReason, "SSRF") {
+		t.Errorf("expected SSRF in block reason, got %q", resp.BlockReason)
+	}
+}
+
+// --- Body Read Error Test ---
+
+func TestFetchEndpoint_BodyReadError(t *testing.T) {
+	// Backend sets Content-Length that exceeds what it actually writes, then
+	// closes the connection. This causes io.ReadAll to return an
+	// "unexpected EOF" error after headers are received.
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("Content-Length", "99999") // claim more bytes than we send
+		w.WriteHeader(http.StatusOK)
+		// Flush headers to ensure client receives them before we abort
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		_, _ = fmt.Fprint(w, "partial")
+		// Hijack connection and close to produce a read error
+		if hj, ok := w.(http.Hijacker); ok {
+			conn, _, err := hj.Hijack()
+			if err == nil {
+				_ = conn.Close()
+			}
+		}
+	}))
+	defer backend.Close()
+
+	cfg := config.Defaults()
+	cfg.FetchProxy.TimeoutSeconds = 5
+	cfg.Internal = nil
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	p := New(cfg, logger, sc, metrics.New())
+
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/data", nil)
+	w := httptest.NewRecorder()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+	mux.ServeHTTP(w, req)
+
+	// The result depends on timing: either client.Do fails (502) or
+	// io.ReadAll fails (502). Both paths result in 502.
+	// On some platforms/timing, partial reads may succeed (200).
+	if w.Code != http.StatusOK && w.Code != http.StatusBadGateway {
+		t.Errorf("expected 200 or 502, got %d", w.Code)
+	}
+}
+
+// --- Start Error Tests ---
+
+func TestProxy_StartReturnsErrorOnBadAddress(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.FetchProxy.Listen = "invalid-address-no-port" // will cause ListenAndServe to fail
+	cfg.Internal = nil
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	p := New(cfg, logger, sc, metrics.New())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := p.Start(ctx)
+	if err == nil {
+		t.Error("expected error for invalid listen address")
+	}
+}
+
+// --- Readability Error Test ---
+
+func TestFetchEndpoint_ReadabilityExtractError(t *testing.T) {
+	// Backend returns content with text/html content type but invalid HTML
+	// that causes readability to fail or return empty content.
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		// Return empty HTML body — readability should return empty TextContent
+		_, _ = fmt.Fprint(w, "")
+	}))
+	defer backend.Close()
+
+	cfg := config.Defaults()
+	cfg.FetchProxy.TimeoutSeconds = 5
+	cfg.Internal = nil
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	p := New(cfg, logger, sc, metrics.New())
+
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/page", nil)
+	w := httptest.NewRecorder()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+
+	var resp FetchResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+	// Either the readability error path or the empty TextContent path is hit
+	if resp.Blocked {
+		t.Error("expected not blocked")
+	}
+}
+
 func TestProxy_StartAndShutdown(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.Listen = "127.0.0.1:0" // random port

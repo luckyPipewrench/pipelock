@@ -892,6 +892,145 @@ func TestIntegrityCheck_VerifyWithoutAgent(t *testing.T) {
 	}
 }
 
+func TestIntegrityInit_SignWithBadKeystore(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, dir, "file.txt", "content\n")
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{
+		"integrity", "init", dir,
+		"--sign", "--agent", "nonexistent-agent", "--keystore", t.TempDir(),
+	})
+	cmd.SetOut(&strings.Builder{})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when signing with nonexistent agent key")
+	}
+}
+
+func TestIntegrityCheck_VerifyBadKeystore(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, dir, "file.txt", "content\n")
+
+	// Init without signing.
+	initCmd := rootCmd()
+	initCmd.SetArgs([]string{"integrity", "init", dir})
+	initCmd.SetOut(&strings.Builder{})
+	if err := initCmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{
+		"integrity", "check", dir,
+		"--verify", "--agent", "nonexistent-agent", "--keystore", t.TempDir(),
+	})
+	cmd.SetOut(&strings.Builder{})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when verifying with nonexistent agent key")
+	}
+}
+
+func TestIntegrityUpdate_WithNewExcludes(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, dir, "file.txt", "content\n")
+	writeTestFile(t, dir, "log.txt", "log\n")
+
+	// Init without excludes.
+	initCmd := rootCmd()
+	initCmd.SetArgs([]string{"integrity", "init", dir})
+	initCmd.SetOut(&strings.Builder{})
+	if err := initCmd.Execute(); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	// Update with --exclude: should replace the existing empty excludes.
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"integrity", "update", dir, "--exclude", "log.txt"})
+
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	// Verify the updated manifest.
+	mPath := filepath.Join(dir, integrity.DefaultManifestFile)
+	m, err := integrity.Load(mPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, ok := m.Files["log.txt"]; ok {
+		t.Error("expected log.txt to be excluded after update with --exclude")
+	}
+}
+
+func TestIntegrityUpdate_SignWithBadKeystore(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, dir, "file.txt", "content\n")
+
+	// Init first.
+	initCmd := rootCmd()
+	initCmd.SetArgs([]string{"integrity", "init", dir})
+	initCmd.SetOut(&strings.Builder{})
+	if err := initCmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{
+		"integrity", "update", dir,
+		"--sign", "--agent", "nonexistent-agent", "--keystore", t.TempDir(),
+	})
+	cmd.SetOut(&strings.Builder{})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when signing with nonexistent agent key during update")
+	}
+}
+
+func TestResolveManifestPath_Default(t *testing.T) {
+	dir := t.TempDir()
+	result := resolveManifestPath("", dir)
+	expected := filepath.Join(dir, integrity.DefaultManifestFile)
+	if result != expected {
+		t.Errorf("expected %q, got %q", expected, result)
+	}
+}
+
+func TestResolveManifestPath_Explicit(t *testing.T) {
+	result := resolveManifestPath("/tmp/custom-manifest.json", "/some/dir")
+	if result != "/tmp/custom-manifest.json" {
+		t.Errorf("expected /tmp/custom-manifest.json, got %q", result)
+	}
+}
+
+func TestResolveManifestPath_RelativeExplicit(t *testing.T) {
+	// A relative explicit path should be resolved to absolute.
+	result := resolveManifestPath("custom.json", "/some/dir")
+	if result == "custom.json" {
+		t.Error("expected relative path to be resolved to absolute")
+	}
+}
+
+func TestResolveDir_DefaultCwd(t *testing.T) {
+	// resolveDir with empty args should default to "." (current dir).
+	result, err := resolveDir(nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	cwd, _ := os.Getwd()
+	if result != cwd {
+		t.Errorf("expected %q, got %q", cwd, result)
+	}
+}
+
 func writeTestFile(t *testing.T, dir, name, content string) {
 	t.Helper()
 	full := filepath.Join(dir, name)

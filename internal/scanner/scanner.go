@@ -267,9 +267,10 @@ func (s *Scanner) checkRateLimit(hostname string) Result {
 	return Result{Allowed: true}
 }
 
-// checkDLP runs DLP regex patterns against URL path and query parameters.
-// All targets are URL-decoded before matching to prevent encoding bypass
-// (e.g., %20 instead of space evading a regex that expects \s).
+// checkDLP runs DLP regex patterns against the full URL string including hostname.
+// Scanning the full URL catches secrets encoded in subdomains (e.g., sk-proj-xxx.evil.com)
+// and secrets split across query parameters. All targets are also URL-decoded before
+// matching to prevent encoding bypass (e.g., %20 instead of space evading \s).
 func (s *Scanner) checkDLP(parsed *url.URL) Result {
 	// parsed.Path is already URL-decoded by Go's url.Parse.
 	// For query strings, decode the full string to catch secrets split
@@ -281,6 +282,7 @@ func (s *Scanner) checkDLP(parsed *url.URL) Result {
 	}
 
 	targets := []string{
+		parsed.String(), // full URL — catches secrets in hostname/subdomains
 		parsed.Path,
 		decodedQuery,
 	}

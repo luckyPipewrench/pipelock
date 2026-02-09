@@ -140,15 +140,17 @@ func (a *Approver) Close() {
 }
 
 // worker processes approval requests sequentially.
+// A single reader goroutine owns the bufio.Reader to prevent concurrent access.
 func (a *Approver) worker() {
 	defer a.wg.Done()
 
-	reader := bufio.NewReader(a.input)
+	lines := make(chan string, 1)
+	go a.readLines(lines)
 
 	for {
 		select {
 		case r := <-a.queue:
-			d := a.prompt(reader, r.req)
+			d := a.prompt(lines, r.req)
 			select {
 			case r.response <- d:
 			case <-a.ctx.Done():
@@ -160,8 +162,29 @@ func (a *Approver) worker() {
 	}
 }
 
+// readLines reads from input sequentially. Only this goroutine touches
+// the bufio.Reader, eliminating data races when prompts time out.
+func (a *Approver) readLines(lines chan<- string) {
+	reader := bufio.NewReader(a.input)
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			select {
+			case lines <- "":
+			case <-a.ctx.Done():
+			}
+			return
+		}
+		select {
+		case lines <- strings.TrimSpace(strings.ToLower(line)):
+		case <-a.ctx.Done():
+			return
+		}
+	}
+}
+
 // prompt displays the threat details and reads the operator's decision.
-func (a *Approver) prompt(reader *bufio.Reader, req *Request) Decision {
+func (a *Approver) prompt(lines <-chan string, req *Request) Decision {
 	_, _ = fmt.Fprintf(a.output, "\n=== PIPELOCK: THREAT DETECTED ===\n")
 	if req.Agent != "" {
 		_, _ = fmt.Fprintf(a.output, "Agent:    %s\n", req.Agent)
@@ -176,18 +199,8 @@ func (a *Approver) prompt(reader *bufio.Reader, req *Request) Decision {
 	}
 	_, _ = fmt.Fprintf(a.output, "\nAllow (y), Block (N), or Strip (s)? [%ds timeout] ", int(a.timeout.Seconds()))
 
-	responseCh := make(chan string, 1)
-	go func() {
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			responseCh <- ""
-			return
-		}
-		responseCh <- strings.TrimSpace(strings.ToLower(line))
-	}()
-
 	select {
-	case input := <-responseCh:
+	case input := <-lines:
 		switch input {
 		case "y", "yes":
 			_, _ = fmt.Fprintln(a.output, "-> Allowed.")

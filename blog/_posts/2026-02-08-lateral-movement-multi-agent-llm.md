@@ -14,7 +14,7 @@ description: "A security gap nobody is patching — how compromised AI agents sp
 
 I run two AI agents. One manages my infrastructure. The other writes code. They share a workspace: config files, memory, task lists. They talk to each other through a shared git repo and file drops.
 
-This isn't unusual anymore. OpenClaw users pair it with Claude Code. Dev teams run multiple specialized agents. Homelab people (myself included) have agents managing different parts of their stack.
+This isn't unusual anymore. OpenHands users pair it with Claude Code. Dev teams run multiple specialized agents. Homelab people (myself included) have agents managing different parts of their stack.
 
 The problem is simple. If one agent gets compromised, it can silently take over every other agent it talks to.
 

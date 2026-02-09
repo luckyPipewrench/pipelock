@@ -25,10 +25,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Security fix: `json.RawMessage` null bypass prevention (result always scanned regardless of error field)
 - JSON tags on `scanner.ResponseMatch` for consistent snake_case output
 - GitHub Pages blog at luckypipewrench.github.io/pipelock
-- ~500 tests passing with `-race`
+- 530+ tests passing with `-race`
 
 ### Removed
 - Stale Phase 1.5 planning doc (planning docs live outside the repo)
+
+## [0.1.2] - 2026-02-08
+
+### Added
+- CodeQL security scanning workflow
+- Codecov coverage integration and badge
+- Go Report Card badge
+
+### Fixed
+- All 53 golangci-lint warnings resolved (zero-warning CI baseline)
+- 363 tests passing with `-race`
 
 ## [0.1.1] - 2026-02-08
 

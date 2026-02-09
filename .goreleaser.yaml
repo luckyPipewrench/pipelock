@@ -19,6 +19,9 @@ builds:
     ldflags:
       - -s -w
       - -X github.com/luckyPipewrench/pipelock/internal/cli.Version={{.Version}}
+      - -X github.com/luckyPipewrench/pipelock/internal/cli.BuildDate={{.Date}}
+      - -X github.com/luckyPipewrench/pipelock/internal/cli.GitCommit={{.ShortCommit}}
+      - -X github.com/luckyPipewrench/pipelock/internal/cli.GoVersion={{.Env.GOVERSION}}
       - -X github.com/luckyPipewrench/pipelock/internal/proxy.Version={{.Version}}
 
 archives:

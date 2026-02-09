@@ -248,7 +248,7 @@ Health response format:
 ```json
 {
   "status": "healthy",
-  "version": "0.1.0",
+  "version": "x.y.z",
   "mode": "balanced",
   "uptime_seconds": 3600.5,
   "dlp_patterns": 8,
@@ -325,16 +325,16 @@ Pipelock includes Ed25519 key management for signing and verifying files — the
 
 ```bash
 # Generate a key pair for an agent
-pipelock keygen --agent my-bot
+pipelock keygen my-bot
 
 # Sign a file
-pipelock sign --agent my-bot manifest.json
+pipelock sign manifest.json --agent my-bot
 
 # Verify a file's signature
-pipelock verify --agent my-bot manifest.json
+pipelock verify manifest.json --agent my-bot
 
 # Trust another agent's public key
-pipelock trust --agent other-bot --key /path/to/other-bot.pub
+pipelock trust other-bot /path/to/other-bot.pub
 ```
 
 Keys are stored under `~/.pipelock/agents/<name>/` (private + public) and `~/.pipelock/trusted_keys/` (trusted peers). Key format uses versioned headers (`pipelock-ed25519-public-v1`) for forward compatibility.
@@ -374,7 +374,7 @@ docker run -p 8888:8888 pipelock
 Generate a Docker Compose file that runs your agent in a network-isolated container with Pipelock as the only internet gateway:
 
 ```bash
-# Supported agents: claude-code, aider, openhands, custom
+# Supported agents: generic, claude-code, openhands
 pipelock generate docker-compose --agent claude-code -o docker-compose.yaml
 docker compose up
 ```

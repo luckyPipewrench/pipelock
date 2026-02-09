@@ -20,7 +20,7 @@ What you expected to happen.
 
 **Environment**
 - OS: [e.g. Linux, macOS, Windows]
-- Go version: [e.g. 1.23]
+- Go version: [e.g. 1.24]
 - Pipelock version: [e.g. 0.1.0 — run `pipelock --version`]
 
 **Additional context**

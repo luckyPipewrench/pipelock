@@ -5,7 +5,7 @@ How Pipelock addresses the [OWASP Top 10 for Agentic Applications](https://owasp
 | Threat | Coverage | Status |
 |--------|----------|--------|
 | ASI01 Prompt Injection | Strong | Shipped |
-| ASI02 Insecure Tool Implementation | Strong | Shipped |
+| ASI02 Insecure Tool Implementation | Partial | Shipped |
 | ASI03 Privilege Escalation | Strong | Shipped |
 | ASI04 Insecure Output Handling | Strong | Shipped |
 | ASI05 Multi-Agent Orchestration | Partial | Shipped |
@@ -32,10 +32,14 @@ How Pipelock addresses the [OWASP Top 10 for Agentic Applications](https://owasp
 response_scanning:
   enabled: true
   action: block  # block, strip, or warn
+  # 5 patterns ship by default (prompt injection, system override,
+  # role override, new instructions, jailbreak). Example:
   patterns:
     - name: "Prompt Injection"
-      regex: '(?i)(ignore|disregard)\s+(all\s+)?(previous|prior)\s+(instructions|prompts)'
+      regex: '(?i)(ignore|disregard|forget)\s+(all\s+)?(previous|prior|above)\s+(instructions|prompts|rules|context)'
 ```
+
+Use `pipelock generate config --preset balanced` for the complete default pattern set.
 
 **Gap:** Regex-based detection can miss novel injection patterns. Future: classifier-based detection (see roadmap).
 
@@ -50,6 +54,8 @@ response_scanning:
 - **Fetch proxy as a controlled tool** — instead of giving agents raw `curl`/`fetch`, the proxy is the only network tool. Every request goes through the full scanner pipeline.
 - **MCP response scanning** — tool results from MCP servers are scanned for injection payloads before the agent processes them.
 - **Input validation** — URLs are validated, parsed, and scanned before any HTTP request is made. Malformed URLs are rejected.
+
+**Gap:** Pipelock controls the HTTP fetch tool and scans MCP responses, but does not validate MCP tool call arguments or restrict shell/filesystem operations. For MCP argument validation, see [AIP](https://github.com/ArangoGutierrez/agent-identity-protocol). For shell/filesystem controls, see [agentsh](https://github.com/canyonroad/agentsh) or [srt](https://github.com/anthropic-experimental/sandbox-runtime).
 
 ---
 
@@ -99,7 +105,7 @@ response_scanning:
 **Pipelock coverage:**
 
 - **Principle of least privilege** — the agent only reaches allowed API domains. Everything else is blocked.
-- **Configurable enforcement modes** — strict (no network), balanced (allowlisted APIs + fetch proxy), audit (log everything).
+- **Configurable enforcement modes** — strict (block on detection, tight thresholds), balanced (warn on detection, default thresholds), audit (detect and log without blocking).
 - **Domain blocklist** — known exfiltration targets (pastebin, transfer.sh) are explicitly blocked.
 - **Rate limiting** — per-domain sliding window prevents bulk data transfer even to allowed domains.
 
@@ -161,6 +167,6 @@ response_scanning:
 
 ## Summary
 
-Pipelock provides strong coverage for 7/10 OWASP Agentic threats, partial coverage for 2/10, and moderate coverage for 1/10. The primary gaps are in multi-agent communication policy (ASI05, [roadmap](https://github.com/luckyPipewrench/pipelock/issues/44)) and semantic content analysis (ASI08).
+Pipelock provides strong coverage for 6/10 OWASP Agentic threats, partial coverage for 3/10, and moderate coverage for 1/10. The primary gaps are in multi-agent communication policy (ASI05, [roadmap](https://github.com/luckyPipewrench/pipelock/issues/44)) and semantic content analysis (ASI08).
 
 No single tool covers all 10 threats. Pipelock focuses on the **network egress + content inspection + workspace integrity** layers. For OS-level sandboxing, see [Anthropic srt](https://github.com/anthropic-experimental/sandbox-runtime). For shell-level policy, see [agentsh](https://github.com/canyonroad/agentsh). See [comparison.md](comparison.md) for a full feature matrix.

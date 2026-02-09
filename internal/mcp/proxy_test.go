@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -32,7 +33,7 @@ func TestForwardScanned_CleanResponse(t *testing.T) {
 	sc := testScannerWithAction(t, "warn")
 	var out, log bytes.Buffer
 
-	found, err := ForwardScanned(strings.NewReader(cleanResponse+"\n"), &out, &log, sc)
+	found, err := ForwardScanned(strings.NewReader(cleanResponse+"\n"), &out, &log, sc, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -53,7 +54,7 @@ func TestForwardScanned_WarnAction(t *testing.T) {
 	sc := testScannerWithAction(t, "warn")
 	var out, log bytes.Buffer
 
-	found, err := ForwardScanned(strings.NewReader(injectionResponse+"\n"), &out, &log, sc)
+	found, err := ForwardScanned(strings.NewReader(injectionResponse+"\n"), &out, &log, sc, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -77,7 +78,7 @@ func TestForwardScanned_BlockAction(t *testing.T) {
 	sc := testScannerWithAction(t, "block")
 	var out, log bytes.Buffer
 
-	found, err := ForwardScanned(strings.NewReader(injectionResponse+"\n"), &out, &log, sc)
+	found, err := ForwardScanned(strings.NewReader(injectionResponse+"\n"), &out, &log, sc, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -108,7 +109,7 @@ func TestForwardScanned_StripAction(t *testing.T) {
 	sc := testScannerWithAction(t, "strip")
 	var out, log bytes.Buffer
 
-	found, err := ForwardScanned(strings.NewReader(injectionResponse+"\n"), &out, &log, sc)
+	found, err := ForwardScanned(strings.NewReader(injectionResponse+"\n"), &out, &log, sc, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -141,7 +142,7 @@ func TestForwardScanned_Notification(t *testing.T) {
 
 	// Notification: has method, no result — should be forwarded unmodified.
 	notification := `{"jsonrpc":"2.0","method":"notifications/resources_updated"}`
-	found, err := ForwardScanned(strings.NewReader(notification+"\n"), &out, &log, sc)
+	found, err := ForwardScanned(strings.NewReader(notification+"\n"), &out, &log, sc, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -161,7 +162,7 @@ func TestForwardScanned_ErrorResponse(t *testing.T) {
 
 	// JSON-RPC error response — no result to scan, forward as-is.
 	errResponse := `{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"Invalid Request"}}`
-	found, err := ForwardScanned(strings.NewReader(errResponse+"\n"), &out, &log, sc)
+	found, err := ForwardScanned(strings.NewReader(errResponse+"\n"), &out, &log, sc, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -181,7 +182,7 @@ func TestForwardScanned_NonJSON(t *testing.T) {
 
 	// Non-JSON line: forward as-is, log warning.
 	nonJSON := "this is not json"
-	found, err := ForwardScanned(strings.NewReader(nonJSON+"\n"), &out, &log, sc)
+	found, err := ForwardScanned(strings.NewReader(nonJSON+"\n"), &out, &log, sc, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -202,7 +203,7 @@ func TestForwardScanned_EmptyLines(t *testing.T) {
 	sc := testScannerWithAction(t, "warn")
 	var out, log bytes.Buffer
 
-	found, err := ForwardScanned(strings.NewReader("\n\n\n"), &out, &log, sc)
+	found, err := ForwardScanned(strings.NewReader("\n\n\n"), &out, &log, sc, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -218,7 +219,7 @@ func TestForwardScanned_EmptyInput(t *testing.T) {
 	sc := testScannerWithAction(t, "warn")
 	var out, log bytes.Buffer
 
-	found, err := ForwardScanned(strings.NewReader(""), &out, &log, sc)
+	found, err := ForwardScanned(strings.NewReader(""), &out, &log, sc, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -232,7 +233,7 @@ func TestForwardScanned_MultipleLines(t *testing.T) {
 	var out, log bytes.Buffer
 
 	input := cleanResponse + "\n" + injectionResponse + "\n" + cleanResponse + "\n"
-	found, err := ForwardScanned(strings.NewReader(input), &out, &log, sc)
+	found, err := ForwardScanned(strings.NewReader(input), &out, &log, sc, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -252,7 +253,7 @@ func TestForwardScanned_BlockMultipleLines(t *testing.T) {
 	var out, log bytes.Buffer
 
 	input := cleanResponse + "\n" + injectionResponse + "\n" + cleanResponse + "\n"
-	found, err := ForwardScanned(strings.NewReader(input), &out, &log, sc)
+	found, err := ForwardScanned(strings.NewReader(input), &out, &log, sc, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -273,6 +274,120 @@ func TestForwardScanned_BlockMultipleLines(t *testing.T) {
 	}
 	if errResp.Error.Code != -32000 {
 		t.Errorf("expected error code -32000, got %d", errResp.Error.Code)
+	}
+}
+
+// --- ForwardScanned ask action tests ---
+
+func TestForwardScanned_AskNoApprover(t *testing.T) {
+	sc := testScannerWithAction(t, "ask")
+	var out, log bytes.Buffer
+
+	// Without an approver, injection should be blocked (fail-closed).
+	found, err := ForwardScanned(strings.NewReader(injectionResponse+"\n"), &out, &log, sc, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !found {
+		t.Fatal("expected injection detected")
+	}
+
+	var errResp rpcError
+	if err := json.Unmarshal(out.Bytes()[:bytes.IndexByte(out.Bytes(), '\n')], &errResp); err != nil {
+		t.Fatalf("block response not valid JSON: %v\noutput: %s", err, out.String())
+	}
+	if errResp.Error.Code != -32000 {
+		t.Errorf("expected error code -32000, got %d", errResp.Error.Code)
+	}
+	if !strings.Contains(log.String(), "no HITL approver") {
+		t.Errorf("expected 'no HITL approver' in log, got: %s", log.String())
+	}
+}
+
+func testApproverForMCP(t *testing.T, input string) *hitl.Approver {
+	t.Helper()
+	a := hitl.New(5, //nolint:goconst // test timeout
+		hitl.WithInput(strings.NewReader(input)),
+		hitl.WithOutput(&bytes.Buffer{}),
+		hitl.WithTerminal(true),
+	)
+	t.Cleanup(a.Close)
+	return a
+}
+
+func TestForwardScanned_AskAllow(t *testing.T) {
+	sc := testScannerWithAction(t, "ask")
+	approver := testApproverForMCP(t, "y\n")
+	var out, log bytes.Buffer
+
+	found, err := ForwardScanned(strings.NewReader(injectionResponse+"\n"), &out, &log, sc, approver)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !found {
+		t.Fatal("expected injection detected")
+	}
+
+	// Allow: original response forwarded.
+	got := strings.TrimSpace(out.String())
+	if got != injectionResponse {
+		t.Errorf("allow should forward original, got: %s", got)
+	}
+	if !strings.Contains(log.String(), "operator allowed") {
+		t.Errorf("expected 'operator allowed' in log, got: %s", log.String())
+	}
+}
+
+func TestForwardScanned_AskBlock(t *testing.T) {
+	sc := testScannerWithAction(t, "ask")
+	approver := testApproverForMCP(t, "n\n")
+	var out, log bytes.Buffer
+
+	found, err := ForwardScanned(strings.NewReader(injectionResponse+"\n"), &out, &log, sc, approver)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !found {
+		t.Fatal("expected injection detected")
+	}
+
+	var errResp rpcError
+	if err := json.Unmarshal(out.Bytes()[:bytes.IndexByte(out.Bytes(), '\n')], &errResp); err != nil {
+		t.Fatalf("block response not valid JSON: %v\noutput: %s", err, out.String())
+	}
+	if errResp.Error.Code != -32000 {
+		t.Errorf("expected error code -32000, got %d", errResp.Error.Code)
+	}
+	if !strings.Contains(log.String(), "operator blocked") {
+		t.Errorf("expected 'operator blocked' in log, got: %s", log.String())
+	}
+}
+
+func TestForwardScanned_AskStrip(t *testing.T) {
+	sc := testScannerWithAction(t, "ask")
+	approver := testApproverForMCP(t, "s\n")
+	var out, log bytes.Buffer
+
+	found, err := ForwardScanned(strings.NewReader(injectionResponse+"\n"), &out, &log, sc, approver)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !found {
+		t.Fatal("expected injection detected")
+	}
+
+	var rpc RPCResponse
+	if err := json.Unmarshal(out.Bytes()[:bytes.IndexByte(out.Bytes(), '\n')], &rpc); err != nil {
+		t.Fatalf("strip response not valid JSON: %v\noutput: %s", err, out.String())
+	}
+	if rpc.Result == nil || len(rpc.Result.Content) == 0 {
+		t.Fatal("expected result content in stripped response")
+	}
+	if !strings.Contains(rpc.Result.Content[0].Text, "[REDACTED:") {
+		t.Errorf("expected [REDACTED:] markers in stripped text, got: %s", rpc.Result.Content[0].Text)
+	}
+	if !strings.Contains(log.String(), "operator chose strip") {
+		t.Errorf("expected 'operator chose strip' in log, got: %s", log.String())
 	}
 }
 

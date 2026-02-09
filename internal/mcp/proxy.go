@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -18,7 +19,7 @@ import (
 // each for prompt injection, and forwards to w based on the scanner's configured
 // action (warn, block, strip). Scan verdicts are logged to logW.
 // Returns true if any injection was detected.
-func ForwardScanned(r io.Reader, w io.Writer, logW io.Writer, sc *scanner.Scanner) (bool, error) {
+func ForwardScanned(r io.Reader, w io.Writer, logW io.Writer, sc *scanner.Scanner, approver *hitl.Approver) (bool, error) {
 	lineScanner := bufio.NewScanner(r)
 	lineScanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)
 
@@ -64,6 +65,67 @@ func ForwardScanned(r io.Reader, w io.Writer, logW io.Writer, sc *scanner.Scanne
 			}
 			if _, err := w.Write([]byte("\n")); err != nil {
 				return foundInjection, fmt.Errorf("writing newline: %w", err)
+			}
+		case "ask":
+			if approver == nil {
+				_, _ = fmt.Fprintf(logW, "pipelock: line %d: no HITL approver configured, blocking\n", lineNum)
+				resp := blockResponse(verdict.ID)
+				if _, err := w.Write(resp); err != nil {
+					return foundInjection, fmt.Errorf("writing block response: %w", err)
+				}
+				if _, err := w.Write([]byte("\n")); err != nil {
+					return foundInjection, fmt.Errorf("writing newline: %w", err)
+				}
+			} else {
+				preview := ""
+				if len(verdict.Matches) > 0 {
+					preview = verdict.Matches[0].MatchText
+				}
+				d := approver.Ask(&hitl.Request{
+					URL:      "mcp-response",
+					Reason:   fmt.Sprintf("prompt injection detected: %s", strings.Join(names, ", ")),
+					Patterns: names,
+					Preview:  preview,
+				})
+				switch d {
+				case hitl.DecisionAllow:
+					_, _ = fmt.Fprintf(logW, "pipelock: line %d: operator allowed\n", lineNum)
+					if _, err := w.Write(line); err != nil {
+						return foundInjection, fmt.Errorf("writing line: %w", err)
+					}
+					if _, err := w.Write([]byte("\n")); err != nil {
+						return foundInjection, fmt.Errorf("writing newline: %w", err)
+					}
+				case hitl.DecisionStrip:
+					_, _ = fmt.Fprintf(logW, "pipelock: line %d: operator chose strip\n", lineNum)
+					stripped, err := stripResponse(line, sc)
+					if err != nil {
+						_, _ = fmt.Fprintf(logW, "pipelock: strip failed (%v), blocking instead\n", err)
+						resp := blockResponse(verdict.ID)
+						if _, err := w.Write(resp); err != nil {
+							return foundInjection, fmt.Errorf("writing block response: %w", err)
+						}
+						if _, err := w.Write([]byte("\n")); err != nil {
+							return foundInjection, fmt.Errorf("writing newline: %w", err)
+						}
+					} else {
+						if _, err := w.Write(stripped); err != nil {
+							return foundInjection, fmt.Errorf("writing stripped response: %w", err)
+						}
+						if _, err := w.Write([]byte("\n")); err != nil {
+							return foundInjection, fmt.Errorf("writing newline: %w", err)
+						}
+					}
+				default: // DecisionBlock
+					_, _ = fmt.Fprintf(logW, "pipelock: line %d: operator blocked\n", lineNum)
+					resp := blockResponse(verdict.ID)
+					if _, err := w.Write(resp); err != nil {
+						return foundInjection, fmt.Errorf("writing block response: %w", err)
+					}
+					if _, err := w.Write([]byte("\n")); err != nil {
+						return foundInjection, fmt.Errorf("writing newline: %w", err)
+					}
+				}
 			}
 		case "strip":
 			stripped, err := stripResponse(line, sc)
@@ -164,7 +226,7 @@ func matchNames(matches []scanner.ResponseMatch) []string {
 // the scanner. Client input is forwarded to the server's stdin, server
 // stdout is scanned and forwarded to the client, and server stderr is
 // forwarded to logW. Returns when the subprocess exits or ctx is cancelled.
-func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW io.Writer, command []string, sc *scanner.Scanner) error {
+func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW io.Writer, command []string, sc *scanner.Scanner, approver *hitl.Approver) error {
 	cmd := exec.CommandContext(ctx, command[0], command[1:]...) //nolint:gosec // command comes from user CLI args
 
 	serverIn, err := cmd.StdinPipe()
@@ -193,7 +255,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	}()
 
 	// Scan and forward server output to client.
-	_, scanErr := ForwardScanned(serverOut, clientOut, logW, sc)
+	_, scanErr := ForwardScanned(serverOut, clientOut, logW, sc, approver)
 
 	// Wait for subprocess to exit.
 	waitErr := cmd.Wait()

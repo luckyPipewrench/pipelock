@@ -21,6 +21,7 @@ import (
 	readability "github.com/go-shiori/go-readability"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -50,6 +51,15 @@ type Proxy struct {
 	server     *http.Server
 	startTime  time.Time
 	reloadMu   sync.Mutex // serializes Reload calls
+	approver   *hitl.Approver
+}
+
+// Option configures optional Proxy behavior.
+type Option func(*Proxy)
+
+// WithApprover sets a HITL approver for the "ask" response scanning action.
+func WithApprover(a *hitl.Approver) Option {
+	return func(p *Proxy) { p.approver = a }
 }
 
 // FetchResponse is the JSON response returned by the /fetch endpoint.
@@ -66,11 +76,14 @@ type FetchResponse struct {
 }
 
 // New creates a new fetch proxy from config.
-func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metrics.Metrics) *Proxy {
+func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metrics.Metrics, opts ...Option) *Proxy {
 	p := &Proxy{
 		logger:    logger,
 		metrics:   m,
 		startTime: time.Now(),
+	}
+	for _, opt := range opts {
+		opt(p)
 	}
 	p.cfgPtr.Store(cfg)
 	p.scannerPtr.Store(sc)
@@ -366,6 +379,36 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				log.LogBlocked("GET", targetURL, "response_scan", reason, clientIP, requestID)
 				writeJSON(w, http.StatusForbidden, FetchResponse{URL: targetURL, Agent: agent, Blocked: true, BlockReason: reason})
 				return
+			case "ask":
+				if p.approver == nil {
+					reason := fmt.Sprintf("response contains prompt injection: %s (no HITL approver)", strings.Join(patternNames, ", "))
+					log.LogBlocked("GET", targetURL, "response_scan", reason, clientIP, requestID)
+					writeJSON(w, http.StatusForbidden, FetchResponse{URL: targetURL, Agent: agent, Blocked: true, BlockReason: reason})
+					return
+				}
+				preview := content
+				if len(preview) > 200 {
+					preview = preview[:200]
+				}
+				d := p.approver.Ask(&hitl.Request{
+					Agent:    agent,
+					URL:      targetURL,
+					Reason:   fmt.Sprintf("prompt injection detected: %s", strings.Join(patternNames, ", ")),
+					Patterns: patternNames,
+					Preview:  preview,
+				})
+				switch d {
+				case hitl.DecisionAllow:
+					log.LogResponseScan(targetURL, clientIP, requestID, "ask:allow", len(scanResult.Matches), patternNames)
+				case hitl.DecisionStrip:
+					content = scanResult.TransformedContent
+					log.LogResponseScan(targetURL, clientIP, requestID, "ask:strip", len(scanResult.Matches), patternNames)
+				default:
+					reason := fmt.Sprintf("response blocked by operator: %s", strings.Join(patternNames, ", "))
+					log.LogBlocked("GET", targetURL, "response_scan", reason, clientIP, requestID)
+					writeJSON(w, http.StatusForbidden, FetchResponse{URL: targetURL, Agent: agent, Blocked: true, BlockReason: reason})
+					return
+				}
 			case "strip":
 				content = scanResult.TransformedContent
 				log.LogResponseScan(targetURL, clientIP, requestID, "strip", len(scanResult.Matches), patternNames)

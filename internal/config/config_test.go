@@ -564,7 +564,7 @@ func TestDefaults_ResponseScanningEnabled(t *testing.T) {
 }
 
 func TestValidate_ResponseScanningValidActions(t *testing.T) {
-	for _, action := range []string{"strip", "warn", "block"} {
+	for _, action := range []string{"strip", "warn", "block", "ask"} {
 		cfg := Defaults()
 		cfg.ResponseScanning.Action = action
 		if err := cfg.Validate(); err != nil {
@@ -640,6 +640,27 @@ func TestApplyDefaults_ResponseScanningActionPreserved(t *testing.T) {
 	cfg.ApplyDefaults()
 	if cfg.ResponseScanning.Action != "block" {
 		t.Errorf("expected action block preserved, got %s", cfg.ResponseScanning.Action)
+	}
+}
+
+func TestApplyDefaults_AskTimeoutDefault(t *testing.T) {
+	cfg := &Config{}
+	cfg.ResponseScanning.Enabled = true
+	cfg.ResponseScanning.Action = "ask"
+	cfg.ApplyDefaults()
+	if cfg.ResponseScanning.AskTimeoutSeconds != 30 {
+		t.Errorf("expected default ask timeout 30, got %d", cfg.ResponseScanning.AskTimeoutSeconds)
+	}
+}
+
+func TestApplyDefaults_AskTimeoutPreserved(t *testing.T) {
+	cfg := &Config{}
+	cfg.ResponseScanning.Enabled = true
+	cfg.ResponseScanning.Action = "ask"
+	cfg.ResponseScanning.AskTimeoutSeconds = 10
+	cfg.ApplyDefaults()
+	if cfg.ResponseScanning.AskTimeoutSeconds != 10 {
+		t.Errorf("expected ask timeout 10 preserved, got %d", cfg.ResponseScanning.AskTimeoutSeconds)
 	}
 }
 

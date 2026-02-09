@@ -6,7 +6,7 @@ import "fmt"
 type ResponseScanResult struct {
 	Clean              bool
 	Matches            []ResponseMatch
-	TransformedContent string // only set for strip action
+	TransformedContent string // set for strip and ask actions
 }
 
 // ResponseMatch describes a single pattern match in response content.
@@ -49,7 +49,7 @@ func (s *Scanner) ScanResponse(content string) ResponseScanResult {
 		Matches: matches,
 	}
 
-	if s.responseAction == "strip" { //nolint:goconst // action string used as-is from config
+	if s.responseAction == "strip" || s.responseAction == "ask" { //nolint:goconst // action string used as-is from config
 		transformed := content
 		for _, p := range s.responsePatterns {
 			replacement := fmt.Sprintf("[REDACTED: %s]", p.name)

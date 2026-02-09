@@ -23,7 +23,7 @@ Pipelock wraps any MCP server as a stdio proxy. It launches the server
 subprocess, forwards requests from the client unmodified, and scans every
 JSON-RPC 2.0 response for prompt injection before forwarding to the client.
 
-```
+```text
 Claude Code  <-->  pipelock mcp proxy  <-->  MCP Server
   (client)           (scan responses)         (subprocess)
 ```
@@ -142,7 +142,8 @@ pipelock. Example hook script:
 #!/bin/bash
 # pipelock-scan.sh — scan URLs before Claude Code fetches them
 URL="$1"
-RESULT=$(curl -s "http://127.0.0.1:8888/fetch?url=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$URL', safe=''))")")
+ENCODED=$(python3 -c "import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=''))" "$URL")
+RESULT=$(curl -s "http://127.0.0.1:8888/fetch?url=${ENCODED}")
 echo "$RESULT"
 ```
 

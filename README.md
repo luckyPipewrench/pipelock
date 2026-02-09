@@ -305,7 +305,7 @@ git_protection:
 ## Integration Guides
 
 - **[Claude Code](docs/guides/claude-code.md)** — MCP proxy setup, `.claude.json` configuration, HTTP fetch proxy hooks
-- Cursor — use `configs/cursor.yaml` with the same MCP proxy pattern as Claude Code
+- Cursor — use `configs/cursor.yaml` with the same MCP proxy pattern as [Claude Code](docs/guides/claude-code.md)
 
 ## CI/CD Usage
 

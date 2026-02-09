@@ -40,7 +40,7 @@ api_allowlist:
   - "api.telegram.org"
 
 fetch_proxy:
-  listen: "127.0.0.1:8888"
+  listen: "127.0.0.1:8888"  # customize if running multiple presets simultaneously
   timeout_seconds: 30
   max_response_mb: 10
   user_agent: "Pipelock Fetch/1.0"
@@ -66,7 +66,7 @@ dlp:
       regex: 'sk-ant-[a-zA-Z0-9\-_]{20,}'
       severity: critical
     - name: "OpenAI API Key"
-      regex: 'sk-proj-[a-zA-Z0-9]{20,}'
+      regex: 'sk-proj-[a-zA-Z0-9\-_]{20,}'
       severity: critical
     - name: "GitHub Token"
       regex: 'gh[ps]_[A-Za-z0-9_]{36,}'

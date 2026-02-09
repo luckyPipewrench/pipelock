@@ -118,7 +118,7 @@ type rpcErrorDetail struct {
 // Code -32000 is in the implementation-defined error range.
 func blockResponse(id json.RawMessage) []byte {
 	resp := rpcError{
-		JSONRPC: "2.0",
+		JSONRPC: jsonRPCVersion,
 		ID:      id,
 		Error: rpcErrorDetail{
 			Code:    -32000,

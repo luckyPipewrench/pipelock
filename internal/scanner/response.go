@@ -11,9 +11,9 @@ type ResponseScanResult struct {
 
 // ResponseMatch describes a single pattern match in response content.
 type ResponseMatch struct {
-	PatternName string
-	MatchText   string // truncated to 100 chars
-	Position    int
+	PatternName string `json:"pattern_name"`
+	MatchText   string `json:"match_text"` // truncated to 100 chars
+	Position    int    `json:"position"`
 }
 
 // ScanResponse checks fetched content for prompt injection patterns.

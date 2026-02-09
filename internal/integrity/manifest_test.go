@@ -221,6 +221,43 @@ func TestLoad_WrongVersion(t *testing.T) {
 	}
 }
 
+func TestSave_TargetIsDirectory(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "subdir")
+	if err := os.MkdirAll(target, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	m := &Manifest{Version: ManifestVersion, Files: map[string]FileEntry{}}
+	// Rename(tempFile, directory) fails with EISDIR on Linux.
+	err := m.Save(target)
+	if err == nil {
+		t.Fatal("expected error when target path is a directory")
+	}
+}
+
+func TestHashFile_Directory(t *testing.T) {
+	dir := t.TempDir()
+
+	// Passing a directory to HashFile — io.Copy from dir fd fails with EISDIR.
+	_, err := HashFile(dir)
+	if err == nil {
+		t.Fatal("expected error when hashing a directory")
+	}
+}
+
+func TestSave_BadDirectory(t *testing.T) {
+	m := &Manifest{
+		Version: ManifestVersion,
+		Files:   map[string]FileEntry{},
+	}
+
+	err := m.Save("/nonexistent/dir/manifest.json")
+	if err == nil {
+		t.Fatal("expected error for non-existent directory")
+	}
+}
+
 func TestLoad_NilFiles(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "manifest.json")

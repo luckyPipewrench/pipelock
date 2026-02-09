@@ -91,11 +91,15 @@ The manifest stores SHA256 hashes for every protected file. When an agent starts
 
 This doesn't stop every lateral movement attack. A compromised agent can still write to files that aren't in the manifest, and we need signing (coming next) to verify who actually made a change. But it catches the most dangerous thing: someone (or something) quietly editing the files that control how your agents behave.
 
+### Now available
+
+- **Ed25519 signing** — verify which agent or person changed each file (`pipelock keygen|sign|verify|trust`)
+- **MCP response scanning** — scan MCP tool responses for prompt injection before they reach the agent (`pipelock mcp scan`)
+
 ### Coming next
 
-- Ed25519 signing, so you can verify which agent or person changed each file
 - Communication policies, so you can define which agents are allowed to modify which files
-- Content scanning to catch prompt injection patterns in shared files before they get loaded
+- Content scanning for shared workspace files (extending MCP scanning to file-based communication)
 
 ## What you can do right now
 

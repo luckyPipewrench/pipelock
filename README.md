@@ -319,6 +319,40 @@ pipelock git install-hooks --config pipelock.yaml --force
 
 > **Note:** Branch glob patterns use Go's `filepath.Match`, which only supports single-level wildcards. `feature/*` matches `feature/login` but **not** `feature/login/oauth`. Use flat branch naming or multiple patterns if needed.
 
+## Ed25519 Signing
+
+Pipelock includes Ed25519 key management for signing and verifying files — the cryptographic layer for securing inter-agent communication.
+
+```bash
+# Generate a key pair for an agent
+pipelock keygen --agent my-bot
+
+# Sign a file
+pipelock sign --agent my-bot manifest.json
+
+# Verify a file's signature
+pipelock verify --agent my-bot manifest.json
+
+# Trust another agent's public key
+pipelock trust --agent other-bot --key /path/to/other-bot.pub
+```
+
+Keys are stored under `~/.pipelock/agents/<name>/` (private + public) and `~/.pipelock/trusted_keys/` (trusted peers). Key format uses versioned headers (`pipelock-ed25519-public-v1`) for forward compatibility.
+
+## MCP Response Scanning
+
+Scan [Model Context Protocol](https://modelcontextprotocol.io/) JSON-RPC 2.0 responses for prompt injection before they reach the agent. MCP tool responses are a lateral movement channel — a compromised MCP server can inject prompt injection payloads into tool call results.
+
+```bash
+# Scan MCP responses from stdin
+mcp-server | pipelock mcp scan
+
+# JSON output mode
+pipelock mcp scan --json --config pipelock.yaml < responses.jsonl
+```
+
+Exit code 0 if all responses are clean, 1 if any injection is detected. Uses the same prompt injection patterns as response scanning. Text content is extracted from all `type=text` content blocks and concatenated (catching injection split across blocks).
+
 ## Docker
 
 ### Pull from GHCR
@@ -372,7 +406,8 @@ The Makefile injects build metadata (version, date, commit, Go version) via ldfl
 ```
 cmd/pipelock/          CLI entry point
 internal/
-  cli/                 Cobra commands (run, check, generate, logs, git, integrity, version)
+  cli/                 Cobra commands (run, check, generate, logs, git, integrity, mcp,
+                         keygen, sign, verify, trust, version, healthcheck)
   config/              YAML config loading, validation, defaults, hot-reload (fsnotify)
   scanner/             URL scanning (SSRF, blocklist, rate limit, DLP, entropy, env leak)
   audit/               Structured JSON audit logging (zerolog)
@@ -380,6 +415,8 @@ internal/
   metrics/             Prometheus metrics + JSON stats endpoint
   gitprotect/          Git-aware security (diff scanning, branch validation, hooks)
   integrity/           File integrity monitoring (SHA256 manifests, check/diff, exclusions)
+  signing/             Ed25519 key management, file signing, signature verification
+  mcp/                 MCP JSON-RPC 2.0 response scanning (prompt injection detection)
 configs/               Preset config files (strict, balanced, audit)
 blog/                  GitHub Pages blog (Jekyll)
 ```

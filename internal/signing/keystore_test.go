@@ -371,3 +371,160 @@ func TestKeystoreLoadTrustedKey_PathTraversal(t *testing.T) {
 		t.Fatal("expected error for path traversal agent name")
 	}
 }
+
+func TestKeystoreGenerateAgent_InvalidName(t *testing.T) {
+	ks := NewKeystore(t.TempDir())
+
+	_, err := ks.GenerateAgent("bad name!")
+	if err == nil {
+		t.Fatal("expected error for invalid agent name")
+	}
+}
+
+func TestKeystoreForceGenerateAgent_InvalidName(t *testing.T) {
+	ks := NewKeystore(t.TempDir())
+
+	_, err := ks.ForceGenerateAgent("bad/name")
+	if err == nil {
+		t.Fatal("expected error for invalid agent name")
+	}
+}
+
+func TestKeystoreTrustKey_InvalidName(t *testing.T) {
+	ks := NewKeystore(t.TempDir())
+
+	err := ks.TrustKey("bad name!", "/dev/null")
+	if err == nil {
+		t.Fatal("expected error for invalid agent name")
+	}
+}
+
+func TestKeystoreTrustKey_NonexistentFile(t *testing.T) {
+	ks := NewKeystore(t.TempDir())
+
+	err := ks.TrustKey("agent", "/nonexistent/key.pub")
+	if err == nil {
+		t.Fatal("expected error for nonexistent file")
+	}
+}
+
+func TestKeystoreAgentExists_InvalidName(t *testing.T) {
+	ks := NewKeystore(t.TempDir())
+
+	if ks.AgentExists("bad name!") {
+		t.Fatal("expected false for invalid agent name")
+	}
+}
+
+func TestKeystoreResolvePublicKey_InvalidName(t *testing.T) {
+	ks := NewKeystore(t.TempDir())
+
+	_, err := ks.ResolvePublicKey("bad name!")
+	if err == nil {
+		t.Fatal("expected error for invalid agent name")
+	}
+}
+
+func TestKeystoreResolvePublicKey_NotFound(t *testing.T) {
+	ks := NewKeystore(t.TempDir())
+
+	_, err := ks.ResolvePublicKey("nobody")
+	if err == nil {
+		t.Fatal("expected error when key not found anywhere")
+	}
+}
+
+func TestKeystoreListAgents_ReadError(t *testing.T) {
+	base := t.TempDir()
+	ks := NewKeystore(base)
+
+	// Create the agents directory, then make it unreadable.
+	agentsDir := filepath.Join(base, agentsSubdir)
+	if err := os.MkdirAll(agentsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(agentsDir, 0o000); err != nil { //nolint:gosec // test: intentionally restricting permissions
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(agentsDir, 0o700) }) //nolint:errcheck,gosec // best-effort cleanup
+
+	_, err := ks.ListAgents()
+	if err == nil {
+		t.Fatal("expected error for unreadable agents directory")
+	}
+}
+
+func TestKeystoreListAgents_NonDirEntries(t *testing.T) {
+	base := t.TempDir()
+	ks := NewKeystore(base)
+
+	// Generate a real agent.
+	if _, err := ks.GenerateAgent("real"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a stray file in the agents directory (non-directory entry).
+	agentsDir := filepath.Join(base, agentsSubdir)
+	strayFile := filepath.Join(agentsDir, "stray-file.txt")
+	if err := os.WriteFile(strayFile, []byte("stray"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	agents, err := ks.ListAgents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Only the real directory should appear, not the stray file.
+	if len(agents) != 1 || agents[0] != "real" {
+		t.Fatalf("expected [real], got %v", agents)
+	}
+}
+
+func TestKeystoreGenerateAgent_ReadOnlyBaseDir(t *testing.T) {
+	base := t.TempDir()
+	ks := NewKeystore(base)
+
+	// Make the base directory non-writable so MkdirAll fails.
+	if err := os.Chmod(base, 0o500); err != nil { //nolint:gosec // test: intentionally restricting permissions
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(base, 0o700) }) //nolint:errcheck,gosec // best-effort cleanup
+
+	_, err := ks.GenerateAgent("alice")
+	if err == nil {
+		t.Fatal("expected error for read-only base directory")
+	}
+}
+
+func TestKeystoreListTrusted_NonPubEntries(t *testing.T) {
+	base := t.TempDir()
+	ks := NewKeystore(base)
+
+	// Generate and trust an agent.
+	if _, err := ks.GenerateAgent("peer"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ks.TrustKey("peer", ks.PublicKeyPath("peer")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a stray non-.pub file in trusted_keys.
+	trustedDir := filepath.Join(base, trustedSubdir)
+	strayFile := filepath.Join(trustedDir, "notes.txt")
+	if err := os.WriteFile(strayFile, []byte("stray"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Also create a subdirectory (should be skipped).
+	if err := os.MkdirAll(filepath.Join(trustedDir, "subdir"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	trusted, err := ks.ListTrusted()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(trusted) != 1 || trusted[0] != "peer" {
+		t.Fatalf("expected [peer], got %v", trusted)
+	}
+}

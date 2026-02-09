@@ -358,6 +358,88 @@ func TestSavePublicKeyFile_Permissions(t *testing.T) {
 	}
 }
 
+func TestVerifyFile_MissingFile(t *testing.T) {
+	pub, _, _ := GenerateKeyPair()
+	err := VerifyFile("/nonexistent/file.txt", "/nonexistent/file.txt.sig", pub)
+	if err == nil {
+		t.Fatal("expected error for missing file")
+	}
+}
+
+func TestAtomicWrite_BadDirectory(t *testing.T) {
+	// Writing to a non-existent directory should fail.
+	err := atomicWrite("/nonexistent/dir/file.txt", []byte("data"), 0o644)
+	if err == nil {
+		t.Fatal("expected error for bad directory")
+	}
+}
+
+func TestAtomicWrite_RoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.txt")
+	data := []byte("hello atomic write")
+
+	if err := atomicWrite(path, data, 0o644); err != nil {
+		t.Fatalf("atomicWrite() error: %v", err)
+	}
+
+	got, err := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, data) {
+		t.Fatalf("data mismatch: got %q, want %q", got, data)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o644 {
+		t.Errorf("permissions = %04o, want 0644", info.Mode().Perm())
+	}
+}
+
+func TestAtomicWrite_OverwritesExisting(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "overwrite.txt")
+
+	if err := atomicWrite(path, []byte("first"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicWrite(path, []byte("second"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "second" {
+		t.Fatalf("expected 'second', got %q", got)
+	}
+	info, _ := os.Stat(path)
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("permissions = %04o, want 0600", info.Mode().Perm())
+	}
+}
+
+func TestDefaultKeystorePath(t *testing.T) {
+	path, err := DefaultKeystorePath()
+	if err != nil {
+		t.Fatalf("DefaultKeystorePath() error: %v", err)
+	}
+	if path == "" {
+		t.Fatal("expected non-empty path")
+	}
+	if !filepath.IsAbs(path) {
+		t.Errorf("expected absolute path, got %q", path)
+	}
+	if filepath.Base(path) != DefaultPipelockDir {
+		t.Errorf("expected base %q, got %q", DefaultPipelockDir, filepath.Base(path))
+	}
+}
+
 func TestLoadSignature_WrongLength(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "truncated.sig")

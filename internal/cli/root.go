@@ -48,6 +48,7 @@ Quick start:
 		gitCmd(),
 		integrityCmd(),
 		keygenCmd(),
+		mcpCmd(),
 		signCmd(),
 		verifyCmd(),
 		trustCmd(),

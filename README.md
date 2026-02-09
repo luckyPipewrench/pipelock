@@ -44,7 +44,7 @@ flowchart LR
     Agent -- "fetch URL" --> Proxy
     Proxy --> Scanner
     Scanner -- "clean content" --> Agent
-    Scanner --> Web
+    Scanner -- "request" --> Web
 
     style PRIVILEGED fill:#fee,stroke:#c33
     style FETCH fill:#efe,stroke:#3a3
@@ -92,7 +92,7 @@ Full comparison: [docs/comparison.md](docs/comparison.md)
 ## Quick Start
 
 ```bash
-# Install
+# Install (requires Go 1.24+)
 go install github.com/luckyPipewrench/pipelock/cmd/pipelock@latest
 
 # Generate a config
@@ -109,8 +109,9 @@ Or with Docker:
 
 ```bash
 docker pull ghcr.io/luckypipewrench/pipelock:latest
-docker run -p 8888:8888 -v ./pipelock.yaml:/etc/pipelock/config.yaml \
-  ghcr.io/luckypipewrench/pipelock:latest
+docker run -p 8888:8888 -v ./pipelock.yaml:/config/pipelock.yaml:ro \
+  ghcr.io/luckypipewrench/pipelock:latest \
+  run --config /config/pipelock.yaml --listen 0.0.0.0:8888
 ```
 
 ## OWASP Agentic Top 10 Coverage
@@ -219,7 +220,7 @@ Exit 0 if clean, 1 if injection detected. Catches injection split across content
 
 ### Multi-Agent Support
 
-Each agent identifies itself via `X-Pipelock-Agent` header. All audit logs include the agent name for per-agent filtering.
+Each agent identifies itself via `X-Pipelock-Agent` header (or `?agent=` query parameter). All audit logs include the agent name for per-agent filtering.
 
 ```bash
 curl -H "X-Pipelock-Agent: my-bot" "http://localhost:8888/fetch?url=https://example.com"
@@ -303,6 +304,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
           go-version: '1.24'

@@ -1,37 +1,55 @@
-# Pipelock config — strict preset
-# Agent can ONLY reach allowlisted API domains. No web browsing. Airtight.
+# Pipelock config — Cursor IDE preset
+# Optimized for Cursor acting through MCP proxy or HTTP fetch proxy.
 #
-# Use this for: regulated industries, high-security environments,
-# or any scenario where exfiltration prevention is non-negotiable.
+# Use this for: Cursor IDE with pipelock as MCP server wrapper.
+# Blocks prompt injection (unattended agent), allows Cursor-specific
+# and broad coding domains, relaxed entropy for code content.
+#
+# Example:
+#   pipelock mcp proxy --config configs/cursor.yaml -- npx @mcp/server
 
 version: 1
-mode: strict
+mode: balanced
 
 api_allowlist:
   - "*.anthropic.com"
   - "*.openai.com"
-  - "api.telegram.org"
-  - "*.discord.com"
-  - "gateway.discord.gg"
-  - "*.slack.com"
+  - "*.cursor.sh"
+  - "*.cursor.com"
   - "github.com"
   - "*.github.com"
   - "*.githubusercontent.com"
   - "registry.npmjs.org"
+  - "*.npmjs.com"
+  - "pypi.org"
+  - "*.python.org"
+  - "*.pythonhosted.org"
+  - "pkg.go.dev"
+  - "proxy.golang.org"
+  - "sum.golang.org"
+  - "crates.io"
+  - "*.crates.io"
+  - "*.docs.rs"
+  - "*.rubygems.org"
+  - "*.maven.org"
+  - "*.googleapis.com"
+  - "*.google.com"
+  - "*.stackoverflow.com"
+  - "*.stackexchange.com"
+  - "*.discord.com"
+  - "gateway.discord.gg"
+  - "*.slack.com"
+  - "api.telegram.org"
 
 fetch_proxy:
-  listen: "127.0.0.1:8888"
+  listen: "127.0.0.1:8888"  # customize if running multiple presets simultaneously
   timeout_seconds: 30
   max_response_mb: 10
   user_agent: "Pipelock Fetch/1.0"
   monitoring:
-    max_url_length: 500
-    # Shannon entropy bits per character. Typical ranges:
-    #   English/slugs: ~3.5-4.0 | hex (commit hashes): ~4.0
-    #   base64: ~4.0-4.5 | random/encrypted: ~5.5-8.0
-    # 3.5 catches base64-encoded secrets and hex strings (more false positives).
-    entropy_threshold: 3.5
-    max_requests_per_minute: 30
+    max_url_length: 4096
+    entropy_threshold: 5.0
+    max_requests_per_minute: 120
     blocklist:
       - "*.pastebin.com"
       - "*.hastebin.com"
@@ -39,6 +57,8 @@ fetch_proxy:
       - "*.transfer.sh"
       - "*.file.io"
       - "*.requestbin.com"
+      - "*.webhook.site"
+      - "*.pipedream.net"
 
 dlp:
   scan_env: true
@@ -64,6 +84,9 @@ dlp:
     - name: "Private Key Header"
       regex: '-----BEGIN\s+(RSA\s+|EC\s+|DSA\s+)?PRIVATE\s+KEY-----'
       severity: critical
+    - name: "Google API Key"
+      regex: 'AIza[0-9A-Za-z\-_]{35}'
+      severity: high
 
 response_scanning:
   enabled: true

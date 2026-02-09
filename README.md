@@ -291,7 +291,21 @@ git_protection:
   pre_push_scan: true
 ```
 
-Three presets included: `configs/strict.yaml`, `configs/balanced.yaml`, `configs/audit.yaml`.
+### Presets
+
+| Preset | Mode | Action | Best For |
+|--------|------|--------|----------|
+| `configs/balanced.yaml` | balanced | warn | General purpose |
+| `configs/strict.yaml` | strict | block | High-security environments |
+| `configs/audit.yaml` | audit | warn | Log-only monitoring |
+| `configs/claude-code.yaml` | balanced | block | Claude Code (unattended) |
+| `configs/cursor.yaml` | balanced | block | Cursor IDE (unattended) |
+| `configs/generic-agent.yaml` | balanced | warn | New agents (tuning phase) |
+
+## Integration Guides
+
+- **[Claude Code](docs/guides/claude-code.md)** — MCP proxy setup, `.claude.json` configuration, HTTP fetch proxy hooks
+- Cursor — use `configs/cursor.yaml` with the same MCP proxy pattern as [Claude Code](docs/guides/claude-code.md)
 
 ## CI/CD Usage
 

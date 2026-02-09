@@ -10,6 +10,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -76,7 +77,14 @@ Examples:
 			sc := scanner.New(cfg)
 			defer sc.Close()
 			m := metrics.New()
-			p := proxy.New(cfg, logger, sc, m)
+
+			var proxyOpts []proxy.Option
+			if cfg.ResponseScanning.Action == "ask" {
+				approver := hitl.New(cfg.ResponseScanning.AskTimeoutSeconds)
+				defer approver.Close()
+				proxyOpts = append(proxyOpts, proxy.WithApprover(approver))
+			}
+			p := proxy.New(cfg, logger, sc, m, proxyOpts...)
 
 			// Context with signal handling for graceful shutdown.
 			// Uses cmd.Context() as parent so tests can inject a cancellable context.

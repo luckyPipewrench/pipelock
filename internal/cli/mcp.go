@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -129,6 +130,12 @@ Claude Desktop config:
 			sc := scanner.New(cfg)
 			defer sc.Close()
 
+			var approver *hitl.Approver
+			if sc.ResponseAction() == "ask" {
+				approver = hitl.New(cfg.ResponseScanning.AskTimeoutSeconds)
+				defer approver.Close()
+			}
+
 			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: proxying MCP server %v (action=%s)\n", serverCmd, sc.ResponseAction())
 
 			ctx, cancel := signal.NotifyContext(
@@ -138,7 +145,7 @@ Claude Desktop config:
 			)
 			defer cancel()
 
-			return mcp.RunProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), serverCmd, sc)
+			return mcp.RunProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), serverCmd, sc, approver)
 		},
 	}
 

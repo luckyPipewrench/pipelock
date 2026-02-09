@@ -43,9 +43,10 @@ type Config struct {
 
 // ResponseScanning configures scanning of fetched page content for prompt injection.
 type ResponseScanning struct {
-	Enabled  bool                  `yaml:"enabled"`
-	Action   string                `yaml:"action"` // strip, warn, block
-	Patterns []ResponseScanPattern `yaml:"patterns"`
+	Enabled           bool                  `yaml:"enabled"`
+	Action            string                `yaml:"action"`              // strip, warn, block, ask
+	AskTimeoutSeconds int                   `yaml:"ask_timeout_seconds"` // timeout for HITL prompt (default 30)
+	Patterns          []ResponseScanPattern `yaml:"patterns"`
 }
 
 // ResponseScanPattern is a named regex pattern for detecting prompt injection in responses.
@@ -168,6 +169,9 @@ func (c *Config) ApplyDefaults() {
 	if c.ResponseScanning.Enabled && c.ResponseScanning.Action == "" {
 		c.ResponseScanning.Action = "warn" //nolint:goconst // config action value
 	}
+	if c.ResponseScanning.Action == "ask" && c.ResponseScanning.AskTimeoutSeconds <= 0 { //nolint:goconst // config action value
+		c.ResponseScanning.AskTimeoutSeconds = 30
+	}
 	if c.GitProtection.Enabled && len(c.GitProtection.AllowedBranches) == 0 {
 		c.GitProtection.AllowedBranches = []string{"feature/*", "fix/*", "main", "master"}
 	}
@@ -239,10 +243,10 @@ func (c *Config) Validate() error {
 	// Validate response scanning config
 	if c.ResponseScanning.Enabled {
 		switch c.ResponseScanning.Action {
-		case "strip", "warn", "block": //nolint:goconst // config action values
+		case "strip", "warn", "block", "ask": //nolint:goconst // config action values
 			// valid
 		default:
-			return fmt.Errorf("invalid response_scanning action %q: must be strip, warn, or block", c.ResponseScanning.Action)
+			return fmt.Errorf("invalid response_scanning action %q: must be strip, warn, block, or ask", c.ResponseScanning.Action)
 		}
 		for _, p := range c.ResponseScanning.Patterns {
 			if p.Name == "" {

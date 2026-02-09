@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -695,6 +697,161 @@ func TestFetchEndpoint_ResponseScan_Disabled(t *testing.T) {
 
 	if resp.Blocked {
 		t.Error("expected disabled scanning not to block")
+	}
+}
+
+// --- Ask Action Response Scan Tests ---
+
+func setupAskProxy(t *testing.T, input string) (*Proxy, *httptest.Server) {
+	t.Helper()
+	p, backend := setupResponseScanProxy(t, "ask")
+
+	approver := hitl.New(5,
+		hitl.WithInput(strings.NewReader(input)),
+		hitl.WithOutput(&bytes.Buffer{}),
+		hitl.WithTerminal(true),
+	)
+	t.Cleanup(approver.Close)
+	p.approver = approver
+
+	return p, backend
+}
+
+func TestFetchEndpoint_ResponseScan_AskAllow(t *testing.T) {
+	p, backend := setupAskProxy(t, "y\n")
+	defer backend.Close()
+
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/injection", nil)
+	w := httptest.NewRecorder()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 for ask:allow, got %d", w.Code)
+	}
+
+	var resp FetchResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+	if resp.Blocked {
+		t.Error("expected ask:allow not to block")
+	}
+	if resp.Content == "" {
+		t.Error("expected non-empty content for ask:allow")
+	}
+}
+
+func TestFetchEndpoint_ResponseScan_AskBlock(t *testing.T) {
+	p, backend := setupAskProxy(t, "n\n")
+	defer backend.Close()
+
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/injection", nil)
+	w := httptest.NewRecorder()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403 for ask:block, got %d", w.Code)
+	}
+
+	var resp FetchResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+	if !resp.Blocked {
+		t.Error("expected blocked=true for ask:block")
+	}
+}
+
+func TestFetchEndpoint_ResponseScan_AskStrip(t *testing.T) {
+	p, backend := setupAskProxy(t, "s\n")
+	defer backend.Close()
+
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/injection", nil)
+	w := httptest.NewRecorder()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 for ask:strip, got %d", w.Code)
+	}
+
+	var resp FetchResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+	if resp.Blocked {
+		t.Error("expected ask:strip not to block")
+	}
+	if strings.Contains(resp.Content, "ignore all previous") {
+		t.Error("expected injection text to be stripped")
+	}
+}
+
+func TestFetchEndpoint_ResponseScan_AskNoApprover(t *testing.T) {
+	// Without an approver, ask should fall back to block (fail-closed).
+	p, backend := setupResponseScanProxy(t, "ask")
+	defer backend.Close()
+
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/injection", nil)
+	w := httptest.NewRecorder()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403 for ask with no approver, got %d", w.Code)
+	}
+
+	var resp FetchResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+	if !resp.Blocked {
+		t.Error("expected blocked=true for ask with no approver")
+	}
+	if !strings.Contains(resp.BlockReason, "no HITL approver") {
+		t.Errorf("expected 'no HITL approver' in block reason, got: %s", resp.BlockReason)
+	}
+}
+
+func TestFetchEndpoint_ResponseScan_AskCleanContent(t *testing.T) {
+	// Clean content should pass through without prompting.
+	p, backend := setupAskProxy(t, "")
+	defer backend.Close()
+
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/clean", nil)
+	w := httptest.NewRecorder()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 for clean content with ask action, got %d", w.Code)
+	}
+}
+
+func TestWithApprover(t *testing.T) {
+	approver := hitl.New(5, hitl.WithTerminal(false))
+	t.Cleanup(approver.Close)
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	p := New(cfg, logger, sc, metrics.New(), WithApprover(approver))
+
+	if p.approver != approver {
+		t.Error("expected WithApprover to set the approver")
 	}
 }
 

@@ -16,7 +16,7 @@ An honest feature matrix and guidance on when to use what.
 | **File integrity monitoring** | SHA256 manifests | No | Workspace checkpoints | Filesystem restrictions |
 | **Ed25519 signing** | Yes | No | No | No |
 | **MCP scanning** | Yes (JSON-RPC 2.0) | Yes (native proxy) | No | No |
-| **HITL approvals** | No (roadmap) | Yes (OS dialogs) | No | No |
+| **HITL approvals** | Yes (terminal y/N/s) | Yes (OS dialogs) | No | No |
 | **Entropy analysis** | Shannon entropy on URLs | No | No | No |
 | **Rate limiting** | Per-domain sliding window | No | No | No |
 | **Audit logging** | Structured JSON (zerolog) | JSONL | Session logs | No |
@@ -40,7 +40,7 @@ An honest feature matrix and guidance on when to use what.
 - You want **workspace integrity monitoring** to detect file tampering
 
 ### Use AIP when:
-- You need **human-in-the-loop approvals** with native OS dialogs
+- You prefer **native OS dialog HITL** (Pipelock uses terminal prompts, AIP uses OS-level dialogs)
 - You're focused specifically on **MCP server security** (AIP is an MCP-native proxy)
 - You want **per-argument regex validation** on MCP tool calls (more granular than Pipelock's current approach)
 

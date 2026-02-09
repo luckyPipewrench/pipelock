@@ -43,6 +43,7 @@ Claude Code  <-->  pipelock mcp proxy  <-->  MCP Server
 | `warn` | Log detection, forward response unchanged | Tuning patterns, low-risk environments |
 | `block` | Replace response with JSON-RPC error (-32000) | Production, unattended agents |
 | `strip` | Redact matched patterns, forward modified response | When partial content is acceptable |
+| `ask` | Terminal y/N/s prompt with timeout (requires TTY) | Attended sessions, manual review |
 
 ## Configuring Claude Code
 

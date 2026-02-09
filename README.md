@@ -166,7 +166,7 @@ The fetch proxy runs a 7-layer scanner pipeline on every request:
 2. **Domain blocklist** — blocks known exfiltration targets (pastebin, transfer.sh)
 3. **Rate limiting** — per-domain sliding window
 4. **DLP patterns** — regex matching for API keys, tokens, and secrets
-5. **Environment variable leak detection** — detects env var values in URLs (raw + base64)
+5. **Environment variable leak detection** — detects the proxy's own env var values in URLs (raw + base64, values must be 16+ chars with entropy > 3.0)
 6. **Entropy analysis** — Shannon entropy flags encoded/encrypted data in URL segments
 7. **URL length limits** — unusually long URLs suggest data exfiltration
 
@@ -178,7 +178,7 @@ Fetched content is scanned for prompt injection before reaching the agent:
 - **System/role overrides** — attempts to hijack system prompts
 - **Jailbreak attempts** — DAN mode, developer mode, etc.
 
-Actions: `block` (reject entirely), `strip` (redact matched text), `warn` (log and pass through)
+Actions: `block` (reject entirely), `strip` (redact matched text), `warn` (log and pass through), `ask` (terminal y/N/s prompt with timeout — requires TTY)
 
 ### File Integrity Monitoring
 
@@ -194,9 +194,11 @@ SHA256 manifests detect modified, added, or removed files. See [lateral movement
 ### Git Protection
 
 ```bash
-git diff HEAD~1 | pipelock git scan-diff             # scan for secrets
+git diff HEAD~1 | pipelock git scan-diff             # scan for secrets in unified diff
 pipelock git install-hooks --config pipelock.yaml     # pre-push hook
 ```
+
+Input must be unified diff format (with `+++ b/filename` headers and `+` lines). Plain text won't match.
 
 ### Ed25519 Signing
 
@@ -209,16 +211,20 @@ pipelock trust other-bot /path/to/other-bot.pub  # trust a peer
 
 Keys stored under `~/.pipelock/agents/` and `~/.pipelock/trusted_keys/`.
 
-### MCP Response Scanning
+### MCP Proxy + Response Scanning
 
-Scan [MCP](https://modelcontextprotocol.io/) JSON-RPC 2.0 responses for prompt injection:
+Wrap any MCP server as a stdio proxy. Pipelock forwards client requests unmodified and scans every server response for prompt injection before returning it:
 
 ```bash
+# Wrap an MCP server (use in .mcp.json for Claude Code)
+pipelock mcp proxy --config pipelock.yaml -- npx -y @modelcontextprotocol/server-filesystem /tmp
+
+# Batch scan (stdin)
 mcp-server | pipelock mcp scan
 pipelock mcp scan --json --config pipelock.yaml < responses.jsonl
 ```
 
-Exit 0 if clean, 1 if injection detected. Catches injection split across content blocks.
+Catches injection split across content blocks. Exit 0 if clean, 1 if injection detected.
 
 ### Multi-Agent Support
 
@@ -445,8 +451,9 @@ internal/
   gitprotect/          Git-aware security (diff scanning, branch validation, hooks)
   integrity/           File integrity monitoring (SHA256 manifests, check/diff, exclusions)
   signing/             Ed25519 key management, file signing, signature verification
-  mcp/                 MCP JSON-RPC 2.0 response scanning (prompt injection detection)
-configs/               Preset config files (strict, balanced, audit)
+  mcp/                 MCP stdio proxy + JSON-RPC 2.0 response scanning
+  hitl/                Human-in-the-loop terminal approval (ask action)
+configs/               Preset config files (strict, balanced, audit, claude-code, cursor, generic-agent)
 docs/                  OWASP mapping, tool comparison
 blog/                  GitHub Pages blog (Jekyll)
 ```

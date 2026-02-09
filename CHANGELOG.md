@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-02-09
+
+### Added
+- MCP stdio proxy mode: `pipelock mcp proxy -- <command>` wraps any MCP server, scanning responses in real-time (`internal/mcp/proxy.go`)
+- Human-in-the-loop terminal approvals: `action: ask` prompts for y/N/s with configurable timeout (`internal/hitl/`)
+- Agent-specific config presets: `configs/claude-code.yaml`, `configs/cursor.yaml`, `configs/generic-agent.yaml`
+- Claude Code integration guide (`docs/guides/claude-code.md`)
+- Homebrew formula in GoReleaser config
+- Asciinema demo recording embedded in README
+
+### Fixed
+- Makefile VERSION fallback: `git describe` failure no longer produces empty version string
+- OpenAI API key DLP regex: now matches keys containing `-` and `_` characters
+- HITL approver data race: single reader goroutine pattern eliminates concurrent `bufio.Reader` access on timeout
+- GoReleaser v2: `folder` renamed to `directory` in Homebrew brews config
+
 ## [0.1.3] - 2026-02-09
 
 ### Added

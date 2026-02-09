@@ -119,7 +119,7 @@ docker run -p 8888:8888 -v ./pipelock.yaml:/config/pipelock.yaml:ro \
 | Threat | Coverage |
 |--------|----------|
 | ASI01 Prompt Injection | **Strong** — response + MCP scanning |
-| ASI02 Insecure Tool Implementation | **Strong** — proxy as controlled tool |
+| ASI02 Insecure Tool Implementation | **Partial** — proxy as controlled tool, MCP scanning |
 | ASI03 Privilege Escalation | **Strong** — capability separation + SSRF protection |
 | ASI04 Insecure Output Handling | **Strong** — response scanning with block/strip/warn |
 | ASI05 Multi-Agent Orchestration | **Partial** — agent ID, integrity, signing |

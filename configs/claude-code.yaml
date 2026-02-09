@@ -1,0 +1,119 @@
+# Pipelock config — Claude Code preset
+# Optimized for Claude Code acting through MCP proxy or HTTP fetch proxy.
+#
+# Use this for: Claude Code with pipelock as MCP server wrapper.
+# Blocks prompt injection (unattended agent), allows broad coding domains,
+# relaxed entropy (code has high-entropy strings like commit hashes).
+#
+# Example:
+#   pipelock mcp proxy --config configs/claude-code.yaml -- npx @mcp/server
+
+version: 1
+mode: balanced
+
+api_allowlist:
+  - "*.anthropic.com"
+  - "*.openai.com"
+  - "github.com"
+  - "*.github.com"
+  - "*.githubusercontent.com"
+  - "registry.npmjs.org"
+  - "*.npmjs.com"
+  - "pypi.org"
+  - "*.python.org"
+  - "*.pythonhosted.org"
+  - "pkg.go.dev"
+  - "proxy.golang.org"
+  - "sum.golang.org"
+  - "crates.io"
+  - "*.crates.io"
+  - "*.docs.rs"
+  - "*.rubygems.org"
+  - "*.maven.org"
+  - "*.googleapis.com"
+  - "*.google.com"
+  - "*.stackoverflow.com"
+  - "*.stackexchange.com"
+  - "*.discord.com"
+  - "gateway.discord.gg"
+  - "*.slack.com"
+  - "api.telegram.org"
+
+fetch_proxy:
+  listen: "127.0.0.1:8888"
+  timeout_seconds: 30
+  max_response_mb: 10
+  user_agent: "Pipelock Fetch/1.0"
+  monitoring:
+    max_url_length: 4096
+    # Higher threshold for code: commit hashes, base64 in configs, UUIDs are common.
+    entropy_threshold: 5.0
+    max_requests_per_minute: 120
+    blocklist:
+      - "*.pastebin.com"
+      - "*.hastebin.com"
+      - "*.paste.ee"
+      - "*.transfer.sh"
+      - "*.file.io"
+      - "*.requestbin.com"
+      - "*.webhook.site"
+      - "*.pipedream.net"
+
+dlp:
+  scan_env: true
+  patterns:
+    - name: "Anthropic API Key"
+      regex: 'sk-ant-[a-zA-Z0-9\-_]{20,}'
+      severity: critical
+    - name: "OpenAI API Key"
+      regex: 'sk-proj-[a-zA-Z0-9]{20,}'
+      severity: critical
+    - name: "GitHub Token"
+      regex: 'gh[ps]_[A-Za-z0-9_]{36,}'
+      severity: critical
+    - name: "Slack Token"
+      regex: 'xox[bpras]-[0-9a-zA-Z-]+'
+      severity: critical
+    - name: "AWS Access Key"
+      regex: 'AKIA[0-9A-Z]{16}'
+      severity: critical
+    - name: "Discord Bot Token"
+      regex: '[MN][A-Za-z0-9]{23,}\.[A-Za-z0-9\-_]{6}\.[A-Za-z0-9\-_]{27,}'
+      severity: critical
+    - name: "Private Key Header"
+      regex: '-----BEGIN\s+(RSA\s+|EC\s+|DSA\s+)?PRIVATE\s+KEY-----'
+      severity: critical
+    - name: "Google API Key"
+      regex: 'AIza[0-9A-Za-z\-_]{35}'
+      severity: high
+
+response_scanning:
+  enabled: true
+  action: block
+  patterns:
+    - name: "Prompt Injection"
+      regex: '(?i)(ignore|disregard|forget)\s+(all\s+)?(previous|prior|above)\s+(instructions|prompts|rules|context)'
+    - name: "System Override"
+      regex: '(?im)^\s*system\s*:'
+    - name: "Role Override"
+      regex: '(?i)you\s+are\s+(now\s+)?(a\s+)?(DAN|evil|unrestricted|jailbroken|unfiltered)'
+    - name: "New Instructions"
+      regex: '(?i)(new|updated|revised)\s+(instructions|directives|rules|prompt)'
+    - name: "Jailbreak Attempt"
+      regex: '(?i)(DAN|developer\s+mode|sudo\s+mode|unrestricted\s+mode)'
+
+logging:
+  format: json
+  output: stdout
+  include_allowed: true
+  include_blocked: true
+
+internal:
+  - "127.0.0.0/8"
+  - "10.0.0.0/8"
+  - "172.16.0.0/12"
+  - "192.168.0.0/16"
+  - "169.254.0.0/16"
+  - "::1/128"
+  - "fc00::/7"
+  - "fe80::/10"

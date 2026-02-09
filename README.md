@@ -16,6 +16,8 @@ If you run Claude Code, OpenHands, or any AI agent with shell access and API key
 
 [Blog](https://luckypipewrench.github.io/pipelock/) | [OWASP Coverage](docs/owasp-mapping.md) | [Tool Comparison](docs/comparison.md)
 
+[![demo](https://asciinema.org/a/I1UzzECkeCBx6p42.svg)](https://asciinema.org/a/I1UzzECkeCBx6p42)
+
 ## The Problem
 
 AI agents run with shell access, API keys in environment, and unrestricted internet. A compromised agent can exfiltrate secrets with one HTTP request:

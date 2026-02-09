@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-02-09
+
 ### Added
 - File integrity monitoring for agent workspaces (`pipelock integrity init|check|update`)
 - SHA256 manifest generation with glob exclusion patterns (`**` doublestar support)
@@ -22,10 +24,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - MCP JSON-RPC 2.0 response scanning for prompt injection (`pipelock mcp scan`)
 - MCP scanning: text extraction from content blocks, split-injection detection via concatenation
 - MCP scanning: `--json` output mode (one verdict per line) and `--config` flag
-- Security fix: `json.RawMessage` null bypass prevention (result always scanned regardless of error field)
-- JSON tags on `scanner.ResponseMatch` for consistent snake_case output
 - GitHub Pages blog at luckypipewrench.github.io/pipelock
 - 530+ tests passing with `-race`
+
+### Fixed
+- DLP bypass: secrets in URL hostnames/subdomains now scanned (full-URL DLP scan)
+- DLP bypass: secrets split across query parameters now detected
+- README: corrected signing CLI syntax, agent types, health version example
+- GoReleaser: added missing BuildDate/GitCommit/GoVersion ldflags
+- Blog: fixed hallucinated product name, removed stale "coming next" reference
+
+### Security
+- `json.RawMessage` null bypass prevention (MCP result always scanned regardless of error field)
 
 ### Removed
 - Stale Phase 1.5 planning doc (planning docs live outside the repo)

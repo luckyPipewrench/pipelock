@@ -13,6 +13,9 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
+// jsonRPCVersion is the JSON-RPC protocol version used by MCP.
+const jsonRPCVersion = "2.0"
+
 // ContentBlock represents a single content block in an MCP tool result.
 type ContentBlock struct {
 	Type string `json:"type"`
@@ -73,7 +76,7 @@ func ScanResponse(line []byte, sc *scanner.Scanner) ScanVerdict {
 		return ScanVerdict{Clean: false, Error: fmt.Sprintf("invalid JSON: %v", err)}
 	}
 
-	if rpc.JSONRPC != "2.0" {
+	if rpc.JSONRPC != jsonRPCVersion {
 		return ScanVerdict{
 			ID:    rpc.ID,
 			Clean: false,

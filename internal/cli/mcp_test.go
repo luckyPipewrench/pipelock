@@ -243,7 +243,7 @@ func TestMcpProxyCmd_NoCommand(t *testing.T) {
 }
 
 func TestMcpProxyCmd_CleanPassthrough(t *testing.T) {
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == "windows" { //nolint:goconst // test skip
 		t.Skip("echo subprocess test requires unix")
 	}
 

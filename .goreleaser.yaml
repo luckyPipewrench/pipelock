@@ -52,7 +52,7 @@ brews:
     homepage: "https://github.com/luckyPipewrench/pipelock"
     description: "Security harness for AI agents"
     license: "Apache-2.0"
-    folder: Formula
+    directory: Formula
     commit_author:
       name: goreleaserbot
       email: bot@goreleaser.com

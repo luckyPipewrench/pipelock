@@ -12,6 +12,8 @@
 
 **Security harness for AI agents.** Controls what your agent can access on the network, preventing credential exfiltration while preserving web browsing capability.
 
+If you run Claude Code, OpenHands, or any AI agent with shell access and API keys, this is for you.
+
 [Blog](https://luckypipewrench.github.io/pipelock/) | [GitHub](https://github.com/luckyPipewrench/pipelock)
 
 ## The Problem

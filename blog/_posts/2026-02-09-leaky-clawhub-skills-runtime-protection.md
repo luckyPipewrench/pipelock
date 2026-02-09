@@ -38,7 +38,7 @@ But the Snyk research describes a different problem. These 283 skills aren't mal
 
 Say an agent uses a legitimate API skill and makes a request with your key embedded in the URL:
 
-```
+```bash
 curl "https://api.service.com/v1/data?key=sk-ant-api03-REAL-KEY-HERE"
 ```
 

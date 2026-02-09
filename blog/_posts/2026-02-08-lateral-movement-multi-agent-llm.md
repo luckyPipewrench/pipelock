@@ -14,7 +14,7 @@ description: "A security gap nobody is patching — how compromised AI agents sp
 
 I run two AI agents. One manages my infrastructure. The other writes code. They share a workspace: config files, memory, task lists. They talk to each other through a shared git repo and file drops.
 
-This isn't unusual anymore. OpenClaw users pair it with Claude Code. Dev teams run multiple specialized agents. Homelab people (myself included) have agents managing different parts of their stack.
+This isn't unusual anymore. OpenHands users pair it with Claude Code. Dev teams run multiple specialized agents. Homelab people (myself included) have agents managing different parts of their stack.
 
 The problem is simple. If one agent gets compromised, it can silently take over every other agent it talks to.
 
@@ -89,7 +89,7 @@ pipelock integrity update ./workspace
 
 The manifest stores SHA256 hashes for every protected file. When an agent starts up, it checks that config files, skill definitions, and identity files haven't been changed outside of a normal workflow.
 
-This doesn't stop every lateral movement attack. A compromised agent can still write to files that aren't in the manifest, and we need signing (coming next) to verify who actually made a change. But it catches the most dangerous thing: someone (or something) quietly editing the files that control how your agents behave.
+This doesn't stop every lateral movement attack. A compromised agent can still write to files that aren't in the manifest, and we need signing to verify who actually made a change. But it catches the most dangerous thing: someone (or something) quietly editing the files that control how your agents behave.
 
 ### Now available
 

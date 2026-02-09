@@ -32,8 +32,8 @@ Three modes:
   audit     - Log everything, restrict nothing (evaluation)
 
 Quick start:
-  pipelock run -- python my_agent.py
-  pipelock run --config pipelock.yaml -- ./my-agent
+  pipelock run
+  pipelock run --config pipelock.yaml
   pipelock check --config pipelock.yaml`,
 		Version:       Version,
 		SilenceUsage:  true,

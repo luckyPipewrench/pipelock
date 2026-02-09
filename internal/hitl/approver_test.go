@@ -163,6 +163,36 @@ func TestApprover_Close(t *testing.T) {
 	a.Close() // should not panic or hang
 }
 
+func TestApprover_CloseBlocksPending(t *testing.T) {
+	// Close while Ask is waiting should return DecisionBlock.
+	r, w := io.Pipe()
+	t.Cleanup(func() {
+		_ = w.Close()
+		_ = r.Close()
+	})
+
+	output := &bytes.Buffer{}
+	a := New(30,
+		WithInput(r),
+		WithOutput(output),
+		WithTerminal(true),
+	)
+
+	done := make(chan Decision, 1)
+	go func() {
+		done <- a.Ask(&Request{URL: "https://test.com", Reason: "test"})
+	}()
+
+	// Give the goroutine time to submit the request.
+	time.Sleep(50 * time.Millisecond)
+	a.Close()
+
+	d := <-done
+	if d != DecisionBlock {
+		t.Fatalf("expected DecisionBlock after Close, got %d", d)
+	}
+}
+
 func TestApprover_PromptContent(t *testing.T) {
 	a, output := testApprover(t, "n\n", 5)
 

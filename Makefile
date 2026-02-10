@@ -11,7 +11,7 @@ LDFLAGS := -ldflags "-s -w \
 	-X $(MODULE)/internal/cli.GoVersion=$(GO_VERSION) \
 	-X $(MODULE)/internal/proxy.Version=$(VERSION)"
 
-.PHONY: build test lint clean docker install fmt vet tidy-check
+.PHONY: build test bench lint clean docker install fmt vet tidy-check
 
 build:
 	go build $(LDFLAGS) -o $(BINARY) ./cmd/pipelock
@@ -26,6 +26,9 @@ test-cover:
 	go test -race -coverprofile=coverage.out ./...
 	go tool cover -html=coverage.out -o coverage.html
 	@echo "Coverage report: coverage.html"
+
+bench:
+	go test -bench=. -benchmem -count=3 -run=^$$ ./internal/scanner/ ./internal/mcp/
 
 fmt:
 	gofmt -s -w .

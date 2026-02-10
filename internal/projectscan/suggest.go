@@ -46,14 +46,14 @@ func (s *SuggestCfg) BuildConfig() *config.Config {
 		cfg.FetchProxy.Monitoring.EntropyThreshold = 5.0
 		cfg.FetchProxy.Monitoring.MaxURLLength = 4096
 		cfg.FetchProxy.Monitoring.MaxReqPerMinute = 120
-		cfg.ResponseScanning.Action = "block"
+		cfg.ResponseScanning.Action = "block" //nolint:goconst // config action value
 		cfg.FetchProxy.Monitoring.Blocklist = append(cfg.FetchProxy.Monitoring.Blocklist,
 			"*.webhook.site", "*.pipedream.net")
 	case AgentCursor:
 		cfg.FetchProxy.Monitoring.EntropyThreshold = 5.0
 		cfg.FetchProxy.Monitoring.MaxURLLength = 4096
 		cfg.FetchProxy.Monitoring.MaxReqPerMinute = 120
-		cfg.ResponseScanning.Action = "block"
+		cfg.ResponseScanning.Action = "block" //nolint:goconst // config action value
 		cfg.FetchProxy.Monitoring.Blocklist = append(cfg.FetchProxy.Monitoring.Blocklist,
 			"*.webhook.site", "*.pipedream.net")
 	default:

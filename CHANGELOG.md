@@ -40,7 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - MCP JSON-RPC 2.0 response scanning for prompt injection (`pipelock mcp scan`)
 - MCP scanning: text extraction from content blocks, split-injection detection via concatenation
 - MCP scanning: `--json` output mode (one verdict per line) and `--config` flag
-- GitHub Pages blog at luckypipewrench.github.io/pipelock
+- Blog at pipelab.org/blog/
 - 530+ tests passing with `-race`
 
 ### Fixed

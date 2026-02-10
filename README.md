@@ -14,7 +14,7 @@
 
 If you run Claude Code, OpenHands, or any AI agent with shell access and API keys, this is for you.
 
-[Blog](https://luckypipewrench.github.io/pipelock/) | [OWASP Coverage](docs/owasp-mapping.md) | [Tool Comparison](docs/comparison.md)
+[Blog](https://pipelab.org/blog/) | [OWASP Coverage](docs/owasp-mapping.md) | [Tool Comparison](docs/comparison.md)
 
 [![demo](https://asciinema.org/a/I1UzzECkeCBx6p42.svg)](https://asciinema.org/a/I1UzzECkeCBx6p42)
 
@@ -199,7 +199,7 @@ pipelock integrity check ./workspace --json  # machine-readable
 pipelock integrity update ./workspace        # re-hash after review
 ```
 
-SHA256 manifests detect modified, added, or removed files. See [lateral movement in multi-agent systems](https://luckypipewrench.github.io/pipelock/blog/2026/02/08/lateral-movement-multi-agent-llm/).
+SHA256 manifests detect modified, added, or removed files. See [lateral movement in multi-agent systems](https://pipelab.org/blog/lateral-movement-multi-agent-llm/).
 
 ### Git Protection
 
@@ -465,7 +465,7 @@ internal/
   hitl/                Human-in-the-loop terminal approval (ask action)
 configs/               Preset config files (strict, balanced, audit, claude-code, cursor, generic-agent)
 docs/                  OWASP mapping, tool comparison
-blog/                  GitHub Pages blog (Jekyll)
+blog/                  Blog posts (mirrored at pipelab.org/blog/)
 ```
 
 ## Credits

@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 480" fill="none">
+  <defs>
+    <linearGradient id="shackle-grad" x1="200" y1="40" x2="200" y2="180" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#00ffc8"/>
+      <stop offset="100%" stop-color="#00b894"/>
+    </linearGradient>
+    <linearGradient id="body-grad" x1="200" y1="160" x2="200" y2="340" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#1a1a2e"/>
+      <stop offset="100%" stop-color="#0f0f1a"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="6" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="glow-text">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Shackle (pipe-style) -->
+  <path d="M130 180 L130 110 C130 65 160 40 200 40 C240 40 270 65 270 110 L270 180"
+        stroke="url(#shackle-grad)" stroke-width="28" stroke-linecap="round" fill="none" filter="url(#glow)"/>
+
+  <!-- Pipe joints on shackle ends -->
+  <rect x="114" y="165" width="32" height="16" rx="3" fill="#00ffc8" opacity="0.7"/>
+  <rect x="254" y="165" width="32" height="16" rx="3" fill="#00ffc8" opacity="0.7"/>
+
+  <!-- Lock body -->
+  <rect x="90" y="180" width="220" height="160" rx="16" fill="url(#body-grad)"
+        stroke="#00ffc8" stroke-width="2.5" filter="url(#glow)"/>
+
+  <!-- Body inner border accent -->
+  <rect x="100" y="190" width="200" height="140" rx="10" fill="none"
+        stroke="#00ffc8" stroke-width="0.5" opacity="0.2"/>
+
+  <!-- Keyhole -->
+  <circle cx="200" cy="248" r="18" fill="#00ffc8" opacity="0.9" filter="url(#glow)"/>
+  <circle cx="200" cy="248" r="10" fill="#0f0f1a"/>
+  <rect x="196" y="256" width="8" height="24" rx="3" fill="#00ffc8" opacity="0.9"/>
+  <rect x="196" y="256" width="8" height="24" rx="3" fill="#0f0f1a" opacity="0.4"/>
+
+  <!-- Pipe thread lines on body sides -->
+  <line x1="95" y1="210" x2="95" y2="215" stroke="#00ffc8" stroke-width="1" opacity="0.3"/>
+  <line x1="95" y1="222" x2="95" y2="227" stroke="#00ffc8" stroke-width="1" opacity="0.3"/>
+  <line x1="95" y1="234" x2="95" y2="239" stroke="#00ffc8" stroke-width="1" opacity="0.3"/>
+  <line x1="305" y1="210" x2="305" y2="215" stroke="#00ffc8" stroke-width="1" opacity="0.3"/>
+  <line x1="305" y1="222" x2="305" y2="227" stroke="#00ffc8" stroke-width="1" opacity="0.3"/>
+  <line x1="305" y1="234" x2="305" y2="239" stroke="#00ffc8" stroke-width="1" opacity="0.3"/>
+
+  <!-- "PIPELOCK" text -->
+  <text x="200" y="420" text-anchor="middle" font-family="'JetBrains Mono', 'Fira Code', 'Courier New', monospace"
+        font-size="52" font-weight="700" letter-spacing="6" fill="#00ffc8" filter="url(#glow-text)">PIPELOCK</text>
+
+  <!-- Subtle tagline -->
+  <text x="200" y="455" text-anchor="middle" font-family="'Inter', 'Helvetica Neue', sans-serif"
+        font-size="14" font-weight="400" letter-spacing="4" fill="#94a3b8" text-transform="uppercase">AI AGENT SECURITY</text>
+</svg>

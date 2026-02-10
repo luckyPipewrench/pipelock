@@ -14,7 +14,9 @@
 
 If you run Claude Code, OpenHands, or any AI agent with shell access and API keys, this is for you.
 
-[Blog](https://pipelab.org/blog/) | [OWASP Coverage](docs/owasp-mapping.md) | [Tool Comparison](docs/comparison.md)
+[Blog](https://pipelab.org/blog/) | [OWASP Coverage](docs/owasp-mapping.md) | [Tool Comparison](docs/comparison.md) | [ClawHub](https://clawhub.ai/luckyPipewrench/pipelock)
+
+> If Pipelock is useful, a [star](https://github.com/luckyPipewrench/pipelock) helps others find it.
 
 [![demo](https://asciinema.org/a/I1UzzECkeCBx6p42.svg)](https://asciinema.org/a/I1UzzECkeCBx6p42)
 
@@ -474,10 +476,6 @@ blog/                  Blog posts (mirrored at pipelab.org/blog/)
 - Threat model informed by [OWASP Agentic AI Top 10](https://genai.owasp.org/resource/owasp-top-10-for-agentic-applications-for-2026/)
 - See [docs/comparison.md](docs/comparison.md) for how Pipelock relates to [AIP](https://github.com/ArangoGutierrez/agent-identity-protocol), [agentsh](https://github.com/canyonroad/agentsh), and [srt](https://github.com/anthropic-experimental/sandbox-runtime)
 - Security review contributions from Dylan Corrales
-
-## Support
-
-If Pipelock is useful to you, [star it on GitHub](https://github.com/luckyPipewrench/pipelock) so others can find it too.
 
 ## License
 

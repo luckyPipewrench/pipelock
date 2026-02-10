@@ -42,6 +42,7 @@ Quick start:
 
 	cmd.AddCommand(
 		auditCmd(),
+		demoCmd(),
 		runCmd(),
 		logsCmd(),
 		checkCmd(),

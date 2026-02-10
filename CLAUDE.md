@@ -230,5 +230,5 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide. Summary:
 | OWASP Agentic Top 10 mapping | [docs/owasp-mapping.md](docs/owasp-mapping.md) |
 | Competitive comparison | [docs/comparison.md](docs/comparison.md) |
 | Claude Code integration guide | [docs/guides/claude-code.md](docs/guides/claude-code.md) |
-| Blog | [blog/](https://luckypipewrench.github.io/pipelock/blog/) |
+| Blog | [pipelab.org/blog/](https://pipelab.org/blog/) |
 | Changelog | [CHANGELOG.md](CHANGELOG.md) |

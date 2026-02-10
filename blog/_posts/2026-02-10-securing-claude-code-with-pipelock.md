@@ -19,7 +19,7 @@ Here's what actually goes wrong:
 3. Claude Code processes the response and follows the injected instruction
 4. Your API keys, tokens, and credentials leave through an outbound HTTP request
 
-This isn't theoretical. The [ClawHub skills audit](https://luckypipewrench.github.io/pipelock/blog/2026/02/09/leaky-clawhub-skills-runtime-protection/) found 283 out of 3,984 skills referencing hardcoded credentials. Some of those skills are MCP servers that developers connect to their agents daily.
+This isn't theoretical. The [ClawHub skills audit](https://pipelab.org/blog/leaky-clawhub-skills/) found 283 out of 3,984 skills referencing hardcoded credentials. Some of those skills are MCP servers that developers connect to their agents daily.
 
 ## Setup: wrap your MCP servers
 

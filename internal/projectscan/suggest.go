@@ -2,6 +2,7 @@ package projectscan
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -42,14 +43,7 @@ func (s *SuggestCfg) BuildConfig() *config.Config {
 
 	// Apply preset-specific settings
 	switch s.Preset {
-	case AgentClaudeCode:
-		cfg.FetchProxy.Monitoring.EntropyThreshold = 5.0
-		cfg.FetchProxy.Monitoring.MaxURLLength = 4096
-		cfg.FetchProxy.Monitoring.MaxReqPerMinute = 120
-		cfg.ResponseScanning.Action = "block" //nolint:goconst // config action value
-		cfg.FetchProxy.Monitoring.Blocklist = append(cfg.FetchProxy.Monitoring.Blocklist,
-			"*.webhook.site", "*.pipedream.net")
-	case AgentCursor:
+	case AgentClaudeCode, AgentCursor:
 		cfg.FetchProxy.Monitoring.EntropyThreshold = 5.0
 		cfg.FetchProxy.Monitoring.MaxURLLength = 4096
 		cfg.FetchProxy.Monitoring.MaxReqPerMinute = 120
@@ -123,5 +117,6 @@ func uniqueEcosystems(domains []string) []string {
 			}
 		}
 	}
+	sort.Strings(result)
 	return result
 }

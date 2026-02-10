@@ -3,6 +3,8 @@ package projectscan
 import (
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -120,7 +122,7 @@ func TestScan_WithMCPServers(t *testing.T) {
 	// Should have an info finding about MCP
 	foundMCP := false
 	for _, f := range report.Findings {
-		if f.Category == "config" && len(report.MCPServers) > 0 {
+		if f.Category == "config" && strings.Contains(f.Message, "mcp.json") {
 			foundMCP = true
 		}
 	}
@@ -277,10 +279,19 @@ func TestScanFiles_EnvPrefix(t *testing.T) {
 }
 
 func TestScanFiles_UnreadableEntry(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission semantics differ on Windows")
+	}
 	dir := t.TempDir()
-	// scanFiles should skip unreadable entries without error
+	secret := filepath.Join(dir, ".env")
+	fakeKey := "sk-proj-" + "abcdefghijklmnop" + "qrstuvwxyz1234567890"
+	if err := os.WriteFile(secret, []byte("KEY="+fakeKey+"\n"), 0o000); err != nil {
+		t.Fatal(err)
+	}
 	findings := scanFiles(dir)
-	_ = findings // just ensure no panic
+	if len(findings) != 0 {
+		t.Error("expected no findings for unreadable file")
+	}
 }
 
 func TestScanFileForSecrets_UnreadableFile(t *testing.T) {

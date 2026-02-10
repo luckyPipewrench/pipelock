@@ -97,8 +97,8 @@ Full comparison: [docs/comparison.md](docs/comparison.md)
 # Install (requires Go 1.24+)
 go install github.com/luckyPipewrench/pipelock/cmd/pipelock@latest
 
-# Generate a config
-pipelock generate config --preset balanced -o pipelock.yaml
+# Scan your project and generate a tailored config
+pipelock audit . -o pipelock.yaml
 
 # Start the proxy
 pipelock run --config pipelock.yaml
@@ -157,6 +157,16 @@ What each mode prevents, detects, or logs:
 > **Honest assessment:** Strict mode provides mathematical certainty. Balanced mode raises the bar from "one curl command" to "sophisticated pre-planned attack." Audit mode gives you visibility you don't have today.
 
 ## Features
+
+### Project Audit
+
+Scan any project directory to detect security risks and generate a tailored config:
+
+```bash
+pipelock audit ./my-project -o pipelock-suggested.yaml
+```
+
+Detects agent type (Claude Code, Cursor, CrewAI, LangGraph, AutoGen), programming languages, package ecosystems, MCP servers, and secrets in environment variables and config files. Outputs a security score and a suggested config file tuned for your project.
 
 ### URL Scanning
 

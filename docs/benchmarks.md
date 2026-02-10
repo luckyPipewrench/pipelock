@@ -33,7 +33,7 @@ Pattern matching for prompt injection on fetched content. 5 regex patterns.
 |-----------|------:|-----:|----------:|
 | Clean (~90B) | 13,880 | 0 | 0 |
 | WithInjection (~100B) | 14,400 | 369 | 3 |
-| LargeClean (~10KB) | 1,880,000 | 88 | 0 |
+| LargeClean (~10KB) | 1,880,000 | 0 | 0 |
 
 ## MCP Response Scanning (`mcp.ScanResponse()`)
 

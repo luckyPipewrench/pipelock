@@ -2,7 +2,7 @@
 layout: post
 title: "Securing Claude Code with Pipelock"
 date: 2026-02-10
-author: Josh Waldrep
+author: luckyPipewrench
 description: "A practical guide to wrapping Claude Code's MCP servers with Pipelock for runtime prompt injection and credential leak protection."
 ---
 

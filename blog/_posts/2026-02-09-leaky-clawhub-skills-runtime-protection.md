@@ -2,7 +2,7 @@
 layout: post
 title: "283 ClawHub Skills Are Leaking Your Secrets. VirusTotal Can't Fix This."
 date: 2026-02-09
-author: Josh Waldrep
+author: luckyPipewrench
 description: "Snyk found 283 ClawHub skills leaking API keys and passwords through the LLM context window. VirusTotal's static scanning can't catch runtime exfiltration. Here's what can."
 ---
 

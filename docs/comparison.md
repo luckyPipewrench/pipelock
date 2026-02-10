@@ -101,4 +101,4 @@ Defense in depth: use tools at multiple layers. A compromised agent must bypass 
 - [AIP](https://github.com/ArangoGutierrez/agent-identity-protocol)
 - [agentsh](https://github.com/canyonroad/agentsh)
 - [srt](https://github.com/anthropic-experimental/sandbox-runtime)
-- [OWASP Agentic Top 10](https://owasp.org/www-project-agentic-ai-top-10/)
+- [OWASP Agentic Top 10](https://genai.owasp.org/resource/agentic-ai-threats-and-mitigations/)

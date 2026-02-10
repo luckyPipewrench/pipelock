@@ -1,13 +1,14 @@
 ---
 layout: default
-title: Home
+title: Pipelock Blog
+description: "Security research and practical guidance for AI agent systems."
 ---
 
 # Pipelock Blog
 
 Security research and practical guidance for AI agent systems.
 
-Pipelock is an open-source security harness that sits between AI agents and the outside world — scanning for secrets, blocking exfiltration, and monitoring file integrity in multi-agent workspaces.
+Pipelock is an open-source security harness that sits between AI agents and the outside world. It scans for secrets, blocks exfiltration, and monitors file integrity in multi-agent workspaces.
 
 {% for post in site.posts %}
 ### [{{ post.title }}]({{ post.url | relative_url }})

@@ -465,6 +465,10 @@ blog/                  GitHub Pages blog (Jekyll)
 - See [docs/comparison.md](docs/comparison.md) for how Pipelock relates to [AIP](https://github.com/ArangoGutierrez/agent-identity-protocol), [agentsh](https://github.com/canyonroad/agentsh), and [srt](https://github.com/anthropic-experimental/sandbox-runtime)
 - Security review contributions from Dylan Corrales
 
+## Support
+
+If Pipelock is useful to you, [star it on GitHub](https://github.com/luckyPipewrench/pipelock) so others can find it too.
+
 ## License
 
 Apache License 2.0 — Copyright 2026 Josh Waldrep

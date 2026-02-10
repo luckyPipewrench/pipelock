@@ -42,7 +42,7 @@ cmd/pipelock/          Entry point (main.go)
 internal/
   cli/                 Cobra commands (run, check, generate, logs, git, integrity, mcp, keygen, sign, verify, trust, version, healthcheck)
   proxy/               HTTP fetch proxy (/fetch, /health, /metrics, /stats)
-  scanner/             URL + response scanning pipeline (6 layers)
+  scanner/             URL + response scanning pipeline (7 layers)
   config/              YAML config loading, validation, hot-reload (fsnotify + SIGHUP)
   audit/               Structured JSON logging (zerolog)
   mcp/                 MCP stdio proxy + JSON-RPC 2.0 response scanning
@@ -65,14 +65,15 @@ Pipelock uses **capability separation**: the agent process (which has secrets an
 Agent (secrets, no network) → Pipelock Proxy (no secrets, full network) → Internet
 ```
 
-### Scanner Pipeline (6 layers)
+### Scanner Pipeline (7 layers)
 
 1. **SSRF** — Block private IPs, link-local, metadata endpoints. DNS rebinding protection.
 2. **Domain blocklist** — Configurable deny/allow lists per mode.
 3. **Rate limiting** — Per-domain sliding window.
-4. **DLP** — Regex patterns for API keys, tokens, credentials (8 built-in patterns, extensible via config). Includes env leak sub-check for raw + base64-encoded environment variable values.
-5. **Entropy** — Flag high-entropy URL segments that may be exfiltrated data (Shannon entropy > 3.0).
-6. **URL length** — Configurable max URL length.
+4. **DLP** — Regex patterns for API keys, tokens, credentials (8 built-in patterns, extensible via config).
+5. **Env leak** — Detect raw + base64-encoded environment variable values (Shannon entropy > 3.0).
+6. **Entropy** — Flag high-entropy URL segments that may be exfiltrated data.
+7. **URL length** — Configurable max URL length.
 
 Response scanning adds prompt injection detection on fetched content.
 

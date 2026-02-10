@@ -8,7 +8,7 @@ An honest feature matrix and guidance on when to use what.
 |---------|----------|-----|---------|-----|
 | **Layer** | HTTP proxy + CLI | MCP proxy | Kernel (seccomp/eBPF/FUSE) | OS sandbox |
 | **Language** | Go | Go | Go | TypeScript |
-| **Binary** | Single, ~17MB | Single | Single + kernel modules | npm package |
+| **Binary** | Single, ~12MB | Single | Single + kernel modules | npm package |
 | **Domain allowlist** | Yes | Yes (MCP-level) | Yes (LLM proxy) | Yes |
 | **DLP (secret detection)** | Regex + entropy + env scan | Regex (per-argument) | Regex (LLM proxy) | No |
 | **SSRF protection** | Yes (DNS pinning) | No | N/A (kernel-level) | N/A |
@@ -101,4 +101,4 @@ Defense in depth: use tools at multiple layers. A compromised agent must bypass 
 - [AIP](https://github.com/ArangoGutierrez/agent-identity-protocol)
 - [agentsh](https://github.com/canyonroad/agentsh)
 - [srt](https://github.com/anthropic-experimental/sandbox-runtime)
-- [OWASP Agentic Top 10](https://genai.owasp.org/resource/agentic-ai-threats-and-mitigations/)
+- [OWASP Agentic Top 10](https://genai.owasp.org/resource/owasp-top-10-for-agentic-applications-for-2026/)

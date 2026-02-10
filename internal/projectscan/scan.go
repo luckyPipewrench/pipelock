@@ -317,8 +317,9 @@ func scanFileForEntropy(path, relPath string) []Finding {
 
 // redact shows the first 8 characters followed by "...".
 func redact(s string) string {
-	if len(s) <= 8 {
+	r := []rune(s)
+	if len(r) <= 8 {
 		return "***"
 	}
-	return s[:8] + "..."
+	return string(r[:8]) + "..."
 }

@@ -148,6 +148,8 @@ func scanEnvSecrets() []Finding {
 	patterns := compileDLPPatterns()
 	var findings []Finding
 
+	// All secret matches are critical in audit context regardless of DLP pattern severity.
+	// Pattern severity applies to proxy runtime scanning, not project auditing.
 	for _, env := range os.Environ() {
 		parts := strings.SplitN(env, "=", 2)
 		if len(parts) != 2 || len(parts[1]) < 8 {

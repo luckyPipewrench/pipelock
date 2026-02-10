@@ -3,6 +3,7 @@ package cli
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -30,7 +31,7 @@ Examples:
   pipelock logs --file pipelock-audit.log -f`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if logFile == "" {
-				return fmt.Errorf("--file is required (specify the audit log file path)")
+				return errLogFileRequired
 			}
 
 			f, err := os.Open(logFile) //nolint:gosec // G304: path from user flag
@@ -62,10 +63,14 @@ Examples:
 			}
 
 			if follow {
-				// Simple follow: keep reading new lines
-				fmt.Fprintln(os.Stderr, "--- following (Ctrl+C to stop) ---")
+				cmd.PrintErrln("--- following (Ctrl+C to stop) ---")
 				reader := bufio.NewReader(f)
 				for {
+					select {
+					case <-cmd.Context().Done():
+						return nil
+					default:
+					}
 					line, err := reader.ReadString('\n')
 					if err != nil {
 						if err == io.EOF {
@@ -93,6 +98,8 @@ Examples:
 
 	return cmd
 }
+
+var errLogFileRequired = errors.New("--file is required (specify the audit log file path)")
 
 // matchFilter checks if a JSON log line matches the event type filter.
 func matchFilter(line, filter string) bool {

@@ -140,7 +140,7 @@ func TestScanFiles_DotEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	findings := scanFiles(dir)
+	findings := scanFiles(dir, compileDLPPatterns())
 	if len(findings) == 0 {
 		t.Fatal("expected findings from .env file")
 	}
@@ -169,7 +169,7 @@ func TestScanFiles_SkipsNodeModules(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	findings := scanFiles(dir)
+	findings := scanFiles(dir, compileDLPPatterns())
 	for _, f := range findings {
 		if f.File != "" && filepath.Base(filepath.Dir(f.File)) == "bad-pkg" {
 			t.Error("should not scan files in node_modules")
@@ -185,7 +185,7 @@ func TestScanFiles_LargeFileSkipped(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	findings := scanFiles(dir)
+	findings := scanFiles(dir, compileDLPPatterns())
 	if len(findings) != 0 {
 		t.Error("expected no findings from oversized file")
 	}
@@ -200,7 +200,7 @@ func TestScanFiles_YAMLConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	findings := scanFiles(dir)
+	findings := scanFiles(dir, compileDLPPatterns())
 	foundAnthropic := false
 	for _, f := range findings {
 		if f.Pattern == "Anthropic API Key" {
@@ -272,7 +272,7 @@ func TestScanFiles_EnvPrefix(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	findings := scanFiles(dir)
+	findings := scanFiles(dir, compileDLPPatterns())
 	if len(findings) == 0 {
 		t.Error("expected findings from .env.production file")
 	}
@@ -288,7 +288,7 @@ func TestScanFiles_UnreadableEntry(t *testing.T) {
 	if err := os.WriteFile(secret, []byte("KEY="+fakeKey+"\n"), 0o000); err != nil {
 		t.Fatal(err)
 	}
-	findings := scanFiles(dir)
+	findings := scanFiles(dir, compileDLPPatterns())
 	if len(findings) != 0 {
 		t.Error("expected no findings for unreadable file")
 	}

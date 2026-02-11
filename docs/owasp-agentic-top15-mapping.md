@@ -212,13 +212,13 @@ This is separate from the [OWASP Top 10 for Agentic Applications](owasp-mapping.
 
 ## Summary
 
-Pipelock provides coverage for **11 of 15** threats in the OWASP Agentic AI framework:
+Pipelock provides coverage for **12 of 15** threats in the OWASP Agentic AI framework:
 
-- **Strong (5):** T1, T3, T7, T8, T13
+- **Strong (6):** T1, T3, T7, T8, T12, T13
 - **Moderate (2):** T6, T11
 - **Partial (4):** T2, T4, T9, T14
 - **Not yet addressed (1):** T10
-- **Out of scope (3):** T5, T15
+- **Out of scope (2):** T5, T15
 
 The strongest coverage areas are egress filtering, DLP, audit logging, integrity monitoring, and MCP scanning. The primary gaps are in HITL flood protection (T10), agent identity/authentication (T9), and semantic content analysis (T5/T6).
 

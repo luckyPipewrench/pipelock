@@ -104,6 +104,41 @@ func TestScan_ClaudeCodeProject(t *testing.T) {
 	}
 }
 
+func TestScan_CriticalFindingPenalizesScore(t *testing.T) {
+	dir := t.TempDir()
+	// Plant a .env with a fake API key so Scan() produces a critical finding
+	fakeKey := "sk-proj-" + "abcdefghijklmnop" + "qrstuvwxyz1234567890"
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("KEY="+fakeKey+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := Scan(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Must have at least one critical finding
+	criticals := 0
+	for _, f := range report.Findings {
+		if f.Severity == "critical" {
+			criticals++
+		}
+	}
+	if criticals == 0 {
+		t.Fatal("expected at least one critical finding from .env secret")
+	}
+
+	// ScoreWith should be penalized (base score minus 5 per critical)
+	baseWith := computeScore(report.Config)
+	expectedWith := baseWith - criticals*5
+	if expectedWith < 0 {
+		expectedWith = 0
+	}
+	if report.ScoreWith != expectedWith {
+		t.Errorf("ScoreWith = %d, want %d (base %d minus %d criticals * 5)", report.ScoreWith, expectedWith, baseWith, criticals)
+	}
+}
+
 func TestScan_WithMCPServers(t *testing.T) {
 	dir := t.TempDir()
 	mcp := `{"mcpServers": {"filesystem": {"command": "npx"}, "postgres": {"command": "npx"}}}`

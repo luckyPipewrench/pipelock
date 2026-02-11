@@ -1,6 +1,7 @@
 package gitprotect
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -318,5 +319,52 @@ func TestFormatFindings_WithFindings(t *testing.T) {
 	}
 	if !strings.Contains(result, "main.go:10") {
 		t.Errorf("expected file:line in output, got %q", result)
+	}
+}
+
+func TestFindingsJSON_WithFindings(t *testing.T) {
+	findings := []Finding{
+		{File: "main.go", Line: 42, Pattern: "AWS Key", Severity: "critical", Content: "[REDACTED]"},
+	}
+	data, err := FindingsJSON(findings)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var decoded []Finding
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if len(decoded) != 1 {
+		t.Fatalf("expected 1 finding, got %d", len(decoded))
+	}
+	if decoded[0].File != "main.go" {
+		t.Errorf("expected file main.go, got %q", decoded[0].File)
+	}
+	if decoded[0].Line != 42 {
+		t.Errorf("expected line 42, got %d", decoded[0].Line)
+	}
+	if decoded[0].Pattern != "AWS Key" {
+		t.Errorf("expected pattern 'AWS Key', got %q", decoded[0].Pattern)
+	}
+}
+
+func TestFindingsJSON_Empty(t *testing.T) {
+	data, err := FindingsJSON(nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(data) != "[]" {
+		t.Errorf("expected [], got %q", string(data))
+	}
+}
+
+func TestFindingsJSON_EmptySlice(t *testing.T) {
+	data, err := FindingsJSON([]Finding{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(data) != "[]" {
+		t.Errorf("expected [], got %q", string(data))
 	}
 }

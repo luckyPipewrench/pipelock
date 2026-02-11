@@ -35,6 +35,7 @@ Examples:
 
 func scanDiffCmd() *cobra.Command {
 	var configFile string
+	var jsonOutput bool
 
 	cmd := &cobra.Command{
 		Use:   "scan-diff",
@@ -45,8 +46,9 @@ Designed for use in git hooks or CI pipelines. Exit code 1 if secrets are found.
 
 Examples:
   git diff HEAD~1 | pipelock git scan-diff
-  git diff --cached | pipelock git scan-diff --config pipelock.yaml`,
-		RunE: func(_ *cobra.Command, _ []string) error {
+  git diff --cached | pipelock git scan-diff --config pipelock.yaml
+  git diff HEAD~1 | pipelock git scan-diff --json`,
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := loadConfigOrDefault(configFile)
 			if err != nil {
 				return err
@@ -62,14 +64,26 @@ Examples:
 			}
 
 			if len(diffData) == 0 {
-				fmt.Fprintln(os.Stderr, "No diff content on stdin.")
+				if jsonOutput {
+					_, _ = fmt.Fprintln(cmd.OutOrStdout(), "[]")
+					return nil
+				}
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "No diff content on stdin.")
 				return nil
 			}
 
 			patterns := gitprotect.CompileDLPPatterns(cfg.DLP.Patterns)
 			findings := gitprotect.ScanDiff(string(diffData), patterns)
 
-			fmt.Fprint(os.Stderr, gitprotect.FormatFindings(findings))
+			if jsonOutput {
+				data, jsonErr := gitprotect.FindingsJSON(findings)
+				if jsonErr != nil {
+					return fmt.Errorf("encoding findings: %w", jsonErr)
+				}
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), string(data))
+			} else {
+				_, _ = fmt.Fprint(cmd.ErrOrStderr(), gitprotect.FormatFindings(findings))
+			}
 
 			if len(findings) > 0 {
 				return ErrSecretsFound
@@ -79,6 +93,7 @@ Examples:
 	}
 
 	cmd.Flags().StringVarP(&configFile, "config", "c", "", "config file path")
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "output findings as JSON")
 	return cmd
 }
 

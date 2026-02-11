@@ -48,7 +48,7 @@ brews:
       owner: luckyPipewrench
       name: homebrew-tap
       branch: main
-      token: "{{ .Env.GITHUB_TOKEN }}"
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     homepage: "https://github.com/luckyPipewrench/pipelock"
     description: "Security harness for AI agents"
     license: "Apache-2.0"

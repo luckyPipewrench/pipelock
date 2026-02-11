@@ -3,6 +3,7 @@
 package gitprotect
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"sort"
@@ -14,11 +15,11 @@ import (
 
 // Finding represents a secret detected in a git diff.
 type Finding struct {
-	File     string // source file path
-	Line     int    // line number in the new file
-	Content  string // sanitized line — actual secret replaced with [REDACTED]
-	Pattern  string // DLP pattern name that matched
-	Severity string // severity level from the DLP pattern
+	File     string `json:"file"`
+	Line     int    `json:"line"`
+	Content  string `json:"content"`
+	Pattern  string `json:"pattern"`
+	Severity string `json:"severity"`
 }
 
 // addedLine represents a line that was added in a diff hunk.
@@ -165,6 +166,15 @@ func ScanDiff(diffText string, patterns []CompiledDLPPattern) []Finding {
 	})
 
 	return findings
+}
+
+// FindingsJSON returns the findings as a JSON-encoded byte slice.
+// An empty or nil slice is encoded as "[]" (not "null").
+func FindingsJSON(findings []Finding) ([]byte, error) {
+	if findings == nil {
+		findings = []Finding{}
+	}
+	return json.Marshal(findings)
 }
 
 // FormatFindings returns a human-readable summary of findings.

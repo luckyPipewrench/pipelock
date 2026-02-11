@@ -1,13 +1,25 @@
 package cli
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/gitprotect"
 )
+
+const cleanDiff = `diff --git a/main.go b/main.go
+--- a/main.go
++++ b/main.go
+@@ -1,2 +1,3 @@
+ package main
++import "fmt"
+
+`
 
 // fakeKey builds a test credential at runtime to avoid gitleaks false positives.
 func fakeKey(suffix string) string {
@@ -51,14 +63,7 @@ func TestGitCmd_InRootHelp(t *testing.T) {
 }
 
 func TestScanDiffCmd_CleanDiff(t *testing.T) {
-	diff := `diff --git a/main.go b/main.go
---- a/main.go
-+++ b/main.go
-@@ -1,2 +1,3 @@
- package main
-+import "fmt"
-
-`
+	diff := cleanDiff
 	r, w, _ := os.Pipe()
 	_, _ = w.WriteString(diff)
 	_ = w.Close()
@@ -464,14 +469,7 @@ fetch_proxy:
 		t.Fatal(err)
 	}
 
-	diff := `diff --git a/main.go b/main.go
---- a/main.go
-+++ b/main.go
-@@ -1,2 +1,3 @@
- package main
-+import "fmt"
-
-`
+	diff := cleanDiff
 	r, w, _ := os.Pipe()
 	_, _ = w.WriteString(diff)
 	_ = w.Close()
@@ -541,5 +539,103 @@ func TestInstallHooksCmd_WithConfig(t *testing.T) {
 	data, _ := os.ReadFile(hookPath) //nolint:gosec // test reads its own temp file
 	if !strings.Contains(string(data), "/etc/pipelock.yaml") {
 		t.Error("hook should contain the config path")
+	}
+}
+
+func TestScanDiffCmd_JSON_CleanDiff(t *testing.T) {
+	diff := cleanDiff
+	r, w, _ := os.Pipe()
+	_, _ = w.WriteString(diff)
+	_ = w.Close()
+
+	oldStdin := os.Stdin
+	os.Stdin = r
+	defer func() { os.Stdin = oldStdin }()
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"git", "scan-diff", "--json"})
+
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	output := strings.TrimSpace(buf.String())
+	if output != "[]" {
+		t.Errorf("expected [], got %q", output)
+	}
+}
+
+func TestScanDiffCmd_JSON_FindsSecret(t *testing.T) {
+	key := fakeKey("EXAMPLE")
+	diff := fmt.Sprintf(`diff --git a/config.go b/config.go
+--- a/config.go
++++ b/config.go
+@@ -1,2 +1,3 @@
+ package config
++var key = "%s"
+
+`, key)
+
+	r, w, _ := os.Pipe()
+	_, _ = w.WriteString(diff)
+	_ = w.Close()
+
+	oldStdin := os.Stdin
+	os.Stdin = r
+	defer func() { os.Stdin = oldStdin }()
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"git", "scan-diff", "--json"})
+
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+
+	err := cmd.Execute()
+	if !errors.Is(err, ErrSecretsFound) {
+		t.Fatalf("expected ErrSecretsFound, got: %v", err)
+	}
+
+	var findings []gitprotect.Finding
+	if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &findings); err != nil {
+		t.Fatalf("invalid JSON output: %v\nraw: %q", err, buf.String())
+	}
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d", len(findings))
+	}
+	if findings[0].File != "config.go" {
+		t.Errorf("expected file config.go, got %q", findings[0].File)
+	}
+	if findings[0].Pattern == "" {
+		t.Error("expected non-empty pattern")
+	}
+}
+
+func TestScanDiffCmd_JSON_EmptyStdin(t *testing.T) {
+	r, w, _ := os.Pipe()
+	_ = w.Close()
+
+	oldStdin := os.Stdin
+	os.Stdin = r
+	defer func() { os.Stdin = oldStdin }()
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"git", "scan-diff", "--json"})
+
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	output := strings.TrimSpace(buf.String())
+	if output != "[]" {
+		t.Errorf("expected [] for empty stdin, got %q", output)
 	}
 }

@@ -127,12 +127,15 @@ func Scan(dir string) (*Report, error) {
 		})
 	}
 
+	// Compile DLP patterns once for both scans
+	patterns := compileDLPPatterns()
+
 	// Scan for secrets in environment
-	envFindings := scanEnvSecrets()
+	envFindings := scanEnvSecrets(patterns)
 	r.Findings = append(r.Findings, envFindings...)
 
 	// Scan files for secrets
-	fileFindings := scanFiles(dir)
+	fileFindings := scanFiles(dir, patterns)
 	r.Findings = append(r.Findings, fileFindings...)
 
 	// Build suggestion and compute scores
@@ -140,12 +143,22 @@ func Scan(dir string) (*Report, error) {
 	r.Score = computeScore(nil)
 	r.ScoreWith = computeScore(r.Config)
 
+	// Penalize "with config" score for critical findings that need manual remediation.
+	// A suggested config enables protections but doesn't fix existing leaked secrets.
+	for _, f := range r.Findings {
+		if f.Severity == "critical" {
+			r.ScoreWith -= 5
+		}
+	}
+	if r.ScoreWith < 0 {
+		r.ScoreWith = 0
+	}
+
 	return r, nil
 }
 
 // scanEnvSecrets checks environment variables against DLP patterns.
-func scanEnvSecrets() []Finding {
-	patterns := compileDLPPatterns()
+func scanEnvSecrets(patterns []compiledDLP) []Finding {
 	var findings []Finding
 
 	// All secret matches are critical in audit context regardless of DLP pattern severity.
@@ -193,8 +206,7 @@ func compileDLPPatterns() []compiledDLP {
 }
 
 // scanFiles walks the directory and scans config/env files for secrets.
-func scanFiles(dir string) []Finding {
-	patterns := compileDLPPatterns()
+func scanFiles(dir string, patterns []compiledDLP) []Finding {
 	var findings []Finding
 
 	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {

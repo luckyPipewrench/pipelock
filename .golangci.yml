@@ -21,6 +21,11 @@ linters:
     - unparam
     - usestdlibvars
     - wastedassign
+  settings:
+    revive:
+      rules:
+        - name: var-naming
+          disabled: true
 
 formatters:
   enable:

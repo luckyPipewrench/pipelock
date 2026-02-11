@@ -98,7 +98,7 @@ func parseHunkNewStart(hunkLine string) int {
 	}
 
 	n, err := strconv.Atoi(rest[:end])
-	if err != nil {
+	if err != nil || n < 1 {
 		return 1
 	}
 	return n

@@ -42,14 +42,15 @@ type request struct {
 // Approver handles human-in-the-loop terminal prompts.
 // If stdin is not a terminal, all requests auto-block (fail-closed).
 type Approver struct {
-	timeout    time.Duration
-	input      io.Reader
-	output     io.Writer
-	queue      chan request
-	ctx        context.Context
-	cancel     context.CancelFunc
-	wg         sync.WaitGroup
-	isTerminal bool
+	timeout            time.Duration
+	input              io.Reader
+	output             io.Writer
+	queue              chan request
+	ctx                context.Context
+	cancel             context.CancelFunc
+	wg                 sync.WaitGroup
+	isTerminal         bool
+	lastPromptTimedOut bool // true if previous prompt hit timeout (stale input possible)
 }
 
 // Option configures an Approver.
@@ -183,8 +184,26 @@ func (a *Approver) readLines(lines chan<- string) {
 	}
 }
 
+// drainStaleLines discards any buffered lines from the channel that were
+// left over from previous prompts (e.g., timeout or extra input).
+func (a *Approver) drainStaleLines(lines <-chan string) {
+	for {
+		select {
+		case <-lines:
+		default:
+			return
+		}
+	}
+}
+
 // prompt displays the threat details and reads the operator's decision.
 func (a *Approver) prompt(lines <-chan string, req *Request) Decision {
+	// Drain stale input only if the previous prompt timed out, because
+	// a timeout leaves the operator's late response sitting in the channel.
+	if a.lastPromptTimedOut {
+		a.drainStaleLines(lines)
+		a.lastPromptTimedOut = false
+	}
 	_, _ = fmt.Fprintf(a.output, "\n=== PIPELOCK: THREAT DETECTED ===\n")
 	if req.Agent != "" {
 		_, _ = fmt.Fprintf(a.output, "Agent:    %s\n", req.Agent)
@@ -214,18 +233,21 @@ func (a *Approver) prompt(lines <-chan string, req *Request) Decision {
 		}
 	case <-time.After(a.timeout):
 		_, _ = fmt.Fprintln(a.output, "\nTimeout — blocked.")
+		a.lastPromptTimedOut = true
 		return DecisionBlock
 	case <-a.ctx.Done():
 		return DecisionBlock
 	}
 }
 
-// truncate returns s truncated to max characters with "..." suffix.
+// truncate returns s truncated to max runes with "..." suffix.
+// Uses rune slicing to avoid splitting multi-byte UTF-8 characters.
 func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
 		return s
 	}
-	return s[:maxLen] + "..."
+	return string(runes[:maxLen]) + "..."
 }
 
 // isStdinTerminal checks if os.Stdin is a terminal device.

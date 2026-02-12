@@ -179,6 +179,11 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 	return p
 }
 
+// CurrentConfig returns the currently active config. Used for reload comparison.
+func (p *Proxy) CurrentConfig() *config.Config {
+	return p.cfgPtr.Load()
+}
+
 // Reload atomically swaps the config and scanner for hot-reload support.
 // The old scanner is closed to release its rate limiter goroutine.
 //
@@ -236,6 +241,16 @@ func (p *Proxy) Start(ctx context.Context) error {
 		case <-done:
 		}
 	}()
+
+	// Warn if listen address exposes metrics/stats to the network
+	if host, _, splitErr := net.SplitHostPort(cfg.FetchProxy.Listen); splitErr == nil {
+		ip := net.ParseIP(host)
+		if host == "" || host == "0.0.0.0" || host == "::" || (ip != nil && !ip.IsLoopback()) {
+			p.logger.LogAnomaly("STARTUP", cfg.FetchProxy.Listen,
+				"listen address is not loopback — /metrics and /stats endpoints are exposed to the network",
+				"", "", 0.5)
+		}
+	}
 
 	p.logger.LogStartup(cfg.FetchProxy.Listen, cfg.Mode)
 
@@ -297,7 +312,11 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		if cfg.EnforceEnabled() {
 			log.LogBlocked("GET", targetURL, result.Scanner, result.Reason, clientIP, requestID)
 			p.metrics.RecordBlocked(parsed.Hostname(), result.Scanner, time.Since(start))
-			writeJSON(w, http.StatusForbidden, FetchResponse{
+			status := http.StatusForbidden
+			if result.Scanner == "ratelimit" {
+				status = http.StatusTooManyRequests
+			}
+			writeJSON(w, status, FetchResponse{
 				URL:         targetURL,
 				Agent:       agent,
 				Blocked:     true,
@@ -308,9 +327,6 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		// Audit mode: log anomaly but allow through
 		log.LogAnomaly("GET", targetURL, fmt.Sprintf("[audit] %s: %s", result.Scanner, result.Reason), clientIP, requestID, result.Score)
 	}
-
-	// Record successful scan for rate limiting
-	sc.RecordRequest(strings.ToLower(parsed.Hostname()))
 
 	// Fetch the URL — attach clientIP/requestID/agent to context for redirect logging
 	ctx := context.WithValue(r.Context(), ctxKeyClientIP, clientIP)
@@ -332,6 +348,19 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := p.client.Do(req)
 	if err != nil {
+		// Detect redirect blocks (from CheckRedirect) and report as blocked, not error.
+		if strings.Contains(err.Error(), "redirect blocked:") {
+			reason := err.Error()
+			log.LogBlocked("GET", targetURL, "redirect", reason, clientIP, requestID)
+			p.metrics.RecordBlocked(parsed.Hostname(), "redirect", time.Since(start))
+			writeJSON(w, http.StatusForbidden, FetchResponse{
+				URL:         targetURL,
+				Agent:       agent,
+				Blocked:     true,
+				BlockReason: reason,
+			})
+			return
+		}
 		log.LogError("GET", targetURL, clientIP, requestID, err)
 		writeJSON(w, http.StatusBadGateway, FetchResponse{
 			URL:   targetURL,
@@ -424,6 +453,9 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+
+	// Record response size for per-domain data budget tracking
+	sc.RecordRequest(strings.ToLower(parsed.Hostname()), len(body))
 
 	duration := time.Since(start)
 	p.metrics.RecordAllowed(duration)

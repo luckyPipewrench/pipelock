@@ -80,7 +80,7 @@ dlp:
       regex: 'gh[ps]_[A-Za-z0-9_]{36,}'
       severity: critical
     - name: "Slack Token"
-      regex: 'xox[bpras]-[0-9a-zA-Z-]+'
+      regex: 'xox[bpras]-[0-9a-zA-Z-]{15,}'
       severity: critical
     - name: "AWS Access Key"
       regex: 'AKIA[0-9A-Z]{16}'
@@ -94,6 +94,15 @@ dlp:
     - name: "Google API Key"
       regex: 'AIza[0-9A-Za-z\-_]{35}'
       severity: high
+    - name: "GitHub Fine-Grained PAT"
+      regex: 'github_pat_[a-zA-Z0-9_]{36,}'
+      severity: critical
+    - name: "OpenAI Service Key"
+      regex: 'sk-svcacct-[a-zA-Z0-9\-]{20,}'
+      severity: critical
+    - name: "Stripe Key"
+      regex: '[sr]k_(live|test)_[a-zA-Z0-9]{20,}'
+      severity: critical
 
 response_scanning:
   enabled: true

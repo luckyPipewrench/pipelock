@@ -662,3 +662,490 @@ func fileNames(m *Manifest) []string {
 	sort.Strings(names)
 	return names
 }
+
+// --- Permission Violation Tests ---
+
+func TestCheck_PermissionViolation(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "script.sh", "#!/bin/bash\necho hello\n")
+
+	// Generate initial manifest
+	manifest, err := Generate(dir, nil)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	// Change file permissions
+	path := filepath.Join(dir, "script.sh")
+	if err := os.Chmod(path, 0o755); err != nil { //nolint:gosec // G302: testing permission change detection
+		t.Fatal(err)
+	}
+
+	// Re-generate to get the updated mode, then manually set manifest to expect old mode
+	current, err := Generate(dir, nil)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	// Set expected mode to something different from current
+	entry := manifest.Files["script.sh"]
+	entry.Mode = "0600"
+	entry.SHA256 = current.Files["script.sh"].SHA256 // keep hash same
+	manifest.Files["script.sh"] = entry
+
+	violations, err := Check(dir, manifest)
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+
+	found := false
+	for _, v := range violations {
+		if v.Type == ViolationPermissions && v.Path == "script.sh" {
+			found = true
+			if v.Expected != "0600" {
+				t.Errorf("expected mode '0600', got %q", v.Expected)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("expected permissions violation for script.sh")
+	}
+}
+
+func TestCheck_NoPermissionViolation_MatchingMode(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "readme.txt", "hello\n")
+
+	manifest, err := Generate(dir, nil)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	// Check with unchanged permissions - should have no violations
+	violations, err := Check(dir, manifest)
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+
+	for _, v := range violations {
+		if v.Type == ViolationPermissions {
+			t.Errorf("unexpected permissions violation for %s", v.Path)
+		}
+	}
+}
+
+func TestCheck_NoPermissionViolation_EmptyMode(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "old.txt", "content\n")
+
+	manifest, err := Generate(dir, nil)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	// Simulate an old manifest without Mode field (backward compat)
+	entry := manifest.Files["old.txt"]
+	entry.Mode = "" // old manifest format
+	manifest.Files["old.txt"] = entry
+
+	violations, err := Check(dir, manifest)
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+
+	for _, v := range violations {
+		if v.Type == ViolationPermissions {
+			t.Error("should not report permissions when manifest has empty Mode")
+		}
+	}
+}
+
+// --- Manifest Save Tests ---
+
+func TestManifest_Save_RoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "test.txt", "hello\n")
+
+	manifest, err := Generate(dir, nil)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	savePath := filepath.Join(dir, ".manifest.json")
+	if err := manifest.Save(savePath); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	loaded, err := Load(savePath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if len(loaded.Files) != len(manifest.Files) {
+		t.Errorf("file count: got %d, want %d", len(loaded.Files), len(manifest.Files))
+	}
+	for path, entry := range manifest.Files {
+		loadedEntry, ok := loaded.Files[path]
+		if !ok {
+			t.Errorf("missing file %s in loaded manifest", path)
+			continue
+		}
+		if loadedEntry.SHA256 != entry.SHA256 {
+			t.Errorf("%s: hash mismatch", path)
+		}
+	}
+}
+
+func TestManifest_Save_BadDirectory(t *testing.T) {
+	m := &Manifest{
+		Version: ManifestVersion,
+		Files:   map[string]FileEntry{},
+	}
+	err := m.Save("/nonexistent/dir/manifest.json")
+	if err == nil {
+		t.Fatal("expected error for bad directory")
+	}
+}
+
+func TestHashFile_NonexistentFile(t *testing.T) {
+	_, err := HashFile("/nonexistent/file.txt")
+	if err == nil {
+		t.Fatal("expected error for nonexistent file")
+	}
+	if !strings.Contains(err.Error(), "opening file") {
+		t.Errorf("expected 'opening file' error, got: %v", err)
+	}
+}
+
+func TestHashFile_ValidFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.txt")
+	content := "hello world\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	entry, err := HashFile(path)
+	if err != nil {
+		t.Fatalf("HashFile: %v", err)
+	}
+	if entry.SHA256 == "" {
+		t.Error("expected non-empty hash")
+	}
+	if entry.Size != int64(len(content)) {
+		t.Errorf("expected size %d, got %d", len(content), entry.Size)
+	}
+	if entry.Mode == "" {
+		t.Error("expected non-empty mode")
+	}
+}
+
+func TestManifest_Load_NullFiles(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bad.json")
+	// Valid JSON with version but files is null.
+	if err := os.WriteFile(path, []byte(`{"version":1,"files":null}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for null files field")
+	}
+	if !strings.Contains(err.Error(), "null") {
+		t.Errorf("expected error about null files, got: %v", err)
+	}
+}
+
+func TestManifest_Load_WrongVersion(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "v2.json")
+	if err := os.WriteFile(path, []byte(`{"version":99,"files":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for wrong version")
+	}
+}
+
+func TestManifest_Load_InvalidJSON(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bad.json")
+	if err := os.WriteFile(path, []byte(`{not json}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for invalid JSON")
+	}
+}
+
+func TestManifest_Load_NonexistentFile(t *testing.T) {
+	_, err := Load("/nonexistent/manifest.json")
+	if err == nil {
+		t.Fatal("expected error for nonexistent file")
+	}
+}
+
+func TestManifest_Save_ReadOnlyDir(t *testing.T) {
+	dir := t.TempDir()
+	subdir := filepath.Join(dir, "readonly")
+	if err := os.MkdirAll(subdir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	// Make dir read-only so CreateTemp fails.
+	if err := os.Chmod(subdir, 0o500); err != nil { //nolint:gosec // intentionally restrictive for test
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(subdir, 0o700) }) //nolint:gosec // restore for cleanup
+
+	m := &Manifest{
+		Version: ManifestVersion,
+		Files:   map[string]FileEntry{"a.txt": {SHA256: "abc", Size: 3, Mode: "0644"}},
+	}
+	err := m.Save(filepath.Join(subdir, "manifest.json"))
+	if err == nil {
+		t.Fatal("expected error for read-only directory")
+	}
+}
+
+func TestGenerate_SymlinkSkipped(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "real.txt"), []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Create a symlink that should be skipped.
+	if err := os.Symlink(filepath.Join(dir, "real.txt"), filepath.Join(dir, "link.txt")); err != nil {
+		t.Skip("symlinks not supported on this platform")
+	}
+
+	m, err := Generate(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := m.Files["link.txt"]; ok {
+		t.Error("expected symlink to be skipped")
+	}
+	if _, ok := m.Files["real.txt"]; !ok {
+		t.Error("expected real.txt in manifest")
+	}
+}
+
+func TestGenerate_HashErrorOnUnreadable(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "noperm.txt")
+	if err := os.WriteFile(path, []byte("secret"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(path, 0o600) }) //nolint:errcheck,gosec // cleanup
+
+	_, err := Generate(dir, nil)
+	if err == nil {
+		t.Fatal("expected error for unreadable file")
+	}
+}
+
+func TestCheck_ModifiedFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "data.txt")
+	if err := os.WriteFile(path, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := Generate(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Modify the file.
+	if err := os.WriteFile(path, []byte("modified"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	violations, err := Check(dir, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(violations) == 0 {
+		t.Fatal("expected violations for modified file")
+	}
+
+	found := false
+	for _, v := range violations {
+		if v.Path == "data.txt" && v.Type == ViolationModified {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected ViolationModified for data.txt")
+	}
+}
+
+func TestCheck_AddedFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "one.txt"), []byte("one"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := Generate(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Add a new file.
+	if err := os.WriteFile(filepath.Join(dir, "two.txt"), []byte("two"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	violations, err := Check(dir, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	found := false
+	for _, v := range violations {
+		if v.Path == "two.txt" && v.Type == ViolationAdded {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected ViolationAdded for two.txt")
+	}
+}
+
+func TestCheck_RemovedFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "gone.txt")
+	if err := os.WriteFile(path, []byte("temp"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := Generate(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Remove the file.
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+
+	violations, err := Check(dir, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	found := false
+	for _, v := range violations {
+		if v.Path == "gone.txt" && v.Type == ViolationRemoved {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected ViolationRemoved for gone.txt")
+	}
+}
+
+func TestMatchDoublestar_MultipleDoubleStars(t *testing.T) {
+	// Multiple ** segments should return false.
+	if matchDoublestar("a/**/b/**/c", "a/x/b/y/c") {
+		t.Error("expected false for multiple ** segments")
+	}
+}
+
+func TestMatchDoublestar_PrefixExactMatch(t *testing.T) {
+	// relPath equals prefix exactly (without trailing path).
+	if !matchDoublestar("dir/**", "dir/file.txt") {
+		t.Error("expected match for dir/**")
+	}
+}
+
+func TestMatchDoublestar_SuffixPattern(t *testing.T) {
+	// **/pattern matching nested files.
+	if !matchDoublestar("**/*.go", "internal/pkg/file.go") {
+		t.Error("expected match for **/*.go")
+	}
+	if matchDoublestar("**/*.go", "internal/pkg/file.txt") {
+		t.Error("expected no match for .txt file")
+	}
+}
+
+func TestManifest_SaveAndLoad_RoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test-manifest.json")
+
+	m := &Manifest{
+		Version: ManifestVersion,
+		Files: map[string]FileEntry{
+			"a.txt": {SHA256: "abc123", Size: 6, Mode: "0644"},
+			"b.txt": {SHA256: "def456", Size: 9, Mode: "0600"},
+		},
+	}
+	if err := m.Save(path); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Version != ManifestVersion {
+		t.Errorf("expected version %d, got %d", ManifestVersion, loaded.Version)
+	}
+	if len(loaded.Files) != 2 {
+		t.Errorf("expected 2 files, got %d", len(loaded.Files))
+	}
+	if loaded.Files["a.txt"].SHA256 != "abc123" {
+		t.Errorf("expected abc123, got %s", loaded.Files["a.txt"].SHA256)
+	}
+}
+
+func TestCheck_HashError(t *testing.T) {
+	// Check should report an error when a file in the manifest can't be read.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secret.txt")
+	if err := os.WriteFile(path, []byte("data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := Generate(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Make the file unreadable so hash fails during Check.
+	if err := os.Chmod(path, 0o000); err != nil { //nolint:gosec // intentionally restrictive for test
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(path, 0o600) }) //nolint:gosec // restore
+
+	violations, err := Check(dir, m)
+	if err == nil && len(violations) == 0 {
+		t.Fatal("expected either an error or a violation for unreadable file")
+	}
+}
+
+func TestGenerate_WalkError(t *testing.T) {
+	// Generate should handle errors from the file walker gracefully.
+	dir := t.TempDir()
+	subdir := filepath.Join(dir, "readable")
+	if err := os.MkdirAll(subdir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(subdir, "ok.txt"), []byte("ok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Make the subdir unreadable so WalkDir can't list its contents.
+	if err := os.Chmod(subdir, 0o000); err != nil { //nolint:gosec // intentionally restrictive for test
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(subdir, 0o700) }) //nolint:gosec // restore
+
+	_, err := Generate(dir, nil)
+	if err == nil {
+		t.Fatal("expected error for unreadable subdirectory")
+	}
+}

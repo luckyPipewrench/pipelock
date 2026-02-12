@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -511,5 +512,99 @@ func TestKeygenCmd_RegisteredInHelp(t *testing.T) {
 		if !strings.Contains(output, sub) {
 			t.Errorf("root help should list %q command", sub)
 		}
+	}
+}
+
+func TestSignCmd_SaveSignatureError(t *testing.T) {
+	// Sign succeeds but saving the .sig file fails (read-only target dir).
+	base := t.TempDir()
+	ks := signing.NewKeystore(base)
+	_, err := ks.GenerateAgent("saver")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a file to sign in a read-only directory.
+	targetDir := t.TempDir()
+	filePath := filepath.Join(targetDir, "data.txt")
+	if err := os.WriteFile(filePath, []byte("sign me"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Make target dir read-only so .sig file can't be written.
+	if err := os.Chmod(targetDir, 0o500); err != nil { //nolint:gosec // intentionally restrictive for test
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(targetDir, 0o700) }) //nolint:gosec // restore
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"sign", filePath, "--agent", "saver", "--keystore", base})
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+
+	err = cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when saving signature")
+	}
+}
+
+func TestVerifyCmd_MissingPublicKey(t *testing.T) {
+	// Verify should fail when the agent's public key doesn't exist.
+	base := t.TempDir()
+
+	// Create a dummy file and signature.
+	filePath := filepath.Join(base, "data.txt")
+	if err := os.WriteFile(filePath, []byte("data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sigPath := filePath + ".sig"
+	if err := os.WriteFile(sigPath, []byte("fakesig"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"verify", filePath, "--agent", "nonexistent", "--keystore", base})
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for missing public key")
+	}
+	if !strings.Contains(err.Error(), "loading key") {
+		t.Errorf("expected 'loading key' error, got: %v", err)
+	}
+}
+
+func TestTrustCmd_BadKeystoreDir(t *testing.T) {
+	// Trust should fail when keystore can't write.
+	base := t.TempDir()
+	ks := signing.NewKeystore(base)
+
+	// Generate a key pair to have a valid pubkey file.
+	_, err := ks.GenerateAgent("trusted")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubPath := filepath.Join(base, "agents", "trusted", "public.key")
+
+	// Use an empty keystore dir that's read-only.
+	badStore := t.TempDir()
+	if err := os.Chmod(badStore, 0o500); err != nil { //nolint:gosec // intentionally restrictive for test
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(badStore, 0o700) }) //nolint:gosec // restore
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"trust", "trusted", pubPath, "--keystore", badStore})
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+
+	err = cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for read-only keystore dir")
 	}
 }

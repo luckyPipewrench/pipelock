@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -453,5 +454,232 @@ func TestLoadSignature_WrongLength(t *testing.T) {
 	_, err := LoadSignature(path)
 	if err == nil {
 		t.Fatal("expected error for wrong signature length")
+	}
+}
+
+func TestLoadPrivateKeyFile_PermissionWarning(t *testing.T) {
+	_, priv, _ := GenerateKeyPair()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "wide-open.key")
+
+	if err := SavePrivateKey(priv, path); err != nil {
+		t.Fatal(err)
+	}
+
+	// Make the key readable by group/others (insecure)
+	if err := os.Chmod(path, 0o644); err != nil { //nolint:gosec // intentionally insecure for test
+		t.Fatal(err)
+	}
+
+	// LoadPrivateKeyFile should still succeed but emit a warning to stderr.
+	// We can't easily capture stderr, but we verify it loads correctly.
+	loaded, err := LoadPrivateKeyFile(path)
+	if err != nil {
+		t.Fatalf("LoadPrivateKeyFile should succeed despite bad perms: %v", err)
+	}
+	if !bytes.Equal(priv, loaded) {
+		t.Fatal("loaded key does not match saved key")
+	}
+}
+
+func TestLoadPrivateKeyFile_GoodPermissions(t *testing.T) {
+	_, priv, _ := GenerateKeyPair()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secure.key")
+
+	if err := SavePrivateKey(priv, path); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify 0600 permissions (set by SavePrivateKey)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("expected 0600, got %04o", info.Mode().Perm())
+	}
+
+	loaded, err := LoadPrivateKeyFile(path)
+	if err != nil {
+		t.Fatalf("LoadPrivateKeyFile error: %v", err)
+	}
+	if !bytes.Equal(priv, loaded) {
+		t.Fatal("loaded key does not match")
+	}
+}
+
+func TestLoadPrivateKeyFile_NonexistentFile(t *testing.T) {
+	_, err := LoadPrivateKeyFile("/nonexistent/key.pem")
+	if err == nil {
+		t.Fatal("expected error for nonexistent file")
+	}
+}
+
+func TestLoadPublicKeyFile_NonexistentFile(t *testing.T) {
+	_, err := LoadPublicKeyFile("/nonexistent/key.pub")
+	if err == nil {
+		t.Fatal("expected error for nonexistent file")
+	}
+}
+
+func TestSaveSignature_BadDirectory(t *testing.T) {
+	err := SaveSignature([]byte("fake-sig"), "/nonexistent/dir/test.sig")
+	if err == nil {
+		t.Fatal("expected error for bad directory")
+	}
+}
+
+func TestLoadPrivateKeyFile_StatOKButUnreadable(t *testing.T) {
+	// Save a valid key, then remove read permission.
+	// os.Stat succeeds (doesn't need read perm), but os.ReadFile fails.
+	_, priv, _ := GenerateKeyPair()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "noaccess.key")
+
+	if err := SavePrivateKey(priv, path); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.Chmod(path, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(path, 0o600) }) //nolint:errcheck,gosec // best-effort cleanup
+
+	_, err := LoadPrivateKeyFile(path)
+	if err == nil {
+		t.Fatal("expected error when file is unreadable")
+	}
+	if !strings.Contains(err.Error(), "reading private key") {
+		t.Errorf("expected 'reading private key' error, got: %v", err)
+	}
+}
+
+func TestAtomicWrite_ReadOnlyDir(t *testing.T) {
+	dir := t.TempDir()
+	subdir := filepath.Join(dir, "readonly")
+	if err := os.MkdirAll(subdir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write a file first so we can test overwrite behavior.
+	path := filepath.Join(subdir, "file.txt")
+	if err := atomicWrite(path, []byte("first"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Make dir read-only so CreateTemp fails.
+	if err := os.Chmod(subdir, 0o500); err != nil { //nolint:gosec // intentionally restrictive for test
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(subdir, 0o700) }) //nolint:gosec // restore for cleanup
+
+	err := atomicWrite(path, []byte("second"), 0o644)
+	if err == nil {
+		t.Fatal("expected error for read-only directory")
+	}
+	if !strings.Contains(err.Error(), "creating temp file") {
+		t.Errorf("expected 'creating temp file' error, got: %v", err)
+	}
+}
+
+func TestDefaultKeystorePath_ReturnsPath(t *testing.T) {
+	path, err := DefaultKeystorePath()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.HasSuffix(path, DefaultPipelockDir) {
+		t.Errorf("expected path ending with %s, got: %s", DefaultPipelockDir, path)
+	}
+}
+
+func TestSavePublicKey_BadPath(t *testing.T) {
+	pub, _, err := GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = SavePublicKey(pub, "/nonexistent/dir/key.pub")
+	if err == nil {
+		t.Fatal("expected error for bad path")
+	}
+}
+
+func TestSavePrivateKey_BadPath(t *testing.T) {
+	_, priv, err := GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = SavePrivateKey(priv, "/nonexistent/dir/key.priv")
+	if err == nil {
+		t.Fatal("expected error for bad path")
+	}
+}
+
+func TestVerifyFile_BadSignature(t *testing.T) {
+	pub, priv, err := GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	file := filepath.Join(dir, "data.txt")
+	if err := os.WriteFile(file, []byte("test data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Sign then modify the file to make signature invalid.
+	sig, err := SignFile(file, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sigPath := file + SigExtension
+	if err := SaveSignature(sig, sigPath); err != nil {
+		t.Fatal(err)
+	}
+
+	// Tamper the file.
+	if err := os.WriteFile(file, []byte("tampered data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err = VerifyFile(file, "", pub)
+	if err == nil {
+		t.Fatal("expected verification failure for tampered file")
+	}
+}
+
+func TestLoadPublicKeyFile_Missing(t *testing.T) {
+	_, err := LoadPublicKeyFile("/nonexistent/key.pub")
+	if err == nil {
+		t.Fatal("expected error for missing file")
+	}
+}
+
+func TestLoadPrivateKeyFile_Missing(t *testing.T) {
+	_, err := LoadPrivateKeyFile("/nonexistent/key.priv")
+	if err == nil {
+		t.Fatal("expected error for missing file")
+	}
+}
+
+func TestAtomicWrite_RenameError(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create a subdirectory where the file should be written.
+	// os.Rename(file, directory) fails with EISDIR.
+	target := filepath.Join(dir, "target")
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	err := atomicWrite(target, []byte("data"), 0o600)
+	if err == nil {
+		t.Fatal("expected error when target is a directory")
+	}
+	if !strings.Contains(err.Error(), "renaming file") {
+		t.Errorf("expected 'renaming file' error, got: %v", err)
 	}
 }

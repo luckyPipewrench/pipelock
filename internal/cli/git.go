@@ -73,7 +73,10 @@ Examples:
 			}
 
 			patterns := gitprotect.CompileDLPPatterns(cfg.DLP.Patterns)
-			findings := gitprotect.ScanDiff(string(diffData), patterns)
+			findings, scanErr := gitprotect.ScanDiff(string(diffData), patterns)
+			if scanErr != nil {
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Warning: %v\n", scanErr)
+			}
 
 			if jsonOutput {
 				data, jsonErr := gitprotect.FindingsJSON(findings)

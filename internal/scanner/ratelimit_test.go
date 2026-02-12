@@ -187,12 +187,13 @@ func TestScanner_Scan_RateLimitIntegration(t *testing.T) {
 	s := New(cfg)
 	defer s.Close()
 
+	// CheckAndRecord records each allowed request atomically.
+	// With limit=3, first 3 scans should pass, 4th should be blocked.
 	for i := 0; i < 3; i++ {
 		result := s.Scan("https://example.com/page")
 		if !result.Allowed {
 			t.Errorf("scan %d should be allowed", i)
 		}
-		s.RecordRequest("example.com")
 	}
 
 	result := s.Scan("https://example.com/page")
@@ -210,7 +211,7 @@ func TestScanner_RecordRequest_NilRateLimiter(_ *testing.T) {
 	s := New(cfg)
 
 	// Should not panic
-	s.RecordRequest("example.com")
+	s.RecordRequest("example.com", 0)
 }
 
 func TestScanner_Close_NilRateLimiter(_ *testing.T) {
@@ -228,15 +229,19 @@ func TestScanner_RateLimit_DifferentDomainsIndependent(t *testing.T) {
 	s := New(cfg)
 	defer s.Close()
 
-	s.RecordRequest("a.com")
-
-	// a.com should be blocked
+	// First scan for a.com is allowed (CheckAndRecord records it)
 	result := s.Scan("https://a.com/page")
+	if !result.Allowed {
+		t.Error("first a.com request should be allowed")
+	}
+
+	// a.com should now be blocked (limit=1, already used)
+	result = s.Scan("https://a.com/page")
 	if result.Allowed {
 		t.Error("expected a.com blocked after rate limit reached")
 	}
 
-	// b.com should still work
+	// b.com should still work (independent counter)
 	result = s.Scan("https://b.com/page")
 	if !result.Allowed {
 		t.Errorf("expected b.com allowed (independent limit), got: %s", result.Reason)

@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"testing"
 )
 
@@ -646,7 +647,7 @@ func TestApplyDefaults_ResponseScanningActionPreserved(t *testing.T) {
 func TestApplyDefaults_AskTimeoutDefault(t *testing.T) {
 	cfg := &Config{}
 	cfg.ResponseScanning.Enabled = true
-	cfg.ResponseScanning.Action = "ask"
+	cfg.ResponseScanning.Action = "ask" //nolint:goconst // test value
 	cfg.ApplyDefaults()
 	if cfg.ResponseScanning.AskTimeoutSeconds != 30 {
 		t.Errorf("expected default ask timeout 30, got %d", cfg.ResponseScanning.AskTimeoutSeconds)
@@ -818,5 +819,233 @@ response_scanning:
 	}
 	if cfg.ResponseScanning.Patterns[0].Name != "Test Pattern" {
 		t.Errorf("expected pattern name 'Test Pattern', got %s", cfg.ResponseScanning.Patterns[0].Name)
+	}
+}
+
+// --- ValidateReload Tests ---
+
+func TestValidateReload_NoWarnings(t *testing.T) {
+	old := Defaults()
+	updated := Defaults()
+
+	warnings := ValidateReload(old, updated)
+	if len(warnings) != 0 {
+		t.Errorf("expected no warnings, got %d: %v", len(warnings), warnings)
+	}
+}
+
+func TestValidateReload_ModeDowngrade(t *testing.T) {
+	old := Defaults()
+	old.Mode = ModeStrict
+	updated := Defaults()
+	updated.Mode = ModeBalanced
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == "mode" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected mode downgrade warning")
+	}
+}
+
+func TestValidateReload_ModeUpgrade_NoWarning(t *testing.T) {
+	old := Defaults()
+	old.Mode = ModeAudit
+	updated := Defaults()
+	updated.Mode = ModeStrict
+
+	warnings := ValidateReload(old, updated)
+	for _, w := range warnings {
+		if w.Field == "mode" {
+			t.Errorf("mode upgrade should not produce warning, got: %s", w.Message)
+		}
+	}
+}
+
+func TestValidateReload_DLPPatternsReduced(t *testing.T) {
+	old := Defaults()
+	updated := Defaults()
+	updated.DLP.Patterns = old.DLP.Patterns[:2] // reduce patterns
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == "dlp.patterns" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected DLP patterns reduction warning")
+	}
+}
+
+func TestValidateReload_DLPPatternsIncreased_NoWarning(t *testing.T) {
+	old := Defaults()
+	old.DLP.Patterns = old.DLP.Patterns[:2]
+	updated := Defaults()
+
+	warnings := ValidateReload(old, updated)
+	for _, w := range warnings {
+		if w.Field == "dlp.patterns" {
+			t.Errorf("increasing patterns should not warn, got: %s", w.Message)
+		}
+	}
+}
+
+func TestValidateReload_InternalCIDRsEmptied(t *testing.T) {
+	old := Defaults()
+	updated := Defaults()
+	updated.Internal = nil
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == "internal" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected internal CIDRs emptied warning")
+	}
+}
+
+func TestValidateReload_InternalCIDRsBothEmpty_NoWarning(t *testing.T) {
+	old := Defaults()
+	old.Internal = nil
+	updated := Defaults()
+	updated.Internal = nil
+
+	warnings := ValidateReload(old, updated)
+	for _, w := range warnings {
+		if w.Field == "internal" {
+			t.Errorf("both empty should not warn, got: %s", w.Message)
+		}
+	}
+}
+
+func TestValidateReload_EnforceDisabled(t *testing.T) {
+	old := Defaults() // Enforce nil => enabled
+	v := false
+	updated := Defaults()
+	updated.Enforce = &v
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == "enforce" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected enforce disabled warning")
+	}
+}
+
+func TestValidateReload_ResponseScanningDisabled(t *testing.T) {
+	old := Defaults()
+	updated := Defaults()
+	updated.ResponseScanning.Enabled = false
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == "response_scanning.enabled" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected response scanning disabled warning")
+	}
+}
+
+func TestValidateReload_MultipleWarnings(t *testing.T) {
+	old := Defaults()
+	old.Mode = ModeStrict
+
+	v := false
+	updated := Defaults()
+	updated.Mode = ModeAudit
+	updated.DLP.Patterns = nil
+	updated.Internal = nil
+	updated.Enforce = &v
+	updated.ResponseScanning.Enabled = false
+
+	warnings := ValidateReload(old, updated)
+	if len(warnings) != 5 {
+		t.Errorf("expected 5 warnings, got %d", len(warnings))
+		for _, w := range warnings {
+			t.Logf("  %s: %s", w.Field, w.Message)
+		}
+	}
+}
+
+// --- Default DLP Pattern Tests ---
+
+func TestDefaults_ContainsNewDLPPatterns(t *testing.T) {
+	cfg := Defaults()
+	patterns := make(map[string]bool)
+	for _, p := range cfg.DLP.Patterns {
+		patterns[p.Name] = true
+	}
+
+	required := []string{
+		"GitHub Fine-Grained PAT",
+		"OpenAI Service Key",
+		"Stripe Key",
+	}
+	for _, name := range required {
+		if !patterns[name] {
+			t.Errorf("default DLP patterns missing %q", name)
+		}
+	}
+}
+
+func TestDefaults_SlackTokenRegex(t *testing.T) {
+	cfg := Defaults()
+	found := false
+	for _, p := range cfg.DLP.Patterns {
+		if p.Name == "Slack Token" {
+			found = true
+			// Regex should use {15,} not just + to require minimum length
+			if p.Regex == "" {
+				t.Error("Slack Token regex is empty")
+			}
+			// Verify the pattern compiles and matches expected format
+			re, err := regexp.Compile(p.Regex)
+			if err != nil {
+				t.Fatalf("Slack Token regex does not compile: %v", err)
+			}
+			// Build test token at runtime to avoid gitleaks
+			prefix := "xoxb"
+			suffix := "-1234567890123-abc"
+			token := prefix + suffix
+			if !re.MatchString(token) {
+				t.Error("Slack Token regex should match valid token format")
+			}
+			break
+		}
+	}
+	if !found {
+		t.Fatal("Slack Token pattern not found in defaults")
+	}
+}
+
+// --- Listen Address Validation ---
+
+func TestValidate_NonLoopbackListenWarning(t *testing.T) {
+	cfg := Defaults()
+	cfg.FetchProxy.Listen = "0.0.0.0:8888"
+	// Should still validate (warning, not error), but the warning goes to stderr
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("non-loopback listen should validate: %v", err)
 	}
 }

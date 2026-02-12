@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -35,17 +36,35 @@ func ForwardScanned(r io.Reader, w io.Writer, logW io.Writer, sc *scanner.Scanne
 
 		verdict := ScanResponse(line, sc)
 
-		// Clean or parse error: forward as-is.
-		// Parse errors are the server's problem — we pass them through.
-		if verdict.Clean || verdict.Error != "" {
+		if verdict.Clean {
 			if _, err := w.Write(line); err != nil {
 				return foundInjection, fmt.Errorf("writing line: %w", err)
 			}
 			if _, err := w.Write([]byte("\n")); err != nil {
 				return foundInjection, fmt.Errorf("writing newline: %w", err)
 			}
-			if verdict.Error != "" {
-				_, _ = fmt.Fprintf(logW, "pipelock: line %d: %s\n", lineNum, verdict.Error)
+			continue
+		}
+
+		// Parse error: always fail-closed regardless of action setting.
+		// Unparseable responses could hide injection in malformed content.
+		if verdict.Error != "" {
+			_, _ = fmt.Fprintf(logW, "pipelock: line %d: %s\n", lineNum, verdict.Error)
+			// Scan raw text for injection even when not valid JSON-RPC.
+			rawResult := sc.ScanResponse(string(line))
+			if !rawResult.Clean {
+				foundInjection = true
+				names := matchNames(rawResult.Matches)
+				_, _ = fmt.Fprintf(logW, "pipelock: line %d: injection in non-JSON content (%s)\n",
+					lineNum, strings.Join(names, ", "))
+			}
+			_, _ = fmt.Fprintf(logW, "pipelock: line %d: blocking unparseable response\n", lineNum)
+			resp := blockResponse(nil)
+			if _, err := w.Write(resp); err != nil {
+				return foundInjection, fmt.Errorf("writing block response: %w", err)
+			}
+			if _, err := w.Write([]byte("\n")); err != nil {
+				return foundInjection, fmt.Errorf("writing newline: %w", err)
 			}
 			continue
 		}
@@ -199,10 +218,25 @@ type stripRPCResponse struct {
 	Error   json.RawMessage `json:"error,omitempty"`
 }
 
+// maxStripDepth limits recursion between stripResponseDepth and stripBatchDepth
+// to prevent stack overflow from maliciously nested JSON arrays.
+const maxStripDepth = 4
+
 // stripResponse re-parses a JSON-RPC response, redacts matched injection
-// patterns in content blocks, and returns the re-marshaled JSON.
-// Scans text from ALL block types (not just "text") to match ExtractText behavior.
+// patterns in content blocks and error fields, and returns the re-marshaled JSON.
 func stripResponse(line []byte, sc *scanner.Scanner) ([]byte, error) {
+	return stripResponseDepth(line, sc, 0)
+}
+
+func stripResponseDepth(line []byte, sc *scanner.Scanner, depth int) ([]byte, error) {
+	// Handle batch responses (JSON array).
+	if len(line) > 0 && line[0] == '[' {
+		if depth >= maxStripDepth {
+			return nil, fmt.Errorf("batch nesting too deep (max %d)", maxStripDepth)
+		}
+		return stripBatchDepth(line, sc, depth+1)
+	}
+
 	var rpc stripRPCResponse
 	if err := json.Unmarshal(line, &rpc); err != nil {
 		return nil, fmt.Errorf("parsing response for strip: %w", err)
@@ -220,7 +254,61 @@ func stripResponse(line []byte, sc *scanner.Scanner) ([]byte, error) {
 		}
 	}
 
+	// Scan error.message and error.data for injection content.
+	if len(rpc.Error) > 0 {
+		var errObj struct {
+			Code    int             `json:"code"`
+			Message string          `json:"message"`
+			Data    json.RawMessage `json:"data,omitempty"`
+		}
+		if json.Unmarshal(rpc.Error, &errObj) == nil {
+			changed := false
+			if errObj.Message != "" {
+				result := sc.ScanResponse(errObj.Message)
+				if !result.Clean && result.TransformedContent != "" {
+					errObj.Message = result.TransformedContent
+					changed = true
+				}
+			}
+			if len(errObj.Data) > 0 {
+				var dataStr string
+				if json.Unmarshal(errObj.Data, &dataStr) == nil && dataStr != "" {
+					result := sc.ScanResponse(dataStr)
+					if !result.Clean && result.TransformedContent != "" {
+						if newData, mErr := json.Marshal(result.TransformedContent); mErr == nil {
+							errObj.Data = newData
+							changed = true
+						}
+					}
+				}
+			}
+			if changed {
+				if newErr, mErr := json.Marshal(errObj); mErr == nil {
+					rpc.Error = newErr
+				}
+			}
+		}
+	}
+
 	return json.Marshal(rpc)
+}
+
+// stripBatchDepth handles stripping injection from batch (array) JSON-RPC responses.
+func stripBatchDepth(line []byte, sc *scanner.Scanner, depth int) ([]byte, error) {
+	var batch []json.RawMessage
+	if err := json.Unmarshal(line, &batch); err != nil {
+		return nil, fmt.Errorf("parsing batch for strip: %w", err)
+	}
+	result := make([]json.RawMessage, len(batch))
+	for i, elem := range batch {
+		stripped, err := stripResponseDepth(elem, sc, depth)
+		if err != nil {
+			result[i] = elem // keep original if strip fails for one element
+		} else {
+			result[i] = json.RawMessage(stripped)
+		}
+	}
+	return json.Marshal(result)
 }
 
 // matchNames extracts pattern names from a list of response matches.
@@ -238,6 +326,10 @@ func matchNames(matches []scanner.ResponseMatch) []string {
 // forwarded to logW. Returns when the subprocess exits or ctx is cancelled.
 func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW io.Writer, command []string, sc *scanner.Scanner, approver *hitl.Approver) error {
 	cmd := exec.CommandContext(ctx, command[0], command[1:]...) //nolint:gosec // command comes from user CLI args
+
+	// Restrict child process environment to safe variables only.
+	// Prevents leaking secrets from the proxy's environment to the MCP server.
+	cmd.Env = safeEnv()
 
 	serverIn, err := cmd.StdinPipe()
 	if err != nil {
@@ -278,4 +370,19 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	}
 
 	return waitErr
+}
+
+// safeEnvKeys are environment variables safe to pass to child MCP server processes.
+var safeEnvKeys = []string{"PATH", "HOME", "USER", "LANG", "TERM", "TZ", "TMPDIR", "SHELL"}
+
+// safeEnv builds a filtered environment from the current process, keeping only
+// variables in safeEnvKeys. This prevents accidental secret leakage to MCP servers.
+func safeEnv() []string {
+	var env []string
+	for _, key := range safeEnvKeys {
+		if val, ok := os.LookupEnv(key); ok {
+			env = append(env, key+"="+val)
+		}
+	}
+	return env
 }

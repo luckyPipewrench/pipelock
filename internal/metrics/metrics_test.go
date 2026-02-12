@@ -215,6 +215,60 @@ func TestConcurrentAccess(t *testing.T) {
 	}
 }
 
+func TestTopScannersCapped(t *testing.T) {
+	m := New()
+	// Fill scanner hits to the cap with unique scanner names
+	for i := range maxTopEntries {
+		name := "scanner" + string(rune('A'+i%26)) + string(rune('0'+i/26))
+		m.RecordBlocked("test.com", name, time.Millisecond)
+	}
+
+	// This scanner should be ignored (cap reached, new key)
+	m.RecordBlocked("test.com", "overflow_scanner", time.Millisecond)
+
+	m.mu.Lock()
+	if len(m.topScannerHits) > maxTopEntries {
+		t.Errorf("expected at most %d scanners, got %d", maxTopEntries, len(m.topScannerHits))
+	}
+	if _, exists := m.topScannerHits["overflow_scanner"]; exists {
+		t.Error("overflow scanner should not be tracked after cap")
+	}
+	m.mu.Unlock()
+}
+
+func TestTopScannersExistingKeyStillIncrements(t *testing.T) {
+	m := New()
+	// Fill scanners to cap with same key
+	for range maxTopEntries {
+		m.RecordBlocked("test.com", "dlp", time.Millisecond)
+	}
+	// Existing key should still increment
+	m.RecordBlocked("test.com", "dlp", time.Millisecond)
+
+	m.mu.Lock()
+	if m.topScannerHits["dlp"] != int64(maxTopEntries)+1 {
+		t.Errorf("expected %d, got %d", maxTopEntries+1, m.topScannerHits["dlp"])
+	}
+	m.mu.Unlock()
+}
+
+func TestRecordBlocked_MultipleScanners(t *testing.T) {
+	m := New()
+	m.RecordBlocked("evil.com", "dlp", time.Millisecond)
+	m.RecordBlocked("evil.com", "ssrf", time.Millisecond)
+	m.RecordBlocked("evil.com", "ratelimit", time.Millisecond)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.blockedCount != 3 {
+		t.Errorf("expected 3 blocked, got %d", m.blockedCount)
+	}
+	if len(m.topScannerHits) != 3 {
+		t.Errorf("expected 3 scanner types, got %d", len(m.topScannerHits))
+	}
+}
+
 func TestTopN_SortedByCount(t *testing.T) {
 	m := map[string]int64{
 		"low":    1,

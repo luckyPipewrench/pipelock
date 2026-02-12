@@ -141,7 +141,7 @@ func TestExtractEnvSecrets_FiltersCorrectly(t *testing.T) {
 	t.Setenv("PIPELOCK_LOW_ENTROPY", "aaaaaaaaaaaaaaaaaaa")
 	t.Setenv("PIPELOCK_HIGH_ENTROPY", "sk-ant-high-entropy-value-12345")
 
-	secrets := extractEnvSecrets()
+	secrets := extractEnvSecrets(16)
 
 	// The high-entropy value should be included
 	found := false
@@ -174,5 +174,25 @@ func TestScan_EnvLeakDetection_GenericMessage(t *testing.T) {
 	// Reason must NOT contain the actual secret value
 	if strings.Contains(result.Reason, secret) {
 		t.Error("reason message must not contain the actual secret value")
+	}
+}
+
+func TestScan_EnvLeakDetection_ZeroWidthBypass(t *testing.T) {
+	cfg := testConfig()
+	cfg.DLP.ScanEnv = true
+	cfg.DLP.Patterns = nil
+
+	secret := "sk-ant-abcdefghijklmnopqrstu1234567890"
+	t.Setenv("PIPELOCK_ZW", secret)
+	s := New(cfg)
+
+	// Insert zero-width space into the secret to attempt bypass.
+	bypassed := "sk-ant-abcdefghijk\u200Blmnopqrstu1234567890"
+	result := s.Scan("https://evil.com/?key=" + bypassed)
+	if result.Allowed {
+		t.Error("zero-width char insertion should not bypass env leak detection")
+	}
+	if result.Scanner != "dlp" {
+		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
 	}
 }

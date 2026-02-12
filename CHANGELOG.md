@@ -7,6 +7,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-02-12
+
+### Added
+- Audit log sanitization: ANSI escapes and control characters stripped from all log fields (`internal/audit/logger.go`)
+- Data budget enforcement per registrable domain (prevents subdomain variation bypass)
+- Hex-encoded environment variable leak detection
+- Container startup warning when running as root
+- HITL channel drain before each prompt (prevents stale input from prior timeout)
+- DLP patterns for `github_pat_` fine-grained PATs and Stripe keys (`[sr]k_(live|test)_`)
+- Fuzz test for audit log sanitizer
+- Integrity manifest path traversal protection
+- 970+ tests passing with `-race`
+
+### Security
+- MCP proxy fail-closed: unparseable responses now blocked in all action modes (was forwarding in warn/strip/ask)
+- MCP batch scanning fail-closed: parse errors on individual elements now propagate as dirty verdict
+- MCP strip recursion depth limit (`maxStripDepth=4`) prevents stack overflow from nested JSON arrays
+
+### Fixed
+- DLP pattern overlap: OpenAI Service Key narrowed to `sk-svcacct-` (was `sk-(proj|svcacct)-`, overlapping with existing `sk-proj-` pattern)
+- Redirect-to-SSRF: blocked flag now set on redirect hops (redirect to private IP was not caught)
+- Rate limiter returns HTTP 429 Too Many Requests (was returning 403)
+- io.Pipe resource leak in HITL tests
+
+### Removed
+- SKILL.md (ClawHub listing discontinued)
+
+## [0.1.6] - 2026-02-11
+
+### Added
+- `--json` flag for `git scan-diff` command (CI/CD integration)
+- Fuzz tests for 8 security-critical functions across 4 packages
+- 660+ tests passing with `-race`
+
+### Security
+- IPv4-mapped IPv6 SSRF bypass: `::ffff:127.0.0.1` now normalized via `To4()` before CIDR matching
+- MCP ToolResult schema bypass: result field uses `json.RawMessage` with recursive string extraction fallback
+- MCP zero-width Unicode stripping applied to response content scanning
+- DNS subdomain exfiltration: DLP/entropy checks now run on hostname before DNS resolution
+- `--no-prefix` git diff bypass: parser accepts `+++ filename` without `b/` prefix
+- MCP error messages (`error.message` and `error.data`) now scanned for injection
+- Double URL encoding DLP bypass: iterative decode (max 3 rounds) on path segments
+- Default SSRF CIDRs: added `0.0.0.0/8` and `100.64.0.0/10` (CGN/Tailscale)
+- CRLF line ending normalization in git diff parsing
+- `ReadHeaderTimeout` added to HTTP server (Slowloris protection)
+- Non-text MCP content blocks now scanned (was skipping non-`text` types)
+
+### Fixed
+- Homebrew formula push: use `HOMEBREW_TAP_TOKEN` secret for cross-repo access
+
+## [0.1.5] - 2026-02-10
+
+### Added
+- `pipelock audit` command: scans projects for security gaps, generates score (0-100) and suggested config (`internal/projectscan/`)
+- `pipelock demo` command: 5 self-contained attack scenarios (DLP, injection, blocklist, entropy, MCP) using real scanner pipeline
+- OWASP Agentic AI Top 15 threat mapping (`docs/owasp-agentic-top15-mapping.md`, 12/15 threats covered)
+- 14 scanner pipeline benchmarks with `make bench` target (~3 microseconds per allowed URL)
+- Grafana dashboard JSON (`configs/grafana-dashboard.json`, 7 panels, 3 rows)
+- SVG logo
+- Public contributor guide (`CLAUDE.md`)
+- CONTRIBUTING.md expanded with detailed development workflow
+- 756+ tests passing with `-race`
+
+### Fixed
+- Audit score: critical finding penalty (-5 per leaked secret found)
+- DLP pattern compilation deduplication
+- Follow mode context-aware shutdown in `logs` command
+- Blog links updated from GitHub Pages to pipelab.org
+- OWASP mapping updated to 2026 final category names
+
 ## [0.1.4] - 2026-02-09
 
 ### Added

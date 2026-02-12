@@ -76,7 +76,7 @@ func FuzzScanDiff(f *testing.F) {
 	f.Add("+++ b/file.go\n@@ -1,2 +1 @@\n-removed\n context\n")
 
 	f.Fuzz(func(t *testing.T, diffText string) {
-		findings := ScanDiff(diffText, patterns)
+		findings, _ := ScanDiff(diffText, patterns)
 
 		for _, finding := range findings {
 			if finding.File == "" {

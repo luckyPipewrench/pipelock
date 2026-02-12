@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -496,6 +497,26 @@ func TestKeystoreGenerateAgent_ReadOnlyBaseDir(t *testing.T) {
 	}
 }
 
+func TestKeystoreListTrusted_ReadError(t *testing.T) {
+	base := t.TempDir()
+	ks := NewKeystore(base)
+
+	// Create the trusted_keys directory, then make it unreadable.
+	trustedDir := filepath.Join(base, trustedSubdir)
+	if err := os.MkdirAll(trustedDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(trustedDir, 0o000); err != nil { //nolint:gosec // test: intentionally restricting permissions
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(trustedDir, 0o700) }) //nolint:errcheck,gosec // best-effort cleanup
+
+	_, err := ks.ListTrusted()
+	if err == nil {
+		t.Fatal("expected error for unreadable trusted directory")
+	}
+}
+
 func TestKeystoreListTrusted_NonPubEntries(t *testing.T) {
 	base := t.TempDir()
 	ks := NewKeystore(base)
@@ -526,5 +547,100 @@ func TestKeystoreListTrusted_NonPubEntries(t *testing.T) {
 	}
 	if len(trusted) != 1 || trusted[0] != "peer" {
 		t.Fatalf("expected [peer], got %v", trusted)
+	}
+}
+
+func TestKeystoreGenerateAgent_MkdirError(t *testing.T) {
+	// Make the base dir unwritable so MkdirAll fails inside generateAgent.
+	base := t.TempDir()
+	if err := os.Chmod(base, 0o500); err != nil { //nolint:gosec // intentionally restrictive for test
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(base, 0o700) }) //nolint:gosec // restore for cleanup
+
+	ks := NewKeystore(base)
+	_, err := ks.GenerateAgent("test-agent")
+	if err == nil {
+		t.Fatal("expected error for unwritable base directory")
+	}
+	if !strings.Contains(err.Error(), "creating agent directory") {
+		t.Errorf("expected 'creating agent directory' error, got: %v", err)
+	}
+}
+
+func TestKeystoreForceGenerateAgent_Success(t *testing.T) {
+	base := t.TempDir()
+	ks := NewKeystore(base)
+
+	// Generate once.
+	pub1, err := ks.GenerateAgent("myagent")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Force regenerate — should succeed and produce different key.
+	pub2, err := ks.ForceGenerateAgent("myagent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(pub1, pub2) {
+		t.Error("expected different key after force regenerate")
+	}
+}
+
+func TestKeystoreTrustKey_InvalidKey(t *testing.T) {
+	base := t.TempDir()
+	ks := NewKeystore(base)
+
+	// Create a file with invalid key data.
+	badKey := filepath.Join(base, "bad.pub")
+	if err := os.WriteFile(badKey, []byte("not a valid key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := ks.TrustKey("badagent", badKey)
+	if err == nil {
+		t.Fatal("expected error for invalid key data")
+	}
+}
+
+func TestKeystoreTrustKey_MissingFile(t *testing.T) {
+	base := t.TempDir()
+	ks := NewKeystore(base)
+
+	err := ks.TrustKey("agent", filepath.Join(base, "nonexistent.pub"))
+	if err == nil {
+		t.Fatal("expected error for nonexistent file")
+	}
+	if !strings.Contains(err.Error(), "reading public key") {
+		t.Errorf("expected 'reading public key' error, got: %v", err)
+	}
+}
+
+func TestKeystoreTrustKey_ReadOnlyBase(t *testing.T) {
+	// TrustKey should fail when the keystore base dir is read-only
+	// (MkdirAll for trusted/ subdir fails).
+	base := t.TempDir()
+	ks := NewKeystore(base)
+
+	// Generate a valid key pair and save the public key.
+	pub, _, err := GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(base, "test.pub")
+	if err := SavePublicKey(pub, keyPath); err != nil {
+		t.Fatal(err)
+	}
+
+	// Make base dir read-only so MkdirAll("trusted/") fails.
+	if err := os.Chmod(base, 0o500); err != nil { //nolint:gosec // intentionally restrictive for test
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(base, 0o700) }) //nolint:gosec // restore
+
+	err = ks.TrustKey("test-agent", keyPath)
+	if err == nil {
+		t.Fatal("expected error for read-only base directory")
 	}
 }

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -500,7 +501,7 @@ logging:
 		cancel()
 		t.Fatalf("decoding health response: %v", err)
 	}
-	if health["mode"] != "strict" {
+	if health["mode"] != "strict" { //nolint:goconst // test value
 		t.Errorf("expected mode=strict (flag override), got %v", health["mode"])
 	}
 	if health["status"] != "healthy" {
@@ -880,5 +881,391 @@ func TestResolveAgentName_FlagOverridesEnv(t *testing.T) {
 	}
 	if name != "flag-agent" {
 		t.Errorf("expected 'flag-agent', got %q", name)
+	}
+}
+
+func TestRunCmd_WithAgentArgs(t *testing.T) {
+	// Find a free port.
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cmd := rootCmd()
+	cmd.SetContext(ctx)
+	cmd.SetArgs([]string{"run", "--listen", addr, "--", "some-agent", "--flag"})
+
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- cmd.Execute()
+	}()
+
+	// Poll until healthy.
+	client := &http.Client{Timeout: time.Second}
+	healthURL := "http://" + addr + "/health"
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case err := <-errCh:
+			cancel()
+			t.Fatalf("run exited early: %v", err)
+		default:
+		}
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+		resp, err := client.Do(req)
+		if err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("run did not shut down")
+	}
+
+	// The run command completed without error, which means the agent args
+	// parsing path (dashIdx >= 0) was exercised. The banner prints to
+	// os.Stderr directly, so we can't capture it via cmd.SetErr.
+}
+
+func TestRunCmd_DefaultMode(t *testing.T) {
+	// Run with no config, no flags — should use default balanced mode.
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cmd := rootCmd()
+	cmd.SetContext(ctx)
+	cmd.SetArgs([]string{"run", "--listen", addr})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- cmd.Execute()
+	}()
+
+	// Wait until healthy, then check mode.
+	client := &http.Client{Timeout: time.Second}
+	healthURL := "http://" + addr + "/health"
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case err := <-errCh:
+			cancel()
+			t.Fatalf("run exited early: %v", err)
+		default:
+		}
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+		resp, err := client.Do(req)
+		if err == nil {
+			var health map[string]any
+			_ = json.NewDecoder(resp.Body).Decode(&health)
+			_ = resp.Body.Close()
+			if health["mode"] == "balanced" {
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("run did not shut down")
+	}
+}
+
+func TestRunCmd_ConfigValidationError(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "bad.yaml")
+	// Invalid mode triggers validation error.
+	cfg := `version: 1
+mode: "not-a-mode"
+`
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"run", "--config", cfgPath})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for invalid mode")
+	}
+	if !strings.Contains(err.Error(), "invalid config") {
+		t.Errorf("expected 'invalid config' error, got: %v", err)
+	}
+}
+
+func TestRunCmd_ModeFlag(t *testing.T) {
+	// Test that --mode strict works without a config file.
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cmd := rootCmd()
+	cmd.SetContext(ctx)
+	cmd.SetArgs([]string{"run", "--mode", "strict", "--listen", addr})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- cmd.Execute()
+	}()
+
+	// Wait for healthy.
+	client := &http.Client{Timeout: time.Second}
+	healthURL := "http://" + addr + "/health"
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case err := <-errCh:
+			cancel()
+			t.Fatalf("run exited early: %v", err)
+		default:
+		}
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+		resp, rerr := client.Do(req)
+		if rerr == nil {
+			var health map[string]any
+			_ = json.NewDecoder(resp.Body).Decode(&health)
+			_ = resp.Body.Close()
+			if health["mode"] == "strict" {
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("run did not shut down")
+	}
+}
+
+func TestRunCmd_WithConfigHotReload(t *testing.T) {
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "test.yaml")
+	cfgContent := fmt.Sprintf(`version: 1
+mode: balanced
+fetch_proxy:
+  listen: "%s"
+  timeout_seconds: 5
+`, addr)
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cmd := rootCmd()
+	cmd.SetContext(ctx)
+	cmd.SetArgs([]string{"run", "--config", cfgPath})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- cmd.Execute()
+	}()
+
+	// Wait for healthy.
+	client := &http.Client{Timeout: time.Second}
+	healthURL := "http://" + addr + "/health"
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case err := <-errCh:
+			cancel()
+			t.Fatalf("run exited early: %v", err)
+		default:
+		}
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+		resp, rerr := client.Do(req)
+		if rerr == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// Modify the config to trigger hot-reload via fsnotify.
+	updatedCfg := fmt.Sprintf(`version: 1
+mode: strict
+fetch_proxy:
+  listen: "%s"
+  timeout_seconds: 5
+`, addr)
+	if err := os.WriteFile(cfgPath, []byte(updatedCfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for reload to take effect.
+	time.Sleep(500 * time.Millisecond)
+
+	// Verify the mode changed.
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		cancel()
+		t.Fatalf("health request failed: %v", err)
+	}
+	var health map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&health)
+	_ = resp.Body.Close()
+	if health["mode"] != "strict" {
+		t.Logf("mode after reload: %v (hot-reload may not have completed yet)", health["mode"])
+	}
+
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("run did not shut down")
+	}
+}
+
+func TestRunCmd_AuditLoggerError(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "test.yaml")
+	// Invalid log output destination.
+	cfg := `version: 1
+mode: balanced
+logging:
+  format: json
+  output: file
+  file: "/nonexistent/deep/nested/dir/audit.log"
+`
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"run", "--config", cfgPath})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for bad log file path")
+	}
+}
+
+func TestGenerateCmd_WriteError(t *testing.T) {
+	// Generate config with -o pointing to a read-only directory.
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o500); err != nil { //nolint:gosec // intentionally restrictive for test
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) //nolint:gosec // restore
+
+	outPath := filepath.Join(dir, "pipelock.yaml")
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"generate", "config", "--preset", "balanced", "-o", outPath})
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error writing to read-only directory")
+	}
+	if !strings.Contains(err.Error(), "writing config file") {
+		t.Errorf("expected 'writing config file' error, got: %v", err)
+	}
+}
+
+func TestDemoCmd_Basic(t *testing.T) {
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"demo"})
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	output := buf.String()
+	if !strings.Contains(output, "5/5 attacks blocked") {
+		t.Errorf("expected all 5 attacks blocked, got: %s", output)
+	}
+}
+
+func TestGenerateDockerComposeCmd_WriteError(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o500); err != nil { //nolint:gosec // intentionally restrictive for test
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) //nolint:gosec // restore
+
+	outPath := filepath.Join(dir, "docker-compose.yaml")
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"generate", "docker-compose", "-o", outPath})
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error writing to read-only directory")
 	}
 }

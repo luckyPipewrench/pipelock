@@ -5,7 +5,9 @@ package scanner
 
 import (
 	"context"
+	"encoding/base32"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"math"
 	"net"
@@ -13,6 +15,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
@@ -34,7 +37,9 @@ type Scanner struct {
 	maxURLLength     int
 	internalCIDRs    []*net.IPNet
 	rateLimiter      *RateLimiter
+	dataBudget       *DataBudget
 	envSecrets       []string // filtered high-entropy env var values
+	minEnvSecretLen  int      // minimum env var length for leak detection
 	responsePatterns []*compiledPattern
 	responseAction   string
 	responseEnabled  bool
@@ -84,9 +89,20 @@ func New(cfg *config.Config) *Scanner {
 		s.internalCIDRs = append(s.internalCIDRs, ipNet)
 	}
 
+	// Initialize data budget if configured
+	if cfg.FetchProxy.Monitoring.MaxDataPerMinute > 0 {
+		s.dataBudget = NewDataBudget(cfg.FetchProxy.Monitoring.MaxDataPerMinute)
+	}
+
+	// Set minimum env secret length from config (default 16)
+	s.minEnvSecretLen = cfg.DLP.MinEnvSecretLength
+	if s.minEnvSecretLen <= 0 {
+		s.minEnvSecretLen = 16
+	}
+
 	// Extract high-entropy environment variables for leak detection
 	if cfg.DLP.ScanEnv {
-		s.envSecrets = extractEnvSecrets()
+		s.envSecrets = extractEnvSecrets(s.minEnvSecretLen)
 	}
 
 	// Compile response scanning patterns — must succeed since config.Validate checks these
@@ -127,13 +143,19 @@ func (s *Scanner) Close() {
 	if s.rateLimiter != nil {
 		s.rateLimiter.Close()
 	}
+	if s.dataBudget != nil {
+		s.dataBudget.Close()
+	}
 }
 
-// RecordRequest records a request timestamp for rate limiting.
-// Call this AFTER Scan() returns Allowed=true and the request will be fetched.
-func (s *Scanner) RecordRequest(hostname string) {
-	if s.rateLimiter != nil {
-		s.rateLimiter.Record(hostname)
+// RecordRequest records response data for per-domain data budget tracking.
+// Call this AFTER Scan() returns Allowed=true and the response is fetched.
+// Rate limiting is handled atomically inside Scan() via CheckAndRecord.
+// dataBytes is the response size; pass 0 if unknown or not yet fetched.
+// Uses baseDomain normalization to match checkDataBudget's tracking.
+func (s *Scanner) RecordRequest(hostname string, dataBytes int) {
+	if s.dataBudget != nil && dataBytes > 0 {
+		s.dataBudget.Record(baseDomain(hostname), dataBytes)
 	}
 }
 
@@ -194,6 +216,11 @@ func (s *Scanner) Scan(rawURL string) Result {
 		}
 	}
 
+	// 7. Data budget check (per-domain sliding window)
+	if result := s.checkDataBudget(hostname); !result.Allowed {
+		return result
+	}
+
 	return Result{Allowed: true, Scanner: "all", Score: 0.0}
 }
 
@@ -207,7 +234,9 @@ func (s *Scanner) checkSSRF(hostname string) Result {
 
 	// Resolve hostname to IP for SSRF check.
 	// Fail closed: if we can't resolve DNS, we can't verify the IP is safe.
-	ips, err := net.DefaultResolver.LookupHost(context.TODO(), hostname)
+	dnsCtx, dnsCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer dnsCancel()
+	ips, err := net.DefaultResolver.LookupHost(dnsCtx, hostname)
 	if err != nil {
 		return Result{
 			Allowed: false,
@@ -260,12 +289,14 @@ func (s *Scanner) checkBlocklist(hostname string) Result {
 }
 
 // checkRateLimit enforces per-domain rate limiting using a sliding window.
+// Uses atomic CheckAndRecord to prevent TOCTOU races where concurrent
+// requests could both pass the check before either records.
 func (s *Scanner) checkRateLimit(hostname string) Result {
 	if s.rateLimiter == nil {
 		return Result{Allowed: true}
 	}
 
-	if !s.rateLimiter.IsAllowed(hostname) {
+	if !s.rateLimiter.CheckAndRecord(hostname) {
 		return Result{
 			Allowed: false,
 			Reason:  fmt.Sprintf("rate limit exceeded for %s", hostname),
@@ -326,8 +357,11 @@ func (s *Scanner) checkDLP(parsed *url.URL) Result {
 		if target == "" {
 			continue
 		}
+		// Strip zero-width characters before DLP pattern matching to prevent bypass
+		// via invisible char insertion (e.g., "sk\u200B-ant" evading "sk-ant" regex).
+		cleaned := stripZeroWidth(target)
 		for _, p := range s.dlpPatterns {
-			if p.re.MatchString(target) {
+			if p.re.MatchString(cleaned) {
 				return Result{
 					Allowed: false,
 					Reason:  fmt.Sprintf("DLP match: %s (%s)", p.name, p.severity),
@@ -354,7 +388,11 @@ func (s *Scanner) checkEnvLeak(parsed *url.URL) Result {
 		return Result{Allowed: true}
 	}
 
-	fullURL := parsed.String()
+	// Strip zero-width chars to prevent bypass via invisible char insertion
+	// (e.g., "secret\u200Bvalue" evading substring match for "secretvalue").
+	fullURL := stripZeroWidth(parsed.String())
+	// Pre-compute lowercase for case-insensitive hex comparison.
+	lowerURL := strings.ToLower(fullURL)
 
 	for _, secret := range s.envSecrets {
 		if strings.Contains(fullURL, secret) {
@@ -385,16 +423,50 @@ func (s *Scanner) checkEnvLeak(parsed *url.URL) Result {
 				Score:   1.0,
 			}
 		}
+
+		// Check hex encoding
+		hexEncoded := hex.EncodeToString([]byte(secret))
+		if strings.Contains(lowerURL, hexEncoded) {
+			return Result{
+				Allowed: false,
+				Reason:  "environment variable leak detected (hex-encoded)",
+				Scanner: "dlp",
+				Score:   1.0,
+			}
+		}
+
+		// Check base32 encoding (standard and no-padding variants)
+		b32Std := base32.StdEncoding.EncodeToString([]byte(secret))
+		if strings.Contains(fullURL, b32Std) {
+			return Result{
+				Allowed: false,
+				Reason:  "environment variable leak detected (base32-encoded)",
+				Scanner: "dlp",
+				Score:   1.0,
+			}
+		}
+		b32NoPad := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString([]byte(secret))
+		if b32NoPad != b32Std && strings.Contains(fullURL, b32NoPad) {
+			return Result{
+				Allowed: false,
+				Reason:  "environment variable leak detected (base32-encoded)",
+				Scanner: "dlp",
+				Score:   1.0,
+			}
+		}
 	}
 
 	return Result{Allowed: true}
 }
 
 // extractEnvSecrets filters environment variables for likely secrets.
-// Returns values >16 chars with Shannon entropy >3.0.
-func extractEnvSecrets() []string {
-	const minLen = 16
+// Returns values >= minLen chars with Shannon entropy >3.0.
+func extractEnvSecrets(minLen int) []string {
 	const minEntropy = 3.0
+
+	if minLen <= 0 {
+		minLen = 16
+	}
 
 	var secrets []string
 	for _, env := range os.Environ() {
@@ -493,6 +565,40 @@ func ShannonEntropy(s string) float64 {
 	}
 
 	return entropy
+}
+
+// checkDataBudget enforces per-domain data transfer limits.
+// Uses baseDomain normalization to prevent subdomain rotation bypass.
+func (s *Scanner) checkDataBudget(hostname string) Result {
+	if s.dataBudget == nil {
+		return Result{Allowed: true}
+	}
+	domain := baseDomain(hostname)
+	if !s.dataBudget.IsAllowed(domain) {
+		return Result{
+			Allowed: false,
+			Reason:  fmt.Sprintf("data budget exceeded for %s", hostname),
+			Scanner: "databudget",
+			Score:   0.8,
+		}
+	}
+	return Result{Allowed: true}
+}
+
+// baseDomain returns the base domain for budget tracking, stripping subdomains
+// to prevent bypass via subdomain rotation (a.evil.com, b.evil.com, etc.).
+// Uses a simple heuristic: returns the last 2 domain labels. This doesn't
+// handle ccTLDs (e.g., co.uk) perfectly but covers the common attack case.
+// IP addresses are returned as-is.
+func baseDomain(hostname string) string {
+	if net.ParseIP(hostname) != nil {
+		return hostname
+	}
+	parts := strings.Split(hostname, ".")
+	if len(parts) <= 2 {
+		return hostname
+	}
+	return strings.Join(parts[len(parts)-2:], ".")
 }
 
 // MatchDomain checks if a hostname matches a pattern.

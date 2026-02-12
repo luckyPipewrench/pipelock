@@ -115,12 +115,31 @@ Examples:
 										fmt.Errorf("scanner construction panic: %v", r))
 								}
 							}()
+							// Check for security downgrades before applying
+							oldCfg := p.CurrentConfig()
+							if oldCfg != nil {
+								warnings := config.ValidateReload(oldCfg, newCfg)
+								for _, w := range warnings {
+									fmt.Fprintf(os.Stderr, "WARNING: config reload: %s - %s\n", w.Field, w.Message)
+								}
+								// Block downgrades from strict mode (security-critical).
+								if oldCfg.Mode == config.ModeStrict && len(warnings) > 0 {
+									logger.LogError("CONFIG_RELOAD", configFile, "", "",
+										fmt.Errorf("rejected: security downgrade from strict mode"))
+									return
+								}
+							}
 							newSc := scanner.New(newCfg)
 							p.Reload(newCfg, newSc)
 							logger.LogConfigReload("success", fmt.Sprintf("mode=%s", newCfg.Mode))
 						}()
 					}
 				}()
+			}
+
+			// Warn if running outside a container (reduced isolation)
+			if !isContainerized() {
+				fmt.Fprintln(os.Stderr, "WARNING: running outside a container - consider using Docker/Podman for network isolation")
 			}
 
 			fmt.Fprintf(os.Stderr, "Pipelock v%s starting\n", Version)

@@ -58,6 +58,34 @@ func (rl *RateLimiter) Record(domain string) {
 	rl.requests[domain] = append(rl.requests[domain], time.Now())
 }
 
+// CheckAndRecord atomically checks the rate limit and records a request
+// if allowed. Returns true if the request is within the limit.
+// This prevents TOCTOU races where concurrent requests could both pass
+// IsAllowed() before either calls Record().
+func (rl *RateLimiter) CheckAndRecord(domain string) bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	now := time.Now()
+	cutoff := now.Add(-time.Minute)
+
+	timestamps := rl.requests[domain]
+	valid := timestamps[:0]
+	for _, ts := range timestamps {
+		if ts.After(cutoff) {
+			valid = append(valid, ts)
+		}
+	}
+
+	if len(valid) >= rl.maxPerMinute {
+		rl.requests[domain] = valid
+		return false
+	}
+
+	rl.requests[domain] = append(valid, now)
+	return true
+}
+
 // Close stops the cleanup goroutine. Safe to call multiple times.
 func (rl *RateLimiter) Close() {
 	select {

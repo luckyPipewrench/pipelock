@@ -40,3 +40,6 @@ pipelock-audit.log
 
 # Claude Code
 .claude/
+
+# ClawHub
+.clawdhub/

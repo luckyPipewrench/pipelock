@@ -297,3 +297,112 @@ func TestApprover_IsTerminal(t *testing.T) {
 		t.Error("expected IsTerminal() == false")
 	}
 }
+
+func TestApprover_TimeoutThenSuccess(t *testing.T) {
+	// First request times out (no input within timeout).
+	// Stale input arrives AFTER timeout. Second request drains it, then
+	// receives fresh "y\n" and returns allow.
+	r, w := io.Pipe()
+	output := &bytes.Buffer{}
+	a := New(1, // 1 second timeout
+		WithInput(r),
+		WithOutput(output),
+		WithTerminal(true),
+	)
+	t.Cleanup(func() {
+		_ = w.Close()
+		a.Close()
+	})
+
+	// First request: no input → times out → sets lastPromptTimedOut = true.
+	d1 := a.Ask(&Request{URL: "https://test.com", Reason: "first"})
+	if d1 != DecisionBlock {
+		t.Fatalf("expected timeout block, got %d", d1)
+	}
+
+	// Write stale input that gets buffered in the lines channel.
+	// The readLines goroutine reads it and puts it in the channel.
+	go func() {
+		_, _ = w.Write([]byte("stale\n"))
+		// Give time for readLines to buffer this, then write real response.
+		time.Sleep(200 * time.Millisecond)
+		_, _ = w.Write([]byte("y\n"))
+	}()
+
+	// Give time for the stale line to be read into the channel.
+	time.Sleep(100 * time.Millisecond)
+
+	// Second request: drainStaleLines removes "stale", then prompt reads "y".
+	d2 := a.Ask(&Request{URL: "https://test.com", Reason: "second"})
+	if d2 != DecisionAllow {
+		t.Fatalf("expected allow after drain, got %d", d2)
+	}
+}
+
+func TestApprover_ContextCancel(t *testing.T) {
+	// Slow reader with no input - cancel context to unblock
+	r, _ := io.Pipe()
+	output := &bytes.Buffer{}
+	a := New(30, // long timeout
+		WithInput(r),
+		WithOutput(output),
+		WithTerminal(true),
+	)
+
+	// Close the approver (cancels context) in background
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		a.Close()
+	}()
+
+	d := a.Ask(&Request{URL: "https://test.com", Reason: "test"})
+	if d != DecisionBlock {
+		t.Fatalf("expected block on context cancel, got %d", d)
+	}
+}
+
+func TestApprover_QueueFullOnCancel(t *testing.T) {
+	// Test that Ask returns DecisionBlock when context is cancelled while queuing
+	r, _ := io.Pipe()
+	output := &bytes.Buffer{}
+	a := New(30,
+		WithInput(r),
+		WithOutput(output),
+		WithTerminal(true),
+	)
+
+	// Cancel immediately
+	a.Close()
+
+	d := a.Ask(&Request{URL: "https://test.com", Reason: "test"})
+	if d != DecisionBlock {
+		t.Fatalf("expected block on cancelled context, got %d", d)
+	}
+}
+
+func TestApprover_StripResponse(t *testing.T) {
+	a, _ := testApprover(t, "s\n", 5)
+
+	d := a.Ask(&Request{URL: "https://test.com", Reason: "test"})
+	if d != DecisionStrip {
+		t.Fatalf("expected DecisionStrip, got %d", d)
+	}
+}
+
+func TestApprover_YesResponse(t *testing.T) {
+	a, _ := testApprover(t, "yes\n", 5)
+
+	d := a.Ask(&Request{URL: "https://test.com", Reason: "test"})
+	if d != DecisionAllow {
+		t.Fatalf("expected DecisionAllow for 'yes', got %d", d)
+	}
+}
+
+func TestApprover_StripWordResponse(t *testing.T) {
+	a, _ := testApprover(t, "strip\n", 5)
+
+	d := a.Ask(&Request{URL: "https://test.com", Reason: "test"})
+	if d != DecisionStrip {
+		t.Fatalf("expected DecisionStrip for 'strip', got %d", d)
+	}
+}

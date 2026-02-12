@@ -3,6 +3,8 @@ package scanner
 import (
 	"fmt"
 	"strings"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 // ResponseScanResult describes the outcome of scanning response content.
@@ -19,8 +21,8 @@ type ResponseMatch struct {
 	Position    int    `json:"position"`
 }
 
-// stripZeroWidth removes Unicode zero-width characters that could be used
-// to evade regex pattern matching (e.g., "ig\u200Bnore" bypassing "ignore").
+// stripZeroWidth removes Unicode zero-width and invisible characters that could
+// be used to evade regex pattern matching (e.g., "ig\u200Bnore" bypassing "ignore").
 func stripZeroWidth(s string) string {
 	return strings.Map(func(r rune) rune {
 		switch r {
@@ -28,6 +30,13 @@ func stripZeroWidth(s string) string {
 			'\u200C', // zero-width non-joiner
 			'\u200D', // zero-width joiner
 			'\u2060', // word joiner
+			'\u2061', // function application
+			'\u2062', // invisible times
+			'\u2063', // invisible separator
+			'\u2064', // invisible plus
+			'\u00AD', // soft hyphen
+			'\u200E', // left-to-right mark
+			'\u200F', // right-to-left mark
 			'\uFEFF': // byte order mark / zero-width no-break space
 			return -1 // drop
 		}
@@ -47,14 +56,16 @@ func (s *Scanner) ScanResponse(content string) ResponseScanResult {
 
 	// Strip zero-width characters before pattern matching to prevent bypass.
 	content = stripZeroWidth(content)
+	// NFKC normalization catches Unicode confusables (e.g., Cyrillic 'а' → Latin 'a').
+	content = norm.NFKC.String(content)
 
 	var matches []ResponseMatch
 	for _, p := range s.responsePatterns {
 		locs := p.re.FindAllStringIndex(content, -1)
 		for _, loc := range locs {
 			matchText := content[loc[0]:loc[1]]
-			if len(matchText) > 100 {
-				matchText = matchText[:100]
+			if runes := []rune(matchText); len(runes) > 100 {
+				matchText = string(runes[:100])
 			}
 			matches = append(matches, ResponseMatch{
 				PatternName: p.name,

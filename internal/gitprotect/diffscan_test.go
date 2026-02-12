@@ -190,7 +190,7 @@ func makeDiffWithSecret(file, line string) string {
 func TestScanDiff_FindsSecret(t *testing.T) {
 	key := fakeKey("EXAMPLE")
 	diff := makeDiffWithSecret("config.go", `var key = "`+key+`"`)
-	findings := ScanDiff(diff, testPatterns())
+	findings, _ := ScanDiff(diff, testPatterns())
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding, got %d", len(findings))
 	}
@@ -222,14 +222,14 @@ func TestScanDiff_NoFindings(t *testing.T) {
 +import "fmt"
 
 `
-	findings := ScanDiff(diff, testPatterns())
+	findings, _ := ScanDiff(diff, testPatterns())
 	if len(findings) != 0 {
 		t.Fatalf("expected 0 findings, got %d", len(findings))
 	}
 }
 
 func TestScanDiff_EmptyDiff(t *testing.T) {
-	findings := ScanDiff("", testPatterns())
+	findings, _ := ScanDiff("", testPatterns())
 	if findings != nil {
 		t.Fatalf("expected nil findings, got %d", len(findings))
 	}
@@ -238,7 +238,7 @@ func TestScanDiff_EmptyDiff(t *testing.T) {
 func TestScanDiff_EmptyPatterns(t *testing.T) {
 	key := fakeKey("EXAMPLE")
 	diff := makeDiffWithSecret("x.go", `var key = "`+key+`"`)
-	findings := ScanDiff(diff, nil)
+	findings, _ := ScanDiff(diff, nil)
 	if findings != nil {
 		t.Fatalf("expected nil findings, got %d", len(findings))
 	}
@@ -262,7 +262,7 @@ diff --git a/a.go b/a.go
 +var a = "%s"
 
 `, keyZ, keyA)
-	findings := ScanDiff(diff, testPatterns())
+	findings, _ := ScanDiff(diff, testPatterns())
 	if len(findings) != 2 {
 		t.Fatalf("expected 2 findings, got %d", len(findings))
 	}
@@ -278,7 +278,7 @@ diff --git a/a.go b/a.go
 func TestScanDiff_RedactsContent(t *testing.T) {
 	key := fakeKey("EXAMPLE")
 	diff := makeDiffWithSecret("x.go", "export AWS_KEY="+key)
-	findings := ScanDiff(diff, testPatterns())
+	findings, _ := ScanDiff(diff, testPatterns())
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding, got %d", len(findings))
 	}
@@ -379,7 +379,7 @@ func TestParseDiff_NoPrefixFormat(t *testing.T) {
  package main
 +var key = "%s"
 `, key)
-	findings := ScanDiff(diff, testPatterns())
+	findings, _ := ScanDiff(diff, testPatterns())
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding with --no-prefix diff, got %d", len(findings))
 	}
@@ -392,7 +392,7 @@ func TestParseDiff_CRLFLineEndings(t *testing.T) {
 	// Windows-style \r\n line endings should not break parsing.
 	key := fakeKey("WINDOWS")
 	diff := "diff --git a/x.go b/x.go\r\n--- a/x.go\r\n+++ b/x.go\r\n@@ -1,2 +1,3 @@\r\n package x\r\n+var k = \"" + key + "\"\r\n\r\n"
-	findings := ScanDiff(diff, testPatterns())
+	findings, _ := ScanDiff(diff, testPatterns())
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding with CRLF line endings, got %d", len(findings))
 	}

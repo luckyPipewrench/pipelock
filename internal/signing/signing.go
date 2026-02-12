@@ -184,7 +184,16 @@ func LoadPublicKeyFile(path string) (ed25519.PublicKey, error) {
 }
 
 // LoadPrivateKeyFile reads and decodes a private key from a file.
+// Warns to stderr if the file is readable by group or others (mode & 0o077 != 0).
 func LoadPrivateKeyFile(path string) (ed25519.PrivateKey, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading private key: %w", err)
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		fmt.Fprintf(os.Stderr, "WARNING: private key %s has permissions %04o — should be 0600\n", path, info.Mode().Perm())
+	}
+
 	data, err := os.ReadFile(path) //nolint:gosec // G304: caller controls path
 	if err != nil {
 		return nil, fmt.Errorf("reading private key: %w", err)

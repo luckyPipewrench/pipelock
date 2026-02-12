@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"os"
@@ -1031,6 +1032,238 @@ func TestResolveDir_DefaultCwd(t *testing.T) {
 	}
 }
 
+func TestIntegrityCheck_JSON(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, dir, "file.txt", "original\n")
+
+	// Init
+	initCmd := rootCmd()
+	initCmd.SetArgs([]string{"integrity", "init", dir})
+	initCmd.SetOut(&strings.Builder{})
+	if err := initCmd.Execute(); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	// Tamper
+	writeTestFile(t, dir, "file.txt", "tampered\n")
+
+	// Check with --json
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"integrity", "check", dir, "--json"})
+
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for integrity violation")
+	}
+
+	// Output should be valid JSON.
+	var result struct {
+		OK         bool `json:"ok"`
+		Violations []struct {
+			Path string `json:"path"`
+			Type string `json:"type"`
+		} `json:"violations"`
+	}
+	if err := json.Unmarshal([]byte(buf.String()), &result); err != nil {
+		t.Fatalf("expected JSON output, got parse error: %v\noutput: %s", err, buf.String())
+	}
+	if result.OK {
+		t.Error("expected ok=false")
+	}
+	if len(result.Violations) != 1 {
+		t.Errorf("expected 1 violation, got %d", len(result.Violations))
+	}
+}
+
+func TestIntegrityCheck_JSON_Clean(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, dir, "file.txt", "content\n")
+
+	// Init
+	initCmd := rootCmd()
+	initCmd.SetArgs([]string{"integrity", "init", dir})
+	initCmd.SetOut(&strings.Builder{})
+	if err := initCmd.Execute(); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	// Check with --json — clean state
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"integrity", "check", dir, "--json"})
+
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var result struct {
+		OK         bool  `json:"ok"`
+		Violations []any `json:"violations"`
+	}
+	if err := json.Unmarshal([]byte(buf.String()), &result); err != nil {
+		t.Fatalf("expected JSON output: %v", err)
+	}
+	if !result.OK {
+		t.Error("expected ok=true for clean check")
+	}
+	if len(result.Violations) != 0 {
+		t.Errorf("expected 0 violations, got %d", len(result.Violations))
+	}
+}
+
+func TestWriteJSONCheck_WithViolations(t *testing.T) {
+	violations := []integrity.Violation{
+		{Path: "file.txt", Type: integrity.ViolationModified, Expected: "abc", Actual: "xyz"},
+		{Path: "new.txt", Type: integrity.ViolationAdded},
+	}
+	var buf strings.Builder
+	err := writeJSONCheck(&buf, violations)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var result struct {
+		OK         bool `json:"ok"`
+		Violations []struct {
+			Path string `json:"path"`
+			Type string `json:"type"`
+		} `json:"violations"`
+	}
+	if err := json.Unmarshal([]byte(buf.String()), &result); err != nil {
+		t.Fatalf("not valid JSON: %v\noutput: %s", err, buf.String())
+	}
+	if result.OK {
+		t.Error("expected ok=false with violations")
+	}
+	if len(result.Violations) != 2 {
+		t.Errorf("expected 2 violations, got %d", len(result.Violations))
+	}
+}
+
+func TestWriteJSONCheck_NoViolations(t *testing.T) {
+	var buf strings.Builder
+	err := writeJSONCheck(&buf, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var result struct {
+		OK         bool  `json:"ok"`
+		Violations []any `json:"violations"`
+	}
+	if err := json.Unmarshal([]byte(buf.String()), &result); err != nil {
+		t.Fatalf("not valid JSON: %v", err)
+	}
+	if !result.OK {
+		t.Error("expected ok=true with no violations")
+	}
+	// Violations should be an empty array, not null.
+	if result.Violations == nil {
+		t.Error("expected empty array, not null")
+	}
+}
+
+func TestResolveManifestPath_DefaultPath(t *testing.T) {
+	result := resolveManifestPath("", "/workspace")
+	want := filepath.Join("/workspace", integrity.DefaultManifestFile)
+	if result != want {
+		t.Errorf("expected %q, got %q", want, result)
+	}
+}
+
+func TestResolveManifestPath_CustomPath(t *testing.T) {
+	result := resolveManifestPath("/custom/manifest.json", "/workspace")
+	if result != "/custom/manifest.json" {
+		t.Errorf("expected /custom/manifest.json, got %q", result)
+	}
+}
+
+func TestResolveDir_Default(t *testing.T) {
+	dir, err := resolveDir(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dir == "" {
+		t.Error("expected non-empty directory for default")
+	}
+}
+
+func TestResolveDir_Custom(t *testing.T) {
+	dir, err := resolveDir([]string{t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dir == "" {
+		t.Error("expected non-empty directory for custom")
+	}
+}
+
+func TestResolveDir_NotADirectory(t *testing.T) {
+	tmp := t.TempDir()
+	file := filepath.Join(tmp, "file.txt")
+	if err := os.WriteFile(file, []byte("hi"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := resolveDir([]string{file})
+	if err == nil {
+		t.Fatal("expected error for non-directory path")
+	}
+}
+
+func TestResolveDir_Nonexistent(t *testing.T) {
+	_, err := resolveDir([]string{"/nonexistent/path/xyz"})
+	if err == nil {
+		t.Fatal("expected error for nonexistent path")
+	}
+}
+
+func TestIntegrityInit_NoDirectory(t *testing.T) {
+	// Init with a nonexistent directory should fail.
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"integrity", "init", "--dir", "/nonexistent/xyz/abc"})
+	var buf strings.Builder
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for nonexistent directory")
+	}
+}
+
+func TestIntegrityCheck_NoManifest(t *testing.T) {
+	dir := t.TempDir()
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"integrity", "check", "--dir", dir})
+	var buf strings.Builder
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when no manifest exists")
+	}
+}
+
+func TestIntegrityUpdate_NoManifest(t *testing.T) {
+	dir := t.TempDir()
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"integrity", "update", "--dir", dir})
+	var buf strings.Builder
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when no manifest exists for update")
+	}
+}
+
 func writeTestFile(t *testing.T, dir, name, content string) {
 	t.Helper()
 	full := filepath.Join(dir, name)
@@ -1039,5 +1272,224 @@ func writeTestFile(t *testing.T, dir, name, content string) {
 	}
 	if err := os.WriteFile(full, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestIntegrityInit_ManifestStatError(t *testing.T) {
+	// Stat on manifest path returns error that's NOT ErrNotExist.
+	// This covers the else-if branch at integrity.go:72.
+	dir := t.TempDir()
+	writeTestFile(t, dir, "file.txt", "content")
+
+	// Create an unreadable parent directory for the manifest.
+	mDir := filepath.Join(dir, "sealed")
+	if err := os.MkdirAll(mDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Create a manifest file then make the dir unreadable so Stat fails with EPERM.
+	mPath := filepath.Join(mDir, "manifest.json")
+	if err := os.WriteFile(mPath, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(mDir, 0o000); err != nil { //nolint:gosec // intentionally restrictive for test
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(mDir, 0o700) }) //nolint:gosec // restore
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"integrity", "init", dir, "--manifest", mPath})
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for unreadable manifest path")
+	}
+	if !strings.Contains(err.Error(), "checking for existing manifest") {
+		t.Errorf("expected 'checking for existing manifest' error, got: %v", err)
+	}
+}
+
+func TestIntegrityInit_SaveError(t *testing.T) {
+	// Generate succeeds but Save fails (read-only output dir).
+	workspace := t.TempDir()
+	writeTestFile(t, workspace, "file.txt", "content")
+
+	outDir := t.TempDir()
+	mPath := filepath.Join(outDir, "manifest.json")
+
+	// Make the output dir read-only AFTER creating it so CreateTemp fails.
+	if err := os.Chmod(outDir, 0o500); err != nil { //nolint:gosec // intentionally restrictive for test
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(outDir, 0o700) }) //nolint:gosec // restore
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"integrity", "init", workspace, "--manifest", mPath})
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for save failure")
+	}
+}
+
+func TestIntegrityCheck_CheckError(t *testing.T) {
+	// Init a manifest, then make a subdirectory unreadable so Check fails.
+	dir := t.TempDir()
+	subdir := filepath.Join(dir, "sub")
+	if err := os.MkdirAll(subdir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, subdir, "file.txt", "content")
+
+	// Init manifest
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"integrity", "init", dir})
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	// Make subdir unreadable so Check's WalkDir fails.
+	if err := os.Chmod(subdir, 0o000); err != nil { //nolint:gosec // intentionally restrictive for test
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(subdir, 0o700) }) //nolint:gosec // restore
+
+	cmd2 := rootCmd()
+	cmd2.SetArgs([]string{"integrity", "check", dir})
+	buf2 := &bytes.Buffer{}
+	cmd2.SetOut(buf2)
+	cmd2.SetErr(buf2)
+
+	err := cmd2.Execute()
+	if err == nil {
+		t.Fatal("expected error for unreadable subdirectory during check")
+	}
+}
+
+func TestIntegrityUpdate_GenerateError(t *testing.T) {
+	// Init a manifest, then make workspace unreadable so Update's Generate fails.
+	dir := t.TempDir()
+	subdir := filepath.Join(dir, "sub")
+	if err := os.MkdirAll(subdir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, subdir, "file.txt", "content")
+
+	// Init manifest
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"integrity", "init", dir})
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	// Make subdir unreadable so Generate's WalkDir fails during update.
+	if err := os.Chmod(subdir, 0o000); err != nil { //nolint:gosec // intentionally restrictive for test
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(subdir, 0o700) }) //nolint:gosec // restore
+
+	cmd2 := rootCmd()
+	cmd2.SetArgs([]string{"integrity", "update", dir})
+	buf2 := &bytes.Buffer{}
+	cmd2.SetOut(buf2)
+	cmd2.SetErr(buf2)
+
+	err := cmd2.Execute()
+	if err == nil {
+		t.Fatal("expected error for unreadable workspace during update")
+	}
+}
+
+func TestIntegrityUpdate_SaveError(t *testing.T) {
+	// Init a manifest to a custom path, then make that dir read-only so Save fails.
+	workspace := t.TempDir()
+	writeTestFile(t, workspace, "file.txt", "content")
+
+	outDir := t.TempDir()
+	mPath := filepath.Join(outDir, "manifest.json")
+
+	// Init with custom manifest path.
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"integrity", "init", workspace, "--manifest", mPath})
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	// Make the output dir read-only so Save fails during update.
+	if err := os.Chmod(outDir, 0o500); err != nil { //nolint:gosec // intentionally restrictive for test
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(outDir, 0o700) }) //nolint:gosec // restore
+
+	cmd2 := rootCmd()
+	cmd2.SetArgs([]string{"integrity", "update", workspace, "--manifest", mPath})
+	buf2 := &bytes.Buffer{}
+	cmd2.SetOut(buf2)
+	cmd2.SetErr(buf2)
+
+	err := cmd2.Execute()
+	if err == nil {
+		t.Fatal("expected error for save failure during update")
+	}
+}
+
+func TestIntegrityCheck_VerifyError(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Init manifest.
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"integrity", "init", dir})
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Check with --verify but nonexistent agent.
+	cmd2 := rootCmd()
+	cmd2.SetArgs([]string{"integrity", "check", dir, "--verify", "--agent", "nonexistent", "--keystore", t.TempDir()})
+	buf2 := &bytes.Buffer{}
+	cmd2.SetOut(buf2)
+	cmd2.SetErr(buf2)
+
+	err := cmd2.Execute()
+	if err == nil {
+		t.Fatal("expected error for verify with nonexistent agent")
+	}
+}
+
+func TestIntegrityUpdate_LoadError(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Run update without init — no existing manifest to load.
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"integrity", "update", dir})
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for missing manifest during update")
 	}
 }

@@ -44,9 +44,12 @@ type RPCError struct {
 // Result is json.RawMessage (not *ToolResult) to handle non-standard result
 // shapes without failing the entire parse — a typed *ToolResult would cause
 // json.Unmarshal to error on string/array/non-object results, allowing bypass.
+// Method and Params are included to scan server notifications for injection.
 type RPCResponse struct {
 	JSONRPC string          `json:"jsonrpc"`
 	ID      json.RawMessage `json:"id"`
+	Method  string          `json:"method,omitempty"`
+	Params  json.RawMessage `json:"params,omitempty"`
 	Result  json.RawMessage `json:"result,omitempty"`
 	Error   json.RawMessage `json:"error,omitempty"`
 }
@@ -131,9 +134,15 @@ func extractStringsFromJSON(raw json.RawMessage) []string {
 
 // ScanResponse parses a single JSON-RPC 2.0 response and scans its text
 // content for prompt injection. Parse errors produce a verdict with Clean=false
-// and the Error field set. Both result content and error messages are scanned —
-// error.message is a common vector for prompt injection via tool errors.
+// and the Error field set. Both result content and error messages are scanned.
+// Server notifications (method+params, no id) are also scanned.
+// Batch responses (JSON arrays) are detected and each element scanned individually.
 func ScanResponse(line []byte, sc *scanner.Scanner) ScanVerdict {
+	// Detect batch response (JSON-RPC 2.0 batch = JSON array).
+	if len(line) > 0 && line[0] == '[' {
+		return scanBatch(line, sc)
+	}
+
 	var rpc RPCResponse
 	if err := json.Unmarshal(line, &rpc); err != nil {
 		return ScanVerdict{Clean: false, Error: fmt.Sprintf("invalid JSON: %v", err)}
@@ -176,6 +185,17 @@ func ScanResponse(line []byte, sc *scanner.Scanner) ScanVerdict {
 		}
 	}
 
+	// Scan notification params for injection content.
+	// MCP server notifications (method+params, no id) can carry payloads.
+	if len(rpc.Params) > 0 && string(rpc.Params) != jsonNull {
+		if paramsText := ExtractText(rpc.Params); paramsText != "" {
+			if text != "" {
+				text += "\n"
+			}
+			text += paramsText
+		}
+	}
+
 	if text == "" {
 		return ScanVerdict{ID: rpc.ID, Clean: true}
 	}
@@ -190,6 +210,43 @@ func ScanResponse(line []byte, sc *scanner.Scanner) ScanVerdict {
 		Clean:   false,
 		Action:  sc.ResponseAction(),
 		Matches: result.Matches,
+	}
+}
+
+// scanBatch scans a JSON-RPC 2.0 batch response (array of responses).
+// Returns a combined verdict aggregating matches from all elements.
+func scanBatch(line []byte, sc *scanner.Scanner) ScanVerdict {
+	var batch []json.RawMessage
+	if err := json.Unmarshal(line, &batch); err != nil {
+		return ScanVerdict{Clean: false, Error: fmt.Sprintf("invalid JSON batch: %v", err)}
+	}
+
+	if len(batch) == 0 {
+		return ScanVerdict{Clean: true}
+	}
+
+	var allMatches []scanner.ResponseMatch
+	var firstID json.RawMessage
+	var action string
+
+	for _, elem := range batch {
+		v := ScanResponse(elem, sc)
+		if firstID == nil && len(v.ID) > 0 {
+			firstID = v.ID
+		}
+		if !v.Clean && v.Error == "" {
+			allMatches = append(allMatches, v.Matches...)
+			if action == "" {
+				action = v.Action
+			}
+		}
+	}
+
+	if len(allMatches) == 0 {
+		return ScanVerdict{ID: firstID, Clean: true}
+	}
+	return ScanVerdict{
+		ID: firstID, Clean: false, Action: action, Matches: allMatches,
 	}
 }
 

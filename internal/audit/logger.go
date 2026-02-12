@@ -4,10 +4,52 @@ package audit
 import (
 	"io"
 	"os"
+	"strings"
 	"time"
+	"unicode"
 
 	"github.com/rs/zerolog"
 )
+
+// sanitizeString strips control characters and ANSI escape sequences from a
+// string before logging. Prevents terminal escape injection via crafted URLs
+// (e.g., \x1b[2J to clear screen when tailing audit logs).
+func sanitizeString(s string) string {
+	// Fast path: most strings have no control characters.
+	clean := true
+	for _, r := range s {
+		if r != '\t' && r != '\n' && (unicode.IsControl(r) || r == '\x1b') {
+			clean = false
+			break
+		}
+	}
+	if clean {
+		return s
+	}
+
+	var b strings.Builder
+	b.Grow(len(s))
+	inEscape := false
+	for _, r := range s {
+		if inEscape {
+			// ANSI escape sequences end with a letter (A-Z, a-z).
+			if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') {
+				inEscape = false
+			}
+			continue
+		}
+		if r == '\x1b' {
+			inEscape = true
+			continue
+		}
+		// Allow tabs and newlines but strip other control chars.
+		if r != '\t' && r != '\n' && unicode.IsControl(r) {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
 
 // EventType describes the kind of audit event.
 type EventType string
@@ -92,7 +134,7 @@ func (l *Logger) LogAllowed(method, url, clientIP, requestID string, statusCode,
 	l.zl.Info().
 		Str("event", string(EventAllowed)).
 		Str("method", method).
-		Str("url", url).
+		Str("url", sanitizeString(url)).
 		Str("client_ip", clientIP).
 		Str("request_id", requestID).
 		Int("status_code", statusCode).
@@ -109,11 +151,11 @@ func (l *Logger) LogBlocked(method, url, scanner, reason, clientIP, requestID st
 	l.zl.Warn().
 		Str("event", string(EventBlocked)).
 		Str("method", method).
-		Str("url", url).
+		Str("url", sanitizeString(url)).
 		Str("client_ip", clientIP).
 		Str("request_id", requestID).
 		Str("scanner", scanner).
-		Str("reason", reason).
+		Str("reason", sanitizeString(reason)).
 		Msg("request blocked")
 }
 
@@ -122,7 +164,7 @@ func (l *Logger) LogError(method, url, clientIP, requestID string, err error) {
 	l.zl.Error().
 		Str("event", string(EventError)).
 		Str("method", method).
-		Str("url", url).
+		Str("url", sanitizeString(url)).
 		Str("client_ip", clientIP).
 		Str("request_id", requestID).
 		Err(err).
@@ -134,10 +176,10 @@ func (l *Logger) LogAnomaly(method, url, reason, clientIP, requestID string, sco
 	l.zl.Warn().
 		Str("event", string(EventAnomaly)).
 		Str("method", method).
-		Str("url", url).
+		Str("url", sanitizeString(url)).
 		Str("client_ip", clientIP).
 		Str("request_id", requestID).
-		Str("reason", reason).
+		Str("reason", sanitizeString(reason)).
 		Float64("score", score).
 		Msg("anomaly detected")
 }
@@ -146,7 +188,7 @@ func (l *Logger) LogAnomaly(method, url, reason, clientIP, requestID string, sco
 func (l *Logger) LogResponseScan(url, clientIP, requestID, action string, matchCount int, patternNames []string) {
 	l.zl.Warn().
 		Str("event", string(EventResponseScan)).
-		Str("url", url).
+		Str("url", sanitizeString(url)).
 		Str("client_ip", clientIP).
 		Str("request_id", requestID).
 		Str("action", action).
@@ -159,8 +201,8 @@ func (l *Logger) LogResponseScan(url, clientIP, requestID, action string, matchC
 func (l *Logger) LogRedirect(originalURL, redirectURL, clientIP, requestID string, hop int) {
 	l.zl.Info().
 		Str("event", string(EventRedirect)).
-		Str("original_url", originalURL).
-		Str("redirect_url", redirectURL).
+		Str("original_url", sanitizeString(originalURL)).
+		Str("redirect_url", sanitizeString(redirectURL)).
 		Str("client_ip", clientIP).
 		Str("request_id", requestID).
 		Int("hop", hop).

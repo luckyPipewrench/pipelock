@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -637,5 +638,119 @@ func TestScanDiffCmd_JSON_EmptyStdin(t *testing.T) {
 	output := strings.TrimSpace(buf.String())
 	if output != "[]" {
 		t.Errorf("expected [] for empty stdin, got %q", output)
+	}
+}
+
+func TestInstallHooksCmd_ReadOnlyGitDir(t *testing.T) {
+	// MkdirAll for hooks dir fails when .git is read-only.
+	dir := t.TempDir()
+	gitDir := filepath.Join(dir, ".git")
+	if err := os.MkdirAll(gitDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	oldDir, _ := os.Getwd()
+	_ = os.Chdir(dir)
+	defer func() { _ = os.Chdir(oldDir) }()
+
+	// Make .git dir read-only so MkdirAll("hooks") fails.
+	if err := os.Chmod(gitDir, 0o500); err != nil { //nolint:gosec // intentionally restrictive for test
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(gitDir, 0o700) }) //nolint:gosec // restore
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"git", "install-hooks"})
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for read-only .git dir")
+	}
+	if !strings.Contains(err.Error(), "creating hooks directory") {
+		t.Errorf("expected 'creating hooks directory' error, got: %v", err)
+	}
+}
+
+func TestInstallHooksCmd_ReadOnlyHooksDir(t *testing.T) {
+	// WriteFile fails when hooks dir exists but is read-only.
+	dir := t.TempDir()
+	gitDir := filepath.Join(dir, ".git")
+	hooksDir := filepath.Join(gitDir, "hooks")
+	if err := os.MkdirAll(hooksDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	oldDir, _ := os.Getwd()
+	_ = os.Chdir(dir)
+	defer func() { _ = os.Chdir(oldDir) }()
+
+	// Make hooks dir read-only so WriteFile fails.
+	if err := os.Chmod(hooksDir, 0o500); err != nil { //nolint:gosec // intentionally restrictive for test
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(hooksDir, 0o700) }) //nolint:gosec // restore
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"git", "install-hooks"})
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for read-only hooks dir")
+	}
+	if !strings.Contains(err.Error(), "writing hook") {
+		t.Errorf("expected 'writing hook' error, got: %v", err)
+	}
+}
+
+func TestResolveGitFile_Unreadable(t *testing.T) {
+	dir := t.TempDir()
+	gitFile := filepath.Join(dir, ".git")
+	if err := os.WriteFile(gitFile, []byte("gitdir: ../somewhere"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Make .git file unreadable.
+	if err := os.Chmod(gitFile, 0o000); err != nil { //nolint:gosec // intentionally restrictive for test
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(gitFile, 0o600) }) //nolint:gosec // restore
+
+	_, err := resolveGitFile(gitFile, dir)
+	if err == nil {
+		t.Fatal("expected error for unreadable .git file")
+	}
+	if !strings.Contains(err.Error(), "reading .git file") {
+		t.Errorf("expected 'reading .git file' error, got: %v", err)
+	}
+}
+
+func TestInstallHooksCmd_BadGitFile(t *testing.T) {
+	// .git is a file with invalid content (no "gitdir: " prefix).
+	// This exercises the findGitDir → resolveGitFile error path.
+	dir := t.TempDir()
+	gitFile := filepath.Join(dir, ".git")
+	if err := os.WriteFile(gitFile, []byte("garbage content\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	oldDir, _ := os.Getwd()
+	_ = os.Chdir(dir)
+	defer func() { _ = os.Chdir(oldDir) }()
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"git", "install-hooks"})
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for invalid .git file content")
 	}
 }

@@ -83,13 +83,15 @@ type Monitoring struct {
 	MaxURLLength     int      `yaml:"max_url_length"`
 	EntropyThreshold float64  `yaml:"entropy_threshold"`
 	MaxReqPerMinute  int      `yaml:"max_requests_per_minute"`
+	MaxDataPerMinute int      `yaml:"max_data_per_minute"` // bytes per domain per minute (0 = disabled)
 	Blocklist        []string `yaml:"blocklist"`
 }
 
 // DLP configures data loss prevention scanning.
 type DLP struct {
-	ScanEnv  bool         `yaml:"scan_env"`
-	Patterns []DLPPattern `yaml:"patterns"`
+	ScanEnv            bool         `yaml:"scan_env"`
+	MinEnvSecretLength int          `yaml:"min_env_secret_length"` // minimum env var length for leak detection (default 16)
+	Patterns           []DLPPattern `yaml:"patterns"`
 }
 
 // DLPPattern is a named regex pattern for detecting secrets in URLs.
@@ -287,7 +289,75 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// Warn if listen address is not loopback (exposed to network).
+	// NOTE: these warnings print to stderr as a side effect. The proxy startup
+	// also logs non-loopback warnings via the audit logger (proxy.go Start).
+	if host, _, err := net.SplitHostPort(c.FetchProxy.Listen); err == nil {
+		ip := net.ParseIP(host)
+		if ip != nil && !ip.IsLoopback() {
+			fmt.Fprintf(os.Stderr, "WARNING: listen address %s is not loopback - proxy endpoints (/metrics, /stats) will be exposed to the network\n", c.FetchProxy.Listen)
+		}
+		if host == "" || host == "0.0.0.0" || host == "::" {
+			fmt.Fprintf(os.Stderr, "WARNING: listen address %s binds to all interfaces - consider using 127.0.0.1 for local-only access\n", c.FetchProxy.Listen)
+		}
+	}
+
 	return nil
+}
+
+// ReloadWarning describes a potential security downgrade from a config reload.
+type ReloadWarning struct {
+	Field   string
+	Message string
+}
+
+// ValidateReload compares old and new configs and returns warnings for
+// potential security downgrades. Warnings don't block the reload.
+func ValidateReload(old, updated *Config) []ReloadWarning {
+	var warnings []ReloadWarning
+
+	// Mode downgrade: strict → balanced → audit
+	modeRank := map[string]int{ModeStrict: 3, ModeBalanced: 2, ModeAudit: 1}
+	if modeRank[updated.Mode] < modeRank[old.Mode] {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "mode",
+			Message: fmt.Sprintf("mode downgraded from %s to %s", old.Mode, updated.Mode),
+		})
+	}
+
+	// DLP patterns removed
+	if len(updated.DLP.Patterns) < len(old.DLP.Patterns) {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "dlp.patterns",
+			Message: fmt.Sprintf("DLP patterns reduced from %d to %d", len(old.DLP.Patterns), len(updated.DLP.Patterns)),
+		})
+	}
+
+	// Internal CIDRs emptied
+	if len(old.Internal) > 0 && len(updated.Internal) == 0 {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "internal",
+			Message: "internal CIDR list emptied — SSRF protection disabled",
+		})
+	}
+
+	// Enforce disabled
+	if old.EnforceEnabled() && !updated.EnforceEnabled() {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "enforce",
+			Message: "enforcement disabled — switching to detect-only mode",
+		})
+	}
+
+	// Response scanning disabled
+	if old.ResponseScanning.Enabled && !updated.ResponseScanning.Enabled {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "response_scanning.enabled",
+			Message: "response scanning disabled",
+		})
+	}
+
+	return warnings
 }
 
 // Defaults returns a Config with sensible defaults for balanced mode.
@@ -332,11 +402,14 @@ func Defaults() *Config {
 				{Name: "Anthropic API Key", Regex: `sk-ant-[a-zA-Z0-9\-_]{20,}`, Severity: "critical"},
 				{Name: "OpenAI API Key", Regex: `sk-proj-[a-zA-Z0-9]{20,}`, Severity: "critical"},
 				{Name: "GitHub Token", Regex: `gh[ps]_[A-Za-z0-9_]{36,}`, Severity: "critical"},
-				{Name: "Slack Token", Regex: `xox[bpras]-[0-9a-zA-Z-]+`, Severity: "critical"},
+				{Name: "Slack Token", Regex: `xox[bpras]-[0-9a-zA-Z-]{15,}`, Severity: "critical"},
 				{Name: "AWS Access Key", Regex: `AKIA[0-9A-Z]{16}`, Severity: "critical"},
 				{Name: "Discord Bot Token", Regex: `[MN][A-Za-z0-9]{23,}\.[A-Za-z0-9\-_]{6}\.[A-Za-z0-9\-_]{27,}`, Severity: "critical"},
 				{Name: "Private Key Header", Regex: `-----BEGIN\s+(RSA\s+|EC\s+|DSA\s+)?PRIVATE\s+KEY-----`, Severity: "critical"},
 				{Name: "Social Security Number", Regex: `\b\d{3}-\d{2}-\d{4}\b`, Severity: "low"},
+				{Name: "GitHub Fine-Grained PAT", Regex: `github_pat_[a-zA-Z0-9_]{36,}`, Severity: "critical"},
+				{Name: "OpenAI Service Key", Regex: `sk-(proj|svcacct)-[a-zA-Z0-9\-]{20,}`, Severity: "critical"},
+				{Name: "Stripe Key", Regex: `[sr]k_(live|test)_[a-zA-Z0-9]{20,}`, Severity: "critical"},
 			},
 		},
 		GitProtection: GitProtection{

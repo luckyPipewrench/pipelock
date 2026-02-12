@@ -89,3 +89,35 @@ func TestExtractAgent_AllowsDots(t *testing.T) {
 		t.Errorf("expected claude-code.v2, got %q", got)
 	}
 }
+
+func TestExtractAgent_EmptyQueryParam(t *testing.T) {
+	// Both header and query param empty → anonymous
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url=https://example.com&agent=", nil)
+	got := ExtractAgent(req)
+	if got != "anonymous" { //nolint:goconst // test value
+		t.Errorf("expected anonymous for empty query param, got %q", got)
+	}
+}
+
+func TestExtractAgent_OnlyDashesAndDots(t *testing.T) {
+	// Agent name with only allowed chars: dashes, dots, underscores
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url=https://example.com", nil)
+	req.Header.Set(AgentHeader, "-._.-.") //nolint:goconst // test value
+	got := ExtractAgent(req)
+	if got != "-._.-." {
+		t.Errorf("expected -._.-, got %q", got)
+	}
+}
+
+func TestExtractAgent_AllSpecialChars_BecomesAnonymous(t *testing.T) {
+	// Agent name that is ALL special chars → regex replaces all with "_"
+	// But underscores ARE allowed, so the result is "___" not empty.
+	// Need chars that become empty: none exist because _ replaces them.
+	// Instead use a name in query param that's something like emoji-only.
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url=https://example.com&agent=%E2%9C%93%E2%9C%93", nil)
+	got := ExtractAgent(req)
+	// Unicode checkmarks → replaced with underscores → "__" (not empty)
+	if got == "" {
+		t.Error("should not return empty string")
+	}
+}

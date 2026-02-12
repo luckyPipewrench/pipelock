@@ -14,7 +14,7 @@
 
 If you run Claude Code, OpenHands, or any AI agent with shell access and API keys, this is for you.
 
-[Blog](https://pipelab.org/blog/) | [OWASP Coverage](docs/owasp-mapping.md) | [Tool Comparison](docs/comparison.md) | [ClawHub](https://clawhub.ai/luckyPipewrench/pipelock)
+[Blog](https://pipelab.org/blog/) | [OWASP Coverage](docs/owasp-mapping.md) | [Tool Comparison](docs/comparison.md)
 
 > If Pipelock is useful, a [star](https://github.com/luckyPipewrench/pipelock) helps others find it.
 

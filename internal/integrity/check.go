@@ -13,9 +13,10 @@ type ViolationType string
 
 // Violation types reported by Check.
 const (
-	ViolationModified ViolationType = "modified"
-	ViolationAdded    ViolationType = "added"
-	ViolationRemoved  ViolationType = "removed"
+	ViolationModified    ViolationType = "modified"
+	ViolationAdded       ViolationType = "added"
+	ViolationRemoved     ViolationType = "removed"
+	ViolationPermissions ViolationType = "permissions"
 )
 
 // Violation represents a single file integrity violation.
@@ -118,6 +119,17 @@ func Check(dir string, manifest *Manifest) ([]Violation, error) {
 				Type:     ViolationModified,
 				Expected: expected.SHA256,
 				Actual:   actual.SHA256,
+			})
+		}
+
+		// Check permissions if the manifest has mode data (backward compat:
+		// older manifests may have empty Mode, skip comparison in that case).
+		if expected.Mode != "" && actual.Mode != "" && actual.Mode != expected.Mode {
+			violations = append(violations, Violation{
+				Path:     path,
+				Type:     ViolationPermissions,
+				Expected: expected.Mode,
+				Actual:   actual.Mode,
 			})
 		}
 	}

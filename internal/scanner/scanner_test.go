@@ -1,7 +1,11 @@
 package scanner
 
 import (
+	"encoding/base32"
+	"fmt"
 	"net"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -1082,5 +1086,329 @@ func TestIsInternalIP_DisabledReturnsAlwaysFalse(t *testing.T) {
 
 	if s.IsInternalIP(net.ParseIP("127.0.0.1")) {
 		t.Error("expected false when SSRF is disabled")
+	}
+}
+
+// --- DataBudget integration tests ---
+
+func TestScan_DataBudgetExceeded(t *testing.T) {
+	cfg := testConfig()
+	cfg.FetchProxy.Monitoring.MaxDataPerMinute = 100 // 100 bytes/min/domain
+	s := New(cfg)
+	defer s.Close()
+
+	// Record enough data to exceed the budget
+	s.RecordRequest("example.com", 150)
+
+	result := s.Scan("https://example.com/page")
+	if result.Allowed {
+		t.Error("expected request blocked after exceeding data budget")
+	}
+	if result.Scanner != "databudget" {
+		t.Errorf("expected scanner=databudget, got %s", result.Scanner)
+	}
+}
+
+func TestScan_DataBudgetUnderLimit(t *testing.T) {
+	cfg := testConfig()
+	cfg.FetchProxy.Monitoring.MaxDataPerMinute = 1000
+	s := New(cfg)
+	defer s.Close()
+
+	s.RecordRequest("example.com", 100)
+
+	result := s.Scan("https://example.com/page")
+	if !result.Allowed {
+		t.Errorf("expected request allowed under data budget, blocked: %s", result.Reason)
+	}
+}
+
+func TestScan_DataBudgetDisabled(t *testing.T) {
+	cfg := testConfig()
+	cfg.FetchProxy.Monitoring.MaxDataPerMinute = 0 // disabled
+	s := New(cfg)
+	defer s.Close()
+
+	// Should always be allowed when disabled
+	result := s.Scan("https://example.com/page")
+	if !result.Allowed {
+		t.Errorf("expected allowed when data budget disabled, blocked: %s", result.Reason)
+	}
+}
+
+func TestRecordRequest_WithDataBudget(t *testing.T) {
+	cfg := testConfig()
+	cfg.FetchProxy.Monitoring.MaxDataPerMinute = 500
+	s := New(cfg)
+	defer s.Close()
+
+	// RecordRequest should track data bytes
+	s.RecordRequest("example.com", 200)
+	s.RecordRequest("example.com", 200)
+
+	// Now at 400 bytes, under 500 limit
+	result := s.Scan("https://example.com/page")
+	if !result.Allowed {
+		t.Errorf("expected allowed at 400/500 bytes, blocked: %s", result.Reason)
+	}
+
+	// Record 200 more to exceed
+	s.RecordRequest("example.com", 200)
+
+	result = s.Scan("https://example.com/page")
+	if result.Allowed {
+		t.Error("expected blocked at 600/500 bytes")
+	}
+}
+
+func TestRecordRequest_NilDataBudget(t *testing.T) {
+	cfg := testConfig()
+	cfg.FetchProxy.Monitoring.MaxDataPerMinute = 0 // no budget
+	s := New(cfg)
+	defer s.Close()
+
+	// Should not panic
+	s.RecordRequest("example.com", 1000)
+}
+
+func TestRecordRequest_ZeroBytes(t *testing.T) {
+	cfg := testConfig()
+	cfg.FetchProxy.Monitoring.MaxDataPerMinute = 100
+	s := New(cfg)
+	defer s.Close()
+
+	// Zero bytes should not be recorded
+	s.RecordRequest("example.com", 0)
+
+	result := s.Scan("https://example.com/page")
+	if !result.Allowed {
+		t.Error("expected allowed after recording 0 bytes")
+	}
+}
+
+// --- DLP zero-width bypass tests ---
+
+func TestScan_DLP_ZeroWidthBypass(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// Try to bypass DLP with zero-width characters inside a known pattern
+	// Build the pattern at runtime to avoid gitleaks
+	prefix := "sk-ant-"
+	suffix := "abcdefghijklmnopqrstuvwxyz"
+	zwsp := "\u200B" // zero-width space
+	url := "https://example.com/api?key=" + prefix + zwsp + suffix
+
+	result := s.Scan(url)
+	if result.Allowed {
+		t.Error("expected DLP to catch zero-width bypass of API key pattern")
+	}
+}
+
+// --- DLP new pattern tests ---
+
+func TestScan_DLP_GitHubFinegrainedPAT(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// Build token at runtime to avoid gitleaks
+	token := "github_pat_" + "aB1cD2eF3gH4iJ5kL6mN7oP8qR9sT0uV1wX2yZ3aB4cD5eF"
+	result := s.Scan("https://example.com/api?token=" + token)
+	if result.Allowed {
+		t.Error("expected DLP to catch GitHub Fine-Grained PAT")
+	}
+}
+
+func TestScan_DLP_OpenAIServiceKey(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// Build key at runtime
+	key := "sk-svcacct-" + "abcdefghijklmnopqrstuvwxyz"
+	result := s.Scan("https://example.com/api?key=" + key)
+	if result.Allowed {
+		t.Error("expected DLP to catch OpenAI Service Key")
+	}
+}
+
+func TestScan_DLP_StripeKey(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// Build key at runtime
+	key := "sk_live_" + "abcdefghijklmnopqrstuvwx"
+	result := s.Scan("https://example.com/api?key=" + key)
+	if result.Allowed {
+		t.Error("expected DLP to catch Stripe live key")
+	}
+}
+
+func TestScan_DLP_StripeTestKey(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	key := "rk_test_" + "abcdefghijklmnopqrstuvwx"
+	result := s.Scan("https://example.com/api?key=" + key)
+	if result.Allowed {
+		t.Error("expected DLP to catch Stripe test restricted key")
+	}
+}
+
+// --- Env leak encoding tests ---
+
+func TestScan_EnvLeak_HexEncoded(t *testing.T) {
+	cfg := testConfig()
+	cfg.DLP.ScanEnv = true
+	s := New(cfg)
+	defer s.Close()
+
+	// Inject a known env secret into the scanner's env secrets list
+	secret := "SuperSecretValue123456" //nolint:goconst // test value
+	s.envSecrets = []string{secret}
+
+	// Hex encode the secret
+	hexEncoded := ""
+	for _, b := range []byte(secret) {
+		hexEncoded += fmt.Sprintf("%02x", b)
+	}
+
+	result := s.Scan("https://example.com/exfil?data=" + hexEncoded)
+	if result.Allowed {
+		t.Error("expected hex-encoded env leak to be caught")
+	}
+	if result.Scanner != "dlp" {
+		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	}
+}
+
+func TestScan_EnvLeak_Base32Encoded(t *testing.T) {
+	cfg := testConfig()
+	cfg.DLP.ScanEnv = true
+	s := New(cfg)
+	defer s.Close()
+
+	secret := "SuperSecretValue123456"
+	s.envSecrets = []string{secret}
+
+	// Base32 StdEncoding
+	encoded := base32.StdEncoding.EncodeToString([]byte(secret))
+
+	result := s.Scan("https://example.com/exfil?data=" + encoded)
+	if result.Allowed {
+		t.Error("expected base32-encoded env leak to be caught")
+	}
+}
+
+func TestScan_EnvLeak_Base32NoPadding(t *testing.T) {
+	cfg := testConfig()
+	cfg.DLP.ScanEnv = true
+	s := New(cfg)
+	defer s.Close()
+
+	secret := "SuperSecretValue123456"
+	s.envSecrets = []string{secret}
+
+	encoded := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString([]byte(secret))
+
+	result := s.Scan("https://example.com/exfil?data=" + encoded)
+	if result.Allowed {
+		t.Error("expected base32-no-padding env leak to be caught")
+	}
+}
+
+// --- Scanner Close tests ---
+
+func TestScanner_Close_WithDataBudget(t *testing.T) {
+	cfg := testConfig()
+	cfg.FetchProxy.Monitoring.MaxDataPerMinute = 1000
+	s := New(cfg)
+	s.Close() // should close data budget cleanup goroutine
+}
+
+func TestScanner_Close_NilDataBudget(t *testing.T) {
+	cfg := testConfig()
+	cfg.FetchProxy.Monitoring.MaxDataPerMinute = 0
+	s := New(cfg)
+	s.Close() // should not panic with nil data budget
+}
+
+// --- CheckAndRecord concurrent test ---
+
+func TestCheckAndRecord_Concurrent(t *testing.T) {
+	rl := NewRateLimiter(100) // 100 req/min
+	defer rl.Close()
+
+	var wg sync.WaitGroup
+	allowed := int64(0)
+	for i := 0; i < 200; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if rl.CheckAndRecord("example.com") {
+				atomic.AddInt64(&allowed, 1)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if allowed > 100 {
+		t.Errorf("expected at most 100 allowed, got %d", allowed)
+	}
+	if allowed == 0 {
+		t.Error("expected some requests to be allowed")
+	}
+}
+
+// --- baseDomain tests ---
+
+func TestBaseDomain_Simple(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"example.com", "example.com"},
+		{"sub.example.com", "example.com"},
+		{"a.b.c.example.com", "example.com"},
+		{"localhost", "localhost"},
+		{"127.0.0.1", "127.0.0.1"},
+		{"::1", "::1"},
+		{"evil.com", "evil.com"},
+		{"deeply.nested.sub.evil.com", "evil.com"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := baseDomain(tt.input)
+			if got != tt.want {
+				t.Errorf("baseDomain(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDataBudget_SubdomainRotation(t *testing.T) {
+	cfg := testConfig()
+	cfg.FetchProxy.Monitoring.MaxDataPerMinute = 500
+	cfg.DLP.Patterns = nil
+	s := New(cfg)
+	defer s.Close()
+
+	// Record data across multiple subdomains — should aggregate under base domain.
+	s.RecordRequest("a.evil.com", 200)
+	s.RecordRequest("b.evil.com", 200)
+	s.RecordRequest("c.evil.com", 200)
+
+	// Budget should now be exceeded for any evil.com subdomain.
+	result := s.Scan("https://d.evil.com/")
+	if result.Allowed {
+		t.Error("expected data budget to block after subdomain rotation exceeds limit")
+	}
+	if result.Scanner != "databudget" {
+		t.Errorf("expected scanner=databudget, got %s", result.Scanner)
 	}
 }

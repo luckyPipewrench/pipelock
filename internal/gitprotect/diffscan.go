@@ -141,13 +141,27 @@ func CompileDLPPatterns(patterns []config.DLPPattern) []CompiledDLPPattern {
 	return compiled
 }
 
+// ErrNoDiffHeaders is returned when input contains no unified diff file headers.
+var ErrNoDiffHeaders = fmt.Errorf("no unified diff file headers found (expected '+++ b/filename' or '+++ filename')")
+
 // ScanDiff scans diff text for DLP pattern matches in added lines.
 // It returns findings sorted by file then line number, with redacted content —
 // the actual secret is replaced with [REDACTED] to prevent accidental exposure.
-func ScanDiff(diffText string, patterns []CompiledDLPPattern) []Finding {
+// Returns ErrNoDiffHeaders if the input contains no valid diff file headers,
+// indicating the caller may have passed non-diff content.
+func ScanDiff(diffText string, patterns []CompiledDLPPattern) ([]Finding, error) {
 	addedLines := parseDiff(diffText)
+
+	// Check if input had content but no diff headers — likely not a diff.
+	if len(addedLines) == 0 && len(strings.TrimSpace(diffText)) > 0 && len(patterns) > 0 {
+		// Only error if the input has content — empty input is fine.
+		if !strings.Contains(diffText, "+++ ") {
+			return nil, ErrNoDiffHeaders
+		}
+	}
+
 	if len(addedLines) == 0 || len(patterns) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	var findings []Finding
@@ -176,7 +190,7 @@ func ScanDiff(diffText string, patterns []CompiledDLPPattern) []Finding {
 		return findings[i].Line < findings[j].Line
 	})
 
-	return findings
+	return findings, nil
 }
 
 // FindingsJSON returns the findings as a JSON-encoded byte slice.

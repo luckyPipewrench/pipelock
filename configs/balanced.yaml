@@ -73,7 +73,7 @@ dlp:
       regex: 'github_pat_[a-zA-Z0-9_]{36,}'
       severity: critical
     - name: "OpenAI Service Key"
-      regex: 'sk-(proj|svcacct)-[a-zA-Z0-9\-]{20,}'
+      regex: 'sk-svcacct-[a-zA-Z0-9\-]{20,}'
       severity: critical
     - name: "Stripe Key"
       regex: '[sr]k_(live|test)_[a-zA-Z0-9]{20,}'

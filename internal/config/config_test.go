@@ -1011,8 +1011,10 @@ func TestDefaults_ContainsNewDLPPatterns(t *testing.T) {
 
 func TestDefaults_SlackTokenRegex(t *testing.T) {
 	cfg := Defaults()
+	found := false
 	for _, p := range cfg.DLP.Patterns {
 		if p.Name == "Slack Token" {
+			found = true
 			// Regex should use {15,} not just + to require minimum length
 			if p.Regex == "" {
 				t.Error("Slack Token regex is empty")
@@ -1031,6 +1033,9 @@ func TestDefaults_SlackTokenRegex(t *testing.T) {
 			}
 			break
 		}
+	}
+	if !found {
+		t.Fatal("Slack Token pattern not found in defaults")
 	}
 }
 

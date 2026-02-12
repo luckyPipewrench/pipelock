@@ -341,7 +341,11 @@ func TestApprover_TimeoutThenSuccess(t *testing.T) {
 
 func TestApprover_ContextCancel(t *testing.T) {
 	// Slow reader with no input - cancel context to unblock
-	r, _ := io.Pipe()
+	r, w := io.Pipe()
+	t.Cleanup(func() {
+		_ = w.Close()
+		_ = r.Close()
+	})
 	output := &bytes.Buffer{}
 	a := New(30, // long timeout
 		WithInput(r),
@@ -363,7 +367,11 @@ func TestApprover_ContextCancel(t *testing.T) {
 
 func TestApprover_QueueFullOnCancel(t *testing.T) {
 	// Test that Ask returns DecisionBlock when context is cancelled while queuing
-	r, _ := io.Pipe()
+	r, w := io.Pipe()
+	t.Cleanup(func() {
+		_ = w.Close()
+		_ = r.Close()
+	})
 	output := &bytes.Buffer{}
 	a := New(30,
 		WithInput(r),

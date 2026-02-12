@@ -408,7 +408,7 @@ func Defaults() *Config {
 				{Name: "Private Key Header", Regex: `-----BEGIN\s+(RSA\s+|EC\s+|DSA\s+)?PRIVATE\s+KEY-----`, Severity: "critical"},
 				{Name: "Social Security Number", Regex: `\b\d{3}-\d{2}-\d{4}\b`, Severity: "low"},
 				{Name: "GitHub Fine-Grained PAT", Regex: `github_pat_[a-zA-Z0-9_]{36,}`, Severity: "critical"},
-				{Name: "OpenAI Service Key", Regex: `sk-(proj|svcacct)-[a-zA-Z0-9\-]{20,}`, Severity: "critical"},
+				{Name: "OpenAI Service Key", Regex: `sk-svcacct-[a-zA-Z0-9\-]{20,}`, Severity: "critical"},
 				{Name: "Stripe Key", Regex: `[sr]k_(live|test)_[a-zA-Z0-9]{20,}`, Severity: "critical"},
 			},
 		},

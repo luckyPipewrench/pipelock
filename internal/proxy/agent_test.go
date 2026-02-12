@@ -105,7 +105,7 @@ func TestExtractAgent_OnlyDashesAndDots(t *testing.T) {
 	req.Header.Set(AgentHeader, "-._.-.") //nolint:goconst // test value
 	got := ExtractAgent(req)
 	if got != "-._.-." {
-		t.Errorf("expected -._.-, got %q", got)
+		t.Errorf("expected -._.-., got %q", got)
 	}
 }
 

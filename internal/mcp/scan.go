@@ -228,11 +228,15 @@ func scanBatch(line []byte, sc *scanner.Scanner) ScanVerdict {
 	var allMatches []scanner.ResponseMatch
 	var firstID json.RawMessage
 	var action string
+	var hasError bool
 
 	for _, elem := range batch {
 		v := ScanResponse(elem, sc)
 		if firstID == nil && len(v.ID) > 0 {
 			firstID = v.ID
+		}
+		if v.Error != "" {
+			hasError = true
 		}
 		if !v.Clean && v.Error == "" {
 			allMatches = append(allMatches, v.Matches...)
@@ -243,6 +247,9 @@ func scanBatch(line []byte, sc *scanner.Scanner) ScanVerdict {
 	}
 
 	if len(allMatches) == 0 {
+		if hasError {
+			return ScanVerdict{ID: firstID, Clean: false, Error: "one or more batch elements failed to parse"}
+		}
 		return ScanVerdict{ID: firstID, Clean: true}
 	}
 	return ScanVerdict{

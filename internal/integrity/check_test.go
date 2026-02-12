@@ -918,7 +918,7 @@ func TestGenerate_SymlinkSkipped(t *testing.T) {
 	}
 	// Create a symlink that should be skipped.
 	if err := os.Symlink(filepath.Join(dir, "real.txt"), filepath.Join(dir, "link.txt")); err != nil {
-		t.Fatal(err)
+		t.Skip("symlinks not supported on this platform")
 	}
 
 	m, err := Generate(dir, nil)
@@ -1122,13 +1122,8 @@ func TestCheck_HashError(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chmod(path, 0o600) }) //nolint:gosec // restore
 
 	violations, err := Check(dir, m)
-	if err != nil {
-		// Check might return an error for unreadable files
-		return
-	}
-	// Or it might report a violation
-	if len(violations) == 0 {
-		t.Error("expected violation or error for unreadable file")
+	if err == nil && len(violations) == 0 {
+		t.Fatal("expected either an error or a violation for unreadable file")
 	}
 }
 

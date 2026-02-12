@@ -2,6 +2,7 @@ package gitprotect
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -398,6 +399,16 @@ func TestParseDiff_CRLFLineEndings(t *testing.T) {
 	}
 	if findings[0].File != "x.go" {
 		t.Errorf("expected file x.go, got %q", findings[0].File)
+	}
+}
+
+func TestScanDiff_ErrNoDiffHeaders(t *testing.T) {
+	findings, err := ScanDiff("random text without diff headers", testPatterns())
+	if !errors.Is(err, ErrNoDiffHeaders) {
+		t.Errorf("expected ErrNoDiffHeaders, got %v", err)
+	}
+	if findings != nil {
+		t.Errorf("expected nil findings, got %v", findings)
 	}
 }
 

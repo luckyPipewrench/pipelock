@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"unicode"
+
+	"github.com/rs/zerolog"
 )
 
 func FuzzSanitizeString(f *testing.F) {
@@ -61,13 +63,13 @@ func TestSanitizeString(t *testing.T) {
 }
 
 func TestLogAllowed_SanitizesURL(t *testing.T) {
-	logger := NewNop()
+	logger := &Logger{zl: zerolog.Nop(), includeAllowed: true}
 	// Should not panic with ANSI in URL.
 	logger.LogAllowed("GET", "https://evil.com/\x1b[2Jclear", "127.0.0.1", "req-1", 200, 0, 0)
 }
 
 func TestLogBlocked_SanitizesURLAndReason(t *testing.T) {
-	logger := NewNop()
+	logger := &Logger{zl: zerolog.Nop(), includeBlocked: true}
 	logger.LogBlocked("GET", "https://\x1b[2Jevil.com", "dlp", "found \x1b[31msecret\x1b[0m", "127.0.0.1", "req-1")
 }
 

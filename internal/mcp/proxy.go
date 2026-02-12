@@ -46,35 +46,25 @@ func ForwardScanned(r io.Reader, w io.Writer, logW io.Writer, sc *scanner.Scanne
 			continue
 		}
 
-		// Parse error: fail-closed for block action, forward with warning otherwise.
+		// Parse error: always fail-closed regardless of action setting.
+		// Unparseable responses could hide injection in malformed content.
 		if verdict.Error != "" {
 			_, _ = fmt.Fprintf(logW, "pipelock: line %d: %s\n", lineNum, verdict.Error)
-			action := sc.ResponseAction()
-			if action == "block" {
-				_, _ = fmt.Fprintf(logW, "pipelock: line %d: dropping unparseable response (action=block)\n", lineNum)
-				resp := blockResponse(nil)
-				if _, err := w.Write(resp); err != nil {
-					return foundInjection, fmt.Errorf("writing block response: %w", err)
-				}
-				if _, err := w.Write([]byte("\n")); err != nil {
-					return foundInjection, fmt.Errorf("writing newline: %w", err)
-				}
-			} else {
-				// Scan raw text for injection even when not valid JSON-RPC.
-				rawResult := sc.ScanResponse(string(line))
-				if !rawResult.Clean {
-					foundInjection = true
-					names := matchNames(rawResult.Matches)
-					_, _ = fmt.Fprintf(logW, "pipelock: line %d: injection in non-JSON content (%s), action=%s\n",
-						lineNum, strings.Join(names, ", "), action)
-				}
-				// warn/strip/ask: forward unparseable lines with warning
-				if _, err := w.Write(line); err != nil {
-					return foundInjection, fmt.Errorf("writing line: %w", err)
-				}
-				if _, err := w.Write([]byte("\n")); err != nil {
-					return foundInjection, fmt.Errorf("writing newline: %w", err)
-				}
+			// Scan raw text for injection even when not valid JSON-RPC.
+			rawResult := sc.ScanResponse(string(line))
+			if !rawResult.Clean {
+				foundInjection = true
+				names := matchNames(rawResult.Matches)
+				_, _ = fmt.Fprintf(logW, "pipelock: line %d: injection in non-JSON content (%s)\n",
+					lineNum, strings.Join(names, ", "))
+			}
+			_, _ = fmt.Fprintf(logW, "pipelock: line %d: blocking unparseable response\n", lineNum)
+			resp := blockResponse(nil)
+			if _, err := w.Write(resp); err != nil {
+				return foundInjection, fmt.Errorf("writing block response: %w", err)
+			}
+			if _, err := w.Write([]byte("\n")); err != nil {
+				return foundInjection, fmt.Errorf("writing newline: %w", err)
 			}
 			continue
 		}
@@ -228,14 +218,23 @@ type stripRPCResponse struct {
 	Error   json.RawMessage `json:"error,omitempty"`
 }
 
+// maxStripDepth limits recursion between stripResponseDepth and stripBatchDepth
+// to prevent stack overflow from maliciously nested JSON arrays.
+const maxStripDepth = 4
+
 // stripResponse re-parses a JSON-RPC response, redacts matched injection
 // patterns in content blocks and error fields, and returns the re-marshaled JSON.
-// Scans text from ALL block types (not just "text") to match ExtractText behavior.
-// Also scans error.message and error.data since MCP servers can inject via errors.
 func stripResponse(line []byte, sc *scanner.Scanner) ([]byte, error) {
+	return stripResponseDepth(line, sc, 0)
+}
+
+func stripResponseDepth(line []byte, sc *scanner.Scanner, depth int) ([]byte, error) {
 	// Handle batch responses (JSON array).
 	if len(line) > 0 && line[0] == '[' {
-		return stripBatch(line, sc)
+		if depth >= maxStripDepth {
+			return nil, fmt.Errorf("batch nesting too deep (max %d)", maxStripDepth)
+		}
+		return stripBatchDepth(line, sc, depth+1)
 	}
 
 	var rpc stripRPCResponse
@@ -294,15 +293,15 @@ func stripResponse(line []byte, sc *scanner.Scanner) ([]byte, error) {
 	return json.Marshal(rpc)
 }
 
-// stripBatch handles stripping injection from batch (array) JSON-RPC responses.
-func stripBatch(line []byte, sc *scanner.Scanner) ([]byte, error) {
+// stripBatchDepth handles stripping injection from batch (array) JSON-RPC responses.
+func stripBatchDepth(line []byte, sc *scanner.Scanner, depth int) ([]byte, error) {
 	var batch []json.RawMessage
 	if err := json.Unmarshal(line, &batch); err != nil {
 		return nil, fmt.Errorf("parsing batch for strip: %w", err)
 	}
 	result := make([]json.RawMessage, len(batch))
 	for i, elem := range batch {
-		stripped, err := stripResponse(elem, sc)
+		stripped, err := stripResponseDepth(elem, sc, depth)
 		if err != nil {
 			result[i] = elem // keep original if strip fails for one element
 		} else {

@@ -27,11 +27,20 @@ type ToolResult struct {
 	Content []ContentBlock `json:"content"`
 }
 
+// RPCError represents a JSON-RPC 2.0 error object.
+type RPCError struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
 // RPCResponse represents a JSON-RPC 2.0 response envelope.
+// Result is json.RawMessage (not *ToolResult) to handle non-standard result
+// shapes without failing the entire parse — a typed *ToolResult would cause
+// json.Unmarshal to error on string/array/non-object results, allowing bypass.
 type RPCResponse struct {
 	JSONRPC string          `json:"jsonrpc"`
 	ID      json.RawMessage `json:"id"`
-	Result  *ToolResult     `json:"result,omitempty"`
+	Result  json.RawMessage `json:"result,omitempty"`
 	Error   json.RawMessage `json:"error,omitempty"`
 }
 
@@ -50,26 +59,73 @@ type ScanVerdict struct {
 	Error   string                  `json:"error,omitempty"`
 }
 
-// ExtractText concatenates all text content blocks separated by newlines.
-// Non-text blocks are silently skipped. Returns "" for nil or empty results.
-func ExtractText(result *ToolResult) string {
-	if result == nil {
+// ExtractText extracts all text content from an MCP tool result.
+// First tries to parse as a standard ToolResult with content blocks (extracting
+// text from ALL block types, not just "text" — prevents bypass via image blocks).
+// Falls back to recursively extracting all string values from arbitrary JSON,
+// preventing bypass via non-standard result shapes.
+func ExtractText(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
 		return ""
 	}
 
-	var texts []string
-	for _, block := range result.Content {
-		if block.Type == "text" {
-			texts = append(texts, block.Text)
+	// Try standard ToolResult structure first.
+	var tr ToolResult
+	if err := json.Unmarshal(raw, &tr); err == nil && len(tr.Content) > 0 {
+		var texts []string
+		for _, block := range tr.Content {
+			// Extract text from ALL content blocks, not just type=="text".
+			// Non-text blocks (image, resource) may carry prompt injection
+			// in their text field.
+			if block.Text != "" {
+				texts = append(texts, block.Text)
+			}
+		}
+		if len(texts) > 0 {
+			return strings.Join(texts, "\n")
 		}
 	}
-	return strings.Join(texts, "\n")
+
+	// Fallback: recursively extract all string values from arbitrary JSON.
+	// Catches non-standard result shapes (plain string, nested objects, etc).
+	strs := extractStringsFromJSON(raw)
+	if len(strs) > 0 {
+		return strings.Join(strs, "\n")
+	}
+
+	return ""
+}
+
+// extractStringsFromJSON recursively extracts all string values from arbitrary JSON.
+// Only extracts values (not keys) to avoid false positives from field names.
+func extractStringsFromJSON(raw json.RawMessage) []string {
+	var result []string
+	var extract func(v interface{})
+	extract = func(v interface{}) {
+		switch val := v.(type) {
+		case string:
+			result = append(result, val)
+		case []interface{}:
+			for _, item := range val {
+				extract(item)
+			}
+		case map[string]interface{}:
+			for _, item := range val {
+				extract(item)
+			}
+		}
+	}
+	var parsed interface{}
+	if err := json.Unmarshal(raw, &parsed); err == nil {
+		extract(parsed)
+	}
+	return result
 }
 
 // ScanResponse parses a single JSON-RPC 2.0 response and scans its text
 // content for prompt injection. Parse errors produce a verdict with Clean=false
-// and the Error field set. Result content is always scanned when present,
-// regardless of the error field (defensive against JSON-RPC spec violations).
+// and the Error field set. Both result content and error messages are scanned —
+// error.message is a common vector for prompt injection via tool errors.
 func ScanResponse(line []byte, sc *scanner.Scanner) ScanVerdict {
 	var rpc RPCResponse
 	if err := json.Unmarshal(line, &rpc); err != nil {
@@ -84,10 +140,22 @@ func ScanResponse(line []byte, sc *scanner.Scanner) ScanVerdict {
 		}
 	}
 
-	// Always scan when result has text — even if an error field is present.
-	// JSON-RPC 2.0 shouldn't have both, but we scan defensively.
+	// Extract text from result (handles standard ToolResult and arbitrary shapes).
 	text := ExtractText(rpc.Result)
-	if rpc.Result == nil || text == "" {
+
+	// Also scan error messages for prompt injection.
+	// Attackers can inject via error.message returned by malicious tool servers.
+	if len(rpc.Error) > 0 && string(rpc.Error) != "null" {
+		var rpcErr RPCError
+		if err := json.Unmarshal(rpc.Error, &rpcErr); err == nil && rpcErr.Message != "" {
+			if text != "" {
+				text += "\n"
+			}
+			text += rpcErr.Message
+		}
+	}
+
+	if text == "" {
 		return ScanVerdict{ID: rpc.ID, Clean: true}
 	}
 

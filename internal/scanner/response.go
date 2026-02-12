@@ -1,6 +1,9 @@
 package scanner
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // ResponseScanResult describes the outcome of scanning response content.
 type ResponseScanResult struct {
@@ -16,13 +19,34 @@ type ResponseMatch struct {
 	Position    int    `json:"position"`
 }
 
+// stripZeroWidth removes Unicode zero-width characters that could be used
+// to evade regex pattern matching (e.g., "ig\u200Bnore" bypassing "ignore").
+func stripZeroWidth(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case '\u200B', // zero-width space
+			'\u200C', // zero-width non-joiner
+			'\u200D', // zero-width joiner
+			'\u2060', // word joiner
+			'\uFEFF': // byte order mark / zero-width no-break space
+			return -1 // drop
+		}
+		return r
+	}, s)
+}
+
 // ScanResponse checks fetched content for prompt injection patterns.
 // If scanning is disabled, returns Clean=true immediately.
+// Zero-width Unicode characters are stripped before scanning to prevent
+// evasion via invisible character insertion.
 // For "strip" action, replaces matches with [REDACTED: PatternName].
 func (s *Scanner) ScanResponse(content string) ResponseScanResult {
 	if !s.responseEnabled {
 		return ResponseScanResult{Clean: true}
 	}
+
+	// Strip zero-width characters before pattern matching to prevent bypass.
+	content = stripZeroWidth(content)
 
 	var matches []ResponseMatch
 	for _, p := range s.responsePatterns {

@@ -368,3 +368,50 @@ func TestFindingsJSON_EmptySlice(t *testing.T) {
 		t.Errorf("expected [], got %q", string(data))
 	}
 }
+
+func TestParseDiff_NoPrefixFormat(t *testing.T) {
+	// git diff --no-prefix produces "+++ filename" without "b/" prefix.
+	key := fakeKey("NOPREFIX")
+	diff := fmt.Sprintf(`diff --git main.go main.go
+--- main.go
++++ main.go
+@@ -1,2 +1,3 @@
+ package main
++var key = "%s"
+`, key)
+	findings := ScanDiff(diff, testPatterns())
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding with --no-prefix diff, got %d", len(findings))
+	}
+	if findings[0].File != "main.go" {
+		t.Errorf("expected file main.go, got %q", findings[0].File)
+	}
+}
+
+func TestParseDiff_CRLFLineEndings(t *testing.T) {
+	// Windows-style \r\n line endings should not break parsing.
+	key := fakeKey("WINDOWS")
+	diff := "diff --git a/x.go b/x.go\r\n--- a/x.go\r\n+++ b/x.go\r\n@@ -1,2 +1,3 @@\r\n package x\r\n+var k = \"" + key + "\"\r\n\r\n"
+	findings := ScanDiff(diff, testPatterns())
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding with CRLF line endings, got %d", len(findings))
+	}
+	if findings[0].File != "x.go" {
+		t.Errorf("expected file x.go, got %q", findings[0].File)
+	}
+}
+
+func TestParseDiff_DevNullSkipped(t *testing.T) {
+	// +++ /dev/null should not be treated as a filename.
+	diff := `diff --git a/deleted.go b/deleted.go
+--- a/deleted.go
++++ /dev/null
+@@ -1,3 +0,0 @@
+-package deleted
+-func old() {}
+`
+	result := parseDiff(diff)
+	if len(result) != 0 {
+		t.Fatalf("expected 0 files from /dev/null diff, got %d", len(result))
+	}
+}

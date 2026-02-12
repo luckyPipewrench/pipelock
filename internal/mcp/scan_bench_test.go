@@ -23,10 +23,11 @@ func benchResponse(texts ...string) []byte {
 	for _, text := range texts {
 		blocks = append(blocks, ContentBlock{Type: "text", Text: text})
 	}
+	resultBytes, _ := json.Marshal(ToolResult{Content: blocks}) //nolint:errcheck // bench helper
 	rpc := RPCResponse{
 		JSONRPC: "2.0",
 		ID:      json.RawMessage("1"),
-		Result:  &ToolResult{Content: blocks},
+		Result:  json.RawMessage(resultBytes),
 	}
 	data, _ := json.Marshal(rpc) //nolint:errcheck // bench helper
 	return data
@@ -53,17 +54,18 @@ func BenchmarkMCPScanResponse_Injection(b *testing.B) {
 }
 
 func BenchmarkExtractText(b *testing.B) {
-	result := &ToolResult{
+	tr := ToolResult{
 		Content: []ContentBlock{
 			{Type: "text", Text: "First block of content."},
-			{Type: "image", Text: "should be skipped"},
+			{Type: "image", Text: "image caption"},
 			{Type: "text", Text: "Second block of content."},
 			{Type: "text", Text: "Third block of content."},
 			{Type: "resource"},
 		},
 	}
+	raw, _ := json.Marshal(tr) //nolint:errcheck // bench helper
 	b.ResetTimer()
 	for b.Loop() {
-		ExtractText(result)
+		ExtractText(raw)
 	}
 }

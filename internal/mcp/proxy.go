@@ -190,17 +190,27 @@ func blockResponse(id json.RawMessage) []byte {
 	return data
 }
 
+// stripRPCResponse is used only by stripResponse for typed result manipulation.
+// The main RPCResponse uses json.RawMessage for flexible scanning.
+type stripRPCResponse struct {
+	JSONRPC string          `json:"jsonrpc"`
+	ID      json.RawMessage `json:"id"`
+	Result  *ToolResult     `json:"result,omitempty"`
+	Error   json.RawMessage `json:"error,omitempty"`
+}
+
 // stripResponse re-parses a JSON-RPC response, redacts matched injection
-// patterns in each text content block, and returns the re-marshaled JSON.
+// patterns in content blocks, and returns the re-marshaled JSON.
+// Scans text from ALL block types (not just "text") to match ExtractText behavior.
 func stripResponse(line []byte, sc *scanner.Scanner) ([]byte, error) {
-	var rpc RPCResponse
+	var rpc stripRPCResponse
 	if err := json.Unmarshal(line, &rpc); err != nil {
 		return nil, fmt.Errorf("parsing response for strip: %w", err)
 	}
 
 	if rpc.Result != nil {
 		for i, block := range rpc.Result.Content {
-			if block.Type != "text" {
+			if block.Text == "" {
 				continue
 			}
 			result := sc.ScanResponse(block.Text)

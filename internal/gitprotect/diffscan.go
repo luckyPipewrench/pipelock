@@ -29,10 +29,14 @@ type addedLine struct {
 }
 
 // parseDiff extracts added lines from unified diff output.
-// It tracks the current file from "+++ b/filename" lines and
-// line numbers from "@@ -X,Y +Z,W @@" hunk headers.
-// Only lines starting with "+" (but not "+++") are captured.
+// It tracks the current file from "+++ b/filename" or "+++ filename" lines
+// (supporting both standard and --no-prefix diffs) and line numbers from
+// "@@ -X,Y +Z,W @@" hunk headers. Only lines starting with "+" (but not
+// "+++") are captured. CRLF line endings are normalized before parsing.
 func parseDiff(diffText string) map[string][]addedLine {
+	// Normalize \r\n to \n to handle Windows-style line endings.
+	diffText = strings.ReplaceAll(diffText, "\r\n", "\n")
+
 	result := make(map[string][]addedLine)
 	lines := strings.Split(diffText, "\n")
 
@@ -40,15 +44,22 @@ func parseDiff(diffText string) map[string][]addedLine {
 	var lineNum int
 
 	for _, line := range lines {
-		// Track current file from "+++ b/filename" header
+		// Track current file from "+++ b/filename" header (standard prefix)
 		if strings.HasPrefix(line, "+++ b/") {
 			currentFile = line[6:] // strip "+++ b/"
 			continue
 		}
 
+		// Also handle --no-prefix diffs: "+++ filename" (no b/ prefix).
+		// Must come after the "+++ b/" check to avoid stripping "b/" from paths.
+		if strings.HasPrefix(line, "+++ ") && !strings.HasPrefix(line, "+++ /dev/null") {
+			currentFile = line[4:] // strip "+++ "
+			continue
+		}
+
 		// Skip other diff headers
 		if strings.HasPrefix(line, "--- ") || strings.HasPrefix(line, "diff ") ||
-			strings.HasPrefix(line, "index ") || strings.HasPrefix(line, "+++ ") {
+			strings.HasPrefix(line, "index ") {
 			continue
 		}
 

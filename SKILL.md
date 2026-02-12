@@ -17,6 +17,8 @@ Pipelock is a fetch proxy that sits between you and the internet. Every outbound
 
 ## Installation
 
+Install the `pipelock` binary using one of these methods:
+
 ```bash
 # Homebrew (macOS/Linux)
 brew install luckyPipewrench/tap/pipelock
@@ -24,6 +26,8 @@ brew install luckyPipewrench/tap/pipelock
 # Or Go
 go install github.com/luckyPipewrench/pipelock/cmd/pipelock@latest
 ```
+
+These are one-time install commands. The only runtime binary is `pipelock`.
 
 ## Quick Start
 
@@ -42,7 +46,7 @@ curl "http://localhost:8888/fetch?url=https://example.com/api/data"
 
 ## Using with MCP Servers
 
-Wrap any MCP server to scan its responses for prompt injection:
+Wrap any MCP server to scan its responses for prompt injection. The command after `--` is the MCP server you want to wrap (requires that server to be installed separately):
 
 ```bash
 pipelock mcp proxy -- npx @modelcontextprotocol/server-filesystem /path/to/dir
@@ -57,6 +61,20 @@ pipelock mcp proxy -- npx @modelcontextprotocol/server-filesystem /path/to/dir
 5. **Env var leaks** - detects your actual env var values in outbound traffic
 6. **Entropy analysis** - flags high-entropy strings that look like secrets
 7. **URL length limits** - flags unusually long URLs suggesting exfiltration
+
+## Data Access
+
+Pipelock is fully local. It never phones home or transmits data externally.
+
+What it reads:
+- **Process environment variables**: scanned at startup to build a fingerprint of high-entropy values (likely secrets). These fingerprints are matched against outbound traffic to detect leaks. The actual values are never logged.
+- **HTTP request/response bodies**: inspected in-flight as a proxy. Content is scanned for DLP patterns and prompt injection, then forwarded or blocked. Nothing is stored to disk.
+- **Workspace files** (integrity mode only): SHA256 hashes are computed to detect unauthorized changes. File contents are not stored, only hashes.
+
+What it does NOT do:
+- No telemetry, analytics, or network callbacks
+- No credential storage or secret management
+- No persistent data collection
 
 ## Actions
 
@@ -89,4 +107,4 @@ pipelock integrity check ./workspace
 
 - [OWASP Agentic Top 10 mapping](https://github.com/luckyPipewrench/pipelock/blob/main/docs/owasp-mapping.md)
 - [Claude Code integration guide](https://github.com/luckyPipewrench/pipelock/blob/main/docs/guides/claude-code.md)
-- Apache 2.0 license, single binary, zero dependencies
+- Apache 2.0 license, single binary, zero runtime dependencies

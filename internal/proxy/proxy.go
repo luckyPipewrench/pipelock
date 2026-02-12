@@ -127,6 +127,10 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 				if ip == nil {
 					return nil, fmt.Errorf("SSRF blocked: unparseable IP %q from DNS for %s", ipStr, host)
 				}
+				// Normalize IPv4-mapped IPv6 (::ffff:x.x.x.x) to 4-byte form.
+				if v4 := ip.To4(); v4 != nil {
+					ip = v4
+				}
 				if currentSc.IsInternalIP(ip) {
 					return nil, fmt.Errorf("SSRF blocked: %s resolves to internal IP %s", host, ipStr)
 				}
@@ -211,9 +215,10 @@ func (p *Proxy) Start(ctx context.Context) error {
 		BaseContext: func(_ net.Listener) context.Context {
 			return ctx
 		},
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: time.Duration(cfg.FetchProxy.TimeoutSeconds+10) * time.Second,
-		IdleTimeout:  120 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second, // Slowloris protection
+		WriteTimeout:      time.Duration(cfg.FetchProxy.TimeoutSeconds+10) * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	// Graceful shutdown on context cancellation.

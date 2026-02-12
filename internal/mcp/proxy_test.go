@@ -141,7 +141,7 @@ func TestForwardScanned_StripAction(t *testing.T) {
 	}
 
 	// Strip: modified response forwarded with redacted content.
-	var rpc RPCResponse
+	var rpc stripRPCResponse
 	if err := json.Unmarshal(out.Bytes()[:bytes.IndexByte(out.Bytes(), '\n')], &rpc); err != nil {
 		t.Fatalf("strip response not valid JSON: %v\noutput: %s", err, out.String())
 	}
@@ -183,7 +183,7 @@ func TestForwardScanned_ErrorResponse(t *testing.T) {
 	sc := testScannerWithAction(t, "block")
 	var out, log bytes.Buffer
 
-	// JSON-RPC error response — no result to scan, forward as-is.
+	// JSON-RPC error response — error message is scanned but "Invalid Request" is benign.
 	errResponse := `{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"Invalid Request"}}`
 	found, err := ForwardScanned(strings.NewReader(errResponse+"\n"), &out, &log, sc, nil)
 	if err != nil {
@@ -399,7 +399,7 @@ func TestForwardScanned_AskStrip(t *testing.T) {
 		t.Fatal("expected injection detected")
 	}
 
-	var rpc RPCResponse
+	var rpc stripRPCResponse
 	if err := json.Unmarshal(out.Bytes()[:bytes.IndexByte(out.Bytes(), '\n')], &rpc); err != nil {
 		t.Fatalf("strip response not valid JSON: %v\noutput: %s", err, out.String())
 	}
@@ -456,7 +456,7 @@ func TestBlockResponse_NullID(t *testing.T) {
 	if err := json.Unmarshal(data, &resp); err != nil {
 		t.Fatalf("not valid JSON: %v", err)
 	}
-	if string(resp.ID) != "null" {
+	if string(resp.ID) != "null" { //nolint:goconst // JSON null literal
 		t.Errorf("id = %s, want null", string(resp.ID))
 	}
 }
@@ -472,7 +472,7 @@ func TestStripResponse_SingleBlock(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	var rpc RPCResponse
+	var rpc stripRPCResponse
 	if err := json.Unmarshal(stripped, &rpc); err != nil {
 		t.Fatalf("stripped response not valid JSON: %v", err)
 	}
@@ -496,7 +496,7 @@ func TestStripResponse_MultipleBlocks(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	var rpc RPCResponse
+	var rpc stripRPCResponse
 	if err := json.Unmarshal(stripped, &rpc); err != nil {
 		t.Fatalf("stripped response not valid JSON: %v", err)
 	}
@@ -520,7 +520,7 @@ func TestStripResponse_NonTextBlocksPreserved(t *testing.T) {
 	sc := testScannerWithAction(t, "strip")
 
 	// Response with image and text blocks.
-	rpc := RPCResponse{
+	rpc := stripRPCResponse{
 		JSONRPC: "2.0",
 		ID:      json.RawMessage("1"),
 		Result: &ToolResult{
@@ -536,7 +536,7 @@ func TestStripResponse_NonTextBlocksPreserved(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	var result RPCResponse
+	var result stripRPCResponse
 	if err := json.Unmarshal(stripped, &result); err != nil {
 		t.Fatalf("not valid JSON: %v", err)
 	}
@@ -547,6 +547,8 @@ func TestStripResponse_NonTextBlocksPreserved(t *testing.T) {
 	if result.Result.Content[0].Type != "image" {
 		t.Errorf("image block type changed to %s", result.Result.Content[0].Type)
 	}
+	// Image block text should now also be scanned for injection (all block types).
+	// "base64data" is not injection, so it should be unchanged.
 	if result.Result.Content[0].Text != "base64data" {
 		t.Errorf("image block text changed to %s", result.Result.Content[0].Text)
 	}

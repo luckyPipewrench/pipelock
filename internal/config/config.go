@@ -177,14 +177,16 @@ func (c *Config) ApplyDefaults() {
 	}
 	if len(c.Internal) == 0 {
 		c.Internal = []string{
-			"127.0.0.0/8",
-			"10.0.0.0/8",
-			"172.16.0.0/12",
-			"192.168.0.0/16",
-			"169.254.0.0/16",
-			"::1/128",
-			"fc00::/7",
-			"fe80::/10",
+			"0.0.0.0/8",      // "this" network — services listening on all interfaces
+			"127.0.0.0/8",    // loopback
+			"10.0.0.0/8",     // RFC 1918 private
+			"172.16.0.0/12",  // RFC 1918 private
+			"192.168.0.0/16", // RFC 1918 private
+			"169.254.0.0/16", // link-local
+			"100.64.0.0/10",  // CGN / shared address space (Tailscale, CGNAT)
+			"::1/128",        // IPv6 loopback
+			"fc00::/7",       // IPv6 unique local
+			"fe80::/10",      // IPv6 link-local
 		}
 	}
 }
@@ -360,11 +362,13 @@ func Defaults() *Config {
 			IncludeBlocked: true,
 		},
 		Internal: []string{
+			"0.0.0.0/8",
 			"127.0.0.0/8",
 			"10.0.0.0/8",
 			"172.16.0.0/12",
 			"192.168.0.0/16",
 			"169.254.0.0/16",
+			"100.64.0.0/10",
 			"::1/128",
 			"fc00::/7",
 			"fe80::/10",

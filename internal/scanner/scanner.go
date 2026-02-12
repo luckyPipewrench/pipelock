@@ -108,6 +108,11 @@ func New(cfg *config.Config) *Scanner {
 // IsInternalIP checks whether the given IP falls within any configured
 // internal CIDR. Returns false when SSRF protection is disabled (no CIDRs).
 func (s *Scanner) IsInternalIP(ip net.IP) bool {
+	// Normalize IPv4-mapped IPv6 addresses (e.g., ::ffff:127.0.0.1) to
+	// their 4-byte IPv4 form so they match IPv4 CIDRs like 127.0.0.0/8.
+	if v4 := ip.To4(); v4 != nil {
+		ip = v4
+	}
 	for _, cidr := range s.internalCIDRs {
 		if cidr.Contains(ip) {
 			return true
@@ -133,7 +138,8 @@ func (s *Scanner) RecordRequest(hostname string) {
 }
 
 // Scan checks a URL against all scanners and returns the result.
-// It runs scheme, SSRF, blocklist, rate limit, URL length, DLP, and entropy checks in order.
+// DLP runs on the hostname BEFORE DNS resolution to prevent secret exfiltration
+// via DNS queries (e.g., "sk-ant-xxx.evil.com" leaks the key during resolution).
 func (s *Scanner) Scan(rawURL string) Result {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
@@ -153,22 +159,32 @@ func (s *Scanner) Scan(rawURL string) Result {
 		}
 	}
 
-	// 2. SSRF protection — block requests to internal/private IPs
-	if result := s.checkSSRF(hostname); !result.Allowed {
-		return result
-	}
-
-	// 3. Blocklist check
+	// 2. Blocklist check — before DNS to avoid resolving known-bad domains.
 	if result := s.checkBlocklist(hostname); !result.Allowed {
 		return result
 	}
 
-	// 4. Rate limit check (per-domain)
+	// 3. DLP + entropy on hostname BEFORE DNS resolution.
+	// Prevents secret exfiltration via DNS queries for domains like
+	// "sk-ant-xxxx.evil.com" where the subdomain encodes a secret.
+	if result := s.checkDLP(parsed); !result.Allowed {
+		return result
+	}
+	if result := s.checkEntropy(parsed); !result.Allowed {
+		return result
+	}
+
+	// 4. SSRF protection — DNS resolution happens here, safe after DLP.
+	if result := s.checkSSRF(hostname); !result.Allowed {
+		return result
+	}
+
+	// 5. Rate limit check (per-domain)
 	if result := s.checkRateLimit(hostname); !result.Allowed {
 		return result
 	}
 
-	// 5. URL length check
+	// 6. URL length check
 	if s.maxURLLength > 0 && len(rawURL) > s.maxURLLength {
 		return Result{
 			Allowed: false,
@@ -176,16 +192,6 @@ func (s *Scanner) Scan(rawURL string) Result {
 			Scanner: "length",
 			Score:   0.8,
 		}
-	}
-
-	// 6. DLP pattern matching on path + query
-	if result := s.checkDLP(parsed); !result.Allowed {
-		return result
-	}
-
-	// 7. Entropy check on path segments and query values
-	if result := s.checkEntropy(parsed); !result.Allowed {
-		return result
 	}
 
 	return Result{Allowed: true, Scanner: "all", Score: 0.0}
@@ -215,6 +221,10 @@ func (s *Scanner) checkSSRF(hostname string) Result {
 		ip := net.ParseIP(ipStr)
 		if ip == nil {
 			continue
+		}
+		// Normalize IPv4-mapped IPv6 (::ffff:x.x.x.x) to 4-byte form.
+		if v4 := ip.To4(); v4 != nil {
+			ip = v4
 		}
 
 		// Check against internal CIDRs
@@ -267,19 +277,30 @@ func (s *Scanner) checkRateLimit(hostname string) Result {
 	return Result{Allowed: true}
 }
 
+// maxDecodeRounds limits iterative URL decoding to prevent infinite loops.
+const maxDecodeRounds = 3
+
+// iterativeDecode applies URL decoding up to 3 times until the string
+// stops changing. This catches double/triple encoding (e.g., %252D → %2D → -).
+func iterativeDecode(s string) string {
+	for range maxDecodeRounds {
+		decoded, err := url.QueryUnescape(s)
+		if err != nil || decoded == s {
+			break
+		}
+		s = decoded
+	}
+	return s
+}
+
 // checkDLP runs DLP regex patterns against the full URL string including hostname.
 // Scanning the full URL catches secrets encoded in subdomains (e.g., sk-proj-xxx.evil.com)
-// and secrets split across query parameters. All targets are also URL-decoded before
-// matching to prevent encoding bypass (e.g., %20 instead of space evading \s).
+// and secrets split across query parameters. Iterative URL decoding (up to 3 rounds)
+// prevents double/triple encoding bypass.
 func (s *Scanner) checkDLP(parsed *url.URL) Result {
 	// parsed.Path is already URL-decoded by Go's url.Parse.
-	// For query strings, decode the full string to catch secrets split
-	// across key=value boundaries, then also check individual decoded values.
-	decodedQuery, err := url.QueryUnescape(parsed.RawQuery)
-	if err != nil {
-		// Malformed percent-encoding — scan the raw query to prevent bypass.
-		decodedQuery = parsed.RawQuery
-	}
+	// For query strings, iteratively decode to catch multi-layer encoding.
+	decodedQuery := iterativeDecode(parsed.RawQuery)
 
 	targets := []string{
 		parsed.String(), // full URL — catches secrets in hostname/subdomains
@@ -287,10 +308,18 @@ func (s *Scanner) checkDLP(parsed *url.URL) Result {
 		decodedQuery,
 	}
 
-	// Also check decoded query keys and values individually
+	// Also check decoded query keys and values individually.
 	for key, values := range parsed.Query() {
-		targets = append(targets, key)
-		targets = append(targets, values...)
+		targets = append(targets, iterativeDecode(key))
+		for _, v := range values {
+			targets = append(targets, iterativeDecode(v))
+		}
+	}
+
+	// Also apply iterative decode to the raw path for double-encoded path segments.
+	decodedPath := iterativeDecode(parsed.RawPath)
+	if decodedPath != "" && decodedPath != parsed.Path {
+		targets = append(targets, decodedPath)
 	}
 
 	for _, target := range targets {

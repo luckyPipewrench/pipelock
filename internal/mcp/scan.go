@@ -32,9 +32,12 @@ type ToolResult struct {
 }
 
 // RPCError represents a JSON-RPC 2.0 error object.
+// Data is optional per JSON-RPC 2.0 but can carry arbitrary content,
+// so it must be scanned for injection like any other text field.
 type RPCError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
+	Code    int             `json:"code"`
+	Message string          `json:"message"`
+	Data    json.RawMessage `json:"data,omitempty"`
 }
 
 // RPCResponse represents a JSON-RPC 2.0 response envelope.
@@ -148,7 +151,9 @@ func ScanResponse(line []byte, sc *scanner.Scanner) ScanVerdict {
 	text := ExtractText(rpc.Result)
 
 	// Also scan error messages for prompt injection.
-	// Attackers can inject via error.message returned by malicious tool servers.
+	// Attackers can inject via error.message and error.data returned by malicious
+	// tool servers. Falls back to recursive string extraction for non-standard
+	// error shapes (e.g., plain string error), matching the Result field pattern.
 	if len(rpc.Error) > 0 && string(rpc.Error) != jsonNull {
 		var rpcErr RPCError
 		if err := json.Unmarshal(rpc.Error, &rpcErr); err == nil && rpcErr.Message != "" {
@@ -156,6 +161,18 @@ func ScanResponse(line []byte, sc *scanner.Scanner) ScanVerdict {
 				text += "\n"
 			}
 			text += rpcErr.Message
+			// Also scan error.data if present.
+			if errData := ExtractText(rpcErr.Data); errData != "" {
+				text += "\n" + errData
+			}
+		} else {
+			// Fallback: extract all strings from non-standard error shapes.
+			if errText := ExtractText(rpc.Error); errText != "" {
+				if text != "" {
+					text += "\n"
+				}
+				text += errText
+			}
 		}
 	}
 

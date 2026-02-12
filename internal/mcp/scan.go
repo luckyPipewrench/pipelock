@@ -16,6 +16,10 @@ import (
 // jsonRPCVersion is the JSON-RPC protocol version used by MCP.
 const jsonRPCVersion = "2.0"
 
+// jsonNull is the JSON literal "null", used to detect nil-equivalent
+// json.RawMessage values that are non-nil Go slices.
+const jsonNull = "null"
+
 // ContentBlock represents a single content block in an MCP tool result.
 type ContentBlock struct {
 	Type string `json:"type"`
@@ -65,7 +69,7 @@ type ScanVerdict struct {
 // Falls back to recursively extracting all string values from arbitrary JSON,
 // preventing bypass via non-standard result shapes.
 func ExtractText(raw json.RawMessage) string {
-	if len(raw) == 0 || string(raw) == "null" {
+	if len(raw) == 0 || string(raw) == jsonNull {
 		return ""
 	}
 
@@ -145,7 +149,7 @@ func ScanResponse(line []byte, sc *scanner.Scanner) ScanVerdict {
 
 	// Also scan error messages for prompt injection.
 	// Attackers can inject via error.message returned by malicious tool servers.
-	if len(rpc.Error) > 0 && string(rpc.Error) != "null" {
+	if len(rpc.Error) > 0 && string(rpc.Error) != jsonNull {
 		var rpcErr RPCError
 		if err := json.Unmarshal(rpc.Error, &rpcErr); err == nil && rpcErr.Message != "" {
 			if text != "" {

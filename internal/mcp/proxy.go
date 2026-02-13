@@ -46,8 +46,7 @@ func (sw *syncWriter) WriteMessage(msg []byte) error {
 // This ensures message-level atomicity when w is a syncWriter, preventing
 // interleaving between concurrent goroutines.
 func writeMessage(w io.Writer, msg []byte) error {
-	buf := make([]byte, 0, len(msg)+1)
-	buf = append(buf, msg...)
+	buf := append([]byte(nil), msg...)
 	buf = append(buf, '\n')
 	_, err := w.Write(buf)
 	return err

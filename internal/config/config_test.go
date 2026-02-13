@@ -559,8 +559,8 @@ func TestDefaults_ResponseScanningEnabled(t *testing.T) {
 	if cfg.ResponseScanning.Action != "warn" { //nolint:goconst // test assertion
 		t.Errorf("expected default action warn, got %s", cfg.ResponseScanning.Action)
 	}
-	if len(cfg.ResponseScanning.Patterns) != 5 {
-		t.Errorf("expected 5 default response patterns, got %d", len(cfg.ResponseScanning.Patterns))
+	if len(cfg.ResponseScanning.Patterns) != 10 {
+		t.Errorf("expected 10 default response patterns, got %d", len(cfg.ResponseScanning.Patterns))
 	}
 }
 

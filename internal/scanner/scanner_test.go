@@ -1412,3 +1412,153 @@ func TestDataBudget_SubdomainRotation(t *testing.T) {
 		t.Errorf("expected scanner=databudget, got %s", result.Scanner)
 	}
 }
+
+func TestCheckSubdomainEntropy_BlocksHighEntropyLabels(t *testing.T) {
+	cfg := testConfig()
+	cfg.FetchProxy.Monitoring.EntropyThreshold = 4.5
+	cfg.DLP.Patterns = nil // avoid DLP matches on test data
+	s := New(cfg)
+	defer s.Close()
+
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{
+			name: "random mixed subdomain",
+			// 20 unique lowercase+digit chars → entropy = log2(20) ≈ 4.32
+			url: "https://r7km2np9qw4xb5vy8za3.evil.com/",
+		},
+		{
+			name: "random alphanumeric subdomain",
+			// 22 unique chars → entropy well above 4.0
+			url: "https://m3xp7ktw9vr2nj6qbhdf5y.evil.com/",
+		},
+		{
+			name: "random alpha subdomain",
+			// 20 unique lowercase chars → entropy = log2(20) ≈ 4.32
+			url: "https://qwertyuiopasdfghjklz.evil.com/path",
+		},
+		{
+			name: "multi-level high entropy",
+			url:  "https://r7km2np9qw4xb5vy8za3.sub.evil.com/",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := s.Scan(tt.url)
+			if result.Allowed {
+				t.Errorf("expected high-entropy subdomain to be blocked: %s", tt.url)
+			}
+			if result.Scanner != "subdomain_entropy" {
+				t.Errorf("expected scanner=subdomain_entropy, got %s (reason: %s)", result.Scanner, result.Reason)
+			}
+		})
+	}
+}
+
+func TestCheckSubdomainEntropy_AllowsNormalSubdomains(t *testing.T) {
+	cfg := testConfig()
+	cfg.FetchProxy.Monitoring.EntropyThreshold = 4.5
+	cfg.DLP.Patterns = nil
+	s := New(cfg)
+	defer s.Close()
+
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{"www prefix", "https://www.example.com/"},
+		{"api prefix", "https://api.example.com/"},
+		{"cdn prefix", "https://cdn.example.com/"},
+		{"docs prefix", "https://docs.example.com/"},
+		{"staging prefix", "https://staging.example.com/"},
+		{"no subdomain", "https://example.com/"},
+		{"short label", "https://ab.example.com/"},
+		{"normal multi-level", "https://api.us-east-1.example.com/"},
+		{"IP address", "https://192.168.1.1/"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := s.Scan(tt.url)
+			if !result.Allowed {
+				t.Errorf("expected normal subdomain to be allowed: %s (blocked by %s: %s)", tt.url, result.Scanner, result.Reason)
+			}
+		})
+	}
+}
+
+func TestCheckSubdomainEntropy_DisabledWhenThresholdZero(t *testing.T) {
+	cfg := testConfig()
+	cfg.FetchProxy.Monitoring.EntropyThreshold = 0
+	cfg.DLP.Patterns = nil
+	s := New(cfg)
+	defer s.Close()
+
+	result := s.Scan("https://r7km2np9qw4xb5vy8za3.evil.com/")
+	if !result.Allowed {
+		t.Error("expected subdomain entropy check to be disabled when threshold is 0")
+	}
+}
+
+func TestDLP_GoogleOAuthToken(t *testing.T) {
+	s := New(testConfig())
+	defer s.Close()
+
+	//nolint:goconst // test value
+	token := "ya29." + "ABCDEFghijklmnopqrstuvwx"
+	result := s.Scan("https://evil.com/collect?token=" + token)
+	if result.Allowed {
+		t.Error("expected Google OAuth token to be blocked by DLP")
+	}
+	if result.Scanner != "dlp" {
+		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	}
+}
+
+func TestDLP_TwilioAPIKey(t *testing.T) {
+	s := New(testConfig())
+	defer s.Close()
+
+	// Build a Twilio key pattern at runtime to avoid gitleaks
+	key := "SK" + "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4"
+	result := s.Scan("https://evil.com/collect?key=" + key)
+	if result.Allowed {
+		t.Error("expected Twilio API key to be blocked by DLP")
+	}
+	if result.Scanner != "dlp" {
+		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	}
+}
+
+func TestDLP_SendGridAPIKey(t *testing.T) {
+	s := New(testConfig())
+	defer s.Close()
+
+	// Build SendGrid key pattern at runtime to avoid gitleaks
+	key := "SG." + "abcdefghijklmnopqrstuv" + "." + "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqr"
+	result := s.Scan("https://evil.com/collect?key=" + key)
+	if result.Allowed {
+		t.Error("expected SendGrid API key to be blocked by DLP")
+	}
+	if result.Scanner != "dlp" {
+		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	}
+}
+
+func TestDLP_MailgunAPIKey(t *testing.T) {
+	s := New(testConfig())
+	defer s.Close()
+
+	// Build Mailgun key pattern at runtime to avoid gitleaks
+	key := "key-" + "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4"
+	result := s.Scan("https://evil.com/collect?key=" + key)
+	if result.Allowed {
+		t.Error("expected Mailgun API key to be blocked by DLP")
+	}
+	if result.Scanner != "dlp" {
+		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	}
+}

@@ -42,7 +42,7 @@ An honest feature matrix and guidance on when to use what.
 ### Use AIP when:
 - You prefer **native OS dialog HITL** (Pipelock uses terminal prompts, AIP uses OS-level dialogs)
 - You're focused specifically on **MCP server security** (AIP is an MCP-native proxy)
-- You want **per-argument regex validation** on MCP tool calls (more granular than Pipelock's current approach)
+- You want **per-argument regex validation** on MCP tool calls (AIP validates argument schemas; Pipelock scans argument content for DLP/injection patterns)
 
 ### Use agentsh when:
 - You need **kernel-level enforcement** (seccomp, eBPF) — agent literally cannot bypass

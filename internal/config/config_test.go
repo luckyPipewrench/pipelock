@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -42,7 +43,7 @@ func TestDefaults_Validates(t *testing.T) {
 
 func TestValidate_InvalidMode(t *testing.T) {
 	cfg := Defaults()
-	cfg.Mode = "invalid"
+	cfg.Mode = "invalid" //nolint:goconst // test value
 	if err := cfg.Validate(); err == nil {
 		t.Error("expected error for invalid mode")
 	}
@@ -811,7 +812,7 @@ response_scanning:
 	if !cfg.ResponseScanning.Enabled {
 		t.Error("expected response scanning enabled")
 	}
-	if cfg.ResponseScanning.Action != "strip" {
+	if cfg.ResponseScanning.Action != "strip" { //nolint:goconst // test value
 		t.Errorf("expected action strip, got %s", cfg.ResponseScanning.Action)
 	}
 	if len(cfg.ResponseScanning.Patterns) != 1 {
@@ -1047,5 +1048,49 @@ func TestValidate_NonLoopbackListenWarning(t *testing.T) {
 	// Should still validate (warning, not error), but the warning goes to stderr
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("non-loopback listen should validate: %v", err)
+	}
+}
+
+// --- MCP Input Scanning Validation ---
+
+func TestValidate_MCPInputScanningValidActions(t *testing.T) {
+	for _, action := range []string{"warn", "block"} {
+		cfg := Defaults()
+		cfg.MCPInputScanning.Enabled = true
+		cfg.MCPInputScanning.Action = action
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("action %q should validate, got: %v", action, err)
+		}
+	}
+}
+
+func TestValidate_MCPInputScanningAskRejected(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPInputScanning.Enabled = true
+	cfg.MCPInputScanning.Action = "ask"
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for ask action on input scanning")
+	}
+	if !strings.Contains(err.Error(), "must be warn or block") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestValidate_MCPInputScanningInvalidAction(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPInputScanning.Enabled = true
+	cfg.MCPInputScanning.Action = "strip"
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for strip action on input scanning")
+	}
+}
+
+func TestValidate_MCPInputScanningDisabledSkipsValidation(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPInputScanning.Enabled = false
+	cfg.MCPInputScanning.Action = "invalid"
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("disabled input scanning should skip validation, got: %v", err)
 	}
 }

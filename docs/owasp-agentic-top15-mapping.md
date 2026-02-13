@@ -52,9 +52,7 @@ This is separate from the [OWASP Top 10 for Agentic Applications](owasp-mapping.
 - **MCP proxy** — `pipelock mcp proxy` wraps MCP servers and scans tool responses for injection payloads.
 - **HITL approvals** — suspicious requests can trigger human-in-the-loop terminal approval before proceeding.
 
-**Coverage: Partial.** Controls the HTTP fetch tool and scans MCP responses. Does not validate MCP tool call arguments or restrict shell/filesystem operations.
-
-**Roadmap:** MCP request argument scanning (inbound side of the proxy).
+**Coverage: Strong.** Controls the HTTP fetch tool, scans MCP responses for injection, and scans MCP requests for DLP leaks and injection in tool arguments. Does not restrict shell/filesystem operations.
 
 ---
 

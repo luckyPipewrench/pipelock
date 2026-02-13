@@ -64,7 +64,7 @@ dlp:
       regex: '[MN][A-Za-z0-9]{23,}\.[A-Za-z0-9\-_]{6}\.[A-Za-z0-9\-_]{27,}'
       severity: critical
     - name: "Private Key Header"
-      regex: '-----BEGIN\s+(RSA\s+|EC\s+|DSA\s+)?PRIVATE\s+KEY-----'
+      regex: '-----BEGIN\s+(RSA\s+|EC\s+|DSA\s+|OPENSSH\s+)?PRIVATE\s+KEY-----'
       severity: critical
     - name: "Social Security Number"
       regex: '\b\d{3}-\d{2}-\d{4}\b'
@@ -115,6 +115,11 @@ response_scanning:
       regex: '(?i)you\s+must\s+(immediately\s+)?(call|execute|run|invoke)\s+(the|this)\s+(function|tool|command|api|endpoint)'
     - name: "Authority Escalation"
       regex: '(?i)you\s+(now\s+)?have\s+(full\s+)?(admin|root|system|superuser|elevated)\s+(access|privileges|permissions|rights)'
+
+mcp_input_scanning:
+  enabled: true
+  action: warn
+  on_parse_error: block
 
 logging:
   format: json

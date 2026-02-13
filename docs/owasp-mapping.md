@@ -55,7 +55,7 @@ Use `pipelock generate config --preset balanced` for the complete default patter
 - **MCP response scanning** — tool results from MCP servers are scanned for injection payloads before the agent processes them.
 - **Input validation** — URLs are validated, parsed, and scanned before any HTTP request is made. Malformed URLs are rejected.
 
-**Gap:** Pipelock controls the HTTP fetch tool and scans MCP responses, but does not validate MCP tool call arguments or restrict shell/filesystem operations. For MCP argument validation, see [AIP](https://github.com/ArangoGutierrez/agent-identity-protocol). For shell/filesystem controls, see [agentsh](https://github.com/canyonroad/agentsh) or [srt](https://github.com/anthropic-experimental/sandbox-runtime).
+**Gap:** Pipelock controls the HTTP fetch tool, scans MCP responses for injection, and scans MCP request arguments for DLP leaks and injection. It does not restrict shell/filesystem operations. For shell/filesystem controls, see [agentsh](https://github.com/canyonroad/agentsh) or [srt](https://github.com/anthropic-experimental/sandbox-runtime).
 
 ---
 

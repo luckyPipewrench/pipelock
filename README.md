@@ -223,9 +223,9 @@ pipelock trust other-bot /path/to/other-bot.pub  # trust a peer
 
 Keys stored under `~/.pipelock/agents/` and `~/.pipelock/trusted_keys/`.
 
-### MCP Proxy + Response Scanning
+### MCP Proxy + Bidirectional Scanning
 
-Wrap any MCP server as a stdio proxy. Pipelock forwards client requests unmodified and scans every server response for prompt injection before returning it:
+Wrap any MCP server as a stdio proxy. Pipelock scans both directions: client requests are checked for DLP leaks and injection in tool arguments, and server responses are scanned for prompt injection before returning to the client:
 
 ```bash
 # Wrap an MCP server (use in .mcp.json for Claude Code)
@@ -284,10 +284,15 @@ dlp:
 
 response_scanning:
   enabled: true
-  action: warn               # block, strip, or warn
+  action: warn               # block, strip, warn, or ask (HITL)
   patterns:
     - name: "Prompt Injection"
       regex: '(?i)(ignore|disregard)\s+(all\s+)?(previous|prior)\s+(instructions|prompts)'
+
+mcp_input_scanning:
+  enabled: true
+  action: warn               # block or warn (auto-enabled for mcp proxy)
+  on_parse_error: block      # block or forward
 
 logging:
   format: json

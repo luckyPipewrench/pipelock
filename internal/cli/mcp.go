@@ -87,14 +87,16 @@ func mcpProxyCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "proxy [flags] -- COMMAND [ARGS...]",
 		Short: "Proxy an MCP server, scanning responses for prompt injection",
-		Long: `Launches an MCP server subprocess and proxies its stdio transport,
-scanning every JSON-RPC 2.0 response for prompt injection before forwarding
-it to the client. Requests from the client pass through unscanned.
+		Long: `Launches an MCP server subprocess and proxies its stdio transport with
+bidirectional scanning:
 
-The action taken on injection detection is controlled by the response_scanning.action
-config setting: warn (log and forward), block (send error response), or strip (redact
-matched patterns and forward).
+  - Responses (server→client) are scanned for prompt injection before forwarding.
+  - Requests (client→server) are scanned for DLP leaks and injection in tool arguments.
 
+Response action is controlled by response_scanning.action (warn/block/strip/ask).
+Request action is controlled by mcp_input_scanning.action (warn/block).
+
+Input scanning is auto-enabled unless explicitly configured in your config file.
 Use this as a drop-in wrapper in your MCP client configuration.
 
 Examples:
@@ -127,6 +129,16 @@ Claude Desktop config:
 				cfg.ResponseScanning = config.Defaults().ResponseScanning
 			}
 
+			// Auto-enable MCP input scanning for proxy mode unless the user explicitly
+			// configured the section. Action is only set by ApplyDefaults when Enabled
+			// is true, so Action=="" with Enabled=false means unconfigured. OnParseError
+			// is always defaulted by ApplyDefaults, so we don't check it here.
+			if !cfg.MCPInputScanning.Enabled && cfg.MCPInputScanning.Action == "" {
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "pipelock: auto-enabling MCP input scanning for proxy mode")
+				cfg.MCPInputScanning.Enabled = true
+				cfg.MCPInputScanning.Action = "warn" //nolint:goconst // config action value
+			}
+
 			sc := scanner.New(cfg)
 			defer sc.Close()
 
@@ -136,7 +148,14 @@ Claude Desktop config:
 				defer approver.Close()
 			}
 
-			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: proxying MCP server %v (action=%s)\n", serverCmd, sc.ResponseAction())
+			inputCfg := &mcp.InputScanConfig{
+				Enabled:      cfg.MCPInputScanning.Enabled,
+				Action:       cfg.MCPInputScanning.Action,
+				OnParseError: cfg.MCPInputScanning.OnParseError,
+			}
+
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: proxying MCP server %v (response=%s, input=%s)\n",
+				serverCmd, sc.ResponseAction(), inputCfg.Action)
 
 			ctx, cancel := signal.NotifyContext(
 				cmd.Context(),
@@ -145,7 +164,7 @@ Claude Desktop config:
 			)
 			defer cancel()
 
-			return mcp.RunProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), serverCmd, sc, approver)
+			return mcp.RunProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), serverCmd, sc, approver, inputCfg)
 		},
 	}
 

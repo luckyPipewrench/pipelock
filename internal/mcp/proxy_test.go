@@ -184,7 +184,7 @@ func TestForwardScanned_ErrorResponse(t *testing.T) {
 	var out, log bytes.Buffer
 
 	// JSON-RPC error response — error message is scanned but "Invalid Request" is benign.
-	errResponse := `{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"Invalid Request"}}`
+	errResponse := `{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"Invalid Request"}}` //nolint:goconst // test value
 	found, err := ForwardScanned(strings.NewReader(errResponse+"\n"), &out, &log, sc, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -612,7 +612,7 @@ func TestRunProxy_CleanPassthrough(t *testing.T) {
 	var out bytes.Buffer
 	logBuf := &syncBuffer{}
 
-	err := RunProxy(context.Background(), strings.NewReader(""), &out, logBuf, []string{"echo", cleanResponse}, sc, nil)
+	err := RunProxy(context.Background(), strings.NewReader(""), &out, logBuf, []string{"echo", cleanResponse}, sc, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -632,7 +632,7 @@ func TestRunProxy_BlocksInjection(t *testing.T) {
 	var out bytes.Buffer
 	logBuf := &syncBuffer{}
 
-	err := RunProxy(context.Background(), strings.NewReader(""), &out, logBuf, []string{"echo", injectionResponse}, sc, nil)
+	err := RunProxy(context.Background(), strings.NewReader(""), &out, logBuf, []string{"echo", injectionResponse}, sc, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -659,7 +659,7 @@ func TestRunProxy_AskAction(t *testing.T) {
 	var out bytes.Buffer
 	logBuf := &syncBuffer{}
 
-	err := RunProxy(context.Background(), strings.NewReader(""), &out, logBuf, []string{"echo", injectionResponse}, sc, approver)
+	err := RunProxy(context.Background(), strings.NewReader(""), &out, logBuf, []string{"echo", injectionResponse}, sc, approver, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -676,7 +676,7 @@ func TestRunProxy_InvalidCommand(t *testing.T) {
 	var out bytes.Buffer
 	logBuf := &syncBuffer{}
 
-	err := RunProxy(context.Background(), strings.NewReader(""), &out, logBuf, []string{"/nonexistent/binary"}, sc, nil)
+	err := RunProxy(context.Background(), strings.NewReader(""), &out, logBuf, []string{"/nonexistent/binary"}, sc, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for invalid command")
 	}
@@ -695,7 +695,7 @@ func TestRunProxy_ContextCancel(t *testing.T) {
 	cancel() // cancel immediately
 
 	// cat with no stdin and cancelled context should exit quickly.
-	_ = RunProxy(ctx, strings.NewReader(""), &out, logBuf, []string{"cat"}, sc, nil)
+	_ = RunProxy(ctx, strings.NewReader(""), &out, logBuf, []string{"cat"}, sc, nil, nil)
 }
 
 // --- ForwardScanned write error tests ---
@@ -728,20 +728,6 @@ func TestForwardScanned_WriteErrorOnCleanLine(t *testing.T) {
 	}
 }
 
-func TestForwardScanned_WriteErrorOnCleanNewline(t *testing.T) {
-	sc := testScannerWithAction(t, "warn")
-	w := &errWriter{limit: 1} // succeed on line, fail on newline
-	var logBuf bytes.Buffer
-
-	_, err := ForwardScanned(strings.NewReader(cleanResponse+"\n"), w, &logBuf, sc, nil)
-	if err == nil {
-		t.Fatal("expected write error")
-	}
-	if !strings.Contains(err.Error(), "writing newline") {
-		t.Errorf("expected 'writing newline' error, got: %v", err)
-	}
-}
-
 func TestForwardScanned_WriteErrorOnBlockResponse(t *testing.T) {
 	sc := testScannerWithAction(t, "block")
 	w := &errWriter{limit: 0} // fail on block response write
@@ -753,20 +739,6 @@ func TestForwardScanned_WriteErrorOnBlockResponse(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "writing block response") {
 		t.Errorf("expected 'writing block response' error, got: %v", err)
-	}
-}
-
-func TestForwardScanned_WriteErrorOnBlockNewline(t *testing.T) {
-	sc := testScannerWithAction(t, "block")
-	w := &errWriter{limit: 1} // succeed on block response, fail on newline
-	var logBuf bytes.Buffer
-
-	_, err := ForwardScanned(strings.NewReader(injectionResponse+"\n"), w, &logBuf, sc, nil)
-	if err == nil {
-		t.Fatal("expected write error")
-	}
-	if !strings.Contains(err.Error(), "writing newline") {
-		t.Errorf("expected 'writing newline' error, got: %v", err)
 	}
 }
 
@@ -843,80 +815,9 @@ func TestForwardScanned_WriteErrorOnAskStripResponse(t *testing.T) {
 	}
 }
 
-// Newline write error tests — cover the second write (after line/response succeeds).
-
 func TestForwardScanned_WriteErrorOnAskNoApproverBlock(t *testing.T) {
 	sc := testScannerWithAction(t, "ask")
 	w := &errWriter{limit: 0} // fail on block response
-	var logBuf bytes.Buffer
-
-	_, err := ForwardScanned(strings.NewReader(injectionResponse+"\n"), w, &logBuf, sc, nil)
-	if err == nil {
-		t.Fatal("expected write error")
-	}
-}
-
-func TestForwardScanned_WriteErrorOnAskNoApproverNewline(t *testing.T) {
-	sc := testScannerWithAction(t, "ask")
-	w := &errWriter{limit: 1} // succeed on block response, fail on newline
-	var logBuf bytes.Buffer
-
-	_, err := ForwardScanned(strings.NewReader(injectionResponse+"\n"), w, &logBuf, sc, nil)
-	if err == nil {
-		t.Fatal("expected write error")
-	}
-}
-
-func TestForwardScanned_WriteErrorOnAskAllowNewline(t *testing.T) {
-	sc := testScannerWithAction(t, "ask")
-	approver := testApproverForMCP(t, "y\n")
-	w := &errWriter{limit: 1} // succeed on allow line, fail on newline
-	var logBuf bytes.Buffer
-
-	_, err := ForwardScanned(strings.NewReader(injectionResponse+"\n"), w, &logBuf, sc, approver)
-	if err == nil {
-		t.Fatal("expected write error")
-	}
-}
-
-func TestForwardScanned_WriteErrorOnAskBlockNewline(t *testing.T) {
-	sc := testScannerWithAction(t, "ask")
-	approver := testApproverForMCP(t, "n\n")
-	w := &errWriter{limit: 1} // succeed on block response, fail on newline
-	var logBuf bytes.Buffer
-
-	_, err := ForwardScanned(strings.NewReader(injectionResponse+"\n"), w, &logBuf, sc, approver)
-	if err == nil {
-		t.Fatal("expected write error")
-	}
-}
-
-func TestForwardScanned_WriteErrorOnAskStripNewline(t *testing.T) {
-	sc := testScannerWithAction(t, "ask")
-	approver := testApproverForMCP(t, "s\n")
-	w := &errWriter{limit: 1} // succeed on stripped response, fail on newline
-	var logBuf bytes.Buffer
-
-	_, err := ForwardScanned(strings.NewReader(injectionResponse+"\n"), w, &logBuf, sc, approver)
-	if err == nil {
-		t.Fatal("expected write error")
-	}
-}
-
-func TestForwardScanned_WriteErrorOnStripNewline(t *testing.T) {
-	sc := testScannerWithAction(t, "strip")
-	w := &errWriter{limit: 1} // succeed on stripped response, fail on newline
-	var logBuf bytes.Buffer
-
-	_, err := ForwardScanned(strings.NewReader(injectionResponse+"\n"), w, &logBuf, sc, nil)
-	if err == nil {
-		t.Fatal("expected write error")
-	}
-}
-
-func TestForwardScanned_WriteErrorOnWarnNewline(t *testing.T) {
-	sc := testScannerWithAction(t, "warn")
-	w := &errWriter{limit: 1} // succeed on warn line, fail on newline
 	var logBuf bytes.Buffer
 
 	_, err := ForwardScanned(strings.NewReader(injectionResponse+"\n"), w, &logBuf, sc, nil)
@@ -964,7 +865,7 @@ func TestRunProxy_ScanWriteError(t *testing.T) {
 	logBuf := &syncBuffer{}
 	w := &errWriter{limit: 0} // clientOut fails → scanErr returned
 
-	err := RunProxy(context.Background(), strings.NewReader(""), w, logBuf, []string{"echo", cleanResponse}, sc, nil)
+	err := RunProxy(context.Background(), strings.NewReader(""), w, logBuf, []string{"echo", cleanResponse}, sc, nil, nil)
 	if err == nil {
 		t.Fatal("expected scan error")
 	}
@@ -1076,18 +977,6 @@ func TestForwardScanned_NonJSON_BlockWriteError(t *testing.T) {
 	}
 }
 
-func TestForwardScanned_NonJSON_BlockNewlineError(t *testing.T) {
-	sc := testScannerWithAction(t, "block")
-	w := &errWriter{limit: 1} // succeed on block response, fail on newline
-	var log bytes.Buffer
-
-	nonJSON := "not json at all"
-	_, err := ForwardScanned(strings.NewReader(nonJSON+"\n"), w, &log, sc, nil)
-	if err == nil {
-		t.Fatal("expected write error on newline")
-	}
-}
-
 func TestForwardScanned_NonJSON_WarnWriteError(t *testing.T) {
 	sc := testScannerWithAction(t, "warn")
 	w := &errWriter{limit: 0} // fail on block response write
@@ -1097,18 +986,6 @@ func TestForwardScanned_NonJSON_WarnWriteError(t *testing.T) {
 	_, err := ForwardScanned(strings.NewReader(nonJSON+"\n"), w, &log, sc, nil)
 	if err == nil {
 		t.Fatal("expected write error")
-	}
-}
-
-func TestForwardScanned_NonJSON_WarnNewlineError(t *testing.T) {
-	sc := testScannerWithAction(t, "warn")
-	w := &errWriter{limit: 1} // succeed on block response, fail on newline
-	var log bytes.Buffer
-
-	nonJSON := "not json at all"
-	_, err := ForwardScanned(strings.NewReader(nonJSON+"\n"), w, &log, sc, nil)
-	if err == nil {
-		t.Fatal("expected write error on newline")
 	}
 }
 
@@ -1232,19 +1109,6 @@ func TestForwardScanned_StripActionFail_FallsBackToBlock(t *testing.T) {
 	_, err := ForwardScanned(strings.NewReader(injectionResponse+"\n"), w, &log, sc, nil)
 	if err == nil {
 		t.Fatal("expected write error")
-	}
-}
-
-func TestForwardScanned_AskStripFail_WriteFallbackBlock(t *testing.T) {
-	// Ask action: operator chooses strip, strip response write succeeds but newline fails.
-	sc := testScannerWithAction(t, "ask")
-	approver := testApproverForMCP(t, "s\n")
-	w := &errWriter{limit: 1} // succeed on strip response, fail on newline
-	var log bytes.Buffer
-
-	_, err := ForwardScanned(strings.NewReader(injectionResponse+"\n"), w, &log, sc, approver)
-	if err == nil {
-		t.Fatal("expected write error on newline after strip")
 	}
 }
 

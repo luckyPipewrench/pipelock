@@ -114,6 +114,15 @@ func ScanRequest(line []byte, sc *scanner.Scanner, action, onParseError string) 
 	// Run DLP patterns + env leak checks.
 	dlpResult := sc.ScanTextForDLP(joined)
 
+	// Also scan concatenated strings (no separator) to catch secrets
+	// split across multiple JSON fields (e.g. "part1":"sk-ant-", "part2":"aaaa...").
+	if dlpResult.Clean {
+		concat := strings.Join(strs, "")
+		if concat != joined {
+			dlpResult = sc.ScanTextForDLP(concat)
+		}
+	}
+
 	// Run injection patterns (reuses response scanning patterns).
 	injResult := sc.ScanResponse(joined)
 

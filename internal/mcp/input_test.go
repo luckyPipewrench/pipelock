@@ -152,6 +152,17 @@ func TestScanRequest(t *testing.T) {
 			wantDLP:      true,
 		},
 		{
+			name: "secret split across multiple arguments - concatenation detection",
+			line: makeRequest(5, "tools/call", map[string]string{
+				"part1": "sk-ant-",
+				"part2": strings.Repeat("z", 25),
+			}),
+			action:       "block",
+			onParseError: "block",
+			wantClean:    false,
+			wantDLP:      true,
+		},
+		{
 			name:         "empty batch request",
 			line:         "[]",
 			action:       "block",

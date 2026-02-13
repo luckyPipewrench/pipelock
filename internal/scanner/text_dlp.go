@@ -13,7 +13,7 @@ import (
 type TextDLPMatch struct {
 	PatternName string `json:"pattern_name"`
 	Severity    string `json:"severity"`
-	Encoded     string `json:"encoded,omitempty"` // "", "base64", "hex", "base32", "env"
+	Encoded     string `json:"encoded,omitempty"` // "", "base64", "hex", "base32", "env", "url", "subdomain"
 }
 
 // TextDLPResult describes the outcome of scanning text for DLP patterns.
@@ -52,6 +52,16 @@ func (s *Scanner) ScanTextForDLP(text string) TextDLPResult {
 	// Uses iterativeDecode (up to 3 rounds) to defeat double/triple encoding.
 	if decoded := iterativeDecode(cleaned); decoded != cleaned {
 		matches = append(matches, s.matchDLPPatterns(decoded, "url")...)
+	}
+
+	// Dot-collapse check: catches secrets split across DNS subdomains
+	// (e.g. "sk-ant-api03.AABBCCDD.EEFFGGHH.evil.com" → "sk-ant-api03AABBCCDDEEFFGGHH...").
+	// Only applied when text contains dots that could be subdomain separators.
+	if strings.Contains(cleaned, ".") {
+		dotless := strings.ReplaceAll(cleaned, ".", "")
+		if dotless != cleaned {
+			matches = append(matches, s.matchDLPPatterns(dotless, "subdomain")...)
+		}
 	}
 
 	// Try base64 decoding the text and check decoded content.

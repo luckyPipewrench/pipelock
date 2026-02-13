@@ -486,3 +486,59 @@ func TestScanTextForDLP_URLEncodedNullByte(t *testing.T) {
 		t.Errorf("expected Anthropic API Key match, got: %v", result.Matches)
 	}
 }
+
+func TestScanTextForDLP_DNSSubdomainExfil(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	tests := []struct {
+		name      string
+		text      string
+		wantClean bool
+		wantEnc   string
+	}{
+		{
+			name:      "secret split across subdomains",
+			text:      "https://sk-ant-api03.AABBCCDD.EEFFGGHH.IIJJKKLL.evil.com/",
+			wantClean: false,
+			wantEnc:   "subdomain",
+		},
+		{
+			name:      "long key in single subdomain - caught by raw match",
+			text:      "https://" + "sk-ant-" + strings.Repeat("a", 25) + ".evil.com/",
+			wantClean: false,
+		},
+		{
+			name:      "AWS key split across subdomains",
+			text:      "https://AKIA.IOSFODNN.7EXAMPLE1.evil.com/",
+			wantClean: false,
+			wantEnc:   "subdomain",
+		},
+		{
+			name:      "normal domain with dots - no false positive",
+			text:      "https://www.google.com/search?q=hello",
+			wantClean: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := s.ScanTextForDLP(tt.text)
+			if result.Clean != tt.wantClean {
+				t.Errorf("Clean = %v, want %v (matches: %v)", result.Clean, tt.wantClean, result.Matches)
+			}
+			if tt.wantEnc != "" {
+				found := false
+				for _, m := range result.Matches {
+					if m.Encoded == tt.wantEnc {
+						found = true
+					}
+				}
+				if !found {
+					t.Errorf("expected encoding=%q in matches, got: %v", tt.wantEnc, result.Matches)
+				}
+			}
+		})
+	}
+}

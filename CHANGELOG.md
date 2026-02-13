@@ -15,7 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Method name and request ID fields included in DLP scan coverage
 - OPENSSH private key format added to Private Key Header DLP pattern
 - Split-key concatenation scanning: detects secrets split across multiple JSON arguments
-- 50+ new tests for input scanning, text DLP, and config validation
+- DNS subdomain exfiltration detection: dot-collapse scanning catches secrets split across subdomains
+- Case-insensitive DLP pattern matching: prevents evasion via `.toUpperCase()` or mixed-case secrets
+- Null byte stripping in scanner pipeline: prevents regex-splitting bypass via `\x00` injection
+- Penetration test suite (`tests/pentest.sh`): 35+ tests across 8 categories for regression testing
+- 55+ new tests for input scanning, text DLP, and config validation
 
 ### Changed
 - CI workflow: removed redundant `go vet` and `go mod verify` steps, combined duplicate test runs, added job timeouts

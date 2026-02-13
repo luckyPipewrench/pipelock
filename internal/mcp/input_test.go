@@ -153,10 +153,9 @@ func TestScanRequest(t *testing.T) {
 		},
 		{
 			name: "secret split across multiple arguments - concatenation detection",
-			line: makeRequest(5, "tools/call", map[string]string{
-				"part1": "sk-ant-",
-				"part2": strings.Repeat("z", 25),
-			}),
+			// Use JSON array params (not object) for deterministic extraction order.
+			// Maps have random iteration in Go, making object-based tests flaky.
+			line:         `{"jsonrpc":"2.0","id":5,"method":"tools/call","params":["sk-ant-","` + strings.Repeat("z", 25) + `"]}`,
 			action:       "block",
 			onParseError: "block",
 			wantClean:    false,

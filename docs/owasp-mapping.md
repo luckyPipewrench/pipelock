@@ -25,7 +25,7 @@ How Pipelock addresses the [OWASP Top 10 for Agentic Applications (2026)](https:
 
 - **Response scanning** — fetched web content is scanned for prompt injection patterns before reaching the agent. Actions: `block` (reject entirely), `strip` (redact matched text), `warn` (log and pass through), `ask` (human approval).
 - **MCP response scanning** — `pipelock mcp proxy` wraps MCP servers and scans JSON-RPC tool results through the same injection detector. Text is concatenated across content blocks, catching injection split across multiple blocks.
-- **MCP input scanning** — client requests are scanned for injection patterns in tool arguments before reaching the MCP server. Catches injection payloads being sent *to* tools, not just returned *from* them.
+- **MCP input scanning** — client requests are scanned for injection patterns in tool arguments before reaching the MCP server. Catches injection payloads being sent *to* tools, not just returned *from* them. Actions: `block` or `warn` (no `ask` — input scanning runs on the request path with no terminal interaction).
 - **Pattern matching** — detects "ignore previous instructions," system/role overrides, jailbreak templates (DAN, developer mode), and multi-language variants.
 
 **Configuration:**

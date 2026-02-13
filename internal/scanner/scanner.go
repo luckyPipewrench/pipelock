@@ -196,6 +196,12 @@ func (s *Scanner) Scan(rawURL string) Result {
 		return result
 	}
 
+	// 3b. Subdomain entropy check — catches base64/hex encoded data in subdomains
+	// (e.g., "aGVsbG8.evil.com" exfiltrating data via DNS queries).
+	if result := s.checkSubdomainEntropy(hostname); !result.Allowed {
+		return result
+	}
+
 	// 4. SSRF protection — DNS resolution happens here, safe after DLP.
 	if result := s.checkSSRF(hostname); !result.Allowed {
 		return result
@@ -582,6 +588,51 @@ func (s *Scanner) checkDataBudget(hostname string) Result {
 			Score:   0.8,
 		}
 	}
+	return Result{Allowed: true}
+}
+
+// subdomainEntropyThreshold is the Shannon entropy threshold for flagging
+// suspicious subdomain labels. Base64-encoded data typically has entropy > 4.0.
+const subdomainEntropyThreshold = 4.0
+
+// subdomainMinLabelLen is the minimum subdomain label length to check.
+// Short labels (www, api, cdn) are normal and should not be flagged.
+const subdomainMinLabelLen = 8
+
+// checkSubdomainEntropy flags hostnames where subdomain labels contain
+// high-entropy data, indicating base64/hex exfiltration via DNS queries.
+// Only checks hostnames with 3+ labels (at least one subdomain beyond base domain).
+func (s *Scanner) checkSubdomainEntropy(hostname string) Result {
+	if s.entropyThreshold <= 0 {
+		return Result{Allowed: true}
+	}
+
+	// Skip IP addresses
+	if net.ParseIP(hostname) != nil {
+		return Result{Allowed: true}
+	}
+
+	labels := strings.Split(hostname, ".")
+	if len(labels) < 3 {
+		return Result{Allowed: true}
+	}
+
+	// Check all labels except the last two (base domain + TLD)
+	for _, label := range labels[:len(labels)-2] {
+		if len(label) < subdomainMinLabelLen {
+			continue
+		}
+		entropy := ShannonEntropy(label)
+		if entropy > subdomainEntropyThreshold {
+			return Result{
+				Allowed: false,
+				Reason:  fmt.Sprintf("high entropy subdomain label %q (%.2f bits)", label, entropy),
+				Scanner: "subdomain_entropy",
+				Score:   math.Min(entropy/8.0, 1.0),
+			}
+		}
+	}
+
 	return Result{Allowed: true}
 }
 

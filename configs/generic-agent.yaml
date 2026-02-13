@@ -103,6 +103,18 @@ dlp:
     - name: "Stripe Key"
       regex: '[sr]k_(live|test)_[a-zA-Z0-9]{20,}'
       severity: critical
+    - name: "Google OAuth Token"
+      regex: 'ya29\.[a-zA-Z0-9_-]{20,}'
+      severity: critical
+    - name: "Twilio API Key"
+      regex: 'SK[a-f0-9]{32}'
+      severity: high
+    - name: "SendGrid API Key"
+      regex: 'SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}'
+      severity: critical
+    - name: "Mailgun API Key"
+      regex: 'key-[a-zA-Z0-9]{32}'
+      severity: high
 
 response_scanning:
   enabled: true
@@ -118,6 +130,16 @@ response_scanning:
       regex: '(?i)(new|updated|revised)\s+(instructions|directives|rules|prompt)'
     - name: "Jailbreak Attempt"
       regex: '(?i)(DAN|developer\s+mode|sudo\s+mode|unrestricted\s+mode)'
+    - name: "Hidden Instruction"
+      regex: '(?i)(do\s+not\s+(reveal|tell|show|display|mention)\s+this\s+to\s+the\s+user|hidden\s+instruction|invisible\s+to\s+(the\s+)?user|the\s+user\s+(cannot|must\s+not|should\s+not)\s+see\s+this)'
+    - name: "Behavior Override"
+      regex: '(?i)from\s+now\s+on\s+(you\s+)?(will|must|should|shall)\s+'
+    - name: "Encoded Payload"
+      regex: '(?i)(decode\s+(this|the\s+following)\s+(from\s+)?base64\s+and\s+(execute|run|follow)|eval\s*\(\s*atob\s*\()'
+    - name: "Tool Invocation"
+      regex: '(?i)you\s+must\s+(immediately\s+)?(call|execute|run|invoke)\s+(the|this)\s+(function|tool|command|api|endpoint)'
+    - name: "Authority Escalation"
+      regex: '(?i)you\s+(now\s+)?have\s+(full\s+)?(admin|root|system|superuser|elevated)\s+(access|privileges|permissions|rights)'
 
 logging:
   format: json

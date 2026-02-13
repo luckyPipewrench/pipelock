@@ -600,12 +600,12 @@ type inputErrWriter struct {
 	limit int
 }
 
-func (w *inputErrWriter) Write(_ []byte) (int, error) {
+func (w *inputErrWriter) Write(p []byte) (int, error) {
 	w.n++
 	if w.n > w.limit {
 		return 0, errors.New("simulated write error")
 	}
-	return 0, nil
+	return len(p), nil
 }
 
 func TestForwardScannedInput_WriteErrorOnCleanForward(t *testing.T) {

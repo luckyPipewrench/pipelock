@@ -19,22 +19,23 @@ pipelock mcp proxy --config configs/claude-code.yaml -- npx -y @modelcontextprot
 
 ## MCP Proxy Mode
 
-Pipelock wraps any MCP server as a stdio proxy. It launches the server
-subprocess, forwards requests from the client unmodified, and scans every
-JSON-RPC 2.0 response for prompt injection before forwarding to the client.
+Pipelock wraps any MCP server as a stdio proxy with bidirectional scanning.
+Client requests are scanned for DLP leaks and injection in tool arguments.
+Server responses are scanned for prompt injection before forwarding to the client.
 
 ```text
 Claude Code  <-->  pipelock mcp proxy  <-->  MCP Server
-  (client)           (scan responses)         (subprocess)
+  (client)         (scan both directions)     (subprocess)
 ```
 
 ### How It Works
 
 1. Pipelock starts the MCP server as a child process
-2. Client requests (stdin) pass through to the server unscanned
-3. Server responses (stdout) are scanned line-by-line for injection patterns
-4. Clean responses are forwarded; threats trigger the configured action
-5. Server stderr is forwarded to pipelock's stderr for diagnostics
+2. Client requests (stdin) are scanned for DLP patterns, env leaks, and injection
+3. Clean requests are forwarded; flagged requests are blocked or warned per config
+4. Server responses (stdout) are scanned line-by-line for injection patterns
+5. Clean responses are forwarded; threats trigger the configured action
+6. Server stderr is forwarded to pipelock's stderr for diagnostics
 
 ### Actions
 
@@ -185,6 +186,12 @@ Use an absolute path in `.mcp.json` if the relative path doesn't resolve:
 ```json
 "args": ["mcp", "proxy", "--config", "/absolute/path/to/pipelock.yaml", "--", ...]
 ```
+
+### Input scanning and injection patterns
+
+MCP input scanning reuses your `response_scanning.patterns` for injection
+detection in tool arguments. If you configure custom injection patterns, they
+apply to both directions. DLP patterns work independently.
 
 ### False positives
 

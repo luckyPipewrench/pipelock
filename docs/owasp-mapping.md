@@ -25,6 +25,7 @@ How Pipelock addresses the [OWASP Top 10 for Agentic Applications (2026)](https:
 
 - **Response scanning** — fetched web content is scanned for prompt injection patterns before reaching the agent. Actions: `block` (reject entirely), `strip` (redact matched text), `warn` (log and pass through), `ask` (human approval).
 - **MCP response scanning** — `pipelock mcp proxy` wraps MCP servers and scans JSON-RPC tool results through the same injection detector. Text is concatenated across content blocks, catching injection split across multiple blocks.
+- **MCP input scanning** — client requests are scanned for injection patterns in tool arguments before reaching the MCP server. Catches injection payloads being sent *to* tools, not just returned *from* them. Actions: `block` or `warn` (no `ask` — input scanning runs on the request path with no terminal interaction).
 - **Pattern matching** — detects "ignore previous instructions," system/role overrides, jailbreak templates (DAN, developer mode), and multi-language variants.
 
 **Configuration:**
@@ -53,9 +54,10 @@ Use `pipelock generate config --preset balanced` for the complete default patter
 
 - **Fetch proxy as a controlled tool** — instead of giving agents raw `curl`/`fetch`, the proxy is the only network tool. Every request goes through the full scanner pipeline.
 - **MCP response scanning** — tool results from MCP servers are scanned for injection payloads before the agent processes them.
+- **MCP input scanning** — client requests are scanned for DLP leaks and injection in tool arguments before reaching the server. Catches secrets or injection payloads being passed as tool call parameters.
 - **Input validation** — URLs are validated, parsed, and scanned before any HTTP request is made. Malformed URLs are rejected.
 
-**Gap:** Pipelock controls the HTTP fetch tool and scans MCP responses, but does not validate MCP tool call arguments or restrict shell/filesystem operations. For MCP argument validation, see [AIP](https://github.com/ArangoGutierrez/agent-identity-protocol). For shell/filesystem controls, see [agentsh](https://github.com/canyonroad/agentsh) or [srt](https://github.com/anthropic-experimental/sandbox-runtime).
+**Gap:** Pipelock controls the HTTP fetch tool and scans MCP traffic bidirectionally (requests and responses). It does not restrict shell/filesystem operations. For shell/filesystem controls, see [agentsh](https://github.com/canyonroad/agentsh) or [srt](https://github.com/anthropic-experimental/sandbox-runtime).
 
 ---
 

@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -42,7 +43,7 @@ func TestDefaults_Validates(t *testing.T) {
 
 func TestValidate_InvalidMode(t *testing.T) {
 	cfg := Defaults()
-	cfg.Mode = "invalid"
+	cfg.Mode = "invalid" //nolint:goconst // test value
 	if err := cfg.Validate(); err == nil {
 		t.Error("expected error for invalid mode")
 	}
@@ -811,7 +812,7 @@ response_scanning:
 	if !cfg.ResponseScanning.Enabled {
 		t.Error("expected response scanning enabled")
 	}
-	if cfg.ResponseScanning.Action != "strip" {
+	if cfg.ResponseScanning.Action != "strip" { //nolint:goconst // test value
 		t.Errorf("expected action strip, got %s", cfg.ResponseScanning.Action)
 	}
 	if len(cfg.ResponseScanning.Patterns) != 1 {
@@ -988,6 +989,46 @@ func TestValidateReload_MultipleWarnings(t *testing.T) {
 	}
 }
 
+func TestValidateReload_MCPInputScanningDisabled(t *testing.T) {
+	old := Defaults()
+	old.MCPInputScanning.Enabled = true
+
+	updated := Defaults()
+	updated.MCPInputScanning.Enabled = false
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == "mcp_input_scanning.enabled" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected warning for MCP input scanning disabled")
+	}
+}
+
+func TestApplyDefaults_MCPInputScanningActionDefaultsWhenEnabled(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPInputScanning.Enabled = true
+	cfg.MCPInputScanning.Action = "" // not set
+	cfg.ApplyDefaults()
+
+	if cfg.MCPInputScanning.Action != "warn" {
+		t.Errorf("expected Action=warn when enabled with no action, got %q", cfg.MCPInputScanning.Action)
+	}
+}
+
+func TestApplyDefaults_MCPInputScanningOnParseErrorDefaulted(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPInputScanning.OnParseError = "" // cleared
+	cfg.ApplyDefaults()
+
+	if cfg.MCPInputScanning.OnParseError != "block" {
+		t.Errorf("expected OnParseError=block, got %q", cfg.MCPInputScanning.OnParseError)
+	}
+}
+
 // --- Default DLP Pattern Tests ---
 
 func TestDefaults_ContainsNewDLPPatterns(t *testing.T) {
@@ -1047,5 +1088,75 @@ func TestValidate_NonLoopbackListenWarning(t *testing.T) {
 	// Should still validate (warning, not error), but the warning goes to stderr
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("non-loopback listen should validate: %v", err)
+	}
+}
+
+// --- MCP Input Scanning Validation ---
+
+func TestValidate_MCPInputScanningValidActions(t *testing.T) {
+	for _, action := range []string{"warn", "block"} {
+		cfg := Defaults()
+		cfg.MCPInputScanning.Enabled = true
+		cfg.MCPInputScanning.Action = action
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("action %q should validate, got: %v", action, err)
+		}
+	}
+}
+
+func TestValidate_MCPInputScanningAskRejected(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPInputScanning.Enabled = true
+	cfg.MCPInputScanning.Action = "ask"
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for ask action on input scanning")
+	}
+	if !strings.Contains(err.Error(), "must be warn or block") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestValidate_MCPInputScanningInvalidAction(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPInputScanning.Enabled = true
+	cfg.MCPInputScanning.Action = "strip"
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for strip action on input scanning")
+	}
+}
+
+func TestValidate_MCPInputScanningDisabledSkipsValidation(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPInputScanning.Enabled = false
+	cfg.MCPInputScanning.Action = "invalid"
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("disabled input scanning should skip validation, got: %v", err)
+	}
+}
+
+func TestValidate_MCPInputScanningOnParseErrorValid(t *testing.T) {
+	for _, val := range []string{"block", "forward"} { //nolint:goconst // test value
+		cfg := Defaults()
+		cfg.MCPInputScanning.Enabled = true
+		cfg.MCPInputScanning.Action = "warn" //nolint:goconst // test value
+		cfg.MCPInputScanning.OnParseError = val
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("on_parse_error=%q should be valid, got: %v", val, err)
+		}
+	}
+}
+
+func TestValidate_MCPInputScanningOnParseErrorInvalid(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPInputScanning.Enabled = true
+	cfg.MCPInputScanning.Action = "warn" //nolint:goconst // test value
+	cfg.MCPInputScanning.OnParseError = "ignore"
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for on_parse_error=ignore")
+	}
+	if !strings.Contains(err.Error(), "on_parse_error") {
+		t.Errorf("error should mention on_parse_error, got: %v", err)
 	}
 }

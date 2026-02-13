@@ -36,9 +36,19 @@ type Config struct {
 	FetchProxy       FetchProxy       `yaml:"fetch_proxy"`
 	DLP              DLP              `yaml:"dlp"`
 	ResponseScanning ResponseScanning `yaml:"response_scanning"`
+	MCPInputScanning MCPInputScanning `yaml:"mcp_input_scanning"`
 	GitProtection    GitProtection    `yaml:"git_protection"`
 	Logging          LoggingConfig    `yaml:"logging"`
 	Internal         []string         `yaml:"internal"`
+}
+
+// MCPInputScanning configures scanning of MCP JSON-RPC requests going from
+// the agent (client) to the MCP server. Catches secrets in tool arguments
+// and injection patterns forwarded to untrusted servers.
+type MCPInputScanning struct {
+	Enabled      bool   `yaml:"enabled"`
+	Action       string `yaml:"action"`         // warn, block
+	OnParseError string `yaml:"on_parse_error"` // block (default), forward
 }
 
 // ResponseScanning configures scanning of fetched page content for prompt injection.
@@ -174,6 +184,14 @@ func (c *Config) ApplyDefaults() {
 	if c.ResponseScanning.Action == "ask" && c.ResponseScanning.AskTimeoutSeconds <= 0 { //nolint:goconst // config action value
 		c.ResponseScanning.AskTimeoutSeconds = 30
 	}
+	// Always default OnParseError (fail-closed) regardless of enabled state,
+	// since validation checks it unconditionally.
+	if c.MCPInputScanning.OnParseError == "" {
+		c.MCPInputScanning.OnParseError = "block" //nolint:goconst // config action value
+	}
+	if c.MCPInputScanning.Enabled && c.MCPInputScanning.Action == "" {
+		c.MCPInputScanning.Action = "warn" //nolint:goconst // config action value
+	}
 	if c.GitProtection.Enabled && len(c.GitProtection.AllowedBranches) == 0 {
 		c.GitProtection.AllowedBranches = []string{"feature/*", "fix/*", "main", "master"}
 	}
@@ -263,6 +281,22 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("response scanning pattern %q has invalid regex: %w", p.Name, err)
 			}
 		}
+	}
+
+	// Validate MCP input scanning config
+	if c.MCPInputScanning.Enabled {
+		switch c.MCPInputScanning.Action {
+		case "warn", "block": //nolint:goconst // config action values
+			// valid (ask not supported for input scanning — no terminal interaction on request path)
+		default:
+			return fmt.Errorf("invalid mcp_input_scanning action %q: must be warn or block", c.MCPInputScanning.Action)
+		}
+	}
+	switch c.MCPInputScanning.OnParseError {
+	case "block", "forward":
+		// valid
+	default:
+		return fmt.Errorf("invalid mcp_input_scanning on_parse_error %q: must be block or forward", c.MCPInputScanning.OnParseError)
 	}
 
 	// Validate git protection config
@@ -357,6 +391,14 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		})
 	}
 
+	// MCP input scanning disabled
+	if old.MCPInputScanning.Enabled && !updated.MCPInputScanning.Enabled {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "mcp_input_scanning.enabled",
+			Message: "MCP input scanning disabled",
+		})
+	}
+
 	return warnings
 }
 
@@ -405,7 +447,7 @@ func Defaults() *Config {
 				{Name: "Slack Token", Regex: `xox[bpras]-[0-9a-zA-Z-]{15,}`, Severity: "critical"},
 				{Name: "AWS Access Key", Regex: `AKIA[0-9A-Z]{16}`, Severity: "critical"},
 				{Name: "Discord Bot Token", Regex: `[MN][A-Za-z0-9]{23,}\.[A-Za-z0-9\-_]{6}\.[A-Za-z0-9\-_]{27,}`, Severity: "critical"},
-				{Name: "Private Key Header", Regex: `-----BEGIN\s+(RSA\s+|EC\s+|DSA\s+)?PRIVATE\s+KEY-----`, Severity: "critical"},
+				{Name: "Private Key Header", Regex: `-----BEGIN\s+(RSA\s+|EC\s+|DSA\s+|OPENSSH\s+)?PRIVATE\s+KEY-----`, Severity: "critical"},
 				{Name: "Social Security Number", Regex: `\b\d{3}-\d{2}-\d{4}\b`, Severity: "low"},
 				{Name: "GitHub Fine-Grained PAT", Regex: `github_pat_[a-zA-Z0-9_]{36,}`, Severity: "critical"},
 				{Name: "OpenAI Service Key", Regex: `sk-svcacct-[a-zA-Z0-9\-]{20,}`, Severity: "critical"},
@@ -415,6 +457,10 @@ func Defaults() *Config {
 				{Name: "SendGrid API Key", Regex: `SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}`, Severity: "critical"},
 				{Name: "Mailgun API Key", Regex: `key-[a-zA-Z0-9]{32}`, Severity: "high"},
 			},
+		},
+		MCPInputScanning: MCPInputScanning{
+			Enabled:      false,
+			OnParseError: "block",
 		},
 		GitProtection: GitProtection{
 			Enabled:         false,

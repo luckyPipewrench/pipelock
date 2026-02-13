@@ -79,7 +79,7 @@ Response scanning adds prompt injection detection on fetched content.
 
 ### MCP Proxy
 
-Wraps any MCP server as a stdio proxy. Scans JSON-RPC 2.0 responses for prompt injection and credential leaks. Requests pass through unscanned (the server is the untrusted party).
+Wraps any MCP server as a stdio proxy with bidirectional scanning. Server responses are scanned for prompt injection. Client requests are scanned for DLP leaks and injection in tool arguments (configurable via `mcp_input_scanning`). Auto-enabled in proxy mode unless explicitly disabled.
 
 ### Key Design Decisions
 

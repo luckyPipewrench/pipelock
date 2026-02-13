@@ -16,6 +16,42 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
+// syncWriter wraps an io.Writer with a mutex to make concurrent writes safe.
+// Used in RunProxy where multiple goroutines write to clientOut and logW.
+type syncWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (sw *syncWriter) Write(p []byte) (int, error) {
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	return sw.w.Write(p)
+}
+
+// WriteMessage writes a JSON-RPC message followed by a newline as a single
+// atomic operation. This prevents interleaving between concurrent goroutines
+// (e.g., the blocked request drainer and ForwardScanned).
+func (sw *syncWriter) WriteMessage(msg []byte) error {
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	if _, err := sw.w.Write(msg); err != nil {
+		return err
+	}
+	_, err := sw.w.Write([]byte("\n"))
+	return err
+}
+
+// writeMessage writes msg followed by a newline in a single Write call.
+// This ensures message-level atomicity when w is a syncWriter, preventing
+// interleaving between concurrent goroutines.
+func writeMessage(w io.Writer, msg []byte) error {
+	buf := append([]byte(nil), msg...)
+	buf = append(buf, '\n')
+	_, err := w.Write(buf)
+	return err
+}
+
 // ForwardScanned reads newline-delimited JSON-RPC 2.0 messages from r, scans
 // each for prompt injection, and forwards to w based on the scanner's configured
 // action (warn, block, strip). Scan verdicts are logged to logW.
@@ -37,11 +73,8 @@ func ForwardScanned(r io.Reader, w io.Writer, logW io.Writer, sc *scanner.Scanne
 		verdict := ScanResponse(line, sc)
 
 		if verdict.Clean {
-			if _, err := w.Write(line); err != nil {
+			if err := writeMessage(w, line); err != nil {
 				return foundInjection, fmt.Errorf("writing line: %w", err)
-			}
-			if _, err := w.Write([]byte("\n")); err != nil {
-				return foundInjection, fmt.Errorf("writing newline: %w", err)
 			}
 			continue
 		}
@@ -60,11 +93,8 @@ func ForwardScanned(r io.Reader, w io.Writer, logW io.Writer, sc *scanner.Scanne
 			}
 			_, _ = fmt.Fprintf(logW, "pipelock: line %d: blocking unparseable response\n", lineNum)
 			resp := blockResponse(nil)
-			if _, err := w.Write(resp); err != nil {
+			if err := writeMessage(w, resp); err != nil {
 				return foundInjection, fmt.Errorf("writing block response: %w", err)
-			}
-			if _, err := w.Write([]byte("\n")); err != nil {
-				return foundInjection, fmt.Errorf("writing newline: %w", err)
 			}
 			continue
 		}
@@ -77,23 +107,17 @@ func ForwardScanned(r io.Reader, w io.Writer, logW io.Writer, sc *scanner.Scanne
 			lineNum, strings.Join(names, ", "), action)
 
 		switch action {
-		case "block":
+		case "block": //nolint:goconst // config action value
 			resp := blockResponse(verdict.ID)
-			if _, err := w.Write(resp); err != nil {
+			if err := writeMessage(w, resp); err != nil {
 				return foundInjection, fmt.Errorf("writing block response: %w", err)
-			}
-			if _, err := w.Write([]byte("\n")); err != nil {
-				return foundInjection, fmt.Errorf("writing newline: %w", err)
 			}
 		case "ask":
 			if approver == nil {
 				_, _ = fmt.Fprintf(logW, "pipelock: line %d: no HITL approver configured, blocking\n", lineNum)
 				resp := blockResponse(verdict.ID)
-				if _, err := w.Write(resp); err != nil {
+				if err := writeMessage(w, resp); err != nil {
 					return foundInjection, fmt.Errorf("writing block response: %w", err)
-				}
-				if _, err := w.Write([]byte("\n")); err != nil {
-					return foundInjection, fmt.Errorf("writing newline: %w", err)
 				}
 			} else {
 				preview := ""
@@ -109,11 +133,8 @@ func ForwardScanned(r io.Reader, w io.Writer, logW io.Writer, sc *scanner.Scanne
 				switch d {
 				case hitl.DecisionAllow:
 					_, _ = fmt.Fprintf(logW, "pipelock: line %d: operator allowed\n", lineNum)
-					if _, err := w.Write(line); err != nil {
+					if err := writeMessage(w, line); err != nil {
 						return foundInjection, fmt.Errorf("writing line: %w", err)
-					}
-					if _, err := w.Write([]byte("\n")); err != nil {
-						return foundInjection, fmt.Errorf("writing newline: %w", err)
 					}
 				case hitl.DecisionStrip:
 					_, _ = fmt.Fprintf(logW, "pipelock: line %d: operator chose strip\n", lineNum)
@@ -121,28 +142,19 @@ func ForwardScanned(r io.Reader, w io.Writer, logW io.Writer, sc *scanner.Scanne
 					if err != nil {
 						_, _ = fmt.Fprintf(logW, "pipelock: strip failed (%v), blocking instead\n", err)
 						resp := blockResponse(verdict.ID)
-						if _, err := w.Write(resp); err != nil {
+						if err := writeMessage(w, resp); err != nil {
 							return foundInjection, fmt.Errorf("writing block response: %w", err)
 						}
-						if _, err := w.Write([]byte("\n")); err != nil {
-							return foundInjection, fmt.Errorf("writing newline: %w", err)
-						}
 					} else {
-						if _, err := w.Write(stripped); err != nil {
+						if err := writeMessage(w, stripped); err != nil {
 							return foundInjection, fmt.Errorf("writing stripped response: %w", err)
-						}
-						if _, err := w.Write([]byte("\n")); err != nil {
-							return foundInjection, fmt.Errorf("writing newline: %w", err)
 						}
 					}
 				default: // DecisionBlock
 					_, _ = fmt.Fprintf(logW, "pipelock: line %d: operator blocked\n", lineNum)
 					resp := blockResponse(verdict.ID)
-					if _, err := w.Write(resp); err != nil {
+					if err := writeMessage(w, resp); err != nil {
 						return foundInjection, fmt.Errorf("writing block response: %w", err)
-					}
-					if _, err := w.Write([]byte("\n")); err != nil {
-						return foundInjection, fmt.Errorf("writing newline: %w", err)
 					}
 				}
 			}
@@ -151,26 +163,17 @@ func ForwardScanned(r io.Reader, w io.Writer, logW io.Writer, sc *scanner.Scanne
 			if err != nil {
 				_, _ = fmt.Fprintf(logW, "pipelock: strip failed (%v), blocking instead\n", err)
 				resp := blockResponse(verdict.ID)
-				if _, err := w.Write(resp); err != nil {
+				if err := writeMessage(w, resp); err != nil {
 					return foundInjection, fmt.Errorf("writing block response: %w", err)
 				}
-				if _, err := w.Write([]byte("\n")); err != nil {
-					return foundInjection, fmt.Errorf("writing newline: %w", err)
-				}
 			} else {
-				if _, err := w.Write(stripped); err != nil {
+				if err := writeMessage(w, stripped); err != nil {
 					return foundInjection, fmt.Errorf("writing stripped response: %w", err)
-				}
-				if _, err := w.Write([]byte("\n")); err != nil {
-					return foundInjection, fmt.Errorf("writing newline: %w", err)
 				}
 			}
 		default: // warn
-			if _, err := w.Write(line); err != nil {
+			if err := writeMessage(w, line); err != nil {
 				return foundInjection, fmt.Errorf("writing line: %w", err)
-			}
-			if _, err := w.Write([]byte("\n")); err != nil {
-				return foundInjection, fmt.Errorf("writing newline: %w", err)
 			}
 		}
 	}
@@ -303,7 +306,8 @@ func stripBatchDepth(line []byte, sc *scanner.Scanner, depth int) ([]byte, error
 	for i, elem := range batch {
 		stripped, err := stripResponseDepth(elem, sc, depth)
 		if err != nil {
-			result[i] = elem // keep original if strip fails for one element
+			// Never forward unstripped injection — block the element instead.
+			result[i] = json.RawMessage(blockResponse(nil))
 		} else {
 			result[i] = json.RawMessage(stripped)
 		}
@@ -320,12 +324,29 @@ func matchNames(matches []scanner.ResponseMatch) []string {
 	return names
 }
 
+// InputScanConfig holds the settings for MCP input scanning.
+// Passed to RunProxy to control request scanning behavior.
+type InputScanConfig struct {
+	Enabled      bool
+	Action       string // warn, block
+	OnParseError string // block, forward
+}
+
 // RunProxy launches an MCP server subprocess and proxies stdio through
-// the scanner. Client input is forwarded to the server's stdin, server
-// stdout is scanned and forwarded to the client, and server stderr is
-// forwarded to logW. Returns when the subprocess exits or ctx is cancelled.
-func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW io.Writer, command []string, sc *scanner.Scanner, approver *hitl.Approver) error {
+// the scanner. Client input is scanned for DLP/injection (if enabled) before
+// forwarding to the server's stdin. Server stdout is scanned and forwarded
+// to the client. Server stderr is forwarded to logW.
+// Both clientOut and logW are wrapped in mutex adapters to prevent concurrent
+// write races between the input scanning goroutine, blocked request drainer,
+// child process stderr, and the main goroutine's response scanning.
+func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW io.Writer, command []string, sc *scanner.Scanner, approver *hitl.Approver, inputCfg *InputScanConfig) error {
 	cmd := exec.CommandContext(ctx, command[0], command[1:]...) //nolint:gosec // command comes from user CLI args
+
+	// Wrap shared writers in mutex adapters. Multiple goroutines write to
+	// clientOut (blocked request drainer + response scanner) and logW
+	// (input scanner + response scanner + child stderr).
+	safeClientOut := &syncWriter{w: clientOut}
+	safeLogW := &syncWriter{w: logW}
 
 	// Restrict child process environment to safe variables only.
 	// Prevents leaking secrets from the proxy's environment to the MCP server.
@@ -341,29 +362,58 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		return fmt.Errorf("creating stdout pipe: %w", err)
 	}
 
-	cmd.Stderr = logW
+	cmd.Stderr = safeLogW
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("starting MCP server %q: %w", command[0], err)
 	}
 
-	// Forward client input to server stdin.
+	// Channel for blocked request IDs from input scanning goroutine.
+	// Blocked drainer goroutine writes error responses to safeClientOut,
+	// which is mutex-protected against concurrent writes from ForwardScanned.
+	blockedCh := make(chan BlockedRequest, 16)
+
+	// Forward client input to server stdin (with optional input scanning).
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		defer serverIn.Close()             //nolint:errcheck // best-effort close on stdin forward
-		_, _ = io.Copy(serverIn, clientIn) //nolint:errcheck // broken pipe on server exit is expected
+		defer serverIn.Close() //nolint:errcheck // best-effort close on stdin forward
+		if inputCfg != nil && inputCfg.Enabled {
+			ForwardScannedInput(clientIn, serverIn, safeLogW, sc, inputCfg.Action, inputCfg.OnParseError, blockedCh)
+		} else {
+			close(blockedCh)                   // No input scanning — close channel immediately.
+			_, _ = io.Copy(serverIn, clientIn) //nolint:errcheck // broken pipe on server exit is expected
+		}
+	}()
+
+	// Drain blocked request channel and write error responses to client.
+	// Runs in a separate goroutine so ForwardScanned can proceed concurrently.
+	var wgBlocked sync.WaitGroup
+	wgBlocked.Add(1)
+	go func() {
+		defer wgBlocked.Done()
+		for blocked := range blockedCh {
+			if blocked.IsNotification {
+				// Notifications have no ID — silently drop (no error response).
+				continue
+			}
+			resp := blockRequestResponse(blocked.ID)
+			_ = safeClientOut.WriteMessage(resp) //nolint:errcheck // best-effort
+		}
 	}()
 
 	// Scan and forward server output to client.
-	_, scanErr := ForwardScanned(serverOut, clientOut, logW, sc, approver)
+	_, scanErr := ForwardScanned(serverOut, safeClientOut, safeLogW, sc, approver)
 
 	// Wait for subprocess to exit.
 	waitErr := cmd.Wait()
 
-	// Wait for stdin goroutine to finish (server exit closes pipe, unblocking io.Copy).
+	// Wait for stdin goroutine to finish (server exit closes pipe, unblocking scanner).
 	wg.Wait()
+
+	// Wait for blocked channel drain to complete.
+	wgBlocked.Wait()
 
 	if scanErr != nil {
 		return fmt.Errorf("scanning: %w", scanErr)

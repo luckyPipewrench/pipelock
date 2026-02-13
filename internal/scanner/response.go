@@ -26,7 +26,8 @@ type ResponseMatch struct {
 func stripZeroWidth(s string) string {
 	return strings.Map(func(r rune) rune {
 		switch r {
-		case '\u200B', // zero-width space
+		case '\x00', // null byte (breaks regex matching)
+			'\u200B', // zero-width space
 			'\u200C', // zero-width non-joiner
 			'\u200D', // zero-width joiner
 			'\u2060', // word joiner

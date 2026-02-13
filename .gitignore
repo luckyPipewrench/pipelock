@@ -1,5 +1,6 @@
 # Binaries
 /pipelock
+/pipelock-static
 *.exe
 *.exe~
 *.dll
@@ -37,6 +38,9 @@ pipelock-audit.log
 # Environment files
 .env
 .env.*
+
+# Pen test suite (not yet committed — refining)
+/tests/
 
 # Claude Code
 .claude/

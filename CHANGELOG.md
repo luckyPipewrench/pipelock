@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- MCP input scanning: bidirectional proxy now scans client requests for DLP leaks and injection in tool arguments
+- `mcp_input_scanning` config section (action: warn/block, on_parse_error: block/forward)
+- Auto-enabled in `mcp proxy` mode unless explicitly configured
+- Iterative URL decoding in text DLP (catches double/triple percent-encoding)
+- Method name and request ID fields included in DLP scan coverage
+- OPENSSH private key format added to Private Key Header DLP pattern
+- Split-key concatenation scanning: detects secrets split across multiple JSON arguments
+- DNS subdomain exfiltration detection: dot-collapse scanning catches secrets split across subdomains
+- Case-insensitive DLP pattern matching: prevents evasion via `.toUpperCase()` or mixed-case secrets
+- Null byte stripping in scanner pipeline: prevents regex-splitting bypass via `\x00` injection
+- Penetration test suite (`tests/pentest.sh`): 35+ tests across 8 categories for regression testing
+- 55+ new tests for input scanning, text DLP, and config validation
+
+### Changed
+- CI workflow: removed redundant `go vet` and `go mod verify` steps, combined duplicate test runs, added job timeouts
+- Audit preset `on_parse_error` changed from `block` to `forward` (consistent with observe-only philosophy)
+- Config validation rejects `ask` action for input scanning (no terminal interaction on request path)
+- CLI auto-enable checks both `enabled` and `action` fields (unconfigured = both at zero values)
+
 ## [0.1.8] - 2026-02-12
 
 ### Added

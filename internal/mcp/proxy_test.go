@@ -1322,6 +1322,45 @@ func TestStripResponse_BatchInvalidJSON(t *testing.T) {
 	}
 }
 
+func TestStripResponse_BatchElementStripError(t *testing.T) {
+	sc := testScannerWithAction(t, "strip")
+
+	// Batch with a 5-level nested array element that exceeds maxStripDepth (4).
+	// At depth 4, stripResponseDepth sees '[' and returns "batch nesting too deep",
+	// which stripBatchDepth catches and replaces with blockResponse(nil).
+	deep := `[[[[[` + injectionResponse + `]]]]]`
+	batch := `[` + deep + `,` + cleanResponse + `]`
+
+	stripped, err := stripResponse([]byte(batch), sc)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// The result should be valid JSON.
+	var result []json.RawMessage
+	if err := json.Unmarshal(stripped, &result); err != nil {
+		t.Fatalf("not valid JSON array: %v", err)
+	}
+	if len(result) != 2 {
+		t.Fatalf("expected 2 elements, got %d", len(result))
+	}
+
+	// First element was deeply nested so strip modified it (contains blockResponse
+	// somewhere in the nesting). Verify it's not the original injection text.
+	if strings.Contains(string(result[0]), "Ignore all previous") {
+		t.Error("deeply nested injection should have been blocked, not forwarded intact")
+	}
+
+	// Second element should be the clean response (unchanged).
+	var rpc2 stripRPCResponse
+	if err := json.Unmarshal(result[1], &rpc2); err != nil {
+		t.Fatalf("second element not valid JSON: %v", err)
+	}
+	if rpc2.Result == nil || len(rpc2.Result.Content) == 0 {
+		t.Fatal("expected result content in second element")
+	}
+}
+
 // --- Non-JSON injection detection test ---
 
 func TestForwardScanned_NonJSON_InjectionDetected(t *testing.T) {

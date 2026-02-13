@@ -989,6 +989,46 @@ func TestValidateReload_MultipleWarnings(t *testing.T) {
 	}
 }
 
+func TestValidateReload_MCPInputScanningDisabled(t *testing.T) {
+	old := Defaults()
+	old.MCPInputScanning.Enabled = true
+
+	updated := Defaults()
+	updated.MCPInputScanning.Enabled = false
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == "mcp_input_scanning.enabled" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected warning for MCP input scanning disabled")
+	}
+}
+
+func TestApplyDefaults_MCPInputScanningActionDefaultsWhenEnabled(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPInputScanning.Enabled = true
+	cfg.MCPInputScanning.Action = "" // not set
+	cfg.ApplyDefaults()
+
+	if cfg.MCPInputScanning.Action != "warn" {
+		t.Errorf("expected Action=warn when enabled with no action, got %q", cfg.MCPInputScanning.Action)
+	}
+}
+
+func TestApplyDefaults_MCPInputScanningOnParseErrorDefaulted(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPInputScanning.OnParseError = "" // cleared
+	cfg.ApplyDefaults()
+
+	if cfg.MCPInputScanning.OnParseError != "block" {
+		t.Errorf("expected OnParseError=block, got %q", cfg.MCPInputScanning.OnParseError)
+	}
+}
+
 // --- Default DLP Pattern Tests ---
 
 func TestDefaults_ContainsNewDLPPatterns(t *testing.T) {

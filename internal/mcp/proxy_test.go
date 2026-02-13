@@ -671,6 +671,86 @@ func TestRunProxy_AskAction(t *testing.T) {
 	}
 }
 
+func TestRunProxy_InputScanningBlocksDirtyRequest(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("echo subprocess test requires unix")
+	}
+
+	sc := testScannerWithAction(t, "warn") // response action irrelevant here
+	var out bytes.Buffer
+	logBuf := &syncBuffer{}
+
+	// Dirty request on client stdin — secret in tool arguments.
+	secret := "sk-ant-" + strings.Repeat("z", 25)
+	dirtyReq := makeRequest(99, "tools/call", map[string]string{"key": secret}) + "\n"
+
+	inputCfg := &InputScanConfig{
+		Enabled:      true,
+		Action:       "block", //nolint:goconst // test value
+		OnParseError: "block", //nolint:goconst // test value
+	}
+
+	// echo outputs a clean server response regardless of stdin.
+	err := RunProxy(context.Background(), strings.NewReader(dirtyReq), &out, logBuf, []string{"echo", cleanResponse}, sc, nil, inputCfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	outStr := out.String()
+
+	// Should contain the clean server response forwarded by ForwardScanned.
+	if !strings.Contains(outStr, "The weather is sunny today.") {
+		t.Errorf("expected clean server response in output, got: %s", outStr)
+	}
+
+	// Should contain a block error response for the dirty request (code -32001).
+	if !strings.Contains(outStr, "-32001") {
+		t.Errorf("expected -32001 block error in output, got: %s", outStr)
+	}
+
+	// Log should mention the blocked input.
+	logStr := logBuf.String()
+	if !strings.Contains(logStr, "blocked") {
+		t.Errorf("expected 'blocked' in log, got: %s", logStr)
+	}
+}
+
+func TestRunProxy_InputScanningForwardsCleanRequest(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("echo subprocess test requires unix")
+	}
+
+	sc := testScannerWithAction(t, "warn")
+	var out bytes.Buffer
+	logBuf := &syncBuffer{}
+
+	// Clean request — no secrets.
+	cleanReq := makeRequest(1, "tools/list", nil) + "\n"
+
+	inputCfg := &InputScanConfig{
+		Enabled:      true,
+		Action:       "block",
+		OnParseError: "block",
+	}
+
+	err := RunProxy(context.Background(), strings.NewReader(cleanReq), &out, logBuf, []string{"echo", cleanResponse}, sc, nil, inputCfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	outStr := out.String()
+
+	// Should contain the server response.
+	if !strings.Contains(outStr, "The weather is sunny today.") {
+		t.Errorf("expected server response in output, got: %s", outStr)
+	}
+
+	// Should NOT contain any block error (clean request forwarded fine).
+	if strings.Contains(outStr, "-32001") {
+		t.Errorf("expected no block error for clean request, got: %s", outStr)
+	}
+}
+
 func TestRunProxy_InvalidCommand(t *testing.T) {
 	sc := testScannerWithAction(t, "warn")
 	var out bytes.Buffer

@@ -571,6 +571,26 @@ func TestForwardScannedInput_AskFallsBackToBlock(t *testing.T) {
 	}
 }
 
+func TestScanRequest_ParseErrorForwardDetectsDLP(t *testing.T) {
+	sc := testInputScanner(t)
+
+	// Malformed JSON that contains a real secret. With on_parse_error=forward,
+	// scanRawBeforeForward should still detect the DLP pattern in the raw text.
+	secret := "sk-ant-" + strings.Repeat("x", 25)
+	malformed := `{bad json with ` + secret + `}`
+	verdict := ScanRequest([]byte(malformed), sc, "block", "forward")
+
+	if verdict.Clean {
+		t.Fatal("expected DLP match in malformed JSON with secret")
+	}
+	if len(verdict.Matches) == 0 {
+		t.Error("expected DLP matches from scanRawBeforeForward")
+	}
+	if verdict.Action != "block" { //nolint:goconst // test value
+		t.Errorf("Action = %q, want %q", verdict.Action, "block")
+	}
+}
+
 // --- blockRequestResponse tests ---
 
 func TestBlockRequestResponse(t *testing.T) {

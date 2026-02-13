@@ -14,12 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Iterative URL decoding in text DLP (catches double/triple percent-encoding)
 - Method name and request ID fields included in DLP scan coverage
 - OPENSSH private key format added to Private Key Header DLP pattern
-- 37 new tests for input scanning, text DLP, and config validation
+- 40 new tests for input scanning, text DLP, and config validation
 
 ### Changed
 - Audit preset `on_parse_error` changed from `block` to `forward` (consistent with observe-only philosophy)
 - Config validation rejects `ask` action for input scanning (no terminal interaction on request path)
-- CLI auto-enable respects explicit `enabled: false` in config
+- CLI auto-enable checks both `enabled` and `action` fields (unconfigured = both at zero values)
 
 ## [0.1.8] - 2026-02-12
 

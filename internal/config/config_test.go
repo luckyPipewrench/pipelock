@@ -1094,3 +1094,29 @@ func TestValidate_MCPInputScanningDisabledSkipsValidation(t *testing.T) {
 		t.Errorf("disabled input scanning should skip validation, got: %v", err)
 	}
 }
+
+func TestValidate_MCPInputScanningOnParseErrorValid(t *testing.T) {
+	for _, val := range []string{"block", "forward"} { //nolint:goconst // test value
+		cfg := Defaults()
+		cfg.MCPInputScanning.Enabled = true
+		cfg.MCPInputScanning.Action = "warn" //nolint:goconst // test value
+		cfg.MCPInputScanning.OnParseError = val
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("on_parse_error=%q should be valid, got: %v", val, err)
+		}
+	}
+}
+
+func TestValidate_MCPInputScanningOnParseErrorInvalid(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPInputScanning.Enabled = true
+	cfg.MCPInputScanning.Action = "warn" //nolint:goconst // test value
+	cfg.MCPInputScanning.OnParseError = "ignore"
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for on_parse_error=ignore")
+	}
+	if !strings.Contains(err.Error(), "on_parse_error") {
+		t.Errorf("error should mention on_parse_error, got: %v", err)
+	}
+}

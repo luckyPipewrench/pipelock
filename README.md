@@ -87,7 +87,7 @@ flowchart LR
 | DLP + entropy analysis | Yes | No | No | Partial |
 | Prompt injection detection | Yes | Yes | No | No |
 | Workspace integrity monitoring | Yes | No | No | Partial |
-| MCP response scanning | Yes | Yes | No | No |
+| MCP scanning (bidirectional) | Yes | Yes | No | No |
 | Single binary, zero deps | Yes | No (Python) | No (npm) | No (kernel modules) |
 | Audit logging + Prometheus | Yes | No | No | No |
 
@@ -122,7 +122,7 @@ docker run -p 8888:8888 -v ./pipelock.yaml:/config/pipelock.yaml:ro \
 
 | Threat | Coverage |
 |--------|----------|
-| ASI01 Prompt Injection | **Strong** — response + MCP scanning |
+| ASI01 Prompt Injection | **Strong** — bidirectional MCP + response scanning |
 | ASI02 Insecure Tool Implementation | **Partial** — proxy as controlled tool, MCP scanning |
 | ASI03 Privilege Escalation | **Strong** — capability separation + SSRF protection |
 | ASI04 Insecure Output Handling | **Strong** — response scanning with block/strip/warn |

@@ -14,9 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Iterative URL decoding in text DLP (catches double/triple percent-encoding)
 - Method name and request ID fields included in DLP scan coverage
 - OPENSSH private key format added to Private Key Header DLP pattern
-- 50 new tests for input scanning, text DLP, and config validation
+- Split-key concatenation scanning: detects secrets split across multiple JSON arguments
+- 50+ new tests for input scanning, text DLP, and config validation
 
 ### Changed
+- CI workflow: removed redundant `go vet` and `go mod verify` steps, combined duplicate test runs, added job timeouts
 - Audit preset `on_parse_error` changed from `block` to `forward` (consistent with observe-only philosophy)
 - Config validation rejects `ask` action for input scanning (no terminal interaction on request path)
 - CLI auto-enable checks both `enabled` and `action` fields (unconfigured = both at zero values)

@@ -92,7 +92,10 @@ func (s *Scanner) ScanTextForDLP(text string) TextDLPResult {
 }
 
 // matchDLPPatterns runs DLP regex patterns against text, tagging matches with encoding.
+// Strips null bytes and zero-width chars from decoded text before matching, since
+// URL/base64/hex decoding can reintroduce them after the initial stripZeroWidth pass.
 func (s *Scanner) matchDLPPatterns(text, encoding string) []TextDLPMatch {
+	text = stripZeroWidth(text)
 	var matches []TextDLPMatch
 	for _, p := range s.dlpPatterns {
 		if p.re.MatchString(text) {

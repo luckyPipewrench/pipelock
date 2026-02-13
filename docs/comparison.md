@@ -12,10 +12,10 @@ An honest feature matrix and guidance on when to use what.
 | **Domain allowlist** | Yes | Yes (MCP-level) | Yes (LLM proxy) | Yes |
 | **DLP (secret detection)** | Regex + entropy + env scan | Regex (per-argument) | Regex (LLM proxy) | No |
 | **SSRF protection** | Yes (DNS pinning) | No | N/A (kernel-level) | N/A |
-| **Prompt injection detection** | Response + MCP scanning | No | No | No |
+| **Prompt injection detection** | Bidirectional (response + request scanning) | No | No | No |
 | **File integrity monitoring** | SHA256 manifests | No | Workspace checkpoints | Filesystem restrictions |
 | **Ed25519 signing** | Yes | No | No | No |
-| **MCP scanning** | Yes (JSON-RPC 2.0) | Yes (native proxy) | No | No |
+| **MCP scanning** | Yes (bidirectional JSON-RPC 2.0) | Yes (native proxy) | No | No |
 | **HITL approvals** | Yes (terminal y/N/s) | Yes (OS dialogs) | No | No |
 | **Entropy analysis** | Shannon entropy on URLs | No | No | No |
 | **Rate limiting** | Per-domain sliding window | No | No | No |

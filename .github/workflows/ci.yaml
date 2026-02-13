@@ -9,6 +9,7 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     strategy:
       matrix:
         go-version: ['1.24', '1.25']
@@ -23,18 +24,8 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
-      - name: Verify dependencies
-        run: go mod verify
-
-      - name: Run vet
-        run: go vet ./...
-
       - name: Run tests
-        run: go test -race -count=1 -v ./...
-
-      - name: Generate coverage
-        if: matrix.go-version == '1.24'
-        run: go test -race -coverprofile=coverage.out ./...
+        run: go test -race -count=1 -coverprofile=coverage.out ./...
 
       - name: Upload coverage
         if: matrix.go-version == '1.24'
@@ -45,6 +36,7 @@ jobs:
 
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v6
         with:
@@ -62,6 +54,7 @@ jobs:
 
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     needs: [test, lint]
     steps:
       - uses: actions/checkout@v6

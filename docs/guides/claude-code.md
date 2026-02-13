@@ -187,6 +187,12 @@ Use an absolute path in `.mcp.json` if the relative path doesn't resolve:
 "args": ["mcp", "proxy", "--config", "/absolute/path/to/pipelock.yaml", "--", ...]
 ```
 
+### Input scanning and injection patterns
+
+MCP input scanning reuses your `response_scanning.patterns` for injection
+detection in tool arguments. If you configure custom injection patterns, they
+apply to both directions. DLP patterns work independently.
+
 ### False positives
 
 If legitimate responses are being blocked, switch to `warn` mode first to see

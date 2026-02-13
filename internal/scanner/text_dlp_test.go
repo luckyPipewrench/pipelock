@@ -158,6 +158,36 @@ func TestScanTextForDLP(t *testing.T) {
 			}(),
 			wantClean: false,
 		},
+		{
+			name:        "case variation - uppercase Anthropic key",
+			text:        "SK-ANT-" + strings.Repeat("A", 25),
+			wantClean:   false,
+			wantPattern: "Anthropic API Key",
+		},
+		{
+			name:        "case variation - mixed case AWS key",
+			text:        "akia" + strings.Repeat("X", 16),
+			wantClean:   false,
+			wantPattern: "AWS Access Key",
+		},
+		{
+			name:        "null byte injection - secret split by null bytes",
+			text:        "sk-ant-\x00" + strings.Repeat("j", 25),
+			wantClean:   false,
+			wantPattern: "Anthropic API Key",
+		},
+		{
+			name:        "case variation - uppercase private key header",
+			text:        "-----BEGIN " + strings.ToUpper("rsa") + " PRIVATE KEY-----",
+			wantClean:   false,
+			wantPattern: "Private Key",
+		},
+		{
+			name:        "case variation - lowercase private key header",
+			text:        strings.ToLower("-----BEGIN RSA") + " private key-----",
+			wantClean:   false,
+			wantPattern: "Private Key",
+		},
 	}
 
 	for _, tt := range tests {
@@ -431,5 +461,28 @@ func TestScanTextForDLP_DoubleURLEncoding(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected AWS Access Key pattern match, got: %v", result.Matches)
+	}
+}
+
+func TestScanTextForDLP_URLEncodedNullByte(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// URL-encoded null byte %00 in the middle of a secret. After iterativeDecode,
+	// the null byte should be stripped by matchDLPPatterns and the key detected.
+	key := "sk-ant-%00" + strings.Repeat("a", 25) //nolint:goconst // test value
+	result := s.ScanTextForDLP(key)
+	if result.Clean {
+		t.Fatal("expected DLP to catch key with URL-encoded null byte")
+	}
+	found := false
+	for _, m := range result.Matches {
+		if strings.Contains(m.PatternName, "Anthropic") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected Anthropic API Key match, got: %v", result.Matches)
 	}
 }

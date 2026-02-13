@@ -126,10 +126,11 @@ This is separate from the [OWASP Top 10 for Agentic Applications](owasp-mapping.
 **Pipelock coverage:**
 
 - **MCP response scanning** — `pipelock mcp proxy` scans all JSON-RPC tool results for prompt injection patterns. Text is concatenated across content blocks, catching injection split across multiple blocks.
+- **MCP input scanning** — client requests are also scanned for injection patterns and DLP leaks in tool arguments. Catches poisoned payloads being sent *to* tools, not just returned *from* them.
 - **Response scanning** — fetched web content is scanned with the same injection detector.
 - **Configurable actions** — `block` (reject), `strip` (redact matched text), `warn` (log and pass through), `ask` (human approval).
 
-**Coverage: Strong.** Both MCP and HTTP channels are scanned for injection.
+**Coverage: Strong.** MCP traffic is scanned bidirectionally (requests and responses). HTTP channels are scanned for injection.
 
 **Gap:** Regex-based detection can miss novel injection patterns. Future: classifier-based detection.
 

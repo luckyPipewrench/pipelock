@@ -67,9 +67,15 @@ func New(cfg *config.Config) *Scanner {
 		s.rateLimiter = NewRateLimiter(cfg.FetchProxy.Monitoring.MaxReqPerMinute)
 	}
 
-	// Compile DLP patterns — must succeed since config.Validate checks these
+	// Compile DLP patterns — must succeed since config.Validate checks these.
+	// Force case-insensitive matching: agents can trivially .toUpperCase() a
+	// secret before exfiltration, so DLP patterns must match regardless of case.
 	for _, p := range cfg.DLP.Patterns {
-		re, err := regexp.Compile(p.Regex)
+		pattern := p.Regex
+		if !strings.HasPrefix(pattern, "(?i)") {
+			pattern = "(?i)" + pattern
+		}
+		re, err := regexp.Compile(pattern)
 		if err != nil {
 			panic(fmt.Sprintf("BUG: DLP pattern %q failed to compile after validation: %v", p.Name, err))
 		}

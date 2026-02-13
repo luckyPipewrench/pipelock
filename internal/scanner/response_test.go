@@ -431,6 +431,8 @@ func TestStripZeroWidth(t *testing.T) {
 		{"word_joiner", "hel\u2060lo", "hello"},
 		{"bom", "hel\uFEFFlo", "hello"},
 		{"multiple", "\u200Bh\u200Ce\u200Dl\u2060l\uFEFFo", "hello"},
+		{"null_byte", "hel\x00lo", "hello"},
+		{"null_in_secret", "sk-ant-\x00test", "sk-ant-test"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -468,7 +468,7 @@ internal/
   gitprotect/          Git-aware security (diff scanning, branch validation, hooks)
   integrity/           File integrity monitoring (SHA256 manifests, check/diff, exclusions)
   signing/             Ed25519 key management, file signing, signature verification
-  mcp/                 MCP stdio proxy + JSON-RPC 2.0 response scanning
+  mcp/                 MCP stdio proxy + bidirectional JSON-RPC 2.0 scanning
   hitl/                Human-in-the-loop terminal approval (ask action)
 configs/               Preset config files (strict, balanced, audit, claude-code, cursor, generic-agent)
 docs/                  OWASP mapping, tool comparison

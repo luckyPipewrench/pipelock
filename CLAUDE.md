@@ -70,7 +70,7 @@ Agent (secrets, no network) → Pipelock Proxy (no secrets, full network) → In
 1. **SSRF** — Block private IPs, link-local, metadata endpoints. DNS rebinding protection.
 2. **Domain blocklist** — Configurable deny/allow lists per mode.
 3. **Rate limiting** — Per-domain sliding window.
-4. **DLP** — Regex patterns for API keys, tokens, credentials (8 built-in patterns, extensible via config).
+4. **DLP** — Regex patterns for API keys, tokens, credentials (15 built-in patterns, extensible via config).
 5. **Env leak** — Detect raw + base64-encoded environment variable values (Shannon entropy > 3.0).
 6. **Entropy** — Flag high-entropy URL segments that may be exfiltrated data.
 7. **URL length** — Configurable max URL length.
@@ -87,7 +87,7 @@ Wraps any MCP server as a stdio proxy with bidirectional scanning. Server respon
 - **SSRF disabled when `cfg.Internal = nil`**: Not just empty slice — nil means no internal network protection (used in tests to avoid DNS lookups).
 - **Scanner.New() panics on invalid DLP regex/CIDRs**: These are programming errors caught after config validation, not runtime errors.
 - **HITL single reader goroutine**: One goroutine owns the bufio.Reader, sends lines to a channel. Prevents data races on concurrent terminal reads.
-- **MCP scans results always when present**: `json.RawMessage("null")` is non-nil — checking for nil would be a bypass vector.
+- **MCP scans bidirectionally**: Responses scanned for injection, requests scanned for DLP leaks + injection in tool arguments. `json.RawMessage("null")` is non-nil — checking for nil would be a bypass vector.
 
 ## CLI Commands
 
@@ -112,7 +112,7 @@ Wraps any MCP server as a stdio proxy with bidirectional scanning. Server respon
 
 - **Race detector mandatory**: All tests run with `-race -count=1`
 - **90% coverage target** across all packages
-- **660+ tests** currently passing
+- **1,000+ tests** currently passing
 
 ### Patterns
 

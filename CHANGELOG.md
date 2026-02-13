@@ -5,7 +5,7 @@ All notable changes to Pipelock will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0] - 2026-02-13
 
 ### Added
 - MCP input scanning: bidirectional proxy now scans client requests for DLP leaks and injection in tool arguments
@@ -18,7 +18,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - DNS subdomain exfiltration detection: dot-collapse scanning catches secrets split across subdomains
 - Case-insensitive DLP pattern matching: prevents evasion via `.toUpperCase()` or mixed-case secrets
 - Null byte stripping in scanner pipeline: prevents regex-splitting bypass via `\x00` injection
-- Penetration test suite (`tests/pentest.sh`): 35+ tests across 8 categories for regression testing
 - 55+ new tests for input scanning, text DLP, and config validation
 
 ### Changed

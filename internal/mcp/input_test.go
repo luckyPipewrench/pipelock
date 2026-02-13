@@ -646,7 +646,7 @@ func TestScanRequest_ActionSetOnDLPMatch(t *testing.T) {
 	if verdict.Clean {
 		t.Fatal("expected DLP match")
 	}
-	if verdict.Action != "block" {
+	if verdict.Action != "block" { //nolint:goconst // test value
 		t.Errorf("Action = %q, want %q", verdict.Action, "block")
 	}
 }

@@ -7,7 +7,7 @@ This is separate from the [OWASP Top 10 for Agentic Applications](owasp-mapping.
 | Threat | Coverage | Status |
 |--------|----------|--------|
 | T1 Memory Poisoning | Strong | Shipped |
-| T2 Tool Misuse | Partial | Shipped |
+| T2 Tool Misuse | Strong | Shipped |
 | T3 Privilege Compromise | Strong | Shipped |
 | T4 Resource Overload | Partial | Shipped |
 | T5 Cascading Hallucination Attacks | — | Out of scope |
@@ -212,9 +212,9 @@ This is separate from the [OWASP Top 10 for Agentic Applications](owasp-mapping.
 
 Pipelock provides coverage for **12 of 15** threats in the OWASP Agentic AI framework:
 
-- **Strong (6):** T1, T3, T7, T8, T12, T13
+- **Strong (7):** T1, T2, T3, T7, T8, T12, T13
 - **Moderate (2):** T6, T11
-- **Partial (4):** T2, T4, T9, T14
+- **Partial (3):** T4, T9, T14
 - **Not yet addressed (1):** T10
 - **Out of scope (2):** T5, T15
 

@@ -29,7 +29,7 @@ Coverage levels: **Full** = Pipelock feature directly implements the requirement
 
 ### Article 9 - Risk Management System
 
-Article 9 requires a continuous, iterative risk management process throughout the AI system lifecycle. This includes risk identification, mitigation through design, prior defined testing metrics, and post-market monitoring.
+Article 9 requires a continuous, iterative risk management process throughout the AI system lifecycle. This includes risk identification, mitigation through design, prior-defined testing metrics, and post-market monitoring.
 
 | Requirement | Pipelock Feature | Coverage |
 |-------------|-----------------|----------|

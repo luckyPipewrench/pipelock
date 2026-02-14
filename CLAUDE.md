@@ -198,7 +198,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide. Summary:
 
 - **Security bugs**: Report via [GitHub Security Advisories](https://github.com/luckyPipewrench/pipelock/security/advisories) — NOT public issues
 - **Don't weaken capability separation** — the proxy must never have access to agent secrets
-- **Don't add dependencies without justification** - 7 direct deps is a feature, not a limitation
+- **Don't add dependencies without justification** — 7 direct deps (cobra, zerolog, go-readability, yaml.v3, prometheus, fsnotify, tablewriter) is a feature, not a limitation
 - **Don't bypass fail-closed defaults** — if in doubt, block
 
 ## Common Development Tasks

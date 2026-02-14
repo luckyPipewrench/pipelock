@@ -365,6 +365,13 @@ func (s *Scanner) checkDLP(parsed *url.URL) Result {
 		targets = append(targets, decodedPath)
 	}
 
+	// Dot-collapse the hostname to catch secrets split across DNS subdomains
+	// (e.g. "sk-ant-api03-.AABBCCDD.EEFFGGHH.evil.com" → "sk-ant-api03-AABBCCDDEEFFGGHHevilcom").
+	// Dots break regex character classes, so individual labels pass DLP checks.
+	if hostname := parsed.Hostname(); strings.Contains(hostname, ".") {
+		targets = append(targets, strings.ReplaceAll(hostname, ".", ""))
+	}
+
 	for _, target := range targets {
 		if target == "" {
 			continue

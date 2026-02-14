@@ -4,17 +4,17 @@
 
 Benchmarks measure the scanner pipeline only, not network I/O. This isolates Pipelock's overhead from the external fetch latency.
 
-Configuration:
+Configuration (v0.1.5 defaults, pattern counts have since increased):
 - SSRF protection disabled (no DNS lookups)
 - Rate limiting disabled (no time-dependent state)
-- Response scanning uses the 5 default prompt injection patterns
-- DLP uses 8 default patterns (API keys, tokens, credentials)
+- Response scanning: 5 prompt injection patterns (current default: 10)
+- DLP: 8 patterns (current default: 15)
 
 Run `make bench` to reproduce on your hardware.
 
 ## Scanner Pipeline (`Scanner.Scan()`)
 
-Full 7-layer URL scanning: scheme, SSRF, blocklist, rate limit, URL length, DLP, entropy.
+Full 9-layer URL scanning: scheme, SSRF, blocklist, rate limit, DLP, path entropy, subdomain entropy, URL length, data budget.
 
 | Benchmark | ns/op | B/op | allocs/op |
 |-----------|------:|-----:|----------:|
@@ -27,7 +27,7 @@ Full 7-layer URL scanning: scheme, SSRF, blocklist, rate limit, URL length, DLP,
 
 ## Response Scanning (`ScanResponse()`)
 
-Pattern matching for prompt injection on fetched content. 5 regex patterns.
+Pattern matching for prompt injection on fetched content. Benchmarked with 5 patterns (current default: 10).
 
 | Benchmark | ns/op | B/op | allocs/op |
 |-----------|------:|-----:|----------:|
@@ -47,7 +47,7 @@ JSON-RPC 2.0 response parsing + text extraction + prompt injection scanning.
 
 ## Key Takeaways
 
-- **Full 7-layer scan on a typical URL: ~3 microseconds.** Well under 1ms.
+- **Full 9-layer scan on a typical URL: ~3 microseconds.** Well under 1ms.
 - Blocked URLs short-circuit early: blocklist check is ~370ns.
 - DLP regex matching (8 patterns) adds ~1.3 microseconds.
 - Response scanning with 5 patterns on small content: ~14 microseconds.

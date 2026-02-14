@@ -48,15 +48,17 @@ Or worse: the agent stores your API key in its memory file, and a different skil
 
 You need something inspecting what actually leaves your machine while the agent is running. Not before. During.
 
-I built [Pipelock](https://github.com/luckyPipewrench/pipelock) for exactly this. It's early-stage but functional: a security harness that sits between your agent and the internet as a proxy, running a 7-layer scanner pipeline on every outbound request:
+I built [Pipelock](https://github.com/luckyPipewrench/pipelock) for exactly this. It's early-stage but functional: a security harness that sits between your agent and the internet as a proxy, running a 9-layer scanner pipeline on every outbound request:
 
-1. **SSRF protection** blocks requests to internal IPs and catches DNS rebinding
-2. **Domain blocklist** blocks known exfiltration targets like pastebin and transfer.sh
-3. **Rate limiting** catches unusual bursts of requests to new domains
-4. **DLP pattern matching** detects API key formats (Anthropic, OpenAI, AWS, GitHub tokens) in URLs
-5. **Environment variable leak detection** checks if your actual env var values appear in outbound traffic
-6. **Entropy analysis** flags high-entropy strings that look like encoded or encrypted secrets, even if they don't match known patterns
-7. **URL length limits** catch unusually long URLs that suggest data exfiltration
+1. **Scheme validation** enforces http/https only
+2. **SSRF protection** blocks requests to internal IPs and catches DNS rebinding
+3. **Domain blocklist** blocks known exfiltration targets like pastebin and transfer.sh
+4. **Rate limiting** catches unusual bursts of requests to new domains
+5. **DLP pattern matching** detects API key formats (Anthropic, OpenAI, AWS, GitHub tokens) in URLs, plus env variable leak detection
+6. **Path entropy analysis** flags high-entropy strings that look like encoded or encrypted secrets
+7. **Subdomain entropy analysis** catches secrets split across DNS subdomains
+8. **URL length limits** catch unusually long URLs that suggest data exfiltration
+9. **Data budget enforcement** per-domain byte limits prevent slow-drip exfiltration
 
 Pipelock also uses capability separation. The process that has your secrets (the agent) is network-restricted. A separate fetch proxy process (which has no secrets) handles internet access. In Docker Compose mode, the agent literally cannot reach the internet except through the proxy, making direct secret exfiltration impossible.
 
@@ -98,4 +100,4 @@ Repo: [github.com/luckyPipewrench/pipelock](https://github.com/luckyPipewrench/p
 
 ---
 
-*Pipelock is open source (Apache 2.0). 530+ tests, 90%+ coverage. One binary, zero dependencies.*
+*Pipelock is open source (Apache 2.0). 1,300+ tests, 94%+ coverage. Single static binary.*

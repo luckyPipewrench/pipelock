@@ -100,7 +100,7 @@ See [docs/benchmarks.md](docs/benchmarks.md) for methodology and results.
 
 See [CLAUDE.md](CLAUDE.md) for the full architecture guide, including:
 
-- Scanner pipeline (7 layers)
+- Scanner pipeline (9 layers)
 - MCP proxy design
 - Config system and hot-reload
 - Package structure and conventions
@@ -129,7 +129,7 @@ See [CLAUDE.md](CLAUDE.md) for the full architecture guide, including:
 
 ## Dependencies
 
-Pipelock has 6 direct dependencies. This is intentional. Any new dependency must be justified in the PR description. We prefer the standard library.
+Pipelock has 7 direct dependencies. This is intentional. Any new dependency must be justified in the PR description. We prefer the standard library.
 
 ## Security
 

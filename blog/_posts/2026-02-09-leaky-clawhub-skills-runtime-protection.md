@@ -51,12 +51,12 @@ You need something inspecting what actually leaves your machine while the agent 
 I built [Pipelock](https://github.com/luckyPipewrench/pipelock) for exactly this. It's early-stage but functional: a security harness that sits between your agent and the internet as a proxy, running a 9-layer scanner pipeline on every outbound request:
 
 1. **Scheme validation** enforces http/https only
-2. **SSRF protection** blocks requests to internal IPs and catches DNS rebinding
-3. **Domain blocklist** blocks known exfiltration targets like pastebin and transfer.sh
-4. **Rate limiting** catches unusual bursts of requests to new domains
-5. **DLP pattern matching** detects API key formats (Anthropic, OpenAI, AWS, GitHub tokens) in URLs, plus env variable leak detection
-6. **Path entropy analysis** flags high-entropy strings that look like encoded or encrypted secrets
-7. **Subdomain entropy analysis** catches secrets split across DNS subdomains
+2. **Domain blocklist** blocks known exfiltration targets like pastebin and transfer.sh
+3. **DLP pattern matching** detects API key formats (Anthropic, OpenAI, AWS, GitHub tokens) in URLs, plus env variable leak detection. Runs before DNS resolution to prevent secret leakage via DNS queries.
+4. **Path entropy analysis** flags high-entropy strings that look like encoded or encrypted secrets
+5. **Subdomain entropy analysis** catches secrets split across DNS subdomains
+6. **SSRF protection** blocks requests to internal IPs and catches DNS rebinding
+7. **Rate limiting** catches unusual bursts of requests to new domains
 8. **URL length limits** catch unusually long URLs that suggest data exfiltration
 9. **Data budget enforcement** per-domain byte limits prevent slow-drip exfiltration
 

@@ -14,7 +14,7 @@ Run `make bench` to reproduce on your hardware.
 
 ## Scanner Pipeline (`Scanner.Scan()`)
 
-Full 9-layer URL scanning: scheme, SSRF, blocklist, rate limit, DLP, path entropy, subdomain entropy, URL length, data budget.
+Full 9-layer URL scanning: scheme, blocklist, DLP (pre-DNS), path entropy, subdomain entropy, SSRF (post-DNS), rate limit, URL length, data budget.
 
 | Benchmark | ns/op | B/op | allocs/op |
 |-----------|------:|-----:|----------:|

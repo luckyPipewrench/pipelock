@@ -68,12 +68,12 @@ Agent (secrets, no network) → Pipelock Proxy (no secrets, full network) → In
 ### Scanner Pipeline (9 layers)
 
 1. **Scheme** — Enforce http/https only.
-2. **SSRF** — Block private IPs, link-local, metadata endpoints. DNS rebinding protection.
-3. **Domain blocklist** — Configurable deny/allow lists per mode.
-4. **Rate limiting** — Per-domain sliding window.
-5. **DLP** — Regex patterns for API keys, tokens, credentials (15 built-in patterns, extensible via config). Includes env variable leak detection (raw + base64, Shannon entropy > 3.0).
-6. **Path entropy** — Flag high-entropy URL path segments that may be exfiltrated data.
-7. **Subdomain entropy** — Flag high-entropy subdomains used for DNS exfiltration.
+2. **Domain blocklist** — Configurable deny/allow lists per mode. Runs before DNS resolution.
+3. **DLP** — Regex patterns for API keys, tokens, credentials (15 built-in patterns, extensible via config). Includes env variable leak detection (raw + base64, Shannon entropy > 3.0). Runs before DNS resolution to prevent secret exfiltration via DNS queries.
+4. **Path entropy** — Flag high-entropy URL path segments that may be exfiltrated data.
+5. **Subdomain entropy** — Flag high-entropy subdomains used for DNS exfiltration.
+6. **SSRF** — Block private IPs, link-local, metadata endpoints. DNS rebinding protection. Runs after DLP so secrets can't leak via DNS resolution.
+7. **Rate limiting** — Per-domain sliding window.
 8. **URL length** — Configurable max URL length.
 9. **Data budget** — Per-domain byte limits prevent slow-drip exfiltration.
 

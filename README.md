@@ -175,12 +175,12 @@ Detects agent type (Claude Code, Cursor, CrewAI, LangGraph, AutoGen), programmin
 The fetch proxy runs a 9-layer scanner pipeline on every request:
 
 1. **Scheme validation** — enforces http/https only
-2. **SSRF protection** — blocks internal/private IPs with DNS rebinding prevention
-3. **Domain blocklist** — blocks known exfiltration targets (pastebin, transfer.sh)
-4. **Rate limiting** — per-domain sliding window
-5. **DLP patterns** — regex matching for API keys, tokens, and secrets (includes env variable leak detection: raw + base64, values 16+ chars with entropy > 3.0)
-6. **Path entropy analysis** — Shannon entropy flags encoded/encrypted data in URL path segments
-7. **Subdomain entropy analysis** — flags high-entropy subdomains used for DNS exfiltration
+2. **Domain blocklist** — blocks known exfiltration targets (pastebin, transfer.sh). Pre-DNS.
+3. **DLP patterns** — regex matching for API keys, tokens, and secrets (includes env variable leak detection: raw + base64, values 16+ chars with entropy > 3.0). Pre-DNS to prevent secret exfiltration via DNS queries.
+4. **Path entropy analysis** — Shannon entropy flags encoded/encrypted data in URL path segments
+5. **Subdomain entropy analysis** — flags high-entropy subdomains used for DNS exfiltration
+6. **SSRF protection** — blocks internal/private IPs with DNS rebinding prevention. Post-DNS, safe after DLP.
+7. **Rate limiting** — per-domain sliding window
 8. **URL length limits** — unusually long URLs suggest data exfiltration
 9. **Data budget** — per-domain byte limits prevent slow-drip exfiltration across many requests
 

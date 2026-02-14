@@ -644,6 +644,57 @@ func TestScan_DLPAWSKeyInSubdomain(t *testing.T) {
 	}
 }
 
+func TestScan_DLPSubdomainDotCollapse(t *testing.T) {
+	s := New(testConfig())
+
+	tests := []struct {
+		name    string
+		url     string
+		blocked bool
+	}{
+		{
+			name:    "anthropic key split across subdomains",
+			url:     "https://sk-ant-api03-.AABBCCDDEE.FFGGHHIIJJ.KKLLMMNNOO.evil.com/",
+			blocked: true,
+		},
+		{
+			name:    "AWS key split across subdomains",
+			url:     "https://AKIA.IOSFODNN.7EXAMPLE1.evil.com/",
+			blocked: true,
+		},
+		{
+			name:    "OpenAI key split across subdomains",
+			url:     "https://sk-proj-.abc123def456.ghi789jkl012.evil.com/",
+			blocked: true,
+		},
+		{
+			name:    "normal domain - no false positive",
+			url:     "https://www.google.com/search?q=hello",
+			blocked: false,
+		},
+		{
+			name:    "normal multi-level subdomain - no false positive",
+			url:     "https://api.us-east-1.example.com/v1/data",
+			blocked: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := s.Scan(tt.url)
+			if tt.blocked && result.Allowed {
+				t.Errorf("expected DLP to block dot-split secret in %s", tt.url)
+			}
+			if !tt.blocked && !result.Allowed {
+				t.Errorf("expected normal URL to be allowed: %s (blocked: %s)", tt.url, result.Reason)
+			}
+			if tt.blocked && result.Scanner != "dlp" {
+				t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+			}
+		})
+	}
+}
+
 func TestScan_DLPSlackToken(t *testing.T) {
 	s := New(testConfig())
 	result := s.Scan("https://example.com/api?token=xoxb-1234567890-abcdefghij")

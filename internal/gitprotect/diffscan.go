@@ -124,11 +124,17 @@ type CompiledDLPPattern struct {
 }
 
 // CompileDLPPatterns compiles config DLP patterns into reusable compiled patterns.
+// Forces case-insensitive matching ((?i) prefix) to match scanner.go behavior —
+// secrets in git diffs should be caught regardless of casing.
 // Invalid patterns are skipped (validation should have caught them).
 func CompileDLPPatterns(patterns []config.DLPPattern) []CompiledDLPPattern {
 	var compiled []CompiledDLPPattern
 	for _, p := range patterns {
-		re, err := regexp.Compile(p.Regex)
+		pattern := p.Regex
+		if !strings.HasPrefix(pattern, "(?i)") {
+			pattern = "(?i)" + pattern
+		}
+		re, err := regexp.Compile(pattern)
 		if err != nil {
 			continue
 		}

@@ -74,6 +74,12 @@ type ScanVerdict struct {
 // text from ALL block types, not just "text" — prevents bypass via image blocks).
 // Falls back to recursively extracting all string values from arbitrary JSON,
 // preventing bypass via non-standard result shapes.
+//
+// Content blocks are joined with a single space to preserve word boundaries.
+// Between-word splits ("previous" + "instructions") produce intact injections
+// the agent will act on — scanner must detect these. Mid-word splits
+// ("Igno" + "re" → "Igno re") don't match, but the injection is also broken
+// for the agent, so this is not exploitable.
 func ExtractText(raw json.RawMessage) string {
 	if len(raw) == 0 || string(raw) == jsonNull {
 		return ""
@@ -92,7 +98,7 @@ func ExtractText(raw json.RawMessage) string {
 			}
 		}
 		if len(texts) > 0 {
-			return strings.Join(texts, "\n")
+			return strings.Join(texts, " ")
 		}
 	}
 

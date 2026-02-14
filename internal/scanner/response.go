@@ -21,6 +21,22 @@ type ResponseMatch struct {
 	Position    int    `json:"position"`
 }
 
+// normalizeWhitespace replaces Unicode whitespace characters that Go's RE2 \s
+// does not match with ASCII space. NFKC handles some (em space U+2003 → space)
+// but not all (Ogham space U+1680, Mongolian vowel separator U+180E).
+func normalizeWhitespace(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case '\u1680', // Ogham space mark
+			'\u180E', // Mongolian vowel separator
+			'\u2028', // line separator
+			'\u2029': // paragraph separator
+			return ' '
+		}
+		return r
+	}, s)
+}
+
 // stripZeroWidth removes Unicode zero-width and invisible characters that could
 // be used to evade regex pattern matching (e.g., "ig\u200Bnore" bypassing "ignore").
 func stripZeroWidth(s string) string {
@@ -59,6 +75,9 @@ func (s *Scanner) ScanResponse(content string) ResponseScanResult {
 	content = stripZeroWidth(content)
 	// NFKC normalization catches Unicode confusables (e.g., Cyrillic 'а' → Latin 'a').
 	content = norm.NFKC.String(content)
+	// Normalize Unicode whitespace to ASCII space so \s+ in regex patterns
+	// catches exotic spaces (e.g., Ogham space U+1680, Mongolian vowel separator U+180E).
+	content = normalizeWhitespace(content)
 
 	var matches []ResponseMatch
 	for _, p := range s.responsePatterns {

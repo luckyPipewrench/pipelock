@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Fetch proxy DNS subdomain exfiltration: dot-collapse scanning now applied to hostnames in `checkDLP` (was only on MCP text scanning side)
+- MCP content block split bypass: `ExtractText` now joins blocks with space separator (was `\n`, allowing between-word injection splits to evade detection)
+- Git DLP case sensitivity: `CompileDLPPatterns` now applies `(?i)` prefix, matching URL scanner behavior
+- Rate limiter subdomain rotation: `checkRateLimit` now uses `baseDomain()` normalization, preventing per-subdomain rate limit evasion
+- Response scanning Unicode whitespace bypass: added `normalizeWhitespace()` for Ogham space (U+1680), Mongolian vowel separator (U+180E), and line/paragraph separators
+- Agent name path traversal: `ValidateAgentName` now rejects names containing `..` or equal to `.`
+- URL DLP NFKC normalization: applied `norm.NFKC.String()` before DLP pattern matching, consistent with response scanning
 
 ## [0.2.0] - 2026-02-13
 

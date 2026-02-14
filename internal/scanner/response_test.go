@@ -444,6 +444,30 @@ func TestStripZeroWidth(t *testing.T) {
 	}
 }
 
+func TestNormalizeWhitespace(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"empty", "", ""},
+		{"ascii_only", "hello world", "hello world"},
+		{"ogham_space", "hello\u1680world", "hello world"},
+		{"mongolian_vs", "hello\u180Eworld", "hello world"},
+		{"line_separator", "hello\u2028world", "hello world"},
+		{"paragraph_separator", "hello\u2029world", "hello world"},
+		{"multiple", "\u1680hello\u180E\u2028world\u2029", " hello  world "},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := normalizeWhitespace(tt.input)
+			if got != tt.want {
+				t.Errorf("normalizeWhitespace(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestScanResponse_HiddenInstruction(t *testing.T) {
 	s := New(testResponseConfig())
 

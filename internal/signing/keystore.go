@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 )
 
 // DefaultPipelockDir is the directory name for pipelock key storage.
@@ -55,10 +56,18 @@ func SanitizeAgentName(name string) string {
 	return name
 }
 
-// ValidateAgentName checks that a name is non-empty and already clean.
+// ValidateAgentName checks that a name is non-empty, already clean, and not
+// a path traversal attempt. Rejects names containing ".." (consecutive dots),
+// which could resolve to parent directories via filepath.Join.
 func ValidateAgentName(name string) error {
 	if name == "" {
 		return fmt.Errorf("agent name cannot be empty")
+	}
+	if strings.Contains(name, "..") {
+		return fmt.Errorf("agent name %q contains path traversal sequence", name)
+	}
+	if name == "." {
+		return fmt.Errorf("agent name %q is a path traversal sequence", name)
 	}
 	if sanitized := SanitizeAgentName(name); sanitized != name {
 		return fmt.Errorf("agent name %q contains invalid characters (use %q)", name, sanitized)

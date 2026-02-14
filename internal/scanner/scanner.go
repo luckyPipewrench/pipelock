@@ -18,6 +18,8 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 // Result describes the outcome of scanning a URL.
@@ -303,12 +305,14 @@ func (s *Scanner) checkBlocklist(hostname string) Result {
 // checkRateLimit enforces per-domain rate limiting using a sliding window.
 // Uses atomic CheckAndRecord to prevent TOCTOU races where concurrent
 // requests could both pass the check before either records.
+// Uses baseDomain normalization to prevent subdomain rotation bypass
+// (e.g., a.evil.com, b.evil.com each getting separate rate limit windows).
 func (s *Scanner) checkRateLimit(hostname string) Result {
 	if s.rateLimiter == nil {
 		return Result{Allowed: true}
 	}
 
-	if !s.rateLimiter.CheckAndRecord(hostname) {
+	if !s.rateLimiter.CheckAndRecord(baseDomain(hostname)) {
 		return Result{
 			Allowed: false,
 			Reason:  fmt.Sprintf("rate limit exceeded for %s", hostname),
@@ -378,7 +382,9 @@ func (s *Scanner) checkDLP(parsed *url.URL) Result {
 		}
 		// Strip zero-width characters before DLP pattern matching to prevent bypass
 		// via invisible char insertion (e.g., "sk\u200B-ant" evading "sk-ant" regex).
-		cleaned := stripZeroWidth(target)
+		// NFKC normalizes Unicode confusables (e.g., Cyrillic 'а' → Latin 'a'),
+		// matching the normalization applied in ScanResponse.
+		cleaned := norm.NFKC.String(stripZeroWidth(target))
 		for _, p := range s.dlpPatterns {
 			if p.re.MatchString(cleaned) {
 				return Result{

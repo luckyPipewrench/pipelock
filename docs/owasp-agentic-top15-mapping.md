@@ -48,7 +48,7 @@ This is separate from the [OWASP Top 10 for Agentic Applications](owasp-mapping.
 
 **Pipelock coverage:**
 
-- **Fetch proxy as controlled tool** — the agent's only network access is through the proxy. Every request goes through the 7-layer scanner pipeline.
+- **Fetch proxy as controlled tool** — the agent's only network access is through the proxy. Every request goes through the 9-layer scanner pipeline.
 - **MCP proxy** — `pipelock mcp proxy` wraps MCP servers and scans tool responses for injection payloads.
 - **HITL approvals** — suspicious requests can trigger human-in-the-loop terminal approval before proceeding.
 
@@ -65,7 +65,7 @@ This is separate from the [OWASP Top 10 for Agentic Applications](owasp-mapping.
 - **Capability separation** — the agent process (holds secrets, no network) and the proxy (has network, no secrets) run separately. Neither has both.
 - **Domain allowlisting** — agents can only reach explicitly allowed API endpoints.
 - **SSRF protection** — blocks requests to internal/private IP ranges with DNS rebinding prevention.
-- **DLP scanning** — 8 built-in patterns detect API keys, tokens, and credentials in outbound traffic.
+- **DLP scanning** - 15 built-in patterns detect API keys, tokens, and credentials in outbound traffic.
 - **Environment variable leak detection** — detects the proxy's own env var values (raw + base64) in URLs.
 
 **Coverage: Strong.** Multiple layers prevent credential leakage and limit agent network access.
@@ -99,7 +99,7 @@ This is separate from the [OWASP Top 10 for Agentic Applications](owasp-mapping.
 - **JSON stats** — `/stats` endpoint provides real-time top domains and block reasons.
 - **Grafana dashboard** — `configs/grafana-dashboard.json` provides a ready-to-import security overview.
 
-**Coverage: Strong.** Every proxy interaction is logged, attributed, and exportable. This is one of Pipelock's strongest areas.
+**Coverage: Strong.** Every proxy interaction is logged, attributed, and exportable.
 
 ---
 
@@ -147,7 +147,7 @@ This is separate from the [OWASP Top 10 for Agentic Applications](owasp-mapping.
 - **Ed25519 signing** — agents sign their outputs. Other agents can verify authenticity before trusting shared data.
 - **Audit logging** — per-agent request logs enable identifying which agent is behaving anomalously.
 
-**Coverage: Strong.** This is the lateral movement defense described in the [blog post](https://pipelab.org/pipelock/blog/2025/05/15/lateral-movement/).
+**Coverage: Strong.** This is the lateral movement defense described in the [blog post](https://pipelab.org/blog/lateral-movement-multi-agent-llm/).
 
 ---
 

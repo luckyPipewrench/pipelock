@@ -42,7 +42,7 @@ cmd/pipelock/          Entry point (main.go)
 internal/
   cli/                 Cobra commands (run, check, generate, logs, git, integrity, mcp, keygen, sign, verify, trust, version, healthcheck)
   proxy/               HTTP fetch proxy (/fetch, /health, /metrics, /stats)
-  scanner/             URL + response scanning pipeline (7 layers)
+  scanner/             URL + response scanning pipeline (9 layers)
   config/              YAML config loading, validation, hot-reload (fsnotify + SIGHUP)
   audit/               Structured JSON logging (zerolog)
   mcp/                 MCP stdio proxy + JSON-RPC 2.0 response scanning
@@ -65,15 +65,17 @@ Pipelock uses **capability separation**: the agent process (which has secrets an
 Agent (secrets, no network) → Pipelock Proxy (no secrets, full network) → Internet
 ```
 
-### Scanner Pipeline (7 layers)
+### Scanner Pipeline (9 layers)
 
-1. **SSRF** — Block private IPs, link-local, metadata endpoints. DNS rebinding protection.
-2. **Domain blocklist** — Configurable deny/allow lists per mode.
-3. **Rate limiting** — Per-domain sliding window.
-4. **DLP** — Regex patterns for API keys, tokens, credentials (15 built-in patterns, extensible via config).
-5. **Env leak** — Detect raw + base64-encoded environment variable values (Shannon entropy > 3.0).
-6. **Entropy** — Flag high-entropy URL segments that may be exfiltrated data.
-7. **URL length** — Configurable max URL length.
+1. **Scheme** — Enforce http/https only.
+2. **Domain blocklist** — Configurable deny/allow lists per mode. Runs before DNS resolution.
+3. **DLP** — Regex patterns for API keys, tokens, credentials (15 built-in patterns, extensible via config). Includes env variable leak detection (raw + base64, Shannon entropy > 3.0). Runs before DNS resolution to prevent secret exfiltration via DNS queries.
+4. **Path entropy** — Flag high-entropy URL path segments that may be exfiltrated data.
+5. **Subdomain entropy** — Flag high-entropy subdomains used for DNS exfiltration.
+6. **SSRF** — Block private IPs, link-local, metadata endpoints. DNS rebinding protection. Runs after DLP so secrets can't leak via DNS resolution.
+7. **Rate limiting** — Per-domain sliding window.
+8. **URL length** — Configurable max URL length.
+9. **Data budget** — Per-domain byte limits prevent slow-drip exfiltration.
 
 Response scanning adds prompt injection detection on fetched content.
 
@@ -112,7 +114,7 @@ Wraps any MCP server as a stdio proxy with bidirectional scanning. Server respon
 
 - **Race detector mandatory**: All tests run with `-race -count=1`
 - **90% coverage target** across all packages
-- **1,000+ tests** currently passing
+- **1,300+ tests** currently passing
 
 ### Patterns
 
@@ -196,7 +198,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide. Summary:
 
 - **Security bugs**: Report via [GitHub Security Advisories](https://github.com/luckyPipewrench/pipelock/security/advisories) — NOT public issues
 - **Don't weaken capability separation** — the proxy must never have access to agent secrets
-- **Don't add dependencies without justification** — 6 direct deps is a feature, not a limitation
+- **Don't add dependencies without justification** — 7 direct deps (cobra, zerolog, go-readability, yaml.v3, prometheus, fsnotify, tablewriter) is a feature, not a limitation
 - **Don't bypass fail-closed defaults** — if in doubt, block
 
 ## Common Development Tasks

@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Manual trigger (`workflow_dispatch`) for OpenSSF Scorecard workflow
 
 ### Changed
-- Branch protection: require codeowner review, last-push approval, 1 approving review, squash-only merges
+- Branch protection: require codeowner review, last-push approval, squash-only merges
 
 ## [0.2.1] - 2026-02-15
 

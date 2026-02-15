@@ -69,6 +69,16 @@ func NewToolBaseline() *ToolBaseline {
 // memory growth from a malicious server sending unlimited unique tool names.
 const maxBaselineTools = 10000
 
+// ShouldSkip returns true if the tool name is unknown and the baseline is at
+// capacity. Callers should skip expensive hash computation in this case to
+// prevent CPU exhaustion from malicious servers flooding with unique tool names.
+func (tb *ToolBaseline) ShouldSkip(name string) bool {
+	tb.mu.Lock()
+	defer tb.mu.Unlock()
+	_, exists := tb.hashes[name]
+	return !exists && len(tb.hashes) >= maxBaselineTools
+}
+
 // CheckAndUpdate stores a tool's hash and reports whether it changed.
 // Returns (driftDetected, previousHash). On first insertion returns (false, "").
 // New tools are silently dropped when the baseline exceeds maxBaselineTools.
@@ -315,7 +325,9 @@ func ScanTools(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) ToolScanRe
 		}
 
 		// Drift detection (rug pull).
-		if cfg.DetectDrift && cfg.Baseline != nil {
+		// Skip hash computation for unknown tools when at capacity to prevent
+		// CPU exhaustion from malicious servers sending unlimited unique names.
+		if cfg.DetectDrift && cfg.Baseline != nil && !cfg.Baseline.ShouldSkip(tool.Name) {
 			hash := hashTool(tool)
 			drifted, prevHash := cfg.Baseline.CheckAndUpdate(tool.Name, hash)
 			if drifted {

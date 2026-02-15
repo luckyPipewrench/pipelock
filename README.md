@@ -127,8 +127,8 @@ Every release includes SLSA build provenance and an SBOM (CycloneDX). Verify wit
 # Verify a downloaded binary
 gh attestation verify pipelock_*_linux_amd64.tar.gz --owner luckyPipewrench
 
-# Verify the container image
-gh attestation verify oci://ghcr.io/luckypipewrench/pipelock:latest --owner luckyPipewrench
+# Verify the container image (substitute the release version)
+gh attestation verify oci://ghcr.io/luckypipewrench/pipelock:<version> --owner luckyPipewrench
 ```
 
 ## OWASP Agentic Top 10 Coverage

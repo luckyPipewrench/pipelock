@@ -94,8 +94,7 @@ jobs:
         run: |
           TAG="${GITHUB_REF_NAME#v}"
           go install github.com/google/go-containerregistry/cmd/crane@v0.20.7
-          DIGEST=$(crane digest "ghcr.io/luckypipewrench/pipelock:${TAG}" 2>&1) || true
-          if [ -z "$DIGEST" ] || echo "$DIGEST" | grep -qi "error"; then
+          if ! DIGEST=$(crane digest "ghcr.io/luckypipewrench/pipelock:${TAG}" 2>/dev/null); then
             echo "::warning::Failed to resolve container digest for tag ${TAG}"
             echo "digest=" >> "$GITHUB_OUTPUT"
           else

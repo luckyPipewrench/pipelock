@@ -59,7 +59,7 @@ jobs:
 
       - name: Generate SBOM
         run: |
-          go install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@v1.10.0
+          go install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@v1.9.0
           cyclonedx-gomod mod -json -output sbom.cdx.json
 
       - name: Upload SBOM to release

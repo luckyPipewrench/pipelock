@@ -2041,6 +2041,212 @@ func TestProxy_HandleFetch_PostMethod(t *testing.T) {
 	}
 }
 
+func TestExtractTargetURL_UnencodedAmpersand(t *testing.T) {
+	tests := []struct {
+		name     string
+		rawQuery string
+		want     string
+	}{
+		{
+			name:     "simple URL no ampersand",
+			rawQuery: "url=https://example.com/page",
+			want:     "https://example.com/page",
+		},
+		{
+			name:     "URL with agent param",
+			rawQuery: "url=https://example.com&agent=my-bot",
+			want:     "https://example.com",
+		},
+		{
+			name:     "unencoded ampersand in target URL",
+			rawQuery: "url=https://example.com/?a=hello&secret=sk-ant-api03-FAKEKEY",
+			want:     "https://example.com/?a=hello&secret=sk-ant-api03-FAKEKEY",
+		},
+		{
+			name:     "multiple unencoded ampersands",
+			rawQuery: "url=https://example.com/?a=1&b=2&c=3",
+			want:     "https://example.com/?a=1&b=2&c=3",
+		},
+		{
+			name:     "properly encoded ampersand",
+			rawQuery: "url=https://example.com/?a=hello%26secret=key",
+			want:     "https://example.com/?a=hello&secret=key",
+		},
+		{
+			name:     "missing url param",
+			rawQuery: "agent=bot",
+			want:     "",
+		},
+		{
+			name:     "empty query",
+			rawQuery: "",
+			want:     "",
+		},
+		{
+			name:     "url param after agent",
+			rawQuery: "agent=bot&url=https://example.com/?x=1&y=2",
+			want:     "https://example.com/?x=1&y=2",
+		},
+		{
+			name:     "secret after ampersand bypasses DLP",
+			rawQuery: "url=https://evil.com/?data=ok&k=AKIAIOSFODNN7EXAMPLE",
+			want:     "https://evil.com/?data=ok&k=AKIAIOSFODNN7EXAMPLE",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/fetch?"+tt.rawQuery, nil)
+			got := extractTargetURL(req)
+			if got != tt.want {
+				t.Errorf("extractTargetURL() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFetchEndpoint_DLPBlocked_UnencodedAmpersand(t *testing.T) {
+	p, backend := setupTestProxy(t)
+	defer backend.Close()
+
+	// Secret hidden after unencoded '&' — previously invisible to scanners.
+	target := backend.URL + "/text?data=ok&key=AKIAIOSFODNN7EXAMPLE"
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+target, nil)
+	w := httptest.NewRecorder()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403 for DLP-blocked URL with secret after &, got %d", w.Code)
+	}
+
+	var resp FetchResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+	if !resp.Blocked {
+		t.Error("expected blocked=true: secret after unencoded & should be scanned")
+	}
+	if !strings.Contains(resp.BlockReason, "DLP") {
+		t.Errorf("expected DLP block reason, got %q", resp.BlockReason)
+	}
+}
+
+func TestExtractRawURLParam(t *testing.T) {
+	tests := []struct {
+		name     string
+		rawQuery string
+		want     string
+	}{
+		{
+			name:     "url at start",
+			rawQuery: "url=https://example.com/?a=1&b=2",
+			want:     "https://example.com/?a=1&b=2",
+		},
+		{
+			name:     "url after agent",
+			rawQuery: "agent=bot&url=https://example.com/?a=1&b=2",
+			want:     "https://example.com/?a=1&b=2",
+		},
+		{
+			name:     "no url param",
+			rawQuery: "other=value",
+			want:     "",
+		},
+		{
+			name:     "percent encoded value",
+			rawQuery: "url=https%3A%2F%2Fexample.com%2F%3Fa%3D1%26b%3D2",
+			want:     "https://example.com/?a=1&b=2",
+		},
+		{
+			name:     "partial encoding",
+			rawQuery: "url=https://example.com/?a=hello%26b=world",
+			want:     "https://example.com/?a=hello&b=world",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractRawURLParam(tt.rawQuery)
+			if got != tt.want {
+				t.Errorf("extractRawURLParam(%q) = %q, want %q", tt.rawQuery, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFetchEndpoint_DLPBlocked_ControlCharBypass(t *testing.T) {
+	p, backend := setupTestProxy(t)
+	defer backend.Close()
+
+	controlChars := []struct {
+		name string
+		char string
+	}{
+		{"null byte", "%00"},
+		{"backspace", "%08"},
+		{"tab", "%09"},
+		{"newline", "%0A"},
+		{"vtab", "%0B"},
+		{"form feed", "%0C"},
+		{"carriage return", "%0D"},
+		{"escape", "%1B"},
+		{"DEL", "%7F"},
+	}
+
+	for _, cc := range controlChars {
+		t.Run(cc.name, func(t *testing.T) {
+			// Insert control char into the middle of an API key
+			target := backend.URL + "/text?key=sk-ant-" + cc.char + "aaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+			req := httptest.NewRequest(http.MethodGet, "/fetch?url="+target, nil)
+			w := httptest.NewRecorder()
+
+			mux := http.NewServeMux()
+			mux.HandleFunc("/fetch", p.handleFetch)
+			mux.ServeHTTP(w, req)
+
+			if w.Code != http.StatusForbidden {
+				t.Errorf("expected 403 for DLP-blocked URL with %s, got %d", cc.name, w.Code)
+			}
+
+			var resp FetchResponse
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("expected valid JSON: %v", err)
+			}
+			if !resp.Blocked {
+				t.Errorf("expected blocked=true: %s in API key should be stripped and caught by DLP", cc.name)
+			}
+		})
+	}
+}
+
+func TestStripFetchControlChars(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"no control chars", "https://example.com/?key=value", "https://example.com/?key=value"},
+		{"null byte", "sk-ant-\x00aaaa", "sk-ant-aaaa"},
+		{"tab", "sk-ant-\taaaa", "sk-ant-aaaa"},
+		{"newline", "sk-ant-\naaaa", "sk-ant-aaaa"},
+		{"DEL", "sk-ant-\x7Faaaa", "sk-ant-aaaa"},
+		{"multiple control chars", "\x00sk\x08-ant\x09-\x0Baaaa\x7F", "sk-ant-aaaa"},
+		{"preserves printable", "https://example.com/?a=1&b=2", "https://example.com/?a=1&b=2"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := stripFetchControlChars(tt.input)
+			if got != tt.want {
+				t.Errorf("stripFetchControlChars(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestProxy_Reload_UpdatesCurrentConfig(t *testing.T) {
 	p, backend := setupTestProxy(t)
 	defer backend.Close()

@@ -286,7 +286,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	targetURL := r.URL.Query().Get("url")
+	targetURL := extractTargetURL(r)
 	if targetURL == "" {
 		writeJSON(w, http.StatusBadRequest, FetchResponse{
 			Error:   "missing 'url' query parameter",
@@ -294,6 +294,13 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+
+	// Strip control characters before URL parsing. Go's url.Parse rejects
+	// URLs with control chars (returns "invalid control character" error),
+	// which means a null byte in "sk-ant-%00key..." would be rejected as a
+	// parse error instead of being detected by the DLP scanner. Stripping
+	// first ensures the cleaned URL flows through the full scanner pipeline.
+	targetURL = stripFetchControlChars(targetURL)
 
 	// Parse and validate URL scheme
 	parsed, err := url.Parse(targetURL)
@@ -470,6 +477,67 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		Content:     content,
 		Blocked:     false,
 	})
+}
+
+// stripFetchControlChars removes C0 control characters (0x00-0x1F) and DEL
+// (0x7F) from a URL string. These characters break url.Parse (Go rejects them
+// as "invalid control character") and can be used to evade DLP scanning by
+// splitting regex matches (e.g., "sk-ant-%00key..." parsed as invalid instead
+// of being caught as a DLP match). Preserves all printable characters.
+func stripFetchControlChars(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r <= 0x1F || r == 0x7F {
+			return -1
+		}
+		return r
+	}, s)
+}
+
+// extractTargetURL extracts the full target URL from the request query string.
+// Standard url.Values parsing splits on '&', which silently truncates unencoded
+// target URLs: /fetch?url=https://example.com/?a=b&secret=key is parsed as two
+// separate params (url=…a=b, secret=key) — the secret escapes all scanners.
+//
+// This function detects truncation by checking for unrecognized query params
+// (the /fetch endpoint only uses "url" and "agent") and falls back to raw
+// query string extraction when truncation is detected.
+func extractTargetURL(r *http.Request) string {
+	query := r.URL.Query()
+	targetURL := query.Get("url")
+	if targetURL == "" {
+		return ""
+	}
+
+	// If only recognized params exist, standard parsing was correct.
+	for key := range query {
+		if key != "url" && key != "agent" {
+			// Unknown param — target URL contains unencoded '&' and was truncated.
+			return extractRawURLParam(r.URL.RawQuery)
+		}
+	}
+	return targetURL
+}
+
+// extractRawURLParam extracts the url= value from a raw query string without
+// splitting on '&'. This preserves the full target URL including any unencoded
+// ampersands. The value is URL-decoded to handle percent-encoded characters.
+func extractRawURLParam(rawQuery string) string {
+	const prefix = "url="
+	var start int
+	if strings.HasPrefix(rawQuery, prefix) {
+		start = len(prefix)
+	} else if i := strings.Index(rawQuery, "&"+prefix); i >= 0 {
+		start = i + 1 + len(prefix)
+	} else {
+		return ""
+	}
+
+	value := rawQuery[start:]
+
+	if decoded, err := url.QueryUnescape(value); err == nil {
+		return decoded
+	}
+	return value
 }
 
 // healthResponse is the JSON response returned by the /health endpoint.

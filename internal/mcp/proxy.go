@@ -55,8 +55,12 @@ func writeMessage(w io.Writer, msg []byte) error {
 // ForwardScanned reads newline-delimited JSON-RPC 2.0 messages from r, scans
 // each for prompt injection, and forwards to w based on the scanner's configured
 // action (warn, block, strip). Scan verdicts are logged to logW.
+// When toolCfg is non-nil, tool descriptions in tools/list responses are scanned
+// for poisoning and tracked for drift (rug pull) detection. Tool scanning runs
+// independently of general response scanning so a "block" tool action is never
+// bypassed by a "warn" general action.
 // Returns true if any injection was detected.
-func ForwardScanned(r io.Reader, w io.Writer, logW io.Writer, sc *scanner.Scanner, approver *hitl.Approver) (bool, error) {
+func ForwardScanned(r io.Reader, w io.Writer, logW io.Writer, sc *scanner.Scanner, approver *hitl.Approver, toolCfg *ToolScanConfig) (bool, error) {
 	lineScanner := bufio.NewScanner(r)
 	lineScanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)
 
@@ -71,6 +75,25 @@ func ForwardScanned(r io.Reader, w io.Writer, logW io.Writer, sc *scanner.Scanne
 		}
 
 		verdict := ScanResponse(line, sc)
+
+		// Tool scanning runs on every response, independent of general scan
+		// verdict. A general scan "warn" must not bypass a tool scan "block".
+		if toolCfg != nil {
+			toolResult := ScanTools(line, sc, toolCfg)
+			if toolResult.IsToolsList && !toolResult.Clean {
+				foundInjection = true
+				logToolFindings(logW, lineNum, toolResult)
+
+				if toolCfg.Action == "block" { //nolint:goconst // config action value
+					resp := blockResponse(toolResult.RPCID)
+					if err := writeMessage(w, resp); err != nil {
+						return foundInjection, fmt.Errorf("writing tool block: %w", err)
+					}
+					continue
+				}
+				// warn: logged above, fall through to general handling
+			}
+		}
 
 		if verdict.Clean {
 			if err := writeMessage(w, line); err != nil {
@@ -336,10 +359,12 @@ type InputScanConfig struct {
 // the scanner. Client input is scanned for DLP/injection (if enabled) before
 // forwarding to the server's stdin. Server stdout is scanned and forwarded
 // to the client. Server stderr is forwarded to logW.
+// When toolCfg is non-nil with a non-empty Action, tool description scanning
+// and drift detection are enabled for this proxy session.
 // Both clientOut and logW are wrapped in mutex adapters to prevent concurrent
 // write races between the input scanning goroutine, blocked request drainer,
 // child process stderr, and the main goroutine's response scanning.
-func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW io.Writer, command []string, sc *scanner.Scanner, approver *hitl.Approver, inputCfg *InputScanConfig) error {
+func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW io.Writer, command []string, sc *scanner.Scanner, approver *hitl.Approver, inputCfg *InputScanConfig, toolCfg *ToolScanConfig) error {
 	cmd := exec.CommandContext(ctx, command[0], command[1:]...) //nolint:gosec // command comes from user CLI args
 
 	// Wrap shared writers in mutex adapters. Multiple goroutines write to
@@ -403,8 +428,18 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		}
 	}()
 
+	// Set up tool scanning with a fresh baseline for this proxy session.
+	var fwdToolCfg *ToolScanConfig
+	if toolCfg != nil && toolCfg.Action != "" {
+		fwdToolCfg = &ToolScanConfig{
+			Baseline:    NewToolBaseline(),
+			Action:      toolCfg.Action,
+			DetectDrift: toolCfg.DetectDrift,
+		}
+	}
+
 	// Scan and forward server output to client.
-	_, scanErr := ForwardScanned(serverOut, safeClientOut, safeLogW, sc, approver)
+	_, scanErr := ForwardScanned(serverOut, safeClientOut, safeLogW, sc, approver, fwdToolCfg)
 
 	// Wait for subprocess to exit.
 	waitErr := cmd.Wait()

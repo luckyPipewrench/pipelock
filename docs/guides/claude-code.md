@@ -22,6 +22,7 @@ pipelock mcp proxy --config configs/claude-code.yaml -- npx -y @modelcontextprot
 Pipelock wraps any MCP server as a stdio proxy with bidirectional scanning.
 Client requests are scanned for DLP leaks and injection in tool arguments.
 Server responses are scanned for prompt injection before forwarding to the client.
+Tool descriptions are scanned for poisoned instructions and tracked for rug-pull changes.
 
 ```text
 Claude Code  <-->  pipelock mcp proxy  <-->  MCP Server

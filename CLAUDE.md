@@ -45,7 +45,7 @@ internal/
   scanner/             URL + response scanning pipeline (9 layers)
   config/              YAML config loading, validation, hot-reload (fsnotify + SIGHUP)
   audit/               Structured JSON logging (zerolog)
-  mcp/                 MCP stdio proxy + JSON-RPC 2.0 response scanning
+  mcp/                 MCP stdio proxy + JSON-RPC 2.0 response scanning + tool poisoning detection
   hitl/                Human-in-the-loop terminal approval (ask action)
   integrity/           SHA256 file manifests (init/check/update/diff)
   signing/             Ed25519 key management, signing, verification
@@ -81,7 +81,7 @@ Response scanning adds prompt injection detection on fetched content.
 
 ### MCP Proxy
 
-Wraps any MCP server as a stdio proxy with bidirectional scanning. Server responses are scanned for prompt injection. Client requests are scanned for DLP leaks and injection in tool arguments (configurable via `mcp_input_scanning`). Auto-enabled in proxy mode unless explicitly disabled.
+Wraps any MCP server as a stdio proxy with bidirectional scanning. Server responses are scanned for prompt injection. Client requests are scanned for DLP leaks and injection in tool arguments (configurable via `mcp_input_scanning`). Tool descriptions are scanned for poisoned instructions and tracked for rug-pull changes (configurable via `mcp_tool_scanning`). All three scanning modes auto-enable in proxy mode unless explicitly configured.
 
 ### Key Design Decisions
 
@@ -89,7 +89,7 @@ Wraps any MCP server as a stdio proxy with bidirectional scanning. Server respon
 - **SSRF disabled when `cfg.Internal = nil`**: Not just empty slice — nil means no internal network protection (used in tests to avoid DNS lookups).
 - **Scanner.New() panics on invalid DLP regex/CIDRs**: These are programming errors caught after config validation, not runtime errors.
 - **HITL single reader goroutine**: One goroutine owns the bufio.Reader, sends lines to a channel. Prevents data races on concurrent terminal reads.
-- **MCP scans bidirectionally**: Responses scanned for injection, requests scanned for DLP leaks + injection in tool arguments. `json.RawMessage("null")` is non-nil — checking for nil would be a bypass vector.
+- **MCP scans bidirectionally**: Responses scanned for injection, requests scanned for DLP leaks + injection in tool arguments, tool descriptions scanned for poisoned instructions + rug-pull changes. `json.RawMessage("null")` is non-nil — checking for nil would be a bypass vector.
 
 ## CLI Commands
 

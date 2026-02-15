@@ -55,9 +55,10 @@ Use `pipelock generate config --preset balanced` for the complete default patter
 - **Fetch proxy as a controlled tool** — instead of giving agents raw `curl`/`fetch`, the proxy is the only network tool. Every request goes through the full scanner pipeline.
 - **MCP response scanning** — tool results from MCP servers are scanned for injection payloads before the agent processes them.
 - **MCP input scanning** — client requests are scanned for DLP leaks and injection in tool arguments before reaching the server. Catches secrets or injection payloads being passed as tool call parameters.
+- **MCP tool scanning** — `tools/list` responses are scanned for poisoned descriptions containing hidden instructions. SHA256 baseline per session detects rug-pull definition changes.
 - **Input validation** — URLs are validated, parsed, and scanned before any HTTP request is made. Malformed URLs are rejected.
 
-**Gap:** Pipelock controls the HTTP fetch tool and scans MCP traffic bidirectionally (requests and responses). It does not restrict shell/filesystem operations. For shell/filesystem controls, see [agentsh](https://github.com/canyonroad/agentsh) or [srt](https://github.com/anthropic-experimental/sandbox-runtime).
+**Gap:** Pipelock controls the HTTP fetch tool and scans MCP traffic bidirectionally (requests, responses, and tool definitions). It does not restrict shell/filesystem operations. For shell/filesystem controls, see [agentsh](https://github.com/canyonroad/agentsh) or [srt](https://github.com/anthropic-experimental/sandbox-runtime).
 
 ---
 
@@ -82,6 +83,7 @@ Use `pipelock generate config --preset balanced` for the complete default patter
 
 - **Workspace integrity monitoring** — SHA256 manifests detect any file modification, addition, or removal in the workspace. A compromised skill that modifies config files is detected.
 - **MCP response scanning** — compromised MCP servers that inject prompt injection payloads into tool results are detected.
+- **MCP tool scanning** — `tools/list` responses are scanned for poisoned tool descriptions (hidden instructions, file exfiltration directives, cross-tool manipulation). SHA256 baseline detects rug-pull changes to tool definitions mid-session.
 - **Ed25519 signing** — files and manifests can be signed for tamper-evident verification. Unsigned or re-signed files are flagged.
 
 **Gap:** No dependency scanning (use [Trivy](https://github.com/aquasecurity/trivy) or Dependabot for that). No MCP server identity verification yet.

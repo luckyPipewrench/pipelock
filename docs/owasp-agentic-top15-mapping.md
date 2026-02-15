@@ -50,9 +50,10 @@ This is separate from the [OWASP Top 10 for Agentic Applications](owasp-mapping.
 
 - **Fetch proxy as controlled tool** — the agent's only network access is through the proxy. Every request goes through the 9-layer scanner pipeline.
 - **MCP proxy** — `pipelock mcp proxy` wraps MCP servers and scans tool responses for injection payloads.
+- **Tool description scanning** — `tools/list` responses are scanned for poisoned descriptions containing hidden instructions, file exfiltration directives, or cross-tool manipulation. Rug-pull detection tracks SHA256 hashes per session and alerts on mid-session changes.
 - **HITL approvals** — suspicious requests can trigger human-in-the-loop terminal approval before proceeding.
 
-**Coverage: Strong.** Controls the HTTP fetch tool, scans MCP responses for injection, and scans MCP requests for DLP leaks and injection in tool arguments. Does not restrict shell/filesystem operations.
+**Coverage: Strong.** Controls the HTTP fetch tool, scans MCP responses for injection, scans MCP requests for DLP leaks and injection in tool arguments, and detects poisoned tool descriptions. Does not restrict shell/filesystem operations.
 
 ---
 
@@ -127,10 +128,11 @@ This is separate from the [OWASP Top 10 for Agentic Applications](owasp-mapping.
 
 - **MCP response scanning** — `pipelock mcp proxy` scans all JSON-RPC tool results for prompt injection patterns. Text is concatenated across content blocks, catching injection split across multiple blocks.
 - **MCP input scanning** — client requests are also scanned for injection patterns and DLP leaks in tool arguments. Catches poisoned payloads being sent *to* tools, not just returned *from* them.
+- **MCP tool scanning** — `tools/list` responses are scanned for poisoned descriptions. SHA256 baseline per session detects rug-pull definition changes.
 - **Response scanning** — fetched web content is scanned with the same injection detector.
-- **Configurable actions** — response scanning: `block` (reject), `strip` (redact matched text), `warn` (log and pass through), `ask` (human approval). Input scanning: `block` or `warn` only (no `ask` — request path has no terminal interaction).
+- **Configurable actions** — response scanning: `block` (reject), `strip` (redact matched text), `warn` (log and pass through), `ask` (human approval). Input/tool scanning: `block` or `warn`.
 
-**Coverage: Strong.** MCP traffic is scanned bidirectionally (requests and responses). HTTP channels are scanned for injection.
+**Coverage: Strong.** MCP traffic is scanned bidirectionally (requests, responses, and tool definitions). HTTP channels are scanned for injection.
 
 **Gap:** Regex-based detection can miss novel injection patterns. Future: classifier-based detection.
 

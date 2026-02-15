@@ -89,7 +89,7 @@ flowchart LR
 | DLP + entropy analysis | Yes | No | No | Partial |
 | Prompt injection detection | Yes | Yes | No | No |
 | Workspace integrity monitoring | Yes | No | No | Partial |
-| MCP scanning (bidirectional) | Yes | Yes | No | No |
+| MCP scanning (bidirectional + tool poisoning) | Yes | Yes | No | No |
 | Single binary, zero deps | Yes | No (Python) | No (npm) | No (kernel modules) |
 | Audit logging + Prometheus | Yes | No | No | No |
 
@@ -241,7 +241,7 @@ Keys stored under `~/.pipelock/agents/` and `~/.pipelock/trusted_keys/`.
 
 ### MCP Proxy + Bidirectional Scanning
 
-Wrap any MCP server as a stdio proxy. Pipelock scans both directions: client requests are checked for DLP leaks and injection in tool arguments, and server responses are scanned for prompt injection before returning to the client:
+Wrap any MCP server as a stdio proxy. Pipelock scans both directions: client requests are checked for DLP leaks and injection in tool arguments, server responses are scanned for prompt injection, and `tools/list` responses are checked for poisoned tool descriptions and rug-pull definition changes:
 
 ```bash
 # Wrap an MCP server (use in .mcp.json for Claude Code)
@@ -309,6 +309,11 @@ mcp_input_scanning:
   enabled: true
   action: warn               # block or warn (auto-enabled for mcp proxy)
   on_parse_error: block      # block or forward
+
+mcp_tool_scanning:
+  enabled: true
+  action: warn               # block or warn (auto-enabled for mcp proxy)
+  detect_drift: true         # alert on tool description changes mid-session
 
 logging:
   format: json
@@ -484,7 +489,7 @@ internal/
   gitprotect/          Git-aware security (diff scanning, branch validation, hooks)
   integrity/           File integrity monitoring (SHA256 manifests, check/diff, exclusions)
   signing/             Ed25519 key management, file signing, signature verification
-  mcp/                 MCP stdio proxy + bidirectional JSON-RPC 2.0 scanning
+  mcp/                 MCP stdio proxy + bidirectional JSON-RPC 2.0 scanning + tool poisoning detection
   hitl/                Human-in-the-loop terminal approval (ask action)
 configs/               Preset config files (strict, balanced, audit, claude-code, cursor, generic-agent)
 docs/                  OWASP mapping, tool comparison

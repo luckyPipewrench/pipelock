@@ -146,6 +146,11 @@ mcp_input_scanning:
   action: warn
   on_parse_error: block
 
+mcp_tool_scanning:
+  enabled: true
+  action: warn
+  detect_drift: true
+
 logging:
   format: json
   output: stdout

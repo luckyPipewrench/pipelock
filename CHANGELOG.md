@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- MCP tool description scanning: detects poisoned tool descriptions containing hidden instructions (`<IMPORTANT>` tags, file exfiltration directives, cross-tool manipulation)
+- MCP tool rug-pull detection: SHA256 baseline tracks tool definitions per session, alerts when descriptions change mid-session
+- `mcp_tool_scanning` config section (action: warn/block, detect_drift: true/false)
+- Auto-enabled in `mcp proxy` mode unless explicitly configured
 - `CODEOWNERS` file for automatic review assignment
 - Cosign keyless signing for release checksums (Sigstore transparency log)
 - Manual trigger (`workflow_dispatch`) for OpenSSF Scorecard workflow

@@ -154,8 +154,24 @@ Claude Desktop config:
 				OnParseError: cfg.MCPInputScanning.OnParseError,
 			}
 
-			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: proxying MCP server %v (response=%s, input=%s)\n",
-				serverCmd, sc.ResponseAction(), inputCfg.Action)
+			// Auto-enable MCP tool scanning for proxy mode unless explicitly configured.
+			if !cfg.MCPToolScanning.Enabled && cfg.MCPToolScanning.Action == "" {
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "pipelock: auto-enabling MCP tool scanning for proxy mode")
+				cfg.MCPToolScanning.Enabled = true
+				cfg.MCPToolScanning.Action = "warn" //nolint:goconst // config action value
+				cfg.MCPToolScanning.DetectDrift = true
+			}
+
+			var toolCfg *mcp.ToolScanConfig
+			if cfg.MCPToolScanning.Enabled {
+				toolCfg = &mcp.ToolScanConfig{
+					Action:      cfg.MCPToolScanning.Action,
+					DetectDrift: cfg.MCPToolScanning.DetectDrift,
+				}
+			}
+
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: proxying MCP server %v (response=%s, input=%s, tools=%s)\n",
+				serverCmd, sc.ResponseAction(), inputCfg.Action, cfg.MCPToolScanning.Action)
 
 			ctx, cancel := signal.NotifyContext(
 				cmd.Context(),
@@ -164,7 +180,7 @@ Claude Desktop config:
 			)
 			defer cancel()
 
-			return mcp.RunProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), serverCmd, sc, approver, inputCfg)
+			return mcp.RunProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), serverCmd, sc, approver, inputCfg, toolCfg)
 		},
 	}
 

@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - All GitHub Actions pinned to commit SHAs (supply chain hardening)
 - Release workflow now includes `id-token` and `attestations` permissions for provenance signing
 - Explicit top-level `permissions: contents: read` in CI workflow (least privilege)
+- Release attestation steps use `continue-on-error` with final verification (prevents cascading failures)
+- Container digest resolution uses `::warning` annotation instead of silent fallback
+- `govulncheck`, `cyclonedx-gomod`, and `crane` pinned to specific versions (not `@latest`)
 
 ### Fixed
 - Fetch proxy DNS subdomain exfiltration: dot-collapse scanning now applied to hostnames in `checkDLP` (was only on MCP text scanning side)

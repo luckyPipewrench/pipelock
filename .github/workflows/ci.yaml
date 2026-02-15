@@ -58,6 +58,9 @@ jobs:
         with:
           version: latest
 
+  # Advisory only — not in build's needs chain. Failures here surface
+  # known vulnerabilities but do not block merges, since vuln database
+  # updates are outside contributor control.
   govulncheck:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -70,7 +73,7 @@ jobs:
           go-version: '1.24'
 
       - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
 
       - name: Run govulncheck
         run: govulncheck ./...

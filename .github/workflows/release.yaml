@@ -58,7 +58,7 @@ jobs:
 
       - name: Generate SBOM
         run: |
-          go install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@latest
+          go install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@v1.10.0
           cyclonedx-gomod mod -json -output sbom.cdx.json
 
       - name: Upload SBOM to release
@@ -66,17 +66,24 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "$GITHUB_REF_NAME" sbom.cdx.json --clobber
 
+      # Attestation steps use continue-on-error so one failure doesn't
+      # cascade and kill the rest. The final verification step checks
+      # that at least the binary attestation succeeded.
       - name: Attest binary archives
+        id: attest-binaries
+        continue-on-error: true
         uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
         with:
           subject-path: dist/pipelock_*.tar.gz
 
       - name: Attest checksums
+        continue-on-error: true
         uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
         with:
           subject-path: dist/checksums.txt
 
       - name: Attest SBOM
+        continue-on-error: true
         uses: actions/attest-sbom@4651f806c01d8637787e274ac3bdf724ef169f34 # v3.0.0
         with:
           subject-path: dist/pipelock_*.tar.gz
@@ -86,14 +93,26 @@ jobs:
         id: digest
         run: |
           TAG="${GITHUB_REF_NAME#v}"
-          go install github.com/google/go-containerregistry/cmd/crane@latest
-          DIGEST=$(crane digest "ghcr.io/luckypipewrench/pipelock:${TAG}" 2>/dev/null || echo "")
-          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          go install github.com/google/go-containerregistry/cmd/crane@v0.20.7
+          DIGEST=$(crane digest "ghcr.io/luckypipewrench/pipelock:${TAG}" 2>&1) || true
+          if [ -z "$DIGEST" ] || echo "$DIGEST" | grep -qi "error"; then
+            echo "::warning::Failed to resolve container digest for tag ${TAG}"
+            echo "digest=" >> "$GITHUB_OUTPUT"
+          else
+            echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Attest container image
         if: steps.digest.outputs.digest != ''
+        continue-on-error: true
         uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
         with:
           subject-name: ghcr.io/luckypipewrench/pipelock
           subject-digest: ${{ steps.digest.outputs.digest }}
           push-to-registry: true
+
+      - name: Verify attestation
+        if: steps.attest-binaries.outcome == 'failure'
+        run: |
+          echo "::error::Binary attestation failed — release provenance is incomplete"
+          exit 1

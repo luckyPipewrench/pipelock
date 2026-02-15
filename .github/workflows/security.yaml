@@ -9,12 +9,14 @@ on:
     - cron: '0 3 * * 0' # Weekly Sunday 3AM UTC
 
 permissions:
-  security-events: write
   contents: read
 
 jobs:
   codeql:
     runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 

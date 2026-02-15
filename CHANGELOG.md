@@ -23,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release attestation steps use `continue-on-error` with final verification (prevents cascading failures)
 - Container digest resolution uses `::warning` annotation instead of silent fallback
 - `govulncheck`, `cyclonedx-gomod`, and `crane` pinned to specific versions (not `@latest`)
+- Docker base images pinned by SHA256 digest (Scorecard Pinned-Dependencies)
+- Write permissions moved from workflow-level to job-level (Scorecard Token-Permissions)
+- Branch protection: added PR requirement, lint as required check, strict status policy, review thread resolution
 
 ### Fixed
 - Fetch proxy DNS subdomain exfiltration: dot-collapse scanning now applied to hostnames in `checkDLP` (was only on MCP text scanning side)

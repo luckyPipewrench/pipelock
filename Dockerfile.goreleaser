@@ -1,6 +1,6 @@
 # Used by GoReleaser — copies the pre-built binary instead of building from source.
 # For local/manual builds, use the main Dockerfile instead.
-FROM alpine:3.21 AS certs
+FROM alpine:3.21@sha256:c3f8e73fdb79deaebaa2037150150191b9dcbfba68b4a46d70103204c53f4709 AS certs
 RUN apk add --no-cache ca-certificates
 
 FROM scratch

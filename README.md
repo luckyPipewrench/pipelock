@@ -7,6 +7,7 @@
 [![CI](https://github.com/luckyPipewrench/pipelock/actions/workflows/ci.yaml/badge.svg)](https://github.com/luckyPipewrench/pipelock/actions/workflows/ci.yaml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/luckyPipewrench/pipelock)](https://goreportcard.com/report/github.com/luckyPipewrench/pipelock)
 [![CodeQL](https://github.com/luckyPipewrench/pipelock/actions/workflows/security.yaml/badge.svg)](https://github.com/luckyPipewrench/pipelock/actions/workflows/security.yaml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/luckyPipewrench/pipelock/badge)](https://scorecard.dev/viewer/?uri=github.com/luckyPipewrench/pipelock)
 [![codecov](https://codecov.io/gh/luckyPipewrench/pipelock/graph/badge.svg)](https://codecov.io/gh/luckyPipewrench/pipelock)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
@@ -116,6 +117,18 @@ docker pull ghcr.io/luckypipewrench/pipelock:latest
 docker run -p 8888:8888 -v ./pipelock.yaml:/config/pipelock.yaml:ro \
   ghcr.io/luckypipewrench/pipelock:latest \
   run --config /config/pipelock.yaml --listen 0.0.0.0:8888
+```
+
+### Verify Release Integrity
+
+Every release includes SLSA build provenance and an SBOM (CycloneDX). Verify with the GitHub CLI:
+
+```bash
+# Verify a downloaded binary
+gh attestation verify pipelock_*_linux_amd64.tar.gz --owner luckyPipewrench
+
+# Verify the container image
+gh attestation verify oci://ghcr.io/luckypipewrench/pipelock:latest --owner luckyPipewrench
 ```
 
 ## OWASP Agentic Top 10 Coverage

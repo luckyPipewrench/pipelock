@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- SLSA build provenance attestation for all release binaries and container images
+- CycloneDX SBOM generated and attached to every release
+- OpenSSF Scorecard workflow with results published to GitHub Security tab
+- `govulncheck` CI job scanning Go dependencies for known vulnerabilities
+- `go mod verify` step in CI and release pipelines
+- OpenSSF Scorecard badge in README
+- Release verification instructions in README (`gh attestation verify`)
+
+### Changed
+- All GitHub Actions pinned to commit SHAs (supply chain hardening)
+- Release workflow now includes `id-token` and `attestations` permissions for provenance signing
+- Explicit top-level `permissions: contents: read` in CI workflow (least privilege)
+
 ### Fixed
 - Fetch proxy DNS subdomain exfiltration: dot-collapse scanning now applied to hostnames in `checkDLP` (was only on MCP text scanning side)
 - MCP content block split bypass: `ExtractText` now joins blocks with space separator (was `\n`, allowing between-word injection splits to evade detection)

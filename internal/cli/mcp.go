@@ -170,8 +170,12 @@ Claude Desktop config:
 				}
 			}
 
+			toolAction := "disabled"
+			if toolCfg != nil {
+				toolAction = toolCfg.Action
+			}
 			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: proxying MCP server %v (response=%s, input=%s, tools=%s)\n",
-				serverCmd, sc.ResponseAction(), inputCfg.Action, cfg.MCPToolScanning.Action)
+				serverCmd, sc.ResponseAction(), inputCfg.Action, toolAction)
 
 			ctx, cancel := signal.NotifyContext(
 				cmd.Context(),

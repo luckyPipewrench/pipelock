@@ -215,13 +215,17 @@ func tryParseToolsList(result json.RawMessage) []ToolDef {
 		return nil
 	}
 
+	var valid []ToolDef
 	for _, t := range tl.Tools {
-		if t.Name == "" {
-			return nil
+		if t.Name != "" {
+			valid = append(valid, t)
 		}
 	}
+	if len(valid) == 0 {
+		return nil
+	}
 
-	return tl.Tools
+	return valid
 }
 
 // normalizeToolText applies Unicode normalization before poison pattern matching.

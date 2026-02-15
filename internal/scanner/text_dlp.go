@@ -31,8 +31,11 @@ func (s *Scanner) ScanTextForDLP(text string) TextDLPResult {
 		return TextDLPResult{Clean: true}
 	}
 
-	// Normalize: strip zero-width chars and apply NFKC.
-	cleaned := stripZeroWidth(text)
+	// Strip ALL control chars (including \t, \n, \r) and apply NFKC.
+	// DLP patterns match specific character sequences where any control char
+	// is evasion, not content. Unlike response scanning (which preserves
+	// whitespace for \s+ patterns), DLP needs aggressive stripping.
+	cleaned := stripControlChars(text)
 	cleaned = norm.NFKC.String(cleaned)
 
 	var matches []TextDLPMatch
@@ -102,10 +105,10 @@ func (s *Scanner) ScanTextForDLP(text string) TextDLPResult {
 }
 
 // matchDLPPatterns runs DLP regex patterns against text, tagging matches with encoding.
-// Strips null bytes and zero-width chars from decoded text before matching, since
-// URL/base64/hex decoding can reintroduce them after the initial stripZeroWidth pass.
+// Strips all control chars from decoded text before matching, since URL/base64/hex
+// decoding can reintroduce them after the initial stripControlChars pass.
 func (s *Scanner) matchDLPPatterns(text, encoding string) []TextDLPMatch {
-	text = stripZeroWidth(text)
+	text = stripControlChars(text)
 	var matches []TextDLPMatch
 	for _, p := range s.dlpPatterns {
 		if p.re.MatchString(text) {

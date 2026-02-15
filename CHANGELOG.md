@@ -5,16 +5,25 @@ All notable changes to Pipelock will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.2] - 2026-02-15
 
 ### Added
 - MCP tool description scanning: detects poisoned tool descriptions containing hidden instructions (`<IMPORTANT>` tags, file exfiltration directives, cross-tool manipulation)
 - MCP tool rug-pull detection: SHA256 baseline tracks tool definitions per session, alerts when descriptions change mid-session
 - `mcp_tool_scanning` config section (action: warn/block, detect_drift: true/false)
 - Auto-enabled in `mcp proxy` mode unless explicitly configured
+- Unicode normalization (NFKC) and C0 control character stripping in tool description scanning
+- Recursive schema extraction: scans `description` and `title` fields from nested `inputSchema` objects
+- JSON-RPC batch response handling for tool scanning
 - `CODEOWNERS` file for automatic review assignment
 - Cosign keyless signing for release checksums (Sigstore transparency log)
 - Manual trigger (`workflow_dispatch`) for OpenSSF Scorecard workflow
+
+### Fixed
+- Fetch proxy URL parameter truncation: unencoded `&` in target URLs silently truncated secrets from DLP scanner
+- Fetch proxy control character bypass: `%00`, `%08`, `%09`, `%0a` in target URLs broke DLP regex matching
+- Empty-name tool bypass: tools with no `name` field bypassed `tools/list` scanning entirely
+- Baseline capacity DoS: malicious servers could force hash computation on unlimited unique tool names (added capacity cap with `ShouldSkip()`)
 
 ### Changed
 - Branch protection: squash-only merges, stale review dismissal

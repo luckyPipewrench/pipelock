@@ -100,4 +100,4 @@ Repo: [github.com/luckyPipewrench/pipelock](https://github.com/luckyPipewrench/p
 
 ---
 
-*Pipelock is open source (Apache 2.0). 1,300+ tests, 94%+ coverage. Single static binary.*
+*Pipelock is open source (Apache 2.0). 1,500+ tests, 95%+ coverage. Single static binary.*

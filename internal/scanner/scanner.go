@@ -380,11 +380,12 @@ func (s *Scanner) checkDLP(parsed *url.URL) Result {
 		if target == "" {
 			continue
 		}
-		// Strip zero-width characters before DLP pattern matching to prevent bypass
-		// via invisible char insertion (e.g., "sk\u200B-ant" evading "sk-ant" regex).
-		// NFKC normalizes Unicode confusables (e.g., Cyrillic 'а' → Latin 'a'),
-		// matching the normalization applied in ScanResponse.
-		cleaned := norm.NFKC.String(stripZeroWidth(target))
+		// Strip ALL control characters before DLP pattern matching. URL components
+		// should never contain control chars — they're evasion via URL encoding
+		// (e.g., %00 null byte, %08 backspace, %09 tab, %0a newline all break
+		// DLP regex matching). Also strips Unicode zero-width chars and applies
+		// NFKC to normalize confusables (e.g., Cyrillic 'а' → Latin 'a').
+		cleaned := norm.NFKC.String(stripControlChars(target))
 		for _, p := range s.dlpPatterns {
 			if p.re.MatchString(cleaned) {
 				return Result{
@@ -413,9 +414,9 @@ func (s *Scanner) checkEnvLeak(parsed *url.URL) Result {
 		return Result{Allowed: true}
 	}
 
-	// Strip zero-width chars to prevent bypass via invisible char insertion
-	// (e.g., "secret\u200Bvalue" evading substring match for "secretvalue").
-	fullURL := stripZeroWidth(parsed.String())
+	// Strip ALL control chars to prevent bypass via URL-encoded control chars
+	// (e.g., %00 null byte, %08 backspace breaking substring match).
+	fullURL := stripControlChars(parsed.String())
 	// Pre-compute lowercase for case-insensitive hex comparison.
 	lowerURL := strings.ToLower(fullURL)
 

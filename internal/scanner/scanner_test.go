@@ -1246,9 +1246,9 @@ func TestScan_DLP_ZeroWidthBypass(t *testing.T) {
 
 	// Try to bypass DLP with zero-width characters inside a known pattern
 	// Build the pattern at runtime to avoid gitleaks
-	prefix := "sk-ant-"
-	suffix := "abcdefghijklmnopqrstuvwxyz"
-	zwsp := "\u200B" // zero-width space
+	prefix := "sk-ant-"                    //nolint:goconst // test value
+	suffix := "abcdefghijklmnopqrstuvwxyz" //nolint:goconst // test value
+	zwsp := "\u200B"                       // zero-width space
 	url := "https://example.com/api?key=" + prefix + zwsp + suffix
 
 	result := s.Scan(url)
@@ -1611,5 +1611,74 @@ func TestDLP_MailgunAPIKey(t *testing.T) {
 	}
 	if result.Scanner != "dlp" {
 		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	}
+}
+
+// --- Control char DLP bypass tests (fetch proxy URL path) ---
+
+func TestScan_DLP_ControlCharBypass(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// Build key at runtime to avoid gitleaks
+	prefix := "sk-ant-"
+	suffix := "abcdefghijklmnopqrstuvwxyz" //nolint:goconst // test value
+
+	tests := []struct {
+		name    string
+		ctrlStr string
+	}{
+		{"null_byte", "\x00"},
+		{"backspace", "\x08"},
+		{"tab", "\x09"},
+		{"newline", "\x0a"},
+		{"carriage_return", "\x0d"},
+		{"form_feed", "\x0c"},
+		{"vertical_tab", "\x0b"},
+		{"escape", "\x1b"},
+		{"unit_separator", "\x1f"},
+		{"DEL", "\x7f"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name+"_in_query", func(t *testing.T) {
+			// Control char injected between prefix and suffix in query param
+			url := "https://example.com/api?key=" + prefix + tt.ctrlStr + suffix
+			result := s.Scan(url)
+			if result.Allowed {
+				t.Errorf("expected DLP to catch key with %s control char in query", tt.name)
+			}
+		})
+	}
+}
+
+func TestScan_DLP_NullByteInPath(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// Null byte in URL path should not bypass DLP
+	prefix := "sk-ant-"
+	suffix := "abcdefghijklmnopqrstuvwxyz" //nolint:goconst // test value
+	url := "https://example.com/" + prefix + "\x00" + suffix
+	result := s.Scan(url)
+	if result.Allowed {
+		t.Error("expected DLP to catch key with null byte in path")
+	}
+}
+
+func TestScan_DLP_MultipleControlChars(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// Multiple different control chars scattered through the secret
+	prefix := "sk-ant-"
+	suffix := "abcdefghijklmnopqrstuvwxyz" //nolint:goconst // test value
+	url := "https://example.com/api?key=" + prefix + "\x08\x09\x0a" + suffix
+	result := s.Scan(url)
+	if result.Allowed {
+		t.Error("expected DLP to catch key with multiple control chars")
 	}
 }

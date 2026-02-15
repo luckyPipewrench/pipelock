@@ -37,6 +37,7 @@ type Config struct {
 	DLP              DLP              `yaml:"dlp"`
 	ResponseScanning ResponseScanning `yaml:"response_scanning"`
 	MCPInputScanning MCPInputScanning `yaml:"mcp_input_scanning"`
+	MCPToolScanning  MCPToolScanning  `yaml:"mcp_tool_scanning"`
 	GitProtection    GitProtection    `yaml:"git_protection"`
 	Logging          LoggingConfig    `yaml:"logging"`
 	Internal         []string         `yaml:"internal"`
@@ -49,6 +50,15 @@ type MCPInputScanning struct {
 	Enabled      bool   `yaml:"enabled"`
 	Action       string `yaml:"action"`         // warn, block
 	OnParseError string `yaml:"on_parse_error"` // block (default), forward
+}
+
+// MCPToolScanning configures scanning of MCP tool descriptions for poisoning
+// and drift detection. Scans tools/list responses for hidden instructions
+// in tool definitions and tracks description hashes to detect rug pulls.
+type MCPToolScanning struct {
+	Enabled     bool   `yaml:"enabled"`
+	Action      string `yaml:"action"`       // warn, block
+	DetectDrift bool   `yaml:"detect_drift"` // rug pull detection
 }
 
 // ResponseScanning configures scanning of fetched page content for prompt injection.
@@ -192,6 +202,9 @@ func (c *Config) ApplyDefaults() {
 	if c.MCPInputScanning.Enabled && c.MCPInputScanning.Action == "" {
 		c.MCPInputScanning.Action = "warn" //nolint:goconst // config action value
 	}
+	if c.MCPToolScanning.Enabled && c.MCPToolScanning.Action == "" {
+		c.MCPToolScanning.Action = "warn" //nolint:goconst // config action value
+	}
 	if c.GitProtection.Enabled && len(c.GitProtection.AllowedBranches) == 0 {
 		c.GitProtection.AllowedBranches = []string{"feature/*", "fix/*", "main", "master"}
 	}
@@ -299,6 +312,16 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("invalid mcp_input_scanning on_parse_error %q: must be block or forward", c.MCPInputScanning.OnParseError)
 	}
 
+	// Validate MCP tool scanning config
+	if c.MCPToolScanning.Enabled {
+		switch c.MCPToolScanning.Action {
+		case "warn", "block": //nolint:goconst // config action values
+			// valid
+		default:
+			return fmt.Errorf("invalid mcp_tool_scanning action %q: must be warn or block", c.MCPToolScanning.Action)
+		}
+	}
+
 	// Validate git protection config
 	if c.GitProtection.Enabled {
 		for _, pattern := range c.GitProtection.AllowedBranches {
@@ -399,6 +422,14 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		})
 	}
 
+	// MCP tool scanning disabled
+	if old.MCPToolScanning.Enabled && !updated.MCPToolScanning.Enabled {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "mcp_tool_scanning.enabled",
+			Message: "MCP tool scanning disabled",
+		})
+	}
+
 	return warnings
 }
 
@@ -461,6 +492,9 @@ func Defaults() *Config {
 		MCPInputScanning: MCPInputScanning{
 			Enabled:      false,
 			OnParseError: "block",
+		},
+		MCPToolScanning: MCPToolScanning{
+			Enabled: false,
 		},
 		GitProtection: GitProtection{
 			Enabled:         false,

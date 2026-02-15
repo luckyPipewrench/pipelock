@@ -433,12 +433,52 @@ func TestStripZeroWidth(t *testing.T) {
 		{"multiple", "\u200Bh\u200Ce\u200Dl\u2060l\uFEFFo", "hello"},
 		{"null_byte", "hel\x00lo", "hello"},
 		{"null_in_secret", "sk-ant-\x00test", "sk-ant-test"},
+		// Non-whitespace C0 control chars are now stripped.
+		{"backspace", "hel\x08lo", "hello"},
+		{"escape", "hel\x1blo", "hello"},
+		{"DEL", "hel\x7flo", "hello"},
+		// Whitespace control chars are preserved for injection pattern matching.
+		{"tab_preserved", "ignore\tprevious", "ignore\tprevious"},
+		{"newline_preserved", "ignore\nprevious", "ignore\nprevious"},
+		{"cr_preserved", "ignore\rprevious", "ignore\rprevious"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := stripZeroWidth(tt.input)
 			if got != tt.want {
 				t.Errorf("stripZeroWidth(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStripControlChars(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"empty", "", ""},
+		{"no_control", "hello world", "hello world"},
+		{"null_byte", "hel\x00lo", "hello"},
+		{"backspace", "hel\x08lo", "hello"},
+		{"tab_stripped", "hel\tlo", "hello"},
+		{"newline_stripped", "hel\nlo", "hello"},
+		{"cr_stripped", "hel\rlo", "hello"},
+		{"form_feed", "hel\x0clo", "hello"},
+		{"escape", "hel\x1blo", "hello"},
+		{"DEL", "hel\x7flo", "hello"},
+		{"all_c0_stripped", "\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f\x7f", ""},
+		{"printable_preserved", "sk-ant-\x00api03-\x08test", "sk-ant-api03-test"},
+		// Unicode zero-width chars also stripped.
+		{"zwsp", "hel\u200Blo", "hello"},
+		{"bom", "hel\uFEFFlo", "hello"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := stripControlChars(tt.input)
+			if got != tt.want {
+				t.Errorf("stripControlChars(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
 	}

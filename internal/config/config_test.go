@@ -1160,3 +1160,64 @@ func TestValidate_MCPInputScanningOnParseErrorInvalid(t *testing.T) {
 		t.Errorf("error should mention on_parse_error, got: %v", err)
 	}
 }
+
+// --- MCPToolScanning Tests ---
+
+func TestApplyDefaults_MCPToolScanningActionDefaultsWhenEnabled(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPToolScanning.Enabled = true
+	cfg.MCPToolScanning.Action = "" // not set
+	cfg.ApplyDefaults()
+
+	if cfg.MCPToolScanning.Action != "warn" { //nolint:goconst // test value
+		t.Errorf("expected Action=warn when enabled with no action, got %q", cfg.MCPToolScanning.Action)
+	}
+}
+
+func TestValidate_MCPToolScanningValidActions(t *testing.T) {
+	for _, action := range []string{"warn", "block"} {
+		cfg := Defaults()
+		cfg.MCPToolScanning.Enabled = true
+		cfg.MCPToolScanning.Action = action
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("action %q should validate, got: %v", action, err)
+		}
+	}
+}
+
+func TestValidate_MCPToolScanningInvalidAction(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPToolScanning.Enabled = true
+	cfg.MCPToolScanning.Action = "strip"
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for strip action on tool scanning")
+	}
+}
+
+func TestValidate_MCPToolScanningDisabledSkipsValidation(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPToolScanning.Enabled = false
+	cfg.MCPToolScanning.Action = "invalid"
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("disabled tool scanning should skip validation, got: %v", err)
+	}
+}
+
+func TestValidateReload_MCPToolScanningDisabled(t *testing.T) {
+	old := Defaults()
+	old.MCPToolScanning.Enabled = true
+
+	updated := Defaults()
+	updated.MCPToolScanning.Enabled = false
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == "mcp_tool_scanning.enabled" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected warning for MCP tool scanning disabled")
+	}
+}

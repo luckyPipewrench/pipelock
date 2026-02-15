@@ -105,7 +105,7 @@ func TestScanTextForDLP(t *testing.T) {
 			name: "zero-width character bypass attempt - still caught",
 			text: func() string {
 				// Insert zero-width space inside the key pattern
-				prefix := "sk-ant-"
+				prefix := "sk-ant-" //nolint:goconst // test value
 				suffix := strings.Repeat("e", 25)
 				return prefix + "\u200B" + suffix
 			}(),
@@ -540,5 +540,52 @@ func TestScanTextForDLP_DNSSubdomainExfil(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestScanTextForDLP_ControlCharBypass(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// Build key at runtime to avoid gitleaks
+	prefix := "sk-ant-"
+	suffix := strings.Repeat("a", 25) //nolint:goconst // test value
+
+	tests := []struct {
+		name    string
+		ctrlStr string
+	}{
+		{"null_byte", "\x00"},
+		{"backspace", "\x08"},
+		{"tab", "\x09"},
+		{"newline", "\x0a"},
+		{"carriage_return", "\x0d"},
+		{"vertical_tab", "\x0b"},
+		{"escape", "\x1b"},
+		{"DEL", "\x7f"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			text := prefix + tt.ctrlStr + suffix
+			result := s.ScanTextForDLP(text)
+			if result.Clean {
+				t.Errorf("expected DLP to catch key with %s control char", tt.name)
+			}
+		})
+	}
+}
+
+func TestScanTextForDLP_MultipleControlChars(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// Multiple control chars scattered through an AWS key
+	key := "AKIA" + "\x08" + "IOSFODNN" + "\x09" + "7EXAMPLE"
+	result := s.ScanTextForDLP(key)
+	if result.Clean {
+		t.Error("expected DLP to catch AWS key with multiple control chars")
 	}
 }

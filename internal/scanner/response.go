@@ -37,13 +37,23 @@ func normalizeWhitespace(s string) string {
 	}, s)
 }
 
-// stripZeroWidth removes Unicode zero-width and invisible characters that could
-// be used to evade regex pattern matching (e.g., "ig\u200Bnore" bypassing "ignore").
+// stripZeroWidth removes ASCII control characters and Unicode zero-width/invisible
+// characters that could be used to evade regex pattern matching. Preserves
+// whitespace control chars (\t, \n, \r) because injection patterns use \s+ to
+// match them. Used in response/injection scanning paths.
 func stripZeroWidth(s string) string {
 	return strings.Map(func(r rune) rune {
+		// Drop non-whitespace C0 control characters and DEL.
+		// These break regex matching when injected (e.g., \x08 backspace)
+		// without contributing visible content.
+		if r <= 0x1F && r != '\t' && r != '\n' && r != '\r' {
+			return -1
+		}
+		if r == 0x7F { // DEL
+			return -1
+		}
 		switch r {
-		case '\x00', // null byte (breaks regex matching)
-			'\u200B', // zero-width space
+		case '\u200B', // zero-width space
 			'\u200C', // zero-width non-joiner
 			'\u200D', // zero-width joiner
 			'\u2060', // word joiner
@@ -56,6 +66,27 @@ func stripZeroWidth(s string) string {
 			'\u200F', // right-to-left mark
 			'\uFEFF': // byte order mark / zero-width no-break space
 			return -1 // drop
+		}
+		return r
+	}, s)
+}
+
+// stripControlChars removes ALL ASCII control characters (0x00-0x1F, 0x7F) and
+// Unicode zero-width/invisible characters. Unlike stripZeroWidth, this also
+// strips whitespace control chars (\t, \n, \r) because DLP patterns match
+// specific character sequences where ANY control char is evasion, not content.
+// Used in DLP scanning paths (fetch proxy URLs, MCP text, env leak detection).
+func stripControlChars(s string) string {
+	return strings.Map(func(r rune) rune {
+		// Drop ALL C0 control characters and DEL.
+		if r <= 0x1F || r == 0x7F {
+			return -1
+		}
+		switch r {
+		case '\u200B', '\u200C', '\u200D', '\u2060',
+			'\u2061', '\u2062', '\u2063', '\u2064',
+			'\u00AD', '\u200E', '\u200F', '\uFEFF':
+			return -1
 		}
 		return r
 	}, s)

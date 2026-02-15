@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-02-15
+
 ### Added
 - SLSA build provenance attestation for all release binaries and container images
 - CycloneDX SBOM generated and attached to every release

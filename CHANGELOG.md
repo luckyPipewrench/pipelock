@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - `CODEOWNERS` file for automatic review assignment
+- Cosign keyless signing for release checksums (Sigstore transparency log)
+- Manual trigger (`workflow_dispatch`) for OpenSSF Scorecard workflow
 
 ### Changed
 - Branch protection: require codeowner review, last-push approval, 1 approving review, squash-only merges

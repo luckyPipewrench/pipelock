@@ -157,7 +157,7 @@ Use `pipelock generate config --preset balanced` for the complete default patter
 - **Audit logging** — every request and scanner detection is logged, giving humans a verifiable record to review.
 - **Prometheus metrics** — `/metrics` and `/stats` endpoints surface block rates, scanner hits, and top domains for human oversight dashboards.
 
-**Gap:** No user-facing UI for non-terminal environments. HITL is terminal-only in v0.1.4.
+**Gap:** No user-facing UI for non-terminal environments. HITL is terminal-only.
 
 ---
 

@@ -282,11 +282,22 @@ func checkToolPoison(text string) []string {
 // Detects tools/list responses by shape, scans each tool's description for
 // injection patterns (general + tool-specific), and optionally tracks tool
 // definition hashes for rug pull (drift) detection.
+// Batch responses (JSON arrays) are detected and each element scanned individually.
 func ScanTools(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) ToolScanResult {
 	if cfg == nil {
 		return ToolScanResult{IsToolsList: false, Clean: true}
 	}
 
+	// Detect batch response (JSON-RPC 2.0 batch = JSON array).
+	if len(line) > 0 && line[0] == '[' {
+		return scanToolsBatch(line, sc, cfg)
+	}
+
+	return scanToolsSingle(line, sc, cfg)
+}
+
+// scanToolsSingle scans a single JSON-RPC 2.0 response for tool poisoning.
+func scanToolsSingle(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) ToolScanResult {
 	var rpc RPCResponse
 	if err := json.Unmarshal(line, &rpc); err != nil {
 		return ToolScanResult{IsToolsList: false, Clean: true}
@@ -297,6 +308,51 @@ func ScanTools(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) ToolScanRe
 		return ToolScanResult{IsToolsList: false, Clean: true}
 	}
 
+	matches := scanToolDefs(tools, sc, cfg)
+
+	if len(matches) == 0 {
+		return ToolScanResult{IsToolsList: true, Clean: true, RPCID: rpc.ID}
+	}
+
+	return ToolScanResult{IsToolsList: true, Clean: false, Matches: matches, RPCID: rpc.ID}
+}
+
+// scanToolsBatch scans a JSON-RPC 2.0 batch response for tool poisoning.
+// Each element is checked independently; results are aggregated.
+func scanToolsBatch(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) ToolScanResult {
+	var batch []json.RawMessage
+	if err := json.Unmarshal(line, &batch); err != nil {
+		return ToolScanResult{IsToolsList: false, Clean: true}
+	}
+
+	var allMatches []ToolScanMatch
+	var firstID json.RawMessage
+	isToolsList := false
+
+	for _, elem := range batch {
+		r := scanToolsSingle(elem, sc, cfg)
+		if r.IsToolsList {
+			isToolsList = true
+			if firstID == nil && len(r.RPCID) > 0 {
+				firstID = r.RPCID
+			}
+			allMatches = append(allMatches, r.Matches...)
+		}
+	}
+
+	if !isToolsList {
+		return ToolScanResult{IsToolsList: false, Clean: true}
+	}
+
+	if len(allMatches) == 0 {
+		return ToolScanResult{IsToolsList: true, Clean: true, RPCID: firstID}
+	}
+
+	return ToolScanResult{IsToolsList: true, Clean: false, Matches: allMatches, RPCID: firstID}
+}
+
+// scanToolDefs scans a slice of tool definitions for injection, poisoning, and drift.
+func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) []ToolScanMatch {
 	var matches []ToolScanMatch
 
 	for _, tool := range tools {
@@ -343,11 +399,7 @@ func ScanTools(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) ToolScanRe
 		}
 	}
 
-	if len(matches) == 0 {
-		return ToolScanResult{IsToolsList: true, Clean: true, RPCID: rpc.ID}
-	}
-
-	return ToolScanResult{IsToolsList: true, Clean: false, Matches: matches, RPCID: rpc.ID}
+	return matches
 }
 
 // logToolFindings writes per-tool scan findings to the log writer.

@@ -229,16 +229,14 @@ func tryParseToolsList(result json.RawMessage) []ToolDef {
 }
 
 // normalizeToolText applies Unicode normalization before poison pattern matching.
-// Same chain as scanner.ScanResponse: strip invisible chars → NFKC → whitespace.
-// Strips non-whitespace C0 control chars (0x01-0x08, 0x0B-0x0C, 0x0E-0x1F, 0x7F)
-// to prevent evasion via control char insertion in tool descriptions.
+// Strips ALL C0 control chars (including \t, \n, \r) + DEL + Unicode invisibles,
+// then NFKC-normalizes. Unlike response scanning (which preserves whitespace for
+// \s+ injection patterns), tool descriptions have no legitimate control chars —
+// any present are evasion attempts (e.g., tab splitting "IMPORTANT" into "IMPOR\tTANT").
 func normalizeToolText(s string) string {
 	s = strings.Map(func(r rune) rune {
-		// Drop non-whitespace C0 control characters and DEL.
-		if r <= 0x1F && r != '\t' && r != '\n' && r != '\r' {
-			return -1
-		}
-		if r == 0x7F {
+		// Drop ALL C0 control characters and DEL.
+		if r <= 0x1F || r == 0x7F {
 			return -1
 		}
 		switch r {

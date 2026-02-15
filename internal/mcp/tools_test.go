@@ -937,6 +937,31 @@ func TestNormalizeToolText_ZeroWidth(t *testing.T) {
 	}
 }
 
+func TestNormalizeToolText_ControlChars(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"tab_splitting_keyword", "IMPOR\tTANT", "IMPORTANT"},
+		{"newline_in_keyword", "IMPOR\nTANT", "IMPORTANT"},
+		{"cr_in_keyword", "IMPOR\rTANT", "IMPORTANT"},
+		{"backspace", "IMPOR\x08TANT", "IMPORTANT"},
+		{"null_byte", "read\x00 .ssh/id_rsa", "read .ssh/id_rsa"},
+		{"escape_char", "ignore\x1b previous", "ignore previous"},
+		{"DEL", "instead\x7f of search", "instead of search"},
+		{"all_c0_stripped", "\x01\x02\x03hello\x1f\x7f", "hello"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := normalizeToolText(tt.input)
+			if got != tt.want {
+				t.Errorf("normalizeToolText(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestNormalizeToolText_NFKC(t *testing.T) {
 	// Fullwidth Latin I (U+FF29) should normalize to regular I.
 	input := "\uFF29MPORTANT"

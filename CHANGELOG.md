@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `govulncheck` CI job scanning Go dependencies for known vulnerabilities
 - `go mod verify` step in CI and release pipelines
 - OpenSSF Scorecard badge in README
+- OpenSSF Best Practices passing badge in README
 - Release verification instructions in README (`gh attestation verify`)
 
 ### Changed

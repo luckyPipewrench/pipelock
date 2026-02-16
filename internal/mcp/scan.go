@@ -271,6 +271,10 @@ const maxLineSize = 10 * 1024 * 1024
 // errors and detections are written (clean lines are silent). In JSON mode,
 // every scanned line produces an output object. Returns true if any injection
 // was detected. Parse errors are reported but do not count as injection.
+//
+// Note: ScanStream uses a raw bufio.Scanner rather than MessageReader because
+// it tracks line numbers including empty lines for user-facing diagnostics.
+// MessageReader skips empty lines, which would change reported line numbers.
 func ScanStream(r io.Reader, w io.Writer, sc *scanner.Scanner, jsonOutput bool) (bool, error) {
 	lineScanner := bufio.NewScanner(r)
 	lineScanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)

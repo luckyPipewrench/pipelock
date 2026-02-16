@@ -144,6 +144,12 @@ func TestCheckCmd_NonexistentConfig(t *testing.T) {
 }
 
 func TestCheckCmd_URLAllowed(t *testing.T) {
+	// check --url runs SSRF checks that require DNS resolution.
+	// Skip in restricted/offline environments where DNS is blocked.
+	if _, err := net.DefaultResolver.LookupHost(context.Background(), "example.com"); err != nil {
+		t.Skip("DNS unavailable (restricted environment)")
+	}
+
 	cmd := rootCmd()
 	cmd.SetArgs([]string{"check", "--url", "https://example.com"})
 
@@ -380,12 +386,19 @@ func TestHealthcheckCmd_NoServer(t *testing.T) {
 }
 
 func TestHealthcheckCmd_Healthy(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	// Use explicit IPv4 listener to avoid IPv6 failures in sandboxed environments.
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(context.Background(), "tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("cannot listen on IPv4 loopback: %v", err)
+	}
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
+	srv.Listener = ln
+	srv.Start()
 	defer srv.Close()
 
-	// Extract host:port from "http://127.0.0.1:PORT"
 	addr := strings.TrimPrefix(srv.URL, "http://")
 
 	cmd := rootCmd()
@@ -691,9 +704,16 @@ func TestRunCmd_ListenFlagOverride(t *testing.T) {
 }
 
 func TestHealthcheckCmd_Unhealthy(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(context.Background(), "tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("cannot listen on IPv4 loopback: %v", err)
+	}
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
+	srv.Listener = ln
+	srv.Start()
 	defer srv.Close()
 
 	addr := strings.TrimPrefix(srv.URL, "http://")
@@ -701,7 +721,7 @@ func TestHealthcheckCmd_Unhealthy(t *testing.T) {
 	cmd := rootCmd()
 	cmd.SetArgs([]string{"healthcheck", "--addr", addr})
 
-	err := cmd.Execute()
+	err = cmd.Execute()
 	if err == nil {
 		t.Error("expected error for unhealthy server")
 	}

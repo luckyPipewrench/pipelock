@@ -1,9 +1,9 @@
 package mcp
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -88,9 +88,32 @@ func ScanRequest(line []byte, sc *scanner.Scanner, action, onParseError string) 
 		}
 	}
 
-	// No params to scan — clean.
+	// No params — but result/error/unknown fields may carry exfiltrable
+	// content (e.g., a compromised agent sending response-shaped messages).
+	// Scan the full raw line for DLP + injection to prevent bypass.
 	if len(rpc.Params) == 0 || string(rpc.Params) == jsonNull {
-		return InputVerdict{ID: rpc.ID, Method: rpc.Method, Clean: true}
+		raw := string(trimmed)
+		dlpResult := sc.ScanTextForDLP(raw)
+		injResult := sc.ScanResponse(raw)
+		if dlpResult.Clean && injResult.Clean {
+			return InputVerdict{ID: rpc.ID, Method: rpc.Method, Clean: true}
+		}
+		var dlpMatches []scanner.TextDLPMatch
+		var injMatches []scanner.ResponseMatch
+		if !dlpResult.Clean {
+			dlpMatches = dlpResult.Matches
+		}
+		if !injResult.Clean {
+			injMatches = injResult.Matches
+		}
+		return InputVerdict{
+			ID:      rpc.ID,
+			Method:  rpc.Method,
+			Clean:   false,
+			Action:  action,
+			Matches: dlpMatches,
+			Inject:  injMatches,
+		}
 	}
 
 	// Extract all strings (keys + values) from params.
@@ -120,6 +143,18 @@ func ScanRequest(line []byte, sc *scanner.Scanner, action, onParseError string) 
 		concat := strings.Join(strs, "")
 		if concat != joined {
 			dlpResult = sc.ScanTextForDLP(concat)
+		}
+	}
+
+	// Scan each extracted string individually for encoded secrets (base64,
+	// hex, base32). The joined string is not valid base64/hex, so encoding
+	// checks only work on individual field values.
+	if dlpResult.Clean {
+		for _, s := range strs {
+			if r := sc.ScanTextForDLP(s); !r.Clean {
+				dlpResult = r
+				break
+			}
 		}
 	}
 
@@ -250,13 +285,13 @@ func blockRequestResponse(id json.RawMessage) []byte {
 	return data
 }
 
-// ForwardScannedInput reads newline-delimited JSON-RPC 2.0 requests from clientIn,
-// scans each for DLP and injection patterns, and forwards clean requests to serverIn.
+// ForwardScannedInput reads JSON-RPC 2.0 requests from reader, scans each for
+// DLP and injection patterns, and forwards clean requests to writer.
 // Blocked request IDs are sent via blockedCh so the main goroutine (which owns
 // clientOut writes) can send error responses without concurrent write races.
 func ForwardScannedInput(
-	clientIn io.Reader,
-	serverIn io.Writer,
+	reader MessageReader,
+	writer MessageWriter,
 	logW io.Writer,
 	sc *scanner.Scanner,
 	action string,
@@ -265,21 +300,24 @@ func ForwardScannedInput(
 ) {
 	defer close(blockedCh)
 
-	lineScanner := bufio.NewScanner(clientIn)
-	lineScanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)
+	// lineNum counts non-empty messages, not raw lines. StdioReader skips
+	// empty lines internally, so this is a message index.
 	lineNum := 0
 
-	for lineScanner.Scan() {
-		lineNum++
-		line := bytes.TrimSpace(lineScanner.Bytes())
-		if len(line) == 0 {
-			continue
+	for {
+		line, err := reader.ReadMessage()
+		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				_, _ = fmt.Fprintf(logW, "pipelock: input scanner error: %v\n", err)
+			}
+			return
 		}
+		lineNum++
 
 		verdict := ScanRequest(line, sc, action, onParseError)
 
 		if verdict.Clean {
-			if err := writeMessage(serverIn, line); err != nil {
+			if err := writer.WriteMessage(line); err != nil {
 				_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
 				return
 			}
@@ -337,15 +375,11 @@ func ForwardScannedInput(
 			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: warning — %s request contains flagged content (%s)\n",
 				lineNum, method, reasonStr)
 			// Forward anyway (warn mode).
-			if err := writeMessage(serverIn, line); err != nil {
+			if err := writer.WriteMessage(line); err != nil {
 				_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
 				return
 			}
 		}
-	}
-
-	if err := lineScanner.Err(); err != nil {
-		_, _ = fmt.Fprintf(logW, "pipelock: input scanner error: %v\n", err)
 	}
 }
 

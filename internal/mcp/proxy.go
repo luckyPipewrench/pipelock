@@ -1,10 +1,9 @@
 package mcp
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -23,56 +22,57 @@ type syncWriter struct {
 	w  io.Writer
 }
 
+// Compile-time assertion: syncWriter implements MessageWriter.
+var _ MessageWriter = (*syncWriter)(nil)
+
 func (sw *syncWriter) Write(p []byte) (int, error) {
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
 	return sw.w.Write(p)
 }
 
-// WriteMessage writes a JSON-RPC message followed by a newline as a single
-// atomic operation. This prevents interleaving between concurrent goroutines
-// (e.g., the blocked request drainer and ForwardScanned).
+// WriteMessage writes a JSON-RPC message followed by a newline in a single
+// Write call under the mutex, preventing interleaving between concurrent
+// goroutines (e.g., the blocked request drainer and ForwardScanned).
 func (sw *syncWriter) WriteMessage(msg []byte) error {
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
-	if _, err := sw.w.Write(msg); err != nil {
-		return err
+	if len(msg) > maxLineSize {
+		return fmt.Errorf("message too large: %d bytes", len(msg))
 	}
-	_, err := sw.w.Write([]byte("\n"))
-	return err
+	buf := make([]byte, len(msg)+1)
+	copy(buf, msg)
+	buf[len(msg)] = '\n'
+	if _, err := sw.w.Write(buf); err != nil {
+		return fmt.Errorf("writing message: %w", err)
+	}
+	return nil
 }
 
-// writeMessage writes msg followed by a newline in a single Write call.
-// This ensures message-level atomicity when w is a syncWriter, preventing
-// interleaving between concurrent goroutines.
-func writeMessage(w io.Writer, msg []byte) error {
-	buf := append([]byte(nil), msg...)
-	buf = append(buf, '\n')
-	_, err := w.Write(buf)
-	return err
-}
-
-// ForwardScanned reads newline-delimited JSON-RPC 2.0 messages from r, scans
-// each for prompt injection, and forwards to w based on the scanner's configured
-// action (warn, block, strip). Scan verdicts are logged to logW.
+// ForwardScanned reads JSON-RPC 2.0 messages from reader, scans each for prompt
+// injection, and forwards to writer based on the scanner's configured action
+// (warn, block, strip). Scan verdicts are logged to logW.
 // When toolCfg is non-nil, tool descriptions in tools/list responses are scanned
 // for poisoning and tracked for drift (rug pull) detection. Tool scanning runs
 // independently of general response scanning so a "block" tool action is never
 // bypassed by a "warn" general action.
 // Returns true if any injection was detected.
-func ForwardScanned(r io.Reader, w io.Writer, logW io.Writer, sc *scanner.Scanner, approver *hitl.Approver, toolCfg *ToolScanConfig) (bool, error) {
-	lineScanner := bufio.NewScanner(r)
-	lineScanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)
-
+func ForwardScanned(reader MessageReader, writer MessageWriter, logW io.Writer, sc *scanner.Scanner, approver *hitl.Approver, toolCfg *ToolScanConfig) (bool, error) {
 	foundInjection := false
+	// lineNum counts non-empty messages, not raw lines. StdioReader skips
+	// empty lines internally, so this is a message index. ScanStream (scan.go)
+	// preserves raw line counting for user-facing diagnostics.
 	lineNum := 0
 
-	for lineScanner.Scan() {
-		lineNum++
-		line := bytes.TrimSpace(lineScanner.Bytes())
-		if len(line) == 0 {
-			continue
+	for {
+		line, err := reader.ReadMessage()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return foundInjection, fmt.Errorf("reading input: %w", err)
 		}
+		lineNum++
 
 		verdict := ScanResponse(line, sc)
 
@@ -86,7 +86,7 @@ func ForwardScanned(r io.Reader, w io.Writer, logW io.Writer, sc *scanner.Scanne
 
 				if toolCfg.Action == "block" { //nolint:goconst // config action value
 					resp := blockResponse(toolResult.RPCID)
-					if err := writeMessage(w, resp); err != nil {
+					if err := writer.WriteMessage(resp); err != nil {
 						return foundInjection, fmt.Errorf("writing tool block: %w", err)
 					}
 					continue
@@ -96,7 +96,7 @@ func ForwardScanned(r io.Reader, w io.Writer, logW io.Writer, sc *scanner.Scanne
 		}
 
 		if verdict.Clean {
-			if err := writeMessage(w, line); err != nil {
+			if err := writer.WriteMessage(line); err != nil {
 				return foundInjection, fmt.Errorf("writing line: %w", err)
 			}
 			continue
@@ -116,7 +116,7 @@ func ForwardScanned(r io.Reader, w io.Writer, logW io.Writer, sc *scanner.Scanne
 			}
 			_, _ = fmt.Fprintf(logW, "pipelock: line %d: blocking unparseable response\n", lineNum)
 			resp := blockResponse(nil)
-			if err := writeMessage(w, resp); err != nil {
+			if err := writer.WriteMessage(resp); err != nil {
 				return foundInjection, fmt.Errorf("writing block response: %w", err)
 			}
 			continue
@@ -132,14 +132,14 @@ func ForwardScanned(r io.Reader, w io.Writer, logW io.Writer, sc *scanner.Scanne
 		switch action {
 		case "block": //nolint:goconst // config action value
 			resp := blockResponse(verdict.ID)
-			if err := writeMessage(w, resp); err != nil {
+			if err := writer.WriteMessage(resp); err != nil {
 				return foundInjection, fmt.Errorf("writing block response: %w", err)
 			}
 		case "ask":
 			if approver == nil {
 				_, _ = fmt.Fprintf(logW, "pipelock: line %d: no HITL approver configured, blocking\n", lineNum)
 				resp := blockResponse(verdict.ID)
-				if err := writeMessage(w, resp); err != nil {
+				if err := writer.WriteMessage(resp); err != nil {
 					return foundInjection, fmt.Errorf("writing block response: %w", err)
 				}
 			} else {
@@ -156,56 +156,45 @@ func ForwardScanned(r io.Reader, w io.Writer, logW io.Writer, sc *scanner.Scanne
 				switch d {
 				case hitl.DecisionAllow:
 					_, _ = fmt.Fprintf(logW, "pipelock: line %d: operator allowed\n", lineNum)
-					if err := writeMessage(w, line); err != nil {
+					if err := writer.WriteMessage(line); err != nil {
 						return foundInjection, fmt.Errorf("writing line: %w", err)
 					}
 				case hitl.DecisionStrip:
 					_, _ = fmt.Fprintf(logW, "pipelock: line %d: operator chose strip\n", lineNum)
-					stripped, err := stripResponse(line, sc)
-					if err != nil {
-						_, _ = fmt.Fprintf(logW, "pipelock: strip failed (%v), blocking instead\n", err)
-						resp := blockResponse(verdict.ID)
-						if err := writeMessage(w, resp); err != nil {
-							return foundInjection, fmt.Errorf("writing block response: %w", err)
-						}
-					} else {
-						if err := writeMessage(w, stripped); err != nil {
-							return foundInjection, fmt.Errorf("writing stripped response: %w", err)
-						}
+					if err := stripOrBlock(line, sc, writer, logW, verdict.ID); err != nil {
+						return foundInjection, fmt.Errorf("writing strip/block response: %w", err)
 					}
 				default: // DecisionBlock
 					_, _ = fmt.Fprintf(logW, "pipelock: line %d: operator blocked\n", lineNum)
 					resp := blockResponse(verdict.ID)
-					if err := writeMessage(w, resp); err != nil {
+					if err := writer.WriteMessage(resp); err != nil {
 						return foundInjection, fmt.Errorf("writing block response: %w", err)
 					}
 				}
 			}
 		case "strip":
-			stripped, err := stripResponse(line, sc)
-			if err != nil {
-				_, _ = fmt.Fprintf(logW, "pipelock: strip failed (%v), blocking instead\n", err)
-				resp := blockResponse(verdict.ID)
-				if err := writeMessage(w, resp); err != nil {
-					return foundInjection, fmt.Errorf("writing block response: %w", err)
-				}
-			} else {
-				if err := writeMessage(w, stripped); err != nil {
-					return foundInjection, fmt.Errorf("writing stripped response: %w", err)
-				}
+			if err := stripOrBlock(line, sc, writer, logW, verdict.ID); err != nil {
+				return foundInjection, fmt.Errorf("writing strip/block response: %w", err)
 			}
 		default: // warn
-			if err := writeMessage(w, line); err != nil {
+			if err := writer.WriteMessage(line); err != nil {
 				return foundInjection, fmt.Errorf("writing line: %w", err)
 			}
 		}
 	}
 
-	if err := lineScanner.Err(); err != nil {
-		return foundInjection, fmt.Errorf("reading input: %w", err)
-	}
-
 	return foundInjection, nil
+}
+
+// stripOrBlock tries to strip injection from the response. If stripping fails,
+// it falls back to blocking (fail-closed). Returns a write error if the writer fails.
+func stripOrBlock(line []byte, sc *scanner.Scanner, writer MessageWriter, logW io.Writer, rpcID json.RawMessage) error {
+	stripped, sErr := stripResponse(line, sc)
+	if sErr != nil {
+		_, _ = fmt.Fprintf(logW, "pipelock: strip failed (%v), blocking instead\n", sErr)
+		return writer.WriteMessage(blockResponse(rpcID))
+	}
+	return writer.WriteMessage(stripped)
 }
 
 // rpcError is a JSON-RPC 2.0 error response sent when a response is blocked.
@@ -405,7 +394,9 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		defer wg.Done()
 		defer serverIn.Close() //nolint:errcheck // best-effort close on stdin forward
 		if inputCfg != nil && inputCfg.Enabled {
-			ForwardScannedInput(clientIn, serverIn, safeLogW, sc, inputCfg.Action, inputCfg.OnParseError, blockedCh)
+			clientReader := NewStdioReader(clientIn)
+			serverWriter := NewStdioWriter(serverIn)
+			ForwardScannedInput(clientReader, serverWriter, safeLogW, sc, inputCfg.Action, inputCfg.OnParseError, blockedCh)
 		} else {
 			close(blockedCh)                   // No input scanning — close channel immediately.
 			_, _ = io.Copy(serverIn, clientIn) //nolint:errcheck // broken pipe on server exit is expected
@@ -439,7 +430,8 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	}
 
 	// Scan and forward server output to client.
-	_, scanErr := ForwardScanned(serverOut, safeClientOut, safeLogW, sc, approver, fwdToolCfg)
+	serverReader := NewStdioReader(serverOut)
+	_, scanErr := ForwardScanned(serverReader, safeClientOut, safeLogW, sc, approver, fwdToolCfg)
 
 	// Wait for subprocess to exit.
 	waitErr := cmd.Wait()

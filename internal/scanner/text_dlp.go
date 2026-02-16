@@ -52,8 +52,8 @@ func (s *Scanner) ScanTextForDLP(text string) TextDLPResult {
 	}
 
 	// Iterative URL-decode and re-check DLP patterns (catches %2D → - etc.).
-	// Uses iterativeDecode (up to 3 rounds) to defeat double/triple encoding.
-	if decoded := iterativeDecode(cleaned); decoded != cleaned {
+	// Uses IterativeDecode to defeat multi-layer encoding.
+	if decoded := IterativeDecode(cleaned); decoded != cleaned {
 		matches = append(matches, s.matchDLPPatterns(decoded, "url")...)
 	}
 

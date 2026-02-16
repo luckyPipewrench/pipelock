@@ -359,12 +359,16 @@ func (s *Scanner) checkRateLimit(hostname string) Result {
 	return Result{Allowed: true}
 }
 
-// maxDecodeRounds limits iterative URL decoding to prevent infinite loops.
-const maxDecodeRounds = 3
+// maxDecodeRounds is a safety ceiling for iterative URL decoding.
+// The loop exits early when decoding produces no change (decoded == s),
+// so this limit only matters for pathological inputs. URL decoding is
+// microsecond-cheap per round, so a generous ceiling has no real cost.
+const maxDecodeRounds = 500
 
-// iterativeDecode applies URL decoding up to 3 times until the string
-// stops changing. This catches double/triple encoding (e.g., %252D → %2D → -).
-func iterativeDecode(s string) string {
+// IterativeDecode applies URL decoding until the string stops changing
+// or the safety ceiling is reached. Catches multi-layer encoding (e.g., %252D → %2D → -).
+// Exported for use by the fetch proxy to normalize display URLs.
+func IterativeDecode(s string) string {
 	for range maxDecodeRounds {
 		decoded, err := url.QueryUnescape(s)
 		if err != nil || decoded == s {
@@ -377,12 +381,12 @@ func iterativeDecode(s string) string {
 
 // checkDLP runs DLP regex patterns against the full URL string including hostname.
 // Scanning the full URL catches secrets encoded in subdomains (e.g., sk-proj-xxx.evil.com)
-// and secrets split across query parameters. Iterative URL decoding (up to 3 rounds)
-// prevents double/triple encoding bypass.
+// and secrets split across query parameters. Iterative URL decoding
+// prevents multi-layer encoding bypass.
 func (s *Scanner) checkDLP(parsed *url.URL) Result {
 	// parsed.Path is already URL-decoded by Go's url.Parse.
 	// For query strings, iteratively decode to catch multi-layer encoding.
-	decodedQuery := iterativeDecode(parsed.RawQuery)
+	decodedQuery := IterativeDecode(parsed.RawQuery)
 
 	targets := []string{
 		parsed.String(), // full URL — catches secrets in hostname/subdomains
@@ -392,14 +396,14 @@ func (s *Scanner) checkDLP(parsed *url.URL) Result {
 
 	// Also check decoded query keys and values individually.
 	for key, values := range parsed.Query() {
-		targets = append(targets, iterativeDecode(key))
+		targets = append(targets, IterativeDecode(key))
 		for _, v := range values {
-			targets = append(targets, iterativeDecode(v))
+			targets = append(targets, IterativeDecode(v))
 		}
 	}
 
 	// Also apply iterative decode to the raw path for double-encoded path segments.
-	decodedPath := iterativeDecode(parsed.RawPath)
+	decodedPath := IterativeDecode(parsed.RawPath)
 	if decodedPath != "" && decodedPath != parsed.Path {
 		targets = append(targets, decodedPath)
 	}

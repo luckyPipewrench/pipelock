@@ -512,9 +512,9 @@ func TestIterativeDecode(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := iterativeDecode(tt.input)
+			got := IterativeDecode(tt.input)
 			if got != tt.want {
-				t.Errorf("iterativeDecode(%q) = %q, want %q", tt.input, got, tt.want)
+				t.Errorf("IterativeDecode(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
 	}

@@ -382,7 +382,7 @@ extra_section:
 	if err != nil {
 		t.Fatalf("unexpected error for config with extra fields: %v", err)
 	}
-	if cfg.Mode != "audit" {
+	if cfg.Mode != ModeAudit {
 		t.Errorf("expected mode audit, got %s", cfg.Mode)
 	}
 }
@@ -446,7 +446,7 @@ func TestValidate_StrictModeWithAllowlist(t *testing.T) {
 
 func TestValidate_AuditModeAllowsEmpty(t *testing.T) {
 	cfg := Defaults()
-	cfg.Mode = "audit"
+	cfg.Mode = ModeAudit
 	cfg.APIAllowlist = nil
 	cfg.DLP.Patterns = nil
 	cfg.FetchProxy.Monitoring.Blocklist = nil

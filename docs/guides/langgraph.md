@@ -11,7 +11,10 @@ deployment.
 # 1. Install pipelock
 go install github.com/luckyPipewrench/pipelock/cmd/pipelock@latest
 
-# 2. Install the MCP adapter
+# 2. Generate a config (or copy a preset)
+pipelock generate config --preset generic-agent > pipelock.yaml
+
+# 3. Install the MCP adapter
 pip install langchain-mcp-adapters langgraph
 ```
 

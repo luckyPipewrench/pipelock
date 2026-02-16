@@ -10,7 +10,10 @@ This guide covers both the `mcps=` DSL and the `MCPServerAdapter` approach.
 # 1. Install pipelock
 go install github.com/luckyPipewrench/pipelock/cmd/pipelock@latest
 
-# 2. Verify
+# 2. Generate a config (or copy a preset)
+pipelock generate config --preset generic-agent > pipelock.yaml
+
+# 3. Verify
 pipelock version
 ```
 

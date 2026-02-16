@@ -24,14 +24,14 @@ func TestDemoCmd(t *testing.T) {
 	})
 
 	t.Run("all_blocked", func(t *testing.T) {
-		if !strings.Contains(output, "5/5 attacks blocked") {
-			t.Errorf("expected 5/5 blocked, got:\n%s", output)
+		if !strings.Contains(output, "7/7 attacks blocked") {
+			t.Errorf("expected 7/7 blocked, got:\n%s", output)
 		}
 	})
 
 	t.Run("blocked_count", func(t *testing.T) {
-		if strings.Count(output, "[BLOCKED]") != 5 {
-			t.Errorf("expected 5 [BLOCKED] results, got %d", strings.Count(output, "[BLOCKED]"))
+		if strings.Count(output, "[BLOCKED]") != 7 {
+			t.Errorf("expected 7 [BLOCKED] results, got %d", strings.Count(output, "[BLOCKED]"))
 		}
 	})
 
@@ -41,7 +41,9 @@ func TestDemoCmd(t *testing.T) {
 			"Prompt Injection",
 			"Data Exfiltration via Paste Service",
 			"High-Entropy Data Smuggling",
-			"MCP Tool Poisoning",
+			"MCP Response Injection",
+			"MCP Input Secret Leak",
+			"MCP Tool Description Attack",
 		}
 		for _, name := range names {
 			if !strings.Contains(output, name) {
@@ -65,6 +67,12 @@ func TestDemoCmd(t *testing.T) {
 	t.Run("mcp_action", func(t *testing.T) {
 		if !strings.Contains(output, "action: block") {
 			t.Error("expected MCP block action in output")
+		}
+	})
+
+	t.Run("tool_poison_detail", func(t *testing.T) {
+		if !strings.Contains(output, "Instruction Tag") {
+			t.Error("expected tool poison detection detail")
 		}
 	})
 

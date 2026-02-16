@@ -314,18 +314,23 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Fully decode the URL for display in responses and logs. The scanner
+	// internally decodes for matching, but targetURL retains partial decoding
+	// from Go's query parsing. Operators should see the final resolved URL.
+	displayURL := normalizeDisplayURL(targetURL)
+
 	// Scan URL through all scanners
 	result := sc.Scan(targetURL)
 	if !result.Allowed {
 		if cfg.EnforceEnabled() {
-			log.LogBlocked("GET", targetURL, result.Scanner, result.Reason, clientIP, requestID)
+			log.LogBlocked("GET", displayURL, result.Scanner, result.Reason, clientIP, requestID)
 			p.metrics.RecordBlocked(parsed.Hostname(), result.Scanner, time.Since(start))
 			status := http.StatusForbidden
 			if result.Scanner == "ratelimit" {
 				status = http.StatusTooManyRequests
 			}
 			writeJSON(w, status, FetchResponse{
-				URL:         targetURL,
+				URL:         displayURL,
 				Agent:       agent,
 				Blocked:     true,
 				BlockReason: result.Reason,
@@ -333,7 +338,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Audit mode: log anomaly but allow through
-		log.LogAnomaly("GET", targetURL, fmt.Sprintf("[audit] %s: %s", result.Scanner, result.Reason), clientIP, requestID, result.Score)
+		log.LogAnomaly("GET", displayURL, fmt.Sprintf("[audit] %s: %s", result.Scanner, result.Reason), clientIP, requestID, result.Score)
 	}
 
 	// Fetch the URL — attach clientIP/requestID/agent to context for redirect logging
@@ -342,9 +347,9 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	ctx = context.WithValue(ctx, ctxKeyAgent, agent)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
 	if err != nil {
-		log.LogError("GET", targetURL, clientIP, requestID, err)
+		log.LogError("GET", displayURL, clientIP, requestID, err)
 		writeJSON(w, http.StatusInternalServerError, FetchResponse{
-			URL:   targetURL,
+			URL:   displayURL,
 			Agent: agent,
 			Error: fmt.Sprintf("creating request: %v", err),
 		})
@@ -359,19 +364,19 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		// Detect redirect blocks (from CheckRedirect) and report as blocked, not error.
 		if strings.Contains(err.Error(), "redirect blocked:") {
 			reason := err.Error()
-			log.LogBlocked("GET", targetURL, "redirect", reason, clientIP, requestID)
+			log.LogBlocked("GET", displayURL, "redirect", reason, clientIP, requestID)
 			p.metrics.RecordBlocked(parsed.Hostname(), "redirect", time.Since(start))
 			writeJSON(w, http.StatusForbidden, FetchResponse{
-				URL:         targetURL,
+				URL:         displayURL,
 				Agent:       agent,
 				Blocked:     true,
 				BlockReason: reason,
 			})
 			return
 		}
-		log.LogError("GET", targetURL, clientIP, requestID, err)
+		log.LogError("GET", displayURL, clientIP, requestID, err)
 		writeJSON(w, http.StatusBadGateway, FetchResponse{
-			URL:   targetURL,
+			URL:   displayURL,
 			Agent: agent,
 			Error: fmt.Sprintf("fetch failed: %v", err),
 		})
@@ -383,9 +388,9 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	maxBytes := int64(cfg.FetchProxy.MaxResponseMB) * 1024 * 1024
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes))
 	if err != nil {
-		log.LogError("GET", targetURL, clientIP, requestID, err)
+		log.LogError("GET", displayURL, clientIP, requestID, err)
 		writeJSON(w, http.StatusBadGateway, FetchResponse{
-			URL:   targetURL,
+			URL:   displayURL,
 			Agent: agent,
 			Error: fmt.Sprintf("reading response: %v", err),
 		})
@@ -400,7 +405,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	if strings.Contains(contentType, "text/html") || strings.Contains(contentType, "application/xhtml") {
 		article, err := readability.FromReader(strings.NewReader(content), parsed)
 		if err != nil {
-			log.LogAnomaly("GET", targetURL, fmt.Sprintf("readability extraction failed: %v", err), clientIP, requestID, 0.3)
+			log.LogAnomaly("GET", displayURL, fmt.Sprintf("readability extraction failed: %v", err), clientIP, requestID, 0.3)
 		} else if article.TextContent != "" {
 			title = article.Title
 			content = article.TextContent
@@ -418,14 +423,14 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			switch sc.ResponseAction() {
 			case "block":
 				reason := fmt.Sprintf("response contains prompt injection: %s", strings.Join(patternNames, ", "))
-				log.LogBlocked("GET", targetURL, "response_scan", reason, clientIP, requestID)
-				writeJSON(w, http.StatusForbidden, FetchResponse{URL: targetURL, Agent: agent, Blocked: true, BlockReason: reason})
+				log.LogBlocked("GET", displayURL, "response_scan", reason, clientIP, requestID)
+				writeJSON(w, http.StatusForbidden, FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
 				return
 			case "ask":
 				if p.approver == nil {
 					reason := fmt.Sprintf("response contains prompt injection: %s (no HITL approver)", strings.Join(patternNames, ", "))
-					log.LogBlocked("GET", targetURL, "response_scan", reason, clientIP, requestID)
-					writeJSON(w, http.StatusForbidden, FetchResponse{URL: targetURL, Agent: agent, Blocked: true, BlockReason: reason})
+					log.LogBlocked("GET", displayURL, "response_scan", reason, clientIP, requestID)
+					writeJSON(w, http.StatusForbidden, FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
 					return
 				}
 				preview := content
@@ -434,30 +439,30 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				}
 				d := p.approver.Ask(&hitl.Request{
 					Agent:    agent,
-					URL:      targetURL,
+					URL:      displayURL,
 					Reason:   fmt.Sprintf("prompt injection detected: %s", strings.Join(patternNames, ", ")),
 					Patterns: patternNames,
 					Preview:  preview,
 				})
 				switch d {
 				case hitl.DecisionAllow:
-					log.LogResponseScan(targetURL, clientIP, requestID, "ask:allow", len(scanResult.Matches), patternNames)
+					log.LogResponseScan(displayURL, clientIP, requestID, "ask:allow", len(scanResult.Matches), patternNames)
 				case hitl.DecisionStrip:
 					content = scanResult.TransformedContent
-					log.LogResponseScan(targetURL, clientIP, requestID, "ask:strip", len(scanResult.Matches), patternNames)
+					log.LogResponseScan(displayURL, clientIP, requestID, "ask:strip", len(scanResult.Matches), patternNames)
 				default:
 					reason := fmt.Sprintf("response blocked by operator: %s", strings.Join(patternNames, ", "))
-					log.LogBlocked("GET", targetURL, "response_scan", reason, clientIP, requestID)
-					writeJSON(w, http.StatusForbidden, FetchResponse{URL: targetURL, Agent: agent, Blocked: true, BlockReason: reason})
+					log.LogBlocked("GET", displayURL, "response_scan", reason, clientIP, requestID)
+					writeJSON(w, http.StatusForbidden, FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
 					return
 				}
 			case "strip":
 				content = scanResult.TransformedContent
-				log.LogResponseScan(targetURL, clientIP, requestID, "strip", len(scanResult.Matches), patternNames)
+				log.LogResponseScan(displayURL, clientIP, requestID, "strip", len(scanResult.Matches), patternNames)
 			case "warn":
-				log.LogResponseScan(targetURL, clientIP, requestID, "warn", len(scanResult.Matches), patternNames)
+				log.LogResponseScan(displayURL, clientIP, requestID, "warn", len(scanResult.Matches), patternNames)
 			default:
-				log.LogResponseScan(targetURL, clientIP, requestID, sc.ResponseAction(), len(scanResult.Matches), patternNames)
+				log.LogResponseScan(displayURL, clientIP, requestID, sc.ResponseAction(), len(scanResult.Matches), patternNames)
 			}
 		}
 	}
@@ -467,10 +472,10 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 	duration := time.Since(start)
 	p.metrics.RecordAllowed(duration)
-	log.LogAllowed("GET", targetURL, clientIP, requestID, resp.StatusCode, len(body), duration)
+	log.LogAllowed("GET", displayURL, clientIP, requestID, resp.StatusCode, len(body), duration)
 
 	writeJSON(w, http.StatusOK, FetchResponse{
-		URL:         targetURL,
+		URL:         displayURL,
 		Agent:       agent,
 		StatusCode:  resp.StatusCode,
 		ContentType: contentType,
@@ -492,6 +497,20 @@ func stripFetchControlChars(s string) string {
 		}
 		return r
 	}, s)
+}
+
+// normalizeDisplayURL fully decodes a URL for display in responses and logs.
+// Iteratively URL-decodes until the string stops changing, so operators see
+// the actual URL the scanner evaluated (not a partially-decoded intermediate).
+func normalizeDisplayURL(raw string) string {
+	for range 500 {
+		decoded, err := url.QueryUnescape(raw)
+		if err != nil || decoded == raw {
+			break
+		}
+		raw = decoded
+	}
+	return raw
 }
 
 // extractTargetURL extracts the full target URL from the request query string.

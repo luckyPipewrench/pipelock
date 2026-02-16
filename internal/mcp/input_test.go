@@ -2,6 +2,8 @@ package mcp
 
 import (
 	"bytes"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"strings"
@@ -10,6 +12,9 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
+
+func base64Encode(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
+func hexEncode(s string) string    { return hex.EncodeToString([]byte(s)) }
 
 // makeRequest builds a JSON-RPC 2.0 request with string params.
 func makeRequest(id int, method string, params interface{}) string {
@@ -911,5 +916,40 @@ func TestScanRequest_NoParamsCleanResponse(t *testing.T) {
 	if !verdict.Clean {
 		t.Fatalf("expected clean for benign response-shaped message, got matches=%v inject=%v",
 			verdict.Matches, verdict.Inject)
+	}
+}
+
+func TestScanRequest_Base64EncodedSecret(t *testing.T) {
+	sc := testInputScanner(t)
+
+	// Base64-encode a DLP-triggering key and put it as a single field value.
+	// The per-string scan should decode it and match.
+	secret := "sk-ant-" + strings.Repeat("q", 25) //nolint:goconst // test value
+	encoded := base64Encode(secret)
+
+	line := makeRequest(1, "tools/call", map[string]string{"data": encoded})
+	verdict := ScanRequest([]byte(line), sc, "block", "block")
+	if verdict.Clean {
+		t.Fatal("expected base64-encoded secret to be caught by per-string DLP scan")
+	}
+	if len(verdict.Matches) == 0 {
+		t.Error("expected DLP matches")
+	}
+}
+
+func TestScanRequest_HexEncodedSecret(t *testing.T) {
+	sc := testInputScanner(t)
+
+	// Hex-encode an AWS key (built at runtime to avoid gitleaks/gosec).
+	secret := "AKIA" + "IOSFODNN7EXAMPLE1" //nolint:goconst // test value
+	encoded := hexEncode(secret)
+
+	line := makeRequest(2, "tools/call", map[string]string{"data": encoded})
+	verdict := ScanRequest([]byte(line), sc, "block", "block")
+	if verdict.Clean {
+		t.Fatal("expected hex-encoded secret to be caught by per-string DLP scan")
+	}
+	if len(verdict.Matches) == 0 {
+		t.Error("expected DLP matches")
 	}
 }

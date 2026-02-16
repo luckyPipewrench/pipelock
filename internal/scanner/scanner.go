@@ -380,8 +380,8 @@ func iterativeDecode(s string) string {
 
 // checkDLP runs DLP regex patterns against the full URL string including hostname.
 // Scanning the full URL catches secrets encoded in subdomains (e.g., sk-proj-xxx.evil.com)
-// and secrets split across query parameters. Iterative URL decoding (up to 3 rounds)
-// prevents double/triple encoding bypass.
+// and secrets split across query parameters. Iterative URL decoding
+// prevents multi-layer encoding bypass.
 func (s *Scanner) checkDLP(parsed *url.URL) Result {
 	// parsed.Path is already URL-decoded by Go's url.Parse.
 	// For query strings, iteratively decode to catch multi-layer encoding.

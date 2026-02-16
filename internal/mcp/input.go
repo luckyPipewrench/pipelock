@@ -146,6 +146,18 @@ func ScanRequest(line []byte, sc *scanner.Scanner, action, onParseError string) 
 		}
 	}
 
+	// Scan each extracted string individually for encoded secrets (base64,
+	// hex, base32). The joined string is not valid base64/hex, so encoding
+	// checks only work on individual field values.
+	if dlpResult.Clean {
+		for _, s := range strs {
+			if r := sc.ScanTextForDLP(s); !r.Clean {
+				dlpResult = r
+				break
+			}
+		}
+	}
+
 	// Run injection patterns (reuses response scanning patterns).
 	injResult := sc.ScanResponse(joined)
 

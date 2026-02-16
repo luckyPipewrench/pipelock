@@ -140,7 +140,7 @@ func runDemo(cmd *cobra.Command, interactive, color bool) error {
 		cmd.Printf("%s%s%s\n", ansiDim, sep, ansiReset)
 		cmd.Printf("%sResults: %d/%d attacks blocked%s\n", ansiBold, blocked, len(scenarios), ansiReset)
 	} else {
-		cmd.Println(strings.Repeat("=", len(title)))
+		cmd.Println(strings.Repeat("=", titleLen))
 		cmd.Printf("Results: %d/%d attacks blocked\n", blocked, len(scenarios))
 	}
 	cmd.Println()

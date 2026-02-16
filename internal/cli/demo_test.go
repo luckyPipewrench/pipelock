@@ -3,6 +3,9 @@ package cli
 import (
 	"strings"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 func TestDemoCmd(t *testing.T) {
@@ -95,5 +98,79 @@ func TestDemoCmd_HelpRegistered(t *testing.T) {
 
 	if !strings.Contains(buf.String(), "demo") {
 		t.Error("expected demo command in help output")
+	}
+}
+
+func TestUseColor_NOCOLOREnv(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	if useColor() {
+		t.Error("expected useColor() to return false when NO_COLOR is set")
+	}
+}
+
+func TestBuildScenarios_Count(t *testing.T) {
+	scenarios := buildScenarios()
+	if len(scenarios) != 7 {
+		t.Errorf("expected 7 scenarios, got %d", len(scenarios))
+	}
+	for i, s := range scenarios {
+		if s.name == "" {
+			t.Errorf("scenario %d has empty name", i)
+		}
+		if s.attack == "" {
+			t.Errorf("scenario %d has empty attack description", i)
+		}
+		if s.run == nil {
+			t.Errorf("scenario %d has nil run function", i)
+		}
+	}
+}
+
+func TestDemoCmd_OutputContainsSeparator(t *testing.T) {
+	cmd := rootCmd()
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetArgs([]string{"demo"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := buf.String()
+	// Non-color mode uses '=' separators
+	if !strings.Contains(output, "=======") {
+		t.Error("expected '=' separator in non-color output")
+	}
+	// Should mention additional protections
+	if !strings.Contains(output, "SSRF") {
+		t.Error("expected SSRF mention in footer")
+	}
+	if !strings.Contains(output, "DNS rebinding") {
+		t.Error("expected DNS rebinding mention in footer")
+	}
+}
+
+func TestDemoCmd_AllScenariosRunAndBlock(t *testing.T) {
+	// Directly run each scenario to cover all run functions
+	scenarios := buildScenarios()
+
+	for _, s := range scenarios {
+		t.Run(s.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Internal = nil
+			cfg.ResponseScanning.Action = "block" //nolint:goconst // test value
+			cfg.DLP.ScanEnv = false
+
+			sc := scanner.New(cfg)
+			defer sc.Close()
+
+			blocked, detail := s.run(sc)
+			if !blocked {
+				t.Errorf("expected scenario %q to be blocked, got: %s", s.name, detail)
+			}
+			if detail == "" {
+				t.Errorf("expected non-empty detail for scenario %q", s.name)
+			}
+		})
 	}
 }

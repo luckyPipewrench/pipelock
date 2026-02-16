@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 
@@ -43,7 +44,8 @@ attack scenarios. No server, config, or network access required.
 
 Each scenario simulates a real attack vector that AI agents face in production:
 credential exfiltration, prompt injection, data exfiltration via known services,
-high-entropy data smuggling, and MCP tool poisoning.
+high-entropy data smuggling, MCP response injection, input secret leaks, and
+tool description poisoning.
 
 Use --interactive for live demos (pauses between scenarios).`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -81,14 +83,15 @@ func runDemo(cmd *cobra.Command, interactive bool) error {
 
 	// Header.
 	title := fmt.Sprintf("Pipelock Demo — %d Attack Scenarios", len(scenarios))
-	sep := strings.Repeat("─", len(title))
+	titleLen := utf8.RuneCountInString(title)
+	sep := strings.Repeat("─", titleLen)
 	if color {
 		cmd.Printf("\n%s%s%s\n", ansiBold, title, ansiReset)
 		cmd.Printf("%s%s%s\n", ansiDim, sep, ansiReset)
 	} else {
 		cmd.Println()
 		cmd.Println(title)
-		cmd.Println(strings.Repeat("=", len(title)))
+		cmd.Println(strings.Repeat("=", titleLen))
 	}
 
 	blocked := 0

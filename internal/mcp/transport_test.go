@@ -178,6 +178,23 @@ func TestStdioRoundTrip(t *testing.T) {
 	}
 }
 
+func TestStdioWriter_TooLarge(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewStdioWriter(&buf)
+
+	huge := make([]byte, maxLineSize+1)
+	err := w.WriteMessage(huge)
+	if err == nil {
+		t.Fatal("expected error for oversized message")
+	}
+	if !strings.Contains(err.Error(), "message too large") {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if buf.Len() != 0 {
+		t.Error("oversized message should not have been written")
+	}
+}
+
 func TestStdioReader_OversizedMessage(t *testing.T) {
 	// A line exceeding maxLineSize should return bufio.ErrTooLong, not EOF.
 	huge := strings.Repeat("x", maxLineSize+1) + "\n"

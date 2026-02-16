@@ -66,6 +66,23 @@ func TestSyncWriter_WriteMessage_ErrorOnFirstWrite(t *testing.T) {
 	}
 }
 
+func TestSyncWriter_WriteMessage_TooLarge(t *testing.T) {
+	var buf bytes.Buffer
+	sw := &syncWriter{w: &buf}
+
+	huge := make([]byte, maxLineSize+1)
+	err := sw.WriteMessage(huge)
+	if err == nil {
+		t.Fatal("expected error for oversized message")
+	}
+	if !strings.Contains(err.Error(), "message too large") {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if buf.Len() != 0 {
+		t.Error("oversized message should not have been written")
+	}
+}
+
 func TestSyncWriter_WriteMessage_Success(t *testing.T) {
 	var buf bytes.Buffer
 	sw := &syncWriter{w: &buf}

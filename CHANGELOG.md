@@ -7,13 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-02-16
+
 ### Added
+- MCP transport abstraction: `MessageReader`/`MessageWriter` interfaces decouple scanning from stdio framing, preparing for HTTP transport
 - Demo command: 7 attack scenarios (was 5), adding MCP input secret leak and tool description poisoning demos
 - Demo ANSI color output with `NO_COLOR` env var support and TTY detection
 - Demo `--interactive` flag for live presentations (pauses between scenarios)
+- CrewAI integration guide (`docs/guides/crewai.md`)
+- LangGraph integration guide (`docs/guides/langgraph.md`)
+- `WriteMessage` size guard (10 MB limit) prevents unbounded memory allocation on malformed input
+- `maxLineSize` guard on stdio message reader for consistency with write path
+
+### Fixed
+- Strict-mode API allowlist enforcement: requests to non-allowlisted domains now blocked in strict mode (was warn-only)
+- MCP no-params DLP bypass: requests with missing `params` field bypassed input scanning entirely
+- Encoded secret bypass in MCP input: multi-layer percent-encoding could evade DLP patterns
+- Display URL normalization: audit log URLs now consistently decoded for readability
+- Three static analysis findings: `ViolationPermissions` field visibility, HITL reload-to-ask warning, stale comment
 
 ### Changed
 - Demo "MCP Tool Poisoning" scenario renamed to "MCP Response Injection" for clarity
+- `iterativeDecode` consolidated into single exported function (was duplicated across scanner paths)
+- Write errors in `syncWriter` and `StdioWriter` now wrapped with context
+- Bumped `sigstore/cosign-installer` from 3.10.1 to 4.0.0
 
 ## [0.2.2] - 2026-02-15
 

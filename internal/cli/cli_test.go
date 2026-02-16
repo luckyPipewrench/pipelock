@@ -1406,8 +1406,8 @@ func TestDemoCmd_Basic(t *testing.T) {
 		t.Fatal(err)
 	}
 	output := buf.String()
-	if !strings.Contains(output, "5/5 attacks blocked") {
-		t.Errorf("expected all 5 attacks blocked, got: %s", output)
+	if !strings.Contains(output, "7/7 attacks blocked") {
+		t.Errorf("expected all 7 attacks blocked, got: %s", output)
 	}
 }
 

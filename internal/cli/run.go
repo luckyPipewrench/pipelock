@@ -79,7 +79,8 @@ Examples:
 			m := metrics.New()
 
 			var proxyOpts []proxy.Option
-			if cfg.ResponseScanning.Action == "ask" {
+			hasApprover := cfg.ResponseScanning.Action == config.ActionAsk
+			if hasApprover {
 				approver := hitl.New(cfg.ResponseScanning.AskTimeoutSeconds)
 				defer approver.Close()
 				proxyOpts = append(proxyOpts, proxy.WithApprover(approver))
@@ -131,6 +132,9 @@ Examples:
 							}
 							newSc := scanner.New(newCfg)
 							p.Reload(newCfg, newSc)
+							if newCfg.ResponseScanning.Action == config.ActionAsk && !hasApprover {
+								fmt.Fprintln(os.Stderr, "WARNING: config reloaded to ask mode but HITL approver was not initialized at startup; detections will be blocked")
+							}
 							logger.LogConfigReload("success", fmt.Sprintf("mode=%s", newCfg.Mode))
 						}()
 					}

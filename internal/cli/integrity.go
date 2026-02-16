@@ -225,6 +225,10 @@ func writeTextCheck(out io.Writer, violations []integrity.Violation) {
 		case integrity.ViolationRemoved:
 			_, _ = fmt.Fprintf(out, "  REMOVED   %s\n", v.Path)
 			_, _ = fmt.Fprintf(out, "    in manifest but missing from disk\n\n")
+		case integrity.ViolationPermissions:
+			_, _ = fmt.Fprintf(out, "  PERMS     %s\n", v.Path)
+			_, _ = fmt.Fprintf(out, "    expected: %s\n", v.Expected)
+			_, _ = fmt.Fprintf(out, "    actual:   %s\n\n", v.Actual)
 		}
 	}
 

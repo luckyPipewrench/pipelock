@@ -18,6 +18,9 @@ const (
 	ModeAudit    = "audit"
 )
 
+// ActionAsk is the "ask" action for HITL approval on detections.
+const ActionAsk = "ask"
+
 // Output/format constants for configuration defaults.
 const (
 	DefaultListen    = "127.0.0.1:8888"

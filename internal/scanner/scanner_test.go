@@ -19,6 +19,9 @@ func testConfig() *config.Config {
 	// Disable SSRF by default so tests don't depend on DNS resolution.
 	// SSRF-specific tests override this.
 	cfg.Internal = nil
+	// Disable allowlist by default so tests don't depend on the default
+	// domain list. Allowlist-specific tests override this.
+	cfg.APIAllowlist = nil
 	return cfg
 }
 
@@ -1680,5 +1683,113 @@ func TestScan_DLP_MultipleControlChars(t *testing.T) {
 	result := s.Scan(url)
 	if result.Allowed {
 		t.Error("expected DLP to catch key with multiple control chars")
+	}
+}
+
+func TestScan_AllowlistBlocksUnlistedDomain(t *testing.T) {
+	cfg := testConfig()
+	cfg.Mode = config.ModeStrict
+	cfg.APIAllowlist = []string{"api.openai.com", "*.anthropic.com"}
+	s := New(cfg)
+
+	result := s.Scan("https://evil.com/exfil")
+	if result.Allowed {
+		t.Fatal("expected allowlist to block unlisted domain")
+	}
+	if result.Scanner != "allowlist" {
+		t.Errorf("expected scanner=allowlist, got %s", result.Scanner)
+	}
+}
+
+func TestScan_AllowlistPermitsListedDomain(t *testing.T) {
+	cfg := testConfig()
+	cfg.Mode = config.ModeStrict
+	cfg.APIAllowlist = []string{"api.openai.com", "*.anthropic.com"}
+	s := New(cfg)
+
+	result := s.Scan("https://api.openai.com/v1/chat")
+	if !result.Allowed {
+		t.Errorf("expected allowlisted domain to be allowed, got blocked: %s", result.Reason)
+	}
+}
+
+func TestScan_AllowlistPermitsWildcard(t *testing.T) {
+	cfg := testConfig()
+	cfg.Mode = config.ModeStrict
+	cfg.APIAllowlist = []string{"*.anthropic.com"}
+	s := New(cfg)
+
+	result := s.Scan("https://api.anthropic.com/v1/messages")
+	if !result.Allowed {
+		t.Errorf("expected wildcard-matched domain to be allowed, got blocked: %s", result.Reason)
+	}
+}
+
+func TestScan_AllowlistEmptyPermitsAll(t *testing.T) {
+	cfg := testConfig()
+	cfg.Mode = config.ModeStrict
+	cfg.APIAllowlist = nil
+	s := New(cfg)
+
+	result := s.Scan("https://anything.example.com/path")
+	if !result.Allowed {
+		t.Errorf("expected empty allowlist to permit all domains, got blocked: %s", result.Reason)
+	}
+}
+
+func TestScan_AllowlistNotEnforcedInBalancedMode(t *testing.T) {
+	cfg := testConfig()
+	cfg.Mode = config.ModeBalanced
+	cfg.APIAllowlist = []string{"api.openai.com"}
+	s := New(cfg)
+
+	// In balanced mode, the allowlist is not enforced
+	result := s.Scan("https://example.com/page")
+	if !result.Allowed {
+		t.Errorf("expected balanced mode to not enforce allowlist, got blocked: %s", result.Reason)
+	}
+}
+
+func TestScan_AllowlistNotEnforcedInAuditMode(t *testing.T) {
+	cfg := testConfig()
+	cfg.Mode = config.ModeAudit
+	cfg.APIAllowlist = []string{"api.openai.com"}
+	s := New(cfg)
+
+	// In audit mode, the allowlist is not enforced
+	result := s.Scan("https://example.com/page")
+	if !result.Allowed {
+		t.Errorf("expected audit mode to not enforce allowlist, got blocked: %s", result.Reason)
+	}
+}
+
+func TestScan_AllowlistCaseInsensitive(t *testing.T) {
+	cfg := testConfig()
+	cfg.Mode = config.ModeStrict
+	cfg.APIAllowlist = []string{"api.openai.com"}
+	s := New(cfg)
+
+	// Hostname is lowercased by Scan(), so "API.OpenAI.com" should match "api.openai.com"
+	result := s.Scan("https://API.OpenAI.com/v1/chat")
+	if !result.Allowed {
+		t.Errorf("expected case-insensitive allowlist match, got blocked: %s", result.Reason)
+	}
+}
+
+func TestScan_AllowlistRunsBeforeBlocklist(t *testing.T) {
+	cfg := testConfig()
+	cfg.Mode = config.ModeStrict
+	// Set allowlist that doesn't include pastebin.com
+	cfg.APIAllowlist = []string{"api.openai.com"}
+	// pastebin.com is in the default blocklist
+	s := New(cfg)
+
+	result := s.Scan("https://pastebin.com/raw/abc")
+	if result.Allowed {
+		t.Fatal("expected domain to be blocked")
+	}
+	// Allowlist should fire BEFORE blocklist
+	if result.Scanner != "allowlist" {
+		t.Errorf("expected scanner=allowlist (checked first), got %s", result.Scanner)
 	}
 }

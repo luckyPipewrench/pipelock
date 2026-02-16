@@ -87,7 +87,7 @@ Examples:
 func strictPreset() *config.Config {
 	cfg := config.Defaults()
 	cfg.Mode = config.ModeStrict
-	// In strict mode, the fetch proxy is not used — agent can only reach allowlisted APIs
+	// In strict mode, the fetch proxy enforces the API allowlist
 	cfg.FetchProxy.Monitoring.EntropyThreshold = 3.5
 	cfg.FetchProxy.Monitoring.MaxURLLength = 500
 	cfg.FetchProxy.Monitoring.MaxReqPerMinute = 30

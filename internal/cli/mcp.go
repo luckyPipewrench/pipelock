@@ -143,7 +143,7 @@ Claude Desktop config:
 			defer sc.Close()
 
 			var approver *hitl.Approver
-			if sc.ResponseAction() == "ask" {
+			if sc.ResponseAction() == config.ActionAsk {
 				approver = hitl.New(cfg.ResponseScanning.AskTimeoutSeconds)
 				defer approver.Close()
 			}

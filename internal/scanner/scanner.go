@@ -32,6 +32,7 @@ type Result struct {
 
 // Scanner checks URLs for suspicious content before fetching.
 type Scanner struct {
+	allowlist        []string
 	blocklist        []string
 	dlpPatterns      []*compiledPattern
 	entropyThreshold float64
@@ -57,7 +58,15 @@ type compiledPattern struct {
 // config.Validate() — this function panics on invalid DLP patterns or CIDRs
 // because those represent programming errors (validation should have caught them).
 func New(cfg *config.Config) *Scanner {
+	// Only enforce the allowlist in strict mode. In balanced/audit modes,
+	// the allowlist is a config field but not enforced at the scanner level.
+	var allowlist []string
+	if cfg.Mode == config.ModeStrict {
+		allowlist = cfg.APIAllowlist
+	}
+
 	s := &Scanner{
+		allowlist:        allowlist,
 		blocklist:        cfg.FetchProxy.Monitoring.Blocklist,
 		entropyThreshold: cfg.FetchProxy.Monitoring.EntropyThreshold,
 		entropyMinLen:    20,
@@ -189,12 +198,18 @@ func (s *Scanner) Scan(rawURL string) Result {
 		}
 	}
 
-	// 2. Blocklist check — before DNS to avoid resolving known-bad domains.
+	// 2. Allowlist check — if configured, only allowlisted domains are permitted.
+	// Runs before DNS to reject disallowed domains without any network I/O.
+	if result := s.checkAllowlist(hostname); !result.Allowed {
+		return result
+	}
+
+	// 3. Blocklist check — before DNS to avoid resolving known-bad domains.
 	if result := s.checkBlocklist(hostname); !result.Allowed {
 		return result
 	}
 
-	// 3. DLP + entropy on hostname BEFORE DNS resolution.
+	// 4. DLP + entropy on hostname BEFORE DNS resolution.
 	// Prevents secret exfiltration via DNS queries for domains like
 	// "sk-ant-xxxx.evil.com" where the subdomain encodes a secret.
 	if result := s.checkDLP(parsed); !result.Allowed {
@@ -204,23 +219,23 @@ func (s *Scanner) Scan(rawURL string) Result {
 		return result
 	}
 
-	// 3b. Subdomain entropy check — catches base64/hex encoded data in subdomains
+	// 4b. Subdomain entropy check — catches base64/hex encoded data in subdomains
 	// (e.g., "aGVsbG8.evil.com" exfiltrating data via DNS queries).
 	if result := s.checkSubdomainEntropy(hostname); !result.Allowed {
 		return result
 	}
 
-	// 4. SSRF protection — DNS resolution happens here, safe after DLP.
+	// 5. SSRF protection — DNS resolution happens here, safe after DLP.
 	if result := s.checkSSRF(hostname); !result.Allowed {
 		return result
 	}
 
-	// 5. Rate limit check (per-domain)
+	// 6. Rate limit check (per-domain)
 	if result := s.checkRateLimit(hostname); !result.Allowed {
 		return result
 	}
 
-	// 6. URL length check
+	// 7. URL length check
 	if s.maxURLLength > 0 && len(rawURL) > s.maxURLLength {
 		return Result{
 			Allowed: false,
@@ -230,7 +245,7 @@ func (s *Scanner) Scan(rawURL string) Result {
 		}
 	}
 
-	// 7. Data budget check (per-domain sliding window)
+	// 8. Data budget check (per-domain sliding window)
 	if result := s.checkDataBudget(hostname); !result.Allowed {
 		return result
 	}
@@ -285,6 +300,26 @@ func (s *Scanner) checkSSRF(hostname string) Result {
 	}
 
 	return Result{Allowed: true}
+}
+
+// checkAllowlist rejects requests to domains not in the allowlist.
+// When the allowlist is empty, all domains are permitted (allowlist is opt-in).
+// Uses MatchDomain for consistent wildcard matching with the blocklist.
+func (s *Scanner) checkAllowlist(hostname string) Result {
+	if len(s.allowlist) == 0 {
+		return Result{Allowed: true}
+	}
+	for _, pattern := range s.allowlist {
+		if MatchDomain(hostname, pattern) {
+			return Result{Allowed: true}
+		}
+	}
+	return Result{
+		Allowed: false,
+		Reason:  fmt.Sprintf("domain not in allowlist: %s", hostname),
+		Scanner: "allowlist",
+		Score:   1.0,
+	}
 }
 
 // checkBlocklist checks the hostname against the domain blocklist.

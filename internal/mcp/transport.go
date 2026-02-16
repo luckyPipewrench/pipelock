@@ -74,6 +74,8 @@ func (sw *StdioWriter) WriteMessage(msg []byte) error {
 	buf := make([]byte, len(msg)+1)
 	copy(buf, msg)
 	buf[len(msg)] = '\n'
-	_, err := sw.w.Write(buf)
-	return err
+	if _, err := sw.w.Write(buf); err != nil {
+		return fmt.Errorf("writing message: %w", err)
+	}
+	return nil
 }

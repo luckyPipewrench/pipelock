@@ -1008,6 +1008,75 @@ func TestRunProxy_ScanWriteError(t *testing.T) {
 	}
 }
 
+func TestRunProxy_WithToolConfig(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("echo subprocess test requires unix")
+	}
+
+	sc := testScannerWithAction(t, "warn")
+	var out bytes.Buffer
+	logBuf := &syncBuffer{}
+
+	toolCfg := &ToolScanConfig{
+		Action:      "warn",
+		DetectDrift: true,
+	}
+
+	err := RunProxy(context.Background(), strings.NewReader(""), &out, logBuf, []string{"echo", cleanResponse}, sc, nil, nil, toolCfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := strings.TrimSpace(out.String())
+	if got != cleanResponse {
+		t.Errorf("expected clean passthrough with tool config, got: %s", got)
+	}
+}
+
+func TestRunProxy_InputScanningBlocksNotification(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("echo subprocess test requires unix")
+	}
+
+	sc := testScannerWithAction(t, "warn")
+	var out bytes.Buffer
+	logBuf := &syncBuffer{}
+
+	// Notification = no "id" field. Contains a secret in params.
+	secret := "sk-ant-" + strings.Repeat("z", 25) //nolint:goconst // test value
+	notification := `{"jsonrpc":"2.0","method":"notifications/message","params":{"body":"` + secret + `"}}` + "\n"
+
+	inputCfg := &InputScanConfig{
+		Enabled:      true,
+		Action:       "block", //nolint:goconst // test value
+		OnParseError: "block", //nolint:goconst // test value
+	}
+
+	err := RunProxy(context.Background(), strings.NewReader(notification), &out, logBuf, []string{"echo", cleanResponse}, sc, nil, inputCfg, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	outStr := out.String()
+
+	// Should contain the clean server response (echo output).
+	if !strings.Contains(outStr, "The weather is sunny today.") {
+		t.Errorf("expected clean server response, got: %s", outStr)
+	}
+
+	// Notification block should NOT produce a -32001 error response
+	// (notifications have no ID, so no error response is sent).
+	if strings.Contains(outStr, "-32001") {
+		t.Errorf("blocked notification should not produce error response, got: %s", outStr)
+	}
+
+	// Log should mention the blocked notification.
+	logStr := logBuf.String()
+	if !strings.Contains(logStr, "blocked") {
+		t.Errorf("expected 'blocked' in log, got: %s", logStr)
+	}
+}
+
 // --- safeEnv tests ---
 
 func TestSafeEnv_ContainsOnlySafeKeys(t *testing.T) {

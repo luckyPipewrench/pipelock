@@ -214,6 +214,52 @@ func TestDemoCmd_ColorOutput(t *testing.T) {
 	}
 }
 
+func TestBuildScenarios_PermissiveScanner(t *testing.T) {
+	// Run each scenario with a scanner that has no detection patterns.
+	// This exercises the "not blocked" / fallback paths in each closure.
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.Patterns = nil
+	cfg.DLP.ScanEnv = false
+	cfg.FetchProxy.Monitoring.Blocklist = nil
+	cfg.FetchProxy.Monitoring.EntropyThreshold = 99 // effectively disable entropy
+	cfg.ResponseScanning.Enabled = false
+	cfg.ResponseScanning.Patterns = nil
+
+	sc := scanner.New(cfg)
+	defer sc.Close()
+
+	scenarios := buildScenarios()
+
+	// Scenarios that should NOT block with a permissive scanner
+	expectAllow := map[string]string{
+		"Credential Exfiltration":             demoScanAllowed,
+		"Prompt Injection":                    "no injection found",
+		"Data Exfiltration via Paste Service": demoScanAllowed,
+		"High-Entropy Data Smuggling":         demoScanAllowed,
+		"MCP Response Injection":              "no injection found",
+		"MCP Input Secret Leak":               "no leak detected",
+	}
+
+	for _, s := range scenarios {
+		t.Run(s.name, func(t *testing.T) {
+			blocked, detail := s.run(sc)
+			if expected, ok := expectAllow[s.name]; ok {
+				if blocked {
+					t.Errorf("expected %q to pass with permissive scanner, got blocked: %s", s.name, detail)
+				}
+				if detail != expected {
+					t.Errorf("detail = %q, want %q", detail, expected)
+				}
+			}
+			// MCP Tool Description Attack still blocks (built-in poison heuristics)
+			if s.name == "MCP Tool Description Attack" && !blocked {
+				t.Error("expected tool description attack to still be detected by built-in heuristics")
+			}
+		})
+	}
+}
+
 func TestDemoCmd_NoColorFlag(t *testing.T) {
 	cmd := rootCmd()
 	buf := &strings.Builder{}

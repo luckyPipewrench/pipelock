@@ -47,6 +47,7 @@ func setupTestProxy(t *testing.T) (*Proxy, *httptest.Server) {
 	cfg.FetchProxy.TimeoutSeconds = 5
 	// Disable SSRF check for test backend (which is on 127.0.0.1)
 	cfg.Internal = nil
+	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
@@ -361,6 +362,7 @@ func TestFetchEndpoint_BackendError(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 2
 	cfg.Internal = nil
+	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
@@ -475,6 +477,7 @@ func setupResponseScanProxy(t *testing.T, action string) (*Proxy, *httptest.Serv
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.APIAllowlist = nil
 	cfg.ResponseScanning = config.ResponseScanning{
 		Enabled: true,
 		Action:  action,
@@ -674,6 +677,7 @@ func TestFetchEndpoint_ResponseScan_Disabled(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.APIAllowlist = nil
 	cfg.ResponseScanning.Enabled = false
 
 	logger := audit.NewNop()
@@ -735,6 +739,7 @@ func TestFetchEndpoint_ResponseScan_AskAllowLongContent(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.APIAllowlist = nil
 	cfg.ResponseScanning = config.ResponseScanning{
 		Enabled: true,
 		Action:  "ask",
@@ -897,6 +902,7 @@ func TestWithApprover(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.APIAllowlist = nil
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
 	p := New(cfg, logger, sc, metrics.New(), WithApprover(approver))
@@ -1076,6 +1082,7 @@ func TestFetchEndpoint_RedirectToBlockedDomain(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
@@ -1115,6 +1122,7 @@ func TestFetchEndpoint_RedirectToDLPMatch(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
@@ -1155,6 +1163,7 @@ func TestFetchEndpoint_RedirectChainExceedsMax(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
@@ -1198,6 +1207,7 @@ func TestFetchEndpoint_RedirectInAuditMode(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.APIAllowlist = nil
 	enforce := false
 	cfg.Enforce = &enforce
 
@@ -1245,6 +1255,7 @@ func TestFetchEndpoint_RedirectInEnforceMode_Blocks(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.APIAllowlist = nil
 	// enforce=nil defaults to true
 
 	logger := audit.NewNop()
@@ -1290,6 +1301,7 @@ func TestFetchEndpoint_RedirectToSafeURL(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
@@ -1328,6 +1340,7 @@ func TestFetchEndpoint_RateLimitReturns429(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.APIAllowlist = nil
 	cfg.FetchProxy.Monitoring.MaxReqPerMinute = 2 // Low limit for testing
 
 	logger := audit.NewNop()
@@ -1382,6 +1395,7 @@ func TestFetchEndpoint_AuditMode_AllowsBlockedURL(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.APIAllowlist = nil
 	enforce := false
 	cfg.Enforce = &enforce
 
@@ -1424,6 +1438,7 @@ func TestFetchEndpoint_AuditMode_EnforceTrue_Blocks(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.APIAllowlist = nil
 	// enforce=nil defaults to true
 
 	logger := audit.NewNop()
@@ -1463,6 +1478,7 @@ func TestProxy_Reload_SwapsConfig(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
@@ -1491,6 +1507,7 @@ func TestProxy_Reload_SwapsConfig(t *testing.T) {
 	newCfg.Mode = "strict"
 	newCfg.FetchProxy.TimeoutSeconds = 5
 	newCfg.Internal = nil
+	newCfg.APIAllowlist = nil
 	newSc := scanner.New(newCfg)
 	p.Reload(newCfg, newSc)
 
@@ -1520,6 +1537,7 @@ func TestProxy_Reload_NewScannerTakesEffect(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
@@ -1542,6 +1560,7 @@ func TestProxy_Reload_NewScannerTakesEffect(t *testing.T) {
 	newCfg := config.Defaults()
 	newCfg.FetchProxy.TimeoutSeconds = 5
 	newCfg.Internal = nil
+	newCfg.APIAllowlist = nil
 	newCfg.FetchProxy.Monitoring.Blocklist = append(newCfg.FetchProxy.Monitoring.Blocklist, "*.example.com")
 	newSc := scanner.New(newCfg)
 	p.Reload(newCfg, newSc)
@@ -1576,6 +1595,7 @@ func TestProxy_Reload_ConcurrentRequestsSafe(_ *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
@@ -1593,6 +1613,7 @@ func TestProxy_Reload_ConcurrentRequestsSafe(_ *testing.T) {
 			newCfg := config.Defaults()
 			newCfg.FetchProxy.TimeoutSeconds = 5
 			newCfg.Internal = nil
+			newCfg.APIAllowlist = nil
 			newSc := scanner.New(newCfg)
 			p.Reload(newCfg, newSc)
 		}
@@ -1646,6 +1667,7 @@ func TestFetchEndpoint_SSRFBlocksInternalIP(t *testing.T) {
 	// requests to internal IPs during the URL scan phase (403 Forbidden).
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 2
+	cfg.APIAllowlist = nil
 	// Keep Internal CIDRs (don't set to nil) so SSRF checks are active
 
 	logger := audit.NewNop()
@@ -1704,6 +1726,7 @@ func TestFetchEndpoint_BodyReadError(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
@@ -1730,6 +1753,7 @@ func TestProxy_StartReturnsErrorOnBadAddress(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.Listen = "invalid-address-no-port" // will cause ListenAndServe to fail
 	cfg.Internal = nil
+	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
@@ -1759,6 +1783,7 @@ func TestFetchEndpoint_ReadabilityExtractError(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
@@ -1789,6 +1814,7 @@ func TestProxy_StartAndShutdown(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.Listen = "127.0.0.1:0" // random port
 	cfg.Internal = nil
+	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
@@ -1895,6 +1921,7 @@ func TestProxy_Start_AlreadyBound(t *testing.T) {
 	cfg.FetchProxy.Listen = addr
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
@@ -1931,6 +1958,7 @@ func TestProxy_FetchViaHostname(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil // Disable SSRF so 127.0.0.1 from DNS is allowed
+	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
@@ -1959,6 +1987,7 @@ func TestProxy_SSRF_DirectIP(t *testing.T) {
 	// Request to a private IP should be blocked at DialContext level.
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 2
+	cfg.APIAllowlist = nil
 	// cfg.Internal is set by Defaults() — includes private CIDRs
 
 	logger := audit.NewNop()
@@ -1982,6 +2011,7 @@ func TestProxy_SSRF_DNSRebind(t *testing.T) {
 	// SSRF validation path in DialContext.
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 2
+	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
@@ -2260,6 +2290,7 @@ func TestProxy_Reload_UpdatesCurrentConfig(t *testing.T) {
 	// Create new config with different settings
 	newCfg := config.Defaults()
 	newCfg.Internal = nil
+	newCfg.APIAllowlist = nil
 	newCfg.FetchProxy.UserAgent = "Updated/2.0"
 	newSc := scanner.New(newCfg)
 	defer newSc.Close()

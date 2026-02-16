@@ -1116,6 +1116,31 @@ func TestIntegrityCheck_JSON_Clean(t *testing.T) {
 	}
 }
 
+func TestWriteTextCheck_PermissionsViolation(t *testing.T) {
+	violations := []integrity.Violation{
+		{Path: "script.sh", Type: integrity.ViolationPermissions, Expected: "-rwxr-xr-x", Actual: "-rw-r--r--"},
+	}
+	var buf strings.Builder
+	writeTextCheck(&buf, violations)
+
+	output := buf.String()
+	if !strings.Contains(output, "PERMS") {
+		t.Errorf("expected PERMS in output, got: %q", output)
+	}
+	if !strings.Contains(output, "script.sh") {
+		t.Errorf("expected script.sh in output, got: %q", output)
+	}
+	if !strings.Contains(output, "-rwxr-xr-x") {
+		t.Errorf("expected expected mode in output, got: %q", output)
+	}
+	if !strings.Contains(output, "-rw-r--r--") {
+		t.Errorf("expected actual mode in output, got: %q", output)
+	}
+	if !strings.Contains(output, "1 violation") {
+		t.Errorf("expected '1 violation' in output, got: %q", output)
+	}
+}
+
 func TestWriteJSONCheck_WithViolations(t *testing.T) {
 	violations := []integrity.Violation{
 		{Path: "file.txt", Type: integrity.ViolationModified, Expected: "abc", Actual: "xyz"},

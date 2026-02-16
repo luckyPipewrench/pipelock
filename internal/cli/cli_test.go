@@ -1211,6 +1211,167 @@ logging:
 	}
 }
 
+func TestRunCmd_ReloadToAskModeWarning(t *testing.T) {
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "test.yaml")
+	// Start with balanced mode (no HITL approver created)
+	cfgContent := fmt.Sprintf(`version: 1
+mode: balanced
+fetch_proxy:
+  listen: "%s"
+  timeout_seconds: 5
+`, addr)
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cmd := rootCmd()
+	cmd.SetContext(ctx)
+	cmd.SetArgs([]string{"run", "--config", cfgPath})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- cmd.Execute()
+	}()
+
+	// Wait for healthy.
+	client := &http.Client{Timeout: time.Second}
+	healthURL := "http://" + addr + "/health"
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case err := <-errCh:
+			cancel()
+			t.Fatalf("run exited early: %v", err)
+		default:
+		}
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+		resp, rerr := client.Do(req)
+		if rerr == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// Reload config to action: ask (triggers warning because no approver at startup).
+	// The warning goes to os.Stderr directly; coverage confirms code path execution.
+	updatedCfg := fmt.Sprintf(`version: 1
+mode: balanced
+fetch_proxy:
+  listen: "%s"
+  timeout_seconds: 5
+response_scanning:
+  enabled: true
+  action: ask
+`, addr)
+	if err := os.WriteFile(cfgPath, []byte(updatedCfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for reload to take effect.
+	time.Sleep(500 * time.Millisecond)
+
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("run did not shut down")
+	}
+}
+
+func TestRunCmd_WithAskModeApprover(t *testing.T) {
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "test.yaml")
+	// Start with ask mode so hasApprover=true and approver is created
+	cfgContent := fmt.Sprintf(`version: 1
+mode: balanced
+fetch_proxy:
+  listen: "%s"
+  timeout_seconds: 5
+response_scanning:
+  enabled: true
+  action: ask
+  ask_timeout_seconds: 1
+`, addr)
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cmd := rootCmd()
+	cmd.SetContext(ctx)
+	cmd.SetArgs([]string{"run", "--config", cfgPath})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- cmd.Execute()
+	}()
+
+	// Wait for healthy.
+	client := &http.Client{Timeout: time.Second}
+	healthURL := "http://" + addr + "/health"
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case err := <-errCh:
+			cancel()
+			t.Fatalf("run exited early: %v", err)
+		default:
+		}
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+		resp, rerr := client.Do(req)
+		if rerr == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// Proxy started with ask mode — approver was created. Shut down cleanly.
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("run did not shut down")
+	}
+}
+
 func TestGenerateCmd_WriteError(t *testing.T) {
 	// Generate config with -o pointing to a read-only directory.
 	dir := t.TempDir()

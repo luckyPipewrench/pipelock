@@ -423,7 +423,7 @@ func (s *Scanner) checkDLP(parsed *url.URL) Result {
 		// should never contain control chars — they're evasion via URL encoding
 		// (e.g., %00 null byte, %08 backspace, %09 tab, %0a newline all break
 		// DLP regex matching). Also strips Unicode zero-width chars and applies
-		// NFKC to normalize confusables (e.g., Cyrillic 'а' → Latin 'a').
+		// NFKC to normalize compatibility decompositions (e.g., fullwidth → ASCII).
 		cleaned := norm.NFKC.String(stripControlChars(target))
 		for _, p := range s.dlpPatterns {
 			if p.re.MatchString(cleaned) {

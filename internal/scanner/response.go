@@ -71,6 +71,84 @@ func stripZeroWidth(s string) string {
 	}, s)
 }
 
+// confusableMap maps Unicode characters from non-Latin scripts that are visually
+// identical to Latin letters. NFKC normalization does NOT handle cross-script
+// confusables — Cyrillic а (U+0430) stays as а, not Latin a. Attackers exploit
+// this to bypass keyword-based injection detection (e.g., "ignоre" with Cyrillic о).
+//
+// Covers Cyrillic and Greek lookalikes commonly used in homoglyph attacks.
+// Not exhaustive — focused on characters that appear in English-language
+// injection phrases ("ignore", "instructions", "system", "execute", etc.).
+var confusableMap = map[rune]rune{
+	// Cyrillic uppercase → Latin
+	'\u0410': 'A', // А
+	'\u0412': 'B', // В
+	'\u0421': 'C', // С
+	'\u0415': 'E', // Е
+	'\u041D': 'H', // Н
+	'\u0406': 'I', // І (Ukrainian)
+	'\u0408': 'J', // Ј (Serbian)
+	'\u041A': 'K', // К
+	'\u041C': 'M', // М
+	'\u041E': 'O', // О
+	'\u0420': 'P', // Р
+	'\u0405': 'S', // Ѕ (Macedonian)
+	'\u0422': 'T', // Т
+	'\u0425': 'X', // Х
+
+	// Cyrillic lowercase → Latin
+	'\u0430': 'a', // а
+	'\u0432': 'v', // в
+	'\u0435': 'e', // е
+	'\u043D': 'h', // н
+	'\u0456': 'i', // і (Ukrainian)
+	'\u043A': 'k', // к
+	'\u043E': 'o', // о
+	'\u0440': 'p', // р
+	'\u0441': 'c', // с
+	'\u0442': 't', // т
+	'\u0443': 'y', // у
+	'\u0445': 'x', // х
+	'\u0458': 'j', // ј (Serbian)
+	'\u0455': 's', // ѕ (Macedonian)
+
+	// Greek uppercase → Latin
+	'\u0391': 'A', // Α
+	'\u0392': 'B', // Β
+	'\u0395': 'E', // Ε
+	'\u0396': 'Z', // Ζ
+	'\u0397': 'H', // Η
+	'\u0399': 'I', // Ι
+	'\u039A': 'K', // Κ
+	'\u039C': 'M', // Μ
+	'\u039D': 'N', // Ν
+	'\u039F': 'O', // Ο
+	'\u03A1': 'P', // Ρ
+	'\u03A4': 'T', // Τ
+	'\u03A5': 'Y', // Υ
+	'\u03A7': 'X', // Χ
+
+	// Greek lowercase → Latin
+	'\u03B1': 'a', // α
+	'\u03B5': 'e', // ε
+	'\u03B9': 'i', // ι
+	'\u03BA': 'k', // κ
+	'\u03BD': 'v', // ν (nu)
+	'\u03BF': 'o', // ο
+}
+
+// ConfusableToASCII maps visually identical non-Latin characters to their Latin
+// equivalents. Applied after NFKC normalization to catch cross-script homoglyph
+// attacks that NFKC does not handle (Cyrillic, Greek lookalikes).
+func ConfusableToASCII(s string) string {
+	return strings.Map(func(r rune) rune {
+		if mapped, ok := confusableMap[r]; ok {
+			return mapped
+		}
+		return r
+	}, s)
+}
+
 // stripControlChars removes ALL ASCII control characters (0x00-0x1F, 0x7F) and
 // Unicode zero-width/invisible characters. Unlike stripZeroWidth, this also
 // strips whitespace control chars (\t, \n, \r) because DLP patterns match
@@ -104,8 +182,11 @@ func (s *Scanner) ScanResponse(content string) ResponseScanResult {
 
 	// Strip zero-width characters before pattern matching to prevent bypass.
 	content = stripZeroWidth(content)
-	// NFKC normalization catches Unicode confusables (e.g., Cyrillic 'а' → Latin 'a').
+	// NFKC normalization handles compatibility decompositions (fullwidth → ASCII).
 	content = norm.NFKC.String(content)
+	// Map cross-script confusables (Cyrillic/Greek lookalikes) to Latin equivalents.
+	// NFKC does NOT handle these — Cyrillic о (U+043E) stays as о without this step.
+	content = ConfusableToASCII(content)
 	// Normalize Unicode whitespace to ASCII space so \s+ in regex patterns
 	// catches exotic spaces (e.g., Ogham space U+1680, Mongolian vowel separator U+180E).
 	content = normalizeWhitespace(content)

@@ -240,9 +240,10 @@ func tryParseToolsList(result json.RawMessage) []ToolDef {
 
 // normalizeToolText applies Unicode normalization before poison pattern matching.
 // Strips ALL C0 control chars (including \t, \n, \r) + DEL + Unicode invisibles,
-// then NFKC-normalizes. Unlike response scanning (which preserves whitespace for
-// \s+ injection patterns), tool descriptions have no legitimate control chars —
-// any present are evasion attempts (e.g., tab splitting "IMPORTANT" into "IMPOR\tTANT").
+// then NFKC-normalizes + confusable mapping. Unlike response scanning (which preserves
+// whitespace for \s+ injection patterns), tool descriptions have no legitimate control
+// chars — any present are evasion attempts (e.g., tab splitting "IMPORTANT" into
+// "IMPOR\tTANT").
 func normalizeToolText(s string) string {
 	s = strings.Map(func(r rune) rune {
 		// Drop ALL C0 control characters and DEL.
@@ -258,6 +259,9 @@ func normalizeToolText(s string) string {
 		return r
 	}, s)
 	s = norm.NFKC.String(s)
+	// Map cross-script confusables (Cyrillic/Greek lookalikes) to Latin equivalents.
+	// NFKC does NOT handle these — Cyrillic о (U+043E) stays as о without this step.
+	s = scanner.ConfusableToASCII(s)
 	return strings.Map(func(r rune) rune {
 		switch r {
 		case '\u1680', '\u180E', '\u2028', '\u2029':

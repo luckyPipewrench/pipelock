@@ -359,11 +359,14 @@ func (s *Scanner) checkRateLimit(hostname string) Result {
 	return Result{Allowed: true}
 }
 
-// maxDecodeRounds limits iterative URL decoding to prevent infinite loops.
-const maxDecodeRounds = 3
+// maxDecodeRounds is a safety ceiling for iterative URL decoding.
+// The loop exits early when decoding produces no change (decoded == s),
+// so this limit only matters for pathological inputs. URL decoding is
+// microsecond-cheap per round, so a generous ceiling has no real cost.
+const maxDecodeRounds = 500
 
-// iterativeDecode applies URL decoding up to 3 times until the string
-// stops changing. This catches double/triple encoding (e.g., %252D → %2D → -).
+// iterativeDecode applies URL decoding until the string stops changing
+// or the safety ceiling is reached. Catches multi-layer encoding (e.g., %252D → %2D → -).
 func iterativeDecode(s string) string {
 	for range maxDecodeRounds {
 		decoded, err := url.QueryUnescape(s)

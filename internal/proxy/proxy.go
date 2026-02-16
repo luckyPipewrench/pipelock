@@ -7,6 +7,7 @@ package proxy
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -256,7 +257,7 @@ func (p *Proxy) Start(ctx context.Context) error {
 
 	err := p.server.ListenAndServe()
 	close(done) // unblock shutdown goroutine if server failed immediately
-	if err == http.ErrServerClosed {
+	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}
 	return err

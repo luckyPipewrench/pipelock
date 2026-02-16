@@ -159,17 +159,8 @@ func ForwardScanned(reader MessageReader, writer MessageWriter, logW io.Writer, 
 					}
 				case hitl.DecisionStrip:
 					_, _ = fmt.Fprintf(logW, "pipelock: line %d: operator chose strip\n", lineNum)
-					stripped, sErr := stripResponse(line, sc)
-					if sErr != nil {
-						_, _ = fmt.Fprintf(logW, "pipelock: strip failed (%v), blocking instead\n", sErr)
-						resp := blockResponse(verdict.ID)
-						if err := writer.WriteMessage(resp); err != nil {
-							return foundInjection, fmt.Errorf("writing block response: %w", err)
-						}
-					} else {
-						if err := writer.WriteMessage(stripped); err != nil {
-							return foundInjection, fmt.Errorf("writing stripped response: %w", err)
-						}
+					if err := stripOrBlock(line, sc, writer, logW, verdict.ID); err != nil {
+						return foundInjection, fmt.Errorf("writing strip/block response: %w", err)
 					}
 				default: // DecisionBlock
 					_, _ = fmt.Fprintf(logW, "pipelock: line %d: operator blocked\n", lineNum)
@@ -180,17 +171,8 @@ func ForwardScanned(reader MessageReader, writer MessageWriter, logW io.Writer, 
 				}
 			}
 		case "strip":
-			stripped, sErr := stripResponse(line, sc)
-			if sErr != nil {
-				_, _ = fmt.Fprintf(logW, "pipelock: strip failed (%v), blocking instead\n", sErr)
-				resp := blockResponse(verdict.ID)
-				if err := writer.WriteMessage(resp); err != nil {
-					return foundInjection, fmt.Errorf("writing block response: %w", err)
-				}
-			} else {
-				if err := writer.WriteMessage(stripped); err != nil {
-					return foundInjection, fmt.Errorf("writing stripped response: %w", err)
-				}
+			if err := stripOrBlock(line, sc, writer, logW, verdict.ID); err != nil {
+				return foundInjection, fmt.Errorf("writing strip/block response: %w", err)
 			}
 		default: // warn
 			if err := writer.WriteMessage(line); err != nil {
@@ -200,6 +182,17 @@ func ForwardScanned(reader MessageReader, writer MessageWriter, logW io.Writer, 
 	}
 
 	return foundInjection, nil
+}
+
+// stripOrBlock tries to strip injection from the response. If stripping fails,
+// it falls back to blocking (fail-closed). Returns a write error if the writer fails.
+func stripOrBlock(line []byte, sc *scanner.Scanner, writer MessageWriter, logW io.Writer, rpcID json.RawMessage) error {
+	stripped, sErr := stripResponse(line, sc)
+	if sErr != nil {
+		_, _ = fmt.Fprintf(logW, "pipelock: strip failed (%v), blocking instead\n", sErr)
+		return writer.WriteMessage(blockResponse(rpcID))
+	}
+	return writer.WriteMessage(stripped)
 }
 
 // rpcError is a JSON-RPC 2.0 error response sent when a response is blocked.

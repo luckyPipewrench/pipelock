@@ -899,8 +899,8 @@ func TestForwardScanned_WriteErrorOnStripResponse(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected write error")
 	}
-	if !strings.Contains(err.Error(), "writing stripped response") {
-		t.Errorf("expected 'writing stripped response' error, got: %v", err)
+	if !strings.Contains(err.Error(), "writing strip/block response") {
+		t.Errorf("expected 'writing strip/block response' error, got: %v", err)
 	}
 }
 
@@ -944,8 +944,8 @@ func TestForwardScanned_WriteErrorOnAskStripResponse(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected write error")
 	}
-	if !strings.Contains(err.Error(), "writing stripped response") {
-		t.Errorf("expected 'writing stripped response' error, got: %v", err)
+	if !strings.Contains(err.Error(), "writing strip/block response") {
+		t.Errorf("expected 'writing strip/block response' error, got: %v", err)
 	}
 }
 
@@ -1508,6 +1508,53 @@ func TestForwardScanned_NonJSON_InjectionDetected(t *testing.T) {
 	}
 	if !strings.Contains(log.String(), "blocking unparseable response") {
 		t.Errorf("expected block log, got: %s", log.String())
+	}
+}
+
+// --- stripOrBlock tests ---
+
+func TestStripOrBlock_InvalidJSON(t *testing.T) {
+	sc := testScannerWithAction(t, "strip")
+	var out bytes.Buffer
+	w := &syncWriter{w: &out}
+	var log bytes.Buffer
+
+	// Invalid JSON causes stripResponse to fail; stripOrBlock falls back to block.
+	err := stripOrBlock([]byte("not valid json"), sc, w, &log, json.RawMessage(`42`))
+	if err != nil {
+		t.Fatalf("unexpected write error: %v", err)
+	}
+
+	if !strings.Contains(log.String(), "strip failed") {
+		t.Errorf("expected 'strip failed' in log, got: %s", log.String())
+	}
+
+	// Output should be a block response, not the original invalid JSON.
+	if strings.Contains(out.String(), "not valid json") {
+		t.Error("invalid JSON should not be forwarded")
+	}
+	if !strings.Contains(out.String(), "-32000") {
+		t.Error("expected -32000 block error response")
+	}
+}
+
+func TestStripOrBlock_ValidStrip(t *testing.T) {
+	sc := testScannerWithAction(t, "strip")
+	var out bytes.Buffer
+	w := &syncWriter{w: &out}
+	var log bytes.Buffer
+
+	err := stripOrBlock([]byte(injectionResponse), sc, w, &log, json.RawMessage(`42`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should have stripped the injection, not blocked.
+	if strings.Contains(log.String(), "strip failed") {
+		t.Error("strip should succeed for valid JSON")
+	}
+	if strings.Contains(out.String(), "-32000") {
+		t.Error("valid JSON should be stripped, not blocked")
 	}
 }
 

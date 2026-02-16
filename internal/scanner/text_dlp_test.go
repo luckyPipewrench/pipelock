@@ -451,7 +451,7 @@ func TestScanTextForDLP_DoubleURLEncoding(t *testing.T) {
 
 	result := s.ScanTextForDLP(doubleEncoded)
 	if result.Clean {
-		t.Fatal("expected DLP to catch double-URL-encoded AWS key via iterativeDecode")
+		t.Fatal("expected DLP to catch double-URL-encoded AWS key via IterativeDecode")
 	}
 	found := false
 	for _, m := range result.Matches {
@@ -469,7 +469,7 @@ func TestScanTextForDLP_URLEncodedNullByte(t *testing.T) {
 	s := New(cfg)
 	defer s.Close()
 
-	// URL-encoded null byte %00 in the middle of a secret. After iterativeDecode,
+	// URL-encoded null byte %00 in the middle of a secret. After IterativeDecode,
 	// the null byte should be stripped by matchDLPPatterns and the key detected.
 	key := "sk-ant-%00" + strings.Repeat("a", 25) //nolint:goconst // test value
 	result := s.ScanTextForDLP(key)

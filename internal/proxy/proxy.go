@@ -317,7 +317,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// Fully decode the URL for display in responses and logs. The scanner
 	// internally decodes for matching, but targetURL retains partial decoding
 	// from Go's query parsing. Operators should see the final resolved URL.
-	displayURL := normalizeDisplayURL(targetURL)
+	displayURL := scanner.IterativeDecode(targetURL)
 
 	// Scan URL through all scanners
 	result := sc.Scan(targetURL)
@@ -497,20 +497,6 @@ func stripFetchControlChars(s string) string {
 		}
 		return r
 	}, s)
-}
-
-// normalizeDisplayURL fully decodes a URL for display in responses and logs.
-// Iteratively URL-decodes until the string stops changing, so operators see
-// the actual URL the scanner evaluated (not a partially-decoded intermediate).
-func normalizeDisplayURL(raw string) string {
-	for range 500 {
-		decoded, err := url.QueryUnescape(raw)
-		if err != nil || decoded == raw {
-			break
-		}
-		raw = decoded
-	}
-	return raw
 }
 
 // extractTargetURL extracts the full target URL from the request query string.

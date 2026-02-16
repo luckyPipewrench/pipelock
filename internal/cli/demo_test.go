@@ -174,3 +174,62 @@ func TestDemoCmd_AllScenariosRunAndBlock(t *testing.T) {
 		})
 	}
 }
+
+func TestDemoCmd_ColorOutput(t *testing.T) {
+	// Call runDemo directly with color=true to exercise ANSI color branches.
+	cmd := rootCmd()
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	// Find the demo subcommand so we can call runDemo on it.
+	demoSub, _, _ := cmd.Find([]string{"demo"})
+	if demoSub == nil {
+		t.Fatal("demo subcommand not found")
+	}
+
+	if err := runDemo(demoSub, false, true); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := buf.String()
+
+	// Color output uses ANSI bold for header, not '=' separators.
+	if !strings.Contains(output, "\033[1m") {
+		t.Error("expected ANSI bold escape in color output")
+	}
+	if !strings.Contains(output, "\033[0m") {
+		t.Error("expected ANSI reset escape in color output")
+	}
+	// Color output uses '─' separator, not '='.
+	if !strings.Contains(output, "─") {
+		t.Error("expected '─' separator in color output")
+	}
+	// Color output uses "✓ BLOCKED" not "[BLOCKED]".
+	if !strings.Contains(output, "✓ BLOCKED") {
+		t.Error("expected '✓ BLOCKED' in color output")
+	}
+	// Should still show all scenarios and final count.
+	if !strings.Contains(output, "7/7 attacks blocked") {
+		t.Errorf("expected 7/7 blocked in color output, got:\n%s", output)
+	}
+}
+
+func TestDemoCmd_NoColorFlag(t *testing.T) {
+	cmd := rootCmd()
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetArgs([]string{"demo", "--no-color"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := buf.String()
+	// --no-color should produce plain text with [BLOCKED], not ANSI codes.
+	if strings.Contains(output, "\033[") {
+		t.Error("expected no ANSI escape codes with --no-color flag")
+	}
+	if !strings.Contains(output, "[BLOCKED]") {
+		t.Error("expected [BLOCKED] markers in no-color output")
+	}
+}

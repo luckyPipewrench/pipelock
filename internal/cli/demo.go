@@ -36,6 +36,8 @@ type scenario struct {
 func demoCmd() *cobra.Command {
 	var interactive bool
 
+	var noColor bool
+
 	cmd := &cobra.Command{
 		Use:   "demo",
 		Short: "Run attack scenarios to show what Pipelock catches",
@@ -49,11 +51,13 @@ tool description poisoning.
 
 Use --interactive for live demos (pauses between scenarios).`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runDemo(cmd, interactive)
+			color := !noColor && useColor()
+			return runDemo(cmd, interactive, color)
 		},
 	}
 
 	cmd.Flags().BoolVarP(&interactive, "interactive", "i", false, "pause between scenarios (for live demos)")
+	cmd.Flags().BoolVar(&noColor, "no-color", false, "disable color output")
 
 	return cmd
 }
@@ -69,7 +73,7 @@ func useColor() bool {
 	return fi.Mode()&os.ModeCharDevice != 0
 }
 
-func runDemo(cmd *cobra.Command, interactive bool) error {
+func runDemo(cmd *cobra.Command, interactive, color bool) error {
 	cfg := config.Defaults()
 	cfg.Internal = nil                    // disable SSRF (avoids DNS lookups)
 	cfg.ResponseScanning.Action = "block" //nolint:goconst // config action value
@@ -79,7 +83,6 @@ func runDemo(cmd *cobra.Command, interactive bool) error {
 	defer sc.Close()
 
 	scenarios := buildScenarios()
-	color := useColor()
 
 	// Header.
 	title := fmt.Sprintf("Pipelock Demo — %d Attack Scenarios", len(scenarios))

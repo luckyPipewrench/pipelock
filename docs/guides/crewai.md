@@ -200,6 +200,7 @@ access:
 networks:
   pipelock-internal:
     internal: true
+    driver: bridge
   pipelock-external:
     driver: bridge
 

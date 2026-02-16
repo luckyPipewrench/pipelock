@@ -243,6 +243,7 @@ reach the internet directly:
 networks:
   pipelock-internal:
     internal: true
+    driver: bridge
   pipelock-external:
     driver: bridge
 

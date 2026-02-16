@@ -114,7 +114,7 @@ Wraps any MCP server as a stdio proxy with bidirectional scanning. Server respon
 
 - **Race detector mandatory**: All tests run with `-race -count=1`
 - **90% coverage target** across all packages
-- **1,500+ tests** currently passing
+- **1,580+ tests** currently passing
 
 ### Patterns
 

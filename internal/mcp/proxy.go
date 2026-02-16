@@ -37,6 +37,9 @@ func (sw *syncWriter) Write(p []byte) (int, error) {
 func (sw *syncWriter) WriteMessage(msg []byte) error {
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
+	if len(msg) > maxLineSize {
+		return fmt.Errorf("message too large: %d bytes", len(msg))
+	}
 	buf := make([]byte, len(msg)+1)
 	copy(buf, msg)
 	buf[len(msg)] = '\n'

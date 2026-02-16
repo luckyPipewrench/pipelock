@@ -146,7 +146,9 @@ func TestCheckCmd_NonexistentConfig(t *testing.T) {
 func TestCheckCmd_URLAllowed(t *testing.T) {
 	// check --url runs SSRF checks that require DNS resolution.
 	// Skip in restricted/offline environments where DNS is blocked.
-	if _, err := net.DefaultResolver.LookupHost(context.Background(), "example.com"); err != nil {
+	dnsCtx, dnsCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer dnsCancel()
+	if _, err := net.DefaultResolver.LookupHost(dnsCtx, "example.com"); err != nil {
 		t.Skip("DNS unavailable (restricted environment)")
 	}
 

@@ -3,6 +3,7 @@ package mcp
 import (
 	"bufio"
 	"bytes"
+	"fmt"
 	"io"
 )
 
@@ -49,7 +50,7 @@ func (sr *StdioReader) ReadMessage() ([]byte, error) {
 		return msg, nil
 	}
 	if err := sr.scanner.Err(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("reading message: %w", err)
 	}
 	return nil, io.EOF
 }
@@ -67,6 +68,9 @@ func NewStdioWriter(w io.Writer) *StdioWriter {
 // WriteMessage writes msg followed by a newline in a single Write call.
 // The single-call approach avoids partial writes from interleaving.
 func (sw *StdioWriter) WriteMessage(msg []byte) error {
+	if len(msg) > maxLineSize {
+		return fmt.Errorf("message too large: %d bytes", len(msg))
+	}
 	buf := make([]byte, len(msg)+1)
 	copy(buf, msg)
 	buf[len(msg)] = '\n'

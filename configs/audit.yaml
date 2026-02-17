@@ -154,7 +154,7 @@ mcp_tool_policy:
       arg_pattern: '(?i)\b(pip|npm|gem|cargo|go)\s+install\b'
     - name: "Destructive Git Operation"
       tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec|git)$'
-      arg_pattern: '(?i)(\bgit\s+)?(push\s+(--force|-f)|reset\s+--hard|clean\s+-fd)\b'
+      arg_pattern: '(?i)(\bgit\s+)?(push\s+(--force(\s|$)|-f\b)|reset\s+--hard\b|clean\s+-fd\b)'
 
 logging:
   format: json

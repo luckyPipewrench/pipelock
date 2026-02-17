@@ -1711,4 +1711,50 @@ func TestRunProxy_PolicyOnlyWithoutInputScanning(t *testing.T) {
 	}
 }
 
+func TestRunProxy_PolicyOnlyMalformedJSONBlocked(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("echo subprocess test requires unix")
+	}
+
+	sc := testScannerWithAction(t, "warn")
+	var out bytes.Buffer
+	logBuf := &syncBuffer{}
+
+	// Malformed JSON — must be blocked (fail-closed) when policy is enabled
+	// but input scanning is disabled.
+	req := "this is not valid json\n"
+
+	policyCfg := NewPolicyConfig(config.MCPToolPolicy{
+		Enabled: true,
+		Action:  "block",
+		Rules: []config.ToolPolicyRule{
+			{
+				Name:        "Destructive File Delete",
+				ToolPattern: `(?i)^bash$`,
+				ArgPattern:  `(?i)\brm\s+-[a-z]*[rf]`,
+				Action:      "block",
+			},
+		},
+	})
+
+	// inputCfg is nil — only policy engine is active.
+	err := RunProxy(context.Background(), strings.NewReader(req), &out, logBuf, []string{"echo", cleanResponse}, sc, nil, nil, nil, policyCfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	outStr := out.String()
+
+	// Malformed JSON should NOT be forwarded to the server.
+	if strings.Contains(outStr, "not valid json") {
+		t.Errorf("expected malformed JSON to be blocked, but it was forwarded: %s", outStr)
+	}
+
+	// Log should mention the parse error.
+	logStr := logBuf.String()
+	if !strings.Contains(logStr, "invalid JSON") && !strings.Contains(logStr, "parse") {
+		t.Errorf("expected parse error in log, got: %s", logStr)
+	}
+}
+
 // makeResponse helper is defined in scan_test.go

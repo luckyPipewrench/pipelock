@@ -324,7 +324,7 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 		{
 			Name:        "Destructive Git Operation",
 			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec|git)$`,
-			ArgPattern:  `(?i)(\bgit\s+)?(push\s+(--force|-f)|reset\s+--hard|clean\s+-fd)\b`,
+			ArgPattern:  `(?i)(\bgit\s+)?(push\s+(--force(\s|$)|-f\b)|reset\s+--hard\b|clean\s+-fd\b)`,
 			Action:      "block",
 		},
 	}

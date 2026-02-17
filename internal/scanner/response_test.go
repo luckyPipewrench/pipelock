@@ -441,6 +441,13 @@ func TestStripZeroWidth(t *testing.T) {
 		{"tab_preserved", "ignore\tprevious", "ignore\tprevious"},
 		{"newline_preserved", "ignore\nprevious", "ignore\nprevious"},
 		{"cr_preserved", "ignore\rprevious", "ignore\rprevious"},
+		// Unicode Tags block (U+E0000-E007F) — Pliny steganography vector.
+		{"tags_block", "ig\U000E0001\U000E006Enore", "ignore"},
+		{"tags_block_full_range", "\U000E0000\U000E007F", ""},
+		// Variation selectors (U+FE00-FE0F) — emoji steganography.
+		{"variation_selector", "ignore\uFE01 previous\uFE0F instructions", "ignore previous instructions"},
+		// Variation selectors supplement (U+E0100-U+E01EF).
+		{"variation_selector_supplement", "ignore\U000E0100previous\U000E01EFinstructions", "ignorepreviousinstructions"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -473,6 +480,10 @@ func TestStripControlChars(t *testing.T) {
 		// Unicode zero-width chars also stripped.
 		{"zwsp", "hel\u200Blo", "hello"},
 		{"bom", "hel\uFEFFlo", "hello"},
+		// Tags block and variation selectors also stripped.
+		{"tags_block", "sk-ant-\U000E0020api03-test", "sk-ant-api03-test"},
+		{"variation_selector", "sk-ant-\uFE01api03\uFE0F-test", "sk-ant-api03-test"},
+		{"variation_selector_supplement", "sk-ant-\U000E0100api03-test", "sk-ant-api03-test"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

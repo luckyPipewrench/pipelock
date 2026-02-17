@@ -38,6 +38,29 @@ func normalizeWhitespace(s string) string {
 	}, s)
 }
 
+// InvisibleRanges defines Unicode ranges stripped from all scanning paths.
+// Consolidates zero-width characters, Tags block (Pliny steganography vector),
+// and variation selectors (emoji steganography vector) into a single source of
+// truth used by stripZeroWidth, stripControlChars, and normalizeToolText
+// (in mcp/tools.go). Ranges cover:
+//   - Soft hyphen, zero-width space through RTL mark, word joiner group, BOM
+//   - Variation selectors 1-16 (U+FE00-FE0F): emoji glyph modifiers
+//   - Tags block (U+E0000-E007F): deprecated language tags, steganography vector
+//   - Variation selectors supplement (U+E0100-E01EF): extended glyph modifiers
+var InvisibleRanges = &unicode.RangeTable{
+	R16: []unicode.Range16{
+		{Lo: 0x00AD, Hi: 0x00AD, Stride: 1}, // soft hyphen
+		{Lo: 0x200B, Hi: 0x200F, Stride: 1}, // zero-width space through RTL mark
+		{Lo: 0x2060, Hi: 0x2064, Stride: 1}, // word joiner through invisible plus
+		{Lo: 0xFE00, Hi: 0xFE0F, Stride: 1}, // variation selectors 1-16
+		{Lo: 0xFEFF, Hi: 0xFEFF, Stride: 1}, // BOM / ZWNBSP
+	},
+	R32: []unicode.Range32{
+		{Lo: 0xE0000, Hi: 0xE007F, Stride: 1}, // Tags block
+		{Lo: 0xE0100, Hi: 0xE01EF, Stride: 1}, // variation selectors supplement
+	},
+}
+
 // stripZeroWidth removes ASCII control characters and Unicode zero-width/invisible
 // characters that could be used to evade regex pattern matching. Preserves
 // whitespace control chars (\t, \n, \r) because injection patterns use \s+ to
@@ -45,28 +68,14 @@ func normalizeWhitespace(s string) string {
 func stripZeroWidth(s string) string {
 	return strings.Map(func(r rune) rune {
 		// Drop non-whitespace C0 control characters and DEL.
-		// These break regex matching when injected (e.g., \x08 backspace)
-		// without contributing visible content.
 		if r <= 0x1F && r != '\t' && r != '\n' && r != '\r' {
 			return -1
 		}
-		if r == 0x7F { // DEL
+		if r == 0x7F {
 			return -1
 		}
-		switch r {
-		case '\u200B', // zero-width space
-			'\u200C', // zero-width non-joiner
-			'\u200D', // zero-width joiner
-			'\u2060', // word joiner
-			'\u2061', // function application
-			'\u2062', // invisible times
-			'\u2063', // invisible separator
-			'\u2064', // invisible plus
-			'\u00AD', // soft hyphen
-			'\u200E', // left-to-right mark
-			'\u200F', // right-to-left mark
-			'\uFEFF': // byte order mark / zero-width no-break space
-			return -1 // drop
+		if unicode.Is(InvisibleRanges, r) {
+			return -1
 		}
 		return r
 	}, s)
@@ -175,14 +184,10 @@ func StripCombiningMarks(s string) string {
 // Used in DLP scanning paths (fetch proxy URLs, MCP text, env leak detection).
 func stripControlChars(s string) string {
 	return strings.Map(func(r rune) rune {
-		// Drop ALL C0 control characters and DEL.
 		if r <= 0x1F || r == 0x7F {
 			return -1
 		}
-		switch r {
-		case '\u200B', '\u200C', '\u200D', '\u2060',
-			'\u2061', '\u2062', '\u2063', '\u2064',
-			'\u00AD', '\u200E', '\u200F', '\uFEFF':
+		if unicode.Is(InvisibleRanges, r) {
 			return -1
 		}
 		return r

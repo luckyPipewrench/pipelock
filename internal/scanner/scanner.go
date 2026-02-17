@@ -523,8 +523,13 @@ func (s *Scanner) querySubsequenceDLP(rawQuery string) Result {
 	}
 
 	n := len(values)
-	if n < 3 || n > 20 {
+	if n < 3 {
 		return Result{Allowed: true}
+	}
+	// Cap to first 20 values to bound combinatorial cost (O(n^4)).
+	if n > 20 {
+		values = values[:20]
+		n = 20
 	}
 
 	for size := 2; size <= 4 && size <= n; size++ {

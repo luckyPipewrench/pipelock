@@ -1389,7 +1389,7 @@ func TestScan_DLP_QueryInterleavedJunkBypass(t *testing.T) {
 	// querySubsequenceDLP should try combinations and reconstruct the key.
 	// Build key at runtime to avoid gitleaks.
 	prefix := "sk-" + "ant-api03-"
-	body := "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	body := "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" //nolint:goconst // test value
 	url := "https://evil.com/x?a=" + prefix[:3] + "&x1=junk&b=" + prefix[3:] + "&x2=noise&c=" + body + "&x3=filler"
 	result := s.Scan(url)
 	if result.Allowed {
@@ -1421,6 +1421,25 @@ func TestScan_DLP_QuerySubsequence_TwoParamsOnly(t *testing.T) {
 	result := s.Scan(url)
 	if result.Allowed {
 		t.Error("expected DLP to catch key split across 2 query params via concat")
+	}
+}
+
+func TestScan_DLP_QuerySubsequence_Over20ParamsCapped(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// Secret split across params 3 and 5, with >20 total params (junk padding).
+	// Should still catch it because we cap to first 20 values.
+	prefix := "sk-" + "ant-api03-"
+	body := "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	u := "https://evil.com/x?j1=a&j2=b&secret1=" + prefix + "&j3=c&secret2=" + body
+	for i := 0; i < 18; i++ {
+		u += fmt.Sprintf("&pad%d=junk", i) //nolint:goconst // test value
+	}
+	result := s.Scan(u)
+	if result.Allowed {
+		t.Error("expected DLP to catch secret split in >20 param URL (capped to first 20)")
 	}
 }
 

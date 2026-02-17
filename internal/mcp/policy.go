@@ -150,7 +150,10 @@ func (pc *PolicyConfig) checkSingle(line []byte) PolicyVerdict {
 	}
 	var argStrings []string
 	if len(tc.Arguments) > 0 && string(tc.Arguments) != jsonNull {
-		argStrings = extractAllStringsFromJSON(tc.Arguments)
+		// Use values-only extraction (not extractAllStringsFromJSON which
+		// includes map keys). Keys like "cmd","flags","target" would pollute
+		// the joined string and break regex adjacency for policy matching.
+		argStrings = extractStringsFromJSON(tc.Arguments)
 	}
 	return pc.CheckToolCall(tc.Name, argStrings)
 }
@@ -255,7 +258,7 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 		{
 			Name:        "Destructive File Delete",
 			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$`,
-			ArgPattern:  `(?i)\brm\s+-[a-z]*[rf]\b`,
+			ArgPattern:  `(?i)\brm\s+(--\s+)?-[a-z]*[rf]\b`,
 			Action:      "block",
 		},
 		{

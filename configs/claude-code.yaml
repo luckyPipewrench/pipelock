@@ -165,7 +165,7 @@ mcp_tool_policy:
   rules:
     - name: "Destructive File Delete"
       tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
-      arg_pattern: '(?i)\brm\s+-[a-z]*[rf]\b'
+      arg_pattern: '(?i)\brm\s+(--\s+)?-[a-z]*[rf]\b'
       action: block
     - name: "Recursive Permission Change"
       tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$'

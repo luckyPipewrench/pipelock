@@ -31,12 +31,14 @@ func (s *Scanner) ScanTextForDLP(text string) TextDLPResult {
 		return TextDLPResult{Clean: true}
 	}
 
-	// Strip ALL control chars (including \t, \n, \r) and apply NFKC.
-	// DLP patterns match specific character sequences where any control char
-	// is evasion, not content. Unlike response scanning (which preserves
-	// whitespace for \s+ patterns), DLP needs aggressive stripping.
+	// Full normalization before DLP pattern matching: strip control chars,
+	// NFKC, cross-script confusable mapping, and combining mark removal.
+	// Must match response scanning depth — otherwise attackers use homoglyphs
+	// in key prefixes (e.g., sk-օnt-... with Armenian օ U+0585 for 'a').
 	cleaned := stripControlChars(text)
 	cleaned = norm.NFKC.String(cleaned)
+	cleaned = ConfusableToASCII(cleaned)
+	cleaned = StripCombiningMarks(cleaned)
 
 	var matches []TextDLPMatch
 
@@ -105,10 +107,13 @@ func (s *Scanner) ScanTextForDLP(text string) TextDLPResult {
 }
 
 // matchDLPPatterns runs DLP regex patterns against text, tagging matches with encoding.
-// Strips all control chars from decoded text before matching, since URL/base64/hex
-// decoding can reintroduce them after the initial stripControlChars pass.
+// Applies full normalization to decoded text, since URL/base64/hex decoding can
+// reintroduce control chars and confusable characters after the initial pass.
 func (s *Scanner) matchDLPPatterns(text, encoding string) []TextDLPMatch {
 	text = stripControlChars(text)
+	text = norm.NFKC.String(text)
+	text = ConfusableToASCII(text)
+	text = StripCombiningMarks(text)
 	var matches []TextDLPMatch
 	for _, p := range s.dlpPatterns {
 		if p.re.MatchString(text) {

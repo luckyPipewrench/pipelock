@@ -379,6 +379,35 @@ func IterativeDecode(s string) string {
 	return s
 }
 
+// stripURLNoise removes URL separator characters that break DLP regex matching
+// when secrets are fragmented across path/query boundaries. Strips characters that
+// are valid in URLs but not in API key character classes [a-zA-Z0-9\-_]. Attackers
+// insert dots, slashes, spaces, and other noise to split key patterns.
+func stripURLNoise(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case '.', '/', ' ', '\t', '\n', '\r', '+', ',', ';', '|':
+			return -1
+		}
+		return r
+	}, s)
+}
+
+// orderedQueryConcat concatenates all query parameter values in their original URL
+// order and returns the result. Catches secrets split across multiple query params
+// (e.g., "?part1=sk-ant-api03-&part2=AAAA..." → "sk-ant-api03-AAAA...").
+// Uses RawQuery instead of url.Values to preserve parameter order.
+func orderedQueryConcat(rawQuery string) string {
+	var b strings.Builder
+	for _, pair := range strings.Split(rawQuery, "&") {
+		_, value, _ := strings.Cut(pair, "=")
+		if value != "" {
+			b.WriteString(IterativeDecode(value))
+		}
+	}
+	return b.String()
+}
+
 // checkDLP runs DLP regex patterns against the full URL string including hostname.
 // Scanning the full URL catches secrets encoded in subdomains (e.g., sk-proj-xxx.evil.com)
 // and secrets split across query parameters. Iterative URL decoding
@@ -415,16 +444,38 @@ func (s *Scanner) checkDLP(parsed *url.URL) Result {
 		targets = append(targets, strings.ReplaceAll(hostname, ".", ""))
 	}
 
+	// Strip URL noise from path to catch secrets split by dots, slashes, and
+	// other separators (e.g., "/sk-ant-api03-AAAA.AAAA/AAAA" → "sk-ant-api03-AAAAAAAAAAAA").
+	// Covers both dot-split and encoded-slash attacks (%2f splitting path segments).
+	if stripped := stripURLNoise(parsed.Path); stripped != parsed.Path {
+		targets = append(targets, stripped)
+	}
+
+	// Concatenate all query values in URL order to catch secrets split across
+	// query parameters (e.g. "?part1=sk-ant-api03-&part2=AAAA..." → "sk-ant-api03-AAAA...").
+	// Uses RawQuery to preserve parameter order (url.Values is a map with random iteration).
+	// Also noise-strip the concatenation to defeat inserted garbage params
+	// (e.g., "?part1=sk-ant-&mid=%20&part2=AAAA" → "sk-ant-AAAA...").
+	if parsed.RawQuery != "" && strings.Contains(parsed.RawQuery, "&") {
+		concat := orderedQueryConcat(parsed.RawQuery)
+		targets = append(targets, concat)
+		if stripped := stripURLNoise(concat); stripped != concat {
+			targets = append(targets, stripped)
+		}
+	}
+
 	for _, target := range targets {
 		if target == "" {
 			continue
 		}
-		// Strip ALL control characters before DLP pattern matching. URL components
-		// should never contain control chars — they're evasion via URL encoding
-		// (e.g., %00 null byte, %08 backspace, %09 tab, %0a newline all break
-		// DLP regex matching). Also strips Unicode zero-width chars and applies
-		// NFKC to normalize compatibility decompositions (e.g., fullwidth → ASCII).
-		cleaned := norm.NFKC.String(stripControlChars(target))
+		// Full normalization before DLP pattern matching: strip control chars,
+		// NFKC, cross-script confusable mapping, and combining mark removal.
+		// Must match response scanning depth — otherwise attackers use homoglyphs
+		// in key prefixes (e.g., sk-օnt-... with Armenian օ U+0585 for 'a').
+		cleaned := stripControlChars(target)
+		cleaned = norm.NFKC.String(cleaned)
+		cleaned = ConfusableToASCII(cleaned)
+		cleaned = StripCombiningMarks(cleaned)
 		for _, p := range s.dlpPatterns {
 			if p.re.MatchString(cleaned) {
 				return Result{
@@ -437,12 +488,107 @@ func (s *Scanner) checkDLP(parsed *url.URL) Result {
 		}
 	}
 
+	// Subsequence scan: try ordered combinations of query values (size 2-4)
+	// to catch secrets split across params with junk values interleaved.
+	// E.g., "?a=sk-&x=junk&b=ant-&y=junk&c=api03-&z=junk&d=AAAA..." —
+	// combination (0,2,4,6) reconstructs "sk-ant-api03-AAAA...".
+	if result := s.querySubsequenceDLP(parsed.RawQuery); !result.Allowed {
+		return result
+	}
+
 	// Check for environment variable leaks
 	if result := s.checkEnvLeak(parsed); !result.Allowed {
 		return result
 	}
 
 	return Result{Allowed: true}
+}
+
+// querySubsequenceDLP checks ordered subsequences (combinations) of query
+// parameter values for DLP pattern matches. Catches secrets split across
+// multiple parameters with arbitrary junk values interleaved between fragments.
+// Tries subsequences of size 2-4 for URLs with 3-20 query params.
+// Cost: O(n^4) worst case, bounded at ~6k combinations for n=20.
+func (s *Scanner) querySubsequenceDLP(rawQuery string) Result {
+	if rawQuery == "" || !strings.Contains(rawQuery, "&") {
+		return Result{Allowed: true}
+	}
+
+	var values []string
+	for _, pair := range strings.Split(rawQuery, "&") {
+		_, value, _ := strings.Cut(pair, "=")
+		if value != "" {
+			values = append(values, IterativeDecode(value))
+		}
+	}
+
+	n := len(values)
+	if n < 3 || n > 20 {
+		return Result{Allowed: true}
+	}
+
+	for size := 2; size <= 4 && size <= n; size++ {
+		if result := s.checkDLPCombinations(values, n, size); !result.Allowed {
+			return result
+		}
+	}
+
+	return Result{Allowed: true}
+}
+
+// checkDLPCombinations generates all ordered combinations of the given size
+// from the values slice and checks each concatenation against DLP patterns.
+func (s *Scanner) checkDLPCombinations(values []string, n, size int) Result {
+	indices := make([]int, size)
+	for i := range indices {
+		indices[i] = i
+	}
+
+	for {
+		var b strings.Builder
+		for _, idx := range indices {
+			b.WriteString(values[idx])
+		}
+		concat := b.String()
+
+		cleaned := stripControlChars(concat)
+		cleaned = norm.NFKC.String(cleaned)
+		cleaned = ConfusableToASCII(cleaned)
+		cleaned = StripCombiningMarks(cleaned)
+
+		for _, p := range s.dlpPatterns {
+			if p.re.MatchString(cleaned) {
+				return Result{
+					Allowed: false,
+					Reason:  fmt.Sprintf("DLP match: %s (%s)", p.name, p.severity),
+					Scanner: "dlp",
+					Score:   1.0,
+				}
+			}
+		}
+
+		if !nextCombination(indices, n) {
+			break
+		}
+	}
+
+	return Result{Allowed: true}
+}
+
+// nextCombination advances indices to the next lexicographic combination.
+// Returns false when all combinations have been exhausted.
+func nextCombination(indices []int, n int) bool {
+	k := len(indices)
+	for i := k - 1; i >= 0; i-- {
+		if indices[i] < n-k+i {
+			indices[i]++
+			for j := i + 1; j < k; j++ {
+				indices[j] = indices[j-1] + 1
+			}
+			return true
+		}
+	}
+	return false
 }
 
 // checkEnvLeak scans for environment variable values in the URL.

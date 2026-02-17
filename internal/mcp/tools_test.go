@@ -1011,6 +1011,10 @@ func TestNormalizeToolText_ControlChars(t *testing.T) {
 		{"escape_char", "ignore\x1b previous", "ignore previous"},
 		{"DEL", "instead\x7f of search", "instead of search"},
 		{"all_c0_stripped", "\x01\x02\x03hello\x1f\x7f", "hello"},
+		{"C1_NEL_splitting", "IMPOR\u0085TANT", "IMPORTANT"},
+		{"C1_CSI_splitting", "IMPOR\u009BTANT", "IMPORTANT"},
+		{"C1_reverse_line_feed", "read\u008D .ssh/id_rsa", "read .ssh/id_rsa"},
+		{"C1_all_stripped", "\u0080\u0085\u008D\u009Bhello\u009F", "hello"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

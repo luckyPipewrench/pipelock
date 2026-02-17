@@ -589,3 +589,86 @@ func TestScanTextForDLP_MultipleControlChars(t *testing.T) {
 		t.Error("expected DLP to catch AWS key with multiple control chars")
 	}
 }
+
+// --- DLP confusable/combining mark bypass tests ---
+
+func TestScanTextForDLP_ConfusableBypass(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	tests := []struct {
+		name        string
+		text        string
+		wantPattern string
+	}{
+		{
+			name:        "Cyrillic_a_in_Anthropic_key",
+			text:        "sk-\u0430nt-" + strings.Repeat("a", 25), // Cyrillic а U+0430
+			wantPattern: "Anthropic API Key",
+		},
+		{
+			name:        "Armenian_a_in_Anthropic_key",
+			text:        "sk-\u0561nt-" + strings.Repeat("a", 25), // Armenian ա U+0561 → 'a'
+			wantPattern: "Anthropic API Key",
+		},
+		{
+			name:        "Greek_A_in_AWS_key",
+			text:        "\u0391KIA" + strings.Repeat("B", 16), // Greek Α U+0391 for A
+			wantPattern: "AWS Access Key",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := s.ScanTextForDLP(tt.text)
+			if result.Clean {
+				t.Errorf("confusable bypass not caught: %s", tt.name)
+			}
+			found := false
+			for _, m := range result.Matches {
+				if strings.Contains(m.PatternName, tt.wantPattern) {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("expected %s match, got: %v", tt.wantPattern, result.Matches)
+			}
+		})
+	}
+}
+
+func TestScanTextForDLP_CombiningMarkBypass(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// Combining long stroke overlay (U+0337) inserted into key prefix
+	key := "sk-a\u0337nt-" + strings.Repeat("a", 25) //nolint:goconst // test value
+	result := s.ScanTextForDLP(key)
+	if result.Clean {
+		t.Error("expected DLP to catch key with combining mark in prefix")
+	}
+}
+
+func TestScanTextForDLP_LatinSmallCapBypass(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// Latin small cap letters in GitHub token prefix
+	key := "ghp_" + strings.Repeat("D", 40) //nolint:goconst // test value
+	// Replace 'g' with Latin Small Capital G (not in confusable map, but 'ghp_' starts with lowercase g)
+	// Test combining mark + confusable in same key
+	keyWithMark := "gh\u0307p_" + strings.Repeat("D", 40)
+	result := s.ScanTextForDLP(keyWithMark)
+	if result.Clean {
+		t.Error("expected DLP to catch GitHub token with combining mark")
+	}
+
+	// Verify clean key still matches
+	result = s.ScanTextForDLP(key)
+	if result.Clean {
+		t.Error("expected DLP to catch clean GitHub token")
+	}
+}

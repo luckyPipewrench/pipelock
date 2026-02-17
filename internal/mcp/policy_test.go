@@ -550,6 +550,43 @@ func TestCheckToolCall_GitPushForceWithExtraTokens(t *testing.T) {
 	}
 }
 
+func TestCheckToolCall_LongFormFieldSplit(t *testing.T) {
+	pc := defaultPolicyConfig(t)
+	// Long-form flags in separate JSON object fields.
+	v := pc.CheckToolCall("bash", []string{"rm", "--recursive", "--force", "/tmp/demo"})
+	if !v.Matched {
+		t.Fatal("expected match for field-split rm --recursive --force")
+	}
+}
+
+func TestCheckToolCall_TabWhitespace(t *testing.T) {
+	pc := defaultPolicyConfig(t)
+	// Tab between rm and -rf — strings.Fields handles all unicode whitespace.
+	v := pc.CheckToolCall("bash", []string{"rm\t-rf /tmp/demo"})
+	if !v.Matched {
+		t.Fatal("expected match for rm<tab>-rf")
+	}
+}
+
+func TestCheckToolCall_NBSPWhitespace(t *testing.T) {
+	pc := defaultPolicyConfig(t)
+	// Non-breaking space (U+00A0) between rm and -rf.
+	v := pc.CheckToolCall("bash", []string{"rm\u00a0-rf /tmp/demo"})
+	if !v.Matched {
+		t.Fatal("expected match for rm<NBSP>-rf")
+	}
+}
+
+func TestCheckToolCall_GitForceWithLease(t *testing.T) {
+	pc := defaultPolicyConfig(t)
+	// --force-with-lease is still a force push variant.
+	// Regex push\s+--force\b matches because \b sits between 'e' and '-'.
+	v := pc.CheckToolCall("bash", []string{"git push --force-with-lease"})
+	if !v.Matched {
+		t.Fatal("expected match for git push --force-with-lease")
+	}
+}
+
 func TestCheckToolCall_SeparatorTokenRmRf(t *testing.T) {
 	// Codex bypass: ["rm","--","-rf","/tmp/demo"] — separator between rm and -rf.
 	pc := defaultPolicyConfig(t)

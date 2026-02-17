@@ -504,6 +504,16 @@ func TestCheckToolCall_KeyedGitPushForceValues(t *testing.T) {
 	}
 }
 
+func TestCheckToolCall_SplitFlagsRF(t *testing.T) {
+	// Split flags "-r -f" in a single value, with map ordering separating from "rm".
+	pc := defaultPolicyConfig(t)
+	// Simulates values-only extraction where map order puts rm and flags apart.
+	v := pc.CheckToolCall("bash", []string{"-r -f", "/tmp/demo", "rm"})
+	if !v.Matched {
+		t.Fatal("expected match for rm with split -r -f flags in non-adjacent values")
+	}
+}
+
 func TestCheckToolCall_SeparatorTokenRmRf(t *testing.T) {
 	// Codex bypass: ["rm","--","-rf","/tmp/demo"] — separator between rm and -rf.
 	pc := defaultPolicyConfig(t)

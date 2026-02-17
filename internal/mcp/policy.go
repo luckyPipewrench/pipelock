@@ -55,18 +55,25 @@ func NewPolicyConfig(cfg config.MCPToolPolicy) *PolicyConfig {
 
 // CheckToolCall evaluates a tool call against policy rules.
 // toolName is the MCP tool name (params.name). argStrings are all string
-// values extracted from params.arguments. The joined string is a space-delimited
-// concatenation of all argStrings, used to catch field-splitting evasion where
-// dangerous commands are split across array elements or separate fields
-// (e.g. {"argv":["rm","-rf","/"]} or {"cmd":"git","args":"push --force"}).
+// values extracted from params.arguments.
+//
+// Three matching strategies handle different evasion techniques:
+//  1. Joined string — catches array-split evasion (["rm","-rf","/"])
+//  2. Individual strings — catches path patterns (.ssh/id_rsa)
+//  3. Pairwise token combinations — catches map-ordering evasion where
+//     command and flags land in separate values with non-deterministic order
 func (pc *PolicyConfig) CheckToolCall(toolName string, argStrings []string) PolicyVerdict {
 	if pc == nil || len(pc.Rules) == 0 {
 		return PolicyVerdict{}
 	}
 
-	// Build a joined view so split-argument evasions are caught.
-	// Example: ["rm", "-rf", "/tmp"] → "rm -rf /tmp" matches rm\s+-[a-z]*[rf].
-	joined := strings.Join(argStrings, " ")
+	// Flatten multi-token values (e.g. "-r -f" → ["-r", "-f"]) so that
+	// flags split within a single field are treated as separate tokens.
+	var tokens []string
+	for _, s := range argStrings {
+		tokens = append(tokens, strings.Fields(s)...)
+	}
+	joined := strings.Join(tokens, " ")
 
 	var matchedRules []string
 	strictest := ""
@@ -87,27 +94,13 @@ func (pc *PolicyConfig) CheckToolCall(toolName string, argStrings []string) Poli
 			continue
 		}
 
-		// Check the joined argument string first (catches field-splitting evasion),
-		// then fall through to individual strings (catches path patterns like .ssh/id_rsa).
-		if rule.ArgPattern.MatchString(joined) {
+		if matchArgPattern(rule.ArgPattern, tokens, joined) {
 			matchedRules = append(matchedRules, rule.Name)
 			action := rule.Action
 			if action == "" {
 				action = pc.Action
 			}
 			strictest = stricterAction(strictest, action)
-			continue
-		}
-		for _, arg := range argStrings {
-			if rule.ArgPattern.MatchString(arg) {
-				matchedRules = append(matchedRules, rule.Name)
-				action := rule.Action
-				if action == "" {
-					action = pc.Action
-				}
-				strictest = stricterAction(strictest, action)
-				break // One match per rule is sufficient.
-			}
 		}
 	}
 
@@ -120,6 +113,33 @@ func (pc *PolicyConfig) CheckToolCall(toolName string, argStrings []string) Poli
 		Action:  strictest,
 		Rules:   matchedRules,
 	}
+}
+
+// matchArgPattern checks if a regex pattern matches against any view of the
+// argument tokens. It uses three strategies:
+//  1. Full joined string (fast path for ordered arrays)
+//  2. Individual tokens (catches self-contained patterns like file paths)
+//  3. Pairwise token combinations (catches map-ordering evasion where command
+//     and flags end up in separate tokens with non-deterministic iteration order)
+func matchArgPattern(pat *regexp.Regexp, tokens []string, joined string) bool {
+	if pat.MatchString(joined) {
+		return true
+	}
+	for _, t := range tokens {
+		if pat.MatchString(t) {
+			return true
+		}
+	}
+	// Pairwise: check "A B" and "B A" for every distinct pair.
+	// Typical arg lists have 3-10 tokens, so this is 6-90 checks — negligible cost.
+	for i, a := range tokens {
+		for j, b := range tokens {
+			if i != j && pat.MatchString(a+" "+b) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // CheckRequest evaluates a JSON-RPC request (single or batch) against policy.

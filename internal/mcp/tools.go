@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"unicode"
 
 	"golang.org/x/text/unicode/norm"
 
@@ -252,14 +253,10 @@ func tryParseToolsList(result json.RawMessage) []ToolDef {
 // "IMPOR\tTANT").
 func normalizeToolText(s string) string {
 	s = strings.Map(func(r rune) rune {
-		// Drop ALL C0 control characters and DEL.
 		if r <= 0x1F || r == 0x7F {
 			return -1
 		}
-		switch r {
-		case '\u200B', '\u200C', '\u200D', '\u2060',
-			'\u2061', '\u2062', '\u2063', '\u2064',
-			'\u00AD', '\u200E', '\u200F', '\uFEFF':
+		if unicode.Is(scanner.InvisibleRanges, r) {
 			return -1
 		}
 		return r

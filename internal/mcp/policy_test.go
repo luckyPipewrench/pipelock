@@ -185,7 +185,7 @@ func TestCheckToolCall_EmptyArgStrings(t *testing.T) {
 	}
 }
 
-// --- Field-splitting evasion (Dylan's Codex review) ---
+// --- Field-splitting evasion ---
 
 func TestCheckToolCall_SplitArgvRmRf(t *testing.T) {
 	pc := &PolicyConfig{
@@ -433,7 +433,7 @@ func TestCheckRequest_Batch_InvalidJSON(t *testing.T) {
 
 func TestCheckRequest_SplitArgvRmRf(t *testing.T) {
 	pc := testPolicyConfig(t)
-	// Exact repro from Dylan's Codex review.
+	// Field-split evasion regression.
 	line := `{"jsonrpc":"2.0","id":22,"method":"tools/call","params":{"name":"bash","arguments":{"argv":["rm","-rf","/tmp/demo"]}}}`
 	v := pc.CheckRequest([]byte(line))
 	if !v.Matched {
@@ -446,7 +446,7 @@ func TestCheckRequest_SplitArgvRmRf(t *testing.T) {
 
 func TestCheckRequest_SplitArgvGitPushForce(t *testing.T) {
 	pc := defaultPolicyConfig(t)
-	// Exact repro from Dylan's Codex review.
+	// Field-split evasion regression.
 	line := `{"jsonrpc":"2.0","id":23,"method":"tools/call","params":{"name":"bash","arguments":{"argv":["git","push","--force"]}}}`
 	v := pc.CheckRequest([]byte(line))
 	if !v.Matched {
@@ -463,10 +463,10 @@ func TestCheckRequest_SplitArgvResetHard(t *testing.T) {
 	}
 }
 
-// --- Codex bypass regressions (values-only extraction + separator token) ---
+// --- Bypass regressions (values-only extraction + separator token) ---
 
 func TestCheckRequest_KeyedFieldRmBypass(t *testing.T) {
-	// Codex bypass: {"cmd":"rm","flags":"-rf","target":"/tmp/demo"} — keys pollute joined string.
+	// Bypass: {"cmd":"rm","flags":"-rf","target":"/tmp/demo"} — keys pollute joined string.
 	// With values-only extraction, joined string is "rm -rf /tmp/demo" (deterministic order not
 	// guaranteed for maps, but keys are excluded so adjacency is more likely).
 	pc := defaultPolicyConfig(t)
@@ -496,7 +496,7 @@ func TestCheckToolCall_ValuesOnlyRmRf(t *testing.T) {
 }
 
 func TestCheckToolCall_KeyedGitPushForceValues(t *testing.T) {
-	// Codex bypass: {"tool":"git","verb":"push","flag":"--force"} — values only.
+	// Bypass: {"tool":"git","verb":"push","flag":"--force"} — values only.
 	pc := defaultPolicyConfig(t)
 	v := pc.CheckToolCall("bash", []string{"git", "push", "--force"})
 	if !v.Matched {
@@ -588,7 +588,7 @@ func TestCheckToolCall_GitForceWithLease(t *testing.T) {
 }
 
 func TestCheckToolCall_SeparatorTokenRmRf(t *testing.T) {
-	// Codex bypass: ["rm","--","-rf","/tmp/demo"] — separator between rm and -rf.
+	// Bypass: ["rm","--","-rf","/tmp/demo"] — separator between rm and -rf.
 	pc := defaultPolicyConfig(t)
 	v := pc.CheckToolCall("bash", []string{"rm", "--", "-rf", "/tmp/demo"})
 	if !v.Matched {

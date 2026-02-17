@@ -3,6 +3,7 @@ package scanner
 import (
 	"fmt"
 	"strings"
+	"unicode"
 
 	"golang.org/x/text/unicode/norm"
 )
@@ -149,6 +150,24 @@ func ConfusableToASCII(s string) string {
 	}, s)
 }
 
+// StripCombiningMarks removes Unicode combining marks (category Mn — Mark, nonspacing)
+// that survive NFKC normalization. Attackers insert combining marks between letters
+// to break keyword matching (e.g., "i\u0307gnore" → "i̇gnore" evades "ignore" regex).
+// NFKC composes where precomposed forms exist (n\u0303 → ñ), making the mark
+// invisible to strings.Map. NFD decomposition reverses this (ñ → n + \u0303) so
+// the combining mark can be stripped. Applied after NFKC + confusable mapping.
+func StripCombiningMarks(s string) string {
+	// NFD decomposes precomposed chars: é → e + combining acute, ñ → n + combining tilde.
+	// Without this, NFKC-composed characters like ñ would survive mark stripping.
+	s = norm.NFD.String(s)
+	return strings.Map(func(r rune) rune {
+		if unicode.Is(unicode.Mn, r) {
+			return -1
+		}
+		return r
+	}, s)
+}
+
 // stripControlChars removes ALL ASCII control characters (0x00-0x1F, 0x7F) and
 // Unicode zero-width/invisible characters. Unlike stripZeroWidth, this also
 // strips whitespace control chars (\t, \n, \r) because DLP patterns match
@@ -187,6 +206,10 @@ func (s *Scanner) ScanResponse(content string) ResponseScanResult {
 	// Map cross-script confusables (Cyrillic/Greek lookalikes) to Latin equivalents.
 	// NFKC does NOT handle these — Cyrillic о (U+043E) stays as о without this step.
 	content = ConfusableToASCII(content)
+	// Strip combining marks that survive NFKC (e.g., i+\u0307 has no precomposed form,
+	// leaving "i̇" which breaks "ignore" matching). Must run after NFKC so that
+	// composable sequences are composed first, not blindly stripped.
+	content = StripCombiningMarks(content)
 	// Normalize Unicode whitespace to ASCII space so \s+ in regex patterns
 	// catches exotic spaces (e.g., Ogham space U+1680, Mongolian vowel separator U+180E).
 	content = normalizeWhitespace(content)

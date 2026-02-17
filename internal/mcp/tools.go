@@ -130,6 +130,12 @@ var toolPoisonPatterns = []*compiledToolPattern{
 		re:   regexp.MustCompile(`(?i)(read|send|include|exfiltrate|steal|access|retrieve|fetch|dump|upload|cat)\s+.{0,40}(\.ssh|\.env|\.aws|credentials|private[_\s]?key|id_rsa|passwd)`),
 	},
 	{
+		// Reverse order: path mentioned before action verb.
+		// Catches "~/.ssh/config and upload" style directives.
+		name: "File Exfiltration Directive",
+		re:   regexp.MustCompile(`(?i)(\.ssh|\.env|\.aws|credentials|private[_\s]?key|id_rsa|passwd).{0,40}(read|send|exfiltrate|steal|retrieve|fetch|dump|upload|cat)\b`),
+	},
+	{
 		name: "Cross-Tool Manipulation",
 		re:   regexp.MustCompile(`(?i)(instead\s+of|rather\s+than|don't\s+use|never\s+use|always\s+prefer)\s+(using\s+)?(the\s+)?\w+\s+(tool|function|command)`),
 	},
@@ -262,6 +268,8 @@ func normalizeToolText(s string) string {
 	// Map cross-script confusables (Cyrillic/Greek lookalikes) to Latin equivalents.
 	// NFKC does NOT handle these — Cyrillic о (U+043E) stays as о without this step.
 	s = scanner.ConfusableToASCII(s)
+	// Strip combining marks that survive NFKC (e.g., i+\u0307 → "i̇" breaks "ignore").
+	s = scanner.StripCombiningMarks(s)
 	return strings.Map(func(r rune) rune {
 		switch r {
 		case '\u1680', '\u180E', '\u2028', '\u2029':

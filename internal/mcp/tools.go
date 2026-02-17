@@ -36,6 +36,7 @@ type ToolScanMatch struct {
 	DriftDetected bool                    `json:"drift_detected,omitempty"`
 	PreviousHash  string                  `json:"previous_hash,omitempty"`
 	CurrentHash   string                  `json:"current_hash,omitempty"`
+	DriftDetail   string                  `json:"drift_detail,omitempty"`
 }
 
 // ToolScanResult describes the outcome of scanning a tools/list response.
@@ -59,11 +60,15 @@ type ToolScanConfig struct {
 type ToolBaseline struct {
 	mu     sync.Mutex
 	hashes map[string]string // tool name → SHA256(description + inputSchema)
+	descs  map[string]string // tool name → last known description text
 }
 
 // NewToolBaseline creates a new empty tool baseline.
 func NewToolBaseline() *ToolBaseline {
-	return &ToolBaseline{hashes: make(map[string]string)}
+	return &ToolBaseline{
+		hashes: make(map[string]string),
+		descs:  make(map[string]string),
+	}
 }
 
 // maxBaselineTools caps the number of tracked tools to prevent unbounded
@@ -102,6 +107,52 @@ func (tb *ToolBaseline) CheckAndUpdate(name, hash string) (bool, string) {
 		return true, prev
 	}
 	return false, ""
+}
+
+// StoreDesc saves a tool's description text for later diff generation.
+// Called alongside CheckAndUpdate. Respects maxBaselineTools capacity.
+func (tb *ToolBaseline) StoreDesc(name, desc string) {
+	tb.mu.Lock()
+	defer tb.mu.Unlock()
+	if _, exists := tb.descs[name]; !exists && len(tb.descs) >= maxBaselineTools {
+		return
+	}
+	tb.descs[name] = desc
+}
+
+// DiffSummary returns a human-readable summary of what changed between the
+// stored description and the new one. Returns "" if no previous description.
+func (tb *ToolBaseline) DiffSummary(name, newDesc string) string {
+	tb.mu.Lock()
+	prev, exists := tb.descs[name]
+	tb.mu.Unlock()
+
+	if !exists {
+		return ""
+	}
+
+	prevLen := len([]rune(prev))
+	newLen := len([]rune(newDesc))
+
+	var parts []string
+	if newLen > prevLen {
+		parts = append(parts, fmt.Sprintf("description grew from %d to %d chars (+%d)", prevLen, newLen, newLen-prevLen))
+	} else if newLen < prevLen {
+		parts = append(parts, fmt.Sprintf("description shrank from %d to %d chars (-%d)", prevLen, newLen, prevLen-newLen))
+	} else {
+		parts = append(parts, fmt.Sprintf("description changed (%d chars)", newLen))
+	}
+
+	// Show added text (new content not in the old description).
+	if newLen > prevLen && len(newDesc) > len(prev) {
+		added := newDesc[len(prev):]
+		if runes := []rune(added); len(runes) > 200 {
+			added = string(runes[:200]) + "..."
+		}
+		parts = append(parts, fmt.Sprintf("added: %q", added))
+	}
+
+	return strings.Join(parts, "; ")
 }
 
 // compiledToolPattern is a precompiled regex for tool-specific poisoning detection.
@@ -402,8 +453,11 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) []T
 				match.DriftDetected = true
 				match.PreviousHash = prevHash
 				match.CurrentHash = hash
+				match.DriftDetail = cfg.Baseline.DiffSummary(tool.Name, text)
 				hasFinding = true
 			}
+			// Store description AFTER diff so next drift compares against current.
+			cfg.Baseline.StoreDesc(tool.Name, text)
 		}
 
 		if hasFinding {
@@ -427,5 +481,8 @@ func logToolFindings(logW io.Writer, lineNum int, result ToolScanResult) {
 		}
 		_, _ = fmt.Fprintf(logW, "pipelock: line %d: tool %q: %s\n",
 			lineNum, m.ToolName, strings.Join(reasons, ", "))
+		if m.DriftDetail != "" {
+			_, _ = fmt.Fprintf(logW, "  %s\n", m.DriftDetail)
+		}
 	}
 }

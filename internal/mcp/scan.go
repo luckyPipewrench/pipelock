@@ -323,7 +323,7 @@ func writeTextVerdict(w io.Writer, v ScanVerdict) error {
 	}
 
 	if v.Error != "" {
-		_, err := fmt.Fprintf(w, "line %d: [ERROR] %s\n", v.Line, v.Error)
+		_, err := fmt.Fprintf(w, "line %d: [ERROR] %s\n", v.Line, v.Error) //nolint:gosec // G705: CLI output, not web
 		return err
 	}
 
@@ -331,6 +331,6 @@ func writeTextVerdict(w io.Writer, v ScanVerdict) error {
 	for _, m := range v.Matches {
 		names = append(names, m.PatternName)
 	}
-	_, err := fmt.Fprintf(w, "line %d: [INJECTION] %s (action: %s)\n", v.Line, strings.Join(names, ", "), v.Action)
+	_, err := fmt.Fprintf(w, "line %d: [INJECTION] %s (action: %s)\n", v.Line, strings.Join(names, ", "), v.Action) //nolint:gosec // G705: CLI output, not web
 	return err
 }

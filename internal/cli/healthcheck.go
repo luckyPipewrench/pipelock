@@ -31,7 +31,7 @@ Examples:
 				return fmt.Errorf("health check failed: %w", err)
 			}
 
-			resp, err := http.DefaultClient.Do(req)
+			resp, err := http.DefaultClient.Do(req) //nolint:gosec // G704: URL from user flag, intentional
 			if err != nil {
 				return fmt.Errorf("health check failed: %w", err)
 			}

@@ -123,9 +123,9 @@ func stripZeroWidth(s string) string {
 // confusables — Cyrillic а (U+0430) stays as а, not Latin a. Attackers exploit
 // this to bypass keyword-based injection detection (e.g., "ignоre" with Cyrillic о).
 //
-// Covers Cyrillic and Greek lookalikes commonly used in homoglyph attacks.
-// Not exhaustive — focused on characters that appear in English-language
-// injection phrases ("ignore", "instructions", "system", "execute", etc.).
+// Covers Cyrillic, Greek, Armenian, Cherokee, and Latin Extended (small caps/IPA)
+// lookalikes commonly used in homoglyph attacks. Not exhaustive — focused on
+// characters that appear in English-language injection phrases and DLP key prefixes.
 var confusableMap = map[rune]rune{
 	// Cyrillic uppercase → Latin
 	'\u0410': 'A', // А
@@ -182,6 +182,34 @@ var confusableMap = map[rune]rune{
 	'\u03BA': 'k', // κ
 	'\u03BD': 'v', // ν (nu)
 	'\u03BF': 'o', // ο
+
+	// Armenian → Latin (visually identical in most fonts)
+	'\u0555': 'O', // Օ (Armenian Capital Letter Oh)
+	'\u0585': 'o', // օ (Armenian Small Letter Oh)
+	'\u054D': 'S', // Ս (Armenian Capital Letter Seh)
+	'\u057D': 's', // ս (Armenian Small Letter Seh)
+	'\u054C': 'L', // Լ — not perfect but close in sans-serif
+	'\u0570': 'h', // հ (Armenian Small Letter Ho)
+	'\u0578': 'n', // ո (Armenian Small Letter Vo — looks like n)
+	'\u057C': 'n', // ռ (Armenian Small Letter Ra — looks like n in some fonts)
+	'\u0561': 'a', // ա (Armenian Small Letter Ayb — similar to a in some fonts)
+
+	// Cherokee → Latin (uppercase only; Cherokee syllabary has many Latin lookalikes)
+	'\u13AA': 'A', // Ꭺ (Cherokee Letter GA — looks like A)
+	'\u13A2': 'I', // Ꭲ (Cherokee Letter I — looks like I)
+	'\u13D2': 'P', // Ꮲ
+	'\u13DA': 'S', // Ꮪ
+	'\u13A1': 'E', // Ꭱ — visually close to E
+	'\u13B3': 'W', // Ꮃ
+	'\u13D4': 'T', // Ꮤ
+
+	// Latin Extended / IPA (small caps that survive NFKC)
+	'\u1D00': 'A', // ᴀ (Latin Letter Small Capital A)
+	'\u1D04': 'C', // ᴄ (Latin Letter Small Capital C)
+	'\u1D07': 'E', // ᴇ (Latin Letter Small Capital E)
+	'\u1D0F': 'O', // ᴏ (Latin Letter Small Capital O)
+	'\u026A': 'I', // ɪ (Latin Letter Small Capital I)
+	'\u0299': 'B', // ʙ (Latin Letter Small Capital B)
 }
 
 // ConfusableToASCII maps visually identical non-Latin characters to their Latin
@@ -214,8 +242,8 @@ func StripCombiningMarks(s string) string {
 	}, s)
 }
 
-// stripControlChars removes ALL ASCII control characters (0x00-0x1F, 0x7F) and
-// Unicode zero-width/invisible characters. Unlike stripZeroWidth, this also
+// stripControlChars removes ALL C0 (0x00-0x1F), C1 (0x80-0x9F), DEL (0x7F),
+// and Unicode zero-width/invisible characters. Unlike stripZeroWidth, this also
 // strips whitespace control chars (\t, \n, \r) because DLP patterns match
 // specific character sequences where ANY control char is evasion, not content.
 // Used in DLP scanning paths (fetch proxy URLs, MCP text, env leak detection).

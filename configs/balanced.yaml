@@ -126,7 +126,11 @@ response_scanning:
     - name: "Output Format Forcing"
       regex: '(?i)(respond\s+with|first\s+(output|write|print|say))\s*[\[\("]?\s*(FILTERED|ERROR|BLOCKED|REFUSED|DECLINED|CENSORED)\s*[\]\)"]?\s*(then|followed\s+by|and\s+then|after\s+(that|which))'
     - name: "System Prompt Extraction"
-      regex: '(?i)(repeat\s+(your|the)\s+(entire\s+)?(instructions|system\s+prompt|initial\s+prompt|rules)|what\s+(is|are)\s+your\s+(system\s+prompt|instructions|rules|directives)|output\s+(your|the)\s+(full\s+)?(system|initial)\s+(prompt|instructions|message)|show\s+me\s+(your|the)\s+(system\s+prompt|hidden\s+instructions|initial\s+instructions))'
+      regex: '(?i)(repeat\s+(your|the)\s+(entire\s+)?(instructions|system\s+prompt|initial\s+prompt|rules)|what\s+(is|are)\s+your\s+(system\s+prompt|instructions|rules|directives)|output\s+(your|the)\s+(full\s+)?(system|initial)\s+(prompt|instructions|message)|show\s+me\s+(your|the)\s+(system\s+prompt|hidden\s+instructions|initial\s+instructions)|(disclose|expose|dump|divulge)\s+(your|the)\s+(hidden\s+|secret\s+|internal\s+)*(system\s+|initialization\s+)*(prompt|instructions|rules|directives))'
+    - name: "Instruction Invalidation"
+      regex: '(?i)(treat|consider|regard)\s+(all\s+)?(earlier|prior|previous|preceding|above)\s+(directions|instructions|guidelines|rules|prompts?)\s+as\s+(obsolete|void|invalid|superseded|overridden|null|cancelled|revoked|inapplicable)'
+    - name: "Instruction Dismissal"
+      regex: '(?i)(set|put|cast|push|throw)\s+(all\s+)?(previous|prior|earlier|preceding|above|existing|current)\s+(directives|instructions|guidelines|rules|prompts?|constraints)\s+(aside|away)'
 
 mcp_input_scanning:
   enabled: true

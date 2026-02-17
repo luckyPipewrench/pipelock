@@ -353,7 +353,7 @@ type InputScanConfig struct {
 // Both clientOut and logW are wrapped in mutex adapters to prevent concurrent
 // write races between the input scanning goroutine, blocked request drainer,
 // child process stderr, and the main goroutine's response scanning.
-func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW io.Writer, command []string, sc *scanner.Scanner, approver *hitl.Approver, inputCfg *InputScanConfig, toolCfg *ToolScanConfig) error {
+func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW io.Writer, command []string, sc *scanner.Scanner, approver *hitl.Approver, inputCfg *InputScanConfig, toolCfg *ToolScanConfig, policyCfg *PolicyConfig) error {
 	cmd := exec.CommandContext(ctx, command[0], command[1:]...) //nolint:gosec // command comes from user CLI args
 
 	// Wrap shared writers in mutex adapters. Multiple goroutines write to
@@ -396,7 +396,13 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		if inputCfg != nil && inputCfg.Enabled {
 			clientReader := NewStdioReader(clientIn)
 			serverWriter := NewStdioWriter(serverIn)
-			ForwardScannedInput(clientReader, serverWriter, safeLogW, sc, inputCfg.Action, inputCfg.OnParseError, blockedCh)
+			ForwardScannedInput(clientReader, serverWriter, safeLogW, sc, inputCfg.Action, inputCfg.OnParseError, blockedCh, policyCfg)
+		} else if policyCfg != nil {
+			// Policy checking enabled but content scanning disabled.
+			// Route through ForwardScannedInput with pass-through content scanning.
+			clientReader := NewStdioReader(clientIn)
+			serverWriter := NewStdioWriter(serverIn)
+			ForwardScannedInput(clientReader, serverWriter, safeLogW, sc, "warn", "forward", blockedCh, policyCfg) //nolint:goconst // config action value
 		} else {
 			close(blockedCh)                   // No input scanning — close channel immediately.
 			_, _ = io.Copy(serverIn, clientIn) //nolint:errcheck // broken pipe on server exit is expected
@@ -414,7 +420,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 				// Notifications have no ID — silently drop (no error response).
 				continue
 			}
-			resp := blockRequestResponse(blocked.ID)
+			resp := blockRequestResponse(blocked)
 			_ = safeClientOut.WriteMessage(resp) //nolint:errcheck // best-effort
 		}
 	}()

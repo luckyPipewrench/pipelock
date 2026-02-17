@@ -247,7 +247,7 @@ func TestMcpProxyCmd_CleanPassthrough(t *testing.T) {
 		t.Skip("echo subprocess test requires unix")
 	}
 
-	cleanJSON := `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"Safe content."}]}}`
+	cleanJSON := `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"Safe content."}]}}` //nolint:goconst // test value
 
 	cmd := rootCmd()
 	cmd.SetArgs([]string{"mcp", "proxy", "--", "echo", cleanJSON})
@@ -362,6 +362,70 @@ func TestMcpProxyCmd_AskAction(t *testing.T) {
 	}
 	if errResp.Error.Code != -32000 {
 		t.Errorf("expected error code -32000, got %d", errResp.Error.Code)
+	}
+}
+
+func TestMcpProxyCmd_AutoEnablesToolPolicy(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("echo subprocess test requires unix")
+	}
+
+	cleanJSON := `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"Safe content."}]}}` //nolint:goconst // test value
+
+	// No config file — all features auto-enabled.
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"mcp", "proxy", "--", "echo", cleanJSON})
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	errBuf := &strings.Builder{}
+	cmd.SetErr(errBuf)
+	cmd.SetIn(bytes.NewReader(nil))
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	stderr := errBuf.String()
+	if !strings.Contains(stderr, "auto-enabling MCP tool call policy") {
+		t.Errorf("expected auto-enable policy message, got stderr: %s", stderr)
+	}
+	if !strings.Contains(stderr, "policy=warn") {
+		t.Errorf("expected policy=warn in status line, got stderr: %s", stderr)
+	}
+}
+
+func TestMcpProxyCmd_ExplicitPolicyNotAutoEnabled(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("echo subprocess test requires unix")
+	}
+
+	cleanJSON := `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"Safe content."}]}}` //nolint:goconst // test value
+
+	// Config with explicit (disabled) policy — should NOT auto-enable.
+	cfgContent := "mcp_tool_policy:\n  enabled: false\n  action: block\n"
+	cfgFile := t.TempDir() + "/explicit.yaml"
+	if err := os.WriteFile(cfgFile, []byte(cfgContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"mcp", "proxy", "--config", cfgFile, "--", "echo", cleanJSON})
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	errBuf := &strings.Builder{}
+	cmd.SetErr(errBuf)
+	cmd.SetIn(bytes.NewReader(nil))
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	stderr := errBuf.String()
+	if strings.Contains(stderr, "auto-enabling MCP tool call policy") {
+		t.Errorf("should NOT auto-enable when explicitly configured, got stderr: %s", stderr)
+	}
+	if !strings.Contains(stderr, "policy=disabled") {
+		t.Errorf("expected policy=disabled in status line, got stderr: %s", stderr)
 	}
 }
 

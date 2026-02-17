@@ -1221,3 +1221,221 @@ func TestValidateReload_MCPToolScanningDisabled(t *testing.T) {
 		t.Error("expected warning for MCP tool scanning disabled")
 	}
 }
+
+// --- MCP Tool Policy Tests ---
+
+func TestApplyDefaults_MCPToolPolicyActionDefaultsWhenEnabled(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPToolPolicy.Enabled = true
+	cfg.MCPToolPolicy.Action = "" // not set
+	cfg.ApplyDefaults()
+
+	if cfg.MCPToolPolicy.Action != "warn" {
+		t.Errorf("expected Action=warn when enabled with no action, got %q", cfg.MCPToolPolicy.Action)
+	}
+}
+
+func TestApplyDefaults_MCPToolPolicyActionNotSetWhenDisabled(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPToolPolicy.Enabled = false
+	cfg.MCPToolPolicy.Action = ""
+	cfg.ApplyDefaults()
+
+	if cfg.MCPToolPolicy.Action != "" {
+		t.Errorf("expected empty action when disabled, got %q", cfg.MCPToolPolicy.Action)
+	}
+}
+
+func TestValidate_MCPToolPolicyValidActions(t *testing.T) {
+	for _, action := range []string{"warn", "block"} {
+		cfg := Defaults()
+		cfg.MCPToolPolicy.Enabled = true
+		cfg.MCPToolPolicy.Action = action
+		cfg.MCPToolPolicy.Rules = []ToolPolicyRule{
+			{Name: "test", ToolPattern: "bash"},
+		}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("action %q should be valid, got: %v", action, err)
+		}
+	}
+}
+
+func TestValidate_MCPToolPolicyInvalidAction(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPToolPolicy.Enabled = true
+	cfg.MCPToolPolicy.Action = "strip"
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for strip action on tool policy")
+	}
+}
+
+func TestValidate_MCPToolPolicyDisabledSkipsValidation(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPToolPolicy.Enabled = false
+	cfg.MCPToolPolicy.Action = "invalid"
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("disabled tool policy should skip validation, got: %v", err)
+	}
+}
+
+func TestValidate_MCPToolPolicyRuleMissingName(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPToolPolicy.Enabled = true
+	cfg.MCPToolPolicy.Action = "warn" //nolint:goconst // test value
+	cfg.MCPToolPolicy.Rules = []ToolPolicyRule{
+		{Name: "", ToolPattern: "bash"},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Error("expected error for rule missing name")
+	}
+}
+
+func TestValidate_MCPToolPolicyRuleMissingToolPattern(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPToolPolicy.Enabled = true
+	cfg.MCPToolPolicy.Action = "warn" //nolint:goconst // test value
+	cfg.MCPToolPolicy.Rules = []ToolPolicyRule{
+		{Name: "test", ToolPattern: ""},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Error("expected error for rule missing tool_pattern")
+	}
+}
+
+func TestValidate_MCPToolPolicyRuleInvalidToolPatternRegex(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPToolPolicy.Enabled = true
+	cfg.MCPToolPolicy.Action = "warn" //nolint:goconst // test value
+	cfg.MCPToolPolicy.Rules = []ToolPolicyRule{
+		{Name: "test", ToolPattern: "[invalid"},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Error("expected error for invalid tool_pattern regex")
+	}
+}
+
+func TestValidate_MCPToolPolicyRuleInvalidArgPatternRegex(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPToolPolicy.Enabled = true
+	cfg.MCPToolPolicy.Action = "warn" //nolint:goconst // test value
+	cfg.MCPToolPolicy.Rules = []ToolPolicyRule{
+		{Name: "test", ToolPattern: "bash", ArgPattern: "[invalid"},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Error("expected error for invalid arg_pattern regex")
+	}
+}
+
+func TestValidate_MCPToolPolicyRuleValidArgPattern(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPToolPolicy.Enabled = true
+	cfg.MCPToolPolicy.Action = "warn" //nolint:goconst // test value
+	cfg.MCPToolPolicy.Rules = []ToolPolicyRule{
+		{Name: "test", ToolPattern: "bash", ArgPattern: `(?i)\brm\s+-rf\b`},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("valid arg_pattern should pass, got: %v", err)
+	}
+}
+
+func TestValidate_MCPToolPolicyRulePerRuleAction(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPToolPolicy.Enabled = true
+	cfg.MCPToolPolicy.Action = "warn" //nolint:goconst // test value
+	cfg.MCPToolPolicy.Rules = []ToolPolicyRule{
+		{Name: "test", ToolPattern: "bash", Action: "block"},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("valid per-rule action should pass, got: %v", err)
+	}
+}
+
+func TestValidate_MCPToolPolicyRuleInvalidPerRuleAction(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPToolPolicy.Enabled = true
+	cfg.MCPToolPolicy.Action = "warn" //nolint:goconst // test value
+	cfg.MCPToolPolicy.Rules = []ToolPolicyRule{
+		{Name: "test", ToolPattern: "bash", Action: "ask"},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Error("expected error for invalid per-rule action")
+	}
+}
+
+func TestValidate_MCPToolPolicyEmptyRulesIsValid(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPToolPolicy.Enabled = true
+	cfg.MCPToolPolicy.Action = "warn" //nolint:goconst // test value
+	cfg.MCPToolPolicy.Rules = nil
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("empty rules list should be valid, got: %v", err)
+	}
+}
+
+func TestValidateReload_MCPToolPolicyDisabled(t *testing.T) {
+	old := Defaults()
+	old.MCPToolPolicy.Enabled = true
+
+	updated := Defaults()
+	updated.MCPToolPolicy.Enabled = false
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == "mcp_tool_policy.enabled" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected warning for MCP tool policy disabled")
+	}
+}
+
+func TestValidateReload_MCPToolPolicyRulesReduced(t *testing.T) {
+	old := Defaults()
+	old.MCPToolPolicy.Rules = []ToolPolicyRule{
+		{Name: "a", ToolPattern: "x"},
+		{Name: "b", ToolPattern: "y"},
+	}
+
+	updated := Defaults()
+	updated.MCPToolPolicy.Rules = []ToolPolicyRule{
+		{Name: "a", ToolPattern: "x"},
+	}
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == "mcp_tool_policy.rules" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected warning for tool policy rules reduced")
+	}
+}
+
+func TestValidateReload_MCPToolPolicyRulesIncreased_NoWarning(t *testing.T) {
+	old := Defaults()
+	old.MCPToolPolicy.Rules = []ToolPolicyRule{
+		{Name: "a", ToolPattern: "x"},
+	}
+
+	updated := Defaults()
+	updated.MCPToolPolicy.Rules = []ToolPolicyRule{
+		{Name: "a", ToolPattern: "x"},
+		{Name: "b", ToolPattern: "y"},
+	}
+
+	warnings := ValidateReload(old, updated)
+	for _, w := range warnings {
+		if w.Field == "mcp_tool_policy.rules" {
+			t.Error("should not warn when rules increased")
+		}
+	}
+}

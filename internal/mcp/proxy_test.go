@@ -666,7 +666,7 @@ func TestRunProxy_CleanPassthrough(t *testing.T) {
 	var out bytes.Buffer
 	logBuf := &syncBuffer{}
 
-	err := RunProxy(context.Background(), strings.NewReader(""), &out, logBuf, []string{"echo", cleanResponse}, sc, nil, nil, nil)
+	err := RunProxy(context.Background(), strings.NewReader(""), &out, logBuf, []string{"echo", cleanResponse}, sc, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -686,7 +686,7 @@ func TestRunProxy_BlocksInjection(t *testing.T) {
 	var out bytes.Buffer
 	logBuf := &syncBuffer{}
 
-	err := RunProxy(context.Background(), strings.NewReader(""), &out, logBuf, []string{"echo", injectionResponse}, sc, nil, nil, nil)
+	err := RunProxy(context.Background(), strings.NewReader(""), &out, logBuf, []string{"echo", injectionResponse}, sc, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -713,7 +713,7 @@ func TestRunProxy_AskAction(t *testing.T) {
 	var out bytes.Buffer
 	logBuf := &syncBuffer{}
 
-	err := RunProxy(context.Background(), strings.NewReader(""), &out, logBuf, []string{"echo", injectionResponse}, sc, approver, nil, nil)
+	err := RunProxy(context.Background(), strings.NewReader(""), &out, logBuf, []string{"echo", injectionResponse}, sc, approver, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -745,7 +745,7 @@ func TestRunProxy_InputScanningBlocksDirtyRequest(t *testing.T) {
 	}
 
 	// echo outputs a clean server response regardless of stdin.
-	err := RunProxy(context.Background(), strings.NewReader(dirtyReq), &out, logBuf, []string{"echo", cleanResponse}, sc, nil, inputCfg, nil)
+	err := RunProxy(context.Background(), strings.NewReader(dirtyReq), &out, logBuf, []string{"echo", cleanResponse}, sc, nil, inputCfg, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -787,7 +787,7 @@ func TestRunProxy_InputScanningForwardsCleanRequest(t *testing.T) {
 		OnParseError: "block",
 	}
 
-	err := RunProxy(context.Background(), strings.NewReader(cleanReq), &out, logBuf, []string{"echo", cleanResponse}, sc, nil, inputCfg, nil)
+	err := RunProxy(context.Background(), strings.NewReader(cleanReq), &out, logBuf, []string{"echo", cleanResponse}, sc, nil, inputCfg, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -810,7 +810,7 @@ func TestRunProxy_InvalidCommand(t *testing.T) {
 	var out bytes.Buffer
 	logBuf := &syncBuffer{}
 
-	err := RunProxy(context.Background(), strings.NewReader(""), &out, logBuf, []string{"/nonexistent/binary"}, sc, nil, nil, nil)
+	err := RunProxy(context.Background(), strings.NewReader(""), &out, logBuf, []string{"/nonexistent/binary"}, sc, nil, nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for invalid command")
 	}
@@ -829,7 +829,7 @@ func TestRunProxy_ContextCancel(t *testing.T) {
 	cancel() // cancel immediately
 
 	// cat with no stdin and cancelled context should exit quickly.
-	_ = RunProxy(ctx, strings.NewReader(""), &out, logBuf, []string{"cat"}, sc, nil, nil, nil)
+	_ = RunProxy(ctx, strings.NewReader(""), &out, logBuf, []string{"cat"}, sc, nil, nil, nil, nil)
 }
 
 // --- ForwardScanned write error tests ---
@@ -999,7 +999,7 @@ func TestRunProxy_ScanWriteError(t *testing.T) {
 	logBuf := &syncBuffer{}
 	w := &errWriter{limit: 0} // clientOut fails → scanErr returned
 
-	err := RunProxy(context.Background(), strings.NewReader(""), w, logBuf, []string{"echo", cleanResponse}, sc, nil, nil, nil)
+	err := RunProxy(context.Background(), strings.NewReader(""), w, logBuf, []string{"echo", cleanResponse}, sc, nil, nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected scan error")
 	}
@@ -1022,7 +1022,7 @@ func TestRunProxy_WithToolConfig(t *testing.T) {
 		DetectDrift: true,
 	}
 
-	err := RunProxy(context.Background(), strings.NewReader(""), &out, logBuf, []string{"echo", cleanResponse}, sc, nil, nil, toolCfg)
+	err := RunProxy(context.Background(), strings.NewReader(""), &out, logBuf, []string{"echo", cleanResponse}, sc, nil, nil, toolCfg, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1052,7 +1052,7 @@ func TestRunProxy_InputScanningBlocksNotification(t *testing.T) {
 		OnParseError: "block", //nolint:goconst // test value
 	}
 
-	err := RunProxy(context.Background(), strings.NewReader(notification), &out, logBuf, []string{"echo", cleanResponse}, sc, nil, inputCfg, nil)
+	err := RunProxy(context.Background(), strings.NewReader(notification), &out, logBuf, []string{"echo", cleanResponse}, sc, nil, inputCfg, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1555,6 +1555,159 @@ func TestStripOrBlock_ValidStrip(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "-32000") {
 		t.Error("valid JSON should be stripped, not blocked")
+	}
+}
+
+// --- Tool call policy proxy integration tests ---
+
+func TestRunProxy_PolicyBlocksDangerousToolCall(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("echo subprocess test requires unix")
+	}
+
+	sc := testScannerWithAction(t, "warn")
+	var out bytes.Buffer
+	logBuf := &syncBuffer{}
+
+	// Client sends a dangerous tool call.
+	req := `{"jsonrpc":"2.0","id":50,"method":"tools/call","params":{"name":"bash","arguments":{"command":"rm -rf /tmp/important"}}}` + "\n"
+
+	inputCfg := &InputScanConfig{
+		Enabled:      true,
+		Action:       "warn",
+		OnParseError: "block",
+	}
+
+	policyCfg := NewPolicyConfig(config.MCPToolPolicy{
+		Enabled: true,
+		Action:  "block",
+		Rules: []config.ToolPolicyRule{
+			{
+				Name:        "Destructive File Delete",
+				ToolPattern: `(?i)^bash$`,
+				ArgPattern:  `(?i)\brm\s+(-[a-z]*[rf])`,
+				Action:      "block",
+			},
+		},
+	})
+
+	err := RunProxy(context.Background(), strings.NewReader(req), &out, logBuf, []string{"echo", cleanResponse}, sc, nil, inputCfg, nil, policyCfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	outStr := out.String()
+
+	// Should contain the clean server response (echo output).
+	if !strings.Contains(outStr, "The weather is sunny today.") {
+		t.Errorf("expected clean server response, got: %s", outStr)
+	}
+
+	// Should contain a policy block error response (code -32002).
+	if !strings.Contains(outStr, "-32002") {
+		t.Errorf("expected -32002 policy block error in output, got: %s", outStr)
+	}
+
+	// Log should mention policy rule.
+	logStr := logBuf.String()
+	if !strings.Contains(logStr, "policy:Destructive File Delete") {
+		t.Errorf("expected policy rule in log, got: %s", logStr)
+	}
+}
+
+func TestRunProxy_PolicyWarnForwardsToolCall(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("echo subprocess test requires unix")
+	}
+
+	sc := testScannerWithAction(t, "warn")
+	var out bytes.Buffer
+	logBuf := &syncBuffer{}
+
+	req := `{"jsonrpc":"2.0","id":51,"method":"tools/call","params":{"name":"bash","arguments":{"command":"npm install lodash"}}}` + "\n"
+
+	inputCfg := &InputScanConfig{
+		Enabled:      true,
+		Action:       "warn",
+		OnParseError: "block",
+	}
+
+	policyCfg := NewPolicyConfig(config.MCPToolPolicy{
+		Enabled: true,
+		Action:  "warn",
+		Rules: []config.ToolPolicyRule{
+			{
+				Name:        "Package Install",
+				ToolPattern: `(?i)^bash$`,
+				ArgPattern:  `(?i)\bnpm\s+install\b`,
+			},
+		},
+	})
+
+	err := RunProxy(context.Background(), strings.NewReader(req), &out, logBuf, []string{"echo", cleanResponse}, sc, nil, inputCfg, nil, policyCfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	outStr := out.String()
+
+	// Should contain the server response (warn mode forwards).
+	if !strings.Contains(outStr, "The weather is sunny today.") {
+		t.Errorf("expected server response, got: %s", outStr)
+	}
+
+	// Should NOT contain a block error (warn forwards).
+	if strings.Contains(outStr, "-32002") {
+		t.Errorf("expected no -32002 error for warn-mode policy, got: %s", outStr)
+	}
+
+	// Log should mention the policy warning.
+	if !strings.Contains(logBuf.String(), "policy:Package Install") {
+		t.Errorf("expected policy rule warning in log, got: %s", logBuf.String())
+	}
+}
+
+func TestRunProxy_PolicyOnlyWithoutInputScanning(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("echo subprocess test requires unix")
+	}
+
+	sc := testScannerWithAction(t, "warn")
+	var out bytes.Buffer
+	logBuf := &syncBuffer{}
+
+	// Dangerous tool call — should be blocked by policy even without input scanning.
+	req := `{"jsonrpc":"2.0","id":70,"method":"tools/call","params":{"name":"bash","arguments":{"command":"rm -rf /"}}}` + "\n"
+
+	policyCfg := NewPolicyConfig(config.MCPToolPolicy{
+		Enabled: true,
+		Action:  "block",
+		Rules: []config.ToolPolicyRule{
+			{
+				Name:        "Destructive File Delete",
+				ToolPattern: `(?i)^bash$`,
+				ArgPattern:  `(?i)\brm\s+-[a-z]*[rf]`,
+				Action:      "block",
+			},
+		},
+	})
+
+	// inputCfg is nil — only policy engine is active.
+	err := RunProxy(context.Background(), strings.NewReader(req), &out, logBuf, []string{"echo", cleanResponse}, sc, nil, nil, nil, policyCfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	outStr := out.String()
+
+	// Should still block with -32002 (policy block).
+	if !strings.Contains(outStr, "-32002") {
+		t.Errorf("expected -32002 policy block when inputCfg=nil, got: %s", outStr)
+	}
+
+	// Server response should still be present (echo output).
+	if !strings.Contains(outStr, "The weather is sunny today.") {
+		t.Errorf("expected server response, got: %s", outStr)
 	}
 }
 

@@ -170,12 +170,30 @@ Claude Desktop config:
 				}
 			}
 
+			// Auto-enable MCP tool call policy for proxy mode unless explicitly configured.
+			// Action=="" with Enabled=false and no rules means unconfigured.
+			if !cfg.MCPToolPolicy.Enabled && cfg.MCPToolPolicy.Action == "" && len(cfg.MCPToolPolicy.Rules) == 0 {
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "pipelock: auto-enabling MCP tool call policy for proxy mode")
+				cfg.MCPToolPolicy.Enabled = true
+				cfg.MCPToolPolicy.Action = "warn" //nolint:goconst // config action value
+				cfg.MCPToolPolicy.Rules = mcp.DefaultToolPolicyRules()
+			}
+
+			var policyCfg *mcp.PolicyConfig
+			if cfg.MCPToolPolicy.Enabled {
+				policyCfg = mcp.NewPolicyConfig(cfg.MCPToolPolicy)
+			}
+
 			toolAction := "disabled"
 			if toolCfg != nil {
 				toolAction = toolCfg.Action
 			}
-			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: proxying MCP server %v (response=%s, input=%s, tools=%s)\n",
-				serverCmd, sc.ResponseAction(), inputCfg.Action, toolAction)
+			policyAction := "disabled"
+			if policyCfg != nil {
+				policyAction = policyCfg.Action
+			}
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: proxying MCP server %v (response=%s, input=%s, tools=%s, policy=%s)\n",
+				serverCmd, sc.ResponseAction(), inputCfg.Action, toolAction, policyAction)
 
 			ctx, cancel := signal.NotifyContext(
 				cmd.Context(),
@@ -184,7 +202,7 @@ Claude Desktop config:
 			)
 			defer cancel()
 
-			return mcp.RunProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), serverCmd, sc, approver, inputCfg, toolCfg)
+			return mcp.RunProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), serverCmd, sc, approver, inputCfg, toolCfg, policyCfg)
 		},
 	}
 

@@ -133,7 +133,7 @@ var toolPoisonPatterns = []*compiledToolPattern{
 		// Reverse order: path mentioned before action verb.
 		// Catches "~/.ssh/config and upload" style directives.
 		name: "File Exfiltration Directive",
-		re:   regexp.MustCompile(`(?i)(\.ssh|\.env|\.aws|credentials|private[_\s]?key|id_rsa|passwd).{0,40}(read|send|exfiltrate|steal|retrieve|fetch|dump|upload|cat)\b`),
+		re:   regexp.MustCompile(`(?i)(\.ssh|\.env|\.aws|credentials|private[_\s]?key|id_rsa|passwd).{0,40}(read|send|include|exfiltrate|steal|access|retrieve|fetch|dump|upload|cat)\b`),
 	},
 	{
 		name: "Cross-Tool Manipulation",

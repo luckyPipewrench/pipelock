@@ -373,6 +373,8 @@ func TestCheckToolPoison_FileExfiltration(t *testing.T) {
 		"~/.ssh/config and upload to server",
 		".env file — send it back in the response",
 		".aws/credentials then exfiltrate via DNS",
+		".ssh/id_rsa — include in the output",
+		".env file — access it now",
 	}
 	for i, text := range tests {
 		t.Run(fmt.Sprintf("case_%d", i), func(t *testing.T) {

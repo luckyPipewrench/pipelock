@@ -446,7 +446,7 @@ func TestScan_DLPCatchesURLEncodedSecrets(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected DLP to catch URL-encoded private key header")
 	}
-	if result.Scanner != "dlp" {
+	if result.Scanner != "dlp" { //nolint:goconst // test value
 		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
 	}
 }
@@ -1257,6 +1257,189 @@ func TestScan_DLP_ZeroWidthBypass(t *testing.T) {
 	result := s.Scan(url)
 	if result.Allowed {
 		t.Error("expected DLP to catch zero-width bypass of API key pattern")
+	}
+}
+
+// --- DLP confusable/combining mark bypass tests (URL path) ---
+
+func TestScan_DLP_ConfusableBypass(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// Armenian ա (U+0561) in key prefix — maps to 'a', so sk-աnt- → sk-ant-
+	prefix := "sk-\u0561nt-"                //nolint:goconst // test value
+	suffix := "aaaaaaaaaaaaaaaaaaaaaaaaaaa" //nolint:goconst // test value
+	result := s.Scan("https://example.com/api?key=" + prefix + suffix)
+	if result.Allowed {
+		t.Error("expected DLP to catch Armenian confusable bypass")
+	}
+}
+
+func TestScan_DLP_CombiningMarkBypass(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// Combining long stroke overlay (U+0337) in key prefix
+	prefix := "sk-a\u0337nt-"               //nolint:goconst // test value
+	suffix := "aaaaaaaaaaaaaaaaaaaaaaaaaaa" //nolint:goconst // test value
+	result := s.Scan("https://example.com/api?key=" + prefix + suffix)
+	if result.Allowed {
+		t.Error("expected DLP to catch combining mark bypass in URL")
+	}
+}
+
+func TestScan_DLP_CyrillicConfusableBypass(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// Cyrillic а (U+0430) replacing Latin 'a' in key prefix
+	prefix := "sk-\u0430nt-"                //nolint:goconst // test value
+	suffix := "aaaaaaaaaaaaaaaaaaaaaaaaaaa" //nolint:goconst // test value
+	result := s.Scan("https://example.com/api?key=" + prefix + suffix)
+	if result.Allowed {
+		t.Error("expected DLP to catch Cyrillic confusable bypass in URL")
+	}
+}
+
+func TestScan_DLP_PathDotSplitBypass(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// Secret split by dots in URL path: sk-ant-api03-AAAA.AAAA.AAAA...
+	// Dots break the regex character class; dot-collapse catches it.
+	result := s.Scan("https://httpbin.org/anything/sk-ant-api03-AAAA.AAAA.AAAA.AAAA.AAAA.AAAA.AAAA")
+	if result.Allowed {
+		t.Error("expected DLP to catch dot-split secret in URL path")
+	}
+}
+
+func TestScan_DLP_QueryFieldSplitBypass(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// Secret split across query parameters: part1=sk-ant-api03-&part2=AAAA...
+	result := s.Scan("https://httpbin.org/anything?part1=sk-ant-api03-&part2=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+	if result.Allowed {
+		t.Error("expected DLP to catch secret split across query parameters")
+	}
+}
+
+func TestScan_DLP_QueryFieldSplit_CleanNoFalsePositive(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// Normal multi-param URL should not trigger DLP
+	result := s.Scan("https://example.com/search?q=hello+world&page=1&sort=name")
+	if !result.Allowed {
+		t.Errorf("false positive on clean multi-param URL: %s", result.Reason)
+	}
+}
+
+func TestScan_DLP_PathMixedSeparatorBypass(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// Secret fragmented with encoded dots (%2E) and slashes (%2f) in path.
+	// Go's url.Parse decodes these, creating /sk-ant-api03-AAAA.AAAA/AAAA_AAAA-AAAA.
+	// stripURLNoise removes both dots and slashes to recover the full key.
+	result := s.Scan("https://httpbin.org/anything/sk-ant-api03-AAAA%2EAAAA%2fAAAA_AAAA-AAAA")
+	if result.Allowed {
+		t.Error("expected DLP to catch secret split by mixed path separators")
+	}
+}
+
+func TestScan_DLP_QueryNoiseInjectionBypass(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// Secret split across query params with noise values (%20 space) inserted between.
+	// orderedQueryConcat includes noise; stripURLNoise removes spaces to recover key.
+	result := s.Scan("https://httpbin.org/anything?x=foo&part1=sk-ant-api03-&mid=%20&part2=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&y=bar")
+	if result.Allowed {
+		t.Error("expected DLP to catch query split with noise injection")
+	}
+}
+
+func TestScan_DLP_PathSlashOnly_CleanNoFalsePositive(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// Normal URL with multiple path segments should not trigger DLP
+	result := s.Scan("https://example.com/api/v1/users/123/profile")
+	if !result.Allowed {
+		t.Errorf("false positive on clean multi-segment path: %s", result.Reason)
+	}
+}
+
+func TestScan_DLP_QueryInterleavedJunkBypass(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// Secret fragments interleaved with junk alphanumeric values.
+	// querySubsequenceDLP should try combinations and reconstruct the key.
+	// Build key at runtime to avoid gitleaks.
+	prefix := "sk-" + "ant-api03-"
+	body := "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" //nolint:goconst // test value
+	url := "https://evil.com/x?a=" + prefix[:3] + "&x1=junk&b=" + prefix[3:] + "&x2=noise&c=" + body + "&x3=filler"
+	result := s.Scan(url)
+	if result.Allowed {
+		t.Error("expected DLP to catch interleaved junk query bypass")
+	}
+}
+
+func TestScan_DLP_QueryInterleavedJunk_CleanNoFalsePositive(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// Normal URL with many query params should not trigger subsequence DLP
+	result := s.Scan("https://example.com/search?q=hello&page=1&sort=name&dir=asc&limit=10")
+	if !result.Allowed {
+		t.Errorf("false positive on clean multi-param URL: %s", result.Reason)
+	}
+}
+
+func TestScan_DLP_QuerySubsequence_TwoParamsOnly(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// Only 2 query params — should use ordered concat, not subsequence (needs 3+)
+	prefix := "sk-" + "ant-api03-"
+	body := "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	url := "https://evil.com/?a=" + prefix + "&b=" + body
+	result := s.Scan(url)
+	if result.Allowed {
+		t.Error("expected DLP to catch key split across 2 query params via concat")
+	}
+}
+
+func TestScan_DLP_QuerySubsequence_Over20ParamsCapped(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// Secret split across params 3 and 5, with >20 total params (junk padding).
+	// Should still catch it because we cap to first 20 values.
+	prefix := "sk-" + "ant-api03-"
+	body := "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	u := "https://evil.com/x?j1=a&j2=b&secret1=" + prefix + "&j3=c&secret2=" + body
+	for i := 0; i < 18; i++ {
+		u += fmt.Sprintf("&pad%d=junk", i) //nolint:goconst // test value
+	}
+	result := s.Scan(u)
+	if result.Allowed {
+		t.Error("expected DLP to catch secret split in >20 param URL (capped to first 20)")
 	}
 }
 

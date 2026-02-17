@@ -90,11 +90,49 @@ func ScanRequest(line []byte, sc *scanner.Scanner, action, onParseError string) 
 
 	// No params — but result/error/unknown fields may carry exfiltrable
 	// content (e.g., a compromised agent sending response-shaped messages).
-	// Scan the full raw line for DLP + injection to prevent bypass.
+	// Extract individual string values and scan each one separately so that
+	// encoded-secret detection (base64, hex) works on field values, not on
+	// the whole JSON blob (which is never valid base64/hex as a unit).
 	if len(rpc.Params) == 0 || string(rpc.Params) == jsonNull {
 		raw := string(trimmed)
-		dlpResult := sc.ScanTextForDLP(raw)
+
+		// Extract individual strings for per-field encoded DLP checks.
+		strs := extractAllStringsFromJSON(trimmed)
+		joined := joinStrings(strs)
+
+		// Run DLP on joined strings first (catches raw patterns).
+		dlpResult := sc.ScanTextForDLP(joined)
+
+		// Also scan concatenated (no separator) to catch split secrets.
+		if dlpResult.Clean && len(strs) > 0 {
+			concat := strings.Join(strs, "")
+			if concat != joined {
+				dlpResult = sc.ScanTextForDLP(concat)
+			}
+		}
+
+		// Scan each extracted string individually for encoded secrets.
+		// The joined string is not valid base64/hex, so encoding checks
+		// only work on individual field values.
+		if dlpResult.Clean {
+			for _, s := range strs {
+				if r := sc.ScanTextForDLP(s); !r.Clean {
+					dlpResult = r
+					break
+				}
+			}
+		}
+
+		// Fall back to scanning full raw JSON for DLP patterns that span
+		// across JSON structure (catches patterns split by JSON syntax).
+		if dlpResult.Clean {
+			dlpResult = sc.ScanTextForDLP(raw)
+		}
+
+		// Run injection patterns on the full raw text (injection patterns
+		// match phrases, not encoded blobs — full text is appropriate).
 		injResult := sc.ScanResponse(raw)
+
 		if dlpResult.Clean && injResult.Clean {
 			return InputVerdict{ID: rpc.ID, Method: rpc.Method, Clean: true}
 		}
@@ -188,9 +226,39 @@ func ScanRequest(line []byte, sc *scanner.Scanner, action, onParseError string) 
 // scanRawBeforeForward scans the raw bytes of an unparseable request for
 // DLP patterns and injection before forwarding in on_parse_error=forward mode.
 // This prevents malformed JSON from being a trivial bypass for all scanning.
+// Extracts individual strings for per-field encoded DLP checks (base64, hex).
 func scanRawBeforeForward(raw []byte, sc *scanner.Scanner, action string) InputVerdict {
 	text := string(raw)
-	dlpResult := sc.ScanTextForDLP(text)
+
+	// Extract individual strings for encoded DLP checks.
+	strs := extractAllStringsFromJSON(raw)
+	joined := joinStrings(strs)
+
+	dlpResult := sc.ScanTextForDLP(joined)
+
+	// Scan concatenated (no separator) to catch split secrets.
+	if dlpResult.Clean && len(strs) > 0 {
+		concat := strings.Join(strs, "")
+		if concat != joined {
+			dlpResult = sc.ScanTextForDLP(concat)
+		}
+	}
+
+	// Scan each extracted string individually for encoded secrets.
+	if dlpResult.Clean {
+		for _, s := range strs {
+			if r := sc.ScanTextForDLP(s); !r.Clean {
+				dlpResult = r
+				break
+			}
+		}
+	}
+
+	// Fall back to full raw text for cross-structure patterns.
+	if dlpResult.Clean {
+		dlpResult = sc.ScanTextForDLP(text)
+	}
+
 	injResult := sc.ScanResponse(text)
 
 	var dlpMatches []scanner.TextDLPMatch

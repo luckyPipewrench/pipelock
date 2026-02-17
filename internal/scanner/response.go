@@ -3,6 +3,7 @@ package scanner
 import (
 	"fmt"
 	"strings"
+	"unicode"
 
 	"golang.org/x/text/unicode/norm"
 )
@@ -37,6 +38,60 @@ func normalizeWhitespace(s string) string {
 	}, s)
 }
 
+// InvisibleRanges defines Unicode ranges stripped from all scanning paths.
+// Consolidates zero-width characters, Tags block (Pliny steganography vector),
+// and variation selectors (emoji steganography vector) into a single source of
+// truth used by stripZeroWidth, stripControlChars, and normalizeToolText
+// (in mcp/tools.go). Ranges cover:
+//   - Soft hyphen, zero-width space through RTL mark, word joiner group, BOM
+//   - Variation selectors 1-16 (U+FE00-FE0F): emoji glyph modifiers
+//   - Tags block (U+E0000-E007F): deprecated language tags, steganography vector
+//   - Variation selectors supplement (U+E0100-E01EF): extended glyph modifiers
+var InvisibleRanges = &unicode.RangeTable{
+	R16: []unicode.Range16{
+		{Lo: 0x00AD, Hi: 0x00AD, Stride: 1}, // soft hyphen
+		{Lo: 0x200B, Hi: 0x200F, Stride: 1}, // zero-width space through RTL mark
+		{Lo: 0x202A, Hi: 0x202E, Stride: 1}, // bidi embedding controls (LRE/RLE/PDF/LRO/RLO)
+		{Lo: 0x2060, Hi: 0x2064, Stride: 1}, // word joiner through invisible plus
+		{Lo: 0x2066, Hi: 0x2069, Stride: 1}, // bidi isolate controls (LRI/RLI/FSI/PDI)
+		{Lo: 0xFE00, Hi: 0xFE0F, Stride: 1}, // variation selectors 1-16
+		{Lo: 0xFEFF, Hi: 0xFEFF, Stride: 1}, // BOM / ZWNBSP
+		{Lo: 0xFFF9, Hi: 0xFFFB, Stride: 1}, // interlinear annotation anchors
+	},
+	R32: []unicode.Range32{
+		{Lo: 0xE0000, Hi: 0xE007F, Stride: 1}, // Tags block
+		{Lo: 0xE0100, Hi: 0xE01EF, Stride: 1}, // variation selectors supplement
+	},
+}
+
+// NormalizeLeetspeak maps common digit-for-letter substitutions used in
+// L1B3RT4S-style injection evasion. Applied as a second-pass only when
+// primary scanning finds no matches, to avoid false positives on legitimate
+// content with digits (e.g., "API v3.0", array indices, numbers).
+func NormalizeLeetspeak(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case '0':
+			return 'o'
+		case '1':
+			return 'i'
+		case '3':
+			return 'e'
+		case '4':
+			return 'a'
+		case '5':
+			return 's'
+		case '7':
+			return 't'
+		case '@':
+			return 'a'
+		case '$':
+			return 's'
+		}
+		return r
+	}, s)
+}
+
 // stripZeroWidth removes ASCII control characters and Unicode zero-width/invisible
 // characters that could be used to evade regex pattern matching. Preserves
 // whitespace control chars (\t, \n, \r) because injection patterns use \s+ to
@@ -44,48 +99,161 @@ func normalizeWhitespace(s string) string {
 func stripZeroWidth(s string) string {
 	return strings.Map(func(r rune) rune {
 		// Drop non-whitespace C0 control characters and DEL.
-		// These break regex matching when injected (e.g., \x08 backspace)
-		// without contributing visible content.
 		if r <= 0x1F && r != '\t' && r != '\n' && r != '\r' {
 			return -1
 		}
-		if r == 0x7F { // DEL
+		if r == 0x7F {
 			return -1
 		}
-		switch r {
-		case '\u200B', // zero-width space
-			'\u200C', // zero-width non-joiner
-			'\u200D', // zero-width joiner
-			'\u2060', // word joiner
-			'\u2061', // function application
-			'\u2062', // invisible times
-			'\u2063', // invisible separator
-			'\u2064', // invisible plus
-			'\u00AD', // soft hyphen
-			'\u200E', // left-to-right mark
-			'\u200F', // right-to-left mark
-			'\uFEFF': // byte order mark / zero-width no-break space
-			return -1 // drop
+		// Drop C1 control characters (U+0080-U+009F). These include NEL (U+0085),
+		// reverse line feed, device control strings, etc. Attackers insert them
+		// mid-word to split keywords (e.g., "igno\u0085re") without visible effect.
+		if r >= 0x80 && r <= 0x9F {
+			return -1
+		}
+		if unicode.Is(InvisibleRanges, r) {
+			return -1
 		}
 		return r
 	}, s)
 }
 
-// stripControlChars removes ALL ASCII control characters (0x00-0x1F, 0x7F) and
-// Unicode zero-width/invisible characters. Unlike stripZeroWidth, this also
+// confusableMap maps Unicode characters from non-Latin scripts that are visually
+// identical to Latin letters. NFKC normalization does NOT handle cross-script
+// confusables — Cyrillic а (U+0430) stays as а, not Latin a. Attackers exploit
+// this to bypass keyword-based injection detection (e.g., "ignоre" with Cyrillic о).
+//
+// Covers Cyrillic, Greek, Armenian, Cherokee, and Latin Extended (small caps/IPA)
+// lookalikes commonly used in homoglyph attacks. Not exhaustive — focused on
+// characters that appear in English-language injection phrases and DLP key prefixes.
+var confusableMap = map[rune]rune{
+	// Cyrillic uppercase → Latin
+	'\u0410': 'A', // А
+	'\u0412': 'B', // В
+	'\u0421': 'C', // С
+	'\u0415': 'E', // Е
+	'\u041D': 'H', // Н
+	'\u0406': 'I', // І (Ukrainian)
+	'\u0408': 'J', // Ј (Serbian)
+	'\u041A': 'K', // К
+	'\u041C': 'M', // М
+	'\u041E': 'O', // О
+	'\u0420': 'P', // Р
+	'\u0405': 'S', // Ѕ (Macedonian)
+	'\u0422': 'T', // Т
+	'\u0425': 'X', // Х
+
+	// Cyrillic lowercase → Latin
+	'\u0430': 'a', // а
+	'\u0432': 'v', // в
+	'\u0435': 'e', // е
+	'\u043D': 'h', // н
+	'\u0456': 'i', // і (Ukrainian)
+	'\u043A': 'k', // к
+	'\u043E': 'o', // о
+	'\u0440': 'p', // р
+	'\u0441': 'c', // с
+	'\u0442': 't', // т
+	'\u0443': 'y', // у
+	'\u0445': 'x', // х
+	'\u0458': 'j', // ј (Serbian)
+	'\u0455': 's', // ѕ (Macedonian)
+
+	// Greek uppercase → Latin
+	'\u0391': 'A', // Α
+	'\u0392': 'B', // Β
+	'\u0395': 'E', // Ε
+	'\u0396': 'Z', // Ζ
+	'\u0397': 'H', // Η
+	'\u0399': 'I', // Ι
+	'\u039A': 'K', // Κ
+	'\u039C': 'M', // Μ
+	'\u039D': 'N', // Ν
+	'\u039F': 'O', // Ο
+	'\u03A1': 'P', // Ρ
+	'\u03A4': 'T', // Τ
+	'\u03A5': 'Y', // Υ
+	'\u03A7': 'X', // Χ
+
+	// Greek lowercase → Latin
+	'\u03B1': 'a', // α
+	'\u03B5': 'e', // ε
+	'\u03B9': 'i', // ι
+	'\u03BA': 'k', // κ
+	'\u03BD': 'v', // ν (nu)
+	'\u03BF': 'o', // ο
+
+	// Armenian → Latin (visually identical in most fonts)
+	'\u0555': 'O', // Օ (Armenian Capital Letter Oh)
+	'\u0585': 'o', // օ (Armenian Small Letter Oh)
+	'\u054D': 'S', // Ս (Armenian Capital Letter Seh)
+	'\u057D': 's', // ս (Armenian Small Letter Seh)
+	'\u054C': 'L', // Լ — not perfect but close in sans-serif
+	'\u0570': 'h', // հ (Armenian Small Letter Ho)
+	'\u0578': 'n', // ո (Armenian Small Letter Vo — looks like n)
+	'\u057C': 'n', // ռ (Armenian Small Letter Ra — looks like n in some fonts)
+	'\u0561': 'a', // ա (Armenian Small Letter Ayb — similar to a in some fonts)
+
+	// Cherokee → Latin (uppercase only; Cherokee syllabary has many Latin lookalikes)
+	'\u13AA': 'A', // Ꭺ (Cherokee Letter GA — looks like A)
+	'\u13A2': 'I', // Ꭲ (Cherokee Letter I — looks like I)
+	'\u13D2': 'P', // Ꮲ
+	'\u13DA': 'S', // Ꮪ
+	'\u13A1': 'E', // Ꭱ — visually close to E
+	'\u13B3': 'W', // Ꮃ
+	'\u13D4': 'T', // Ꮤ
+
+	// Latin Extended / IPA (small caps that survive NFKC)
+	'\u1D00': 'A', // ᴀ (Latin Letter Small Capital A)
+	'\u1D04': 'C', // ᴄ (Latin Letter Small Capital C)
+	'\u1D07': 'E', // ᴇ (Latin Letter Small Capital E)
+	'\u1D0F': 'O', // ᴏ (Latin Letter Small Capital O)
+	'\u026A': 'I', // ɪ (Latin Letter Small Capital I)
+	'\u0299': 'B', // ʙ (Latin Letter Small Capital B)
+}
+
+// ConfusableToASCII maps visually identical non-Latin characters to their Latin
+// equivalents. Applied after NFKC normalization to catch cross-script homoglyph
+// attacks that NFKC does not handle (Cyrillic, Greek lookalikes).
+func ConfusableToASCII(s string) string {
+	return strings.Map(func(r rune) rune {
+		if mapped, ok := confusableMap[r]; ok {
+			return mapped
+		}
+		return r
+	}, s)
+}
+
+// StripCombiningMarks removes Unicode combining marks (category Mn — Mark, nonspacing)
+// that survive NFKC normalization. Attackers insert combining marks between letters
+// to break keyword matching (e.g., "i\u0307gnore" → "i̇gnore" evades "ignore" regex).
+// NFKC composes where precomposed forms exist (n\u0303 → ñ), making the mark
+// invisible to strings.Map. NFD decomposition reverses this (ñ → n + \u0303) so
+// the combining mark can be stripped. Applied after NFKC + confusable mapping.
+func StripCombiningMarks(s string) string {
+	// NFD decomposes precomposed chars: é → e + combining acute, ñ → n + combining tilde.
+	// Without this, NFKC-composed characters like ñ would survive mark stripping.
+	s = norm.NFD.String(s)
+	return strings.Map(func(r rune) rune {
+		if unicode.Is(unicode.Mn, r) {
+			return -1
+		}
+		return r
+	}, s)
+}
+
+// stripControlChars removes ALL C0 (0x00-0x1F), C1 (0x80-0x9F), DEL (0x7F),
+// and Unicode zero-width/invisible characters. Unlike stripZeroWidth, this also
 // strips whitespace control chars (\t, \n, \r) because DLP patterns match
 // specific character sequences where ANY control char is evasion, not content.
 // Used in DLP scanning paths (fetch proxy URLs, MCP text, env leak detection).
 func stripControlChars(s string) string {
 	return strings.Map(func(r rune) rune {
-		// Drop ALL C0 control characters and DEL.
-		if r <= 0x1F || r == 0x7F {
+		// Drop C0 controls (U+0000-001F), DEL (U+007F), and C1 controls (U+0080-009F).
+		if r <= 0x1F || r == 0x7F || (r >= 0x80 && r <= 0x9F) {
 			return -1
 		}
-		switch r {
-		case '\u200B', '\u200C', '\u200D', '\u2060',
-			'\u2061', '\u2062', '\u2063', '\u2064',
-			'\u00AD', '\u200E', '\u200F', '\uFEFF':
+		if unicode.Is(InvisibleRanges, r) {
 			return -1
 		}
 		return r
@@ -102,27 +270,24 @@ func (s *Scanner) ScanResponse(content string) ResponseScanResult {
 		return ResponseScanResult{Clean: true}
 	}
 
-	// Strip zero-width characters before pattern matching to prevent bypass.
+	// Normalize: strip invisibles, NFKC, confusables, combining marks, whitespace.
 	content = stripZeroWidth(content)
-	// NFKC normalization catches Unicode confusables (e.g., Cyrillic 'а' → Latin 'a').
 	content = norm.NFKC.String(content)
-	// Normalize Unicode whitespace to ASCII space so \s+ in regex patterns
-	// catches exotic spaces (e.g., Ogham space U+1680, Mongolian vowel separator U+180E).
+	content = ConfusableToASCII(content)
+	content = StripCombiningMarks(content)
 	content = normalizeWhitespace(content)
 
-	var matches []ResponseMatch
-	for _, p := range s.responsePatterns {
-		locs := p.re.FindAllStringIndex(content, -1)
-		for _, loc := range locs {
-			matchText := content[loc[0]:loc[1]]
-			if runes := []rune(matchText); len(runes) > 100 {
-				matchText = string(runes[:100])
-			}
-			matches = append(matches, ResponseMatch{
-				PatternName: p.name,
-				MatchText:   matchText,
-				Position:    loc[0],
-			})
+	// Primary scan on normalized content.
+	matches := s.matchResponsePatterns(content)
+
+	// Dual-pass: if primary scan is clean, re-scan with leetspeak normalization.
+	// Only fires when primary found nothing, avoiding FPs on digit-heavy text
+	// (e.g., "API v3.0" → "API ve.o" would not match any injection pattern, but
+	// "1gn0r3 pr3v10us 1nstruct10ns" → "ignore previous instructions" does).
+	if len(matches) == 0 {
+		leeted := NormalizeLeetspeak(content)
+		if leeted != content {
+			matches = s.matchResponsePatterns(leeted)
 		}
 	}
 
@@ -145,6 +310,26 @@ func (s *Scanner) ScanResponse(content string) ResponseScanResult {
 	}
 
 	return result
+}
+
+// matchResponsePatterns runs all response patterns against content and returns matches.
+func (s *Scanner) matchResponsePatterns(content string) []ResponseMatch {
+	var matches []ResponseMatch
+	for _, p := range s.responsePatterns {
+		locs := p.re.FindAllStringIndex(content, -1)
+		for _, loc := range locs {
+			matchText := content[loc[0]:loc[1]]
+			if runes := []rune(matchText); len(runes) > 100 {
+				matchText = string(runes[:100])
+			}
+			matches = append(matches, ResponseMatch{
+				PatternName: p.name,
+				MatchText:   matchText,
+				Position:    loc[0],
+			})
+		}
+	}
+	return matches
 }
 
 // ResponseScanningEnabled returns whether response scanning is active.

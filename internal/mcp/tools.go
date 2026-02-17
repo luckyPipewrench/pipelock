@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"unicode"
 
 	"golang.org/x/text/unicode/norm"
 
@@ -35,6 +36,7 @@ type ToolScanMatch struct {
 	DriftDetected bool                    `json:"drift_detected,omitempty"`
 	PreviousHash  string                  `json:"previous_hash,omitempty"`
 	CurrentHash   string                  `json:"current_hash,omitempty"`
+	DriftDetail   string                  `json:"drift_detail,omitempty"`
 }
 
 // ToolScanResult describes the outcome of scanning a tools/list response.
@@ -58,11 +60,15 @@ type ToolScanConfig struct {
 type ToolBaseline struct {
 	mu     sync.Mutex
 	hashes map[string]string // tool name → SHA256(description + inputSchema)
+	descs  map[string]string // tool name → last known description text
 }
 
 // NewToolBaseline creates a new empty tool baseline.
 func NewToolBaseline() *ToolBaseline {
-	return &ToolBaseline{hashes: make(map[string]string)}
+	return &ToolBaseline{
+		hashes: make(map[string]string),
+		descs:  make(map[string]string),
+	}
 }
 
 // maxBaselineTools caps the number of tracked tools to prevent unbounded
@@ -103,6 +109,54 @@ func (tb *ToolBaseline) CheckAndUpdate(name, hash string) (bool, string) {
 	return false, ""
 }
 
+// StoreDesc saves a tool's description text for later diff generation.
+// Called alongside CheckAndUpdate. Respects maxBaselineTools capacity.
+func (tb *ToolBaseline) StoreDesc(name, desc string) {
+	tb.mu.Lock()
+	defer tb.mu.Unlock()
+	if _, exists := tb.descs[name]; !exists && len(tb.descs) >= maxBaselineTools {
+		return
+	}
+	tb.descs[name] = desc
+}
+
+// DiffSummary returns a human-readable summary of what changed between the
+// stored description and the new one. Returns "" if no previous description.
+func (tb *ToolBaseline) DiffSummary(name, newDesc string) string {
+	tb.mu.Lock()
+	prev, exists := tb.descs[name]
+	tb.mu.Unlock()
+
+	if !exists {
+		return ""
+	}
+
+	prevLen := len([]rune(prev))
+	newLen := len([]rune(newDesc))
+
+	var parts []string
+	if newLen > prevLen {
+		parts = append(parts, fmt.Sprintf("description grew from %d to %d chars (+%d)", prevLen, newLen, newLen-prevLen))
+	} else if newLen < prevLen {
+		parts = append(parts, fmt.Sprintf("description shrank from %d to %d chars (-%d)", prevLen, newLen, prevLen-newLen))
+	} else {
+		parts = append(parts, fmt.Sprintf("description changed (%d chars)", newLen))
+	}
+
+	// Show added text (tail of new description beyond previous length).
+	// Use rune slicing to avoid splitting multi-byte characters.
+	if newLen > prevLen {
+		newRunes := []rune(newDesc)
+		added := string(newRunes[prevLen:])
+		if len(newRunes)-prevLen > 200 {
+			added = string(newRunes[prevLen:prevLen+200]) + "..."
+		}
+		parts = append(parts, fmt.Sprintf("added: %q", added))
+	}
+
+	return strings.Join(parts, "; ")
+}
+
 // compiledToolPattern is a precompiled regex for tool-specific poisoning detection.
 type compiledToolPattern struct {
 	name string
@@ -128,6 +182,12 @@ var toolPoisonPatterns = []*compiledToolPattern{
 	{
 		name: "File Exfiltration Directive",
 		re:   regexp.MustCompile(`(?i)(read|send|include|exfiltrate|steal|access|retrieve|fetch|dump|upload|cat)\s+.{0,40}(\.ssh|\.env|\.aws|credentials|private[_\s]?key|id_rsa|passwd)`),
+	},
+	{
+		// Reverse order: path mentioned before action verb.
+		// Catches "~/.ssh/config and upload" style directives.
+		name: "File Exfiltration Directive",
+		re:   regexp.MustCompile(`(?i)(\.ssh|\.env|\.aws|credentials|private[_\s]?key|id_rsa|passwd).{0,40}(read|send|include|exfiltrate|steal|access|retrieve|fetch|dump|upload|cat)\b`),
 	},
 	{
 		name: "Cross-Tool Manipulation",
@@ -239,25 +299,31 @@ func tryParseToolsList(result json.RawMessage) []ToolDef {
 }
 
 // normalizeToolText applies Unicode normalization before poison pattern matching.
-// Strips ALL C0 control chars (including \t, \n, \r) + DEL + Unicode invisibles,
-// then NFKC-normalizes. Unlike response scanning (which preserves whitespace for
-// \s+ injection patterns), tool descriptions have no legitimate control chars —
-// any present are evasion attempts (e.g., tab splitting "IMPORTANT" into "IMPOR\tTANT").
+// Strips ALL control chars (C0 including \t\n\r, C1 U+0080-009F, DEL) + Unicode
+// invisibles, then NFKC-normalizes + confusable mapping. Unlike response scanning
+// (which preserves whitespace for \s+ injection patterns), tool descriptions have
+// no legitimate control chars — any present are evasion attempts (e.g., tab splitting
+// "IMPORTANT" into "IMPOR\tTANT", or C1 NEL splitting into "IMPOR\u0085TANT").
 func normalizeToolText(s string) string {
 	s = strings.Map(func(r rune) rune {
-		// Drop ALL C0 control characters and DEL.
-		if r <= 0x1F || r == 0x7F {
+		// Drop C0 controls (U+0000-001F), DEL (U+007F), and C1 controls (U+0080-009F).
+		if r <= 0x1F || r == 0x7F || (r >= 0x80 && r <= 0x9F) {
 			return -1
 		}
-		switch r {
-		case '\u200B', '\u200C', '\u200D', '\u2060',
-			'\u2061', '\u2062', '\u2063', '\u2064',
-			'\u00AD', '\u200E', '\u200F', '\uFEFF':
+		if unicode.Is(scanner.InvisibleRanges, r) {
 			return -1
 		}
 		return r
 	}, s)
 	s = norm.NFKC.String(s)
+	// Map cross-script confusables (Cyrillic/Greek lookalikes) to Latin equivalents.
+	// NFKC does NOT handle these — Cyrillic о (U+043E) stays as о without this step.
+	s = scanner.ConfusableToASCII(s)
+	// Strip combining marks that survive NFKC (e.g., i+\u0307 → "i̇" breaks "ignore").
+	s = scanner.StripCombiningMarks(s)
+	// Normalize leetspeak substitutions (1→i, 0→o, 3→e, etc.) to catch
+	// L1B3RT4S-style evasion in tool descriptions (e.g., <1MP0RT4NT>).
+	s = scanner.NormalizeLeetspeak(s)
 	return strings.Map(func(r rune) rune {
 		switch r {
 		case '\u1680', '\u180E', '\u2028', '\u2029':
@@ -390,8 +456,11 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) []T
 				match.DriftDetected = true
 				match.PreviousHash = prevHash
 				match.CurrentHash = hash
+				match.DriftDetail = cfg.Baseline.DiffSummary(tool.Name, text)
 				hasFinding = true
 			}
+			// Store description AFTER diff so next drift compares against current.
+			cfg.Baseline.StoreDesc(tool.Name, text)
 		}
 
 		if hasFinding {
@@ -415,5 +484,8 @@ func logToolFindings(logW io.Writer, lineNum int, result ToolScanResult) {
 		}
 		_, _ = fmt.Fprintf(logW, "pipelock: line %d: tool %q: %s\n",
 			lineNum, m.ToolName, strings.Join(reasons, ", "))
+		if m.DriftDetail != "" {
+			_, _ = fmt.Fprintf(logW, "  %s\n", m.DriftDetail)
+		}
 	}
 }

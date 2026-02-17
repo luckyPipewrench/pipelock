@@ -1501,6 +1501,19 @@ func TestToolBaseline_DiffSummary_Truncated(t *testing.T) {
 	}
 }
 
+func TestToolBaseline_DiffSummary_MultiByte(t *testing.T) {
+	tb := NewToolBaseline()
+	// Use multi-byte characters (Cyrillic) to verify rune-safe slicing.
+	tb.StoreDesc("tool", "\u0410\u0411")                                // АБ = 4 bytes, 2 runes
+	summary := tb.DiffSummary("tool", "\u0410\u0411\u0412\u0413\u0414") // АБВГД = 10 bytes, 5 runes
+	if !strings.Contains(summary, "grew") {
+		t.Errorf("expected 'grew' in summary, got %q", summary)
+	}
+	if !strings.Contains(summary, "\u0412\u0413\u0414") {
+		t.Errorf("expected added Cyrillic text in summary, got %q", summary)
+	}
+}
+
 func TestToolBaseline_StoreDesc_CapacityLimit(t *testing.T) {
 	tb := NewToolBaseline()
 	// Fill to capacity.

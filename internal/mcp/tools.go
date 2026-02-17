@@ -143,11 +143,13 @@ func (tb *ToolBaseline) DiffSummary(name, newDesc string) string {
 		parts = append(parts, fmt.Sprintf("description changed (%d chars)", newLen))
 	}
 
-	// Show added text (new content not in the old description).
-	if newLen > prevLen && len(newDesc) > len(prev) {
-		added := newDesc[len(prev):]
-		if runes := []rune(added); len(runes) > 200 {
-			added = string(runes[:200]) + "..."
+	// Show added text (tail of new description beyond previous length).
+	// Use rune slicing to avoid splitting multi-byte characters.
+	if newLen > prevLen {
+		newRunes := []rune(newDesc)
+		added := string(newRunes[prevLen:])
+		if len(newRunes)-prevLen > 200 {
+			added = string(newRunes[prevLen:prevLen+200]) + "..."
 		}
 		parts = append(parts, fmt.Sprintf("added: %q", added))
 	}

@@ -51,9 +51,12 @@ var InvisibleRanges = &unicode.RangeTable{
 	R16: []unicode.Range16{
 		{Lo: 0x00AD, Hi: 0x00AD, Stride: 1}, // soft hyphen
 		{Lo: 0x200B, Hi: 0x200F, Stride: 1}, // zero-width space through RTL mark
+		{Lo: 0x202A, Hi: 0x202E, Stride: 1}, // bidi embedding controls (LRE/RLE/PDF/LRO/RLO)
 		{Lo: 0x2060, Hi: 0x2064, Stride: 1}, // word joiner through invisible plus
+		{Lo: 0x2066, Hi: 0x2069, Stride: 1}, // bidi isolate controls (LRI/RLI/FSI/PDI)
 		{Lo: 0xFE00, Hi: 0xFE0F, Stride: 1}, // variation selectors 1-16
 		{Lo: 0xFEFF, Hi: 0xFEFF, Stride: 1}, // BOM / ZWNBSP
+		{Lo: 0xFFF9, Hi: 0xFFFB, Stride: 1}, // interlinear annotation anchors
 	},
 	R32: []unicode.Range32{
 		{Lo: 0xE0000, Hi: 0xE007F, Stride: 1}, // Tags block
@@ -100,6 +103,12 @@ func stripZeroWidth(s string) string {
 			return -1
 		}
 		if r == 0x7F {
+			return -1
+		}
+		// Drop C1 control characters (U+0080-U+009F). These include NEL (U+0085),
+		// reverse line feed, device control strings, etc. Attackers insert them
+		// mid-word to split keywords (e.g., "igno\u0085re") without visible effect.
+		if r >= 0x80 && r <= 0x9F {
 			return -1
 		}
 		if unicode.Is(InvisibleRanges, r) {
@@ -212,7 +221,8 @@ func StripCombiningMarks(s string) string {
 // Used in DLP scanning paths (fetch proxy URLs, MCP text, env leak detection).
 func stripControlChars(s string) string {
 	return strings.Map(func(r rune) rune {
-		if r <= 0x1F || r == 0x7F {
+		// Drop C0 controls (U+0000-001F), DEL (U+007F), and C1 controls (U+0080-009F).
+		if r <= 0x1F || r == 0x7F || (r >= 0x80 && r <= 0x9F) {
 			return -1
 		}
 		if unicode.Is(InvisibleRanges, r) {

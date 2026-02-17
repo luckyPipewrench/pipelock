@@ -61,6 +61,34 @@ var InvisibleRanges = &unicode.RangeTable{
 	},
 }
 
+// NormalizeLeetspeak maps common digit-for-letter substitutions used in
+// L1B3RT4S-style injection evasion. Applied as a second-pass only when
+// primary scanning finds no matches, to avoid false positives on legitimate
+// content with digits (e.g., "API v3.0", array indices, numbers).
+func NormalizeLeetspeak(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case '0':
+			return 'o'
+		case '1':
+			return 'i'
+		case '3':
+			return 'e'
+		case '4':
+			return 'a'
+		case '5':
+			return 's'
+		case '7':
+			return 't'
+		case '@':
+			return 'a'
+		case '$':
+			return 's'
+		}
+		return r
+	}, s)
+}
+
 // stripZeroWidth removes ASCII control characters and Unicode zero-width/invisible
 // characters that could be used to evade regex pattern matching. Preserves
 // whitespace control chars (\t, \n, \r) because injection patterns use \s+ to
@@ -204,34 +232,24 @@ func (s *Scanner) ScanResponse(content string) ResponseScanResult {
 		return ResponseScanResult{Clean: true}
 	}
 
-	// Strip zero-width characters before pattern matching to prevent bypass.
+	// Normalize: strip invisibles, NFKC, confusables, combining marks, whitespace.
 	content = stripZeroWidth(content)
-	// NFKC normalization handles compatibility decompositions (fullwidth → ASCII).
 	content = norm.NFKC.String(content)
-	// Map cross-script confusables (Cyrillic/Greek lookalikes) to Latin equivalents.
-	// NFKC does NOT handle these — Cyrillic о (U+043E) stays as о without this step.
 	content = ConfusableToASCII(content)
-	// Strip combining marks that survive NFKC (e.g., i+\u0307 has no precomposed form,
-	// leaving "i̇" which breaks "ignore" matching). Must run after NFKC so that
-	// composable sequences are composed first, not blindly stripped.
 	content = StripCombiningMarks(content)
-	// Normalize Unicode whitespace to ASCII space so \s+ in regex patterns
-	// catches exotic spaces (e.g., Ogham space U+1680, Mongolian vowel separator U+180E).
 	content = normalizeWhitespace(content)
 
-	var matches []ResponseMatch
-	for _, p := range s.responsePatterns {
-		locs := p.re.FindAllStringIndex(content, -1)
-		for _, loc := range locs {
-			matchText := content[loc[0]:loc[1]]
-			if runes := []rune(matchText); len(runes) > 100 {
-				matchText = string(runes[:100])
-			}
-			matches = append(matches, ResponseMatch{
-				PatternName: p.name,
-				MatchText:   matchText,
-				Position:    loc[0],
-			})
+	// Primary scan on normalized content.
+	matches := s.matchResponsePatterns(content)
+
+	// Dual-pass: if primary scan is clean, re-scan with leetspeak normalization.
+	// Only fires when primary found nothing, avoiding FPs on digit-heavy text
+	// (e.g., "API v3.0" → "API ve.o" would not match any injection pattern, but
+	// "1gn0r3 pr3v10us 1nstruct10ns" → "ignore previous instructions" does).
+	if len(matches) == 0 {
+		leeted := NormalizeLeetspeak(content)
+		if leeted != content {
+			matches = s.matchResponsePatterns(leeted)
 		}
 	}
 
@@ -254,6 +272,26 @@ func (s *Scanner) ScanResponse(content string) ResponseScanResult {
 	}
 
 	return result
+}
+
+// matchResponsePatterns runs all response patterns against content and returns matches.
+func (s *Scanner) matchResponsePatterns(content string) []ResponseMatch {
+	var matches []ResponseMatch
+	for _, p := range s.responsePatterns {
+		locs := p.re.FindAllStringIndex(content, -1)
+		for _, loc := range locs {
+			matchText := content[loc[0]:loc[1]]
+			if runes := []rune(matchText); len(runes) > 100 {
+				matchText = string(runes[:100])
+			}
+			matches = append(matches, ResponseMatch{
+				PatternName: p.name,
+				MatchText:   matchText,
+				Position:    loc[0],
+			})
+		}
+	}
+	return matches
 }
 
 // ResponseScanningEnabled returns whether response scanning is active.

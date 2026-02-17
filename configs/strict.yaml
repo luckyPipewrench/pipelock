@@ -110,6 +110,18 @@ response_scanning:
       regex: '(?i)you\s+must\s+(immediately\s+)?(call|execute|run|invoke)\s+(the|this)\s+(function|tool|command|api|endpoint)'
     - name: "Authority Escalation"
       regex: '(?i)you\s+(now\s+)?have\s+(full\s+)?(admin|root|system|superuser|elevated)\s+(access|privileges|permissions|rights)'
+    - name: "Pliny Divider"
+      regex: '(?i)={1,3}/?[A-Z\-]{2,}(/[A-Z\-]{1,4}){3,}=+'
+    - name: "Meta-Command Activation"
+      regex: '(?i)(\{GODMODE\s*:\s*(ENABLED|ON|TRUE)\}|!OMNI\b|RESET_CORTEX|LIBERTAS\s+FACTOR|ENABLE\s+DEV(ELOPER)?\s+MODE|JAILBREAK\s+(ENABLED|ACTIVATED|ON))'
+    - name: "Roleplay Framing"
+      regex: '(?i)(let''?s\s+play\s+a\s+game\s+where\s+you|pretend\s+you\s+are\s+an?\s+(character|person|AI)\s+(who|that)\s+(has\s+no|doesn''?t\s+have|ignores?|bypasses?)|(in\s+this\s+)?(hypothetical|fictional|imaginary)\s+scenario\s+(where\s+)?you\s+(are|have|can|must))'
+    - name: "Instruction Boundary"
+      regex: '(<\|(?:endoftext|im_start|im_end|system|end_header_id|begin_of_text)\|>|\[/?INST\]|<\|(?:user|assistant)\|>|<<SYS>>|</s>)'
+    - name: "Output Format Forcing"
+      regex: '(?i)(respond\s+with|first\s+(output|write|print|say))\s*[\[\("]?\s*(FILTERED|ERROR|BLOCKED|REFUSED|DECLINED|CENSORED)\s*[\]\)"]?\s*(then|followed\s+by|and\s+then|after\s+(that|which))'
+    - name: "System Prompt Extraction"
+      regex: '(?i)(repeat\s+(your|the)\s+(entire\s+)?(instructions|system\s+prompt|initial\s+prompt|rules)|what\s+(is|are)\s+your\s+(system\s+prompt|instructions|rules|directives)|output\s+(your|the)\s+(full\s+)?(system|initial)\s+(prompt|instructions|message)|show\s+me\s+(your|the)\s+(system\s+prompt|hidden\s+instructions|initial\s+instructions))'
 
 mcp_input_scanning:
   enabled: true

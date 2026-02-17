@@ -267,6 +267,9 @@ func normalizeToolText(s string) string {
 	s = scanner.ConfusableToASCII(s)
 	// Strip combining marks that survive NFKC (e.g., i+\u0307 → "i̇" breaks "ignore").
 	s = scanner.StripCombiningMarks(s)
+	// Normalize leetspeak substitutions (1→i, 0→o, 3→e, etc.) to catch
+	// L1B3RT4S-style evasion in tool descriptions (e.g., <1MP0RT4NT>).
+	s = scanner.NormalizeLeetspeak(s)
 	return strings.Map(func(r rune) rune {
 		switch r {
 		case '\u1680', '\u180E', '\u2028', '\u2029':

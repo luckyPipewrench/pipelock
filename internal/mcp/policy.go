@@ -115,6 +115,10 @@ func (pc *PolicyConfig) CheckToolCall(toolName string, argStrings []string) Poli
 	}
 }
 
+// maxPairwiseTokens caps token count for O(n²) pairwise matching.
+// Prevents DoS from extremely long whitespace-heavy argument strings.
+const maxPairwiseTokens = 64
+
 // matchArgPattern checks if a regex pattern matches against any view of the
 // argument tokens. It uses three strategies:
 //  1. Full joined string (fast path for ordered arrays)
@@ -132,10 +136,13 @@ func matchArgPattern(pat *regexp.Regexp, tokens []string, joined string) bool {
 	}
 	// Pairwise: check "A B" and "B A" for every distinct pair.
 	// Typical arg lists have 3-10 tokens, so this is 6-90 checks — negligible cost.
-	for i, a := range tokens {
-		for j, b := range tokens {
-			if i != j && pat.MatchString(a+" "+b) {
-				return true
+	// Capped at maxPairwiseTokens to prevent DoS from adversarial inputs.
+	if len(tokens) <= maxPairwiseTokens {
+		for i, a := range tokens {
+			for j, b := range tokens {
+				if i != j && pat.MatchString(a+" "+b) {
+					return true
+				}
 			}
 		}
 	}
@@ -284,7 +291,7 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 		{
 			Name:        "Recursive Permission Change",
 			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$`,
-			ArgPattern:  `(?i)\b(chmod\s+-R\s+777|chown\s+-R)\b`,
+			ArgPattern:  `(?i)\b(chmod\s+(-R|--recursive)\s+(777|666)|chmod\s+(777|666)\s+(-R|--recursive)|chown\s+(-R|--recursive))\b`,
 		},
 		{
 			Name:        "Credential File Access",
@@ -317,7 +324,7 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 		{
 			Name:        "Destructive Git Operation",
 			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec|git)$`,
-			ArgPattern:  `(?i)(\bgit\s+)?(push\s+--force|reset\s+--hard|clean\s+-fd)\b`,
+			ArgPattern:  `(?i)(\bgit\s+)?(push\s+(--force|-f)|reset\s+--hard|clean\s+-fd)\b`,
 			Action:      "block",
 		},
 	}

@@ -351,6 +351,9 @@ func (c *Config) Validate() error {
 
 	// Validate MCP tool policy config
 	if c.MCPToolPolicy.Enabled {
+		if len(c.MCPToolPolicy.Rules) == 0 {
+			return fmt.Errorf("mcp_tool_policy is enabled but has no rules; add rules or set enabled: false")
+		}
 		switch c.MCPToolPolicy.Action {
 		case "warn", "block": //nolint:goconst // config action values
 			// valid

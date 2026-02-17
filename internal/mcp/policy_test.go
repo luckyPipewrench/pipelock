@@ -587,6 +587,95 @@ func TestCheckToolCall_GitForceWithLease(t *testing.T) {
 	}
 }
 
+func TestCheckToolCall_GitPushShortForceFlag(t *testing.T) {
+	pc := defaultPolicyConfig(t)
+	// git push -f is the short form of --force.
+	v := pc.CheckToolCall("bash", []string{"git push -f"})
+	if !v.Matched {
+		t.Fatal("expected match for git push -f")
+	}
+}
+
+func TestCheckToolCall_GitPushShortForceSplit(t *testing.T) {
+	pc := defaultPolicyConfig(t)
+	// Split tokens: ["git", "push", "-f"]
+	v := pc.CheckToolCall("bash", []string{"git", "push", "-f"})
+	if !v.Matched {
+		t.Fatal("expected match for split git push -f")
+	}
+}
+
+func TestCheckToolCall_ChmodLongRecursive(t *testing.T) {
+	pc := defaultPolicyConfig(t)
+	v := pc.CheckToolCall("bash", []string{"chmod --recursive 777 /tmp"})
+	if !v.Matched {
+		t.Fatal("expected match for chmod --recursive 777")
+	}
+}
+
+func TestCheckToolCall_ChmodModeBeforeFlag(t *testing.T) {
+	pc := defaultPolicyConfig(t)
+	v := pc.CheckToolCall("bash", []string{"chmod 777 -R /tmp"})
+	if !v.Matched {
+		t.Fatal("expected match for chmod 777 -R (reverse order)")
+	}
+}
+
+func TestCheckToolCall_Chmod666Recursive(t *testing.T) {
+	pc := defaultPolicyConfig(t)
+	v := pc.CheckToolCall("bash", []string{"chmod -R 666 /tmp"})
+	if !v.Matched {
+		t.Fatal("expected match for chmod -R 666")
+	}
+}
+
+func TestCheckToolCall_PairwiseTokenCapStillMatchesJoined(t *testing.T) {
+	pc := defaultPolicyConfig(t)
+	// Even with many tokens, if "rm -rf" appears adjacent in the joined string,
+	// the fast path (strategy 1) catches it regardless of pairwise cap.
+	args := []string{"rm", "-rf"}
+	for range 70 {
+		args = append(args, "padding")
+	}
+	args = append(args, "/tmp/demo")
+	v := pc.CheckToolCall("bash", args)
+	if !v.Matched {
+		t.Fatal("expected match via joined string even when tokens exceed pairwise cap")
+	}
+}
+
+func TestCheckToolCall_PairwiseCapSkipsLoop(t *testing.T) {
+	// Verify pairwise loop is actually skipped for large token counts.
+	// Use a pattern that can ONLY match via pairwise (tokens non-adjacent in joined).
+	rule := &CompiledPolicyRule{
+		Name:        "test",
+		ToolPattern: regexp.MustCompile(`^bash$`),
+		ArgPattern:  regexp.MustCompile(`^rm -rf$`),
+		Action:      "block",
+	}
+	pc := &PolicyConfig{Action: "warn", Rules: []*CompiledPolicyRule{rule}}
+
+	// With few tokens — pairwise finds "rm" + "-rf".
+	smallArgs := []string{"rm", "padding", "-rf"}
+	v := pc.CheckToolCall("bash", smallArgs)
+	if !v.Matched {
+		t.Fatal("expected pairwise match with small token count")
+	}
+
+	// With 65+ tokens — pairwise skipped, "rm" and "-rf" non-adjacent in joined.
+	bigArgs := []string{"rm"}
+	for range 64 {
+		bigArgs = append(bigArgs, "x")
+	}
+	bigArgs = append(bigArgs, "-rf")
+	v = pc.CheckToolCall("bash", bigArgs)
+	// Joined string is "rm x x x ... x -rf" which matches `rm.*-rf` but NOT `^rm -rf$`.
+	// Pairwise would catch it, but is capped. Should NOT match.
+	if v.Matched {
+		t.Fatal("pairwise should be skipped when tokens exceed cap")
+	}
+}
+
 func TestCheckToolCall_SeparatorTokenRmRf(t *testing.T) {
 	// Bypass: ["rm","--","-rf","/tmp/demo"] — separator between rm and -rf.
 	pc := defaultPolicyConfig(t)

@@ -152,7 +152,7 @@ mcp_tool_policy:
       action: block
     - name: "Recursive Permission Change"
       tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
-      arg_pattern: '(?i)\b(chmod\s+-R\s+777|chown\s+-R)\b'
+      arg_pattern: '(?i)\b(chmod\s+(-R|--recursive)\s+(777|666)|chmod\s+(777|666)\s+(-R|--recursive)|chown\s+(-R|--recursive))\b'
     - name: "Credential File Access"
       tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec|read_file|file_read)$'
       arg_pattern: '(?i)(\.ssh/(id_|authorized)|\.aws/credentials|\.env\b|\.netrc|/etc/shadow)'
@@ -173,7 +173,7 @@ mcp_tool_policy:
       arg_pattern: '(?i)\b(pip|npm|gem|cargo|go)\s+install\b'
     - name: "Destructive Git Operation"
       tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec|git)$'
-      arg_pattern: '(?i)(\bgit\s+)?(push\s+--force|reset\s+--hard|clean\s+-fd)\b'
+      arg_pattern: '(?i)(\bgit\s+)?(push\s+(--force|-f)|reset\s+--hard|clean\s+-fd)\b'
       action: block
 
 logging:

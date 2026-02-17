@@ -1278,6 +1278,28 @@ func TestValidate_MCPToolPolicyDisabledSkipsValidation(t *testing.T) {
 	}
 }
 
+func TestValidate_MCPToolPolicyEnabledNoRules(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPToolPolicy.Enabled = true
+	cfg.MCPToolPolicy.Action = "warn" //nolint:goconst // test value
+	cfg.MCPToolPolicy.Rules = nil
+	err := cfg.Validate()
+	if err == nil {
+		t.Error("expected error for enabled policy with no rules")
+	}
+}
+
+func TestValidate_MCPToolPolicyEnabledEmptyRules(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPToolPolicy.Enabled = true
+	cfg.MCPToolPolicy.Action = "warn" //nolint:goconst // test value
+	cfg.MCPToolPolicy.Rules = []ToolPolicyRule{}
+	err := cfg.Validate()
+	if err == nil {
+		t.Error("expected error for enabled policy with empty rules slice")
+	}
+}
+
 func TestValidate_MCPToolPolicyRuleMissingName(t *testing.T) {
 	cfg := Defaults()
 	cfg.MCPToolPolicy.Enabled = true
@@ -1364,16 +1386,6 @@ func TestValidate_MCPToolPolicyRuleInvalidPerRuleAction(t *testing.T) {
 	err := cfg.Validate()
 	if err == nil {
 		t.Error("expected error for invalid per-rule action")
-	}
-}
-
-func TestValidate_MCPToolPolicyEmptyRulesIsValid(t *testing.T) {
-	cfg := Defaults()
-	cfg.MCPToolPolicy.Enabled = true
-	cfg.MCPToolPolicy.Action = "warn" //nolint:goconst // test value
-	cfg.MCPToolPolicy.Rules = nil
-	if err := cfg.Validate(); err != nil {
-		t.Errorf("empty rules list should be valid, got: %v", err)
 	}
 }
 

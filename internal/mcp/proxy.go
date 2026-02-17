@@ -400,9 +400,10 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		} else if policyCfg != nil {
 			// Policy checking enabled but content scanning disabled.
 			// Route through ForwardScannedInput with pass-through content scanning.
+			// Use onParseError="block" (fail-closed) so malformed JSON can't bypass policy.
 			clientReader := NewStdioReader(clientIn)
 			serverWriter := NewStdioWriter(serverIn)
-			ForwardScannedInput(clientReader, serverWriter, safeLogW, sc, "warn", "forward", blockedCh, policyCfg) //nolint:goconst // config action value
+			ForwardScannedInput(clientReader, serverWriter, safeLogW, sc, "warn", "block", blockedCh, policyCfg) //nolint:goconst // config action value
 		} else {
 			close(blockedCh)                   // No input scanning — close channel immediately.
 			_, _ = io.Copy(serverIn, clientIn) //nolint:errcheck // broken pipe on server exit is expected

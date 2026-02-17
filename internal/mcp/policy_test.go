@@ -514,6 +514,42 @@ func TestCheckToolCall_SplitFlagsRF(t *testing.T) {
 	}
 }
 
+func TestCheckToolCall_LongFormRecursiveForce(t *testing.T) {
+	pc := defaultPolicyConfig(t)
+	// GNU long-form flags: rm --recursive --force /tmp/demo
+	v := pc.CheckToolCall("bash", []string{"rm --recursive --force /tmp/demo"})
+	if !v.Matched {
+		t.Fatal("expected match for rm --recursive --force")
+	}
+}
+
+func TestCheckToolCall_LongFormSplitTokens(t *testing.T) {
+	pc := defaultPolicyConfig(t)
+	// Long-form flags as separate tokens (pairwise matching).
+	v := pc.CheckToolCall("bash", []string{"rm", "--recursive", "--force", "/tmp/demo"})
+	if !v.Matched {
+		t.Fatal("expected match for rm with --recursive as separate token")
+	}
+}
+
+func TestCheckToolCall_RmFlagOrderPermutation(t *testing.T) {
+	pc := defaultPolicyConfig(t)
+	// Reversed flag order: -f -r instead of -r -f
+	v := pc.CheckToolCall("bash", []string{"rm", "-f", "-r", "/tmp/demo"})
+	if !v.Matched {
+		t.Fatal("expected match for rm -f -r")
+	}
+}
+
+func TestCheckToolCall_GitPushForceWithExtraTokens(t *testing.T) {
+	pc := defaultPolicyConfig(t)
+	// git push origin main --force — extra tokens between push and --force
+	v := pc.CheckToolCall("bash", []string{"git push origin main --force"})
+	if !v.Matched {
+		t.Fatal("expected match for git push origin main --force")
+	}
+}
+
 func TestCheckToolCall_SeparatorTokenRmRf(t *testing.T) {
 	// Codex bypass: ["rm","--","-rf","/tmp/demo"] — separator between rm and -rf.
 	pc := defaultPolicyConfig(t)

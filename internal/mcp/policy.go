@@ -278,7 +278,7 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 		{
 			Name:        "Destructive File Delete",
 			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$`,
-			ArgPattern:  `(?i)\brm\s+(--\s+)?-[a-z]*[rf]\b`,
+			ArgPattern:  `(?i)\brm\s+(--\s+)?(-[a-z]*[rf]\b|--(?:recursive|force)\b)`,
 			Action:      "block",
 		},
 		{

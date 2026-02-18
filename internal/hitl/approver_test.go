@@ -251,7 +251,7 @@ func TestApprover_Concurrent(t *testing.T) {
 		go func(idx int) {
 			defer wg.Done()
 			results[idx] = a.Ask(&Request{
-				URL:    "https://evil.com/" + string(rune('a'+idx)),
+				URL:    "https://evil.com/" + string(rune('a'+idx)), //nolint:gosec // G115: idx bounded by loop [0,3)
 				Reason: "test",
 			})
 		}(i)

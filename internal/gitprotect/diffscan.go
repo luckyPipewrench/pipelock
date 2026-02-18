@@ -215,10 +215,10 @@ func FormatFindings(findings []Finding) string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Found %d secret(s) in diff:\n\n", len(findings)))
+	fmt.Fprintf(&sb, "Found %d secret(s) in diff:\n\n", len(findings))
 	for _, f := range findings {
-		sb.WriteString(fmt.Sprintf("  %s:%d  %s (%s)\n", f.File, f.Line, f.Pattern, f.Severity))
-		sb.WriteString(fmt.Sprintf("    %s\n\n", f.Content))
+		fmt.Fprintf(&sb, "  %s:%d  %s (%s)\n", f.File, f.Line, f.Pattern, f.Severity)
+		fmt.Fprintf(&sb, "    %s\n\n", f.Content)
 	}
 	return sb.String()
 }

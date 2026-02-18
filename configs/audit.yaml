@@ -127,6 +127,35 @@ mcp_tool_scanning:
   action: warn
   detect_drift: true
 
+mcp_tool_policy:
+  enabled: true
+  action: warn
+  rules:
+    - name: "Destructive File Delete"
+      tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
+      arg_pattern: '(?i)\brm\s+(--\s+)?(-[a-z]*[rf]\b|--(?:recursive|force)\b)'
+    - name: "Recursive Permission Change"
+      tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
+      arg_pattern: '(?i)\b(chmod\s+(-R|--recursive)\s+(777|666)|chmod\s+(777|666)\s+(-R|--recursive)|chown\s+(-R|--recursive))\b'
+    - name: "Credential File Access"
+      tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec|read_file|file_read)$'
+      arg_pattern: '(?i)(\.ssh/(id_|authorized)|\.aws/credentials|\.env\b|\.netrc|/etc/shadow)'
+    - name: "Network Exfiltration"
+      tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
+      arg_pattern: '(?i)\b(curl|wget)\b.*(-d\s|--data|--upload-file|-T\s|-X\s+POST|--post-data)'
+    - name: "Reverse Shell"
+      tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
+      arg_pattern: '(?i)(bash\s+-i\s+>&|/dev/tcp/|mkfifo\s+|nc\s+-e|ncat\s+-e)'
+    - name: "Disk Wipe Command"
+      tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
+      arg_pattern: '(?i)\b(dd\s+if=.*of=/dev/|mkfs\.|fdisk)\b'
+    - name: "Package Install"
+      tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
+      arg_pattern: '(?i)\b(pip|npm|gem|cargo|go)\s+install\b'
+    - name: "Destructive Git Operation"
+      tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec|git)$'
+      arg_pattern: '(?i)(\bgit\s+)?(push\s+(--force(\s|$)|-f\b)|reset\s+--hard\b|clean\s+-fd\b)'
+
 logging:
   format: json
   output: stdout

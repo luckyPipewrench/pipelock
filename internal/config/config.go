@@ -41,6 +41,7 @@ type Config struct {
 	ResponseScanning ResponseScanning `yaml:"response_scanning"`
 	MCPInputScanning MCPInputScanning `yaml:"mcp_input_scanning"`
 	MCPToolScanning  MCPToolScanning  `yaml:"mcp_tool_scanning"`
+	MCPToolPolicy    MCPToolPolicy    `yaml:"mcp_tool_policy"`
 	GitProtection    GitProtection    `yaml:"git_protection"`
 	Logging          LoggingConfig    `yaml:"logging"`
 	Internal         []string         `yaml:"internal"`
@@ -62,6 +63,26 @@ type MCPToolScanning struct {
 	Enabled     bool   `yaml:"enabled"`
 	Action      string `yaml:"action"`       // warn, block
 	DetectDrift bool   `yaml:"detect_drift"` // rug pull detection
+}
+
+// MCPToolPolicy configures pre-execution policy checking on MCP tool calls.
+// Rules match tool names and argument patterns to block or warn on dangerous
+// operations before they reach the MCP server.
+type MCPToolPolicy struct {
+	Enabled bool             `yaml:"enabled"`
+	Action  string           `yaml:"action"` // warn, block (default for rules without override)
+	Rules   []ToolPolicyRule `yaml:"rules"`
+}
+
+// ToolPolicyRule defines a single tool call policy rule.
+// ToolPattern matches against the tool name from params.name in tools/call requests.
+// ArgPattern optionally matches against any string value in params.arguments.
+// If ArgPattern is empty, the rule triggers on tool name alone.
+type ToolPolicyRule struct {
+	Name        string `yaml:"name"`
+	ToolPattern string `yaml:"tool_pattern"` // regex matching tool name
+	ArgPattern  string `yaml:"arg_pattern"`  // regex matching any argument value (optional)
+	Action      string `yaml:"action"`       // per-rule override: warn, block (optional)
 }
 
 // ResponseScanning configures scanning of fetched page content for prompt injection.
@@ -208,6 +229,9 @@ func (c *Config) ApplyDefaults() {
 	if c.MCPToolScanning.Enabled && c.MCPToolScanning.Action == "" {
 		c.MCPToolScanning.Action = "warn" //nolint:goconst // config action value
 	}
+	if c.MCPToolPolicy.Enabled && c.MCPToolPolicy.Action == "" {
+		c.MCPToolPolicy.Action = "warn" //nolint:goconst // config action value
+	}
 	if c.GitProtection.Enabled && len(c.GitProtection.AllowedBranches) == 0 {
 		c.GitProtection.AllowedBranches = []string{"feature/*", "fix/*", "main", "master"}
 	}
@@ -325,6 +349,43 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// Validate MCP tool policy config
+	if c.MCPToolPolicy.Enabled {
+		if len(c.MCPToolPolicy.Rules) == 0 {
+			return fmt.Errorf("mcp_tool_policy is enabled but has no rules; add rules or set enabled: false")
+		}
+		switch c.MCPToolPolicy.Action {
+		case "warn", "block": //nolint:goconst // config action values
+			// valid
+		default:
+			return fmt.Errorf("invalid mcp_tool_policy action %q: must be warn or block", c.MCPToolPolicy.Action)
+		}
+		for i, r := range c.MCPToolPolicy.Rules {
+			if r.Name == "" {
+				return fmt.Errorf("mcp_tool_policy rule %d missing name", i)
+			}
+			if r.ToolPattern == "" {
+				return fmt.Errorf("mcp_tool_policy rule %q missing tool_pattern", r.Name)
+			}
+			if _, err := regexp.Compile(r.ToolPattern); err != nil {
+				return fmt.Errorf("mcp_tool_policy rule %q has invalid tool_pattern: %w", r.Name, err)
+			}
+			if r.ArgPattern != "" {
+				if _, err := regexp.Compile(r.ArgPattern); err != nil {
+					return fmt.Errorf("mcp_tool_policy rule %q has invalid arg_pattern: %w", r.Name, err)
+				}
+			}
+			if r.Action != "" {
+				switch r.Action {
+				case "warn", "block": //nolint:goconst // config action values
+					// valid
+				default:
+					return fmt.Errorf("mcp_tool_policy rule %q has invalid action %q: must be warn or block", r.Name, r.Action)
+				}
+			}
+		}
+	}
+
 	// Validate git protection config
 	if c.GitProtection.Enabled {
 		for _, pattern := range c.GitProtection.AllowedBranches {
@@ -433,6 +494,22 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		})
 	}
 
+	// MCP tool policy disabled
+	if old.MCPToolPolicy.Enabled && !updated.MCPToolPolicy.Enabled {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "mcp_tool_policy.enabled",
+			Message: "MCP tool call policy disabled",
+		})
+	}
+
+	// MCP tool policy rules reduced
+	if len(updated.MCPToolPolicy.Rules) < len(old.MCPToolPolicy.Rules) {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "mcp_tool_policy.rules",
+			Message: fmt.Sprintf("tool policy rules reduced from %d to %d", len(old.MCPToolPolicy.Rules), len(updated.MCPToolPolicy.Rules)),
+		})
+	}
+
 	return warnings
 }
 
@@ -497,6 +574,9 @@ func Defaults() *Config {
 			OnParseError: "block",
 		},
 		MCPToolScanning: MCPToolScanning{
+			Enabled: false,
+		},
+		MCPToolPolicy: MCPToolPolicy{
 			Enabled: false,
 		},
 		GitProtection: GitProtection{

@@ -337,16 +337,27 @@ type BlockedRequest struct {
 	ID             json.RawMessage
 	IsNotification bool // Notifications have no ID — don't send error response.
 	LogMessage     string
+	ErrorCode      int    // 0 = use default -32001; -32002 = policy block
+	ErrorMessage   string // empty = use default message
 }
 
 // blockRequestResponse generates a JSON-RPC 2.0 error response for a blocked request.
-func blockRequestResponse(id json.RawMessage) []byte {
+// Uses ErrorCode/ErrorMessage from BlockedRequest if set, otherwise defaults.
+func blockRequestResponse(br BlockedRequest) []byte {
+	code := br.ErrorCode
+	if code == 0 {
+		code = -32001
+	}
+	msg := br.ErrorMessage
+	if msg == "" {
+		msg = "pipelock: request blocked by MCP input scanning"
+	}
 	resp := rpcError{
 		JSONRPC: jsonRPCVersion,
-		ID:      id,
+		ID:      br.ID,
 		Error: rpcErrorDetail{
-			Code:    -32001,
-			Message: "pipelock: request blocked by MCP input scanning",
+			Code:    code,
+			Message: msg,
 		},
 	}
 	data, _ := json.Marshal(resp) //nolint:errcheck // marshaling known-good struct
@@ -355,6 +366,8 @@ func blockRequestResponse(id json.RawMessage) []byte {
 
 // ForwardScannedInput reads JSON-RPC 2.0 requests from reader, scans each for
 // DLP and injection patterns, and forwards clean requests to writer.
+// When policyCfg is non-nil, tool call policy rules are also checked
+// independently of content scanning — the strictest action wins.
 // Blocked request IDs are sent via blockedCh so the main goroutine (which owns
 // clientOut writes) can send error responses without concurrent write races.
 func ForwardScannedInput(
@@ -365,6 +378,7 @@ func ForwardScannedInput(
 	action string,
 	onParseError string,
 	blockedCh chan<- BlockedRequest,
+	policyCfg *PolicyConfig,
 ) {
 	defer close(blockedCh)
 
@@ -384,15 +398,13 @@ func ForwardScannedInput(
 
 		verdict := ScanRequest(line, sc, action, onParseError)
 
-		if verdict.Clean {
-			if err := writer.WriteMessage(line); err != nil {
-				_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
-				return
-			}
-			continue
+		// Tool call policy check — independent of content scanning.
+		policyVerdict := PolicyVerdict{}
+		if policyCfg != nil {
+			policyVerdict = policyCfg.CheckRequest(line)
 		}
 
-		// Parse error — block by default.
+		// Parse error — block by default (policy doesn't override parse errors).
 		if verdict.Error != "" {
 			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: %s\n", lineNum, verdict.Error)
 			isNotification := len(verdict.ID) == 0
@@ -404,13 +416,25 @@ func ForwardScannedInput(
 			continue
 		}
 
-		// DLP or injection match.
+		// Both clean — forward.
+		if verdict.Clean && !policyVerdict.Matched {
+			if err := writer.WriteMessage(line); err != nil {
+				_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
+				return
+			}
+			continue
+		}
+
+		// Build combined reasons from content scan and policy.
 		var reasons []string
 		for _, m := range verdict.Matches {
 			reasons = append(reasons, m.PatternName)
 		}
 		for _, m := range verdict.Inject {
 			reasons = append(reasons, m.PatternName)
+		}
+		for _, r := range policyVerdict.Rules {
+			reasons = append(reasons, "policy:"+r)
 		}
 		reasonStr := joinStrings(reasons)
 
@@ -419,9 +443,27 @@ func ForwardScannedInput(
 			method = "unknown"
 		}
 
+		// Determine effective action: strictest of content scan action and policy action.
+		effectiveAction := ""
+		if !verdict.Clean {
+			effectiveAction = action
+		}
+		if policyVerdict.Matched {
+			effectiveAction = stricterAction(effectiveAction, policyVerdict.Action)
+		}
+
 		isNotification := len(verdict.ID) == 0
 
-		switch action {
+		// Determine error response fields based on what triggered the block.
+		isPolicyOnly := verdict.Clean && policyVerdict.Matched
+		errCode := 0 // default: -32001 (content scan)
+		errMsg := "" // default message
+		if isPolicyOnly {
+			errCode = -32002 // policy-specific error code
+			errMsg = "pipelock: request blocked by tool call policy"
+		}
+
+		switch effectiveAction {
 		case "block": //nolint:goconst // config action value
 			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked %s request (%s)\n",
 				lineNum, method, reasonStr)
@@ -429,6 +471,8 @@ func ForwardScannedInput(
 				ID:             verdict.ID,
 				IsNotification: isNotification,
 				LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked", lineNum),
+				ErrorCode:      errCode,
+				ErrorMessage:   errMsg,
 			}
 		case "ask":
 			// HITL for input scanning is impractical — fall back to block.
@@ -438,6 +482,8 @@ func ForwardScannedInput(
 				ID:             verdict.ID,
 				IsNotification: isNotification,
 				LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked (ask fallback)", lineNum),
+				ErrorCode:      errCode,
+				ErrorMessage:   errMsg,
 			}
 		default: // warn
 			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: warning — %s request contains flagged content (%s)\n",

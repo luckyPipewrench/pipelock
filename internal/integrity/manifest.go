@@ -90,7 +90,7 @@ func (m *Manifest) Save(path string) error {
 		os.Remove(tmpName) //nolint:errcheck,gosec // cleanup
 		return fmt.Errorf("closing temp file: %w", err)
 	}
-	if err := os.Rename(tmpName, path); err != nil {
+	if err := os.Rename(tmpName, path); err != nil { //nolint:gosec // G703: path from caller, not user input
 		os.Remove(tmpName) //nolint:errcheck,gosec // cleanup
 		return fmt.Errorf("writing manifest: %w", err)
 	}

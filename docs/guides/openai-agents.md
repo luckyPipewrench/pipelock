@@ -102,41 +102,37 @@ Wrap each server independently. If one returns a poisoned response, Pipelock
 blocks it without affecting the others:
 
 ```python
-from agents import Agent
+import asyncio
+from agents import Agent, Runner
 from agents.mcp import MCPServerStdio
 
-filesystem = MCPServerStdio(
-    name="Pipelock Filesystem",
-    params={
-        "command": "pipelock",
-        "args": ["mcp", "proxy", "--config", "pipelock.yaml", "--",
-                 "npx", "-y", "@modelcontextprotocol/server-filesystem", "/workspace"],
-    },
-)
+async def main():
+    async with (
+        MCPServerStdio(name="Pipelock Filesystem", params={
+            "command": "pipelock",
+            "args": ["mcp", "proxy", "--config", "pipelock.yaml", "--",
+                     "npx", "-y", "@modelcontextprotocol/server-filesystem", "/workspace"],
+        }) as filesystem,
+        MCPServerStdio(name="Pipelock SQLite", params={
+            "command": "pipelock",
+            "args": ["mcp", "proxy", "--config", "pipelock.yaml", "--",
+                     "python", "-m", "mcp_server_sqlite", "--db", "/data/app.db"],
+        }) as database,
+        MCPServerStdio(name="Pipelock GitHub", params={
+            "command": "pipelock",
+            "args": ["mcp", "proxy", "--config", "pipelock.yaml", "--",
+                     "npx", "-y", "@modelcontextprotocol/server-github"],
+        }) as github,
+    ):
+        agent = Agent(
+            name="Dev Assistant",
+            instructions="You help with code, data, and project management.",
+            mcp_servers=[filesystem, database, github],
+        )
+        result = await Runner.run(agent, "List project issues")
+        print(result.final_output)
 
-database = MCPServerStdio(
-    name="Pipelock SQLite",
-    params={
-        "command": "pipelock",
-        "args": ["mcp", "proxy", "--config", "pipelock.yaml", "--",
-                 "python", "-m", "mcp_server_sqlite", "--db", "/data/app.db"],
-    },
-)
-
-github = MCPServerStdio(
-    name="Pipelock GitHub",
-    params={
-        "command": "pipelock",
-        "args": ["mcp", "proxy", "--config", "pipelock.yaml", "--",
-                 "npx", "-y", "@modelcontextprotocol/server-github"],
-    },
-)
-
-agent = Agent(
-    name="Dev Assistant",
-    instructions="You help with code, data, and project management.",
-    mcp_servers=[filesystem, database, github],
-)
+asyncio.run(main())
 ```
 
 ### Pattern C: Mixed Transports
@@ -145,34 +141,32 @@ Wrap stdio servers with Pipelock. Remote servers connect directly and are not
 covered by the stdio proxy:
 
 ```python
-from agents import Agent
+import asyncio
+from agents import Agent, Runner
 from agents.mcp import MCPServerStdio, MCPServerStreamableHttp
 
-# Local server: wrap with pipelock
-local = MCPServerStdio(
-    name="Pipelock Filesystem",
-    params={
-        "command": "pipelock",
-        "args": ["mcp", "proxy", "--config", "pipelock.yaml", "--",
-                 "npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
-    },
-)
+async def main():
+    async with (
+        MCPServerStdio(name="Pipelock Filesystem", params={
+            "command": "pipelock",
+            "args": ["mcp", "proxy", "--config", "pipelock.yaml", "--",
+                     "npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+        }) as local,
+        # Remote server: NOT scanned by pipelock
+        # Pipelock's MCP proxy only wraps stdio servers.
+        MCPServerStreamableHttp(name="Remote API", params={
+            "url": "https://api.example.com/mcp",
+        }) as remote,
+    ):
+        agent = Agent(
+            name="Hybrid Agent",
+            instructions="You use local and remote tools.",
+            mcp_servers=[local, remote],
+        )
+        result = await Runner.run(agent, "Use local and remote tools")
+        print(result.final_output)
 
-# Remote server: NOT scanned by pipelock
-# Pipelock's MCP proxy only wraps stdio servers.
-# For remote servers, vet the server before connecting.
-remote = MCPServerStreamableHttp(
-    name="Remote API",
-    params={
-        "url": "https://api.example.com/mcp",
-    },
-)
-
-agent = Agent(
-    name="Hybrid Agent",
-    instructions="You use local and remote tools.",
-    mcp_servers=[local, remote],
-)
+asyncio.run(main())
 ```
 
 > **Note:** `MCPServerSse` is deprecated. Use `MCPServerStreamableHttp` for new
@@ -184,9 +178,19 @@ outbound HTTP traffic from your agent code (API calls, web fetches), route those
 through `pipelock run` as a fetch proxy. See the
 [HTTP fetch proxy](#http-fetch-proxy) section below.
 
-**Tip:** The SDK also supports `mcp_config=MCPConfig(convert_schemas_to_strict=True)`
-for strict JSON schema validation on MCP tools. This pairs well with Pipelock —
-the SDK validates schema structure while Pipelock validates content.
+**Tip:** The SDK supports strict JSON schema validation on MCP tools, which
+pairs well with Pipelock — the SDK validates schema structure while Pipelock
+validates content:
+
+```python
+from agents import Agent
+from agents.agent import MCPConfig
+
+agent = Agent(
+    ...,
+    mcp_config=MCPConfig(convert_schemas_to_strict=True),
+)
+```
 
 ### Pattern D: Multi-Agent Handoffs
 
@@ -194,41 +198,40 @@ When using the SDK's handoff feature, each agent can have its own set of
 Pipelock-wrapped MCP servers with different configs:
 
 ```python
-from agents import Agent
+import asyncio
+from agents import Agent, Runner
 from agents.mcp import MCPServerStdio
 
-# Researcher gets broad access, warn mode
-researcher = Agent(
-    name="Researcher",
-    instructions="You research topics using web and file tools.",
-    mcp_servers=[
-        MCPServerStdio(
-            name="Pipelock Filesystem (warn)",
-            params={
-                "command": "pipelock",
-                "args": ["mcp", "proxy", "--config", "pipelock-warn.yaml", "--",
-                         "npx", "-y", "@modelcontextprotocol/server-filesystem", "/data"],
-            },
-        ),
-    ],
-)
+async def main():
+    async with (
+        MCPServerStdio(name="Pipelock Filesystem (warn)", params={
+            "command": "pipelock",
+            "args": ["mcp", "proxy", "--config", "pipelock-warn.yaml", "--",
+                     "npx", "-y", "@modelcontextprotocol/server-filesystem", "/data"],
+        }) as research_fs,
+        MCPServerStdio(name="Pipelock Filesystem (strict)", params={
+            "command": "pipelock",
+            "args": ["mcp", "proxy", "--config", "pipelock-strict.yaml", "--",
+                     "npx", "-y", "@modelcontextprotocol/server-filesystem", "/output"],
+        }) as writer_fs,
+    ):
+        researcher = Agent(
+            name="Researcher",
+            instructions="You research topics using web and file tools.",
+            mcp_servers=[research_fs],
+        )
 
-# Writer gets restricted access, block mode
-writer = Agent(
-    name="Writer",
-    instructions="You write reports based on research.",
-    mcp_servers=[
-        MCPServerStdio(
-            name="Pipelock Filesystem (strict)",
-            params={
-                "command": "pipelock",
-                "args": ["mcp", "proxy", "--config", "pipelock-strict.yaml", "--",
-                         "npx", "-y", "@modelcontextprotocol/server-filesystem", "/output"],
-            },
-        ),
-    ],
-    handoffs=[researcher],
-)
+        writer = Agent(
+            name="Writer",
+            instructions="You write reports based on research.",
+            mcp_servers=[writer_fs],
+            handoffs=[researcher],
+        )
+
+        result = await Runner.run(writer, "Write a report on workspace contents")
+        print(result.final_output)
+
+asyncio.run(main())
 ```
 
 ## Docker Compose

@@ -146,7 +146,7 @@ Examples:
 				return fmt.Errorf("writing hook: %w", err)
 			}
 
-			cmd.PrintErrf("Installed pre-push hook at %s\n", hookPath)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Installed pre-push hook at %s\n", hookPath)
 			return nil
 		},
 	}

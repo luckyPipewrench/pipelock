@@ -108,7 +108,7 @@ Examples:
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, cfgLabel, err := loadTestConfig(configFile)
 			if err != nil {
-				return err
+				return ExitCodeError(2, err)
 			}
 
 			// Disable SSRF and env scanning for self-test.

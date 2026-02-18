@@ -2,8 +2,33 @@
 package cli
 
 import (
+	"errors"
+
 	"github.com/spf13/cobra"
 )
+
+// ExitError wraps an error with a specific exit code for main() to use.
+type ExitError struct {
+	Err  error
+	Code int
+}
+
+func (e *ExitError) Error() string { return e.Err.Error() }
+func (e *ExitError) Unwrap() error { return e.Err }
+
+// ExitCodeError wraps err with a non-standard exit code.
+func ExitCodeError(code int, err error) error {
+	return &ExitError{Err: err, Code: code}
+}
+
+// ExitCodeOf returns the exit code for an error, defaulting to 1.
+func ExitCodeOf(err error) int {
+	var ee *ExitError
+	if errors.As(err, &ee) {
+		return ee.Code
+	}
+	return 1
+}
 
 // Build metadata, set at build time via ldflags. Defaults are used when
 // building with plain "go build" (without the Makefile).

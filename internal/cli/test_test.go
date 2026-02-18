@@ -740,3 +740,54 @@ func TestTestCmd_ColorOutput(t *testing.T) {
 		t.Error("expected [PASS] in color output")
 	}
 }
+
+func TestTestCmd_ConfigLoadError_ExitCode2(t *testing.T) {
+	// A nonexistent config file should produce an ExitError with code 2.
+	cmd := rootCmd()
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetArgs([]string{"test", "--config", "/nonexistent/path/pipelock.yaml"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for nonexistent config file")
+	}
+
+	var ee *ExitError
+	if !errors.As(err, &ee) {
+		t.Fatalf("expected *ExitError, got %T: %v", err, err)
+	}
+	if ee.Code != 2 {
+		t.Errorf("ExitError.Code = %d, want 2", ee.Code)
+	}
+	if !strings.Contains(err.Error(), "config load error") {
+		t.Errorf("error should mention config load, got: %v", err)
+	}
+}
+
+func TestTestCmd_ConfigLoadError_InvalidYAML(t *testing.T) {
+	// Invalid YAML content should also produce exit code 2.
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "bad.yaml")
+	if err := os.WriteFile(cfgPath, []byte("{{not yaml"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := rootCmd()
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetArgs([]string{"test", "--config", cfgPath})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for invalid YAML config")
+	}
+
+	var ee *ExitError
+	if !errors.As(err, &ee) {
+		t.Fatalf("expected *ExitError for invalid YAML, got %T: %v", err, err)
+	}
+	if ee.Code != 2 {
+		t.Errorf("ExitError.Code = %d, want 2", ee.Code)
+	}
+}

@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"os"
 	"os/signal"
 	"syscall"
 
@@ -121,7 +120,7 @@ Examples:
 							if oldCfg != nil {
 								warnings := config.ValidateReload(oldCfg, newCfg)
 								for _, w := range warnings {
-									fmt.Fprintf(os.Stderr, "WARNING: config reload: %s - %s\n", w.Field, w.Message)
+									cmd.PrintErrf("WARNING: config reload: %s - %s\n", w.Field, w.Message)
 								}
 								// Block downgrades from strict mode (security-critical).
 								if oldCfg.Mode == config.ModeStrict && len(warnings) > 0 {
@@ -133,7 +132,7 @@ Examples:
 							newSc := scanner.New(newCfg)
 							p.Reload(newCfg, newSc)
 							if newCfg.ResponseScanning.Action == config.ActionAsk && !hasApprover {
-								fmt.Fprintln(os.Stderr, "WARNING: config reloaded to ask mode but HITL approver was not initialized at startup; detections will be blocked")
+								cmd.PrintErrln("WARNING: config reloaded to ask mode but HITL approver was not initialized at startup; detections will be blocked")
 							}
 							logger.LogConfigReload("success", fmt.Sprintf("mode=%s", newCfg.Mode))
 						}()
@@ -143,27 +142,27 @@ Examples:
 
 			// Warn if running outside a container (reduced isolation)
 			if !isContainerized() {
-				fmt.Fprintln(os.Stderr, "WARNING: running outside a container - consider using Docker/Podman for network isolation")
+				cmd.PrintErrln("WARNING: running outside a container - consider using Docker/Podman for network isolation")
 			}
 
-			fmt.Fprintf(os.Stderr, "Pipelock v%s starting\n", Version)
-			fmt.Fprintf(os.Stderr, "  Mode:   %s\n", cfg.Mode)
-			fmt.Fprintf(os.Stderr, "  Listen: %s\n", cfg.FetchProxy.Listen)
-			fmt.Fprintf(os.Stderr, "  Fetch:  http://%s/fetch?url=<url>\n", cfg.FetchProxy.Listen)
-			fmt.Fprintf(os.Stderr, "  Health: http://%s/health\n", cfg.FetchProxy.Listen)
-			fmt.Fprintf(os.Stderr, "  Stats:  http://%s/stats\n", cfg.FetchProxy.Listen)
+			cmd.PrintErrf("Pipelock v%s starting\n", Version)
+			cmd.PrintErrf("  Mode:   %s\n", cfg.Mode)
+			cmd.PrintErrf("  Listen: %s\n", cfg.FetchProxy.Listen)
+			cmd.PrintErrf("  Fetch:  http://%s/fetch?url=<url>\n", cfg.FetchProxy.Listen)
+			cmd.PrintErrf("  Health: http://%s/health\n", cfg.FetchProxy.Listen)
+			cmd.PrintErrf("  Stats:  http://%s/stats\n", cfg.FetchProxy.Listen)
 			if configFile != "" {
-				fmt.Fprintf(os.Stderr, "  Config: %s (hot-reload enabled, SIGHUP to reload)\n", configFile)
+				cmd.PrintErrf("  Config: %s (hot-reload enabled, SIGHUP to reload)\n", configFile)
 			}
 
 			// Check for agent command after --
 			dashIdx := cmd.ArgsLenAtDash()
 			if dashIdx >= 0 && dashIdx < len(args) {
 				agentCmd := args[dashIdx:]
-				fmt.Fprintf(os.Stderr, "  Agent:  %v\n", agentCmd)
-				fmt.Fprintf(os.Stderr, "\nNote: agent process launching is not yet implemented (Phase 2).\n")
-				fmt.Fprintf(os.Stderr, "The fetch proxy is running — configure your agent to use:\n")
-				fmt.Fprintf(os.Stderr, "  PIPELOCK_FETCH_URL=http://%s/fetch\n\n", cfg.FetchProxy.Listen)
+				cmd.PrintErrf("  Agent:  %v\n", agentCmd)
+				cmd.PrintErrln("\nNote: agent process launching is not yet implemented (Phase 2).")
+				cmd.PrintErrln("The fetch proxy is running — configure your agent to use:")
+				cmd.PrintErrf("  PIPELOCK_FETCH_URL=http://%s/fetch\n\n", cfg.FetchProxy.Listen)
 			}
 
 			// Start the proxy (blocks until context cancelled or error)
@@ -172,7 +171,7 @@ Examples:
 			}
 
 			logger.LogShutdown("signal received")
-			fmt.Fprintln(os.Stderr, "\nPipelock stopped.")
+			cmd.PrintErrln("\nPipelock stopped.")
 			return nil
 		},
 	}

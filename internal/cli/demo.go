@@ -17,12 +17,13 @@ import (
 
 // ANSI escape codes for terminal color output.
 const (
-	ansiReset     = "\033[0m"
-	ansiBold      = "\033[1m"
-	ansiDim       = "\033[2m"
-	ansiBoldGreen = "\033[1;32m"
-	ansiBoldRed   = "\033[1;31m"
-	ansiBoldCyan  = "\033[1;36m"
+	ansiReset      = "\033[0m"
+	ansiBold       = "\033[1m"
+	ansiDim        = "\033[2m"
+	ansiBoldGreen  = "\033[1;32m"
+	ansiBoldYellow = "\033[1;33m"
+	ansiBoldRed    = "\033[1;31m"
+	ansiBoldCyan   = "\033[1;36m"
 )
 
 const demoScanAllowed = "scan allowed"

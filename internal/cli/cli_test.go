@@ -964,8 +964,7 @@ func TestRunCmd_WithAgentArgs(t *testing.T) {
 	}
 
 	// The run command completed without error, which means the agent args
-	// parsing path (dashIdx >= 0) was exercised. The banner prints to
-	// os.Stderr directly, so we can't capture it via cmd.SetErr.
+	// parsing path (dashIdx >= 0) was exercised.
 }
 
 func TestRunCmd_DefaultMode(t *testing.T) {
@@ -1292,7 +1291,6 @@ fetch_proxy:
 	}
 
 	// Reload config to action: ask (triggers warning because no approver at startup).
-	// The warning goes to os.Stderr directly; coverage confirms code path execution.
 	updatedCfg := fmt.Sprintf(`version: 1
 mode: balanced
 fetch_proxy:

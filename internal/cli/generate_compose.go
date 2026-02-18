@@ -40,11 +40,11 @@ Examples:
 				if err := os.WriteFile(output, []byte(tmpl), 0o644); err != nil { //nolint:gosec // user-requested output file
 					return fmt.Errorf("writing compose file: %w", err)
 				}
-				fmt.Fprintf(os.Stderr, "Docker Compose file written to %s\n", output)
-				fmt.Fprintf(os.Stderr, "\nNext steps:\n")
-				fmt.Fprintf(os.Stderr, "  1. Generate a pipelock config:  pipelock generate config -o pipelock.yaml\n")
-				fmt.Fprintf(os.Stderr, "  2. Create a .env file with your API key:  echo 'ANTHROPIC_API_KEY=sk-ant-...' > .env\n")
-				fmt.Fprintf(os.Stderr, "  3. Start the stack:  docker compose up\n")
+				cmd.PrintErrf("Docker Compose file written to %s\n", output)
+				cmd.PrintErrln("\nNext steps:")
+				cmd.PrintErrln("  1. Generate a pipelock config:  pipelock generate config -o pipelock.yaml")
+				cmd.PrintErrln("  2. Create a .env file with your API key:  echo 'ANTHROPIC_API_KEY=sk-ant-...' > .env")
+				cmd.PrintErrln("  3. Start the stack:  docker compose up")
 			} else {
 				cmd.Print(tmpl)
 			}

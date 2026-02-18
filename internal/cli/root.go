@@ -52,6 +52,7 @@ Quick start:
 		keygenCmd(),
 		mcpCmd(),
 		signCmd(),
+		testCmd(),
 		verifyCmd(),
 		trustCmd(),
 		versionCmd(),

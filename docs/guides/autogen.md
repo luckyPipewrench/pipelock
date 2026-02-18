@@ -99,64 +99,83 @@ asyncio.run(main())
 Create tools from multiple Pipelock-wrapped servers and combine them:
 
 ```python
+import asyncio
+from autogen_agentchat.agents import AssistantAgent
+from autogen_ext.models.openai import OpenAIChatCompletionClient
 from autogen_ext.tools.mcp import StdioServerParams, mcp_server_tools
 
-filesystem_params = StdioServerParams(
-    command="pipelock",
-    args=["mcp", "proxy", "--config", "pipelock.yaml", "--",
-          "npx", "-y", "@modelcontextprotocol/server-filesystem", "/workspace"],
-)
+async def main():
+    model_client = OpenAIChatCompletionClient(model="gpt-4o")
 
-database_params = StdioServerParams(
-    command="pipelock",
-    args=["mcp", "proxy", "--config", "pipelock.yaml", "--",
-          "python", "-m", "mcp_server_sqlite", "--db", "/data/app.db"],
-)
+    filesystem_params = StdioServerParams(
+        command="pipelock",
+        args=["mcp", "proxy", "--config", "pipelock.yaml", "--",
+              "npx", "-y", "@modelcontextprotocol/server-filesystem", "/workspace"],
+    )
 
-fs_tools = await mcp_server_tools(filesystem_params)
-db_tools = await mcp_server_tools(database_params)
+    database_params = StdioServerParams(
+        command="pipelock",
+        args=["mcp", "proxy", "--config", "pipelock.yaml", "--",
+              "python", "-m", "mcp_server_sqlite", "--db", "/data/app.db"],
+    )
 
-agent = AssistantAgent(
-    name="multi_tool_agent",
-    model_client=model_client,
-    tools=fs_tools + db_tools,
-)
+    fs_tools = await mcp_server_tools(filesystem_params)
+    db_tools = await mcp_server_tools(database_params)
+
+    agent = AssistantAgent(
+        name="multi_tool_agent",
+        model_client=model_client,
+        tools=fs_tools + db_tools,
+    )
+
+asyncio.run(main())
 ```
 
 ### Pattern C: Mixed Transports
 
-Wrap stdio servers with Pipelock. SSE servers connect directly and are not
+Wrap stdio servers with Pipelock. Remote servers connect directly and are not
 covered by the stdio proxy:
 
 ```python
-from autogen_ext.tools.mcp import StdioServerParams, SseServerParams, mcp_server_tools
+import asyncio
+from autogen_agentchat.agents import AssistantAgent
+from autogen_ext.models.openai import OpenAIChatCompletionClient
+from autogen_ext.tools.mcp import StdioServerParams, StreamableHttpServerParams, mcp_server_tools
 
-# Local server: wrap with pipelock
-local_params = StdioServerParams(
-    command="pipelock",
-    args=["mcp", "proxy", "--config", "pipelock.yaml", "--",
-          "npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
-)
+async def main():
+    model_client = OpenAIChatCompletionClient(model="gpt-4o")
 
-# Remote server: NOT scanned by pipelock
-# Pipelock's MCP proxy only wraps stdio servers.
-# For remote SSE servers, vet the server before connecting.
-remote_params = SseServerParams(
-    url="https://api.example.com/mcp/sse",
-    headers={"Authorization": "Bearer token"},
-)
+    # Local server: wrap with pipelock
+    local_params = StdioServerParams(
+        command="pipelock",
+        args=["mcp", "proxy", "--config", "pipelock.yaml", "--",
+              "npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+    )
 
-local_tools = await mcp_server_tools(local_params)
-remote_tools = await mcp_server_tools(remote_params)
+    # Remote server: NOT scanned by pipelock
+    # Pipelock's MCP proxy only wraps stdio servers.
+    # For remote servers, vet the server before connecting.
+    remote_params = StreamableHttpServerParams(
+        url="https://api.example.com/mcp",
+        headers={"Authorization": "Bearer token"},
+    )
 
-agent = AssistantAgent(
-    name="hybrid_agent",
-    model_client=model_client,
-    tools=local_tools + remote_tools,
-)
+    local_tools = await mcp_server_tools(local_params)
+    remote_tools = await mcp_server_tools(remote_params)
+
+    agent = AssistantAgent(
+        name="hybrid_agent",
+        model_client=model_client,
+        tools=local_tools + remote_tools,
+    )
+
+asyncio.run(main())
 ```
 
-**Note:** Pipelock's MCP proxy only wraps stdio-based servers. Remote SSE/HTTP
+> **Note:** `SseServerParams` is deprecated. Use `StreamableHttpServerParams`
+> for new remote MCP connections.
+
+**Note:** Pipelock's MCP proxy only wraps stdio-based servers. Remote HTTP/SSE
 MCP connections go directly to the remote endpoint and bypass Pipelock. For
 outbound HTTP traffic from your agent code (API calls, web fetches), route those
 through `pipelock run` as a fetch proxy. See the
@@ -168,43 +187,50 @@ AutoGen's team abstractions (`RoundRobinGroupChat`, `SelectorGroupChat`, etc.)
 allow agents with different Pipelock configs to collaborate:
 
 ```python
+import asyncio
 from autogen_agentchat.agents import AssistantAgent
 from autogen_agentchat.teams import RoundRobinGroupChat
 from autogen_agentchat.conditions import TextMentionTermination
+from autogen_ext.models.openai import OpenAIChatCompletionClient
 from autogen_ext.tools.mcp import StdioServerParams, mcp_server_tools
 
-# Researcher: broad access, warn mode
-research_tools = await mcp_server_tools(StdioServerParams(
-    command="pipelock",
-    args=["mcp", "proxy", "--config", "pipelock-warn.yaml", "--",
-          "npx", "-y", "@modelcontextprotocol/server-fetch"],
-))
+async def main():
+    model_client = OpenAIChatCompletionClient(model="gpt-4o")
 
-researcher = AssistantAgent(
-    name="researcher",
-    model_client=model_client,
-    tools=research_tools,
-    system_message="Research topics. Say TERMINATE when done.",
-)
+    # Researcher: broad access, warn mode
+    research_tools = await mcp_server_tools(StdioServerParams(
+        command="pipelock",
+        args=["mcp", "proxy", "--config", "pipelock-warn.yaml", "--",
+              "npx", "-y", "@modelcontextprotocol/server-fetch"],
+    ))
 
-# Writer: restricted access, block mode
-writer_tools = await mcp_server_tools(StdioServerParams(
-    command="pipelock",
-    args=["mcp", "proxy", "--config", "pipelock-strict.yaml", "--",
-          "npx", "-y", "@modelcontextprotocol/server-filesystem", "/output"],
-))
+    researcher = AssistantAgent(
+        name="researcher",
+        model_client=model_client,
+        tools=research_tools,
+        system_message="Research topics. Say TERMINATE when done.",
+    )
 
-writer = AssistantAgent(
-    name="writer",
-    model_client=model_client,
-    tools=writer_tools,
-    system_message="Write reports based on research. Say TERMINATE when done.",
-)
+    # Writer: restricted access, block mode
+    writer_tools = await mcp_server_tools(StdioServerParams(
+        command="pipelock",
+        args=["mcp", "proxy", "--config", "pipelock-strict.yaml", "--",
+              "npx", "-y", "@modelcontextprotocol/server-filesystem", "/output"],
+    ))
 
-team = RoundRobinGroupChat(
-    participants=[researcher, writer],
-    termination_condition=TextMentionTermination("TERMINATE"),
-)
+    writer = AssistantAgent(
+        name="writer",
+        model_client=model_client,
+        tools=writer_tools,
+        system_message="Write reports based on research. Say TERMINATE when done.",
+    )
+
+    team = RoundRobinGroupChat(
+        participants=[researcher, writer],
+        termination_condition=TextMentionTermination("TERMINATE"),
+    )
+
+asyncio.run(main())
 ```
 
 ## Docker Compose
@@ -288,10 +314,10 @@ def fetch_through_pipelock(url: str) -> str:
 
 | Config | Action | Best For |
 |--------|--------|----------|
-| `balanced` | warn | Recommended starting point (`--preset balanced`) |
-| `strict` | block | High-security, production (`--preset strict`) |
-| `generic-agent.yaml` | warn | Agent-specific tuning (copy from `configs/`) |
-| `claude-code.yaml` | block | Unattended coding agents (copy from `configs/`) |
+| `balanced` | warn (default) | Recommended starting point (`--preset balanced`) |
+| `strict` | block (default) | High-security, production (`--preset strict`) |
+| `generic-agent.yaml` | warn (default) | Agent-specific tuning (copy from `configs/`) |
+| `claude-code.yaml` | block (default) | Unattended coding agents (copy from `configs/`) |
 
 Start with `balanced` to log detections without blocking. Review the logs,
 tune thresholds, then switch to `strict` for production.

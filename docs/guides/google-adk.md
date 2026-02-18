@@ -22,16 +22,19 @@ pipelock version
 from google.adk.agents import Agent
 from google.adk.tools import McpToolset
 from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
+from mcp import StdioServerParameters
 
 filesystem_toolset = McpToolset(
     connection_params=StdioConnectionParams(
-        command="pipelock",
-        args=[
-            "mcp", "proxy",
-            "--config", "pipelock.yaml",
-            "--",
-            "npx", "-y", "@modelcontextprotocol/server-filesystem", "/workspace"
-        ],
+        server_params=StdioServerParameters(
+            command="pipelock",
+            args=[
+                "mcp", "proxy",
+                "--config", "pipelock.yaml",
+                "--",
+                "npx", "-y", "@modelcontextprotocol/server-filesystem", "/workspace"
+            ],
+        )
     )
 )
 
@@ -75,17 +78,20 @@ from google.adk.sessions import InMemorySessionService
 from google.adk.tools import McpToolset
 from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
 from google.genai import types
+from mcp import StdioServerParameters
 
 async def main():
     toolset = McpToolset(
         connection_params=StdioConnectionParams(
-            command="pipelock",
-            args=[
-                "mcp", "proxy",
-                "--config", "pipelock.yaml",
-                "--",
-                "npx", "-y", "@modelcontextprotocol/server-filesystem", "/workspace"
-            ],
+            server_params=StdioServerParameters(
+                command="pipelock",
+                args=[
+                    "mcp", "proxy",
+                    "--config", "pipelock.yaml",
+                    "--",
+                    "npx", "-y", "@modelcontextprotocol/server-filesystem", "/workspace"
+                ],
+            )
         )
     )
 
@@ -128,20 +134,25 @@ Wrap each server independently with its own Pipelock proxy:
 from google.adk.agents import Agent
 from google.adk.tools import McpToolset
 from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
+from mcp import StdioServerParameters
 
 filesystem = McpToolset(
     connection_params=StdioConnectionParams(
-        command="pipelock",
-        args=["mcp", "proxy", "--config", "pipelock.yaml", "--",
-              "npx", "-y", "@modelcontextprotocol/server-filesystem", "/workspace"],
+        server_params=StdioServerParameters(
+            command="pipelock",
+            args=["mcp", "proxy", "--config", "pipelock.yaml", "--",
+                  "npx", "-y", "@modelcontextprotocol/server-filesystem", "/workspace"],
+        )
     )
 )
 
 database = McpToolset(
     connection_params=StdioConnectionParams(
-        command="pipelock",
-        args=["mcp", "proxy", "--config", "pipelock.yaml", "--",
-              "python", "-m", "mcp_server_sqlite", "--db", "/data/app.db"],
+        server_params=StdioServerParameters(
+            command="pipelock",
+            args=["mcp", "proxy", "--config", "pipelock.yaml", "--",
+                  "python", "-m", "mcp_server_sqlite", "--db", "/data/app.db"],
+        )
     )
 )
 
@@ -155,8 +166,8 @@ agent = Agent(
 
 ### Pattern C: Mixed Transports
 
-Wrap stdio servers with Pipelock. Remote SSE servers connect directly and are
-not covered by the stdio proxy:
+Wrap stdio servers with Pipelock. Remote servers connect directly and are not
+covered by the stdio proxy:
 
 ```python
 from google.adk.agents import Agent
@@ -165,19 +176,22 @@ from google.adk.tools.mcp_tool.mcp_session_manager import (
     StdioConnectionParams,
     SseConnectionParams,
 )
+from mcp import StdioServerParameters
 
 # Local server: wrap with pipelock
 local = McpToolset(
     connection_params=StdioConnectionParams(
-        command="pipelock",
-        args=["mcp", "proxy", "--config", "pipelock.yaml", "--",
-              "npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+        server_params=StdioServerParameters(
+            command="pipelock",
+            args=["mcp", "proxy", "--config", "pipelock.yaml", "--",
+                  "npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+        )
     )
 )
 
 # Remote server: NOT scanned by pipelock
 # Pipelock's MCP proxy only wraps stdio servers.
-# For remote SSE servers, vet the server before connecting.
+# For remote servers, vet the server before connecting.
 remote = McpToolset(
     connection_params=SseConnectionParams(url="https://api.example.com/mcp/sse")
 )
@@ -190,7 +204,7 @@ agent = Agent(
 )
 ```
 
-**Note:** Pipelock's MCP proxy only wraps stdio-based servers. Remote SSE/HTTP
+**Note:** Pipelock's MCP proxy only wraps stdio-based servers. Remote HTTP/SSE
 MCP connections go directly to the remote endpoint and bypass Pipelock. For
 outbound HTTP traffic from your agent code (API calls, web fetches), route those
 through `pipelock run` as a fetch proxy. See the
@@ -205,6 +219,7 @@ Pipelock-wrapped MCP servers with different security configs:
 from google.adk.agents import Agent
 from google.adk.tools import McpToolset
 from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
+from mcp import StdioServerParameters
 
 researcher = Agent(
     model="gemini-2.0-flash",
@@ -213,9 +228,11 @@ researcher = Agent(
     tools=[
         McpToolset(
             connection_params=StdioConnectionParams(
-                command="pipelock",
-                args=["mcp", "proxy", "--config", "pipelock-warn.yaml", "--",
-                      "npx", "-y", "@modelcontextprotocol/server-fetch"],
+                server_params=StdioServerParameters(
+                    command="pipelock",
+                    args=["mcp", "proxy", "--config", "pipelock-warn.yaml", "--",
+                          "npx", "-y", "@modelcontextprotocol/server-fetch"],
+                )
             )
         ),
     ],
@@ -228,9 +245,11 @@ writer = Agent(
     tools=[
         McpToolset(
             connection_params=StdioConnectionParams(
-                command="pipelock",
-                args=["mcp", "proxy", "--config", "pipelock-strict.yaml", "--",
-                      "npx", "-y", "@modelcontextprotocol/server-filesystem", "/output"],
+                server_params=StdioServerParameters(
+                    command="pipelock",
+                    args=["mcp", "proxy", "--config", "pipelock-strict.yaml", "--",
+                          "npx", "-y", "@modelcontextprotocol/server-filesystem", "/output"],
+                )
             )
         ),
     ],
@@ -319,10 +338,10 @@ def fetch_through_pipelock(url: str) -> str:
 
 | Config | Action | Best For |
 |--------|--------|----------|
-| `balanced` | warn | Recommended starting point (`--preset balanced`) |
-| `strict` | block | High-security, production (`--preset strict`) |
-| `generic-agent.yaml` | warn | Agent-specific tuning (copy from `configs/`) |
-| `claude-code.yaml` | block | Unattended coding agents (copy from `configs/`) |
+| `balanced` | warn (default) | Recommended starting point (`--preset balanced`) |
+| `strict` | block (default) | High-security, production (`--preset strict`) |
+| `generic-agent.yaml` | warn (default) | Agent-specific tuning (copy from `configs/`) |
+| `claude-code.yaml` | block (default) | Unattended coding agents (copy from `configs/`) |
 
 Start with `balanced` to log detections without blocking. Review the logs,
 tune thresholds, then switch to `strict` for production.
@@ -374,9 +393,11 @@ Use absolute paths if relative paths don't resolve:
 ```python
 McpToolset(
     connection_params=StdioConnectionParams(
-        command="pipelock",
-        args=["mcp", "proxy", "--config", "/etc/pipelock/config.yaml", "--",
-              "npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+        server_params=StdioServerParameters(
+            command="pipelock",
+            args=["mcp", "proxy", "--config", "/etc/pipelock/config.yaml", "--",
+                  "npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+        )
     )
 )
 ```

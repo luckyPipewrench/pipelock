@@ -141,12 +141,12 @@ agent = Agent(
 
 ### Pattern C: Mixed Transports
 
-Wrap stdio servers with Pipelock. SSE servers connect directly and are not
+Wrap stdio servers with Pipelock. Remote servers connect directly and are not
 covered by the stdio proxy:
 
 ```python
 from agents import Agent
-from agents.mcp import MCPServerStdio, MCPServerSse
+from agents.mcp import MCPServerStdio, MCPServerStreamableHttp
 
 # Local server: wrap with pipelock
 local = MCPServerStdio(
@@ -160,10 +160,11 @@ local = MCPServerStdio(
 
 # Remote server: NOT scanned by pipelock
 # Pipelock's MCP proxy only wraps stdio servers.
-# For remote SSE servers, vet the server before connecting.
-remote = MCPServerSse(
+# For remote servers, vet the server before connecting.
+remote = MCPServerStreamableHttp(
+    name="Remote API",
     params={
-        "url": "https://api.example.com/mcp/sse",
+        "url": "https://api.example.com/mcp",
     },
 )
 
@@ -174,7 +175,10 @@ agent = Agent(
 )
 ```
 
-**Note:** Pipelock's MCP proxy only wraps stdio-based servers. Remote SSE/HTTP
+> **Note:** `MCPServerSse` is deprecated. Use `MCPServerStreamableHttp` for new
+> remote MCP connections.
+
+**Note:** Pipelock's MCP proxy only wraps stdio-based servers. Remote HTTP/SSE
 MCP connections go directly to the remote endpoint and bypass Pipelock. For
 outbound HTTP traffic from your agent code (API calls, web fetches), route those
 through `pipelock run` as a fetch proxy. See the
@@ -308,10 +312,10 @@ def fetch_through_pipelock(url: str) -> str:
 
 | Config | Action | Best For |
 |--------|--------|----------|
-| `balanced` | warn | Recommended starting point (`--preset balanced`) |
-| `strict` | block | High-security, production (`--preset strict`) |
-| `generic-agent.yaml` | warn | Agent-specific tuning (copy from `configs/`) |
-| `claude-code.yaml` | block | Unattended coding agents (copy from `configs/`) |
+| `balanced` | warn (default) | Recommended starting point (`--preset balanced`) |
+| `strict` | block (default) | High-security, production (`--preset strict`) |
+| `generic-agent.yaml` | warn (default) | Agent-specific tuning (copy from `configs/`) |
+| `claude-code.yaml` | block (default) | Unattended coding agents (copy from `configs/`) |
 
 Start with `balanced` to log detections without blocking. Review the logs,
 tune thresholds, then switch to `strict` for production.

@@ -15,7 +15,7 @@ func TestSSEReader_SingleEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if string(msg) != `{"id":1}` {
+	if string(msg) != `{"id":1}` { //nolint:goconst // test value
 		t.Errorf("got %q, want %q", string(msg), `{"id":1}`)
 	}
 

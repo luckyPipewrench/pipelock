@@ -19,27 +19,32 @@ pipelock version
 ```
 
 ```python
-from agents import Agent
+import asyncio
+from agents import Agent, Runner
 from agents.mcp import MCPServerStdio
 
-server = MCPServerStdio(
-    name="Pipelock Filesystem",
-    params={
-        "command": "pipelock",
-        "args": [
-            "mcp", "proxy",
-            "--config", "pipelock.yaml",
-            "--",
-            "npx", "-y", "@modelcontextprotocol/server-filesystem", "/workspace"
-        ],
-    },
-)
+async def main():
+    async with MCPServerStdio(
+        name="Pipelock Filesystem",
+        params={
+            "command": "pipelock",
+            "args": [
+                "mcp", "proxy",
+                "--config", "pipelock.yaml",
+                "--",
+                "npx", "-y", "@modelcontextprotocol/server-filesystem", "/workspace"
+            ],
+        },
+    ) as server:
+        agent = Agent(
+            name="Research Assistant",
+            instructions="You help users research information using available tools.",
+            mcp_servers=[server],
+        )
+        result = await Runner.run(agent, "List files in the workspace")
+        print(result.final_output)
 
-agent = Agent(
-    name="Research Assistant",
-    instructions="You help users research information using available tools.",
-    mcp_servers=[server],
-)
+asyncio.run(main())
 ```
 
 That's it. Pipelock intercepts all MCP traffic between the agent and the

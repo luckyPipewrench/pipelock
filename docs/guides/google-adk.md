@@ -272,6 +272,7 @@ networks:
 
 services:
   pipelock:
+    # Pin to a specific version for production (e.g., ghcr.io/luckypipewrench/pipelock:v0.2.3)
     image: ghcr.io/luckypipewrench/pipelock:latest
     networks:
       - pipelock-internal
@@ -327,7 +328,9 @@ def fetch_through_pipelock(url: str) -> str:
         "http://localhost:8888/fetch",
         params={"url": url},
         headers={"X-Pipelock-Agent": "adk-research"},
+        timeout=30,
     )
+    resp.raise_for_status()
     data = resp.json()
     if data.get("blocked"):
         raise RuntimeError(f"Pipelock blocked request: {data.get('block_reason')}")

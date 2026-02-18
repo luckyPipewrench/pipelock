@@ -191,6 +191,7 @@ import asyncio
 from autogen_agentchat.agents import AssistantAgent
 from autogen_agentchat.teams import RoundRobinGroupChat
 from autogen_agentchat.conditions import TextMentionTermination
+from autogen_agentchat.ui import Console
 from autogen_ext.models.openai import OpenAIChatCompletionClient
 from autogen_ext.tools.mcp import StdioServerParams, mcp_server_tools
 
@@ -230,6 +231,8 @@ async def main():
         termination_condition=TextMentionTermination("TERMINATE"),
     )
 
+    await Console(team.run_stream(task="Research and write a report on workspace contents"))
+
 asyncio.run(main())
 ```
 
@@ -248,6 +251,7 @@ networks:
 
 services:
   pipelock:
+    # Pin to a specific version for production (e.g., ghcr.io/luckypipewrench/pipelock:v0.2.3)
     image: ghcr.io/luckypipewrench/pipelock:latest
     networks:
       - pipelock-internal
@@ -303,7 +307,9 @@ def fetch_through_pipelock(url: str) -> str:
         "http://localhost:8888/fetch",
         params={"url": url},
         headers={"X-Pipelock-Agent": "autogen-research"},
+        timeout=30,
     )
+    resp.raise_for_status()
     data = resp.json()
     if data.get("blocked"):
         raise RuntimeError(f"Pipelock blocked request: {data.get('block_reason')}")

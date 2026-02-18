@@ -103,6 +103,9 @@ asyncio.run(main())
 
 ### Pattern B: Multiple MCP Servers
 
+> **Note:** Parenthesized context managers (`async with (...)`) require Python
+> 3.10+.
+
 Wrap each server independently. If one returns a poisoned response, Pipelock
 blocks it without affecting the others:
 
@@ -220,20 +223,20 @@ async def main():
                      "npx", "-y", "@modelcontextprotocol/server-filesystem", "/output"],
         }) as writer_fs,
     ):
-        researcher = Agent(
-            name="Researcher",
-            instructions="You research topics using web and file tools.",
-            mcp_servers=[research_fs],
-        )
-
         writer = Agent(
             name="Writer",
             instructions="You write reports based on research.",
             mcp_servers=[writer_fs],
-            handoffs=[researcher],
         )
 
-        result = await Runner.run(writer, "Write a report on workspace contents")
+        researcher = Agent(
+            name="Researcher",
+            instructions="You research topics using web and file tools.",
+            mcp_servers=[research_fs],
+            handoffs=[writer],
+        )
+
+        result = await Runner.run(researcher, "Research and write a report on workspace contents")
         print(result.final_output)
 
 asyncio.run(main())
@@ -254,6 +257,7 @@ networks:
 
 services:
   pipelock:
+    # Pin to a specific version for production (e.g., ghcr.io/luckypipewrench/pipelock:v0.2.3)
     image: ghcr.io/luckypipewrench/pipelock:latest
     networks:
       - pipelock-internal
@@ -309,7 +313,9 @@ def fetch_through_pipelock(url: str) -> str:
         "http://localhost:8888/fetch",
         params={"url": url},
         headers={"X-Pipelock-Agent": "openai-research"},
+        timeout=30,
     )
+    resp.raise_for_status()
     data = resp.json()
     if data.get("blocked"):
         raise RuntimeError(f"Pipelock blocked request: {data.get('block_reason')}")

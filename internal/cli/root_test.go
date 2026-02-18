@@ -13,6 +13,13 @@ func TestExitError_Error(t *testing.T) {
 	if ee.Error() != inner.Error() {
 		t.Errorf("Error() = %q, want %q", ee.Error(), inner.Error())
 	}
+
+	// Direct struct construction with nil Err should not panic.
+	nilErr := &ExitError{Code: 2}
+	got := nilErr.Error()
+	if got != "exit code 2" {
+		t.Errorf("Error() with nil Err = %q, want %q", got, "exit code 2")
+	}
 }
 
 func TestExitError_Unwrap(t *testing.T) {

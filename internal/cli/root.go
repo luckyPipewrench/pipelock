@@ -3,6 +3,7 @@ package cli
 
 import (
 	"errors"
+	"strconv"
 
 	"github.com/spf13/cobra"
 )
@@ -13,7 +14,12 @@ type ExitError struct {
 	Code int
 }
 
-func (e *ExitError) Error() string { return e.Err.Error() }
+func (e *ExitError) Error() string {
+	if e.Err == nil {
+		return "exit code " + strconv.Itoa(e.Code)
+	}
+	return e.Err.Error()
+}
 func (e *ExitError) Unwrap() error { return e.Err }
 
 // ExitCodeError wraps err with a non-standard exit code.

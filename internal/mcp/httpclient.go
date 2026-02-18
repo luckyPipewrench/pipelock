@@ -160,3 +160,71 @@ func (r *closingSSEReader) ReadMessage() ([]byte, error) {
 	}
 	return msg, nil
 }
+
+// OpenGETStream opens a GET SSE connection for server-initiated messages.
+// Returns a MessageReader yielding SSE events. Returns an error if the server
+// responds with 405 (doesn't support GET stream) or other error status.
+func (c *HTTPClient) OpenGETStream() (MessageReader, error) {
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, c.url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating GET request: %w", err)
+	}
+	req.Header.Set("Accept", "text/event-stream")
+
+	c.sessionMu.Lock()
+	if c.sessionID != "" {
+		req.Header.Set("Mcp-Session-Id", c.sessionID)
+	}
+	c.sessionMu.Unlock()
+
+	for key, vals := range c.headers {
+		for _, v := range vals {
+			req.Header.Set(key, v)
+		}
+	}
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("HTTP GET: %w", err)
+	}
+
+	if resp.StatusCode == http.StatusMethodNotAllowed {
+		resp.Body.Close() //nolint:errcheck,gosec // best-effort cleanup
+		return nil, fmt.Errorf("server does not support GET stream (405)")
+	}
+	if resp.StatusCode >= 400 {
+		resp.Body.Close() //nolint:errcheck,gosec // best-effort cleanup
+		return nil, fmt.Errorf("GET stream returned HTTP %d", resp.StatusCode)
+	}
+
+	return &closingSSEReader{
+		sse:  NewSSEReader(resp.Body),
+		body: resp.Body,
+	}, nil
+}
+
+// DeleteSession sends an HTTP DELETE to terminate the MCP session.
+func (c *HTTPClient) DeleteSession() {
+	c.sessionMu.Lock()
+	sid := c.sessionID
+	c.sessionMu.Unlock()
+	if sid == "" {
+		return
+	}
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodDelete, c.url, nil)
+	if err != nil {
+		return
+	}
+	req.Header.Set("Mcp-Session-Id", sid)
+	for key, vals := range c.headers {
+		for _, v := range vals {
+			req.Header.Set(key, v)
+		}
+	}
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return
+	}
+	resp.Body.Close() //nolint:errcheck,gosec // best-effort cleanup
+}

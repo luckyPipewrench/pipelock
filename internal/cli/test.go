@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 
@@ -318,14 +319,15 @@ func writeTextReport(cmd *cobra.Command, results []testResult, report testReport
 
 	// Header.
 	header := fmt.Sprintf("Pipelock Test Suite — %d vectors, config: %s", report.Total, report.ConfigFile)
+	headerLen := utf8.RuneCountInString(header)
 
 	_, _ = fmt.Fprintln(out)
 	if color {
 		_, _ = fmt.Fprintf(out, "%s%s%s\n", ansiBold, header, ansiReset)
-		_, _ = fmt.Fprintf(out, "%s%s%s\n", ansiDim, strings.Repeat("\u2550", len(header)), ansiReset)
+		_, _ = fmt.Fprintf(out, "%s%s%s\n", ansiDim, strings.Repeat("\u2550", headerLen), ansiReset)
 	} else {
 		_, _ = fmt.Fprintln(out, header)
-		_, _ = fmt.Fprintln(out, strings.Repeat("=", len(header)))
+		_, _ = fmt.Fprintln(out, strings.Repeat("=", headerLen))
 	}
 
 	// Group by category, maintaining order.
@@ -348,9 +350,9 @@ func writeTextReport(cmd *cobra.Command, results []testResult, report testReport
 	// Footer.
 	_, _ = fmt.Fprintln(out)
 	if color {
-		_, _ = fmt.Fprintf(out, "%s%s%s\n", ansiDim, strings.Repeat("\u2550", len(header)), ansiReset)
+		_, _ = fmt.Fprintf(out, "%s%s%s\n", ansiDim, strings.Repeat("\u2550", headerLen), ansiReset)
 	} else {
-		_, _ = fmt.Fprintln(out, strings.Repeat("=", len(header)))
+		_, _ = fmt.Fprintln(out, strings.Repeat("=", headerLen))
 	}
 	_, _ = fmt.Fprintf(out, "Results: %d passed, %d failed, %d skipped\n", report.Passed, report.Failed, report.Skipped)
 

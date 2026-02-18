@@ -117,7 +117,7 @@ Examples:
   pipelock git install-hooks
   pipelock git install-hooks --config /etc/pipelock.yaml
   pipelock git install-hooks --force`,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			gitDir, err := findGitDir()
 			if err != nil {
 				return err
@@ -146,7 +146,7 @@ Examples:
 				return fmt.Errorf("writing hook: %w", err)
 			}
 
-			fmt.Fprintf(os.Stderr, "Installed pre-push hook at %s\n", hookPath)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Installed pre-push hook at %s\n", hookPath)
 			return nil
 		},
 	}

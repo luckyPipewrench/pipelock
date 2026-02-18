@@ -140,16 +140,18 @@ reg := prometheus.NewRegistry()
 ln, _ := net.ListenConfig{}.Listen(ctx, "tcp", "127.0.0.1:0")
 ```
 
-### Common test pitfalls
+### Common pitfalls
 
-- `_, _ =` to satisfy errcheck for intentionally-ignored errors
-- `http.MethodGet` not `"GET"` (usestdlibvars linter)
-- `_` for unused function parameters (unparam linter)
-- Build fake credentials at runtime to avoid gitleaks false positives
-- `//nolint:goconst // test value` for repeated test strings
+- **errorlint**: Never compare errors with `==` / `!=`. Always use `errors.Is()` and `errors.As()` — even in tests, even for struct fields
+- **staticcheck QF1012**: Use `fmt.Fprintf(w, ...)` not `w.WriteString(fmt.Sprintf(...))`
+- **gosec G101**: Build fake credentials at runtime (`"AKIA" + "IOSFODNN7EXAMPLE"`) to avoid secret detection false positives
+- **errcheck**: `_, _ =` to satisfy errcheck for intentionally-ignored errors
+- **usestdlibvars**: `http.MethodGet` not `"GET"`
+- **unparam**: `_` for unused function parameters
+- **goconst**: `//nolint:goconst // test value` for repeated test strings
+- **gosec**: File permissions: use `0o600` not `0600`
+- **noctx**: `net.ListenConfig{}.Listen(ctx, ...)` not bare `net.Listen`
 - Re-stage go.mod after the tidy pre-commit hook runs
-- File permissions: use `0o600` not `0600` (gosec)
-- HTTP clients: `net.ListenConfig{}.Listen(ctx, ...)` not bare `net.Listen` (noctx)
 
 ## Linter Configuration
 

@@ -31,6 +31,9 @@ jobs:
       - name: Validate config
         run: pipelock check --config pipelock.yaml
 
+      - name: Test scanning coverage
+        run: pipelock test --config pipelock.yaml --fail-on-gap
+
       - name: Scan PR diff for secrets
         run: git diff origin/main...HEAD | pipelock git scan-diff --config pipelock.yaml
 

@@ -12,7 +12,7 @@ Docker Compose deployment.
 go install github.com/luckyPipewrench/pipelock/cmd/pipelock@latest
 
 # 2. Generate a config (or copy a preset)
-pipelock generate config --preset generic-agent > pipelock.yaml
+pipelock generate config --preset balanced > pipelock.yaml
 
 # 3. Verify
 pipelock version
@@ -23,13 +23,16 @@ from agents import Agent
 from agents.mcp import MCPServerStdio
 
 server = MCPServerStdio(
-    command="pipelock",
-    args=[
-        "mcp", "proxy",
-        "--config", "pipelock.yaml",
-        "--",
-        "npx", "-y", "@modelcontextprotocol/server-filesystem", "/workspace"
-    ],
+    name="Pipelock Filesystem",
+    params={
+        "command": "pipelock",
+        "args": [
+            "mcp", "proxy",
+            "--config", "pipelock.yaml",
+            "--",
+            "npx", "-y", "@modelcontextprotocol/server-filesystem", "/workspace"
+        ],
+    },
 )
 
 agent = Agent(
@@ -69,23 +72,24 @@ from agents import Agent, Runner
 from agents.mcp import MCPServerStdio
 
 async def main():
-    server = MCPServerStdio(
-        command="pipelock",
-        args=[
-            "mcp", "proxy",
-            "--config", "pipelock.yaml",
-            "--",
-            "npx", "-y", "@modelcontextprotocol/server-filesystem", "/workspace"
-        ],
-    )
+    async with MCPServerStdio(
+        name="Pipelock Filesystem",
+        params={
+            "command": "pipelock",
+            "args": [
+                "mcp", "proxy",
+                "--config", "pipelock.yaml",
+                "--",
+                "npx", "-y", "@modelcontextprotocol/server-filesystem", "/workspace"
+            ],
+        },
+    ) as server:
+        agent = Agent(
+            name="File Analyst",
+            instructions="You analyze files in the workspace.",
+            mcp_servers=[server],
+        )
 
-    agent = Agent(
-        name="File Analyst",
-        instructions="You analyze files in the workspace.",
-        mcp_servers=[server],
-    )
-
-    async with server:
         result = await Runner.run(agent, "List all files in the workspace")
         print(result.final_output)
 
@@ -102,21 +106,30 @@ from agents import Agent
 from agents.mcp import MCPServerStdio
 
 filesystem = MCPServerStdio(
-    command="pipelock",
-    args=["mcp", "proxy", "--config", "pipelock.yaml", "--",
-          "npx", "-y", "@modelcontextprotocol/server-filesystem", "/workspace"],
+    name="Pipelock Filesystem",
+    params={
+        "command": "pipelock",
+        "args": ["mcp", "proxy", "--config", "pipelock.yaml", "--",
+                 "npx", "-y", "@modelcontextprotocol/server-filesystem", "/workspace"],
+    },
 )
 
 database = MCPServerStdio(
-    command="pipelock",
-    args=["mcp", "proxy", "--config", "pipelock.yaml", "--",
-          "python", "-m", "mcp_server_sqlite", "--db", "/data/app.db"],
+    name="Pipelock SQLite",
+    params={
+        "command": "pipelock",
+        "args": ["mcp", "proxy", "--config", "pipelock.yaml", "--",
+                 "python", "-m", "mcp_server_sqlite", "--db", "/data/app.db"],
+    },
 )
 
 github = MCPServerStdio(
-    command="pipelock",
-    args=["mcp", "proxy", "--config", "pipelock.yaml", "--",
-          "npx", "-y", "@modelcontextprotocol/server-github"],
+    name="Pipelock GitHub",
+    params={
+        "command": "pipelock",
+        "args": ["mcp", "proxy", "--config", "pipelock.yaml", "--",
+                 "npx", "-y", "@modelcontextprotocol/server-github"],
+    },
 )
 
 agent = Agent(
@@ -126,28 +139,50 @@ agent = Agent(
 )
 ```
 
-### Pattern C: Strict Schema Mode
+### Pattern C: Mixed Transports
 
-The OpenAI Agents SDK supports strict JSON schema validation for MCP tools.
-This pairs well with Pipelock — the SDK validates schema structure while
-Pipelock validates content:
+Wrap stdio servers with Pipelock. SSE servers connect directly and are not
+covered by the stdio proxy:
 
 ```python
-from agents.mcp import MCPServerStdio
+from agents import Agent
+from agents.mcp import MCPServerStdio, MCPServerSse
 
-server = MCPServerStdio(
-    command="pipelock",
-    args=["mcp", "proxy", "--config", "pipelock.yaml", "--",
-          "npx", "-y", "@modelcontextprotocol/server-filesystem", "/workspace"],
+# Local server: wrap with pipelock
+local = MCPServerStdio(
+    name="Pipelock Filesystem",
+    params={
+        "command": "pipelock",
+        "args": ["mcp", "proxy", "--config", "pipelock.yaml", "--",
+                 "npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+    },
+)
+
+# Remote server: NOT scanned by pipelock
+# Pipelock's MCP proxy only wraps stdio servers.
+# For remote SSE servers, vet the server before connecting.
+remote = MCPServerSse(
+    params={
+        "url": "https://api.example.com/mcp/sse",
+    },
 )
 
 agent = Agent(
-    name="Strict Agent",
-    instructions="You work with files.",
-    mcp_servers=[server],
-    mcp_config={"convert_schemas_to_strict": True},
+    name="Hybrid Agent",
+    instructions="You use local and remote tools.",
+    mcp_servers=[local, remote],
 )
 ```
+
+**Note:** Pipelock's MCP proxy only wraps stdio-based servers. Remote SSE/HTTP
+MCP connections go directly to the remote endpoint and bypass Pipelock. For
+outbound HTTP traffic from your agent code (API calls, web fetches), route those
+through `pipelock run` as a fetch proxy. See the
+[HTTP fetch proxy](#http-fetch-proxy) section below.
+
+**Tip:** The SDK also supports `mcp_config=MCPConfig(convert_schemas_to_strict=True)`
+for strict JSON schema validation on MCP tools. This pairs well with Pipelock —
+the SDK validates schema structure while Pipelock validates content.
 
 ### Pattern D: Multi-Agent Handoffs
 
@@ -156,6 +191,7 @@ Pipelock-wrapped MCP servers with different configs:
 
 ```python
 from agents import Agent
+from agents.mcp import MCPServerStdio
 
 # Researcher gets broad access, warn mode
 researcher = Agent(
@@ -163,9 +199,12 @@ researcher = Agent(
     instructions="You research topics using web and file tools.",
     mcp_servers=[
         MCPServerStdio(
-            command="pipelock",
-            args=["mcp", "proxy", "--config", "pipelock-warn.yaml", "--",
-                  "npx", "-y", "@modelcontextprotocol/server-filesystem", "/data"],
+            name="Pipelock Filesystem (warn)",
+            params={
+                "command": "pipelock",
+                "args": ["mcp", "proxy", "--config", "pipelock-warn.yaml", "--",
+                         "npx", "-y", "@modelcontextprotocol/server-filesystem", "/data"],
+            },
         ),
     ],
 )
@@ -176,9 +215,12 @@ writer = Agent(
     instructions="You write reports based on research.",
     mcp_servers=[
         MCPServerStdio(
-            command="pipelock",
-            args=["mcp", "proxy", "--config", "pipelock-strict.yaml", "--",
-                  "npx", "-y", "@modelcontextprotocol/server-filesystem", "/output"],
+            name="Pipelock Filesystem (strict)",
+            params={
+                "command": "pipelock",
+                "args": ["mcp", "proxy", "--config", "pipelock-strict.yaml", "--",
+                         "npx", "-y", "@modelcontextprotocol/server-filesystem", "/output"],
+            },
         ),
     ],
     handoffs=[researcher],
@@ -230,17 +272,49 @@ The agent container can only reach the `pipelock` service. All HTTP traffic goes
 through the fetch proxy. MCP servers running as subprocesses inside the agent
 container are wrapped with `pipelock mcp proxy` as shown above.
 
+You can also generate this template with:
+
+```bash
+pipelock generate docker-compose --agent generic
+```
+
+## HTTP Fetch Proxy
+
+For scanning HTTP traffic from OpenAI agents (web fetches, API calls), run
+Pipelock as a fetch proxy:
+
+```bash
+pipelock run --config pipelock.yaml
+```
+
+Configure your agent to route HTTP requests through `http://localhost:8888/fetch`:
+
+```python
+import requests
+
+def fetch_through_pipelock(url: str) -> str:
+    resp = requests.get(
+        "http://localhost:8888/fetch",
+        params={"url": url},
+        headers={"X-Pipelock-Agent": "openai-research"},
+    )
+    data = resp.json()
+    if data.get("blocked"):
+        raise RuntimeError(f"Pipelock blocked request: {data.get('block_reason')}")
+    return data.get("content", "")
+```
+
 ## Choosing a Config
 
-| Preset | Action | Best For |
+| Config | Action | Best For |
 |--------|--------|----------|
-| `generic-agent.yaml` | warn | New integrations (recommended starting point) |
-| `balanced.yaml` | warn | General purpose, fetch proxy tuning |
-| `claude-code.yaml` | block | Unattended agents |
-| `strict.yaml` | block | High-security, production |
+| `balanced` | warn | Recommended starting point (`--preset balanced`) |
+| `strict` | block | High-security, production (`--preset strict`) |
+| `generic-agent.yaml` | warn | Agent-specific tuning (copy from `configs/`) |
+| `claude-code.yaml` | block | Unattended coding agents (copy from `configs/`) |
 
-Start with `generic-agent.yaml` to log detections without blocking. Review the
-logs, tune thresholds, then switch to `strict.yaml` for production.
+Start with `balanced` to log detections without blocking. Review the logs,
+tune thresholds, then switch to `strict` for production.
 
 ## Troubleshooting
 
@@ -288,8 +362,11 @@ Use absolute paths if relative paths don't resolve:
 
 ```python
 MCPServerStdio(
-    command="pipelock",
-    args=["mcp", "proxy", "--config", "/etc/pipelock/config.yaml", "--",
-          "npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+    name="Pipelock Filesystem",
+    params={
+        "command": "pipelock",
+        "args": ["mcp", "proxy", "--config", "/etc/pipelock/config.yaml", "--",
+                 "npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+    },
 )
 ```

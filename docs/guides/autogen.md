@@ -12,26 +12,31 @@ AutoGen v0.4+ and Docker Compose deployment.
 go install github.com/luckyPipewrench/pipelock/cmd/pipelock@latest
 
 # 2. Generate a config (or copy a preset)
-pipelock generate config --preset generic-agent > pipelock.yaml
+pipelock generate config --preset balanced > pipelock.yaml
 
 # 3. Verify
 pipelock version
 ```
 
 ```python
+import asyncio
 from autogen_ext.tools.mcp import StdioServerParams, mcp_server_tools
 
-server_params = StdioServerParams(
-    command="pipelock",
-    args=[
-        "mcp", "proxy",
-        "--config", "pipelock.yaml",
-        "--",
-        "npx", "-y", "@modelcontextprotocol/server-filesystem", "/workspace"
-    ],
-)
+async def main():
+    server_params = StdioServerParams(
+        command="pipelock",
+        args=[
+            "mcp", "proxy",
+            "--config", "pipelock.yaml",
+            "--",
+            "npx", "-y", "@modelcontextprotocol/server-filesystem", "/workspace"
+        ],
+    )
 
-tools = await mcp_server_tools(server_params)
+    tools = await mcp_server_tools(server_params)
+    # tools is a list of standard AutoGen tool objects
+
+asyncio.run(main())
 ```
 
 That's it. The `tools` list contains standard AutoGen tool objects backed by
@@ -247,13 +252,19 @@ The agent container can only reach the `pipelock` service. All HTTP traffic goes
 through the fetch proxy. MCP servers running as subprocesses inside the agent
 container are wrapped with `pipelock mcp proxy` as shown above.
 
+You can also generate this template with:
+
+```bash
+pipelock generate docker-compose --agent generic
+```
+
 ## HTTP Fetch Proxy
 
 For scanning HTTP traffic from AutoGen agents (web fetches, API calls), run
 Pipelock as a fetch proxy:
 
 ```bash
-pipelock run --config configs/balanced.yaml
+pipelock run --config pipelock.yaml
 ```
 
 Configure your agent to route HTTP requests through `http://localhost:8888/fetch`:
@@ -275,15 +286,15 @@ def fetch_through_pipelock(url: str) -> str:
 
 ## Choosing a Config
 
-| Preset | Action | Best For |
+| Config | Action | Best For |
 |--------|--------|----------|
-| `generic-agent.yaml` | warn | New integrations (recommended starting point) |
-| `balanced.yaml` | warn | General purpose, fetch proxy tuning |
-| `claude-code.yaml` | block | Unattended agents |
-| `strict.yaml` | block | High-security, production |
+| `balanced` | warn | Recommended starting point (`--preset balanced`) |
+| `strict` | block | High-security, production (`--preset strict`) |
+| `generic-agent.yaml` | warn | Agent-specific tuning (copy from `configs/`) |
+| `claude-code.yaml` | block | Unattended coding agents (copy from `configs/`) |
 
-Start with `generic-agent.yaml` to log detections without blocking. Review the
-logs, tune thresholds, then switch to `strict.yaml` for production.
+Start with `balanced` to log detections without blocking. Review the logs,
+tune thresholds, then switch to `strict` for production.
 
 ## Troubleshooting
 
@@ -324,3 +335,15 @@ mcp_tool_scanning:
 ```
 
 Review stderr output, then tighten thresholds.
+
+### Config file not found
+
+Use absolute paths if relative paths don't resolve:
+
+```python
+StdioServerParams(
+    command="pipelock",
+    args=["mcp", "proxy", "--config", "/etc/pipelock/config.yaml", "--",
+          "npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+)
+```

@@ -12,32 +12,30 @@ and Docker Compose deployment.
 go install github.com/luckyPipewrench/pipelock/cmd/pipelock@latest
 
 # 2. Generate a config (or copy a preset)
-pipelock generate config --preset generic-agent > pipelock.yaml
+pipelock generate config --preset balanced > pipelock.yaml
 
 # 3. Verify
 pipelock version
 ```
 
 ```python
-from google.adk.agents import LlmAgent
-from google.adk.tools.mcp_tool.mcp_toolset import McpToolset, StdioConnectionParams
-from mcp import StdioServerParameters
+from google.adk.agents import Agent
+from google.adk.tools import McpToolset
+from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
 
 filesystem_toolset = McpToolset(
     connection_params=StdioConnectionParams(
-        server_params=StdioServerParameters(
-            command="pipelock",
-            args=[
-                "mcp", "proxy",
-                "--config", "pipelock.yaml",
-                "--",
-                "npx", "-y", "@modelcontextprotocol/server-filesystem", "/workspace"
-            ],
-        )
+        command="pipelock",
+        args=[
+            "mcp", "proxy",
+            "--config", "pipelock.yaml",
+            "--",
+            "npx", "-y", "@modelcontextprotocol/server-filesystem", "/workspace"
+        ],
     )
 )
 
-agent = LlmAgent(
+agent = Agent(
     model="gemini-2.0-flash",
     name="research_agent",
     instruction="You help users research information using available tools.",
@@ -71,35 +69,31 @@ The standard ADK pattern using `Runner` for agent execution:
 
 ```python
 import asyncio
-from google.adk.agents import LlmAgent
+from google.adk.agents import Agent
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
-from google.adk.tools.mcp_tool.mcp_toolset import McpToolset, StdioConnectionParams
+from google.adk.tools import McpToolset
+from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
 from google.genai import types
-from mcp import StdioServerParameters
 
 async def main():
     toolset = McpToolset(
         connection_params=StdioConnectionParams(
-            server_params=StdioServerParameters(
-                command="pipelock",
-                args=[
-                    "mcp", "proxy",
-                    "--config", "pipelock.yaml",
-                    "--",
-                    "npx", "-y", "@modelcontextprotocol/server-filesystem", "/workspace"
-                ],
-            )
+            command="pipelock",
+            args=[
+                "mcp", "proxy",
+                "--config", "pipelock.yaml",
+                "--",
+                "npx", "-y", "@modelcontextprotocol/server-filesystem", "/workspace"
+            ],
         )
     )
 
-    tools, exit_stack = await toolset.connect()
-
-    agent = LlmAgent(
+    agent = Agent(
         model="gemini-2.0-flash",
         name="file_agent",
         instruction="You analyze files in the workspace.",
-        tools=tools,
+        tools=[toolset],
     )
 
     runner = Runner(
@@ -123,8 +117,6 @@ async def main():
         if event.is_final_response():
             print(event.content.parts[0].text)
 
-    await exit_stack.aclose()
-
 asyncio.run(main())
 ```
 
@@ -133,30 +125,27 @@ asyncio.run(main())
 Wrap each server independently with its own Pipelock proxy:
 
 ```python
-from google.adk.tools.mcp_tool.mcp_toolset import McpToolset, StdioConnectionParams
-from mcp import StdioServerParameters
+from google.adk.agents import Agent
+from google.adk.tools import McpToolset
+from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
 
 filesystem = McpToolset(
     connection_params=StdioConnectionParams(
-        server_params=StdioServerParameters(
-            command="pipelock",
-            args=["mcp", "proxy", "--config", "pipelock.yaml", "--",
-                  "npx", "-y", "@modelcontextprotocol/server-filesystem", "/workspace"],
-        )
+        command="pipelock",
+        args=["mcp", "proxy", "--config", "pipelock.yaml", "--",
+              "npx", "-y", "@modelcontextprotocol/server-filesystem", "/workspace"],
     )
 )
 
 database = McpToolset(
     connection_params=StdioConnectionParams(
-        server_params=StdioServerParameters(
-            command="pipelock",
-            args=["mcp", "proxy", "--config", "pipelock.yaml", "--",
-                  "python", "-m", "mcp_server_sqlite", "--db", "/data/app.db"],
-        )
+        command="pipelock",
+        args=["mcp", "proxy", "--config", "pipelock.yaml", "--",
+              "python", "-m", "mcp_server_sqlite", "--db", "/data/app.db"],
     )
 )
 
-agent = LlmAgent(
+agent = Agent(
     model="gemini-2.0-flash",
     name="multi_tool_agent",
     instruction="You work with files and databases.",
@@ -170,19 +159,19 @@ Wrap stdio servers with Pipelock. Remote SSE servers connect directly and are
 not covered by the stdio proxy:
 
 ```python
-from google.adk.tools.mcp_tool.mcp_toolset import (
-    McpToolset, StdioConnectionParams, SseConnectionParams
+from google.adk.agents import Agent
+from google.adk.tools import McpToolset
+from google.adk.tools.mcp_tool.mcp_session_manager import (
+    StdioConnectionParams,
+    SseConnectionParams,
 )
-from mcp import StdioServerParameters
 
 # Local server: wrap with pipelock
 local = McpToolset(
     connection_params=StdioConnectionParams(
-        server_params=StdioServerParameters(
-            command="pipelock",
-            args=["mcp", "proxy", "--config", "pipelock.yaml", "--",
-                  "npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
-        )
+        command="pipelock",
+        args=["mcp", "proxy", "--config", "pipelock.yaml", "--",
+              "npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
     )
 )
 
@@ -193,7 +182,7 @@ remote = McpToolset(
     connection_params=SseConnectionParams(url="https://api.example.com/mcp/sse")
 )
 
-agent = LlmAgent(
+agent = Agent(
     model="gemini-2.0-flash",
     name="hybrid_agent",
     instruction="You use local and remote tools.",
@@ -213,35 +202,35 @@ ADK supports hierarchical agent architectures. Each sub-agent can have its own
 Pipelock-wrapped MCP servers with different security configs:
 
 ```python
-researcher = LlmAgent(
+from google.adk.agents import Agent
+from google.adk.tools import McpToolset
+from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
+
+researcher = Agent(
     model="gemini-2.0-flash",
     name="researcher",
     instruction="You research topics using available tools.",
     tools=[
         McpToolset(
             connection_params=StdioConnectionParams(
-                server_params=StdioServerParameters(
-                    command="pipelock",
-                    args=["mcp", "proxy", "--config", "pipelock-warn.yaml", "--",
-                          "npx", "-y", "@modelcontextprotocol/server-fetch"],
-                )
+                command="pipelock",
+                args=["mcp", "proxy", "--config", "pipelock-warn.yaml", "--",
+                      "npx", "-y", "@modelcontextprotocol/server-fetch"],
             )
         ),
     ],
 )
 
-writer = LlmAgent(
+writer = Agent(
     model="gemini-2.0-flash",
     name="writer",
     instruction="You write reports. Delegate research to the researcher.",
     tools=[
         McpToolset(
             connection_params=StdioConnectionParams(
-                server_params=StdioServerParameters(
-                    command="pipelock",
-                    args=["mcp", "proxy", "--config", "pipelock-strict.yaml", "--",
-                          "npx", "-y", "@modelcontextprotocol/server-filesystem", "/output"],
-                )
+                command="pipelock",
+                args=["mcp", "proxy", "--config", "pipelock-strict.yaml", "--",
+                      "npx", "-y", "@modelcontextprotocol/server-filesystem", "/output"],
             )
         ),
     ],
@@ -294,13 +283,19 @@ The agent container can only reach the `pipelock` service. All HTTP traffic goes
 through the fetch proxy. MCP servers running as subprocesses inside the agent
 container are wrapped with `pipelock mcp proxy` as shown above.
 
+You can also generate this template with:
+
+```bash
+pipelock generate docker-compose --agent generic
+```
+
 ## HTTP Fetch Proxy
 
 For scanning HTTP traffic from ADK agents (web fetches, API calls), run Pipelock
 as a fetch proxy:
 
 ```bash
-pipelock run --config configs/balanced.yaml
+pipelock run --config pipelock.yaml
 ```
 
 Configure your agent to route HTTP requests through `http://localhost:8888/fetch`:
@@ -322,15 +317,15 @@ def fetch_through_pipelock(url: str) -> str:
 
 ## Choosing a Config
 
-| Preset | Action | Best For |
+| Config | Action | Best For |
 |--------|--------|----------|
-| `generic-agent.yaml` | warn | New integrations (recommended starting point) |
-| `balanced.yaml` | warn | General purpose, fetch proxy tuning |
-| `claude-code.yaml` | block | Unattended agents |
-| `strict.yaml` | block | High-security, production |
+| `balanced` | warn | Recommended starting point (`--preset balanced`) |
+| `strict` | block | High-security, production (`--preset strict`) |
+| `generic-agent.yaml` | warn | Agent-specific tuning (copy from `configs/`) |
+| `claude-code.yaml` | block | Unattended coding agents (copy from `configs/`) |
 
-Start with `generic-agent.yaml` to log detections without blocking. Review the
-logs, tune thresholds, then switch to `strict.yaml` for production.
+Start with `balanced` to log detections without blocking. Review the logs,
+tune thresholds, then switch to `strict` for production.
 
 ## Troubleshooting
 
@@ -371,3 +366,17 @@ mcp_tool_scanning:
 ```
 
 Review stderr output, then tighten thresholds.
+
+### Config file not found
+
+Use absolute paths if relative paths don't resolve:
+
+```python
+McpToolset(
+    connection_params=StdioConnectionParams(
+        command="pipelock",
+        args=["mcp", "proxy", "--config", "/etc/pipelock/config.yaml", "--",
+              "npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+    )
+)
+```

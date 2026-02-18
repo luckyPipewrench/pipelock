@@ -351,6 +351,9 @@ git_protection:
 ## Integration Guides
 
 - **[Claude Code](docs/guides/claude-code.md)** — MCP proxy setup, `.claude.json` configuration, HTTP fetch proxy hooks
+- **[OpenAI Agents SDK](docs/guides/openai-agents.md)** — `MCPServerStdio`, multi-agent handoffs, Docker Compose
+- **[Google ADK](docs/guides/google-adk.md)** — `McpToolset`, `StdioConnectionParams`, sub-agents
+- **[AutoGen](docs/guides/autogen.md)** — `StdioServerParams`, `mcp_server_tools()`, multi-agent teams
 - **[CrewAI](docs/guides/crewai.md)** — `MCPServerStdio` wrapping, `MCPServerAdapter`, Docker Compose
 - **[LangGraph](docs/guides/langgraph.md)** — `MultiServerMCPClient`, `StateGraph`, Docker deployment
 - Cursor — use `configs/cursor.yaml` with the same MCP proxy pattern as [Claude Code](docs/guides/claude-code.md)

@@ -27,6 +27,14 @@ linters:
         linters: [gosec]
         text: "G704"
   settings:
+    gosec:
+      excludes:
+        # Taint analysis rules — false positives for CLI tools and HTTP proxies.
+        # Pipelock IS a proxy; client.Do(req) is its core purpose. SSRF protection
+        # lives in the scanner pipeline, not the Go type system.
+        - G704 # SSRF via taint analysis
+        - G705 # XSS via taint analysis — CLI terminal output, not web
+        - G703 # Path traversal via taint analysis — paths are validated upstream
     revive:
       rules:
         - name: var-naming

@@ -56,7 +56,7 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9
         with:
-          version: latest
+          version: v2.10.1
 
   # Advisory only — not in build's needs chain. Failures here surface
   # known vulnerabilities but do not block merges, since vuln database

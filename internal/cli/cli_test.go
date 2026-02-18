@@ -1008,7 +1008,7 @@ func TestRunCmd_DefaultMode(t *testing.T) {
 			var health map[string]any
 			_ = json.NewDecoder(resp.Body).Decode(&health)
 			_ = resp.Body.Close()
-			if health["mode"] == "balanced" {
+			if health["mode"] == "balanced" { //nolint:goconst // test value
 				break
 			}
 		}

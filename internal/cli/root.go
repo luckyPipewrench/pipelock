@@ -17,7 +17,11 @@ func (e *ExitError) Error() string { return e.Err.Error() }
 func (e *ExitError) Unwrap() error { return e.Err }
 
 // ExitCodeError wraps err with a non-standard exit code.
+// Returns nil when err is nil (no error to wrap).
 func ExitCodeError(code int, err error) error {
+	if err == nil {
+		return nil
+	}
 	return &ExitError{Err: err, Code: code}
 }
 

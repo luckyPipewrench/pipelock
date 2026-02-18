@@ -47,6 +47,12 @@ func TestExitCodeError(t *testing.T) {
 	}
 }
 
+func TestExitCodeError_NilErr(t *testing.T) {
+	if got := ExitCodeError(2, nil); got != nil {
+		t.Errorf("ExitCodeError(2, nil) = %v, want nil", got)
+	}
+}
+
 func TestExitCodeOf(t *testing.T) {
 	tests := []struct {
 		name string

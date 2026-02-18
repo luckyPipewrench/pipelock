@@ -2,8 +2,6 @@ package cli
 
 import (
 	"errors"
-	"fmt"
-	"os"
 
 	"github.com/spf13/cobra"
 
@@ -34,7 +32,7 @@ Examples:
 				var err error
 				cfg, err = config.Load(configFile)
 				if err != nil {
-					fmt.Fprintf(os.Stderr, "Config validation FAILED: %v\n", err)
+					cmd.PrintErrf("Config validation FAILED: %v\n", err)
 					return err
 				}
 				cmd.Println("Config validation: OK")

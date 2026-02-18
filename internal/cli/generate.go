@@ -69,7 +69,7 @@ Examples:
 				if err := os.WriteFile(output, []byte(header+string(data)), 0o600); err != nil {
 					return fmt.Errorf("writing config file: %w", err)
 				}
-				fmt.Fprintf(os.Stderr, "Config written to %s\n", output)
+				cmd.PrintErrf("Config written to %s\n", output)
 			} else {
 				cmd.Print(header + string(data))
 			}

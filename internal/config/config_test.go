@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -1429,6 +1430,36 @@ func TestValidateReload_MCPToolPolicyRulesReduced(t *testing.T) {
 	}
 	if !found {
 		t.Error("expected warning for tool policy rules reduced")
+	}
+}
+
+func TestLoad_WithSecretsFile(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create a secrets file with a valid secret
+	secretsPath := filepath.Join(dir, "secrets.txt")
+	if err := os.WriteFile(secretsPath, []byte("xK9mP2nQ7vR4wT6y\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfgYAML := fmt.Sprintf(`
+version: 1
+mode: balanced
+dlp:
+  secrets_file: %q
+`, secretsPath)
+
+	configPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte(cfgYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.DLP.SecretsFile != secretsPath {
+		t.Errorf("expected secrets_file %q, got %q", secretsPath, cfg.DLP.SecretsFile)
 	}
 }
 

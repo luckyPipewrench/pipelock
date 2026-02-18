@@ -134,6 +134,7 @@ type Monitoring struct {
 // DLP configures data loss prevention scanning.
 type DLP struct {
 	ScanEnv            bool         `yaml:"scan_env"`
+	SecretsFile        string       `yaml:"secrets_file"`
 	MinEnvSecretLength int          `yaml:"min_env_secret_length"` // minimum env var length for leak detection (default 16)
 	Patterns           []DLPPattern `yaml:"patterns"`
 }

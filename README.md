@@ -90,6 +90,7 @@ flowchart LR
 | Prompt injection detection | Yes | Yes | No | No |
 | Workspace integrity monitoring | Yes | No | No | Partial |
 | MCP scanning (bidirectional + tool poisoning) | Yes | Yes | No | No |
+| MCP HTTP transport (Streamable HTTP) | Yes | No | No | No |
 | Single binary, zero deps | Yes | No (Python) | No (npm) | No (kernel modules) |
 | Audit logging + Prometheus | Yes | No | No | No |
 
@@ -244,8 +245,11 @@ Keys stored under `~/.pipelock/agents/` and `~/.pipelock/trusted_keys/`.
 Wrap any MCP server as a stdio proxy. Pipelock scans both directions: client requests are checked for DLP leaks and injection in tool arguments, server responses are scanned for prompt injection, and `tools/list` responses are checked for poisoned tool descriptions and rug-pull definition changes:
 
 ```bash
-# Wrap an MCP server (use in .mcp.json for Claude Code)
+# Wrap a local MCP server (stdio transport)
 pipelock mcp proxy --config pipelock.yaml -- npx -y @modelcontextprotocol/server-filesystem /tmp
+
+# Proxy a remote MCP server (Streamable HTTP transport)
+pipelock mcp proxy --upstream http://localhost:8080/mcp
 
 # Batch scan (stdin)
 mcp-server | pipelock mcp scan
@@ -491,7 +495,7 @@ internal/
   gitprotect/          Git-aware security (diff scanning, branch validation, hooks)
   integrity/           File integrity monitoring (SHA256 manifests, check/diff, exclusions)
   signing/             Ed25519 key management, file signing, signature verification
-  mcp/                 MCP stdio proxy + bidirectional JSON-RPC 2.0 scanning + tool poisoning detection
+  mcp/                 MCP proxy (stdio + Streamable HTTP) + bidirectional scanning + tool poisoning
   hitl/                Human-in-the-loop terminal approval (ask action)
 configs/               Preset config files (strict, balanced, audit, claude-code, cursor, generic-agent)
 docs/                  OWASP mapping, tool comparison

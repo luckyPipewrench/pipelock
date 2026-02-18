@@ -359,7 +359,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	req.Header.Set("User-Agent", cfg.FetchProxy.UserAgent)
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain,*/*;q=0.8")
 
-	resp, err := p.client.Do(req)
+	resp, err := p.client.Do(req) //nolint:gosec // G704: URL validated by scanner pipeline before reaching here
 	if err != nil {
 		// Detect redirect blocks (from CheckRedirect) and report as blocked, not error.
 		if strings.Contains(err.Error(), "redirect blocked:") {

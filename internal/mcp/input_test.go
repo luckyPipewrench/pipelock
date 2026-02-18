@@ -370,7 +370,7 @@ func TestExtractAllStringsFromJSON(t *testing.T) {
 // fwdScannedInput wraps ForwardScannedInput with StdioReader/StdioWriter so
 // tests keep the familiar io.Reader/io.Writer call pattern.
 func fwdScannedInput(r io.Reader, w io.Writer, logW io.Writer, sc *scanner.Scanner, action, onParseError string, blockedCh chan<- BlockedRequest) {
-	ForwardScannedInput(NewStdioReader(r), NewStdioWriter(w), logW, sc, action, onParseError, blockedCh)
+	ForwardScannedInput(NewStdioReader(r), NewStdioWriter(w), logW, sc, action, onParseError, blockedCh, nil)
 }
 
 func TestForwardScannedInput_CleanRequestsForwarded(t *testing.T) {
@@ -739,7 +739,7 @@ func TestScanRequest_ParseErrorForwardDetectsInjection(t *testing.T) {
 
 func TestBlockRequestResponse(t *testing.T) {
 	id := json.RawMessage(`42`)
-	resp := blockRequestResponse(id)
+	resp := blockRequestResponse(BlockedRequest{ID: id})
 
 	var parsed struct {
 		JSONRPC string `json:"jsonrpc"`
@@ -1066,6 +1066,203 @@ func TestScanRequest_CombiningMarkInjectionBypass(t *testing.T) {
 				t.Errorf("expected injection matches for %s", tt.name)
 			}
 		})
+	}
+}
+
+// --- Tool call policy integration tests ---
+
+func buildPolicyConfig(action string, rules []config.ToolPolicyRule) *PolicyConfig {
+	return NewPolicyConfig(config.MCPToolPolicy{
+		Enabled: true,
+		Action:  action,
+		Rules:   rules,
+	})
+}
+
+func TestForwardScannedInput_PolicyBlocksDangerousToolCall(t *testing.T) {
+	sc := testInputScanner(t)
+
+	// A clean request (no DLP leaks) that matches a policy rule.
+	req := `{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"bash","arguments":{"command":"rm -rf /tmp/important"}}}` + "\n"
+
+	policyCfg := buildPolicyConfig("block", []config.ToolPolicyRule{
+		{
+			Name:        "Destructive File Delete",
+			ToolPattern: `(?i)^bash$`,
+			ArgPattern:  `(?i)\brm\s+(-[a-z]*[rf])`,
+			Action:      "block",
+		},
+	})
+
+	var serverIn bytes.Buffer
+	var logW bytes.Buffer
+	blockedCh := make(chan BlockedRequest, 10)
+
+	clientIn := strings.NewReader(req)
+	ForwardScannedInput(NewStdioReader(clientIn), NewStdioWriter(&serverIn), &logW, sc, "block", "block", blockedCh, policyCfg)
+
+	// Should NOT be forwarded (policy blocks it).
+	if strings.Contains(serverIn.String(), "tools/call") {
+		t.Error("expected policy-blocked request NOT to be forwarded")
+	}
+
+	// Should receive blocked request with policy-specific error code.
+	var gotBlocked bool
+	for br := range blockedCh {
+		if len(br.ID) > 0 {
+			gotBlocked = true
+			if br.ErrorCode != -32002 {
+				t.Errorf("ErrorCode = %d, want -32002", br.ErrorCode)
+			}
+			if !strings.Contains(br.ErrorMessage, "tool call policy") {
+				t.Errorf("ErrorMessage = %q, want it to contain 'tool call policy'", br.ErrorMessage)
+			}
+		}
+	}
+	if !gotBlocked {
+		t.Error("expected blocked request on channel")
+	}
+
+	// Log should mention policy rule.
+	if !strings.Contains(logW.String(), "policy:Destructive File Delete") {
+		t.Errorf("expected policy rule name in log, got: %s", logW.String())
+	}
+}
+
+func TestForwardScannedInput_PolicyWarnForwardsRequest(t *testing.T) {
+	sc := testInputScanner(t)
+
+	req := `{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"bash","arguments":{"command":"npm install lodash"}}}` + "\n"
+
+	policyCfg := buildPolicyConfig("warn", []config.ToolPolicyRule{
+		{
+			Name:        "Package Install",
+			ToolPattern: `(?i)^bash$`,
+			ArgPattern:  `(?i)\bnpm\s+install\b`,
+		},
+	})
+
+	var serverIn bytes.Buffer
+	var logW bytes.Buffer
+	blockedCh := make(chan BlockedRequest, 10)
+
+	clientIn := strings.NewReader(req)
+	ForwardScannedInput(NewStdioReader(clientIn), NewStdioWriter(&serverIn), &logW, sc, "block", "block", blockedCh, policyCfg)
+
+	// Warn mode — request should be forwarded.
+	if !strings.Contains(serverIn.String(), "tools/call") {
+		t.Error("expected warn-mode policy request to be forwarded")
+	}
+
+	// Log should contain warning with policy rule name.
+	if !strings.Contains(logW.String(), "warning") {
+		t.Errorf("expected 'warning' in log, got: %s", logW.String())
+	}
+	if !strings.Contains(logW.String(), "policy:Package Install") {
+		t.Errorf("expected policy rule name in log, got: %s", logW.String())
+	}
+
+	// No blocked requests on channel (warn mode forwards).
+	for br := range blockedCh {
+		if len(br.ID) > 0 {
+			t.Errorf("unexpected blocked request in warn mode: %+v", br)
+		}
+	}
+}
+
+func TestForwardScannedInput_PolicyAndDLPBothMatch(t *testing.T) {
+	sc := testInputScanner(t)
+
+	// Request that triggers BOTH DLP (secret in args) AND policy (rm -rf pattern).
+	secret := "sk-ant-" + strings.Repeat("q", 25)
+	req := `{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"bash","arguments":{"command":"rm -rf /","key":"` + secret + `"}}}` + "\n"
+
+	policyCfg := buildPolicyConfig("warn", []config.ToolPolicyRule{
+		{
+			Name:        "Destructive File Delete",
+			ToolPattern: `(?i)^bash$`,
+			ArgPattern:  `(?i)\brm\s+(-[a-z]*[rf])`,
+			Action:      "block", // per-rule override: block
+		},
+	})
+
+	var serverIn bytes.Buffer
+	var logW bytes.Buffer
+	blockedCh := make(chan BlockedRequest, 10)
+
+	clientIn := strings.NewReader(req)
+	// Content action is "block" for DLP; policy rule also says "block". Strictest wins.
+	ForwardScannedInput(NewStdioReader(clientIn), NewStdioWriter(&serverIn), &logW, sc, "block", "block", blockedCh, policyCfg)
+
+	// Should NOT be forwarded (both DLP and policy match = block).
+	if strings.Contains(serverIn.String(), "tools/call") {
+		t.Error("expected request blocked by both DLP and policy NOT to be forwarded")
+	}
+
+	var gotBlocked bool
+	for br := range blockedCh {
+		if len(br.ID) > 0 {
+			gotBlocked = true
+			// Both matched, but DLP also matched so this is NOT policy-only.
+			// Should use default error code (0 means -32001).
+			if br.ErrorCode != 0 {
+				t.Errorf("ErrorCode = %d, want 0 (default -32001) when both DLP and policy match", br.ErrorCode)
+			}
+		}
+	}
+	if !gotBlocked {
+		t.Error("expected blocked request on channel")
+	}
+
+	// Log should mention both DLP and policy reasons.
+	logStr := logW.String()
+	if !strings.Contains(logStr, "policy:Destructive File Delete") {
+		t.Errorf("expected policy rule in log, got: %s", logStr)
+	}
+}
+
+func TestForwardScannedInput_PolicyNilPassthrough(t *testing.T) {
+	sc := testInputScanner(t)
+
+	// A tools/call request that would match default policy rules, but policyCfg is nil.
+	req := `{"jsonrpc":"2.0","id":13,"method":"tools/call","params":{"name":"bash","arguments":{"command":"rm -rf /tmp"}}}` + "\n"
+
+	var serverIn bytes.Buffer
+	var logW bytes.Buffer
+	blockedCh := make(chan BlockedRequest, 10)
+
+	clientIn := strings.NewReader(req)
+	ForwardScannedInput(NewStdioReader(clientIn), NewStdioWriter(&serverIn), &logW, sc, "warn", "block", blockedCh, nil)
+
+	// No policy engine — should be forwarded (content is clean, no DLP match).
+	if !strings.Contains(serverIn.String(), "tools/call") {
+		t.Error("expected request to be forwarded when policyCfg is nil")
+	}
+}
+
+func TestBlockRequestResponse_CustomErrorCode(t *testing.T) {
+	id := json.RawMessage(`99`)
+	resp := blockRequestResponse(BlockedRequest{
+		ID:           id,
+		ErrorCode:    -32002,
+		ErrorMessage: "pipelock: request blocked by tool call policy",
+	})
+
+	var parsed struct {
+		ID    int `json:"id"`
+		Error struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(resp, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+	if parsed.Error.Code != -32002 {
+		t.Errorf("error.code = %d, want -32002", parsed.Error.Code)
+	}
+	if parsed.Error.Message != "pipelock: request blocked by tool call policy" {
+		t.Errorf("error.message = %q", parsed.Error.Message)
 	}
 }
 

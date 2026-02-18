@@ -487,7 +487,7 @@ logging:
 		}
 
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
-		resp, err := client.Do(req) //nolint:gosec // test request to local httptest server
+		resp, err := client.Do(req) //nolint:gosec // G704: test-only, URL from httptest server
 		if err == nil {
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
@@ -504,7 +504,7 @@ logging:
 
 	// Verify the health response shows the flag override (strict, not balanced)
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
-	resp, err := client.Do(req) //nolint:gosec // test request to local httptest server
+	resp, err := client.Do(req) //nolint:gosec // G704: test-only, URL from httptest server
 	if err != nil {
 		cancel()
 		t.Fatalf("health request failed: %v", err)
@@ -679,7 +679,7 @@ func TestRunCmd_ListenFlagOverride(t *testing.T) {
 		}
 
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
-		resp, err := client.Do(req) //nolint:gosec // test request to local httptest server
+		resp, err := client.Do(req) //nolint:gosec // G704: test-only, URL from httptest server
 		if err == nil {
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
@@ -943,7 +943,7 @@ func TestRunCmd_WithAgentArgs(t *testing.T) {
 		default:
 		}
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
-		resp, err := client.Do(req) //nolint:gosec // test request to local httptest server
+		resp, err := client.Do(req) //nolint:gosec // G704: test-only, URL from httptest server
 		if err == nil {
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
@@ -1004,7 +1004,7 @@ func TestRunCmd_DefaultMode(t *testing.T) {
 		default:
 		}
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
-		resp, err := client.Do(req) //nolint:gosec // test request to local httptest server
+		resp, err := client.Do(req) //nolint:gosec // G704: test-only, URL from httptest server
 		if err == nil {
 			var health map[string]any
 			_ = json.NewDecoder(resp.Body).Decode(&health)
@@ -1088,7 +1088,7 @@ func TestRunCmd_ModeFlag(t *testing.T) {
 		default:
 		}
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
-		resp, rerr := client.Do(req) //nolint:gosec // test request to local httptest server
+		resp, rerr := client.Do(req) //nolint:gosec // G704: test-only, URL from httptest server
 		if rerr == nil {
 			var health map[string]any
 			_ = json.NewDecoder(resp.Body).Decode(&health)
@@ -1158,7 +1158,7 @@ fetch_proxy:
 		default:
 		}
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
-		resp, rerr := client.Do(req) //nolint:gosec // test request to local httptest server
+		resp, rerr := client.Do(req) //nolint:gosec // G704: test-only, URL from httptest server
 		if rerr == nil {
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
@@ -1184,7 +1184,7 @@ fetch_proxy:
 
 	// Verify the mode changed.
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
-	resp, err := client.Do(req) //nolint:gosec // test request to local httptest server
+	resp, err := client.Do(req) //nolint:gosec // G704: test-only, URL from httptest server
 	if err != nil {
 		cancel()
 		t.Fatalf("health request failed: %v", err)
@@ -1281,7 +1281,7 @@ fetch_proxy:
 		default:
 		}
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
-		resp, rerr := client.Do(req) //nolint:gosec // test request to local httptest server
+		resp, rerr := client.Do(req) //nolint:gosec // G704: test-only, URL from httptest server
 		if rerr == nil {
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
@@ -1372,7 +1372,7 @@ response_scanning:
 		default:
 		}
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
-		resp, rerr := client.Do(req) //nolint:gosec // test request to local httptest server
+		resp, rerr := client.Do(req) //nolint:gosec // G704: test-only, URL from httptest server
 		if rerr == nil {
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {

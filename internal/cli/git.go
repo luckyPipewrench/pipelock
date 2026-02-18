@@ -83,9 +83,9 @@ Examples:
 				if jsonErr != nil {
 					return fmt.Errorf("encoding findings: %w", jsonErr)
 				}
-				_, _ = fmt.Fprintln(cmd.OutOrStdout(), string(data))
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), string(data)) //nolint:gosec // CLI terminal output
 			} else {
-				_, _ = fmt.Fprint(cmd.ErrOrStderr(), gitprotect.FormatFindings(findings))
+				_, _ = fmt.Fprint(cmd.ErrOrStderr(), gitprotect.FormatFindings(findings)) //nolint:gosec // CLI terminal output
 			}
 
 			if len(findings) > 0 {

@@ -12,13 +12,13 @@ Pipelock protects against AI agents being tricked into harmful actions. The prim
 4. **Tool poisoning** — MCP server descriptions contain hidden instructions or change definitions mid-session to manipulate agent behavior.
 5. **Data exfiltration** — Agent sends sensitive workspace data to external endpoints through legitimate-looking requests.
 
-These map to the [OWASP Top 10 for Agentic Applications](docs/owasp-mapping.md) and are tested against [200+ evasion techniques](CONTRIBUTING.md).
+These map to the [OWASP Top 10 for Agentic Applications](owasp-mapping.md) and are tested against [200+ evasion techniques](../CONTRIBUTING.md).
 
 ## Trust Boundaries
 
 Pipelock enforces a capability separation architecture:
 
-```
+```text
 +-----------------------+          +------------------------+          +----------+
 |       Agent           |   --->   |     Pipelock Proxy     |   --->   | Internet |
 | (has secrets/API keys |          | (has network access,   |          |          |

@@ -157,7 +157,7 @@ func atomicWrite(path string, data []byte, perm os.FileMode) error {
 		os.Remove(tmpName) //nolint:errcheck,gosec // best-effort cleanup
 		return fmt.Errorf("closing temp file: %w", err)
 	}
-	if err := os.Rename(tmpName, path); err != nil {
+	if err := os.Rename(tmpName, path); err != nil { //nolint:gosec // atomic rename in same directory
 		os.Remove(tmpName) //nolint:errcheck,gosec // best-effort cleanup
 		return fmt.Errorf("renaming file: %w", err)
 	}

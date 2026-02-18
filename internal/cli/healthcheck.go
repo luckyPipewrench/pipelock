@@ -31,7 +31,7 @@ Examples:
 				return fmt.Errorf("health check failed: %w", err)
 			}
 
-			resp, err := http.DefaultClient.Do(req)
+			resp, err := http.DefaultClient.Do(req) //nolint:gosec // user-provided address from CLI flag
 			if err != nil {
 				return fmt.Errorf("health check failed: %w", err)
 			}

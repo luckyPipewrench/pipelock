@@ -14,7 +14,7 @@ LDFLAGS := -ldflags "-s -w \
 .PHONY: build test bench lint clean docker install fmt vet tidy-check
 
 build:
-	go build $(LDFLAGS) -o $(BINARY) ./cmd/pipelock
+	go build -trimpath $(LDFLAGS) -o $(BINARY) ./cmd/pipelock
 
 install:
 	go install $(LDFLAGS) ./cmd/pipelock

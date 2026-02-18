@@ -10,6 +10,8 @@ builds:
     binary: pipelock
     env:
       - CGO_ENABLED=0
+    flags:
+      - -trimpath
     goos:
       - linux
       - darwin

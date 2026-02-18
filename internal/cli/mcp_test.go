@@ -237,8 +237,8 @@ func TestMcpProxyCmd_NoCommand(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when no command is provided after --")
 	}
-	if !strings.Contains(err.Error(), "no MCP server command") {
-		t.Errorf("expected 'no MCP server command' error, got: %v", err)
+	if !strings.Contains(err.Error(), "--upstream") {
+		t.Errorf("expected error mentioning --upstream, got: %v", err)
 	}
 }
 
@@ -458,5 +458,50 @@ func TestMcpProxyCmd_ForceEnablesResponseScanning(t *testing.T) {
 	// Command overrides to defaults (warn action) — injection logged, original forwarded.
 	if !strings.Contains(errBuf.String(), "warning: response scanning was disabled") {
 		t.Errorf("expected disabled warning, got stderr: %s", errBuf.String())
+	}
+}
+
+func TestMcpProxyCmd_UpstreamRejectsSubprocessArgs(t *testing.T) {
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"mcp", "proxy", "--upstream", "http://localhost:8080/mcp", "--", "echo", "test"})
+	cmd.SetIn(bytes.NewReader(nil))
+	cmd.SetOut(&strings.Builder{})
+	cmd.SetErr(&strings.Builder{})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when both --upstream and subprocess command are provided")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("expected 'mutually exclusive' error, got: %v", err)
+	}
+}
+
+func TestMcpProxyCmd_UpstreamHelp(t *testing.T) {
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"mcp", "proxy", "--help"})
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	_ = cmd.Execute()
+	output := buf.String()
+	if !strings.Contains(output, "--upstream") {
+		t.Error("help should mention --upstream flag")
+	}
+}
+
+func TestMcpProxyCmd_NeitherUpstreamNorCommand(t *testing.T) {
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"mcp", "proxy"})
+	cmd.SetIn(bytes.NewReader(nil))
+	cmd.SetOut(&strings.Builder{})
+	cmd.SetErr(&strings.Builder{})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when neither --upstream nor subprocess command is provided")
+	}
+	if !strings.Contains(err.Error(), "--upstream") || !strings.Contains(err.Error(), "COMMAND") {
+		t.Errorf("expected error mentioning both options, got: %v", err)
 	}
 }

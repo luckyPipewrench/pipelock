@@ -29,6 +29,10 @@ func RunHTTPProxy(
 	toolCfg *ToolScanConfig,
 	policyCfg *PolicyConfig,
 ) error {
+	// Create a child context so we can stop the GET stream when stdin EOF is reached.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	safeClientOut := &syncWriter{w: clientOut}
 	safeLogW := &syncWriter{w: logW}
 
@@ -45,6 +49,9 @@ func RunHTTPProxy(
 	}
 
 	clientReader := NewStdioReader(clientIn)
+
+	var wg sync.WaitGroup
+	var getStreamOnce sync.Once
 
 	for {
 		msg, err := clientReader.ReadMessage()
@@ -88,12 +95,23 @@ func RunHTTPProxy(
 		if scanErr != nil {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
 		}
+
+		// After first successful response, start GET stream for server-initiated messages.
+		getStreamOnce.Do(func() {
+			if sid := httpClient.SessionID(); sid != "" {
+				startGETStream(ctx, httpClient, safeClientOut, safeLogW, sc, approver, fwdToolCfg, &wg)
+			}
+		})
 	}
 
 	// Terminate session if established.
 	if httpClient.SessionID() != "" {
 		httpClient.DeleteSession()
 	}
+
+	// Stop GET stream and wait for it to finish.
+	cancel()
+	wg.Wait()
 
 	return nil
 }
@@ -222,9 +240,6 @@ func upstreamErrorResponse(id json.RawMessage, upstreamErr error) []byte {
 
 // startGETStream maintains a background GET SSE connection for server-initiated
 // messages. Called after the initialize handshake establishes a session ID.
-// This is a skeleton for Task 5 integration.
-//
-//nolint:unused // skeleton for Task 5 GET stream integration
 func startGETStream(
 	ctx context.Context,
 	httpClient *HTTPClient,

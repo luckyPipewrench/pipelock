@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -169,5 +170,48 @@ func TestRunHTTPProxy_UpstreamError(t *testing.T) {
 	}
 	if rpc.Error.Code != -32003 {
 		t.Errorf("error code = %d, want -32003\noutput: %s", rpc.Error.Code, output)
+	}
+}
+
+func TestRunHTTPProxy_GETStreamReceivesServerNotifications(t *testing.T) {
+	// Track GET requests to verify the stream was opened.
+	var getCount int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			atomic.AddInt32(&getCount, 1)
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/resources/updated\"}\n\n"))
+			return
+		}
+		// POST: return initialize response with session ID.
+		w.Header().Set("Mcp-Session-Id", "sess-test") //nolint:goconst // test value
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-03-26"}}`))
+	}))
+	defer srv.Close()
+
+	sc := testScannerForHTTP(t)
+
+	stdin := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize"}` + "\n")
+	var stdout, stderr bytes.Buffer
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, sc, nil, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("RunHTTPProxy() error = %v", err)
+	}
+
+	// Verify we received both the POST response and the GET notification.
+	output := strings.TrimSpace(stdout.String())
+	lines := strings.Split(output, "\n")
+	if len(lines) < 2 {
+		t.Errorf("expected at least 2 messages (POST response + GET notification), got %d: %q",
+			len(lines), output)
+	}
+
+	if atomic.LoadInt32(&getCount) == 0 {
+		t.Error("expected GET stream to be opened")
 	}
 }

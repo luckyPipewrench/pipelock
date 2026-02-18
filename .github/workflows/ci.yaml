@@ -95,7 +95,7 @@ jobs:
       - name: Build binary
         run: |
           VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "0.1.0-dev")
-          go build -ldflags "-s -w \
+          go build -trimpath -ldflags "-s -w \
             -X github.com/luckyPipewrench/pipelock/internal/cli.Version=$VERSION \
             -X github.com/luckyPipewrench/pipelock/internal/proxy.Version=$VERSION" \
             -o pipelock ./cmd/pipelock

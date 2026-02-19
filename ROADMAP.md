@@ -18,11 +18,11 @@ Shipped capabilities:
 - Git diff scanning for leaked secrets
 - Structured JSON audit logging with Prometheus metrics
 - Preset configs for common agent frameworks
-- MCP Streamable HTTP transport support
 - Known secret file scanning (`secrets_file` config)
 
 ## Near-Term
 
+- MCP Streamable HTTP transport support
 - Agent process management (launch, monitor, enforce capability separation)
 - Expanded DLP pattern library
 - Configuration improvements and validation tooling

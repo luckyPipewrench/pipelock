@@ -46,12 +46,14 @@ Then:
 
 ```bash
 # Scan your project and generate a tailored config
-pipelock audit . -o pipelock.yaml
+pipelock audit . -o pipelock-suggested.yaml
+# Review the output, then rename when ready:
+mv pipelock-suggested.yaml pipelock.yaml
 
 # Start the proxy
-pipelock run --config pipelock.yaml
+pipelock run --config pipelock.yaml &
 
-# Test: this should be blocked
+# Test: this should be blocked (exit code 1 = working correctly)
 pipelock check --config pipelock.yaml --url "https://pastebin.com/raw/abc123"
 ```
 
@@ -130,7 +132,7 @@ flowchart LR
 | Prompt injection detection | Yes | Yes | No | No |
 | Workspace integrity monitoring | Yes | No | No | Partial |
 | MCP scanning (bidirectional + tool poisoning) | Yes | Yes | No | No |
-| Single binary, zero deps | Yes | No (Python) | No (npm) | No (kernel modules) |
+| Single binary, zero deps | Yes | No (Python) | No (npm) | No (kernel-level enforcement) |
 | Audit logging + Prometheus | Yes | No | No | No |
 
 Full comparison: [docs/comparison.md](docs/comparison.md)
@@ -156,7 +158,7 @@ What each mode prevents, detects, or logs:
 | Chunked exfiltration | **Prevented** | **Detected** (rate + data budget) | Logged |
 | Public-key encrypted blob in URL | **Prevented** | Logged (entropy flags it) | Logged |
 
-> **Honest assessment:** Strict mode provides mathematical certainty. Balanced mode raises the bar from "one curl command" to "sophisticated pre-planned attack." Audit mode gives you visibility you don't have today.
+> **Honest assessment:** Strict mode blocks all outbound HTTP except allowlisted API domains — no web browsing means no exfiltration channel through the proxy. Balanced mode raises the bar from "one curl command" to "sophisticated pre-planned attack." Audit mode gives you visibility you don't have today.
 
 ## Features
 

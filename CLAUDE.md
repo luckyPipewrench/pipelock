@@ -10,7 +10,7 @@ This file helps contributors (human and AI) work effectively on the Pipelock cod
 | Go version | 1.24+ |
 | License | Apache 2.0 |
 | Binary | Single static binary, ~12MB |
-| Dependencies | cobra, zerolog, go-readability, yaml.v3, prometheus, fsnotify |
+| Dependencies | cobra, zerolog, go-readability, yaml.v3, prometheus, fsnotify, x/text |
 
 ## Build, Test, Lint
 
@@ -40,7 +40,7 @@ Both must pass before pushing. CI runs lint and tests on all code (not just chan
 ```
 cmd/pipelock/          Entry point (main.go)
 internal/
-  cli/                 Cobra commands (run, check, generate, logs, git, integrity, mcp, keygen, sign, verify, trust, version, healthcheck)
+  cli/                 Cobra commands (audit, check, demo, generate, git, healthcheck, integrity, keygen, logs, mcp, run, sign, test, trust, verify, version)
   proxy/               HTTP fetch proxy (/fetch, /health, /metrics, /stats)
   scanner/             URL + response scanning pipeline (9 layers)
   config/              YAML config loading, validation, hot-reload (fsnotify + SIGHUP)
@@ -95,8 +95,11 @@ Wraps any MCP server as a stdio proxy with bidirectional scanning. Server respon
 
 | Command | Purpose |
 |---------|---------|
+| `pipelock audit` | Scan a project directory and generate a tailored config |
 | `pipelock run` | Start the fetch proxy server |
-| `pipelock check` | Validate a config file |
+| `pipelock check` | Validate a config file and optionally scan a URL |
+| `pipelock test` | Run built-in scanner validation tests |
+| `pipelock demo` | Run an interactive demo of scanner capabilities |
 | `pipelock generate config` | Generate config from preset (--preset balanced/strict/audit). Agent configs in `configs/` for direct use with `--config`. |
 | `pipelock generate docker-compose` | Generate a Docker Compose file for running the proxy |
 | `pipelock mcp proxy` | MCP stdio proxy wrapping an MCP server |
@@ -214,7 +217,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide. Summary:
 
 - **Security bugs**: Report via [GitHub Security Advisories](https://github.com/luckyPipewrench/pipelock/security/advisories) — NOT public issues
 - **Don't weaken capability separation** — the proxy must never have access to agent secrets
-- **Don't add dependencies without justification** — 7 direct deps (cobra, zerolog, go-readability, yaml.v3, prometheus, fsnotify, tablewriter) is a feature, not a limitation
+- **Don't add dependencies without justification** — 7 direct deps (cobra, zerolog, go-readability, yaml.v3, prometheus, fsnotify, x/text) is a feature, not a limitation
 - **Don't bypass fail-closed defaults** — if in doubt, block
 
 ## Common Development Tasks

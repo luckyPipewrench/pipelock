@@ -7,12 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-02-19
+
 ### Added
-- MCP Streamable HTTP transport: `pipelock mcp proxy --upstream <url>` bridges stdio clients to remote MCP servers over HTTP
-- SSE reader for parsing Server-Sent Events responses from HTTP MCP servers
-- GET SSE stream support for server-initiated messages (notifications, requests)
-- Session lifecycle management (Mcp-Session-Id tracking, DELETE on exit)
-- Full bidirectional scanning on HTTP transport (response injection, input DLP, tool poisoning, tool call policy)
+- MCP Streamable HTTP transport: `pipelock mcp proxy --upstream <url>` bridges stdio clients to remote MCP servers over HTTP with SSE stream support and session lifecycle management (PR #112)
+- Pre-execution tool call policy: configurable `mcp_tool_policy` blocks dangerous commands (rm -rf, curl to external, chmod 777) before MCP tools execute, with pairwise token matching and whitespace normalization (PR #107)
+- Known secret scanning: `dlp.secrets_file` config loads explicit secrets from file, scans URLs and MCP tool arguments for raw + base64/hex/base32 encoded variants including unpadded forms (PR #111)
+- `pipelock test` CLI command: validates scanner coverage against loaded config with structured pass/fail output per scanner layer (PR #109)
+- Framework integration guides: OpenAI Agents SDK, Google ADK, AutoGen (PR #110)
+- GOVERNANCE.md, ROADMAP.md, and security assurance documentation for OpenSSF Silver (PR #108)
+- OpenSSF Best Practices Silver badge (PR #114)
+
+### Fixed
+- Unicode bypass in injection and DLP scanning: full homoglyph normalization (Cyrillic, Greek, Armenian, Cherokee), combining mark stripping, leetspeak normalization, 6 new injection patterns (PR #105)
+- govulncheck CI flake: pinned Go version to 1.24.13 to prevent runner cache inconsistency (PR #113)
+- Codecov targets raised to 95% project / 90% patch (PR #113)
+
+### Changed
+- README Quick Start reordered: `pipelock check` before `pipelock run` since check doesn't need a running proxy (PR #113)
+- CONTRIBUTING.md updated with complete CLI command list and project structure (PR #113)
+- Demo script uses `DEMO_TMPDIR` instead of `TMPDIR` to avoid shadowing POSIX env var (PR #113)
+- CI matrix tests Go 1.24 + 1.25 (PR #113)
 
 ## [0.2.3] - 2026-02-16
 

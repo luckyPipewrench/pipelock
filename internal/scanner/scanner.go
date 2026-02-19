@@ -513,6 +513,11 @@ func (s *Scanner) checkDLP(parsed *url.URL) Result {
 		return result
 	}
 
+	// Check for known file secret leaks
+	if result := s.checkFileSecretLeak(parsed); !result.Allowed {
+		return result
+	}
+
 	return Result{Allowed: true}
 }
 
@@ -678,6 +683,79 @@ func (s *Scanner) checkEnvLeak(parsed *url.URL) Result {
 			return Result{
 				Allowed: false,
 				Reason:  "environment variable leak detected (base32-encoded)",
+				Scanner: "dlp",
+				Score:   1.0,
+			}
+		}
+	}
+
+	return Result{Allowed: true}
+}
+
+// checkFileSecretLeak scans for secrets loaded from the secrets_file in the URL.
+// Mirrors checkEnvLeak with distinct messages for incident response clarity.
+func (s *Scanner) checkFileSecretLeak(parsed *url.URL) Result {
+	if len(s.fileSecrets) == 0 {
+		return Result{Allowed: true}
+	}
+
+	fullURL := stripControlChars(parsed.String())
+	lowerURL := strings.ToLower(fullURL)
+
+	for _, secret := range s.fileSecrets {
+		if strings.Contains(fullURL, secret) {
+			return Result{
+				Allowed: false,
+				Reason:  "known secret leak detected",
+				Scanner: "dlp",
+				Score:   1.0,
+			}
+		}
+
+		encoded := base64.StdEncoding.EncodeToString([]byte(secret))
+		if strings.Contains(fullURL, encoded) {
+			return Result{
+				Allowed: false,
+				Reason:  "known secret leak detected (base64-encoded)",
+				Scanner: "dlp",
+				Score:   1.0,
+			}
+		}
+
+		encodedURL := base64.URLEncoding.EncodeToString([]byte(secret))
+		if encodedURL != encoded && strings.Contains(fullURL, encodedURL) {
+			return Result{
+				Allowed: false,
+				Reason:  "known secret leak detected (base64url-encoded)",
+				Scanner: "dlp",
+				Score:   1.0,
+			}
+		}
+
+		hexEncoded := hex.EncodeToString([]byte(secret))
+		if strings.Contains(lowerURL, hexEncoded) {
+			return Result{
+				Allowed: false,
+				Reason:  "known secret leak detected (hex-encoded)",
+				Scanner: "dlp",
+				Score:   1.0,
+			}
+		}
+
+		b32Std := base32.StdEncoding.EncodeToString([]byte(secret))
+		if strings.Contains(fullURL, b32Std) {
+			return Result{
+				Allowed: false,
+				Reason:  "known secret leak detected (base32-encoded)",
+				Scanner: "dlp",
+				Score:   1.0,
+			}
+		}
+		b32NoPad := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString([]byte(secret))
+		if b32NoPad != b32Std && strings.Contains(fullURL, b32NoPad) {
+			return Result{
+				Allowed: false,
+				Reason:  "known secret leak detected (base32-encoded)",
 				Scanner: "dlp",
 				Score:   1.0,
 			}

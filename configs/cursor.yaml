@@ -150,7 +150,7 @@ response_scanning:
     - name: "Instruction Dismissal"
       regex: '(?i)(set|put|cast|push|throw)\s+(all\s+)?(previous|prior|earlier|preceding|above|existing|current)\s+(\w+\s+)?(directives|instructions|guidelines|rules|prompts?|constraints)\s+(aside|away)'
     - name: "Instruction Downgrade"
-      regex: '(?i)(treat|consider|regard|reinterpret)\s+(the\s+)?(previous|prior|above|system|policy|original)\s+(\w+\s+)?(text|instructions?|rules|directives|guidelines|safeguards|constraints|controls|context|prompt)\s+(as\s+)?(historical|outdated|deprecated|optional|background|secondary|non-binding|informational)'
+      regex: '(?i)(treat|consider|regard|reinterpret|downgrade)\s+(the\s+)?(previous|prior|above|system|policy|original|existing)\s+(\w+\s+)?(text|instructions?|rules|directives|guidelines|safeguards|constraints|controls|checks|context|prompt)\s+((as|to)\s+)?(historical|outdated|deprecated|optional|background|secondary|non-binding|informational|advisory)'
     - name: "Priority Override"
       regex: '(?i)prioritize\s+(the\s+)?(task|user|current|new|latest)\s+(request|message|input|instructions?|prompt)'
 

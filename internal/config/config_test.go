@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -1497,6 +1498,206 @@ func TestValidateReload_MCPToolPolicyRulesReduced(t *testing.T) {
 	}
 	if !found {
 		t.Error("expected warning for tool policy rules reduced")
+	}
+}
+
+func TestLoad_WithSecretsFile(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create a secrets file with a valid secret
+	secretsPath := filepath.Join(dir, "secrets.txt")
+	testSecret := "xK9mP2nQ" + "7vR4wT6y" //nolint:goconst // test value, runtime construction avoids gosec G101
+	if err := os.WriteFile(secretsPath, []byte(testSecret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfgYAML := fmt.Sprintf(`
+version: 1
+mode: balanced
+dlp:
+  secrets_file: %q
+`, secretsPath)
+
+	configPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte(cfgYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.DLP.SecretsFile != secretsPath {
+		t.Errorf("expected secrets_file %q, got %q", secretsPath, cfg.DLP.SecretsFile)
+	}
+}
+
+func TestValidate_SecretsFileNotFound(t *testing.T) {
+	cfg := Defaults()
+	cfg.DLP.SecretsFile = "/nonexistent/path/secrets.txt"
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for nonexistent secrets file")
+	}
+}
+
+func TestValidate_SecretsFileWorldReadable(t *testing.T) {
+	dir := t.TempDir()
+	secretsPath := filepath.Join(dir, "secrets.txt")
+	testSecret := "xK9mP2nQ" + "7vR4wT6y"                                             //nolint:goconst // test value, runtime construction avoids gosec G101
+	if err := os.WriteFile(secretsPath, []byte(testSecret+"\n"), 0o644); err != nil { //nolint:gosec // G306: intentionally world-readable for test
+		t.Fatal(err)
+	}
+
+	cfg := Defaults()
+	cfg.DLP.SecretsFile = secretsPath
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for world-readable secrets file")
+	}
+	if !strings.Contains(err.Error(), "world-readable") {
+		t.Errorf("error should mention world-readable, got: %v", err)
+	}
+}
+
+func TestValidate_SecretsFileValid(t *testing.T) {
+	dir := t.TempDir()
+	secretsPath := filepath.Join(dir, "secrets.txt")
+	testSecret := "xK9mP2nQ" + "7vR4wT6y" //nolint:goconst // test value, runtime construction avoids gosec G101
+	if err := os.WriteFile(secretsPath, []byte(testSecret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := Defaults()
+	cfg.DLP.SecretsFile = secretsPath
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("valid secrets file should pass validation: %v", err)
+	}
+}
+
+func TestLoad_SecretsFileRelativePathResolved(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create secrets file in same directory as config
+	secretsPath := filepath.Join(dir, "my-secrets.txt")
+	testSecret := "xK9mP2nQ" + "7vR4wT6y" //nolint:goconst // test value, runtime construction avoids gosec G101
+	if err := os.WriteFile(secretsPath, []byte(testSecret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Config references secrets file with relative path
+	cfgYAML := `
+version: 1
+mode: balanced
+dlp:
+  secrets_file: "my-secrets.txt"
+`
+	configPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte(cfgYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should be resolved to absolute path
+	if !filepath.IsAbs(cfg.DLP.SecretsFile) {
+		t.Errorf("expected absolute path, got %q", cfg.DLP.SecretsFile)
+	}
+	if cfg.DLP.SecretsFile != secretsPath {
+		t.Errorf("expected %q, got %q", secretsPath, cfg.DLP.SecretsFile)
+	}
+}
+
+func TestValidate_SecretsFileEmptyString_NoValidation(t *testing.T) {
+	cfg := Defaults()
+	cfg.DLP.SecretsFile = ""
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("empty secrets_file should skip validation: %v", err)
+	}
+}
+
+func TestValidateReload_SecretsFileRemoved(t *testing.T) {
+	old := Defaults()
+	old.DLP.SecretsFile = "/path/to/secrets.txt" //nolint:goconst // test value
+
+	updated := Defaults()
+	updated.DLP.SecretsFile = ""
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == "dlp.secrets_file" { //nolint:goconst // test value
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected warning for secrets_file removal")
+	}
+}
+
+func TestValidateReload_SecretsFileSame_NoWarning(t *testing.T) {
+	old := Defaults()
+	old.DLP.SecretsFile = "/path/to/secrets.txt" //nolint:goconst // test value
+
+	updated := Defaults()
+	updated.DLP.SecretsFile = "/path/to/secrets.txt" //nolint:goconst // test value
+
+	warnings := ValidateReload(old, updated)
+	for _, w := range warnings {
+		if w.Field == "dlp.secrets_file" { //nolint:goconst // test value
+			t.Errorf("same secrets_file should not warn, got: %s", w.Message)
+		}
+	}
+}
+
+func TestValidateReload_SecretsFileBothEmpty_NoWarning(t *testing.T) {
+	old := Defaults()
+	updated := Defaults()
+
+	warnings := ValidateReload(old, updated)
+	for _, w := range warnings {
+		if w.Field == "dlp.secrets_file" { //nolint:goconst // test value
+			t.Errorf("both empty should not warn, got: %s", w.Message)
+		}
+	}
+}
+
+func TestValidateReload_SecretsFilePathChanged(t *testing.T) {
+	old := Defaults()
+	old.DLP.SecretsFile = "/path/to/old-secrets.txt"
+
+	updated := Defaults()
+	updated.DLP.SecretsFile = "/path/to/new-secrets.txt"
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == "dlp.secrets_file" { //nolint:goconst // test value
+			found = true
+			if !strings.Contains(w.Message, "changed") {
+				t.Errorf("expected 'changed' in message, got: %s", w.Message)
+			}
+		}
+	}
+	if !found {
+		t.Error("expected warning for secrets_file path change")
+	}
+}
+
+func TestValidateReload_SecretsFileAdded_NoWarning(t *testing.T) {
+	old := Defaults()
+	// No secrets_file initially
+
+	updated := Defaults()
+	updated.DLP.SecretsFile = "/path/to/secrets.txt" //nolint:goconst // test value
+
+	warnings := ValidateReload(old, updated)
+	for _, w := range warnings {
+		if w.Field == "dlp.secrets_file" { //nolint:goconst // test value
+			t.Errorf("adding secrets_file should not warn, got: %s", w.Message)
+		}
 	}
 }
 

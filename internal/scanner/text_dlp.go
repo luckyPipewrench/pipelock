@@ -27,7 +27,7 @@ type TextDLPResult struct {
 // from MCP tool arguments. It applies zero-width stripping, NFKC normalization,
 // and checks encoded variants (base64, hex, base32) of the text for patterns.
 func (s *Scanner) ScanTextForDLP(text string) TextDLPResult {
-	if len(s.dlpPatterns) == 0 && len(s.envSecrets) == 0 {
+	if len(s.dlpPatterns) == 0 && len(s.envSecrets) == 0 && len(s.fileSecrets) == 0 {
 		return TextDLPResult{Clean: true}
 	}
 
@@ -95,7 +95,10 @@ func (s *Scanner) ScanTextForDLP(text string) TextDLPResult {
 	}
 
 	// Check for env secret leaks (raw + encoded forms).
-	matches = append(matches, s.checkEnvLeakText(cleaned)...)
+	matches = append(matches, s.checkSecretsInText(s.envSecrets, cleaned, "Environment Variable Leak", "env")...)
+
+	// Check for file secret leaks (raw + encoded forms).
+	matches = append(matches, s.checkSecretsInText(s.fileSecrets, cleaned, "Known Secret Leak", "")...)
 
 	// Deduplicate matches by pattern name + encoding.
 	matches = deduplicateMatches(matches)
@@ -127,75 +130,28 @@ func (s *Scanner) matchDLPPatterns(text, encoding string) []TextDLPMatch {
 	return matches
 }
 
-// checkEnvLeakText checks text for environment variable secret values.
-// Checks raw text and common encoded forms (base64, hex, base32).
-func (s *Scanner) checkEnvLeakText(text string) []TextDLPMatch {
-	if len(s.envSecrets) == 0 {
+// checkSecretsInText scans text for leaked secrets (env vars or file-based).
+// If encodedOverride is non-empty, all matches use that as the Encoded field (e.g. "env").
+// Otherwise, the actual encoding label from matchSecretEncodings is used.
+func (s *Scanner) checkSecretsInText(secrets []string, text, patternName, encodedOverride string) []TextDLPMatch {
+	if len(secrets) == 0 {
 		return nil
 	}
 
-	lowerText := strings.ToLower(text)
-	var matches []TextDLPMatch
+	texts := []string{text}
+	lowerTexts := []string{strings.ToLower(text)}
 
-	for _, secret := range s.envSecrets {
-		// Raw match.
-		if strings.Contains(text, secret) {
-			matches = append(matches, TextDLPMatch{
-				PatternName: "Environment Variable Leak",
-				Severity:    "critical",
-				Encoded:     "env",
-			})
-			return matches // One env leak is enough to flag.
-		}
-
-		// Base64-encoded match (check both padded and unpadded).
-		encoded := base64.StdEncoding.EncodeToString([]byte(secret))
-		unpadded := strings.TrimRight(encoded, "=")
-		if strings.Contains(text, encoded) || strings.Contains(text, unpadded) {
-			matches = append(matches, TextDLPMatch{
-				PatternName: "Environment Variable Leak",
-				Severity:    "critical",
-				Encoded:     "env",
-			})
-			return matches
-		}
-
-		// URL-safe base64 (check both padded and unpadded).
-		encodedURL := base64.URLEncoding.EncodeToString([]byte(secret))
-		unpaddedURL := strings.TrimRight(encodedURL, "=")
-		if (encodedURL != encoded && strings.Contains(text, encodedURL)) ||
-			(unpaddedURL != unpadded && strings.Contains(text, unpaddedURL)) {
-			matches = append(matches, TextDLPMatch{
-				PatternName: "Environment Variable Leak",
-				Severity:    "critical",
-				Encoded:     "env",
-			})
-			return matches
-		}
-
-		// Hex-encoded match.
-		hexEncoded := hex.EncodeToString([]byte(secret))
-		if strings.Contains(lowerText, hexEncoded) {
-			matches = append(matches, TextDLPMatch{
-				PatternName: "Environment Variable Leak",
-				Severity:    "critical",
-				Encoded:     "env",
-			})
-			return matches
-		}
-
-		// Base32-encoded match.
-		b32 := base32.StdEncoding.EncodeToString([]byte(secret))
-		if strings.Contains(text, b32) {
-			matches = append(matches, TextDLPMatch{
-				PatternName: "Environment Variable Leak",
-				Severity:    "critical",
-				Encoded:     "env",
-			})
-			return matches
+	for _, secret := range secrets {
+		if matched, enc := matchSecretEncodings(secret, texts, lowerTexts); matched {
+			m := TextDLPMatch{PatternName: patternName, Severity: "critical"}
+			if encodedOverride != "" {
+				m.Encoded = encodedOverride
+			} else {
+				m.Encoded = enc
+			}
+			return []TextDLPMatch{m}
 		}
 	}
-
 	return nil
 }
 

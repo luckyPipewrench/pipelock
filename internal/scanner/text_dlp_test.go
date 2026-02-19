@@ -371,52 +371,46 @@ func TestMatchDLPPatterns(t *testing.T) {
 	}
 }
 
-func TestCheckEnvLeakText_NoSecrets(t *testing.T) {
+func TestCheckSecretsInText_NoEnvSecrets(t *testing.T) {
 	cfg := testConfig()
 	s := New(cfg)
 	defer s.Close()
 
-	// No env secrets configured
-	s.envSecrets = nil
-	matches := s.checkEnvLeakText("some text with anything")
+	matches := s.checkSecretsInText(nil, "some text with anything", "Environment Variable Leak", "env")
 	if len(matches) != 0 {
 		t.Errorf("expected no matches with empty envSecrets, got %d", len(matches))
 	}
 }
 
-func TestCheckEnvLeakText_HexEncoded(t *testing.T) {
+func TestCheckSecretsInText_HexEncodedEnvSecret(t *testing.T) {
 	cfg := testConfig()
 	cfg.DLP.ScanEnv = true
 	s := New(cfg)
 	defer s.Close()
 
 	secret := "SuperSecretTestValue99" //nolint:goconst // test value
-	s.envSecrets = []string{secret}
-
 	hexEncoded := hex.EncodeToString([]byte(secret))
-	matches := s.checkEnvLeakText("data: " + hexEncoded)
+	matches := s.checkSecretsInText([]string{secret}, "data: "+hexEncoded, "Environment Variable Leak", "env")
 	if len(matches) == 0 {
 		t.Error("expected hex-encoded env leak to be caught")
 	}
 }
 
-func TestCheckEnvLeakText_Base32Encoded(t *testing.T) {
+func TestCheckSecretsInText_Base32EncodedEnvSecret(t *testing.T) {
 	cfg := testConfig()
 	cfg.DLP.ScanEnv = true
 	s := New(cfg)
 	defer s.Close()
 
 	secret := "Base32TestSecretValue!" //nolint:goconst // test value
-	s.envSecrets = []string{secret}
-
 	b32Encoded := base32.StdEncoding.EncodeToString([]byte(secret))
-	matches := s.checkEnvLeakText("data: " + b32Encoded)
+	matches := s.checkSecretsInText([]string{secret}, "data: "+b32Encoded, "Environment Variable Leak", "env")
 	if len(matches) == 0 {
 		t.Error("expected base32-encoded env leak to be caught")
 	}
 }
 
-func TestCheckEnvLeakText_URLSafeBase64(t *testing.T) {
+func TestCheckSecretsInText_URLSafeBase64EnvSecret(t *testing.T) {
 	cfg := testConfig()
 	cfg.DLP.ScanEnv = true
 	s := New(cfg)
@@ -424,8 +418,6 @@ func TestCheckEnvLeakText_URLSafeBase64(t *testing.T) {
 
 	// Use a secret that produces different URL-safe vs standard base64
 	secret := "Secret?With>Special+Chars" //nolint:goconst // test value
-	s.envSecrets = []string{secret}
-
 	urlEncoded := base64.URLEncoding.EncodeToString([]byte(secret))
 	stdEncoded := base64.StdEncoding.EncodeToString([]byte(secret))
 
@@ -434,7 +426,7 @@ func TestCheckEnvLeakText_URLSafeBase64(t *testing.T) {
 		t.Skip("URL-safe and standard base64 encodings are the same for this secret")
 	}
 
-	matches := s.checkEnvLeakText("data: " + urlEncoded)
+	matches := s.checkSecretsInText([]string{secret}, "data: "+urlEncoded, "Environment Variable Leak", "env")
 	if len(matches) == 0 {
 		t.Error("expected URL-safe base64-encoded env leak to be caught")
 	}

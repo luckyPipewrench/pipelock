@@ -2291,7 +2291,7 @@ func TestDedupSecrets_NoOverlap(t *testing.T) {
 	}
 }
 
-// --- checkFileSecretLeak Tests ---
+// --- File Secret URL Scanning Tests ---
 
 func TestScan_BlocksFileSecretInURL(t *testing.T) {
 	dir := t.TempDir()

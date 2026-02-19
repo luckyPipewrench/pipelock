@@ -95,10 +95,10 @@ func (s *Scanner) ScanTextForDLP(text string) TextDLPResult {
 	}
 
 	// Check for env secret leaks (raw + encoded forms).
-	matches = append(matches, s.checkEnvLeakText(cleaned)...)
+	matches = append(matches, s.checkSecretsInText(s.envSecrets, cleaned, "Environment Variable Leak", "env")...)
 
 	// Check for file secret leaks (raw + encoded forms).
-	matches = append(matches, s.checkFileSecretLeakText(cleaned)...)
+	matches = append(matches, s.checkSecretsInText(s.fileSecrets, cleaned, "Known Secret Leak", "")...)
 
 	// Deduplicate matches by pattern name + encoding.
 	matches = deduplicateMatches(matches)
@@ -130,18 +130,10 @@ func (s *Scanner) matchDLPPatterns(text, encoding string) []TextDLPMatch {
 	return matches
 }
 
-func (s *Scanner) checkEnvLeakText(text string) []TextDLPMatch {
-	return s.checkSecretsInText(s.envSecrets, text, "Environment Variable Leak", "critical", "env")
-}
-
-func (s *Scanner) checkFileSecretLeakText(text string) []TextDLPMatch {
-	return s.checkSecretsInText(s.fileSecrets, text, "Known Secret Leak", "critical", "")
-}
-
-// checkSecretsInText is the shared implementation for env and file secret text scanning.
+// checkSecretsInText scans text for leaked secrets (env vars or file-based).
 // If encodedOverride is non-empty, all matches use that as the Encoded field (e.g. "env").
 // Otherwise, the actual encoding label from matchSecretEncodings is used.
-func (s *Scanner) checkSecretsInText(secrets []string, text, patternName, severity, encodedOverride string) []TextDLPMatch {
+func (s *Scanner) checkSecretsInText(secrets []string, text, patternName, encodedOverride string) []TextDLPMatch {
 	if len(secrets) == 0 {
 		return nil
 	}
@@ -151,7 +143,7 @@ func (s *Scanner) checkSecretsInText(secrets []string, text, patternName, severi
 
 	for _, secret := range secrets {
 		if matched, enc := matchSecretEncodings(secret, texts, lowerTexts); matched {
-			m := TextDLPMatch{PatternName: patternName, Severity: severity}
+			m := TextDLPMatch{PatternName: patternName, Severity: "critical"}
 			if encodedOverride != "" {
 				m.Encoded = encodedOverride
 			} else {

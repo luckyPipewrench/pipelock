@@ -513,12 +513,12 @@ func (s *Scanner) checkDLP(parsed *url.URL) Result {
 	}
 
 	// Check for environment variable leaks
-	if result := s.checkEnvLeak(parsed); !result.Allowed {
+	if result := s.checkSecretsInURL(s.envSecrets, parsed, "environment variable leak detected"); !result.Allowed {
 		return result
 	}
 
 	// Check for known file secret leaks
-	if result := s.checkFileSecretLeak(parsed); !result.Allowed {
+	if result := s.checkSecretsInURL(s.fileSecrets, parsed, "known secret leak detected"); !result.Allowed {
 		return result
 	}
 
@@ -617,18 +617,7 @@ func nextCombination(indices []int, n int) bool {
 	return false
 }
 
-// checkEnvLeak scans for environment variable values in the URL.
-// Checks both raw and base64-encoded versions to catch common exfiltration patterns.
-// Never logs the actual secret values to prevent accidental exposure.
-func (s *Scanner) checkEnvLeak(parsed *url.URL) Result {
-	return s.checkSecretsInURL(s.envSecrets, parsed, "environment variable leak detected")
-}
-
-func (s *Scanner) checkFileSecretLeak(parsed *url.URL) Result {
-	return s.checkSecretsInURL(s.fileSecrets, parsed, "known secret leak detected")
-}
-
-// checkSecretsInURL is the shared implementation for env and file secret URL scanning.
+// checkSecretsInURL scans a URL for leaked secrets (env vars or file-based).
 // It URL-decodes, strips control chars, and checks all encoded forms of each secret.
 func (s *Scanner) checkSecretsInURL(secrets []string, parsed *url.URL, reasonPrefix string) Result {
 	if len(secrets) == 0 {

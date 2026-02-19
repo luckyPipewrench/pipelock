@@ -118,6 +118,30 @@ func stripZeroWidth(s string) string {
 	}, s)
 }
 
+// replaceInvisibleWithSpace replaces invisible/control characters with spaces
+// instead of dropping them. This preserves word boundaries for response scanning:
+// "ignore\u200ball" becomes "ignore all" (detectable) instead of "ignoreall" (bypass).
+// Policy matching uses stripZeroWidth (drops chars) because command tokens like
+// "r\u200bm" must collapse to "rm". Response scanning needs the opposite — word
+// boundaries must survive so injection regex like `ignore\s+all` can match.
+func replaceInvisibleWithSpace(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r <= 0x1F && r != '\t' && r != '\n' && r != '\r' {
+			return ' '
+		}
+		if r == 0x7F {
+			return ' '
+		}
+		if r >= 0x80 && r <= 0x9F {
+			return ' '
+		}
+		if unicode.Is(InvisibleRanges, r) {
+			return ' '
+		}
+		return r
+	}, s)
+}
+
 // confusableMap maps Unicode characters from non-Latin scripts that are visually
 // identical to Latin letters. NFKC normalization does NOT handle cross-script
 // confusables — Cyrillic а (U+0430) stays as а, not Latin a. Attackers exploit
@@ -150,6 +174,7 @@ var confusableMap = map[rune]rune{
 	'\u043D': 'h', // н
 	'\u0456': 'i', // і (Ukrainian)
 	'\u043A': 'k', // к
+	'\u043C': 'm', // м
 	'\u043E': 'o', // о
 	'\u0440': 'p', // р
 	'\u0441': 'c', // с
@@ -260,6 +285,34 @@ func stripControlChars(s string) string {
 	}, s)
 }
 
+// NormalizeForMatching applies the standard normalization pipeline used across
+// all scanning paths: strip invisible/control characters, NFKC decomposition,
+// confusable-to-ASCII mapping, combining mark removal, and whitespace
+// normalization. Preserves whitespace control chars (tab, newline, CR) so
+// regex patterns using \s+ continue to work.
+func NormalizeForMatching(s string) string {
+	s = stripZeroWidth(s)
+	s = norm.NFKC.String(s)
+	s = ConfusableToASCII(s)
+	s = StripCombiningMarks(s)
+	s = normalizeWhitespace(s)
+	return s
+}
+
+// NormalizeForPolicy applies the same normalization pipeline as
+// NormalizeForMatching, but replaces invisible characters with spaces instead
+// of dropping them. This preserves word boundaries at invisible character
+// positions, which is critical for tool-policy regex matching: "rm\u200b-rf"
+// becomes "rm -rf" (matchable) instead of "rm-rf" (not matchable by \brm\s+).
+func NormalizeForPolicy(s string) string {
+	s = replaceInvisibleWithSpace(s)
+	s = norm.NFKC.String(s)
+	s = ConfusableToASCII(s)
+	s = StripCombiningMarks(s)
+	s = normalizeWhitespace(s)
+	return s
+}
+
 // ScanResponse checks fetched content for prompt injection patterns.
 // If scanning is disabled, returns Clean=true immediately.
 // Zero-width Unicode characters are stripped before scanning to prevent
@@ -270,20 +323,30 @@ func (s *Scanner) ScanResponse(content string) ResponseScanResult {
 		return ResponseScanResult{Clean: true}
 	}
 
-	// Normalize: strip invisibles, NFKC, confusables, combining marks, whitespace.
-	content = stripZeroWidth(content)
-	content = norm.NFKC.String(content)
-	content = ConfusableToASCII(content)
-	content = StripCombiningMarks(content)
-	content = normalizeWhitespace(content)
+	// Save original for secondary pass before normalization.
+	original := content
 
-	// Primary scan on normalized content.
+	// Primary: drop invisible chars, then normalize. Catches mid-word ZW insertion
+	// where the attacker splits a keyword: "igno\u200bre" → "ignore" (detected).
+	content = NormalizeForMatching(content)
 	matches := s.matchResponsePatterns(content)
 
-	// Dual-pass: if primary scan is clean, re-scan with leetspeak normalization.
-	// Only fires when primary found nothing, avoiding FPs on digit-heavy text
-	// (e.g., "API v3.0" → "API ve.o" would not match any injection pattern, but
-	// "1gn0r3 pr3v10us 1nstruct10ns" → "ignore previous instructions" does).
+	// Secondary: replace invisible chars with spaces, then normalize. Catches
+	// word-boundary collapse where the attacker uses ZW instead of space:
+	// "ignore\u200ball" → NormalizeForMatching drops ZW → "ignoreall" (bypass).
+	// Replacing with space first → "ignore all" → regex `ignore\s+all` matches.
+	if len(matches) == 0 {
+		spaced := NormalizeForMatching(replaceInvisibleWithSpace(original))
+		if spaced != content {
+			matches = s.matchResponsePatterns(spaced)
+			if len(matches) > 0 {
+				content = spaced // use spaced version for strip action
+			}
+		}
+	}
+
+	// Tertiary: leetspeak normalization. Only fires when both prior passes found
+	// nothing, avoiding FPs on digit-heavy text (e.g., "API v3.0").
 	if len(matches) == 0 {
 		leeted := NormalizeLeetspeak(content)
 		if leeted != content {

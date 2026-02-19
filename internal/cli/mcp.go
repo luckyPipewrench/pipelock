@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os/signal"
 	"syscall"
 
@@ -83,9 +84,10 @@ Examples:
 
 func mcpProxyCmd() *cobra.Command {
 	var configFile string
+	var upstreamURL string
 
 	cmd := &cobra.Command{
-		Use:   "proxy [flags] -- COMMAND [ARGS...]",
+		Use:   "proxy [flags] [-- COMMAND [ARGS...]]",
 		Short: "Proxy an MCP server, scanning responses for prompt injection",
 		Long: `Launches an MCP server subprocess and proxies its stdio transport with
 bidirectional scanning:
@@ -99,11 +101,15 @@ Request action is controlled by mcp_input_scanning.action (warn/block).
 Input scanning is auto-enabled unless explicitly configured in your config file.
 Use this as a drop-in wrapper in your MCP client configuration.
 
-Examples:
+Subprocess (stdio) mode:
   pipelock mcp proxy -- npx @modelcontextprotocol/server-filesystem /tmp
   pipelock mcp proxy --config pipelock.yaml -- python my_server.py
 
-Claude Desktop config:
+HTTP transport mode:
+  pipelock mcp proxy --upstream http://localhost:8080/mcp
+  pipelock mcp proxy --upstream https://mcp.example.com/v1 --config pipelock.yaml
+
+Claude Desktop config (local subprocess):
   {
     "mcpServers": {
       "filesystem": {
@@ -111,13 +117,37 @@ Claude Desktop config:
         "args": ["mcp", "proxy", "--", "npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
       }
     }
+  }
+
+Claude Desktop config (remote server):
+  {
+    "mcpServers": {
+      "remote": {
+        "command": "pipelock",
+        "args": ["mcp", "proxy", "--upstream", "http://host.docker.internal:8080/mcp"]
+      }
+    }
   }`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dashIdx := cmd.ArgsLenAtDash()
-			if dashIdx < 0 || dashIdx >= len(args) {
-				return errors.New("no MCP server command specified (use -- to separate)")
+			hasSubprocess := dashIdx >= 0 && dashIdx < len(args)
+			hasUpstream := upstreamURL != ""
+
+			// Mutual exclusion validation.
+			if hasUpstream && hasSubprocess {
+				return errors.New("--upstream and subprocess command (--) are mutually exclusive")
 			}
-			serverCmd := args[dashIdx:]
+			if !hasUpstream && !hasSubprocess {
+				return errors.New("specify --upstream URL or -- COMMAND [ARGS...]")
+			}
+
+			// Validate upstream URL scheme.
+			if hasUpstream {
+				u, err := url.Parse(upstreamURL)
+				if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+					return fmt.Errorf("invalid upstream URL %q: must be http:// or https:// with a host", upstreamURL)
+				}
+			}
 
 			cfg, err := loadConfigOrDefault(configFile)
 			if err != nil {
@@ -192,14 +222,22 @@ Claude Desktop config:
 			if policyCfg != nil {
 				policyAction = policyCfg.Action
 			}
+			if hasUpstream {
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: proxying upstream %s (response=%s, input=%s, tools=%s, policy=%s)\n",
+					upstreamURL, sc.ResponseAction(), inputCfg.Action, toolAction, policyAction)
+
+				ctx, cancel := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
+				defer cancel()
+
+				return mcp.RunHTTPProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, sc, approver, nil, inputCfg, toolCfg, policyCfg)
+			}
+
+			// Subprocess mode.
+			serverCmd := args[dashIdx:]
 			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: proxying MCP server %v (response=%s, input=%s, tools=%s, policy=%s)\n",
 				serverCmd, sc.ResponseAction(), inputCfg.Action, toolAction, policyAction)
 
-			ctx, cancel := signal.NotifyContext(
-				cmd.Context(),
-				syscall.SIGINT,
-				syscall.SIGTERM,
-			)
+			ctx, cancel := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 			defer cancel()
 
 			return mcp.RunProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), serverCmd, sc, approver, inputCfg, toolCfg, policyCfg)
@@ -207,5 +245,6 @@ Claude Desktop config:
 	}
 
 	cmd.Flags().StringVarP(&configFile, "config", "c", "", "config file path")
+	cmd.Flags().StringVar(&upstreamURL, "upstream", "", "upstream MCP server URL (Streamable HTTP transport)")
 	return cmd
 }

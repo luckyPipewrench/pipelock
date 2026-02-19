@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- MCP Streamable HTTP transport: `pipelock mcp proxy --upstream <url>` bridges stdio clients to remote MCP servers over HTTP
+- SSE reader for parsing Server-Sent Events responses from HTTP MCP servers
+- GET SSE stream support for server-initiated messages (notifications, requests)
+- Session lifecycle management (Mcp-Session-Id tracking, DELETE on exit)
+- Full bidirectional scanning on HTTP transport (response injection, input DLP, tool poisoning, tool call policy)
+
 ## [0.2.3] - 2026-02-16
 
 ### Added

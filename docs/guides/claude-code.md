@@ -25,13 +25,18 @@ Server responses are scanned for prompt injection before forwarding to the clien
 Tool descriptions are scanned for poisoned instructions and tracked for rug-pull changes.
 
 ```text
+# Local subprocess (stdio)
 Claude Code  <-->  pipelock mcp proxy  <-->  MCP Server
   (client)         (scan both directions)     (subprocess)
+
+# Remote server (Streamable HTTP)
+Claude Code  <-->  pipelock mcp proxy --upstream  <-->  Remote MCP Server
+  (client)         (scan both directions)                (HTTP)
 ```
 
 ### How It Works
 
-1. Pipelock starts the MCP server as a child process
+1. Pipelock starts the MCP server as a child process (or connects to `--upstream` URL)
 2. Client requests (stdin) are scanned for DLP patterns, env leaks, and injection
 3. Clean requests are forwarded; flagged requests are blocked or warned per config
 4. Server responses (stdout) are scanned line-by-line for injection patterns
@@ -116,6 +121,31 @@ Wrap each MCP server independently:
   }
 }
 ```
+
+### Remote MCP Servers (Streamable HTTP)
+
+For MCP servers accessible over HTTP (e.g., hosted services, Docker containers),
+use `--upstream` instead of `--`:
+
+```json
+{
+  "mcpServers": {
+    "remote-tools": {
+      "command": "pipelock",
+      "args": [
+        "mcp", "proxy",
+        "--config", "pipelock.yaml",
+        "--upstream", "http://localhost:8080/mcp"
+      ]
+    }
+  }
+}
+```
+
+Pipelock bridges Claude Code's stdio transport to the upstream HTTP server,
+applying the same bidirectional scanning as subprocess mode. Session IDs are
+tracked automatically, and a GET SSE stream is opened for server-initiated
+messages when the server supports it.
 
 ## HTTP Fetch Proxy Mode
 

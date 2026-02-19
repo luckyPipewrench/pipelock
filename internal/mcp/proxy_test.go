@@ -505,7 +505,7 @@ func TestBlockResponse_Structure(t *testing.T) {
 	if err := json.Unmarshal(data, &resp); err != nil {
 		t.Fatalf("not valid JSON: %v", err)
 	}
-	if resp.JSONRPC != "2.0" {
+	if resp.JSONRPC != "2.0" { //nolint:goconst // test assertion
 		t.Errorf("jsonrpc = %q, want 2.0", resp.JSONRPC)
 	}
 	if string(resp.ID) != "99" {

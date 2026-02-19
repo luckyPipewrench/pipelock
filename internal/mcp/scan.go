@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -112,6 +113,19 @@ func ExtractText(raw json.RawMessage) string {
 	return ""
 }
 
+// sortedKeys returns the keys of a map in sorted order. Used by JSON extraction
+// functions to ensure deterministic iteration — Go map order is random, so
+// split-secret concat scanning would miss secrets nondeterministically without
+// stable ordering.
+func sortedKeys(m map[string]interface{}) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 // extractStringsFromJSON recursively extracts all string values from arbitrary JSON.
 // Only extracts values (not keys) to avoid false positives from field names.
 func extractStringsFromJSON(raw json.RawMessage) []string {
@@ -126,8 +140,8 @@ func extractStringsFromJSON(raw json.RawMessage) []string {
 				extract(item)
 			}
 		case map[string]interface{}:
-			for _, item := range val {
-				extract(item)
+			for _, k := range sortedKeys(val) {
+				extract(val[k])
 			}
 		}
 	}

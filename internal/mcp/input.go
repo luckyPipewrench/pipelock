@@ -44,9 +44,9 @@ func extractAllStringsFromJSON(raw json.RawMessage) []string {
 				extract(item)
 			}
 		case map[string]interface{}:
-			for k, item := range val {
+			for _, k := range sortedKeys(val) {
 				result = append(result, k) // Extract keys too.
-				extract(item)
+				extract(val[k])
 			}
 		}
 	}
@@ -103,17 +103,12 @@ func ScanRequest(line []byte, sc *scanner.Scanner, action, onParseError string) 
 		// Run DLP on joined strings first (catches raw patterns).
 		dlpResult := sc.ScanTextForDLP(joined)
 
-		// Also scan concatenated (no separator) to catch split secrets.
-		if dlpResult.Clean && len(strs) > 0 {
-			concat := strings.Join(strs, "")
-			if concat != joined {
-				dlpResult = sc.ScanTextForDLP(concat)
-			}
-		}
+		// Catch secrets split across multiple JSON fields.
+		dlpResult = scanSplitSecret(trimmed, joined, sc, dlpResult)
 
-		// Scan each extracted string individually for encoded secrets.
-		// The joined string is not valid base64/hex, so encoding checks
-		// only work on individual field values.
+		// Scan each extracted string individually for encoded secrets
+		// (base64, hex). The joined string is not valid base64/hex as a
+		// unit, so encoding checks only work on individual field values.
 		if dlpResult.Clean {
 			for _, s := range strs {
 				if r := sc.ScanTextForDLP(s); !r.Clean {
@@ -175,17 +170,11 @@ func ScanRequest(line []byte, sc *scanner.Scanner, action, onParseError string) 
 	// Run DLP patterns + env leak checks.
 	dlpResult := sc.ScanTextForDLP(joined)
 
-	// Also scan concatenated strings (no separator) to catch secrets
-	// split across multiple JSON fields (e.g. "part1":"sk-ant-", "part2":"aaaa...").
-	if dlpResult.Clean {
-		concat := strings.Join(strs, "")
-		if concat != joined {
-			dlpResult = sc.ScanTextForDLP(concat)
-		}
-	}
+	// Catch secrets split across multiple JSON fields.
+	dlpResult = scanSplitSecret(rpc.Params, joined, sc, dlpResult)
 
 	// Scan each extracted string individually for encoded secrets (base64,
-	// hex, base32). The joined string is not valid base64/hex, so encoding
+	// hex). The joined string is not valid base64/hex as a unit, so encoding
 	// checks only work on individual field values.
 	if dlpResult.Clean {
 		for _, s := range strs {
@@ -236,13 +225,8 @@ func scanRawBeforeForward(raw []byte, sc *scanner.Scanner, action string) InputV
 
 	dlpResult := sc.ScanTextForDLP(joined)
 
-	// Scan concatenated (no separator) to catch split secrets.
-	if dlpResult.Clean && len(strs) > 0 {
-		concat := strings.Join(strs, "")
-		if concat != joined {
-			dlpResult = sc.ScanTextForDLP(concat)
-		}
-	}
+	// Catch secrets split across multiple JSON fields.
+	dlpResult = scanSplitSecret(raw, joined, sc, dlpResult)
 
 	// Scan each extracted string individually for encoded secrets.
 	if dlpResult.Clean {
@@ -459,8 +443,8 @@ func ForwardScannedInput(
 		errCode := 0 // default: -32001 (content scan)
 		errMsg := "" // default message
 		if isPolicyOnly {
-			errCode = -32002 // policy-specific error code
-			errMsg = "pipelock: request blocked by tool call policy"
+			errCode = -32002                                         // policy-specific error code
+			errMsg = "pipelock: request blocked by tool call policy" //nolint:goconst // shared error message with proxy_http.go
 		}
 
 		switch effectiveAction {
@@ -474,7 +458,7 @@ func ForwardScannedInput(
 				ErrorCode:      errCode,
 				ErrorMessage:   errMsg,
 			}
-		case "ask":
+		case "ask": //nolint:goconst // config action value
 			// HITL for input scanning is impractical — fall back to block.
 			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked %s request (%s) [ask not supported for input scanning]\n",
 				lineNum, method, reasonStr)
@@ -500,4 +484,24 @@ func ForwardScannedInput(
 // joinStrings joins strings with newline separator, matching ExtractText pattern.
 func joinStrings(ss []string) string {
 	return strings.Join(ss, "\n")
+}
+
+// scanSplitSecret checks for secrets split across multiple JSON fields by
+// concatenating values without separators. Keys are excluded (via
+// extractStringsFromJSON, not extractAllStringsFromJSON) because interleaved
+// keys break DLP regex adjacency. Returns the original result if clean or if
+// concat adds no new information.
+func scanSplitSecret(raw json.RawMessage, joined string, sc *scanner.Scanner, result scanner.TextDLPResult) scanner.TextDLPResult {
+	if !result.Clean {
+		return result
+	}
+	vals := extractStringsFromJSON(raw)
+	if len(vals) <= 1 {
+		return result
+	}
+	concat := strings.Join(vals, "")
+	if concat == joined {
+		return result
+	}
+	return sc.ScanTextForDLP(concat)
 }

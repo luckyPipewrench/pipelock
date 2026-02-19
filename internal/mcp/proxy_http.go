@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -53,6 +54,7 @@ func RunHTTPProxy(
 
 	var wg sync.WaitGroup
 	var getStreamOnce sync.Once
+	var lastScanErr error
 
 	for {
 		msg, err := clientReader.ReadMessage()
@@ -74,7 +76,9 @@ func RunHTTPProxy(
 		if blocked := scanHTTPInput(msg, sc, safeLogW, inputCfg, policyCfg); blocked != nil {
 			if !blocked.IsNotification {
 				resp := blockRequestResponse(*blocked)
-				_ = safeClientOut.WriteMessage(resp) //nolint:errcheck // best-effort
+				if wErr := safeClientOut.WriteMessage(resp); wErr != nil {
+					_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send block response: %v\n", wErr)
+				}
 			}
 			continue
 		}
@@ -82,11 +86,14 @@ func RunHTTPProxy(
 		// POST to upstream.
 		respReader, err := httpClient.SendMessage(ctx, msg)
 		if err != nil {
+			// Log full upstream error details to stderr for debugging.
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream error: %v\n", err)
+			// Send sanitized error to client — don't include upstream body content
+			// which could contain prompt injection payloads.
 			rpcID := extractRPCID(msg)
-			if rpcID != nil {
-				errResp := upstreamErrorResponse(rpcID, err)
-				_ = safeClientOut.WriteMessage(errResp) //nolint:errcheck // best-effort
+			errResp := upstreamErrorResponse(rpcID, fmt.Errorf("upstream HTTP request failed"))
+			if wErr := safeClientOut.WriteMessage(errResp); wErr != nil {
+				_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send error response: %v\n", wErr)
 			}
 			continue
 		}
@@ -95,26 +102,30 @@ func RunHTTPProxy(
 		_, scanErr := ForwardScanned(respReader, safeClientOut, safeLogW, sc, approver, fwdToolCfg)
 		if scanErr != nil {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
+			lastScanErr = scanErr
 		}
 
-		// After first successful response, start GET stream for server-initiated messages.
-		getStreamOnce.Do(func() {
-			if sid := httpClient.SessionID(); sid != "" {
+		// After first successful response with a session ID, start GET stream
+		// for server-initiated messages. Check session ID OUTSIDE the Once so
+		// that early responses without a session ID (e.g. 202) don't consume
+		// the Once and permanently prevent the GET stream.
+		if httpClient.SessionID() != "" {
+			getStreamOnce.Do(func() {
 				startGETStream(ctx, httpClient, safeClientOut, safeLogW, sc, approver, fwdToolCfg, &wg)
-			}
-		})
+			})
+		}
 	}
 
 	// Terminate session if established.
 	if httpClient.SessionID() != "" {
-		httpClient.DeleteSession()
+		httpClient.DeleteSession(safeLogW)
 	}
 
 	// Stop GET stream and wait for it to finish.
 	cancel()
 	wg.Wait()
 
-	return nil
+	return lastScanErr
 }
 
 // scanHTTPInput checks a single input message for DLP/injection/policy.
@@ -219,13 +230,14 @@ func extractRPCID(msg []byte) json.RawMessage {
 	if json.Unmarshal(msg, &rpc) != nil {
 		return nil
 	}
-	if string(rpc.ID) == "null" || len(rpc.ID) == 0 {
+	if string(rpc.ID) == jsonNull || len(rpc.ID) == 0 {
 		return nil
 	}
 	return rpc.ID
 }
 
 // upstreamErrorResponse creates a JSON-RPC error for HTTP transport failures.
+// If id is nil, the response uses a JSON null id (valid for unidentifiable requests).
 func upstreamErrorResponse(id json.RawMessage, upstreamErr error) []byte {
 	resp := rpcError{
 		JSONRPC: jsonRPCVersion,
@@ -241,7 +253,9 @@ func upstreamErrorResponse(id json.RawMessage, upstreamErr error) []byte {
 
 // startGETStream maintains a background GET SSE connection for server-initiated
 // messages. Called after the initialize handshake establishes a session ID.
-// Reconnects with exponential backoff (1s base, 30s cap) on stream end.
+// Reconnects with exponential backoff (1s base, 30s cap) on stream end or
+// transient errors. Exits permanently only on 405 (server doesn't support
+// GET streams) or context cancellation.
 func startGETStream(
 	ctx context.Context,
 	httpClient *HTTPClient,
@@ -269,10 +283,27 @@ func startGETStream(
 			reader, err := httpClient.OpenGETStream(ctx)
 			if err != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: GET stream: %v\n", err)
-				return
+				// 405 = server doesn't support GET streams — permanent, no retry.
+				if strings.Contains(err.Error(), "405") {
+					return
+				}
+				// Transient error — backoff and retry.
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(backoff):
+				}
+				backoff *= 2
+				if backoff > maxBackoff {
+					backoff = maxBackoff
+				}
+				continue
 			}
 
-			_, _ = ForwardScanned(reader, safeClientOut, safeLogW, sc, approver, toolCfg)
+			_, scanErr := ForwardScanned(reader, safeClientOut, safeLogW, sc, approver, toolCfg)
+			if scanErr != nil {
+				_, _ = fmt.Fprintf(safeLogW, "pipelock: GET stream scan error: %v\n", scanErr)
+			}
 
 			// Stream ended — reconnect with backoff unless cancelled.
 			select {

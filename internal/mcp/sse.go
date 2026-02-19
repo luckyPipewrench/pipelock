@@ -71,14 +71,15 @@ func (sr *SSEReader) ReadMessage() ([]byte, error) {
 		}
 	}
 
-	// Stream ended — if we have accumulated data, return it.
+	// Stream ended — check for scanner errors before returning partial data.
+	// A partial event (data accumulated without a blank-line boundary) during
+	// a scanner error means the event was interrupted mid-stream.
+	if err := sr.scanner.Err(); err != nil {
+		return nil, err
+	}
 	if hasData {
 		joined := strings.Join(data, "\n")
 		return []byte(joined), nil
-	}
-
-	if err := sr.scanner.Err(); err != nil {
-		return nil, err
 	}
 	return nil, io.EOF
 }

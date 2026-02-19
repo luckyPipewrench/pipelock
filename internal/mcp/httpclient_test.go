@@ -213,3 +213,321 @@ func TestHTTPClient_AuthHeader(t *testing.T) {
 	}
 	drain(t, reader)
 }
+
+func TestHTTPClient_RedirectBlocked(t *testing.T) {
+	// Second server (the redirect target) should never be reached.
+	var targetCalled atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		targetCalled.Add(1)
+		w.Header().Set("Content-Type", "application/json") //nolint:goconst // test value
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+	}))
+	defer target.Close()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusFound)
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(srv.URL, nil)
+	// SendMessage returns the 302 response directly (doesn't follow redirect).
+	// 302 is < 400, so it's treated as a "successful" response with an HTML body.
+	reader, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	drain(t, reader)
+
+	// The critical security property: the target server should NOT be contacted.
+	if targetCalled.Load() != 0 {
+		t.Error("redirect target was contacted — SSRF vulnerability")
+	}
+}
+
+func TestHTTPClient_HeaderImmutability(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json") //nolint:goconst // test value
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+	}))
+	defer srv.Close()
+
+	headers := http.Header{}
+	headers.Set("X-Custom", "original") //nolint:goconst // test value
+
+	c := NewHTTPClient(srv.URL, headers)
+
+	// Mutate the original headers after construction.
+	headers.Set("X-Custom", "mutated")
+
+	// Client should still use the original value.
+	reader, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	drain(t, reader)
+
+	if c.headers.Get("X-Custom") != "original" {
+		t.Errorf("header was mutated: got %q, want %q", c.headers.Get("X-Custom"), "original")
+	}
+}
+
+func TestHTTPClient_ExtraHeadersCannotOverrideTransport(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Extra headers should NOT override Content-Type or Accept.
+		if ct := r.Header.Get("Content-Type"); ct != "application/json" { //nolint:goconst // test value
+			t.Errorf("Content-Type = %q, want application/json (should not be overridden)", ct)
+		}
+		if accept := r.Header.Get("Accept"); accept != "application/json, text/event-stream" { //nolint:goconst // test value
+			t.Errorf("Accept = %q, should not be overridden", accept)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+	}))
+	defer srv.Close()
+
+	headers := http.Header{}
+	headers.Set("Content-Type", "text/plain") //nolint:goconst // test value
+	headers.Set("Accept", "text/html")        //nolint:goconst // test value
+	c := NewHTTPClient(srv.URL, headers)
+	reader, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	drain(t, reader)
+}
+
+func TestHTTPClient_OpenGETStream_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "expected GET", http.StatusMethodNotAllowed)
+			return
+		}
+		if got := r.Header.Get("Accept"); got != "text/event-stream" { //nolint:goconst // test value
+			t.Errorf("Accept = %q, want text/event-stream", got)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"msg\":\"hello\"}\n\n"))
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(srv.URL, nil)
+	reader, err := c.OpenGETStream(context.Background())
+	if err != nil {
+		t.Fatalf("OpenGETStream: %v", err)
+	}
+
+	msg, err := reader.ReadMessage()
+	if err != nil {
+		t.Fatalf("ReadMessage: %v", err)
+	}
+	if string(msg) != `{"msg":"hello"}` {
+		t.Errorf("got %q", string(msg))
+	}
+}
+
+func TestHTTPClient_OpenGETStream_405(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(srv.URL, nil)
+	_, err := c.OpenGETStream(context.Background())
+	if err == nil {
+		t.Fatal("expected error for 405 response")
+	}
+	if !strings.Contains(err.Error(), "405") {
+		t.Errorf("error should mention 405, got: %v", err)
+	}
+}
+
+func TestHTTPClient_OpenGETStream_ErrorWithBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte("invalid session"))
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(srv.URL, nil)
+	_, err := c.OpenGETStream(context.Background())
+	if err == nil {
+		t.Fatal("expected error for 400 response")
+	}
+	if !strings.Contains(err.Error(), "invalid session") {
+		t.Errorf("error should include body, got: %v", err)
+	}
+}
+
+func TestHTTPClient_OpenGETStream_ErrorNoBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(srv.URL, nil)
+	_, err := c.OpenGETStream(context.Background())
+	if err == nil {
+		t.Fatal("expected error for 403 response")
+	}
+	if !strings.Contains(err.Error(), "403") {
+		t.Errorf("error should mention 403, got: %v", err)
+	}
+}
+
+func TestHTTPClient_OpenGETStream_IncludesSessionID(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			w.Header().Set("Mcp-Session-Id", "sess-get-test") //nolint:goconst // test value
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+			return
+		}
+		// GET: verify session ID header.
+		if got := r.Header.Get("Mcp-Session-Id"); got != "sess-get-test" { //nolint:goconst // test value
+			t.Errorf("GET Mcp-Session-Id = %q, want %q", got, "sess-get-test")
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {}\n\n"))
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(srv.URL, nil)
+
+	// Establish session with POST.
+	r, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	drain(t, r)
+
+	// GET should include session ID.
+	reader, err := c.OpenGETStream(context.Background())
+	if err != nil {
+		t.Fatalf("OpenGETStream: %v", err)
+	}
+	drain(t, reader)
+}
+
+func TestHTTPClient_DeleteSession_Success(t *testing.T) {
+	var deleteCalled atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			w.Header().Set("Mcp-Session-Id", "sess-del-test") //nolint:goconst // test value
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+			return
+		}
+		if r.Method == http.MethodDelete {
+			deleteCalled.Add(1)
+			if got := r.Header.Get("Mcp-Session-Id"); got != "sess-del-test" { //nolint:goconst // test value
+				t.Errorf("DELETE Mcp-Session-Id = %q, want %q", got, "sess-del-test")
+			}
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(srv.URL, nil)
+	r, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	drain(t, r)
+
+	var logBuf strings.Builder
+	c.DeleteSession(&logBuf)
+
+	if deleteCalled.Load() != 1 {
+		t.Error("expected DELETE to be called")
+	}
+	if logBuf.Len() != 0 {
+		t.Errorf("unexpected log output: %s", logBuf.String())
+	}
+}
+
+func TestHTTPClient_DeleteSession_NoSession(t *testing.T) {
+	var serverCalled atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		serverCalled.Add(1)
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(srv.URL, nil)
+	c.DeleteSession(nil)
+
+	if serverCalled.Load() != 0 {
+		t.Error("server should not be called when no session exists")
+	}
+}
+
+func TestHTTPClient_DeleteSession_ServerError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			w.Header().Set("Mcp-Session-Id", "sess-err") //nolint:goconst // test value
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(srv.URL, nil)
+	r, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	drain(t, r)
+
+	var logBuf strings.Builder
+	c.DeleteSession(&logBuf)
+
+	if !strings.Contains(logBuf.String(), "500") {
+		t.Errorf("expected 500 in log, got: %s", logBuf.String())
+	}
+}
+
+func TestHTTPClient_SendMessage_EmptyBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json") //nolint:goconst // test value
+		// Empty response body.
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(srv.URL, nil)
+	reader, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+
+	// Empty body should return EOF.
+	_, err = reader.ReadMessage()
+	if !errors.Is(err, io.EOF) {
+		t.Errorf("expected io.EOF for empty body, got %v", err)
+	}
+}
+
+func TestHTTPClient_ClosingSSEReader_DoubleRead(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream") //nolint:goconst // test value
+		_, _ = w.Write([]byte("data: {}\n\n"))
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(srv.URL, nil)
+	reader, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+
+	// Read the event.
+	_, _ = reader.ReadMessage()
+	// Read until EOF.
+	_, _ = reader.ReadMessage()
+	// Subsequent reads after body close should return EOF, not panic.
+	_, err = reader.ReadMessage()
+	if !errors.Is(err, io.EOF) {
+		t.Errorf("expected io.EOF on third read, got %v", err)
+	}
+}

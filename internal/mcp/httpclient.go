@@ -25,12 +25,19 @@ type HTTPClient struct {
 
 // NewHTTPClient creates an HTTPClient that POSTs JSON-RPC messages to url.
 // Extra headers (e.g., Authorization) are sent with every request.
-// If headers is nil, no extra headers are added.
+// If headers is nil, no extra headers are added. Headers are cloned to
+// prevent mutation after construction.
 func NewHTTPClient(url string, headers http.Header) *HTTPClient {
 	return &HTTPClient{
 		url:     url,
-		headers: headers,
-		client:  &http.Client{},
+		headers: headers.Clone(),
+		client: &http.Client{
+			// Disable redirects — the upstream URL is validated at the CLI layer,
+			// and following redirects could bypass that validation (SSRF vector).
+			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 	}
 }
 
@@ -57,15 +64,15 @@ func (c *HTTPClient) SendMessage(ctx context.Context, msg []byte) (MessageReader
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
 
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json, text/event-stream")
-
-	// Copy extra headers (e.g., Authorization).
+	// Apply extra headers first, then set transport-critical headers after
+	// so they cannot be overridden by caller-provided extras.
 	for key, vals := range c.headers {
 		for _, v := range vals {
-			req.Header.Set(key, v)
+			req.Header.Add(key, v)
 		}
 	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
 
 	// Include session ID if established.
 	c.sessionMu.Lock()
@@ -151,15 +158,20 @@ func (r *singleMessageReader) ReadMessage() ([]byte, error) {
 }
 
 // closingSSEReader wraps an SSEReader with the response body so that
-// the body is closed when the SSE stream returns EOF.
+// the body is closed when the SSE stream returns EOF or any error.
 type closingSSEReader struct {
-	sse  *SSEReader
-	body io.ReadCloser
+	sse    *SSEReader
+	body   io.ReadCloser
+	closed bool
 }
 
 func (r *closingSSEReader) ReadMessage() ([]byte, error) {
+	if r.closed {
+		return nil, io.EOF
+	}
 	msg, err := r.sse.ReadMessage()
 	if err != nil {
+		r.closed = true
 		r.body.Close() //nolint:errcheck,gosec // best-effort cleanup on stream end
 		return nil, err
 	}
@@ -174,6 +186,12 @@ func (c *HTTPClient) OpenGETStream(ctx context.Context) (MessageReader, error) {
 	if err != nil {
 		return nil, fmt.Errorf("creating GET request: %w", err)
 	}
+	// Apply extra headers first, then set transport-critical headers after.
+	for key, vals := range c.headers {
+		for _, v := range vals {
+			req.Header.Add(key, v)
+		}
+	}
 	req.Header.Set("Accept", "text/event-stream")
 
 	c.sessionMu.Lock()
@@ -181,12 +199,6 @@ func (c *HTTPClient) OpenGETStream(ctx context.Context) (MessageReader, error) {
 		req.Header.Set("Mcp-Session-Id", c.sessionID)
 	}
 	c.sessionMu.Unlock()
-
-	for key, vals := range c.headers {
-		for _, v := range vals {
-			req.Header.Set(key, v)
-		}
-	}
 
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -198,7 +210,11 @@ func (c *HTTPClient) OpenGETStream(ctx context.Context) (MessageReader, error) {
 		return nil, fmt.Errorf("server does not support GET stream (405)")
 	}
 	if resp.StatusCode >= 400 {
-		resp.Body.Close() //nolint:errcheck,gosec // best-effort cleanup
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024)) //nolint:errcheck // best-effort read
+		resp.Body.Close()                                      //nolint:errcheck,gosec // best-effort cleanup
+		if len(body) > 0 {
+			return nil, fmt.Errorf("GET stream HTTP %d: %s", resp.StatusCode, bytes.TrimSpace(body))
+		}
 		return nil, fmt.Errorf("GET stream returned HTTP %d", resp.StatusCode)
 	}
 
@@ -210,7 +226,8 @@ func (c *HTTPClient) OpenGETStream(ctx context.Context) (MessageReader, error) {
 
 // DeleteSession sends an HTTP DELETE to terminate the MCP session.
 // Uses a 5-second timeout since this is best-effort cleanup.
-func (c *HTTPClient) DeleteSession() {
+// Errors are logged to logW if non-nil.
+func (c *HTTPClient) DeleteSession(logW io.Writer) {
 	c.sessionMu.Lock()
 	sid := c.sessionID
 	c.sessionMu.Unlock()
@@ -223,17 +240,26 @@ func (c *HTTPClient) DeleteSession() {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.url, nil)
 	if err != nil {
+		if logW != nil {
+			_, _ = fmt.Fprintf(logW, "pipelock: session delete: %v\n", err)
+		}
 		return
 	}
-	req.Header.Set("Mcp-Session-Id", sid)
 	for key, vals := range c.headers {
 		for _, v := range vals {
-			req.Header.Set(key, v)
+			req.Header.Add(key, v)
 		}
 	}
+	req.Header.Set("Mcp-Session-Id", sid)
 	resp, err := c.client.Do(req)
 	if err != nil {
+		if logW != nil {
+			_, _ = fmt.Fprintf(logW, "pipelock: session delete: %v\n", err)
+		}
 		return
 	}
 	resp.Body.Close() //nolint:errcheck,gosec // best-effort cleanup
+	if resp.StatusCode >= 400 && logW != nil {
+		_, _ = fmt.Fprintf(logW, "pipelock: session delete: server returned HTTP %d\n", resp.StatusCode)
+	}
 }

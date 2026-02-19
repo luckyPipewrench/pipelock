@@ -459,8 +459,8 @@ func ForwardScannedInput(
 		errCode := 0 // default: -32001 (content scan)
 		errMsg := "" // default message
 		if isPolicyOnly {
-			errCode = -32002 // policy-specific error code
-			errMsg = "pipelock: request blocked by tool call policy"
+			errCode = -32002                                         // policy-specific error code
+			errMsg = "pipelock: request blocked by tool call policy" //nolint:goconst // shared error message with proxy_http.go
 		}
 
 		switch effectiveAction {

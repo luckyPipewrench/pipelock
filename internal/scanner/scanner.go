@@ -704,10 +704,12 @@ func (s *Scanner) checkFileSecretLeak(parsed *url.URL) Result {
 	}
 
 	fullURL := stripControlChars(parsed.String())
+	decodedURL := IterativeDecode(fullURL)
 	lowerURL := strings.ToLower(fullURL)
+	lowerDecoded := strings.ToLower(decodedURL)
 
 	for _, secret := range s.fileSecrets {
-		if strings.Contains(fullURL, secret) {
+		if strings.Contains(fullURL, secret) || strings.Contains(decodedURL, secret) {
 			return Result{
 				Allowed: false,
 				Reason:  "known secret leak detected",
@@ -718,7 +720,8 @@ func (s *Scanner) checkFileSecretLeak(parsed *url.URL) Result {
 
 		encoded := base64.StdEncoding.EncodeToString([]byte(secret))
 		unpaddedStd := strings.TrimRight(encoded, "=")
-		if strings.Contains(fullURL, encoded) || (unpaddedStd != encoded && strings.Contains(fullURL, unpaddedStd)) {
+		if strings.Contains(fullURL, encoded) || strings.Contains(decodedURL, encoded) ||
+			(unpaddedStd != encoded && (strings.Contains(fullURL, unpaddedStd) || strings.Contains(decodedURL, unpaddedStd))) {
 			return Result{
 				Allowed: false,
 				Reason:  "known secret leak detected (base64-encoded)",
@@ -729,8 +732,8 @@ func (s *Scanner) checkFileSecretLeak(parsed *url.URL) Result {
 
 		encodedURL := base64.URLEncoding.EncodeToString([]byte(secret))
 		unpaddedURL := strings.TrimRight(encodedURL, "=")
-		if (encodedURL != encoded && strings.Contains(fullURL, encodedURL)) ||
-			(unpaddedURL != unpaddedStd && strings.Contains(fullURL, unpaddedURL)) {
+		if (encodedURL != encoded && (strings.Contains(fullURL, encodedURL) || strings.Contains(decodedURL, encodedURL))) ||
+			(unpaddedURL != unpaddedStd && (strings.Contains(fullURL, unpaddedURL) || strings.Contains(decodedURL, unpaddedURL))) {
 			return Result{
 				Allowed: false,
 				Reason:  "known secret leak detected (base64url-encoded)",
@@ -740,7 +743,7 @@ func (s *Scanner) checkFileSecretLeak(parsed *url.URL) Result {
 		}
 
 		hexEncoded := hex.EncodeToString([]byte(secret))
-		if strings.Contains(lowerURL, hexEncoded) {
+		if strings.Contains(lowerURL, hexEncoded) || strings.Contains(lowerDecoded, hexEncoded) {
 			return Result{
 				Allowed: false,
 				Reason:  "known secret leak detected (hex-encoded)",
@@ -750,7 +753,7 @@ func (s *Scanner) checkFileSecretLeak(parsed *url.URL) Result {
 		}
 
 		b32Std := base32.StdEncoding.EncodeToString([]byte(secret))
-		if strings.Contains(fullURL, b32Std) {
+		if strings.Contains(fullURL, b32Std) || strings.Contains(decodedURL, b32Std) {
 			return Result{
 				Allowed: false,
 				Reason:  "known secret leak detected (base32-encoded)",
@@ -759,7 +762,7 @@ func (s *Scanner) checkFileSecretLeak(parsed *url.URL) Result {
 			}
 		}
 		b32NoPad := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString([]byte(secret))
-		if b32NoPad != b32Std && strings.Contains(fullURL, b32NoPad) {
+		if b32NoPad != b32Std && (strings.Contains(fullURL, b32NoPad) || strings.Contains(decodedURL, b32NoPad)) {
 			return Result{
 				Allowed: false,
 				Reason:  "known secret leak detected (base32-encoded)",

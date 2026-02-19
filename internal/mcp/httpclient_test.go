@@ -445,6 +445,10 @@ func TestHTTPClient_DeleteSession_Success(t *testing.T) {
 	if logBuf.Len() != 0 {
 		t.Errorf("unexpected log output: %s", logBuf.String())
 	}
+	// Session ID should be cleared after successful delete.
+	if c.SessionID() != "" {
+		t.Errorf("sessionID should be cleared after delete, got %q", c.SessionID())
+	}
 }
 
 func TestHTTPClient_DeleteSession_NoSession(t *testing.T) {

@@ -278,6 +278,14 @@ func (c *HTTPClient) DeleteSession(logW io.Writer) {
 		return
 	}
 	resp.Body.Close() //nolint:errcheck,gosec // best-effort cleanup
+
+	// Clear session ID unconditionally — even if the server returned an error,
+	// the session should not be reused (prevents stale Mcp-Session-Id headers
+	// on subsequent requests if reconnection occurs).
+	c.sessionMu.Lock()
+	c.sessionID = ""
+	c.sessionMu.Unlock()
+
 	if resp.StatusCode >= 400 && logW != nil {
 		_, _ = fmt.Fprintf(logW, "pipelock: session delete: server returned HTTP %d\n", resp.StatusCode)
 	}

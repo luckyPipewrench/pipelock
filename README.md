@@ -511,7 +511,7 @@ Details, config examples, and gap analysis: [docs/owasp-mapping.md](docs/owasp-m
 
 </details>
 
-```
+```text
 cmd/pipelock/          CLI entry point
 internal/
   cli/                 Cobra commands (run, check, generate, logs, git, integrity, mcp,

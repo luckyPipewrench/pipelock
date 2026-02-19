@@ -134,6 +134,7 @@ type Monitoring struct {
 // DLP configures data loss prevention scanning.
 type DLP struct {
 	ScanEnv            bool         `yaml:"scan_env"`
+	SecretsFile        string       `yaml:"secrets_file"`
 	MinEnvSecretLength int          `yaml:"min_env_secret_length"` // minimum env var length for leak detection (default 16)
 	Patterns           []DLPPattern `yaml:"patterns"`
 }
@@ -169,6 +170,11 @@ func Load(path string) (*Config, error) {
 	}
 
 	cfg.ApplyDefaults()
+
+	// Resolve relative secrets_file path relative to config file directory.
+	if cfg.DLP.SecretsFile != "" && !filepath.IsAbs(cfg.DLP.SecretsFile) {
+		cfg.DLP.SecretsFile = filepath.Join(filepath.Dir(path), cfg.DLP.SecretsFile)
+	}
 
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
@@ -292,6 +298,17 @@ func (c *Config) Validate() error {
 		}
 		if _, err := regexp.Compile(p.Regex); err != nil {
 			return fmt.Errorf("DLP pattern %q has invalid regex: %w", p.Name, err)
+		}
+	}
+
+	// Validate secrets_file if configured
+	if c.DLP.SecretsFile != "" {
+		info, err := os.Stat(c.DLP.SecretsFile)
+		if err != nil {
+			return fmt.Errorf("secrets_file %q: %w", c.DLP.SecretsFile, err)
+		}
+		if info.Mode().Perm()&0o004 != 0 {
+			return fmt.Errorf("secrets_file %q is world-readable (mode %04o): restrict to 0600", c.DLP.SecretsFile, info.Mode().Perm())
 		}
 	}
 
@@ -508,6 +525,22 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 			Field:   "mcp_tool_policy.rules",
 			Message: fmt.Sprintf("tool policy rules reduced from %d to %d", len(old.MCPToolPolicy.Rules), len(updated.MCPToolPolicy.Rules)),
 		})
+	}
+
+	// Secrets file changed or removed (security-relevant)
+	if old.DLP.SecretsFile != updated.DLP.SecretsFile {
+		if updated.DLP.SecretsFile == "" {
+			warnings = append(warnings, ReloadWarning{
+				Field:   "dlp.secrets_file",
+				Message: "secrets_file removed — known secret scanning disabled",
+			})
+		} else if old.DLP.SecretsFile != "" {
+			warnings = append(warnings, ReloadWarning{
+				Field: "dlp.secrets_file",
+				Message: fmt.Sprintf("secrets_file changed from %q to %q — secrets will be reloaded",
+					old.DLP.SecretsFile, updated.DLP.SecretsFile),
+			})
+		}
 	}
 
 	return warnings

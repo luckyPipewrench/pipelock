@@ -212,6 +212,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide. Summary:
 - Table-driven tests where applicable
 - Readability over cleverness
 - No stutter: `proxy.Option` not `proxy.ProxyOption` (revive linter)
+- **DRY enforcement**: When adding a new function that mirrors an existing one (same loop, same encoding checks, different inputs/outputs), extract a shared helper immediately — don't copy-paste and diverge. If you see parallel functions doing the same work with different labels, refactor first, then add the new variant as a thin wrapper.
 
 ### Security
 

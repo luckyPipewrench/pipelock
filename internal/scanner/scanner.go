@@ -4,6 +4,7 @@
 package scanner
 
 import (
+	"bufio"
 	"context"
 	"encoding/base32"
 	"encoding/base64"
@@ -42,6 +43,7 @@ type Scanner struct {
 	rateLimiter      *RateLimiter
 	dataBudget       *DataBudget
 	envSecrets       []string // filtered high-entropy env var values
+	fileSecrets      []string // loaded from secrets_file config
 	minEnvSecretLen  int      // minimum env var length for leak detection
 	responsePatterns []*compiledPattern
 	responseAction   string
@@ -120,6 +122,20 @@ func New(cfg *config.Config) *Scanner {
 	// Extract high-entropy environment variables for leak detection
 	if cfg.DLP.ScanEnv {
 		s.envSecrets = extractEnvSecrets(s.minEnvSecretLen)
+	}
+
+	// Load explicit secrets from secrets file
+	if cfg.DLP.SecretsFile != "" {
+		fileSecrets, err := loadSecretsFile(cfg.DLP.SecretsFile, s.minEnvSecretLen)
+		if err != nil {
+			panic(fmt.Sprintf("BUG: secrets file %q failed after validation: %v",
+				cfg.DLP.SecretsFile, err))
+		}
+		s.fileSecrets = dedupSecrets(fileSecrets, s.envSecrets)
+		if len(s.fileSecrets) == 0 {
+			fmt.Fprintf(os.Stderr, "pipelock: warning: secrets_file %q yielded zero usable secrets\n",
+				cfg.DLP.SecretsFile)
+		}
 	}
 
 	// Compile response scanning patterns — must succeed since config.Validate checks these
@@ -497,7 +513,12 @@ func (s *Scanner) checkDLP(parsed *url.URL) Result {
 	}
 
 	// Check for environment variable leaks
-	if result := s.checkEnvLeak(parsed); !result.Allowed {
+	if result := s.checkSecretsInURL(s.envSecrets, parsed, "environment variable leak detected"); !result.Allowed {
+		return result
+	}
+
+	// Check for known file secret leaks
+	if result := s.checkSecretsInURL(s.fileSecrets, parsed, "known secret leak detected"); !result.Allowed {
 		return result
 	}
 
@@ -596,83 +617,81 @@ func nextCombination(indices []int, n int) bool {
 	return false
 }
 
-// checkEnvLeak scans for environment variable values in the URL.
-// Checks both raw and base64-encoded versions to catch common exfiltration patterns.
-// Never logs the actual secret values to prevent accidental exposure.
-func (s *Scanner) checkEnvLeak(parsed *url.URL) Result {
-	if len(s.envSecrets) == 0 {
+// checkSecretsInURL scans a URL for leaked secrets (env vars or file-based).
+// It URL-decodes, strips control chars, and checks all encoded forms of each secret.
+func (s *Scanner) checkSecretsInURL(secrets []string, parsed *url.URL, reasonPrefix string) Result {
+	if len(secrets) == 0 {
 		return Result{Allowed: true}
 	}
 
-	// Strip ALL control chars to prevent bypass via URL-encoded control chars
-	// (e.g., %00 null byte, %08 backspace breaking substring match).
 	fullURL := stripControlChars(parsed.String())
-	// Pre-compute lowercase for case-insensitive hex comparison.
-	lowerURL := strings.ToLower(fullURL)
+	decodedURL := stripControlChars(IterativeDecode(fullURL))
+	texts := []string{fullURL, decodedURL}
+	lowerTexts := []string{strings.ToLower(fullURL), strings.ToLower(decodedURL)}
 
-	for _, secret := range s.envSecrets {
-		if strings.Contains(fullURL, secret) {
-			return Result{
-				Allowed: false,
-				Reason:  "environment variable leak detected",
-				Scanner: "dlp",
-				Score:   1.0,
+	for _, secret := range secrets {
+		if matched, enc := matchSecretEncodings(secret, texts, lowerTexts); matched {
+			reason := reasonPrefix
+			if enc != "" {
+				reason += " (" + enc + "-encoded)"
 			}
-		}
-
-		encoded := base64.StdEncoding.EncodeToString([]byte(secret))
-		if strings.Contains(fullURL, encoded) {
-			return Result{
-				Allowed: false,
-				Reason:  "environment variable leak detected (base64-encoded)",
-				Scanner: "dlp",
-				Score:   1.0,
-			}
-		}
-
-		encodedURL := base64.URLEncoding.EncodeToString([]byte(secret))
-		if encodedURL != encoded && strings.Contains(fullURL, encodedURL) {
-			return Result{
-				Allowed: false,
-				Reason:  "environment variable leak detected (base64url-encoded)",
-				Scanner: "dlp",
-				Score:   1.0,
-			}
-		}
-
-		// Check hex encoding
-		hexEncoded := hex.EncodeToString([]byte(secret))
-		if strings.Contains(lowerURL, hexEncoded) {
-			return Result{
-				Allowed: false,
-				Reason:  "environment variable leak detected (hex-encoded)",
-				Scanner: "dlp",
-				Score:   1.0,
-			}
-		}
-
-		// Check base32 encoding (standard and no-padding variants)
-		b32Std := base32.StdEncoding.EncodeToString([]byte(secret))
-		if strings.Contains(fullURL, b32Std) {
-			return Result{
-				Allowed: false,
-				Reason:  "environment variable leak detected (base32-encoded)",
-				Scanner: "dlp",
-				Score:   1.0,
-			}
-		}
-		b32NoPad := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString([]byte(secret))
-		if b32NoPad != b32Std && strings.Contains(fullURL, b32NoPad) {
-			return Result{
-				Allowed: false,
-				Reason:  "environment variable leak detected (base32-encoded)",
-				Scanner: "dlp",
-				Score:   1.0,
-			}
+			return Result{Allowed: false, Reason: reason, Scanner: "dlp", Score: 1.0}
 		}
 	}
-
 	return Result{Allowed: true}
+}
+
+// containsAny returns true if needle appears in any of the haystacks.
+func containsAny(needle string, haystacks ...string) bool {
+	for _, h := range haystacks {
+		if strings.Contains(h, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// matchSecretEncodings checks all encoded forms of a secret against the given texts.
+// texts are for case-sensitive checks; lowerTexts (pre-lowercased) are for hex comparison.
+// Returns (true, encoding) on first match. Encoding is "" for raw, or "base64",
+// "base64url", "hex", "base32" for encoded forms.
+func matchSecretEncodings(secret string, texts, lowerTexts []string) (bool, string) {
+	// Raw match.
+	if containsAny(secret, texts...) {
+		return true, ""
+	}
+
+	// Base64 standard (padded + unpadded).
+	b64Std := base64.StdEncoding.EncodeToString([]byte(secret))
+	b64StdNoPad := strings.TrimRight(b64Std, "=")
+	if containsAny(b64Std, texts...) ||
+		(b64StdNoPad != b64Std && containsAny(b64StdNoPad, texts...)) {
+		return true, "base64"
+	}
+
+	// Base64 URL-safe (padded + unpadded).
+	b64URL := base64.URLEncoding.EncodeToString([]byte(secret))
+	b64URLNoPad := strings.TrimRight(b64URL, "=")
+	if (b64URL != b64Std && containsAny(b64URL, texts...)) ||
+		(b64URLNoPad != b64StdNoPad && containsAny(b64URLNoPad, texts...)) {
+		return true, "base64url"
+	}
+
+	// Hex (case-insensitive via pre-lowered texts).
+	hexEnc := hex.EncodeToString([]byte(secret))
+	if containsAny(hexEnc, lowerTexts...) {
+		return true, "hex"
+	}
+
+	// Base32 standard (padded + unpadded).
+	b32Std := base32.StdEncoding.EncodeToString([]byte(secret))
+	b32NoPad := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString([]byte(secret))
+	if containsAny(b32Std, texts...) ||
+		(b32NoPad != b32Std && containsAny(b32NoPad, texts...)) {
+		return true, "base32"
+	}
+
+	return false, ""
 }
 
 // extractEnvSecrets filters environment variables for likely secrets.
@@ -702,6 +721,107 @@ func extractEnvSecrets(minLen int) []string {
 	}
 
 	return secrets
+}
+
+// dedupSecrets removes duplicates from fileSecrets: both against envSecrets
+// (preventing double-scanning) and within fileSecrets itself.
+func dedupSecrets(fileSecrets, envSecrets []string) []string {
+	existing := make(map[string]struct{}, len(envSecrets)+len(fileSecrets))
+	for _, s := range envSecrets {
+		existing[s] = struct{}{}
+	}
+	var result []string
+	for _, s := range fileSecrets {
+		if _, ok := existing[s]; !ok {
+			existing[s] = struct{}{}
+			result = append(result, s)
+		}
+	}
+	return result
+}
+
+// loadSecretsFile reads explicit secret values from a file, one per line.
+// Lines starting with # (after optional whitespace) are comments.
+// Blank lines, null-byte lines, and lines below minLen are skipped.
+// Max 4096 bytes per line, max 1000 entries.
+func loadSecretsFile(path string, minLen int) ([]string, error) { //nolint:unparam // minLen varies in tests
+	f, err := os.Open(path) //nolint:gosec // G304: path validated by config.Validate
+	if err != nil {
+		return nil, fmt.Errorf("opening secrets file: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+
+	const (
+		maxLineLen = 4096
+		maxEntries = 1000
+	)
+
+	var (
+		secrets []string
+		lineNum int
+		first   = true
+	)
+
+	sc := bufio.NewScanner(f)
+	// Buffer must exceed maxLineLen so bufio.ErrTooLong cannot fire for any
+	// line the explicit len(line) > maxLineLen guard would skip.
+	const scanBufMax = maxLineLen*2 + 4096
+	sc.Buffer(make([]byte, 0, scanBufMax), scanBufMax)
+
+	for sc.Scan() {
+		lineNum++
+		line := sc.Text()
+
+		// Strip UTF-8 BOM from first line.
+		if first {
+			line = strings.TrimPrefix(line, "\xef\xbb\xbf")
+			first = false
+		}
+
+		// Strip leading and trailing whitespace/tabs/CR.
+		line = strings.TrimSpace(line)
+
+		// Skip blank lines.
+		if line == "" {
+			continue
+		}
+
+		// Skip comment lines (# as first non-whitespace).
+		if strings.HasPrefix(strings.TrimLeft(line, " \t"), "#") {
+			continue
+		}
+
+		// Reject lines with null bytes.
+		if strings.ContainsRune(line, '\x00') {
+			fmt.Fprintf(os.Stderr, "pipelock: warning: secrets_file line %d contains null byte, skipping\n", lineNum)
+			continue
+		}
+
+		// Reject lines exceeding max length.
+		if len(line) > maxLineLen {
+			fmt.Fprintf(os.Stderr, "pipelock: warning: secrets_file line %d exceeds %d bytes, skipping\n", lineNum, maxLineLen)
+			continue
+		}
+
+		// Skip values below minimum length.
+		if len(line) < minLen {
+			fmt.Fprintf(os.Stderr, "pipelock: warning: secrets_file line %d too short (%d < %d), skipping\n", lineNum, len(line), minLen)
+			continue
+		}
+
+		// Enforce max entries.
+		if len(secrets) >= maxEntries {
+			fmt.Fprintf(os.Stderr, "pipelock: warning: secrets_file exceeds %d entries, ignoring remainder\n", maxEntries)
+			break
+		}
+
+		secrets = append(secrets, line)
+	}
+	if err := sc.Err(); err != nil {
+		return nil, fmt.Errorf("reading secrets file: %w", err)
+	}
+
+	return secrets, nil
 }
 
 // checkEntropy calculates Shannon entropy on URL path segments and query values.

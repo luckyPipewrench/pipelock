@@ -53,7 +53,7 @@ go test -race -count=1 ./...     # All tests with race detector
 ### Requirements
 
 - All tests run with `-race -count=1`
-- Target **90%+ coverage** on new code (`make test-cover` for local report)
+- Target **95%+ coverage** on new code (`make test-cover` for local report)
 - Table-driven tests where there are 3+ cases
 
 ### Patterns
@@ -95,6 +95,37 @@ See [docs/benchmarks.md](docs/benchmarks.md) for methodology and results.
 - File permissions: `0o600` not `0600`
 - HTTP methods: `http.MethodGet` not `"GET"`
 - See [.golangci.yml](.golangci.yml) for all 19 enabled linters
+
+## Building
+
+```bash
+make build    # Build with version metadata
+make test     # Run tests
+make lint     # Lint
+make docker   # Build Docker image
+```
+
+## Project Structure
+
+```text
+cmd/pipelock/          CLI entry point
+internal/
+  cli/                 Cobra commands (audit, check, demo, generate, git, healthcheck,
+                         integrity, keygen, logs, mcp, run, sign, test, trust, verify, version)
+  config/              YAML config loading, validation, defaults, hot-reload (fsnotify)
+  scanner/             URL scanning (SSRF, blocklist, rate limit, DLP, entropy, env leak)
+  audit/               Structured JSON audit logging (zerolog)
+  proxy/               Fetch proxy HTTP server (go-readability, agent ID, DNS pinning)
+  metrics/             Prometheus metrics + JSON stats endpoint
+  gitprotect/          Git-aware security (diff scanning, branch validation, hooks)
+  integrity/           File integrity monitoring (SHA256 manifests, check/diff, exclusions)
+  signing/             Ed25519 key management, file signing, signature verification
+  mcp/                 MCP stdio proxy + bidirectional JSON-RPC 2.0 scanning + tool poisoning detection
+  hitl/                Human-in-the-loop terminal approval (ask action)
+configs/               Preset config files (strict, balanced, audit, claude-code, cursor, generic-agent)
+docs/                  OWASP mapping, tool comparison
+blog/                  Blog posts (mirrored at pipelab.org/blog/)
+```
 
 ## Architecture
 

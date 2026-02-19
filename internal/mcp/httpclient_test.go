@@ -409,6 +409,47 @@ func TestHTTPClient_OpenGETStream_IncludesSessionID(t *testing.T) {
 	drain(t, reader)
 }
 
+func TestHTTPClient_ErrorResponseDoesNotOverwriteSessionID(t *testing.T) {
+	// An error response with a crafted Mcp-Session-Id header must not
+	// overwrite the established session ID.
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		callCount++
+		if callCount == 1 {
+			// First call: establish session with a 200.
+			w.Header().Set("Mcp-Session-Id", "good-session") //nolint:goconst // test value
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+			return
+		}
+		// Second call: return 500 with a crafted session ID.
+		w.Header().Set("Mcp-Session-Id", "evil-session") //nolint:goconst // test value
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(srv.URL, nil)
+
+	// Establish session.
+	reader, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
+	if err != nil {
+		t.Fatalf("first SendMessage: %v", err)
+	}
+	drain(t, reader)
+	if c.SessionID() != "good-session" {
+		t.Fatalf("session not established: got %q", c.SessionID())
+	}
+
+	// Error response should not overwrite.
+	_, err = c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":2,"method":"test"}`))
+	if err == nil {
+		t.Fatal("expected error for 500")
+	}
+	if c.SessionID() != "good-session" {
+		t.Errorf("session ID overwritten by error response: got %q, want %q", c.SessionID(), "good-session")
+	}
+}
+
 func TestHTTPClient_DeleteSession_Success(t *testing.T) {
 	var deleteCalled atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -804,6 +845,32 @@ func TestHTTPClient_ErrorStatusEmptyBody(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "403") {
 		t.Errorf("expected 403 in error, got: %v", err)
+	}
+}
+
+func TestHTTPClient_SingleMessageReader_Overflow(t *testing.T) {
+	// A response exceeding maxLineSize should return a clear error
+	// instead of silently truncating and causing confusing parse errors.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Write maxLineSize + 100 bytes to exceed the limit.
+		_, _ = w.Write([]byte(`{"data":"`))
+		_, _ = w.Write(make([]byte, maxLineSize))
+		_, _ = w.Write([]byte(`"}`))
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(srv.URL, nil)
+	reader, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"test"}`))
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	_, err = reader.ReadMessage()
+	if err == nil {
+		t.Fatal("expected overflow error")
+	}
+	if !strings.Contains(err.Error(), "exceeds maximum size") {
+		t.Errorf("expected 'exceeds maximum size' error, got: %v", err)
 	}
 }
 

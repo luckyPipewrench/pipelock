@@ -91,11 +91,15 @@ func (c *HTTPClient) SendMessage(ctx context.Context, msg []byte) (MessageReader
 		return nil, fmt.Errorf("sending request: %w", err)
 	}
 
-	// Track session ID from response.
-	if sid := resp.Header.Get("Mcp-Session-Id"); sid != "" {
-		c.sessionMu.Lock()
-		c.sessionID = sid
-		c.sessionMu.Unlock()
+	// Track session ID only from success responses. Error responses (4xx/5xx)
+	// or redirects (3xx) should not overwrite a valid session ID — a crafted
+	// Mcp-Session-Id on an error response would corrupt subsequent requests.
+	if resp.StatusCode < 300 {
+		if sid := resp.Header.Get("Mcp-Session-Id"); sid != "" {
+			c.sessionMu.Lock()
+			c.sessionID = sid
+			c.sessionMu.Unlock()
+		}
 	}
 
 	// 202 Accepted: notification acknowledged, no body to read.
@@ -156,10 +160,15 @@ func (r *singleMessageReader) ReadMessage() ([]byte, error) {
 	}
 	r.done = true
 
-	data, err := io.ReadAll(io.LimitReader(r.body, int64(maxLineSize)))
+	// Read one extra byte beyond the limit so we can detect truncation
+	// and return a clear error instead of passing incomplete JSON downstream.
+	data, err := io.ReadAll(io.LimitReader(r.body, int64(maxLineSize)+1))
 	_ = r.body.Close() // best-effort cleanup after read
 	if err != nil {
 		return nil, fmt.Errorf("reading response body: %w", err)
+	}
+	if len(data) > maxLineSize {
+		return nil, fmt.Errorf("response body exceeds maximum size (%d bytes)", maxLineSize)
 	}
 
 	data = bytes.TrimSpace(data)

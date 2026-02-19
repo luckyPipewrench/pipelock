@@ -1246,7 +1246,7 @@ func TestBlockRequestResponse_CustomErrorCode(t *testing.T) {
 	resp := blockRequestResponse(BlockedRequest{
 		ID:           id,
 		ErrorCode:    -32002,
-		ErrorMessage: "pipelock: request blocked by tool call policy",
+		ErrorMessage: "pipelock: request blocked by tool call policy", //nolint:goconst // test value
 	})
 
 	var parsed struct {

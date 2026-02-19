@@ -117,6 +117,37 @@ func TestSSEReader_EmptyInput(t *testing.T) {
 	}
 }
 
+func TestSSEReader_IDWithNULLIgnored(t *testing.T) {
+	// Per SSE spec: if the id field value contains U+0000 NULL, ignore it.
+	input := "id: valid-id\ndata: first\n\nid: has\x00null\ndata: second\n\n"
+	r := NewSSEReader(strings.NewReader(input))
+
+	// First event: id is valid.
+	msg1, err := r.ReadMessage()
+	if err != nil {
+		t.Fatalf("msg1: unexpected error: %v", err)
+	}
+	if string(msg1) != "first" {
+		t.Errorf("msg1 = %q, want %q", string(msg1), "first")
+	}
+	if r.LastEventID() != "valid-id" {
+		t.Errorf("after first event: LastEventID() = %q, want %q", r.LastEventID(), "valid-id")
+	}
+
+	// Second event: id contains NULL — should be ignored, keeping previous id.
+	msg2, err := r.ReadMessage()
+	if err != nil {
+		t.Fatalf("msg2: unexpected error: %v", err)
+	}
+	if string(msg2) != "second" {
+		t.Errorf("msg2 = %q, want %q", string(msg2), "second")
+	}
+	// LastEventID should still be "valid-id" since the NULL id was ignored.
+	if r.LastEventID() != "valid-id" {
+		t.Errorf("after second event: LastEventID() = %q, want %q (NULL id should be ignored)", r.LastEventID(), "valid-id")
+	}
+}
+
 func TestSSEReader_DataWithoutNewlineTerminator(t *testing.T) {
 	// Stream ends without a final blank line but has accumulated data.
 	// Should still return the event.

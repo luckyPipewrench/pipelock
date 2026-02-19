@@ -458,7 +458,7 @@ func ForwardScannedInput(
 				ErrorCode:      errCode,
 				ErrorMessage:   errMsg,
 			}
-		case "ask":
+		case "ask": //nolint:goconst // config action value
 			// HITL for input scanning is impractical — fall back to block.
 			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked %s request (%s) [ask not supported for input scanning]\n",
 				lineNum, method, reasonStr)

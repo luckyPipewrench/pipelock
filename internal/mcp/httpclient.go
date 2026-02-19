@@ -3,6 +3,7 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,6 +11,10 @@ import (
 	"sync"
 	"time"
 )
+
+// ErrStreamNotSupported indicates the upstream server returned HTTP 405 for
+// a GET request, meaning it does not support server-initiated SSE streams.
+var ErrStreamNotSupported = errors.New("server does not support GET stream")
 
 // HTTPClient sends JSON-RPC 2.0 messages over HTTP POST and returns
 // a MessageReader for each response. It implements the MCP Streamable HTTP
@@ -97,6 +102,13 @@ func (c *HTTPClient) SendMessage(ctx context.Context, msg []byte) (MessageReader
 	if resp.StatusCode == http.StatusAccepted {
 		resp.Body.Close() //nolint:errcheck,gosec // best-effort cleanup
 		return &emptyReader{}, nil
+	}
+
+	// Redirect or other 3xx — since we disabled redirect-following, treat these
+	// as errors to avoid processing unexpected response bodies.
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		resp.Body.Close() //nolint:errcheck,gosec // best-effort cleanup
+		return nil, fmt.Errorf("HTTP %d: unexpected redirect (redirects are disabled)", resp.StatusCode)
 	}
 
 	// Error status codes: read limited body for diagnostics, then return error.
@@ -207,7 +219,7 @@ func (c *HTTPClient) OpenGETStream(ctx context.Context) (MessageReader, error) {
 
 	if resp.StatusCode == http.StatusMethodNotAllowed {
 		resp.Body.Close() //nolint:errcheck,gosec // best-effort cleanup
-		return nil, fmt.Errorf("server does not support GET stream (405)")
+		return nil, fmt.Errorf("%w (HTTP 405)", ErrStreamNotSupported)
 	}
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024)) //nolint:errcheck // best-effort read

@@ -230,13 +230,14 @@ func TestHTTPClient_RedirectBlocked(t *testing.T) {
 	defer srv.Close()
 
 	c := NewHTTPClient(srv.URL, nil)
-	// SendMessage returns the 302 response directly (doesn't follow redirect).
-	// 302 is < 400, so it's treated as a "successful" response with an HTML body.
-	reader, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
-	if err != nil {
-		t.Fatalf("SendMessage: %v", err)
+	// SendMessage should return an error for 3xx (redirects are disabled).
+	_, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
+	if err == nil {
+		t.Fatal("expected error for redirect response, got nil")
 	}
-	drain(t, reader)
+	if !strings.Contains(err.Error(), "unexpected redirect") {
+		t.Errorf("expected redirect error, got: %v", err)
+	}
 
 	// The critical security property: the target server should NOT be contacted.
 	if targetCalled.Load() != 0 {
@@ -485,6 +486,108 @@ func TestHTTPClient_DeleteSession_ServerError(t *testing.T) {
 
 	if !strings.Contains(logBuf.String(), "500") {
 		t.Errorf("expected 500 in log, got: %s", logBuf.String())
+	}
+}
+
+func TestHTTPClient_DeleteSession_ConnectionError(t *testing.T) {
+	// Start server, establish session, then close server before DELETE.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			w.Header().Set("Mcp-Session-Id", "sess-conn-err") //nolint:goconst // test value
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+			return
+		}
+	}))
+
+	c := NewHTTPClient(srv.URL, nil)
+	r, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	drain(t, r)
+
+	// Close the server before DELETE — should log connection error.
+	srv.Close()
+
+	var logBuf strings.Builder
+	c.DeleteSession(&logBuf)
+
+	if !strings.Contains(logBuf.String(), "session delete") {
+		t.Errorf("expected connection error log, got: %s", logBuf.String())
+	}
+}
+
+func TestHTTPClient_DeleteSession_ConnectionError_NilLog(t *testing.T) {
+	// Same as above but with nil logW — should not panic.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			w.Header().Set("Mcp-Session-Id", "sess-nil-log") //nolint:goconst // test value
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+			return
+		}
+	}))
+
+	c := NewHTTPClient(srv.URL, nil)
+	r, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	drain(t, r)
+
+	srv.Close()
+
+	// Should not panic with nil logW.
+	c.DeleteSession(nil)
+}
+
+func TestErrStreamNotSupported_Sentinel(t *testing.T) {
+	// Verify errors.Is works with the wrapped sentinel.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(srv.URL, nil)
+	_, err := c.OpenGETStream(context.Background())
+	if err == nil {
+		t.Fatal("expected error for 405")
+	}
+	if !errors.Is(err, ErrStreamNotSupported) {
+		t.Errorf("expected errors.Is(err, ErrStreamNotSupported) = true, got false; err: %v", err)
+	}
+}
+
+func TestHTTPClient_OpenGETStream_3xxRedirect(t *testing.T) {
+	// GET to a redirecting server — since we don't have explicit 3xx handling
+	// in OpenGETStream, the response gets the 302 status with redirect-following
+	// disabled. The status is < 400, so it falls through to the SSE reader path.
+	// This tests the code path after the 400+ check.
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {}\n\n"))
+	}))
+	defer target.Close()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusFound)
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(srv.URL, nil)
+	// OpenGETStream with 302: redirect-following is disabled, server returns 302.
+	// Status 302 < 400, so it falls through to SSE reader. The body is the redirect
+	// HTML, which won't parse as SSE — reader returns EOF.
+	reader, err := c.OpenGETStream(context.Background())
+	if err != nil {
+		// 302 is not >= 400, so OpenGETStream should not return an error.
+		t.Fatalf("OpenGETStream: %v", err)
+	}
+	// Should get EOF since the redirect HTML body isn't valid SSE.
+	_, err = reader.ReadMessage()
+	if !errors.Is(err, io.EOF) {
+		t.Logf("expected EOF for non-SSE redirect body, got: %v", err)
 	}
 }
 

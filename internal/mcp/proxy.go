@@ -135,7 +135,7 @@ func ForwardScanned(reader MessageReader, writer MessageWriter, logW io.Writer, 
 			if err := writer.WriteMessage(resp); err != nil {
 				return foundInjection, fmt.Errorf("writing block response: %w", err)
 			}
-		case "ask":
+		case "ask": //nolint:goconst // config action value
 			if approver == nil {
 				_, _ = fmt.Fprintf(logW, "pipelock: line %d: no HITL approver configured, blocking\n", lineNum)
 				resp := blockResponse(verdict.ID)

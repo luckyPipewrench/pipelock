@@ -15,7 +15,12 @@ import (
 // Attackers use ${IFS} or $IFS to replace spaces: "rm${IFS}-rf" expands to "rm -rf"
 // at runtime, but policy sees the literal "${IFS}" token. Normalizing these to spaces
 // before regex matching ensures policy catches the intended command.
-var shellExpansionRe = regexp.MustCompile(`\$\{?IFS\}?`)
+//
+// Covers common parameter expansion forms:
+//   - $IFS (bare), ${IFS} (braced)
+//   - ${IFS:0:1} (substring), ${IFS%%?} / ${IFS#?} (pattern removal)
+//   - ${!IFS} (indirect expansion)
+var shellExpansionRe = regexp.MustCompile(`\$\{!?IFS(?:[^a-zA-Z0-9_}][^}]*)?\}|\$IFS\b`)
 
 // shellOctalRe matches shell octal escape sequences (\NNN where N is 0-7).
 // In bash, $'\155' decodes to 'm'. Decoding these reveals the intended command:
@@ -39,6 +44,17 @@ var simpleCmdSubRe = regexp.MustCompile(`\$\(\s*(?:echo|printf)\s+['"]?(\w+)['"]
 // simpleAssignRe matches shell variable assignment followed by separator.
 // "x=rm;$x -rf" hides the command name in a variable.
 var simpleAssignRe = regexp.MustCompile(`(\w+)=(\w+)\s*[;&|]`)
+
+// policyPreNormalize maps ambiguous confusables to their command-relevant Latin
+// equivalent. The shared confusableMap maps Cyrillic у → 'y' (correct for injection
+// detection: "you are now"), but this creates a bypass for command matching:
+// c\u0443rl normalizes to "cyrl" instead of "curl", evading the Network Exfiltration
+// rule. This replacer runs BEFORE NormalizeForMatching in policy checking only,
+// so injection detection keeps the shared у→'y' mapping unaffected.
+var policyPreNormalize = strings.NewReplacer(
+	"\u0443", "u", // Cyrillic у — used as 'u' in curl/sudo/su/run
+	"\u0423", "U", // Cyrillic У (uppercase)
+)
 
 // PolicyConfig holds compiled tool call policy rules for pre-execution checking.
 // A nil PolicyConfig disables policy checking entirely.
@@ -98,6 +114,11 @@ func (pc *PolicyConfig) CheckToolCall(toolName string, argStrings []string) Poli
 		return PolicyVerdict{}
 	}
 
+	// Pre-normalize ambiguous confusables for policy matching before the
+	// shared Unicode normalization. This resolves Cyrillic у → 'u' for
+	// command tokens (curl, sudo) without affecting injection detection.
+	toolName = policyPreNormalize.Replace(toolName)
+
 	// Normalize tool name and arg strings to defeat zero-width/invisible
 	// character insertion (e.g. "r\u200bm" → "rm"), homoglyph attacks
 	// (Cyrillic/Greek lookalikes), and combining mark evasion.
@@ -113,16 +134,12 @@ func (pc *PolicyConfig) CheckToolCall(toolName string, argStrings []string) Poli
 	//  4. Command substitution resolve ($(printf rm) → rm)
 	//  5. Variable assignment resolve (x=rm;$x → x=rm;rm)
 	//  6. Shell expansion normalize (${IFS} → space)
-	var tokens []string
-	for _, s := range argStrings {
-		normalized := scanner.NormalizeForMatching(s)
-		normalized = decodeShellEscapes(normalized)
-		normalized = shellEscapeRe.ReplaceAllString(normalized, "$1")
-		normalized = resolveShellConstruction(normalized)
-		normalized = shellExpansionRe.ReplaceAllString(normalized, " ")
-		tokens = append(tokens, strings.Fields(normalized)...)
-	}
-	joined := strings.Join(tokens, " ")
+	//
+	// Two normalization passes handle different ZW-char insertion strategies:
+	//  - Primary: drop invisible chars (catches mid-word: "r\u200bm" → "rm")
+	//  - Secondary: replace invisible with space (catches separator: "rm\u200b-rf" → "rm -rf")
+	tokens, joined := normalizeArgTokens(argStrings, scanner.NormalizeForMatching)
+	altTokens, altJoined := normalizeArgTokens(argStrings, scanner.NormalizeForPolicy)
 
 	var matchedRules []string
 	strictest := ""
@@ -143,7 +160,7 @@ func (pc *PolicyConfig) CheckToolCall(toolName string, argStrings []string) Poli
 			continue
 		}
 
-		if matchArgPattern(rule.ArgPattern, tokens, joined) {
+		if matchArgPattern(rule.ArgPattern, tokens, joined) || matchArgPattern(rule.ArgPattern, altTokens, altJoined) {
 			matchedRules = append(matchedRules, rule.Name)
 			action := rule.Action
 			if action == "" {
@@ -162,6 +179,25 @@ func (pc *PolicyConfig) CheckToolCall(toolName string, argStrings []string) Poli
 		Action:  strictest,
 		Rules:   matchedRules,
 	}
+}
+
+// normalizeArgTokens applies policyPreNormalize, a Unicode normalization
+// function, shell escape decoding, and shell construction resolution to
+// each argument string, then splits into tokens. normFn selects the Unicode
+// normalization strategy (NormalizeForMatching drops invisible chars,
+// NormalizeForPolicy replaces them with spaces).
+func normalizeArgTokens(argStrings []string, normFn func(string) string) ([]string, string) {
+	var tokens []string
+	for _, s := range argStrings {
+		s = policyPreNormalize.Replace(s)
+		normalized := normFn(s)
+		normalized = decodeShellEscapes(normalized)
+		normalized = shellEscapeRe.ReplaceAllString(normalized, "$1")
+		normalized = resolveShellConstruction(normalized)
+		normalized = shellExpansionRe.ReplaceAllString(normalized, " ")
+		tokens = append(tokens, strings.Fields(normalized)...)
+	}
+	return tokens, strings.Join(tokens, " ")
 }
 
 // maxPairwiseTokens caps token count for O(n²) pairwise matching.
@@ -347,17 +383,35 @@ func decodeShellEscapes(s string) string {
 	return s
 }
 
-// resolveShellConstruction resolves simple command substitutions and variable
-// assignments used to build command names indirectly:
+// resolveShellConstruction iteratively resolves simple command substitutions
+// and variable assignments used to build command names indirectly:
 //   - $(printf rm) → rm
 //   - $(echo rm) → rm
+//   - $($(printf echo) rm) → rm (nested, resolved over 2 iterations)
 //   - x=rm;$x → x=rm;rm
+//   - v=IFS;${!v} → v=IFS;${IFS} (indirect expansion)
+//
+// Iterates until no further changes occur, bounded to prevent infinite loops
+// on pathological input.
 func resolveShellConstruction(s string) string {
-	s = simpleCmdSubRe.ReplaceAllString(s, "$1")
-	matches := simpleAssignRe.FindAllStringSubmatch(s, 10)
-	for _, m := range matches {
-		s = strings.ReplaceAll(s, "${"+m[1]+"}", m[2])
-		s = strings.ReplaceAll(s, "$"+m[1], m[2])
+	const maxIterations = 5
+	for range maxIterations {
+		prev := s
+		s = simpleCmdSubRe.ReplaceAllString(s, "$1")
+		matches := simpleAssignRe.FindAllStringSubmatch(s, 10)
+		for _, m := range matches {
+			// Direct expansion: ${var} and $var → value.
+			s = strings.ReplaceAll(s, "${"+m[1]+"}", m[2])
+			s = strings.ReplaceAll(s, "$"+m[1], m[2])
+			// Indirect expansion: ${!var...} → ${value...}.
+			// In bash, ${!v} expands the variable whose name is v's value.
+			// Replacing the prefix ${!varname with ${value converts e.g.
+			// v=IFS;${!v:0:1} → v=IFS;${IFS:0:1}, which shellExpansionRe catches.
+			s = strings.ReplaceAll(s, "${!"+m[1], "${"+m[2])
+		}
+		if s == prev {
+			break
+		}
 	}
 	return s
 }

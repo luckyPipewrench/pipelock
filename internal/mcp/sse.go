@@ -65,7 +65,10 @@ func (sr *SSEReader) ReadMessage() ([]byte, error) {
 			data = append(data, value)
 			hasData = true
 		case "id":
-			sr.lastEventID = value
+			// Per SSE spec: if the id field value contains U+0000 NULL, ignore it.
+			if !strings.Contains(value, "\x00") {
+				sr.lastEventID = value
+			}
 		case "event", "retry":
 			// Tracked but not used for message extraction.
 		}

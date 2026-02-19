@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -213,6 +212,16 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 			ErrorCode:      errCode,
 			ErrorMessage:   errMsg,
 		}
+	case "ask": //nolint:goconst // config action value
+		// HITL for input scanning is impractical — fall back to block (same as stdio proxy).
+		_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s) [ask not supported for input scanning]\n", joinStrings(reasons))
+		return &BlockedRequest{
+			ID:             verdict.ID,
+			IsNotification: isNotification,
+			LogMessage:     "blocked (ask fallback)",
+			ErrorCode:      errCode,
+			ErrorMessage:   errMsg,
+		}
 	default: // warn
 		if len(reasons) > 0 {
 			_, _ = fmt.Fprintf(logW, "pipelock: input: warning (%s)\n", joinStrings(reasons))
@@ -254,8 +263,8 @@ func upstreamErrorResponse(id json.RawMessage, upstreamErr error) []byte {
 // startGETStream maintains a background GET SSE connection for server-initiated
 // messages. Called after the initialize handshake establishes a session ID.
 // Reconnects with exponential backoff (1s base, 30s cap) on stream end or
-// transient errors. Exits permanently only on 405 (server doesn't support
-// GET streams) or context cancellation.
+// transient errors. Exits permanently only on ErrStreamNotSupported (HTTP 405)
+// or context cancellation.
 func startGETStream(
 	ctx context.Context,
 	httpClient *HTTPClient,
@@ -283,8 +292,8 @@ func startGETStream(
 			reader, err := httpClient.OpenGETStream(ctx)
 			if err != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: GET stream: %v\n", err)
-				// 405 = server doesn't support GET streams — permanent, no retry.
-				if strings.Contains(err.Error(), "405") {
+				// Permanent error — server does not support GET streams.
+				if errors.Is(err, ErrStreamNotSupported) {
 					return
 				}
 				// Transient error — backoff and retry.
@@ -299,6 +308,9 @@ func startGETStream(
 				}
 				continue
 			}
+
+			// Reset backoff on successful connection.
+			backoff = time.Second
 
 			_, scanErr := ForwardScanned(reader, safeClientOut, safeLogW, sc, approver, toolCfg)
 			if scanErr != nil {

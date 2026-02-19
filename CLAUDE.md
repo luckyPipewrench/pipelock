@@ -114,7 +114,7 @@ Wraps any MCP server as a stdio proxy with bidirectional scanning. Server respon
 
 - **Race detector mandatory**: All tests run with `-race -count=1`
 - **90% coverage target** across all packages
-- **2,100+ tests** currently passing (count with `go test -v ./... | grep -c -- '--- PASS:'`)
+- **1,900+ tests** currently passing (count with `go test -v ./... 2>&1 | grep -c -- '--- PASS:'`)
 
 ### Patterns
 
@@ -152,7 +152,7 @@ go test -v ./... 2>&1 | grep -c -- '--- PASS:'
 grep -r "func Test" internal/ | wc -l
 ```
 
-After adding tests, update the count in all locations: `CLAUDE.md`, `docs/security-assurance.md`, `docs/compliance/eu-ai-act-mapping.md`, and any blog posts referencing the count. Use a round-down number (e.g., "2,100+" not "2,138") so it doesn't go stale on every minor addition.
+After adding tests, update the count in all locations: `CLAUDE.md`, `docs/security-assurance.md`, `docs/compliance/eu-ai-act-mapping.md`, and any blog posts referencing the count. Use a round-down number (e.g., "1,900+" not "1,997") so it doesn't go stale on every minor addition. Verify with: `go test -v ./... 2>&1 | grep -c -- '--- PASS:'`
 
 ### Common pitfalls
 

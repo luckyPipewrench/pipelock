@@ -357,12 +357,12 @@ func stricterAction(a, b string) string {
 	ra, aOK := actionRank[a]
 	rb, bOK := actionRank[b]
 	if !aOK {
-		a = "block" //nolint:goconst // action string used as-is from config
-		ra = actionRank[a]
+		a = "block"
+		ra = actionRank["block"]
 	}
 	if !bOK {
-		b = "block" //nolint:goconst // action string used as-is from config
-		rb = actionRank[b]
+		b = "block"
+		rb = actionRank["block"]
 	}
 	if rb > ra {
 		return b

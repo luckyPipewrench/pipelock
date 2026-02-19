@@ -41,9 +41,11 @@ pipelock-audit.log
 
 # Pen test suite (not yet committed — refining)
 /tests/
+/tests
 
 # Claude Code
 .claude/
+.claude
 
 # ClawHub
 .clawdhub/

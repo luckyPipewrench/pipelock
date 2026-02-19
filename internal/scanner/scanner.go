@@ -621,158 +621,88 @@ func nextCombination(indices []int, n int) bool {
 // Checks both raw and base64-encoded versions to catch common exfiltration patterns.
 // Never logs the actual secret values to prevent accidental exposure.
 func (s *Scanner) checkEnvLeak(parsed *url.URL) Result {
-	if len(s.envSecrets) == 0 {
-		return Result{Allowed: true}
-	}
-
-	// Strip ALL control chars to prevent bypass via URL-encoded control chars
-	// (e.g., %00 null byte, %08 backspace breaking substring match).
-	fullURL := stripControlChars(parsed.String())
-	// Pre-compute lowercase for case-insensitive hex comparison.
-	lowerURL := strings.ToLower(fullURL)
-
-	for _, secret := range s.envSecrets {
-		if strings.Contains(fullURL, secret) {
-			return Result{
-				Allowed: false,
-				Reason:  "environment variable leak detected",
-				Scanner: "dlp",
-				Score:   1.0,
-			}
-		}
-
-		encoded := base64.StdEncoding.EncodeToString([]byte(secret))
-		if strings.Contains(fullURL, encoded) {
-			return Result{
-				Allowed: false,
-				Reason:  "environment variable leak detected (base64-encoded)",
-				Scanner: "dlp",
-				Score:   1.0,
-			}
-		}
-
-		encodedURL := base64.URLEncoding.EncodeToString([]byte(secret))
-		if encodedURL != encoded && strings.Contains(fullURL, encodedURL) {
-			return Result{
-				Allowed: false,
-				Reason:  "environment variable leak detected (base64url-encoded)",
-				Scanner: "dlp",
-				Score:   1.0,
-			}
-		}
-
-		// Check hex encoding
-		hexEncoded := hex.EncodeToString([]byte(secret))
-		if strings.Contains(lowerURL, hexEncoded) {
-			return Result{
-				Allowed: false,
-				Reason:  "environment variable leak detected (hex-encoded)",
-				Scanner: "dlp",
-				Score:   1.0,
-			}
-		}
-
-		// Check base32 encoding (standard and no-padding variants)
-		b32Std := base32.StdEncoding.EncodeToString([]byte(secret))
-		if strings.Contains(fullURL, b32Std) {
-			return Result{
-				Allowed: false,
-				Reason:  "environment variable leak detected (base32-encoded)",
-				Scanner: "dlp",
-				Score:   1.0,
-			}
-		}
-		b32NoPad := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString([]byte(secret))
-		if b32NoPad != b32Std && strings.Contains(fullURL, b32NoPad) {
-			return Result{
-				Allowed: false,
-				Reason:  "environment variable leak detected (base32-encoded)",
-				Scanner: "dlp",
-				Score:   1.0,
-			}
-		}
-	}
-
-	return Result{Allowed: true}
+	return s.checkSecretsInURL(s.envSecrets, parsed, "environment variable leak detected")
 }
 
-// checkFileSecretLeak scans for secrets loaded from the secrets_file in the URL.
-// Mirrors checkEnvLeak with distinct messages for incident response clarity.
 func (s *Scanner) checkFileSecretLeak(parsed *url.URL) Result {
-	if len(s.fileSecrets) == 0 {
+	return s.checkSecretsInURL(s.fileSecrets, parsed, "known secret leak detected")
+}
+
+// checkSecretsInURL is the shared implementation for env and file secret URL scanning.
+// It URL-decodes, strips control chars, and checks all encoded forms of each secret.
+func (s *Scanner) checkSecretsInURL(secrets []string, parsed *url.URL, reasonPrefix string) Result {
+	if len(secrets) == 0 {
 		return Result{Allowed: true}
 	}
 
 	fullURL := stripControlChars(parsed.String())
 	decodedURL := stripControlChars(IterativeDecode(fullURL))
-	lowerURL := strings.ToLower(fullURL)
-	lowerDecoded := strings.ToLower(decodedURL)
+	texts := []string{fullURL, decodedURL}
+	lowerTexts := []string{strings.ToLower(fullURL), strings.ToLower(decodedURL)}
 
-	for _, secret := range s.fileSecrets {
-		if strings.Contains(fullURL, secret) || strings.Contains(decodedURL, secret) {
-			return Result{
-				Allowed: false,
-				Reason:  "known secret leak detected",
-				Scanner: "dlp",
-				Score:   1.0,
+	for _, secret := range secrets {
+		if matched, enc := matchSecretEncodings(secret, texts, lowerTexts); matched {
+			reason := reasonPrefix
+			if enc != "" {
+				reason += " (" + enc + "-encoded)"
 			}
-		}
-
-		encoded := base64.StdEncoding.EncodeToString([]byte(secret))
-		unpaddedStd := strings.TrimRight(encoded, "=")
-		if strings.Contains(fullURL, encoded) || strings.Contains(decodedURL, encoded) ||
-			(unpaddedStd != encoded && (strings.Contains(fullURL, unpaddedStd) || strings.Contains(decodedURL, unpaddedStd))) {
-			return Result{
-				Allowed: false,
-				Reason:  "known secret leak detected (base64-encoded)",
-				Scanner: "dlp",
-				Score:   1.0,
-			}
-		}
-
-		encodedURL := base64.URLEncoding.EncodeToString([]byte(secret))
-		unpaddedURL := strings.TrimRight(encodedURL, "=")
-		if (encodedURL != encoded && (strings.Contains(fullURL, encodedURL) || strings.Contains(decodedURL, encodedURL))) ||
-			(unpaddedURL != unpaddedStd && (strings.Contains(fullURL, unpaddedURL) || strings.Contains(decodedURL, unpaddedURL))) {
-			return Result{
-				Allowed: false,
-				Reason:  "known secret leak detected (base64url-encoded)",
-				Scanner: "dlp",
-				Score:   1.0,
-			}
-		}
-
-		hexEncoded := hex.EncodeToString([]byte(secret))
-		if strings.Contains(lowerURL, hexEncoded) || strings.Contains(lowerDecoded, hexEncoded) {
-			return Result{
-				Allowed: false,
-				Reason:  "known secret leak detected (hex-encoded)",
-				Scanner: "dlp",
-				Score:   1.0,
-			}
-		}
-
-		b32Std := base32.StdEncoding.EncodeToString([]byte(secret))
-		if strings.Contains(fullURL, b32Std) || strings.Contains(decodedURL, b32Std) {
-			return Result{
-				Allowed: false,
-				Reason:  "known secret leak detected (base32-encoded)",
-				Scanner: "dlp",
-				Score:   1.0,
-			}
-		}
-		b32NoPad := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString([]byte(secret))
-		if b32NoPad != b32Std && (strings.Contains(fullURL, b32NoPad) || strings.Contains(decodedURL, b32NoPad)) {
-			return Result{
-				Allowed: false,
-				Reason:  "known secret leak detected (base32-encoded)",
-				Scanner: "dlp",
-				Score:   1.0,
-			}
+			return Result{Allowed: false, Reason: reason, Scanner: "dlp", Score: 1.0}
 		}
 	}
-
 	return Result{Allowed: true}
+}
+
+// containsAny returns true if needle appears in any of the haystacks.
+func containsAny(needle string, haystacks ...string) bool {
+	for _, h := range haystacks {
+		if strings.Contains(h, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// matchSecretEncodings checks all encoded forms of a secret against the given texts.
+// texts are for case-sensitive checks; lowerTexts (pre-lowercased) are for hex comparison.
+// Returns (true, encoding) on first match. Encoding is "" for raw, or "base64",
+// "base64url", "hex", "base32" for encoded forms.
+func matchSecretEncodings(secret string, texts, lowerTexts []string) (bool, string) {
+	// Raw match.
+	if containsAny(secret, texts...) {
+		return true, ""
+	}
+
+	// Base64 standard (padded + unpadded).
+	b64Std := base64.StdEncoding.EncodeToString([]byte(secret))
+	b64StdNoPad := strings.TrimRight(b64Std, "=")
+	if containsAny(b64Std, texts...) ||
+		(b64StdNoPad != b64Std && containsAny(b64StdNoPad, texts...)) {
+		return true, "base64"
+	}
+
+	// Base64 URL-safe (padded + unpadded).
+	b64URL := base64.URLEncoding.EncodeToString([]byte(secret))
+	b64URLNoPad := strings.TrimRight(b64URL, "=")
+	if (b64URL != b64Std && containsAny(b64URL, texts...)) ||
+		(b64URLNoPad != b64StdNoPad && containsAny(b64URLNoPad, texts...)) {
+		return true, "base64url"
+	}
+
+	// Hex (case-insensitive via pre-lowered texts).
+	hexEnc := hex.EncodeToString([]byte(secret))
+	if containsAny(hexEnc, lowerTexts...) {
+		return true, "hex"
+	}
+
+	// Base32 standard (padded + unpadded).
+	b32Std := base32.StdEncoding.EncodeToString([]byte(secret))
+	b32NoPad := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString([]byte(secret))
+	if containsAny(b32Std, texts...) ||
+		(b32NoPad != b32Std && containsAny(b32NoPad, texts...)) {
+		return true, "base32"
+	}
+
+	return false, ""
 }
 
 // extractEnvSecrets filters environment variables for likely secrets.

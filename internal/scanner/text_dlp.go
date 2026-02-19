@@ -130,147 +130,36 @@ func (s *Scanner) matchDLPPatterns(text, encoding string) []TextDLPMatch {
 	return matches
 }
 
-// checkEnvLeakText checks text for environment variable secret values.
-// Checks raw text and common encoded forms (base64, hex, base32).
 func (s *Scanner) checkEnvLeakText(text string) []TextDLPMatch {
-	if len(s.envSecrets) == 0 {
-		return nil
-	}
-
-	lowerText := strings.ToLower(text)
-	var matches []TextDLPMatch
-
-	for _, secret := range s.envSecrets {
-		// Raw match.
-		if strings.Contains(text, secret) {
-			matches = append(matches, TextDLPMatch{
-				PatternName: "Environment Variable Leak",
-				Severity:    "critical",
-				Encoded:     "env",
-			})
-			return matches // One env leak is enough to flag.
-		}
-
-		// Base64-encoded match (check both padded and unpadded).
-		encoded := base64.StdEncoding.EncodeToString([]byte(secret))
-		unpadded := strings.TrimRight(encoded, "=")
-		if strings.Contains(text, encoded) || strings.Contains(text, unpadded) {
-			matches = append(matches, TextDLPMatch{
-				PatternName: "Environment Variable Leak",
-				Severity:    "critical",
-				Encoded:     "env",
-			})
-			return matches
-		}
-
-		// URL-safe base64 (check both padded and unpadded).
-		encodedURL := base64.URLEncoding.EncodeToString([]byte(secret))
-		unpaddedURL := strings.TrimRight(encodedURL, "=")
-		if (encodedURL != encoded && strings.Contains(text, encodedURL)) ||
-			(unpaddedURL != unpadded && strings.Contains(text, unpaddedURL)) {
-			matches = append(matches, TextDLPMatch{
-				PatternName: "Environment Variable Leak",
-				Severity:    "critical",
-				Encoded:     "env",
-			})
-			return matches
-		}
-
-		// Hex-encoded match.
-		hexEncoded := hex.EncodeToString([]byte(secret))
-		if strings.Contains(lowerText, hexEncoded) {
-			matches = append(matches, TextDLPMatch{
-				PatternName: "Environment Variable Leak",
-				Severity:    "critical",
-				Encoded:     "env",
-			})
-			return matches
-		}
-
-		// Base32-encoded match.
-		b32 := base32.StdEncoding.EncodeToString([]byte(secret))
-		if strings.Contains(text, b32) {
-			matches = append(matches, TextDLPMatch{
-				PatternName: "Environment Variable Leak",
-				Severity:    "critical",
-				Encoded:     "env",
-			})
-			return matches
-		}
-	}
-
-	return nil
+	return s.checkSecretsInText(s.envSecrets, text, "Environment Variable Leak", "critical", "env")
 }
 
-// checkFileSecretLeakText checks text for known secret values loaded from secrets_file.
-// Checks raw text and common encoded forms (base64, hex, base32).
 func (s *Scanner) checkFileSecretLeakText(text string) []TextDLPMatch {
-	if len(s.fileSecrets) == 0 {
+	return s.checkSecretsInText(s.fileSecrets, text, "Known Secret Leak", "critical", "")
+}
+
+// checkSecretsInText is the shared implementation for env and file secret text scanning.
+// If encodedOverride is non-empty, all matches use that as the Encoded field (e.g. "env").
+// Otherwise, the actual encoding label from matchSecretEncodings is used.
+func (s *Scanner) checkSecretsInText(secrets []string, text, patternName, severity, encodedOverride string) []TextDLPMatch {
+	if len(secrets) == 0 {
 		return nil
 	}
 
-	lowerText := strings.ToLower(text)
-	var matches []TextDLPMatch
+	texts := []string{text}
+	lowerTexts := []string{strings.ToLower(text)}
 
-	for _, secret := range s.fileSecrets {
-		// Raw match.
-		if strings.Contains(text, secret) {
-			matches = append(matches, TextDLPMatch{
-				PatternName: "Known Secret Leak",
-				Severity:    "critical",
-			})
-			return matches
-		}
-
-		// Base64-encoded match (check both padded and unpadded).
-		encoded := base64.StdEncoding.EncodeToString([]byte(secret))
-		unpadded := strings.TrimRight(encoded, "=")
-		if strings.Contains(text, encoded) || strings.Contains(text, unpadded) {
-			matches = append(matches, TextDLPMatch{
-				PatternName: "Known Secret Leak",
-				Severity:    "critical",
-				Encoded:     "base64",
-			})
-			return matches
-		}
-
-		// URL-safe base64 (check both padded and unpadded).
-		encodedURL := base64.URLEncoding.EncodeToString([]byte(secret))
-		unpaddedURL := strings.TrimRight(encodedURL, "=")
-		if (encodedURL != encoded && strings.Contains(text, encodedURL)) ||
-			(unpaddedURL != unpadded && strings.Contains(text, unpaddedURL)) {
-			matches = append(matches, TextDLPMatch{
-				PatternName: "Known Secret Leak",
-				Severity:    "critical",
-				Encoded:     "base64",
-			})
-			return matches
-		}
-
-		// Hex-encoded match.
-		hexEncoded := hex.EncodeToString([]byte(secret))
-		if strings.Contains(lowerText, hexEncoded) {
-			matches = append(matches, TextDLPMatch{
-				PatternName: "Known Secret Leak",
-				Severity:    "critical",
-				Encoded:     "hex",
-			})
-			return matches
-		}
-
-		// Base32-encoded match (padded and unpadded).
-		b32 := base32.StdEncoding.EncodeToString([]byte(secret))
-		b32NoPad := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString([]byte(secret))
-		if strings.Contains(text, b32) || (b32NoPad != b32 && strings.Contains(text, b32NoPad)) {
-			matches = append(matches, TextDLPMatch{
-				PatternName: "Known Secret Leak",
-				Severity:    "critical",
-				Encoded:     "base32",
-			})
-			return matches
+	for _, secret := range secrets {
+		if matched, enc := matchSecretEncodings(secret, texts, lowerTexts); matched {
+			m := TextDLPMatch{PatternName: patternName, Severity: severity}
+			if encodedOverride != "" {
+				m.Encoded = encodedOverride
+			} else {
+				m.Encoded = enc
+			}
+			return []TextDLPMatch{m}
 		}
 	}
-
 	return nil
 }
 

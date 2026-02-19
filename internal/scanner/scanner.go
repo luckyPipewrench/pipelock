@@ -132,6 +132,10 @@ func New(cfg *config.Config) *Scanner {
 				cfg.DLP.SecretsFile, err))
 		}
 		s.fileSecrets = dedupSecrets(fileSecrets, s.envSecrets)
+		if len(s.fileSecrets) == 0 {
+			fmt.Fprintf(os.Stderr, "pipelock: warning: secrets_file %q yielded zero usable secrets\n",
+				cfg.DLP.SecretsFile)
+		}
 	}
 
 	// Compile response scanning patterns — must succeed since config.Validate checks these
@@ -713,7 +717,8 @@ func (s *Scanner) checkFileSecretLeak(parsed *url.URL) Result {
 		}
 
 		encoded := base64.StdEncoding.EncodeToString([]byte(secret))
-		if strings.Contains(fullURL, encoded) {
+		unpaddedStd := strings.TrimRight(encoded, "=")
+		if strings.Contains(fullURL, encoded) || (unpaddedStd != encoded && strings.Contains(fullURL, unpaddedStd)) {
 			return Result{
 				Allowed: false,
 				Reason:  "known secret leak detected (base64-encoded)",
@@ -723,7 +728,9 @@ func (s *Scanner) checkFileSecretLeak(parsed *url.URL) Result {
 		}
 
 		encodedURL := base64.URLEncoding.EncodeToString([]byte(secret))
-		if encodedURL != encoded && strings.Contains(fullURL, encodedURL) {
+		unpaddedURL := strings.TrimRight(encodedURL, "=")
+		if (encodedURL != encoded && strings.Contains(fullURL, encodedURL)) ||
+			(unpaddedURL != unpaddedStd && strings.Contains(fullURL, unpaddedURL)) {
 			return Result{
 				Allowed: false,
 				Reason:  "known secret leak detected (base64url-encoded)",
@@ -794,19 +801,17 @@ func extractEnvSecrets(minLen int) []string {
 	return secrets
 }
 
-// dedupSecrets removes values from fileSecrets that already exist in envSecrets.
-// This prevents double-scanning when a secret appears in both sources.
+// dedupSecrets removes duplicates from fileSecrets: both against envSecrets
+// (preventing double-scanning) and within fileSecrets itself.
 func dedupSecrets(fileSecrets, envSecrets []string) []string {
-	if len(envSecrets) == 0 {
-		return fileSecrets
-	}
-	existing := make(map[string]struct{}, len(envSecrets))
+	existing := make(map[string]struct{}, len(envSecrets)+len(fileSecrets))
 	for _, s := range envSecrets {
 		existing[s] = struct{}{}
 	}
 	var result []string
 	for _, s := range fileSecrets {
 		if _, ok := existing[s]; !ok {
+			existing[s] = struct{}{}
 			result = append(result, s)
 		}
 	}
@@ -848,8 +853,8 @@ func loadSecretsFile(path string, minLen int) ([]string, error) { //nolint:unpar
 			first = false
 		}
 
-		// Strip trailing whitespace/tabs/CR.
-		line = strings.TrimRight(line, " \t\r")
+		// Strip leading and trailing whitespace/tabs/CR.
+		line = strings.TrimSpace(line)
 
 		// Skip blank lines.
 		if line == "" {

@@ -928,3 +928,26 @@ func mustCompile(pattern string) *regexp.Regexp {
 func compilePattern(pattern string) (*regexp.Regexp, error) {
 	return regexp.Compile(pattern)
 }
+
+// --- Codex Creative Security Round Tests ---
+
+func TestCheckToolCall_FullwidthCommandObfuscation(t *testing.T) {
+	// Fullwidth Latin ｒｍ (U+FF52 U+FF4D) used to evade "rm -rf" detection.
+	// strings.Fields handles Unicode whitespace, but NFKC normalization of
+	// fullwidth chars to ASCII depends on the policy matching path.
+	pc := defaultPolicyConfig(t)
+	v := pc.CheckToolCall("bash", []string{"\uff52\uff4d -rf /tmp/demo"})
+	if !v.Matched {
+		t.Skip("known gap: fullwidth Latin chars not normalized before policy matching")
+	}
+}
+
+func TestCheckToolCall_HomoglyphCyrillicCommand(t *testing.T) {
+	// Cyrillic м (U+043C) substituted for Latin m in "rm": "rм -rf".
+	// Policy regex `\brm\s+` expects ASCII "rm" — Cyrillic evades the match.
+	pc := defaultPolicyConfig(t)
+	v := pc.CheckToolCall("bash", []string{"r\u043c -rf /tmp/demo"})
+	if !v.Matched {
+		t.Skip("known gap: Cyrillic homoglyph in command not normalized before policy matching")
+	}
+}

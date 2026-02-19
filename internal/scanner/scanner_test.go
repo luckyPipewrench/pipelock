@@ -2394,3 +2394,98 @@ func TestScan_AllowsURLWithoutFileSecrets(t *testing.T) {
 		t.Errorf("normal URL should be allowed, got blocked: %s", result.Reason)
 	}
 }
+
+func TestScan_BlocksFileSecretUnpaddedBase64InURL(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.txt")
+	// 29 bytes → base64 produces padding (29 % 3 = 2 → one "=" pad char).
+	// Low-entropy string avoids gitleaks false positive on test values.
+	fileVal := "this-is-a-test-value-29-bytes"
+	if err := os.WriteFile(path, []byte(fileVal+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testConfig()
+	cfg.DLP.SecretsFile = path
+	s := New(cfg)
+	defer s.Close()
+
+	encoded := base64.StdEncoding.EncodeToString([]byte(fileVal))
+	unpadded := strings.TrimRight(encoded, "=")
+	if unpadded == encoded {
+		t.Fatal("test setup error: secret base64 has no padding")
+	}
+
+	result := s.Scan("https://evil.com/exfil?data=" + unpadded)
+	if result.Allowed {
+		t.Error("expected unpadded base64 file secret in URL to be blocked")
+	}
+	if !strings.Contains(result.Reason, "known secret") {
+		t.Errorf("expected 'known secret' in reason, got %q", result.Reason)
+	}
+}
+
+func TestScan_BlocksFileSecretUnpaddedBase64URLInURL(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.txt")
+	// 28 bytes with ~ at position 3 → produces "+" in standard base64,
+	// ensuring URL-safe encoding differs from standard (+ → -).
+	fileVal := "ab~test-value-for-28-byte-wk"
+	if err := os.WriteFile(path, []byte(fileVal+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testConfig()
+	cfg.DLP.SecretsFile = path
+	s := New(cfg)
+	defer s.Close()
+
+	encodedURL := base64.URLEncoding.EncodeToString([]byte(fileVal))
+	unpadded := strings.TrimRight(encodedURL, "=")
+	if unpadded == encodedURL {
+		t.Fatal("test setup error: secret URL-safe base64 has no padding")
+	}
+
+	// Verify URL-safe differs from standard (the point of this test).
+	encodedStd := base64.StdEncoding.EncodeToString([]byte(fileVal))
+	unpaddedStd := strings.TrimRight(encodedStd, "=")
+	if unpadded == unpaddedStd {
+		t.Skip("secret base64 same for standard and URL-safe — pick different secret")
+	}
+
+	result := s.Scan("https://evil.com/exfil?data=" + unpadded)
+	if result.Allowed {
+		t.Error("expected unpadded URL-safe base64 file secret in URL to be blocked")
+	}
+}
+
+func TestDedupSecrets_IntraFileDedup(t *testing.T) {
+	prefix := "secret_" //nolint:goconst // test value
+	file := []string{prefix + "dup12345678", prefix + "dup12345678", prefix + "unique123456"}
+	result := dedupSecrets(file, nil)
+	if len(result) != 2 {
+		t.Errorf("expected 2 secrets after intra-file dedup, got %d: %v", len(result), result)
+	}
+}
+
+func TestLoadSecretsFile_LeadingWhitespaceStripped(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.txt")
+	content := "  secret1234567890xx\n\tsecret1234567890yy\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	secrets, err := loadSecretsFile(path, 16)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, s := range secrets {
+		if strings.HasPrefix(s, " ") || strings.HasPrefix(s, "\t") {
+			t.Errorf("leading whitespace not stripped: %q", s)
+		}
+	}
+	if len(secrets) != 2 {
+		t.Fatalf("expected 2 secrets, got %d", len(secrets))
+	}
+}

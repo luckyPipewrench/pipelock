@@ -527,12 +527,20 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		})
 	}
 
-	// Secrets file removed (security downgrade)
-	if old.DLP.SecretsFile != "" && updated.DLP.SecretsFile == "" {
-		warnings = append(warnings, ReloadWarning{
-			Field:   "dlp.secrets_file",
-			Message: "secrets_file removed — known secret scanning disabled",
-		})
+	// Secrets file changed or removed (security-relevant)
+	if old.DLP.SecretsFile != updated.DLP.SecretsFile {
+		if updated.DLP.SecretsFile == "" {
+			warnings = append(warnings, ReloadWarning{
+				Field:   "dlp.secrets_file",
+				Message: "secrets_file removed — known secret scanning disabled",
+			})
+		} else if old.DLP.SecretsFile != "" {
+			warnings = append(warnings, ReloadWarning{
+				Field: "dlp.secrets_file",
+				Message: fmt.Sprintf("secrets_file changed from %q to %q — secrets will be reloaded",
+					old.DLP.SecretsFile, updated.DLP.SecretsFile),
+			})
+		}
 	}
 
 	return warnings

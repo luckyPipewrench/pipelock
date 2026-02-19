@@ -1592,6 +1592,43 @@ func TestValidateReload_SecretsFileBothEmpty_NoWarning(t *testing.T) {
 	}
 }
 
+func TestValidateReload_SecretsFilePathChanged(t *testing.T) {
+	old := Defaults()
+	old.DLP.SecretsFile = "/path/to/old-secrets.txt"
+
+	updated := Defaults()
+	updated.DLP.SecretsFile = "/path/to/new-secrets.txt"
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == "dlp.secrets_file" { //nolint:goconst // test value
+			found = true
+			if !strings.Contains(w.Message, "changed") {
+				t.Errorf("expected 'changed' in message, got: %s", w.Message)
+			}
+		}
+	}
+	if !found {
+		t.Error("expected warning for secrets_file path change")
+	}
+}
+
+func TestValidateReload_SecretsFileAdded_NoWarning(t *testing.T) {
+	old := Defaults()
+	// No secrets_file initially
+
+	updated := Defaults()
+	updated.DLP.SecretsFile = "/path/to/secrets.txt" //nolint:goconst // test value
+
+	warnings := ValidateReload(old, updated)
+	for _, w := range warnings {
+		if w.Field == "dlp.secrets_file" { //nolint:goconst // test value
+			t.Errorf("adding secrets_file should not warn, got: %s", w.Message)
+		}
+	}
+}
+
 func TestValidateReload_MCPToolPolicyRulesIncreased_NoWarning(t *testing.T) {
 	old := Defaults()
 	old.MCPToolPolicy.Rules = []ToolPolicyRule{

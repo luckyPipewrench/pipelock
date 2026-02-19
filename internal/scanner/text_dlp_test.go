@@ -804,3 +804,51 @@ func TestScanTextForDLP_NoFileSecrets_Clean(t *testing.T) {
 		t.Errorf("expected clean result with no file secrets, got %v", result.Matches)
 	}
 }
+
+func TestScanTextForDLP_FileSecretEncodedFieldValues(t *testing.T) {
+	secret := "MyFileSecretValue1234" //nolint:goconst // test value
+
+	tests := []struct {
+		name    string
+		text    string
+		wantEnc string
+	}{
+		{"raw", secret, ""},
+		{"base64", base64.StdEncoding.EncodeToString([]byte(secret)), "base64"},
+		{"hex", hex.EncodeToString([]byte(secret)), "hex"},
+		{"base32", base32.StdEncoding.EncodeToString([]byte(secret)), "base32"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "secrets.txt")
+			if err := os.WriteFile(path, []byte(secret+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			cfg := testConfig()
+			cfg.DLP.SecretsFile = path
+			s := New(cfg)
+			defer s.Close()
+
+			result := s.ScanTextForDLP(tt.text)
+			if result.Clean {
+				t.Fatal("expected detection")
+			}
+
+			var found bool
+			for _, m := range result.Matches {
+				if m.PatternName == "Known Secret Leak" {
+					found = true
+					if m.Encoded != tt.wantEnc {
+						t.Errorf("Encoded = %q, want %q", m.Encoded, tt.wantEnc)
+					}
+				}
+			}
+			if !found {
+				t.Error("expected 'Known Secret Leak' match")
+			}
+		})
+	}
+}

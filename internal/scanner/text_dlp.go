@@ -218,7 +218,6 @@ func (s *Scanner) checkFileSecretLeakText(text string) []TextDLPMatch {
 			matches = append(matches, TextDLPMatch{
 				PatternName: "Known Secret Leak",
 				Severity:    "critical",
-				Encoded:     "env",
 			})
 			return matches
 		}
@@ -230,7 +229,7 @@ func (s *Scanner) checkFileSecretLeakText(text string) []TextDLPMatch {
 			matches = append(matches, TextDLPMatch{
 				PatternName: "Known Secret Leak",
 				Severity:    "critical",
-				Encoded:     "env",
+				Encoded:     "base64",
 			})
 			return matches
 		}
@@ -243,7 +242,7 @@ func (s *Scanner) checkFileSecretLeakText(text string) []TextDLPMatch {
 			matches = append(matches, TextDLPMatch{
 				PatternName: "Known Secret Leak",
 				Severity:    "critical",
-				Encoded:     "env",
+				Encoded:     "base64",
 			})
 			return matches
 		}
@@ -254,18 +253,19 @@ func (s *Scanner) checkFileSecretLeakText(text string) []TextDLPMatch {
 			matches = append(matches, TextDLPMatch{
 				PatternName: "Known Secret Leak",
 				Severity:    "critical",
-				Encoded:     "env",
+				Encoded:     "hex",
 			})
 			return matches
 		}
 
-		// Base32-encoded match.
+		// Base32-encoded match (padded and unpadded).
 		b32 := base32.StdEncoding.EncodeToString([]byte(secret))
-		if strings.Contains(text, b32) {
+		b32NoPad := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString([]byte(secret))
+		if strings.Contains(text, b32) || (b32NoPad != b32 && strings.Contains(text, b32NoPad)) {
 			matches = append(matches, TextDLPMatch{
 				PatternName: "Known Secret Leak",
 				Severity:    "critical",
-				Encoded:     "env",
+				Encoded:     "base32",
 			})
 			return matches
 		}

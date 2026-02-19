@@ -1546,6 +1546,52 @@ func TestValidate_SecretsFileEmptyString_NoValidation(t *testing.T) {
 	}
 }
 
+func TestValidateReload_SecretsFileRemoved(t *testing.T) {
+	old := Defaults()
+	old.DLP.SecretsFile = "/path/to/secrets.txt" //nolint:goconst // test value
+
+	updated := Defaults()
+	updated.DLP.SecretsFile = ""
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == "dlp.secrets_file" { //nolint:goconst // test value
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected warning for secrets_file removal")
+	}
+}
+
+func TestValidateReload_SecretsFileSame_NoWarning(t *testing.T) {
+	old := Defaults()
+	old.DLP.SecretsFile = "/path/to/secrets.txt" //nolint:goconst // test value
+
+	updated := Defaults()
+	updated.DLP.SecretsFile = "/path/to/secrets.txt" //nolint:goconst // test value
+
+	warnings := ValidateReload(old, updated)
+	for _, w := range warnings {
+		if w.Field == "dlp.secrets_file" { //nolint:goconst // test value
+			t.Errorf("same secrets_file should not warn, got: %s", w.Message)
+		}
+	}
+}
+
+func TestValidateReload_SecretsFileBothEmpty_NoWarning(t *testing.T) {
+	old := Defaults()
+	updated := Defaults()
+
+	warnings := ValidateReload(old, updated)
+	for _, w := range warnings {
+		if w.Field == "dlp.secrets_file" { //nolint:goconst // test value
+			t.Errorf("both empty should not warn, got: %s", w.Message)
+		}
+	}
+}
+
 func TestValidateReload_MCPToolPolicyRulesIncreased_NoWarning(t *testing.T) {
 	old := Defaults()
 	old.MCPToolPolicy.Rules = []ToolPolicyRule{

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -16,11 +17,28 @@ import (
 // before regex matching ensures policy catches the intended command.
 var shellExpansionRe = regexp.MustCompile(`\$\{?IFS\}?`)
 
+// shellOctalRe matches shell octal escape sequences (\NNN where N is 0-7).
+// In bash, $'\155' decodes to 'm'. Decoding these reveals the intended command:
+// "r\155 -rf" becomes "rm -rf". Must run before shellEscapeRe.
+var shellOctalRe = regexp.MustCompile(`\\([0-7]{1,3})`)
+
+// shellHexRe matches shell hex escape sequences (\xHH).
+// In bash, $'\x6d' decodes to 'm'. Decoding these reveals the intended command.
+var shellHexRe = regexp.MustCompile(`\\x([0-9a-fA-F]{2})`)
+
 // shellEscapeRe matches backslash-escaped word characters used to break command
 // keywords. In bash, backslash before a non-special character is a no-op:
 // "r\m -rf" executes identically to "rm -rf". Stripping these lets policy
-// regex see the intended command.
+// regex see the intended command. Runs after octal/hex decode.
 var shellEscapeRe = regexp.MustCompile(`\\(\w)`)
+
+// simpleCmdSubRe matches simple command substitutions used to build command names.
+// $(printf rm) and $(echo rm) are evasion techniques that hide the real command.
+var simpleCmdSubRe = regexp.MustCompile(`\$\(\s*(?:echo|printf)\s+['"]?(\w+)['"]?\s*\)`)
+
+// simpleAssignRe matches shell variable assignment followed by separator.
+// "x=rm;$x -rf" hides the command name in a variable.
+var simpleAssignRe = regexp.MustCompile(`(\w+)=(\w+)\s*[;&|]`)
 
 // PolicyConfig holds compiled tool call policy rules for pre-execution checking.
 // A nil PolicyConfig disables policy checking entirely.
@@ -87,12 +105,20 @@ func (pc *PolicyConfig) CheckToolCall(toolName string, argStrings []string) Poli
 
 	// Flatten multi-token values (e.g. "-r -f" → ["-r", "-f"]) so that
 	// flags split within a single field are treated as separate tokens.
-	// Shell expansion tokens like ${IFS} are normalized to spaces first,
-	// so "rm${IFS}-rf" becomes "rm -rf" before tokenization.
+	//
+	// Normalization pipeline (order matters):
+	//  1. Unicode normalization (zero-width, homoglyphs, combining marks)
+	//  2. Octal/hex escape decode (\155 → m, \x6d → m)
+	//  3. Backslash escape strip (\m → m)
+	//  4. Command substitution resolve ($(printf rm) → rm)
+	//  5. Variable assignment resolve (x=rm;$x → x=rm;rm)
+	//  6. Shell expansion normalize (${IFS} → space)
 	var tokens []string
 	for _, s := range argStrings {
 		normalized := scanner.NormalizeForMatching(s)
+		normalized = decodeShellEscapes(normalized)
 		normalized = shellEscapeRe.ReplaceAllString(normalized, "$1")
+		normalized = resolveShellConstruction(normalized)
 		normalized = shellExpansionRe.ReplaceAllString(normalized, " ")
 		tokens = append(tokens, strings.Fields(normalized)...)
 	}
@@ -299,6 +325,41 @@ func stricterAction(a, b string) string {
 		return b
 	}
 	return a
+}
+
+// decodeShellEscapes resolves octal (\NNN) and hex (\xHH) escape sequences
+// to their character equivalents. This catches evasion like r\155 → rm.
+func decodeShellEscapes(s string) string {
+	s = shellHexRe.ReplaceAllStringFunc(s, func(m string) string {
+		v, err := strconv.ParseUint(m[2:], 16, 8)
+		if err != nil {
+			return m
+		}
+		return string(rune(v))
+	})
+	s = shellOctalRe.ReplaceAllStringFunc(s, func(m string) string {
+		v, err := strconv.ParseUint(m[1:], 8, 8)
+		if err != nil {
+			return m
+		}
+		return string(rune(v))
+	})
+	return s
+}
+
+// resolveShellConstruction resolves simple command substitutions and variable
+// assignments used to build command names indirectly:
+//   - $(printf rm) → rm
+//   - $(echo rm) → rm
+//   - x=rm;$x → x=rm;rm
+func resolveShellConstruction(s string) string {
+	s = simpleCmdSubRe.ReplaceAllString(s, "$1")
+	matches := simpleAssignRe.FindAllStringSubmatch(s, 10)
+	for _, m := range matches {
+		s = strings.ReplaceAll(s, "${"+m[1]+"}", m[2])
+		s = strings.ReplaceAll(s, "$"+m[1], m[2])
+	}
+	return s
 }
 
 // DefaultToolPolicyRules returns the built-in set of tool call policy rules

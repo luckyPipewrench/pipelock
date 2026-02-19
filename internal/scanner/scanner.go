@@ -704,7 +704,7 @@ func (s *Scanner) checkFileSecretLeak(parsed *url.URL) Result {
 	}
 
 	fullURL := stripControlChars(parsed.String())
-	decodedURL := IterativeDecode(fullURL)
+	decodedURL := stripControlChars(IterativeDecode(fullURL))
 	lowerURL := strings.ToLower(fullURL)
 	lowerDecoded := strings.ToLower(decodedURL)
 

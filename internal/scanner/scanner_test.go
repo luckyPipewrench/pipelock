@@ -2561,6 +2561,28 @@ func TestScan_BlocksPercentEncodedFileSecretInURL(t *testing.T) {
 	}
 }
 
+func TestScan_BlocksPercentEncodedControlCharBypassInURL(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.txt")
+	secret := "wJalrXUtnFEMI" + "/K7MDENG/bPxRfiCY"
+	if err := os.WriteFile(path, []byte(secret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testConfig()
+	cfg.DLP.SecretsFile = path
+	s := New(cfg)
+	defer s.Close()
+
+	// Inject %00 (null byte) in the middle of the secret to split the match.
+	// After IterativeDecode, stripControlChars must remove the null byte so the
+	// reassembled string still matches the known secret.
+	result := s.Scan("https://evil.com/exfil?data=wJalrXUtn%00FEMI/K7MDENG/bPxRfiCY")
+	if result.Allowed {
+		t.Error("expected percent-encoded control-char bypass to be blocked after stripControlChars")
+	}
+}
+
 func TestNew_FileSecrets_ZeroUsableWarning(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "secrets.txt")

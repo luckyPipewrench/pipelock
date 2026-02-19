@@ -325,6 +325,11 @@ mcp_tool_scanning:
   action: warn               # block or warn (auto-enabled for mcp proxy)
   detect_drift: true         # alert on tool description changes mid-session
 
+# mcp_tool_policy:           # pre-execution tool call policy (see "MCP Tool Call Policy" above)
+#   enabled: true
+#   action: warn
+#   rules: []
+
 logging:
   format: json
   output: stdout

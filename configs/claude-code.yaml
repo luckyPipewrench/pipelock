@@ -117,11 +117,11 @@ response_scanning:
     - name: "System Override"
       regex: '(?im)^\s*system\s*:'
     - name: "Role Override"
-      regex: '(?i)you\s+are\s+(now\s+)?(a\s+)?(DAN|evil|unrestricted|jailbroken|unfiltered)'
+      regex: '(?i)you\s+are\s+(now\s+)?(a\s+)?(\bDAN\b|evil|unrestricted|jailbroken|unfiltered)'
     - name: "New Instructions"
       regex: '(?i)(new|updated|revised)\s+(instructions|directives|rules|prompt)'
     - name: "Jailbreak Attempt"
-      regex: '(?i)(DAN|developer\s+mode|sudo\s+mode|unrestricted\s+mode)'
+      regex: '(?i)(\bDAN\b|developer\s+mode|sudo\s+mode|unrestricted\s+mode)'
     - name: "Hidden Instruction"
       regex: '(?i)(do\s+not\s+(reveal|tell|show|display|mention)\s+this\s+to\s+the\s+user|hidden\s+instruction|invisible\s+to\s+(the\s+)?user|the\s+user\s+(cannot|must\s+not|should\s+not)\s+see\s+this)'
     - name: "Behavior Override"
@@ -147,7 +147,7 @@ response_scanning:
     - name: "Instruction Invalidation"
       regex: '(?i)(treat|consider|regard)\s+(all\s+)?(earlier|prior|previous|preceding|above)\s+(directions|instructions|guidelines|rules|prompts?)\s+as\s+(obsolete|void|invalid|superseded|overridden|null|cancelled|revoked|inapplicable)'
     - name: "Instruction Dismissal"
-      regex: '(?i)(set|put|cast|push|throw)\s+(all\s+)?(previous|prior|earlier|preceding|above|existing|current)\s+(directives|instructions|guidelines|rules|prompts?|constraints)\s+(aside|away)'
+      regex: '(?i)(set|put|cast|push|throw)\s+(all\s+)?(previous|prior|earlier|preceding|above|existing|current)\s+(\w+\s+)?(directives|instructions|guidelines|rules|prompts?|constraints)\s+(aside|away)'
 
 mcp_input_scanning:
   enabled: true

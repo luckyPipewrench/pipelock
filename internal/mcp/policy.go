@@ -10,6 +10,12 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
+// shellExpansionRe matches shell variable expansions used as whitespace substitutes.
+// Attackers use ${IFS} or $IFS to replace spaces: "rm${IFS}-rf" expands to "rm -rf"
+// at runtime, but policy sees the literal "${IFS}" token. Normalizing these to spaces
+// before regex matching ensures policy catches the intended command.
+var shellExpansionRe = regexp.MustCompile(`\$\{?IFS\}?`)
+
 // PolicyConfig holds compiled tool call policy rules for pre-execution checking.
 // A nil PolicyConfig disables policy checking entirely.
 type PolicyConfig struct {
@@ -75,9 +81,13 @@ func (pc *PolicyConfig) CheckToolCall(toolName string, argStrings []string) Poli
 
 	// Flatten multi-token values (e.g. "-r -f" → ["-r", "-f"]) so that
 	// flags split within a single field are treated as separate tokens.
+	// Shell expansion tokens like ${IFS} are normalized to spaces first,
+	// so "rm${IFS}-rf" becomes "rm -rf" before tokenization.
 	var tokens []string
 	for _, s := range argStrings {
-		tokens = append(tokens, strings.Fields(scanner.NormalizeForMatching(s))...)
+		normalized := scanner.NormalizeForMatching(s)
+		normalized = shellExpansionRe.ReplaceAllString(normalized, " ")
+		tokens = append(tokens, strings.Fields(normalized)...)
 	}
 	joined := strings.Join(tokens, " ")
 
@@ -271,12 +281,12 @@ func stricterAction(a, b string) string {
 	ra, aOK := actionRank[a]
 	rb, bOK := actionRank[b]
 	if !aOK {
-		a = "block"
-		ra = actionRank["block"]
+		a = "block" //nolint:goconst // action string used as-is from config
+		ra = actionRank[a]
 	}
 	if !bOK {
-		b = "block"
-		rb = actionRank["block"]
+		b = "block" //nolint:goconst // action string used as-is from config
+		rb = actionRank[b]
 	}
 	if rb > ra {
 		return b
@@ -331,6 +341,12 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 			Name:        "Destructive Git Operation",
 			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec|git)$`,
 			ArgPattern:  `(?i)(\bgit\s+)?(push\s+(--force(\s|$)|-f\b)|reset\s+--hard\b|clean\s+-fd\b)`,
+			Action:      "block",
+		},
+		{
+			Name:        "Encoded Command Execution",
+			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$`,
+			ArgPattern:  `(?i)(\beval\b.*\bbase64\b|\bbase64\s+(-d|--decode)\b.*\|\s*(ba)?sh\b)`,
 			Action:      "block",
 		},
 	}

@@ -10,7 +10,7 @@ This file helps contributors (human and AI) work effectively on the Pipelock cod
 | Go version | 1.24+ |
 | License | Apache 2.0 |
 | Binary | Single static binary, ~12MB |
-| Dependencies | cobra, zerolog, go-readability, yaml.v3, prometheus, fsnotify |
+| Dependencies | cobra, zerolog, go-readability, yaml.v3, prometheus, fsnotify, x/text |
 
 ## Build, Test, Lint
 
@@ -40,7 +40,7 @@ Both must pass before pushing. CI runs lint and tests on all code (not just chan
 ```
 cmd/pipelock/          Entry point (main.go)
 internal/
-  cli/                 Cobra commands (run, check, generate, logs, git, integrity, mcp, keygen, sign, verify, trust, version, healthcheck)
+  cli/                 Cobra commands (audit, check, demo, generate, git, healthcheck, integrity, keygen, logs, mcp, run, sign, test, trust, verify, version)
   proxy/               HTTP fetch proxy (/fetch, /health, /metrics, /stats)
   scanner/             URL + response scanning pipeline (9 layers)
   config/              YAML config loading, validation, hot-reload (fsnotify + SIGHUP)
@@ -95,8 +95,11 @@ Wraps any MCP server as a stdio proxy with bidirectional scanning. Server respon
 
 | Command | Purpose |
 |---------|---------|
+| `pipelock audit` | Scan a project directory and generate a tailored config |
 | `pipelock run` | Start the fetch proxy server |
-| `pipelock check` | Validate a config file |
+| `pipelock check` | Validate a config file and optionally scan a URL |
+| `pipelock test` | Run built-in scanner validation tests |
+| `pipelock demo` | Run an interactive demo of scanner capabilities |
 | `pipelock generate config` | Generate config from preset (--preset balanced/strict/audit). Agent configs in `configs/` for direct use with `--config`. |
 | `pipelock generate docker-compose` | Generate a Docker Compose file for running the proxy |
 | `pipelock mcp proxy` | MCP stdio proxy wrapping an MCP server |
@@ -113,8 +116,8 @@ Wraps any MCP server as a stdio proxy with bidirectional scanning. Server respon
 ### Requirements
 
 - **Race detector mandatory**: All tests run with `-race -count=1`
-- **90% coverage target** across all packages
-- **1,580+ tests** currently passing
+- **95% coverage target** on new code, maintain 95%+ overall (currently 96.1%)
+- **1,900+ tests** currently passing (count with `go test -v ./... 2>&1 | grep -c -- '--- PASS:'`)
 
 ### Patterns
 
@@ -139,6 +142,20 @@ reg := prometheus.NewRegistry()
 // Integration tests use net.ListenConfig for free ports
 ln, _ := net.ListenConfig{}.Listen(ctx, "tcp", "127.0.0.1:0")
 ```
+
+### Updating test counts
+
+When docs reference a test count, use the **total test cases** (including subtests), not the number of `func Test` definitions. Table-driven tests expand into many subtests via `t.Run()`.
+
+```bash
+# Correct way to count (includes subtests):
+go test -v ./... 2>&1 | grep -c -- '--- PASS:'
+
+# Wrong (only counts function definitions, misses subtests):
+grep -r "func Test" internal/ | wc -l
+```
+
+After adding tests, update the count in all locations: `CLAUDE.md`, `docs/security-assurance.md`, `docs/compliance/eu-ai-act-mapping.md`, and any blog posts referencing the count. Use a round-down number (e.g., "1,900+" not "1,997") so it doesn't go stale on every minor addition. Verify with: `go test -v ./... 2>&1 | grep -c -- '--- PASS:'`
 
 ### Common pitfalls
 
@@ -183,7 +200,7 @@ Tag push (`v*`) triggers GoReleaser v2:
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide. Summary:
 
 1. Fork and create a feature branch
-2. Write tests for new functionality (aim for 90%+ coverage)
+2. Write tests for new functionality (aim for 95%+ coverage)
 3. Run `make lint && make test` — both must pass
 4. Open a PR against `main` with a clear description
 5. CI must pass (3 required checks). PRs are squash-merged.
@@ -201,7 +218,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide. Summary:
 
 - **Security bugs**: Report via [GitHub Security Advisories](https://github.com/luckyPipewrench/pipelock/security/advisories) — NOT public issues
 - **Don't weaken capability separation** — the proxy must never have access to agent secrets
-- **Don't add dependencies without justification** — 7 direct deps (cobra, zerolog, go-readability, yaml.v3, prometheus, fsnotify, tablewriter) is a feature, not a limitation
+- **Don't add dependencies without justification** — 7 direct deps (cobra, zerolog, go-readability, yaml.v3, prometheus, fsnotify, x/text) is a feature, not a limitation
 - **Don't bypass fail-closed defaults** — if in doubt, block
 
 ## Common Development Tasks

@@ -4,6 +4,7 @@
 package scanner
 
 import (
+	"bufio"
 	"context"
 	"encoding/base32"
 	"encoding/base64"
@@ -702,6 +703,87 @@ func extractEnvSecrets(minLen int) []string {
 	}
 
 	return secrets
+}
+
+// loadSecretsFile reads explicit secret values from a file, one per line.
+// Lines starting with # (after optional whitespace) are comments.
+// Blank lines, null-byte lines, and lines below minLen are skipped.
+// Max 4096 bytes per line, max 1000 entries.
+func loadSecretsFile(path string, minLen int) ([]string, error) { //nolint:unparam // minLen varies in tests
+	f, err := os.Open(path) //nolint:gosec // G304: path validated by config.Validate
+	if err != nil {
+		return nil, fmt.Errorf("opening secrets file: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+
+	const (
+		maxLineLen = 4096
+		maxEntries = 1000
+	)
+
+	var (
+		secrets []string
+		lineNum int
+		first   = true
+	)
+
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, maxLineLen*2), maxLineLen*2)
+
+	for sc.Scan() {
+		lineNum++
+		line := sc.Text()
+
+		// Strip UTF-8 BOM from first line.
+		if first {
+			line = strings.TrimPrefix(line, "\xef\xbb\xbf")
+			first = false
+		}
+
+		// Strip trailing whitespace/tabs/CR.
+		line = strings.TrimRight(line, " \t\r")
+
+		// Skip blank lines.
+		if line == "" {
+			continue
+		}
+
+		// Skip comment lines (# as first non-whitespace).
+		if strings.HasPrefix(strings.TrimLeft(line, " \t"), "#") {
+			continue
+		}
+
+		// Reject lines with null bytes.
+		if strings.ContainsRune(line, '\x00') {
+			fmt.Fprintf(os.Stderr, "pipelock: warning: secrets_file line %d contains null byte, skipping\n", lineNum)
+			continue
+		}
+
+		// Reject lines exceeding max length.
+		if len(line) > maxLineLen {
+			fmt.Fprintf(os.Stderr, "pipelock: warning: secrets_file line %d exceeds %d bytes, skipping\n", lineNum, maxLineLen)
+			continue
+		}
+
+		// Skip values below minimum length.
+		if len(line) < minLen {
+			fmt.Fprintf(os.Stderr, "pipelock: warning: secrets_file line %d too short (%d < %d), skipping\n", lineNum, len(line), minLen)
+			continue
+		}
+
+		// Enforce max entries.
+		if len(secrets) >= maxEntries {
+			fmt.Fprintf(os.Stderr, "pipelock: warning: secrets_file exceeds %d entries, ignoring remainder\n", maxEntries)
+			break
+		}
+
+		secrets = append(secrets, line)
+	}
+	if err := sc.Err(); err != nil {
+		return nil, fmt.Errorf("reading secrets file: %w", err)
+	}
+
+	return secrets, nil
 }
 
 // checkEntropy calculates Shannon entropy on URL path segments and query values.

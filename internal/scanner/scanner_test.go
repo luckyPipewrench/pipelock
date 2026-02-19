@@ -4,6 +4,9 @@ import (
 	"encoding/base32"
 	"fmt"
 	"net"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1974,5 +1977,239 @@ func TestScan_AllowlistRunsBeforeBlocklist(t *testing.T) {
 	// Allowlist should fire BEFORE blocklist
 	if result.Scanner != "allowlist" {
 		t.Errorf("expected scanner=allowlist (checked first), got %s", result.Scanner)
+	}
+}
+
+// --- loadSecretsFile Tests ---
+
+func TestLoadSecretsFile_Basic(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.txt")
+	content := "# Database password\nxK9mP2nQ7vR4wT6y\n\n# Vault token\nhvs.CAESIJ9PQRsTuVwXyZ0123456789\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	secrets, err := loadSecretsFile(path, 16)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(secrets) != 2 {
+		t.Fatalf("expected 2 secrets, got %d", len(secrets))
+	}
+	if secrets[0] != "xK9mP2nQ7vR4wT6y" {
+		t.Errorf("expected first secret 'xK9mP2nQ7vR4wT6y', got %q", secrets[0])
+	}
+}
+
+func TestLoadSecretsFile_CommentsAndBlankLines(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.txt")
+	content := "# full comment\n  # indented comment\n\n\n  \nsecret1234567890xx\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	secrets, err := loadSecretsFile(path, 16)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(secrets) != 1 {
+		t.Fatalf("expected 1 secret, got %d: %v", len(secrets), secrets)
+	}
+}
+
+func TestLoadSecretsFile_InlineHashPreserved(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.txt")
+	content := "secret#with#hashes1\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	secrets, err := loadSecretsFile(path, 16)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(secrets) != 1 || secrets[0] != "secret#with#hashes1" {
+		t.Errorf("inline # should be preserved, got %v", secrets)
+	}
+}
+
+func TestLoadSecretsFile_TrailingWhitespaceStripped(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.txt")
+	content := "secret1234567890xx  \nsecret1234567890yy\t\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	secrets, err := loadSecretsFile(path, 16)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, s := range secrets {
+		if strings.ContainsAny(s, " \t\r") {
+			t.Errorf("trailing whitespace not stripped: %q", s)
+		}
+	}
+}
+
+func TestLoadSecretsFile_CRLFLineEndings(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.txt")
+	content := "secret1234567890xx\r\nsecret1234567890yy\r\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	secrets, err := loadSecretsFile(path, 16)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(secrets) != 2 {
+		t.Fatalf("expected 2 secrets with CRLF, got %d", len(secrets))
+	}
+	for _, s := range secrets {
+		if strings.Contains(s, "\r") {
+			t.Errorf("CR not stripped: %q", s)
+		}
+	}
+}
+
+func TestLoadSecretsFile_UTF8BOMStripped(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.txt")
+	bom := "\xef\xbb\xbf"
+	content := bom + "secret1234567890xx\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	secrets, err := loadSecretsFile(path, 16)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(secrets) != 1 {
+		t.Fatalf("expected 1 secret, got %d", len(secrets))
+	}
+	if strings.HasPrefix(secrets[0], bom) {
+		t.Error("UTF-8 BOM not stripped from first line")
+	}
+	if secrets[0] != "secret1234567890xx" {
+		t.Errorf("expected 'secret1234567890xx', got %q", secrets[0])
+	}
+}
+
+func TestLoadSecretsFile_NullBytesSkipped(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.txt")
+	content := "goodsecretvalue1234\nbad\x00secret12345678\nanothergoodsecret12\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	secrets, err := loadSecretsFile(path, 16)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(secrets) != 2 {
+		t.Fatalf("expected 2 secrets (null byte line skipped), got %d: %v", len(secrets), secrets)
+	}
+}
+
+func TestLoadSecretsFile_MinLengthFiltered(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.txt")
+	content := "short\nlongenoughsecretvalue1234\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	secrets, err := loadSecretsFile(path, 16)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(secrets) != 1 {
+		t.Fatalf("expected 1 secret (short filtered), got %d: %v", len(secrets), secrets)
+	}
+}
+
+func TestLoadSecretsFile_MaxLineLengthEnforced(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.txt")
+	longLine := strings.Repeat("a", 4097)
+	content := longLine + "\nvalidsecretsixteen\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	secrets, err := loadSecretsFile(path, 16)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(secrets) != 1 {
+		t.Fatalf("expected 1 secret (long line skipped), got %d", len(secrets))
+	}
+}
+
+func TestLoadSecretsFile_MaxEntriesEnforced(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.txt")
+	var b strings.Builder
+	for i := range 1001 {
+		_, _ = fmt.Fprintf(&b, "secret%04d__padding\n", i)
+	}
+	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	secrets, err := loadSecretsFile(path, 16)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(secrets) != 1000 {
+		t.Fatalf("expected 1000 secrets (max enforced), got %d", len(secrets))
+	}
+}
+
+func TestLoadSecretsFile_EmptyFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.txt")
+	if err := os.WriteFile(path, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	secrets, err := loadSecretsFile(path, 16)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(secrets) != 0 {
+		t.Fatalf("expected 0 secrets for empty file, got %d", len(secrets))
+	}
+}
+
+func TestLoadSecretsFile_FileNotFound(t *testing.T) {
+	_, err := loadSecretsFile("/nonexistent/secrets.txt", 16)
+	if err == nil {
+		t.Error("expected error for nonexistent file")
+	}
+}
+
+func TestLoadSecretsFile_DuplicatesPreserved(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.txt")
+	content := "secret1234567890xx\nsecret1234567890xx\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	secrets, err := loadSecretsFile(path, 16)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Duplicates within the file are preserved (dedup happens against envSecrets later)
+	if len(secrets) != 2 {
+		t.Fatalf("expected 2 secrets (duplicates preserved), got %d", len(secrets))
 	}
 }

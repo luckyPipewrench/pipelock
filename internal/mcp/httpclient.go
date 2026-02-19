@@ -157,7 +157,7 @@ func (r *singleMessageReader) ReadMessage() ([]byte, error) {
 	r.done = true
 
 	data, err := io.ReadAll(io.LimitReader(r.body, int64(maxLineSize)))
-	r.body.Close() //nolint:errcheck,gosec // best-effort cleanup after read
+	_ = r.body.Close() // best-effort cleanup after read
 	if err != nil {
 		return nil, fmt.Errorf("reading response body: %w", err)
 	}
@@ -221,6 +221,13 @@ func (c *HTTPClient) OpenGETStream(ctx context.Context) (MessageReader, error) {
 		resp.Body.Close() //nolint:errcheck,gosec // best-effort cleanup
 		return nil, fmt.Errorf("%w (HTTP 405)", ErrStreamNotSupported)
 	}
+	// Redirect or other 3xx — since we disabled redirect-following, treat these
+	// as errors (consistent with SendMessage).
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		resp.Body.Close() //nolint:errcheck,gosec // best-effort cleanup
+		return nil, fmt.Errorf("GET stream HTTP %d: unexpected redirect (redirects are disabled)", resp.StatusCode)
+	}
+
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024)) //nolint:errcheck // best-effort read
 		resp.Body.Close()                                      //nolint:errcheck,gosec // best-effort cleanup

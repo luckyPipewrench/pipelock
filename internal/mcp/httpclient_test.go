@@ -560,10 +560,9 @@ func TestErrStreamNotSupported_Sentinel(t *testing.T) {
 }
 
 func TestHTTPClient_OpenGETStream_3xxRedirect(t *testing.T) {
-	// GET to a redirecting server — since we don't have explicit 3xx handling
-	// in OpenGETStream, the response gets the 302 status with redirect-following
-	// disabled. The status is < 400, so it falls through to the SSE reader path.
-	// This tests the code path after the 400+ check.
+	// GET to a redirecting server — redirect-following is disabled, so the
+	// 302 status is returned directly. OpenGETStream should reject 3xx
+	// responses as errors (consistent with SendMessage's fail-closed design).
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: {}\n\n"))
@@ -576,18 +575,82 @@ func TestHTTPClient_OpenGETStream_3xxRedirect(t *testing.T) {
 	defer srv.Close()
 
 	c := NewHTTPClient(srv.URL, nil)
-	// OpenGETStream with 302: redirect-following is disabled, server returns 302.
-	// Status 302 < 400, so it falls through to SSE reader. The body is the redirect
-	// HTML, which won't parse as SSE — reader returns EOF.
+	_, err := c.OpenGETStream(context.Background())
+	if err == nil {
+		t.Fatal("expected error for 3xx redirect, got nil")
+	}
+	if !strings.Contains(err.Error(), "unexpected redirect") {
+		t.Errorf("expected redirect error message, got: %v", err)
+	}
+}
+
+func TestHTTPClient_SendMessage_3xxRedirect(t *testing.T) {
+	// SendMessage rejects 3xx responses (redirects are disabled).
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json") //nolint:goconst // test value
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+	}))
+	defer target.Close()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusMovedPermanently)
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(srv.URL, nil)
+	_, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
+	if err == nil {
+		t.Fatal("expected error for 3xx redirect, got nil")
+	}
+	if !strings.Contains(err.Error(), "unexpected redirect") {
+		t.Errorf("expected redirect error message, got: %v", err)
+	}
+}
+
+func TestHTTPClient_DeleteSession_ServerError_NilLog(t *testing.T) {
+	// Server returns 500 but logW is nil — should not panic.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			w.Header().Set("Mcp-Session-Id", "sess-err-nillog") //nolint:goconst // test value
+			w.Header().Set("Content-Type", "application/json")  //nolint:goconst // test value
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(srv.URL, nil)
+	r, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	drain(t, r)
+
+	// Should not panic with nil logW and 500 response.
+	c.DeleteSession(nil)
+}
+
+func TestHTTPClient_OpenGETStream_IncludesHeaders(t *testing.T) {
+	// Verify extra headers are sent with GET stream requests.
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "text/event-stream") //nolint:goconst // test value
+		_, _ = w.Write([]byte("data: {}\n\n"))
+	}))
+	defer srv.Close()
+
+	headers := http.Header{"Authorization": []string{"Bearer test-token"}}
+	c := NewHTTPClient(srv.URL, headers)
 	reader, err := c.OpenGETStream(context.Background())
 	if err != nil {
-		// 302 is not >= 400, so OpenGETStream should not return an error.
 		t.Fatalf("OpenGETStream: %v", err)
 	}
-	// Should get EOF since the redirect HTML body isn't valid SSE.
-	_, err = reader.ReadMessage()
-	if !errors.Is(err, io.EOF) {
-		t.Logf("expected EOF for non-SSE redirect body, got: %v", err)
+	drain(t, reader)
+
+	if gotAuth != "Bearer test-token" {
+		t.Errorf("expected Authorization header, got %q", gotAuth)
 	}
 }
 

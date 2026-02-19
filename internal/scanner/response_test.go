@@ -614,6 +614,59 @@ func TestNormalizeWhitespace(t *testing.T) {
 	}
 }
 
+func TestReplaceInvisibleWithSpace(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"empty", "", ""},
+		{"ascii_only", "hello world", "hello world"},
+		{"zwsp", "rm\u200b-rf", "rm -rf"},
+		{"zwnj", "rm\u200c-rf", "rm -rf"},
+		{"word_joiner", "rm\u2060-rf", "rm -rf"},
+		{"del_char", "rm\x7f-rf", "rm -rf"},
+		{"c0_control", "rm\x01-rf", "rm -rf"},
+		{"c1_control", "rm\u0085-rf", "rm -rf"},
+		{"preserves_tab", "rm\t-rf", "rm\t-rf"},
+		{"preserves_newline", "rm\n-rf", "rm\n-rf"},
+		{"preserves_cr", "rm\r-rf", "rm\r-rf"},
+		{"bidi_control", "rm\u202a-rf", "rm -rf"},
+		{"variation_selector", "rm\uFE01-rf", "rm -rf"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := replaceInvisibleWithSpace(tt.input)
+			if got != tt.want {
+				t.Errorf("replaceInvisibleWithSpace(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeForPolicy(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"plain", "rm -rf /tmp", "rm -rf /tmp"},
+		{"zwsp_separator", "rm\u200b-rf /tmp", "rm -rf /tmp"},
+		{"cyrillic_confusable", "r\u043C -rf /tmp", "rm -rf /tmp"},  // Cyrillic м → m
+		{"combining_mark", "r\u0307m -rf /tmp", "rm -rf /tmp"},      // combining dot above
+		{"mixed_evasion", "ch\u043Cod\u200b-R 777", "chmod -R 777"}, // homoglyph + ZW
+		{"c1_between_words", "ignore\u0085all previous", "ignore all previous"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := NormalizeForPolicy(tt.input)
+			if got != tt.want {
+				t.Errorf("NormalizeForPolicy(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestNormalizeLeetspeak(t *testing.T) {
 	tests := []struct {
 		name  string

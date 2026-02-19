@@ -2213,3 +2213,69 @@ func TestLoadSecretsFile_DuplicatesPreserved(t *testing.T) {
 		t.Fatalf("expected 2 secrets (duplicates preserved), got %d", len(secrets))
 	}
 }
+
+// --- Scanner fileSecrets Tests ---
+
+func TestNew_LoadsFileSecrets(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.txt")
+	if err := os.WriteFile(path, []byte("xK9mP2nQ7vR4wT6y\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testConfig()
+	cfg.DLP.SecretsFile = path
+	s := New(cfg)
+	defer s.Close()
+
+	if len(s.fileSecrets) != 1 {
+		t.Fatalf("expected 1 file secret, got %d", len(s.fileSecrets))
+	}
+	if s.fileSecrets[0] != "xK9mP2nQ7vR4wT6y" {
+		t.Errorf("expected 'xK9mP2nQ7vR4wT6y', got %q", s.fileSecrets[0])
+	}
+}
+
+func TestNew_FileSecretsDedupedAgainstEnv(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.txt")
+	content := "xK9mP2nQ7vR4wT6y\nanotherUniqueSecret1\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testConfig()
+	cfg.DLP.SecretsFile = path
+	s := New(cfg)
+	defer s.Close()
+
+	// Manually inject env secret to test dedup
+	s.envSecrets = []string{"xK9mP2nQ7vR4wT6y"}
+	// Re-run dedup
+	s.fileSecrets = dedupSecrets([]string{"xK9mP2nQ7vR4wT6y", "anotherUniqueSecret1"}, s.envSecrets)
+
+	if len(s.fileSecrets) != 1 {
+		t.Fatalf("expected 1 file secret after dedup, got %d: %v", len(s.fileSecrets), s.fileSecrets)
+	}
+	if s.fileSecrets[0] != "anotherUniqueSecret1" {
+		t.Errorf("wrong secret after dedup: %q", s.fileSecrets[0])
+	}
+}
+
+func TestDedupSecrets_Empty(t *testing.T) {
+	result := dedupSecrets(nil, nil)
+	if len(result) != 0 {
+		t.Errorf("expected empty result, got %v", result)
+	}
+}
+
+func TestDedupSecrets_NoOverlap(t *testing.T) {
+	// Build values at runtime to avoid gitleaks false positive
+	prefix := "secret_" //nolint:goconst // test value
+	file := []string{prefix + "a_1234567", prefix + "b_1234567"}
+	env := []string{prefix + "c_1234567"}
+	result := dedupSecrets(file, env)
+	if len(result) != 2 {
+		t.Errorf("expected 2 secrets with no overlap, got %d", len(result))
+	}
+}

@@ -43,6 +43,7 @@ type Scanner struct {
 	rateLimiter      *RateLimiter
 	dataBudget       *DataBudget
 	envSecrets       []string // filtered high-entropy env var values
+	fileSecrets      []string // loaded from secrets_file config
 	minEnvSecretLen  int      // minimum env var length for leak detection
 	responsePatterns []*compiledPattern
 	responseAction   string
@@ -121,6 +122,16 @@ func New(cfg *config.Config) *Scanner {
 	// Extract high-entropy environment variables for leak detection
 	if cfg.DLP.ScanEnv {
 		s.envSecrets = extractEnvSecrets(s.minEnvSecretLen)
+	}
+
+	// Load explicit secrets from secrets file
+	if cfg.DLP.SecretsFile != "" {
+		fileSecrets, err := loadSecretsFile(cfg.DLP.SecretsFile, s.minEnvSecretLen)
+		if err != nil {
+			panic(fmt.Sprintf("BUG: secrets file %q failed after validation: %v",
+				cfg.DLP.SecretsFile, err))
+		}
+		s.fileSecrets = dedupSecrets(fileSecrets, s.envSecrets)
 	}
 
 	// Compile response scanning patterns — must succeed since config.Validate checks these
@@ -703,6 +714,25 @@ func extractEnvSecrets(minLen int) []string {
 	}
 
 	return secrets
+}
+
+// dedupSecrets removes values from fileSecrets that already exist in envSecrets.
+// This prevents double-scanning when a secret appears in both sources.
+func dedupSecrets(fileSecrets, envSecrets []string) []string {
+	if len(envSecrets) == 0 {
+		return fileSecrets
+	}
+	existing := make(map[string]struct{}, len(envSecrets))
+	for _, s := range envSecrets {
+		existing[s] = struct{}{}
+	}
+	var result []string
+	for _, s := range fileSecrets {
+		if _, ok := existing[s]; !ok {
+			result = append(result, s)
+		}
+	}
+	return result
 }
 
 // loadSecretsFile reads explicit secret values from a file, one per line.

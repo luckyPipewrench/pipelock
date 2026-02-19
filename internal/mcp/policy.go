@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 // PolicyConfig holds compiled tool call policy rules for pre-execution checking.
@@ -67,11 +68,16 @@ func (pc *PolicyConfig) CheckToolCall(toolName string, argStrings []string) Poli
 		return PolicyVerdict{}
 	}
 
+	// Normalize tool name and arg strings to defeat zero-width/invisible
+	// character insertion (e.g. "r\u200bm" → "rm"), homoglyph attacks
+	// (Cyrillic/Greek lookalikes), and combining mark evasion.
+	toolName = scanner.NormalizeForMatching(toolName)
+
 	// Flatten multi-token values (e.g. "-r -f" → ["-r", "-f"]) so that
 	// flags split within a single field are treated as separate tokens.
 	var tokens []string
 	for _, s := range argStrings {
-		tokens = append(tokens, strings.Fields(s)...)
+		tokens = append(tokens, strings.Fields(scanner.NormalizeForMatching(s))...)
 	}
 	joined := strings.Join(tokens, " ")
 

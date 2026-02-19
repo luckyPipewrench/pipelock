@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -1263,6 +1264,60 @@ func TestBlockRequestResponse_CustomErrorCode(t *testing.T) {
 	}
 	if parsed.Error.Message != "pipelock: request blocked by tool call policy" {
 		t.Errorf("error.message = %q", parsed.Error.Message)
+	}
+}
+
+// TestScanRequest_SplitSecretDeterministic verifies that a secret split across
+// two JSON fields is always detected, regardless of map iteration order. Before
+// the fix, Go's random map iteration caused ~15% miss rate.
+func TestScanRequest_SplitSecretDeterministic(t *testing.T) {
+	t.Parallel()
+	sc := testInputScanner(t)
+
+	// Build key at runtime to avoid gitleaks.
+	prefix := "sk-ant-"                          //nolint:goconst // test value
+	suffix := "api03-" + strings.Repeat("A", 25) //nolint:goconst // test value
+	msg := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"fetch","arguments":{"part1":%q,"part2":%q}}}`, prefix, suffix)
+
+	// Run 80 times — before the fix, this would pass ~68/80 and fail ~12/80.
+	for i := 0; i < 80; i++ {
+		verdict := ScanRequest([]byte(msg), sc, "block", "block")
+		if verdict.Clean {
+			t.Fatalf("run %d: split secret was not detected (nondeterministic?)", i)
+		}
+	}
+}
+
+// TestScanRequest_SplitSecretNoParams verifies split-secret detection in the
+// no-params code path (result/error fields).
+func TestScanRequest_SplitSecretNoParams(t *testing.T) {
+	t.Parallel()
+	sc := testInputScanner(t)
+
+	prefix := "sk-ant-"
+	suffix := "api03-" + strings.Repeat("B", 25) //nolint:goconst // test value
+	msg := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":{"a":%q,"b":%q}}`, prefix, suffix)
+
+	verdict := ScanRequest([]byte(msg), sc, "block", "block")
+	if verdict.Clean {
+		t.Error("split secret in no-params path should be detected")
+	}
+}
+
+// TestScanRequest_SplitSecretForwardMode verifies split-secret detection in the
+// scanRawBeforeForward path (on_parse_error=forward for invalid JSON-RPC).
+func TestScanRequest_SplitSecretForwardMode(t *testing.T) {
+	t.Parallel()
+	sc := testInputScanner(t)
+
+	prefix := "sk-ant-"
+	suffix := "api03-" + strings.Repeat("C", 25) //nolint:goconst // test value
+	// Invalid JSON-RPC version triggers the forward path.
+	msg := fmt.Sprintf(`{"jsonrpc":"1.0","id":1,"result":{"a":%q,"b":%q}}`, prefix, suffix)
+
+	verdict := ScanRequest([]byte(msg), sc, "block", "forward")
+	if verdict.Clean {
+		t.Error("split secret in forward-mode path should be detected")
 	}
 }
 

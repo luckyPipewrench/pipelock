@@ -150,6 +150,7 @@ var confusableMap = map[rune]rune{
 	'\u043D': 'h', // н
 	'\u0456': 'i', // і (Ukrainian)
 	'\u043A': 'k', // к
+	'\u043C': 'm', // м
 	'\u043E': 'o', // о
 	'\u0440': 'p', // р
 	'\u0441': 'c', // с
@@ -260,6 +261,20 @@ func stripControlChars(s string) string {
 	}, s)
 }
 
+// NormalizeForMatching applies the standard normalization pipeline used across
+// all scanning paths: strip invisible/control characters, NFKC decomposition,
+// confusable-to-ASCII mapping, combining mark removal, and whitespace
+// normalization. Preserves whitespace control chars (tab, newline, CR) so
+// regex patterns using \s+ continue to work.
+func NormalizeForMatching(s string) string {
+	s = stripZeroWidth(s)
+	s = norm.NFKC.String(s)
+	s = ConfusableToASCII(s)
+	s = StripCombiningMarks(s)
+	s = normalizeWhitespace(s)
+	return s
+}
+
 // ScanResponse checks fetched content for prompt injection patterns.
 // If scanning is disabled, returns Clean=true immediately.
 // Zero-width Unicode characters are stripped before scanning to prevent
@@ -271,11 +286,7 @@ func (s *Scanner) ScanResponse(content string) ResponseScanResult {
 	}
 
 	// Normalize: strip invisibles, NFKC, confusables, combining marks, whitespace.
-	content = stripZeroWidth(content)
-	content = norm.NFKC.String(content)
-	content = ConfusableToASCII(content)
-	content = StripCombiningMarks(content)
-	content = normalizeWhitespace(content)
+	content = NormalizeForMatching(content)
 
 	// Primary scan on normalized content.
 	matches := s.matchResponsePatterns(content)

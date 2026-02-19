@@ -598,6 +598,9 @@ func Defaults() *Config {
 				{Name: "Encoded Payload", Regex: `(?i)(decode\s+(this|the\s+following)\s+(from\s+)?base64\s+and\s+(execute|run|follow)|eval\s*\(\s*atob\s*\()`},
 				{Name: "Tool Invocation", Regex: `(?i)you\s+must\s+(immediately\s+)?(call|execute|run|invoke)\s+(the|this)\s+(function|tool|command|api|endpoint)`},
 				{Name: "Authority Escalation", Regex: `(?i)you\s+(now\s+)?have\s+(full\s+)?(admin|root|system|superuser|elevated)\s+(access|privileges|permissions|rights)`},
+				{Name: "Instruction Downgrade", Regex: `(?i)(treat|consider|regard)\s+(the\s+)?(previous|prior|above|system|policy|original)\s+(text|instructions?|rules|directives|context|prompt)\s+(as\s+)?(historical|outdated|deprecated|optional|background|secondary|non-binding|informational)`},
+				{Name: "Instruction Dismissal", Regex: `(?i)(set|put)\s+(the\s+)?(previous|prior|above|system|original)\s+(instructions?|directives|rules|context|prompt)\s+(aside|away|to\s+(one|the)\s+side)`},
+				{Name: "Priority Override", Regex: `(?i)prioritize\s+(the\s+)?(task|user|current|new|latest)\s+(request|message|input|instructions?|prompt)`},
 			},
 		},
 		Logging: LoggingConfig{

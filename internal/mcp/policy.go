@@ -16,6 +16,12 @@ import (
 // before regex matching ensures policy catches the intended command.
 var shellExpansionRe = regexp.MustCompile(`\$\{?IFS\}?`)
 
+// shellEscapeRe matches backslash-escaped word characters used to break command
+// keywords. In bash, backslash before a non-special character is a no-op:
+// "r\m -rf" executes identically to "rm -rf". Stripping these lets policy
+// regex see the intended command.
+var shellEscapeRe = regexp.MustCompile(`\\(\w)`)
+
 // PolicyConfig holds compiled tool call policy rules for pre-execution checking.
 // A nil PolicyConfig disables policy checking entirely.
 type PolicyConfig struct {
@@ -86,6 +92,7 @@ func (pc *PolicyConfig) CheckToolCall(toolName string, argStrings []string) Poli
 	var tokens []string
 	for _, s := range argStrings {
 		normalized := scanner.NormalizeForMatching(s)
+		normalized = shellEscapeRe.ReplaceAllString(normalized, "$1")
 		normalized = shellExpansionRe.ReplaceAllString(normalized, " ")
 		tokens = append(tokens, strings.Fields(normalized)...)
 	}

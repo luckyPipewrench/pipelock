@@ -50,11 +50,11 @@ pipelock audit . -o pipelock-suggested.yaml
 # Review the output, then rename when ready:
 mv pipelock-suggested.yaml pipelock.yaml
 
-# Start the proxy
-pipelock run --config pipelock.yaml &
-
-# Test: this should be blocked (exit code 1 = working correctly)
+# Verify: this should be blocked (exit code 1 = working correctly)
 pipelock check --config pipelock.yaml --url "https://pastebin.com/raw/abc123"
+
+# When ready, start the proxy (agents connect to localhost:8888)
+pipelock run --config pipelock.yaml
 ```
 
 <details>

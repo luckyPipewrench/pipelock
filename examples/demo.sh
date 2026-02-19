@@ -7,8 +7,11 @@
 # Usage:
 #   ./examples/demo.sh
 #
-# For a recording:
+# For a recording (full interactive demo):
 #   asciinema rec -c ./examples/demo.sh demo.cast
+#
+# For README GIF (shorter, no proxy needed):
+#   See examples/demo-readme.sh
 
 set -euo pipefail
 

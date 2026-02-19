@@ -114,7 +114,7 @@ Wraps any MCP server as a stdio proxy with bidirectional scanning. Server respon
 
 - **Race detector mandatory**: All tests run with `-race -count=1`
 - **90% coverage target** across all packages
-- **1,580+ tests** currently passing
+- **2,100+ tests** currently passing (count with `go test -v ./... | grep -c -- '--- PASS:'`)
 
 ### Patterns
 
@@ -139,6 +139,20 @@ reg := prometheus.NewRegistry()
 // Integration tests use net.ListenConfig for free ports
 ln, _ := net.ListenConfig{}.Listen(ctx, "tcp", "127.0.0.1:0")
 ```
+
+### Updating test counts
+
+When docs reference a test count, use the **total test cases** (including subtests), not the number of `func Test` definitions. Table-driven tests expand into many subtests via `t.Run()`.
+
+```bash
+# Correct way to count (includes subtests):
+go test -v ./... 2>&1 | grep -c -- '--- PASS:'
+
+# Wrong (only counts function definitions, misses subtests):
+grep -r "func Test" internal/ | wc -l
+```
+
+After adding tests, update the count in all locations: `CLAUDE.md`, `docs/security-assurance.md`, `docs/compliance/eu-ai-act-mapping.md`, and any blog posts referencing the count. Use a round-down number (e.g., "2,100+" not "2,138") so it doesn't go stale on every minor addition.
 
 ### Common pitfalls
 

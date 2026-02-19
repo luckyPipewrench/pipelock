@@ -20,7 +20,7 @@ If you run Claude Code, OpenHands, or any AI agent with shell access and API key
 
 > If Pipelock is useful, a [star](https://github.com/luckyPipewrench/pipelock) helps others find it.
 
-[![demo](https://asciinema.org/a/I1UzzECkeCBx6p42.svg)](https://asciinema.org/a/I1UzzECkeCBx6p42)
+![Pipelock demo — DLP blocking, domain blocklist, integrity monitoring](assets/demo.gif)
 
 ## The Problem
 
@@ -190,7 +190,7 @@ The fetch proxy runs a 9-layer scanner pipeline on every request:
 
 1. **Scheme validation** — enforces http/https only
 2. **Domain blocklist** — blocks known exfiltration targets (pastebin, transfer.sh). Pre-DNS.
-3. **DLP patterns** — regex matching for API keys, tokens, and secrets (includes env variable leak detection: raw + base64, values 16+ chars with entropy > 3.0). Pre-DNS to prevent secret exfiltration via DNS queries.
+3. **DLP patterns** — regex matching for API keys, tokens, and secrets (includes env variable leak detection and known-secret file scanning: raw + base64/hex/base32 encoded, values 16+ chars with entropy > 3.0). Pre-DNS to prevent secret exfiltration via DNS queries.
 4. **Path entropy analysis** — Shannon entropy flags encoded/encrypted data in URL path segments
 5. **Subdomain entropy analysis** — flags high-entropy subdomains used for DNS exfiltration
 6. **SSRF protection** — blocks internal/private IPs with DNS rebinding prevention. Post-DNS, safe after DLP.
@@ -254,6 +254,26 @@ pipelock mcp scan --json --config pipelock.yaml < responses.jsonl
 
 Catches injection split across content blocks. Exit 0 if clean, 1 if injection detected.
 
+### MCP Tool Call Policy
+
+Define rules to block or warn before specific tool calls reach MCP servers:
+
+```yaml
+mcp_tool_policy:
+  enabled: true
+  action: warn
+  rules:
+    - name: "Block shell execution"
+      tool_pattern: "execute_command|run_terminal"
+      action: block
+    - name: "Warn on sensitive writes"
+      tool_pattern: "write_file"
+      arg_pattern: '/etc/.*|/usr/.*'
+      action: warn
+```
+
+Auto-enabled in proxy mode. Rules are evaluated before tool calls are forwarded.
+
 ### Multi-Agent Support
 
 Each agent identifies itself via `X-Pipelock-Agent` header (or `?agent=` query parameter). All audit logs include the agent name for per-agent filtering.
@@ -290,6 +310,7 @@ fetch_proxy:
 
 dlp:
   scan_env: true
+  secrets_file: "./known-secrets.txt"  # optional: one secret per line, scanned in raw + encoded forms
   patterns:
     - name: "Anthropic API Key"
       regex: 'sk-ant-[a-zA-Z0-9\-_]{20,}'

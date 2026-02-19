@@ -88,7 +88,7 @@ Detailed mappings to security frameworks:
 
 Security claims are verified through:
 
-- **Unit and integration tests** — 1,900+ tests with race detector, 96%+ statement coverage
+- **Unit and integration tests** — 2,100+ tests with race detector, 96%+ statement coverage
 - **Evasion test suite** — 200+ attack techniques tested against scanners
 - **Static analysis** — CodeQL (security-and-quality) and golangci-lint with gosec
 - **Dependency monitoring** — Dependabot alerts, govulncheck in CI

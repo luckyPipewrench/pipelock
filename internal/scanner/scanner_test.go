@@ -2586,7 +2586,7 @@ func TestScan_BlocksPercentEncodedControlCharBypassInURL(t *testing.T) {
 func TestNew_FileSecrets_ZeroUsableWarning(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "secrets.txt")
-	// All lines too short (< 8 chars, default minLen for file secrets)
+	// All lines too short (< 16 chars, the default minEnvSecretLen)
 	content := "short\nabc\n# comment\n"
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)

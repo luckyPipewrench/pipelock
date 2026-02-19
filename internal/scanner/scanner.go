@@ -844,7 +844,10 @@ func loadSecretsFile(path string, minLen int) ([]string, error) { //nolint:unpar
 	)
 
 	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, maxLineLen*2), maxLineLen*2)
+	// Buffer must exceed maxLineLen so bufio.ErrTooLong cannot fire for any
+	// line the explicit len(line) > maxLineLen guard would skip.
+	const scanBufMax = maxLineLen*2 + 4096
+	sc.Buffer(make([]byte, 0, scanBufMax), scanBufMax)
 
 	for sc.Scan() {
 		lineNum++

@@ -116,7 +116,7 @@ Wraps any MCP server as a stdio proxy with bidirectional scanning. Server respon
 ### Requirements
 
 - **Race detector mandatory**: All tests run with `-race -count=1`
-- **90% coverage target** across all packages
+- **95% coverage target** on new code, maintain 95%+ overall (currently 96.1%)
 - **1,900+ tests** currently passing (count with `go test -v ./... 2>&1 | grep -c -- '--- PASS:'`)
 
 ### Patterns
@@ -200,7 +200,7 @@ Tag push (`v*`) triggers GoReleaser v2:
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide. Summary:
 
 1. Fork and create a feature branch
-2. Write tests for new functionality (aim for 90%+ coverage)
+2. Write tests for new functionality (aim for 95%+ coverage)
 3. Run `make lint && make test` — both must pass
 4. Open a PR against `main` with a clear description
 5. CI must pass (3 required checks). PRs are squash-merged.

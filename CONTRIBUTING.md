@@ -53,7 +53,7 @@ go test -race -count=1 ./...     # All tests with race detector
 ### Requirements
 
 - All tests run with `-race -count=1`
-- Target **90%+ coverage** on new code (`make test-cover` for local report)
+- Target **95%+ coverage** on new code (`make test-cover` for local report)
 - Table-driven tests where there are 3+ cases
 
 ### Patterns

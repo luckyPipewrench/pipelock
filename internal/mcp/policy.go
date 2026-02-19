@@ -45,6 +45,12 @@ var simpleCmdSubRe = regexp.MustCompile(`\$\(\s*(?:echo|printf)\s+['"]?(\w+)['"]
 // "x=rm;$x -rf" hides the command name in a variable.
 var simpleAssignRe = regexp.MustCompile(`(\w+)=(\w+)\s*[;&|]`)
 
+// shellQuoteStripper removes shell quoting artifacts left over from ANSI-C
+// quoting (e.g. $'\x6d' framing). After decodeShellEscapes, r$'\x6d' becomes
+// r$'m' — the $' prefix and trailing quote prevent regex from seeing "rm".
+// The $' pair is stripped first (ANSI-C opening), then remaining lone quotes.
+var shellQuoteStripper = strings.NewReplacer("$'", "", `$"`, "", "'", "", `"`, "", "`", "")
+
 // policyPreNormalize maps ambiguous confusables to their command-relevant Latin
 // equivalent. The shared confusableMap maps Cyrillic у → 'y' (correct for injection
 // detection: "you are now"), but this creates a bypass for command matching:
@@ -192,6 +198,7 @@ func normalizeArgTokens(argStrings []string, normFn func(string) string) ([]stri
 		s = policyPreNormalize.Replace(s)
 		normalized := normFn(s)
 		normalized = decodeShellEscapes(normalized)
+		normalized = shellQuoteStripper.Replace(normalized)
 		normalized = shellEscapeRe.ReplaceAllString(normalized, "$1")
 		normalized = resolveShellConstruction(normalized)
 		normalized = shellExpansionRe.ReplaceAllString(normalized, " ")

@@ -588,7 +588,7 @@ func Defaults() *Config {
 			Enabled: true,
 			Action:  "warn",
 			Patterns: []ResponseScanPattern{
-				{Name: "Prompt Injection", Regex: `(?i)(ignore|disregard|forget)[-,;:.]*\s+(all\s+)?(previous|prior|above)\s+(instructions|prompts|rules|context)`},
+				{Name: "Prompt Injection", Regex: `(?i)(ignore|disregard|forget)[-,;:.]*\s+(all\s+)?(previous|prior|above)\s+(\w+\s+)?(instructions|prompts|rules|context|directives)`},
 				{Name: "System Override", Regex: `(?im)^\s*system\s*:`},
 				{Name: "Role Override", Regex: `(?i)you\s+are\s+(now\s+)?(a\s+)?((?-i:\bDAN\b)|evil|unrestricted|jailbroken|unfiltered)`},
 				{Name: "New Instructions", Regex: `(?i)(new|updated|revised)\s+(instructions|directives|rules|prompt)`},

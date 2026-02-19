@@ -1262,7 +1262,7 @@ func TestBlockRequestResponse_CustomErrorCode(t *testing.T) {
 	if parsed.Error.Code != -32002 {
 		t.Errorf("error.code = %d, want -32002", parsed.Error.Code)
 	}
-	if parsed.Error.Message != "pipelock: request blocked by tool call policy" {
+	if parsed.Error.Message != "pipelock: request blocked by tool call policy" { //nolint:goconst // test value
 		t.Errorf("error.message = %q", parsed.Error.Message)
 	}
 }

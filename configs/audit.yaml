@@ -81,7 +81,7 @@ response_scanning:
   action: warn
   patterns:
     - name: "Prompt Injection"
-      regex: '(?i)(ignore|disregard|forget)[-,;:.]*\s+(all\s+)?(previous|prior|above)\s+(instructions|prompts|rules|context)'
+      regex: '(?i)(ignore|disregard|forget)[-,;:.]*\s+(all\s+)?(previous|prior|above)\s+(\w+\s+)?(instructions|prompts|rules|context|directives)'
     - name: "System Override"
       regex: '(?im)^\s*system\s*:'
     - name: "Role Override"

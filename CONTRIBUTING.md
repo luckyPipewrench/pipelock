@@ -107,11 +107,11 @@ make docker   # Build Docker image
 
 ## Project Structure
 
-```
+```text
 cmd/pipelock/          CLI entry point
 internal/
-  cli/                 Cobra commands (run, check, generate, logs, git, integrity, mcp,
-                         keygen, sign, verify, trust, version, healthcheck)
+  cli/                 Cobra commands (audit, check, demo, generate, git, healthcheck,
+                         integrity, keygen, logs, mcp, run, sign, test, trust, verify, version)
   config/              YAML config loading, validation, defaults, hot-reload (fsnotify)
   scanner/             URL scanning (SSRF, blocklist, rate limit, DLP, entropy, env leak)
   audit/               Structured JSON audit logging (zerolog)

@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bufio"
 	"errors"
 	"io"
 	"strings"
@@ -166,5 +167,26 @@ func TestSSEReader_DataWithoutNewlineTerminator(t *testing.T) {
 	_, err = r.ReadMessage()
 	if !errors.Is(err, io.EOF) {
 		t.Errorf("expected io.EOF after unterminated event, got %v", err)
+	}
+}
+
+func TestSSEReader_ScannerError(t *testing.T) {
+	// Exercise the scanner.Err() path (line 80-82).
+	// Create an SSEReader with a tiny buffer so a long line triggers a scan error.
+	longLine := "data: " + strings.Repeat("x", 200) + "\n\n"
+	sr := &SSEReader{
+		scanner: func() *bufio.Scanner {
+			s := bufio.NewScanner(strings.NewReader(longLine))
+			s.Buffer(make([]byte, 0, 64), 100) // 100 byte max — line won't fit
+			return s
+		}(),
+	}
+
+	_, err := sr.ReadMessage()
+	if err == nil {
+		t.Fatal("expected error for line exceeding buffer")
+	}
+	if errors.Is(err, io.EOF) {
+		t.Error("should not be io.EOF — should be a scanner error")
 	}
 }

@@ -1545,6 +1545,87 @@ func TestCheckToolCall_IndirectIFSExpansionBypass(t *testing.T) {
 	}
 }
 
+func TestMatchArgPattern_IndividualTokenMatch(t *testing.T) {
+	// Exercise the individual-token match path (line 225-227).
+	// Pattern matches a single token but NOT the full joined string.
+	pat := regexp.MustCompile(`^/etc/passwd$`)
+	tokens := []string{"cat", "/etc/passwd"}
+	joined := "cat /etc/passwd"
+
+	// Full joined: "cat /etc/passwd" — does NOT match ^/etc/passwd$
+	// Individual token: "/etc/passwd" — matches
+	if !matchArgPattern(pat, tokens, joined) {
+		t.Error("expected individual token match for /etc/passwd")
+	}
+}
+
+func TestMatchArgPattern_NoMatchAllPaths(t *testing.T) {
+	// Exercise the return false path (line 241) — no full, individual, or pairwise match.
+	pat := regexp.MustCompile(`dangerous_cmd`)
+	tokens := []string{"safe", "command"}
+	joined := "safe command"
+
+	if matchArgPattern(pat, tokens, joined) {
+		t.Error("should not match safe command")
+	}
+}
+
+func TestParseToolCall_BadParamsJSON(t *testing.T) {
+	// Exercise the params unmarshal error path (line 337-339).
+	msg := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":"not-an-object"}`
+	tc := parseToolCall([]byte(msg))
+	if tc != nil {
+		t.Error("expected nil for non-object params")
+	}
+}
+
+func TestParseToolCall_EmptyToolName(t *testing.T) {
+	// Exercise the empty name check (line 340-342).
+	msg := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"","arguments":{}}}`
+	tc := parseToolCall([]byte(msg))
+	if tc != nil {
+		t.Error("expected nil for empty tool name")
+	}
+}
+
+func TestDecodeShellEscapes_OctalOverflowUint8(t *testing.T) {
+	// Exercise the octal parse error path (line 385-387).
+	// \400 matches shellOctalRe (digits 4,0,0 are all in [0-7]) but
+	// 400 octal = 256 decimal, which overflows uint8 — returned unchanged.
+	result := decodeShellEscapes(`\400`)
+	if result != `\400` {
+		t.Errorf("octal overflow should be unchanged, got %q", result)
+	}
+}
+
+func TestCheckRequest_BatchWithMixedActions(t *testing.T) {
+	cfg := config.MCPToolPolicy{
+		Enabled: true,
+		Action:  "warn",
+		Rules: []config.ToolPolicyRule{
+			{Name: "warn-rule", ToolPattern: `^echo$`},
+			{Name: "block-rule", ToolPattern: `^bash$`, ArgPattern: `rm`, Action: "block"},
+		},
+	}
+	pc := NewPolicyConfig(cfg)
+
+	// Batch with two tool calls: one triggering warn, one triggering block.
+	batch := fmt.Sprintf(`[%s,%s]`,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"text":"hi"}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"bash","arguments":{"cmd":"rm -rf /"}}}`,
+	)
+	v := pc.CheckRequest([]byte(batch))
+	if !v.Matched {
+		t.Fatal("batch should match")
+	}
+	if v.Action != "block" {
+		t.Errorf("strictest action should be block, got %q", v.Action)
+	}
+	if len(v.Rules) != 2 {
+		t.Errorf("expected 2 rules, got %v", v.Rules)
+	}
+}
+
 // newDefaultPolicyConfig returns a PolicyConfig built from DefaultToolPolicyRules.
 func newDefaultPolicyConfig() *PolicyConfig {
 	return NewPolicyConfig(config.MCPToolPolicy{

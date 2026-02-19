@@ -654,6 +654,58 @@ func TestHTTPClient_OpenGETStream_IncludesHeaders(t *testing.T) {
 	}
 }
 
+func TestHTTPClient_DeleteSession_IncludesExtraHeaders(t *testing.T) {
+	// Verify that extra headers (e.g., Authorization) are sent with DELETE requests.
+	// Previous tests used nil headers — this exercises the header-copy loop (lines 267-270).
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			w.Header().Set("Mcp-Session-Id", "sess-hdr") //nolint:goconst // test value
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+			return
+		}
+		if r.Method == http.MethodDelete {
+			gotAuth = r.Header.Get("Authorization")
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+	}))
+	defer srv.Close()
+
+	headers := http.Header{"Authorization": []string{"Bearer delete-tok"}}
+	c := NewHTTPClient(srv.URL, headers)
+
+	r, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	drain(t, r)
+
+	c.DeleteSession(nil)
+
+	if gotAuth != "Bearer delete-tok" {
+		t.Errorf("DELETE should include Authorization header, got %q", gotAuth)
+	}
+}
+
+func TestHTTPClient_DeleteSession_BadURL(t *testing.T) {
+	// Exercise the req-creation error branch in DeleteSession (lines 261-265).
+	// Use a URL with a control character that http.NewRequestWithContext rejects.
+	c := &HTTPClient{
+		url:       "http://\x00invalid",
+		headers:   http.Header{},
+		client:    &http.Client{},
+		sessionID: "force-delete",
+	}
+
+	var logBuf strings.Builder
+	c.DeleteSession(&logBuf)
+	if !strings.Contains(logBuf.String(), "session delete") {
+		t.Errorf("expected error log for bad URL, got: %s", logBuf.String())
+	}
+}
+
 func TestHTTPClient_SendMessage_EmptyBody(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json") //nolint:goconst // test value
@@ -671,6 +723,83 @@ func TestHTTPClient_SendMessage_EmptyBody(t *testing.T) {
 	_, err = reader.ReadMessage()
 	if !errors.Is(err, io.EOF) {
 		t.Errorf("expected io.EOF for empty body, got %v", err)
+	}
+}
+
+func TestHTTPClient_SendMessage_BadURL(t *testing.T) {
+	// Exercise the req-creation error branch (line 68-70).
+	c := &HTTPClient{
+		url:     "http://\x00invalid",
+		headers: http.Header{},
+		client:  &http.Client{},
+	}
+	_, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"test"}`))
+	if err == nil {
+		t.Fatal("expected error for bad URL")
+	}
+	if !strings.Contains(err.Error(), "creating request") {
+		t.Errorf("expected 'creating request' error, got: %v", err)
+	}
+}
+
+func TestHTTPClient_OpenGETStream_BadURL(t *testing.T) {
+	// Exercise the req-creation error branch in OpenGETStream (line 198-200).
+	c := &HTTPClient{
+		url:     "http://\x00invalid",
+		headers: http.Header{},
+		client:  &http.Client{},
+	}
+	_, err := c.OpenGETStream(context.Background())
+	if err == nil {
+		t.Fatal("expected error for bad URL")
+	}
+	if !strings.Contains(err.Error(), "creating GET request") {
+		t.Errorf("expected 'creating GET request' error, got: %v", err)
+	}
+}
+
+func TestHTTPClient_SingleMessageReader_ReadError(t *testing.T) {
+	// Exercise the ReadAll error branch in singleMessageReader (line 161-163).
+	errReader := &errReadCloser{err: errors.New("disk failure")}
+	r := &singleMessageReader{body: errReader}
+
+	_, err := r.ReadMessage()
+	if err == nil {
+		t.Fatal("expected error from ReadMessage")
+	}
+	if !strings.Contains(err.Error(), "disk failure") {
+		t.Errorf("expected wrapped disk failure, got: %v", err)
+	}
+}
+
+// errReadCloser is a ReadCloser that always returns an error.
+type errReadCloser struct {
+	err error
+}
+
+func (r *errReadCloser) Read(_ []byte) (int, error) {
+	return 0, r.err
+}
+
+func (r *errReadCloser) Close() error {
+	return nil
+}
+
+func TestHTTPClient_ErrorStatusEmptyBody(t *testing.T) {
+	// Exercise the empty-body branch of error status (line 121).
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		// No body written.
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(srv.URL, nil)
+	_, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"test"}`))
+	if err == nil {
+		t.Fatal("expected error for 403")
+	}
+	if !strings.Contains(err.Error(), "403") {
+		t.Errorf("expected 403 in error, got: %v", err)
 	}
 }
 

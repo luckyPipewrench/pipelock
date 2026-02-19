@@ -1463,6 +1463,89 @@ dlp:
 	}
 }
 
+func TestValidate_SecretsFileNotFound(t *testing.T) {
+	cfg := Defaults()
+	cfg.DLP.SecretsFile = "/nonexistent/path/secrets.txt"
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for nonexistent secrets file")
+	}
+}
+
+func TestValidate_SecretsFileWorldReadable(t *testing.T) {
+	dir := t.TempDir()
+	secretsPath := filepath.Join(dir, "secrets.txt")
+	if err := os.WriteFile(secretsPath, []byte("xK9mP2nQ7vR4wT6y\n"), 0o644); err != nil { //nolint:gosec // G306: intentionally world-readable for test
+		t.Fatal(err)
+	}
+
+	cfg := Defaults()
+	cfg.DLP.SecretsFile = secretsPath
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for world-readable secrets file")
+	}
+	if !strings.Contains(err.Error(), "world-readable") {
+		t.Errorf("error should mention world-readable, got: %v", err)
+	}
+}
+
+func TestValidate_SecretsFileValid(t *testing.T) {
+	dir := t.TempDir()
+	secretsPath := filepath.Join(dir, "secrets.txt")
+	if err := os.WriteFile(secretsPath, []byte("xK9mP2nQ7vR4wT6y\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := Defaults()
+	cfg.DLP.SecretsFile = secretsPath
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("valid secrets file should pass validation: %v", err)
+	}
+}
+
+func TestLoad_SecretsFileRelativePathResolved(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create secrets file in same directory as config
+	secretsPath := filepath.Join(dir, "my-secrets.txt")
+	if err := os.WriteFile(secretsPath, []byte("xK9mP2nQ7vR4wT6y\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Config references secrets file with relative path
+	cfgYAML := `
+version: 1
+mode: balanced
+dlp:
+  secrets_file: "my-secrets.txt"
+`
+	configPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte(cfgYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should be resolved to absolute path
+	if !filepath.IsAbs(cfg.DLP.SecretsFile) {
+		t.Errorf("expected absolute path, got %q", cfg.DLP.SecretsFile)
+	}
+	if cfg.DLP.SecretsFile != secretsPath {
+		t.Errorf("expected %q, got %q", secretsPath, cfg.DLP.SecretsFile)
+	}
+}
+
+func TestValidate_SecretsFileEmptyString_NoValidation(t *testing.T) {
+	cfg := Defaults()
+	cfg.DLP.SecretsFile = ""
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("empty secrets_file should skip validation: %v", err)
+	}
+}
+
 func TestValidateReload_MCPToolPolicyRulesIncreased_NoWarning(t *testing.T) {
 	old := Defaults()
 	old.MCPToolPolicy.Rules = []ToolPolicyRule{

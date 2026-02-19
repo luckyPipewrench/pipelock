@@ -171,6 +171,11 @@ func Load(path string) (*Config, error) {
 
 	cfg.ApplyDefaults()
 
+	// Resolve relative secrets_file path relative to config file directory.
+	if cfg.DLP.SecretsFile != "" && !filepath.IsAbs(cfg.DLP.SecretsFile) {
+		cfg.DLP.SecretsFile = filepath.Join(filepath.Dir(path), cfg.DLP.SecretsFile)
+	}
+
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
@@ -293,6 +298,17 @@ func (c *Config) Validate() error {
 		}
 		if _, err := regexp.Compile(p.Regex); err != nil {
 			return fmt.Errorf("DLP pattern %q has invalid regex: %w", p.Name, err)
+		}
+	}
+
+	// Validate secrets_file if configured
+	if c.DLP.SecretsFile != "" {
+		info, err := os.Stat(c.DLP.SecretsFile)
+		if err != nil {
+			return fmt.Errorf("secrets_file %q: %w", c.DLP.SecretsFile, err)
+		}
+		if info.Mode().Perm()&0o004 != 0 {
+			return fmt.Errorf("secrets_file %q is world-readable (mode %04o): restrict to 0600", c.DLP.SecretsFile, info.Mode().Perm())
 		}
 	}
 

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -79,7 +80,7 @@ func RunHTTPProxy(
 		}
 
 		// POST to upstream.
-		respReader, err := httpClient.SendMessage(msg)
+		respReader, err := httpClient.SendMessage(ctx, msg)
 		if err != nil {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream error: %v\n", err)
 			rpcID := extractRPCID(msg)
@@ -240,6 +241,7 @@ func upstreamErrorResponse(id json.RawMessage, upstreamErr error) []byte {
 
 // startGETStream maintains a background GET SSE connection for server-initiated
 // messages. Called after the initialize handshake establishes a session ID.
+// Reconnects with exponential backoff (1s base, 30s cap) on stream end.
 func startGETStream(
 	ctx context.Context,
 	httpClient *HTTPClient,
@@ -253,6 +255,10 @@ func startGETStream(
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+
+		backoff := time.Second
+		const maxBackoff = 30 * time.Second
+
 		for {
 			select {
 			case <-ctx.Done():
@@ -260,14 +266,24 @@ func startGETStream(
 			default:
 			}
 
-			reader, err := httpClient.OpenGETStream()
+			reader, err := httpClient.OpenGETStream(ctx)
 			if err != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: GET stream: %v\n", err)
 				return
 			}
 
 			_, _ = ForwardScanned(reader, safeClientOut, safeLogW, sc, approver, toolCfg)
-			// Stream ended — reconnect unless cancelled.
+
+			// Stream ended — reconnect with backoff unless cancelled.
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+			backoff *= 2
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
 		}
 	}()
 }

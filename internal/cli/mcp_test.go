@@ -505,3 +505,32 @@ func TestMcpProxyCmd_NeitherUpstreamNorCommand(t *testing.T) {
 		t.Errorf("expected error mentioning both options, got: %v", err)
 	}
 }
+
+func TestMcpProxyCmd_UpstreamInvalidURL(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{"file scheme", "file:///etc/passwd"},
+		{"ftp scheme", "ftp://evil.com/data"},
+		{"no scheme", "localhost:8080/mcp"},
+		{"no host", "http:///path"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := rootCmd()
+			cmd.SetArgs([]string{"mcp", "proxy", "--upstream", tt.url})
+			cmd.SetIn(bytes.NewReader(nil))
+			cmd.SetOut(&strings.Builder{})
+			cmd.SetErr(&strings.Builder{})
+
+			err := cmd.Execute()
+			if err == nil {
+				t.Fatalf("expected error for URL %q", tt.url)
+			}
+			if !strings.Contains(err.Error(), "invalid upstream URL") {
+				t.Errorf("expected 'invalid upstream URL' error, got: %v", err)
+			}
+		})
+	}
+}

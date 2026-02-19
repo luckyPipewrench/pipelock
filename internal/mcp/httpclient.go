@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 )
 
 // HTTPClient sends JSON-RPC 2.0 messages over HTTP POST and returns
@@ -50,8 +51,8 @@ func (c *HTTPClient) SessionID() string {
 //   - 4xx/5xx status codes: returns an error (body is closed).
 //
 // The Mcp-Session-Id header is tracked from responses and sent on subsequent requests.
-func (c *HTTPClient) SendMessage(msg []byte) (MessageReader, error) {
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, c.url, bytes.NewReader(msg))
+func (c *HTTPClient) SendMessage(ctx context.Context, msg []byte) (MessageReader, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(msg))
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
@@ -91,9 +92,13 @@ func (c *HTTPClient) SendMessage(msg []byte) (MessageReader, error) {
 		return &emptyReader{}, nil
 	}
 
-	// Error status codes: return error and close body.
+	// Error status codes: read limited body for diagnostics, then return error.
 	if resp.StatusCode >= 400 {
-		resp.Body.Close() //nolint:errcheck,gosec // best-effort cleanup
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024)) //nolint:errcheck // best-effort read
+		resp.Body.Close()                                      //nolint:errcheck,gosec // best-effort cleanup
+		if len(body) > 0 {
+			return nil, fmt.Errorf("HTTP %d: %s: %s", resp.StatusCode, resp.Status, bytes.TrimSpace(body))
+		}
 		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status)
 	}
 
@@ -164,8 +169,8 @@ func (r *closingSSEReader) ReadMessage() ([]byte, error) {
 // OpenGETStream opens a GET SSE connection for server-initiated messages.
 // Returns a MessageReader yielding SSE events. Returns an error if the server
 // responds with 405 (doesn't support GET stream) or other error status.
-func (c *HTTPClient) OpenGETStream() (MessageReader, error) {
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, c.url, nil)
+func (c *HTTPClient) OpenGETStream(ctx context.Context) (MessageReader, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("creating GET request: %w", err)
 	}
@@ -204,6 +209,7 @@ func (c *HTTPClient) OpenGETStream() (MessageReader, error) {
 }
 
 // DeleteSession sends an HTTP DELETE to terminate the MCP session.
+// Uses a 5-second timeout since this is best-effort cleanup.
 func (c *HTTPClient) DeleteSession() {
 	c.sessionMu.Lock()
 	sid := c.sessionID
@@ -212,7 +218,10 @@ func (c *HTTPClient) DeleteSession() {
 		return
 	}
 
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodDelete, c.url, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.url, nil)
 	if err != nil {
 		return
 	}

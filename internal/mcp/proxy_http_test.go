@@ -5,11 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -177,9 +179,14 @@ func TestRunHTTPProxy_UpstreamError(t *testing.T) {
 func TestRunHTTPProxy_GETStreamReceivesServerNotifications(t *testing.T) {
 	// Track GET requests to verify the stream was opened.
 	var getCount int32
+	getCalled := make(chan struct{}, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
 			atomic.AddInt32(&getCount, 1)
+			select {
+			case getCalled <- struct{}{}:
+			default:
+			}
 			w.Header().Set("Content-Type", "text/event-stream")
 			_, _ = w.Write([]byte("data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/resources/updated\"}\n\n"))
 			return
@@ -193,13 +200,34 @@ func TestRunHTTPProxy_GETStreamReceivesServerNotifications(t *testing.T) {
 
 	sc := testScannerForHTTP(t)
 
-	stdin := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize"}` + "\n")
+	// Use a pipe so we control when stdin EOF happens. This avoids a race where
+	// cancel() fires before the GET stream goroutine can deliver its notification.
+	stdinR, stdinW := io.Pipe()
 	var stdout, stderr bytes.Buffer
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, sc, nil, nil, nil, nil, nil)
+	done := make(chan error, 1)
+	go func() {
+		done <- RunHTTPProxy(ctx, stdinR, &stdout, &stderr, srv.URL, sc, nil, nil, nil, nil, nil)
+	}()
+
+	// Send initialize request.
+	_, _ = stdinW.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}` + "\n"))
+
+	// Wait for GET stream to be called, then close stdin.
+	select {
+	case <-getCalled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for GET stream to be called")
+	}
+
+	// Small delay to let the GET notification be forwarded to stdout.
+	time.Sleep(50 * time.Millisecond)
+	_ = stdinW.Close()
+
+	err := <-done
 	if err != nil {
 		t.Fatalf("RunHTTPProxy() error = %v", err)
 	}

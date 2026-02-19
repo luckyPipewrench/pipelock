@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os/signal"
 	"syscall"
 
@@ -138,6 +139,14 @@ Claude Desktop config (remote server):
 			}
 			if !hasUpstream && !hasSubprocess {
 				return errors.New("specify --upstream URL or -- COMMAND [ARGS...]")
+			}
+
+			// Validate upstream URL scheme.
+			if hasUpstream {
+				u, err := url.Parse(upstreamURL)
+				if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+					return fmt.Errorf("invalid upstream URL %q: must be http:// or https:// with a host", upstreamURL)
+				}
 			}
 
 			cfg, err := loadConfigOrDefault(configFile)

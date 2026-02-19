@@ -1,10 +1,12 @@
 package mcp
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 )
@@ -36,7 +38,7 @@ func TestHTTPClient_JSONResponse(t *testing.T) {
 	defer srv.Close()
 
 	c := NewHTTPClient(srv.URL, nil)
-	reader, err := c.SendMessage([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
+	reader, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
 	if err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
@@ -64,7 +66,7 @@ func TestHTTPClient_SSEResponse(t *testing.T) {
 	defer srv.Close()
 
 	c := NewHTTPClient(srv.URL, nil)
-	reader, err := c.SendMessage([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	reader, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
 	if err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
@@ -119,7 +121,7 @@ func TestHTTPClient_SessionIDTracking(t *testing.T) {
 	c := NewHTTPClient(srv.URL, nil)
 
 	// First request: establishes session.
-	r1, err := c.SendMessage([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
+	r1, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
 	if err != nil {
 		t.Fatalf("SendMessage 1: %v", err)
 	}
@@ -130,7 +132,7 @@ func TestHTTPClient_SessionIDTracking(t *testing.T) {
 	}
 
 	// Second request: should include session ID.
-	r2, err := c.SendMessage([]byte(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`))
+	r2, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`))
 	if err != nil {
 		t.Fatalf("SendMessage 2: %v", err)
 	}
@@ -148,7 +150,7 @@ func TestHTTPClient_202Accepted(t *testing.T) {
 	defer srv.Close()
 
 	c := NewHTTPClient(srv.URL, nil)
-	reader, err := c.SendMessage([]byte(`{"jsonrpc":"2.0","method":"notifications/initialized"}`))
+	reader, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","method":"notifications/initialized"}`))
 	if err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
@@ -167,9 +169,27 @@ func TestHTTPClient_ErrorStatus(t *testing.T) {
 	defer srv.Close()
 
 	c := NewHTTPClient(srv.URL, nil)
-	_, err := c.SendMessage([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	_, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
 	if err == nil {
 		t.Fatal("expected error for 500 response")
+	}
+}
+
+func TestHTTPClient_ErrorStatusIncludesBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"session expired"}`))
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(srv.URL, nil)
+	_, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	if err == nil {
+		t.Fatal("expected error for 400 response")
+	}
+	if !strings.Contains(err.Error(), "session expired") {
+		t.Errorf("error should include body, got: %v", err)
 	}
 }
 
@@ -187,7 +207,7 @@ func TestHTTPClient_AuthHeader(t *testing.T) {
 	headers.Set("Authorization", "Bearer tok-123") //nolint:goconst // test value
 
 	c := NewHTTPClient(srv.URL, headers)
-	reader, err := c.SendMessage([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
+	reader, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
 	if err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}

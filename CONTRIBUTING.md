@@ -96,6 +96,37 @@ See [docs/benchmarks.md](docs/benchmarks.md) for methodology and results.
 - HTTP methods: `http.MethodGet` not `"GET"`
 - See [.golangci.yml](.golangci.yml) for all 19 enabled linters
 
+## Building
+
+```bash
+make build    # Build with version metadata
+make test     # Run tests
+make lint     # Lint
+make docker   # Build Docker image
+```
+
+## Project Structure
+
+```
+cmd/pipelock/          CLI entry point
+internal/
+  cli/                 Cobra commands (run, check, generate, logs, git, integrity, mcp,
+                         keygen, sign, verify, trust, version, healthcheck)
+  config/              YAML config loading, validation, defaults, hot-reload (fsnotify)
+  scanner/             URL scanning (SSRF, blocklist, rate limit, DLP, entropy, env leak)
+  audit/               Structured JSON audit logging (zerolog)
+  proxy/               Fetch proxy HTTP server (go-readability, agent ID, DNS pinning)
+  metrics/             Prometheus metrics + JSON stats endpoint
+  gitprotect/          Git-aware security (diff scanning, branch validation, hooks)
+  integrity/           File integrity monitoring (SHA256 manifests, check/diff, exclusions)
+  signing/             Ed25519 key management, file signing, signature verification
+  mcp/                 MCP stdio proxy + bidirectional JSON-RPC 2.0 scanning + tool poisoning detection
+  hitl/                Human-in-the-loop terminal approval (ask action)
+configs/               Preset config files (strict, balanced, audit, claude-code, cursor, generic-agent)
+docs/                  OWASP mapping, tool comparison
+blog/                  Blog posts (mirrored at pipelab.org/blog/)
+```
+
 ## Architecture
 
 See [CLAUDE.md](CLAUDE.md) for the full architecture guide, including:

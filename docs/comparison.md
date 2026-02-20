@@ -12,7 +12,7 @@ An honest feature matrix and guidance on when to use what.
 | **Domain allowlist** | Yes | No | No | Yes (MCP-level) | Yes (LLM proxy) | Yes |
 | **DLP (secret detection)** | Regex + entropy + env scan + known-secret file | Proxy mode: PII + secrets | Basic (`--block-secrets`) | Regex (per-argument) | Regex (LLM proxy) | No |
 | **SSRF protection** | Yes (DNS pinning) | No | No | No | N/A (kernel-level) | N/A |
-| **Prompt injection detection** | Bidirectional (response + request) | Scan mode: static analysis | No | No | No | No |
+| **Prompt injection detection** | Bidirectional (response + request) | Scan: static; Proxy: indirect | No | No | No | No |
 | **Tool poisoning detection** | Pattern + Unicode normalization | Yes (hash-based) | No | No | No | No |
 | **Rug-pull detection** | SHA256 baseline tracking | Yes (hash-based) | No | No | No | No |
 | **File integrity monitoring** | SHA256 manifests | No | No | No | Workspace checkpoints | Filesystem restrictions |
@@ -22,7 +22,7 @@ An honest feature matrix and guidance on when to use what.
 | **HITL approvals** | Yes (terminal y/N/s) | No | No | Yes (OS dialogs) | No | No |
 | **Entropy analysis** | Shannon entropy on URLs | No | No | No | No | No |
 | **Rate limiting** | Per-domain sliding window | No | No | No | No | No |
-| **Audit logging** | Structured JSON (zerolog) | No | No | JSONL | Session logs | No |
+| **Audit logging** | Structured JSON (zerolog) | Proxy: traffic logs | Call tracing | JSONL | Session logs | No |
 | **Prometheus metrics** | Yes | No | No | No | No | No |
 | **Interceptor/plugin model** | N/A (proxy) | N/A | Exec/Docker/HTTP interceptors | N/A | N/A | N/A |
 | **Network isolation** | Docker Compose generation | No | Docker native | No | Kernel-level | sandbox-exec / bubblewrap |

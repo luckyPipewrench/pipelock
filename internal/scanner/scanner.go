@@ -19,8 +19,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
-
-	"golang.org/x/text/unicode/norm"
+	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
 
 // Result describes the outcome of scanning a URL.
@@ -488,10 +487,7 @@ func (s *Scanner) checkDLP(parsed *url.URL) Result {
 		// NFKC, cross-script confusable mapping, and combining mark removal.
 		// Must match response scanning depth — otherwise attackers use homoglyphs
 		// in key prefixes (e.g., sk-օnt-... with Armenian օ U+0585 for 'a').
-		cleaned := stripControlChars(target)
-		cleaned = norm.NFKC.String(cleaned)
-		cleaned = ConfusableToASCII(cleaned)
-		cleaned = StripCombiningMarks(cleaned)
+		cleaned := normalize.ForDLP(target)
 		for _, p := range s.dlpPatterns {
 			if p.re.MatchString(cleaned) {
 				return Result{
@@ -577,10 +573,7 @@ func (s *Scanner) checkDLPCombinations(values []string, n, size int) Result {
 		}
 		concat := b.String()
 
-		cleaned := stripControlChars(concat)
-		cleaned = norm.NFKC.String(cleaned)
-		cleaned = ConfusableToASCII(cleaned)
-		cleaned = StripCombiningMarks(cleaned)
+		cleaned := normalize.ForDLP(concat)
 
 		for _, p := range s.dlpPatterns {
 			if p.re.MatchString(cleaned) {
@@ -624,8 +617,8 @@ func (s *Scanner) checkSecretsInURL(secrets []string, parsed *url.URL, reasonPre
 		return Result{Allowed: true}
 	}
 
-	fullURL := stripControlChars(parsed.String())
-	decodedURL := stripControlChars(IterativeDecode(fullURL))
+	fullURL := normalize.StripControlChars(parsed.String())
+	decodedURL := normalize.StripControlChars(IterativeDecode(fullURL))
 	texts := []string{fullURL, decodedURL}
 	lowerTexts := []string{strings.ToLower(fullURL), strings.ToLower(decodedURL)}
 

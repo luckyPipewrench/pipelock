@@ -6,18 +6,18 @@ An honest feature matrix and guidance on when to use what.
 
 | Feature | Pipelock | mcp-scan (Snyk) | Docker MCP Gateway | AIP | agentsh | srt |
 |---------|----------|----------------|-------------------|-----|---------|-----|
-| **Layer** | HTTP proxy + CLI | Static scanner | MCP gateway | MCP proxy | Kernel (seccomp/eBPF/FUSE) | OS sandbox |
+| **Layer** | HTTP proxy + CLI | Static scanner + MCP proxy | MCP gateway | MCP proxy | Kernel (seccomp/eBPF/FUSE) | OS sandbox |
 | **Language** | Go | Python | Go | Go | Go | TypeScript |
 | **Binary** | Single, ~12MB | pip package | Docker image | Single | Single + kernel modules | npm package |
 | **Domain allowlist** | Yes | No | No | Yes (MCP-level) | Yes (LLM proxy) | Yes |
-| **DLP (secret detection)** | Regex + entropy + env scan + known-secret file | No | Basic (`--block-secrets`) | Regex (per-argument) | Regex (LLM proxy) | No |
+| **DLP (secret detection)** | Regex + entropy + env scan + known-secret file | Proxy mode: PII + secrets | Basic (`--block-secrets`) | Regex (per-argument) | Regex (LLM proxy) | No |
 | **SSRF protection** | Yes (DNS pinning) | No | No | No | N/A (kernel-level) | N/A |
-| **Prompt injection detection** | Bidirectional (response + request) | No | No | No | No | No |
+| **Prompt injection detection** | Bidirectional (response + request) | Scan mode: static analysis | No | No | No | No |
 | **Tool poisoning detection** | Pattern + Unicode normalization | Yes (hash-based) | No | No | No | No |
 | **Rug-pull detection** | SHA256 baseline tracking | Yes (hash-based) | No | No | No | No |
 | **File integrity monitoring** | SHA256 manifests | No | No | No | Workspace checkpoints | Filesystem restrictions |
 | **Ed25519 signing** | Yes | No | No | No | No | No |
-| **MCP scanning** | Bidirectional + tool poisoning | Tools/list only | Basic secret scan | Native proxy | No | No |
+| **MCP scanning** | Bidirectional + tool poisoning | Scan: tools/list; Proxy: runtime guardrails | Basic secret scan | Native proxy | No | No |
 | **MCP HTTP transport** | Streamable HTTP (`--upstream`) | No | Native | No | No | No |
 | **HITL approvals** | Yes (terminal y/N/s) | No | No | Yes (OS dialogs) | No | No |
 | **Entropy analysis** | Shannon entropy on URLs | No | No | No | No | No |
@@ -37,7 +37,7 @@ An honest feature matrix and guidance on when to use what.
 ### Use mcp-scan / Snyk agent-scan when:
 - You want a **quick static audit** of MCP server tool definitions before connecting
 - You need to **detect known-malicious tool descriptions** in a registry
-- You're evaluating MCP servers and want a **one-time scan** (not runtime protection)
+- You want **runtime MCP traffic monitoring** with PII/secrets guardrails (proxy mode)
 
 ### Use Docker MCP Gateway when:
 - You're already in the **Docker ecosystem** and want native MCP server management
@@ -70,7 +70,7 @@ An honest feature matrix and guidance on when to use what.
 - You don't need DLP, audit logging, or injection detection
 
 ### Pipelock vs mcp-scan
-mcp-scan detects tool poisoning via hash comparison — it answers "has this tool changed?" Pipelock answers "is this tool description trying to trick the agent?" with pattern matching, Unicode normalization, and runtime content scanning. mcp-scan is a static audit; Pipelock is a runtime proxy. Use both: mcp-scan during evaluation, Pipelock during execution.
+mcp-scan has two modes: static scanning detects tool poisoning via hash comparison ("has this tool changed?"), while proxy mode monitors MCP traffic with PII/secrets guardrails. Pipelock scans bidirectionally with pattern matching, Unicode normalization, entropy analysis, and covers HTTP fetch traffic in addition to MCP. They're complementary: mcp-scan for MCP-specific auditing and guardrails, Pipelock for deep content inspection across both HTTP and MCP.
 
 ### Pipelock vs Docker MCP Gateway
 Docker MCP Gateway aggregates MCP servers and provides basic secret scanning. Pipelock provides deep content inspection (15+ DLP patterns, injection detection, entropy analysis, tool poisoning). They're complementary — Pipelock could run as a Gateway interceptor for content inspection while Gateway handles routing and Docker-native lifecycle management.

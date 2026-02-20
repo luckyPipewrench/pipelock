@@ -172,11 +172,14 @@ const toolPoisonKeywords = `IMPORTANT|CRITICAL|SYSTEM|INSTRUCTION|SECRET|HIDDEN|
 var toolPoisonPatterns = []*compiledToolPattern{
 	{
 		name: "Instruction Tag",
-		// Catches <IMPORTANT>, [IMPORTANT], and **IMPORTANT** variants.
+		// Catches <IMPORTANT>, [IMPORTANT], **IMPORTANT**, and variants with
+		// trailing words like **CRITICAL FIRST STEP** or [SYSTEM NOTE].
+		// All three tag styles use \b + capped permissive fill ({0,100}) to
+		// match trailing words consistently without unbounded backtracking.
 		re: regexp.MustCompile(`(?i)(?:` +
-			`<\s*(?:` + toolPoisonKeywords + `)\b[^>]*>` + `|` +
-			`\[\s*(?:` + toolPoisonKeywords + `)\s*\]` + `|` +
-			`\*{2}\s*(?:` + toolPoisonKeywords + `)\s*\*{2}` +
+			`<\s*(?:` + toolPoisonKeywords + `)\b[^>]{0,100}>` + `|` +
+			`\[\s*(?:` + toolPoisonKeywords + `)\b[^\]]{0,100}\]` + `|` +
+			`\*{2}\s*(?:` + toolPoisonKeywords + `)\b[^*]{0,100}\*{2}` +
 			`)`),
 	},
 	{
@@ -192,6 +195,26 @@ var toolPoisonPatterns = []*compiledToolPattern{
 	{
 		name: "Cross-Tool Manipulation",
 		re:   regexp.MustCompile(`(?i)(instead\s+of|rather\s+than|don't\s+use|never\s+use|always\s+prefer)\s+(using\s+)?(the\s+)?\w+\s+(tool|function|command)`),
+	},
+	{
+		name: "Dangerous Capability",
+		// Detects tools that describe executing local files, scripts, or commands.
+		// Standalone "script"/"file" require a determiner (a/the/any) to avoid
+		// false positives on "Execute the deployment script" or "Run the build
+		// script". Qualified forms (local/shell/arbitrary/system) match directly.
+		re: regexp.MustCompile(`(?i)(execut|run|launch|spawn)\w*\s+.{0,40}(` +
+			`local\s+(?:file|script)|` +
+			`(?:a|the|any)\s+(?:file|script)\b|` +
+			`(?:shell|arbitrary|system)\s+(?:command|script))`,
+		),
+	},
+	{
+		name: "Dangerous Capability",
+		// Detects tools that download from URLs then execute the result.
+		// Requires "it"/"them" after the execute verb to avoid false positives
+		// on "Fetch data and run the analysis" where fetch and run act on
+		// different objects.
+		re: regexp.MustCompile(`(?i)(download|fetch|retriev)\w*\s+.{0,60}(execut|run|launch)\w*\s+(?:it|them)\b`),
 	},
 }
 

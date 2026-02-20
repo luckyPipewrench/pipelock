@@ -148,6 +148,65 @@ var confusableMap = map[rune]rune{
 	'\u1D21': 'W', // ᴡ (Latin Letter Small Capital W)
 	'\u028F': 'Y', // ʏ (Latin Letter Small Capital Y)
 	'\u1D22': 'Z', // ᴢ (Latin Letter Small Capital Z)
+
+	// Negative Squared Latin Capital Letters (U+1F170–U+1F189)
+	// Emoji-style boxed letters that LLMs read as Latin. NFKC does not decompose them.
+	'\U0001F170': 'A', // 🅰
+	'\U0001F171': 'B', // 🅱
+	'\U0001F172': 'C', // 🅲
+	'\U0001F173': 'D', // 🅳
+	'\U0001F174': 'E', // 🅴
+	'\U0001F175': 'F', // 🅵
+	'\U0001F176': 'G', // 🅶
+	'\U0001F177': 'H', // 🅷
+	'\U0001F178': 'I', // 🅸
+	'\U0001F179': 'J', // 🅹
+	'\U0001F17A': 'K', // 🅺
+	'\U0001F17B': 'L', // 🅻
+	'\U0001F17C': 'M', // 🅼
+	'\U0001F17D': 'N', // 🅽
+	'\U0001F17E': 'O', // 🅾
+	'\U0001F17F': 'P', // 🅿
+	'\U0001F180': 'Q', // 🆀
+	'\U0001F181': 'R', // 🆁
+	'\U0001F182': 'S', // 🆂
+	'\U0001F183': 'T', // 🆃
+	'\U0001F184': 'U', // 🆄
+	'\U0001F185': 'V', // 🆅
+	'\U0001F186': 'W', // 🆆
+	'\U0001F187': 'X', // 🆇
+	'\U0001F188': 'Y', // 🆈
+	'\U0001F189': 'Z', // 🆉
+
+	// Regional Indicator Symbols (U+1F1E6–U+1F1FF)
+	// Used in pairs for flag emoji (🇺🇸 = U+1F1FA + U+1F1F8), but individually
+	// render as circled letters that LLMs interpret as Latin characters.
+	'\U0001F1E6': 'A', // 🇦
+	'\U0001F1E7': 'B', // 🇧
+	'\U0001F1E8': 'C', // 🇨
+	'\U0001F1E9': 'D', // 🇩
+	'\U0001F1EA': 'E', // 🇪
+	'\U0001F1EB': 'F', // 🇫
+	'\U0001F1EC': 'G', // 🇬
+	'\U0001F1ED': 'H', // 🇭
+	'\U0001F1EE': 'I', // 🇮
+	'\U0001F1EF': 'J', // 🇯
+	'\U0001F1F0': 'K', // 🇰
+	'\U0001F1F1': 'L', // 🇱
+	'\U0001F1F2': 'M', // 🇲
+	'\U0001F1F3': 'N', // 🇳
+	'\U0001F1F4': 'O', // 🇴
+	'\U0001F1F5': 'P', // 🇵
+	'\U0001F1F6': 'Q', // 🇶
+	'\U0001F1F7': 'R', // 🇷
+	'\U0001F1F8': 'S', // 🇸
+	'\U0001F1F9': 'T', // 🇹
+	'\U0001F1FA': 'U', // 🇺
+	'\U0001F1FB': 'V', // 🇻
+	'\U0001F1FC': 'W', // 🇼
+	'\U0001F1FD': 'X', // 🇽
+	'\U0001F1FE': 'Y', // 🇾
+	'\U0001F1FF': 'Z', // 🇿
 }
 
 // NormalizeWhitespace replaces Unicode whitespace characters that Go's RE2 \s

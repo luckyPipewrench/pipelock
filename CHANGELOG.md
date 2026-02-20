@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-02-20
+
+### Added
+- MCP `--env` flag: pass specific environment variables to child processes without exposing the full environment (PR #119)
+
+### Fixed
+- Tool poisoning detection: instruction tag patterns (`<IMPORTANT>`, `<system>`) and dangerous capability patterns (file exfil, cross-tool manipulation) hardened via adversarial testing (PR #117)
+
+### Changed
+- Rebrand from "security harness" to "agent firewall" across all user-facing surfaces: CLI, README, docs, demo, Homebrew formula (PR #120)
+- Extract `internal/normalize` package: consolidate Unicode normalization pipeline, add `ForPolicy` variant for command matching (PR #116)
+- Documentation refresh: updated comparison matrix, stale references, testing stats (PR #118)
+
 ## [0.2.4] - 2026-02-19
 
 ### Added

@@ -6,7 +6,7 @@ import (
 	"encoding/hex"
 	"strings"
 
-	"golang.org/x/text/unicode/norm"
+	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
 
 // TextDLPMatch describes a single DLP pattern match in arbitrary text.
@@ -35,10 +35,7 @@ func (s *Scanner) ScanTextForDLP(text string) TextDLPResult {
 	// NFKC, cross-script confusable mapping, and combining mark removal.
 	// Must match response scanning depth — otherwise attackers use homoglyphs
 	// in key prefixes (e.g., sk-օnt-... with Armenian օ U+0585 for 'a').
-	cleaned := stripControlChars(text)
-	cleaned = norm.NFKC.String(cleaned)
-	cleaned = ConfusableToASCII(cleaned)
-	cleaned = StripCombiningMarks(cleaned)
+	cleaned := normalize.ForDLP(text)
 
 	var matches []TextDLPMatch
 
@@ -113,10 +110,7 @@ func (s *Scanner) ScanTextForDLP(text string) TextDLPResult {
 // Applies full normalization to decoded text, since URL/base64/hex decoding can
 // reintroduce control chars and confusable characters after the initial pass.
 func (s *Scanner) matchDLPPatterns(text, encoding string) []TextDLPMatch {
-	text = stripControlChars(text)
-	text = norm.NFKC.String(text)
-	text = ConfusableToASCII(text)
-	text = StripCombiningMarks(text)
+	text = normalize.ForDLP(text)
 	var matches []TextDLPMatch
 	for _, p := range s.dlpPatterns {
 		if p.re.MatchString(text) {

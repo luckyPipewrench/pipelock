@@ -4,7 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -85,6 +87,7 @@ Examples:
 func mcpProxyCmd() *cobra.Command {
 	var configFile string
 	var upstreamURL string
+	var envVars []string
 
 	cmd := &cobra.Command{
 		Use:   "proxy [flags] [-- COMMAND [ARGS...]]",
@@ -127,7 +130,14 @@ Claude Desktop config (remote server):
         "args": ["mcp", "proxy", "--upstream", "http://host.docker.internal:8080/mcp"]
       }
     }
-  }`,
+  }
+
+Environment passthrough (subprocess mode only):
+  pipelock mcp proxy --env BRAIN_DIR --env API_URL=http://localhost:8081 -- node server.js
+
+  By default, pipelock strips the child process environment to prevent secret leakage.
+  Use --env KEY to pass through a variable from the current environment, or
+  --env KEY=VALUE to set it explicitly.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dashIdx := cmd.ArgsLenAtDash()
 			hasSubprocess := dashIdx >= 0 && dashIdx < len(args)
@@ -223,6 +233,9 @@ Claude Desktop config (remote server):
 				policyAction = policyCfg.Action
 			}
 			if hasUpstream {
+				if len(envVars) > 0 {
+					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning: --env is ignored in HTTP transport mode (no child process)")
+				}
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: proxying upstream %s (response=%s, input=%s, tools=%s, policy=%s)\n",
 					upstreamURL, sc.ResponseAction(), inputCfg.Action, toolAction, policyAction)
 
@@ -230,6 +243,38 @@ Claude Desktop config (remote server):
 				defer cancel()
 
 				return mcp.RunHTTPProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, sc, approver, nil, inputCfg, toolCfg, policyCfg)
+			}
+
+			// Parse --env flags into KEY=VALUE pairs for the child process.
+			// KEY without value: pass through from current environment.
+			// KEY=VALUE: set explicitly.
+			// Empty keys, safe-list keys, and dangerous keys are rejected.
+			var extraEnv []string
+			for _, e := range envVars {
+				key, _, hasValue := strings.Cut(e, "=")
+				if key == "" {
+					return errors.New("--env requires a non-empty variable name")
+				}
+				if mcp.IsSafeEnvKey(key) {
+					return fmt.Errorf("--env %s is already set by pipelock and cannot be overridden", key)
+				}
+				if mcp.IsDangerousEnvKey(key) {
+					return fmt.Errorf("--env %s is blocked: this variable can inject code or redirect traffic in the child process", key)
+				}
+				if hasValue {
+					extraEnv = append(extraEnv, e)
+				} else if val, found := os.LookupEnv(e); found {
+					extraEnv = append(extraEnv, e+"="+val)
+				}
+			}
+			if len(extraEnv) > 0 {
+				keys := make([]string, 0, len(extraEnv))
+				for _, e := range extraEnv {
+					k, _, _ := strings.Cut(e, "=")
+					keys = append(keys, k)
+				}
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: passing %d env var(s) to child process: %s\n",
+					len(keys), strings.Join(keys, ", "))
 			}
 
 			// Subprocess mode.
@@ -240,11 +285,12 @@ Claude Desktop config (remote server):
 			ctx, cancel := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 			defer cancel()
 
-			return mcp.RunProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), serverCmd, sc, approver, inputCfg, toolCfg, policyCfg)
+			return mcp.RunProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), serverCmd, sc, approver, inputCfg, toolCfg, policyCfg, extraEnv...)
 		},
 	}
 
 	cmd.Flags().StringVarP(&configFile, "config", "c", "", "config file path")
 	cmd.Flags().StringVar(&upstreamURL, "upstream", "", "upstream MCP server URL (Streamable HTTP transport)")
+	cmd.Flags().StringArrayVar(&envVars, "env", nil, "pass environment variable to child process (KEY or KEY=VALUE, repeatable)")
 	return cmd
 }

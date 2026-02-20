@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
-	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
 
 // shellExpansionRe matches shell variable expansions used as whitespace substitutes.
@@ -55,7 +55,7 @@ var shellQuoteStripper = strings.NewReplacer("$'", "", `$"`, "", "'", "", `"`, "
 // equivalent. The shared confusableMap maps Cyrillic у → 'y' (correct for injection
 // detection: "you are now"), but this creates a bypass for command matching:
 // c\u0443rl normalizes to "cyrl" instead of "curl", evading the Network Exfiltration
-// rule. This replacer runs BEFORE NormalizeForMatching in policy checking only,
+// rule. This replacer runs BEFORE normalize.ForMatching in policy checking only,
 // so injection detection keeps the shared у→'y' mapping unaffected.
 var policyPreNormalize = strings.NewReplacer(
 	"\u0443", "u", // Cyrillic у — used as 'u' in curl/sudo/su/run
@@ -128,7 +128,7 @@ func (pc *PolicyConfig) CheckToolCall(toolName string, argStrings []string) Poli
 	// Normalize tool name and arg strings to defeat zero-width/invisible
 	// character insertion (e.g. "r\u200bm" → "rm"), homoglyph attacks
 	// (Cyrillic/Greek lookalikes), and combining mark evasion.
-	toolName = scanner.NormalizeForMatching(toolName)
+	toolName = normalize.ForMatching(toolName)
 
 	// Flatten multi-token values (e.g. "-r -f" → ["-r", "-f"]) so that
 	// flags split within a single field are treated as separate tokens.
@@ -144,8 +144,8 @@ func (pc *PolicyConfig) CheckToolCall(toolName string, argStrings []string) Poli
 	// Two normalization passes handle different ZW-char insertion strategies:
 	//  - Primary: drop invisible chars (catches mid-word: "r\u200bm" → "rm")
 	//  - Secondary: replace invisible with space (catches separator: "rm\u200b-rf" → "rm -rf")
-	tokens, joined := normalizeArgTokens(argStrings, scanner.NormalizeForMatching)
-	altTokens, altJoined := normalizeArgTokens(argStrings, scanner.NormalizeForPolicy)
+	tokens, joined := normalizeArgTokens(argStrings, normalize.ForMatching)
+	altTokens, altJoined := normalizeArgTokens(argStrings, normalize.ForPolicy)
 
 	var matchedRules []string
 	strictest := ""
@@ -190,8 +190,8 @@ func (pc *PolicyConfig) CheckToolCall(toolName string, argStrings []string) Poli
 // normalizeArgTokens applies policyPreNormalize, a Unicode normalization
 // function, shell escape decoding, and shell construction resolution to
 // each argument string, then splits into tokens. normFn selects the Unicode
-// normalization strategy (NormalizeForMatching drops invisible chars,
-// NormalizeForPolicy replaces them with spaces).
+// normalization strategy (normalize.ForMatching drops invisible chars,
+// normalize.ForPolicy replaces them with spaces).
 func normalizeArgTokens(argStrings []string, normFn func(string) string) ([]string, string) {
 	var tokens []string
 	for _, s := range argStrings {

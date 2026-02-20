@@ -12,7 +12,7 @@
 [![codecov](https://codecov.io/gh/luckyPipewrench/pipelock/graph/badge.svg)](https://codecov.io/gh/luckyPipewrench/pipelock)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
-**Security harness for AI agents.** Single binary, zero runtime dependencies.
+**Open-source firewall for AI agents.** Single binary, zero runtime dependencies.
 
 Your agent has `$ANTHROPIC_API_KEY` in its environment — and shell access. One request is all it takes:
 
@@ -74,15 +74,15 @@ gh attestation verify oci://ghcr.io/luckypipewrench/pipelock:<version> --owner l
 
 ## How It Works
 
-Pipelock uses **capability separation** — the agent process (which has secrets) is network-restricted, while a separate fetch proxy (which has NO secrets) handles web browsing. Every request goes through a 9-layer scanner pipeline.
+Like a WAF for web apps, Pipelock sits inline between your AI agent and the internet. It uses **capability separation** — the agent process (which has secrets) is network-restricted, while Pipelock (which has NO secrets) inspects all traffic through a 9-layer scanner pipeline.
 
 ```mermaid
 flowchart LR
     subgraph PRIVILEGED["Privileged Zone"]
         Agent["AI Agent\n(has API keys)"]
     end
-    subgraph FETCH["Fetch Zone"]
-        Proxy["Fetch Proxy\n(NO secrets)"]
+    subgraph FETCH["Firewall Zone"]
+        Proxy["Pipelock\n(NO secrets)"]
         Scanner["Scanner Pipeline\nSSRF · Blocklist · Rate Limit\nDLP · Env Leak · Entropy · Length"]
     end
     subgraph NET["Internet"]
@@ -103,22 +103,22 @@ flowchart LR
 <summary>Text diagram (for terminals / non-mermaid renderers)</summary>
 
 ```
-┌──────────────────────┐         ┌─────────────────────┐
-│  PRIVILEGED ZONE     │         │  FETCH ZONE          │
-│                      │         │                      │
-│  AI Agent            │  IPC    │  Fetch Proxy         │
-│  - Has API keys      │────────>│  - NO secrets        │
-│  - Has credentials   │ "fetch  │  - Full internet     │
-│  - Restricted network│  url"   │  - Returns text      │
-│                      │<────────│  - URL scanning      │
-│  Can reach:          │ content │  - Audit logging     │
-│  ✓ api.anthropic.com │         │                      │
-│  ✓ discord.com       │         │  Can reach:          │
-│  ✗ evil.com          │         │  ✓ Any URL           │
-│  ✗ pastebin.com      │         │  But has:            │
-└──────────────────────┘         │  ✗ No env secrets    │
-                                 │  ✗ No credentials    │
-                                 └─────────────────────┘
+┌──────────────────────┐         ┌───────────────────────┐
+│  PRIVILEGED ZONE     │         │  FIREWALL ZONE        │
+│                      │         │                       │
+│  AI Agent            │  IPC    │  Pipelock             │
+│  - Has API keys      │────────>│  - NO secrets         │
+│  - Has credentials   │ "fetch  │  - Full internet      │
+│  - Restricted network│  url"   │  - Returns text       │
+│                      │<────────│  - URL scanning       │
+│  Can reach:          │ content │  - Audit logging      │
+│  ✓ api.anthropic.com │         │                       │
+│  ✓ discord.com       │         │  Can reach:           │
+│  ✗ evil.com          │         │  ✓ Any URL            │
+│  ✗ pastebin.com      │         │  But has:             │
+└──────────────────────┘         │  ✗ No env secrets     │
+                                 │  ✗ No credentials     │
+                                 └───────────────────────┘
 ```
 
 </details>
@@ -175,7 +175,7 @@ Detects agent type (Claude Code, Cursor, CrewAI, LangGraph, AutoGen), programmin
 
 ### URL Scanning
 
-The fetch proxy runs a 9-layer scanner pipeline on every request:
+Every request passes through a 9-layer scanner pipeline:
 
 1. **Scheme validation** — enforces http/https only
 2. **Domain blocklist** — blocks known exfiltration targets (pastebin, transfer.sh). Pre-DNS.
@@ -422,7 +422,7 @@ pipelock generate docker-compose --agent claude-code -o docker-compose.yaml
 docker compose up
 ```
 
-The generated compose file creates two containers: **pipelock** (fetch proxy with internet) and **agent** (your AI agent on an internal-only network, can only reach pipelock).
+The generated compose file creates two containers: **pipelock** (firewall with internet access) and **agent** (your AI agent on an internal-only network, can only reach pipelock).
 
 <details>
 <summary>API Reference</summary>

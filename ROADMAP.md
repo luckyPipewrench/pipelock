@@ -6,9 +6,8 @@ High-level direction for Pipelock development. Priorities may shift based on com
 
 Shipped capabilities:
 
-- HTTP fetch proxy with 9-layer scanner pipeline
-- MCP stdio proxy with bidirectional scanning
-- MCP Streamable HTTP transport (`--upstream` mode)
+- HTTP and MCP traffic scanning with 9-layer scanner pipeline
+- MCP stdio and Streamable HTTP proxy with bidirectional scanning
 - DLP detection (15+ credential patterns, entropy analysis, encoding-aware)
 - Prompt injection detection (20+ pattern categories, Unicode-aware)
 - Tool description poisoning detection with rug-pull tracking
@@ -26,11 +25,9 @@ Shipped capabilities:
 
 ## Near-Term
 
-- "Agent Firewall" positioning (documentation refresh)
-- Codebase refactoring (MCP package modularization)
-- Unified HTTP+MCP mode (single process for both proxy types)
-- GitHub Action v2 (MCP scanning, SARIF output)
-- Docker compose-for-agents example
+- Agent process management (launch, monitor, enforce capability separation)
+- Expanded DLP pattern library
+- Configuration improvements and validation tooling
 
 ## Medium-Term
 
@@ -49,7 +46,7 @@ Shipped capabilities:
 
 ## Out of Scope
 
-Pipelock is a runtime security layer. These are explicitly not goals:
+Pipelock is an application-layer agent firewall. These are explicitly not goals:
 
 - Model training or fine-tuning security
 - Data governance or dataset management

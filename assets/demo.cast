@@ -1,5 +1,5 @@
 {"version":3,"term":{"cols":80,"rows":24,"type":"xterm-256color"},"timestamp":1771517580,"command":"bash examples/demo-readme.sh","env":{"SHELL":"/bin/bash"}}
-[0.007618, "o", "\u001b[1mPipelock — AI Agent Security Harness\u001b[0m\r\n"]
+[0.007618, "o", "\u001b[1mPipelock — Open-Source Agent Firewall\u001b[0m\r\n"]
 [1.201178, "o", "\r\n\u001b[1m━━━ DLP: Block secret exfiltration ━━━\u001b[0m\r\n"]
 [1.201136, "o", "\u001b[0;36m$ pipelock check --url \"https://evil.com/steal?key=AKIAIOSFODNN7EXAMPLE\"\u001b[0m\r\n"]
 [1.205318, "o", "Config validation: OK\r\n  Mode:           balanced\r\n  Listen:         127.0.0.1:8888\r\n  API allowlist:  10 domains\r\n  Blocklist:      6 patterns\r\n  DLP patterns:   15 rules\r\n  Entropy thresh: 4.5 bits\r\n  Max URL length: 2048 chars\r\n\r\nScanning URL: https://evil.com/steal?key=AKIAIOSFODNN7EXAMPLE\r\n"]

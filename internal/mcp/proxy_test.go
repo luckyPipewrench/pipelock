@@ -1123,6 +1123,120 @@ func TestSafeEnv_IncludesPATH(t *testing.T) {
 	}
 }
 
+func TestRunProxy_ExtraEnvPassedToChild(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sh subprocess test requires unix")
+	}
+
+	sc := testScannerWithAction(t, "warn")
+
+	var out strings.Builder
+	logBuf := &strings.Builder{}
+
+	// The child must output valid JSON-RPC. Use sh -c to embed the env var value.
+	script := `printf '{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"%s"}]}}\n' "$MY_CUSTOM_VAR"`
+	err := RunProxy(context.Background(), strings.NewReader(""), &out, logBuf, []string{"sh", "-c", script}, sc, nil, nil, nil, nil, "MY_CUSTOM_VAR=hello_from_pipelock")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(out.String(), "hello_from_pipelock") {
+		t.Errorf("expected child output to contain env var value, got: %q", out.String())
+	}
+}
+
+func TestRunProxy_ExtraEnvDoesNotLeakWithout(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("env subprocess test requires unix")
+	}
+
+	// Set a var in our process that should NOT reach the child (not in safeEnvKeys).
+	t.Setenv("PIPELOCK_TEST_SECRET", "should_not_leak")
+
+	sc := testScannerWithAction(t, "warn")
+
+	var out strings.Builder
+	logBuf := &strings.Builder{}
+
+	// Run env and check that PIPELOCK_TEST_SECRET is not present (no extraEnv).
+	_ = RunProxy(context.Background(), strings.NewReader(""), &out, logBuf, []string{"env"}, sc, nil, nil, nil, nil)
+
+	if strings.Contains(out.String(), "PIPELOCK_TEST_SECRET") {
+		t.Error("PIPELOCK_TEST_SECRET should not be in child env without --env")
+	}
+}
+
+// --- IsDangerousEnvKey tests ---
+
+func TestIsDangerousEnvKey_BlocksCodeInjection(t *testing.T) {
+	dangerous := []string{
+		"LD_PRELOAD", "LD_LIBRARY_PATH",
+		"DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH",
+		"NODE_OPTIONS", "PYTHONSTARTUP", "PYTHONPATH",
+		"PERL5OPT", "RUBYOPT", "BASH_ENV",
+		"JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS",
+		"GIT_ASKPASS",
+	}
+	for _, key := range dangerous {
+		if !IsDangerousEnvKey(key) {
+			t.Errorf("expected %s to be dangerous", key)
+		}
+	}
+}
+
+func TestIsDangerousEnvKey_BlocksProxyRedirection(t *testing.T) {
+	// Exact-case matches.
+	exact := []string{
+		"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "FTP_PROXY", "NO_PROXY",
+		"http_proxy", "https_proxy", "all_proxy", "ftp_proxy", "no_proxy",
+	}
+	for _, key := range exact {
+		if !IsDangerousEnvKey(key) {
+			t.Errorf("expected %s to be dangerous", key)
+		}
+	}
+	// Mixed-case must also be caught (case-insensitive suffix check).
+	mixed := []string{
+		"Http_Proxy", "Https_Proxy", "All_Proxy", "Ftp_Proxy",
+		"No_Proxy", "SOCKS_PROXY", "socks_proxy", "MY_CUSTOM_PROXY",
+	}
+	for _, key := range mixed {
+		if !IsDangerousEnvKey(key) {
+			t.Errorf("expected %s to be dangerous (case-insensitive proxy match)", key)
+		}
+	}
+}
+
+func TestIsDangerousEnvKey_AllowsSafeVars(t *testing.T) {
+	safe := []string{
+		"BRAIN_DIR", "API_URL", "DATABASE_URL", "MY_CONFIG",
+		"GITHUB_TOKEN", "BRAVE_API_KEY", "ANTHROPIC_API_KEY",
+		"PROXY_CONFIG",    // ends with CONFIG, not _PROXY
+		"USE_PROXY_CACHE", // _PROXY is not a suffix
+	}
+	for _, key := range safe {
+		if IsDangerousEnvKey(key) {
+			t.Errorf("expected %s to be safe, got dangerous", key)
+		}
+	}
+}
+
+func TestIsSafeEnvKey(t *testing.T) {
+	// Safe env keys must be identified.
+	for _, key := range safeEnvKeys {
+		if !IsSafeEnvKey(key) {
+			t.Errorf("expected %s to be a safe env key", key)
+		}
+	}
+	// User vars must not be flagged as safe.
+	userVars := []string{"BRAIN_DIR", "API_URL", "DATABASE_URL", "NODE_OPTIONS"}
+	for _, key := range userVars {
+		if IsSafeEnvKey(key) {
+			t.Errorf("expected %s to NOT be a safe env key", key)
+		}
+	}
+}
+
 // --- ForwardScanned strip-fail-block tests ---
 
 func TestForwardScanned_StripFail_FallsBackToBlock(t *testing.T) {

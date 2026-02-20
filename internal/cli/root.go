@@ -57,9 +57,10 @@ func Execute() error {
 func rootCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "pipelock",
-		Short: "Security harness for AI agents",
-		Long: `Pipelock controls what your AI agent can access on the network,
-preventing credential exfiltration while preserving web browsing capability.
+		Short: "Open-source firewall for AI agents",
+		Long: `Pipelock is an application-layer firewall that controls what your AI agent
+can access on the network, preventing credential exfiltration while preserving
+web browsing capability.
 
 Three modes:
   strict    - Agent can only reach allowlisted API domains (airtight)

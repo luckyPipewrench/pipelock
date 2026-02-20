@@ -4,33 +4,30 @@ An honest feature matrix and guidance on when to use what.
 
 ## Feature Matrix
 
-| Feature | Pipelock | mcp-scan (Snyk) | Docker MCP Gateway | AIP | agentsh | srt |
-|---------|----------|----------------|-------------------|-----|---------|-----|
-| **Layer** | HTTP proxy + CLI | Static scanner + MCP proxy | MCP gateway | MCP proxy | Kernel (seccomp/eBPF/FUSE) | OS sandbox |
-| **Language** | Go | Python | Go | Go | Go | TypeScript |
-| **Binary** | Single, ~12MB | pip package | Docker image | Single | Single + kernel modules | npm package |
-| **Domain allowlist** | Yes | No | No | Yes (MCP-level) | Yes (LLM proxy) | Yes |
-| **DLP (secret detection)** | Regex + entropy + env scan + known-secret file | Proxy mode: PII + secrets | Basic (`--block-secrets`) | Regex (per-argument) | Regex (LLM proxy) | No |
-| **SSRF protection** | Yes (DNS pinning) | No | No | No | N/A (kernel-level) | N/A |
-| **Prompt injection detection** | Bidirectional (response + request) | Scan: static; Proxy: indirect | No | No | No | No |
-| **Tool poisoning detection** | Pattern + Unicode normalization | Yes (hash-based) | No | No | No | No |
-| **Rug-pull detection** | SHA256 baseline tracking | Yes (hash-based) | No | No | No | No |
-| **File integrity monitoring** | SHA256 manifests | No | No | No | Workspace checkpoints | Filesystem restrictions |
-| **Ed25519 signing** | Yes | No | No | No | No | No |
-| **MCP scanning** | Bidirectional + tool poisoning | Scan: tools/list; Proxy: runtime guardrails | Basic secret scan | Native proxy | No | No |
-| **MCP HTTP transport** | Streamable HTTP (`--upstream`) | No | Native | No | No | No |
-| **HITL approvals** | Yes (terminal y/N/s) | No | No | Yes (OS dialogs) | No | No |
-| **Entropy analysis** | Shannon entropy on URLs | No | No | No | No | No |
-| **Rate limiting** | Per-domain sliding window | No | No | No | No | No |
-| **Audit logging** | Structured JSON (zerolog) | Proxy: traffic logs | Call tracing | JSONL | Session logs | No |
-| **Prometheus metrics** | Yes | No | No | No | No | No |
-| **Interceptor/plugin model** | N/A (proxy) | N/A | Exec/Docker/HTTP interceptors | N/A | N/A | N/A |
-| **Network isolation** | Docker Compose generation | No | Docker native | No | Kernel-level | sandbox-exec / bubblewrap |
-| **Syscall filtering** | No | No | No | No | Yes (seccomp) | Yes (sandbox-exec) |
-| **Filesystem sandboxing** | No | No | No | No | Yes (FUSE) | Yes (bubblewrap) |
-| **Config format** | YAML + presets | CLI flags | Docker config | YAML (agent.yaml) | CLI flags | Code |
-| **Hot-reload** | Yes (fsnotify + SIGHUP) | No | No | No | No | No |
-| **CI/CD friendly** | Yes (exit codes, JSON output) | Yes | Limited | Yes | Limited | Yes |
+| Feature | Pipelock | AIP | agentsh | srt |
+|---------|----------|-----|---------|-----|
+| **Layer** | Application firewall (HTTP + MCP) | MCP proxy | Kernel (seccomp/eBPF/FUSE) | OS sandbox |
+| **Language** | Go | Go | Go | TypeScript |
+| **Binary** | Single, ~12MB | Single | Single + kernel modules | npm package |
+| **Domain allowlist** | Yes | Yes (MCP-level) | Yes (LLM proxy) | Yes |
+| **DLP (secret detection)** | Regex + entropy + env scan | Regex (per-argument) | Regex (LLM proxy) | No |
+| **SSRF protection** | Yes (DNS pinning) | No | N/A (kernel-level) | N/A |
+| **Prompt injection detection** | Bidirectional (response + request scanning) | No | No | No |
+| **File integrity monitoring** | SHA256 manifests | No | Workspace checkpoints | Filesystem restrictions |
+| **Ed25519 signing** | Yes | No | No | No |
+| **MCP scanning** | Yes (bidirectional + tool poisoning) | Yes (native proxy) | No | No |
+| **HITL approvals** | Yes (terminal y/N/s) | Yes (OS dialogs) | No | No |
+| **Entropy analysis** | Shannon entropy on URLs | No | No | No |
+| **Rate limiting** | Per-domain sliding window | No | No | No |
+| **Audit logging** | Structured JSON (zerolog) | JSONL | Session logs | No |
+| **Prometheus metrics** | Yes | No | No | No |
+| **Multi-agent support** | Agent ID header + per-agent logs | Per-agent config | Per-session | No |
+| **Network isolation** | Docker Compose generation | No | Kernel-level | sandbox-exec / bubblewrap |
+| **Syscall filtering** | No | No | Yes (seccomp) | Yes (sandbox-exec) |
+| **Filesystem sandboxing** | No | No | Yes (FUSE) | Yes (bubblewrap) |
+| **Config format** | YAML + presets | YAML (agent.yaml) | CLI flags | Code |
+| **Hot-reload** | Yes (fsnotify + SIGHUP) | No | No | No |
+| **CI/CD friendly** | Yes (exit codes, JSON output) | Yes | Limited | Yes |
 
 ## When to Use What
 
@@ -88,31 +85,28 @@ agentsh provides kernel-level enforcement (the agent literally cannot make unaut
 ## Architecture Comparison
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│  Layer 5: Static Analysis                                         │
-│  ┌──────────┐                                                     │
-│  │ mcp-scan │   Pre-deployment tool auditing                      │
-│  └──────────┘                                                     │
-├──────────────────────────────────────────────────────────────────┤
-│  Layer 4: Application / Runtime                                   │
-│  ┌──────────┐  ┌──────────┐  ┌──────────────────┐                │
-│  │ Pipelock │  │   AIP    │  │ Docker MCP       │  HTTP/MCP      │
-│  │          │  │          │  │ Gateway           │  proxy, DLP,   │
-│  └──────────┘  └──────────┘  └──────────────────┘  inspection    │
-├──────────────────────────────────────────────────────────────────┤
-│  Layer 3: Shell / Process                                         │
-│  ┌──────────┐                                                     │
-│  │ agentsh  │   Syscall interception, FUSE, process steering      │
-│  └──────────┘                                                     │
-├──────────────────────────────────────────────────────────────────┤
-│  Layer 2: OS Sandbox                                              │
-│  ┌──────────┐                                                     │
-│  │   srt    │   sandbox-exec, bubblewrap, binary allow/deny       │
-│  └──────────┘                                                     │
-├──────────────────────────────────────────────────────────────────┤
-│  Layer 1: Container / VM                                          │
-│  Docker, Firecracker, gVisor                                      │
-└──────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│  Layer 4: Application                                    │
+│  ┌──────────┐  ┌──────────┐                              │
+│  │ Pipelock │  │   AIP    │   Agent firewall: DLP,       │
+│  │          │  │          │   injection, scanning        │
+│  └──────────┘  └──────────┘                              │
+├─────────────────────────────────────────────────────────┤
+│  Layer 3: Shell / Process                                │
+│  ┌──────────┐                                            │
+│  │ agentsh  │   Syscall interception, FUSE,              │
+│  │          │   process steering                         │
+│  └──────────┘                                            │
+├─────────────────────────────────────────────────────────┤
+│  Layer 2: OS Sandbox                                     │
+│  ┌──────────┐                                            │
+│  │   srt    │   sandbox-exec, bubblewrap,                │
+│  │          │   binary allow/deny                        │
+│  └──────────┘                                            │
+├─────────────────────────────────────────────────────────┤
+│  Layer 1: Container / VM                                 │
+│  Docker, Firecracker, gVisor                             │
+└─────────────────────────────────────────────────────────┘
 ```
 
 Defense in depth: use tools at multiple layers. A compromised agent must bypass all layers to exfiltrate data.

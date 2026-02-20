@@ -2,7 +2,7 @@
 
 How Pipelock's runtime security controls map to the [EU AI Act (Regulation 2024/1689)](https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=OJ:L_202401689) requirements for high-risk AI systems, with a [NIST AI RMF 1.0](https://nvlpubs.nist.gov/nistpubs/ai/nist.ai.100-1.pdf) crosswalk.
 
-**Scope:** Pipelock is a runtime security layer for AI agent deployments. It covers network egress filtering, content inspection, audit logging, and human oversight. It doesn't cover model training, data governance, or full-lifecycle AI management. Coverage gaps are documented below.
+**Scope:** Pipelock is an application-layer firewall for AI agent deployments. It covers network egress filtering, content inspection, audit logging, and human oversight. It doesn't cover model training, data governance, or full-lifecycle AI management. Coverage gaps are documented below.
 
 **Disclaimer:** This document maps Pipelock's security features to EU AI Act requirements for informational purposes. It does not constitute legal advice or guarantee regulatory compliance. Organizations should consult qualified legal counsel for compliance obligations specific to their AI systems.
 

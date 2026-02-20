@@ -8,7 +8,7 @@ description: "Security research and practical guidance for AI agent systems."
 
 Security research and practical guidance for AI agent systems.
 
-Pipelock is an open-source security harness that sits between AI agents and the outside world. It scans for secrets, blocks exfiltration, and monitors file integrity in multi-agent workspaces.
+Pipelock is an open-source firewall for AI agents. It sits between agents and the outside world, scanning for secrets, blocking exfiltration, detecting prompt injection, and monitoring workspace integrity.
 
 {% for post in site.posts %}
 ### [{{ post.title }}]({{ post.url | relative_url }})

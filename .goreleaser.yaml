@@ -64,7 +64,7 @@ brews:
       branch: main
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     homepage: "https://github.com/luckyPipewrench/pipelock"
-    description: "Security harness for AI agents"
+    description: "Open-source firewall for AI agents"
     license: "Apache-2.0"
     directory: Formula
     commit_author:

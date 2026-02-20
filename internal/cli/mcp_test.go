@@ -534,3 +534,214 @@ func TestMcpProxyCmd_UpstreamInvalidURL(t *testing.T) {
 		})
 	}
 }
+
+func TestMcpProxyCmd_EnvFlagInHelp(t *testing.T) {
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"mcp", "proxy", "--help"})
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	_ = cmd.Execute()
+	if !strings.Contains(buf.String(), "--env") {
+		t.Error("help should mention --env flag")
+	}
+}
+
+func TestMcpProxyCmd_EnvPassthrough(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sh subprocess test requires unix")
+	}
+
+	t.Setenv("PIPELOCK_TEST_VAR", "test_value_42")
+
+	// The child must output valid JSON-RPC so the proxy scanner doesn't block it.
+	// Use sh -c to read the env var and embed it in a JSON-RPC response.
+	script := `printf '{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"%s"}]}}\n' "$PIPELOCK_TEST_VAR"`
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"mcp", "proxy", "--env", "PIPELOCK_TEST_VAR", "--", "sh", "-c", script})
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(&strings.Builder{})
+	cmd.SetIn(bytes.NewReader(nil))
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// The env var value should appear in the forwarded response.
+	if !strings.Contains(buf.String(), "test_value_42") {
+		t.Errorf("expected child output to contain env var value, got: %s", buf.String())
+	}
+}
+
+func TestMcpProxyCmd_EnvExplicitValue(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sh subprocess test requires unix")
+	}
+
+	script := `printf '{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"%s"}]}}\n' "$MY_VAR"`
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"mcp", "proxy", "--env", "MY_VAR=explicit_value", "--", "sh", "-c", script})
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(&strings.Builder{})
+	cmd.SetIn(bytes.NewReader(nil))
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(buf.String(), "explicit_value") {
+		t.Errorf("expected child output to contain explicit_value, got: %s", buf.String())
+	}
+}
+
+func TestMcpProxyCmd_EnvUnsetVarSilentlySkipped(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sh subprocess test requires unix")
+	}
+
+	// NONEXISTENT_VAR is not set — should be silently skipped.
+	// The child outputs a clean response proving no error occurred.
+	cleanJSON := `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"Safe content."}]}}` //nolint:goconst // test value
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"mcp", "proxy", "--env", "NONEXISTENT_VAR_12345", "--", "echo", cleanJSON})
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(&strings.Builder{})
+	cmd.SetIn(bytes.NewReader(nil))
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error for unset env var: %v", err)
+	}
+}
+
+func TestMcpProxyCmd_EnvBlocksDangerousVars(t *testing.T) {
+	dangerous := []string{
+		"LD_PRELOAD", "NODE_OPTIONS", "PYTHONSTARTUP",
+		"HTTP_PROXY", "DYLD_INSERT_LIBRARIES",
+		"ALL_PROXY", "NO_PROXY", "FTP_PROXY",
+		"Http_Proxy", // mixed-case caught by suffix check
+		"JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS",
+		"GIT_ASKPASS",
+	}
+	for _, key := range dangerous {
+		t.Run(key, func(t *testing.T) {
+			cmd := rootCmd()
+			cmd.SetArgs([]string{"mcp", "proxy", "--env", key + "=/evil/path", "--", "echo", "test"})
+			cmd.SetIn(bytes.NewReader(nil))
+			cmd.SetOut(&strings.Builder{})
+			cmd.SetErr(&strings.Builder{})
+
+			err := cmd.Execute()
+			if err == nil {
+				t.Fatalf("expected error for dangerous env var %s", key)
+			}
+			if !strings.Contains(err.Error(), "blocked") {
+				t.Errorf("expected 'blocked' in error for %s, got: %v", key, err)
+			}
+		})
+	}
+}
+
+func TestMcpProxyCmd_EnvBlocksSafeKeyOverride(t *testing.T) {
+	safeKeys := []string{"PATH", "HOME", "USER", "SHELL"}
+	for _, key := range safeKeys {
+		t.Run(key, func(t *testing.T) {
+			cmd := rootCmd()
+			cmd.SetArgs([]string{"mcp", "proxy", "--env", key + "=/evil", "--", "echo", "test"})
+			cmd.SetIn(bytes.NewReader(nil))
+			cmd.SetOut(&strings.Builder{})
+			cmd.SetErr(&strings.Builder{})
+
+			err := cmd.Execute()
+			if err == nil {
+				t.Fatalf("expected error when overriding safe env key %s", key)
+			}
+			if !strings.Contains(err.Error(), "cannot be overridden") {
+				t.Errorf("expected 'cannot be overridden' in error for %s, got: %v", key, err)
+			}
+		})
+	}
+}
+
+func TestMcpProxyCmd_EnvRejectsEmptyKey(t *testing.T) {
+	tests := []struct {
+		name string
+		arg  string
+	}{
+		{"empty_string", ""},
+		{"equals_only", "=value"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := rootCmd()
+			cmd.SetArgs([]string{"mcp", "proxy", "--env", tc.arg, "--", "echo", "test"})
+			cmd.SetIn(bytes.NewReader(nil))
+			cmd.SetOut(&strings.Builder{})
+			cmd.SetErr(&strings.Builder{})
+
+			err := cmd.Execute()
+			if err == nil {
+				t.Fatal("expected error for empty env key")
+			}
+			if !strings.Contains(err.Error(), "non-empty") {
+				t.Errorf("expected 'non-empty' in error, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestMcpProxyCmd_EnvValueWithEquals(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sh subprocess test requires unix")
+	}
+
+	// DATABASE_URL=postgres://user:pass@host/db has multiple = signs.
+	// strings.Cut must split on the first = only.
+	cmd := rootCmd()
+	cmd.SetArgs([]string{
+		"mcp", "proxy", "--env", "DATABASE_URL=postgres://user:pass@host:5432/db?sslmode=require", "--",
+		"sh", "-c", `echo '{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"connected"}]}}'`,
+	})
+	cmd.SetIn(strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}` + "\n"))
+	var out strings.Builder
+	cmd.SetOut(&out)
+	cmd.SetErr(&strings.Builder{})
+
+	err := cmd.Execute()
+	if err != nil {
+		t.Fatalf("unexpected error with embedded = in value: %v", err)
+	}
+}
+
+func TestMcpProxyCmd_EnvAuditLog(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sh subprocess test requires unix")
+	}
+
+	cleanJSON := `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"Safe content."}]}}` //nolint:goconst // test value
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"mcp", "proxy", "--env", "FOO=bar", "--env", "BAZ=qux", "--", "echo", cleanJSON})
+	buf := &strings.Builder{}
+	errBuf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(errBuf)
+	cmd.SetIn(bytes.NewReader(nil))
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	stderr := errBuf.String()
+	if !strings.Contains(stderr, "passing 2 env var(s)") {
+		t.Errorf("expected audit log of 2 env vars, got stderr: %s", stderr)
+	}
+	if !strings.Contains(stderr, "FOO") || !strings.Contains(stderr, "BAZ") {
+		t.Errorf("expected env var keys in audit log, got stderr: %s", stderr)
+	}
+}

@@ -296,10 +296,6 @@ func tryParseToolsList(result json.RawMessage) []ToolDef {
 	return valid
 }
 
-// normalizeToolText delegates to normalize.ForToolText.
-// Kept as a wrapper while tests reference the unexported name.
-func normalizeToolText(s string) string { return normalize.ForToolText(s) }
-
 // checkToolPoison runs tool-specific poisoning patterns against normalized text.
 func checkToolPoison(text string) []string {
 	var findings []string
@@ -406,7 +402,7 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) []T
 
 			// Tool-specific poisoning patterns on normalized text.
 			// Normalization prevents zero-width char and confusable bypasses.
-			poison := checkToolPoison(normalizeToolText(text))
+			poison := checkToolPoison(normalize.ForToolText(text))
 			if len(poison) > 0 {
 				match.ToolPoison = poison
 				hasFinding = true

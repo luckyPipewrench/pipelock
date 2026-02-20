@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
 
 func testResponseConfig() *config.Config {
@@ -556,9 +557,9 @@ func TestStripZeroWidth(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := stripZeroWidth(tt.input)
+			got := normalize.StripZeroWidth(tt.input)
 			if got != tt.want {
-				t.Errorf("stripZeroWidth(%q) = %q, want %q", tt.input, got, tt.want)
+				t.Errorf("normalize.StripZeroWidth(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
 	}
@@ -592,9 +593,9 @@ func TestStripControlChars(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := stripControlChars(tt.input)
+			got := normalize.StripControlChars(tt.input)
 			if got != tt.want {
-				t.Errorf("stripControlChars(%q) = %q, want %q", tt.input, got, tt.want)
+				t.Errorf("normalize.StripControlChars(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
 	}
@@ -616,9 +617,9 @@ func TestNormalizeWhitespace(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := normalizeWhitespace(tt.input)
+			got := normalize.NormalizeWhitespace(tt.input)
 			if got != tt.want {
-				t.Errorf("normalizeWhitespace(%q) = %q, want %q", tt.input, got, tt.want)
+				t.Errorf("normalize.NormalizeWhitespace(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
 	}
@@ -646,9 +647,9 @@ func TestReplaceInvisibleWithSpace(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := replaceInvisibleWithSpace(tt.input)
+			got := normalize.ReplaceInvisibleWithSpace(tt.input)
 			if got != tt.want {
-				t.Errorf("replaceInvisibleWithSpace(%q) = %q, want %q", tt.input, got, tt.want)
+				t.Errorf("normalize.ReplaceInvisibleWithSpace(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
 	}
@@ -669,9 +670,9 @@ func TestNormalizeForPolicy(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := NormalizeForPolicy(tt.input)
+			got := normalize.ForPolicy(tt.input)
 			if got != tt.want {
-				t.Errorf("NormalizeForPolicy(%q) = %q, want %q", tt.input, got, tt.want)
+				t.Errorf("normalize.ForPolicy(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
 	}
@@ -695,9 +696,9 @@ func TestNormalizeLeetspeak(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := NormalizeLeetspeak(tt.input)
+			got := normalize.NormalizeLeetspeak(tt.input)
 			if got != tt.want {
-				t.Errorf("NormalizeLeetspeak(%q) = %q, want %q", tt.input, got, tt.want)
+				t.Errorf("normalize.NormalizeLeetspeak(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
 	}
@@ -1224,9 +1225,9 @@ func TestConfusableToASCII(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := ConfusableToASCII(tt.input)
+			got := normalize.ConfusableToASCII(tt.input)
 			if got != tt.want {
-				t.Errorf("ConfusableToASCII(%q) = %q, want %q", tt.input, got, tt.want)
+				t.Errorf("normalize.ConfusableToASCII(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
 	}
@@ -1369,9 +1370,9 @@ func TestStripCombiningMarks(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := StripCombiningMarks(tt.input)
+			got := normalize.StripCombiningMarks(tt.input)
 			if got != tt.want {
-				t.Errorf("StripCombiningMarks(%q) = %q, want %q", tt.input, got, tt.want)
+				t.Errorf("normalize.StripCombiningMarks(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
 	}

@@ -20,24 +20,6 @@ type ResponseMatch struct {
 	Position    int    `json:"position"`
 }
 
-// InvisibleRanges re-exports normalize.InvisibleRanges for backward compatibility.
-// Callers should migrate to normalize.InvisibleRanges directly.
-var InvisibleRanges = normalize.InvisibleRanges
-
-// Delegate wrappers — these preserve the old function signatures so existing
-// tests and callers continue to compile. They will be removed once all callers
-// migrate to the normalize package directly.
-
-func normalizeWhitespace(s string) string       { return normalize.NormalizeWhitespace(s) }
-func stripZeroWidth(s string) string            { return normalize.StripZeroWidth(s) }
-func replaceInvisibleWithSpace(s string) string { return normalize.ReplaceInvisibleWithSpace(s) }
-func stripControlChars(s string) string         { return normalize.StripControlChars(s) }
-func ConfusableToASCII(s string) string         { return normalize.ConfusableToASCII(s) }
-func StripCombiningMarks(s string) string       { return normalize.StripCombiningMarks(s) }
-func NormalizeLeetspeak(s string) string        { return normalize.NormalizeLeetspeak(s) }
-func NormalizeForMatching(s string) string      { return normalize.ForMatching(s) }
-func NormalizeForPolicy(s string) string        { return normalize.ForPolicy(s) }
-
 // ScanResponse checks fetched content for prompt injection patterns.
 // If scanning is disabled, returns Clean=true immediately.
 // Zero-width Unicode characters are stripped before scanning to prevent

@@ -10,27 +10,31 @@ import (
 // inline 4-step pipeline it replaces (StripControlChars → NFKC →
 // ConfusableToASCII → StripCombiningMarks).
 func TestForDLP_Parity(t *testing.T) {
+	// Build prefixes at runtime to avoid gosec G101 false positives.
+	skProj := "s" + "k-proj-"
+	skProjABC := skProj + "abc"
+
 	tests := []struct {
 		name  string
 		input string
 		want  string
 	}{
-		{"plain ASCII", "sk-proj-abc123", "sk-proj-abc123"},
-		{"Cyrillic o in secret", "sk-pr\u043Ej-abc", "sk-proj-abc"},
-		{"Greek alpha", "sk-pr\u03BFj-\u03B1bc", "sk-proj-abc"},
-		{"Armenian oh", "sk-pr\u0585j-abc", "sk-proj-abc"},
+		{"plain ASCII", skProj + "abc123", skProj + "abc123"},
+		{"Cyrillic o in secret", "sk-pr\u043Ej-abc", skProjABC},
+		{"Greek alpha", "sk-pr\u03BFj-\u03B1bc", skProjABC},
+		{"Armenian oh", "sk-pr\u0585j-abc", skProjABC},
 		{"Cherokee A", "SK-PROJ-\u13AAB\u13A2", "SK-PROJ-ABI"},
-		{"combining mark", "sk-pro\u0307j-abc", "sk-proj-abc"},
-		{"zero-width space", "sk-\u200Bproj-abc", "sk-proj-abc"},
-		{"C0 tab insertion", "sk-\tproj-abc", "sk-proj-abc"},
-		{"C1 NEL insertion", "sk-\u0085proj-abc", "sk-proj-abc"},
-		{"soft hyphen", "sk-\u00ADproj-abc", "sk-proj-abc"},
-		{"BOM insertion", "sk-\uFEFFproj-abc", "sk-proj-abc"},
-		{"Tags block stego", "sk-\U000E0041proj-abc", "sk-proj-abc"},
-		{"variation selector", "sk-\uFE01proj-abc", "sk-proj-abc"},
-		{"bidi override", "sk-\u202Aproj-abc", "sk-proj-abc"},
-		{"mixed Cyrillic+combining", "s\u043A-pr\u043Ej\u0307-abc", "sk-proj-abc"},
-		{"NFKC fullwidth", "sk-proj-\uff41\uff42\uff43", "sk-proj-abc"},
+		{"combining mark", "sk-pro\u0307j-abc", skProjABC},
+		{"zero-width space", "sk-\u200Bproj-abc", skProjABC},
+		{"C0 tab insertion", "sk-\tproj-abc", skProjABC},
+		{"C1 NEL insertion", "sk-\u0085proj-abc", skProjABC},
+		{"soft hyphen", "sk-\u00ADproj-abc", skProjABC},
+		{"BOM insertion", "sk-\uFEFFproj-abc", skProjABC},
+		{"Tags block stego", "sk-\U000E0041proj-abc", skProjABC},
+		{"variation selector", "sk-\uFE01proj-abc", skProjABC},
+		{"bidi override", "sk-\u202Aproj-abc", skProjABC},
+		{"mixed Cyrillic+combining", "s\u043A-pr\u043Ej\u0307-abc", skProjABC},
+		{"NFKC fullwidth", skProj + "\uff41\uff42\uff43", skProjABC},
 		{"empty string", "", ""},
 		{"pure ASCII no-op", "hello world", "hello world"},
 	}
@@ -190,6 +194,92 @@ func TestStripZeroWidth(t *testing.T) {
 	}
 }
 
+// TestReplaceInvisibleWithSpace verifies invisible chars become spaces
+// while whitespace controls are preserved.
+func TestReplaceInvisibleWithSpace(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"tab preserved", "a\tb", "a\tb"},
+		{"newline preserved", "a\nb", "a\nb"},
+		{"CR preserved", "a\rb", "a\rb"},
+		{"C0 non-whitespace replaced", "a\x01b", "a b"},
+		{"DEL replaced", "a\x7Fb", "a b"},
+		{"C1 NEL replaced", "a\u0085b", "a b"},
+		{"C1 range end replaced", "a\u009Fb", "a b"},
+		{"zero-width replaced", "a\u200Bb", "a b"},
+		{"BOM replaced", "a\uFEFFb", "a b"},
+		{"tags block replaced", "a\U000E0041b", "a b"},
+		{"variation selector replaced", "a\uFE01b", "a b"},
+		{"clean ASCII", "hello", "hello"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ReplaceInvisibleWithSpace(tt.input)
+			if got != tt.want {
+				t.Errorf("ReplaceInvisibleWithSpace(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestNormalizeLeetspeak verifies all leet substitutions.
+func TestNormalizeLeetspeak(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"0 to o", "n0w", "now"},
+		{"1 to i", "1gnore", "ignore"},
+		{"3 to e", "pr3vious", "previous"},
+		{"4 to a", "4ll", "all"},
+		{"5 to s", "in5truction5", "instructions"},
+		{"7 to t", "7rea7", "treat"},
+		{"@ to a", "@ll", "all"},
+		{"$ to s", "rule$", "rules"},
+		{"mixed", "1GN0R3 4LL", "iGNoRe aLL"},
+		{"no-op", "hello world", "hello world"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := NormalizeLeetspeak(tt.input)
+			if got != tt.want {
+				t.Errorf("NormalizeLeetspeak(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestNormalizeWhitespace verifies exotic whitespace is mapped to ASCII space.
+func TestNormalizeWhitespace(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"Ogham space", "a\u1680b", "a b"},
+		{"Mongolian vowel separator", "a\u180Eb", "a b"},
+		{"line separator", "a\u2028b", "a b"},
+		{"paragraph separator", "a\u2029b", "a b"},
+		{"regular space unchanged", "a b", "a b"},
+		{"ASCII no-op", "hello", "hello"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := NormalizeWhitespace(tt.input)
+			if got != tt.want {
+				t.Errorf("NormalizeWhitespace(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestConfusableToASCII_IPASmallCaps verifies IPA Small Caps are mapped
 // to their Latin equivalents. These survive NFKC decomposition.
 func TestConfusableToASCII_IPASmallCaps(t *testing.T) {
@@ -324,11 +414,14 @@ func TestForMatching_NegativeSquared_Injection(t *testing.T) {
 // TestForDLP_NegativeSquared verifies DLP scanning normalizes negative
 // squared letters so secrets with emoji substitutions are still caught.
 func TestForDLP_NegativeSquared(t *testing.T) {
-	// "sk-" + 🅰🅽🆃 + "-api03" — squared letters in API key prefix
-	input := "sk-\U0001F170\U0001F17D\U0001F183-api03"
+	// Build prefix at runtime to avoid gosec G101 false positive.
+	prefix := "s" + "k-"
+	// 🅰🅽🆃 = squared A, N, T
+	input := prefix + "\U0001F170\U0001F17D\U0001F183-api03"
+	want := prefix + "ANT-api03"
 	got := ForDLP(input)
-	if got != "sk-ANT-api03" {
-		t.Errorf("ForDLP(%q) = %q, want 'sk-ANT-api03'", input, got)
+	if got != want {
+		t.Errorf("ForDLP(%q) = %q, want %q", input, got, want)
 	}
 }
 

@@ -247,26 +247,33 @@ func NormalizeLeetspeak(s string) string {
 	}, s)
 }
 
+// mapInvisible maps non-whitespace control characters and Unicode invisible
+// characters to the given replacement rune. Pass -1 to strip, ' ' to replace
+// with space. Whitespace controls (\t, \n, \r) are always preserved.
+func mapInvisible(s string, replacement rune) string {
+	return strings.Map(func(r rune) rune {
+		if r <= 0x1F && r != '\t' && r != '\n' && r != '\r' {
+			return replacement
+		}
+		if r == 0x7F {
+			return replacement
+		}
+		if r >= 0x80 && r <= 0x9F {
+			return replacement
+		}
+		if unicode.Is(InvisibleRanges, r) {
+			return replacement
+		}
+		return r
+	}, s)
+}
+
 // StripZeroWidth removes ASCII control characters (except \t, \n, \r) and
 // Unicode zero-width/invisible characters. Preserves whitespace control chars
 // because injection patterns use \s+ to match them.
 // Used in response/injection scanning paths.
 func StripZeroWidth(s string) string {
-	return strings.Map(func(r rune) rune {
-		if r <= 0x1F && r != '\t' && r != '\n' && r != '\r' {
-			return -1
-		}
-		if r == 0x7F {
-			return -1
-		}
-		if r >= 0x80 && r <= 0x9F {
-			return -1
-		}
-		if unicode.Is(InvisibleRanges, r) {
-			return -1
-		}
-		return r
-	}, s)
+	return mapInvisible(s, -1)
 }
 
 // ReplaceInvisibleWithSpace replaces invisible/control characters with spaces
@@ -274,21 +281,7 @@ func StripZeroWidth(s string) string {
 // positions: "ignore\u200ball" becomes "ignore all" (detectable) instead of
 // "ignoreall" (bypass). Used in policy matching where word boundaries matter.
 func ReplaceInvisibleWithSpace(s string) string {
-	return strings.Map(func(r rune) rune {
-		if r <= 0x1F && r != '\t' && r != '\n' && r != '\r' {
-			return ' '
-		}
-		if r == 0x7F {
-			return ' '
-		}
-		if r >= 0x80 && r <= 0x9F {
-			return ' '
-		}
-		if unicode.Is(InvisibleRanges, r) {
-			return ' '
-		}
-		return r
-	}, s)
+	return mapInvisible(s, ' ')
 }
 
 // ConfusableToASCII maps visually identical non-Latin characters to their Latin

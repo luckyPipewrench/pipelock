@@ -353,7 +353,7 @@ type InputScanConfig struct {
 // Both clientOut and logW are wrapped in mutex adapters to prevent concurrent
 // write races between the input scanning goroutine, blocked request drainer,
 // child process stderr, and the main goroutine's response scanning.
-func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW io.Writer, command []string, sc *scanner.Scanner, approver *hitl.Approver, inputCfg *InputScanConfig, toolCfg *ToolScanConfig, policyCfg *PolicyConfig) error {
+func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW io.Writer, command []string, sc *scanner.Scanner, approver *hitl.Approver, inputCfg *InputScanConfig, toolCfg *ToolScanConfig, policyCfg *PolicyConfig, extraEnv ...string) error {
 	cmd := exec.CommandContext(ctx, command[0], command[1:]...) //nolint:gosec // command comes from user CLI args
 
 	// Wrap shared writers in mutex adapters. Multiple goroutines write to
@@ -364,7 +364,8 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 
 	// Restrict child process environment to safe variables only.
 	// Prevents leaking secrets from the proxy's environment to the MCP server.
-	cmd.Env = safeEnv()
+	// Extra env vars from --env flags are appended (user explicitly opted in).
+	cmd.Env = append(safeEnv(), extraEnv...)
 
 	serverIn, err := cmd.StdinPipe()
 	if err != nil {
@@ -457,7 +458,72 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 }
 
 // safeEnvKeys are environment variables safe to pass to child MCP server processes.
+// These cannot be overridden via --env to prevent footgun scenarios (e.g. --env PATH=/evil).
 var safeEnvKeys = []string{"PATH", "HOME", "USER", "LANG", "TERM", "TZ", "TMPDIR", "SHELL"}
+
+// safeEnvKeySet mirrors safeEnvKeys as a set for O(1) lookup in IsSafeEnvKey.
+var safeEnvKeySet = func() map[string]bool {
+	m := make(map[string]bool, len(safeEnvKeys))
+	for _, k := range safeEnvKeys {
+		m[k] = true
+	}
+	return m
+}()
+
+// dangerousEnvKeys are environment variable names that can inject code or libraries
+// into child processes. These are blocked even when explicitly requested via --env.
+var dangerousEnvKeys = map[string]bool{
+	// Dynamic linker injection (Linux/macOS).
+	"LD_PRELOAD":            true,
+	"LD_LIBRARY_PATH":       true,
+	"DYLD_INSERT_LIBRARIES": true,
+	"DYLD_LIBRARY_PATH":     true,
+	// Runtime code injection.
+	"NODE_OPTIONS":      true,
+	"PYTHONSTARTUP":     true,
+	"PYTHONPATH":        true,
+	"PERL5OPT":          true,
+	"RUBYOPT":           true,
+	"BASH_ENV":          true,
+	"JAVA_TOOL_OPTIONS": true,
+	"_JAVA_OPTIONS":     true,
+	"JDK_JAVA_OPTIONS":  true,
+	// Credential helper injection — causes git to execute arbitrary programs.
+	"GIT_ASKPASS": true,
+	// Proxy redirection — the MCP proxy IS the controlled network path.
+	// Both cases listed because Go checks HTTP_PROXY/http_proxy, Node.js
+	// checks case-insensitively, etc. Mixed-case caught by IsDangerousEnvKey.
+	"HTTP_PROXY":  true,
+	"HTTPS_PROXY": true,
+	"ALL_PROXY":   true,
+	"FTP_PROXY":   true,
+	"NO_PROXY":    true,
+	"http_proxy":  true,
+	"https_proxy": true,
+	"all_proxy":   true,
+	"ftp_proxy":   true,
+	"no_proxy":    true,
+}
+
+// IsSafeEnvKey reports whether the given key is one of the system variables
+// already provided by safeEnv(). These cannot be overridden via --env.
+func IsSafeEnvKey(key string) bool {
+	return safeEnvKeySet[key]
+}
+
+// IsDangerousEnvKey reports whether the given environment variable name is
+// blocked from passthrough because it can inject code or redirect traffic.
+// Proxy-related vars are checked case-insensitively since different runtimes
+// (Go, Node.js, Python, curl) honor different casings.
+func IsDangerousEnvKey(key string) bool {
+	if dangerousEnvKeys[key] {
+		return true
+	}
+	// Case-insensitive catch-all for proxy vars. Covers mixed-case forms
+	// like Http_Proxy that some runtimes (notably Node.js) honor.
+	upper := strings.ToUpper(key)
+	return strings.HasSuffix(upper, "_PROXY")
+}
 
 // safeEnv builds a filtered environment from the current process, keeping only
 // variables in safeEnvKeys. This prevents accidental secret leakage to MCP servers.

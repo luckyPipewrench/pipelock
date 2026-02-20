@@ -1340,6 +1340,9 @@ func TestCheckToolCall_CommandSubstitutionBypass(t *testing.T) {
 		{"printf_rm", []string{"$(printf rm) -rf /tmp/demo"}},
 		{"echo_rm", []string{"$(echo rm) -rf /tmp/demo"}},
 		{"printf_quoted", []string{"$(printf 'rm') -rf /tmp/demo"}},
+		{"printf_format_s", []string{"$(printf %s rm) -rf /tmp/demo"}},
+		{"printf_format_b", []string{"$(printf %b rm) -rf /tmp/demo"}},
+		{"printf_format_quoted", []string{"$(printf '%s' rm) -rf /tmp/demo"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1372,6 +1375,54 @@ func TestCheckToolCall_ShellConstructionNoFalsePositive(t *testing.T) {
 			v := pc.CheckToolCall("bash", tt.args)
 			if v.Matched {
 				t.Errorf("false positive on safe shell construction: args=%v matched rules=%v", tt.args, v.Rules)
+			}
+		})
+	}
+}
+
+// TestCheckToolCall_BraceExpansionBypass verifies that bash brace expansion
+// used to construct destructive commands is caught by policy.
+func TestCheckToolCall_BraceExpansionBypass(t *testing.T) {
+	t.Parallel()
+	pc := defaultPolicyConfig(t)
+
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"rm_rf_tmp", []string{"{rm,-rf,/tmp/demo}"}},
+		{"rm_r_slash", []string{"{rm,-r,/}"}},
+		{"rm_force_recursive", []string{"{rm,--force,--recursive,/tmp}"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			v := pc.CheckToolCall("bash", tt.args)
+			if !v.Matched {
+				t.Errorf("brace expansion bypass not detected: args=%v", tt.args)
+			}
+		})
+	}
+}
+
+// TestCheckToolCall_BraceExpansionNoFalsePositive verifies legitimate brace usage.
+func TestCheckToolCall_BraceExpansionNoFalsePositive(t *testing.T) {
+	t.Parallel()
+	pc := defaultPolicyConfig(t)
+
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"file_glob", []string{"ls *.{go,mod,sum}"}},
+		{"mkdir_multi", []string{"mkdir {src,test,docs}"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			v := pc.CheckToolCall("bash", tt.args)
+			if v.Matched {
+				t.Errorf("false positive on brace expansion: args=%v matched rules=%v", tt.args, v.Rules)
 			}
 		})
 	}

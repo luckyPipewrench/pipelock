@@ -34,7 +34,7 @@ trap 'rm -rf "$DEMO_TMPDIR"' EXIT
 # Generate a config for check commands
 pipelock generate config --preset balanced -o "$DEMO_TMPDIR/pipelock.yaml" 2>/dev/null
 
-echo -e "${BOLD}Pipelock — AI Agent Security Harness${RESET}"
+echo -e "${BOLD}Pipelock — Open-Source Agent Firewall${RESET}"
 pause
 
 # --- 1: DLP catches API key ---

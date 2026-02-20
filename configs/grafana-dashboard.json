@@ -26,7 +26,7 @@
   "annotations": {
     "list": []
   },
-  "description": "Security overview for the Pipelock AI agent security harness. Tracks request rates, scanner activity, and latency.",
+  "description": "Security overview for the Pipelock agent firewall. Tracks request rates, scanner activity, and latency.",
   "editable": true,
   "id": null,
   "links": [],

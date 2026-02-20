@@ -6,7 +6,7 @@ An honest feature matrix and guidance on when to use what.
 
 | Feature | Pipelock | AIP | agentsh | srt |
 |---------|----------|-----|---------|-----|
-| **Layer** | HTTP proxy + CLI | MCP proxy | Kernel (seccomp/eBPF/FUSE) | OS sandbox |
+| **Layer** | Application firewall (HTTP + MCP) | MCP proxy | Kernel (seccomp/eBPF/FUSE) | OS sandbox |
 | **Language** | Go | Go | Go | TypeScript |
 | **Binary** | Single, ~12MB | Single | Single + kernel modules | npm package |
 | **Domain allowlist** | Yes | Yes (MCP-level) | Yes (LLM proxy) | Yes |
@@ -72,8 +72,8 @@ agentsh provides kernel-level enforcement (the agent literally cannot make unaut
 ┌─────────────────────────────────────────────────────────┐
 │  Layer 4: Application                                    │
 │  ┌──────────┐  ┌──────────┐                              │
-│  │ Pipelock │  │   AIP    │   HTTP/MCP proxy, DLP,       │
-│  │          │  │          │   content inspection          │
+│  │ Pipelock │  │   AIP    │   Agent firewall: DLP,       │
+│  │          │  │          │   injection, scanning        │
 │  └──────────┘  └──────────┘                              │
 ├─────────────────────────────────────────────────────────┤
 │  Layer 3: Shell / Process                                │

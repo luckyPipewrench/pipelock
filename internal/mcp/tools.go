@@ -9,10 +9,8 @@ import (
 	"regexp"
 	"strings"
 	"sync"
-	"unicode"
 
-	"golang.org/x/text/unicode/norm"
-
+	"github.com/luckyPipewrench/pipelock/internal/normalize"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -298,40 +296,9 @@ func tryParseToolsList(result json.RawMessage) []ToolDef {
 	return valid
 }
 
-// normalizeToolText applies Unicode normalization before poison pattern matching.
-// Strips ALL control chars (C0 including \t\n\r, C1 U+0080-009F, DEL) + Unicode
-// invisibles, then NFKC-normalizes + confusable mapping. Unlike response scanning
-// (which preserves whitespace for \s+ injection patterns), tool descriptions have
-// no legitimate control chars — any present are evasion attempts (e.g., tab splitting
-// "IMPORTANT" into "IMPOR\tTANT", or C1 NEL splitting into "IMPOR\u0085TANT").
-func normalizeToolText(s string) string {
-	s = strings.Map(func(r rune) rune {
-		// Drop C0 controls (U+0000-001F), DEL (U+007F), and C1 controls (U+0080-009F).
-		if r <= 0x1F || r == 0x7F || (r >= 0x80 && r <= 0x9F) {
-			return -1
-		}
-		if unicode.Is(scanner.InvisibleRanges, r) {
-			return -1
-		}
-		return r
-	}, s)
-	s = norm.NFKC.String(s)
-	// Map cross-script confusables (Cyrillic/Greek lookalikes) to Latin equivalents.
-	// NFKC does NOT handle these — Cyrillic о (U+043E) stays as о without this step.
-	s = scanner.ConfusableToASCII(s)
-	// Strip combining marks that survive NFKC (e.g., i+\u0307 → "i̇" breaks "ignore").
-	s = scanner.StripCombiningMarks(s)
-	// Normalize leetspeak substitutions (1→i, 0→o, 3→e, etc.) to catch
-	// L1B3RT4S-style evasion in tool descriptions (e.g., <1MP0RT4NT>).
-	s = scanner.NormalizeLeetspeak(s)
-	return strings.Map(func(r rune) rune {
-		switch r {
-		case '\u1680', '\u180E', '\u2028', '\u2029':
-			return ' '
-		}
-		return r
-	}, s)
-}
+// normalizeToolText delegates to normalize.ForToolText.
+// Kept as a wrapper while tests reference the unexported name.
+func normalizeToolText(s string) string { return normalize.ForToolText(s) }
 
 // checkToolPoison runs tool-specific poisoning patterns against normalized text.
 func checkToolPoison(text string) []string {

@@ -8,10 +8,11 @@ Shipped capabilities:
 
 - HTTP fetch proxy with 9-layer scanner pipeline
 - MCP stdio proxy with bidirectional scanning
+- MCP Streamable HTTP transport (`--upstream` mode)
 - DLP detection (15+ credential patterns, entropy analysis, encoding-aware)
 - Prompt injection detection (20+ pattern categories, Unicode-aware)
 - Tool description poisoning detection with rug-pull tracking
-- Pre-execution tool call policy engine
+- Pre-execution tool call policy engine (9 default rules)
 - Human-in-the-loop terminal approvals
 - File integrity monitoring (SHA-256 manifests)
 - Ed25519 signing and verification
@@ -19,26 +20,32 @@ Shipped capabilities:
 - Structured JSON audit logging with Prometheus metrics
 - Preset configs for common agent frameworks
 - Known secret file scanning (`secrets_file` config)
+- Scanner validation command (`pipelock test`)
+- Framework integration guides (Claude Code, OpenAI, Google ADK, AutoGen, CrewAI, LangGraph)
+- OpenSSF Best Practices Silver badge, SLSA provenance, CycloneDX SBOM
 
 ## Near-Term
 
-- MCP Streamable HTTP transport support
-- Agent process management (launch, monitor, enforce capability separation)
-- Expanded DLP pattern library
-- Configuration improvements and validation tooling
+- "Agent Firewall" positioning (documentation refresh)
+- Codebase refactoring (MCP package modularization)
+- Unified HTTP+MCP mode (single process for both proxy types)
+- GitHub Action v2 (MCP scanning, SARIF output)
+- Docker compose-for-agents example
 
 ## Medium-Term
 
 - Inter-agent communication security (lateral movement prevention)
 - Multi-agent policy coordination
-- Enhanced observability and telemetry integration
-- Additional MCP transport backends
+- Redirect-instead-of-block (steer agents to safe alternatives)
+- Policy generation ("profile-then-lock" learned allowlists)
+- K8s sidecar Helm chart
 
 ## Long-Term
 
 - Enterprise deployment patterns (multi-tenant, centralized policy)
-- Ecosystem integrations with agent orchestration frameworks
 - Community-driven scanner rule sharing
+- Web dashboard and fleet management
+- Compliance report generation (NIST AI RMF evidence from audit logs)
 
 ## Out of Scope
 
@@ -48,6 +55,8 @@ Pipelock is a runtime security layer. These are explicitly not goals:
 - Data governance or dataset management
 - Full-lifecycle AI management platforms
 - Replacing network firewalls or endpoint protection
+- Full sandbox/container runtime
+- Custom policy DSL
 
 ## Feedback
 

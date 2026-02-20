@@ -531,11 +531,27 @@ docs/                  OWASP mapping, tool comparison
 blog/                  Blog posts (mirrored at pipelab.org/blog/)
 ```
 
+## Testing
+
+Canonical metrics — updated each release.
+
+| Metric | Value |
+|--------|-------|
+| Go tests (with `-race`) | 2,500+ |
+| Statement coverage | 96%+ |
+| Evasion techniques tested | 230+ |
+| Scanner pipeline overhead | < 0.005ms/request |
+| CI matrix | Go 1.24 + 1.25, CodeQL, golangci-lint |
+| Supply chain | SLSA provenance, CycloneDX SBOM, cosign signatures |
+| OpenSSF Scorecard | 7.8/10 |
+
+Run `make test` to verify locally. Full benchmark details: [docs/benchmarks.md](docs/benchmarks.md).
+
 ## Credits
 
 - Architecture influenced by [Anthropic's Claude Code sandboxing](https://www.anthropic.com/engineering/claude-code-sandboxing) and [sandbox-runtime](https://github.com/anthropic-experimental/sandbox-runtime)
 - Threat model informed by [OWASP Agentic AI Top 10](https://genai.owasp.org/resource/owasp-top-10-for-agentic-applications-for-2026/)
-- See [docs/comparison.md](docs/comparison.md) for how Pipelock relates to [AIP](https://github.com/ArangoGutierrez/agent-identity-protocol), [agentsh](https://github.com/canyonroad/agentsh), and [srt](https://github.com/anthropic-experimental/sandbox-runtime)
+- See [docs/comparison.md](docs/comparison.md) for how Pipelock relates to [mcp-scan (Snyk)](https://github.com/snyk/agent-scan), [Docker MCP Gateway](https://github.com/docker/mcp-gateway), [AIP](https://github.com/ArangoGutierrez/agent-identity-protocol), [agentsh](https://github.com/canyonroad/agentsh), and [srt](https://github.com/anthropic-experimental/sandbox-runtime)
 - Security review contributions from Dylan Corrales
 
 If Pipelock is useful, please [star this repository](https://github.com/luckyPipewrench/pipelock) — it helps others find the project.

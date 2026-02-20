@@ -176,7 +176,7 @@ How Pipelock maps to NIST AI Risk Management Framework functions, with EU AI Act
 | NIST Subcategory | Description | Pipelock Feature | EU AI Act |
 |-----------------|-------------|-----------------|-----------|
 | MEASURE 1.1 | Metrics selected and documented | Prometheus: `pipelock_requests_total`, `pipelock_scanner_hits_total`, `pipelock_request_duration_seconds` | Art. 12 |
-| MEASURE 2.5 | System demonstrated valid and reliable | CI: 3 required checks (test, lint, build), CodeQL analysis, 1,900+ tests, race detector enabled | Art. 15 |
+| MEASURE 2.5 | System demonstrated valid and reliable | CI: 3 required checks (test, lint, build), CodeQL analysis, comprehensive test suite with race detector (see [README](../../README.md#testing)) | Art. 15 |
 | MEASURE 2.6 | Evaluated for misuse and abuse | Scanning layers target misuse: DLP catches exfiltration, SSRF catches internal probing, injection detection catches hijacking | Art. 9, 15 |
 | MEASURE 2.7 | Security and resilience evaluated | Security audit completed (26 of 32 items fixed); DNS rebinding protection; fail-closed architecture | Art. 15 |
 | MEASURE 3.1 | Risks tracked on ongoing basis | Prometheus real-time tracking; zerolog persistent timeline; both queryable and alertable | Art. 12 |

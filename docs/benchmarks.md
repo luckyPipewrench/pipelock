@@ -4,11 +4,13 @@
 
 Benchmarks measure the scanner pipeline only, not network I/O. This isolates Pipelock's overhead from the external fetch latency.
 
-Configuration (v0.1.5 defaults, pattern counts have since increased):
+Configuration used for these benchmarks (v0.1.5 defaults):
 - SSRF protection disabled (no DNS lookups)
 - Rate limiting disabled (no time-dependent state)
-- Response scanning: 5 prompt injection patterns (current default: 10)
-- DLP: 8 patterns (current default: 15)
+- Response scanning: 5 prompt injection patterns
+- DLP: 8 patterns
+
+> **Note:** Current defaults ship more patterns (15 DLP, 13 response scanning). Real-world overhead scales linearly with pattern count but remains well under 1ms. Run `make bench` with your config to measure.
 
 Run `make bench` to reproduce on your hardware.
 
@@ -27,7 +29,7 @@ Full 9-layer URL scanning: scheme, blocklist, DLP (pre-DNS), path entropy, subdo
 
 ## Response Scanning (`ScanResponse()`)
 
-Pattern matching for prompt injection on fetched content. Benchmarked with 5 patterns (current default: 10).
+Pattern matching for prompt injection on fetched content. Benchmarked with 5 patterns.
 
 | Benchmark | ns/op | B/op | allocs/op |
 |-----------|------:|-----:|----------:|

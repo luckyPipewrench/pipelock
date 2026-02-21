@@ -18,8 +18,14 @@ const (
 	ModeAudit    = "audit"
 )
 
-// ActionAsk is the "ask" action for HITL approval on detections.
-const ActionAsk = "ask"
+// Action constants for scanner and policy responses.
+const (
+	ActionBlock   = "block"
+	ActionWarn    = "warn"
+	ActionAsk     = "ask"
+	ActionStrip   = "strip"
+	ActionForward = "forward"
+)
 
 // Output/format constants for configuration defaults.
 const (
@@ -338,7 +344,7 @@ func (c *Config) Validate() error {
 	// Validate response scanning config
 	if c.ResponseScanning.Enabled {
 		switch c.ResponseScanning.Action {
-		case "strip", "warn", "block", "ask": //nolint:goconst // config action values
+		case ActionStrip, ActionWarn, ActionBlock, ActionAsk:
 			// valid
 		default:
 			return fmt.Errorf("invalid response_scanning action %q: must be strip, warn, block, or ask", c.ResponseScanning.Action)
@@ -359,14 +365,14 @@ func (c *Config) Validate() error {
 	// Validate MCP input scanning config
 	if c.MCPInputScanning.Enabled {
 		switch c.MCPInputScanning.Action {
-		case "warn", "block": //nolint:goconst // config action values
+		case ActionWarn, ActionBlock:
 			// valid (ask not supported for input scanning — no terminal interaction on request path)
 		default:
 			return fmt.Errorf("invalid mcp_input_scanning action %q: must be warn or block", c.MCPInputScanning.Action)
 		}
 	}
 	switch c.MCPInputScanning.OnParseError {
-	case "block", "forward":
+	case ActionBlock, ActionForward:
 		// valid
 	default:
 		return fmt.Errorf("invalid mcp_input_scanning on_parse_error %q: must be block or forward", c.MCPInputScanning.OnParseError)
@@ -375,7 +381,7 @@ func (c *Config) Validate() error {
 	// Validate MCP tool scanning config
 	if c.MCPToolScanning.Enabled {
 		switch c.MCPToolScanning.Action {
-		case "warn", "block": //nolint:goconst // config action values
+		case ActionWarn, ActionBlock:
 			// valid
 		default:
 			return fmt.Errorf("invalid mcp_tool_scanning action %q: must be warn or block", c.MCPToolScanning.Action)
@@ -388,7 +394,7 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("mcp_tool_policy is enabled but has no rules; add rules or set enabled: false")
 		}
 		switch c.MCPToolPolicy.Action {
-		case "warn", "block": //nolint:goconst // config action values
+		case ActionWarn, ActionBlock:
 			// valid
 		default:
 			return fmt.Errorf("invalid mcp_tool_policy action %q: must be warn or block", c.MCPToolPolicy.Action)
@@ -410,7 +416,7 @@ func (c *Config) Validate() error {
 			}
 			if r.Action != "" {
 				switch r.Action {
-				case "warn", "block": //nolint:goconst // config action values
+				case ActionWarn, ActionBlock:
 					// valid
 				default:
 					return fmt.Errorf("mcp_tool_policy rule %q has invalid action %q: must be warn or block", r.Name, r.Action)
@@ -643,7 +649,7 @@ func Defaults() *Config {
 		},
 		MCPInputScanning: MCPInputScanning{
 			Enabled:      false,
-			OnParseError: "block",
+			OnParseError: ActionBlock,
 		},
 		MCPToolScanning: MCPToolScanning{
 			Enabled: false,

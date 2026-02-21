@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -69,7 +70,7 @@ func ScanRequest(line []byte, sc *scanner.Scanner, action, onParseError string) 
 
 	var rpc RPCResponse // Reuse struct — has Method and Params fields.
 	if err := json.Unmarshal(trimmed, &rpc); err != nil {
-		if onParseError == "forward" { //nolint:goconst // config action value
+		if onParseError == config.ActionForward {
 			// Still scan raw text for secrets/injection before forwarding.
 			return scanRawBeforeForward(trimmed, sc, action)
 		}
@@ -77,7 +78,7 @@ func ScanRequest(line []byte, sc *scanner.Scanner, action, onParseError string) 
 	}
 
 	if rpc.JSONRPC != jsonRPCVersion {
-		if onParseError == "forward" { //nolint:goconst // config action value
+		if onParseError == config.ActionForward {
 			// Still scan raw text for secrets/injection before forwarding.
 			return scanRawBeforeForward(trimmed, sc, action)
 		}
@@ -271,7 +272,7 @@ func scanRawBeforeForward(raw []byte, sc *scanner.Scanner, action string) InputV
 func scanRequestBatch(line []byte, sc *scanner.Scanner, action, onParseError string) InputVerdict {
 	var batch []json.RawMessage
 	if err := json.Unmarshal(line, &batch); err != nil {
-		if onParseError == "forward" {
+		if onParseError == config.ActionForward {
 			return scanRawBeforeForward(line, sc, action)
 		}
 		return InputVerdict{Clean: false, Error: fmt.Sprintf("invalid JSON batch: %v", err)}
@@ -444,11 +445,11 @@ func ForwardScannedInput(
 		errMsg := "" // default message
 		if isPolicyOnly {
 			errCode = -32002                                         // policy-specific error code
-			errMsg = "pipelock: request blocked by tool call policy" //nolint:goconst // shared error message with proxy_http.go
+			errMsg = "pipelock: request blocked by tool call policy" //nolint:goconst // shared error message with proxy_http.go, not worth extracting
 		}
 
 		switch effectiveAction {
-		case "block": //nolint:goconst // config action value
+		case config.ActionBlock:
 			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked %s request (%s)\n",
 				lineNum, method, reasonStr)
 			blockedCh <- BlockedRequest{
@@ -458,7 +459,7 @@ func ForwardScannedInput(
 				ErrorCode:      errCode,
 				ErrorMessage:   errMsg,
 			}
-		case "ask": //nolint:goconst // config action value
+		case config.ActionAsk:
 			// HITL for input scanning is impractical — fall back to block.
 			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked %s request (%s) [ask not supported for input scanning]\n",
 				lineNum, method, reasonStr)

@@ -45,6 +45,9 @@ outputs:
   config-path:
     description: 'Path to the config used (user-provided or auto-generated).'
     value: ${{ steps.audit.outputs.config_path }}
+  audit-failed:
+    description: 'Whether the audit command itself failed to run (fail-closed).'
+    value: ${{ steps.audit.outputs.audit_failed }}
 
 runs:
   using: 'composite'
@@ -115,16 +118,19 @@ runs:
         mkdir -p "$REPORT_DIR"
 
         # Single audit run: JSON to stdout, human-readable to stderr
+        # Fail-closed: if audit itself errors, track it so Check results can fail
+        AUDIT_FAILED="false"
         if ! pipelock audit "$DIR" --json > "$REPORT_DIR/audit.json" 2>"$REPORT_DIR/audit.log"; then
-          echo "::warning::Pipelock audit encountered an error. Check the audit log artifact."
+          AUDIT_FAILED="true"
+          echo "::error::Pipelock audit failed. Check the audit log artifact."
           cat "$REPORT_DIR/audit.log" >&2
         fi
 
         # Display human-readable report in the log
         cat "$REPORT_DIR/audit.log" >&2
 
-        # Parse findings
-        if [ -s "$REPORT_DIR/audit.json" ]; then
+        # Parse findings from valid JSON output
+        if [ "$AUDIT_FAILED" = "false" ] && [ -s "$REPORT_DIR/audit.json" ]; then
           SCORE=$(jq -r '.score // 0' "$REPORT_DIR/audit.json")
           FINDINGS=$(jq '.findings | length' "$REPORT_DIR/audit.json")
           CRITICALS=$(jq '[.findings[] | select(.severity == "critical")] | length' "$REPORT_DIR/audit.json")
@@ -133,6 +139,7 @@ runs:
           echo "score=${SCORE}" >> "$GITHUB_OUTPUT"
           echo "findings_count=${FINDINGS}" >> "$GITHUB_OUTPUT"
           echo "critical_count=${CRITICALS}" >> "$GITHUB_OUTPUT"
+          echo "audit_failed=false" >> "$GITHUB_OUTPUT"
 
           # Emit GitHub annotations for findings with file locations
           jq -r '.findings[] | select(.file != null and .file != "") |
@@ -167,9 +174,11 @@ runs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
         else
+          # Audit failed or produced no output: fail-closed
           echo "score=0" >> "$GITHUB_OUTPUT"
           echo "findings_count=0" >> "$GITHUB_OUTPUT"
           echo "critical_count=0" >> "$GITHUB_OUTPUT"
+          echo "audit_failed=true" >> "$GITHUB_OUTPUT"
         fi
 
         # Determine config path: user-provided or auto-generate
@@ -212,7 +221,12 @@ runs:
         fi
 
         if ! git diff "origin/${{ github.base_ref }}...HEAD" | pipelock git scan-diff $SCAN_ARGS; then
-          echo "::warning::Potential secrets detected in PR diff. Review the output above."
+          if [ "${{ inputs.fail-on-findings }}" = "true" ]; then
+            echo "::error::Secrets detected in PR diff. Failing because fail-on-findings is enabled."
+            exit 1
+          else
+            echo "::warning::Potential secrets detected in PR diff. Review the output above."
+          fi
         fi
 
     - name: Upload audit report
@@ -227,6 +241,12 @@ runs:
       if: inputs.fail-on-findings == 'true'
       shell: bash
       run: |
+        # Fail-closed: if audit itself failed, the gate fails
+        if [ "${{ steps.audit.outputs.audit_failed }}" = "true" ]; then
+          echo "::error::Pipelock audit failed to run. Failing because fail-on-findings is enabled (fail-closed)."
+          exit 1
+        fi
+
         CRITICALS="${{ steps.audit.outputs.critical_count }}"
         if [ "${CRITICALS:-0}" -gt 0 ]; then
           echo "::error::Pipelock found ${CRITICALS} critical finding(s). See audit report for details."

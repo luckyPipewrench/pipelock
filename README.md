@@ -47,9 +47,7 @@ go install github.com/luckyPipewrench/pipelock/cmd/pipelock@latest
 ```bash
 # 1. Generate a config and enable the forward proxy
 pipelock audit . -o pipelock.yaml
-# Add "forward_proxy: { enabled: true }" to pipelock.yaml, or use:
 pipelock generate config --preset balanced > pipelock.yaml
-echo 'forward_proxy: { enabled: true }' >> pipelock.yaml
 
 # 2. Start pipelock
 pipelock run --config pipelock.yaml

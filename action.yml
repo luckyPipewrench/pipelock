@@ -245,6 +245,7 @@ runs:
         BASE_REF: ${{ github.base_ref }}
         CONFIG_PATH: ${{ steps.audit.outputs.config_path }}
       run: |
+        set -euo pipefail
         SCAN_ARGS=()
         if [ -n "$CONFIG_PATH" ] && [ -f "$CONFIG_PATH" ]; then
           SCAN_ARGS+=(--config "$CONFIG_PATH")
@@ -261,7 +262,7 @@ runs:
 
     - name: Upload audit report
       if: always()
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
       with:
         name: pipelock-audit-report
         path: ${{ runner.temp }}/pipelock-reports/

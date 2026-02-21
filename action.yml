@@ -68,6 +68,14 @@ runs:
         fi
         VERSION="${VERSION#v}"
 
+        # Detect OS
+        OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+        case "$OS" in
+          linux)  GOOS="linux" ;;
+          darwin) GOOS="darwin" ;;
+          *) echo "::error::Unsupported OS: $OS"; exit 1 ;;
+        esac
+
         # Detect architecture
         ARCH="$(uname -m)"
         case "$ARCH" in
@@ -77,7 +85,7 @@ runs:
           *) echo "::error::Unsupported architecture: $ARCH"; exit 1 ;;
         esac
 
-        ASSET="pipelock_${VERSION}_linux_${GOARCH}.tar.gz"
+        ASSET="pipelock_${VERSION}_${GOOS}_${GOARCH}.tar.gz"
         BASE_URL="https://github.com/luckyPipewrench/pipelock/releases/download/v${VERSION}"
 
         # Download binary and checksums
@@ -89,7 +97,11 @@ runs:
         curl -fsSL "${BASE_URL}/checksums.txt" -o "${INSTALL_DIR}/checksums.txt"
 
         # Verify checksum
-        EXPECTED=$(grep "$ASSET" "${INSTALL_DIR}/checksums.txt" | awk '{print $1}')
+        EXPECTED=$(awk -v asset="$ASSET" '$2 == asset || $NF == asset {print $1; exit}' "${INSTALL_DIR}/checksums.txt")
+        if [ -z "$EXPECTED" ]; then
+          echo "::error::Asset ${ASSET} not found in checksums.txt"
+          exit 1
+        fi
         ACTUAL=$(sha256sum "${INSTALL_DIR}/pipelock.tar.gz" | awk '{print $1}')
         if [ "$EXPECTED" != "$ACTUAL" ]; then
           echo "::error::Checksum mismatch for ${ASSET}. Expected: ${EXPECTED}, Got: ${ACTUAL}"
@@ -123,10 +135,9 @@ runs:
         if ! pipelock audit "$DIR" --json > "$REPORT_DIR/audit.json" 2>"$REPORT_DIR/audit.log"; then
           AUDIT_FAILED="true"
           echo "::error::Pipelock audit failed. Check the audit log artifact."
-          cat "$REPORT_DIR/audit.log" >&2
         fi
 
-        # Display human-readable report in the log
+        # Display human-readable report in the log (once)
         cat "$REPORT_DIR/audit.log" >&2
 
         # Parse findings from valid JSON output

@@ -283,6 +283,13 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	removeHopByHopHeaders(respHeader)
 
+	// Drop Content-Length: the upstream value may exceed MaxResponseMB. If
+	// we forward it and then cap the body with LimitReader, the client sees
+	// a Content-Length promising more data than it receives, corrupting
+	// HTTP/1.1 persistent connections. Without Content-Length, Go's HTTP
+	// server falls back to chunked transfer encoding.
+	respHeader.Del("Content-Length")
+
 	w.WriteHeader(resp.StatusCode)
 
 	// Stream body with size limit

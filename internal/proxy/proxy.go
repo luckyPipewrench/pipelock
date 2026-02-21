@@ -179,11 +179,16 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
 func (p *Proxy) ssrfSafeDialContext(ctx context.Context, network, addr string) (net.Conn, error) {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("ssrfSafeDialContext: split addr %q: %w", addr, err)
 	}
 
 	// If the host is already an IP, check it and dial directly.
 	if ip := net.ParseIP(host); ip != nil {
+		// Normalize IPv4-mapped IPv6 (::ffff:x.x.x.x) to 4-byte form,
+		// consistent with the DNS resolution path below.
+		if v4 := ip.To4(); v4 != nil {
+			ip = v4
+		}
 		if currentSc := p.scannerPtr.Load(); currentSc.IsInternalIP(ip) {
 			return nil, fmt.Errorf("SSRF blocked: connection to internal IP %s", host)
 		}
@@ -193,7 +198,7 @@ func (p *Proxy) ssrfSafeDialContext(ctx context.Context, network, addr string) (
 	// Resolve DNS and validate every IP before connecting.
 	ips, err := net.DefaultResolver.LookupHost(ctx, host)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("ssrfSafeDialContext: DNS lookup %q: %w", host, err)
 	}
 
 	if len(ips) == 0 {
@@ -219,19 +224,10 @@ func (p *Proxy) ssrfSafeDialContext(ctx context.Context, network, addr string) (
 	return p.dialer.DialContext(ctx, network, net.JoinHostPort(ips[0], port))
 }
 
-// Start starts the fetch proxy HTTP server. It blocks until the context
-// is cancelled or the server encounters a fatal error.
-func (p *Proxy) Start(ctx context.Context) error {
-	cfg := p.cfgPtr.Load()
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/fetch", p.handleFetch)
-	mux.HandleFunc("/health", p.handleHealth)
-	mux.Handle("/metrics", p.metrics.PrometheusHandler())
-	mux.HandleFunc("/stats", p.metrics.StatsHandler())
-
-	// Wrap mux to intercept CONNECT and absolute-URI forward proxy requests.
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+// buildHandler wraps a ServeMux to intercept CONNECT and absolute-URI forward
+// proxy requests before falling through to the mux. Used by Start() and tests.
+func (p *Proxy) buildHandler(mux *http.ServeMux) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodConnect {
 			if !p.cfgPtr.Load().ForwardProxy.Enabled {
 				http.Error(w, "CONNECT not supported", http.StatusMethodNotAllowed)
@@ -250,10 +246,29 @@ func (p *Proxy) Start(ctx context.Context) error {
 		}
 		mux.ServeHTTP(w, r)
 	})
+}
+
+// Start starts the fetch proxy HTTP server. It blocks until the context
+// is cancelled or the server encounters a fatal error.
+func (p *Proxy) Start(ctx context.Context) error {
+	cfg := p.cfgPtr.Load()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+	mux.HandleFunc("/health", p.handleHealth)
+	mux.Handle("/metrics", p.metrics.PrometheusHandler())
+	mux.HandleFunc("/stats", p.metrics.StatsHandler())
+
+	handler := p.buildHandler(mux)
 
 	// CONNECT tunnels need to live beyond any single write timeout.
-	// When forward proxy is enabled, disable WriteTimeout and rely on
-	// per-tunnel max_tunnel_seconds and idle_timeout_seconds instead.
+	// When forward proxy is enabled, WriteTimeout is set to 0 (unlimited)
+	// because http.Server enforces it per-connection, not per-handler, and
+	// CONNECT tunnels run for minutes. This also affects /fetch, /health,
+	// /metrics, and /stats on the same listener. Those endpoints remain
+	// protected by: the http.Client.Timeout on outbound fetches, the
+	// ReadHeaderTimeout (slowloris), and the response size cap (MaxResponseMB).
+	// Per-tunnel lifetime is enforced by max_tunnel_seconds and idle_timeout_seconds.
 	writeTimeout := time.Duration(cfg.FetchProxy.TimeoutSeconds+10) * time.Second
 	if cfg.ForwardProxy.Enabled {
 		writeTimeout = 0

@@ -22,8 +22,12 @@ func runCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "run [flags]",
-		Short: "Start the Pipelock fetch proxy",
-		Long: `Start the fetch proxy server that scans and fetches URLs on behalf of agents.
+		Short: "Start the Pipelock proxy",
+		Long: `Start the proxy server that scans and controls agent HTTP traffic.
+
+Supports two proxy modes on the same port:
+  - Fetch proxy:   /fetch?url=... (extracts text, scans responses)
+  - Forward proxy: CONNECT tunnels + absolute-URI (set HTTPS_PROXY, zero agent changes)
 
 The proxy runs until interrupted (SIGINT/SIGTERM). When started with --config,
 file changes and SIGHUP signals trigger a hot-reload of config and scanner.
@@ -128,6 +132,14 @@ Examples:
 										fmt.Errorf("rejected: security downgrade from strict mode"))
 									return
 								}
+								// Block enabling forward proxy via reload. WriteTimeout is
+								// set at server start and cannot change at runtime; tunnels
+								// would be killed prematurely. Restart to enable.
+								if !oldCfg.ForwardProxy.Enabled && newCfg.ForwardProxy.Enabled {
+									logger.LogError("CONFIG_RELOAD", configFile, "", "",
+										fmt.Errorf("rejected: forward proxy cannot be enabled via reload (requires restart)"))
+									return
+								}
 							}
 							newSc := scanner.New(newCfg)
 							p.Reload(newCfg, newSc)
@@ -151,6 +163,9 @@ Examples:
 			cmd.PrintErrf("  Fetch:  http://%s/fetch?url=<url>\n", cfg.FetchProxy.Listen)
 			cmd.PrintErrf("  Health: http://%s/health\n", cfg.FetchProxy.Listen)
 			cmd.PrintErrf("  Stats:  http://%s/stats\n", cfg.FetchProxy.Listen)
+			if cfg.ForwardProxy.Enabled {
+				cmd.PrintErrf("  Proxy:  HTTP/HTTPS forward proxy enabled (CONNECT + absolute-URI)\n")
+			}
 			if configFile != "" {
 				cmd.PrintErrf("  Config: %s (hot-reload enabled, SIGHUP to reload)\n", configFile)
 			}

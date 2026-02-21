@@ -37,6 +37,7 @@ type Config struct {
 	Enforce          *bool            `yaml:"enforce"` // nil = true (default); false = detect & log without blocking
 	APIAllowlist     []string         `yaml:"api_allowlist"`
 	FetchProxy       FetchProxy       `yaml:"fetch_proxy"`
+	ForwardProxy     ForwardProxy     `yaml:"forward_proxy"`
 	DLP              DLP              `yaml:"dlp"`
 	ResponseScanning ResponseScanning `yaml:"response_scanning"`
 	MCPInputScanning MCPInputScanning `yaml:"mcp_input_scanning"`
@@ -97,6 +98,15 @@ type ResponseScanning struct {
 type ResponseScanPattern struct {
 	Name  string `yaml:"name"`
 	Regex string `yaml:"regex"`
+}
+
+// ForwardProxy configures HTTP CONNECT and absolute-URI forward proxy support.
+// When enabled, the proxy accepts standard CONNECT tunnels (for HTTPS) and
+// absolute-URI requests (for HTTP), applying the scanner pipeline to each target.
+type ForwardProxy struct {
+	Enabled            bool `yaml:"enabled"`
+	MaxTunnelSeconds   int  `yaml:"max_tunnel_seconds"`
+	IdleTimeoutSeconds int  `yaml:"idle_timeout_seconds"`
 }
 
 // GitProtection configures git-aware security features.
@@ -237,6 +247,12 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.MCPToolPolicy.Enabled && c.MCPToolPolicy.Action == "" {
 		c.MCPToolPolicy.Action = "warn" //nolint:goconst // config action value
+	}
+	if c.ForwardProxy.MaxTunnelSeconds <= 0 {
+		c.ForwardProxy.MaxTunnelSeconds = 300
+	}
+	if c.ForwardProxy.IdleTimeoutSeconds <= 0 {
+		c.ForwardProxy.IdleTimeoutSeconds = 120
 	}
 	if c.GitProtection.Enabled && len(c.GitProtection.AllowedBranches) == 0 {
 		c.GitProtection.AllowedBranches = []string{"feature/*", "fix/*", "main", "master"}
@@ -420,6 +436,16 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// Validate forward proxy config
+	if c.ForwardProxy.Enabled {
+		if c.ForwardProxy.MaxTunnelSeconds <= 0 {
+			return fmt.Errorf("forward_proxy.max_tunnel_seconds must be positive")
+		}
+		if c.ForwardProxy.IdleTimeoutSeconds <= 0 {
+			return fmt.Errorf("forward_proxy.idle_timeout_seconds must be positive")
+		}
+	}
+
 	// Validate internal CIDRs are parseable
 	for _, cidr := range c.Internal {
 		if _, _, err := net.ParseCIDR(cidr); err != nil {
@@ -527,6 +553,14 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		})
 	}
 
+	// Forward proxy disabled
+	if old.ForwardProxy.Enabled && !updated.ForwardProxy.Enabled {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "forward_proxy.enabled",
+			Message: "forward proxy disabled",
+		})
+	}
+
 	// Secrets file changed or removed (security-relevant)
 	if old.DLP.SecretsFile != updated.DLP.SecretsFile {
 		if updated.DLP.SecretsFile == "" {
@@ -581,6 +615,11 @@ func Defaults() *Config {
 					"*.requestbin.com",
 				},
 			},
+		},
+		ForwardProxy: ForwardProxy{
+			Enabled:            false,
+			MaxTunnelSeconds:   300,
+			IdleTimeoutSeconds: 120,
 		},
 		DLP: DLP{
 			ScanEnv: true,

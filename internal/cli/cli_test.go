@@ -1392,6 +1392,202 @@ response_scanning:
 	}
 }
 
+func TestRunCmd_ForwardProxyBanner(t *testing.T) {
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "test.yaml")
+	cfgContent := fmt.Sprintf(`version: 1
+mode: balanced
+fetch_proxy:
+  listen: "%s"
+  timeout_seconds: 5
+forward_proxy:
+  enabled: true
+  max_tunnel_seconds: 10
+  idle_timeout_seconds: 2
+`, addr)
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var stderrBuf bytes.Buffer
+	cmd := rootCmd()
+	cmd.SetContext(ctx)
+	cmd.SetArgs([]string{"run", "--config", cfgPath})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(&stderrBuf)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- cmd.Execute()
+	}()
+
+	// Wait for healthy.
+	client := &http.Client{Timeout: time.Second}
+	healthURL := "http://" + addr + "/health"
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case cmdErr := <-errCh:
+			cancel()
+			t.Fatalf("run exited early: %v", cmdErr)
+		default:
+		}
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+		resp, rerr := client.Do(req) //nolint:gosec // test-only
+		if rerr == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// Verify health shows forward_proxy_enabled=true
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+	resp, err := client.Do(req) //nolint:gosec // test-only
+	if err != nil {
+		cancel()
+		t.Fatalf("health request failed: %v", err)
+	}
+	var health map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&health)
+	_ = resp.Body.Close()
+	if health["forward_proxy_enabled"] != true {
+		t.Errorf("expected forward_proxy_enabled=true, got %v", health["forward_proxy_enabled"])
+	}
+
+	cancel()
+	select {
+	case cmdErr := <-errCh:
+		if cmdErr != nil {
+			t.Errorf("unexpected error: %v", cmdErr)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("run did not shut down")
+	}
+
+	// Check stderr banner printed the forward proxy line
+	if !strings.Contains(stderrBuf.String(), "forward proxy enabled") {
+		t.Errorf("expected forward proxy banner in stderr, got: %s", stderrBuf.String())
+	}
+}
+
+func TestRunCmd_ReloadRejectsForwardProxyEnable(t *testing.T) {
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "test.yaml")
+	// Start with forward_proxy disabled
+	cfgContent := fmt.Sprintf(`version: 1
+mode: balanced
+fetch_proxy:
+  listen: "%s"
+  timeout_seconds: 5
+forward_proxy:
+  enabled: false
+`, addr)
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cmd := rootCmd()
+	cmd.SetContext(ctx)
+	cmd.SetArgs([]string{"run", "--config", cfgPath})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- cmd.Execute()
+	}()
+
+	// Wait for healthy.
+	client := &http.Client{Timeout: time.Second}
+	healthURL := "http://" + addr + "/health"
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case cmdErr := <-errCh:
+			cancel()
+			t.Fatalf("run exited early: %v", cmdErr)
+		default:
+		}
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+		resp, rerr := client.Do(req) //nolint:gosec // test-only
+		if rerr == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// Hot-reload: enable forward_proxy (should be rejected)
+	updatedCfg := fmt.Sprintf(`version: 1
+mode: balanced
+fetch_proxy:
+  listen: "%s"
+  timeout_seconds: 5
+forward_proxy:
+  enabled: true
+  max_tunnel_seconds: 10
+  idle_timeout_seconds: 2
+`, addr)
+	if err := os.WriteFile(cfgPath, []byte(updatedCfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for reload to process
+	time.Sleep(500 * time.Millisecond)
+
+	// Verify forward_proxy is still disabled (reload was rejected)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+	resp, err := client.Do(req) //nolint:gosec // test-only
+	if err != nil {
+		cancel()
+		t.Fatalf("health request failed: %v", err)
+	}
+	var health map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&health)
+	_ = resp.Body.Close()
+
+	if health["forward_proxy_enabled"] == true {
+		t.Error("forward_proxy should remain disabled after rejected reload")
+	}
+
+	cancel()
+	select {
+	case cmdErr := <-errCh:
+		if cmdErr != nil {
+			t.Errorf("unexpected error: %v", cmdErr)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("run did not shut down")
+	}
+}
+
 func TestGenerateCmd_WriteError(t *testing.T) {
 	// Generate config with -o pointing to a read-only directory.
 	dir := t.TempDir()

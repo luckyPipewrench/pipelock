@@ -62,6 +62,9 @@ const (
 	EventAnomaly      EventType = "anomaly"
 	EventResponseScan EventType = "response_scan"
 	EventRedirect     EventType = "redirect"
+	EventTunnelOpen   EventType = "tunnel_open"
+	EventTunnelClose  EventType = "tunnel_close"
+	EventForwardHTTP  EventType = "forward_http"
 	EventConfigReload EventType = "config_reload"
 )
 
@@ -195,6 +198,51 @@ func (l *Logger) LogResponseScan(url, clientIP, requestID, action string, matchC
 		Int("match_count", matchCount).
 		Strs("patterns", patternNames).
 		Msg("response scan detected prompt injection")
+}
+
+// LogTunnelOpen logs a CONNECT tunnel establishment.
+func (l *Logger) LogTunnelOpen(target, clientIP, requestID string) {
+	if !l.includeAllowed {
+		return
+	}
+	l.zl.Info().
+		Str("event", string(EventTunnelOpen)).
+		Str("target", sanitizeString(target)).
+		Str("client_ip", clientIP).
+		Str("request_id", requestID).
+		Msg("tunnel opened")
+}
+
+// LogTunnelClose logs a CONNECT tunnel teardown with traffic stats.
+func (l *Logger) LogTunnelClose(target, clientIP, requestID string, totalBytes int64, duration time.Duration) {
+	if !l.includeAllowed {
+		return
+	}
+	l.zl.Info().
+		Str("event", string(EventTunnelClose)).
+		Str("target", sanitizeString(target)).
+		Str("client_ip", clientIP).
+		Str("request_id", requestID).
+		Int64("total_bytes", totalBytes).
+		Dur("duration_ms", duration).
+		Msg("tunnel closed")
+}
+
+// LogForwardHTTP logs a forward proxy HTTP request (absolute-URI).
+func (l *Logger) LogForwardHTTP(method, url, clientIP, requestID string, statusCode, sizeBytes int, duration time.Duration) {
+	if !l.includeAllowed {
+		return
+	}
+	l.zl.Info().
+		Str("event", string(EventForwardHTTP)).
+		Str("method", method).
+		Str("url", sanitizeString(url)).
+		Str("client_ip", clientIP).
+		Str("request_id", requestID).
+		Int("status_code", statusCode).
+		Int("size_bytes", sizeBytes).
+		Dur("duration_ms", duration).
+		Msg("forward proxy request")
 }
 
 // LogRedirect logs a redirect hop in the chain.

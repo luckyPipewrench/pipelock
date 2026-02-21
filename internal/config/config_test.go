@@ -1720,3 +1720,165 @@ func TestValidateReload_MCPToolPolicyRulesIncreased_NoWarning(t *testing.T) {
 		}
 	}
 }
+
+// --- Forward Proxy Config Tests ---
+
+func TestDefaults_ForwardProxy(t *testing.T) {
+	cfg := Defaults()
+	if cfg.ForwardProxy.Enabled {
+		t.Error("forward proxy should be disabled by default")
+	}
+	if cfg.ForwardProxy.MaxTunnelSeconds != 300 {
+		t.Errorf("expected max_tunnel_seconds=300, got %d", cfg.ForwardProxy.MaxTunnelSeconds)
+	}
+	if cfg.ForwardProxy.IdleTimeoutSeconds != 120 {
+		t.Errorf("expected idle_timeout_seconds=120, got %d", cfg.ForwardProxy.IdleTimeoutSeconds)
+	}
+}
+
+func TestApplyDefaults_ForwardProxyMaxTunnel(t *testing.T) {
+	cfg := Defaults()
+	cfg.ForwardProxy.MaxTunnelSeconds = 0 // zero triggers default
+	cfg.ApplyDefaults()
+	if cfg.ForwardProxy.MaxTunnelSeconds != 300 {
+		t.Errorf("expected max_tunnel_seconds=300 after ApplyDefaults, got %d", cfg.ForwardProxy.MaxTunnelSeconds)
+	}
+}
+
+func TestApplyDefaults_ForwardProxyIdleTimeout(t *testing.T) {
+	cfg := Defaults()
+	cfg.ForwardProxy.IdleTimeoutSeconds = 0 // zero triggers default
+	cfg.ApplyDefaults()
+	if cfg.ForwardProxy.IdleTimeoutSeconds != 120 {
+		t.Errorf("expected idle_timeout_seconds=120 after ApplyDefaults, got %d", cfg.ForwardProxy.IdleTimeoutSeconds)
+	}
+}
+
+func TestApplyDefaults_ForwardProxyCustomValues(t *testing.T) {
+	cfg := Defaults()
+	cfg.ForwardProxy.MaxTunnelSeconds = 600
+	cfg.ForwardProxy.IdleTimeoutSeconds = 60
+	cfg.ApplyDefaults()
+	if cfg.ForwardProxy.MaxTunnelSeconds != 600 {
+		t.Errorf("expected custom max_tunnel_seconds=600 preserved, got %d", cfg.ForwardProxy.MaxTunnelSeconds)
+	}
+	if cfg.ForwardProxy.IdleTimeoutSeconds != 60 {
+		t.Errorf("expected custom idle_timeout_seconds=60 preserved, got %d", cfg.ForwardProxy.IdleTimeoutSeconds)
+	}
+}
+
+func TestValidate_ForwardProxyEnabled(t *testing.T) {
+	cfg := Defaults()
+	cfg.ForwardProxy.Enabled = true
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("forward proxy with defaults should validate: %v", err)
+	}
+}
+
+func TestValidate_ForwardProxyInvalidMaxTunnel(t *testing.T) {
+	cfg := Defaults()
+	cfg.ForwardProxy.Enabled = true
+	cfg.ForwardProxy.MaxTunnelSeconds = -1
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for negative max_tunnel_seconds")
+	}
+}
+
+func TestValidate_ForwardProxyInvalidIdleTimeout(t *testing.T) {
+	cfg := Defaults()
+	cfg.ForwardProxy.Enabled = true
+	cfg.ForwardProxy.IdleTimeoutSeconds = 0
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for zero idle_timeout_seconds")
+	}
+}
+
+func TestValidate_ForwardProxyDisabledSkipsValidation(t *testing.T) {
+	cfg := Defaults()
+	cfg.ForwardProxy.Enabled = false
+	cfg.ForwardProxy.MaxTunnelSeconds = -999
+	cfg.ForwardProxy.IdleTimeoutSeconds = -999
+	// When disabled, validation of tunnel values is skipped
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("disabled forward proxy should skip validation: %v", err)
+	}
+}
+
+func TestValidateReload_ForwardProxyDisabled(t *testing.T) {
+	old := Defaults()
+	old.ForwardProxy.Enabled = true
+
+	updated := Defaults()
+	updated.ForwardProxy.Enabled = false
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == "forward_proxy.enabled" { //nolint:goconst // test value
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected warning for forward proxy disabled")
+	}
+}
+
+func TestValidateReload_ForwardProxyEnabled_NoWarning(t *testing.T) {
+	old := Defaults()
+	old.ForwardProxy.Enabled = false
+
+	updated := Defaults()
+	updated.ForwardProxy.Enabled = true
+
+	warnings := ValidateReload(old, updated)
+	for _, w := range warnings {
+		if w.Field == "forward_proxy.enabled" { //nolint:goconst // test value
+			t.Errorf("enabling forward proxy should not warn, got: %s", w.Message)
+		}
+	}
+}
+
+func TestValidateReload_ForwardProxyBothEnabled_NoWarning(t *testing.T) {
+	old := Defaults()
+	old.ForwardProxy.Enabled = true
+
+	updated := Defaults()
+	updated.ForwardProxy.Enabled = true
+
+	warnings := ValidateReload(old, updated)
+	for _, w := range warnings {
+		if w.Field == "forward_proxy.enabled" { //nolint:goconst // test value
+			t.Errorf("both enabled should not warn, got: %s", w.Message)
+		}
+	}
+}
+
+func TestLoad_ForwardProxyFromYAML(t *testing.T) {
+	dir := t.TempDir()
+	cfgYAML := `
+version: 1
+mode: balanced
+forward_proxy:
+  enabled: true
+  max_tunnel_seconds: 600
+  idle_timeout_seconds: 60
+`
+	configPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte(cfgYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.ForwardProxy.Enabled {
+		t.Error("expected forward_proxy.enabled=true from YAML")
+	}
+	if cfg.ForwardProxy.MaxTunnelSeconds != 600 {
+		t.Errorf("expected max_tunnel_seconds=600, got %d", cfg.ForwardProxy.MaxTunnelSeconds)
+	}
+	if cfg.ForwardProxy.IdleTimeoutSeconds != 60 {
+		t.Errorf("expected idle_timeout_seconds=60, got %d", cfg.ForwardProxy.IdleTimeoutSeconds)
+	}
+}

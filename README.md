@@ -79,7 +79,12 @@ gh attestation verify oci://ghcr.io/luckypipewrench/pipelock:<version> --owner l
 
 ## How It Works
 
-Like a WAF for web apps, Pipelock sits inline between your AI agent and the internet. It uses **capability separation**: the agent process (which has secrets) is network-restricted, while Pipelock (which has NO secrets) inspects all traffic through a 9-layer scanner pipeline. Network isolation is enforced by your environment (Docker network, firewall rules, or OS sandbox). Pipelock includes `pipelock generate docker-compose` to set this up automatically.
+Like a WAF for web apps, Pipelock sits inline between your AI agent and the internet. It uses **capability separation** -- the agent process (which has secrets) is network-restricted, while Pipelock (which has NO secrets) inspects all traffic through a 9-layer scanner pipeline.
+
+Two proxy modes, same port:
+
+- **Fetch proxy** (`/fetch?url=...`): Pipelock fetches the URL, extracts text, scans the response for prompt injection, and returns clean content. Best for agents that use a dedicated fetch tool.
+- **Forward proxy** (`HTTPS_PROXY`): Standard HTTP CONNECT tunneling and absolute-URI forwarding. Agents use Pipelock as their system proxy with zero code changes. Hostname scanning catches blocked domains and SSRF before the tunnel opens. Best for agents that use native `fetch()` or HTTP libraries.
 
 ```mermaid
 flowchart LR
@@ -94,8 +99,9 @@ flowchart LR
         Web["Web"]
     end
 
-    Agent -- "fetch URL" --> Proxy
+    Agent -- "fetch URL\nor CONNECT" --> Proxy
     Proxy --> Scanner
+    Scanner -- "content or\ntunnel" --> Agent
     Scanner -- "request" --> Web
     Web -- "response" --> Scanner
     Scanner -- "clean content" --> Agent
@@ -114,8 +120,8 @@ flowchart LR
 │                      │         │                       │
 │  AI Agent            │  IPC    │  Pipelock             │
 │  - Has API keys      │────────>│  - NO secrets         │
-│  - Has credentials   │ "fetch  │  - Full internet      │
-│  - Restricted network│  url"   │  - Returns text       │
+│  - Has credentials   │ fetch / │  - Full internet      │
+│  - Restricted network│ CONNECT │  - Returns text       │
 │                      │<────────│  - URL scanning       │
 │  Can reach:          │ content │  - Audit logging      │
 │  ✓ api.anthropic.com │         │                       │
@@ -151,7 +157,7 @@ Pipelock runs in three modes:
 | Mode | Security | Web Browsing | Use Case |
 |------|----------|--------------|----------|
 | **strict** | Allowlist-only | None | Regulated industries, high-security |
-| **balanced** | Blocks naive + detects sophisticated | Via fetch proxy | Most developers (default) |
+| **balanced** | Blocks naive + detects sophisticated | Via fetch or forward proxy | Most developers (default) |
 | **audit** | Logging only | Unrestricted | Evaluation before enforcement |
 
 What each mode prevents, detects, or logs:
@@ -340,6 +346,11 @@ mcp_tool_scanning:
 #   action: warn
 #   rules: []
 
+forward_proxy:
+  enabled: false             # enable to accept CONNECT tunnels and absolute-URI requests
+  max_tunnel_seconds: 300    # max lifetime per tunnel
+  idle_timeout_seconds: 120  # kill idle tunnels after this
+
 logging:
   format: json
   output: stdout
@@ -437,13 +448,18 @@ The generated compose file creates two containers: **pipelock** (firewall with i
 # Fetch a URL (returns extracted text content)
 curl "http://localhost:8888/fetch?url=https://example.com"
 
+# Forward proxy (when forward_proxy.enabled: true)
+# Set HTTPS_PROXY=http://localhost:8888 and use any HTTP client normally.
+# HTTPS goes through CONNECT tunnels; plain HTTP uses absolute-URI forwarding.
+curl -x http://localhost:8888 https://example.com
+
 # Health check
 curl "http://localhost:8888/health"
 
 # Prometheus metrics
 curl "http://localhost:8888/metrics"
 
-# JSON stats (top blocked domains, scanner hits, block rate)
+# JSON stats (top blocked domains, scanner hits, tunnels, block rate)
 curl "http://localhost:8888/stats"
 ```
 
@@ -470,7 +486,8 @@ curl "http://localhost:8888/stats"
   "dlp_patterns": 15,
   "response_scan_enabled": true,
   "git_protection_enabled": false,
-  "rate_limit_enabled": true
+  "rate_limit_enabled": true,
+  "forward_proxy_enabled": false
 }
 ```
 
@@ -484,6 +501,7 @@ curl "http://localhost:8888/stats"
     "blocked": 8,
     "block_rate": 0.053
   },
+  "tunnels": 42,
   "top_blocked_domains": [
     {"name": "pastebin.com", "count": 5},
     {"name": "transfer.sh", "count": 3}
@@ -525,7 +543,7 @@ internal/
   config/              YAML config loading, validation, defaults, hot-reload (fsnotify)
   scanner/             URL scanning (SSRF, blocklist, rate limit, DLP, entropy, env leak)
   audit/               Structured JSON audit logging (zerolog)
-  proxy/               Fetch proxy HTTP server (go-readability, agent ID, DNS pinning)
+  proxy/               HTTP proxy: fetch (/fetch), forward (CONNECT + absolute-URI), DNS pinning
   metrics/             Prometheus metrics + JSON stats endpoint
   gitprotect/          Git-aware security (diff scanning, branch validation, hooks)
   integrity/           File integrity monitoring (SHA256 manifests, check/diff, exclusions)

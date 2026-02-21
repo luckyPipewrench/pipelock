@@ -55,14 +55,17 @@ runs:
     - name: Download Pipelock
       id: download
       shell: bash
+      env:
+        PIPELOCK_VERSION: ${{ inputs.version }}
+        GH_TOKEN: ${{ github.token }}
       run: |
         set -euo pipefail
 
-        VERSION="${{ inputs.version }}"
+        VERSION="$PIPELOCK_VERSION"
         if [ "$VERSION" = "latest" ]; then
           # Use GitHub API directly (no gh CLI dependency)
           VERSION=$(curl -fsSL \
-            -H "Authorization: token ${{ github.token }}" \
+            -H "Authorization: token $GH_TOKEN" \
             "https://api.github.com/repos/luckyPipewrench/pipelock/releases/latest" \
             | jq -r '.tag_name' | sed 's/^v//')
         fi
@@ -92,17 +95,21 @@ runs:
         INSTALL_DIR="${RUNNER_TEMP:-/tmp}/pipelock-bin"
         mkdir -p "$INSTALL_DIR"
 
-        echo "Downloading pipelock v${VERSION} (linux/${GOARCH})..."
+        echo "Downloading pipelock v${VERSION} (${GOOS}/${GOARCH})..."
         curl -fsSL "${BASE_URL}/${ASSET}" -o "${INSTALL_DIR}/pipelock.tar.gz"
         curl -fsSL "${BASE_URL}/checksums.txt" -o "${INSTALL_DIR}/checksums.txt"
 
-        # Verify checksum
+        # Verify checksum (portable: sha256sum on Linux, shasum on macOS)
         EXPECTED=$(awk -v asset="$ASSET" '$2 == asset || $NF == asset {print $1; exit}' "${INSTALL_DIR}/checksums.txt")
         if [ -z "$EXPECTED" ]; then
           echo "::error::Asset ${ASSET} not found in checksums.txt"
           exit 1
         fi
-        ACTUAL=$(sha256sum "${INSTALL_DIR}/pipelock.tar.gz" | awk '{print $1}')
+        if command -v sha256sum &>/dev/null; then
+          ACTUAL=$(sha256sum "${INSTALL_DIR}/pipelock.tar.gz" | awk '{print $1}')
+        else
+          ACTUAL=$(shasum -a 256 "${INSTALL_DIR}/pipelock.tar.gz" | awk '{print $1}')
+        fi
         if [ "$EXPECTED" != "$ACTUAL" ]; then
           echo "::error::Checksum mismatch for ${ASSET}. Expected: ${EXPECTED}, Got: ${ACTUAL}"
           exit 1
@@ -121,11 +128,14 @@ runs:
     - name: Run audit
       id: audit
       shell: bash
+      env:
+        PIPELOCK_DIR: ${{ inputs.directory }}
+        PIPELOCK_CONFIG: ${{ inputs.config }}
       run: |
         set -euo pipefail
 
-        DIR="${{ inputs.directory }}"
-        CONFIG="${{ inputs.config }}"
+        DIR="$PIPELOCK_DIR"
+        CONFIG="$PIPELOCK_CONFIG"
         REPORT_DIR="${RUNNER_TEMP:-/tmp}/pipelock-reports"
         mkdir -p "$REPORT_DIR"
 
@@ -207,7 +217,9 @@ runs:
     - name: Validate config
       if: inputs.config != ''
       shell: bash
-      run: pipelock check --config "${{ inputs.config }}"
+      env:
+        PIPELOCK_CONFIG: ${{ inputs.config }}
+      run: pipelock check --config "$PIPELOCK_CONFIG"
 
     - name: Test scanning coverage
       if: inputs.test-vectors == 'true'
@@ -223,16 +235,19 @@ runs:
     - name: Scan PR diff
       if: inputs.scan-diff == 'true' && github.event_name == 'pull_request'
       shell: bash
+      env:
+        PIPELOCK_FAIL_ON_FINDINGS: ${{ inputs.fail-on-findings }}
+        BASE_REF: ${{ github.base_ref }}
       run: |
         CONFIG_PATH="${{ steps.audit.outputs.config_path }}"
 
-        SCAN_ARGS=""
+        SCAN_ARGS=()
         if [ -n "$CONFIG_PATH" ] && [ -f "$CONFIG_PATH" ]; then
-          SCAN_ARGS="--config $CONFIG_PATH"
+          SCAN_ARGS+=(--config "$CONFIG_PATH")
         fi
 
-        if ! git diff "origin/${{ github.base_ref }}...HEAD" | pipelock git scan-diff $SCAN_ARGS; then
-          if [ "${{ inputs.fail-on-findings }}" = "true" ]; then
+        if ! git diff "origin/${BASE_REF}...HEAD" | pipelock git scan-diff "${SCAN_ARGS[@]}"; then
+          if [ "$PIPELOCK_FAIL_ON_FINDINGS" = "true" ]; then
             echo "::error::Secrets detected in PR diff. Failing because fail-on-findings is enabled."
             exit 1
           else

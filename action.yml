@@ -1,0 +1,234 @@
+name: 'Pipelock Agent Security Scan'
+description: 'Scan your project for AI agent security risks. Detects secrets, misconfigurations, and generates a tailored security config.'
+author: 'luckyPipewrench'
+
+branding:
+  icon: 'shield'
+  color: 'green'
+
+inputs:
+  version:
+    description: 'Pipelock version to use (e.g., "0.2.5"). Defaults to latest release.'
+    required: false
+    default: 'latest'
+  config:
+    description: 'Path to pipelock config file. If not set, runs audit to generate one.'
+    required: false
+    default: ''
+  directory:
+    description: 'Directory to scan. Defaults to workspace root.'
+    required: false
+    default: '.'
+  scan-diff:
+    description: 'Scan the PR diff for leaked secrets (requires fetch-depth: 0).'
+    required: false
+    default: 'true'
+  fail-on-findings:
+    description: 'Fail the action if critical findings are detected.'
+    required: false
+    default: 'true'
+  test-vectors:
+    description: 'Run built-in test vectors to validate scanning coverage.'
+    required: false
+    default: 'true'
+
+outputs:
+  score:
+    description: 'Security score (0-100) for the scanned project.'
+    value: ${{ steps.audit.outputs.score }}
+  findings-count:
+    description: 'Total number of findings.'
+    value: ${{ steps.audit.outputs.findings_count }}
+  critical-count:
+    description: 'Number of critical findings.'
+    value: ${{ steps.audit.outputs.critical_count }}
+  config-path:
+    description: 'Path to the config used (user-provided or auto-generated).'
+    value: ${{ steps.audit.outputs.config_path }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Download Pipelock
+      id: download
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        VERSION="${{ inputs.version }}"
+        if [ "$VERSION" = "latest" ]; then
+          # Use GitHub API directly (no gh CLI dependency)
+          VERSION=$(curl -fsSL \
+            -H "Authorization: token ${{ github.token }}" \
+            "https://api.github.com/repos/luckyPipewrench/pipelock/releases/latest" \
+            | jq -r '.tag_name' | sed 's/^v//')
+        fi
+        VERSION="${VERSION#v}"
+
+        # Detect architecture
+        ARCH="$(uname -m)"
+        case "$ARCH" in
+          x86_64)  GOARCH="amd64" ;;
+          aarch64) GOARCH="arm64" ;;
+          arm64)   GOARCH="arm64" ;;
+          *) echo "::error::Unsupported architecture: $ARCH"; exit 1 ;;
+        esac
+
+        ASSET="pipelock_${VERSION}_linux_${GOARCH}.tar.gz"
+        BASE_URL="https://github.com/luckyPipewrench/pipelock/releases/download/v${VERSION}"
+
+        # Download binary and checksums
+        INSTALL_DIR="${RUNNER_TEMP:-/tmp}/pipelock-bin"
+        mkdir -p "$INSTALL_DIR"
+
+        echo "Downloading pipelock v${VERSION} (linux/${GOARCH})..."
+        curl -fsSL "${BASE_URL}/${ASSET}" -o "${INSTALL_DIR}/pipelock.tar.gz"
+        curl -fsSL "${BASE_URL}/checksums.txt" -o "${INSTALL_DIR}/checksums.txt"
+
+        # Verify checksum
+        EXPECTED=$(grep "$ASSET" "${INSTALL_DIR}/checksums.txt" | awk '{print $1}')
+        ACTUAL=$(sha256sum "${INSTALL_DIR}/pipelock.tar.gz" | awk '{print $1}')
+        if [ "$EXPECTED" != "$ACTUAL" ]; then
+          echo "::error::Checksum mismatch for ${ASSET}. Expected: ${EXPECTED}, Got: ${ACTUAL}"
+          exit 1
+        fi
+        echo "Checksum verified."
+
+        tar -xzf "${INSTALL_DIR}/pipelock.tar.gz" -C "$INSTALL_DIR" pipelock
+        chmod +x "${INSTALL_DIR}/pipelock"
+        echo "$INSTALL_DIR" >> "$GITHUB_PATH"
+        echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+    - name: Verify binary
+      shell: bash
+      run: pipelock version
+
+    - name: Run audit
+      id: audit
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        DIR="${{ inputs.directory }}"
+        CONFIG="${{ inputs.config }}"
+        REPORT_DIR="${RUNNER_TEMP:-/tmp}/pipelock-reports"
+        mkdir -p "$REPORT_DIR"
+
+        # Single audit run: JSON to stdout, human-readable to stderr
+        if ! pipelock audit "$DIR" --json > "$REPORT_DIR/audit.json" 2>"$REPORT_DIR/audit.log"; then
+          echo "::warning::Pipelock audit encountered an error. Check the audit log artifact."
+          cat "$REPORT_DIR/audit.log" >&2
+        fi
+
+        # Display human-readable report in the log
+        cat "$REPORT_DIR/audit.log" >&2
+
+        # Parse findings
+        if [ -s "$REPORT_DIR/audit.json" ]; then
+          SCORE=$(jq -r '.score // 0' "$REPORT_DIR/audit.json")
+          FINDINGS=$(jq '.findings | length' "$REPORT_DIR/audit.json")
+          CRITICALS=$(jq '[.findings[] | select(.severity == "critical")] | length' "$REPORT_DIR/audit.json")
+          WARNINGS=$(jq '[.findings[] | select(.severity == "warning")] | length' "$REPORT_DIR/audit.json")
+
+          echo "score=${SCORE}" >> "$GITHUB_OUTPUT"
+          echo "findings_count=${FINDINGS}" >> "$GITHUB_OUTPUT"
+          echo "critical_count=${CRITICALS}" >> "$GITHUB_OUTPUT"
+
+          # Emit GitHub annotations for findings with file locations
+          jq -r '.findings[] | select(.file != null and .file != "") |
+            (if .severity == "critical" then "error"
+             elif .severity == "warning" then "warning"
+             else "notice" end) as $level |
+            "::\($level) file=\(.file),line=\(.line // 1)::\(.message)"' "$REPORT_DIR/audit.json"
+
+          # Write job summary
+          {
+            echo "### Pipelock Security Audit"
+            echo ""
+            echo "| Metric | Value |"
+            echo "|--------|-------|"
+            echo "| Security Score | **${SCORE}/100** |"
+            echo "| Findings | ${FINDINGS} (${CRITICALS} critical, ${WARNINGS} warning) |"
+            echo "| Directory | \`${DIR}\` |"
+            echo ""
+            if [ "$CRITICALS" -gt 0 ]; then
+              echo "> **${CRITICALS} critical finding(s) detected.** See annotations on the PR diff."
+              echo ""
+            fi
+            if [ "$FINDINGS" -gt 0 ]; then
+              echo "<details><summary>Findings</summary>"
+              echo ""
+              jq -r '.findings[] |
+                "- **[\(.severity)]** \(.message)" +
+                (if .file then " (`\(.file)`" + (if .line then ":\(.line)" else "" end) + ")" else "" end)' \
+                "$REPORT_DIR/audit.json"
+              echo ""
+              echo "</details>"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+        else
+          echo "score=0" >> "$GITHUB_OUTPUT"
+          echo "findings_count=0" >> "$GITHUB_OUTPUT"
+          echo "critical_count=0" >> "$GITHUB_OUTPUT"
+        fi
+
+        # Determine config path: user-provided or auto-generate
+        if [ -n "$CONFIG" ]; then
+          echo "config_path=${CONFIG}" >> "$GITHUB_OUTPUT"
+        else
+          pipelock audit "$DIR" -o "$REPORT_DIR/suggested.yaml" 2>/dev/null || true
+          if [ -f "$REPORT_DIR/suggested.yaml" ]; then
+            echo "config_path=${REPORT_DIR}/suggested.yaml" >> "$GITHUB_OUTPUT"
+          else
+            echo "config_path=" >> "$GITHUB_OUTPUT"
+          fi
+        fi
+
+    - name: Validate config
+      if: inputs.config != ''
+      shell: bash
+      run: pipelock check --config "${{ inputs.config }}"
+
+    - name: Test scanning coverage
+      if: inputs.test-vectors == 'true'
+      shell: bash
+      run: |
+        CONFIG_PATH="${{ steps.audit.outputs.config_path }}"
+        if [ -n "$CONFIG_PATH" ] && [ -f "$CONFIG_PATH" ]; then
+          pipelock test --config "$CONFIG_PATH" --fail-on-gap
+        else
+          echo "::notice::Skipping test vectors (no config available)"
+        fi
+
+    - name: Scan PR diff
+      if: inputs.scan-diff == 'true' && github.event_name == 'pull_request'
+      shell: bash
+      run: |
+        CONFIG_PATH="${{ steps.audit.outputs.config_path }}"
+
+        SCAN_ARGS=""
+        if [ -n "$CONFIG_PATH" ] && [ -f "$CONFIG_PATH" ]; then
+          SCAN_ARGS="--config $CONFIG_PATH"
+        fi
+
+        if ! git diff "origin/${{ github.base_ref }}...HEAD" | pipelock git scan-diff $SCAN_ARGS; then
+          echo "::warning::Potential secrets detected in PR diff. Review the output above."
+        fi
+
+    - name: Upload audit report
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: pipelock-audit-report
+        path: ${{ runner.temp }}/pipelock-reports/
+        if-no-files-found: ignore
+
+    - name: Check results
+      if: inputs.fail-on-findings == 'true'
+      shell: bash
+      run: |
+        CRITICALS="${{ steps.audit.outputs.critical_count }}"
+        if [ "${CRITICALS:-0}" -gt 0 ]; then
+          echo "::error::Pipelock found ${CRITICALS} critical finding(s). See audit report for details."
+          exit 1
+        fi

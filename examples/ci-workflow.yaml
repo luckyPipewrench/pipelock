@@ -1,10 +1,12 @@
-# Example workflow: use Pipelock in your CI pipeline to scan for secrets
-# and verify workspace integrity before deploying AI agent tasks.
+# Example: Pipelock agent security scan in CI
 #
-# Copy this to your repo's .github/workflows/ and adjust as needed.
+# Scans your project for AI agent security risks on every PR.
+# Detects exposed secrets, missing configs, and validates scanning coverage.
 #
-# Prerequisites: add a pipelock.yaml to your repo root.
-# Generate one with: pipelock generate config --preset balanced -o pipelock.yaml
+# Usage:
+#   1. Copy this to .github/workflows/pipelock.yaml
+#   2. Optionally add a pipelock.yaml config to your repo root
+#      (or let the action generate one automatically)
 
 name: Pipelock Security Scan
 
@@ -18,31 +20,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # needed for git diff
+          fetch-depth: 0  # needed for PR diff scanning
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - name: Pipelock Scan
+        uses: luckyPipewrench/pipelock@v0.2.5
         with:
-          go-version: '1.24'
-
-      - name: Install Pipelock
-        run: go install github.com/luckyPipewrench/pipelock/cmd/pipelock@latest
-
-      - name: Validate config
-        run: pipelock check --config pipelock.yaml
-
-      - name: Test scanning coverage
-        run: pipelock test --config pipelock.yaml --fail-on-gap
-
-      - name: Scan PR diff for secrets
-        run: git diff origin/main...HEAD | pipelock git scan-diff --config pipelock.yaml
-
-      - name: Check workspace integrity
-        run: |
-          # Initialize manifest on first run, check on subsequent runs
-          if [ -f .pipelock-manifest.json ]; then
-            pipelock integrity check . --manifest .pipelock-manifest.json
-          else
-            echo "No manifest found — skipping integrity check"
-            echo "Run 'pipelock integrity init . --manifest .pipelock-manifest.json' to create one"
-          fi
+          # config: pipelock.yaml  # uncomment if you have a config
+          scan-diff: 'true'
+          fail-on-findings: 'true'

@@ -389,30 +389,39 @@ git_protection:
 - **[LangGraph](docs/guides/langgraph.md)** — `MultiServerMCPClient`, `StateGraph`, Docker deployment
 - Cursor — use `configs/cursor.yaml` with the same MCP proxy pattern as [Claude Code](docs/guides/claude-code.md)
 
-## CI/CD Usage
+## GitHub Action
+
+Scan your project for agent security risks on every PR. No Go toolchain needed.
 
 ```yaml
-# .github/workflows/agent-security.yaml
-name: Agent Security
-on: [push]
-jobs:
-  scan:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.24'
-      - run: go install github.com/luckyPipewrench/pipelock/cmd/pipelock@latest
-      - name: Check config
-        run: pipelock check --config pipelock.yaml
-      - name: Scan diff for secrets
-        run: git diff origin/main...HEAD | pipelock git scan-diff --config pipelock.yaml
-      - name: Verify workspace integrity
-        run: pipelock integrity check ./
+# .github/workflows/pipelock.yaml
+- uses: luckyPipewrench/pipelock@v0.2.5
+  with:
+    scan-diff: 'true'
+    fail-on-findings: 'true'
 ```
+
+The action downloads a pre-built binary, runs `pipelock audit` on your project, scans the PR diff for leaked secrets, and uploads the audit report as a workflow artifact. Critical findings produce GitHub annotations inline on the PR diff.
+
+**With a config file:**
+
+```yaml
+- uses: luckyPipewrench/pipelock@v0.2.5
+  with:
+    config: pipelock.yaml
+    test-vectors: 'true'
+```
+
+See [`examples/ci-workflow.yaml`](examples/ci-workflow.yaml) for a complete workflow, or [`examples/ci-workflow-advanced.yaml`](examples/ci-workflow-advanced.yaml) for security score reporting in the job summary.
+
+| Input | Default | Description |
+|-------|---------|-------------|
+| `version` | `latest` | Pipelock version to download |
+| `config` | *(none)* | Path to config file (auto-generates if not set) |
+| `directory` | `.` | Directory to scan |
+| `scan-diff` | `true` | Scan PR diff for leaked secrets |
+| `fail-on-findings` | `true` | Fail if critical findings detected |
+| `test-vectors` | `true` | Validate scanning coverage with built-in tests |
 
 ## Docker
 

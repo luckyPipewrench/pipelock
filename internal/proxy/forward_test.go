@@ -3,7 +3,6 @@ package proxy
 import (
 	"bufio"
 	"context"
-	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
@@ -591,7 +590,7 @@ func TestConnectSSRFBlocked(t *testing.T) {
 	}
 }
 
-func TestConnectViaHTTPSProxy(t *testing.T) {
+func TestConnectViaHTTPProxy(t *testing.T) {
 	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = fmt.Fprint(w, "hello from backend")
@@ -601,15 +600,7 @@ func TestConnectViaHTTPSProxy(t *testing.T) {
 	proxyAddr, cleanup := setupForwardProxy(t, nil)
 	defer cleanup()
 
-	proxyURL, _ := url.Parse("http://" + proxyAddr) //nolint:errcheck // test
-	client := &http.Client{
-		Transport: &http.Transport{
-			Proxy:           http.ProxyURL(proxyURL),
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // test only
-		},
-		Timeout: 5 * time.Second,
-	}
-
+	client := proxyClient(proxyAddr)
 	resp := doGet(t, client, backend.URL+"/via-proxy")
 	defer func() { _ = resp.Body.Close() }()
 
@@ -976,5 +967,152 @@ func TestConnectDefaultPort(t *testing.T) {
 	// Will get 502 (dial failure to port 443) which proves the default port logic ran
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Errorf("expected 502 (default port 443 unreachable), got %d", resp.StatusCode)
+	}
+}
+
+func TestSSRFSafeDialContext_DirectIP(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"}
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	p := New(cfg, logger, sc, metrics.New())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// Direct IP in internal range should be blocked
+	_, err := p.ssrfSafeDialContext(ctx, "tcp", "10.0.0.1:443")
+	if err == nil {
+		t.Fatal("expected SSRF block for internal IP, got nil")
+	}
+	if !strings.Contains(err.Error(), "SSRF blocked") {
+		t.Errorf("expected SSRF blocked error, got: %v", err)
+	}
+}
+
+func TestSSRFSafeDialContext_InvalidAddr(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = []string{"10.0.0.0/8"}
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	p := New(cfg, logger, sc, metrics.New())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// Address without port should fail SplitHostPort
+	_, err := p.ssrfSafeDialContext(ctx, "tcp", "no-port")
+	if err == nil {
+		t.Fatal("expected error for address without port")
+	}
+}
+
+func TestSSRFSafeDialContext_DNSResolvesToInternal(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = []string{"127.0.0.0/8"}
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	p := New(cfg, logger, sc, metrics.New())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// "localhost" resolves to 127.0.0.1 which is in the internal range.
+	// This exercises the DNS resolution path in ssrfSafeDialContext.
+	_, err := p.ssrfSafeDialContext(ctx, "tcp", "localhost:443")
+	if err == nil {
+		t.Fatal("expected SSRF block for localhost resolving to 127.0.0.1")
+	}
+	if !strings.Contains(err.Error(), "SSRF blocked") {
+		t.Errorf("expected SSRF blocked error, got: %v", err)
+	}
+}
+
+func TestSSRFSafeDialContext_AllowedIP(t *testing.T) {
+	// Start a local listener to accept the connection
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(context.Background(), "tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+	go func() {
+		conn, acceptErr := ln.Accept()
+		if acceptErr != nil {
+			return
+		}
+		_ = conn.Close()
+	}()
+
+	cfg := config.Defaults()
+	cfg.Internal = nil // No SSRF checks
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	p := New(cfg, logger, sc, metrics.New())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// Direct IP with no internal ranges should succeed
+	conn, dialErr := p.ssrfSafeDialContext(ctx, "tcp", ln.Addr().String())
+	if dialErr != nil {
+		t.Fatalf("expected successful dial, got: %v", dialErr)
+	}
+	_ = conn.Close()
+}
+
+func TestConnectBlockedByEnforce(t *testing.T) {
+	// Test the enforce=true path with a blocklisted target
+	proxyAddr, cleanup := setupForwardProxy(t, func(cfg *config.Config) {
+		cfg.FetchProxy.Monitoring.Blocklist = []string{"127.0.0.1"}
+	})
+	defer cleanup()
+
+	conn := dialProxy(t, proxyAddr)
+	defer func() { _ = conn.Close() }()
+
+	// CONNECT to a blocklisted IP
+	_, _ = fmt.Fprintf(conn, "CONNECT 127.0.0.1:9999 HTTP/1.1\r\nHost: 127.0.0.1:9999\r\n\r\n")
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("expected 403 for blocklisted target, got %d", resp.StatusCode)
+	}
+}
+
+func TestGetTunnelSemaphore(t *testing.T) {
+	// Verify the lazy initialization returns the same instance
+	s1 := getTunnelSemaphore()
+	s2 := getTunnelSemaphore()
+	if s1 != s2 {
+		t.Error("getTunnelSemaphore should return the same instance")
+	}
+}
+
+func TestBidirectionalCopy(t *testing.T) {
+	// Test bidirectional copy with a near-immediate deadline
+	server, client := net.Pipe()
+	defer func() { _ = server.Close() }()
+	defer func() { _ = client.Close() }()
+
+	deadline := time.Now().Add(100 * time.Millisecond)
+	start := time.Now()
+	total := bidirectionalCopy(client, server, 50*time.Millisecond, deadline)
+	elapsed := time.Since(start)
+
+	// Should return quickly (within deadline) with zero bytes
+	if total != 0 {
+		t.Errorf("expected 0 bytes, got %d", total)
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("bidirectionalCopy took %v, expected ~100ms", elapsed)
 	}
 }

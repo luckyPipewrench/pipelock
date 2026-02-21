@@ -119,9 +119,11 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	defer sem.Release()
 
-	// Dial target via SSRF-safe dialer with tunnel deadline
+	// Compute absolute deadline once from start. This covers both dial and
+	// relay so the total tunnel lifetime never exceeds max_tunnel_seconds.
 	maxDuration := time.Duration(cfg.ForwardProxy.MaxTunnelSeconds) * time.Second
-	dialCtx, dialCancel := context.WithTimeout(r.Context(), maxDuration)
+	deadline := start.Add(maxDuration)
+	dialCtx, dialCancel := context.WithDeadline(r.Context(), deadline)
 	defer dialCancel()
 
 	targetConn, err := p.ssrfSafeDialContext(dialCtx, "tcp", target)
@@ -163,7 +165,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	// Bidirectional relay with idle timeout
 	idleTimeout := time.Duration(cfg.ForwardProxy.IdleTimeoutSeconds) * time.Second
-	totalBytes := bidirectionalCopy(clientConn, targetConn, idleTimeout, maxDuration)
+	totalBytes := bidirectionalCopy(clientConn, targetConn, idleTimeout, deadline)
 
 	p.metrics.DecrActiveTunnels()
 	duration := time.Since(start)
@@ -175,10 +177,10 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 }
 
 // bidirectionalCopy relays data between two connections with idle timeout.
+// The deadline is an absolute time computed once in handleConnect so the total
+// tunnel lifetime (including dial) never exceeds max_tunnel_seconds.
 // Returns the total bytes transferred in both directions.
-func bidirectionalCopy(client, target net.Conn, idleTimeout, maxDuration time.Duration) int64 {
-	// Set absolute deadline for the tunnel
-	deadline := time.Now().Add(maxDuration)
+func bidirectionalCopy(client, target net.Conn, idleTimeout time.Duration, deadline time.Time) int64 {
 	_ = client.SetDeadline(deadline)
 	_ = target.SetDeadline(deadline)
 

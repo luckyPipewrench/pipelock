@@ -1,0 +1,627 @@
+package proxy
+
+import (
+	"bufio"
+	"context"
+	"crypto/tls"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
+)
+
+// setupForwardProxy creates a running pipelock proxy with forward_proxy enabled
+// and returns the proxy address and a cleanup function.
+func setupForwardProxy(t *testing.T, cfgMod func(*config.Config)) (string, func()) {
+	t.Helper()
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.APIAllowlist = nil
+	cfg.ForwardProxy.Enabled = true
+	cfg.ForwardProxy.MaxTunnelSeconds = 10
+	cfg.ForwardProxy.IdleTimeoutSeconds = 2
+	cfg.FetchProxy.TimeoutSeconds = 5
+
+	if cfgMod != nil {
+		cfgMod(cfg)
+	}
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	m := metrics.New()
+	p := New(cfg, logger, sc, m)
+
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(context.Background(), "tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	go func() {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/fetch", p.handleFetch)
+		mux.HandleFunc("/health", p.handleHealth)
+
+		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodConnect {
+				if !p.cfgPtr.Load().ForwardProxy.Enabled {
+					http.Error(w, "CONNECT not supported", http.StatusMethodNotAllowed)
+					return
+				}
+				p.handleConnect(w, r)
+				return
+			}
+			if r.URL.IsAbs() && r.URL.Host != "" {
+				if !p.cfgPtr.Load().ForwardProxy.Enabled {
+					http.Error(w, "forward proxy not enabled", http.StatusMethodNotAllowed)
+					return
+				}
+				p.handleForwardHTTP(w, r)
+				return
+			}
+			mux.ServeHTTP(w, r)
+		})
+
+		srv := &http.Server{
+			Handler:           handler,
+			ReadHeaderTimeout: 5 * time.Second,
+			BaseContext: func(_ net.Listener) context.Context {
+				return ctx
+			},
+		}
+
+		go func() {
+			<-ctx.Done()
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer shutdownCancel()
+			_ = srv.Shutdown(shutdownCtx)
+		}()
+
+		_ = srv.Serve(ln)
+	}()
+
+	proxyAddr := ln.Addr().String()
+	return proxyAddr, cancel
+}
+
+// dialProxy connects to the proxy via TCP.
+func dialProxy(t *testing.T, proxyAddr string) net.Conn {
+	t.Helper()
+	d := net.Dialer{Timeout: 2 * time.Second}
+	conn, err := d.DialContext(context.Background(), "tcp", proxyAddr)
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	return conn
+}
+
+// listenEcho creates a TCP listener that echoes back received data.
+func listenEcho(t *testing.T) net.Listener {
+	t.Helper()
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(context.Background(), "tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer func() { _ = conn.Close() }()
+				buf := make([]byte, 1024)
+				n, err := conn.Read(buf)
+				if err != nil {
+					return
+				}
+				_, _ = conn.Write(buf[:n])
+			}()
+		}
+	}()
+	return ln
+}
+
+// listenHold creates a TCP listener that holds connections open without sending.
+func listenHold(t *testing.T) net.Listener {
+	t.Helper()
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(context.Background(), "tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer func() { _ = conn.Close() }()
+				time.Sleep(10 * time.Second)
+			}()
+		}
+	}()
+	return ln
+}
+
+// doGet issues a GET request via the given client with a proper context.
+func doGet(t *testing.T, client *http.Client, targetURL string) *http.Response {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("request to %s: %v", targetURL, err)
+	}
+	return resp
+}
+
+// proxyClient creates an http.Client that uses the given proxy address.
+func proxyClient(proxyAddr string) *http.Client {
+	proxyURL, _ := url.Parse("http://" + proxyAddr) //nolint:errcheck // test helper
+	return &http.Client{
+		Transport: &http.Transport{
+			Proxy: http.ProxyURL(proxyURL),
+		},
+		Timeout: 5 * time.Second,
+	}
+}
+
+func TestConnectAllowed(t *testing.T) {
+	echoLn := listenEcho(t)
+	defer func() { _ = echoLn.Close() }()
+
+	proxyAddr, cleanup := setupForwardProxy(t, nil)
+	defer cleanup()
+
+	conn := dialProxy(t, proxyAddr)
+	defer func() { _ = conn.Close() }()
+
+	_, _ = fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", echoLn.Addr().String(), echoLn.Addr().String())
+
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	testMsg := "hello through tunnel"
+	_, err = conn.Write([]byte(testMsg))
+	if err != nil {
+		t.Fatalf("write through tunnel: %v", err)
+	}
+
+	reply := make([]byte, len(testMsg))
+	_, err = io.ReadFull(br, reply)
+	if err != nil {
+		t.Fatalf("read through tunnel: %v", err)
+	}
+
+	if string(reply) != testMsg {
+		t.Errorf("expected %q, got %q", testMsg, string(reply))
+	}
+}
+
+func TestConnectDisabled(t *testing.T) {
+	proxyAddr, cleanup := setupForwardProxy(t, func(cfg *config.Config) {
+		cfg.ForwardProxy.Enabled = false
+	})
+	defer cleanup()
+
+	conn := dialProxy(t, proxyAddr)
+	defer func() { _ = conn.Close() }()
+
+	_, _ = fmt.Fprintf(conn, "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n")
+
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", resp.StatusCode)
+	}
+}
+
+func TestConnectBlockedDomain(t *testing.T) {
+	proxyAddr, cleanup := setupForwardProxy(t, func(cfg *config.Config) {
+		cfg.FetchProxy.Monitoring.Blocklist = []string{"*.pastebin.com"}
+	})
+	defer cleanup()
+
+	conn := dialProxy(t, proxyAddr)
+	defer func() { _ = conn.Close() }()
+
+	_, _ = fmt.Fprintf(conn, "CONNECT evil.pastebin.com:443 HTTP/1.1\r\nHost: evil.pastebin.com:443\r\n\r\n")
+
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("expected 403, got %d (body: %s)", resp.StatusCode, body)
+	}
+}
+
+func TestConnectAuditMode(t *testing.T) {
+	echoLn := listenEcho(t)
+	defer func() { _ = echoLn.Close() }()
+
+	enforce := false
+	proxyAddr, cleanup := setupForwardProxy(t, func(cfg *config.Config) {
+		cfg.Enforce = &enforce
+		cfg.FetchProxy.Monitoring.Blocklist = []string{"*.pastebin.com"}
+	})
+	defer cleanup()
+
+	conn := dialProxy(t, proxyAddr)
+	defer func() { _ = conn.Close() }()
+
+	target := echoLn.Addr().String()
+	_, _ = fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target)
+
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 in audit mode, got %d", resp.StatusCode)
+	}
+}
+
+func TestConnectMaxTunnels(t *testing.T) {
+	sem := newTunnelSemaphore(1)
+
+	if !sem.TryAcquire() {
+		t.Fatal("first acquire should succeed")
+	}
+
+	if sem.TryAcquire() {
+		t.Fatal("second acquire should fail with capacity 1")
+	}
+
+	sem.Release()
+
+	if !sem.TryAcquire() {
+		t.Fatal("acquire after release should succeed")
+	}
+	sem.Release()
+}
+
+func TestConnectIdleTimeout(t *testing.T) {
+	holdLn := listenHold(t)
+	defer func() { _ = holdLn.Close() }()
+
+	proxyAddr, cleanup := setupForwardProxy(t, func(cfg *config.Config) {
+		cfg.ForwardProxy.IdleTimeoutSeconds = 1
+	})
+	defer cleanup()
+
+	conn := dialProxy(t, proxyAddr)
+	defer func() { _ = conn.Close() }()
+
+	target := holdLn.Addr().String()
+	_, _ = fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target)
+
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	buf := make([]byte, 1)
+	_, err = conn.Read(buf)
+
+	if err == nil {
+		t.Error("expected error from idle timeout, got nil")
+	}
+}
+
+func TestForwardHTTPAllowed(t *testing.T) {
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("X-Custom", "test-value")
+		_, _ = fmt.Fprintf(w, "method=%s path=%s", r.Method, r.URL.Path)
+	}))
+	defer backend.Close()
+
+	proxyAddr, cleanup := setupForwardProxy(t, nil)
+	defer cleanup()
+
+	client := proxyClient(proxyAddr)
+	resp := doGet(t, client, backend.URL+"/test")
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200, got %d", resp.StatusCode)
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "method=GET") {
+		t.Errorf("expected body to contain method=GET, got: %s", body)
+	}
+	if !strings.Contains(string(body), "path=/test") {
+		t.Errorf("expected body to contain path=/test, got: %s", body)
+	}
+	if resp.Header.Get("X-Custom") != "test-value" {
+		t.Errorf("expected X-Custom header, got: %s", resp.Header.Get("X-Custom"))
+	}
+}
+
+func TestForwardHTTPDisabled(t *testing.T) {
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, "ok")
+	}))
+	defer backend.Close()
+
+	proxyAddr, cleanup := setupForwardProxy(t, func(cfg *config.Config) {
+		cfg.ForwardProxy.Enabled = false
+	})
+	defer cleanup()
+
+	client := proxyClient(proxyAddr)
+	resp := doGet(t, client, backend.URL+"/test")
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", resp.StatusCode)
+	}
+}
+
+func TestForwardHTTPBlockedDomain(t *testing.T) {
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, "should not reach here")
+	}))
+	defer backend.Close()
+
+	proxyAddr, cleanup := setupForwardProxy(t, func(cfg *config.Config) {
+		cfg.FetchProxy.Monitoring.Blocklist = []string{"127.0.0.1"}
+	})
+	defer cleanup()
+
+	client := proxyClient(proxyAddr)
+	resp := doGet(t, client, backend.URL+"/test")
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusForbidden {
+		body, _ := io.ReadAll(resp.Body)
+		t.Errorf("expected 403, got %d (body: %s)", resp.StatusCode, body)
+	}
+}
+
+func TestForwardHTTPPost(t *testing.T) {
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = fmt.Fprintf(w, "method=%s body=%s", r.Method, body)
+	}))
+	defer backend.Close()
+
+	proxyAddr, cleanup := setupForwardProxy(t, nil)
+	defer cleanup()
+
+	client := proxyClient(proxyAddr)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, backend.URL+"/submit", strings.NewReader("test-data"))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "text/plain")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("forward HTTP POST: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "method=POST") {
+		t.Errorf("expected POST method, got: %s", body)
+	}
+	if !strings.Contains(string(body), "body=test-data") {
+		t.Errorf("expected body=test-data, got: %s", body)
+	}
+}
+
+func TestForwardHTTPHopByHop(t *testing.T) {
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Proxy-Authorization") != "" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = fmt.Fprint(w, "Proxy-Authorization should be stripped")
+			return
+		}
+		w.Header().Set("Keep-Alive", "timeout=5")
+		w.Header().Set("X-Custom-Response", "should-pass")
+		_, _ = fmt.Fprint(w, "ok")
+	}))
+	defer backend.Close()
+
+	proxyAddr, cleanup := setupForwardProxy(t, nil)
+	defer cleanup()
+
+	conn := dialProxy(t, proxyAddr)
+	defer func() { _ = conn.Close() }()
+
+	reqStr := fmt.Sprintf("GET %s/hoptest HTTP/1.1\r\nHost: %s\r\nProxy-Authorization: Basic dGVzdDp0ZXN0\r\nConnection: keep-alive\r\n\r\n",
+		backend.URL, backend.Listener.Addr().String())
+	_, _ = conn.Write([]byte(reqStr))
+
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, body)
+	}
+
+	if resp.Header.Get("Keep-Alive") != "" {
+		t.Error("Keep-Alive header should be stripped from response")
+	}
+	if resp.Header.Get("X-Custom-Response") != "should-pass" {
+		t.Error("X-Custom-Response header should pass through")
+	}
+}
+
+func TestRemoveHopByHopHeaders(t *testing.T) {
+	h := http.Header{}
+	h.Set("Connection", "keep-alive")
+	h.Set("Keep-Alive", "timeout=5")
+	h.Set("Proxy-Authorization", "Basic abc")
+	h.Set("Te", "trailers")
+	h.Set("Trailer", "X-Checksum")
+	h.Set("Transfer-Encoding", "chunked")
+	h.Set("Upgrade", "websocket")
+	h.Set("Content-Type", "text/plain")
+	h.Set("X-Custom", "value")
+
+	removeHopByHopHeaders(h)
+
+	for _, header := range hopByHopHeaders {
+		if h.Get(header) != "" {
+			t.Errorf("hop-by-hop header %q should be removed", header)
+		}
+	}
+	if h.Get("Content-Type") != "text/plain" {
+		t.Error("Content-Type should not be removed")
+	}
+	if h.Get("X-Custom") != "value" {
+		t.Error("X-Custom should not be removed")
+	}
+}
+
+func TestTunnelSemaphore(t *testing.T) {
+	sem := newTunnelSemaphore(2)
+
+	if !sem.TryAcquire() {
+		t.Error("first acquire should succeed")
+	}
+	if !sem.TryAcquire() {
+		t.Error("second acquire should succeed")
+	}
+	if sem.TryAcquire() {
+		t.Error("third acquire should fail (capacity 2)")
+	}
+
+	sem.Release()
+	if !sem.TryAcquire() {
+		t.Error("acquire after release should succeed")
+	}
+}
+
+func TestConnectSSRFBlocked(t *testing.T) {
+	proxyAddr, cleanup := setupForwardProxy(t, func(cfg *config.Config) {
+		cfg.Internal = []string{
+			"10.0.0.0/8",
+			"172.16.0.0/12",
+			"192.168.0.0/16",
+		}
+	})
+	defer cleanup()
+
+	conn := dialProxy(t, proxyAddr)
+	defer func() { _ = conn.Close() }()
+
+	_, _ = fmt.Fprintf(conn, "CONNECT 10.0.0.1:443 HTTP/1.1\r\nHost: 10.0.0.1:443\r\n\r\n")
+
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	// Scanner catches the private IP before the dial attempt, returning 403.
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("expected 403 for SSRF blocked, got %d", resp.StatusCode)
+	}
+}
+
+func TestConnectViaHTTPSProxy(t *testing.T) {
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = fmt.Fprint(w, "hello from backend")
+	}))
+	defer backend.Close()
+
+	proxyAddr, cleanup := setupForwardProxy(t, nil)
+	defer cleanup()
+
+	proxyURL, _ := url.Parse("http://" + proxyAddr) //nolint:errcheck // test
+	client := &http.Client{
+		Transport: &http.Transport{
+			Proxy:           http.ProxyURL(proxyURL),
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // test only
+		},
+		Timeout: 5 * time.Second,
+	}
+
+	resp := doGet(t, client, backend.URL+"/via-proxy")
+	defer func() { _ = resp.Body.Close() }()
+
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "hello from backend" {
+		t.Errorf("expected 'hello from backend', got: %s", body)
+	}
+}
+
+func TestHealthIncludesForwardProxy(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.ForwardProxy.Enabled = true
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	p := New(cfg, logger, sc, metrics.New())
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	w := httptest.NewRecorder()
+	p.handleHealth(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, `"forward_proxy_enabled":true`) {
+		t.Errorf("expected forward_proxy_enabled:true in health response, got: %s", body)
+	}
+}

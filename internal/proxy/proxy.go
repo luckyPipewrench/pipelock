@@ -48,6 +48,7 @@ type Proxy struct {
 	scannerPtr atomic.Pointer[scanner.Scanner]
 	logger     *audit.Logger
 	metrics    *metrics.Metrics
+	dialer     *net.Dialer
 	client     *http.Client
 	server     *http.Server
 	startTime  time.Time
@@ -89,57 +90,13 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 	p.cfgPtr.Store(cfg)
 	p.scannerPtr.Store(sc)
 
-	dialer := &net.Dialer{
+	p.dialer = &net.Dialer{
 		Timeout:   10 * time.Second,
 		KeepAlive: 30 * time.Second,
 	}
 
 	transport := &http.Transport{
-		// Custom DialContext pins DNS resolution to prevent DNS rebinding SSRF.
-		// Without this, an attacker could return a safe IP during scanning but
-		// a private IP when the HTTP client re-resolves at connection time.
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			host, port, err := net.SplitHostPort(addr)
-			if err != nil {
-				return nil, err
-			}
-
-			// If the host is already an IP, check it and dial directly.
-			if ip := net.ParseIP(host); ip != nil {
-				if currentSc := p.scannerPtr.Load(); currentSc.IsInternalIP(ip) {
-					return nil, fmt.Errorf("SSRF blocked: connection to internal IP %s", host)
-				}
-				return dialer.DialContext(ctx, network, addr)
-			}
-
-			// Resolve DNS and validate every IP before connecting.
-			ips, err := net.DefaultResolver.LookupHost(ctx, host)
-			if err != nil {
-				return nil, err
-			}
-
-			if len(ips) == 0 {
-				return nil, fmt.Errorf("SSRF blocked: DNS returned no addresses for %s", host)
-			}
-
-			currentSc := p.scannerPtr.Load()
-			for _, ipStr := range ips {
-				ip := net.ParseIP(ipStr)
-				if ip == nil {
-					return nil, fmt.Errorf("SSRF blocked: unparseable IP %q from DNS for %s", ipStr, host)
-				}
-				// Normalize IPv4-mapped IPv6 (::ffff:x.x.x.x) to 4-byte form.
-				if v4 := ip.To4(); v4 != nil {
-					ip = v4
-				}
-				if currentSc.IsInternalIP(ip) {
-					return nil, fmt.Errorf("SSRF blocked: %s resolves to internal IP %s", host, ipStr)
-				}
-			}
-
-			// Connect to the first validated IP.
-			return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0], port))
-		},
+		DialContext:           p.ssrfSafeDialContext,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ResponseHeaderTimeout: time.Duration(cfg.FetchProxy.TimeoutSeconds) * time.Second,
 		MaxIdleConns:          100,
@@ -204,6 +161,53 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
 	}
 }
 
+// ssrfSafeDialContext resolves DNS and validates all IPs against internal
+// CIDRs before connecting. Prevents DNS rebinding SSRF where an attacker
+// returns a safe IP during scanning but a private IP at connection time.
+// Used by both the HTTP client transport and CONNECT tunnel dialing.
+func (p *Proxy) ssrfSafeDialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, err
+	}
+
+	// If the host is already an IP, check it and dial directly.
+	if ip := net.ParseIP(host); ip != nil {
+		if currentSc := p.scannerPtr.Load(); currentSc.IsInternalIP(ip) {
+			return nil, fmt.Errorf("SSRF blocked: connection to internal IP %s", host)
+		}
+		return p.dialer.DialContext(ctx, network, addr)
+	}
+
+	// Resolve DNS and validate every IP before connecting.
+	ips, err := net.DefaultResolver.LookupHost(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("SSRF blocked: DNS returned no addresses for %s", host)
+	}
+
+	currentSc := p.scannerPtr.Load()
+	for _, ipStr := range ips {
+		ip := net.ParseIP(ipStr)
+		if ip == nil {
+			return nil, fmt.Errorf("SSRF blocked: unparseable IP %q from DNS for %s", ipStr, host)
+		}
+		// Normalize IPv4-mapped IPv6 (::ffff:x.x.x.x) to 4-byte form.
+		if v4 := ip.To4(); v4 != nil {
+			ip = v4
+		}
+		if currentSc.IsInternalIP(ip) {
+			return nil, fmt.Errorf("SSRF blocked: %s resolves to internal IP %s", host, ipStr)
+		}
+	}
+
+	// Connect to the first validated IP.
+	return p.dialer.DialContext(ctx, network, net.JoinHostPort(ips[0], port))
+}
+
 // Start starts the fetch proxy HTTP server. It blocks until the context
 // is cancelled or the server encounters a fatal error.
 func (p *Proxy) Start(ctx context.Context) error {
@@ -215,15 +219,44 @@ func (p *Proxy) Start(ctx context.Context) error {
 	mux.Handle("/metrics", p.metrics.PrometheusHandler())
 	mux.HandleFunc("/stats", p.metrics.StatsHandler())
 
+	// Wrap mux to intercept CONNECT and absolute-URI forward proxy requests.
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodConnect {
+			if !p.cfgPtr.Load().ForwardProxy.Enabled {
+				http.Error(w, "CONNECT not supported", http.StatusMethodNotAllowed)
+				return
+			}
+			p.handleConnect(w, r)
+			return
+		}
+		if r.URL.IsAbs() && r.URL.Host != "" {
+			if !p.cfgPtr.Load().ForwardProxy.Enabled {
+				http.Error(w, "forward proxy not enabled", http.StatusMethodNotAllowed)
+				return
+			}
+			p.handleForwardHTTP(w, r)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
+
+	// CONNECT tunnels need to live beyond any single write timeout.
+	// When forward proxy is enabled, disable WriteTimeout and rely on
+	// per-tunnel max_tunnel_seconds and idle_timeout_seconds instead.
+	writeTimeout := time.Duration(cfg.FetchProxy.TimeoutSeconds+10) * time.Second
+	if cfg.ForwardProxy.Enabled {
+		writeTimeout = 0
+	}
+
 	p.server = &http.Server{
 		Addr:    cfg.FetchProxy.Listen,
-		Handler: mux,
+		Handler: handler,
 		BaseContext: func(_ net.Listener) context.Context {
 			return ctx
 		},
 		ReadTimeout:       10 * time.Second,
 		ReadHeaderTimeout: 5 * time.Second, // Slowloris protection
-		WriteTimeout:      time.Duration(cfg.FetchProxy.TimeoutSeconds+10) * time.Second,
+		WriteTimeout:      writeTimeout,
 		IdleTimeout:       120 * time.Second,
 	}
 
@@ -556,6 +589,7 @@ type healthResponse struct {
 	ResponseScanEnabled  bool    `json:"response_scan_enabled"`
 	GitProtectionEnabled bool    `json:"git_protection_enabled"`
 	RateLimitEnabled     bool    `json:"rate_limit_enabled"`
+	ForwardProxyEnabled  bool    `json:"forward_proxy_enabled"`
 }
 
 // handleHealth returns proxy health status including uptime and feature flags.
@@ -570,6 +604,7 @@ func (p *Proxy) handleHealth(w http.ResponseWriter, _ *http.Request) {
 		ResponseScanEnabled:  cfg.ResponseScanning.Enabled,
 		GitProtectionEnabled: cfg.GitProtection.Enabled,
 		RateLimitEnabled:     cfg.FetchProxy.Monitoring.MaxReqPerMinute > 0,
+		ForwardProxyEnabled:  cfg.ForwardProxy.Enabled,
 	})
 }
 

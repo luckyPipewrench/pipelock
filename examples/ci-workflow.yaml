@@ -23,7 +23,7 @@ jobs:
           fetch-depth: 0  # needed for PR diff scanning
 
       - name: Pipelock Scan
-        uses: luckyPipewrench/pipelock@v0.2.5
+        uses: luckyPipewrench/pipelock@v0.2.6
         with:
           # config: pipelock.yaml  # uncomment if you have a config
           scan-diff: 'true'

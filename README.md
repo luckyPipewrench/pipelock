@@ -42,25 +42,49 @@ docker pull ghcr.io/luckypipewrench/pipelock:latest
 go install github.com/luckyPipewrench/pipelock/cmd/pipelock@latest
 ```
 
-Then:
+**Try the forward proxy (zero code changes):**
+
+```bash
+# 1. Generate a config and enable the forward proxy
+pipelock audit . -o pipelock.yaml
+# Add "forward_proxy: { enabled: true }" to pipelock.yaml, or use:
+pipelock generate config --preset balanced > pipelock.yaml
+echo 'forward_proxy: { enabled: true }' >> pipelock.yaml
+
+# 2. Start pipelock
+pipelock run --config pipelock.yaml
+
+# 3. Point any agent (or any process) at pipelock
+export HTTPS_PROXY=http://127.0.0.1:8888
+export HTTP_PROXY=http://127.0.0.1:8888
+
+# Now every HTTP request flows through pipelock's scanner.
+# This should be blocked (DLP catches the fake API key):
+curl "https://example.com/?key=sk-ant-api03-fake1234567890"
+```
+
+No SDK, no wrapper, no code changes. If the agent speaks HTTP, pipelock scans it.
+
+<details>
+<summary>Fetch proxy mode (for agents with a dedicated fetch tool)</summary>
 
 ```bash
 # Scan your project and generate a tailored config
-pipelock audit . -o pipelock-suggested.yaml
-# Review the output, then rename when ready:
-mv pipelock-suggested.yaml pipelock.yaml
+pipelock audit . -o pipelock.yaml
 
 # Verify: both should be blocked (exit code 1 = working correctly)
 pipelock check --config pipelock.yaml --url "https://pastebin.com/raw/abc123"
 pipelock check --config pipelock.yaml --url "https://example.com/?t=sk-ant-api03-fake1234567890"
 
-# When ready, start the proxy (agents connect to localhost:8888)
+# Start the proxy (agents connect to localhost:8888/fetch?url=...)
 pipelock run --config pipelock.yaml
 
 # For full network isolation (agent can ONLY reach pipelock):
 pipelock generate docker-compose --agent claude-code -o docker-compose.yaml
 docker compose up
 ```
+
+</details>
 
 <details>
 <summary>Verify release integrity (SLSA provenance + SBOM)</summary>

@@ -42,25 +42,47 @@ docker pull ghcr.io/luckypipewrench/pipelock:latest
 go install github.com/luckyPipewrench/pipelock/cmd/pipelock@latest
 ```
 
-Then:
+**Try the forward proxy (zero code changes):**
+
+```bash
+# 1. Generate a config and enable the forward proxy
+pipelock audit . -o pipelock.yaml
+pipelock generate config --preset balanced > pipelock.yaml
+
+# 2. Start pipelock
+pipelock run --config pipelock.yaml
+
+# 3. Point any agent (or any process) at pipelock
+export HTTPS_PROXY=http://127.0.0.1:8888
+export HTTP_PROXY=http://127.0.0.1:8888
+
+# Now every HTTP request flows through pipelock's scanner.
+# This should be blocked (DLP catches the fake API key):
+curl "https://example.com/?key=sk-ant-api03-fake1234567890"
+```
+
+No SDK, no wrapper, no code changes. If the agent speaks HTTP, pipelock scans it.
+
+<details>
+<summary>Fetch proxy mode (for agents with a dedicated fetch tool)</summary>
 
 ```bash
 # Scan your project and generate a tailored config
-pipelock audit . -o pipelock-suggested.yaml
-# Review the output, then rename when ready:
-mv pipelock-suggested.yaml pipelock.yaml
+pipelock audit . -o pipelock.yaml
 
 # Verify: both should be blocked (exit code 1 = working correctly)
 pipelock check --config pipelock.yaml --url "https://pastebin.com/raw/abc123"
 pipelock check --config pipelock.yaml --url "https://example.com/?t=sk-ant-api03-fake1234567890"
 
-# When ready, start the proxy (agents connect to localhost:8888)
+# Start the proxy (agents connect to localhost:8888/fetch?url=...)
 pipelock run --config pipelock.yaml
 
 # For full network isolation (agent can ONLY reach pipelock):
 pipelock generate docker-compose --agent claude-code -o docker-compose.yaml
 docker compose up
 ```
+
+</details>
 
 <details>
 <summary>Verify release integrity (SLSA provenance + SBOM)</summary>
@@ -396,30 +418,39 @@ git_protection:
 - **[LangGraph](docs/guides/langgraph.md)** — `MultiServerMCPClient`, `StateGraph`, Docker deployment
 - Cursor — use `configs/cursor.yaml` with the same MCP proxy pattern as [Claude Code](docs/guides/claude-code.md)
 
-## CI/CD Usage
+## GitHub Action
+
+Scan your project for agent security risks on every PR. No Go toolchain needed.
 
 ```yaml
-# .github/workflows/agent-security.yaml
-name: Agent Security
-on: [push]
-jobs:
-  scan:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.24'
-      - run: go install github.com/luckyPipewrench/pipelock/cmd/pipelock@v0.2.5
-      - name: Check config
-        run: pipelock check --config pipelock.yaml
-      - name: Scan diff for secrets
-        run: git diff origin/main...HEAD | pipelock git scan-diff --config pipelock.yaml
-      - name: Verify workspace integrity
-        run: pipelock integrity check ./
+# .github/workflows/pipelock.yaml
+- uses: luckyPipewrench/pipelock@v0.2.6
+  with:
+    scan-diff: 'true'
+    fail-on-findings: 'true'
 ```
+
+The action downloads a pre-built binary, runs `pipelock audit` on your project, scans the PR diff for leaked secrets, and uploads the audit report as a workflow artifact. Critical findings produce GitHub annotations inline on the PR diff.
+
+**With a config file:**
+
+```yaml
+- uses: luckyPipewrench/pipelock@v0.2.6
+  with:
+    config: pipelock.yaml
+    test-vectors: 'true'
+```
+
+See [`examples/ci-workflow.yaml`](examples/ci-workflow.yaml) for a complete workflow, or [`examples/ci-workflow-advanced.yaml`](examples/ci-workflow-advanced.yaml) for security score reporting in the job summary.
+
+| Input | Default | Description |
+|-------|---------|-------------|
+| `version` | `latest` | Pipelock version to download |
+| `config` | *(none)* | Path to config file (auto-generates if not set) |
+| `directory` | `.` | Directory to scan |
+| `scan-diff` | `true` | Scan PR diff for leaked secrets |
+| `fail-on-findings` | `true` | Fail if critical findings detected |
+| `test-vectors` | `true` | Validate scanning coverage with built-in tests |
 
 ## Docker
 

@@ -64,7 +64,7 @@ runs:
         VERSION="$PIPELOCK_VERSION"
         if [ "$VERSION" = "latest" ]; then
           # Use GitHub API directly (no gh CLI dependency)
-          VERSION=$(curl -fsSL \
+          VERSION=$(curl -fsSL --connect-timeout 10 --max-time 30 \
             -H "Authorization: token $GH_TOKEN" \
             "https://api.github.com/repos/luckyPipewrench/pipelock/releases/latest" \
             | jq -r '.tag_name' | sed 's/^v//')

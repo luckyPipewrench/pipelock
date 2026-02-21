@@ -3,6 +3,7 @@ package scanner
 import (
 	"fmt"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
 
@@ -70,7 +71,7 @@ func (s *Scanner) ScanResponse(content string) ResponseScanResult {
 		Matches: matches,
 	}
 
-	if s.responseAction == "strip" || s.responseAction == "ask" { //nolint:goconst // action string used as-is from config
+	if s.responseAction == config.ActionStrip || s.responseAction == config.ActionAsk {
 		transformed := content
 		for _, p := range s.responsePatterns {
 			replacement := fmt.Sprintf("[REDACTED: %s]", p.name)

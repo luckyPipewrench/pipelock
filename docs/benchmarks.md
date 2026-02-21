@@ -10,7 +10,7 @@ Configuration used for these benchmarks (v0.2.5, balanced defaults):
 - Response scanning: 20 prompt injection patterns
 - DLP: 15 patterns
 
-> **Note:** Overhead scales linearly with pattern count but stays well under 1ms even with custom patterns added. Run `make bench` with your config to measure.
+> **Note:** Overhead scales linearly with pattern count. Typical URLs scan in ~25μs. Very long URLs (near the configured limit) can take ~1.4ms due to full normalization. Run `make bench` with your config to measure.
 
 Run `make bench` to reproduce on your hardware.
 
@@ -54,7 +54,8 @@ JSON-RPC 2.0 response parsing + text extraction + prompt injection scanning.
 - DLP regex matching (15 patterns) adds ~6 microseconds.
 - Response scanning with 20 patterns on small content: ~44 microseconds.
 - MCP scanning (JSON parse + text extraction + pattern match): ~42 microseconds.
-- The scanner pipeline adds **< 0.03ms overhead per request**. Network latency dominates.
+- The scanner pipeline adds **~0.025ms overhead for typical requests**. Network latency dominates.
+- Exception: `BlockedByURLLength` (~1.4ms) exercises the full URL normalization pipeline on very long URLs. This path only triggers when a URL exceeds the configured limit.
 
 ## Running Benchmarks
 

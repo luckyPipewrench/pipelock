@@ -286,3 +286,122 @@ func TestTopN_SortedByCount(t *testing.T) {
 		t.Errorf("expected medium=50 second, got %s=%d", result[1].Name, result[1].Count)
 	}
 }
+
+func TestRecordTunnel(t *testing.T) {
+	m := New()
+	m.RecordTunnel(5*time.Second, 4096)
+	m.RecordTunnel(10*time.Second, 8192)
+
+	m.mu.Lock()
+	if m.tunnelCount != 2 {
+		t.Errorf("expected 2 tunnels, got %d", m.tunnelCount)
+	}
+	m.mu.Unlock()
+}
+
+func TestRecordTunnelBlocked(t *testing.T) {
+	m := New()
+	m.RecordTunnelBlocked()
+	m.RecordTunnelBlocked()
+
+	// Verify the Prometheus counter was incremented (check via /metrics)
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	m.PrometheusHandler().ServeHTTP(w, req)
+
+	body, _ := io.ReadAll(w.Body)
+	text := string(body)
+	if !strings.Contains(text, `pipelock_tunnels_total{result="blocked"}`) {
+		t.Error("expected pipelock_tunnels_total with blocked label in /metrics output")
+	}
+}
+
+func TestIncrDecrActiveTunnels(t *testing.T) {
+	m := New()
+	m.IncrActiveTunnels()
+	m.IncrActiveTunnels()
+	m.IncrActiveTunnels()
+	m.DecrActiveTunnels()
+
+	// Check gauge via /metrics
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	m.PrometheusHandler().ServeHTTP(w, req)
+
+	body, _ := io.ReadAll(w.Body)
+	text := string(body)
+	if !strings.Contains(text, "pipelock_active_tunnels") {
+		t.Error("expected pipelock_active_tunnels in /metrics output")
+	}
+}
+
+func TestStatsHandler_IncludesTunnels(t *testing.T) {
+	m := New()
+	m.RecordTunnel(5*time.Second, 4096)
+	m.RecordTunnel(10*time.Second, 8192)
+
+	req := httptest.NewRequest(http.MethodGet, "/stats", nil)
+	w := httptest.NewRecorder()
+	m.StatsHandler().ServeHTTP(w, req)
+
+	var stats statsResponse
+	if err := json.NewDecoder(w.Body).Decode(&stats); err != nil {
+		t.Fatalf("failed to decode stats: %v", err)
+	}
+	if stats.Tunnels != 2 {
+		t.Errorf("expected tunnels=2, got %d", stats.Tunnels)
+	}
+}
+
+func TestPrometheusHandler_TunnelMetrics(t *testing.T) {
+	m := New()
+	m.RecordTunnel(5*time.Second, 4096)
+	m.IncrActiveTunnels()
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	m.PrometheusHandler().ServeHTTP(w, req)
+
+	body, _ := io.ReadAll(w.Body)
+	text := string(body)
+
+	if !strings.Contains(text, "pipelock_tunnels_total") {
+		t.Error("expected pipelock_tunnels_total in /metrics output")
+	}
+	if !strings.Contains(text, "pipelock_tunnel_duration_seconds") {
+		t.Error("expected pipelock_tunnel_duration_seconds in /metrics output")
+	}
+	if !strings.Contains(text, "pipelock_tunnel_bytes_total") {
+		t.Error("expected pipelock_tunnel_bytes_total in /metrics output")
+	}
+	if !strings.Contains(text, "pipelock_active_tunnels") {
+		t.Error("expected pipelock_active_tunnels in /metrics output")
+	}
+}
+
+func TestConcurrentTunnelAccess(t *testing.T) {
+	m := New()
+	var wg sync.WaitGroup
+	for range 50 {
+		wg.Add(3)
+		go func() {
+			defer wg.Done()
+			m.RecordTunnel(time.Millisecond, 100)
+		}()
+		go func() {
+			defer wg.Done()
+			m.IncrActiveTunnels()
+		}()
+		go func() {
+			defer wg.Done()
+			m.DecrActiveTunnels()
+		}()
+	}
+	wg.Wait()
+
+	m.mu.Lock()
+	if m.tunnelCount != 50 {
+		t.Errorf("expected 50 tunnels, got %d", m.tunnelCount)
+	}
+	m.mu.Unlock()
+}

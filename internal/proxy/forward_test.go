@@ -278,7 +278,9 @@ func TestConnectAuditMode(t *testing.T) {
 	enforce := false
 	proxyAddr, cleanup := setupForwardProxy(t, func(cfg *config.Config) {
 		cfg.Enforce = &enforce
-		cfg.FetchProxy.Monitoring.Blocklist = []string{"*.pastebin.com"}
+		// Blocklist 127.0.0.1 so the scanner rejects the target, but audit
+		// mode (enforce=false) logs the anomaly and lets traffic through.
+		cfg.FetchProxy.Monitoring.Blocklist = []string{"127.0.0.1"}
 	})
 	defer cleanup()
 
@@ -288,14 +290,28 @@ func TestConnectAuditMode(t *testing.T) {
 	target := echoLn.Addr().String()
 	_, _ = fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target)
 
-	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
 	if err != nil {
 		t.Fatalf("read response: %v", err)
 	}
 	_ = resp.Body.Close()
 
+	// Audit mode: scanner blocks 127.0.0.1 but enforce=false, so the
+	// tunnel is established anyway (covers lines 109-111 audit anomaly path).
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("expected 200 in audit mode, got %d", resp.StatusCode)
+	}
+
+	// Verify tunnel actually works by sending data through
+	_, _ = conn.Write([]byte("audit-test"))
+	buf := make([]byte, 32)
+	n, readErr := br.Read(buf)
+	if readErr != nil {
+		t.Fatalf("read through audit tunnel: %v", readErr)
+	}
+	if string(buf[:n]) != "audit-test" {
+		t.Errorf("expected echo 'audit-test', got %q", string(buf[:n]))
 	}
 }
 
@@ -623,5 +639,342 @@ func TestHealthIncludesForwardProxy(t *testing.T) {
 	body := w.Body.String()
 	if !strings.Contains(body, `"forward_proxy_enabled":true`) {
 		t.Errorf("expected forward_proxy_enabled:true in health response, got: %s", body)
+	}
+}
+
+// startProxyOnFreePort starts the proxy via Start() on a random port and returns
+// the listening address. Uses the production code path (mux wrapper, WriteTimeout).
+func startProxyOnFreePort(t *testing.T, cfg *config.Config) (string, func()) {
+	t.Helper()
+
+	// Find a free port
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(context.Background(), "tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+
+	cfg.FetchProxy.Listen = addr
+	cfg.FetchProxy.TimeoutSeconds = 5
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	m := metrics.New()
+	p := New(cfg, logger, sc, m)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- p.Start(ctx)
+	}()
+
+	// Wait for server to be ready
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		d := net.Dialer{Timeout: 100 * time.Millisecond}
+		conn, dialErr := d.DialContext(context.Background(), "tcp", addr)
+		if dialErr == nil {
+			_ = conn.Close()
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	cleanup := func() {
+		cancel()
+		select {
+		case <-errCh:
+		case <-time.After(3 * time.Second):
+		}
+		sc.Close()
+	}
+	return addr, cleanup
+}
+
+func TestStartConnectViaProduction(t *testing.T) {
+	echoLn := listenEcho(t)
+	defer func() { _ = echoLn.Close() }()
+	echoAddr := echoLn.Addr().String()
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.APIAllowlist = nil
+	cfg.ForwardProxy.Enabled = true
+	cfg.ForwardProxy.MaxTunnelSeconds = 10
+	cfg.ForwardProxy.IdleTimeoutSeconds = 2
+
+	proxyAddr, cleanup := startProxyOnFreePort(t, cfg)
+	defer cleanup()
+
+	// CONNECT through the production Start() code path
+	conn := dialProxy(t, proxyAddr)
+	defer func() { _ = conn.Close() }()
+
+	_, _ = fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", echoAddr, echoAddr)
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatalf("read connect response: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	_, _ = conn.Write([]byte("hello"))
+	buf := make([]byte, 32)
+	n, _ := br.Read(buf)
+	if string(buf[:n]) != "hello" {
+		t.Errorf("expected echo 'hello', got %q", string(buf[:n]))
+	}
+}
+
+func TestStartConnectDisabledViaProduction(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.APIAllowlist = nil
+	cfg.ForwardProxy.Enabled = false
+
+	proxyAddr, cleanup := startProxyOnFreePort(t, cfg)
+	defer cleanup()
+
+	conn := dialProxy(t, proxyAddr)
+	defer func() { _ = conn.Close() }()
+
+	_, _ = fmt.Fprintf(conn, "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n")
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405 when forward proxy disabled, got %d", resp.StatusCode)
+	}
+}
+
+func TestStartForwardHTTPViaProduction(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = fmt.Fprint(w, "backend-ok")
+	}))
+	defer backend.Close()
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.APIAllowlist = nil
+	cfg.ForwardProxy.Enabled = true
+
+	proxyAddr, cleanup := startProxyOnFreePort(t, cfg)
+	defer cleanup()
+
+	client := proxyClient(proxyAddr)
+	resp := doGet(t, client, backend.URL+"/test")
+	defer resp.Body.Close() //nolint:errcheck // test
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "backend-ok" {
+		t.Errorf("expected 'backend-ok', got %q", string(body))
+	}
+}
+
+func TestStartForwardHTTPDisabledViaProduction(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.APIAllowlist = nil
+	cfg.ForwardProxy.Enabled = false
+
+	proxyAddr, cleanup := startProxyOnFreePort(t, cfg)
+	defer cleanup()
+
+	client := proxyClient(proxyAddr)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://example.com/test", nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck // test
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405 when forward proxy disabled, got %d", resp.StatusCode)
+	}
+}
+
+func TestStartFetchStillWorksWithForwardProxy(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = fmt.Fprint(w, "<html><body>hello fetch</body></html>")
+	}))
+	defer backend.Close()
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.APIAllowlist = nil
+	cfg.ForwardProxy.Enabled = true
+
+	proxyAddr, cleanup := startProxyOnFreePort(t, cfg)
+	defer cleanup()
+
+	// /fetch endpoint should still work alongside forward proxy
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	fetchURL := fmt.Sprintf("http://%s/fetch?url=%s", proxyAddr, url.QueryEscape(backend.URL))
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, fetchURL, nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("fetch request failed: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck // test
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 from /fetch, got %d", resp.StatusCode)
+	}
+}
+
+func TestConnectMissingHost(t *testing.T) {
+	proxyAddr, cleanup := setupForwardProxy(t, nil)
+	defer cleanup()
+
+	conn := dialProxy(t, proxyAddr)
+	defer func() { _ = conn.Close() }()
+
+	// CONNECT with empty host (missing Host header and no authority)
+	_, _ = conn.Write([]byte("CONNECT HTTP/1.1\r\n\r\n"))
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected 400 for missing host, got %d", resp.StatusCode)
+	}
+}
+
+func TestForwardHTTPAuditMode(t *testing.T) {
+	// Backend to target
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, "audit-ok")
+	}))
+	defer backend.Close()
+
+	proxyAddr, cleanup := setupForwardProxy(t, func(cfg *config.Config) {
+		cfg.Mode = config.ModeAudit
+		v := false
+		cfg.Enforce = &v
+		// Add a blocklist to trigger scan failure
+		cfg.FetchProxy.Monitoring.Blocklist = []string{"127.0.0.1"}
+	})
+	defer cleanup()
+
+	client := proxyClient(proxyAddr)
+	resp := doGet(t, client, backend.URL+"/test")
+	defer resp.Body.Close() //nolint:errcheck // test
+
+	// Audit mode: should still succeed (log only, no block)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 in audit mode, got %d", resp.StatusCode)
+	}
+}
+
+func TestForwardHTTPDialFailure(t *testing.T) {
+	proxyAddr, cleanup := setupForwardProxy(t, nil)
+	defer cleanup()
+
+	client := proxyClient(proxyAddr)
+
+	// Target a port that nothing is listening on
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://127.0.0.1:1/unreachable", nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		// Connection refused errors may propagate as client errors
+		return
+	}
+	defer resp.Body.Close() //nolint:errcheck // test
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("expected 502 for unreachable target, got %d", resp.StatusCode)
+	}
+}
+
+func TestConnectDialFailure(t *testing.T) {
+	proxyAddr, cleanup := setupForwardProxy(t, nil)
+	defer cleanup()
+
+	conn := dialProxy(t, proxyAddr)
+	defer func() { _ = conn.Close() }()
+
+	// CONNECT to a port that nothing is listening on
+	_, _ = fmt.Fprintf(conn, "CONNECT 127.0.0.1:1 HTTP/1.1\r\nHost: 127.0.0.1:1\r\n\r\n")
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("expected 502 for dial failure, got %d", resp.StatusCode)
+	}
+}
+
+func TestCopyWithIdleTimeoutRespectsDeadline(t *testing.T) {
+	// Verify that copyWithIdleTimeout caps per-read deadlines at the absolute
+	// deadline. A 10s idle timeout should be capped by a near-immediate deadline.
+	server, client := net.Pipe()
+	defer func() { _ = server.Close() }()
+	defer func() { _ = client.Close() }()
+
+	// Set deadline to 50ms from now, idle timeout much longer (10s)
+	deadline := time.Now().Add(50 * time.Millisecond)
+	var dst strings.Builder
+	dstConn := &writerConn{Writer: &dst, Conn: client}
+
+	start := time.Now()
+	// Server never sends data, so copyWithIdleTimeout blocks on Read.
+	// With deadline capping, it should return after ~50ms (the deadline),
+	// not after 10s (the idle timeout).
+	_ = copyWithIdleTimeout(dstConn, server, 10*time.Second, deadline)
+	elapsed := time.Since(start)
+
+	if elapsed > 2*time.Second {
+		t.Errorf("copyWithIdleTimeout took %v; expected it to respect the ~50ms deadline", elapsed)
+	}
+}
+
+// writerConn wraps an io.Writer into a net.Conn for testing copyWithIdleTimeout's
+// write path. Only Write is used; all net.Conn methods delegate to the embedded Conn.
+type writerConn struct {
+	io.Writer
+	net.Conn
+}
+
+func (w *writerConn) Write(p []byte) (int, error) {
+	return w.Writer.Write(p)
+}
+
+func TestConnectDefaultPort(t *testing.T) {
+	// CONNECT with host but no port should default to :443
+	proxyAddr, cleanup := setupForwardProxy(t, nil)
+	defer cleanup()
+
+	conn := dialProxy(t, proxyAddr)
+	defer func() { _ = conn.Close() }()
+
+	// CONNECT to just "127.0.0.1" (no port) - should try :443 and fail since nothing listens there
+	_, _ = fmt.Fprintf(conn, "CONNECT 127.0.0.1 HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	_ = resp.Body.Close()
+	// Will get 502 (dial failure to port 443) which proves the default port logic ran
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("expected 502 (default port 443 unreachable), got %d", resp.StatusCode)
 	}
 }

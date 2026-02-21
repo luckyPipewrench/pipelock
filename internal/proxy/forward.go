@@ -186,7 +186,7 @@ func bidirectionalCopy(client, target net.Conn, idleTimeout, maxDuration time.Du
 	done := make(chan struct{})
 
 	go func() {
-		clientToTarget = copyWithIdleTimeout(target, client, idleTimeout)
+		clientToTarget = copyWithIdleTimeout(target, client, idleTimeout, deadline)
 		// Half-close: signal target that no more data is coming
 		if tc, ok := target.(*net.TCPConn); ok {
 			_ = tc.CloseWrite()
@@ -194,7 +194,7 @@ func bidirectionalCopy(client, target net.Conn, idleTimeout, maxDuration time.Du
 		close(done)
 	}()
 
-	targetToClient = copyWithIdleTimeout(client, target, idleTimeout)
+	targetToClient = copyWithIdleTimeout(client, target, idleTimeout, deadline)
 	// Half-close: signal client that no more data is coming
 	if tc, ok := client.(*net.TCPConn); ok {
 		_ = tc.CloseWrite()
@@ -205,12 +205,18 @@ func bidirectionalCopy(client, target net.Conn, idleTimeout, maxDuration time.Du
 }
 
 // copyWithIdleTimeout copies from src to dst, resetting the read deadline
-// on src after each successful read. Returns total bytes copied.
-func copyWithIdleTimeout(dst, src net.Conn, idleTimeout time.Duration) int64 {
+// on src after each successful read. The per-read deadline is capped at the
+// absolute deadline so tunnels cannot exceed max_tunnel_seconds while active.
+// Returns total bytes copied.
+func copyWithIdleTimeout(dst, src net.Conn, idleTimeout time.Duration, deadline time.Time) int64 {
 	buf := make([]byte, tunnelBufSize)
 	var total int64
 	for {
-		_ = src.SetReadDeadline(time.Now().Add(idleTimeout))
+		rd := time.Now().Add(idleTimeout)
+		if rd.After(deadline) {
+			rd = deadline
+		}
+		_ = src.SetReadDeadline(rd)
 		n, err := src.Read(buf)
 		if n > 0 {
 			written, wErr := dst.Write(buf[:n])

@@ -261,8 +261,10 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			clientIP, requestID, result.Score)
 	}
 
-	// Clone request and strip hop-by-hop headers
-	outReq := r.Clone(r.Context())
+	// Clone request with context keys so CheckRedirect can attribute audit logs
+	ctx := context.WithValue(r.Context(), ctxKeyClientIP, clientIP)
+	ctx = context.WithValue(ctx, ctxKeyRequestID, requestID)
+	outReq := r.Clone(ctx)
 	outReq.RequestURI = "" // required for http.Client
 	removeHopByHopHeaders(outReq.Header)
 

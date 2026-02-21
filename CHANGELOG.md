@@ -7,9 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-02-24
+
 ### Added
-- HTTP forward proxy: standard CONNECT tunneling and absolute-URI HTTP forwarding on the same port as the fetch proxy. Set `HTTPS_PROXY=http://localhost:8888` and all agent HTTP traffic flows through the scanner pipeline. Configurable via `forward_proxy` config section with tunnel duration and idle timeout controls. Enabling forward proxy requires a process restart; it cannot be activated via hot-reload.
-- Tunnel observability: Prometheus metrics (tunnel count, bytes, duration histogram, active gauge), JSON stats, and structured audit logs for tunnel open/close events.
+- HTTP forward proxy: standard CONNECT tunneling and absolute-URI HTTP forwarding on the same port as the fetch proxy. Set `HTTPS_PROXY=http://localhost:8888` and all agent HTTP traffic flows through the scanner pipeline. Configurable tunnel duration and idle timeout controls (PR #123)
+- Tunnel observability: Prometheus metrics (tunnel count, bytes transferred, duration histogram, active gauge), JSON stats, and structured audit logs for tunnel open/close events (PR #123)
+- GitHub Action (`luckyPipewrench/pipelock`): composite action for CI/CD agent security scanning with checksum-verified binary download, multi-arch (amd64/arm64) and multi-OS (Linux/macOS) support, fail-closed audit gate, PR diff secret scanning, inline GitHub annotations on findings, and job summary (PR #125)
+- CI workflow examples for basic and advanced GitHub Action usage (PR #125)
+
+### Changed
+- Forward proxy enabled by default in all 6 preset configs: balanced, strict, audit, claude-code, cursor, generic-agent (PR #125)
+- Action string constants extracted to `config` package (`ActionBlock`, `ActionWarn`, `ActionAsk`, `ActionStrip`, `ActionForward`), replacing ~70 hardcoded literals across 12 files (PR #124)
+- README rewritten with forward proxy "zero code changes" quickstart as primary path, refreshed benchmarks and testing stats, honest security assessment section (PR #122, #125)
+- Copyright updated to legal name in LICENSE (PR #122)
 
 ## [0.2.5] - 2026-02-20
 

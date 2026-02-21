@@ -43,7 +43,7 @@ fetch_proxy:
       - "*.requestbin.com"
 
 forward_proxy:
-  enabled: false
+  enabled: true
   max_tunnel_seconds: 300
   idle_timeout_seconds: 120
 

@@ -39,6 +39,17 @@ const (
 // requestCounter provides monotonic request IDs.
 var requestCounter atomic.Uint64
 
+// requestMeta extracts the client IP (port stripped) and a unique request ID
+// from the incoming request. Used by all proxy handler paths.
+func requestMeta(r *http.Request) (clientIP, requestID string) {
+	clientIP = r.RemoteAddr
+	if host, _, err := net.SplitHostPort(clientIP); err == nil {
+		clientIP = host
+	}
+	requestID = fmt.Sprintf("req-%d", requestCounter.Add(1))
+	return
+}
+
 // Version is set at build time via ldflags.
 var Version = "0.1.0-dev"
 
@@ -302,11 +313,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	cfg := p.cfgPtr.Load()
 	sc := p.scannerPtr.Load()
 
-	clientIP := r.RemoteAddr
-	if host, _, err := net.SplitHostPort(clientIP); err == nil {
-		clientIP = host
-	}
-	requestID := fmt.Sprintf("req-%d", requestCounter.Add(1))
+	clientIP, requestID := requestMeta(r)
 	agent := ExtractAgent(r)
 
 	// Create a per-request sub-logger tagged with the agent name

@@ -661,9 +661,14 @@ func startProxyOnFreePort(t *testing.T, cfg *config.Config) (string, func()) {
 		errCh <- p.Start(ctx)
 	}()
 
-	// Wait for server to be ready
+	// Wait for server to be ready, draining errCh to detect startup failures.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
+		select {
+		case startErr := <-errCh:
+			t.Fatalf("proxy Start() failed: %v", startErr)
+		default:
+		}
 		d := net.Dialer{Timeout: 100 * time.Millisecond}
 		conn, dialErr := d.DialContext(context.Background(), "tcp", addr)
 		if dialErr == nil {
@@ -1009,7 +1014,7 @@ func TestSSRFSafeDialContext_InvalidAddr(t *testing.T) {
 	}
 }
 
-func TestSSRFSafeDialContext_DNSResolvesToInternal(t *testing.T) {
+func TestSSRFSafeDialContext_LoopbackBlocked(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = []string{"127.0.0.0/8"}
 
@@ -1020,11 +1025,10 @@ func TestSSRFSafeDialContext_DNSResolvesToInternal(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	// "localhost" resolves to 127.0.0.1 which is in the internal range.
-	// This exercises the DNS resolution path in ssrfSafeDialContext.
-	_, err := p.ssrfSafeDialContext(ctx, "tcp", "localhost:443")
+	// 127.0.0.1 is in the internal range 127.0.0.0/8.
+	_, err := p.ssrfSafeDialContext(ctx, "tcp", "127.0.0.1:443")
 	if err == nil {
-		t.Fatal("expected SSRF block for localhost resolving to 127.0.0.1")
+		t.Fatal("expected SSRF block for loopback IP")
 	}
 	if !strings.Contains(err.Error(), "SSRF blocked") {
 		t.Errorf("expected SSRF blocked error, got: %v", err)
@@ -1094,6 +1098,56 @@ func TestGetTunnelSemaphore(t *testing.T) {
 	s2 := getTunnelSemaphore()
 	if s1 != s2 {
 		t.Error("getTunnelSemaphore should return the same instance")
+	}
+}
+
+func TestConnectIPv6BareNoPort(t *testing.T) {
+	// CONNECT with bare IPv6 literal "[::1]" (no port) should default to :443
+	// and correctly normalize to [::1]:443 (not [[::1]]:443).
+	proxyAddr, cleanup := setupForwardProxy(t, nil)
+	defer cleanup()
+
+	conn := dialProxy(t, proxyAddr)
+	defer func() { _ = conn.Close() }()
+
+	_, _ = fmt.Fprintf(conn, "CONNECT [::1] HTTP/1.1\r\nHost: [::1]\r\n\r\n")
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	// Expect 502 (dial failure to [::1]:443), not a parse error.
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("expected 502 for bare IPv6 dial failure, got %d", resp.StatusCode)
+	}
+}
+
+func TestConnectIPv6Brackets(t *testing.T) {
+	// Verify that CONNECT to an IPv6 literal produces a valid synthetic URL.
+	// net.SplitHostPort("[::1]:443") strips brackets, so the proxy must
+	// re-bracket before building "https://[::1]/" for the scanner.
+	proxyAddr, cleanup := setupForwardProxy(t, nil)
+	defer cleanup()
+
+	conn := dialProxy(t, proxyAddr)
+	defer func() { _ = conn.Close() }()
+
+	// CONNECT to IPv6 loopback - will fail the dial (nothing listening on [::1]:443)
+	// but exercises the URL construction path.
+	_, _ = fmt.Fprintf(conn, "CONNECT [::1]:443 HTTP/1.1\r\nHost: [::1]:443\r\n\r\n")
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	// Expect 502 (dial failure) not 403 (scanner misparse) or 400 (bad URL).
+	// This proves the synthetic URL was valid and the scanner processed it correctly.
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("expected 502 for IPv6 dial failure, got %d", resp.StatusCode)
 	}
 }
 

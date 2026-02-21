@@ -73,11 +73,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	cfg := p.cfgPtr.Load()
 	sc := p.scannerPtr.Load()
 
-	clientIP := r.RemoteAddr
-	if host, _, err := net.SplitHostPort(clientIP); err == nil {
-		clientIP = host
-	}
-	requestID := fmt.Sprintf("req-%d", requestCounter.Add(1))
+	clientIP, requestID := requestMeta(r)
 
 	target := r.Host
 	if target == "" {
@@ -86,15 +82,21 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Ensure target has a port. CONNECT targets are always host:port.
+	// Strip brackets from bare IPv6 literals before JoinHostPort adds them back.
 	if _, _, err := net.SplitHostPort(target); err != nil {
-		target = net.JoinHostPort(target, "443")
+		bare := strings.TrimPrefix(strings.TrimSuffix(target, "]"), "[")
+		target = net.JoinHostPort(bare, "443")
 	}
 
 	// Synthesize a URL for scanner pipeline. The scanner expects a full URL,
 	// but CONNECT only gives us host:port. Use https:// as the tunnel is
 	// typically used for TLS traffic.
 	host, _, _ := net.SplitHostPort(target)
-	syntheticURL := "https://" + host + "/"
+	syntheticHost := host
+	if strings.Contains(host, ":") { // IPv6 literal needs brackets in URL
+		syntheticHost = "[" + host + "]"
+	}
+	syntheticURL := "https://" + syntheticHost + "/"
 
 	// Scan through all 9 layers
 	result := sc.Scan(syntheticURL)
@@ -241,11 +243,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	cfg := p.cfgPtr.Load()
 	sc := p.scannerPtr.Load()
 
-	clientIP := r.RemoteAddr
-	if host, _, err := net.SplitHostPort(clientIP); err == nil {
-		clientIP = host
-	}
-	requestID := fmt.Sprintf("req-%d", requestCounter.Add(1))
+	clientIP, requestID := requestMeta(r)
 
 	targetURL := r.URL.String()
 

@@ -691,3 +691,179 @@ func TestLogRedirect_JSONFormat(t *testing.T) {
 		t.Errorf("expected request_id=req-7, got %v", entry["request_id"])
 	}
 }
+
+func TestLogTunnelOpen_JSONFormat(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogTunnelOpen("example.com:443", "10.0.0.5", "req-100")
+	logger.Close()
+
+	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+
+	if entry["event"] != "tunnel_open" {
+		t.Errorf("expected event=tunnel_open, got %v", entry["event"])
+	}
+	if entry["target"] != "example.com:443" {
+		t.Errorf("expected target=example.com:443, got %v", entry["target"])
+	}
+	if entry["client_ip"] != "10.0.0.5" {
+		t.Errorf("expected client_ip=10.0.0.5, got %v", entry["client_ip"])
+	}
+	if entry["request_id"] != "req-100" {
+		t.Errorf("expected request_id=req-100, got %v", entry["request_id"])
+	}
+}
+
+func TestLogTunnelOpen_Filtered(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, false, true) // includeAllowed=false
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogTunnelOpen("example.com:443", "10.0.0.5", "req-100")
+	logger.Close()
+
+	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
+	if len(bytes.TrimSpace(data)) > 0 {
+		t.Error("expected tunnel_open to be filtered when includeAllowed=false")
+	}
+}
+
+func TestLogTunnelClose_JSONFormat(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogTunnelClose("example.com:443", "10.0.0.5", "req-100", 4096, 5*time.Second)
+	logger.Close()
+
+	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+
+	if entry["event"] != "tunnel_close" {
+		t.Errorf("expected event=tunnel_close, got %v", entry["event"])
+	}
+	if entry["target"] != "example.com:443" {
+		t.Errorf("expected target=example.com:443, got %v", entry["target"])
+	}
+	totalBytes, ok := entry["total_bytes"].(float64)
+	if !ok || totalBytes != 4096 {
+		t.Errorf("expected total_bytes=4096, got %v", entry["total_bytes"])
+	}
+	if _, ok := entry["duration_ms"]; !ok {
+		t.Error("expected duration_ms field in tunnel_close event")
+	}
+}
+
+func TestLogTunnelClose_Filtered(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, false, true) // includeAllowed=false
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogTunnelClose("example.com:443", "10.0.0.5", "req-100", 4096, 5*time.Second)
+	logger.Close()
+
+	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
+	if len(bytes.TrimSpace(data)) > 0 {
+		t.Error("expected tunnel_close to be filtered when includeAllowed=false")
+	}
+}
+
+func TestLogForwardHTTP_JSONFormat(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogForwardHTTP("GET", "http://example.com/path", "10.0.0.5", "req-200", 200, 2048, 100*time.Millisecond)
+	logger.Close()
+
+	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+
+	if entry["event"] != "forward_http" {
+		t.Errorf("expected event=forward_http, got %v", entry["event"])
+	}
+	if entry["method"] != "GET" {
+		t.Errorf("expected method=GET, got %v", entry["method"])
+	}
+	if entry["url"] != "http://example.com/path" {
+		t.Errorf("expected url=http://example.com/path, got %v", entry["url"])
+	}
+	statusCode, ok := entry["status_code"].(float64)
+	if !ok || statusCode != 200 {
+		t.Errorf("expected status_code=200, got %v", entry["status_code"])
+	}
+	sizeBytes, ok := entry["size_bytes"].(float64)
+	if !ok || sizeBytes != 2048 {
+		t.Errorf("expected size_bytes=2048, got %v", entry["size_bytes"])
+	}
+	if _, ok := entry["duration_ms"]; !ok {
+		t.Error("expected duration_ms field in forward_http event")
+	}
+}
+
+func TestLogForwardHTTP_Filtered(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, false, true) // includeAllowed=false
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogForwardHTTP("GET", "http://example.com/path", "10.0.0.5", "req-200", 200, 2048, 100*time.Millisecond)
+	logger.Close()
+
+	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
+	if len(bytes.TrimSpace(data)) > 0 {
+		t.Error("expected forward_http to be filtered when includeAllowed=false")
+	}
+}
+
+func TestLogTunnelOpen_SanitizesTarget(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogTunnelOpen("evil\x1b[2J.com:443", "10.0.0.5", "req-101")
+	logger.Close()
+
+	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+
+	target, _ := entry["target"].(string)
+	if strings.Contains(target, "\x1b") {
+		t.Error("expected ANSI escape to be stripped from target")
+	}
+}

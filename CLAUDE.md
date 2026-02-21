@@ -41,7 +41,7 @@ Both must pass before pushing. CI runs lint and tests on all code (not just chan
 cmd/pipelock/          Entry point (main.go)
 internal/
   cli/                 Cobra commands (audit, check, demo, generate, git, healthcheck, integrity, keygen, logs, mcp, run, sign, test, trust, verify, version)
-  proxy/               HTTP fetch proxy (/fetch, /health, /metrics, /stats)
+  proxy/               HTTP proxy: fetch (/fetch), forward (CONNECT + absolute-URI), /health, /metrics, /stats
   scanner/             URL + response scanning pipeline (9 layers)
   config/              YAML config loading, validation, hot-reload (fsnotify + SIGHUP)
   audit/               Structured JSON logging (zerolog)
@@ -59,7 +59,11 @@ blog/                  GitHub Pages blog (Jekyll)
 
 ## Architecture
 
-Pipelock uses **capability separation**: the agent process (which has secrets and API keys) cannot reach the internet directly. All HTTP traffic goes through the Pipelock fetch proxy, which scans every request and response.
+Pipelock uses **capability separation**: the agent process (which has secrets and API keys) cannot reach the internet directly. All HTTP traffic goes through Pipelock, which scans every request.
+
+Two proxy modes on the same port:
+- **Fetch proxy** (`/fetch?url=...`): fetches URL, extracts text, scans response for injection
+- **Forward proxy** (CONNECT + absolute-URI): standard HTTP proxy, agents set `HTTPS_PROXY`. Scans target hostname through the 9-layer pipeline before opening the tunnel. Enabled via `forward_proxy.enabled: true`.
 
 ```
 Agent (secrets, no network) → Pipelock Proxy (no secrets, full network) → Internet
@@ -96,7 +100,7 @@ Wraps any MCP server with bidirectional scanning. Supports two transport modes: 
 | Command | Purpose |
 |---------|---------|
 | `pipelock audit` | Scan a project directory and generate a tailored config |
-| `pipelock run` | Start the fetch proxy server |
+| `pipelock run` | Start the proxy server (fetch + forward) |
 | `pipelock check` | Validate a config file and optionally scan a URL |
 | `pipelock test` | Run built-in scanner validation tests |
 | `pipelock demo` | Run an interactive demo of scanner capabilities |

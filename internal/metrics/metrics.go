@@ -23,12 +23,18 @@ type Metrics struct {
 	scannerHits    *prometheus.CounterVec
 	requestLatency prometheus.Histogram
 
+	tunnelsTotal   *prometheus.CounterVec
+	tunnelDuration prometheus.Histogram
+	tunnelBytes    prometheus.Counter
+	activeTunnels  prometheus.Gauge
+
 	mu                sync.Mutex
 	startTime         time.Time
 	topBlockedDomains map[string]int64
 	topScannerHits    map[string]int64
 	allowedCount      int64
 	blockedCount      int64
+	tunnelCount       int64
 }
 
 // New creates a Metrics instance with its own Prometheus registry.
@@ -54,13 +60,43 @@ func New() *Metrics {
 		Buckets:   []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
 	})
 
-	reg.MustRegister(requestsTotal, scannerHits, requestLatency)
+	tunnelsTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "pipelock",
+		Name:      "tunnels_total",
+		Help:      "Total CONNECT tunnels by result.",
+	}, []string{"result"})
+
+	tunnelDuration := prometheus.NewHistogram(prometheus.HistogramOpts{
+		Namespace: "pipelock",
+		Name:      "tunnel_duration_seconds",
+		Help:      "CONNECT tunnel duration in seconds.",
+		Buckets:   []float64{1, 5, 10, 30, 60, 120, 300},
+	})
+
+	tunnelBytes := prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: "pipelock",
+		Name:      "tunnel_bytes_total",
+		Help:      "Total bytes transferred through CONNECT tunnels.",
+	})
+
+	activeTunnels := prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: "pipelock",
+		Name:      "active_tunnels",
+		Help:      "Current number of active CONNECT tunnels.",
+	})
+
+	reg.MustRegister(requestsTotal, scannerHits, requestLatency,
+		tunnelsTotal, tunnelDuration, tunnelBytes, activeTunnels)
 
 	return &Metrics{
 		registry:          reg,
 		requestsTotal:     requestsTotal,
 		scannerHits:       scannerHits,
 		requestLatency:    requestLatency,
+		tunnelsTotal:      tunnelsTotal,
+		tunnelDuration:    tunnelDuration,
+		tunnelBytes:       tunnelBytes,
+		activeTunnels:     activeTunnels,
 		startTime:         time.Now(),
 		topBlockedDomains: make(map[string]int64),
 		topScannerHits:    make(map[string]int64),
@@ -98,6 +134,32 @@ func (m *Metrics) RecordBlocked(domain, scannerName string, duration time.Durati
 	m.mu.Unlock()
 }
 
+// RecordTunnel records a completed CONNECT tunnel.
+func (m *Metrics) RecordTunnel(duration time.Duration, totalBytes int64) {
+	m.tunnelsTotal.WithLabelValues("completed").Inc()
+	m.tunnelDuration.Observe(duration.Seconds())
+	m.tunnelBytes.Add(float64(totalBytes))
+
+	m.mu.Lock()
+	m.tunnelCount++
+	m.mu.Unlock()
+}
+
+// RecordTunnelBlocked records a blocked CONNECT tunnel attempt.
+func (m *Metrics) RecordTunnelBlocked() {
+	m.tunnelsTotal.WithLabelValues("blocked").Inc()
+}
+
+// IncrActiveTunnels increments the active tunnel gauge.
+func (m *Metrics) IncrActiveTunnels() {
+	m.activeTunnels.Inc()
+}
+
+// DecrActiveTunnels decrements the active tunnel gauge.
+func (m *Metrics) DecrActiveTunnels() {
+	m.activeTunnels.Dec()
+}
+
 // PrometheusHandler returns an HTTP handler that serves /metrics in Prometheus text format.
 func (m *Metrics) PrometheusHandler() http.Handler {
 	return promhttp.HandlerFor(m.registry, promhttp.HandlerOpts{})
@@ -115,6 +177,7 @@ func (m *Metrics) StatsHandler() http.HandlerFunc {
 				Allowed: m.allowedCount,
 				Blocked: m.blockedCount,
 			},
+			Tunnels:           m.tunnelCount,
 			TopBlockedDomains: topN(m.topBlockedDomains),
 			TopScanners:       topN(m.topScannerHits),
 		}
@@ -131,6 +194,7 @@ func (m *Metrics) StatsHandler() http.HandlerFunc {
 type statsResponse struct {
 	UptimeSeconds     float64       `json:"uptime_seconds"`
 	Requests          requestStats  `json:"requests"`
+	Tunnels           int64         `json:"tunnels"`
 	TopBlockedDomains []rankedEntry `json:"top_blocked_domains"`
 	TopScanners       []rankedEntry `json:"top_scanners"`
 }

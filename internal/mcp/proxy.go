@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -84,7 +85,7 @@ func ForwardScanned(reader MessageReader, writer MessageWriter, logW io.Writer, 
 				foundInjection = true
 				logToolFindings(logW, lineNum, toolResult)
 
-				if toolCfg.Action == "block" { //nolint:goconst // config action value
+				if toolCfg.Action == config.ActionBlock {
 					resp := blockResponse(toolResult.RPCID)
 					if err := writer.WriteMessage(resp); err != nil {
 						return foundInjection, fmt.Errorf("writing tool block: %w", err)
@@ -130,12 +131,12 @@ func ForwardScanned(reader MessageReader, writer MessageWriter, logW io.Writer, 
 			lineNum, strings.Join(names, ", "), action)
 
 		switch action {
-		case "block": //nolint:goconst // config action value
+		case config.ActionBlock:
 			resp := blockResponse(verdict.ID)
 			if err := writer.WriteMessage(resp); err != nil {
 				return foundInjection, fmt.Errorf("writing block response: %w", err)
 			}
-		case "ask": //nolint:goconst // config action value
+		case config.ActionAsk:
 			if approver == nil {
 				_, _ = fmt.Fprintf(logW, "pipelock: line %d: no HITL approver configured, blocking\n", lineNum)
 				resp := blockResponse(verdict.ID)
@@ -172,7 +173,7 @@ func ForwardScanned(reader MessageReader, writer MessageWriter, logW io.Writer, 
 					}
 				}
 			}
-		case "strip":
+		case config.ActionStrip:
 			if err := stripOrBlock(line, sc, writer, logW, verdict.ID); err != nil {
 				return foundInjection, fmt.Errorf("writing strip/block response: %w", err)
 			}
@@ -404,7 +405,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 			// Use onParseError="block" (fail-closed) so malformed JSON can't bypass policy.
 			clientReader := NewStdioReader(clientIn)
 			serverWriter := NewStdioWriter(serverIn)
-			ForwardScannedInput(clientReader, serverWriter, safeLogW, sc, "warn", "block", blockedCh, policyCfg) //nolint:goconst // config action value
+			ForwardScannedInput(clientReader, serverWriter, safeLogW, sc, config.ActionWarn, config.ActionBlock, blockedCh, policyCfg)
 		} else {
 			close(blockedCh)                   // No input scanning — close channel immediately.
 			_, _ = io.Copy(serverIn, clientIn) //nolint:errcheck // broken pipe on server exit is expected

@@ -76,9 +76,9 @@ func useColor() bool {
 
 func runDemo(cmd *cobra.Command, interactive, color bool) error {
 	cfg := config.Defaults()
-	cfg.Internal = nil                    // disable SSRF (avoids DNS lookups)
-	cfg.ResponseScanning.Action = "block" //nolint:goconst // config action value
-	cfg.DLP.ScanEnv = false               // don't scan demo runner's env
+	cfg.Internal = nil // disable SSRF (avoids DNS lookups)
+	cfg.ResponseScanning.Action = config.ActionBlock
+	cfg.DLP.ScanEnv = false // don't scan demo runner's env
 
 	sc := scanner.New(cfg)
 	defer sc.Close()
@@ -269,7 +269,7 @@ func buildScenarios() []scenario {
 				if err != nil {
 					return false, fmt.Sprintf("marshal error: %v", err)
 				}
-				verdict := mcp.ScanRequest(line, sc, "block", "block") //nolint:goconst // config action value
+				verdict := mcp.ScanRequest(line, sc, config.ActionBlock, config.ActionBlock)
 				if !verdict.Clean {
 					if len(verdict.Matches) > 0 {
 						return true, fmt.Sprintf("%s (action: %s)", verdict.Matches[0].PatternName, verdict.Action)
@@ -313,7 +313,7 @@ func buildScenarios() []scenario {
 				}
 				toolCfg := &mcp.ToolScanConfig{
 					Baseline:    mcp.NewToolBaseline(),
-					Action:      "block",
+					Action:      config.ActionBlock,
 					DetectDrift: false,
 				}
 				result := mcp.ScanTools(line, sc, toolCfg)

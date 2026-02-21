@@ -22,7 +22,7 @@ func TestNewPolicyConfig_Disabled(t *testing.T) {
 }
 
 func TestNewPolicyConfig_NoRules(t *testing.T) {
-	cfg := config.MCPToolPolicy{Enabled: true, Action: "warn"}
+	cfg := config.MCPToolPolicy{Enabled: true, Action: config.ActionWarn}
 	pc := NewPolicyConfig(cfg)
 	if pc != nil {
 		t.Error("expected nil for config with no rules")
@@ -82,7 +82,7 @@ func TestCheckToolCall_ToolNameMatchWithArg(t *testing.T) {
 	if !v.Matched {
 		t.Fatal("expected match for rm -rf")
 	}
-	if v.Action != "warn" {
+	if v.Action != config.ActionWarn {
 		t.Errorf("expected action=warn, got %q", v.Action)
 	}
 	if len(v.Rules) != 1 || v.Rules[0] != "rm-check" {
@@ -655,7 +655,7 @@ func TestCheckToolCall_PairwiseCapSkipsLoop(t *testing.T) {
 		ArgPattern:  regexp.MustCompile(`^rm -rf$`),
 		Action:      "block",
 	}
-	pc := &PolicyConfig{Action: "warn", Rules: []*CompiledPolicyRule{rule}}
+	pc := &PolicyConfig{Action: config.ActionWarn, Rules: []*CompiledPolicyRule{rule}}
 
 	// With few tokens — pairwise finds "rm" + "-rf".
 	smallArgs := []string{"rm", "padding", "-rf"}
@@ -979,7 +979,7 @@ func testPolicyConfig(_ *testing.T) *PolicyConfig {
 func defaultPolicyConfig(_ *testing.T) *PolicyConfig {
 	cfg := config.MCPToolPolicy{
 		Enabled: true,
-		Action:  "warn",
+		Action:  config.ActionWarn,
 		Rules:   DefaultToolPolicyRules(),
 	}
 	pc := NewPolicyConfig(cfg)
@@ -1652,7 +1652,7 @@ func TestDecodeShellEscapes_OctalOverflowUint8(t *testing.T) {
 func TestCheckRequest_BatchWithMixedActions(t *testing.T) {
 	cfg := config.MCPToolPolicy{
 		Enabled: true,
-		Action:  "warn",
+		Action:  config.ActionWarn,
 		Rules: []config.ToolPolicyRule{
 			{Name: "warn-rule", ToolPattern: `^echo$`},
 			{Name: "block-rule", ToolPattern: `^bash$`, ArgPattern: `rm`, Action: "block"},

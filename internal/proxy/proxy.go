@@ -476,12 +476,12 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				patternNames[i] = m.PatternName
 			}
 			switch sc.ResponseAction() {
-			case "block":
+			case config.ActionBlock:
 				reason := fmt.Sprintf("response contains prompt injection: %s", strings.Join(patternNames, ", "))
 				log.LogBlocked("GET", displayURL, "response_scan", reason, clientIP, requestID)
 				writeJSON(w, http.StatusForbidden, FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
 				return
-			case "ask":
+			case config.ActionAsk:
 				if p.approver == nil {
 					reason := fmt.Sprintf("response contains prompt injection: %s (no HITL approver)", strings.Join(patternNames, ", "))
 					log.LogBlocked("GET", displayURL, "response_scan", reason, clientIP, requestID)
@@ -511,11 +511,11 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 					writeJSON(w, http.StatusForbidden, FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
 					return
 				}
-			case "strip":
+			case config.ActionStrip:
 				content = scanResult.TransformedContent
-				log.LogResponseScan(displayURL, clientIP, requestID, "strip", len(scanResult.Matches), patternNames)
-			case "warn":
-				log.LogResponseScan(displayURL, clientIP, requestID, "warn", len(scanResult.Matches), patternNames)
+				log.LogResponseScan(displayURL, clientIP, requestID, config.ActionStrip, len(scanResult.Matches), patternNames)
+			case config.ActionWarn:
+				log.LogResponseScan(displayURL, clientIP, requestID, config.ActionWarn, len(scanResult.Matches), patternNames)
 			default:
 				log.LogResponseScan(displayURL, clientIP, requestID, sc.ResponseAction(), len(scanResult.Matches), patternNames)
 			}

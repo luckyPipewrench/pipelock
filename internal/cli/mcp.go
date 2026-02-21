@@ -176,7 +176,7 @@ Environment passthrough (subprocess mode only):
 			if !cfg.MCPInputScanning.Enabled && cfg.MCPInputScanning.Action == "" {
 				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "pipelock: auto-enabling MCP input scanning for proxy mode")
 				cfg.MCPInputScanning.Enabled = true
-				cfg.MCPInputScanning.Action = "warn" //nolint:goconst // config action value
+				cfg.MCPInputScanning.Action = config.ActionWarn
 			}
 
 			sc := scanner.New(cfg)
@@ -198,7 +198,7 @@ Environment passthrough (subprocess mode only):
 			if !cfg.MCPToolScanning.Enabled && cfg.MCPToolScanning.Action == "" {
 				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "pipelock: auto-enabling MCP tool scanning for proxy mode")
 				cfg.MCPToolScanning.Enabled = true
-				cfg.MCPToolScanning.Action = "warn" //nolint:goconst // config action value
+				cfg.MCPToolScanning.Action = config.ActionWarn
 				cfg.MCPToolScanning.DetectDrift = true
 			}
 
@@ -215,7 +215,7 @@ Environment passthrough (subprocess mode only):
 			if !cfg.MCPToolPolicy.Enabled && cfg.MCPToolPolicy.Action == "" && len(cfg.MCPToolPolicy.Rules) == 0 {
 				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "pipelock: auto-enabling MCP tool call policy for proxy mode")
 				cfg.MCPToolPolicy.Enabled = true
-				cfg.MCPToolPolicy.Action = "warn" //nolint:goconst // config action value
+				cfg.MCPToolPolicy.Action = config.ActionWarn
 				cfg.MCPToolPolicy.Rules = mcp.DefaultToolPolicyRules()
 			}
 

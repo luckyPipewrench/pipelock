@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -133,8 +134,8 @@ func RunHTTPProxy(
 // but returns a verdict instead of writing to a channel.
 func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *InputScanConfig, policyCfg *PolicyConfig) *BlockedRequest {
 	// Determine input scanning parameters.
-	action := "warn"        //nolint:goconst // config action value
-	onParseError := "block" //nolint:goconst // config action value
+	action := config.ActionWarn
+	onParseError := config.ActionBlock
 	if inputCfg != nil && inputCfg.Enabled {
 		action = inputCfg.Action
 		onParseError = inputCfg.OnParseError
@@ -203,7 +204,7 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 	}
 
 	switch effectiveAction {
-	case "block": //nolint:goconst // config action value
+	case config.ActionBlock:
 		_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s)\n", joinStrings(reasons))
 		return &BlockedRequest{
 			ID:             verdict.ID,
@@ -212,7 +213,7 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 			ErrorCode:      errCode,
 			ErrorMessage:   errMsg,
 		}
-	case "ask": //nolint:goconst // config action value
+	case config.ActionAsk:
 		// HITL for input scanning is impractical — fall back to block (same as stdio proxy).
 		_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s) [ask not supported for input scanning]\n", joinStrings(reasons))
 		return &BlockedRequest{

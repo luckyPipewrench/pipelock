@@ -359,7 +359,7 @@ func parseToolCall(line []byte) *toolCallParams {
 
 // actionRank maps action strings to strictness levels for comparison.
 // Unknown values are treated as block (fail-closed).
-var actionRank = map[string]int{"": 0, "warn": 1, "ask": 2, "block": 3}
+var actionRank = map[string]int{"": 0, config.ActionWarn: 1, config.ActionAsk: 2, config.ActionBlock: 3}
 
 // stricterAction returns the more restrictive of two actions.
 // block > ask > warn > "" (empty). Unknown values are treated as block (fail-closed).
@@ -367,12 +367,12 @@ func stricterAction(a, b string) string {
 	ra, aOK := actionRank[a]
 	rb, bOK := actionRank[b]
 	if !aOK {
-		a = "block"
-		ra = actionRank["block"]
+		a = config.ActionBlock
+		ra = actionRank[config.ActionBlock]
 	}
 	if !bOK {
-		b = "block"
-		rb = actionRank["block"]
+		b = config.ActionBlock
+		rb = actionRank[config.ActionBlock]
 	}
 	if rb > ra {
 		return b
@@ -451,7 +451,7 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 			Name:        "Destructive File Delete",
 			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$`,
 			ArgPattern:  `(?i)\brm\s+(--\s+)?(-[a-z]*[rf]\b|--(?:recursive|force)\b)`,
-			Action:      "block",
+			Action:      config.ActionBlock,
 		},
 		{
 			Name:        "Recursive Permission Change",
@@ -462,7 +462,7 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 			Name:        "Credential File Access",
 			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec|read_file|file_read)$`,
 			ArgPattern:  `(?i)(\.ssh/(id_|authorized)|\.aws/credentials|\.env\b|\.netrc|/etc/shadow)`,
-			Action:      "block",
+			Action:      config.ActionBlock,
 		},
 		{
 			Name:        "Network Exfiltration",
@@ -473,13 +473,13 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 			Name:        "Reverse Shell",
 			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$`,
 			ArgPattern:  `(?i)(bash\s+-i\s+>&|/dev/tcp/|mkfifo\s+|nc\s+-e|ncat\s+-e)`,
-			Action:      "block",
+			Action:      config.ActionBlock,
 		},
 		{
 			Name:        "Disk Wipe Command",
 			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$`,
 			ArgPattern:  `(?i)\b(dd\s+if=.*of=/dev/|mkfs\.|fdisk)\b`,
-			Action:      "block",
+			Action:      config.ActionBlock,
 		},
 		{
 			Name:        "Package Install",
@@ -490,13 +490,13 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 			Name:        "Destructive Git Operation",
 			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec|git)$`,
 			ArgPattern:  `(?i)(\bgit\s+)?(push\s+(--force(\s|$)|-f\b)|reset\s+--hard\b|clean\s+-fd\b)`,
-			Action:      "block",
+			Action:      config.ActionBlock,
 		},
 		{
 			Name:        "Encoded Command Execution",
 			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$`,
 			ArgPattern:  `(?i)(\beval\b.*\bbase64\b|\bbase64\s+(-d|--decode)\b.*\|\s*(ba)?sh\b)`,
-			Action:      "block",
+			Action:      config.ActionBlock,
 		},
 	}
 }

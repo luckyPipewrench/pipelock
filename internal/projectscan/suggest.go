@@ -47,7 +47,7 @@ func (s *SuggestCfg) BuildConfig() *config.Config {
 		cfg.FetchProxy.Monitoring.EntropyThreshold = 5.0
 		cfg.FetchProxy.Monitoring.MaxURLLength = 4096
 		cfg.FetchProxy.Monitoring.MaxReqPerMinute = 120
-		cfg.ResponseScanning.Action = "block" //nolint:goconst // config action value
+		cfg.ResponseScanning.Action = config.ActionBlock
 		cfg.FetchProxy.Monitoring.Blocklist = append(cfg.FetchProxy.Monitoring.Blocklist,
 			"*.webhook.site", "*.pipedream.net")
 	default:

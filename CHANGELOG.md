@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- HTTP forward proxy: standard CONNECT tunneling and absolute-URI HTTP forwarding on the same port as the fetch proxy. Set `HTTPS_PROXY=http://localhost:8888` and all agent HTTP traffic flows through the scanner pipeline. Configurable via `forward_proxy` config section with tunnel duration and idle timeout controls. Enabling forward proxy requires a process restart; it cannot be activated via hot-reload.
+- Tunnel observability: Prometheus metrics (tunnel count, bytes, duration histogram, active gauge), JSON stats, and structured audit logs for tunnel open/close events.
+
 ## [0.2.5] - 2026-02-20
 
 ### Added

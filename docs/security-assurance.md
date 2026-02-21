@@ -12,7 +12,7 @@ Pipelock protects against AI agents being tricked into harmful actions. The prim
 4. **Tool poisoning** — MCP server descriptions contain hidden instructions or change definitions mid-session to manipulate agent behavior.
 5. **Data exfiltration** — Agent sends sensitive workspace data to external endpoints through legitimate-looking requests.
 
-These map to the [OWASP Top 10 for Agentic Applications](owasp-mapping.md) and are tested against [200+ evasion techniques](../CONTRIBUTING.md).
+These map to the [OWASP Top 10 for Agentic Applications](owasp-mapping.md) and are tested against a comprehensive evasion test suite (see [README testing metrics](../README.md#testing)).
 
 ## Trust Boundaries
 
@@ -88,8 +88,8 @@ Detailed mappings to security frameworks:
 
 Security claims are verified through:
 
-- **Unit and integration tests** — 1,900+ tests, race detector enabled in CI, 96%+ statement coverage
-- **Evasion test suite** — 200+ attack techniques tested against scanners
+- **Unit and integration tests** — Comprehensive test suite with race detector enabled in CI. See [README testing metrics](../README.md#testing) for current numbers.
+- **Evasion test suite** — Encoding chains, Unicode confusables, field splitting, control characters, and other bypass techniques tested against all scanner layers
 - **Static analysis** — CodeQL (security-and-quality) and golangci-lint with gosec
 - **Dependency monitoring** — Dependabot alerts, govulncheck in CI
 - **Signed releases** — Cosign signatures, SLSA provenance attestations, CycloneDX SBOM

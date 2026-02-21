@@ -31,6 +31,16 @@ An honest feature matrix and guidance on when to use what.
 
 ## When to Use What
 
+### Use mcp-scan / Snyk agent-scan when:
+- You want a **quick static audit** of MCP server tool definitions before connecting
+- You need to **detect known-malicious tool descriptions** in a registry
+- You want **runtime MCP traffic monitoring** with PII/secrets guardrails (proxy mode)
+
+### Use Docker MCP Gateway when:
+- You're already in the **Docker ecosystem** and want native MCP server management
+- You need the **interceptor framework** (programmable middleware for MCP requests)
+- Basic secret scanning is sufficient and you want **Docker-native deployment**
+
 ### Use Pipelock when:
 - You need to **prevent credential exfiltration** from AI agents with API keys
 - You want **content inspection** (DLP, injection detection) on what agents fetch
@@ -55,6 +65,12 @@ An honest feature matrix and guidance on when to use what.
 - You need **OS-level process sandboxing** (sandbox-exec on macOS, bubblewrap on Linux)
 - You want domain-level allow/deny **without content inspection**
 - You don't need DLP, audit logging, or injection detection
+
+### Pipelock vs mcp-scan
+mcp-scan has two modes: static scanning detects tool poisoning via hash comparison ("has this tool changed?"), while proxy mode monitors MCP traffic with PII/secrets guardrails. Pipelock scans bidirectionally with pattern matching, Unicode normalization, entropy analysis, and covers HTTP fetch traffic in addition to MCP. They're complementary: mcp-scan for MCP-specific auditing and guardrails, Pipelock for deep content inspection across both HTTP and MCP.
+
+### Pipelock vs Docker MCP Gateway
+Docker MCP Gateway aggregates MCP servers and provides basic secret scanning. Pipelock provides deep content inspection (15+ DLP patterns, injection detection, entropy analysis, tool poisoning). They're complementary — Pipelock could run as a Gateway interceptor for content inspection while Gateway handles routing and Docker-native lifecycle management.
 
 ## Using Tools Together
 
@@ -98,6 +114,8 @@ Defense in depth: use tools at multiple layers. A compromised agent must bypass 
 ## Links
 
 - [Pipelock](https://github.com/luckyPipewrench/pipelock)
+- [mcp-scan / Snyk agent-scan](https://github.com/snyk/agent-scan)
+- [Docker MCP Gateway](https://github.com/docker/mcp-gateway)
 - [AIP](https://github.com/ArangoGutierrez/agent-identity-protocol)
 - [agentsh](https://github.com/canyonroad/agentsh)
 - [srt](https://github.com/anthropic-experimental/sandbox-runtime)

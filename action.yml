@@ -70,6 +70,10 @@ runs:
             | jq -r '.tag_name' | sed 's/^v//')
         fi
         VERSION="${VERSION#v}"
+        if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
+          echo "::error::Failed to resolve pipelock version from GitHub API"
+          exit 1
+        fi
 
         # Detect OS
         OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
@@ -96,8 +100,8 @@ runs:
         mkdir -p "$INSTALL_DIR"
 
         echo "Downloading pipelock v${VERSION} (${GOOS}/${GOARCH})..."
-        curl -fsSL "${BASE_URL}/${ASSET}" -o "${INSTALL_DIR}/pipelock.tar.gz"
-        curl -fsSL "${BASE_URL}/checksums.txt" -o "${INSTALL_DIR}/checksums.txt"
+        curl -fsSL --connect-timeout 10 --max-time 60 "${BASE_URL}/${ASSET}" -o "${INSTALL_DIR}/pipelock.tar.gz"
+        curl -fsSL --connect-timeout 10 --max-time 30 "${BASE_URL}/checksums.txt" -o "${INSTALL_DIR}/checksums.txt"
 
         # Verify checksum (portable: sha256sum on Linux, shasum on macOS)
         EXPECTED=$(awk -v asset="$ASSET" '$2 == asset || $NF == asset {print $1; exit}' "${INSTALL_DIR}/checksums.txt")
@@ -224,8 +228,9 @@ runs:
     - name: Test scanning coverage
       if: inputs.test-vectors == 'true'
       shell: bash
+      env:
+        CONFIG_PATH: ${{ steps.audit.outputs.config_path }}
       run: |
-        CONFIG_PATH="${{ steps.audit.outputs.config_path }}"
         if [ -n "$CONFIG_PATH" ] && [ -f "$CONFIG_PATH" ]; then
           pipelock test --config "$CONFIG_PATH" --fail-on-gap
         else
@@ -238,9 +243,8 @@ runs:
       env:
         PIPELOCK_FAIL_ON_FINDINGS: ${{ inputs.fail-on-findings }}
         BASE_REF: ${{ github.base_ref }}
+        CONFIG_PATH: ${{ steps.audit.outputs.config_path }}
       run: |
-        CONFIG_PATH="${{ steps.audit.outputs.config_path }}"
-
         SCAN_ARGS=()
         if [ -n "$CONFIG_PATH" ] && [ -f "$CONFIG_PATH" ]; then
           SCAN_ARGS+=(--config "$CONFIG_PATH")
@@ -266,14 +270,16 @@ runs:
     - name: Check results
       if: inputs.fail-on-findings == 'true'
       shell: bash
+      env:
+        AUDIT_FAILED: ${{ steps.audit.outputs.audit_failed }}
+        CRITICALS: ${{ steps.audit.outputs.critical_count }}
       run: |
         # Fail-closed: if audit itself failed, the gate fails
-        if [ "${{ steps.audit.outputs.audit_failed }}" = "true" ]; then
+        if [ "$AUDIT_FAILED" = "true" ]; then
           echo "::error::Pipelock audit failed to run. Failing because fail-on-findings is enabled (fail-closed)."
           exit 1
         fi
 
-        CRITICALS="${{ steps.audit.outputs.critical_count }}"
         if [ "${CRITICALS:-0}" -gt 0 ]; then
           echo "::error::Pipelock found ${CRITICALS} critical finding(s). See audit report for details."
           exit 1

@@ -166,7 +166,7 @@ flowchart LR
 | Prompt injection detection | Yes | Yes | No | No |
 | Workspace integrity monitoring | Yes | No | No | Partial |
 | MCP scanning (bidirectional + tool poisoning) | Yes | Yes | No | No |
-| MCP HTTP transport (Streamable HTTP) | Yes | No | No | No |
+| MCP HTTP transport (Streamable HTTP + reverse proxy) | Yes | No | No | No |
 | Single binary, zero deps | Yes | No (Python) | No (npm) | No (kernel-level enforcement) |
 | Audit logging + Prometheus | Yes | No | No | No |
 
@@ -272,6 +272,12 @@ pipelock mcp proxy --config pipelock.yaml -- npx -y @modelcontextprotocol/server
 
 # Proxy a remote MCP server (Streamable HTTP transport)
 pipelock mcp proxy --upstream http://localhost:8080/mcp
+
+# HTTP reverse proxy (MCP-to-MCP, for server deployments)
+pipelock mcp proxy --listen 0.0.0.0:8889 --upstream http://upstream:3000/mcp
+
+# Combined mode (fetch/forward proxy + MCP listener on separate ports)
+pipelock run --config pipelock.yaml --mcp-listen 0.0.0.0:8889 --mcp-upstream http://localhost:3000/mcp
 
 # Batch scan (stdin)
 mcp-server | pipelock mcp scan
@@ -424,7 +430,7 @@ Scan your project for agent security risks on every PR. No Go toolchain needed.
 
 ```yaml
 # .github/workflows/pipelock.yaml
-- uses: luckyPipewrench/pipelock@v0.2.6
+- uses: luckyPipewrench/pipelock@v0.2.7
   with:
     scan-diff: 'true'
     fail-on-findings: 'true'
@@ -435,7 +441,7 @@ The action downloads a pre-built binary, runs `pipelock audit` on your project, 
 **With a config file:**
 
 ```yaml
-- uses: luckyPipewrench/pipelock@v0.2.6
+- uses: luckyPipewrench/pipelock@v0.2.7
   with:
     config: pipelock.yaml
     test-vectors: 'true'
@@ -592,7 +598,7 @@ Canonical metrics — updated each release.
 
 | Metric | Value |
 |--------|-------|
-| Go tests (with `-race`) | 2,600+ |
+| Go tests (with `-race`) | 2,700+ |
 | Statement coverage | 96%+ |
 | Evasion techniques tested | 230+ |
 | Scanner pipeline overhead | ~25μs per URL scan |

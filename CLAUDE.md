@@ -85,7 +85,7 @@ Response scanning adds prompt injection detection on fetched content.
 
 ### MCP Proxy
 
-Wraps any MCP server with bidirectional scanning. Supports two transport modes: stdio subprocess (`-- COMMAND`) and Streamable HTTP (`--upstream URL`). Server responses are scanned for prompt injection. Client requests are scanned for DLP leaks and injection in tool arguments (configurable via `mcp_input_scanning`). Tool descriptions are scanned for poisoned instructions and tracked for rug-pull changes (configurable via `mcp_tool_scanning`). All three scanning modes auto-enable in proxy mode unless explicitly configured.
+Wraps any MCP server with bidirectional scanning. Supports three transport modes: stdio subprocess (`-- COMMAND`), Streamable HTTP stdio-to-HTTP (`--upstream URL`), and HTTP reverse proxy (`--listen ADDR --upstream URL`). The HTTP reverse proxy mode is also available via `pipelock run --mcp-listen --mcp-upstream` for combined fetch/forward + MCP deployments. Server responses are scanned for prompt injection. Client requests are scanned for DLP leaks and injection in tool arguments (configurable via `mcp_input_scanning`). Tool descriptions are scanned for poisoned instructions and tracked for rug-pull changes (configurable via `mcp_tool_scanning`). All three scanning modes auto-enable in proxy mode unless explicitly configured.
 
 ### Key Design Decisions
 

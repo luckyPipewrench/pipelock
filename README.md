@@ -12,7 +12,7 @@
 [![codecov](https://codecov.io/gh/luckyPipewrench/pipelock/graph/badge.svg)](https://codecov.io/gh/luckyPipewrench/pipelock)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
-**Open-source firewall for AI agents.** Single binary, zero runtime dependencies.
+**Open-source [agent firewall](https://pipelab.org/agent-firewall/) for AI agents.** Single binary, zero runtime dependencies.
 
 Your agent has `$ANTHROPIC_API_KEY` in its environment, plus shell access. One request is all it takes:
 
@@ -101,7 +101,7 @@ gh attestation verify oci://ghcr.io/luckypipewrench/pipelock:<version> --owner l
 
 ## How It Works
 
-Like a WAF for web apps, Pipelock sits inline between your AI agent and the internet. It uses **capability separation** -- the agent process (which has secrets) is network-restricted, while Pipelock (which has NO secrets) inspects all traffic through a 9-layer scanner pipeline.
+Pipelock is an [agent firewall](https://pipelab.org/agent-firewall/): like a WAF for web apps, it sits inline between your AI agent and the internet. It uses **capability separation** -- the agent process (which has secrets) is network-restricted, while Pipelock (which has NO secrets) inspects all traffic through a 9-layer scanner pipeline.
 
 Two proxy modes, same port:
 

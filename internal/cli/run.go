@@ -1,7 +1,10 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"os/signal"
 	"syscall"
 
@@ -10,6 +13,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
+	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -19,6 +23,8 @@ func runCmd() *cobra.Command {
 	var configFile string
 	var mode string
 	var listen string
+	var mcpListen string
+	var mcpUpstream string
 
 	cmd := &cobra.Command{
 		Use:   "run [flags]",
@@ -29,14 +35,35 @@ Supports two proxy modes on the same port:
   - Fetch proxy:   /fetch?url=... (extracts text, scans responses)
   - Forward proxy: CONNECT tunnels + absolute-URI (set HTTPS_PROXY, zero agent changes)
 
+Optionally runs an MCP HTTP listener alongside the fetch proxy. The MCP listener
+accepts JSON-RPC POST requests and proxies them to an upstream MCP server with
+bidirectional scanning (DLP, injection, tool poisoning, policy).
+
 The proxy runs until interrupted (SIGINT/SIGTERM). When started with --config,
 file changes and SIGHUP signals trigger a hot-reload of config and scanner.
 
 Examples:
   pipelock run                                       # standalone proxy
   pipelock run --config pipelock.yaml                # with config file (hot-reload)
-  pipelock run --mode strict --listen 0.0.0.0:9999   # override mode and listen address`,
+  pipelock run --mode strict --listen 0.0.0.0:9999   # override mode and listen address
+  pipelock run --mcp-listen 0.0.0.0:8889 --mcp-upstream http://mcp-server:3000/mcp`,
 		RunE: func(cmd *cobra.Command, args []string) error { //nolint:revive // args used via ArgsLenAtDash
+			// Validate MCP listener flags.
+			hasMCPListen := mcpListen != ""
+			hasMCPUpstream := mcpUpstream != ""
+			if hasMCPListen && !hasMCPUpstream {
+				return errors.New("--mcp-listen requires --mcp-upstream")
+			}
+			if hasMCPUpstream && !hasMCPListen {
+				return errors.New("--mcp-upstream requires --mcp-listen")
+			}
+			if hasMCPUpstream {
+				u, uErr := url.Parse(mcpUpstream)
+				if uErr != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+					return fmt.Errorf("invalid --mcp-upstream %q: must be http:// or https:// with a host", mcpUpstream)
+				}
+			}
+
 			// Load config
 			var cfg *config.Config
 			var err error
@@ -169,6 +196,9 @@ Examples:
 			if configFile != "" {
 				cmd.PrintErrf("  Config: %s (hot-reload enabled, SIGHUP to reload)\n", configFile)
 			}
+			if hasMCPListen {
+				cmd.PrintErrf("  MCP:    http://%s -> %s\n", mcpListen, mcpUpstream)
+			}
 
 			// Check for agent command after --
 			dashIdx := cmd.ArgsLenAtDash()
@@ -180,9 +210,75 @@ Examples:
 				cmd.PrintErrf("  PIPELOCK_FETCH_URL=http://%s/fetch\n\n", cfg.FetchProxy.Listen)
 			}
 
-			// Start the proxy (blocks until context cancelled or error)
+			// Start MCP HTTP listener in background if configured.
+			var mcpErr chan error
+			if hasMCPListen {
+				// Auto-enable MCP scanning features for listener mode.
+				if !cfg.MCPInputScanning.Enabled && cfg.MCPInputScanning.Action == "" {
+					cmd.PrintErrln("pipelock: auto-enabling MCP input scanning for listener mode")
+					cfg.MCPInputScanning.Enabled = true
+					cfg.MCPInputScanning.Action = config.ActionBlock
+				}
+				if !cfg.MCPToolScanning.Enabled && cfg.MCPToolScanning.Action == "" {
+					cmd.PrintErrln("pipelock: auto-enabling MCP tool scanning for listener mode")
+					cfg.MCPToolScanning.Enabled = true
+					cfg.MCPToolScanning.Action = config.ActionWarn
+					cfg.MCPToolScanning.DetectDrift = true
+				}
+				if !cfg.MCPToolPolicy.Enabled && cfg.MCPToolPolicy.Action == "" && len(cfg.MCPToolPolicy.Rules) == 0 {
+					cmd.PrintErrln("pipelock: auto-enabling MCP tool call policy for listener mode")
+					cfg.MCPToolPolicy.Enabled = true
+					cfg.MCPToolPolicy.Action = config.ActionWarn
+					cfg.MCPToolPolicy.Rules = mcp.DefaultToolPolicyRules()
+				}
+
+				inputCfg := &mcp.InputScanConfig{
+					Enabled:      cfg.MCPInputScanning.Enabled,
+					Action:       cfg.MCPInputScanning.Action,
+					OnParseError: cfg.MCPInputScanning.OnParseError,
+				}
+				var toolCfg *mcp.ToolScanConfig
+				if cfg.MCPToolScanning.Enabled {
+					toolCfg = &mcp.ToolScanConfig{
+						Action:      cfg.MCPToolScanning.Action,
+						DetectDrift: cfg.MCPToolScanning.DetectDrift,
+					}
+				}
+				var policyCfg *mcp.PolicyConfig
+				if cfg.MCPToolPolicy.Enabled {
+					policyCfg = mcp.NewPolicyConfig(cfg.MCPToolPolicy)
+				}
+
+				var mcpApprover *hitl.Approver
+				if sc.ResponseAction() == config.ActionAsk {
+					mcpApprover = hitl.New(cfg.ResponseScanning.AskTimeoutSeconds)
+					defer mcpApprover.Close()
+				}
+
+				// Bind MCP listener synchronously so port conflicts are caught
+				// before the fetch proxy starts. Without this, a bind failure
+				// would be silently swallowed until shutdown.
+				mcpLn, lnErr := (&net.ListenConfig{}).Listen(ctx, "tcp", mcpListen)
+				if lnErr != nil {
+					return fmt.Errorf("MCP listener bind %s: %w", mcpListen, lnErr)
+				}
+
+				mcpErr = make(chan error, 1)
+				go func() {
+					mcpErr <- mcp.RunHTTPListenerProxy(ctx, mcpLn, mcpUpstream, cmd.ErrOrStderr(), sc, mcpApprover, inputCfg, toolCfg, policyCfg)
+				}()
+			}
+
+			// Start the fetch proxy (blocks until context cancelled or error).
 			if err := p.Start(ctx); err != nil {
 				return fmt.Errorf("proxy error: %w", err)
+			}
+
+			// If MCP listener was running, check for errors.
+			if mcpErr != nil {
+				if mErr := <-mcpErr; mErr != nil {
+					cmd.PrintErrf("pipelock: MCP listener error: %v\n", mErr)
+				}
 			}
 
 			logger.LogShutdown("signal received")
@@ -194,6 +290,8 @@ Examples:
 	cmd.Flags().StringVarP(&configFile, "config", "c", "", "config file path")
 	cmd.Flags().StringVarP(&mode, "mode", "m", "balanced", "operating mode: strict, balanced, audit")
 	cmd.Flags().StringVarP(&listen, "listen", "l", "", "listen address (default 127.0.0.1:8888)")
+	cmd.Flags().StringVar(&mcpListen, "mcp-listen", "", "MCP HTTP listener address (e.g. 0.0.0.0:8889)")
+	cmd.Flags().StringVar(&mcpUpstream, "mcp-upstream", "", "upstream MCP server URL for HTTP listener")
 
 	return cmd
 }

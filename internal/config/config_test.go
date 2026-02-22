@@ -744,6 +744,70 @@ func TestApplyDefaults_ResponseScanningDisabledNoActionDefault(t *testing.T) {
 	}
 }
 
+func TestApplyDefaults_InjectsResponsePatternsWhenEmpty(t *testing.T) {
+	cfg := &Config{}
+	cfg.ResponseScanning.Enabled = true
+	cfg.ApplyDefaults()
+
+	defaults := Defaults()
+	if len(cfg.ResponseScanning.Patterns) != len(defaults.ResponseScanning.Patterns) {
+		t.Errorf("expected %d default response patterns, got %d",
+			len(defaults.ResponseScanning.Patterns), len(cfg.ResponseScanning.Patterns))
+	}
+}
+
+func TestApplyDefaults_PreservesExistingResponsePatterns(t *testing.T) {
+	cfg := &Config{}
+	cfg.ResponseScanning.Enabled = true
+	cfg.ResponseScanning.Patterns = []ResponseScanPattern{
+		{Name: "Custom", Regex: `custom-regex`},
+	}
+	cfg.ApplyDefaults()
+
+	if len(cfg.ResponseScanning.Patterns) != 1 {
+		t.Errorf("expected 1 custom pattern preserved, got %d", len(cfg.ResponseScanning.Patterns))
+	}
+	if cfg.ResponseScanning.Patterns[0].Name != "Custom" {
+		t.Errorf("expected custom pattern name, got %s", cfg.ResponseScanning.Patterns[0].Name)
+	}
+}
+
+func TestApplyDefaults_NoPatternsWhenResponseScanningDisabled(t *testing.T) {
+	cfg := &Config{}
+	cfg.ResponseScanning.Enabled = false
+	cfg.ApplyDefaults()
+
+	if len(cfg.ResponseScanning.Patterns) != 0 {
+		t.Errorf("expected no patterns when disabled, got %d", len(cfg.ResponseScanning.Patterns))
+	}
+}
+
+func TestApplyDefaults_InjectsDLPPatternsWhenEmpty(t *testing.T) {
+	cfg := &Config{}
+	cfg.ApplyDefaults()
+
+	defaults := Defaults()
+	if len(cfg.DLP.Patterns) != len(defaults.DLP.Patterns) {
+		t.Errorf("expected %d default DLP patterns, got %d",
+			len(defaults.DLP.Patterns), len(cfg.DLP.Patterns))
+	}
+}
+
+func TestApplyDefaults_PreservesExistingDLPPatterns(t *testing.T) {
+	cfg := &Config{}
+	cfg.DLP.Patterns = []DLPPattern{
+		{Name: "Custom Secret", Regex: `custom-[a-z]+`, Severity: "high"},
+	}
+	cfg.ApplyDefaults()
+
+	if len(cfg.DLP.Patterns) != 1 {
+		t.Errorf("expected 1 custom DLP pattern preserved, got %d", len(cfg.DLP.Patterns))
+	}
+	if cfg.DLP.Patterns[0].Name != "Custom Secret" {
+		t.Errorf("expected custom DLP pattern name, got %s", cfg.DLP.Patterns[0].Name)
+	}
+}
+
 // --- EnforceEnabled Tests ---
 
 func TestEnforceEnabled_NilDefaultsTrue(t *testing.T) {

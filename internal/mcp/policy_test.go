@@ -308,7 +308,7 @@ func TestParseToolCall_NullParams(t *testing.T) {
 }
 
 func TestParseToolCall_NoParams(t *testing.T) {
-	line := `{"jsonrpc":"2.0","id":1,"method":"tools/call"}`
+	line := `{"jsonrpc":"2.0","id":1,"method":"tools/call"}` //nolint:goconst // test value
 	tc := parseToolCall([]byte(line))
 	if tc != nil {
 		t.Error("expected nil for missing params")

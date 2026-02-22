@@ -14,7 +14,7 @@ func TestStdioReader_SingleMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if string(msg) != `{"jsonrpc":"2.0","id":1}` {
+	if string(msg) != `{"jsonrpc":"2.0","id":1}` { //nolint:goconst // test value
 		t.Errorf("got %q", string(msg))
 	}
 }
@@ -53,7 +53,7 @@ func TestStdioReader_SkipsEmptyLines(t *testing.T) {
 	if err != nil {
 		t.Fatalf("msg1: %v", err)
 	}
-	if string(msg1) != `{"id":1}` {
+	if string(msg1) != `{"id":1}` { //nolint:goconst // test value
 		t.Errorf("msg1 = %q", string(msg1))
 	}
 

@@ -390,7 +390,7 @@ func TestHealthcheckCmd_NoServer(t *testing.T) {
 func TestHealthcheckCmd_Healthy(t *testing.T) {
 	// Use explicit IPv4 listener to avoid IPv6 failures in sandboxed environments.
 	lc := net.ListenConfig{}
-	ln, err := lc.Listen(context.Background(), "tcp4", "127.0.0.1:0")
+	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Skipf("cannot listen on IPv4 loopback: %v", err)
 	}
@@ -707,7 +707,7 @@ func TestRunCmd_ListenFlagOverride(t *testing.T) {
 
 func TestHealthcheckCmd_Unhealthy(t *testing.T) {
 	lc := net.ListenConfig{}
-	ln, err := lc.Listen(context.Background(), "tcp4", "127.0.0.1:0")
+	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Skipf("cannot listen on IPv4 loopback: %v", err)
 	}
@@ -1585,6 +1585,203 @@ forward_proxy:
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("run did not shut down")
+	}
+}
+
+func TestRunCmd_MCPListenRequiresUpstream(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	cmd := rootCmd()
+	cmd.SetContext(ctx)
+	cmd.SetArgs([]string{"run", "--mcp-listen", "0.0.0.0:8889"})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when --mcp-listen without --mcp-upstream")
+	}
+	if !strings.Contains(err.Error(), "--mcp-listen requires --mcp-upstream") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestRunCmd_MCPUpstreamRequiresListen(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	cmd := rootCmd()
+	cmd.SetContext(ctx)
+	cmd.SetArgs([]string{"run", "--mcp-upstream", "http://localhost:3000/mcp"})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when --mcp-upstream without --mcp-listen")
+	}
+	if !strings.Contains(err.Error(), "--mcp-upstream requires --mcp-listen") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestRunCmd_MCPUpstreamInvalidURL(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	cmd := rootCmd()
+	cmd.SetContext(ctx)
+	cmd.SetArgs([]string{"run", "--mcp-listen", "0.0.0.0:8889", "--mcp-upstream", "not-a-url"})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for invalid upstream URL")
+	}
+	if !strings.Contains(err.Error(), "invalid --mcp-upstream") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestRunCmd_MCPListenInHelp(t *testing.T) {
+	cmd := rootCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{"run", "--help"})
+	_ = cmd.Execute()
+
+	output := buf.String()
+	if !strings.Contains(output, "--mcp-listen") {
+		t.Error("help should mention --mcp-listen")
+	}
+	if !strings.Contains(output, "--mcp-upstream") {
+		t.Error("help should mention --mcp-upstream")
+	}
+}
+
+func TestRunCmd_MCPListenBanner(t *testing.T) {
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fetchAddr := ln.Addr().String()
+	_ = ln.Close()
+
+	ln2, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mcpAddr := ln2.Addr().String()
+	_ = ln2.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cmd := rootCmd()
+	cmd.SetContext(ctx)
+	cmd.SetArgs([]string{
+		"run",
+		"--listen", fetchAddr,
+		"--mcp-listen", mcpAddr,
+		"--mcp-upstream", "http://localhost:19999",
+	})
+	cmd.SetOut(io.Discard)
+	var errBuf bytes.Buffer
+	cmd.SetErr(&errBuf)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- cmd.Execute()
+	}()
+
+	// Wait for fetch proxy health.
+	client := &http.Client{Timeout: time.Second}
+	healthURL := "http://" + fetchAddr + "/health"
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case cmdErr := <-errCh:
+			cancel()
+			t.Fatalf("run exited early: %v", cmdErr)
+		default:
+		}
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+		resp, rerr := client.Do(req) //nolint:gosec // test-only
+		if rerr == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// Verify MCP listener health endpoint.
+	mcpHealthURL := "http://" + mcpAddr + "/health"
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, mcpHealthURL, nil)
+	resp, err := client.Do(req) //nolint:gosec // test-only
+	if err != nil {
+		cancel()
+		t.Fatalf("MCP health request failed: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("MCP health status = %d, want 200", resp.StatusCode)
+	}
+
+	// Verify banner mentions MCP.
+	banner := errBuf.String()
+	if !strings.Contains(banner, "MCP:") {
+		t.Errorf("banner should mention MCP, got: %s", banner)
+	}
+
+	cancel()
+	select {
+	case cmdErr := <-errCh:
+		if cmdErr != nil {
+			t.Errorf("unexpected error: %v", cmdErr)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("run did not shut down")
+	}
+}
+
+func TestRunCmd_MCPListenStartupFailure(t *testing.T) {
+	// Occupy a port, then start pipelock run with --mcp-listen on the same port.
+	// The run command should fail immediately with a bind error instead of
+	// silently running the fetch proxy without MCP protection.
+	lc := net.ListenConfig{}
+	blocker, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer blocker.Close() //nolint:errcheck // test
+	occupiedPort := blocker.Addr().String()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cmd := rootCmd()
+	cmd.SetContext(ctx)
+	cmd.SetArgs([]string{
+		"run",
+		"--listen", "127.0.0.1:0",
+		"--mcp-listen", occupiedPort,
+		"--mcp-upstream", "http://localhost:19999",
+	})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+
+	cmdErr := cmd.Execute()
+	if cmdErr == nil {
+		cancel()
+		t.Fatal("expected bind error, but run succeeded")
+	}
+	if !strings.Contains(cmdErr.Error(), "MCP listener bind") {
+		t.Errorf("expected 'MCP listener bind' error, got: %v", cmdErr)
 	}
 }
 

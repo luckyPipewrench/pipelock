@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"runtime"
@@ -715,6 +716,69 @@ func TestMcpProxyCmd_EnvValueWithEquals(t *testing.T) {
 	err := cmd.Execute()
 	if err != nil {
 		t.Fatalf("unexpected error with embedded = in value: %v", err)
+	}
+}
+
+func TestMcpProxyCmd_ListenInHelp(t *testing.T) {
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"mcp", "proxy", "--help"})
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	_ = cmd.Execute()
+	if !strings.Contains(buf.String(), "--listen") {
+		t.Error("help should mention --listen flag")
+	}
+}
+
+func TestMcpProxyCmd_ListenRequiresUpstream(t *testing.T) {
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"mcp", "proxy", "--listen", "0.0.0.0:8889"})
+	cmd.SetIn(bytes.NewReader(nil))
+	cmd.SetOut(&strings.Builder{})
+	cmd.SetErr(&strings.Builder{})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when --listen is used without --upstream")
+	}
+	if !strings.Contains(err.Error(), "--listen requires --upstream") {
+		t.Errorf("expected '--listen requires --upstream' error, got: %v", err)
+	}
+}
+
+func TestMcpProxyCmd_ListenRejectsSubprocess(t *testing.T) {
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"mcp", "proxy", "--listen", "0.0.0.0:8889", "--", "echo", "test"})
+	cmd.SetIn(bytes.NewReader(nil))
+	cmd.SetOut(&strings.Builder{})
+	cmd.SetErr(&strings.Builder{})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when --listen and subprocess are both specified")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("expected 'mutually exclusive' error, got: %v", err)
+	}
+}
+
+func TestMcpProxyCmd_ListenIgnoresEnvFlag(t *testing.T) {
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"mcp", "proxy", "--listen", "0.0.0.0:8889", "--upstream", "http://localhost:3000/mcp", "--env", "FOO=bar"})
+	cmd.SetIn(bytes.NewReader(nil))
+	cmd.SetOut(&strings.Builder{})
+	errBuf := &strings.Builder{}
+	cmd.SetErr(errBuf)
+
+	// Cancel context immediately so the listener shuts down.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cmd.SetContext(ctx)
+
+	_ = cmd.Execute()
+	if !strings.Contains(errBuf.String(), "--env is ignored") {
+		t.Errorf("expected --env ignored warning, got stderr: %s", errBuf.String())
 	}
 }
 

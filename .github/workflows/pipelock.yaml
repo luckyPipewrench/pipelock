@@ -12,12 +12,12 @@ jobs:
   security-scan:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
 
       - name: Pipelock Scan
-        uses: luckyPipewrench/pipelock@v0.2.6
+        uses: luckyPipewrench/pipelock@ca2fe17d25afd5e1251007660eaea2a0eab4ce60 # v0.2.6
         with:
           scan-diff: 'true'
           fail-on-findings: 'true'

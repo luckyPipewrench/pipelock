@@ -361,7 +361,7 @@ func TestRunHTTPProxy_ToolPoisoningDetection(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
-	cfg.ResponseScanning.Action = "warn" // General is warn, but tool scanning is block.
+	cfg.ResponseScanning.Action = "warn" //nolint:goconst // test value
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 

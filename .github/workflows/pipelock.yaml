@@ -1,0 +1,23 @@
+# Dogfood: run Pipelock's own security scan on every PR
+name: Pipelock Security Scan
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Pipelock Scan
+        uses: luckyPipewrench/pipelock@v0.2.6
+        with:
+          scan-diff: 'true'
+          fail-on-findings: 'true'

@@ -7,7 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.2.6] - 2026-02-24
+## [0.2.7] - 2026-02-22
+
+### Added
+- MCP HTTP reverse proxy: `--mcp-listen` + `--mcp-upstream` flags on `pipelock run` create an HTTP-to-HTTP scanning proxy with bidirectional JSON-RPC 2.0 validation, Authorization header DLP scanning, and fail-closed parse error handling (PR #127)
+- MCP standalone HTTP listener: `pipelock mcp proxy --listen :8889 --upstream http://host/mcp` for deployments that only need MCP scanning without the fetch/forward proxy (PR #127)
+- JSON-RPC 2.0 structural validation on HTTP listener: rejects non-string method types, wrong/missing jsonrpc version, and missing method field with proper -32600 error codes; batch requests pass through to per-element scanning (PR #127)
+- CI dogfooding: Pipelock's own GitHub Action runs on every PR, scanning diffs for exposed credentials and injection patterns (PR #126)
+
+### Fixed
+- Release workflow: semver-only tag filter (`v*.*.*`) prevents floating tags like `v1` from triggering spurious GoReleaser releases (PR #126)
+- Auto-move `v1` floating tag after each semver release so the GitHub Action always resolves to the latest version (PR #126)
+
+### Changed
+- MCP auto-enable default: `mcp_input_scanning.action` changed from `warn` to `block` when auto-enabled in proxy mode, preventing credential forwarding in balanced configs (PR #127)
+- Default response scanning and DLP patterns auto-populated when MCP listener enables scanning on an unconfigured section (PR #127)
+
+## [0.2.6] - 2026-02-21
 
 ### Added
 - HTTP forward proxy: standard CONNECT tunneling and absolute-URI HTTP forwarding on the same port as the fetch proxy. Set `HTTPS_PROXY=http://localhost:8888` and all agent HTTP traffic flows through the scanner pipeline. Configurable tunnel duration and idle timeout controls (PR #123)

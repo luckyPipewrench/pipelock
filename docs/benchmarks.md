@@ -4,7 +4,7 @@
 
 Benchmarks measure the scanner pipeline only, not network I/O. This isolates Pipelock's overhead from the external fetch latency.
 
-Configuration used for these benchmarks (v0.2.6, balanced defaults):
+Configuration used for these benchmarks (v0.2.7, balanced defaults):
 - SSRF protection disabled (no DNS lookups)
 - Rate limiting disabled (no time-dependent state)
 - Response scanning: 20 prompt injection patterns

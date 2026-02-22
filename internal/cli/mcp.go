@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"os/signal"
@@ -87,6 +88,7 @@ Examples:
 func mcpProxyCmd() *cobra.Command {
 	var configFile string
 	var upstreamURL string
+	var listenAddr string
 	var envVars []string
 
 	cmd := &cobra.Command{
@@ -108,9 +110,13 @@ Subprocess (stdio) mode:
   pipelock mcp proxy -- npx @modelcontextprotocol/server-filesystem /tmp
   pipelock mcp proxy --config pipelock.yaml -- python my_server.py
 
-HTTP transport mode:
+HTTP transport mode (stdio client, HTTP upstream):
   pipelock mcp proxy --upstream http://localhost:8080/mcp
   pipelock mcp proxy --upstream https://mcp.example.com/v1 --config pipelock.yaml
+
+HTTP reverse proxy mode (HTTP listener, HTTP upstream):
+  pipelock mcp proxy --listen 0.0.0.0:8889 --upstream http://localhost:3000/mcp
+  pipelock mcp proxy --listen :8889 --upstream http://web:3000/mcp --config pipelock.yaml
 
 Claude Desktop config (local subprocess):
   {
@@ -142,10 +148,17 @@ Environment passthrough (subprocess mode only):
 			dashIdx := cmd.ArgsLenAtDash()
 			hasSubprocess := dashIdx >= 0 && dashIdx < len(args)
 			hasUpstream := upstreamURL != ""
+			hasListen := listenAddr != ""
 
 			// Mutual exclusion validation.
 			if hasUpstream && hasSubprocess {
 				return errors.New("--upstream and subprocess command (--) are mutually exclusive")
+			}
+			if hasListen && hasSubprocess {
+				return errors.New("--listen and subprocess command (--) are mutually exclusive")
+			}
+			if hasListen && !hasUpstream {
+				return errors.New("--listen requires --upstream")
 			}
 			if !hasUpstream && !hasSubprocess {
 				return errors.New("specify --upstream URL or -- COMMAND [ARGS...]")
@@ -176,7 +189,7 @@ Environment passthrough (subprocess mode only):
 			if !cfg.MCPInputScanning.Enabled && cfg.MCPInputScanning.Action == "" {
 				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "pipelock: auto-enabling MCP input scanning for proxy mode")
 				cfg.MCPInputScanning.Enabled = true
-				cfg.MCPInputScanning.Action = config.ActionWarn
+				cfg.MCPInputScanning.Action = config.ActionBlock
 			}
 
 			sc := scanner.New(cfg)
@@ -236,12 +249,24 @@ Environment passthrough (subprocess mode only):
 				if len(envVars) > 0 {
 					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning: --env is ignored in HTTP transport mode (no child process)")
 				}
-				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: proxying upstream %s (response=%s, input=%s, tools=%s, policy=%s)\n",
-					upstreamURL, sc.ResponseAction(), inputCfg.Action, toolAction, policyAction)
 
 				ctx, cancel := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 				defer cancel()
 
+				// HTTP reverse proxy mode: --listen + --upstream.
+				if hasListen {
+					mcpLn, lnErr := (&net.ListenConfig{}).Listen(ctx, "tcp", listenAddr)
+					if lnErr != nil {
+						return fmt.Errorf("MCP listener bind %s: %w", listenAddr, lnErr)
+					}
+					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: MCP reverse proxy %s -> %s (response=%s, input=%s, tools=%s, policy=%s)\n",
+						listenAddr, upstreamURL, sc.ResponseAction(), inputCfg.Action, toolAction, policyAction)
+					return mcp.RunHTTPListenerProxy(ctx, mcpLn, upstreamURL, cmd.ErrOrStderr(), sc, approver, inputCfg, toolCfg, policyCfg)
+				}
+
+				// Stdio-to-HTTP mode: --upstream only.
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: proxying upstream %s (response=%s, input=%s, tools=%s, policy=%s)\n",
+					upstreamURL, sc.ResponseAction(), inputCfg.Action, toolAction, policyAction)
 				return mcp.RunHTTPProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, sc, approver, nil, inputCfg, toolCfg, policyCfg)
 			}
 
@@ -291,6 +316,7 @@ Environment passthrough (subprocess mode only):
 
 	cmd.Flags().StringVarP(&configFile, "config", "c", "", "config file path")
 	cmd.Flags().StringVar(&upstreamURL, "upstream", "", "upstream MCP server URL (Streamable HTTP transport)")
+	cmd.Flags().StringVar(&listenAddr, "listen", "", "listen address for HTTP reverse proxy mode (e.g. 0.0.0.0:8889)")
 	cmd.Flags().StringArrayVar(&envVars, "env", nil, "pass environment variable to child process (KEY or KEY=VALUE, repeatable)")
 	return cmd
 }

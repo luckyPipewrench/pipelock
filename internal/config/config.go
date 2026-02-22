@@ -240,6 +240,14 @@ func (c *Config) ApplyDefaults() {
 	if c.ResponseScanning.Action == "ask" && c.ResponseScanning.AskTimeoutSeconds <= 0 { //nolint:goconst // config action value
 		c.ResponseScanning.AskTimeoutSeconds = 30
 	}
+	// Inject default patterns when scanning is enabled but no patterns are configured.
+	// Without this, enabled: true with an empty patterns list silently disables detection.
+	if c.ResponseScanning.Enabled && len(c.ResponseScanning.Patterns) == 0 {
+		c.ResponseScanning.Patterns = Defaults().ResponseScanning.Patterns
+	}
+	if len(c.DLP.Patterns) == 0 {
+		c.DLP.Patterns = Defaults().DLP.Patterns
+	}
 	// Always default OnParseError (fail-closed) regardless of enabled state,
 	// since validation checks it unconditionally.
 	if c.MCPInputScanning.OnParseError == "" {

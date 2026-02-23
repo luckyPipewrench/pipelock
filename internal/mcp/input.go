@@ -126,8 +126,19 @@ func ScanRequest(line []byte, sc *scanner.Scanner, action, onParseError string) 
 		}
 
 		// Run injection patterns on the full raw text (injection patterns
-		// match phrases, not encoded blobs — full text is appropriate).
+		// match phrases, not encoded blobs -- full text is appropriate).
 		injResult := sc.ScanResponse(raw)
+
+		// Also scan each extracted string individually for encoded injection
+		// (e.g. base64-encoded phrases) that don't decode in the full blob.
+		if injResult.Clean {
+			for _, s := range strs {
+				if r := sc.ScanResponse(s); !r.Clean {
+					injResult = r
+					break
+				}
+			}
+		}
 
 		if dlpResult.Clean && injResult.Clean {
 			return InputVerdict{ID: rpc.ID, Method: rpc.Method, Clean: true}
@@ -187,7 +198,20 @@ func ScanRequest(line []byte, sc *scanner.Scanner, action, onParseError string) 
 	}
 
 	// Run injection patterns (reuses response scanning patterns).
+	// First scan joined text for injection phrases that span fields.
 	injResult := sc.ScanResponse(joined)
+
+	// Also scan each extracted string individually for injection. Catches
+	// encoded injection (e.g. base64) in a single field that doesn't decode
+	// cleanly when concatenated with other fields.
+	if injResult.Clean {
+		for _, s := range strs {
+			if r := sc.ScanResponse(s); !r.Clean {
+				injResult = r
+				break
+			}
+		}
+	}
 
 	var dlpMatches []scanner.TextDLPMatch
 	var injMatches []scanner.ResponseMatch
@@ -245,6 +269,17 @@ func scanRawBeforeForward(raw []byte, sc *scanner.Scanner, action string) InputV
 	}
 
 	injResult := sc.ScanResponse(text)
+
+	// Also scan each extracted string individually for encoded injection
+	// (e.g. base64-encoded phrases) that don't decode in the full blob.
+	if injResult.Clean {
+		for _, s := range strs {
+			if r := sc.ScanResponse(s); !r.Clean {
+				injResult = r
+				break
+			}
+		}
+	}
 
 	var dlpMatches []scanner.TextDLPMatch
 	var injMatches []scanner.ResponseMatch

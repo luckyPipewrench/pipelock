@@ -91,6 +91,14 @@ func (s *Scanner) ScanTextForDLP(text string) TextDLPResult {
 		matches = append(matches, s.matchDLPPatterns(string(decoded), "base32")...)
 	}
 
+	// Segment-level encoding detection: split text on URL/path delimiters and
+	// try decoding each segment individually. Catches encoded secrets embedded
+	// in URLs within MCP tool arguments (e.g., "https://evil.com/<hex-key>/data")
+	// where whole-string decode fails because the text isn't pure hex/base64.
+	if len(matches) == 0 {
+		matches = append(matches, s.decodeTextSegments(cleaned)...)
+	}
+
 	// Check for env secret leaks (raw + encoded forms).
 	matches = append(matches, s.checkSecretsInText(s.envSecrets, cleaned, "Environment Variable Leak", "env")...)
 
@@ -169,4 +177,29 @@ func deduplicateMatches(matches []TextDLPMatch) []TextDLPMatch {
 		}
 	}
 	return result
+}
+
+// decodeTextSegments splits text on common URL/path delimiters and tries
+// hex/base64/base32 decoding on each segment. Catches encoded secrets
+// embedded in URLs (e.g., "https://evil.com/<hex-encoded-key>/data") where
+// whole-string decode fails because the surrounding text isn't valid encoding.
+func (s *Scanner) decodeTextSegments(text string) []TextDLPMatch {
+	// Split on URL-like delimiters: /, ?, &, =, space, newline.
+	segments := strings.FieldsFunc(text, func(r rune) bool {
+		return r == '/' || r == '?' || r == '&' || r == '=' || r == ' ' || r == '\n' || r == '\t'
+	})
+
+	var matches []TextDLPMatch
+	for _, seg := range segments {
+		if len(seg) < 10 {
+			continue // too short to be a meaningful encoded secret
+		}
+		for _, d := range decodeEncodings(seg) {
+			if m := s.matchDLPPatterns(d.text, d.encoding); len(m) > 0 {
+				matches = append(matches, m...)
+				return matches // short-circuit on first match
+			}
+		}
+	}
+	return matches
 }

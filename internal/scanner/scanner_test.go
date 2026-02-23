@@ -1689,7 +1689,7 @@ func TestScan_DLP_HexEncodedAPIKeyInQuery(t *testing.T) {
 	s := New(cfg)
 	defer s.Close()
 
-	// hex("sk-ant-abcdefghijklmnopqrstuvwxyz") — build at runtime
+	// hex(prefix + suffix) — build at runtime
 	prefix := "sk-ant-"
 	suffix := "abcdefghijklmnopqrstuvwxyz" //nolint:goconst // test value
 	hexEncoded := hex.EncodeToString([]byte(prefix + suffix))
@@ -1707,7 +1707,7 @@ func TestScan_DLP_Base64EncodedAPIKeyInQuery(t *testing.T) {
 	s := New(cfg)
 	defer s.Close()
 
-	// base64("sk-ant-abcdefghijklmnopqrstuvwxyz") — build at runtime
+	// base64(prefix + suffix) — build at runtime
 	prefix := "sk-ant-"
 	suffix := "abcdefghijklmnopqrstuvwxyz" //nolint:goconst // test value
 	b64Encoded := base64.StdEncoding.EncodeToString([]byte(prefix + suffix))
@@ -1752,7 +1752,7 @@ func TestScan_DLP_HexEncodedAPIKeyInPath(t *testing.T) {
 	s := New(cfg)
 	defer s.Close()
 
-	// hex("sk-ant-abcdefghijklmnopqrstuvwxyz") embedded in path segment
+	// hex(prefix + suffix) embedded in path segment
 	prefix := "sk-ant-"
 	suffix := "abcdefghijklmnopqrstuvwxyz" //nolint:goconst // test value
 	hexEncoded := hex.EncodeToString([]byte(prefix + suffix))
@@ -1770,7 +1770,7 @@ func TestScan_DLP_Base64EncodedAPIKeyInPath(t *testing.T) {
 	s := New(cfg)
 	defer s.Close()
 
-	// base64("sk-ant-abcdefghijklmnopqrstuvwxyz") embedded in path segment
+	// base64(prefix + suffix) embedded in path segment
 	prefix := "sk-ant-"
 	suffix := "abcdefghijklmnopqrstuvwxyz" //nolint:goconst // test value
 	b64Encoded := base64.RawURLEncoding.EncodeToString([]byte(prefix + suffix))

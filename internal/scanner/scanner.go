@@ -471,14 +471,14 @@ type decodedResult struct {
 func decodeEncodings(s string) []decodedResult {
 	var out []decodedResult
 	if decoded, err := hex.DecodeString(s); err == nil && len(decoded) > 0 {
-		out = append(out, decodedResult{string(decoded), "hex"})
+		out = append(out, decodedResult{string(decoded), "hex"}) //nolint:goconst // encoding label
 	}
 	for _, enc := range []*base64.Encoding{
 		base64.StdEncoding, base64.URLEncoding,
 		base64.RawStdEncoding, base64.RawURLEncoding,
 	} {
 		if decoded, err := enc.DecodeString(s); err == nil && len(decoded) > 0 {
-			out = append(out, decodedResult{string(decoded), "base64"})
+			out = append(out, decodedResult{string(decoded), "base64"}) //nolint:goconst // encoding label
 		}
 	}
 	if decoded, err := base32.StdEncoding.DecodeString(s); err == nil && len(decoded) > 0 {

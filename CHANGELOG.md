@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.8] - 2026-02-23
+
+### Fixed
+- Close 9 scanner evasion bypasses found during red team testing: hex/base64-encoded secrets in URL query params and path segments, vowel-fold flag corruption on `(?im)` patterns, strip mode fail-open when detection came from non-redactable passes, and missing normalization passes on decoded response content (PR #135)
+- Close 3 DLP evasion bypasses in query parameter scanning: iterative URL-decode, noise-stripped values, and dot-collapsed subdomain splits now applied to individual query keys and values (PR #134)
+
+### Changed
+- Encoding attribution: segment-level DLP matches now carry correct encoding labels (hex, base64, base32) instead of always reporting "hex"
+- Response scanning decoded-content path runs all normalization passes (primary, opt-space, vowel-fold), closing a gap where base64/hex-encoded vowel-substituted injection could bypass detection
+- Logo tagline updated to "Agent Firewall"
+
 ## [0.2.7] - 2026-02-22
 
 ### Added

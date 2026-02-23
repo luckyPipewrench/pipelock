@@ -1,0 +1,116 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" fill="none">
+  <defs>
+    <linearGradient id="bg-grad" x1="0" y1="0" x2="1280" y2="640" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0a0a14"/>
+      <stop offset="50%" stop-color="#0f0f1e"/>
+      <stop offset="100%" stop-color="#0a0a14"/>
+    </linearGradient>
+    <linearGradient id="shackle-grad" x1="0" y1="0" x2="0" y2="1" gradientUnits="objectBoundingBox">
+      <stop offset="0%" stop-color="#00ffc8"/>
+      <stop offset="100%" stop-color="#00b894"/>
+    </linearGradient>
+    <linearGradient id="body-grad" x1="0" y1="0" x2="0" y2="1" gradientUnits="objectBoundingBox">
+      <stop offset="0%" stop-color="#1a1a2e"/>
+      <stop offset="100%" stop-color="#0f0f1a"/>
+    </linearGradient>
+    <linearGradient id="line-fade" x1="0" y1="0" x2="1" y2="0" gradientUnits="objectBoundingBox">
+      <stop offset="0%" stop-color="#00ffc8" stop-opacity="0"/>
+      <stop offset="30%" stop-color="#00ffc8" stop-opacity="0.15"/>
+      <stop offset="70%" stop-color="#00ffc8" stop-opacity="0.15"/>
+      <stop offset="100%" stop-color="#00ffc8" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="5" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="glow-soft">
+      <feGaussianBlur stdDeviation="2.5" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="glow-wide">
+      <feGaussianBlur stdDeviation="20" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#00ffc8" stroke-width="0.3" opacity="0.06"/>
+    </pattern>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1280" height="640" fill="url(#bg-grad)"/>
+
+  <!-- Subtle grid overlay -->
+  <rect width="1280" height="640" fill="url(#grid)"/>
+
+  <!-- Ambient glow behind padlock -->
+  <circle cx="320" cy="300" r="180" fill="#00ffc8" opacity="0.03" filter="url(#glow-wide)"/>
+
+  <!-- Horizontal accent line -->
+  <rect x="0" y="438" width="1280" height="1" fill="url(#line-fade)"/>
+
+  <!-- === Padlock (scaled, centered at x=320 y=280) === -->
+  <g transform="translate(320, 280) scale(0.65)">
+    <!-- Shackle -->
+    <path d="M-70 0 L-70 -70 C-70 -115 -40 -140 0 -140 C40 -140 70 -115 70 -70 L70 0"
+          stroke="url(#shackle-grad)" stroke-width="28" stroke-linecap="round" fill="none" filter="url(#glow)"/>
+
+    <!-- Pipe joints -->
+    <rect x="-86" y="-15" width="32" height="16" rx="3" fill="#00ffc8" opacity="0.7"/>
+    <rect x="54" y="-15" width="32" height="16" rx="3" fill="#00ffc8" opacity="0.7"/>
+
+    <!-- Lock body -->
+    <rect x="-110" y="0" width="220" height="160" rx="16" fill="url(#body-grad)"
+          stroke="#00ffc8" stroke-width="2.5" filter="url(#glow)"/>
+
+    <!-- Inner border -->
+    <rect x="-100" y="10" width="200" height="140" rx="10" fill="none"
+          stroke="#00ffc8" stroke-width="0.5" opacity="0.2"/>
+
+    <!-- Keyhole -->
+    <circle cx="0" cy="68" r="18" fill="#00ffc8" opacity="0.9" filter="url(#glow)"/>
+    <circle cx="0" cy="68" r="10" fill="#0f0f1a"/>
+    <rect x="-4" y="76" width="8" height="24" rx="3" fill="#00ffc8" opacity="0.9"/>
+    <rect x="-4" y="76" width="8" height="24" rx="3" fill="#0f0f1a" opacity="0.4"/>
+
+    <!-- Pipe threads -->
+    <line x1="-105" y1="30" x2="-105" y2="35" stroke="#00ffc8" stroke-width="1" opacity="0.3"/>
+    <line x1="-105" y1="42" x2="-105" y2="47" stroke="#00ffc8" stroke-width="1" opacity="0.3"/>
+    <line x1="-105" y1="54" x2="-105" y2="59" stroke="#00ffc8" stroke-width="1" opacity="0.3"/>
+    <line x1="105" y1="30" x2="105" y2="35" stroke="#00ffc8" stroke-width="1" opacity="0.3"/>
+    <line x1="105" y1="42" x2="105" y2="47" stroke="#00ffc8" stroke-width="1" opacity="0.3"/>
+    <line x1="105" y1="54" x2="105" y2="59" stroke="#00ffc8" stroke-width="1" opacity="0.3"/>
+  </g>
+
+  <!-- === Typography (right side) === -->
+
+  <!-- Product name -->
+  <text x="580" y="275" font-family="'JetBrains Mono', 'Fira Code', 'SF Mono', 'Courier New', monospace"
+        font-size="72" font-weight="700" letter-spacing="8" fill="#00ffc8" filter="url(#glow-soft)">PIPELOCK</text>
+
+  <!-- Category claim - the term we're coining -->
+  <text x="583" y="320" font-family="'Inter', 'Helvetica Neue', 'Segoe UI', sans-serif"
+        font-size="22" font-weight="500" letter-spacing="6" fill="#94a3b8">AGENT FIREWALL</text>
+
+  <!-- Value props below the line -->
+  <text x="583" y="478" font-family="'Inter', 'Helvetica Neue', 'Segoe UI', sans-serif"
+        font-size="15" font-weight="400" letter-spacing="1.5" fill="#475569">Open Source</text>
+  <circle cx="695" cy="474" r="2" fill="#00ffc8" opacity="0.5"/>
+  <text x="712" y="478" font-family="'Inter', 'Helvetica Neue', 'Segoe UI', sans-serif"
+        font-size="15" font-weight="400" letter-spacing="1.5" fill="#475569">Zero Dependencies</text>
+  <circle cx="890" cy="474" r="2" fill="#00ffc8" opacity="0.5"/>
+  <text x="907" y="478" font-family="'Inter', 'Helvetica Neue', 'Segoe UI', sans-serif"
+        font-size="15" font-weight="400" letter-spacing="1.5" fill="#475569">Fail-Closed</text>
+
+  <!-- Thin top and bottom border accents -->
+  <rect x="0" y="0" width="1280" height="2" fill="#00ffc8" opacity="0.08"/>
+  <rect x="0" y="638" width="1280" height="2" fill="#00ffc8" opacity="0.08"/>
+</svg>

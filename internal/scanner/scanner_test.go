@@ -1795,6 +1795,9 @@ func TestScan_DLP_HexEncodedAWSKeyInPath(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected hex-encoded AWS key in URL path to be blocked")
 	}
+	if result.Scanner != "dlp" {
+		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	}
 }
 
 func TestScan_DLP_EncodedPathNoFalsePositives(t *testing.T) {

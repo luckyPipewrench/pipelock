@@ -42,7 +42,7 @@ No single control is assumed to be sufficient. The scanner pipeline applies 9 la
 |-------|-----------------|
 | Scheme enforcement | Non-HTTP protocol abuse |
 | Domain blocklist/allowlist | Known-bad destinations, scope control |
-| DLP pattern matching | Credential leakage (15+ patterns, encoding-aware) |
+| DLP pattern matching | Credential leakage (16 patterns, encoding-aware) |
 | Path entropy analysis | Exfiltration via high-entropy URL segments |
 | Subdomain entropy analysis | DNS-based exfiltration |
 | SSRF protection | Private network access, DNS rebinding |

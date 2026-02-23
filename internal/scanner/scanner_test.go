@@ -1502,6 +1502,174 @@ func TestScan_DLP_StripeTestKey(t *testing.T) {
 	}
 }
 
+// --- DLP evasion fixes (dot-separated, short key, credential-in-URL) ---
+
+func TestScan_DLP_QueryValueDotSeparatedBypass(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// Dot-separated key in a query parameter value. Before the fix,
+	// stripURLNoise only ran on paths, not individual query values.
+	prefix := "s.k.-.a.n.t.-." //nolint:goconst // test value
+	suffix := "A.B.C.D.E.F.G.H.I.J"
+	result := s.Scan("https://example.com/api?data=" + prefix + suffix)
+	if result.Allowed {
+		t.Error("expected DLP to catch dot-separated key in query value")
+	}
+}
+
+func TestScan_DLP_QueryKeyDotSeparatedBypass(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// Dot-separated key stuffed into a query parameter NAME, not value.
+	prefix := "s.k.-.a.n.t.-." //nolint:goconst // test value
+	suffix := "A.B.C.D.E.F.G.H.I.J"
+	result := s.Scan("https://example.com/api?" + prefix + suffix + "=1")
+	if result.Allowed {
+		t.Error("expected DLP to catch dot-separated key in query key")
+	}
+}
+
+func TestScan_DLP_ShortAnthropicKey(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// Key with 10-char suffix (previously needed 20+). The sk-ant- prefix
+	// is distinctive enough that partial fragments should still be caught.
+	key := "sk-ant-" + "ABCDEFGHIJ"
+	result := s.Scan("https://example.com/api?key=" + key)
+	if result.Allowed {
+		t.Error("expected DLP to catch short Anthropic key prefix")
+	}
+}
+
+func TestScan_DLP_ShortOpenAIKey(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	key := "sk-proj-" + "ABCDEFGHIJ"
+	result := s.Scan("https://example.com/api?key=" + key)
+	if result.Allowed {
+		t.Error("expected DLP to catch short OpenAI key prefix")
+	}
+}
+
+func TestScan_DLP_VeryShortKeyNoFP(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// Sample/test values under {10,} suffix threshold should not trigger.
+	key := "sk-ant-" + "foobar"
+	result := s.Scan("https://example.com/api?note=" + key)
+	if !result.Allowed {
+		t.Errorf("false positive on sample key value: %s", result.Reason)
+	}
+}
+
+func TestScan_DLP_CredentialInURL_Password(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	result := s.Scan("https://example.com/api?password=mysecret123")
+	if result.Allowed {
+		t.Error("expected DLP to catch password= in URL")
+	}
+}
+
+func TestScan_DLP_CredentialInURL_Token(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	val := "abc123" + "def456" //nolint:goconst // test value, runtime construction avoids gitleaks
+	result := s.Scan("https://example.com/webhook?token=" + val)
+	if result.Allowed {
+		t.Error("expected DLP to catch token= in URL")
+	}
+}
+
+func TestScan_DLP_CredentialInURL_ApiKey(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	result := s.Scan("https://example.com/v1?apikey=secretvalue123")
+	if result.Allowed {
+		t.Error("expected DLP to catch apikey= in URL")
+	}
+}
+
+func TestScan_DLP_CredentialInURL_Secret(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	result := s.Scan("https://example.com/db?secret=hunter2abc")
+	if result.Allowed {
+		t.Error("expected DLP to catch secret= in URL")
+	}
+}
+
+func TestScan_DLP_CredentialInURL_ShortValueNoFP(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// Values under 4 chars should NOT trigger (avoids "token=yes", "password=no").
+	result := s.Scan("https://example.com/api?token=yes")
+	if !result.Allowed {
+		t.Errorf("false positive on short credential value: %s", result.Reason)
+	}
+}
+
+func TestScan_DLP_CredentialInURL_WordBoundaryNoFP(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// Compound param names containing "token", "secret", etc. as a SUBSTRING
+	// should NOT trigger due to \b word boundary anchor.
+	fps := []struct {
+		name string
+		url  string
+	}{
+		{"next_token", "https://example.com/api?next_token=" + "abcd1234" + "efgh"}, //nolint:goconst // runtime construction avoids gitleaks
+		{"page_token", "https://example.com/list?page_token=cursor12345"},
+		{"csrf_token_id", "https://example.com/form?csrf_token_id=abc1234def"},
+		{"auth_token_type", "https://example.com/oauth?auth_token_type=bearer123"},
+		{"access_token_expiry", "https://example.com/auth?access_token_expiry=3600secs"},
+		{"client_secret_hash", "https://example.com/app?client_secret_hash=sha256abcd"},
+	}
+
+	for _, fp := range fps {
+		t.Run(fp.name, func(t *testing.T) {
+			result := s.Scan(fp.url)
+			if !result.Allowed {
+				t.Errorf("false positive on %s: %s", fp.name, result.Reason)
+			}
+		})
+	}
+}
+
+func TestScan_DLP_CredentialInURL_InPath(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// Credential pattern embedded in path, not just query params.
+	result := s.Scan("https://example.com/connect?password=verysecretpassword&host=db.internal")
+	if result.Allowed {
+		t.Error("expected DLP to catch password= in connection string URL")
+	}
+}
+
 // --- Env leak encoding tests ---
 
 func TestScan_EnvLeak_HexEncoded(t *testing.T) {

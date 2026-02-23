@@ -667,6 +667,42 @@ func TestScanTextForDLP_LatinSmallCapBypass(t *testing.T) {
 	}
 }
 
+// --- DLP evasion fixes (short key, credential-in-URL) ---
+
+func TestScanTextForDLP_ShortAnthropicKey(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	key := "sk-ant-" + "ABCDEFGHIJ"
+	result := s.ScanTextForDLP(key)
+	if result.Clean {
+		t.Error("expected text DLP to catch short Anthropic key prefix")
+	}
+}
+
+func TestScanTextForDLP_CredentialInURL(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	result := s.ScanTextForDLP("connect to postgres://user:pass@host/db?password=supersecret123")
+	if result.Clean {
+		t.Error("expected text DLP to catch password= in connection string")
+	}
+}
+
+func TestScanTextForDLP_CredentialInURL_ShortValueClean(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	result := s.ScanTextForDLP("set token=yes in the config")
+	if !result.Clean {
+		t.Errorf("false positive on short credential value in text: %v", result.Matches)
+	}
+}
+
 // --- File Secret Text DLP Tests ---
 
 func TestScanTextForDLP_FileSecretRawMatch(t *testing.T) {

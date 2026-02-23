@@ -638,8 +638,8 @@ func Defaults() *Config {
 		DLP: DLP{
 			ScanEnv: true,
 			Patterns: []DLPPattern{
-				{Name: "Anthropic API Key", Regex: `sk-ant-[a-zA-Z0-9\-_]{20,}`, Severity: "critical"},
-				{Name: "OpenAI API Key", Regex: `sk-proj-[a-zA-Z0-9]{20,}`, Severity: "critical"},
+				{Name: "Anthropic API Key", Regex: `sk-ant-[a-zA-Z0-9\-_]{10,}`, Severity: "critical"},
+				{Name: "OpenAI API Key", Regex: `sk-proj-[a-zA-Z0-9\-_]{10,}`, Severity: "critical"},
 				{Name: "GitHub Token", Regex: `gh[ps]_[A-Za-z0-9_]{36,}`, Severity: "critical"},
 				{Name: "Slack Token", Regex: `xox[bpras]-[0-9a-zA-Z-]{15,}`, Severity: "critical"},
 				{Name: "AWS Access Key", Regex: `AKIA[0-9A-Z]{16}`, Severity: "critical"},
@@ -647,12 +647,17 @@ func Defaults() *Config {
 				{Name: "Private Key Header", Regex: `-----BEGIN\s+(RSA\s+|EC\s+|DSA\s+|OPENSSH\s+)?PRIVATE\s+KEY-----`, Severity: "critical"},
 				{Name: "Social Security Number", Regex: `\b\d{3}-\d{2}-\d{4}\b`, Severity: "low"},
 				{Name: "GitHub Fine-Grained PAT", Regex: `github_pat_[a-zA-Z0-9_]{36,}`, Severity: "critical"},
-				{Name: "OpenAI Service Key", Regex: `sk-svcacct-[a-zA-Z0-9\-]{20,}`, Severity: "critical"},
+				{Name: "OpenAI Service Key", Regex: `sk-svcacct-[a-zA-Z0-9\-]{10,}`, Severity: "critical"},
 				{Name: "Stripe Key", Regex: `[sr]k_(live|test)_[a-zA-Z0-9]{20,}`, Severity: "critical"},
 				{Name: "Google OAuth Token", Regex: `ya29\.[a-zA-Z0-9_-]{20,}`, Severity: "critical"},
 				{Name: "Twilio API Key", Regex: `SK[a-f0-9]{32}`, Severity: "high"},
 				{Name: "SendGrid API Key", Regex: `SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}`, Severity: "critical"},
 				{Name: "Mailgun API Key", Regex: `key-[a-zA-Z0-9]{32}`, Severity: "high"},
+				// \b protects underscore-compound names (next_token, csrf_token_id) since _ is \w.
+				// Hyphen-compound names (show-password, x-token) are NOT protected since - is \W,
+				// so \b still fires. Accepted tradeoff: such params are rare in agent traffic.
+				// Case-insensitive matching is added automatically by scanner.New() via (?i) prefix.
+				{Name: "Credential in URL", Regex: `\b(?:password|passwd|secret|token|apikey|api_key|api-key)\s*=\s*[^\s&]{4,}`, Severity: "high"},
 			},
 		},
 		MCPInputScanning: MCPInputScanning{

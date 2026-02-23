@@ -69,10 +69,10 @@ dlp:
   scan_env: true
   patterns:
     - name: "Anthropic API Key"
-      regex: 'sk-ant-[a-zA-Z0-9\-_]{20,}'
+      regex: 'sk-ant-[a-zA-Z0-9\-_]{10,}'
       severity: critical
     - name: "OpenAI API Key"
-      regex: 'sk-proj-[a-zA-Z0-9\-_]{20,}'
+      regex: 'sk-proj-[a-zA-Z0-9\-_]{10,}'
       severity: critical
     - name: "GitHub Token"
       regex: 'gh[ps]_[A-Za-z0-9_]{36,}'
@@ -96,7 +96,7 @@ dlp:
       regex: 'github_pat_[a-zA-Z0-9_]{36,}'
       severity: critical
     - name: "OpenAI Service Key"
-      regex: 'sk-svcacct-[a-zA-Z0-9\-]{20,}'
+      regex: 'sk-svcacct-[a-zA-Z0-9\-]{10,}'
       severity: critical
     - name: "Stripe Key"
       regex: '[sr]k_(live|test)_[a-zA-Z0-9]{20,}'
@@ -112,6 +112,9 @@ dlp:
       severity: critical
     - name: "Mailgun API Key"
       regex: 'key-[a-zA-Z0-9]{32}'
+      severity: high
+    - name: "Credential in URL"
+      regex: '\b(?:password|passwd|secret|token|apikey|api_key|api-key)\s*=\s*[^\s&]{4,}'
       severity: high
 
 response_scanning:

@@ -66,7 +66,7 @@ This is separate from the [OWASP Top 10 for Agentic Applications](owasp-mapping.
 - **Capability separation** — the agent process (holds secrets, no network) and the proxy (has network, no secrets) run separately. Neither has both.
 - **Domain allowlisting** — agents can only reach explicitly allowed API endpoints.
 - **SSRF protection** — blocks requests to internal/private IP ranges with DNS rebinding prevention.
-- **DLP scanning** - 15 built-in patterns detect API keys, tokens, and credentials in outbound traffic.
+- **DLP scanning** - 16 built-in patterns detect API keys, tokens, and credentials in outbound traffic.
 - **Environment variable leak detection** — detects the proxy's own env var values (raw + base64) in URLs.
 
 **Coverage: Strong.** Multiple layers prevent credential leakage and limit agent network access.

@@ -439,10 +439,20 @@ func (s *Scanner) checkDLP(parsed *url.URL) Result {
 	}
 
 	// Also check decoded query keys and values individually.
+	// Noise-strip each value to catch dot-separated keys (e.g. "s.k.-.a.n.t.-..." → "sk-ant-...").
+	// The path gets noise-stripped below, but individual query values need it too.
 	for key, values := range parsed.Query() {
-		targets = append(targets, IterativeDecode(key))
+		decodedKey := IterativeDecode(key)
+		targets = append(targets, decodedKey)
+		if stripped := stripURLNoise(decodedKey); stripped != decodedKey {
+			targets = append(targets, stripped)
+		}
 		for _, v := range values {
-			targets = append(targets, IterativeDecode(v))
+			decoded := IterativeDecode(v)
+			targets = append(targets, decoded)
+			if stripped := stripURLNoise(decoded); stripped != decoded {
+				targets = append(targets, stripped)
+			}
 		}
 	}
 

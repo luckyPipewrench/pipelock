@@ -1658,12 +1658,12 @@ func TestScan_DLP_CredentialInURL_WordBoundaryNoFP(t *testing.T) {
 	}
 }
 
-func TestScan_DLP_CredentialInURL_InPath(t *testing.T) {
+func TestScan_DLP_CredentialInURL_InQueryString(t *testing.T) {
 	cfg := testConfig()
 	s := New(cfg)
 	defer s.Close()
 
-	// Credential pattern embedded in path, not just query params.
+	// Credential pattern in query string (connection string style URL).
 	result := s.Scan("https://example.com/connect?password=verysecretpassword&host=db.internal")
 	if result.Allowed {
 		t.Error("expected DLP to catch password= in connection string URL")

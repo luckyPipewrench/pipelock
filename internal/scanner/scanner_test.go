@@ -1559,18 +1559,6 @@ func TestScan_DLP_ShortOpenAIKey(t *testing.T) {
 	}
 }
 
-func TestScan_DLP_ShortSvcAcctKey(t *testing.T) {
-	cfg := testConfig()
-	s := New(cfg)
-	defer s.Close()
-
-	key := "sk-svcacct-" + strings.Repeat("A", 10) //nolint:goconst // test value
-	result := s.Scan("https://example.com/api?key=" + key)
-	if result.Allowed {
-		t.Error("expected DLP to catch short OpenAI service-account key prefix")
-	}
-}
-
 func TestScan_DLP_VeryShortKeyNoFP(t *testing.T) {
 	cfg := testConfig()
 	s := New(cfg)
@@ -1679,6 +1667,157 @@ func TestScan_DLP_CredentialInURL_InQueryString(t *testing.T) {
 	result := s.Scan("https://example.com/connect?password=verysecretpassword&host=db.internal")
 	if result.Allowed {
 		t.Error("expected DLP to catch password= in connection string URL")
+	}
+}
+
+func TestScan_DLP_ShortSvcAcctKey(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	key := "sk-svcacct-" + strings.Repeat("A", 10) //nolint:goconst // test value
+	result := s.Scan("https://example.com/api?key=" + key)
+	if result.Allowed {
+		t.Error("expected DLP to catch short OpenAI service-account key prefix")
+	}
+}
+
+// --- Hex/base64 encoded DLP in query params (fix #1: decodeEncodings) ---
+
+func TestScan_DLP_HexEncodedAPIKeyInQuery(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// hex("sk-ant-abcdefghijklmnopqrstuvwxyz") — build at runtime
+	prefix := "sk-ant-"
+	suffix := "abcdefghijklmnopqrstuvwxyz" //nolint:goconst // test value
+	hexEncoded := hex.EncodeToString([]byte(prefix + suffix))
+	result := s.Scan("https://example.com/api?key=" + hexEncoded)
+	if result.Allowed {
+		t.Error("expected hex-encoded API key in query param to be blocked")
+	}
+	if result.Scanner != "dlp" {
+		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	}
+}
+
+func TestScan_DLP_Base64EncodedAPIKeyInQuery(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// base64("sk-ant-abcdefghijklmnopqrstuvwxyz") — build at runtime
+	prefix := "sk-ant-"
+	suffix := "abcdefghijklmnopqrstuvwxyz" //nolint:goconst // test value
+	b64Encoded := base64.StdEncoding.EncodeToString([]byte(prefix + suffix))
+	result := s.Scan("https://example.com/api?key=" + b64Encoded)
+	if result.Allowed {
+		t.Error("expected base64-encoded API key in query param to be blocked")
+	}
+	if result.Scanner != "dlp" {
+		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	}
+}
+
+func TestScan_DLP_EncodedQueryNoFalsePositives(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// These should NOT trigger DLP when decoded
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{"hex of clean text", "https://example.com/api?data=" + hex.EncodeToString([]byte("hello world"))},
+		{"base64 of clean text", "https://example.com/api?data=" + base64.StdEncoding.EncodeToString([]byte("hello world"))},
+		{"short hex value", "https://example.com/api?color=ff00ff"},
+		{"normal query params", "https://example.com/search?q=golang+tutorial"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := s.Scan(tt.url)
+			if !result.Allowed {
+				t.Errorf("false positive on clean encoded query: %s (reason: %s)", tt.url, result.Reason)
+			}
+		})
+	}
+}
+
+// --- Hex/base64 encoded DLP in URL path segments (Rook bypass #1) ---
+
+func TestScan_DLP_HexEncodedAPIKeyInPath(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// hex("sk-ant-abcdefghijklmnopqrstuvwxyz") embedded in path segment
+	prefix := "sk-ant-"
+	suffix := "abcdefghijklmnopqrstuvwxyz" //nolint:goconst // test value
+	hexEncoded := hex.EncodeToString([]byte(prefix + suffix))
+	result := s.Scan("https://example.com/exfil/" + hexEncoded + "/data")
+	if result.Allowed {
+		t.Error("expected hex-encoded API key in URL path to be blocked")
+	}
+	if result.Scanner != "dlp" {
+		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	}
+}
+
+func TestScan_DLP_Base64EncodedAPIKeyInPath(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// base64("sk-ant-abcdefghijklmnopqrstuvwxyz") embedded in path segment
+	prefix := "sk-ant-"
+	suffix := "abcdefghijklmnopqrstuvwxyz" //nolint:goconst // test value
+	b64Encoded := base64.RawURLEncoding.EncodeToString([]byte(prefix + suffix))
+	result := s.Scan("https://example.com/exfil/" + b64Encoded)
+	if result.Allowed {
+		t.Error("expected base64-encoded API key in URL path to be blocked")
+	}
+	if result.Scanner != "dlp" {
+		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	}
+}
+
+func TestScan_DLP_HexEncodedAWSKeyInPath(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// hex-encode an AWS key in the path
+	key := "AKIA" + "IOSFODNN7EXAMPLE1" //nolint:goconst // test value
+	hexEncoded := hex.EncodeToString([]byte(key))
+	result := s.Scan("https://example.com/" + hexEncoded)
+	if result.Allowed {
+		t.Error("expected hex-encoded AWS key in URL path to be blocked")
+	}
+}
+
+func TestScan_DLP_EncodedPathNoFalsePositives(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{"hex of clean text in path", "https://example.com/" + hex.EncodeToString([]byte("hello world"))},
+		{"base64 of clean text in path", "https://example.com/" + base64.RawURLEncoding.EncodeToString([]byte("hello world"))},
+		{"short path segment", "https://example.com/abc123"},
+		{"normal path", "https://example.com/api/v1/users/profile"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := s.Scan(tt.url)
+			if !result.Allowed {
+				t.Errorf("false positive on clean encoded path: %s (reason: %s)", tt.url, result.Reason)
+			}
+		})
 	}
 }
 

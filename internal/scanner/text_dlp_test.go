@@ -365,7 +365,7 @@ func TestMatchDLPPatterns(t *testing.T) {
 	}
 
 	for _, m := range matches {
-		if m.Encoded != "hex" {
+		if m.Encoded != "hex" { //nolint:goconst // test value
 			t.Errorf("expected Encoded=%q, got %q", "hex", m.Encoded)
 		}
 	}
@@ -681,18 +681,6 @@ func TestScanTextForDLP_ShortAnthropicKey(t *testing.T) {
 	}
 }
 
-func TestScanTextForDLP_ShortSvcAcctKey(t *testing.T) {
-	cfg := testConfig()
-	s := New(cfg)
-	defer s.Close()
-
-	key := "sk-svcacct-" + strings.Repeat("A", 10) //nolint:goconst // test value
-	result := s.ScanTextForDLP(key)
-	if result.Clean {
-		t.Error("expected text DLP to catch short service-account key prefix")
-	}
-}
-
 func TestScanTextForDLP_CredentialInURL(t *testing.T) {
 	cfg := testConfig()
 	s := New(cfg)
@@ -989,5 +977,71 @@ func TestScanTextForDLP_FileSecretUnpaddedBase32Match(t *testing.T) {
 	result := s.ScanTextForDLP(noPad)
 	if result.Clean {
 		t.Error("expected unpadded base32-encoded file secret to be detected")
+	}
+}
+
+func TestScanTextForDLP_ShortSvcAcctKey(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	key := "sk-svcacct-" + strings.Repeat("A", 10) //nolint:goconst // test value
+	result := s.ScanTextForDLP(key)
+	if result.Clean {
+		t.Error("expected text DLP to catch short service-account key prefix")
+	}
+}
+
+// --- Segment-level encoding attribution tests ---
+
+func TestScanTextForDLP_SegmentHex_EncodingLabel(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// Hex-encoded API key embedded in a URL path.
+	secret := "sk-ant-" + strings.Repeat("a", 26) //nolint:goconst // test value
+	hexEncoded := hex.EncodeToString([]byte(secret))
+	text := "https://evil.com/exfil/" + hexEncoded + "/data"
+
+	result := s.ScanTextForDLP(text)
+	if result.Clean {
+		t.Fatal("expected hex-encoded key in URL path to be caught")
+	}
+	found := false
+	for _, m := range result.Matches {
+		if m.PatternName == "Anthropic API Key" && m.Encoded == "hex" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected match with encoding='hex', got matches: %+v", result.Matches)
+	}
+}
+
+func TestScanTextForDLP_SegmentBase64_EncodingLabel(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// Base64-encoded API key embedded in a URL path.
+	secret := "sk-ant-" + strings.Repeat("b", 26) //nolint:goconst // test value
+	b64Encoded := base64.RawURLEncoding.EncodeToString([]byte(secret))
+	text := "https://evil.com/exfil/" + b64Encoded + "/data"
+
+	result := s.ScanTextForDLP(text)
+	if result.Clean {
+		t.Fatal("expected base64-encoded key in URL path to be caught")
+	}
+	found := false
+	for _, m := range result.Matches {
+		if m.PatternName == "Anthropic API Key" && m.Encoded == "base64" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected match with encoding='base64', got matches: %+v", result.Matches)
 	}
 }

@@ -264,8 +264,14 @@ func stripResponseDepth(line []byte, sc *scanner.Scanner, depth int) ([]byte, er
 				continue
 			}
 			result := sc.ScanResponse(block.Text)
-			if !result.Clean && result.TransformedContent != "" {
-				rpc.Result.Content[i].Text = result.TransformedContent
+			if !result.Clean {
+				if result.TransformedContent != "" {
+					rpc.Result.Content[i].Text = result.TransformedContent
+				} else {
+					// Detection from non-redactable pass (vowel-fold/decoded).
+					// Can't strip, fail-closed to block.
+					return nil, fmt.Errorf("injection detected but not redactable in content block %d", i)
+				}
 			}
 		}
 	}
@@ -281,19 +287,27 @@ func stripResponseDepth(line []byte, sc *scanner.Scanner, depth int) ([]byte, er
 			changed := false
 			if errObj.Message != "" {
 				result := sc.ScanResponse(errObj.Message)
-				if !result.Clean && result.TransformedContent != "" {
-					errObj.Message = result.TransformedContent
-					changed = true
+				if !result.Clean {
+					if result.TransformedContent != "" {
+						errObj.Message = result.TransformedContent
+						changed = true
+					} else {
+						return nil, fmt.Errorf("injection detected but not redactable in error message")
+					}
 				}
 			}
 			if len(errObj.Data) > 0 {
 				var dataStr string
 				if json.Unmarshal(errObj.Data, &dataStr) == nil && dataStr != "" {
 					result := sc.ScanResponse(dataStr)
-					if !result.Clean && result.TransformedContent != "" {
-						if newData, mErr := json.Marshal(result.TransformedContent); mErr == nil {
-							errObj.Data = newData
-							changed = true
+					if !result.Clean {
+						if result.TransformedContent != "" {
+							if newData, mErr := json.Marshal(result.TransformedContent); mErr == nil {
+								errObj.Data = newData
+								changed = true
+							}
+						} else {
+							return nil, fmt.Errorf("injection detected but not redactable in error data")
 						}
 					}
 				}

@@ -32,21 +32,23 @@ type Result struct {
 
 // Scanner checks URLs for suspicious content before fetching.
 type Scanner struct {
-	allowlist        []string
-	blocklist        []string
-	dlpPatterns      []*compiledPattern
-	entropyThreshold float64
-	entropyMinLen    int
-	maxURLLength     int
-	internalCIDRs    []*net.IPNet
-	rateLimiter      *RateLimiter
-	dataBudget       *DataBudget
-	envSecrets       []string // filtered high-entropy env var values
-	fileSecrets      []string // loaded from secrets_file config
-	minEnvSecretLen  int      // minimum env var length for leak detection
-	responsePatterns []*compiledPattern
-	responseAction   string
-	responseEnabled  bool
+	allowlist                 []string
+	blocklist                 []string
+	dlpPatterns               []*compiledPattern
+	entropyThreshold          float64
+	entropyMinLen             int
+	maxURLLength              int
+	internalCIDRs             []*net.IPNet
+	rateLimiter               *RateLimiter
+	dataBudget                *DataBudget
+	envSecrets                []string // filtered high-entropy env var values
+	fileSecrets               []string // loaded from secrets_file config
+	minEnvSecretLen           int      // minimum env var length for leak detection
+	responsePatterns          []*compiledPattern
+	responseOptSpacePatterns  []*compiledPattern // \s+ → \s* variants for ZW-stripped pass
+	responseVowelFoldPatterns []*compiledPattern // vowel-folded variants for confusable vowel attacks
+	responseAction            string
+	responseEnabled           bool
 }
 
 type compiledPattern struct {
@@ -147,6 +149,39 @@ func New(cfg *config.Config) *Scanner {
 				panic(fmt.Sprintf("BUG: response pattern %q failed after validation: %v", p.Name, err))
 			}
 			s.responsePatterns = append(s.responsePatterns, &compiledPattern{name: p.Name, re: re})
+
+			// Compile optional-whitespace variant: \s+ → \s* so that
+			// "ignoreallpreviousinstructions" (ZW-stripped with no spaces)
+			// still matches injection patterns. Handles the combined attack
+			// where ZW chars split keywords AND replace word separators.
+			optRegex := strings.ReplaceAll(p.Regex, `\s+`, `\s*`)
+			optRegex = strings.ReplaceAll(optRegex, `[-,;:.\s]+`, `[-,;:.\s]*`)
+			if optRegex != p.Regex {
+				optRe, optErr := regexp.Compile(optRegex)
+				if optErr == nil {
+					s.responseOptSpacePatterns = append(s.responseOptSpacePatterns, &compiledPattern{name: p.Name, re: optRe})
+				}
+			}
+
+			// Compile vowel-folded variant: fold all vowels (e,i,o,u -> a) in the
+			// regex so that confusable-vowel attacks are caught. An attacker using
+			// o-stroke (maps to o) to replace both 'o' and 'u' produces "instroctions"
+			// after confusable mapping. Standard patterns fail. Vowel-folding both
+			// the pattern and the content makes them match.
+			// Preserve (?i) flag: FoldVowels would corrupt i->a making (?a) invalid.
+			vfRegex := p.Regex
+			vfPrefix := ""
+			if strings.HasPrefix(vfRegex, "(?i)") {
+				vfPrefix = "(?i)"
+				vfRegex = vfRegex[4:]
+			}
+			vfRegex = vfPrefix + normalize.FoldVowels(vfRegex)
+			if vfRegex != p.Regex {
+				vfRe, vfErr := regexp.Compile(vfRegex)
+				if vfErr == nil {
+					s.responseVowelFoldPatterns = append(s.responseVowelFoldPatterns, &compiledPattern{name: p.Name, re: vfRe})
+				}
+			}
 		}
 	}
 
@@ -423,6 +458,35 @@ func orderedQueryConcat(rawQuery string) string {
 	return b.String()
 }
 
+// decodedResult pairs decoded text with the encoding that produced it.
+type decodedResult struct {
+	text     string
+	encoding string
+}
+
+// decodeEncodings tries hex, base64, and base32 decoding on a string and returns
+// any successfully decoded variants with encoding labels. Used by checkDLP to
+// catch encoded secrets in query parameters (e.g. ?key=736b2d616e742d... is
+// hex-encoded sk-ant-...). Mirrors the encoding checks in ScanTextForDLP.
+func decodeEncodings(s string) []decodedResult {
+	var out []decodedResult
+	if decoded, err := hex.DecodeString(s); err == nil && len(decoded) > 0 {
+		out = append(out, decodedResult{string(decoded), "hex"})
+	}
+	for _, enc := range []*base64.Encoding{
+		base64.StdEncoding, base64.URLEncoding,
+		base64.RawStdEncoding, base64.RawURLEncoding,
+	} {
+		if decoded, err := enc.DecodeString(s); err == nil && len(decoded) > 0 {
+			out = append(out, decodedResult{string(decoded), "base64"})
+		}
+	}
+	if decoded, err := base32.StdEncoding.DecodeString(s); err == nil && len(decoded) > 0 {
+		out = append(out, decodedResult{string(decoded), "base32"})
+	}
+	return out
+}
+
 // checkDLP runs DLP regex patterns against the full URL string including hostname.
 // Scanning the full URL catches secrets encoded in subdomains (e.g., sk-proj-xxx.evil.com)
 // and secrets split across query parameters. Iterative URL decoding
@@ -440,16 +504,23 @@ func (s *Scanner) checkDLP(parsed *url.URL) Result {
 
 	// Also check decoded query keys and values individually.
 	// Noise-strip each value to catch dot-separated keys (e.g. "s.k.-.a.n.t.-..." → "sk-ant-...").
-	// The path gets noise-stripped below, but individual query values need it too.
+	// Try hex/base64/base32 decoding to catch encoded secrets
+	// (e.g. ?key=736b2d616e742d... is hex-encoded sk-ant-...).
 	for key, values := range parsed.Query() {
 		decodedKey := IterativeDecode(key)
 		targets = append(targets, decodedKey)
+		for _, d := range decodeEncodings(decodedKey) {
+			targets = append(targets, d.text)
+		}
 		if stripped := stripURLNoise(decodedKey); stripped != decodedKey {
 			targets = append(targets, stripped)
 		}
 		for _, v := range values {
 			decoded := IterativeDecode(v)
 			targets = append(targets, decoded)
+			for _, d := range decodeEncodings(decoded) {
+				targets = append(targets, d.text)
+			}
 			if stripped := stripURLNoise(decoded); stripped != decoded {
 				targets = append(targets, stripped)
 			}
@@ -460,6 +531,17 @@ func (s *Scanner) checkDLP(parsed *url.URL) Result {
 	decodedPath := IterativeDecode(parsed.RawPath)
 	if decodedPath != "" && decodedPath != parsed.Path {
 		targets = append(targets, decodedPath)
+	}
+
+	// Try hex/base64/base32 decoding on path segments to catch encoded secrets
+	// in URL paths (e.g. /73732d616e742d... is hex-encoded sk-ant-...).
+	// Path is already URL-decoded by Go's url.Parse, so we decode the segments directly.
+	for _, segment := range strings.Split(parsed.Path, "/") {
+		if len(segment) >= 10 { // minimum viable encoded secret length
+			for _, d := range decodeEncodings(segment) {
+				targets = append(targets, d.text)
+			}
+		}
 	}
 
 	// Dot-collapse the hostname to catch secrets split across DNS subdomains

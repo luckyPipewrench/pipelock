@@ -681,6 +681,18 @@ func TestScanTextForDLP_ShortAnthropicKey(t *testing.T) {
 	}
 }
 
+func TestScanTextForDLP_ShortSvcAcctKey(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	key := "sk-svcacct-" + strings.Repeat("A", 10) //nolint:goconst // test value
+	result := s.ScanTextForDLP(key)
+	if result.Clean {
+		t.Error("expected text DLP to catch short service-account key prefix")
+	}
+}
+
 func TestScanTextForDLP_CredentialInURL(t *testing.T) {
 	cfg := testConfig()
 	s := New(cfg)

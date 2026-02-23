@@ -169,16 +169,38 @@ func (s *Scanner) matchDecodedResponse(content string) []ResponseMatch {
 		base64.RawStdEncoding, base64.RawURLEncoding,
 	} {
 		if decoded, err := enc.DecodeString(stripped); err == nil && len(decoded) > 0 {
-			normalized := normalize.ForMatching(string(decoded))
-			if matches := matchPatternsAgainst(s.responsePatterns, normalized); len(matches) > 0 {
+			if matches := s.matchDecodedNormalized(string(decoded)); len(matches) > 0 {
 				return matches
 			}
 		}
 	}
 	if decoded, err := hex.DecodeString(stripped); err == nil && len(decoded) > 0 {
-		normalized := normalize.ForMatching(string(decoded))
-		if matches := matchPatternsAgainst(s.responsePatterns, normalized); len(matches) > 0 {
+		if matches := s.matchDecodedNormalized(string(decoded)); len(matches) > 0 {
 			return matches
+		}
+	}
+	return nil
+}
+
+// matchDecodedNormalized runs all response scanning passes (primary, opt-space,
+// vowel-fold) against decoded content. Without this, encoded payloads carrying
+// vowel-substituted or zero-width-separated injection would bypass detection.
+func (s *Scanner) matchDecodedNormalized(decoded string) []ResponseMatch {
+	normalized := normalize.ForMatching(decoded)
+	if matches := matchPatternsAgainst(s.responsePatterns, normalized); len(matches) > 0 {
+		return matches
+	}
+	if len(s.responseOptSpacePatterns) > 0 {
+		if matches := matchPatternsAgainst(s.responseOptSpacePatterns, normalized); len(matches) > 0 {
+			return matches
+		}
+	}
+	if len(s.responseVowelFoldPatterns) > 0 {
+		folded := normalize.FoldVowels(normalized)
+		if folded != normalized {
+			if matches := matchPatternsAgainst(s.responseVowelFoldPatterns, folded); len(matches) > 0 {
+				return matches
+			}
 		}
 	}
 	return nil

@@ -1559,6 +1559,18 @@ func TestScan_DLP_ShortOpenAIKey(t *testing.T) {
 	}
 }
 
+func TestScan_DLP_ShortSvcAcctKey(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	key := "sk-svcacct-" + strings.Repeat("A", 10) //nolint:goconst // test value
+	result := s.Scan("https://example.com/api?key=" + key)
+	if result.Allowed {
+		t.Error("expected DLP to catch short OpenAI service-account key prefix")
+	}
+}
+
 func TestScan_DLP_VeryShortKeyNoFP(t *testing.T) {
 	cfg := testConfig()
 	s := New(cfg)
@@ -1667,18 +1679,6 @@ func TestScan_DLP_CredentialInURL_InQueryString(t *testing.T) {
 	result := s.Scan("https://example.com/connect?password=verysecretpassword&host=db.internal")
 	if result.Allowed {
 		t.Error("expected DLP to catch password= in connection string URL")
-	}
-}
-
-func TestScan_DLP_ShortSvcAcctKey(t *testing.T) {
-	cfg := testConfig()
-	s := New(cfg)
-	defer s.Close()
-
-	key := "sk-svcacct-" + strings.Repeat("A", 10) //nolint:goconst // test value
-	result := s.Scan("https://example.com/api?key=" + key)
-	if result.Allowed {
-		t.Error("expected DLP to catch short OpenAI service-account key prefix")
 	}
 }
 

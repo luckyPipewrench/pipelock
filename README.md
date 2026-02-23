@@ -345,12 +345,12 @@ dlp:
   secrets_file: "./known-secrets.txt"  # optional: one secret per line, scanned in raw + encoded forms
   patterns:
     - name: "Anthropic API Key"
-      regex: 'sk-ant-[a-zA-Z0-9\-_]{20,}'
+      regex: 'sk-ant-[a-zA-Z0-9\-_]{10,}'
       severity: critical
     - name: "AWS Access Key"
       regex: 'AKIA[0-9A-Z]{16}'
       severity: critical
-    # ... 13 more patterns ship by default (see configs/balanced.yaml)
+    # ... 14 more patterns ship by default (see configs/balanced.yaml)
 
 response_scanning:
   enabled: true
@@ -520,7 +520,7 @@ curl "http://localhost:8888/stats"
   "version": "x.y.z",
   "mode": "balanced",
   "uptime_seconds": 3600.5,
-  "dlp_patterns": 15,
+  "dlp_patterns": 16,
   "response_scan_enabled": true,
   "git_protection_enabled": false,
   "rate_limit_enabled": true,

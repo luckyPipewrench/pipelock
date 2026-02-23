@@ -168,12 +168,25 @@ func New(cfg *config.Config) *Scanner {
 			// o-stroke (maps to o) to replace both 'o' and 'u' produces "instroctions"
 			// after confusable mapping. Standard patterns fail. Vowel-folding both
 			// the pattern and the content makes them match.
-			// Preserve (?i) flag: FoldVowels would corrupt i->a making (?a) invalid.
+			// Extract any leading (?flags) group before folding. FoldVowels would
+			// corrupt flag chars (e.g. i->a turning (?im) into (?am), which is invalid).
 			vfRegex := p.Regex
 			vfPrefix := ""
-			if strings.HasPrefix(vfRegex, "(?i)") {
-				vfPrefix = "(?i)"
-				vfRegex = vfRegex[4:]
+			if strings.HasPrefix(vfRegex, "(?") {
+				if end := strings.Index(vfRegex, ")"); end > 1 {
+					flags := vfRegex[2:end]
+					allFlags := true
+					for _, r := range flags {
+						if !strings.ContainsRune("imsU-", r) {
+							allFlags = false
+							break
+						}
+					}
+					if allFlags {
+						vfPrefix = vfRegex[:end+1]
+						vfRegex = vfRegex[end+1:]
+					}
+				}
 			}
 			vfRegex = vfPrefix + normalize.FoldVowels(vfRegex)
 			if vfRegex != p.Regex {
@@ -464,6 +477,13 @@ type decodedResult struct {
 	encoding string
 }
 
+// Encoding labels for decoded results.
+const (
+	encodingHex    = "hex"
+	encodingBase64 = "base64"
+	encodingBase32 = "base32"
+)
+
 // decodeEncodings tries hex, base64, and base32 decoding on a string and returns
 // any successfully decoded variants with encoding labels. Used by checkDLP to
 // catch encoded secrets in query parameters (e.g. ?key=736b2d616e742d... is
@@ -471,18 +491,18 @@ type decodedResult struct {
 func decodeEncodings(s string) []decodedResult {
 	var out []decodedResult
 	if decoded, err := hex.DecodeString(s); err == nil && len(decoded) > 0 {
-		out = append(out, decodedResult{string(decoded), "hex"}) //nolint:goconst // encoding label
+		out = append(out, decodedResult{string(decoded), encodingHex})
 	}
 	for _, enc := range []*base64.Encoding{
 		base64.StdEncoding, base64.URLEncoding,
 		base64.RawStdEncoding, base64.RawURLEncoding,
 	} {
 		if decoded, err := enc.DecodeString(s); err == nil && len(decoded) > 0 {
-			out = append(out, decodedResult{string(decoded), "base64"}) //nolint:goconst // encoding label
+			out = append(out, decodedResult{string(decoded), encodingBase64})
 		}
 	}
 	if decoded, err := base32.StdEncoding.DecodeString(s); err == nil && len(decoded) > 0 {
-		out = append(out, decodedResult{string(decoded), "base32"})
+		out = append(out, decodedResult{string(decoded), encodingBase32})
 	}
 	return out
 }
@@ -751,7 +771,7 @@ func matchSecretEncodings(secret string, texts, lowerTexts []string) (bool, stri
 	b64StdNoPad := strings.TrimRight(b64Std, "=")
 	if containsAny(b64Std, texts...) ||
 		(b64StdNoPad != b64Std && containsAny(b64StdNoPad, texts...)) {
-		return true, "base64"
+		return true, encodingBase64
 	}
 
 	// Base64 URL-safe (padded + unpadded).
@@ -765,7 +785,7 @@ func matchSecretEncodings(secret string, texts, lowerTexts []string) (bool, stri
 	// Hex (case-insensitive via pre-lowered texts).
 	hexEnc := hex.EncodeToString([]byte(secret))
 	if containsAny(hexEnc, lowerTexts...) {
-		return true, "hex"
+		return true, encodingHex
 	}
 
 	// Base32 standard (padded + unpadded).
@@ -773,7 +793,7 @@ func matchSecretEncodings(secret string, texts, lowerTexts []string) (bool, stri
 	b32NoPad := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString([]byte(secret))
 	if containsAny(b32Std, texts...) ||
 		(b32NoPad != b32Std && containsAny(b32NoPad, texts...)) {
-		return true, "base32"
+		return true, encodingBase32
 	}
 
 	return false, ""

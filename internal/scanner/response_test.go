@@ -2233,6 +2233,28 @@ func TestScanResponse_VowelFoldNoFalsePositives(t *testing.T) {
 	}
 }
 
+func TestScanResponse_VowelFoldMultiFlagPattern(t *testing.T) {
+	// Patterns with (?im) flags must have proper vowel-fold variants.
+	// Previously, only (?i) was stripped before FoldVowels, causing (?im)
+	// to become (?am) which fails to compile.
+	cfg := testConfig()
+	cfg.ResponseScanning = config.ResponseScanning{
+		Enabled: true,
+		Action:  "block",
+		Patterns: []config.ResponseScanPattern{
+			{Name: "multi-flag test", Regex: `(?im)^\s*system\s*override\s*:`},
+		},
+	}
+	s := New(cfg)
+	defer s.Close()
+
+	// Vowel-substituted: "system" -> "systam", "override" -> "ovarrida"
+	result := s.ScanResponse("systam ovarrida:")
+	if result.Clean {
+		t.Error("expected (?im) pattern to have working vowel-fold variant")
+	}
+}
+
 func TestScanResponse_Base64EncodedNoFalsePositives(t *testing.T) {
 	s := New(testResponseConfig())
 

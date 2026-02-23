@@ -653,6 +653,10 @@ func Defaults() *Config {
 				{Name: "Twilio API Key", Regex: `SK[a-f0-9]{32}`, Severity: "high"},
 				{Name: "SendGrid API Key", Regex: `SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}`, Severity: "critical"},
 				{Name: "Mailgun API Key", Regex: `key-[a-zA-Z0-9]{32}`, Severity: "high"},
+				// \b protects underscore-compound names (next_token, csrf_token_id) since _ is \w.
+				// Hyphen-compound names (show-password, x-token) are NOT protected since - is \W,
+				// so \b still fires. Accepted tradeoff: such params are rare in agent traffic.
+				// Case-insensitive matching is added automatically by scanner.New() via (?i) prefix.
 				{Name: "Credential in URL", Regex: `\b(?:password|passwd|secret|token|apikey|api_key|api-key)\s*=\s*[^\s&]{4,}`, Severity: "high"},
 			},
 		},

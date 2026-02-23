@@ -674,7 +674,7 @@ func TestScanTextForDLP_ShortAnthropicKey(t *testing.T) {
 	s := New(cfg)
 	defer s.Close()
 
-	key := "sk-ant-" + "ABCDEFGHIJ"
+	key := "sk-ant-" + strings.Repeat("A", 10) //nolint:goconst // test value
 	result := s.ScanTextForDLP(key)
 	if result.Clean {
 		t.Error("expected text DLP to catch short Anthropic key prefix")

@@ -1540,7 +1540,7 @@ func TestScan_DLP_ShortAnthropicKey(t *testing.T) {
 
 	// Key with 10-char suffix (previously needed 20+). The sk-ant- prefix
 	// is distinctive enough that partial fragments should still be caught.
-	key := "sk-ant-" + "ABCDEFGHIJ"
+	key := "sk-ant-" + strings.Repeat("A", 10) //nolint:goconst // test value
 	result := s.Scan("https://example.com/api?key=" + key)
 	if result.Allowed {
 		t.Error("expected DLP to catch short Anthropic key prefix")
@@ -1552,7 +1552,7 @@ func TestScan_DLP_ShortOpenAIKey(t *testing.T) {
 	s := New(cfg)
 	defer s.Close()
 
-	key := "sk-proj-" + "ABCDEFGHIJ"
+	key := "sk-proj-" + strings.Repeat("A", 10) //nolint:goconst // test value
 	result := s.Scan("https://example.com/api?key=" + key)
 	if result.Allowed {
 		t.Error("expected DLP to catch short OpenAI key prefix")

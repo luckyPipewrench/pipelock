@@ -123,6 +123,20 @@ var confusableMap = map[rune]rune{
 	'\u13B3': 'W', // Ꮃ
 	'\u13D4': 'T', // Ꮤ
 
+	// Latin stroke/bar letters that do NOT NFD-decompose (the stroke is integral,
+	// not a combining mark). Used in Scandinavian, Polish, etc. but in English
+	// injection phrases they're confusables.
+	'\u00D8': 'O', // Ø (Latin Capital Letter O with Stroke)
+	'\u00F8': 'o', // ø (Latin Small Letter O with Stroke)
+	'\u0110': 'D', // Đ (Latin Capital Letter D with Stroke)
+	'\u0111': 'd', // đ (Latin Small Letter D with Stroke)
+	'\u0141': 'L', // Ł (Latin Capital Letter L with Stroke)
+	'\u0142': 'l', // ł (Latin Small Letter L with Stroke)
+	'\u0126': 'H', // Ħ (Latin Capital Letter H with Stroke)
+	'\u0127': 'h', // ħ (Latin Small Letter H with Stroke)
+	'\u0166': 'T', // Ŧ (Latin Capital Letter T with Stroke)
+	'\u0167': 't', // ŧ (Latin Small Letter T with Stroke)
+
 	// Latin Extended / IPA (small caps that survive NFKC)
 	'\u1D00': 'A', // ᴀ (Latin Letter Small Capital A)
 	'\u0299': 'B', // ʙ (Latin Letter Small Capital B)
@@ -359,6 +373,25 @@ func ForPolicy(s string) string {
 	s = StripCombiningMarks(s)
 	s = NormalizeWhitespace(s)
 	return s
+}
+
+// FoldVowels collapses all ASCII vowels (a, e, i, o, u) to 'a'. Used as a final
+// injection detection pass after confusable mapping. When an attacker substitutes
+// a single confusable character (e.g. ø→o) for multiple different vowels, standard
+// pattern matching fails because "instroctions" ≠ "instructions". Vowel-folding
+// makes both "instroctions" and "instructions" become "anstractaans", enabling
+// pattern comparison on the folded forms.
+func FoldVowels(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case 'e', 'i', 'o', 'u', 'E', 'I', 'O', 'U':
+			if r >= 'a' && r <= 'z' {
+				return 'a'
+			}
+			return 'A'
+		}
+		return r
+	}, s)
 }
 
 // ForToolText applies normalization for MCP tool description scanning. Strips ALL

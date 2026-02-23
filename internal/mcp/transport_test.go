@@ -61,7 +61,7 @@ func TestStdioReader_SkipsEmptyLines(t *testing.T) {
 	if err != nil {
 		t.Fatalf("msg2: %v", err)
 	}
-	if string(msg2) != `{"id":2}` {
+	if string(msg2) != `{"id":2}` { //nolint:goconst // test value
 		t.Errorf("msg2 = %q", string(msg2))
 	}
 }

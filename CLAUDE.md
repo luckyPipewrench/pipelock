@@ -120,7 +120,7 @@ Wraps any MCP server with bidirectional scanning. Supports three transport modes
 ### Requirements
 
 - **Race detector mandatory**: All tests run with `-race -count=1`
-- **95% coverage target** on new code, maintain 95%+ overall (currently 96.1%)
+- **95% coverage target** on new code, maintain 95%+ overall (currently 96.0%)
 - **See README.md for current test count** (count with `go test -v ./... 2>&1 | grep -c -- '--- PASS:'`)
 
 ### Patterns

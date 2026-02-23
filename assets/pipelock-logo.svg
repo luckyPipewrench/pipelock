@@ -60,5 +60,5 @@
 
   <!-- Subtle tagline -->
   <text x="200" y="455" text-anchor="middle" font-family="'Inter', 'Helvetica Neue', sans-serif"
-        font-size="14" font-weight="400" letter-spacing="4" fill="#94a3b8" text-transform="uppercase">AI AGENT SECURITY</text>
+        font-size="14" font-weight="400" letter-spacing="4" fill="#94a3b8" text-transform="uppercase">AGENT FIREWALL</text>
 </svg>

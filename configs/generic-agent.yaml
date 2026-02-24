@@ -223,6 +223,18 @@ mcp_tool_policy:
       tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
       arg_pattern: '(?i)(\beval\b.*\bbase64\b|\bbase64\s+(-d|--decode)\b.*\|\s*(ba)?sh\b)'
 
+# Session behavioral profiling (opt-in, warn-only recommended in v1)
+session_profiling:
+  enabled: false
+
+# Adaptive enforcement (opt-in)
+adaptive_enforcement:
+  enabled: false
+
+# MCP session binding (opt-in)
+mcp_session_binding:
+  enabled: false
+
 logging:
   format: json
   output: stdout

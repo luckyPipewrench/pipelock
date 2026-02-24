@@ -74,6 +74,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	sc := p.scannerPtr.Load()
 
 	clientIP, requestID := requestMeta(r)
+	agent := ExtractAgent(r)
 
 	target := r.Host
 	if target == "" {
@@ -100,6 +101,11 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	// Scan through all 9 layers
 	result := sc.Scan(syntheticURL)
+
+	// Session profiling: record BEFORE the enforce-mode early return so adaptive
+	// signals (SignalBlock) fire even for blocked requests.
+	sessionBlocked, sessionDetail := p.recordSessionActivity(clientIP, agent, host, requestID, result.Allowed, result.Score, cfg, p.logger)
+
 	if !result.Allowed {
 		if cfg.EnforceEnabled() {
 			p.logger.LogBlocked(http.MethodConnect, target, result.Scanner, result.Reason, clientIP, requestID)
@@ -111,6 +117,11 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		p.logger.LogAnomaly(http.MethodConnect, target,
 			fmt.Sprintf("[audit] %s: %s", result.Scanner, result.Reason),
 			clientIP, requestID, result.Score)
+	}
+
+	if sessionBlocked {
+		http.Error(w, sessionDetail, http.StatusForbidden)
+		return
 	}
 
 	// WebSocket redirect hint: if the target host matches the redirect list
@@ -256,11 +267,17 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	sc := p.scannerPtr.Load()
 
 	clientIP, requestID := requestMeta(r)
+	agent := ExtractAgent(r)
 
 	targetURL := r.URL.String()
 
 	// Scan through all 9 layers
 	result := sc.Scan(targetURL)
+
+	// Session profiling: record BEFORE the enforce-mode early return so adaptive
+	// signals (SignalBlock) fire even for blocked requests.
+	sessionBlocked, sessionDetail := p.recordSessionActivity(clientIP, agent, r.URL.Hostname(), requestID, result.Allowed, result.Score, cfg, p.logger)
+
 	if !result.Allowed {
 		if cfg.EnforceEnabled() {
 			p.logger.LogBlocked(r.Method, targetURL, result.Scanner, result.Reason, clientIP, requestID)
@@ -271,6 +288,11 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		p.logger.LogAnomaly(r.Method, targetURL,
 			fmt.Sprintf("[audit] %s: %s", result.Scanner, result.Reason),
 			clientIP, requestID, result.Score)
+	}
+
+	if sessionBlocked {
+		http.Error(w, sessionDetail, http.StatusForbidden)
+		return
 	}
 
 	// Clone request with context keys so CheckRedirect can attribute audit logs

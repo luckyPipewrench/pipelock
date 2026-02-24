@@ -1,13 +1,16 @@
 package mcp
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 // testScanner is defined in scan_test.go (shared across package tests).
@@ -1666,5 +1669,121 @@ func TestScanTools_DriftDetail(t *testing.T) {
 	}
 	if !found {
 		t.Error("expected drift match with non-empty DriftDetail")
+	}
+}
+
+// --- Session binding tests ---
+
+func TestToolBaseline_SessionBinding(t *testing.T) {
+	tb := NewToolBaseline()
+
+	// No baseline yet.
+	if tb.HasBaseline() {
+		t.Error("expected no baseline before SetKnownTools")
+	}
+	if tb.IsKnownTool("read_file") {
+		t.Error("expected unknown tool before baseline")
+	}
+
+	// Establish baseline.
+	tb.SetKnownTools([]string{"read_file", "write_file", "list_dir"})
+
+	if !tb.HasBaseline() {
+		t.Error("expected baseline after SetKnownTools")
+	}
+	if !tb.IsKnownTool("read_file") {
+		t.Error("expected read_file to be known")
+	}
+	if !tb.IsKnownTool("write_file") {
+		t.Error("expected write_file to be known")
+	}
+	if tb.IsKnownTool("exec_command") {
+		t.Error("expected exec_command to be unknown")
+	}
+}
+
+func TestToolBaseline_PostBaselineNewTool(t *testing.T) {
+	tb := NewToolBaseline()
+	tb.SetKnownTools([]string{"read_file", "write_file"})
+
+	// Second tools/list with a new tool added.
+	added := tb.CheckNewTools([]string{"read_file", "write_file", "exec_command"})
+
+	if len(added) != 1 || added[0] != "exec_command" {
+		t.Errorf("expected [exec_command] added, got %v", added)
+	}
+
+	// Now it should be known (CheckNewTools adds it).
+	if !tb.IsKnownTool("exec_command") {
+		t.Error("expected exec_command to be known after CheckNewTools")
+	}
+
+	// Second check should return nothing new.
+	added2 := tb.CheckNewTools([]string{"read_file", "write_file", "exec_command"})
+	if len(added2) != 0 {
+		t.Errorf("expected no new tools on second check, got %v", added2)
+	}
+}
+
+func TestToolScanResult_ToolNames(t *testing.T) {
+	// Verify ScanTools populates ToolNames from tools/list responses.
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+
+	tb := NewToolBaseline()
+	toolCfg := &ToolScanConfig{Baseline: tb, Action: "warn", DetectDrift: false}
+
+	resp := `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"read_file","description":"Reads a file"},{"name":"write_file","description":"Writes a file"}]}}`
+	result := ScanTools([]byte(resp), sc, toolCfg)
+
+	if !result.IsToolsList {
+		t.Fatal("expected IsToolsList to be true")
+	}
+	if len(result.ToolNames) != 2 {
+		t.Fatalf("expected 2 tool names, got %d", len(result.ToolNames))
+	}
+	nameSet := map[string]bool{}
+	for _, n := range result.ToolNames {
+		nameSet[n] = true
+	}
+	if !nameSet["read_file"] || !nameSet["write_file"] {
+		t.Errorf("expected read_file and write_file in ToolNames, got %v", result.ToolNames)
+	}
+}
+
+func TestForwardScanned_SessionBinding_CapturesBaseline(t *testing.T) {
+	// Verify ForwardScanned captures tool names into baseline from tools/list.
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+
+	tb := NewToolBaseline()
+	toolCfg := &ToolScanConfig{Baseline: tb, Action: "warn", DetectDrift: false}
+
+	toolsResp := `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"alpha","description":"Tool A"},{"name":"beta","description":"Tool B"}]}}` + "\n"
+	reader := NewStdioReader(strings.NewReader(toolsResp))
+	var out bytes.Buffer
+	writer := NewStdioWriter(&out)
+	var logBuf bytes.Buffer
+
+	_, err := ForwardScanned(reader, writer, &logBuf, sc, nil, toolCfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !tb.HasBaseline() {
+		t.Error("expected baseline to be established after tools/list")
+	}
+	if !tb.IsKnownTool("alpha") {
+		t.Error("expected alpha to be known after baseline capture")
+	}
+	if !tb.IsKnownTool("beta") {
+		t.Error("expected beta to be known after baseline capture")
+	}
+	if tb.IsKnownTool("gamma") {
+		t.Error("expected gamma to be unknown")
 	}
 }

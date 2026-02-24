@@ -539,7 +539,7 @@ func TestLogResponseScan_JSONFormat(t *testing.T) {
 	if entry["request_id"] != "req-10" {
 		t.Errorf("expected request_id=req-10, got %v", entry["request_id"])
 	}
-	if entry["action"] != "warn" {
+	if entry["action"] != "warn" { //nolint:goconst // test value
 		t.Errorf("expected action=warn, got %v", entry["action"])
 	}
 	matchCount, ok := entry["match_count"].(float64)
@@ -843,6 +843,119 @@ func TestLogForwardHTTP_Filtered(t *testing.T) {
 	if len(bytes.TrimSpace(data)) > 0 {
 		t.Error("expected forward_http to be filtered when includeAllowed=false")
 	}
+}
+
+func TestLogSessionAnomaly_JSONFormat(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogSessionAnomaly("10.0.0.1", "domain_burst", "6 new domains in 5m window", "10.0.0.1", "req-20", 2.0)
+	logger.Close()
+
+	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+
+	if entry["event"] != "session_anomaly" {
+		t.Errorf("expected event=session_anomaly, got %v", entry["event"])
+	}
+	if entry["session"] != "10.0.0.1" {
+		t.Errorf("expected session=10.0.0.1, got %v", entry["session"])
+	}
+	if entry["anomaly_type"] != "domain_burst" {
+		t.Errorf("expected anomaly_type=domain_burst, got %v", entry["anomaly_type"])
+	}
+	if entry["detail"] != "6 new domains in 5m window" {
+		t.Errorf("expected detail, got %v", entry["detail"])
+	}
+	if entry["client_ip"] != "10.0.0.1" {
+		t.Errorf("expected client_ip=10.0.0.1, got %v", entry["client_ip"])
+	}
+	if entry["request_id"] != "req-20" {
+		t.Errorf("expected request_id=req-20, got %v", entry["request_id"])
+	}
+	score, ok := entry["score"].(float64)
+	if !ok || score != 2.0 {
+		t.Errorf("expected score=2.0, got %v", entry["score"])
+	}
+}
+
+func TestLogAdaptiveEscalation_JSONFormat(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogAdaptiveEscalation("10.0.0.1", "warn", "block", "10.0.0.1", "req-30", 5.5)
+	logger.Close()
+
+	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+
+	if entry["event"] != "adaptive_escalation" {
+		t.Errorf("expected event=adaptive_escalation, got %v", entry["event"])
+	}
+	if entry["session"] != "10.0.0.1" {
+		t.Errorf("expected session=10.0.0.1, got %v", entry["session"])
+	}
+	if entry["from"] != "warn" {
+		t.Errorf("expected from=warn, got %v", entry["from"])
+	}
+	if entry["to"] != "block" {
+		t.Errorf("expected to=block, got %v", entry["to"])
+	}
+	score, ok := entry["score"].(float64)
+	if !ok || score != 5.5 {
+		t.Errorf("expected score=5.5, got %v", entry["score"])
+	}
+}
+
+func TestLogMCPUnknownTool_JSONFormat(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogMCPUnknownTool("execute_code", "warn")
+	logger.Close()
+
+	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+
+	if entry["event"] != "mcp_unknown_tool" {
+		t.Errorf("expected event=mcp_unknown_tool, got %v", entry["event"])
+	}
+	if entry["tool"] != "execute_code" {
+		t.Errorf("expected tool=execute_code, got %v", entry["tool"])
+	}
+	if entry["action"] != "warn" {
+		t.Errorf("expected action=warn, got %v", entry["action"])
+	}
+}
+
+func TestNewNop_SessionEvents(_ *testing.T) {
+	logger := NewNop()
+	// Should not panic
+	logger.LogSessionAnomaly("10.0.0.1", "domain_burst", "test", "10.0.0.1", "req-1", 1.0)
+	logger.LogAdaptiveEscalation("10.0.0.1", "warn", "block", "10.0.0.1", "req-2", 5.0)
+	logger.LogMCPUnknownTool("bad_tool", "warn")
+	logger.Close()
 }
 
 func TestLogTunnelOpen_SanitizesTarget(t *testing.T) {

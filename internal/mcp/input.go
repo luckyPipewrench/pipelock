@@ -58,6 +58,24 @@ func extractAllStringsFromJSON(raw json.RawMessage) []string {
 	return result
 }
 
+// extractToolCallName extracts the tool name from a tools/call JSON-RPC request.
+// Returns "" if the message is not a tools/call or the name cannot be extracted.
+func extractToolCallName(line []byte) string {
+	var req struct {
+		Method string `json:"method"`
+		Params struct {
+			Name string `json:"name"`
+		} `json:"params"`
+	}
+	if json.Unmarshal(line, &req) != nil {
+		return ""
+	}
+	if req.Method != "tools/call" { //nolint:goconst // MCP method name used across packages
+		return ""
+	}
+	return req.Params.Name
+}
+
 // ScanRequest parses a JSON-RPC 2.0 request and scans its params for
 // DLP patterns, injection patterns, and env secret leaks. Fail-closed
 // on parse errors (configurable via onParseError).
@@ -384,10 +402,21 @@ func blockRequestResponse(br BlockedRequest) []byte {
 	return data
 }
 
+// SessionBindingConfig controls MCP session binding (tool inventory validation).
+// When non-nil with a valid Baseline, tools/call requests are checked against
+// the tool inventory captured from the first tools/list response.
+type SessionBindingConfig struct {
+	Baseline          *ToolBaseline
+	UnknownToolAction string // warn, block
+	NoBaselineAction  string // warn, block (action when no baseline yet)
+}
+
 // ForwardScannedInput reads JSON-RPC 2.0 requests from reader, scans each for
 // DLP and injection patterns, and forwards clean requests to writer.
 // When policyCfg is non-nil, tool call policy rules are also checked
 // independently of content scanning — the strictest action wins.
+// When bindingCfg is non-nil, tools/call requests are validated against the
+// session tool baseline.
 // Blocked request IDs are sent via blockedCh so the main goroutine (which owns
 // clientOut writes) can send error responses without concurrent write races.
 func ForwardScannedInput(
@@ -399,6 +428,7 @@ func ForwardScannedInput(
 	onParseError string,
 	blockedCh chan<- BlockedRequest,
 	policyCfg *PolicyConfig,
+	bindingCfg *SessionBindingConfig,
 ) {
 	defer close(blockedCh)
 
@@ -424,6 +454,26 @@ func ForwardScannedInput(
 			policyVerdict = policyCfg.CheckRequest(line)
 		}
 
+		// Session binding: validate tools/call against baseline.
+		bindingAction := ""
+		bindingReason := ""
+		if bindingCfg != nil && bindingCfg.Baseline != nil && verdict.Method == "tools/call" {
+			toolName := extractToolCallName(line)
+			if toolName != "" {
+				if !bindingCfg.Baseline.HasBaseline() {
+					_, _ = fmt.Fprintf(logW, "pipelock: input line %d: tools/call %q before baseline established\n",
+						lineNum, toolName)
+					bindingAction = bindingCfg.NoBaselineAction
+					bindingReason = "session_binding:no_baseline"
+				} else if !bindingCfg.Baseline.IsKnownTool(toolName) {
+					_, _ = fmt.Fprintf(logW, "pipelock: input line %d: tools/call %q not in session baseline\n",
+						lineNum, toolName)
+					bindingAction = bindingCfg.UnknownToolAction
+					bindingReason = "session_binding:unknown_tool"
+				}
+			}
+		}
+
 		// Parse error — block by default (policy doesn't override parse errors).
 		if verdict.Error != "" {
 			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: %s\n", lineNum, verdict.Error)
@@ -436,8 +486,8 @@ func ForwardScannedInput(
 			continue
 		}
 
-		// Both clean — forward.
-		if verdict.Clean && !policyVerdict.Matched {
+		// All clean — forward.
+		if verdict.Clean && !policyVerdict.Matched && bindingAction == "" {
 			if err := writer.WriteMessage(line); err != nil {
 				_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
 				return
@@ -445,7 +495,7 @@ func ForwardScannedInput(
 			continue
 		}
 
-		// Build combined reasons from content scan and policy.
+		// Build combined reasons from content scan, policy, and binding.
 		var reasons []string
 		for _, m := range verdict.Matches {
 			reasons = append(reasons, m.PatternName)
@@ -456,6 +506,9 @@ func ForwardScannedInput(
 		for _, r := range policyVerdict.Rules {
 			reasons = append(reasons, "policy:"+r)
 		}
+		if bindingReason != "" {
+			reasons = append(reasons, bindingReason)
+		}
 		reasonStr := joinStrings(reasons)
 
 		method := verdict.Method
@@ -463,13 +516,16 @@ func ForwardScannedInput(
 			method = "unknown"
 		}
 
-		// Determine effective action: strictest of content scan action and policy action.
+		// Determine effective action: strictest of content scan, policy, and binding.
 		effectiveAction := ""
 		if !verdict.Clean {
 			effectiveAction = action
 		}
 		if policyVerdict.Matched {
 			effectiveAction = stricterAction(effectiveAction, policyVerdict.Action)
+		}
+		if bindingAction != "" {
+			effectiveAction = stricterAction(effectiveAction, bindingAction)
 		}
 
 		isNotification := len(verdict.ID) == 0

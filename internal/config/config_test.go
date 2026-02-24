@@ -1946,3 +1946,339 @@ forward_proxy:
 		t.Errorf("expected idle_timeout_seconds=60, got %d", cfg.ForwardProxy.IdleTimeoutSeconds)
 	}
 }
+
+func TestSessionProfilingValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		setup   func(*Config) // runs before ApplyDefaults (for enabling features)
+		modify  func(*Config) // runs after ApplyDefaults (for injecting invalid values)
+		wantErr string
+	}{
+		{
+			name: "disabled is valid with defaults",
+		},
+		{
+			name: "enabled with defaults is valid",
+			setup: func(c *Config) {
+				c.SessionProfiling.Enabled = true
+			},
+		},
+		{
+			name: "invalid anomaly action",
+			setup: func(c *Config) {
+				c.SessionProfiling.Enabled = true
+			},
+			modify: func(c *Config) {
+				c.SessionProfiling.AnomalyAction = "invalid" //nolint:goconst // test value
+			},
+			wantErr: "anomaly_action",
+		},
+		{
+			name: "zero domain burst",
+			setup: func(c *Config) {
+				c.SessionProfiling.Enabled = true
+			},
+			modify: func(c *Config) {
+				c.SessionProfiling.DomainBurst = 0
+			},
+			wantErr: "domain_burst must be positive",
+		},
+		{
+			name: "zero window minutes",
+			setup: func(c *Config) {
+				c.SessionProfiling.Enabled = true
+			},
+			modify: func(c *Config) {
+				c.SessionProfiling.WindowMinutes = 0
+			},
+			wantErr: "window_minutes must be positive",
+		},
+		{
+			name: "zero volume spike ratio",
+			setup: func(c *Config) {
+				c.SessionProfiling.Enabled = true
+			},
+			modify: func(c *Config) {
+				c.SessionProfiling.VolumeSpikeRatio = 0
+			},
+			wantErr: "volume_spike_ratio must be positive",
+		},
+		{
+			name: "zero max sessions always invalid",
+			modify: func(c *Config) {
+				c.SessionProfiling.MaxSessions = 0
+			},
+			wantErr: "max_sessions must be positive",
+		},
+		{
+			name: "zero session ttl always invalid",
+			modify: func(c *Config) {
+				c.SessionProfiling.SessionTTLMinutes = 0
+			},
+			wantErr: "session_ttl_minutes must be positive",
+		},
+		{
+			name: "zero cleanup interval always invalid",
+			modify: func(c *Config) {
+				c.SessionProfiling.CleanupIntervalSeconds = 0
+			},
+			wantErr: "cleanup_interval_seconds must be positive",
+		},
+		{
+			name: "custom valid config",
+			setup: func(c *Config) {
+				c.SessionProfiling.Enabled = true
+				c.SessionProfiling.AnomalyAction = ActionBlock
+				c.SessionProfiling.DomainBurst = 10
+				c.SessionProfiling.WindowMinutes = 10
+				c.SessionProfiling.VolumeSpikeRatio = 5.0
+				c.SessionProfiling.MaxSessions = 500
+				c.SessionProfiling.SessionTTLMinutes = 60
+				c.SessionProfiling.CleanupIntervalSeconds = 120
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Defaults()
+			if tt.setup != nil {
+				tt.setup(cfg)
+			}
+			cfg.ApplyDefaults()
+			if tt.modify != nil {
+				tt.modify(cfg)
+			}
+			err := cfg.Validate()
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatal("expected error")
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("error %q should contain %q", err.Error(), tt.wantErr)
+				}
+			} else if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestAdaptiveEnforcementValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		setup   func(*Config)
+		modify  func(*Config)
+		wantErr string
+	}{
+		{
+			name: "disabled is valid",
+		},
+		{
+			name: "enabled with defaults is valid",
+			setup: func(c *Config) {
+				c.AdaptiveEnforcement.Enabled = true
+			},
+		},
+		{
+			name: "zero threshold",
+			setup: func(c *Config) {
+				c.AdaptiveEnforcement.Enabled = true
+			},
+			modify: func(c *Config) {
+				c.AdaptiveEnforcement.EscalationThreshold = 0
+			},
+			wantErr: "escalation_threshold must be positive",
+		},
+		{
+			name: "negative decay",
+			setup: func(c *Config) {
+				c.AdaptiveEnforcement.Enabled = true
+			},
+			modify: func(c *Config) {
+				c.AdaptiveEnforcement.DecayPerCleanRequest = -0.1
+			},
+			wantErr: "decay_per_clean_request must be non-negative",
+		},
+		{
+			name: "zero decay is valid",
+			setup: func(c *Config) {
+				c.AdaptiveEnforcement.Enabled = true
+				c.AdaptiveEnforcement.DecayPerCleanRequest = 0
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Defaults()
+			if tt.setup != nil {
+				tt.setup(cfg)
+			}
+			cfg.ApplyDefaults()
+			if tt.modify != nil {
+				tt.modify(cfg)
+			}
+			err := cfg.Validate()
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatal("expected error")
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("error %q should contain %q", err.Error(), tt.wantErr)
+				}
+			} else if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestMCPSessionBindingValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		setup   func(*Config)
+		modify  func(*Config)
+		wantErr string
+	}{
+		{
+			name: "disabled is valid",
+		},
+		{
+			name: "enabled with defaults is valid",
+			setup: func(c *Config) {
+				c.MCPToolScanning.Enabled = true
+				c.MCPSessionBinding.Enabled = true
+			},
+		},
+		{
+			name: "enabled without tool scanning is invalid",
+			setup: func(c *Config) {
+				c.MCPSessionBinding.Enabled = true
+			},
+			wantErr: "mcp_session_binding.enabled requires mcp_tool_scanning.enabled",
+		},
+		{
+			name: "invalid unknown tool action",
+			setup: func(c *Config) {
+				c.MCPToolScanning.Enabled = true
+				c.MCPSessionBinding.Enabled = true
+			},
+			modify: func(c *Config) {
+				c.MCPSessionBinding.UnknownToolAction = "invalid" //nolint:goconst // test value
+			},
+			wantErr: "unknown_tool_action",
+		},
+		{
+			name: "invalid no baseline action",
+			setup: func(c *Config) {
+				c.MCPToolScanning.Enabled = true
+				c.MCPSessionBinding.Enabled = true
+			},
+			modify: func(c *Config) {
+				c.MCPSessionBinding.NoBaselineAction = "invalid" //nolint:goconst // test value
+			},
+			wantErr: "no_baseline_action",
+		},
+		{
+			name: "block actions are valid",
+			setup: func(c *Config) {
+				c.MCPToolScanning.Enabled = true
+				c.MCPSessionBinding.Enabled = true
+				c.MCPSessionBinding.UnknownToolAction = ActionBlock
+				c.MCPSessionBinding.NoBaselineAction = ActionBlock
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Defaults()
+			if tt.setup != nil {
+				tt.setup(cfg)
+			}
+			cfg.ApplyDefaults()
+			if tt.modify != nil {
+				tt.modify(cfg)
+			}
+			err := cfg.Validate()
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatal("expected error")
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("error %q should contain %q", err.Error(), tt.wantErr)
+				}
+			} else if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestSessionProfilingDefaults(t *testing.T) {
+	cfg := Defaults()
+	cfg.SessionProfiling.Enabled = true
+	cfg.ApplyDefaults()
+
+	if cfg.SessionProfiling.AnomalyAction != ActionWarn {
+		t.Errorf("expected warn, got %s", cfg.SessionProfiling.AnomalyAction)
+	}
+	if cfg.SessionProfiling.DomainBurst != 5 {
+		t.Errorf("expected 5, got %d", cfg.SessionProfiling.DomainBurst)
+	}
+	if cfg.SessionProfiling.WindowMinutes != 5 {
+		t.Errorf("expected 5, got %d", cfg.SessionProfiling.WindowMinutes)
+	}
+	if cfg.SessionProfiling.VolumeSpikeRatio != 3.0 {
+		t.Errorf("expected 3.0, got %f", cfg.SessionProfiling.VolumeSpikeRatio)
+	}
+	if cfg.SessionProfiling.MaxSessions != 1000 {
+		t.Errorf("expected 1000, got %d", cfg.SessionProfiling.MaxSessions)
+	}
+	if cfg.SessionProfiling.SessionTTLMinutes != 30 {
+		t.Errorf("expected 30, got %d", cfg.SessionProfiling.SessionTTLMinutes)
+	}
+	if cfg.SessionProfiling.CleanupIntervalSeconds != 60 {
+		t.Errorf("expected 60, got %d", cfg.SessionProfiling.CleanupIntervalSeconds)
+	}
+}
+
+func TestAdaptiveEnforcementDefaults(t *testing.T) {
+	cfg := Defaults()
+	cfg.AdaptiveEnforcement.Enabled = true
+	cfg.ApplyDefaults()
+
+	if cfg.AdaptiveEnforcement.EscalationThreshold != 5.0 {
+		t.Errorf("expected 5.0, got %f", cfg.AdaptiveEnforcement.EscalationThreshold)
+	}
+	if cfg.AdaptiveEnforcement.DecayPerCleanRequest != 0.5 {
+		t.Errorf("expected 0.5, got %f", cfg.AdaptiveEnforcement.DecayPerCleanRequest)
+	}
+}
+
+func TestMCPSessionBindingDefaults(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPSessionBinding.Enabled = true
+	cfg.ApplyDefaults()
+
+	if cfg.MCPSessionBinding.UnknownToolAction != ActionWarn {
+		t.Errorf("expected warn, got %s", cfg.MCPSessionBinding.UnknownToolAction)
+	}
+	if cfg.MCPSessionBinding.NoBaselineAction != ActionWarn {
+		t.Errorf("expected warn, got %s", cfg.MCPSessionBinding.NoBaselineAction)
+	}
+}
+
+func TestResourceBoundsDefaultEvenWhenDisabled(t *testing.T) {
+	cfg := Defaults()
+	// SessionProfiling NOT enabled
+	cfg.ApplyDefaults()
+
+	if cfg.SessionProfiling.MaxSessions != 1000 {
+		t.Errorf("max_sessions should default even when disabled, got %d", cfg.SessionProfiling.MaxSessions)
+	}
+	if cfg.SessionProfiling.SessionTTLMinutes != 30 {
+		t.Errorf("session_ttl_minutes should default even when disabled, got %d", cfg.SessionProfiling.SessionTTLMinutes)
+	}
+	if cfg.SessionProfiling.CleanupIntervalSeconds != 60 {
+		t.Errorf("cleanup_interval_seconds should default even when disabled, got %d", cfg.SessionProfiling.CleanupIntervalSeconds)
+	}
+}

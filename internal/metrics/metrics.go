@@ -36,6 +36,11 @@ type Metrics struct {
 	wsScanHits         *prometheus.CounterVec
 	wsRedirectHints    prometheus.Counter
 
+	sessionAnomalies   *prometheus.CounterVec
+	sessionEscalations *prometheus.CounterVec
+	sessionsActive     prometheus.Gauge
+	sessionsEvicted    prometheus.Counter
+
 	wsConnectionCount int64
 
 	mu                sync.Mutex
@@ -138,9 +143,34 @@ func New() *Metrics {
 		Help:      "CONNECT requests to known WebSocket API hosts.",
 	})
 
+	sessionAnomalies := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "pipelock",
+		Name:      "session_anomalies_total",
+		Help:      "Total session behavioral anomalies by type.",
+	}, []string{"type"})
+
+	sessionEscalations := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "pipelock",
+		Name:      "session_escalations_total",
+		Help:      "Total session enforcement escalations by transition.",
+	}, []string{"from", "to"})
+
+	sessionsActive := prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: "pipelock",
+		Name:      "sessions_active",
+		Help:      "Current number of active tracked sessions.",
+	})
+
+	sessionsEvicted := prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: "pipelock",
+		Name:      "sessions_evicted_total",
+		Help:      "Total sessions evicted by TTL or capacity.",
+	})
+
 	reg.MustRegister(requestsTotal, scannerHits, requestLatency,
 		tunnelsTotal, tunnelDuration, tunnelBytes, activeTunnels,
-		wsConnectionsTotal, wsDuration, wsBytes, activeWS, wsFrames, wsScanHits, wsRedirectHints)
+		wsConnectionsTotal, wsDuration, wsBytes, activeWS, wsFrames, wsScanHits, wsRedirectHints,
+		sessionAnomalies, sessionEscalations, sessionsActive, sessionsEvicted)
 
 	return &Metrics{
 		registry:           reg,
@@ -158,6 +188,10 @@ func New() *Metrics {
 		wsFrames:           wsFrames,
 		wsScanHits:         wsScanHits,
 		wsRedirectHints:    wsRedirectHints,
+		sessionAnomalies:   sessionAnomalies,
+		sessionEscalations: sessionEscalations,
+		sessionsActive:     sessionsActive,
+		sessionsEvicted:    sessionsEvicted,
 		startTime:          time.Now(),
 		topBlockedDomains:  make(map[string]int64),
 		topScannerHits:     make(map[string]int64),
@@ -266,6 +300,26 @@ func (m *Metrics) RecordWSScanHit(scannerName string) {
 // RecordWSRedirectHint records a CONNECT request to a known WebSocket API host.
 func (m *Metrics) RecordWSRedirectHint() {
 	m.wsRedirectHints.Inc()
+}
+
+// RecordSessionAnomaly increments the session anomaly counter by type.
+func (m *Metrics) RecordSessionAnomaly(anomalyType string) {
+	m.sessionAnomalies.WithLabelValues(anomalyType).Inc()
+}
+
+// RecordSessionEscalation increments the session escalation counter by transition.
+func (m *Metrics) RecordSessionEscalation(from, to string) {
+	m.sessionEscalations.WithLabelValues(from, to).Inc()
+}
+
+// SetSessionsActive sets the current number of active tracked sessions.
+func (m *Metrics) SetSessionsActive(n float64) {
+	m.sessionsActive.Set(n)
+}
+
+// RecordSessionEvicted increments the evicted sessions counter.
+func (m *Metrics) RecordSessionEvicted() {
+	m.sessionsEvicted.Inc()
 }
 
 // PrometheusHandler returns an HTTP handler that serves /metrics in Prometheus text format.

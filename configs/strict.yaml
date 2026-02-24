@@ -202,6 +202,18 @@ mcp_tool_policy:
       arg_pattern: '(?i)(\beval\b.*\bbase64\b|\bbase64\s+(-d|--decode)\b.*\|\s*(ba)?sh\b)'
       action: block
 
+# Session behavioral profiling (opt-in, warn-only recommended in v1)
+session_profiling:
+  enabled: false
+
+# Adaptive enforcement (opt-in)
+adaptive_enforcement:
+  enabled: false
+
+# MCP session binding (opt-in)
+mcp_session_binding:
+  enabled: false
+
 logging:
   format: json
   output: stdout

@@ -236,6 +236,72 @@ func TestTopScannersCapped(t *testing.T) {
 	m.mu.Unlock()
 }
 
+func TestRecordSessionAnomaly(t *testing.T) {
+	m := New()
+	m.RecordSessionAnomaly("domain_burst")
+	m.RecordSessionAnomaly("domain_burst")
+	m.RecordSessionAnomaly("volume_spike")
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	m.PrometheusHandler().ServeHTTP(w, req)
+
+	body, _ := io.ReadAll(w.Body)
+	text := string(body)
+	if !strings.Contains(text, `pipelock_session_anomalies_total{type="domain_burst"}`) {
+		t.Error("expected domain_burst anomaly counter in /metrics")
+	}
+	if !strings.Contains(text, `pipelock_session_anomalies_total{type="volume_spike"}`) {
+		t.Error("expected volume_spike anomaly counter in /metrics")
+	}
+}
+
+func TestRecordSessionEscalation(t *testing.T) {
+	m := New()
+	m.RecordSessionEscalation("warn", "block")
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	m.PrometheusHandler().ServeHTTP(w, req)
+
+	body, _ := io.ReadAll(w.Body)
+	text := string(body)
+	if !strings.Contains(text, `pipelock_session_escalations_total{from="warn",to="block"}`) {
+		t.Error("expected escalation counter in /metrics")
+	}
+}
+
+func TestSetSessionsActive(t *testing.T) {
+	m := New()
+	m.SetSessionsActive(42)
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	m.PrometheusHandler().ServeHTTP(w, req)
+
+	body, _ := io.ReadAll(w.Body)
+	text := string(body)
+	if !strings.Contains(text, "pipelock_sessions_active") {
+		t.Error("expected pipelock_sessions_active gauge in /metrics")
+	}
+}
+
+func TestRecordSessionEvicted(t *testing.T) {
+	m := New()
+	m.RecordSessionEvicted()
+	m.RecordSessionEvicted()
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	m.PrometheusHandler().ServeHTTP(w, req)
+
+	body, _ := io.ReadAll(w.Body)
+	text := string(body)
+	if !strings.Contains(text, "pipelock_sessions_evicted_total") {
+		t.Error("expected pipelock_sessions_evicted_total counter in /metrics")
+	}
+}
+
 func TestTopScannersExistingKeyStillIncrements(t *testing.T) {
 	m := New()
 	// Fill scanners to cap with same key

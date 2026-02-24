@@ -221,6 +221,11 @@ Environment passthrough (subprocess mode only):
 					Action:      cfg.MCPToolScanning.Action,
 					DetectDrift: cfg.MCPToolScanning.DetectDrift,
 				}
+				// Wire session binding into tool scanning when enabled.
+				if cfg.MCPSessionBinding.Enabled {
+					toolCfg.BindingUnknownAction = cfg.MCPSessionBinding.UnknownToolAction
+					toolCfg.BindingNoBaselineAction = cfg.MCPSessionBinding.NoBaselineAction
+				}
 			}
 
 			// Auto-enable MCP tool call policy for proxy mode unless explicitly configured.

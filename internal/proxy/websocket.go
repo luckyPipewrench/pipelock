@@ -109,6 +109,11 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	// Run through all 9 scanner layers.
 	result := sc.Scan(scanURL)
+
+	// Session profiling: record BEFORE the enforce-mode early return so adaptive
+	// signals (SignalBlock) fire even for blocked requests.
+	sessionBlocked, sessionDetail := p.recordSessionActivity(clientIP, agent, parsed.Hostname(), requestID, result.Allowed, result.Score, cfg, log)
+
 	if !result.Allowed {
 		if cfg.EnforceEnabled() {
 			log.LogBlocked("WS", targetURL, result.Scanner, result.Reason, clientIP, requestID)
@@ -119,6 +124,11 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		log.LogAnomaly("WS", targetURL,
 			fmt.Sprintf("[audit] %s: %s", result.Scanner, result.Reason),
 			clientIP, requestID, result.Score)
+	}
+
+	if sessionBlocked {
+		http.Error(w, sessionDetail, http.StatusForbidden)
+		return
 	}
 
 	// Check connection semaphore.

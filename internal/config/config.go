@@ -38,21 +38,24 @@ const (
 
 // Config is the top-level Pipelock configuration.
 type Config struct {
-	Version          int              `yaml:"version"`
-	Mode             string           `yaml:"mode"`    // strict, balanced, audit
-	Enforce          *bool            `yaml:"enforce"` // nil = true (default); false = detect & log without blocking
-	APIAllowlist     []string         `yaml:"api_allowlist"`
-	FetchProxy       FetchProxy       `yaml:"fetch_proxy"`
-	ForwardProxy     ForwardProxy     `yaml:"forward_proxy"`
-	WebSocketProxy   WebSocketProxy   `yaml:"websocket_proxy"`
-	DLP              DLP              `yaml:"dlp"`
-	ResponseScanning ResponseScanning `yaml:"response_scanning"`
-	MCPInputScanning MCPInputScanning `yaml:"mcp_input_scanning"`
-	MCPToolScanning  MCPToolScanning  `yaml:"mcp_tool_scanning"`
-	MCPToolPolicy    MCPToolPolicy    `yaml:"mcp_tool_policy"`
-	GitProtection    GitProtection    `yaml:"git_protection"`
-	Logging          LoggingConfig    `yaml:"logging"`
-	Internal         []string         `yaml:"internal"`
+	Version             int                 `yaml:"version"`
+	Mode                string              `yaml:"mode"`    // strict, balanced, audit
+	Enforce             *bool               `yaml:"enforce"` // nil = true (default); false = detect & log without blocking
+	APIAllowlist        []string            `yaml:"api_allowlist"`
+	FetchProxy          FetchProxy          `yaml:"fetch_proxy"`
+	ForwardProxy        ForwardProxy        `yaml:"forward_proxy"`
+	WebSocketProxy      WebSocketProxy      `yaml:"websocket_proxy"`
+	DLP                 DLP                 `yaml:"dlp"`
+	ResponseScanning    ResponseScanning    `yaml:"response_scanning"`
+	MCPInputScanning    MCPInputScanning    `yaml:"mcp_input_scanning"`
+	MCPToolScanning     MCPToolScanning     `yaml:"mcp_tool_scanning"`
+	MCPToolPolicy       MCPToolPolicy       `yaml:"mcp_tool_policy"`
+	GitProtection       GitProtection       `yaml:"git_protection"`
+	Logging             LoggingConfig       `yaml:"logging"`
+	SessionProfiling    SessionProfiling    `yaml:"session_profiling"`
+	AdaptiveEnforcement AdaptiveEnforcement `yaml:"adaptive_enforcement"`
+	MCPSessionBinding   MCPSessionBinding   `yaml:"mcp_session_binding"`
+	Internal            []string            `yaml:"internal"`
 }
 
 // MCPInputScanning configures scanning of MCP JSON-RPC requests going from
@@ -191,6 +194,38 @@ type LoggingConfig struct {
 	// Currently parsed from config but not enforced.
 }
 
+// SessionProfiling configures per-session behavioral analysis.
+// Tracks domains, volumes, and scanner signals per agent session to detect
+// anomalous behavior patterns like sudden domain bursts or volume spikes.
+type SessionProfiling struct {
+	Enabled                bool    `yaml:"enabled"`
+	AnomalyAction          string  `yaml:"anomaly_action"`           // warn, block
+	DomainBurst            int     `yaml:"domain_burst"`             // new domains in one window to flag
+	WindowMinutes          int     `yaml:"window_minutes"`           // rolling window duration
+	VolumeSpikeRatio       float64 `yaml:"volume_spike_ratio"`       // bytes > ratio * rolling avg
+	MaxSessions            int     `yaml:"max_sessions"`             // hard cap on concurrent sessions
+	SessionTTLMinutes      int     `yaml:"session_ttl_minutes"`      // idle eviction TTL
+	CleanupIntervalSeconds int     `yaml:"cleanup_interval_seconds"` // background cleanup period
+}
+
+// AdaptiveEnforcement configures per-session threat scoring with escalation.
+// Score accumulates from DLP near-misses and blocks. When threshold is exceeded,
+// the session's enforcement level escalates (audit->warn or warn->block).
+type AdaptiveEnforcement struct {
+	Enabled              bool    `yaml:"enabled"`
+	EscalationThreshold  float64 `yaml:"escalation_threshold"`    // points before escalation
+	DecayPerCleanRequest float64 `yaml:"decay_per_clean_request"` // score reduction per clean request
+}
+
+// MCPSessionBinding configures tool inventory validation per MCP connection.
+// Captures tool names on first tools/list response and validates subsequent
+// tools/call requests against that baseline.
+type MCPSessionBinding struct {
+	Enabled           bool   `yaml:"enabled"`
+	UnknownToolAction string `yaml:"unknown_tool_action"` // warn, block
+	NoBaselineAction  string `yaml:"no_baseline_action"`  // warn, block
+}
+
 // Load reads, parses, defaults, and validates a Pipelock config file.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // G304: path from caller
@@ -324,6 +359,51 @@ func (c *Config) ApplyDefaults() {
 			"::1/128",        // IPv6 loopback
 			"fc00::/7",       // IPv6 unique local
 			"fe80::/10",      // IPv6 link-local
+		}
+	}
+
+	// Session profiling defaults
+	if c.SessionProfiling.Enabled {
+		if c.SessionProfiling.AnomalyAction == "" {
+			c.SessionProfiling.AnomalyAction = ActionWarn
+		}
+		if c.SessionProfiling.DomainBurst <= 0 {
+			c.SessionProfiling.DomainBurst = 5
+		}
+		if c.SessionProfiling.WindowMinutes <= 0 {
+			c.SessionProfiling.WindowMinutes = 5
+		}
+		if c.SessionProfiling.VolumeSpikeRatio <= 0 {
+			c.SessionProfiling.VolumeSpikeRatio = 3.0
+		}
+	}
+	if c.SessionProfiling.MaxSessions <= 0 {
+		c.SessionProfiling.MaxSessions = 1000
+	}
+	if c.SessionProfiling.SessionTTLMinutes <= 0 {
+		c.SessionProfiling.SessionTTLMinutes = 30
+	}
+	if c.SessionProfiling.CleanupIntervalSeconds <= 0 {
+		c.SessionProfiling.CleanupIntervalSeconds = 60
+	}
+
+	// Adaptive enforcement defaults
+	if c.AdaptiveEnforcement.Enabled {
+		if c.AdaptiveEnforcement.EscalationThreshold <= 0 {
+			c.AdaptiveEnforcement.EscalationThreshold = 5.0
+		}
+		if c.AdaptiveEnforcement.DecayPerCleanRequest <= 0 {
+			c.AdaptiveEnforcement.DecayPerCleanRequest = 0.5
+		}
+	}
+
+	// MCP session binding defaults
+	if c.MCPSessionBinding.Enabled {
+		if c.MCPSessionBinding.UnknownToolAction == "" {
+			c.MCPSessionBinding.UnknownToolAction = ActionWarn
+		}
+		if c.MCPSessionBinding.NoBaselineAction == "" {
+			c.MCPSessionBinding.NoBaselineAction = ActionWarn
 		}
 	}
 }
@@ -532,6 +612,63 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// Validate session profiling config
+	if c.SessionProfiling.Enabled {
+		switch c.SessionProfiling.AnomalyAction {
+		case ActionWarn, ActionBlock:
+			// valid
+		default:
+			return fmt.Errorf("invalid session_profiling.anomaly_action %q: must be warn or block", c.SessionProfiling.AnomalyAction)
+		}
+		if c.SessionProfiling.DomainBurst <= 0 {
+			return fmt.Errorf("session_profiling.domain_burst must be positive")
+		}
+		if c.SessionProfiling.WindowMinutes <= 0 {
+			return fmt.Errorf("session_profiling.window_minutes must be positive")
+		}
+		if c.SessionProfiling.VolumeSpikeRatio <= 0 {
+			return fmt.Errorf("session_profiling.volume_spike_ratio must be positive")
+		}
+	}
+	if c.SessionProfiling.MaxSessions <= 0 {
+		return fmt.Errorf("session_profiling.max_sessions must be positive")
+	}
+	if c.SessionProfiling.SessionTTLMinutes <= 0 {
+		return fmt.Errorf("session_profiling.session_ttl_minutes must be positive")
+	}
+	if c.SessionProfiling.CleanupIntervalSeconds <= 0 {
+		return fmt.Errorf("session_profiling.cleanup_interval_seconds must be positive")
+	}
+
+	// Validate adaptive enforcement config
+	if c.AdaptiveEnforcement.Enabled {
+		if c.AdaptiveEnforcement.EscalationThreshold <= 0 {
+			return fmt.Errorf("adaptive_enforcement.escalation_threshold must be positive")
+		}
+		if c.AdaptiveEnforcement.DecayPerCleanRequest < 0 {
+			return fmt.Errorf("adaptive_enforcement.decay_per_clean_request must be non-negative")
+		}
+	}
+
+	// Validate MCP session binding config
+	if c.MCPSessionBinding.Enabled {
+		if !c.MCPToolScanning.Enabled {
+			return fmt.Errorf("mcp_session_binding.enabled requires mcp_tool_scanning.enabled (binding needs tool scanning for baseline capture)")
+		}
+		switch c.MCPSessionBinding.UnknownToolAction {
+		case ActionWarn, ActionBlock:
+			// valid
+		default:
+			return fmt.Errorf("invalid mcp_session_binding.unknown_tool_action %q: must be warn or block", c.MCPSessionBinding.UnknownToolAction)
+		}
+		switch c.MCPSessionBinding.NoBaselineAction {
+		case ActionWarn, ActionBlock:
+			// valid
+		default:
+			return fmt.Errorf("invalid mcp_session_binding.no_baseline_action %q: must be warn or block", c.MCPSessionBinding.NoBaselineAction)
+		}
+	}
+
 	// Validate internal CIDRs are parseable
 	for _, cidr := range c.Internal {
 		if _, _, err := net.ParseCIDR(cidr); err != nil {
@@ -652,6 +789,30 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		warnings = append(warnings, ReloadWarning{
 			Field:   "websocket_proxy.enabled",
 			Message: "WebSocket proxy disabled",
+		})
+	}
+
+	// Session profiling disabled
+	if old.SessionProfiling.Enabled && !updated.SessionProfiling.Enabled {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "session_profiling.enabled",
+			Message: "session behavioral profiling disabled",
+		})
+	}
+
+	// Adaptive enforcement disabled
+	if old.AdaptiveEnforcement.Enabled && !updated.AdaptiveEnforcement.Enabled {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "adaptive_enforcement.enabled",
+			Message: "adaptive enforcement disabled",
+		})
+	}
+
+	// MCP session binding disabled
+	if old.MCPSessionBinding.Enabled && !updated.MCPSessionBinding.Enabled {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "mcp_session_binding.enabled",
+			Message: "MCP session binding disabled",
 		})
 	}
 
@@ -789,6 +950,11 @@ func Defaults() *Config {
 			Output:         DefaultLogOutput,
 			IncludeAllowed: true,
 			IncludeBlocked: true,
+		},
+		SessionProfiling: SessionProfiling{
+			MaxSessions:            1000,
+			SessionTTLMinutes:      30,
+			CleanupIntervalSeconds: 60,
 		},
 		Internal: []string{
 			"0.0.0.0/8",

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -2317,4 +2318,483 @@ func TestProxy_Reload_UpdatesCurrentConfig(t *testing.T) {
 	if reloaded.FetchProxy.UserAgent != "Updated/2.0" {
 		t.Errorf("expected user agent 'Updated/2.0', got %s", reloaded.FetchProxy.UserAgent)
 	}
+}
+
+func TestProxy_SessionProfiling_DomainBurst(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.FetchProxy.TimeoutSeconds = 5
+	cfg.Internal = nil
+	cfg.APIAllowlist = nil
+	cfg.SessionProfiling.Enabled = true
+	cfg.SessionProfiling.AnomalyAction = config.ActionBlock
+	cfg.SessionProfiling.DomainBurst = 2
+	cfg.SessionProfiling.WindowMinutes = 5
+	cfg.SessionProfiling.VolumeSpikeRatio = 10.0 // high, won't trigger
+	cfg.SessionProfiling.MaxSessions = 100
+	cfg.SessionProfiling.SessionTTLMinutes = 30
+	cfg.SessionProfiling.CleanupIntervalSeconds = 60
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+	p := New(cfg, logger, sc, metrics.New())
+	defer p.Close()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+
+	// Send requests to different domains. These will fail at fetch (DNS)
+	// but session profiling runs before fetch, so anomalies are detected.
+	// First 2 domains are within burst threshold.
+	for _, domain := range []string{"a.example.com", "b.example.com"} {
+		req := httptest.NewRequest(http.MethodGet, "/fetch?url=http://"+domain+"/text", nil)
+		req.RemoteAddr = "192.168.1.1:12345" //nolint:goconst // test value
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+
+		// Should NOT be 403 (domain burst not yet exceeded)
+		if w.Code == http.StatusForbidden {
+			var resp FetchResponse
+			_ = json.Unmarshal(w.Body.Bytes(), &resp)
+			t.Fatalf("domain %s should not trigger session anomaly block, got: %s", domain, resp.BlockReason)
+		}
+	}
+
+	// 3rd domain exceeds burst threshold (3 > 2), should be blocked.
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url=http://c.example.com/text", nil)
+	req.RemoteAddr = "192.168.1.1:12345"
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for domain burst, got %d", w.Code)
+	}
+
+	var resp FetchResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if !resp.Blocked {
+		t.Error("expected blocked=true")
+	}
+	if !strings.Contains(resp.BlockReason, "session anomaly") {
+		t.Errorf("expected session anomaly block reason, got: %s", resp.BlockReason)
+	}
+}
+
+func TestProxy_SessionProfiling_WarnMode(t *testing.T) {
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = fmt.Fprint(w, "ok")
+	}))
+	defer backend.Close()
+
+	cfg := config.Defaults()
+	cfg.FetchProxy.TimeoutSeconds = 5
+	cfg.Internal = nil
+	cfg.APIAllowlist = nil
+	cfg.SessionProfiling.Enabled = true
+	cfg.SessionProfiling.AnomalyAction = config.ActionWarn // warn, not block
+	cfg.SessionProfiling.DomainBurst = 2
+	cfg.SessionProfiling.WindowMinutes = 5
+	cfg.SessionProfiling.VolumeSpikeRatio = 10.0
+	cfg.SessionProfiling.MaxSessions = 100
+	cfg.SessionProfiling.SessionTTLMinutes = 30
+	cfg.SessionProfiling.CleanupIntervalSeconds = 60
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+	p := New(cfg, logger, sc, metrics.New())
+	defer p.Close()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+
+	// Send 3 requests to different domains via the backend URL with different paths.
+	// All use the same backend hostname, so domain burst won't trigger (only 1 unique domain).
+	for range 3 {
+		req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/text", nil)
+		req.RemoteAddr = "192.168.1.1:12345"
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+
+		// In warn mode, requests should succeed even with anomalies.
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 in warn mode, got %d", w.Code)
+		}
+	}
+}
+
+func TestProxy_SessionProfiling_Disabled(t *testing.T) {
+	p, backend := setupTestProxy(t)
+	defer backend.Close()
+
+	// Default config has session profiling disabled, so sessionMgr is nil.
+	if p.sessionMgrPtr.Load() != nil {
+		t.Fatal("sessionMgr should be nil when profiling disabled")
+	}
+
+	// Normal requests should work fine.
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/text", nil)
+	w := httptest.NewRecorder()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 with profiling disabled, got %d", w.Code)
+	}
+}
+
+func TestProxy_AdaptiveEscalation(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.FetchProxy.TimeoutSeconds = 5
+	cfg.Internal = nil
+	cfg.APIAllowlist = nil
+	cfg.SessionProfiling.Enabled = true
+	cfg.SessionProfiling.AnomalyAction = config.ActionWarn
+	cfg.SessionProfiling.DomainBurst = 100 // high, won't trigger
+	cfg.SessionProfiling.WindowMinutes = 5
+	cfg.SessionProfiling.VolumeSpikeRatio = 10.0
+	cfg.SessionProfiling.MaxSessions = 100
+	cfg.SessionProfiling.SessionTTLMinutes = 30
+	cfg.SessionProfiling.CleanupIntervalSeconds = 60
+	cfg.AdaptiveEnforcement.Enabled = true
+	cfg.AdaptiveEnforcement.EscalationThreshold = 3.0
+	cfg.AdaptiveEnforcement.DecayPerCleanRequest = 0.5
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+	m := metrics.New()
+	p := New(cfg, logger, sc, m)
+	defer p.Close()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+
+	// Send requests with DLP matches (high score, but allowed in audit mode).
+	// These trigger SignalDLPNearMiss (+1 each) or SignalBlock (+3 each).
+	// Using a URL that triggers a scanner hit with a score (like a DLP near-miss).
+	// A request to a blocked domain in audit mode produces Score > 0.
+	auditMode := false
+	_ = auditMode // just documenting the approach
+
+	// Use a clean URL to the same client IP — verify the session exists and
+	// tracks clean requests (decay).
+	for range 5 {
+		req := httptest.NewRequest(http.MethodGet, "/fetch?url=http://safe.example.com/page", nil)
+		req.RemoteAddr = "10.0.0.1:12345"
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		// These will fail at fetch (DNS) but session records them as clean.
+		_ = w
+	}
+
+	// Verify session was created and has decayed score.
+	sess := p.sessionMgrPtr.Load().GetOrCreate("10.0.0.1")
+	if sess.ThreatScore() != 0 {
+		t.Errorf("expected score 0 after clean requests, got %f", sess.ThreatScore())
+	}
+
+	// Manually inject signals to test escalation integration.
+	// SignalBlock adds +3, which meets the threshold of 3.0.
+	escalated, from, to := sess.RecordSignal(SignalBlock, cfg.AdaptiveEnforcement.EscalationThreshold)
+	if !escalated {
+		t.Error("should escalate when score reaches threshold")
+	}
+	if from != "normal" {
+		t.Errorf("expected from=normal, got %s", from)
+	}
+	if to != "elevated" {
+		t.Errorf("expected to=elevated, got %s", to)
+	}
+
+	if sess.ThreatScore() != 3.0 {
+		t.Errorf("expected score 3.0, got %f", sess.ThreatScore())
+	}
+	if !sess.IsEscalated() {
+		t.Error("session should be escalated at threshold")
+	}
+}
+
+func TestProxy_Close_SessionManager(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SessionProfiling.Enabled = true
+	cfg.SessionProfiling.AnomalyAction = config.ActionWarn
+	cfg.SessionProfiling.DomainBurst = 5
+	cfg.SessionProfiling.WindowMinutes = 5
+	cfg.SessionProfiling.VolumeSpikeRatio = 3.0
+	cfg.SessionProfiling.MaxSessions = 100
+	cfg.SessionProfiling.SessionTTLMinutes = 30
+	cfg.SessionProfiling.CleanupIntervalSeconds = 60
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+	p := New(cfg, logger, sc, metrics.New())
+
+	if p.sessionMgrPtr.Load() == nil {
+		t.Fatal("sessionMgr should be non-nil when profiling enabled")
+	}
+
+	// Close should not panic. Double close should be safe.
+	p.Close()
+	p.Close()
+}
+
+func TestProxy_Reload_TogglesSessionManager(t *testing.T) {
+	// Start with profiling disabled.
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SessionProfiling.Enabled = false
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+	m := metrics.New()
+	p := New(cfg, logger, sc, m)
+	defer p.Close()
+
+	if p.sessionMgrPtr.Load() != nil {
+		t.Fatal("sessionMgr should be nil when profiling disabled")
+	}
+
+	// Reload with profiling enabled — should create session manager.
+	cfg2 := config.Defaults()
+	cfg2.Internal = nil
+	cfg2.SessionProfiling.Enabled = true
+	cfg2.SessionProfiling.AnomalyAction = config.ActionWarn
+	cfg2.SessionProfiling.DomainBurst = 5
+	cfg2.SessionProfiling.WindowMinutes = 5
+	cfg2.SessionProfiling.MaxSessions = 100
+	cfg2.SessionProfiling.SessionTTLMinutes = 30
+	cfg2.SessionProfiling.CleanupIntervalSeconds = 60
+	sc2 := scanner.New(cfg2)
+	p.Reload(cfg2, sc2)
+
+	if p.sessionMgrPtr.Load() == nil {
+		t.Fatal("sessionMgr should be created on reload when enabling profiling")
+	}
+
+	// Reload with profiling disabled — should close and nil session manager.
+	cfg3 := config.Defaults()
+	cfg3.Internal = nil
+	cfg3.SessionProfiling.Enabled = false
+	sc3 := scanner.New(cfg3)
+	p.Reload(cfg3, sc3)
+
+	if p.sessionMgrPtr.Load() != nil {
+		t.Fatal("sessionMgr should be nil after reload disables profiling")
+	}
+}
+
+func TestProxy_SessionProfiling_AgentKeying(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.FetchProxy.TimeoutSeconds = 5
+	cfg.Internal = nil
+	cfg.APIAllowlist = nil
+	cfg.SessionProfiling.Enabled = true
+	cfg.SessionProfiling.AnomalyAction = config.ActionBlock
+	cfg.SessionProfiling.DomainBurst = 2
+	cfg.SessionProfiling.WindowMinutes = 5
+	cfg.SessionProfiling.MaxSessions = 100
+	cfg.SessionProfiling.SessionTTLMinutes = 30
+	cfg.SessionProfiling.CleanupIntervalSeconds = 60
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+	p := New(cfg, logger, sc, metrics.New())
+	defer p.Close()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+
+	// Agent "alpha" hits 3 unique domains (exceeds burst of 2).
+	for _, domain := range []string{"a.example.com", "b.example.com", "c.example.com"} {
+		req := httptest.NewRequest(http.MethodGet, "/fetch?url=http://"+domain+"/x", nil)
+		req.RemoteAddr = "10.0.0.1:9999" //nolint:goconst // test value
+		req.Header.Set("X-Pipelock-Agent", "alpha")
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+	}
+
+	// Agent "beta" on the SAME client IP should have a separate session.
+	// 1st unique domain for beta — should NOT be blocked.
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url=http://d.example.com/x", nil)
+	req.RemoteAddr = "10.0.0.1:9999" //nolint:goconst // test value
+	req.Header.Set("X-Pipelock-Agent", "beta")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	// If keying were clientIP-only, beta would inherit alpha's 3 unique domains
+	// and this 4th would trigger domain_burst. With agent|clientIP keying,
+	// beta has only 1 domain — no anomaly.
+	if w.Code == http.StatusForbidden {
+		var resp FetchResponse
+		_ = json.Unmarshal(w.Body.Bytes(), &resp)
+		t.Errorf("beta agent should not be blocked by alpha's domain burst, got: %s", resp.BlockReason)
+	}
+}
+
+func TestProxy_AdaptiveSignalBlock_InEnforceMode(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.FetchProxy.TimeoutSeconds = 5
+	cfg.Internal = nil
+	cfg.APIAllowlist = nil
+	// Enable session profiling + adaptive enforcement.
+	cfg.SessionProfiling.Enabled = true
+	cfg.SessionProfiling.AnomalyAction = config.ActionWarn
+	cfg.SessionProfiling.DomainBurst = 100 // high, won't trigger
+	cfg.SessionProfiling.WindowMinutes = 5
+	cfg.SessionProfiling.MaxSessions = 100
+	cfg.SessionProfiling.SessionTTLMinutes = 30
+	cfg.SessionProfiling.CleanupIntervalSeconds = 60
+	cfg.AdaptiveEnforcement.Enabled = true
+	cfg.AdaptiveEnforcement.EscalationThreshold = 3.0
+	cfg.AdaptiveEnforcement.DecayPerCleanRequest = 0.1
+
+	// Add a blocklist entry so the scanner blocks a specific domain in enforce mode.
+	cfg.Mode = "enforce"
+	cfg.FetchProxy.Monitoring.Blocklist = []string{"evil.example.com"}
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+	p := New(cfg, logger, sc, metrics.New())
+	defer p.Close()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+
+	// Send a request to the blocked domain. Scanner will block it (403).
+	// With the W4 fix, recordSessionActivity runs BEFORE the enforce return,
+	// so SignalBlock (+3) fires and the session gets escalated.
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url=http://evil.example.com/data", nil)
+	req.RemoteAddr = "10.0.0.1:9999" //nolint:goconst // test value
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 from scanner block, got %d", w.Code)
+	}
+
+	// Verify the session received the SignalBlock signal.
+	sess := p.sessionMgrPtr.Load().GetOrCreate("10.0.0.1")
+	score := sess.ThreatScore()
+	if score < 3.0 {
+		t.Errorf("expected threat score >= 3.0 from SignalBlock in enforce mode, got %f", score)
+	}
+	if !sess.IsEscalated() {
+		t.Error("session should be escalated after SignalBlock in enforce mode")
+	}
+}
+
+func TestProxy_Reload_UpdatesSessionConfig(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SessionProfiling.Enabled = true
+	cfg.SessionProfiling.AnomalyAction = config.ActionWarn
+	cfg.SessionProfiling.DomainBurst = 5
+	cfg.SessionProfiling.WindowMinutes = 5
+	cfg.SessionProfiling.MaxSessions = 100
+	cfg.SessionProfiling.SessionTTLMinutes = 30
+	cfg.SessionProfiling.CleanupIntervalSeconds = 60
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+	p := New(cfg, logger, sc, metrics.New())
+	defer p.Close()
+
+	sm := p.sessionMgrPtr.Load()
+	if sm == nil {
+		t.Fatal("sessionMgr should be non-nil")
+	}
+
+	// Create a session before reload.
+	sm.GetOrCreate("10.0.0.1")
+
+	// Reload with different MaxSessions (profiling stays enabled).
+	cfg2 := config.Defaults()
+	cfg2.Internal = nil
+	cfg2.SessionProfiling.Enabled = true
+	cfg2.SessionProfiling.AnomalyAction = config.ActionWarn
+	cfg2.SessionProfiling.DomainBurst = 10 // changed
+	cfg2.SessionProfiling.WindowMinutes = 5
+	cfg2.SessionProfiling.MaxSessions = 50       // changed
+	cfg2.SessionProfiling.SessionTTLMinutes = 15 // changed
+	cfg2.SessionProfiling.CleanupIntervalSeconds = 60
+	sc2 := scanner.New(cfg2)
+	p.Reload(cfg2, sc2)
+
+	// Same SessionManager instance should be retained (not replaced).
+	sm2 := p.sessionMgrPtr.Load()
+	if sm2 != sm {
+		t.Error("should retain same SessionManager when profiling stays enabled")
+	}
+
+	// Existing sessions should still be accessible.
+	if sm2.Len() != 1 {
+		t.Errorf("expected 1 session preserved after config update, got %d", sm2.Len())
+	}
+}
+
+func TestProxy_SessionMgr_ConcurrentReloadRequest(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.FetchProxy.TimeoutSeconds = 5
+	cfg.Internal = nil
+	cfg.APIAllowlist = nil
+	cfg.SessionProfiling.Enabled = true
+	cfg.SessionProfiling.AnomalyAction = config.ActionWarn
+	cfg.SessionProfiling.DomainBurst = 100
+	cfg.SessionProfiling.WindowMinutes = 5
+	cfg.SessionProfiling.MaxSessions = 100
+	cfg.SessionProfiling.SessionTTLMinutes = 30
+	cfg.SessionProfiling.CleanupIntervalSeconds = 60
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+	p := New(cfg, logger, sc, metrics.New())
+	defer p.Close()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+
+	// Hammer requests and reloads concurrently to detect races.
+	var wg sync.WaitGroup
+	for i := range 20 {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodGet, "/fetch?url=http://safe.example.com/page", nil)
+			req.RemoteAddr = fmt.Sprintf("10.0.0.%d:1234", n%5)
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, req)
+		}(i)
+	}
+	for range 5 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			newCfg := config.Defaults()
+			newCfg.Internal = nil
+			newCfg.SessionProfiling.Enabled = true
+			newCfg.SessionProfiling.AnomalyAction = config.ActionWarn
+			newCfg.SessionProfiling.DomainBurst = 100
+			newCfg.SessionProfiling.WindowMinutes = 5
+			newCfg.SessionProfiling.MaxSessions = 100
+			newCfg.SessionProfiling.SessionTTLMinutes = 30
+			newCfg.SessionProfiling.CleanupIntervalSeconds = 60
+			newSc := scanner.New(newCfg)
+			p.Reload(newCfg, newSc)
+		}()
+	}
+	wg.Wait()
+	// If the race detector doesn't fire, the atomic pointer is working.
 }

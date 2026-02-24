@@ -56,20 +56,23 @@ type EventType string
 
 // Event type constants for structured audit log entries.
 const (
-	EventAllowed      EventType = "allowed"
-	EventBlocked      EventType = "blocked"
-	EventError        EventType = "error"
-	EventAnomaly      EventType = "anomaly"
-	EventResponseScan EventType = "response_scan"
-	EventRedirect     EventType = "redirect"
-	EventTunnelOpen   EventType = "tunnel_open"
-	EventTunnelClose  EventType = "tunnel_close"
-	EventForwardHTTP  EventType = "forward_http"
-	EventConfigReload EventType = "config_reload"
-	EventWSOpen       EventType = "ws_open"
-	EventWSClose      EventType = "ws_close"
-	EventWSBlocked    EventType = "ws_blocked"
-	EventWSScan       EventType = "ws_scan"
+	EventAllowed            EventType = "allowed"
+	EventBlocked            EventType = "blocked"
+	EventError              EventType = "error"
+	EventAnomaly            EventType = "anomaly"
+	EventResponseScan       EventType = "response_scan"
+	EventRedirect           EventType = "redirect"
+	EventTunnelOpen         EventType = "tunnel_open"
+	EventTunnelClose        EventType = "tunnel_close"
+	EventForwardHTTP        EventType = "forward_http"
+	EventConfigReload       EventType = "config_reload"
+	EventWSOpen             EventType = "ws_open"
+	EventWSClose            EventType = "ws_close"
+	EventWSBlocked          EventType = "ws_blocked"
+	EventWSScan             EventType = "ws_scan"
+	EventSessionAnomaly     EventType = "session_anomaly"
+	EventAdaptiveEscalation EventType = "adaptive_escalation"
+	EventMCPUnknownTool     EventType = "mcp_unknown_tool"
 )
 
 // Logger handles structured audit logging using zerolog.
@@ -348,6 +351,41 @@ func (l *Logger) LogWSScan(target, direction, clientIP, requestID, action string
 		Int("match_count", matchCount).
 		Strs("patterns", patternNames).
 		Msg("websocket scan hit")
+}
+
+// LogSessionAnomaly logs a session behavioral anomaly detection.
+func (l *Logger) LogSessionAnomaly(sessionKey, anomalyType, detail, clientIP, requestID string, score float64) {
+	l.zl.Warn().
+		Str("event", string(EventSessionAnomaly)).
+		Str("session", sanitizeString(sessionKey)).
+		Str("anomaly_type", anomalyType).
+		Str("detail", sanitizeString(detail)).
+		Str("client_ip", clientIP).
+		Str("request_id", requestID).
+		Float64("score", score).
+		Msg("session anomaly detected")
+}
+
+// LogAdaptiveEscalation logs an enforcement level escalation.
+func (l *Logger) LogAdaptiveEscalation(sessionKey, from, to, clientIP, requestID string, score float64) {
+	l.zl.Warn().
+		Str("event", string(EventAdaptiveEscalation)).
+		Str("session", sanitizeString(sessionKey)).
+		Str("from", from).
+		Str("to", to).
+		Str("client_ip", clientIP).
+		Str("request_id", requestID).
+		Float64("score", score).
+		Msg("enforcement escalated")
+}
+
+// LogMCPUnknownTool logs a tool call to a tool not in the session baseline.
+func (l *Logger) LogMCPUnknownTool(toolName, action string) {
+	l.zl.Warn().
+		Str("event", string(EventMCPUnknownTool)).
+		Str("tool", sanitizeString(toolName)).
+		Str("action", action).
+		Msg("tool not in session baseline")
 }
 
 // With returns a sub-logger that includes the given key-value pair in every

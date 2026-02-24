@@ -8,7 +8,7 @@ branding:
 
 inputs:
   version:
-    description: 'Pipelock version to use (e.g., "0.2.8"). Defaults to latest release.'
+    description: 'Pipelock version to use (e.g., "0.2.9"). Defaults to latest release.'
     required: false
     default: 'latest'
   config:
@@ -68,7 +68,7 @@ runs:
         VERSION="$PIPELOCK_VERSION"
         if [ "$VERSION" = "latest" ]; then
           # Use GitHub API directly (no gh CLI dependency)
-          VERSION=$(curl -fsSL --connect-timeout 10 --max-time 30 \
+          VERSION=$(curl -fsSL --connect-timeout 10 --max-time 30 --retry 3 --retry-delay 2 --retry-all-errors \
             -H "Authorization: token $GH_TOKEN" \
             "https://api.github.com/repos/luckyPipewrench/pipelock/releases/latest" \
             | jq -r '.tag_name' | sed 's/^v//')
@@ -104,8 +104,8 @@ runs:
         mkdir -p "$INSTALL_DIR"
 
         echo "Downloading pipelock v${VERSION} (${GOOS}/${GOARCH})..."
-        curl -fsSL --connect-timeout 10 --max-time 60 "${BASE_URL}/${ASSET}" -o "${INSTALL_DIR}/pipelock.tar.gz"
-        curl -fsSL --connect-timeout 10 --max-time 30 "${BASE_URL}/checksums.txt" -o "${INSTALL_DIR}/checksums.txt"
+        curl -fsSL --connect-timeout 10 --max-time 60 --retry 3 --retry-delay 2 --retry-all-errors "${BASE_URL}/${ASSET}" -o "${INSTALL_DIR}/pipelock.tar.gz"
+        curl -fsSL --connect-timeout 10 --max-time 30 --retry 3 --retry-delay 2 --retry-all-errors "${BASE_URL}/checksums.txt" -o "${INSTALL_DIR}/checksums.txt"
 
         # Verify checksum (portable: sha256sum on Linux, shasum on macOS)
         EXPECTED=$(awk -v asset="$ASSET" '$2 == asset || $NF == asset {print $1; exit}' "${INSTALL_DIR}/checksums.txt")

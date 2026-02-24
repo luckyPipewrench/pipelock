@@ -480,7 +480,7 @@ Scan your project for agent security risks on every PR. No Go toolchain needed.
 
 ```yaml
 # .github/workflows/pipelock.yaml
-- uses: luckyPipewrench/pipelock@v0.2.8
+- uses: luckyPipewrench/pipelock@v0.2.9
   with:
     scan-diff: 'true'
     fail-on-findings: 'true'
@@ -491,7 +491,7 @@ The action downloads a pre-built binary, runs `pipelock audit` on your project, 
 **With a config file:**
 
 ```yaml
-- uses: luckyPipewrench/pipelock@v0.2.8
+- uses: luckyPipewrench/pipelock@v0.2.9
   with:
     config: pipelock.yaml
     test-vectors: 'true'

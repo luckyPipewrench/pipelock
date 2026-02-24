@@ -2348,25 +2348,22 @@ func TestProxy_SessionProfiling_DomainBurst(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/fetch", p.handleFetch)
 
-	// Send requests to different domains. These will fail at fetch (DNS)
-	// but session profiling runs before fetch, so anomalies are detected.
-	// First 2 domains are within burst threshold.
-	for _, domain := range []string{"a.example.com", "b.example.com"} {
-		req := httptest.NewRequest(http.MethodGet, "/fetch?url=http://"+domain+"/text", nil)
+	// Send a request to the first domain. 1 unique domain is below threshold (2).
+	{
+		req := httptest.NewRequest(http.MethodGet, "/fetch?url=http://a.example.com/text", nil)
 		req.RemoteAddr = "192.168.1.1:12345" //nolint:goconst // test value
 		w := httptest.NewRecorder()
 		mux.ServeHTTP(w, req)
 
-		// Should NOT be 403 (domain burst not yet exceeded)
 		if w.Code == http.StatusForbidden {
 			var resp FetchResponse
 			_ = json.Unmarshal(w.Body.Bytes(), &resp)
-			t.Fatalf("domain %s should not trigger session anomaly block, got: %s", domain, resp.BlockReason)
+			t.Fatalf("1st domain should not trigger session anomaly block, got: %s", resp.BlockReason)
 		}
 	}
 
-	// 3rd domain exceeds burst threshold (3 > 2), should be blocked.
-	req := httptest.NewRequest(http.MethodGet, "/fetch?url=http://c.example.com/text", nil)
+	// 2nd unique domain hits threshold (2 >= 2), should be blocked.
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url=http://b.example.com/text", nil)
 	req.RemoteAddr = "192.168.1.1:12345"
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
@@ -2706,8 +2703,7 @@ func TestProxy_AdaptiveSignalBlock_InEnforceMode(t *testing.T) {
 	cfg.AdaptiveEnforcement.EscalationThreshold = 3.0
 	cfg.AdaptiveEnforcement.DecayPerCleanRequest = 0.1
 
-	// Add a blocklist entry so the scanner blocks a specific domain in enforce mode.
-	cfg.Mode = "enforce"
+	// Add a blocklist entry so the scanner blocks the domain (enforce is default).
 	cfg.FetchProxy.Monitoring.Blocklist = []string{"evil.example.com"}
 
 	logger := audit.NewNop()

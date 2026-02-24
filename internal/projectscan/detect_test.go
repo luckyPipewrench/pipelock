@@ -147,6 +147,10 @@ func TestDetectLanguages_AllExtensions(t *testing.T) {
 }
 
 func TestDetectLanguages_WalkError(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("permission-based test cannot run as root")
+	}
+
 	dir := t.TempDir()
 	// Create an unreadable subdirectory to trigger the err != nil path
 	// in the WalkDir callback.

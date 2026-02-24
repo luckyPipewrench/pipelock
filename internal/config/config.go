@@ -642,6 +642,9 @@ func (c *Config) Validate() error {
 
 	// Validate adaptive enforcement config
 	if c.AdaptiveEnforcement.Enabled {
+		if !c.SessionProfiling.Enabled {
+			return fmt.Errorf("adaptive_enforcement.enabled requires session_profiling.enabled")
+		}
 		if c.AdaptiveEnforcement.EscalationThreshold <= 0 {
 			return fmt.Errorf("adaptive_enforcement.escalation_threshold must be positive")
 		}

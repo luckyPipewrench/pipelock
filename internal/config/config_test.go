@@ -2076,12 +2076,21 @@ func TestAdaptiveEnforcementValidation(t *testing.T) {
 		{
 			name: "enabled with defaults is valid",
 			setup: func(c *Config) {
+				c.SessionProfiling.Enabled = true
 				c.AdaptiveEnforcement.Enabled = true
 			},
 		},
 		{
+			name: "enabled without session profiling",
+			setup: func(c *Config) {
+				c.AdaptiveEnforcement.Enabled = true
+			},
+			wantErr: "adaptive_enforcement.enabled requires session_profiling.enabled",
+		},
+		{
 			name: "zero threshold",
 			setup: func(c *Config) {
+				c.SessionProfiling.Enabled = true
 				c.AdaptiveEnforcement.Enabled = true
 			},
 			modify: func(c *Config) {
@@ -2092,6 +2101,7 @@ func TestAdaptiveEnforcementValidation(t *testing.T) {
 		{
 			name: "negative decay",
 			setup: func(c *Config) {
+				c.SessionProfiling.Enabled = true
 				c.AdaptiveEnforcement.Enabled = true
 			},
 			modify: func(c *Config) {
@@ -2102,6 +2112,7 @@ func TestAdaptiveEnforcementValidation(t *testing.T) {
 		{
 			name: "zero decay is valid",
 			setup: func(c *Config) {
+				c.SessionProfiling.Enabled = true
 				c.AdaptiveEnforcement.Enabled = true
 				c.AdaptiveEnforcement.DecayPerCleanRequest = 0
 			},

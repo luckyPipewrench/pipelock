@@ -56,16 +56,16 @@ func TestSessionManager_DomainBurst(t *testing.T) {
 
 	sess := sm.GetOrCreate("10.0.0.1")
 
-	// First 3 domains are fine (at threshold, not over)
-	for _, d := range []string{"a.com", "b.com", "c.com"} {
+	// First 2 domains are below threshold
+	for _, d := range []string{"a.com", "b.com"} {
 		anomalies := sess.RecordRequest(d, cfg)
 		if len(anomalies) > 0 {
 			t.Errorf("domain %s should not trigger anomaly", d)
 		}
 	}
 
-	// 4th new domain in same window triggers burst
-	anomalies := sess.RecordRequest("d.com", cfg)
+	// 3rd new domain hits threshold (>= 3) and triggers burst
+	anomalies := sess.RecordRequest("c.com", cfg)
 	found := false
 	for _, a := range anomalies {
 		if a.Type == "domain_burst" { //nolint:goconst // test value
@@ -73,7 +73,7 @@ func TestSessionManager_DomainBurst(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Error("4th new domain should trigger domain_burst anomaly")
+		t.Error("3rd new domain should trigger domain_burst anomaly")
 	}
 }
 
@@ -85,8 +85,8 @@ func TestSessionManager_DomainBurst_RepeatedDomainNoTrigger(t *testing.T) {
 
 	sess := sm.GetOrCreate("10.0.0.1")
 
-	// 3 unique domains
-	for _, d := range []string{"a.com", "b.com", "c.com"} {
+	// 2 unique domains (below threshold of 3)
+	for _, d := range []string{"a.com", "b.com"} {
 		sess.RecordRequest(d, cfg)
 	}
 
@@ -489,16 +489,16 @@ func TestSessionManager_IPDomainBurst(t *testing.T) {
 
 	ip := "10.0.0.1" //nolint:goconst // test value
 
-	// First 3 domains are fine
-	for _, d := range []string{"a.com", "b.com", "c.com"} {
+	// First 2 domains are below threshold
+	for _, d := range []string{"a.com", "b.com"} {
 		anomalies := sm.RecordIPDomain(ip, d, cfg)
 		if len(anomalies) > 0 {
 			t.Errorf("domain %s should not trigger IP anomaly", d)
 		}
 	}
 
-	// 4th new domain triggers IP-level burst
-	anomalies := sm.RecordIPDomain(ip, "d.com", cfg)
+	// 3rd new domain hits threshold (>= 3) and triggers IP-level burst
+	anomalies := sm.RecordIPDomain(ip, "c.com", cfg)
 	found := false
 	for _, a := range anomalies {
 		if a.Type == "ip_domain_burst" { //nolint:goconst // test value
@@ -509,7 +509,7 @@ func TestSessionManager_IPDomainBurst(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Error("4th domain should trigger ip_domain_burst anomaly")
+		t.Error("3rd domain should trigger ip_domain_burst anomaly")
 	}
 }
 
@@ -534,13 +534,14 @@ func TestSessionManager_IPDomainBurst_HeaderRotation(t *testing.T) {
 		}
 	}
 
-	// Now check IP-level: record all 4 domains against the same IP
+	// Now check IP-level: record all 4 domains against the same IP.
+	// With DomainBurst=3, the 3rd domain triggers (>= threshold).
 	for i, d := range domains {
 		anomalies := sm.RecordIPDomain(ip, d, cfg)
-		if i < 3 && len(anomalies) > 0 {
+		if i < 2 && len(anomalies) > 0 {
 			t.Errorf("domain %d should not trigger IP burst yet", i+1)
 		}
-		if i == 3 {
+		if i == 2 {
 			found := false
 			for _, a := range anomalies {
 				if a.Type == "ip_domain_burst" {
@@ -548,7 +549,7 @@ func TestSessionManager_IPDomainBurst_HeaderRotation(t *testing.T) {
 				}
 			}
 			if !found {
-				t.Error("4th domain should trigger ip_domain_burst despite different agent headers")
+				t.Error("3rd domain should trigger ip_domain_burst despite different agent headers")
 			}
 		}
 	}
@@ -562,7 +563,8 @@ func TestSessionManager_IPDomainBurst_RepeatedDomainNoTrigger(t *testing.T) {
 
 	ip := "10.0.0.1"
 
-	for _, d := range []string{"a.com", "b.com", "c.com"} {
+	// 2 unique domains (below threshold of 3)
+	for _, d := range []string{"a.com", "b.com"} {
 		sm.RecordIPDomain(ip, d, cfg)
 	}
 
@@ -584,7 +586,8 @@ func TestSessionManager_IPDomainBurst_WindowExpiry(t *testing.T) {
 
 	ip := "10.0.0.1"
 
-	for _, d := range []string{"a.com", "b.com", "c.com"} {
+	// 2 unique domains (below threshold)
+	for _, d := range []string{"a.com", "b.com"} {
 		sm.RecordIPDomain(ip, d, cfg)
 	}
 
@@ -598,8 +601,8 @@ func TestSessionManager_IPDomainBurst_WindowExpiry(t *testing.T) {
 	sm.ipDomains[ip] = entries
 	sm.mu.Unlock()
 
-	// 4th domain should NOT trigger burst because old entries expired
-	anomalies := sm.RecordIPDomain(ip, "d.com", cfg)
+	// 3rd domain should NOT trigger burst because old entries expired (only 1 in window)
+	anomalies := sm.RecordIPDomain(ip, "c.com", cfg)
 	for _, a := range anomalies {
 		if a.Type == "ip_domain_burst" {
 			t.Error("ip_domain_burst should not trigger after window expiry")
@@ -613,14 +616,14 @@ func TestSessionManager_IPDomainBurst_DifferentIPs(t *testing.T) {
 	sm := NewSessionManager(cfg, nil)
 	defer sm.Close()
 
-	// Two different IPs each access 3 domains: neither should trigger
-	for _, d := range []string{"a.com", "b.com", "c.com"} {
+	// Two different IPs each access 2 domains: neither should trigger (below 3)
+	for _, d := range []string{"a.com", "b.com"} {
 		sm.RecordIPDomain("10.0.0.1", d, cfg)
 		sm.RecordIPDomain("10.0.0.2", d, cfg)
 	}
 
-	// 4th domain on IP1 triggers for IP1 only
-	anomalies1 := sm.RecordIPDomain("10.0.0.1", "d.com", cfg)
+	// 3rd domain on IP1 hits threshold for IP1 only
+	anomalies1 := sm.RecordIPDomain("10.0.0.1", "c.com", cfg)
 	found := false
 	for _, a := range anomalies1 {
 		if a.Type == "ip_domain_burst" {
@@ -628,14 +631,14 @@ func TestSessionManager_IPDomainBurst_DifferentIPs(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Error("IP 10.0.0.1 should trigger ip_domain_burst with 4th domain")
+		t.Error("IP 10.0.0.1 should trigger ip_domain_burst with 3rd domain")
 	}
 
-	// IP2 still at 3 domains, should not trigger
-	anomalies2 := sm.RecordIPDomain("10.0.0.2", "c.com", cfg)
+	// IP2 still at 2 domains, revisiting should not trigger
+	anomalies2 := sm.RecordIPDomain("10.0.0.2", "b.com", cfg)
 	for _, a := range anomalies2 {
 		if a.Type == "ip_domain_burst" {
-			t.Error("IP 10.0.0.2 should not trigger burst (only 3 domains, repeated)")
+			t.Error("IP 10.0.0.2 should not trigger burst (only 2 unique domains)")
 		}
 	}
 }

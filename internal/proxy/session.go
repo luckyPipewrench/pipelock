@@ -51,32 +51,10 @@ func (s *SessionState) RecordRequest(domain string, cfg *config.SessionProfiling
 
 	// Domain burst detection: count unique new domains in the rolling window.
 	windowCutoff := now.Add(-time.Duration(cfg.WindowMinutes) * time.Minute)
+	s.domainWindows, _ = pruneDomainWindow(s.domainWindows, domain, windowCutoff, now)
 
-	// Prune expired domain entries
-	pruned := s.domainWindows[:0]
-	for _, de := range s.domainWindows {
-		if de.at.After(windowCutoff) {
-			pruned = append(pruned, de)
-		}
-	}
-	s.domainWindows = pruned
-
-	// Check if this domain is already in the current window
-	seen := false
-	for _, de := range s.domainWindows {
-		if de.domain == domain {
-			seen = true
-			break
-		}
-	}
-
-	if !seen {
-		s.domainWindows = append(s.domainWindows, domainEntry{domain: domain, at: now})
-	}
-
-	// Count unique domains in window
 	uniqueDomains := countUniqueDomains(s.domainWindows)
-	if uniqueDomains > cfg.DomainBurst {
+	if uniqueDomains >= cfg.DomainBurst {
 		anomalies = append(anomalies, Anomaly{
 			Type:   "domain_burst",
 			Detail: fmt.Sprintf("%d new domains in %dm window (threshold: %d)", uniqueDomains, cfg.WindowMinutes, cfg.DomainBurst),
@@ -94,6 +72,31 @@ func countUniqueDomains(entries []domainEntry) int {
 		seen[e.domain] = struct{}{}
 	}
 	return len(seen)
+}
+
+// pruneDomainWindow removes expired entries, appends domain if not already
+// present, and returns the updated slice plus the unique domain count.
+// Shared by per-session RecordRequest and per-IP RecordIPDomain.
+func pruneDomainWindow(entries []domainEntry, domain string, windowCutoff, now time.Time) ([]domainEntry, int) {
+	pruned := entries[:0]
+	for _, de := range entries {
+		if de.at.After(windowCutoff) {
+			pruned = append(pruned, de)
+		}
+	}
+
+	seen := false
+	for _, de := range pruned {
+		if de.domain == domain {
+			seen = true
+			break
+		}
+	}
+	if !seen {
+		pruned = append(pruned, domainEntry{domain: domain, at: now})
+	}
+
+	return pruned, countUniqueDomains(pruned)
 }
 
 // SignalType identifies a threat signal for adaptive enforcement.
@@ -273,31 +276,11 @@ func (sm *SessionManager) RecordIPDomain(clientIP, domain string, cfg *config.Se
 	now := time.Now()
 	windowCutoff := now.Add(-time.Duration(cfg.WindowMinutes) * time.Minute)
 
-	// Prune expired entries for this IP
-	entries := sm.ipDomains[clientIP]
-	pruned := entries[:0]
-	for _, de := range entries {
-		if de.at.After(windowCutoff) {
-			pruned = append(pruned, de)
-		}
-	}
-
-	// Check if this domain is already tracked for this IP
-	seen := false
-	for _, de := range pruned {
-		if de.domain == domain {
-			seen = true
-			break
-		}
-	}
-	if !seen {
-		pruned = append(pruned, domainEntry{domain: domain, at: now})
-	}
+	pruned, uniqueDomains := pruneDomainWindow(sm.ipDomains[clientIP], domain, windowCutoff, now)
 	sm.ipDomains[clientIP] = pruned
 
 	var anomalies []Anomaly
-	uniqueDomains := countUniqueDomains(pruned)
-	if uniqueDomains > cfg.DomainBurst {
+	if uniqueDomains >= cfg.DomainBurst {
 		anomalies = append(anomalies, Anomaly{
 			Type:   "ip_domain_burst",
 			Detail: fmt.Sprintf("%d unique domains from IP in %dm window (threshold: %d)", uniqueDomains, cfg.WindowMinutes, cfg.DomainBurst),

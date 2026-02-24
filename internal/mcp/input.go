@@ -459,18 +459,21 @@ func ForwardScannedInput(
 		bindingReason := ""
 		if bindingCfg != nil && bindingCfg.Baseline != nil && verdict.Method == "tools/call" {
 			toolName := extractToolCallName(line)
-			if toolName != "" {
-				if !bindingCfg.Baseline.HasBaseline() {
-					_, _ = fmt.Fprintf(logW, "pipelock: input line %d: tools/call %q before baseline established\n",
-						lineNum, toolName)
-					bindingAction = bindingCfg.NoBaselineAction
-					bindingReason = "session_binding:no_baseline"
-				} else if !bindingCfg.Baseline.IsKnownTool(toolName) {
-					_, _ = fmt.Fprintf(logW, "pipelock: input line %d: tools/call %q not in session baseline\n",
-						lineNum, toolName)
-					bindingAction = bindingCfg.UnknownToolAction
-					bindingReason = "session_binding:unknown_tool"
-				}
+			if toolName == "" {
+				// Fail closed: tools/call without a name is a binding violation.
+				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: tools/call missing params.name\n", lineNum)
+				bindingAction = bindingCfg.UnknownToolAction
+				bindingReason = "session_binding:missing_tool_name"
+			} else if !bindingCfg.Baseline.HasBaseline() {
+				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: tools/call %q before baseline established\n",
+					lineNum, toolName)
+				bindingAction = bindingCfg.NoBaselineAction
+				bindingReason = "session_binding:no_baseline"
+			} else if !bindingCfg.Baseline.IsKnownTool(toolName) {
+				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: tools/call %q not in session baseline\n",
+					lineNum, toolName)
+				bindingAction = bindingCfg.UnknownToolAction
+				bindingReason = "session_binding:unknown_tool"
 			}
 		}
 

@@ -1881,3 +1881,43 @@ func TestForwardScannedInput_SessionBinding_NonToolCallIgnored(t *testing.T) {
 		t.Error("expected tools/list to be forwarded without session binding check")
 	}
 }
+
+func TestForwardScannedInput_SessionBinding_BatchBlocked(t *testing.T) {
+	// Batch requests should be caught by session binding since the aggregate
+	// verdict has no Method, bypassing per-method checks.
+	sc := testInputScanner(t)
+
+	tb := NewToolBaseline()
+	tb.SetKnownTools([]string{"read_file"})
+
+	bindingCfg := &SessionBindingConfig{
+		Baseline:          tb,
+		UnknownToolAction: "block",
+		NoBaselineAction:  "block",
+	}
+
+	// Batch containing a tools/call — should be blocked.
+	batch := `[{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"exec_command","arguments":{"cmd":"ls"}}}]` + "\n"
+
+	var serverBuf bytes.Buffer
+	var logBuf bytes.Buffer
+	blockedCh := make(chan BlockedRequest, 10)
+
+	ForwardScannedInput(
+		NewStdioReader(strings.NewReader(batch)),
+		NewStdioWriter(&serverBuf),
+		&logBuf, sc, "warn", "block", blockedCh, nil, bindingCfg,
+	)
+
+	blocked := make([]BlockedRequest, 0)
+	for b := range blockedCh {
+		blocked = append(blocked, b)
+	}
+
+	if len(blocked) != 1 {
+		t.Fatalf("expected 1 blocked batch request, got %d", len(blocked))
+	}
+	if !strings.Contains(logBuf.String(), "batch request with session binding active") {
+		t.Errorf("expected batch binding log, got: %s", logBuf.String())
+	}
+}

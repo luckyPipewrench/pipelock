@@ -2107,15 +2107,7 @@ func TestAdaptiveEnforcementValidation(t *testing.T) {
 			modify: func(c *Config) {
 				c.AdaptiveEnforcement.DecayPerCleanRequest = -0.1
 			},
-			wantErr: "decay_per_clean_request must be non-negative",
-		},
-		{
-			name: "zero decay is valid",
-			setup: func(c *Config) {
-				c.SessionProfiling.Enabled = true
-				c.AdaptiveEnforcement.Enabled = true
-				c.AdaptiveEnforcement.DecayPerCleanRequest = 0
-			},
+			wantErr: "decay_per_clean_request must be positive",
 		},
 	}
 	for _, tt := range tests {

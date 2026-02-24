@@ -167,7 +167,8 @@ func (tb *ToolBaseline) DiffSummary(name, newDesc string) string {
 
 // SetKnownTools sets the session baseline from a tools/list response.
 // Called on the first tools/list to lock the baseline. Subsequent calls
-// add newly seen tools to the known set.
+// add newly seen tools to the known set. Respects maxBaselineTools to
+// prevent unbounded memory growth from malicious servers.
 func (tb *ToolBaseline) SetKnownTools(names []string) {
 	tb.mu.Lock()
 	defer tb.mu.Unlock()
@@ -175,6 +176,9 @@ func (tb *ToolBaseline) SetKnownTools(names []string) {
 		tb.knownTools = make(map[string]bool, len(names))
 	}
 	for _, n := range names {
+		if !tb.knownTools[n] && len(tb.knownTools) >= maxBaselineTools {
+			break
+		}
 		tb.knownTools[n] = true
 	}
 	tb.hasBaseline = true
@@ -196,12 +200,16 @@ func (tb *ToolBaseline) IsKnownTool(name string) bool {
 
 // CheckNewTools compares a list of tool names against the baseline and returns
 // any that were not previously known. Newly seen tools are added to the baseline.
+// Respects maxBaselineTools to prevent unbounded memory growth.
 func (tb *ToolBaseline) CheckNewTools(names []string) []string {
 	tb.mu.Lock()
 	defer tb.mu.Unlock()
 	var added []string
 	for _, n := range names {
 		if !tb.knownTools[n] {
+			if len(tb.knownTools) >= maxBaselineTools {
+				continue
+			}
 			added = append(added, n)
 			tb.knownTools[n] = true
 		}

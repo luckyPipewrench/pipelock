@@ -1725,6 +1725,36 @@ func TestToolBaseline_PostBaselineNewTool(t *testing.T) {
 	}
 }
 
+func TestToolBaseline_KnownToolsCap(t *testing.T) {
+	tb := NewToolBaseline()
+
+	// Fill to capacity.
+	names := make([]string, maxBaselineTools)
+	for i := range names {
+		names[i] = fmt.Sprintf("tool_%d", i)
+	}
+	tb.SetKnownTools(names)
+
+	if !tb.HasBaseline() {
+		t.Fatal("expected baseline after SetKnownTools")
+	}
+
+	// New tool beyond capacity should be dropped by SetKnownTools.
+	tb.SetKnownTools([]string{"overflow_tool"})
+	if tb.IsKnownTool("overflow_tool") {
+		t.Error("expected overflow_tool to be dropped at capacity")
+	}
+
+	// CheckNewTools should also respect the cap.
+	added := tb.CheckNewTools([]string{"another_overflow"})
+	if len(added) != 0 {
+		t.Errorf("expected no tools added at capacity, got %v", added)
+	}
+	if tb.IsKnownTool("another_overflow") {
+		t.Error("expected another_overflow to be dropped at capacity")
+	}
+}
+
 func TestToolScanResult_ToolNames(t *testing.T) {
 	// Verify ScanTools populates ToolNames from tools/list responses.
 	cfg := config.Defaults()

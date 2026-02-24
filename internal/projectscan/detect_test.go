@@ -3,6 +3,7 @@ package projectscan
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -147,6 +148,9 @@ func TestDetectLanguages_AllExtensions(t *testing.T) {
 }
 
 func TestDetectLanguages_WalkError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission-based test not reliable on Windows")
+	}
 	if os.Getuid() == 0 {
 		t.Skip("permission-based test cannot run as root")
 	}
@@ -158,7 +162,7 @@ func TestDetectLanguages_WalkError(t *testing.T) {
 	if err := os.Mkdir(noread, 0o000); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(noread, 0o600) })
+	t.Cleanup(func() { _ = os.Chmod(noread, 0o700) }) //nolint:gosec // directory needs exec bit for TempDir cleanup
 
 	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("//"), 0o600); err != nil {
 		t.Fatal(err)

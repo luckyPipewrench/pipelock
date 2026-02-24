@@ -457,6 +457,18 @@ func ForwardScannedInput(
 		// Session binding: validate tools/call against baseline.
 		bindingAction := ""
 		bindingReason := ""
+
+		// Batch requests bypass per-method binding checks because the
+		// aggregate verdict has no single Method. Fail closed: treat
+		// batch requests as binding violations when session binding is
+		// active, since they could contain unvalidated tools/call messages.
+		trimmedLine := bytes.TrimSpace(line)
+		if bindingCfg != nil && bindingCfg.Baseline != nil && len(trimmedLine) > 0 && trimmedLine[0] == '[' {
+			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: batch request with session binding active\n", lineNum)
+			bindingAction = bindingCfg.UnknownToolAction
+			bindingReason = "session_binding:batch_request"
+		}
+
 		if bindingCfg != nil && bindingCfg.Baseline != nil && verdict.Method == "tools/call" {
 			toolName := extractToolCallName(line)
 			if toolName == "" {

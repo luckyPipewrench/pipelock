@@ -2397,7 +2397,7 @@ func TestProxy_SessionProfiling_WarnMode(t *testing.T) {
 	cfg.APIAllowlist = nil
 	cfg.SessionProfiling.Enabled = true
 	cfg.SessionProfiling.AnomalyAction = config.ActionWarn // warn, not block
-	cfg.SessionProfiling.DomainBurst = 2
+	cfg.SessionProfiling.DomainBurst = 1                   // triggers on first unique domain
 	cfg.SessionProfiling.WindowMinutes = 5
 	cfg.SessionProfiling.VolumeSpikeRatio = 10.0
 	cfg.SessionProfiling.MaxSessions = 100
@@ -2413,18 +2413,15 @@ func TestProxy_SessionProfiling_WarnMode(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/fetch", p.handleFetch)
 
-	// Send 3 requests to different domains via the backend URL with different paths.
-	// All use the same backend hostname, so domain burst won't trigger (only 1 unique domain).
-	for range 3 {
-		req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/text", nil)
-		req.RemoteAddr = "192.168.1.1:12345"
-		w := httptest.NewRecorder()
-		mux.ServeHTTP(w, req)
+	// DomainBurst=1 means the first unique domain triggers an anomaly.
+	// In warn mode, the request should succeed despite the anomaly.
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/text", nil)
+	req.RemoteAddr = "192.168.1.1:12345"
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
 
-		// In warn mode, requests should succeed even with anomalies.
-		if w.Code != http.StatusOK {
-			t.Fatalf("expected 200 in warn mode, got %d", w.Code)
-		}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 in warn mode, got %d", w.Code)
 	}
 }
 

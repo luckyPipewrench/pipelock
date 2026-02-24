@@ -648,8 +648,8 @@ func (c *Config) Validate() error {
 		if c.AdaptiveEnforcement.EscalationThreshold <= 0 {
 			return fmt.Errorf("adaptive_enforcement.escalation_threshold must be positive")
 		}
-		if c.AdaptiveEnforcement.DecayPerCleanRequest < 0 {
-			return fmt.Errorf("adaptive_enforcement.decay_per_clean_request must be non-negative")
+		if c.AdaptiveEnforcement.DecayPerCleanRequest <= 0 {
+			return fmt.Errorf("adaptive_enforcement.decay_per_clean_request must be positive")
 		}
 	}
 

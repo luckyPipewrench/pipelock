@@ -267,8 +267,9 @@ func (p *Proxy) dlpScanWSHeaders(headers http.Header, hostname string, sc *scann
 		return false, ""
 	}
 
-	// Scan auth-bearing header values.
-	for _, key := range []string{"Authorization", "X-Api-Key", "X-Goog-Api-Key"} {
+	// Scan auth-bearing header values. Cookie is included because
+	// buildWSForwardHeaders copies it when ForwardCookies is enabled.
+	for _, key := range []string{"Authorization", "X-Api-Key", "X-Goog-Api-Key", "Cookie"} {
 		val := headers.Get(key)
 		if val == "" {
 			continue
@@ -737,19 +738,30 @@ func writeCloseFrame(conn net.Conn, code ws.StatusCode, reason string) {
 	reasonBytes := []byte(reason)
 	if len(reasonBytes) > 123 { // 125 - 2 bytes for status code
 		reasonBytes = reasonBytes[:123]
+		// Back up to a valid UTF-8 boundary so we don't split a multi-byte
+		// codepoint (RFC 6455 requires close reasons to be valid UTF-8).
+		for len(reasonBytes) > 0 && !utf8.Valid(reasonBytes) {
+			reasonBytes = reasonBytes[:len(reasonBytes)-1]
+		}
 	}
 	payload := make([]byte, 2+len(reasonBytes))
 	payload[0] = byte(code >> 8) //nolint:gosec // StatusCode is uint16, high byte extraction is safe
 	payload[1] = byte(code & 0xFF)
 	copy(payload[2:], reasonBytes)
 
-	_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	_ = ws.WriteHeader(conn, ws.Header{
+	// Build the complete frame (header + payload) in a single buffer so the
+	// conn.Write is one syscall. Both relay goroutines may call writeCloseFrame
+	// on the same conn concurrently; a single write prevents interleaved bytes.
+	var buf bytes.Buffer
+	_ = ws.WriteHeader(&buf, ws.Header{
 		Fin:    true,
 		OpCode: ws.OpClose,
 		Length: int64(len(payload)),
 	})
-	_, _ = conn.Write(payload)
+	buf.Write(payload)
+
+	_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	_, _ = conn.Write(buf.Bytes())
 }
 
 // opCodeLabel returns a human-readable label for metrics.

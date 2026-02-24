@@ -341,7 +341,7 @@ Features:
 - Fragment reassembly with per-message size limits
 - Auth header forwarding with DLP scanning (Authorization, Cookie when enabled)
 - SSRF-safe upstream dialer (same DNS-pinning as forward proxy)
-- Prometheus metrics: `pipelock_ws_connections_total`, `pipelock_ws_active`, `pipelock_ws_blocked_total`
+- Prometheus metrics: `pipelock_ws_connections_total`, `pipelock_ws_active_connections`, `pipelock_ws_frames_total`, `pipelock_ws_scan_hits_total`
 - Structured audit logs for open/close/blocked events
 
 ### Multi-Agent Support
@@ -507,6 +507,7 @@ See [`examples/ci-workflow.yaml`](examples/ci-workflow.yaml) for a complete work
 | `scan-diff` | `true` | Scan PR diff for leaked secrets |
 | `fail-on-findings` | `true` | Fail if critical findings detected |
 | `test-vectors` | `true` | Validate scanning coverage with built-in tests |
+| `exclude-paths` | *(none)* | Paths to exclude from findings (one per line, supports globs) |
 
 ## Docker
 
@@ -651,7 +652,7 @@ Canonical metrics — updated each release.
 
 | Metric | Value |
 |--------|-------|
-| Go tests (with `-race`) | 2,800+ |
+| Go tests (with `-race`) | 2,900+ |
 | Statement coverage | 96%+ |
 | Evasion techniques tested | 230+ |
 | Scanner pipeline overhead | ~25μs per URL scan |

@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - WebSocket configuration: `websocket_proxy` section in config with `max_message_bytes`, `scan_text_frames`, `allow_binary_frames`, `strip_compression`, `max_connection_seconds`, `idle_timeout_seconds`, `origin_policy`, and `max_concurrent_connections`
 - WebSocket health reporting: `/health` endpoint includes `websocket_proxy_enabled` field
 - All 6 preset configs updated with `websocket_proxy` defaults (disabled by default)
+- `--exclude` flag for `pipelock audit` and `pipelock git scan-diff`: filter findings by path using globs (`*.generated.go`) or directory prefixes (`vendor/`). Repeatable for multiple patterns.
+- GitHub Action `exclude-paths` input: newline-separated path patterns passed to both audit and scan-diff steps
 
 ## [0.2.8] - 2026-02-23
 

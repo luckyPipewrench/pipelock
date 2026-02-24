@@ -36,6 +36,7 @@ Examples:
 func scanDiffCmd() *cobra.Command {
 	var configFile string
 	var jsonOutput bool
+	var excludePaths []string
 
 	cmd := &cobra.Command{
 		Use:   "scan-diff",
@@ -47,7 +48,8 @@ Designed for use in git hooks or CI pipelines. Exit code 1 if secrets are found.
 Examples:
   git diff HEAD~1 | pipelock git scan-diff
   git diff --cached | pipelock git scan-diff --config pipelock.yaml
-  git diff HEAD~1 | pipelock git scan-diff --json`,
+  git diff HEAD~1 | pipelock git scan-diff --json
+  git diff HEAD~1 | pipelock git scan-diff --exclude vendor/ --exclude "*.generated.go"`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := loadConfigOrDefault(configFile)
 			if err != nil {
@@ -78,6 +80,18 @@ Examples:
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Warning: %v\n", scanErr)
 			}
 
+			// Filter excluded paths from findings
+			if len(excludePaths) > 0 {
+				filtered := findings[:0:0]
+				for _, f := range findings {
+					if f.File != "" && shouldExclude(f.File, excludePaths) {
+						continue
+					}
+					filtered = append(filtered, f)
+				}
+				findings = filtered
+			}
+
 			if jsonOutput {
 				data, jsonErr := gitprotect.FindingsJSON(findings)
 				if jsonErr != nil {
@@ -97,6 +111,7 @@ Examples:
 
 	cmd.Flags().StringVarP(&configFile, "config", "c", "", "config file path")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "output findings as JSON")
+	cmd.Flags().StringArrayVar(&excludePaths, "exclude", nil, "exclude paths from findings (glob or directory prefix, repeatable)")
 	return cmd
 }
 

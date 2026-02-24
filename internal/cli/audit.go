@@ -13,6 +13,7 @@ import (
 func auditCmd() *cobra.Command {
 	var output string
 	var jsonOutput bool
+	var excludePaths []string
 
 	cmd := &cobra.Command{
 		Use:   "audit [directory]",
@@ -25,12 +26,26 @@ and secrets in environment variables and config files.
 Examples:
   pipelock audit .
   pipelock audit ./my-project -o pipelock-suggested.yaml
-  pipelock audit ./my-project --json`,
+  pipelock audit ./my-project --json
+  pipelock audit . --exclude vendor/ --exclude "*.generated.go"`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			report, err := projectscan.Scan(args[0])
 			if err != nil {
 				return err
+			}
+
+			// Filter excluded paths from findings and recompute scores
+			if len(excludePaths) > 0 {
+				filtered := report.Findings[:0:0]
+				for _, f := range report.Findings {
+					if f.File != "" && shouldExclude(f.File, excludePaths) {
+						continue
+					}
+					filtered = append(filtered, f)
+				}
+				report.Findings = filtered
+				report.AdjustScoreForFindings()
 			}
 
 			if jsonOutput {
@@ -68,6 +83,7 @@ Examples:
 
 	cmd.Flags().StringVarP(&output, "output", "o", "", "write suggested config to file")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "output findings as JSON")
+	cmd.Flags().StringArrayVar(&excludePaths, "exclude", nil, "exclude paths from findings (glob or directory prefix, repeatable)")
 
 	return cmd
 }

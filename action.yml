@@ -8,7 +8,7 @@ branding:
 
 inputs:
   version:
-    description: 'Pipelock version to use (e.g., "0.2.6"). Defaults to latest release.'
+    description: 'Pipelock version to use (e.g., "0.2.8"). Defaults to latest release.'
     required: false
     default: 'latest'
   config:
@@ -31,6 +31,10 @@ inputs:
     description: 'Run built-in test vectors to validate scanning coverage.'
     required: false
     default: 'true'
+  exclude-paths:
+    description: 'Paths to exclude from findings (one per line). Supports globs (*.generated.go) and directory prefixes (vendor/).'
+    required: false
+    default: ''
 
 outputs:
   score:
@@ -135,6 +139,7 @@ runs:
       env:
         PIPELOCK_DIR: ${{ inputs.directory }}
         PIPELOCK_CONFIG: ${{ inputs.config }}
+        PIPELOCK_EXCLUDE: ${{ inputs.exclude-paths }}
       run: |
         set -euo pipefail
 
@@ -143,10 +148,21 @@ runs:
         REPORT_DIR="${RUNNER_TEMP:-/tmp}/pipelock-reports"
         mkdir -p "$REPORT_DIR"
 
+        # Build --exclude flags from newline-separated input
+        EXCLUDE_ARGS=()
+        if [ -n "$PIPELOCK_EXCLUDE" ]; then
+          while IFS= read -r pattern; do
+            pattern="$(echo "$pattern" | xargs)"  # trim whitespace
+            if [ -n "$pattern" ]; then
+              EXCLUDE_ARGS+=(--exclude "$pattern")
+            fi
+          done <<< "$PIPELOCK_EXCLUDE"
+        fi
+
         # Single audit run: JSON to stdout, human-readable to stderr
         # Fail-closed: if audit itself errors, track it so Check results can fail
         AUDIT_FAILED="false"
-        if ! pipelock audit "$DIR" --json > "$REPORT_DIR/audit.json" 2>"$REPORT_DIR/audit.log"; then
+        if ! pipelock audit "$DIR" --json "${EXCLUDE_ARGS[@]}" > "$REPORT_DIR/audit.json" 2>"$REPORT_DIR/audit.log"; then
           AUDIT_FAILED="true"
           echo "::error::Pipelock audit failed. Check the audit log artifact."
         fi
@@ -210,7 +226,7 @@ runs:
         if [ -n "$CONFIG" ]; then
           echo "config_path=${CONFIG}" >> "$GITHUB_OUTPUT"
         else
-          pipelock audit "$DIR" -o "$REPORT_DIR/suggested.yaml" 2>/dev/null || true
+          pipelock audit "$DIR" -o "$REPORT_DIR/suggested.yaml" "${EXCLUDE_ARGS[@]}" 2>/dev/null || true
           if [ -f "$REPORT_DIR/suggested.yaml" ]; then
             echo "config_path=${REPORT_DIR}/suggested.yaml" >> "$GITHUB_OUTPUT"
           else
@@ -242,6 +258,7 @@ runs:
       shell: bash
       env:
         PIPELOCK_FAIL_ON_FINDINGS: ${{ inputs.fail-on-findings }}
+        PIPELOCK_EXCLUDE: ${{ inputs.exclude-paths }}
         BASE_REF: ${{ github.base_ref }}
         CONFIG_PATH: ${{ steps.audit.outputs.config_path }}
       run: |
@@ -249,6 +266,16 @@ runs:
         SCAN_ARGS=()
         if [ -n "$CONFIG_PATH" ] && [ -f "$CONFIG_PATH" ]; then
           SCAN_ARGS+=(--config "$CONFIG_PATH")
+        fi
+
+        # Build --exclude flags from newline-separated input
+        if [ -n "$PIPELOCK_EXCLUDE" ]; then
+          while IFS= read -r pattern; do
+            pattern="$(echo "$pattern" | xargs)"  # trim whitespace
+            if [ -n "$pattern" ]; then
+              SCAN_ARGS+=(--exclude "$pattern")
+            fi
+          done <<< "$PIPELOCK_EXCLUDE"
         fi
 
         if ! git diff "origin/${BASE_REF}...HEAD" | pipelock git scan-diff "${SCAN_ARGS[@]}"; then

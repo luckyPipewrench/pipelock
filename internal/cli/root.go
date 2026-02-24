@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strconv"
 
+	"github.com/luckyPipewrench/pipelock/internal/proxy"
 	"github.com/spf13/cobra"
 )
 
@@ -51,6 +52,7 @@ var (
 
 // Execute runs the root command.
 func Execute() error {
+	proxy.Version = Version // sync so /health reports the same version as CLI
 	return rootCmd().Execute()
 }
 

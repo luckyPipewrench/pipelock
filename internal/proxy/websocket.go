@@ -390,7 +390,11 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 			return
 		}
 
-		// Read payload.
+		// Read payload. Hard guard mirrors the size checks above; if this fires
+		// it means a code change broke the earlier validation.
+		if hdr.Length < 0 || hdr.Length > int64(r.maxMsg) {
+			return
+		}
 		payload := make([]byte, hdr.Length)
 		if hdr.Length > 0 {
 			if _, err := io.ReadFull(r.clientConn, payload); err != nil {
@@ -531,7 +535,11 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 			return
 		}
 
-		// Read payload.
+		// Read payload. Hard guard mirrors the size checks above; if this fires
+		// it means a code change broke the earlier validation.
+		if hdr.Length < 0 || hdr.Length > int64(r.maxMsg) {
+			return
+		}
 		payload := make([]byte, hdr.Length)
 		if hdr.Length > 0 {
 			if _, err := io.ReadFull(r.upstreamConn, payload); err != nil {

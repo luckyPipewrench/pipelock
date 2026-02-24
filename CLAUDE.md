@@ -10,7 +10,7 @@ This file helps contributors (human and AI) work effectively on the Pipelock cod
 | Go version | 1.24+ |
 | License | Apache 2.0 |
 | Binary | Single static binary, ~12MB |
-| Dependencies | cobra, zerolog, go-readability, yaml.v3, prometheus, fsnotify, x/text |
+| Dependencies | cobra, zerolog, go-readability, yaml.v3, prometheus, fsnotify, x/text, gobwas/ws |
 
 ## Build, Test, Lint
 
@@ -223,7 +223,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide. Summary:
 
 - **Security bugs**: Report via [GitHub Security Advisories](https://github.com/luckyPipewrench/pipelock/security/advisories) — NOT public issues
 - **Don't weaken capability separation** — the proxy must never have access to agent secrets
-- **Don't add dependencies without justification** — 7 direct deps (cobra, zerolog, go-readability, yaml.v3, prometheus, fsnotify, x/text) is a feature, not a limitation
+- **Don't add dependencies without justification** — 8 direct deps (cobra, zerolog, go-readability, yaml.v3, prometheus, fsnotify, x/text, gobwas/ws) is a feature, not a limitation
 - **Don't bypass fail-closed defaults** — if in doubt, block
 
 ## Common Development Tasks

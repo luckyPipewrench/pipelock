@@ -297,7 +297,7 @@ func (l *Logger) LogWSOpen(target, clientIP, requestID, agent string) {
 		Str("target", sanitizeString(target)).
 		Str("client_ip", clientIP).
 		Str("request_id", requestID).
-		Str("agent", agent).
+		Str("agent", sanitizeString(agent)).
 		Msg("websocket opened")
 }
 
@@ -311,7 +311,7 @@ func (l *Logger) LogWSClose(target, clientIP, requestID, agent string, clientToS
 		Str("target", sanitizeString(target)).
 		Str("client_ip", clientIP).
 		Str("request_id", requestID).
-		Str("agent", agent).
+		Str("agent", sanitizeString(agent)).
 		Int64("client_to_server_bytes", clientToServer).
 		Int64("server_to_client_bytes", serverToClient).
 		Int64("text_frames", textFrames).

@@ -332,6 +332,7 @@ websocket_proxy:
   max_connection_seconds: 3600     # 1h max lifetime
   idle_timeout_seconds: 300        # 5min idle timeout
   origin_policy: rewrite           # rewrite, forward, or strip
+  forward_cookies: false           # forward cookies to upstream
 ```
 
 Features:
@@ -419,12 +420,14 @@ forward_proxy:
 websocket_proxy:
   enabled: false             # enable /ws WebSocket proxy endpoint
   max_message_bytes: 1048576 # 1MB max per assembled message
+  max_concurrent_connections: 128
   scan_text_frames: true     # DLP + injection scanning on text frames
   allow_binary_frames: false # block binary frames by default
   strip_compression: true    # force uncompressed (required for frame scanning)
   max_connection_seconds: 3600
   idle_timeout_seconds: 300
   origin_policy: rewrite     # rewrite, forward, or strip Origin header
+  forward_cookies: false     # forward cookies to upstream
 
 logging:
   format: json

@@ -185,50 +185,46 @@ func TestWSProxyEcho(t *testing.T) {
 	}
 }
 
-func TestWSProxyDisabled(t *testing.T) {
-	proxyAddr, cleanup := setupWSProxy(t, func(cfg *config.Config) {
-		cfg.WebSocketProxy.Enabled = false
-	})
-	defer cleanup()
-
-	resp, err := http.Get("http://" + proxyAddr + "/ws?url=ws://example.com") //nolint:noctx // test
-	if err != nil {
-		t.Fatalf("request: %v", err)
+func TestWSProxyErrorPaths(t *testing.T) {
+	tests := []struct {
+		name       string
+		path       string
+		modifyCfg  func(*config.Config)
+		wantStatus int
+	}{
+		{
+			name:       "disabled",
+			path:       "/ws?url=ws://example.com",
+			modifyCfg:  func(cfg *config.Config) { cfg.WebSocketProxy.Enabled = false },
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name:       "missing url",
+			path:       "/ws",
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "invalid scheme",
+			path:       "/ws?url=http://example.com",
+			wantStatus: http.StatusBadRequest,
+		},
 	}
-	defer resp.Body.Close() //nolint:errcheck // test
 
-	if resp.StatusCode != http.StatusNotFound {
-		t.Errorf("expected 404, got %d", resp.StatusCode)
-	}
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			proxyAddr, cleanup := setupWSProxy(t, tt.modifyCfg)
+			defer cleanup()
 
-func TestWSProxyMissingURL(t *testing.T) {
-	proxyAddr, cleanup := setupWSProxy(t, nil)
-	defer cleanup()
+			resp, err := http.Get("http://" + proxyAddr + tt.path) //nolint:noctx // test
+			if err != nil {
+				t.Fatalf("request: %v", err)
+			}
+			defer resp.Body.Close() //nolint:errcheck // test
 
-	resp, err := http.Get("http://" + proxyAddr + "/ws") //nolint:noctx // test
-	if err != nil {
-		t.Fatalf("request: %v", err)
-	}
-	defer resp.Body.Close() //nolint:errcheck // test
-
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("expected 400, got %d", resp.StatusCode)
-	}
-}
-
-func TestWSProxyInvalidScheme(t *testing.T) {
-	proxyAddr, cleanup := setupWSProxy(t, nil)
-	defer cleanup()
-
-	resp, err := http.Get("http://" + proxyAddr + "/ws?url=http://example.com") //nolint:noctx // test
-	if err != nil {
-		t.Fatalf("request: %v", err)
-	}
-	defer resp.Body.Close() //nolint:errcheck // test
-
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("expected 400, got %d", resp.StatusCode)
+			if resp.StatusCode != tt.wantStatus {
+				t.Errorf("expected %d, got %d", tt.wantStatus, resp.StatusCode)
+			}
+		})
 	}
 }
 
@@ -471,8 +467,8 @@ func TestWSProxyHealthIncludesWS(t *testing.T) {
 }
 
 func TestWSProxyOriginRewrite(t *testing.T) {
-	// Capture headers received by the upstream server.
-	var capturedOrigin string
+	// Channel synchronizes the origin header capture between handler and test goroutines.
+	originCh := make(chan string, 1)
 	lc := net.ListenConfig{}
 	ln, err := lc.Listen(context.Background(), "tcp4", "127.0.0.1:0")
 	if err != nil {
@@ -480,7 +476,7 @@ func TestWSProxyOriginRewrite(t *testing.T) {
 	}
 	srv := &http.Server{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			capturedOrigin = r.Header.Get("Origin")
+			originCh <- r.Header.Get("Origin")
 			conn, _, _, upgradeErr := ws.UpgradeHTTP(r, w)
 			if upgradeErr != nil {
 				return
@@ -506,6 +502,7 @@ func TestWSProxyOriginRewrite(t *testing.T) {
 	_, _, _ = wsutil.ReadServerData(conn)
 
 	// In rewrite mode, Origin should be set to the target host.
+	capturedOrigin := <-originCh
 	expectedOrigin := "http://" + ln.Addr().String()
 	if capturedOrigin != expectedOrigin {
 		t.Errorf("expected origin %q, got %q", expectedOrigin, capturedOrigin)
@@ -513,7 +510,7 @@ func TestWSProxyOriginRewrite(t *testing.T) {
 }
 
 func TestWSProxyOriginStrip(t *testing.T) {
-	var capturedOrigin string
+	originCh := make(chan string, 1)
 	lc := net.ListenConfig{}
 	ln, err := lc.Listen(context.Background(), "tcp4", "127.0.0.1:0")
 	if err != nil {
@@ -521,7 +518,7 @@ func TestWSProxyOriginStrip(t *testing.T) {
 	}
 	srv := &http.Server{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			capturedOrigin = r.Header.Get("Origin")
+			originCh <- r.Header.Get("Origin")
 			conn, _, _, upgradeErr := ws.UpgradeHTTP(r, w)
 			if upgradeErr != nil {
 				return
@@ -544,6 +541,7 @@ func TestWSProxyOriginStrip(t *testing.T) {
 
 	_, _, _ = wsutil.ReadServerData(conn)
 
+	capturedOrigin := <-originCh
 	if capturedOrigin != "" {
 		t.Errorf("expected empty origin in strip mode, got %q", capturedOrigin)
 	}
@@ -884,6 +882,7 @@ func TestIsExpectedCloseErr(t *testing.T) {
 
 func TestWSConfigDefaults(t *testing.T) {
 	cfg := config.Defaults()
+	cfg.Internal = nil
 	ws := cfg.WebSocketProxy
 
 	if ws.Enabled {

@@ -17,6 +17,8 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
+const severityCritical = "critical"
+
 // Finding represents a single security finding from the project scan.
 type Finding struct {
 	Severity string `json:"severity"` // critical, warning, info
@@ -77,6 +79,21 @@ var secretFileExts = map[string]bool{
 	".conf":       true,
 	".cfg":        true,
 	".properties": true,
+}
+
+// AdjustScoreForFindings recomputes ScoreWith based on the current Findings
+// slice. Call this after filtering findings (e.g. via --exclude) so the
+// penalty for critical findings stays consistent with what is reported.
+func (r *Report) AdjustScoreForFindings() {
+	r.ScoreWith = computeScore(r.Config)
+	for _, f := range r.Findings {
+		if f.Severity == severityCritical {
+			r.ScoreWith -= 5
+		}
+	}
+	if r.ScoreWith < 0 {
+		r.ScoreWith = 0
+	}
 }
 
 // Scan walks the project directory and produces a Report.
@@ -146,7 +163,7 @@ func Scan(dir string) (*Report, error) {
 	// Penalize "with config" score for critical findings that need manual remediation.
 	// A suggested config enables protections but doesn't fix existing leaked secrets.
 	for _, f := range r.Findings {
-		if f.Severity == "critical" {
+		if f.Severity == severityCritical {
 			r.ScoreWith -= 5
 		}
 	}
@@ -174,7 +191,7 @@ func scanEnvSecrets(patterns []compiledDLP) []Finding {
 		for _, p := range patterns {
 			if p.re.MatchString(value) {
 				findings = append(findings, Finding{
-					Severity: "critical",
+					Severity: severityCritical,
 					Category: "secret",
 					Message:  fmt.Sprintf("API key found in environment: %s (%s)", name, p.name),
 					Pattern:  p.name,
@@ -270,7 +287,7 @@ func scanFileForSecrets(path, relPath string, patterns []compiledDLP) []Finding 
 		for _, p := range patterns {
 			if p.re.MatchString(line) {
 				findings = append(findings, Finding{
-					Severity: "critical",
+					Severity: severityCritical,
 					Category: "secret",
 					Message:  fmt.Sprintf("Secret pattern match: %s", p.name),
 					File:     relPath,

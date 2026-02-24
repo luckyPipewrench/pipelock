@@ -23,8 +23,8 @@ const cleanDiff = `diff --git a/main.go b/main.go
 `
 
 // fakeKey builds a test credential at runtime to avoid gitleaks false positives.
-func fakeKey(suffix string) string {
-	return "AK" + "IA" + "IOSFODNN7" + suffix
+func fakeKey() string {
+	return "AK" + "IA" + "IOSFODNN7" + "EXAMPLE"
 }
 
 func TestGitCmd_Help(t *testing.T) {
@@ -87,7 +87,7 @@ func TestScanDiffCmd_CleanDiff(t *testing.T) {
 }
 
 func TestScanDiffCmd_FindsSecret(t *testing.T) {
-	key := fakeKey("EXAMPLE")
+	key := fakeKey()
 	diff := fmt.Sprintf(`diff --git a/config.go b/config.go
 --- a/config.go
 +++ b/config.go
@@ -571,7 +571,7 @@ func TestScanDiffCmd_JSON_CleanDiff(t *testing.T) {
 }
 
 func TestScanDiffCmd_JSON_FindsSecret(t *testing.T) {
-	key := fakeKey("EXAMPLE")
+	key := fakeKey()
 	diff := fmt.Sprintf(`diff --git a/config.go b/config.go
 --- a/config.go
 +++ b/config.go
@@ -727,6 +727,109 @@ func TestResolveGitFile_Unreadable(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "reading .git file") {
 		t.Errorf("expected 'reading .git file' error, got: %v", err)
+	}
+}
+
+func TestScanDiffCmd_ExcludePaths(t *testing.T) {
+	key := fakeKey()
+	diff := fmt.Sprintf(`diff --git a/vendor/lib.go b/vendor/lib.go
+--- a/vendor/lib.go
++++ b/vendor/lib.go
+@@ -1,2 +1,3 @@
+ package lib
++var key = "%s"
+
+`, key)
+
+	r, w, _ := os.Pipe()
+	_, _ = w.WriteString(diff)
+	_ = w.Close()
+
+	oldStdin := os.Stdin
+	os.Stdin = r
+	defer func() { os.Stdin = oldStdin }()
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"git", "scan-diff", "--exclude", "vendor/"})
+
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+
+	// Should succeed because the finding in vendor/ is excluded
+	err := cmd.Execute()
+	if err != nil {
+		t.Fatalf("expected no error with excluded path, got: %v", err)
+	}
+}
+
+func TestScanDiffCmd_ExcludeGlob(t *testing.T) {
+	key := fakeKey()
+	diff := fmt.Sprintf(`diff --git a/pkg/gen.pb.go b/pkg/gen.pb.go
+--- a/pkg/gen.pb.go
++++ b/pkg/gen.pb.go
+@@ -1,2 +1,3 @@
+ package pkg
++var key = "%s"
+
+`, key)
+
+	r, w, _ := os.Pipe()
+	_, _ = w.WriteString(diff)
+	_ = w.Close()
+
+	oldStdin := os.Stdin
+	os.Stdin = r
+	defer func() { os.Stdin = oldStdin }()
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"git", "scan-diff", "--json", "--exclude", "*.pb.go"})
+
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+
+	err := cmd.Execute()
+	if err != nil {
+		t.Fatalf("expected no error with excluded glob, got: %v", err)
+	}
+
+	output := strings.TrimSpace(buf.String())
+	if output != "[]" {
+		t.Errorf("expected empty findings [], got %q", output)
+	}
+}
+
+func TestScanDiffCmd_ExcludeDoesNotAffectOtherFiles(t *testing.T) {
+	key := fakeKey()
+	diff := fmt.Sprintf(`diff --git a/config.go b/config.go
+--- a/config.go
++++ b/config.go
+@@ -1,2 +1,3 @@
+ package config
++var key = "%s"
+
+`, key)
+
+	r, w, _ := os.Pipe()
+	_, _ = w.WriteString(diff)
+	_ = w.Close()
+
+	oldStdin := os.Stdin
+	os.Stdin = r
+	defer func() { os.Stdin = oldStdin }()
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"git", "scan-diff", "--exclude", "vendor/"})
+
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+
+	// config.go is NOT excluded, so the secret should still be found
+	err := cmd.Execute()
+	if !errors.Is(err, ErrSecretsFound) {
+		t.Fatalf("expected ErrSecretsFound for non-excluded file, got: %v", err)
 	}
 }
 

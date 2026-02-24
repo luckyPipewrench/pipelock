@@ -337,3 +337,109 @@ func TestJoin_Single(t *testing.T) {
 		t.Errorf("expected 'only', got %q", result)
 	}
 }
+
+func TestAuditCmd_ExcludePaths(t *testing.T) {
+	dir := t.TempDir()
+	// Create a .env file that triggers a finding
+	envContent := "API_KEY=" + "sk-ant-" + "api03-XXXXXXXXXXXX" + "XXXXXXXXXXXXXXXX\n"
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(envContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Without --exclude, the .env finding should appear
+	cmd := rootCmd()
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"audit", dir, "--json"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(buf.String(), ".env") {
+		t.Fatal("expected .env finding without --exclude")
+	}
+
+	// With --exclude, the .env finding should be filtered
+	cmd2 := rootCmd()
+	buf2 := &strings.Builder{}
+	cmd2.SetOut(buf2)
+	cmd2.SetErr(buf2)
+	cmd2.SetArgs([]string{"audit", dir, "--json", "--exclude", ".env"})
+
+	if err := cmd2.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(buf2.String(), `"file":".env"`) {
+		t.Error("expected .env finding to be excluded")
+	}
+}
+
+func TestAuditCmd_ExcludeRecomputesScore(t *testing.T) {
+	dir := t.TempDir()
+	// Create a .env file with a fake secret that triggers a critical finding
+	envContent := "API_KEY=" + "sk-ant-" + "api03-XXXXXXXXXXXX" + "XXXXXXXXXXXXXXXX\n"
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(envContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Without exclude: score_with_config is penalized for the critical
+	cmd1 := rootCmd()
+	buf1 := &strings.Builder{}
+	cmd1.SetOut(buf1)
+	cmd1.SetErr(buf1)
+	cmd1.SetArgs([]string{"audit", dir, "--json"})
+	if err := cmd1.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	unfiltered := buf1.String()
+
+	// With exclude: score_with_config should be higher (penalty removed)
+	cmd2 := rootCmd()
+	buf2 := &strings.Builder{}
+	cmd2.SetOut(buf2)
+	cmd2.SetErr(buf2)
+	cmd2.SetArgs([]string{"audit", dir, "--json", "--exclude", ".env"})
+	if err := cmd2.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	filtered := buf2.String()
+
+	// The filtered output should not contain the same score_with_config
+	// as the unfiltered output (it should be higher since penalty is removed).
+	// We just verify both contain the field and they differ.
+	if !strings.Contains(unfiltered, `"score_with_config"`) {
+		t.Fatal("expected score_with_config in unfiltered output")
+	}
+	if !strings.Contains(filtered, `"score_with_config"`) {
+		t.Fatal("expected score_with_config in filtered output")
+	}
+	if unfiltered == filtered {
+		t.Error("expected filtered output to differ from unfiltered (score should change)")
+	}
+}
+
+func TestAuditCmd_ExcludeDirectory(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "secrets")
+	if err := os.MkdirAll(sub, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	envContent := "API_KEY=" + "sk-ant-" + "api03-XXXXXXXXXXXX" + "XXXXXXXXXXXXXXXX\n"
+	if err := os.WriteFile(filepath.Join(sub, ".env"), []byte(envContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := rootCmd()
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"audit", dir, "--json", "--exclude", "secrets/"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(buf.String(), "secrets/") {
+		t.Error("expected secrets/ findings to be excluded")
+	}
+}

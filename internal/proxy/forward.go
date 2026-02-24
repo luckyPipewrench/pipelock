@@ -113,6 +113,18 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			clientIP, requestID, result.Score)
 	}
 
+	// WebSocket redirect hint: if the target host matches the redirect list
+	// and WebSocket proxy is enabled, suggest using /ws instead of CONNECT.
+	// Checked BEFORE dial to avoid wasting a TCP connection.
+	if cfg.WebSocketProxy.Enabled && len(cfg.ForwardProxy.RedirectWebSocketHosts) > 0 {
+		if isHostAllowlisted(host, cfg.ForwardProxy.RedirectWebSocketHosts) {
+			p.metrics.RecordWSRedirectHint()
+			p.logger.LogAnomaly(http.MethodConnect, target,
+				fmt.Sprintf("hint: %s supports WebSocket; consider using /ws endpoint for frame-level scanning", host),
+				clientIP, requestID, 0.2)
+		}
+	}
+
 	// Check tunnel capacity
 	sem := getTunnelSemaphore()
 	if !sem.TryAcquire() {

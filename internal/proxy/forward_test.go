@@ -753,7 +753,7 @@ func TestStartConnectViaProduction(t *testing.T) {
 	_, _ = conn.Write([]byte("hello"))
 	buf := make([]byte, 32)
 	n, _ := br.Read(buf)
-	if string(buf[:n]) != "hello" {
+	if string(buf[:n]) != "hello" { //nolint:goconst // test value
 		t.Errorf("expected echo 'hello', got %q", string(buf[:n]))
 	}
 }

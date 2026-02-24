@@ -115,13 +115,15 @@ internal/
   config/              YAML config loading, validation, defaults, hot-reload (fsnotify)
   scanner/             URL scanning (SSRF, blocklist, rate limit, DLP, entropy, env leak)
   audit/               Structured JSON audit logging (zerolog)
-  proxy/               Fetch proxy HTTP server (go-readability, agent ID, DNS pinning)
+  proxy/               HTTP proxy: fetch, forward (CONNECT + absolute-URI), WebSocket (/ws)
   metrics/             Prometheus metrics + JSON stats endpoint
   gitprotect/          Git-aware security (diff scanning, branch validation, hooks)
   integrity/           File integrity monitoring (SHA256 manifests, check/diff, exclusions)
   signing/             Ed25519 key management, file signing, signature verification
   mcp/                 MCP stdio proxy + bidirectional JSON-RPC 2.0 scanning + tool poisoning detection
   hitl/                Human-in-the-loop terminal approval (ask action)
+  normalize/           Unicode normalization pipeline (NFKC, homoglyphs, combining marks)
+  projectscan/         Project directory scanner for audit command
 configs/               Preset config files (strict, balanced, audit, claude-code, cursor, generic-agent)
 docs/                  OWASP mapping, tool comparison
 blog/                  Blog posts (mirrored at pipelab.org/blog/)
@@ -160,7 +162,7 @@ See [CLAUDE.md](CLAUDE.md) for the full architecture guide, including:
 
 ## Dependencies
 
-Pipelock has 7 direct dependencies. This is intentional. Any new dependency must be justified in the PR description. We prefer the standard library.
+Pipelock has 8 direct dependencies. This is intentional. Any new dependency must be justified in the PR description. We prefer the standard library.
 
 ## Security
 

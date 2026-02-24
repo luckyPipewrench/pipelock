@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- WebSocket proxy: `/ws?url=ws://...` endpoint with bidirectional frame relay, DLP + injection scanning on text frames, fragment reassembly, message size limits, SSRF-safe upstream dialer, auth header forwarding with DLP scanning, concurrency limits, connection lifetime and idle timeout controls, and Prometheus metrics
+- WebSocket configuration: `websocket_proxy` section in config with `max_message_bytes`, `scan_text_frames`, `allow_binary_frames`, `strip_compression`, `max_connection_seconds`, `idle_timeout_seconds`, `origin_policy`, and `max_concurrent_connections`
+- WebSocket health reporting: `/health` endpoint includes `websocket_proxy_enabled` field
+- All 6 preset configs updated with `websocket_proxy` defaults (disabled by default)
+- `--exclude` flag for `pipelock audit` and `pipelock git scan-diff`: filter findings by path using globs (`*.generated.go`) or directory prefixes (`vendor/`). Repeatable for multiple patterns.
+- GitHub Action `exclude-paths` input: newline-separated path patterns passed to both audit and scan-diff steps
+
 ## [0.2.8] - 2026-02-23
 
 ### Fixed

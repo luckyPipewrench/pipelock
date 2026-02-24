@@ -10,7 +10,7 @@ This file helps contributors (human and AI) work effectively on the Pipelock cod
 | Go version | 1.24+ |
 | License | Apache 2.0 |
 | Binary | Single static binary, ~12MB |
-| Dependencies | cobra, zerolog, go-readability, yaml.v3, prometheus, fsnotify, x/text |
+| Dependencies | cobra, zerolog, go-readability, yaml.v3, prometheus, fsnotify, x/text, gobwas/ws |
 
 ## Build, Test, Lint
 
@@ -41,7 +41,7 @@ Both must pass before pushing. CI runs lint and tests on all code (not just chan
 cmd/pipelock/          Entry point (main.go)
 internal/
   cli/                 Cobra commands (audit, check, demo, generate, git, healthcheck, integrity, keygen, logs, mcp, run, sign, test, trust, verify, version)
-  proxy/               HTTP proxy: fetch (/fetch), forward (CONNECT + absolute-URI), /health, /metrics, /stats
+  proxy/               HTTP proxy: fetch (/fetch), forward (CONNECT + absolute-URI), WebSocket (/ws), /health, /metrics, /stats
   scanner/             URL + response scanning pipeline (9 layers)
   config/              YAML config loading, validation, hot-reload (fsnotify + SIGHUP)
   audit/               Structured JSON logging (zerolog)
@@ -61,9 +61,10 @@ blog/                  GitHub Pages blog (Jekyll)
 
 Pipelock uses **capability separation**: the agent process (which has secrets and API keys) cannot reach the internet directly. All HTTP traffic goes through Pipelock, which scans every request.
 
-Two proxy modes on the same port:
+Three proxy modes on the same port:
 - **Fetch proxy** (`/fetch?url=...`): fetches URL, extracts text, scans response for injection
 - **Forward proxy** (CONNECT + absolute-URI): standard HTTP proxy, agents set `HTTPS_PROXY`. Scans target hostname through the 9-layer pipeline before opening the tunnel. Enabled via `forward_proxy.enabled: true`.
+- **WebSocket proxy** (`/ws?url=ws://...`): upgrades client, dials upstream through SSRF-safe dialer, scans text frames bidirectionally through the DLP + injection pipeline. Handles fragment reassembly, message size limits, connection lifetime/idle timeouts, and auth header forwarding. Enabled via `websocket_proxy.enabled: true`.
 
 ```
 Agent (secrets, no network) → Pipelock Proxy (no secrets, full network) → Internet
@@ -222,7 +223,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide. Summary:
 
 - **Security bugs**: Report via [GitHub Security Advisories](https://github.com/luckyPipewrench/pipelock/security/advisories) — NOT public issues
 - **Don't weaken capability separation** — the proxy must never have access to agent secrets
-- **Don't add dependencies without justification** — 7 direct deps (cobra, zerolog, go-readability, yaml.v3, prometheus, fsnotify, x/text) is a feature, not a limitation
+- **Don't add dependencies without justification** — 8 direct deps (cobra, zerolog, go-readability, yaml.v3, prometheus, fsnotify, x/text, gobwas/ws) is a feature, not a limitation
 - **Don't bypass fail-closed defaults** — if in doubt, block
 
 ## Common Development Tasks

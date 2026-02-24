@@ -360,6 +360,7 @@ func (r *wsRelay) run(ctx context.Context) wsRelayStats {
 func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFunc, idleTimeout time.Duration) (bytesTransferred, textFrames, binaryFrames int64, blocked bool) {
 	defer cancel()
 	frag := &fragmentState{maxBytes: r.maxMsg}
+	var crossMsgTail []byte // rolling tail for cross-message DLP scanning
 	log := r.proxy.logger.With("agent", r.agent)
 
 	for {
@@ -466,8 +467,28 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 			}
 
 			// DLP scanning on reassembled text.
+			// Cross-message DLP: prepend tail of previous message to catch
+			// secrets split across separate WebSocket message boundaries.
 			if r.scanText {
-				dlpResult := r.scanner.ScanTextForDLP(string(msg))
+				var scanInput []byte
+				if len(crossMsgTail) > 0 {
+					scanInput = append(crossMsgTail, msg...)
+				} else {
+					scanInput = msg
+				}
+				dlpResult := r.scanner.ScanTextForDLP(string(scanInput))
+
+				// Update rolling tail for next message (always, regardless of result).
+				if len(msg) >= crossMsgOverlap {
+					crossMsgTail = make([]byte, crossMsgOverlap)
+					copy(crossMsgTail, msg[len(msg)-crossMsgOverlap:])
+				} else {
+					crossMsgTail = append(crossMsgTail, msg...)
+					if len(crossMsgTail) > crossMsgOverlap {
+						crossMsgTail = crossMsgTail[len(crossMsgTail)-crossMsgOverlap:]
+					}
+				}
+
 				if !dlpResult.Clean {
 					names := make([]string, len(dlpResult.Matches))
 					for i, m := range dlpResult.Matches {
@@ -676,6 +697,11 @@ const (
 	wsReasonMessageTooLarge = "message too large" //nolint:gosec // not a credential
 	// RFC 6455 §5.5: control frames must not exceed 125 bytes payload.
 	wsMaxControlPayload = 125
+	// crossMsgOverlap is how many bytes of the previous text message to retain
+	// for cross-message DLP scanning. Secrets split across separate WebSocket
+	// messages (each FIN=1) would evade per-message scanning without this overlap.
+	// 512 bytes covers any single-line DLP pattern with headroom.
+	crossMsgOverlap = 512
 )
 
 // process handles fragment reassembly. Returns (complete, message, closeCode, closeReason).

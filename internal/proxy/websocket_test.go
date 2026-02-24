@@ -1097,6 +1097,272 @@ func TestWSReloadWarning(t *testing.T) {
 	}
 }
 
+// --- Cross-message DLP tests ---
+// These test the rolling tail buffer that catches secrets split across
+// separate WebSocket messages (each FIN=1, complete messages).
+
+func TestWSProxy_CrossMessageDLP_SplitKey(t *testing.T) {
+	backendAddr, backendCleanup := wsEchoServer(t)
+	defer backendCleanup()
+
+	proxyAddr, proxyCleanup := setupWSProxy(t, nil)
+	defer proxyCleanup()
+
+	conn := dialWS(t, proxyAddr, backendAddr)
+	defer conn.Close() //nolint:errcheck // test
+
+	// Build key at runtime to avoid gosec G101.
+	prefix := "AKIA" + "IOSFODNN7"
+	suffix := "EXAMPLE" //nolint:goconst // test value
+
+	// Message 1: key prefix. Should be allowed (not a full match).
+	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte("data: "+prefix)); err != nil {
+		t.Fatalf("write msg1: %v", err)
+	}
+	reply, _, err := wsutil.ReadServerData(conn)
+	if err != nil {
+		t.Fatalf("read msg1: %v (first half should pass)", err)
+	}
+	if !strings.Contains(string(reply), prefix) {
+		t.Errorf("msg1: expected echo containing prefix, got %q", reply)
+	}
+
+	// Message 2: key suffix. Cross-message DLP should detect the full key.
+	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(suffix)); err != nil {
+		t.Fatalf("write msg2: %v", err)
+	}
+	_, _, err = wsutil.ReadServerData(conn)
+	if err == nil {
+		t.Fatal("expected connection closed on msg2 (cross-message DLP), got nil")
+	}
+}
+
+func TestWSProxy_CrossMessageDLP_ThreeWaySplit(t *testing.T) {
+	backendAddr, backendCleanup := wsEchoServer(t)
+	defer backendCleanup()
+
+	proxyAddr, proxyCleanup := setupWSProxy(t, nil)
+	defer proxyCleanup()
+
+	conn := dialWS(t, proxyAddr, backendAddr)
+	defer conn.Close() //nolint:errcheck // test
+
+	// Split Anthropic key across 3 messages. Build at runtime for gosec.
+	// Anthropic DLP pattern requires sk-ant- + 10+ alphanumeric chars.
+	// Part2 must have <10 chars so tail("sk-ant-")+part2 doesn't match.
+	parts := []string{
+		"sk-ant-",                    // 7 chars — no DLP match alone
+		"IOSFOD",                     // 6 chars — tail+this = "sk-ant-IOSFOD" (6 after prefix, <10)
+		"NN7EXAMPLE1234567890abcdef", // completes key in tail+this
+	}
+
+	// First two parts should pass individually.
+	for i := 0; i < 2; i++ {
+		if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(parts[i])); err != nil {
+			t.Fatalf("write part[%d]: %v", i, err)
+		}
+		_, _, err := wsutil.ReadServerData(conn)
+		if err != nil {
+			t.Fatalf("read part[%d]: %v (should pass)", i, err)
+		}
+	}
+
+	// Third part completes the key in the rolling tail. Should be blocked.
+	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(parts[2])); err != nil {
+		t.Fatalf("write part[2]: %v", err)
+	}
+	_, _, err := wsutil.ReadServerData(conn)
+	if err == nil {
+		t.Fatal("expected connection closed on part[2] (three-way split DLP), got nil")
+	}
+}
+
+func TestWSProxy_CrossMessageDLP_CleanSequence(t *testing.T) {
+	backendAddr, backendCleanup := wsEchoServer(t)
+	defer backendCleanup()
+
+	proxyAddr, proxyCleanup := setupWSProxy(t, nil)
+	defer proxyCleanup()
+
+	conn := dialWS(t, proxyAddr, backendAddr)
+	defer conn.Close() //nolint:errcheck // test
+
+	// Multiple clean messages should not trigger false positives,
+	// even though the rolling tail accumulates across them.
+	msgs := []string{
+		"hello world",
+		"the weather is nice today",
+		"how are you doing",
+		"this is a normal conversation",
+		"no secrets here",
+	}
+
+	for i, msg := range msgs {
+		if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(msg)); err != nil {
+			t.Fatalf("write[%d]: %v", i, err)
+		}
+		reply, _, err := wsutil.ReadServerData(conn)
+		if err != nil {
+			t.Fatalf("read[%d]: %v (clean message should pass)", i, err)
+		}
+		if string(reply) != msg {
+			t.Errorf("msg[%d]: expected %q, got %q", i, msg, reply)
+		}
+	}
+}
+
+func TestWSProxy_CrossMessageDLP_TailEviction(t *testing.T) {
+	backendAddr, backendCleanup := wsEchoServer(t)
+	defer backendCleanup()
+
+	proxyAddr, proxyCleanup := setupWSProxy(t, nil)
+	defer proxyCleanup()
+
+	conn := dialWS(t, proxyAddr, backendAddr)
+	defer conn.Close() //nolint:errcheck // test
+
+	// Build key at runtime for gosec.
+	prefix := "AKIA" + "IOSFODNN7"
+	suffix := "EXAMPLE"
+
+	// Message 1: key prefix.
+	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte("data: "+prefix)); err != nil {
+		t.Fatalf("write prefix: %v", err)
+	}
+	if _, _, err := wsutil.ReadServerData(conn); err != nil {
+		t.Fatalf("read prefix: %v", err)
+	}
+
+	// Message 2: 600 bytes of clean data (exceeds 512-byte overlap window).
+	// This should evict the key prefix from the rolling tail.
+	// Use spaces (non-alphanumeric) so tail+padding can't form a valid key pattern.
+	padding := strings.Repeat(" ", 600)
+	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(padding)); err != nil {
+		t.Fatalf("write padding: %v", err)
+	}
+	if _, _, err := wsutil.ReadServerData(conn); err != nil {
+		t.Fatalf("read padding: %v", err)
+	}
+
+	// Message 3: key suffix. Should NOT be blocked because the prefix
+	// was evicted from the tail by the padding message.
+	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(suffix)); err != nil {
+		t.Fatalf("write suffix: %v", err)
+	}
+	reply, _, err := wsutil.ReadServerData(conn)
+	if err != nil {
+		t.Fatalf("read suffix: %v (should pass after tail eviction)", err)
+	}
+	if string(reply) != suffix {
+		t.Errorf("expected %q, got %q", suffix, reply)
+	}
+}
+
+func TestWSProxy_CrossMessageDLP_AnthropicKey(t *testing.T) {
+	backendAddr, backendCleanup := wsEchoServer(t)
+	defer backendCleanup()
+
+	proxyAddr, proxyCleanup := setupWSProxy(t, nil)
+	defer proxyCleanup()
+
+	conn := dialWS(t, proxyAddr, backendAddr)
+	defer conn.Close() //nolint:errcheck // test
+
+	// Split at the prefix boundary. Build at runtime for gosec.
+	part1 := "sk-ant-"
+	part2 := "IOSFODNN7EXAMPLE1234567890abcdef"
+
+	// Message 1: just the prefix.
+	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(part1)); err != nil {
+		t.Fatalf("write part1: %v", err)
+	}
+	if _, _, err := wsutil.ReadServerData(conn); err != nil {
+		t.Fatalf("read part1: %v (prefix alone should pass)", err)
+	}
+
+	// Message 2: the key body. Cross-message DLP catches the full key.
+	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(part2)); err != nil {
+		t.Fatalf("write part2: %v", err)
+	}
+	_, _, err := wsutil.ReadServerData(conn)
+	if err == nil {
+		t.Fatal("expected connection closed on part2 (cross-message Anthropic key DLP), got nil")
+	}
+}
+
+func TestWSProxy_CrossMessageDLP_FragmentThenSplit(t *testing.T) {
+	backendAddr, backendCleanup := wsEchoServer(t)
+	defer backendCleanup()
+
+	proxyAddr, proxyCleanup := setupWSProxy(t, nil)
+	defer proxyCleanup()
+
+	// Use raw connection for low-level frame control (fragments).
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	wsURL := fmt.Sprintf("ws://%s/ws?url=ws://%s", proxyAddr, backendAddr)
+	conn, _, _, err := ws.Dial(ctx, wsURL)
+	if err != nil {
+		t.Fatalf("ws dial: %v", err)
+	}
+	defer conn.Close() //nolint:errcheck // test
+
+	// Step 1: Send a fragmented clean message (FIN=0 + continuation FIN=1).
+	// This tests that fragment reassembly still works alongside the cross-message buffer.
+	frame1 := ws.NewTextFrame([]byte("hel"))
+	frame1.Header.Fin = false
+	frame1.Header.Masked = true
+	frame1.Header.Mask = ws.NewMask()
+	ws.Cipher(frame1.Payload, frame1.Header.Mask, 0)
+	if err := ws.WriteFrame(conn, frame1); err != nil {
+		t.Fatalf("write fragment 1: %v", err)
+	}
+
+	frame2 := ws.Frame{
+		Header: ws.Header{
+			OpCode: ws.OpContinuation,
+			Fin:    true,
+			Masked: true,
+			Mask:   ws.NewMask(),
+			Length: 2,
+		},
+		Payload: []byte("lo"),
+	}
+	ws.Cipher(frame2.Payload, frame2.Header.Mask, 0)
+	if err := ws.WriteFrame(conn, frame2); err != nil {
+		t.Fatalf("write fragment 2: %v", err)
+	}
+
+	// Read the reassembled echo.
+	reply, _, readErr := wsutil.ReadServerData(conn)
+	if readErr != nil {
+		t.Fatalf("read fragmented echo: %v", readErr)
+	}
+	if string(reply) != "hello" {
+		t.Errorf("expected 'hello', got %q", reply)
+	}
+
+	// Step 2: Now test cross-message DLP with separate complete messages.
+	// Build at runtime for gosec.
+	prefix := "AKIA" + "IOSFODNN7"
+	suffix := "EXAMPLE"
+
+	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte("data: "+prefix)); err != nil {
+		t.Fatalf("write split prefix: %v", err)
+	}
+	if _, _, err := wsutil.ReadServerData(conn); err != nil {
+		t.Fatalf("read split prefix: %v", err)
+	}
+
+	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(suffix)); err != nil {
+		t.Fatalf("write split suffix: %v", err)
+	}
+	_, _, err = wsutil.ReadServerData(conn)
+	if err == nil {
+		t.Fatal("expected cross-message DLP block after fragment+split sequence, got nil")
+	}
+}
+
 func TestWSBlockedDomain(t *testing.T) {
 	proxyAddr, cleanup := setupWSProxy(t, func(cfg *config.Config) {
 		cfg.FetchProxy.Monitoring.Blocklist = []string{"*.evil.com"}

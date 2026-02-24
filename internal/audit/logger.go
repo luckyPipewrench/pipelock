@@ -66,6 +66,10 @@ const (
 	EventTunnelClose  EventType = "tunnel_close"
 	EventForwardHTTP  EventType = "forward_http"
 	EventConfigReload EventType = "config_reload"
+	EventWSOpen       EventType = "ws_open"
+	EventWSClose      EventType = "ws_close"
+	EventWSBlocked    EventType = "ws_blocked"
+	EventWSScan       EventType = "ws_scan"
 )
 
 // Logger handles structured audit logging using zerolog.
@@ -281,6 +285,69 @@ func (l *Logger) LogShutdown(reason string) {
 		Str("event", "shutdown").
 		Str("reason", reason).
 		Msg("pipelock stopping")
+}
+
+// LogWSOpen logs a WebSocket proxy connection establishment.
+func (l *Logger) LogWSOpen(target, clientIP, requestID, agent string) {
+	if !l.includeAllowed {
+		return
+	}
+	l.zl.Info().
+		Str("event", string(EventWSOpen)).
+		Str("target", sanitizeString(target)).
+		Str("client_ip", clientIP).
+		Str("request_id", requestID).
+		Str("agent", agent).
+		Msg("websocket opened")
+}
+
+// LogWSClose logs a WebSocket proxy connection teardown with traffic stats.
+func (l *Logger) LogWSClose(target, clientIP, requestID, agent string, clientToServer, serverToClient int64, textFrames, binaryFrames int64, duration time.Duration) {
+	if !l.includeAllowed {
+		return
+	}
+	l.zl.Info().
+		Str("event", string(EventWSClose)).
+		Str("target", sanitizeString(target)).
+		Str("client_ip", clientIP).
+		Str("request_id", requestID).
+		Str("agent", agent).
+		Int64("client_to_server_bytes", clientToServer).
+		Int64("server_to_client_bytes", serverToClient).
+		Int64("text_frames", textFrames).
+		Int64("binary_frames", binaryFrames).
+		Dur("duration_ms", duration).
+		Msg("websocket closed")
+}
+
+// LogWSBlocked logs a blocked WebSocket frame or connection.
+func (l *Logger) LogWSBlocked(target, direction, scannerName, reason, clientIP, requestID string) {
+	if !l.includeBlocked {
+		return
+	}
+	l.zl.Warn().
+		Str("event", string(EventWSBlocked)).
+		Str("target", sanitizeString(target)).
+		Str("direction", direction).
+		Str("scanner", scannerName).
+		Str("reason", sanitizeString(reason)).
+		Str("client_ip", clientIP).
+		Str("request_id", requestID).
+		Msg("websocket blocked")
+}
+
+// LogWSScan logs a WebSocket frame scan hit (warn/strip action).
+func (l *Logger) LogWSScan(target, direction, clientIP, requestID, action string, matchCount int, patternNames []string) {
+	l.zl.Warn().
+		Str("event", string(EventWSScan)).
+		Str("target", sanitizeString(target)).
+		Str("direction", direction).
+		Str("client_ip", clientIP).
+		Str("request_id", requestID).
+		Str("action", action).
+		Int("match_count", matchCount).
+		Strs("patterns", patternNames).
+		Msg("websocket scan hit")
 }
 
 // With returns a sub-logger that includes the given key-value pair in every

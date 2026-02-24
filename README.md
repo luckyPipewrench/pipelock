@@ -103,10 +103,11 @@ gh attestation verify oci://ghcr.io/luckypipewrench/pipelock:<version> --owner l
 
 Pipelock is an [agent firewall](https://pipelab.org/agent-firewall/): like a WAF for web apps, it sits inline between your AI agent and the internet. It uses **capability separation** -- the agent process (which has secrets) is network-restricted, while Pipelock (which has NO secrets) inspects all traffic through a 9-layer scanner pipeline.
 
-Two proxy modes, same port:
+Three proxy modes, same port:
 
 - **Fetch proxy** (`/fetch?url=...`): Pipelock fetches the URL, extracts text, scans the response for prompt injection, and returns clean content. Best for agents that use a dedicated fetch tool.
 - **Forward proxy** (`HTTPS_PROXY`): Standard HTTP CONNECT tunneling and absolute-URI forwarding. Agents use Pipelock as their system proxy with zero code changes. Hostname scanning catches blocked domains and SSRF before the tunnel opens. Best for agents that use native `fetch()` or HTTP libraries.
+- **WebSocket proxy** (`/ws?url=ws://...`): Upgrades the client connection, dials the upstream WebSocket server through the SSRF-safe dialer, and relays frames bidirectionally. Text frames are scanned through the full DLP + injection pipeline. Fragment reassembly, message size limits, idle timeout, and connection lifetime controls are all built in.
 
 ```mermaid
 flowchart LR
@@ -121,7 +122,7 @@ flowchart LR
         Web["Web"]
     end
 
-    Agent -- "fetch URL\nor CONNECT" --> Proxy
+    Agent -- "fetch URL\nCONNECT\nor WebSocket" --> Proxy
     Proxy --> Scanner
     Scanner -- "content or\ntunnel" --> Agent
     Scanner -- "request" --> Web
@@ -144,6 +145,7 @@ flowchart LR
 │  - Has API keys      │────────>│  - NO secrets         │
 │  - Has credentials   │ fetch / │  - Full internet      │
 │  - Restricted network│ CONNECT │  - Returns text       │
+│                      │ /ws     │  - WS frame scanning  │
 │                      │<────────│  - URL scanning       │
 │  Can reach:          │ content │  - Audit logging      │
 │  ✓ api.anthropic.com │         │                       │
@@ -166,6 +168,7 @@ flowchart LR
 | Prompt injection detection | Yes | Yes | No | No |
 | Workspace integrity monitoring | Yes | No | No | Partial |
 | MCP scanning (bidirectional + tool poisoning) | Yes | Yes | No | No |
+| WebSocket proxy (frame scanning + fragment reassembly) | Yes | No | No | No |
 | MCP HTTP transport (Streamable HTTP + reverse proxy) | Yes | No | No | No |
 | Single binary, zero deps | Yes | No (Python) | No (npm) | No (kernel-level enforcement) |
 | Audit logging + Prometheus | Yes | No | No | No |
@@ -306,6 +309,40 @@ mcp_tool_policy:
 
 Auto-enabled in proxy mode. Rules are evaluated before tool calls are forwarded.
 
+### WebSocket Proxy
+
+Proxy WebSocket connections through the scanner pipeline. Text frames get DLP and injection scanning; binary frames can be allowed or blocked by policy. The proxy handles fragment reassembly, message size limits, and connection lifecycle:
+
+```bash
+# Enable in config (or use a preset with websocket_proxy.enabled: true)
+pipelock run --config pipelock.yaml
+
+# Agent connects via /ws endpoint
+wscat -c "ws://localhost:8888/ws?url=ws://upstream:9090/stream"
+```
+
+```yaml
+websocket_proxy:
+  enabled: true
+  max_message_bytes: 1048576       # 1MB max per message
+  max_concurrent_connections: 128
+  scan_text_frames: true           # DLP + injection on text frames
+  allow_binary_frames: false       # block binary by default
+  strip_compression: true          # force uncompressed (required for scanning)
+  max_connection_seconds: 3600     # 1h max lifetime
+  idle_timeout_seconds: 300        # 5min idle timeout
+  origin_policy: rewrite           # rewrite, forward, or strip
+```
+
+Features:
+- Full 9-layer scanner pipeline on target URL before connecting
+- DLP + injection scanning on text frame content (both directions)
+- Fragment reassembly with per-message size limits
+- Auth header forwarding with DLP scanning (Authorization, Cookie when enabled)
+- SSRF-safe upstream dialer (same DNS-pinning as forward proxy)
+- Prometheus metrics: `pipelock_ws_connections_total`, `pipelock_ws_active`, `pipelock_ws_blocked_total`
+- Structured audit logs for open/close/blocked events
+
 ### Multi-Agent Support
 
 Each agent identifies itself via `X-Pipelock-Agent` header (or `?agent=` query parameter). All audit logs include the agent name for per-agent filtering.
@@ -378,6 +415,16 @@ forward_proxy:
   enabled: false             # enable to accept CONNECT tunnels and absolute-URI requests
   max_tunnel_seconds: 300    # max lifetime per tunnel
   idle_timeout_seconds: 120  # kill idle tunnels after this
+
+websocket_proxy:
+  enabled: false             # enable /ws WebSocket proxy endpoint
+  max_message_bytes: 1048576 # 1MB max per assembled message
+  scan_text_frames: true     # DLP + injection scanning on text frames
+  allow_binary_frames: false # block binary frames by default
+  strip_compression: true    # force uncompressed (required for frame scanning)
+  max_connection_seconds: 3600
+  idle_timeout_seconds: 300
+  origin_policy: rewrite     # rewrite, forward, or strip Origin header
 
 logging:
   format: json
@@ -488,6 +535,8 @@ curl "http://localhost:8888/fetch?url=https://example.com"
 # Forward proxy (when forward_proxy.enabled: true)
 # Set HTTPS_PROXY=http://localhost:8888 and use any HTTP client normally.
 # HTTPS goes through CONNECT tunnels; plain HTTP uses absolute-URI forwarding.
+# WebSocket proxy (when websocket_proxy.enabled: true)
+# wscat -c "ws://localhost:8888/ws?url=ws://upstream:9090/path"
 curl -x http://localhost:8888 https://example.com
 
 # Health check
@@ -524,7 +573,8 @@ curl "http://localhost:8888/stats"
   "response_scan_enabled": true,
   "git_protection_enabled": false,
   "rate_limit_enabled": true,
-  "forward_proxy_enabled": false
+  "forward_proxy_enabled": false,
+  "websocket_proxy_enabled": false
 }
 ```
 
@@ -580,7 +630,7 @@ internal/
   config/              YAML config loading, validation, defaults, hot-reload (fsnotify)
   scanner/             URL scanning (SSRF, blocklist, rate limit, DLP, entropy, env leak)
   audit/               Structured JSON audit logging (zerolog)
-  proxy/               HTTP proxy: fetch (/fetch), forward (CONNECT + absolute-URI), DNS pinning
+  proxy/               HTTP proxy: fetch (/fetch), forward (CONNECT + absolute-URI), WebSocket (/ws), DNS pinning
   metrics/             Prometheus metrics + JSON stats endpoint
   gitprotect/          Git-aware security (diff scanning, branch validation, hooks)
   integrity/           File integrity monitoring (SHA256 manifests, check/diff, exclusions)

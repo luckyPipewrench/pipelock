@@ -32,6 +32,18 @@ forward_proxy:
   max_tunnel_seconds: 300
   idle_timeout_seconds: 120
 
+websocket_proxy:
+  enabled: false
+  max_message_bytes: 1048576
+  max_concurrent_connections: 128
+  scan_text_frames: true
+  allow_binary_frames: true
+  forward_cookies: false
+  strip_compression: true
+  max_connection_seconds: 3600
+  idle_timeout_seconds: 300
+  origin_policy: rewrite
+
 dlp:
   scan_env: true
   patterns:

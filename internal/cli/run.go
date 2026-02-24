@@ -167,6 +167,13 @@ Examples:
 										fmt.Errorf("rejected: forward proxy cannot be enabled via reload (requires restart)"))
 									return
 								}
+								// Block enabling WebSocket proxy via reload for the same
+								// reason: WriteTimeout must be 0 at server start.
+								if !oldCfg.WebSocketProxy.Enabled && newCfg.WebSocketProxy.Enabled {
+									logger.LogError("CONFIG_RELOAD", configFile, "", "",
+										fmt.Errorf("rejected: WebSocket proxy cannot be enabled via reload (requires restart)"))
+									return
+								}
 							}
 							newSc := scanner.New(newCfg)
 							p.Reload(newCfg, newSc)
@@ -192,6 +199,9 @@ Examples:
 			cmd.PrintErrf("  Stats:  http://%s/stats\n", cfg.FetchProxy.Listen)
 			if cfg.ForwardProxy.Enabled {
 				cmd.PrintErrf("  Proxy:  HTTP/HTTPS forward proxy enabled (CONNECT + absolute-URI)\n")
+			}
+			if cfg.WebSocketProxy.Enabled {
+				cmd.PrintErrf("  WS:     http://%s/ws?url=<ws-url> (WebSocket proxy enabled)\n", cfg.FetchProxy.Listen)
 			}
 			if configFile != "" {
 				cmd.PrintErrf("  Config: %s (hot-reload enabled, SIGHUP to reload)\n", configFile)

@@ -44,6 +44,7 @@ type Config struct {
 	APIAllowlist     []string         `yaml:"api_allowlist"`
 	FetchProxy       FetchProxy       `yaml:"fetch_proxy"`
 	ForwardProxy     ForwardProxy     `yaml:"forward_proxy"`
+	WebSocketProxy   WebSocketProxy   `yaml:"websocket_proxy"`
 	DLP              DLP              `yaml:"dlp"`
 	ResponseScanning ResponseScanning `yaml:"response_scanning"`
 	MCPInputScanning MCPInputScanning `yaml:"mcp_input_scanning"`
@@ -110,9 +111,26 @@ type ResponseScanPattern struct {
 // When enabled, the proxy accepts standard CONNECT tunnels (for HTTPS) and
 // absolute-URI requests (for HTTP), applying the scanner pipeline to each target.
 type ForwardProxy struct {
-	Enabled            bool `yaml:"enabled"`
-	MaxTunnelSeconds   int  `yaml:"max_tunnel_seconds"`
-	IdleTimeoutSeconds int  `yaml:"idle_timeout_seconds"`
+	Enabled                bool     `yaml:"enabled"`
+	MaxTunnelSeconds       int      `yaml:"max_tunnel_seconds"`
+	IdleTimeoutSeconds     int      `yaml:"idle_timeout_seconds"`
+	RedirectWebSocketHosts []string `yaml:"redirect_websocket_hosts"`
+}
+
+// WebSocketProxy configures the /ws WebSocket proxy endpoint.
+// When enabled, the proxy upgrades client connections, dials upstream WebSocket
+// servers through the SSRF-safe dialer, and scans frames bidirectionally.
+type WebSocketProxy struct {
+	Enabled                  bool   `yaml:"enabled"`
+	MaxMessageBytes          int    `yaml:"max_message_bytes"`
+	MaxConcurrentConnections int    `yaml:"max_concurrent_connections"`
+	ScanTextFrames           *bool  `yaml:"scan_text_frames"`
+	AllowBinaryFrames        bool   `yaml:"allow_binary_frames"`
+	ForwardCookies           bool   `yaml:"forward_cookies"`
+	StripCompression         *bool  `yaml:"strip_compression"`
+	MaxConnectionSeconds     int    `yaml:"max_connection_seconds"`
+	IdleTimeoutSeconds       int    `yaml:"idle_timeout_seconds"`
+	OriginPolicy             string `yaml:"origin_policy"` // rewrite (default), forward, strip
 }
 
 // GitProtection configures git-aware security features.
@@ -267,6 +285,29 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.ForwardProxy.IdleTimeoutSeconds <= 0 {
 		c.ForwardProxy.IdleTimeoutSeconds = 120
+	}
+	if c.WebSocketProxy.MaxMessageBytes <= 0 {
+		c.WebSocketProxy.MaxMessageBytes = 1048576 // 1MB
+	}
+	if c.WebSocketProxy.MaxConcurrentConnections <= 0 {
+		c.WebSocketProxy.MaxConcurrentConnections = 128
+	}
+	if c.WebSocketProxy.ScanTextFrames == nil {
+		t := true
+		c.WebSocketProxy.ScanTextFrames = &t
+	}
+	if c.WebSocketProxy.StripCompression == nil {
+		t := true
+		c.WebSocketProxy.StripCompression = &t
+	}
+	if c.WebSocketProxy.MaxConnectionSeconds <= 0 {
+		c.WebSocketProxy.MaxConnectionSeconds = 3600
+	}
+	if c.WebSocketProxy.IdleTimeoutSeconds <= 0 {
+		c.WebSocketProxy.IdleTimeoutSeconds = 300
+	}
+	if c.WebSocketProxy.OriginPolicy == "" {
+		c.WebSocketProxy.OriginPolicy = "rewrite"
 	}
 	if c.GitProtection.Enabled && len(c.GitProtection.AllowedBranches) == 0 {
 		c.GitProtection.AllowedBranches = []string{"feature/*", "fix/*", "main", "master"}
@@ -460,6 +501,37 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// Validate WebSocket proxy config
+	if c.WebSocketProxy.Enabled {
+		if c.WebSocketProxy.MaxMessageBytes <= 0 {
+			return fmt.Errorf("websocket_proxy.max_message_bytes must be positive")
+		}
+		if c.WebSocketProxy.MaxConcurrentConnections <= 0 {
+			return fmt.Errorf("websocket_proxy.max_concurrent_connections must be positive")
+		}
+		if c.WebSocketProxy.MaxConnectionSeconds <= 0 {
+			return fmt.Errorf("websocket_proxy.max_connection_seconds must be positive")
+		}
+		if c.WebSocketProxy.IdleTimeoutSeconds <= 0 {
+			return fmt.Errorf("websocket_proxy.idle_timeout_seconds must be positive")
+		}
+		switch c.WebSocketProxy.OriginPolicy {
+		case "rewrite", "forward", ActionStrip:
+			// valid
+		default:
+			return fmt.Errorf("invalid websocket_proxy.origin_policy %q: must be rewrite, forward, or strip", c.WebSocketProxy.OriginPolicy)
+		}
+		// Compression must stay stripped; scanning requires uncompressed frame payloads.
+		if c.WebSocketProxy.StripCompression != nil && !*c.WebSocketProxy.StripCompression {
+			return fmt.Errorf("websocket_proxy.strip_compression must be true: scanning requires uncompressed frames")
+		}
+		// Warn about memory budget
+		memBudget := int64(c.WebSocketProxy.MaxConcurrentConnections) * int64(c.WebSocketProxy.MaxMessageBytes) * 2
+		if memBudget > 1<<30 { // 1GB
+			fmt.Fprintf(os.Stderr, "WARNING: websocket_proxy memory budget is %dMB (max_concurrent_connections * max_message_bytes * 2) - consider reducing\n", memBudget/(1<<20))
+		}
+	}
+
 	// Validate internal CIDRs are parseable
 	for _, cidr := range c.Internal {
 		if _, _, err := net.ParseCIDR(cidr); err != nil {
@@ -575,6 +647,14 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		})
 	}
 
+	// WebSocket proxy disabled
+	if old.WebSocketProxy.Enabled && !updated.WebSocketProxy.Enabled {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "websocket_proxy.enabled",
+			Message: "WebSocket proxy disabled",
+		})
+	}
+
 	// Secrets file changed or removed (security-relevant)
 	if old.DLP.SecretsFile != updated.DLP.SecretsFile {
 		if updated.DLP.SecretsFile == "" {
@@ -634,6 +714,16 @@ func Defaults() *Config {
 			Enabled:            false,
 			MaxTunnelSeconds:   300,
 			IdleTimeoutSeconds: 120,
+		},
+		WebSocketProxy: WebSocketProxy{
+			Enabled:                  false,
+			MaxMessageBytes:          1048576,
+			MaxConcurrentConnections: 128,
+			ScanTextFrames:           ptrBool(true),
+			StripCompression:         ptrBool(true),
+			MaxConnectionSeconds:     3600,
+			IdleTimeoutSeconds:       300,
+			OriginPolicy:             "rewrite",
 		},
 		DLP: DLP{
 			ScanEnv: true,
@@ -715,3 +805,5 @@ func Defaults() *Config {
 	}
 	return cfg
 }
+
+func ptrBool(v bool) *bool { return &v }

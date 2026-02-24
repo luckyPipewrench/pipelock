@@ -255,22 +255,25 @@ func (p *Proxy) Start(ctx context.Context) error {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/fetch", p.handleFetch)
+	mux.HandleFunc("/ws", p.handleWebSocket)
 	mux.HandleFunc("/health", p.handleHealth)
 	mux.Handle("/metrics", p.metrics.PrometheusHandler())
 	mux.HandleFunc("/stats", p.metrics.StatsHandler())
 
 	handler := p.buildHandler(mux)
 
-	// CONNECT tunnels need to live beyond any single write timeout.
-	// When forward proxy is enabled, WriteTimeout is set to 0 (unlimited)
-	// because http.Server enforces it per-connection, not per-handler, and
-	// CONNECT tunnels run for minutes. This also affects /fetch, /health,
-	// /metrics, and /stats on the same listener. Those endpoints remain
-	// protected by: the http.Client.Timeout on outbound fetches, the
-	// ReadHeaderTimeout (slowloris), and the response size cap (MaxResponseMB).
-	// Per-tunnel lifetime is enforced by max_tunnel_seconds and idle_timeout_seconds.
+	// CONNECT tunnels and WebSocket connections need to live beyond any single
+	// write timeout. When forward proxy or WebSocket proxy is enabled,
+	// WriteTimeout is set to 0 (unlimited) because http.Server enforces it
+	// per-connection, not per-handler. Long-lived connections would be killed
+	// prematurely. This also affects /fetch, /health, /metrics, and /stats on
+	// the same listener. Those endpoints remain protected by: the
+	// http.Client.Timeout on outbound fetches, the ReadHeaderTimeout
+	// (slowloris), and the response size cap (MaxResponseMB). Per-connection
+	// lifetime is enforced by max_tunnel_seconds / max_connection_seconds and
+	// idle_timeout_seconds.
 	writeTimeout := time.Duration(cfg.FetchProxy.TimeoutSeconds+10) * time.Second
-	if cfg.ForwardProxy.Enabled {
+	if cfg.ForwardProxy.Enabled || cfg.WebSocketProxy.Enabled {
 		writeTimeout = 0
 	}
 
@@ -360,7 +363,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 	// Parse and validate URL scheme
 	parsed, err := url.Parse(targetURL)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") { //nolint:goconst // scheme literal
 		writeJSON(w, http.StatusBadRequest, FetchResponse{
 			URL:     targetURL,
 			Error:   "invalid URL: must be http or https",
@@ -603,30 +606,32 @@ func extractRawURLParam(rawQuery string) string {
 
 // healthResponse is the JSON response returned by the /health endpoint.
 type healthResponse struct {
-	Status               string  `json:"status"`
-	Version              string  `json:"version"`
-	Mode                 string  `json:"mode"`
-	UptimeSeconds        float64 `json:"uptime_seconds"`
-	DLPPatterns          int     `json:"dlp_patterns"`
-	ResponseScanEnabled  bool    `json:"response_scan_enabled"`
-	GitProtectionEnabled bool    `json:"git_protection_enabled"`
-	RateLimitEnabled     bool    `json:"rate_limit_enabled"`
-	ForwardProxyEnabled  bool    `json:"forward_proxy_enabled"`
+	Status                string  `json:"status"`
+	Version               string  `json:"version"`
+	Mode                  string  `json:"mode"`
+	UptimeSeconds         float64 `json:"uptime_seconds"`
+	DLPPatterns           int     `json:"dlp_patterns"`
+	ResponseScanEnabled   bool    `json:"response_scan_enabled"`
+	GitProtectionEnabled  bool    `json:"git_protection_enabled"`
+	RateLimitEnabled      bool    `json:"rate_limit_enabled"`
+	ForwardProxyEnabled   bool    `json:"forward_proxy_enabled"`
+	WebSocketProxyEnabled bool    `json:"websocket_proxy_enabled"`
 }
 
 // handleHealth returns proxy health status including uptime and feature flags.
 func (p *Proxy) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	cfg := p.cfgPtr.Load()
 	writeJSON(w, http.StatusOK, healthResponse{
-		Status:               "healthy",
-		Version:              Version,
-		Mode:                 cfg.Mode,
-		UptimeSeconds:        time.Since(p.startTime).Seconds(),
-		DLPPatterns:          len(cfg.DLP.Patterns),
-		ResponseScanEnabled:  cfg.ResponseScanning.Enabled,
-		GitProtectionEnabled: cfg.GitProtection.Enabled,
-		RateLimitEnabled:     cfg.FetchProxy.Monitoring.MaxReqPerMinute > 0,
-		ForwardProxyEnabled:  cfg.ForwardProxy.Enabled,
+		Status:                "healthy",
+		Version:               Version,
+		Mode:                  cfg.Mode,
+		UptimeSeconds:         time.Since(p.startTime).Seconds(),
+		DLPPatterns:           len(cfg.DLP.Patterns),
+		ResponseScanEnabled:   cfg.ResponseScanning.Enabled,
+		GitProtectionEnabled:  cfg.GitProtection.Enabled,
+		RateLimitEnabled:      cfg.FetchProxy.Monitoring.MaxReqPerMinute > 0,
+		ForwardProxyEnabled:   cfg.ForwardProxy.Enabled,
+		WebSocketProxyEnabled: cfg.WebSocketProxy.Enabled,
 	})
 }
 

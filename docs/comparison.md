@@ -6,7 +6,7 @@ An honest feature matrix and guidance on when to use what.
 
 | Feature | Pipelock | AIP | agentsh | srt |
 |---------|----------|-----|---------|-----|
-| **Layer** | Application firewall (HTTP + MCP) | MCP proxy | Kernel (seccomp/eBPF/FUSE) | OS sandbox |
+| **Layer** | Application firewall (HTTP + MCP + WebSocket) | MCP proxy | Kernel (seccomp/eBPF/FUSE) | OS sandbox |
 | **Language** | Go | Go | Go | TypeScript |
 | **Binary** | Single, ~12MB | Single | Single + kernel modules | npm package |
 | **Domain allowlist** | Yes | Yes (MCP-level) | Yes (LLM proxy) | Yes |
@@ -15,6 +15,7 @@ An honest feature matrix and guidance on when to use what.
 | **Prompt injection detection** | Bidirectional (response + request scanning) | No | No | No |
 | **File integrity monitoring** | SHA256 manifests | No | Workspace checkpoints | Filesystem restrictions |
 | **Ed25519 signing** | Yes | No | No | No |
+| **WebSocket proxy** | Yes (frame scanning + fragment reassembly) | No | No | No |
 | **MCP scanning** | Yes (bidirectional + tool poisoning) | Yes (native proxy) | No | No |
 | **HITL approvals** | Yes (terminal y/N/s) | Yes (OS dialogs) | No | No |
 | **Entropy analysis** | Shannon entropy on URLs | No | No | No |

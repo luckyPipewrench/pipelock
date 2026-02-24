@@ -2211,6 +2211,11 @@ func TestExtractRawURLParam(t *testing.T) {
 			rawQuery: "url=https://example.com/?a=hello%26b=world",
 			want:     "https://example.com/?a=hello&b=world",
 		},
+		{
+			name:     "invalid percent encoding returns raw value",
+			rawQuery: "url=https%3A%2F%2Fexample.com%2F%ZZbad",
+			want:     "https%3A%2F%2Fexample.com%2F%ZZbad",
+		},
 	}
 
 	for _, tt := range tests {
@@ -2505,10 +2510,10 @@ func TestProxy_AdaptiveEscalation(t *testing.T) {
 	if !escalated {
 		t.Error("should escalate when score reaches threshold")
 	}
-	if from != "normal" {
+	if from != "normal" { //nolint:goconst // test value
 		t.Errorf("expected from=normal, got %s", from)
 	}
-	if to != "elevated" {
+	if to != "elevated" { //nolint:goconst // test value
 		t.Errorf("expected to=elevated, got %s", to)
 	}
 
@@ -2614,7 +2619,7 @@ func TestProxy_SessionProfiling_AgentKeying(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/fetch", p.handleFetch)
 
-	// Agent "alpha" hits 3 unique domains (exceeds burst of 2).
+	// Agent "alpha" on IP .1 hits 3 unique domains (exceeds burst of 2).
 	for _, domain := range []string{"a.example.com", "b.example.com", "c.example.com"} {
 		req := httptest.NewRequest(http.MethodGet, "/fetch?url=http://"+domain+"/x", nil)
 		req.RemoteAddr = "10.0.0.1:9999" //nolint:goconst // test value
@@ -2623,21 +2628,64 @@ func TestProxy_SessionProfiling_AgentKeying(t *testing.T) {
 		mux.ServeHTTP(w, req)
 	}
 
-	// Agent "beta" on the SAME client IP should have a separate session.
-	// 1st unique domain for beta — should NOT be blocked.
+	// Agent "beta" on DIFFERENT IP should have separate agent session AND
+	// separate IP-level tracking. 1st unique domain — should NOT be blocked.
 	req := httptest.NewRequest(http.MethodGet, "/fetch?url=http://d.example.com/x", nil)
-	req.RemoteAddr = "10.0.0.1:9999" //nolint:goconst // test value
+	req.RemoteAddr = "10.0.0.2:9999"
 	req.Header.Set("X-Pipelock-Agent", "beta")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
-	// If keying were clientIP-only, beta would inherit alpha's 3 unique domains
-	// and this 4th would trigger domain_burst. With agent|clientIP keying,
-	// beta has only 1 domain — no anomaly.
+	// Beta's agent session has only 1 domain AND beta's IP has only 1 domain.
+	// Neither per-agent nor per-IP tracker should trigger.
 	if w.Code == http.StatusForbidden {
 		var resp FetchResponse
 		_ = json.Unmarshal(w.Body.Bytes(), &resp)
-		t.Errorf("beta agent should not be blocked by alpha's domain burst, got: %s", resp.BlockReason)
+		t.Errorf("beta agent on different IP should not be blocked, got: %s", resp.BlockReason)
+	}
+}
+
+func TestProxy_SessionProfiling_IPDomainBurst_HeaderRotation(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.FetchProxy.TimeoutSeconds = 5
+	cfg.Internal = nil
+	cfg.APIAllowlist = nil
+	cfg.SessionProfiling.Enabled = true
+	cfg.SessionProfiling.AnomalyAction = config.ActionBlock
+	cfg.SessionProfiling.DomainBurst = 2
+	cfg.SessionProfiling.WindowMinutes = 5
+	cfg.SessionProfiling.MaxSessions = 100
+	cfg.SessionProfiling.SessionTTLMinutes = 30
+	cfg.SessionProfiling.CleanupIntervalSeconds = 60
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+	p := New(cfg, logger, sc, metrics.New())
+	defer p.Close()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+
+	// Simulate header rotation: same IP, different agent per request.
+	// Each agent session sees only 1 domain (no per-agent burst), but the
+	// IP-level tracker sees all domains from this IP.
+	agents := []string{"agent-1", "agent-2", "agent-3"}
+	domains := []string{"a.example.com", "b.example.com", "c.example.com"}
+
+	var lastCode int
+	for i, agent := range agents {
+		req := httptest.NewRequest(http.MethodGet, "/fetch?url=http://"+domains[i]+"/x", nil)
+		req.RemoteAddr = "10.0.0.1:9999" //nolint:goconst // test value
+		req.Header.Set("X-Pipelock-Agent", agent)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		lastCode = w.Code
+	}
+
+	// 3rd domain from same IP should trigger ip_domain_burst (threshold: 2)
+	if lastCode != http.StatusForbidden {
+		t.Errorf("header rotation should be caught by IP-level domain burst, got status %d", lastCode)
 	}
 }
 

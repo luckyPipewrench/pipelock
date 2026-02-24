@@ -187,19 +187,26 @@ func escalationLabel(level int) string {
 type SessionManager struct {
 	mu       sync.RWMutex
 	sessions map[string]*SessionState
-	cfgPtr   atomic.Pointer[config.SessionProfiling]
-	metrics  *metrics.Metrics // nil-safe; used for gauge/counter updates
-	done     chan struct{}
-	closed   sync.Once
+
+	// ipDomains tracks domain diversity per source IP, independent of agent
+	// header. This catches domain burst attacks where the attacker rotates
+	// the X-Pipelock-Agent header per request to create fresh sessions.
+	ipDomains map[string][]domainEntry
+
+	cfgPtr  atomic.Pointer[config.SessionProfiling]
+	metrics *metrics.Metrics // nil-safe; used for gauge/counter updates
+	done    chan struct{}
+	closed  sync.Once
 }
 
 // NewSessionManager creates a session manager with background cleanup.
 // The metrics parameter is optional (nil disables gauge/counter updates).
 func NewSessionManager(cfg *config.SessionProfiling, m *metrics.Metrics) *SessionManager {
 	sm := &SessionManager{
-		sessions: make(map[string]*SessionState),
-		metrics:  m,
-		done:     make(chan struct{}),
+		sessions:  make(map[string]*SessionState),
+		ipDomains: make(map[string][]domainEntry),
+		metrics:   m,
+		done:      make(chan struct{}),
 	}
 	sm.cfgPtr.Store(cfg)
 
@@ -254,6 +261,53 @@ func (sm *SessionManager) Len() int {
 	return len(sm.sessions)
 }
 
+// RecordIPDomain checks domain diversity across all agent identities from the
+// same source IP. This catches header rotation attacks where an attacker sends
+// each request with a different X-Pipelock-Agent value to avoid per-session
+// domain burst detection. Returns anomalies when the IP crosses the burst
+// threshold regardless of which agent identity was used.
+func (sm *SessionManager) RecordIPDomain(clientIP, domain string, cfg *config.SessionProfiling) []Anomaly {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	now := time.Now()
+	windowCutoff := now.Add(-time.Duration(cfg.WindowMinutes) * time.Minute)
+
+	// Prune expired entries for this IP
+	entries := sm.ipDomains[clientIP]
+	pruned := entries[:0]
+	for _, de := range entries {
+		if de.at.After(windowCutoff) {
+			pruned = append(pruned, de)
+		}
+	}
+
+	// Check if this domain is already tracked for this IP
+	seen := false
+	for _, de := range pruned {
+		if de.domain == domain {
+			seen = true
+			break
+		}
+	}
+	if !seen {
+		pruned = append(pruned, domainEntry{domain: domain, at: now})
+	}
+	sm.ipDomains[clientIP] = pruned
+
+	var anomalies []Anomaly
+	uniqueDomains := countUniqueDomains(pruned)
+	if uniqueDomains > cfg.DomainBurst {
+		anomalies = append(anomalies, Anomaly{
+			Type:   "ip_domain_burst",
+			Detail: fmt.Sprintf("%d unique domains from IP in %dm window (threshold: %d)", uniqueDomains, cfg.WindowMinutes, cfg.DomainBurst),
+			Score:  3.0, // higher than per-agent burst: indicates intentional evasion
+		})
+	}
+
+	return anomalies
+}
+
 // UpdateConfig swaps the session manager's config pointer so that TTL,
 // capacity, threshold, and cleanup interval changes take effect on the
 // next operation.
@@ -288,12 +342,13 @@ func (sm *SessionManager) cleanupLoop() {
 	}
 }
 
-// cleanup removes sessions idle beyond TTL.
+// cleanup removes sessions idle beyond TTL and prunes stale IP domain entries.
 func (sm *SessionManager) cleanup() {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	ttl := time.Duration(sm.cfgPtr.Load().SessionTTLMinutes) * time.Minute
+	cfg := sm.cfgPtr.Load()
+	ttl := time.Duration(cfg.SessionTTLMinutes) * time.Minute
 	cutoff := time.Now().Add(-ttl)
 
 	evicted := 0
@@ -305,6 +360,22 @@ func (sm *SessionManager) cleanup() {
 		if idle {
 			delete(sm.sessions, key)
 			evicted++
+		}
+	}
+
+	// Prune IP domain entries older than the rolling window.
+	windowCutoff := time.Now().Add(-time.Duration(cfg.WindowMinutes) * time.Minute)
+	for ip, entries := range sm.ipDomains {
+		pruned := entries[:0]
+		for _, de := range entries {
+			if de.at.After(windowCutoff) {
+				pruned = append(pruned, de)
+			}
+		}
+		if len(pruned) == 0 {
+			delete(sm.ipDomains, ip)
+		} else {
+			sm.ipDomains[ip] = pruned
 		}
 	}
 

@@ -958,6 +958,219 @@ func TestNewNop_SessionEvents(_ *testing.T) {
 	logger.Close()
 }
 
+func TestLogConfigReload_JSONFormat(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogConfigReload("success", "hot-reload via SIGHUP")
+	logger.Close()
+
+	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+
+	if entry["event"] != "config_reload" {
+		t.Errorf("expected event=config_reload, got %v", entry["event"])
+	}
+	if entry["status"] != "success" {
+		t.Errorf("expected status=success, got %v", entry["status"])
+	}
+	if entry["detail"] != "hot-reload via SIGHUP" {
+		t.Errorf("expected detail, got %v", entry["detail"])
+	}
+}
+
+func TestLogWSOpen_JSONFormat(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogWSOpen("ws://example.com/stream", "10.0.0.5", "req-200", "test-agent")
+	logger.Close()
+
+	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+
+	if entry["event"] != "ws_open" {
+		t.Errorf("expected event=ws_open, got %v", entry["event"])
+	}
+	if entry["target"] != "ws://example.com/stream" {
+		t.Errorf("expected target, got %v", entry["target"])
+	}
+	if entry["agent"] != "test-agent" {
+		t.Errorf("expected agent=test-agent, got %v", entry["agent"])
+	}
+}
+
+func TestLogWSOpen_Filtered(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, false, true) // includeAllowed=false
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogWSOpen("ws://example.com/stream", "10.0.0.5", "req-200", "test-agent")
+	logger.Close()
+
+	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
+	if len(bytes.TrimSpace(data)) > 0 {
+		t.Error("expected ws_open to be filtered when includeAllowed=false")
+	}
+}
+
+func TestLogWSClose_JSONFormat(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogWSClose("ws://example.com/stream", "10.0.0.5", "req-200", "test-agent",
+		4096, 8192, 10, 2, 5*time.Second)
+	logger.Close()
+
+	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+
+	if entry["event"] != "ws_close" {
+		t.Errorf("expected event=ws_close, got %v", entry["event"])
+	}
+	if entry["target"] != "ws://example.com/stream" {
+		t.Errorf("expected target, got %v", entry["target"])
+	}
+	c2s, ok := entry["client_to_server_bytes"].(float64)
+	if !ok || c2s != 4096 {
+		t.Errorf("expected client_to_server_bytes=4096, got %v", entry["client_to_server_bytes"])
+	}
+	s2c, ok := entry["server_to_client_bytes"].(float64)
+	if !ok || s2c != 8192 {
+		t.Errorf("expected server_to_client_bytes=8192, got %v", entry["server_to_client_bytes"])
+	}
+	tf, ok := entry["text_frames"].(float64)
+	if !ok || tf != 10 {
+		t.Errorf("expected text_frames=10, got %v", entry["text_frames"])
+	}
+}
+
+func TestLogWSClose_Filtered(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, false, true) // includeAllowed=false
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogWSClose("ws://example.com/stream", "10.0.0.5", "req-200", "test-agent",
+		4096, 8192, 10, 2, 5*time.Second)
+	logger.Close()
+
+	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
+	if len(bytes.TrimSpace(data)) > 0 {
+		t.Error("expected ws_close to be filtered when includeAllowed=false")
+	}
+}
+
+func TestLogWSBlocked_JSONFormat(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogWSBlocked("ws://evil.com/exfil", "client_to_server", "dlp", "secret detected", "10.0.0.1", "req-300")
+	logger.Close()
+
+	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+
+	if entry["event"] != "ws_blocked" {
+		t.Errorf("expected event=ws_blocked, got %v", entry["event"])
+	}
+	if entry["direction"] != "client_to_server" {
+		t.Errorf("expected direction=client_to_server, got %v", entry["direction"])
+	}
+	if entry["scanner"] != "dlp" {
+		t.Errorf("expected scanner=dlp, got %v", entry["scanner"])
+	}
+	if entry["reason"] != "secret detected" {
+		t.Errorf("expected reason='secret detected', got %v", entry["reason"])
+	}
+}
+
+func TestLogWSBlocked_Filtered(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, false) // includeBlocked=false
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogWSBlocked("ws://evil.com/exfil", "client_to_server", "dlp", "secret detected", "10.0.0.1", "req-300")
+	logger.Close()
+
+	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
+	if len(bytes.TrimSpace(data)) > 0 {
+		t.Error("expected ws_blocked to be filtered when includeBlocked=false")
+	}
+}
+
+func TestLogWSScan_JSONFormat(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogWSScan("ws://example.com/chat", "server_to_client", "10.0.0.1", "req-400", "warn", 2, []string{"Prompt Injection", "Jailbreak"})
+	logger.Close()
+
+	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+
+	if entry["event"] != "ws_scan" {
+		t.Errorf("expected event=ws_scan, got %v", entry["event"])
+	}
+	if entry["direction"] != "server_to_client" {
+		t.Errorf("expected direction=server_to_client, got %v", entry["direction"])
+	}
+	if entry["action"] != "warn" { //nolint:goconst // test value
+		t.Errorf("expected action=warn, got %v", entry["action"])
+	}
+	matchCount, ok := entry["match_count"].(float64)
+	if !ok || matchCount != 2 {
+		t.Errorf("expected match_count=2, got %v", entry["match_count"])
+	}
+	patterns, ok := entry["patterns"].([]any)
+	if !ok || len(patterns) != 2 {
+		t.Errorf("expected 2 patterns, got %v", entry["patterns"])
+	}
+}
+
 func TestLogTunnelOpen_SanitizesTarget(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.log")

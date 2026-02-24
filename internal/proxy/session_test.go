@@ -312,10 +312,10 @@ func TestSessionState_Escalation(t *testing.T) {
 	if !escalated {
 		t.Error("should escalate at threshold")
 	}
-	if from != "normal" {
+	if from != "normal" { //nolint:goconst // test value
 		t.Errorf("expected from=normal, got %s", from)
 	}
-	if to != "elevated" {
+	if to != "elevated" { //nolint:goconst // test value
 		t.Errorf("expected to=elevated, got %s", to)
 	}
 
@@ -479,4 +479,241 @@ func TestSessionManager_NilMetrics(t *testing.T) {
 	sm.GetOrCreate("b") // eviction with nil metrics should not panic
 
 	sm.cleanup() // cleanup with nil metrics should not panic
+}
+
+func TestSessionManager_IPDomainBurst(t *testing.T) {
+	cfg := testSessionConfig()
+	cfg.DomainBurst = 3
+	sm := NewSessionManager(cfg, nil)
+	defer sm.Close()
+
+	ip := "10.0.0.1" //nolint:goconst // test value
+
+	// First 3 domains are fine
+	for _, d := range []string{"a.com", "b.com", "c.com"} {
+		anomalies := sm.RecordIPDomain(ip, d, cfg)
+		if len(anomalies) > 0 {
+			t.Errorf("domain %s should not trigger IP anomaly", d)
+		}
+	}
+
+	// 4th new domain triggers IP-level burst
+	anomalies := sm.RecordIPDomain(ip, "d.com", cfg)
+	found := false
+	for _, a := range anomalies {
+		if a.Type == "ip_domain_burst" { //nolint:goconst // test value
+			found = true
+			if a.Score != 3.0 {
+				t.Errorf("expected ip_domain_burst score 3.0, got %f", a.Score)
+			}
+		}
+	}
+	if !found {
+		t.Error("4th domain should trigger ip_domain_burst anomaly")
+	}
+}
+
+func TestSessionManager_IPDomainBurst_HeaderRotation(t *testing.T) {
+	cfg := testSessionConfig()
+	cfg.DomainBurst = 3
+	sm := NewSessionManager(cfg, nil)
+	defer sm.Close()
+
+	ip := "10.0.0.1"
+
+	// Simulate header rotation: different agent sessions, same IP, different domains.
+	// Per-agent sessions see only 1 domain each (no burst), but IP tracker sees all 4.
+	agents := []string{"agent-1|" + ip, "agent-2|" + ip, "agent-3|" + ip, "agent-4|" + ip}
+	domains := []string{"a.com", "b.com", "c.com", "d.com"}
+
+	for i, agent := range agents {
+		sess := sm.GetOrCreate(agent)
+		agentAnomalies := sess.RecordRequest(domains[i], cfg)
+		if len(agentAnomalies) > 0 {
+			t.Errorf("agent %s should not trigger per-agent burst for single domain", agent)
+		}
+	}
+
+	// Now check IP-level: record all 4 domains against the same IP
+	for i, d := range domains {
+		anomalies := sm.RecordIPDomain(ip, d, cfg)
+		if i < 3 && len(anomalies) > 0 {
+			t.Errorf("domain %d should not trigger IP burst yet", i+1)
+		}
+		if i == 3 {
+			found := false
+			for _, a := range anomalies {
+				if a.Type == "ip_domain_burst" {
+					found = true
+				}
+			}
+			if !found {
+				t.Error("4th domain should trigger ip_domain_burst despite different agent headers")
+			}
+		}
+	}
+}
+
+func TestSessionManager_IPDomainBurst_RepeatedDomainNoTrigger(t *testing.T) {
+	cfg := testSessionConfig()
+	cfg.DomainBurst = 3
+	sm := NewSessionManager(cfg, nil)
+	defer sm.Close()
+
+	ip := "10.0.0.1"
+
+	for _, d := range []string{"a.com", "b.com", "c.com"} {
+		sm.RecordIPDomain(ip, d, cfg)
+	}
+
+	// Revisiting a known domain should not trigger burst
+	anomalies := sm.RecordIPDomain(ip, "a.com", cfg)
+	for _, a := range anomalies {
+		if a.Type == "ip_domain_burst" {
+			t.Error("revisiting known domain should not trigger ip_domain_burst")
+		}
+	}
+}
+
+func TestSessionManager_IPDomainBurst_WindowExpiry(t *testing.T) {
+	cfg := testSessionConfig()
+	cfg.DomainBurst = 3
+	cfg.WindowMinutes = 1
+	sm := NewSessionManager(cfg, nil)
+	defer sm.Close()
+
+	ip := "10.0.0.1"
+
+	for _, d := range []string{"a.com", "b.com", "c.com"} {
+		sm.RecordIPDomain(ip, d, cfg)
+	}
+
+	// Backdate all IP domain entries past the window
+	sm.mu.Lock()
+	past := time.Now().Add(-2 * time.Minute)
+	entries := sm.ipDomains[ip]
+	for i := range entries {
+		entries[i].at = past
+	}
+	sm.ipDomains[ip] = entries
+	sm.mu.Unlock()
+
+	// 4th domain should NOT trigger burst because old entries expired
+	anomalies := sm.RecordIPDomain(ip, "d.com", cfg)
+	for _, a := range anomalies {
+		if a.Type == "ip_domain_burst" {
+			t.Error("ip_domain_burst should not trigger after window expiry")
+		}
+	}
+}
+
+func TestSessionManager_IPDomainBurst_DifferentIPs(t *testing.T) {
+	cfg := testSessionConfig()
+	cfg.DomainBurst = 3
+	sm := NewSessionManager(cfg, nil)
+	defer sm.Close()
+
+	// Two different IPs each access 3 domains: neither should trigger
+	for _, d := range []string{"a.com", "b.com", "c.com"} {
+		sm.RecordIPDomain("10.0.0.1", d, cfg)
+		sm.RecordIPDomain("10.0.0.2", d, cfg)
+	}
+
+	// 4th domain on IP1 triggers for IP1 only
+	anomalies1 := sm.RecordIPDomain("10.0.0.1", "d.com", cfg)
+	found := false
+	for _, a := range anomalies1 {
+		if a.Type == "ip_domain_burst" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("IP 10.0.0.1 should trigger ip_domain_burst with 4th domain")
+	}
+
+	// IP2 still at 3 domains, should not trigger
+	anomalies2 := sm.RecordIPDomain("10.0.0.2", "c.com", cfg)
+	for _, a := range anomalies2 {
+		if a.Type == "ip_domain_burst" {
+			t.Error("IP 10.0.0.2 should not trigger burst (only 3 domains, repeated)")
+		}
+	}
+}
+
+func TestEscalationLabel_HighLevel(t *testing.T) {
+	// Test the fallback format for levels beyond the label array
+	label := escalationLabel(5)
+	if label != "level_5" {
+		t.Errorf("expected level_5, got %s", label)
+	}
+
+	// Test known labels
+	if got := escalationLabel(0); got != "normal" {
+		t.Errorf("expected normal, got %s", got)
+	}
+	if got := escalationLabel(1); got != "elevated" {
+		t.Errorf("expected elevated, got %s", got)
+	}
+	if got := escalationLabel(2); got != "high" {
+		t.Errorf("expected high, got %s", got)
+	}
+}
+
+func TestSessionManager_IPDomainCleanup_PartialExpiry(t *testing.T) {
+	cfg := testSessionConfig()
+	cfg.WindowMinutes = 1
+	sm := NewSessionManager(cfg, nil)
+	defer sm.Close()
+
+	// Add 2 domains, backdate only 1
+	sm.RecordIPDomain("10.0.0.1", "a.com", cfg) //nolint:goconst // test value
+	sm.RecordIPDomain("10.0.0.1", "b.com", cfg) //nolint:goconst // test value
+
+	sm.mu.Lock()
+	entries := sm.ipDomains["10.0.0.1"]              //nolint:goconst // test value
+	entries[0].at = time.Now().Add(-2 * time.Minute) // expire first only
+	sm.ipDomains["10.0.0.1"] = entries
+	sm.mu.Unlock()
+
+	sm.cleanup()
+
+	// IP should still exist with 1 entry (partial cleanup, not full delete)
+	sm.mu.RLock()
+	remaining := sm.ipDomains["10.0.0.1"]
+	sm.mu.RUnlock()
+
+	if len(remaining) != 1 {
+		t.Errorf("expected 1 remaining IP domain entry, got %d", len(remaining))
+	}
+}
+
+func TestSessionManager_IPDomainCleanup(t *testing.T) {
+	cfg := testSessionConfig()
+	cfg.WindowMinutes = 1
+	sm := NewSessionManager(cfg, nil)
+	defer sm.Close()
+
+	sm.RecordIPDomain("10.0.0.1", "a.com", cfg)
+	sm.RecordIPDomain("10.0.0.1", "b.com", cfg)
+
+	// Backdate entries
+	sm.mu.Lock()
+	past := time.Now().Add(-2 * time.Minute)
+	entries := sm.ipDomains["10.0.0.1"]
+	for i := range entries {
+		entries[i].at = past
+	}
+	sm.ipDomains["10.0.0.1"] = entries
+	sm.mu.Unlock()
+
+	// Cleanup should prune expired IP domain entries
+	sm.cleanup()
+
+	sm.mu.RLock()
+	_, exists := sm.ipDomains["10.0.0.1"]
+	sm.mu.RUnlock()
+
+	if exists {
+		t.Error("expired IP domain entries should be cleaned up")
+	}
 }

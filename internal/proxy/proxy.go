@@ -225,6 +225,11 @@ func (p *Proxy) recordSessionActivity(clientIP, agent, hostname, requestID strin
 	sess := sm.GetOrCreate(key)
 	anomalies := sess.RecordRequest(hostname, &cfg.SessionProfiling)
 
+	// IP-level domain tracking: catches header rotation attacks where the
+	// agent identity changes per request but the source IP stays the same.
+	ipAnomalies := sm.RecordIPDomain(clientIP, hostname, &cfg.SessionProfiling)
+	anomalies = append(anomalies, ipAnomalies...)
+
 	// Record adaptive signals (only when adaptive enforcement is enabled).
 	// NOTE: v1 is scoring-only — signals accumulate and escalation events are
 	// logged/metriced for observability, but enforcement behavior is not yet

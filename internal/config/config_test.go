@@ -2267,6 +2267,157 @@ func TestMCPSessionBindingDefaults(t *testing.T) {
 	}
 }
 
+func TestValidate_WebSocketProxyInvalidMaxMessageBytes(t *testing.T) {
+	cfg := Defaults()
+	cfg.WebSocketProxy.Enabled = true
+	cfg.ApplyDefaults()
+	cfg.WebSocketProxy.MaxMessageBytes = 0
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "max_message_bytes must be positive") {
+		t.Errorf("expected max_message_bytes error, got: %v", err)
+	}
+}
+
+func TestValidate_WebSocketProxyInvalidMaxConcurrent(t *testing.T) {
+	cfg := Defaults()
+	cfg.WebSocketProxy.Enabled = true
+	cfg.ApplyDefaults()
+	cfg.WebSocketProxy.MaxConcurrentConnections = 0
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "max_concurrent_connections must be positive") {
+		t.Errorf("expected max_concurrent_connections error, got: %v", err)
+	}
+}
+
+func TestValidate_WebSocketProxyInvalidMaxConnectionSeconds(t *testing.T) {
+	cfg := Defaults()
+	cfg.WebSocketProxy.Enabled = true
+	cfg.ApplyDefaults()
+	cfg.WebSocketProxy.MaxConnectionSeconds = 0
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "max_connection_seconds must be positive") {
+		t.Errorf("expected max_connection_seconds error, got: %v", err)
+	}
+}
+
+func TestValidate_WebSocketProxyInvalidIdleTimeout(t *testing.T) {
+	cfg := Defaults()
+	cfg.WebSocketProxy.Enabled = true
+	cfg.ApplyDefaults()
+	cfg.WebSocketProxy.IdleTimeoutSeconds = 0
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "idle_timeout_seconds must be positive") {
+		t.Errorf("expected idle_timeout_seconds error, got: %v", err)
+	}
+}
+
+func TestValidate_WebSocketProxyInvalidOriginPolicy(t *testing.T) {
+	cfg := Defaults()
+	cfg.WebSocketProxy.Enabled = true
+	cfg.ApplyDefaults()
+	cfg.WebSocketProxy.OriginPolicy = "invalid"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "origin_policy") {
+		t.Errorf("expected origin_policy error, got: %v", err)
+	}
+}
+
+func TestValidate_WebSocketProxyStripCompressionFalse(t *testing.T) {
+	cfg := Defaults()
+	cfg.WebSocketProxy.Enabled = true
+	cfg.ApplyDefaults()
+	v := false
+	cfg.WebSocketProxy.StripCompression = &v
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "strip_compression") {
+		t.Errorf("expected strip_compression error, got: %v", err)
+	}
+}
+
+func TestValidateReload_WebSocketProxyDisabled(t *testing.T) {
+	old := Defaults()
+	old.WebSocketProxy.Enabled = true
+
+	updated := Defaults()
+	updated.WebSocketProxy.Enabled = false
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == "websocket_proxy.enabled" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected warning when websocket_proxy is disabled")
+	}
+}
+
+func TestValidateReload_SessionProfilingDisabled(t *testing.T) {
+	old := Defaults()
+	old.SessionProfiling.Enabled = true
+
+	updated := Defaults()
+	updated.SessionProfiling.Enabled = false
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == "session_profiling.enabled" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected warning when session_profiling is disabled")
+	}
+}
+
+func TestValidateReload_AdaptiveEnforcementDisabled(t *testing.T) {
+	old := Defaults()
+	old.AdaptiveEnforcement.Enabled = true
+
+	updated := Defaults()
+	updated.AdaptiveEnforcement.Enabled = false
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == "adaptive_enforcement.enabled" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected warning when adaptive_enforcement is disabled")
+	}
+}
+
+func TestValidateReload_MCPSessionBindingDisabled(t *testing.T) {
+	old := Defaults()
+	old.MCPSessionBinding.Enabled = true
+
+	updated := Defaults()
+	updated.MCPSessionBinding.Enabled = false
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == "mcp_session_binding.enabled" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected warning when mcp_session_binding is disabled")
+	}
+}
+
+func TestValidate_WebSocketProxyMemoryBudgetWarning(t *testing.T) {
+	// Exercise the memory budget warning path (config.go lines 609-612).
+	cfg := Defaults()
+	cfg.WebSocketProxy.Enabled = true
+	cfg.ApplyDefaults()
+	// Set values that produce > 1GB memory budget.
+	cfg.WebSocketProxy.MaxConcurrentConnections = 1024
+	cfg.WebSocketProxy.MaxMessageBytes = 1048576 // 1MB * 1024 * 2 = 2GB
+	// Should still validate (warning only, not an error).
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("high memory budget should warn, not error: %v", err)
+	}
+}
+
 func TestResourceBoundsDefaultEvenWhenDisabled(t *testing.T) {
 	cfg := Defaults()
 	// SessionProfiling NOT enabled

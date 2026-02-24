@@ -50,6 +50,12 @@ type Metrics struct {
 	allowedCount      int64
 	blockedCount      int64
 	tunnelCount       int64
+
+	// Session profiling stats (for JSON /stats endpoint)
+	sessionActiveCount     int64
+	sessionAnomalyCount    int64
+	sessionEscalationCount int64
+	topAnomalyTypes        map[string]int64
 }
 
 // New creates a Metrics instance with its own Prometheus registry.
@@ -195,6 +201,7 @@ func New() *Metrics {
 		startTime:          time.Now(),
 		topBlockedDomains:  make(map[string]int64),
 		topScannerHits:     make(map[string]int64),
+		topAnomalyTypes:    make(map[string]int64),
 	}
 }
 
@@ -305,16 +312,33 @@ func (m *Metrics) RecordWSRedirectHint() {
 // RecordSessionAnomaly increments the session anomaly counter by type.
 func (m *Metrics) RecordSessionAnomaly(anomalyType string) {
 	m.sessionAnomalies.WithLabelValues(anomalyType).Inc()
+
+	m.mu.Lock()
+	m.sessionAnomalyCount++
+	if len(m.topAnomalyTypes) < maxTopEntries {
+		m.topAnomalyTypes[anomalyType]++
+	} else if _, exists := m.topAnomalyTypes[anomalyType]; exists {
+		m.topAnomalyTypes[anomalyType]++
+	}
+	m.mu.Unlock()
 }
 
 // RecordSessionEscalation increments the session escalation counter by transition.
 func (m *Metrics) RecordSessionEscalation(from, to string) {
 	m.sessionEscalations.WithLabelValues(from, to).Inc()
+
+	m.mu.Lock()
+	m.sessionEscalationCount++
+	m.mu.Unlock()
 }
 
 // SetSessionsActive sets the current number of active tracked sessions.
 func (m *Metrics) SetSessionsActive(n float64) {
 	m.sessionsActive.Set(n)
+
+	m.mu.Lock()
+	m.sessionActiveCount = int64(n)
+	m.mu.Unlock()
 }
 
 // RecordSessionEvicted increments the evicted sessions counter.
@@ -343,6 +367,12 @@ func (m *Metrics) StatsHandler() http.HandlerFunc {
 			WebSockets:        m.wsConnectionCount,
 			TopBlockedDomains: topN(m.topBlockedDomains),
 			TopScanners:       topN(m.topScannerHits),
+			Sessions: sessionStats{
+				Active:       m.sessionActiveCount,
+				Anomalies:    m.sessionAnomalyCount,
+				Escalations:  m.sessionEscalationCount,
+				TopAnomalies: topN(m.topAnomalyTypes),
+			},
 		}
 		if total > 0 {
 			stats.Requests.BlockRate = float64(m.blockedCount) / float64(total)
@@ -361,6 +391,14 @@ type statsResponse struct {
 	WebSockets        int64         `json:"websockets"`
 	TopBlockedDomains []rankedEntry `json:"top_blocked_domains"`
 	TopScanners       []rankedEntry `json:"top_scanners"`
+	Sessions          sessionStats  `json:"sessions"`
+}
+
+type sessionStats struct {
+	Active       int64         `json:"active"`
+	Anomalies    int64         `json:"anomalies"`
+	Escalations  int64         `json:"escalations"`
+	TopAnomalies []rankedEntry `json:"top_anomalies"`
 }
 
 type requestStats struct {

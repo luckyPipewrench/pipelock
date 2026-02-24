@@ -204,13 +204,13 @@ mcp_tool_policy:
       arg_pattern: '(?i)(\beval\b.*\bbase64\b|\bbase64\s+(-d|--decode)\b.*\|\s*(ba)?sh\b)'
       action: block
 
-# Session behavioral profiling (opt-in, warn-only recommended in v1)
+# Session behavioral profiling (warn-only, no blocking by default)
 session_profiling:
-  enabled: false
+  enabled: true
 
-# Adaptive enforcement (opt-in)
+# Adaptive enforcement (scoring-only in v1, observability only)
 adaptive_enforcement:
-  enabled: false
+  enabled: true
 
 # MCP session binding (opt-in)
 mcp_session_binding:

@@ -23,6 +23,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
+	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -60,6 +61,7 @@ type Proxy struct {
 	sessionMgrPtr atomic.Pointer[SessionManager] // nil when profiling disabled
 	logger        *audit.Logger
 	metrics       *metrics.Metrics
+	ks            *killswitch.Controller
 	dialer        *net.Dialer
 	client        *http.Client
 	server        *http.Server
@@ -74,6 +76,11 @@ type Option func(*Proxy)
 // WithApprover sets a HITL approver for the "ask" response scanning action.
 func WithApprover(a *hitl.Approver) Option {
 	return func(p *Proxy) { p.approver = a }
+}
+
+// WithKillSwitch sets the emergency deny-all kill switch controller.
+func WithKillSwitch(ks *killswitch.Controller) Option {
+	return func(p *Proxy) { p.ks = ks }
 }
 
 // FetchResponse is the JSON response returned by the /fetch endpoint.
@@ -218,7 +225,7 @@ func (p *Proxy) recordSessionActivity(clientIP, agent, hostname, requestID strin
 
 	// Build session key: agent|clientIP when agent is known, else just clientIP.
 	key := clientIP
-	if agent != "" && agent != "anonymous" {
+	if agent != "" && agent != "anonymous" { //nolint:goconst // clarity over deduplication
 		key = agent + "|" + clientIP
 	}
 
@@ -319,6 +326,22 @@ func (p *Proxy) ssrfSafeDialContext(ctx context.Context, network, addr string) (
 // proxy requests before falling through to the mux. Used by Start() and tests.
 func (p *Proxy) buildHandler(mux *http.ServeMux) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Kill switch: deny all requests when active (except exempt endpoints/IPs).
+		if p.ks != nil {
+			if d := p.ks.IsActiveHTTP(r); d.Active {
+				clientIP, _ := requestMeta(r)
+				p.logger.LogKillSwitchDeny("http", r.URL.Path, d.Source, d.Message, clientIP)
+				p.metrics.RecordKillSwitchDenial("http", r.URL.Path)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_ = json.NewEncoder(w).Encode(map[string]string{
+					"error":   "kill_switch_active",
+					"message": d.Message,
+				})
+				return
+			}
+		}
+
 		if r.Method == http.MethodConnect {
 			if !p.cfgPtr.Load().ForwardProxy.Enabled {
 				http.Error(w, "CONNECT not supported", http.StatusMethodNotAllowed)

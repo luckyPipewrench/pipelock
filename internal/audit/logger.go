@@ -73,6 +73,7 @@ const (
 	EventSessionAnomaly     EventType = "session_anomaly"
 	EventAdaptiveEscalation EventType = "adaptive_escalation"
 	EventMCPUnknownTool     EventType = "mcp_unknown_tool"
+	EventKillSwitchDeny     EventType = "kill_switch_deny"
 )
 
 // Logger handles structured audit logging using zerolog.
@@ -386,6 +387,18 @@ func (l *Logger) LogMCPUnknownTool(toolName, action string) {
 		Str("tool", sanitizeString(toolName)).
 		Str("action", action).
 		Msg("tool not in session baseline")
+}
+
+// LogKillSwitchDeny logs a request denied by the kill switch.
+func (l *Logger) LogKillSwitchDeny(transport, endpoint, source, message, clientIP string) {
+	l.zl.Info().
+		Str("event", string(EventKillSwitchDeny)).
+		Str("transport", transport).
+		Str("endpoint", endpoint).
+		Str("source", source).
+		Str("message", sanitizeString(message)).
+		Str("client_ip", clientIP).
+		Msg("kill switch denied request")
 }
 
 // With returns a sub-logger that includes the given key-value pair in every

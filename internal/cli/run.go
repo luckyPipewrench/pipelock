@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"os"
 	"os/signal"
 	"syscall"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
+	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
@@ -103,10 +105,12 @@ Examples:
 			}
 			defer logger.Close()
 
-			// Set up scanner, metrics, and proxy
+			// Set up scanner, metrics, kill switch, and proxy
 			sc := scanner.New(cfg)
 			defer sc.Close()
 			m := metrics.New()
+
+			ks := killswitch.New(cfg)
 
 			var proxyOpts []proxy.Option
 			hasApprover := cfg.ResponseScanning.Action == config.ActionAsk
@@ -115,6 +119,7 @@ Examples:
 				defer approver.Close()
 				proxyOpts = append(proxyOpts, proxy.WithApprover(approver))
 			}
+			proxyOpts = append(proxyOpts, proxy.WithKillSwitch(ks))
 			p := proxy.New(cfg, logger, sc, m, proxyOpts...)
 
 			// Context with signal handling for graceful shutdown.
@@ -125,6 +130,20 @@ Examples:
 				syscall.SIGTERM,
 			)
 			defer cancel()
+
+			// SIGUSR1 toggles the kill switch (separate from SIGINT/SIGTERM).
+			sigusr1Ch := make(chan os.Signal, 1)
+			signal.Notify(sigusr1Ch, syscall.SIGUSR1)
+			go func() {
+				for range sigusr1Ch {
+					active := ks.ToggleSignal()
+					if active {
+						cmd.PrintErrln("pipelock: kill switch ACTIVATED via SIGUSR1")
+					} else {
+						cmd.PrintErrln("pipelock: kill switch DEACTIVATED via SIGUSR1")
+					}
+				}
+			}()
 
 			// Start config hot-reload if a config file is provided
 			if configFile != "" {
@@ -177,6 +196,7 @@ Examples:
 							}
 							newSc := scanner.New(newCfg)
 							p.Reload(newCfg, newSc)
+							ks.Reload(newCfg)
 							if newCfg.ResponseScanning.Action == config.ActionAsk && !hasApprover {
 								cmd.PrintErrln("WARNING: config reloaded to ask mode but HITL approver was not initialized at startup; detections will be blocked")
 							}
@@ -275,7 +295,7 @@ Examples:
 
 				mcpErr = make(chan error, 1)
 				go func() {
-					mcpErr <- mcp.RunHTTPListenerProxy(ctx, mcpLn, mcpUpstream, cmd.ErrOrStderr(), sc, mcpApprover, inputCfg, toolCfg, policyCfg)
+					mcpErr <- mcp.RunHTTPListenerProxy(ctx, mcpLn, mcpUpstream, cmd.ErrOrStderr(), sc, mcpApprover, inputCfg, toolCfg, policyCfg, ks)
 				}()
 			}
 

@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -431,6 +432,7 @@ func ForwardScannedInput(
 	blockedCh chan<- BlockedRequest,
 	policyCfg *PolicyConfig,
 	bindingCfg *SessionBindingConfig,
+	ks *killswitch.Controller,
 ) {
 	defer close(blockedCh)
 
@@ -447,6 +449,28 @@ func ForwardScannedInput(
 			return
 		}
 		lineNum++
+
+		// Kill switch: deny all messages when active.
+		if ks != nil {
+			if d := ks.IsActiveMCP(line); d.Active {
+				if d.IsNotification {
+					// Notifications have no ID — silently drop.
+					_, _ = fmt.Fprintf(logW, "pipelock: input line %d: kill switch dropped notification (source=%s)\n",
+						lineNum, d.Source)
+				} else {
+					// Request with ID — send JSON-RPC error response.
+					rpcID := extractRPCID(line)
+					blockedCh <- BlockedRequest{
+						ID:             rpcID,
+						IsNotification: false,
+						LogMessage:     fmt.Sprintf("pipelock: input line %d: kill switch denied (source=%s)", lineNum, d.Source),
+						ErrorCode:      -32004,
+						ErrorMessage:   d.Message,
+					}
+				}
+				continue
+			}
+		}
 
 		verdict := ScanRequest(line, sc, action, onParseError)
 

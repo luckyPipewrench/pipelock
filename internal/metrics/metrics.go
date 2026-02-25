@@ -36,6 +36,8 @@ type Metrics struct {
 	wsScanHits         *prometheus.CounterVec
 	wsRedirectHints    prometheus.Counter
 
+	killSwitchDenials *prometheus.CounterVec
+
 	sessionAnomalies   *prometheus.CounterVec
 	sessionEscalations *prometheus.CounterVec
 	sessionsActive     prometheus.Gauge
@@ -149,6 +151,12 @@ func New() *Metrics {
 		Help:      "CONNECT requests to known WebSocket API hosts.",
 	})
 
+	killSwitchDenials := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "pipelock",
+		Name:      "kill_switch_denials_total",
+		Help:      "Total requests denied by the kill switch.",
+	}, []string{"transport", "endpoint"})
+
 	sessionAnomalies := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "pipelock",
 		Name:      "session_anomalies_total",
@@ -176,6 +184,7 @@ func New() *Metrics {
 	reg.MustRegister(requestsTotal, scannerHits, requestLatency,
 		tunnelsTotal, tunnelDuration, tunnelBytes, activeTunnels,
 		wsConnectionsTotal, wsDuration, wsBytes, activeWS, wsFrames, wsScanHits, wsRedirectHints,
+		killSwitchDenials,
 		sessionAnomalies, sessionEscalations, sessionsActive, sessionsEvicted)
 
 	return &Metrics{
@@ -194,6 +203,7 @@ func New() *Metrics {
 		wsFrames:           wsFrames,
 		wsScanHits:         wsScanHits,
 		wsRedirectHints:    wsRedirectHints,
+		killSwitchDenials:  killSwitchDenials,
 		sessionAnomalies:   sessionAnomalies,
 		sessionEscalations: sessionEscalations,
 		sessionsActive:     sessionsActive,
@@ -307,6 +317,11 @@ func (m *Metrics) RecordWSScanHit(scannerName string) {
 // RecordWSRedirectHint records a CONNECT request to a known WebSocket API host.
 func (m *Metrics) RecordWSRedirectHint() {
 	m.wsRedirectHints.Inc()
+}
+
+// RecordKillSwitchDenial increments the kill switch denial counter.
+func (m *Metrics) RecordKillSwitchDenial(transport, endpoint string) {
+	m.killSwitchDenials.WithLabelValues(transport, endpoint).Inc()
 }
 
 // RecordSessionAnomaly increments the session anomaly counter by type.

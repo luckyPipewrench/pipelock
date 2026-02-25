@@ -64,6 +64,7 @@ type Config struct {
 	SessionProfiling    SessionProfiling    `yaml:"session_profiling"`
 	AdaptiveEnforcement AdaptiveEnforcement `yaml:"adaptive_enforcement"`
 	MCPSessionBinding   MCPSessionBinding   `yaml:"mcp_session_binding"`
+	KillSwitch          KillSwitch          `yaml:"kill_switch"`
 	Internal            []string            `yaml:"internal"`
 }
 
@@ -235,6 +236,19 @@ type MCPSessionBinding struct {
 	NoBaselineAction  string `yaml:"no_baseline_action"`  // warn, block
 }
 
+// KillSwitch configures the emergency deny-all kill switch.
+// When active, all requests are rejected except health/metrics endpoints
+// and allowlisted IPs. Three activation sources (config, SIGUSR1, sentinel
+// file) are OR-composed: any one active means the kill switch is engaged.
+type KillSwitch struct {
+	Enabled       bool     `yaml:"enabled"`
+	SentinelFile  string   `yaml:"sentinel_file"`
+	Message       string   `yaml:"message"`
+	HealthExempt  *bool    `yaml:"health_exempt"`
+	MetricsExempt *bool    `yaml:"metrics_exempt"`
+	AllowlistIPs  []string `yaml:"allowlist_ips"`
+}
+
 // Load reads, parses, defaults, and validates a Pipelock config file.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // G304: path from caller
@@ -404,6 +418,17 @@ func (c *Config) ApplyDefaults() {
 		if c.AdaptiveEnforcement.DecayPerCleanRequest <= 0 {
 			c.AdaptiveEnforcement.DecayPerCleanRequest = 0.5
 		}
+	}
+
+	// Kill switch defaults
+	if c.KillSwitch.Message == "" {
+		c.KillSwitch.Message = "Emergency deny-all active"
+	}
+	if c.KillSwitch.HealthExempt == nil {
+		c.KillSwitch.HealthExempt = ptrBool(true)
+	}
+	if c.KillSwitch.MetricsExempt == nil {
+		c.KillSwitch.MetricsExempt = ptrBool(true)
 	}
 
 	// MCP session binding defaults
@@ -688,6 +713,13 @@ func (c *Config) Validate() error {
 		}
 		if s.Path == "" {
 			return fmt.Errorf("suppress entry %d (%s) missing required field \"path\"", i, s.Rule)
+		}
+	}
+
+	// Validate kill switch allowlist CIDRs are parseable
+	for _, cidr := range c.KillSwitch.AllowlistIPs {
+		if _, _, err := net.ParseCIDR(cidr); err != nil {
+			return fmt.Errorf("invalid kill_switch.allowlist_ips CIDR %q: %w", cidr, err)
 		}
 	}
 

@@ -2559,3 +2559,57 @@ suppress:
 		t.Errorf("expected rule validation error, got: %v", err)
 	}
 }
+
+func TestKillSwitch_Defaults(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+
+	if cfg.KillSwitch.Message != "Emergency deny-all active" {
+		t.Errorf("expected default message, got %q", cfg.KillSwitch.Message)
+	}
+	if cfg.KillSwitch.HealthExempt == nil || !*cfg.KillSwitch.HealthExempt {
+		t.Error("expected HealthExempt to default to true")
+	}
+	if cfg.KillSwitch.MetricsExempt == nil || !*cfg.KillSwitch.MetricsExempt {
+		t.Error("expected MetricsExempt to default to true")
+	}
+	if cfg.KillSwitch.Enabled {
+		t.Error("expected kill switch disabled by default")
+	}
+}
+
+func TestKillSwitch_ValidCIDR(t *testing.T) {
+	cfg := Defaults()
+	cfg.KillSwitch.AllowlistIPs = []string{"10.0.0.0/8", "192.168.1.0/24"}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("expected valid CIDRs to pass validation: %v", err)
+	}
+}
+
+func TestKillSwitch_InvalidCIDR(t *testing.T) {
+	cfg := Defaults()
+	cfg.KillSwitch.AllowlistIPs = []string{"not-a-cidr"}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected validation error for invalid CIDR")
+	}
+}
+
+func TestKillSwitch_InvalidCIDR_MissingMask(t *testing.T) {
+	cfg := Defaults()
+	cfg.KillSwitch.AllowlistIPs = []string{"192.168.1.1"}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected validation error for CIDR without mask")
+	}
+}
+
+func TestKillSwitch_HealthExemptExplicitFalse(t *testing.T) {
+	cfg := Defaults()
+	f := false
+	cfg.KillSwitch.HealthExempt = &f
+	cfg.ApplyDefaults()
+
+	// Explicit false should NOT be overridden by defaults.
+	if *cfg.KillSwitch.HealthExempt {
+		t.Error("explicit false should be preserved, not overridden")
+	}
+}

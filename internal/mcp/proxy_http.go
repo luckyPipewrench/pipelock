@@ -14,6 +14,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
+	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
@@ -35,6 +36,7 @@ func RunHTTPProxy(
 	inputCfg *InputScanConfig,
 	toolCfg *ToolScanConfig,
 	policyCfg *PolicyConfig,
+	ks *killswitch.Controller,
 ) error {
 	// Create a child context so we can stop the GET stream when stdin EOF is reached.
 	ctx, cancel := context.WithCancel(ctx)
@@ -74,6 +76,22 @@ func RunHTTPProxy(
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
+		}
+
+		// Kill switch: deny all messages when active.
+		if ks != nil {
+			if d := ks.IsActiveMCP(msg); d.Active {
+				if d.IsNotification {
+					_, _ = fmt.Fprintf(safeLogW, "pipelock: kill switch dropped notification (source=%s)\n", d.Source)
+					continue
+				}
+				rpcID := extractRPCID(msg)
+				resp := killswitch.KillSwitchErrorResponse(rpcID, d.Message)
+				if wErr := safeClientOut.WriteMessage(resp); wErr != nil {
+					_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send kill switch response: %v\n", wErr)
+				}
+				continue
+			}
 		}
 
 		// Input scanning — call ScanRequest and CheckRequest directly.
@@ -390,6 +408,7 @@ func RunHTTPListenerProxy(
 	inputCfg *InputScanConfig,
 	toolCfg *ToolScanConfig,
 	policyCfg *PolicyConfig,
+	ks *killswitch.Controller,
 ) error {
 	safeLogW := &syncWriter{w: logW}
 
@@ -474,6 +493,21 @@ func RunHTTPListenerProxy(
 					Error:   rpcErrorDetail{Code: -32600, Message: "pipelock: invalid request: " + reason},
 				})
 				_, _ = w.Write(invalidReq)
+				return
+			}
+		}
+
+		// Kill switch: deny all requests when active.
+		if ks != nil {
+			if d := ks.IsActiveMCP(body); d.Active {
+				w.Header().Set("Content-Type", "application/json")
+				if d.IsNotification {
+					w.WriteHeader(http.StatusAccepted)
+					_, _ = fmt.Fprintf(safeLogW, "pipelock: kill switch dropped notification (source=%s)\n", d.Source)
+					return
+				}
+				rpcID := extractRPCID(body)
+				_, _ = w.Write(killswitch.KillSwitchErrorResponse(rpcID, d.Message))
 				return
 			}
 		}

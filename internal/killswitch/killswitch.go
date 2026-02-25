@@ -5,6 +5,7 @@ package killswitch
 
 import (
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"os"
@@ -144,7 +145,15 @@ func (c *Controller) computeDecision(rt *runtime) Decision {
 		return Decision{Active: true, Message: rt.message, Source: "signal"}
 	}
 	if rt.sentinelFile != "" {
-		if _, err := os.Stat(rt.sentinelFile); err == nil {
+		_, err := os.Stat(rt.sentinelFile)
+		if err == nil {
+			return Decision{Active: true, Message: rt.message, Source: "sentinel"}
+		}
+		// Fail closed: if stat fails for any reason other than file-not-found
+		// (e.g. permission denied, broken symlink), treat as active. An
+		// attacker should not be able to bypass the kill switch by making the
+		// sentinel file unreadable.
+		if !errors.Is(err, os.ErrNotExist) {
 			return Decision{Active: true, Message: rt.message, Source: "sentinel"}
 		}
 	}

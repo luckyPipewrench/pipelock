@@ -2613,3 +2613,326 @@ func TestKillSwitch_HealthExemptExplicitFalse(t *testing.T) {
 		t.Error("explicit false should be preserved, not overridden")
 	}
 }
+
+// --- toSlash Tests ---
+
+func TestToSlash(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "no backslashes unchanged",
+			in:   "vendor/foo/bar.go", //nolint:goconst // test value
+			want: "vendor/foo/bar.go",
+		},
+		{
+			name: "backslashes converted",
+			in:   `vendor\foo\bar.go`,
+			want: "vendor/foo/bar.go",
+		},
+		{
+			name: "mixed separators",
+			in:   `vendor/foo\bar.go`,
+			want: "vendor/foo/bar.go",
+		},
+		{
+			name: "empty string",
+			in:   "",
+			want: "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := toSlash(tt.in)
+			if got != tt.want {
+				t.Errorf("toSlash(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// --- matchesPath Tests ---
+
+func TestMatchesPath(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		target  string
+		pattern string
+		want    bool
+	}{
+		{
+			name:    "empty pattern",
+			target:  "main.go", //nolint:goconst // test value
+			pattern: "",
+			want:    false,
+		},
+		{
+			name:    "directory prefix matches subpath",
+			target:  "vendor/foo/bar.go",
+			pattern: "vendor/",
+			want:    true,
+		},
+		{
+			name:    "directory prefix no match",
+			target:  "src/foo/bar.go",
+			pattern: "vendor/",
+			want:    false,
+		},
+		{
+			name:    "exact match",
+			target:  "src/main.go",
+			pattern: "src/main.go",
+			want:    true,
+		},
+		{
+			name:    "exact match no match",
+			target:  "src/main.go",
+			pattern: "src/other.go",
+			want:    false,
+		},
+		{
+			name:    "glob on full path",
+			target:  "main.go",
+			pattern: "*.go",
+			want:    true,
+		},
+		{
+			name:    "glob on full path no match",
+			target:  "main.go",
+			pattern: "*.txt",
+			want:    false,
+		},
+		{
+			name:    "glob on basename",
+			target:  "dir/foo.txt",
+			pattern: "*.txt",
+			want:    true,
+		},
+		{
+			name:    "glob on basename no match",
+			target:  "dir/foo.go",
+			pattern: "*.txt",
+			want:    false,
+		},
+		{
+			name:    "URL suffix match",
+			target:  "https://example.com/robots.txt", //nolint:goconst // test value
+			pattern: "robots.txt",                     //nolint:goconst // test value
+			want:    true,
+		},
+		{
+			name:    "URL suffix no match",
+			target:  "https://example.com/index.html",
+			pattern: "robots.txt",
+			want:    false,
+		},
+		{
+			name:    "URL suffix pattern with leading slash does not match",
+			target:  "https://example.com/robots.txt",
+			pattern: "/robots.txt",
+			want:    false,
+		},
+		{
+			name:    "backslash target not normalized by matchesPath",
+			target:  `vendor\foo\bar.go`,
+			pattern: "vendor/",
+			want:    false, // matchesPath does not normalize target; SuppressedReason does
+		},
+		{
+			name:    "backslash pattern normalized",
+			target:  "vendor/foo/bar.go",
+			pattern: `vendor\`,
+			want:    true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := matchesPath(tt.target, tt.pattern)
+			if got != tt.want {
+				t.Errorf("matchesPath(%q, %q) = %v, want %v", tt.target, tt.pattern, got, tt.want)
+			}
+		})
+	}
+}
+
+// --- IsSuppressed Tests ---
+
+func TestIsSuppressed(t *testing.T) {
+	t.Parallel()
+	entries := []SuppressEntry{
+		{Rule: "Credential in URL", Path: "app/models/client.rb", Reason: "constructor param"}, //nolint:goconst // test value
+		{Rule: "env-leak", Path: "config/", Reason: "initializer env refs"},                    //nolint:goconst // test value
+		{Rule: "secret-pattern", Path: "*.test.js", Reason: "test fixtures"},
+	}
+
+	tests := []struct {
+		name   string
+		rule   string
+		target string
+		want   bool
+	}{
+		{
+			name:   "empty target",
+			rule:   "Credential in URL", //nolint:goconst // test value
+			target: "",
+			want:   false,
+		},
+		{
+			name:   "empty entries",
+			rule:   "Credential in URL",
+			target: "app/models/client.rb",
+			want:   false,
+		},
+		{
+			name:   "rule and path match",
+			rule:   "Credential in URL",
+			target: "app/models/client.rb",
+			want:   true,
+		},
+		{
+			name:   "rule mismatch",
+			rule:   "other-rule",
+			target: "app/models/client.rb",
+			want:   false,
+		},
+		{
+			name:   "case insensitive rule matching",
+			rule:   "credential in url",
+			target: "app/models/client.rb",
+			want:   true,
+		},
+		{
+			name:   "directory prefix suppression",
+			rule:   "env-leak",
+			target: "config/initializers/secrets.rb",
+			want:   true,
+		},
+		{
+			name:   "glob basename suppression",
+			rule:   "secret-pattern",
+			target: "src/utils/helpers.test.js",
+			want:   true,
+		},
+		{
+			name:   "path mismatch",
+			rule:   "Credential in URL",
+			target: "app/controllers/foo.rb",
+			want:   false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var e []SuppressEntry
+			if tt.name != "empty entries" {
+				e = entries
+			}
+			got := IsSuppressed(tt.rule, tt.target, e)
+			if got != tt.want {
+				t.Errorf("IsSuppressed(%q, %q, entries) = %v, want %v", tt.rule, tt.target, got, tt.want)
+			}
+		})
+	}
+}
+
+// --- SuppressedReason Tests ---
+
+func TestSuppressedReason(t *testing.T) {
+	t.Parallel()
+	entries := []SuppressEntry{
+		{Rule: "Credential in URL", Path: "app/models/client.rb", Reason: "constructor param"},
+		{Rule: "env-leak", Path: "config/", Reason: "initializer env refs"},
+	}
+
+	tests := []struct {
+		name       string
+		rule       string
+		target     string
+		entries    []SuppressEntry
+		wantReason string
+		wantOK     bool
+	}{
+		{
+			name:       "empty target returns false",
+			rule:       "Credential in URL",
+			target:     "",
+			entries:    entries,
+			wantReason: "",
+			wantOK:     false,
+		},
+		{
+			name:       "nil entries returns false",
+			rule:       "Credential in URL",
+			target:     "app/models/client.rb",
+			entries:    nil,
+			wantReason: "",
+			wantOK:     false,
+		},
+		{
+			name:       "empty entries returns false",
+			rule:       "Credential in URL",
+			target:     "app/models/client.rb",
+			entries:    []SuppressEntry{},
+			wantReason: "",
+			wantOK:     false,
+		},
+		{
+			name:       "matching entry returns reason",
+			rule:       "Credential in URL",
+			target:     "app/models/client.rb",
+			entries:    entries,
+			wantReason: "constructor param",
+			wantOK:     true,
+		},
+		{
+			name:       "case insensitive rule returns reason",
+			rule:       "CREDENTIAL IN URL",
+			target:     "app/models/client.rb",
+			entries:    entries,
+			wantReason: "constructor param",
+			wantOK:     true,
+		},
+		{
+			name:       "directory prefix returns reason",
+			rule:       "env-leak",
+			target:     "config/initializers/secrets.rb",
+			entries:    entries,
+			wantReason: "initializer env refs",
+			wantOK:     true,
+		},
+		{
+			name:       "rule mismatch returns false",
+			rule:       "unknown-rule",
+			target:     "app/models/client.rb",
+			entries:    entries,
+			wantReason: "",
+			wantOK:     false,
+		},
+		{
+			name:       "path mismatch returns false",
+			rule:       "Credential in URL",
+			target:     "other/path.rb",
+			entries:    entries,
+			wantReason: "",
+			wantOK:     false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			reason, ok := SuppressedReason(tt.rule, tt.target, tt.entries)
+			if ok != tt.wantOK {
+				t.Errorf("SuppressedReason(%q, %q) ok = %v, want %v", tt.rule, tt.target, ok, tt.wantOK)
+			}
+			if reason != tt.wantReason {
+				t.Errorf("SuppressedReason(%q, %q) reason = %q, want %q", tt.rule, tt.target, reason, tt.wantReason)
+			}
+		})
+	}
+}

@@ -393,11 +393,11 @@ func (l *Logger) LogMCPUnknownTool(toolName, action string) {
 func (l *Logger) LogKillSwitchDeny(transport, endpoint, source, message, clientIP string) {
 	l.zl.Info().
 		Str("event", string(EventKillSwitchDeny)).
-		Str("transport", transport).
-		Str("endpoint", endpoint).
-		Str("source", source).
-		Str("message", sanitizeString(message)).
-		Str("client_ip", clientIP).
+		Str("transport", sanitizeString(transport)).
+		Str("endpoint", sanitizeString(endpoint)).
+		Str("source", sanitizeString(source)).
+		Str("deny_message", sanitizeString(message)).
+		Str("client_ip", sanitizeString(clientIP)).
 		Msg("kill switch denied request")
 }
 

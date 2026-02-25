@@ -525,4 +525,113 @@ func TestController_SourcePriority(t *testing.T) {
 	}
 }
 
+func TestController_SentinelStatError(t *testing.T) {
+	// Verify fail-closed: if os.Stat returns an error other than ErrNotExist
+	// (e.g. permission denied), the kill switch should be ACTIVE.
+	if os.Getuid() == 0 {
+		t.Skip("permission-based test cannot run as root")
+	}
+
+	dir := t.TempDir()
+	restrictedDir := filepath.Join(dir, "noaccess")
+	if err := os.Mkdir(restrictedDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	sentinelPath := filepath.Join(restrictedDir, "killswitch")
+	if err := os.WriteFile(sentinelPath, []byte("kill"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Remove all permissions on the directory so os.Stat on the file inside
+	// returns EACCES (permission denied), not ErrNotExist.
+	if err := os.Chmod(restrictedDir, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		// Restore permissions so t.TempDir() cleanup can remove the directory.
+		_ = os.Chmod(restrictedDir, 0o700) //nolint:errcheck,gosec // best-effort cleanup, directory needs execute
+	}()
+
+	cfg := testConfig()
+	cfg.KillSwitch.SentinelFile = sentinelPath
+	cfg.KillSwitch.Message = "fail closed" //nolint:goconst // test value
+
+	c := New(cfg)
+
+	r := httptest.NewRequest(http.MethodGet, "/fetch", nil)
+	d := c.IsActiveHTTP(r)
+	if !d.Active {
+		t.Fatal("expected kill switch ACTIVE on sentinel stat permission error (fail closed)")
+	}
+	if d.Source != "sentinel" { //nolint:goconst // test value
+		t.Errorf("expected source %q, got %q", "sentinel", d.Source)
+	}
+	if d.Message != "fail closed" { //nolint:goconst // test value
+		t.Errorf("expected message %q, got %q", "fail closed", d.Message)
+	}
+}
+
+func TestController_KillSwitchErrorResponse(t *testing.T) {
+	tests := []struct {
+		name    string
+		id      json.RawMessage
+		message string
+		wantID  string
+		wantMsg string
+	}{
+		{
+			name:    "numeric id",
+			id:      json.RawMessage(`1`),
+			message: "deny all", //nolint:goconst // test value
+			wantID:  "1",
+			wantMsg: "deny all", //nolint:goconst // test value
+		},
+		{
+			name:    "string id",
+			id:      json.RawMessage(`"abc-123"`),
+			message: "kill switch active", //nolint:goconst // test value
+			wantID:  `"abc-123"`,
+			wantMsg: "kill switch active", //nolint:goconst // test value
+		},
+		{
+			name:    "null id",
+			id:      json.RawMessage(`null`),
+			message: "emergency shutdown", //nolint:goconst // test value
+			wantID:  "null",
+			wantMsg: "emergency shutdown", //nolint:goconst // test value
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := KillSwitchErrorResponse(tt.id, tt.message)
+
+			var parsed struct {
+				JSONRPC string          `json:"jsonrpc"`
+				ID      json.RawMessage `json:"id"`
+				Error   struct {
+					Code    int    `json:"code"`
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(resp, &parsed); err != nil {
+				t.Fatalf("failed to unmarshal response: %v", err)
+			}
+			if parsed.JSONRPC != "2.0" {
+				t.Errorf("expected jsonrpc %q, got %q", "2.0", parsed.JSONRPC)
+			}
+			if string(parsed.ID) != tt.wantID {
+				t.Errorf("expected id %s, got %s", tt.wantID, string(parsed.ID))
+			}
+			if parsed.Error.Code != -32004 {
+				t.Errorf("expected error code -32004, got %d", parsed.Error.Code)
+			}
+			if parsed.Error.Message != tt.wantMsg {
+				t.Errorf("expected error message %q, got %q", tt.wantMsg, parsed.Error.Message)
+			}
+		})
+	}
+}
+
 func ptrBool(v bool) *bool { return &v }

@@ -123,28 +123,36 @@ func SortedKeys(m map[string]interface{}) []string {
 	return keys
 }
 
+// maxExtractDepth limits recursion in ExtractStringsFromJSON to prevent stack
+// overflow from maliciously deeply-nested JSON.
+const maxExtractDepth = 64
+
 // ExtractStringsFromJSON recursively extracts all string values from arbitrary JSON.
 // Only extracts values (not keys) to avoid false positives from field names.
+// Recursion is bounded by maxExtractDepth to prevent stack overflow.
 func ExtractStringsFromJSON(raw json.RawMessage) []string {
 	var result []string
-	var extract func(v interface{})
-	extract = func(v interface{}) {
+	var extract func(v interface{}, depth int)
+	extract = func(v interface{}, depth int) {
+		if depth > maxExtractDepth {
+			return
+		}
 		switch val := v.(type) {
 		case string:
 			result = append(result, val)
 		case []interface{}:
 			for _, item := range val {
-				extract(item)
+				extract(item, depth+1)
 			}
 		case map[string]interface{}:
 			for _, k := range SortedKeys(val) {
-				extract(val[k])
+				extract(val[k], depth+1)
 			}
 		}
 	}
 	var parsed interface{}
 	if err := json.Unmarshal(raw, &parsed); err == nil {
-		extract(parsed)
+		extract(parsed, 0)
 	}
 	return result
 }

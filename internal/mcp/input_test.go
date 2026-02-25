@@ -11,11 +11,13 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 func base64Encode(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
 func hexEncode(s string) string    { return hex.EncodeToString([]byte(s)) }
+func intPtrInput(v int) *int       { return &v }
 
 // makeRequest builds a JSON-RPC 2.0 request with string params.
 func makeRequest(id int, method string, params interface{}) string {
@@ -1919,5 +1921,175 @@ func TestForwardScannedInput_SessionBinding_BatchBlocked(t *testing.T) {
 	}
 	if !strings.Contains(logBuf.String(), "batch request with session binding active") {
 		t.Errorf("expected batch binding log, got: %s", logBuf.String())
+	}
+}
+
+func TestForwardScannedInput_KillSwitchBlocksRequest(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.KillSwitch.Enabled = true
+	cfg.KillSwitch.Message = "test kill switch deny" //nolint:goconst // test value
+	ks := killswitch.New(cfg)
+
+	sc := testScanner(t)
+
+	request := makeRequest(1, "tools/call", map[string]string{"name": "read_file"}) //nolint:goconst // test value
+	stdin := strings.NewReader(request + "\n")
+	clientReader := NewStdioReader(stdin)
+
+	var serverBuf bytes.Buffer
+	serverWriter := NewStdioWriter(&serverBuf)
+
+	var logBuf bytes.Buffer
+	blockedCh := make(chan BlockedRequest, 16)
+
+	go ForwardScannedInput(clientReader, serverWriter, &logBuf, sc, "block", "block", blockedCh, nil, nil, ks, nil)
+
+	var blocked []BlockedRequest
+	for b := range blockedCh {
+		blocked = append(blocked, b)
+	}
+
+	if len(blocked) != 1 {
+		t.Fatalf("expected 1 blocked request, got %d", len(blocked))
+	}
+	if blocked[0].ErrorCode != -32004 {
+		t.Errorf("expected error code -32004, got %d", blocked[0].ErrorCode)
+	}
+	if blocked[0].ErrorMessage != "test kill switch deny" { //nolint:goconst // test value
+		t.Errorf("expected message %q, got %q", "test kill switch deny", blocked[0].ErrorMessage)
+	}
+	if serverBuf.Len() != 0 {
+		t.Errorf("expected no data forwarded to server, got %q", serverBuf.String())
+	}
+}
+
+func TestForwardScannedInput_KillSwitchDropsNotification(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.KillSwitch.Enabled = true
+	ks := killswitch.New(cfg)
+
+	sc := testScanner(t)
+
+	notification := makeNotification("notifications/initialized", nil) //nolint:goconst // test value
+	stdin := strings.NewReader(notification + "\n")
+	clientReader := NewStdioReader(stdin)
+
+	var serverBuf bytes.Buffer
+	serverWriter := NewStdioWriter(&serverBuf)
+
+	var logBuf bytes.Buffer
+	blockedCh := make(chan BlockedRequest, 16)
+
+	go ForwardScannedInput(clientReader, serverWriter, &logBuf, sc, "block", "block", blockedCh, nil, nil, ks, nil)
+
+	var blocked []BlockedRequest
+	for b := range blockedCh {
+		blocked = append(blocked, b)
+	}
+
+	// Notifications are silently dropped (not sent to blockedCh).
+	if len(blocked) != 0 {
+		t.Fatalf("expected 0 blocked requests (notification dropped), got %d", len(blocked))
+	}
+	if serverBuf.Len() != 0 {
+		t.Errorf("expected no data forwarded to server, got %q", serverBuf.String())
+	}
+	if !strings.Contains(logBuf.String(), "kill switch dropped notification") {
+		t.Errorf("expected kill switch log for notification, got: %s", logBuf.String())
+	}
+}
+
+func TestForwardScannedInput_ChainDetectionBlock(t *testing.T) {
+	sc := testScanner(t)
+
+	chainCfg := &config.ToolChainDetection{
+		Enabled:       true,
+		Action:        "block",
+		WindowSize:    20,
+		WindowSeconds: 300,
+		MaxGap:        intPtrInput(3),
+		PatternOverrides: map[string]string{
+			"read-then-exec": "block", //nolint:goconst // test value
+		},
+	}
+	cm := NewChainMatcher(chainCfg)
+
+	// Send read_file then execute_command to trigger "read-then-exec" chain.
+	input := makeRequest(1, "tools/call", map[string]string{"name": "read_file"}) + "\n" +
+		makeRequest(2, "tools/call", map[string]string{"name": "execute_command"}) + "\n"
+	stdin := strings.NewReader(input)
+	clientReader := NewStdioReader(stdin)
+
+	var serverBuf bytes.Buffer
+	serverWriter := NewStdioWriter(&serverBuf)
+
+	var logBuf bytes.Buffer
+	blockedCh := make(chan BlockedRequest, 16)
+
+	go ForwardScannedInput(clientReader, serverWriter, &logBuf, sc, "warn", "block", blockedCh, nil, nil, nil, cm)
+
+	var blocked []BlockedRequest
+	for b := range blockedCh {
+		blocked = append(blocked, b)
+	}
+
+	// First request should forward, second should be blocked by chain detection.
+	if len(blocked) != 1 {
+		t.Fatalf("expected 1 blocked request from chain detection, got %d", len(blocked))
+	}
+	if blocked[0].ErrorCode != -32004 {
+		t.Errorf("expected error code -32004, got %d", blocked[0].ErrorCode)
+	}
+	if !strings.Contains(blocked[0].ErrorMessage, "chain pattern") {
+		t.Errorf("expected chain pattern in error message, got %q", blocked[0].ErrorMessage)
+	}
+	if !strings.Contains(logBuf.String(), "chain detected") {
+		t.Errorf("expected chain detection log, got: %s", logBuf.String())
+	}
+}
+
+func TestForwardScannedInput_ChainDetectionWarn(t *testing.T) {
+	sc := testScanner(t)
+
+	chainCfg := &config.ToolChainDetection{
+		Enabled:       true,
+		Action:        "warn",
+		WindowSize:    20,
+		WindowSeconds: 300,
+		MaxGap:        intPtrInput(3),
+	}
+	cm := NewChainMatcher(chainCfg)
+
+	input := makeRequest(1, "tools/call", map[string]string{"name": "read_file"}) + "\n" +
+		makeRequest(2, "tools/call", map[string]string{"name": "execute_command"}) + "\n"
+	stdin := strings.NewReader(input)
+	clientReader := NewStdioReader(stdin)
+
+	var serverBuf bytes.Buffer
+	serverWriter := NewStdioWriter(&serverBuf)
+
+	var logBuf bytes.Buffer
+	blockedCh := make(chan BlockedRequest, 16)
+
+	go ForwardScannedInput(clientReader, serverWriter, &logBuf, sc, "warn", "block", blockedCh, nil, nil, nil, cm)
+
+	var blocked []BlockedRequest
+	for b := range blockedCh {
+		blocked = append(blocked, b)
+	}
+
+	// Warn mode: no blocked requests, both forwarded.
+	if len(blocked) != 0 {
+		t.Fatalf("expected 0 blocked requests in warn mode, got %d", len(blocked))
+	}
+	// Both requests should be forwarded to server.
+	lines := strings.Split(strings.TrimSpace(serverBuf.String()), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 forwarded messages, got %d: %q", len(lines), serverBuf.String())
+	}
+	if !strings.Contains(logBuf.String(), "chain detected") {
+		t.Errorf("expected chain detection warning log, got: %s", logBuf.String())
 	}
 }

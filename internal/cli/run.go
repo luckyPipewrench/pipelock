@@ -134,8 +134,13 @@ Examples:
 			// SIGUSR1 toggles the kill switch (separate from SIGINT/SIGTERM).
 			sigusr1Ch := make(chan os.Signal, 1)
 			signal.Notify(sigusr1Ch, syscall.SIGUSR1)
+			defer signal.Stop(sigusr1Ch)
+			defer close(sigusr1Ch)
 			go func() {
-				for range sigusr1Ch {
+				for sig := range sigusr1Ch {
+					if sig == nil {
+						return
+					}
 					active := ks.ToggleSignal()
 					if active {
 						cmd.PrintErrln("pipelock: kill switch ACTIVATED via SIGUSR1")

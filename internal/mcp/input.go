@@ -32,10 +32,15 @@ type InputVerdict struct {
 // from arbitrary JSON. Unlike jsonrpc.ExtractStringsFromJSON (values only), this
 // version also extracts map keys because an agent can exfiltrate secrets
 // by encoding them as JSON object keys in tool arguments.
+// Recursion is bounded by jsonrpc.maxExtractDepth (via the same constant) to
+// prevent stack overflow from deeply-nested payloads.
 func extractAllStringsFromJSON(raw json.RawMessage) []string {
 	var result []string
-	var extract func(v interface{})
-	extract = func(v interface{}) {
+	var extract func(v interface{}, depth int)
+	extract = func(v interface{}, depth int) {
+		if depth > 64 { // matches jsonrpc.maxExtractDepth
+			return
+		}
 		switch val := v.(type) {
 		case string:
 			result = append(result, val)
@@ -46,18 +51,18 @@ func extractAllStringsFromJSON(raw json.RawMessage) []string {
 			result = append(result, strconv.FormatBool(val))
 		case []interface{}:
 			for _, item := range val {
-				extract(item)
+				extract(item, depth+1)
 			}
 		case map[string]interface{}:
 			for _, k := range jsonrpc.SortedKeys(val) {
 				result = append(result, k) // Extract keys too.
-				extract(val[k])
+				extract(val[k], depth+1)
 			}
 		}
 	}
 	var parsed interface{}
 	if err := json.Unmarshal(raw, &parsed); err == nil {
-		extract(parsed)
+		extract(parsed, 0)
 	}
 	return result
 }

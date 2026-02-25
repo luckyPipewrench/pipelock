@@ -211,11 +211,9 @@ func TestMatcher_WindowEviction(t *testing.T) {
 	// Window is now full (3 entries). Next entry should evict oldest.
 	m.Record("s1", "run_command") //nolint:goconst // test value
 
-	// The read_file should have been evicted. So read-then-exec should NOT match
-	// because the read is gone.
+	// Add another entry; the oldest (read_file) should have been evicted.
 	_ = m.Record("s1", "bash_exec")
-	// However, run_command (exec) and bash_exec (exec) are both exec.
-	// Check that the original read is gone by checking history size.
+	// Verify eviction by checking history size.
 	sh, ok := m.sessions.Load("s1")
 	if !ok {
 		t.Fatal("session not found")

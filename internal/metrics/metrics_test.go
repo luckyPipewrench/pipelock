@@ -788,7 +788,6 @@ func TestRecordBlocked_TopDomainsCapped(t *testing.T) {
 	if _, exists := m.topBlockedDomains["overflow.com"]; exists {
 		t.Error("overflow domain should not be tracked after cap")
 	}
-	// Same for scanner hits: fill + overflow.
 	if len(m.topBlockedDomains) > maxTopEntries {
 		t.Errorf("expected at most %d blocked domains, got %d", maxTopEntries, len(m.topBlockedDomains))
 	}

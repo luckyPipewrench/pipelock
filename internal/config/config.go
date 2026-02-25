@@ -451,7 +451,7 @@ func (c *Config) ApplyDefaults() {
 		c.WebSocketProxy.IdleTimeoutSeconds = 300
 	}
 	if c.WebSocketProxy.OriginPolicy == "" {
-		c.WebSocketProxy.OriginPolicy = "rewrite"
+		c.WebSocketProxy.OriginPolicy = "rewrite" //nolint:goconst // used as default value
 	}
 	if c.GitProtection.Enabled && len(c.GitProtection.AllowedBranches) == 0 {
 		c.GitProtection.AllowedBranches = []string{"feature/*", "fix/*", "main", "master"}

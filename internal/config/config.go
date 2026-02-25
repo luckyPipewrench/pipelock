@@ -36,12 +36,21 @@ const (
 	OutputBoth       = "both"
 )
 
+// SuppressEntry defines a finding suppression rule for false positives.
+// Used in pipelock.yaml to suppress specific DLP patterns on specific paths.
+type SuppressEntry struct {
+	Rule   string `yaml:"rule"`             // DLP pattern name (required)
+	Path   string `yaml:"path"`             // exact path or glob pattern (required)
+	Reason string `yaml:"reason,omitempty"` // human-readable justification
+}
+
 // Config is the top-level Pipelock configuration.
 type Config struct {
 	Version             int                 `yaml:"version"`
 	Mode                string              `yaml:"mode"`    // strict, balanced, audit
 	Enforce             *bool               `yaml:"enforce"` // nil = true (default); false = detect & log without blocking
 	APIAllowlist        []string            `yaml:"api_allowlist"`
+	Suppress            []SuppressEntry     `yaml:"suppress"`
 	FetchProxy          FetchProxy          `yaml:"fetch_proxy"`
 	ForwardProxy        ForwardProxy        `yaml:"forward_proxy"`
 	WebSocketProxy      WebSocketProxy      `yaml:"websocket_proxy"`
@@ -669,6 +678,16 @@ func (c *Config) Validate() error {
 			// valid
 		default:
 			return fmt.Errorf("invalid mcp_session_binding.no_baseline_action %q: must be warn or block", c.MCPSessionBinding.NoBaselineAction)
+		}
+	}
+
+	// Validate suppress entries have required fields
+	for i, s := range c.Suppress {
+		if s.Rule == "" {
+			return fmt.Errorf("suppress entry %d missing required field \"rule\"", i)
+		}
+		if s.Path == "" {
+			return fmt.Errorf("suppress entry %d (%s) missing required field \"path\"", i, s.Rule)
 		}
 	}
 

@@ -37,6 +37,7 @@ func scanDiffCmd() *cobra.Command {
 	var configFile string
 	var jsonOutput bool
 	var excludePaths []string
+	var verbose bool
 
 	cmd := &cobra.Command{
 		Use:   "scan-diff",
@@ -80,6 +81,12 @@ Examples:
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Warning: %v\n", scanErr)
 			}
 
+			// Suppression: inline comments and config entries
+			findings, suppressed, reasons := suppressGitFindings(findings, cfg.Suppress)
+			if verbose && len(suppressed) > 0 {
+				printSuppressedGit(cmd.ErrOrStderr(), suppressed, reasons)
+			}
+
 			// Filter excluded paths from findings
 			if len(excludePaths) > 0 {
 				filtered := findings[:0:0]
@@ -112,6 +119,7 @@ Examples:
 	cmd.Flags().StringVarP(&configFile, "config", "c", "", "config file path")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "output findings as JSON")
 	cmd.Flags().StringArrayVar(&excludePaths, "exclude", nil, "exclude paths from findings (glob or directory prefix, repeatable)")
+	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "print suppressed findings to stderr")
 	return cmd
 }
 

@@ -14,6 +14,8 @@ func auditCmd() *cobra.Command {
 	var output string
 	var jsonOutput bool
 	var excludePaths []string
+	var configFile string
+	var verbose bool
 
 	cmd := &cobra.Command{
 		Use:   "audit [directory]",
@@ -27,12 +29,30 @@ Examples:
   pipelock audit .
   pipelock audit ./my-project -o pipelock-suggested.yaml
   pipelock audit ./my-project --json
-  pipelock audit . --exclude vendor/ --exclude "*.generated.go"`,
+  pipelock audit . --exclude vendor/ --exclude "*.generated.go"
+  pipelock audit . --config pipelock.yaml --verbose`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			report, err := projectscan.Scan(args[0])
 			if err != nil {
 				return err
+			}
+
+			// Load config for suppress entries (if provided)
+			cfg, cfgErr := loadConfigOrDefault(configFile)
+			if cfgErr != nil {
+				return cfgErr
+			}
+
+			// Suppression: inline comments and config entries
+			var suppressed []projectscan.Finding
+			var reasons []suppressResult
+			report.Findings, suppressed, reasons = suppressProjectFindings(report.Findings, cfg.Suppress)
+			if verbose && len(suppressed) > 0 {
+				printSuppressedProject(cmd.ErrOrStderr(), suppressed, reasons)
+			}
+			if len(suppressed) > 0 {
+				report.AdjustScoreForFindings()
 			}
 
 			// Filter excluded paths from findings and recompute scores
@@ -84,6 +104,8 @@ Examples:
 	cmd.Flags().StringVarP(&output, "output", "o", "", "write suggested config to file")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "output findings as JSON")
 	cmd.Flags().StringArrayVar(&excludePaths, "exclude", nil, "exclude paths from findings (glob or directory prefix, repeatable)")
+	cmd.Flags().StringVarP(&configFile, "config", "c", "", "config file path (for suppress entries)")
+	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "print suppressed findings to stderr")
 
 	return cmd
 }

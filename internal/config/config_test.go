@@ -2436,3 +2436,126 @@ func TestResourceBoundsDefaultEvenWhenDisabled(t *testing.T) {
 		t.Errorf("cleanup_interval_seconds should default even when disabled, got %d", cfg.SessionProfiling.CleanupIntervalSeconds)
 	}
 }
+
+// --- Suppress Config Tests ---
+
+func TestValidate_SuppressValid(t *testing.T) {
+	cfg := Defaults()
+	cfg.Suppress = []SuppressEntry{
+		{Rule: "Credential in URL", Path: "app/models/client.rb", Reason: "Instance var, not a secret"},
+		{Rule: "Anthropic API Key", Path: "config/initializers/*.rb"},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("valid suppress entries should validate: %v", err)
+	}
+}
+
+func TestValidate_SuppressMissingRule(t *testing.T) {
+	cfg := Defaults()
+	cfg.Suppress = []SuppressEntry{
+		{Rule: "", Path: "app/models/client.rb"},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for suppress entry with empty rule")
+	}
+	if !strings.Contains(err.Error(), "missing required field \"rule\"") {
+		t.Errorf("expected 'missing required field rule' error, got: %v", err)
+	}
+}
+
+func TestValidate_SuppressMissingPath(t *testing.T) {
+	cfg := Defaults()
+	cfg.Suppress = []SuppressEntry{
+		{Rule: "Credential in URL", Path: ""},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for suppress entry with empty path")
+	}
+	if !strings.Contains(err.Error(), "missing required field \"path\"") {
+		t.Errorf("expected 'missing required field path' error, got: %v", err)
+	}
+}
+
+func TestValidate_SuppressEmptyList(t *testing.T) {
+	cfg := Defaults()
+	cfg.Suppress = []SuppressEntry{}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("empty suppress list should validate: %v", err)
+	}
+}
+
+func TestValidate_SuppressNilList(t *testing.T) {
+	cfg := Defaults()
+	cfg.Suppress = nil
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("nil suppress list should validate: %v", err)
+	}
+}
+
+func TestLoad_WithSuppressEntries(t *testing.T) {
+	yamlContent := `
+version: 1
+mode: balanced
+api_allowlist:
+  - "*.anthropic.com"
+suppress:
+  - rule: Credential in URL
+    path: app/models/assistant/external/client.rb
+    reason: "Instance variable storing constructor param"
+  - rule: Anthropic API Key
+    path: "config/initializers/*.rb"
+    reason: "Initializers reference env var names"
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(yamlContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.Suppress) != 2 {
+		t.Fatalf("expected 2 suppress entries, got %d", len(cfg.Suppress))
+	}
+	if cfg.Suppress[0].Rule != "Credential in URL" {
+		t.Errorf("expected rule 'Credential in URL', got %q", cfg.Suppress[0].Rule)
+	}
+	if cfg.Suppress[0].Path != "app/models/assistant/external/client.rb" {
+		t.Errorf("expected path 'app/models/assistant/external/client.rb', got %q", cfg.Suppress[0].Path)
+	}
+	if cfg.Suppress[0].Reason != "Instance variable storing constructor param" {
+		t.Errorf("expected reason, got %q", cfg.Suppress[0].Reason)
+	}
+	if cfg.Suppress[1].Reason != "Initializers reference env var names" {
+		t.Errorf("expected reason for entry 1, got %q", cfg.Suppress[1].Reason)
+	}
+}
+
+func TestLoad_SuppressValidationError(t *testing.T) {
+	yamlContent := `
+version: 1
+mode: balanced
+api_allowlist:
+  - "*.anthropic.com"
+suppress:
+  - rule: ""
+    path: "some/path.rb"
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(yamlContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected validation error for empty rule")
+	}
+	if !strings.Contains(err.Error(), "missing required field \"rule\"") {
+		t.Errorf("expected rule validation error, got: %v", err)
+	}
+}

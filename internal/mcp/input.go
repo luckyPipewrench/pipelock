@@ -599,18 +599,25 @@ func ForwardScannedInput(
 		}
 
 		// Determine effective action: strictest of content scan, policy, and binding.
+		// mergeAction handles the initial empty state correctly (empty = no action yet).
 		effectiveAction := ""
+		mergeAction := func(cur, next string) string {
+			if cur == "" {
+				return next
+			}
+			return policy.StricterAction(cur, next)
+		}
 		if !verdict.Clean {
 			effectiveAction = action
 		}
 		if policyVerdict.Matched {
-			effectiveAction = policy.StricterAction(effectiveAction, policyVerdict.Action)
+			effectiveAction = mergeAction(effectiveAction, policyVerdict.Action)
 		}
 		if bindingAction != "" {
-			effectiveAction = policy.StricterAction(effectiveAction, bindingAction)
+			effectiveAction = mergeAction(effectiveAction, bindingAction)
 		}
 		if chainAction != "" {
-			effectiveAction = policy.StricterAction(effectiveAction, chainAction)
+			effectiveAction = mergeAction(effectiveAction, chainAction)
 		}
 
 		isNotification := len(verdict.ID) == 0

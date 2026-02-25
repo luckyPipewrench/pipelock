@@ -251,15 +251,23 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 	}
 
 	// Determine effective action (strictest wins).
+	// mergeAction sets effectiveAction to the stricter of cur and next,
+	// handling the initial empty state correctly (empty = no action yet).
 	effectiveAction := ""
+	mergeAction := func(cur, next string) string {
+		if cur == "" {
+			return next
+		}
+		return policy.StricterAction(cur, next)
+	}
 	if !verdict.Clean {
 		effectiveAction = action
 	}
 	if policyVerdict.Matched {
-		effectiveAction = policy.StricterAction(effectiveAction, policyVerdict.Action)
+		effectiveAction = mergeAction(effectiveAction, policyVerdict.Action)
 	}
 	if chainAction != "" {
-		effectiveAction = policy.StricterAction(effectiveAction, chainAction)
+		effectiveAction = mergeAction(effectiveAction, chainAction)
 	}
 
 	isNotification := len(verdict.ID) == 0

@@ -198,8 +198,12 @@ func (m *Matcher) evict(sess *sessionHistory, now time.Time) {
 func (m *Matcher) matchPatterns(sess *sessionHistory) ChainVerdict {
 	var best ChainVerdict
 
+	maxGap := 3 // default, normally set by ApplyDefaults
+	if m.cfg.MaxGap != nil {
+		maxGap = *m.cfg.MaxGap
+	}
 	for _, p := range m.patterns {
-		if subsequenceMatch(sess.records, p.sequence, *m.cfg.MaxGap) {
+		if subsequenceMatch(sess.records, p.sequence, maxGap) {
 			if !best.Matched || isBetterMatch(p, best) {
 				best = ChainVerdict{
 					Matched:     true,

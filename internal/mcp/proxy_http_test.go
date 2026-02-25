@@ -2364,15 +2364,18 @@ func TestHTTPListener_ChainDetectionWarn(t *testing.T) {
 		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"/etc/passwd"}}}`,
 		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"execute_command","arguments":{"command":"ls"}}}`,
 	}
-	for _, call := range calls {
+	for i, call := range calls {
 		resp, err := http.Post(baseURL+"/", "application/json", strings.NewReader(call)) //nolint:gosec,noctx // test
 		if err != nil {
 			t.Fatalf("POST: %v", err)
 		}
+		// In warn mode, all requests must still be forwarded (200), not blocked.
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("call %d: status = %d, want 200 (warn should forward)", i, resp.StatusCode)
+		}
 		_ = resp.Body.Close()
 	}
 
-	// In warn mode, both requests should succeed (200).
 	// Check logs for chain detection warning.
 	if !strings.Contains(logBuf.String(), "chain detected") {
 		t.Errorf("expected chain detection warning in logs, got: %s", logBuf.String())

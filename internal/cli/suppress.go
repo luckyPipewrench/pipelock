@@ -64,16 +64,12 @@ func checkConfigSuppression(file string, rule string, entries []config.SuppressE
 		return suppressResult{}
 	}
 
-	for _, e := range entries {
-		if !strings.EqualFold(e.Rule, rule) {
-			continue
-		}
-		if shouldExclude(file, []string{e.Path}) {
-			return suppressResult{
-				suppressed: true,
-				source:     suppressSourceConfig,
-				reason:     e.Reason,
-			}
+	reason, ok := config.SuppressedReason(rule, file, entries)
+	if ok {
+		return suppressResult{
+			suppressed: true,
+			source:     suppressSourceConfig,
+			reason:     reason,
 		}
 	}
 

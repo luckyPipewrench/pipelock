@@ -603,6 +603,17 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// Response scanning: check fetched content for prompt injection
 	if sc.ResponseScanningEnabled() {
 		scanResult := sc.ScanResponse(content)
+		// Filter out suppressed findings before acting.
+		if !scanResult.Clean && len(cfg.Suppress) > 0 {
+			var kept []scanner.ResponseMatch
+			for _, m := range scanResult.Matches {
+				if !config.IsSuppressed(m.PatternName, displayURL, cfg.Suppress) {
+					kept = append(kept, m)
+				}
+			}
+			scanResult.Matches = kept
+			scanResult.Clean = len(kept) == 0
+		}
 		if !scanResult.Clean {
 			patternNames := make([]string, len(scanResult.Matches))
 			for i, m := range scanResult.Matches {

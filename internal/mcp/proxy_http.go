@@ -574,10 +574,17 @@ func RunHTTPListenerProxy(
 		}
 
 		// Use Mcp-Session-Id header as chain detection session key so
-		// concurrent clients don't share tool call history.
+		// concurrent clients don't share tool call history. When no
+		// session ID is present, fall back to the client IP (without
+		// port) so all requests from the same agent share chain history
+		// even across separate TCP connections.
 		chainSessionKey := r.Header.Get("Mcp-Session-Id")
 		if chainSessionKey == "" {
-			chainSessionKey = r.RemoteAddr
+			host, _, err := net.SplitHostPort(r.RemoteAddr)
+			if err != nil {
+				host = r.RemoteAddr
+			}
+			chainSessionKey = host
 		}
 
 		// Input scanning: DLP, injection, policy, chain detection.

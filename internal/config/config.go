@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -37,11 +39,72 @@ const (
 )
 
 // SuppressEntry defines a finding suppression rule for false positives.
-// Used in pipelock.yaml to suppress specific DLP patterns on specific paths.
+// Used in pipelock.yaml to suppress specific patterns on specific paths/URLs.
 type SuppressEntry struct {
-	Rule   string `yaml:"rule"`             // DLP pattern name (required)
-	Path   string `yaml:"path"`             // exact path or glob pattern (required)
+	Rule   string `yaml:"rule"`             // pattern name (required)
+	Path   string `yaml:"path"`             // exact path, glob, or URL pattern (required)
 	Reason string `yaml:"reason,omitempty"` // human-readable justification
+}
+
+// IsSuppressed checks if a finding with the given rule name and target path/URL
+// matches any suppress entry. Supports exact match, glob (path.Match), directory
+// prefix ("vendor/"), and basename glob ("*.txt" matches "dir/foo.txt").
+func IsSuppressed(rule, target string, entries []SuppressEntry) bool {
+	_, ok := SuppressedReason(rule, target, entries)
+	return ok
+}
+
+// SuppressedReason returns the reason and true if the finding is suppressed,
+// or ("", false) if not suppressed.
+func SuppressedReason(rule, target string, entries []SuppressEntry) (string, bool) {
+	if target == "" || len(entries) == 0 {
+		return "", false
+	}
+	target = toSlash(target)
+	for _, e := range entries {
+		if !strings.EqualFold(e.Rule, rule) {
+			continue
+		}
+		if matchesPath(target, e.Path) {
+			return e.Reason, true
+		}
+	}
+	return "", false
+}
+
+// matchesPath checks if target matches the given pattern.
+func matchesPath(target, pattern string) bool {
+	p := toSlash(pattern)
+	if p == "" {
+		return false
+	}
+	// Directory prefix: "vendor/" matches "vendor/foo/bar.go"
+	if strings.HasSuffix(p, "/") {
+		return strings.HasPrefix(target, p)
+	}
+	// Exact match.
+	if target == p {
+		return true
+	}
+	// Glob on full path.
+	if matched, _ := path.Match(p, target); matched {
+		return true
+	}
+	// Glob on basename (e.g., "*.txt" matches "dir/foo.txt").
+	if matched, _ := path.Match(p, path.Base(target)); matched {
+		return true
+	}
+	// URL suffix match: pattern without leading slash matches URL path suffix.
+	// e.g., "robots.txt" matches "https://example.com/robots.txt"
+	if !strings.HasPrefix(p, "/") && strings.HasSuffix(target, "/"+p) {
+		return true
+	}
+	return false
+}
+
+// toSlash normalizes path separators to forward slashes.
+func toSlash(s string) string {
+	return strings.ReplaceAll(s, "\\", "/")
 }
 
 // Config is the top-level Pipelock configuration.

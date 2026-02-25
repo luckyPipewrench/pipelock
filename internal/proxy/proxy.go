@@ -55,16 +55,17 @@ var Version = "0.1.0-dev"
 
 // Proxy is the Pipelock fetch proxy server.
 type Proxy struct {
-	cfgPtr     atomic.Pointer[config.Config]
-	scannerPtr atomic.Pointer[scanner.Scanner]
-	logger     *audit.Logger
-	metrics    *metrics.Metrics
-	dialer     *net.Dialer
-	client     *http.Client
-	server     *http.Server
-	startTime  time.Time
-	reloadMu   sync.Mutex // serializes Reload calls
-	approver   *hitl.Approver
+	cfgPtr        atomic.Pointer[config.Config]
+	scannerPtr    atomic.Pointer[scanner.Scanner]
+	sessionMgrPtr atomic.Pointer[SessionManager] // nil when profiling disabled
+	logger        *audit.Logger
+	metrics       *metrics.Metrics
+	dialer        *net.Dialer
+	client        *http.Client
+	server        *http.Server
+	startTime     time.Time
+	reloadMu      sync.Mutex // serializes Reload calls
+	approver      *hitl.Approver
 }
 
 // Option configures optional Proxy behavior.
@@ -100,6 +101,10 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 	}
 	p.cfgPtr.Store(cfg)
 	p.scannerPtr.Store(sc)
+
+	if cfg.SessionProfiling.Enabled {
+		p.sessionMgrPtr.Store(NewSessionManager(&cfg.SessionProfiling, m))
+	}
 
 	p.dialer = &net.Dialer{
 		Timeout:   10 * time.Second,
@@ -155,6 +160,7 @@ func (p *Proxy) CurrentConfig() *config.Config {
 
 // Reload atomically swaps the config and scanner for hot-reload support.
 // The old scanner is closed to release its rate limiter goroutine.
+// Session manager lifecycle is toggled when session_profiling.enabled changes.
 //
 // Note: HTTP client timeouts, transport settings, and server listen address
 // are set at construction in New()/Start() and are NOT updated by Reload.
@@ -164,12 +170,97 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
 	p.reloadMu.Lock()
 	defer p.reloadMu.Unlock()
 
+	oldCfg := p.cfgPtr.Load()
 	p.cfgPtr.Store(cfg)
 	old := p.scannerPtr.Swap(sc)
 
 	if old != nil {
 		old.Close()
 	}
+
+	// Toggle session manager lifecycle on config change.
+	wasEnabled := oldCfg.SessionProfiling.Enabled
+	isEnabled := cfg.SessionProfiling.Enabled
+	if !wasEnabled && isEnabled {
+		p.sessionMgrPtr.Store(NewSessionManager(&cfg.SessionProfiling, p.metrics))
+	} else if wasEnabled && !isEnabled {
+		if old := p.sessionMgrPtr.Swap(nil); old != nil {
+			old.Close()
+		}
+	} else if wasEnabled && isEnabled {
+		// Config values changed while profiling stays enabled — update in place
+		// so TTL/capacity thresholds take effect without losing session state.
+		if sm := p.sessionMgrPtr.Load(); sm != nil {
+			sm.UpdateConfig(&cfg.SessionProfiling)
+		}
+	}
+}
+
+// Close releases resources owned by the proxy (session manager goroutine).
+// Safe to call multiple times. Does not stop the HTTP server — use context
+// cancellation in Start() for that.
+func (p *Proxy) Close() {
+	if sm := p.sessionMgrPtr.Load(); sm != nil {
+		sm.Close()
+	}
+}
+
+// recordSessionActivity handles session profiling, adaptive signals, and anomaly
+// detection for any proxy handler. The agent parameter enables per-agent session
+// isolation (key becomes "agent|clientIP"); pass "" when agent is unavailable.
+// Returns (blocked, blockDetail) when the request should be rejected due to a
+// session anomaly in block mode.
+func (p *Proxy) recordSessionActivity(clientIP, agent, hostname, requestID string, resultAllowed bool, resultScore float64, cfg *config.Config, log *audit.Logger) (bool, string) {
+	sm := p.sessionMgrPtr.Load()
+	if sm == nil || !cfg.SessionProfiling.Enabled {
+		return false, ""
+	}
+
+	// Build session key: agent|clientIP when agent is known, else just clientIP.
+	key := clientIP
+	if agent != "" && agent != "anonymous" {
+		key = agent + "|" + clientIP
+	}
+
+	sess := sm.GetOrCreate(key)
+	anomalies := sess.RecordRequest(hostname, &cfg.SessionProfiling)
+
+	// IP-level domain tracking: catches header rotation attacks where the
+	// agent identity changes per request but the source IP stays the same.
+	ipAnomalies := sm.RecordIPDomain(clientIP, hostname, &cfg.SessionProfiling)
+	anomalies = append(anomalies, ipAnomalies...)
+
+	// Record adaptive signals (only when adaptive enforcement is enabled).
+	// NOTE: v1 is scoring-only — signals accumulate and escalation events are
+	// logged/metriced for observability, but enforcement behavior is not yet
+	// changed by escalation level. Escalation-aware blocking is planned for v2.
+	if cfg.AdaptiveEnforcement.Enabled {
+		adaptiveCfg := cfg.AdaptiveEnforcement
+		if !resultAllowed {
+			if escalated, from, to := sess.RecordSignal(SignalBlock, adaptiveCfg.EscalationThreshold); escalated {
+				log.LogAdaptiveEscalation(key, from, to, clientIP, requestID, sess.ThreatScore())
+				p.metrics.RecordSessionEscalation(from, to)
+			}
+		} else if resultScore > 0 {
+			if escalated, from, to := sess.RecordSignal(SignalDLPNearMiss, adaptiveCfg.EscalationThreshold); escalated {
+				log.LogAdaptiveEscalation(key, from, to, clientIP, requestID, sess.ThreatScore())
+				p.metrics.RecordSessionEscalation(from, to)
+			}
+		} else {
+			sess.RecordClean(adaptiveCfg.DecayPerCleanRequest)
+		}
+	}
+
+	for _, a := range anomalies {
+		log.LogSessionAnomaly(key, a.Type, a.Detail, clientIP, requestID, a.Score)
+		p.metrics.RecordSessionAnomaly(a.Type)
+
+		if cfg.SessionProfiling.AnomalyAction == config.ActionBlock && cfg.EnforceEnabled() {
+			return true, fmt.Sprintf("session anomaly: %s", a.Detail)
+		}
+	}
+
+	return false, ""
 }
 
 // ssrfSafeDialContext resolves DNS and validates all IPs against internal
@@ -301,6 +392,7 @@ func (p *Proxy) Start(ctx context.Context) error {
 			if err := p.server.Shutdown(shutdownCtx); err != nil {
 				p.logger.LogError("SHUTDOWN", cfg.FetchProxy.Listen, "", "", err)
 			}
+			p.Close()
 		case <-done:
 		}
 	}()
@@ -379,6 +471,11 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 	// Scan URL through all scanners
 	result := sc.Scan(targetURL)
+
+	// Session profiling: record BEFORE the enforce-mode early return so adaptive
+	// signals (SignalBlock) fire even for blocked requests.
+	sessionBlocked, sessionDetail := p.recordSessionActivity(clientIP, agent, parsed.Hostname(), requestID, result.Allowed, result.Score, cfg, log)
+
 	if !result.Allowed {
 		if cfg.EnforceEnabled() {
 			log.LogBlocked("GET", displayURL, result.Scanner, result.Reason, clientIP, requestID)
@@ -397,6 +494,16 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		}
 		// Audit mode: log anomaly but allow through
 		log.LogAnomaly("GET", displayURL, fmt.Sprintf("[audit] %s: %s", result.Scanner, result.Reason), clientIP, requestID, result.Score)
+	}
+
+	if sessionBlocked {
+		writeJSON(w, http.StatusForbidden, FetchResponse{
+			URL:         displayURL,
+			Agent:       agent,
+			Blocked:     true,
+			BlockReason: sessionDetail,
+		})
+		return
 	}
 
 	// Fetch the URL — attach clientIP/requestID/agent to context for redirect logging

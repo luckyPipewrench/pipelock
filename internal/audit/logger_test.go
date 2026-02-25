@@ -539,7 +539,7 @@ func TestLogResponseScan_JSONFormat(t *testing.T) {
 	if entry["request_id"] != "req-10" {
 		t.Errorf("expected request_id=req-10, got %v", entry["request_id"])
 	}
-	if entry["action"] != "warn" {
+	if entry["action"] != "warn" { //nolint:goconst // test value
 		t.Errorf("expected action=warn, got %v", entry["action"])
 	}
 	matchCount, ok := entry["match_count"].(float64)
@@ -842,6 +842,332 @@ func TestLogForwardHTTP_Filtered(t *testing.T) {
 	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
 	if len(bytes.TrimSpace(data)) > 0 {
 		t.Error("expected forward_http to be filtered when includeAllowed=false")
+	}
+}
+
+func TestLogSessionAnomaly_JSONFormat(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogSessionAnomaly("10.0.0.1", "domain_burst", "6 new domains in 5m window", "10.0.0.1", "req-20", 2.0)
+	logger.Close()
+
+	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+
+	if entry["event"] != "session_anomaly" {
+		t.Errorf("expected event=session_anomaly, got %v", entry["event"])
+	}
+	if entry["session"] != "10.0.0.1" {
+		t.Errorf("expected session=10.0.0.1, got %v", entry["session"])
+	}
+	if entry["anomaly_type"] != "domain_burst" {
+		t.Errorf("expected anomaly_type=domain_burst, got %v", entry["anomaly_type"])
+	}
+	if entry["detail"] != "6 new domains in 5m window" {
+		t.Errorf("expected detail, got %v", entry["detail"])
+	}
+	if entry["client_ip"] != "10.0.0.1" {
+		t.Errorf("expected client_ip=10.0.0.1, got %v", entry["client_ip"])
+	}
+	if entry["request_id"] != "req-20" {
+		t.Errorf("expected request_id=req-20, got %v", entry["request_id"])
+	}
+	score, ok := entry["score"].(float64)
+	if !ok || score != 2.0 {
+		t.Errorf("expected score=2.0, got %v", entry["score"])
+	}
+}
+
+func TestLogAdaptiveEscalation_JSONFormat(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogAdaptiveEscalation("10.0.0.1", "warn", "block", "10.0.0.1", "req-30", 5.5)
+	logger.Close()
+
+	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+
+	if entry["event"] != "adaptive_escalation" {
+		t.Errorf("expected event=adaptive_escalation, got %v", entry["event"])
+	}
+	if entry["session"] != "10.0.0.1" {
+		t.Errorf("expected session=10.0.0.1, got %v", entry["session"])
+	}
+	if entry["from"] != "warn" {
+		t.Errorf("expected from=warn, got %v", entry["from"])
+	}
+	if entry["to"] != "block" {
+		t.Errorf("expected to=block, got %v", entry["to"])
+	}
+	score, ok := entry["score"].(float64)
+	if !ok || score != 5.5 {
+		t.Errorf("expected score=5.5, got %v", entry["score"])
+	}
+}
+
+func TestLogMCPUnknownTool_JSONFormat(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogMCPUnknownTool("execute_code", "warn")
+	logger.Close()
+
+	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+
+	if entry["event"] != "mcp_unknown_tool" {
+		t.Errorf("expected event=mcp_unknown_tool, got %v", entry["event"])
+	}
+	if entry["tool"] != "execute_code" {
+		t.Errorf("expected tool=execute_code, got %v", entry["tool"])
+	}
+	if entry["action"] != "warn" {
+		t.Errorf("expected action=warn, got %v", entry["action"])
+	}
+}
+
+func TestNewNop_SessionEvents(_ *testing.T) {
+	logger := NewNop()
+	// Should not panic
+	logger.LogSessionAnomaly("10.0.0.1", "domain_burst", "test", "10.0.0.1", "req-1", 1.0)
+	logger.LogAdaptiveEscalation("10.0.0.1", "warn", "block", "10.0.0.1", "req-2", 5.0)
+	logger.LogMCPUnknownTool("bad_tool", "warn")
+	logger.Close()
+}
+
+func TestLogConfigReload_JSONFormat(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogConfigReload("success", "hot-reload via SIGHUP")
+	logger.Close()
+
+	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+
+	if entry["event"] != "config_reload" {
+		t.Errorf("expected event=config_reload, got %v", entry["event"])
+	}
+	if entry["status"] != "success" {
+		t.Errorf("expected status=success, got %v", entry["status"])
+	}
+	if entry["detail"] != "hot-reload via SIGHUP" {
+		t.Errorf("expected detail, got %v", entry["detail"])
+	}
+}
+
+func TestLogWSOpen_JSONFormat(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogWSOpen("ws://example.com/stream", "10.0.0.5", "req-200", "test-agent")
+	logger.Close()
+
+	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+
+	if entry["event"] != "ws_open" {
+		t.Errorf("expected event=ws_open, got %v", entry["event"])
+	}
+	if entry["target"] != "ws://example.com/stream" {
+		t.Errorf("expected target, got %v", entry["target"])
+	}
+	if entry["agent"] != "test-agent" {
+		t.Errorf("expected agent=test-agent, got %v", entry["agent"])
+	}
+}
+
+func TestLogWSOpen_Filtered(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, false, true) // includeAllowed=false
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogWSOpen("ws://example.com/stream", "10.0.0.5", "req-200", "test-agent")
+	logger.Close()
+
+	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
+	if len(bytes.TrimSpace(data)) > 0 {
+		t.Error("expected ws_open to be filtered when includeAllowed=false")
+	}
+}
+
+func TestLogWSClose_JSONFormat(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogWSClose("ws://example.com/stream", "10.0.0.5", "req-200", "test-agent",
+		4096, 8192, 10, 2, 5*time.Second)
+	logger.Close()
+
+	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+
+	if entry["event"] != "ws_close" {
+		t.Errorf("expected event=ws_close, got %v", entry["event"])
+	}
+	if entry["target"] != "ws://example.com/stream" {
+		t.Errorf("expected target, got %v", entry["target"])
+	}
+	c2s, ok := entry["client_to_server_bytes"].(float64)
+	if !ok || c2s != 4096 {
+		t.Errorf("expected client_to_server_bytes=4096, got %v", entry["client_to_server_bytes"])
+	}
+	s2c, ok := entry["server_to_client_bytes"].(float64)
+	if !ok || s2c != 8192 {
+		t.Errorf("expected server_to_client_bytes=8192, got %v", entry["server_to_client_bytes"])
+	}
+	tf, ok := entry["text_frames"].(float64)
+	if !ok || tf != 10 {
+		t.Errorf("expected text_frames=10, got %v", entry["text_frames"])
+	}
+}
+
+func TestLogWSClose_Filtered(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, false, true) // includeAllowed=false
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogWSClose("ws://example.com/stream", "10.0.0.5", "req-200", "test-agent",
+		4096, 8192, 10, 2, 5*time.Second)
+	logger.Close()
+
+	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
+	if len(bytes.TrimSpace(data)) > 0 {
+		t.Error("expected ws_close to be filtered when includeAllowed=false")
+	}
+}
+
+func TestLogWSBlocked_JSONFormat(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogWSBlocked("ws://evil.com/exfil", "client_to_server", "dlp", "secret detected", "10.0.0.1", "req-300")
+	logger.Close()
+
+	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+
+	if entry["event"] != "ws_blocked" {
+		t.Errorf("expected event=ws_blocked, got %v", entry["event"])
+	}
+	if entry["direction"] != "client_to_server" {
+		t.Errorf("expected direction=client_to_server, got %v", entry["direction"])
+	}
+	if entry["scanner"] != "dlp" {
+		t.Errorf("expected scanner=dlp, got %v", entry["scanner"])
+	}
+	if entry["reason"] != "secret detected" {
+		t.Errorf("expected reason='secret detected', got %v", entry["reason"])
+	}
+}
+
+func TestLogWSBlocked_Filtered(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, false) // includeBlocked=false
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogWSBlocked("ws://evil.com/exfil", "client_to_server", "dlp", "secret detected", "10.0.0.1", "req-300")
+	logger.Close()
+
+	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
+	if len(bytes.TrimSpace(data)) > 0 {
+		t.Error("expected ws_blocked to be filtered when includeBlocked=false")
+	}
+}
+
+func TestLogWSScan_JSONFormat(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogWSScan("ws://example.com/chat", "server_to_client", "10.0.0.1", "req-400", "warn", 2, []string{"Prompt Injection", "Jailbreak"})
+	logger.Close()
+
+	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+
+	if entry["event"] != "ws_scan" {
+		t.Errorf("expected event=ws_scan, got %v", entry["event"])
+	}
+	if entry["direction"] != "server_to_client" {
+		t.Errorf("expected direction=server_to_client, got %v", entry["direction"])
+	}
+	if entry["action"] != "warn" { //nolint:goconst // test value
+		t.Errorf("expected action=warn, got %v", entry["action"])
+	}
+	matchCount, ok := entry["match_count"].(float64)
+	if !ok || matchCount != 2 {
+		t.Errorf("expected match_count=2, got %v", entry["match_count"])
+	}
+	patterns, ok := entry["patterns"].([]any)
+	if !ok || len(patterns) != 2 {
+		t.Errorf("expected 2 patterns, got %v", entry["patterns"])
 	}
 }
 

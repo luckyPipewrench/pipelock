@@ -81,6 +81,17 @@ func ForwardScanned(reader MessageReader, writer MessageWriter, logW io.Writer, 
 		// verdict. A general scan "warn" must not bypass a tool scan "block".
 		if toolCfg != nil {
 			toolResult := ScanTools(line, sc, toolCfg)
+			// Session binding: capture tool names from tools/list responses.
+			if toolResult.IsToolsList && toolCfg.Baseline != nil && len(toolResult.ToolNames) > 0 {
+				if !toolCfg.Baseline.HasBaseline() {
+					toolCfg.Baseline.SetKnownTools(toolResult.ToolNames)
+				} else {
+					added := toolCfg.Baseline.CheckNewTools(toolResult.ToolNames)
+					for _, name := range added {
+						_, _ = fmt.Fprintf(logW, "pipelock: tool %q added post-baseline\n", name)
+					}
+				}
+			}
 			if toolResult.IsToolsList && !toolResult.Clean {
 				foundInjection = true
 				logToolFindings(logW, lineNum, toolResult)
@@ -403,6 +414,33 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	// which is mutex-protected against concurrent writes from ForwardScanned.
 	blockedCh := make(chan BlockedRequest, 16)
 
+	// Set up tool scanning with a fresh baseline for this proxy session.
+	// The baseline is shared between ForwardScanned (response-side, captures
+	// tools/list) and ForwardScannedInput (request-side, validates tools/call).
+	// Must be created before goroutines that reference it.
+	var fwdToolCfg *ToolScanConfig
+	if toolCfg != nil && toolCfg.Action != "" {
+		fwdToolCfg = &ToolScanConfig{
+			Baseline:                NewToolBaseline(),
+			Action:                  toolCfg.Action,
+			DetectDrift:             toolCfg.DetectDrift,
+			BindingUnknownAction:    toolCfg.BindingUnknownAction,
+			BindingNoBaselineAction: toolCfg.BindingNoBaselineAction,
+		}
+	}
+
+	// Build session binding config for input scanning. Shares the same
+	// ToolBaseline so tools/list captures (response-side) are visible to
+	// tools/call validation (request-side).
+	var bindingCfg *SessionBindingConfig
+	if fwdToolCfg != nil && fwdToolCfg.BindingUnknownAction != "" {
+		bindingCfg = &SessionBindingConfig{
+			Baseline:          fwdToolCfg.Baseline,
+			UnknownToolAction: fwdToolCfg.BindingUnknownAction,
+			NoBaselineAction:  fwdToolCfg.BindingNoBaselineAction,
+		}
+	}
+
 	// Forward client input to server stdin (with optional input scanning).
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -412,14 +450,14 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		if inputCfg != nil && inputCfg.Enabled {
 			clientReader := NewStdioReader(clientIn)
 			serverWriter := NewStdioWriter(serverIn)
-			ForwardScannedInput(clientReader, serverWriter, safeLogW, sc, inputCfg.Action, inputCfg.OnParseError, blockedCh, policyCfg)
-		} else if policyCfg != nil {
-			// Policy checking enabled but content scanning disabled.
+			ForwardScannedInput(clientReader, serverWriter, safeLogW, sc, inputCfg.Action, inputCfg.OnParseError, blockedCh, policyCfg, bindingCfg)
+		} else if policyCfg != nil || bindingCfg != nil {
+			// Policy checking or session binding enabled but content scanning disabled.
 			// Route through ForwardScannedInput with pass-through content scanning.
 			// Use onParseError="block" (fail-closed) so malformed JSON can't bypass policy.
 			clientReader := NewStdioReader(clientIn)
 			serverWriter := NewStdioWriter(serverIn)
-			ForwardScannedInput(clientReader, serverWriter, safeLogW, sc, config.ActionWarn, config.ActionBlock, blockedCh, policyCfg)
+			ForwardScannedInput(clientReader, serverWriter, safeLogW, sc, config.ActionWarn, config.ActionBlock, blockedCh, policyCfg, bindingCfg)
 		} else {
 			close(blockedCh)                   // No input scanning — close channel immediately.
 			_, _ = io.Copy(serverIn, clientIn) //nolint:errcheck // broken pipe on server exit is expected
@@ -441,16 +479,6 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 			_ = safeClientOut.WriteMessage(resp) //nolint:errcheck // best-effort
 		}
 	}()
-
-	// Set up tool scanning with a fresh baseline for this proxy session.
-	var fwdToolCfg *ToolScanConfig
-	if toolCfg != nil && toolCfg.Action != "" {
-		fwdToolCfg = &ToolScanConfig{
-			Baseline:    NewToolBaseline(),
-			Action:      toolCfg.Action,
-			DetectDrift: toolCfg.DetectDrift,
-		}
-	}
 
 	// Scan and forward server output to client.
 	serverReader := NewStdioReader(serverOut)

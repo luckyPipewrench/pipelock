@@ -1206,6 +1206,108 @@ func TestConnectIPv6Brackets(t *testing.T) {
 	}
 }
 
+func TestConnectSessionBlocked(t *testing.T) {
+	// Session profiling should block CONNECT when anomaly_action=block.
+	proxyAddr, cleanup := setupForwardProxy(t, func(cfg *config.Config) {
+		cfg.SessionProfiling.Enabled = true
+		cfg.SessionProfiling.DomainBurst = 2
+		cfg.SessionProfiling.WindowMinutes = 5
+		cfg.SessionProfiling.AnomalyAction = "block" //nolint:goconst // test value
+		cfg.SessionProfiling.MaxSessions = 100
+		cfg.SessionProfiling.SessionTTLMinutes = 30
+		cfg.SessionProfiling.CleanupIntervalSeconds = 60
+	})
+	defer cleanup()
+
+	// Send CONNECT requests to enough different domains to trigger domain burst.
+	domains := []string{"a.com:443", "b.com:443", "c.com:443"}
+	for _, d := range domains {
+		conn := dialProxy(t, proxyAddr)
+		_, _ = fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", d, d)
+		br := bufio.NewReader(conn)
+		resp, err := http.ReadResponse(br, nil)
+		if err == nil {
+			_ = resp.Body.Close()
+		}
+		_ = conn.Close()
+	}
+
+	// After exceeding domain burst threshold (2), next request should be blocked.
+	conn := dialProxy(t, proxyAddr)
+	defer func() { _ = conn.Close() }()
+	_, _ = fmt.Fprintf(conn, "CONNECT final.com:443 HTTP/1.1\r\nHost: final.com:443\r\n\r\n")
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("expected 403 when session anomaly blocks, got %d", resp.StatusCode)
+	}
+}
+
+func TestConnectWSRedirectHint(t *testing.T) {
+	// Exercise the WebSocket redirect hint path (forward.go lines 130-136).
+	proxyAddr, cleanup := setupForwardProxy(t, func(cfg *config.Config) {
+		cfg.WebSocketProxy.Enabled = true
+		cfg.ForwardProxy.RedirectWebSocketHosts = []string{"stream.example.com"}
+	})
+	defer cleanup()
+
+	conn := dialProxy(t, proxyAddr)
+	defer func() { _ = conn.Close() }()
+
+	// CONNECT to a host that's in the redirect-websocket list.
+	_, _ = fmt.Fprintf(conn, "CONNECT stream.example.com:443 HTTP/1.1\r\nHost: stream.example.com:443\r\n\r\n")
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	// The hint is a log-only anomaly; CONNECT still proceeds (and fails at dial).
+	// Status 502 means the scanner passed and the dial failed, proving the hint code ran.
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("expected 502 (dial failed after hint), got %d", resp.StatusCode)
+	}
+}
+
+func TestForwardHTTPSessionBlocked(t *testing.T) {
+	// Session profiling should block forward HTTP when anomaly_action=block.
+	proxyAddr, cleanup := setupForwardProxy(t, func(cfg *config.Config) {
+		cfg.SessionProfiling.Enabled = true
+		cfg.SessionProfiling.DomainBurst = 2
+		cfg.SessionProfiling.WindowMinutes = 5
+		cfg.SessionProfiling.AnomalyAction = "block" //nolint:goconst // test value
+		cfg.SessionProfiling.MaxSessions = 100
+		cfg.SessionProfiling.SessionTTLMinutes = 30
+		cfg.SessionProfiling.CleanupIntervalSeconds = 60
+	})
+	defer cleanup()
+
+	client := proxyClient(proxyAddr)
+
+	// Trigger domain burst by hitting many different hosts via forward proxy.
+	for i := 0; i < 4; i++ {
+		reqURL := fmt.Sprintf("http://domain%d.com/path", i)
+		req, _ := http.NewRequest(http.MethodGet, reqURL, nil) //nolint:noctx // test
+		resp, err := client.Do(req)
+		if err == nil {
+			_ = resp.Body.Close()
+		}
+	}
+
+	// After exceeding domain burst, the next forward HTTP should be blocked.
+	resp := doGet(t, client, "http://final-domain.com/test")
+	defer resp.Body.Close() //nolint:errcheck // test
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("expected 403 when session anomaly blocks forward HTTP, got %d", resp.StatusCode)
+	}
+}
+
 func TestBidirectionalCopy(t *testing.T) {
 	// Test bidirectional copy with a near-immediate deadline
 	server, client := net.Pipe()

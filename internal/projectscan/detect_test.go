@@ -3,6 +3,7 @@ package projectscan
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -115,6 +116,62 @@ func TestDetectLanguages(t *testing.T) {
 	}
 	if langs[0] != "Go" {
 		t.Errorf("expected Go as top language, got %q", langs[0])
+	}
+}
+
+func TestDetectLanguages_AllExtensions(t *testing.T) {
+	dir := t.TempDir()
+	// Exercise every switch branch in detectLanguages.
+	for _, name := range []string{
+		"main.go", "app.py", "index.js", "app.ts",
+		"lib.rs", "server.rb", "App.java",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("//"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	langs := detectLanguages(dir)
+	want := map[string]bool{
+		"Go": true, "Python": true, "JavaScript": true,
+		"TypeScript": true, "Rust": true, "Ruby": true, "Java": true,
+	}
+	got := make(map[string]bool)
+	for _, l := range langs {
+		got[l] = true
+	}
+	for lang := range want {
+		if !got[lang] {
+			t.Errorf("missing language %q", lang)
+		}
+	}
+}
+
+func TestDetectLanguages_WalkError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission-based test not reliable on Windows")
+	}
+	if os.Getuid() == 0 {
+		t.Skip("permission-based test cannot run as root")
+	}
+
+	dir := t.TempDir()
+	// Create an unreadable subdirectory to trigger the err != nil path
+	// in the WalkDir callback.
+	noread := filepath.Join(dir, "noperm")
+	if err := os.Mkdir(noread, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(noread, 0o700) }) //nolint:gosec // directory needs exec bit for TempDir cleanup
+
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("//"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	langs := detectLanguages(dir)
+	// Should still detect Go from the readable file.
+	if len(langs) == 0 || langs[0] != "Go" {
+		t.Errorf("expected Go, got %v", langs)
 	}
 }
 

@@ -236,6 +236,85 @@ func TestTopScannersCapped(t *testing.T) {
 	m.mu.Unlock()
 }
 
+func TestRecordSessionAnomaly(t *testing.T) {
+	m := New()
+	m.RecordSessionAnomaly("domain_burst")
+	m.RecordSessionAnomaly("domain_burst")
+	m.RecordSessionAnomaly("volume_spike")
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	m.PrometheusHandler().ServeHTTP(w, req)
+
+	body, _ := io.ReadAll(w.Body)
+	text := string(body)
+	if !strings.Contains(text, `pipelock_session_anomalies_total{type="domain_burst"}`) {
+		t.Error("expected domain_burst anomaly counter in /metrics")
+	}
+	if !strings.Contains(text, `pipelock_session_anomalies_total{type="volume_spike"}`) {
+		t.Error("expected volume_spike anomaly counter in /metrics")
+	}
+
+	// Also verify JSON stats tracking
+	m.mu.Lock()
+	if m.sessionAnomalyCount != 3 {
+		t.Errorf("expected 3 anomalies in stats, got %d", m.sessionAnomalyCount)
+	}
+	if m.topAnomalyTypes["domain_burst"] != 2 {
+		t.Errorf("expected domain_burst=2, got %d", m.topAnomalyTypes["domain_burst"])
+	}
+	if m.topAnomalyTypes["volume_spike"] != 1 {
+		t.Errorf("expected volume_spike=1, got %d", m.topAnomalyTypes["volume_spike"])
+	}
+	m.mu.Unlock()
+}
+
+func TestRecordSessionEscalation(t *testing.T) {
+	m := New()
+	m.RecordSessionEscalation("warn", "block")
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	m.PrometheusHandler().ServeHTTP(w, req)
+
+	body, _ := io.ReadAll(w.Body)
+	text := string(body)
+	if !strings.Contains(text, `pipelock_session_escalations_total{from="warn",to="block"}`) {
+		t.Error("expected escalation counter in /metrics")
+	}
+}
+
+func TestSetSessionsActive(t *testing.T) {
+	m := New()
+	m.SetSessionsActive(42)
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	m.PrometheusHandler().ServeHTTP(w, req)
+
+	body, _ := io.ReadAll(w.Body)
+	text := string(body)
+	if !strings.Contains(text, "pipelock_sessions_active") {
+		t.Error("expected pipelock_sessions_active gauge in /metrics")
+	}
+}
+
+func TestRecordSessionEvicted(t *testing.T) {
+	m := New()
+	m.RecordSessionEvicted()
+	m.RecordSessionEvicted()
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	m.PrometheusHandler().ServeHTTP(w, req)
+
+	body, _ := io.ReadAll(w.Body)
+	text := string(body)
+	if !strings.Contains(text, "pipelock_sessions_evicted_total") {
+		t.Error("expected pipelock_sessions_evicted_total counter in /metrics")
+	}
+}
+
 func TestTopScannersExistingKeyStillIncrements(t *testing.T) {
 	m := New()
 	// Fill scanners to cap with same key
@@ -402,6 +481,283 @@ func TestConcurrentTunnelAccess(t *testing.T) {
 	m.mu.Lock()
 	if m.tunnelCount != 50 {
 		t.Errorf("expected 50 tunnels, got %d", m.tunnelCount)
+	}
+	m.mu.Unlock()
+}
+
+func TestStatsHandler_IncludesSessionData(t *testing.T) {
+	m := New()
+	m.SetSessionsActive(5)
+	m.RecordSessionAnomaly("domain_burst")
+	m.RecordSessionAnomaly("domain_burst")
+	m.RecordSessionAnomaly("ip_domain_burst")
+	m.RecordSessionEscalation("normal", "elevated")
+
+	req := httptest.NewRequest(http.MethodGet, "/stats", nil)
+	w := httptest.NewRecorder()
+	m.StatsHandler().ServeHTTP(w, req)
+
+	var stats statsResponse
+	if err := json.NewDecoder(w.Body).Decode(&stats); err != nil {
+		t.Fatalf("failed to decode stats: %v", err)
+	}
+
+	if stats.Sessions.Active != 5 {
+		t.Errorf("expected sessions.active=5, got %d", stats.Sessions.Active)
+	}
+	if stats.Sessions.Anomalies != 3 {
+		t.Errorf("expected sessions.anomalies=3, got %d", stats.Sessions.Anomalies)
+	}
+	if stats.Sessions.Escalations != 1 {
+		t.Errorf("expected sessions.escalations=1, got %d", stats.Sessions.Escalations)
+	}
+	if len(stats.Sessions.TopAnomalies) != 2 {
+		t.Errorf("expected 2 anomaly types, got %d", len(stats.Sessions.TopAnomalies))
+	}
+	// Verify sorted by count (domain_burst=2 first)
+	if len(stats.Sessions.TopAnomalies) >= 1 && stats.Sessions.TopAnomalies[0].Name != "domain_burst" {
+		t.Errorf("expected domain_burst first (highest count), got %s", stats.Sessions.TopAnomalies[0].Name)
+	}
+}
+
+func TestStatsHandler_EmptySessionData(t *testing.T) {
+	m := New()
+
+	req := httptest.NewRequest(http.MethodGet, "/stats", nil)
+	w := httptest.NewRecorder()
+	m.StatsHandler().ServeHTTP(w, req)
+
+	var stats statsResponse
+	if err := json.NewDecoder(w.Body).Decode(&stats); err != nil {
+		t.Fatalf("failed to decode stats: %v", err)
+	}
+
+	if stats.Sessions.Active != 0 {
+		t.Errorf("expected sessions.active=0, got %d", stats.Sessions.Active)
+	}
+	if stats.Sessions.Anomalies != 0 {
+		t.Errorf("expected sessions.anomalies=0, got %d", stats.Sessions.Anomalies)
+	}
+	if stats.Sessions.Escalations != 0 {
+		t.Errorf("expected sessions.escalations=0, got %d", stats.Sessions.Escalations)
+	}
+}
+
+func TestRecordWSCompleted(t *testing.T) {
+	m := New()
+	m.RecordWSCompleted()
+	m.RecordWSCompleted()
+
+	m.mu.Lock()
+	if m.wsConnectionCount != 2 {
+		t.Errorf("expected 2 WS completions, got %d", m.wsConnectionCount)
+	}
+	m.mu.Unlock()
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	m.PrometheusHandler().ServeHTTP(w, req)
+	body, _ := io.ReadAll(w.Body)
+	if !strings.Contains(string(body), `pipelock_ws_connections_total{result="completed"}`) {
+		t.Error("expected ws_connections_total with completed label")
+	}
+}
+
+func TestRecordWSBlocked(t *testing.T) {
+	m := New()
+	m.RecordWSBlocked()
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	m.PrometheusHandler().ServeHTTP(w, req)
+	body, _ := io.ReadAll(w.Body)
+	if !strings.Contains(string(body), `pipelock_ws_connections_total{result="blocked"}`) {
+		t.Error("expected ws_connections_total with blocked label")
+	}
+}
+
+func TestRecordWSStats(t *testing.T) {
+	m := New()
+	m.RecordWSStats(5*time.Second, 1024, 2048)
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	m.PrometheusHandler().ServeHTTP(w, req)
+	body, _ := io.ReadAll(w.Body)
+	text := string(body)
+	if !strings.Contains(text, "pipelock_ws_duration_seconds") {
+		t.Error("expected pipelock_ws_duration_seconds in /metrics")
+	}
+	if !strings.Contains(text, `pipelock_ws_bytes_total{direction="client_to_server"}`) {
+		t.Error("expected ws_bytes_total client_to_server")
+	}
+	if !strings.Contains(text, `pipelock_ws_bytes_total{direction="server_to_client"}`) {
+		t.Error("expected ws_bytes_total server_to_client")
+	}
+}
+
+func TestIncrDecrActiveWS(t *testing.T) {
+	m := New()
+	m.IncrActiveWS()
+	m.IncrActiveWS()
+	m.DecrActiveWS()
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	m.PrometheusHandler().ServeHTTP(w, req)
+	body, _ := io.ReadAll(w.Body)
+	if !strings.Contains(string(body), "pipelock_ws_active_connections") {
+		t.Error("expected pipelock_ws_active_connections gauge")
+	}
+}
+
+func TestRecordWSFrame(t *testing.T) {
+	m := New()
+	m.RecordWSFrame("text")
+	m.RecordWSFrame("binary")
+	m.RecordWSFrame("text")
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	m.PrometheusHandler().ServeHTTP(w, req)
+	body, _ := io.ReadAll(w.Body)
+	text := string(body)
+	if !strings.Contains(text, `pipelock_ws_frames_total{type="text"}`) {
+		t.Error("expected ws_frames_total with text type")
+	}
+	if !strings.Contains(text, `pipelock_ws_frames_total{type="binary"}`) {
+		t.Error("expected ws_frames_total with binary type")
+	}
+}
+
+func TestRecordWSScanHit(t *testing.T) {
+	m := New()
+	m.RecordWSScanHit("dlp")
+	m.RecordWSScanHit("injection")
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	m.PrometheusHandler().ServeHTTP(w, req)
+	body, _ := io.ReadAll(w.Body)
+	text := string(body)
+	if !strings.Contains(text, `pipelock_ws_scan_hits_total{scanner="dlp"}`) {
+		t.Error("expected ws_scan_hits_total with dlp scanner")
+	}
+	if !strings.Contains(text, `pipelock_ws_scan_hits_total{scanner="injection"}`) {
+		t.Error("expected ws_scan_hits_total with injection scanner")
+	}
+}
+
+func TestRecordWSRedirectHint(t *testing.T) {
+	m := New()
+	m.RecordWSRedirectHint()
+	m.RecordWSRedirectHint()
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	m.PrometheusHandler().ServeHTTP(w, req)
+	body, _ := io.ReadAll(w.Body)
+	if !strings.Contains(string(body), "pipelock_forward_ws_redirect_hint_total") {
+		t.Error("expected forward_ws_redirect_hint_total counter")
+	}
+}
+
+func TestStatsHandler_IncludesWebSockets(t *testing.T) {
+	m := New()
+	m.RecordWSCompleted()
+	m.RecordWSCompleted()
+	m.RecordWSCompleted()
+
+	req := httptest.NewRequest(http.MethodGet, "/stats", nil)
+	w := httptest.NewRecorder()
+	m.StatsHandler().ServeHTTP(w, req)
+
+	var stats statsResponse
+	if err := json.NewDecoder(w.Body).Decode(&stats); err != nil {
+		t.Fatalf("failed to decode stats: %v", err)
+	}
+	if stats.WebSockets != 3 {
+		t.Errorf("expected websockets=3, got %d", stats.WebSockets)
+	}
+}
+
+func TestTopAnomalyTypesCapped(t *testing.T) {
+	m := New()
+	// Fill anomaly types to the cap
+	for i := range maxTopEntries {
+		m.RecordSessionAnomaly("type" + string(rune('A'+i%26)) + string(rune('0'+i/26)))
+	}
+
+	// New type should be ignored after cap
+	m.RecordSessionAnomaly("overflow_type")
+
+	m.mu.Lock()
+	if len(m.topAnomalyTypes) > maxTopEntries {
+		t.Errorf("expected at most %d anomaly types, got %d", maxTopEntries, len(m.topAnomalyTypes))
+	}
+	if _, exists := m.topAnomalyTypes["overflow_type"]; exists {
+		t.Error("overflow anomaly type should not be tracked after cap")
+	}
+	m.mu.Unlock()
+}
+
+func TestConcurrentSessionMetrics(t *testing.T) {
+	m := New()
+	var wg sync.WaitGroup
+	for range 50 {
+		wg.Add(3)
+		go func() {
+			defer wg.Done()
+			m.RecordSessionAnomaly("domain_burst")
+		}()
+		go func() {
+			defer wg.Done()
+			m.RecordSessionEscalation("normal", "elevated")
+		}()
+		go func() {
+			defer wg.Done()
+			m.SetSessionsActive(10)
+		}()
+	}
+	wg.Wait()
+
+	m.mu.Lock()
+	if m.sessionAnomalyCount != 50 {
+		t.Errorf("expected 50 anomalies, got %d", m.sessionAnomalyCount)
+	}
+	if m.sessionEscalationCount != 50 {
+		t.Errorf("expected 50 escalations, got %d", m.sessionEscalationCount)
+	}
+	m.mu.Unlock()
+}
+
+func TestConcurrentWSMetrics(t *testing.T) {
+	m := New()
+	var wg sync.WaitGroup
+	for range 50 {
+		wg.Add(4)
+		go func() {
+			defer wg.Done()
+			m.RecordWSCompleted()
+		}()
+		go func() {
+			defer wg.Done()
+			m.IncrActiveWS()
+		}()
+		go func() {
+			defer wg.Done()
+			m.DecrActiveWS()
+		}()
+		go func() {
+			defer wg.Done()
+			m.RecordWSStats(time.Millisecond, 100, 200)
+		}()
+	}
+	wg.Wait()
+
+	m.mu.Lock()
+	if m.wsConnectionCount != 50 {
+		t.Errorf("expected 50 WS completions, got %d", m.wsConnectionCount)
 	}
 	m.mu.Unlock()
 }

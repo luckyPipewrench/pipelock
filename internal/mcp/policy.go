@@ -333,7 +333,7 @@ func parseToolCall(line []byte) *toolCallParams {
 	if err := json.Unmarshal(line, &rpc); err != nil {
 		return nil
 	}
-	if rpc.Method != "tools/call" {
+	if rpc.Method != "tools/call" { //nolint:goconst // MCP method name used across packages
 		return nil
 	}
 	if len(rpc.Params) == 0 || string(rpc.Params) == jsonNull {

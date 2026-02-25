@@ -43,22 +43,32 @@ type ToolScanResult struct {
 	Clean       bool            `json:"clean"`
 	Matches     []ToolScanMatch `json:"matches,omitempty"`
 	RPCID       json.RawMessage `json:"-"` // parsed ID for block responses (avoids re-parse)
+	ToolNames   []string        `json:"-"` // tool names from tools/list (for session binding)
 }
 
 // ToolScanConfig holds configuration for MCP tool description scanning.
 // A nil ToolScanConfig disables tool scanning entirely.
+// Session binding fields are optional: when BindingUnknownAction is non-empty,
+// tools/call requests are validated against the baseline captured from tools/list.
 type ToolScanConfig struct {
 	Baseline    *ToolBaseline
 	Action      string // warn, block
 	DetectDrift bool
+
+	// Session binding (optional). When BindingUnknownAction is non-empty,
+	// RunProxy wires tools/call validation into the input scanner.
+	BindingUnknownAction    string // warn, block — action for unknown tool calls
+	BindingNoBaselineAction string // warn, block — action before baseline established
 }
 
-// ToolBaseline tracks SHA256 hashes of tool definitions for rug pull detection.
-// Safe for concurrent use.
+// ToolBaseline tracks SHA256 hashes of tool definitions for rug pull detection
+// and session binding (known tool inventory). Safe for concurrent use.
 type ToolBaseline struct {
-	mu     sync.Mutex
-	hashes map[string]string // tool name → SHA256(description + inputSchema)
-	descs  map[string]string // tool name → last known description text
+	mu          sync.Mutex
+	hashes      map[string]string // tool name → SHA256(description + inputSchema)
+	descs       map[string]string // tool name → last known description text
+	knownTools  map[string]bool   // session binding: tool name set from first tools/list
+	hasBaseline bool              // true after first SetKnownTools call
 }
 
 // NewToolBaseline creates a new empty tool baseline.
@@ -153,6 +163,58 @@ func (tb *ToolBaseline) DiffSummary(name, newDesc string) string {
 	}
 
 	return strings.Join(parts, "; ")
+}
+
+// SetKnownTools sets the session baseline from a tools/list response.
+// Called on the first tools/list to lock the baseline. Subsequent calls
+// add newly seen tools to the known set. Respects maxBaselineTools to
+// prevent unbounded memory growth from malicious servers.
+func (tb *ToolBaseline) SetKnownTools(names []string) {
+	tb.mu.Lock()
+	defer tb.mu.Unlock()
+	if tb.knownTools == nil {
+		tb.knownTools = make(map[string]bool, len(names))
+	}
+	for _, n := range names {
+		if !tb.knownTools[n] && len(tb.knownTools) >= maxBaselineTools {
+			break
+		}
+		tb.knownTools[n] = true
+	}
+	tb.hasBaseline = true
+}
+
+// HasBaseline reports whether a tool inventory baseline has been established.
+func (tb *ToolBaseline) HasBaseline() bool {
+	tb.mu.Lock()
+	defer tb.mu.Unlock()
+	return tb.hasBaseline
+}
+
+// IsKnownTool reports whether the given tool name is in the session baseline.
+func (tb *ToolBaseline) IsKnownTool(name string) bool {
+	tb.mu.Lock()
+	defer tb.mu.Unlock()
+	return tb.knownTools[name]
+}
+
+// CheckNewTools compares a list of tool names against the baseline and returns
+// any that were not previously known. Newly seen tools are added to the baseline.
+// Respects maxBaselineTools to prevent unbounded memory growth.
+func (tb *ToolBaseline) CheckNewTools(names []string) []string {
+	tb.mu.Lock()
+	defer tb.mu.Unlock()
+	var added []string
+	for _, n := range names {
+		if !tb.knownTools[n] {
+			if len(tb.knownTools) >= maxBaselineTools {
+				continue
+			}
+			added = append(added, n)
+			tb.knownTools[n] = true
+		}
+	}
+	return added
 }
 
 // compiledToolPattern is a precompiled regex for tool-specific poisoning detection.
@@ -360,13 +422,19 @@ func scanToolsSingle(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) Tool
 		return ToolScanResult{IsToolsList: false, Clean: true}
 	}
 
+	// Extract tool names for session binding.
+	names := make([]string, len(tools))
+	for i, t := range tools {
+		names[i] = t.Name
+	}
+
 	matches := scanToolDefs(tools, sc, cfg)
 
 	if len(matches) == 0 {
-		return ToolScanResult{IsToolsList: true, Clean: true, RPCID: rpc.ID}
+		return ToolScanResult{IsToolsList: true, Clean: true, RPCID: rpc.ID, ToolNames: names}
 	}
 
-	return ToolScanResult{IsToolsList: true, Clean: false, Matches: matches, RPCID: rpc.ID}
+	return ToolScanResult{IsToolsList: true, Clean: false, Matches: matches, RPCID: rpc.ID, ToolNames: names}
 }
 
 // scanToolsBatch scans a JSON-RPC 2.0 batch response for tool poisoning.
@@ -378,6 +446,7 @@ func scanToolsBatch(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) ToolS
 	}
 
 	var allMatches []ToolScanMatch
+	var allNames []string
 	var firstID json.RawMessage
 	isToolsList := false
 
@@ -389,6 +458,7 @@ func scanToolsBatch(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) ToolS
 				firstID = r.RPCID
 			}
 			allMatches = append(allMatches, r.Matches...)
+			allNames = append(allNames, r.ToolNames...)
 		}
 	}
 
@@ -397,10 +467,10 @@ func scanToolsBatch(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) ToolS
 	}
 
 	if len(allMatches) == 0 {
-		return ToolScanResult{IsToolsList: true, Clean: true, RPCID: firstID}
+		return ToolScanResult{IsToolsList: true, Clean: true, RPCID: firstID, ToolNames: allNames}
 	}
 
-	return ToolScanResult{IsToolsList: true, Clean: false, Matches: allMatches, RPCID: firstID}
+	return ToolScanResult{IsToolsList: true, Clean: false, Matches: allMatches, RPCID: firstID, ToolNames: allNames}
 }
 
 // scanToolDefs scans a slice of tool definitions for injection, poisoning, and drift.

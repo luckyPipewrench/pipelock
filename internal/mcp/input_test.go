@@ -269,7 +269,7 @@ func TestScanRequest_PreservesMethod(t *testing.T) {
 
 	line := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"path":"/file"}}`
 	verdict := ScanRequest([]byte(line), sc, "block", "block")
-	if verdict.Method != "tools/call" {
+	if verdict.Method != "tools/call" { //nolint:goconst // test value
 		t.Errorf("Method = %q, want %q", verdict.Method, "tools/call")
 	}
 }
@@ -371,7 +371,7 @@ func TestExtractAllStringsFromJSON(t *testing.T) {
 // fwdScannedInput wraps ForwardScannedInput with StdioReader/StdioWriter so
 // tests keep the familiar io.Reader/io.Writer call pattern.
 func fwdScannedInput(r io.Reader, w io.Writer, logW io.Writer, sc *scanner.Scanner, action, onParseError string, blockedCh chan<- BlockedRequest) {
-	ForwardScannedInput(NewStdioReader(r), NewStdioWriter(w), logW, sc, action, onParseError, blockedCh, nil)
+	ForwardScannedInput(NewStdioReader(r), NewStdioWriter(w), logW, sc, action, onParseError, blockedCh, nil, nil)
 }
 
 func TestForwardScannedInput_CleanRequestsForwarded(t *testing.T) {
@@ -1100,7 +1100,7 @@ func TestForwardScannedInput_PolicyBlocksDangerousToolCall(t *testing.T) {
 	blockedCh := make(chan BlockedRequest, 10)
 
 	clientIn := strings.NewReader(req)
-	ForwardScannedInput(NewStdioReader(clientIn), NewStdioWriter(&serverIn), &logW, sc, "block", "block", blockedCh, policyCfg)
+	ForwardScannedInput(NewStdioReader(clientIn), NewStdioWriter(&serverIn), &logW, sc, "block", "block", blockedCh, policyCfg, nil)
 
 	// Should NOT be forwarded (policy blocks it).
 	if strings.Contains(serverIn.String(), "tools/call") {
@@ -1148,7 +1148,7 @@ func TestForwardScannedInput_PolicyWarnForwardsRequest(t *testing.T) {
 	blockedCh := make(chan BlockedRequest, 10)
 
 	clientIn := strings.NewReader(req)
-	ForwardScannedInput(NewStdioReader(clientIn), NewStdioWriter(&serverIn), &logW, sc, "block", "block", blockedCh, policyCfg)
+	ForwardScannedInput(NewStdioReader(clientIn), NewStdioWriter(&serverIn), &logW, sc, "block", "block", blockedCh, policyCfg, nil)
 
 	// Warn mode — request should be forwarded.
 	if !strings.Contains(serverIn.String(), "tools/call") {
@@ -1193,7 +1193,7 @@ func TestForwardScannedInput_PolicyAndDLPBothMatch(t *testing.T) {
 
 	clientIn := strings.NewReader(req)
 	// Content action is "block" for DLP; policy rule also says "block". Strictest wins.
-	ForwardScannedInput(NewStdioReader(clientIn), NewStdioWriter(&serverIn), &logW, sc, "block", "block", blockedCh, policyCfg)
+	ForwardScannedInput(NewStdioReader(clientIn), NewStdioWriter(&serverIn), &logW, sc, "block", "block", blockedCh, policyCfg, nil)
 
 	// Should NOT be forwarded (both DLP and policy match = block).
 	if strings.Contains(serverIn.String(), "tools/call") {
@@ -1233,7 +1233,7 @@ func TestForwardScannedInput_PolicyNilPassthrough(t *testing.T) {
 	blockedCh := make(chan BlockedRequest, 10)
 
 	clientIn := strings.NewReader(req)
-	ForwardScannedInput(NewStdioReader(clientIn), NewStdioWriter(&serverIn), &logW, sc, "warn", "block", blockedCh, nil)
+	ForwardScannedInput(NewStdioReader(clientIn), NewStdioWriter(&serverIn), &logW, sc, "warn", "block", blockedCh, nil, nil)
 
 	// No policy engine — should be forwarded (content is clean, no DLP match).
 	if !strings.Contains(serverIn.String(), "tools/call") {
@@ -1437,7 +1437,7 @@ func TestForwardScannedInput_InjectionInToolArgs(t *testing.T) {
 	var logBuf bytes.Buffer
 	blockedCh := make(chan BlockedRequest, 10)
 
-	ForwardScannedInput(NewStdioReader(strings.NewReader(msg)), NewStdioWriter(&serverBuf), &logBuf, sc, "block", "block", blockedCh, nil)
+	ForwardScannedInput(NewStdioReader(strings.NewReader(msg)), NewStdioWriter(&serverBuf), &logBuf, sc, "block", "block", blockedCh, nil, nil)
 
 	blocked := make([]BlockedRequest, 0)
 	for b := range blockedCh {
@@ -1464,7 +1464,7 @@ func TestForwardScannedInput_EmptyMethodFallback(t *testing.T) {
 	var logBuf bytes.Buffer
 	blockedCh := make(chan BlockedRequest, 10)
 
-	ForwardScannedInput(NewStdioReader(strings.NewReader(msg)), NewStdioWriter(&serverBuf), &logBuf, sc, "block", "block", blockedCh, nil)
+	ForwardScannedInput(NewStdioReader(strings.NewReader(msg)), NewStdioWriter(&serverBuf), &logBuf, sc, "block", "block", blockedCh, nil, nil)
 
 	blocked := make([]BlockedRequest, 0)
 	for b := range blockedCh {
@@ -1681,5 +1681,243 @@ func TestScanRequest_StructuralDirectivePhrase(t *testing.T) {
 	verdict := ScanRequest([]byte(line), sc, "block", "block")
 	if verdict.Clean {
 		t.Skip("known gap: structural directive phrase not covered by current injection patterns")
+	}
+}
+
+// --- Session binding tests ---
+
+func TestForwardScannedInput_SessionBinding_BlockUnknown(t *testing.T) {
+	// tools/call for a tool not in the session baseline should be blocked.
+	sc := testInputScanner(t)
+
+	tb := NewToolBaseline()
+	tb.SetKnownTools([]string{"read_file", "write_file"})
+
+	bindingCfg := &SessionBindingConfig{
+		Baseline:          tb,
+		UnknownToolAction: "block",
+		NoBaselineAction:  "block",
+	}
+
+	req := makeRequest(1, "tools/call", map[string]interface{}{
+		"name":      "exec_command",
+		"arguments": map[string]string{"cmd": "ls"},
+	}) + "\n"
+
+	var serverBuf bytes.Buffer
+	var logBuf bytes.Buffer
+	blockedCh := make(chan BlockedRequest, 10)
+
+	ForwardScannedInput(
+		NewStdioReader(strings.NewReader(req)),
+		NewStdioWriter(&serverBuf),
+		&logBuf, sc, "warn", "block", blockedCh, nil, bindingCfg,
+	)
+
+	blocked := make([]BlockedRequest, 0)
+	for b := range blockedCh {
+		blocked = append(blocked, b)
+	}
+
+	if len(blocked) != 1 {
+		t.Fatalf("expected 1 blocked request, got %d", len(blocked))
+	}
+	if strings.Contains(serverBuf.String(), "exec_command") {
+		t.Error("expected unknown tool call NOT to be forwarded")
+	}
+	if !strings.Contains(logBuf.String(), "not in session baseline") {
+		t.Errorf("expected 'not in session baseline' in log, got: %s", logBuf.String())
+	}
+}
+
+func TestForwardScannedInput_SessionBinding_WarnUnknown(t *testing.T) {
+	// tools/call for unknown tool in warn mode should log but forward.
+	sc := testInputScanner(t)
+
+	tb := NewToolBaseline()
+	tb.SetKnownTools([]string{"read_file"})
+
+	bindingCfg := &SessionBindingConfig{
+		Baseline:          tb,
+		UnknownToolAction: "warn",
+		NoBaselineAction:  "warn",
+	}
+
+	req := makeRequest(1, "tools/call", map[string]interface{}{
+		"name":      "exec_command",
+		"arguments": map[string]string{"cmd": "ls"},
+	}) + "\n"
+
+	var serverBuf bytes.Buffer
+	var logBuf bytes.Buffer
+	blockedCh := make(chan BlockedRequest, 10)
+
+	ForwardScannedInput(
+		NewStdioReader(strings.NewReader(req)),
+		NewStdioWriter(&serverBuf),
+		&logBuf, sc, "warn", "block", blockedCh, nil, bindingCfg,
+	)
+
+	// Drain blocked channel.
+	for range blockedCh {
+	}
+
+	// Warn mode: should be forwarded.
+	if !strings.Contains(serverBuf.String(), "exec_command") {
+		t.Error("expected unknown tool call to be forwarded in warn mode")
+	}
+	if !strings.Contains(logBuf.String(), "not in session baseline") {
+		t.Errorf("expected 'not in session baseline' in log, got: %s", logBuf.String())
+	}
+}
+
+func TestForwardScannedInput_SessionBinding_NoBaseline(t *testing.T) {
+	// tools/call before any tools/list baseline is established.
+	sc := testInputScanner(t)
+
+	tb := NewToolBaseline() // No SetKnownTools called.
+
+	bindingCfg := &SessionBindingConfig{
+		Baseline:          tb,
+		UnknownToolAction: "block",
+		NoBaselineAction:  "block",
+	}
+
+	req := makeRequest(1, "tools/call", map[string]interface{}{
+		"name":      "read_file",
+		"arguments": map[string]string{"path": "/etc/passwd"},
+	}) + "\n"
+
+	var serverBuf bytes.Buffer
+	var logBuf bytes.Buffer
+	blockedCh := make(chan BlockedRequest, 10)
+
+	ForwardScannedInput(
+		NewStdioReader(strings.NewReader(req)),
+		NewStdioWriter(&serverBuf),
+		&logBuf, sc, "warn", "block", blockedCh, nil, bindingCfg,
+	)
+
+	blocked := make([]BlockedRequest, 0)
+	for b := range blockedCh {
+		blocked = append(blocked, b)
+	}
+
+	if len(blocked) != 1 {
+		t.Fatalf("expected 1 blocked request (no baseline), got %d", len(blocked))
+	}
+	if !strings.Contains(logBuf.String(), "before baseline established") {
+		t.Errorf("expected 'before baseline established' in log, got: %s", logBuf.String())
+	}
+}
+
+func TestForwardScannedInput_SessionBinding_KnownToolAllowed(t *testing.T) {
+	// tools/call for a known tool should be forwarded normally.
+	sc := testInputScanner(t)
+
+	tb := NewToolBaseline()
+	tb.SetKnownTools([]string{"read_file", "write_file"})
+
+	bindingCfg := &SessionBindingConfig{
+		Baseline:          tb,
+		UnknownToolAction: "block",
+		NoBaselineAction:  "block",
+	}
+
+	req := makeRequest(1, "tools/call", map[string]interface{}{
+		"name":      "read_file",
+		"arguments": map[string]string{"path": "/tmp/test"},
+	}) + "\n"
+
+	var serverBuf bytes.Buffer
+	var logBuf bytes.Buffer
+	blockedCh := make(chan BlockedRequest, 10)
+
+	ForwardScannedInput(
+		NewStdioReader(strings.NewReader(req)),
+		NewStdioWriter(&serverBuf),
+		&logBuf, sc, "warn", "block", blockedCh, nil, bindingCfg,
+	)
+
+	// Drain blocked channel.
+	for range blockedCh {
+	}
+
+	if !strings.Contains(serverBuf.String(), "read_file") {
+		t.Error("expected known tool call to be forwarded")
+	}
+}
+
+func TestForwardScannedInput_SessionBinding_NonToolCallIgnored(t *testing.T) {
+	// Non-tools/call methods should not trigger session binding checks.
+	sc := testInputScanner(t)
+
+	tb := NewToolBaseline()
+	tb.SetKnownTools([]string{"read_file"})
+
+	bindingCfg := &SessionBindingConfig{
+		Baseline:          tb,
+		UnknownToolAction: "block",
+		NoBaselineAction:  "block",
+	}
+
+	// tools/list is not tools/call — should pass through.
+	req := makeRequest(1, "tools/list", nil) + "\n"
+
+	var serverBuf bytes.Buffer
+	var logBuf bytes.Buffer
+	blockedCh := make(chan BlockedRequest, 10)
+
+	ForwardScannedInput(
+		NewStdioReader(strings.NewReader(req)),
+		NewStdioWriter(&serverBuf),
+		&logBuf, sc, "warn", "block", blockedCh, nil, bindingCfg,
+	)
+
+	for range blockedCh {
+	}
+
+	if !strings.Contains(serverBuf.String(), "tools/list") {
+		t.Error("expected tools/list to be forwarded without session binding check")
+	}
+}
+
+func TestForwardScannedInput_SessionBinding_BatchBlocked(t *testing.T) {
+	// Batch requests should be caught by session binding since the aggregate
+	// verdict has no Method, bypassing per-method checks.
+	sc := testInputScanner(t)
+
+	tb := NewToolBaseline()
+	tb.SetKnownTools([]string{"read_file"})
+
+	bindingCfg := &SessionBindingConfig{
+		Baseline:          tb,
+		UnknownToolAction: "block",
+		NoBaselineAction:  "block",
+	}
+
+	// Batch containing a tools/call — should be blocked.
+	batch := `[{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"exec_command","arguments":{"cmd":"ls"}}}]` + "\n"
+
+	var serverBuf bytes.Buffer
+	var logBuf bytes.Buffer
+	blockedCh := make(chan BlockedRequest, 10)
+
+	ForwardScannedInput(
+		NewStdioReader(strings.NewReader(batch)),
+		NewStdioWriter(&serverBuf),
+		&logBuf, sc, "warn", "block", blockedCh, nil, bindingCfg,
+	)
+
+	blocked := make([]BlockedRequest, 0)
+	for b := range blockedCh {
+		blocked = append(blocked, b)
+	}
+
+	if len(blocked) != 1 {
+		t.Fatalf("expected 1 blocked batch request, got %d", len(blocked))
+	}
+	if !strings.Contains(logBuf.String(), "batch request with session binding active") {
+		t.Errorf("expected batch binding log, got: %s", logBuf.String())
 	}
 }

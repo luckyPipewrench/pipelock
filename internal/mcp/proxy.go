@@ -13,6 +13,8 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -38,7 +40,7 @@ func (sw *syncWriter) Write(p []byte) (int, error) {
 func (sw *syncWriter) WriteMessage(msg []byte) error {
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
-	if len(msg) > maxLineSize {
+	if len(msg) > transport.MaxLineSize {
 		return fmt.Errorf("message too large: %d bytes", len(msg))
 	}
 	buf := make([]byte, len(msg)+1)
@@ -94,7 +96,7 @@ func ForwardScanned(reader MessageReader, writer MessageWriter, logW io.Writer, 
 			}
 			if toolResult.IsToolsList && !toolResult.Clean {
 				foundInjection = true
-				logToolFindings(logW, lineNum, toolResult)
+				LogToolFindings(logW, lineNum, toolResult)
 
 				if toolCfg.Action == config.ActionBlock {
 					resp := blockResponse(toolResult.RPCID)
@@ -225,7 +227,7 @@ type rpcErrorDetail struct {
 // Code -32000 is in the implementation-defined error range.
 func blockResponse(id json.RawMessage) []byte {
 	resp := rpcError{
-		JSONRPC: jsonRPCVersion,
+		JSONRPC: jsonrpc.Version,
 		ID:      id,
 		Error: rpcErrorDetail{
 			Code:    -32000,

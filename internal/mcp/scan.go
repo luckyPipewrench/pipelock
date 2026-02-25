@@ -8,149 +8,63 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"sort"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
-// jsonRPCVersion is the JSON-RPC protocol version used by MCP.
-const jsonRPCVersion = "2.0"
+// Type aliases re-export sub-package types so existing consumers of mcp.X
+// continue to work without import changes. These are true aliases (not new
+// types), so values are interchangeable with the originals.
+type (
+	// jsonrpc types.
+	ContentBlock = jsonrpc.ContentBlock
+	ToolResult   = jsonrpc.ToolResult
+	RPCError     = jsonrpc.RPCError
+	RPCResponse  = jsonrpc.RPCResponse
+	ScanVerdict  = jsonrpc.ScanVerdict
 
-// jsonNull is the JSON literal "null", used to detect nil-equivalent
-// json.RawMessage values that are non-nil Go slices.
-const jsonNull = "null"
+	// transport types.
+	MessageReader = transport.MessageReader
+	MessageWriter = transport.MessageWriter
 
-// ContentBlock represents a single content block in an MCP tool result.
-type ContentBlock struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
-}
+	// tools types.
+	ToolScanConfig = tools.ToolScanConfig
+	ToolBaseline   = tools.ToolBaseline
 
-// ToolResult represents the result field of an MCP tool response.
-type ToolResult struct {
-	Content []ContentBlock `json:"content"`
-}
+	// policy types.
+	PolicyConfig       = policy.PolicyConfig
+	PolicyVerdict      = policy.PolicyVerdict
+	CompiledPolicyRule = policy.CompiledPolicyRule
+)
 
-// RPCError represents a JSON-RPC 2.0 error object.
-// Data is optional per JSON-RPC 2.0 but can carry arbitrary content,
-// so it must be scanned for injection like any other text field.
-type RPCError struct {
-	Code    int             `json:"code"`
-	Message string          `json:"message"`
-	Data    json.RawMessage `json:"data,omitempty"`
-}
+// Package-level aliases so existing test files and remaining code in this
+// package can reference the constants without qualifying with sub-packages.
+const (
+	maxLineSize    = transport.MaxLineSize
+	jsonRPCVersion = jsonrpc.Version //nolint:goconst // alias for backward compat
+	jsonNull       = jsonrpc.Null    //nolint:goconst // alias for backward compat
+)
 
-// RPCResponse represents a JSON-RPC 2.0 response envelope.
-// Result is json.RawMessage (not *ToolResult) to handle non-standard result
-// shapes without failing the entire parse — a typed *ToolResult would cause
-// json.Unmarshal to error on string/array/non-object results, allowing bypass.
-// Method and Params are included to scan server notifications for injection.
-type RPCResponse struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      json.RawMessage `json:"id"`
-	Method  string          `json:"method,omitempty"`
-	Params  json.RawMessage `json:"params,omitempty"`
-	Result  json.RawMessage `json:"result,omitempty"`
-	Error   json.RawMessage `json:"error,omitempty"`
-}
+// Re-export constructor functions for backward compatibility.
+var (
+	ExtractText = jsonrpc.ExtractText
 
-// ScanVerdict describes the outcome of scanning a single MCP response.
-//
-// Three states:
-//   - Clean:     Clean=true, other fields zero/empty.
-//   - Error:     Clean=false, Error set (parse/protocol failure). Not injection.
-//   - Injection: Clean=false, Error empty, Matches and Action set.
-type ScanVerdict struct {
-	Line    int                     `json:"line"`
-	ID      json.RawMessage         `json:"id"`
-	Clean   bool                    `json:"clean"`
-	Action  string                  `json:"action,omitempty"`
-	Matches []scanner.ResponseMatch `json:"matches,omitempty"`
-	Error   string                  `json:"error,omitempty"`
-}
+	NewStdioReader = transport.NewStdioReader
+	NewStdioWriter = transport.NewStdioWriter
+	NewHTTPClient  = transport.NewHTTPClient
 
-// ExtractText extracts all text content from an MCP tool result.
-// First tries to parse as a standard ToolResult with content blocks (extracting
-// text from ALL block types, not just "text" — prevents bypass via image blocks).
-// Falls back to recursively extracting all string values from arbitrary JSON,
-// preventing bypass via non-standard result shapes.
-//
-// Content blocks are joined with a single space to preserve word boundaries.
-// Between-word splits ("previous" + "instructions") produce intact injections
-// the agent will act on — scanner must detect these. Mid-word splits
-// ("Igno" + "re" → "Igno re") don't match, but the injection is also broken
-// for the agent, so this is not exploitable.
-func ExtractText(raw json.RawMessage) string {
-	if len(raw) == 0 || string(raw) == jsonNull {
-		return ""
-	}
+	ScanTools       = tools.ScanTools
+	NewToolBaseline = tools.NewToolBaseline
+	LogToolFindings = tools.LogToolFindings
 
-	// Try standard ToolResult structure first.
-	var tr ToolResult
-	if err := json.Unmarshal(raw, &tr); err == nil && len(tr.Content) > 0 {
-		var texts []string
-		for _, block := range tr.Content {
-			// Extract text from ALL content blocks, not just type=="text".
-			// Non-text blocks (image, resource) may carry prompt injection
-			// in their text field.
-			if block.Text != "" {
-				texts = append(texts, block.Text)
-			}
-		}
-		if len(texts) > 0 {
-			return strings.Join(texts, " ")
-		}
-	}
-
-	// Fallback: recursively extract all string values from arbitrary JSON.
-	// Catches non-standard result shapes (plain string, nested objects, etc).
-	strs := extractStringsFromJSON(raw)
-	if len(strs) > 0 {
-		return strings.Join(strs, "\n")
-	}
-
-	return ""
-}
-
-// sortedKeys returns the keys of a map in sorted order. Used by JSON extraction
-// functions to ensure deterministic iteration — Go map order is random, so
-// split-secret concat scanning would miss secrets nondeterministically without
-// stable ordering.
-func sortedKeys(m map[string]interface{}) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
-}
-
-// extractStringsFromJSON recursively extracts all string values from arbitrary JSON.
-// Only extracts values (not keys) to avoid false positives from field names.
-func extractStringsFromJSON(raw json.RawMessage) []string {
-	var result []string
-	var extract func(v interface{})
-	extract = func(v interface{}) {
-		switch val := v.(type) {
-		case string:
-			result = append(result, val)
-		case []interface{}:
-			for _, item := range val {
-				extract(item)
-			}
-		case map[string]interface{}:
-			for _, k := range sortedKeys(val) {
-				extract(val[k])
-			}
-		}
-	}
-	var parsed interface{}
-	if err := json.Unmarshal(raw, &parsed); err == nil {
-		extract(parsed)
-	}
-	return result
-}
+	NewPolicyConfig        = policy.NewPolicyConfig
+	DefaultToolPolicyRules = policy.DefaultToolPolicyRules
+)
 
 // ScanResponse parses a single JSON-RPC 2.0 response and scans its text
 // content for prompt injection. Parse errors produce a verdict with Clean=false
@@ -168,7 +82,7 @@ func ScanResponse(line []byte, sc *scanner.Scanner) ScanVerdict {
 		return ScanVerdict{Clean: false, Error: fmt.Sprintf("invalid JSON: %v", err)}
 	}
 
-	if rpc.JSONRPC != jsonRPCVersion {
+	if rpc.JSONRPC != jsonrpc.Version {
 		return ScanVerdict{
 			ID:    rpc.ID,
 			Clean: false,
@@ -183,7 +97,7 @@ func ScanResponse(line []byte, sc *scanner.Scanner) ScanVerdict {
 	// Attackers can inject via error.message and error.data returned by malicious
 	// tool servers. Falls back to recursive string extraction for non-standard
 	// error shapes (e.g., plain string error), matching the Result field pattern.
-	if len(rpc.Error) > 0 && string(rpc.Error) != jsonNull {
+	if len(rpc.Error) > 0 && string(rpc.Error) != jsonrpc.Null {
 		var rpcErr RPCError
 		if err := json.Unmarshal(rpc.Error, &rpcErr); err == nil && rpcErr.Message != "" {
 			if text != "" {
@@ -207,7 +121,7 @@ func ScanResponse(line []byte, sc *scanner.Scanner) ScanVerdict {
 
 	// Scan notification params for injection content.
 	// MCP server notifications (method+params, no id) can carry payloads.
-	if len(rpc.Params) > 0 && string(rpc.Params) != jsonNull {
+	if len(rpc.Params) > 0 && string(rpc.Params) != jsonrpc.Null {
 		if paramsText := ExtractText(rpc.Params); paramsText != "" {
 			if text != "" {
 				text += "\n"
@@ -277,9 +191,6 @@ func scanBatch(line []byte, sc *scanner.Scanner) ScanVerdict {
 	}
 }
 
-// maxLineSize is the maximum line length for MCP responses (10 MB).
-const maxLineSize = 10 * 1024 * 1024
-
 // ScanStream reads newline-delimited JSON-RPC 2.0 responses from r, scans
 // each for prompt injection, and writes results to w. In text mode, only
 // errors and detections are written (clean lines are silent). In JSON mode,
@@ -287,7 +198,7 @@ const maxLineSize = 10 * 1024 * 1024
 // was detected. Parse errors are reported but do not count as injection.
 func ScanStream(r io.Reader, w io.Writer, sc *scanner.Scanner, jsonOutput bool) (bool, error) {
 	lineScanner := bufio.NewScanner(r)
-	lineScanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)
+	lineScanner.Buffer(make([]byte, 0, 64*1024), transport.MaxLineSize)
 
 	foundInjection := false
 	lineNum := 0

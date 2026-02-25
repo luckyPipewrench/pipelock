@@ -14,6 +14,9 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -197,7 +200,7 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 		effectiveAction = action
 	}
 	if policyVerdict.Matched {
-		effectiveAction = stricterAction(effectiveAction, policyVerdict.Action)
+		effectiveAction = policy.StricterAction(effectiveAction, policyVerdict.Action)
 	}
 
 	isNotification := len(verdict.ID) == 0
@@ -247,7 +250,7 @@ func extractRPCID(msg []byte) json.RawMessage {
 	if json.Unmarshal(msg, &rpc) != nil {
 		return nil
 	}
-	if string(rpc.ID) == jsonNull || len(rpc.ID) == 0 {
+	if string(rpc.ID) == jsonrpc.Null || len(rpc.ID) == 0 {
 		return nil
 	}
 	return rpc.ID
@@ -265,7 +268,7 @@ func validateRPCStructure(msg []byte) string {
 		return "invalid JSON structure"
 	}
 	// jsonrpc field must be exactly "2.0".
-	if env.JSONRPC != jsonRPCVersion {
+	if env.JSONRPC != jsonrpc.Version {
 		return "jsonrpc field must be \"2.0\""
 	}
 	// method field is required for client requests.
@@ -283,7 +286,7 @@ func validateRPCStructure(msg []byte) string {
 // If id is nil, the response uses a JSON null id (valid for unidentifiable requests).
 func upstreamErrorResponse(id json.RawMessage, upstreamErr error) []byte {
 	resp := rpcError{
-		JSONRPC: jsonRPCVersion,
+		JSONRPC: jsonrpc.Version,
 		ID:      id,
 		Error: rpcErrorDetail{
 			Code:    -32003,
@@ -297,11 +300,11 @@ func upstreamErrorResponse(id json.RawMessage, upstreamErr error) []byte {
 // startGETStream maintains a background GET SSE connection for server-initiated
 // messages. Called after the initialize handshake establishes a session ID.
 // Reconnects with exponential backoff (1s base, 30s cap) on stream end or
-// transient errors. Exits permanently only on ErrStreamNotSupported (HTTP 405)
+// transient errors. Exits permanently only on transport.ErrStreamNotSupported (HTTP 405)
 // or context cancellation.
 func startGETStream(
 	ctx context.Context,
-	httpClient *HTTPClient,
+	httpClient *transport.HTTPClient,
 	safeClientOut *syncWriter,
 	safeLogW *syncWriter,
 	sc *scanner.Scanner,
@@ -327,7 +330,7 @@ func startGETStream(
 			if err != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: GET stream: %v\n", err)
 				// Permanent error — server does not support GET streams.
-				if errors.Is(err, ErrStreamNotSupported) {
+				if errors.Is(err, transport.ErrStreamNotSupported) {
 					return
 				}
 				// Transient error — backoff and retry.
@@ -424,7 +427,7 @@ func RunHTTPListenerProxy(
 		}
 
 		// Cap request body to prevent memory exhaustion.
-		r.Body = http.MaxBytesReader(w, r.Body, int64(maxLineSize))
+		r.Body = http.MaxBytesReader(w, r.Body, int64(transport.MaxLineSize))
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
@@ -449,7 +452,7 @@ func RunHTTPListenerProxy(
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
 			parseErr, _ := json.Marshal(rpcError{
-				JSONRPC: jsonRPCVersion,
+				JSONRPC: jsonrpc.Version,
 				Error:   rpcErrorDetail{Code: -32700, Message: "pipelock: parse error: invalid JSON"},
 			})
 			_, _ = w.Write(parseErr)
@@ -466,7 +469,7 @@ func RunHTTPListenerProxy(
 				w.WriteHeader(http.StatusBadRequest)
 				rpcID := extractRPCID(body)
 				invalidReq, _ := json.Marshal(rpcError{
-					JSONRPC: jsonRPCVersion,
+					JSONRPC: jsonrpc.Version,
 					ID:      rpcID,
 					Error:   rpcErrorDetail{Code: -32600, Message: "pipelock: invalid request: " + reason},
 				})
@@ -485,7 +488,7 @@ func RunHTTPListenerProxy(
 				w.Header().Set("Content-Type", "application/json")
 				rpcID := extractRPCID(body)
 				resp, _ := json.Marshal(rpcError{
-					JSONRPC: jsonRPCVersion,
+					JSONRPC: jsonrpc.Version,
 					ID:      rpcID,
 					Error:   rpcErrorDetail{Code: -32001, Message: "pipelock: request blocked by MCP input scanning"},
 				})
@@ -550,7 +553,7 @@ func RunHTTPListenerProxy(
 		}
 
 		// Read upstream response body and scan it.
-		reader := &singleMessageReader{body: upResp.Body}
+		reader := &transport.SingleMessageReader{Body: upResp.Body}
 		var buf bytes.Buffer
 		bufWriter := &syncWriter{w: &buf}
 		_, scanErr := ForwardScanned(reader, bufWriter, safeLogW, sc, approver, fwdToolCfg)

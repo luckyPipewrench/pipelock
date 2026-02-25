@@ -1,4 +1,6 @@
-package mcp
+// Package policy provides MCP tool call policy rules for pre-execution checking.
+// Rules match tool names and argument patterns to detect dangerous operations.
+package policy
 
 import (
 	"bytes"
@@ -8,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
 
@@ -171,7 +174,7 @@ func (pc *PolicyConfig) CheckToolCall(toolName string, argStrings []string) Poli
 			if action == "" {
 				action = pc.Action
 			}
-			strictest = stricterAction(strictest, action)
+			strictest = StricterAction(strictest, action)
 			continue
 		}
 
@@ -181,7 +184,7 @@ func (pc *PolicyConfig) CheckToolCall(toolName string, argStrings []string) Poli
 			if action == "" {
 				action = pc.Action
 			}
-			strictest = stricterAction(strictest, action)
+			strictest = StricterAction(strictest, action)
 		}
 	}
 
@@ -278,11 +281,11 @@ func (pc *PolicyConfig) checkSingle(line []byte) PolicyVerdict {
 		return PolicyVerdict{}
 	}
 	var argStrings []string
-	if len(tc.Arguments) > 0 && string(tc.Arguments) != jsonNull {
+	if len(tc.Arguments) > 0 && string(tc.Arguments) != jsonrpc.Null {
 		// Use values-only extraction (not extractAllStringsFromJSON which
 		// includes map keys). Keys like "cmd","flags","target" would pollute
 		// the joined string and break regex adjacency for policy matching.
-		argStrings = extractStringsFromJSON(tc.Arguments)
+		argStrings = jsonrpc.ExtractStringsFromJSON(tc.Arguments)
 	}
 	return pc.CheckToolCall(tc.Name, argStrings)
 }
@@ -301,7 +304,7 @@ func (pc *PolicyConfig) checkBatch(line []byte) PolicyVerdict {
 		v := pc.checkSingle(elem)
 		if v.Matched {
 			allRules = append(allRules, v.Rules...)
-			strictest = stricterAction(strictest, v.Action)
+			strictest = StricterAction(strictest, v.Action)
 		}
 	}
 
@@ -336,7 +339,7 @@ func parseToolCall(line []byte) *toolCallParams {
 	if rpc.Method != "tools/call" { //nolint:goconst // MCP method name used across packages
 		return nil
 	}
-	if len(rpc.Params) == 0 || string(rpc.Params) == jsonNull {
+	if len(rpc.Params) == 0 || string(rpc.Params) == jsonrpc.Null {
 		return nil
 	}
 
@@ -361,9 +364,9 @@ func parseToolCall(line []byte) *toolCallParams {
 // Unknown values are treated as block (fail-closed).
 var actionRank = map[string]int{"": 0, config.ActionWarn: 1, config.ActionAsk: 2, config.ActionBlock: 3}
 
-// stricterAction returns the more restrictive of two actions.
+// StricterAction returns the more restrictive of two actions.
 // block > ask > warn > "" (empty). Unknown values are treated as block (fail-closed).
-func stricterAction(a, b string) string {
+func StricterAction(a, b string) string {
 	ra, aOK := actionRank[a]
 	rb, bOK := actionRank[b]
 	if !aOK {

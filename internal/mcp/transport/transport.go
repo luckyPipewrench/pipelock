@@ -1,4 +1,7 @@
-package mcp
+// Package transport provides message framing for MCP JSON-RPC 2.0 transports.
+// It includes stdio (newline-delimited), SSE (Server-Sent Events), and HTTP
+// client implementations.
+package transport
 
 import (
 	"bufio"
@@ -6,6 +9,9 @@ import (
 	"fmt"
 	"io"
 )
+
+// MaxLineSize is the maximum line length for MCP responses (10 MB).
+const MaxLineSize = 10 * 1024 * 1024
 
 // MessageReader reads framed messages from a transport.
 // Each call to ReadMessage returns one complete JSON-RPC message.
@@ -32,7 +38,7 @@ type StdioReader struct {
 // NewStdioReader creates a StdioReader that reads newline-delimited messages.
 func NewStdioReader(r io.Reader) *StdioReader {
 	s := bufio.NewScanner(r)
-	s.Buffer(make([]byte, 0, 64*1024), maxLineSize)
+	s.Buffer(make([]byte, 0, 64*1024), MaxLineSize)
 	return &StdioReader{scanner: s}
 }
 
@@ -68,7 +74,7 @@ func NewStdioWriter(w io.Writer) *StdioWriter {
 // WriteMessage writes msg followed by a newline in a single Write call.
 // The single-call approach avoids partial writes from interleaving.
 func (sw *StdioWriter) WriteMessage(msg []byte) error {
-	if len(msg) > maxLineSize {
+	if len(msg) > MaxLineSize {
 		return fmt.Errorf("message too large: %d bytes", len(msg))
 	}
 	buf := make([]byte, len(msg)+1)

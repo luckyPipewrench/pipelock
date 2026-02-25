@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -25,7 +27,7 @@ type InputVerdict struct {
 }
 
 // extractAllStringsFromJSON recursively extracts all string values AND keys
-// from arbitrary JSON. Unlike extractStringsFromJSON (values only), this
+// from arbitrary JSON. Unlike jsonrpc.ExtractStringsFromJSON (values only), this
 // version also extracts map keys because an agent can exfiltrate secrets
 // by encoding them as JSON object keys in tool arguments.
 func extractAllStringsFromJSON(raw json.RawMessage) []string {
@@ -45,7 +47,7 @@ func extractAllStringsFromJSON(raw json.RawMessage) []string {
 				extract(item)
 			}
 		case map[string]interface{}:
-			for _, k := range sortedKeys(val) {
+			for _, k := range jsonrpc.SortedKeys(val) {
 				result = append(result, k) // Extract keys too.
 				extract(val[k])
 			}
@@ -95,7 +97,7 @@ func ScanRequest(line []byte, sc *scanner.Scanner, action, onParseError string) 
 		return InputVerdict{Clean: false, Error: fmt.Sprintf("invalid JSON: %v", err)}
 	}
 
-	if rpc.JSONRPC != jsonRPCVersion {
+	if rpc.JSONRPC != jsonrpc.Version {
 		if onParseError == config.ActionForward {
 			// Still scan raw text for secrets/injection before forwarding.
 			return scanRawBeforeForward(trimmed, sc, action)
@@ -112,7 +114,7 @@ func ScanRequest(line []byte, sc *scanner.Scanner, action, onParseError string) 
 	// Extract individual string values and scan each one separately so that
 	// encoded-secret detection (base64, hex) works on field values, not on
 	// the whole JSON blob (which is never valid base64/hex as a unit).
-	if len(rpc.Params) == 0 || string(rpc.Params) == jsonNull {
+	if len(rpc.Params) == 0 || string(rpc.Params) == jsonrpc.Null {
 		raw := string(trimmed)
 
 		// Extract individual strings for per-field encoded DLP checks.
@@ -191,7 +193,7 @@ func ScanRequest(line []byte, sc *scanner.Scanner, action, onParseError string) 
 	if rpc.Method != "" {
 		strs = append(strs, rpc.Method)
 	}
-	if len(rpc.ID) > 0 && string(rpc.ID) != jsonNull {
+	if len(rpc.ID) > 0 && string(rpc.ID) != jsonrpc.Null {
 		strs = append(strs, string(rpc.ID))
 	}
 
@@ -391,7 +393,7 @@ func blockRequestResponse(br BlockedRequest) []byte {
 		msg = "pipelock: request blocked by MCP input scanning"
 	}
 	resp := rpcError{
-		JSONRPC: jsonRPCVersion,
+		JSONRPC: jsonrpc.Version,
 		ID:      br.ID,
 		Error: rpcErrorDetail{
 			Code:    code,
@@ -537,10 +539,10 @@ func ForwardScannedInput(
 			effectiveAction = action
 		}
 		if policyVerdict.Matched {
-			effectiveAction = stricterAction(effectiveAction, policyVerdict.Action)
+			effectiveAction = policy.StricterAction(effectiveAction, policyVerdict.Action)
 		}
 		if bindingAction != "" {
-			effectiveAction = stricterAction(effectiveAction, bindingAction)
+			effectiveAction = policy.StricterAction(effectiveAction, bindingAction)
 		}
 
 		isNotification := len(verdict.ID) == 0
@@ -595,14 +597,14 @@ func joinStrings(ss []string) string {
 
 // scanSplitSecret checks for secrets split across multiple JSON fields by
 // concatenating values without separators. Keys are excluded (via
-// extractStringsFromJSON, not extractAllStringsFromJSON) because interleaved
+// jsonrpc.ExtractStringsFromJSON, not extractAllStringsFromJSON) because interleaved
 // keys break DLP regex adjacency. Returns the original result if clean or if
 // concat adds no new information.
 func scanSplitSecret(raw json.RawMessage, joined string, sc *scanner.Scanner, result scanner.TextDLPResult) scanner.TextDLPResult {
 	if !result.Clean {
 		return result
 	}
-	vals := extractStringsFromJSON(raw)
+	vals := jsonrpc.ExtractStringsFromJSON(raw)
 	if len(vals) <= 1 {
 		return result
 	}

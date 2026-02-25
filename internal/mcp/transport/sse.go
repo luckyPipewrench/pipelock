@@ -1,4 +1,4 @@
-package mcp
+package transport
 
 import (
 	"bufio"
@@ -16,10 +16,10 @@ type SSEReader struct {
 }
 
 // NewSSEReader creates an SSEReader that parses SSE events from r.
-// The scanner buffer matches StdioReader's sizing (64KB initial, maxLineSize max).
+// The scanner buffer matches StdioReader's sizing (64KB initial, MaxLineSize max).
 func NewSSEReader(r io.Reader) *SSEReader {
 	s := bufio.NewScanner(r)
-	s.Buffer(make([]byte, 0, 64*1024), maxLineSize)
+	s.Buffer(make([]byte, 0, 64*1024), MaxLineSize)
 	return &SSEReader{scanner: s}
 }
 

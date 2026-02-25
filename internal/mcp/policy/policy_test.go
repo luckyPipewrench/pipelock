@@ -1,4 +1,4 @@
-package mcp
+package policy
 
 import (
 	"encoding/json"
@@ -772,7 +772,7 @@ func TestMatchArgPattern_EmptyArgs(t *testing.T) {
 	}
 }
 
-// --- stricterAction ---
+// --- StricterAction ---
 
 func TestStricterAction(t *testing.T) {
 	tests := []struct {
@@ -801,9 +801,9 @@ func TestStricterAction(t *testing.T) {
 		{"", "typo", "block"},      // unknown → block beats empty
 	}
 	for _, tt := range tests {
-		got := stricterAction(tt.a, tt.b)
+		got := StricterAction(tt.a, tt.b)
 		if got != tt.want {
-			t.Errorf("stricterAction(%q, %q) = %q, want %q", tt.a, tt.b, got, tt.want)
+			t.Errorf("StricterAction(%q, %q) = %q, want %q", tt.a, tt.b, got, tt.want)
 		}
 	}
 }

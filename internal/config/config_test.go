@@ -2936,3 +2936,231 @@ func TestSuppressedReason(t *testing.T) {
 		})
 	}
 }
+
+// TestValidate_AllFeaturesEnabled validates a config with every feature enabled
+// using valid settings. This exercises all the valid-case branches in Validate().
+func TestValidate_AllFeaturesEnabled(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+
+	// Enable all feature sections with valid configs.
+	cfg.ResponseScanning.Enabled = true
+	cfg.ResponseScanning.Action = ActionWarn
+
+	cfg.MCPInputScanning.Enabled = true
+	cfg.MCPInputScanning.Action = ActionBlock
+
+	cfg.MCPToolScanning.Enabled = true
+	cfg.MCPToolScanning.Action = ActionWarn
+
+	cfg.MCPToolPolicy.Enabled = true
+	cfg.MCPToolPolicy.Action = ActionBlock
+	cfg.MCPToolPolicy.Rules = []ToolPolicyRule{
+		{Name: "test-rule", ToolPattern: ".*exec.*", Action: ActionWarn},
+	}
+
+	cfg.GitProtection.Enabled = true
+	cfg.GitProtection.AllowedBranches = []string{"main", "feat/*"}
+	cfg.GitProtection.BlockedCommands = []string{"push --force"}
+
+	cfg.ForwardProxy.Enabled = true
+	cfg.ForwardProxy.MaxTunnelSeconds = 300
+	cfg.ForwardProxy.IdleTimeoutSeconds = 60
+
+	cfg.WebSocketProxy.Enabled = true
+	cfg.WebSocketProxy.MaxMessageBytes = 1048576
+	cfg.WebSocketProxy.MaxConcurrentConnections = 50
+	cfg.WebSocketProxy.MaxConnectionSeconds = 3600
+	cfg.WebSocketProxy.IdleTimeoutSeconds = 300
+	cfg.WebSocketProxy.OriginPolicy = "rewrite"
+
+	cfg.KillSwitch.Enabled = true
+	cfg.KillSwitch.Message = "test kill switch"
+
+	maxGap := 5
+	cfg.ToolChainDetection.Enabled = true
+	cfg.ToolChainDetection.Action = ActionWarn
+	cfg.ToolChainDetection.WindowSize = 20
+	cfg.ToolChainDetection.WindowSeconds = 300
+	cfg.ToolChainDetection.MaxGap = &maxGap
+	cfg.ToolChainDetection.CustomPatterns = []ChainPattern{
+		{Name: "test-chain", Sequence: []string{"read", "exec"}, Severity: "high", Action: ActionBlock},
+	}
+	cfg.ToolChainDetection.PatternOverrides = map[string]string{
+		"read-then-exec": ActionWarn,
+	}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("fully-featured valid config should validate: %v", err)
+	}
+}
+
+// TestValidate_AllModesCoverBranches validates each mode to cover the mode switch.
+func TestValidate_AllModesCoverBranches(t *testing.T) {
+	for _, mode := range []string{ModeStrict, ModeBalanced, ModeAudit} {
+		t.Run(mode, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.ApplyDefaults()
+			cfg.Mode = mode
+			if mode == ModeStrict {
+				cfg.APIAllowlist = []string{"*.example.com"}
+			}
+			if err := cfg.Validate(); err != nil {
+				t.Errorf("mode %q should validate: %v", mode, err)
+			}
+		})
+	}
+}
+
+// TestValidate_LoggingFormatsAndOutputs covers all valid logging format/output combos.
+func TestValidate_LoggingFormatsAndOutputs(t *testing.T) {
+	for _, format := range []string{DefaultLogFormat, "text"} {
+		for _, output := range []string{DefaultLogOutput, OutputFile, OutputBoth} {
+			name := fmt.Sprintf("%s/%s", format, output)
+			t.Run(name, func(t *testing.T) {
+				cfg := Defaults()
+				cfg.ApplyDefaults()
+				cfg.Logging.Format = format
+				cfg.Logging.Output = output
+				if output == OutputFile || output == OutputBoth {
+					cfg.Logging.File = "/tmp/test-pipelock.log"
+				}
+				if err := cfg.Validate(); err != nil {
+					t.Errorf("logging format=%q output=%q should validate: %v", format, output, err)
+				}
+			})
+		}
+	}
+}
+
+func TestValidate_KillSwitchInvalidSentinelDir(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	cfg.KillSwitch.SentinelFile = "/nonexistent/dir/sentinel"
+	// Should still validate — sentinel existence is checked at runtime, not config time.
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("kill switch with nonexistent sentinel path should validate: %v", err)
+	}
+}
+
+func TestValidate_ChainDetectionInvalidMaxGap(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	cfg.ToolChainDetection.Enabled = true
+	cfg.ToolChainDetection.Action = ActionWarn
+	cfg.ToolChainDetection.WindowSize = 20
+	cfg.ToolChainDetection.WindowSeconds = 300
+	neg := -1
+	cfg.ToolChainDetection.MaxGap = &neg
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for negative MaxGap")
+	}
+}
+
+func TestValidate_ChainDetectionInvalidCustomPattern(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern ChainPattern
+		wantErr string
+	}{
+		{
+			name:    "missing name",
+			pattern: ChainPattern{Sequence: []string{"a", "b"}, Severity: "high"},
+			wantErr: "missing name",
+		},
+		{
+			name:    "short sequence",
+			pattern: ChainPattern{Name: "x", Sequence: []string{"a"}, Severity: "high"},
+			wantErr: "at least 2 steps",
+		},
+		{
+			name:    "invalid severity",
+			pattern: ChainPattern{Name: "x", Sequence: []string{"a", "b"}, Severity: "low"},
+			wantErr: "invalid severity",
+		},
+		{
+			name:    "invalid action",
+			pattern: ChainPattern{Name: "x", Sequence: []string{"a", "b"}, Severity: "high", Action: "drop"},
+			wantErr: "invalid action",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.ApplyDefaults()
+			cfg.ToolChainDetection.Enabled = true
+			cfg.ToolChainDetection.Action = ActionWarn
+			cfg.ToolChainDetection.WindowSize = 20
+			cfg.ToolChainDetection.WindowSeconds = 300
+			cfg.ToolChainDetection.CustomPatterns = []ChainPattern{tt.pattern}
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatal("expected validation error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("expected error containing %q, got: %v", tt.wantErr, err)
+			}
+		})
+	}
+}
+
+func TestValidate_ChainDetectionInvalidPatternOverride(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	cfg.ToolChainDetection.Enabled = true
+	cfg.ToolChainDetection.Action = ActionWarn
+	cfg.ToolChainDetection.WindowSize = 20
+	cfg.ToolChainDetection.WindowSeconds = 300
+	cfg.ToolChainDetection.PatternOverrides = map[string]string{
+		"read-then-exec": "drop",
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for invalid pattern override action")
+	}
+	if !strings.Contains(err.Error(), "invalid action") {
+		t.Errorf("expected 'invalid action' error, got: %v", err)
+	}
+}
+
+func TestValidate_ChainDetectionDisabledSkipsValidation(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	cfg.ToolChainDetection.Enabled = false
+	cfg.ToolChainDetection.Action = "invalid"
+	// Should not error because disabled.
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("disabled chain detection should skip validation: %v", err)
+	}
+}
+
+func TestValidate_OnParseErrorValidValues(t *testing.T) {
+	for _, val := range []string{ActionBlock, ActionForward} {
+		t.Run(val, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.ApplyDefaults()
+			cfg.MCPInputScanning.OnParseError = val
+			if err := cfg.Validate(); err != nil {
+				t.Errorf("on_parse_error=%q should validate: %v", val, err)
+			}
+		})
+	}
+}
+
+func TestValidate_WebSocketOriginPolicies(t *testing.T) {
+	for _, pol := range []string{"rewrite", "forward", ActionStrip} {
+		t.Run(pol, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.ApplyDefaults()
+			cfg.WebSocketProxy.Enabled = true
+			cfg.WebSocketProxy.MaxMessageBytes = 1048576
+			cfg.WebSocketProxy.MaxConcurrentConnections = 50
+			cfg.WebSocketProxy.MaxConnectionSeconds = 3600
+			cfg.WebSocketProxy.IdleTimeoutSeconds = 300
+			cfg.WebSocketProxy.OriginPolicy = pol
+			if err := cfg.Validate(); err != nil {
+				t.Errorf("origin_policy=%q should validate: %v", pol, err)
+			}
+		})
+	}
+}

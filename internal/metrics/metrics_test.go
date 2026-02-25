@@ -731,6 +731,85 @@ func TestConcurrentSessionMetrics(t *testing.T) {
 	m.mu.Unlock()
 }
 
+func TestRecordKillSwitchDenial(t *testing.T) {
+	m := New()
+	m.RecordKillSwitchDenial("http", "/fetch")
+	m.RecordKillSwitchDenial("mcp", "tools/call")
+	m.RecordKillSwitchDenial("http", "/fetch")
+
+	// Verify Prometheus metric incremented.
+	handler := m.PrometheusHandler()
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := rec.Body.String()
+	if !strings.Contains(body, `pipelock_kill_switch_denials_total{endpoint="/fetch",transport="http"} 2`) {
+		t.Errorf("expected 2 http /fetch denials in metrics output:\n%s", body)
+	}
+	if !strings.Contains(body, `pipelock_kill_switch_denials_total{endpoint="tools/call",transport="mcp"} 1`) {
+		t.Errorf("expected 1 mcp tools/call denial in metrics output:\n%s", body)
+	}
+}
+
+func TestRecordChainDetection(t *testing.T) {
+	m := New()
+	m.RecordChainDetection("read-then-exec", "high", "warn")
+	m.RecordChainDetection("read-then-exec", "high", "warn")
+	m.RecordChainDetection("env-then-network", "critical", "block")
+
+	handler := m.PrometheusHandler()
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := rec.Body.String()
+	if !strings.Contains(body, `pipelock_chain_detections_total{action="warn",pattern="read-then-exec",severity="high"} 2`) {
+		t.Errorf("expected 2 read-then-exec detections:\n%s", body)
+	}
+	if !strings.Contains(body, `pipelock_chain_detections_total{action="block",pattern="env-then-network",severity="critical"} 1`) {
+		t.Errorf("expected 1 env-then-network detection:\n%s", body)
+	}
+}
+
+func TestRecordBlocked_TopDomainsCapped(t *testing.T) {
+	m := New()
+	// Fill domains to cap.
+	for i := range maxTopEntries {
+		m.RecordBlocked("domain"+string(rune('a'+i%26))+string(rune('0'+i/26))+".com", "dlp", time.Millisecond)
+	}
+	// Existing domain should still increment.
+	m.RecordBlocked("domaina0.com", "dlp", time.Millisecond)
+	m.mu.Lock()
+	if m.topBlockedDomains["domaina0.com"] != 2 {
+		t.Errorf("expected existing domain count 2, got %d", m.topBlockedDomains["domaina0.com"])
+	}
+	m.mu.Unlock()
+
+	// New domain should be ignored after cap.
+	m.RecordBlocked("overflow.com", "dlp", time.Millisecond)
+	m.mu.Lock()
+	if _, exists := m.topBlockedDomains["overflow.com"]; exists {
+		t.Error("overflow domain should not be tracked after cap")
+	}
+	// Same for scanner hits: fill + overflow.
+	if len(m.topBlockedDomains) > maxTopEntries {
+		t.Errorf("expected at most %d blocked domains, got %d", maxTopEntries, len(m.topBlockedDomains))
+	}
+	m.mu.Unlock()
+}
+
+func TestRecordSessionAnomaly_ExistingTypeAfterCap(t *testing.T) {
+	m := New()
+	// Fill anomaly types to cap.
+	for i := range maxTopEntries {
+		m.RecordSessionAnomaly("type" + string(rune('A'+i%26)) + string(rune('0'+i/26)))
+	}
+	// Existing type should still increment even after cap.
+	m.RecordSessionAnomaly("typeA0")
+	m.mu.Lock()
+	if m.topAnomalyTypes["typeA0"] != 2 {
+		t.Errorf("expected existing anomaly type count 2, got %d", m.topAnomalyTypes["typeA0"])
+	}
+	m.mu.Unlock()
+}
+
 func TestConcurrentWSMetrics(t *testing.T) {
 	m := New()
 	var wg sync.WaitGroup

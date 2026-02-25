@@ -302,7 +302,7 @@ func TestMatcher_PatternOverrides(t *testing.T) {
 	if !v.Matched {
 		t.Error("expected match")
 	}
-	if v.Action != "block" {
+	if v.Action != "block" { //nolint:goconst // test value
 		t.Errorf("expected action block from pattern override, got %q", v.Action)
 	}
 }
@@ -489,5 +489,81 @@ func TestMatcher_MaxGapRetry(t *testing.T) {
 	sess.mu.Unlock()
 	if !matched {
 		t.Error("should match using second occurrence of step[0]")
+	}
+}
+
+func TestMatcher_NilConfig(t *testing.T) {
+	// nil config should produce a no-op matcher (not panic).
+	m := NewMatcher(nil)
+	v := m.Record("s1", "read_file")
+	if v.Matched {
+		t.Error("nil config matcher should never match")
+	}
+}
+
+func TestMatcher_WithMetrics(t *testing.T) {
+	var recorded []string
+	recorder := &stubMetrics{recordFn: func(p, s, a string) {
+		recorded = append(recorded, p+":"+s+":"+a)
+	}}
+
+	cfg := &config.ToolChainDetection{
+		Enabled:       true,
+		Action:        "warn",
+		WindowSize:    20,
+		WindowSeconds: 60,
+		MaxGap:        intPtr(3),
+	}
+	m := NewMatcher(cfg).WithMetrics(recorder)
+
+	m.Record("s1", "read_file")
+	m.Record("s1", "bash_command")
+
+	if len(recorded) == 0 {
+		t.Fatal("expected metrics recording on chain match")
+	}
+	if recorded[0] != "read-then-exec:high:warn" {
+		t.Errorf("unexpected metric: %s", recorded[0])
+	}
+}
+
+type stubMetrics struct {
+	recordFn func(pattern, severity, action string)
+}
+
+func (s *stubMetrics) RecordChainDetection(pattern, severity, action string) {
+	s.recordFn(pattern, severity, action)
+}
+
+func TestMatcher_CustomPatternOverride(t *testing.T) {
+	// Custom pattern with PatternOverrides should use the override action.
+	cfg := &config.ToolChainDetection{
+		Enabled:       true,
+		Action:        "warn",
+		WindowSize:    20,
+		WindowSeconds: 60,
+		MaxGap:        intPtr(3),
+		CustomPatterns: []config.ChainPattern{
+			{
+				Name:     "my-custom",
+				Sequence: []string{"read", "write"},
+				Severity: "medium",
+				Action:   "warn",
+			},
+		},
+		PatternOverrides: map[string]string{
+			"my-custom": "block",
+		},
+	}
+	m := NewMatcher(cfg)
+
+	m.Record("s1", "read_file")
+	v := m.Record("s1", "write_file")
+
+	if !v.Matched {
+		t.Fatal("expected match")
+	}
+	if v.Action != "block" {
+		t.Errorf("expected override action %q, got %q", "block", v.Action)
 	}
 }

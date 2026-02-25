@@ -634,4 +634,53 @@ func TestController_KillSwitchErrorResponse(t *testing.T) {
 	}
 }
 
+func TestController_BareIPAddress(t *testing.T) {
+	// extractIP must handle bare IPs (no port) as well as host:port.
+	cfg := testConfig()
+	cfg.KillSwitch.Enabled = true
+	cfg.KillSwitch.AllowlistIPs = []string{"10.0.0.0/24"}
+	cfg.KillSwitch.Message = "bare IP test" //nolint:goconst // test value
+
+	c := New(cfg)
+
+	// Request with bare IP (no port) — should be allowlisted.
+	r := httptest.NewRequest(http.MethodGet, "/fetch", nil)
+	r.RemoteAddr = "10.0.0.1" // bare IP, no :port
+	d := c.IsActiveHTTP(r)
+	if d.Active {
+		t.Error("bare IP 10.0.0.1 should be allowlisted")
+	}
+
+	// Verify non-allowlisted bare IP is still blocked.
+	r2 := httptest.NewRequest(http.MethodGet, "/fetch", nil)
+	r2.RemoteAddr = "192.168.1.1" // bare IP, not in allowlist
+	d2 := c.IsActiveHTTP(r2)
+	if !d2.Active {
+		t.Error("non-allowlisted bare IP should be denied")
+	}
+}
+
+func TestController_HasIDEdgeCases(t *testing.T) {
+	// hasID is used in IsActiveMCP to distinguish requests from notifications.
+	tests := []struct {
+		name string
+		msg  string
+		want bool
+	}{
+		{"invalid json", "not json at all", false},
+		{"null id", `{"jsonrpc":"2.0","method":"test","id":null}`, false},
+		{"no id field", `{"jsonrpc":"2.0","method":"test"}`, false},
+		{"numeric id", `{"jsonrpc":"2.0","method":"test","id":1}`, true},
+		{"string id", `{"jsonrpc":"2.0","method":"test","id":"abc"}`, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := hasID([]byte(tt.msg))
+			if got != tt.want {
+				t.Errorf("hasID(%q) = %v, want %v", tt.msg, got, tt.want)
+			}
+		})
+	}
+}
+
 func ptrBool(v bool) *bool { return &v }

@@ -2093,3 +2093,82 @@ func TestForwardScannedInput_ChainDetectionWarn(t *testing.T) {
 		t.Errorf("expected chain detection warning log, got: %s", logBuf.String())
 	}
 }
+
+func TestExtractToolCallName_EdgeCases(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+		want string
+	}{
+		{"invalid json", "not json", ""},
+		{"not tools/call", `{"jsonrpc":"2.0","method":"initialize","id":1}`, ""},
+		{"valid tools/call", `{"jsonrpc":"2.0","method":"tools/call","id":1,"params":{"name":"read_file"}}`, "read_file"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractToolCallName([]byte(tt.line))
+			if got != tt.want {
+				t.Errorf("extractToolCallName() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExtractAllStringsFromJSON_DepthLimit(t *testing.T) {
+	// Build a JSON object nested >64 levels deep.
+	var b strings.Builder
+	for range 70 {
+		b.WriteString(`{"k":`)
+	}
+	b.WriteString(`"leaf"`)
+	for range 70 {
+		b.WriteString(`}`)
+	}
+	result := extractAllStringsFromJSON(json.RawMessage(b.String()))
+
+	// The leaf value should NOT appear — recursion stopped at depth 64.
+	for _, s := range result {
+		if s == "leaf" {
+			t.Error("expected depth limit to prevent extracting deeply nested leaf")
+		}
+	}
+}
+
+func TestForwardScannedInput_BindingMissingToolName(t *testing.T) {
+	// tools/call without params.name should trigger fail-closed binding violation.
+	sc := testInputScanner(t)
+
+	tb := NewToolBaseline()
+	tb.SetKnownTools([]string{"read_file"})
+
+	bindingCfg := &SessionBindingConfig{
+		Baseline:          tb,
+		UnknownToolAction: "block",
+		NoBaselineAction:  "warn",
+	}
+
+	// Manually craft a tools/call with no params.name (empty params).
+	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{}}` + "\n"
+
+	var serverBuf bytes.Buffer
+	var logBuf bytes.Buffer
+	blockedCh := make(chan BlockedRequest, 16)
+
+	ForwardScannedInput(
+		NewStdioReader(strings.NewReader(input)),
+		NewStdioWriter(&serverBuf),
+		&logBuf, sc, "warn", "block", blockedCh, nil, bindingCfg, nil, nil,
+	)
+
+	blocked := make([]BlockedRequest, 0)
+	for b := range blockedCh {
+		blocked = append(blocked, b)
+	}
+
+	if len(blocked) != 1 {
+		t.Fatalf("expected 1 blocked request for missing tool name, got %d", len(blocked))
+	}
+	if !strings.Contains(logBuf.String(), "missing params.name") {
+		t.Errorf("expected log about missing params.name, got: %s", logBuf.String())
+	}
+}

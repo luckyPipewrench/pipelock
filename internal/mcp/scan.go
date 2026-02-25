@@ -10,6 +10,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
@@ -40,6 +41,10 @@ type (
 	PolicyConfig       = policy.PolicyConfig
 	PolicyVerdict      = policy.PolicyVerdict
 	CompiledPolicyRule = policy.CompiledPolicyRule
+
+	// chains types.
+	ChainMatcher = chains.Matcher
+	ChainVerdict = chains.ChainVerdict
 )
 
 // Package-level aliases so existing test files and remaining code in this
@@ -64,6 +69,8 @@ var (
 
 	NewPolicyConfig        = policy.NewPolicyConfig
 	DefaultToolPolicyRules = policy.DefaultToolPolicyRules
+
+	NewChainMatcher = chains.NewMatcher
 )
 
 // ScanResponse parses a single JSON-RPC 2.0 response and scans its text

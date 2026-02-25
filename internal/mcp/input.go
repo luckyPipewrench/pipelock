@@ -11,6 +11,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -433,6 +434,7 @@ func ForwardScannedInput(
 	policyCfg *PolicyConfig,
 	bindingCfg *SessionBindingConfig,
 	ks *killswitch.Controller,
+	chainMatcher *chains.Matcher,
 ) {
 	defer close(blockedCh)
 
@@ -495,23 +497,54 @@ func ForwardScannedInput(
 			bindingReason = "session_binding:batch_request"
 		}
 
+		// Extract tool name once for both binding and chain detection.
+		var toolCallName string
+		if verdict.Method == "tools/call" { //nolint:goconst // MCP method name used across packages
+			toolCallName = extractToolCallName(line)
+		}
+
 		if bindingCfg != nil && bindingCfg.Baseline != nil && verdict.Method == "tools/call" {
-			toolName := extractToolCallName(line)
-			if toolName == "" {
+			if toolCallName == "" {
 				// Fail closed: tools/call without a name is a binding violation.
 				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: tools/call missing params.name\n", lineNum)
 				bindingAction = bindingCfg.UnknownToolAction
 				bindingReason = "session_binding:missing_tool_name"
 			} else if !bindingCfg.Baseline.HasBaseline() {
 				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: tools/call %q before baseline established\n",
-					lineNum, toolName)
+					lineNum, toolCallName)
 				bindingAction = bindingCfg.NoBaselineAction
 				bindingReason = "session_binding:no_baseline"
-			} else if !bindingCfg.Baseline.IsKnownTool(toolName) {
+			} else if !bindingCfg.Baseline.IsKnownTool(toolCallName) {
 				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: tools/call %q not in session baseline\n",
-					lineNum, toolName)
+					lineNum, toolCallName)
 				bindingAction = bindingCfg.UnknownToolAction
 				bindingReason = "session_binding:unknown_tool"
+			}
+		}
+
+		// Chain detection: check if this tool call matches an attack pattern.
+		// Runs on every tools/call regardless of content scan results.
+		chainAction := ""
+		chainReason := ""
+		if chainMatcher != nil && toolCallName != "" {
+			cv := chainMatcher.Record("default", toolCallName)
+			if cv.Matched {
+				_, _ = fmt.Fprintf(logW, "pipelock: chain detected: %s (severity=%s, action=%s)\n",
+					cv.PatternName, cv.Severity, cv.Action)
+				if cv.Action == config.ActionBlock {
+					rpcID := extractRPCID(line)
+					blockedCh <- BlockedRequest{
+						ID:             rpcID,
+						IsNotification: len(rpcID) == 0,
+						LogMessage:     fmt.Sprintf("pipelock: input line %d: chain pattern %q blocked", lineNum, cv.PatternName),
+						ErrorCode:      -32004,
+						ErrorMessage:   fmt.Sprintf("tool call blocked: chain pattern %q detected", cv.PatternName),
+					}
+					continue
+				}
+				// warn action: record reason for inclusion in combined verdict.
+				chainAction = cv.Action
+				chainReason = "chain:" + cv.PatternName
 			}
 		}
 
@@ -528,7 +561,7 @@ func ForwardScannedInput(
 		}
 
 		// All clean — forward.
-		if verdict.Clean && !policyVerdict.Matched && bindingAction == "" {
+		if verdict.Clean && !policyVerdict.Matched && bindingAction == "" && chainAction == "" {
 			if err := writer.WriteMessage(line); err != nil {
 				_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
 				return
@@ -550,6 +583,9 @@ func ForwardScannedInput(
 		if bindingReason != "" {
 			reasons = append(reasons, bindingReason)
 		}
+		if chainReason != "" {
+			reasons = append(reasons, chainReason)
+		}
 		reasonStr := joinStrings(reasons)
 
 		method := verdict.Method
@@ -567,6 +603,9 @@ func ForwardScannedInput(
 		}
 		if bindingAction != "" {
 			effectiveAction = policy.StricterAction(effectiveAction, bindingAction)
+		}
+		if chainAction != "" {
+			effectiveAction = policy.StricterAction(effectiveAction, chainAction)
 		}
 
 		isNotification := len(verdict.ID) == 0

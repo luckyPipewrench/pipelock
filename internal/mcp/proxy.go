@@ -14,6 +14,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -382,7 +383,7 @@ type InputScanConfig struct {
 // Both clientOut and logW are wrapped in mutex adapters to prevent concurrent
 // write races between the input scanning goroutine, blocked request drainer,
 // child process stderr, and the main goroutine's response scanning.
-func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW io.Writer, command []string, sc *scanner.Scanner, approver *hitl.Approver, inputCfg *InputScanConfig, toolCfg *ToolScanConfig, policyCfg *PolicyConfig, ks *killswitch.Controller, extraEnv ...string) error {
+func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW io.Writer, command []string, sc *scanner.Scanner, approver *hitl.Approver, inputCfg *InputScanConfig, toolCfg *ToolScanConfig, policyCfg *PolicyConfig, ks *killswitch.Controller, chainMatcher *chains.Matcher, extraEnv ...string) error {
 	cmd := exec.CommandContext(ctx, command[0], command[1:]...) //nolint:gosec // command comes from user CLI args
 
 	// Wrap shared writers in mutex adapters. Multiple goroutines write to
@@ -453,14 +454,14 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		if inputCfg != nil && inputCfg.Enabled {
 			clientReader := NewStdioReader(clientIn)
 			serverWriter := NewStdioWriter(serverIn)
-			ForwardScannedInput(clientReader, serverWriter, safeLogW, sc, inputCfg.Action, inputCfg.OnParseError, blockedCh, policyCfg, bindingCfg, ks)
-		} else if policyCfg != nil || bindingCfg != nil {
-			// Policy checking or session binding enabled but content scanning disabled.
+			ForwardScannedInput(clientReader, serverWriter, safeLogW, sc, inputCfg.Action, inputCfg.OnParseError, blockedCh, policyCfg, bindingCfg, ks, chainMatcher)
+		} else if policyCfg != nil || bindingCfg != nil || chainMatcher != nil {
+			// Policy checking, session binding, or chain detection enabled but content scanning disabled.
 			// Route through ForwardScannedInput with pass-through content scanning.
 			// Use onParseError="block" (fail-closed) so malformed JSON can't bypass policy.
 			clientReader := NewStdioReader(clientIn)
 			serverWriter := NewStdioWriter(serverIn)
-			ForwardScannedInput(clientReader, serverWriter, safeLogW, sc, config.ActionWarn, config.ActionBlock, blockedCh, policyCfg, bindingCfg, ks)
+			ForwardScannedInput(clientReader, serverWriter, safeLogW, sc, config.ActionWarn, config.ActionBlock, blockedCh, policyCfg, bindingCfg, ks, chainMatcher)
 		} else {
 			close(blockedCh)                   // No input scanning — close channel immediately.
 			_, _ = io.Copy(serverIn, clientIn) //nolint:errcheck // broken pipe on server exit is expected

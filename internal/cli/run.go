@@ -293,9 +293,15 @@ Examples:
 					return fmt.Errorf("MCP listener bind %s: %w", mcpListen, lnErr)
 				}
 
+				// Initialize chain matcher for MCP listener if configured.
+				var mcpChainMatcher *mcp.ChainMatcher
+				if cfg.ToolChainDetection.Enabled {
+					mcpChainMatcher = mcp.NewChainMatcher(&cfg.ToolChainDetection).WithMetrics(m)
+				}
+
 				mcpErr = make(chan error, 1)
 				go func() {
-					mcpErr <- mcp.RunHTTPListenerProxy(ctx, mcpLn, mcpUpstream, cmd.ErrOrStderr(), sc, mcpApprover, inputCfg, toolCfg, policyCfg, ks)
+					mcpErr <- mcp.RunHTTPListenerProxy(ctx, mcpLn, mcpUpstream, cmd.ErrOrStderr(), sc, mcpApprover, inputCfg, toolCfg, policyCfg, ks, mcpChainMatcher)
 				}()
 			}
 

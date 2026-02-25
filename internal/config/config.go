@@ -65,6 +65,7 @@ type Config struct {
 	AdaptiveEnforcement AdaptiveEnforcement `yaml:"adaptive_enforcement"`
 	MCPSessionBinding   MCPSessionBinding   `yaml:"mcp_session_binding"`
 	KillSwitch          KillSwitch          `yaml:"kill_switch"`
+	ToolChainDetection  ToolChainDetection  `yaml:"tool_chain_detection"`
 	Internal            []string            `yaml:"internal"`
 }
 
@@ -249,6 +250,28 @@ type KillSwitch struct {
 	AllowlistIPs  []string `yaml:"allowlist_ips"`
 }
 
+// ToolChainDetection configures MCP tool call chain pattern detection.
+// Detects attack patterns in sequences of tool calls using subsequence
+// matching with a configurable max_gap constraint.
+type ToolChainDetection struct {
+	Enabled          bool                `yaml:"enabled"`
+	Action           string              `yaml:"action"`            // warn, block
+	WindowSize       int                 `yaml:"window_size"`       // max tool calls in history
+	WindowSeconds    int                 `yaml:"window_seconds"`    // time-based eviction
+	MaxGap           *int                `yaml:"max_gap"`           // max innocent calls between steps (nil = default 3)
+	ToolCategories   map[string][]string `yaml:"tool_categories"`   // category -> tool name patterns
+	PatternOverrides map[string]string   `yaml:"pattern_overrides"` // pattern name -> action override
+	CustomPatterns   []ChainPattern      `yaml:"custom_patterns"`
+}
+
+// ChainPattern defines a tool call chain to detect.
+type ChainPattern struct {
+	Name     string   `yaml:"name"`
+	Sequence []string `yaml:"sequence"` // category names
+	Severity string   `yaml:"severity"` // medium, high, critical
+	Action   string   `yaml:"action"`   // optional per-pattern override
+}
+
 // Load reads, parses, defaults, and validates a Pipelock config file.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // G304: path from caller
@@ -429,6 +452,21 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.KillSwitch.MetricsExempt == nil {
 		c.KillSwitch.MetricsExempt = ptrBool(true)
+	}
+
+	// Tool chain detection defaults
+	if c.ToolChainDetection.Enabled && c.ToolChainDetection.Action == "" {
+		c.ToolChainDetection.Action = ActionWarn
+	}
+	if c.ToolChainDetection.WindowSize <= 0 {
+		c.ToolChainDetection.WindowSize = 20
+	}
+	if c.ToolChainDetection.WindowSeconds <= 0 {
+		c.ToolChainDetection.WindowSeconds = 60
+	}
+	if c.ToolChainDetection.MaxGap == nil {
+		d := 3
+		c.ToolChainDetection.MaxGap = &d
 	}
 
 	// MCP session binding defaults
@@ -706,6 +744,55 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// Validate tool chain detection config
+	if c.ToolChainDetection.Enabled {
+		switch c.ToolChainDetection.Action {
+		case ActionWarn, ActionBlock:
+			// valid
+		default:
+			return fmt.Errorf("invalid tool_chain_detection.action %q: must be warn or block", c.ToolChainDetection.Action)
+		}
+		if c.ToolChainDetection.WindowSize <= 0 {
+			return fmt.Errorf("tool_chain_detection.window_size must be positive")
+		}
+		if c.ToolChainDetection.WindowSeconds <= 0 {
+			return fmt.Errorf("tool_chain_detection.window_seconds must be positive")
+		}
+		if c.ToolChainDetection.MaxGap != nil && *c.ToolChainDetection.MaxGap < 0 {
+			return fmt.Errorf("tool_chain_detection.max_gap must be non-negative")
+		}
+		for i, p := range c.ToolChainDetection.CustomPatterns {
+			if p.Name == "" {
+				return fmt.Errorf("tool_chain_detection.custom_patterns[%d] missing name", i)
+			}
+			if len(p.Sequence) < 2 {
+				return fmt.Errorf("tool_chain_detection.custom_patterns[%d] %q: sequence must have at least 2 steps", i, p.Name)
+			}
+			switch p.Severity {
+			case "medium", "high", "critical":
+				// valid
+			default:
+				return fmt.Errorf("tool_chain_detection.custom_patterns[%d] %q: invalid severity %q: must be medium, high, or critical", i, p.Name, p.Severity)
+			}
+			if p.Action != "" {
+				switch p.Action {
+				case ActionWarn, ActionBlock:
+					// valid
+				default:
+					return fmt.Errorf("tool_chain_detection.custom_patterns[%d] %q: invalid action %q: must be warn or block", i, p.Name, p.Action)
+				}
+			}
+		}
+		for name, action := range c.ToolChainDetection.PatternOverrides {
+			switch action {
+			case ActionWarn, ActionBlock:
+				// valid
+			default:
+				return fmt.Errorf("tool_chain_detection.pattern_overrides[%q]: invalid action %q: must be warn or block", name, action)
+			}
+		}
+	}
+
 	// Validate suppress entries have required fields
 	for i, s := range c.Suppress {
 		if s.Rule == "" {
@@ -867,6 +954,14 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		warnings = append(warnings, ReloadWarning{
 			Field:   "mcp_session_binding.enabled",
 			Message: "MCP session binding disabled",
+		})
+	}
+
+	// Tool chain detection disabled
+	if old.ToolChainDetection.Enabled && !updated.ToolChainDetection.Enabled {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "tool_chain_detection.enabled",
+			Message: "tool chain detection disabled",
 		})
 	}
 

@@ -15,6 +15,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
@@ -37,6 +38,7 @@ func RunHTTPProxy(
 	toolCfg *ToolScanConfig,
 	policyCfg *PolicyConfig,
 	ks *killswitch.Controller,
+	chainMatcher *chains.Matcher,
 ) error {
 	// Create a child context so we can stop the GET stream when stdin EOF is reached.
 	ctx, cancel := context.WithCancel(ctx)
@@ -96,7 +98,7 @@ func RunHTTPProxy(
 
 		// Input scanning — call ScanRequest and CheckRequest directly.
 		// The sequential (non-concurrent) architecture means no channel needed.
-		if blocked := scanHTTPInput(msg, sc, safeLogW, inputCfg, policyCfg); blocked != nil {
+		if blocked := scanHTTPInput(msg, sc, safeLogW, inputCfg, policyCfg, chainMatcher, "default"); blocked != nil {
 			if !blocked.IsNotification {
 				resp := blockRequestResponse(*blocked)
 				if wErr := safeClientOut.WriteMessage(resp); wErr != nil {
@@ -155,7 +157,7 @@ func RunHTTPProxy(
 // Returns a *BlockedRequest if the message should be blocked, nil if clean.
 // This is the HTTP proxy equivalent of ForwardScannedInput's per-message logic,
 // but returns a verdict instead of writing to a channel.
-func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *InputScanConfig, policyCfg *PolicyConfig) *BlockedRequest {
+func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *InputScanConfig, policyCfg *PolicyConfig, chainMatcher *chains.Matcher, sessionKey string) *BlockedRequest {
 	// Determine input scanning parameters.
 	action := config.ActionWarn
 	onParseError := config.ActionBlock
@@ -171,10 +173,17 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 		verdict = ScanRequest(msg, sc, action, onParseError)
 	} else {
 		verdict = InputVerdict{Clean: true}
-		// When input scanning is disabled, extract the ID from the raw message
-		// so policy-blocked responses include the correct request ID.
-		if policyCfg != nil {
+		// When input scanning is disabled, extract enough metadata from the
+		// raw message so policy and chain detection still work.
+		if policyCfg != nil || chainMatcher != nil {
 			verdict.ID = extractRPCID(msg)
+			// Extract method for chain detection even when content scanning is off.
+			var env struct {
+				Method string `json:"method"`
+			}
+			if json.Unmarshal(msg, &env) == nil {
+				verdict.Method = env.Method
+			}
 		}
 	}
 
@@ -182,6 +191,32 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 	policyVerdict := PolicyVerdict{}
 	if policyCfg != nil {
 		policyVerdict = policyCfg.CheckRequest(msg)
+	}
+
+	// Chain detection: check if this tool call matches an attack pattern.
+	chainAction := ""
+	chainReason := ""
+	if chainMatcher != nil && verdict.Method == "tools/call" { //nolint:goconst // MCP method name used across packages
+		toolName := extractToolCallName(msg)
+		if toolName != "" {
+			cv := chainMatcher.Record(sessionKey, toolName)
+			if cv.Matched {
+				_, _ = fmt.Fprintf(logW, "pipelock: chain detected: %s (severity=%s, action=%s)\n",
+					cv.PatternName, cv.Severity, cv.Action)
+				if cv.Action == config.ActionBlock {
+					rpcID := extractRPCID(msg)
+					return &BlockedRequest{
+						ID:             rpcID,
+						IsNotification: len(rpcID) == 0,
+						LogMessage:     fmt.Sprintf("chain pattern %q blocked", cv.PatternName),
+						ErrorCode:      -32004,
+						ErrorMessage:   fmt.Sprintf("tool call blocked: chain pattern %q detected", cv.PatternName),
+					}
+				}
+				chainAction = cv.Action
+				chainReason = "chain:" + cv.PatternName
+			}
+		}
 	}
 
 	// Parse error — always block.
@@ -195,8 +230,8 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 		}
 	}
 
-	// Both clean — proceed.
-	if verdict.Clean && !policyVerdict.Matched {
+	// All clean — proceed.
+	if verdict.Clean && !policyVerdict.Matched && chainAction == "" {
 		return nil
 	}
 
@@ -211,6 +246,9 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 	for _, r := range policyVerdict.Rules {
 		reasons = append(reasons, "policy:"+r)
 	}
+	if chainReason != "" {
+		reasons = append(reasons, chainReason)
+	}
 
 	// Determine effective action (strictest wins).
 	effectiveAction := ""
@@ -219,6 +257,9 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 	}
 	if policyVerdict.Matched {
 		effectiveAction = policy.StricterAction(effectiveAction, policyVerdict.Action)
+	}
+	if chainAction != "" {
+		effectiveAction = policy.StricterAction(effectiveAction, chainAction)
 	}
 
 	isNotification := len(verdict.ID) == 0
@@ -409,6 +450,7 @@ func RunHTTPListenerProxy(
 	toolCfg *ToolScanConfig,
 	policyCfg *PolicyConfig,
 	ks *killswitch.Controller,
+	chainMatcher *chains.Matcher,
 ) error {
 	safeLogW := &syncWriter{w: logW}
 
@@ -531,8 +573,15 @@ func RunHTTPListenerProxy(
 			}
 		}
 
-		// Input scanning: DLP, injection, policy.
-		if blocked := scanHTTPInput(body, sc, safeLogW, inputCfg, policyCfg); blocked != nil {
+		// Use Mcp-Session-Id header as chain detection session key so
+		// concurrent clients don't share tool call history.
+		chainSessionKey := r.Header.Get("Mcp-Session-Id")
+		if chainSessionKey == "" {
+			chainSessionKey = r.RemoteAddr
+		}
+
+		// Input scanning: DLP, injection, policy, chain detection.
+		if blocked := scanHTTPInput(body, sc, safeLogW, inputCfg, policyCfg, chainMatcher, chainSessionKey); blocked != nil {
 			w.Header().Set("Content-Type", "application/json")
 			if blocked.IsNotification {
 				w.WriteHeader(http.StatusAccepted)

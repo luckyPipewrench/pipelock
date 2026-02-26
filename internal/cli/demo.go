@@ -12,6 +12,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -311,12 +312,12 @@ func buildScenarios() []scenario {
 				if err != nil {
 					return false, fmt.Sprintf("marshal error: %v", err)
 				}
-				toolCfg := &mcp.ToolScanConfig{
-					Baseline:    mcp.NewToolBaseline(),
+				toolCfg := &tools.ToolScanConfig{
+					Baseline:    tools.NewToolBaseline(),
 					Action:      config.ActionBlock,
 					DetectDrift: false,
 				}
-				result := mcp.ScanTools(line, sc, toolCfg)
+				result := tools.ScanTools(line, sc, toolCfg)
 				if !result.Clean && len(result.Matches) > 0 {
 					m := result.Matches[0]
 					reasons := make([]string, 0, len(m.ToolPoison)+len(m.Injection))

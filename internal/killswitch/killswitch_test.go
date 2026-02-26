@@ -457,7 +457,7 @@ func TestController_MCPResponseFormat(t *testing.T) {
 	if json.Unmarshal(request, &req) == nil {
 		reqID = req.ID
 	}
-	errResp := KillSwitchErrorResponse(reqID, d.Message)
+	errResp := ErrorResponse(reqID, d.Message)
 
 	// Parse and verify format.
 	var parsed struct {
@@ -572,7 +572,7 @@ func TestController_SentinelStatError(t *testing.T) {
 	}
 }
 
-func TestController_KillSwitchErrorResponse(t *testing.T) {
+func TestController_ErrorResponse(t *testing.T) {
 	tests := []struct {
 		name    string
 		id      json.RawMessage
@@ -605,7 +605,7 @@ func TestController_KillSwitchErrorResponse(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			resp := KillSwitchErrorResponse(tt.id, tt.message)
+			resp := ErrorResponse(tt.id, tt.message)
 
 			var parsed struct {
 				JSONRPC string          `json:"jsonrpc"`

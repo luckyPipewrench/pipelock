@@ -255,6 +255,7 @@ func TestCheckConfigSuppression(t *testing.T) {
 		name       string
 		file       string
 		rule       string
+		entries    []config.SuppressEntry
 		suppressed bool
 		reason     string
 	}{
@@ -262,6 +263,7 @@ func TestCheckConfigSuppression(t *testing.T) {
 			name:       "exact path match",
 			file:       "app/models/client.rb",
 			rule:       "Credential in URL",
+			entries:    entries,
 			suppressed: true,
 			reason:     "Instance var",
 		},
@@ -269,6 +271,7 @@ func TestCheckConfigSuppression(t *testing.T) {
 			name:       "glob path match",
 			file:       "config/initializers/auth.rb",
 			rule:       "Credential in URL",
+			entries:    entries,
 			suppressed: true,
 			reason:     "Env var names",
 		},
@@ -276,6 +279,7 @@ func TestCheckConfigSuppression(t *testing.T) {
 			name:       "directory prefix match",
 			file:       "vendor/gem/lib.rb",
 			rule:       "Anthropic API Key",
+			entries:    entries,
 			suppressed: true,
 			reason:     "",
 		},
@@ -283,35 +287,35 @@ func TestCheckConfigSuppression(t *testing.T) {
 			name:       "wrong rule not suppressed",
 			file:       "app/models/client.rb",
 			rule:       "Anthropic API Key",
+			entries:    entries,
 			suppressed: false,
 		},
 		{
 			name:       "wrong path not suppressed",
 			file:       "app/controllers/main.rb",
 			rule:       "Credential in URL",
+			entries:    entries,
 			suppressed: false,
 		},
 		{
 			name:       "empty file not suppressed",
 			file:       "",
 			rule:       "Credential in URL",
+			entries:    entries,
 			suppressed: false,
 		},
 		{
 			name:       "no entries not suppressed",
 			file:       "app/models/client.rb",
 			rule:       "Credential in URL",
+			entries:    nil,
 			suppressed: false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var ents []config.SuppressEntry
-			if tt.name != "no entries not suppressed" {
-				ents = entries
-			}
-			r := checkConfigSuppression(tt.file, tt.rule, ents)
+			r := checkConfigSuppression(tt.file, tt.rule, tt.entries)
 			if r.suppressed != tt.suppressed {
 				t.Errorf("expected suppressed=%v, got %v", tt.suppressed, r.suppressed)
 			}

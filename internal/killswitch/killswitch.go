@@ -6,6 +6,7 @@ package killswitch
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
@@ -66,9 +67,12 @@ func buildRuntime(cfg *config.Config) *runtime {
 
 	for _, cidr := range cfg.KillSwitch.AllowlistIPs {
 		_, ipNet, err := net.ParseCIDR(cidr)
-		if err == nil {
-			rt.allowlistNets = append(rt.allowlistNets, ipNet)
+		if err != nil {
+			// config.Validate guarantees all CIDRs are valid. If we reach
+			// here, it is a programming error in the reload path.
+			panic(fmt.Sprintf("BUG: kill switch CIDR %q failed after validation: %v", cidr, err))
 		}
+		rt.allowlistNets = append(rt.allowlistNets, ipNet)
 	}
 
 	return rt
@@ -91,8 +95,11 @@ func (c *Controller) IsActiveHTTP(r *http.Request) Decision {
 
 	// Check IP allowlist.
 	if len(rt.allowlistNets) > 0 {
-		clientIP := extractIP(r.RemoteAddr)
-		if clientIP != nil {
+		host, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil {
+			host = r.RemoteAddr
+		}
+		if clientIP := net.ParseIP(host); clientIP != nil {
 			for _, ipNet := range rt.allowlistNets {
 				if ipNet.Contains(clientIP) {
 					return Decision{}
@@ -160,15 +167,6 @@ func (c *Controller) computeDecision(rt *runtime) Decision {
 	return Decision{}
 }
 
-// extractIP parses the IP from a RemoteAddr (host:port or bare IP).
-func extractIP(remoteAddr string) net.IP {
-	host, _, err := net.SplitHostPort(remoteAddr)
-	if err != nil {
-		host = remoteAddr
-	}
-	return net.ParseIP(host)
-}
-
 // hasID checks if a JSON message contains an "id" field (i.e., is a request,
 // not a notification). A notification has no "id" or "id": null.
 func hasID(msg []byte) bool {
@@ -181,9 +179,9 @@ func hasID(msg []byte) bool {
 	return len(env.ID) > 0 && string(env.ID) != "null"
 }
 
-// KillSwitchErrorResponse builds a JSON-RPC 2.0 error response for a kill
-// switch denial. Uses error code -32004 (implementation-defined range).
-func KillSwitchErrorResponse(id json.RawMessage, message string) []byte {
+// ErrorResponse builds a JSON-RPC 2.0 error response for a kill switch
+// denial. Uses error code -32004 (implementation-defined range).
+func ErrorResponse(id json.RawMessage, message string) []byte {
 	resp := struct {
 		JSONRPC string          `json:"jsonrpc"`
 		ID      json.RawMessage `json:"id"`

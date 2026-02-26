@@ -133,7 +133,7 @@ func TestBuiltInPatterns(t *testing.T) {
 		MaxGap:        intPtr(3),
 	}
 
-	m := NewMatcher(cfg)
+	m := New(cfg)
 
 	// Verify all 8 built-in patterns exist.
 	expectedPatterns := map[string]struct{}{
@@ -170,7 +170,7 @@ func TestMatcher_Record(t *testing.T) {
 		WindowSeconds: 60,
 		MaxGap:        intPtr(3),
 	}
-	m := NewMatcher(cfg)
+	m := New(cfg)
 
 	// Record a read followed by exec — should match "read-then-exec"
 	v1 := m.Record("session1", "read_file") //nolint:goconst // test value
@@ -202,7 +202,7 @@ func TestMatcher_WindowEviction(t *testing.T) {
 		WindowSeconds: 60,
 		MaxGap:        intPtr(3),
 	}
-	m := NewMatcher(cfg)
+	m := New(cfg)
 
 	// Fill window with reads, then overflow
 	m.Record("s1", "read_file")
@@ -234,7 +234,7 @@ func TestMatcher_WindowEviction(t *testing.T) {
 		WindowSeconds: 1, // 1 second window
 		MaxGap:        intPtr(3),
 	}
-	m2 := NewMatcher(cfg2)
+	m2 := New(cfg2)
 
 	m2.Record("s2", "read_file")
 	time.Sleep(1100 * time.Millisecond) // Wait for window to expire
@@ -262,7 +262,7 @@ func TestMatcher_CustomPatterns(t *testing.T) {
 			},
 		},
 	}
-	m := NewMatcher(cfg)
+	m := New(cfg)
 
 	m.Record("s1", "read_file")
 	m.Record("s1", "list_files")
@@ -292,7 +292,7 @@ func TestMatcher_PatternOverrides(t *testing.T) {
 			"read-then-exec": "block", //nolint:goconst // test value
 		},
 	}
-	m := NewMatcher(cfg)
+	m := New(cfg)
 
 	m.Record("s1", "read_file")
 	v := m.Record("s1", "bash_command")
@@ -315,7 +315,7 @@ func TestMatcher_HighestSeverity(t *testing.T) {
 		WindowSeconds: 60,
 		MaxGap:        intPtr(5),
 	}
-	m := NewMatcher(cfg)
+	m := New(cfg)
 
 	m.Record("s1", "read_file")
 	m.Record("s1", "write_file")
@@ -339,7 +339,7 @@ func TestMatcher_UnknownCategory(t *testing.T) {
 		WindowSeconds: 60,
 		MaxGap:        intPtr(3),
 	}
-	m := NewMatcher(cfg)
+	m := New(cfg)
 
 	// Unknown tools should not be recorded
 	v := m.Record("s1", "foobar_baz")
@@ -369,7 +369,7 @@ func TestMatcher_Concurrent(t *testing.T) {
 		WindowSeconds: 60,
 		MaxGap:        intPtr(3),
 	}
-	m := NewMatcher(cfg)
+	m := New(cfg)
 
 	var wg sync.WaitGroup
 	for i := range 50 {
@@ -397,7 +397,7 @@ func TestMatcher_SessionIsolation(t *testing.T) {
 		WindowSeconds: 60,
 		MaxGap:        intPtr(3),
 	}
-	m := NewMatcher(cfg)
+	m := New(cfg)
 
 	// Session A: record read
 	m.Record("sessionA", "read_file")
@@ -421,7 +421,7 @@ func TestMatcher_NilSafe(t *testing.T) {
 	cfg := &config.ToolChainDetection{
 		Enabled: false,
 	}
-	m := NewMatcher(cfg)
+	m := New(cfg)
 
 	v := m.Record("s1", "read_file")
 	if v.Matched {
@@ -445,7 +445,7 @@ func TestMatcher_CustomPatternAction(t *testing.T) {
 			},
 		},
 	}
-	m := NewMatcher(cfg)
+	m := New(cfg)
 
 	m.Record("s1", "env_get")
 	v := m.Record("s1", "fetch_url")
@@ -470,7 +470,7 @@ func TestMatcher_MaxGapRetry(t *testing.T) {
 		WindowSeconds: 60,
 		MaxGap:        intPtr(1),
 	}
-	m := NewMatcher(cfg)
+	m := New(cfg)
 
 	// First read, then too many gaps before exec
 	m.Record("s1", "read_file")    // read at pos 0
@@ -492,7 +492,7 @@ func TestMatcher_MaxGapRetry(t *testing.T) {
 
 func TestMatcher_NilConfig(t *testing.T) {
 	// nil config should produce a no-op matcher (not panic).
-	m := NewMatcher(nil)
+	m := New(nil)
 	v := m.Record("s1", "read_file")
 	if v.Matched {
 		t.Error("nil config matcher should never match")
@@ -512,7 +512,7 @@ func TestMatcher_WithMetrics(t *testing.T) {
 		WindowSeconds: 60,
 		MaxGap:        intPtr(3),
 	}
-	m := NewMatcher(cfg).WithMetrics(recorder)
+	m := New(cfg).WithMetrics(recorder)
 
 	m.Record("s1", "read_file")
 	m.Record("s1", "bash_command")
@@ -553,7 +553,7 @@ func TestMatcher_CustomPatternOverride(t *testing.T) {
 			"my-custom": "block",
 		},
 	}
-	m := NewMatcher(cfg)
+	m := New(cfg)
 
 	m.Record("s1", "read_file")
 	v := m.Record("s1", "write_file")

@@ -7,8 +7,8 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
-// ChainVerdict is the result of checking a tool call against chain patterns.
-type ChainVerdict struct {
+// Verdict describes the result of checking a tool call against chain patterns.
+type Verdict struct {
 	Matched     bool
 	PatternName string
 	Severity    string // medium, high, critical
@@ -74,9 +74,9 @@ var actionRank = map[string]int{
 	"block": 2,
 }
 
-// NewMatcher creates a Matcher from the tool chain detection config.
+// New creates a Matcher from the tool chain detection config.
 // Returns a no-op matcher if the config is nil or disabled.
-func NewMatcher(cfg *config.ToolChainDetection) *Matcher {
+func New(cfg *config.ToolChainDetection) *Matcher {
 	if cfg == nil {
 		cfg = &config.ToolChainDetection{}
 	}
@@ -132,15 +132,15 @@ func (m *Matcher) WithMetrics(mr MetricsRecorder) *Matcher {
 // all patterns against the updated history. Returns the highest-severity match.
 //
 // If the tool classifies as "unknown", it is not recorded and no match is returned.
-func (m *Matcher) Record(sessionKey, toolName string) ChainVerdict {
+func (m *Matcher) Record(sessionKey, toolName string) Verdict {
 	if !m.cfg.Enabled || len(m.patterns) == 0 {
-		return ChainVerdict{}
+		return Verdict{}
 	}
 
 	// Classify tool.
 	category := classifyTool(toolName, m.cfg)
 	if category == "unknown" {
-		return ChainVerdict{}
+		return Verdict{}
 	}
 
 	// Get or create session history.
@@ -195,17 +195,17 @@ func (m *Matcher) evict(sess *sessionHistory, now time.Time) {
 // matchPatterns checks all patterns against the session history.
 // Returns the highest-severity match (critical > high > medium),
 // breaking ties by strictest action (block > warn).
-func (m *Matcher) matchPatterns(sess *sessionHistory) ChainVerdict {
-	var best ChainVerdict
+func (m *Matcher) matchPatterns(sess *sessionHistory) Verdict {
+	var best Verdict
 
-	maxGap := 3 // default, normally set by ApplyDefaults
+	maxGap := config.DefaultMaxGap
 	if m.cfg.MaxGap != nil {
 		maxGap = *m.cfg.MaxGap
 	}
 	for _, p := range m.patterns {
 		if subsequenceMatch(sess.records, p.sequence, maxGap) {
 			if !best.Matched || isBetterMatch(p, best) {
-				best = ChainVerdict{
+				best = Verdict{
 					Matched:     true,
 					PatternName: p.name,
 					Severity:    p.severity,
@@ -220,7 +220,7 @@ func (m *Matcher) matchPatterns(sess *sessionHistory) ChainVerdict {
 
 // isBetterMatch returns true if pattern p has higher severity or stricter
 // action than the current best verdict.
-func isBetterMatch(p pattern, best ChainVerdict) bool {
+func isBetterMatch(p pattern, best Verdict) bool {
 	ps := severityRank[p.severity]
 	bs := severityRank[best.Severity]
 	if ps != bs {

@@ -226,8 +226,8 @@ func TestReplaceInvisibleWithSpace(t *testing.T) {
 	}
 }
 
-// TestNormalizeLeetspeak verifies all leet substitutions.
-func TestNormalizeLeetspeak(t *testing.T) {
+// TestLeetspeak verifies all leet substitutions.
+func TestLeetspeak(t *testing.T) {
 	tests := []struct {
 		name  string
 		input string
@@ -247,16 +247,16 @@ func TestNormalizeLeetspeak(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := NormalizeLeetspeak(tt.input)
+			got := Leetspeak(tt.input)
 			if got != tt.want {
-				t.Errorf("NormalizeLeetspeak(%q) = %q, want %q", tt.input, got, tt.want)
+				t.Errorf("Leetspeak(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
 	}
 }
 
-// TestNormalizeWhitespace verifies exotic whitespace is mapped to ASCII space.
-func TestNormalizeWhitespace(t *testing.T) {
+// TestWhitespace verifies exotic whitespace is mapped to ASCII space.
+func TestWhitespace(t *testing.T) {
 	tests := []struct {
 		name  string
 		input string
@@ -272,9 +272,9 @@ func TestNormalizeWhitespace(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := NormalizeWhitespace(tt.input)
+			got := Whitespace(tt.input)
 			if got != tt.want {
-				t.Errorf("NormalizeWhitespace(%q) = %q, want %q", tt.input, got, tt.want)
+				t.Errorf("Whitespace(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
 	}

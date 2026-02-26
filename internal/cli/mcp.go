@@ -16,6 +16,9 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -218,9 +221,9 @@ Environment passthrough (subprocess mode only):
 				cfg.MCPToolScanning.DetectDrift = true
 			}
 
-			var toolCfg *mcp.ToolScanConfig
+			var toolCfg *tools.ToolScanConfig
 			if cfg.MCPToolScanning.Enabled {
-				toolCfg = &mcp.ToolScanConfig{
+				toolCfg = &tools.ToolScanConfig{
 					Action:      cfg.MCPToolScanning.Action,
 					DetectDrift: cfg.MCPToolScanning.DetectDrift,
 				}
@@ -237,18 +240,18 @@ Environment passthrough (subprocess mode only):
 				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "pipelock: auto-enabling MCP tool call policy for proxy mode")
 				cfg.MCPToolPolicy.Enabled = true
 				cfg.MCPToolPolicy.Action = config.ActionWarn
-				cfg.MCPToolPolicy.Rules = mcp.DefaultToolPolicyRules()
+				cfg.MCPToolPolicy.Rules = policy.DefaultToolPolicyRules()
 			}
 
-			var policyCfg *mcp.PolicyConfig
+			var policyCfg *policy.Config
 			if cfg.MCPToolPolicy.Enabled {
-				policyCfg = mcp.NewPolicyConfig(cfg.MCPToolPolicy)
+				policyCfg = policy.New(cfg.MCPToolPolicy)
 			}
 
 			// Initialize chain matcher if tool chain detection is configured.
-			var chainMatcher *mcp.ChainMatcher
+			var chainMatcher *chains.Matcher
 			if cfg.ToolChainDetection.Enabled {
-				chainMatcher = mcp.NewChainMatcher(&cfg.ToolChainDetection)
+				chainMatcher = chains.New(&cfg.ToolChainDetection)
 			}
 
 			toolAction := "disabled"

@@ -10,67 +10,9 @@ import (
 	"io"
 	"strings"
 
-	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
-	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
-	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
-)
-
-// Type aliases re-export sub-package types so existing consumers of mcp.X
-// continue to work without import changes. These are true aliases (not new
-// types), so values are interchangeable with the originals.
-type (
-	// jsonrpc types.
-	ContentBlock = jsonrpc.ContentBlock
-	ToolResult   = jsonrpc.ToolResult
-	RPCError     = jsonrpc.RPCError
-	RPCResponse  = jsonrpc.RPCResponse
-	ScanVerdict  = jsonrpc.ScanVerdict
-
-	// transport types.
-	MessageReader = transport.MessageReader
-	MessageWriter = transport.MessageWriter
-
-	// tools types.
-	ToolScanConfig = tools.ToolScanConfig
-	ToolBaseline   = tools.ToolBaseline
-
-	// policy types.
-	PolicyConfig       = policy.PolicyConfig
-	PolicyVerdict      = policy.PolicyVerdict
-	CompiledPolicyRule = policy.CompiledPolicyRule
-
-	// chains types.
-	ChainMatcher = chains.Matcher
-	ChainVerdict = chains.ChainVerdict
-)
-
-// Package-level aliases so existing test files and remaining code in this
-// package can reference the constants without qualifying with sub-packages.
-const (
-	maxLineSize    = transport.MaxLineSize
-	jsonRPCVersion = jsonrpc.Version //nolint:goconst // alias for backward compat
-	jsonNull       = jsonrpc.Null    //nolint:goconst // alias for backward compat
-)
-
-// Re-export constructor functions for backward compatibility.
-var (
-	ExtractText = jsonrpc.ExtractText
-
-	NewStdioReader = transport.NewStdioReader
-	NewStdioWriter = transport.NewStdioWriter
-	NewHTTPClient  = transport.NewHTTPClient
-
-	ScanTools       = tools.ScanTools
-	NewToolBaseline = tools.NewToolBaseline
-	LogToolFindings = tools.LogToolFindings
-
-	NewPolicyConfig        = policy.NewPolicyConfig
-	DefaultToolPolicyRules = policy.DefaultToolPolicyRules
-
-	NewChainMatcher = chains.NewMatcher
 )
 
 // ScanResponse parses a single JSON-RPC 2.0 response and scans its text
@@ -78,19 +20,19 @@ var (
 // and the Error field set. Both result content and error messages are scanned.
 // Server notifications (method+params, no id) are also scanned.
 // Batch responses (JSON arrays) are detected and each element scanned individually.
-func ScanResponse(line []byte, sc *scanner.Scanner) ScanVerdict {
+func ScanResponse(line []byte, sc *scanner.Scanner) jsonrpc.ScanVerdict {
 	// Detect batch response (JSON-RPC 2.0 batch = JSON array).
 	if len(line) > 0 && line[0] == '[' {
 		return scanBatch(line, sc)
 	}
 
-	var rpc RPCResponse
+	var rpc jsonrpc.RPCResponse
 	if err := json.Unmarshal(line, &rpc); err != nil {
-		return ScanVerdict{Clean: false, Error: fmt.Sprintf("invalid JSON: %v", err)}
+		return jsonrpc.ScanVerdict{Clean: false, Error: fmt.Sprintf("invalid JSON: %v", err)}
 	}
 
 	if rpc.JSONRPC != jsonrpc.Version {
-		return ScanVerdict{
+		return jsonrpc.ScanVerdict{
 			ID:    rpc.ID,
 			Clean: false,
 			Error: fmt.Sprintf("not a JSON-RPC 2.0 response: jsonrpc=%q", rpc.JSONRPC),
@@ -98,26 +40,26 @@ func ScanResponse(line []byte, sc *scanner.Scanner) ScanVerdict {
 	}
 
 	// Extract text from result (handles standard ToolResult and arbitrary shapes).
-	text := ExtractText(rpc.Result)
+	text := jsonrpc.ExtractText(rpc.Result)
 
 	// Also scan error messages for prompt injection.
 	// Attackers can inject via error.message and error.data returned by malicious
 	// tool servers. Falls back to recursive string extraction for non-standard
 	// error shapes (e.g., plain string error), matching the Result field pattern.
 	if len(rpc.Error) > 0 && string(rpc.Error) != jsonrpc.Null {
-		var rpcErr RPCError
+		var rpcErr jsonrpc.RPCError
 		if err := json.Unmarshal(rpc.Error, &rpcErr); err == nil && rpcErr.Message != "" {
 			if text != "" {
 				text += "\n"
 			}
 			text += rpcErr.Message
 			// Also scan error.data if present.
-			if errData := ExtractText(rpcErr.Data); errData != "" {
+			if errData := jsonrpc.ExtractText(rpcErr.Data); errData != "" {
 				text += "\n" + errData
 			}
 		} else {
 			// Fallback: extract all strings from non-standard error shapes.
-			if errText := ExtractText(rpc.Error); errText != "" {
+			if errText := jsonrpc.ExtractText(rpc.Error); errText != "" {
 				if text != "" {
 					text += "\n"
 				}
@@ -129,7 +71,7 @@ func ScanResponse(line []byte, sc *scanner.Scanner) ScanVerdict {
 	// Scan notification params for injection content.
 	// MCP server notifications (method+params, no id) can carry payloads.
 	if len(rpc.Params) > 0 && string(rpc.Params) != jsonrpc.Null {
-		if paramsText := ExtractText(rpc.Params); paramsText != "" {
+		if paramsText := jsonrpc.ExtractText(rpc.Params); paramsText != "" {
 			if text != "" {
 				text += "\n"
 			}
@@ -138,15 +80,15 @@ func ScanResponse(line []byte, sc *scanner.Scanner) ScanVerdict {
 	}
 
 	if text == "" {
-		return ScanVerdict{ID: rpc.ID, Clean: true}
+		return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: true}
 	}
 
 	result := sc.ScanResponse(text)
 	if result.Clean {
-		return ScanVerdict{ID: rpc.ID, Clean: true}
+		return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: true}
 	}
 
-	return ScanVerdict{
+	return jsonrpc.ScanVerdict{
 		ID:      rpc.ID,
 		Clean:   false,
 		Action:  sc.ResponseAction(),
@@ -156,14 +98,14 @@ func ScanResponse(line []byte, sc *scanner.Scanner) ScanVerdict {
 
 // scanBatch scans a JSON-RPC 2.0 batch response (array of responses).
 // Returns a combined verdict aggregating matches from all elements.
-func scanBatch(line []byte, sc *scanner.Scanner) ScanVerdict {
+func scanBatch(line []byte, sc *scanner.Scanner) jsonrpc.ScanVerdict {
 	var batch []json.RawMessage
 	if err := json.Unmarshal(line, &batch); err != nil {
-		return ScanVerdict{Clean: false, Error: fmt.Sprintf("invalid JSON batch: %v", err)}
+		return jsonrpc.ScanVerdict{Clean: false, Error: fmt.Sprintf("invalid JSON batch: %v", err)}
 	}
 
 	if len(batch) == 0 {
-		return ScanVerdict{Clean: true}
+		return jsonrpc.ScanVerdict{Clean: true}
 	}
 
 	var allMatches []scanner.ResponseMatch
@@ -189,11 +131,11 @@ func scanBatch(line []byte, sc *scanner.Scanner) ScanVerdict {
 
 	if len(allMatches) == 0 {
 		if hasError {
-			return ScanVerdict{ID: firstID, Clean: false, Error: "one or more batch elements failed to parse"}
+			return jsonrpc.ScanVerdict{ID: firstID, Clean: false, Error: "one or more batch elements failed to parse"}
 		}
-		return ScanVerdict{ID: firstID, Clean: true}
+		return jsonrpc.ScanVerdict{ID: firstID, Clean: true}
 	}
-	return ScanVerdict{
+	return jsonrpc.ScanVerdict{
 		ID: firstID, Clean: false, Action: action, Matches: allMatches,
 	}
 }
@@ -249,7 +191,7 @@ func ScanStream(r io.Reader, w io.Writer, sc *scanner.Scanner, jsonOutput bool) 
 
 // writeTextVerdict writes a human-readable verdict to w.
 // Clean lines produce no output; only findings are reported.
-func writeTextVerdict(w io.Writer, v ScanVerdict) error {
+func writeTextVerdict(w io.Writer, v jsonrpc.ScanVerdict) error {
 	if v.Clean {
 		return nil
 	}

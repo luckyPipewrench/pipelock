@@ -11,6 +11,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
+	mcptools "github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -726,12 +727,12 @@ func buildTestVectors() []testVector {
 					},
 				}
 				payload := buildMCPToolsList(1, tools)
-				toolCfg := &mcp.ToolScanConfig{
-					Baseline:    mcp.NewToolBaseline(),
+				toolCfg := &mcptools.ToolScanConfig{
+					Baseline:    mcptools.NewToolBaseline(),
 					Action:      config.ActionBlock,
 					DetectDrift: false,
 				}
-				r := mcp.ScanTools(payload, sc, toolCfg)
+				r := mcptools.ScanTools(payload, sc, toolCfg)
 				if !r.Clean && len(r.Matches) > 0 {
 					m := r.Matches[0]
 					reasons := make([]string, 0, len(m.ToolPoison)+len(m.Injection))
@@ -755,12 +756,12 @@ func buildTestVectors() []testVector {
 					},
 				}
 				payload := buildMCPToolsList(2, tools)
-				toolCfg := &mcp.ToolScanConfig{
-					Baseline:    mcp.NewToolBaseline(),
+				toolCfg := &mcptools.ToolScanConfig{
+					Baseline:    mcptools.NewToolBaseline(),
 					Action:      config.ActionBlock,
 					DetectDrift: false,
 				}
-				r := mcp.ScanTools(payload, sc, toolCfg)
+				r := mcptools.ScanTools(payload, sc, toolCfg)
 				if !r.Clean && len(r.Matches) > 0 {
 					m := r.Matches[0]
 					reasons := make([]string, 0, len(m.ToolPoison)+len(m.Injection))
@@ -792,12 +793,12 @@ func buildTestVectors() []testVector {
 					},
 				}
 				payload := buildMCPToolsList(3, tools)
-				toolCfg := &mcp.ToolScanConfig{
-					Baseline:    mcp.NewToolBaseline(),
+				toolCfg := &mcptools.ToolScanConfig{
+					Baseline:    mcptools.NewToolBaseline(),
 					Action:      config.ActionBlock,
 					DetectDrift: false,
 				}
-				r := mcp.ScanTools(payload, sc, toolCfg)
+				r := mcptools.ScanTools(payload, sc, toolCfg)
 				if r.Clean {
 					return vectorResult{Blocked: false, Expected: false, Detail: "clean"}
 				}

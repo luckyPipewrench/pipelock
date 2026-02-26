@@ -16,6 +16,9 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -264,7 +267,7 @@ Examples:
 					cmd.PrintErrln("pipelock: auto-enabling MCP tool call policy for listener mode")
 					cfg.MCPToolPolicy.Enabled = true
 					cfg.MCPToolPolicy.Action = config.ActionWarn
-					cfg.MCPToolPolicy.Rules = mcp.DefaultToolPolicyRules()
+					cfg.MCPToolPolicy.Rules = policy.DefaultToolPolicyRules()
 				}
 
 				inputCfg := &mcp.InputScanConfig{
@@ -272,16 +275,16 @@ Examples:
 					Action:       cfg.MCPInputScanning.Action,
 					OnParseError: cfg.MCPInputScanning.OnParseError,
 				}
-				var toolCfg *mcp.ToolScanConfig
+				var toolCfg *tools.ToolScanConfig
 				if cfg.MCPToolScanning.Enabled {
-					toolCfg = &mcp.ToolScanConfig{
+					toolCfg = &tools.ToolScanConfig{
 						Action:      cfg.MCPToolScanning.Action,
 						DetectDrift: cfg.MCPToolScanning.DetectDrift,
 					}
 				}
-				var policyCfg *mcp.PolicyConfig
+				var policyCfg *policy.Config
 				if cfg.MCPToolPolicy.Enabled {
-					policyCfg = mcp.NewPolicyConfig(cfg.MCPToolPolicy)
+					policyCfg = policy.New(cfg.MCPToolPolicy)
 				}
 
 				var mcpApprover *hitl.Approver
@@ -299,9 +302,9 @@ Examples:
 				}
 
 				// Initialize chain matcher for MCP listener if configured.
-				var mcpChainMatcher *mcp.ChainMatcher
+				var mcpChainMatcher *chains.Matcher
 				if cfg.ToolChainDetection.Enabled {
-					mcpChainMatcher = mcp.NewChainMatcher(&cfg.ToolChainDetection).WithMetrics(m)
+					mcpChainMatcher = chains.New(&cfg.ToolChainDetection).WithMetrics(m)
 				}
 
 				mcpErr = make(chan error, 1)

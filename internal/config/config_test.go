@@ -2772,68 +2772,73 @@ func TestIsSuppressed(t *testing.T) {
 	}
 
 	tests := []struct {
-		name   string
-		rule   string
-		target string
-		want   bool
+		name    string
+		rule    string
+		target  string
+		entries []SuppressEntry
+		want    bool
 	}{
 		{
-			name:   "empty target",
-			rule:   "Credential in URL", //nolint:goconst // test value
-			target: "",
-			want:   false,
+			name:    "empty target",
+			rule:    "Credential in URL", //nolint:goconst // test value
+			target:  "",
+			entries: entries,
+			want:    false,
 		},
 		{
-			name:   "empty entries",
-			rule:   "Credential in URL",
-			target: "app/models/client.rb",
-			want:   false,
+			name:    "empty entries",
+			rule:    "Credential in URL",
+			target:  "app/models/client.rb",
+			entries: nil,
+			want:    false,
 		},
 		{
-			name:   "rule and path match",
-			rule:   "Credential in URL",
-			target: "app/models/client.rb",
-			want:   true,
+			name:    "rule and path match",
+			rule:    "Credential in URL",
+			target:  "app/models/client.rb",
+			entries: entries,
+			want:    true,
 		},
 		{
-			name:   "rule mismatch",
-			rule:   "other-rule",
-			target: "app/models/client.rb",
-			want:   false,
+			name:    "rule mismatch",
+			rule:    "other-rule",
+			target:  "app/models/client.rb",
+			entries: entries,
+			want:    false,
 		},
 		{
-			name:   "case insensitive rule matching",
-			rule:   "credential in url",
-			target: "app/models/client.rb",
-			want:   true,
+			name:    "case insensitive rule matching",
+			rule:    "credential in url",
+			target:  "app/models/client.rb",
+			entries: entries,
+			want:    true,
 		},
 		{
-			name:   "directory prefix suppression",
-			rule:   "env-leak",
-			target: "config/initializers/secrets.rb",
-			want:   true,
+			name:    "directory prefix suppression",
+			rule:    "env-leak",
+			target:  "config/initializers/secrets.rb",
+			entries: entries,
+			want:    true,
 		},
 		{
-			name:   "glob basename suppression",
-			rule:   "secret-pattern",
-			target: "src/utils/helpers.test.js",
-			want:   true,
+			name:    "glob basename suppression",
+			rule:    "secret-pattern",
+			target:  "src/utils/helpers.test.js",
+			entries: entries,
+			want:    true,
 		},
 		{
-			name:   "path mismatch",
-			rule:   "Credential in URL",
-			target: "app/controllers/foo.rb",
-			want:   false,
+			name:    "path mismatch",
+			rule:    "Credential in URL",
+			target:  "app/controllers/foo.rb",
+			entries: entries,
+			want:    false,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			var e []SuppressEntry
-			if tt.name != "empty entries" {
-				e = entries
-			}
-			got := IsSuppressed(tt.rule, tt.target, e)
+			got := IsSuppressed(tt.rule, tt.target, tt.entries)
 			if got != tt.want {
 				t.Errorf("IsSuppressed(%q, %q, entries) = %v, want %v", tt.rule, tt.target, got, tt.want)
 			}
@@ -3023,7 +3028,7 @@ func TestValidate_LoggingFormatsAndOutputs(t *testing.T) {
 				cfg.Logging.Format = format
 				cfg.Logging.Output = output
 				if output == OutputFile || output == OutputBoth {
-					cfg.Logging.File = "/tmp/test-pipelock.log"
+					cfg.Logging.File = filepath.Join(t.TempDir(), "test-pipelock.log")
 				}
 				if err := cfg.Validate(); err != nil {
 					t.Errorf("logging format=%q output=%q should validate: %v", format, output, err)

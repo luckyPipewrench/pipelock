@@ -73,38 +73,38 @@ var policyPreNormalize = strings.NewReplacer(
 	"\u0423", "U", // Cyrillic У (uppercase)
 )
 
-// PolicyConfig holds compiled tool call policy rules for pre-execution checking.
-// A nil PolicyConfig disables policy checking entirely.
-type PolicyConfig struct {
+// Config holds compiled tool call policy rules for pre-execution checking.
+// A nil Config disables policy checking.
+type Config struct {
 	Action string // default action: warn, block
-	Rules  []*CompiledPolicyRule
+	Rules  []*CompiledRule
 }
 
-// CompiledPolicyRule is a pre-compiled policy rule ready for matching.
-type CompiledPolicyRule struct {
+// CompiledRule holds a pre-compiled policy rule ready for matching.
+type CompiledRule struct {
 	Name        string
 	ToolPattern *regexp.Regexp
 	ArgPattern  *regexp.Regexp // nil = match on tool name alone
-	Action      string         // per-rule override, empty = use PolicyConfig.Action
+	Action      string         // per-rule override, empty = use Config.Action
 }
 
-// PolicyVerdict describes the outcome of checking a tool call against policy.
-type PolicyVerdict struct {
+// Verdict describes the outcome of checking a tool call against policy.
+type Verdict struct {
 	Matched bool
 	Action  string   // effective action (from rule override or default)
 	Rules   []string // names of matched rules
 }
 
-// NewPolicyConfig compiles policy rules from config. Returns nil if disabled
-// or no rules are configured. Panics on invalid regex — caller must validate
-// config first (config.Validate compiles all patterns).
-func NewPolicyConfig(cfg config.MCPToolPolicy) *PolicyConfig {
+// New compiles policy rules from config. Returns nil if disabled or no rules
+// are configured. Panics on invalid regex; the caller must validate config
+// first (config.Validate compiles all patterns).
+func New(cfg config.MCPToolPolicy) *Config {
 	if !cfg.Enabled || len(cfg.Rules) == 0 {
 		return nil
 	}
-	pc := &PolicyConfig{Action: cfg.Action}
+	pc := &Config{Action: cfg.Action}
 	for _, r := range cfg.Rules {
-		compiled := &CompiledPolicyRule{
+		compiled := &CompiledRule{
 			Name:        r.Name,
 			ToolPattern: regexp.MustCompile(r.ToolPattern),
 			Action:      r.Action,
@@ -126,9 +126,9 @@ func NewPolicyConfig(cfg config.MCPToolPolicy) *PolicyConfig {
 //  2. Individual strings — catches path patterns (.ssh/id_rsa)
 //  3. Pairwise token combinations — catches map-ordering evasion where
 //     command and flags land in separate values with non-deterministic order
-func (pc *PolicyConfig) CheckToolCall(toolName string, argStrings []string) PolicyVerdict {
+func (pc *Config) CheckToolCall(toolName string, argStrings []string) Verdict {
 	if pc == nil || len(pc.Rules) == 0 {
-		return PolicyVerdict{}
+		return Verdict{}
 	}
 
 	// Pre-normalize ambiguous confusables for policy matching before the
@@ -189,10 +189,10 @@ func (pc *PolicyConfig) CheckToolCall(toolName string, argStrings []string) Poli
 	}
 
 	if len(matchedRules) == 0 {
-		return PolicyVerdict{}
+		return Verdict{}
 	}
 
-	return PolicyVerdict{
+	return Verdict{
 		Matched: true,
 		Action:  strictest,
 		Rules:   matchedRules,
@@ -256,14 +256,14 @@ func matchArgPattern(pat *regexp.Regexp, tokens []string, joined string) bool {
 
 // CheckRequest evaluates a JSON-RPC request (single or batch) against policy.
 // Returns a clean verdict for non-tools/call methods and unparseable messages.
-func (pc *PolicyConfig) CheckRequest(line []byte) PolicyVerdict {
+func (pc *Config) CheckRequest(line []byte) Verdict {
 	if pc == nil {
-		return PolicyVerdict{}
+		return Verdict{}
 	}
 
 	trimmed := bytes.TrimSpace(line)
 	if len(trimmed) == 0 {
-		return PolicyVerdict{}
+		return Verdict{}
 	}
 
 	// Batch request — iterate elements.
@@ -275,10 +275,10 @@ func (pc *PolicyConfig) CheckRequest(line []byte) PolicyVerdict {
 }
 
 // checkSingle parses one JSON-RPC request and checks it against policy.
-func (pc *PolicyConfig) checkSingle(line []byte) PolicyVerdict {
+func (pc *Config) checkSingle(line []byte) Verdict {
 	tc := parseToolCall(line)
 	if tc == nil {
-		return PolicyVerdict{}
+		return Verdict{}
 	}
 	var argStrings []string
 	if len(tc.Arguments) > 0 && string(tc.Arguments) != jsonrpc.Null {
@@ -291,10 +291,10 @@ func (pc *PolicyConfig) checkSingle(line []byte) PolicyVerdict {
 }
 
 // checkBatch evaluates a batch of JSON-RPC requests and aggregates policy results.
-func (pc *PolicyConfig) checkBatch(line []byte) PolicyVerdict {
+func (pc *Config) checkBatch(line []byte) Verdict {
 	var batch []json.RawMessage
 	if err := json.Unmarshal(line, &batch); err != nil {
-		return PolicyVerdict{}
+		return Verdict{}
 	}
 
 	var allRules []string
@@ -309,10 +309,10 @@ func (pc *PolicyConfig) checkBatch(line []byte) PolicyVerdict {
 	}
 
 	if len(allRules) == 0 {
-		return PolicyVerdict{}
+		return Verdict{}
 	}
 
-	return PolicyVerdict{
+	return Verdict{
 		Matched: true,
 		Action:  strictest,
 		Rules:   allRules,

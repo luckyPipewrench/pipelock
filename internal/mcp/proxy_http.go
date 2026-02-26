@@ -18,6 +18,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -35,8 +36,8 @@ func RunHTTPProxy(
 	approver *hitl.Approver,
 	extraHeaders http.Header,
 	inputCfg *InputScanConfig,
-	toolCfg *ToolScanConfig,
-	policyCfg *PolicyConfig,
+	toolCfg *tools.ToolScanConfig,
+	policyCfg *policy.Config,
 	ks *killswitch.Controller,
 	chainMatcher *chains.Matcher,
 ) error {
@@ -47,19 +48,19 @@ func RunHTTPProxy(
 	safeClientOut := &syncWriter{w: clientOut}
 	safeLogW := &syncWriter{w: logW}
 
-	httpClient := NewHTTPClient(upstreamURL, extraHeaders)
+	httpClient := transport.NewHTTPClient(upstreamURL, extraHeaders)
 
 	// Tool scanning baseline for this session.
-	var fwdToolCfg *ToolScanConfig
+	var fwdToolCfg *tools.ToolScanConfig
 	if toolCfg != nil && toolCfg.Action != "" {
-		fwdToolCfg = &ToolScanConfig{
-			Baseline:    NewToolBaseline(),
+		fwdToolCfg = &tools.ToolScanConfig{
+			Baseline:    tools.NewToolBaseline(),
 			Action:      toolCfg.Action,
 			DetectDrift: toolCfg.DetectDrift,
 		}
 	}
 
-	clientReader := NewStdioReader(clientIn)
+	clientReader := transport.NewStdioReader(clientIn)
 
 	var wg sync.WaitGroup
 	var getStreamOnce sync.Once
@@ -88,7 +89,7 @@ func RunHTTPProxy(
 					continue
 				}
 				rpcID := extractRPCID(msg)
-				resp := killswitch.KillSwitchErrorResponse(rpcID, d.Message)
+				resp := killswitch.ErrorResponse(rpcID, d.Message)
 				if wErr := safeClientOut.WriteMessage(resp); wErr != nil {
 					_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send kill switch response: %v\n", wErr)
 				}
@@ -157,7 +158,7 @@ func RunHTTPProxy(
 // Returns a *BlockedRequest if the message should be blocked, nil if clean.
 // This is the HTTP proxy equivalent of ForwardScannedInput's per-message logic,
 // but returns a verdict instead of writing to a channel.
-func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *InputScanConfig, policyCfg *PolicyConfig, chainMatcher *chains.Matcher, sessionKey string) *BlockedRequest {
+func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *InputScanConfig, policyCfg *policy.Config, chainMatcher *chains.Matcher, sessionKey string) *BlockedRequest {
 	// Determine input scanning parameters.
 	action := config.ActionWarn
 	onParseError := config.ActionBlock
@@ -188,7 +189,7 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 	}
 
 	// Policy check.
-	policyVerdict := PolicyVerdict{}
+	policyVerdict := policy.Verdict{}
 	if policyCfg != nil {
 		policyVerdict = policyCfg.CheckRequest(msg)
 	}
@@ -204,10 +205,9 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 				_, _ = fmt.Fprintf(logW, "pipelock: chain detected: %s (severity=%s, action=%s)\n",
 					cv.PatternName, cv.Severity, cv.Action)
 				if cv.Action == config.ActionBlock {
-					rpcID := extractRPCID(msg)
 					return &BlockedRequest{
-						ID:             rpcID,
-						IsNotification: len(rpcID) == 0,
+						ID:             verdict.ID,
+						IsNotification: isRPCNotification(verdict.ID),
 						LogMessage:     fmt.Sprintf("chain pattern %q blocked", cv.PatternName),
 						ErrorCode:      -32004,
 						ErrorMessage:   fmt.Sprintf("tool call blocked: chain pattern %q detected", cv.PatternName),
@@ -222,10 +222,9 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 	// Parse error — always block.
 	if verdict.Error != "" {
 		_, _ = fmt.Fprintf(logW, "pipelock: input: %s\n", verdict.Error)
-		isNotification := len(verdict.ID) == 0
 		return &BlockedRequest{
 			ID:             verdict.ID,
-			IsNotification: isNotification,
+			IsNotification: isRPCNotification(verdict.ID),
 			LogMessage:     "blocked (parse error)",
 		}
 	}
@@ -270,7 +269,7 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 		effectiveAction = mergeAction(effectiveAction, chainAction)
 	}
 
-	isNotification := len(verdict.ID) == 0
+	isNotification := isRPCNotification(verdict.ID)
 
 	// Error code/message based on what triggered.
 	errCode := 0
@@ -376,7 +375,7 @@ func startGETStream(
 	safeLogW *syncWriter,
 	sc *scanner.Scanner,
 	approver *hitl.Approver,
-	toolCfg *ToolScanConfig,
+	toolCfg *tools.ToolScanConfig,
 	wg *sync.WaitGroup,
 ) {
 	wg.Add(1)
@@ -455,18 +454,18 @@ func RunHTTPListenerProxy(
 	sc *scanner.Scanner,
 	approver *hitl.Approver,
 	inputCfg *InputScanConfig,
-	toolCfg *ToolScanConfig,
-	policyCfg *PolicyConfig,
+	toolCfg *tools.ToolScanConfig,
+	policyCfg *policy.Config,
 	ks *killswitch.Controller,
 	chainMatcher *chains.Matcher,
 ) error {
 	safeLogW := &syncWriter{w: logW}
 
 	// Shared tool baseline across all requests for drift detection.
-	var fwdToolCfg *ToolScanConfig
+	var fwdToolCfg *tools.ToolScanConfig
 	if toolCfg != nil && toolCfg.Action != "" {
-		fwdToolCfg = &ToolScanConfig{
-			Baseline:    NewToolBaseline(),
+		fwdToolCfg = &tools.ToolScanConfig{
+			Baseline:    tools.NewToolBaseline(),
 			Action:      toolCfg.Action,
 			DetectDrift: toolCfg.DetectDrift,
 		}
@@ -557,7 +556,7 @@ func RunHTTPListenerProxy(
 					return
 				}
 				rpcID := extractRPCID(body)
-				_, _ = w.Write(killswitch.KillSwitchErrorResponse(rpcID, d.Message))
+				_, _ = w.Write(killswitch.ErrorResponse(rpcID, d.Message))
 				return
 			}
 		}

@@ -14,6 +14,8 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -95,7 +97,7 @@ func ScanRequest(line []byte, sc *scanner.Scanner, action, onParseError string) 
 		return scanRequestBatch(trimmed, sc, action, onParseError)
 	}
 
-	var rpc RPCResponse // Reuse struct — has Method and Params fields.
+	var rpc jsonrpc.RPCResponse // Reuse struct — has Method and Params fields.
 	if err := json.Unmarshal(trimmed, &rpc); err != nil {
 		if onParseError == config.ActionForward {
 			// Still scan raw text for secrets/injection before forwarding.
@@ -415,7 +417,7 @@ func blockRequestResponse(br BlockedRequest) []byte {
 // When non-nil with a valid Baseline, tools/call requests are checked against
 // the tool inventory captured from the first tools/list response.
 type SessionBindingConfig struct {
-	Baseline          *ToolBaseline
+	Baseline          *tools.ToolBaseline
 	UnknownToolAction string // warn, block
 	NoBaselineAction  string // warn, block (action when no baseline yet)
 }
@@ -429,14 +431,14 @@ type SessionBindingConfig struct {
 // Blocked request IDs are sent via blockedCh so the main goroutine (which owns
 // clientOut writes) can send error responses without concurrent write races.
 func ForwardScannedInput(
-	reader MessageReader,
-	writer MessageWriter,
+	reader transport.MessageReader,
+	writer transport.MessageWriter,
 	logW io.Writer,
 	sc *scanner.Scanner,
 	action string,
 	onParseError string,
 	blockedCh chan<- BlockedRequest,
-	policyCfg *PolicyConfig,
+	policyCfg *policy.Config,
 	bindingCfg *SessionBindingConfig,
 	ks *killswitch.Controller,
 	chainMatcher *chains.Matcher,
@@ -482,7 +484,7 @@ func ForwardScannedInput(
 		verdict := ScanRequest(line, sc, action, onParseError)
 
 		// Tool call policy check — independent of content scanning.
-		policyVerdict := PolicyVerdict{}
+		policyVerdict := policy.Verdict{}
 		if policyCfg != nil {
 			policyVerdict = policyCfg.CheckRequest(line)
 		}
@@ -531,16 +533,21 @@ func ForwardScannedInput(
 		// Runs on every tools/call regardless of content scan results.
 		chainAction := ""
 		chainReason := ""
+		// Stdio proxy has exactly one client session per process instance.
+		// "default" is the correct session key for this 1:1 architecture.
 		if chainMatcher != nil && toolCallName != "" {
 			cv := chainMatcher.Record("default", toolCallName)
 			if cv.Matched {
 				_, _ = fmt.Fprintf(logW, "pipelock: chain detected: %s (severity=%s, action=%s)\n",
 					cv.PatternName, cv.Severity, cv.Action)
 				if cv.Action == config.ActionBlock {
-					rpcID := extractRPCID(line)
+					// Use verdict.ID from the already-parsed ScanRequest result
+					// rather than re-parsing via extractRPCID. A tools/call always
+					// has an ID; using the parsed value avoids a silent-drop bug
+					// if re-parsing fails on unusual ID shapes.
 					blockedCh <- BlockedRequest{
-						ID:             rpcID,
-						IsNotification: len(rpcID) == 0,
+						ID:             verdict.ID,
+						IsNotification: isRPCNotification(verdict.ID),
 						LogMessage:     fmt.Sprintf("pipelock: input line %d: chain pattern %q blocked", lineNum, cv.PatternName),
 						ErrorCode:      -32004,
 						ErrorMessage:   fmt.Sprintf("tool call blocked: chain pattern %q detected", cv.PatternName),
@@ -556,10 +563,9 @@ func ForwardScannedInput(
 		// Parse error — block by default (policy doesn't override parse errors).
 		if verdict.Error != "" {
 			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: %s\n", lineNum, verdict.Error)
-			isNotification := len(verdict.ID) == 0
 			blockedCh <- BlockedRequest{
 				ID:             verdict.ID,
-				IsNotification: isNotification,
+				IsNotification: isRPCNotification(verdict.ID),
 				LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked (parse error)", lineNum),
 			}
 			continue
@@ -620,7 +626,7 @@ func ForwardScannedInput(
 			effectiveAction = mergeAction(effectiveAction, chainAction)
 		}
 
-		isNotification := len(verdict.ID) == 0
+		isNotification := isRPCNotification(verdict.ID)
 
 		// Determine error response fields based on what triggered the block.
 		isPolicyOnly := verdict.Clean && policyVerdict.Matched
@@ -665,7 +671,14 @@ func ForwardScannedInput(
 	}
 }
 
-// joinStrings joins strings with newline separator, matching ExtractText pattern.
+// isRPCNotification returns true if the JSON-RPC ID represents a notification.
+// A notification has no "id" field (nil/empty) or "id": null. The json.RawMessage
+// for null is non-nil with len=4, so len(id)==0 alone is insufficient.
+func isRPCNotification(id json.RawMessage) bool {
+	return len(id) == 0 || string(id) == jsonrpc.Null
+}
+
+// joinStrings joins strings with newline separator, matching jsonrpc.ExtractText pattern.
 func joinStrings(ss []string) string {
 	return strings.Join(ss, "\n")
 }

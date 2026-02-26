@@ -59,7 +59,7 @@ func (s *Scanner) ScanResponse(content string) ResponseScanResult {
 	// Tertiary: leetspeak normalization. Only fires when both prior passes found
 	// nothing, avoiding FPs on digit-heavy text (e.g., "API v3.0").
 	if len(matches) == 0 {
-		leeted := normalize.NormalizeLeetspeak(content)
+		leeted := normalize.Leetspeak(content)
 		if leeted != content {
 			matches = s.matchResponsePatterns(leeted)
 		}

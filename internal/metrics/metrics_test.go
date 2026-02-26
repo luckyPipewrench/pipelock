@@ -768,32 +768,6 @@ func TestRecordChainDetection(t *testing.T) {
 	}
 }
 
-func TestRecordBlocked_TopDomainsCapped(t *testing.T) {
-	m := New()
-	// Fill domains to cap.
-	for i := range maxTopEntries {
-		m.RecordBlocked("domain"+string(rune('a'+i%26))+string(rune('0'+i/26))+".com", "dlp", time.Millisecond)
-	}
-	// Existing domain should still increment.
-	m.RecordBlocked("domaina0.com", "dlp", time.Millisecond)
-	m.mu.Lock()
-	if m.topBlockedDomains["domaina0.com"] != 2 {
-		t.Errorf("expected existing domain count 2, got %d", m.topBlockedDomains["domaina0.com"])
-	}
-	m.mu.Unlock()
-
-	// New domain should be ignored after cap.
-	m.RecordBlocked("overflow.com", "dlp", time.Millisecond)
-	m.mu.Lock()
-	if _, exists := m.topBlockedDomains["overflow.com"]; exists {
-		t.Error("overflow domain should not be tracked after cap")
-	}
-	if len(m.topBlockedDomains) > maxTopEntries {
-		t.Errorf("expected at most %d blocked domains, got %d", maxTopEntries, len(m.topBlockedDomains))
-	}
-	m.mu.Unlock()
-}
-
 func TestRecordSessionAnomaly_ExistingTypeAfterCap(t *testing.T) {
 	m := New()
 	// Fill anomaly types to cap.

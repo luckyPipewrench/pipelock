@@ -36,6 +36,10 @@ const (
 	DefaultLogOutput = "stdout"
 	OutputFile       = "file"
 	OutputBoth       = "both"
+
+	// DefaultMaxGap is the default maximum number of non-matching tool calls
+	// allowed between consecutive steps in a chain pattern.
+	DefaultMaxGap = 3
 )
 
 // SuppressEntry defines a finding suppression rule for false positives.
@@ -528,7 +532,7 @@ func (c *Config) ApplyDefaults() {
 		c.ToolChainDetection.WindowSeconds = 60
 	}
 	if c.ToolChainDetection.MaxGap == nil {
-		d := 3
+		d := DefaultMaxGap
 		c.ToolChainDetection.MaxGap = &d
 	}
 

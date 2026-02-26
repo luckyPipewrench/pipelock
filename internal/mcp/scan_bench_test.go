@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -19,12 +20,12 @@ func benchScanner(b *testing.B) *scanner.Scanner {
 }
 
 func benchResponse(texts ...string) []byte {
-	var blocks []ContentBlock
+	var blocks []jsonrpc.ContentBlock
 	for _, text := range texts {
-		blocks = append(blocks, ContentBlock{Type: "text", Text: text})
+		blocks = append(blocks, jsonrpc.ContentBlock{Type: "text", Text: text})
 	}
-	resultBytes, _ := json.Marshal(ToolResult{Content: blocks}) //nolint:errcheck // bench helper
-	rpc := RPCResponse{
+	resultBytes, _ := json.Marshal(jsonrpc.ToolResult{Content: blocks}) //nolint:errcheck // bench helper
+	rpc := jsonrpc.RPCResponse{
 		JSONRPC: "2.0",
 		ID:      json.RawMessage("1"),
 		Result:  json.RawMessage(resultBytes),
@@ -54,8 +55,8 @@ func BenchmarkMCPScanResponse_Injection(b *testing.B) {
 }
 
 func BenchmarkExtractText(b *testing.B) {
-	tr := ToolResult{
-		Content: []ContentBlock{
+	tr := jsonrpc.ToolResult{
+		Content: []jsonrpc.ContentBlock{
 			{Type: "text", Text: "First block of content."},
 			{Type: "image", Text: "image caption"},
 			{Type: "text", Text: "Second block of content."},
@@ -66,6 +67,6 @@ func BenchmarkExtractText(b *testing.B) {
 	raw, _ := json.Marshal(tr) //nolint:errcheck // bench helper
 	b.ResetTimer()
 	for b.Loop() {
-		ExtractText(raw)
+		jsonrpc.ExtractText(raw)
 	}
 }

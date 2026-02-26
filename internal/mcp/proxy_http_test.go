@@ -18,6 +18,10 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -368,7 +372,7 @@ func TestRunHTTPProxy_ToolPoisoningDetection(t *testing.T) {
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 
-	toolCfg := &ToolScanConfig{
+	toolCfg := &tools.ToolScanConfig{
 		Action:      "block",
 		DetectDrift: true,
 	}
@@ -525,9 +529,9 @@ func TestScanHTTPInput_PolicyOnlyBlock(t *testing.T) {
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 
-	policyCfg := &PolicyConfig{
+	policyCfg := &policy.Config{
 		Action: "block", //nolint:goconst // test value
-		Rules: []*CompiledPolicyRule{
+		Rules: []*policy.CompiledRule{
 			{Name: "block-dangerous", ToolPattern: regexp.MustCompile(`dangerous_tool`), Action: "block"},
 		},
 	}
@@ -741,9 +745,9 @@ func TestScanHTTPInput_PolicyAskFallbackToBlock(t *testing.T) {
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 
-	policyCfg := &PolicyConfig{
+	policyCfg := &policy.Config{
 		Action: "ask", //nolint:goconst // test value
-		Rules: []*CompiledPolicyRule{
+		Rules: []*policy.CompiledRule{
 			{Name: "block-tool", ToolPattern: regexp.MustCompile(`dangerous_tool`), Action: "ask"},
 		},
 	}
@@ -1230,8 +1234,8 @@ func startListenerProxy(
 	upstreamURL string,
 	sc *scanner.Scanner,
 	inputCfg *InputScanConfig,
-	toolCfg *ToolScanConfig,
-	policyCfg *PolicyConfig,
+	toolCfg *tools.ToolScanConfig,
+	policyCfg *policy.Config,
 ) (string, context.CancelFunc, *bytes.Buffer) {
 	t.Helper()
 
@@ -1996,8 +2000,8 @@ func TestHTTPListener_OversizedBody(t *testing.T) {
 	sc := testScannerForHTTP(t)
 	baseURL, _, _ := startListenerProxy(t, upstream.URL, sc, nil, nil, nil)
 
-	// Send body larger than maxLineSize (10 MB).
-	bigBody := make([]byte, maxLineSize+1024)
+	// Send body larger than transport.MaxLineSize (10 MB).
+	bigBody := make([]byte, transport.MaxLineSize+1024)
 	for i := range bigBody {
 		bigBody[i] = 'x'
 	}
@@ -2058,9 +2062,9 @@ func TestHTTPListener_PolicyBlock(t *testing.T) {
 		OnParseError: "block",
 	}
 
-	policyCfg := &PolicyConfig{
+	policyCfg := &policy.Config{
 		Action: "block",
-		Rules: []*CompiledPolicyRule{
+		Rules: []*policy.CompiledRule{
 			{Name: "block-danger", ToolPattern: regexp.MustCompile(`dangerous_tool`), Action: "block"},
 		},
 	}
@@ -2103,9 +2107,9 @@ func TestHTTPListener_PolicyOnlyBlock(t *testing.T) {
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 
-	policyCfg := &PolicyConfig{
+	policyCfg := &policy.Config{
 		Action: "block",
-		Rules: []*CompiledPolicyRule{
+		Rules: []*policy.CompiledRule{
 			{Name: "block-danger", ToolPattern: regexp.MustCompile(`dangerous_tool`), Action: "block"},
 		},
 	}
@@ -2149,9 +2153,9 @@ func TestScanHTTPInput_PolicyOnlyPreservesID(t *testing.T) {
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 
-	policyCfg := &PolicyConfig{
+	policyCfg := &policy.Config{
 		Action: "block",
-		Rules: []*CompiledPolicyRule{
+		Rules: []*policy.CompiledRule{
 			{Name: "block-tool", ToolPattern: regexp.MustCompile(`blocked_tool`), Action: "block"},
 		},
 	}
@@ -2181,11 +2185,11 @@ func TestHTTPListener_ToolPoisoningBlock(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
-	cfg.ResponseScanning.Action = "warn"
+	cfg.ResponseScanning.Action = config.ActionWarn
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 
-	toolCfg := &ToolScanConfig{
+	toolCfg := &tools.ToolScanConfig{
 		Action:      "block",
 		DetectDrift: true,
 	}
@@ -2215,7 +2219,7 @@ func startListenerProxyFull(
 	sc *scanner.Scanner,
 	inputCfg *InputScanConfig,
 	ks *killswitch.Controller,
-	cm *ChainMatcher,
+	cm *chains.Matcher,
 ) (string, *bytes.Buffer) {
 	t.Helper()
 
@@ -2354,7 +2358,7 @@ func TestHTTPListener_ChainDetectionWarn(t *testing.T) {
 		WindowSeconds: 300,
 		MaxGap:        intPtrHTTP(3),
 	}
-	cm := NewChainMatcher(chainCfg)
+	cm := chains.New(chainCfg)
 
 	inputCfg := &InputScanConfig{Enabled: true, Action: "warn"}
 	baseURL, logBuf := startListenerProxyFull(t, upstream.URL, sc, inputCfg, nil, cm)
@@ -2401,7 +2405,7 @@ func TestHTTPListener_ChainDetectionBlock(t *testing.T) {
 			"read-then-exec": "block", //nolint:goconst // test value
 		},
 	}
-	cm := NewChainMatcher(chainCfg)
+	cm := chains.New(chainCfg)
 
 	inputCfg := &InputScanConfig{Enabled: true, Action: "warn"}
 	baseURL, _ := startListenerProxyFull(t, upstream.URL, sc, inputCfg, nil, cm)
@@ -2455,7 +2459,7 @@ func TestHTTPListener_SessionKeyFromHeader(t *testing.T) {
 		WindowSeconds: 300,
 		MaxGap:        intPtrHTTP(3),
 	}
-	cm := NewChainMatcher(chainCfg)
+	cm := chains.New(chainCfg)
 
 	inputCfg := &InputScanConfig{Enabled: true, Action: "warn"}
 	baseURL, logBuf := startListenerProxyFull(t, upstream.URL, sc, inputCfg, nil, cm)
@@ -2496,7 +2500,7 @@ func TestScanHTTPInput_ChainWarnForwards(t *testing.T) {
 		WindowSeconds: 300,
 		MaxGap:        intPtrHTTP(3),
 	}
-	cm := NewChainMatcher(chainCfg)
+	cm := chains.New(chainCfg)
 
 	inputCfg := &InputScanConfig{Enabled: true, Action: "warn"}
 	var logBuf bytes.Buffer
@@ -2533,7 +2537,7 @@ func TestScanHTTPInput_ChainBlockBlocks(t *testing.T) {
 			"read-then-exec": "block", //nolint:goconst // test value
 		},
 	}
-	cm := NewChainMatcher(chainCfg)
+	cm := chains.New(chainCfg)
 
 	inputCfg := &InputScanConfig{Enabled: true, Action: "warn"}
 	var logBuf bytes.Buffer

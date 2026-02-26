@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/luckyPipewrench/pipelock/internal/mcp"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 )
 
 func TestMcpScanCmd_InRootHelp(t *testing.T) {
@@ -95,7 +95,7 @@ func TestMcpScanCmd_JsonOutput(t *testing.T) {
 	if output == "" {
 		t.Fatal("expected JSON output for clean line")
 	}
-	var v mcp.ScanVerdict
+	var v jsonrpc.ScanVerdict
 	if err := json.Unmarshal([]byte(output), &v); err != nil {
 		t.Fatalf("output not valid JSON: %v\noutput: %s", err, output)
 	}
@@ -120,7 +120,7 @@ func TestMcpScanCmd_JsonOutputWithInjection(t *testing.T) {
 
 	// Output should be valid JSON with matches.
 	output := strings.TrimSpace(buf.String())
-	var v mcp.ScanVerdict
+	var v jsonrpc.ScanVerdict
 	if err := json.Unmarshal([]byte(output), &v); err != nil {
 		t.Fatalf("output not valid JSON: %v\noutput: %s", err, output)
 	}

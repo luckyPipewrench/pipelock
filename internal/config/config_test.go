@@ -2494,6 +2494,30 @@ func TestValidate_SuppressNilList(t *testing.T) {
 	}
 }
 
+func TestValidate_SuppressInvalidGlob(t *testing.T) {
+	cfg := Defaults()
+	cfg.Suppress = []SuppressEntry{
+		{Rule: "Credential in URL", Path: "foo[", Reason: "bad glob"},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for malformed glob pattern")
+	}
+	if !strings.Contains(err.Error(), "invalid path pattern") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestValidate_SuppressValidGlob(t *testing.T) {
+	cfg := Defaults()
+	cfg.Suppress = []SuppressEntry{
+		{Rule: "Credential in URL", Path: "vendor/*.go", Reason: "vendor code"},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("valid glob should pass validation: %v", err)
+	}
+}
+
 func TestLoad_WithSuppressEntries(t *testing.T) {
 	yamlContent := `
 version: 1

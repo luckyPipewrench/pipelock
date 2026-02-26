@@ -868,6 +868,13 @@ func (c *Config) Validate() error {
 		if s.Path == "" {
 			return fmt.Errorf("suppress entry %d (%s) missing required field \"path\"", i, s.Rule)
 		}
+		// Validate glob syntax so misconfigured patterns fail fast
+		// instead of silently never matching at runtime.
+		if strings.ContainsAny(s.Path, "*?[") {
+			if _, err := path.Match(toSlash(s.Path), "x"); err != nil {
+				return fmt.Errorf("suppress entry %d (%s) has invalid path pattern %q: %w", i, s.Rule, s.Path, err)
+			}
+		}
 	}
 
 	// Validate kill switch allowlist CIDRs are parseable

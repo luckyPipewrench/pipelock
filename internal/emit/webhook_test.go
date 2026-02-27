@@ -56,6 +56,7 @@ func TestWebhookSink_SuccessfulPost(t *testing.T) {
 	defer srv.Close()
 
 	sink := NewWebhookSink(srv.URL)
+	defer func() { _ = sink.Close() }()
 
 	ts := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
 	err := sink.Emit(context.Background(), Event{
@@ -96,8 +97,6 @@ func TestWebhookSink_SuccessfulPost(t *testing.T) {
 	if received.Fields["url"] != "https://evil.com" {
 		t.Errorf("fields[url] = %v, want %q", received.Fields["url"], "https://evil.com")
 	}
-
-	_ = sink.Close()
 }
 
 func TestWebhookSink_BearerToken(t *testing.T) {
@@ -113,6 +112,7 @@ func TestWebhookSink_BearerToken(t *testing.T) {
 	//nolint:goconst // test value
 	token := "test" + "-secret-token"
 	sink := NewWebhookSink(srv.URL, WithBearerToken(token))
+	defer func() { _ = sink.Close() }()
 
 	err := sink.Emit(context.Background(), Event{
 		Severity:   SeverityWarn,
@@ -134,8 +134,6 @@ func TestWebhookSink_BearerToken(t *testing.T) {
 	if gotAuth != want {
 		t.Errorf("Authorization = %q, want %q", gotAuth, want)
 	}
-
-	_ = sink.Close()
 }
 
 func TestWebhookSink_NoAuthHeaderWithoutToken(t *testing.T) {
@@ -150,6 +148,7 @@ func TestWebhookSink_NoAuthHeaderWithoutToken(t *testing.T) {
 	defer srv.Close()
 
 	sink := NewWebhookSink(srv.URL)
+	defer func() { _ = sink.Close() }()
 
 	err := sink.Emit(context.Background(), Event{
 		Severity:   SeverityWarn,
@@ -166,8 +165,6 @@ func TestWebhookSink_NoAuthHeaderWithoutToken(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for webhook POST")
 	}
-
-	_ = sink.Close()
 }
 
 func TestWebhookSink_QueueFull(t *testing.T) {
@@ -366,6 +363,7 @@ func TestWebhookSink_NilFieldsInPayload(t *testing.T) {
 	defer srv.Close()
 
 	sink := NewWebhookSink(srv.URL)
+	defer func() { _ = sink.Close() }()
 
 	err := sink.Emit(context.Background(), Event{
 		Severity:   SeverityWarn,
@@ -388,8 +386,6 @@ func TestWebhookSink_NilFieldsInPayload(t *testing.T) {
 	if received.Type != "blocked" { //nolint:goconst // test value
 		t.Errorf("payload type = %q, want %q", received.Type, "blocked")
 	}
-
-	_ = sink.Close()
 }
 
 func TestWebhookSink_EmitAfterClose(t *testing.T) {
@@ -428,9 +424,13 @@ func TestWebhookSink_EmitClosedDuringQueueWait(t *testing.T) {
 	}
 
 	// Fill the queue: first event goes to goroutine (blocked on HTTP), second fills channel.
-	_ = sink.Emit(context.Background(), event)
+	if err := sink.Emit(context.Background(), event); err != nil {
+		t.Fatalf("first Emit: %v", err)
+	}
 	time.Sleep(10 * time.Millisecond) // let goroutine pick it up
-	_ = sink.Emit(context.Background(), event)
+	if err := sink.Emit(context.Background(), event); err != nil {
+		t.Fatalf("second Emit: %v", err)
+	}
 
 	// Close while queue is full — exercises the <-w.done path in the second select.
 	go func() {

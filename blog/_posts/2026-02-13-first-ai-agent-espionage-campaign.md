@@ -42,7 +42,7 @@ The agent scanned internal networks. It resolved hostnames, mapped services, ide
 
 The agent read `.env` files, config files, and environment variables. It found API keys, database passwords, and access tokens. Standard stuff for any coding agent with filesystem access.
 
-**What stops this:** DLP scanning and environment variable leak detection. Pipelock scans every outbound request for patterns matching API keys, tokens, and credentials (15 built-in patterns, extensible). The env leak scanner detects when values from the proxy's own environment show up in a request, raw or base64-encoded. Important caveat: the proxy only knows about secrets in its own environment. If the agent has credentials the proxy doesn't, you need filesystem sandboxing to prevent access in the first place.
+**What stops this:** DLP scanning and environment variable leak detection. Pipelock scans every outbound request for patterns matching API keys, tokens, and credentials (22 built-in patterns, extensible). The env leak scanner detects when values from the proxy's own environment show up in a request, raw or base64-encoded. Important caveat: the proxy only knows about secrets in its own environment. If the agent has credentials the proxy doesn't, you need filesystem sandboxing to prevent access in the first place.
 
 ### 3. Exploitation
 

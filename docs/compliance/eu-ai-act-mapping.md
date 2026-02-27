@@ -205,7 +205,7 @@ Mapping from individual Pipelock controls to both frameworks.
 | SSRF protection | Private IP blocking, DNS rebinding prevention, metadata endpoint blocking | Art. 15(4-5) | MAP 2.1, MEASURE 2.7 |
 | Domain blocklist | Configurable deny/allow lists with wildcard support | Art. 9(5) | GOVERN 1.2, MANAGE 1.1 |
 | Rate limiting | Per-domain sliding window, base domain normalization | Art. 15(4) | MANAGE 1.1 |
-| DLP scanning | 15 built-in credential patterns, custom regex, severity classification | Art. 15(5) | GOVERN 1.2, MEASURE 2.6 |
+| DLP scanning | 22 built-in credential patterns, custom regex, severity classification | Art. 15(5) | GOVERN 1.2, MEASURE 2.6 |
 | Env leak detection | Raw + base64 + hex, Shannon entropy > 3.0 | Art. 15(5) | MEASURE 2.6 |
 | Entropy analysis | Shannon entropy on URL path segments and query parameters | Art. 15(5) | MAP 2.1 |
 | Content scanning | Response scanning with zero-width stripping, NFKC, case-insensitive | Art. 15(5) | MAP 2.1, MEASURE 2.6 |

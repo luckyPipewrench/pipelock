@@ -14,10 +14,10 @@ Add `// pipelock:ignore` to a source line to suppress findings on that line.
 
 ```go
 // Suppress a specific rule:
-url := "https://api.example.com/v1?token=placeholder" // pipelock:ignore Credential in URL
+url := buildTestURL("token", testToken) // pipelock:ignore Credential in URL
 
 // Suppress all rules on this line (use sparingly):
-testValue := "sk-ant-test-key-for-unit-tests" // pipelock:ignore
+testValue := loadFixture("fake-key.txt") // pipelock:ignore
 ```
 
 **Supported comment styles:**

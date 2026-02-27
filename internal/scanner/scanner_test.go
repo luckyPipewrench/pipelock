@@ -84,7 +84,7 @@ func TestScan_BlocksDLPPatterns(t *testing.T) {
 		pattern string
 	}{
 		{"https://example.com/api?key=sk-ant-abcdefghijklmnopqrstu", "Anthropic API Key"},
-		{"https://example.com/path?token=AKIAIOSFODNN7EXAMPLE", "AWS Access ID"},
+		{"https://example.com/path?token=" + "AKIA" + "IOSFODNN7EXAMPLE", "AWS Access ID"},
 		{"https://example.com/path?token=ASIA" + "IOSFODNN7EXAMPLE", "AWS Access ID"},
 		{"https://example.com/path/ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijkl", "GitHub Token"},
 		{"https://example.com/path/gho_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijkl", "GitHub Token"},

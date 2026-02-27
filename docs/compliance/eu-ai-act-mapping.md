@@ -104,7 +104,7 @@ Note: Art. 15(5) uses "adversarial examples" and "model evasion," not "prompt in
 | Requirement | Pipelock Feature | Coverage |
 |-------------|-----------------|----------|
 | **Adversarial examples / model evasion** (Art. 15(5)) | Content scanning on responses and MCP tool results; zero-width char stripping; NFKC normalization; case-insensitive matching; null byte stripping. Covers text-based injection patterns, not model-level evasion. | Partial |
-| **Confidentiality attacks** (Art. 15(5)) | DLP scanning (15 built-in credential patterns, extensible via config), env leak detection (raw + base64 + hex), Shannon entropy analysis, DNS subdomain exfiltration detection, split-key concatenation scanning | Full |
+| **Confidentiality attacks** (Art. 15(5)) | DLP scanning (22 built-in credential patterns, extensible via config), env leak detection (raw + base64 + hex), Shannon entropy analysis, DNS subdomain exfiltration detection, split-key concatenation scanning | Full |
 | **Data poisoning** (Art. 15(5)) | File integrity monitoring (SHA256 manifests), Ed25519 signing and verification, response scanning on fetched content | Partial |
 | **Resilient against unauthorized alteration** (Art. 15(5)) | Capability separation prevents agent from being manipulated into exfiltrating data; SSRF blocks access to internal infrastructure | Full |
 | **Technical redundancy / fail-safe** (Art. 15(4)) | Fail-closed architecture: scan error, HITL timeout, parse failure, DNS error, context cancellation all default to block | Full |

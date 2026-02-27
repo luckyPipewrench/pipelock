@@ -13,6 +13,12 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
+	"github.com/luckyPipewrench/pipelock/internal/killswitch"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -23,8 +29,8 @@ type syncWriter struct {
 	w  io.Writer
 }
 
-// Compile-time assertion: syncWriter implements MessageWriter.
-var _ MessageWriter = (*syncWriter)(nil)
+// Compile-time assertion: syncWriter implements transport.MessageWriter.
+var _ transport.MessageWriter = (*syncWriter)(nil)
 
 func (sw *syncWriter) Write(p []byte) (int, error) {
 	sw.mu.Lock()
@@ -38,7 +44,7 @@ func (sw *syncWriter) Write(p []byte) (int, error) {
 func (sw *syncWriter) WriteMessage(msg []byte) error {
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
-	if len(msg) > maxLineSize {
+	if len(msg) > transport.MaxLineSize {
 		return fmt.Errorf("message too large: %d bytes", len(msg))
 	}
 	buf := make([]byte, len(msg)+1)
@@ -58,7 +64,7 @@ func (sw *syncWriter) WriteMessage(msg []byte) error {
 // independently of general response scanning so a "block" tool action is never
 // bypassed by a "warn" general action.
 // Returns true if any injection was detected.
-func ForwardScanned(reader MessageReader, writer MessageWriter, logW io.Writer, sc *scanner.Scanner, approver *hitl.Approver, toolCfg *ToolScanConfig) (bool, error) {
+func ForwardScanned(reader transport.MessageReader, writer transport.MessageWriter, logW io.Writer, sc *scanner.Scanner, approver *hitl.Approver, toolCfg *tools.ToolScanConfig) (bool, error) {
 	foundInjection := false
 	// lineNum counts non-empty messages, not raw lines. StdioReader skips
 	// empty lines internally, so this is a message index. ScanStream (scan.go)
@@ -80,7 +86,7 @@ func ForwardScanned(reader MessageReader, writer MessageWriter, logW io.Writer, 
 		// Tool scanning runs on every response, independent of general scan
 		// verdict. A general scan "warn" must not bypass a tool scan "block".
 		if toolCfg != nil {
-			toolResult := ScanTools(line, sc, toolCfg)
+			toolResult := tools.ScanTools(line, sc, toolCfg)
 			// Session binding: capture tool names from tools/list responses.
 			if toolResult.IsToolsList && toolCfg.Baseline != nil && len(toolResult.ToolNames) > 0 {
 				if !toolCfg.Baseline.HasBaseline() {
@@ -94,7 +100,7 @@ func ForwardScanned(reader MessageReader, writer MessageWriter, logW io.Writer, 
 			}
 			if toolResult.IsToolsList && !toolResult.Clean {
 				foundInjection = true
-				logToolFindings(logW, lineNum, toolResult)
+				tools.LogToolFindings(logW, lineNum, toolResult)
 
 				if toolCfg.Action == config.ActionBlock {
 					resp := blockResponse(toolResult.RPCID)
@@ -200,7 +206,7 @@ func ForwardScanned(reader MessageReader, writer MessageWriter, logW io.Writer, 
 
 // stripOrBlock tries to strip injection from the response. If stripping fails,
 // it falls back to blocking (fail-closed). Returns a write error if the writer fails.
-func stripOrBlock(line []byte, sc *scanner.Scanner, writer MessageWriter, logW io.Writer, rpcID json.RawMessage) error {
+func stripOrBlock(line []byte, sc *scanner.Scanner, writer transport.MessageWriter, logW io.Writer, rpcID json.RawMessage) error {
 	stripped, sErr := stripResponse(line, sc)
 	if sErr != nil {
 		_, _ = fmt.Fprintf(logW, "pipelock: strip failed (%v), blocking instead\n", sErr)
@@ -225,7 +231,7 @@ type rpcErrorDetail struct {
 // Code -32000 is in the implementation-defined error range.
 func blockResponse(id json.RawMessage) []byte {
 	resp := rpcError{
-		JSONRPC: jsonRPCVersion,
+		JSONRPC: jsonrpc.Version,
 		ID:      id,
 		Error: rpcErrorDetail{
 			Code:    -32000,
@@ -237,12 +243,12 @@ func blockResponse(id json.RawMessage) []byte {
 }
 
 // stripRPCResponse is used only by stripResponse for typed result manipulation.
-// The main RPCResponse uses json.RawMessage for flexible scanning.
+// The main jsonrpc.RPCResponse uses json.RawMessage for flexible scanning.
 type stripRPCResponse struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      json.RawMessage `json:"id"`
-	Result  *ToolResult     `json:"result,omitempty"`
-	Error   json.RawMessage `json:"error,omitempty"`
+	JSONRPC string              `json:"jsonrpc"`
+	ID      json.RawMessage     `json:"id"`
+	Result  *jsonrpc.ToolResult `json:"result,omitempty"`
+	Error   json.RawMessage     `json:"error,omitempty"`
 }
 
 // maxStripDepth limits recursion between stripResponseDepth and stripBatchDepth
@@ -379,7 +385,7 @@ type InputScanConfig struct {
 // Both clientOut and logW are wrapped in mutex adapters to prevent concurrent
 // write races between the input scanning goroutine, blocked request drainer,
 // child process stderr, and the main goroutine's response scanning.
-func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW io.Writer, command []string, sc *scanner.Scanner, approver *hitl.Approver, inputCfg *InputScanConfig, toolCfg *ToolScanConfig, policyCfg *PolicyConfig, extraEnv ...string) error {
+func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW io.Writer, command []string, sc *scanner.Scanner, approver *hitl.Approver, inputCfg *InputScanConfig, toolCfg *tools.ToolScanConfig, policyCfg *policy.Config, ks *killswitch.Controller, chainMatcher *chains.Matcher, extraEnv ...string) error {
 	cmd := exec.CommandContext(ctx, command[0], command[1:]...) //nolint:gosec // command comes from user CLI args
 
 	// Wrap shared writers in mutex adapters. Multiple goroutines write to
@@ -418,10 +424,10 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	// The baseline is shared between ForwardScanned (response-side, captures
 	// tools/list) and ForwardScannedInput (request-side, validates tools/call).
 	// Must be created before goroutines that reference it.
-	var fwdToolCfg *ToolScanConfig
+	var fwdToolCfg *tools.ToolScanConfig
 	if toolCfg != nil && toolCfg.Action != "" {
-		fwdToolCfg = &ToolScanConfig{
-			Baseline:                NewToolBaseline(),
+		fwdToolCfg = &tools.ToolScanConfig{
+			Baseline:                tools.NewToolBaseline(),
 			Action:                  toolCfg.Action,
 			DetectDrift:             toolCfg.DetectDrift,
 			BindingUnknownAction:    toolCfg.BindingUnknownAction,
@@ -430,7 +436,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	}
 
 	// Build session binding config for input scanning. Shares the same
-	// ToolBaseline so tools/list captures (response-side) are visible to
+	// tools.ToolBaseline so tools/list captures (response-side) are visible to
 	// tools/call validation (request-side).
 	var bindingCfg *SessionBindingConfig
 	if fwdToolCfg != nil && fwdToolCfg.BindingUnknownAction != "" {
@@ -448,16 +454,16 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		defer wg.Done()
 		defer serverIn.Close() //nolint:errcheck // best-effort close on stdin forward
 		if inputCfg != nil && inputCfg.Enabled {
-			clientReader := NewStdioReader(clientIn)
-			serverWriter := NewStdioWriter(serverIn)
-			ForwardScannedInput(clientReader, serverWriter, safeLogW, sc, inputCfg.Action, inputCfg.OnParseError, blockedCh, policyCfg, bindingCfg)
-		} else if policyCfg != nil || bindingCfg != nil {
-			// Policy checking or session binding enabled but content scanning disabled.
+			clientReader := transport.NewStdioReader(clientIn)
+			serverWriter := transport.NewStdioWriter(serverIn)
+			ForwardScannedInput(clientReader, serverWriter, safeLogW, sc, inputCfg.Action, inputCfg.OnParseError, blockedCh, policyCfg, bindingCfg, ks, chainMatcher)
+		} else if policyCfg != nil || bindingCfg != nil || chainMatcher != nil {
+			// Policy checking, session binding, or chain detection enabled but content scanning disabled.
 			// Route through ForwardScannedInput with pass-through content scanning.
 			// Use onParseError="block" (fail-closed) so malformed JSON can't bypass policy.
-			clientReader := NewStdioReader(clientIn)
-			serverWriter := NewStdioWriter(serverIn)
-			ForwardScannedInput(clientReader, serverWriter, safeLogW, sc, config.ActionWarn, config.ActionBlock, blockedCh, policyCfg, bindingCfg)
+			clientReader := transport.NewStdioReader(clientIn)
+			serverWriter := transport.NewStdioWriter(serverIn)
+			ForwardScannedInput(clientReader, serverWriter, safeLogW, sc, config.ActionWarn, config.ActionBlock, blockedCh, policyCfg, bindingCfg, ks, chainMatcher)
 		} else {
 			close(blockedCh)                   // No input scanning — close channel immediately.
 			_, _ = io.Copy(serverIn, clientIn) //nolint:errcheck // broken pipe on server exit is expected
@@ -476,12 +482,14 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 				continue
 			}
 			resp := blockRequestResponse(blocked)
-			_ = safeClientOut.WriteMessage(resp) //nolint:errcheck // best-effort
+			if wErr := safeClientOut.WriteMessage(resp); wErr != nil {
+				_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send block response: %v\n", wErr)
+			}
 		}
 	}()
 
 	// Scan and forward server output to client.
-	serverReader := NewStdioReader(serverOut)
+	serverReader := transport.NewStdioReader(serverOut)
 	_, scanErr := ForwardScanned(serverReader, safeClientOut, safeLogW, sc, approver, fwdToolCfg)
 
 	// Wait for subprocess to exit.

@@ -223,9 +223,9 @@ var confusableMap = map[rune]rune{
 	'\U0001F1FF': 'Z', // 🇿
 }
 
-// NormalizeWhitespace replaces Unicode whitespace characters that Go's RE2 \s
-// does not match with ASCII space.
-func NormalizeWhitespace(s string) string {
+// Whitespace replaces Unicode whitespace characters that Go's RE2 \s does not
+// match with ASCII space.
+func Whitespace(s string) string {
 	return strings.Map(func(r rune) rune {
 		switch r {
 		case '\u1680', '\u180E', '\u2028', '\u2029':
@@ -235,9 +235,9 @@ func NormalizeWhitespace(s string) string {
 	}, s)
 }
 
-// NormalizeLeetspeak maps common digit-for-letter substitutions used in
-// L1B3RT4S-style injection evasion.
-func NormalizeLeetspeak(s string) string {
+// Leetspeak maps common digit-for-letter substitutions used in L1B3RT4S-style
+// injection evasion.
+func Leetspeak(s string) string {
 	return strings.Map(func(r rune) rune {
 		switch r {
 		case '0':
@@ -359,7 +359,7 @@ func ForMatching(s string) string {
 	s = norm.NFKC.String(s)
 	s = ConfusableToASCII(s)
 	s = StripCombiningMarks(s)
-	s = NormalizeWhitespace(s)
+	s = Whitespace(s)
 	return s
 }
 
@@ -371,23 +371,23 @@ func ForPolicy(s string) string {
 	s = norm.NFKC.String(s)
 	s = ConfusableToASCII(s)
 	s = StripCombiningMarks(s)
-	s = NormalizeWhitespace(s)
+	s = Whitespace(s)
 	return s
 }
 
-// FoldVowels collapses all ASCII vowels (a, e, i, o, u) to 'a'. Used as a final
-// injection detection pass after confusable mapping. When an attacker substitutes
-// a single confusable character (e.g. ø→o) for multiple different vowels, standard
-// pattern matching fails because "instroctions" ≠ "instructions". Vowel-folding
-// makes both "instroctions" and "instructions" become "anstractaans", enabling
-// pattern comparison on the folded forms.
+// FoldVowels collapses all ASCII vowels to a single representative: lowercase
+// vowels become 'a', uppercase vowels become 'A'. Used as a final injection
+// detection pass after confusable mapping. When an attacker substitutes a single
+// confusable character (e.g. ø→o) for multiple different vowels, standard pattern
+// matching fails because "instroctions" != "instructions". Vowel-folding makes
+// both become "anstractaans", enabling pattern comparison on the folded forms.
+// Callers use (?i) regex flags so the case distinction does not affect matching.
 func FoldVowels(s string) string {
 	return strings.Map(func(r rune) rune {
 		switch r {
-		case 'e', 'i', 'o', 'u', 'E', 'I', 'O', 'U':
-			if r >= 'a' && r <= 'z' {
-				return 'a'
-			}
+		case 'a', 'e', 'i', 'o', 'u':
+			return 'a'
+		case 'A', 'E', 'I', 'O', 'U':
 			return 'A'
 		}
 		return r
@@ -403,7 +403,7 @@ func ForToolText(s string) string {
 	s = norm.NFKC.String(s)
 	s = ConfusableToASCII(s)
 	s = StripCombiningMarks(s)
-	s = NormalizeLeetspeak(s)
-	s = NormalizeWhitespace(s)
+	s = Leetspeak(s)
+	s = Whitespace(s)
 	return s
 }

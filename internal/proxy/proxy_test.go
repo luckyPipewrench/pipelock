@@ -16,6 +16,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
+	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -2838,4 +2839,146 @@ func TestProxy_SessionMgr_ConcurrentReloadRequest(t *testing.T) {
 	}
 	wg.Wait()
 	// If the race detector doesn't fire, the atomic pointer is working.
+}
+
+func TestKillSwitch_DeniesHTTPRequest(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.KillSwitch.Enabled = true
+	cfg.KillSwitch.Message = "kill switch test" //nolint:goconst // test value
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	m := metrics.New()
+	ks := killswitch.New(cfg)
+	p := New(cfg, logger, sc, m, WithKillSwitch(ks))
+
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("request should not reach backend")
+	}))
+	defer backend.Close()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+	handler := p.buildHandler(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/html", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected status 503, got %d", w.Code)
+	}
+
+	var resp map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp["error"] != "kill_switch_active" { //nolint:goconst // test value
+		t.Errorf("expected error %q, got %q", "kill_switch_active", resp["error"])
+	}
+	if resp["message"] != "kill switch test" {
+		t.Errorf("expected message %q, got %q", "kill switch test", resp["message"])
+	}
+}
+
+func TestKillSwitch_ExemptsHealthEndpoint(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.KillSwitch.Enabled = true
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	m := metrics.New()
+	ks := killswitch.New(cfg)
+	p := New(cfg, logger, sc, m, WithKillSwitch(ks))
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"status":"ok"}`)
+	})
+	handler := p.buildHandler(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected /health to be exempt, got status %d", w.Code)
+	}
+}
+
+func TestKillSwitch_ExemptsMetricsEndpoint(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.KillSwitch.Enabled = true
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	m := metrics.New()
+	ks := killswitch.New(cfg)
+	p := New(cfg, logger, sc, m, WithKillSwitch(ks))
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/metrics", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = fmt.Fprintf(w, "# HELP test\n")
+	})
+	handler := p.buildHandler(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected /metrics to be exempt, got status %d", w.Code)
+	}
+}
+
+func TestKillSwitch_AllowlistIP(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.KillSwitch.Enabled = true
+	cfg.KillSwitch.AllowlistIPs = []string{"127.0.0.1/32"}
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	m := metrics.New()
+	ks := killswitch.New(cfg)
+	p := New(cfg, logger, sc, m, WithKillSwitch(ks))
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+	handler := p.buildHandler(mux)
+
+	// Request from allowlisted IP should pass through.
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url=http://example.com", nil)
+	req.RemoteAddr = "127.0.0.1:54321"
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	// Should NOT return 503 (would return a fetch error or block, but not kill switch).
+	if w.Code == http.StatusServiceUnavailable {
+		t.Error("expected allowlisted IP to bypass kill switch")
+	}
+}
+
+func TestWithKillSwitch_NilSafe(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	m := metrics.New()
+	// No kill switch — nil controller.
+	p := New(cfg, logger, sc, m)
+
+	mux := http.NewServeMux()
+	handler := p.buildHandler(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	// Should not panic with nil kill switch controller.
 }

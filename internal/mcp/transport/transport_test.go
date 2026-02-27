@@ -1,4 +1,4 @@
-package mcp
+package transport
 
 import (
 	"bytes"
@@ -7,6 +7,21 @@ import (
 	"strings"
 	"testing"
 )
+
+// errWriter returns an error after limit writes.
+// Mirrors the same helper in proxy_test.go; duplicated because different packages.
+type errWriter struct {
+	n     int
+	limit int
+}
+
+func (w *errWriter) Write(p []byte) (int, error) {
+	w.n++
+	if w.n > w.limit {
+		return 0, errors.New("simulated write error")
+	}
+	return len(p), nil
+}
 
 func TestStdioReader_SingleMessage(t *testing.T) {
 	r := NewStdioReader(strings.NewReader(`{"jsonrpc":"2.0","id":1}` + "\n"))
@@ -182,7 +197,7 @@ func TestStdioWriter_TooLarge(t *testing.T) {
 	var buf bytes.Buffer
 	w := NewStdioWriter(&buf)
 
-	huge := make([]byte, maxLineSize+1)
+	huge := make([]byte, MaxLineSize+1)
 	err := w.WriteMessage(huge)
 	if err == nil {
 		t.Fatal("expected error for oversized message")
@@ -196,8 +211,8 @@ func TestStdioWriter_TooLarge(t *testing.T) {
 }
 
 func TestStdioReader_OversizedMessage(t *testing.T) {
-	// A line exceeding maxLineSize should return bufio.ErrTooLong, not EOF.
-	huge := strings.Repeat("x", maxLineSize+1) + "\n"
+	// A line exceeding MaxLineSize should return bufio.ErrTooLong, not EOF.
+	huge := strings.Repeat("x", MaxLineSize+1) + "\n"
 	r := NewStdioReader(strings.NewReader(huge))
 	_, err := r.ReadMessage()
 	if err == nil {

@@ -1,4 +1,4 @@
-package mcp
+package transport
 
 import (
 	"context"
@@ -410,19 +410,15 @@ func TestHTTPClient_OpenGETStream_IncludesSessionID(t *testing.T) {
 }
 
 func TestHTTPClient_ErrorResponseDoesNotOverwriteSessionID(t *testing.T) {
-	// An error response with a crafted Mcp-Session-Id header must not
-	// overwrite the established session ID.
 	callCount := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		callCount++
 		if callCount == 1 {
-			// First call: establish session with a 200.
 			w.Header().Set("Mcp-Session-Id", "good-session") //nolint:goconst // test value
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
 			return
 		}
-		// Second call: return 500 with a crafted session ID.
 		w.Header().Set("Mcp-Session-Id", "evil-session") //nolint:goconst // test value
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
@@ -430,7 +426,6 @@ func TestHTTPClient_ErrorResponseDoesNotOverwriteSessionID(t *testing.T) {
 
 	c := NewHTTPClient(srv.URL, nil)
 
-	// Establish session.
 	reader, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
 	if err != nil {
 		t.Fatalf("first SendMessage: %v", err)
@@ -440,7 +435,6 @@ func TestHTTPClient_ErrorResponseDoesNotOverwriteSessionID(t *testing.T) {
 		t.Fatalf("session not established: got %q", c.SessionID())
 	}
 
-	// Error response should not overwrite.
 	_, err = c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":2,"method":"test"}`))
 	if err == nil {
 		t.Fatal("expected error for 500")
@@ -486,7 +480,6 @@ func TestHTTPClient_DeleteSession_Success(t *testing.T) {
 	if logBuf.Len() != 0 {
 		t.Errorf("unexpected log output: %s", logBuf.String())
 	}
-	// Session ID should be cleared after successful delete.
 	if c.SessionID() != "" {
 		t.Errorf("sessionID should be cleared after delete, got %q", c.SessionID())
 	}
@@ -535,7 +528,6 @@ func TestHTTPClient_DeleteSession_ServerError(t *testing.T) {
 }
 
 func TestHTTPClient_DeleteSession_ConnectionError(t *testing.T) {
-	// Start server, establish session, then close server before DELETE.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
 			w.Header().Set("Mcp-Session-Id", "sess-conn-err") //nolint:goconst // test value
@@ -552,7 +544,6 @@ func TestHTTPClient_DeleteSession_ConnectionError(t *testing.T) {
 	}
 	drain(t, r)
 
-	// Close the server before DELETE — should log connection error.
 	srv.Close()
 
 	var logBuf strings.Builder
@@ -564,7 +555,6 @@ func TestHTTPClient_DeleteSession_ConnectionError(t *testing.T) {
 }
 
 func TestHTTPClient_DeleteSession_ConnectionError_NilLog(t *testing.T) {
-	// Same as above but with nil logW — should not panic.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
 			w.Header().Set("Mcp-Session-Id", "sess-nil-log") //nolint:goconst // test value
@@ -583,12 +573,10 @@ func TestHTTPClient_DeleteSession_ConnectionError_NilLog(t *testing.T) {
 
 	srv.Close()
 
-	// Should not panic with nil logW.
 	c.DeleteSession(nil)
 }
 
 func TestErrStreamNotSupported_Sentinel(t *testing.T) {
-	// Verify errors.Is works with the wrapped sentinel.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}))
@@ -605,9 +593,6 @@ func TestErrStreamNotSupported_Sentinel(t *testing.T) {
 }
 
 func TestHTTPClient_OpenGETStream_3xxRedirect(t *testing.T) {
-	// GET to a redirecting server — redirect-following is disabled, so the
-	// 302 status is returned directly. OpenGETStream should reject 3xx
-	// responses as errors (consistent with SendMessage's fail-closed design).
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: {}\n\n"))
@@ -630,7 +615,6 @@ func TestHTTPClient_OpenGETStream_3xxRedirect(t *testing.T) {
 }
 
 func TestHTTPClient_SendMessage_3xxRedirect(t *testing.T) {
-	// SendMessage rejects 3xx responses (redirects are disabled).
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json") //nolint:goconst // test value
 		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
@@ -653,7 +637,6 @@ func TestHTTPClient_SendMessage_3xxRedirect(t *testing.T) {
 }
 
 func TestHTTPClient_DeleteSession_ServerError_NilLog(t *testing.T) {
-	// Server returns 500 but logW is nil — should not panic.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
 			w.Header().Set("Mcp-Session-Id", "sess-err-nillog") //nolint:goconst // test value
@@ -672,12 +655,10 @@ func TestHTTPClient_DeleteSession_ServerError_NilLog(t *testing.T) {
 	}
 	drain(t, r)
 
-	// Should not panic with nil logW and 500 response.
 	c.DeleteSession(nil)
 }
 
 func TestHTTPClient_OpenGETStream_IncludesHeaders(t *testing.T) {
-	// Verify extra headers are sent with GET stream requests.
 	var gotAuth string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
@@ -700,8 +681,6 @@ func TestHTTPClient_OpenGETStream_IncludesHeaders(t *testing.T) {
 }
 
 func TestHTTPClient_DeleteSession_IncludesExtraHeaders(t *testing.T) {
-	// Verify that extra headers (e.g., Authorization) are sent with DELETE requests.
-	// Previous tests used nil headers — this exercises the header-copy loop (lines 267-270).
 	var gotAuth string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
@@ -735,8 +714,6 @@ func TestHTTPClient_DeleteSession_IncludesExtraHeaders(t *testing.T) {
 }
 
 func TestHTTPClient_DeleteSession_BadURL(t *testing.T) {
-	// Exercise the req-creation error branch in DeleteSession (lines 261-265).
-	// Use a URL with a control character that http.NewRequestWithContext rejects.
 	c := &HTTPClient{
 		url:       "http://\x00invalid",
 		headers:   http.Header{},
@@ -764,7 +741,6 @@ func TestHTTPClient_SendMessage_EmptyBody(t *testing.T) {
 		t.Fatalf("SendMessage: %v", err)
 	}
 
-	// Empty body should return EOF.
 	_, err = reader.ReadMessage()
 	if !errors.Is(err, io.EOF) {
 		t.Errorf("expected io.EOF for empty body, got %v", err)
@@ -772,7 +748,6 @@ func TestHTTPClient_SendMessage_EmptyBody(t *testing.T) {
 }
 
 func TestHTTPClient_SendMessage_BadURL(t *testing.T) {
-	// Exercise the req-creation error branch (line 68-70).
 	c := &HTTPClient{
 		url:     "http://\x00invalid",
 		headers: http.Header{},
@@ -788,7 +763,6 @@ func TestHTTPClient_SendMessage_BadURL(t *testing.T) {
 }
 
 func TestHTTPClient_OpenGETStream_BadURL(t *testing.T) {
-	// Exercise the req-creation error branch in OpenGETStream (line 198-200).
 	c := &HTTPClient{
 		url:     "http://\x00invalid",
 		headers: http.Header{},
@@ -804,9 +778,8 @@ func TestHTTPClient_OpenGETStream_BadURL(t *testing.T) {
 }
 
 func TestHTTPClient_SingleMessageReader_ReadError(t *testing.T) {
-	// Exercise the ReadAll error branch in singleMessageReader (line 161-163).
 	errReader := &errReadCloser{err: errors.New("disk failure")}
-	r := &singleMessageReader{body: errReader}
+	r := &SingleMessageReader{Body: errReader}
 
 	_, err := r.ReadMessage()
 	if err == nil {
@@ -831,10 +804,8 @@ func (r *errReadCloser) Close() error {
 }
 
 func TestHTTPClient_ErrorStatusEmptyBody(t *testing.T) {
-	// Exercise the empty-body branch of error status (line 121).
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
-		// No body written.
 	}))
 	defer srv.Close()
 
@@ -849,13 +820,10 @@ func TestHTTPClient_ErrorStatusEmptyBody(t *testing.T) {
 }
 
 func TestHTTPClient_SingleMessageReader_Overflow(t *testing.T) {
-	// A response exceeding maxLineSize should return a clear error
-	// instead of silently truncating and causing confusing parse errors.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		// Write maxLineSize + 100 bytes to exceed the limit.
 		_, _ = w.Write([]byte(`{"data":"`))
-		_, _ = w.Write(make([]byte, maxLineSize))
+		_, _ = w.Write(make([]byte, MaxLineSize))
 		_, _ = w.Write([]byte(`"}`))
 	}))
 	defer srv.Close()

@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -34,7 +36,80 @@ const (
 	DefaultLogOutput = "stdout"
 	OutputFile       = "file"
 	OutputBoth       = "both"
+
+	// DefaultMaxGap is the default maximum number of non-matching tool calls
+	// allowed between consecutive steps in a chain pattern.
+	DefaultMaxGap = 3
 )
+
+// SuppressEntry defines a finding suppression rule for false positives.
+// Used in pipelock.yaml to suppress specific patterns on specific paths/URLs.
+type SuppressEntry struct {
+	Rule   string `yaml:"rule"`             // pattern name (required)
+	Path   string `yaml:"path"`             // exact path, glob, or URL pattern (required)
+	Reason string `yaml:"reason,omitempty"` // human-readable justification
+}
+
+// IsSuppressed checks if a finding with the given rule name and target path/URL
+// matches any suppress entry. Supports exact match, glob (path.Match), directory
+// prefix ("vendor/"), and basename glob ("*.txt" matches "dir/foo.txt").
+func IsSuppressed(rule, target string, entries []SuppressEntry) bool {
+	_, ok := SuppressedReason(rule, target, entries)
+	return ok
+}
+
+// SuppressedReason returns the reason and true if the finding is suppressed,
+// or ("", false) if not suppressed.
+func SuppressedReason(rule, target string, entries []SuppressEntry) (string, bool) {
+	if target == "" || len(entries) == 0 {
+		return "", false
+	}
+	target = toSlash(target)
+	for _, e := range entries {
+		if !strings.EqualFold(e.Rule, rule) {
+			continue
+		}
+		if matchesPath(target, e.Path) {
+			return e.Reason, true
+		}
+	}
+	return "", false
+}
+
+// matchesPath checks if target matches the given pattern.
+func matchesPath(target, pattern string) bool {
+	p := toSlash(pattern)
+	if p == "" {
+		return false
+	}
+	// Directory prefix: "vendor/" matches "vendor/foo/bar.go"
+	if strings.HasSuffix(p, "/") {
+		return strings.HasPrefix(target, p)
+	}
+	// Exact match.
+	if target == p {
+		return true
+	}
+	// Glob on full path.
+	if matched, _ := path.Match(p, target); matched {
+		return true
+	}
+	// Glob on basename (e.g., "*.txt" matches "dir/foo.txt").
+	if matched, _ := path.Match(p, path.Base(target)); matched {
+		return true
+	}
+	// URL suffix match: pattern without leading slash matches URL path suffix.
+	// e.g., "robots.txt" matches "https://example.com/robots.txt"
+	if !strings.HasPrefix(p, "/") && strings.HasSuffix(target, "/"+p) {
+		return true
+	}
+	return false
+}
+
+// toSlash normalizes path separators to forward slashes.
+func toSlash(s string) string {
+	return strings.ReplaceAll(s, "\\", "/")
+}
 
 // Config is the top-level Pipelock configuration.
 type Config struct {
@@ -42,6 +117,7 @@ type Config struct {
 	Mode                string              `yaml:"mode"`    // strict, balanced, audit
 	Enforce             *bool               `yaml:"enforce"` // nil = true (default); false = detect & log without blocking
 	APIAllowlist        []string            `yaml:"api_allowlist"`
+	Suppress            []SuppressEntry     `yaml:"suppress"`
 	FetchProxy          FetchProxy          `yaml:"fetch_proxy"`
 	ForwardProxy        ForwardProxy        `yaml:"forward_proxy"`
 	WebSocketProxy      WebSocketProxy      `yaml:"websocket_proxy"`
@@ -55,6 +131,8 @@ type Config struct {
 	SessionProfiling    SessionProfiling    `yaml:"session_profiling"`
 	AdaptiveEnforcement AdaptiveEnforcement `yaml:"adaptive_enforcement"`
 	MCPSessionBinding   MCPSessionBinding   `yaml:"mcp_session_binding"`
+	KillSwitch          KillSwitch          `yaml:"kill_switch"`
+	ToolChainDetection  ToolChainDetection  `yaml:"tool_chain_detection"`
 	Internal            []string            `yaml:"internal"`
 }
 
@@ -226,6 +304,41 @@ type MCPSessionBinding struct {
 	NoBaselineAction  string `yaml:"no_baseline_action"`  // warn, block
 }
 
+// KillSwitch configures the emergency deny-all kill switch.
+// When active, all requests are rejected except health/metrics endpoints
+// and allowlisted IPs. Three activation sources (config, SIGUSR1, sentinel
+// file) are OR-composed: any one active means the kill switch is engaged.
+type KillSwitch struct {
+	Enabled       bool     `yaml:"enabled"`
+	SentinelFile  string   `yaml:"sentinel_file"`
+	Message       string   `yaml:"message"`
+	HealthExempt  *bool    `yaml:"health_exempt"`
+	MetricsExempt *bool    `yaml:"metrics_exempt"`
+	AllowlistIPs  []string `yaml:"allowlist_ips"`
+}
+
+// ToolChainDetection configures MCP tool call chain pattern detection.
+// Detects attack patterns in sequences of tool calls using subsequence
+// matching with a configurable max_gap constraint.
+type ToolChainDetection struct {
+	Enabled          bool                `yaml:"enabled"`
+	Action           string              `yaml:"action"`            // warn, block
+	WindowSize       int                 `yaml:"window_size"`       // max tool calls in history
+	WindowSeconds    int                 `yaml:"window_seconds"`    // time-based eviction
+	MaxGap           *int                `yaml:"max_gap"`           // max innocent calls between steps (nil = default 3)
+	ToolCategories   map[string][]string `yaml:"tool_categories"`   // category -> tool name patterns
+	PatternOverrides map[string]string   `yaml:"pattern_overrides"` // pattern name -> action override
+	CustomPatterns   []ChainPattern      `yaml:"custom_patterns"`
+}
+
+// ChainPattern defines a tool call chain to detect.
+type ChainPattern struct {
+	Name     string   `yaml:"name"`
+	Sequence []string `yaml:"sequence"` // category names
+	Severity string   `yaml:"severity"` // medium, high, critical
+	Action   string   `yaml:"action"`   // optional per-pattern override
+}
+
 // Load reads, parses, defaults, and validates a Pipelock config file.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // G304: path from caller
@@ -342,7 +455,7 @@ func (c *Config) ApplyDefaults() {
 		c.WebSocketProxy.IdleTimeoutSeconds = 300
 	}
 	if c.WebSocketProxy.OriginPolicy == "" {
-		c.WebSocketProxy.OriginPolicy = "rewrite"
+		c.WebSocketProxy.OriginPolicy = "rewrite" //nolint:goconst // used as default value
 	}
 	if c.GitProtection.Enabled && len(c.GitProtection.AllowedBranches) == 0 {
 		c.GitProtection.AllowedBranches = []string{"feature/*", "fix/*", "main", "master"}
@@ -395,6 +508,32 @@ func (c *Config) ApplyDefaults() {
 		if c.AdaptiveEnforcement.DecayPerCleanRequest <= 0 {
 			c.AdaptiveEnforcement.DecayPerCleanRequest = 0.5
 		}
+	}
+
+	// Kill switch defaults
+	if c.KillSwitch.Message == "" {
+		c.KillSwitch.Message = "Emergency deny-all active"
+	}
+	if c.KillSwitch.HealthExempt == nil {
+		c.KillSwitch.HealthExempt = ptrBool(true)
+	}
+	if c.KillSwitch.MetricsExempt == nil {
+		c.KillSwitch.MetricsExempt = ptrBool(true)
+	}
+
+	// Tool chain detection defaults
+	if c.ToolChainDetection.Enabled && c.ToolChainDetection.Action == "" {
+		c.ToolChainDetection.Action = ActionWarn
+	}
+	if c.ToolChainDetection.WindowSize <= 0 {
+		c.ToolChainDetection.WindowSize = 20
+	}
+	if c.ToolChainDetection.WindowSeconds <= 0 {
+		c.ToolChainDetection.WindowSeconds = 60
+	}
+	if c.ToolChainDetection.MaxGap == nil {
+		d := DefaultMaxGap
+		c.ToolChainDetection.MaxGap = &d
 	}
 
 	// MCP session binding defaults
@@ -672,6 +811,79 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// Validate tool chain detection config
+	if c.ToolChainDetection.Enabled {
+		switch c.ToolChainDetection.Action {
+		case ActionWarn, ActionBlock:
+			// valid
+		default:
+			return fmt.Errorf("invalid tool_chain_detection.action %q: must be warn or block", c.ToolChainDetection.Action)
+		}
+		if c.ToolChainDetection.WindowSize <= 0 {
+			return fmt.Errorf("tool_chain_detection.window_size must be positive")
+		}
+		if c.ToolChainDetection.WindowSeconds <= 0 {
+			return fmt.Errorf("tool_chain_detection.window_seconds must be positive")
+		}
+		if c.ToolChainDetection.MaxGap != nil && *c.ToolChainDetection.MaxGap < 0 {
+			return fmt.Errorf("tool_chain_detection.max_gap must be non-negative")
+		}
+		for i, p := range c.ToolChainDetection.CustomPatterns {
+			if p.Name == "" {
+				return fmt.Errorf("tool_chain_detection.custom_patterns[%d] missing name", i)
+			}
+			if len(p.Sequence) < 2 {
+				return fmt.Errorf("tool_chain_detection.custom_patterns[%d] %q: sequence must have at least 2 steps", i, p.Name)
+			}
+			switch p.Severity {
+			case "medium", "high", "critical":
+				// valid
+			default:
+				return fmt.Errorf("tool_chain_detection.custom_patterns[%d] %q: invalid severity %q: must be medium, high, or critical", i, p.Name, p.Severity)
+			}
+			if p.Action != "" {
+				switch p.Action {
+				case ActionWarn, ActionBlock:
+					// valid
+				default:
+					return fmt.Errorf("tool_chain_detection.custom_patterns[%d] %q: invalid action %q: must be warn or block", i, p.Name, p.Action)
+				}
+			}
+		}
+		for name, action := range c.ToolChainDetection.PatternOverrides {
+			switch action {
+			case ActionWarn, ActionBlock:
+				// valid
+			default:
+				return fmt.Errorf("tool_chain_detection.pattern_overrides[%q]: invalid action %q: must be warn or block", name, action)
+			}
+		}
+	}
+
+	// Validate suppress entries have required fields
+	for i, s := range c.Suppress {
+		if s.Rule == "" {
+			return fmt.Errorf("suppress entry %d missing required field \"rule\"", i)
+		}
+		if s.Path == "" {
+			return fmt.Errorf("suppress entry %d (%s) missing required field \"path\"", i, s.Rule)
+		}
+		// Validate glob syntax so misconfigured patterns fail fast
+		// instead of silently never matching at runtime.
+		if strings.ContainsAny(s.Path, "*?[") {
+			if _, err := path.Match(toSlash(s.Path), "x"); err != nil {
+				return fmt.Errorf("suppress entry %d (%s) has invalid path pattern %q: %w", i, s.Rule, s.Path, err)
+			}
+		}
+	}
+
+	// Validate kill switch allowlist CIDRs are parseable
+	for _, cidr := range c.KillSwitch.AllowlistIPs {
+		if _, _, err := net.ParseCIDR(cidr); err != nil {
+			return fmt.Errorf("invalid kill_switch.allowlist_ips CIDR %q: %w", cidr, err)
+		}
+	}
+
 	// Validate internal CIDRs are parseable
 	for _, cidr := range c.Internal {
 		if _, _, err := net.ParseCIDR(cidr); err != nil {
@@ -816,6 +1028,14 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		warnings = append(warnings, ReloadWarning{
 			Field:   "mcp_session_binding.enabled",
 			Message: "MCP session binding disabled",
+		})
+	}
+
+	// Tool chain detection disabled
+	if old.ToolChainDetection.Enabled && !updated.ToolChainDetection.Enabled {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "tool_chain_detection.enabled",
+			Message: "tool chain detection disabled",
 		})
 	}
 

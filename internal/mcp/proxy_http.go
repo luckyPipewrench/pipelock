@@ -14,6 +14,12 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
+	"github.com/luckyPipewrench/pipelock/internal/killswitch"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -30,8 +36,10 @@ func RunHTTPProxy(
 	approver *hitl.Approver,
 	extraHeaders http.Header,
 	inputCfg *InputScanConfig,
-	toolCfg *ToolScanConfig,
-	policyCfg *PolicyConfig,
+	toolCfg *tools.ToolScanConfig,
+	policyCfg *policy.Config,
+	ks *killswitch.Controller,
+	chainMatcher *chains.Matcher,
 ) error {
 	// Create a child context so we can stop the GET stream when stdin EOF is reached.
 	ctx, cancel := context.WithCancel(ctx)
@@ -40,19 +48,19 @@ func RunHTTPProxy(
 	safeClientOut := &syncWriter{w: clientOut}
 	safeLogW := &syncWriter{w: logW}
 
-	httpClient := NewHTTPClient(upstreamURL, extraHeaders)
+	httpClient := transport.NewHTTPClient(upstreamURL, extraHeaders)
 
 	// Tool scanning baseline for this session.
-	var fwdToolCfg *ToolScanConfig
+	var fwdToolCfg *tools.ToolScanConfig
 	if toolCfg != nil && toolCfg.Action != "" {
-		fwdToolCfg = &ToolScanConfig{
-			Baseline:    NewToolBaseline(),
+		fwdToolCfg = &tools.ToolScanConfig{
+			Baseline:    tools.NewToolBaseline(),
 			Action:      toolCfg.Action,
 			DetectDrift: toolCfg.DetectDrift,
 		}
 	}
 
-	clientReader := NewStdioReader(clientIn)
+	clientReader := transport.NewStdioReader(clientIn)
 
 	var wg sync.WaitGroup
 	var getStreamOnce sync.Once
@@ -73,9 +81,25 @@ func RunHTTPProxy(
 		default:
 		}
 
+		// Kill switch: deny all messages when active.
+		if ks != nil {
+			if d := ks.IsActiveMCP(msg); d.Active {
+				if d.IsNotification {
+					_, _ = fmt.Fprintf(safeLogW, "pipelock: kill switch dropped notification (source=%s)\n", d.Source)
+					continue
+				}
+				rpcID := extractRPCID(msg)
+				resp := killswitch.ErrorResponse(rpcID, d.Message)
+				if wErr := safeClientOut.WriteMessage(resp); wErr != nil {
+					_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send kill switch response: %v\n", wErr)
+				}
+				continue
+			}
+		}
+
 		// Input scanning — call ScanRequest and CheckRequest directly.
 		// The sequential (non-concurrent) architecture means no channel needed.
-		if blocked := scanHTTPInput(msg, sc, safeLogW, inputCfg, policyCfg); blocked != nil {
+		if blocked := scanHTTPInput(msg, sc, safeLogW, inputCfg, policyCfg, chainMatcher, "default"); blocked != nil {
 			if !blocked.IsNotification {
 				resp := blockRequestResponse(*blocked)
 				if wErr := safeClientOut.WriteMessage(resp); wErr != nil {
@@ -134,7 +158,7 @@ func RunHTTPProxy(
 // Returns a *BlockedRequest if the message should be blocked, nil if clean.
 // This is the HTTP proxy equivalent of ForwardScannedInput's per-message logic,
 // but returns a verdict instead of writing to a channel.
-func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *InputScanConfig, policyCfg *PolicyConfig) *BlockedRequest {
+func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *InputScanConfig, policyCfg *policy.Config, chainMatcher *chains.Matcher, sessionKey string) *BlockedRequest {
 	// Determine input scanning parameters.
 	action := config.ActionWarn
 	onParseError := config.ActionBlock
@@ -150,32 +174,63 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 		verdict = ScanRequest(msg, sc, action, onParseError)
 	} else {
 		verdict = InputVerdict{Clean: true}
-		// When input scanning is disabled, extract the ID from the raw message
-		// so policy-blocked responses include the correct request ID.
-		if policyCfg != nil {
+		// When input scanning is disabled, extract enough metadata from the
+		// raw message so policy and chain detection still work.
+		if policyCfg != nil || chainMatcher != nil {
 			verdict.ID = extractRPCID(msg)
+			// Extract method for chain detection even when content scanning is off.
+			var env struct {
+				Method string `json:"method"`
+			}
+			if json.Unmarshal(msg, &env) == nil {
+				verdict.Method = env.Method
+			}
 		}
 	}
 
 	// Policy check.
-	policyVerdict := PolicyVerdict{}
+	policyVerdict := policy.Verdict{}
 	if policyCfg != nil {
 		policyVerdict = policyCfg.CheckRequest(msg)
+	}
+
+	// Chain detection: check if this tool call matches an attack pattern.
+	chainAction := ""
+	chainReason := ""
+	if chainMatcher != nil && verdict.Method == "tools/call" { //nolint:goconst // MCP method name used across packages
+		toolName := extractToolCallName(msg)
+		if toolName != "" {
+			cv := chainMatcher.Record(sessionKey, toolName)
+			if cv.Matched {
+				_, _ = fmt.Fprintf(logW, "pipelock: chain detected: %s (severity=%s, action=%s)\n",
+					cv.PatternName, cv.Severity, cv.Action)
+				if cv.Action == config.ActionBlock {
+					return &BlockedRequest{
+						ID:             verdict.ID,
+						IsNotification: isRPCNotification(verdict.ID),
+						LogMessage:     fmt.Sprintf("chain pattern %q blocked", cv.PatternName),
+						ErrorCode:      -32004,
+						ErrorMessage:   fmt.Sprintf("tool call blocked: chain pattern %q detected", cv.PatternName),
+					}
+				}
+				chainAction = cv.Action
+				chainReason = "chain:" + cv.PatternName
+			}
+		}
 	}
 
 	// Parse error — always block.
 	if verdict.Error != "" {
 		_, _ = fmt.Fprintf(logW, "pipelock: input: %s\n", verdict.Error)
-		isNotification := len(verdict.ID) == 0
 		return &BlockedRequest{
 			ID:             verdict.ID,
-			IsNotification: isNotification,
+			IsNotification: isRPCNotification(verdict.ID),
 			LogMessage:     "blocked (parse error)",
 		}
 	}
 
-	// Both clean — proceed.
-	if verdict.Clean && !policyVerdict.Matched {
+	// All clean — proceed.
+	if verdict.Clean && !policyVerdict.Matched && chainAction == "" {
 		return nil
 	}
 
@@ -190,17 +245,31 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 	for _, r := range policyVerdict.Rules {
 		reasons = append(reasons, "policy:"+r)
 	}
+	if chainReason != "" {
+		reasons = append(reasons, chainReason)
+	}
 
 	// Determine effective action (strictest wins).
+	// mergeAction sets effectiveAction to the stricter of cur and next,
+	// handling the initial empty state correctly (empty = no action yet).
 	effectiveAction := ""
+	mergeAction := func(cur, next string) string {
+		if cur == "" {
+			return next
+		}
+		return policy.StricterAction(cur, next)
+	}
 	if !verdict.Clean {
 		effectiveAction = action
 	}
 	if policyVerdict.Matched {
-		effectiveAction = stricterAction(effectiveAction, policyVerdict.Action)
+		effectiveAction = mergeAction(effectiveAction, policyVerdict.Action)
+	}
+	if chainAction != "" {
+		effectiveAction = mergeAction(effectiveAction, chainAction)
 	}
 
-	isNotification := len(verdict.ID) == 0
+	isNotification := isRPCNotification(verdict.ID)
 
 	// Error code/message based on what triggered.
 	errCode := 0
@@ -247,7 +316,7 @@ func extractRPCID(msg []byte) json.RawMessage {
 	if json.Unmarshal(msg, &rpc) != nil {
 		return nil
 	}
-	if string(rpc.ID) == jsonNull || len(rpc.ID) == 0 {
+	if string(rpc.ID) == jsonrpc.Null || len(rpc.ID) == 0 {
 		return nil
 	}
 	return rpc.ID
@@ -265,7 +334,7 @@ func validateRPCStructure(msg []byte) string {
 		return "invalid JSON structure"
 	}
 	// jsonrpc field must be exactly "2.0".
-	if env.JSONRPC != jsonRPCVersion {
+	if env.JSONRPC != jsonrpc.Version {
 		return "jsonrpc field must be \"2.0\""
 	}
 	// method field is required for client requests.
@@ -283,7 +352,7 @@ func validateRPCStructure(msg []byte) string {
 // If id is nil, the response uses a JSON null id (valid for unidentifiable requests).
 func upstreamErrorResponse(id json.RawMessage, upstreamErr error) []byte {
 	resp := rpcError{
-		JSONRPC: jsonRPCVersion,
+		JSONRPC: jsonrpc.Version,
 		ID:      id,
 		Error: rpcErrorDetail{
 			Code:    -32003,
@@ -297,16 +366,16 @@ func upstreamErrorResponse(id json.RawMessage, upstreamErr error) []byte {
 // startGETStream maintains a background GET SSE connection for server-initiated
 // messages. Called after the initialize handshake establishes a session ID.
 // Reconnects with exponential backoff (1s base, 30s cap) on stream end or
-// transient errors. Exits permanently only on ErrStreamNotSupported (HTTP 405)
+// transient errors. Exits permanently only on transport.ErrStreamNotSupported (HTTP 405)
 // or context cancellation.
 func startGETStream(
 	ctx context.Context,
-	httpClient *HTTPClient,
+	httpClient *transport.HTTPClient,
 	safeClientOut *syncWriter,
 	safeLogW *syncWriter,
 	sc *scanner.Scanner,
 	approver *hitl.Approver,
-	toolCfg *ToolScanConfig,
+	toolCfg *tools.ToolScanConfig,
 	wg *sync.WaitGroup,
 ) {
 	wg.Add(1)
@@ -327,7 +396,7 @@ func startGETStream(
 			if err != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: GET stream: %v\n", err)
 				// Permanent error — server does not support GET streams.
-				if errors.Is(err, ErrStreamNotSupported) {
+				if errors.Is(err, transport.ErrStreamNotSupported) {
 					return
 				}
 				// Transient error — backoff and retry.
@@ -385,16 +454,18 @@ func RunHTTPListenerProxy(
 	sc *scanner.Scanner,
 	approver *hitl.Approver,
 	inputCfg *InputScanConfig,
-	toolCfg *ToolScanConfig,
-	policyCfg *PolicyConfig,
+	toolCfg *tools.ToolScanConfig,
+	policyCfg *policy.Config,
+	ks *killswitch.Controller,
+	chainMatcher *chains.Matcher,
 ) error {
 	safeLogW := &syncWriter{w: logW}
 
 	// Shared tool baseline across all requests for drift detection.
-	var fwdToolCfg *ToolScanConfig
+	var fwdToolCfg *tools.ToolScanConfig
 	if toolCfg != nil && toolCfg.Action != "" {
-		fwdToolCfg = &ToolScanConfig{
-			Baseline:    NewToolBaseline(),
+		fwdToolCfg = &tools.ToolScanConfig{
+			Baseline:    tools.NewToolBaseline(),
 			Action:      toolCfg.Action,
 			DetectDrift: toolCfg.DetectDrift,
 		}
@@ -424,7 +495,7 @@ func RunHTTPListenerProxy(
 		}
 
 		// Cap request body to prevent memory exhaustion.
-		r.Body = http.MaxBytesReader(w, r.Body, int64(maxLineSize))
+		r.Body = http.MaxBytesReader(w, r.Body, int64(transport.MaxLineSize))
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
@@ -449,7 +520,7 @@ func RunHTTPListenerProxy(
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
 			parseErr, _ := json.Marshal(rpcError{
-				JSONRPC: jsonRPCVersion,
+				JSONRPC: jsonrpc.Version,
 				Error:   rpcErrorDetail{Code: -32700, Message: "pipelock: parse error: invalid JSON"},
 			})
 			_, _ = w.Write(parseErr)
@@ -466,11 +537,26 @@ func RunHTTPListenerProxy(
 				w.WriteHeader(http.StatusBadRequest)
 				rpcID := extractRPCID(body)
 				invalidReq, _ := json.Marshal(rpcError{
-					JSONRPC: jsonRPCVersion,
+					JSONRPC: jsonrpc.Version,
 					ID:      rpcID,
 					Error:   rpcErrorDetail{Code: -32600, Message: "pipelock: invalid request: " + reason},
 				})
 				_, _ = w.Write(invalidReq)
+				return
+			}
+		}
+
+		// Kill switch: deny all requests when active.
+		if ks != nil {
+			if d := ks.IsActiveMCP(body); d.Active {
+				w.Header().Set("Content-Type", "application/json")
+				if d.IsNotification {
+					w.WriteHeader(http.StatusAccepted)
+					_, _ = fmt.Fprintf(safeLogW, "pipelock: kill switch dropped notification (source=%s)\n", d.Source)
+					return
+				}
+				rpcID := extractRPCID(body)
+				_, _ = w.Write(killswitch.ErrorResponse(rpcID, d.Message))
 				return
 			}
 		}
@@ -485,7 +571,7 @@ func RunHTTPListenerProxy(
 				w.Header().Set("Content-Type", "application/json")
 				rpcID := extractRPCID(body)
 				resp, _ := json.Marshal(rpcError{
-					JSONRPC: jsonRPCVersion,
+					JSONRPC: jsonrpc.Version,
 					ID:      rpcID,
 					Error:   rpcErrorDetail{Code: -32001, Message: "pipelock: request blocked by MCP input scanning"},
 				})
@@ -494,8 +580,22 @@ func RunHTTPListenerProxy(
 			}
 		}
 
-		// Input scanning: DLP, injection, policy.
-		if blocked := scanHTTPInput(body, sc, safeLogW, inputCfg, policyCfg); blocked != nil {
+		// Use Mcp-Session-Id header as chain detection session key so
+		// concurrent clients don't share tool call history. When no
+		// session ID is present, fall back to the client IP (without
+		// port) so all requests from the same agent share chain history
+		// even across separate TCP connections.
+		chainSessionKey := r.Header.Get("Mcp-Session-Id")
+		if chainSessionKey == "" {
+			host, _, err := net.SplitHostPort(r.RemoteAddr)
+			if err != nil {
+				host = r.RemoteAddr
+			}
+			chainSessionKey = host
+		}
+
+		// Input scanning: DLP, injection, policy, chain detection.
+		if blocked := scanHTTPInput(body, sc, safeLogW, inputCfg, policyCfg, chainMatcher, chainSessionKey); blocked != nil {
 			w.Header().Set("Content-Type", "application/json")
 			if blocked.IsNotification {
 				w.WriteHeader(http.StatusAccepted)
@@ -550,7 +650,7 @@ func RunHTTPListenerProxy(
 		}
 
 		// Read upstream response body and scan it.
-		reader := &singleMessageReader{body: upResp.Body}
+		reader := &transport.SingleMessageReader{Body: upResp.Body}
 		var buf bytes.Buffer
 		bufWriter := &syncWriter{w: &buf}
 		_, scanErr := ForwardScanned(reader, bufWriter, safeLogW, sc, approver, fwdToolCfg)

@@ -1,4 +1,4 @@
-package mcp
+package transport
 
 import (
 	"bytes"
@@ -135,7 +135,7 @@ func (c *HTTPClient) SendMessage(ctx context.Context, msg []byte) (MessageReader
 	}
 
 	// Default: treat as single JSON message.
-	return &singleMessageReader{body: resp.Body}, nil
+	return &SingleMessageReader{Body: resp.Body}, nil
 }
 
 // emptyReader returns io.EOF on every ReadMessage call.
@@ -146,15 +146,15 @@ func (*emptyReader) ReadMessage() ([]byte, error) {
 	return nil, io.EOF
 }
 
-// singleMessageReader reads the entire response body as one message,
+// SingleMessageReader reads the entire response body as one message,
 // then returns io.EOF on subsequent calls. The body is closed after
 // the first read or on the EOF read.
-type singleMessageReader struct {
-	body io.ReadCloser
+type SingleMessageReader struct {
+	Body io.ReadCloser
 	done bool
 }
 
-func (r *singleMessageReader) ReadMessage() ([]byte, error) {
+func (r *SingleMessageReader) ReadMessage() ([]byte, error) {
 	if r.done {
 		return nil, io.EOF
 	}
@@ -162,13 +162,13 @@ func (r *singleMessageReader) ReadMessage() ([]byte, error) {
 
 	// Read one extra byte beyond the limit so we can detect truncation
 	// and return a clear error instead of passing incomplete JSON downstream.
-	data, err := io.ReadAll(io.LimitReader(r.body, int64(maxLineSize)+1))
-	_ = r.body.Close() // best-effort cleanup after read
+	data, err := io.ReadAll(io.LimitReader(r.Body, int64(MaxLineSize)+1))
+	_ = r.Body.Close() // best-effort cleanup after read
 	if err != nil {
 		return nil, fmt.Errorf("reading response body: %w", err)
 	}
-	if len(data) > maxLineSize {
-		return nil, fmt.Errorf("response body exceeds maximum size (%d bytes)", maxLineSize)
+	if len(data) > MaxLineSize {
+		return nil, fmt.Errorf("response body exceeds maximum size (%d bytes)", MaxLineSize)
 	}
 
 	data = bytes.TrimSpace(data)

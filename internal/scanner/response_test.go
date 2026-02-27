@@ -639,9 +639,9 @@ func TestNormalizeWhitespace(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := normalize.NormalizeWhitespace(tt.input)
+			got := normalize.Whitespace(tt.input)
 			if got != tt.want {
-				t.Errorf("normalize.NormalizeWhitespace(%q) = %q, want %q", tt.input, got, tt.want)
+				t.Errorf("normalize.Whitespace(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
 	}
@@ -718,9 +718,9 @@ func TestNormalizeLeetspeak(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := normalize.NormalizeLeetspeak(tt.input)
+			got := normalize.Leetspeak(tt.input)
 			if got != tt.want {
-				t.Errorf("normalize.NormalizeLeetspeak(%q) = %q, want %q", tt.input, got, tt.want)
+				t.Errorf("normalize.Leetspeak(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
 	}

@@ -1,4 +1,6 @@
-package mcp
+// Package policy provides MCP tool call policy rules for pre-execution checking.
+// Rules match tool names and argument patterns to detect dangerous operations.
+package policy
 
 import (
 	"bytes"
@@ -8,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
 
@@ -70,38 +73,38 @@ var policyPreNormalize = strings.NewReplacer(
 	"\u0423", "U", // Cyrillic У (uppercase)
 )
 
-// PolicyConfig holds compiled tool call policy rules for pre-execution checking.
-// A nil PolicyConfig disables policy checking entirely.
-type PolicyConfig struct {
+// Config holds compiled tool call policy rules for pre-execution checking.
+// A nil Config disables policy checking.
+type Config struct {
 	Action string // default action: warn, block
-	Rules  []*CompiledPolicyRule
+	Rules  []*CompiledRule
 }
 
-// CompiledPolicyRule is a pre-compiled policy rule ready for matching.
-type CompiledPolicyRule struct {
+// CompiledRule holds a pre-compiled policy rule ready for matching.
+type CompiledRule struct {
 	Name        string
 	ToolPattern *regexp.Regexp
 	ArgPattern  *regexp.Regexp // nil = match on tool name alone
-	Action      string         // per-rule override, empty = use PolicyConfig.Action
+	Action      string         // per-rule override, empty = use Config.Action
 }
 
-// PolicyVerdict describes the outcome of checking a tool call against policy.
-type PolicyVerdict struct {
+// Verdict describes the outcome of checking a tool call against policy.
+type Verdict struct {
 	Matched bool
 	Action  string   // effective action (from rule override or default)
 	Rules   []string // names of matched rules
 }
 
-// NewPolicyConfig compiles policy rules from config. Returns nil if disabled
-// or no rules are configured. Panics on invalid regex — caller must validate
-// config first (config.Validate compiles all patterns).
-func NewPolicyConfig(cfg config.MCPToolPolicy) *PolicyConfig {
+// New compiles policy rules from config. Returns nil if disabled or no rules
+// are configured. Panics on invalid regex; the caller must validate config
+// first (config.Validate compiles all patterns).
+func New(cfg config.MCPToolPolicy) *Config {
 	if !cfg.Enabled || len(cfg.Rules) == 0 {
 		return nil
 	}
-	pc := &PolicyConfig{Action: cfg.Action}
+	pc := &Config{Action: cfg.Action}
 	for _, r := range cfg.Rules {
-		compiled := &CompiledPolicyRule{
+		compiled := &CompiledRule{
 			Name:        r.Name,
 			ToolPattern: regexp.MustCompile(r.ToolPattern),
 			Action:      r.Action,
@@ -123,9 +126,9 @@ func NewPolicyConfig(cfg config.MCPToolPolicy) *PolicyConfig {
 //  2. Individual strings — catches path patterns (.ssh/id_rsa)
 //  3. Pairwise token combinations — catches map-ordering evasion where
 //     command and flags land in separate values with non-deterministic order
-func (pc *PolicyConfig) CheckToolCall(toolName string, argStrings []string) PolicyVerdict {
+func (pc *Config) CheckToolCall(toolName string, argStrings []string) Verdict {
 	if pc == nil || len(pc.Rules) == 0 {
-		return PolicyVerdict{}
+		return Verdict{}
 	}
 
 	// Pre-normalize ambiguous confusables for policy matching before the
@@ -171,7 +174,7 @@ func (pc *PolicyConfig) CheckToolCall(toolName string, argStrings []string) Poli
 			if action == "" {
 				action = pc.Action
 			}
-			strictest = stricterAction(strictest, action)
+			strictest = StricterAction(strictest, action)
 			continue
 		}
 
@@ -181,15 +184,15 @@ func (pc *PolicyConfig) CheckToolCall(toolName string, argStrings []string) Poli
 			if action == "" {
 				action = pc.Action
 			}
-			strictest = stricterAction(strictest, action)
+			strictest = StricterAction(strictest, action)
 		}
 	}
 
 	if len(matchedRules) == 0 {
-		return PolicyVerdict{}
+		return Verdict{}
 	}
 
-	return PolicyVerdict{
+	return Verdict{
 		Matched: true,
 		Action:  strictest,
 		Rules:   matchedRules,
@@ -253,14 +256,14 @@ func matchArgPattern(pat *regexp.Regexp, tokens []string, joined string) bool {
 
 // CheckRequest evaluates a JSON-RPC request (single or batch) against policy.
 // Returns a clean verdict for non-tools/call methods and unparseable messages.
-func (pc *PolicyConfig) CheckRequest(line []byte) PolicyVerdict {
+func (pc *Config) CheckRequest(line []byte) Verdict {
 	if pc == nil {
-		return PolicyVerdict{}
+		return Verdict{}
 	}
 
 	trimmed := bytes.TrimSpace(line)
 	if len(trimmed) == 0 {
-		return PolicyVerdict{}
+		return Verdict{}
 	}
 
 	// Batch request — iterate elements.
@@ -272,26 +275,26 @@ func (pc *PolicyConfig) CheckRequest(line []byte) PolicyVerdict {
 }
 
 // checkSingle parses one JSON-RPC request and checks it against policy.
-func (pc *PolicyConfig) checkSingle(line []byte) PolicyVerdict {
+func (pc *Config) checkSingle(line []byte) Verdict {
 	tc := parseToolCall(line)
 	if tc == nil {
-		return PolicyVerdict{}
+		return Verdict{}
 	}
 	var argStrings []string
-	if len(tc.Arguments) > 0 && string(tc.Arguments) != jsonNull {
+	if len(tc.Arguments) > 0 && string(tc.Arguments) != jsonrpc.Null {
 		// Use values-only extraction (not extractAllStringsFromJSON which
 		// includes map keys). Keys like "cmd","flags","target" would pollute
 		// the joined string and break regex adjacency for policy matching.
-		argStrings = extractStringsFromJSON(tc.Arguments)
+		argStrings = jsonrpc.ExtractStringsFromJSON(tc.Arguments)
 	}
 	return pc.CheckToolCall(tc.Name, argStrings)
 }
 
 // checkBatch evaluates a batch of JSON-RPC requests and aggregates policy results.
-func (pc *PolicyConfig) checkBatch(line []byte) PolicyVerdict {
+func (pc *Config) checkBatch(line []byte) Verdict {
 	var batch []json.RawMessage
 	if err := json.Unmarshal(line, &batch); err != nil {
-		return PolicyVerdict{}
+		return Verdict{}
 	}
 
 	var allRules []string
@@ -301,15 +304,15 @@ func (pc *PolicyConfig) checkBatch(line []byte) PolicyVerdict {
 		v := pc.checkSingle(elem)
 		if v.Matched {
 			allRules = append(allRules, v.Rules...)
-			strictest = stricterAction(strictest, v.Action)
+			strictest = StricterAction(strictest, v.Action)
 		}
 	}
 
 	if len(allRules) == 0 {
-		return PolicyVerdict{}
+		return Verdict{}
 	}
 
-	return PolicyVerdict{
+	return Verdict{
 		Matched: true,
 		Action:  strictest,
 		Rules:   allRules,
@@ -336,7 +339,7 @@ func parseToolCall(line []byte) *toolCallParams {
 	if rpc.Method != "tools/call" { //nolint:goconst // MCP method name used across packages
 		return nil
 	}
-	if len(rpc.Params) == 0 || string(rpc.Params) == jsonNull {
+	if len(rpc.Params) == 0 || string(rpc.Params) == jsonrpc.Null {
 		return nil
 	}
 
@@ -361,9 +364,9 @@ func parseToolCall(line []byte) *toolCallParams {
 // Unknown values are treated as block (fail-closed).
 var actionRank = map[string]int{"": 0, config.ActionWarn: 1, config.ActionAsk: 2, config.ActionBlock: 3}
 
-// stricterAction returns the more restrictive of two actions.
+// StricterAction returns the more restrictive of two actions.
 // block > ask > warn > "" (empty). Unknown values are treated as block (fail-closed).
-func stricterAction(a, b string) string {
+func StricterAction(a, b string) string {
 	ra, aOK := actionRank[a]
 	rb, bOK := actionRank[b]
 	if !aOK {

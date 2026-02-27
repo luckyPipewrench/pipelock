@@ -14,7 +14,11 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
+	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -195,6 +199,8 @@ Environment passthrough (subprocess mode only):
 			sc := scanner.New(cfg)
 			defer sc.Close()
 
+			ks := killswitch.New(cfg)
+
 			var approver *hitl.Approver
 			if sc.ResponseAction() == config.ActionAsk {
 				approver = hitl.New(cfg.ResponseScanning.AskTimeoutSeconds)
@@ -215,9 +221,9 @@ Environment passthrough (subprocess mode only):
 				cfg.MCPToolScanning.DetectDrift = true
 			}
 
-			var toolCfg *mcp.ToolScanConfig
+			var toolCfg *tools.ToolScanConfig
 			if cfg.MCPToolScanning.Enabled {
-				toolCfg = &mcp.ToolScanConfig{
+				toolCfg = &tools.ToolScanConfig{
 					Action:      cfg.MCPToolScanning.Action,
 					DetectDrift: cfg.MCPToolScanning.DetectDrift,
 				}
@@ -234,12 +240,18 @@ Environment passthrough (subprocess mode only):
 				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "pipelock: auto-enabling MCP tool call policy for proxy mode")
 				cfg.MCPToolPolicy.Enabled = true
 				cfg.MCPToolPolicy.Action = config.ActionWarn
-				cfg.MCPToolPolicy.Rules = mcp.DefaultToolPolicyRules()
+				cfg.MCPToolPolicy.Rules = policy.DefaultToolPolicyRules()
 			}
 
-			var policyCfg *mcp.PolicyConfig
+			var policyCfg *policy.Config
 			if cfg.MCPToolPolicy.Enabled {
-				policyCfg = mcp.NewPolicyConfig(cfg.MCPToolPolicy)
+				policyCfg = policy.New(cfg.MCPToolPolicy)
+			}
+
+			// Initialize chain matcher if tool chain detection is configured.
+			var chainMatcher *chains.Matcher
+			if cfg.ToolChainDetection.Enabled {
+				chainMatcher = chains.New(&cfg.ToolChainDetection)
 			}
 
 			toolAction := "disabled"
@@ -266,13 +278,13 @@ Environment passthrough (subprocess mode only):
 					}
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: MCP reverse proxy %s -> %s (response=%s, input=%s, tools=%s, policy=%s)\n",
 						listenAddr, upstreamURL, sc.ResponseAction(), inputCfg.Action, toolAction, policyAction)
-					return mcp.RunHTTPListenerProxy(ctx, mcpLn, upstreamURL, cmd.ErrOrStderr(), sc, approver, inputCfg, toolCfg, policyCfg)
+					return mcp.RunHTTPListenerProxy(ctx, mcpLn, upstreamURL, cmd.ErrOrStderr(), sc, approver, inputCfg, toolCfg, policyCfg, ks, chainMatcher)
 				}
 
 				// Stdio-to-HTTP mode: --upstream only.
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: proxying upstream %s (response=%s, input=%s, tools=%s, policy=%s)\n",
 					upstreamURL, sc.ResponseAction(), inputCfg.Action, toolAction, policyAction)
-				return mcp.RunHTTPProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, sc, approver, nil, inputCfg, toolCfg, policyCfg)
+				return mcp.RunHTTPProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, sc, approver, nil, inputCfg, toolCfg, policyCfg, ks, chainMatcher)
 			}
 
 			// Parse --env flags into KEY=VALUE pairs for the child process.
@@ -315,7 +327,7 @@ Environment passthrough (subprocess mode only):
 			ctx, cancel := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 			defer cancel()
 
-			return mcp.RunProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), serverCmd, sc, approver, inputCfg, toolCfg, policyCfg, extraEnv...)
+			return mcp.RunProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), serverCmd, sc, approver, inputCfg, toolCfg, policyCfg, ks, chainMatcher, extraEnv...)
 		},
 	}
 

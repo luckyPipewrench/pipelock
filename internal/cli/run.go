@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"os"
 	"os/signal"
 	"syscall"
 
@@ -13,7 +14,11 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
+	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -103,10 +108,12 @@ Examples:
 			}
 			defer logger.Close()
 
-			// Set up scanner, metrics, and proxy
+			// Set up scanner, metrics, kill switch, and proxy
 			sc := scanner.New(cfg)
 			defer sc.Close()
 			m := metrics.New()
+
+			ks := killswitch.New(cfg)
 
 			var proxyOpts []proxy.Option
 			hasApprover := cfg.ResponseScanning.Action == config.ActionAsk
@@ -115,6 +122,7 @@ Examples:
 				defer approver.Close()
 				proxyOpts = append(proxyOpts, proxy.WithApprover(approver))
 			}
+			proxyOpts = append(proxyOpts, proxy.WithKillSwitch(ks))
 			p := proxy.New(cfg, logger, sc, m, proxyOpts...)
 
 			// Context with signal handling for graceful shutdown.
@@ -125,6 +133,25 @@ Examples:
 				syscall.SIGTERM,
 			)
 			defer cancel()
+
+			// SIGUSR1 toggles the kill switch (separate from SIGINT/SIGTERM).
+			sigusr1Ch := make(chan os.Signal, 1)
+			signal.Notify(sigusr1Ch, syscall.SIGUSR1)
+			defer signal.Stop(sigusr1Ch)
+			defer close(sigusr1Ch)
+			go func() {
+				for sig := range sigusr1Ch {
+					if sig == nil {
+						return
+					}
+					active := ks.ToggleSignal()
+					if active {
+						cmd.PrintErrln("pipelock: kill switch ACTIVATED via SIGUSR1")
+					} else {
+						cmd.PrintErrln("pipelock: kill switch DEACTIVATED via SIGUSR1")
+					}
+				}
+			}()
 
 			// Start config hot-reload if a config file is provided
 			if configFile != "" {
@@ -177,6 +204,7 @@ Examples:
 							}
 							newSc := scanner.New(newCfg)
 							p.Reload(newCfg, newSc)
+							ks.Reload(newCfg)
 							if newCfg.ResponseScanning.Action == config.ActionAsk && !hasApprover {
 								cmd.PrintErrln("WARNING: config reloaded to ask mode but HITL approver was not initialized at startup; detections will be blocked")
 							}
@@ -239,7 +267,7 @@ Examples:
 					cmd.PrintErrln("pipelock: auto-enabling MCP tool call policy for listener mode")
 					cfg.MCPToolPolicy.Enabled = true
 					cfg.MCPToolPolicy.Action = config.ActionWarn
-					cfg.MCPToolPolicy.Rules = mcp.DefaultToolPolicyRules()
+					cfg.MCPToolPolicy.Rules = policy.DefaultToolPolicyRules()
 				}
 
 				inputCfg := &mcp.InputScanConfig{
@@ -247,16 +275,16 @@ Examples:
 					Action:       cfg.MCPInputScanning.Action,
 					OnParseError: cfg.MCPInputScanning.OnParseError,
 				}
-				var toolCfg *mcp.ToolScanConfig
+				var toolCfg *tools.ToolScanConfig
 				if cfg.MCPToolScanning.Enabled {
-					toolCfg = &mcp.ToolScanConfig{
+					toolCfg = &tools.ToolScanConfig{
 						Action:      cfg.MCPToolScanning.Action,
 						DetectDrift: cfg.MCPToolScanning.DetectDrift,
 					}
 				}
-				var policyCfg *mcp.PolicyConfig
+				var policyCfg *policy.Config
 				if cfg.MCPToolPolicy.Enabled {
-					policyCfg = mcp.NewPolicyConfig(cfg.MCPToolPolicy)
+					policyCfg = policy.New(cfg.MCPToolPolicy)
 				}
 
 				var mcpApprover *hitl.Approver
@@ -273,9 +301,15 @@ Examples:
 					return fmt.Errorf("MCP listener bind %s: %w", mcpListen, lnErr)
 				}
 
+				// Initialize chain matcher for MCP listener if configured.
+				var mcpChainMatcher *chains.Matcher
+				if cfg.ToolChainDetection.Enabled {
+					mcpChainMatcher = chains.New(&cfg.ToolChainDetection).WithMetrics(m)
+				}
+
 				mcpErr = make(chan error, 1)
 				go func() {
-					mcpErr <- mcp.RunHTTPListenerProxy(ctx, mcpLn, mcpUpstream, cmd.ErrOrStderr(), sc, mcpApprover, inputCfg, toolCfg, policyCfg)
+					mcpErr <- mcp.RunHTTPListenerProxy(ctx, mcpLn, mcpUpstream, cmd.ErrOrStderr(), sc, mcpApprover, inputCfg, toolCfg, policyCfg, ks, mcpChainMatcher)
 				}()
 			}
 

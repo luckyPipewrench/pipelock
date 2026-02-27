@@ -2436,3 +2436,760 @@ func TestResourceBoundsDefaultEvenWhenDisabled(t *testing.T) {
 		t.Errorf("cleanup_interval_seconds should default even when disabled, got %d", cfg.SessionProfiling.CleanupIntervalSeconds)
 	}
 }
+
+// --- Suppress Config Tests ---
+
+func TestValidate_SuppressValid(t *testing.T) {
+	cfg := Defaults()
+	cfg.Suppress = []SuppressEntry{
+		{Rule: "Credential in URL", Path: "app/models/client.rb", Reason: "Instance var, not a secret"},
+		{Rule: "Anthropic API Key", Path: "config/initializers/*.rb"},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("valid suppress entries should validate: %v", err)
+	}
+}
+
+func TestValidate_SuppressMissingRule(t *testing.T) {
+	cfg := Defaults()
+	cfg.Suppress = []SuppressEntry{
+		{Rule: "", Path: "app/models/client.rb"},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for suppress entry with empty rule")
+	}
+	if !strings.Contains(err.Error(), "missing required field \"rule\"") {
+		t.Errorf("expected 'missing required field rule' error, got: %v", err)
+	}
+}
+
+func TestValidate_SuppressMissingPath(t *testing.T) {
+	cfg := Defaults()
+	cfg.Suppress = []SuppressEntry{
+		{Rule: "Credential in URL", Path: ""},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for suppress entry with empty path")
+	}
+	if !strings.Contains(err.Error(), "missing required field \"path\"") {
+		t.Errorf("expected 'missing required field path' error, got: %v", err)
+	}
+}
+
+func TestValidate_SuppressEmptyList(t *testing.T) {
+	cfg := Defaults()
+	cfg.Suppress = []SuppressEntry{}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("empty suppress list should validate: %v", err)
+	}
+}
+
+func TestValidate_SuppressNilList(t *testing.T) {
+	cfg := Defaults()
+	cfg.Suppress = nil
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("nil suppress list should validate: %v", err)
+	}
+}
+
+func TestValidate_SuppressInvalidGlob(t *testing.T) {
+	cfg := Defaults()
+	cfg.Suppress = []SuppressEntry{
+		{Rule: "Credential in URL", Path: "foo[", Reason: "bad glob"},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for malformed glob pattern")
+	}
+	if !strings.Contains(err.Error(), "invalid path pattern") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestValidate_SuppressValidGlob(t *testing.T) {
+	cfg := Defaults()
+	cfg.Suppress = []SuppressEntry{
+		{Rule: "Credential in URL", Path: "vendor/*.go", Reason: "vendor code"},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("valid glob should pass validation: %v", err)
+	}
+}
+
+func TestLoad_WithSuppressEntries(t *testing.T) {
+	yamlContent := `
+version: 1
+mode: balanced
+api_allowlist:
+  - "*.anthropic.com"
+suppress:
+  - rule: Credential in URL
+    path: app/models/assistant/external/client.rb
+    reason: "Instance variable storing constructor param"
+  - rule: Anthropic API Key
+    path: "config/initializers/*.rb"
+    reason: "Initializers reference env var names"
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(yamlContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.Suppress) != 2 {
+		t.Fatalf("expected 2 suppress entries, got %d", len(cfg.Suppress))
+	}
+	if cfg.Suppress[0].Rule != "Credential in URL" {
+		t.Errorf("expected rule 'Credential in URL', got %q", cfg.Suppress[0].Rule)
+	}
+	if cfg.Suppress[0].Path != "app/models/assistant/external/client.rb" {
+		t.Errorf("expected path 'app/models/assistant/external/client.rb', got %q", cfg.Suppress[0].Path)
+	}
+	if cfg.Suppress[0].Reason != "Instance variable storing constructor param" {
+		t.Errorf("expected reason, got %q", cfg.Suppress[0].Reason)
+	}
+	if cfg.Suppress[1].Reason != "Initializers reference env var names" {
+		t.Errorf("expected reason for entry 1, got %q", cfg.Suppress[1].Reason)
+	}
+}
+
+func TestLoad_SuppressValidationError(t *testing.T) {
+	yamlContent := `
+version: 1
+mode: balanced
+api_allowlist:
+  - "*.anthropic.com"
+suppress:
+  - rule: ""
+    path: "some/path.rb"
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(yamlContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected validation error for empty rule")
+	}
+	if !strings.Contains(err.Error(), "missing required field \"rule\"") {
+		t.Errorf("expected rule validation error, got: %v", err)
+	}
+}
+
+func TestKillSwitch_Defaults(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+
+	if cfg.KillSwitch.Message != "Emergency deny-all active" {
+		t.Errorf("expected default message, got %q", cfg.KillSwitch.Message)
+	}
+	if cfg.KillSwitch.HealthExempt == nil || !*cfg.KillSwitch.HealthExempt {
+		t.Error("expected HealthExempt to default to true")
+	}
+	if cfg.KillSwitch.MetricsExempt == nil || !*cfg.KillSwitch.MetricsExempt {
+		t.Error("expected MetricsExempt to default to true")
+	}
+	if cfg.KillSwitch.Enabled {
+		t.Error("expected kill switch disabled by default")
+	}
+}
+
+func TestKillSwitch_ValidCIDR(t *testing.T) {
+	cfg := Defaults()
+	cfg.KillSwitch.AllowlistIPs = []string{"10.0.0.0/8", "192.168.1.0/24"}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("expected valid CIDRs to pass validation: %v", err)
+	}
+}
+
+func TestKillSwitch_InvalidCIDR(t *testing.T) {
+	cfg := Defaults()
+	cfg.KillSwitch.AllowlistIPs = []string{"not-a-cidr"}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected validation error for invalid CIDR")
+	}
+}
+
+func TestKillSwitch_InvalidCIDR_MissingMask(t *testing.T) {
+	cfg := Defaults()
+	cfg.KillSwitch.AllowlistIPs = []string{"192.168.1.1"}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected validation error for CIDR without mask")
+	}
+}
+
+func TestKillSwitch_HealthExemptExplicitFalse(t *testing.T) {
+	cfg := Defaults()
+	f := false
+	cfg.KillSwitch.HealthExempt = &f
+	cfg.ApplyDefaults()
+
+	// Explicit false should NOT be overridden by defaults.
+	if *cfg.KillSwitch.HealthExempt {
+		t.Error("explicit false should be preserved, not overridden")
+	}
+}
+
+// --- toSlash Tests ---
+
+func TestToSlash(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "no backslashes unchanged",
+			in:   "vendor/foo/bar.go", //nolint:goconst // test value
+			want: "vendor/foo/bar.go",
+		},
+		{
+			name: "backslashes converted",
+			in:   `vendor\foo\bar.go`,
+			want: "vendor/foo/bar.go",
+		},
+		{
+			name: "mixed separators",
+			in:   `vendor/foo\bar.go`,
+			want: "vendor/foo/bar.go",
+		},
+		{
+			name: "empty string",
+			in:   "",
+			want: "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := toSlash(tt.in)
+			if got != tt.want {
+				t.Errorf("toSlash(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// --- matchesPath Tests ---
+
+func TestMatchesPath(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		target  string
+		pattern string
+		want    bool
+	}{
+		{
+			name:    "empty pattern",
+			target:  "main.go", //nolint:goconst // test value
+			pattern: "",
+			want:    false,
+		},
+		{
+			name:    "directory prefix matches subpath",
+			target:  "vendor/foo/bar.go",
+			pattern: "vendor/",
+			want:    true,
+		},
+		{
+			name:    "directory prefix no match",
+			target:  "src/foo/bar.go",
+			pattern: "vendor/",
+			want:    false,
+		},
+		{
+			name:    "exact match",
+			target:  "src/main.go",
+			pattern: "src/main.go",
+			want:    true,
+		},
+		{
+			name:    "exact match no match",
+			target:  "src/main.go",
+			pattern: "src/other.go",
+			want:    false,
+		},
+		{
+			name:    "glob on full path",
+			target:  "main.go",
+			pattern: "*.go",
+			want:    true,
+		},
+		{
+			name:    "glob on full path no match",
+			target:  "main.go",
+			pattern: "*.txt",
+			want:    false,
+		},
+		{
+			name:    "glob on basename",
+			target:  "dir/foo.txt",
+			pattern: "*.txt",
+			want:    true,
+		},
+		{
+			name:    "glob on basename no match",
+			target:  "dir/foo.go",
+			pattern: "*.txt",
+			want:    false,
+		},
+		{
+			name:    "URL suffix match",
+			target:  "https://example.com/robots.txt", //nolint:goconst // test value
+			pattern: "robots.txt",                     //nolint:goconst // test value
+			want:    true,
+		},
+		{
+			name:    "URL suffix no match",
+			target:  "https://example.com/index.html",
+			pattern: "robots.txt",
+			want:    false,
+		},
+		{
+			name:    "URL suffix pattern with leading slash does not match",
+			target:  "https://example.com/robots.txt",
+			pattern: "/robots.txt",
+			want:    false,
+		},
+		{
+			name:    "backslash target not normalized by matchesPath",
+			target:  `vendor\foo\bar.go`,
+			pattern: "vendor/",
+			want:    false, // matchesPath does not normalize target; SuppressedReason does
+		},
+		{
+			name:    "backslash pattern normalized",
+			target:  "vendor/foo/bar.go",
+			pattern: `vendor\`,
+			want:    true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := matchesPath(tt.target, tt.pattern)
+			if got != tt.want {
+				t.Errorf("matchesPath(%q, %q) = %v, want %v", tt.target, tt.pattern, got, tt.want)
+			}
+		})
+	}
+}
+
+// --- IsSuppressed Tests ---
+
+func TestIsSuppressed(t *testing.T) {
+	t.Parallel()
+	entries := []SuppressEntry{
+		{Rule: "Credential in URL", Path: "app/models/client.rb", Reason: "constructor param"}, //nolint:goconst // test value
+		{Rule: "env-leak", Path: "config/", Reason: "initializer env refs"},                    //nolint:goconst // test value
+		{Rule: "secret-pattern", Path: "*.test.js", Reason: "test fixtures"},
+	}
+
+	tests := []struct {
+		name    string
+		rule    string
+		target  string
+		entries []SuppressEntry
+		want    bool
+	}{
+		{
+			name:    "empty target",
+			rule:    "Credential in URL", //nolint:goconst // test value
+			target:  "",
+			entries: entries,
+			want:    false,
+		},
+		{
+			name:    "empty entries",
+			rule:    "Credential in URL",
+			target:  "app/models/client.rb",
+			entries: nil,
+			want:    false,
+		},
+		{
+			name:    "rule and path match",
+			rule:    "Credential in URL",
+			target:  "app/models/client.rb",
+			entries: entries,
+			want:    true,
+		},
+		{
+			name:    "rule mismatch",
+			rule:    "other-rule",
+			target:  "app/models/client.rb",
+			entries: entries,
+			want:    false,
+		},
+		{
+			name:    "case insensitive rule matching",
+			rule:    "credential in url",
+			target:  "app/models/client.rb",
+			entries: entries,
+			want:    true,
+		},
+		{
+			name:    "directory prefix suppression",
+			rule:    "env-leak",
+			target:  "config/initializers/secrets.rb",
+			entries: entries,
+			want:    true,
+		},
+		{
+			name:    "glob basename suppression",
+			rule:    "secret-pattern",
+			target:  "src/utils/helpers.test.js",
+			entries: entries,
+			want:    true,
+		},
+		{
+			name:    "path mismatch",
+			rule:    "Credential in URL",
+			target:  "app/controllers/foo.rb",
+			entries: entries,
+			want:    false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := IsSuppressed(tt.rule, tt.target, tt.entries)
+			if got != tt.want {
+				t.Errorf("IsSuppressed(%q, %q, entries) = %v, want %v", tt.rule, tt.target, got, tt.want)
+			}
+		})
+	}
+}
+
+// --- SuppressedReason Tests ---
+
+func TestSuppressedReason(t *testing.T) {
+	t.Parallel()
+	entries := []SuppressEntry{
+		{Rule: "Credential in URL", Path: "app/models/client.rb", Reason: "constructor param"},
+		{Rule: "env-leak", Path: "config/", Reason: "initializer env refs"},
+	}
+
+	tests := []struct {
+		name       string
+		rule       string
+		target     string
+		entries    []SuppressEntry
+		wantReason string
+		wantOK     bool
+	}{
+		{
+			name:       "empty target returns false",
+			rule:       "Credential in URL",
+			target:     "",
+			entries:    entries,
+			wantReason: "",
+			wantOK:     false,
+		},
+		{
+			name:       "nil entries returns false",
+			rule:       "Credential in URL",
+			target:     "app/models/client.rb",
+			entries:    nil,
+			wantReason: "",
+			wantOK:     false,
+		},
+		{
+			name:       "empty entries returns false",
+			rule:       "Credential in URL",
+			target:     "app/models/client.rb",
+			entries:    []SuppressEntry{},
+			wantReason: "",
+			wantOK:     false,
+		},
+		{
+			name:       "matching entry returns reason",
+			rule:       "Credential in URL",
+			target:     "app/models/client.rb",
+			entries:    entries,
+			wantReason: "constructor param",
+			wantOK:     true,
+		},
+		{
+			name:       "case insensitive rule returns reason",
+			rule:       "CREDENTIAL IN URL",
+			target:     "app/models/client.rb",
+			entries:    entries,
+			wantReason: "constructor param",
+			wantOK:     true,
+		},
+		{
+			name:       "directory prefix returns reason",
+			rule:       "env-leak",
+			target:     "config/initializers/secrets.rb",
+			entries:    entries,
+			wantReason: "initializer env refs",
+			wantOK:     true,
+		},
+		{
+			name:       "rule mismatch returns false",
+			rule:       "unknown-rule",
+			target:     "app/models/client.rb",
+			entries:    entries,
+			wantReason: "",
+			wantOK:     false,
+		},
+		{
+			name:       "path mismatch returns false",
+			rule:       "Credential in URL",
+			target:     "other/path.rb",
+			entries:    entries,
+			wantReason: "",
+			wantOK:     false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			reason, ok := SuppressedReason(tt.rule, tt.target, tt.entries)
+			if ok != tt.wantOK {
+				t.Errorf("SuppressedReason(%q, %q) ok = %v, want %v", tt.rule, tt.target, ok, tt.wantOK)
+			}
+			if reason != tt.wantReason {
+				t.Errorf("SuppressedReason(%q, %q) reason = %q, want %q", tt.rule, tt.target, reason, tt.wantReason)
+			}
+		})
+	}
+}
+
+// TestValidate_AllFeaturesEnabled validates a config with every feature enabled
+// using valid settings. This exercises all the valid-case branches in Validate().
+func TestValidate_AllFeaturesEnabled(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+
+	// Enable all feature sections with valid configs.
+	cfg.ResponseScanning.Enabled = true
+	cfg.ResponseScanning.Action = ActionWarn
+
+	cfg.MCPInputScanning.Enabled = true
+	cfg.MCPInputScanning.Action = ActionBlock
+
+	cfg.MCPToolScanning.Enabled = true
+	cfg.MCPToolScanning.Action = ActionWarn
+
+	cfg.MCPToolPolicy.Enabled = true
+	cfg.MCPToolPolicy.Action = ActionBlock
+	cfg.MCPToolPolicy.Rules = []ToolPolicyRule{
+		{Name: "test-rule", ToolPattern: ".*exec.*", Action: ActionWarn},
+	}
+
+	cfg.GitProtection.Enabled = true
+	cfg.GitProtection.AllowedBranches = []string{"main", "feat/*"}
+	cfg.GitProtection.BlockedCommands = []string{"push --force"}
+
+	cfg.ForwardProxy.Enabled = true
+	cfg.ForwardProxy.MaxTunnelSeconds = 300
+	cfg.ForwardProxy.IdleTimeoutSeconds = 60
+
+	cfg.WebSocketProxy.Enabled = true
+	cfg.WebSocketProxy.MaxMessageBytes = 1048576
+	cfg.WebSocketProxy.MaxConcurrentConnections = 50
+	cfg.WebSocketProxy.MaxConnectionSeconds = 3600
+	cfg.WebSocketProxy.IdleTimeoutSeconds = 300
+	cfg.WebSocketProxy.OriginPolicy = "rewrite"
+
+	cfg.KillSwitch.Enabled = true
+	cfg.KillSwitch.Message = "test kill switch"
+
+	maxGap := 5
+	cfg.ToolChainDetection.Enabled = true
+	cfg.ToolChainDetection.Action = ActionWarn
+	cfg.ToolChainDetection.WindowSize = 20
+	cfg.ToolChainDetection.WindowSeconds = 300
+	cfg.ToolChainDetection.MaxGap = &maxGap
+	cfg.ToolChainDetection.CustomPatterns = []ChainPattern{
+		{Name: "test-chain", Sequence: []string{"read", "exec"}, Severity: "high", Action: ActionBlock},
+	}
+	cfg.ToolChainDetection.PatternOverrides = map[string]string{
+		"read-then-exec": ActionWarn,
+	}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("fully-featured valid config should validate: %v", err)
+	}
+}
+
+// TestValidate_AllModesCoverBranches validates each mode to cover the mode switch.
+func TestValidate_AllModesCoverBranches(t *testing.T) {
+	for _, mode := range []string{ModeStrict, ModeBalanced, ModeAudit} {
+		t.Run(mode, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.ApplyDefaults()
+			cfg.Mode = mode
+			if mode == ModeStrict {
+				cfg.APIAllowlist = []string{"*.example.com"}
+			}
+			if err := cfg.Validate(); err != nil {
+				t.Errorf("mode %q should validate: %v", mode, err)
+			}
+		})
+	}
+}
+
+// TestValidate_LoggingFormatsAndOutputs covers all valid logging format/output combos.
+func TestValidate_LoggingFormatsAndOutputs(t *testing.T) {
+	for _, format := range []string{DefaultLogFormat, "text"} {
+		for _, output := range []string{DefaultLogOutput, OutputFile, OutputBoth} {
+			name := fmt.Sprintf("%s/%s", format, output)
+			t.Run(name, func(t *testing.T) {
+				cfg := Defaults()
+				cfg.ApplyDefaults()
+				cfg.Logging.Format = format
+				cfg.Logging.Output = output
+				if output == OutputFile || output == OutputBoth {
+					cfg.Logging.File = filepath.Join(t.TempDir(), "test-pipelock.log")
+				}
+				if err := cfg.Validate(); err != nil {
+					t.Errorf("logging format=%q output=%q should validate: %v", format, output, err)
+				}
+			})
+		}
+	}
+}
+
+func TestValidate_KillSwitchInvalidSentinelDir(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	cfg.KillSwitch.SentinelFile = "/nonexistent/dir/sentinel"
+	// Should still validate — sentinel existence is checked at runtime, not config time.
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("kill switch with nonexistent sentinel path should validate: %v", err)
+	}
+}
+
+func TestValidate_ChainDetectionInvalidMaxGap(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	cfg.ToolChainDetection.Enabled = true
+	cfg.ToolChainDetection.Action = ActionWarn
+	cfg.ToolChainDetection.WindowSize = 20
+	cfg.ToolChainDetection.WindowSeconds = 300
+	neg := -1
+	cfg.ToolChainDetection.MaxGap = &neg
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for negative MaxGap")
+	}
+}
+
+func TestValidate_ChainDetectionInvalidCustomPattern(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern ChainPattern
+		wantErr string
+	}{
+		{
+			name:    "missing name",
+			pattern: ChainPattern{Sequence: []string{"a", "b"}, Severity: "high"},
+			wantErr: "missing name",
+		},
+		{
+			name:    "short sequence",
+			pattern: ChainPattern{Name: "x", Sequence: []string{"a"}, Severity: "high"},
+			wantErr: "at least 2 steps",
+		},
+		{
+			name:    "invalid severity",
+			pattern: ChainPattern{Name: "x", Sequence: []string{"a", "b"}, Severity: "low"},
+			wantErr: "invalid severity",
+		},
+		{
+			name:    "invalid action",
+			pattern: ChainPattern{Name: "x", Sequence: []string{"a", "b"}, Severity: "high", Action: "drop"},
+			wantErr: "invalid action",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.ApplyDefaults()
+			cfg.ToolChainDetection.Enabled = true
+			cfg.ToolChainDetection.Action = ActionWarn
+			cfg.ToolChainDetection.WindowSize = 20
+			cfg.ToolChainDetection.WindowSeconds = 300
+			cfg.ToolChainDetection.CustomPatterns = []ChainPattern{tt.pattern}
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatal("expected validation error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("expected error containing %q, got: %v", tt.wantErr, err)
+			}
+		})
+	}
+}
+
+func TestValidate_ChainDetectionInvalidPatternOverride(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	cfg.ToolChainDetection.Enabled = true
+	cfg.ToolChainDetection.Action = ActionWarn
+	cfg.ToolChainDetection.WindowSize = 20
+	cfg.ToolChainDetection.WindowSeconds = 300
+	cfg.ToolChainDetection.PatternOverrides = map[string]string{
+		"read-then-exec": "drop",
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for invalid pattern override action")
+	}
+	if !strings.Contains(err.Error(), "invalid action") {
+		t.Errorf("expected 'invalid action' error, got: %v", err)
+	}
+}
+
+func TestValidate_ChainDetectionDisabledSkipsValidation(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	cfg.ToolChainDetection.Enabled = false
+	cfg.ToolChainDetection.Action = "invalid"
+	// Should not error because disabled.
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("disabled chain detection should skip validation: %v", err)
+	}
+}
+
+func TestValidate_OnParseErrorValidValues(t *testing.T) {
+	for _, val := range []string{ActionBlock, ActionForward} {
+		t.Run(val, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.ApplyDefaults()
+			cfg.MCPInputScanning.OnParseError = val
+			if err := cfg.Validate(); err != nil {
+				t.Errorf("on_parse_error=%q should validate: %v", val, err)
+			}
+		})
+	}
+}
+
+func TestValidate_WebSocketOriginPolicies(t *testing.T) {
+	for _, pol := range []string{"rewrite", "forward", ActionStrip} {
+		t.Run(pol, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.ApplyDefaults()
+			cfg.WebSocketProxy.Enabled = true
+			cfg.WebSocketProxy.MaxMessageBytes = 1048576
+			cfg.WebSocketProxy.MaxConcurrentConnections = 50
+			cfg.WebSocketProxy.MaxConnectionSeconds = 3600
+			cfg.WebSocketProxy.IdleTimeoutSeconds = 300
+			cfg.WebSocketProxy.OriginPolicy = pol
+			if err := cfg.Validate(); err != nil {
+				t.Errorf("origin_policy=%q should validate: %v", pol, err)
+			}
+		})
+	}
+}

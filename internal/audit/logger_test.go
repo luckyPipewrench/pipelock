@@ -1171,6 +1171,75 @@ func TestLogWSScan_JSONFormat(t *testing.T) {
 	}
 }
 
+func TestLogKillSwitchDeny_JSONFormat(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogKillSwitchDeny("http", "https://api.example.com/v1/chat", "global", "all traffic halted", "10.0.0.5") //nolint:goconst // test value
+	logger.Close()
+
+	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+
+	checks := map[string]any{
+		"event":        "kill_switch_deny",
+		"transport":    "http",
+		"endpoint":     "https://api.example.com/v1/chat",
+		"source":       "global",
+		"deny_message": "all traffic halted",
+		"client_ip":    "10.0.0.5",
+		"component":    "pipelock",
+		"message":      "kill switch denied request",
+	}
+	for key, want := range checks {
+		if entry[key] != want {
+			t.Errorf("expected %s=%v, got %v", key, want, entry[key])
+		}
+	}
+
+	if entry["time"] == nil {
+		t.Error("expected time field")
+	}
+}
+
+func TestLogKillSwitchDeny_SanitizesFields(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogKillSwitchDeny(
+		"http",
+		"https://evil\x1b[2J.com/path",
+		"global",
+		"bad\x1b[0mmessage",
+		"10.0.0\x1b[2J.1",
+	)
+	logger.Close()
+
+	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+
+	for _, field := range []string{"transport", "endpoint", "source", "deny_message", "client_ip"} {
+		val, _ := entry[field].(string)
+		if strings.Contains(val, "\x1b") {
+			t.Errorf("expected ANSI escape to be stripped from %s, got %q", field, val)
+		}
+	}
+}
+
 func TestLogTunnelOpen_SanitizesTarget(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.log")

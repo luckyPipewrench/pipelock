@@ -1,4 +1,4 @@
-package mcp
+package transport
 
 import (
 	"bufio"
@@ -171,7 +171,7 @@ func TestSSEReader_DataWithoutNewlineTerminator(t *testing.T) {
 }
 
 func TestSSEReader_ScannerError(t *testing.T) {
-	// Exercise the scanner.Err() path (line 80-82).
+	// Exercise the scanner.Err() path.
 	// Create an SSEReader with a tiny buffer so a long line triggers a scan error.
 	longLine := "data: " + strings.Repeat("x", 200) + "\n\n"
 	sr := &SSEReader{

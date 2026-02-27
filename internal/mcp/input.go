@@ -10,6 +10,12 @@ import (
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/killswitch"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -25,13 +31,18 @@ type InputVerdict struct {
 }
 
 // extractAllStringsFromJSON recursively extracts all string values AND keys
-// from arbitrary JSON. Unlike extractStringsFromJSON (values only), this
+// from arbitrary JSON. Unlike jsonrpc.ExtractStringsFromJSON (values only), this
 // version also extracts map keys because an agent can exfiltrate secrets
 // by encoding them as JSON object keys in tool arguments.
+// Recursion is bounded by jsonrpc.maxExtractDepth (via the same constant) to
+// prevent stack overflow from deeply-nested payloads.
 func extractAllStringsFromJSON(raw json.RawMessage) []string {
 	var result []string
-	var extract func(v interface{})
-	extract = func(v interface{}) {
+	var extract func(v interface{}, depth int)
+	extract = func(v interface{}, depth int) {
+		if depth > 64 { // matches jsonrpc.maxExtractDepth
+			return
+		}
 		switch val := v.(type) {
 		case string:
 			result = append(result, val)
@@ -42,18 +53,18 @@ func extractAllStringsFromJSON(raw json.RawMessage) []string {
 			result = append(result, strconv.FormatBool(val))
 		case []interface{}:
 			for _, item := range val {
-				extract(item)
+				extract(item, depth+1)
 			}
 		case map[string]interface{}:
-			for _, k := range sortedKeys(val) {
+			for _, k := range jsonrpc.SortedKeys(val) {
 				result = append(result, k) // Extract keys too.
-				extract(val[k])
+				extract(val[k], depth+1)
 			}
 		}
 	}
 	var parsed interface{}
 	if err := json.Unmarshal(raw, &parsed); err == nil {
-		extract(parsed)
+		extract(parsed, 0)
 	}
 	return result
 }
@@ -86,7 +97,7 @@ func ScanRequest(line []byte, sc *scanner.Scanner, action, onParseError string) 
 		return scanRequestBatch(trimmed, sc, action, onParseError)
 	}
 
-	var rpc RPCResponse // Reuse struct — has Method and Params fields.
+	var rpc jsonrpc.RPCResponse // Reuse struct — has Method and Params fields.
 	if err := json.Unmarshal(trimmed, &rpc); err != nil {
 		if onParseError == config.ActionForward {
 			// Still scan raw text for secrets/injection before forwarding.
@@ -95,7 +106,7 @@ func ScanRequest(line []byte, sc *scanner.Scanner, action, onParseError string) 
 		return InputVerdict{Clean: false, Error: fmt.Sprintf("invalid JSON: %v", err)}
 	}
 
-	if rpc.JSONRPC != jsonRPCVersion {
+	if rpc.JSONRPC != jsonrpc.Version {
 		if onParseError == config.ActionForward {
 			// Still scan raw text for secrets/injection before forwarding.
 			return scanRawBeforeForward(trimmed, sc, action)
@@ -112,7 +123,7 @@ func ScanRequest(line []byte, sc *scanner.Scanner, action, onParseError string) 
 	// Extract individual string values and scan each one separately so that
 	// encoded-secret detection (base64, hex) works on field values, not on
 	// the whole JSON blob (which is never valid base64/hex as a unit).
-	if len(rpc.Params) == 0 || string(rpc.Params) == jsonNull {
+	if len(rpc.Params) == 0 || string(rpc.Params) == jsonrpc.Null {
 		raw := string(trimmed)
 
 		// Extract individual strings for per-field encoded DLP checks.
@@ -191,7 +202,7 @@ func ScanRequest(line []byte, sc *scanner.Scanner, action, onParseError string) 
 	if rpc.Method != "" {
 		strs = append(strs, rpc.Method)
 	}
-	if len(rpc.ID) > 0 && string(rpc.ID) != jsonNull {
+	if len(rpc.ID) > 0 && string(rpc.ID) != jsonrpc.Null {
 		strs = append(strs, string(rpc.ID))
 	}
 
@@ -391,7 +402,7 @@ func blockRequestResponse(br BlockedRequest) []byte {
 		msg = "pipelock: request blocked by MCP input scanning"
 	}
 	resp := rpcError{
-		JSONRPC: jsonRPCVersion,
+		JSONRPC: jsonrpc.Version,
 		ID:      br.ID,
 		Error: rpcErrorDetail{
 			Code:    code,
@@ -406,7 +417,7 @@ func blockRequestResponse(br BlockedRequest) []byte {
 // When non-nil with a valid Baseline, tools/call requests are checked against
 // the tool inventory captured from the first tools/list response.
 type SessionBindingConfig struct {
-	Baseline          *ToolBaseline
+	Baseline          *tools.ToolBaseline
 	UnknownToolAction string // warn, block
 	NoBaselineAction  string // warn, block (action when no baseline yet)
 }
@@ -420,15 +431,17 @@ type SessionBindingConfig struct {
 // Blocked request IDs are sent via blockedCh so the main goroutine (which owns
 // clientOut writes) can send error responses without concurrent write races.
 func ForwardScannedInput(
-	reader MessageReader,
-	writer MessageWriter,
+	reader transport.MessageReader,
+	writer transport.MessageWriter,
 	logW io.Writer,
 	sc *scanner.Scanner,
 	action string,
 	onParseError string,
 	blockedCh chan<- BlockedRequest,
-	policyCfg *PolicyConfig,
+	policyCfg *policy.Config,
 	bindingCfg *SessionBindingConfig,
+	ks *killswitch.Controller,
+	chainMatcher *chains.Matcher,
 ) {
 	defer close(blockedCh)
 
@@ -446,10 +459,32 @@ func ForwardScannedInput(
 		}
 		lineNum++
 
+		// Kill switch: deny all messages when active.
+		if ks != nil {
+			if d := ks.IsActiveMCP(line); d.Active {
+				if d.IsNotification {
+					// Notifications have no ID — silently drop.
+					_, _ = fmt.Fprintf(logW, "pipelock: input line %d: kill switch dropped notification (source=%s)\n",
+						lineNum, d.Source)
+				} else {
+					// Request with ID — send JSON-RPC error response.
+					rpcID := extractRPCID(line)
+					blockedCh <- BlockedRequest{
+						ID:             rpcID,
+						IsNotification: false,
+						LogMessage:     fmt.Sprintf("pipelock: input line %d: kill switch denied (source=%s)", lineNum, d.Source),
+						ErrorCode:      -32004,
+						ErrorMessage:   d.Message,
+					}
+				}
+				continue
+			}
+		}
+
 		verdict := ScanRequest(line, sc, action, onParseError)
 
 		// Tool call policy check — independent of content scanning.
-		policyVerdict := PolicyVerdict{}
+		policyVerdict := policy.Verdict{}
 		if policyCfg != nil {
 			policyVerdict = policyCfg.CheckRequest(line)
 		}
@@ -469,40 +504,75 @@ func ForwardScannedInput(
 			bindingReason = "session_binding:batch_request"
 		}
 
+		// Extract tool name once for both binding and chain detection.
+		var toolCallName string
+		if verdict.Method == "tools/call" { //nolint:goconst // MCP method name used across packages
+			toolCallName = extractToolCallName(line)
+		}
+
 		if bindingCfg != nil && bindingCfg.Baseline != nil && verdict.Method == "tools/call" {
-			toolName := extractToolCallName(line)
-			if toolName == "" {
+			if toolCallName == "" {
 				// Fail closed: tools/call without a name is a binding violation.
 				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: tools/call missing params.name\n", lineNum)
 				bindingAction = bindingCfg.UnknownToolAction
 				bindingReason = "session_binding:missing_tool_name"
 			} else if !bindingCfg.Baseline.HasBaseline() {
 				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: tools/call %q before baseline established\n",
-					lineNum, toolName)
+					lineNum, toolCallName)
 				bindingAction = bindingCfg.NoBaselineAction
 				bindingReason = "session_binding:no_baseline"
-			} else if !bindingCfg.Baseline.IsKnownTool(toolName) {
+			} else if !bindingCfg.Baseline.IsKnownTool(toolCallName) {
 				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: tools/call %q not in session baseline\n",
-					lineNum, toolName)
+					lineNum, toolCallName)
 				bindingAction = bindingCfg.UnknownToolAction
 				bindingReason = "session_binding:unknown_tool"
+			}
+		}
+
+		// Chain detection: check if this tool call matches an attack pattern.
+		// Runs on every tools/call regardless of content scan results.
+		chainAction := ""
+		chainReason := ""
+		// Stdio proxy has exactly one client session per process instance.
+		// "default" is the correct session key for this 1:1 architecture.
+		if chainMatcher != nil && toolCallName != "" {
+			cv := chainMatcher.Record("default", toolCallName)
+			if cv.Matched {
+				_, _ = fmt.Fprintf(logW, "pipelock: chain detected: %s (severity=%s, action=%s)\n",
+					cv.PatternName, cv.Severity, cv.Action)
+				if cv.Action == config.ActionBlock {
+					// Use verdict.ID from the already-parsed ScanRequest result
+					// rather than re-parsing via extractRPCID. A tools/call always
+					// has an ID; using the parsed value avoids a silent-drop bug
+					// if re-parsing fails on unusual ID shapes.
+					blockedCh <- BlockedRequest{
+						ID:             verdict.ID,
+						IsNotification: isRPCNotification(verdict.ID),
+						LogMessage:     fmt.Sprintf("pipelock: input line %d: chain pattern %q blocked", lineNum, cv.PatternName),
+						ErrorCode:      -32004,
+						ErrorMessage:   fmt.Sprintf("tool call blocked: chain pattern %q detected", cv.PatternName),
+					}
+					continue
+				}
+				// warn action: record reason for inclusion in combined verdict.
+				chainAction = cv.Action
+				chainReason = "chain:" + cv.PatternName
 			}
 		}
 
 		// Parse error — block by default (policy doesn't override parse errors).
 		if verdict.Error != "" {
 			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: %s\n", lineNum, verdict.Error)
-			isNotification := len(verdict.ID) == 0
 			blockedCh <- BlockedRequest{
 				ID:             verdict.ID,
-				IsNotification: isNotification,
+				IsNotification: isRPCNotification(verdict.ID),
 				LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked (parse error)", lineNum),
 			}
 			continue
 		}
 
 		// All clean — forward.
-		if verdict.Clean && !policyVerdict.Matched && bindingAction == "" {
+		if verdict.Clean && !policyVerdict.Matched && bindingAction == "" && chainAction == "" {
 			if err := writer.WriteMessage(line); err != nil {
 				_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
 				return
@@ -524,6 +594,9 @@ func ForwardScannedInput(
 		if bindingReason != "" {
 			reasons = append(reasons, bindingReason)
 		}
+		if chainReason != "" {
+			reasons = append(reasons, chainReason)
+		}
 		reasonStr := joinStrings(reasons)
 
 		method := verdict.Method
@@ -532,18 +605,28 @@ func ForwardScannedInput(
 		}
 
 		// Determine effective action: strictest of content scan, policy, and binding.
+		// mergeAction handles the initial empty state correctly (empty = no action yet).
 		effectiveAction := ""
+		mergeAction := func(cur, next string) string {
+			if cur == "" {
+				return next
+			}
+			return policy.StricterAction(cur, next)
+		}
 		if !verdict.Clean {
 			effectiveAction = action
 		}
 		if policyVerdict.Matched {
-			effectiveAction = stricterAction(effectiveAction, policyVerdict.Action)
+			effectiveAction = mergeAction(effectiveAction, policyVerdict.Action)
 		}
 		if bindingAction != "" {
-			effectiveAction = stricterAction(effectiveAction, bindingAction)
+			effectiveAction = mergeAction(effectiveAction, bindingAction)
+		}
+		if chainAction != "" {
+			effectiveAction = mergeAction(effectiveAction, chainAction)
 		}
 
-		isNotification := len(verdict.ID) == 0
+		isNotification := isRPCNotification(verdict.ID)
 
 		// Determine error response fields based on what triggered the block.
 		isPolicyOnly := verdict.Clean && policyVerdict.Matched
@@ -588,21 +671,28 @@ func ForwardScannedInput(
 	}
 }
 
-// joinStrings joins strings with newline separator, matching ExtractText pattern.
+// isRPCNotification returns true if the JSON-RPC ID represents a notification.
+// A notification has no "id" field (nil/empty) or "id": null. The json.RawMessage
+// for null is non-nil with len=4, so len(id)==0 alone is insufficient.
+func isRPCNotification(id json.RawMessage) bool {
+	return len(id) == 0 || string(id) == jsonrpc.Null
+}
+
+// joinStrings joins strings with newline separator, matching jsonrpc.ExtractText pattern.
 func joinStrings(ss []string) string {
 	return strings.Join(ss, "\n")
 }
 
 // scanSplitSecret checks for secrets split across multiple JSON fields by
 // concatenating values without separators. Keys are excluded (via
-// extractStringsFromJSON, not extractAllStringsFromJSON) because interleaved
+// jsonrpc.ExtractStringsFromJSON, not extractAllStringsFromJSON) because interleaved
 // keys break DLP regex adjacency. Returns the original result if clean or if
 // concat adds no new information.
 func scanSplitSecret(raw json.RawMessage, joined string, sc *scanner.Scanner, result scanner.TextDLPResult) scanner.TextDLPResult {
 	if !result.Clean {
 		return result
 	}
-	vals := extractStringsFromJSON(raw)
+	vals := jsonrpc.ExtractStringsFromJSON(raw)
 	if len(vals) <= 1 {
 		return result
 	}

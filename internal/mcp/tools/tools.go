@@ -1,4 +1,6 @@
-package mcp
+// Package tools provides MCP tool description scanning for poisoning detection,
+// rug-pull (drift) detection, and session binding (tool inventory validation).
+package tools
 
 import (
 	"crypto/sha256"
@@ -10,6 +12,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -355,7 +358,7 @@ func collectDescriptions(obj map[string]interface{}, result *[]string, depth int
 // Uses shape-based detection: result must have a "tools" array with named entries.
 // Returns nil if the shape doesn't match.
 func tryParseToolsList(result json.RawMessage) []ToolDef {
-	if len(result) == 0 || string(result) == jsonNull {
+	if len(result) == 0 || string(result) == jsonrpc.Null {
 		return nil
 	}
 
@@ -412,7 +415,7 @@ func ScanTools(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) ToolScanRe
 
 // scanToolsSingle scans a single JSON-RPC 2.0 response for tool poisoning.
 func scanToolsSingle(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) ToolScanResult {
-	var rpc RPCResponse
+	var rpc jsonrpc.RPCResponse
 	if err := json.Unmarshal(line, &rpc); err != nil {
 		return ToolScanResult{IsToolsList: false, Clean: true}
 	}
@@ -527,8 +530,8 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) []T
 	return matches
 }
 
-// logToolFindings writes per-tool scan findings to the log writer.
-func logToolFindings(logW io.Writer, lineNum int, result ToolScanResult) {
+// LogToolFindings writes per-tool scan findings to the log writer.
+func LogToolFindings(logW io.Writer, lineNum int, result ToolScanResult) {
 	for _, m := range result.Matches {
 		var reasons []string
 		for _, inj := range m.Injection {

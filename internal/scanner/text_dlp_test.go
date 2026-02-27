@@ -36,10 +36,10 @@ func TestScanTextForDLP(t *testing.T) {
 			wantPattern: "Anthropic API Key",
 		},
 		{
-			name:        "raw DLP pattern match - AWS Access Key",
+			name:        "raw DLP pattern match - AWS Access ID",
 			text:        "My access key is AKIA" + strings.Repeat("A", 16),
 			wantClean:   false,
-			wantPattern: "AWS Access Key",
+			wantPattern: "AWS Access ID",
 		},
 		{
 			name: "base64-encoded secret decoded and matched",
@@ -170,7 +170,7 @@ func TestScanTextForDLP(t *testing.T) {
 			name:        "case variation - mixed case AWS key",
 			text:        "akia" + strings.Repeat("X", 16),
 			wantClean:   false,
-			wantPattern: "AWS Access Key",
+			wantPattern: "AWS Access ID",
 		},
 		{
 			name:        "null byte injection - secret split by null bytes",
@@ -189,6 +189,155 @@ func TestScanTextForDLP(t *testing.T) {
 			text:        strings.ToLower("-----BEGIN RSA") + " private key-----",
 			wantClean:   false,
 			wantPattern: "Private Key",
+		},
+		// --- Expanded AWS credential prefixes ---
+		{
+			name:        "AWS STS temporary key (ASIA prefix)",
+			text:        "ASIA" + "IOSFODNN7EXAMPLE",
+			wantClean:   false,
+			wantPattern: "AWS Access ID",
+		},
+		{
+			name:        "AWS assumed role ID (AROA prefix)",
+			text:        "AROA" + "IOSFODNN7EXAMP",
+			wantClean:   false,
+			wantPattern: "AWS Access ID",
+		},
+		{
+			name:        "AWS IAM user ID (AIDA prefix)",
+			text:        "AIDA" + "IOSFODNN7EXAMP",
+			wantClean:   false,
+			wantPattern: "AWS Access ID",
+		},
+		{
+			name:        "AWS IAM group ID (AGPA prefix)",
+			text:        "AGPA" + "IOSFODNN7EXAMP",
+			wantClean:   false,
+			wantPattern: "AWS Access ID",
+		},
+		{
+			name:        "AWS legacy prefix (A3T prefix)",
+			text:        "A3T" + "IOSFODNN7EXAMPL",
+			wantClean:   false,
+			wantPattern: "AWS Access ID",
+		},
+		{
+			name:        "AWS EC2 instance profile (AIPA prefix)",
+			text:        "AIPA" + "IOSFODNN7EXAMP",
+			wantClean:   false,
+			wantPattern: "AWS Access ID",
+		},
+		{
+			name:        "AWS managed policy (ANPA prefix)",
+			text:        "ANPA" + "IOSFODNN7EXAMP",
+			wantClean:   false,
+			wantPattern: "AWS Access ID",
+		},
+		{
+			name:        "AWS managed policy version (ANVA prefix)",
+			text:        "ANVA" + "IOSFODNN7EXAMP",
+			wantClean:   false,
+			wantPattern: "AWS Access ID",
+		},
+		// --- Expanded GitHub token types ---
+		{
+			name:        "GitHub OAuth token (gho_ prefix)",
+			text:        "gho_" + "aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789",
+			wantClean:   false,
+			wantPattern: "GitHub Token",
+		},
+		{
+			name:        "GitHub User-to-Server token (ghu_ prefix)",
+			text:        "ghu_" + "aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789",
+			wantClean:   false,
+			wantPattern: "GitHub Token",
+		},
+		{
+			name:        "GitHub App refresh token (ghr_ prefix)",
+			text:        "ghr_" + "aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789",
+			wantClean:   false,
+			wantPattern: "GitHub Token",
+		},
+		{
+			name:        "GitHub App install token (ghs_ prefix)",
+			text:        "ghs_" + "aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789",
+			wantClean:   false,
+			wantPattern: "GitHub Token",
+		},
+		// --- New patterns ---
+		{
+			name:        "Fireworks API Key",
+			text:        "fw_" + "aBcDeFgHiJkLmNoPqRsTuVwX",
+			wantClean:   false,
+			wantPattern: "Fireworks API Key",
+		},
+		{
+			name:        "Google API Key",
+			text:        "AIza" + "SyA1234567890abcdefghijklmnopqrstuv",
+			wantClean:   false,
+			wantPattern: "Google API Key",
+		},
+		{
+			name:        "Google OAuth Client Secret (GOCSPX)",
+			text:        "GOCSPX-" + "aBcDeFgHiJkLmNoPqRsTuVwXyZaB",
+			wantClean:   false,
+			wantPattern: "Google OAuth Client Secret",
+		},
+		{
+			name:        "Slack App Token (xapp prefix)",
+			text:        "xapp-" + "1-A0B1C2D3E4-5678901234-abcdef0123456789",
+			wantClean:   false,
+			wantPattern: "Slack App Token",
+		},
+		{
+			name: "JWT Token (3-segment base64url)",
+			text: "eyJ" + "hbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9" +
+				".eyJ" + "zdWIiOiIxMjM0NTY3ODkwIn0" +
+				".dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
+			wantClean:   false,
+			wantPattern: "JWT Token",
+		},
+		{
+			name:        "Google OAuth Client ID",
+			text:        "123456789012" + "-abcdefghij1234567890abcdefghij12" + ".apps.googleusercontent.com",
+			wantClean:   false,
+			wantPattern: "Google OAuth Client ID",
+		},
+		// --- False positive tests (should NOT match) ---
+		{
+			name:      "FP: Fireworks prefix but too short",
+			text:      "fw_config",
+			wantClean: true,
+		},
+		{
+			name:      "FP: GOCSPX too short",
+			text:      "GOCSPX-short",
+			wantClean: true,
+		},
+		{
+			name:      "FP: Google OAuth ID wrong domain",
+			text:      "123456789-abcdef.apps.example.com",
+			wantClean: true,
+		},
+		{
+			name:      "FP: JWT-like but segments too short",
+			text:      "eyJhbGci.eyJzdWI.abc",
+			wantClean: true,
+		},
+		{
+			name:      "FP: Google API Key suffix too short (34 chars)",
+			text:      "AIza" + "SyA1234567890abcdefghijklmnopqrstu",
+			wantClean: true,
+		},
+		{
+			name:      "FP: ASIAN_MARKETS not an AWS key",
+			text:      "ASIAN_MARKETS",
+			wantClean: true,
+		},
+		{
+			name:      "FP: Google OAuth Client ID with short numeric prefix",
+			text:      "12345-abcdefghij1234567890abcdefghij12.apps.googleusercontent.com",
+			wantClean: true,
 		},
 	}
 
@@ -290,7 +439,7 @@ func TestScanTextForDLP_MultiplePatterns(t *testing.T) {
 		patternNames[m.PatternName] = true
 	}
 
-	for _, want := range []string{"Anthropic API Key", "AWS Access Key", "GitHub Token"} {
+	for _, want := range []string{"Anthropic API Key", "AWS Access ID", "GitHub Token"} {
 		if !patternNames[want] {
 			t.Errorf("expected pattern %q in matches, got: %v", want, result.Matches)
 		}
@@ -449,12 +598,12 @@ func TestScanTextForDLP_DoubleURLEncoding(t *testing.T) {
 	}
 	found := false
 	for _, m := range result.Matches {
-		if m.PatternName == "AWS Access Key" { //nolint:goconst // test value
+		if m.PatternName == "AWS Access ID" { //nolint:goconst // test value
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("expected AWS Access Key pattern match, got: %v", result.Matches)
+		t.Errorf("expected AWS Access ID pattern match, got: %v", result.Matches)
 	}
 }
 
@@ -609,7 +758,7 @@ func TestScanTextForDLP_ConfusableBypass(t *testing.T) {
 		{
 			name:        "Greek_A_in_AWS_key",
 			text:        "\u0391KIA" + strings.Repeat("B", 16), // Greek Α U+0391 for A
-			wantPattern: "AWS Access Key",
+			wantPattern: "AWS Access ID",
 		},
 	}
 

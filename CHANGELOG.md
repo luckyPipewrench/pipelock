@@ -19,6 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Session profiling and adaptive enforcement config sections (scoring-only in v1, observability groundwork)
 - Health endpoint now reports `kill_switch_active` field
 - Preset configs (strict, balanced) updated with kill switch and emit examples (commented out)
+- DLP: 6 new patterns — Fireworks API Key, Google API Key, Google OAuth Client Secret (GOCSPX), Slack App Token (`xapp-`), JWT Token, Google OAuth Client ID
+- DLP: expanded AWS Access ID detection from AKIA-only to all 9 credential prefixes (AKIA, ASIA, AROA, AIDA, AIPA, AGPA, ANPA, ANVA, A3T)
+- DLP: expanded GitHub Token detection to cover all 5 token types (ghp, gho, ghu, ghs, ghr)
+- All 6 preset configs (balanced, strict, audit, claude-code, cursor, generic-agent) updated with expanded DLP pattern set (22 patterns)
+
+### Fixed
+- Close WebSocket cross-message DLP bypass: secrets split across WebSocket text frames are now detected via fragment reassembly buffer scanning (PR #140)
+- Close header rotation evasion: IP-level domain tracking prevents agents from rotating Host/Origin headers to bypass per-domain rate limits (PR #141)
 
 ### Changed
 - MCP package refactored into sub-packages: `transport`, `tools`, `policy`, `jsonrpc` for clearer separation of concerns

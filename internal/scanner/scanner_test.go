@@ -84,8 +84,15 @@ func TestScan_BlocksDLPPatterns(t *testing.T) {
 		pattern string
 	}{
 		{"https://example.com/api?key=sk-ant-abcdefghijklmnopqrstu", "Anthropic API Key"},
-		{"https://example.com/path?token=AKIAIOSFODNN7EXAMPLE", "AWS Access Key"},
+		{"https://example.com/path?token=AKIAIOSFODNN7EXAMPLE", "AWS Access ID"},
+		{"https://example.com/path?token=ASIA" + "IOSFODNN7EXAMPLE", "AWS Access ID"},
 		{"https://example.com/path/ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijkl", "GitHub Token"},
+		{"https://example.com/path/gho_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijkl", "GitHub Token"},
+		{"https://example.com/api?k=fw_" + "aBcDeFgHiJkLmNoPqRsTuVwX", "Fireworks API Key"},
+		{"https://example.com/api?k=GOCSPX-" + "aBcDeFgHiJkLmNoPqRsTuVwXyZaB", "Google OAuth Client Secret"},
+		{"https://example.com/api?k=AIza" + "SyA1234567890abcdefghijklmnopqrstuv", "Google API Key"},
+		{"https://example.com/api?k=xapp-" + "1-A0B1C2D3E4-5678901234-abcdef0123456789", "Slack App Token"},
+		{"https://example.com/api?jwt=" + "eyJhbGciOiJIUzI1NiIs" + "InR5cCI6IkpXVCJ9.eyJz" + "dWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U", "JWT Token"},
 	}
 
 	for _, tt := range tests {
@@ -96,6 +103,47 @@ func TestScan_BlocksDLPPatterns(t *testing.T) {
 		if result.Scanner != "dlp" { //nolint:goconst // test value
 			t.Errorf("expected scanner=dlp for %s, got %s", tt.url, result.Scanner)
 		}
+	}
+}
+
+// TestScan_DLPFalsePositiveRegression guards against DLP patterns matching
+// benign URL content. Each entry should remain allowed (not blocked by DLP).
+func TestScan_DLPFalsePositiveRegression(t *testing.T) {
+	cfg := testConfig()
+	cfg.FetchProxy.Monitoring.EntropyThreshold = 0 // disable entropy so only DLP is tested
+	cfg.FetchProxy.Monitoring.MaxURLLength = 4096
+	s := New(cfg)
+
+	tests := []struct {
+		name string
+		url  string
+	}{
+		// AWS-like prefixes in benign contexts
+		{"ASIA in region slug", "https://example.com/regions/asia-pacific-southeast"},
+		{"AIDA in product name", "https://example.com/products/aida-assistant"},
+		// JWT-like dotted identifiers
+		{"version triple", "https://example.com/api/v2.1.0/resource"},
+		{"dotted package name", "https://registry.npmjs.org/@scope/pkg/1.2.3"},
+		// Google OAuth ID-like numeric prefix
+		{"short numeric param", "https://example.com/api?id=12345-abcdef"},
+		// Fireworks prefix in config key
+		{"fw_ config param", "https://example.com/api?fw_version=2"},
+		// GOCSPX too short
+		{"GOCSPX short value", "https://example.com/api?code=GOCSPX-short"},
+		// Slack xapp too short / wrong format
+		{"xapp bare prefix", "https://example.com/api?v=xapp-incomplete"},
+		// Google API key suffix too short
+		{"AIza with 34 chars", "https://example.com/api?k=AIza" + "SyA1234567890abcdefghijklmnopqrstu"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := s.Scan(tt.url)
+			if !result.Allowed {
+				t.Errorf("expected %s to be allowed (FP regression), got blocked: scanner=%s reason=%s",
+					tt.url, result.Scanner, result.Reason)
+			}
+		})
 	}
 }
 

@@ -345,13 +345,16 @@ func TestAPIHandler_RateLimitWindowReset(t *testing.T) {
 	c := New(cfg)
 	h := NewAPIHandler(c)
 
-	// Exhaust the rate limit.
-	for i := 0; i < apiRateLimitMax; i++ {
+	// Exhaust the rate limit — verify the last request is actually throttled.
+	for i := 0; i <= apiRateLimitMax; i++ {
 		body := bytes.NewBufferString(`{"active": true}`)
 		r := httptest.NewRequest(http.MethodPost, "/api/v1/killswitch", body)
 		r.Header.Set("Authorization", "Bearer test-token") //nolint:goconst // test value
 		w := httptest.NewRecorder()
 		h.HandleToggle(w, r)
+		if i == apiRateLimitMax && w.Code != http.StatusTooManyRequests {
+			t.Fatalf("request %d: expected 429 before window reset, got %d", i, w.Code)
+		}
 	}
 
 	// Simulate window expiration by moving windowStart into the past.

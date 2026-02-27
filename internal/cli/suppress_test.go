@@ -357,13 +357,13 @@ func TestSuppressGitFindings(t *testing.T) {
 	}
 
 	entries := []config.SuppressEntry{
-		{Rule: "AWS Access Key", Path: "vendor/"},
+		{Rule: "AWS Access ID", Path: "vendor/"},
 	}
 
 	findings := []gitprotect.Finding{
-		{File: path, Line: 2, Pattern: "Anthropic API Key", Content: fakeAntKey1, Severity: "critical"},                         // inline suppressed
-		{File: path, Line: 3, Pattern: "Anthropic API Key", Content: fakeAntKey2, Severity: "critical"},                         // NOT suppressed
-		{File: filepath.Join("vendor", "lib.go"), Line: 5, Pattern: "AWS Access Key", Content: "AKIA...", Severity: "critical"}, // config suppressed
+		{File: path, Line: 2, Pattern: "Anthropic API Key", Content: fakeAntKey1, Severity: "critical"},                        // inline suppressed
+		{File: path, Line: 3, Pattern: "Anthropic API Key", Content: fakeAntKey2, Severity: "critical"},                        // NOT suppressed
+		{File: filepath.Join("vendor", "lib.go"), Line: 5, Pattern: "AWS Access ID", Content: "AKIA...", Severity: "critical"}, // config suppressed
 	}
 
 	kept, suppressed, reasons := suppressGitFindings(findings, entries)
@@ -445,7 +445,7 @@ func TestPrintSuppressedGit(t *testing.T) {
 	findings := []gitprotect.Finding{
 		{File: "app/client.rb", Line: 22, Pattern: "Credential in URL", Content: "...", Severity: "high"},
 		{File: "config/auth.rb", Line: 5, Pattern: "Credential in URL", Content: "...", Severity: "high"},
-		{File: "vendor/lib.rb", Line: 0, Pattern: "AWS Access Key", Content: "...", Severity: "critical"},
+		{File: "vendor/lib.rb", Line: 0, Pattern: "AWS Access ID", Content: "...", Severity: "critical"},
 	}
 	reasons := []suppressResult{
 		{suppressed: true, source: suppressSourceInline},
@@ -463,7 +463,7 @@ func TestPrintSuppressedGit(t *testing.T) {
 	if !strings.Contains(output, `SUPPRESSED: config/auth.rb:5  Credential in URL (config: "Env var names, not values")`) {
 		t.Errorf("expected config suppression line with reason, got:\n%s", output)
 	}
-	if !strings.Contains(output, "SUPPRESSED: vendor/lib.rb  AWS Access Key (config)") {
+	if !strings.Contains(output, "SUPPRESSED: vendor/lib.rb  AWS Access ID (config)") {
 		t.Errorf("expected config suppression line without reason, got:\n%s", output)
 	}
 }
@@ -472,7 +472,7 @@ func TestPrintSuppressedProject(t *testing.T) {
 	findings := []projectscan.Finding{
 		{File: "src/main.go", Line: 10, Pattern: "Anthropic API Key", Severity: "critical", Category: "secret", Message: "key found"},
 		{File: "config/auth.rb", Line: 5, Pattern: "Credential in URL", Severity: "high", Category: "secret", Message: "cred found"},
-		{File: "vendor/lib.rb", Line: 0, Pattern: "AWS Access Key", Severity: "critical", Category: "secret", Message: "key found"},
+		{File: "vendor/lib.rb", Line: 0, Pattern: "AWS Access ID", Severity: "critical", Category: "secret", Message: "key found"},
 	}
 	reasons := []suppressResult{
 		{suppressed: true, source: suppressSourceInline},
@@ -490,7 +490,7 @@ func TestPrintSuppressedProject(t *testing.T) {
 	if !strings.Contains(output, `SUPPRESSED: config/auth.rb:5  Credential in URL (config: "Env var names, not values")`) {
 		t.Errorf("expected config suppression line with reason, got:\n%s", output)
 	}
-	if !strings.Contains(output, "SUPPRESSED: vendor/lib.rb  AWS Access Key (config)") {
+	if !strings.Contains(output, "SUPPRESSED: vendor/lib.rb  AWS Access ID (config)") {
 		t.Errorf("expected config suppression line without reason, got:\n%s", output)
 	}
 }

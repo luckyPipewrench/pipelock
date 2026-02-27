@@ -370,6 +370,7 @@ func TestTestCmd_ExitCodeOnFailure(t *testing.T) {
 	cfgYAML := `version: 1
 mode: balanced
 dlp:
+  include_defaults: false
   patterns:
     - name: "Anthropic API Key"
       regex: "sk-ant-api03-[A-Za-z0-9_-]{20,}"
@@ -412,6 +413,7 @@ func TestTestCmd_JSONExitCodeOnFailure(t *testing.T) {
 	cfgYAML := `version: 1
 mode: balanced
 dlp:
+  include_defaults: false
   patterns:
     - name: "Anthropic API Key"
       regex: "sk-ant-api03-[A-Za-z0-9_-]{20,}"

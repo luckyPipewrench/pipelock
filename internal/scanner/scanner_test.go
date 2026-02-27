@@ -121,6 +121,7 @@ func TestScan_DLPFalsePositiveRegression(t *testing.T) {
 		// AWS-like prefixes in benign contexts
 		{"ASIA in region slug", "https://example.com/regions/asia-pacific-southeast"},
 		{"AIDA in product name", "https://example.com/products/aida-assistant"},
+		{"ASIA contiguous uppercase (non-secret)", "https://example.com/reports/ASIA2025REPORT1234"},
 		// JWT-like dotted identifiers
 		{"version triple", "https://example.com/api/v2.1.0/resource"},
 		{"dotted package name", "https://registry.npmjs.org/@scope/pkg/1.2.3"},

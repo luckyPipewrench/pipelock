@@ -181,6 +181,7 @@ type ResponseScanning struct {
 	Enabled           bool                  `yaml:"enabled"`
 	Action            string                `yaml:"action"`              // strip, warn, block, ask
 	AskTimeoutSeconds int                   `yaml:"ask_timeout_seconds"` // timeout for HITL prompt (default 30)
+	IncludeDefaults   *bool                 `yaml:"include_defaults"`    // nil/true: merge user patterns with defaults; false: user patterns only
 	Patterns          []ResponseScanPattern `yaml:"patterns"`
 }
 
@@ -253,6 +254,7 @@ type DLP struct {
 	ScanEnv            bool         `yaml:"scan_env"`
 	SecretsFile        string       `yaml:"secrets_file"`
 	MinEnvSecretLength int          `yaml:"min_env_secret_length"` // minimum env var length for leak detection (default 16)
+	IncludeDefaults    *bool        `yaml:"include_defaults"`      // nil/true: merge user patterns with defaults; false: user patterns only
 	Patterns           []DLPPattern `yaml:"patterns"`
 }
 
@@ -435,14 +437,24 @@ func (c *Config) ApplyDefaults() {
 	if c.ResponseScanning.Action == "ask" && c.ResponseScanning.AskTimeoutSeconds <= 0 { //nolint:goconst // config action value
 		c.ResponseScanning.AskTimeoutSeconds = 30
 	}
-	// Inject default patterns when scanning is enabled but no patterns are configured.
-	// Without this, enabled: true with an empty patterns list silently disables detection.
-	if c.ResponseScanning.Enabled && len(c.ResponseScanning.Patterns) == 0 {
-		c.ResponseScanning.Patterns = Defaults().ResponseScanning.Patterns
+	// Merge default response scanning patterns with user patterns.
+	// include_defaults (nil/true): defaults load first, user patterns override by name.
+	// include_defaults (false): only user patterns are used (full override).
+	if c.ResponseScanning.Enabled {
+		c.ResponseScanning.Patterns = mergeResponsePatterns(
+			c.ResponseScanning.IncludeDefaults,
+			c.ResponseScanning.Patterns,
+			Defaults().ResponseScanning.Patterns,
+		)
 	}
-	if len(c.DLP.Patterns) == 0 {
-		c.DLP.Patterns = Defaults().DLP.Patterns
-	}
+	// Merge default DLP patterns with user patterns.
+	// include_defaults (nil/true): defaults load first, user patterns override by name.
+	// include_defaults (false): only user patterns are used (full override).
+	c.DLP.Patterns = mergeDLPPatterns(
+		c.DLP.IncludeDefaults,
+		c.DLP.Patterns,
+		Defaults().DLP.Patterns,
+	)
 	// Always default OnParseError (fail-closed) regardless of enabled state,
 	// since validation checks it unconditionally.
 	if c.MCPInputScanning.OnParseError == "" {
@@ -597,6 +609,58 @@ func (c *Config) ApplyDefaults() {
 			c.MCPSessionBinding.NoBaselineAction = ActionWarn
 		}
 	}
+}
+
+// mergeDLPPatterns merges default DLP patterns with user-defined patterns.
+// When includeDefaults is nil or true, defaults are loaded first and user
+// patterns override by name (matching Name field). New defaults that don't
+// exist in the user config are automatically added.
+// When includeDefaults is false, only user patterns are used.
+func mergeDLPPatterns(includeDefaults *bool, user, defaults []DLPPattern) []DLPPattern {
+	if includeDefaults != nil && !*includeDefaults {
+		// Explicit opt-out: user patterns only (old behavior).
+		return user
+	}
+	if len(user) == 0 {
+		return defaults
+	}
+	// Build lookup of user pattern names.
+	userNames := make(map[string]struct{}, len(user))
+	for _, p := range user {
+		userNames[p.Name] = struct{}{}
+	}
+	// Start with defaults not overridden by user, then append all user patterns.
+	merged := make([]DLPPattern, 0, len(defaults)+len(user))
+	for _, d := range defaults {
+		if _, overridden := userNames[d.Name]; !overridden {
+			merged = append(merged, d)
+		}
+	}
+	merged = append(merged, user...)
+	return merged
+}
+
+// mergeResponsePatterns merges default response scanning patterns with user-defined patterns.
+// Same semantics as mergeDLPPatterns: nil/true merges by name, false uses user only.
+func mergeResponsePatterns(includeDefaults *bool, user, defaults []ResponseScanPattern) []ResponseScanPattern {
+	if includeDefaults != nil && !*includeDefaults {
+		return user
+	}
+	if len(user) == 0 {
+		return defaults
+	}
+	userNames := make(map[string]struct{}, len(user))
+	for _, p := range user {
+		userNames[p.Name] = struct{}{}
+	}
+	merged := make([]ResponseScanPattern, 0, len(defaults)+len(user))
+	for _, d := range defaults {
+		if _, overridden := userNames[d.Name]; !overridden {
+			merged = append(merged, d)
+		}
+	}
+	merged = append(merged, user...)
+	return merged
 }
 
 // Validate checks the config for errors. Must be called after ApplyDefaults.
@@ -1052,6 +1116,16 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		})
 	}
 
+	// DLP include_defaults disabled
+	oldInclude := old.DLP.IncludeDefaults == nil || *old.DLP.IncludeDefaults
+	newInclude := updated.DLP.IncludeDefaults == nil || *updated.DLP.IncludeDefaults
+	if oldInclude && !newInclude {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "dlp.include_defaults",
+			Message: "DLP include_defaults disabled — new default patterns will not be merged on future upgrades",
+		})
+	}
+
 	// Internal CIDRs emptied
 	if len(old.Internal) > 0 && len(updated.Internal) == 0 {
 		warnings = append(warnings, ReloadWarning{
@@ -1265,9 +1339,10 @@ func Defaults() *Config {
 				{Name: "GitHub Fine-Grained PAT", Regex: `github_pat_[a-zA-Z0-9_]{36,}`, Severity: "critical"},
 
 				// Cloud provider credentials
-				// {12,} is intentionally loose: real AWS IDs are 20-21 chars, but truncated
-				// exfiltration attempts (split across subdomains/fields) may be shorter.
-				{Name: "AWS Access ID", Regex: `(AKIA|A3T|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{12,}`, Severity: "critical"},
+				// All AWS credential prefixes: AKIA (access key), ASIA (STS temp), AROA (role),
+				// AIDA (user ID), AIPA (instance profile), AGPA (group), ANPA/ANVA (policy), A3T (legacy).
+				// {16,}: real AWS IDs have 16+ chars after prefix. Avoids FPs like ASIA2025REPORT1234.
+				{Name: "AWS Access ID", Regex: `(AKIA|A3T|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16,}`, Severity: "critical"},
 				{Name: "Google OAuth Token", Regex: `ya29\.[a-zA-Z0-9_-]{20,}`, Severity: "critical"},
 
 				// Messaging platform tokens

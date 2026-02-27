@@ -421,6 +421,8 @@ suppress:
 
 Inline suppression via `// pipelock:ignore` comments in source files (used by `pipelock audit` and `pipelock git scan-diff`).
 
+See [Finding Suppression Guide](docs/guides/suppression.md) for the full reference: all rule names, path matching styles, `--exclude` flag, and GitHub Action integration.
+
 ### Tool Call Chain Detection
 
 Detects attack patterns in sequences of MCP tool calls. Ships with 8 built-in patterns covering reconnaissance, credential theft, data staging, and exfiltration chains:
@@ -476,7 +478,7 @@ dlp:
       regex: 'sk-ant-[a-zA-Z0-9\-_]{10,}'
       severity: critical
     - name: "AWS Access ID"
-      regex: '(AKIA|A3T|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{12,}'
+      regex: '(AKIA|A3T|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16,}'
       severity: critical
     # ... 20 more patterns ship by default (see configs/balanced.yaml)
 
@@ -615,7 +617,7 @@ Scan your project for agent security risks on every PR. No Go toolchain needed.
 
 ```yaml
 # .github/workflows/pipelock.yaml
-- uses: luckyPipewrench/pipelock@v0.2.9
+- uses: luckyPipewrench/pipelock@v0.3.0
   with:
     scan-diff: 'true'
     fail-on-findings: 'true'
@@ -626,7 +628,7 @@ The action downloads a pre-built binary, runs `pipelock audit` on your project, 
 **With a config file:**
 
 ```yaml
-- uses: luckyPipewrench/pipelock@v0.2.9
+- uses: luckyPipewrench/pipelock@v0.3.0
   with:
     config: pipelock.yaml
     test-vectors: 'true'

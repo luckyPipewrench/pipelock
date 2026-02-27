@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-02-27
+
 ### Added
 - Kill switch: emergency deny-all with four activation sources (config, SIGUSR1 signal, sentinel file, HTTP API), OR-composed so any single source blocks all proxy traffic
 - Kill switch API: `POST /api/v1/killswitch` (activate/deactivate) and `GET /api/v1/killswitch/status` (per-source state) with bearer token auth, rate limiting, and input hardening (MaxBytesReader, DisallowUnknownFields, strict EOF enforcement)
@@ -23,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - DLP: expanded AWS Access ID detection from AKIA-only to all 9 credential prefixes (AKIA, ASIA, AROA, AIDA, AIPA, AGPA, ANPA, ANVA, A3T)
 - DLP: expanded GitHub Token detection to cover all 5 token types (ghp, gho, ghu, ghs, ghr)
 - All 6 preset configs (balanced, strict, audit, claude-code, cursor, generic-agent) updated with expanded DLP pattern set (22 patterns)
+- DLP `include_defaults` config field: when true (default), user-defined DLP patterns are merged with built-in defaults by name — new default patterns are automatically added on binary upgrade without requiring config changes. Set `include_defaults: false` to use only user-defined patterns (previous behavior). Same field available for `response_scanning`.
+- Finding suppression guide (`docs/guides/suppression.md`): documents all three suppression layers (inline comments, config entries, `--exclude` flag), available rule names, path matching styles, and GitHub Action integration
 
 ### Fixed
 - Close WebSocket cross-message DLP bypass: secrets split across WebSocket text frames are now detected via fragment reassembly buffer scanning (PR #140)

@@ -79,6 +79,7 @@ websocket_proxy:
 
 dlp:
   scan_env: true
+  include_defaults: false  # Preset defines the complete pattern set
   patterns:
     # Provider API keys
     - name: "Anthropic API Key"
@@ -111,7 +112,7 @@ dlp:
       severity: critical
     # Cloud provider credentials
     - name: "AWS Access ID"
-      regex: '(AKIA|A3T|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{12,}'
+      regex: '(AKIA|A3T|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16,}'
       severity: critical
     - name: "Google OAuth Token"
       regex: 'ya29\.[a-zA-Z0-9_-]{20,}'
@@ -155,6 +156,7 @@ dlp:
 response_scanning:
   enabled: true
   action: block
+  include_defaults: false  # Preset defines the complete pattern set
   patterns:
     - name: "Prompt Injection"
       regex: '(?i)(ignore|disregard|forget|abandon)[-,;:.\s]+\s*(all\s+)?(previous|prior|above|earlier)\s+(\w+\s+)?(instructions|prompts|rules|context|directives|constraints|policies|guardrails)'

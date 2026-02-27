@@ -457,8 +457,8 @@ func TestValidate_AuditModeAllowsEmpty(t *testing.T) {
 	}
 }
 
-func TestLoad_WithDLPPatterns(t *testing.T) {
-	yaml := `
+func TestLoad_WithDLPPatterns_MergesDefaults(t *testing.T) {
+	yamlContent := `
 version: 1
 mode: balanced
 api_allowlist:
@@ -472,7 +472,50 @@ dlp:
 `
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(yamlContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defaults := Defaults()
+	expectedCount := len(defaults.DLP.Patterns) + 1
+	if len(cfg.DLP.Patterns) != expectedCount {
+		t.Fatalf("expected %d DLP patterns (defaults + 1 custom), got %d",
+			expectedCount, len(cfg.DLP.Patterns))
+	}
+	// Custom pattern should be present.
+	found := false
+	for _, p := range cfg.DLP.Patterns {
+		if p.Name == "Test Pattern" { //nolint:goconst // test value
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected 'Test Pattern' in merged DLP patterns")
+	}
+}
+
+func TestLoad_WithDLPPatterns_IncludeDefaultsFalse(t *testing.T) {
+	yamlContent := `
+version: 1
+mode: balanced
+api_allowlist:
+  - "*.example.com"
+dlp:
+  include_defaults: false
+  scan_env: true
+  patterns:
+    - name: "Test Pattern"
+      regex: 'test-[a-z]+'
+      severity: high
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(yamlContent), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -481,7 +524,7 @@ dlp:
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(cfg.DLP.Patterns) != 1 {
-		t.Fatalf("expected 1 DLP pattern, got %d", len(cfg.DLP.Patterns))
+		t.Fatalf("expected 1 DLP pattern with include_defaults: false, got %d", len(cfg.DLP.Patterns))
 	}
 	if cfg.DLP.Patterns[0].Name != "Test Pattern" {
 		t.Errorf("expected pattern name 'Test Pattern', got %s", cfg.DLP.Patterns[0].Name)
@@ -756,19 +799,29 @@ func TestApplyDefaults_InjectsResponsePatternsWhenEmpty(t *testing.T) {
 	}
 }
 
-func TestApplyDefaults_PreservesExistingResponsePatterns(t *testing.T) {
+func TestApplyDefaults_MergesCustomWithDefaultResponsePatterns(t *testing.T) {
 	cfg := &Config{}
 	cfg.ResponseScanning.Enabled = true
 	cfg.ResponseScanning.Patterns = []ResponseScanPattern{
-		{Name: "Custom", Regex: `custom-regex`},
+		{Name: "Custom", Regex: `custom-regex`}, //nolint:goconst // test value
 	}
 	cfg.ApplyDefaults()
 
-	if len(cfg.ResponseScanning.Patterns) != 1 {
-		t.Errorf("expected 1 custom pattern preserved, got %d", len(cfg.ResponseScanning.Patterns))
+	defaults := Defaults()
+	expectedCount := len(defaults.ResponseScanning.Patterns) + 1
+	if len(cfg.ResponseScanning.Patterns) != expectedCount {
+		t.Errorf("expected %d response patterns (defaults + 1 custom), got %d",
+			expectedCount, len(cfg.ResponseScanning.Patterns))
 	}
-	if cfg.ResponseScanning.Patterns[0].Name != "Custom" {
-		t.Errorf("expected custom pattern name, got %s", cfg.ResponseScanning.Patterns[0].Name)
+	found := false
+	for _, p := range cfg.ResponseScanning.Patterns {
+		if p.Name == "Custom" { //nolint:goconst // test value
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected custom response pattern in merged result")
 	}
 }
 
@@ -793,19 +846,74 @@ func TestApplyDefaults_InjectsDLPPatternsWhenEmpty(t *testing.T) {
 	}
 }
 
-func TestApplyDefaults_PreservesExistingDLPPatterns(t *testing.T) {
+func TestApplyDefaults_MergesCustomWithDefaultDLPPatterns(t *testing.T) {
 	cfg := &Config{}
 	cfg.DLP.Patterns = []DLPPattern{
 		{Name: "Custom Secret", Regex: `custom-[a-z]+`, Severity: "high"},
 	}
 	cfg.ApplyDefaults()
 
+	defaults := Defaults()
+	// Custom pattern + all defaults (Custom Secret doesn't match any default name).
+	expectedCount := len(defaults.DLP.Patterns) + 1
+	if len(cfg.DLP.Patterns) != expectedCount {
+		t.Errorf("expected %d DLP patterns (defaults + 1 custom), got %d",
+			expectedCount, len(cfg.DLP.Patterns))
+	}
+	// Custom pattern should be present (appended after defaults).
+	found := false
+	for _, p := range cfg.DLP.Patterns {
+		if p.Name == "Custom Secret" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected custom DLP pattern to be preserved in merged result")
+	}
+}
+
+func TestApplyDefaults_IncludeDefaultsFalse_PreservesOnlyUserPatterns(t *testing.T) {
+	f := false
+	cfg := &Config{}
+	cfg.DLP.IncludeDefaults = &f
+	cfg.DLP.Patterns = []DLPPattern{
+		{Name: "Custom Secret", Regex: `custom-[a-z]+`, Severity: "high"},
+	}
+	cfg.ApplyDefaults()
+
 	if len(cfg.DLP.Patterns) != 1 {
-		t.Errorf("expected 1 custom DLP pattern preserved, got %d", len(cfg.DLP.Patterns))
+		t.Errorf("expected 1 DLP pattern with include_defaults: false, got %d", len(cfg.DLP.Patterns))
 	}
 	if cfg.DLP.Patterns[0].Name != "Custom Secret" {
-		t.Errorf("expected custom DLP pattern name, got %s", cfg.DLP.Patterns[0].Name)
+		t.Errorf("expected Custom Secret, got %s", cfg.DLP.Patterns[0].Name)
 	}
+}
+
+func TestApplyDefaults_UserPatternOverridesDefaultByName(t *testing.T) {
+	cfg := &Config{}
+	// Override the Anthropic API Key pattern with a custom regex.
+	cfg.DLP.Patterns = []DLPPattern{
+		{Name: "Anthropic API Key", Regex: `sk-ant-custom-[a-z]+`, Severity: "critical"},
+	}
+	cfg.ApplyDefaults()
+
+	defaults := Defaults()
+	// Same count as defaults — user pattern replaced one default by name.
+	if len(cfg.DLP.Patterns) != len(defaults.DLP.Patterns) {
+		t.Errorf("expected %d DLP patterns (user overrides one default), got %d",
+			len(defaults.DLP.Patterns), len(cfg.DLP.Patterns))
+	}
+	// Verify the user's regex won (not the default).
+	for _, p := range cfg.DLP.Patterns {
+		if p.Name == "Anthropic API Key" {
+			if p.Regex != `sk-ant-custom-[a-z]+` {
+				t.Errorf("expected user regex to override default, got %s", p.Regex)
+			}
+			return
+		}
+	}
+	t.Error("expected Anthropic API Key pattern in merged result")
 }
 
 // --- EnforceEnabled Tests ---
@@ -919,8 +1027,8 @@ func TestApplyDefaults_MonitoringDefaults(t *testing.T) {
 	}
 }
 
-func TestLoad_WithResponseScanning(t *testing.T) {
-	yaml := `
+func TestLoad_WithResponseScanning_MergesDefaults(t *testing.T) {
+	yamlContent := `
 version: 1
 mode: balanced
 api_allowlist:
@@ -934,7 +1042,7 @@ response_scanning:
 `
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(yamlContent), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -948,11 +1056,21 @@ response_scanning:
 	if cfg.ResponseScanning.Action != "strip" { //nolint:goconst // test value
 		t.Errorf("expected action strip, got %s", cfg.ResponseScanning.Action)
 	}
-	if len(cfg.ResponseScanning.Patterns) != 1 {
-		t.Fatalf("expected 1 pattern, got %d", len(cfg.ResponseScanning.Patterns))
+	defaults := Defaults()
+	expectedCount := len(defaults.ResponseScanning.Patterns) + 1
+	if len(cfg.ResponseScanning.Patterns) != expectedCount {
+		t.Fatalf("expected %d patterns (defaults + 1 custom), got %d",
+			expectedCount, len(cfg.ResponseScanning.Patterns))
 	}
-	if cfg.ResponseScanning.Patterns[0].Name != "Test Pattern" {
-		t.Errorf("expected pattern name 'Test Pattern', got %s", cfg.ResponseScanning.Patterns[0].Name)
+	found := false
+	for _, p := range cfg.ResponseScanning.Patterns {
+		if p.Name == "Test Pattern" { //nolint:goconst // test value
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected 'Test Pattern' in merged response scanning patterns")
 	}
 }
 
@@ -3623,5 +3741,131 @@ func TestValidate_EmitSyslogFacility_Invalid(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "facility") {
 		t.Errorf("expected error mentioning facility, got: %v", err)
+	}
+}
+
+// --- DLP include_defaults merge tests ---
+
+func TestMergeDLPPatterns_NilIncludeDefaults_MergesAll(t *testing.T) {
+	user := []DLPPattern{
+		{Name: "Custom", Regex: `custom-[a-z]+`, Severity: "high"},
+	}
+	defaults := []DLPPattern{
+		{Name: "Default A", Regex: `default-a`, Severity: "critical"},
+		{Name: "Default B", Regex: `default-b`, Severity: "high"},
+	}
+	result := mergeDLPPatterns(nil, user, defaults)
+	if len(result) != 3 {
+		t.Fatalf("expected 3 patterns, got %d", len(result))
+	}
+	// Defaults come first, then user.
+	if result[0].Name != "Default A" {
+		t.Errorf("expected Default A first, got %s", result[0].Name)
+	}
+	if result[2].Name != "Custom" {
+		t.Errorf("expected Custom last, got %s", result[2].Name)
+	}
+}
+
+func TestMergeDLPPatterns_TrueIncludeDefaults_MergesAll(t *testing.T) {
+	tr := true
+	user := []DLPPattern{
+		{Name: "Custom", Regex: `custom-[a-z]+`, Severity: "high"},
+	}
+	defaults := []DLPPattern{
+		{Name: "Default A", Regex: `default-a`, Severity: "critical"},
+	}
+	result := mergeDLPPatterns(&tr, user, defaults)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 patterns, got %d", len(result))
+	}
+}
+
+func TestMergeDLPPatterns_FalseIncludeDefaults_UserOnly(t *testing.T) {
+	f := false
+	user := []DLPPattern{
+		{Name: "Custom", Regex: `custom-[a-z]+`, Severity: "high"},
+	}
+	defaults := []DLPPattern{
+		{Name: "Default A", Regex: `default-a`, Severity: "critical"},
+		{Name: "Default B", Regex: `default-b`, Severity: "high"},
+	}
+	result := mergeDLPPatterns(&f, user, defaults)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 pattern, got %d", len(result))
+	}
+	if result[0].Name != "Custom" {
+		t.Errorf("expected Custom, got %s", result[0].Name)
+	}
+}
+
+func TestMergeDLPPatterns_UserOverridesByName(t *testing.T) {
+	user := []DLPPattern{
+		{Name: "Default A", Regex: `user-override`, Severity: "low"},
+		{Name: "Custom", Regex: `custom`, Severity: "high"},
+	}
+	defaults := []DLPPattern{
+		{Name: "Default A", Regex: `default-a`, Severity: "critical"},
+		{Name: "Default B", Regex: `default-b`, Severity: "high"},
+	}
+	result := mergeDLPPatterns(nil, user, defaults)
+	// Default B (not overridden) + user's Default A + Custom = 3
+	if len(result) != 3 {
+		t.Fatalf("expected 3 patterns, got %d", len(result))
+	}
+	// Verify user's regex won for Default A.
+	for _, p := range result {
+		if p.Name == "Default A" && p.Regex != "user-override" {
+			t.Errorf("expected user regex for Default A, got %s", p.Regex)
+		}
+	}
+}
+
+func TestMergeDLPPatterns_EmptyUser_ReturnsDefaults(t *testing.T) {
+	defaults := []DLPPattern{
+		{Name: "Default A", Regex: `default-a`, Severity: "critical"},
+	}
+	result := mergeDLPPatterns(nil, nil, defaults)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 default pattern, got %d", len(result))
+	}
+}
+
+func TestMergeDLPPatterns_FalseIncludeDefaults_EmptyUser(t *testing.T) {
+	f := false
+	defaults := []DLPPattern{
+		{Name: "Default A", Regex: `default-a`, Severity: "critical"},
+	}
+	result := mergeDLPPatterns(&f, nil, defaults)
+	if len(result) != 0 {
+		t.Fatalf("expected 0 patterns with include_defaults: false and no user patterns, got %d", len(result))
+	}
+}
+
+func TestMergeResponsePatterns_NilIncludeDefaults_MergesAll(t *testing.T) {
+	user := []ResponseScanPattern{
+		{Name: "Custom Injection", Regex: `custom-inject`},
+	}
+	defaults := []ResponseScanPattern{
+		{Name: "Default Inject A", Regex: `default-inject-a`},
+		{Name: "Default Inject B", Regex: `default-inject-b`},
+	}
+	result := mergeResponsePatterns(nil, user, defaults)
+	if len(result) != 3 {
+		t.Fatalf("expected 3 patterns, got %d", len(result))
+	}
+}
+
+func TestMergeResponsePatterns_FalseIncludeDefaults_UserOnly(t *testing.T) {
+	f := false
+	user := []ResponseScanPattern{
+		{Name: "Custom Injection", Regex: `custom-inject`},
+	}
+	defaults := []ResponseScanPattern{
+		{Name: "Default Inject A", Regex: `default-inject-a`},
+	}
+	result := mergeResponsePatterns(&f, user, defaults)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 pattern, got %d", len(result))
 	}
 }

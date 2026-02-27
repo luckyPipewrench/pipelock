@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Kill switch: emergency deny-all with four activation sources (config, SIGUSR1 signal, sentinel file, HTTP API), OR-composed so any single source blocks all proxy traffic
+- Kill switch API: `POST /api/v1/killswitch` (activate/deactivate) and `GET /api/v1/killswitch/status` (per-source state) with bearer token auth, rate limiting, and input hardening (MaxBytesReader, DisallowUnknownFields, strict EOF enforcement)
+- Kill switch port isolation: `api_listen` config field runs the kill switch API on a dedicated port, preventing agents from deactivating their own kill switch in sidecar deployments
+- Event emission: fire-and-forget dispatch to webhook and syslog sinks with independent severity filters (`info`, `warn`, `critical`), configurable `instance_id`, and async buffered delivery
+- Webhook sink: HTTP POST with bearer token auth, configurable timeout and queue size, background worker with graceful shutdown
+- Syslog sink: UDP/TCP delivery with configurable facility, tag, and severity mapping to syslog priority levels
+- Finding suppression: silence known false positives via config (`suppress` entries with rule name, path glob, and reason) or inline `// pipelock:ignore` source comments
+- Tool call chain detection: subsequence matching on MCP tool call sequences with 8 built-in attack patterns (recon, credential theft, data staging, exfiltration), configurable window size, time-based eviction, and max-gap constraint
+- Session profiling and adaptive enforcement config sections (scoring-only in v1, observability groundwork)
+- Health endpoint now reports `kill_switch_active` field
+- Preset configs (strict, balanced) updated with kill switch and emit examples (commented out)
+
+### Changed
+- MCP package refactored into sub-packages: `transport`, `tools`, `policy`, `jsonrpc` for clearer separation of concerns
+- Audit logger enhanced with event emission dispatch: audit calls now route to configured webhook/syslog sinks based on severity
+- Normalize package extracted as `internal/normalize` with `ForPolicy` variant for MCP tool policy command matching
+
 ## [0.2.9] - 2026-02-23
 
 ### Added

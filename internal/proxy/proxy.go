@@ -62,6 +62,7 @@ type Proxy struct {
 	logger        *audit.Logger
 	metrics       *metrics.Metrics
 	ks            *killswitch.Controller
+	ksAPI         *killswitch.APIHandler
 	dialer        *net.Dialer
 	client        *http.Client
 	server        *http.Server
@@ -81,6 +82,11 @@ func WithApprover(a *hitl.Approver) Option {
 // WithKillSwitch sets the emergency deny-all kill switch controller.
 func WithKillSwitch(ks *killswitch.Controller) Option {
 	return func(p *Proxy) { p.ks = ks }
+}
+
+// WithKillSwitchAPI sets the kill switch API handler for registering routes.
+func WithKillSwitchAPI(api *killswitch.APIHandler) Option {
+	return func(p *Proxy) { p.ksAPI = api }
 }
 
 // FetchResponse is the JSON response returned by the /fetch endpoint.
@@ -373,6 +379,14 @@ func (p *Proxy) Start(ctx context.Context) error {
 	mux.HandleFunc("/health", p.handleHealth)
 	mux.Handle("/metrics", p.metrics.PrometheusHandler())
 	mux.HandleFunc("/stats", p.metrics.StatsHandler())
+	// Register kill switch API routes only when the API is NOT running on a
+	// separate port. When api_listen is configured, these routes are served
+	// by the dedicated API server — the main port returns 404, preventing
+	// the agent from reaching the API to self-deactivate.
+	if p.ksAPI != nil && cfg.KillSwitch.APIListen == "" {
+		mux.HandleFunc("/api/v1/killswitch", p.ksAPI.HandleToggle)
+		mux.HandleFunc("/api/v1/killswitch/status", p.ksAPI.HandleStatus)
+	}
 
 	handler := p.buildHandler(mux)
 
@@ -757,12 +771,13 @@ type healthResponse struct {
 	RateLimitEnabled      bool    `json:"rate_limit_enabled"`
 	ForwardProxyEnabled   bool    `json:"forward_proxy_enabled"`
 	WebSocketProxyEnabled bool    `json:"websocket_proxy_enabled"`
+	KillSwitchActive      bool    `json:"kill_switch_active"`
 }
 
 // handleHealth returns proxy health status including uptime and feature flags.
 func (p *Proxy) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	cfg := p.cfgPtr.Load()
-	writeJSON(w, http.StatusOK, healthResponse{
+	resp := healthResponse{
 		Status:                "healthy",
 		Version:               Version,
 		Mode:                  cfg.Mode,
@@ -773,7 +788,19 @@ func (p *Proxy) handleHealth(w http.ResponseWriter, _ *http.Request) {
 		RateLimitEnabled:      cfg.FetchProxy.Monitoring.MaxReqPerMinute > 0,
 		ForwardProxyEnabled:   cfg.ForwardProxy.Enabled,
 		WebSocketProxyEnabled: cfg.WebSocketProxy.Enabled,
-	})
+	}
+	if p.ks != nil {
+		// Read-only kill switch status — no auth needed. Lets operators
+		// see kill switch state from the main port even when the API
+		// is on a separate port.
+		for _, active := range p.ks.Sources() {
+			if active {
+				resp.KillSwitchActive = true
+				break
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func writeJSON(w http.ResponseWriter, status int, data any) {

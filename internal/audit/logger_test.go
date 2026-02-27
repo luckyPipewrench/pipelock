@@ -2,13 +2,42 @@ package audit
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/emit"
 )
+
+// collectingSink records all emitted events for test assertions.
+type collectingSink struct {
+	mu     sync.Mutex
+	events []emit.Event
+}
+
+func (c *collectingSink) Emit(_ context.Context, event emit.Event) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.events = append(c.events, event)
+	return nil
+}
+
+func (c *collectingSink) Close() error { return nil }
+
+func (c *collectingSink) lastEvent() (emit.Event, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.events) == 0 {
+		return emit.Event{}, false
+	}
+	return c.events[len(c.events)-1], true
+}
 
 func TestNew_StdoutJSON(t *testing.T) {
 	logger, err := New("json", "stdout", "", true, true)
@@ -164,7 +193,7 @@ func TestLogBlocked_JSONFormat(t *testing.T) {
 	if entry["client_ip"] != "192.168.1.1" {
 		t.Errorf("expected client_ip=192.168.1.1, got %v", entry["client_ip"])
 	}
-	if entry["request_id"] != "req-7" {
+	if entry["request_id"] != "req-7" { //nolint:goconst // test value
 		t.Errorf("expected request_id=req-7, got %v", entry["request_id"])
 	}
 }
@@ -186,7 +215,7 @@ func TestLogError_IncludesError(t *testing.T) {
 		t.Fatalf("expected valid JSON: %v", err)
 	}
 
-	if entry["event"] != "error" {
+	if entry["event"] != "error" { //nolint:goconst // test value
 		t.Errorf("expected event=error, got %v", entry["event"])
 	}
 	if entry["error"] == nil || entry["error"] == "" {
@@ -527,7 +556,7 @@ func TestLogResponseScan_JSONFormat(t *testing.T) {
 		t.Fatalf("expected valid JSON: %v", err)
 	}
 
-	if entry["event"] != "response_scan" {
+	if entry["event"] != "response_scan" { //nolint:goconst // test value
 		t.Errorf("expected event=response_scan, got %v", entry["event"])
 	}
 	if entry["url"] != "https://example.com/page" {
@@ -1260,5 +1289,277 @@ func TestLogTunnelOpen_SanitizesTarget(t *testing.T) {
 	target, _ := entry["target"].(string)
 	if strings.Contains(target, "\x1b") {
 		t.Error("expected ANSI escape to be stripped from target")
+	}
+}
+
+// --- Emitter path tests ---
+// These verify that audit log methods actually emit events through the emitter.
+
+func newLoggerWithEmitter(t *testing.T) (*Logger, *collectingSink) {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink := &collectingSink{}
+	emitter := emit.NewEmitter("test-instance", sink)
+	logger.SetEmitter(emitter)
+	t.Cleanup(func() { _ = emitter.Close() })
+	return logger, sink
+}
+
+func TestEmit_LogBlocked(t *testing.T) {
+	logger, sink := newLoggerWithEmitter(t)
+	defer logger.Close()
+
+	logger.LogBlocked("GET", "https://evil.com", "dlp", "secret found", "10.0.0.1", "req-1")
+
+	ev, ok := sink.lastEvent()
+	if !ok {
+		t.Fatal("expected emitted event")
+	}
+	if ev.Type != "blocked" { //nolint:goconst // test value
+		t.Errorf("type = %q, want blocked", ev.Type)
+	}
+	if ev.Fields["scanner"] != "dlp" {
+		t.Errorf("fields[scanner] = %v, want dlp", ev.Fields["scanner"])
+	}
+	if ev.InstanceID != "test-instance" {
+		t.Errorf("instance_id = %q, want test-instance", ev.InstanceID)
+	}
+}
+
+func TestEmit_LogBlocked_IncludeBlockedFalse(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+	logger, err := New("json", "file", path, true, false) // includeBlocked=false
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logger.Close()
+	sink := &collectingSink{}
+	emitter := emit.NewEmitter("test", sink)
+	logger.SetEmitter(emitter)
+	t.Cleanup(func() { _ = emitter.Close() })
+
+	logger.LogBlocked("GET", "https://evil.com", "dlp", "secret found", "10.0.0.1", "req-1")
+
+	// Even with includeBlocked=false, emission should still fire
+	if _, ok := sink.lastEvent(); !ok {
+		t.Error("expected emitted event even when includeBlocked=false")
+	}
+}
+
+func TestEmit_LogError(t *testing.T) {
+	logger, sink := newLoggerWithEmitter(t)
+	defer logger.Close()
+
+	logger.LogError("GET", "https://example.com", "10.0.0.1", "req-2", fmt.Errorf("connection refused"))
+
+	ev, ok := sink.lastEvent()
+	if !ok {
+		t.Fatal("expected emitted event")
+	}
+	if ev.Type != "error" {
+		t.Errorf("type = %q, want error", ev.Type)
+	}
+	if ev.Fields["error"] != "connection refused" {
+		t.Errorf("fields[error] = %v", ev.Fields["error"])
+	}
+}
+
+func TestEmit_LogAnomaly(t *testing.T) {
+	logger, sink := newLoggerWithEmitter(t)
+	defer logger.Close()
+
+	logger.LogAnomaly("GET", "https://example.com", "high entropy", "10.0.0.1", "req-3", 3.5)
+
+	ev, ok := sink.lastEvent()
+	if !ok {
+		t.Fatal("expected emitted event")
+	}
+	if ev.Type != "anomaly" {
+		t.Errorf("type = %q, want anomaly", ev.Type)
+	}
+	if ev.Fields["score"] != 3.5 {
+		t.Errorf("fields[score] = %v, want 3.5", ev.Fields["score"])
+	}
+}
+
+func TestEmit_LogResponseScan(t *testing.T) {
+	logger, sink := newLoggerWithEmitter(t)
+	defer logger.Close()
+
+	logger.LogResponseScan("https://example.com", "10.0.0.1", "req-4", "block", 2, []string{"injection", "jailbreak"})
+
+	ev, ok := sink.lastEvent()
+	if !ok {
+		t.Fatal("expected emitted event")
+	}
+	if ev.Type != "response_scan" {
+		t.Errorf("type = %q, want response_scan", ev.Type)
+	}
+	if ev.Fields["match_count"] != 2 {
+		t.Errorf("fields[match_count] = %v, want 2", ev.Fields["match_count"])
+	}
+}
+
+func TestEmit_LogConfigReload(t *testing.T) {
+	logger, sink := newLoggerWithEmitter(t)
+	defer logger.Close()
+
+	logger.LogConfigReload("success", "SIGHUP")
+
+	ev, ok := sink.lastEvent()
+	if !ok {
+		t.Fatal("expected emitted event")
+	}
+	if ev.Type != "config_reload" {
+		t.Errorf("type = %q, want config_reload", ev.Type)
+	}
+	if ev.Fields["status"] != "success" {
+		t.Errorf("fields[status] = %v", ev.Fields["status"])
+	}
+}
+
+func TestEmit_LogWSBlocked(t *testing.T) {
+	logger, sink := newLoggerWithEmitter(t)
+	defer logger.Close()
+
+	logger.LogWSBlocked("ws://evil.com", "client_to_server", "dlp", "secret", "10.0.0.1", "req-5")
+
+	ev, ok := sink.lastEvent()
+	if !ok {
+		t.Fatal("expected emitted event")
+	}
+	if ev.Type != "ws_blocked" {
+		t.Errorf("type = %q, want ws_blocked", ev.Type)
+	}
+}
+
+func TestEmit_LogWSScan(t *testing.T) {
+	logger, sink := newLoggerWithEmitter(t)
+	defer logger.Close()
+
+	logger.LogWSScan("ws://example.com", "server_to_client", "10.0.0.1", "req-6", "warn", 1, []string{"injection"})
+
+	ev, ok := sink.lastEvent()
+	if !ok {
+		t.Fatal("expected emitted event")
+	}
+	if ev.Type != "ws_scan" {
+		t.Errorf("type = %q, want ws_scan", ev.Type)
+	}
+}
+
+func TestEmit_LogSessionAnomaly(t *testing.T) {
+	logger, sink := newLoggerWithEmitter(t)
+	defer logger.Close()
+
+	logger.LogSessionAnomaly("10.0.0.1", "domain_burst", "6 domains in 5m", "10.0.0.1", "req-7", 2.0)
+
+	ev, ok := sink.lastEvent()
+	if !ok {
+		t.Fatal("expected emitted event")
+	}
+	if ev.Type != "session_anomaly" {
+		t.Errorf("type = %q, want session_anomaly", ev.Type)
+	}
+	if ev.Fields["client_ip"] != "10.0.0.1" {
+		t.Errorf("fields[client_ip] = %v, want 10.0.0.1", ev.Fields["client_ip"])
+	}
+	if ev.Fields["request_id"] != "req-7" {
+		t.Errorf("fields[request_id] = %v, want req-7", ev.Fields["request_id"])
+	}
+}
+
+func TestEmit_LogSessionAnomaly_OmitsEmptyFields(t *testing.T) {
+	logger, sink := newLoggerWithEmitter(t)
+	defer logger.Close()
+
+	// Empty clientIP and requestID should be omitted from emitted event
+	logger.LogSessionAnomaly("session-1", "domain_burst", "test", "", "", 1.0)
+
+	ev, ok := sink.lastEvent()
+	if !ok {
+		t.Fatal("expected emitted event")
+	}
+	if _, exists := ev.Fields["client_ip"]; exists {
+		t.Error("expected client_ip to be omitted when empty")
+	}
+	if _, exists := ev.Fields["request_id"]; exists {
+		t.Error("expected request_id to be omitted when empty")
+	}
+}
+
+func TestEmit_LogAdaptiveEscalation(t *testing.T) {
+	logger, sink := newLoggerWithEmitter(t)
+	defer logger.Close()
+
+	logger.LogAdaptiveEscalation("10.0.0.1", "warn", "block", "10.0.0.1", "req-8", 5.5)
+
+	ev, ok := sink.lastEvent()
+	if !ok {
+		t.Fatal("expected emitted event")
+	}
+	if ev.Type != "adaptive_escalation" {
+		t.Errorf("type = %q, want adaptive_escalation", ev.Type)
+	}
+	// Escalation to "block" should be critical severity
+	if ev.Severity != emit.SeverityCritical {
+		t.Errorf("severity = %v, want critical", ev.Severity)
+	}
+}
+
+func TestEmit_LogAdaptiveEscalation_OmitsEmptyFields(t *testing.T) {
+	logger, sink := newLoggerWithEmitter(t)
+	defer logger.Close()
+
+	logger.LogAdaptiveEscalation("session-1", "warn", "block", "", "", 5.0)
+
+	ev, ok := sink.lastEvent()
+	if !ok {
+		t.Fatal("expected emitted event")
+	}
+	if _, exists := ev.Fields["client_ip"]; exists {
+		t.Error("expected client_ip to be omitted when empty")
+	}
+}
+
+func TestEmit_LogMCPUnknownTool(t *testing.T) {
+	logger, sink := newLoggerWithEmitter(t)
+	defer logger.Close()
+
+	logger.LogMCPUnknownTool("execute_code", "warn")
+
+	ev, ok := sink.lastEvent()
+	if !ok {
+		t.Fatal("expected emitted event")
+	}
+	if ev.Type != "mcp_unknown_tool" {
+		t.Errorf("type = %q, want mcp_unknown_tool", ev.Type)
+	}
+	if ev.Fields["tool"] != "execute_code" {
+		t.Errorf("fields[tool] = %v", ev.Fields["tool"])
+	}
+}
+
+func TestEmit_LogKillSwitchDeny(t *testing.T) {
+	logger, sink := newLoggerWithEmitter(t)
+	defer logger.Close()
+
+	logger.LogKillSwitchDeny("http", "https://example.com", "global", "halted", "10.0.0.1")
+
+	ev, ok := sink.lastEvent()
+	if !ok {
+		t.Fatal("expected emitted event")
+	}
+	if ev.Type != "kill_switch_deny" {
+		t.Errorf("type = %q, want kill_switch_deny", ev.Type)
+	}
+	if ev.Severity != emit.SeverityCritical {
+		t.Errorf("severity = %v, want critical", ev.Severity)
 	}
 }

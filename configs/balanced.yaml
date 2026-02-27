@@ -216,6 +216,30 @@ adaptive_enforcement:
 mcp_session_binding:
   enabled: false
 
+# Kill switch — emergency deny-all. Activate via config, SIGUSR1, sentinel file, or API.
+# kill_switch:
+#   enabled: false
+#   sentinel_file: /tmp/pipelock-kill
+#   message: "Emergency deny-all active"
+#   api_token: ""          # Set a bearer token to enable POST /api/v1/killswitch
+#   api_exempt: true       # Keep API reachable while kill switch is active
+
+# Event emission — forward audit events to external systems (SIEM, webhook, n8n).
+# Sinks have independent min_severity filters. Events below the threshold are dropped.
+# emit:
+#   instance_id: ""        # Defaults to hostname
+#   webhook:
+#     url: "https://your-siem.example.com/webhook"
+#     min_severity: warn   # info, warn, critical
+#     auth_token: ""       # Bearer token for Authorization header
+#     timeout_seconds: 5
+#     queue_size: 64
+#   syslog:
+#     address: "udp://syslog.example.com:514"
+#     min_severity: warn
+#     facility: local0
+#     tag: pipelock
+
 logging:
   format: json
   output: stdout

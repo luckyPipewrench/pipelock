@@ -1,18 +1,22 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/emit"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
@@ -108,12 +112,34 @@ Examples:
 			}
 			defer logger.Close()
 
+			// Set up event emission (webhooks, syslog).
+			// Always create the emitter (even with 0 sinks) so hot-reload
+			// can add sinks later without needing to recreate it.
+			emitSinks, emitErr := buildEmitSinks(cfg)
+			if emitErr != nil {
+				return fmt.Errorf("creating emit sinks: %w", emitErr)
+			}
+
+			instanceID := cfg.Emit.InstanceID
+			if instanceID == "" {
+				instanceID = emit.DefaultInstanceID()
+			}
+			emitter := emit.NewEmitter(instanceID, emitSinks...)
+			defer func() { _ = emitter.Close() }()
+			logger.SetEmitter(emitter)
+
 			// Set up scanner, metrics, kill switch, and proxy
 			sc := scanner.New(cfg)
 			defer sc.Close()
 			m := metrics.New()
 
 			ks := killswitch.New(cfg)
+
+			// Always create the API handler so routes are registered at startup.
+			// The handler returns 503 when no api_token is configured, and reads
+			// the token from the live config on each request — so adding a token
+			// via hot-reload makes the endpoint functional without a restart.
+			ksAPI := killswitch.NewAPIHandler(ks)
 
 			var proxyOpts []proxy.Option
 			hasApprover := cfg.ResponseScanning.Action == config.ActionAsk
@@ -123,6 +149,16 @@ Examples:
 				proxyOpts = append(proxyOpts, proxy.WithApprover(approver))
 			}
 			proxyOpts = append(proxyOpts, proxy.WithKillSwitch(ks))
+
+			// Only register kill switch API routes on the main proxy port
+			// when api_listen is NOT configured. When api_listen is set,
+			// the API runs on a dedicated port and the main port returns 404.
+			apiOnSeparatePort := cfg.KillSwitch.APIListen != ""
+			if !apiOnSeparatePort {
+				proxyOpts = append(proxyOpts, proxy.WithKillSwitchAPI(ksAPI))
+			} else {
+				ks.SetSeparateAPIPort(true)
+			}
 			p := proxy.New(cfg, logger, sc, m, proxyOpts...)
 
 			// Context with signal handling for graceful shutdown.
@@ -201,10 +237,34 @@ Examples:
 										fmt.Errorf("rejected: WebSocket proxy cannot be enabled via reload (requires restart)"))
 									return
 								}
+								// Block api_listen changes via reload. The API server
+								// binds at startup and can't rebind at runtime.
+								if oldCfg.KillSwitch.APIListen != newCfg.KillSwitch.APIListen {
+									cmd.PrintErrf("WARNING: config reload: kill_switch.api_listen changed from %q to %q — requires restart, ignoring\n",
+										oldCfg.KillSwitch.APIListen, newCfg.KillSwitch.APIListen)
+									newCfg.KillSwitch.APIListen = oldCfg.KillSwitch.APIListen
+								}
 							}
 							newSc := scanner.New(newCfg)
 							p.Reload(newCfg, newSc)
 							ks.Reload(newCfg)
+
+							// Reload emit sinks: build new sinks from config,
+							// swap into emitter, close old sinks.
+							newSinks, sinkErr := buildEmitSinks(newCfg)
+							if sinkErr != nil {
+								logger.LogError("CONFIG_RELOAD", configFile, "", "",
+									fmt.Errorf("emit sink rebuild failed: %w", sinkErr))
+							} else {
+								oldSinks := emitter.ReloadSinks(newSinks)
+								for _, s := range oldSinks {
+									if closeErr := s.Close(); closeErr != nil {
+										logger.LogError("CONFIG_RELOAD", configFile, "", "",
+											fmt.Errorf("closing old emit sink: %w", closeErr))
+									}
+								}
+							}
+
 							if newCfg.ResponseScanning.Action == config.ActionAsk && !hasApprover {
 								cmd.PrintErrln("WARNING: config reloaded to ask mode but HITL approver was not initialized at startup; detections will be blocked")
 							}
@@ -231,6 +291,19 @@ Examples:
 			if cfg.WebSocketProxy.Enabled {
 				cmd.PrintErrf("  WS:     http://%s/ws?url=<ws-url> (WebSocket proxy enabled)\n", cfg.FetchProxy.Listen)
 			}
+			if cfg.Emit.Webhook.URL != "" {
+				cmd.PrintErrf("  Emit:   webhook -> %s (min_severity: %s)\n", redactEndpoint(cfg.Emit.Webhook.URL), cfg.Emit.Webhook.MinSeverity)
+			}
+			if cfg.Emit.Syslog.Address != "" {
+				cmd.PrintErrf("  Emit:   syslog -> %s (min_severity: %s)\n", redactEndpoint(cfg.Emit.Syslog.Address), cfg.Emit.Syslog.MinSeverity)
+			}
+			if cfg.KillSwitch.APIToken != "" {
+				if apiOnSeparatePort {
+					cmd.PrintErrf("  API:    http://%s/api/v1/killswitch (kill switch remote control, separate port)\n", cfg.KillSwitch.APIListen)
+				} else {
+					cmd.PrintErrf("  API:    http://%s/api/v1/killswitch (kill switch remote control)\n", cfg.FetchProxy.Listen)
+				}
+			}
 			if configFile != "" {
 				cmd.PrintErrf("  Config: %s (hot-reload enabled, SIGHUP to reload)\n", configFile)
 			}
@@ -246,6 +319,45 @@ Examples:
 				cmd.PrintErrln("\nNote: agent process launching is not yet implemented (Phase 2).")
 				cmd.PrintErrln("The fetch proxy is running — configure your agent to use:")
 				cmd.PrintErrf("  PIPELOCK_FETCH_URL=http://%s/fetch\n\n", cfg.FetchProxy.Listen)
+			}
+
+			// Start kill switch API on a separate port if configured.
+			// Follows the same pattern as the MCP listener: bind synchronously
+			// so port conflicts are caught early, serve in a goroutine, and
+			// drain the error channel after the main proxy exits.
+			var ksAPIErr chan error
+			if apiOnSeparatePort {
+				apiMux := http.NewServeMux()
+				apiMux.HandleFunc("/api/v1/killswitch", ksAPI.HandleToggle)
+				apiMux.HandleFunc("/api/v1/killswitch/status", ksAPI.HandleStatus)
+
+				apiLn, lnErr := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.KillSwitch.APIListen)
+				if lnErr != nil {
+					return fmt.Errorf("kill switch API bind %s: %w", cfg.KillSwitch.APIListen, lnErr)
+				}
+
+				apiSrv := &http.Server{
+					Handler:           apiMux,
+					ReadTimeout:       10 * time.Second,
+					ReadHeaderTimeout: 5 * time.Second,
+					WriteTimeout:      10 * time.Second,
+					IdleTimeout:       120 * time.Second,
+				}
+				go func() {
+					<-ctx.Done()
+					shutdownCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer shutCancel()
+					_ = apiSrv.Shutdown(shutdownCtx) //nolint:errcheck // best-effort shutdown
+				}()
+
+				ksAPIErr = make(chan error, 1)
+				go func() {
+					err := apiSrv.Serve(apiLn)
+					if errors.Is(err, http.ErrServerClosed) {
+						err = nil
+					}
+					ksAPIErr <- err
+				}()
 			}
 
 			// Start MCP HTTP listener in background if configured.
@@ -325,6 +437,13 @@ Examples:
 				}
 			}
 
+			// If kill switch API was running on a separate port, check for errors.
+			if ksAPIErr != nil {
+				if aErr := <-ksAPIErr; aErr != nil {
+					cmd.PrintErrf("pipelock: kill switch API listener error: %v\n", aErr)
+				}
+			}
+
 			logger.LogShutdown("signal received")
 			cmd.PrintErrln("\nPipelock stopped.")
 			return nil
@@ -338,4 +457,57 @@ Examples:
 	cmd.Flags().StringVar(&mcpUpstream, "mcp-upstream", "", "upstream MCP server URL for HTTP listener")
 
 	return cmd
+}
+
+// buildEmitSinks creates emit sinks from the current config.
+// Used at startup and during hot-reload.
+func buildEmitSinks(cfg *config.Config) ([]emit.Sink, error) {
+	var sinks []emit.Sink
+
+	if cfg.Emit.Webhook.URL != "" {
+		var opts []emit.WebhookOption
+		opts = append(opts, emit.WithMinSeverity(emit.ParseSeverity(cfg.Emit.Webhook.MinSeverity)))
+		if cfg.Emit.Webhook.AuthToken != "" {
+			opts = append(opts, emit.WithBearerToken(cfg.Emit.Webhook.AuthToken))
+		}
+		if cfg.Emit.Webhook.QueueSize > 0 {
+			opts = append(opts, emit.WithQueueSize(cfg.Emit.Webhook.QueueSize))
+		}
+		if cfg.Emit.Webhook.TimeoutSecs > 0 {
+			opts = append(opts, emit.WithWebhookTimeout(time.Duration(cfg.Emit.Webhook.TimeoutSecs)*time.Second))
+		}
+		sinks = append(sinks, emit.NewWebhookSink(cfg.Emit.Webhook.URL, opts...))
+	}
+
+	if cfg.Emit.Syslog.Address != "" {
+		syslogSink, err := emit.NewSyslogSinkFromConfig(
+			cfg.Emit.Syslog.Address,
+			cfg.Emit.Syslog.Facility,
+			cfg.Emit.Syslog.Tag,
+			cfg.Emit.Syslog.MinSeverity,
+		)
+		if err != nil {
+			// Close already-created sinks to prevent goroutine leaks.
+			for _, s := range sinks {
+				_ = s.Close()
+			}
+			return nil, fmt.Errorf("creating syslog sink: %w", err)
+		}
+		sinks = append(sinks, syslogSink)
+	}
+
+	return sinks, nil
+}
+
+// redactEndpoint strips userinfo, query, and fragment from an endpoint URL
+// to prevent leaking tokens/secrets in startup logs.
+func redactEndpoint(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "<invalid>"
+	}
+	u.User = nil
+	u.RawQuery = ""
+	u.Fragment = ""
+	return u.String()
 }

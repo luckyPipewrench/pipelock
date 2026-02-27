@@ -3001,7 +3001,7 @@ func TestValidate_AllFeaturesEnabled(t *testing.T) {
 	cfg.WebSocketProxy.MaxConcurrentConnections = 50
 	cfg.WebSocketProxy.MaxConnectionSeconds = 3600
 	cfg.WebSocketProxy.IdleTimeoutSeconds = 300
-	cfg.WebSocketProxy.OriginPolicy = "rewrite"
+	cfg.WebSocketProxy.OriginPolicy = "rewrite" //nolint:goconst // test value
 
 	cfg.KillSwitch.Enabled = true
 	cfg.KillSwitch.Message = "test kill switch"
@@ -3191,5 +3191,437 @@ func TestValidate_WebSocketOriginPolicies(t *testing.T) {
 				t.Errorf("origin_policy=%q should validate: %v", pol, err)
 			}
 		})
+	}
+}
+
+// --- Emit Config Tests ---
+
+func TestDefaults_EmitFields(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+
+	if cfg.Emit.Webhook.TimeoutSecs != 5 {
+		t.Errorf("expected default webhook timeout_seconds 5, got %d", cfg.Emit.Webhook.TimeoutSecs)
+	}
+	if cfg.Emit.Webhook.QueueSize != 64 {
+		t.Errorf("expected default webhook queue_size 64, got %d", cfg.Emit.Webhook.QueueSize)
+	}
+	if cfg.Emit.Webhook.MinSeverity != "warn" { //nolint:goconst // test assertion
+		t.Errorf("expected default webhook min_severity warn, got %s", cfg.Emit.Webhook.MinSeverity)
+	}
+	if cfg.Emit.Syslog.MinSeverity != "warn" { //nolint:goconst // test assertion
+		t.Errorf("expected default syslog min_severity warn, got %s", cfg.Emit.Syslog.MinSeverity)
+	}
+	if cfg.Emit.Syslog.Facility != "local0" { //nolint:goconst // test assertion
+		t.Errorf("expected default syslog facility local0, got %s", cfg.Emit.Syslog.Facility)
+	}
+	if cfg.Emit.Syslog.Tag != "pipelock" { //nolint:goconst // test assertion
+		t.Errorf("expected default syslog tag pipelock, got %s", cfg.Emit.Syslog.Tag)
+	}
+}
+
+func TestDefaults_KillSwitchAPIExempt(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+
+	if cfg.KillSwitch.APIExempt == nil {
+		t.Error("expected APIExempt to be non-nil after ApplyDefaults")
+	} else if !*cfg.KillSwitch.APIExempt {
+		t.Error("expected APIExempt to default to true")
+	}
+}
+
+func TestValidate_EmitWebhookInvalidSeverity(t *testing.T) {
+	cfg := Defaults()
+	cfg.Emit.Webhook.URL = "https://example.com/hook" //nolint:goconst // test value
+	cfg.Emit.Webhook.MinSeverity = "debug"
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for invalid webhook min_severity")
+	}
+}
+
+func TestValidate_EmitSyslogInvalidSeverity(t *testing.T) {
+	cfg := Defaults()
+	cfg.Emit.Syslog.Address = "udp://syslog.example.com:514" //nolint:goconst // test value
+	cfg.Emit.Syslog.MinSeverity = "debug"
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for invalid syslog min_severity")
+	}
+}
+
+func TestValidate_EmitWebhookValidConfig(t *testing.T) {
+	for _, sev := range []string{"info", "warn", "critical"} {
+		t.Run(sev, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.Emit.Webhook.URL = "https://example.com/hook"
+			cfg.Emit.Webhook.MinSeverity = sev
+			cfg.Emit.Webhook.TimeoutSecs = 10
+			cfg.Emit.Webhook.QueueSize = 32
+			if err := cfg.Validate(); err != nil {
+				t.Errorf("valid webhook config with severity %q should validate, got: %v", sev, err)
+			}
+		})
+	}
+}
+
+func TestValidate_EmitSyslogValidConfig(t *testing.T) {
+	for _, sev := range []string{"info", "warn", "critical"} {
+		t.Run(sev, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.Emit.Syslog.Address = "udp://syslog.example.com:514"
+			cfg.Emit.Syslog.MinSeverity = sev
+			if err := cfg.Validate(); err != nil {
+				t.Errorf("valid syslog config with severity %q should validate, got: %v", sev, err)
+			}
+		})
+	}
+}
+
+func TestValidate_EmitWebhookInvalidTimeout(t *testing.T) {
+	cfg := Defaults()
+	cfg.Emit.Webhook.URL = "https://example.com/hook"
+	cfg.Emit.Webhook.MinSeverity = "warn"
+	cfg.Emit.Webhook.QueueSize = 32
+	cfg.Emit.Webhook.TimeoutSecs = -1
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for negative webhook timeout_seconds")
+	}
+	if !strings.Contains(err.Error(), "timeout_seconds") {
+		t.Errorf("error should mention timeout_seconds, got: %v", err)
+	}
+}
+
+func TestValidate_EmitWebhookInvalidQueueSize(t *testing.T) {
+	cfg := Defaults()
+	cfg.Emit.Webhook.URL = "https://example.com/hook"
+	cfg.Emit.Webhook.MinSeverity = "warn"
+	cfg.Emit.Webhook.TimeoutSecs = 5
+	cfg.Emit.Webhook.QueueSize = 0
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for zero webhook queue_size")
+	}
+	if !strings.Contains(err.Error(), "queue_size") {
+		t.Errorf("error should mention queue_size, got: %v", err)
+	}
+}
+
+func TestValidate_EmitNoSinksConfigured(t *testing.T) {
+	cfg := Defaults()
+	// No URL or address set — should pass validation
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("config with no emit sinks should validate, got: %v", err)
+	}
+}
+
+func TestValidateReload_EmitWebhookDisabled(t *testing.T) {
+	old := Defaults()
+	old.Emit.Webhook.URL = "https://example.com/hook"
+
+	updated := Defaults()
+	updated.Emit.Webhook.URL = ""
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == "emit.webhook.url" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected warning when webhook emission is disabled")
+	}
+}
+
+func TestValidateReload_EmitSyslogDisabled(t *testing.T) {
+	old := Defaults()
+	old.Emit.Syslog.Address = "udp://syslog.example.com:514"
+
+	updated := Defaults()
+	updated.Emit.Syslog.Address = ""
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == "emit.syslog.address" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected warning when syslog emission is disabled")
+	}
+}
+
+func TestValidateReload_EmitWebhookBothEmpty_NoWarning(t *testing.T) {
+	old := Defaults()
+	updated := Defaults()
+
+	warnings := ValidateReload(old, updated)
+	for _, w := range warnings {
+		if w.Field == "emit.webhook.url" {
+			t.Errorf("both empty webhook URLs should not warn, got: %s", w.Message)
+		}
+	}
+}
+
+func TestValidateReload_EmitSyslogBothEmpty_NoWarning(t *testing.T) {
+	old := Defaults()
+	updated := Defaults()
+
+	warnings := ValidateReload(old, updated)
+	for _, w := range warnings {
+		if w.Field == "emit.syslog.address" {
+			t.Errorf("both empty syslog addresses should not warn, got: %s", w.Message)
+		}
+	}
+}
+
+func TestValidate_KillSwitchAPIListen_Valid(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	cfg.KillSwitch.APIListen = "0.0.0.0:9090" //nolint:goconst // test value
+	cfg.KillSwitch.APIToken = "test-token"    //nolint:goconst,gosec // test value
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid api_listen should pass validation: %v", err)
+	}
+}
+
+func TestValidate_KillSwitchAPIListen_Empty(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	// Empty api_listen is the default — should always pass.
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("empty api_listen should pass validation: %v", err)
+	}
+}
+
+func TestValidate_KillSwitchAPIListen_Invalid(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	cfg.KillSwitch.APIListen = "not-a-valid-address"
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for malformed api_listen")
+	}
+	if !strings.Contains(err.Error(), "kill_switch.api_listen") {
+		t.Errorf("expected error about kill_switch.api_listen, got: %v", err)
+	}
+}
+
+func TestValidate_KillSwitchAPIListen_CollisionWithProxy(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	cfg.KillSwitch.APIListen = cfg.FetchProxy.Listen // same port
+	cfg.KillSwitch.APIToken = "test-token"           //nolint:goconst,gosec // test value
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error when api_listen port collides with proxy listen port")
+	}
+	if !strings.Contains(err.Error(), "collides") {
+		t.Errorf("expected collision error, got: %v", err)
+	}
+}
+
+func TestValidate_KillSwitchAPIListen_CollisionDifferentBind(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	cfg.FetchProxy.Listen = "127.0.0.1:8888"
+	cfg.KillSwitch.APIListen = "0.0.0.0:8888" // same port, different bind address
+	cfg.KillSwitch.APIToken = "test-token"    //nolint:goconst,gosec // test value
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error when api_listen port matches proxy listen port (different bind)")
+	}
+	if !strings.Contains(err.Error(), "collides") {
+		t.Errorf("expected collision error, got: %v", err)
+	}
+}
+
+func TestValidate_KillSwitchAPIListen_RequiresToken(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	cfg.KillSwitch.APIListen = "0.0.0.0:9090" //nolint:goconst // test value
+	cfg.KillSwitch.APIToken = ""              // no token
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error when api_listen is set without api_token")
+	}
+	if !strings.Contains(err.Error(), "api_token") {
+		t.Errorf("expected error about api_token, got: %v", err)
+	}
+}
+
+func TestValidateReload_KillSwitchAPIListenChanged(t *testing.T) {
+	old := Defaults()
+	old.KillSwitch.APIListen = "0.0.0.0:9090" //nolint:goconst // test value
+
+	updated := Defaults()
+	updated.KillSwitch.APIListen = "0.0.0.0:9091"
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == "kill_switch.api_listen" { //nolint:goconst // test value
+			found = true
+			if !strings.Contains(w.Message, "requires restart") {
+				t.Errorf("expected restart warning, got: %s", w.Message)
+			}
+		}
+	}
+	if !found {
+		t.Error("expected warning for api_listen change, got none")
+	}
+}
+
+func TestValidateReload_KillSwitchAPIListenSame_NoWarning(t *testing.T) {
+	old := Defaults()
+	old.KillSwitch.APIListen = "0.0.0.0:9090" //nolint:goconst // test value
+
+	updated := Defaults()
+	updated.KillSwitch.APIListen = "0.0.0.0:9090" //nolint:goconst // test value
+
+	warnings := ValidateReload(old, updated)
+	for _, w := range warnings {
+		if w.Field == "kill_switch.api_listen" { //nolint:goconst // test value
+			t.Errorf("same api_listen should not warn, got: %s", w.Message)
+		}
+	}
+}
+
+func TestValidateReload_KillSwitchAPIListenBothEmpty_NoWarning(t *testing.T) {
+	old := Defaults()
+	updated := Defaults()
+
+	warnings := ValidateReload(old, updated)
+	for _, w := range warnings {
+		if w.Field == "kill_switch.api_listen" { //nolint:goconst // test value
+			t.Errorf("both empty api_listen should not warn, got: %s", w.Message)
+		}
+	}
+}
+
+func TestValidate_EmitWebhookURL_Valid(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	cfg.Emit.Webhook.URL = "https://siem.example.com/webhook" //nolint:goconst // test value
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid webhook URL should pass validation: %v", err)
+	}
+}
+
+func TestValidate_EmitWebhookURL_Invalid(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	cfg.Emit.Webhook.URL = "not-a-url"
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for malformed webhook URL")
+	}
+	if !strings.Contains(err.Error(), "emit.webhook.url") {
+		t.Errorf("expected error about emit.webhook.url, got: %v", err)
+	}
+}
+
+func TestValidate_EmitWebhookURL_NoScheme(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	cfg.Emit.Webhook.URL = "siem.example.com/webhook"
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for webhook URL without scheme")
+	}
+	if !strings.Contains(err.Error(), "http://") {
+		t.Errorf("expected error mentioning http://, got: %v", err)
+	}
+}
+
+func TestValidate_EmitSyslogAddress_Valid(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	cfg.Emit.Syslog.Address = "udp://syslog.example.com:514" //nolint:goconst // test value
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid syslog address should pass validation: %v", err)
+	}
+}
+
+func TestValidate_EmitSyslogAddress_Invalid(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	cfg.Emit.Syslog.Address = "syslog.example.com:514" // missing scheme
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for syslog address without scheme")
+	}
+	if !strings.Contains(err.Error(), "emit.syslog.address") {
+		t.Errorf("expected error about emit.syslog.address, got: %v", err)
+	}
+}
+
+func TestValidate_EmitSyslogAddress_WrongScheme(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	cfg.Emit.Syslog.Address = "https://syslog.example.com:514" // wrong scheme
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for syslog address with wrong scheme")
+	}
+	if !strings.Contains(err.Error(), "udp://") {
+		t.Errorf("expected error mentioning udp://, got: %v", err)
+	}
+}
+
+func TestValidate_EmitSyslogAddress_MissingPort(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	cfg.Emit.Syslog.Address = "udp://syslog.example.com" // no port
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for syslog address without port")
+	}
+	if !strings.Contains(err.Error(), "port") {
+		t.Errorf("expected error mentioning port, got: %v", err)
+	}
+}
+
+func TestValidate_EmitSyslogFacility_Valid(t *testing.T) {
+	for _, fac := range []string{"kern", "user", "daemon", "auth", "local0", "local7"} {
+		t.Run(fac, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.ApplyDefaults()
+			cfg.Emit.Syslog.Address = "udp://syslog.example.com:514" //nolint:goconst // test value
+			cfg.Emit.Syslog.Facility = fac
+			if err := cfg.Validate(); err != nil {
+				t.Errorf("valid facility %q should pass: %v", fac, err)
+			}
+		})
+	}
+}
+
+func TestValidate_EmitSyslogFacility_Invalid(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	cfg.Emit.Syslog.Address = "udp://syslog.example.com:514" //nolint:goconst // test value
+	cfg.Emit.Syslog.Facility = "loca10"                      // typo
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for invalid syslog facility")
+	}
+	if !strings.Contains(err.Error(), "facility") {
+		t.Errorf("expected error mentioning facility, got: %v", err)
 	}
 }

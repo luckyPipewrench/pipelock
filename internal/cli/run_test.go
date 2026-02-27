@@ -67,6 +67,11 @@ func TestRedactEndpoint(t *testing.T) {
 			raw:  "",
 			want: "",
 		},
+		{
+			name: "invalid URL returns sentinel",
+			raw:  "%invalid",
+			want: "<invalid>",
+		},
 	}
 
 	for _, tt := range tests {

@@ -300,6 +300,28 @@ func TestNewSyslogSinkFromConfig_InvalidAddress(t *testing.T) {
 	}
 }
 
+func TestSyslogSink_Emit_MarshalError(t *testing.T) {
+	addr, _ := startUDPSyslog(t)
+	sink, err := NewSyslogSink("udp://" + addr)
+	if err != nil {
+		t.Fatalf("NewSyslogSink: %v", err)
+	}
+	defer func() { _ = sink.Close() }()
+
+	// Channel field is unmarshalable — Emit should return an error.
+	event := Event{
+		Severity:  SeverityWarn,
+		Type:      "blocked",
+		Timestamp: time.Now(),
+		Fields:    map[string]any{"bad": make(chan int)},
+	}
+
+	err = sink.Emit(context.Background(), event)
+	if err == nil {
+		t.Error("expected marshal error from Emit")
+	}
+}
+
 func TestSyslogOptions(t *testing.T) {
 	cfg := &syslogConfig{}
 

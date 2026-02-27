@@ -406,6 +406,90 @@ func TestWebhookSink_EmitAfterClose(t *testing.T) {
 	}
 }
 
+func TestWebhookSink_SendMarshalError(t *testing.T) {
+	// Events with unmarshalable fields (channels) should be silently dropped,
+	// not panic or block the goroutine.
+	var count atomic.Int64
+
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		count.Add(1)
+	}))
+	defer srv.Close()
+
+	sink := NewWebhookSink(srv.URL)
+	defer func() { _ = sink.Close() }()
+
+	// Emit event with unmarshalable field — json.Marshal will fail.
+	err := sink.Emit(context.Background(), Event{
+		Severity:   SeverityWarn,
+		Type:       "blocked",
+		Timestamp:  time.Now(),
+		InstanceID: "test",
+		Fields:     map[string]any{"bad": make(chan int)},
+	})
+	if err != nil {
+		t.Fatalf("Emit returned error: %v", err)
+	}
+
+	// Follow up with a valid event to prove the goroutine survived.
+	err = sink.Emit(context.Background(), Event{
+		Severity:   SeverityWarn,
+		Type:       "blocked",
+		Timestamp:  time.Now(),
+		InstanceID: "test",
+	})
+	if err != nil {
+		t.Fatalf("Emit returned error: %v", err)
+	}
+
+	_ = sink.Close()
+
+	if got := count.Load(); got != 1 {
+		t.Errorf("expected 1 successful request (bad event skipped), got %d", got)
+	}
+}
+
+func TestWebhookSink_SendInvalidURL(t *testing.T) {
+	// A sink with an invalid URL should log errors, not panic or block.
+	sink := NewWebhookSink("://invalid-url")
+	defer func() { _ = sink.Close() }()
+
+	err := sink.Emit(context.Background(), Event{
+		Severity:   SeverityWarn,
+		Type:       "blocked",
+		Timestamp:  time.Now(),
+		InstanceID: "test",
+	})
+	if err != nil {
+		t.Fatalf("Emit returned error: %v", err)
+	}
+
+	// Close should not hang even with errors.
+	_ = sink.Close()
+}
+
+func TestWebhookSink_SendConnectionRefused(t *testing.T) {
+	// Start a server and immediately close it — the URL will refuse connections.
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {}))
+	url := srv.URL
+	srv.Close()
+
+	sink := NewWebhookSink(url, WithWebhookTimeout(100*time.Millisecond))
+
+	err := sink.Emit(context.Background(), Event{
+		Severity:   SeverityWarn,
+		Type:       "blocked",
+		Timestamp:  time.Now(),
+		InstanceID: "test",
+	})
+	if err != nil {
+		t.Fatalf("Emit returned error: %v", err)
+	}
+
+	// Close should drain without hanging despite connection errors.
+	_ = sink.Close()
+}
+
 func TestWebhookSink_EmitClosedDuringQueueWait(t *testing.T) {
 	// Create a sink with a tiny queue so the second select path is exercised.
 	blocker := make(chan struct{})

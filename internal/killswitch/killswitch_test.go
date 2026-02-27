@@ -1033,4 +1033,23 @@ func TestController_APIHandler_Deactivate_PreservesOtherSources(t *testing.T) {
 	}
 }
 
+func TestController_Reload_InvalidCIDR(t *testing.T) {
+	cfg := testConfig()
+	c := New(cfg)
+
+	// Reload with an invalid CIDR — should log to stderr and continue,
+	// not panic.
+	cfg2 := testConfig()
+	cfg2.KillSwitch.AllowlistIPs = []string{"not-a-cidr", "10.0.0.0/8"}
+	c.Reload(cfg2)
+
+	// Verify the valid CIDR was still added (controller is functional).
+	r := httptest.NewRequest(http.MethodGet, "/fetch", nil)
+	r.RemoteAddr = "10.0.0.1:12345"
+	d := c.IsActiveHTTP(r)
+	if d.Active {
+		t.Error("expected inactive — IP should be in allowlist from the valid CIDR")
+	}
+}
+
 func ptrBool(v bool) *bool { return &v }

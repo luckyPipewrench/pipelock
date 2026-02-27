@@ -261,9 +261,16 @@ func TestNewSyslogSink_InvalidAddress(t *testing.T) {
 }
 
 func TestNewSyslogSink_DialFailure(t *testing.T) {
-	// TCP to a port nothing is listening on should fail to connect
-	// (or at least error on write; UDP is connectionless so use TCP)
-	_, err := NewSyslogSink("tcp://127.0.0.1:1")
+	// Bind a TCP port, then close it — guarantees nothing is listening.
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+
+	_, err = NewSyslogSink("tcp://" + addr)
 	if err == nil {
 		t.Error("expected error for unreachable address")
 	}

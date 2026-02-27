@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestAPIHandler_Toggle_Activate(t *testing.T) {
@@ -335,6 +336,38 @@ func TestAPIHandler_RateLimit(t *testing.T) {
 				t.Error("expected Retry-After header on rate limit")
 			}
 		}
+	}
+}
+
+func TestAPIHandler_RateLimitWindowReset(t *testing.T) {
+	cfg := testConfig()
+	cfg.KillSwitch.APIToken = "test-token" //nolint:goconst // test value
+	c := New(cfg)
+	h := NewAPIHandler(c)
+
+	// Exhaust the rate limit.
+	for i := 0; i < apiRateLimitMax; i++ {
+		body := bytes.NewBufferString(`{"active": true}`)
+		r := httptest.NewRequest(http.MethodPost, "/api/v1/killswitch", body)
+		r.Header.Set("Authorization", "Bearer test-token") //nolint:goconst // test value
+		w := httptest.NewRecorder()
+		h.HandleToggle(w, r)
+	}
+
+	// Simulate window expiration by moving windowStart into the past.
+	h.mu.Lock()
+	h.windowStart = time.Now().Add(-apiRateLimitWindow - time.Second)
+	h.mu.Unlock()
+
+	// Next request should succeed — window has reset.
+	body := bytes.NewBufferString(`{"active": false}`)
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/killswitch", body)
+	r.Header.Set("Authorization", "Bearer test-token") //nolint:goconst // test value
+	w := httptest.NewRecorder()
+	h.HandleToggle(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 after window reset, got %d", w.Code)
 	}
 }
 

@@ -3280,18 +3280,30 @@ func TestValidate_EmitSyslogValidConfig(t *testing.T) {
 func TestValidate_EmitWebhookInvalidTimeout(t *testing.T) {
 	cfg := Defaults()
 	cfg.Emit.Webhook.URL = "https://example.com/hook"
+	cfg.Emit.Webhook.MinSeverity = "warn"
+	cfg.Emit.Webhook.QueueSize = 32
 	cfg.Emit.Webhook.TimeoutSecs = -1
-	if err := cfg.Validate(); err == nil {
-		t.Error("expected error for negative webhook timeout_seconds")
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for negative webhook timeout_seconds")
+	}
+	if !strings.Contains(err.Error(), "timeout_seconds") {
+		t.Errorf("error should mention timeout_seconds, got: %v", err)
 	}
 }
 
 func TestValidate_EmitWebhookInvalidQueueSize(t *testing.T) {
 	cfg := Defaults()
 	cfg.Emit.Webhook.URL = "https://example.com/hook"
+	cfg.Emit.Webhook.MinSeverity = "warn"
+	cfg.Emit.Webhook.TimeoutSecs = 5
 	cfg.Emit.Webhook.QueueSize = 0
-	if err := cfg.Validate(); err == nil {
-		t.Error("expected error for zero webhook queue_size")
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for zero webhook queue_size")
+	}
+	if !strings.Contains(err.Error(), "queue_size") {
+		t.Errorf("error should mention queue_size, got: %v", err)
 	}
 }
 

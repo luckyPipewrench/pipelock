@@ -1340,7 +1340,9 @@ func TestEmit_LogBlocked_IncludeBlockedFalse(t *testing.T) {
 	}
 	defer logger.Close()
 	sink := &collectingSink{}
-	logger.SetEmitter(emit.NewEmitter("test", sink))
+	emitter := emit.NewEmitter("test", sink)
+	logger.SetEmitter(emitter)
+	t.Cleanup(func() { _ = emitter.Close() })
 
 	logger.LogBlocked("GET", "https://evil.com", "dlp", "secret found", "10.0.0.1", "req-1")
 

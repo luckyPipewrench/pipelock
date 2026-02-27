@@ -79,8 +79,14 @@ func TestRedactEndpoint(t *testing.T) {
 	}
 }
 
-func TestBuildEmitSinks_NoConfig(t *testing.T) {
+func testConfig() *config.Config {
 	cfg := config.Defaults()
+	cfg.Internal = nil
+	return cfg
+}
+
+func TestBuildEmitSinks_NoConfig(t *testing.T) {
+	cfg := testConfig()
 	sinks, err := buildEmitSinks(cfg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -96,7 +102,7 @@ func TestBuildEmitSinks_WebhookOnly(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := config.Defaults()
+	cfg := testConfig()
 	cfg.Emit.Webhook.URL = srv.URL
 	cfg.Emit.Webhook.MinSeverity = "warn" //nolint:goconst // test value
 
@@ -118,7 +124,7 @@ func TestBuildEmitSinks_WebhookWithAllOptions(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := config.Defaults()
+	cfg := testConfig()
 	cfg.Emit.Webhook.URL = srv.URL
 	cfg.Emit.Webhook.MinSeverity = "info"          //nolint:goconst // test value
 	cfg.Emit.Webhook.AuthToken = "test-" + "token" //nolint:goconst // test value
@@ -140,7 +146,7 @@ func TestBuildEmitSinks_WebhookWithAllOptions(t *testing.T) {
 func TestBuildEmitSinks_SyslogOnly(t *testing.T) {
 	conn := listenUDP(t)
 
-	cfg := config.Defaults()
+	cfg := testConfig()
 	cfg.Emit.Syslog.Address = "udp://" + conn.LocalAddr().String()
 	cfg.Emit.Syslog.MinSeverity = "warn" //nolint:goconst // test value
 	cfg.Emit.Syslog.Facility = "local3"
@@ -166,7 +172,7 @@ func TestBuildEmitSinks_BothSinks(t *testing.T) {
 
 	conn := listenUDP(t)
 
-	cfg := config.Defaults()
+	cfg := testConfig()
 	cfg.Emit.Webhook.URL = srv.URL
 	cfg.Emit.Webhook.MinSeverity = "info" //nolint:goconst // test value
 	cfg.Emit.Syslog.Address = "udp://" + conn.LocalAddr().String()
@@ -190,11 +196,11 @@ func TestBuildEmitSinks_SyslogError_CleansUpWebhook(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := config.Defaults()
+	cfg := testConfig()
 	cfg.Emit.Webhook.URL = srv.URL
 	cfg.Emit.Webhook.MinSeverity = "info"
 	// Invalid syslog address triggers error after webhook is created
-	cfg.Emit.Syslog.Address = "tcp://127.0.0.1:1" // nothing listening on port 1
+	cfg.Emit.Syslog.Address = "tcp://127.0.0.1:notaport" // deterministic parse failure
 
 	sinks, err := buildEmitSinks(cfg)
 	if err == nil {

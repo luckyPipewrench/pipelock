@@ -391,3 +391,57 @@ func TestWebhookSink_NilFieldsInPayload(t *testing.T) {
 
 	_ = sink.Close()
 }
+
+func TestWebhookSink_EmitAfterClose(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {}))
+	defer srv.Close()
+
+	sink := NewWebhookSink(srv.URL)
+	_ = sink.Close()
+
+	err := sink.Emit(context.Background(), Event{
+		Severity:   SeverityWarn,
+		Type:       "blocked",
+		Timestamp:  time.Now(),
+		InstanceID: "test",
+	})
+	if err == nil {
+		t.Error("expected error when emitting to closed sink")
+	}
+}
+
+func TestWebhookSink_EmitClosedDuringQueueWait(t *testing.T) {
+	// Create a sink with a tiny queue so the second select path is exercised.
+	blocker := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		<-blocker
+	}))
+	defer srv.Close()
+
+	sink := NewWebhookSink(srv.URL, WithQueueSize(1))
+
+	event := Event{
+		Severity:   SeverityWarn,
+		Type:       "blocked",
+		Timestamp:  time.Now(),
+		InstanceID: "test",
+	}
+
+	// Fill the queue: first event goes to goroutine (blocked on HTTP), second fills channel.
+	_ = sink.Emit(context.Background(), event)
+	time.Sleep(10 * time.Millisecond) // let goroutine pick it up
+	_ = sink.Emit(context.Background(), event)
+
+	// Close while queue is full — exercises the <-w.done path in the second select.
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		close(blocker) // unblock the server so Close can finish
+	}()
+	_ = sink.Close()
+
+	// Emit after close should return error
+	err := sink.Emit(context.Background(), event)
+	if err == nil {
+		t.Error("expected error when emitting to closed sink")
+	}
+}

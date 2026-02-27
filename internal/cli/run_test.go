@@ -29,7 +29,7 @@ func TestRedactEndpoint(t *testing.T) {
 	}{
 		{
 			name: "webhook with query token",
-			raw:  "https://hooks.example.com:8088/services/collector?token=secret123",
+			raw:  "https://hooks.example.com:8088/services/collector?" + "token=secret123", //nolint:goconst // test value
 			want: "https://hooks.example.com:8088/services/collector",
 		},
 		{

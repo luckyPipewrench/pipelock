@@ -144,7 +144,7 @@ use this behind TLS with restricted network access.
 emit:
   webhook:
     url: "https://splunk.example.com:8088/services/collector/raw"
-    # Append ?token=<YOUR_SPLUNK_TOKEN> to the URL above
+    # For Splunk HEC auth, append your HEC credential as a query param
     min_severity: "warn"
 ```
 

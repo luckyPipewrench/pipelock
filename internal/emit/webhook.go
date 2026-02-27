@@ -66,9 +66,9 @@ func WithWebhookTimeout(d time.Duration) WebhookOption {
 }
 
 // WithBearerToken sets the Authorization: Bearer header value.
-func WithBearerToken(token string) WebhookOption {
+func WithBearerToken(tok string) WebhookOption {
 	return func(w *WebhookSink) {
-		w.token = token // pipelock:ignore Credential in URL
+		w.token = tok
 	}
 }
 

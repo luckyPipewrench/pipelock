@@ -22,14 +22,6 @@ jobs:
           scan-diff: 'true'
           fail-on-findings: 'true'
           test-vectors: 'false'  # MCP scanning gaps expected for a Go source repo
-          config: |
-            suppress:
-              - rule: "Credential in URL"
-                path: "internal/scanner/"
-                reason: "Test values for DLP pattern validation"
-              - rule: "AWS Access Key"
-                path: "internal/scanner/"
-                reason: "Test values for DLP pattern validation"
-              - rule: "AWS Access ID"
-                path: "internal/scanner/"
-                reason: "Test values for DLP pattern validation"
+          exclude-paths: |
+            internal/scanner/scanner_test.go
+            internal/scanner/text_dlp_test.go

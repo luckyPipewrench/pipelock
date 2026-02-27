@@ -1,6 +1,7 @@
 package killswitch
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -680,6 +681,355 @@ func TestController_HasIDEdgeCases(t *testing.T) {
 				t.Errorf("hasID(%q) = %v, want %v", tt.msg, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestController_APISource(t *testing.T) {
+	cfg := testConfig()
+	c := New(cfg)
+
+	r := httptest.NewRequest(http.MethodGet, "/fetch", nil)
+	d := c.IsActiveHTTP(r)
+	if d.Active {
+		t.Fatal("expected inactive initially")
+	}
+
+	c.SetAPI(true)
+	d = c.IsActiveHTTP(r)
+	if !d.Active {
+		t.Fatal("expected active after SetAPI(true)")
+	}
+	if d.Source != "api" { //nolint:goconst // test value
+		t.Errorf("expected source %q, got %q", "api", d.Source)
+	}
+
+	c.SetAPI(false)
+	d = c.IsActiveHTTP(r)
+	if d.Active {
+		t.Fatal("expected inactive after SetAPI(false)")
+	}
+}
+
+func TestController_APIExempt(t *testing.T) {
+	cfg := testConfig()
+	cfg.KillSwitch.Enabled = true
+
+	c := New(cfg)
+
+	// /api/v1/killswitch is exempt by default
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/killswitch", nil)
+	d := c.IsActiveHTTP(r)
+	if d.Active {
+		t.Fatal("expected /api/v1/killswitch to be exempt from kill switch")
+	}
+
+	// /api/v1/killswitch/status is also exempt
+	r2 := httptest.NewRequest(http.MethodGet, "/api/v1/killswitch/status", nil)
+	d2 := c.IsActiveHTTP(r2)
+	if d2.Active {
+		t.Fatal("expected /api/v1/killswitch/status to be exempt")
+	}
+
+	// Non-API path is still blocked
+	r3 := httptest.NewRequest(http.MethodGet, "/fetch", nil)
+	d3 := c.IsActiveHTTP(r3)
+	if !d3.Active {
+		t.Fatal("expected /fetch to be blocked")
+	}
+}
+
+func TestController_APIExemptDisabled(t *testing.T) {
+	cfg := testConfig()
+	cfg.KillSwitch.Enabled = true
+	cfg.KillSwitch.APIExempt = ptrBool(false)
+
+	c := New(cfg)
+
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/killswitch", nil)
+	d := c.IsActiveHTTP(r)
+	if !d.Active {
+		t.Fatal("expected /api/v1/killswitch to be blocked when api_exempt disabled")
+	}
+}
+
+func TestController_SourcePriority_WithAPI(t *testing.T) {
+	dir := t.TempDir()
+	sentinelPath := filepath.Join(dir, "killswitch")
+
+	cfg := testConfig()
+	cfg.KillSwitch.Enabled = true
+	cfg.KillSwitch.SentinelFile = sentinelPath
+
+	c := New(cfg)
+	c.SetAPI(true)
+	c.ToggleSignal()
+	if err := os.WriteFile(sentinelPath, []byte("kill"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	r := httptest.NewRequest(http.MethodGet, "/fetch", nil)
+
+	// All sources active — config wins
+	d := c.IsActiveHTTP(r)
+	if d.Source != "config" {
+		t.Errorf("expected source %q, got %q", "config", d.Source)
+	}
+
+	// Disable config — api wins
+	cfg2 := testConfig()
+	cfg2.KillSwitch.SentinelFile = sentinelPath
+	c.Reload(cfg2)
+	d = c.IsActiveHTTP(r)
+	if d.Source != "api" {
+		t.Errorf("expected source %q, got %q", "api", d.Source)
+	}
+
+	// Disable api — signal wins
+	c.SetAPI(false)
+	d = c.IsActiveHTTP(r)
+	if d.Source != "signal" {
+		t.Errorf("expected source %q, got %q", "signal", d.Source)
+	}
+
+	// Disable signal — sentinel wins
+	c.ToggleSignal()
+	d = c.IsActiveHTTP(r)
+	if d.Source != "sentinel" {
+		t.Errorf("expected source %q, got %q", "sentinel", d.Source)
+	}
+}
+
+func TestController_Sources(t *testing.T) {
+	dir := t.TempDir()
+	sentinelPath := filepath.Join(dir, "killswitch")
+
+	cfg := testConfig()
+	cfg.KillSwitch.Enabled = true
+	cfg.KillSwitch.SentinelFile = sentinelPath
+
+	c := New(cfg)
+	c.SetAPI(true)
+
+	sources := c.Sources()
+	if !sources["config"] {
+		t.Error("expected config source active")
+	}
+	if !sources["api"] {
+		t.Error("expected api source active")
+	}
+	if sources["signal"] {
+		t.Error("expected signal source inactive")
+	}
+	if sources["sentinel"] {
+		t.Error("expected sentinel source inactive (file doesn't exist)")
+	}
+}
+
+func TestController_SeparatePort_SkipsAPIExemption(t *testing.T) {
+	cfg := testConfig()
+	cfg.KillSwitch.Enabled = true
+
+	c := New(cfg)
+	c.SetSeparateAPIPort(true)
+
+	// With separatePort=true, /api/v1/killswitch should NOT be exempt.
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/killswitch", nil)
+	d := c.IsActiveHTTP(r)
+	if !d.Active {
+		t.Fatal("expected /api/v1/killswitch to be BLOCKED when separatePort=true")
+	}
+
+	// /api/v1/killswitch/status should also be blocked.
+	r2 := httptest.NewRequest(http.MethodGet, "/api/v1/killswitch/status", nil)
+	d2 := c.IsActiveHTTP(r2)
+	if !d2.Active {
+		t.Fatal("expected /api/v1/killswitch/status to be BLOCKED when separatePort=true")
+	}
+
+	// /health and /metrics should still be exempt (separate from API exemption).
+	rHealth := httptest.NewRequest(http.MethodGet, "/health", nil)
+	if c.IsActiveHTTP(rHealth).Active {
+		t.Fatal("expected /health to remain exempt when separatePort=true")
+	}
+	rMetrics := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	if c.IsActiveHTTP(rMetrics).Active {
+		t.Fatal("expected /metrics to remain exempt when separatePort=true")
+	}
+}
+
+func TestController_SeparatePort_Default(t *testing.T) {
+	cfg := testConfig()
+	cfg.KillSwitch.Enabled = true
+
+	c := New(cfg)
+	// separatePort defaults to false — API should be exempt as before.
+
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/killswitch", nil)
+	d := c.IsActiveHTTP(r)
+	if d.Active {
+		t.Fatal("expected /api/v1/killswitch to be exempt by default (separatePort=false)")
+	}
+}
+
+func TestController_SeparatePort_Toggle(t *testing.T) {
+	cfg := testConfig()
+	cfg.KillSwitch.Enabled = true
+
+	c := New(cfg)
+
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/killswitch", nil)
+
+	// Default: exempt.
+	if c.IsActiveHTTP(r).Active {
+		t.Fatal("expected exempt initially")
+	}
+
+	// Enable separate port: blocked.
+	c.SetSeparateAPIPort(true)
+	if !c.IsActiveHTTP(r).Active {
+		t.Fatal("expected blocked after SetSeparateAPIPort(true)")
+	}
+
+	// Disable separate port: exempt again.
+	c.SetSeparateAPIPort(false)
+	if c.IsActiveHTTP(r).Active {
+		t.Fatal("expected exempt after SetSeparateAPIPort(false)")
+	}
+}
+
+func TestController_MultiSource_DeactivateAPI_OthersRemain(t *testing.T) {
+	dir := t.TempDir()
+	sentinelPath := filepath.Join(dir, "killswitch")
+
+	cfg := testConfig()
+	cfg.KillSwitch.SentinelFile = sentinelPath
+
+	c := New(cfg)
+	c.SetAPI(true)
+	c.ToggleSignal()
+	if err := os.WriteFile(sentinelPath, []byte("kill"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	r := httptest.NewRequest(http.MethodGet, "/fetch", nil)
+
+	// All three runtime sources active.
+	d := c.IsActiveHTTP(r)
+	if !d.Active || d.Source != "api" {
+		t.Fatalf("expected active from api, got active=%v source=%q", d.Active, d.Source)
+	}
+
+	// Deactivate API — signal and sentinel remain.
+	c.SetAPI(false)
+	d = c.IsActiveHTTP(r)
+	if !d.Active {
+		t.Fatal("expected still active after deactivating API (signal+sentinel remain)")
+	}
+	if d.Source != "signal" {
+		t.Errorf("expected source %q after API off, got %q", "signal", d.Source)
+	}
+
+	// Deactivate signal — sentinel remains.
+	c.ToggleSignal()
+	d = c.IsActiveHTTP(r)
+	if !d.Active {
+		t.Fatal("expected still active after deactivating signal (sentinel remains)")
+	}
+	if d.Source != "sentinel" {
+		t.Errorf("expected source %q after signal off, got %q", "sentinel", d.Source)
+	}
+
+	// Remove sentinel — all off.
+	if err := os.Remove(sentinelPath); err != nil {
+		t.Fatal(err)
+	}
+	d = c.IsActiveHTTP(r)
+	if d.Active {
+		t.Fatal("expected inactive after all sources deactivated")
+	}
+}
+
+func TestController_Reload_PreservesRuntimeState(t *testing.T) {
+	cfg := testConfig()
+	cfg.KillSwitch.Message = "before reload" //nolint:goconst // test value
+
+	c := New(cfg)
+	c.SetAPI(true)
+	c.ToggleSignal()
+
+	r := httptest.NewRequest(http.MethodGet, "/fetch", nil)
+	d := c.IsActiveHTTP(r)
+	if !d.Active || d.Source != "api" {
+		t.Fatalf("pre-reload: expected active from api, got active=%v source=%q", d.Active, d.Source)
+	}
+
+	// Reload with different message — API and signal must survive.
+	cfg2 := testConfig()
+	cfg2.KillSwitch.Message = "after reload" //nolint:goconst // test value
+	c.Reload(cfg2)
+
+	d = c.IsActiveHTTP(r)
+	if !d.Active {
+		t.Fatal("expected active after reload (API and signal should be preserved)")
+	}
+	if d.Source != "api" {
+		t.Errorf("expected source %q after reload, got %q", "api", d.Source)
+	}
+	if d.Message != "after reload" {
+		t.Errorf("expected message %q after reload, got %q", "after reload", d.Message)
+	}
+
+	// Verify signal also survived reload.
+	c.SetAPI(false)
+	d = c.IsActiveHTTP(r)
+	if !d.Active || d.Source != "signal" {
+		t.Fatalf("expected signal survived reload, got active=%v source=%q", d.Active, d.Source)
+	}
+}
+
+func TestController_APIHandler_Deactivate_PreservesOtherSources(t *testing.T) {
+	cfg := testConfig()
+	cfg.KillSwitch.APIToken = "test-token" //nolint:goconst,gosec // test value
+	c := New(cfg)
+	h := NewAPIHandler(c)
+
+	// Activate both API and signal.
+	c.SetAPI(true)
+	c.ToggleSignal()
+
+	r := httptest.NewRequest(http.MethodGet, "/fetch", nil)
+	d := c.IsActiveHTTP(r)
+	if !d.Active || d.Source != "api" {
+		t.Fatalf("expected active from api, got active=%v source=%q", d.Active, d.Source)
+	}
+
+	// Deactivate via the API handler (same as a real HTTP call).
+	body := bytes.NewBufferString(`{"active": false}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/killswitch", body)
+	req.Header.Set("Authorization", "Bearer test-token") //nolint:goconst // test value
+	w := httptest.NewRecorder()
+	h.HandleToggle(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	// API source off, but kill switch still active from signal.
+	d = c.IsActiveHTTP(r)
+	if !d.Active {
+		t.Fatal("expected kill switch still active (signal source remains)")
+	}
+	if d.Source != "signal" {
+		t.Errorf("expected source %q after API deactivation, got %q", "signal", d.Source)
+	}
+
+	// Verify the status endpoint reflects both sources correctly.
+	sources := c.Sources()
+	if sources["api"] {
+		t.Error("expected api source to be false after deactivation")
+	}
+	if !sources["signal"] {
+		t.Error("expected signal source to still be true")
 	}
 }
 

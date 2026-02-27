@@ -2,12 +2,14 @@
 package audit
 
 import (
+	"context"
 	"io"
 	"os"
 	"strings"
 	"time"
 	"unicode"
 
+	"github.com/luckyPipewrench/pipelock/internal/emit"
 	"github.com/rs/zerolog"
 )
 
@@ -81,7 +83,8 @@ type Logger struct {
 	zl             zerolog.Logger
 	includeAllowed bool
 	includeBlocked bool
-	fileHandle     *os.File // non-nil if logging to file
+	fileHandle     *os.File      // non-nil if logging to file
+	emitter        *emit.Emitter // optional external event emitter
 }
 
 // New creates a new audit logger. The caller should call Close when done.
@@ -137,6 +140,13 @@ func NewNop() *Logger {
 	}
 }
 
+// SetEmitter sets the event emitter for external emission.
+// Must be called before the logger is used concurrently (i.e., before
+// the proxy starts serving). Not safe for concurrent use with Log methods.
+func (l *Logger) SetEmitter(e *emit.Emitter) {
+	l.emitter = e
+}
+
 // LogAllowed logs a successful, allowed request.
 func (l *Logger) LogAllowed(method, url, clientIP, requestID string, statusCode, sizeBytes int, duration time.Duration) {
 	if !l.includeAllowed {
@@ -156,18 +166,30 @@ func (l *Logger) LogAllowed(method, url, clientIP, requestID string, statusCode,
 
 // LogBlocked logs a blocked request with the reason.
 func (l *Logger) LogBlocked(method, url, scanner, reason, clientIP, requestID string) {
-	if !l.includeBlocked {
-		return
+	// includeBlocked gates local audit log only — external emission always fires
+	// so SIEM/webhook consumers see blocked events regardless of local verbosity.
+	if l.includeBlocked {
+		l.zl.Warn().
+			Str("event", string(EventBlocked)).
+			Str("method", method).
+			Str("url", sanitizeString(url)).
+			Str("client_ip", clientIP).
+			Str("request_id", requestID).
+			Str("scanner", scanner).
+			Str("reason", sanitizeString(reason)).
+			Msg("request blocked")
 	}
-	l.zl.Warn().
-		Str("event", string(EventBlocked)).
-		Str("method", method).
-		Str("url", sanitizeString(url)).
-		Str("client_ip", clientIP).
-		Str("request_id", requestID).
-		Str("scanner", scanner).
-		Str("reason", sanitizeString(reason)).
-		Msg("request blocked")
+
+	if l.emitter != nil {
+		l.emitter.Emit(context.Background(), string(EventBlocked), map[string]any{
+			"method":     method,
+			"url":        sanitizeString(url),
+			"scanner":    scanner,
+			"reason":     sanitizeString(reason),
+			"client_ip":  clientIP,
+			"request_id": requestID,
+		})
+	}
 }
 
 // LogError logs a fetch error.
@@ -180,6 +202,20 @@ func (l *Logger) LogError(method, url, clientIP, requestID string, err error) {
 		Str("request_id", requestID).
 		Err(err).
 		Msg("request error")
+
+	if l.emitter != nil {
+		errStr := ""
+		if err != nil {
+			errStr = err.Error()
+		}
+		l.emitter.Emit(context.Background(), string(EventError), map[string]any{
+			"method":     method,
+			"url":        sanitizeString(url),
+			"client_ip":  clientIP,
+			"request_id": requestID,
+			"error":      errStr,
+		})
+	}
 }
 
 // LogAnomaly logs suspicious but not blocked activity.
@@ -193,6 +229,17 @@ func (l *Logger) LogAnomaly(method, url, reason, clientIP, requestID string, sco
 		Str("reason", sanitizeString(reason)).
 		Float64("score", score).
 		Msg("anomaly detected")
+
+	if l.emitter != nil {
+		l.emitter.Emit(context.Background(), string(EventAnomaly), map[string]any{
+			"method":     method,
+			"url":        sanitizeString(url),
+			"reason":     sanitizeString(reason),
+			"client_ip":  clientIP,
+			"request_id": requestID,
+			"score":      score,
+		})
+	}
 }
 
 // LogResponseScan logs a response content scan that found prompt injection patterns.
@@ -206,6 +253,17 @@ func (l *Logger) LogResponseScan(url, clientIP, requestID, action string, matchC
 		Int("match_count", matchCount).
 		Strs("patterns", patternNames).
 		Msg("response scan detected prompt injection")
+
+	if l.emitter != nil {
+		l.emitter.Emit(context.Background(), string(EventResponseScan), map[string]any{
+			"url":         sanitizeString(url),
+			"client_ip":   clientIP,
+			"request_id":  requestID,
+			"action":      action,
+			"match_count": matchCount,
+			"patterns":    patternNames,
+		})
+	}
 }
 
 // LogTunnelOpen logs a CONNECT tunnel establishment.
@@ -272,6 +330,13 @@ func (l *Logger) LogConfigReload(status, detail string) {
 		Str("status", status).
 		Str("detail", detail).
 		Msg("configuration reloaded")
+
+	if l.emitter != nil {
+		l.emitter.Emit(context.Background(), string(EventConfigReload), map[string]any{
+			"status": status,
+			"detail": detail,
+		})
+	}
 }
 
 // LogStartup logs that the proxy has started.
@@ -326,18 +391,29 @@ func (l *Logger) LogWSClose(target, clientIP, requestID, agent string, clientToS
 
 // LogWSBlocked logs a blocked WebSocket frame or connection.
 func (l *Logger) LogWSBlocked(target, direction, scannerName, reason, clientIP, requestID string) {
-	if !l.includeBlocked {
-		return
+	// includeBlocked gates local audit log only — external emission always fires.
+	if l.includeBlocked {
+		l.zl.Warn().
+			Str("event", string(EventWSBlocked)).
+			Str("target", sanitizeString(target)).
+			Str("direction", direction).
+			Str("scanner", scannerName).
+			Str("reason", sanitizeString(reason)).
+			Str("client_ip", clientIP).
+			Str("request_id", requestID).
+			Msg("websocket blocked")
 	}
-	l.zl.Warn().
-		Str("event", string(EventWSBlocked)).
-		Str("target", sanitizeString(target)).
-		Str("direction", direction).
-		Str("scanner", scannerName).
-		Str("reason", sanitizeString(reason)).
-		Str("client_ip", clientIP).
-		Str("request_id", requestID).
-		Msg("websocket blocked")
+
+	if l.emitter != nil {
+		l.emitter.Emit(context.Background(), string(EventWSBlocked), map[string]any{
+			"target":     sanitizeString(target),
+			"direction":  direction,
+			"scanner":    scannerName,
+			"reason":     sanitizeString(reason),
+			"client_ip":  clientIP,
+			"request_id": requestID,
+		})
+	}
 }
 
 // LogWSScan logs a WebSocket frame scan hit (warn/strip action).
@@ -352,6 +428,18 @@ func (l *Logger) LogWSScan(target, direction, clientIP, requestID, action string
 		Int("match_count", matchCount).
 		Strs("patterns", patternNames).
 		Msg("websocket scan hit")
+
+	if l.emitter != nil {
+		l.emitter.Emit(context.Background(), string(EventWSScan), map[string]any{
+			"target":      sanitizeString(target),
+			"direction":   direction,
+			"client_ip":   clientIP,
+			"request_id":  requestID,
+			"action":      action,
+			"match_count": matchCount,
+			"patterns":    patternNames,
+		})
+	}
 }
 
 // LogSessionAnomaly logs a session behavioral anomaly detection.
@@ -365,6 +453,22 @@ func (l *Logger) LogSessionAnomaly(sessionKey, anomalyType, detail, clientIP, re
 		Str("request_id", requestID).
 		Float64("score", score).
 		Msg("session anomaly detected")
+
+	if l.emitter != nil {
+		fields := map[string]any{
+			"session":      sanitizeString(sessionKey),
+			"anomaly_type": anomalyType,
+			"detail":       sanitizeString(detail),
+			"score":        score,
+		}
+		if clientIP != "" {
+			fields["client_ip"] = clientIP
+		}
+		if requestID != "" {
+			fields["request_id"] = requestID
+		}
+		l.emitter.Emit(context.Background(), string(EventSessionAnomaly), fields)
+	}
 }
 
 // LogAdaptiveEscalation logs an enforcement level escalation.
@@ -378,6 +482,22 @@ func (l *Logger) LogAdaptiveEscalation(sessionKey, from, to, clientIP, requestID
 		Str("request_id", requestID).
 		Float64("score", score).
 		Msg("enforcement escalated")
+
+	if l.emitter != nil {
+		fields := map[string]any{
+			"session": sanitizeString(sessionKey),
+			"from":    from,
+			"to":      to,
+			"score":   score,
+		}
+		if clientIP != "" {
+			fields["client_ip"] = clientIP
+		}
+		if requestID != "" {
+			fields["request_id"] = requestID
+		}
+		l.emitter.EmitWithSeverity(context.Background(), emit.EscalationSeverity(to), string(EventAdaptiveEscalation), fields)
+	}
 }
 
 // LogMCPUnknownTool logs a tool call to a tool not in the session baseline.
@@ -387,6 +507,13 @@ func (l *Logger) LogMCPUnknownTool(toolName, action string) {
 		Str("tool", sanitizeString(toolName)).
 		Str("action", action).
 		Msg("tool not in session baseline")
+
+	if l.emitter != nil {
+		l.emitter.Emit(context.Background(), string(EventMCPUnknownTool), map[string]any{
+			"tool":   sanitizeString(toolName),
+			"action": action,
+		})
+	}
 }
 
 // LogKillSwitchDeny logs a request denied by the kill switch.
@@ -399,6 +526,16 @@ func (l *Logger) LogKillSwitchDeny(transport, endpoint, source, message, clientI
 		Str("deny_message", sanitizeString(message)).
 		Str("client_ip", sanitizeString(clientIP)).
 		Msg("kill switch denied request")
+
+	if l.emitter != nil {
+		l.emitter.Emit(context.Background(), string(EventKillSwitchDeny), map[string]any{
+			"transport":    sanitizeString(transport),
+			"endpoint":     sanitizeString(endpoint),
+			"source":       sanitizeString(source),
+			"deny_message": sanitizeString(message),
+			"client_ip":    sanitizeString(clientIP),
+		})
+	}
 }
 
 // With returns a sub-logger that includes the given key-value pair in every
@@ -409,6 +546,7 @@ func (l *Logger) With(key, value string) *Logger {
 		zl:             l.zl.With().Str(key, value).Logger(),
 		includeAllowed: l.includeAllowed,
 		includeBlocked: l.includeBlocked,
+		emitter:        l.emitter,
 	}
 }
 

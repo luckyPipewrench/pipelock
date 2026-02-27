@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -132,6 +133,7 @@ type Config struct {
 	AdaptiveEnforcement AdaptiveEnforcement `yaml:"adaptive_enforcement"`
 	MCPSessionBinding   MCPSessionBinding   `yaml:"mcp_session_binding"`
 	KillSwitch          KillSwitch          `yaml:"kill_switch"`
+	Emit                EmitConfig          `yaml:"emit"`
 	ToolChainDetection  ToolChainDetection  `yaml:"tool_chain_detection"`
 	Internal            []string            `yaml:"internal"`
 }
@@ -314,7 +316,34 @@ type KillSwitch struct {
 	Message       string   `yaml:"message"`
 	HealthExempt  *bool    `yaml:"health_exempt"`
 	MetricsExempt *bool    `yaml:"metrics_exempt"`
+	APIExempt     *bool    `yaml:"api_exempt"` // exempt /api/v1/* from kill switch (default true)
+	APIToken      string   `yaml:"api_token"`  //nolint:gosec // G117: config field, not a hardcoded credential
+	APIListen     string   `yaml:"api_listen"` // separate listen address for kill switch API (e.g. "0.0.0.0:9090")
 	AllowlistIPs  []string `yaml:"allowlist_ips"`
+}
+
+// EmitConfig configures external event emission (webhook and syslog).
+type EmitConfig struct {
+	InstanceID string        `yaml:"instance_id"` // defaults to hostname
+	Webhook    WebhookConfig `yaml:"webhook"`
+	Syslog     SyslogConfig  `yaml:"syslog"`
+}
+
+// WebhookConfig configures the webhook emission sink.
+type WebhookConfig struct {
+	URL         string `yaml:"url"`
+	MinSeverity string `yaml:"min_severity"` // info, warn, critical
+	AuthToken   string `yaml:"auth_token"`   //nolint:gosec // G117: config field, not a hardcoded credential
+	TimeoutSecs int    `yaml:"timeout_seconds"`
+	QueueSize   int    `yaml:"queue_size"`
+}
+
+// SyslogConfig configures the syslog emission sink (RFC 5424).
+type SyslogConfig struct {
+	Address     string `yaml:"address"`      // e.g. "udp://syslog.example.com:514"
+	MinSeverity string `yaml:"min_severity"` // info, warn, critical
+	Facility    string `yaml:"facility"`     // e.g. "local0" (default)
+	Tag         string `yaml:"tag"`          // e.g. "pipelock" (default)
 }
 
 // ToolChainDetection configures MCP tool call chain pattern detection.
@@ -519,6 +548,29 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.KillSwitch.MetricsExempt == nil {
 		c.KillSwitch.MetricsExempt = ptrBool(true)
+	}
+	if c.KillSwitch.APIExempt == nil {
+		c.KillSwitch.APIExempt = ptrBool(true)
+	}
+
+	// Emit defaults
+	if c.Emit.Webhook.TimeoutSecs <= 0 {
+		c.Emit.Webhook.TimeoutSecs = 5
+	}
+	if c.Emit.Webhook.QueueSize <= 0 {
+		c.Emit.Webhook.QueueSize = 64
+	}
+	if c.Emit.Webhook.MinSeverity == "" {
+		c.Emit.Webhook.MinSeverity = "warn"
+	}
+	if c.Emit.Syslog.MinSeverity == "" {
+		c.Emit.Syslog.MinSeverity = "warn"
+	}
+	if c.Emit.Syslog.Facility == "" {
+		c.Emit.Syslog.Facility = "local0"
+	}
+	if c.Emit.Syslog.Tag == "" {
+		c.Emit.Syslog.Tag = "pipelock"
 	}
 
 	// Tool chain detection defaults
@@ -836,7 +888,7 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("tool_chain_detection.custom_patterns[%d] %q: sequence must have at least 2 steps", i, p.Name)
 			}
 			switch p.Severity {
-			case "medium", "high", "critical":
+			case "medium", "high", "critical": //nolint:goconst // severity values shared across validation
 				// valid
 			default:
 				return fmt.Errorf("tool_chain_detection.custom_patterns[%d] %q: invalid severity %q: must be medium, high, or critical", i, p.Name, p.Severity)
@@ -881,6 +933,71 @@ func (c *Config) Validate() error {
 	for _, cidr := range c.KillSwitch.AllowlistIPs {
 		if _, _, err := net.ParseCIDR(cidr); err != nil {
 			return fmt.Errorf("invalid kill_switch.allowlist_ips CIDR %q: %w", cidr, err)
+		}
+	}
+
+	// Validate kill switch API listen address (if set)
+	if c.KillSwitch.APIListen != "" {
+		_, apiPort, err := net.SplitHostPort(c.KillSwitch.APIListen)
+		if err != nil {
+			return fmt.Errorf("invalid kill_switch.api_listen %q: %w", c.KillSwitch.APIListen, err)
+		}
+		_, proxyPort, proxyErr := net.SplitHostPort(c.FetchProxy.Listen)
+		if proxyErr != nil {
+			return fmt.Errorf("invalid fetch_proxy.listen %q: %w", c.FetchProxy.Listen, proxyErr)
+		}
+		if apiPort == proxyPort {
+			return fmt.Errorf("kill_switch.api_listen port %s collides with fetch_proxy.listen port %s", apiPort, proxyPort)
+		}
+		if c.KillSwitch.APIToken == "" {
+			return fmt.Errorf("kill_switch.api_listen requires kill_switch.api_token to be set")
+		}
+	}
+
+	// Validate emit config
+	if c.Emit.Webhook.URL != "" {
+		u, urlErr := url.Parse(c.Emit.Webhook.URL)
+		if urlErr != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return fmt.Errorf("invalid emit.webhook.url %q: must be http:// or https:// with a host", c.Emit.Webhook.URL)
+		}
+		switch c.Emit.Webhook.MinSeverity { //nolint:goconst // severity values shared across validation
+		case "info", "warn", "critical":
+			// valid
+		default:
+			return fmt.Errorf("invalid emit.webhook.min_severity %q: must be info, warn, or critical", c.Emit.Webhook.MinSeverity)
+		}
+		if c.Emit.Webhook.TimeoutSecs <= 0 {
+			return fmt.Errorf("emit.webhook.timeout_seconds must be positive")
+		}
+		if c.Emit.Webhook.QueueSize <= 0 {
+			return fmt.Errorf("emit.webhook.queue_size must be positive")
+		}
+	}
+	if c.Emit.Syslog.Address != "" {
+		sysU, sysErr := url.Parse(c.Emit.Syslog.Address)
+		if sysErr != nil || (sysU.Scheme != "udp" && sysU.Scheme != "tcp") || sysU.Host == "" {
+			return fmt.Errorf("invalid emit.syslog.address %q: must be udp:// or tcp:// with host:port", c.Emit.Syslog.Address)
+		}
+		if _, _, splitErr := net.SplitHostPort(sysU.Host); splitErr != nil {
+			return fmt.Errorf("invalid emit.syslog.address %q: must include port (e.g. udp://host:514): %w", c.Emit.Syslog.Address, splitErr)
+		}
+		switch c.Emit.Syslog.MinSeverity { //nolint:goconst // severity values shared across validation
+		case "info", "warn", "critical":
+			// valid
+		default:
+			return fmt.Errorf("invalid emit.syslog.min_severity %q: must be info, warn, or critical", c.Emit.Syslog.MinSeverity)
+		}
+		if c.Emit.Syslog.Facility != "" {
+			validFacilities := map[string]bool{
+				"kern": true, "user": true, "mail": true, "daemon": true,
+				"auth": true, "syslog": true, "lpr": true, "news": true,
+				"uucp": true, "local0": true, "local1": true, "local2": true,
+				"local3": true, "local4": true, "local5": true, "local6": true,
+				"local7": true,
+			}
+			if !validFacilities[strings.ToLower(c.Emit.Syslog.Facility)] {
+				return fmt.Errorf("invalid emit.syslog.facility %q", c.Emit.Syslog.Facility)
+			}
 		}
 	}
 
@@ -1036,6 +1153,28 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		warnings = append(warnings, ReloadWarning{
 			Field:   "tool_chain_detection.enabled",
 			Message: "tool chain detection disabled",
+		})
+	}
+
+	// Emit sinks removed
+	if old.Emit.Webhook.URL != "" && updated.Emit.Webhook.URL == "" {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "emit.webhook.url",
+			Message: "webhook emission disabled",
+		})
+	}
+	if old.Emit.Syslog.Address != "" && updated.Emit.Syslog.Address == "" {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "emit.syslog.address",
+			Message: "syslog emission disabled",
+		})
+	}
+
+	// Kill switch API listen address changed (requires restart)
+	if old.KillSwitch.APIListen != updated.KillSwitch.APIListen {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "kill_switch.api_listen",
+			Message: "api_listen cannot change at runtime (requires restart) — ignoring",
 		})
 	}
 

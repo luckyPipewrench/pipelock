@@ -1306,6 +1306,7 @@ func newLoggerWithEmitter(t *testing.T) (*Logger, *collectingSink) {
 	sink := &collectingSink{}
 	emitter := emit.NewEmitter("test-instance", sink)
 	logger.SetEmitter(emitter)
+	t.Cleanup(func() { _ = emitter.Close() })
 	return logger, sink
 }
 

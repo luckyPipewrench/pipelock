@@ -1,6 +1,25 @@
 package cli
 
-import "testing"
+import (
+	"context"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
+)
+
+func listenUDP(t *testing.T) net.PacketConn {
+	t.Helper()
+	lc := net.ListenConfig{}
+	conn, err := lc.ListenPacket(context.Background(), "udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	return conn
+}
 
 func TestRedactEndpoint(t *testing.T) {
 	tests := []struct {
@@ -57,5 +76,135 @@ func TestRedactEndpoint(t *testing.T) {
 				t.Errorf("redactEndpoint(%q) = %q, want %q", tt.raw, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestBuildEmitSinks_NoConfig(t *testing.T) {
+	cfg := config.Defaults()
+	sinks, err := buildEmitSinks(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(sinks) != 0 {
+		t.Errorf("expected 0 sinks, got %d", len(sinks))
+	}
+}
+
+func TestBuildEmitSinks_WebhookOnly(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	cfg := config.Defaults()
+	cfg.Emit.Webhook.URL = srv.URL
+	cfg.Emit.Webhook.MinSeverity = "warn" //nolint:goconst // test value
+
+	sinks, err := buildEmitSinks(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(sinks) != 1 {
+		t.Errorf("expected 1 sink, got %d", len(sinks))
+	}
+	for _, s := range sinks {
+		_ = s.Close()
+	}
+}
+
+func TestBuildEmitSinks_WebhookWithAllOptions(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	cfg := config.Defaults()
+	cfg.Emit.Webhook.URL = srv.URL
+	cfg.Emit.Webhook.MinSeverity = "info"          //nolint:goconst // test value
+	cfg.Emit.Webhook.AuthToken = "test-" + "token" //nolint:goconst // test value
+	cfg.Emit.Webhook.QueueSize = 32
+	cfg.Emit.Webhook.TimeoutSecs = 10
+
+	sinks, err := buildEmitSinks(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(sinks) != 1 {
+		t.Errorf("expected 1 sink, got %d", len(sinks))
+	}
+	for _, s := range sinks {
+		_ = s.Close()
+	}
+}
+
+func TestBuildEmitSinks_SyslogOnly(t *testing.T) {
+	conn := listenUDP(t)
+
+	cfg := config.Defaults()
+	cfg.Emit.Syslog.Address = "udp://" + conn.LocalAddr().String()
+	cfg.Emit.Syslog.MinSeverity = "warn" //nolint:goconst // test value
+	cfg.Emit.Syslog.Facility = "local3"
+	cfg.Emit.Syslog.Tag = "test"
+
+	sinks, err := buildEmitSinks(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(sinks) != 1 {
+		t.Errorf("expected 1 sink, got %d", len(sinks))
+	}
+	for _, s := range sinks {
+		_ = s.Close()
+	}
+}
+
+func TestBuildEmitSinks_BothSinks(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	conn := listenUDP(t)
+
+	cfg := config.Defaults()
+	cfg.Emit.Webhook.URL = srv.URL
+	cfg.Emit.Webhook.MinSeverity = "info" //nolint:goconst // test value
+	cfg.Emit.Syslog.Address = "udp://" + conn.LocalAddr().String()
+	cfg.Emit.Syslog.MinSeverity = "warn" //nolint:goconst // test value
+
+	sinks, err := buildEmitSinks(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(sinks) != 2 {
+		t.Errorf("expected 2 sinks, got %d", len(sinks))
+	}
+	for _, s := range sinks {
+		_ = s.Close()
+	}
+}
+
+func TestBuildEmitSinks_SyslogError_CleansUpWebhook(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	cfg := config.Defaults()
+	cfg.Emit.Webhook.URL = srv.URL
+	cfg.Emit.Webhook.MinSeverity = "info"
+	// Invalid syslog address triggers error after webhook is created
+	cfg.Emit.Syslog.Address = "tcp://127.0.0.1:1" // nothing listening on port 1
+
+	sinks, err := buildEmitSinks(cfg)
+	if err == nil {
+		for _, s := range sinks {
+			_ = s.Close()
+		}
+		t.Fatal("expected error for unreachable syslog")
+	}
+	// Webhook sink should have been cleaned up (no goroutine leak)
+	if sinks != nil {
+		t.Errorf("expected nil sinks on error, got %d", len(sinks))
 	}
 }

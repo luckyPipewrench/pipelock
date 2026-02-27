@@ -427,8 +427,9 @@ The kill switch uses OR logic across four independent sources (config, API,
 SIGUSR1 signal, sentinel file). If *any* source is active, all traffic is
 denied. Deactivating one doesn't affect the others.
 
-**Rate limiting:** 10 requests per 60-second window. Exceeding it returns
-`429` with a `Retry-After: 60` header.
+**Rate limiting:** `POST /api/v1/killswitch` is limited to 10 requests per
+60-second window. Exceeding it returns `429` with a `Retry-After: 60` header.
+`GET` status requests are not rate-limited.
 
 **Port isolation:** When `kill_switch.api_listen` is set, the API runs on a
 dedicated port that isn't exposed to the agent. This matters — without it, a

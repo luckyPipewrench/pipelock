@@ -292,10 +292,10 @@ Examples:
 				cmd.PrintErrf("  WS:     http://%s/ws?url=<ws-url> (WebSocket proxy enabled)\n", cfg.FetchProxy.Listen)
 			}
 			if cfg.Emit.Webhook.URL != "" {
-				cmd.PrintErrf("  Emit:   webhook -> %s (min_severity: %s)\n", cfg.Emit.Webhook.URL, cfg.Emit.Webhook.MinSeverity)
+				cmd.PrintErrf("  Emit:   webhook -> %s (min_severity: %s)\n", redactEndpoint(cfg.Emit.Webhook.URL), cfg.Emit.Webhook.MinSeverity)
 			}
 			if cfg.Emit.Syslog.Address != "" {
-				cmd.PrintErrf("  Emit:   syslog -> %s (min_severity: %s)\n", cfg.Emit.Syslog.Address, cfg.Emit.Syslog.MinSeverity)
+				cmd.PrintErrf("  Emit:   syslog -> %s (min_severity: %s)\n", redactEndpoint(cfg.Emit.Syslog.Address), cfg.Emit.Syslog.MinSeverity)
 			}
 			if cfg.KillSwitch.APIToken != "" {
 				if apiOnSeparatePort {
@@ -497,4 +497,17 @@ func buildEmitSinks(cfg *config.Config) ([]emit.Sink, error) {
 	}
 
 	return sinks, nil
+}
+
+// redactEndpoint strips userinfo, query, and fragment from an endpoint URL
+// to prevent leaking tokens/secrets in startup logs.
+func redactEndpoint(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "<invalid>"
+	}
+	u.User = nil
+	u.RawQuery = ""
+	u.Fragment = ""
+	return u.String()
 }

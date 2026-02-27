@@ -4,6 +4,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"sync"
 	"time"
@@ -75,7 +76,7 @@ func (h *APIHandler) HandleToggle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("invalid request body: %v", err), http.StatusBadRequest)
 		return
 	}
-	if dec.More() {
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
 		http.Error(w, "request body must contain exactly one JSON object", http.StatusBadRequest)
 		return
 	}

@@ -6,7 +6,7 @@ How Pipelock's runtime security controls map to the [EU AI Act (Regulation 2024/
 
 **Disclaimer:** This document maps Pipelock's security features to EU AI Act requirements for informational purposes. It does not constitute legal advice or guarantee regulatory compliance. Organizations should consult qualified legal counsel for compliance obligations specific to their AI systems.
 
-**Last updated:** v0.2.9 (February 2026)
+**Last updated:** v0.3.0 (February 2026)
 
 ---
 
@@ -104,7 +104,7 @@ Note: Art. 15(5) uses "adversarial examples" and "model evasion," not "prompt in
 | Requirement | Pipelock Feature | Coverage |
 |-------------|-----------------|----------|
 | **Adversarial examples / model evasion** (Art. 15(5)) | Content scanning on responses and MCP tool results; zero-width char stripping; NFKC normalization; case-insensitive matching; null byte stripping. Covers text-based injection patterns, not model-level evasion. | Partial |
-| **Confidentiality attacks** (Art. 15(5)) | DLP scanning (15 built-in credential patterns, extensible via config), env leak detection (raw + base64 + hex), Shannon entropy analysis, DNS subdomain exfiltration detection, split-key concatenation scanning | Full |
+| **Confidentiality attacks** (Art. 15(5)) | DLP scanning (22 built-in credential patterns, extensible via config), env leak detection (raw + base64 + hex), Shannon entropy analysis, DNS subdomain exfiltration detection, split-key concatenation scanning | Full |
 | **Data poisoning** (Art. 15(5)) | File integrity monitoring (SHA256 manifests), Ed25519 signing and verification, response scanning on fetched content | Partial |
 | **Resilient against unauthorized alteration** (Art. 15(5)) | Capability separation prevents agent from being manipulated into exfiltrating data; SSRF blocks access to internal infrastructure | Full |
 | **Technical redundancy / fail-safe** (Art. 15(4)) | Fail-closed architecture: scan error, HITL timeout, parse failure, DNS error, context cancellation all default to block | Full |
@@ -205,7 +205,7 @@ Mapping from individual Pipelock controls to both frameworks.
 | SSRF protection | Private IP blocking, DNS rebinding prevention, metadata endpoint blocking | Art. 15(4-5) | MAP 2.1, MEASURE 2.7 |
 | Domain blocklist | Configurable deny/allow lists with wildcard support | Art. 9(5) | GOVERN 1.2, MANAGE 1.1 |
 | Rate limiting | Per-domain sliding window, base domain normalization | Art. 15(4) | MANAGE 1.1 |
-| DLP scanning | 15 built-in credential patterns, custom regex, severity classification | Art. 15(5) | GOVERN 1.2, MEASURE 2.6 |
+| DLP scanning | 22 built-in credential patterns, custom regex, severity classification | Art. 15(5) | GOVERN 1.2, MEASURE 2.6 |
 | Env leak detection | Raw + base64 + hex, Shannon entropy > 3.0 | Art. 15(5) | MEASURE 2.6 |
 | Entropy analysis | Shannon entropy on URL path segments and query parameters | Art. 15(5) | MAP 2.1 |
 | Content scanning | Response scanning with zero-width stripping, NFKC, case-insensitive | Art. 15(5) | MAP 2.1, MEASURE 2.6 |

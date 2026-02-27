@@ -71,7 +71,7 @@ An honest feature matrix and guidance on when to use what.
 mcp-scan has two modes: static scanning detects tool poisoning via hash comparison ("has this tool changed?"), while proxy mode monitors MCP traffic with PII/secrets guardrails. Pipelock scans bidirectionally with pattern matching, Unicode normalization, entropy analysis, and covers HTTP fetch traffic in addition to MCP. They're complementary: mcp-scan for MCP-specific auditing and guardrails, Pipelock for deep content inspection across both HTTP and MCP.
 
 ### Pipelock vs Docker MCP Gateway
-Docker MCP Gateway aggregates MCP servers and provides basic secret scanning. Pipelock provides deep content inspection (16 DLP patterns, injection detection, entropy analysis, tool poisoning). They're complementary — Pipelock could run as a Gateway interceptor for content inspection while Gateway handles routing and Docker-native lifecycle management.
+Docker MCP Gateway aggregates MCP servers and provides basic secret scanning. Pipelock provides deep content inspection (22 DLP patterns, injection detection, entropy analysis, tool poisoning). They're complementary — Pipelock could run as a Gateway interceptor for content inspection while Gateway handles routing and Docker-native lifecycle management.
 
 ## Using Tools Together
 

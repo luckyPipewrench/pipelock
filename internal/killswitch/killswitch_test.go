@@ -1040,14 +1040,24 @@ func TestController_Reload_InvalidCIDR(t *testing.T) {
 	// Reload with an invalid CIDR — should log to stderr and continue,
 	// not panic.
 	cfg2 := testConfig()
+	cfg2.KillSwitch.Enabled = true
+	cfg2.KillSwitch.Message = "test deny"
 	cfg2.KillSwitch.AllowlistIPs = []string{"not-a-cidr", "10.0.0.0/8"}
 	c.Reload(cfg2)
 
-	// Verify the valid CIDR was still added (controller is functional).
+	// Non-allowlisted IP should be blocked (kill switch is enabled).
 	r := httptest.NewRequest(http.MethodGet, "/fetch", nil)
-	r.RemoteAddr = "10.0.0.1:12345"
+	r.RemoteAddr = "192.168.1.1:12345"
 	d := c.IsActiveHTTP(r)
-	if d.Active {
+	if !d.Active {
+		t.Error("expected active — IP is not in allowlist and kill switch is enabled")
+	}
+
+	// Allowlisted IP should pass despite the kill switch (valid CIDR was processed).
+	r2 := httptest.NewRequest(http.MethodGet, "/fetch", nil)
+	r2.RemoteAddr = "10.0.0.1:12345"
+	d2 := c.IsActiveHTTP(r2)
+	if d2.Active {
 		t.Error("expected inactive — IP should be in allowlist from the valid CIDR")
 	}
 }

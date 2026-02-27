@@ -182,7 +182,7 @@ identifies several threats. Here's what Pipelock detects at runtime:
 
 | Threat | CrewAI's Guidance | Pipelock's Detection |
 |--------|-------------------|---------------------|
-| Credential exposure | "Use trusted servers" | DLP scanner catches 15 built-in credential patterns in tool arguments (API keys, tokens, private keys) |
+| Credential exposure | "Use trusted servers" | DLP scanner catches 22 built-in credential patterns in tool arguments (API keys, tokens, private keys) |
 | Prompt injection via tool metadata | "Only connect to trusted servers" | Tool description scanning detects hidden instructions, exfiltration directives, cross-tool manipulation |
 | Tool behavior changes mid-session | Not addressed | Rug-pull detection tracks tool definition hashes per session, alerts on changes |
 | DNS exfiltration via subdomains | Not addressed | Dot-collapse scanning and subdomain entropy analysis |

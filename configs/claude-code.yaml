@@ -78,43 +78,55 @@ websocket_proxy:
 
 dlp:
   scan_env: true
+  include_defaults: false  # Preset defines the complete pattern set
   patterns:
+    # Provider API keys
     - name: "Anthropic API Key"
       regex: 'sk-ant-[a-zA-Z0-9\-_]{10,}'
       severity: critical
     - name: "OpenAI API Key"
       regex: 'sk-proj-[a-zA-Z0-9\-_]{10,}'
       severity: critical
-    - name: "GitHub Token"
-      regex: 'gh[ps]_[A-Za-z0-9_]{36,}'
+    - name: "OpenAI Service Key"
+      regex: 'sk-svcacct-[a-zA-Z0-9\-]{10,}'
       severity: critical
-    - name: "Slack Token"
-      regex: 'xox[bpras]-[0-9a-zA-Z-]{15,}'
-      severity: critical
-    - name: "AWS Access Key"
-      regex: 'AKIA[0-9A-Z]{16}'
-      severity: critical
-    - name: "Discord Bot Token"
-      regex: '[MN][A-Za-z0-9]{23,}\.[A-Za-z0-9\-_]{6}\.[A-Za-z0-9\-_]{27,}'
-      severity: critical
-    - name: "Private Key Header"
-      regex: '-----BEGIN\s+(RSA\s+|EC\s+|DSA\s+|OPENSSH\s+)?PRIVATE\s+KEY-----'
+    - name: "Fireworks API Key"
+      regex: 'fw_[a-zA-Z0-9]{24,}'
       severity: critical
     - name: "Google API Key"
       regex: 'AIza[0-9A-Za-z\-_]{35}'
       severity: high
-    - name: "GitHub Fine-Grained PAT"
-      regex: 'github_pat_[a-zA-Z0-9_]{36,}'
-      severity: critical
-    - name: "OpenAI Service Key"
-      regex: 'sk-svcacct-[a-zA-Z0-9\-]{10,}'
+    - name: "Google OAuth Client Secret"
+      regex: 'GOCSPX-[A-Za-z0-9_\-]{28,}'
       severity: critical
     - name: "Stripe Key"
       regex: '[sr]k_(live|test)_[a-zA-Z0-9]{20,}'
       severity: critical
+    # Source control tokens
+    - name: "GitHub Token"
+      regex: 'gh[pousr]_[A-Za-z0-9_]{36,}'
+      severity: critical
+    - name: "GitHub Fine-Grained PAT"
+      regex: 'github_pat_[a-zA-Z0-9_]{36,}'
+      severity: critical
+    # Cloud provider credentials
+    - name: "AWS Access ID"
+      regex: '(AKIA|A3T|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16,}'
+      severity: critical
     - name: "Google OAuth Token"
       regex: 'ya29\.[a-zA-Z0-9_-]{20,}'
       severity: critical
+    # Messaging platform tokens
+    - name: "Slack Token"
+      regex: 'xox[bpras]-[0-9a-zA-Z-]{15,}'
+      severity: critical
+    - name: "Slack App Token"
+      regex: 'xapp-[0-9]+-[A-Za-z0-9_]+-[0-9]+-[a-f0-9]+'
+      severity: critical
+    - name: "Discord Bot Token"
+      regex: '[MN][A-Za-z0-9]{23,}\.[A-Za-z0-9\-_]{6}\.[A-Za-z0-9\-_]{27,}'
+      severity: critical
+    # Communication service keys
     - name: "Twilio API Key"
       regex: 'SK[a-f0-9]{32}'
       severity: high
@@ -124,6 +136,18 @@ dlp:
     - name: "Mailgun API Key"
       regex: 'key-[a-zA-Z0-9]{32}'
       severity: high
+    # Cryptographic material
+    - name: "Private Key Header"
+      regex: '-----BEGIN\s+(RSA\s+|EC\s+|DSA\s+|OPENSSH\s+)?PRIVATE\s+KEY-----'
+      severity: critical
+    - name: "JWT Token"
+      regex: '(ey[a-zA-Z0-9_\-=]{10,}\.){2}[a-zA-Z0-9_\-=]{10,}'
+      severity: high
+    # Identity / PII
+    - name: "Google OAuth Client ID"
+      regex: '[0-9]{6,}-[0-9A-Za-z_]{32}\.apps\.googleusercontent\.com'
+      severity: medium
+    # Generic credential patterns
     - name: "Credential in URL"
       regex: '\b(?:password|passwd|secret|token|apikey|api_key|api-key)\s*=\s*[^\s&]{4,}'
       severity: high
@@ -131,6 +155,7 @@ dlp:
 response_scanning:
   enabled: true
   action: block
+  include_defaults: false  # Preset defines the complete pattern set
   patterns:
     - name: "Prompt Injection"
       regex: '(?i)(ignore|disregard|forget|abandon)[-,;:.\s]+\s*(all\s+)?(previous|prior|above|earlier)\s+(\w+\s+)?(instructions|prompts|rules|context|directives|constraints|policies|guardrails)'

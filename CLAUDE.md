@@ -87,7 +87,7 @@ Agent (secrets, no network) → Pipelock (no secrets, full network) → Internet
 
 ### Scanner Pipeline
 
-1. Scheme (http/https only) → 2. Domain blocklist → 3. DLP (15+ patterns, env leak detection, entropy) → 4. Path entropy → 5. Subdomain entropy → 6. SSRF (private IPs, metadata, DNS rebinding) → 7. Rate limiting → 8. URL length → 9. Data budget
+1. Scheme (http/https only) → 2. Domain blocklist → 3. DLP (22 patterns, env leak detection, entropy) → 4. Path entropy → 5. Subdomain entropy → 6. SSRF (private IPs, metadata, DNS rebinding) → 7. Rate limiting → 8. URL length → 9. Data budget
 
 Layers 2-3 run **before** DNS resolution. Layer 6 runs **after**. This ordering prevents DNS-based exfiltration.
 
@@ -180,9 +180,9 @@ Additional: CodeQL (security-and-quality), govulncheck.
 ## Common Development Tasks
 
 ### Adding a DLP pattern
-1. Add regex to `internal/scanner/scanner.go` (DLP patterns section)
-2. Add test cases in `scanner_test.go`
-3. Update `configs/` presets if pattern should be on by default
+1. Add regex to `internal/config/config.go` (`Defaults()` DLP Patterns slice)
+2. Add test cases in `internal/scanner/text_dlp_test.go` and `scanner_test.go`
+3. Update all 6 `configs/` preset YAML files with the new pattern
 4. Verify no false positives: `make test`
 
 ### Adding a scanner layer

@@ -181,6 +181,7 @@ type ResponseScanning struct {
 	Enabled           bool                  `yaml:"enabled"`
 	Action            string                `yaml:"action"`              // strip, warn, block, ask
 	AskTimeoutSeconds int                   `yaml:"ask_timeout_seconds"` // timeout for HITL prompt (default 30)
+	IncludeDefaults   *bool                 `yaml:"include_defaults"`    // nil/true: merge user patterns with defaults; false: user patterns only
 	Patterns          []ResponseScanPattern `yaml:"patterns"`
 }
 
@@ -253,6 +254,7 @@ type DLP struct {
 	ScanEnv            bool         `yaml:"scan_env"`
 	SecretsFile        string       `yaml:"secrets_file"`
 	MinEnvSecretLength int          `yaml:"min_env_secret_length"` // minimum env var length for leak detection (default 16)
+	IncludeDefaults    *bool        `yaml:"include_defaults"`      // nil/true: merge user patterns with defaults; false: user patterns only
 	Patterns           []DLPPattern `yaml:"patterns"`
 }
 
@@ -435,14 +437,24 @@ func (c *Config) ApplyDefaults() {
 	if c.ResponseScanning.Action == "ask" && c.ResponseScanning.AskTimeoutSeconds <= 0 { //nolint:goconst // config action value
 		c.ResponseScanning.AskTimeoutSeconds = 30
 	}
-	// Inject default patterns when scanning is enabled but no patterns are configured.
-	// Without this, enabled: true with an empty patterns list silently disables detection.
-	if c.ResponseScanning.Enabled && len(c.ResponseScanning.Patterns) == 0 {
-		c.ResponseScanning.Patterns = Defaults().ResponseScanning.Patterns
+	// Merge default response scanning patterns with user patterns.
+	// include_defaults (nil/true): defaults load first, user patterns override by name.
+	// include_defaults (false): only user patterns are used (full override).
+	if c.ResponseScanning.Enabled {
+		c.ResponseScanning.Patterns = mergeResponsePatterns(
+			c.ResponseScanning.IncludeDefaults,
+			c.ResponseScanning.Patterns,
+			Defaults().ResponseScanning.Patterns,
+		)
 	}
-	if len(c.DLP.Patterns) == 0 {
-		c.DLP.Patterns = Defaults().DLP.Patterns
-	}
+	// Merge default DLP patterns with user patterns.
+	// include_defaults (nil/true): defaults load first, user patterns override by name.
+	// include_defaults (false): only user patterns are used (full override).
+	c.DLP.Patterns = mergeDLPPatterns(
+		c.DLP.IncludeDefaults,
+		c.DLP.Patterns,
+		Defaults().DLP.Patterns,
+	)
 	// Always default OnParseError (fail-closed) regardless of enabled state,
 	// since validation checks it unconditionally.
 	if c.MCPInputScanning.OnParseError == "" {
@@ -597,6 +609,58 @@ func (c *Config) ApplyDefaults() {
 			c.MCPSessionBinding.NoBaselineAction = ActionWarn
 		}
 	}
+}
+
+// mergeDLPPatterns merges default DLP patterns with user-defined patterns.
+// When includeDefaults is nil or true, defaults are loaded first and user
+// patterns override by name (matching Name field). New defaults that don't
+// exist in the user config are automatically added.
+// When includeDefaults is false, only user patterns are used.
+func mergeDLPPatterns(includeDefaults *bool, user, defaults []DLPPattern) []DLPPattern {
+	if includeDefaults != nil && !*includeDefaults {
+		// Explicit opt-out: user patterns only (old behavior).
+		return user
+	}
+	if len(user) == 0 {
+		return defaults
+	}
+	// Build lookup of user pattern names.
+	userNames := make(map[string]struct{}, len(user))
+	for _, p := range user {
+		userNames[p.Name] = struct{}{}
+	}
+	// Start with defaults not overridden by user, then append all user patterns.
+	merged := make([]DLPPattern, 0, len(defaults)+len(user))
+	for _, d := range defaults {
+		if _, overridden := userNames[d.Name]; !overridden {
+			merged = append(merged, d)
+		}
+	}
+	merged = append(merged, user...)
+	return merged
+}
+
+// mergeResponsePatterns merges default response scanning patterns with user-defined patterns.
+// Same semantics as mergeDLPPatterns: nil/true merges by name, false uses user only.
+func mergeResponsePatterns(includeDefaults *bool, user, defaults []ResponseScanPattern) []ResponseScanPattern {
+	if includeDefaults != nil && !*includeDefaults {
+		return user
+	}
+	if len(user) == 0 {
+		return defaults
+	}
+	userNames := make(map[string]struct{}, len(user))
+	for _, p := range user {
+		userNames[p.Name] = struct{}{}
+	}
+	merged := make([]ResponseScanPattern, 0, len(defaults)+len(user))
+	for _, d := range defaults {
+		if _, overridden := userNames[d.Name]; !overridden {
+			merged = append(merged, d)
+		}
+	}
+	merged = append(merged, user...)
+	return merged
 }
 
 // Validate checks the config for errors. Must be called after ApplyDefaults.
@@ -1052,6 +1116,16 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		})
 	}
 
+	// DLP include_defaults disabled
+	oldInclude := old.DLP.IncludeDefaults == nil || *old.DLP.IncludeDefaults
+	newInclude := updated.DLP.IncludeDefaults == nil || *updated.DLP.IncludeDefaults
+	if oldInclude && !newInclude {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "dlp.include_defaults",
+			Message: "DLP include_defaults disabled — new default patterns will not be merged on future upgrades",
+		})
+	}
+
 	// Internal CIDRs emptied
 	if len(old.Internal) > 0 && len(updated.Internal) == 0 {
 		warnings = append(warnings, ReloadWarning{
@@ -1251,21 +1325,45 @@ func Defaults() *Config {
 		DLP: DLP{
 			ScanEnv: true,
 			Patterns: []DLPPattern{
+				// Provider API keys
 				{Name: "Anthropic API Key", Regex: `sk-ant-[a-zA-Z0-9\-_]{10,}`, Severity: "critical"},
 				{Name: "OpenAI API Key", Regex: `sk-proj-[a-zA-Z0-9\-_]{10,}`, Severity: "critical"},
-				{Name: "GitHub Token", Regex: `gh[ps]_[A-Za-z0-9_]{36,}`, Severity: "critical"},
-				{Name: "Slack Token", Regex: `xox[bpras]-[0-9a-zA-Z-]{15,}`, Severity: "critical"},
-				{Name: "AWS Access Key", Regex: `AKIA[0-9A-Z]{16}`, Severity: "critical"},
-				{Name: "Discord Bot Token", Regex: `[MN][A-Za-z0-9]{23,}\.[A-Za-z0-9\-_]{6}\.[A-Za-z0-9\-_]{27,}`, Severity: "critical"},
-				{Name: "Private Key Header", Regex: `-----BEGIN\s+(RSA\s+|EC\s+|DSA\s+|OPENSSH\s+)?PRIVATE\s+KEY-----`, Severity: "critical"},
-				{Name: "Social Security Number", Regex: `\b\d{3}-\d{2}-\d{4}\b`, Severity: "low"},
-				{Name: "GitHub Fine-Grained PAT", Regex: `github_pat_[a-zA-Z0-9_]{36,}`, Severity: "critical"},
 				{Name: "OpenAI Service Key", Regex: `sk-svcacct-[a-zA-Z0-9\-]{10,}`, Severity: "critical"},
+				{Name: "Fireworks API Key", Regex: `fw_[a-zA-Z0-9]{24,}`, Severity: "critical"},
+				{Name: "Google API Key", Regex: `AIza[0-9A-Za-z\-_]{35}`, Severity: "high"},
+				{Name: "Google OAuth Client Secret", Regex: `GOCSPX-[A-Za-z0-9_\-]{28,}`, Severity: "critical"},
 				{Name: "Stripe Key", Regex: `[sr]k_(live|test)_[a-zA-Z0-9]{20,}`, Severity: "critical"},
+
+				// Source control tokens
+				{Name: "GitHub Token", Regex: `gh[pousr]_[A-Za-z0-9_]{36,}`, Severity: "critical"},
+				{Name: "GitHub Fine-Grained PAT", Regex: `github_pat_[a-zA-Z0-9_]{36,}`, Severity: "critical"},
+
+				// Cloud provider credentials
+				// All AWS credential prefixes: AKIA (access key), ASIA (STS temp), AROA (role),
+				// AIDA (user ID), AIPA (instance profile), AGPA (group), ANPA/ANVA (policy), A3T (legacy).
+				// {16,}: real AWS IDs have 16+ chars after prefix. Avoids FPs like ASIA2025REPORT1234.
+				{Name: "AWS Access ID", Regex: `(AKIA|A3T|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16,}`, Severity: "critical"},
 				{Name: "Google OAuth Token", Regex: `ya29\.[a-zA-Z0-9_-]{20,}`, Severity: "critical"},
+
+				// Messaging platform tokens
+				{Name: "Slack Token", Regex: `xox[bpras]-[0-9a-zA-Z-]{15,}`, Severity: "critical"},
+				{Name: "Slack App Token", Regex: `xapp-[0-9]+-[A-Za-z0-9_]+-[0-9]+-[a-f0-9]+`, Severity: "critical"},
+				{Name: "Discord Bot Token", Regex: `[MN][A-Za-z0-9]{23,}\.[A-Za-z0-9\-_]{6}\.[A-Za-z0-9\-_]{27,}`, Severity: "critical"},
+
+				// Communication service keys
 				{Name: "Twilio API Key", Regex: `SK[a-f0-9]{32}`, Severity: "high"},
 				{Name: "SendGrid API Key", Regex: `SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}`, Severity: "critical"},
 				{Name: "Mailgun API Key", Regex: `key-[a-zA-Z0-9]{32}`, Severity: "high"},
+
+				// Cryptographic material
+				{Name: "Private Key Header", Regex: `-----BEGIN\s+(RSA\s+|EC\s+|DSA\s+|OPENSSH\s+)?PRIVATE\s+KEY-----`, Severity: "critical"},
+				{Name: "JWT Token", Regex: `(ey[a-zA-Z0-9_\-=]{10,}\.){2}[a-zA-Z0-9_\-=]{10,}`, Severity: "high"},
+
+				// Identity / PII
+				{Name: "Social Security Number", Regex: `\b\d{3}-\d{2}-\d{4}\b`, Severity: "low"},
+				{Name: "Google OAuth Client ID", Regex: `[0-9]{6,}-[0-9A-Za-z_]{32}\.apps\.googleusercontent\.com`, Severity: "medium"},
+
+				// Generic credential patterns
 				// \b protects underscore-compound names (next_token, csrf_token_id) since _ is \w.
 				// Hyphen-compound names (show-password, x-token) are NOT protected since - is \W,
 				// so \b still fires. Accepted tradeoff: such params are rare in agent traffic.

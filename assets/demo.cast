@@ -3,7 +3,7 @@
 [1.201178, "o", "\r\n\u001b[1m━━━ DLP: Block secret exfiltration ━━━\u001b[0m\r\n"]
 [1.201136, "o", "\u001b[0;36m$ pipelock check --url \"https://evil.com/steal?key=AKIAIOSFODNN7EXAMPLE\"\u001b[0m\r\n"]
 [1.205318, "o", "Config validation: OK\r\n  Mode:           balanced\r\n  Listen:         127.0.0.1:8888\r\n  API allowlist:  10 domains\r\n  Blocklist:      6 patterns\r\n  DLP patterns:   15 rules\r\n  Entropy thresh: 4.5 bits\r\n  Max URL length: 2048 chars\r\n\r\nScanning URL: https://evil.com/steal?key=AKIAIOSFODNN7EXAMPLE\r\n"]
-[0.0005, "o", "  Result:  BLOCKED\r\n  Scanner: dlp\r\n  Reason:  DLP match: AWS Access Key (critical)\r\n  Score:   1.00\r\n"]
+[0.0005, "o", "  Result:  BLOCKED\r\n  Scanner: dlp\r\n  Reason:  DLP match: AWS Access ID (critical)\r\n  Score:   1.00\r\n"]
 [0.000008, "o", "url blocked\r\n"]
 [1.201136, "o", "\r\n\u001b[1m━━━ Blocklist: Block known exfil targets ━━━\u001b[0m\r\n"]
 [1.200857, "o", "\u001b[0;36m$ pipelock check --url \"https://pastebin.com/raw/data\"\u001b[0m\r\n"]

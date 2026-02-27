@@ -170,6 +170,9 @@ flowchart LR
 | MCP scanning (bidirectional + tool poisoning) | Yes | Yes | No | No |
 | WebSocket proxy (frame scanning + fragment reassembly) | Yes | No | No | No |
 | MCP HTTP transport (Streamable HTTP + reverse proxy) | Yes | No | No | No |
+| Emergency kill switch (config + signal + file + API) | Yes | No | No | No |
+| Event emission (webhook + syslog) | Yes | No | No | No |
+| Tool call chain detection | Yes | No | No | No |
 | Single binary, zero deps | Yes | No (Python) | No (npm) | No (kernel-level enforcement) |
 | Audit logging + Prometheus | Yes | No | No | No |
 
@@ -344,6 +347,93 @@ Features:
 - Prometheus metrics: `pipelock_ws_connections_total`, `pipelock_ws_active_connections`, `pipelock_ws_frames_total`, `pipelock_ws_scan_hits_total`
 - Structured audit logs for open/close/blocked events
 
+### Kill Switch
+
+Emergency deny-all that blocks every request through the proxy. Four activation sources, OR-composed — any one active means all traffic is blocked:
+
+| Source | How to activate | How to deactivate |
+|--------|----------------|-------------------|
+| **Config** | `kill_switch.enabled: true` | Set to `false` and SIGHUP |
+| **Signal** | `kill -SIGUSR1 <pid>` | `kill -SIGUSR1 <pid>` (toggles) |
+| **Sentinel file** | `touch /tmp/pipelock-kill` | `rm /tmp/pipelock-kill` |
+| **API** | `POST /api/v1/killswitch` with `{"active": true}` | `POST /api/v1/killswitch` with `{"active": false}` |
+
+The API requires a bearer token (`api_token` in config). Health endpoint (`/health`) always reports kill switch status — no auth needed.
+
+**Port isolation**: Set `api_listen` to run the API on a separate port. This prevents agents from deactivating their own kill switch — the agent's traffic goes through the main proxy port and cannot reach the API. Recommended for sidecar deployments:
+
+```yaml
+kill_switch:
+  enabled: false
+  api_listen: "0.0.0.0:9090"    # Separate port — not exposed via k8s Service
+  api_token: "CHANGE-ME"
+  sentinel_file: /tmp/pipelock-kill
+  message: "Emergency deny-all active"
+```
+
+```bash
+# Activate from operator machine (agent cannot reach this port)
+curl -X POST http://localhost:9090/api/v1/killswitch \
+  -H "Authorization: Bearer TOKEN" \
+  -d '{"active": true}'
+
+# Check status (shows all four sources)
+curl http://localhost:9090/api/v1/killswitch/status \
+  -H "Authorization: Bearer TOKEN"
+```
+
+### Event Emission
+
+Forward audit events to external systems (SIEM, webhook receivers, syslog servers). Events are fire-and-forget — emission never blocks the proxy. Two independent sinks, each with its own severity filter:
+
+```yaml
+emit:
+  instance_id: "prod-agent-1"     # Identifies this pipelock instance in events
+  webhook:
+    url: "https://your-siem.example.com/webhook"
+    min_severity: warn             # info, warn, critical
+    auth_token: "CHANGE-ME"
+    timeout_seconds: 5
+    queue_size: 64
+  syslog:
+    address: "udp://syslog.example.com:514"
+    min_severity: warn
+    facility: local0
+    tag: pipelock
+```
+
+Severity levels are hardcoded per event type — users control the emission threshold, not the severity:
+- **critical**: kill switch deny, adaptive escalation to block
+- **warn**: blocked requests, anomalies, session anomalies, MCP unknown tools, response scan hits, WebSocket blocked/scan hits, errors
+- **info**: allowed requests, forward proxy HTTP, tunnel open/close, WebSocket open/close, config reload, redirects
+
+### Finding Suppression
+
+Suppress specific scanner findings when you know they're false positives. Two methods:
+
+```yaml
+# Config-level suppression
+suppress:
+  - rule: "Jailbreak Attempt"
+    path: "*/robots.txt"
+    reason: "robots.txt content triggers developer mode regex"
+```
+
+Inline suppression via `// pipelock:ignore` comments in source files (used by `pipelock audit` and `pipelock git scan-diff`).
+
+### Tool Call Chain Detection
+
+Detects attack patterns in sequences of MCP tool calls. Ships with 8 built-in patterns covering reconnaissance, credential theft, data staging, and exfiltration chains:
+
+```yaml
+tool_chain_detection:
+  enabled: true
+  action: warn              # warn or block
+  window_size: 20           # max tool calls in history
+  window_seconds: 300       # time-based eviction
+  max_gap: 3                # max innocent calls between chain steps
+```
+
 ### Multi-Agent Support
 
 Each agent identifies itself via `X-Pipelock-Agent` header (or `?agent=` query parameter). All audit logs include the agent name for per-agent filtering.
@@ -428,6 +518,51 @@ websocket_proxy:
   idle_timeout_seconds: 300
   origin_policy: rewrite     # rewrite, forward, or strip Origin header
   forward_cookies: false     # forward cookies to upstream
+
+# Finding suppression — silence known false positives
+# suppress:
+#   - rule: "Jailbreak Attempt"
+#     path: "*/robots.txt"
+#     reason: "robots.txt content triggers developer mode regex"
+
+# Kill switch — emergency deny-all (see "Kill Switch" section above)
+# kill_switch:
+#   enabled: false
+#   api_listen: "0.0.0.0:9090"  # separate port for operator-only API access
+#   api_token: ""                # set a bearer token to enable the API
+#   sentinel_file: /tmp/pipelock-kill
+#   message: "Emergency deny-all active"
+
+# Event emission — forward audit events to external systems
+# emit:
+#   instance_id: ""              # defaults to hostname
+#   webhook:
+#     url: "https://your-siem.example.com/webhook"
+#     min_severity: warn
+#     auth_token: ""
+#     timeout_seconds: 5
+#     queue_size: 64
+#   syslog:
+#     address: "udp://syslog.example.com:514"
+#     min_severity: warn
+#     facility: local0
+#     tag: pipelock
+
+# Tool call chain detection (MCP)
+# tool_chain_detection:
+#   enabled: true
+#   action: warn
+#   window_size: 20
+#   window_seconds: 300
+#   max_gap: 3
+
+# Session behavioral profiling
+# session_profiling:
+#   enabled: true
+
+# Adaptive enforcement (scoring-only in v1)
+# adaptive_enforcement:
+#   enabled: true
 
 logging:
   format: json
@@ -551,6 +686,14 @@ curl "http://localhost:8888/metrics"
 
 # JSON stats (top blocked domains, scanner hits, tunnels, block rate)
 curl "http://localhost:8888/stats"
+
+# Kill switch API (when api_listen is set, use that port instead)
+# Activate:
+curl -X POST http://localhost:9090/api/v1/killswitch \
+  -H "Authorization: Bearer TOKEN" -d '{"active": true}'
+# Status:
+curl http://localhost:9090/api/v1/killswitch/status \
+  -H "Authorization: Bearer TOKEN"
 ```
 
 **Fetch response:**
@@ -578,7 +721,8 @@ curl "http://localhost:8888/stats"
   "git_protection_enabled": false,
   "rate_limit_enabled": true,
   "forward_proxy_enabled": false,
-  "websocket_proxy_enabled": false
+  "websocket_proxy_enabled": false,
+  "kill_switch_active": false
 }
 ```
 
@@ -633,14 +777,17 @@ internal/
                          keygen, sign, verify, trust, version, healthcheck)
   config/              YAML config loading, validation, defaults, hot-reload (fsnotify)
   scanner/             URL scanning (SSRF, blocklist, rate limit, DLP, entropy, env leak)
-  audit/               Structured JSON audit logging (zerolog)
+  audit/               Structured JSON audit logging (zerolog) + event emission dispatch
   proxy/               HTTP proxy: fetch (/fetch), forward (CONNECT + absolute-URI), WebSocket (/ws), DNS pinning
   metrics/             Prometheus metrics + JSON stats endpoint
   gitprotect/          Git-aware security (diff scanning, branch validation, hooks)
   integrity/           File integrity monitoring (SHA256 manifests, check/diff, exclusions)
   signing/             Ed25519 key management, file signing, signature verification
-  mcp/                 MCP proxy (stdio + Streamable HTTP) + bidirectional scanning + tool poisoning
+  mcp/                 MCP proxy (stdio + Streamable HTTP) + bidirectional scanning + tool poisoning + chain detection
+  killswitch/          Emergency deny-all controller (config, signal, sentinel file, API) + port isolation
+  emit/                Event emission to external systems (webhook + syslog sinks)
   hitl/                Human-in-the-loop terminal approval (ask action)
+  normalize/           Unicode normalization pipeline (NFC, whitespace, combining marks)
 configs/               Preset config files (strict, balanced, audit, claude-code, cursor, generic-agent)
 docs/                  OWASP mapping, tool comparison
 blog/                  Blog posts (mirrored at pipelab.org/blog/)
@@ -652,7 +799,7 @@ Canonical metrics — updated each release.
 
 | Metric | Value |
 |--------|-------|
-| Go tests (with `-race`) | 2,900+ |
+| Go tests (with `-race`) | 3,558 |
 | Statement coverage | 96%+ |
 | Evasion techniques tested | 230+ |
 | Scanner pipeline overhead | ~25μs per URL scan |

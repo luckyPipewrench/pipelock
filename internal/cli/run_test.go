@@ -1,11 +1,15 @@
 package cli
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
@@ -217,5 +221,274 @@ func TestBuildEmitSinks_SyslogError_CleansUpWebhook(t *testing.T) {
 	// Webhook sink should have been cleaned up (no goroutine leak)
 	if sinks != nil {
 		t.Errorf("expected nil sinks on error, got %d", len(sinks))
+	}
+}
+
+// freePort returns a free TCP port on localhost.
+func freePort(t *testing.T) string {
+	t.Helper()
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("free port: %v", err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+	return addr
+}
+
+// waitForPort polls a TCP address until it accepts connections or times out.
+func waitForPort(t *testing.T, addr string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	dialer := &net.Dialer{Timeout: 50 * time.Millisecond}
+	for time.Now().Before(deadline) {
+		conn, err := dialer.DialContext(context.Background(), "tcp4", addr)
+		if err == nil {
+			_ = conn.Close()
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("port %s not ready within 5s", addr)
+}
+
+// doGet issues a context-aware GET and fails the test on error.
+func doGet(t *testing.T, client *http.Client, url string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatalf("new request %s: %v", url, err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("GET %s: %v", url, err)
+	}
+	return resp
+}
+
+func TestRunCmd_MetricsPortIsolation(t *testing.T) {
+	mainAddr := freePort(t)
+	metricsAddr := freePort(t)
+
+	cfgYAML := fmt.Sprintf(`version: 1
+mode: balanced
+metrics_listen: %q
+fetch_proxy:
+  listen: %q
+  timeout_seconds: 5
+  max_response_mb: 1
+logging:
+  format: json
+  output: stdout
+`, metricsAddr, mainAddr)
+
+	tmpFile, err := os.CreateTemp(t.TempDir(), "pipelock-*.yaml")
+	if err != nil {
+		t.Fatalf("create temp config: %v", err)
+	}
+	if _, err := tmpFile.WriteString(cfgYAML); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	_ = tmpFile.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cmd := runCmd()
+	cmd.SetContext(ctx)
+	cmd.SetArgs([]string{"--config", tmpFile.Name()})
+	var stderr bytes.Buffer
+	cmd.SetErr(&stderr)
+	cmd.SetOut(&stderr)
+
+	cmdErr := make(chan error, 1)
+	go func() {
+		cmdErr <- cmd.Execute()
+	}()
+
+	// Wait for both ports.
+	waitForPort(t, mainAddr)
+	waitForPort(t, metricsAddr)
+
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	// Main port: /health should work.
+	resp := doGet(t, client, "http://"+mainAddr+"/health")
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("/health: want 200, got %d", resp.StatusCode)
+	}
+
+	// Main port: /metrics should 404 (isolated to metrics port).
+	resp = doGet(t, client, "http://"+mainAddr+"/metrics")
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("/metrics on main port: want 404, got %d", resp.StatusCode)
+	}
+
+	// Main port: /stats should 404.
+	resp = doGet(t, client, "http://"+mainAddr+"/stats")
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("/stats on main port: want 404, got %d", resp.StatusCode)
+	}
+
+	// Metrics port: /metrics should 200.
+	resp = doGet(t, client, "http://"+metricsAddr+"/metrics")
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("/metrics on metrics port: want 200, got %d", resp.StatusCode)
+	}
+
+	// Metrics port: /stats should 200.
+	resp = doGet(t, client, "http://"+metricsAddr+"/stats")
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("/stats on metrics port: want 200, got %d", resp.StatusCode)
+	}
+
+	// Shut down.
+	cancel()
+	select {
+	case err := <-cmdErr:
+		if err != nil {
+			t.Errorf("runCmd returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("runCmd did not exit within 5s")
+	}
+}
+
+func TestRunCmd_MetricsDisplayMessage(t *testing.T) {
+	mainAddr := freePort(t)
+	metricsAddr := freePort(t)
+
+	cfgYAML := fmt.Sprintf(`version: 1
+mode: balanced
+metrics_listen: %q
+fetch_proxy:
+  listen: %q
+  timeout_seconds: 5
+  max_response_mb: 1
+logging:
+  format: json
+  output: stdout
+`, metricsAddr, mainAddr)
+
+	tmpFile, err := os.CreateTemp(t.TempDir(), "pipelock-*.yaml")
+	if err != nil {
+		t.Fatalf("create temp config: %v", err)
+	}
+	if _, err := tmpFile.WriteString(cfgYAML); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	_ = tmpFile.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cmd := runCmd()
+	cmd.SetContext(ctx)
+	cmd.SetArgs([]string{"--config", tmpFile.Name()})
+	var stderr bytes.Buffer
+	cmd.SetErr(&stderr)
+	cmd.SetOut(&stderr)
+
+	cmdErr := make(chan error, 1)
+	go func() {
+		cmdErr <- cmd.Execute()
+	}()
+
+	waitForPort(t, mainAddr)
+
+	cancel()
+	select {
+	case <-cmdErr:
+	case <-time.After(5 * time.Second):
+		t.Fatal("runCmd did not exit")
+	}
+
+	output := stderr.String()
+	// Verify the separate-port stats message appears.
+	if !bytes.Contains([]byte(output), []byte("separate port")) {
+		t.Errorf("expected 'separate port' in output, got:\n%s", output)
+	}
+	// Verify metrics listening message appears.
+	if !bytes.Contains([]byte(output), []byte("metrics listening on")) {
+		t.Errorf("expected 'metrics listening on' in output, got:\n%s", output)
+	}
+}
+
+func TestRunCmd_NoMetricsListen(t *testing.T) {
+	mainAddr := freePort(t)
+
+	cfgYAML := fmt.Sprintf(`version: 1
+mode: balanced
+fetch_proxy:
+  listen: %q
+  timeout_seconds: 5
+  max_response_mb: 1
+logging:
+  format: json
+  output: stdout
+`, mainAddr)
+
+	tmpFile, err := os.CreateTemp(t.TempDir(), "pipelock-*.yaml")
+	if err != nil {
+		t.Fatalf("create temp config: %v", err)
+	}
+	if _, err := tmpFile.WriteString(cfgYAML); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	_ = tmpFile.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cmd := runCmd()
+	cmd.SetContext(ctx)
+	cmd.SetArgs([]string{"--config", tmpFile.Name()})
+	var stderr bytes.Buffer
+	cmd.SetErr(&stderr)
+	cmd.SetOut(&stderr)
+
+	cmdErr := make(chan error, 1)
+	go func() {
+		cmdErr <- cmd.Execute()
+	}()
+
+	// Give it a moment to start or fail.
+	time.Sleep(200 * time.Millisecond)
+
+	// Check if command already exited with an error.
+	select {
+	case err := <-cmdErr:
+		t.Fatalf("runCmd exited early: err=%v\nstderr:\n%s", err, stderr.String())
+	default:
+	}
+
+	waitForPort(t, mainAddr)
+
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	// Without metrics_listen: /metrics should be available on main port.
+	resp := doGet(t, client, "http://"+mainAddr+"/metrics")
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("/metrics on main port: want 200, got %d", resp.StatusCode)
+	}
+
+	// /stats should be available on main port.
+	resp = doGet(t, client, "http://"+mainAddr+"/stats")
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("/stats on main port: want 200, got %d", resp.StatusCode)
+	}
+
+	cancel()
+	select {
+	case <-cmdErr:
+	case <-time.After(5 * time.Second):
+		t.Fatal("runCmd did not exit")
 	}
 }

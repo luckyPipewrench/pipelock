@@ -1843,3 +1843,173 @@ func TestGenerateDockerComposeCmd_WriteError(t *testing.T) {
 		t.Fatal("expected error writing to read-only directory")
 	}
 }
+
+func TestRunCmd_ReloadRejectsMetricsListenChange(t *testing.T) {
+	lc := net.ListenConfig{}
+	ln, listenErr := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if listenErr != nil {
+		t.Fatal(listenErr)
+	}
+	mainAddr := ln.Addr().String()
+	_ = ln.Close()
+
+	ln2, listenErr2 := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if listenErr2 != nil {
+		t.Fatal(listenErr2)
+	}
+	metricsAddr := ln2.Addr().String()
+	_ = ln2.Close()
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "test.yaml")
+	cfgContent := fmt.Sprintf(`version: 1
+mode: balanced
+metrics_listen: "%s"
+fetch_proxy:
+  listen: "%s"
+  timeout_seconds: 5
+`, metricsAddr, mainAddr)
+	if writeErr := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cmd := rootCmd()
+	cmd.SetContext(ctx)
+	cmd.SetArgs([]string{"run", "--config", cfgPath})
+	var stderr bytes.Buffer
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(&stderr)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- cmd.Execute()
+	}()
+
+	// Wait for healthy.
+	client := &http.Client{Timeout: time.Second}
+	healthURL := "http://" + mainAddr + "/health"
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case cmdErr := <-errCh:
+			cancel()
+			t.Fatalf("run exited early: %v", cmdErr)
+		default:
+		}
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+		resp, rerr := client.Do(req) //nolint:gosec // test-only
+		if rerr == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// Hot-reload: change metrics_listen (should be rejected).
+	updatedCfg := fmt.Sprintf(`version: 1
+mode: balanced
+metrics_listen: "127.0.0.1:19999"
+fetch_proxy:
+  listen: "%s"
+  timeout_seconds: 5
+`, mainAddr)
+	if writeErr := os.WriteFile(cfgPath, []byte(updatedCfg), 0o600); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+
+	// Wait for reload to process.
+	time.Sleep(500 * time.Millisecond)
+
+	cancel()
+	select {
+	case cmdErr := <-errCh:
+		if cmdErr != nil {
+			t.Errorf("unexpected error: %v", cmdErr)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("run did not shut down")
+	}
+
+	// Safe to read stderr now that the command has exited.
+	if !bytes.Contains(stderr.Bytes(), []byte("metrics_listen changed")) {
+		t.Errorf("expected metrics_listen reload warning, got:\n%s", stderr.String())
+	}
+}
+
+func TestRunCmd_WebSocketBanner(t *testing.T) {
+	lc := net.ListenConfig{}
+	ln, listenErr := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if listenErr != nil {
+		t.Fatal(listenErr)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "test.yaml")
+	cfgContent := fmt.Sprintf(`version: 1
+mode: balanced
+fetch_proxy:
+  listen: "%s"
+  timeout_seconds: 5
+websocket_proxy:
+  enabled: true
+  max_message_bytes: 65536
+`, addr)
+	if writeErr := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cmd := rootCmd()
+	cmd.SetContext(ctx)
+	cmd.SetArgs([]string{"run", "--config", cfgPath})
+	var stderr bytes.Buffer
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(&stderr)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- cmd.Execute()
+	}()
+
+	// Wait for healthy.
+	client := &http.Client{Timeout: time.Second}
+	healthURL := "http://" + addr + "/health"
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case cmdErr := <-errCh:
+			cancel()
+			t.Fatalf("run exited early: %v", cmdErr)
+		default:
+		}
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+		resp, rerr := client.Do(req) //nolint:gosec // test-only
+		if rerr == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	if !bytes.Contains(stderr.Bytes(), []byte("WebSocket proxy enabled")) {
+		t.Errorf("expected WS banner, got:\n%s", stderr.String())
+	}
+
+	cancel()
+	select {
+	case <-errCh:
+	case <-time.After(10 * time.Second):
+		t.Fatal("run did not shut down")
+	}
+}

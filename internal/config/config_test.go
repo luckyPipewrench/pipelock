@@ -3582,7 +3582,7 @@ func TestValidateReload_KillSwitchAPIListenChanged(t *testing.T) {
 	old.KillSwitch.APIListen = "0.0.0.0:9090" //nolint:goconst // test value
 
 	updated := Defaults()
-	updated.KillSwitch.APIListen = "0.0.0.0:9091"
+	updated.KillSwitch.APIListen = "0.0.0.0:9091" //nolint:goconst // test value
 
 	warnings := ValidateReload(old, updated)
 	found := false
@@ -3853,6 +3853,78 @@ func TestMergeResponsePatterns_NilIncludeDefaults_MergesAll(t *testing.T) {
 	result := mergeResponsePatterns(nil, user, defaults)
 	if len(result) != 3 {
 		t.Fatalf("expected 3 patterns, got %d", len(result))
+	}
+}
+
+func TestValidate_MetricsListen_Valid(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	cfg.MetricsListen = "0.0.0.0:9091" //nolint:goconst // test value
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid metrics_listen should pass: %v", err)
+	}
+}
+
+func TestValidate_MetricsListen_Invalid(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	cfg.MetricsListen = "not-a-valid-address"
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for malformed metrics_listen")
+	}
+	if !strings.Contains(err.Error(), "metrics_listen") {
+		t.Errorf("expected error about metrics_listen, got: %v", err)
+	}
+}
+
+func TestValidate_MetricsListen_CollidesProxy(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	cfg.MetricsListen = cfg.FetchProxy.Listen // same port
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected collision error")
+	}
+	if !strings.Contains(err.Error(), "collides") {
+		t.Errorf("expected collision message, got: %v", err)
+	}
+}
+
+func TestValidate_MetricsListen_CollidesAPI(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	cfg.KillSwitch.APIListen = "0.0.0.0:9091"
+	cfg.KillSwitch.APIToken = "test-token" //nolint:gosec // test
+	cfg.MetricsListen = "0.0.0.0:9091"     // same port as API
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected collision error")
+	}
+	if !strings.Contains(err.Error(), "collides") {
+		t.Errorf("expected collision message, got: %v", err)
+	}
+}
+
+func TestValidateReload_MetricsListenChanged(t *testing.T) {
+	old := Defaults()
+	old.MetricsListen = "0.0.0.0:9091"
+
+	updated := Defaults()
+	updated.MetricsListen = "0.0.0.0:9092"
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == "metrics_listen" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected reload warning for metrics_listen change")
 	}
 }
 

@@ -386,6 +386,157 @@ func TestWSProxyMaxMessageSize(t *testing.T) {
 	}
 }
 
+func TestWSProxyCompressedFrameRejected_ClientSide(t *testing.T) {
+	backendAddr, backendCleanup := wsEchoServer(t)
+	defer backendCleanup()
+
+	proxyAddr, proxyCleanup := setupWSProxy(t, nil)
+	defer proxyCleanup()
+
+	conn := dialWS(t, proxyAddr, backendAddr)
+	defer conn.Close() //nolint:errcheck // test
+
+	// Send a frame with RSV1 set (compressed indicator).
+	payload := []byte("compressed data")
+	mask := ws.NewMask()
+	masked := make([]byte, len(payload))
+	copy(masked, payload)
+	ws.Cipher(masked, mask, 0)
+
+	hdr := ws.Header{
+		Fin:    true,
+		Rsv:    ws.Rsv(true, false, false), // RSV1 = compressed
+		OpCode: ws.OpText,
+		Length: int64(len(masked)),
+		Masked: true,
+		Mask:   mask,
+	}
+	if err := ws.WriteHeader(conn, hdr); err != nil {
+		t.Fatalf("write header: %v", err)
+	}
+	if _, err := conn.Write(masked); err != nil {
+		t.Fatalf("write payload: %v", err)
+	}
+
+	// Proxy should close with protocol error.
+	_, _, err := wsutil.ReadServerData(conn)
+	if err == nil {
+		t.Fatal("expected close after RSV1 frame, got nil error")
+	}
+}
+
+func TestWSProxyCompressedFrameRejected_ServerSide(t *testing.T) {
+	// Backend that sends a frame with RSV1 set.
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(context.Background(), "tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	srv := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			conn, _, _, upgradeErr := ws.UpgradeHTTP(r, w)
+			if upgradeErr != nil {
+				return
+			}
+			defer conn.Close() //nolint:errcheck // test
+			// Wait for client message, then reply with RSV1 frame.
+			_, _, _ = wsutil.ReadClientData(conn)
+			payload := []byte("compressed response")
+			hdr := ws.Header{
+				Fin:    true,
+				Rsv:    ws.Rsv(true, false, false),
+				OpCode: ws.OpText,
+				Length: int64(len(payload)),
+			}
+			_ = ws.WriteHeader(conn, hdr)
+			_, _ = conn.Write(payload)
+		}),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() { _ = srv.Serve(ln) }()
+	defer srv.Close() //nolint:errcheck // test
+	backendAddr := ln.Addr().String()
+
+	proxyAddr, proxyCleanup := setupWSProxy(t, nil)
+	defer proxyCleanup()
+
+	conn := dialWS(t, proxyAddr, backendAddr)
+	defer conn.Close() //nolint:errcheck // test
+
+	// Send a clean message to trigger the server's compressed reply.
+	if writeErr := wsutil.WriteClientMessage(conn, ws.OpText, []byte("trigger")); writeErr != nil {
+		t.Fatalf("write: %v", writeErr)
+	}
+
+	// Proxy should close the connection due to RSV1 in server response.
+	_, _, readErr := wsutil.ReadServerData(conn)
+	if readErr == nil {
+		t.Fatal("expected close after server RSV1 frame, got nil error")
+	}
+}
+
+func TestWSProxyCompressionExtensionStripped(t *testing.T) {
+	// Backend that checks if Sec-WebSocket-Extensions was forwarded.
+	extensionsCh := make(chan string, 1)
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(context.Background(), "tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	srv := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			extensionsCh <- r.Header.Get("Sec-WebSocket-Extensions")
+			conn, _, _, upgradeErr := ws.UpgradeHTTP(r, w)
+			if upgradeErr != nil {
+				return
+			}
+			defer conn.Close() //nolint:errcheck // test
+			msg, op, readErr := wsutil.ReadClientData(conn)
+			if readErr != nil {
+				return
+			}
+			_ = wsutil.WriteServerMessage(conn, op, msg)
+		}),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() { _ = srv.Serve(ln) }()
+	defer srv.Close() //nolint:errcheck // test
+	backendAddr := ln.Addr().String()
+
+	proxyAddr, proxyCleanup := setupWSProxy(t, nil)
+	defer proxyCleanup()
+
+	// Dial with permessage-deflate extension header.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	wsURL := fmt.Sprintf("ws://%s/ws?url=ws://%s", proxyAddr, backendAddr)
+	dialer := ws.Dialer{
+		Header: ws.HandshakeHeaderHTTP(http.Header{
+			"Sec-WebSocket-Extensions": []string{"permessage-deflate"},
+		}),
+		Timeout: 5 * time.Second,
+	}
+	conn, _, _, dialErr := dialer.Dial(ctx, wsURL)
+	if dialErr != nil {
+		t.Fatalf("dial: %v", dialErr)
+	}
+	defer conn.Close() //nolint:errcheck // test
+
+	if writeErr := wsutil.WriteClientMessage(conn, ws.OpText, []byte("test")); writeErr != nil {
+		t.Fatalf("write: %v", writeErr)
+	}
+	_, _, _ = wsutil.ReadServerData(conn)
+
+	select {
+	case gotExtensions := <-extensionsCh:
+		if gotExtensions != "" {
+			t.Errorf("Sec-WebSocket-Extensions should not be forwarded, got %q", gotExtensions)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for backend extension header capture")
+	}
+}
+
 func TestWSProxyCleanMessage(t *testing.T) {
 	backendAddr, backendCleanup := wsEchoServer(t)
 	defer backendCleanup()

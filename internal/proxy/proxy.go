@@ -660,11 +660,11 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		hidden := extractHiddenContent(content)
 		if hidden != "" {
 			rawResult := sc.ScanResponse(hidden)
-			blocked, _ := p.filterAndActOnResponseScan(w, rawResult, content, displayURL, agent, clientIP, requestID, sc, cfg, log)
+			blocked, _, found := p.filterAndActOnResponseScan(w, rawResult, content, displayURL, agent, clientIP, requestID, sc, cfg, log)
 			if blocked {
 				return
 			}
-			hiddenInjectionFound = !rawResult.Clean
+			hiddenInjectionFound = found
 		}
 	}
 
@@ -696,7 +696,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// Response scanning: check extracted content for prompt injection.
 	if sc.ResponseScanningEnabled() {
 		scanResult := sc.ScanResponse(content)
-		blocked, newContent := p.filterAndActOnResponseScan(w, scanResult, content, displayURL, agent, clientIP, requestID, sc, cfg, log)
+		blocked, newContent, _ := p.filterAndActOnResponseScan(w, scanResult, content, displayURL, agent, clientIP, requestID, sc, cfg, log)
 		if blocked {
 			return
 		}
@@ -722,8 +722,9 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 }
 
 // filterAndActOnResponseScan applies suppression filtering and the configured
-// response scanning action to a scan result. Returns true if the request was
-// blocked (HTTP response already written). On strip, returns the transformed content.
+// response scanning action to a scan result. Returns blocked=true if the
+// request was blocked (HTTP response already written), the output content
+// (possibly stripped), and found=true if unsuppressed findings remain.
 func (p *Proxy) filterAndActOnResponseScan(
 	w http.ResponseWriter,
 	result scanner.ResponseScanResult,
@@ -731,7 +732,7 @@ func (p *Proxy) filterAndActOnResponseScan(
 	sc *scanner.Scanner,
 	cfg *config.Config,
 	log *audit.Logger,
-) (blocked bool, out string) {
+) (blocked bool, out string, found bool) {
 	out = content
 
 	// Filter out suppressed findings.
@@ -746,7 +747,7 @@ func (p *Proxy) filterAndActOnResponseScan(
 		result.Clean = len(kept) == 0
 	}
 	if result.Clean {
-		return false, out
+		return false, out, false
 	}
 
 	patternNames := make([]string, len(result.Matches))
@@ -759,13 +760,13 @@ func (p *Proxy) filterAndActOnResponseScan(
 		reason := fmt.Sprintf("response contains prompt injection: %s", strings.Join(patternNames, ", "))
 		log.LogBlocked("GET", displayURL, "response_scan", reason, clientIP, requestID)
 		writeJSON(w, http.StatusForbidden, FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
-		return true, ""
+		return true, "", true
 	case config.ActionAsk:
 		if p.approver == nil {
 			reason := fmt.Sprintf("response contains prompt injection: %s (no HITL approver)", strings.Join(patternNames, ", "))
 			log.LogBlocked("GET", displayURL, "response_scan", reason, clientIP, requestID)
 			writeJSON(w, http.StatusForbidden, FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
-			return true, ""
+			return true, "", true
 		}
 		preview := content
 		if len(preview) > 200 {
@@ -788,7 +789,7 @@ func (p *Proxy) filterAndActOnResponseScan(
 			reason := fmt.Sprintf("response blocked by operator: %s", strings.Join(patternNames, ", "))
 			log.LogBlocked("GET", displayURL, "response_scan", reason, clientIP, requestID)
 			writeJSON(w, http.StatusForbidden, FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
-			return true, ""
+			return true, "", true
 		}
 	case config.ActionStrip:
 		out = result.TransformedContent
@@ -798,7 +799,7 @@ func (p *Proxy) filterAndActOnResponseScan(
 	default:
 		log.LogResponseScan(displayURL, clientIP, requestID, sc.ResponseAction(), len(result.Matches), patternNames)
 	}
-	return false, out
+	return false, out, true
 }
 
 // stripFetchControlChars removes C0 control characters (0x00-0x1F) and DEL

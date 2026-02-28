@@ -444,6 +444,14 @@ Each agent identifies itself via `X-Pipelock-Agent` header (or `?agent=` query p
 curl -H "X-Pipelock-Agent: my-bot" "http://localhost:8888/fetch?url=https://example.com"
 ```
 
+### Fleet Monitoring
+
+Built-in Prometheus metrics with a ready-to-import [Grafana dashboard](configs/grafana-dashboard.json). Covers all 20 metrics across connections, security events, WebSocket proxy, and session profiling.
+
+![Pipelock Fleet Monitor — Grafana dashboard showing 4 agents with traffic, security events, and WebSocket metrics](docs/assets/fleet-dashboard.jpg)
+
+See [docs/metrics.md](docs/metrics.md) for the full metrics reference and [examples/prometheus/pipelock-alerts.yaml](examples/prometheus/pipelock-alerts.yaml) for alert rule templates.
+
 ## Configuration
 
 ```yaml

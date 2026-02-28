@@ -454,22 +454,18 @@ compromised agent could call the API to deactivate its own kill switch.
 
 Pipelock exposes Prometheus metrics at `/metrics`. If you already run
 Alertmanager, you can alert on counters directly — useful for events like
-chain detection that aren't emitted to webhook/syslog:
+chain detection that aren't emitted to webhook/syslog.
+
+A complete set of alert rules covering traffic anomalies, security events,
+session profiling, and operational health is available at
+[`examples/prometheus/pipelock-alerts.yaml`](../../examples/prometheus/pipelock-alerts.yaml).
+Here are the three most important rules to start with:
 
 ```yaml
-# prometheus-rules.yaml
 groups:
   - name: pipelock
     rules:
-      - alert: PipelockHighBlockRate
-        expr: rate(pipelock_requests_total{result="blocked"}[5m]) > 10
-        for: 2m
-        labels:
-          severity: warning
-        annotations:
-          summary: "High block rate on {{ $labels.instance }}"
-
-      - alert: PipelockKillSwitchDenials
+      - alert: PipelockKillSwitchActive
         expr: increase(pipelock_kill_switch_denials_total[1m]) > 0
         for: 0m
         labels:
@@ -484,6 +480,14 @@ groups:
           severity: critical
         annotations:
           summary: "Chain attack detected on {{ $labels.instance }}"
+
+      - alert: PipelockDown
+        expr: up{job=~".*pipelock.*"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Pipelock instance {{ $labels.instance }} is down"
 ```
 
 ## Operational Notes

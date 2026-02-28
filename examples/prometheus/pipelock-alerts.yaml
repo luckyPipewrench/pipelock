@@ -1,0 +1,143 @@
+# Pipelock Prometheus Alert Rules
+#
+# Copy this file into your Prometheus rules directory or include it via
+# the PrometheusRule CRD if running the Prometheus Operator.
+#
+# Adjust thresholds and `for` durations to match your environment.
+# All rules use $labels.instance to identify which pipelock instance fired.
+
+groups:
+  - name: pipelock
+    rules:
+      # --- Traffic Anomalies ---
+
+      - alert: PipelockHighBlockRate
+        expr: rate(pipelock_requests_total{result="blocked"}[5m]) > 10
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High block rate on {{ $labels.instance }}"
+          description: >-
+            Pipelock is blocking more than 10 requests/sec over a 5-minute
+            window. This may indicate a misconfigured agent or an active
+            exfiltration attempt.
+
+      - alert: PipelockTunnelRejections
+        expr: rate(pipelock_tunnels_total{result="blocked"}[5m]) > 5
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Elevated tunnel rejections on {{ $labels.instance }}"
+          description: >-
+            CONNECT tunnels are being blocked at a sustained rate. Check if the
+            domain allowlist needs updating or if an agent is trying to reach
+            unauthorized hosts.
+
+      # --- Security Events ---
+
+      - alert: PipelockKillSwitchActive
+        expr: increase(pipelock_kill_switch_denials_total[1m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Kill switch denying traffic on {{ $labels.instance }}"
+          description: >-
+            The emergency kill switch is active and denying all traffic.
+            Transport: {{ $labels.transport }}, endpoint: {{ $labels.endpoint }}.
+
+      - alert: PipelockChainDetection
+        expr: increase(pipelock_chain_detections_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Tool call chain attack detected on {{ $labels.instance }}"
+          description: >-
+            Chain detection fired: pattern={{ $labels.pattern }},
+            severity={{ $labels.severity }}, action={{ $labels.action }}.
+
+      - alert: PipelockScannerHitsSpike
+        expr: rate(pipelock_scanner_hits_total[5m]) > 5
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Scanner hit spike on {{ $labels.instance }}"
+          description: >-
+            Scanner {{ $labels.scanner }} is triggering at an elevated rate.
+            Investigate whether this is a real threat or a false positive
+            pattern that needs suppression.
+
+      - alert: PipelockWSBlocked
+        expr: increase(pipelock_ws_scan_hits_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "WebSocket scan hit on {{ $labels.instance }}"
+          description: >-
+            Scanner {{ $labels.scanner }} detected suspicious content in a
+            WebSocket frame. Review the agent's WebSocket traffic.
+
+      # --- Session Profiling ---
+
+      - alert: PipelockSessionEscalation
+        expr: increase(pipelock_session_escalations_total{to="block"}[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Session escalated to block on {{ $labels.instance }}"
+          description: >-
+            A session was escalated from {{ $labels.from }} to block due to
+            sustained anomalous behavior. The agent is now being actively
+            blocked.
+
+      - alert: PipelockHighAnomalyRate
+        expr: rate(pipelock_session_anomalies_total[10m]) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Elevated anomaly rate on {{ $labels.instance }}"
+          description: >-
+            Behavioral anomalies (type={{ $labels.type }}) are occurring at a
+            sustained rate. This may precede an enforcement escalation.
+
+      # --- Operational Health ---
+
+      - alert: PipelockDown
+        expr: up{job=~".*pipelock.*"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Pipelock instance {{ $labels.instance }} is down"
+          description: >-
+            Prometheus cannot scrape metrics from this pipelock instance.
+            The agent firewall may be offline, leaving the agent unprotected.
+
+      - alert: PipelockHighTunnelCount
+        expr: pipelock_active_tunnels > 50
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High active tunnel count on {{ $labels.instance }}"
+          description: >-
+            {{ $value }} active CONNECT tunnels. This may indicate connection
+            leaking or an unusual traffic pattern.
+
+      - alert: PipelockSessionEvictions
+        expr: rate(pipelock_sessions_evicted_total[10m]) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Sessions being evicted on {{ $labels.instance }}"
+          description: >-
+            Session tracking is evicting entries at a sustained rate. Consider
+            increasing session capacity or TTL if this is expected traffic.

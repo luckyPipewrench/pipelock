@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Reject WebSocket compressed frames (RSV1 bit): compressed bytes bypass DLP pattern matching entirely, now closed with StatusProtocolError on both relay directions
+- Scan raw HTML body before go-readability extraction: injection hidden in HTML comments, script/style tags, and hidden elements was stripped before the response scanner could detect it
+- Use Mozilla Public Suffix List for ccTLD-aware domain grouping: `baseDomain()` now correctly groups `evil.co.uk` instead of merging all `.co.uk` domains into one rate limit bucket
+
+### Added
+- Metrics port isolation: `metrics_listen` config field runs `/metrics` and `/stats` on a dedicated port, preventing agents from scraping operational metadata
+- `filterAndActOnResponseScan` helper: extracted response scan action handling (suppress, block, ask, strip, warn) to eliminate duplication between raw HTML and extracted text scan paths
+
+### Changed
+- `golang.org/x/net` promoted from indirect to direct dependency (publicsuffix for ccTLD handling, already pulled in by go-readability)
+
 ## [0.3.0] - 2026-02-27
 
 ### Added

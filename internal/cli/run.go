@@ -244,6 +244,13 @@ Examples:
 										oldCfg.KillSwitch.APIListen, newCfg.KillSwitch.APIListen)
 									newCfg.KillSwitch.APIListen = oldCfg.KillSwitch.APIListen
 								}
+								// Block metrics_listen changes via reload. The metrics
+								// server binds at startup and can't rebind at runtime.
+								if oldCfg.MetricsListen != newCfg.MetricsListen {
+									cmd.PrintErrf("WARNING: config reload: metrics_listen changed from %q to %q — requires restart, ignoring\n",
+										oldCfg.MetricsListen, newCfg.MetricsListen)
+									newCfg.MetricsListen = oldCfg.MetricsListen
+								}
 							}
 							newSc := scanner.New(newCfg)
 							p.Reload(newCfg, newSc)
@@ -284,7 +291,11 @@ Examples:
 			cmd.PrintErrf("  Listen: %s\n", cfg.FetchProxy.Listen)
 			cmd.PrintErrf("  Fetch:  http://%s/fetch?url=<url>\n", cfg.FetchProxy.Listen)
 			cmd.PrintErrf("  Health: http://%s/health\n", cfg.FetchProxy.Listen)
-			cmd.PrintErrf("  Stats:  http://%s/stats\n", cfg.FetchProxy.Listen)
+			if cfg.MetricsListen != "" {
+				cmd.PrintErrf("  Stats:  http://%s/stats (separate port)\n", cfg.MetricsListen)
+			} else {
+				cmd.PrintErrf("  Stats:  http://%s/stats\n", cfg.FetchProxy.Listen)
+			}
 			if cfg.ForwardProxy.Enabled {
 				cmd.PrintErrf("  Proxy:  HTTP/HTTPS forward proxy enabled (CONNECT + absolute-URI)\n")
 			}
@@ -358,6 +369,41 @@ Examples:
 					}
 					ksAPIErr <- err
 				}()
+			}
+
+			// Start metrics server on a separate port if configured.
+			var metricsErr chan error
+			if cfg.MetricsListen != "" {
+				metricsMux := http.NewServeMux()
+				metricsMux.Handle("/metrics", m.PrometheusHandler())
+				metricsMux.HandleFunc("/stats", m.StatsHandler())
+
+				metricsLn, lnErr := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.MetricsListen)
+				if lnErr != nil {
+					return fmt.Errorf("metrics bind %s: %w", cfg.MetricsListen, lnErr)
+				}
+				metricsSrv := &http.Server{
+					Handler:           metricsMux,
+					ReadTimeout:       10 * time.Second,
+					ReadHeaderTimeout: 5 * time.Second,
+					WriteTimeout:      10 * time.Second,
+					IdleTimeout:       120 * time.Second,
+				}
+				go func() {
+					<-ctx.Done()
+					shutdownCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer shutCancel()
+					_ = metricsSrv.Shutdown(shutdownCtx)
+				}()
+				metricsErr = make(chan error, 1)
+				go func() {
+					srvErr := metricsSrv.Serve(metricsLn)
+					if errors.Is(srvErr, http.ErrServerClosed) {
+						srvErr = nil
+					}
+					metricsErr <- srvErr
+				}()
+				cmd.PrintErrf("pipelock: metrics listening on %s\n", cfg.MetricsListen)
 			}
 
 			// Start MCP HTTP listener in background if configured.
@@ -434,6 +480,13 @@ Examples:
 			if mcpErr != nil {
 				if mErr := <-mcpErr; mErr != nil {
 					cmd.PrintErrf("pipelock: MCP listener error: %v\n", mErr)
+				}
+			}
+
+			// If metrics was running on a separate port, check for errors.
+			if metricsErr != nil {
+				if mErr := <-metricsErr; mErr != nil {
+					cmd.PrintErrf("pipelock: metrics listener error: %v\n", mErr)
 				}
 			}
 

@@ -18,6 +18,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/net/publicsuffix"
+
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
@@ -1071,20 +1073,21 @@ func (s *Scanner) checkSubdomainEntropy(hostname string) Result {
 	return Result{Allowed: true}
 }
 
-// baseDomain returns the base domain for budget tracking, stripping subdomains
-// to prevent bypass via subdomain rotation (a.evil.com, b.evil.com, etc.).
-// Uses a simple heuristic: returns the last 2 domain labels. This doesn't
-// handle ccTLDs (e.g., co.uk) perfectly but covers the common attack case.
-// IP addresses are returned as-is.
+// baseDomain returns the registrable domain (eTLD+1) for budget tracking,
+// stripping subdomains to prevent bypass via subdomain rotation.
+// Uses the Mozilla Public Suffix List via golang.org/x/net/publicsuffix,
+// which correctly handles ccTLDs (co.uk, com.au, gov.uk, etc.).
+// IP addresses and single-label hosts are returned as-is.
 func baseDomain(hostname string) string {
 	if net.ParseIP(hostname) != nil {
 		return hostname
 	}
-	parts := strings.Split(hostname, ".")
-	if len(parts) <= 2 {
+	etld1, err := publicsuffix.EffectiveTLDPlusOne(hostname)
+	if err != nil {
+		// Fallback for single-label hosts (localhost, etc.)
 		return hostname
 	}
-	return strings.Join(parts[len(parts)-2:], ".")
+	return etld1
 }
 
 // MatchDomain checks if a hostname matches a pattern.

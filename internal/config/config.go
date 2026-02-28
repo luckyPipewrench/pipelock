@@ -133,6 +133,7 @@ type Config struct {
 	AdaptiveEnforcement AdaptiveEnforcement `yaml:"adaptive_enforcement"`
 	MCPSessionBinding   MCPSessionBinding   `yaml:"mcp_session_binding"`
 	KillSwitch          KillSwitch          `yaml:"kill_switch"`
+	MetricsListen       string              `yaml:"metrics_listen"` // separate listen address for /metrics and /stats
 	Emit                EmitConfig          `yaml:"emit"`
 	ToolChainDetection  ToolChainDetection  `yaml:"tool_chain_detection"`
 	Internal            []string            `yaml:"internal"`
@@ -1018,6 +1019,27 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// Validate metrics listen address (if set)
+	if c.MetricsListen != "" {
+		_, metricsPort, err := net.SplitHostPort(c.MetricsListen)
+		if err != nil {
+			return fmt.Errorf("invalid metrics_listen %q: %w", c.MetricsListen, err)
+		}
+		_, proxyPort, proxyErr := net.SplitHostPort(c.FetchProxy.Listen)
+		if proxyErr != nil {
+			return fmt.Errorf("invalid fetch_proxy.listen %q: %w", c.FetchProxy.Listen, proxyErr)
+		}
+		if metricsPort == proxyPort {
+			return fmt.Errorf("metrics_listen port %s collides with fetch_proxy.listen port %s", metricsPort, proxyPort)
+		}
+		if c.KillSwitch.APIListen != "" {
+			_, apiPort, _ := net.SplitHostPort(c.KillSwitch.APIListen)
+			if metricsPort == apiPort {
+				return fmt.Errorf("metrics_listen port %s collides with kill_switch.api_listen port %s", metricsPort, apiPort)
+			}
+		}
+	}
+
 	// Validate emit config
 	if c.Emit.Webhook.URL != "" {
 		u, urlErr := url.Parse(c.Emit.Webhook.URL)
@@ -1249,6 +1271,14 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		warnings = append(warnings, ReloadWarning{
 			Field:   "kill_switch.api_listen",
 			Message: "api_listen cannot change at runtime (requires restart) — ignoring",
+		})
+	}
+
+	// Metrics listen address changed (requires restart)
+	if old.MetricsListen != updated.MetricsListen {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "metrics_listen",
+			Message: "metrics_listen cannot change at runtime (requires restart) — ignoring",
 		})
 	}
 

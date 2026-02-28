@@ -3007,3 +3007,31 @@ func TestLoadSecretsFile_LeadingWhitespaceStripped(t *testing.T) {
 		t.Fatalf("expected 2 secrets, got %d", len(secrets))
 	}
 }
+
+func TestBaseDomain(t *testing.T) {
+	tests := []struct{ input, want string }{
+		// ccTLDs: the whole point of using publicsuffix
+		{"evil.co.uk", "evil.co.uk"},
+		{"sub.evil.co.uk", "evil.co.uk"},
+		{"evil.com.au", "evil.com.au"},
+		{"sub.evil.com.au", "evil.com.au"},
+		{"a.evil.gov.uk", "evil.gov.uk"},
+		// Standard TLDs
+		{"evil.com", "evil.com"},
+		{"sub.evil.com", "evil.com"},
+		{"a.b.c.evil.com", "evil.com"},
+		// IP addresses: returned as-is
+		{"192.168.1.1", "192.168.1.1"},
+		{"::1", "::1"},
+		// Single-label hosts
+		{"localhost", "localhost"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := baseDomain(tt.input)
+			if got != tt.want {
+				t.Errorf("baseDomain(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}

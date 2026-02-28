@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -39,6 +40,43 @@ const (
 
 // requestCounter provides monotonic request IDs.
 var requestCounter atomic.Uint64
+
+// Regex patterns for extracting content from HTML hiding spots that
+// readability strips (comments, script bodies, style bodies). We scan
+// only these extracted fragments for injection, not the full HTML markup,
+// to avoid false positives on legitimate HTML tags and attributes.
+var (
+	reHTMLComment   = regexp.MustCompile(`(?s)<!--(.*?)-->`)
+	reScriptBody    = regexp.MustCompile(`(?si)<script[^>]*>(.*?)</script>`)
+	reStyleBody     = regexp.MustCompile(`(?si)<style[^>]*>(.*?)</style>`)
+	reHiddenElement = regexp.MustCompile(`(?si)<[a-z][a-z0-9]*\b` +
+		`(?:[^>]*?(?:display\s*:\s*none|visibility\s*:\s*hidden)|[^>]*?\shidden)` +
+		`[^>]*>(.*?)</`)
+)
+
+// extractHiddenContent pulls text from HTML elements that readability
+// strips: comments, script bodies, and style bodies. Returns the
+// concatenated text from these hiding spots (empty if none found).
+func extractHiddenContent(html string) string {
+	var b strings.Builder
+	for _, m := range reHTMLComment.FindAllStringSubmatch(html, -1) {
+		b.WriteString(m[1])
+		b.WriteByte('\n')
+	}
+	for _, m := range reScriptBody.FindAllStringSubmatch(html, -1) {
+		b.WriteString(m[1])
+		b.WriteByte('\n')
+	}
+	for _, m := range reStyleBody.FindAllStringSubmatch(html, -1) {
+		b.WriteString(m[1])
+		b.WriteByte('\n')
+	}
+	for _, m := range reHiddenElement.FindAllStringSubmatch(html, -1) {
+		b.WriteString(m[1])
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
 
 // requestMeta extracts the client IP (port stripped) and a unique request ID
 // from the incoming request. Used by all proxy handler paths.
@@ -614,16 +652,18 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 	isHTML := strings.Contains(contentType, "text/html") || strings.Contains(contentType, "application/xhtml")
 
-	// Scan raw HTML before readability strips hidden content (comments,
-	// script/style blocks, hidden attributes). This catches injection
-	// that readability would remove before the extracted-text scan.
+	// Extract text from HTML hiding spots (comments, script/style bodies)
+	// that readability strips. Scan only those fragments for injection,
+	// not the full HTML markup, to avoid false positives on legitimate tags.
 	if sc.ResponseScanningEnabled() && isHTML {
-		rawResult := sc.ScanResponse(content)
-		blocked, newContent := p.filterAndActOnResponseScan(w, rawResult, content, displayURL, agent, clientIP, requestID, sc, cfg, log)
-		if blocked {
-			return
+		hidden := extractHiddenContent(content)
+		if hidden != "" {
+			rawResult := sc.ScanResponse(hidden)
+			blocked, _ := p.filterAndActOnResponseScan(w, rawResult, content, displayURL, agent, clientIP, requestID, sc, cfg, log)
+			if blocked {
+				return
+			}
 		}
-		content = newContent
 	}
 
 	// Use go-readability for HTML content extraction.

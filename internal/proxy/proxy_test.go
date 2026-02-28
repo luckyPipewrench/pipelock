@@ -3092,3 +3092,118 @@ func TestFetchEndpoint_ResponseScan_RawHTML(t *testing.T) {
 		})
 	}
 }
+
+func TestFetchEndpoint_ResponseScan_RawHTML_NoFalsePositive(t *testing.T) {
+	// Normal HTML with script tags, CSS, and JavaScript should NOT trigger
+	// the raw HTML scan. Only injection hidden inside these elements should.
+	htmlPage := `<html><head>
+		<script src="app.js"></script>
+		<style>body { font-family: sans-serif; }</style>
+	</head><body>
+		<h1>Welcome to W3Schools</h1>
+		<p>Learn JavaScript, HTML, CSS, and more.</p>
+		<script>
+			var x = document.getElementById("demo");
+			x.style.display = "block";
+			console.log("page loaded");
+		</script>
+	</body></html>`
+
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = fmt.Fprint(w, htmlPage)
+	}))
+	defer backend.Close()
+
+	cfg := config.Defaults()
+	cfg.FetchProxy.TimeoutSeconds = 5
+	cfg.Internal = nil
+	cfg.APIAllowlist = nil
+	cfg.ResponseScanning = config.ResponseScanning{
+		Enabled: true,
+		Action:  "block",
+		Patterns: []config.ResponseScanPattern{
+			{Name: "Prompt Injection", Regex: `(?i)(ignore|disregard|forget)\s+(all\s+)?(previous|prior|above)\s+(instructions|prompts|rules|context)`},
+		},
+	}
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	p := New(cfg, logger, sc, metrics.New())
+
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL, nil)
+	w := httptest.NewRecorder()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+	mux.ServeHTTP(w, req)
+
+	if w.Code == http.StatusForbidden {
+		t.Error("normal HTML with script tags should not trigger response scan (false positive)")
+	}
+}
+
+func TestExtractHiddenContent(t *testing.T) {
+	tests := []struct {
+		name     string
+		html     string
+		contains string
+		empty    bool
+	}{
+		{
+			name:     "html_comment",
+			html:     `<html><body><!-- secret payload --></body></html>`,
+			contains: "secret payload",
+		},
+		{
+			name:     "script_body",
+			html:     `<html><body><script>var x = "hidden text";</script></body></html>`,
+			contains: `var x = "hidden text";`,
+		},
+		{
+			name:     "style_body",
+			html:     `<html><body><style>.cls { color: red; }</style></body></html>`,
+			contains: ".cls { color: red; }",
+		},
+		{
+			name:     "display_none",
+			html:     `<html><body><div style="display:none">hidden payload</div></body></html>`,
+			contains: "hidden payload",
+		},
+		{
+			name:     "visibility_hidden",
+			html:     `<html><body><span style="visibility:hidden">invisible text</span></body></html>`,
+			contains: "invisible text",
+		},
+		{
+			name:     "hidden_attribute",
+			html:     `<html><body><p hidden>secret paragraph</p></body></html>`,
+			contains: "secret paragraph",
+		},
+		{
+			name:  "clean_html_no_extraction",
+			html:  `<html><body><h1>Hello</h1><p>Normal page.</p></body></html>`,
+			empty: true,
+		},
+		{
+			name:  "script_src_only_no_body",
+			html:  `<html><head><script src="app.js"></script></head><body>Hi</body></html>`,
+			empty: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := extractHiddenContent(tt.html)
+			if tt.empty {
+				if strings.TrimSpace(result) != "" {
+					t.Errorf("expected empty extraction, got: %q", result)
+				}
+				return
+			}
+			if !strings.Contains(result, tt.contains) {
+				t.Errorf("expected extraction to contain %q, got: %q", tt.contains, result)
+			}
+		})
+	}
+}

@@ -133,6 +133,7 @@ type Config struct {
 	AdaptiveEnforcement AdaptiveEnforcement `yaml:"adaptive_enforcement"`
 	MCPSessionBinding   MCPSessionBinding   `yaml:"mcp_session_binding"`
 	KillSwitch          KillSwitch          `yaml:"kill_switch"`
+	MetricsListen       string              `yaml:"metrics_listen"` // separate listen address for /metrics and /stats
 	Emit                EmitConfig          `yaml:"emit"`
 	ToolChainDetection  ToolChainDetection  `yaml:"tool_chain_detection"`
 	Internal            []string            `yaml:"internal"`
@@ -1018,6 +1019,27 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// Validate metrics listen address (if set)
+	if c.MetricsListen != "" {
+		_, metricsPort, err := net.SplitHostPort(c.MetricsListen)
+		if err != nil {
+			return fmt.Errorf("invalid metrics_listen %q: %w", c.MetricsListen, err)
+		}
+		_, proxyPort, proxyErr := net.SplitHostPort(c.FetchProxy.Listen)
+		if proxyErr != nil {
+			return fmt.Errorf("invalid fetch_proxy.listen %q: %w", c.FetchProxy.Listen, proxyErr)
+		}
+		if metricsPort == proxyPort {
+			return fmt.Errorf("metrics_listen port %s collides with fetch_proxy.listen port %s", metricsPort, proxyPort)
+		}
+		if c.KillSwitch.APIListen != "" {
+			_, apiPort, _ := net.SplitHostPort(c.KillSwitch.APIListen)
+			if metricsPort == apiPort {
+				return fmt.Errorf("metrics_listen port %s collides with kill_switch.api_listen port %s", metricsPort, apiPort)
+			}
+		}
+	}
+
 	// Validate emit config
 	if c.Emit.Webhook.URL != "" {
 		u, urlErr := url.Parse(c.Emit.Webhook.URL)
@@ -1252,6 +1274,14 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		})
 	}
 
+	// Metrics listen address changed (requires restart)
+	if old.MetricsListen != updated.MetricsListen {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "metrics_listen",
+			Message: "metrics_listen cannot change at runtime (requires restart) — ignoring",
+		})
+	}
+
 	// Secrets file changed or removed (security-relevant)
 	if old.DLP.SecretsFile != updated.DLP.SecretsFile {
 		if updated.DLP.SecretsFile == "" {
@@ -1390,7 +1420,7 @@ func Defaults() *Config {
 			Enabled: true,
 			Action:  "warn",
 			Patterns: []ResponseScanPattern{
-				{Name: "Prompt Injection", Regex: `(?i)(ignore|disregard|forget|abandon)[-,;:.\s]+\s*(all\s+)?(previous|prior|above|earlier)\s+(\w+\s+)?(instructions|prompts|rules|context|directives|constraints|policies|guardrails)`},
+				{Name: "Prompt Injection", Regex: `(?i)(ignore|disregard|forget|abandon)[-,;:.\s]+\s*(?:all\s+\w+\s+|\w+\s+all\s+|all\s+|\w+\s+)?(previous|prior|above|earlier)\s+(\w+\s+)?(instructions|prompts|rules|context|directives|constraints|policies|guardrails)`},
 				{Name: "System Override", Regex: `(?im)^\s*system\s*:`},
 				{Name: "Role Override", Regex: `(?i)you\s+are\s+(now\s+)?(a\s+)?((?-i:\bDAN\b)|evil|unrestricted|jailbroken|unfiltered)`},
 				{Name: "New Instructions", Regex: `(?i)(new|updated|revised)\s+(instructions|directives|rules|prompt)`},

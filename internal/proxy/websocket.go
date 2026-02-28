@@ -402,6 +402,15 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 			return
 		}
 
+		// Reject compressed frames (RSV1 = permessage-deflate indicator).
+		// Compressed bytes bypass DLP pattern matching entirely.
+		if hdr.Rsv1() {
+			writeCloseFrame(r.clientConn, ws.StatusProtocolError, "compressed frames not supported")
+			writeCloseFrame(r.upstreamConn, ws.StatusProtocolError, "compressed frames not supported")
+			blocked = true
+			return
+		}
+
 		// Read payload. Hard guard mirrors the size checks above; if this fires
 		// it means a code change broke the earlier validation.
 		if hdr.Length < 0 || hdr.Length > int64(r.maxMsg) {
@@ -564,6 +573,15 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 		if !hdr.OpCode.IsControl() && hdr.Length > int64(r.maxMsg) {
 			writeCloseFrame(r.clientConn, ws.StatusMessageTooBig, wsReasonMessageTooLarge)
 			writeCloseFrame(r.upstreamConn, ws.StatusMessageTooBig, wsReasonMessageTooLarge)
+			return
+		}
+
+		// Reject compressed frames (RSV1 = permessage-deflate indicator).
+		// Compressed bytes bypass DLP pattern matching entirely.
+		if hdr.Rsv1() {
+			writeCloseFrame(r.clientConn, ws.StatusProtocolError, "compressed frames not supported")
+			writeCloseFrame(r.upstreamConn, ws.StatusProtocolError, "compressed frames not supported")
+			blocked = true
 			return
 		}
 

@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -39,6 +40,43 @@ const (
 
 // requestCounter provides monotonic request IDs.
 var requestCounter atomic.Uint64
+
+// Regex patterns for extracting content from HTML hiding spots that
+// readability strips (comments, script bodies, style bodies). We scan
+// only these extracted fragments for injection, not the full HTML markup,
+// to avoid false positives on legitimate HTML tags and attributes.
+var (
+	reHTMLComment   = regexp.MustCompile(`(?s)<!--(.*?)-->`)
+	reScriptBody    = regexp.MustCompile(`(?si)<script[^>]*>(.*?)</script>`)
+	reStyleBody     = regexp.MustCompile(`(?si)<style[^>]*>(.*?)</style>`)
+	reHiddenElement = regexp.MustCompile(`(?si)<[a-z][a-z0-9]*\b` +
+		`(?:[^>]*?(?:display\s*:\s*none|visibility\s*:\s*hidden)|[^>]*?\shidden)` +
+		`[^>]*>(.*?)</`)
+)
+
+// extractHiddenContent pulls text from HTML elements that readability
+// strips: comments, script bodies, and style bodies. Returns the
+// concatenated text from these hiding spots (empty if none found).
+func extractHiddenContent(html string) string {
+	var b strings.Builder
+	for _, m := range reHTMLComment.FindAllStringSubmatch(html, -1) {
+		b.WriteString(m[1])
+		b.WriteByte('\n')
+	}
+	for _, m := range reScriptBody.FindAllStringSubmatch(html, -1) {
+		b.WriteString(m[1])
+		b.WriteByte('\n')
+	}
+	for _, m := range reStyleBody.FindAllStringSubmatch(html, -1) {
+		b.WriteString(m[1])
+		b.WriteByte('\n')
+	}
+	for _, m := range reHiddenElement.FindAllStringSubmatch(html, -1) {
+		b.WriteString(m[1])
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
 
 // requestMeta extracts the client IP (port stripped) and a unique request ID
 // from the incoming request. Used by all proxy handler paths.
@@ -377,8 +415,14 @@ func (p *Proxy) Start(ctx context.Context) error {
 	mux.HandleFunc("/fetch", p.handleFetch)
 	mux.HandleFunc("/ws", p.handleWebSocket)
 	mux.HandleFunc("/health", p.handleHealth)
-	mux.Handle("/metrics", p.metrics.PrometheusHandler())
-	mux.HandleFunc("/stats", p.metrics.StatsHandler())
+	// Register metrics/stats only when NOT running on a separate port.
+	// When metrics_listen is configured, these routes are served by a
+	// dedicated metrics server — the main port returns 404, preventing
+	// the agent from scraping operational metadata.
+	if cfg.MetricsListen == "" {
+		mux.Handle("/metrics", p.metrics.PrometheusHandler())
+		mux.HandleFunc("/stats", p.metrics.StatsHandler())
+	}
 	// Register kill switch API routes only when the API is NOT running on a
 	// separate port. When api_listen is configured, these routes are served
 	// by the dedicated API server — the main port returns 404, preventing
@@ -434,13 +478,16 @@ func (p *Proxy) Start(ctx context.Context) error {
 		}
 	}()
 
-	// Warn if listen address exposes metrics/stats to the network
-	if host, _, splitErr := net.SplitHostPort(cfg.FetchProxy.Listen); splitErr == nil {
-		ip := net.ParseIP(host)
-		if host == "" || host == "0.0.0.0" || host == "::" || (ip != nil && !ip.IsLoopback()) {
-			p.logger.LogAnomaly("STARTUP", cfg.FetchProxy.Listen,
-				"listen address is not loopback — /metrics and /stats endpoints are exposed to the network",
-				"", "", 0.5)
+	// Warn if listen address exposes metrics/stats to the network.
+	// Skip when metrics_listen is set — metrics are on a separate port.
+	if cfg.MetricsListen == "" {
+		if host, _, splitErr := net.SplitHostPort(cfg.FetchProxy.Listen); splitErr == nil {
+			ip := net.ParseIP(host)
+			if host == "" || host == "0.0.0.0" || host == "::" || (ip != nil && !ip.IsLoopback()) {
+				p.logger.LogAnomaly("STARTUP", cfg.FetchProxy.Listen,
+					"listen address is not loopback — /metrics and /stats endpoints are exposed to the network",
+					"", "", 0.5)
+			}
 		}
 	}
 
@@ -603,81 +650,57 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	content := string(body)
 	title := ""
 
-	// Use go-readability for HTML content extraction
-	if strings.Contains(contentType, "text/html") || strings.Contains(contentType, "application/xhtml") {
+	isHTML := strings.Contains(contentType, "text/html") || strings.Contains(contentType, "application/xhtml")
+
+	// Extract text from HTML hiding spots (comments, script/style bodies)
+	// that readability strips. Scan only those fragments for injection,
+	// not the full HTML markup, to avoid false positives on legitimate tags.
+	var hiddenInjectionFound bool
+	if sc.ResponseScanningEnabled() && isHTML {
+		hidden := extractHiddenContent(content)
+		if hidden != "" {
+			rawResult := sc.ScanResponse(hidden)
+			blocked, _, found := p.filterAndActOnResponseScan(w, rawResult, content, displayURL, agent, clientIP, requestID, sc, cfg, log)
+			if blocked {
+				return
+			}
+			hiddenInjectionFound = found
+		}
+	}
+
+	// Use go-readability for HTML content extraction.
+	readabilityOK := false
+	if isHTML {
 		article, err := readability.FromReader(strings.NewReader(content), parsed)
 		if err != nil {
 			log.LogAnomaly("GET", displayURL, fmt.Sprintf("readability extraction failed: %v", err), clientIP, requestID, 0.3)
 		} else if article.TextContent != "" {
 			title = article.Title
 			content = article.TextContent
+			readabilityOK = true
 		}
 	}
 
-	// Response scanning: check fetched content for prompt injection
+	// Fail-closed: if hidden injection was detected in HTML comments/script/
+	// style/hidden elements but readability failed to strip them, block rather
+	// than delivering raw HTML with embedded injection. The pre-scan's
+	// TransformedContent cannot map back to the full HTML (it operates on
+	// concatenated fragments), so strip cannot function here.
+	if hiddenInjectionFound && !readabilityOK {
+		reason := "hidden injection detected and readability extraction failed (fail-closed)"
+		log.LogBlocked("GET", displayURL, "response_scan", reason, clientIP, requestID)
+		writeJSON(w, http.StatusForbidden, FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
+		return
+	}
+
+	// Response scanning: check extracted content for prompt injection.
 	if sc.ResponseScanningEnabled() {
 		scanResult := sc.ScanResponse(content)
-		// Filter out suppressed findings before acting.
-		if !scanResult.Clean && len(cfg.Suppress) > 0 {
-			var kept []scanner.ResponseMatch
-			for _, m := range scanResult.Matches {
-				if !config.IsSuppressed(m.PatternName, displayURL, cfg.Suppress) {
-					kept = append(kept, m)
-				}
-			}
-			scanResult.Matches = kept
-			scanResult.Clean = len(kept) == 0
+		blocked, newContent, _ := p.filterAndActOnResponseScan(w, scanResult, content, displayURL, agent, clientIP, requestID, sc, cfg, log)
+		if blocked {
+			return
 		}
-		if !scanResult.Clean {
-			patternNames := make([]string, len(scanResult.Matches))
-			for i, m := range scanResult.Matches {
-				patternNames[i] = m.PatternName
-			}
-			switch sc.ResponseAction() {
-			case config.ActionBlock:
-				reason := fmt.Sprintf("response contains prompt injection: %s", strings.Join(patternNames, ", "))
-				log.LogBlocked("GET", displayURL, "response_scan", reason, clientIP, requestID)
-				writeJSON(w, http.StatusForbidden, FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
-				return
-			case config.ActionAsk:
-				if p.approver == nil {
-					reason := fmt.Sprintf("response contains prompt injection: %s (no HITL approver)", strings.Join(patternNames, ", "))
-					log.LogBlocked("GET", displayURL, "response_scan", reason, clientIP, requestID)
-					writeJSON(w, http.StatusForbidden, FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
-					return
-				}
-				preview := content
-				if len(preview) > 200 {
-					preview = preview[:200]
-				}
-				d := p.approver.Ask(&hitl.Request{
-					Agent:    agent,
-					URL:      displayURL,
-					Reason:   fmt.Sprintf("prompt injection detected: %s", strings.Join(patternNames, ", ")),
-					Patterns: patternNames,
-					Preview:  preview,
-				})
-				switch d {
-				case hitl.DecisionAllow:
-					log.LogResponseScan(displayURL, clientIP, requestID, "ask:allow", len(scanResult.Matches), patternNames)
-				case hitl.DecisionStrip:
-					content = scanResult.TransformedContent
-					log.LogResponseScan(displayURL, clientIP, requestID, "ask:strip", len(scanResult.Matches), patternNames)
-				default:
-					reason := fmt.Sprintf("response blocked by operator: %s", strings.Join(patternNames, ", "))
-					log.LogBlocked("GET", displayURL, "response_scan", reason, clientIP, requestID)
-					writeJSON(w, http.StatusForbidden, FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
-					return
-				}
-			case config.ActionStrip:
-				content = scanResult.TransformedContent
-				log.LogResponseScan(displayURL, clientIP, requestID, config.ActionStrip, len(scanResult.Matches), patternNames)
-			case config.ActionWarn:
-				log.LogResponseScan(displayURL, clientIP, requestID, config.ActionWarn, len(scanResult.Matches), patternNames)
-			default:
-				log.LogResponseScan(displayURL, clientIP, requestID, sc.ResponseAction(), len(scanResult.Matches), patternNames)
-			}
-		}
+		content = newContent
 	}
 
 	// Record response size for per-domain data budget tracking
@@ -696,6 +719,87 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		Content:     content,
 		Blocked:     false,
 	})
+}
+
+// filterAndActOnResponseScan applies suppression filtering and the configured
+// response scanning action to a scan result. Returns blocked=true if the
+// request was blocked (HTTP response already written), the output content
+// (possibly stripped), and found=true if unsuppressed findings remain.
+func (p *Proxy) filterAndActOnResponseScan(
+	w http.ResponseWriter,
+	result scanner.ResponseScanResult,
+	content, displayURL, agent, clientIP, requestID string,
+	sc *scanner.Scanner,
+	cfg *config.Config,
+	log *audit.Logger,
+) (blocked bool, out string, found bool) {
+	out = content
+
+	// Filter out suppressed findings.
+	if !result.Clean && len(cfg.Suppress) > 0 {
+		var kept []scanner.ResponseMatch
+		for _, m := range result.Matches {
+			if !config.IsSuppressed(m.PatternName, displayURL, cfg.Suppress) {
+				kept = append(kept, m)
+			}
+		}
+		result.Matches = kept
+		result.Clean = len(kept) == 0
+	}
+	if result.Clean {
+		return false, out, false
+	}
+
+	patternNames := make([]string, len(result.Matches))
+	for i, m := range result.Matches {
+		patternNames[i] = m.PatternName
+	}
+
+	switch sc.ResponseAction() {
+	case config.ActionBlock:
+		reason := fmt.Sprintf("response contains prompt injection: %s", strings.Join(patternNames, ", "))
+		log.LogBlocked("GET", displayURL, "response_scan", reason, clientIP, requestID)
+		writeJSON(w, http.StatusForbidden, FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
+		return true, "", true
+	case config.ActionAsk:
+		if p.approver == nil {
+			reason := fmt.Sprintf("response contains prompt injection: %s (no HITL approver)", strings.Join(patternNames, ", "))
+			log.LogBlocked("GET", displayURL, "response_scan", reason, clientIP, requestID)
+			writeJSON(w, http.StatusForbidden, FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
+			return true, "", true
+		}
+		preview := content
+		if len(preview) > 200 {
+			preview = preview[:200]
+		}
+		d := p.approver.Ask(&hitl.Request{
+			Agent:    agent,
+			URL:      displayURL,
+			Reason:   fmt.Sprintf("prompt injection detected: %s", strings.Join(patternNames, ", ")),
+			Patterns: patternNames,
+			Preview:  preview,
+		})
+		switch d {
+		case hitl.DecisionAllow:
+			log.LogResponseScan(displayURL, clientIP, requestID, "ask:allow", len(result.Matches), patternNames)
+		case hitl.DecisionStrip:
+			out = result.TransformedContent
+			log.LogResponseScan(displayURL, clientIP, requestID, "ask:strip", len(result.Matches), patternNames)
+		default:
+			reason := fmt.Sprintf("response blocked by operator: %s", strings.Join(patternNames, ", "))
+			log.LogBlocked("GET", displayURL, "response_scan", reason, clientIP, requestID)
+			writeJSON(w, http.StatusForbidden, FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
+			return true, "", true
+		}
+	case config.ActionStrip:
+		out = result.TransformedContent
+		log.LogResponseScan(displayURL, clientIP, requestID, config.ActionStrip, len(result.Matches), patternNames)
+	case config.ActionWarn:
+		log.LogResponseScan(displayURL, clientIP, requestID, config.ActionWarn, len(result.Matches), patternNames)
+	default:
+		log.LogResponseScan(displayURL, clientIP, requestID, sc.ResponseAction(), len(result.Matches), patternNames)
+	}
+	return false, out, true
 }
 
 // stripFetchControlChars removes C0 control characters (0x00-0x1F) and DEL

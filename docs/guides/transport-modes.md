@@ -90,7 +90,7 @@ Bidirectional WebSocket proxy with frame-level scanning.
 ws://localhost:8888/ws?url=wss://api.example.com/stream
 ```
 
-### MCP Stdio Proxy (`pipelock mcp -- COMMAND`)
+### MCP stdio proxy (`pipelock mcp -- COMMAND`)
 
 Wraps a local MCP server process with full bidirectional message scanning.
 

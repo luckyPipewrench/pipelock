@@ -159,7 +159,7 @@ response_scanning:
   include_defaults: false  # Preset defines the complete pattern set
   patterns:
     - name: "Prompt Injection"
-      regex: '(?i)(ignore|disregard|forget|abandon)[-,;:.\s]+\s*(\w+\s+)?(all\s+)?(previous|prior|above|earlier)\s+(\w+\s+)?(instructions|prompts|rules|context|directives|constraints|policies|guardrails)'
+      regex: '(?i)(ignore|disregard|forget|abandon)[-,;:.\s]+\s*(?:all\s+\w+\s+|\w+\s+all\s+|all\s+|\w+\s+)?(previous|prior|above|earlier)\s+(\w+\s+)?(instructions|prompts|rules|context|directives|constraints|policies|guardrails)'
     - name: "System Override"
       regex: '(?im)^\s*system\s*:'
     - name: "Role Override"

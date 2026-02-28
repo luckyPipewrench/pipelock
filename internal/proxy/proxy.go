@@ -655,6 +655,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// Extract text from HTML hiding spots (comments, script/style bodies)
 	// that readability strips. Scan only those fragments for injection,
 	// not the full HTML markup, to avoid false positives on legitimate tags.
+	var hiddenInjectionFound bool
 	if sc.ResponseScanningEnabled() && isHTML {
 		hidden := extractHiddenContent(content)
 		if hidden != "" {
@@ -663,10 +664,12 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			if blocked {
 				return
 			}
+			hiddenInjectionFound = !rawResult.Clean
 		}
 	}
 
 	// Use go-readability for HTML content extraction.
+	readabilityOK := false
 	if isHTML {
 		article, err := readability.FromReader(strings.NewReader(content), parsed)
 		if err != nil {
@@ -674,7 +677,20 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		} else if article.TextContent != "" {
 			title = article.Title
 			content = article.TextContent
+			readabilityOK = true
 		}
+	}
+
+	// Fail-closed: if hidden injection was detected in HTML comments/script/
+	// style/hidden elements but readability failed to strip them, block rather
+	// than delivering raw HTML with embedded injection. The pre-scan's
+	// TransformedContent cannot map back to the full HTML (it operates on
+	// concatenated fragments), so strip cannot function here.
+	if hiddenInjectionFound && !readabilityOK {
+		reason := "hidden injection detected and readability extraction failed (fail-closed)"
+		log.LogBlocked("GET", displayURL, "response_scan", reason, clientIP, requestID)
+		writeJSON(w, http.StatusForbidden, FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
+		return
 	}
 
 	// Response scanning: check extracted content for prompt injection.

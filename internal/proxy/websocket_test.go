@@ -477,7 +477,7 @@ func TestWSProxyCompressedFrameRejected_ServerSide(t *testing.T) {
 
 func TestWSProxyCompressionExtensionStripped(t *testing.T) {
 	// Backend that checks if Sec-WebSocket-Extensions was forwarded.
-	var gotExtensions string
+	extensionsCh := make(chan string, 1)
 	lc := net.ListenConfig{}
 	ln, err := lc.Listen(context.Background(), "tcp4", "127.0.0.1:0")
 	if err != nil {
@@ -485,7 +485,7 @@ func TestWSProxyCompressionExtensionStripped(t *testing.T) {
 	}
 	srv := &http.Server{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			gotExtensions = r.Header.Get("Sec-WebSocket-Extensions")
+			extensionsCh <- r.Header.Get("Sec-WebSocket-Extensions")
 			conn, _, _, upgradeErr := ws.UpgradeHTTP(r, w)
 			if upgradeErr != nil {
 				return
@@ -527,8 +527,13 @@ func TestWSProxyCompressionExtensionStripped(t *testing.T) {
 	}
 	_, _, _ = wsutil.ReadServerData(conn)
 
-	if gotExtensions != "" {
-		t.Errorf("Sec-WebSocket-Extensions should not be forwarded, got %q", gotExtensions)
+	select {
+	case gotExtensions := <-extensionsCh:
+		if gotExtensions != "" {
+			t.Errorf("Sec-WebSocket-Extensions should not be forwarded, got %q", gotExtensions)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for backend extension header capture")
 	}
 }
 

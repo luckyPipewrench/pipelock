@@ -8,7 +8,7 @@ Pipelock supports multiple proxy modes, each with different scanning capabilitie
 |------|----------|----------|-------------------|-------------------|----------|
 | Fetch | `/fetch?url=...` | HTTP | Full body | Injection detection | AI agents that need extracted text |
 | CONNECT | `HTTPS_PROXY` | HTTPS tunnel | Hostname only | None | Standard HTTPS clients |
-| Absolute-URI | `HTTP_PROXY` | HTTP | Hostname only | None | Plaintext HTTP clients |
+| Absolute-URI | `HTTP_PROXY` | HTTP | Full URL | None | Plaintext HTTP clients |
 | WebSocket | `/ws?url=...` | WS/WSS | Bidirectional frames | DLP + injection | Real-time agent communication |
 | MCP stdio | `pipelock mcp -- CMD` | stdio | Full messages | Full (6 layers) | Local MCP servers |
 | MCP HTTP | `pipelock mcp --upstream URL` | HTTP | Full messages | Full (6 layers) | Remote MCP servers |

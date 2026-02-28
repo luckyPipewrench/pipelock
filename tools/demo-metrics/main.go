@@ -16,6 +16,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -68,7 +69,11 @@ func main() {
 	for _, a := range agents {
 		fmt.Printf("  %-20s http://localhost:%d/metrics\n", a.name, a.port)
 	}
-	fmt.Printf("\nWill run for %s. Press Ctrl+C to stop early.\n", *duration)
+	if *duration > 0 {
+		fmt.Printf("\nWill run for %s. Press Ctrl+C to stop early.\n", *duration)
+	} else {
+		fmt.Println("\nRunning until Ctrl+C (no timeout).")
+	}
 	fmt.Println("\nAdd to Prometheus scrape config:")
 	fmt.Println("  - job_name: pipelock-demo")
 	fmt.Println("    static_configs:")
@@ -94,13 +99,13 @@ func runAgent(ctx context.Context, name string, port int, scenario func(context.
 
 	srv := &http.Server{Addr: fmt.Sprintf(":%d", port), Handler: mux}
 	go func() {
-		if err := srv.ListenAndServe(); err != http.ErrServerClosed {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("%s: %v", name, err)
 		}
 	}()
 
 	scenario(ctx, m)
-	srv.Shutdown(context.Background())
+	_ = srv.Shutdown(context.Background())
 }
 
 // ---------------------------------------------------------------------------

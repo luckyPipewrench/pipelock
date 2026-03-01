@@ -155,7 +155,7 @@ Examples:
 			}
 
 			if binary == "" {
-				binary = "pipelock"
+				binary = mcporterBinaryName
 			}
 
 			hookContent := gitprotect.GeneratePrePushHook(binary, configFile)

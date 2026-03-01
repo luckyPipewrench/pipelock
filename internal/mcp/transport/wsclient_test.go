@@ -89,6 +89,7 @@ func TestWSClient_WriteMessage(t *testing.T) {
 }
 
 func TestWSClient_FragmentedMessage(t *testing.T) {
+	clientDone := make(chan struct{})
 	srv := wsTestServer(t, func(conn net.Conn) {
 		defer func() { _ = conn.Close() }()
 		// Send a fragmented message: two frames.
@@ -107,7 +108,8 @@ func TestWSClient_FragmentedMessage(t *testing.T) {
 			Length: int64(len(part2)),
 		})
 		_, _ = conn.Write(part2)
-		time.Sleep(200 * time.Millisecond)
+		// Wait for client to finish reading before closing.
+		<-clientDone
 	})
 	defer srv.Close()
 
@@ -119,6 +121,7 @@ func TestWSClient_FragmentedMessage(t *testing.T) {
 	defer func() { _ = client.Close() }()
 
 	msg, err := client.ReadMessage()
+	close(clientDone)
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}

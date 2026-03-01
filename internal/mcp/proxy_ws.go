@@ -113,7 +113,13 @@ func RunWSProxy(
 			if stdinErr != nil {
 				return stdinErr
 			}
-			return innerCtx.Err()
+			if lastScanErr != nil {
+				return lastScanErr
+			}
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			return nil
 		default:
 		}
 

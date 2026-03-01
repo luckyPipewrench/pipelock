@@ -37,6 +37,15 @@ func wsURL(srv *httptest.Server) string {
 	return "ws" + strings.TrimPrefix(srv.URL, "http")
 }
 
+func waitForResponse(t *testing.T, ch <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for upstream response signal")
+	}
+}
+
 // wsRespondServer creates a test WS server that reads one client message,
 // sends the given response, then signals via responseSent before closing.
 func wsRespondServer(t *testing.T, response []byte, responseSent chan<- struct{}) *httptest.Server {
@@ -85,7 +94,7 @@ func TestRunWSProxy_ForwardsCleanRequest(t *testing.T) {
 
 	// Send request, wait for response to arrive, then close stdin.
 	_, _ = pw.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"text":"hi"}}}` + "\n"))
-	<-responseSent
+	waitForResponse(t, responseSent)
 	time.Sleep(20 * time.Millisecond) // Let ForwardScanned write to stdout.
 	_ = pw.Close()
 
@@ -138,7 +147,7 @@ func TestRunWSProxy_BlocksInjectedResponse(t *testing.T) {
 	}()
 
 	_, _ = pw.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"text":"hi"}}}` + "\n"))
-	<-responseSent
+	waitForResponse(t, responseSent)
 	time.Sleep(20 * time.Millisecond)
 	_ = pw.Close()
 
@@ -443,7 +452,7 @@ func TestRunWSProxy_ToolScanningDetectsPoison(t *testing.T) {
 	}()
 
 	_, _ = pw.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}` + "\n"))
-	<-responseSent
+	waitForResponse(t, responseSent)
 	time.Sleep(20 * time.Millisecond)
 	_ = pw.Close()
 
@@ -590,7 +599,7 @@ func TestRunWSProxy_InputScanWarnMode(t *testing.T) {
 	}()
 
 	_, _ = pw.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"text":"` + fakeKey + `"}}}` + "\n"))
-	<-responseSent
+	waitForResponse(t, responseSent)
 	time.Sleep(20 * time.Millisecond)
 	_ = pw.Close()
 
@@ -682,7 +691,7 @@ func TestRunWSProxy_BindingConfigWired(t *testing.T) {
 	}()
 
 	_, _ = pw.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}` + "\n"))
-	<-responseSent
+	waitForResponse(t, responseSent)
 	time.Sleep(20 * time.Millisecond)
 	_ = pw.Close()
 

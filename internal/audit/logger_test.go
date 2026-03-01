@@ -81,7 +81,7 @@ func TestNewNop(_ *testing.T) {
 	logger.LogAllowed("GET", "https://example.com", "127.0.0.1", "req-1", 200, 1024, time.Second)
 	logger.LogBlocked("GET", "https://evil.com", "blocklist", "domain blocked", "127.0.0.1", "req-2")
 	logger.LogError("GET", "https://fail.com", "127.0.0.1", "req-3", os.ErrNotExist)
-	logger.LogAnomaly("GET", "https://sus.com", "high entropy", "127.0.0.1", "req-4", 0.9)
+	logger.LogAnomaly("GET", "https://sus.com", "entropy", "high entropy", "127.0.0.1", "req-4", 0.9)
 	logger.LogStartup(":8888", "balanced")
 	logger.LogShutdown("test")
 	logger.LogRedirect("https://a.com", "https://b.com", "127.0.0.1", "req-6", 1)
@@ -298,7 +298,7 @@ func TestLogAnomaly_JSONFormat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogAnomaly("GET", "https://sus.com/data", "high entropy segment", "10.0.0.1", "req-5", 0.85)
+	logger.LogAnomaly("GET", "https://sus.com/data", "entropy", "high entropy segment", "10.0.0.1", "req-5", 0.85)
 	logger.Close()
 
 	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
@@ -325,6 +325,12 @@ func TestLogAnomaly_JSONFormat(t *testing.T) {
 	}
 	if entry["request_id"] != "req-5" {
 		t.Errorf("expected request_id=req-5, got %v", entry["request_id"])
+	}
+	if entry["scanner"] != "entropy" {
+		t.Errorf("expected scanner=entropy, got %v", entry["scanner"])
+	}
+	if entry["mitre_technique"] != "T1048" { //nolint:goconst // test value
+		t.Errorf("expected mitre_technique=T1048, got %v", entry["mitre_technique"])
 	}
 }
 
@@ -434,14 +440,15 @@ func TestLogBlocked_IncludesAllFields(t *testing.T) {
 	}
 
 	checks := map[string]any{
-		"event":      "blocked",
-		"method":     "GET",
-		"url":        "https://evil.com/exfil",
-		"scanner":    "blocklist",
-		"reason":     "domain in blocklist: evil.com",
-		"component":  "pipelock",
-		"client_ip":  "192.168.1.1",
-		"request_id": "req-50",
+		"event":           "blocked",
+		"method":          "GET",
+		"url":             "https://evil.com/exfil",
+		"scanner":         "blocklist",
+		"reason":          "domain in blocklist: evil.com",
+		"component":       "pipelock",
+		"client_ip":       "192.168.1.1",
+		"request_id":      "req-50",
+		"mitre_technique": "T1071.001",
 	}
 	for key, want := range checks {
 		if entry[key] != want {
@@ -518,9 +525,9 @@ func TestLogger_MultipleEvents(t *testing.T) {
 
 	logger.LogStartup(":8888", "balanced")
 	logger.LogAllowed("GET", "https://a.com", "10.0.0.1", "req-1", 200, 100, time.Millisecond)
-	logger.LogBlocked("GET", "https://b.com", "dlp", "secret found", "10.0.0.1", "req-2")
+	logger.LogBlocked("GET", "https://b.com", ScannerDLP, "secret found", "10.0.0.1", "req-2")
 	logger.LogError("GET", "https://c.com", "10.0.0.1", "req-3", os.ErrNotExist)
-	logger.LogAnomaly("GET", "https://d.com", "weird", "10.0.0.1", "req-4", 0.5)
+	logger.LogAnomaly("GET", "https://d.com", "", "weird", "10.0.0.1", "req-4", 0.5)
 	logger.LogShutdown("done")
 	logger.Close()
 
@@ -1124,7 +1131,7 @@ func TestLogWSBlocked_JSONFormat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogWSBlocked("ws://evil.com/exfil", "client_to_server", "dlp", "secret detected", "10.0.0.1", "req-300")
+	logger.LogWSBlocked("ws://evil.com/exfil", DirectionClientToServer, ScannerDLP, "secret detected", "10.0.0.1", "req-300")
 	logger.Close()
 
 	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
@@ -1136,10 +1143,10 @@ func TestLogWSBlocked_JSONFormat(t *testing.T) {
 	if entry["event"] != "ws_blocked" {
 		t.Errorf("expected event=ws_blocked, got %v", entry["event"])
 	}
-	if entry["direction"] != "client_to_server" {
+	if entry["direction"] != DirectionClientToServer {
 		t.Errorf("expected direction=client_to_server, got %v", entry["direction"])
 	}
-	if entry["scanner"] != "dlp" {
+	if entry["scanner"] != ScannerDLP {
 		t.Errorf("expected scanner=dlp, got %v", entry["scanner"])
 	}
 	if entry["reason"] != "secret detected" {
@@ -1155,7 +1162,7 @@ func TestLogWSBlocked_Filtered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogWSBlocked("ws://evil.com/exfil", "client_to_server", "dlp", "secret detected", "10.0.0.1", "req-300")
+	logger.LogWSBlocked("ws://evil.com/exfil", DirectionClientToServer, ScannerDLP, "secret detected", "10.0.0.1", "req-300")
 	logger.Close()
 
 	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
@@ -1172,7 +1179,7 @@ func TestLogWSScan_JSONFormat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogWSScan("ws://example.com/chat", "server_to_client", "10.0.0.1", "req-400", "warn", 2, []string{"Prompt Injection", "Jailbreak"})
+	logger.LogWSScan("ws://example.com/chat", DirectionServerToClient, "10.0.0.1", "req-400", "warn", 2, []string{"Prompt Injection", "Jailbreak"})
 	logger.Close()
 
 	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
@@ -1184,7 +1191,7 @@ func TestLogWSScan_JSONFormat(t *testing.T) {
 	if entry["event"] != "ws_scan" {
 		t.Errorf("expected event=ws_scan, got %v", entry["event"])
 	}
-	if entry["direction"] != "server_to_client" {
+	if entry["direction"] != DirectionServerToClient {
 		t.Errorf("expected direction=server_to_client, got %v", entry["direction"])
 	}
 	if entry["action"] != "warn" { //nolint:goconst // test value
@@ -1197,6 +1204,36 @@ func TestLogWSScan_JSONFormat(t *testing.T) {
 	patterns, ok := entry["patterns"].([]any)
 	if !ok || len(patterns) != 2 {
 		t.Errorf("expected 2 patterns, got %v", entry["patterns"])
+	}
+	// server_to_client = response injection = T1059.
+	if entry["mitre_technique"] != "T1059" { //nolint:goconst // test value
+		t.Errorf("expected mitre_technique=T1059 for server_to_client, got %v", entry["mitre_technique"])
+	}
+}
+
+func TestLogWSScan_ClientToServer_DLPTechnique(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogWSScan("ws://example.com/chat", DirectionClientToServer, "10.0.0.1", "req-401", "audit", 1, []string{"AWS Key"})
+	logger.Close()
+
+	data, _ := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+
+	// client_to_server = DLP/exfil = T1048.
+	if entry["mitre_technique"] != "T1048" { //nolint:goconst // test value
+		t.Errorf("expected mitre_technique=T1048 for client_to_server, got %v", entry["mitre_technique"])
+	}
+	if entry["direction"] != DirectionClientToServer {
+		t.Errorf("expected direction=client_to_server, got %v", entry["direction"])
 	}
 }
 
@@ -1314,7 +1351,7 @@ func TestEmit_LogBlocked(t *testing.T) {
 	logger, sink := newLoggerWithEmitter(t)
 	defer logger.Close()
 
-	logger.LogBlocked("GET", "https://evil.com", "dlp", "secret found", "10.0.0.1", "req-1")
+	logger.LogBlocked("GET", "https://evil.com", ScannerDLP, "secret found", "10.0.0.1", "req-1")
 
 	ev, ok := sink.lastEvent()
 	if !ok {
@@ -1323,8 +1360,11 @@ func TestEmit_LogBlocked(t *testing.T) {
 	if ev.Type != "blocked" { //nolint:goconst // test value
 		t.Errorf("type = %q, want blocked", ev.Type)
 	}
-	if ev.Fields["scanner"] != "dlp" {
+	if ev.Fields["scanner"] != ScannerDLP {
 		t.Errorf("fields[scanner] = %v, want dlp", ev.Fields["scanner"])
+	}
+	if ev.Fields["mitre_technique"] != "T1048" { //nolint:goconst // test value
+		t.Errorf("fields[mitre_technique] = %v, want T1048", ev.Fields["mitre_technique"])
 	}
 	if ev.InstanceID != "test-instance" {
 		t.Errorf("instance_id = %q, want test-instance", ev.InstanceID)
@@ -1344,7 +1384,7 @@ func TestEmit_LogBlocked_IncludeBlockedFalse(t *testing.T) {
 	logger.SetEmitter(emitter)
 	t.Cleanup(func() { _ = emitter.Close() })
 
-	logger.LogBlocked("GET", "https://evil.com", "dlp", "secret found", "10.0.0.1", "req-1")
+	logger.LogBlocked("GET", "https://evil.com", ScannerDLP, "secret found", "10.0.0.1", "req-1")
 
 	// Even with includeBlocked=false, emission should still fire
 	if _, ok := sink.lastEvent(); !ok {
@@ -1374,7 +1414,7 @@ func TestEmit_LogAnomaly(t *testing.T) {
 	logger, sink := newLoggerWithEmitter(t)
 	defer logger.Close()
 
-	logger.LogAnomaly("GET", "https://example.com", "high entropy", "10.0.0.1", "req-3", 3.5)
+	logger.LogAnomaly("GET", "https://example.com", "entropy", "high entropy", "10.0.0.1", "req-3", 3.5)
 
 	ev, ok := sink.lastEvent()
 	if !ok {
@@ -1385,6 +1425,12 @@ func TestEmit_LogAnomaly(t *testing.T) {
 	}
 	if ev.Fields["score"] != 3.5 {
 		t.Errorf("fields[score] = %v, want 3.5", ev.Fields["score"])
+	}
+	if ev.Fields["scanner"] != "entropy" {
+		t.Errorf("fields[scanner] = %v, want entropy", ev.Fields["scanner"])
+	}
+	if ev.Fields["mitre_technique"] != "T1048" { //nolint:goconst // test value
+		t.Errorf("fields[mitre_technique] = %v, want T1048", ev.Fields["mitre_technique"])
 	}
 }
 
@@ -1403,6 +1449,9 @@ func TestEmit_LogResponseScan(t *testing.T) {
 	}
 	if ev.Fields["match_count"] != 2 {
 		t.Errorf("fields[match_count] = %v, want 2", ev.Fields["match_count"])
+	}
+	if ev.Fields["mitre_technique"] != "T1059" {
+		t.Errorf("fields[mitre_technique] = %v, want T1059", ev.Fields["mitre_technique"])
 	}
 }
 
@@ -1428,7 +1477,7 @@ func TestEmit_LogWSBlocked(t *testing.T) {
 	logger, sink := newLoggerWithEmitter(t)
 	defer logger.Close()
 
-	logger.LogWSBlocked("ws://evil.com", "client_to_server", "dlp", "secret", "10.0.0.1", "req-5")
+	logger.LogWSBlocked("ws://evil.com", DirectionClientToServer, ScannerDLP, "secret", "10.0.0.1", "req-5")
 
 	ev, ok := sink.lastEvent()
 	if !ok {
@@ -1437,13 +1486,16 @@ func TestEmit_LogWSBlocked(t *testing.T) {
 	if ev.Type != "ws_blocked" {
 		t.Errorf("type = %q, want ws_blocked", ev.Type)
 	}
+	if ev.Fields["mitre_technique"] != "T1048" { //nolint:goconst // test value
+		t.Errorf("fields[mitre_technique] = %v, want T1048", ev.Fields["mitre_technique"])
+	}
 }
 
 func TestEmit_LogWSScan(t *testing.T) {
 	logger, sink := newLoggerWithEmitter(t)
 	defer logger.Close()
 
-	logger.LogWSScan("ws://example.com", "server_to_client", "10.0.0.1", "req-6", "warn", 1, []string{"injection"})
+	logger.LogWSScan("ws://example.com", DirectionServerToClient, "10.0.0.1", "req-6", "warn", 1, []string{"injection"})
 
 	ev, ok := sink.lastEvent()
 	if !ok {
@@ -1451,6 +1503,24 @@ func TestEmit_LogWSScan(t *testing.T) {
 	}
 	if ev.Type != "ws_scan" {
 		t.Errorf("type = %q, want ws_scan", ev.Type)
+	}
+	if ev.Fields["mitre_technique"] != "T1059" { //nolint:goconst // test value
+		t.Errorf("fields[mitre_technique] = %v, want T1059", ev.Fields["mitre_technique"])
+	}
+}
+
+func TestEmit_LogWSScan_ClientToServer(t *testing.T) {
+	logger, sink := newLoggerWithEmitter(t)
+	defer logger.Close()
+
+	logger.LogWSScan("ws://example.com", DirectionClientToServer, "10.0.0.1", "req-6b", "audit", 1, []string{"AWS Key"})
+
+	ev, ok := sink.lastEvent()
+	if !ok {
+		t.Fatal("expected emitted event")
+	}
+	if ev.Fields["mitre_technique"] != "T1048" { //nolint:goconst // test value
+		t.Errorf("fields[mitre_technique] = %v, want T1048", ev.Fields["mitre_technique"])
 	}
 }
 
@@ -1472,6 +1542,9 @@ func TestEmit_LogSessionAnomaly(t *testing.T) {
 	}
 	if ev.Fields["request_id"] != "req-7" {
 		t.Errorf("fields[request_id] = %v, want req-7", ev.Fields["request_id"])
+	}
+	if ev.Fields["mitre_technique"] != "T1078" {
+		t.Errorf("fields[mitre_technique] = %v, want T1078", ev.Fields["mitre_technique"])
 	}
 }
 
@@ -1544,6 +1617,9 @@ func TestEmit_LogMCPUnknownTool(t *testing.T) {
 	if ev.Fields["tool"] != "execute_code" {
 		t.Errorf("fields[tool] = %v", ev.Fields["tool"])
 	}
+	if ev.Fields["mitre_technique"] != "T1195.002" {
+		t.Errorf("fields[mitre_technique] = %v, want T1195.002", ev.Fields["mitre_technique"])
+	}
 }
 
 func TestEmit_LogKillSwitchDeny(t *testing.T) {
@@ -1561,5 +1637,59 @@ func TestEmit_LogKillSwitchDeny(t *testing.T) {
 	}
 	if ev.Severity != emit.SeverityCritical {
 		t.Errorf("severity = %v, want critical", ev.Severity)
+	}
+}
+
+func TestEmit_DefensiveEvents_NoMITRETechnique(t *testing.T) {
+	logger, sink := newLoggerWithEmitter(t)
+	defer logger.Close()
+
+	// Kill switch deny is a defensive action, not an attack detection.
+	logger.LogKillSwitchDeny("http", "https://example.com", "api", "testing", "10.0.0.1")
+	ev, ok := sink.lastEvent()
+	if !ok {
+		t.Fatal("expected emitted event for kill_switch_deny")
+	}
+	if _, exists := ev.Fields["mitre_technique"]; exists {
+		t.Error("kill_switch_deny should not have mitre_technique field")
+	}
+
+	// Config reload is normal operation.
+	logger.LogConfigReload("success", "SIGHUP")
+	ev, ok = sink.lastEvent()
+	if !ok {
+		t.Fatal("expected emitted event for config_reload")
+	}
+	if _, exists := ev.Fields["mitre_technique"]; exists {
+		t.Error("config_reload should not have mitre_technique field")
+	}
+
+	// Adaptive escalation is a defensive response.
+	logger.LogAdaptiveEscalation("session-1", "warn", "block", "10.0.0.1", "req-1", 5.0)
+	ev, ok = sink.lastEvent()
+	if !ok {
+		t.Fatal("expected emitted event for adaptive_escalation")
+	}
+	if _, exists := ev.Fields["mitre_technique"]; exists {
+		t.Error("adaptive_escalation should not have mitre_technique field")
+	}
+}
+
+func TestEmit_LogAnomaly_NoScanner_NoTechnique(t *testing.T) {
+	logger, sink := newLoggerWithEmitter(t)
+	defer logger.Close()
+
+	// Operational anomaly with empty scanner should not have mitre_technique.
+	logger.LogAnomaly("STARTUP", "0.0.0.0:8888", "", "listen address not loopback", "", "", 0.5)
+
+	ev, ok := sink.lastEvent()
+	if !ok {
+		t.Fatal("expected emitted event")
+	}
+	if _, exists := ev.Fields["scanner"]; exists {
+		t.Error("expected scanner to be omitted when empty")
+	}
+	if _, exists := ev.Fields["mitre_technique"]; exists {
+		t.Error("expected mitre_technique to be omitted when scanner is empty")
 	}
 }

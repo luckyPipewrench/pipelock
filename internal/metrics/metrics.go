@@ -375,6 +375,55 @@ func (m *Metrics) RecordSessionEvicted() {
 	m.sessionsEvicted.Inc()
 }
 
+// RegisterKillSwitchState registers a custom collector that reports the
+// current kill switch state as pipelock_kill_switch_active{source=...}
+// gauges. The sourceFunc is called once per Prometheus scrape and should
+// return the active/inactive state of each source (e.g. Controller.Sources).
+func (m *Metrics) RegisterKillSwitchState(sourceFunc func() map[string]bool) {
+	m.registry.MustRegister(&killSwitchCollector{sourceFunc: sourceFunc})
+}
+
+// RegisterInfo registers a pipelock_info gauge with the given version label.
+// This is a standard Prometheus info metric (always 1) that lets Grafana
+// display which version each agent runs.
+func (m *Metrics) RegisterInfo(version string) {
+	info := prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace:   "pipelock",
+		Name:        "info",
+		Help:        "Pipelock build information.",
+		ConstLabels: prometheus.Labels{"version": version},
+	})
+	info.Set(1)
+	m.registry.MustRegister(info)
+}
+
+// killSwitchCollector implements prometheus.Collector to report kill switch
+// source states on each scrape. This avoids stale gauge values: the state
+// is read fresh from the Controller on every Prometheus scrape request.
+type killSwitchCollector struct {
+	sourceFunc func() map[string]bool
+}
+
+var killSwitchActiveDesc = prometheus.NewDesc(
+	"pipelock_kill_switch_active",
+	"Whether a kill switch source is currently active (1) or inactive (0).",
+	[]string{"source"}, nil,
+)
+
+func (c *killSwitchCollector) Describe(ch chan<- *prometheus.Desc) {
+	ch <- killSwitchActiveDesc
+}
+
+func (c *killSwitchCollector) Collect(ch chan<- prometheus.Metric) {
+	for source, active := range c.sourceFunc() {
+		val := 0.0
+		if active {
+			val = 1.0
+		}
+		ch <- prometheus.MustNewConstMetric(killSwitchActiveDesc, prometheus.GaugeValue, val, source)
+	}
+}
+
 // PrometheusHandler returns an HTTP handler that serves /metrics in Prometheus text format.
 func (m *Metrics) PrometheusHandler() http.Handler {
 	return promhttp.HandlerFor(m.registry, promhttp.HandlerOpts{})

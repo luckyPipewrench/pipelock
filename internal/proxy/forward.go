@@ -114,9 +114,8 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Audit mode: log anomaly but allow through
-		p.logger.LogAnomaly(http.MethodConnect, target,
-			fmt.Sprintf("[audit] %s: %s", result.Scanner, result.Reason),
-			clientIP, requestID, result.Score)
+		p.logger.LogAnomaly(http.MethodConnect, target, result.Scanner,
+			result.Reason, clientIP, requestID, result.Score)
 	}
 
 	if sessionBlocked {
@@ -130,7 +129,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if cfg.WebSocketProxy.Enabled && len(cfg.ForwardProxy.RedirectWebSocketHosts) > 0 {
 		if isHostAllowlisted(host, cfg.ForwardProxy.RedirectWebSocketHosts) {
 			p.metrics.RecordWSRedirectHint()
-			p.logger.LogAnomaly(http.MethodConnect, target,
+			p.logger.LogAnomaly(http.MethodConnect, target, "",
 				fmt.Sprintf("hint: %s supports WebSocket; consider using /ws endpoint for frame-level scanning", host),
 				clientIP, requestID, 0.2)
 		}
@@ -285,9 +284,8 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "blocked: "+result.Reason, http.StatusForbidden)
 			return
 		}
-		p.logger.LogAnomaly(r.Method, targetURL,
-			fmt.Sprintf("[audit] %s: %s", result.Scanner, result.Reason),
-			clientIP, requestID, result.Score)
+		p.logger.LogAnomaly(r.Method, targetURL, result.Scanner,
+			result.Reason, clientIP, requestID, result.Score)
 	}
 
 	if sessionBlocked {

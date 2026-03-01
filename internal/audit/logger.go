@@ -78,6 +78,15 @@ const (
 	EventKillSwitchDeny     EventType = "kill_switch_deny"
 )
 
+// WebSocket frame direction constants used in audit log entries.
+const (
+	DirectionClientToServer = "client_to_server"
+	DirectionServerToClient = "server_to_client"
+)
+
+// Scanner label for DLP audit events (used in technique mapping).
+const ScannerDLP = "dlp"
+
 // Logger handles structured audit logging using zerolog.
 type Logger struct {
 	zl             zerolog.Logger
@@ -166,29 +175,38 @@ func (l *Logger) LogAllowed(method, url, clientIP, requestID string, statusCode,
 
 // LogBlocked logs a blocked request with the reason.
 func (l *Logger) LogBlocked(method, url, scanner, reason, clientIP, requestID string) {
+	technique := TechniqueForScanner(scanner)
+
 	// includeBlocked gates local audit log only — external emission always fires
 	// so SIEM/webhook consumers see blocked events regardless of local verbosity.
 	if l.includeBlocked {
-		l.zl.Warn().
+		event := l.zl.Warn().
 			Str("event", string(EventBlocked)).
 			Str("method", method).
 			Str("url", sanitizeString(url)).
 			Str("client_ip", clientIP).
 			Str("request_id", requestID).
 			Str("scanner", scanner).
-			Str("reason", sanitizeString(reason)).
-			Msg("request blocked")
+			Str("reason", sanitizeString(reason))
+		if technique != "" {
+			event = event.Str("mitre_technique", technique)
+		}
+		event.Msg("request blocked")
 	}
 
 	if l.emitter != nil {
-		l.emitter.Emit(context.Background(), string(EventBlocked), map[string]any{
+		fields := map[string]any{
 			"method":     method,
 			"url":        sanitizeString(url),
 			"scanner":    scanner,
 			"reason":     sanitizeString(reason),
 			"client_ip":  clientIP,
 			"request_id": requestID,
-		})
+		}
+		if technique != "" {
+			fields["mitre_technique"] = technique
+		}
+		l.emitter.Emit(context.Background(), string(EventBlocked), fields)
 	}
 }
 
@@ -218,32 +236,52 @@ func (l *Logger) LogError(method, url, clientIP, requestID string, err error) {
 	}
 }
 
-// LogAnomaly logs suspicious but not blocked activity.
-func (l *Logger) LogAnomaly(method, url, reason, clientIP, requestID string, score float64) {
-	l.zl.Warn().
+// LogAnomaly logs suspicious but not blocked activity. The scanner parameter
+// identifies which scanner/check produced the anomaly (e.g. "dlp", "ssrf").
+// Pass an empty string for operational anomalies that aren't scanner-driven
+// (startup warnings, readability failures, redirect hints).
+func (l *Logger) LogAnomaly(method, url, scanner, reason, clientIP, requestID string, score float64) {
+	technique := TechniqueForScanner(scanner)
+
+	event := l.zl.Warn().
 		Str("event", string(EventAnomaly)).
 		Str("method", method).
 		Str("url", sanitizeString(url)).
 		Str("client_ip", clientIP).
-		Str("request_id", requestID).
-		Str("reason", sanitizeString(reason)).
+		Str("request_id", requestID)
+	if scanner != "" {
+		event = event.Str("scanner", scanner)
+	}
+	if technique != "" {
+		event = event.Str("mitre_technique", technique)
+	}
+	event.Str("reason", sanitizeString(reason)).
 		Float64("score", score).
 		Msg("anomaly detected")
 
 	if l.emitter != nil {
-		l.emitter.Emit(context.Background(), string(EventAnomaly), map[string]any{
+		fields := map[string]any{
 			"method":     method,
 			"url":        sanitizeString(url),
 			"reason":     sanitizeString(reason),
 			"client_ip":  clientIP,
 			"request_id": requestID,
 			"score":      score,
-		})
+		}
+		if scanner != "" {
+			fields["scanner"] = scanner
+		}
+		if technique != "" {
+			fields["mitre_technique"] = technique
+		}
+		l.emitter.Emit(context.Background(), string(EventAnomaly), fields)
 	}
 }
 
 // LogResponseScan logs a response content scan that found prompt injection patterns.
 func (l *Logger) LogResponseScan(url, clientIP, requestID, action string, matchCount int, patternNames []string) {
+	technique := TechniqueForScanner("response_scan")
+
 	l.zl.Warn().
 		Str("event", string(EventResponseScan)).
 		Str("url", sanitizeString(url)).
@@ -252,16 +290,18 @@ func (l *Logger) LogResponseScan(url, clientIP, requestID, action string, matchC
 		Str("action", action).
 		Int("match_count", matchCount).
 		Strs("patterns", patternNames).
+		Str("mitre_technique", technique).
 		Msg("response scan detected prompt injection")
 
 	if l.emitter != nil {
 		l.emitter.Emit(context.Background(), string(EventResponseScan), map[string]any{
-			"url":         sanitizeString(url),
-			"client_ip":   clientIP,
-			"request_id":  requestID,
-			"action":      action,
-			"match_count": matchCount,
-			"patterns":    patternNames,
+			"url":             sanitizeString(url),
+			"client_ip":       clientIP,
+			"request_id":      requestID,
+			"action":          action,
+			"match_count":     matchCount,
+			"patterns":        patternNames,
+			"mitre_technique": technique,
 		})
 	}
 }
@@ -391,33 +431,50 @@ func (l *Logger) LogWSClose(target, clientIP, requestID, agent string, clientToS
 
 // LogWSBlocked logs a blocked WebSocket frame or connection.
 func (l *Logger) LogWSBlocked(target, direction, scannerName, reason, clientIP, requestID string) {
+	technique := TechniqueForScanner(scannerName)
+
 	// includeBlocked gates local audit log only — external emission always fires.
 	if l.includeBlocked {
-		l.zl.Warn().
+		event := l.zl.Warn().
 			Str("event", string(EventWSBlocked)).
 			Str("target", sanitizeString(target)).
 			Str("direction", direction).
 			Str("scanner", scannerName).
 			Str("reason", sanitizeString(reason)).
 			Str("client_ip", clientIP).
-			Str("request_id", requestID).
-			Msg("websocket blocked")
+			Str("request_id", requestID)
+		if technique != "" {
+			event = event.Str("mitre_technique", technique)
+		}
+		event.Msg("websocket blocked")
 	}
 
 	if l.emitter != nil {
-		l.emitter.Emit(context.Background(), string(EventWSBlocked), map[string]any{
+		fields := map[string]any{
 			"target":     sanitizeString(target),
 			"direction":  direction,
 			"scanner":    scannerName,
 			"reason":     sanitizeString(reason),
 			"client_ip":  clientIP,
 			"request_id": requestID,
-		})
+		}
+		if technique != "" {
+			fields["mitre_technique"] = technique
+		}
+		l.emitter.Emit(context.Background(), string(EventWSBlocked), fields)
 	}
 }
 
 // LogWSScan logs a WebSocket frame scan hit (warn/strip action).
+// Direction determines the MITRE technique: client_to_server is DLP/exfil (T1048),
+// server_to_client is prompt injection detection (T1059).
 func (l *Logger) LogWSScan(target, direction, clientIP, requestID, action string, matchCount int, patternNames []string) {
+	scanner := string(EventResponseScan)
+	if direction == DirectionClientToServer {
+		scanner = ScannerDLP
+	}
+	technique := TechniqueForScanner(scanner)
+
 	l.zl.Warn().
 		Str("event", string(EventWSScan)).
 		Str("target", sanitizeString(target)).
@@ -427,23 +484,27 @@ func (l *Logger) LogWSScan(target, direction, clientIP, requestID, action string
 		Str("action", action).
 		Int("match_count", matchCount).
 		Strs("patterns", patternNames).
+		Str("mitre_technique", technique).
 		Msg("websocket scan hit")
 
 	if l.emitter != nil {
 		l.emitter.Emit(context.Background(), string(EventWSScan), map[string]any{
-			"target":      sanitizeString(target),
-			"direction":   direction,
-			"client_ip":   clientIP,
-			"request_id":  requestID,
-			"action":      action,
-			"match_count": matchCount,
-			"patterns":    patternNames,
+			"target":          sanitizeString(target),
+			"direction":       direction,
+			"client_ip":       clientIP,
+			"request_id":      requestID,
+			"action":          action,
+			"match_count":     matchCount,
+			"patterns":        patternNames,
+			"mitre_technique": technique,
 		})
 	}
 }
 
 // LogSessionAnomaly logs a session behavioral anomaly detection.
 func (l *Logger) LogSessionAnomaly(sessionKey, anomalyType, detail, clientIP, requestID string, score float64) {
+	technique := TechniqueForScanner("session_anomaly")
+
 	l.zl.Warn().
 		Str("event", string(EventSessionAnomaly)).
 		Str("session", sanitizeString(sessionKey)).
@@ -452,14 +513,16 @@ func (l *Logger) LogSessionAnomaly(sessionKey, anomalyType, detail, clientIP, re
 		Str("client_ip", clientIP).
 		Str("request_id", requestID).
 		Float64("score", score).
+		Str("mitre_technique", technique).
 		Msg("session anomaly detected")
 
 	if l.emitter != nil {
 		fields := map[string]any{
-			"session":      sanitizeString(sessionKey),
-			"anomaly_type": anomalyType,
-			"detail":       sanitizeString(detail),
-			"score":        score,
+			"session":         sanitizeString(sessionKey),
+			"anomaly_type":    anomalyType,
+			"detail":          sanitizeString(detail),
+			"score":           score,
+			"mitre_technique": technique,
 		}
 		if clientIP != "" {
 			fields["client_ip"] = clientIP
@@ -502,16 +565,20 @@ func (l *Logger) LogAdaptiveEscalation(sessionKey, from, to, clientIP, requestID
 
 // LogMCPUnknownTool logs a tool call to a tool not in the session baseline.
 func (l *Logger) LogMCPUnknownTool(toolName, action string) {
+	technique := TechniqueForScanner("mcp_unknown_tool")
+
 	l.zl.Warn().
 		Str("event", string(EventMCPUnknownTool)).
 		Str("tool", sanitizeString(toolName)).
 		Str("action", action).
+		Str("mitre_technique", technique).
 		Msg("tool not in session baseline")
 
 	if l.emitter != nil {
 		l.emitter.Emit(context.Background(), string(EventMCPUnknownTool), map[string]any{
-			"tool":   sanitizeString(toolName),
-			"action": action,
+			"tool":            sanitizeString(toolName),
+			"action":          action,
+			"mitre_technique": technique,
 		})
 	}
 }

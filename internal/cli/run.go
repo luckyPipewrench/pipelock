@@ -134,6 +134,8 @@ Examples:
 			m := metrics.New()
 
 			ks := killswitch.New(cfg)
+			m.RegisterKillSwitchState(ks.Sources)
+			m.RegisterInfo(Version)
 
 			// Always create the API handler so routes are registered at startup.
 			// The handler returns 503 when no api_token is configured, and reads

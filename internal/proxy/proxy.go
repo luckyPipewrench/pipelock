@@ -430,7 +430,6 @@ func (p *Proxy) Start(ctx context.Context) error {
 	if p.ksAPI != nil && cfg.KillSwitch.APIListen == "" {
 		mux.HandleFunc("/api/v1/killswitch", p.ksAPI.HandleToggle)
 		mux.HandleFunc("/api/v1/killswitch/status", p.ksAPI.HandleStatus)
-		mux.HandleFunc("/dashboard", p.ksAPI.HandleDashboard)
 	}
 
 	handler := p.buildHandler(mux)

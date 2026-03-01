@@ -121,7 +121,7 @@ func (c *Controller) IsActiveHTTP(r *http.Request) Decision {
 	// (separatePort=true), the main port gets no exemption — the agent
 	// cannot reach the API to self-deactivate the kill switch.
 	if rt.apiExempt && !c.separatePort.Load() &&
-		(path == "/api/v1/killswitch" || path == "/api/v1/killswitch/status" || path == "/dashboard") {
+		(path == "/api/v1/killswitch" || path == "/api/v1/killswitch/status") {
 		return Decision{}
 	}
 

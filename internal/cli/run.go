@@ -134,6 +134,8 @@ Examples:
 			m := metrics.New()
 
 			ks := killswitch.New(cfg)
+			m.RegisterKillSwitchState(ks.Sources)
+			m.RegisterInfo(Version)
 
 			// Always create the API handler so routes are registered at startup.
 			// The handler returns 503 when no api_token is configured, and reads
@@ -341,7 +343,6 @@ Examples:
 				apiMux := http.NewServeMux()
 				apiMux.HandleFunc("/api/v1/killswitch", ksAPI.HandleToggle)
 				apiMux.HandleFunc("/api/v1/killswitch/status", ksAPI.HandleStatus)
-				apiMux.HandleFunc("/dashboard", ksAPI.HandleDashboard)
 
 				apiLn, lnErr := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.KillSwitch.APIListen)
 				if lnErr != nil {

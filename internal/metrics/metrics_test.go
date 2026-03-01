@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -812,4 +813,72 @@ func TestConcurrentWSMetrics(t *testing.T) {
 		t.Errorf("expected 50 WS completions, got %d", m.wsConnectionCount)
 	}
 	m.mu.Unlock()
+}
+
+func TestRegisterKillSwitchState(t *testing.T) {
+	m := New()
+	m.RegisterKillSwitchState(func() map[string]bool {
+		return map[string]bool{
+			"config":   false,
+			"api":      true,
+			"signal":   false,
+			"sentinel": false,
+		}
+	})
+
+	handler := m.PrometheusHandler()
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := rec.Body.String()
+
+	if !strings.Contains(body, `pipelock_kill_switch_active{source="api"} 1`) {
+		t.Errorf("expected api source active (1):\n%s", body)
+	}
+	if !strings.Contains(body, `pipelock_kill_switch_active{source="config"} 0`) {
+		t.Errorf("expected config source inactive (0):\n%s", body)
+	}
+	if !strings.Contains(body, `pipelock_kill_switch_active{source="signal"} 0`) {
+		t.Errorf("expected signal source inactive (0):\n%s", body)
+	}
+	if !strings.Contains(body, `pipelock_kill_switch_active{source="sentinel"} 0`) {
+		t.Errorf("expected sentinel source inactive (0):\n%s", body)
+	}
+}
+
+func TestRegisterKillSwitchState_AllActive(t *testing.T) {
+	m := New()
+	m.RegisterKillSwitchState(func() map[string]bool {
+		return map[string]bool{
+			"config":   true,
+			"api":      true,
+			"signal":   true,
+			"sentinel": true,
+		}
+	})
+
+	handler := m.PrometheusHandler()
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := rec.Body.String()
+
+	for _, src := range []string{"config", "api", "signal", "sentinel"} {
+		expected := fmt.Sprintf(`pipelock_kill_switch_active{source="%s"} 1`, src)
+		if !strings.Contains(body, expected) {
+			t.Errorf("expected %s active (1):\n%s", src, body)
+		}
+	}
+}
+
+func TestRegisterInfo(t *testing.T) {
+	m := New()
+	m.RegisterInfo("0.3.1-test")
+
+	handler := m.PrometheusHandler()
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := rec.Body.String()
+
+	if !strings.Contains(body, `pipelock_info{version="0.3.1-test"} 1`) {
+		t.Errorf("expected pipelock_info with version label:\n%s", body)
+	}
 }

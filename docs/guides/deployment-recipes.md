@@ -79,7 +79,7 @@ services:
   pipelock:
     # ... (same as above)
     ports:
-      - "9090:9090"    # Kill switch API, host-only
+      - "127.0.0.1:9090:9090"    # Kill switch API, host-only
 
   # pipelock.yaml should have:
   # kill_switch:
@@ -87,7 +87,7 @@ services:
   #   api_token: "your-token-here"
 ```
 
-The agent on `agent-internal` cannot reach port 9090. Only the host (or another container on `proxy-external`) can.
+Port publishing controls host access, not inter-container access. The agent on `agent-internal` can still reach `pipelock:9090` via the service name. The token requirement is what prevents unauthorized activation. Binding to `127.0.0.1` on the host side keeps the API off external interfaces.
 
 ## Kubernetes with NetworkPolicy
 

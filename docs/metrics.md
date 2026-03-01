@@ -44,9 +44,9 @@ uses CONNECT tunnels (see below) and does not increment request counters.
 
 ## CONNECT Tunnel Metrics
 
-All HTTPS traffic from AI agents uses CONNECT tunnels, which are opaque TCP pipes
-that pipelock cannot inspect. These are the primary traffic metrics for
-most deployments.
+In forward-proxy mode, HTTPS traffic uses CONNECT tunnels, which are opaque TCP
+pipes that pipelock cannot inspect beyond the hostname. These are the primary
+traffic metrics for forward-proxy deployments.
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|

@@ -153,7 +153,7 @@ websocket_proxy:
 
 ## DLP (Data Loss Prevention)
 
-Scans URLs for secrets using regex patterns. Runs before DNS resolution to prevent secret exfiltration via DNS queries. Matching is always case-insensitive.
+Scans URLs for secrets and sensitive data using regex patterns. Built-in patterns cover API keys, tokens, credentials, and prompt injection indicators. Runs before DNS resolution to prevent exfiltration via DNS queries. Matching is always case-insensitive.
 
 ```yaml
 dlp:

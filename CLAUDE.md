@@ -30,7 +30,7 @@ make test           # go test -race -count=1 ./...
 make test-cover     # Coverage report → coverage.html
 make lint           # golangci-lint (v2, 19 linters, gofumpt)
 make bench          # Benchmarks for scanner + mcp
-make fmt            # gofmt -s (CI enforces gofumpt, so run `gofumpt -w .` locally)
+make fmt            # gofumpt -w . (stricter than gofmt — handles alignment + import grouping)
 make vet            # Static analysis
 make tidy-check     # Verify go.mod/go.sum
 make docker         # Docker image

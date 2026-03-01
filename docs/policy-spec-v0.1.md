@@ -20,7 +20,7 @@ Pipelock implements this spec natively. Other agent firewall implementations can
 A policy document is a YAML file with these top-level keys:
 
 ```yaml
-policy_version: "0.1"
+policy_version: "0.1.0"
 name: "production-agents"
 description: "Policy for production AI agent fleet"
 
@@ -299,7 +299,7 @@ The `policy_version` field uses semver. Implementations MUST reject policies wit
 ## Example: Minimal Production Policy
 
 ```yaml
-policy_version: "0.1"
+policy_version: "0.1.0"
 name: "minimal-production"
 
 egress:

@@ -62,9 +62,14 @@ func (c *WSClient) ReadMessage() ([]byte, error) {
 			return nil, fmt.Errorf("reading ws header: %w", err)
 		}
 
-		// Enforce size limit before allocation to prevent memory DoS.
-		// A malicious upstream could send a header claiming a huge payload.
-		if hdr.Length > int64(MaxLineSize) {
+		// Enforce size limits before allocation to prevent memory DoS.
+		// Control frames: RFC 6455 caps at 125 bytes.
+		if hdr.OpCode.IsControl() && hdr.Length > plwsutil.MaxControlPayload {
+			plwsutil.WriteClientCloseFrame(c.conn, ws.StatusProtocolError, "control frame too large")
+			return nil, fmt.Errorf("control frame too large: %d bytes", hdr.Length)
+		}
+		// Data frames: reject headers claiming payloads larger than MaxLineSize.
+		if !hdr.OpCode.IsControl() && hdr.Length > int64(MaxLineSize) {
 			plwsutil.WriteClientCloseFrame(c.conn, ws.StatusMessageTooBig, "frame too large")
 			return nil, fmt.Errorf("frame too large: %d bytes (max %d)", hdr.Length, MaxLineSize)
 		}
@@ -84,10 +89,6 @@ func (c *WSClient) ReadMessage() ([]byte, error) {
 
 		// Control frames: handle inline (they can appear between fragments).
 		if hdr.OpCode.IsControl() {
-			if hdr.Length > plwsutil.MaxControlPayload {
-				plwsutil.WriteClientCloseFrame(c.conn, ws.StatusProtocolError, "control frame too large")
-				return nil, fmt.Errorf("control frame too large: %d bytes", hdr.Length)
-			}
 			switch hdr.OpCode {
 			case ws.OpClose:
 				// Echo close frame back, then signal EOF.

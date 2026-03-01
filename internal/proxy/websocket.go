@@ -378,7 +378,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		hdr, err := ws.ReadHeader(r.clientConn)
 		if err != nil {
 			if !plwsutil.IsExpectedCloseErr(err) {
-				plwsutil.WriteCloseFrame(r.upstreamConn, ws.StatusGoingAway, "client disconnected")
+				plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusGoingAway, "client disconnected")
 			}
 			return
 		}
@@ -390,7 +390,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		}
 		if !hdr.OpCode.IsControl() && hdr.Length > int64(r.maxMsg) {
 			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusMessageTooBig, plwsutil.ReasonMessageTooLarge)
-			plwsutil.WriteCloseFrame(r.upstreamConn, ws.StatusMessageTooBig, plwsutil.ReasonMessageTooLarge)
+			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusMessageTooBig, plwsutil.ReasonMessageTooLarge)
 			return
 		}
 
@@ -398,7 +398,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		// Compressed bytes bypass DLP pattern matching entirely.
 		if hdr.Rsv1() {
 			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusProtocolError, "compressed frames not supported")
-			plwsutil.WriteCloseFrame(r.upstreamConn, ws.StatusProtocolError, "compressed frames not supported")
+			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusProtocolError, "compressed frames not supported")
 			blocked = true
 			return
 		}
@@ -426,7 +426,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		if hdr.OpCode.IsControl() {
 			if hdr.OpCode == ws.OpClose {
 				// Forward close frame to upstream, then exit.
-				plwsutil.WriteCloseFrame(r.upstreamConn, ws.StatusNormalClosure, "client closed")
+				plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusNormalClosure, "client closed")
 				return
 			}
 			// Ping/Pong: forward to upstream (proxy is CLIENT to upstream).
@@ -444,7 +444,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 				log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, "policy", "binary frames not allowed", r.clientIP, r.requestID)
 				r.proxy.metrics.RecordWSScanHit("policy")
 				plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "binary frames not allowed")
-				plwsutil.WriteCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "binary frames not allowed")
+				plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "binary frames not allowed")
 				blocked = true
 				return
 			}
@@ -455,7 +455,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		if closeCode != 0 {
 			log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, "policy", closeReason, r.clientIP, r.requestID)
 			plwsutil.WriteCloseFrame(r.clientConn, closeCode, closeReason)
-			plwsutil.WriteCloseFrame(r.upstreamConn, closeCode, closeReason)
+			plwsutil.WriteClientCloseFrame(r.upstreamConn, closeCode, closeReason)
 			blocked = true
 			return
 		}
@@ -473,7 +473,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 			// UTF-8 validation per RFC 6455.
 			if !utf8.Valid(msg) {
 				plwsutil.WriteCloseFrame(r.clientConn, ws.StatusInvalidFramePayloadData, "invalid UTF-8")
-				plwsutil.WriteCloseFrame(r.upstreamConn, ws.StatusInvalidFramePayloadData, "invalid UTF-8")
+				plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusInvalidFramePayloadData, "invalid UTF-8")
 				return
 			}
 
@@ -510,7 +510,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 						log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, audit.ScannerDLP, reason, r.clientIP, r.requestID)
 						r.proxy.metrics.RecordWSScanHit(audit.ScannerDLP)
 						plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "DLP violation")
-						plwsutil.WriteCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "DLP violation")
+						plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "DLP violation")
 						blocked = true
 						return
 					}
@@ -542,7 +542,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 	for {
 		select {
 		case <-ctx.Done():
-			plwsutil.WriteCloseFrame(r.upstreamConn, ws.StatusGoingAway, "connection timeout")
+			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusGoingAway, "connection timeout")
 			return
 		default:
 		}
@@ -559,12 +559,12 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 
 		// Guard against OOM: reject frames exceeding limits before allocating.
 		if hdr.OpCode.IsControl() && hdr.Length > plwsutil.MaxControlPayload {
-			plwsutil.WriteCloseFrame(r.upstreamConn, ws.StatusProtocolError, "control frame too large")
+			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusProtocolError, "control frame too large")
 			return
 		}
 		if !hdr.OpCode.IsControl() && hdr.Length > int64(r.maxMsg) {
 			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusMessageTooBig, plwsutil.ReasonMessageTooLarge)
-			plwsutil.WriteCloseFrame(r.upstreamConn, ws.StatusMessageTooBig, plwsutil.ReasonMessageTooLarge)
+			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusMessageTooBig, plwsutil.ReasonMessageTooLarge)
 			return
 		}
 
@@ -572,7 +572,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 		// Compressed bytes bypass DLP pattern matching entirely.
 		if hdr.Rsv1() {
 			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusProtocolError, "compressed frames not supported")
-			plwsutil.WriteCloseFrame(r.upstreamConn, ws.StatusProtocolError, "compressed frames not supported")
+			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusProtocolError, "compressed frames not supported")
 			blocked = true
 			return
 		}
@@ -617,7 +617,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 				log.LogWSBlocked(r.targetURL, audit.DirectionServerToClient, "policy", "binary frames not allowed", r.clientIP, r.requestID)
 				r.proxy.metrics.RecordWSScanHit("policy")
 				plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "binary frames not allowed")
-				plwsutil.WriteCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "binary frames not allowed")
+				plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "binary frames not allowed")
 				blocked = true
 				return
 			}
@@ -628,7 +628,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 		if closeCode != 0 {
 			log.LogWSBlocked(r.targetURL, audit.DirectionServerToClient, "policy", closeReason, r.clientIP, r.requestID)
 			plwsutil.WriteCloseFrame(r.clientConn, closeCode, closeReason)
-			plwsutil.WriteCloseFrame(r.upstreamConn, closeCode, closeReason)
+			plwsutil.WriteClientCloseFrame(r.upstreamConn, closeCode, closeReason)
 			blocked = true
 			return
 		}
@@ -646,7 +646,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 			// UTF-8 validation.
 			if !utf8.Valid(msg) {
 				plwsutil.WriteCloseFrame(r.clientConn, ws.StatusInvalidFramePayloadData, "invalid UTF-8")
-				plwsutil.WriteCloseFrame(r.upstreamConn, ws.StatusInvalidFramePayloadData, "invalid UTF-8")
+				plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusInvalidFramePayloadData, "invalid UTF-8")
 				return
 			}
 
@@ -665,7 +665,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 						reason := fmt.Sprintf("injection detected: %s", strings.Join(patternNames, ", "))
 						log.LogWSBlocked(r.targetURL, audit.DirectionServerToClient, "response_scan", reason, r.clientIP, r.requestID)
 						plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "injection detected")
-						plwsutil.WriteCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "injection detected")
+						plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "injection detected")
 						blocked = true
 						return
 					case config.ActionStrip:
@@ -676,7 +676,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 							reason := fmt.Sprintf("injection detected (strip failed): %s", strings.Join(patternNames, ", "))
 							log.LogWSBlocked(r.targetURL, audit.DirectionServerToClient, "response_scan", reason, r.clientIP, r.requestID)
 							plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "injection detected")
-							plwsutil.WriteCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "injection detected")
+							plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "injection detected")
 							blocked = true
 							return
 						}
@@ -689,7 +689,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 						reason := fmt.Sprintf("injection detected (ask not supported for WS): %s", strings.Join(patternNames, ", "))
 						log.LogWSBlocked(r.targetURL, audit.DirectionServerToClient, "response_scan", reason, r.clientIP, r.requestID)
 						plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "injection detected")
-						plwsutil.WriteCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "injection detected")
+						plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "injection detected")
 						blocked = true
 						return
 					default:

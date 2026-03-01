@@ -129,7 +129,7 @@ func wrapServerEntry(raw json.RawMessage, pipelockBin, configPath string) (wrapp
 	if urlVal, ok := entry["url"]; ok {
 		urlStr, isStr := urlVal.(string)
 		if !isStr {
-			return wrappedEntry{value: entry}, nil
+			return wrappedEntry{}, fmt.Errorf("\"url\" field must be a string, got %T", urlVal)
 		}
 		// Check if already wrapped (url entries don't have command).
 		if _, hasCmd := entry["command"]; hasCmd {
@@ -149,7 +149,10 @@ func wrapServerEntry(raw json.RawMessage, pipelockBin, configPath string) (wrapp
 	if !hasCmd {
 		return wrappedEntry{value: entry}, nil
 	}
-	cmdStr, _ := cmdVal.(string)
+	cmdStr, isStr := cmdVal.(string)
+	if !isStr {
+		return wrappedEntry{}, fmt.Errorf("\"command\" field must be a string, got %T", cmdVal)
+	}
 
 	argsRaw, _ := entry["args"].([]interface{})
 	args := toStringSlice(argsRaw)

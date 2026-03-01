@@ -30,11 +30,11 @@ func wsTestServer(t *testing.T, handler func(conn net.Conn)) *httptest.Server {
 }
 
 func TestWSClient_SingleTextFrame(t *testing.T) {
+	clientDone := make(chan struct{})
 	srv := wsTestServer(t, func(conn net.Conn) {
 		defer func() { _ = conn.Close() }()
 		_ = gobwasutil.WriteServerMessage(conn, ws.OpText, []byte(`{"jsonrpc":"2.0","id":1}`))
-		// Wait for client to read.
-		time.Sleep(200 * time.Millisecond)
+		<-clientDone
 	})
 	defer srv.Close()
 
@@ -46,6 +46,7 @@ func TestWSClient_SingleTextFrame(t *testing.T) {
 	defer func() { _ = client.Close() }()
 
 	msg, err := client.ReadMessage()
+	close(clientDone)
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
@@ -132,10 +133,11 @@ func TestWSClient_FragmentedMessage(t *testing.T) {
 }
 
 func TestWSClient_BinaryFrameRejected(t *testing.T) {
+	clientDone := make(chan struct{})
 	srv := wsTestServer(t, func(conn net.Conn) {
 		defer func() { _ = conn.Close() }()
 		_ = gobwasutil.WriteServerMessage(conn, ws.OpBinary, []byte{0x00, 0x01})
-		time.Sleep(100 * time.Millisecond)
+		<-clientDone
 	})
 	defer srv.Close()
 
@@ -147,6 +149,7 @@ func TestWSClient_BinaryFrameRejected(t *testing.T) {
 	defer func() { _ = client.Close() }()
 
 	_, err = client.ReadMessage()
+	close(clientDone)
 	if err == nil {
 		t.Fatal("expected error for binary frame")
 	}
@@ -156,6 +159,7 @@ func TestWSClient_BinaryFrameRejected(t *testing.T) {
 }
 
 func TestWSClient_CloseFrameReturnsEOF(t *testing.T) {
+	clientDone := make(chan struct{})
 	srv := wsTestServer(t, func(conn net.Conn) {
 		defer func() { _ = conn.Close() }()
 		// Send a close frame.
@@ -166,7 +170,7 @@ func TestWSClient_CloseFrameReturnsEOF(t *testing.T) {
 		})
 		// Status code: 1000 (normal closure).
 		_, _ = conn.Write([]byte{0x03, 0xE8})
-		time.Sleep(100 * time.Millisecond)
+		<-clientDone
 	})
 	defer srv.Close()
 
@@ -178,6 +182,7 @@ func TestWSClient_CloseFrameReturnsEOF(t *testing.T) {
 	defer func() { _ = client.Close() }()
 
 	_, err = client.ReadMessage()
+	close(clientDone)
 	if !errors.Is(err, io.EOF) {
 		t.Errorf("expected io.EOF, got: %v", err)
 	}
@@ -185,6 +190,7 @@ func TestWSClient_CloseFrameReturnsEOF(t *testing.T) {
 
 func TestWSClient_PingPong(t *testing.T) {
 	pongReceived := make(chan bool, 1)
+	clientDone := make(chan struct{})
 	srv := wsTestServer(t, func(conn net.Conn) {
 		defer func() { _ = conn.Close() }()
 		// Send ping.
@@ -206,7 +212,7 @@ func TestWSClient_PingPong(t *testing.T) {
 		}
 		// Send a text message so the client's ReadMessage returns.
 		_ = gobwasutil.WriteServerMessage(conn, ws.OpText, []byte(`{"ok":true}`))
-		time.Sleep(200 * time.Millisecond)
+		<-clientDone
 	})
 	defer srv.Close()
 
@@ -219,6 +225,7 @@ func TestWSClient_PingPong(t *testing.T) {
 
 	// ReadMessage should handle the ping internally and return the text message.
 	msg, err := client.ReadMessage()
+	close(clientDone)
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
@@ -235,15 +242,16 @@ func TestWSClient_PingPong(t *testing.T) {
 }
 
 func TestWSClient_InvalidUTF8Rejected(t *testing.T) {
+	clientDone := make(chan struct{})
 	srv := wsTestServer(t, func(conn net.Conn) {
 		defer func() { _ = conn.Close() }()
 		// Send invalid UTF-8 as a text frame.
 		invalid := []byte{0xFF, 0xFE}
 		if utf8.Valid(invalid) {
-			t.Skip("test payload is valid UTF-8")
+			return // skip if somehow valid
 		}
 		_ = gobwasutil.WriteServerMessage(conn, ws.OpText, invalid)
-		time.Sleep(100 * time.Millisecond)
+		<-clientDone
 	})
 	defer srv.Close()
 
@@ -255,6 +263,7 @@ func TestWSClient_InvalidUTF8Rejected(t *testing.T) {
 	defer func() { _ = client.Close() }()
 
 	_, err = client.ReadMessage()
+	close(clientDone)
 	if err == nil {
 		t.Fatal("expected error for invalid UTF-8")
 	}
@@ -304,6 +313,7 @@ func TestWSClient_MessageWriterInterface(t *testing.T) {
 }
 
 func TestWSClient_ReadOversizedFrame(t *testing.T) {
+	clientDone := make(chan struct{})
 	srv := wsTestServer(t, func(conn net.Conn) {
 		defer func() { _ = conn.Close() }()
 		// Send a frame header claiming a payload larger than MaxLineSize.
@@ -314,7 +324,7 @@ func TestWSClient_ReadOversizedFrame(t *testing.T) {
 			Length: int64(MaxLineSize) + 1,
 		})
 		// Don't send the payload; the client should reject on the header alone.
-		time.Sleep(200 * time.Millisecond)
+		<-clientDone
 	})
 	defer srv.Close()
 
@@ -326,6 +336,7 @@ func TestWSClient_ReadOversizedFrame(t *testing.T) {
 	defer func() { _ = client.Close() }()
 
 	_, err = client.ReadMessage()
+	close(clientDone)
 	if err == nil {
 		t.Fatal("expected error for oversized frame")
 	}
@@ -335,9 +346,10 @@ func TestWSClient_ReadOversizedFrame(t *testing.T) {
 }
 
 func TestWSClient_WriteMessageTooLarge(t *testing.T) {
+	clientDone := make(chan struct{})
 	srv := wsTestServer(t, func(conn net.Conn) {
 		defer func() { _ = conn.Close() }()
-		time.Sleep(200 * time.Millisecond)
+		<-clientDone
 	})
 	defer srv.Close()
 
@@ -350,10 +362,105 @@ func TestWSClient_WriteMessageTooLarge(t *testing.T) {
 
 	huge := make([]byte, MaxLineSize+1)
 	err = client.WriteMessage(huge)
+	close(clientDone)
 	if err == nil {
 		t.Fatal("expected error for oversized message")
 	}
 	if !strings.Contains(err.Error(), "too large") {
 		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestWSClient_NewWSClientFromConn(t *testing.T) {
+	server, client := net.Pipe()
+	defer func() { _ = server.Close() }()
+
+	wsc := NewWSClientFromConn(client)
+	if wsc == nil {
+		t.Fatal("expected non-nil WSClient")
+	}
+	if wsc.conn != client {
+		t.Error("conn not set correctly")
+	}
+	_ = wsc.Close()
+}
+
+func TestWSClient_CloseIdempotent(t *testing.T) {
+	clientDone := make(chan struct{})
+	srv := wsTestServer(t, func(conn net.Conn) {
+		defer func() { _ = conn.Close() }()
+		<-clientDone
+	})
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	client, err := NewWSClient(context.Background(), wsURL)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	close(clientDone)
+
+	// Close twice should not panic.
+	_ = client.Close()
+	_ = client.Close()
+}
+
+func TestWSClient_OversizedControlFrame(t *testing.T) {
+	clientDone := make(chan struct{})
+	srv := wsTestServer(t, func(conn net.Conn) {
+		defer func() { _ = conn.Close() }()
+		// Send a ping with payload > 125 bytes (RFC 6455 limit for control frames).
+		_ = ws.WriteHeader(conn, ws.Header{
+			Fin:    true,
+			OpCode: ws.OpPing,
+			Length: 126,
+		})
+		_, _ = conn.Write(make([]byte, 126))
+		<-clientDone
+	})
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	client, err := NewWSClient(context.Background(), wsURL)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	_, err = client.ReadMessage()
+	close(clientDone)
+	if err == nil {
+		t.Fatal("expected error for oversized control frame")
+	}
+	if !strings.Contains(err.Error(), "control frame too large") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestWSClient_UnsolicitedPongIgnored(t *testing.T) {
+	clientDone := make(chan struct{})
+	srv := wsTestServer(t, func(conn net.Conn) {
+		defer func() { _ = conn.Close() }()
+		// Send unsolicited pong, then a text message.
+		_ = gobwasutil.WriteServerMessage(conn, ws.OpPong, []byte("pong"))
+		_ = gobwasutil.WriteServerMessage(conn, ws.OpText, []byte(`{"id":1}`))
+		<-clientDone
+	})
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	client, err := NewWSClient(context.Background(), wsURL)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	msg, err := client.ReadMessage()
+	close(clientDone)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(msg) != `{"id":1}` { //nolint:goconst // test value
+		t.Errorf("expected text message, got: %s", msg)
 	}
 }

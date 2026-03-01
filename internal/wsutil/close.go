@@ -10,19 +10,26 @@ import (
 	"github.com/gobwas/ws"
 )
 
-// WriteCloseFrame sends a WebSocket close frame with the given status code and reason.
-func WriteCloseFrame(conn net.Conn, code ws.StatusCode, reason string) {
-	// Close frame payload: 2-byte status code + optional UTF-8 reason.
-	// Truncate reason to fit in control frame (125 bytes max payload).
+// sanitizeCloseReason truncates and validates UTF-8 for close frame reasons.
+// RFC 6455 requires close reasons to be valid UTF-8 and fit in 123 bytes
+// (125-byte control payload minus 2-byte status code).
+func sanitizeCloseReason(reason string) []byte {
 	reasonBytes := []byte(reason)
 	if len(reasonBytes) > 123 { // 125 - 2 bytes for status code
 		reasonBytes = reasonBytes[:123]
-		// Back up to a valid UTF-8 boundary so we don't split a multi-byte
-		// codepoint (RFC 6455 requires close reasons to be valid UTF-8).
-		for len(reasonBytes) > 0 && !utf8.Valid(reasonBytes) {
-			reasonBytes = reasonBytes[:len(reasonBytes)-1]
-		}
 	}
+	// Walk back to a valid UTF-8 boundary. Handles both truncation mid-codepoint
+	// and short but invalid UTF-8 input.
+	for len(reasonBytes) > 0 && !utf8.Valid(reasonBytes) {
+		reasonBytes = reasonBytes[:len(reasonBytes)-1]
+	}
+	return reasonBytes
+}
+
+// WriteCloseFrame sends a WebSocket close frame with the given status code and reason.
+func WriteCloseFrame(conn net.Conn, code ws.StatusCode, reason string) {
+	// Close frame payload: 2-byte status code + optional UTF-8 reason.
+	reasonBytes := sanitizeCloseReason(reason)
 	payload := make([]byte, 2+len(reasonBytes))
 	payload[0] = byte(code >> 8) //nolint:gosec // StatusCode is uint16, high byte extraction is safe
 	payload[1] = byte(code & 0xFF)
@@ -45,13 +52,7 @@ func WriteCloseFrame(conn net.Conn, code ws.StatusCode, reason string) {
 
 // WriteClientCloseFrame sends a masked close frame (client-to-server per RFC 6455).
 func WriteClientCloseFrame(conn net.Conn, code ws.StatusCode, reason string) {
-	reasonBytes := []byte(reason)
-	if len(reasonBytes) > 123 {
-		reasonBytes = reasonBytes[:123]
-		for len(reasonBytes) > 0 && !utf8.Valid(reasonBytes) {
-			reasonBytes = reasonBytes[:len(reasonBytes)-1]
-		}
-	}
+	reasonBytes := sanitizeCloseReason(reason)
 	payload := make([]byte, 2+len(reasonBytes))
 	payload[0] = byte(code >> 8) //nolint:gosec // StatusCode is uint16, high byte extraction is safe
 	payload[1] = byte(code & 0xFF)

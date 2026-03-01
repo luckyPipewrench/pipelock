@@ -597,3 +597,143 @@ func TestGenerateMcporter_FlagLikeEnvKeysDropped(t *testing.T) {
 		t.Errorf("expected 1 --env flag (SAFE_VAR only), got %d", envCount)
 	}
 }
+
+func TestGenerateMcporter_NonStringURLRejectsEntry(t *testing.T) {
+	input := `{
+		"mcpServers": {
+			"broken": {
+				"url": 12345
+			}
+		}
+	}`
+
+	cmd := rootCmd()
+	cmd.SetErr(&bytes.Buffer{})
+	tmpFile := filepath.Join(t.TempDir(), "test.json")
+	if err := os.WriteFile(tmpFile, []byte(input), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd.SetArgs([]string{"generate", "mcporter", "-i", tmpFile})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for non-string url")
+	}
+}
+
+func TestGenerateMcporter_NonStringCommandRejectsEntry(t *testing.T) {
+	input := `{
+		"mcpServers": {
+			"broken": {
+				"command": ["not", "a", "string"]
+			}
+		}
+	}`
+
+	cmd := rootCmd()
+	cmd.SetErr(&bytes.Buffer{})
+	tmpFile := filepath.Join(t.TempDir(), "test.json")
+	if err := os.WriteFile(tmpFile, []byte(input), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd.SetArgs([]string{"generate", "mcporter", "-i", tmpFile})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for non-string command")
+	}
+}
+
+func TestGenerateMcporter_OutputFile(t *testing.T) {
+	input := `{"mcpServers":{"test":{"command":"node","args":["server.js"]}}}` //nolint:goconst
+
+	tmpDir := t.TempDir()
+	inFile := filepath.Join(tmpDir, "in.json")
+	outFile := filepath.Join(tmpDir, "out.json")
+	if err := os.WriteFile(inFile, []byte(input), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stderr bytes.Buffer
+	cmd := rootCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"generate", "mcporter", "-i", inFile, "-o", outFile})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	data, err := os.ReadFile(outFile) //nolint:gosec // test file
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	servers := result["mcpServers"].(map[string]interface{})
+	test := servers["test"].(map[string]interface{})
+	if test["command"] != "pipelock" { //nolint:goconst // test value
+		t.Fatal("output file should contain wrapped server")
+	}
+}
+
+func TestGenerateMcporter_NoCommandNoURL(t *testing.T) {
+	// Entry with neither command nor url should pass through unchanged.
+	input := `{
+		"mcpServers": {
+			"custom": {
+				"type": "sse",
+				"endpoint": "http://example.com"
+			}
+		}
+	}`
+
+	var buf bytes.Buffer
+	cmd := rootCmd()
+	cmd.SetOut(&buf)
+	cmd.SetErr(&bytes.Buffer{})
+
+	tmpFile := filepath.Join(t.TempDir(), "test.json")
+	if err := os.WriteFile(tmpFile, []byte(input), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd.SetArgs([]string{"generate", "mcporter", "-i", tmpFile})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	servers := result["mcpServers"].(map[string]interface{})
+	custom := servers["custom"].(map[string]interface{})
+	if custom["type"] != "sse" {
+		t.Fatal("passthrough entry should be unchanged")
+	}
+}
+
+func TestGenerateMcporter_InvalidServerEntry(t *testing.T) {
+	input := `{
+		"mcpServers": {
+			"broken": "not an object"
+		}
+	}`
+
+	cmd := rootCmd()
+	cmd.SetErr(&bytes.Buffer{})
+	tmpFile := filepath.Join(t.TempDir(), "test.json")
+	if err := os.WriteFile(tmpFile, []byte(input), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd.SetArgs([]string{"generate", "mcporter", "-i", tmpFile})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for invalid server entry")
+	}
+}

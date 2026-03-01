@@ -60,7 +60,7 @@ func (f *FragmentState) Process(hdr ws.Header, payload []byte) (complete bool, m
 
 	default:
 		// Single-frame message (Fin=true, non-continuation, non-control).
-		if int(hdr.Length) > f.MaxBytes {
+		if len(payload) > f.MaxBytes {
 			return false, nil, ws.StatusMessageTooBig, ReasonMessageTooLarge
 		}
 		f.Opcode = hdr.OpCode

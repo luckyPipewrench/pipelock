@@ -88,6 +88,33 @@ func TestWriteCloseFrame_EmptyReason(t *testing.T) {
 	}
 }
 
+func TestWriteCloseFrame_InvalidUTF8Short(t *testing.T) {
+	server, client := net.Pipe()
+	defer func() { _ = server.Close() }()
+	defer func() { _ = client.Close() }()
+
+	done := make(chan []byte, 1)
+	go func() {
+		buf := make([]byte, 256)
+		_ = server.SetReadDeadline(time.Now().Add(2 * time.Second))
+		n, _ := server.Read(buf)
+		done <- buf[:n]
+	}()
+
+	// Short invalid UTF-8 (under 123 bytes but still invalid).
+	WriteCloseFrame(client, ws.StatusNormalClosure, "\xff\xfe invalid")
+
+	data := <-done
+	if len(data) < 4 {
+		t.Fatalf("close frame too short: %d bytes", len(data))
+	}
+	// The reason should have been sanitized (invalid bytes removed).
+	payloadLen := int(data[1] & 0x7F)
+	if payloadLen < 2 {
+		t.Error("expected at least status code in payload")
+	}
+}
+
 func TestWriteClientCloseFrame_Masked(t *testing.T) {
 	server, client := net.Pipe()
 	defer func() { _ = server.Close() }()

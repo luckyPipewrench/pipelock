@@ -202,6 +202,14 @@ spec:
   policyTypes:
     - Egress
   egress:
+    # Allow DNS resolution.
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - port: 53
+          protocol: UDP
+    # Allow traffic only to the pipelock sidecar (localhost in same pod).
+    # This prevents the agent from making direct external connections.
     - to:
         - podSelector:
             matchLabels:

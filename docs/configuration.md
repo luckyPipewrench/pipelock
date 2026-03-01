@@ -397,7 +397,7 @@ Emergency deny-all with four independent activation sources. Any one active bloc
 ```yaml
 kill_switch:
   enabled: false
-  sentinel_file: /tmp/pipelock-kill
+  sentinel_file: /tmp/pipelock-kill   # example path; default is "" (disabled)
   message: "Emergency deny-all active"
   health_exempt: true
   metrics_exempt: true

@@ -183,9 +183,6 @@ Environment passthrough (subprocess mode only):
 				default:
 					return fmt.Errorf("invalid upstream URL %q: scheme must be http, https, ws, or wss", upstreamURL)
 				}
-				if isWSUpstream && hasSubprocess {
-					return errors.New("ws:// and wss:// upstream cannot be combined with subprocess command (--)")
-				}
 			}
 
 			cfg, err := loadConfigOrDefault(configFile)

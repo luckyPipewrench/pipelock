@@ -737,3 +737,145 @@ func TestGenerateMcporter_InvalidServerEntry(t *testing.T) {
 		t.Fatal("expected error for invalid server entry")
 	}
 }
+
+func TestGenerateMcporter_McpServersNotObject(t *testing.T) {
+	input := `{"mcpServers": "not-an-object"}`
+
+	cmd := rootCmd()
+	cmd.SetErr(&bytes.Buffer{})
+	tmpFile := filepath.Join(t.TempDir(), "test.json")
+	if err := os.WriteFile(tmpFile, []byte(input), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd.SetArgs([]string{"generate", "mcporter", "-i", tmpFile})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when mcpServers is not an object")
+	}
+}
+
+func TestGenerateMcporter_OutputFileError(t *testing.T) {
+	input := `{"mcpServers":{"test":{"command":"node","args":["server.js"]}}}` //nolint:goconst
+
+	tmpFile := filepath.Join(t.TempDir(), "in.json")
+	if err := os.WriteFile(tmpFile, []byte(input), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := rootCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	// Write to a nonexistent directory.
+	cmd.SetArgs([]string{"generate", "mcporter", "-i", tmpFile, "-o", "/nonexistent/dir/out.json"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error writing to nonexistent dir")
+	}
+}
+
+func TestGenerateMcporter_URLEntryAlreadyWrapped(t *testing.T) {
+	// URL entry that also has command/args indicating pipelock wrapping.
+	input := `{
+		"mcpServers": {
+			"gateway": {
+				"url": "ws://localhost:3000/mcp",
+				"command": "pipelock",
+				"args": ["mcp", "proxy", "--upstream", "ws://localhost:3000/mcp"]
+			}
+		}
+	}`
+
+	var buf bytes.Buffer
+	cmd := rootCmd()
+	cmd.SetOut(&buf)
+	cmd.SetErr(&bytes.Buffer{})
+
+	tmpFile := filepath.Join(t.TempDir(), "test.json")
+	if err := os.WriteFile(tmpFile, []byte(input), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd.SetArgs([]string{"generate", "mcporter", "-i", tmpFile})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	servers := result["mcpServers"].(map[string]interface{})
+	gw := servers["gateway"].(map[string]interface{})
+	// Should be skipped (already wrapped).
+	if gw["command"] != "pipelock" { //nolint:goconst // test value
+		t.Fatal("already-wrapped URL entry should remain unchanged")
+	}
+}
+
+func TestGenerateMcporter_IsAlreadyWrapped_DashDashBeforeProxy(t *testing.T) {
+	// Args with -- before "proxy" should not be considered wrapped.
+	if isAlreadyWrapped("pipelock", []string{"mcp", "--", "proxy"}) {
+		t.Fatal("should not detect as wrapped when -- appears before proxy")
+	}
+}
+
+func TestGenerateMcporter_ToStringSlice_NonStringElements(t *testing.T) {
+	result := toStringSlice([]interface{}{"hello", 123, true, "world"})
+	if len(result) != 2 || result[0] != "hello" || result[1] != "world" {
+		t.Fatalf("expected [hello world], got %v", result)
+	}
+}
+
+func TestGenerateMcporter_AtomicWriteFile_StatFailure(t *testing.T) {
+	err := atomicWriteFile("/nonexistent/path/file.json", []byte("{}"), false)
+	if err == nil {
+		t.Fatal("expected error for stat on nonexistent path")
+	}
+}
+
+func TestGenerateMcporter_UpstreamFlagLikeEnvKeysDropped(t *testing.T) {
+	// Flag-like env keys should be dropped in upstream entries too.
+	input := `{
+		"mcpServers": {
+			"remote": {
+				"url": "http://localhost:8080/mcp",
+				"env": {"--evil": "bad", "SAFE": "ok"}
+			}
+		}
+	}`
+
+	var buf bytes.Buffer
+	cmd := rootCmd()
+	cmd.SetOut(&buf)
+	cmd.SetErr(&bytes.Buffer{})
+
+	tmpFile := filepath.Join(t.TempDir(), "test.json")
+	if err := os.WriteFile(tmpFile, []byte(input), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd.SetArgs([]string{"generate", "mcporter", "-i", tmpFile})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	servers := result["mcpServers"].(map[string]interface{})
+	remote := servers["remote"].(map[string]interface{})
+	args := remote["args"].([]interface{})
+	envCount := 0
+	for _, a := range args {
+		if a == "--env" {
+			envCount++
+		}
+	}
+	if envCount != 1 {
+		t.Errorf("expected 1 --env flag (SAFE only), got %d", envCount)
+	}
+}

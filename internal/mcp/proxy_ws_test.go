@@ -648,3 +648,119 @@ func TestRunWSProxy_BlockedNotificationSilent(t *testing.T) {
 		t.Errorf("expected no stdout for blocked notification, got: %s", stdout.String())
 	}
 }
+
+func TestRunWSProxy_BindingConfigWired(t *testing.T) {
+	responseSent := make(chan struct{})
+	toolListResp := []byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"safe","description":"A safe tool","inputSchema":{"type":"object"}}]}}`)
+	srv := wsRespondServer(t, toolListResp, responseSent)
+	defer srv.Close()
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+
+	toolCfg := &tools.ToolScanConfig{
+		Action:                  config.ActionWarn,
+		DetectDrift:             true,
+		BindingUnknownAction:    config.ActionBlock,
+		BindingNoBaselineAction: config.ActionWarn,
+	}
+
+	pr, pw := io.Pipe()
+	var stdout, stderr bytes.Buffer
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var proxyErr error
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		proxyErr = RunWSProxy(ctx, pr, &stdout, &stderr, wsURL(srv), sc, nil, nil, toolCfg, nil, nil, nil)
+	}()
+
+	_, _ = pw.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}` + "\n"))
+	<-responseSent
+	time.Sleep(20 * time.Millisecond)
+	_ = pw.Close()
+
+	wg.Wait()
+	if proxyErr != nil {
+		t.Fatalf("RunWSProxy: %v", proxyErr)
+	}
+}
+
+func TestRunWSProxy_UpstreamWriteError(t *testing.T) {
+	// Server accepts upgrade, reads one message, then closes.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, _, _, err := ws.UpgradeHTTP(r, w)
+		if err != nil {
+			return
+		}
+		// Read one message, then close to trigger write error on second.
+		_, _ = gobwasutil.ReadClientMessage(conn, nil)
+		_ = conn.Close()
+	}))
+	defer srv.Close()
+
+	sc := testScannerForWS(t)
+
+	pr, pw := io.Pipe()
+	var stdout, stderr bytes.Buffer
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		// Error is expected from upstream write or context cancellation.
+		_ = RunWSProxy(ctx, pr, &stdout, &stderr, wsURL(srv), sc, nil, nil, nil, nil, nil, nil)
+	}()
+
+	// First message accepted by server.
+	_, _ = pw.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"test","params":{}}` + "\n"))
+	time.Sleep(100 * time.Millisecond)
+	// Second message: server already closed, write should fail.
+	_, _ = pw.Write([]byte(`{"jsonrpc":"2.0","id":2,"method":"test","params":{}}` + "\n"))
+	time.Sleep(50 * time.Millisecond)
+	_ = pw.Close()
+
+	wg.Wait()
+	// No panic and no hang is the key invariant.
+}
+
+// errReaderWS is an io.Reader that always returns an error (not io.EOF).
+type errReaderWS struct{ err error }
+
+func (r *errReaderWS) Read([]byte) (int, error) { return 0, r.err }
+
+func TestRunWSProxy_StdinReadError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, _, _, err := ws.UpgradeHTTP(r, w)
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		time.Sleep(500 * time.Millisecond)
+	}))
+	defer srv.Close()
+
+	sc := testScannerForWS(t)
+	var stdout, stderr bytes.Buffer
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	customErr := fmt.Errorf("custom read failure")
+	err := RunWSProxy(ctx, &errReaderWS{err: customErr}, &stdout, &stderr, wsURL(srv), sc, nil, nil, nil, nil, nil, nil)
+	if err == nil {
+		t.Fatal("expected stdin read error")
+	}
+	if !strings.Contains(err.Error(), "reading stdin") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}

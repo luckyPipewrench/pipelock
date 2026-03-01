@@ -94,6 +94,25 @@ dockers:
     goarch: arm64
     dockerfile: Dockerfile.goreleaser
 
+  # Init container image for K8s sidecar deployments (MCP stdio wrapping).
+  # Alpine-based so `cp` is available for copying the binary to shared volumes.
+  - image_templates:
+      - "ghcr.io/luckypipewrench/pipelock-init:{{ .Version }}-amd64"
+    ids: [pipelock]
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/amd64"
+    dockerfile: Dockerfile.init
+
+  - image_templates:
+      - "ghcr.io/luckypipewrench/pipelock-init:{{ .Version }}-arm64"
+    ids: [pipelock]
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/arm64"
+    goarch: arm64
+    dockerfile: Dockerfile.init
+
 docker_manifests:
   - name_template: "ghcr.io/luckypipewrench/pipelock:{{ .Version }}"
     image_templates:
@@ -104,3 +123,13 @@ docker_manifests:
     image_templates:
       - "ghcr.io/luckypipewrench/pipelock:{{ .Version }}-amd64"
       - "ghcr.io/luckypipewrench/pipelock:{{ .Version }}-arm64"
+
+  - name_template: "ghcr.io/luckypipewrench/pipelock-init:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/luckypipewrench/pipelock-init:{{ .Version }}-amd64"
+      - "ghcr.io/luckypipewrench/pipelock-init:{{ .Version }}-arm64"
+
+  - name_template: "ghcr.io/luckypipewrench/pipelock-init:latest"
+    image_templates:
+      - "ghcr.io/luckypipewrench/pipelock-init:{{ .Version }}-amd64"
+      - "ghcr.io/luckypipewrench/pipelock-init:{{ .Version }}-arm64"

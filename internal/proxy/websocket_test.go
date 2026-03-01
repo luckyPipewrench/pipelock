@@ -19,6 +19,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	plwsutil "github.com/luckyPipewrench/pipelock/internal/wsutil"
 )
 
 // wsEchoServer creates a WebSocket server that echoes text frames back.
@@ -827,11 +828,11 @@ func TestWSProxyScanDisabled(t *testing.T) {
 // ---------- Fragment reassembly tests ----------
 
 func TestFragmentState_SingleFrame(t *testing.T) {
-	f := &fragmentState{maxBytes: 1024}
+	f := &plwsutil.FragmentState{MaxBytes: 1024}
 	hdr := ws.Header{OpCode: ws.OpText, Fin: true, Length: 5}
 	payload := []byte("hello")
 
-	complete, msg, code, _ := f.process(hdr, payload)
+	complete, msg, code, _ := f.Process(hdr, payload)
 	if !complete {
 		t.Error("expected complete")
 	}
@@ -844,11 +845,11 @@ func TestFragmentState_SingleFrame(t *testing.T) {
 }
 
 func TestFragmentState_MultiFrame(t *testing.T) {
-	f := &fragmentState{maxBytes: 1024}
+	f := &plwsutil.FragmentState{MaxBytes: 1024}
 
 	// First fragment (not final).
 	hdr1 := ws.Header{OpCode: ws.OpText, Fin: false, Length: 3}
-	complete, _, code, _ := f.process(hdr1, []byte("hel"))
+	complete, _, code, _ := f.Process(hdr1, []byte("hel"))
 	if complete {
 		t.Error("should not be complete after first fragment")
 	}
@@ -858,7 +859,7 @@ func TestFragmentState_MultiFrame(t *testing.T) {
 
 	// Continuation (final).
 	hdr2 := ws.Header{OpCode: ws.OpContinuation, Fin: true, Length: 2}
-	complete, msg, code, _ := f.process(hdr2, []byte("lo"))
+	complete, msg, code, _ := f.Process(hdr2, []byte("lo"))
 	if !complete {
 		t.Error("expected complete after final continuation")
 	}
@@ -871,10 +872,10 @@ func TestFragmentState_MultiFrame(t *testing.T) {
 }
 
 func TestFragmentState_TooLarge(t *testing.T) {
-	f := &fragmentState{maxBytes: 10}
+	f := &plwsutil.FragmentState{MaxBytes: 10}
 
 	hdr := ws.Header{OpCode: ws.OpText, Fin: true, Length: 20}
-	_, _, code, reason := f.process(hdr, make([]byte, 20))
+	_, _, code, reason := f.Process(hdr, make([]byte, 20))
 	if code != ws.StatusMessageTooBig {
 		t.Errorf("expected StatusMessageTooBig, got %d", code)
 	}
@@ -884,18 +885,18 @@ func TestFragmentState_TooLarge(t *testing.T) {
 }
 
 func TestFragmentState_TooLargeAccumulated(t *testing.T) {
-	f := &fragmentState{maxBytes: 10}
+	f := &plwsutil.FragmentState{MaxBytes: 10}
 
 	// Start fragment with 8 bytes.
 	hdr1 := ws.Header{OpCode: ws.OpText, Fin: false, Length: 8}
-	_, _, code, _ := f.process(hdr1, make([]byte, 8))
+	_, _, code, _ := f.Process(hdr1, make([]byte, 8))
 	if code != 0 {
 		t.Errorf("first fragment should be ok, got code %d", code)
 	}
 
 	// Continuation that pushes over the limit.
 	hdr2 := ws.Header{OpCode: ws.OpContinuation, Fin: true, Length: 5}
-	_, _, code, reason := f.process(hdr2, make([]byte, 5))
+	_, _, code, reason := f.Process(hdr2, make([]byte, 5))
 	if code != ws.StatusMessageTooBig {
 		t.Errorf("expected StatusMessageTooBig, got %d", code)
 	}
@@ -905,25 +906,25 @@ func TestFragmentState_TooLargeAccumulated(t *testing.T) {
 }
 
 func TestFragmentState_UnexpectedContinuation(t *testing.T) {
-	f := &fragmentState{maxBytes: 1024}
+	f := &plwsutil.FragmentState{MaxBytes: 1024}
 
 	hdr := ws.Header{OpCode: ws.OpContinuation, Fin: true, Length: 3}
-	_, _, code, _ := f.process(hdr, []byte("abc"))
+	_, _, code, _ := f.Process(hdr, []byte("abc"))
 	if code != ws.StatusProtocolError {
 		t.Errorf("expected StatusProtocolError, got %d", code)
 	}
 }
 
 func TestFragmentState_NewDataDuringFragment(t *testing.T) {
-	f := &fragmentState{maxBytes: 1024}
+	f := &plwsutil.FragmentState{MaxBytes: 1024}
 
 	// Start a fragmented message.
 	hdr1 := ws.Header{OpCode: ws.OpText, Fin: false, Length: 3}
-	f.process(hdr1, []byte("abc")) //nolint:errcheck // test
+	f.Process(hdr1, []byte("abc")) //nolint:errcheck // test
 
 	// Send a new data frame while fragmentation is in progress.
 	hdr2 := ws.Header{OpCode: ws.OpText, Fin: true, Length: 3}
-	_, _, code, _ := f.process(hdr2, []byte("xyz"))
+	_, _, code, _ := f.Process(hdr2, []byte("xyz"))
 	if code != ws.StatusProtocolError {
 		t.Errorf("expected StatusProtocolError, got %d", code)
 	}
@@ -994,7 +995,7 @@ func TestWriteCloseFrame(t *testing.T) {
 	defer server.Close() //nolint:errcheck // test
 
 	go func() {
-		writeCloseFrame(server, ws.StatusNormalClosure, "test close")
+		plwsutil.WriteCloseFrame(server, ws.StatusNormalClosure, "test close")
 	}()
 
 	// Read the close frame on the client side.
@@ -1022,7 +1023,7 @@ func TestWriteCloseFrame_UTF8Truncation(t *testing.T) {
 	defer server.Close() //nolint:errcheck // test
 
 	go func() {
-		writeCloseFrame(server, ws.StatusNormalClosure, reason)
+		plwsutil.WriteCloseFrame(server, ws.StatusNormalClosure, reason)
 	}()
 
 	hdr, err := ws.ReadHeader(client)
@@ -1052,7 +1053,7 @@ func TestWriteCloseFrame_AtomicWrite(t *testing.T) {
 	defer server.Close() //nolint:errcheck // test
 
 	go func() {
-		writeCloseFrame(server, ws.StatusPolicyViolation, "DLP violation")
+		plwsutil.WriteCloseFrame(server, ws.StatusPolicyViolation, "DLP violation")
 	}()
 
 	hdr, err := ws.ReadHeader(client)
@@ -1116,8 +1117,8 @@ func TestIsExpectedCloseErr(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := isExpectedCloseErr(tt.err); got != tt.want {
-				t.Errorf("isExpectedCloseErr(%v) = %v, want %v", tt.err, got, tt.want)
+			if got := plwsutil.IsExpectedCloseErr(tt.err); got != tt.want {
+				t.Errorf("plwsutil.IsExpectedCloseErr(%v) = %v, want %v", tt.err, got, tt.want)
 			}
 		})
 	}

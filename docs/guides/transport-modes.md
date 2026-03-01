@@ -10,8 +10,9 @@ Pipelock supports multiple proxy modes, each with different scanning capabilitie
 | CONNECT | `HTTPS_PROXY` | HTTPS tunnel | Hostname only | None | Standard HTTPS clients |
 | Absolute-URI | `HTTP_PROXY` | HTTP | Full URL | None | Plaintext HTTP clients |
 | WebSocket | `/ws?url=...` | WS/WSS | Bidirectional frames | DLP + injection | Real-time agent communication |
-| MCP stdio | `pipelock mcp -- CMD` | stdio | Full messages | Full (6 layers) | Local MCP servers |
-| MCP HTTP | `pipelock mcp --upstream URL` | HTTP | Full messages | Full (6 layers) | Remote MCP servers |
+| MCP stdio | `pipelock mcp proxy -- CMD` | stdio | Full messages | Full (6 layers) | Local MCP servers |
+| MCP HTTP | `pipelock mcp proxy --upstream URL` | HTTP | Full messages | Full (6 layers) | Remote MCP servers (HTTP) |
+| MCP WebSocket | `pipelock mcp proxy --upstream ws://...` | WS/WSS | Full messages | Full (6 layers) | Remote MCP servers (WS) |
 
 ## Detailed Breakdown
 
@@ -90,7 +91,7 @@ Bidirectional WebSocket proxy with frame-level scanning.
 ws://localhost:8888/ws?url=wss://api.example.com/stream
 ```
 
-### MCP stdio proxy (`pipelock mcp -- COMMAND`)
+### MCP stdio proxy (`pipelock mcp proxy -- COMMAND`)
 
 Wraps a local MCP server process with full bidirectional message scanning.
 
@@ -111,23 +112,44 @@ Wraps a local MCP server process with full bidirectional message scanning.
   "mcpServers": {
     "filesystem": {
       "command": "pipelock",
-      "args": ["mcp", "--config", "pipelock.yaml", "--", "npx", "@modelcontextprotocol/server-filesystem", "/tmp"]
+      "args": ["mcp", "proxy", "--config", "pipelock.yaml", "--", "npx", "@modelcontextprotocol/server-filesystem", "/tmp"]
     }
   }
 }
 ```
 
-### MCP HTTP Proxy (`pipelock mcp --upstream URL`)
+### MCP HTTP Proxy (`pipelock mcp proxy --upstream URL`)
 
 Proxies a remote MCP server over HTTP with the same scanning as stdio mode.
 
 **Scanning:** Same 6 layers as MCP stdio (response, input, tool, policy, chain, session binding).
 
 **Transport sub-modes:**
-- **Stdio-to-HTTP bridge** (`pipelock mcp --upstream URL`): Translates stdio JSON-RPC to HTTP requests against a streamable HTTP MCP server
-- **HTTP reverse proxy** (`pipelock mcp --listen ADDR --upstream URL` or `pipelock run --mcp-listen ADDR --mcp-upstream URL`): Listens on an HTTP port and reverse-proxies to the upstream MCP server
+- **Stdio-to-HTTP bridge** (`pipelock mcp proxy --upstream URL`): Translates stdio JSON-RPC to HTTP requests against a streamable HTTP MCP server
+- **HTTP reverse proxy** (`pipelock mcp proxy --listen ADDR --upstream URL` or `pipelock run --mcp-listen ADDR --mcp-upstream URL`): Listens on an HTTP port and reverse-proxies to the upstream MCP server
 
 **Use when:** Connecting to remote MCP servers over HTTP and you want the same scanning coverage as local stdio servers.
+
+### MCP WebSocket Proxy (`pipelock mcp proxy --upstream ws://...`)
+
+Proxies a remote MCP server over WebSocket with the same scanning as stdio mode.
+
+**Scanning:** Same 6 layers as MCP stdio (response, input, tool, policy, chain, session binding).
+
+**How it works:** When `--upstream` receives a `ws://` or `wss://` URL, pipelock connects to the upstream over WebSocket and translates between stdin/stdout JSON-RPC and WebSocket text frames. Each JSON-RPC message maps to one WebSocket text frame. Fragment reassembly is handled automatically.
+
+**Use when:** Connecting to MCP servers that expose a WebSocket endpoint (common with OpenClaw gateways and other real-time MCP hosts).
+
+```json
+{
+  "mcpServers": {
+    "remote": {
+      "command": "pipelock",
+      "args": ["mcp", "proxy", "--config", "pipelock.yaml", "--upstream", "ws://localhost:3000/mcp"]
+    }
+  }
+}
+```
 
 ## Security Implications
 
@@ -153,3 +175,11 @@ If your agent handles secrets and you need content-level DLP, use the **fetch pr
 | TLS termination | Pipelock terminates | End-to-end (agent to origin) |
 | SDK compatibility | Requires `/fetch` API | Native `HTTPS_PROXY` support |
 | Performance | Slower (extraction) | Faster (pass-through) |
+
+## See Also
+
+- [Configuration Reference](../configuration.md) for all config fields controlling each proxy mode
+- [OpenClaw Integration](openclaw.md) for deploying pipelock with OpenClaw gateways
+- [Deployment Recipes](deployment-recipes.md) for Docker Compose, Kubernetes, and host-level enforcement
+- [Bypass Resistance](../bypass-resistance.md) for details on how each scanning layer resists evasion
+- [Attacks Blocked](../attacks-blocked.md) for real-world attack examples across all transport modes

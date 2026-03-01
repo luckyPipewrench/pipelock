@@ -809,3 +809,16 @@ func TestMcpProxyCmd_EnvAuditLog(t *testing.T) {
 		t.Errorf("expected env var keys in audit log, got stderr: %s", stderr)
 	}
 }
+
+func TestMCPProxy_ListenWithWSUpstreamRejected(t *testing.T) {
+	cmd := rootCmd()
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"mcp", "proxy", "--listen", "127.0.0.1:0", "--upstream", "ws://localhost:9999/mcp"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for --listen + ws:// upstream")
+	}
+	if !strings.Contains(err.Error(), "not yet supported") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}

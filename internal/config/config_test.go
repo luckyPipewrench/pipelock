@@ -3281,6 +3281,71 @@ func TestValidate_ChainDetectionDisabledSkipsValidation(t *testing.T) {
 	}
 }
 
+func TestDefaults_MCPWSListenerMaxConnections(t *testing.T) {
+	cfg := Defaults()
+	if cfg.MCPWSListener.MaxConnections != 100 {
+		t.Errorf("expected default max_connections=100, got %d", cfg.MCPWSListener.MaxConnections)
+	}
+}
+
+func TestApplyDefaults_MCPWSListenerMaxConnections(t *testing.T) {
+	cfg := &Config{}
+	cfg.ApplyDefaults()
+	if cfg.MCPWSListener.MaxConnections != 100 {
+		t.Errorf("expected applied default max_connections=100, got %d", cfg.MCPWSListener.MaxConnections)
+	}
+}
+
+func TestValidate_MCPWSListenerValidOrigins(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	cfg.MCPWSListener.AllowedOrigins = []string{
+		"https://example.com",
+		"http://localhost:3000",
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("valid origins should pass validation: %v", err)
+	}
+}
+
+func TestValidate_MCPWSListenerEmptyOrigin(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	cfg.MCPWSListener.AllowedOrigins = []string{""}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for empty origin")
+	}
+	if !strings.Contains(err.Error(), "allowed_origins[0] is empty") {
+		t.Errorf("error should mention empty origin, got: %v", err)
+	}
+}
+
+func TestValidate_MCPWSListenerInvalidOrigin(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	cfg.MCPWSListener.AllowedOrigins = []string{"not-a-url"}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for invalid origin")
+	}
+	if !strings.Contains(err.Error(), "must be a valid origin") {
+		t.Errorf("error should mention valid origin, got: %v", err)
+	}
+}
+
+func TestValidate_MCPWSListenerZeroMaxConnections(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPWSListener.MaxConnections = 0
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for zero max_connections")
+	}
+	if !strings.Contains(err.Error(), "max_connections must be positive") {
+		t.Errorf("error should mention max_connections, got: %v", err)
+	}
+}
+
 func TestValidate_OnParseErrorValidValues(t *testing.T) {
 	for _, val := range []string{ActionBlock, ActionForward} {
 		t.Run(val, func(t *testing.T) {

@@ -169,10 +169,22 @@ Environment passthrough (subprocess mode only):
 			}
 
 			// Validate upstream URL scheme.
+			var isWSUpstream bool
 			if hasUpstream {
 				u, err := url.Parse(upstreamURL)
-				if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-					return fmt.Errorf("invalid upstream URL %q: must be http:// or https:// with a host", upstreamURL)
+				if err != nil || u.Host == "" {
+					return fmt.Errorf("invalid upstream URL %q: must include a scheme and host", upstreamURL)
+				}
+				switch u.Scheme {
+				case "http", "https":
+					// HTTP transport.
+				case "ws", "wss":
+					isWSUpstream = true
+				default:
+					return fmt.Errorf("invalid upstream URL %q: scheme must be http, https, ws, or wss", upstreamURL)
+				}
+				if isWSUpstream && hasSubprocess {
+					return errors.New("ws:// and wss:// upstream cannot be combined with subprocess command (--)")
 				}
 			}
 
@@ -271,6 +283,9 @@ Environment passthrough (subprocess mode only):
 				defer cancel()
 
 				// HTTP reverse proxy mode: --listen + --upstream.
+				if hasListen && isWSUpstream {
+					return fmt.Errorf("--listen with WebSocket upstream (ws/wss) is not yet supported; use stdio mode: pipelock mcp proxy --upstream %s", upstreamURL)
+				}
 				if hasListen {
 					mcpLn, lnErr := (&net.ListenConfig{}).Listen(ctx, "tcp", listenAddr)
 					if lnErr != nil {
@@ -279,6 +294,13 @@ Environment passthrough (subprocess mode only):
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: MCP reverse proxy %s -> %s (response=%s, input=%s, tools=%s, policy=%s)\n",
 						listenAddr, upstreamURL, sc.ResponseAction(), inputCfg.Action, toolAction, policyAction)
 					return mcp.RunHTTPListenerProxy(ctx, mcpLn, upstreamURL, cmd.ErrOrStderr(), sc, approver, inputCfg, toolCfg, policyCfg, ks, chainMatcher)
+				}
+
+				// Stdio-to-WebSocket mode: --upstream ws:// or wss://.
+				if isWSUpstream {
+					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: proxying WS upstream %s (response=%s, input=%s, tools=%s, policy=%s)\n",
+						upstreamURL, sc.ResponseAction(), inputCfg.Action, toolAction, policyAction)
+					return mcp.RunWSProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, sc, approver, inputCfg, toolCfg, policyCfg, ks, chainMatcher)
 				}
 
 				// Stdio-to-HTTP mode: --upstream only.

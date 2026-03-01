@@ -136,6 +136,7 @@ type Config struct {
 	MetricsListen       string              `yaml:"metrics_listen"` // separate listen address for /metrics and /stats
 	Emit                EmitConfig          `yaml:"emit"`
 	ToolChainDetection  ToolChainDetection  `yaml:"tool_chain_detection"`
+	MCPWSListener       MCPWSListener       `yaml:"mcp_ws_listener"`
 	Internal            []string            `yaml:"internal"`
 }
 
@@ -347,6 +348,14 @@ type SyslogConfig struct {
 	MinSeverity string `yaml:"min_severity"` // info, warn, critical
 	Facility    string `yaml:"facility"`     // e.g. "local0" (default)
 	Tag         string `yaml:"tag"`          // e.g. "pipelock" (default)
+}
+
+// MCPWSListener configures the MCP WebSocket listener for inbound connections.
+// When the MCP proxy is running in listener mode with a ws:// or wss:// upstream,
+// this controls origin validation and connection limits for inbound WS clients.
+type MCPWSListener struct {
+	AllowedOrigins []string `yaml:"allowed_origins"` // additional browser origins to allow (loopback always allowed)
+	MaxConnections int      `yaml:"max_connections"` // max concurrent inbound WS connections (default 100)
 }
 
 // ToolChainDetection configures MCP tool call chain pattern detection.
@@ -599,6 +608,11 @@ func (c *Config) ApplyDefaults() {
 	if c.ToolChainDetection.MaxGap == nil {
 		d := DefaultMaxGap
 		c.ToolChainDetection.MaxGap = &d
+	}
+
+	// MCP WS listener defaults
+	if c.MCPWSListener.MaxConnections <= 0 {
+		c.MCPWSListener.MaxConnections = 100
 	}
 
 	// MCP session binding defaults
@@ -974,6 +988,20 @@ func (c *Config) Validate() error {
 			default:
 				return fmt.Errorf("tool_chain_detection.pattern_overrides[%q]: invalid action %q: must be warn or block", name, action)
 			}
+		}
+	}
+
+	// Validate MCP WS listener config
+	if c.MCPWSListener.MaxConnections <= 0 {
+		return fmt.Errorf("mcp_ws_listener.max_connections must be positive")
+	}
+	for i, origin := range c.MCPWSListener.AllowedOrigins {
+		if origin == "" {
+			return fmt.Errorf("mcp_ws_listener.allowed_origins[%d] is empty", i)
+		}
+		u, parseErr := url.Parse(origin)
+		if parseErr != nil || u.Host == "" {
+			return fmt.Errorf("mcp_ws_listener.allowed_origins[%d] %q: must be a valid origin (e.g. https://example.com)", i, origin)
 		}
 	}
 
@@ -1440,6 +1468,9 @@ func Defaults() *Config {
 			Output:         DefaultLogOutput,
 			IncludeAllowed: true,
 			IncludeBlocked: true,
+		},
+		MCPWSListener: MCPWSListener{
+			MaxConnections: 100,
 		},
 		SessionProfiling: SessionProfiling{
 			MaxSessions:            1000,

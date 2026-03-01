@@ -114,8 +114,11 @@ func (c *WSClient) ReadMessage() ([]byte, error) {
 				return nil, io.EOF
 			case ws.OpPing:
 				c.writeMu.Lock()
-				_ = c.writeMsg(ws.OpPong, payload)
+				pongErr := c.writeMsg(ws.OpPong, payload)
 				c.writeMu.Unlock()
+				if pongErr != nil {
+					return nil, fmt.Errorf("writing pong: %w", pongErr)
+				}
 			case ws.OpPong:
 				// Ignore unsolicited pongs.
 			}

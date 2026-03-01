@@ -173,7 +173,7 @@ pipelock. Example hook script:
 
 ```bash
 #!/bin/bash
-# pipelock-scan.sh — scan URLs before Claude Code fetches them
+# pipelock-scan.sh: scan URLs before Claude Code fetches them
 URL="$1"
 ENCODED=$(python3 -c "import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=''))" "$URL")
 RESULT=$(curl -s "http://127.0.0.1:8888/fetch?url=${ENCODED}")

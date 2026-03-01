@@ -1,4 +1,4 @@
-# OWASP Agentic AI Threats & Mitigations — Pipelock Coverage
+# OWASP Agentic AI Threats & Mitigations: Pipelock Coverage
 
 How Pipelock addresses the [OWASP Agentic AI Threats and Mitigations](https://genai.owasp.org/resource/agentic-ai-threats-and-mitigations/) framework (15 threats, published by the OWASP Agentic Security Initiative).
 
@@ -10,7 +10,7 @@ This is separate from the [OWASP Top 10 for Agentic Applications](owasp-mapping.
 | T2 Tool Misuse | Strong | Shipped |
 | T3 Privilege Compromise | Strong | Shipped |
 | T4 Resource Overload | Partial | Shipped |
-| T5 Cascading Hallucination Attacks | — | Out of scope |
+| T5 Cascading Hallucination Attacks | | Out of scope |
 | T6 Intent Breaking & Goal Manipulation | Moderate | Shipped |
 | T7 Misaligned & Deceptive Behaviors | Strong | Shipped |
 | T8 Repudiation & Untraceability | Strong | Shipped |
@@ -20,7 +20,7 @@ This is separate from the [OWASP Top 10 for Agentic Applications](owasp-mapping.
 | T12 Agent Communication Poisoning | Strong | Shipped |
 | T13 Rogue Agents in Multi-Agent Systems | Strong | Shipped |
 | T14 Human Attacks on Multi-Agent Systems | Partial | Shipped |
-| T15 Human Manipulation | — | Out of scope |
+| T15 Human Manipulation | | Out of scope |
 
 ---
 
@@ -32,9 +32,9 @@ This is separate from the [OWASP Top 10 for Agentic Applications](owasp-mapping.
 
 **Pipelock coverage:**
 
-- **Workspace integrity monitoring** — `pipelock integrity init/check/update` tracks SHA256 hashes of all workspace files. Any modification, addition, or deletion is detected and reported.
-- **Ed25519 signing** — manifests and files can be cryptographically signed. Tampered content fails verification.
-- **Response scanning** — fetched content (a common source of memory/context data) is scanned for prompt injection before the agent sees it.
+- **Workspace integrity monitoring:** `pipelock integrity init/check/update` tracks SHA256 hashes of all workspace files. Any modification, addition, or deletion is detected and reported.
+- **Ed25519 signing:** manifests and files can be cryptographically signed. Tampered content fails verification.
+- **Response scanning:** fetched content (a common source of memory/context data) is scanned for prompt injection before the agent sees it.
 
 **Coverage: Strong.** Integrity monitoring catches file-level poisoning. Response scanning catches injection in fetched content.
 
@@ -48,10 +48,10 @@ This is separate from the [OWASP Top 10 for Agentic Applications](owasp-mapping.
 
 **Pipelock coverage:**
 
-- **Fetch proxy as controlled tool** — the agent's only network access is through the proxy. Every request goes through the 9-layer scanner pipeline.
-- **MCP proxy** — `pipelock mcp proxy` wraps MCP servers and scans tool responses for injection payloads.
-- **Tool description scanning** — `tools/list` responses are scanned for poisoned descriptions containing hidden instructions, file exfiltration directives, or cross-tool manipulation. Rug-pull detection tracks SHA256 hashes per session and alerts on mid-session changes.
-- **HITL approvals** — suspicious requests can trigger human-in-the-loop terminal approval before proceeding.
+- **Fetch proxy as controlled tool:** the agent's only network access is through the proxy. Every request goes through the 9-layer scanner pipeline.
+- **MCP proxy:** `pipelock mcp proxy` wraps MCP servers and scans tool responses for injection payloads.
+- **Tool description scanning:** `tools/list` responses are scanned for poisoned descriptions containing hidden instructions, file exfiltration directives, or cross-tool manipulation. Rug-pull detection tracks SHA256 hashes per session and alerts on mid-session changes.
+- **HITL approvals:** suspicious requests can trigger human-in-the-loop terminal approval before proceeding.
 
 **Coverage: Strong.** Controls the HTTP fetch tool, scans MCP responses for injection, scans MCP requests for DLP leaks and injection in tool arguments, and detects poisoned tool descriptions. Does not restrict shell/filesystem operations.
 
@@ -63,11 +63,11 @@ This is separate from the [OWASP Top 10 for Agentic Applications](owasp-mapping.
 
 **Pipelock coverage:**
 
-- **Capability separation** — the agent process (holds secrets, no network) and the proxy (has network, no secrets) run separately. Neither has both.
-- **Domain allowlisting** — agents can only reach explicitly allowed API endpoints.
-- **SSRF protection** — blocks requests to internal/private IP ranges with DNS rebinding prevention.
-- **DLP scanning** - 22 built-in patterns detect API keys, tokens, and credentials in outbound traffic.
-- **Environment variable leak detection** — detects the proxy's own env var values (raw + base64) in URLs.
+- **Capability separation:** the agent process (holds secrets, no network) and the proxy (has network, no secrets) run separately. Neither has both.
+- **Domain allowlisting:** agents can only reach explicitly allowed API endpoints.
+- **SSRF protection:** blocks requests to internal/private IP ranges with DNS rebinding prevention.
+- **DLP scanning:** 22 built-in patterns detect API keys, tokens, and credentials in outbound traffic.
+- **Environment variable leak detection:** detects the proxy's own env var values (raw + base64) in URLs.
 
 **Coverage: Strong.** Multiple layers prevent credential leakage and limit agent network access.
 
@@ -79,10 +79,10 @@ This is separate from the [OWASP Top 10 for Agentic Applications](owasp-mapping.
 
 **Pipelock coverage:**
 
-- **DLP scanning** — catches API keys, tokens, and credentials in outbound URLs regardless of why the agent is sending them.
-- **Entropy analysis** — flags high-entropy URL segments that look like encoded secrets, even if they don't match known patterns.
-- **Domain blocklist** — known exfiltration targets (pastebin, transfer.sh, etc.) are blocked.
-- **Audit logging** — every request is logged with zerolog, creating a verifiable trail of all agent network activity.
+- **DLP scanning:** catches API keys, tokens, and credentials in outbound URLs regardless of why the agent is sending them.
+- **Entropy analysis:** flags high-entropy URL segments that look like encoded secrets, even if they don't match known patterns.
+- **Domain blocklist:** known exfiltration targets (pastebin, transfer.sh, etc.) are blocked.
+- **Audit logging:** every request is logged with zerolog, creating a verifiable trail of all agent network activity.
 
 **Coverage: Strong.** DLP + entropy + blocklist catches most exfiltration attempts. Audit trail enables post-incident analysis.
 
@@ -94,11 +94,11 @@ This is separate from the [OWASP Top 10 for Agentic Applications](owasp-mapping.
 
 **Pipelock coverage:**
 
-- **Structured audit logging** — every proxy request is logged as structured JSON (zerolog) with: URL, domain, agent name, result (allowed/blocked), scanner reason, timestamp.
-- **Per-agent identification** — agents identify via `X-Pipelock-Agent` header. All log entries include the agent name.
-- **Prometheus metrics** — `/metrics` endpoint exports request counts, scanner hits, and latency histograms for dashboards.
-- **JSON stats** — `/stats` endpoint provides real-time top domains and block reasons.
-- **Grafana dashboard** — `configs/grafana-dashboard.json` provides a ready-to-import security overview.
+- **Structured audit logging:** every proxy request is logged as structured JSON (zerolog) with URL, domain, agent name, result (allowed/blocked), scanner reason, and timestamp.
+- **Per-agent identification:** agents identify via `X-Pipelock-Agent` header. All log entries include the agent name.
+- **Prometheus metrics:** `/metrics` endpoint exports request counts, scanner hits, and latency histograms for dashboards.
+- **JSON stats:** `/stats` endpoint provides real-time top domains and block reasons.
+- **Grafana dashboard:** `configs/grafana-dashboard.json` provides a ready-to-import security overview.
 
 **Coverage: Strong.** Every proxy interaction is logged, attributed, and exportable.
 
@@ -110,9 +110,9 @@ This is separate from the [OWASP Top 10 for Agentic Applications](owasp-mapping.
 
 **Pipelock coverage:**
 
-- **Egress blocking** — even if an agent executes malicious code, outbound network access is restricted to allowed domains. Callback/exfil to attacker-controlled servers is blocked.
-- **MCP proxy scanning** — tool results are scanned for injection payloads before the agent processes them, reducing the chance of code injection through tool responses.
-- **Content extraction** — HTML is converted to clean text via go-readability, removing scripts and executable content from fetched pages.
+- **Egress blocking:** even if an agent executes malicious code, outbound network access is restricted to allowed domains. Callback/exfil to attacker-controlled servers is blocked.
+- **MCP proxy scanning:** tool results are scanned for injection payloads before the agent processes them, reducing the chance of code injection through tool responses.
+- **Content extraction:** HTML is converted to clean text via go-readability, removing scripts and executable content from fetched pages.
 
 **Coverage: Moderate.** Pipelock limits the blast radius of RCE by blocking exfiltration, but does not sandbox code execution itself.
 
@@ -126,11 +126,11 @@ This is separate from the [OWASP Top 10 for Agentic Applications](owasp-mapping.
 
 **Pipelock coverage:**
 
-- **MCP response scanning** — `pipelock mcp proxy` scans all JSON-RPC tool results for prompt injection patterns. Text is concatenated across content blocks, catching injection split across multiple blocks.
-- **MCP input scanning** — client requests are also scanned for injection patterns and DLP leaks in tool arguments. Catches poisoned payloads being sent *to* tools, not just returned *from* them.
-- **MCP tool scanning** — `tools/list` responses are scanned for poisoned descriptions. SHA256 baseline per session detects rug-pull definition changes.
-- **Response scanning** — fetched web content is scanned with the same injection detector.
-- **Configurable actions** — response scanning: `block` (reject), `strip` (redact matched text), `warn` (log and pass through), `ask` (human approval). Input/tool scanning: `block` or `warn`.
+- **MCP response scanning:** `pipelock mcp proxy` scans all JSON-RPC tool results for prompt injection patterns. Text is concatenated across content blocks, catching injection split across multiple blocks.
+- **MCP input scanning:** client requests are also scanned for injection patterns and DLP leaks in tool arguments. Catches poisoned payloads being sent *to* tools, not just returned *from* them.
+- **MCP tool scanning:** `tools/list` responses are scanned for poisoned descriptions. SHA256 baseline per session detects rug-pull definition changes.
+- **Response scanning:** fetched web content is scanned with the same injection detector.
+- **Configurable actions:** response scanning supports `block` (reject), `strip` (redact matched text), `warn` (log and pass through), or `ask` (human approval). Input/tool scanning supports `block` or `warn`.
 
 **Coverage: Strong.** MCP traffic is scanned bidirectionally (requests, responses, and tool definitions). HTTP channels are scanned for injection.
 
@@ -144,10 +144,10 @@ This is separate from the [OWASP Top 10 for Agentic Applications](owasp-mapping.
 
 **Pipelock coverage:**
 
-- **Workspace integrity monitoring** — detects unauthorized file modifications in shared workspaces. If Agent A writes a poisoned config file, integrity check catches it before Agent B reads it.
-- **Per-agent egress filtering** — each agent runs behind its own proxy instance with its own allowlist.
-- **Ed25519 signing** — agents sign their outputs. Other agents can verify authenticity before trusting shared data.
-- **Audit logging** — per-agent request logs enable identifying which agent is behaving anomalously.
+- **Workspace integrity monitoring:** detects unauthorized file modifications in shared workspaces. If Agent A writes a poisoned config file, integrity check catches it before Agent B reads it.
+- **Per-agent egress filtering:** each agent runs behind its own proxy instance with its own allowlist.
+- **Ed25519 signing:** agents sign their outputs. Other agents can verify authenticity before trusting shared data.
+- **Audit logging:** per-agent request logs enable identifying which agent is behaving anomalously.
 
 **Coverage: Strong.** This is the lateral movement defense described in the [blog post](https://pipelab.org/blog/lateral-movement-multi-agent-llm/).
 
@@ -161,9 +161,9 @@ This is separate from the [OWASP Top 10 for Agentic Applications](owasp-mapping.
 
 **Pipelock coverage:**
 
-- **Per-domain rate limiting** — sliding window rate limiter prevents bulk requests.
-- **Response size limits** — `max_response_mb` caps fetched content size.
-- **Request timeouts** — configurable per-request timeout prevents hanging connections.
+- **Per-domain rate limiting:** sliding window rate limiter prevents bulk requests.
+- **Response size limits:** `max_response_mb` caps fetched content size.
+- **Request timeouts:** configurable per-request timeout prevents hanging connections.
 
 **Coverage: Partial.** Limits network-level resource consumption. Does not address CPU/memory exhaustion from agent compute.
 

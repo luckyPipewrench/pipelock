@@ -39,21 +39,21 @@ uses CONNECT tunnels (see below) and does not increment request counters.
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
 | `pipelock_requests_total` | counter | `result` | Total HTTP requests. `result` is `allowed` or `blocked`. |
-| `pipelock_request_duration_seconds` | histogram | — | HTTP request latency. Buckets: 10ms to 10s. |
+| `pipelock_request_duration_seconds` | histogram | (none) | HTTP request latency. Buckets: 10ms to 10s. |
 | `pipelock_scanner_hits_total` | counter | `scanner` | Blocks by scanner type (e.g. `dlp`, `prompt_injection`, `domain`). |
 
 ## CONNECT Tunnel Metrics
 
-All HTTPS traffic from AI agents uses CONNECT tunnels — opaque TCP pipes
+All HTTPS traffic from AI agents uses CONNECT tunnels, which are opaque TCP pipes
 that pipelock cannot inspect. These are the primary traffic metrics for
 most deployments.
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
 | `pipelock_tunnels_total` | counter | `result` | Total CONNECT tunnels. `result` is `completed` or `blocked`. |
-| `pipelock_tunnel_duration_seconds` | histogram | — | Tunnel lifetime. Buckets: 1s to 300s. |
-| `pipelock_tunnel_bytes_total` | counter | — | Total bytes transferred through all tunnels. |
-| `pipelock_active_tunnels` | gauge | — | Currently open CONNECT tunnels. |
+| `pipelock_tunnel_duration_seconds` | histogram | (none) | Tunnel lifetime. Buckets: 1s to 300s. |
+| `pipelock_tunnel_bytes_total` | counter | (none) | Total bytes transferred through all tunnels. |
+| `pipelock_active_tunnels` | gauge | (none) | Currently open CONNECT tunnels. |
 
 ## WebSocket Proxy Metrics
 
@@ -64,12 +64,12 @@ inspect WebSocket frames for DLP and prompt injection.
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
 | `pipelock_ws_connections_total` | counter | `result` | Total WebSocket connections. `result` is `completed` or `blocked`. |
-| `pipelock_ws_duration_seconds` | histogram | — | WebSocket connection lifetime. Buckets: 1s to 3600s. |
+| `pipelock_ws_duration_seconds` | histogram | (none) | WebSocket connection lifetime. Buckets: 1s to 3600s. |
 | `pipelock_ws_bytes_total` | counter | `direction` | Bytes transferred. `direction` is `client_to_server` or `server_to_client`. |
-| `pipelock_ws_active_connections` | gauge | — | Currently open WebSocket connections. |
+| `pipelock_ws_active_connections` | gauge | (none) | Currently open WebSocket connections. |
 | `pipelock_ws_frames_total` | counter | `type` | Frames by type (e.g. `text`, `binary`). |
 | `pipelock_ws_scan_hits_total` | counter | `scanner` | WebSocket frame scan detections by scanner. |
-| `pipelock_forward_ws_redirect_hint_total` | counter | — | CONNECT requests to known WebSocket API hosts (potential upgrade candidates). |
+| `pipelock_forward_ws_redirect_hint_total` | counter | (none) | CONNECT requests to known WebSocket API hosts (potential upgrade candidates). |
 
 ## Security Event Metrics
 
@@ -92,14 +92,14 @@ enforcement escalation.
 |--------|------|--------|-------------|
 | `pipelock_session_anomalies_total` | counter | `type` | Behavioral anomalies by type. |
 | `pipelock_session_escalations_total` | counter | `from`, `to` | Enforcement escalations by transition (e.g. `warn` → `block`). |
-| `pipelock_sessions_active` | gauge | — | Currently tracked sessions. |
-| `pipelock_sessions_evicted_total` | counter | — | Sessions evicted by TTL or capacity limit. |
+| `pipelock_sessions_active` | gauge | (none) | Currently tracked sessions. |
+| `pipelock_sessions_evicted_total` | counter | (none) | Sessions evicted by TTL or capacity limit. |
 
 ## Counter Initialization
 
 Prometheus `CounterVec` metrics only appear in `/metrics` output after
 their first increment. If you see a metric missing from a fresh instance,
-it means that event type hasn't occurred yet — not that the metric is
+it means that event type hasn't occurred yet, not that the metric is
 broken. For example, `pipelock_requests_total` won't appear if all traffic
 is HTTPS (CONNECT tunnels).
 

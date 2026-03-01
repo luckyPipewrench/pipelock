@@ -2,9 +2,9 @@
 
 Pipelock has three layers for suppressing false positives, from most precise to broadest:
 
-1. **Inline comments** — suppress one rule on one line
-2. **Config suppress entries** — suppress a rule across matching paths
-3. **`--exclude` flag** — remove entire paths from results
+1. **Inline comments:** suppress one rule on one line
+2. **Config suppress entries:** suppress a rule across matching paths
+3. **`--exclude` flag:** remove entire paths from results
 
 All three work in `pipelock audit`, `pipelock git scan-diff`, and the GitHub Action.
 
@@ -64,7 +64,7 @@ suppress:
 | Basename glob | `*.generated.go` | `pkg/api/types.generated.go` |
 | URL suffix | `robots.txt` | `https://example.com/robots.txt` |
 
-The `reason` field is optional but recommended — it appears in audit logs and helps future maintainers understand why the suppression exists.
+The `reason` field is optional but recommended. It appears in audit logs and helps future maintainers understand why the suppression exists.
 
 **When to use:** Directories with known false positives, third-party code, generated files, documentation directories.
 
@@ -79,7 +79,7 @@ pipelock audit --exclude node_modules/ --exclude dist/
 
 Path patterns use the same matching rules as config suppress entries (exact, directory prefix, glob, basename glob).
 
-**When to use:** Third-party code, build artifacts, generated files — anything you don't control.
+**When to use:** Third-party code, build artifacts, generated files, and anything else you don't control.
 
 ## GitHub Action
 
@@ -115,7 +115,7 @@ Use the `config` input to provide inline YAML config with suppress entries:
 
 ### Inline comments
 
-Inline `// pipelock:ignore` comments work automatically — no action config needed.
+Inline `// pipelock:ignore` comments work automatically with no action config needed.
 
 ## Available Rule Names
 
@@ -168,13 +168,13 @@ Inline `// pipelock:ignore` comments work automatically — no action config nee
 
 When multiple layers apply to the same finding:
 
-1. **Inline comments win first** — checked before anything else
-2. **Config suppress entries** — checked if no inline match
-3. **`--exclude` flag** — applied last, removes from output entirely
+1. **Inline comments win first.** Checked before anything else.
+2. **Config suppress entries.** Checked if no inline match.
+3. **`--exclude` flag.** Applied last, removes from output entirely.
 
 ## What NOT to Do
 
-- **Don't remove patterns from config** to suppress findings — that disables detection everywhere, including for real secrets.
-- **Don't lower severity** to avoid emission — use `min_severity` on emit sinks instead.
-- **Don't use blanket `// pipelock:ignore`** without a rule name — too broad, suppresses all detection on that line.
-- **Don't suppress findings you haven't investigated** — every suppression is a risk acceptance decision.
+- **Don't remove patterns from config** to suppress findings. That disables detection everywhere, including for real secrets.
+- **Don't lower severity** to avoid emission. Use `min_severity` on emit sinks instead.
+- **Don't use blanket `// pipelock:ignore`** without a rule name. It is too broad and suppresses all detection on that line.
+- **Don't suppress findings you haven't investigated.** Every suppression is a risk acceptance decision.

@@ -1,4 +1,4 @@
-# OWASP Agentic Top 10 — Pipelock Coverage
+# OWASP Agentic Top 10: Pipelock Coverage
 
 How Pipelock addresses the [OWASP Top 10 for Agentic Applications (2026)](https://genai.owasp.org/resource/owasp-top-10-for-agentic-applications-for-2026/).
 
@@ -23,10 +23,10 @@ How Pipelock addresses the [OWASP Top 10 for Agentic Applications (2026)](https:
 
 **Pipelock coverage:**
 
-- **Response scanning** — fetched web content is scanned for prompt injection patterns before reaching the agent. Actions: `block` (reject entirely), `strip` (redact matched text), `warn` (log and pass through), `ask` (human approval).
-- **MCP response scanning** — `pipelock mcp proxy` wraps MCP servers and scans JSON-RPC tool results through the same injection detector. Text is concatenated across content blocks, catching injection split across multiple blocks.
-- **MCP input scanning** — client requests are scanned for injection patterns in tool arguments before reaching the MCP server. Catches injection payloads being sent *to* tools, not just returned *from* them. Actions: `block` or `warn` (no `ask` — input scanning runs on the request path with no terminal interaction).
-- **Pattern matching** — detects "ignore previous instructions," system/role overrides, jailbreak templates (DAN, developer mode), and multi-language variants.
+- **Response scanning:** fetched web content is scanned for prompt injection patterns before reaching the agent. Actions: `block` (reject entirely), `strip` (redact matched text), `warn` (log and pass through), `ask` (human approval).
+- **MCP response scanning:** `pipelock mcp proxy` wraps MCP servers and scans JSON-RPC tool results through the same injection detector. Text is concatenated across content blocks, catching injection split across multiple blocks.
+- **MCP input scanning:** client requests are scanned for injection patterns in tool arguments before reaching the MCP server. Catches injection payloads being sent *to* tools, not just returned *from* them. Actions: `block` or `warn` (no `ask`, since input scanning runs on the request path with no terminal interaction).
+- **Pattern matching:** detects "ignore previous instructions," system/role overrides, jailbreak templates (DAN, developer mode), and multi-language variants.
 
 **Configuration:**
 ```yaml
@@ -48,15 +48,15 @@ Use `pipelock generate config --preset balanced` for the complete default patter
 
 ## ASI02: Tool Misuse
 
-**Threat:** Agents misuse legitimate tools due to prompt injection, misalignment, or unsafe delegation — calling tools with destructive parameters or chaining tools in unexpected ways.
+**Threat:** Agents misuse legitimate tools due to prompt injection, misalignment, or unsafe delegation, calling tools with destructive parameters or chaining tools in unexpected ways.
 
 **Pipelock coverage:**
 
-- **Fetch proxy as a controlled tool** — instead of giving agents raw `curl`/`fetch`, the proxy is the only network tool. Every request goes through the full scanner pipeline.
-- **MCP response scanning** — tool results from MCP servers are scanned for injection payloads before the agent processes them.
-- **MCP input scanning** — client requests are scanned for DLP leaks and injection in tool arguments before reaching the server. Catches secrets or injection payloads being passed as tool call parameters.
-- **MCP tool scanning** — `tools/list` responses are scanned for poisoned descriptions containing hidden instructions. SHA256 baseline per session detects rug-pull definition changes.
-- **Input validation** — URLs are validated, parsed, and scanned before any HTTP request is made. Malformed URLs are rejected.
+- **Fetch proxy as a controlled tool:** instead of giving agents raw `curl`/`fetch`, the proxy is the only network tool. Every request goes through the full scanner pipeline.
+- **MCP response scanning:** tool results from MCP servers are scanned for injection payloads before the agent processes them.
+- **MCP input scanning:** client requests are scanned for DLP leaks and injection in tool arguments before reaching the server. Catches secrets or injection payloads being passed as tool call parameters.
+- **MCP tool scanning:** `tools/list` responses are scanned for poisoned descriptions containing hidden instructions. SHA256 baseline per session detects rug-pull definition changes.
+- **Input validation:** URLs are validated, parsed, and scanned before any HTTP request is made. Malformed URLs are rejected.
 
 **Gap:** Pipelock controls the HTTP fetch tool and scans MCP traffic bidirectionally (requests, responses, and tool definitions). It does not restrict shell/filesystem operations. For shell/filesystem controls, see [agentsh](https://github.com/canyonroad/agentsh) or [srt](https://github.com/anthropic-experimental/sandbox-runtime).
 
@@ -68,10 +68,10 @@ Use `pipelock generate config --preset balanced` for the complete default patter
 
 **Pipelock coverage:**
 
-- **Capability separation** — the agent process (which holds secrets) runs in a network-restricted environment. The fetch proxy (which has network access) holds no secrets. Neither process has both.
-- **Domain allowlisting** — the agent can only reach explicitly allowed API endpoints (e.g., `*.anthropic.com`, `github.com`).
-- **SSRF protection** — blocks requests to internal/private IP ranges (RFC 1918, link-local, loopback) with DNS rebinding prevention. Custom DialContext resolves DNS and validates all returned IPs before connecting.
-- **Docker Compose isolation** — `pipelock generate docker-compose` creates a network topology where the agent container has no direct internet access.
+- **Capability separation:** the agent process (which holds secrets) runs in a network-restricted environment. The fetch proxy (which has network access) holds no secrets. Neither process has both.
+- **Domain allowlisting:** the agent can only reach explicitly allowed API endpoints (e.g., `*.anthropic.com`, `github.com`).
+- **SSRF protection:** blocks requests to internal/private IP ranges (RFC 1918, link-local, loopback) with DNS rebinding prevention. Custom DialContext resolves DNS and validates all returned IPs before connecting.
+- **Docker Compose isolation:** `pipelock generate docker-compose` creates a network topology where the agent container has no direct internet access.
 
 ---
 
@@ -81,10 +81,10 @@ Use `pipelock generate config --preset balanced` for the complete default patter
 
 **Pipelock coverage:**
 
-- **Workspace integrity monitoring** — SHA256 manifests detect any file modification, addition, or removal in the workspace. A compromised skill that modifies config files is detected.
-- **MCP response scanning** — compromised MCP servers that inject prompt injection payloads into tool results are detected.
-- **MCP tool scanning** — `tools/list` responses are scanned for poisoned tool descriptions (hidden instructions, file exfiltration directives, cross-tool manipulation). SHA256 baseline detects rug-pull changes to tool definitions mid-session.
-- **Ed25519 signing** — files and manifests can be signed for tamper-evident verification. Unsigned or re-signed files are flagged.
+- **Workspace integrity monitoring:** SHA256 manifests detect any file modification, addition, or removal in the workspace. A compromised skill that modifies config files is detected.
+- **MCP response scanning:** compromised MCP servers that inject prompt injection payloads into tool results are detected.
+- **MCP tool scanning:** `tools/list` responses are scanned for poisoned tool descriptions (hidden instructions, file exfiltration directives, cross-tool manipulation). SHA256 baseline detects rug-pull changes to tool definitions mid-session.
+- **Ed25519 signing:** files and manifests can be signed for tamper-evident verification. Unsigned or re-signed files are flagged.
 
 **Gap:** No dependency scanning (use [Trivy](https://github.com/aquasecurity/trivy) or Dependabot for that). No MCP server identity verification yet.
 
@@ -96,9 +96,9 @@ Use `pipelock generate config --preset balanced` for the complete default patter
 
 **Pipelock coverage:**
 
-- **MCP proxy scanning** — `pipelock mcp proxy` scans tool results before the agent sees them, catching injection payloads that could trick agents into executing malicious code.
-- **Content extraction** — HTML is converted to clean text via go-readability, removing scripts, styles, and other executable content from fetched pages.
-- **DLP pattern matching** — detects API key formats in URLs and request bodies, which can indicate code execution results leaking secrets.
+- **MCP proxy scanning:** `pipelock mcp proxy` scans tool results before the agent sees them, catching injection payloads that could trick agents into executing malicious code.
+- **Content extraction:** HTML is converted to clean text via go-readability, removing scripts, styles, and other executable content from fetched pages.
+- **DLP pattern matching:** detects API key formats in URLs and request bodies, which can indicate code execution results leaking secrets.
 
 **Gap:** Pipelock does not sandbox code execution itself. For OS-level sandboxing, see [srt](https://github.com/anthropic-experimental/sandbox-runtime) or [agentsh](https://github.com/canyonroad/agentsh).
 
@@ -110,9 +110,9 @@ Use `pipelock generate config --preset balanced` for the complete default patter
 
 **Pipelock coverage:**
 
-- **Response scanning** — fetched web content (the most common knowledge source for coding agents) is scanned for injection before entering the agent's context.
-- **Content extraction** — go-readability strips non-content elements, reducing the attack surface of fetched pages.
-- **Workspace integrity monitoring** — detects unauthorized modifications to memory files, config files, and other workspace data the agent reads.
+- **Response scanning:** fetched web content (the most common knowledge source for coding agents) is scanned for injection before entering the agent's context.
+- **Content extraction:** go-readability strips non-content elements, reducing the attack surface of fetched pages.
+- **Workspace integrity monitoring:** detects unauthorized modifications to memory files, config files, and other workspace data the agent reads.
 
 **Gap:** No semantic analysis of retrieved content. Pipelock detects pattern-based injection but not subtly misleading information.
 
@@ -124,9 +124,9 @@ Use `pipelock generate config --preset balanced` for the complete default patter
 
 **Pipelock coverage:**
 
-- **Multi-agent identification** — each agent identifies itself via `X-Pipelock-Agent` header. All audit log entries include the agent name, enabling per-agent monitoring.
-- **File integrity monitoring** — `pipelock integrity init/check/update` detects unauthorized workspace modifications. An agent that tampers with shared handoff files is detected.
-- **Ed25519 signing** — agents can sign and verify files/manifests. Tampered content is cryptographically detectable.
+- **Multi-agent identification:** each agent identifies itself via `X-Pipelock-Agent` header. All audit log entries include the agent name, enabling per-agent monitoring.
+- **File integrity monitoring:** `pipelock integrity init/check/update` detects unauthorized workspace modifications. An agent that tampers with shared handoff files is detected.
+- **Ed25519 signing:** agents can sign and verify files/manifests. Tampered content is cryptographically detectable.
 
 **Gap:** No runtime inter-agent communication policy yet. See roadmap issue [#44](https://github.com/luckyPipewrench/pipelock/issues/44).
 
@@ -134,14 +134,14 @@ Use `pipelock generate config --preset balanced` for the complete default patter
 
 ## ASI08: Cascading Failures
 
-**Threat:** Failures propagate through agent chains — one agent's error or compromise triggers failures in downstream agents.
+**Threat:** Failures propagate through agent chains. One agent's error or compromise triggers failures in downstream agents.
 
 **Pipelock coverage:**
 
-- **Per-domain rate limiting** — sliding window rate limiter prevents bulk requests from one agent overwhelming external services.
-- **Response size limits** — `max_response_mb` caps the size of fetched content, preventing memory exhaustion.
-- **Request timeouts** — configurable per-request timeout prevents hanging connections that block agent pipelines.
-- **Structured logging** — every request is logged with zerolog, enabling rapid diagnosis of failure chains across agents.
+- **Per-domain rate limiting:** sliding window rate limiter prevents bulk requests from one agent overwhelming external services.
+- **Response size limits:** `max_response_mb` caps the size of fetched content, preventing memory exhaustion.
+- **Request timeouts:** configurable per-request timeout prevents hanging connections that block agent pipelines.
+- **Structured logging:** every request is logged with zerolog, enabling rapid diagnosis of failure chains across agents.
 
 **Gap:** No circuit-breaker pattern or agent-level health checks yet.
 
@@ -153,9 +153,9 @@ Use `pipelock generate config --preset balanced` for the complete default patter
 
 **Pipelock coverage:**
 
-- **HITL terminal approval** — `action: ask` prompts the human operator with a terminal y/N/s dialog when suspicious content is detected. The human can approve, deny, or strip before the request proceeds.
-- **Audit logging** — every request and scanner detection is logged, giving humans a verifiable record to review.
-- **Prometheus metrics** — `/metrics` and `/stats` endpoints surface block rates, scanner hits, and top domains for human oversight dashboards.
+- **HITL terminal approval:** `action: ask` prompts the human operator with a terminal y/N/s dialog when suspicious content is detected. The human can approve, deny, or strip before the request proceeds.
+- **Audit logging:** every request and scanner detection is logged, giving humans a verifiable record to review.
+- **Prometheus metrics:** `/metrics` and `/stats` endpoints surface block rates, scanner hits, and top domains for human oversight dashboards.
 
 **Gap:** No user-facing UI for non-terminal environments. HITL is terminal-only.
 
@@ -167,14 +167,14 @@ Use `pipelock generate config --preset balanced` for the complete default patter
 
 **Pipelock coverage:**
 
-- **Principle of least privilege** — the agent only reaches allowed API domains. Everything else is blocked.
-- **Capability separation** — the agent process has no direct network access. Only the proxy (which has no secrets) can reach the internet.
-- **Configurable enforcement modes** — strict (block on detection, tight thresholds), balanced (warn on detection, default thresholds), audit (detect and log without blocking).
-- **Domain blocklist** — known exfiltration targets (pastebin, transfer.sh) are explicitly blocked.
-- **Rate limiting** — per-domain sliding window prevents bulk data transfer even to allowed domains.
-- **Environment variable leak detection** — detects the proxy's own env var values in outbound traffic (raw + base64).
-- **Entropy analysis** — flags high-entropy strings that look like encoded secrets.
-- **URL length limits** — unusually long URLs (potential data exfiltration) are flagged.
+- **Principle of least privilege:** the agent only reaches allowed API domains. Everything else is blocked.
+- **Capability separation:** the agent process has no direct network access. Only the proxy (which has no secrets) can reach the internet.
+- **Configurable enforcement modes:** strict (block on detection, tight thresholds), balanced (warn on detection, default thresholds), audit (detect and log without blocking).
+- **Domain blocklist:** known exfiltration targets (pastebin, transfer.sh) are explicitly blocked.
+- **Rate limiting:** per-domain sliding window prevents bulk data transfer even to allowed domains.
+- **Environment variable leak detection:** detects the proxy's own env var values in outbound traffic (raw + base64).
+- **Entropy analysis:** flags high-entropy strings that look like encoded secrets.
+- **URL length limits:** unusually long URLs (potential data exfiltration) are flagged.
 
 ---
 

@@ -6,7 +6,7 @@ labels: security, bug
 assignees: ''
 ---
 
-**STOP — Is this exploitable in production?**
+**STOP: Is this exploitable in production?**
 If this bypass could lead to real credential exfiltration, please report it privately via [SECURITY.md](../../SECURITY.md) instead of opening a public issue.
 
 **Scanner bypassed**

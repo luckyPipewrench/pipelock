@@ -1,18 +1,18 @@
 # Security Assurance Case
 
-This document describes Pipelock's security model, trust boundaries, threat coverage, and known limitations. It serves as the project's assurance case — a structured argument that security requirements are met.
+This document describes Pipelock's security model, trust boundaries, threat coverage, and known limitations. It serves as the project's assurance case: a structured argument that security requirements are met.
 
 ## Threat Model
 
 Pipelock protects against AI agents being tricked into harmful actions. The primary threats are:
 
-1. **Credential exfiltration** — Agent leaks API keys, tokens, or secrets through HTTP requests, DNS queries, URL parameters, or MCP tool arguments.
-2. **Prompt injection** — Attacker-controlled text in web pages or tool results redirects the agent's behavior.
-3. **Tool misuse** — Agent executes destructive commands (file deletion, force-push, reverse shells) due to injection or misconfiguration.
-4. **Tool poisoning** — MCP server descriptions contain hidden instructions or change definitions mid-session to manipulate agent behavior.
-5. **Data exfiltration** — Agent sends sensitive workspace data to external endpoints through legitimate-looking requests.
+1. **Credential exfiltration:** Agent leaks API keys, tokens, or secrets through HTTP requests, DNS queries, URL parameters, or MCP tool arguments.
+2. **Prompt injection:** Attacker-controlled text in web pages or tool results redirects the agent's behavior.
+3. **Tool misuse:** Agent executes destructive commands (file deletion, force-push, reverse shells) due to injection or misconfiguration.
+4. **Tool poisoning:** MCP server descriptions contain hidden instructions or change definitions mid-session to manipulate agent behavior.
+5. **Data exfiltration:** Agent sends sensitive workspace data to external endpoints through legitimate-looking requests.
 
-These map to the [OWASP Top 10 for Agentic Applications](owasp-mapping.md) and are tested against a comprehensive evasion test suite (see [README testing metrics](../README.md#testing)).
+These map to the [OWASP Top 10 for Agentic Applications](owasp-mapping.md) and are tested against a full evasion test suite (see [README testing metrics](../README.md#testing)).
 
 ## Trust Boundaries
 
@@ -70,27 +70,27 @@ DLP and injection scanners are tested against encoding chains (base64, hex, mult
 
 Honest assessment of limitations:
 
-- **Model-level attacks** — If the model itself is compromised or fine-tuned to be malicious, Pipelock cannot detect this. We operate at the communication boundary, not inside the model.
-- **Novel evasion techniques** — Pattern-based detection catches known techniques. Novel bypasses require scanner updates. We do not claim complete coverage.
-- **Encrypted or steganographic exfiltration** — Data hidden within legitimate-looking content (e.g., encoded in image pixels or timing channels) is beyond pattern-based detection.
-- **Insider threats** — If the agent operator intentionally configures Pipelock to be permissive, the tool respects that configuration.
-- **Attacks that don't cross a boundary** — If an agent and its tools run in the same process with no proxy, Pipelock has nothing to inspect.
+- **Model-level attacks:** If the model itself is compromised or fine-tuned to be malicious, Pipelock cannot detect this. We operate at the communication boundary, not inside the model.
+- **Novel evasion techniques:** Pattern-based detection catches known techniques. Novel bypasses require scanner updates. We do not claim complete coverage.
+- **Encrypted or steganographic exfiltration:** Data hidden within legitimate-looking content (e.g., encoded in image pixels or timing channels) is beyond pattern-based detection.
+- **Insider threats:** If the agent operator intentionally configures Pipelock to be permissive, the tool respects that configuration.
+- **Attacks that don't cross a boundary:** If an agent and its tools run in the same process with no proxy, Pipelock has nothing to inspect.
 
 ## Compliance Mappings
 
 Detailed mappings to security frameworks:
 
-- [OWASP Top 10 for Agentic Applications](owasp-mapping.md) — Coverage of ASI01–ASI10
-- [OWASP Agentic AI Threats & Mitigations](owasp-agentic-top15-mapping.md) — Coverage of T1–T15
-- [EU AI Act Compliance Mapping](compliance/eu-ai-act-mapping.md) — Articles 9, 12–15, 26 with NIST AI RMF crosswalk
+- [OWASP Top 10 for Agentic Applications](owasp-mapping.md) (coverage of ASI01–ASI10)
+- [OWASP Agentic AI Threats & Mitigations](owasp-agentic-top15-mapping.md) (coverage of T1–T15)
+- [EU AI Act Compliance Mapping](compliance/eu-ai-act-mapping.md) (Articles 9, 12–15, 26 with NIST AI RMF crosswalk)
 
 ## Verification
 
 Security claims are verified through:
 
-- **Unit and integration tests** — Comprehensive test suite with race detector enabled in CI. See [README testing metrics](../README.md#testing) for current numbers.
-- **Evasion test suite** — Encoding chains, Unicode confusables, field splitting, control characters, and other bypass techniques tested against all scanner layers
-- **Static analysis** — CodeQL (security-and-quality) and golangci-lint with gosec
-- **Dependency monitoring** — Dependabot alerts, govulncheck in CI
-- **Signed releases** — Cosign signatures, SLSA provenance attestations, CycloneDX SBOM
-- **Vulnerability disclosure** — Responsible disclosure via [GitHub Security Advisories](https://github.com/luckyPipewrench/pipelock/security/advisories)
+- **Unit and integration tests:** Full test suite with race detector enabled in CI. See [README testing metrics](../README.md#testing) for current numbers.
+- **Evasion test suite:** Encoding chains, Unicode confusables, field splitting, control characters, and other bypass techniques tested against all scanner layers
+- **Static analysis:** CodeQL (security-and-quality) and golangci-lint with gosec
+- **Dependency monitoring:** Dependabot alerts, govulncheck in CI
+- **Signed releases:** Cosign signatures, SLSA provenance attestations, CycloneDX SBOM
+- **Vulnerability disclosure:** Responsible disclosure via [GitHub Security Advisories](https://github.com/luckyPipewrench/pipelock/security/advisories)

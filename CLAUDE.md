@@ -1,13 +1,13 @@
-# CLAUDE.md — Pipelock Development Guide
+# CLAUDE.md: Pipelock Development Guide
 
-Pipelock is an agent firewall — a network proxy that sits between AI agents and the internet, scanning all HTTP/WebSocket/MCP traffic for secret exfiltration, prompt injection, SSRF, and tool poisoning.
+Pipelock is an agent firewall: a network proxy that sits between AI agents and the internet, scanning all HTTP/WebSocket/MCP traffic for secret exfiltration, prompt injection, SSRF, and tool poisoning.
 
 ## Hard Rules
 
 These are non-negotiable. Violating any of them breaks the security model.
 
 - **Never weaken capability separation.** The proxy runs in the unprivileged zone (no secrets, full network). The agent runs in the privileged zone (has secrets, no direct network). If pipelock ever needs access to agent secrets, the architecture is wrong.
-- **Never bypass fail-closed defaults.** HITL timeout, non-terminal input, parse errors, context cancellation — all default to **block**. If in doubt, block.
+- **Never bypass fail-closed defaults.** HITL timeout, non-terminal input, parse errors, context cancellation: all default to **block**. If in doubt, block.
 - **Never add dependencies without justification.** 8 direct deps is intentional, not a limitation. Every dependency is attack surface. Propose additions in the PR description with rationale.
 - **Never panic on runtime input.** All `panic()` calls in the codebase are post-validation programming errors caught at startup (invalid DLP regex, bad CIDR after config validation). User/agent input must never cause a panic.
 - **DLP runs before DNS resolution.** Layers 2-3 (blocklist, DLP) execute before layer 6 (SSRF/DNS). Reordering them would allow secret exfiltration via DNS queries.
@@ -17,7 +17,7 @@ These are non-negotiable. Violating any of them breaks the security model.
 | Item | Value |
 |------|-------|
 | Module | `github.com/luckyPipewrench/pipelock` |
-| Go | 1.24+ (CI tests 1.24 + 1.25 — code must compile on both) |
+| Go | 1.24+ (CI tests 1.24 and 1.25) |
 | License | Apache 2.0 |
 | Binary | Single static binary, ~12MB |
 | Deps | cobra, zerolog, go-readability, yaml.v3, prometheus, fsnotify, x/text, gobwas/ws |
@@ -30,7 +30,7 @@ make test           # go test -race -count=1 ./...
 make test-cover     # Coverage report → coverage.html
 make lint           # golangci-lint (v2, 19 linters, gofumpt)
 make bench          # Benchmarks for scanner + mcp
-make fmt            # gofmt -s (CI enforces gofumpt — run `gofumpt -w .` locally)
+make fmt            # gofmt -s (CI enforces gofumpt, so run `gofumpt -w .` locally)
 make vet            # Static analysis
 make tidy-check     # Verify go.mod/go.sum
 make docker         # Docker image
@@ -75,11 +75,11 @@ docs/                   Guides, OWASP mapping, comparison
 
 ## Architecture
 
-**Capability separation** — the agent (secrets, no network) talks to pipelock (no secrets, full network) which talks to the internet. Three proxy modes on the same port:
+**Capability separation:** the agent (secrets, no network) talks to pipelock (no secrets, full network) which talks to the internet. Three proxy modes on the same port:
 
-- **Fetch** (`/fetch?url=...`) — fetches URL, extracts text, scans response for injection
-- **Forward** (CONNECT + absolute-URI) — standard HTTP proxy via `HTTPS_PROXY`, scans hostname through 9-layer pipeline
-- **WebSocket** (`/ws?url=...`) — bidirectional frame scanning, DLP on headers, fragment reassembly
+- **Fetch** (`/fetch?url=...`): fetches URL, extracts text, scans response for injection
+- **Forward** (CONNECT + absolute-URI): standard HTTP proxy via `HTTPS_PROXY`, scans hostname through 9-layer pipeline
+- **WebSocket** (`/ws?url=...`): bidirectional frame scanning, DLP on headers, fragment reassembly
 
 ```
 Agent (secrets, no network) → Pipelock (no secrets, full network) → Internet
@@ -87,24 +87,24 @@ Agent (secrets, no network) → Pipelock (no secrets, full network) → Internet
 
 ### Scanner Pipeline
 
-1. Scheme (http/https only) → 2. Domain blocklist → 3. DLP (22 patterns, env leak detection, entropy) → 4. Path entropy → 5. Subdomain entropy → 6. SSRF (private IPs, metadata, DNS rebinding) → 7. Rate limiting → 8. URL length → 9. Data budget
+1. Scheme (http/https only) → 2. Domain blocklist → 3. DLP (35 patterns, env leak detection, entropy) → 4. Path entropy → 5. Subdomain entropy → 6. SSRF (private IPs, metadata, DNS rebinding) → 7. Rate limiting → 8. URL length → 9. Data budget
 
 Layers 2-3 run **before** DNS resolution. Layer 6 runs **after**. This ordering prevents DNS-based exfiltration.
 
 ### MCP Proxy
 
 Wraps any MCP server with bidirectional scanning. Three transport modes:
-- **Stdio** (`-- COMMAND`) — subprocess wrapping
-- **Streamable HTTP** (`--upstream URL`) — stdio-to-HTTP bridge
-- **HTTP reverse proxy** (`--listen ADDR --upstream URL`) — also available via `pipelock run --mcp-listen --mcp-upstream`
+- **Stdio** (`-- COMMAND`): subprocess wrapping
+- **Streamable HTTP** (`--upstream URL`): stdio-to-HTTP bridge
+- **HTTP reverse proxy** (`--listen ADDR --upstream URL`): also available via `pipelock run --mcp-listen --mcp-upstream`
 
 Scanning layers:
-- **Response scanning** — prompt injection detection in tool results
-- **Input scanning** — DLP + injection in tool arguments (`mcp_input_scanning`)
-- **Tool scanning** — poisoned descriptions + rug-pull drift detection (`mcp_tool_scanning`)
-- **Tool policy** — pre-execution allow/deny rules with shell obfuscation detection (`mcp_tool_policy`)
-- **Chain detection** — subsequence matching on tool call sequences (`tool_chain_detection`)
-- **Session binding** — tool inventory pinning per session (`mcp_session_binding`)
+- **Response scanning:** prompt injection detection in tool results
+- **Input scanning:** DLP + injection in tool arguments (`mcp_input_scanning`)
+- **Tool scanning:** poisoned descriptions + rug-pull drift detection (`mcp_tool_scanning`)
+- **Tool policy:** pre-execution allow/deny rules with shell obfuscation detection (`mcp_tool_policy`)
+- **Chain detection:** subsequence matching on tool call sequences (`tool_chain_detection`)
+- **Session binding:** tool inventory pinning per session (`mcp_session_binding`)
 
 ### Config System
 
@@ -116,7 +116,7 @@ Action constants: `config.ActionBlock`, `ActionWarn`, `ActionAsk`, `ActionStrip`
 
 ### Architectural Principles
 
-- **Fail-closed everywhere.** Timeouts, parse errors, non-terminal HITL, context cancellation — all block.
+- **Fail-closed everywhere.** Timeouts, parse errors, non-terminal HITL, context cancellation: all block.
 - **OR-composed kill switch.** Four independent sources (config, API, SIGUSR1, sentinel file) tracked via atomic bools. Any one active = all traffic denied. Deactivating one doesn't affect others.
 - **Fire-and-forget emission.** Webhook uses async buffered channel. Syslog is synchronous but UDP. Neither blocks the proxy. Queue overflow = drop + Prometheus counter.
 - **Severity is not user-configurable.** Event severity is hardcoded per event type. Users control the emission *threshold* (`min_severity`), not the severity itself. This prevents misconfiguration hiding critical events.
@@ -125,11 +125,11 @@ Action constants: `config.ActionBlock`, `ActionWarn`, `ActionAsk`, `ActionStrip`
 ### Implementation Gotchas
 
 - `cfg.Internal = nil` disables SSRF checks (not empty slice). Used in tests to avoid DNS lookups.
-- `Scanner.New()` panics on invalid DLP regex/CIDRs — these are programming errors after config validation, never runtime errors.
+- `Scanner.New()` panics on invalid DLP regex/CIDRs. These are programming errors after config validation, never runtime errors.
 - `json.RawMessage("null")` is non-nil in Go. Must use `string(raw) == "null"`, not `raw == nil`. Checking nil would be a bypass vector.
 - HITL uses a single reader goroutine that owns the `bufio.Reader`. Prevents data races on concurrent terminal reads.
 - Tool baseline caps at 10,000 tools per session. Prevents unbounded memory from malicious MCP servers.
-- DLP patterns are auto-prefixed with `(?i)` — agents can uppercase secrets, so matching is always case-insensitive.
+- DLP patterns are auto-prefixed with `(?i)` because agents can uppercase secrets, so matching is always case-insensitive.
 
 ## Testing
 
@@ -152,7 +152,7 @@ net.ListenConfig{}.Listen(ctx, ...)   // Free port binding (noctx compliant)
 
 | Linter | Rule | Fix |
 |--------|------|-----|
-| errorlint | `err == ErrFoo` | `errors.Is(err, ErrFoo)` — even in tests |
+| errorlint | `err == ErrFoo` | `errors.Is(err, ErrFoo)` (even in tests) |
 | staticcheck | QF1012 | `fmt.Fprintf(w, ...)` not `w.WriteString(fmt.Sprintf(...))` |
 | gosec | G101 | Build fake creds at runtime: `"AKIA" + "IOSFODNN7EXAMPLE"` |
 | errcheck | ignored error | `_, _ = w.Write(b)` for intentional ignores |
@@ -161,19 +161,20 @@ net.ListenConfig{}.Listen(ctx, ...)   // Free port binding (noctx compliant)
 | gosec | file perms | `0o600` not `0600` |
 | noctx | bare listener | `net.ListenConfig{}.Listen(ctx, ...)` |
 | unparam | unused param | `_` prefix |
-| gofumpt | formatting | Stricter than gofmt — handles alignment + import grouping |
+| gofumpt | formatting | Stricter than gofmt. Handles alignment + import grouping |
 
 Re-stage `go.mod` after the tidy pre-commit hook runs.
 
 ## CI Pipeline
 
-Three required checks on `main`:
+Six required checks on `main`:
 
-1. **test** — Go 1.24 + 1.25 matrix, race detector, Codecov upload
-2. **lint** — golangci-lint v2
-3. **build** — compile binary, verify `--version`
-
-Additional: CodeQL (security-and-quality), govulncheck.
+1. **test:** Go 1.24 + 1.25 matrix, race detector, Codecov upload
+2. **lint:** golangci-lint v2
+3. **build:** compile binary, verify `--version`
+4. **govulncheck:** known vulnerability scanning
+5. **CodeQL:** security-and-quality static analysis
+6. **pipelock:** self-scan (dogfooding the GitHub Action on every PR)
 
 **Release:** Tag push (`v*`) → GoReleaser v2 → multi-arch binaries + GHCR image + Homebrew formula.
 
@@ -231,7 +232,12 @@ Report vulnerabilities via [GitHub Security Advisories](https://github.com/lucky
 
 | Resource | Location |
 |----------|----------|
+| Configuration reference | [docs/configuration.md](docs/configuration.md) |
+| Attacks blocked gallery | [docs/attacks-blocked.md](docs/attacks-blocked.md) |
+| Bypass resistance matrix | [docs/bypass-resistance.md](docs/bypass-resistance.md) |
 | OWASP Agentic Top 10 mapping | [docs/owasp-mapping.md](docs/owasp-mapping.md) |
 | Competitive comparison | [docs/comparison.md](docs/comparison.md) |
 | Integration guides | [docs/guides/](docs/guides/) |
+| Deployment recipes | [docs/guides/deployment-recipes.md](docs/guides/deployment-recipes.md) |
+| Metrics reference | [docs/metrics.md](docs/metrics.md) |
 | Changelog | [CHANGELOG.md](CHANGELOG.md) |

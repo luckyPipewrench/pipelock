@@ -61,7 +61,7 @@ Pipelock scans three things:
 
 ### Pattern A: AssistantAgent with MCP Tools
 
-The standard pattern — create MCP tools and pass them to an `AssistantAgent`:
+The standard pattern: create MCP tools and pass them to an `AssistantAgent`.
 
 ```python
 import asyncio

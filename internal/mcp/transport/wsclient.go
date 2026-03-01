@@ -74,13 +74,10 @@ func (c *WSClient) ReadMessage() ([]byte, error) {
 			return nil, fmt.Errorf("frame too large: %d bytes (max %d)", hdr.Length, MaxLineSize)
 		}
 
-		// Allocation is safe: control frames capped at 125 bytes (line 67),
-		// data frames capped at MaxLineSize (line 72). Both checked above.
-		n := hdr.Length
-		if n > int64(MaxLineSize) {
-			n = int64(MaxLineSize) // unreachable: guarded above, satisfies CodeQL taint analysis
-		}
-		payload := make([]byte, n)
+		// Allocation safe: control frames capped at 125 B (line 67),
+		// data frames capped at MaxLineSize (line 72). min() makes the
+		// upper bound explicit at the allocation site for static analysis.
+		payload := make([]byte, min(hdr.Length, int64(MaxLineSize)))
 		if hdr.Length > 0 {
 			if _, err := io.ReadFull(c.conn, payload); err != nil {
 				return nil, fmt.Errorf("reading ws payload: %w", err)

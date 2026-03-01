@@ -435,6 +435,118 @@ func TestWSClient_ServerModeWriteUnmasked(t *testing.T) {
 	_ = wsc.Close()
 }
 
+func TestWSClient_MaskedFrameUnmasked(t *testing.T) {
+	// Verify that ReadMessage correctly unmasks a masked frame.
+	// Servers should send unmasked frames, but WSClient handles masked
+	// frames defensively (lines 99-101 in wsclient.go).
+	serverConn, clientConn := net.Pipe()
+	defer func() { _ = clientConn.Close() }()
+
+	wsc := NewWSClientFromConn(serverConn, false)
+
+	payload := []byte(`{"id":99}`)
+	mask := [4]byte{0xAA, 0xBB, 0xCC, 0xDD}
+	masked := make([]byte, len(payload))
+	copy(masked, payload)
+	ws.Cipher(masked, mask, 0)
+
+	go func() {
+		_ = ws.WriteHeader(clientConn, ws.Header{
+			Fin:    true,
+			OpCode: ws.OpText,
+			Masked: true,
+			Mask:   mask,
+			Length: int64(len(masked)),
+		})
+		_, _ = clientConn.Write(masked)
+	}()
+
+	msg, err := wsc.ReadMessage()
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(msg) != `{"id":99}` {
+		t.Errorf("expected unmasked payload, got: %s", msg)
+	}
+	_ = wsc.Close()
+}
+
+func TestWSClient_FragmentError(t *testing.T) {
+	// Send a continuation frame without a preceding initial frame.
+	// This triggers the fragment error path (lines 129-132).
+	serverConn, clientConn := net.Pipe()
+	defer func() { _ = clientConn.Close() }()
+
+	wsc := NewWSClientFromConn(serverConn, false)
+
+	go func() {
+		_ = ws.WriteHeader(clientConn, ws.Header{
+			Fin:    true,
+			OpCode: ws.OpContinuation,
+			Length: 5,
+		})
+		_, _ = clientConn.Write([]byte("hello"))
+	}()
+
+	_, err := wsc.ReadMessage()
+	if err == nil {
+		t.Fatal("expected fragment error")
+	}
+	if !strings.Contains(err.Error(), "fragment") {
+		t.Errorf("expected fragment error, got: %v", err)
+	}
+	_ = wsc.Close()
+}
+
+func TestWSClient_TruncatedPayload(t *testing.T) {
+	// Send a frame header claiming 100 bytes, then close the connection
+	// before writing all of them. This triggers the ReadFull error
+	// path (lines 92-94).
+	serverConn, clientConn := net.Pipe()
+
+	wsc := NewWSClientFromConn(serverConn, false)
+
+	go func() {
+		_ = ws.WriteHeader(clientConn, ws.Header{
+			Fin:    true,
+			OpCode: ws.OpText,
+			Length: 100,
+		})
+		// Write only 10 bytes then close.
+		_, _ = clientConn.Write([]byte("short_data"))
+		_ = clientConn.Close()
+	}()
+
+	_, err := wsc.ReadMessage()
+	if err == nil {
+		t.Fatal("expected error for truncated payload")
+	}
+	if !strings.Contains(err.Error(), "reading ws payload") {
+		t.Errorf("expected payload read error, got: %v", err)
+	}
+	_ = wsc.Close()
+}
+
+func TestWSClient_HeaderReadError(t *testing.T) {
+	// Close the remote end before any frames are sent.
+	// This triggers the non-close header read error (line 72).
+	serverConn, clientConn := net.Pipe()
+
+	wsc := NewWSClientFromConn(serverConn, false)
+
+	// Write garbage (not a valid WS frame) then close.
+	go func() {
+		_, _ = clientConn.Write([]byte{0xFF})
+		_ = clientConn.Close()
+	}()
+
+	_, err := wsc.ReadMessage()
+	if err == nil {
+		t.Fatal("expected header read error")
+	}
+	_ = wsc.Close()
+}
+
 func TestWSClient_CloseIdempotent(t *testing.T) {
 	clientDone := make(chan struct{})
 	srv := wsTestServer(t, func(conn net.Conn) {

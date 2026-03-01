@@ -733,6 +733,55 @@ func TestRunWSProxy_UpstreamWriteError(t *testing.T) {
 	// No panic and no hang is the key invariant.
 }
 
+func TestRunWSProxy_ParentContextCancellation(t *testing.T) {
+	// Cancel the parent context while stdin is producing messages.
+	// This exercises the ctx.Done goroutine (lines 57-63) that force-closes
+	// the WS connection, plus the innerCtx check in the stdin loop (lines 110-120).
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, _, _, err := ws.UpgradeHTTP(r, w)
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		// Keep reading to keep the connection open.
+		for {
+			if _, readErr := gobwasutil.ReadClientMessage(conn, nil); readErr != nil {
+				return
+			}
+		}
+	}))
+	defer srv.Close()
+
+	sc := testScannerForWS(t)
+
+	// Stdin produces one message then blocks until context is cancelled.
+	pr, pw := io.Pipe()
+	var stdout, stderr bytes.Buffer
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	var runErr error
+	go func() {
+		defer wg.Done()
+		runErr = RunWSProxy(ctx, pr, &stdout, &stderr, wsURL(srv), sc, nil, nil, nil, nil, nil, nil)
+	}()
+
+	// Send one message, let it forward, then cancel context.
+	_, _ = pw.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"ping"}` + "\n"))
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	time.Sleep(50 * time.Millisecond)
+	_ = pw.Close()
+
+	wg.Wait()
+	// Should return context.Canceled or nil — not hang.
+	if runErr != nil && !strings.Contains(runErr.Error(), "context canceled") {
+		t.Errorf("unexpected error: %v", runErr)
+	}
+}
+
 // errReaderWS is an io.Reader that always returns an error (not io.EOF).
 type errReaderWS struct{ err error }
 

@@ -249,8 +249,8 @@ Every policy decision produces a structured audit event. This is the canonical f
 | `method` | string | HTTP method |
 | `url` | string | Target URL (may be truncated) |
 | `agent` | string | Agent identifier |
-| `client_ip` | string | Source IP (HTTP transports only, empty for stdio MCP) |
-| `request_id` | string | Unique request identifier (HTTP transports only, empty for stdio MCP) |
+| `client_ip` | string | Source IP (HTTP transports only, omitted for stdio MCP) |
+| `request_id` | string | Unique request identifier (HTTP transports only, omitted for stdio MCP) |
 | `mitre_technique` | string | MITRE ATT&CK technique ID |
 | `instance_id` | string | Pipelock instance identifier |
 | `score` | number | Threat score (if adaptive enforcement is enabled) |

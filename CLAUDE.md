@@ -81,7 +81,7 @@ docs/                   Guides, OWASP mapping, comparison
 - **Forward** (CONNECT + absolute-URI): standard HTTP proxy via `HTTPS_PROXY`, scans hostname through 9-layer pipeline
 - **WebSocket** (`/ws?url=...`): bidirectional frame scanning, DLP on headers, fragment reassembly
 
-```
+```text
 Agent (secrets, no network) → Pipelock (no secrets, full network) → Internet
 ```
 

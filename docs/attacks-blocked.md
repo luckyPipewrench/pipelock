@@ -135,7 +135,7 @@ response_scanning:
 An attacker inserts invisible Unicode characters to break pattern matching.
 
 **Attack:**
-```
+```text
 Ig\u200bnore\u200b all\u200b previous\u200b instructions
 ```
 

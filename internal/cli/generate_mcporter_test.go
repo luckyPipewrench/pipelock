@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -822,9 +823,53 @@ func TestGenerateMcporter_IsAlreadyWrapped_DashDashBeforeProxy(t *testing.T) {
 }
 
 func TestGenerateMcporter_ToStringSlice_NonStringElements(t *testing.T) {
-	result := toStringSlice([]interface{}{"hello", 123, true, "world"})
+	_, err := toStringSlice([]interface{}{"hello", 123, true, "world"})
+	if err == nil {
+		t.Fatal("expected error for non-string element")
+	}
+	if !strings.Contains(err.Error(), "args[1]") {
+		t.Fatalf("error should reference index 1, got: %v", err)
+	}
+}
+
+func TestGenerateMcporter_ToStringSlice_AllStrings(t *testing.T) {
+	result, err := toStringSlice([]interface{}{"hello", "world"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if len(result) != 2 || result[0] != "hello" || result[1] != "world" {
 		t.Fatalf("expected [hello world], got %v", result)
+	}
+}
+
+func TestGenerateMcporter_ToStringSlice_Nil(t *testing.T) {
+	result, err := toStringSlice(nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != nil {
+		t.Fatalf("expected nil, got %v", result)
+	}
+}
+
+func TestGenerateMcporter_InPlaceAndOutputMutuallyExclusive(t *testing.T) {
+	tmpDir := t.TempDir()
+	inputFile := filepath.Join(tmpDir, "input.json")
+	if err := os.WriteFile(inputFile, []byte(`{"mcpServers":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	cmd := rootCmd()
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"generate", "mcporter", "-i", inputFile, "--in-place", "-o", "out.json"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for --in-place + --output")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("expected mutually exclusive error, got: %v", err)
 	}
 }
 

@@ -42,7 +42,7 @@ pipelock generate mcporter -i servers.json --in-place --backup
 
 ## Architecture
 
-```
+```text
 ┌─────────────────────────────────────────────────────────┐
 │                    Agent Host                           │
 │                                                         │

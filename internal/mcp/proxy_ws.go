@@ -66,13 +66,11 @@ func RunWSProxy(
 	var fwdToolCfg *tools.ToolScanConfig
 	if toolCfg != nil && toolCfg.Action != "" {
 		fwdToolCfg = &tools.ToolScanConfig{
-			Baseline:    tools.NewToolBaseline(),
-			Action:      toolCfg.Action,
-			DetectDrift: toolCfg.DetectDrift,
-		}
-		if toolCfg.BindingUnknownAction != "" {
-			fwdToolCfg.BindingUnknownAction = toolCfg.BindingUnknownAction
-			fwdToolCfg.BindingNoBaselineAction = toolCfg.BindingNoBaselineAction
+			Baseline:                tools.NewToolBaseline(),
+			Action:                  toolCfg.Action,
+			DetectDrift:             toolCfg.DetectDrift,
+			BindingUnknownAction:    toolCfg.BindingUnknownAction,
+			BindingNoBaselineAction: toolCfg.BindingNoBaselineAction,
 		}
 	}
 

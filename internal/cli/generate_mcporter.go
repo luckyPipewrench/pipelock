@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"time"
 
@@ -35,6 +36,10 @@ Examples:
   pipelock generate mcporter -i servers.json -o wrapped.json
   pipelock generate mcporter -i servers.json --in-place --backup`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if inPlace && outputFile != "" {
+				return fmt.Errorf("--in-place and --output are mutually exclusive")
+			}
+
 			data, err := os.ReadFile(inputFile) //nolint:gosec // user-provided input file
 			if err != nil {
 				return fmt.Errorf("reading input: %w", err)
@@ -135,7 +140,10 @@ func wrapServerEntry(raw json.RawMessage, pipelockBin, configPath string) (wrapp
 		if _, hasCmd := entry["command"]; hasCmd {
 			cmdStr, _ := entry["command"].(string)
 			argsRaw, _ := entry["args"].([]interface{})
-			args := toStringSlice(argsRaw)
+			args, argsErr := toStringSlice(argsRaw)
+			if argsErr != nil {
+				return wrappedEntry{}, fmt.Errorf("url server args: %w", argsErr)
+			}
 			if isAlreadyWrapped(cmdStr, args) {
 				return wrappedEntry{value: entry, skipped: true}, nil
 			}
@@ -155,7 +163,10 @@ func wrapServerEntry(raw json.RawMessage, pipelockBin, configPath string) (wrapp
 	}
 
 	argsRaw, _ := entry["args"].([]interface{})
-	args := toStringSlice(argsRaw)
+	args, argsErr := toStringSlice(argsRaw)
+	if argsErr != nil {
+		return wrappedEntry{}, fmt.Errorf("args: %w", argsErr)
+	}
 
 	if isAlreadyWrapped(cmdStr, args) {
 		return wrappedEntry{value: entry, skipped: true}, nil
@@ -169,10 +180,16 @@ func wrapServerEntry(raw json.RawMessage, pipelockBin, configPath string) (wrapp
 func wrapStdioEntry(command string, args []string, envMap map[string]interface{}, pipelockBin, configPath string) map[string]interface{} {
 	wrappedArgs := []string{"mcp", "proxy", "--config", configPath}
 
-	// Add --env flags for each environment variable.
+	// Add --env flags for each environment variable in sorted order
+	// for deterministic output (Go map iteration is non-deterministic).
 	// Skip keys that look like flags to prevent argument injection
 	// (e.g., env key "--config" would inject a second --config flag).
+	envKeys := make([]string, 0, len(envMap))
 	for key := range envMap {
+		envKeys = append(envKeys, key)
+	}
+	sort.Strings(envKeys)
+	for _, key := range envKeys {
 		if len(key) == 0 || key[0] == '-' {
 			continue
 		}
@@ -201,8 +218,13 @@ func wrapStdioEntry(command string, args []string, envMap map[string]interface{}
 func wrapUpstreamEntry(url string, envMap map[string]interface{}, pipelockBin, configPath string) map[string]interface{} {
 	args := []string{"mcp", "proxy", "--config", configPath}
 
-	// Add --env flags for each environment variable.
+	// Add --env flags in sorted order for deterministic output.
+	envKeys := make([]string, 0, len(envMap))
 	for key := range envMap {
+		envKeys = append(envKeys, key)
+	}
+	sort.Strings(envKeys)
+	for _, key := range envKeys {
 		if len(key) == 0 || key[0] == '-' {
 			continue
 		}
@@ -247,18 +269,19 @@ func isAlreadyWrapped(command string, args []string) bool {
 	return false
 }
 
-func toStringSlice(raw []interface{}) []string {
+func toStringSlice(raw []interface{}) ([]string, error) {
 	if raw == nil {
-		return nil
+		return nil, nil
 	}
 	result := make([]string, 0, len(raw))
-	for _, v := range raw {
+	for i, v := range raw {
 		s, ok := v.(string)
-		if ok {
-			result = append(result, s)
+		if !ok {
+			return nil, fmt.Errorf("args[%d]: expected string, got %T", i, v)
 		}
+		result = append(result, s)
 	}
-	return result
+	return result, nil
 }
 
 func atomicWriteFile(path string, data []byte, doBackup bool) error {

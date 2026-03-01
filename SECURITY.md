@@ -43,6 +43,6 @@ The following are in scope:
 
 Pipelock's security model is documented in the README. Key design decisions:
 
-1. **No MITM** — We don't decrypt HTTPS traffic. Security comes from capability separation, not inspection.
-2. **Defense in depth** — Multiple scanner layers (blocklist, DLP, entropy) each catch different attack vectors.
-3. **Honest claims** — We document what each mode prevents vs. detects. See the security matrix in the README.
+1. **No MITM:** We don't decrypt HTTPS traffic. Security comes from capability separation, not inspection.
+2. **Defense in depth:** Multiple scanner layers (blocklist, DLP, entropy) each catch different attack vectors.
+3. **Honest claims:** We document what each mode prevents vs. detects. See the security matrix in the README.

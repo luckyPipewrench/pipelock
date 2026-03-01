@@ -28,9 +28,9 @@ Both sinks emit the same JSON envelope:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `severity` | string | `info`, `warn`, or `critical` — hardcoded per event type |
+| `severity` | string | `info`, `warn`, or `critical`. Hardcoded per event type. |
 | `type` | string | Event type identifier (see tables below) |
-| `timestamp` | string | RFC 3339, nanosecond precision, UTC. Trailing zeros are trimmed — use ISO 8601 parsing, not fixed-width extraction. |
+| `timestamp` | string | RFC 3339, nanosecond precision, UTC. Trailing zeros are trimmed. Use ISO 8601 parsing, not fixed-width extraction. |
 | `pipelock_instance` | string | Hostname, `emit.instance_id` config override, or `"pipelock"` fallback |
 | `fields` | object | Event-specific key-value pairs (vary by type) |
 
@@ -109,12 +109,12 @@ emit:
 **Severity filtering:** Events below `min_severity` are silently dropped before
 reaching the sink. Set to `warn` for all security events (recommended), or
 `critical` for emergency alerts only. Setting `info` adds `config_reload`
-events — all other info-level events are local-only and never sent to sinks.
+events. All other info-level events are local-only and never sent to sinks.
 
 **`min_severity` defaults to `warn`** when omitted. Valid values are `info`,
 `warn`, and `critical`. Invalid values fail config validation.
 
-**You can't change event severity** — it's hardcoded per event type. What you
+**You can't change event severity:** it's hardcoded per event type. What you
 control is the emission *threshold* (`min_severity`). This is intentional: it
 prevents misconfiguration from silently hiding critical events.
 
@@ -137,7 +137,7 @@ Splunk HEC expects `Authorization: Splunk <token>`, but pipelock sends
 rewrite the auth header from `Bearer` to `Splunk`.
 
 **Option B:** Use Splunk's raw endpoint with the token in the URL. Be aware
-this exposes the token in access logs, proxy logs, and URL fields — only
+this exposes the token in access logs, proxy logs, and URL fields, so only
 use this behind TLS with restricted network access.
 
 ```yaml
@@ -336,7 +336,7 @@ Kill switch events:
 pipelock.severity: "critical" AND pipelock.type: "kill_switch_deny"
 ```
 
-EQL sequence — blocked request followed by kill switch within 60 seconds:
+EQL sequence: blocked request followed by kill switch within 60 seconds:
 
 ```eql
 sequence by pipelock.pipelock_instance with maxspan=60s
@@ -344,7 +344,7 @@ sequence by pipelock.pipelock_instance with maxspan=60s
   [any where pipelock.type == "kill_switch_deny"]
 ```
 
-### Grafana (LogQL — Loki)
+### Grafana (LogQL / Loki)
 
 Blocked requests rate:
 
@@ -385,7 +385,7 @@ Agent violates policy
 
 ### Kill Switch API
 
-The examples below use port 9090 — replace with whatever you set in
+The examples below use port 9090. Replace with whatever you set in
 `kill_switch.api_listen`. If `api_listen` is not set, the API lives on the
 main proxy port (default 8888).
 
@@ -432,28 +432,28 @@ denied. Deactivating one doesn't affect the others.
 `GET` status requests are not rate-limited.
 
 **Port isolation:** When `kill_switch.api_listen` is set, the API runs on a
-dedicated port that isn't exposed to the agent. This matters — without it, a
+dedicated port that isn't exposed to the agent. This matters. Without it, a
 compromised agent could call the API to deactivate its own kill switch.
 
 ### n8n Workflow Example
 
-1. **Webhook node** — receives pipelock events at `/webhook/pipelock-events`
-2. **Switch node** — route by `severity`:
+1. **Webhook node:** receives pipelock events at `/webhook/pipelock-events`
+2. **Switch node:** route by `severity`:
    - `critical` → kill switch + PagerDuty
    - `warn` with `type == "blocked"` and `fields.scanner == "dlp"` → kill switch + Slack
    - `warn` with `type == "blocked"` → Slack only
    - other → log to database
-3. **HTTP Request node** — POST to kill switch API:
+3. **HTTP Request node:** POST to kill switch API:
    - URL: `http://pipelock-api:9090/api/v1/killswitch`
    - Auth: Bearer token
    - Body: `{"active": true}`
-4. **Slack node** — post alert to `#security-alerts` channel
-5. **Postgres node** — archive all events for compliance
+4. **Slack node:** post alert to `#security-alerts` channel
+5. **Postgres node:** archive all events for compliance
 
 ### Alertmanager Integration
 
 Pipelock exposes Prometheus metrics at `/metrics`. If you already run
-Alertmanager, you can alert on counters directly — useful for events like
+Alertmanager, you can alert on counters directly, which is useful for events like
 chain detection that aren't emitted to webhook/syslog.
 
 A complete set of alert rules covering traffic anomalies, security events,
@@ -506,7 +506,7 @@ OS hostname.
 
 **Local logs vs emission.** `logging.include_allowed` and
 `logging.include_blocked` only affect local log output (stderr/file). Webhook
-and syslog emission is independent — security events (blocked, anomaly, error,
+and syslog emission is independent: security events (blocked, anomaly, error,
 etc.) are always sent if they meet the severity threshold. Info-level
 operational events (allowed, tunnel, WebSocket, redirect, forward) are
 local-only regardless of `min_severity`.
@@ -520,7 +520,7 @@ proxy in front or use the SIEM's raw ingestion endpoint.
 Trigger a known block to verify events flow end-to-end:
 
 ```bash
-# Send a request containing a fake AWS key — pipelock will block and emit the event
+# Send a request containing a fake AWS key. Pipelock will block and emit the event.
 FAKE_KEY="AKIA""IOSFODNN7EXAMPLE"
 curl -x http://localhost:8888 "https://example.com/?key=${FAKE_KEY}"
 ```

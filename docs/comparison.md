@@ -56,8 +56,8 @@ An honest feature matrix and guidance on when to use what.
 - You want **per-argument regex validation** on MCP tool calls (AIP validates argument schemas; Pipelock scans argument content for DLP/injection patterns)
 
 ### Use agentsh when:
-- You need **kernel-level enforcement** (seccomp, eBPF) — agent literally cannot bypass
-- You want **"steering"** — redirect denied operations to safe alternatives (e.g., SIGKILL to SIGTERM)
+- You need **kernel-level enforcement** (seccomp, eBPF), which the agent literally cannot bypass
+- You want **"steering"** to redirect denied operations to safe alternatives (e.g., SIGKILL to SIGTERM)
 - You need **filesystem sandboxing** via FUSE
 - You're comfortable with kernel modules and more complex setup
 
@@ -71,7 +71,7 @@ An honest feature matrix and guidance on when to use what.
 mcp-scan has two modes: static scanning detects tool poisoning via hash comparison ("has this tool changed?"), while proxy mode monitors MCP traffic with PII/secrets guardrails. Pipelock scans bidirectionally with pattern matching, Unicode normalization, entropy analysis, and covers HTTP fetch traffic in addition to MCP. They're complementary: mcp-scan for MCP-specific auditing and guardrails, Pipelock for deep content inspection across both HTTP and MCP.
 
 ### Pipelock vs Docker MCP Gateway
-Docker MCP Gateway aggregates MCP servers and provides basic secret scanning. Pipelock provides deep content inspection (22 DLP patterns, injection detection, entropy analysis, tool poisoning). They're complementary — Pipelock could run as a Gateway interceptor for content inspection while Gateway handles routing and Docker-native lifecycle management.
+Docker MCP Gateway aggregates MCP servers and provides basic secret scanning. Pipelock provides deep content inspection (22 DLP patterns, injection detection, entropy analysis, tool poisoning). They're complementary: Pipelock could run as a Gateway interceptor for content inspection while Gateway handles routing and Docker-native lifecycle management.
 
 ## Using Tools Together
 

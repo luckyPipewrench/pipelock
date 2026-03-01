@@ -69,7 +69,7 @@ Pipelock scans three things:
 
 ### Pattern A: Single MCP Server
 
-The simplest case — one MCP server wrapped with Pipelock:
+The simplest case: one MCP server wrapped with Pipelock.
 
 ```python
 import asyncio
@@ -187,7 +187,7 @@ through `pipelock run` as a fetch proxy. See the
 [HTTP fetch proxy](#http-fetch-proxy) section below.
 
 **Tip:** The SDK supports strict JSON schema validation on MCP tools, which
-pairs well with Pipelock — the SDK validates schema structure while Pipelock
+pairs well with Pipelock. The SDK validates schema structure while Pipelock
 validates content:
 
 ```python

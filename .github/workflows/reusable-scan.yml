@@ -1,0 +1,85 @@
+# Reusable Pipelock security scan workflow.
+#
+# External repos call this with 3 lines:
+#
+#   jobs:
+#     security:
+#       uses: luckyPipewrench/pipelock/.github/workflows/reusable-scan.yml@v1
+#
+# All inputs have sensible defaults. Override what you need.
+
+name: Pipelock Security Scan
+
+on:
+  workflow_call:
+    inputs:
+      pipelock-version:
+        description: 'Pipelock version (e.g., "0.3.0"). Defaults to latest.'
+        type: string
+        default: 'latest'
+      config-path:
+        description: 'Path to pipelock.yaml. If empty, generates one automatically.'
+        type: string
+        default: ''
+      scan-directory:
+        description: 'Directory to scan.'
+        type: string
+        default: '.'
+      scan-pr-diff:
+        description: 'Scan the PR diff for leaked secrets.'
+        type: boolean
+        default: true
+      fail-on-critical:
+        description: 'Fail the workflow if critical findings are detected.'
+        type: boolean
+        default: true
+      validate-coverage:
+        description: 'Run built-in test vectors to check scanning coverage.'
+        type: boolean
+        default: true
+      exclude-paths:
+        description: 'Paths to exclude from findings (one per line, supports globs).'
+        type: string
+        default: ''
+    outputs:
+      score:
+        description: 'Security score (0-100)'
+        value: ${{ jobs.scan.outputs.score }}
+      findings-count:
+        description: 'Total findings'
+        value: ${{ jobs.scan.outputs.findings-count }}
+      critical-count:
+        description: 'Critical findings'
+        value: ${{ jobs.scan.outputs.critical-count }}
+
+jobs:
+  scan:
+    name: Pipelock Scan
+    runs-on: ubuntu-latest
+    outputs:
+      score: ${{ steps.pipelock.outputs.score }}
+      findings-count: ${{ steps.pipelock.outputs.findings-count }}
+      critical-count: ${{ steps.pipelock.outputs.critical-count }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history needed for PR diff scanning
+
+      - name: Run Pipelock
+        id: pipelock
+        uses: luckyPipewrench/pipelock@v1
+        env:
+          PIPELOCK_VERSION: ${{ inputs.pipelock-version }}
+          PIPELOCK_CONFIG: ${{ inputs.config-path }}
+          PIPELOCK_DIR: ${{ inputs.scan-directory }}
+          PIPELOCK_EXCLUDE: ${{ inputs.exclude-paths }}
+        with:
+          version: ${{ inputs.pipelock-version }}
+          config: ${{ inputs.config-path }}
+          directory: ${{ inputs.scan-directory }}
+          scan-diff: ${{ inputs.scan-pr-diff && 'true' || 'false' }}
+          fail-on-findings: ${{ inputs.fail-on-critical && 'true' || 'false' }}
+          test-vectors: ${{ inputs.validate-coverage && 'true' || 'false' }}
+          exclude-paths: ${{ inputs.exclude-paths }}

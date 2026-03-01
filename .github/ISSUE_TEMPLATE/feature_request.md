@@ -16,4 +16,4 @@ How you think it should work.
 Other approaches you've thought about.
 
 **Additional context**
-Any other context — links, examples, related issues.
+Any other context: links, examples, related issues.

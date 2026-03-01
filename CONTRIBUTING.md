@@ -167,8 +167,8 @@ Pipelock has 8 direct dependencies. This is intentional. Any new dependency must
 ## Security
 
 - **Vulnerabilities**: Report via [GitHub Security Advisories](https://github.com/luckyPipewrench/pipelock/security/advisories), NOT public issues
-- **Don't weaken capability separation** -- the proxy must never access agent secrets
-- **Don't bypass fail-closed defaults** -- if in doubt, block
+- **Don't weaken capability separation:** the proxy must never access agent secrets
+- **Don't bypass fail-closed defaults:** if in doubt, block
 - See [SECURITY.md](SECURITY.md) for the full policy
 
 ## Reporting Issues

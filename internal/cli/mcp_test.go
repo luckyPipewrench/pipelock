@@ -809,3 +809,89 @@ func TestMcpProxyCmd_EnvAuditLog(t *testing.T) {
 		t.Errorf("expected env var keys in audit log, got stderr: %s", stderr)
 	}
 }
+
+func TestMCPProxy_ListenWithWSUpstreamRejected(t *testing.T) {
+	cmd := rootCmd()
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"mcp", "proxy", "--listen", "127.0.0.1:0", "--upstream", "ws://localhost:9999/mcp"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for --listen + ws:// upstream")
+	}
+	if !strings.Contains(err.Error(), "not yet supported") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestMcpProxyCmd_WSUpstreamScheme(t *testing.T) {
+	// Verify that ws:// and wss:// are accepted as valid upstream schemes.
+	// The general mutual exclusion check rejects --upstream + subprocess first,
+	// so this only tests the URL parsing path with a WS scheme.
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"mcp", "proxy", "--upstream", "ws://localhost:9999/mcp"})
+	cmd.SetIn(bytes.NewReader(nil))
+	cmd.SetOut(&strings.Builder{})
+	errBuf := &strings.Builder{}
+	cmd.SetErr(errBuf)
+
+	// Cancel context immediately so the proxy doesn't actually connect.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cmd.SetContext(ctx)
+
+	_ = cmd.Execute()
+	// If it got past URL validation, stderr should mention "proxying WS upstream".
+	if !strings.Contains(errBuf.String(), "proxying WS upstream") {
+		t.Errorf("expected WS proxy startup message, got stderr: %s", errBuf.String())
+	}
+}
+
+func TestMcpProxyCmd_SessionBindingWiring(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("echo subprocess test requires unix")
+	}
+
+	cleanJSON := `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"Safe content."}]}}` //nolint:goconst // test value
+
+	cfgContent := "mcp_tool_scanning:\n  enabled: true\n  action: warn\n  detect_drift: true\nmcp_session_binding:\n  enabled: true\n  unknown_tool_action: block\n  no_baseline_action: warn\n"
+	cfgFile := t.TempDir() + "/binding.yaml"
+	if err := os.WriteFile(cfgFile, []byte(cfgContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"mcp", "proxy", "--config", cfgFile, "--", "echo", cleanJSON})
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(&strings.Builder{})
+	cmd.SetIn(bytes.NewReader(nil))
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestMcpProxyCmd_ChainDetectionWiring(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("echo subprocess test requires unix")
+	}
+
+	cleanJSON := `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"Safe content."}]}}` //nolint:goconst // test value
+
+	cfgContent := "tool_chain_detection:\n  enabled: true\n  window_size: 10\n  window_seconds: 60\n"
+	cfgFile := t.TempDir() + "/chain.yaml"
+	if err := os.WriteFile(cfgFile, []byte(cfgContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"mcp", "proxy", "--config", cfgFile, "--", "echo", cleanJSON})
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(&strings.Builder{})
+	cmd.SetIn(bytes.NewReader(nil))
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}

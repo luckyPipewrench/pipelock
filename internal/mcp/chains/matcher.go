@@ -169,6 +169,12 @@ func (m *Matcher) Record(sessionKey, toolName string) Verdict {
 	return v
 }
 
+// ClearSession removes all tool call history for the given session key.
+// Safe to call with a non-existent key (no-op).
+func (m *Matcher) ClearSession(sessionKey string) {
+	m.sessions.Delete(sessionKey)
+}
+
 // evict removes stale entries from the session history.
 // Time-based eviction runs first, then count-based.
 func (m *Matcher) evict(sess *sessionHistory, now time.Time) {

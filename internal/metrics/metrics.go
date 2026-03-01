@@ -380,6 +380,9 @@ func (m *Metrics) RecordSessionEvicted() {
 // gauges. The sourceFunc is called once per Prometheus scrape and should
 // return the active/inactive state of each source (e.g. Controller.Sources).
 func (m *Metrics) RegisterKillSwitchState(sourceFunc func() map[string]bool) {
+	if sourceFunc == nil {
+		return
+	}
 	m.registry.MustRegister(&killSwitchCollector{sourceFunc: sourceFunc})
 }
 

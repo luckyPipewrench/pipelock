@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -19,6 +18,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	plwsutil "github.com/luckyPipewrench/pipelock/internal/wsutil"
 )
 
 // wsSemaphore limits concurrent WebSocket proxy connections.
@@ -60,14 +60,6 @@ type wsRelayStats struct {
 	textFrames     int64
 	binaryFrames   int64
 	blocked        bool // true if relay terminated due to a policy/DLP/injection block
-}
-
-// fragmentState tracks WebSocket message fragment reassembly.
-type fragmentState struct {
-	opcode   ws.OpCode
-	buf      bytes.Buffer
-	maxBytes int
-	active   bool
 }
 
 // handleWebSocket handles /ws WebSocket proxy requests.
@@ -168,7 +160,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	upstreamConn, dialErr := p.wsDialUpstream(r.Context(), targetURL, fwdHeaders, cfg)
 	if dialErr != nil {
 		log.LogError("WS", targetURL, clientIP, requestID, fmt.Errorf("upstream dial: %w", dialErr))
-		writeCloseFrame(clientConn, ws.StatusInternalServerError, "upstream dial failed")
+		plwsutil.WriteCloseFrame(clientConn, ws.StatusInternalServerError, "upstream dial failed")
 		return
 	}
 	defer upstreamConn.Close() //nolint:errcheck // best effort
@@ -369,14 +361,14 @@ func (r *wsRelay) run(ctx context.Context) wsRelayStats {
 // clientToUpstream reads frames from client, DLP-scans text, writes to upstream.
 func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFunc, idleTimeout time.Duration) (bytesTransferred, textFrames, binaryFrames int64, blocked bool) {
 	defer cancel()
-	frag := &fragmentState{maxBytes: r.maxMsg}
+	frag := &plwsutil.FragmentState{MaxBytes: r.maxMsg}
 	var crossMsgTail []byte // rolling tail for cross-message DLP scanning
 	log := r.proxy.logger.With("agent", r.agent)
 
 	for {
 		select {
 		case <-ctx.Done():
-			writeCloseFrame(r.clientConn, ws.StatusGoingAway, "connection timeout")
+			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusGoingAway, "connection timeout")
 			return
 		default:
 		}
@@ -385,28 +377,28 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 
 		hdr, err := ws.ReadHeader(r.clientConn)
 		if err != nil {
-			if !isExpectedCloseErr(err) {
-				writeCloseFrame(r.upstreamConn, ws.StatusGoingAway, "client disconnected")
+			if !plwsutil.IsExpectedCloseErr(err) {
+				plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusGoingAway, "client disconnected")
 			}
 			return
 		}
 
 		// Guard against OOM: reject frames exceeding limits before allocating.
-		if hdr.OpCode.IsControl() && hdr.Length > wsMaxControlPayload {
-			writeCloseFrame(r.clientConn, ws.StatusProtocolError, "control frame too large")
+		if hdr.OpCode.IsControl() && hdr.Length > plwsutil.MaxControlPayload {
+			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusProtocolError, "control frame too large")
 			return
 		}
 		if !hdr.OpCode.IsControl() && hdr.Length > int64(r.maxMsg) {
-			writeCloseFrame(r.clientConn, ws.StatusMessageTooBig, wsReasonMessageTooLarge)
-			writeCloseFrame(r.upstreamConn, ws.StatusMessageTooBig, wsReasonMessageTooLarge)
+			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusMessageTooBig, plwsutil.ReasonMessageTooLarge)
+			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusMessageTooBig, plwsutil.ReasonMessageTooLarge)
 			return
 		}
 
 		// Reject compressed frames (RSV1 = permessage-deflate indicator).
 		// Compressed bytes bypass DLP pattern matching entirely.
 		if hdr.Rsv1() {
-			writeCloseFrame(r.clientConn, ws.StatusProtocolError, "compressed frames not supported")
-			writeCloseFrame(r.upstreamConn, ws.StatusProtocolError, "compressed frames not supported")
+			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusProtocolError, "compressed frames not supported")
+			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusProtocolError, "compressed frames not supported")
 			blocked = true
 			return
 		}
@@ -434,7 +426,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		if hdr.OpCode.IsControl() {
 			if hdr.OpCode == ws.OpClose {
 				// Forward close frame to upstream, then exit.
-				writeCloseFrame(r.upstreamConn, ws.StatusNormalClosure, "client closed")
+				plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusNormalClosure, "client closed")
 				return
 			}
 			// Ping/Pong: forward to upstream (proxy is CLIENT to upstream).
@@ -446,24 +438,24 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		}
 
 		// Binary frames.
-		if hdr.OpCode == ws.OpBinary || (hdr.OpCode == ws.OpContinuation && frag.active && frag.opcode == ws.OpBinary) {
+		if hdr.OpCode == ws.OpBinary || (hdr.OpCode == ws.OpContinuation && frag.Active && frag.Opcode == ws.OpBinary) {
 			binaryFrames++
 			if !r.allowBinary {
 				log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, "policy", "binary frames not allowed", r.clientIP, r.requestID)
 				r.proxy.metrics.RecordWSScanHit("policy")
-				writeCloseFrame(r.clientConn, ws.StatusPolicyViolation, "binary frames not allowed")
-				writeCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "binary frames not allowed")
+				plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "binary frames not allowed")
+				plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "binary frames not allowed")
 				blocked = true
 				return
 			}
 		}
 
 		// Fragment reassembly for text frames.
-		complete, msg, closeCode, closeReason := frag.process(hdr, payload)
+		complete, msg, closeCode, closeReason := frag.Process(hdr, payload)
 		if closeCode != 0 {
 			log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, "policy", closeReason, r.clientIP, r.requestID)
-			writeCloseFrame(r.clientConn, closeCode, closeReason)
-			writeCloseFrame(r.upstreamConn, closeCode, closeReason)
+			plwsutil.WriteCloseFrame(r.clientConn, closeCode, closeReason)
+			plwsutil.WriteClientCloseFrame(r.upstreamConn, closeCode, closeReason)
 			blocked = true
 			return
 		}
@@ -475,13 +467,13 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		}
 
 		// Complete message available. Count and scan.
-		if frag.opcode == ws.OpText || hdr.OpCode == ws.OpText {
+		if frag.Opcode == ws.OpText || hdr.OpCode == ws.OpText {
 			textFrames++
 
 			// UTF-8 validation per RFC 6455.
 			if !utf8.Valid(msg) {
-				writeCloseFrame(r.clientConn, ws.StatusInvalidFramePayloadData, "invalid UTF-8")
-				writeCloseFrame(r.upstreamConn, ws.StatusInvalidFramePayloadData, "invalid UTF-8")
+				plwsutil.WriteCloseFrame(r.clientConn, ws.StatusInvalidFramePayloadData, "invalid UTF-8")
+				plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusInvalidFramePayloadData, "invalid UTF-8")
 				return
 			}
 
@@ -517,8 +509,8 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 						reason := fmt.Sprintf("DLP match: %s", strings.Join(names, ", "))
 						log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, audit.ScannerDLP, reason, r.clientIP, r.requestID)
 						r.proxy.metrics.RecordWSScanHit(audit.ScannerDLP)
-						writeCloseFrame(r.clientConn, ws.StatusPolicyViolation, "DLP violation")
-						writeCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "DLP violation")
+						plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "DLP violation")
+						plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "DLP violation")
 						blocked = true
 						return
 					}
@@ -529,28 +521,28 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 
 		// Forward complete message to upstream (proxy is CLIENT, so masked).
 		opCode := hdr.OpCode
-		if frag.opcode != 0 {
-			opCode = frag.opcode
+		if frag.Opcode != 0 {
+			opCode = frag.Opcode
 		}
 		err = wsutil.WriteClientMessage(r.upstreamConn, opCode, msg)
 		if err != nil {
 			return
 		}
 		bytesTransferred += int64(len(msg))
-		frag.reset()
+		frag.Reset()
 	}
 }
 
 // upstreamToClient reads frames from upstream, injection-scans text, writes to client.
 func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFunc, idleTimeout time.Duration) (bytesTransferred, textFrames, binaryFrames int64, blocked bool) {
 	defer cancel()
-	frag := &fragmentState{maxBytes: r.maxMsg}
+	frag := &plwsutil.FragmentState{MaxBytes: r.maxMsg}
 	log := r.proxy.logger.With("agent", r.agent)
 
 	for {
 		select {
 		case <-ctx.Done():
-			writeCloseFrame(r.upstreamConn, ws.StatusGoingAway, "connection timeout")
+			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusGoingAway, "connection timeout")
 			return
 		default:
 		}
@@ -559,28 +551,28 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 
 		hdr, err := ws.ReadHeader(r.upstreamConn)
 		if err != nil {
-			if !isExpectedCloseErr(err) {
-				writeCloseFrame(r.clientConn, ws.StatusGoingAway, "upstream disconnected")
+			if !plwsutil.IsExpectedCloseErr(err) {
+				plwsutil.WriteCloseFrame(r.clientConn, ws.StatusGoingAway, "upstream disconnected")
 			}
 			return
 		}
 
 		// Guard against OOM: reject frames exceeding limits before allocating.
-		if hdr.OpCode.IsControl() && hdr.Length > wsMaxControlPayload {
-			writeCloseFrame(r.upstreamConn, ws.StatusProtocolError, "control frame too large")
+		if hdr.OpCode.IsControl() && hdr.Length > plwsutil.MaxControlPayload {
+			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusProtocolError, "control frame too large")
 			return
 		}
 		if !hdr.OpCode.IsControl() && hdr.Length > int64(r.maxMsg) {
-			writeCloseFrame(r.clientConn, ws.StatusMessageTooBig, wsReasonMessageTooLarge)
-			writeCloseFrame(r.upstreamConn, ws.StatusMessageTooBig, wsReasonMessageTooLarge)
+			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusMessageTooBig, plwsutil.ReasonMessageTooLarge)
+			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusMessageTooBig, plwsutil.ReasonMessageTooLarge)
 			return
 		}
 
 		// Reject compressed frames (RSV1 = permessage-deflate indicator).
 		// Compressed bytes bypass DLP pattern matching entirely.
 		if hdr.Rsv1() {
-			writeCloseFrame(r.clientConn, ws.StatusProtocolError, "compressed frames not supported")
-			writeCloseFrame(r.upstreamConn, ws.StatusProtocolError, "compressed frames not supported")
+			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusProtocolError, "compressed frames not supported")
+			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusProtocolError, "compressed frames not supported")
 			blocked = true
 			return
 		}
@@ -607,7 +599,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 		// Control frames.
 		if hdr.OpCode.IsControl() {
 			if hdr.OpCode == ws.OpClose {
-				writeCloseFrame(r.clientConn, ws.StatusNormalClosure, "upstream closed")
+				plwsutil.WriteCloseFrame(r.clientConn, ws.StatusNormalClosure, "upstream closed")
 				return
 			}
 			// Forward Ping/Pong to client (proxy is SERVER to client, no masking).
@@ -619,24 +611,24 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 		}
 
 		// Binary frames.
-		if hdr.OpCode == ws.OpBinary || (hdr.OpCode == ws.OpContinuation && frag.active && frag.opcode == ws.OpBinary) {
+		if hdr.OpCode == ws.OpBinary || (hdr.OpCode == ws.OpContinuation && frag.Active && frag.Opcode == ws.OpBinary) {
 			binaryFrames++
 			if !r.allowBinary {
 				log.LogWSBlocked(r.targetURL, audit.DirectionServerToClient, "policy", "binary frames not allowed", r.clientIP, r.requestID)
 				r.proxy.metrics.RecordWSScanHit("policy")
-				writeCloseFrame(r.clientConn, ws.StatusPolicyViolation, "binary frames not allowed")
-				writeCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "binary frames not allowed")
+				plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "binary frames not allowed")
+				plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "binary frames not allowed")
 				blocked = true
 				return
 			}
 		}
 
 		// Fragment reassembly.
-		complete, msg, closeCode, closeReason := frag.process(hdr, payload)
+		complete, msg, closeCode, closeReason := frag.Process(hdr, payload)
 		if closeCode != 0 {
 			log.LogWSBlocked(r.targetURL, audit.DirectionServerToClient, "policy", closeReason, r.clientIP, r.requestID)
-			writeCloseFrame(r.clientConn, closeCode, closeReason)
-			writeCloseFrame(r.upstreamConn, closeCode, closeReason)
+			plwsutil.WriteCloseFrame(r.clientConn, closeCode, closeReason)
+			plwsutil.WriteClientCloseFrame(r.upstreamConn, closeCode, closeReason)
 			blocked = true
 			return
 		}
@@ -648,13 +640,13 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 		}
 
 		// Complete message. Count and scan.
-		if frag.opcode == ws.OpText || hdr.OpCode == ws.OpText {
+		if frag.Opcode == ws.OpText || hdr.OpCode == ws.OpText {
 			textFrames++
 
 			// UTF-8 validation.
 			if !utf8.Valid(msg) {
-				writeCloseFrame(r.clientConn, ws.StatusInvalidFramePayloadData, "invalid UTF-8")
-				writeCloseFrame(r.upstreamConn, ws.StatusInvalidFramePayloadData, "invalid UTF-8")
+				plwsutil.WriteCloseFrame(r.clientConn, ws.StatusInvalidFramePayloadData, "invalid UTF-8")
+				plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusInvalidFramePayloadData, "invalid UTF-8")
 				return
 			}
 
@@ -672,8 +664,8 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 					case config.ActionBlock:
 						reason := fmt.Sprintf("injection detected: %s", strings.Join(patternNames, ", "))
 						log.LogWSBlocked(r.targetURL, audit.DirectionServerToClient, "response_scan", reason, r.clientIP, r.requestID)
-						writeCloseFrame(r.clientConn, ws.StatusPolicyViolation, "injection detected")
-						writeCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "injection detected")
+						plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "injection detected")
+						plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "injection detected")
 						blocked = true
 						return
 					case config.ActionStrip:
@@ -683,8 +675,8 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 							// Cannot strip, fall back to block.
 							reason := fmt.Sprintf("injection detected (strip failed): %s", strings.Join(patternNames, ", "))
 							log.LogWSBlocked(r.targetURL, audit.DirectionServerToClient, "response_scan", reason, r.clientIP, r.requestID)
-							writeCloseFrame(r.clientConn, ws.StatusPolicyViolation, "injection detected")
-							writeCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "injection detected")
+							plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "injection detected")
+							plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "injection detected")
 							blocked = true
 							return
 						}
@@ -696,8 +688,8 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 						// Fail closed: block.
 						reason := fmt.Sprintf("injection detected (ask not supported for WS): %s", strings.Join(patternNames, ", "))
 						log.LogWSBlocked(r.targetURL, audit.DirectionServerToClient, "response_scan", reason, r.clientIP, r.requestID)
-						writeCloseFrame(r.clientConn, ws.StatusPolicyViolation, "injection detected")
-						writeCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "injection detected")
+						plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "injection detected")
+						plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "injection detected")
 						blocked = true
 						return
 					default:
@@ -709,114 +701,25 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 
 		// Forward complete message to client (proxy is SERVER, no masking).
 		opCode := hdr.OpCode
-		if frag.opcode != 0 {
-			opCode = frag.opcode
+		if frag.Opcode != 0 {
+			opCode = frag.Opcode
 		}
 		err = wsutil.WriteServerMessage(r.clientConn, opCode, msg)
 		if err != nil {
 			return
 		}
 		bytesTransferred += int64(len(msg))
-		frag.reset()
+		frag.Reset()
 	}
 }
 
 const (
-	wsReasonMessageTooLarge = "message too large" //nolint:gosec // not a credential
-	// RFC 6455 §5.5: control frames must not exceed 125 bytes payload.
-	wsMaxControlPayload = 125
 	// crossMsgOverlap is how many bytes of the previous text message to retain
 	// for cross-message DLP scanning. Secrets split across separate WebSocket
 	// messages (each FIN=1) would evade per-message scanning without this overlap.
 	// 512 bytes covers any single-line DLP pattern with headroom.
 	crossMsgOverlap = 512
 )
-
-// process handles fragment reassembly. Returns (complete, message, closeCode, closeReason).
-// When closeCode is non-zero, the connection should be terminated.
-func (f *fragmentState) process(hdr ws.Header, payload []byte) (complete bool, msg []byte, closeCode ws.StatusCode, closeReason string) {
-	switch {
-	case hdr.OpCode == ws.OpContinuation && !f.active:
-		// Unexpected continuation without a started fragment.
-		return false, nil, ws.StatusProtocolError, "unexpected continuation frame"
-
-	case hdr.OpCode != ws.OpContinuation && !hdr.OpCode.IsControl() && f.active:
-		// New data frame while fragmentation is in progress.
-		return false, nil, ws.StatusProtocolError, "new data frame during fragmentation"
-
-	case !hdr.Fin && hdr.OpCode != ws.OpContinuation && !hdr.OpCode.IsControl():
-		// Start of a new fragmented message.
-		f.active = true
-		f.opcode = hdr.OpCode
-		f.buf.Reset()
-		if int(hdr.Length) > f.maxBytes {
-			return false, nil, ws.StatusMessageTooBig, wsReasonMessageTooLarge
-		}
-		_, _ = f.buf.Write(payload)
-		return false, nil, 0, ""
-
-	case hdr.OpCode == ws.OpContinuation && f.active:
-		// Continuation of a fragmented message.
-		if f.buf.Len()+len(payload) > f.maxBytes {
-			return false, nil, ws.StatusMessageTooBig, wsReasonMessageTooLarge
-		}
-		_, _ = f.buf.Write(payload)
-		if hdr.Fin {
-			msg := make([]byte, f.buf.Len())
-			copy(msg, f.buf.Bytes())
-			return true, msg, 0, ""
-		}
-		return false, nil, 0, ""
-
-	default:
-		// Single-frame message (Fin=true, non-continuation, non-control).
-		if int(hdr.Length) > f.maxBytes {
-			return false, nil, ws.StatusMessageTooBig, wsReasonMessageTooLarge
-		}
-		f.opcode = hdr.OpCode
-		return true, payload, 0, ""
-	}
-}
-
-// reset clears fragment state after a complete message.
-func (f *fragmentState) reset() {
-	f.active = false
-	f.opcode = 0
-	f.buf.Reset()
-}
-
-// writeCloseFrame sends a WebSocket close frame with the given status code and reason.
-func writeCloseFrame(conn net.Conn, code ws.StatusCode, reason string) {
-	// Close frame payload: 2-byte status code + optional UTF-8 reason.
-	// Truncate reason to fit in control frame (125 bytes max payload).
-	reasonBytes := []byte(reason)
-	if len(reasonBytes) > 123 { // 125 - 2 bytes for status code
-		reasonBytes = reasonBytes[:123]
-		// Back up to a valid UTF-8 boundary so we don't split a multi-byte
-		// codepoint (RFC 6455 requires close reasons to be valid UTF-8).
-		for len(reasonBytes) > 0 && !utf8.Valid(reasonBytes) {
-			reasonBytes = reasonBytes[:len(reasonBytes)-1]
-		}
-	}
-	payload := make([]byte, 2+len(reasonBytes))
-	payload[0] = byte(code >> 8) //nolint:gosec // StatusCode is uint16, high byte extraction is safe
-	payload[1] = byte(code & 0xFF)
-	copy(payload[2:], reasonBytes)
-
-	// Build the complete frame (header + payload) in a single buffer so the
-	// conn.Write is one syscall. Both relay goroutines may call writeCloseFrame
-	// on the same conn concurrently; a single write prevents interleaved bytes.
-	var buf bytes.Buffer
-	_ = ws.WriteHeader(&buf, ws.Header{
-		Fin:    true,
-		OpCode: ws.OpClose,
-		Length: int64(len(payload)),
-	})
-	buf.Write(payload)
-
-	_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	_, _ = conn.Write(buf.Bytes())
-}
 
 // opCodeLabel returns a human-readable label for metrics.
 func opCodeLabel(op ws.OpCode) string {
@@ -828,16 +731,4 @@ func opCodeLabel(op ws.OpCode) string {
 	default:
 		return "control"
 	}
-}
-
-// isExpectedCloseErr returns true for errors that are normal during connection teardown.
-func isExpectedCloseErr(err error) bool {
-	if err == nil {
-		return false
-	}
-	s := err.Error()
-	return strings.Contains(s, "use of closed network connection") ||
-		strings.Contains(s, "connection reset by peer") ||
-		strings.Contains(s, "broken pipe") ||
-		strings.Contains(s, "EOF")
 }

@@ -182,7 +182,7 @@ func TestMatcher_Record(t *testing.T) {
 	if !v2.Matched {
 		t.Error("read + exec should match read-then-exec pattern")
 	}
-	if v2.PatternName != "read-then-exec" {
+	if v2.PatternName != "read-then-exec" { //nolint:goconst // test value
 		t.Errorf("expected pattern read-then-exec, got %q", v2.PatternName)
 	}
 	if v2.Severity != "high" {
@@ -563,5 +563,78 @@ func TestMatcher_CustomPatternOverride(t *testing.T) {
 	}
 	if v.Action != "block" {
 		t.Errorf("expected override action %q, got %q", "block", v.Action)
+	}
+}
+
+func TestMatcher_ClearSession(t *testing.T) {
+	cfg := &config.ToolChainDetection{
+		Enabled:       true,
+		Action:        "warn",
+		WindowSize:    20,
+		WindowSeconds: 60,
+		MaxGap:        intPtr(3),
+	}
+	m := New(cfg)
+
+	// Record read_file — first step of "read-then-exec".
+	v := m.Record("s1", "read_file")
+	if v.Matched {
+		t.Fatal("single read should not match")
+	}
+
+	// Clear the session, wiping the read history.
+	m.ClearSession("s1")
+
+	// Now record exec — should NOT match because read was cleared.
+	v = m.Record("s1", "bash_command")
+	if v.Matched {
+		t.Error("expected no match after ClearSession wiped history")
+	}
+}
+
+func TestMatcher_ClearSession_NonExistent(t *testing.T) {
+	cfg := &config.ToolChainDetection{
+		Enabled:       true,
+		Action:        "warn",
+		WindowSize:    20,
+		WindowSeconds: 60,
+		MaxGap:        intPtr(3),
+	}
+	m := New(cfg)
+
+	// Should not panic on a key that was never recorded.
+	m.ClearSession("no-such-session")
+}
+
+func TestMatcher_ClearSession_IndependentSessions(t *testing.T) {
+	cfg := &config.ToolChainDetection{
+		Enabled:       true,
+		Action:        "warn",
+		WindowSize:    20,
+		WindowSeconds: 60,
+		MaxGap:        intPtr(3),
+	}
+	m := New(cfg)
+
+	// Record read in both sessions.
+	m.Record("s1", "read_file")
+	m.Record("s2", "read_file")
+
+	// Clear only s1.
+	m.ClearSession("s1")
+
+	// s1: exec should NOT match (history cleared).
+	v1 := m.Record("s1", "bash_command")
+	if v1.Matched {
+		t.Error("s1 should not match after ClearSession")
+	}
+
+	// s2: exec SHOULD match (unaffected by s1's clear).
+	v2 := m.Record("s2", "bash_command")
+	if !v2.Matched {
+		t.Error("s2 should still match — ClearSession(s1) should not affect s2")
+	}
+	if v2.PatternName != "read-then-exec" { //nolint:goconst // test value
+		t.Errorf("expected read-then-exec, got %q", v2.PatternName)
 	}
 }

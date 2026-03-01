@@ -155,7 +155,7 @@ Examples:
 			}
 
 			if binary == "" {
-				binary = "pipelock"
+				binary = mcporterBinaryName
 			}
 
 			hookContent := gitprotect.GeneratePrePushHook(binary, configFile)
@@ -175,7 +175,7 @@ Examples:
 	}
 
 	cmd.Flags().StringVarP(&configFile, "config", "c", "", "config file path for the hook to use")
-	cmd.Flags().StringVar(&binary, "binary", "", "path to pipelock binary (default: pipelock in PATH)")
+	cmd.Flags().StringVar(&binary, "binary", "", "path to pipelock binary (default: "+mcporterBinaryName+" in PATH)")
 	cmd.Flags().BoolVar(&force, "force", false, "overwrite existing hook")
 	return cmd
 }

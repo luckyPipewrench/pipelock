@@ -24,6 +24,7 @@ Examples:
 
 	cmd.AddCommand(generateConfigCmd())
 	cmd.AddCommand(generateDockerComposeCmd())
+	cmd.AddCommand(generateMcporterCmd())
 	return cmd
 }
 

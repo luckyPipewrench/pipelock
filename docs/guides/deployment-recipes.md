@@ -121,19 +121,11 @@ spec:
       labels:
         app: my-agent
     spec:
-      # Init container: download pipelock binary for MCP wrapping
+      # Init container: copy pipelock binary for MCP stdio wrapping
       initContainers:
         - name: pipelock-init
-          image: alpine:3.19
-          command:
-            - sh
-            - -c
-            - |
-              VERSION=0.3.0  # pin to a specific release
-              ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
-              wget -qO- "https://github.com/luckyPipewrench/pipelock/releases/download/v${VERSION}/pipelock_${VERSION}_linux_${ARCH}.tar.gz" \
-                | tar xz -C /shared-bin pipelock
-              chmod +x /shared-bin/pipelock
+          image: ghcr.io/luckypipewrench/pipelock-init:0.3.1
+          command: ["cp", "/pipelock", "/shared-bin/pipelock"]
           volumeMounts:
             - name: shared-bin
               mountPath: /shared-bin
@@ -141,7 +133,7 @@ spec:
       containers:
         # Pipelock sidecar
         - name: pipelock
-          image: ghcr.io/luckypipewrench/pipelock:latest
+          image: ghcr.io/luckypipewrench/pipelock:0.3.1
           args:
             - run
             - --config

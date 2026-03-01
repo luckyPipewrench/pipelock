@@ -207,7 +207,6 @@ Set `include_defaults: false` to use only your patterns.
 | Private Key Header | `-----BEGIN.*PRIVATE KEY-----` | critical |
 | Social Security Number | `\b\d{3}-\d{2}-\d{4}\b` | critical |
 | Credential in URL | `password\|token\|secret=value` | high |
-| Google OAuth Client ID | `*.apps.googleusercontent.com` | medium |
 | Prompt Injection | `(ignore\|disregard\|forget)...previous...instructions` | high |
 | System Override | `system:` | high |
 | Role Override | `you are now (DAN\|evil\|unrestricted)` | high |

@@ -88,7 +88,8 @@ pause
 # --- 7: Config generation ---
 step "7. Generate: Starter config in one command"
 show 'pipelock generate config --preset strict'
-pipelock generate config --preset strict 2>&1 | head -20
+pipelock generate config --preset strict 2>&1 > "$DEMO_TMPDIR/strict.yaml"
+head -20 "$DEMO_TMPDIR/strict.yaml"
 echo "  ..."
 pause
 

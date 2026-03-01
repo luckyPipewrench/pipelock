@@ -154,7 +154,7 @@ The generator is idempotent. Running it twice produces identical output. Servers
 
 ## Kubernetes Sidecar Deployment
 
-Run pipelock as a sidecar container alongside your agent:
+Run pipelock as a sidecar container alongside your agent. The init container copies the pipelock binary into a shared volume so the agent can use it for MCP stdio wrapping:
 
 ```yaml
 apiVersion: apps/v1
@@ -164,16 +164,30 @@ metadata:
 spec:
   template:
     spec:
+      initContainers:
+        - name: pipelock-init
+          image: ghcr.io/luckypipewrench/pipelock-init:0.3.1
+          command: ["cp", "/pipelock", "/shared-bin/pipelock"]
+          volumeMounts:
+            - name: shared-bin
+              mountPath: /shared-bin
+
       containers:
         - name: agent
           image: your-agent:latest
           env:
             - name: HTTPS_PROXY
               value: "http://localhost:8888"
-            # MCP servers configured to use pipelock binary
+          volumeMounts:
+            - name: shared-bin
+              mountPath: /usr/local/bin/pipelock
+              subPath: pipelock
+            - name: config
+              mountPath: /etc/pipelock
+              readOnly: true
 
         - name: pipelock
-          image: ghcr.io/luckypipewrench/pipelock:latest
+          image: ghcr.io/luckypipewrench/pipelock:0.3.1
           args: ["run", "--listen", "0.0.0.0:8888"]
           ports:
             - containerPort: 8888
@@ -186,6 +200,8 @@ spec:
         - name: config
           configMap:
             name: pipelock-config
+        - name: shared-bin
+          emptyDir: {}
 ```
 
 Add a NetworkPolicy to restrict the agent container's egress to only the pipelock sidecar:

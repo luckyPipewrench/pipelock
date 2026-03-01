@@ -18,8 +18,10 @@ import (
 // to an upstream MCP server. MCP is JSON-RPC over text frames only; binary frames
 // are rejected (fail-closed). Fragment reassembly uses the shared wsutil package.
 type WSClient struct {
-	conn net.Conn
-	frag plwsutil.FragmentState
+	conn     net.Conn
+	r        io.Reader // reader for frames (may differ from conn when Dial returns a buffered reader)
+	isServer bool      // true = unmasked writes (server side), false = masked writes (client side)
+	frag     plwsutil.FragmentState
 
 	// writeMu serializes writes. Reads are expected from a single goroutine.
 	writeMu   sync.Mutex
@@ -30,22 +32,30 @@ type WSClient struct {
 // a WSClient. The connection is established using gobwas/ws.Dial with the
 // provided context for timeout/cancellation.
 func NewWSClient(ctx context.Context, rawURL string) (*WSClient, error) {
-	conn, _, _, err := ws.Dial(ctx, rawURL)
+	conn, br, _, err := ws.Dial(ctx, rawURL)
 	if err != nil {
 		return nil, fmt.Errorf("ws dial %s: %w", rawURL, err)
 	}
+	var reader io.Reader = conn
+	if br != nil {
+		reader = br
+	}
 	return &WSClient{
 		conn: conn,
+		r:    reader,
 		frag: plwsutil.FragmentState{MaxBytes: MaxLineSize},
 	}, nil
 }
 
 // NewWSClientFromConn wraps an existing net.Conn as a WSClient.
-// Used for listener mode where the connection is already established.
-func NewWSClientFromConn(conn net.Conn) *WSClient {
+// Set server=true for connections accepted via UpgradeHTTP (sends unmasked frames).
+// Set server=false for connections established via Dial (sends masked frames).
+func NewWSClientFromConn(conn net.Conn, server bool) *WSClient {
 	return &WSClient{
-		conn: conn,
-		frag: plwsutil.FragmentState{MaxBytes: MaxLineSize},
+		conn:     conn,
+		r:        conn,
+		isServer: server,
+		frag:     plwsutil.FragmentState{MaxBytes: MaxLineSize},
 	}
 }
 
@@ -54,7 +64,7 @@ func NewWSClientFromConn(conn net.Conn) *WSClient {
 // Returns io.EOF on clean close.
 func (c *WSClient) ReadMessage() ([]byte, error) {
 	for {
-		hdr, err := ws.ReadHeader(c.conn)
+		hdr, err := ws.ReadHeader(c.r)
 		if err != nil {
 			if plwsutil.IsExpectedCloseErr(err) {
 				return nil, io.EOF
@@ -65,21 +75,21 @@ func (c *WSClient) ReadMessage() ([]byte, error) {
 		// Enforce size limits before allocation to prevent memory DoS.
 		// Control frames: RFC 6455 caps at 125 bytes.
 		if hdr.OpCode.IsControl() && hdr.Length > plwsutil.MaxControlPayload {
-			plwsutil.WriteClientCloseFrame(c.conn, ws.StatusProtocolError, "control frame too large")
+			c.writeCloseFrame(ws.StatusProtocolError, "control frame too large")
 			return nil, fmt.Errorf("control frame too large: %d bytes", hdr.Length)
 		}
 		// Data frames: reject headers claiming payloads larger than MaxLineSize.
 		if !hdr.OpCode.IsControl() && hdr.Length > int64(MaxLineSize) {
-			plwsutil.WriteClientCloseFrame(c.conn, ws.StatusMessageTooBig, "frame too large")
+			c.writeCloseFrame(ws.StatusMessageTooBig, "frame too large")
 			return nil, fmt.Errorf("frame too large: %d bytes (max %d)", hdr.Length, MaxLineSize)
 		}
 
-		// Allocation safe: control frames capped at 125 B (line 67),
-		// data frames capped at MaxLineSize (line 72). min() makes the
+		// Allocation safe: control frames capped at 125 B (line 80),
+		// data frames capped at MaxLineSize (line 85). min() makes the
 		// upper bound explicit at the allocation site for static analysis.
 		payload := make([]byte, min(hdr.Length, int64(MaxLineSize)))
 		if hdr.Length > 0 {
-			if _, err := io.ReadFull(c.conn, payload); err != nil {
+			if _, err := io.ReadFull(c.r, payload); err != nil {
 				return nil, fmt.Errorf("reading ws payload: %w", err)
 			}
 		}
@@ -95,11 +105,11 @@ func (c *WSClient) ReadMessage() ([]byte, error) {
 			switch hdr.OpCode {
 			case ws.OpClose:
 				// Echo close frame back, then signal EOF.
-				plwsutil.WriteClientCloseFrame(c.conn, ws.StatusNormalClosure, "")
+				c.writeCloseFrame(ws.StatusNormalClosure, "")
 				return nil, io.EOF
 			case ws.OpPing:
 				c.writeMu.Lock()
-				_ = gobwasutil.WriteClientMessage(c.conn, ws.OpPong, payload)
+				_ = c.writeMsg(ws.OpPong, payload)
 				c.writeMu.Unlock()
 			case ws.OpPong:
 				// Ignore unsolicited pongs.
@@ -111,13 +121,13 @@ func (c *WSClient) ReadMessage() ([]byte, error) {
 		isBinary := hdr.OpCode == ws.OpBinary ||
 			(hdr.OpCode == ws.OpContinuation && c.frag.Active && c.frag.Opcode == ws.OpBinary)
 		if isBinary {
-			plwsutil.WriteClientCloseFrame(c.conn, ws.StatusPolicyViolation, "binary frames not allowed")
+			c.writeCloseFrame(ws.StatusPolicyViolation, "binary frames not allowed")
 			return nil, fmt.Errorf("binary frame rejected")
 		}
 
 		complete, msg, closeCode, closeReason := c.frag.Process(hdr, payload)
 		if closeCode != 0 {
-			plwsutil.WriteClientCloseFrame(c.conn, closeCode, closeReason)
+			c.writeCloseFrame(closeCode, closeReason)
 			return nil, fmt.Errorf("fragment error: %s", closeReason)
 		}
 		if !complete {
@@ -126,7 +136,7 @@ func (c *WSClient) ReadMessage() ([]byte, error) {
 
 		// Validate UTF-8 (RFC 6455 requirement for text frames).
 		if !utf8.Valid(msg) {
-			plwsutil.WriteClientCloseFrame(c.conn, ws.StatusInvalidFramePayloadData, "invalid UTF-8")
+			c.writeCloseFrame(ws.StatusInvalidFramePayloadData, "invalid UTF-8")
 			return nil, fmt.Errorf("invalid UTF-8 in text frame")
 		}
 
@@ -146,17 +156,34 @@ func (c *WSClient) WriteMessage(msg []byte) error {
 	}
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
-	// Write as client (masked) per RFC 6455.
-	return gobwasutil.WriteClientMessage(c.conn, ws.OpText, msg)
+	return c.writeMsg(ws.OpText, msg)
 }
 
 // Close sends a close frame and closes the underlying connection.
 // Safe to call from multiple goroutines; the close frame is sent at most once.
 func (c *WSClient) Close() error {
 	c.closeOnce.Do(func() {
-		c.writeMu.Lock()
-		plwsutil.WriteClientCloseFrame(c.conn, ws.StatusNormalClosure, "")
-		c.writeMu.Unlock()
+		c.writeCloseFrame(ws.StatusNormalClosure, "")
 	})
 	return c.conn.Close()
+}
+
+// writeCloseFrame sends a close frame under writeMu.
+func (c *WSClient) writeCloseFrame(code ws.StatusCode, reason string) {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	if c.isServer {
+		plwsutil.WriteCloseFrame(c.conn, code, reason)
+	} else {
+		plwsutil.WriteClientCloseFrame(c.conn, code, reason)
+	}
+}
+
+// writeMsg sends a data/control frame with the correct masking for the role.
+// Caller must hold writeMu.
+func (c *WSClient) writeMsg(op ws.OpCode, payload []byte) error {
+	if c.isServer {
+		return gobwasutil.WriteServerMessage(c.conn, op, payload)
+	}
+	return gobwasutil.WriteClientMessage(c.conn, op, payload)
 }

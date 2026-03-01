@@ -375,12 +375,62 @@ func TestWSClient_NewWSClientFromConn(t *testing.T) {
 	server, client := net.Pipe()
 	defer func() { _ = server.Close() }()
 
-	wsc := NewWSClientFromConn(client)
+	wsc := NewWSClientFromConn(client, false)
 	if wsc == nil {
 		t.Fatal("expected non-nil WSClient")
 	}
 	if wsc.conn != client {
 		t.Error("conn not set correctly")
+	}
+	if wsc.isServer {
+		t.Error("expected client mode")
+	}
+	_ = wsc.Close()
+}
+
+func TestWSClient_NewWSClientFromConn_ServerMode(t *testing.T) {
+	server, client := net.Pipe()
+	defer func() { _ = server.Close() }()
+
+	wsc := NewWSClientFromConn(client, true)
+	if wsc == nil {
+		t.Fatal("expected non-nil WSClient")
+	}
+	if !wsc.isServer {
+		t.Error("expected server mode")
+	}
+	_ = wsc.Close()
+}
+
+func TestWSClient_ServerModeWriteUnmasked(t *testing.T) {
+	// Verify server-mode WSClient sends unmasked frames.
+	serverConn, clientConn := net.Pipe()
+	defer func() { _ = clientConn.Close() }()
+
+	wsc := NewWSClientFromConn(serverConn, true)
+
+	go func() {
+		_ = wsc.WriteMessage([]byte(`{"jsonrpc":"2.0","method":"test"}`))
+	}()
+
+	// Read the frame header from the client side.
+	// Server-mode frames must be unmasked (Masked=false).
+	hdr, err := ws.ReadHeader(clientConn)
+	if err != nil {
+		t.Fatalf("read header: %v", err)
+	}
+	if hdr.Masked {
+		t.Error("server-mode frame should not be masked")
+	}
+	if hdr.OpCode != ws.OpText {
+		t.Errorf("expected text frame, got %v", hdr.OpCode)
+	}
+	payload := make([]byte, hdr.Length)
+	if hdr.Length > 0 {
+		_, _ = io.ReadFull(clientConn, payload)
+	}
+	if string(payload) != `{"jsonrpc":"2.0","method":"test"}` {
+		t.Errorf("unexpected payload: %s", payload)
 	}
 	_ = wsc.Close()
 }

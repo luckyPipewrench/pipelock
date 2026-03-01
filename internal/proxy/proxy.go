@@ -196,7 +196,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 					rlog.LogBlocked("GET", redirectURL, "redirect", fmt.Sprintf("redirect from %s blocked: %s", originalURL, result.Reason), clientIP, requestID)
 					return fmt.Errorf("redirect blocked: %s", result.Reason)
 				}
-				rlog.LogAnomaly("GET", redirectURL, fmt.Sprintf("[audit] redirect from %s: %s", originalURL, result.Reason), clientIP, requestID, result.Score)
+				rlog.LogAnomaly("GET", redirectURL, result.Scanner, fmt.Sprintf("redirect from %s: %s", originalURL, result.Reason), clientIP, requestID, result.Score)
 			}
 			return nil
 		},
@@ -430,6 +430,7 @@ func (p *Proxy) Start(ctx context.Context) error {
 	if p.ksAPI != nil && cfg.KillSwitch.APIListen == "" {
 		mux.HandleFunc("/api/v1/killswitch", p.ksAPI.HandleToggle)
 		mux.HandleFunc("/api/v1/killswitch/status", p.ksAPI.HandleStatus)
+		mux.HandleFunc("/dashboard", p.ksAPI.HandleDashboard)
 	}
 
 	handler := p.buildHandler(mux)
@@ -484,7 +485,7 @@ func (p *Proxy) Start(ctx context.Context) error {
 		if host, _, splitErr := net.SplitHostPort(cfg.FetchProxy.Listen); splitErr == nil {
 			ip := net.ParseIP(host)
 			if host == "" || host == "0.0.0.0" || host == "::" || (ip != nil && !ip.IsLoopback()) {
-				p.logger.LogAnomaly("STARTUP", cfg.FetchProxy.Listen,
+				p.logger.LogAnomaly("STARTUP", cfg.FetchProxy.Listen, "",
 					"listen address is not loopback — /metrics and /stats endpoints are exposed to the network",
 					"", "", 0.5)
 			}
@@ -577,7 +578,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Audit mode: log anomaly but allow through
-		log.LogAnomaly("GET", displayURL, fmt.Sprintf("[audit] %s: %s", result.Scanner, result.Reason), clientIP, requestID, result.Score)
+		log.LogAnomaly("GET", displayURL, result.Scanner, result.Reason, clientIP, requestID, result.Score)
 	}
 
 	if sessionBlocked {
@@ -673,7 +674,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	if isHTML {
 		article, err := readability.FromReader(strings.NewReader(content), parsed)
 		if err != nil {
-			log.LogAnomaly("GET", displayURL, fmt.Sprintf("readability extraction failed: %v", err), clientIP, requestID, 0.3)
+			log.LogAnomaly("GET", displayURL, "", fmt.Sprintf("readability extraction failed: %v", err), clientIP, requestID, 0.3)
 		} else if article.TextContent != "" {
 			title = article.Title
 			content = article.TextContent

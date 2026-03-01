@@ -846,6 +846,12 @@ func TestController_SeparatePort_SkipsAPIExemption(t *testing.T) {
 		t.Fatal("expected /api/v1/killswitch/status to be BLOCKED when separatePort=true")
 	}
 
+	// /dashboard should also be blocked (same API exemption group).
+	rDash := httptest.NewRequest(http.MethodGet, "/dashboard", nil)
+	if !c.IsActiveHTTP(rDash).Active {
+		t.Fatal("expected /dashboard to be BLOCKED when separatePort=true")
+	}
+
 	// /health and /metrics should still be exempt (separate from API exemption).
 	rHealth := httptest.NewRequest(http.MethodGet, "/health", nil)
 	if c.IsActiveHTTP(rHealth).Active {

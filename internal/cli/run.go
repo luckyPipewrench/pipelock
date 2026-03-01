@@ -341,6 +341,7 @@ Examples:
 				apiMux := http.NewServeMux()
 				apiMux.HandleFunc("/api/v1/killswitch", ksAPI.HandleToggle)
 				apiMux.HandleFunc("/api/v1/killswitch/status", ksAPI.HandleStatus)
+				apiMux.HandleFunc("/dashboard", ksAPI.HandleDashboard)
 
 				apiLn, lnErr := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.KillSwitch.APIListen)
 				if lnErr != nil {

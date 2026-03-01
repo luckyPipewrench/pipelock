@@ -25,7 +25,9 @@ type APIHandler struct {
 }
 
 // NewAPIHandler creates an API handler for the given controller.
+// Panics if the dashboard template has a syntax error (programming bug).
 func NewAPIHandler(ctrl *Controller) *APIHandler {
+	initDashboardTemplate()
 	return &APIHandler{
 		ctrl:        ctrl,
 		windowStart: time.Now(),

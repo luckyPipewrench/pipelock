@@ -16,6 +16,7 @@ import (
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -121,9 +122,8 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "WebSocket blocked: "+result.Reason, http.StatusForbidden)
 			return
 		}
-		log.LogAnomaly("WS", targetURL,
-			fmt.Sprintf("[audit] %s: %s", result.Scanner, result.Reason),
-			clientIP, requestID, result.Score)
+		log.LogAnomaly("WS", targetURL, result.Scanner,
+			result.Reason, clientIP, requestID, result.Score)
 	}
 
 	if sessionBlocked {
@@ -145,7 +145,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// DLP-scan forwarded auth header values (unless target is allowlisted).
 	if cfg.EnforceEnabled() {
 		if blocked, reason := p.dlpScanWSHeaders(fwdHeaders, parsed.Hostname(), sc, cfg); blocked {
-			log.LogWSBlocked(targetURL, "client_to_server", "dlp", reason, clientIP, requestID)
+			log.LogWSBlocked(targetURL, audit.DirectionClientToServer, audit.ScannerDLP, reason, clientIP, requestID)
 			p.metrics.RecordWSBlocked()
 			http.Error(w, "WebSocket blocked: "+reason, http.StatusForbidden)
 			return
@@ -449,7 +449,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		if hdr.OpCode == ws.OpBinary || (hdr.OpCode == ws.OpContinuation && frag.active && frag.opcode == ws.OpBinary) {
 			binaryFrames++
 			if !r.allowBinary {
-				log.LogWSBlocked(r.targetURL, "client_to_server", "policy", "binary frames not allowed", r.clientIP, r.requestID)
+				log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, "policy", "binary frames not allowed", r.clientIP, r.requestID)
 				r.proxy.metrics.RecordWSScanHit("policy")
 				writeCloseFrame(r.clientConn, ws.StatusPolicyViolation, "binary frames not allowed")
 				writeCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "binary frames not allowed")
@@ -461,7 +461,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		// Fragment reassembly for text frames.
 		complete, msg, closeCode, closeReason := frag.process(hdr, payload)
 		if closeCode != 0 {
-			log.LogWSBlocked(r.targetURL, "client_to_server", "policy", closeReason, r.clientIP, r.requestID)
+			log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, "policy", closeReason, r.clientIP, r.requestID)
 			writeCloseFrame(r.clientConn, closeCode, closeReason)
 			writeCloseFrame(r.upstreamConn, closeCode, closeReason)
 			blocked = true
@@ -515,14 +515,14 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 					}
 					if r.cfg.EnforceEnabled() {
 						reason := fmt.Sprintf("DLP match: %s", strings.Join(names, ", "))
-						log.LogWSBlocked(r.targetURL, "client_to_server", "dlp", reason, r.clientIP, r.requestID)
-						r.proxy.metrics.RecordWSScanHit("dlp")
+						log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, audit.ScannerDLP, reason, r.clientIP, r.requestID)
+						r.proxy.metrics.RecordWSScanHit(audit.ScannerDLP)
 						writeCloseFrame(r.clientConn, ws.StatusPolicyViolation, "DLP violation")
 						writeCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "DLP violation")
 						blocked = true
 						return
 					}
-					log.LogWSScan(r.targetURL, "client_to_server", r.clientIP, r.requestID, "audit", len(dlpResult.Matches), names)
+					log.LogWSScan(r.targetURL, audit.DirectionClientToServer, r.clientIP, r.requestID, "audit", len(dlpResult.Matches), names)
 				}
 			}
 		}
@@ -622,7 +622,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 		if hdr.OpCode == ws.OpBinary || (hdr.OpCode == ws.OpContinuation && frag.active && frag.opcode == ws.OpBinary) {
 			binaryFrames++
 			if !r.allowBinary {
-				log.LogWSBlocked(r.targetURL, "server_to_client", "policy", "binary frames not allowed", r.clientIP, r.requestID)
+				log.LogWSBlocked(r.targetURL, audit.DirectionServerToClient, "policy", "binary frames not allowed", r.clientIP, r.requestID)
 				r.proxy.metrics.RecordWSScanHit("policy")
 				writeCloseFrame(r.clientConn, ws.StatusPolicyViolation, "binary frames not allowed")
 				writeCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "binary frames not allowed")
@@ -634,7 +634,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 		// Fragment reassembly.
 		complete, msg, closeCode, closeReason := frag.process(hdr, payload)
 		if closeCode != 0 {
-			log.LogWSBlocked(r.targetURL, "server_to_client", "policy", closeReason, r.clientIP, r.requestID)
+			log.LogWSBlocked(r.targetURL, audit.DirectionServerToClient, "policy", closeReason, r.clientIP, r.requestID)
 			writeCloseFrame(r.clientConn, closeCode, closeReason)
 			writeCloseFrame(r.upstreamConn, closeCode, closeReason)
 			blocked = true
@@ -671,7 +671,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 					switch r.scanner.ResponseAction() {
 					case config.ActionBlock:
 						reason := fmt.Sprintf("injection detected: %s", strings.Join(patternNames, ", "))
-						log.LogWSBlocked(r.targetURL, "server_to_client", "response_scan", reason, r.clientIP, r.requestID)
+						log.LogWSBlocked(r.targetURL, audit.DirectionServerToClient, "response_scan", reason, r.clientIP, r.requestID)
 						writeCloseFrame(r.clientConn, ws.StatusPolicyViolation, "injection detected")
 						writeCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "injection detected")
 						blocked = true
@@ -682,26 +682,26 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 						} else {
 							// Cannot strip, fall back to block.
 							reason := fmt.Sprintf("injection detected (strip failed): %s", strings.Join(patternNames, ", "))
-							log.LogWSBlocked(r.targetURL, "server_to_client", "response_scan", reason, r.clientIP, r.requestID)
+							log.LogWSBlocked(r.targetURL, audit.DirectionServerToClient, "response_scan", reason, r.clientIP, r.requestID)
 							writeCloseFrame(r.clientConn, ws.StatusPolicyViolation, "injection detected")
 							writeCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "injection detected")
 							blocked = true
 							return
 						}
-						log.LogWSScan(r.targetURL, "server_to_client", r.clientIP, r.requestID, config.ActionStrip, len(scanResult.Matches), patternNames)
+						log.LogWSScan(r.targetURL, audit.DirectionServerToClient, r.clientIP, r.requestID, config.ActionStrip, len(scanResult.Matches), patternNames)
 					case config.ActionWarn:
-						log.LogWSScan(r.targetURL, "server_to_client", r.clientIP, r.requestID, config.ActionWarn, len(scanResult.Matches), patternNames)
+						log.LogWSScan(r.targetURL, audit.DirectionServerToClient, r.clientIP, r.requestID, config.ActionWarn, len(scanResult.Matches), patternNames)
 					case config.ActionAsk:
 						// HITL not supported for WebSocket (no request/response cycle).
 						// Fail closed: block.
 						reason := fmt.Sprintf("injection detected (ask not supported for WS): %s", strings.Join(patternNames, ", "))
-						log.LogWSBlocked(r.targetURL, "server_to_client", "response_scan", reason, r.clientIP, r.requestID)
+						log.LogWSBlocked(r.targetURL, audit.DirectionServerToClient, "response_scan", reason, r.clientIP, r.requestID)
 						writeCloseFrame(r.clientConn, ws.StatusPolicyViolation, "injection detected")
 						writeCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "injection detected")
 						blocked = true
 						return
 					default:
-						log.LogWSScan(r.targetURL, "server_to_client", r.clientIP, r.requestID, r.scanner.ResponseAction(), len(scanResult.Matches), patternNames)
+						log.LogWSScan(r.targetURL, audit.DirectionServerToClient, r.clientIP, r.requestID, r.scanner.ResponseAction(), len(scanResult.Matches), patternNames)
 					}
 				}
 			}

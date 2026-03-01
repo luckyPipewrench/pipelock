@@ -1480,7 +1480,7 @@
       },
       "targets": [
         {
-          "expr": "pipelock_kill_switch_active{source=\"config\",instance=~\"$instance\"} or vector(0)",
+          "expr": "max(pipelock_kill_switch_active{source=\"config\",instance=~\"$instance\"}) or vector(0)",
           "legendFormat": "",
           "refId": "A"
         }
@@ -1556,7 +1556,7 @@
       },
       "targets": [
         {
-          "expr": "pipelock_kill_switch_active{source=\"api\",instance=~\"$instance\"} or vector(0)",
+          "expr": "max(pipelock_kill_switch_active{source=\"api\",instance=~\"$instance\"}) or vector(0)",
           "legendFormat": "",
           "refId": "A"
         }
@@ -1632,7 +1632,7 @@
       },
       "targets": [
         {
-          "expr": "pipelock_kill_switch_active{source=\"signal\",instance=~\"$instance\"} or vector(0)",
+          "expr": "max(pipelock_kill_switch_active{source=\"signal\",instance=~\"$instance\"}) or vector(0)",
           "legendFormat": "",
           "refId": "A"
         }
@@ -1708,7 +1708,7 @@
       },
       "targets": [
         {
-          "expr": "pipelock_kill_switch_active{source=\"sentinel\",instance=~\"$instance\"} or vector(0)",
+          "expr": "max(pipelock_kill_switch_active{source=\"sentinel\",instance=~\"$instance\"}) or vector(0)",
           "legendFormat": "",
           "refId": "A"
         }

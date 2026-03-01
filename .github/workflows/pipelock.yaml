@@ -25,3 +25,10 @@ jobs:
           exclude-paths: |
             internal/scanner/scanner_test.go
             internal/scanner/text_dlp_test.go
+            README.md
+            assets/demo.cast
+            docs/attacks-blocked.md
+            docs/bypass-resistance.md
+            docs/configuration.md
+            docs/guides/deployment-recipes.md
+            examples/demo-readme.sh

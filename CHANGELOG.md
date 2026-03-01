@@ -7,17 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- WebSocket MCP transport: `--upstream ws://` and `wss://` for MCP proxy connections, with the same 6-layer scanning pipeline as stdio and HTTP modes
+- `pipelock generate mcporter` CLI: wraps MCP server configs with pipelock scanning. Reads any JSON with `mcpServers`, preserves env blocks, detects already-wrapped servers, idempotent
+- `pipelock-init` container image: Alpine-based multi-arch image for K8s initContainer deployments, replaces multi-line wget/tar/chmod scripts with `cp /pipelock /shared-bin/pipelock`
+- MITRE ATT&CK technique IDs mapped to all scanner labels (T1048, T1059, T1046, T1071.001, T1190, T1195.002, T1078, T1030) in blocked, anomaly, ws_scan, response_scan, session_anomaly, and mcp_unknown_tool audit events and emitted payloads
+- `pipelock_kill_switch_active{source}` Prometheus gauge via custom collector (fresh state per scrape, four sources: config, api, signal, sentinel)
+- `pipelock_info{version}` build information metric
+- Metrics port isolation: `metrics_listen` config field runs `/metrics` and `/stats` on a dedicated port, preventing agents from scraping operational metadata. Changes rejected on hot-reload with a warning.
+- Cosign signature verification in the GitHub Action: release checksums verified against Sigstore attestation before binary install. Graceful degradation when cosign is unavailable.
+- Reusable GitHub Actions security scan workflow (`.github/workflows/reusable-scan.yml`) with 7 configurable inputs and `score`, `findings-count`, `critical-count` outputs
+- 7 new docs: configuration reference, deployment recipes (Docker/K8s/iptables/macOS PF), bypass resistance matrix, attacks-blocked gallery, policy spec v0.1, transport modes guide, OpenClaw deployment guide
+- Prometheus metrics reference (`docs/metrics.md`): all 20 metrics with scrape config and PodMonitor example
+- 11 ready-to-use Prometheus alert rules (`examples/prometheus/pipelock-alerts.yaml`)
+- Grafana dashboard rebuilt from 4-panel overview to 18-panel fleet monitor with per-source kill switch status, chain detection by pattern, session anomaly breakdown, escalation timeseries, and multi-instance `$instance` filter variable
+- `filterAndActOnResponseScan` helper: extracted response scan action handling (suppress, block, ask, strip, warn) to eliminate duplication between raw HTML and extracted text scan paths
+- Demo extended with base64-encoded secret detection, git diff scanning, and config generation steps
+
 ### Fixed
 - Reject WebSocket compressed frames (RSV1 bit): compressed bytes bypass DLP pattern matching entirely, now closed with StatusProtocolError on both relay directions
 - Scan raw HTML body before go-readability extraction: injection hidden in HTML comments, script/style tags, and hidden elements was stripped before the response scanner could detect it
 - Use Mozilla Public Suffix List for ccTLD-aware domain grouping: `baseDomain()` now correctly groups `evil.co.uk` instead of merging all `.co.uk` domains into one rate limit bucket
-
-### Added
-- Metrics port isolation: `metrics_listen` config field runs `/metrics` and `/stats` on a dedicated port, preventing agents from scraping operational metadata
-- `filterAndActOnResponseScan` helper: extracted response scan action handling (suppress, block, ask, strip, warn) to eliminate duplication between raw HTML and extracted text scan paths
+- Prompt injection detection regex broadened to catch determiner-before-modifier evasion variants (e.g. "ignore your previous instructions", "forget the prior rules")
+- RFC 6455 compliance: WebSocket proxy now sends masked close frames to upstream connections (previously sent unmasked server-style frames)
 
 ### Changed
-- `golang.org/x/net` promoted from indirect to direct dependency (publicsuffix for ccTLD handling, already pulled in by go-readability)
+- `internal/wsutil` package extracted: shared WebSocket utilities (fragment reassembly, close frames, error classification) used by both the HTTP WS proxy and MCP WS transport
+- Anomaly audit events now include `scanner` as a structured field with MITRE technique mapping (previously embedded in reason string)
+- README slimmed from 829 to ~490 lines; full configuration YAML replaced with link to `docs/configuration.md`, forward proxy quick start moved to collapsible section
+- Quick start updated to use `pipelock check` (works without running the proxy)
+- `golang.org/x/net` promoted from indirect to direct dependency (publicsuffix for ccTLD handling)
 
 ## [0.3.0] - 2026-02-27
 

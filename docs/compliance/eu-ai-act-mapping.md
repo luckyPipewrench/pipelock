@@ -6,7 +6,7 @@ How Pipelock's runtime security controls map to the [EU AI Act (Regulation 2024/
 
 **Disclaimer:** This document maps Pipelock's security features to EU AI Act requirements for informational purposes. It does not constitute legal advice or guarantee regulatory compliance. Organizations should consult qualified legal counsel for compliance obligations specific to their AI systems.
 
-**Last updated:** v0.3.0 (February 2026)
+**Last updated:** v0.3.1 (March 2026)
 
 ---
 

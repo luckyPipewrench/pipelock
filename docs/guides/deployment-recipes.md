@@ -1,6 +1,6 @@
 # Deployment Recipes
 
-Pipelock blocks bad traffic, but only if traffic actually goes through it. These recipes lock your agent's egress so nothing bypasses the proxy.
+Pipelock blocks bad traffic, but only if traffic actually goes through it. Setting `HTTPS_PROXY` is a convenience, not a security boundary: any agent that can make raw socket calls can bypass it. These recipes lock your agent's egress at the network level so nothing bypasses the proxy.
 
 The pattern is always the same: agent can only reach pipelock, pipelock can reach the internet.
 
@@ -49,6 +49,10 @@ services:
 ```
 
 The `internal: true` flag on `agent-internal` is what makes this work. Docker won't create a gateway for that network, so the agent container has no route to the internet. Its only option is pipelock on port 8888.
+
+> **Docker version note:** Docker < 25.0.5 has a DNS leak on internal networks ([CVE-2024-29018](https://github.com/moby/moby/security/advisories/GHSA-mq39-4gv4-mvpx)). Containers on `internal: true` networks could resolve external hostnames via the embedded DNS server, bypassing the `internal` flag. Upgrade to Docker >= 25.0.5 or add `enable_ipv6: false` to your internal network definition as a partial mitigation.
+
+For a complete working example with verification tests, see [`examples/quickstart/`](../../examples/quickstart/).
 
 ### Adding MCP Servers
 
@@ -393,6 +397,13 @@ curl -s "http://localhost:8888/fetch?url=https://example.com"
 # This should be BLOCKED by pipelock (DLP catches the fake key)
 curl -s "http://localhost:8888/fetch?url=https://example.com/?key=sk-ant-api03-fake1234567890"
 # Expected: blocked response
+```
+
+For Docker Compose deployments, the [`examples/quickstart/`](../../examples/quickstart/) includes an automated verification suite that tests network isolation, DLP blocking, response injection detection, and MCP tool poisoning in one command:
+
+```bash
+cd examples/quickstart
+docker compose --profile verify up --abort-on-container-exit --exit-code-from verify
 ```
 
 ## Which Recipe to Use

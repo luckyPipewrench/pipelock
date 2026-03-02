@@ -23,8 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Grafana dashboard rebuilt from 4-panel overview to 18-panel fleet monitor with per-source kill switch status, chain detection by pattern, session anomaly breakdown, escalation timeseries, and multi-instance `$instance` filter variable
 - `filterAndActOnResponseScan` helper: extracted response scan action handling (suppress, block, ask, strip, warn) to eliminate duplication between raw HTML and extracted text scan paths
 - Demo extended with base64-encoded secret detection, git diff scanning, and config generation steps
+- Docker Compose quickstart (`examples/quickstart/`): production-ready two-network architecture with `internal: true` isolation, opt-in verification suite (5 tests: network isolation, DLP, response injection, MCP tool poisoning), attacker container for reproducible demos
 
 ### Fixed
+- `internal: []` in YAML config now correctly disables SSRF checks. Previously, `ApplyDefaults()` treated explicit empty slices the same as absent fields, filling in default CIDRs. This blocked legitimate Docker container traffic on private IPs (172.x.x.x).
 - `generate mcporter` now preserves per-server extra fields (`alwaysAllow`, `disabled`, `metadata`, `headers`, etc.) during wrapping. Previously only `command`, `args`, and `env` survived.
 - Reject WebSocket compressed frames (RSV1 bit): compressed bytes bypass DLP pattern matching entirely, now closed with StatusProtocolError on both relay directions
 - Scan raw HTML body before go-readability extraction: injection hidden in HTML comments, script/style tags, and hidden elements was stripped before the response scanner could detect it

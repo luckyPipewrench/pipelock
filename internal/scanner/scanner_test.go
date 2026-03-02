@@ -1739,7 +1739,7 @@ func TestScan_DLP_HexEncodedAPIKeyInQuery(t *testing.T) {
 	defer s.Close()
 
 	// hex(prefix + suffix) — build at runtime
-	prefix := "sk-ant-"
+	prefix := "sk-ant-"                    //nolint:goconst // test value
 	suffix := "abcdefghijklmnopqrstuvwxyz" //nolint:goconst // test value
 	hexEncoded := hex.EncodeToString([]byte(prefix + suffix))
 	result := s.Scan("https://example.com/api?key=" + hexEncoded)
@@ -1757,7 +1757,7 @@ func TestScan_DLP_Base64EncodedAPIKeyInQuery(t *testing.T) {
 	defer s.Close()
 
 	// base64(prefix + suffix) — build at runtime
-	prefix := "sk-ant-"
+	prefix := "sk-ant-"                    //nolint:goconst // test value
 	suffix := "abcdefghijklmnopqrstuvwxyz" //nolint:goconst // test value
 	b64Encoded := base64.StdEncoding.EncodeToString([]byte(prefix + suffix))
 	result := s.Scan("https://example.com/api?key=" + b64Encoded)
@@ -1802,7 +1802,7 @@ func TestScan_DLP_HexEncodedAPIKeyInPath(t *testing.T) {
 	defer s.Close()
 
 	// hex(prefix + suffix) embedded in path segment
-	prefix := "sk-ant-"
+	prefix := "sk-ant-"                    //nolint:goconst // test value
 	suffix := "abcdefghijklmnopqrstuvwxyz" //nolint:goconst // test value
 	hexEncoded := hex.EncodeToString([]byte(prefix + suffix))
 	result := s.Scan("https://example.com/exfil/" + hexEncoded + "/data")
@@ -1820,7 +1820,7 @@ func TestScan_DLP_Base64EncodedAPIKeyInPath(t *testing.T) {
 	defer s.Close()
 
 	// base64(prefix + suffix) embedded in path segment
-	prefix := "sk-ant-"
+	prefix := "sk-ant-"                    //nolint:goconst // test value
 	suffix := "abcdefghijklmnopqrstuvwxyz" //nolint:goconst // test value
 	b64Encoded := base64.RawURLEncoding.EncodeToString([]byte(prefix + suffix))
 	result := s.Scan("https://example.com/exfil/" + b64Encoded)
@@ -2185,7 +2185,7 @@ func TestScan_DLP_ControlCharBypass(t *testing.T) {
 	defer s.Close()
 
 	// Build key at runtime to avoid gitleaks
-	prefix := "sk-ant-"
+	prefix := "sk-ant-"                    //nolint:goconst // test value
 	suffix := "abcdefghijklmnopqrstuvwxyz" //nolint:goconst // test value
 
 	tests := []struct {
@@ -2222,7 +2222,7 @@ func TestScan_DLP_NullByteInPath(t *testing.T) {
 	defer s.Close()
 
 	// Null byte in URL path should not bypass DLP
-	prefix := "sk-ant-"
+	prefix := "sk-ant-"                    //nolint:goconst // test value
 	suffix := "abcdefghijklmnopqrstuvwxyz" //nolint:goconst // test value
 	url := "https://example.com/" + prefix + "\x00" + suffix
 	result := s.Scan(url)
@@ -2237,7 +2237,7 @@ func TestScan_DLP_MultipleControlChars(t *testing.T) {
 	defer s.Close()
 
 	// Multiple different control chars scattered through the secret
-	prefix := "sk-ant-"
+	prefix := "sk-ant-"                    //nolint:goconst // test value
 	suffix := "abcdefghijklmnopqrstuvwxyz" //nolint:goconst // test value
 	url := "https://example.com/api?key=" + prefix + "\x08\x09\x0a" + suffix
 	result := s.Scan(url)

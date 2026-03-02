@@ -115,8 +115,9 @@ func toSlash(s string) string {
 // Config is the top-level Pipelock configuration.
 type Config struct {
 	Version             int                 `yaml:"version"`
-	Mode                string              `yaml:"mode"`    // strict, balanced, audit
-	Enforce             *bool               `yaml:"enforce"` // nil = true (default); false = detect & log without blocking
+	Mode                string              `yaml:"mode"`           // strict, balanced, audit
+	Enforce             *bool               `yaml:"enforce"`        // nil = true (default); false = detect & log without blocking
+	ExplainBlocks       *bool               `yaml:"explain_blocks"` // nil = false (default); true = include hints in block responses
 	APIAllowlist        []string            `yaml:"api_allowlist"`
 	Suppress            []SuppressEntry     `yaml:"suppress"`
 	FetchProxy          FetchProxy          `yaml:"fetch_proxy"`
@@ -231,6 +232,14 @@ type GitProtection struct {
 // Defaults to true when Enforce is nil (not set in config).
 func (c *Config) EnforceEnabled() bool {
 	return c.Enforce == nil || *c.Enforce
+}
+
+// ExplainBlocksEnabled returns whether block responses include hints.
+// Defaults to false when ExplainBlocks is nil (opt-in only).
+// Enabling this exposes scanner names and config field names in responses,
+// which is useful for debugging but constitutes information disclosure.
+func (c *Config) ExplainBlocksEnabled() bool {
+	return c.ExplainBlocks != nil && *c.ExplainBlocks
 }
 
 // FetchProxy configures the unprivileged fetch proxy.

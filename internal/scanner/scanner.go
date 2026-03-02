@@ -24,11 +24,30 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
 
+// Scanner label constants. These values flow into Prometheus metrics
+// (pipelock_scanner_hits_total{scanner="..."}), suppression rules, and audit
+// logs. Changing a value is a breaking change for dashboards and alerts.
+const (
+	ScannerParser           = "parser"
+	ScannerScheme           = "scheme"
+	ScannerLength           = "length"
+	ScannerSSRF             = "ssrf"
+	ScannerAllowlist        = "allowlist"
+	ScannerBlocklist        = "blocklist"
+	ScannerRateLimit        = "ratelimit"
+	ScannerDLP              = "dlp"
+	ScannerEntropy          = "entropy"
+	ScannerSubdomainEntropy = "subdomain_entropy"
+	ScannerDataBudget       = "databudget"
+	ScannerAll              = "all"
+)
+
 // Result describes the outcome of scanning a URL.
 type Result struct {
 	Allowed bool    `json:"allowed"`
 	Reason  string  `json:"reason,omitempty"`
 	Scanner string  `json:"scanner,omitempty"` // which scanner triggered
+	Hint    string  `json:"hint,omitempty"`    // actionable guidance when blocked
 	Score   float64 `json:"score"`             // anomaly score 0.0-1.0
 }
 
@@ -241,13 +260,48 @@ func (s *Scanner) RecordRequest(hostname string, dataBytes int) {
 	}
 }
 
+// scannerHints maps scanner labels to actionable guidance for operators.
+// Keyed by scanner constants; TestHintForBlock covers all entries.
+var scannerHints = map[string]string{
+	ScannerBlocklist:        "Domain is on the blocklist. Remove from fetch_proxy.monitoring.blocklist if legitimate.",
+	ScannerDLP:              "A DLP pattern matched this URL. If false positive, add a suppress entry for this rule.",
+	ScannerEntropy:          "High-entropy content detected. Review the URL for data exfiltration attempts.",
+	ScannerSubdomainEntropy: "High-entropy content detected in subdomain. Review for data exfiltration via DNS.",
+	ScannerSSRF:             "SSRF protection blocked this URL. It may resolve to a private IP or DNS resolution failed.",
+	ScannerRateLimit:        "Rate limit exceeded. Retry later or adjust fetch_proxy.monitoring.max_requests_per_minute.",
+	ScannerLength:           "URL exceeds maximum length. Check for data stuffing in query parameters.",
+	ScannerDataBudget:       "Session data budget exceeded.",
+	ScannerScheme:           "Only http and https schemes are allowed.",
+	ScannerAllowlist:        "Domain not on the allowlist. In strict mode, only allowlisted domains are reachable.",
+	ScannerParser:           "The URL could not be parsed.",
+}
+
+// HintForBlock returns actionable guidance for a blocked scan result.
+// Returns empty string for unknown scanner labels (fail-safe).
+func HintForBlock(r *Result) string {
+	if r == nil || r.Allowed {
+		return ""
+	}
+	return scannerHints[r.Scanner]
+}
+
 // Scan checks a URL against all scanners and returns the result.
+// Blocked results include a Hint field with actionable guidance.
+func (s *Scanner) Scan(rawURL string) Result {
+	r := s.scan(rawURL)
+	if !r.Allowed {
+		r.Hint = HintForBlock(&r)
+	}
+	return r
+}
+
+// scan checks a URL against all scanners and returns the result.
 // DLP runs on the hostname BEFORE DNS resolution to prevent secret exfiltration
 // via DNS queries (e.g., "sk-ant-xxx.evil.com" leaks the key during resolution).
-func (s *Scanner) Scan(rawURL string) Result {
+func (s *Scanner) scan(rawURL string) Result {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
-		return Result{Allowed: false, Reason: "invalid URL", Scanner: "parser", Score: 1.0}
+		return Result{Allowed: false, Reason: "invalid URL", Scanner: ScannerParser, Score: 1.0}
 	}
 
 	// Normalize hostname for consistent matching
@@ -258,7 +312,7 @@ func (s *Scanner) Scan(rawURL string) Result {
 		return Result{
 			Allowed: false,
 			Reason:  fmt.Sprintf("scheme %q not allowed: only http and https", parsed.Scheme),
-			Scanner: "scheme",
+			Scanner: ScannerScheme,
 			Score:   1.0,
 		}
 	}
@@ -305,7 +359,7 @@ func (s *Scanner) Scan(rawURL string) Result {
 		return Result{
 			Allowed: false,
 			Reason:  fmt.Sprintf("URL length %d exceeds maximum %d", len(rawURL), s.maxURLLength),
-			Scanner: "length",
+			Scanner: ScannerLength,
 			Score:   0.8,
 		}
 	}
@@ -315,7 +369,7 @@ func (s *Scanner) Scan(rawURL string) Result {
 		return result
 	}
 
-	return Result{Allowed: true, Scanner: "all", Score: 0.0}
+	return Result{Allowed: true, Scanner: ScannerAll, Score: 0.0}
 }
 
 // checkSSRF blocks requests to internal/private IP ranges.
@@ -335,7 +389,7 @@ func (s *Scanner) checkSSRF(hostname string) Result {
 		return Result{
 			Allowed: false,
 			Reason:  fmt.Sprintf("SSRF check failed: DNS resolution error for %s: %v", hostname, err),
-			Scanner: "ssrf",
+			Scanner: ScannerSSRF,
 			Score:   1.0,
 		}
 	}
@@ -356,7 +410,7 @@ func (s *Scanner) checkSSRF(hostname string) Result {
 				return Result{
 					Allowed: false,
 					Reason:  fmt.Sprintf("SSRF blocked: %s resolves to internal IP %s", hostname, ipStr),
-					Scanner: "ssrf",
+					Scanner: ScannerSSRF,
 					Score:   1.0,
 				}
 			}
@@ -382,7 +436,7 @@ func (s *Scanner) checkAllowlist(hostname string) Result {
 	return Result{
 		Allowed: false,
 		Reason:  fmt.Sprintf("domain not in allowlist: %s", hostname),
-		Scanner: "allowlist",
+		Scanner: ScannerAllowlist,
 		Score:   1.0,
 	}
 }
@@ -394,7 +448,7 @@ func (s *Scanner) checkBlocklist(hostname string) Result {
 			return Result{
 				Allowed: false,
 				Reason:  fmt.Sprintf("domain blocked: %s matches %s", hostname, pattern),
-				Scanner: "blocklist",
+				Scanner: ScannerBlocklist,
 				Score:   1.0,
 			}
 		}
@@ -416,7 +470,7 @@ func (s *Scanner) checkRateLimit(hostname string) Result {
 		return Result{
 			Allowed: false,
 			Reason:  fmt.Sprintf("rate limit exceeded for %s", hostname),
-			Scanner: "ratelimit",
+			Scanner: ScannerRateLimit,
 			Score:   0.7,
 		}
 	}
@@ -607,7 +661,7 @@ func (s *Scanner) checkDLP(parsed *url.URL) Result {
 				return Result{
 					Allowed: false,
 					Reason:  fmt.Sprintf("DLP match: %s (%s)", p.name, p.severity),
-					Scanner: "dlp",
+					Scanner: ScannerDLP,
 					Score:   1.0,
 				}
 			}
@@ -694,7 +748,7 @@ func (s *Scanner) checkDLPCombinations(values []string, n, size int) Result {
 				return Result{
 					Allowed: false,
 					Reason:  fmt.Sprintf("DLP match: %s (%s)", p.name, p.severity),
-					Scanner: "dlp",
+					Scanner: ScannerDLP,
 					Score:   1.0,
 				}
 			}
@@ -742,7 +796,7 @@ func (s *Scanner) checkSecretsInURL(secrets []string, parsed *url.URL, reasonPre
 			if enc != "" {
 				reason += " (" + enc + "-encoded)"
 			}
-			return Result{Allowed: false, Reason: reason, Scanner: "dlp", Score: 1.0}
+			return Result{Allowed: false, Reason: reason, Scanner: ScannerDLP, Score: 1.0}
 		}
 	}
 	return Result{Allowed: true}
@@ -945,7 +999,7 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 				return Result{
 					Allowed: false,
 					Reason:  fmt.Sprintf("high entropy path segment (%.2f > %.2f threshold)", entropy, s.entropyThreshold),
-					Scanner: "entropy",
+					Scanner: ScannerEntropy,
 					Score:   math.Min(entropy/8.0, 1.0), // normalize to 0-1
 				}
 			}
@@ -961,7 +1015,7 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 				return Result{
 					Allowed: false,
 					Reason:  fmt.Sprintf("high entropy query key %q (%.2f > %.2f threshold)", key, entropy, s.entropyThreshold),
-					Scanner: "entropy",
+					Scanner: ScannerEntropy,
 					Score:   math.Min(entropy/8.0, 1.0),
 				}
 			}
@@ -973,7 +1027,7 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 					return Result{
 						Allowed: false,
 						Reason:  fmt.Sprintf("high entropy query param %q (%.2f > %.2f threshold)", key, entropy, s.entropyThreshold),
-						Scanner: "entropy",
+						Scanner: ScannerEntropy,
 						Score:   math.Min(entropy/8.0, 1.0),
 					}
 				}
@@ -1021,7 +1075,7 @@ func (s *Scanner) checkDataBudget(hostname string) Result {
 		return Result{
 			Allowed: false,
 			Reason:  fmt.Sprintf("data budget exceeded for %s", hostname),
-			Scanner: "databudget",
+			Scanner: ScannerDataBudget,
 			Score:   0.8,
 		}
 	}
@@ -1064,7 +1118,7 @@ func (s *Scanner) checkSubdomainEntropy(hostname string) Result {
 			return Result{
 				Allowed: false,
 				Reason:  fmt.Sprintf("high entropy subdomain label %q (%.2f bits)", label, entropy),
-				Scanner: "subdomain_entropy",
+				Scanner: ScannerSubdomainEntropy,
 				Score:   math.Min(entropy/8.0, 1.0),
 			}
 		}

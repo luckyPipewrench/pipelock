@@ -966,6 +966,31 @@ func TestEnforceEnabled_ExplicitFalse(t *testing.T) {
 	}
 }
 
+// --- ExplainBlocksEnabled Tests ---
+
+func TestExplainBlocksEnabled_NilDefaultsFalse(t *testing.T) {
+	cfg := &Config{} // ExplainBlocks is nil by default
+	if cfg.ExplainBlocksEnabled() {
+		t.Error("expected ExplainBlocksEnabled() == false when ExplainBlocks is nil")
+	}
+}
+
+func TestExplainBlocksEnabled_ExplicitTrue(t *testing.T) {
+	v := true
+	cfg := &Config{ExplainBlocks: &v}
+	if !cfg.ExplainBlocksEnabled() {
+		t.Error("expected ExplainBlocksEnabled() == true when ExplainBlocks is explicitly true")
+	}
+}
+
+func TestExplainBlocksEnabled_ExplicitFalse(t *testing.T) {
+	v := false
+	cfg := &Config{ExplainBlocks: &v}
+	if cfg.ExplainBlocksEnabled() {
+		t.Error("expected ExplainBlocksEnabled() == false when ExplainBlocks is explicitly false")
+	}
+}
+
 // --- Git Protection Validation Tests ---
 
 func TestValidate_GitProtectionEnabled(t *testing.T) {

@@ -15,7 +15,7 @@ This starts two containers:
 
 Set your agent's `HTTP_PROXY` and `HTTPS_PROXY` to `http://pipelock:8888`. The agent container already has these configured.
 
-Pin a specific version with `PIPELOCK_VERSION=0.3.1 docker compose up`.
+Pin a specific version with `PIPELOCK_VERSION=0.3.2 docker compose up`.
 
 ## Verify
 

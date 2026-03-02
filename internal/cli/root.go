@@ -81,6 +81,7 @@ Quick start:
 	cmd.AddCommand(
 		auditCmd(),
 		demoCmd(),
+		diagnoseCmd(),
 		runCmd(),
 		logsCmd(),
 		checkCmd(),

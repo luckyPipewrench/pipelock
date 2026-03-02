@@ -138,6 +138,7 @@ type FetchResponse struct {
 	Error       string `json:"error,omitempty"`
 	Blocked     bool   `json:"blocked"`
 	BlockReason string `json:"block_reason,omitempty"`
+	Hint        string `json:"hint,omitempty"`
 }
 
 // New creates a new fetch proxy from config.
@@ -406,9 +407,9 @@ func (p *Proxy) buildHandler(mux *http.ServeMux) http.Handler {
 	})
 }
 
-// Start starts the fetch proxy HTTP server. It blocks until the context
-// is cancelled or the server encounters a fatal error.
-func (p *Proxy) Start(ctx context.Context) error {
+// buildMux constructs the route multiplexer for the proxy. Used by both
+// Start() and Handler() to ensure route registration is not duplicated.
+func (p *Proxy) buildMux() *http.ServeMux {
 	cfg := p.cfgPtr.Load()
 
 	mux := http.NewServeMux()
@@ -416,23 +417,32 @@ func (p *Proxy) Start(ctx context.Context) error {
 	mux.HandleFunc("/ws", p.handleWebSocket)
 	mux.HandleFunc("/health", p.handleHealth)
 	// Register metrics/stats only when NOT running on a separate port.
-	// When metrics_listen is configured, these routes are served by a
-	// dedicated metrics server — the main port returns 404, preventing
-	// the agent from scraping operational metadata.
 	if cfg.MetricsListen == "" {
 		mux.Handle("/metrics", p.metrics.PrometheusHandler())
 		mux.HandleFunc("/stats", p.metrics.StatsHandler())
 	}
 	// Register kill switch API routes only when the API is NOT running on a
-	// separate port. When api_listen is configured, these routes are served
-	// by the dedicated API server — the main port returns 404, preventing
-	// the agent from reaching the API to self-deactivate.
+	// separate port.
 	if p.ksAPI != nil && cfg.KillSwitch.APIListen == "" {
 		mux.HandleFunc("/api/v1/killswitch", p.ksAPI.HandleToggle)
 		mux.HandleFunc("/api/v1/killswitch/status", p.ksAPI.HandleStatus)
 	}
+	return mux
+}
 
-	handler := p.buildHandler(mux)
+// Handler returns the composed HTTP handler for the proxy, including
+// CONNECT interception and kill switch checks. Useful for testing with
+// httptest.NewServer and for embedding the proxy in other servers.
+func (p *Proxy) Handler() http.Handler {
+	return p.buildHandler(p.buildMux())
+}
+
+// Start starts the fetch proxy HTTP server. It blocks until the context
+// is cancelled or the server encounters a fatal error.
+func (p *Proxy) Start(ctx context.Context) error {
+	cfg := p.cfgPtr.Load()
+
+	handler := p.buildHandler(p.buildMux())
 
 	// CONNECT tunnels and WebSocket connections need to live beyond any single
 	// write timeout. When forward proxy or WebSocket proxy is enabled,
@@ -565,15 +575,19 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			log.LogBlocked("GET", displayURL, result.Scanner, result.Reason, clientIP, requestID)
 			p.metrics.RecordBlocked(parsed.Hostname(), result.Scanner, time.Since(start))
 			status := http.StatusForbidden
-			if result.Scanner == "ratelimit" {
+			if result.Scanner == scanner.ScannerRateLimit {
 				status = http.StatusTooManyRequests
 			}
-			writeJSON(w, status, FetchResponse{
+			resp := FetchResponse{
 				URL:         displayURL,
 				Agent:       agent,
 				Blocked:     true,
 				BlockReason: result.Reason,
-			})
+			}
+			if cfg.ExplainBlocksEnabled() {
+				resp.Hint = result.Hint
+			}
+			writeJSON(w, status, resp)
 			return
 		}
 		// Audit mode: log anomaly but allow through
@@ -615,12 +629,16 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			reason := err.Error()
 			log.LogBlocked("GET", displayURL, "redirect", reason, clientIP, requestID)
 			p.metrics.RecordBlocked(parsed.Hostname(), "redirect", time.Since(start))
-			writeJSON(w, http.StatusForbidden, FetchResponse{
+			resp := FetchResponse{
 				URL:         displayURL,
 				Agent:       agent,
 				Blocked:     true,
 				BlockReason: reason,
-			})
+			}
+			if cfg.ExplainBlocksEnabled() {
+				resp.Hint = "Request was redirected to a different origin. Cross-origin redirects are blocked to prevent open redirect attacks."
+			}
+			writeJSON(w, http.StatusForbidden, resp)
 			return
 		}
 		log.LogError("GET", displayURL, clientIP, requestID, err)

@@ -111,6 +111,9 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		if cfg.EnforceEnabled() {
 			log.LogBlocked("WS", targetURL, result.Scanner, result.Reason, clientIP, requestID)
 			p.metrics.RecordWSBlocked()
+			if cfg.ExplainBlocksEnabled() && result.Hint != "" {
+				w.Header().Set("X-Pipelock-Hint", result.Hint)
+			}
 			http.Error(w, "WebSocket blocked: "+result.Reason, http.StatusForbidden)
 			return
 		}

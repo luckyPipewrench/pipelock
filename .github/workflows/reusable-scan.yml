@@ -66,13 +66,13 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0  # Full history needed for PR diff scanning
 
       - name: Run Pipelock
         id: pipelock
-        uses: luckyPipewrench/pipelock@v1
+        uses: luckyPipewrench/pipelock@34667f2146ff5404f31a25d4632b96c94377be12 # v1
         env:
           PIPELOCK_VERSION: ${{ inputs.pipelock-version }}
           PIPELOCK_CONFIG: ${{ inputs.config-path }}

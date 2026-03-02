@@ -261,6 +261,8 @@ See [docs/guides/siem-integration.md](docs/guides/siem-integration.md) for log s
 
 | Feature | What It Does |
 |---------|-------------|
+| **Diagnose** | `pipelock diagnose` runs 6 local checks to verify your config works end-to-end (no network required) |
+| **Block Hints** | Opt-in `explain_blocks: true` adds fix suggestions to blocked responses |
 | **Project Audit** | `pipelock audit ./project` scans for security risks and generates a tailored config |
 | **File Integrity** | SHA256 manifests detect modified, added, or removed workspace files |
 | **Git Protection** | `git diff \| pipelock git scan-diff` catches secrets before they're committed |
@@ -314,7 +316,7 @@ Scan your project for agent security risks on every PR. No Go toolchain needed.
 
 ```yaml
 # .github/workflows/pipelock.yaml
-- uses: luckyPipewrench/pipelock@v0.3.1
+- uses: luckyPipewrench/pipelock@v0.3.2
   with:
     scan-diff: 'true'
     fail-on-findings: 'true'
@@ -480,7 +482,7 @@ Canonical metrics, updated each release.
 
 | Metric | Value |
 |--------|-------|
-| Go tests (with `-race`) | 3,900+ |
+| Go tests (with `-race`) | 3,940+ |
 | Statement coverage | 95%+ |
 | Evasion techniques tested | 230+ |
 | Scanner pipeline overhead | ~25us per URL scan |

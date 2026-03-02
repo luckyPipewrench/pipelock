@@ -27,6 +27,7 @@ If a reload fails validation (invalid regex, security downgrade), the old config
 version: 1                    # Config schema version (currently 1)
 mode: balanced                # "strict", "balanced", or "audit"
 enforce: true                 # false = detect without blocking (warning-only)
+explain_blocks: false         # true = include fix hints in block responses
 ```
 
 | Field | Type | Default | Description |
@@ -34,6 +35,17 @@ enforce: true                 # false = detect without blocking (warning-only)
 | `version` | int | `1` | Config schema version |
 | `mode` | string | `"balanced"` | Operating mode (see [Modes](#modes)) |
 | `enforce` | bool | `true` | When false, all blocks become warnings |
+| `explain_blocks` | bool | `false` | Include actionable hints in block responses |
+
+### Block Hints (`explain_blocks`)
+
+When enabled, blocked responses include a hint explaining why the request was blocked and how to fix it. Fetch proxy responses get a `hint` field in the JSON body. CONNECT and WebSocket rejections get an `X-Pipelock-Hint` response header.
+
+```yaml
+explain_blocks: true
+```
+
+**Security note:** Hints expose scanner names and config field names (e.g., "Add to api_allowlist", "Add a suppress entry"). This is useful for debugging but reveals your security policy to the agent. **Default: false (opt-in).** Enable when you trust your agent or need easier debugging. Leave disabled in production where untrusted agents could use hints to craft bypasses.
 
 ### Modes
 

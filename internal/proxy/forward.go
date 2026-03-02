@@ -110,6 +110,9 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		if cfg.EnforceEnabled() {
 			p.logger.LogBlocked(http.MethodConnect, target, result.Scanner, result.Reason, clientIP, requestID)
 			p.metrics.RecordTunnelBlocked()
+			if cfg.ExplainBlocksEnabled() && result.Hint != "" {
+				w.Header().Set("X-Pipelock-Hint", result.Hint)
+			}
 			http.Error(w, "CONNECT blocked: "+result.Reason, http.StatusForbidden)
 			return
 		}
@@ -281,6 +284,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		if cfg.EnforceEnabled() {
 			p.logger.LogBlocked(r.Method, targetURL, result.Scanner, result.Reason, clientIP, requestID)
 			p.metrics.RecordBlocked(r.URL.Hostname(), result.Scanner, time.Since(start))
+			if cfg.ExplainBlocksEnabled() && result.Hint != "" {
+				w.Header().Set("X-Pipelock-Hint", result.Hint)
+			}
 			http.Error(w, "blocked: "+result.Reason, http.StatusForbidden)
 			return
 		}

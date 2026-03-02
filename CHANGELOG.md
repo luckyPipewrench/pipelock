@@ -5,7 +5,24 @@ All notable changes to Pipelock will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.2] - 2026-03-02
+
+### Added
+- `pipelock diagnose` command: fully local end-to-end configuration verification. Spins up a mock upstream and temp proxy, runs 6 checks (health, fetch allowed/blocked, hint presence, CONNECT allowed/blocked). Exit 0 on pass, 1 on failure, 2 on config error. Supports `--json` and `--config`.
+- `explain_blocks` config field (opt-in, default false): blocked responses include actionable hints explaining why a request was blocked and how to fix it. Fetch proxy gets a JSON `hint` field, CONNECT and WebSocket get an `X-Pipelock-Hint` header. Hints are per-scanner (DLP, blocklist, SSRF, entropy, rate limit, etc.).
+- Scanner label constants (`scanner.ScannerDLP`, `scanner.ScannerBlocklist`, etc.): 12 exported constants matching existing on-wire metric label values
+- `proxy.Handler()` method: returns the composed HTTP handler for use with `httptest.NewServer` or custom listeners
+- Docker Compose quickstart (`examples/quickstart/`): production-ready two-network architecture with `internal: true` isolation, opt-in verification suite (5 tests: network isolation, DLP, response injection, MCP tool poisoning), attacker container for reproducible demos
+
+### Fixed
+- `generate mcporter` now preserves per-server extra fields (`alwaysAllow`, `disabled`, `metadata`, `headers`, etc.) during wrapping. Previously only `command`, `args`, and `env` survived.
+- WebSocket scanner label split: protocol enforcement events now correctly use `ws_protocol` label
+- Grafana dashboard template variable syntax corrected for fleet filtering
+
+### Changed
+- Reusable scan workflow actions pinned to commit SHAs for OpenSSF Scorecard compliance
+
+## [0.3.1] - 2026-03-01
 
 ### Added
 - WebSocket MCP transport: `--upstream ws://` and `wss://` for MCP proxy connections, with the same 6-layer scanning pipeline as stdio and HTTP modes
@@ -23,11 +40,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Grafana dashboard rebuilt from 4-panel overview to 18-panel fleet monitor with per-source kill switch status, chain detection by pattern, session anomaly breakdown, escalation timeseries, and multi-instance `$instance` filter variable
 - `filterAndActOnResponseScan` helper: extracted response scan action handling (suppress, block, ask, strip, warn) to eliminate duplication between raw HTML and extracted text scan paths
 - Demo extended with base64-encoded secret detection, git diff scanning, and config generation steps
-- Docker Compose quickstart (`examples/quickstart/`): production-ready two-network architecture with `internal: true` isolation, opt-in verification suite (5 tests: network isolation, DLP, response injection, MCP tool poisoning), attacker container for reproducible demos
 
 ### Fixed
 - `internal: []` in YAML config now correctly disables SSRF checks. Previously, `ApplyDefaults()` treated explicit empty slices the same as absent fields, filling in default CIDRs. This blocked legitimate Docker container traffic on private IPs (172.x.x.x).
-- `generate mcporter` now preserves per-server extra fields (`alwaysAllow`, `disabled`, `metadata`, `headers`, etc.) during wrapping. Previously only `command`, `args`, and `env` survived.
 - Reject WebSocket compressed frames (RSV1 bit): compressed bytes bypass DLP pattern matching entirely, now closed with StatusProtocolError on both relay directions
 - Scan raw HTML body before go-readability extraction: injection hidden in HTML comments, script/style tags, and hidden elements was stripped before the response scanner could detect it
 - Use Mozilla Public Suffix List for ccTLD-aware domain grouping: `baseDomain()` now correctly groups `evil.co.uk` instead of merging all `.co.uk` domains into one rate limit bucket

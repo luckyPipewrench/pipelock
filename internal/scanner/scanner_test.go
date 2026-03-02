@@ -3035,3 +3035,78 @@ func TestBaseDomain(t *testing.T) {
 		})
 	}
 }
+
+func TestHintForBlock(t *testing.T) {
+	tests := []struct {
+		scanner string
+		want    string
+	}{
+		{ScannerBlocklist, "Domain is on the blocklist. Remove from fetch_proxy.monitoring.blocklist if legitimate."},
+		{ScannerDLP, "A DLP pattern matched this URL. If false positive, add a suppress entry for this rule."},
+		{ScannerEntropy, "High-entropy content detected. Review the URL for data exfiltration attempts."},
+		{ScannerSubdomainEntropy, "High-entropy content detected in subdomain. Review for data exfiltration via DNS."},
+		{ScannerSSRF, "SSRF protection blocked this URL. It may resolve to a private IP or DNS resolution failed."},
+		{ScannerRateLimit, "Rate limit exceeded. Retry later or adjust fetch_proxy.monitoring.max_requests_per_minute."},
+		{ScannerLength, "URL exceeds maximum length. Check for data stuffing in query parameters."},
+		{ScannerDataBudget, "Session data budget exceeded."},
+		{ScannerScheme, "Only http and https schemes are allowed."},
+		{ScannerAllowlist, "Domain not on the allowlist. In strict mode, only allowlisted domains are reachable."},
+		{ScannerParser, "The URL could not be parsed."},
+		{"unknown_scanner", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.scanner, func(t *testing.T) {
+			r := &Result{Allowed: false, Scanner: tt.scanner}
+			got := HintForBlock(r)
+			if got != tt.want {
+				t.Errorf("HintForBlock(scanner=%q) = %q, want %q", tt.scanner, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHintForBlockAllowed(t *testing.T) {
+	r := &Result{Allowed: true, Scanner: ScannerAll}
+	if hint := HintForBlock(r); hint != "" {
+		t.Errorf("expected empty hint for allowed result, got %q", hint)
+	}
+}
+
+func TestHintForBlockNil(t *testing.T) {
+	if hint := HintForBlock(nil); hint != "" {
+		t.Errorf("expected empty hint for nil result, got %q", hint)
+	}
+}
+
+func TestScanPopulatesHintOnBlock(t *testing.T) {
+	cfg := testConfig()
+	sc := New(cfg)
+	defer sc.Close()
+
+	// This URL should be blocked by DLP (AWS key pattern).
+	fakeKey := "AKIA" + "IOSFODNN7EXAMPLE" //nolint:goconst // test value
+	result := sc.Scan("https://example.com/?token=" + fakeKey)
+	if result.Allowed {
+		t.Fatal("expected URL to be blocked by DLP")
+	}
+	if result.Hint == "" {
+		t.Error("expected non-empty hint on blocked result")
+	}
+	if result.Scanner != "dlp" {
+		t.Errorf("expected scanner=dlp, got %q", result.Scanner)
+	}
+}
+
+func TestScanHintEmptyOnAllowed(t *testing.T) {
+	cfg := testConfig()
+	sc := New(cfg)
+	defer sc.Close()
+
+	result := sc.Scan("https://example.com/")
+	if !result.Allowed {
+		t.Fatalf("expected URL to be allowed, got blocked: %s", result.Reason)
+	}
+	if result.Hint != "" {
+		t.Errorf("expected empty hint on allowed result, got %q", result.Hint)
+	}
+}

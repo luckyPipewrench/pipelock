@@ -3423,3 +3423,100 @@ func TestExtractHiddenContent(t *testing.T) {
 		})
 	}
 }
+
+func TestHandler_ServesEndpoints(t *testing.T) {
+	p, backend := setupTestProxy(t)
+	defer backend.Close()
+
+	ts := httptest.NewServer(p.Handler())
+	defer ts.Close()
+
+	endpoints := []struct {
+		path   string
+		status int
+	}{
+		{"/health", http.StatusOK},
+		{"/metrics", http.StatusOK},
+		{"/stats", http.StatusOK},
+	}
+	for _, ep := range endpoints {
+		t.Run(ep.path, func(t *testing.T) {
+			resp, err := http.Get(ts.URL + ep.path) //nolint:noctx // test one-shot
+			if err != nil {
+				t.Fatalf("GET %s: %v", ep.path, err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode != ep.status {
+				t.Errorf("GET %s: expected %d, got %d", ep.path, ep.status, resp.StatusCode)
+			}
+		})
+	}
+}
+
+func TestFetchResponseHint_Enabled(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.APIAllowlist = nil
+	v := true
+	cfg.ExplainBlocks = &v
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	m := metrics.New()
+	p := New(cfg, logger, sc, m)
+
+	ts := httptest.NewServer(p.Handler())
+	defer ts.Close()
+
+	// Trigger a DLP block with a fake AWS key (split for gosec).
+	fakeKey := "AKIA" + "IOSFODNN7EXAMPLE"                                             //nolint:goconst // test value
+	resp, err := http.Get(ts.URL + "/fetch?url=https://example.com/?token=" + fakeKey) //nolint:noctx,gosec // test one-shot
+	if err != nil {
+		t.Fatalf("fetch request failed: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	var fr FetchResponse
+	if err := json.NewDecoder(resp.Body).Decode(&fr); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	if !fr.Blocked {
+		t.Fatal("expected blocked response")
+	}
+	if fr.Hint == "" {
+		t.Error("expected non-empty hint when explain_blocks is enabled")
+	}
+}
+
+func TestFetchResponseHint_Disabled(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.APIAllowlist = nil
+	// ExplainBlocks is nil (defaults to false).
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	m := metrics.New()
+	p := New(cfg, logger, sc, m)
+
+	ts := httptest.NewServer(p.Handler())
+	defer ts.Close()
+
+	fakeKey := "AKIA" + "IOSFODNN7EXAMPLE"                                             //nolint:goconst // test value
+	resp, err := http.Get(ts.URL + "/fetch?url=https://example.com/?token=" + fakeKey) //nolint:noctx,gosec // test one-shot
+	if err != nil {
+		t.Fatalf("fetch request failed: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	var fr FetchResponse
+	if err := json.NewDecoder(resp.Body).Decode(&fr); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	if !fr.Blocked {
+		t.Fatal("expected blocked response")
+	}
+	if fr.Hint != "" {
+		t.Errorf("expected empty hint when explain_blocks is disabled, got %q", fr.Hint)
+	}
+}

@@ -8,7 +8,7 @@ branding:
 
 inputs:
   version:
-    description: 'Pipelock version to use (e.g., "0.3.0"). Defaults to latest release.'
+    description: 'Pipelock version to use (e.g., "0.3.1"). Defaults to latest release.'
     required: false
     default: 'latest'
   config:

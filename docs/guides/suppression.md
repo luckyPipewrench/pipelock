@@ -88,7 +88,7 @@ Path patterns use the same matching rules as config suppress entries (exact, dir
 Use the `exclude-paths` input (one pattern per line):
 
 ```yaml
-- uses: luckyPipewrench/pipelock@v0.3.0
+- uses: luckyPipewrench/pipelock@v0.3.1
   with:
     exclude-paths: |
       vendor/
@@ -101,7 +101,7 @@ Use the `exclude-paths` input (one pattern per line):
 Use the `config` input to provide inline YAML config with suppress entries:
 
 ```yaml
-- uses: luckyPipewrench/pipelock@v0.3.0
+- uses: luckyPipewrench/pipelock@v0.3.1
   with:
     config: |
       suppress:

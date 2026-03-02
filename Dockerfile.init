@@ -1,0 +1,14 @@
+# Init container for K8s sidecar deployments.
+# Copies the pipelock binary to a shared volume for MCP stdio wrapping.
+#
+# Usage in a pod spec:
+#   initContainers:
+#     - name: pipelock-init
+#       image: ghcr.io/luckypipewrench/pipelock-init:0.3.1
+#       command: ["cp", "/pipelock", "/shared-bin/pipelock"]
+#       volumeMounts:
+#         - name: shared-bin
+#           mountPath: /shared-bin
+FROM alpine:3.21@sha256:c3f8e73fdb79deaebaa2037150150191b9dcbfba68b4a46d70103204c53f4709
+COPY pipelock /pipelock
+USER 65534

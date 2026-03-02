@@ -71,6 +71,13 @@ inspect WebSocket frames for DLP and prompt injection.
 | `pipelock_ws_scan_hits_total` | counter | `scanner` | WebSocket frame scan detections by scanner. |
 | `pipelock_forward_ws_redirect_hint_total` | counter | (none) | CONNECT requests to known WebSocket API hosts (potential upgrade candidates). |
 
+## Build Information
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `pipelock_info` | gauge | `version` | Build information. Always 1. The `version` label identifies the running release (e.g. `0.3.1`). |
+| `pipelock_kill_switch_active` | gauge | `source` | Whether each kill switch source is active (1) or inactive (0). `source` is `config`, `api`, `signal`, or `sentinel`. Reported fresh on every scrape. |
+
 ## Security Event Metrics
 
 These counters track enforcement actions. In a healthy deployment, all of
@@ -144,7 +151,7 @@ An importable Grafana dashboard is included at
 [`configs/grafana-dashboard.json`](../configs/grafana-dashboard.json).
 Import it via **Dashboards → Import → Upload JSON file** in Grafana.
 
-The dashboard covers all 20 metric families across six sections: fleet
+The dashboard covers all 22 metric families across six sections: fleet
 overview, agent status table, traffic, connection details, security events,
 and WebSocket proxy.
 

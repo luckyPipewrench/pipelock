@@ -660,22 +660,22 @@
               "uid": true,
               "prometheus": true,
               "Value #F": true,
-              "Value #A": true
+              "Value #A": true,
+              "Value #G": true
             },
             "renameByName": {
               "instance": "Agent",
               "namespace": "Namespace",
-              "Value #A": "Status",
               "Value #B": "Tunnels",
               "Value #C": "Data",
               "Value #D": "Avg Duration",
               "Value #E": "Evicted",
-              "Value #F": "(ns)"
+              "version": "Version"
             },
             "indexByName": {
               "instance": 0,
               "namespace": 1,
-              "Value #A": 2,
+              "version": 2,
               "Value #B": 3,
               "Value #C": 4,
               "Value #D": 5,
@@ -1219,7 +1219,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (scanner) (pipelock_scanner_hits_total{instance=~\"$instance\"}) or vector(0)",
+          "expr": "sum by (scanner) (pipelock_scanner_hits_total{instance=~\"$instance\"})",
           "refId": "A",
           "legendFormat": "{{scanner}}",
           "format": "time_series",
@@ -2300,5 +2300,5 @@
       ]
     }
   ],
-  "description": "Security monitoring for the Pipelock agent firewall. Tracks all 20 metric families: CONNECT tunnels, HTTP requests, scanner activity, session profiling, kill switch events, chain detection, and WebSocket proxy."
+  "description": "Security monitoring for the Pipelock agent firewall. Tracks all 22 metric families: CONNECT tunnels, HTTP requests, scanner activity, session profiling, kill switch events, chain detection, and WebSocket proxy."
 }

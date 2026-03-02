@@ -332,6 +332,31 @@ func TestValidate_EmptyInternalCIDRs(t *testing.T) {
 	}
 }
 
+func TestApplyDefaults_ExplicitEmptyInternalPreserved(t *testing.T) {
+	// YAML "internal: []" produces a non-nil empty slice.
+	// ApplyDefaults must NOT fill in default CIDRs when the user explicitly
+	// empties the list (e.g., for Docker Compose where containers use private IPs).
+	cfg := &Config{
+		Internal: []string{}, // explicit empty, non-nil
+	}
+	cfg.ApplyDefaults()
+	if len(cfg.Internal) != 0 {
+		t.Errorf("explicit empty internal should stay empty, got %d CIDRs", len(cfg.Internal))
+	}
+}
+
+func TestApplyDefaults_AbsentInternalGetsDefaults(t *testing.T) {
+	// YAML with no "internal:" field produces a nil slice.
+	// ApplyDefaults must fill in default CIDRs.
+	cfg := &Config{
+		Internal: nil, // absent from YAML
+	}
+	cfg.ApplyDefaults()
+	if len(cfg.Internal) == 0 {
+		t.Error("absent internal should get default CIDRs")
+	}
+}
+
 func TestApplyDefaults_DoesNotOverwriteExistingValues(t *testing.T) {
 	cfg := &Config{
 		Version: 2,

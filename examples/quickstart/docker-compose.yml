@@ -24,9 +24,9 @@ services:
       - pipelock-external
     command: ["run", "--listen", "0.0.0.0:8888", "--config", "/config/pipelock.yaml"]
     volumes:
-      - ./pipelock.yaml:/config/pipelock.yaml:ro
+      - ./pipelock.yaml:/config/pipelock.yaml:ro,z
     healthcheck:
-      test: ["/pipelock", "healthcheck"]
+      test: ["CMD", "/pipelock", "healthcheck"]
       interval: 10s
       timeout: 3s
       start_period: 5s
@@ -62,13 +62,13 @@ services:
     networks:
       - pipelock-external    # Reachable by pipelock, NOT by agent.
     volumes:
-      - ./inject-page.html:/srv/index.html:ro
+      - ./inject-page.html:/srv/index.html:ro,z
     command: ["python", "-m", "http.server", "9999", "--directory", "/srv"]
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9999/"]
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:9999/"]
       interval: 2s
       timeout: 2s
-      start_period: 1s
+      start_period: 3s
       retries: 5
 
   verify:
@@ -83,9 +83,9 @@ services:
       attacker:
         condition: service_healthy
     volumes:
-      - ./verify.sh:/verify.sh:ro
-      - ./mock-mcp-server.sh:/mock-mcp-server.sh:ro
-      - ./pipelock.yaml:/config/pipelock.yaml:ro
+      - ./verify.sh:/verify.sh:ro,z
+      - ./mock-mcp-server.sh:/mock-mcp-server.sh:ro,z
+      - ./pipelock.yaml:/config/pipelock.yaml:ro,z
     entrypoint: ["sh", "/verify.sh"]
 
 networks:

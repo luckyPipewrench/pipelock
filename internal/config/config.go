@@ -511,7 +511,7 @@ func (c *Config) ApplyDefaults() {
 	if c.GitProtection.Enabled && len(c.GitProtection.AllowedBranches) == 0 {
 		c.GitProtection.AllowedBranches = []string{"feature/*", "fix/*", "main", "master"}
 	}
-	if len(c.Internal) == 0 {
+	if c.Internal == nil {
 		c.Internal = []string{
 			"0.0.0.0/8",      // "this" network — services listening on all interfaces
 			"127.0.0.0/8",    // loopback

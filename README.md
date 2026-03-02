@@ -304,6 +304,7 @@ Full reference with all fields, defaults, and hot-reload behavior: **[docs/confi
 - **[CrewAI](docs/guides/crewai.md):** `MCPServerStdio` wrapping, `MCPServerAdapter`
 - **[LangGraph](docs/guides/langgraph.md):** `MultiServerMCPClient`, `StateGraph`
 - **Cursor:** use `configs/cursor.yaml` with the same MCP proxy pattern as [Claude Code](docs/guides/claude-code.md)
+- **[OpenClaw](docs/guides/openclaw.md):** Gateway sidecar, init container, `generate mcporter` config wrapping
 
 ## CI Integration
 
@@ -446,6 +447,7 @@ Details, config examples, and gap analysis: [docs/owasp-mapping.md](docs/owasp-m
 | [OWASP Mapping](docs/owasp-mapping.md) | Coverage against OWASP Agentic AI Top 10 |
 | [Comparison](docs/comparison.md) | How pipelock compares to agent-scan, srt, agentsh, MCP Gateway |
 | [Finding Suppression](docs/guides/suppression.md) | Rule names, path matching, inline comments, CI integration |
+| [OpenClaw Guide](docs/guides/openclaw.md) | Gateway sidecar, init container, `generate mcporter` wrapping |
 | [Security Assurance](docs/security-assurance.md) | Security model, trust boundaries, supply chain |
 | [EU AI Act Mapping](docs/compliance/eu-ai-act-mapping.md) | Article-by-article compliance mapping |
 

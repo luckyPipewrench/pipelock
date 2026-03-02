@@ -880,6 +880,84 @@ func TestGenerateMcporter_AtomicWriteFile_StatFailure(t *testing.T) {
 	}
 }
 
+func TestGenerateMcporter_PreservesPerServerExtraFields(t *testing.T) {
+	// Per-server fields like metadata, disabled, alwaysAllow must survive wrapping.
+	// Claude Code uses alwaysAllow and disabled on server entries.
+	input := `{
+		"mcpServers": {
+			"stdio-server": {
+				"command": "node",
+				"args": ["server.js"],
+				"metadata": {"description": "My server", "version": "2.1.0"},
+				"disabled": false,
+				"alwaysAllow": ["read_file", "write_file"]
+			},
+			"url-server": {
+				"url": "http://localhost:8080/mcp",
+				"disabled": true,
+				"alwaysAllow": ["search"],
+				"headers": {"Authorization": "Bearer tok"}
+			}
+		}
+	}`
+
+	var buf bytes.Buffer
+	cmd := rootCmd()
+	cmd.SetOut(&buf)
+	cmd.SetErr(&bytes.Buffer{})
+
+	tmpFile := filepath.Join(t.TempDir(), "test.json")
+	if err := os.WriteFile(tmpFile, []byte(input), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd.SetArgs([]string{"generate", "mcporter", "-i", tmpFile})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	servers := result["mcpServers"].(map[string]interface{})
+
+	// stdio-server should be wrapped AND preserve extra fields.
+	stdio := servers["stdio-server"].(map[string]interface{})
+	if stdio["command"] != "pipelock" { //nolint:goconst // test value
+		t.Fatal("stdio-server should be wrapped")
+	}
+	if stdio["disabled"] != false {
+		t.Errorf("disabled should be preserved, got %v", stdio["disabled"])
+	}
+	allow, ok := stdio["alwaysAllow"].([]interface{})
+	if !ok || len(allow) != 2 {
+		t.Errorf("alwaysAllow should be preserved with 2 items, got %v", stdio["alwaysAllow"])
+	}
+	meta, ok := stdio["metadata"].(map[string]interface{})
+	if !ok || meta["description"] != "My server" {
+		t.Errorf("metadata should be preserved, got %v", stdio["metadata"])
+	}
+
+	// url-server should be wrapped AND preserve extra fields (except url).
+	urlSrv := servers["url-server"].(map[string]interface{})
+	if urlSrv["command"] != "pipelock" { //nolint:goconst // test value
+		t.Fatal("url-server should be wrapped")
+	}
+	if urlSrv["disabled"] != true {
+		t.Errorf("disabled should be preserved, got %v", urlSrv["disabled"])
+	}
+	allowURL, ok := urlSrv["alwaysAllow"].([]interface{})
+	if !ok || len(allowURL) != 1 {
+		t.Errorf("alwaysAllow should be preserved with 1 item, got %v", urlSrv["alwaysAllow"])
+	}
+	headers, ok := urlSrv["headers"].(map[string]interface{})
+	if !ok || headers["Authorization"] != "Bearer tok" {
+		t.Errorf("headers should be preserved, got %v", urlSrv["headers"])
+	}
+}
+
 func TestGenerateMcporter_UpstreamFlagLikeEnvKeysDropped(t *testing.T) {
 	// Flag-like env keys should be dropped in upstream entries too.
 	input := `{

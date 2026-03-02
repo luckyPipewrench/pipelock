@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Demo extended with base64-encoded secret detection, git diff scanning, and config generation steps
 
 ### Fixed
+- `generate mcporter` now preserves per-server extra fields (`alwaysAllow`, `disabled`, `metadata`, `headers`, etc.) during wrapping. Previously only `command`, `args`, and `env` survived.
 - Reject WebSocket compressed frames (RSV1 bit): compressed bytes bypass DLP pattern matching entirely, now closed with StatusProtocolError on both relay directions
 - Scan raw HTML body before go-readability extraction: injection hidden in HTML comments, script/style tags, and hidden elements was stripped before the response scanner could detect it
 - Use Mozilla Public Suffix List for ccTLD-aware domain grouping: `baseDomain()` now correctly groups `evil.co.uk` instead of merging all `.co.uk` domains into one rate limit bucket
@@ -32,6 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - RFC 6455 compliance: WebSocket proxy now sends masked close frames to upstream connections (previously sent unmasked server-style frames)
 
 ### Changed
+- **Telemetry label split:** WebSocket protocol enforcement events (binary frame rejection, fragment errors) now emit scanner label `ws_protocol` instead of `policy`. The `policy` label is now exclusively for MCP tool policy violations. MITRE mapping: `ws_protocol` maps to T1071 (Application Layer Protocol), `policy` remains T1059 (Command and Scripting Interpreter). Update any dashboards or alert rules that filter on `scanner="policy"` for WebSocket-specific events.
 - `internal/wsutil` package extracted: shared WebSocket utilities (fragment reassembly, close frames, error classification) used by both the HTTP WS proxy and MCP WS transport
 - Anomaly audit events now include `scanner` as a structured field with MITRE technique mapping (previously embedded in reason string)
 - README slimmed from 829 to ~490 lines; full configuration YAML replaced with link to `docs/configuration.md`, forward proxy quick start moved to collapsible section

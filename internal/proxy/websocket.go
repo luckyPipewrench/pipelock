@@ -441,8 +441,8 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		if hdr.OpCode == ws.OpBinary || (hdr.OpCode == ws.OpContinuation && frag.Active && frag.Opcode == ws.OpBinary) {
 			binaryFrames++
 			if !r.allowBinary {
-				log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, "policy", "binary frames not allowed", r.clientIP, r.requestID)
-				r.proxy.metrics.RecordWSScanHit("policy")
+				log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, "ws_protocol", "binary frames not allowed", r.clientIP, r.requestID)
+				r.proxy.metrics.RecordWSScanHit("ws_protocol")
 				plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "binary frames not allowed")
 				plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "binary frames not allowed")
 				blocked = true
@@ -453,7 +453,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		// Fragment reassembly for text frames.
 		complete, msg, closeCode, closeReason := frag.Process(hdr, payload)
 		if closeCode != 0 {
-			log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, "policy", closeReason, r.clientIP, r.requestID)
+			log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, "ws_protocol", closeReason, r.clientIP, r.requestID)
 			plwsutil.WriteCloseFrame(r.clientConn, closeCode, closeReason)
 			plwsutil.WriteClientCloseFrame(r.upstreamConn, closeCode, closeReason)
 			blocked = true
@@ -614,8 +614,8 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 		if hdr.OpCode == ws.OpBinary || (hdr.OpCode == ws.OpContinuation && frag.Active && frag.Opcode == ws.OpBinary) {
 			binaryFrames++
 			if !r.allowBinary {
-				log.LogWSBlocked(r.targetURL, audit.DirectionServerToClient, "policy", "binary frames not allowed", r.clientIP, r.requestID)
-				r.proxy.metrics.RecordWSScanHit("policy")
+				log.LogWSBlocked(r.targetURL, audit.DirectionServerToClient, "ws_protocol", "binary frames not allowed", r.clientIP, r.requestID)
+				r.proxy.metrics.RecordWSScanHit("ws_protocol")
 				plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "binary frames not allowed")
 				plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "binary frames not allowed")
 				blocked = true
@@ -626,7 +626,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 		// Fragment reassembly.
 		complete, msg, closeCode, closeReason := frag.Process(hdr, payload)
 		if closeCode != 0 {
-			log.LogWSBlocked(r.targetURL, audit.DirectionServerToClient, "policy", closeReason, r.clientIP, r.requestID)
+			log.LogWSBlocked(r.targetURL, audit.DirectionServerToClient, "ws_protocol", closeReason, r.clientIP, r.requestID)
 			plwsutil.WriteCloseFrame(r.clientConn, closeCode, closeReason)
 			plwsutil.WriteClientCloseFrame(r.upstreamConn, closeCode, closeReason)
 			blocked = true

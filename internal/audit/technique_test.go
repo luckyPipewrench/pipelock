@@ -38,6 +38,9 @@ func TestTechniqueForScanner_AllMappedEntries(t *testing.T) {
 		{"response_scan", "T1059"},
 		{"policy", "T1059"},
 
+		// WebSocket transport
+		{"ws_protocol", "T1071"},
+
 		// Exploitation
 		{"parser", "T1190"},
 
@@ -93,7 +96,7 @@ func TestTechniqueMap_NoDuplicateKeys(t *testing.T) {
 	// This test is a compile-time guarantee in Go (duplicate map keys are a
 	// compile error), but we verify the map has the expected number of entries
 	// to catch accidental deletions during refactoring.
-	const expectedEntries = 18
+	const expectedEntries = 19
 	if len(techniqueMap) != expectedEntries {
 		t.Errorf("techniqueMap has %d entries, expected %d (was an entry added or removed?)", len(techniqueMap), expectedEntries)
 	}

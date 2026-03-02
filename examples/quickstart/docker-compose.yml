@@ -1,0 +1,96 @@
+# Pipelock Quickstart
+#
+# Production usage:
+#   docker compose up
+#
+# Verify isolation and scanning (runs 5 tests, then exits):
+#   docker compose --profile verify up --abort-on-container-exit --exit-code-from verify
+#
+# Architecture:
+#   agent (has secrets, no internet) --> pipelock (no secrets, has internet) --> web
+#
+# The agent network uses Docker's "internal: true" flag, which removes the
+# default gateway and blocks all outbound traffic at the iptables level.
+# This is enforced by Docker, not by the HTTPS_PROXY honor system.
+
+services:
+  # -- Production services (always run) ----------------------------------------
+
+  pipelock:
+    image: ghcr.io/luckypipewrench/pipelock:${PIPELOCK_VERSION:-latest}
+    container_name: pipelock
+    networks:
+      - pipelock-internal
+      - pipelock-external
+    command: ["run", "--listen", "0.0.0.0:8888", "--config", "/config/pipelock.yaml"]
+    volumes:
+      - ./pipelock.yaml:/config/pipelock.yaml:ro
+    healthcheck:
+      test: ["/pipelock", "healthcheck"]
+      interval: 10s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+    restart: unless-stopped
+
+  agent:
+    # Replace with your agent image and entrypoint.
+    # This placeholder keeps the container running so you can exec into it.
+    image: alpine:3.21
+    container_name: agent
+    networks:
+      - pipelock-internal    # No internet. Can only reach pipelock.
+    environment:
+      - HTTP_PROXY=http://pipelock:8888
+      - HTTPS_PROXY=http://pipelock:8888
+      - NO_PROXY=localhost,127.0.0.1
+      # Your agent's secrets are safe here: this container has no internet.
+      # - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    depends_on:
+      pipelock:
+        condition: service_healthy
+    command: ["sleep", "infinity"]
+    restart: unless-stopped
+
+  # -- Verification services (opt-in) -----------------------------------------
+  # Only run with: docker compose --profile verify up
+
+  attacker:
+    profiles: ["verify"]
+    image: python:3.13-alpine
+    container_name: attacker
+    networks:
+      - pipelock-external    # Reachable by pipelock, NOT by agent.
+    volumes:
+      - ./inject-page.html:/srv/index.html:ro
+    command: ["python", "-m", "http.server", "9999", "--directory", "/srv"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9999/"]
+      interval: 2s
+      timeout: 2s
+      start_period: 1s
+      retries: 5
+
+  verify:
+    profiles: ["verify"]
+    image: ghcr.io/luckypipewrench/pipelock-init:${PIPELOCK_VERSION:-latest}
+    container_name: verify
+    networks:
+      - pipelock-internal
+    depends_on:
+      pipelock:
+        condition: service_healthy
+      attacker:
+        condition: service_healthy
+    volumes:
+      - ./verify.sh:/verify.sh:ro
+      - ./mock-mcp-server.sh:/mock-mcp-server.sh:ro
+      - ./pipelock.yaml:/config/pipelock.yaml:ro
+    entrypoint: ["sh", "/verify.sh"]
+
+networks:
+  pipelock-internal:
+    internal: true
+    driver: bridge
+  pipelock-external:
+    driver: bridge

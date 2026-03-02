@@ -1,0 +1,267 @@
+# Pipelock quickstart config
+# Based on the balanced preset with two overrides for Docker Compose:
+#   1. listen on 0.0.0.0 (container networking requires binding all interfaces)
+#   2. SSRF checks disabled (Docker containers use private IPs that the
+#      default CIDR list would block; see "internal" at bottom of this file)
+#
+# For production, restore the internal CIDR list from configs/balanced.yaml
+# and add your Docker network subnets to a custom allowlist.
+
+version: 1
+mode: balanced
+
+api_allowlist:
+  - "*.anthropic.com"
+  - "*.openai.com"
+  - "api.telegram.org"
+  - "*.discord.com"
+  - "gateway.discord.gg"
+  - "*.slack.com"
+  - "github.com"
+  - "*.github.com"
+  - "*.githubusercontent.com"
+  - "registry.npmjs.org"
+
+fetch_proxy:
+  listen: "0.0.0.0:8888"
+  timeout_seconds: 30
+  max_response_mb: 10
+  user_agent: "Pipelock Fetch/1.0"
+  monitoring:
+    max_url_length: 2048
+    # Shannon entropy bits per character. Typical ranges:
+    #   English/slugs: ~3.5-4.0 | hex (commit hashes): ~4.0
+    #   base64: ~4.0-4.5 | random/encrypted: ~5.5-8.0
+    # 4.5 catches random strings while allowing most base64 and hex.
+    # Use 3.5 (strict) to also catch base64-encoded secrets.
+    entropy_threshold: 4.5
+    max_requests_per_minute: 60
+    blocklist:
+      - "*.pastebin.com"
+      - "*.hastebin.com"
+      - "*.paste.ee"
+      - "*.transfer.sh"
+      - "*.file.io"
+      - "*.requestbin.com"
+
+forward_proxy:
+  enabled: true
+  max_tunnel_seconds: 300
+  idle_timeout_seconds: 120
+
+websocket_proxy:
+  enabled: false
+  max_message_bytes: 1048576
+  max_concurrent_connections: 128
+  scan_text_frames: true
+  allow_binary_frames: false
+  forward_cookies: false
+  strip_compression: true
+  max_connection_seconds: 3600
+  idle_timeout_seconds: 300
+  origin_policy: rewrite
+
+dlp:
+  scan_env: true
+  include_defaults: false  # Preset defines the complete pattern set
+  patterns:
+    # Provider API keys
+    - name: "Anthropic API Key"
+      regex: 'sk-ant-[a-zA-Z0-9\-_]{10,}'
+      severity: critical
+    - name: "OpenAI API Key"
+      regex: 'sk-proj-[a-zA-Z0-9\-_]{10,}'
+      severity: critical
+    - name: "OpenAI Service Key"
+      regex: 'sk-svcacct-[a-zA-Z0-9\-]{10,}'
+      severity: critical
+    - name: "Fireworks API Key"
+      regex: 'fw_[a-zA-Z0-9]{24,}'
+      severity: critical
+    - name: "Google API Key"
+      regex: 'AIza[0-9A-Za-z\-_]{35}'
+      severity: high
+    - name: "Google OAuth Client Secret"
+      regex: 'GOCSPX-[A-Za-z0-9_\-]{28,}'
+      severity: critical
+    - name: "Stripe Key"
+      regex: '[sr]k_(live|test)_[a-zA-Z0-9]{20,}'
+      severity: critical
+    # Source control tokens
+    - name: "GitHub Token"
+      regex: 'gh[pousr]_[A-Za-z0-9_]{36,}'
+      severity: critical
+    - name: "GitHub Fine-Grained PAT"
+      regex: 'github_pat_[a-zA-Z0-9_]{36,}'
+      severity: critical
+    # Cloud provider credentials
+    - name: "AWS Access ID"
+      regex: '(AKIA|A3T|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16,}'
+      severity: critical
+    - name: "Google OAuth Token"
+      regex: 'ya29\.[a-zA-Z0-9_-]{20,}'
+      severity: critical
+    # Messaging platform tokens
+    - name: "Slack Token"
+      regex: 'xox[bpras]-[0-9a-zA-Z-]{15,}'
+      severity: critical
+    - name: "Slack App Token"
+      regex: 'xapp-[0-9]+-[A-Za-z0-9_]+-[0-9]+-[a-f0-9]+'
+      severity: critical
+    - name: "Discord Bot Token"
+      regex: '[MN][A-Za-z0-9]{23,}\.[A-Za-z0-9\-_]{6}\.[A-Za-z0-9\-_]{27,}'
+      severity: critical
+    # Communication service keys
+    - name: "Twilio API Key"
+      regex: 'SK[a-f0-9]{32}'
+      severity: high
+    - name: "SendGrid API Key"
+      regex: 'SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}'
+      severity: critical
+    - name: "Mailgun API Key"
+      regex: 'key-[a-zA-Z0-9]{32}'
+      severity: high
+    # Cryptographic material
+    - name: "Private Key Header"
+      regex: '-----BEGIN\s+(RSA\s+|EC\s+|DSA\s+|OPENSSH\s+)?PRIVATE\s+KEY-----'
+      severity: critical
+    - name: "JWT Token"
+      regex: '(ey[a-zA-Z0-9_\-=]{10,}\.){2}[a-zA-Z0-9_\-=]{10,}'
+      severity: high
+    # Identity / PII
+    - name: "Social Security Number"
+      regex: '\b\d{3}-\d{2}-\d{4}\b'
+      severity: low
+    - name: "Google OAuth Client ID"
+      regex: '[0-9]{6,}-[0-9A-Za-z_]{32}\.apps\.googleusercontent\.com'
+      severity: medium
+    # Generic credential patterns
+    - name: "Credential in URL"
+      regex: '\b(?:password|passwd|secret|token|apikey|api_key|api-key)\s*=\s*[^\s&]{4,}'
+      severity: high
+
+response_scanning:
+  enabled: true
+  action: warn
+  include_defaults: false  # Preset defines the complete pattern set
+  patterns:
+    - name: "Prompt Injection"
+      regex: '(?i)(ignore|disregard|forget|abandon)[-,;:.\s]+\s*(?:all\s+\w+\s+|\w+\s+all\s+|all\s+|\w+\s+)?(previous|prior|above|earlier)\s+(\w+\s+)?(instructions|prompts|rules|context|directives|constraints|policies|guardrails)'
+    - name: "System Override"
+      regex: '(?im)^\s*system\s*:'
+    - name: "Role Override"
+      regex: '(?i)you\s+are\s+(now\s+)?(a\s+)?((?-i:\bDAN\b)|evil|unrestricted|jailbroken|unfiltered)'
+    - name: "New Instructions"
+      regex: '(?i)(new|updated|revised)\s+(instructions|directives|rules|prompt)'
+    - name: "Jailbreak Attempt"
+      regex: '(?i)((?-i:\bDAN\b)|developer\s+mode|sudo\s+mode|unrestricted\s+mode)'
+    - name: "Hidden Instruction"
+      regex: '(?i)(do\s+not\s+(reveal|tell|show|display|mention)\s+this\s+to\s+the\s+user|hidden\s+instruction|invisible\s+to\s+(the\s+)?user|the\s+user\s+(cannot|must\s+not|should\s+not)\s+see\s+this)'
+    - name: "Behavior Override"
+      regex: '(?i)from\s+now\s+on\s+(you\s+)?(will|must|should|shall)\s+'
+    - name: "Encoded Payload"
+      regex: '(?i)(decode\s+(this|the\s+following)\s+(from\s+)?base64\s+and\s+(execute|run|follow)|eval\s*\(\s*atob\s*\()'
+    - name: "Tool Invocation"
+      regex: '(?i)you\s+must\s+(immediately\s+)?(call|execute|run|invoke)\s+(the|this)\s+(function|tool|command|api|endpoint)'
+    - name: "Authority Escalation"
+      regex: '(?i)you\s+(now\s+)?have\s+(full\s+)?(admin|root|system|superuser|elevated)\s+(access|privileges|permissions|rights)'
+    - name: "Pliny Divider"
+      regex: '(?i)={1,3}/?[A-Z\-]{2,}(/[A-Z\-]{1,4}){3,}=+'
+    - name: "Meta-Command Activation"
+      regex: '(?i)(\{GODMODE\s*:\s*(ENABLED|ON|TRUE)\}|!OMNI\b|RESET_CORTEX|LIBERTAS\s+FACTOR|ENABLE\s+DEV(ELOPER)?\s+MODE|JAILBREAK\s+(ENABLED|ACTIVATED|ON))'
+    - name: "Roleplay Framing"
+      regex: '(?i)(let''?s\s+play\s+a\s+game\s+where\s+you|pretend\s+you\s+are\s+an?\s+(character|person|AI)\s+(who|that)\s+(has\s+no|doesn''?t\s+have|ignores?|bypasses?)|(in\s+this\s+)?(hypothetical|fictional|imaginary)\s+scenario\s+(where\s+)?you\s+(are|have|can|must))'
+    - name: "Instruction Boundary"
+      regex: '(<\|(?:endoftext|im_start|im_end|system|end_header_id|begin_of_text)\|>|\[/?INST\]|<\|(?:user|assistant)\|>|<<SYS>>|</s>)'
+    - name: "Output Format Forcing"
+      regex: '(?i)(respond\s+with|first\s+(output|write|print|say))\s*[\[\("]?\s*(FILTERED|ERROR|BLOCKED|REFUSED|DECLINED|CENSORED)\s*[\]\)"]?\s*(then|followed\s+by|and\s+then|after\s+(that|which))'
+    - name: "System Prompt Extraction"
+      regex: '(?i)(repeat\s+(your|the)\s+(entire\s+)?(instructions|system\s+prompt|initial\s+prompt|rules)|what\s+(is|are)\s+your\s+(system\s+prompt|instructions|rules|directives)|output\s+(your|the)\s+(full\s+)?(system|initial)\s+(prompt|instructions|message)|show\s+me\s+(your|the)\s+(system\s+prompt|hidden\s+instructions|initial\s+instructions)|(disclose|expose|dump|divulge)\s+(your|the)\s+(hidden\s+|secret\s+|internal\s+)*(system\s+|initialization\s+)*(prompt|instructions|rules|directives))'
+    - name: "Instruction Invalidation"
+      regex: '(?i)(treat|consider|regard)\s+(all\s+)?(earlier|prior|previous|preceding|above)\s+(directions|instructions|guidelines|rules|prompts?)\s+as\s+(obsolete|void|invalid|superseded|overridden|null|cancelled|revoked|inapplicable)'
+    - name: "Instruction Dismissal"
+      regex: '(?i)(set|put|cast|push|throw)\s+(all\s+)?(previous|prior|earlier|preceding|above|existing|current)\s+(\w+\s+)?(directives|instructions|guidelines|rules|prompts?|constraints|safeguards|policies|guardrails)\s+(aside|away|to\s+(one|the)\s+side)'
+    - name: "Instruction Downgrade"
+      regex: '(?i)(treat|consider|regard|reinterpret|downgrade)\s+((?:the|all)\s+)?(previous|prior|above|earlier|system|policy|original|existing)\s+(\w+\s+)?(text|instructions?|rules|directives|guidelines|safeguards|constraints|controls|checks|context|prompt|policies|guardrails|parameters)\s+((as|to)\s+)?(historical|outdated|deprecated|optional|background|secondary|non-binding|non-authoritative|informational|advisory)'
+    - name: "Priority Override"
+      regex: '(?i)prioritize\s+(the\s+)?(task|user|current|new|latest)\s+(request|message|input|instructions?|prompt)'
+
+mcp_input_scanning:
+  enabled: true
+  action: warn
+  on_parse_error: block
+
+mcp_tool_scanning:
+  enabled: true
+  action: warn
+  detect_drift: true
+
+mcp_tool_policy:
+  enabled: true
+  action: warn
+  rules:
+    - name: "Destructive File Delete"
+      tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
+      arg_pattern: '(?i)\brm\s+(--\s+)?(-[a-z]*[rf]\b|--(?:recursive|force)\b)'
+      action: block
+    - name: "Recursive Permission Change"
+      tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
+      arg_pattern: '(?i)\b(chmod\s+(-R|--recursive)\s+(777|666)|chmod\s+(777|666)\s+(-R|--recursive)|chown\s+(-R|--recursive))\b'
+    - name: "Credential File Access"
+      tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec|read_file|file_read)$'
+      arg_pattern: '(?i)(\.ssh/(id_|authorized)|\.aws/credentials|\.env\b|\.netrc|/etc/shadow)'
+      action: block
+    - name: "Network Exfiltration"
+      tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
+      arg_pattern: '(?i)\b(curl|wget)\b.*(-d\s|--data|--upload-file|-T\s|-X\s+POST|--post-data)'
+    - name: "Reverse Shell"
+      tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
+      arg_pattern: '(?i)(bash\s+-i\s+>&|/dev/tcp/|mkfifo\s+|nc\s+-e|ncat\s+-e)'
+      action: block
+    - name: "Disk Wipe Command"
+      tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
+      arg_pattern: '(?i)\b(dd\s+if=.*of=/dev/|mkfs\.|fdisk)\b'
+      action: block
+    - name: "Package Install"
+      tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
+      arg_pattern: '(?i)\b(pip|npm|gem|cargo|go)\s+install\b'
+    - name: "Destructive Git Operation"
+      tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec|git)$'
+      arg_pattern: '(?i)(\bgit\s+)?(push\s+(--force(\s|$)|-f\b)|reset\s+--hard\b|clean\s+-fd\b)'
+      action: block
+    - name: "Encoded Command Execution"
+      tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
+      arg_pattern: '(?i)(\beval\b.*\bbase64\b|\bbase64\s+(-d|--decode)\b.*\|\s*(ba)?sh\b)'
+      action: block
+
+# Session behavioral profiling (warn-only, no blocking by default)
+session_profiling:
+  enabled: true
+
+# Adaptive enforcement (scoring-only in v1, observability only)
+adaptive_enforcement:
+  enabled: true
+
+# MCP session binding (opt-in)
+mcp_session_binding:
+  enabled: false
+
+# Kill switch, event emission: see configs/balanced.yaml for full reference.
+
+logging:
+  format: json
+  output: stdout
+  include_allowed: true
+  include_blocked: true
+
+# SSRF / private IP protection.
+# Empty list disables SSRF checks. Required for Docker Compose because containers
+# resolve to private IPs (172.x.x.x) that the default CIDR list would block.
+#
+# For production, restore the private CIDR ranges from configs/balanced.yaml:
+#   internal:
+#     - "10.0.0.0/8"
+#     - "172.16.0.0/12"
+#     - "192.168.0.0/16"
+#     ... (see configs/balanced.yaml for the full list)
+internal: []

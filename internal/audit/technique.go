@@ -29,7 +29,10 @@ var techniqueMap = map[string]string{
 
 	// Command and scripting interpreter (response-side / MCP)
 	"response_scan": "T1059", // Command and Scripting Interpreter (prompt injection)
-	"policy":        "T1059", // Tool policy violation
+	"policy":        "T1059", // MCP tool policy violation
+
+	// WebSocket transport protocol enforcement
+	"ws_protocol": "T1071", // Application Layer Protocol (binary frame / fragment violation)
 
 	// Exploitation / parsing
 	"parser": "T1190", // Exploit Public-Facing Application

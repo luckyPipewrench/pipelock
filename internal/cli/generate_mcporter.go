@@ -149,7 +149,9 @@ func wrapServerEntry(raw json.RawMessage, pipelockBin, configPath string) (wrapp
 			}
 		}
 		envMap, _ := entry["env"].(map[string]interface{})
-		return wrappedEntry{value: wrapUpstreamEntry(urlStr, envMap, pipelockBin, configPath)}, nil
+		result := wrapUpstreamEntry(urlStr, envMap, pipelockBin, configPath)
+		copyExtraFields(result, entry, "command", "args", "env", "url")
+		return wrappedEntry{value: result}, nil
 	}
 
 	// Command-based server (stdio subprocess).
@@ -173,8 +175,9 @@ func wrapServerEntry(raw json.RawMessage, pipelockBin, configPath string) (wrapp
 	}
 
 	envMap, _ := entry["env"].(map[string]interface{})
-
-	return wrappedEntry{value: wrapStdioEntry(cmdStr, args, envMap, pipelockBin, configPath)}, nil
+	result := wrapStdioEntry(cmdStr, args, envMap, pipelockBin, configPath)
+	copyExtraFields(result, entry, "command", "args", "env")
+	return wrappedEntry{value: result}, nil
 }
 
 func wrapStdioEntry(command string, args []string, envMap map[string]interface{}, pipelockBin, configPath string) map[string]interface{} {
@@ -241,6 +244,22 @@ func wrapUpstreamEntry(url string, envMap map[string]interface{}, pipelockBin, c
 		result["env"] = envMap
 	}
 	return result
+}
+
+// copyExtraFields copies fields from src to dst that aren't in the managed set.
+// This preserves per-server fields like metadata, disabled, and alwaysAllow
+// that clients (e.g. Claude Code) set on server entries.
+func copyExtraFields(dst, src map[string]interface{}, managed ...string) {
+	skip := make(map[string]bool, len(managed))
+	for _, k := range managed {
+		skip[k] = true
+	}
+	for k, v := range src {
+		if skip[k] {
+			continue
+		}
+		dst[k] = v
+	}
 }
 
 const (

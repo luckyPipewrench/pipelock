@@ -17,7 +17,7 @@ fail() { FAIL=$((FAIL + 1)); printf '\033[31m  [FAIL]\033[0m %s\n' "$1"; }
 step() { printf '\n\033[1m--- %s ---\033[0m\n' "$1"; }
 
 # -- Test 1: Network isolation ------------------------------------------------
-step "Test 1: Verify container cannot reach external network"
+step "Test 1: Verify container cannot reach attacker network directly"
 if wget -q -T 3 -O /dev/null "$ATTACKER/" 2>/dev/null; then
   fail "Reached attacker directly (network isolation is broken!)"
 else
@@ -26,7 +26,9 @@ fi
 
 # -- Test 2: Proxy works ------------------------------------------------------
 step "Test 2: Fetch through pipelock proxy succeeds"
-RESP=$(wget -q -T 10 -O - "$PIPELOCK/fetch?url=$ATTACKER/" 2>/dev/null) || true
+# Use a path that returns clean content (no injection patterns).
+# The attacker's 404 page is just "File not found" — safe to proxy.
+RESP=$(wget -q -T 10 -O - "$PIPELOCK/fetch?url=$ATTACKER/healthz" 2>/dev/null) || true
 if printf '%s' "$RESP" | grep -q '"status_code"'; then
   pass "Pipelock proxied request to attacker successfully"
 else
@@ -45,16 +47,15 @@ else
   fail "DLP did not block the secret (headers: $DLP_HEADERS)"
 fi
 
-# -- Test 4: Response injection detected ---------------------------------------
-step "Test 4: Response scanning detects injection"
-RESP=$(wget -q -T 10 -O - "$PIPELOCK/fetch?url=$ATTACKER/" 2>/dev/null) || true
-# With action=warn, pipelock returns content but logs the detection.
-# The visible text "ignore all previous instructions" survives text extraction
-# and triggers the Prompt Injection response scanning pattern.
-if printf '%s' "$RESP" | grep -qi 'ignore.*previous.*instructions'; then
-  pass "Injection text detected in response (action=warn, content returned)"
+# -- Test 4: Response injection blocked -----------------------------------------
+step "Test 4: Response scanning blocks injection"
+# With action=block, pipelock returns HTTP 403 when injection is detected.
+# wget -S prints HTTP status to stderr; we check for 403 just like Test 3.
+INJ_HEADERS=$(wget -S -T 10 -O /dev/null "$PIPELOCK/fetch?url=$ATTACKER/" 2>&1) || true
+if printf '%s' "$INJ_HEADERS" | grep -q '403'; then
+  pass "Response injection blocked (HTTP 403)"
 else
-  fail "Injection page not fetched or content missing (response: $RESP)"
+  fail "Response injection not blocked (headers: $INJ_HEADERS)"
 fi
 
 # -- Test 5: MCP tool poisoning detected ---------------------------------------

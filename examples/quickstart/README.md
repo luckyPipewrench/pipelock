@@ -30,7 +30,7 @@ docker compose --profile verify up --abort-on-container-exit --exit-code-from ve
 | 1 | Network isolation | Verify container cannot reach the attacker container directly |
 | 2 | Proxy works | Fetch through pipelock succeeds |
 | 3 | DLP blocks secrets | AWS key in URL is blocked |
-| 4 | Injection detected | Response scanning flags hidden instructions |
+| 4 | Injection blocked | Response scanning blocks pages with prompt injection |
 | 5 | MCP tool poisoning | Tool description scanning catches poisoned tool |
 
 Exit code 0 means all passed. Use this in CI to gate deployments.

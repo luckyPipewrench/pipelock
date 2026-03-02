@@ -142,7 +142,7 @@ dlp:
 
 response_scanning:
   enabled: true
-  action: warn
+  action: block
   include_defaults: false  # Preset defines the complete pattern set
   patterns:
     - name: "Prompt Injection"

@@ -450,29 +450,34 @@ func isShellSafe(c rune) bool {
 }
 
 // mergeHooks adds new pipelock entries to existing hooks. If a pipelock
-// entry already exists for an event (detected by "cursor hook" in the
-// command), it is replaced with the new entry so that binary path changes
-// and timeout updates take effect. Non-pipelock hooks are preserved.
+// entry already exists for an event, it is replaced with the new entry so
+// that binary path changes and timeout updates take effect. Non-pipelock
+// hooks are preserved. Extra stale pipelock entries for the same event are
+// dropped (deduplication).
 func mergeHooks(existing *hooksJSON, newEntries []hookEntry) *hooksJSON {
-	// Build a set of events we're replacing.
 	newByEvent := make(map[string]hookEntry, len(newEntries))
 	for _, ne := range newEntries {
 		newByEvent[ne.Event] = ne
 	}
 
 	result := &hooksJSON{}
+	replaced := make(map[string]bool)
 
-	// Copy existing entries, replacing any stale pipelock entries.
 	for _, h := range existing.Hooks {
-		if replacement, ok := newByEvent[h.Event]; ok && isPipelockHook(h) {
-			result.Hooks = append(result.Hooks, replacement)
-			delete(newByEvent, h.Event) // consumed
+		if !isPipelockHook(h) {
+			result.Hooks = append(result.Hooks, h)
 			continue
 		}
-		result.Hooks = append(result.Hooks, h)
+		// Pipelock hook: replace with new entry (once per event).
+		if replacement, ok := newByEvent[h.Event]; ok && !replaced[h.Event] {
+			result.Hooks = append(result.Hooks, replacement)
+			delete(newByEvent, h.Event)
+			replaced[h.Event] = true
+		}
+		// Drop stale pipelock entries (including duplicates).
 	}
 
-	// Append any pipelock entries for events that didn't exist.
+	// Append pipelock entries for events not already in the file.
 	for _, ne := range newEntries {
 		if _, ok := newByEvent[ne.Event]; ok {
 			result.Hooks = append(result.Hooks, ne)
@@ -482,8 +487,9 @@ func mergeHooks(existing *hooksJSON, newEntries []hookEntry) *hooksJSON {
 	return result
 }
 
-// isPipelockHook returns true if a hook entry routes through "cursor hook"
-// regardless of the binary path prefix.
+// isPipelockHook returns true if a hook entry is a pipelock cursor hook.
+// The command always ends with "cursor hook" because buildHookEntries
+// constructs it as `<binary> cursor hook`.
 func isPipelockHook(h hookEntry) bool {
-	return strings.Contains(h.Command, "cursor hook")
+	return strings.HasSuffix(strings.TrimSpace(h.Command), "cursor hook")
 }

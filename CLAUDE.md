@@ -156,12 +156,16 @@ net.ListenConfig{}.Listen(ctx, ...)   // Free port binding (noctx compliant)
 | staticcheck | QF1012 | `fmt.Fprintf(w, ...)` not `w.WriteString(fmt.Sprintf(...))` |
 | gosec | G101 | Build fake creds at runtime: `"AKIA" + "IOSFODNN7EXAMPLE"` |
 | errcheck | ignored error | `_, _ = w.Write(b)` for intentional ignores |
+| errcheck | cleanup error | `_ = os.Remove(path)` in error-return cleanup paths |
+| errcheck | fmt output | `_, _ = fmt.Fprintf(w, ...)` when writing to cmd output |
 | usestdlibvars | `"GET"` | `http.MethodGet` |
 | goconst | repeated string | `//nolint:goconst // test value` |
-| gosec | file perms | `0o600` not `0600` |
+| gosec | G301 dir perms | `0o750` not `0o755` for directories |
+| gosec | G302/G306 file perms | `0o600` not `0o644` for files |
+| gosec | G304 file inclusion | `//nolint:gosec // <justification>` when path is from user flag |
 | noctx | bare listener | `net.ListenConfig{}.Listen(ctx, ...)` |
 | unparam | unused param | `_` prefix |
-| gofumpt | formatting | Stricter than gofmt. Handles alignment + import grouping |
+| gofumpt | formatting | Stricter than gofmt. Run `gofumpt -w .` before committing |
 
 Re-stage `go.mod` after the tidy pre-commit hook runs.
 
@@ -216,11 +220,14 @@ Six required checks on `main`:
 
 ## Code Style
 
-- **gofumpt** formatting (not gofmt)
+- **gofumpt** formatting (not gofmt). Run `gofumpt -w <file>` after creating/editing.
 - Error wrapping: `fmt.Errorf("context: %w", err)`
 - Table-driven tests with `t.Run()`
 - No stutter: `proxy.Option` not `proxy.ProxyOption`
 - DRY: if two functions do the same work with different labels, extract a shared helper immediately
+- **File permissions:** always `0o600` for files, `0o750` for directories. Never `0o644`/`0o755`.
+- **Error ignoring:** always `_ = fn()` in cleanup paths (not bare `fn()`). Always `_, _ = fmt.Fprintf(w, ...)` for output writes.
+- **Lint before commit:** run `golangci-lint run ./...` on first draft, not after tests. Fix lint first, then test.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full contributor guide. PRs are squash-merged.
 

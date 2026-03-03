@@ -5,6 +5,17 @@ All notable changes to Pipelock will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- `pipelock cursor hook` subcommand: Cursor IDE hook integration. Reads hook events from stdin, evaluates DLP, injection, and tool policy, writes allow/deny JSON to stdout. Always exits 0 with JSON `permission` field as the authoritative decision. Without `--config`, uses a security-focused default profile with 9 tool policy rules, MCP input scanning, and response scanning enabled.
+- `pipelock cursor install` subcommand: writes `hooks.json` to register pipelock with Cursor. Supports `--global` (default, `~/.cursor/`) and `--project` (`.cursor/` in cwd). Atomic writes via temp file + rename, `.bak` backup, idempotent merge with existing hooks, upgrade-safe replacement of stale entries.
+- `internal/decide` package: shared decision engine for evaluating agent actions against pipelock's scanning pipeline. Supports shell execution, MCP tool calls, and file read events with per-finding action semantics (block vs warn) and `enforce` flag override.
+- Fail-closed on malformed MCP tool_input: invalid JSON in tool arguments is treated as block-level evidence. Legitimate MCP tool calls always have valid JSON; parse failure indicates tampering or corruption.
+
+### Fixed
+- Pre-existing lint issues in `tests/ws-helper/main.go`: errcheck on `conn.Close()`, noctx on `net.Listen`
+
 ## [0.3.2] - 2026-03-02
 
 ### Added

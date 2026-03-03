@@ -80,6 +80,7 @@ Quick start:
 
 	cmd.AddCommand(
 		auditCmd(),
+		cursorCmd(),
 		demoCmd(),
 		diagnoseCmd(),
 		runCmd(),

@@ -15,7 +15,9 @@ func TestCursorCmd_InRootHelp(t *testing.T) {
 	buf := &strings.Builder{}
 	cmd.SetOut(buf)
 
-	_ = cmd.Execute()
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if !strings.Contains(buf.String(), "cursor") {
 		t.Error("root help should list cursor command")
 	}
@@ -27,7 +29,9 @@ func TestCursorHookCmd_Help(t *testing.T) {
 	buf := &strings.Builder{}
 	cmd.SetOut(buf)
 
-	_ = cmd.Execute()
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	output := buf.String()
 	for _, want := range []string{"--config", "stdin", "permission"} {
 		if !strings.Contains(output, want) {
@@ -314,11 +318,7 @@ func TestCursorInstallCmd_Project(t *testing.T) {
 	dir := t.TempDir()
 
 	// Change to temp dir for --project.
-	orig, _ := os.Getwd()
-	if err := os.Chdir(dir); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chdir(orig) })
+	chdirTemp(t, dir)
 
 	cmd := rootCmd()
 	cmd.SetArgs([]string{"cursor", "install", "--project", "--global=false"})
@@ -358,11 +358,7 @@ func TestCursorInstallCmd_Merge(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	orig, _ := os.Getwd()
-	if err := os.Chdir(dir); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chdir(orig) })
+	chdirTemp(t, dir)
 
 	cmd := rootCmd()
 	cmd.SetArgs([]string{"cursor", "install", "--project", "--global=false"})
@@ -404,11 +400,7 @@ func TestCursorInstallCmd_Merge(t *testing.T) {
 func TestCursorInstallCmd_Idempotent(t *testing.T) {
 	dir := t.TempDir()
 
-	orig, _ := os.Getwd()
-	if err := os.Chdir(dir); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chdir(orig) })
+	chdirTemp(t, dir)
 
 	// Install twice.
 	for i := range 2 {
@@ -452,11 +444,7 @@ func TestCursorInstallCmd_Backup(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	orig, _ := os.Getwd()
-	if err := os.Chdir(dir); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chdir(orig) })
+	chdirTemp(t, dir)
 
 	cmd := rootCmd()
 	cmd.SetArgs([]string{"cursor", "install", "--project", "--global=false"})
@@ -480,11 +468,7 @@ func TestCursorInstallCmd_Backup(t *testing.T) {
 func TestCursorInstallCmd_AtomicWrite(t *testing.T) {
 	dir := t.TempDir()
 
-	orig, _ := os.Getwd()
-	if err := os.Chdir(dir); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chdir(orig) })
+	chdirTemp(t, dir)
 
 	cmd := rootCmd()
 	cmd.SetArgs([]string{"cursor", "install", "--project", "--global=false"})
@@ -535,11 +519,7 @@ func TestCursorInstallCmd_UpgradePath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	orig, _ := os.Getwd()
-	if err := os.Chdir(dir); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chdir(orig) })
+	chdirTemp(t, dir)
 
 	cmd := rootCmd()
 	cmd.SetArgs([]string{"cursor", "install", "--project", "--global=false"})
@@ -674,4 +654,116 @@ mcp_tool_policy:
 	if resp.UserMessage == "" {
 		t.Error("expected advisory user message for warn-action")
 	}
+}
+
+func TestCursorHookCmd_ReadFileEvent(t *testing.T) {
+	// Verify beforeReadFile with credential path is denied.
+	input := `{"hook_event_name":"beforeReadFile","file_path":"/home/user/.ssh/id_rsa","conversation_id":"abc","generation_id":"def"}`
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"cursor", "hook"})
+	cmd.SetIn(bytes.NewReader([]byte(input)))
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var resp cursorResponse
+	if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &resp); err != nil {
+		t.Fatalf("output not valid JSON: %v\noutput: %s", err, buf.String())
+	}
+	if resp.Permission != "deny" {
+		t.Errorf("expected deny for credential file read, got %s", resp.Permission)
+	}
+}
+
+func TestCursorHookCmd_ReadFileCleanPath(t *testing.T) {
+	input := `{"hook_event_name":"beforeReadFile","file_path":"/tmp/notes.txt","conversation_id":"abc","generation_id":"def"}`
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"cursor", "hook"})
+	cmd.SetIn(bytes.NewReader([]byte(input)))
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var resp cursorResponse
+	if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &resp); err != nil {
+		t.Fatalf("output not valid JSON: %v\noutput: %s", err, buf.String())
+	}
+	if resp.Permission != "allow" {
+		t.Errorf("expected allow for clean file path, got %s", resp.Permission)
+	}
+}
+
+func TestCursorHookCmd_ConfigError(t *testing.T) {
+	// Bad config file should produce deny JSON, not crash.
+	input := `{"hook_event_name":"beforeShellExecution","command":"ls","cwd":"/tmp","conversation_id":"abc","generation_id":"def"}`
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"cursor", "hook", "--config", "/nonexistent/pipelock.yaml"})
+	cmd.SetIn(bytes.NewReader([]byte(input)))
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	// Should always exit 0 (no error returned).
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var resp cursorResponse
+	if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &resp); err != nil {
+		t.Fatalf("output not valid JSON: %v\noutput: %s", err, buf.String())
+	}
+	if resp.Permission != "deny" {
+		t.Errorf("expected deny for config error, got %s", resp.Permission)
+	}
+	if !strings.Contains(resp.UserMessage, "config error") {
+		t.Errorf("expected config error message, got: %s", resp.UserMessage)
+	}
+}
+
+func TestCursorHookCmd_MCPCleanTool(t *testing.T) {
+	input := `{"hook_event_name":"beforeMCPExecution","server":"test-server","tool_name":"list_files","tool_input":"{\"path\":\"/tmp\"}","conversation_id":"abc","generation_id":"def"}`
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"cursor", "hook"})
+	cmd.SetIn(bytes.NewReader([]byte(input)))
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var resp cursorResponse
+	if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &resp); err != nil {
+		t.Fatalf("output not valid JSON: %v\noutput: %s", err, buf.String())
+	}
+	if resp.Permission != "allow" {
+		t.Errorf("expected allow for clean MCP tool, got %s", resp.Permission)
+	}
+}
+
+// chdirTemp changes the working directory to dir and registers a cleanup
+// to restore the original. Returns the original directory.
+func chdirTemp(t *testing.T, dir string) {
+	t.Helper()
+	orig, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(orig); err != nil {
+			t.Errorf("failed to restore working directory: %v", err)
+		}
+	})
 }

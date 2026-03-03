@@ -146,16 +146,13 @@ func decideMCP(cfg *config.Config, sc *scanner.Scanner, policyCfg *policy.Config
 		}
 	}
 
-	// DLP: scan for secrets.
-	if scanText != "" {
+	// DLP + injection: respect MCP input scanning toggle and action.
+	if scanText != "" && cfg.MCPInputScanning.Enabled {
 		dlpResult := sc.ScanTextForDLP(scanText)
 		evidence = append(evidence, evidenceFromDLP(dlpResult)...)
-	}
 
-	// Injection: scan for prompt injection.
-	if scanText != "" {
 		injResult := sc.ScanResponse(scanText)
-		evidence = append(evidence, evidenceFromInjection(injResult, cfg.ResponseScanning.Action)...)
+		evidence = append(evidence, evidenceFromInjection(injResult, cfg.MCPInputScanning.Action)...)
 	}
 
 	// Policy: check tool name + args.

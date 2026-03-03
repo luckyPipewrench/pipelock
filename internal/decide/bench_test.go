@@ -16,7 +16,6 @@ import (
 func BenchmarkColdStart(b *testing.B) {
 	for b.Loop() {
 		cfg := config.Defaults()
-		cfg.Internal = nil
 		cfg.DLP.ScanEnv = false
 		cfg.MCPInputScanning.Enabled = true
 		cfg.MCPInputScanning.Action = config.ActionBlock
@@ -28,6 +27,7 @@ func BenchmarkColdStart(b *testing.B) {
 		cfg.ResponseScanning.Enabled = true
 		cfg.ResponseScanning.Action = config.ActionBlock
 		cfg.ApplyDefaults()
+		cfg.Internal = nil // after ApplyDefaults to prevent overwrite
 
 		sc := scanner.New(cfg)
 		pc := policy.New(cfg.MCPToolPolicy)

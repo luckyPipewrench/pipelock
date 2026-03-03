@@ -560,19 +560,37 @@ func TestCursorInstallCmd_UpgradePath(t *testing.T) {
 }
 
 func TestCursorInstallCmd_InvalidFlags(t *testing.T) {
-	cmd := rootCmd()
-	cmd.SetArgs([]string{"cursor", "install", "--global=false", "--project=false"})
-	buf := &strings.Builder{}
-	cmd.SetOut(buf)
-	cmd.SetErr(buf)
+	t.Run("neither flag", func(t *testing.T) {
+		cmd := rootCmd()
+		cmd.SetArgs([]string{"cursor", "install", "--global=false", "--project=false"})
+		buf := &strings.Builder{}
+		cmd.SetOut(buf)
+		cmd.SetErr(buf)
 
-	err := cmd.Execute()
-	if err == nil {
-		t.Fatal("expected error when both --global and --project are false")
-	}
-	if !strings.Contains(err.Error(), "--global or --project") {
-		t.Errorf("unexpected error message: %s", err.Error())
-	}
+		err := cmd.Execute()
+		if err == nil {
+			t.Fatal("expected error when both --global and --project are false")
+		}
+		if !strings.Contains(err.Error(), "--global or --project") {
+			t.Errorf("unexpected error message: %s", err.Error())
+		}
+	})
+
+	t.Run("both flags", func(t *testing.T) {
+		cmd := rootCmd()
+		cmd.SetArgs([]string{"cursor", "install", "--global", "--project"})
+		buf := &strings.Builder{}
+		cmd.SetOut(buf)
+		cmd.SetErr(buf)
+
+		err := cmd.Execute()
+		if err == nil {
+			t.Fatal("expected error when both --global and --project are set")
+		}
+		if !strings.Contains(err.Error(), "mutually exclusive") {
+			t.Errorf("unexpected error message: %s", err.Error())
+		}
+	})
 }
 
 func TestShellQuote(t *testing.T) {

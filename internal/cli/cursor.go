@@ -305,18 +305,23 @@ Runs are idempotent: running twice produces the same result.`,
 }
 
 func runCursorInstall(cmd *cobra.Command, global, project, dryRun bool) error {
+	if global && project {
+		return fmt.Errorf("--global and --project are mutually exclusive")
+	}
+	if !global && !project {
+		return fmt.Errorf("either --global or --project must be set")
+	}
+
 	// Determine target path.
 	var targetDir string
 	if project {
 		targetDir = filepath.Join(".", ".cursor")
-	} else if global {
+	} else {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return fmt.Errorf("finding home directory: %w", err)
 		}
 		targetDir = filepath.Join(home, ".cursor")
-	} else {
-		return fmt.Errorf("either --global or --project must be set")
 	}
 
 	targetPath := filepath.Join(targetDir, "hooks.json")

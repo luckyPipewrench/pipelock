@@ -38,7 +38,7 @@ func TestLogsCmd_FollowMode(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	// Append a new line while follow mode is active
-	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0o600) //nolint:gosec // test file
+	f, err := os.OpenFile(filepath.Clean(logPath), os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		cancel()
 		t.Fatalf("opening log for append: %v", err)
@@ -96,7 +96,7 @@ func TestLogsCmd_FollowWithFilter(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	// Append lines: one allowed (filtered), one blocked (shown)
-	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0o600) //nolint:gosec // test file
+	f, err := os.OpenFile(filepath.Clean(logPath), os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		cancel()
 		t.Fatalf("opening log for append: %v", err)

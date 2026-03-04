@@ -338,7 +338,7 @@ func runCursorInstall(cmd *cobra.Command, global, project, dryRun bool) error {
 
 	// Load existing hooks.json if present.
 	existing := &hooksJSON{}
-	existingData, readErr := os.ReadFile(targetPath) //nolint:gosec // path from user flag or home dir
+	existingData, readErr := os.ReadFile(filepath.Clean(targetPath))
 	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
 		return fmt.Errorf("reading existing %s: %w", targetPath, readErr)
 	}

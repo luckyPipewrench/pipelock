@@ -167,7 +167,7 @@ func TestGenerateDockerComposeCmd_OutputFile(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	data, err := os.ReadFile(outPath) //nolint:gosec // test reads its own temp file
+	data, err := os.ReadFile(filepath.Clean(outPath))
 	if err != nil {
 		t.Fatalf("expected output file: %v", err)
 	}

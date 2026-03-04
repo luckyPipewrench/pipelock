@@ -384,7 +384,7 @@ func TestAtomicWrite_RoundTrip(t *testing.T) {
 		t.Fatalf("atomicWrite() error: %v", err)
 	}
 
-	got, err := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
+	got, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -412,7 +412,7 @@ func TestAtomicWrite_OverwritesExisting(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
+	got, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		t.Fatal(err)
 	}

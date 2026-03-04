@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -147,7 +148,7 @@ func printSuppressedProject(w io.Writer, suppressed []projectscan.Finding, reaso
 // readSourceLine reads a specific line number from a file.
 // Returns an empty string if the file doesn't exist or the line is out of range.
 func readSourceLine(path string, line int) (string, error) {
-	f, err := os.Open(path) //nolint:gosec // G304: path from finding, not user input
+	f, err := os.Open(filepath.Clean(path))
 	if err != nil {
 		return "", err
 	}

@@ -95,7 +95,7 @@ func TestAuditCmd_OutputFile(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	data, err := os.ReadFile(outFile) //nolint:gosec // test file path
+	data, err := os.ReadFile(filepath.Clean(outFile))
 	if err != nil {
 		t.Fatalf("failed to read output file: %v", err)
 	}

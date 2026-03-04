@@ -733,7 +733,7 @@ func TestIntegrityCheck_VerifyTamperedManifest(t *testing.T) {
 
 	// Tamper with the manifest file by appending data.
 	mPath := filepath.Join(dir, integrity.DefaultManifestFile)
-	data, err := os.ReadFile(mPath) //nolint:gosec // test path
+	data, err := os.ReadFile(filepath.Clean(mPath))
 	if err != nil {
 		t.Fatal(err)
 	}

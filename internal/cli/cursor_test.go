@@ -345,7 +345,7 @@ func TestCursorInstallCmd_Project(t *testing.T) {
 	}
 
 	hooksPath := filepath.Join(dir, ".cursor", "hooks.json")
-	data, err := os.ReadFile(hooksPath) //nolint:gosec // test path
+	data, err := os.ReadFile(filepath.Clean(hooksPath))
 	if err != nil {
 		t.Fatalf("hooks.json not created: %v", err)
 	}
@@ -384,7 +384,7 @@ func TestCursorInstallCmd_Merge(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	data, err := os.ReadFile(hooksPath) //nolint:gosec // test path
+	data, err := os.ReadFile(filepath.Clean(hooksPath))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -429,7 +429,7 @@ func TestCursorInstallCmd_Idempotent(t *testing.T) {
 	}
 
 	hooksPath := filepath.Join(dir, ".cursor", "hooks.json")
-	data, err := os.ReadFile(hooksPath) //nolint:gosec // test path
+	data, err := os.ReadFile(filepath.Clean(hooksPath))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -471,7 +471,7 @@ func TestCursorInstallCmd_Backup(t *testing.T) {
 
 	// Backup should exist.
 	backupPath := hooksPath + ".bak"
-	backupData, err := os.ReadFile(backupPath) //nolint:gosec // test path
+	backupData, err := os.ReadFile(filepath.Clean(backupPath))
 	if err != nil {
 		t.Fatalf("backup file not created: %v", err)
 	}
@@ -506,7 +506,7 @@ func TestCursorInstallCmd_AtomicWrite(t *testing.T) {
 	}
 
 	// Verify hooks.json is valid.
-	data, err := os.ReadFile(filepath.Join(cursorDir, "hooks.json")) //nolint:gosec // test path
+	data, err := os.ReadFile(filepath.Clean(filepath.Join(cursorDir, "hooks.json")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -544,7 +544,7 @@ func TestCursorInstallCmd_UpgradePath(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	data, err := os.ReadFile(hooksPath) //nolint:gosec // test path
+	data, err := os.ReadFile(filepath.Clean(hooksPath))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -646,7 +646,7 @@ func TestCursorInstallCmd_GlobalActual(t *testing.T) {
 	}
 
 	hooksPath := filepath.Join(dir, ".cursor", "hooks.json")
-	data, err := os.ReadFile(hooksPath) //nolint:gosec // test path
+	data, err := os.ReadFile(filepath.Clean(hooksPath))
 	if err != nil {
 		t.Fatalf("hooks.json not created at global path: %v", err)
 	}

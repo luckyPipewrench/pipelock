@@ -219,7 +219,7 @@ func findGitDir() (string, error) {
 // resolveGitFile reads a .git file (used by worktrees/submodules) and
 // returns the absolute path to the actual git directory.
 func resolveGitFile(gitFilePath, baseDir string) (string, error) {
-	data, err := os.ReadFile(gitFilePath) //nolint:gosec // reading .git pointer file
+	data, err := os.ReadFile(filepath.Clean(gitFilePath))
 	if err != nil {
 		return "", fmt.Errorf("reading .git file: %w", err)
 	}

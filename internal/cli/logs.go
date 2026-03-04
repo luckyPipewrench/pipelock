@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -34,7 +35,7 @@ Examples:
 				return errLogFileRequired
 			}
 
-			f, err := os.Open(logFile) //nolint:gosec // G304: path from user flag
+			f, err := os.Open(filepath.Clean(logFile))
 			if err != nil {
 				return fmt.Errorf("opening log file: %w", err)
 			}

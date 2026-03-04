@@ -25,9 +25,9 @@ jobs:
 
       - name: Pipelock Scan
         id: scan
-        uses: luckyPipewrench/pipelock@v0.3.2
+        uses: luckyPipewrench/pipelock@v0.3.3
         with:
-          version: '0.3.2'
+          version: '0.3.3'
           config: pipelock.yaml
           scan-diff: 'true'
           test-vectors: 'true'

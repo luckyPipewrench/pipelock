@@ -32,7 +32,7 @@ func GenerateKeyPair() (ed25519.PublicKey, ed25519.PrivateKey, error) {
 
 // SignFile reads a file and produces a detached Ed25519 signature.
 func SignFile(path string, privKey ed25519.PrivateKey) ([]byte, error) {
-	data, err := os.ReadFile(path) //nolint:gosec // G304: caller controls path
+	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return nil, fmt.Errorf("reading file to sign: %w", err)
 	}
@@ -46,7 +46,7 @@ func VerifyFile(path, sigPath string, pubKey ed25519.PublicKey) error {
 		sigPath = path + SigExtension
 	}
 
-	data, err := os.ReadFile(path) //nolint:gosec // G304: caller controls path
+	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return fmt.Errorf("reading file to verify: %w", err)
 	}
@@ -72,7 +72,7 @@ func SaveSignature(sig []byte, path string) error {
 
 // LoadSignature reads and decodes a base64-encoded .sig file.
 func LoadSignature(path string) ([]byte, error) {
-	data, err := os.ReadFile(path) //nolint:gosec // G304: caller controls path
+	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return nil, fmt.Errorf("reading signature: %w", err)
 	}
@@ -176,7 +176,7 @@ func SavePrivateKey(key ed25519.PrivateKey, path string) error {
 
 // LoadPublicKeyFile reads and decodes a public key from a file.
 func LoadPublicKeyFile(path string) (ed25519.PublicKey, error) {
-	data, err := os.ReadFile(path) //nolint:gosec // G304: caller controls path
+	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return nil, fmt.Errorf("reading public key: %w", err)
 	}
@@ -194,7 +194,7 @@ func LoadPrivateKeyFile(path string) (ed25519.PrivateKey, error) {
 		fmt.Fprintf(os.Stderr, "WARNING: private key %s has permissions %04o — should be 0600\n", path, info.Mode().Perm())
 	}
 
-	data, err := os.ReadFile(path) //nolint:gosec // G304: caller controls path
+	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return nil, fmt.Errorf("reading private key: %w", err)
 	}

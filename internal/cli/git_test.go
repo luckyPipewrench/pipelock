@@ -167,7 +167,7 @@ func TestInstallHooksCmd_CreatesHook(t *testing.T) {
 	}
 
 	hookPath := filepath.Join(gitDir, "hooks", "pre-push")
-	data, err := os.ReadFile(hookPath) //nolint:gosec // test reads its own temp file
+	data, err := os.ReadFile(filepath.Clean(hookPath))
 	if err != nil {
 		t.Fatalf("hook file not created: %v", err)
 	}
@@ -195,7 +195,7 @@ func TestInstallHooksCmd_ExistingHookBlocked(t *testing.T) {
 	}
 	// Create existing hook
 	hookPath := filepath.Join(gitDir, "pre-push")
-	if err := os.WriteFile(hookPath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil { //nolint:gosec // test file
+	if err := os.WriteFile(filepath.Clean(hookPath), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil { //nolint:gosec // G302: hooks must be executable
 		t.Fatal(err)
 	}
 
@@ -226,7 +226,7 @@ func TestInstallHooksCmd_ForceOverwrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	hookPath := filepath.Join(gitDir, "pre-push")
-	if err := os.WriteFile(hookPath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil { //nolint:gosec // test file
+	if err := os.WriteFile(filepath.Clean(hookPath), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil { //nolint:gosec // G302: hooks must be executable
 		t.Fatal(err)
 	}
 
@@ -245,7 +245,7 @@ func TestInstallHooksCmd_ForceOverwrite(t *testing.T) {
 		t.Fatalf("expected --force to succeed, got: %v", err)
 	}
 
-	data, _ := os.ReadFile(hookPath) //nolint:gosec // test reads its own temp file
+	data, _ := os.ReadFile(filepath.Clean(hookPath))
 	if !strings.Contains(string(data), "scan-diff") {
 		t.Error("hook should have been overwritten with pipelock content")
 	}
@@ -308,7 +308,7 @@ func TestInstallHooksCmd_GitFile_Worktree(t *testing.T) {
 	}
 
 	hookPath := filepath.Join(realGitDir, "hooks", "pre-push")
-	data, err := os.ReadFile(hookPath) //nolint:gosec // test reads its own temp file
+	data, err := os.ReadFile(filepath.Clean(hookPath))
 	if err != nil {
 		t.Fatalf("hook file not created in worktree gitdir: %v", err)
 	}
@@ -340,7 +340,7 @@ func TestInstallHooksCmd_WithBinary(t *testing.T) {
 	}
 
 	hookPath := filepath.Join(gitDir, "hooks", "pre-push")
-	data, _ := os.ReadFile(hookPath) //nolint:gosec // test reads its own temp file
+	data, _ := os.ReadFile(filepath.Clean(hookPath))
 	if !strings.Contains(string(data), "/usr/local/bin/pipelock") {
 		t.Error("hook should contain the custom binary path")
 	}
@@ -537,7 +537,7 @@ func TestInstallHooksCmd_WithConfig(t *testing.T) {
 	}
 
 	hookPath := filepath.Join(gitDir, "hooks", "pre-push")
-	data, _ := os.ReadFile(hookPath) //nolint:gosec // test reads its own temp file
+	data, _ := os.ReadFile(filepath.Clean(hookPath))
 	if !strings.Contains(string(data), "/etc/pipelock.yaml") {
 		t.Error("hook should contain the config path")
 	}

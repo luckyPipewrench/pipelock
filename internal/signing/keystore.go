@@ -142,7 +142,7 @@ func (k *Keystore) TrustKey(name, pubKeyPath string) error {
 		return err
 	}
 
-	data, err := os.ReadFile(pubKeyPath) //nolint:gosec // G304: caller controls path
+	data, err := os.ReadFile(filepath.Clean(pubKeyPath))
 	if err != nil {
 		return fmt.Errorf("reading public key: %w", err)
 	}

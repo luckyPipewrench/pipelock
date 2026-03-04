@@ -213,7 +213,7 @@ func TestVerifyInstallCmd_OutputFile(t *testing.T) {
 		t.Fatalf("verify-install --output failed: %v", err)
 	}
 
-	data, err := os.ReadFile(outPath) //nolint:gosec // test reads from known temp dir
+	data, err := os.ReadFile(filepath.Clean(outPath))
 	if err != nil {
 		t.Fatalf("reading output file: %v", err)
 	}

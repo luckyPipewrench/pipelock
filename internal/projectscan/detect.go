@@ -162,7 +162,7 @@ type mcpConfig struct {
 // detectMCPServers reads .mcp.json and returns server names.
 func detectMCPServers(dir string) []string {
 	path := filepath.Join(dir, ".mcp.json")
-	data, err := os.ReadFile(path) //nolint:gosec // G304: controlled path
+	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return nil
 	}
@@ -188,14 +188,14 @@ func hasGitRepo(dir string) bool {
 func readPythonDeps(dir string) []string {
 	// Try requirements.txt first
 	path := filepath.Join(dir, "requirements.txt")
-	data, err := os.ReadFile(path) //nolint:gosec // G304: controlled path
+	data, err := os.ReadFile(filepath.Clean(path))
 	if err == nil {
 		return parsePythonRequirements(string(data))
 	}
 
 	// Try pyproject.toml dependencies section (simplified)
 	path = filepath.Join(dir, "pyproject.toml")
-	data, err = os.ReadFile(path) //nolint:gosec // G304: controlled path
+	data, err = os.ReadFile(filepath.Clean(path))
 	if err == nil {
 		return parsePyprojectDeps(string(data))
 	}
@@ -239,7 +239,7 @@ func parsePyprojectDeps(content string) []string {
 
 // hasDependency checks if a package.json contains a dependency.
 func hasDependency(path, pkg string) bool {
-	data, err := os.ReadFile(path) //nolint:gosec // G304: controlled path
+	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return false
 	}

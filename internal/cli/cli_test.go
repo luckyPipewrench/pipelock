@@ -236,7 +236,7 @@ func TestGenerateCmd_OutputToFile(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	data, err := os.ReadFile(outPath) //nolint:gosec // G304: test reads its own temp file
+	data, err := os.ReadFile(filepath.Clean(outPath))
 	if err != nil {
 		t.Fatalf("expected output file to exist: %v", err)
 	}

@@ -413,7 +413,7 @@ func TestVerifyCmd_CustomSigPath(t *testing.T) {
 
 	// Move sig to a custom location.
 	customSig := filepath.Join(t.TempDir(), "custom.sig")
-	data, err := os.ReadFile(testFile + ".sig") //nolint:gosec // test path
+	data, err := os.ReadFile(filepath.Clean(testFile + ".sig"))
 	if err != nil {
 		t.Fatal(err)
 	}

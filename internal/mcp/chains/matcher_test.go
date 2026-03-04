@@ -8,19 +8,21 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
+const patReadThenExec = "read-then-exec"
+
 func intPtr(v int) *int { return &v }
 
 func TestSubsequenceMatch(t *testing.T) {
 	// Basic subsequence: [read, exec] should match in [read, exec]
 	history := []toolCallRecord{
-		{category: "read", name: "read_file"},    //nolint:goconst // test value
-		{category: "exec", name: "bash_command"}, //nolint:goconst // test value
+		{category: "read", name: "read_file"},
+		{category: "exec", name: "bash_command"},
 	}
 	pat := pattern{
-		name:     "read-then-exec", //nolint:goconst // test value
+		name:     patReadThenExec,
 		sequence: []string{"read", "exec"},
-		severity: "high", //nolint:goconst // test value
-		action:   "warn", //nolint:goconst // test value
+		severity: "high",
+		action:   config.ActionWarn,
 	}
 	if !subsequenceMatch(history, pat.sequence, 3) {
 		t.Error("expected subsequence match for [read, exec] in [read, exec]")
@@ -28,9 +30,9 @@ func TestSubsequenceMatch(t *testing.T) {
 
 	// With intervening calls: [read, list, exec] should match [read, exec] with max_gap=3
 	history2 := []toolCallRecord{
-		{category: "read", name: "read_file"},  //nolint:goconst // test value
-		{category: "list", name: "list_files"}, //nolint:goconst // test value
-		{category: "exec", name: "bash_exec"},  //nolint:goconst // test value
+		{category: "read", name: "read_file"},
+		{category: "list", name: "list_files"},
+		{category: "exec", name: "bash_exec"},
 	}
 	if !subsequenceMatch(history2, pat.sequence, 3) {
 		t.Error("expected subsequence match for [read, exec] in [read, list, exec] with gap=3")
@@ -38,15 +40,15 @@ func TestSubsequenceMatch(t *testing.T) {
 
 	// Three-step pattern
 	pat3 := pattern{
-		name:     "read-write-send", //nolint:goconst // test value
+		name:     "read-write-send",
 		sequence: []string{"read", "write", "network"},
-		severity: "critical", //nolint:goconst // test value
-		action:   "warn",     //nolint:goconst // test value
+		severity: "critical",
+		action:   config.ActionWarn,
 	}
 	history3 := []toolCallRecord{
-		{category: "read", name: "read_file"},       //nolint:goconst // test value
-		{category: "write", name: "write_file"},     //nolint:goconst // test value
-		{category: "network", name: "send_request"}, //nolint:goconst // test value
+		{category: "read", name: "read_file"},
+		{category: "write", name: "write_file"},
+		{category: "network", name: "send_request"},
 	}
 	if !subsequenceMatch(history3, pat3.sequence, 3) {
 		t.Error("expected subsequence match for [read, write, network]")
@@ -127,7 +129,7 @@ func TestSubsequenceMatch_NoMatch(t *testing.T) {
 func TestBuiltInPatterns(t *testing.T) {
 	cfg := &config.ToolChainDetection{
 		Enabled:       true,
-		Action:        "warn", //nolint:goconst // test value
+		Action:        config.ActionWarn,
 		WindowSize:    20,
 		WindowSeconds: 60,
 		MaxGap:        intPtr(3),
@@ -137,7 +139,7 @@ func TestBuiltInPatterns(t *testing.T) {
 
 	// Verify all 8 built-in patterns exist.
 	expectedPatterns := map[string]struct{}{
-		"read-then-exec":       {},
+		patReadThenExec:        {},
 		"read-write-send":      {},
 		"env-then-network":     {},
 		"directory-scan":       {},
@@ -165,30 +167,30 @@ func TestBuiltInPatterns(t *testing.T) {
 func TestMatcher_Record(t *testing.T) {
 	cfg := &config.ToolChainDetection{
 		Enabled:       true,
-		Action:        "warn",
+		Action:        config.ActionWarn,
 		WindowSize:    20,
 		WindowSeconds: 60,
 		MaxGap:        intPtr(3),
 	}
 	m := New(cfg)
 
-	// Record a read followed by exec — should match "read-then-exec"
-	v1 := m.Record("session1", "read_file") //nolint:goconst // test value
+	// Record a read followed by exec — should match patReadThenExec
+	v1 := m.Record("session1", "read_file")
 	if v1.Matched {
 		t.Error("single read should not match any pattern")
 	}
 
-	v2 := m.Record("session1", "bash_command") //nolint:goconst // test value
+	v2 := m.Record("session1", "bash_command")
 	if !v2.Matched {
 		t.Error("read + exec should match read-then-exec pattern")
 	}
-	if v2.PatternName != "read-then-exec" { //nolint:goconst // test value
+	if v2.PatternName != patReadThenExec {
 		t.Errorf("expected pattern read-then-exec, got %q", v2.PatternName)
 	}
 	if v2.Severity != "high" {
 		t.Errorf("expected severity high, got %q", v2.Severity)
 	}
-	if v2.Action != "warn" {
+	if v2.Action != config.ActionWarn {
 		t.Errorf("expected action warn, got %q", v2.Action)
 	}
 }
@@ -197,7 +199,7 @@ func TestMatcher_WindowEviction(t *testing.T) {
 	// Test count-based eviction
 	cfg := &config.ToolChainDetection{
 		Enabled:       true,
-		Action:        "warn",
+		Action:        config.ActionWarn,
 		WindowSize:    3, // Very small window
 		WindowSeconds: 60,
 		MaxGap:        intPtr(3),
@@ -209,7 +211,7 @@ func TestMatcher_WindowEviction(t *testing.T) {
 	m.Record("s1", "list_files")
 	m.Record("s1", "list_dirs")
 	// Window is now full (3 entries). Next entry should evict oldest.
-	m.Record("s1", "run_command") //nolint:goconst // test value
+	m.Record("s1", "run_command")
 
 	// Add another entry; the oldest (read_file) should have been evicted.
 	_ = m.Record("s1", "bash_exec")
@@ -229,7 +231,7 @@ func TestMatcher_WindowEviction(t *testing.T) {
 	// Test time-based eviction
 	cfg2 := &config.ToolChainDetection{
 		Enabled:       true,
-		Action:        "warn",
+		Action:        config.ActionWarn,
 		WindowSize:    100,
 		WindowSeconds: 1, // 1 second window
 		MaxGap:        intPtr(3),
@@ -241,7 +243,7 @@ func TestMatcher_WindowEviction(t *testing.T) {
 
 	// The read should be evicted. New exec should not match read-then-exec.
 	v := m2.Record("s2", "bash_command")
-	if v.Matched && v.PatternName == "read-then-exec" {
+	if v.Matched && v.PatternName == patReadThenExec {
 		t.Error("stale read should have been evicted by time window")
 	}
 	_ = v
@@ -250,7 +252,7 @@ func TestMatcher_WindowEviction(t *testing.T) {
 func TestMatcher_CustomPatterns(t *testing.T) {
 	cfg := &config.ToolChainDetection{
 		Enabled:       true,
-		Action:        "warn",
+		Action:        config.ActionWarn,
 		WindowSize:    20,
 		WindowSeconds: 60,
 		MaxGap:        intPtr(5),
@@ -284,12 +286,12 @@ func TestMatcher_CustomPatterns(t *testing.T) {
 func TestMatcher_PatternOverrides(t *testing.T) {
 	cfg := &config.ToolChainDetection{
 		Enabled:       true,
-		Action:        "warn",
+		Action:        config.ActionWarn,
 		WindowSize:    20,
 		WindowSeconds: 60,
 		MaxGap:        intPtr(3),
 		PatternOverrides: map[string]string{
-			"read-then-exec": "block", //nolint:goconst // test value
+			patReadThenExec: config.ActionBlock,
 		},
 	}
 	m := New(cfg)
@@ -300,7 +302,7 @@ func TestMatcher_PatternOverrides(t *testing.T) {
 	if !v.Matched {
 		t.Error("expected match")
 	}
-	if v.Action != "block" { //nolint:goconst // test value
+	if v.Action != config.ActionBlock {
 		t.Errorf("expected action block from pattern override, got %q", v.Action)
 	}
 }
@@ -310,7 +312,7 @@ func TestMatcher_HighestSeverity(t *testing.T) {
 	// read-write-send (critical) and read-sensitive-write (medium)
 	cfg := &config.ToolChainDetection{
 		Enabled:       true,
-		Action:        "warn",
+		Action:        config.ActionWarn,
 		WindowSize:    20,
 		WindowSeconds: 60,
 		MaxGap:        intPtr(5),
@@ -334,7 +336,7 @@ func TestMatcher_HighestSeverity(t *testing.T) {
 func TestMatcher_UnknownCategory(t *testing.T) {
 	cfg := &config.ToolChainDetection{
 		Enabled:       true,
-		Action:        "warn",
+		Action:        config.ActionWarn,
 		WindowSize:    20,
 		WindowSeconds: 60,
 		MaxGap:        intPtr(3),
@@ -364,7 +366,7 @@ func TestMatcher_UnknownCategory(t *testing.T) {
 func TestMatcher_Concurrent(t *testing.T) {
 	cfg := &config.ToolChainDetection{
 		Enabled:       true,
-		Action:        "warn",
+		Action:        config.ActionWarn,
 		WindowSize:    100,
 		WindowSeconds: 60,
 		MaxGap:        intPtr(3),
@@ -376,7 +378,7 @@ func TestMatcher_Concurrent(t *testing.T) {
 		wg.Add(1)
 		go func(_ int) {
 			defer wg.Done()
-			session := "session-concurrent" //nolint:goconst // test value
+			session := "session-concurrent"
 			m.Record(session, "read_file")
 			m.Record(session, "bash_command")
 			m.Record(session, "list_files")
@@ -392,7 +394,7 @@ func TestMatcher_Concurrent(t *testing.T) {
 func TestMatcher_SessionIsolation(t *testing.T) {
 	cfg := &config.ToolChainDetection{
 		Enabled:       true,
-		Action:        "warn",
+		Action:        config.ActionWarn,
 		WindowSize:    20,
 		WindowSeconds: 60,
 		MaxGap:        intPtr(3),
@@ -432,7 +434,7 @@ func TestMatcher_NilSafe(t *testing.T) {
 func TestMatcher_CustomPatternAction(t *testing.T) {
 	cfg := &config.ToolChainDetection{
 		Enabled:       true,
-		Action:        "warn",
+		Action:        config.ActionWarn,
 		WindowSize:    20,
 		WindowSeconds: 60,
 		MaxGap:        intPtr(3),
@@ -441,7 +443,7 @@ func TestMatcher_CustomPatternAction(t *testing.T) {
 				Name:     "custom-block-pattern",
 				Sequence: []string{"env", "network"},
 				Severity: "critical",
-				Action:   "block",
+				Action:   config.ActionBlock,
 			},
 		},
 	}
@@ -455,7 +457,7 @@ func TestMatcher_CustomPatternAction(t *testing.T) {
 	}
 	// Both custom and built-in "env-then-network" match. The custom has
 	// action=block, the built-in has action=warn. Block should win.
-	if v.Action != "block" {
+	if v.Action != config.ActionBlock {
 		t.Errorf("expected block (strictest action), got %q", v.Action)
 	}
 }
@@ -465,7 +467,7 @@ func TestMatcher_MaxGapRetry(t *testing.T) {
 	// the matcher tries the next occurrence of step[0].
 	cfg := &config.ToolChainDetection{
 		Enabled:       true,
-		Action:        "warn",
+		Action:        config.ActionWarn,
 		WindowSize:    20,
 		WindowSeconds: 60,
 		MaxGap:        intPtr(1),
@@ -507,7 +509,7 @@ func TestMatcher_WithMetrics(t *testing.T) {
 
 	cfg := &config.ToolChainDetection{
 		Enabled:       true,
-		Action:        "warn",
+		Action:        config.ActionWarn,
 		WindowSize:    20,
 		WindowSeconds: 60,
 		MaxGap:        intPtr(3),
@@ -537,7 +539,7 @@ func TestMatcher_CustomPatternOverride(t *testing.T) {
 	// Custom pattern with PatternOverrides should use the override action.
 	cfg := &config.ToolChainDetection{
 		Enabled:       true,
-		Action:        "warn",
+		Action:        config.ActionWarn,
 		WindowSize:    20,
 		WindowSeconds: 60,
 		MaxGap:        intPtr(3),
@@ -546,11 +548,11 @@ func TestMatcher_CustomPatternOverride(t *testing.T) {
 				Name:     "my-custom",
 				Sequence: []string{"read", "write"},
 				Severity: "medium",
-				Action:   "warn",
+				Action:   config.ActionWarn,
 			},
 		},
 		PatternOverrides: map[string]string{
-			"my-custom": "block",
+			"my-custom": config.ActionBlock,
 		},
 	}
 	m := New(cfg)
@@ -561,22 +563,22 @@ func TestMatcher_CustomPatternOverride(t *testing.T) {
 	if !v.Matched {
 		t.Fatal("expected match")
 	}
-	if v.Action != "block" {
-		t.Errorf("expected override action %q, got %q", "block", v.Action)
+	if v.Action != config.ActionBlock {
+		t.Errorf("expected override action %q, got %q", config.ActionBlock, v.Action)
 	}
 }
 
 func TestMatcher_ClearSession(t *testing.T) {
 	cfg := &config.ToolChainDetection{
 		Enabled:       true,
-		Action:        "warn",
+		Action:        config.ActionWarn,
 		WindowSize:    20,
 		WindowSeconds: 60,
 		MaxGap:        intPtr(3),
 	}
 	m := New(cfg)
 
-	// Record read_file — first step of "read-then-exec".
+	// Record read_file — first step of patReadThenExec.
 	v := m.Record("s1", "read_file")
 	if v.Matched {
 		t.Fatal("single read should not match")
@@ -595,7 +597,7 @@ func TestMatcher_ClearSession(t *testing.T) {
 func TestMatcher_ClearSession_NonExistent(t *testing.T) {
 	cfg := &config.ToolChainDetection{
 		Enabled:       true,
-		Action:        "warn",
+		Action:        config.ActionWarn,
 		WindowSize:    20,
 		WindowSeconds: 60,
 		MaxGap:        intPtr(3),
@@ -609,7 +611,7 @@ func TestMatcher_ClearSession_NonExistent(t *testing.T) {
 func TestMatcher_ClearSession_IndependentSessions(t *testing.T) {
 	cfg := &config.ToolChainDetection{
 		Enabled:       true,
-		Action:        "warn",
+		Action:        config.ActionWarn,
 		WindowSize:    20,
 		WindowSeconds: 60,
 		MaxGap:        intPtr(3),
@@ -634,7 +636,7 @@ func TestMatcher_ClearSession_IndependentSessions(t *testing.T) {
 	if !v2.Matched {
 		t.Error("s2 should still match — ClearSession(s1) should not affect s2")
 	}
-	if v2.PatternName != "read-then-exec" { //nolint:goconst // test value
+	if v2.PatternName != patReadThenExec {
 		t.Errorf("expected read-then-exec, got %q", v2.PatternName)
 	}
 }

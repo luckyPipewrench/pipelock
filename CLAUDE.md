@@ -159,13 +159,35 @@ net.ListenConfig{}.Listen(ctx, ...)   // Free port binding (noctx compliant)
 | errcheck | cleanup error | `_ = os.Remove(path)` in error-return cleanup paths |
 | errcheck | fmt output | `_, _ = fmt.Fprintf(w, ...)` when writing to cmd output |
 | usestdlibvars | `"GET"` | `http.MethodGet` |
-| goconst | repeated string | `//nolint:goconst // test value` |
+| goconst | repeated string | Extract a `const`. Never use `//nolint:goconst`. See below. |
 | gosec | G301 dir perms | `0o750` not `0o755` for directories |
 | gosec | G302/G306 file perms | `0o600` not `0o644` for files |
 | gosec | G304 file inclusion | `//nolint:gosec // <justification>` when path is from user flag |
 | noctx | bare listener | `net.ListenConfig{}.Listen(ctx, ...)` |
 | unparam | unused param | `_` prefix |
 | gofumpt | formatting | Stricter than gofmt. Run `gofumpt -w .` before committing |
+
+### goconst: Always Extract Constants
+
+**Never suppress goconst with `//nolint:goconst`.** Extract a named constant instead.
+
+**Production code:** use exported or unexported package-level constants.
+```go
+const methodToolsCall = "tools/call"       // unexported, used within package
+const ActionBlock     = "block"            // exported, used across packages
+```
+
+**Test code:** add a `const` block near the top of the test file.
+```go
+const (
+    testClientIP = "10.0.0.1"
+    testToken    = "test-token" //nolint:gosec // test credential
+)
+```
+
+**Existing constants:** the codebase has `config.ActionBlock`, `ActionWarn`, `ActionAsk`, `ActionStrip`, `ActionForward`, `ModeStrict`, `ModeBalanced`, `ModeAudit`, `SeverityInfo`, `SeverityWarn`, `SeverityCritical`, `SeverityHigh`, `SeverityMedium`. Use them. Check for existing constants before creating new ones.
+
+**Inside raw string literals (backticks):** Go constants can't be interpolated inside backtick strings. Use string concatenation: `` `prefix` + constant + `suffix` ``. If the string is a JSON template, keep the literal value inside the template and use the constant only in Go comparisons.
 
 Re-stage `go.mod` after the tidy pre-commit hook runs.
 
@@ -228,6 +250,8 @@ Six required checks on `main`:
 - **File permissions:** always `0o600` for files, `0o750` for directories. Never `0o644`/`0o755`.
 - **Error ignoring:** always `_ = fn()` in cleanup paths (not bare `fn()`). Always `_, _ = fmt.Fprintf(w, ...)` for output writes.
 - **Lint before commit:** run `golangci-lint run ./...` on first draft, not after tests. Fix lint first, then test.
+- **No `//nolint:goconst`:** always extract a named constant. Zero tolerance. See Linter Pitfalls.
+- **Use existing constants:** check `config.Action*`, `config.Mode*`, `config.Severity*` before creating test-local constants for the same values.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full contributor guide. PRs are squash-merged.
 

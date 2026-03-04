@@ -59,7 +59,6 @@ func TestParseSeverity_Roundtrip(t *testing.T) {
 }
 
 func TestEventSeverity_CoverExpectedTypes(t *testing.T) {
-	//nolint:goconst // test values
 	expectedTypes := []struct {
 		eventType string
 		wantSev   Severity

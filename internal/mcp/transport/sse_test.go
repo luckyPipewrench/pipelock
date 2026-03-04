@@ -16,8 +16,8 @@ func TestSSEReader_SingleEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if string(msg) != `{"id":1}` { //nolint:goconst // test value
-		t.Errorf("got %q, want %q", string(msg), `{"id":1}`)
+	if string(msg) != testJSONID1 {
+		t.Errorf("got %q, want %q", string(msg), testJSONID1)
 	}
 
 	// Next read should return io.EOF.
@@ -35,16 +35,16 @@ func TestSSEReader_MultipleEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("msg1: unexpected error: %v", err)
 	}
-	if string(msg1) != `{"id":1}` { //nolint:goconst // test value
-		t.Errorf("msg1 = %q, want %q", string(msg1), `{"id":1}`)
+	if string(msg1) != testJSONID1 {
+		t.Errorf("msg1 = %q, want %q", string(msg1), testJSONID1)
 	}
 
 	msg2, err := r.ReadMessage()
 	if err != nil {
 		t.Fatalf("msg2: unexpected error: %v", err)
 	}
-	if string(msg2) != `{"id":2}` { //nolint:goconst // test value
-		t.Errorf("msg2 = %q, want %q", string(msg2), `{"id":2}`)
+	if string(msg2) != testJSONID2 {
+		t.Errorf("msg2 = %q, want %q", string(msg2), testJSONID2)
 	}
 
 	_, err = r.ReadMessage()

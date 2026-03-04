@@ -30,7 +30,7 @@ func TestExtractText_NilEmptyNull(t *testing.T) {
 func TestExtractText_StandardToolResult(t *testing.T) {
 	raw := json.RawMessage(`{"content":[{"type":"text","text":"hello"},{"type":"text","text":"world"}]}`)
 	got := ExtractText(raw)
-	want := "hello world" //nolint:goconst // test value
+	want := "hello world"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -82,7 +82,7 @@ func TestExtractText_BlocksWithNoTextField(t *testing.T) {
 	// non-standard shapes that might carry injection.
 	raw := json.RawMessage(`{"content":[{"type":"image"},{"type":"resource"}]}`)
 	got := ExtractText(raw)
-	want := "image\nresource" //nolint:goconst // test value
+	want := "image\nresource"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -194,7 +194,7 @@ func TestSortedKeys_SingleKey(t *testing.T) {
 func TestExtractStringsFromJSON_PlainString(t *testing.T) {
 	raw := json.RawMessage(`"hello"`)
 	got := ExtractStringsFromJSON(raw)
-	if len(got) != 1 || got[0] != "hello" { //nolint:goconst // test value
+	if len(got) != 1 || got[0] != "hello" {
 		t.Errorf("expected [hello], got %v", got)
 	}
 }
@@ -288,7 +288,7 @@ func TestExtractStringsFromJSON_DepthGuard(t *testing.T) {
 	// The string "leaf" is at depth = depth (66), which exceeds maxExtractDepth (64).
 	// It should not be extracted.
 	for _, s := range got {
-		if s == "leaf" { //nolint:goconst // test value
+		if s == "leaf" {
 			t.Error("depth guard failed: extracted string beyond maxExtractDepth")
 		}
 	}
@@ -375,7 +375,7 @@ func TestExtractText_ContentBlocksTakePrecedence(t *testing.T) {
 	raw := json.RawMessage(`{"content":[{"type":"text","text":"hello"},{"type":"text","text":"world"}]}`)
 	got := ExtractText(raw)
 	// Content blocks path: space-joined.
-	if !strings.Contains(got, "hello world") { //nolint:goconst // test value
+	if !strings.Contains(got, "hello world") {
 		t.Errorf("expected space-joined content blocks, got %q", got)
 	}
 	// Should NOT be newline-joined (that would be the fallback path).
@@ -407,7 +407,7 @@ func TestConstants(t *testing.T) {
 // --- Struct JSON round-trip ---
 
 func TestContentBlock_JSONRoundTrip(t *testing.T) {
-	cb := ContentBlock{Type: "text", Text: "hello"} //nolint:goconst // test value
+	cb := ContentBlock{Type: "text", Text: "hello"}
 	data, err := json.Marshal(cb)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)

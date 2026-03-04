@@ -11,7 +11,7 @@ func FuzzScanResponse(f *testing.F) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.ResponseScanning.Enabled = true
-	cfg.ResponseScanning.Action = "warn" //nolint:goconst // test value
+	cfg.ResponseScanning.Action = "warn"
 	sc := scanner.New(cfg)
 	defer sc.Close()
 

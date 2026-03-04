@@ -15,6 +15,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 func TestRootCmd_Version(t *testing.T) {
@@ -516,7 +518,7 @@ logging:
 		cancel()
 		t.Fatalf("decoding health response: %v", err)
 	}
-	if health["mode"] != "strict" { //nolint:goconst // test value
+	if health["mode"] != config.ModeStrict {
 		t.Errorf("expected mode=strict (flag override), got %v", health["mode"])
 	}
 	if health["status"] != "healthy" {
@@ -1008,7 +1010,7 @@ func TestRunCmd_DefaultMode(t *testing.T) {
 			var health map[string]any
 			_ = json.NewDecoder(resp.Body).Decode(&health)
 			_ = resp.Body.Close()
-			if health["mode"] == "balanced" { //nolint:goconst // test value
+			if health["mode"] == config.ModeBalanced {
 				break
 			}
 		}
@@ -1191,7 +1193,7 @@ fetch_proxy:
 	var health map[string]any
 	_ = json.NewDecoder(resp.Body).Decode(&health)
 	_ = resp.Body.Close()
-	if health["mode"] != "strict" {
+	if health["mode"] != config.ModeStrict {
 		t.Logf("mode after reload: %v (hot-reload may not have completed yet)", health["mode"])
 	}
 

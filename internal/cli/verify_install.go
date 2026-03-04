@@ -331,7 +331,7 @@ func checkProxyHealth(env *verifyEnv) verifyResult {
 }
 
 func checkFetchDLP(env *verifyEnv) verifyResult {
-	fakeKey := "AKIA" + "IOSFODNN7EXAMPLE" //nolint:goconst // verify test value
+	fakeKey := "AKIA" + "IOSFODNN7EXAMPLE"
 	url := env.ProxyURL + "/fetch?url=" + env.MockURL + "%3Ftoken%3D" + fakeKey
 
 	resp, err := verifyGet(url)

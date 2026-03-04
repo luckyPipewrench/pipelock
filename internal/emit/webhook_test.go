@@ -12,6 +12,11 @@ import (
 	"time"
 )
 
+const (
+	testSeverityWarn = "warn"
+	testEventBlocked = "blocked"
+)
+
 func TestWebhookSink_BelowMinSeverity(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		t.Error("unexpected request: event below minSev should be dropped")
@@ -61,7 +66,7 @@ func TestWebhookSink_SuccessfulPost(t *testing.T) {
 	ts := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
 	err := sink.Emit(context.Background(), Event{
 		Severity:   SeverityWarn,
-		Type:       "blocked",
+		Type:       testEventBlocked,
 		Timestamp:  ts,
 		InstanceID: "test-host",
 		Fields:     map[string]any{"url": "https://evil.com", "reason": "blocklist"},
@@ -76,13 +81,12 @@ func TestWebhookSink_SuccessfulPost(t *testing.T) {
 		t.Fatal("timed out waiting for webhook POST")
 	}
 
-	//nolint:goconst // test value
-	if received.Severity != "warn" {
-		t.Errorf("payload severity = %q, want %q", received.Severity, "warn")
+	if received.Severity != testSeverityWarn {
+		t.Errorf("payload severity = %q, want %q", received.Severity, testSeverityWarn)
 	}
-	//nolint:goconst // test value
-	if received.Type != "blocked" {
-		t.Errorf("payload type = %q, want %q", received.Type, "blocked")
+
+	if received.Type != testEventBlocked {
+		t.Errorf("payload type = %q, want %q", received.Type, testEventBlocked)
 	}
 	if received.Instance != "test-host" {
 		t.Errorf("payload instance = %q, want %q", received.Instance, "test-host")
@@ -109,14 +113,13 @@ func TestWebhookSink_BearerToken(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	//nolint:goconst // test value
 	token := "test" + "-secret-token"
 	sink := NewWebhookSink(srv.URL, WithBearerToken(token))
 	defer func() { _ = sink.Close() }()
 
 	err := sink.Emit(context.Background(), Event{
 		Severity:   SeverityWarn,
-		Type:       "blocked",
+		Type:       testEventBlocked,
 		Timestamp:  time.Now(),
 		InstanceID: "test",
 	})
@@ -152,7 +155,7 @@ func TestWebhookSink_NoAuthHeaderWithoutToken(t *testing.T) {
 
 	err := sink.Emit(context.Background(), Event{
 		Severity:   SeverityWarn,
-		Type:       "blocked",
+		Type:       testEventBlocked,
 		Timestamp:  time.Now(),
 		InstanceID: "test",
 	})
@@ -183,7 +186,7 @@ func TestWebhookSink_QueueFull(t *testing.T) {
 
 	event := Event{
 		Severity:   SeverityWarn,
-		Type:       "blocked",
+		Type:       testEventBlocked,
 		Timestamp:  time.Now(),
 		InstanceID: "test",
 	}
@@ -222,7 +225,7 @@ func TestWebhookSink_CloseDrainsPending(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		err := sink.Emit(context.Background(), Event{
 			Severity:   SeverityWarn,
-			Type:       "blocked",
+			Type:       testEventBlocked,
 			Timestamp:  time.Now(),
 			InstanceID: "test",
 		})
@@ -254,7 +257,7 @@ func TestWebhookSink_ServerErrorDoesNotBlock(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		err := sink.Emit(context.Background(), Event{
 			Severity:   SeverityWarn,
-			Type:       "blocked",
+			Type:       testEventBlocked,
 			Timestamp:  time.Now(),
 			InstanceID: "test",
 		})
@@ -294,7 +297,7 @@ func TestWebhookSink_ConcurrentEmit(t *testing.T) {
 			for i := 0; i < eventsPerGoroutine; i++ {
 				_ = sink.Emit(context.Background(), Event{
 					Severity:   SeverityWarn,
-					Type:       "blocked",
+					Type:       testEventBlocked,
 					Timestamp:  time.Now(),
 					InstanceID: "test",
 				})
@@ -367,7 +370,7 @@ func TestWebhookSink_NilFieldsInPayload(t *testing.T) {
 
 	err := sink.Emit(context.Background(), Event{
 		Severity:   SeverityWarn,
-		Type:       "blocked",
+		Type:       testEventBlocked,
 		Timestamp:  time.Now(),
 		InstanceID: "test",
 		Fields:     nil,
@@ -383,8 +386,8 @@ func TestWebhookSink_NilFieldsInPayload(t *testing.T) {
 	}
 
 	// nil map should serialize as JSON null, not cause an error.
-	if received.Type != "blocked" { //nolint:goconst // test value
-		t.Errorf("payload type = %q, want %q", received.Type, "blocked")
+	if received.Type != testEventBlocked {
+		t.Errorf("payload type = %q, want %q", received.Type, testEventBlocked)
 	}
 }
 
@@ -397,7 +400,7 @@ func TestWebhookSink_EmitAfterClose(t *testing.T) {
 
 	err := sink.Emit(context.Background(), Event{
 		Severity:   SeverityWarn,
-		Type:       "blocked",
+		Type:       testEventBlocked,
 		Timestamp:  time.Now(),
 		InstanceID: "test",
 	})
@@ -422,7 +425,7 @@ func TestWebhookSink_SendMarshalError(t *testing.T) {
 	// Emit event with unmarshalable field — json.Marshal will fail.
 	err := sink.Emit(context.Background(), Event{
 		Severity:   SeverityWarn,
-		Type:       "blocked",
+		Type:       testEventBlocked,
 		Timestamp:  time.Now(),
 		InstanceID: "test",
 		Fields:     map[string]any{"bad": make(chan int)},
@@ -434,7 +437,7 @@ func TestWebhookSink_SendMarshalError(t *testing.T) {
 	// Follow up with a valid event to prove the goroutine survived.
 	err = sink.Emit(context.Background(), Event{
 		Severity:   SeverityWarn,
-		Type:       "blocked",
+		Type:       testEventBlocked,
 		Timestamp:  time.Now(),
 		InstanceID: "test",
 	})
@@ -456,7 +459,7 @@ func TestWebhookSink_SendInvalidURL(t *testing.T) {
 
 	err := sink.Emit(context.Background(), Event{
 		Severity:   SeverityWarn,
-		Type:       "blocked",
+		Type:       testEventBlocked,
 		Timestamp:  time.Now(),
 		InstanceID: "test",
 	})
@@ -478,7 +481,7 @@ func TestWebhookSink_SendConnectionRefused(t *testing.T) {
 
 	err := sink.Emit(context.Background(), Event{
 		Severity:   SeverityWarn,
-		Type:       "blocked",
+		Type:       testEventBlocked,
 		Timestamp:  time.Now(),
 		InstanceID: "test",
 	})
@@ -502,7 +505,7 @@ func TestWebhookSink_EmitClosedDuringQueueWait(t *testing.T) {
 
 	event := Event{
 		Severity:   SeverityWarn,
-		Type:       "blocked",
+		Type:       testEventBlocked,
 		Timestamp:  time.Now(),
 		InstanceID: "test",
 	}

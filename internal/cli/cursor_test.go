@@ -10,6 +10,11 @@ import (
 	"testing"
 )
 
+const (
+	decisionAllow = "allow"
+	decisionDeny  = "deny"
+)
+
 // errReader is an io.Reader that always returns an error.
 type errReader struct {
 	err error
@@ -67,7 +72,7 @@ func TestCursorHookCmd_CleanShellCommand(t *testing.T) {
 	if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &resp); err != nil {
 		t.Fatalf("output not valid JSON: %v\noutput: %s", err, buf.String())
 	}
-	if resp.Permission != "allow" { //nolint:goconst // test value
+	if resp.Permission != decisionAllow {
 		t.Errorf("expected allow, got %s; message: %s", resp.Permission, resp.UserMessage)
 	}
 }
@@ -91,7 +96,7 @@ func TestCursorHookCmd_BlocksSecret(t *testing.T) {
 	if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &resp); err != nil {
 		t.Fatalf("output not valid JSON: %v\noutput: %s", err, buf.String())
 	}
-	if resp.Permission != "deny" { //nolint:goconst // test value
+	if resp.Permission != decisionDeny {
 		t.Errorf("expected deny for secret in command, got %s", resp.Permission)
 	}
 	if !strings.Contains(resp.UserMessage, "Anthropic API Key") {
@@ -116,7 +121,7 @@ func TestCursorHookCmd_BlocksRmRf(t *testing.T) {
 	if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &resp); err != nil {
 		t.Fatalf("output not valid JSON: %v\noutput: %s", err, buf.String())
 	}
-	if resp.Permission != "deny" {
+	if resp.Permission != decisionDeny {
 		t.Errorf("expected deny for rm -rf, got %s", resp.Permission)
 	}
 }
@@ -140,7 +145,7 @@ func TestCursorHookCmd_MalformedJSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &resp); err != nil {
 		t.Fatalf("output not valid JSON on malformed input: %v\noutput: %s", err, buf.String())
 	}
-	if resp.Permission != "deny" {
+	if resp.Permission != decisionDeny {
 		t.Errorf("malformed input should deny, got %s", resp.Permission)
 	}
 }
@@ -160,7 +165,7 @@ func TestCursorHookCmd_EmptyStdin(t *testing.T) {
 	if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &resp); err != nil {
 		t.Fatalf("output not valid JSON on empty stdin: %v\noutput: %s", err, buf.String())
 	}
-	if resp.Permission != "deny" {
+	if resp.Permission != decisionDeny {
 		t.Errorf("empty stdin should deny, got %s", resp.Permission)
 	}
 }
@@ -182,7 +187,7 @@ func TestCursorHookCmd_UnknownEvent(t *testing.T) {
 	if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &resp); err != nil {
 		t.Fatalf("output not valid JSON: %v\noutput: %s", err, buf.String())
 	}
-	if resp.Permission != "deny" {
+	if resp.Permission != decisionDeny {
 		t.Errorf("unknown event should deny, got %s", resp.Permission)
 	}
 }
@@ -232,7 +237,7 @@ func TestCursorHookCmd_MCPExecution(t *testing.T) {
 	if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &resp); err != nil {
 		t.Fatalf("output not valid JSON: %v\noutput: %s", err, buf.String())
 	}
-	if resp.Permission != "allow" {
+	if resp.Permission != decisionAllow {
 		t.Errorf("expected allow for clean MCP call, got %s; message: %s", resp.Permission, resp.UserMessage)
 	}
 }
@@ -254,7 +259,7 @@ func TestCursorHookCmd_ReadFile(t *testing.T) {
 	if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &resp); err != nil {
 		t.Fatalf("output not valid JSON: %v\noutput: %s", err, buf.String())
 	}
-	if resp.Permission != "allow" {
+	if resp.Permission != decisionAllow {
 		t.Errorf("expected allow for normal file, got %s; message: %s", resp.Permission, resp.UserMessage)
 	}
 }
@@ -289,7 +294,7 @@ mcp_tool_policy:
 	if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &resp); err != nil {
 		t.Fatalf("output not valid JSON: %v\noutput: %s", err, buf.String())
 	}
-	if resp.Permission != "allow" {
+	if resp.Permission != decisionAllow {
 		t.Errorf("expected allow with policy disabled, got %s; message: %s", resp.Permission, resp.UserMessage)
 	}
 }
@@ -674,7 +679,7 @@ func TestCursorHookCmd_StdinReadError(t *testing.T) {
 	if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &resp); err != nil {
 		t.Fatalf("output not valid JSON: %v\noutput: %s", err, buf.String())
 	}
-	if resp.Permission != "deny" {
+	if resp.Permission != decisionDeny {
 		t.Errorf("expected deny for stdin read error, got %s", resp.Permission)
 	}
 	if !strings.Contains(resp.UserMessage, "read stdin") {
@@ -785,7 +790,7 @@ mcp_tool_policy:
 	if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &resp); err != nil {
 		t.Fatalf("output not valid JSON: %v\noutput: %s", err, buf.String())
 	}
-	if resp.Permission != "allow" {
+	if resp.Permission != decisionAllow {
 		t.Errorf("expected allow for warn-action policy, got %s; message: %s", resp.Permission, resp.UserMessage)
 	}
 	if resp.UserMessage == "" {
@@ -811,7 +816,7 @@ func TestCursorHookCmd_ReadFileEvent(t *testing.T) {
 	if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &resp); err != nil {
 		t.Fatalf("output not valid JSON: %v\noutput: %s", err, buf.String())
 	}
-	if resp.Permission != "deny" {
+	if resp.Permission != decisionDeny {
 		t.Errorf("expected deny for credential file read, got %s", resp.Permission)
 	}
 }
@@ -833,7 +838,7 @@ func TestCursorHookCmd_ReadFileCleanPath(t *testing.T) {
 	if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &resp); err != nil {
 		t.Fatalf("output not valid JSON: %v\noutput: %s", err, buf.String())
 	}
-	if resp.Permission != "allow" {
+	if resp.Permission != decisionAllow {
 		t.Errorf("expected allow for clean file path, got %s", resp.Permission)
 	}
 }
@@ -857,7 +862,7 @@ func TestCursorHookCmd_ConfigError(t *testing.T) {
 	if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &resp); err != nil {
 		t.Fatalf("output not valid JSON: %v\noutput: %s", err, buf.String())
 	}
-	if resp.Permission != "deny" {
+	if resp.Permission != decisionDeny {
 		t.Errorf("expected deny for config error, got %s", resp.Permission)
 	}
 	if !strings.Contains(resp.UserMessage, "config error") {
@@ -882,7 +887,7 @@ func TestCursorHookCmd_MCPCleanTool(t *testing.T) {
 	if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &resp); err != nil {
 		t.Fatalf("output not valid JSON: %v\noutput: %s", err, buf.String())
 	}
-	if resp.Permission != "allow" {
+	if resp.Permission != decisionAllow {
 		t.Errorf("expected allow for clean MCP tool, got %s", resp.Permission)
 	}
 }
@@ -908,7 +913,7 @@ func TestCursorHookCmd_OversizedStdin(t *testing.T) {
 	if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &resp); err != nil {
 		t.Fatalf("output not valid JSON: %v\noutput: %s", err, buf.String())
 	}
-	if resp.Permission != "deny" {
+	if resp.Permission != decisionDeny {
 		t.Errorf("expected deny for oversized input, got %s", resp.Permission)
 	}
 	if !strings.Contains(resp.UserMessage, "too large") {
@@ -920,14 +925,14 @@ func TestWriteResponse(t *testing.T) {
 	t.Run("normal", func(t *testing.T) {
 		var buf bytes.Buffer
 		writeResponse(&buf, cursorResponse{
-			Permission:  "allow",
+			Permission:  decisionAllow,
 			UserMessage: "ok",
 		})
 		var resp cursorResponse
 		if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &resp); err != nil {
 			t.Fatalf("invalid JSON: %v", err)
 		}
-		if resp.Permission != "allow" {
+		if resp.Permission != decisionAllow {
 			t.Errorf("expected allow, got %s", resp.Permission)
 		}
 	})

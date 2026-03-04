@@ -22,6 +22,11 @@ import (
 	plwsutil "github.com/luckyPipewrench/pipelock/internal/wsutil"
 )
 
+const (
+	testWSHello   = "hello"
+	testWSExample = "EXAMPLE"
+)
+
 // wsEchoServer creates a WebSocket server that echoes text frames back.
 func wsEchoServer(t *testing.T) (string, func()) {
 	t.Helper()
@@ -320,7 +325,7 @@ func TestWSProxyInjectionBlocked(t *testing.T) {
 	defer conn.Close() //nolint:errcheck // test
 
 	// Trigger the injection server by sending a message.
-	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte("hello")); err != nil {
+	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(testWSHello)); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 
@@ -345,7 +350,7 @@ func TestWSProxyInjectionWarn(t *testing.T) {
 	defer conn.Close() //nolint:errcheck // test
 
 	// Trigger the injection server.
-	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte("hello")); err != nil {
+	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(testWSHello)); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 
@@ -759,14 +764,14 @@ func TestWSProxyHeaderDLPSkipAllowlisted(t *testing.T) {
 	defer conn.Close() //nolint:errcheck // test
 
 	// Verify the connection works.
-	if writeErr := wsutil.WriteClientMessage(conn, ws.OpText, []byte("hello")); writeErr != nil {
+	if writeErr := wsutil.WriteClientMessage(conn, ws.OpText, []byte(testWSHello)); writeErr != nil {
 		t.Fatalf("write: %v", writeErr)
 	}
 	reply, _, readErr := wsutil.ReadServerData(conn)
 	if readErr != nil {
 		t.Fatalf("read: %v", readErr)
 	}
-	if string(reply) != "hello" { //nolint:goconst // test value
+	if string(reply) != testWSHello {
 		t.Errorf("expected 'hello', got %q", reply)
 	}
 }
@@ -830,13 +835,13 @@ func TestWSProxyScanDisabled(t *testing.T) {
 func TestFragmentState_SingleFrame(t *testing.T) {
 	f := &plwsutil.FragmentState{MaxBytes: 1024}
 	hdr := ws.Header{OpCode: ws.OpText, Fin: true, Length: 5}
-	payload := []byte("hello")
+	payload := []byte(testWSHello)
 
 	complete, msg, code, _ := f.Process(hdr, payload)
 	if !complete {
 		t.Error("expected complete")
 	}
-	if string(msg) != "hello" {
+	if string(msg) != testWSHello {
 		t.Errorf("expected 'hello', got %q", msg)
 	}
 	if code != 0 {
@@ -863,7 +868,7 @@ func TestFragmentState_MultiFrame(t *testing.T) {
 	if !complete {
 		t.Error("expected complete after final continuation")
 	}
-	if string(msg) != "hello" {
+	if string(msg) != testWSHello {
 		t.Errorf("expected 'hello', got %q", msg)
 	}
 	if code != 0 {
@@ -879,7 +884,7 @@ func TestFragmentState_TooLarge(t *testing.T) {
 	if code != ws.StatusMessageTooBig {
 		t.Errorf("expected StatusMessageTooBig, got %d", code)
 	}
-	if reason != "message too large" { //nolint:goconst // test value
+	if reason != "message too large" {
 		t.Errorf("expected 'message too large', got %q", reason)
 	}
 }
@@ -1265,7 +1270,7 @@ func TestWSProxy_CrossMessageDLP_SplitKey(t *testing.T) {
 
 	// Build key at runtime to avoid gosec G101.
 	prefix := "AKIA" + "IOSFODNN7"
-	suffix := "EXAMPLE" //nolint:goconst // test value
+	suffix := testWSExample
 
 	// Message 1: key prefix. Should be allowed (not a full match).
 	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte("data: "+prefix)); err != nil {
@@ -1375,7 +1380,7 @@ func TestWSProxy_CrossMessageDLP_TailEviction(t *testing.T) {
 
 	// Build key at runtime for gosec.
 	prefix := "AKIA" + "IOSFODNN7"
-	suffix := "EXAMPLE"
+	suffix := testWSExample
 
 	// Message 1: key prefix.
 	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte("data: "+prefix)); err != nil {
@@ -1490,14 +1495,14 @@ func TestWSProxy_CrossMessageDLP_FragmentThenSplit(t *testing.T) {
 	if readErr != nil {
 		t.Fatalf("read fragmented echo: %v", readErr)
 	}
-	if string(reply) != "hello" {
+	if string(reply) != testWSHello {
 		t.Errorf("expected 'hello', got %q", reply)
 	}
 
 	// Step 2: Now test cross-message DLP with separate complete messages.
 	// Build at runtime for gosec.
 	prefix := "AKIA" + "IOSFODNN7"
-	suffix := "EXAMPLE"
+	suffix := testWSExample
 
 	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte("data: "+prefix)); err != nil {
 		t.Fatalf("write split prefix: %v", err)
@@ -1577,7 +1582,7 @@ func TestWSProxyAuditModePassthrough(t *testing.T) {
 	conn := dialWS(t, proxyAddr, backendAddr)
 	defer conn.Close() //nolint:errcheck // test
 
-	err := wsutil.WriteClientMessage(conn, ws.OpText, []byte("hello"))
+	err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(testWSHello))
 	if err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -1585,7 +1590,7 @@ func TestWSProxyAuditModePassthrough(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	if string(msg) != "hello" {
+	if string(msg) != testWSHello {
 		t.Errorf("expected echo 'hello', got %q", string(msg))
 	}
 }
@@ -1635,7 +1640,7 @@ func TestWSProxySessionBlocked(t *testing.T) {
 		cfg.SessionProfiling.Enabled = true
 		cfg.SessionProfiling.DomainBurst = 2
 		cfg.SessionProfiling.WindowMinutes = 5
-		cfg.SessionProfiling.AnomalyAction = "block" //nolint:goconst // test value
+		cfg.SessionProfiling.AnomalyAction = config.ActionBlock
 		cfg.SessionProfiling.MaxSessions = 100
 		cfg.SessionProfiling.SessionTTLMinutes = 30
 		cfg.SessionProfiling.CleanupIntervalSeconds = 60
@@ -1835,7 +1840,7 @@ func TestWSProxyInjectionStrip_ServerSide(t *testing.T) {
 	conn := dialWS(t, proxyAddr, backendAddr)
 	defer conn.Close() //nolint:errcheck // test
 
-	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte("hello")); err != nil {
+	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(testWSHello)); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 
@@ -2046,7 +2051,7 @@ func TestWSProxyInjectionAsk_ServerSide(t *testing.T) {
 	conn := dialWS(t, proxyAddr, backendAddr)
 	defer conn.Close() //nolint:errcheck // test
 
-	if writeErr := wsutil.WriteClientMessage(conn, ws.OpText, []byte("hello")); writeErr != nil {
+	if writeErr := wsutil.WriteClientMessage(conn, ws.OpText, []byte(testWSHello)); writeErr != nil {
 		t.Fatalf("write: %v", writeErr)
 	}
 

@@ -9,6 +9,11 @@ import (
 	"testing"
 )
 
+const (
+	testMCPInput = `{"mcpServers":{"test":{"command":"node","args":["server.js"]}}}`
+	flagEnv      = "--env"
+)
+
 func TestGenerateMcporter_BasicWrap(t *testing.T) {
 	input := `{
 		"mcpServers": {
@@ -43,7 +48,7 @@ func TestGenerateMcporter_BasicWrap(t *testing.T) {
 	servers := result["mcpServers"].(map[string]interface{})
 	fs := servers["filesystem"].(map[string]interface{})
 
-	if fs["command"] != "pipelock" { //nolint:goconst // test value
+	if fs["command"] != mcporterBinaryName {
 		t.Fatalf("command should be pipelock, got %v", fs["command"])
 	}
 
@@ -55,7 +60,7 @@ func TestGenerateMcporter_BasicWrap(t *testing.T) {
 		if a == "--" {
 			foundSep = true
 		}
-		if a == "--env" && i+1 < len(args) && args[i+1] == "HOME" { //nolint:goconst // test value
+		if a == flagEnv && i+1 < len(args) && args[i+1] == "HOME" {
 			foundEnv = true
 		}
 	}
@@ -99,12 +104,12 @@ func TestGenerateMcporter_AlreadyWrapped(t *testing.T) {
 
 	servers := result["mcpServers"].(map[string]interface{})
 	fs := servers["filesystem"].(map[string]interface{})
-	if fs["command"] != "pipelock" { //nolint:goconst // test value
+	if fs["command"] != mcporterBinaryName {
 		t.Fatal("already-wrapped server should remain unchanged")
 	}
 	// Verify args are unchanged (not double-wrapped).
 	args := fs["args"].([]interface{})
-	if len(args) != 5 || args[0] != "mcp" || args[1] != "proxy" { //nolint:goconst // test value
+	if len(args) != 5 || args[0] != "mcp" || args[1] != "proxy" {
 		t.Fatalf("args should be unchanged, got %v", args)
 	}
 }
@@ -140,13 +145,13 @@ func TestGenerateMcporter_HTTPUpstream(t *testing.T) {
 
 	servers := result["mcpServers"].(map[string]interface{})
 	remote := servers["remote"].(map[string]interface{})
-	if remote["command"] != "pipelock" { //nolint:goconst // test value
+	if remote["command"] != mcporterBinaryName {
 		t.Fatal("expected pipelock wrapper")
 	}
 	args := remote["args"].([]interface{})
 	hasUpstream := false
 	for i, a := range args {
-		if a == "--upstream" && i+1 < len(args) && args[i+1] == "http://localhost:8080/mcp" { //nolint:goconst // test value
+		if a == "--upstream" && i+1 < len(args) && args[i+1] == "http://localhost:8080/mcp" {
 			hasUpstream = true
 		}
 	}
@@ -186,7 +191,7 @@ func TestGenerateMcporter_WSUpstream(t *testing.T) {
 
 	servers := result["mcpServers"].(map[string]interface{})
 	ws := servers["ws-server"].(map[string]interface{})
-	if ws["command"] != "pipelock" { //nolint:goconst // test value
+	if ws["command"] != mcporterBinaryName {
 		t.Fatal("expected pipelock wrapper")
 	}
 	args := ws["args"].([]interface{})
@@ -280,7 +285,7 @@ func TestGenerateMcporter_UnknownFormat(t *testing.T) {
 }
 
 func TestGenerateMcporter_InPlace(t *testing.T) {
-	input := `{"mcpServers":{"test":{"command":"node","args":["server.js"]}}}` //nolint:goconst
+	input := testMCPInput
 
 	tmpFile := filepath.Join(t.TempDir(), "mcporter.json")
 	if err := os.WriteFile(tmpFile, []byte(input), 0o600); err != nil {
@@ -306,13 +311,13 @@ func TestGenerateMcporter_InPlace(t *testing.T) {
 
 	servers := result["mcpServers"].(map[string]interface{})
 	test := servers["test"].(map[string]interface{})
-	if test["command"] != "pipelock" { //nolint:goconst // test value
+	if test["command"] != mcporterBinaryName {
 		t.Fatal("in-place write should have wrapped the server")
 	}
 }
 
 func TestGenerateMcporter_InPlaceWithBackup(t *testing.T) {
-	input := `{"mcpServers":{"test":{"command":"node","args":["server.js"]}}}` //nolint:goconst
+	input := testMCPInput
 
 	tmpFile := filepath.Join(t.TempDir(), "mcporter.json")
 	if err := os.WriteFile(tmpFile, []byte(input), 0o600); err != nil {
@@ -337,7 +342,7 @@ func TestGenerateMcporter_InPlaceWithBackup(t *testing.T) {
 }
 
 func TestGenerateMcporter_CustomBinAndConfig(t *testing.T) {
-	input := `{"mcpServers":{"test":{"command":"node","args":["server.js"]}}}` //nolint:goconst
+	input := testMCPInput
 
 	var buf bytes.Buffer
 	cmd := rootCmd()
@@ -422,19 +427,19 @@ func TestGenerateMcporter_MultipleServers(t *testing.T) {
 
 	// stdio-server should be wrapped.
 	stdio := servers["stdio-server"].(map[string]interface{})
-	if stdio["command"] != "pipelock" { //nolint:goconst // test value
+	if stdio["command"] != mcporterBinaryName {
 		t.Fatal("stdio-server should be wrapped")
 	}
 
 	// http-server should be wrapped with --upstream.
 	http := servers["http-server"].(map[string]interface{})
-	if http["command"] != "pipelock" { //nolint:goconst // test value
+	if http["command"] != mcporterBinaryName {
 		t.Fatal("http-server should be wrapped")
 	}
 
 	// wrapped should remain unchanged.
 	w := servers["wrapped"].(map[string]interface{})
-	if w["command"] != "pipelock" { //nolint:goconst // test value
+	if w["command"] != mcporterBinaryName {
 		t.Fatal("wrapped should remain pipelock")
 	}
 	wArgs := w["args"].([]interface{})
@@ -535,7 +540,7 @@ func TestGenerateMcporter_URLEntryPreservesEnv(t *testing.T) {
 	args := gw["args"].([]interface{})
 	envCount := 0
 	for _, a := range args {
-		if a == "--env" {
+		if a == flagEnv {
 			envCount++
 		}
 	}
@@ -584,7 +589,7 @@ func TestGenerateMcporter_FlagLikeEnvKeysDropped(t *testing.T) {
 	// Only SAFE_VAR should appear after --env; flag-like keys must be dropped.
 	envCount := 0
 	for i, a := range args {
-		if a == "--env" {
+		if a == flagEnv {
 			envCount++
 			if i+1 < len(args) {
 				val := args[i+1].(string)
@@ -646,7 +651,7 @@ func TestGenerateMcporter_NonStringCommandRejectsEntry(t *testing.T) {
 }
 
 func TestGenerateMcporter_OutputFile(t *testing.T) {
-	input := `{"mcpServers":{"test":{"command":"node","args":["server.js"]}}}` //nolint:goconst
+	input := testMCPInput
 
 	tmpDir := t.TempDir()
 	inFile := filepath.Join(tmpDir, "in.json")
@@ -675,7 +680,7 @@ func TestGenerateMcporter_OutputFile(t *testing.T) {
 	}
 	servers := result["mcpServers"].(map[string]interface{})
 	test := servers["test"].(map[string]interface{})
-	if test["command"] != "pipelock" { //nolint:goconst // test value
+	if test["command"] != mcporterBinaryName {
 		t.Fatal("output file should contain wrapped server")
 	}
 }
@@ -757,7 +762,7 @@ func TestGenerateMcporter_McpServersNotObject(t *testing.T) {
 }
 
 func TestGenerateMcporter_OutputFileError(t *testing.T) {
-	input := `{"mcpServers":{"test":{"command":"node","args":["server.js"]}}}` //nolint:goconst
+	input := testMCPInput
 
 	tmpFile := filepath.Join(t.TempDir(), "in.json")
 	if err := os.WriteFile(tmpFile, []byte(input), 0o600); err != nil {
@@ -810,14 +815,14 @@ func TestGenerateMcporter_URLEntryAlreadyWrapped(t *testing.T) {
 	servers := result["mcpServers"].(map[string]interface{})
 	gw := servers["gateway"].(map[string]interface{})
 	// Should be skipped (already wrapped).
-	if gw["command"] != "pipelock" { //nolint:goconst // test value
+	if gw["command"] != mcporterBinaryName {
 		t.Fatal("already-wrapped URL entry should remain unchanged")
 	}
 }
 
 func TestGenerateMcporter_IsAlreadyWrapped_DashDashBeforeProxy(t *testing.T) {
 	// Args with -- before "proxy" should not be considered wrapped.
-	if isAlreadyWrapped("pipelock", []string{"mcp", "--", "proxy"}) {
+	if isAlreadyWrapped(mcporterBinaryName, []string{"mcp", "--", "proxy"}) {
 		t.Fatal("should not detect as wrapped when -- appears before proxy")
 	}
 }
@@ -925,7 +930,7 @@ func TestGenerateMcporter_PreservesPerServerExtraFields(t *testing.T) {
 
 	// stdio-server should be wrapped AND preserve extra fields.
 	stdio := servers["stdio-server"].(map[string]interface{})
-	if stdio["command"] != "pipelock" { //nolint:goconst // test value
+	if stdio["command"] != mcporterBinaryName {
 		t.Fatal("stdio-server should be wrapped")
 	}
 	if stdio["disabled"] != false {
@@ -942,7 +947,7 @@ func TestGenerateMcporter_PreservesPerServerExtraFields(t *testing.T) {
 
 	// url-server should be wrapped AND preserve extra fields (except url).
 	urlSrv := servers["url-server"].(map[string]interface{})
-	if urlSrv["command"] != "pipelock" { //nolint:goconst // test value
+	if urlSrv["command"] != mcporterBinaryName {
 		t.Fatal("url-server should be wrapped")
 	}
 	if urlSrv["disabled"] != true {
@@ -994,7 +999,7 @@ func TestGenerateMcporter_UpstreamFlagLikeEnvKeysDropped(t *testing.T) {
 	args := remote["args"].([]interface{})
 	envCount := 0
 	for _, a := range args {
-		if a == "--env" {
+		if a == flagEnv {
 			envCount++
 		}
 	}

@@ -11,6 +11,10 @@ import (
 	"testing"
 )
 
+const (
+	testJSONID2 = `{"id":2}`
+)
+
 // drain reads all messages from a MessageReader until an error is returned.
 func drain(t *testing.T, r MessageReader) {
 	t.Helper()
@@ -25,14 +29,14 @@ func drain(t *testing.T, r MessageReader) {
 func TestHTTPClient_JSONResponse(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Verify request headers.
-		if ct := r.Header.Get("Content-Type"); ct != "application/json" { //nolint:goconst // test value
+		if ct := r.Header.Get("Content-Type"); ct != "application/json" {
 			t.Errorf("Content-Type = %q, want application/json", ct)
 		}
-		if accept := r.Header.Get("Accept"); accept != "application/json, text/event-stream" { //nolint:goconst // test value
+		if accept := r.Header.Get("Accept"); accept != "application/json, text/event-stream" {
 			t.Errorf("Accept = %q, want %q", accept, "application/json, text/event-stream")
 		}
 
-		w.Header().Set("Content-Type", "application/json") //nolint:goconst // test value
+		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
 	}))
 	defer srv.Close()
@@ -47,7 +51,7 @@ func TestHTTPClient_JSONResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadMessage: %v", err)
 	}
-	if string(msg) != `{"jsonrpc":"2.0","id":1,"result":{}}` { //nolint:goconst // test value
+	if string(msg) != `{"jsonrpc":"2.0","id":1,"result":{}}` {
 		t.Errorf("got %q", string(msg))
 	}
 
@@ -60,7 +64,7 @@ func TestHTTPClient_JSONResponse(t *testing.T) {
 
 func TestHTTPClient_SSEResponse(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream") //nolint:goconst // test value
+		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: {\"id\":1}\n\ndata: {\"id\":2}\n\n"))
 	}))
 	defer srv.Close()
@@ -75,16 +79,16 @@ func TestHTTPClient_SSEResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadMessage 1: %v", err)
 	}
-	if string(msg1) != `{"id":1}` { //nolint:goconst // test value
-		t.Errorf("msg1 = %q, want %q", string(msg1), `{"id":1}`)
+	if string(msg1) != testJSONID1 {
+		t.Errorf("msg1 = %q, want %q", string(msg1), testJSONID1)
 	}
 
 	msg2, err := reader.ReadMessage()
 	if err != nil {
 		t.Fatalf("ReadMessage 2: %v", err)
 	}
-	if string(msg2) != `{"id":2}` { //nolint:goconst // test value
-		t.Errorf("msg2 = %q, want %q", string(msg2), `{"id":2}`)
+	if string(msg2) != testJSONID2 {
+		t.Errorf("msg2 = %q, want %q", string(msg2), testJSONID2)
 	}
 
 	// Next read should return io.EOF.
@@ -102,13 +106,13 @@ func TestHTTPClient_SessionIDTracking(t *testing.T) {
 
 		if call == 1 {
 			// First call: no session ID expected, set one in response.
-			if got := r.Header.Get("Mcp-Session-Id"); got != "" { //nolint:goconst // test value
+			if got := r.Header.Get("Mcp-Session-Id"); got != "" {
 				t.Errorf("call 1: unexpected Mcp-Session-Id header: %q", got)
 			}
-			w.Header().Set("Mcp-Session-Id", "sess-abc-123") //nolint:goconst // test value
+			w.Header().Set("Mcp-Session-Id", "sess-abc-123")
 		} else {
 			// Second call: session ID should be sent.
-			if got := r.Header.Get("Mcp-Session-Id"); got != "sess-abc-123" { //nolint:goconst // test value
+			if got := r.Header.Get("Mcp-Session-Id"); got != "sess-abc-123" {
 				t.Errorf("call 2: Mcp-Session-Id = %q, want %q", got, "sess-abc-123")
 			}
 		}
@@ -195,7 +199,7 @@ func TestHTTPClient_ErrorStatusIncludesBody(t *testing.T) {
 
 func TestHTTPClient_AuthHeader(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("Authorization"); got != "Bearer tok-123" { //nolint:goconst // test value
+		if got := r.Header.Get("Authorization"); got != "Bearer tok-123" {
 			t.Errorf("Authorization = %q, want %q", got, "Bearer tok-123")
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -204,7 +208,7 @@ func TestHTTPClient_AuthHeader(t *testing.T) {
 	defer srv.Close()
 
 	headers := http.Header{}
-	headers.Set("Authorization", "Bearer tok-123") //nolint:goconst // test value
+	headers.Set("Authorization", "Bearer tok-123")
 
 	c := NewHTTPClient(srv.URL, headers)
 	reader, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
@@ -219,7 +223,7 @@ func TestHTTPClient_RedirectBlocked(t *testing.T) {
 	var targetCalled atomic.Int32
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		targetCalled.Add(1)
-		w.Header().Set("Content-Type", "application/json") //nolint:goconst // test value
+		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
 	}))
 	defer target.Close()
@@ -247,13 +251,13 @@ func TestHTTPClient_RedirectBlocked(t *testing.T) {
 
 func TestHTTPClient_HeaderImmutability(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json") //nolint:goconst // test value
+		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
 	}))
 	defer srv.Close()
 
 	headers := http.Header{}
-	headers.Set("X-Custom", "original") //nolint:goconst // test value
+	headers.Set("X-Custom", "original")
 
 	c := NewHTTPClient(srv.URL, headers)
 
@@ -275,10 +279,10 @@ func TestHTTPClient_HeaderImmutability(t *testing.T) {
 func TestHTTPClient_ExtraHeadersCannotOverrideTransport(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Extra headers should NOT override Content-Type or Accept.
-		if ct := r.Header.Get("Content-Type"); ct != "application/json" { //nolint:goconst // test value
+		if ct := r.Header.Get("Content-Type"); ct != "application/json" {
 			t.Errorf("Content-Type = %q, want application/json (should not be overridden)", ct)
 		}
-		if accept := r.Header.Get("Accept"); accept != "application/json, text/event-stream" { //nolint:goconst // test value
+		if accept := r.Header.Get("Accept"); accept != "application/json, text/event-stream" {
 			t.Errorf("Accept = %q, should not be overridden", accept)
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -287,8 +291,8 @@ func TestHTTPClient_ExtraHeadersCannotOverrideTransport(t *testing.T) {
 	defer srv.Close()
 
 	headers := http.Header{}
-	headers.Set("Content-Type", "text/plain") //nolint:goconst // test value
-	headers.Set("Accept", "text/html")        //nolint:goconst // test value
+	headers.Set("Content-Type", "text/plain")
+	headers.Set("Accept", "text/html")
 	c := NewHTTPClient(srv.URL, headers)
 	reader, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
 	if err != nil {
@@ -303,7 +307,7 @@ func TestHTTPClient_OpenGETStream_Success(t *testing.T) {
 			http.Error(w, "expected GET", http.StatusMethodNotAllowed)
 			return
 		}
-		if got := r.Header.Get("Accept"); got != "text/event-stream" { //nolint:goconst // test value
+		if got := r.Header.Get("Accept"); got != "text/event-stream" {
 			t.Errorf("Accept = %q, want text/event-stream", got)
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -378,13 +382,13 @@ func TestHTTPClient_OpenGETStream_ErrorNoBody(t *testing.T) {
 func TestHTTPClient_OpenGETStream_IncludesSessionID(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
-			w.Header().Set("Mcp-Session-Id", "sess-get-test") //nolint:goconst // test value
+			w.Header().Set("Mcp-Session-Id", "sess-get-test")
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
 			return
 		}
 		// GET: verify session ID header.
-		if got := r.Header.Get("Mcp-Session-Id"); got != "sess-get-test" { //nolint:goconst // test value
+		if got := r.Header.Get("Mcp-Session-Id"); got != "sess-get-test" {
 			t.Errorf("GET Mcp-Session-Id = %q, want %q", got, "sess-get-test")
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -414,12 +418,12 @@ func TestHTTPClient_ErrorResponseDoesNotOverwriteSessionID(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		callCount++
 		if callCount == 1 {
-			w.Header().Set("Mcp-Session-Id", "good-session") //nolint:goconst // test value
+			w.Header().Set("Mcp-Session-Id", "good-session")
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
 			return
 		}
-		w.Header().Set("Mcp-Session-Id", "evil-session") //nolint:goconst // test value
+		w.Header().Set("Mcp-Session-Id", "evil-session")
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer srv.Close()
@@ -448,14 +452,14 @@ func TestHTTPClient_DeleteSession_Success(t *testing.T) {
 	var deleteCalled atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
-			w.Header().Set("Mcp-Session-Id", "sess-del-test") //nolint:goconst // test value
+			w.Header().Set("Mcp-Session-Id", "sess-del-test")
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
 			return
 		}
 		if r.Method == http.MethodDelete {
 			deleteCalled.Add(1)
-			if got := r.Header.Get("Mcp-Session-Id"); got != "sess-del-test" { //nolint:goconst // test value
+			if got := r.Header.Get("Mcp-Session-Id"); got != "sess-del-test" {
 				t.Errorf("DELETE Mcp-Session-Id = %q, want %q", got, "sess-del-test")
 			}
 			w.WriteHeader(http.StatusOK)
@@ -503,7 +507,7 @@ func TestHTTPClient_DeleteSession_NoSession(t *testing.T) {
 func TestHTTPClient_DeleteSession_ServerError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
-			w.Header().Set("Mcp-Session-Id", "sess-err") //nolint:goconst // test value
+			w.Header().Set("Mcp-Session-Id", "sess-err")
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
 			return
@@ -530,7 +534,7 @@ func TestHTTPClient_DeleteSession_ServerError(t *testing.T) {
 func TestHTTPClient_DeleteSession_ConnectionError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
-			w.Header().Set("Mcp-Session-Id", "sess-conn-err") //nolint:goconst // test value
+			w.Header().Set("Mcp-Session-Id", "sess-conn-err")
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
 			return
@@ -557,7 +561,7 @@ func TestHTTPClient_DeleteSession_ConnectionError(t *testing.T) {
 func TestHTTPClient_DeleteSession_ConnectionError_NilLog(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
-			w.Header().Set("Mcp-Session-Id", "sess-nil-log") //nolint:goconst // test value
+			w.Header().Set("Mcp-Session-Id", "sess-nil-log")
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
 			return
@@ -616,7 +620,7 @@ func TestHTTPClient_OpenGETStream_3xxRedirect(t *testing.T) {
 
 func TestHTTPClient_SendMessage_3xxRedirect(t *testing.T) {
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json") //nolint:goconst // test value
+		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
 	}))
 	defer target.Close()
@@ -639,8 +643,8 @@ func TestHTTPClient_SendMessage_3xxRedirect(t *testing.T) {
 func TestHTTPClient_DeleteSession_ServerError_NilLog(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
-			w.Header().Set("Mcp-Session-Id", "sess-err-nillog") //nolint:goconst // test value
-			w.Header().Set("Content-Type", "application/json")  //nolint:goconst // test value
+			w.Header().Set("Mcp-Session-Id", "sess-err-nillog")
+			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
 			return
 		}
@@ -662,7 +666,7 @@ func TestHTTPClient_OpenGETStream_IncludesHeaders(t *testing.T) {
 	var gotAuth string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
-		w.Header().Set("Content-Type", "text/event-stream") //nolint:goconst // test value
+		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: {}\n\n"))
 	}))
 	defer srv.Close()
@@ -684,7 +688,7 @@ func TestHTTPClient_DeleteSession_IncludesExtraHeaders(t *testing.T) {
 	var gotAuth string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
-			w.Header().Set("Mcp-Session-Id", "sess-hdr") //nolint:goconst // test value
+			w.Header().Set("Mcp-Session-Id", "sess-hdr")
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
 			return
@@ -730,7 +734,7 @@ func TestHTTPClient_DeleteSession_BadURL(t *testing.T) {
 
 func TestHTTPClient_SendMessage_EmptyBody(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json") //nolint:goconst // test value
+		w.Header().Set("Content-Type", "application/json")
 		// Empty response body.
 	}))
 	defer srv.Close()
@@ -844,7 +848,7 @@ func TestHTTPClient_SingleMessageReader_Overflow(t *testing.T) {
 
 func TestHTTPClient_ClosingSSEReader_DoubleRead(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream") //nolint:goconst // test value
+		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: {}\n\n"))
 	}))
 	defer srv.Close()

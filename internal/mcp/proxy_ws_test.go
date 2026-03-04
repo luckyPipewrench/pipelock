@@ -115,8 +115,8 @@ func TestRunWSProxy_ForwardsCleanRequest(t *testing.T) {
 	if err := json.Unmarshal([]byte(output), &rpc); err != nil {
 		t.Fatalf("invalid JSON: %v\noutput: %s", err, output)
 	}
-	if rpc.JSONRPC != "2.0" { //nolint:goconst // test value
-		t.Errorf("jsonrpc = %q, want %q", rpc.JSONRPC, "2.0")
+	if rpc.JSONRPC != jsonRPC20 {
+		t.Errorf("jsonrpc = %q, want %q", rpc.JSONRPC, jsonRPC20)
 	}
 }
 
@@ -128,7 +128,7 @@ func TestRunWSProxy_BlocksInjectedResponse(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
-	cfg.ResponseScanning.Action = "block" //nolint:goconst // test value
+	cfg.ResponseScanning.Action = config.ActionBlock
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 
@@ -225,7 +225,7 @@ func TestRunWSProxy_KillSwitchDeniesAll(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.KillSwitch.Enabled = true
-	cfg.KillSwitch.Message = "test kill" //nolint:goconst // test value
+	cfg.KillSwitch.Message = "test kill"
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 
@@ -265,7 +265,7 @@ func TestRunWSProxy_KillSwitchDropsNotification(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.KillSwitch.Enabled = true
-	cfg.KillSwitch.Message = "test kill" //nolint:goconst // test value
+	cfg.KillSwitch.Message = "test kill"
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 
@@ -428,7 +428,7 @@ func TestRunWSProxy_ToolScanningDetectsPoison(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
-	cfg.ResponseScanning.Action = "block" //nolint:goconst // test value
+	cfg.ResponseScanning.Action = config.ActionBlock
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 

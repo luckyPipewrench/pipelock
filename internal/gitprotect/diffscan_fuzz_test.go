@@ -64,7 +64,7 @@ func FuzzScanDiff(f *testing.F) {
 	patterns := CompileDLPPatterns(config.Defaults().DLP.Patterns)
 
 	// Diff with secret
-	f.Add("+++ b/config.go\n@@ -0,0 +1 @@\n+apiKey := \"AKIA" + "IOSFODNN7EXAMPLE\"\n") //nolint:goconst // fuzz seed
+	f.Add("+++ b/config.go\n@@ -0,0 +1 @@\n+apiKey := \"AKIA" + "IOSFODNN7EXAMPLE\"\n")
 
 	// Clean diff
 	f.Add("+++ b/safe.go\n@@ -0,0 +1 @@\n+fmt.Println(\"hello\")\n")

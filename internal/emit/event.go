@@ -19,7 +19,7 @@ const (
 func (s Severity) String() string {
 	switch s {
 	case SeverityWarn:
-		return "warn" //nolint:goconst // severity string values used in String() and ParseSeverity()
+		return "warn"
 	case SeverityCritical:
 		return "critical"
 	default:

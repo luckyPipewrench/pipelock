@@ -94,9 +94,9 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Map ws->http, wss->https for the scanner pipeline (scanner expects HTTP schemes).
-	scanScheme := "http" //nolint:goconst // scheme literal
+	scanScheme := schemeHTTP
 	if parsed.Scheme == "wss" {
-		scanScheme = "https" //nolint:goconst // scheme literal
+		scanScheme = schemeHTTPS
 	}
 	scanURL := scanScheme + "://" + parsed.Host + parsed.RequestURI()
 
@@ -237,9 +237,9 @@ func (p *Proxy) buildWSForwardHeaders(r *http.Request, parsed *url.URL, cfg *con
 	case "strip":
 		// Do not forward Origin.
 	default: // "rewrite"
-		scheme := "https"
+		scheme := schemeHTTPS
 		if parsed.Scheme == "ws" {
-			scheme = "http"
+			scheme = schemeHTTP
 		}
 		fwd.Set("Origin", scheme+"://"+parsed.Host)
 	}

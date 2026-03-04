@@ -38,11 +38,11 @@ func TestReloader_FileChange(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	// Modify config
-	writeTestConfig(t, cfgPath, "audit")
+	writeTestConfig(t, cfgPath, ModeAudit)
 
 	select {
 	case cfg := <-r.Changes():
-		if cfg.Mode != "audit" { //nolint:goconst // test values
+		if cfg.Mode != ModeAudit {
 			t.Errorf("expected mode audit, got %s", cfg.Mode)
 		}
 	case <-time.After(3 * time.Second):
@@ -165,7 +165,7 @@ func TestReloader_SIGHUPReload(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	// Update config file (SIGHUP reloads from disk, so the file must change)
-	writeTestConfig(t, cfgPath, "audit")
+	writeTestConfig(t, cfgPath, ModeAudit)
 
 	// Small delay so the file is written before signal
 	time.Sleep(50 * time.Millisecond)
@@ -177,7 +177,7 @@ func TestReloader_SIGHUPReload(t *testing.T) {
 
 	select {
 	case cfg := <-r.Changes():
-		if cfg.Mode != "audit" { //nolint:goconst // test value
+		if cfg.Mode != ModeAudit {
 			t.Errorf("expected mode audit after SIGHUP, got %s", cfg.Mode)
 		}
 	case <-time.After(3 * time.Second):
@@ -269,14 +269,14 @@ func TestReloader_RenameReload(t *testing.T) {
 
 	// Write to temp, then rename (vim pattern)
 	tmpPath := filepath.Join(dir, "pipelock.yaml.tmp")
-	writeTestConfig(t, tmpPath, "audit")
+	writeTestConfig(t, tmpPath, ModeAudit)
 	if err := os.Rename(tmpPath, cfgPath); err != nil {
 		t.Fatal(err)
 	}
 
 	select {
 	case cfg := <-r.Changes():
-		if cfg.Mode != "audit" { //nolint:goconst // test values
+		if cfg.Mode != ModeAudit {
 			t.Errorf("expected mode audit, got %s", cfg.Mode)
 		}
 	case <-time.After(3 * time.Second):

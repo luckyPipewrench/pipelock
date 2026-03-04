@@ -17,6 +17,13 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
+const (
+	testAlphabet   = "abcdefghijklmnopqrstuvwxyz"
+	testLowEntropy = "aaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	testUpperPad   = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	testSecretVal  = "SuperSecretValue123456"
+)
+
 func testConfig() *config.Config {
 	cfg := config.Defaults()
 	// Use a higher entropy threshold for test predictability
@@ -100,7 +107,7 @@ func TestScan_BlocksDLPPatterns(t *testing.T) {
 		if result.Allowed {
 			t.Errorf("expected %s to be blocked (DLP: %s)", tt.url, tt.pattern)
 		}
-		if result.Scanner != "dlp" { //nolint:goconst // test value
+		if result.Scanner != ScannerDLP {
 			t.Errorf("expected scanner=dlp for %s, got %s", tt.url, result.Scanner)
 		}
 	}
@@ -157,7 +164,7 @@ func TestScan_BlocksHighEntropySegments(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected high-entropy URL to be blocked")
 	}
-	if result.Scanner != "entropy" { //nolint:goconst // test value
+	if result.Scanner != ScannerEntropy {
 		t.Errorf("expected scanner=entropy, got %s", result.Scanner)
 	}
 }
@@ -501,7 +508,7 @@ func TestScan_DLPCatchesURLEncodedSecrets(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected DLP to catch URL-encoded private key header")
 	}
-	if result.Scanner != "dlp" { //nolint:goconst // test value
+	if result.Scanner != ScannerDLP {
 		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
 	}
 }
@@ -514,7 +521,7 @@ func TestScan_DLPCatchesURLEncodedDashes(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected DLP to catch URL-encoded Anthropic key")
 	}
-	if result.Scanner != "dlp" {
+	if result.Scanner != ScannerDLP {
 		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
 	}
 }
@@ -537,7 +544,7 @@ func TestScan_DLPCatchesDoubleEncodedSecret(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected DLP to catch double-encoded Anthropic key")
 	}
-	if result.Scanner != "dlp" {
+	if result.Scanner != ScannerDLP {
 		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
 	}
 }
@@ -621,7 +628,7 @@ func TestScan_HighEntropyQueryKey(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected high-entropy query key to be blocked")
 	}
-	if result.Scanner != "entropy" {
+	if result.Scanner != ScannerEntropy {
 		t.Errorf("expected scanner=entropy, got %s", result.Scanner)
 	}
 }
@@ -668,7 +675,7 @@ func TestScan_DLPInPath(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected DLP to catch AWS key in URL path")
 	}
-	if result.Scanner != "dlp" {
+	if result.Scanner != ScannerDLP {
 		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
 	}
 }
@@ -680,7 +687,7 @@ func TestScan_DLPInSubdomain(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected DLP to catch OpenAI key in subdomain")
 	}
-	if result.Scanner != "dlp" {
+	if result.Scanner != ScannerDLP {
 		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
 	}
 }
@@ -746,7 +753,7 @@ func TestScan_DLPSubdomainDotCollapse(t *testing.T) {
 			if !tt.blocked && !result.Allowed {
 				t.Errorf("expected normal URL to be allowed: %s (blocked: %s)", tt.url, result.Reason)
 			}
-			if tt.blocked && result.Scanner != "dlp" {
+			if tt.blocked && result.Scanner != ScannerDLP {
 				t.Errorf("expected scanner=dlp, got %s", result.Scanner)
 			}
 		})
@@ -785,7 +792,7 @@ func TestScan_DLPOpenAIKey_OldFormatNotMatched(t *testing.T) {
 	result := s.Scan("https://example.com/api?key=sk-abcdefghijklmnopqrstuvwxyz")
 	if !result.Allowed {
 		// May still be caught by entropy, check it's not DLP
-		if result.Scanner == "dlp" {
+		if result.Scanner == ScannerDLP {
 			t.Error("expected old sk- prefix NOT to trigger DLP (too broad)")
 		}
 	}
@@ -929,7 +936,7 @@ func TestScan_Base64String(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected high-entropy base64-like string to be blocked")
 	}
-	if result.Scanner != "entropy" {
+	if result.Scanner != ScannerEntropy {
 		t.Errorf("expected scanner=entropy, got %s", result.Scanner)
 	}
 }
@@ -942,7 +949,7 @@ func TestScan_MultipleQueryParams_OneTriggering(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected URL with secret in one query param to be blocked")
 	}
-	if result.Scanner != "dlp" {
+	if result.Scanner != ScannerDLP {
 		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
 	}
 }
@@ -1010,7 +1017,7 @@ func TestScan_DLPCatchesSecretInHostnameBeforeDNS(t *testing.T) {
 	if result.Allowed {
 		t.Fatal("expected DLP to catch secret in hostname")
 	}
-	if result.Scanner != "dlp" {
+	if result.Scanner != ScannerDLP {
 		t.Errorf("expected scanner=dlp (runs before DNS), got %s", result.Scanner)
 	}
 }
@@ -1025,7 +1032,7 @@ func TestScan_EntropyInQueryParam(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected high-entropy query param to be blocked")
 	}
-	if result.Scanner != "entropy" {
+	if result.Scanner != ScannerEntropy {
 		t.Errorf("expected scanner=entropy, got %s", result.Scanner)
 	}
 }
@@ -1126,7 +1133,7 @@ func TestScan_DLPCatchesMalformedPercentEncoding(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected DLP to catch AWS key even with malformed percent-encoding in query")
 	}
-	if result.Scanner != "dlp" {
+	if result.Scanner != ScannerDLP {
 		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
 	}
 }
@@ -1304,9 +1311,9 @@ func TestScan_DLP_ZeroWidthBypass(t *testing.T) {
 
 	// Try to bypass DLP with zero-width characters inside a known pattern
 	// Build the pattern at runtime to avoid gitleaks
-	prefix := "sk-ant-"                    //nolint:goconst // test value
-	suffix := "abcdefghijklmnopqrstuvwxyz" //nolint:goconst // test value
-	zwsp := "\u200B"                       // zero-width space
+	prefix := testAnthropicPrefix
+	suffix := testAlphabet
+	zwsp := "\u200B" // zero-width space
 	url := "https://example.com/api?key=" + prefix + zwsp + suffix
 
 	result := s.Scan(url)
@@ -1323,8 +1330,8 @@ func TestScan_DLP_ConfusableBypass(t *testing.T) {
 	defer s.Close()
 
 	// Armenian ա (U+0561) in key prefix — maps to 'a', so sk-աnt- → sk-ant-
-	prefix := "sk-\u0561nt-"                //nolint:goconst // test value
-	suffix := "aaaaaaaaaaaaaaaaaaaaaaaaaaa" //nolint:goconst // test value
+	prefix := "sk-\u0561nt-"
+	suffix := testLowEntropy
 	result := s.Scan("https://example.com/api?key=" + prefix + suffix)
 	if result.Allowed {
 		t.Error("expected DLP to catch Armenian confusable bypass")
@@ -1337,8 +1344,8 @@ func TestScan_DLP_CombiningMarkBypass(t *testing.T) {
 	defer s.Close()
 
 	// Combining long stroke overlay (U+0337) in key prefix
-	prefix := "sk-a\u0337nt-"               //nolint:goconst // test value
-	suffix := "aaaaaaaaaaaaaaaaaaaaaaaaaaa" //nolint:goconst // test value
+	prefix := "sk-a\u0337nt-"
+	suffix := testLowEntropy
 	result := s.Scan("https://example.com/api?key=" + prefix + suffix)
 	if result.Allowed {
 		t.Error("expected DLP to catch combining mark bypass in URL")
@@ -1351,8 +1358,8 @@ func TestScan_DLP_CyrillicConfusableBypass(t *testing.T) {
 	defer s.Close()
 
 	// Cyrillic а (U+0430) replacing Latin 'a' in key prefix
-	prefix := "sk-\u0430nt-"                //nolint:goconst // test value
-	suffix := "aaaaaaaaaaaaaaaaaaaaaaaaaaa" //nolint:goconst // test value
+	prefix := "sk-\u0430nt-"
+	suffix := testLowEntropy
 	result := s.Scan("https://example.com/api?key=" + prefix + suffix)
 	if result.Allowed {
 		t.Error("expected DLP to catch Cyrillic confusable bypass in URL")
@@ -1444,7 +1451,7 @@ func TestScan_DLP_QueryInterleavedJunkBypass(t *testing.T) {
 	// querySubsequenceDLP should try combinations and reconstruct the key.
 	// Build key at runtime to avoid gitleaks.
 	prefix := "sk-" + "ant-api03-"
-	body := "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" //nolint:goconst // test value
+	body := testUpperPad
 	url := "https://evil.com/x?a=" + prefix[:3] + "&x1=junk&b=" + prefix[3:] + "&x2=noise&c=" + body + "&x3=filler"
 	result := s.Scan(url)
 	if result.Allowed {
@@ -1471,7 +1478,7 @@ func TestScan_DLP_QuerySubsequence_TwoParamsOnly(t *testing.T) {
 
 	// Only 2 query params — should use ordered concat, not subsequence (needs 3+)
 	prefix := "sk-" + "ant-api03-"
-	body := "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	body := testUpperPad
 	url := "https://evil.com/?a=" + prefix + "&b=" + body
 	result := s.Scan(url)
 	if result.Allowed {
@@ -1487,10 +1494,10 @@ func TestScan_DLP_QuerySubsequence_Over20ParamsCapped(t *testing.T) {
 	// Secret split across params 3 and 5, with >20 total params (junk padding).
 	// Should still catch it because we cap to first 20 values.
 	prefix := "sk-" + "ant-api03-"
-	body := "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	body := testUpperPad
 	u := "https://evil.com/x?j1=a&j2=b&secret1=" + prefix + "&j3=c&secret2=" + body
 	for i := 0; i < 18; i++ {
-		u += fmt.Sprintf("&pad%d=junk", i) //nolint:goconst // test value
+		u += fmt.Sprintf("&pad%d=junk", i)
 	}
 	result := s.Scan(u)
 	if result.Allowed {
@@ -1519,7 +1526,7 @@ func TestScan_DLP_OpenAIServiceKey(t *testing.T) {
 	defer s.Close()
 
 	// Build key at runtime
-	key := "sk-svcacct-" + "abcdefghijklmnopqrstuvwxyz"
+	key := "sk-svcacct-" + testAlphabet
 	result := s.Scan("https://example.com/api?key=" + key)
 	if result.Allowed {
 		t.Error("expected DLP to catch OpenAI Service Key")
@@ -1560,7 +1567,7 @@ func TestScan_DLP_QueryValueDotSeparatedBypass(t *testing.T) {
 
 	// Dot-separated key in a query parameter value. Before the fix,
 	// stripURLNoise only ran on paths, not individual query values.
-	prefix := "s.k.-.a.n.t.-." //nolint:goconst // test value
+	prefix := "s.k.-.a.n.t.-."
 	suffix := "A.B.C.D.E.F.G.H.I.J"
 	result := s.Scan("https://example.com/api?data=" + prefix + suffix)
 	if result.Allowed {
@@ -1574,7 +1581,7 @@ func TestScan_DLP_QueryKeyDotSeparatedBypass(t *testing.T) {
 	defer s.Close()
 
 	// Dot-separated key stuffed into a query parameter NAME, not value.
-	prefix := "s.k.-.a.n.t.-." //nolint:goconst // test value
+	prefix := "s.k.-.a.n.t.-."
 	suffix := "A.B.C.D.E.F.G.H.I.J"
 	result := s.Scan("https://example.com/api?" + prefix + suffix + "=1")
 	if result.Allowed {
@@ -1589,7 +1596,7 @@ func TestScan_DLP_ShortAnthropicKey(t *testing.T) {
 
 	// Key with 10-char suffix (previously needed 20+). The sk-ant- prefix
 	// is distinctive enough that partial fragments should still be caught.
-	key := "sk-ant-" + strings.Repeat("A", 10) //nolint:goconst // test value
+	key := "sk-ant-" + strings.Repeat("A", 10)
 	result := s.Scan("https://example.com/api?key=" + key)
 	if result.Allowed {
 		t.Error("expected DLP to catch short Anthropic key prefix")
@@ -1601,7 +1608,7 @@ func TestScan_DLP_ShortOpenAIKey(t *testing.T) {
 	s := New(cfg)
 	defer s.Close()
 
-	key := "sk-proj-" + strings.Repeat("A", 10) //nolint:goconst // test value
+	key := "sk-proj-" + strings.Repeat("A", 10)
 	result := s.Scan("https://example.com/api?key=" + key)
 	if result.Allowed {
 		t.Error("expected DLP to catch short OpenAI key prefix")
@@ -1613,7 +1620,7 @@ func TestScan_DLP_ShortSvcAcctKey(t *testing.T) {
 	s := New(cfg)
 	defer s.Close()
 
-	key := "sk-svcacct-" + strings.Repeat("A", 10) //nolint:goconst // test value
+	key := "sk-svcacct-" + strings.Repeat("A", 10)
 	result := s.Scan("https://example.com/api?key=" + key)
 	if result.Allowed {
 		t.Error("expected DLP to catch short OpenAI service-account key prefix")
@@ -1649,7 +1656,7 @@ func TestScan_DLP_CredentialInURL_Token(t *testing.T) {
 	s := New(cfg)
 	defer s.Close()
 
-	val := "abc123" + "def456" //nolint:goconst // test value, runtime construction avoids gitleaks
+	val := "abc123" + "def456"
 	result := s.Scan("https://example.com/webhook?token=" + val)
 	if result.Allowed {
 		t.Error("expected DLP to catch token= in URL")
@@ -1701,7 +1708,7 @@ func TestScan_DLP_CredentialInURL_WordBoundaryNoFP(t *testing.T) {
 		name string
 		url  string
 	}{
-		{"next_token", "https://example.com/api?next_token=" + "abcd1234" + "efgh"}, //nolint:goconst // runtime construction avoids gitleaks
+		{"next_token", "https://example.com/api?next_token=" + "abcd1234" + "efgh"},
 		{"page_token", "https://example.com/list?page_token=cursor12345"},
 		{"csrf_token_id", "https://example.com/form?csrf_token_id=abc1234def"},
 		{"auth_token_type", "https://example.com/oauth?auth_token_type=bearer123"},
@@ -1739,14 +1746,14 @@ func TestScan_DLP_HexEncodedAPIKeyInQuery(t *testing.T) {
 	defer s.Close()
 
 	// hex(prefix + suffix) — build at runtime
-	prefix := "sk-ant-"                    //nolint:goconst // test value
-	suffix := "abcdefghijklmnopqrstuvwxyz" //nolint:goconst // test value
+	prefix := testAnthropicPrefix
+	suffix := testAlphabet
 	hexEncoded := hex.EncodeToString([]byte(prefix + suffix))
 	result := s.Scan("https://example.com/api?key=" + hexEncoded)
 	if result.Allowed {
 		t.Error("expected hex-encoded API key in query param to be blocked")
 	}
-	if result.Scanner != "dlp" {
+	if result.Scanner != ScannerDLP {
 		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
 	}
 }
@@ -1757,14 +1764,14 @@ func TestScan_DLP_Base64EncodedAPIKeyInQuery(t *testing.T) {
 	defer s.Close()
 
 	// base64(prefix + suffix) — build at runtime
-	prefix := "sk-ant-"                    //nolint:goconst // test value
-	suffix := "abcdefghijklmnopqrstuvwxyz" //nolint:goconst // test value
+	prefix := testAnthropicPrefix
+	suffix := testAlphabet
 	b64Encoded := base64.StdEncoding.EncodeToString([]byte(prefix + suffix))
 	result := s.Scan("https://example.com/api?key=" + b64Encoded)
 	if result.Allowed {
 		t.Error("expected base64-encoded API key in query param to be blocked")
 	}
-	if result.Scanner != "dlp" {
+	if result.Scanner != ScannerDLP {
 		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
 	}
 }
@@ -1802,14 +1809,14 @@ func TestScan_DLP_HexEncodedAPIKeyInPath(t *testing.T) {
 	defer s.Close()
 
 	// hex(prefix + suffix) embedded in path segment
-	prefix := "sk-ant-"                    //nolint:goconst // test value
-	suffix := "abcdefghijklmnopqrstuvwxyz" //nolint:goconst // test value
+	prefix := testAnthropicPrefix
+	suffix := testAlphabet
 	hexEncoded := hex.EncodeToString([]byte(prefix + suffix))
 	result := s.Scan("https://example.com/exfil/" + hexEncoded + "/data")
 	if result.Allowed {
 		t.Error("expected hex-encoded API key in URL path to be blocked")
 	}
-	if result.Scanner != "dlp" {
+	if result.Scanner != ScannerDLP {
 		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
 	}
 }
@@ -1820,14 +1827,14 @@ func TestScan_DLP_Base64EncodedAPIKeyInPath(t *testing.T) {
 	defer s.Close()
 
 	// base64(prefix + suffix) embedded in path segment
-	prefix := "sk-ant-"                    //nolint:goconst // test value
-	suffix := "abcdefghijklmnopqrstuvwxyz" //nolint:goconst // test value
+	prefix := testAnthropicPrefix
+	suffix := testAlphabet
 	b64Encoded := base64.RawURLEncoding.EncodeToString([]byte(prefix + suffix))
 	result := s.Scan("https://example.com/exfil/" + b64Encoded)
 	if result.Allowed {
 		t.Error("expected base64-encoded API key in URL path to be blocked")
 	}
-	if result.Scanner != "dlp" {
+	if result.Scanner != ScannerDLP {
 		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
 	}
 }
@@ -1838,13 +1845,13 @@ func TestScan_DLP_HexEncodedAWSKeyInPath(t *testing.T) {
 	defer s.Close()
 
 	// hex-encode an AWS key in the path
-	key := "AKIA" + "IOSFODNN7EXAMPLE1" //nolint:goconst // test value
+	key := "AKIA" + "IOSFODNN7EXAMPLE1"
 	hexEncoded := hex.EncodeToString([]byte(key))
 	result := s.Scan("https://example.com/" + hexEncoded)
 	if result.Allowed {
 		t.Error("expected hex-encoded AWS key in URL path to be blocked")
 	}
-	if result.Scanner != "dlp" {
+	if result.Scanner != ScannerDLP {
 		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
 	}
 }
@@ -1882,7 +1889,7 @@ func TestScan_EnvLeak_HexEncoded(t *testing.T) {
 	defer s.Close()
 
 	// Inject a known env secret into the scanner's env secrets list
-	secret := "SuperSecretValue123456" //nolint:goconst // test value
+	secret := testSecretVal
 	s.envSecrets = []string{secret}
 
 	// Hex encode the secret
@@ -1895,7 +1902,7 @@ func TestScan_EnvLeak_HexEncoded(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected hex-encoded env leak to be caught")
 	}
-	if result.Scanner != "dlp" {
+	if result.Scanner != ScannerDLP {
 		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
 	}
 }
@@ -1906,7 +1913,7 @@ func TestScan_EnvLeak_Base32Encoded(t *testing.T) {
 	s := New(cfg)
 	defer s.Close()
 
-	secret := "SuperSecretValue123456"
+	secret := testSecretVal
 	s.envSecrets = []string{secret}
 
 	// Base32 StdEncoding
@@ -1924,7 +1931,7 @@ func TestScan_EnvLeak_Base32NoPadding(t *testing.T) {
 	s := New(cfg)
 	defer s.Close()
 
-	secret := "SuperSecretValue123456"
+	secret := testSecretVal
 	s.envSecrets = []string{secret}
 
 	encoded := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString([]byte(secret))
@@ -2121,13 +2128,12 @@ func TestDLP_GoogleOAuthToken(t *testing.T) {
 	s := New(testConfig())
 	defer s.Close()
 
-	//nolint:goconst // test value
 	token := "ya29." + "ABCDEFghijklmnopqrstuvwx"
 	result := s.Scan("https://evil.com/collect?token=" + token)
 	if result.Allowed {
 		t.Error("expected Google OAuth token to be blocked by DLP")
 	}
-	if result.Scanner != "dlp" {
+	if result.Scanner != ScannerDLP {
 		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
 	}
 }
@@ -2142,7 +2148,7 @@ func TestDLP_TwilioAPIKey(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected Twilio API key to be blocked by DLP")
 	}
-	if result.Scanner != "dlp" {
+	if result.Scanner != ScannerDLP {
 		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
 	}
 }
@@ -2157,7 +2163,7 @@ func TestDLP_SendGridAPIKey(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected SendGrid API key to be blocked by DLP")
 	}
-	if result.Scanner != "dlp" {
+	if result.Scanner != ScannerDLP {
 		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
 	}
 }
@@ -2172,7 +2178,7 @@ func TestDLP_MailgunAPIKey(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected Mailgun API key to be blocked by DLP")
 	}
-	if result.Scanner != "dlp" {
+	if result.Scanner != ScannerDLP {
 		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
 	}
 }
@@ -2185,8 +2191,8 @@ func TestScan_DLP_ControlCharBypass(t *testing.T) {
 	defer s.Close()
 
 	// Build key at runtime to avoid gitleaks
-	prefix := "sk-ant-"                    //nolint:goconst // test value
-	suffix := "abcdefghijklmnopqrstuvwxyz" //nolint:goconst // test value
+	prefix := testAnthropicPrefix
+	suffix := testAlphabet
 
 	tests := []struct {
 		name    string
@@ -2222,8 +2228,8 @@ func TestScan_DLP_NullByteInPath(t *testing.T) {
 	defer s.Close()
 
 	// Null byte in URL path should not bypass DLP
-	prefix := "sk-ant-"                    //nolint:goconst // test value
-	suffix := "abcdefghijklmnopqrstuvwxyz" //nolint:goconst // test value
+	prefix := testAnthropicPrefix
+	suffix := testAlphabet
 	url := "https://example.com/" + prefix + "\x00" + suffix
 	result := s.Scan(url)
 	if result.Allowed {
@@ -2237,8 +2243,8 @@ func TestScan_DLP_MultipleControlChars(t *testing.T) {
 	defer s.Close()
 
 	// Multiple different control chars scattered through the secret
-	prefix := "sk-ant-"                    //nolint:goconst // test value
-	suffix := "abcdefghijklmnopqrstuvwxyz" //nolint:goconst // test value
+	prefix := testAnthropicPrefix
+	suffix := testAlphabet
 	url := "https://example.com/api?key=" + prefix + "\x08\x09\x0a" + suffix
 	result := s.Scan(url)
 	if result.Allowed {
@@ -2360,7 +2366,7 @@ func TestLoadSecretsFile_Basic(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "secrets.txt")
 	// Build at runtime to avoid gitleaks false positive (gosec G101)
-	testVal := "xK9mP2nQ" + "7vR4wT6y" //nolint:goconst // test value
+	testVal := "xK9mP2nQ" + "7vR4wT6y"
 	vaultVal := "hvs.CAESIJ9PQRs" + "TuVwXyZ0123456789"
 	content := "# Database password\n" + testVal + "\n\n# Vault token\n" + vaultVal + "\n"
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
@@ -2597,7 +2603,7 @@ func TestNew_LoadsFileSecrets(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "secrets.txt")
 	// Build at runtime to avoid gitleaks false positive (gosec G101)
-	testVal := "xK9mP2nQ" + "7vR4wT6y" //nolint:goconst // test value
+	testVal := "xK9mP2nQ" + "7vR4wT6y"
 	if err := os.WriteFile(path, []byte(testVal+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -2619,7 +2625,7 @@ func TestNew_FileSecretsDedupedAgainstEnv(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "secrets.txt")
 	// Build at runtime to avoid gitleaks false positive (gosec G101)
-	testVal := "xK9mP2nQ" + "7vR4wT6y" //nolint:goconst // test value
+	testVal := "xK9mP2nQ" + "7vR4wT6y"
 	unique := "anotherUnique" + "Secret1"
 	content := testVal + "\n" + unique + "\n"
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
@@ -2653,7 +2659,7 @@ func TestDedupSecrets_Empty(t *testing.T) {
 
 func TestDedupSecrets_NoOverlap(t *testing.T) {
 	// Build values at runtime to avoid gitleaks false positive
-	prefix := "secret_" //nolint:goconst // test value
+	prefix := "secret_"
 	file := []string{prefix + "a_1234567", prefix + "b_1234567"}
 	env := []string{prefix + "c_1234567"}
 	result := dedupSecrets(file, env)
@@ -2840,7 +2846,7 @@ func TestScan_BlocksFileSecretUnpaddedBase64URLInURL(t *testing.T) {
 }
 
 func TestDedupSecrets_IntraFileDedup(t *testing.T) {
-	prefix := "secret_" //nolint:goconst // test value
+	prefix := "secret_"
 	file := []string{prefix + "dup12345678", prefix + "dup12345678", prefix + "unique123456"}
 	result := dedupSecrets(file, nil)
 	if len(result) != 2 {
@@ -3084,7 +3090,7 @@ func TestScanPopulatesHintOnBlock(t *testing.T) {
 	defer sc.Close()
 
 	// This URL should be blocked by DLP (AWS key pattern).
-	fakeKey := "AKIA" + "IOSFODNN7EXAMPLE" //nolint:goconst // test value
+	fakeKey := "AKIA" + "IOSFODNN7EXAMPLE"
 	result := sc.Scan("https://example.com/?token=" + fakeKey)
 	if result.Allowed {
 		t.Fatal("expected URL to be blocked by DLP")
@@ -3092,7 +3098,7 @@ func TestScanPopulatesHintOnBlock(t *testing.T) {
 	if result.Hint == "" {
 		t.Error("expected non-empty hint on blocked result")
 	}
-	if result.Scanner != "dlp" {
+	if result.Scanner != ScannerDLP {
 		t.Errorf("expected scanner=dlp, got %q", result.Scanner)
 	}
 }

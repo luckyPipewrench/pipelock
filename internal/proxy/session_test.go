@@ -14,6 +14,12 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 )
 
+const (
+	testClientIP      = "10.0.0.1"
+	testIPDomainBurst = "ip_domain_burst"
+	testDomainBurst   = "domain_burst"
+)
+
 func testSessionConfig() *config.SessionProfiling {
 	return &config.SessionProfiling{
 		Enabled:                true,
@@ -54,7 +60,7 @@ func TestSessionManager_DomainBurst(t *testing.T) {
 	sm := NewSessionManager(cfg, nil)
 	defer sm.Close()
 
-	sess := sm.GetOrCreate("10.0.0.1")
+	sess := sm.GetOrCreate(testClientIP)
 
 	// First 2 domains are below threshold
 	for _, d := range []string{"a.com", "b.com"} {
@@ -68,7 +74,7 @@ func TestSessionManager_DomainBurst(t *testing.T) {
 	anomalies := sess.RecordRequest("c.com", cfg)
 	found := false
 	for _, a := range anomalies {
-		if a.Type == "domain_burst" { //nolint:goconst // test value
+		if a.Type == testDomainBurst {
 			found = true
 		}
 	}
@@ -83,7 +89,7 @@ func TestSessionManager_DomainBurst_RepeatedDomainNoTrigger(t *testing.T) {
 	sm := NewSessionManager(cfg, nil)
 	defer sm.Close()
 
-	sess := sm.GetOrCreate("10.0.0.1")
+	sess := sm.GetOrCreate(testClientIP)
 
 	// 2 unique domains (below threshold of 3)
 	for _, d := range []string{"a.com", "b.com"} {
@@ -93,7 +99,7 @@ func TestSessionManager_DomainBurst_RepeatedDomainNoTrigger(t *testing.T) {
 	// Revisiting already-seen domain should NOT trigger burst
 	anomalies := sess.RecordRequest("a.com", cfg)
 	for _, a := range anomalies {
-		if a.Type == "domain_burst" { //nolint:goconst // test value
+		if a.Type == testDomainBurst {
 			t.Error("revisiting known domain should not trigger domain_burst")
 		}
 	}
@@ -106,7 +112,7 @@ func TestSessionManager_DomainBurst_WindowExpiry(t *testing.T) {
 	sm := NewSessionManager(cfg, nil)
 	defer sm.Close()
 
-	sess := sm.GetOrCreate("10.0.0.1")
+	sess := sm.GetOrCreate(testClientIP)
 
 	// Add 3 domains
 	for _, d := range []string{"a.com", "b.com", "c.com"} {
@@ -124,7 +130,7 @@ func TestSessionManager_DomainBurst_WindowExpiry(t *testing.T) {
 	// 4th domain should NOT trigger burst because old entries expired
 	anomalies := sess.RecordRequest("d.com", cfg)
 	for _, a := range anomalies {
-		if a.Type == "domain_burst" {
+		if a.Type == testDomainBurst {
 			t.Error("domain_burst should not trigger after window expiry")
 		}
 	}
@@ -188,7 +194,7 @@ func TestSessionManager_TTLEviction(t *testing.T) {
 	sm := NewSessionManager(cfg, nil)
 	defer sm.Close()
 
-	sess := sm.GetOrCreate("10.0.0.1")
+	sess := sm.GetOrCreate(testClientIP)
 
 	// Backdate the session's last activity
 	sess.mu.Lock()
@@ -209,7 +215,7 @@ func TestSessionManager_TTLEviction_ActiveNotEvicted(t *testing.T) {
 	sm := NewSessionManager(cfg, nil)
 	defer sm.Close()
 
-	sm.GetOrCreate("10.0.0.1") // fresh, within TTL
+	sm.GetOrCreate(testClientIP) // fresh, within TTL
 
 	sm.cleanup()
 
@@ -253,7 +259,7 @@ func TestSessionState_ThreatScore(t *testing.T) {
 	sm := NewSessionManager(cfg, nil)
 	defer sm.Close()
 
-	sess := sm.GetOrCreate("10.0.0.1")
+	sess := sm.GetOrCreate(testClientIP)
 
 	// DLP near-miss adds +1
 	sess.RecordSignal(SignalDLPNearMiss, 5.0)
@@ -279,7 +285,7 @@ func TestSessionState_ScoreNeverNegative(t *testing.T) {
 	sm := NewSessionManager(cfg, nil)
 	defer sm.Close()
 
-	sess := sm.GetOrCreate("10.0.0.1")
+	sess := sm.GetOrCreate(testClientIP)
 
 	// Decay without any signals should floor at 0
 	sess.RecordClean(10.0)
@@ -293,7 +299,7 @@ func TestSessionState_Escalation(t *testing.T) {
 	sm := NewSessionManager(cfg, nil)
 	defer sm.Close()
 
-	sess := sm.GetOrCreate("10.0.0.1")
+	sess := sm.GetOrCreate(testClientIP)
 
 	if sess.IsEscalated() {
 		t.Error("new session should not be escalated")
@@ -312,10 +318,10 @@ func TestSessionState_Escalation(t *testing.T) {
 	if !escalated {
 		t.Error("should escalate at threshold")
 	}
-	if from != "normal" { //nolint:goconst // test value
+	if from != "normal" {
 		t.Errorf("expected from=normal, got %s", from)
 	}
-	if to != "elevated" { //nolint:goconst // test value
+	if to != "elevated" {
 		t.Errorf("expected to=elevated, got %s", to)
 	}
 
@@ -332,7 +338,7 @@ func TestSessionState_EscalationThresholdDoubles(t *testing.T) {
 	sm := NewSessionManager(cfg, nil)
 	defer sm.Close()
 
-	sess := sm.GetOrCreate("10.0.0.1")
+	sess := sm.GetOrCreate(testClientIP)
 
 	// First escalation at threshold 5
 	for range 5 {
@@ -358,7 +364,7 @@ func TestSessionState_EscalationSticky(t *testing.T) {
 	sm := NewSessionManager(cfg, nil)
 	defer sm.Close()
 
-	sess := sm.GetOrCreate("10.0.0.1")
+	sess := sm.GetOrCreate(testClientIP)
 
 	// Escalate
 	for range 5 {
@@ -384,7 +390,7 @@ func TestSessionState_DomainAnomalySignal(t *testing.T) {
 	sm := NewSessionManager(cfg, nil)
 	defer sm.Close()
 
-	sess := sm.GetOrCreate("10.0.0.1")
+	sess := sm.GetOrCreate(testClientIP)
 	sess.RecordSignal(SignalDomainAnomaly, 5.0) // +2
 
 	if sess.ThreatScore() != 2.0 {
@@ -397,7 +403,7 @@ func TestSessionState_LastActivity(t *testing.T) {
 	sm := NewSessionManager(cfg, nil)
 	defer sm.Close()
 
-	sess := sm.GetOrCreate("10.0.0.1")
+	sess := sm.GetOrCreate(testClientIP)
 	before := time.Now()
 	sess.RecordRequest("example.com", cfg)
 	after := time.Now()
@@ -487,7 +493,7 @@ func TestSessionManager_IPDomainBurst(t *testing.T) {
 	sm := NewSessionManager(cfg, nil)
 	defer sm.Close()
 
-	ip := "10.0.0.1" //nolint:goconst // test value
+	ip := testClientIP
 
 	// First 2 domains are below threshold
 	for _, d := range []string{"a.com", "b.com"} {
@@ -501,7 +507,7 @@ func TestSessionManager_IPDomainBurst(t *testing.T) {
 	anomalies := sm.RecordIPDomain(ip, "c.com", cfg)
 	found := false
 	for _, a := range anomalies {
-		if a.Type == "ip_domain_burst" { //nolint:goconst // test value
+		if a.Type == testIPDomainBurst {
 			found = true
 			if a.Score != 3.0 {
 				t.Errorf("expected ip_domain_burst score 3.0, got %f", a.Score)
@@ -519,7 +525,7 @@ func TestSessionManager_IPDomainBurst_HeaderRotation(t *testing.T) {
 	sm := NewSessionManager(cfg, nil)
 	defer sm.Close()
 
-	ip := "10.0.0.1"
+	ip := testClientIP
 
 	// Simulate header rotation: different agent sessions, same IP, different domains.
 	// Per-agent sessions see only 1 domain each (no burst), but IP tracker sees all 4.
@@ -544,7 +550,7 @@ func TestSessionManager_IPDomainBurst_HeaderRotation(t *testing.T) {
 		if i == 2 {
 			found := false
 			for _, a := range anomalies {
-				if a.Type == "ip_domain_burst" {
+				if a.Type == testIPDomainBurst {
 					found = true
 				}
 			}
@@ -561,7 +567,7 @@ func TestSessionManager_IPDomainBurst_RepeatedDomainNoTrigger(t *testing.T) {
 	sm := NewSessionManager(cfg, nil)
 	defer sm.Close()
 
-	ip := "10.0.0.1"
+	ip := testClientIP
 
 	// 2 unique domains (below threshold of 3)
 	for _, d := range []string{"a.com", "b.com"} {
@@ -571,7 +577,7 @@ func TestSessionManager_IPDomainBurst_RepeatedDomainNoTrigger(t *testing.T) {
 	// Revisiting a known domain should not trigger burst
 	anomalies := sm.RecordIPDomain(ip, "a.com", cfg)
 	for _, a := range anomalies {
-		if a.Type == "ip_domain_burst" {
+		if a.Type == testIPDomainBurst {
 			t.Error("revisiting known domain should not trigger ip_domain_burst")
 		}
 	}
@@ -584,7 +590,7 @@ func TestSessionManager_IPDomainBurst_WindowExpiry(t *testing.T) {
 	sm := NewSessionManager(cfg, nil)
 	defer sm.Close()
 
-	ip := "10.0.0.1"
+	ip := testClientIP
 
 	// 2 unique domains (below threshold)
 	for _, d := range []string{"a.com", "b.com"} {
@@ -604,7 +610,7 @@ func TestSessionManager_IPDomainBurst_WindowExpiry(t *testing.T) {
 	// 3rd domain should NOT trigger burst because old entries expired (only 1 in window)
 	anomalies := sm.RecordIPDomain(ip, "c.com", cfg)
 	for _, a := range anomalies {
-		if a.Type == "ip_domain_burst" {
+		if a.Type == testIPDomainBurst {
 			t.Error("ip_domain_burst should not trigger after window expiry")
 		}
 	}
@@ -618,15 +624,15 @@ func TestSessionManager_IPDomainBurst_DifferentIPs(t *testing.T) {
 
 	// Two different IPs each access 2 domains: neither should trigger (below 3)
 	for _, d := range []string{"a.com", "b.com"} {
-		sm.RecordIPDomain("10.0.0.1", d, cfg)
+		sm.RecordIPDomain(testClientIP, d, cfg)
 		sm.RecordIPDomain("10.0.0.2", d, cfg)
 	}
 
 	// 3rd domain on IP1 hits threshold for IP1 only
-	anomalies1 := sm.RecordIPDomain("10.0.0.1", "c.com", cfg)
+	anomalies1 := sm.RecordIPDomain(testClientIP, "c.com", cfg)
 	found := false
 	for _, a := range anomalies1 {
-		if a.Type == "ip_domain_burst" {
+		if a.Type == testIPDomainBurst {
 			found = true
 		}
 	}
@@ -637,7 +643,7 @@ func TestSessionManager_IPDomainBurst_DifferentIPs(t *testing.T) {
 	// IP2 still at 2 domains, revisiting should not trigger
 	anomalies2 := sm.RecordIPDomain("10.0.0.2", "b.com", cfg)
 	for _, a := range anomalies2 {
-		if a.Type == "ip_domain_burst" {
+		if a.Type == testIPDomainBurst {
 			t.Error("IP 10.0.0.2 should not trigger burst (only 2 unique domains)")
 		}
 	}
@@ -669,20 +675,20 @@ func TestSessionManager_IPDomainCleanup_PartialExpiry(t *testing.T) {
 	defer sm.Close()
 
 	// Add 2 domains, backdate only 1
-	sm.RecordIPDomain("10.0.0.1", "a.com", cfg) //nolint:goconst // test value
-	sm.RecordIPDomain("10.0.0.1", "b.com", cfg) //nolint:goconst // test value
+	sm.RecordIPDomain(testClientIP, "a.com", cfg)
+	sm.RecordIPDomain(testClientIP, "b.com", cfg)
 
 	sm.mu.Lock()
-	entries := sm.ipDomains["10.0.0.1"]              //nolint:goconst // test value
+	entries := sm.ipDomains[testClientIP]
 	entries[0].at = time.Now().Add(-2 * time.Minute) // expire first only
-	sm.ipDomains["10.0.0.1"] = entries
+	sm.ipDomains[testClientIP] = entries
 	sm.mu.Unlock()
 
 	sm.cleanup()
 
 	// IP should still exist with 1 entry (partial cleanup, not full delete)
 	sm.mu.RLock()
-	remaining := sm.ipDomains["10.0.0.1"]
+	remaining := sm.ipDomains[testClientIP]
 	sm.mu.RUnlock()
 
 	if len(remaining) != 1 {
@@ -696,24 +702,24 @@ func TestSessionManager_IPDomainCleanup(t *testing.T) {
 	sm := NewSessionManager(cfg, nil)
 	defer sm.Close()
 
-	sm.RecordIPDomain("10.0.0.1", "a.com", cfg)
-	sm.RecordIPDomain("10.0.0.1", "b.com", cfg)
+	sm.RecordIPDomain(testClientIP, "a.com", cfg)
+	sm.RecordIPDomain(testClientIP, "b.com", cfg)
 
 	// Backdate entries
 	sm.mu.Lock()
 	past := time.Now().Add(-2 * time.Minute)
-	entries := sm.ipDomains["10.0.0.1"]
+	entries := sm.ipDomains[testClientIP]
 	for i := range entries {
 		entries[i].at = past
 	}
-	sm.ipDomains["10.0.0.1"] = entries
+	sm.ipDomains[testClientIP] = entries
 	sm.mu.Unlock()
 
 	// Cleanup should prune expired IP domain entries
 	sm.cleanup()
 
 	sm.mu.RLock()
-	_, exists := sm.ipDomains["10.0.0.1"]
+	_, exists := sm.ipDomains[testClientIP]
 	sm.mu.RUnlock()
 
 	if exists {

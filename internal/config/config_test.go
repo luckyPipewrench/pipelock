@@ -9,6 +9,21 @@ import (
 	"testing"
 )
 
+const (
+	testInvalid      = "invalid"
+	testSecretsPath  = "/path/to/secrets.txt"
+	testWebhookURL   = "https://example.com/hook"
+	testSyslogAddr   = "udp://syslog.example.com:514"
+	testAPIListen    = "0.0.0.0:9090"
+	testAPIListen2   = "0.0.0.0:9091"
+	testPatternName  = "Test Pattern"
+	testCustomName   = "Custom"
+	testToken        = "test-token"       //nolint:gosec // test credential
+	fieldDLPSecrets  = "dlp.secrets_file" //nolint:gosec // config field path, not a credential
+	fieldFwdProxy    = "forward_proxy.enabled"
+	fieldKSAPIListen = "kill_switch.api_listen"
+)
+
 func TestDefaults(t *testing.T) {
 	cfg := Defaults()
 
@@ -44,7 +59,7 @@ func TestDefaults_Validates(t *testing.T) {
 
 func TestValidate_InvalidMode(t *testing.T) {
 	cfg := Defaults()
-	cfg.Mode = "invalid" //nolint:goconst // test value
+	cfg.Mode = testInvalid
 	if err := cfg.Validate(); err == nil {
 		t.Error("expected error for invalid mode")
 	}
@@ -491,7 +506,7 @@ api_allowlist:
 dlp:
   scan_env: true
   patterns:
-    - name: "Test Pattern"
+    - name: Test Pattern
       regex: 'test-[a-z]+'
       severity: high
 `
@@ -514,7 +529,7 @@ dlp:
 	// Custom pattern should be present.
 	found := false
 	for _, p := range cfg.DLP.Patterns {
-		if p.Name == "Test Pattern" { //nolint:goconst // test value
+		if p.Name == testPatternName {
 			found = true
 			break
 		}
@@ -534,7 +549,7 @@ dlp:
   include_defaults: false
   scan_env: true
   patterns:
-    - name: "Test Pattern"
+    - name: Test Pattern
       regex: 'test-[a-z]+'
       severity: high
 `
@@ -551,7 +566,7 @@ dlp:
 	if len(cfg.DLP.Patterns) != 1 {
 		t.Fatalf("expected 1 DLP pattern with include_defaults: false, got %d", len(cfg.DLP.Patterns))
 	}
-	if cfg.DLP.Patterns[0].Name != "Test Pattern" {
+	if cfg.DLP.Patterns[0].Name != testPatternName {
 		t.Errorf("expected pattern name 'Test Pattern', got %s", cfg.DLP.Patterns[0].Name)
 	}
 }
@@ -626,7 +641,7 @@ func TestDefaults_ResponseScanningEnabled(t *testing.T) {
 	if !cfg.ResponseScanning.Enabled {
 		t.Error("expected response scanning enabled by default")
 	}
-	if cfg.ResponseScanning.Action != "warn" { //nolint:goconst // test assertion
+	if cfg.ResponseScanning.Action != ActionWarn {
 		t.Errorf("expected default action warn, got %s", cfg.ResponseScanning.Action)
 	}
 	if len(cfg.ResponseScanning.Patterns) != 13 {
@@ -703,7 +718,7 @@ func TestDefaults_NewInjectionPatternsBehavior(t *testing.T) {
 }
 
 func TestValidate_ResponseScanningValidActions(t *testing.T) {
-	for _, action := range []string{"strip", "warn", "block", "ask"} {
+	for _, action := range []string{"strip", ActionWarn, ActionBlock, "ask"} {
 		cfg := Defaults()
 		cfg.ResponseScanning.Action = action
 		if err := cfg.Validate(); err != nil {
@@ -753,7 +768,7 @@ func TestValidate_ResponseScanningMissingRegex(t *testing.T) {
 func TestValidate_ResponseScanningDisabledSkipsValidation(t *testing.T) {
 	cfg := Defaults()
 	cfg.ResponseScanning.Enabled = false
-	cfg.ResponseScanning.Action = "invalid"
+	cfg.ResponseScanning.Action = testInvalid
 	cfg.ResponseScanning.Patterns = []ResponseScanPattern{
 		{Name: "bad", Regex: "[invalid"},
 	}
@@ -767,7 +782,7 @@ func TestApplyDefaults_ResponseScanningActionDefault(t *testing.T) {
 	cfg := &Config{}
 	cfg.ResponseScanning.Enabled = true
 	cfg.ApplyDefaults()
-	if cfg.ResponseScanning.Action != "warn" { //nolint:goconst // test assertion
+	if cfg.ResponseScanning.Action != ActionWarn {
 		t.Errorf("expected default action warn, got %s", cfg.ResponseScanning.Action)
 	}
 }
@@ -775,9 +790,9 @@ func TestApplyDefaults_ResponseScanningActionDefault(t *testing.T) {
 func TestApplyDefaults_ResponseScanningActionPreserved(t *testing.T) {
 	cfg := &Config{}
 	cfg.ResponseScanning.Enabled = true
-	cfg.ResponseScanning.Action = "block" //nolint:goconst // test assertion
+	cfg.ResponseScanning.Action = ActionBlock
 	cfg.ApplyDefaults()
-	if cfg.ResponseScanning.Action != "block" {
+	if cfg.ResponseScanning.Action != ActionBlock {
 		t.Errorf("expected action block preserved, got %s", cfg.ResponseScanning.Action)
 	}
 }
@@ -785,7 +800,7 @@ func TestApplyDefaults_ResponseScanningActionPreserved(t *testing.T) {
 func TestApplyDefaults_AskTimeoutDefault(t *testing.T) {
 	cfg := &Config{}
 	cfg.ResponseScanning.Enabled = true
-	cfg.ResponseScanning.Action = "ask" //nolint:goconst // test value
+	cfg.ResponseScanning.Action = ActionAsk
 	cfg.ApplyDefaults()
 	if cfg.ResponseScanning.AskTimeoutSeconds != 30 {
 		t.Errorf("expected default ask timeout 30, got %d", cfg.ResponseScanning.AskTimeoutSeconds)
@@ -795,7 +810,7 @@ func TestApplyDefaults_AskTimeoutDefault(t *testing.T) {
 func TestApplyDefaults_AskTimeoutPreserved(t *testing.T) {
 	cfg := &Config{}
 	cfg.ResponseScanning.Enabled = true
-	cfg.ResponseScanning.Action = "ask"
+	cfg.ResponseScanning.Action = ActionAsk
 	cfg.ResponseScanning.AskTimeoutSeconds = 10
 	cfg.ApplyDefaults()
 	if cfg.ResponseScanning.AskTimeoutSeconds != 10 {
@@ -828,7 +843,7 @@ func TestApplyDefaults_MergesCustomWithDefaultResponsePatterns(t *testing.T) {
 	cfg := &Config{}
 	cfg.ResponseScanning.Enabled = true
 	cfg.ResponseScanning.Patterns = []ResponseScanPattern{
-		{Name: "Custom", Regex: `custom-regex`}, //nolint:goconst // test value
+		{Name: testCustomName, Regex: `custom-regex`},
 	}
 	cfg.ApplyDefaults()
 
@@ -840,7 +855,7 @@ func TestApplyDefaults_MergesCustomWithDefaultResponsePatterns(t *testing.T) {
 	}
 	found := false
 	for _, p := range cfg.ResponseScanning.Patterns {
-		if p.Name == "Custom" { //nolint:goconst // test value
+		if p.Name == testCustomName {
 			found = true
 			break
 		}
@@ -1087,7 +1102,7 @@ response_scanning:
   enabled: true
   action: strip
   patterns:
-    - name: "Test Pattern"
+    - name: Test Pattern
       regex: '(?i)test\s+injection'
 `
 	dir := t.TempDir()
@@ -1103,7 +1118,7 @@ response_scanning:
 	if !cfg.ResponseScanning.Enabled {
 		t.Error("expected response scanning enabled")
 	}
-	if cfg.ResponseScanning.Action != "strip" { //nolint:goconst // test value
+	if cfg.ResponseScanning.Action != ActionStrip {
 		t.Errorf("expected action strip, got %s", cfg.ResponseScanning.Action)
 	}
 	defaults := Defaults()
@@ -1114,7 +1129,7 @@ response_scanning:
 	}
 	found := false
 	for _, p := range cfg.ResponseScanning.Patterns {
-		if p.Name == "Test Pattern" { //nolint:goconst // test value
+		if p.Name == testPatternName {
 			found = true
 			break
 		}
@@ -1315,7 +1330,7 @@ func TestApplyDefaults_MCPInputScanningActionDefaultsWhenEnabled(t *testing.T) {
 	cfg.MCPInputScanning.Action = "" // not set
 	cfg.ApplyDefaults()
 
-	if cfg.MCPInputScanning.Action != "warn" {
+	if cfg.MCPInputScanning.Action != ActionWarn {
 		t.Errorf("expected Action=warn when enabled with no action, got %q", cfg.MCPInputScanning.Action)
 	}
 }
@@ -1325,7 +1340,7 @@ func TestApplyDefaults_MCPInputScanningOnParseErrorDefaulted(t *testing.T) {
 	cfg.MCPInputScanning.OnParseError = "" // cleared
 	cfg.ApplyDefaults()
 
-	if cfg.MCPInputScanning.OnParseError != "block" {
+	if cfg.MCPInputScanning.OnParseError != ActionBlock {
 		t.Errorf("expected OnParseError=block, got %q", cfg.MCPInputScanning.OnParseError)
 	}
 }
@@ -1395,7 +1410,7 @@ func TestValidate_NonLoopbackListenWarning(t *testing.T) {
 // --- MCP Input Scanning Validation ---
 
 func TestValidate_MCPInputScanningValidActions(t *testing.T) {
-	for _, action := range []string{"warn", "block"} {
+	for _, action := range []string{ActionWarn, ActionBlock} {
 		cfg := Defaults()
 		cfg.MCPInputScanning.Enabled = true
 		cfg.MCPInputScanning.Action = action
@@ -1408,7 +1423,7 @@ func TestValidate_MCPInputScanningValidActions(t *testing.T) {
 func TestValidate_MCPInputScanningAskRejected(t *testing.T) {
 	cfg := Defaults()
 	cfg.MCPInputScanning.Enabled = true
-	cfg.MCPInputScanning.Action = "ask"
+	cfg.MCPInputScanning.Action = ActionAsk
 	err := cfg.Validate()
 	if err == nil {
 		t.Fatal("expected error for ask action on input scanning")
@@ -1421,7 +1436,7 @@ func TestValidate_MCPInputScanningAskRejected(t *testing.T) {
 func TestValidate_MCPInputScanningInvalidAction(t *testing.T) {
 	cfg := Defaults()
 	cfg.MCPInputScanning.Enabled = true
-	cfg.MCPInputScanning.Action = "strip"
+	cfg.MCPInputScanning.Action = ActionStrip
 	if err := cfg.Validate(); err == nil {
 		t.Error("expected error for strip action on input scanning")
 	}
@@ -1430,17 +1445,17 @@ func TestValidate_MCPInputScanningInvalidAction(t *testing.T) {
 func TestValidate_MCPInputScanningDisabledSkipsValidation(t *testing.T) {
 	cfg := Defaults()
 	cfg.MCPInputScanning.Enabled = false
-	cfg.MCPInputScanning.Action = "invalid"
+	cfg.MCPInputScanning.Action = testInvalid
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("disabled input scanning should skip validation, got: %v", err)
 	}
 }
 
 func TestValidate_MCPInputScanningOnParseErrorValid(t *testing.T) {
-	for _, val := range []string{"block", "forward"} { //nolint:goconst // test value
+	for _, val := range []string{"block", "forward"} {
 		cfg := Defaults()
 		cfg.MCPInputScanning.Enabled = true
-		cfg.MCPInputScanning.Action = "warn" //nolint:goconst // test value
+		cfg.MCPInputScanning.Action = ActionWarn
 		cfg.MCPInputScanning.OnParseError = val
 		if err := cfg.Validate(); err != nil {
 			t.Errorf("on_parse_error=%q should be valid, got: %v", val, err)
@@ -1451,7 +1466,7 @@ func TestValidate_MCPInputScanningOnParseErrorValid(t *testing.T) {
 func TestValidate_MCPInputScanningOnParseErrorInvalid(t *testing.T) {
 	cfg := Defaults()
 	cfg.MCPInputScanning.Enabled = true
-	cfg.MCPInputScanning.Action = "warn" //nolint:goconst // test value
+	cfg.MCPInputScanning.Action = ActionWarn
 	cfg.MCPInputScanning.OnParseError = "ignore"
 	err := cfg.Validate()
 	if err == nil {
@@ -1470,13 +1485,13 @@ func TestApplyDefaults_MCPToolScanningActionDefaultsWhenEnabled(t *testing.T) {
 	cfg.MCPToolScanning.Action = "" // not set
 	cfg.ApplyDefaults()
 
-	if cfg.MCPToolScanning.Action != "warn" { //nolint:goconst // test value
+	if cfg.MCPToolScanning.Action != ActionWarn {
 		t.Errorf("expected Action=warn when enabled with no action, got %q", cfg.MCPToolScanning.Action)
 	}
 }
 
 func TestValidate_MCPToolScanningValidActions(t *testing.T) {
-	for _, action := range []string{"warn", "block"} {
+	for _, action := range []string{ActionWarn, ActionBlock} {
 		cfg := Defaults()
 		cfg.MCPToolScanning.Enabled = true
 		cfg.MCPToolScanning.Action = action
@@ -1489,7 +1504,7 @@ func TestValidate_MCPToolScanningValidActions(t *testing.T) {
 func TestValidate_MCPToolScanningInvalidAction(t *testing.T) {
 	cfg := Defaults()
 	cfg.MCPToolScanning.Enabled = true
-	cfg.MCPToolScanning.Action = "strip"
+	cfg.MCPToolScanning.Action = ActionStrip
 	if err := cfg.Validate(); err == nil {
 		t.Error("expected error for strip action on tool scanning")
 	}
@@ -1498,7 +1513,7 @@ func TestValidate_MCPToolScanningInvalidAction(t *testing.T) {
 func TestValidate_MCPToolScanningDisabledSkipsValidation(t *testing.T) {
 	cfg := Defaults()
 	cfg.MCPToolScanning.Enabled = false
-	cfg.MCPToolScanning.Action = "invalid"
+	cfg.MCPToolScanning.Action = testInvalid
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("disabled tool scanning should skip validation, got: %v", err)
 	}
@@ -1531,7 +1546,7 @@ func TestApplyDefaults_MCPToolPolicyActionDefaultsWhenEnabled(t *testing.T) {
 	cfg.MCPToolPolicy.Action = "" // not set
 	cfg.ApplyDefaults()
 
-	if cfg.MCPToolPolicy.Action != "warn" {
+	if cfg.MCPToolPolicy.Action != ActionWarn {
 		t.Errorf("expected Action=warn when enabled with no action, got %q", cfg.MCPToolPolicy.Action)
 	}
 }
@@ -1548,7 +1563,7 @@ func TestApplyDefaults_MCPToolPolicyActionNotSetWhenDisabled(t *testing.T) {
 }
 
 func TestValidate_MCPToolPolicyValidActions(t *testing.T) {
-	for _, action := range []string{"warn", "block"} {
+	for _, action := range []string{ActionWarn, ActionBlock} {
 		cfg := Defaults()
 		cfg.MCPToolPolicy.Enabled = true
 		cfg.MCPToolPolicy.Action = action
@@ -1564,7 +1579,7 @@ func TestValidate_MCPToolPolicyValidActions(t *testing.T) {
 func TestValidate_MCPToolPolicyInvalidAction(t *testing.T) {
 	cfg := Defaults()
 	cfg.MCPToolPolicy.Enabled = true
-	cfg.MCPToolPolicy.Action = "strip"
+	cfg.MCPToolPolicy.Action = ActionStrip
 	if err := cfg.Validate(); err == nil {
 		t.Error("expected error for strip action on tool policy")
 	}
@@ -1573,7 +1588,7 @@ func TestValidate_MCPToolPolicyInvalidAction(t *testing.T) {
 func TestValidate_MCPToolPolicyDisabledSkipsValidation(t *testing.T) {
 	cfg := Defaults()
 	cfg.MCPToolPolicy.Enabled = false
-	cfg.MCPToolPolicy.Action = "invalid"
+	cfg.MCPToolPolicy.Action = testInvalid
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("disabled tool policy should skip validation, got: %v", err)
 	}
@@ -1582,7 +1597,7 @@ func TestValidate_MCPToolPolicyDisabledSkipsValidation(t *testing.T) {
 func TestValidate_MCPToolPolicyEnabledNoRules(t *testing.T) {
 	cfg := Defaults()
 	cfg.MCPToolPolicy.Enabled = true
-	cfg.MCPToolPolicy.Action = "warn" //nolint:goconst // test value
+	cfg.MCPToolPolicy.Action = ActionWarn
 	cfg.MCPToolPolicy.Rules = nil
 	err := cfg.Validate()
 	if err == nil {
@@ -1593,7 +1608,7 @@ func TestValidate_MCPToolPolicyEnabledNoRules(t *testing.T) {
 func TestValidate_MCPToolPolicyEnabledEmptyRules(t *testing.T) {
 	cfg := Defaults()
 	cfg.MCPToolPolicy.Enabled = true
-	cfg.MCPToolPolicy.Action = "warn" //nolint:goconst // test value
+	cfg.MCPToolPolicy.Action = ActionWarn
 	cfg.MCPToolPolicy.Rules = []ToolPolicyRule{}
 	err := cfg.Validate()
 	if err == nil {
@@ -1604,7 +1619,7 @@ func TestValidate_MCPToolPolicyEnabledEmptyRules(t *testing.T) {
 func TestValidate_MCPToolPolicyRuleMissingName(t *testing.T) {
 	cfg := Defaults()
 	cfg.MCPToolPolicy.Enabled = true
-	cfg.MCPToolPolicy.Action = "warn" //nolint:goconst // test value
+	cfg.MCPToolPolicy.Action = ActionWarn
 	cfg.MCPToolPolicy.Rules = []ToolPolicyRule{
 		{Name: "", ToolPattern: "bash"},
 	}
@@ -1617,7 +1632,7 @@ func TestValidate_MCPToolPolicyRuleMissingName(t *testing.T) {
 func TestValidate_MCPToolPolicyRuleMissingToolPattern(t *testing.T) {
 	cfg := Defaults()
 	cfg.MCPToolPolicy.Enabled = true
-	cfg.MCPToolPolicy.Action = "warn" //nolint:goconst // test value
+	cfg.MCPToolPolicy.Action = ActionWarn
 	cfg.MCPToolPolicy.Rules = []ToolPolicyRule{
 		{Name: "test", ToolPattern: ""},
 	}
@@ -1630,7 +1645,7 @@ func TestValidate_MCPToolPolicyRuleMissingToolPattern(t *testing.T) {
 func TestValidate_MCPToolPolicyRuleInvalidToolPatternRegex(t *testing.T) {
 	cfg := Defaults()
 	cfg.MCPToolPolicy.Enabled = true
-	cfg.MCPToolPolicy.Action = "warn" //nolint:goconst // test value
+	cfg.MCPToolPolicy.Action = ActionWarn
 	cfg.MCPToolPolicy.Rules = []ToolPolicyRule{
 		{Name: "test", ToolPattern: "[invalid"},
 	}
@@ -1643,7 +1658,7 @@ func TestValidate_MCPToolPolicyRuleInvalidToolPatternRegex(t *testing.T) {
 func TestValidate_MCPToolPolicyRuleInvalidArgPatternRegex(t *testing.T) {
 	cfg := Defaults()
 	cfg.MCPToolPolicy.Enabled = true
-	cfg.MCPToolPolicy.Action = "warn" //nolint:goconst // test value
+	cfg.MCPToolPolicy.Action = ActionWarn
 	cfg.MCPToolPolicy.Rules = []ToolPolicyRule{
 		{Name: "test", ToolPattern: "bash", ArgPattern: "[invalid"},
 	}
@@ -1656,7 +1671,7 @@ func TestValidate_MCPToolPolicyRuleInvalidArgPatternRegex(t *testing.T) {
 func TestValidate_MCPToolPolicyRuleValidArgPattern(t *testing.T) {
 	cfg := Defaults()
 	cfg.MCPToolPolicy.Enabled = true
-	cfg.MCPToolPolicy.Action = "warn" //nolint:goconst // test value
+	cfg.MCPToolPolicy.Action = ActionWarn
 	cfg.MCPToolPolicy.Rules = []ToolPolicyRule{
 		{Name: "test", ToolPattern: "bash", ArgPattern: `(?i)\brm\s+-rf\b`},
 	}
@@ -1668,7 +1683,7 @@ func TestValidate_MCPToolPolicyRuleValidArgPattern(t *testing.T) {
 func TestValidate_MCPToolPolicyRulePerRuleAction(t *testing.T) {
 	cfg := Defaults()
 	cfg.MCPToolPolicy.Enabled = true
-	cfg.MCPToolPolicy.Action = "warn" //nolint:goconst // test value
+	cfg.MCPToolPolicy.Action = ActionWarn
 	cfg.MCPToolPolicy.Rules = []ToolPolicyRule{
 		{Name: "test", ToolPattern: "bash", Action: "block"},
 	}
@@ -1680,7 +1695,7 @@ func TestValidate_MCPToolPolicyRulePerRuleAction(t *testing.T) {
 func TestValidate_MCPToolPolicyRuleInvalidPerRuleAction(t *testing.T) {
 	cfg := Defaults()
 	cfg.MCPToolPolicy.Enabled = true
-	cfg.MCPToolPolicy.Action = "warn" //nolint:goconst // test value
+	cfg.MCPToolPolicy.Action = ActionWarn
 	cfg.MCPToolPolicy.Rules = []ToolPolicyRule{
 		{Name: "test", ToolPattern: "bash", Action: "ask"},
 	}
@@ -1738,7 +1753,7 @@ func TestLoad_WithSecretsFile(t *testing.T) {
 
 	// Create a secrets file with a valid secret
 	secretsPath := filepath.Join(dir, "secrets.txt")
-	testSecret := "xK9mP2nQ" + "7vR4wT6y" //nolint:goconst // test value, runtime construction avoids gosec G101
+	testSecret := "xK9mP2nQ" + "7vR4wT6y"
 	if err := os.WriteFile(secretsPath, []byte(testSecret+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1775,7 +1790,7 @@ func TestValidate_SecretsFileNotFound(t *testing.T) {
 func TestValidate_SecretsFileWorldReadable(t *testing.T) {
 	dir := t.TempDir()
 	secretsPath := filepath.Join(dir, "secrets.txt")
-	testSecret := "xK9mP2nQ" + "7vR4wT6y"                                             //nolint:goconst // test value, runtime construction avoids gosec G101
+	testSecret := "xK9mP2nQ" + "7vR4wT6y"
 	if err := os.WriteFile(secretsPath, []byte(testSecret+"\n"), 0o644); err != nil { //nolint:gosec // G306: intentionally world-readable for test
 		t.Fatal(err)
 	}
@@ -1794,7 +1809,7 @@ func TestValidate_SecretsFileWorldReadable(t *testing.T) {
 func TestValidate_SecretsFileValid(t *testing.T) {
 	dir := t.TempDir()
 	secretsPath := filepath.Join(dir, "secrets.txt")
-	testSecret := "xK9mP2nQ" + "7vR4wT6y" //nolint:goconst // test value, runtime construction avoids gosec G101
+	testSecret := "xK9mP2nQ" + "7vR4wT6y"
 	if err := os.WriteFile(secretsPath, []byte(testSecret+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1811,7 +1826,7 @@ func TestLoad_SecretsFileRelativePathResolved(t *testing.T) {
 
 	// Create secrets file in same directory as config
 	secretsPath := filepath.Join(dir, "my-secrets.txt")
-	testSecret := "xK9mP2nQ" + "7vR4wT6y" //nolint:goconst // test value, runtime construction avoids gosec G101
+	testSecret := "xK9mP2nQ" + "7vR4wT6y"
 	if err := os.WriteFile(secretsPath, []byte(testSecret+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1852,7 +1867,7 @@ func TestValidate_SecretsFileEmptyString_NoValidation(t *testing.T) {
 
 func TestValidateReload_SecretsFileRemoved(t *testing.T) {
 	old := Defaults()
-	old.DLP.SecretsFile = "/path/to/secrets.txt" //nolint:goconst // test value
+	old.DLP.SecretsFile = testSecretsPath
 
 	updated := Defaults()
 	updated.DLP.SecretsFile = ""
@@ -1860,7 +1875,7 @@ func TestValidateReload_SecretsFileRemoved(t *testing.T) {
 	warnings := ValidateReload(old, updated)
 	found := false
 	for _, w := range warnings {
-		if w.Field == "dlp.secrets_file" { //nolint:goconst // test value
+		if w.Field == fieldDLPSecrets {
 			found = true
 		}
 	}
@@ -1871,14 +1886,14 @@ func TestValidateReload_SecretsFileRemoved(t *testing.T) {
 
 func TestValidateReload_SecretsFileSame_NoWarning(t *testing.T) {
 	old := Defaults()
-	old.DLP.SecretsFile = "/path/to/secrets.txt" //nolint:goconst // test value
+	old.DLP.SecretsFile = testSecretsPath
 
 	updated := Defaults()
-	updated.DLP.SecretsFile = "/path/to/secrets.txt" //nolint:goconst // test value
+	updated.DLP.SecretsFile = testSecretsPath
 
 	warnings := ValidateReload(old, updated)
 	for _, w := range warnings {
-		if w.Field == "dlp.secrets_file" { //nolint:goconst // test value
+		if w.Field == fieldDLPSecrets {
 			t.Errorf("same secrets_file should not warn, got: %s", w.Message)
 		}
 	}
@@ -1890,7 +1905,7 @@ func TestValidateReload_SecretsFileBothEmpty_NoWarning(t *testing.T) {
 
 	warnings := ValidateReload(old, updated)
 	for _, w := range warnings {
-		if w.Field == "dlp.secrets_file" { //nolint:goconst // test value
+		if w.Field == fieldDLPSecrets {
 			t.Errorf("both empty should not warn, got: %s", w.Message)
 		}
 	}
@@ -1906,7 +1921,7 @@ func TestValidateReload_SecretsFilePathChanged(t *testing.T) {
 	warnings := ValidateReload(old, updated)
 	found := false
 	for _, w := range warnings {
-		if w.Field == "dlp.secrets_file" { //nolint:goconst // test value
+		if w.Field == fieldDLPSecrets {
 			found = true
 			if !strings.Contains(w.Message, "changed") {
 				t.Errorf("expected 'changed' in message, got: %s", w.Message)
@@ -1923,11 +1938,11 @@ func TestValidateReload_SecretsFileAdded_NoWarning(t *testing.T) {
 	// No secrets_file initially
 
 	updated := Defaults()
-	updated.DLP.SecretsFile = "/path/to/secrets.txt" //nolint:goconst // test value
+	updated.DLP.SecretsFile = testSecretsPath
 
 	warnings := ValidateReload(old, updated)
 	for _, w := range warnings {
-		if w.Field == "dlp.secrets_file" { //nolint:goconst // test value
+		if w.Field == fieldDLPSecrets {
 			t.Errorf("adding secrets_file should not warn, got: %s", w.Message)
 		}
 	}
@@ -2046,7 +2061,7 @@ func TestValidateReload_ForwardProxyDisabled(t *testing.T) {
 	warnings := ValidateReload(old, updated)
 	found := false
 	for _, w := range warnings {
-		if w.Field == "forward_proxy.enabled" { //nolint:goconst // test value
+		if w.Field == fieldFwdProxy {
 			found = true
 		}
 	}
@@ -2064,7 +2079,7 @@ func TestValidateReload_ForwardProxyEnabled_NoWarning(t *testing.T) {
 
 	warnings := ValidateReload(old, updated)
 	for _, w := range warnings {
-		if w.Field == "forward_proxy.enabled" { //nolint:goconst // test value
+		if w.Field == fieldFwdProxy {
 			t.Errorf("enabling forward proxy should not warn, got: %s", w.Message)
 		}
 	}
@@ -2079,7 +2094,7 @@ func TestValidateReload_ForwardProxyBothEnabled_NoWarning(t *testing.T) {
 
 	warnings := ValidateReload(old, updated)
 	for _, w := range warnings {
-		if w.Field == "forward_proxy.enabled" { //nolint:goconst // test value
+		if w.Field == fieldFwdProxy {
 			t.Errorf("both enabled should not warn, got: %s", w.Message)
 		}
 	}
@@ -2137,7 +2152,7 @@ func TestSessionProfilingValidation(t *testing.T) {
 				c.SessionProfiling.Enabled = true
 			},
 			modify: func(c *Config) {
-				c.SessionProfiling.AnomalyAction = "invalid" //nolint:goconst // test value
+				c.SessionProfiling.AnomalyAction = testInvalid
 			},
 			wantErr: "anomaly_action",
 		},
@@ -2334,7 +2349,7 @@ func TestMCPSessionBindingValidation(t *testing.T) {
 				c.MCPSessionBinding.Enabled = true
 			},
 			modify: func(c *Config) {
-				c.MCPSessionBinding.UnknownToolAction = "invalid" //nolint:goconst // test value
+				c.MCPSessionBinding.UnknownToolAction = testInvalid
 			},
 			wantErr: "unknown_tool_action",
 		},
@@ -2345,7 +2360,7 @@ func TestMCPSessionBindingValidation(t *testing.T) {
 				c.MCPSessionBinding.Enabled = true
 			},
 			modify: func(c *Config) {
-				c.MCPSessionBinding.NoBaselineAction = "invalid" //nolint:goconst // test value
+				c.MCPSessionBinding.NoBaselineAction = testInvalid
 			},
 			wantErr: "no_baseline_action",
 		},
@@ -2482,7 +2497,7 @@ func TestValidate_WebSocketProxyInvalidOriginPolicy(t *testing.T) {
 	cfg := Defaults()
 	cfg.WebSocketProxy.Enabled = true
 	cfg.ApplyDefaults()
-	cfg.WebSocketProxy.OriginPolicy = "invalid"
+	cfg.WebSocketProxy.OriginPolicy = testInvalid
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "origin_policy") {
 		t.Errorf("expected origin_policy error, got: %v", err)
 	}
@@ -2817,7 +2832,7 @@ func TestToSlash(t *testing.T) {
 	}{
 		{
 			name: "no backslashes unchanged",
-			in:   "vendor/foo/bar.go", //nolint:goconst // test value
+			in:   "vendor/foo/bar.go",
 			want: "vendor/foo/bar.go",
 		},
 		{
@@ -2859,7 +2874,7 @@ func TestMatchesPath(t *testing.T) {
 	}{
 		{
 			name:    "empty pattern",
-			target:  "main.go", //nolint:goconst // test value
+			target:  "main.go",
 			pattern: "",
 			want:    false,
 		},
@@ -2913,8 +2928,8 @@ func TestMatchesPath(t *testing.T) {
 		},
 		{
 			name:    "URL suffix match",
-			target:  "https://example.com/robots.txt", //nolint:goconst // test value
-			pattern: "robots.txt",                     //nolint:goconst // test value
+			target:  "https://example.com/robots.txt",
+			pattern: "robots.txt",
 			want:    true,
 		},
 		{
@@ -2958,8 +2973,8 @@ func TestMatchesPath(t *testing.T) {
 func TestIsSuppressed(t *testing.T) {
 	t.Parallel()
 	entries := []SuppressEntry{
-		{Rule: "Credential in URL", Path: "app/models/client.rb", Reason: "constructor param"}, //nolint:goconst // test value
-		{Rule: "env-leak", Path: "config/", Reason: "initializer env refs"},                    //nolint:goconst // test value
+		{Rule: "Credential in URL", Path: "app/models/client.rb", Reason: "constructor param"},
+		{Rule: "env-leak", Path: "config/", Reason: "initializer env refs"},
 		{Rule: "secret-pattern", Path: "*.test.js", Reason: "test fixtures"},
 	}
 
@@ -2972,7 +2987,7 @@ func TestIsSuppressed(t *testing.T) {
 	}{
 		{
 			name:    "empty target",
-			rule:    "Credential in URL", //nolint:goconst // test value
+			rule:    "Credential in URL",
 			target:  "",
 			entries: entries,
 			want:    false,
@@ -3169,7 +3184,7 @@ func TestValidate_AllFeaturesEnabled(t *testing.T) {
 	cfg.WebSocketProxy.MaxConcurrentConnections = 50
 	cfg.WebSocketProxy.MaxConnectionSeconds = 3600
 	cfg.WebSocketProxy.IdleTimeoutSeconds = 300
-	cfg.WebSocketProxy.OriginPolicy = "rewrite" //nolint:goconst // test value
+	cfg.WebSocketProxy.OriginPolicy = "rewrite"
 
 	cfg.KillSwitch.Enabled = true
 	cfg.KillSwitch.Message = "test kill switch"
@@ -3324,7 +3339,7 @@ func TestValidate_ChainDetectionDisabledSkipsValidation(t *testing.T) {
 	cfg := Defaults()
 	cfg.ApplyDefaults()
 	cfg.ToolChainDetection.Enabled = false
-	cfg.ToolChainDetection.Action = "invalid"
+	cfg.ToolChainDetection.Action = testInvalid
 	// Should not error because disabled.
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("disabled chain detection should skip validation: %v", err)
@@ -3439,16 +3454,16 @@ func TestDefaults_EmitFields(t *testing.T) {
 	if cfg.Emit.Webhook.QueueSize != 64 {
 		t.Errorf("expected default webhook queue_size 64, got %d", cfg.Emit.Webhook.QueueSize)
 	}
-	if cfg.Emit.Webhook.MinSeverity != "warn" { //nolint:goconst // test assertion
+	if cfg.Emit.Webhook.MinSeverity != ActionWarn {
 		t.Errorf("expected default webhook min_severity warn, got %s", cfg.Emit.Webhook.MinSeverity)
 	}
-	if cfg.Emit.Syslog.MinSeverity != "warn" { //nolint:goconst // test assertion
+	if cfg.Emit.Syslog.MinSeverity != ActionWarn {
 		t.Errorf("expected default syslog min_severity warn, got %s", cfg.Emit.Syslog.MinSeverity)
 	}
-	if cfg.Emit.Syslog.Facility != "local0" { //nolint:goconst // test assertion
+	if cfg.Emit.Syslog.Facility != "local0" {
 		t.Errorf("expected default syslog facility local0, got %s", cfg.Emit.Syslog.Facility)
 	}
-	if cfg.Emit.Syslog.Tag != "pipelock" { //nolint:goconst // test assertion
+	if cfg.Emit.Syslog.Tag != "pipelock" {
 		t.Errorf("expected default syslog tag pipelock, got %s", cfg.Emit.Syslog.Tag)
 	}
 }
@@ -3466,7 +3481,7 @@ func TestDefaults_KillSwitchAPIExempt(t *testing.T) {
 
 func TestValidate_EmitWebhookInvalidSeverity(t *testing.T) {
 	cfg := Defaults()
-	cfg.Emit.Webhook.URL = "https://example.com/hook" //nolint:goconst // test value
+	cfg.Emit.Webhook.URL = testWebhookURL
 	cfg.Emit.Webhook.MinSeverity = "debug"
 	if err := cfg.Validate(); err == nil {
 		t.Error("expected error for invalid webhook min_severity")
@@ -3475,7 +3490,7 @@ func TestValidate_EmitWebhookInvalidSeverity(t *testing.T) {
 
 func TestValidate_EmitSyslogInvalidSeverity(t *testing.T) {
 	cfg := Defaults()
-	cfg.Emit.Syslog.Address = "udp://syslog.example.com:514" //nolint:goconst // test value
+	cfg.Emit.Syslog.Address = testSyslogAddr
 	cfg.Emit.Syslog.MinSeverity = "debug"
 	if err := cfg.Validate(); err == nil {
 		t.Error("expected error for invalid syslog min_severity")
@@ -3483,10 +3498,10 @@ func TestValidate_EmitSyslogInvalidSeverity(t *testing.T) {
 }
 
 func TestValidate_EmitWebhookValidConfig(t *testing.T) {
-	for _, sev := range []string{"info", "warn", "critical"} {
+	for _, sev := range []string{SeverityInfo, ActionWarn, SeverityCritical} {
 		t.Run(sev, func(t *testing.T) {
 			cfg := Defaults()
-			cfg.Emit.Webhook.URL = "https://example.com/hook"
+			cfg.Emit.Webhook.URL = testWebhookURL
 			cfg.Emit.Webhook.MinSeverity = sev
 			cfg.Emit.Webhook.TimeoutSecs = 10
 			cfg.Emit.Webhook.QueueSize = 32
@@ -3498,10 +3513,10 @@ func TestValidate_EmitWebhookValidConfig(t *testing.T) {
 }
 
 func TestValidate_EmitSyslogValidConfig(t *testing.T) {
-	for _, sev := range []string{"info", "warn", "critical"} {
+	for _, sev := range []string{SeverityInfo, ActionWarn, SeverityCritical} {
 		t.Run(sev, func(t *testing.T) {
 			cfg := Defaults()
-			cfg.Emit.Syslog.Address = "udp://syslog.example.com:514"
+			cfg.Emit.Syslog.Address = testSyslogAddr
 			cfg.Emit.Syslog.MinSeverity = sev
 			if err := cfg.Validate(); err != nil {
 				t.Errorf("valid syslog config with severity %q should validate, got: %v", sev, err)
@@ -3512,8 +3527,8 @@ func TestValidate_EmitSyslogValidConfig(t *testing.T) {
 
 func TestValidate_EmitWebhookInvalidTimeout(t *testing.T) {
 	cfg := Defaults()
-	cfg.Emit.Webhook.URL = "https://example.com/hook"
-	cfg.Emit.Webhook.MinSeverity = "warn"
+	cfg.Emit.Webhook.URL = testWebhookURL
+	cfg.Emit.Webhook.MinSeverity = ActionWarn
 	cfg.Emit.Webhook.QueueSize = 32
 	cfg.Emit.Webhook.TimeoutSecs = -1
 	err := cfg.Validate()
@@ -3527,8 +3542,8 @@ func TestValidate_EmitWebhookInvalidTimeout(t *testing.T) {
 
 func TestValidate_EmitWebhookInvalidQueueSize(t *testing.T) {
 	cfg := Defaults()
-	cfg.Emit.Webhook.URL = "https://example.com/hook"
-	cfg.Emit.Webhook.MinSeverity = "warn"
+	cfg.Emit.Webhook.URL = testWebhookURL
+	cfg.Emit.Webhook.MinSeverity = ActionWarn
 	cfg.Emit.Webhook.TimeoutSecs = 5
 	cfg.Emit.Webhook.QueueSize = 0
 	err := cfg.Validate()
@@ -3550,7 +3565,7 @@ func TestValidate_EmitNoSinksConfigured(t *testing.T) {
 
 func TestValidateReload_EmitWebhookDisabled(t *testing.T) {
 	old := Defaults()
-	old.Emit.Webhook.URL = "https://example.com/hook"
+	old.Emit.Webhook.URL = testWebhookURL
 
 	updated := Defaults()
 	updated.Emit.Webhook.URL = ""
@@ -3570,7 +3585,7 @@ func TestValidateReload_EmitWebhookDisabled(t *testing.T) {
 
 func TestValidateReload_EmitSyslogDisabled(t *testing.T) {
 	old := Defaults()
-	old.Emit.Syslog.Address = "udp://syslog.example.com:514"
+	old.Emit.Syslog.Address = testSyslogAddr
 
 	updated := Defaults()
 	updated.Emit.Syslog.Address = ""
@@ -3615,8 +3630,8 @@ func TestValidateReload_EmitSyslogBothEmpty_NoWarning(t *testing.T) {
 func TestValidate_KillSwitchAPIListen_Valid(t *testing.T) {
 	cfg := Defaults()
 	cfg.ApplyDefaults()
-	cfg.KillSwitch.APIListen = "0.0.0.0:9090" //nolint:goconst // test value
-	cfg.KillSwitch.APIToken = "test-token"    //nolint:goconst,gosec // test value
+	cfg.KillSwitch.APIListen = testAPIListen
+	cfg.KillSwitch.APIToken = testToken //nolint:gosec // test value
 
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("valid api_listen should pass validation: %v", err)
@@ -3641,7 +3656,7 @@ func TestValidate_KillSwitchAPIListen_Invalid(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected validation error for malformed api_listen")
 	}
-	if !strings.Contains(err.Error(), "kill_switch.api_listen") {
+	if !strings.Contains(err.Error(), fieldKSAPIListen) {
 		t.Errorf("expected error about kill_switch.api_listen, got: %v", err)
 	}
 }
@@ -3650,7 +3665,7 @@ func TestValidate_KillSwitchAPIListen_CollisionWithProxy(t *testing.T) {
 	cfg := Defaults()
 	cfg.ApplyDefaults()
 	cfg.KillSwitch.APIListen = cfg.FetchProxy.Listen // same port
-	cfg.KillSwitch.APIToken = "test-token"           //nolint:goconst,gosec // test value
+	cfg.KillSwitch.APIToken = testToken              //nolint:gosec // test value
 
 	err := cfg.Validate()
 	if err == nil {
@@ -3666,7 +3681,7 @@ func TestValidate_KillSwitchAPIListen_CollisionDifferentBind(t *testing.T) {
 	cfg.ApplyDefaults()
 	cfg.FetchProxy.Listen = "127.0.0.1:8888"
 	cfg.KillSwitch.APIListen = "0.0.0.0:8888" // same port, different bind address
-	cfg.KillSwitch.APIToken = "test-token"    //nolint:goconst,gosec // test value
+	cfg.KillSwitch.APIToken = testToken       //nolint:gosec // test value
 
 	err := cfg.Validate()
 	if err == nil {
@@ -3680,8 +3695,8 @@ func TestValidate_KillSwitchAPIListen_CollisionDifferentBind(t *testing.T) {
 func TestValidate_KillSwitchAPIListen_RequiresToken(t *testing.T) {
 	cfg := Defaults()
 	cfg.ApplyDefaults()
-	cfg.KillSwitch.APIListen = "0.0.0.0:9090" //nolint:goconst // test value
-	cfg.KillSwitch.APIToken = ""              // no token
+	cfg.KillSwitch.APIListen = testAPIListen
+	cfg.KillSwitch.APIToken = "" // no token
 
 	err := cfg.Validate()
 	if err == nil {
@@ -3694,15 +3709,15 @@ func TestValidate_KillSwitchAPIListen_RequiresToken(t *testing.T) {
 
 func TestValidateReload_KillSwitchAPIListenChanged(t *testing.T) {
 	old := Defaults()
-	old.KillSwitch.APIListen = "0.0.0.0:9090" //nolint:goconst // test value
+	old.KillSwitch.APIListen = testAPIListen
 
 	updated := Defaults()
-	updated.KillSwitch.APIListen = "0.0.0.0:9091" //nolint:goconst // test value
+	updated.KillSwitch.APIListen = testAPIListen2
 
 	warnings := ValidateReload(old, updated)
 	found := false
 	for _, w := range warnings {
-		if w.Field == "kill_switch.api_listen" { //nolint:goconst // test value
+		if w.Field == fieldKSAPIListen {
 			found = true
 			if !strings.Contains(w.Message, "requires restart") {
 				t.Errorf("expected restart warning, got: %s", w.Message)
@@ -3716,14 +3731,14 @@ func TestValidateReload_KillSwitchAPIListenChanged(t *testing.T) {
 
 func TestValidateReload_KillSwitchAPIListenSame_NoWarning(t *testing.T) {
 	old := Defaults()
-	old.KillSwitch.APIListen = "0.0.0.0:9090" //nolint:goconst // test value
+	old.KillSwitch.APIListen = testAPIListen
 
 	updated := Defaults()
-	updated.KillSwitch.APIListen = "0.0.0.0:9090" //nolint:goconst // test value
+	updated.KillSwitch.APIListen = testAPIListen
 
 	warnings := ValidateReload(old, updated)
 	for _, w := range warnings {
-		if w.Field == "kill_switch.api_listen" { //nolint:goconst // test value
+		if w.Field == fieldKSAPIListen {
 			t.Errorf("same api_listen should not warn, got: %s", w.Message)
 		}
 	}
@@ -3735,7 +3750,7 @@ func TestValidateReload_KillSwitchAPIListenBothEmpty_NoWarning(t *testing.T) {
 
 	warnings := ValidateReload(old, updated)
 	for _, w := range warnings {
-		if w.Field == "kill_switch.api_listen" { //nolint:goconst // test value
+		if w.Field == fieldKSAPIListen {
 			t.Errorf("both empty api_listen should not warn, got: %s", w.Message)
 		}
 	}
@@ -3744,7 +3759,7 @@ func TestValidateReload_KillSwitchAPIListenBothEmpty_NoWarning(t *testing.T) {
 func TestValidate_EmitWebhookURL_Valid(t *testing.T) {
 	cfg := Defaults()
 	cfg.ApplyDefaults()
-	cfg.Emit.Webhook.URL = "https://siem.example.com/webhook" //nolint:goconst // test value
+	cfg.Emit.Webhook.URL = "https://siem.example.com/webhook"
 
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("valid webhook URL should pass validation: %v", err)
@@ -3782,7 +3797,7 @@ func TestValidate_EmitWebhookURL_NoScheme(t *testing.T) {
 func TestValidate_EmitSyslogAddress_Valid(t *testing.T) {
 	cfg := Defaults()
 	cfg.ApplyDefaults()
-	cfg.Emit.Syslog.Address = "udp://syslog.example.com:514" //nolint:goconst // test value
+	cfg.Emit.Syslog.Address = testSyslogAddr
 
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("valid syslog address should pass validation: %v", err)
@@ -3836,7 +3851,7 @@ func TestValidate_EmitSyslogFacility_Valid(t *testing.T) {
 		t.Run(fac, func(t *testing.T) {
 			cfg := Defaults()
 			cfg.ApplyDefaults()
-			cfg.Emit.Syslog.Address = "udp://syslog.example.com:514" //nolint:goconst // test value
+			cfg.Emit.Syslog.Address = testSyslogAddr
 			cfg.Emit.Syslog.Facility = fac
 			if err := cfg.Validate(); err != nil {
 				t.Errorf("valid facility %q should pass: %v", fac, err)
@@ -3848,8 +3863,8 @@ func TestValidate_EmitSyslogFacility_Valid(t *testing.T) {
 func TestValidate_EmitSyslogFacility_Invalid(t *testing.T) {
 	cfg := Defaults()
 	cfg.ApplyDefaults()
-	cfg.Emit.Syslog.Address = "udp://syslog.example.com:514" //nolint:goconst // test value
-	cfg.Emit.Syslog.Facility = "loca10"                      // typo
+	cfg.Emit.Syslog.Address = testSyslogAddr
+	cfg.Emit.Syslog.Facility = "loca10" // typo
 	err := cfg.Validate()
 	if err == nil {
 		t.Fatal("expected validation error for invalid syslog facility")
@@ -3863,7 +3878,7 @@ func TestValidate_EmitSyslogFacility_Invalid(t *testing.T) {
 
 func TestMergeDLPPatterns_NilIncludeDefaults_MergesAll(t *testing.T) {
 	user := []DLPPattern{
-		{Name: "Custom", Regex: `custom-[a-z]+`, Severity: "high"},
+		{Name: testCustomName, Regex: `custom-[a-z]+`, Severity: "high"},
 	}
 	defaults := []DLPPattern{
 		{Name: "Default A", Regex: `default-a`, Severity: "critical"},
@@ -3877,7 +3892,7 @@ func TestMergeDLPPatterns_NilIncludeDefaults_MergesAll(t *testing.T) {
 	if result[0].Name != "Default A" {
 		t.Errorf("expected Default A first, got %s", result[0].Name)
 	}
-	if result[2].Name != "Custom" {
+	if result[2].Name != testCustomName {
 		t.Errorf("expected Custom last, got %s", result[2].Name)
 	}
 }
@@ -3885,7 +3900,7 @@ func TestMergeDLPPatterns_NilIncludeDefaults_MergesAll(t *testing.T) {
 func TestMergeDLPPatterns_TrueIncludeDefaults_MergesAll(t *testing.T) {
 	tr := true
 	user := []DLPPattern{
-		{Name: "Custom", Regex: `custom-[a-z]+`, Severity: "high"},
+		{Name: testCustomName, Regex: `custom-[a-z]+`, Severity: "high"},
 	}
 	defaults := []DLPPattern{
 		{Name: "Default A", Regex: `default-a`, Severity: "critical"},
@@ -3899,7 +3914,7 @@ func TestMergeDLPPatterns_TrueIncludeDefaults_MergesAll(t *testing.T) {
 func TestMergeDLPPatterns_FalseIncludeDefaults_UserOnly(t *testing.T) {
 	f := false
 	user := []DLPPattern{
-		{Name: "Custom", Regex: `custom-[a-z]+`, Severity: "high"},
+		{Name: testCustomName, Regex: `custom-[a-z]+`, Severity: "high"},
 	}
 	defaults := []DLPPattern{
 		{Name: "Default A", Regex: `default-a`, Severity: "critical"},
@@ -3909,7 +3924,7 @@ func TestMergeDLPPatterns_FalseIncludeDefaults_UserOnly(t *testing.T) {
 	if len(result) != 1 {
 		t.Fatalf("expected 1 pattern, got %d", len(result))
 	}
-	if result[0].Name != "Custom" {
+	if result[0].Name != testCustomName {
 		t.Errorf("expected Custom, got %s", result[0].Name)
 	}
 }
@@ -3917,7 +3932,7 @@ func TestMergeDLPPatterns_FalseIncludeDefaults_UserOnly(t *testing.T) {
 func TestMergeDLPPatterns_UserOverridesByName(t *testing.T) {
 	user := []DLPPattern{
 		{Name: "Default A", Regex: `user-override`, Severity: "low"},
-		{Name: "Custom", Regex: `custom`, Severity: "high"},
+		{Name: testCustomName, Regex: `custom`, Severity: "high"},
 	}
 	defaults := []DLPPattern{
 		{Name: "Default A", Regex: `default-a`, Severity: "critical"},
@@ -3974,7 +3989,7 @@ func TestMergeResponsePatterns_NilIncludeDefaults_MergesAll(t *testing.T) {
 func TestValidate_MetricsListen_Valid(t *testing.T) {
 	cfg := Defaults()
 	cfg.ApplyDefaults()
-	cfg.MetricsListen = "0.0.0.0:9091" //nolint:goconst // test value
+	cfg.MetricsListen = testAPIListen2
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("valid metrics_listen should pass: %v", err)
 	}
@@ -4010,9 +4025,9 @@ func TestValidate_MetricsListen_CollidesProxy(t *testing.T) {
 func TestValidate_MetricsListen_CollidesAPI(t *testing.T) {
 	cfg := Defaults()
 	cfg.ApplyDefaults()
-	cfg.KillSwitch.APIListen = "0.0.0.0:9091"
-	cfg.KillSwitch.APIToken = "test-token" //nolint:gosec // test
-	cfg.MetricsListen = "0.0.0.0:9091"     // same port as API
+	cfg.KillSwitch.APIListen = testAPIListen2
+	cfg.KillSwitch.APIToken = testToken //nolint:gosec // test
+	cfg.MetricsListen = testAPIListen2  // same port as API
 
 	err := cfg.Validate()
 	if err == nil {
@@ -4025,7 +4040,7 @@ func TestValidate_MetricsListen_CollidesAPI(t *testing.T) {
 
 func TestValidateReload_MetricsListenChanged(t *testing.T) {
 	old := Defaults()
-	old.MetricsListen = "0.0.0.0:9091"
+	old.MetricsListen = testAPIListen2
 
 	updated := Defaults()
 	updated.MetricsListen = "0.0.0.0:9092"

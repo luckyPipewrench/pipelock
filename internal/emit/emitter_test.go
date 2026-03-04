@@ -59,7 +59,7 @@ func TestEmitter_FanOut(t *testing.T) {
 			t.Errorf("sink %d: got %d events, want 1", i, len(events))
 			continue
 		}
-		if events[0].Type != "blocked" { //nolint:goconst // test value
+		if events[0].Type != "blocked" {
 			t.Errorf("sink %d: event type = %q, want %q", i, events[0].Type, "blocked")
 		}
 		if events[0].InstanceID != "test-host" {

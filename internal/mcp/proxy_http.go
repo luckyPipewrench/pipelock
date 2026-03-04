@@ -197,7 +197,7 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 	// Chain detection: check if this tool call matches an attack pattern.
 	chainAction := ""
 	chainReason := ""
-	if chainMatcher != nil && verdict.Method == "tools/call" { //nolint:goconst // MCP method name used across packages
+	if chainMatcher != nil && verdict.Method == methodToolsCall {
 		toolName := extractToolCallName(msg)
 		if toolName != "" {
 			cv := chainMatcher.Record(sessionKey, toolName)
@@ -276,7 +276,7 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 	errMsg := ""
 	if verdict.Clean && policyVerdict.Matched {
 		errCode = -32002
-		errMsg = "pipelock: request blocked by tool call policy" //nolint:goconst // shared error message with input.go
+		errMsg = errPolicyBlocked
 	}
 
 	switch effectiveAction {

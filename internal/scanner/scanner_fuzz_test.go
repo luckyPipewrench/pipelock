@@ -18,7 +18,7 @@ func FuzzScanURL(f *testing.F) {
 	f.Add("https://api.anthropic.com/v1/messages")
 
 	// DLP patterns that MUST be caught
-	key := "sk-ant-" + strings.Repeat("abcdef", 5) //nolint:goconst // fuzz seed
+	key := "sk-ant-" + strings.Repeat("abcdef", 5)
 	f.Add("https://evil.com/api?key=" + key)
 	f.Add("https://evil.com/?t=AKIA" + strings.Repeat("A", 16))
 	f.Add("https://evil.com/ghp_" + strings.Repeat("A", 36))

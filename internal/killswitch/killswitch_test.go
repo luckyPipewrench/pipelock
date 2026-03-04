@@ -13,6 +13,21 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
+// Package-level test constants for strings used 3+ times across test files.
+const (
+	testToken       = "test-token"
+	testBearerToken = "Bearer test-token"
+	bearerNewToken  = "Bearer new-token"
+	srcAPI          = "api"
+	srcConfig       = "config"
+	srcSignal       = "signal"
+	srcSentinel     = "sentinel"
+	msgTestDenyAll  = "test deny-all"
+	msgDenyAll      = "deny all"
+	msgFailClosed   = "fail closed"
+	msgUpdated      = "updated message"
+)
+
 func testConfig() *config.Config {
 	cfg := config.Defaults()
 	cfg.Internal = nil // disable SSRF for tests
@@ -22,7 +37,7 @@ func testConfig() *config.Config {
 func TestController_ConfigEnabled(t *testing.T) {
 	cfg := testConfig()
 	cfg.KillSwitch.Enabled = true
-	cfg.KillSwitch.Message = "test deny-all" //nolint:goconst // test value
+	cfg.KillSwitch.Message = msgTestDenyAll
 
 	c := New(cfg)
 
@@ -31,11 +46,11 @@ func TestController_ConfigEnabled(t *testing.T) {
 	if !d.Active {
 		t.Fatal("expected kill switch to be active when config enabled")
 	}
-	if d.Source != "config" { //nolint:goconst // test value
-		t.Errorf("expected source %q, got %q", "config", d.Source)
+	if d.Source != srcConfig {
+		t.Errorf("expected source %q, got %q", srcConfig, d.Source)
 	}
-	if d.Message != "test deny-all" { //nolint:goconst // test value
-		t.Errorf("expected message %q, got %q", "test deny-all", d.Message)
+	if d.Message != msgTestDenyAll {
+		t.Errorf("expected message %q, got %q", msgTestDenyAll, d.Message)
 	}
 }
 
@@ -77,8 +92,8 @@ func TestController_SentinelFile(t *testing.T) {
 	if !d.Active {
 		t.Fatal("expected kill switch active when sentinel file present")
 	}
-	if d.Source != "sentinel" { //nolint:goconst // test value
-		t.Errorf("expected source %q, got %q", "sentinel", d.Source)
+	if d.Source != srcSentinel {
+		t.Errorf("expected source %q, got %q", srcSentinel, d.Source)
 	}
 
 	// Remove sentinel file — inactive again.
@@ -114,8 +129,8 @@ func TestController_SignalToggle(t *testing.T) {
 	if !d.Active {
 		t.Fatal("expected kill switch active after signal toggle on")
 	}
-	if d.Source != "signal" { //nolint:goconst // test value
-		t.Errorf("expected source %q, got %q", "signal", d.Source)
+	if d.Source != srcSignal {
+		t.Errorf("expected source %q, got %q", srcSignal, d.Source)
 	}
 
 	// Toggle off.
@@ -165,8 +180,8 @@ func TestController_ORComposition(t *testing.T) {
 	if !d.Active {
 		t.Fatal("expected active from signal alone")
 	}
-	if d.Source != "signal" {
-		t.Errorf("expected source %q, got %q", "signal", d.Source)
+	if d.Source != srcSignal {
+		t.Errorf("expected source %q, got %q", srcSignal, d.Source)
 	}
 
 	// Toggle signal off, create sentinel.
@@ -179,8 +194,8 @@ func TestController_ORComposition(t *testing.T) {
 	if !d.Active {
 		t.Fatal("expected active from sentinel alone")
 	}
-	if d.Source != "sentinel" {
-		t.Errorf("expected source %q, got %q", "sentinel", d.Source)
+	if d.Source != srcSentinel {
+		t.Errorf("expected source %q, got %q", srcSentinel, d.Source)
 	}
 
 	// Remove sentinel — all sources off.
@@ -279,7 +294,7 @@ func TestController_AllowlistIP(t *testing.T) {
 func TestController_Reload(t *testing.T) {
 	cfg := testConfig()
 	cfg.KillSwitch.Enabled = true
-	cfg.KillSwitch.Message = "initial message" //nolint:goconst // test value
+	cfg.KillSwitch.Message = "initial message"
 
 	c := New(cfg)
 
@@ -292,7 +307,7 @@ func TestController_Reload(t *testing.T) {
 	// Reload with different config.
 	cfg2 := testConfig()
 	cfg2.KillSwitch.Enabled = false
-	cfg2.KillSwitch.Message = "updated message" //nolint:goconst // test value
+	cfg2.KillSwitch.Message = msgUpdated
 	c.Reload(cfg2)
 
 	d = c.IsActiveHTTP(r)
@@ -303,22 +318,22 @@ func TestController_Reload(t *testing.T) {
 	// Re-enable with updated message.
 	cfg3 := testConfig()
 	cfg3.KillSwitch.Enabled = true
-	cfg3.KillSwitch.Message = "updated message"
+	cfg3.KillSwitch.Message = msgUpdated
 	c.Reload(cfg3)
 
 	d = c.IsActiveHTTP(r)
 	if !d.Active {
 		t.Fatal("expected kill switch active after reload re-enabling")
 	}
-	if d.Message != "updated message" {
-		t.Errorf("expected message %q, got %q", "updated message", d.Message)
+	if d.Message != msgUpdated {
+		t.Errorf("expected message %q, got %q", msgUpdated, d.Message)
 	}
 }
 
 func TestController_HTTPResponse(t *testing.T) {
 	cfg := testConfig()
 	cfg.KillSwitch.Enabled = true
-	cfg.KillSwitch.Message = "test deny-all" //nolint:goconst // test value
+	cfg.KillSwitch.Message = msgTestDenyAll
 
 	c := New(cfg)
 
@@ -328,18 +343,18 @@ func TestController_HTTPResponse(t *testing.T) {
 	if !d.Active {
 		t.Fatal("expected active decision")
 	}
-	if d.Message != "test deny-all" {
-		t.Errorf("expected message %q, got %q", "test deny-all", d.Message)
+	if d.Message != msgTestDenyAll {
+		t.Errorf("expected message %q, got %q", msgTestDenyAll, d.Message)
 	}
-	if d.Source != "config" {
-		t.Errorf("expected source %q, got %q", "config", d.Source)
+	if d.Source != srcConfig {
+		t.Errorf("expected source %q, got %q", srcConfig, d.Source)
 	}
 }
 
 func TestController_MCPNotification(t *testing.T) {
 	cfg := testConfig()
 	cfg.KillSwitch.Enabled = true
-	cfg.KillSwitch.Message = "deny all" //nolint:goconst // test value
+	cfg.KillSwitch.Message = msgDenyAll
 
 	c := New(cfg)
 
@@ -439,7 +454,7 @@ func TestController_NilController(t *testing.T) {
 func TestController_MCPResponseFormat(t *testing.T) {
 	cfg := testConfig()
 	cfg.KillSwitch.Enabled = true
-	cfg.KillSwitch.Message = "deny all"
+	cfg.KillSwitch.Message = msgDenyAll
 
 	c := New(cfg)
 
@@ -481,7 +496,7 @@ func TestController_MCPResponseFormat(t *testing.T) {
 	if parsed.Error.Code != -32004 {
 		t.Errorf("expected error code -32004, got %d", parsed.Error.Code)
 	}
-	if parsed.Error.Message != "deny all" {
+	if parsed.Error.Message != msgDenyAll {
 		t.Errorf("expected error message %q, got %q", "deny all", parsed.Error.Message)
 	}
 }
@@ -503,8 +518,8 @@ func TestController_SourcePriority(t *testing.T) {
 
 	r := httptest.NewRequest(http.MethodGet, "/fetch", nil)
 	d := c.IsActiveHTTP(r)
-	if d.Source != "config" {
-		t.Errorf("expected source %q when all sources active, got %q", "config", d.Source)
+	if d.Source != srcConfig {
+		t.Errorf("expected source %q when all sources active, got %q", srcConfig, d.Source)
 	}
 
 	// Disable config — signal should be next.
@@ -514,15 +529,15 @@ func TestController_SourcePriority(t *testing.T) {
 	c.Reload(cfg2)
 
 	d = c.IsActiveHTTP(r)
-	if d.Source != "signal" {
-		t.Errorf("expected source %q when config disabled, got %q", "signal", d.Source)
+	if d.Source != srcSignal {
+		t.Errorf("expected source %q when config disabled, got %q", srcSignal, d.Source)
 	}
 
 	// Disable signal — sentinel should be next.
 	c.ToggleSignal()
 	d = c.IsActiveHTTP(r)
-	if d.Source != "sentinel" {
-		t.Errorf("expected source %q when config+signal disabled, got %q", "sentinel", d.Source)
+	if d.Source != srcSentinel {
+		t.Errorf("expected source %q when config+signal disabled, got %q", srcSentinel, d.Source)
 	}
 }
 
@@ -556,7 +571,7 @@ func TestController_SentinelStatError(t *testing.T) {
 
 	cfg := testConfig()
 	cfg.KillSwitch.SentinelFile = sentinelPath
-	cfg.KillSwitch.Message = "fail closed" //nolint:goconst // test value
+	cfg.KillSwitch.Message = msgFailClosed
 
 	c := New(cfg)
 
@@ -565,11 +580,11 @@ func TestController_SentinelStatError(t *testing.T) {
 	if !d.Active {
 		t.Fatal("expected kill switch ACTIVE on sentinel stat permission error (fail closed)")
 	}
-	if d.Source != "sentinel" { //nolint:goconst // test value
-		t.Errorf("expected source %q, got %q", "sentinel", d.Source)
+	if d.Source != srcSentinel {
+		t.Errorf("expected source %q, got %q", srcSentinel, d.Source)
 	}
-	if d.Message != "fail closed" { //nolint:goconst // test value
-		t.Errorf("expected message %q, got %q", "fail closed", d.Message)
+	if d.Message != msgFailClosed {
+		t.Errorf("expected message %q, got %q", msgFailClosed, d.Message)
 	}
 }
 
@@ -584,23 +599,23 @@ func TestController_ErrorResponse(t *testing.T) {
 		{
 			name:    "numeric id",
 			id:      json.RawMessage(`1`),
-			message: "deny all", //nolint:goconst // test value
+			message: msgDenyAll,
 			wantID:  "1",
-			wantMsg: "deny all", //nolint:goconst // test value
+			wantMsg: msgDenyAll,
 		},
 		{
 			name:    "string id",
 			id:      json.RawMessage(`"abc-123"`),
-			message: "kill switch active", //nolint:goconst // test value
+			message: "kill switch active",
 			wantID:  `"abc-123"`,
-			wantMsg: "kill switch active", //nolint:goconst // test value
+			wantMsg: "kill switch active",
 		},
 		{
 			name:    "null id",
 			id:      json.RawMessage(`null`),
-			message: "emergency shutdown", //nolint:goconst // test value
+			message: "emergency shutdown",
 			wantID:  "null",
-			wantMsg: "emergency shutdown", //nolint:goconst // test value
+			wantMsg: "emergency shutdown",
 		},
 	}
 
@@ -640,7 +655,7 @@ func TestController_BareIPAddress(t *testing.T) {
 	cfg := testConfig()
 	cfg.KillSwitch.Enabled = true
 	cfg.KillSwitch.AllowlistIPs = []string{"10.0.0.0/24"}
-	cfg.KillSwitch.Message = "bare IP test" //nolint:goconst // test value
+	cfg.KillSwitch.Message = "bare IP test"
 
 	c := New(cfg)
 
@@ -699,8 +714,8 @@ func TestController_APISource(t *testing.T) {
 	if !d.Active {
 		t.Fatal("expected active after SetAPI(true)")
 	}
-	if d.Source != "api" { //nolint:goconst // test value
-		t.Errorf("expected source %q, got %q", "api", d.Source)
+	if d.Source != srcAPI {
+		t.Errorf("expected source %q, got %q", srcAPI, d.Source)
 	}
 
 	c.SetAPI(false)
@@ -771,8 +786,8 @@ func TestController_SourcePriority_WithAPI(t *testing.T) {
 
 	// All sources active — config wins
 	d := c.IsActiveHTTP(r)
-	if d.Source != "config" {
-		t.Errorf("expected source %q, got %q", "config", d.Source)
+	if d.Source != srcConfig {
+		t.Errorf("expected source %q, got %q", srcConfig, d.Source)
 	}
 
 	// Disable config — api wins
@@ -780,22 +795,22 @@ func TestController_SourcePriority_WithAPI(t *testing.T) {
 	cfg2.KillSwitch.SentinelFile = sentinelPath
 	c.Reload(cfg2)
 	d = c.IsActiveHTTP(r)
-	if d.Source != "api" {
-		t.Errorf("expected source %q, got %q", "api", d.Source)
+	if d.Source != srcAPI {
+		t.Errorf("expected source %q, got %q", srcAPI, d.Source)
 	}
 
 	// Disable api — signal wins
 	c.SetAPI(false)
 	d = c.IsActiveHTTP(r)
-	if d.Source != "signal" {
-		t.Errorf("expected source %q, got %q", "signal", d.Source)
+	if d.Source != srcSignal {
+		t.Errorf("expected source %q, got %q", srcSignal, d.Source)
 	}
 
 	// Disable signal — sentinel wins
 	c.ToggleSignal()
 	d = c.IsActiveHTTP(r)
-	if d.Source != "sentinel" {
-		t.Errorf("expected source %q, got %q", "sentinel", d.Source)
+	if d.Source != srcSentinel {
+		t.Errorf("expected source %q, got %q", srcSentinel, d.Source)
 	}
 }
 
@@ -811,16 +826,16 @@ func TestController_Sources(t *testing.T) {
 	c.SetAPI(true)
 
 	sources := c.Sources()
-	if !sources["config"] {
+	if !sources[srcConfig] {
 		t.Error("expected config source active")
 	}
-	if !sources["api"] {
+	if !sources[srcAPI] {
 		t.Error("expected api source active")
 	}
-	if sources["signal"] {
+	if sources[srcSignal] {
 		t.Error("expected signal source inactive")
 	}
-	if sources["sentinel"] {
+	if sources[srcSentinel] {
 		t.Error("expected sentinel source inactive (file doesn't exist)")
 	}
 }
@@ -915,7 +930,7 @@ func TestController_MultiSource_DeactivateAPI_OthersRemain(t *testing.T) {
 
 	// All three runtime sources active.
 	d := c.IsActiveHTTP(r)
-	if !d.Active || d.Source != "api" {
+	if !d.Active || d.Source != srcAPI {
 		t.Fatalf("expected active from api, got active=%v source=%q", d.Active, d.Source)
 	}
 
@@ -925,8 +940,8 @@ func TestController_MultiSource_DeactivateAPI_OthersRemain(t *testing.T) {
 	if !d.Active {
 		t.Fatal("expected still active after deactivating API (signal+sentinel remain)")
 	}
-	if d.Source != "signal" {
-		t.Errorf("expected source %q after API off, got %q", "signal", d.Source)
+	if d.Source != srcSignal {
+		t.Errorf("expected source %q after API off, got %q", srcSignal, d.Source)
 	}
 
 	// Deactivate signal — sentinel remains.
@@ -935,8 +950,8 @@ func TestController_MultiSource_DeactivateAPI_OthersRemain(t *testing.T) {
 	if !d.Active {
 		t.Fatal("expected still active after deactivating signal (sentinel remains)")
 	}
-	if d.Source != "sentinel" {
-		t.Errorf("expected source %q after signal off, got %q", "sentinel", d.Source)
+	if d.Source != srcSentinel {
+		t.Errorf("expected source %q after signal off, got %q", srcSentinel, d.Source)
 	}
 
 	// Remove sentinel — all off.
@@ -951,7 +966,7 @@ func TestController_MultiSource_DeactivateAPI_OthersRemain(t *testing.T) {
 
 func TestController_Reload_PreservesRuntimeState(t *testing.T) {
 	cfg := testConfig()
-	cfg.KillSwitch.Message = "before reload" //nolint:goconst // test value
+	cfg.KillSwitch.Message = "before reload"
 
 	c := New(cfg)
 	c.SetAPI(true)
@@ -959,21 +974,21 @@ func TestController_Reload_PreservesRuntimeState(t *testing.T) {
 
 	r := httptest.NewRequest(http.MethodGet, "/fetch", nil)
 	d := c.IsActiveHTTP(r)
-	if !d.Active || d.Source != "api" {
+	if !d.Active || d.Source != srcAPI {
 		t.Fatalf("pre-reload: expected active from api, got active=%v source=%q", d.Active, d.Source)
 	}
 
 	// Reload with different message — API and signal must survive.
 	cfg2 := testConfig()
-	cfg2.KillSwitch.Message = "after reload" //nolint:goconst // test value
+	cfg2.KillSwitch.Message = "after reload"
 	c.Reload(cfg2)
 
 	d = c.IsActiveHTTP(r)
 	if !d.Active {
 		t.Fatal("expected active after reload (API and signal should be preserved)")
 	}
-	if d.Source != "api" {
-		t.Errorf("expected source %q after reload, got %q", "api", d.Source)
+	if d.Source != srcAPI {
+		t.Errorf("expected source %q after reload, got %q", srcAPI, d.Source)
 	}
 	if d.Message != "after reload" {
 		t.Errorf("expected message %q after reload, got %q", "after reload", d.Message)
@@ -982,14 +997,14 @@ func TestController_Reload_PreservesRuntimeState(t *testing.T) {
 	// Verify signal also survived reload.
 	c.SetAPI(false)
 	d = c.IsActiveHTTP(r)
-	if !d.Active || d.Source != "signal" {
+	if !d.Active || d.Source != srcSignal {
 		t.Fatalf("expected signal survived reload, got active=%v source=%q", d.Active, d.Source)
 	}
 }
 
 func TestController_APIHandler_Deactivate_PreservesOtherSources(t *testing.T) {
 	cfg := testConfig()
-	cfg.KillSwitch.APIToken = "test-token" //nolint:goconst,gosec // test value
+	cfg.KillSwitch.APIToken = testToken //nolint:gosec // test value
 	c := New(cfg)
 	h := NewAPIHandler(c)
 
@@ -999,14 +1014,14 @@ func TestController_APIHandler_Deactivate_PreservesOtherSources(t *testing.T) {
 
 	r := httptest.NewRequest(http.MethodGet, "/fetch", nil)
 	d := c.IsActiveHTTP(r)
-	if !d.Active || d.Source != "api" {
+	if !d.Active || d.Source != srcAPI {
 		t.Fatalf("expected active from api, got active=%v source=%q", d.Active, d.Source)
 	}
 
 	// Deactivate via the API handler (same as a real HTTP call).
 	body := bytes.NewBufferString(`{"active": false}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/killswitch", body)
-	req.Header.Set("Authorization", "Bearer test-token") //nolint:goconst // test value
+	req.Header.Set("Authorization", testBearerToken)
 	w := httptest.NewRecorder()
 	h.HandleToggle(w, req)
 
@@ -1019,16 +1034,16 @@ func TestController_APIHandler_Deactivate_PreservesOtherSources(t *testing.T) {
 	if !d.Active {
 		t.Fatal("expected kill switch still active (signal source remains)")
 	}
-	if d.Source != "signal" {
-		t.Errorf("expected source %q after API deactivation, got %q", "signal", d.Source)
+	if d.Source != srcSignal {
+		t.Errorf("expected source %q after API deactivation, got %q", srcSignal, d.Source)
 	}
 
 	// Verify the status endpoint reflects both sources correctly.
 	sources := c.Sources()
-	if sources["api"] {
+	if sources[srcAPI] {
 		t.Error("expected api source to be false after deactivation")
 	}
-	if !sources["signal"] {
+	if !sources[srcSignal] {
 		t.Error("expected signal source to still be true")
 	}
 }

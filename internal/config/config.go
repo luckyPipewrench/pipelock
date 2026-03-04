@@ -30,6 +30,20 @@ const (
 	ActionForward = "forward"
 )
 
+// Severity constants for chain detection and emit thresholds.
+const (
+	SeverityInfo     = "info"
+	SeverityWarn     = "warn"
+	SeverityCritical = "critical"
+	SeverityHigh     = "high"
+	SeverityMedium   = "medium"
+)
+
+// Origin policy constants for WebSocket proxy.
+const (
+	OriginPolicyRewrite = "rewrite"
+)
+
 // Output/format constants for configuration defaults.
 const (
 	DefaultListen    = "127.0.0.1:8888"
@@ -451,9 +465,9 @@ func (c *Config) ApplyDefaults() {
 		c.Logging.Output = DefaultLogOutput
 	}
 	if c.ResponseScanning.Enabled && c.ResponseScanning.Action == "" {
-		c.ResponseScanning.Action = "warn" //nolint:goconst // config action value
+		c.ResponseScanning.Action = ActionWarn
 	}
-	if c.ResponseScanning.Action == "ask" && c.ResponseScanning.AskTimeoutSeconds <= 0 { //nolint:goconst // config action value
+	if c.ResponseScanning.Action == ActionAsk && c.ResponseScanning.AskTimeoutSeconds <= 0 {
 		c.ResponseScanning.AskTimeoutSeconds = 30
 	}
 	// Merge default response scanning patterns with user patterns.
@@ -477,16 +491,16 @@ func (c *Config) ApplyDefaults() {
 	// Always default OnParseError (fail-closed) regardless of enabled state,
 	// since validation checks it unconditionally.
 	if c.MCPInputScanning.OnParseError == "" {
-		c.MCPInputScanning.OnParseError = "block" //nolint:goconst // config action value
+		c.MCPInputScanning.OnParseError = ActionBlock
 	}
 	if c.MCPInputScanning.Enabled && c.MCPInputScanning.Action == "" {
-		c.MCPInputScanning.Action = "warn" //nolint:goconst // config action value
+		c.MCPInputScanning.Action = ActionWarn
 	}
 	if c.MCPToolScanning.Enabled && c.MCPToolScanning.Action == "" {
-		c.MCPToolScanning.Action = "warn" //nolint:goconst // config action value
+		c.MCPToolScanning.Action = ActionWarn
 	}
 	if c.MCPToolPolicy.Enabled && c.MCPToolPolicy.Action == "" {
-		c.MCPToolPolicy.Action = "warn" //nolint:goconst // config action value
+		c.MCPToolPolicy.Action = ActionWarn
 	}
 	if c.ForwardProxy.MaxTunnelSeconds <= 0 {
 		c.ForwardProxy.MaxTunnelSeconds = 300
@@ -515,7 +529,7 @@ func (c *Config) ApplyDefaults() {
 		c.WebSocketProxy.IdleTimeoutSeconds = 300
 	}
 	if c.WebSocketProxy.OriginPolicy == "" {
-		c.WebSocketProxy.OriginPolicy = "rewrite" //nolint:goconst // used as default value
+		c.WebSocketProxy.OriginPolicy = OriginPolicyRewrite
 	}
 	if c.GitProtection.Enabled && len(c.GitProtection.AllowedBranches) == 0 {
 		c.GitProtection.AllowedBranches = []string{"feature/*", "fix/*", "main", "master"}
@@ -592,10 +606,10 @@ func (c *Config) ApplyDefaults() {
 		c.Emit.Webhook.QueueSize = 64
 	}
 	if c.Emit.Webhook.MinSeverity == "" {
-		c.Emit.Webhook.MinSeverity = "warn"
+		c.Emit.Webhook.MinSeverity = SeverityWarn
 	}
 	if c.Emit.Syslog.MinSeverity == "" {
-		c.Emit.Syslog.MinSeverity = "warn"
+		c.Emit.Syslog.MinSeverity = SeverityWarn
 	}
 	if c.Emit.Syslog.Facility == "" {
 		c.Emit.Syslog.Facility = "local0"
@@ -875,7 +889,7 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("websocket_proxy.idle_timeout_seconds must be positive")
 		}
 		switch c.WebSocketProxy.OriginPolicy {
-		case "rewrite", "forward", ActionStrip:
+		case OriginPolicyRewrite, "forward", ActionStrip:
 			// valid
 		default:
 			return fmt.Errorf("invalid websocket_proxy.origin_policy %q: must be rewrite, forward, or strip", c.WebSocketProxy.OriginPolicy)
@@ -976,7 +990,7 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("tool_chain_detection.custom_patterns[%d] %q: sequence must have at least 2 steps", i, p.Name)
 			}
 			switch p.Severity {
-			case "medium", "high", "critical": //nolint:goconst // severity values shared across validation
+			case SeverityMedium, SeverityHigh, SeverityCritical:
 				// valid
 			default:
 				return fmt.Errorf("tool_chain_detection.custom_patterns[%d] %q: invalid severity %q: must be medium, high, or critical", i, p.Name, p.Severity)
@@ -1083,8 +1097,8 @@ func (c *Config) Validate() error {
 		if urlErr != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 			return fmt.Errorf("invalid emit.webhook.url %q: must be http:// or https:// with a host", c.Emit.Webhook.URL)
 		}
-		switch c.Emit.Webhook.MinSeverity { //nolint:goconst // severity values shared across validation
-		case "info", "warn", "critical":
+		switch c.Emit.Webhook.MinSeverity {
+		case SeverityInfo, SeverityWarn, SeverityCritical:
 			// valid
 		default:
 			return fmt.Errorf("invalid emit.webhook.min_severity %q: must be info, warn, or critical", c.Emit.Webhook.MinSeverity)
@@ -1104,8 +1118,8 @@ func (c *Config) Validate() error {
 		if _, _, splitErr := net.SplitHostPort(sysU.Host); splitErr != nil {
 			return fmt.Errorf("invalid emit.syslog.address %q: must include port (e.g. udp://host:514): %w", c.Emit.Syslog.Address, splitErr)
 		}
-		switch c.Emit.Syslog.MinSeverity { //nolint:goconst // severity values shared across validation
-		case "info", "warn", "critical":
+		switch c.Emit.Syslog.MinSeverity {
+		case SeverityInfo, SeverityWarn, SeverityCritical:
 			// valid
 		default:
 			return fmt.Errorf("invalid emit.syslog.min_severity %q: must be info, warn, or critical", c.Emit.Syslog.MinSeverity)
@@ -1387,7 +1401,7 @@ func Defaults() *Config {
 			StripCompression:         ptrBool(true),
 			MaxConnectionSeconds:     3600,
 			IdleTimeoutSeconds:       300,
-			OriginPolicy:             "rewrite",
+			OriginPolicy:             OriginPolicyRewrite,
 		},
 		DLP: DLP{
 			ScanEnv: true,

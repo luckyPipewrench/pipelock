@@ -38,6 +38,11 @@ const (
 	ctxKeyAgent
 )
 
+const (
+	schemeHTTP  = "http"
+	schemeHTTPS = "https"
+)
+
 // requestCounter provides monotonic request IDs.
 var requestCounter atomic.Uint64
 
@@ -270,7 +275,7 @@ func (p *Proxy) recordSessionActivity(clientIP, agent, hostname, requestID strin
 
 	// Build session key: agent|clientIP when agent is known, else just clientIP.
 	key := clientIP
-	if agent != "" && agent != "anonymous" { //nolint:goconst // clarity over deduplication
+	if agent != "" && agent != agentAnonymous {
 		key = agent + "|" + clientIP
 	}
 
@@ -375,8 +380,8 @@ func (p *Proxy) buildHandler(mux *http.ServeMux) http.Handler {
 		if p.ks != nil {
 			if d := p.ks.IsActiveHTTP(r); d.Active {
 				clientIP, _ := requestMeta(r)
-				p.logger.LogKillSwitchDeny("http", r.URL.Path, d.Source, d.Message, clientIP)
-				p.metrics.RecordKillSwitchDenial("http", r.URL.Path)
+				p.logger.LogKillSwitchDeny(schemeHTTP, r.URL.Path, d.Source, d.Message, clientIP)
+				p.metrics.RecordKillSwitchDenial(schemeHTTP, r.URL.Path)
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusServiceUnavailable)
 				_ = json.NewEncoder(w).Encode(map[string]string{
@@ -549,7 +554,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 	// Parse and validate URL scheme
 	parsed, err := url.Parse(targetURL)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") { //nolint:goconst // scheme literal
+	if err != nil || (parsed.Scheme != schemeHTTP && parsed.Scheme != schemeHTTPS) {
 		writeJSON(w, http.StatusBadRequest, FetchResponse{
 			URL:     targetURL,
 			Error:   "invalid URL: must be http or https",

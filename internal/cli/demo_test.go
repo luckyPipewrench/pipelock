@@ -158,7 +158,7 @@ func TestDemoCmd_AllScenariosRunAndBlock(t *testing.T) {
 		t.Run(s.name, func(t *testing.T) {
 			cfg := config.Defaults()
 			cfg.Internal = nil
-			cfg.ResponseScanning.Action = "block" //nolint:goconst // test value
+			cfg.ResponseScanning.Action = "block"
 			cfg.DLP.ScanEnv = false
 
 			sc := scanner.New(cfg)

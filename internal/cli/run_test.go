@@ -38,7 +38,7 @@ func TestRedactEndpoint(t *testing.T) {
 		},
 		{
 			name: "webhook with userinfo",
-			raw:  "https://" + "user:pass" + "@hooks.example.com/webhook", //nolint:goconst // test value
+			raw:  "https://" + "user:pass" + "@hooks.example.com/webhook",
 			want: "https://hooks.example.com/webhook",
 		},
 		{
@@ -113,7 +113,7 @@ func TestBuildEmitSinks_WebhookOnly(t *testing.T) {
 
 	cfg := testConfig()
 	cfg.Emit.Webhook.URL = srv.URL
-	cfg.Emit.Webhook.MinSeverity = "warn" //nolint:goconst // test value
+	cfg.Emit.Webhook.MinSeverity = config.SeverityWarn
 
 	sinks, err := buildEmitSinks(cfg)
 	if err != nil {
@@ -135,8 +135,8 @@ func TestBuildEmitSinks_WebhookWithAllOptions(t *testing.T) {
 
 	cfg := testConfig()
 	cfg.Emit.Webhook.URL = srv.URL
-	cfg.Emit.Webhook.MinSeverity = "info"          //nolint:goconst // test value
-	cfg.Emit.Webhook.AuthToken = "test-" + "token" //nolint:goconst // test value
+	cfg.Emit.Webhook.MinSeverity = config.SeverityInfo
+	cfg.Emit.Webhook.AuthToken = "test-" + "token"
 	cfg.Emit.Webhook.QueueSize = 32
 	cfg.Emit.Webhook.TimeoutSecs = 10
 
@@ -157,7 +157,7 @@ func TestBuildEmitSinks_SyslogOnly(t *testing.T) {
 
 	cfg := testConfig()
 	cfg.Emit.Syslog.Address = "udp://" + conn.LocalAddr().String()
-	cfg.Emit.Syslog.MinSeverity = "warn" //nolint:goconst // test value
+	cfg.Emit.Syslog.MinSeverity = config.SeverityWarn
 	cfg.Emit.Syslog.Facility = "local3"
 	cfg.Emit.Syslog.Tag = "test"
 
@@ -183,9 +183,9 @@ func TestBuildEmitSinks_BothSinks(t *testing.T) {
 
 	cfg := testConfig()
 	cfg.Emit.Webhook.URL = srv.URL
-	cfg.Emit.Webhook.MinSeverity = "info" //nolint:goconst // test value
+	cfg.Emit.Webhook.MinSeverity = config.SeverityInfo
 	cfg.Emit.Syslog.Address = "udp://" + conn.LocalAddr().String()
-	cfg.Emit.Syslog.MinSeverity = "warn" //nolint:goconst // test value
+	cfg.Emit.Syslog.MinSeverity = config.SeverityWarn
 
 	sinks, err := buildEmitSinks(cfg)
 	if err != nil {
@@ -207,7 +207,7 @@ func TestBuildEmitSinks_SyslogError_CleansUpWebhook(t *testing.T) {
 
 	cfg := testConfig()
 	cfg.Emit.Webhook.URL = srv.URL
-	cfg.Emit.Webhook.MinSeverity = "info"
+	cfg.Emit.Webhook.MinSeverity = config.SeverityInfo
 	// Invalid syslog address triggers error after webhook is created
 	cfg.Emit.Syslog.Address = "tcp://127.0.0.1:notaport" // deterministic parse failure
 

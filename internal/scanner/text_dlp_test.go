@@ -13,6 +13,11 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
+const (
+	testAnthropicPrefix = "sk-ant-"
+	testAnthropicName   = "Anthropic API Key"
+)
+
 func TestScanTextForDLP(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -30,10 +35,10 @@ func TestScanTextForDLP(t *testing.T) {
 		},
 		{
 			name: "raw DLP pattern match - Anthropic API Key",
-			//nolint:goconst // test value
-			text:        "Please use this key: " + "sk-ant-" + strings.Repeat("a", 25),
+
+			text:        "Please use this key: " + testAnthropicPrefix + strings.Repeat("a", 25),
 			wantClean:   false,
-			wantPattern: "Anthropic API Key",
+			wantPattern: testAnthropicName,
 		},
 		{
 			name:        "raw DLP pattern match - AWS Access ID",
@@ -44,31 +49,31 @@ func TestScanTextForDLP(t *testing.T) {
 		{
 			name: "base64-encoded secret decoded and matched",
 			text: func() string {
-				secret := "sk-ant-" + strings.Repeat("b", 25)
+				secret := testAnthropicPrefix + strings.Repeat("b", 25)
 				return base64.StdEncoding.EncodeToString([]byte(secret))
 			}(),
 			wantClean:   false,
-			wantPattern: "Anthropic API Key",
+			wantPattern: testAnthropicName,
 			wantEncoded: "base64",
 		},
 		{
 			name: "hex-encoded secret decoded and matched",
 			text: func() string {
-				secret := "sk-ant-" + strings.Repeat("c", 25)
+				secret := testAnthropicPrefix + strings.Repeat("c", 25)
 				return hex.EncodeToString([]byte(secret))
 			}(),
 			wantClean:   false,
-			wantPattern: "Anthropic API Key",
+			wantPattern: testAnthropicName,
 			wantEncoded: "hex",
 		},
 		{
 			name: "base32-encoded secret decoded and matched",
 			text: func() string {
-				secret := "sk-ant-" + strings.Repeat("d", 25)
+				secret := testAnthropicPrefix + strings.Repeat("d", 25)
 				return base32.StdEncoding.EncodeToString([]byte(secret))
 			}(),
 			wantClean:   false,
-			wantPattern: "Anthropic API Key",
+			wantPattern: testAnthropicName,
 			wantEncoded: "base32",
 		},
 		{
@@ -79,7 +84,7 @@ func TestScanTextForDLP(t *testing.T) {
 				return cfg
 			},
 			setupScanner: func(s *Scanner) {
-				s.envSecrets = []string{"MyTopSecretEnvValue1234"} //nolint:goconst // test value
+				s.envSecrets = []string{"MyTopSecretEnvValue1234"}
 			},
 			text:        "Here is the value: MyTopSecretEnvValue1234",
 			wantClean:   false,
@@ -94,7 +99,7 @@ func TestScanTextForDLP(t *testing.T) {
 				return cfg
 			},
 			setupScanner: func(s *Scanner) {
-				s.envSecrets = []string{"AnotherSecretValue56789"} //nolint:goconst // test value
+				s.envSecrets = []string{"AnotherSecretValue56789"}
 			},
 			text: func() string {
 				return "encoded: " + base64.StdEncoding.EncodeToString([]byte("AnotherSecretValue56789"))
@@ -107,12 +112,12 @@ func TestScanTextForDLP(t *testing.T) {
 			name: "zero-width character bypass attempt - still caught",
 			text: func() string {
 				// Insert zero-width space inside the key pattern
-				prefix := "sk-ant-" //nolint:goconst // test value
+				prefix := testAnthropicPrefix
 				suffix := strings.Repeat("e", 25)
 				return prefix + "\u200B" + suffix
 			}(),
 			wantClean:   false,
-			wantPattern: "Anthropic API Key",
+			wantPattern: testAnthropicName,
 		},
 		{
 			name: "NFKC normalization - Unicode confusables",
@@ -123,7 +128,7 @@ func TestScanTextForDLP(t *testing.T) {
 				return "\uff53\uff4b-ant-" + strings.Repeat("f", 25)
 			}(),
 			wantClean:   false,
-			wantPattern: "Anthropic API Key",
+			wantPattern: testAnthropicName,
 		},
 		{
 			name:      "empty text returns clean",
@@ -138,14 +143,14 @@ func TestScanTextForDLP(t *testing.T) {
 				cfg.DLP.ScanEnv = false
 				return cfg
 			},
-			text:      "sk-ant-" + strings.Repeat("g", 25),
+			text:      testAnthropicPrefix + strings.Repeat("g", 25),
 			wantClean: true,
 		},
 		{
 			name: "deduplication - same pattern raw + encoded only appears once per encoding",
 			text: func() string {
 				// Both the raw secret and its base64 form in same text
-				secret := "sk-ant-" + strings.Repeat("h", 25)
+				secret := testAnthropicPrefix + strings.Repeat("h", 25)
 				encoded := base64.StdEncoding.EncodeToString([]byte(secret))
 				return secret + " " + encoded
 			}(),
@@ -154,7 +159,7 @@ func TestScanTextForDLP(t *testing.T) {
 		{
 			name: "multiple pattern matches in single text",
 			text: func() string {
-				anthropic := "sk-ant-" + strings.Repeat("i", 25)
+				anthropic := testAnthropicPrefix + strings.Repeat("i", 25)
 				aws := "AKIA" + strings.Repeat("B", 16)
 				return "Keys: " + anthropic + " and " + aws
 			}(),
@@ -164,7 +169,7 @@ func TestScanTextForDLP(t *testing.T) {
 			name:        "case variation - uppercase Anthropic key",
 			text:        "SK-ANT-" + strings.Repeat("A", 25),
 			wantClean:   false,
-			wantPattern: "Anthropic API Key",
+			wantPattern: testAnthropicName,
 		},
 		{
 			name:        "case variation - mixed case AWS key",
@@ -176,7 +181,7 @@ func TestScanTextForDLP(t *testing.T) {
 			name:        "null byte injection - secret split by null bytes",
 			text:        "sk-ant-\x00" + strings.Repeat("j", 25),
 			wantClean:   false,
-			wantPattern: "Anthropic API Key",
+			wantPattern: testAnthropicName,
 		},
 		{
 			name:        "case variation - uppercase private key header",
@@ -389,7 +394,7 @@ func TestScanTextForDLP_Deduplication(t *testing.T) {
 	// The raw secret appears in the text AND the base64-decoded form also matches.
 	// The raw match (Encoded="") should appear once, the base64 match (Encoded="base64")
 	// should appear once — no duplicates within the same PatternName+Encoded pair.
-	secret := "sk-ant-" + strings.Repeat("x", 25) //nolint:goconst // test value
+	secret := testAnthropicPrefix + strings.Repeat("x", 25)
 	// Construct text that has the raw secret AND its base64 encoding
 	encoded := base64.StdEncoding.EncodeToString([]byte(secret))
 	text := secret + " " + encoded
@@ -399,14 +404,14 @@ func TestScanTextForDLP_Deduplication(t *testing.T) {
 		t.Fatal("expected matches, got clean")
 	}
 
-	// Count occurrences of "Anthropic API Key" with Encoded=""
+	// Count occurrences of testAnthropicName with Encoded=""
 	rawCount := 0
 	b64Count := 0
 	for _, m := range result.Matches {
-		if m.PatternName == "Anthropic API Key" && m.Encoded == "" { //nolint:goconst // test value
+		if m.PatternName == testAnthropicName && m.Encoded == "" {
 			rawCount++
 		}
-		if m.PatternName == "Anthropic API Key" && m.Encoded == "base64" { //nolint:goconst // test value
+		if m.PatternName == testAnthropicName && m.Encoded == "base64" {
 			b64Count++
 		}
 	}
@@ -424,7 +429,7 @@ func TestScanTextForDLP_MultiplePatterns(t *testing.T) {
 	s := New(cfg)
 	defer s.Close()
 
-	anthropic := "sk-ant-" + strings.Repeat("j", 25)
+	anthropic := testAnthropicPrefix + strings.Repeat("j", 25)
 	aws := "AKIA" + strings.Repeat("C", 16)
 	github := "ghp_" + strings.Repeat("D", 40)
 	text := anthropic + " " + aws + " " + github
@@ -439,7 +444,7 @@ func TestScanTextForDLP_MultiplePatterns(t *testing.T) {
 		patternNames[m.PatternName] = true
 	}
 
-	for _, want := range []string{"Anthropic API Key", "AWS Access ID", "GitHub Token"} {
+	for _, want := range []string{testAnthropicName, "AWS Access ID", "GitHub Token"} {
 		if !patternNames[want] {
 			t.Errorf("expected pattern %q in matches, got: %v", want, result.Matches)
 		}
@@ -506,7 +511,7 @@ func TestMatchDLPPatterns(t *testing.T) {
 	defer s.Close()
 
 	// Test that matchDLPPatterns tags encoding correctly
-	secret := "sk-ant-" + strings.Repeat("k", 25) //nolint:goconst // test value
+	secret := testAnthropicPrefix + strings.Repeat("k", 25)
 	matches := s.matchDLPPatterns(secret, "hex")
 
 	if len(matches) == 0 {
@@ -514,7 +519,7 @@ func TestMatchDLPPatterns(t *testing.T) {
 	}
 
 	for _, m := range matches {
-		if m.Encoded != "hex" { //nolint:goconst // test value
+		if m.Encoded != "hex" {
 			t.Errorf("expected Encoded=%q, got %q", "hex", m.Encoded)
 		}
 	}
@@ -537,7 +542,7 @@ func TestCheckSecretsInText_HexEncodedEnvSecret(t *testing.T) {
 	s := New(cfg)
 	defer s.Close()
 
-	secret := "SuperSecretTestValue99" //nolint:goconst // test value
+	secret := "SuperSecretTestValue99"
 	hexEncoded := hex.EncodeToString([]byte(secret))
 	matches := s.checkSecretsInText([]string{secret}, "data: "+hexEncoded, "Environment Variable Leak", "env")
 	if len(matches) == 0 {
@@ -551,7 +556,7 @@ func TestCheckSecretsInText_Base32EncodedEnvSecret(t *testing.T) {
 	s := New(cfg)
 	defer s.Close()
 
-	secret := "Base32TestSecretValue!" //nolint:goconst // test value
+	secret := "Base32TestSecretValue!"
 	b32Encoded := base32.StdEncoding.EncodeToString([]byte(secret))
 	matches := s.checkSecretsInText([]string{secret}, "data: "+b32Encoded, "Environment Variable Leak", "env")
 	if len(matches) == 0 {
@@ -566,7 +571,7 @@ func TestCheckSecretsInText_URLSafeBase64EnvSecret(t *testing.T) {
 	defer s.Close()
 
 	// Use a secret that produces different URL-safe vs standard base64
-	secret := "Secret?With>Special+Chars" //nolint:goconst // test value
+	secret := "Secret?With>Special+Chars"
 	urlEncoded := base64.URLEncoding.EncodeToString([]byte(secret))
 	stdEncoded := base64.StdEncoding.EncodeToString([]byte(secret))
 
@@ -598,7 +603,7 @@ func TestScanTextForDLP_DoubleURLEncoding(t *testing.T) {
 	}
 	found := false
 	for _, m := range result.Matches {
-		if m.PatternName == "AWS Access ID" { //nolint:goconst // test value
+		if m.PatternName == "AWS Access ID" {
 			found = true
 		}
 	}
@@ -614,7 +619,7 @@ func TestScanTextForDLP_URLEncodedNullByte(t *testing.T) {
 
 	// URL-encoded null byte %00 in the middle of a secret. After IterativeDecode,
 	// the null byte should be stripped by matchDLPPatterns and the key detected.
-	key := "sk-ant-%00" + strings.Repeat("a", 25) //nolint:goconst // test value
+	key := "sk-ant-%00" + strings.Repeat("a", 25)
 	result := s.ScanTextForDLP(key)
 	if result.Clean {
 		t.Fatal("expected DLP to catch key with URL-encoded null byte")
@@ -649,7 +654,7 @@ func TestScanTextForDLP_DNSSubdomainExfil(t *testing.T) {
 		},
 		{
 			name:      "long key in single subdomain - caught by raw match",
-			text:      "https://" + "sk-ant-" + strings.Repeat("a", 25) + ".evil.com/",
+			text:      "https://" + testAnthropicPrefix + strings.Repeat("a", 25) + ".evil.com/",
 			wantClean: false,
 		},
 		{
@@ -692,8 +697,8 @@ func TestScanTextForDLP_ControlCharBypass(t *testing.T) {
 	defer s.Close()
 
 	// Build key at runtime to avoid gitleaks
-	prefix := "sk-ant-"
-	suffix := strings.Repeat("a", 25) //nolint:goconst // test value
+	prefix := testAnthropicPrefix
+	suffix := strings.Repeat("a", 25)
 
 	tests := []struct {
 		name    string
@@ -748,12 +753,12 @@ func TestScanTextForDLP_ConfusableBypass(t *testing.T) {
 		{
 			name:        "Cyrillic_a_in_Anthropic_key",
 			text:        "sk-\u0430nt-" + strings.Repeat("a", 25), // Cyrillic а U+0430
-			wantPattern: "Anthropic API Key",
+			wantPattern: testAnthropicName,
 		},
 		{
 			name:        "Armenian_a_in_Anthropic_key",
 			text:        "sk-\u0561nt-" + strings.Repeat("a", 25), // Armenian ա U+0561 → 'a'
-			wantPattern: "Anthropic API Key",
+			wantPattern: testAnthropicName,
 		},
 		{
 			name:        "Greek_A_in_AWS_key",
@@ -787,7 +792,7 @@ func TestScanTextForDLP_CombiningMarkBypass(t *testing.T) {
 	defer s.Close()
 
 	// Combining long stroke overlay (U+0337) inserted into key prefix
-	key := "sk-a\u0337nt-" + strings.Repeat("a", 25) //nolint:goconst // test value
+	key := "sk-a\u0337nt-" + strings.Repeat("a", 25)
 	result := s.ScanTextForDLP(key)
 	if result.Clean {
 		t.Error("expected DLP to catch key with combining mark in prefix")
@@ -800,7 +805,7 @@ func TestScanTextForDLP_LatinSmallCapBypass(t *testing.T) {
 	defer s.Close()
 
 	// Latin small cap letters in GitHub token prefix
-	key := "ghp_" + strings.Repeat("D", 40) //nolint:goconst // test value
+	key := "ghp_" + strings.Repeat("D", 40)
 	// Replace 'g' with Latin Small Capital G (not in confusable map, but 'ghp_' starts with lowercase g)
 	// Test combining mark + confusable in same key
 	keyWithMark := "gh\u0307p_" + strings.Repeat("D", 40)
@@ -823,7 +828,7 @@ func TestScanTextForDLP_ShortAnthropicKey(t *testing.T) {
 	s := New(cfg)
 	defer s.Close()
 
-	key := "sk-ant-" + strings.Repeat("A", 10) //nolint:goconst // test value
+	key := testAnthropicPrefix + strings.Repeat("A", 10)
 	result := s.ScanTextForDLP(key)
 	if result.Clean {
 		t.Error("expected text DLP to catch short Anthropic key prefix")
@@ -835,7 +840,7 @@ func TestScanTextForDLP_ShortSvcAcctKey(t *testing.T) {
 	s := New(cfg)
 	defer s.Close()
 
-	key := "sk-svcacct-" + strings.Repeat("A", 10) //nolint:goconst // test value
+	key := "sk-svcacct-" + strings.Repeat("A", 10)
 	result := s.ScanTextForDLP(key)
 	if result.Clean {
 		t.Error("expected text DLP to catch short service-account key prefix")
@@ -869,7 +874,7 @@ func TestScanTextForDLP_CredentialInURL_ShortValueClean(t *testing.T) {
 func TestScanTextForDLP_FileSecretRawMatch(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "secrets.txt")
-	secret := "MyFileSecret" + "Value1234" //nolint:goconst // test value, runtime construction avoids gosec G101
+	secret := "MyFileSecret" + "Value1234"
 	if err := os.WriteFile(path, []byte(secret+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -897,7 +902,7 @@ func TestScanTextForDLP_FileSecretRawMatch(t *testing.T) {
 func TestScanTextForDLP_FileSecretBase64Match(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "secrets.txt")
-	secret := "MyFileSecret" + "Value1234" //nolint:goconst // test value, runtime construction avoids gosec G101
+	secret := "MyFileSecret" + "Value1234"
 	if err := os.WriteFile(path, []byte(secret+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -917,7 +922,7 @@ func TestScanTextForDLP_FileSecretBase64Match(t *testing.T) {
 func TestScanTextForDLP_FileSecretHexMatch(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "secrets.txt")
-	secret := "MyFileSecret" + "Value1234" //nolint:goconst // test value, runtime construction avoids gosec G101
+	secret := "MyFileSecret" + "Value1234"
 	if err := os.WriteFile(path, []byte(secret+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -937,7 +942,7 @@ func TestScanTextForDLP_FileSecretHexMatch(t *testing.T) {
 func TestScanTextForDLP_FileSecretBase32Match(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "secrets.txt")
-	secret := "MyFileSecret" + "Value1234" //nolint:goconst // test value, runtime construction avoids gosec G101
+	secret := "MyFileSecret" + "Value1234"
 	if err := os.WriteFile(path, []byte(secret+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -957,7 +962,7 @@ func TestScanTextForDLP_FileSecretBase32Match(t *testing.T) {
 func TestScanTextForDLP_FileSecretDistinctFromEnv(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "secrets.txt")
-	fileSecret := "FileOnlySecretValue1" //nolint:goconst // test value
+	fileSecret := "FileOnlySecretValue1"
 	if err := os.WriteFile(path, []byte(fileSecret+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -997,7 +1002,7 @@ func TestScanTextForDLP_NoFileSecrets_Clean(t *testing.T) {
 func TestScanTextForDLP_FileSecretPresent_NoMatch(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "secrets.txt")
-	secret := "MyFileSecret" + "Value1234" //nolint:goconst // test value, runtime construction avoids gosec G101
+	secret := "MyFileSecret" + "Value1234"
 	if err := os.WriteFile(path, []byte(secret+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1015,7 +1020,7 @@ func TestScanTextForDLP_FileSecretPresent_NoMatch(t *testing.T) {
 }
 
 func TestScanTextForDLP_FileSecretEncodedFieldValues(t *testing.T) {
-	secret := "MyFileSecret" + "Value1234" //nolint:goconst // test value, runtime construction avoids gosec G101
+	secret := "MyFileSecret" + "Value1234"
 
 	tests := []struct {
 		name    string
@@ -1067,7 +1072,7 @@ func TestScanTextForDLP_FileSecretURLSafeBase64Match(t *testing.T) {
 	path := filepath.Join(dir, "secrets.txt")
 	// 28 bytes with ~ at position 3 → produces "+" in standard base64,
 	// ensuring URL-safe encoding (+ → -) differs from standard.
-	secret := "ab~test-value" + "-for-28-byte-wk" //nolint:goconst // test value
+	secret := "ab~test-value" + "-for-28-byte-wk"
 	if err := os.WriteFile(path, []byte(secret+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1092,7 +1097,7 @@ func TestScanTextForDLP_FileSecretURLSafeBase64Match(t *testing.T) {
 func TestScanTextForDLP_FileSecretUnpaddedBase64URLMatch(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "secrets.txt")
-	secret := "ab~test-value" + "-for-28-byte-wk" //nolint:goconst // test value
+	secret := "ab~test-value" + "-for-28-byte-wk"
 	if err := os.WriteFile(path, []byte(secret+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1119,7 +1124,7 @@ func TestScanTextForDLP_FileSecretUnpaddedBase32Match(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "secrets.txt")
 	// 29 bytes → base32 produces padding (29 % 5 = 4)
-	secret := "this-is-a-test" + "-value-29-bytes" //nolint:goconst // test value
+	secret := "this-is-a-test" + "-value-29-bytes"
 	if err := os.WriteFile(path, []byte(secret+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1149,7 +1154,7 @@ func TestScanTextForDLP_SegmentHex_EncodingLabel(t *testing.T) {
 	defer s.Close()
 
 	// Hex-encoded API key embedded in a URL path.
-	secret := "sk-ant-" + strings.Repeat("a", 26) //nolint:goconst // test value
+	secret := testAnthropicPrefix + strings.Repeat("a", 26)
 	hexEncoded := hex.EncodeToString([]byte(secret))
 	text := "https://evil.com/exfil/" + hexEncoded + "/data"
 
@@ -1159,7 +1164,7 @@ func TestScanTextForDLP_SegmentHex_EncodingLabel(t *testing.T) {
 	}
 	found := false
 	for _, m := range result.Matches {
-		if m.PatternName == "Anthropic API Key" && m.Encoded == "hex" {
+		if m.PatternName == testAnthropicName && m.Encoded == "hex" {
 			found = true
 			break
 		}
@@ -1175,7 +1180,7 @@ func TestScanTextForDLP_SegmentBase64_EncodingLabel(t *testing.T) {
 	defer s.Close()
 
 	// Base64-encoded API key embedded in a URL path.
-	secret := "sk-ant-" + strings.Repeat("b", 26) //nolint:goconst // test value
+	secret := testAnthropicPrefix + strings.Repeat("b", 26)
 	b64Encoded := base64.RawURLEncoding.EncodeToString([]byte(secret))
 	text := "https://evil.com/exfil/" + b64Encoded + "/data"
 
@@ -1185,7 +1190,7 @@ func TestScanTextForDLP_SegmentBase64_EncodingLabel(t *testing.T) {
 	}
 	found := false
 	for _, m := range result.Matches {
-		if m.PatternName == "Anthropic API Key" && m.Encoded == "base64" {
+		if m.PatternName == testAnthropicName && m.Encoded == "base64" {
 			found = true
 			break
 		}

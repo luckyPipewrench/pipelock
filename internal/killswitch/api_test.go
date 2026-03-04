@@ -10,15 +10,20 @@ import (
 	"time"
 )
 
+const (
+	testAPIToken  = "test-token-123" //nolint:gosec // test credential
+	testBearer123 = "Bearer test-token-123"
+)
+
 func TestAPIHandler_Toggle_Activate(t *testing.T) {
 	cfg := testConfig()
-	cfg.KillSwitch.APIToken = "test-token-123" //nolint:goconst // test value
+	cfg.KillSwitch.APIToken = testAPIToken
 	c := New(cfg)
 	h := NewAPIHandler(c)
 
 	body := bytes.NewBufferString(`{"active": true}`)
 	r := httptest.NewRequest(http.MethodPost, "/api/v1/killswitch", body)
-	r.Header.Set("Authorization", "Bearer test-token-123") //nolint:goconst // test value
+	r.Header.Set("Authorization", testBearer123)
 	w := httptest.NewRecorder()
 
 	h.HandleToggle(w, r)
@@ -33,21 +38,21 @@ func TestAPIHandler_Toggle_Activate(t *testing.T) {
 	if !d.Active {
 		t.Fatal("expected kill switch active after API toggle")
 	}
-	if d.Source != "api" { //nolint:goconst // test value
-		t.Errorf("expected source %q, got %q", "api", d.Source)
+	if d.Source != srcAPI {
+		t.Errorf("expected source %q, got %q", srcAPI, d.Source)
 	}
 }
 
 func TestAPIHandler_Toggle_Deactivate(t *testing.T) {
 	cfg := testConfig()
-	cfg.KillSwitch.APIToken = "test-token-123" //nolint:goconst // test value
+	cfg.KillSwitch.APIToken = testAPIToken
 	c := New(cfg)
 	c.SetAPI(true) // pre-activate
 	h := NewAPIHandler(c)
 
 	body := bytes.NewBufferString(`{"active": false}`)
 	r := httptest.NewRequest(http.MethodPost, "/api/v1/killswitch", body)
-	r.Header.Set("Authorization", "Bearer test-token-123") //nolint:goconst // test value
+	r.Header.Set("Authorization", testBearer123)
 	w := httptest.NewRecorder()
 
 	h.HandleToggle(w, r)
@@ -65,7 +70,7 @@ func TestAPIHandler_Toggle_Deactivate(t *testing.T) {
 
 func TestAPIHandler_Toggle_NoToken(t *testing.T) {
 	cfg := testConfig()
-	cfg.KillSwitch.APIToken = "secret" //nolint:goconst // test value
+	cfg.KillSwitch.APIToken = "secret"
 	c := New(cfg)
 	h := NewAPIHandler(c)
 
@@ -86,13 +91,13 @@ func TestAPIHandler_Toggle_NoToken(t *testing.T) {
 
 func TestAPIHandler_Toggle_WrongToken(t *testing.T) {
 	cfg := testConfig()
-	cfg.KillSwitch.APIToken = "correct-token" //nolint:goconst // test value
+	cfg.KillSwitch.APIToken = "correct-token"
 	c := New(cfg)
 	h := NewAPIHandler(c)
 
 	body := bytes.NewBufferString(`{"active": true}`)
 	r := httptest.NewRequest(http.MethodPost, "/api/v1/killswitch", body)
-	r.Header.Set("Authorization", "Bearer wrong-token") //nolint:goconst // test value
+	r.Header.Set("Authorization", "Bearer wrong-token")
 	w := httptest.NewRecorder()
 
 	h.HandleToggle(w, r)
@@ -110,7 +115,7 @@ func TestAPIHandler_Toggle_NoAPIToken_Configured(t *testing.T) {
 
 	body := bytes.NewBufferString(`{"active": true}`)
 	r := httptest.NewRequest(http.MethodPost, "/api/v1/killswitch", body)
-	r.Header.Set("Authorization", "Bearer something") //nolint:goconst // test value
+	r.Header.Set("Authorization", "Bearer something")
 	w := httptest.NewRecorder()
 
 	h.HandleToggle(w, r)
@@ -122,7 +127,7 @@ func TestAPIHandler_Toggle_NoAPIToken_Configured(t *testing.T) {
 
 func TestAPIHandler_Toggle_WrongMethod(t *testing.T) {
 	cfg := testConfig()
-	cfg.KillSwitch.APIToken = "test" //nolint:goconst // test value
+	cfg.KillSwitch.APIToken = "test"
 	c := New(cfg)
 	h := NewAPIHandler(c)
 
@@ -138,13 +143,13 @@ func TestAPIHandler_Toggle_WrongMethod(t *testing.T) {
 
 func TestAPIHandler_Toggle_InvalidJSON(t *testing.T) {
 	cfg := testConfig()
-	cfg.KillSwitch.APIToken = "test-token" //nolint:goconst // test value
+	cfg.KillSwitch.APIToken = testToken
 	c := New(cfg)
 	h := NewAPIHandler(c)
 
 	body := bytes.NewBufferString(`not json`)
 	r := httptest.NewRequest(http.MethodPost, "/api/v1/killswitch", body)
-	r.Header.Set("Authorization", "Bearer test-token") //nolint:goconst // test value
+	r.Header.Set("Authorization", "Bearer test-token")
 	w := httptest.NewRecorder()
 
 	h.HandleToggle(w, r)
@@ -156,13 +161,13 @@ func TestAPIHandler_Toggle_InvalidJSON(t *testing.T) {
 
 func TestAPIHandler_Toggle_UnknownFields(t *testing.T) {
 	cfg := testConfig()
-	cfg.KillSwitch.APIToken = "test-token" //nolint:goconst // test value
+	cfg.KillSwitch.APIToken = testToken
 	c := New(cfg)
 	h := NewAPIHandler(c)
 
 	body := bytes.NewBufferString(`{"active": true, "extra": "field"}`)
 	r := httptest.NewRequest(http.MethodPost, "/api/v1/killswitch", body)
-	r.Header.Set("Authorization", "Bearer test-token") //nolint:goconst // test value
+	r.Header.Set("Authorization", "Bearer test-token")
 	w := httptest.NewRecorder()
 
 	h.HandleToggle(w, r)
@@ -174,13 +179,13 @@ func TestAPIHandler_Toggle_UnknownFields(t *testing.T) {
 
 func TestAPIHandler_Toggle_MissingActiveField(t *testing.T) {
 	cfg := testConfig()
-	cfg.KillSwitch.APIToken = "test-token" //nolint:goconst // test value
+	cfg.KillSwitch.APIToken = testToken
 	c := New(cfg)
 	h := NewAPIHandler(c)
 
 	body := bytes.NewBufferString(`{}`)
 	r := httptest.NewRequest(http.MethodPost, "/api/v1/killswitch", body)
-	r.Header.Set("Authorization", "Bearer test-token") //nolint:goconst // test value
+	r.Header.Set("Authorization", "Bearer test-token")
 	w := httptest.NewRecorder()
 
 	h.HandleToggle(w, r)
@@ -192,14 +197,14 @@ func TestAPIHandler_Toggle_MissingActiveField(t *testing.T) {
 
 func TestAPIHandler_Toggle_ConcatenatedJSON(t *testing.T) {
 	cfg := testConfig()
-	cfg.KillSwitch.APIToken = "test-token" //nolint:goconst // test value
+	cfg.KillSwitch.APIToken = testToken
 	c := New(cfg)
 	h := NewAPIHandler(c)
 
 	// Two concatenated JSON objects — only first should be parsed, second should cause rejection.
 	body := bytes.NewBufferString(`{"active":true}{"active":false}`)
 	r := httptest.NewRequest(http.MethodPost, "/api/v1/killswitch", body)
-	r.Header.Set("Authorization", "Bearer test-token") //nolint:goconst // test value
+	r.Header.Set("Authorization", "Bearer test-token")
 	w := httptest.NewRecorder()
 
 	h.HandleToggle(w, r)
@@ -214,14 +219,14 @@ func TestAPIHandler_Toggle_ConcatenatedJSON(t *testing.T) {
 
 func TestAPIHandler_Toggle_TrailingGarbage(t *testing.T) {
 	cfg := testConfig()
-	cfg.KillSwitch.APIToken = "test-token" //nolint:goconst // test value
+	cfg.KillSwitch.APIToken = testToken
 	c := New(cfg)
 	h := NewAPIHandler(c)
 
 	// Valid JSON followed by trailing non-JSON data.
 	body := bytes.NewBufferString(`{"active":true}x`)
 	r := httptest.NewRequest(http.MethodPost, "/api/v1/killswitch", body)
-	r.Header.Set("Authorization", "Bearer test-token") //nolint:goconst // test value
+	r.Header.Set("Authorization", "Bearer test-token")
 	w := httptest.NewRecorder()
 
 	h.HandleToggle(w, r)
@@ -236,14 +241,14 @@ func TestAPIHandler_Toggle_TrailingGarbage(t *testing.T) {
 
 func TestAPIHandler_Toggle_OversizedBody(t *testing.T) {
 	cfg := testConfig()
-	cfg.KillSwitch.APIToken = "test-token" //nolint:goconst // test value
+	cfg.KillSwitch.APIToken = testToken
 	c := New(cfg)
 	h := NewAPIHandler(c)
 
 	// Body exceeding MaxBytesReader limit (1024 bytes).
 	bigBody := `{"active":true,` + strings.Repeat(`"x":"y",`, 200) + `"z":"z"}`
 	r := httptest.NewRequest(http.MethodPost, "/api/v1/killswitch", strings.NewReader(bigBody))
-	r.Header.Set("Authorization", "Bearer test-token") //nolint:goconst // test value
+	r.Header.Set("Authorization", "Bearer test-token")
 	w := httptest.NewRecorder()
 
 	h.HandleToggle(w, r)
@@ -259,13 +264,13 @@ func TestAPIHandler_Toggle_OversizedBody(t *testing.T) {
 func TestAPIHandler_Status(t *testing.T) {
 	cfg := testConfig()
 	cfg.KillSwitch.Enabled = true
-	cfg.KillSwitch.APIToken = "test-token" //nolint:goconst // test value
+	cfg.KillSwitch.APIToken = testToken
 	c := New(cfg)
 	c.SetAPI(true)
 	h := NewAPIHandler(c)
 
 	r := httptest.NewRequest(http.MethodGet, "/api/v1/killswitch/status", nil)
-	r.Header.Set("Authorization", "Bearer test-token") //nolint:goconst // test value
+	r.Header.Set("Authorization", "Bearer test-token")
 	w := httptest.NewRecorder()
 
 	h.HandleStatus(w, r)
@@ -295,7 +300,7 @@ func TestAPIHandler_Status(t *testing.T) {
 
 func TestAPIHandler_Status_Unauthorized(t *testing.T) {
 	cfg := testConfig()
-	cfg.KillSwitch.APIToken = "secret" //nolint:goconst // test value
+	cfg.KillSwitch.APIToken = "secret"
 	c := New(cfg)
 	h := NewAPIHandler(c)
 
@@ -311,7 +316,7 @@ func TestAPIHandler_Status_Unauthorized(t *testing.T) {
 
 func TestAPIHandler_RateLimit(t *testing.T) {
 	cfg := testConfig()
-	cfg.KillSwitch.APIToken = "test-token" //nolint:goconst // test value
+	cfg.KillSwitch.APIToken = testToken
 	c := New(cfg)
 	h := NewAPIHandler(c)
 
@@ -319,7 +324,7 @@ func TestAPIHandler_RateLimit(t *testing.T) {
 	for i := 0; i < apiRateLimitMax+1; i++ {
 		body := bytes.NewBufferString(`{"active": true}`)
 		r := httptest.NewRequest(http.MethodPost, "/api/v1/killswitch", body)
-		r.Header.Set("Authorization", "Bearer test-token") //nolint:goconst // test value
+		r.Header.Set("Authorization", "Bearer test-token")
 		w := httptest.NewRecorder()
 
 		h.HandleToggle(w, r)
@@ -341,7 +346,7 @@ func TestAPIHandler_RateLimit(t *testing.T) {
 
 func TestAPIHandler_RateLimitWindowReset(t *testing.T) {
 	cfg := testConfig()
-	cfg.KillSwitch.APIToken = "test-token" //nolint:goconst // test value
+	cfg.KillSwitch.APIToken = testToken
 	c := New(cfg)
 	h := NewAPIHandler(c)
 
@@ -349,7 +354,7 @@ func TestAPIHandler_RateLimitWindowReset(t *testing.T) {
 	for i := 0; i <= apiRateLimitMax; i++ {
 		body := bytes.NewBufferString(`{"active": true}`)
 		r := httptest.NewRequest(http.MethodPost, "/api/v1/killswitch", body)
-		r.Header.Set("Authorization", "Bearer test-token") //nolint:goconst // test value
+		r.Header.Set("Authorization", "Bearer test-token")
 		w := httptest.NewRecorder()
 		h.HandleToggle(w, r)
 		if i == apiRateLimitMax && w.Code != http.StatusTooManyRequests {
@@ -365,7 +370,7 @@ func TestAPIHandler_RateLimitWindowReset(t *testing.T) {
 	// Next request should succeed — window has reset.
 	body := bytes.NewBufferString(`{"active": false}`)
 	r := httptest.NewRequest(http.MethodPost, "/api/v1/killswitch", body)
-	r.Header.Set("Authorization", "Bearer test-token") //nolint:goconst // test value
+	r.Header.Set("Authorization", "Bearer test-token")
 	w := httptest.NewRecorder()
 	h.HandleToggle(w, r)
 
@@ -382,7 +387,7 @@ func TestAPIHandler_TokenAddedViaReload(t *testing.T) {
 
 	body := bytes.NewBufferString(`{"active": true}`)
 	r := httptest.NewRequest(http.MethodPost, "/api/v1/killswitch", body)
-	r.Header.Set("Authorization", "Bearer new-token") //nolint:goconst // test value
+	r.Header.Set("Authorization", "Bearer new-token")
 	w := httptest.NewRecorder()
 	h.HandleToggle(w, r)
 	if w.Code != http.StatusServiceUnavailable {
@@ -391,13 +396,13 @@ func TestAPIHandler_TokenAddedViaReload(t *testing.T) {
 
 	// Reload config with a token
 	cfg2 := testConfig()
-	cfg2.KillSwitch.APIToken = "new-token" //nolint:goconst // test value
+	cfg2.KillSwitch.APIToken = "new-token"
 	c.Reload(cfg2)
 
 	// Now the API should accept the token
 	body2 := bytes.NewBufferString(`{"active": true}`)
 	r2 := httptest.NewRequest(http.MethodPost, "/api/v1/killswitch", body2)
-	r2.Header.Set("Authorization", "Bearer new-token") //nolint:goconst // test value
+	r2.Header.Set("Authorization", "Bearer new-token")
 	w2 := httptest.NewRecorder()
 	h.HandleToggle(w2, r2)
 	if w2.Code != http.StatusOK {
@@ -407,12 +412,12 @@ func TestAPIHandler_TokenAddedViaReload(t *testing.T) {
 
 func TestAPIHandler_Status_WrongMethod(t *testing.T) {
 	cfg := testConfig()
-	cfg.KillSwitch.APIToken = "test-token" //nolint:goconst // test value
+	cfg.KillSwitch.APIToken = testToken
 	c := New(cfg)
 	h := NewAPIHandler(c)
 
 	r := httptest.NewRequest(http.MethodPost, "/api/v1/killswitch/status", nil)
-	r.Header.Set("Authorization", "Bearer test-token") //nolint:goconst // test value
+	r.Header.Set("Authorization", "Bearer test-token")
 	w := httptest.NewRecorder()
 
 	h.HandleStatus(w, r)
@@ -429,7 +434,7 @@ func TestAPIHandler_Status_NoTokenConfigured(t *testing.T) {
 	h := NewAPIHandler(c)
 
 	r := httptest.NewRequest(http.MethodGet, "/api/v1/killswitch/status", nil)
-	r.Header.Set("Authorization", "Bearer something") //nolint:goconst // test value
+	r.Header.Set("Authorization", "Bearer something")
 	w := httptest.NewRecorder()
 
 	h.HandleStatus(w, r)
@@ -441,14 +446,14 @@ func TestAPIHandler_Status_NoTokenConfigured(t *testing.T) {
 
 func TestAPIHandler_TokenRotation(t *testing.T) {
 	cfg := testConfig()
-	cfg.KillSwitch.APIToken = "old-token" //nolint:goconst // test value
+	cfg.KillSwitch.APIToken = "old-token"
 	c := New(cfg)
 	h := NewAPIHandler(c)
 
 	// Old token works
 	body := bytes.NewBufferString(`{"active": true}`)
 	r := httptest.NewRequest(http.MethodPost, "/api/v1/killswitch", body)
-	r.Header.Set("Authorization", "Bearer old-token") //nolint:goconst // test value
+	r.Header.Set("Authorization", "Bearer old-token")
 	w := httptest.NewRecorder()
 	h.HandleToggle(w, r)
 	if w.Code != http.StatusOK {
@@ -457,13 +462,13 @@ func TestAPIHandler_TokenRotation(t *testing.T) {
 
 	// Reload config with new token
 	cfg2 := testConfig()
-	cfg2.KillSwitch.APIToken = "new-token" //nolint:goconst // test value
+	cfg2.KillSwitch.APIToken = "new-token"
 	c.Reload(cfg2)
 
 	// Old token no longer works
 	body2 := bytes.NewBufferString(`{"active": false}`)
 	r2 := httptest.NewRequest(http.MethodPost, "/api/v1/killswitch", body2)
-	r2.Header.Set("Authorization", "Bearer old-token") //nolint:goconst // test value
+	r2.Header.Set("Authorization", "Bearer old-token")
 	w2 := httptest.NewRecorder()
 	h.HandleToggle(w2, r2)
 	if w2.Code != http.StatusUnauthorized {
@@ -473,7 +478,7 @@ func TestAPIHandler_TokenRotation(t *testing.T) {
 	// New token works
 	body3 := bytes.NewBufferString(`{"active": false}`)
 	r3 := httptest.NewRequest(http.MethodPost, "/api/v1/killswitch", body3)
-	r3.Header.Set("Authorization", "Bearer new-token") //nolint:goconst // test value
+	r3.Header.Set("Authorization", "Bearer new-token")
 	w3 := httptest.NewRecorder()
 	h.HandleToggle(w3, r3)
 	if w3.Code != http.StatusOK {

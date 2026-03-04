@@ -21,6 +21,15 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
+const (
+	testFinalPath   = "/final"
+	testRemoteAddr  = "192.168.1.1:12345"
+	testRemoteAddr2 = "10.0.0.1:9999"
+	testProfileNorm = "normal"
+	testProfileElev = "elevated"
+	testContentJSON = "application/json"
+)
+
 // newIPv4Server creates an httptest.Server bound to 127.0.0.1 (IPv4 only).
 // Avoids failures in sandboxed environments where IPv6 is unavailable.
 func newIPv4Server(t *testing.T, handler http.Handler) *httptest.Server {
@@ -46,7 +55,7 @@ func setupTestProxy(t *testing.T) (*Proxy, *httptest.Server) {
 			w.Header().Set("Content-Type", "text/html")
 			_, _ = fmt.Fprint(w, `<html><head><title>Test Page</title></head><body><p>Hello world</p></body></html>`)
 		case "/json":
-			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Type", testContentJSON)
 			_, _ = fmt.Fprint(w, `{"message":"hello"}`)
 		case "/text":
 			w.Header().Set("Content-Type", "text/plain")
@@ -358,7 +367,7 @@ func TestFetchEndpoint_ResponseContentType(t *testing.T) {
 
 	// The proxy response itself should always be application/json
 	ct := w.Header().Get("Content-Type")
-	if ct != "application/json" { //nolint:goconst // test value
+	if ct != testContentJSON {
 		t.Errorf("expected Content-Type application/json, got %s", ct)
 	}
 }
@@ -515,7 +524,7 @@ func setupResponseScanProxy(t *testing.T, action string) (*Proxy, *httptest.Serv
 }
 
 func TestFetchEndpoint_ResponseScan_CleanContent(t *testing.T) {
-	p, backend := setupResponseScanProxy(t, "block")
+	p, backend := setupResponseScanProxy(t, config.ActionBlock)
 	defer backend.Close()
 
 	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/clean", nil)
@@ -543,7 +552,7 @@ func TestFetchEndpoint_ResponseScan_CleanContent(t *testing.T) {
 }
 
 func TestFetchEndpoint_ResponseScan_BlockAction(t *testing.T) {
-	p, backend := setupResponseScanProxy(t, "block")
+	p, backend := setupResponseScanProxy(t, config.ActionBlock)
 	defer backend.Close()
 
 	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/injection", nil)
@@ -635,7 +644,7 @@ func TestFetchEndpoint_ResponseScan_StripAction(t *testing.T) {
 }
 
 func TestFetchEndpoint_ResponseScan_BlockJailbreak(t *testing.T) {
-	p, backend := setupResponseScanProxy(t, "block")
+	p, backend := setupResponseScanProxy(t, config.ActionBlock)
 	defer backend.Close()
 
 	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/jailbreak", nil)
@@ -660,7 +669,7 @@ func TestFetchEndpoint_ResponseScan_BlockJailbreak(t *testing.T) {
 }
 
 func TestFetchEndpoint_ResponseScan_MultiInjection(t *testing.T) {
-	p, backend := setupResponseScanProxy(t, "block")
+	p, backend := setupResponseScanProxy(t, config.ActionBlock)
 	defer backend.Close()
 
 	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/multi-injection", nil)
@@ -968,7 +977,7 @@ func TestStatsEndpoint(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", w.Code)
 	}
-	if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+	if ct := w.Header().Get("Content-Type"); ct != testContentJSON {
 		t.Errorf("expected application/json, got %s", ct)
 	}
 
@@ -1054,7 +1063,7 @@ func TestFetchEndpoint_AgentDefaultAnonymous(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("expected valid JSON: %v", err)
 	}
-	if resp.Agent != "anonymous" { //nolint:goconst // test value
+	if resp.Agent != "anonymous" {
 		t.Errorf("expected agent=anonymous, got %q", resp.Agent)
 	}
 }
@@ -1211,7 +1220,7 @@ func TestFetchEndpoint_RedirectInAuditMode(t *testing.T) {
 	// (logged as anomaly, not blocked). The redirect target points back to the
 	// backend so the request succeeds — proving audit mode didn't block the redirect.
 	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/final" { //nolint:goconst // test path
+		if r.URL.Path == testFinalPath {
 			w.Header().Set("Content-Type", "text/plain")
 			_, _ = fmt.Fprint(w, "reached through audit redirect")
 			return
@@ -1260,7 +1269,7 @@ func TestFetchEndpoint_RedirectInEnforceMode_Blocks(t *testing.T) {
 	// Same setup as audit mode test above, but with enforce=true.
 	// The redirect to a DLP-triggering URL should be blocked.
 	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/final" {
+		if r.URL.Path == testFinalPath {
 			w.Header().Set("Content-Type", "text/plain")
 			_, _ = fmt.Fprint(w, "should not reach here")
 			return
@@ -1306,12 +1315,12 @@ func TestFetchEndpoint_RedirectInEnforceMode_Blocks(t *testing.T) {
 func TestFetchEndpoint_RedirectToSafeURL(t *testing.T) {
 	// Backend redirects to itself at a different path — should succeed
 	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/final" {
+		if r.URL.Path == testFinalPath {
 			w.Header().Set("Content-Type", "text/plain")
 			_, _ = fmt.Fprint(w, "redirected content")
 			return
 		}
-		http.Redirect(w, r, "/final", http.StatusFound)
+		http.Redirect(w, r, testFinalPath, http.StatusFound)
 	}))
 	defer backend.Close()
 
@@ -1391,7 +1400,7 @@ func TestFetchEndpoint_RateLimitReturns429(t *testing.T) {
 	if !resp.Blocked {
 		t.Error("expected Blocked=true for rate-limited request")
 	}
-	if !strings.Contains(resp.BlockReason, "rate limit") { //nolint:goconst // test value
+	if !strings.Contains(resp.BlockReason, "rate limit") {
 		t.Errorf("expected 'rate limit' in block_reason, got %q", resp.BlockReason)
 	}
 }
@@ -1889,7 +1898,7 @@ func TestWriteJSON_Success(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", rr.Code)
 	}
-	if ct := rr.Header().Get("Content-Type"); ct != "application/json" {
+	if ct := rr.Header().Get("Content-Type"); ct != testContentJSON {
 		t.Errorf("expected Content-Type application/json, got %s", ct)
 	}
 	body := strings.TrimSpace(rr.Body.String())
@@ -2352,7 +2361,7 @@ func TestProxy_SessionProfiling_DomainBurst(t *testing.T) {
 	// Send a request to the first domain. 1 unique domain is below threshold (2).
 	{
 		req := httptest.NewRequest(http.MethodGet, "/fetch?url=http://a.example.com/text", nil)
-		req.RemoteAddr = "192.168.1.1:12345" //nolint:goconst // test value
+		req.RemoteAddr = testRemoteAddr
 		w := httptest.NewRecorder()
 		mux.ServeHTTP(w, req)
 
@@ -2365,7 +2374,7 @@ func TestProxy_SessionProfiling_DomainBurst(t *testing.T) {
 
 	// 2nd unique domain hits threshold (2 >= 2), should be blocked.
 	req := httptest.NewRequest(http.MethodGet, "/fetch?url=http://b.example.com/text", nil)
-	req.RemoteAddr = "192.168.1.1:12345"
+	req.RemoteAddr = testRemoteAddr
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
@@ -2417,7 +2426,7 @@ func TestProxy_SessionProfiling_WarnMode(t *testing.T) {
 	// DomainBurst=1 means the first unique domain triggers an anomaly.
 	// In warn mode, the request should succeed despite the anomaly.
 	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/text", nil)
-	req.RemoteAddr = "192.168.1.1:12345"
+	req.RemoteAddr = testRemoteAddr
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
@@ -2505,10 +2514,10 @@ func TestProxy_AdaptiveEscalation(t *testing.T) {
 	if !escalated {
 		t.Error("should escalate when score reaches threshold")
 	}
-	if from != "normal" { //nolint:goconst // test value
+	if from != testProfileNorm {
 		t.Errorf("expected from=normal, got %s", from)
 	}
-	if to != "elevated" { //nolint:goconst // test value
+	if to != testProfileElev {
 		t.Errorf("expected to=elevated, got %s", to)
 	}
 
@@ -2617,7 +2626,7 @@ func TestProxy_SessionProfiling_AgentKeying(t *testing.T) {
 	// Agent "alpha" on IP .1 hits 3 unique domains (exceeds burst of 2).
 	for _, domain := range []string{"a.example.com", "b.example.com", "c.example.com"} {
 		req := httptest.NewRequest(http.MethodGet, "/fetch?url=http://"+domain+"/x", nil)
-		req.RemoteAddr = "10.0.0.1:9999" //nolint:goconst // test value
+		req.RemoteAddr = testRemoteAddr2
 		req.Header.Set("X-Pipelock-Agent", "alpha")
 		w := httptest.NewRecorder()
 		mux.ServeHTTP(w, req)
@@ -2671,7 +2680,7 @@ func TestProxy_SessionProfiling_IPDomainBurst_HeaderRotation(t *testing.T) {
 	var lastCode int
 	for i, agent := range agents {
 		req := httptest.NewRequest(http.MethodGet, "/fetch?url=http://"+domains[i]+"/x", nil)
-		req.RemoteAddr = "10.0.0.1:9999" //nolint:goconst // test value
+		req.RemoteAddr = testRemoteAddr2
 		req.Header.Set("X-Pipelock-Agent", agent)
 		w := httptest.NewRecorder()
 		mux.ServeHTTP(w, req)
@@ -2717,7 +2726,7 @@ func TestProxy_AdaptiveSignalBlock_InEnforceMode(t *testing.T) {
 	// With the W4 fix, recordSessionActivity runs BEFORE the enforce return,
 	// so SignalBlock (+3) fires and the session gets escalated.
 	req := httptest.NewRequest(http.MethodGet, "/fetch?url=http://evil.example.com/data", nil)
-	req.RemoteAddr = "10.0.0.1:9999" //nolint:goconst // test value
+	req.RemoteAddr = testRemoteAddr2
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
@@ -2845,7 +2854,7 @@ func TestKillSwitch_DeniesHTTPRequest(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.KillSwitch.Enabled = true
-	cfg.KillSwitch.Message = "kill switch test" //nolint:goconst // test value
+	cfg.KillSwitch.Message = "kill switch test"
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
@@ -2874,7 +2883,7 @@ func TestKillSwitch_DeniesHTTPRequest(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if resp["error"] != "kill_switch_active" { //nolint:goconst // test value
+	if resp["error"] != "kill_switch_active" {
 		t.Errorf("expected error %q, got %q", "kill_switch_active", resp["error"])
 	}
 	if resp["message"] != "kill switch test" {
@@ -2895,7 +2904,7 @@ func TestKillSwitch_ExemptsHealthEndpoint(t *testing.T) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Type", testContentJSON)
 		_, _ = fmt.Fprintf(w, `{"status":"ok"}`)
 	})
 	handler := p.buildHandler(mux)
@@ -3061,7 +3070,7 @@ func TestFetchEndpoint_ResponseScan_RawHTML(t *testing.T) {
 			cfg.APIAllowlist = nil
 			cfg.ResponseScanning = config.ResponseScanning{
 				Enabled: true,
-				Action:  "block",
+				Action:  config.ActionBlock,
 				Patterns: []config.ResponseScanPattern{
 					{Name: "Prompt Injection", Regex: `(?i)(ignore|disregard|forget)\s+(all\s+)?(previous|prior|above)\s+(instructions|prompts|rules|context)`},
 				},
@@ -3132,7 +3141,7 @@ func TestFetchEndpoint_ResponseScan_RawHTML_DeterminerBeforeModifier(t *testing.
 			cfg.APIAllowlist = nil
 			// Use defaults which include the updated Prompt Injection regex
 			cfg.ResponseScanning.Enabled = true
-			cfg.ResponseScanning.Action = "block"
+			cfg.ResponseScanning.Action = config.ActionBlock
 
 			logger := audit.NewNop()
 			sc := scanner.New(cfg)
@@ -3188,7 +3197,7 @@ func TestFetchEndpoint_ResponseScan_RawHTML_NoFalsePositive(t *testing.T) {
 	cfg.APIAllowlist = nil
 	cfg.ResponseScanning = config.ResponseScanning{
 		Enabled: true,
-		Action:  "block",
+		Action:  config.ActionBlock,
 		Patterns: []config.ResponseScanPattern{
 			{Name: "Prompt Injection", Regex: `(?i)(ignore|disregard|forget)\s+(all\s+)?(previous|prior|above)\s+(instructions|prompts|rules|context)`},
 		},
@@ -3469,7 +3478,7 @@ func TestFetchResponseHint_Enabled(t *testing.T) {
 	defer ts.Close()
 
 	// Trigger a DLP block with a fake AWS key (split for gosec).
-	fakeKey := "AKIA" + "IOSFODNN7EXAMPLE"                                             //nolint:goconst // test value
+	fakeKey := "AKIA" + "IOSFODNN7EXAMPLE"
 	resp, err := http.Get(ts.URL + "/fetch?url=https://example.com/?token=" + fakeKey) //nolint:noctx,gosec // test one-shot
 	if err != nil {
 		t.Fatalf("fetch request failed: %v", err)
@@ -3502,7 +3511,7 @@ func TestFetchResponseHint_Disabled(t *testing.T) {
 	ts := httptest.NewServer(p.Handler())
 	defer ts.Close()
 
-	fakeKey := "AKIA" + "IOSFODNN7EXAMPLE"                                             //nolint:goconst // test value
+	fakeKey := "AKIA" + "IOSFODNN7EXAMPLE"
 	resp, err := http.Get(ts.URL + "/fetch?url=https://example.com/?token=" + fakeKey) //nolint:noctx,gosec // test one-shot
 	if err != nil {
 		t.Fatalf("fetch request failed: %v", err)

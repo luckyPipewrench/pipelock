@@ -29,20 +29,20 @@ func TestStdioReader_SingleMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if string(msg) != `{"jsonrpc":"2.0","id":1}` { //nolint:goconst // test value
+	if string(msg) != `{"jsonrpc":"2.0","id":1}` {
 		t.Errorf("got %q", string(msg))
 	}
 }
 
 func TestStdioReader_MultipleMessages(t *testing.T) {
-	input := `{"id":1}` + "\n" + `{"id":2}` + "\n" //nolint:goconst // test value
+	input := testJSONID1 + "\n" + testJSONID2 + "\n"
 	r := NewStdioReader(strings.NewReader(input))
 
 	msg1, err := r.ReadMessage()
 	if err != nil {
 		t.Fatalf("msg1: %v", err)
 	}
-	if string(msg1) != `{"id":1}` { //nolint:goconst // test value
+	if string(msg1) != testJSONID1 {
 		t.Errorf("msg1 = %q", string(msg1))
 	}
 
@@ -50,7 +50,7 @@ func TestStdioReader_MultipleMessages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("msg2: %v", err)
 	}
-	if string(msg2) != `{"id":2}` { //nolint:goconst // test value
+	if string(msg2) != testJSONID2 {
 		t.Errorf("msg2 = %q", string(msg2))
 	}
 
@@ -61,14 +61,14 @@ func TestStdioReader_MultipleMessages(t *testing.T) {
 }
 
 func TestStdioReader_SkipsEmptyLines(t *testing.T) {
-	input := "\n\n" + `{"id":1}` + "\n\n\n" + `{"id":2}` + "\n"
+	input := "\n\n" + testJSONID1 + "\n\n\n" + testJSONID2 + "\n"
 	r := NewStdioReader(strings.NewReader(input))
 
 	msg1, err := r.ReadMessage()
 	if err != nil {
 		t.Fatalf("msg1: %v", err)
 	}
-	if string(msg1) != `{"id":1}` { //nolint:goconst // test value
+	if string(msg1) != testJSONID1 {
 		t.Errorf("msg1 = %q", string(msg1))
 	}
 
@@ -76,7 +76,7 @@ func TestStdioReader_SkipsEmptyLines(t *testing.T) {
 	if err != nil {
 		t.Fatalf("msg2: %v", err)
 	}
-	if string(msg2) != `{"id":2}` { //nolint:goconst // test value
+	if string(msg2) != testJSONID2 {
 		t.Errorf("msg2 = %q", string(msg2))
 	}
 }
@@ -87,7 +87,7 @@ func TestStdioReader_TrimsWhitespace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if string(msg) != `{"id":1}` {
+	if string(msg) != testJSONID1 {
 		t.Errorf("got %q, want trimmed", string(msg))
 	}
 }
@@ -109,7 +109,7 @@ func TestStdioReader_OnlyEmptyLines(t *testing.T) {
 }
 
 func TestStdioReader_ReturnsCopy(t *testing.T) {
-	input := `{"id":1}` + "\n" + `{"id":2}` + "\n"
+	input := testJSONID1 + "\n" + testJSONID2 + "\n"
 	r := NewStdioReader(strings.NewReader(input))
 
 	msg1, _ := r.ReadMessage()
@@ -126,7 +126,7 @@ func TestStdioWriter_SingleMessage(t *testing.T) {
 	var buf bytes.Buffer
 	w := NewStdioWriter(&buf)
 
-	if err := w.WriteMessage([]byte(`{"id":1}`)); err != nil {
+	if err := w.WriteMessage([]byte(testJSONID1)); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if buf.String() != "{\"id\":1}\n" {
@@ -138,24 +138,24 @@ func TestStdioWriter_MultipleMessages(t *testing.T) {
 	var buf bytes.Buffer
 	w := NewStdioWriter(&buf)
 
-	_ = w.WriteMessage([]byte(`{"id":1}`))
-	_ = w.WriteMessage([]byte(`{"id":2}`))
+	_ = w.WriteMessage([]byte(testJSONID1))
+	_ = w.WriteMessage([]byte(testJSONID2))
 
 	lines := strings.Split(strings.TrimSuffix(buf.String(), "\n"), "\n")
 	if len(lines) != 2 {
 		t.Fatalf("expected 2 lines, got %d: %q", len(lines), buf.String())
 	}
-	if lines[0] != `{"id":1}` {
+	if lines[0] != testJSONID1 {
 		t.Errorf("line 0 = %q", lines[0])
 	}
-	if lines[1] != `{"id":2}` {
+	if lines[1] != testJSONID2 {
 		t.Errorf("line 1 = %q", lines[1])
 	}
 }
 
 func TestStdioWriter_PropagatesError(t *testing.T) {
 	w := NewStdioWriter(&errWriter{limit: 0})
-	err := w.WriteMessage([]byte(`{"id":1}`))
+	err := w.WriteMessage([]byte(testJSONID1))
 	if err == nil {
 		t.Error("expected error from failing writer")
 	}

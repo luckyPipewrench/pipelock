@@ -19,6 +19,12 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
+// methodToolsCall is the JSON-RPC method for MCP tool invocations.
+const methodToolsCall = "tools/call"
+
+// errPolicyBlocked is the error message returned when a tool call is denied by policy.
+const errPolicyBlocked = "pipelock: request blocked by tool call policy"
+
 // InputVerdict describes the outcome of scanning a single MCP request.
 type InputVerdict struct {
 	ID      json.RawMessage         `json:"id"`
@@ -81,7 +87,7 @@ func extractToolCallName(line []byte) string {
 	if json.Unmarshal(line, &req) != nil {
 		return ""
 	}
-	if req.Method != "tools/call" { //nolint:goconst // MCP method name used across packages
+	if req.Method != methodToolsCall {
 		return ""
 	}
 	return req.Params.Name
@@ -506,11 +512,11 @@ func ForwardScannedInput(
 
 		// Extract tool name once for both binding and chain detection.
 		var toolCallName string
-		if verdict.Method == "tools/call" { //nolint:goconst // MCP method name used across packages
+		if verdict.Method == methodToolsCall {
 			toolCallName = extractToolCallName(line)
 		}
 
-		if bindingCfg != nil && bindingCfg.Baseline != nil && verdict.Method == "tools/call" {
+		if bindingCfg != nil && bindingCfg.Baseline != nil && verdict.Method == methodToolsCall {
 			if toolCallName == "" {
 				// Fail closed: tools/call without a name is a binding violation.
 				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: tools/call missing params.name\n", lineNum)
@@ -633,8 +639,8 @@ func ForwardScannedInput(
 		errCode := 0 // default: -32001 (content scan)
 		errMsg := "" // default message
 		if isPolicyOnly {
-			errCode = -32002                                         // policy-specific error code
-			errMsg = "pipelock: request blocked by tool call policy" //nolint:goconst // shared error message with proxy_http.go, not worth extracting
+			errCode = -32002 // policy-specific error code
+			errMsg = errPolicyBlocked
 		}
 
 		switch effectiveAction {

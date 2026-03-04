@@ -16,6 +16,10 @@ import (
 	gobwasutil "github.com/gobwas/ws/wsutil"
 )
 
+const (
+	testJSONID1 = `{"id":1}`
+)
+
 const testJSONRPCMsg = `{"jsonrpc":"2.0","id":1}`
 
 // wsTestServer creates an httptest server that upgrades to WebSocket and runs handler.
@@ -608,7 +612,7 @@ func TestWSClient_UnsolicitedPongIgnored(t *testing.T) {
 		defer func() { _ = conn.Close() }()
 		// Send unsolicited pong, then a text message.
 		_ = gobwasutil.WriteServerMessage(conn, ws.OpPong, []byte("pong"))
-		_ = gobwasutil.WriteServerMessage(conn, ws.OpText, []byte(`{"id":1}`))
+		_ = gobwasutil.WriteServerMessage(conn, ws.OpText, []byte(testJSONID1))
 		<-clientDone
 	})
 	defer srv.Close()
@@ -625,7 +629,7 @@ func TestWSClient_UnsolicitedPongIgnored(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	if string(msg) != `{"id":1}` { //nolint:goconst // test value
+	if string(msg) != testJSONID1 {
 		t.Errorf("expected text message, got: %s", msg)
 	}
 }

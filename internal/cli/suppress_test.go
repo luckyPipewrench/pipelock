@@ -14,7 +14,7 @@ import (
 // Runtime-built credential-like strings to avoid tripping pipelock's own
 // security scanner in CI (scan-diff mode).
 //
-//nolint:goconst // test values, intentionally duplicated across helpers
+
 var (
 	fakeToken    = "@" + "to" + "ken = to" + "ken" // looks like cred-in-url pattern
 	fakeAPIKey   = "api" + "Key = getKey()"        // ditto

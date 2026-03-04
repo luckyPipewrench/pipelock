@@ -18,7 +18,7 @@ func benchConfig() *config.Config {
 func benchResponseConfig() *config.Config {
 	cfg := benchConfig()
 	cfg.ResponseScanning.Enabled = true
-	cfg.ResponseScanning.Action = "warn" //nolint:goconst // bench config
+	cfg.ResponseScanning.Action = "warn"
 	return cfg
 }
 

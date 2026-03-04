@@ -477,7 +477,7 @@ func TestForwardHTTPHopByHop(t *testing.T) {
 	conn := dialProxy(t, proxyAddr)
 	defer func() { _ = conn.Close() }()
 
-	fakeAuth := base64.StdEncoding.EncodeToString([]byte("test" + ":" + "test")) //nolint:goconst // test value
+	fakeAuth := base64.StdEncoding.EncodeToString([]byte("test" + ":" + "test"))
 	reqStr := fmt.Sprintf("GET %s/hoptest HTTP/1.1\r\nHost: %s\r\nProxy-Authorization: Basic %s\r\nConnection: keep-alive\r\n\r\n",
 		backend.URL, backend.Listener.Addr().String(), fakeAuth)
 	_, _ = conn.Write([]byte(reqStr))
@@ -753,7 +753,7 @@ func TestStartConnectViaProduction(t *testing.T) {
 	_, _ = conn.Write([]byte("hello"))
 	buf := make([]byte, 32)
 	n, _ := br.Read(buf)
-	if string(buf[:n]) != "hello" { //nolint:goconst // test value
+	if string(buf[:n]) != "hello" {
 		t.Errorf("expected echo 'hello', got %q", string(buf[:n]))
 	}
 }
@@ -1212,7 +1212,7 @@ func TestConnectSessionBlocked(t *testing.T) {
 		cfg.SessionProfiling.Enabled = true
 		cfg.SessionProfiling.DomainBurst = 2
 		cfg.SessionProfiling.WindowMinutes = 5
-		cfg.SessionProfiling.AnomalyAction = "block" //nolint:goconst // test value
+		cfg.SessionProfiling.AnomalyAction = "block"
 		cfg.SessionProfiling.MaxSessions = 100
 		cfg.SessionProfiling.SessionTTLMinutes = 30
 		cfg.SessionProfiling.CleanupIntervalSeconds = 60
@@ -1280,7 +1280,7 @@ func TestForwardHTTPSessionBlocked(t *testing.T) {
 		cfg.SessionProfiling.Enabled = true
 		cfg.SessionProfiling.DomainBurst = 2
 		cfg.SessionProfiling.WindowMinutes = 5
-		cfg.SessionProfiling.AnomalyAction = "block" //nolint:goconst // test value
+		cfg.SessionProfiling.AnomalyAction = "block"
 		cfg.SessionProfiling.MaxSessions = 100
 		cfg.SessionProfiling.SessionTTLMinutes = 30
 		cfg.SessionProfiling.CleanupIntervalSeconds = 60

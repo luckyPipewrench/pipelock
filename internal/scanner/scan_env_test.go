@@ -17,7 +17,7 @@ func TestScan_EnvLeakDetection_Disabled(t *testing.T) {
 	result := s.Scan("https://evil.com/?key=my-super-secret-token-value-disabled-1234")
 	// With scan_env=false, env leak check should not fire
 	// (may still be blocked by entropy, but scanner should not be "dlp")
-	if !result.Allowed && result.Scanner == "dlp" && strings.Contains(result.Reason, "environment variable") { //nolint:goconst // test value
+	if !result.Allowed && result.Scanner == ScannerDLP && strings.Contains(result.Reason, "environment variable") {
 		t.Error("expected env leak check to be disabled when scan_env=false")
 	}
 }
@@ -34,7 +34,7 @@ func TestScan_EnvLeakDetection_RawValue(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected URL blocked due to env var leak")
 	}
-	if result.Scanner != "dlp" {
+	if result.Scanner != ScannerDLP {
 		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
 	}
 	if !strings.Contains(result.Reason, "environment variable leak") {
@@ -68,7 +68,7 @@ func TestScan_EnvLeakDetection_Base64URLEncoded(t *testing.T) {
 
 	// A tilde at position mod 3 == 2 produces '+' in standard base64
 	// and '-' in URL base64, so the encodings differ.
-	secret := "xR~4kP8mZj9nFqW2Ls" //nolint:goconst,gosec // test value
+	secret := "xR~4kP8mZj9nFqW2Ls" //nolint:gosec // test value
 	t.Setenv("PIPELOCK_TEST_B64URL", secret)
 	s := New(cfg)
 
@@ -192,7 +192,7 @@ func TestScan_EnvLeakDetection_ZeroWidthBypass(t *testing.T) {
 	if result.Allowed {
 		t.Error("zero-width char insertion should not bypass env leak detection")
 	}
-	if result.Scanner != "dlp" {
+	if result.Scanner != ScannerDLP {
 		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
 	}
 }

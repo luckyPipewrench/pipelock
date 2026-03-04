@@ -39,7 +39,7 @@ func TestExtractAgent_DefaultAnonymous(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/fetch?url=https://example.com", nil)
 
 	got := ExtractAgent(req)
-	if got != "anonymous" { //nolint:goconst // test value
+	if got != agentAnonymous {
 		t.Errorf("expected anonymous, got %s", got)
 	}
 }
@@ -50,7 +50,7 @@ func TestExtractAgent_SanitizesSpecialChars(t *testing.T) {
 
 	got := ExtractAgent(req)
 	// Newline, quotes, colon, space, braces all become underscores
-	if got != "evil_agent_____inject__true_" { //nolint:goconst // test value
+	if got != "evil_agent_____inject__true_" {
 		t.Errorf("expected sanitized agent name, got %q", got)
 	}
 }
@@ -94,7 +94,7 @@ func TestExtractAgent_EmptyQueryParam(t *testing.T) {
 	// Both header and query param empty → anonymous
 	req := httptest.NewRequest(http.MethodGet, "/fetch?url=https://example.com&agent=", nil)
 	got := ExtractAgent(req)
-	if got != "anonymous" { //nolint:goconst // test value
+	if got != agentAnonymous {
 		t.Errorf("expected anonymous for empty query param, got %q", got)
 	}
 }
@@ -102,7 +102,7 @@ func TestExtractAgent_EmptyQueryParam(t *testing.T) {
 func TestExtractAgent_OnlyDashesAndDots(t *testing.T) {
 	// Agent name with only allowed chars: dashes, dots, underscores
 	req := httptest.NewRequest(http.MethodGet, "/fetch?url=https://example.com", nil)
-	req.Header.Set(AgentHeader, "-._.-.") //nolint:goconst // test value
+	req.Header.Set(AgentHeader, "-._.-.")
 	got := ExtractAgent(req)
 	if got != "-._.-." {
 		t.Errorf("expected -._.-., got %q", got)

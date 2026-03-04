@@ -3,12 +3,14 @@ package scanner
 import (
 	"strings"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 func FuzzScanResponseContent(f *testing.F) {
 	cfg := testConfig()
 	cfg.ResponseScanning.Enabled = true
-	cfg.ResponseScanning.Action = "warn" //nolint:goconst // test value
+	cfg.ResponseScanning.Action = config.ActionWarn
 	sc := New(cfg)
 	defer sc.Close()
 

@@ -166,7 +166,7 @@ spec:
     spec:
       initContainers:
         - name: pipelock-init
-          image: ghcr.io/luckypipewrench/pipelock-init:0.3.3
+          image: ghcr.io/luckypipewrench/pipelock-init:0.3.4
           command: ["cp", "/pipelock", "/shared-bin/pipelock"]
           volumeMounts:
             - name: shared-bin
@@ -187,7 +187,7 @@ spec:
               readOnly: true
 
         - name: pipelock
-          image: ghcr.io/luckypipewrench/pipelock:0.3.3
+          image: ghcr.io/luckypipewrench/pipelock:0.3.4
           args: ["run", "--listen", "0.0.0.0:8888"]
           ports:
             - containerPort: 8888

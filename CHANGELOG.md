@@ -5,10 +5,11 @@ All notable changes to Pipelock will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.4] - 2026-03-04
 
 ### Fixed
 - `pipelock cursor install` now writes Cursor's v1 hooks.json format (map keyed by event name with `version` field). Previously wrote a flat array that Cursor silently ignored, causing hooks to never fire.
+- `pipelock cursor install` now preserves `args` fields on existing hooks during merge. Previously, non-pipelock hooks with `args` arrays lost their arguments after install or upgrade.
 - `pipelock preflight` now scans both v1 and legacy hooks.json formats. Previously only understood the legacy format and would false-positive on v1 files.
 
 ## [0.3.3] - 2026-03-04

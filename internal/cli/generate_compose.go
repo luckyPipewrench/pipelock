@@ -38,7 +38,7 @@ Examples:
 			}
 
 			if output != "" {
-				if err := os.WriteFile(filepath.Clean(output), []byte(tmpl), 0o644); err != nil { //nolint:gosec // G306: 0o644 intentional for user output
+				if err := os.WriteFile(filepath.Clean(output), []byte(tmpl), 0o600); err != nil {
 					return fmt.Errorf("writing compose file: %w", err)
 				}
 				cmd.PrintErrf("Docker Compose file written to %s\n", output)

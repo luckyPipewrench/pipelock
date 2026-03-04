@@ -409,6 +409,10 @@ func TestCursorInstallCmd_Merge(t *testing.T) {
 		t.Fatalf("invalid hooks.json: %v", err)
 	}
 
+	if hooks.Version != 1 {
+		t.Errorf("expected version 1 after merge, got %d", hooks.Version)
+	}
+
 	// 3 event types.
 	if len(hooks.Hooks) != 3 {
 		t.Errorf("expected 3 event types after merge, got %d", len(hooks.Hooks))
@@ -458,6 +462,10 @@ func TestCursorInstallCmd_Idempotent(t *testing.T) {
 	var hooks hooksJSON
 	if err := json.Unmarshal(data, &hooks); err != nil {
 		t.Fatal(err)
+	}
+
+	if hooks.Version != 1 {
+		t.Errorf("expected version 1 after idempotent install, got %d", hooks.Version)
 	}
 
 	// Should still be exactly 3 event types, 1 entry each, no duplicates.

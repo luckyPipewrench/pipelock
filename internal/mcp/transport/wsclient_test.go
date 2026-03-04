@@ -16,6 +16,8 @@ import (
 	gobwasutil "github.com/gobwas/ws/wsutil"
 )
 
+const testJSONRPCMsg = `{"jsonrpc":"2.0","id":1}`
+
 // wsTestServer creates an httptest server that upgrades to WebSocket and runs handler.
 func wsTestServer(t *testing.T, handler func(conn net.Conn)) *httptest.Server {
 	t.Helper()
@@ -33,7 +35,7 @@ func TestWSClient_SingleTextFrame(t *testing.T) {
 	clientDone := make(chan struct{})
 	srv := wsTestServer(t, func(conn net.Conn) {
 		defer func() { _ = conn.Close() }()
-		_ = gobwasutil.WriteServerMessage(conn, ws.OpText, []byte(`{"jsonrpc":"2.0","id":1}`))
+		_ = gobwasutil.WriteServerMessage(conn, ws.OpText, []byte(testJSONRPCMsg))
 		<-clientDone
 	})
 	defer srv.Close()
@@ -50,7 +52,7 @@ func TestWSClient_SingleTextFrame(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	if string(msg) != `{"jsonrpc":"2.0","id":1}` { //nolint:goconst // test value
+	if string(msg) != testJSONRPCMsg {
 		t.Errorf("unexpected message: %s", msg)
 	}
 }
@@ -126,7 +128,7 @@ func TestWSClient_FragmentedMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	expected := `{"jsonrpc":"2.0","id":1}`
+	expected := testJSONRPCMsg
 	if string(msg) != expected {
 		t.Errorf("got %q, want %q", string(msg), expected)
 	}

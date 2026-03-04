@@ -768,6 +768,82 @@ func TestCursorHookCmd_MCPCleanTool(t *testing.T) {
 	}
 }
 
+func TestCursorHookCmd_OversizedStdin(t *testing.T) {
+	// Send >10MB to trigger the size cap.
+	big := make([]byte, 10<<20+100) // 10MB + 100 bytes
+	for i := range big {
+		big[i] = 'x'
+	}
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"cursor", "hook"})
+	cmd.SetIn(bytes.NewReader(big))
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var resp cursorResponse
+	if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &resp); err != nil {
+		t.Fatalf("output not valid JSON: %v\noutput: %s", err, buf.String())
+	}
+	if resp.Permission != "deny" {
+		t.Errorf("expected deny for oversized input, got %s", resp.Permission)
+	}
+	if !strings.Contains(resp.UserMessage, "too large") {
+		t.Errorf("expected 'too large' message, got: %s", resp.UserMessage)
+	}
+}
+
+func TestWriteResponse(t *testing.T) {
+	t.Run("normal", func(t *testing.T) {
+		var buf bytes.Buffer
+		writeResponse(&buf, cursorResponse{
+			Permission:  "allow",
+			UserMessage: "ok",
+		})
+		var resp cursorResponse
+		if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &resp); err != nil {
+			t.Fatalf("invalid JSON: %v", err)
+		}
+		if resp.Permission != "allow" {
+			t.Errorf("expected allow, got %s", resp.Permission)
+		}
+	})
+}
+
+func TestCursorInstallCmd_MalformedExisting(t *testing.T) {
+	dir := t.TempDir()
+	cursorDir := filepath.Join(dir, ".cursor")
+	if err := os.MkdirAll(cursorDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write invalid JSON to hooks.json.
+	hooksPath := filepath.Join(cursorDir, "hooks.json")
+	if err := os.WriteFile(hooksPath, []byte("{bad json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	chdirTemp(t, dir)
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"cursor", "install", "--project", "--global=false"})
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for malformed existing hooks.json")
+	}
+	if !strings.Contains(err.Error(), "parsing existing") {
+		t.Errorf("unexpected error: %s", err.Error())
+	}
+}
+
 // chdirTemp changes the working directory to dir and registers a cleanup
 // to restore the original. Returns the original directory.
 func chdirTemp(t *testing.T, dir string) {

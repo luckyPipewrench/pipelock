@@ -7,5 +7,7 @@ coverage:
     patch:
       default:
         target: 90%
+ignore:
+  - "tests/ws-helper/**"
 comment:
   layout: "reach, diff, files"

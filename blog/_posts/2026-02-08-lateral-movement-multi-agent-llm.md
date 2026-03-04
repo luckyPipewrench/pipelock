@@ -3,7 +3,7 @@ layout: post
 title: "Lateral movement in multi-agent LLM systems"
 date: 2026-02-08
 author: luckyPipewrench
-description: "A security gap nobody is patching — how compromised AI agents spread to other agents through shared files, and what you can do about it."
+description: "A security gap nobody is patching: how compromised AI agents spread to other agents through shared files, and what you can do about it."
 ---
 
 *A security gap nobody is patching*

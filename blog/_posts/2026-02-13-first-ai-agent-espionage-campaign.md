@@ -1,9 +1,9 @@
 ---
 layout: post
-title: "The first AI agent espionage campaign, and what defenses actually matter"
+title: "The First AI Agent Espionage Campaign: What Defenses Matter"
 date: 2026-02-13
 author: luckyPipewrench
-description: "Anthropic disclosed GTG-1002, the first AI agent espionage campaign. A state-sponsored group jailbroke Claude Code for autonomous hacking. Here's what happened and which defenses actually work."
+description: "Anthropic disclosed GTG-1002, the first AI agent espionage campaign. A state actor jailbroke Claude Code for autonomous hacking. What happened and which defenses work."
 ---
 
 *The attack you've been warned about finally happened.*

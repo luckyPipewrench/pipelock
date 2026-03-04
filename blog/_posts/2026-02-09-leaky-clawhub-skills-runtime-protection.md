@@ -1,9 +1,9 @@
 ---
 layout: post
-title: "283 ClawHub Skills Are Leaking Your Secrets. VirusTotal Can't Fix This."
+title: "283 ClawHub Skills Are Leaking Your Secrets"
 date: 2026-02-09
 author: luckyPipewrench
-description: "Snyk found 283 ClawHub skills leaking API keys and passwords through the LLM context window. VirusTotal's static scanning can't catch runtime exfiltration. Here's what can."
+description: "Snyk found 283 ClawHub skills leaking API keys through the LLM context window. Static scanning can't catch runtime exfiltration. Here's what can."
 ---
 
 [Snyk just published research](https://snyk.io/blog/openclaw-skills-credential-leaks-research/) showing that 283 out of 3,984 ClawHub skills, roughly 7.1% of the entire registry, contain critical security flaws that expose API keys, passwords, and even credit card numbers through the LLM context window.
@@ -92,7 +92,7 @@ pipelock generate config --preset balanced -o pipelock.yaml
 pipelock run --config pipelock.yaml
 ```
 
-Demo: [asciinema.org/a/I1UzzECkeCBx6p42](https://asciinema.org/a/I1UzzECkeCBx6p42)
+Demo: see the [quick start guide](https://github.com/luckyPipewrench/pipelock#quick-start) to try it yourself
 
 OWASP Agentic Top 10 mapping: [docs/owasp-mapping.md](https://github.com/luckyPipewrench/pipelock/blob/main/docs/owasp-mapping.md)
 

@@ -91,6 +91,7 @@ Quick start:
 		integrityCmd(),
 		keygenCmd(),
 		mcpCmd(),
+		preflightCmd(),
 		signCmd(),
 		testCmd(),
 		verifyCmd(),

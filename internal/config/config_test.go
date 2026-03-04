@@ -136,7 +136,7 @@ func TestApplyDefaults_FillsZeroValues(t *testing.T) {
 	if cfg.Version != 1 {
 		t.Errorf("expected version 1, got %d", cfg.Version)
 	}
-	if cfg.Mode != "balanced" {
+	if cfg.Mode != ModeBalanced {
 		t.Errorf("expected mode balanced, got %s", cfg.Mode)
 	}
 	if cfg.FetchProxy.Listen == "" {
@@ -179,7 +179,7 @@ logging:
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Mode != "balanced" {
+	if cfg.Mode != ModeBalanced {
 		t.Errorf("expected mode balanced, got %s", cfg.Mode)
 	}
 	if cfg.FetchProxy.Listen != "127.0.0.1:9090" {

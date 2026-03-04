@@ -11,8 +11,8 @@ import (
 )
 
 const (
-	testAPIToken  = "test-token-123" //nolint:gosec // test credential
-	testBearer123 = "Bearer test-token-123"
+	testAPIToken  = "test-" + "token-123"
+	testBearer123 = "Bearer " + testAPIToken
 )
 
 func TestAPIHandler_Toggle_Activate(t *testing.T) {

@@ -3454,10 +3454,10 @@ func TestDefaults_EmitFields(t *testing.T) {
 	if cfg.Emit.Webhook.QueueSize != 64 {
 		t.Errorf("expected default webhook queue_size 64, got %d", cfg.Emit.Webhook.QueueSize)
 	}
-	if cfg.Emit.Webhook.MinSeverity != ActionWarn {
+	if cfg.Emit.Webhook.MinSeverity != SeverityWarn {
 		t.Errorf("expected default webhook min_severity warn, got %s", cfg.Emit.Webhook.MinSeverity)
 	}
-	if cfg.Emit.Syslog.MinSeverity != ActionWarn {
+	if cfg.Emit.Syslog.MinSeverity != SeverityWarn {
 		t.Errorf("expected default syslog min_severity warn, got %s", cfg.Emit.Syslog.MinSeverity)
 	}
 	if cfg.Emit.Syslog.Facility != "local0" {
@@ -3498,7 +3498,7 @@ func TestValidate_EmitSyslogInvalidSeverity(t *testing.T) {
 }
 
 func TestValidate_EmitWebhookValidConfig(t *testing.T) {
-	for _, sev := range []string{SeverityInfo, ActionWarn, SeverityCritical} {
+	for _, sev := range []string{SeverityInfo, SeverityWarn, SeverityCritical} {
 		t.Run(sev, func(t *testing.T) {
 			cfg := Defaults()
 			cfg.Emit.Webhook.URL = testWebhookURL
@@ -3513,7 +3513,7 @@ func TestValidate_EmitWebhookValidConfig(t *testing.T) {
 }
 
 func TestValidate_EmitSyslogValidConfig(t *testing.T) {
-	for _, sev := range []string{SeverityInfo, ActionWarn, SeverityCritical} {
+	for _, sev := range []string{SeverityInfo, SeverityWarn, SeverityCritical} {
 		t.Run(sev, func(t *testing.T) {
 			cfg := Defaults()
 			cfg.Emit.Syslog.Address = testSyslogAddr
@@ -3528,7 +3528,7 @@ func TestValidate_EmitSyslogValidConfig(t *testing.T) {
 func TestValidate_EmitWebhookInvalidTimeout(t *testing.T) {
 	cfg := Defaults()
 	cfg.Emit.Webhook.URL = testWebhookURL
-	cfg.Emit.Webhook.MinSeverity = ActionWarn
+	cfg.Emit.Webhook.MinSeverity = SeverityWarn
 	cfg.Emit.Webhook.QueueSize = 32
 	cfg.Emit.Webhook.TimeoutSecs = -1
 	err := cfg.Validate()
@@ -3543,7 +3543,7 @@ func TestValidate_EmitWebhookInvalidTimeout(t *testing.T) {
 func TestValidate_EmitWebhookInvalidQueueSize(t *testing.T) {
 	cfg := Defaults()
 	cfg.Emit.Webhook.URL = testWebhookURL
-	cfg.Emit.Webhook.MinSeverity = ActionWarn
+	cfg.Emit.Webhook.MinSeverity = SeverityWarn
 	cfg.Emit.Webhook.TimeoutSecs = 5
 	cfg.Emit.Webhook.QueueSize = 0
 	err := cfg.Validate()

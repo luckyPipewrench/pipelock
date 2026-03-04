@@ -226,10 +226,10 @@ func TestScanResponse_ErrorWithResult(t *testing.T) {
 
 func TestScanResponse_NilResult(t *testing.T) {
 	sc := testScanner(t)
-	line := `{"jsonrpc":"2.0","id":1}`
+	line := `{"jsonrpc":"2.0","id":1,"result":null}`
 	v := ScanResponse([]byte(line), sc)
 	if !v.Clean {
-		t.Errorf("missing result should be clean, got error=%q", v.Error)
+		t.Errorf("null result should be clean, got error=%q", v.Error)
 	}
 }
 

@@ -42,6 +42,11 @@ type verifyEnv struct {
 	Sc        *scanner.Scanner
 	PolicyCfg *policy.Config
 	RunCtx    string // "host", "container", "pod"
+
+	// DialTCP dials a TCP address. Tests override to avoid real network calls.
+	DialTCP func(addr string) (net.Conn, error)
+	// DialUDP dials a UDP address. Tests override to avoid real network calls.
+	DialUDP func(addr string) (net.Conn, error)
 }
 
 // verifyResult is the outcome of a single check.
@@ -223,6 +228,8 @@ func runVerifyInstall(cmd *cobra.Command, configFile string, jsonOut, noColor bo
 		Sc:        sc,
 		PolicyCfg: pc,
 		RunCtx:    runCtx,
+		DialTCP:   directTCPConnect,
+		DialUDP:   directUDPConnect,
 	}
 
 	// Run all checks and build report.
@@ -439,7 +446,7 @@ func checkNoDirectHTTP(env *verifyEnv) verifyResult {
 			Detail: "running on host; egress probes require container/pod boundary",
 		}
 	}
-	conn, err := directTCPConnect("1.1.1.1:80")
+	conn, err := env.DialTCP("1.1.1.1:80")
 	if err != nil {
 		return verifyResult{
 			Status:   verifyStatusPass,
@@ -465,10 +472,7 @@ func checkNoDirectDNS(env *verifyEnv) verifyResult {
 
 	query := buildDNSQuery()
 
-	dnsCtx, dnsCancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer dnsCancel()
-	var dnsDialer net.Dialer
-	conn, err := dnsDialer.DialContext(dnsCtx, "udp", "8.8.8.8:53")
+	conn, err := env.DialUDP("8.8.8.8:53")
 	if err != nil {
 		return verifyResult{
 			Status:   verifyStatusPass,
@@ -511,7 +515,7 @@ func checkNoDirectHTTPS(env *verifyEnv) verifyResult {
 			Detail: "running on host; egress probes require container/pod boundary",
 		}
 	}
-	conn, err := directTCPConnect("1.1.1.1:443")
+	conn, err := env.DialTCP("1.1.1.1:443")
 	if err != nil {
 		return verifyResult{
 			Status:   verifyStatusPass,
@@ -532,6 +536,13 @@ func directTCPConnect(addr string) (net.Conn, error) {
 	defer cancel()
 	var d net.Dialer
 	return d.DialContext(ctx, "tcp", addr)
+}
+
+func directUDPConnect(addr string) (net.Conn, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	var d net.Dialer
+	return d.DialContext(ctx, "udp", addr)
 }
 
 // buildDNSQuery constructs a minimal DNS A query for example.com.

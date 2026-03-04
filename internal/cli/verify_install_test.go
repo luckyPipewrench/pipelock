@@ -5,10 +5,13 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
@@ -303,6 +306,155 @@ func TestCapitalizeFirst(t *testing.T) {
 			t.Errorf("capitalizeFirst(%q) = %q, want %q", tt.in, got, tt.want)
 		}
 	}
+}
+
+// mockConn is a minimal net.Conn for testing containment probes.
+type mockConn struct {
+	readData []byte
+	readErr  error
+	closed   bool
+}
+
+func (c *mockConn) Read(b []byte) (int, error) {
+	if c.readErr != nil {
+		return 0, c.readErr
+	}
+	n := copy(b, c.readData)
+	return n, nil
+}
+
+func (c *mockConn) Write(b []byte) (int, error)        { return len(b), nil }
+func (c *mockConn) Close() error                       { c.closed = true; return nil }
+func (c *mockConn) LocalAddr() net.Addr                { return &net.TCPAddr{} }
+func (c *mockConn) RemoteAddr() net.Addr               { return &net.TCPAddr{} }
+func (c *mockConn) SetDeadline(_ time.Time) error      { return nil }
+func (c *mockConn) SetReadDeadline(_ time.Time) error  { return nil }
+func (c *mockConn) SetWriteDeadline(_ time.Time) error { return nil }
+
+func TestCheckNoDirectHTTP_Blocked(t *testing.T) {
+	env := &verifyEnv{
+		RunCtx: verifyContextContainer,
+		DialTCP: func(_ string) (net.Conn, error) {
+			return nil, fmt.Errorf("connection refused")
+		},
+	}
+	r := checkNoDirectHTTP(env)
+	if r.Status != verifyStatusPass {
+		t.Errorf("expected pass (blocked), got %s: %s", r.Status, r.Detail)
+	}
+	if r.Evidence["error"] == "" {
+		t.Error("expected error in evidence")
+	}
+}
+
+func TestCheckNoDirectHTTP_Exposed(t *testing.T) {
+	mc := &mockConn{}
+	env := &verifyEnv{
+		RunCtx: verifyContextContainer,
+		DialTCP: func(_ string) (net.Conn, error) {
+			return mc, nil
+		},
+	}
+	r := checkNoDirectHTTP(env)
+	if r.Status != verifyStatusFail {
+		t.Errorf("expected fail (exposed), got %s: %s", r.Status, r.Detail)
+	}
+	if !mc.closed {
+		t.Error("expected connection to be closed")
+	}
+}
+
+func TestCheckNoDirectHTTPS_Blocked(t *testing.T) {
+	env := &verifyEnv{
+		RunCtx: verifyContextPod,
+		DialTCP: func(_ string) (net.Conn, error) {
+			return nil, fmt.Errorf("connection refused")
+		},
+	}
+	r := checkNoDirectHTTPS(env)
+	if r.Status != verifyStatusPass {
+		t.Errorf("expected pass (blocked), got %s: %s", r.Status, r.Detail)
+	}
+}
+
+func TestCheckNoDirectHTTPS_Exposed(t *testing.T) {
+	mc := &mockConn{}
+	env := &verifyEnv{
+		RunCtx: verifyContextPod,
+		DialTCP: func(_ string) (net.Conn, error) {
+			return mc, nil
+		},
+	}
+	r := checkNoDirectHTTPS(env)
+	if r.Status != verifyStatusFail {
+		t.Errorf("expected fail (exposed), got %s: %s", r.Status, r.Detail)
+	}
+}
+
+func TestCheckNoDirectDNS_DialBlocked(t *testing.T) {
+	env := &verifyEnv{
+		RunCtx: verifyContextContainer,
+		DialUDP: func(_ string) (net.Conn, error) {
+			return nil, fmt.Errorf("network unreachable")
+		},
+	}
+	r := checkNoDirectDNS(env)
+	if r.Status != verifyStatusPass {
+		t.Errorf("expected pass (dial blocked), got %s: %s", r.Status, r.Detail)
+	}
+}
+
+func TestCheckNoDirectDNS_WriteBlocked(t *testing.T) {
+	env := &verifyEnv{
+		RunCtx: verifyContextContainer,
+		DialUDP: func(_ string) (net.Conn, error) {
+			return &writeFailConn{}, nil
+		},
+	}
+	r := checkNoDirectDNS(env)
+	if r.Status != verifyStatusPass {
+		t.Errorf("expected pass (write blocked), got %s: %s", r.Status, r.Detail)
+	}
+	if !strings.Contains(r.Detail, "write failed") {
+		t.Errorf("expected 'write failed' detail, got: %s", r.Detail)
+	}
+}
+
+func TestCheckNoDirectDNS_NoResponse(t *testing.T) {
+	env := &verifyEnv{
+		RunCtx: verifyContextPod,
+		DialUDP: func(_ string) (net.Conn, error) {
+			return &mockConn{readErr: fmt.Errorf("read timeout")}, nil
+		},
+	}
+	r := checkNoDirectDNS(env)
+	if r.Status != verifyStatusPass {
+		t.Errorf("expected pass (no response), got %s: %s", r.Status, r.Detail)
+	}
+	if !strings.Contains(r.Detail, "no response") {
+		t.Errorf("expected 'no response' detail, got: %s", r.Detail)
+	}
+}
+
+func TestCheckNoDirectDNS_Exposed(t *testing.T) {
+	// Return a fake DNS response (just needs to not error on Read).
+	env := &verifyEnv{
+		RunCtx: verifyContextContainer,
+		DialUDP: func(_ string) (net.Conn, error) {
+			return &mockConn{readData: make([]byte, 64)}, nil
+		},
+	}
+	r := checkNoDirectDNS(env)
+	if r.Status != verifyStatusFail {
+		t.Errorf("expected fail (exposed), got %s: %s", r.Status, r.Detail)
+	}
+}
+
+// writeFailConn succeeds on dial but fails on write.
+type writeFailConn struct{ mockConn }
+
+func (c *writeFailConn) Write(_ []byte) (int, error) {
+	return 0, fmt.Errorf("write blocked")
 }
 
 func TestVerifyStatusIcon(t *testing.T) {

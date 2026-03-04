@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/preflight"
+	"github.com/luckyPipewrench/pipelock/internal/projectscan"
 )
 
 func writeTestJSON(t *testing.T, dir, relPath string, v any) {
@@ -43,6 +44,22 @@ func TestPreflight_EmptyDir(t *testing.T) {
 	}
 	if r.Summary.Critical > 0 || r.Summary.High > 0 {
 		t.Error("expected 0 critical/high for empty dir")
+	}
+}
+
+func TestPrintPreflightReport_NoFindings(t *testing.T) {
+	var buf bytes.Buffer
+	cmd := rootCmd()
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	r := &preflight.Report{
+		Directory:    "/test",
+		FilesScanned: []string{"a.json"},
+	}
+	printPreflightReport(cmd, r, false)
+	if !contains(buf.String(), "No findings") {
+		t.Errorf("expected 'No findings' in output, got: %s", buf.String())
 	}
 }
 
@@ -193,6 +210,10 @@ func TestPreflight_Exclude(t *testing.T) {
 			}},
 		},
 	})
+	// Add a second file so some findings survive the exclude filter.
+	writeTestJSON(t, dir, ".claude/settings.local.json", map[string]any{
+		"enableAllProjectMcpServers": true,
+	})
 	var buf bytes.Buffer
 	cmd := rootCmd()
 	cmd.SetOut(&buf)
@@ -208,6 +229,9 @@ func TestPreflight_Exclude(t *testing.T) {
 	}
 	if r.Summary.Critical > 0 {
 		t.Error("expected 0 critical after exclude")
+	}
+	if r.Summary.High == 0 {
+		t.Error("expected surviving high finding from settings.local.json")
 	}
 }
 
@@ -276,6 +300,58 @@ func TestPreflight_TextOutput_Severity(t *testing.T) {
 	output := buf.String()
 	if !contains(output, "Summary:") {
 		t.Error("expected Summary line in text output")
+	}
+}
+
+func TestSeverityTag(t *testing.T) {
+	tests := []struct {
+		sev, substr string
+		color       bool
+	}{
+		{preflight.SevCritical, "[CRITICAL]", false},
+		{preflight.SevHigh, "[HIGH]", false},
+		{preflight.SevWarning, "[WARNING]", false},
+		{preflight.SevInfo, "[INFO]", false},
+		{preflight.SevCritical, "\033[1;31m", true},
+		{preflight.SevHigh, "\033[1;33m", true},
+		{preflight.SevWarning, "\033[0;33m", true},
+		{preflight.SevInfo, "\033[0;36m", true},
+	}
+	for _, tc := range tests {
+		tag := severityTag(tc.sev, tc.color)
+		if !contains(tag, tc.substr) {
+			t.Errorf("severityTag(%q, color=%v) = %q, want substring %q", tc.sev, tc.color, tag, tc.substr)
+		}
+	}
+}
+
+func TestPrintPreflightReport_ColorWithLineNumbers(t *testing.T) {
+	var buf bytes.Buffer
+	cmd := rootCmd()
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	r := &preflight.Report{
+		Directory:    "/test",
+		FilesScanned: []string{"a.json"},
+		Findings: []projectscan.Finding{
+			{Severity: preflight.SevCritical, Message: "bad hook", File: ".claude/settings.json", Line: 5},
+			{Severity: preflight.SevHigh, Message: "bad mcp", File: ".mcp.json"},
+			{Severity: preflight.SevWarning, Message: "open approval"},
+		},
+		Summary: preflight.Summary{Critical: 1, High: 1, Warning: 1},
+	}
+
+	printPreflightReport(cmd, r, true)
+	out := buf.String()
+	if !contains(out, "\033[1;31m") {
+		t.Error("expected ANSI red for critical")
+	}
+	if !contains(out, ":5)") {
+		t.Error("expected line number in output")
+	}
+	if !contains(out, "(.mcp.json)") {
+		t.Error("expected file without line number")
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 const (
 	decisionAllow = "allow"
 	decisionDeny  = "deny"
+	testArgFix    = "--fix"
 )
 
 // errReader is an io.Reader that always returns an error.
@@ -1081,6 +1082,30 @@ func TestParseHooksJSON_HooksMapNoVersion(t *testing.T) {
 	}
 }
 
+func TestParseHooksJSON_V1PreservesArgs(t *testing.T) {
+	data := `{"version":1,"hooks":{"beforeShellExecution":[{"command":"lint","args":["--fix","src/"],"timeout":30}]}}`
+	hooks, err := parseHooksJSON([]byte(data))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	entry := hooks.Hooks["beforeShellExecution"][0]
+	if len(entry.Args) != 2 || entry.Args[0] != testArgFix || entry.Args[1] != "src/" {
+		t.Errorf("expected args [--fix src/], got %v", entry.Args)
+	}
+}
+
+func TestParseHooksJSON_LegacyPreservesArgs(t *testing.T) {
+	data := `{"hooks":[{"event":"beforeShellExecution","command":"lint","args":["--fix"],"timeout":5}]}`
+	hooks, err := parseHooksJSON([]byte(data))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	entry := hooks.Hooks["beforeShellExecution"][0]
+	if len(entry.Args) != 1 || entry.Args[0] != testArgFix {
+		t.Errorf("expected args [--fix], got %v", entry.Args)
+	}
+}
+
 func TestParseHooksJSON_LegacyEmptyEvent(t *testing.T) {
 	// Legacy entry with empty event field should be skipped.
 	data := `{"hooks":[{"event":"","command":"skip-me"},{"event":"beforeShellExecution","command":"keep-me"}]}`
@@ -1151,6 +1176,53 @@ func TestCursorInstallCmd_MergeLegacy(t *testing.T) {
 	if !found {
 		t.Error("legacy hook was lost during upgrade+merge")
 	}
+}
+
+func TestCursorInstallCmd_MergePreservesArgs(t *testing.T) {
+	dir := t.TempDir()
+	cursorDir := filepath.Join(dir, ".cursor")
+	if err := os.MkdirAll(cursorDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	// Pre-create hooks.json with a hook that uses args.
+	existing := `{"version":1,"hooks":{"beforeShellExecution":[{"command":"lint","args":["--fix","src/"],"timeout":30}]}}`
+	hooksPath := filepath.Join(cursorDir, "hooks.json")
+	if err := os.WriteFile(hooksPath, []byte(existing), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	chdirTemp(t, dir)
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"cursor", "install", "--project", "--global=false"})
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Clean(hooksPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var hooks hooksJSON
+	if err := json.Unmarshal(data, &hooks); err != nil {
+		t.Fatalf("invalid hooks.json: %v", err)
+	}
+
+	// Find the lint hook and verify args survived.
+	for _, h := range hooks.Hooks["beforeShellExecution"] {
+		if h.Command == "lint" {
+			if len(h.Args) != 2 || h.Args[0] != testArgFix || h.Args[1] != "src/" {
+				t.Errorf("args were modified: expected [--fix src/], got %v", h.Args)
+			}
+			return
+		}
+	}
+	t.Error("lint hook with args was lost during merge")
 }
 
 // chdirTemp changes the working directory to dir and registers a cleanup

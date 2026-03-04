@@ -57,8 +57,9 @@ type hooksJSON struct {
 
 // hookEntry represents a single hook script in hooks.json.
 type hookEntry struct {
-	Command string `json:"command"`
-	Timeout int    `json:"timeout,omitempty"`
+	Command string   `json:"command"`
+	Args    []string `json:"args,omitempty"`
+	Timeout int      `json:"timeout,omitempty"`
 }
 
 // legacyHooksJSON represents the pre-v0.3.4 hooks.json format where hooks
@@ -68,9 +69,10 @@ type legacyHooksJSON struct {
 }
 
 type legacyHookEntry struct {
-	Event   string `json:"event"`
-	Command string `json:"command"`
-	Timeout int    `json:"timeout"`
+	Event   string   `json:"event"`
+	Command string   `json:"command"`
+	Args    []string `json:"args,omitempty"`
+	Timeout int      `json:"timeout"`
 }
 
 // parseHooksJSON parses hooks.json data, supporting both the current v1 format
@@ -102,6 +104,7 @@ func parseHooksJSON(data []byte) (*hooksJSON, error) {
 		if le.Event != "" {
 			result.Hooks[le.Event] = append(result.Hooks[le.Event], hookEntry{
 				Command: le.Command,
+				Args:    le.Args,
 				Timeout: le.Timeout,
 			})
 		}

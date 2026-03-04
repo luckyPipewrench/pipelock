@@ -295,7 +295,7 @@ func safeRead(canonicalRoot, relPath string) ([]byte, []projectscan.Finding) {
 	}
 
 	// Size check: high severity (not warning) so --ci fails on evasion attempt
-	finfo, err := os.Stat(fullPath)
+	finfo, err := os.Stat(resolved)
 	if err != nil {
 		return nil, []projectscan.Finding{{
 			Severity: SevCritical,
@@ -313,7 +313,7 @@ func safeRead(canonicalRoot, relPath string) ([]byte, []projectscan.Finding) {
 		}}
 	}
 
-	data, err := os.ReadFile(fullPath) //nolint:gosec // G304: path validated above
+	data, err := os.ReadFile(resolved) //nolint:gosec // G304: path validated and confined above
 	if err != nil {
 		// Fail-closed: targeted file exists but can't be read = critical.
 		// Prevents evasion via restrictive permissions on malicious config.

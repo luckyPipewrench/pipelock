@@ -94,6 +94,7 @@ Quick start:
 		signCmd(),
 		testCmd(),
 		verifyCmd(),
+		verifyInstallCmd(),
 		trustCmd(),
 		versionCmd(),
 		healthcheckCmd(),

@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `pipelock verify-install` command: 10 deterministic checks verifying scanning pipeline and network containment. Produces human-readable or `--json` output with optional Ed25519 `--sign` for tamper-evident reports. Supports `--output` to write results to file.
 - `pipelock cursor hook` subcommand: Cursor IDE hook integration. Reads hook events from stdin, evaluates DLP, injection, and tool policy, writes allow/deny JSON to stdout. Always exits 0 with JSON `permission` field as the authoritative decision. Without `--config`, uses a security-focused default profile with 9 tool policy rules, MCP input scanning, and response scanning enabled.
 - `pipelock cursor install` subcommand: writes `hooks.json` to register pipelock with Cursor. Supports `--global` (default, `~/.cursor/`) and `--project` (`.cursor/` in cwd). Atomic writes via temp file + rename, `.bak` backup, idempotent merge with existing hooks, upgrade-safe replacement of stale entries.
 - `internal/decide` package: shared decision engine for evaluating agent actions against pipelock's scanning pipeline. Supports shell execution, MCP tool calls, and file read events with per-finding action semantics (block vs warn) and `enforce` flag override.

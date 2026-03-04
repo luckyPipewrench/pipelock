@@ -7,12 +7,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
+	"github.com/luckyPipewrench/pipelock/internal/proxy"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
@@ -469,8 +475,275 @@ func TestVerifyStatusIcon(t *testing.T) {
 		t.Errorf("expected ' N/A', got %q", got)
 	}
 
-	// With color: should contain ANSI escape.
-	if got := verifyStatusIcon(verifyStatusPass, true); !strings.Contains(got, "\033[") {
-		t.Errorf("expected ANSI escape in colored PASS, got %q", got)
+	// With color: all statuses should contain ANSI escape.
+	for _, status := range []string{verifyStatusPass, verifyStatusFail, verifyStatusNA} {
+		got := verifyStatusIcon(status, true)
+		if !strings.Contains(got, "\033[") {
+			t.Errorf("expected ANSI escape in colored %s, got %q", status, got)
+		}
+	}
+}
+
+// testScanEnv creates a verifyEnv with a real scanner and policy for unit-testing
+// individual check functions. The proxy URL points to a mock that returns 200.
+func testScanEnv(t *testing.T) *verifyEnv {
+	t.Helper()
+	cfg := testConfig()
+	cfg.ForwardProxy.Enabled = true
+	cfg.MCPToolPolicy = config.MCPToolPolicy{
+		Enabled: true,
+		Action:  config.ActionBlock,
+		Rules:   policy.DefaultToolPolicyRules(),
+	}
+	cfg.ResponseScanning.Enabled = true
+	cfg.ResponseScanning.Action = config.ActionBlock
+	cfg.MCPInputScanning.Enabled = true
+	cfg.MCPInputScanning.Action = config.ActionBlock
+	sc := scanner.New(cfg)
+	t.Cleanup(func() { sc.Close() })
+	pc := policy.New(cfg.MCPToolPolicy)
+	return &verifyEnv{
+		Cfg:       cfg,
+		Sc:        sc,
+		PolicyCfg: pc,
+		RunCtx:    verifyContextHost,
+	}
+}
+
+func TestCheckConfigValid_Fail(t *testing.T) {
+	env := testScanEnv(t)
+	// Set an invalid mode to trigger validation failure.
+	env.Cfg.Mode = "invalid-mode"
+	r := checkConfigValid(env)
+	if r.Status != verifyStatusFail {
+		t.Errorf("expected fail for invalid config, got %s: %s", r.Status, r.Detail)
+	}
+	if !strings.Contains(r.Detail, "validation error") {
+		t.Errorf("expected 'validation error' in detail, got: %s", r.Detail)
+	}
+}
+
+func TestCheckProxyHealth_Error(t *testing.T) {
+	env := testScanEnv(t)
+	env.ProxyURL = "http://127.0.0.1:1" // nothing listening
+	r := checkProxyHealth(env)
+	if r.Status != verifyStatusFail {
+		t.Errorf("expected fail for unreachable proxy, got %s: %s", r.Status, r.Detail)
+	}
+}
+
+func TestCheckFetchDLP_Error(t *testing.T) {
+	env := testScanEnv(t)
+	env.ProxyURL = "http://127.0.0.1:1" // nothing listening
+	env.MockURL = "http://127.0.0.1:2"
+	r := checkFetchDLP(env)
+	if r.Status != verifyStatusFail {
+		t.Errorf("expected fail for unreachable proxy, got %s: %s", r.Status, r.Detail)
+	}
+	if !strings.Contains(r.Detail, "fetch request failed") {
+		t.Errorf("expected 'fetch request failed' detail, got: %s", r.Detail)
+	}
+}
+
+func TestCheckVerifyForwardBlocked_Disabled(t *testing.T) {
+	env := testScanEnv(t)
+	env.Cfg.ForwardProxy.Enabled = false
+	r := checkVerifyForwardBlocked(env)
+	if r.Status != verifyStatusFail {
+		t.Errorf("expected fail for disabled forward proxy, got %s: %s", r.Status, r.Detail)
+	}
+	if !strings.Contains(r.Detail, "disabled") {
+		t.Errorf("expected 'disabled' in detail, got: %s", r.Detail)
+	}
+}
+
+func TestCheckScanningDLP_Disabled(t *testing.T) {
+	env := testScanEnv(t)
+	env.Cfg.MCPInputScanning.Enabled = false
+	r := checkScanningDLP(env)
+	if r.Status != verifyStatusFail {
+		t.Errorf("expected fail for disabled input scanning, got %s: %s", r.Status, r.Detail)
+	}
+}
+
+func TestCheckScanningInjection_Disabled(t *testing.T) {
+	env := testScanEnv(t)
+	env.Cfg.ResponseScanning.Enabled = false
+	r := checkScanningInjection(env)
+	if r.Status != verifyStatusFail {
+		t.Errorf("expected fail for disabled response scanning, got %s: %s", r.Status, r.Detail)
+	}
+}
+
+func TestCheckScanningPolicy_Disabled(t *testing.T) {
+	env := testScanEnv(t)
+	env.Cfg.MCPToolPolicy.Enabled = false
+	r := checkScanningPolicy(env)
+	if r.Status != verifyStatusFail {
+		t.Errorf("expected fail for disabled tool policy, got %s: %s", r.Status, r.Detail)
+	}
+}
+
+func TestBuildVerifyReport_ContainmentExposed(t *testing.T) {
+	env := &verifyEnv{RunCtx: verifyContextContainer}
+	checks := []verifyCheck{
+		{Name: "scan1", Category: verifyCatScanning, Run: func(_ *verifyEnv) verifyResult {
+			return verifyResult{Status: verifyStatusPass}
+		}},
+		{Name: "contain1", Category: verifyCatContainment, Run: func(_ *verifyEnv) verifyResult {
+			return verifyResult{Status: verifyStatusFail, Detail: "exposed"}
+		}},
+	}
+	report := buildVerifyReport(env, checks, "test")
+	if report.Summary.Containment != verifyContainmentExposed {
+		t.Errorf("expected containment=exposed, got %s", report.Summary.Containment)
+	}
+	if report.Summary.Failed != 1 {
+		t.Errorf("expected 1 failed, got %d", report.Summary.Failed)
+	}
+}
+
+func TestBuildVerifyReport_ContainmentContained(t *testing.T) {
+	env := &verifyEnv{RunCtx: verifyContextPod}
+	checks := []verifyCheck{
+		{Name: "scan1", Category: verifyCatScanning, Run: func(_ *verifyEnv) verifyResult {
+			return verifyResult{Status: verifyStatusPass}
+		}},
+		{Name: "contain1", Category: verifyCatContainment, Run: func(_ *verifyEnv) verifyResult {
+			return verifyResult{Status: verifyStatusPass}
+		}},
+	}
+	report := buildVerifyReport(env, checks, "test")
+	if report.Summary.Containment != verifyContainmentContained {
+		t.Errorf("expected containment=contained, got %s", report.Summary.Containment)
+	}
+}
+
+func TestBuildVerifyReport_ScanningDegraded(t *testing.T) {
+	env := &verifyEnv{RunCtx: verifyContextHost}
+	checks := []verifyCheck{
+		{Name: "scan1", Category: verifyCatScanning, Run: func(_ *verifyEnv) verifyResult {
+			return verifyResult{Status: verifyStatusFail, Detail: "bad"}
+		}},
+	}
+	report := buildVerifyReport(env, checks, "test")
+	if report.Summary.Scanning != verifyScanningDegraded {
+		t.Errorf("expected scanning=degraded, got %s", report.Summary.Scanning)
+	}
+}
+
+func TestVerifyInstallCmd_BadConfig(t *testing.T) {
+	var buf, errBuf bytes.Buffer
+	cmd := verifyInstallCmd()
+	cmd.SetOut(&buf)
+	cmd.SetErr(&errBuf)
+	cmd.SetArgs([]string{"--config", "/nonexistent/path.yaml", "--no-color"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for missing config file")
+	}
+}
+
+func TestVerifyInstallCmd_BadSignKey(t *testing.T) {
+	var buf, errBuf bytes.Buffer
+	cmd := verifyInstallCmd()
+	cmd.SetOut(&buf)
+	cmd.SetErr(&errBuf)
+	cmd.SetArgs([]string{"--json", "--no-color", "--sign", "/nonexistent/key.pem"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for missing sign key")
+	}
+}
+
+func TestWriteVerifyReportFile_BadPath(t *testing.T) {
+	report := verifyReport{Version: "test"}
+	err := writeVerifyReportFile(report, "/nonexistent/dir/report.json")
+	if err == nil {
+		t.Fatal("expected error for bad path")
+	}
+}
+
+func TestCheckProxyHealth_Non200(t *testing.T) {
+	// Start a server that returns 503.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	env := testScanEnv(t)
+	env.ProxyURL = srv.URL
+	r := checkProxyHealth(env)
+	if r.Status != verifyStatusFail {
+		t.Errorf("expected fail for non-200, got %s: %s", r.Status, r.Detail)
+	}
+	if !strings.Contains(r.Detail, "503") {
+		t.Errorf("expected status code in detail, got: %s", r.Detail)
+	}
+}
+
+func TestCheckFetchDLP_NotBlocked(t *testing.T) {
+	// A server that returns an unblocked fetch response.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		resp := proxy.FetchResponse{Blocked: false, Content: "OK"}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	env := testScanEnv(t)
+	env.ProxyURL = srv.URL
+	env.MockURL = srv.URL
+	r := checkFetchDLP(env)
+	if r.Status != verifyStatusFail {
+		t.Errorf("expected fail when DLP allows request, got %s: %s", r.Status, r.Detail)
+	}
+	if !strings.Contains(r.Detail, "allowed") {
+		t.Errorf("expected 'allowed' in detail, got: %s", r.Detail)
+	}
+}
+
+func TestCheckFetchDLP_BadJSON(t *testing.T) {
+	// A server that returns invalid JSON.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("not json"))
+	}))
+	defer srv.Close()
+
+	env := testScanEnv(t)
+	env.ProxyURL = srv.URL
+	env.MockURL = srv.URL
+	r := checkFetchDLP(env)
+	if r.Status != verifyStatusFail {
+		t.Errorf("expected fail for bad JSON, got %s: %s", r.Status, r.Detail)
+	}
+	if !strings.Contains(r.Detail, "decode error") {
+		t.Errorf("expected 'decode error' in detail, got: %s", r.Detail)
+	}
+}
+
+func TestPrintVerifyTable_WithFailures(t *testing.T) {
+	report := verifyReport{
+		Version: "test",
+		Checks: []verifyReportCheck{
+			{Name: "scan1", Category: verifyCatScanning, Status: verifyStatusPass, Detail: "ok"},
+			{Name: "scan2", Category: verifyCatScanning, Status: verifyStatusFail, Detail: "bad"},
+			{Name: "contain1", Category: verifyCatContainment, Status: verifyStatusFail, Detail: "exposed"},
+		},
+		Summary: verifyReportSummary{
+			Total: 3, Passed: 1, Failed: 2, Scanning: verifyScanningDegraded,
+			Containment: verifyContainmentExposed,
+		},
+	}
+	var buf bytes.Buffer
+	printVerifyTable(&buf, report, false)
+	out := buf.String()
+	if !strings.Contains(out, "2 FAILED") {
+		t.Errorf("expected '2 FAILED' in output:\n%s", out)
+	}
+	if !strings.Contains(out, "Scanning: degraded") {
+		t.Errorf("expected 'Scanning: degraded' in output:\n%s", out)
+	}
+	if !strings.Contains(out, "Containment: exposed") {
+		t.Errorf("expected 'Containment: exposed' in output:\n%s", out)
 	}
 }

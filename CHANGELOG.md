@@ -5,7 +5,7 @@ All notable changes to Pipelock will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.3] - 2026-03-04
 
 ### Added
 - `pipelock verify-install` command: 10 deterministic checks verifying scanning pipeline and network containment. Produces human-readable or `--json` output with optional Ed25519 `--sign` for tamper-evident reports. Supports `--output` to write results to file.
@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `pipelock cursor install` subcommand: writes `hooks.json` to register pipelock with Cursor. Supports `--global` (default, `~/.cursor/`) and `--project` (`.cursor/` in cwd). Atomic writes via temp file + rename, `.bak` backup, idempotent merge with existing hooks, upgrade-safe replacement of stale entries.
 - `internal/decide` package: shared decision engine for evaluating agent actions against pipelock's scanning pipeline. Supports shell execution, MCP tool calls, and file read events with per-finding action semantics (block vs warn) and `enforce` flag override.
 - Fail-closed on malformed MCP tool_input: invalid JSON in tool arguments is treated as block-level evidence. Legitimate MCP tool calls always have valid JSON; parse failure indicates tampering or corruption.
+- `pipelock audit --preflight` scanner: detects dangerous IDE configuration files (`.cursor/mcp.json`, `.vscode/mcp.json`) in project directories that could override agent security settings. Reports threat level (critical/high/medium/low) with actionable remediation steps.
+
+### Changed
+- Replaced all `//nolint:gosec` G304 suppressions with `filepath.Clean()` across production and test code (84 occurrences in 26 files). No behavioral change.
+- Eliminated all `//nolint:goconst` directives, extracted named constants
 
 ### Fixed
 - Pre-existing lint issues in `tests/ws-helper/main.go`: errcheck on `conn.Close()`, noctx on `net.Listen`

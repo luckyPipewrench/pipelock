@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -906,7 +907,7 @@ func dedupSecrets(fileSecrets, envSecrets []string) []string {
 // Blank lines, null-byte lines, and lines below minLen are skipped.
 // Max 4096 bytes per line, max 1000 entries.
 func loadSecretsFile(path string, minLen int) ([]string, error) { //nolint:unparam // minLen varies in tests
-	f, err := os.Open(path) //nolint:gosec // G304: path validated by config.Validate
+	f, err := os.Open(filepath.Clean(path))
 	if err != nil {
 		return nil, fmt.Errorf("opening secrets file: %w", err)
 	}

@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -37,7 +38,7 @@ Examples:
 			}
 
 			if output != "" {
-				if err := os.WriteFile(output, []byte(tmpl), 0o644); err != nil { //nolint:gosec // user-requested output file
+				if err := os.WriteFile(filepath.Clean(output), []byte(tmpl), 0o600); err != nil {
 					return fmt.Errorf("writing compose file: %w", err)
 				}
 				cmd.PrintErrf("Docker Compose file written to %s\n", output)

@@ -20,7 +20,7 @@ func isContainerized() bool {
 	}
 
 	// cgroup-based: /proc/1/cgroup references container runtime
-	data, err := os.ReadFile("/proc/1/cgroup") //nolint:gosec // G304: fixed path
+	data, err := os.ReadFile("/proc/1/cgroup")
 	if err == nil {
 		content := string(data)
 		if strings.Contains(content, "docker") ||

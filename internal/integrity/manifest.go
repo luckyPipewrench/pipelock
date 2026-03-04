@@ -39,7 +39,7 @@ type FileEntry struct {
 
 // Load reads and parses a manifest from disk.
 func Load(path string) (*Manifest, error) {
-	data, err := os.ReadFile(path) //nolint:gosec // G304: caller controls path
+	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return nil, fmt.Errorf("reading manifest: %w", err)
 	}
@@ -100,7 +100,7 @@ func (m *Manifest) Save(path string) error {
 
 // HashFile computes the SHA256 hash and stats a single file.
 func HashFile(path string) (FileEntry, error) {
-	f, err := os.Open(path) //nolint:gosec // G304: caller controls path
+	f, err := os.Open(filepath.Clean(path))
 	if err != nil {
 		return FileEntry{}, fmt.Errorf("opening file: %w", err)
 	}

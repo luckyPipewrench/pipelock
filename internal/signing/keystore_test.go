@@ -336,7 +336,7 @@ func TestKeystoreResolvePublicKey_CorruptedKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	pubPath := ks.PublicKeyPath("corrupt")
-	if err := os.WriteFile(pubPath, []byte("garbage"), 0o600); err != nil { //nolint:gosec // test path
+	if err := os.WriteFile(filepath.Clean(pubPath), []byte("garbage"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 

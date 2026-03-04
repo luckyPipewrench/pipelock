@@ -272,7 +272,7 @@ func scanFiles(dir string, patterns []compiledDLP) []Finding {
 }
 
 func scanFileForSecrets(path, relPath string, patterns []compiledDLP) []Finding {
-	f, err := os.Open(path) //nolint:gosec // G304: path from caller-controlled dir walk
+	f, err := os.Open(filepath.Clean(path))
 	if err != nil {
 		return nil
 	}
@@ -303,7 +303,7 @@ func scanFileForSecrets(path, relPath string, patterns []compiledDLP) []Finding 
 }
 
 func scanFileForEntropy(path, relPath string) []Finding {
-	f, err := os.Open(path) //nolint:gosec // G304: path from caller-controlled dir walk
+	f, err := os.Open(filepath.Clean(path))
 	if err != nil {
 		return nil
 	}

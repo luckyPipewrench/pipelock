@@ -405,7 +405,7 @@ type ChainPattern struct {
 
 // Load reads, parses, defaults, and validates a Pipelock config file.
 func Load(path string) (*Config, error) {
-	data, err := os.ReadFile(path) //nolint:gosec // G304: path from caller
+	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return nil, fmt.Errorf("reading config %s: %w", path, err)
 	}

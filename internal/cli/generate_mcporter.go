@@ -40,7 +40,7 @@ Examples:
 				return fmt.Errorf("--in-place and --output are mutually exclusive")
 			}
 
-			data, err := os.ReadFile(inputFile) //nolint:gosec // user-provided input file
+			data, err := os.ReadFile(filepath.Clean(inputFile))
 			if err != nil {
 				return fmt.Errorf("reading input: %w", err)
 			}
@@ -310,7 +310,7 @@ func atomicWriteFile(path string, data []byte, doBackup bool) error {
 	}
 
 	if doBackup {
-		bakData, readErr := os.ReadFile(path) //nolint:gosec // user-provided path
+		bakData, readErr := os.ReadFile(filepath.Clean(path))
 		if readErr != nil {
 			return fmt.Errorf("reading original for backup: %w", readErr)
 		}

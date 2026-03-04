@@ -174,7 +174,7 @@ func TestManifest_Save_ValidJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	data, err := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
+	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		t.Fatal(err)
 	}

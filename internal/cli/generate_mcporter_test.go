@@ -299,7 +299,7 @@ func TestGenerateMcporter_InPlace(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	data, err := os.ReadFile(tmpFile) //nolint:gosec // test file
+	data, err := os.ReadFile(filepath.Clean(tmpFile))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -332,7 +332,7 @@ func TestGenerateMcporter_InPlaceWithBackup(t *testing.T) {
 	}
 
 	// .bak should exist with original content.
-	bakData, err := os.ReadFile(tmpFile + ".bak") //nolint:gosec // test file
+	bakData, err := os.ReadFile(filepath.Clean(tmpFile + ".bak"))
 	if err != nil {
 		t.Fatalf("backup file not found: %v", err)
 	}
@@ -669,7 +669,7 @@ func TestGenerateMcporter_OutputFile(t *testing.T) {
 		t.Fatalf("execute: %v", err)
 	}
 
-	data, err := os.ReadFile(outFile) //nolint:gosec // test file
+	data, err := os.ReadFile(filepath.Clean(outFile))
 	if err != nil {
 		t.Fatalf("read output: %v", err)
 	}

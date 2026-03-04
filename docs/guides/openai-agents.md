@@ -257,7 +257,7 @@ networks:
 
 services:
   pipelock:
-    # Pin to a specific version for production (e.g., ghcr.io/luckypipewrench/pipelock:v0.3.2)
+    # Pin to a specific version for production (e.g., ghcr.io/luckypipewrench/pipelock:v0.3.3)
     image: ghcr.io/luckypipewrench/pipelock:latest
     networks:
       - pipelock-internal

@@ -866,6 +866,10 @@ func TestPreflight_UnreadableCommandsDir(t *testing.T) {
 	if !hasFindingFull(r.Findings, SevCritical, CatConfig, "unreadable commands directory") {
 		t.Error("expected critical/config unreadable commands dir finding")
 	}
+	// Should NOT have contradictory "no config files found" info alongside critical findings.
+	if hasFindingMsg(r.Findings, "no AI agent config files found") {
+		t.Error("should not report 'no config files found' when fail-closed findings exist")
+	}
 }
 
 func TestPreflight_SymlinkedCommandsDir(t *testing.T) {
@@ -983,6 +987,8 @@ func TestIsStandardAnthropicURL(t *testing.T) {
 		{"no scheme", "api.anthropic.com", true},
 		{"attacker subdomain", "https://api.anthropic.com.attacker.tld", false},
 		{"attacker domain", "https://evil.com", false},
+		{"http downgrade", "http://api.anthropic.com", false},
+		{"ftp scheme", "ftp://api.anthropic.com", false},
 		{"empty", "", false},
 		{"path only", "/v1/messages", false},
 	}

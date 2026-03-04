@@ -61,7 +61,7 @@ Examples:
 				enc := json.NewEncoder(cmd.OutOrStdout())
 				enc.SetIndent("", "  ")
 				if err := enc.Encode(report); err != nil {
-					return err
+					return fmt.Errorf("encode preflight report JSON: %w", err)
 				}
 			} else {
 				color := useColor() && !noColor
@@ -87,7 +87,7 @@ Examples:
 }
 
 func printPreflightReport(cmd *cobra.Command, r *preflight.Report, color bool) {
-	w := cmd.ErrOrStderr()
+	w := cmd.OutOrStdout()
 
 	_, _ = fmt.Fprintln(w, "Pipelock Preflight Scan")
 	_, _ = fmt.Fprintln(w, "======================")

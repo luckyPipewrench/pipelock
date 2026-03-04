@@ -218,7 +218,7 @@ func Scan(dir string, opts ...Option) (*Report, error) {
 	}
 
 	// If zero files found: info finding
-	if len(r.FilesScanned) == 0 {
+	if len(r.FilesScanned) == 0 && len(r.Findings) == 0 {
 		r.Findings = append(r.Findings, projectscan.Finding{
 			Severity: SevInfo,
 			Category: CatConfig,

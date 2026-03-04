@@ -279,6 +279,11 @@ func isStandardAnthropicURL(rawURL string) bool {
 		return false
 	}
 
+	// Reject non-HTTPS schemes (HTTP downgrade attack)
+	if parsed.Scheme != "" && !strings.EqualFold(parsed.Scheme, "https") {
+		return false
+	}
+
 	host := strings.ToLower(parsed.Hostname())
 	for _, trusted := range standardAnthropicHosts {
 		// Exact match

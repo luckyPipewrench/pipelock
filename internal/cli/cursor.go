@@ -297,7 +297,7 @@ Runs are idempotent: running twice produces the same result.`,
 		},
 	}
 
-	cmd.Flags().BoolVar(&global, "global", true, "install to ~/.cursor/hooks.json")
+	cmd.Flags().BoolVar(&global, "global", false, "install to ~/.cursor/hooks.json (default when no scope flag given)")
 	cmd.Flags().BoolVar(&project, "project", false, "install to .cursor/hooks.json in current directory")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would be written without modifying files")
 
@@ -308,11 +308,8 @@ func runCursorInstall(cmd *cobra.Command, global, project, dryRun bool) error {
 	if global && project {
 		return fmt.Errorf("--global and --project are mutually exclusive")
 	}
-	if !global && !project {
-		return fmt.Errorf("either --global or --project must be set")
-	}
 
-	// Determine target path.
+	// Determine target path. When neither flag is set, defaults to global.
 	var targetDir string
 	if project {
 		targetDir = filepath.Join(".", ".cursor")

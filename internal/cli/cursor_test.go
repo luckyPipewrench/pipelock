@@ -3,11 +3,21 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// errReader is an io.Reader that always returns an error.
+type errReader struct {
+	err error
+}
+
+func (r *errReader) Read(_ []byte) (int, error) {
+	return 0, r.err
+}
 
 func TestCursorCmd_InRootHelp(t *testing.T) {
 	cmd := rootCmd()
@@ -613,6 +623,92 @@ func TestCursorInstallCmd_ProjectAlone(t *testing.T) {
 	hooksPath := filepath.Join(dir, ".cursor", "hooks.json")
 	if _, err := os.Stat(hooksPath); err != nil {
 		t.Fatalf("hooks.json not created: %v", err)
+	}
+}
+
+func TestCursorInstallCmd_GlobalActual(t *testing.T) {
+	// Override HOME to a temp dir so --global writes there.
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"cursor", "install", "--global"})
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	hooksPath := filepath.Join(dir, ".cursor", "hooks.json")
+	data, err := os.ReadFile(hooksPath) //nolint:gosec // test path
+	if err != nil {
+		t.Fatalf("hooks.json not created at global path: %v", err)
+	}
+	var hooks hooksJSON
+	if err := json.Unmarshal(data, &hooks); err != nil {
+		t.Fatalf("invalid hooks.json: %v", err)
+	}
+	if len(hooks.Hooks) != 3 {
+		t.Errorf("expected 3 hooks, got %d", len(hooks.Hooks))
+	}
+	// Verify output confirms global path.
+	if !strings.Contains(buf.String(), "Installed pipelock hooks") {
+		t.Error("expected installation confirmation message")
+	}
+}
+
+func TestCursorHookCmd_StdinReadError(t *testing.T) {
+	// Use an io.Reader that returns an error.
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"cursor", "hook"})
+	cmd.SetIn(&errReader{err: fmt.Errorf("simulated read error")})
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var resp cursorResponse
+	if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &resp); err != nil {
+		t.Fatalf("output not valid JSON: %v\noutput: %s", err, buf.String())
+	}
+	if resp.Permission != "deny" {
+		t.Errorf("expected deny for stdin read error, got %s", resp.Permission)
+	}
+	if !strings.Contains(resp.UserMessage, "read stdin") {
+		t.Errorf("expected read stdin error message, got: %s", resp.UserMessage)
+	}
+}
+
+func TestCursorInstallCmd_ReadPermError(t *testing.T) {
+	// Create hooks.json as a directory to trigger a read error (not ENOENT).
+	dir := t.TempDir()
+	cursorDir := filepath.Join(dir, ".cursor")
+	if err := os.MkdirAll(cursorDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	// Create hooks.json as a directory (causes read error, not parse error).
+	hooksAsDir := filepath.Join(cursorDir, "hooks.json")
+	if err := os.MkdirAll(hooksAsDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	chdirTemp(t, dir)
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"cursor", "install", "--project"})
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for unreadable hooks.json")
+	}
+	if !strings.Contains(err.Error(), "reading existing") {
+		t.Errorf("unexpected error: %s", err.Error())
 	}
 }
 

@@ -450,6 +450,36 @@ func TestExtractAllStringsFromJSON_Bounds(t *testing.T) {
 	}
 }
 
+func TestExtractAllStringsFromJSON_ByteCap(t *testing.T) {
+	// Build a JSON array with few but very large strings to hit byte cap.
+	// Each string is 100KB, 11 of them = 1.1MB > maxExtractBytes (1MB).
+	bigStr := strings.Repeat("x", 100*1024)
+	var b []byte
+	b = append(b, '[')
+	for i := 0; i < 11; i++ {
+		if i > 0 {
+			b = append(b, ',')
+		}
+		b = append(b, '"')
+		b = append(b, bigStr...)
+		b = append(b, '"')
+	}
+	b = append(b, ']')
+
+	result := ExtractAllStringsFromJSON(b)
+	// Should cap before extracting all 11.
+	if len(result) >= 11 {
+		t.Errorf("expected fewer than 11 strings due to byte cap, got %d", len(result))
+	}
+	totalBytes := 0
+	for _, s := range result {
+		totalBytes += len(s)
+	}
+	if totalBytes > maxExtractBytes {
+		t.Errorf("total bytes %d exceeds cap %d", totalBytes, maxExtractBytes)
+	}
+}
+
 func TestDecide_WarnActionAllows(t *testing.T) {
 	// Custom rule with warn action (default rules have per-rule block overrides).
 	cfg := config.Defaults()

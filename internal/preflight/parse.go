@@ -51,13 +51,26 @@ type mcpServerDef struct {
 	URL     string                     `json:"url"`
 }
 
-// cursorHooksJSON represents .cursor/hooks.json.
+// cursorHooksJSON represents .cursor/hooks.json (v1 format: hooks keyed by event name).
 type cursorHooksJSON struct {
-	Hooks []cursorHookEntry `json:"hooks"`
+	Version int                          `json:"version"`
+	Hooks   map[string][]cursorHookEntry `json:"hooks"`
+}
+
+// cursorHooksLegacyJSON represents the pre-v0.3.4 hooks.json format
+// where hooks was a flat array with an "event" field per entry.
+type cursorHooksLegacyJSON struct {
+	Hooks []cursorHookLegacyEntry `json:"hooks"`
+}
+
+type cursorHookLegacyEntry struct {
+	Event   string   `json:"event"`
+	Command string   `json:"command"`
+	Args    []string `json:"args"`
+	Timeout int      `json:"timeout"`
 }
 
 type cursorHookEntry struct {
-	Event   string   `json:"event"`
 	Command string   `json:"command"`
 	Args    []string `json:"args"`
 	Timeout int      `json:"timeout"`
@@ -135,10 +148,29 @@ func parseMCPJSON(data []byte, filePath string) []projectscan.Finding {
 	return findings
 }
 
-// parseCursorHooks scans a .cursor/hooks.json file.
+// parseCursorHooks scans a .cursor/hooks.json file. Supports both the v1
+// format (hooks as a map keyed by event name) and the legacy format (flat
+// array with an "event" field per entry).
 func parseCursorHooks(data []byte, filePath string) []projectscan.Finding {
+	// Try v1 format first (map-based).
 	var hooks cursorHooksJSON
-	if err := json.Unmarshal(data, &hooks); err != nil {
+	if err := json.Unmarshal(data, &hooks); err == nil && hooks.Hooks != nil {
+		var findings []projectscan.Finding
+		for event, entries := range hooks.Hooks {
+			for _, h := range entries {
+				cmd := h.Command
+				if len(h.Args) > 0 {
+					cmd += " " + strings.Join(h.Args, " ")
+				}
+				findings = append(findings, checkHookCommand(cmd, filePath, fmt.Sprintf("cursor hook[%s]", event))...)
+			}
+		}
+		return findings
+	}
+
+	// Try legacy format (flat array).
+	var legacy cursorHooksLegacyJSON
+	if err := json.Unmarshal(data, &legacy); err != nil {
 		return []projectscan.Finding{{
 			Severity: SevCritical,
 			Category: CatConfig,
@@ -148,7 +180,7 @@ func parseCursorHooks(data []byte, filePath string) []projectscan.Finding {
 	}
 
 	var findings []projectscan.Finding
-	for _, h := range hooks.Hooks {
+	for _, h := range legacy.Hooks {
 		cmd := h.Command
 		if len(h.Args) > 0 {
 			cmd += " " + strings.Join(h.Args, " ")

@@ -48,16 +48,65 @@ type cursorHookPayload struct {
 	Content  string `json:"content"`
 }
 
-// hooksJSON represents Cursor's hooks.json file structure.
+// hooksJSON represents Cursor's hooks.json file structure (version 1).
+// Hooks is keyed by event name, each mapping to an array of hook entries.
 type hooksJSON struct {
-	Hooks []hookEntry `json:"hooks"`
+	Version int                    `json:"version"`
+	Hooks   map[string][]hookEntry `json:"hooks"`
 }
 
-// hookEntry represents a single hook in hooks.json.
+// hookEntry represents a single hook script in hooks.json.
 type hookEntry struct {
+	Command string `json:"command"`
+	Timeout int    `json:"timeout,omitempty"`
+}
+
+// legacyHooksJSON represents the pre-v0.3.4 hooks.json format where hooks
+// was a flat array with an "event" field per entry.
+type legacyHooksJSON struct {
+	Hooks []legacyHookEntry `json:"hooks"`
+}
+
+type legacyHookEntry struct {
 	Event   string `json:"event"`
 	Command string `json:"command"`
 	Timeout int    `json:"timeout"`
+}
+
+// parseHooksJSON parses hooks.json data, supporting both the current v1 format
+// (hooks as a map keyed by event name) and the legacy pre-v0.3.4 format
+// (hooks as a flat array with an "event" field per entry).
+func parseHooksJSON(data []byte) (*hooksJSON, error) {
+	var hooks hooksJSON
+	if err := json.Unmarshal(data, &hooks); err == nil && (hooks.Hooks != nil || hooks.Version > 0) {
+		if hooks.Version == 0 {
+			hooks.Version = 1
+		}
+		if hooks.Hooks == nil {
+			hooks.Hooks = make(map[string][]hookEntry)
+		}
+		return &hooks, nil
+	}
+
+	// Try legacy format (pre-v0.3.4: hooks as array with event field).
+	var legacy legacyHooksJSON
+	if err := json.Unmarshal(data, &legacy); err != nil {
+		return nil, fmt.Errorf("unrecognized hooks.json format: %w", err)
+	}
+
+	result := &hooksJSON{
+		Version: 1,
+		Hooks:   make(map[string][]hookEntry),
+	}
+	for _, le := range legacy.Hooks {
+		if le.Event != "" {
+			result.Hooks[le.Event] = append(result.Hooks[le.Event], hookEntry{
+				Command: le.Command,
+				Timeout: le.Timeout,
+			})
+		}
+	}
+	return result, nil
 }
 
 func cursorCmd() *cobra.Command {
@@ -337,16 +386,18 @@ func runCursorInstall(cmd *cobra.Command, global, project, dryRun bool) error {
 	newEntries := buildHookEntries(exe)
 
 	// Load existing hooks.json if present.
-	existing := &hooksJSON{}
+	existing := &hooksJSON{Version: 1, Hooks: make(map[string][]hookEntry)}
 	existingData, readErr := os.ReadFile(filepath.Clean(targetPath))
 	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
 		return fmt.Errorf("reading existing %s: %w", targetPath, readErr)
 	}
 	if readErr == nil {
-		// File exists: parse it.
-		if err := json.Unmarshal(existingData, existing); err != nil {
+		// File exists: parse it (supports both current and legacy formats).
+		parsed, err := parseHooksJSON(existingData)
+		if err != nil {
 			return fmt.Errorf("parsing existing %s: %w", targetPath, err)
 		}
+		existing = parsed
 	}
 
 	// Merge: add new entries that don't already exist.
@@ -408,8 +459,11 @@ func runCursorInstall(cmd *cobra.Command, global, project, dryRun bool) error {
 	return nil
 }
 
-// buildHookEntries creates the 3 hook entries for pipelock.
-func buildHookEntries(exe string) []hookEntry {
+// cursorHookTimeout is the default timeout (seconds) for pipelock hook entries.
+const cursorHookTimeout = 10
+
+// buildHookEntries creates the 3 hook entries for pipelock, keyed by event name.
+func buildHookEntries(exe string) map[string][]hookEntry {
 	events := []string{
 		"beforeShellExecution",
 		"beforeMCPExecution",
@@ -417,15 +471,14 @@ func buildHookEntries(exe string) []hookEntry {
 	}
 
 	quoted := shellQuote(exe)
-	entries := make([]hookEntry, 0, len(events))
+	result := make(map[string][]hookEntry, len(events))
 	for _, event := range events {
-		entries = append(entries, hookEntry{
-			Event:   event,
+		result[event] = []hookEntry{{
 			Command: quoted + " cursor hook",
-			Timeout: 10,
-		})
+			Timeout: cursorHookTimeout,
+		}}
 	}
-	return entries
+	return result
 }
 
 // shellQuote wraps a string in single quotes if it contains characters
@@ -456,34 +509,29 @@ func isShellSafe(c rune) bool {
 // that binary path changes and timeout updates take effect. Non-pipelock
 // hooks are preserved. Extra stale pipelock entries for the same event are
 // dropped (deduplication).
-func mergeHooks(existing *hooksJSON, newEntries []hookEntry) *hooksJSON {
-	newByEvent := make(map[string]hookEntry, len(newEntries))
-	for _, ne := range newEntries {
-		newByEvent[ne.Event] = ne
+func mergeHooks(existing *hooksJSON, newEntries map[string][]hookEntry) *hooksJSON {
+	// Preserve existing version if higher than 1 (future-proof).
+	version := existing.Version
+	if version < 1 {
+		version = 1
+	}
+	result := &hooksJSON{
+		Version: version,
+		Hooks:   make(map[string][]hookEntry),
 	}
 
-	result := &hooksJSON{}
-	replaced := make(map[string]bool)
-
-	for _, h := range existing.Hooks {
-		if !isPipelockHook(h) {
-			result.Hooks = append(result.Hooks, h)
-			continue
+	// Preserve existing non-pipelock hooks per event.
+	for event, entries := range existing.Hooks {
+		for _, h := range entries {
+			if !isPipelockHook(h) {
+				result.Hooks[event] = append(result.Hooks[event], h)
+			}
 		}
-		// Pipelock hook: replace with new entry (once per event).
-		if replacement, ok := newByEvent[h.Event]; ok && !replaced[h.Event] {
-			result.Hooks = append(result.Hooks, replacement)
-			delete(newByEvent, h.Event)
-			replaced[h.Event] = true
-		}
-		// Drop stale pipelock entries (including duplicates).
 	}
 
-	// Append pipelock entries for events not already in the file.
-	for _, ne := range newEntries {
-		if _, ok := newByEvent[ne.Event]; ok {
-			result.Hooks = append(result.Hooks, ne)
-		}
+	// Add new pipelock entries (replaces any old pipelock entries).
+	for event, entries := range newEntries {
+		result.Hooks[event] = append(result.Hooks[event], entries...)
 	}
 
 	return result

@@ -354,8 +354,22 @@ func TestCursorInstallCmd_Project(t *testing.T) {
 	if err := json.Unmarshal(data, &hooks); err != nil {
 		t.Fatalf("invalid hooks.json: %v", err)
 	}
+	if hooks.Version != 1 {
+		t.Errorf("expected version 1, got %d", hooks.Version)
+	}
+	// 3 event types: beforeShellExecution, beforeMCPExecution, beforeReadFile.
 	if len(hooks.Hooks) != 3 {
-		t.Errorf("expected 3 hooks, got %d", len(hooks.Hooks))
+		t.Errorf("expected 3 event types, got %d", len(hooks.Hooks))
+	}
+	for _, event := range []string{"beforeShellExecution", "beforeMCPExecution", "beforeReadFile"} {
+		entries, ok := hooks.Hooks[event]
+		if !ok {
+			t.Errorf("missing event %s", event)
+			continue
+		}
+		if len(entries) != 1 {
+			t.Errorf("expected 1 entry for %s, got %d", event, len(entries))
+		}
 	}
 }
 
@@ -366,8 +380,8 @@ func TestCursorInstallCmd_Merge(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Pre-create hooks.json with an existing non-pipelock hook.
-	existing := `{"hooks":[{"event":"beforeShellExecution","command":"other-tool check","timeout":5}]}`
+	// Pre-create hooks.json with a non-pipelock hook (v1 format).
+	existing := `{"version":1,"hooks":{"beforeShellExecution":[{"command":"other-tool check","timeout":5}]}}`
 	hooksPath := filepath.Join(cursorDir, "hooks.json")
 	if err := os.WriteFile(hooksPath, []byte(existing), 0o600); err != nil {
 		t.Fatal(err)
@@ -394,14 +408,20 @@ func TestCursorInstallCmd_Merge(t *testing.T) {
 		t.Fatalf("invalid hooks.json: %v", err)
 	}
 
-	// Should have the original hook + 3 pipelock hooks = 4 total.
-	if len(hooks.Hooks) != 4 {
-		t.Errorf("expected 4 hooks after merge, got %d", len(hooks.Hooks))
+	// 3 event types.
+	if len(hooks.Hooks) != 3 {
+		t.Errorf("expected 3 event types after merge, got %d", len(hooks.Hooks))
+	}
+
+	// beforeShellExecution should have 2 entries: other-tool + pipelock.
+	shellEntries := hooks.Hooks["beforeShellExecution"]
+	if len(shellEntries) != 2 {
+		t.Fatalf("expected 2 beforeShellExecution entries, got %d", len(shellEntries))
 	}
 
 	// Original hook should still be present.
 	found := false
-	for _, h := range hooks.Hooks {
+	for _, h := range shellEntries {
 		if h.Command == "other-tool check" {
 			found = true
 			break
@@ -439,9 +459,14 @@ func TestCursorInstallCmd_Idempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Should still be exactly 3 hooks, no duplicates.
+	// Should still be exactly 3 event types, 1 entry each, no duplicates.
 	if len(hooks.Hooks) != 3 {
-		t.Errorf("expected 3 hooks after idempotent install, got %d", len(hooks.Hooks))
+		t.Errorf("expected 3 event types after idempotent install, got %d", len(hooks.Hooks))
+	}
+	for event, entries := range hooks.Hooks {
+		if len(entries) != 1 {
+			t.Errorf("expected 1 entry for %s after idempotent install, got %d", event, len(entries))
+		}
 	}
 }
 
@@ -452,8 +477,8 @@ func TestCursorInstallCmd_Backup(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Pre-create hooks.json.
-	original := `{"hooks":[]}`
+	// Pre-create hooks.json (empty v1 format).
+	original := `{"version":1,"hooks":{}}`
 	hooksPath := filepath.Join(cursorDir, "hooks.json")
 	if err := os.WriteFile(hooksPath, []byte(original), 0o600); err != nil {
 		t.Fatal(err)
@@ -505,7 +530,7 @@ func TestCursorInstallCmd_AtomicWrite(t *testing.T) {
 		}
 	}
 
-	// Verify hooks.json is valid.
+	// Verify hooks.json is valid v1 format.
 	data, err := os.ReadFile(filepath.Clean(filepath.Join(cursorDir, "hooks.json")))
 	if err != nil {
 		t.Fatal(err)
@@ -513,6 +538,9 @@ func TestCursorInstallCmd_AtomicWrite(t *testing.T) {
 	var hooks hooksJSON
 	if err := json.Unmarshal(data, &hooks); err != nil {
 		t.Fatalf("hooks.json is invalid after atomic write: %v", err)
+	}
+	if hooks.Version != 1 {
+		t.Errorf("expected version 1, got %d", hooks.Version)
 	}
 }
 
@@ -523,7 +551,7 @@ func TestCursorInstallCmd_UpgradePath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Pre-create hooks.json with a stale pipelock entry (old binary path).
+	// Pre-create hooks.json in legacy format (pre-v0.3.4: flat array).
 	stale := `{"hooks":[` +
 		`{"event":"beforeShellExecution","command":"/old/path/pipelock cursor hook","timeout":5},` +
 		`{"event":"beforeMCPExecution","command":"/old/path/pipelock cursor hook","timeout":5},` +
@@ -554,22 +582,29 @@ func TestCursorInstallCmd_UpgradePath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Should still have exactly 3 entries (replaced, not duplicated).
+	// Should be upgraded to v1 format with 3 event types.
+	if hooks.Version != 1 {
+		t.Errorf("expected version 1, got %d", hooks.Version)
+	}
 	if len(hooks.Hooks) != 3 {
-		t.Errorf("expected 3 hooks after upgrade, got %d", len(hooks.Hooks))
+		t.Errorf("expected 3 event types after upgrade, got %d", len(hooks.Hooks))
 	}
 
-	// None should reference the old path.
-	for _, h := range hooks.Hooks {
+	// None should reference the old path. All should have updated timeout.
+	for event, entries := range hooks.Hooks {
+		if len(entries) != 1 {
+			t.Errorf("expected 1 entry for %s, got %d", event, len(entries))
+			continue
+		}
+		h := entries[0]
 		if strings.Contains(h.Command, "/old/path") {
-			t.Errorf("stale entry not updated: %s", h.Command)
+			t.Errorf("stale entry not updated for %s: %s", event, h.Command)
 		}
 		if !strings.Contains(h.Command, "cursor hook") {
-			t.Errorf("hook command missing 'cursor hook': %s", h.Command)
+			t.Errorf("hook command missing 'cursor hook' for %s: %s", event, h.Command)
 		}
-		// Timeout should be updated to 10 (our default).
-		if h.Timeout != 10 {
-			t.Errorf("timeout not updated: got %d, want 10", h.Timeout)
+		if h.Timeout != cursorHookTimeout {
+			t.Errorf("timeout not updated for %s: got %d, want %d", event, h.Timeout, cursorHookTimeout)
 		}
 	}
 }
@@ -654,8 +689,11 @@ func TestCursorInstallCmd_GlobalActual(t *testing.T) {
 	if err := json.Unmarshal(data, &hooks); err != nil {
 		t.Fatalf("invalid hooks.json: %v", err)
 	}
+	if hooks.Version != 1 {
+		t.Errorf("expected version 1, got %d", hooks.Version)
+	}
 	if len(hooks.Hooks) != 3 {
-		t.Errorf("expected 3 hooks, got %d", len(hooks.Hooks))
+		t.Errorf("expected 3 event types, got %d", len(hooks.Hooks))
 	}
 	// Verify output confirms global path.
 	if !strings.Contains(buf.String(), "Installed pipelock hooks") {
@@ -965,6 +1003,108 @@ func TestCursorInstallCmd_MalformedExisting(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "parsing existing") {
 		t.Errorf("unexpected error: %s", err.Error())
+	}
+}
+
+func TestParseHooksJSON_V1Format(t *testing.T) {
+	data := `{"version":1,"hooks":{"beforeShellExecution":[{"command":"some-tool","timeout":5}]}}`
+	hooks, err := parseHooksJSON([]byte(data))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if hooks.Version != 1 {
+		t.Errorf("expected version 1, got %d", hooks.Version)
+	}
+	if len(hooks.Hooks["beforeShellExecution"]) != 1 {
+		t.Errorf("expected 1 entry, got %d", len(hooks.Hooks["beforeShellExecution"]))
+	}
+	if hooks.Hooks["beforeShellExecution"][0].Command != "some-tool" {
+		t.Errorf("expected command 'some-tool', got %q", hooks.Hooks["beforeShellExecution"][0].Command)
+	}
+}
+
+func TestParseHooksJSON_LegacyFormat(t *testing.T) {
+	data := `{"hooks":[{"event":"beforeShellExecution","command":"old-tool","timeout":5}]}`
+	hooks, err := parseHooksJSON([]byte(data))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if hooks.Version != 1 {
+		t.Errorf("expected version 1, got %d", hooks.Version)
+	}
+	entries := hooks.Hooks["beforeShellExecution"]
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+	if entries[0].Command != "old-tool" {
+		t.Errorf("expected command 'old-tool', got %q", entries[0].Command)
+	}
+	if entries[0].Timeout != 5 {
+		t.Errorf("expected timeout 5, got %d", entries[0].Timeout)
+	}
+}
+
+func TestParseHooksJSON_Malformed(t *testing.T) {
+	_, err := parseHooksJSON([]byte("{bad json"))
+	if err == nil {
+		t.Fatal("expected error for malformed JSON")
+	}
+}
+
+func TestCursorInstallCmd_MergeLegacy(t *testing.T) {
+	dir := t.TempDir()
+	cursorDir := filepath.Join(dir, ".cursor")
+	if err := os.MkdirAll(cursorDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	// Pre-create hooks.json in legacy format with a non-pipelock hook.
+	existing := `{"hooks":[{"event":"beforeShellExecution","command":"other-tool check","timeout":5}]}`
+	hooksPath := filepath.Join(cursorDir, "hooks.json")
+	if err := os.WriteFile(hooksPath, []byte(existing), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	chdirTemp(t, dir)
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"cursor", "install", "--project", "--global=false"})
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Clean(hooksPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var hooks hooksJSON
+	if err := json.Unmarshal(data, &hooks); err != nil {
+		t.Fatalf("invalid hooks.json: %v", err)
+	}
+
+	// Should be upgraded to v1 format.
+	if hooks.Version != 1 {
+		t.Errorf("expected version 1, got %d", hooks.Version)
+	}
+
+	// beforeShellExecution should have 2 entries: other-tool + pipelock.
+	shellEntries := hooks.Hooks["beforeShellExecution"]
+	if len(shellEntries) != 2 {
+		t.Fatalf("expected 2 beforeShellExecution entries, got %d", len(shellEntries))
+	}
+
+	found := false
+	for _, h := range shellEntries {
+		if h.Command == "other-tool check" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("legacy hook was lost during upgrade+merge")
 	}
 }
 

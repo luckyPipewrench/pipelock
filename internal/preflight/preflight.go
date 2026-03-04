@@ -313,7 +313,7 @@ func safeRead(canonicalRoot, relPath string) ([]byte, []projectscan.Finding) {
 		}}
 	}
 
-	data, err := os.ReadFile(resolved) //nolint:gosec // G304: path validated and confined above
+	data, err := os.ReadFile(filepath.Clean(resolved))
 	if err != nil {
 		// Fail-closed: targeted file exists but can't be read = critical.
 		// Prevents evasion via restrictive permissions on malicious config.

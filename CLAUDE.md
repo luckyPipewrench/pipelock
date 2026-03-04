@@ -162,7 +162,7 @@ net.ListenConfig{}.Listen(ctx, ...)   // Free port binding (noctx compliant)
 | goconst | repeated string | Extract a `const`. Never use `//nolint:goconst`. See below. |
 | gosec | G301 dir perms | `0o750` not `0o755` for directories |
 | gosec | G302/G306 file perms | `0o600` not `0o644` for files |
-| gosec | G304 file inclusion | `//nolint:gosec // <justification>` when path is from user flag |
+| gosec | G304 file inclusion | `os.ReadFile(filepath.Clean(path))`. Never `//nolint:gosec`. |
 | noctx | bare listener | `net.ListenConfig{}.Listen(ctx, ...)` |
 | unparam | unused param | `_` prefix |
 | gofumpt | formatting | Stricter than gofmt. Run `gofumpt -w .` before committing |

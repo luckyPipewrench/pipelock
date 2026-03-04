@@ -252,7 +252,7 @@ func sendFragmented(wsURL, part1, part2 string) {
 		fmt.Println("WRITE_FAILED")
 		return
 	}
-	if _, writeErr := conn.Write(masked1); writeErr != nil {
+	if writeErr := writeAll(conn, masked1); writeErr != nil {
 		fmt.Println("WRITE_FAILED")
 		return
 	}
@@ -275,7 +275,7 @@ func sendFragmented(wsURL, part1, part2 string) {
 		fmt.Println("WRITE_FAILED")
 		return
 	}
-	if _, writeErr := conn.Write(masked2); writeErr != nil {
+	if writeErr := writeAll(conn, masked2); writeErr != nil {
 		fmt.Println("WRITE_FAILED")
 		return
 	}
@@ -321,7 +321,7 @@ func sendCompressed(wsURL, payload string) {
 		fmt.Println("WRITE_FAILED")
 		return
 	}
-	if _, writeErr := conn.Write(masked); writeErr != nil {
+	if writeErr := writeAll(conn, masked); writeErr != nil {
 		fmt.Println("WRITE_FAILED")
 		return
 	}
@@ -353,4 +353,16 @@ func serveHTML(port, html string) {
 	if serveErr := srv.Serve(ln); serveErr != nil {
 		fmt.Fprintf(os.Stderr, "serve: %v\n", serveErr)
 	}
+}
+
+// writeAll writes all of data to conn, handling partial writes.
+func writeAll(conn net.Conn, data []byte) error {
+	for len(data) > 0 {
+		n, err := conn.Write(data)
+		if err != nil {
+			return err
+		}
+		data = data[n:]
+	}
+	return nil
 }

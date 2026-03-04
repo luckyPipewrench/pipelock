@@ -106,8 +106,10 @@ func decideShell(cfg *config.Config, sc *scanner.Scanner, policyCfg *policy.Conf
 	evidence = append(evidence, evidenceFromDLP(dlpResult)...)
 
 	// Injection: scan command for prompt injection relay.
-	injResult := sc.ScanResponse(p.Command)
-	evidence = append(evidence, evidenceFromInjection(injResult, cfg.ResponseScanning.Action)...)
+	if cfg.ResponseScanning.Enabled {
+		injResult := sc.ScanResponse(p.Command)
+		evidence = append(evidence, evidenceFromInjection(injResult, cfg.ResponseScanning.Action)...)
+	}
 
 	// Policy: map shell execution to tool name "bash" to reuse existing rules.
 	if policyCfg != nil {
@@ -183,8 +185,10 @@ func decideFile(cfg *config.Config, sc *scanner.Scanner, policyCfg *policy.Confi
 		dlpResult := sc.ScanTextForDLP(p.Content)
 		evidence = append(evidence, evidenceFromDLP(dlpResult)...)
 
-		injResult := sc.ScanResponse(p.Content)
-		evidence = append(evidence, evidenceFromInjection(injResult, cfg.ResponseScanning.Action)...)
+		if cfg.ResponseScanning.Enabled {
+			injResult := sc.ScanResponse(p.Content)
+			evidence = append(evidence, evidenceFromInjection(injResult, cfg.ResponseScanning.Action)...)
+		}
 	}
 
 	return buildDecision(cfg, evidence)

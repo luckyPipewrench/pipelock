@@ -560,22 +560,6 @@ func TestCursorInstallCmd_UpgradePath(t *testing.T) {
 }
 
 func TestCursorInstallCmd_InvalidFlags(t *testing.T) {
-	t.Run("neither flag", func(t *testing.T) {
-		cmd := rootCmd()
-		cmd.SetArgs([]string{"cursor", "install", "--global=false", "--project=false"})
-		buf := &strings.Builder{}
-		cmd.SetOut(buf)
-		cmd.SetErr(buf)
-
-		err := cmd.Execute()
-		if err == nil {
-			t.Fatal("expected error when both --global and --project are false")
-		}
-		if !strings.Contains(err.Error(), "--global or --project") {
-			t.Errorf("unexpected error message: %s", err.Error())
-		}
-	})
-
 	t.Run("both flags", func(t *testing.T) {
 		cmd := rootCmd()
 		cmd.SetArgs([]string{"cursor", "install", "--global", "--project"})
@@ -591,6 +575,45 @@ func TestCursorInstallCmd_InvalidFlags(t *testing.T) {
 			t.Errorf("unexpected error message: %s", err.Error())
 		}
 	})
+}
+
+func TestCursorInstallCmd_DefaultsToGlobal(t *testing.T) {
+	// When neither --global nor --project is given, defaults to global.
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"cursor", "install", "--dry-run"})
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	output := buf.String()
+	if !strings.Contains(output, ".cursor") {
+		t.Error("expected .cursor path in dry-run output")
+	}
+	if !strings.Contains(output, "Would write to") {
+		t.Error("expected dry-run output")
+	}
+}
+
+func TestCursorInstallCmd_ProjectAlone(t *testing.T) {
+	// --project alone (without --global) should work.
+	dir := t.TempDir()
+	chdirTemp(t, dir)
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"cursor", "install", "--project"})
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error with --project alone: %v", err)
+	}
+
+	hooksPath := filepath.Join(dir, ".cursor", "hooks.json")
+	if _, err := os.Stat(hooksPath); err != nil {
+		t.Fatalf("hooks.json not created: %v", err)
+	}
 }
 
 func TestShellQuote(t *testing.T) {

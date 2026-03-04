@@ -8,8 +8,14 @@ import (
 	"sort"
 )
 
-// maxExtractDepth prevents stack overflow on deeply nested JSON.
-const maxExtractDepth = 64
+const (
+	// maxExtractDepth prevents stack overflow on deeply nested JSON.
+	maxExtractDepth = 64
+	// maxExtractStrings caps the number of extracted strings to bound memory.
+	maxExtractStrings = 2048
+	// maxExtractBytes caps the total extracted text to 1 MiB.
+	maxExtractBytes = 1 << 20
+)
 
 // ExtractAllStringsFromJSON recursively extracts all string keys and values
 // from arbitrary JSON. Unlike jsonrpc.ExtractStringsFromJSON (values-only),
@@ -20,14 +26,22 @@ func ExtractAllStringsFromJSON(raw json.RawMessage) []string {
 		return nil
 	}
 	var result []string
+	var totalBytes int
+	capped := false
+
 	var extract func(v interface{}, depth int)
 	extract = func(v interface{}, depth int) {
-		if depth > maxExtractDepth {
+		if capped || depth > maxExtractDepth {
 			return
 		}
 		switch val := v.(type) {
 		case string:
+			if len(result) >= maxExtractStrings || totalBytes+len(val) > maxExtractBytes {
+				capped = true
+				return
+			}
 			result = append(result, val)
+			totalBytes += len(val)
 		case []interface{}:
 			for _, item := range val {
 				extract(item, depth+1)
@@ -39,7 +53,12 @@ func ExtractAllStringsFromJSON(raw json.RawMessage) []string {
 			}
 			sort.Strings(keys)
 			for _, k := range keys {
+				if len(result) >= maxExtractStrings || totalBytes+len(k) > maxExtractBytes {
+					capped = true
+					return
+				}
 				result = append(result, k)
+				totalBytes += len(k)
 				extract(val[k], depth+1)
 			}
 		}

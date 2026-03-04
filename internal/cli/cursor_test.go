@@ -1051,6 +1051,51 @@ func TestParseHooksJSON_Malformed(t *testing.T) {
 	}
 }
 
+func TestParseHooksJSON_VersionOnlyNoHooks(t *testing.T) {
+	// v1 JSON with version field but no hooks map: should succeed with empty map.
+	data := `{"version":2}`
+	hooks, err := parseHooksJSON([]byte(data))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if hooks.Version != 2 {
+		t.Errorf("expected version 2, got %d", hooks.Version)
+	}
+	if hooks.Hooks == nil {
+		t.Error("expected non-nil hooks map")
+	}
+}
+
+func TestParseHooksJSON_HooksMapNoVersion(t *testing.T) {
+	// Hooks map present but version omitted: should default to 1.
+	data := `{"hooks":{"beforeReadFile":[{"command":"test-cmd"}]}}`
+	hooks, err := parseHooksJSON([]byte(data))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if hooks.Version != 1 {
+		t.Errorf("expected version 1 (default), got %d", hooks.Version)
+	}
+	if len(hooks.Hooks["beforeReadFile"]) != 1 {
+		t.Errorf("expected 1 entry, got %d", len(hooks.Hooks["beforeReadFile"]))
+	}
+}
+
+func TestParseHooksJSON_LegacyEmptyEvent(t *testing.T) {
+	// Legacy entry with empty event field should be skipped.
+	data := `{"hooks":[{"event":"","command":"skip-me"},{"event":"beforeShellExecution","command":"keep-me"}]}`
+	hooks, err := parseHooksJSON([]byte(data))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(hooks.Hooks) != 1 {
+		t.Errorf("expected 1 event group, got %d", len(hooks.Hooks))
+	}
+	if len(hooks.Hooks["beforeShellExecution"]) != 1 {
+		t.Errorf("expected 1 entry for beforeShellExecution, got %d", len(hooks.Hooks["beforeShellExecution"]))
+	}
+}
+
 func TestCursorInstallCmd_MergeLegacy(t *testing.T) {
 	dir := t.TempDir()
 	cursorDir := filepath.Join(dir, ".cursor")

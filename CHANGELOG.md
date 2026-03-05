@@ -5,6 +5,11 @@ All notable changes to Pipelock will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Kill switch API token can now be set via `PIPELOCK_KILLSWITCH_API_TOKEN` environment variable, overriding the `kill_switch.api_token` config field. Enables Kubernetes deployments to source the token from a Secret instead of a ConfigMap.
+
 ## [0.3.4] - 2026-03-04
 
 ### Fixed

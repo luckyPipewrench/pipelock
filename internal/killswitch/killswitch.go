@@ -15,6 +15,12 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
+// EnvAPIToken is the environment variable that overrides kill_switch.api_token
+// from the config file. When set to a non-empty value, it takes priority over
+// the config file value. This allows Kubernetes deployments to source the token
+// from a Secret (via env[].valueFrom.secretKeyRef) instead of a ConfigMap.
+const EnvAPIToken = "PIPELOCK_" + "KILLSWITCH_API_TOKEN" //nolint:gosec // env var name, not a credential
+
 // Decision describes the outcome of a kill switch check.
 type Decision struct {
 	Active         bool
@@ -74,6 +80,9 @@ func buildRuntime(cfg *config.Config) *runtime {
 		rt.apiExempt = true
 	}
 	rt.apiToken = cfg.KillSwitch.APIToken
+	if envToken := os.Getenv(EnvAPIToken); envToken != "" {
+		rt.apiToken = envToken
+	}
 
 	for _, cidr := range cfg.KillSwitch.AllowlistIPs {
 		_, ipNet, err := net.ParseCIDR(cidr)

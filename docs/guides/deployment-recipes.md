@@ -147,6 +147,12 @@ spec:
               name: proxy
             - containerPort: 9090
               name: killswitch
+          env:
+            - name: PIPELOCK_KILLSWITCH_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: pipelock-secrets
+                  key: killswitch-api-token
           volumeMounts:
             - name: pipelock-config
               mountPath: /etc/pipelock/pipelock.yaml

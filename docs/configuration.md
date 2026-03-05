@@ -427,11 +427,22 @@ kill_switch:
 | `health_exempt` | `true` | No | /health bypasses kill switch |
 | `metrics_exempt` | `true` | No | /metrics bypasses kill switch |
 | `api_exempt` | `true` | No | /api/v1/* bypasses kill switch |
-| `api_token` | `""` | No | Bearer token for API endpoints |
+| `api_token` | `""` | No | Bearer token for API endpoints. Can be overridden by `PIPELOCK_KILLSWITCH_API_TOKEN` env var. |
 | `api_listen` | `""` | **Yes** | Separate listen address for API |
 | `allowlist_ips` | `[]` | No | IPs always allowed through |
 
 **Port isolation:** When `api_listen` is set, the kill switch API runs on a dedicated port. The main proxy port has no API routes, preventing agents from deactivating their own kill switch.
+
+**Environment variable override:** Set `PIPELOCK_KILLSWITCH_API_TOKEN` to override `api_token` from the config file. This is useful for Kubernetes deployments where the config file lives in a ConfigMap (plaintext in etcd) but the token should come from a Secret:
+
+```yaml
+env:
+  - name: PIPELOCK_KILLSWITCH_API_TOKEN
+    valueFrom:
+      secretKeyRef:
+        name: pipelock-secrets
+        key: killswitch-api-token
+```
 
 ## Event Emission
 

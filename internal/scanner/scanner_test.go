@@ -252,6 +252,59 @@ func TestScan_BlocksSSRF_Loopback(t *testing.T) {
 	}
 }
 
+func TestScan_BlocksSSRF_IPv6ZoneID(t *testing.T) {
+	cfg := testConfig()
+	cfg.Internal = []string{"::1/128", "fe80::/10", "fc00::/7"}
+	s := New(cfg)
+
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{"loopback with zone ID", "http://[::1%25eth0]/"},
+		{"link-local with zone ID", "http://[fe80::1%25eth0]/"},
+		{"ULA with zone ID", "http://[fc00::1%25eth0]/"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := s.Scan(tt.url)
+			if result.Allowed {
+				t.Errorf("expected %s to be blocked (SSRF zone ID bypass)", tt.url)
+			}
+			if result.Scanner != ScannerSSRF {
+				t.Errorf("expected scanner=ssrf for %s, got %s", tt.url, result.Scanner)
+			}
+		})
+	}
+}
+
+func TestScan_BlocksSSRF_Multicast(t *testing.T) {
+	cfg := testConfig()
+	cfg.Internal = []string{"224.0.0.0/4", "ff00::/8"}
+	s := New(cfg)
+
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{"IPv4 multicast", "http://224.0.0.1/"},
+		{"IPv6 multicast", "http://[ff02::1]/"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := s.Scan(tt.url)
+			if result.Allowed {
+				t.Errorf("expected %s to be blocked (multicast SSRF)", tt.url)
+			}
+			if result.Scanner != ScannerSSRF {
+				t.Errorf("expected scanner=ssrf for %s, got %s", tt.url, result.Scanner)
+			}
+		})
+	}
+}
+
 func TestScan_EntropySkipsShortSegments(t *testing.T) {
 	s := New(testConfig())
 

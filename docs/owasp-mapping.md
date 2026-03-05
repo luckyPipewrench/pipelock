@@ -127,6 +127,7 @@ Use `pipelock generate config --preset balanced` for the complete default patter
 - **Multi-agent identification:** each agent identifies itself via `X-Pipelock-Agent` header. All audit log entries include the agent name, enabling per-agent monitoring.
 - **File integrity monitoring:** `pipelock integrity init/check/update` detects unauthorized workspace modifications. An agent that tampers with shared handoff files is detected.
 - **Ed25519 signing:** agents can sign and verify files/manifests. Tampered content is cryptographically detectable.
+- **MCP confused deputy protection:** response ID validation ensures a malicious MCP server cannot inject unsolicited JSON-RPC responses to hijack agent execution flow. Outbound request IDs are tracked and inbound responses are validated against them (one-shot consumption prevents replay).
 
 **Gap:** No runtime inter-agent communication policy yet. See roadmap issue [#44](https://github.com/luckyPipewrench/pipelock/issues/44).
 

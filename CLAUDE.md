@@ -209,7 +209,7 @@ Six required checks on `main`:
 ### Adding a DLP pattern
 1. Add regex to `internal/config/config.go` (`Defaults()` DLP Patterns slice)
 2. Add test cases in `internal/scanner/text_dlp_test.go` and `scanner_test.go`
-3. Update all 6 `configs/` preset YAML files with the new pattern
+3. Update all 7 `configs/` preset YAML files with the new pattern
 4. Verify no false positives: `make test`
 
 ### Adding a scanner layer

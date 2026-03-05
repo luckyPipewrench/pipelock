@@ -56,6 +56,16 @@ traffic metrics for forward-proxy deployments.
 | `pipelock_active_tunnels` | gauge | (none) | Currently open CONNECT tunnels. |
 | `pipelock_sni_total` | counter | `category` | SNI verification results. `category` is `match`, `mismatch`, `not_tls`, `no_extension`, `malformed_tls`, or `timeout`. |
 
+## Request Scanning Metrics
+
+Request body and header scanning detects secrets in POST/PUT/PATCH bodies,
+form data, multipart uploads, and HTTP headers on forward-proxy traffic.
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `pipelock_body_dlp_hits_total` | counter | `action` | Request body DLP detections. `action` is `warn` or `block`. |
+| `pipelock_header_dlp_hits_total` | counter | `action` | Request header DLP detections. `action` is `warn` or `block`. |
+
 ## WebSocket Proxy Metrics
 
 WebSocket connections are upgraded from CONNECT tunnels when the target
@@ -152,7 +162,7 @@ An importable Grafana dashboard is included at
 [`configs/grafana-dashboard.json`](../configs/grafana-dashboard.json).
 Import it via **Dashboards → Import → Upload JSON file** in Grafana.
 
-The dashboard covers all 22 metric families across six sections: fleet
+The dashboard covers all 25 metric families across six sections: fleet
 overview, agent status table, traffic, connection details, security events,
 and WebSocket proxy.
 

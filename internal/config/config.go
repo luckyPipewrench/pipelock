@@ -577,6 +577,8 @@ func (c *Config) ApplyDefaults() {
 			"::1/128",        // IPv6 loopback
 			"fc00::/7",       // IPv6 unique local
 			"fe80::/10",      // IPv6 link-local
+			"224.0.0.0/4",    // IPv4 multicast
+			"ff00::/8",       // IPv6 multicast
 		}
 	}
 

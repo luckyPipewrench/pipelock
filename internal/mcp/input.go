@@ -395,6 +395,8 @@ type SessionBindingConfig struct {
 // independently of content scanning — the strictest action wins.
 // When bindingCfg is non-nil, tools/call requests are validated against the
 // session tool baseline.
+// When tracker is non-nil, each forwarded request's ID is recorded so the
+// response-side (ForwardScanned) can validate that response IDs were solicited.
 // Blocked request IDs are sent via blockedCh so the main goroutine (which owns
 // clientOut writes) can send error responses without concurrent write races.
 func ForwardScannedInput(
@@ -409,6 +411,7 @@ func ForwardScannedInput(
 	bindingCfg *SessionBindingConfig,
 	ks *killswitch.Controller,
 	chainMatcher *chains.Matcher,
+	tracker *RequestTracker,
 ) {
 	defer close(blockedCh)
 
@@ -540,6 +543,10 @@ func ForwardScannedInput(
 
 		// All clean — forward.
 		if verdict.Clean && !policyVerdict.Matched && bindingAction == "" && chainAction == "" {
+			// Track request ID before forwarding so response-side can validate.
+			// Must happen before write to prevent race: response could arrive
+			// before Track completes in concurrent stdio paths.
+			tracker.Track(verdict.ID)
 			if err := writer.WriteMessage(line); err != nil {
 				_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
 				return
@@ -629,6 +636,8 @@ func ForwardScannedInput(
 		default: // warn
 			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: warning — %s request contains flagged content (%s)\n",
 				lineNum, method, reasonStr)
+			// Track ID before forwarding (warn mode still sends the request).
+			tracker.Track(verdict.ID)
 			// Forward anyway (warn mode).
 			if err := writer.WriteMessage(line); err != nil {
 				_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)

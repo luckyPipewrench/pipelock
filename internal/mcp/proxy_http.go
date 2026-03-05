@@ -60,6 +60,9 @@ func RunHTTPProxy(
 		}
 	}
 
+	// Request tracker for confused deputy protection.
+	tracker := NewRequestTracker()
+
 	clientReader := transport.NewStdioReader(clientIn)
 
 	var wg sync.WaitGroup
@@ -109,6 +112,9 @@ func RunHTTPProxy(
 			continue
 		}
 
+		// Track request ID before sending to upstream for confused deputy protection.
+		tracker.Track(extractRPCID(msg))
+
 		// POST to upstream.
 		respReader, err := httpClient.SendMessage(ctx, msg)
 		if err != nil {
@@ -125,7 +131,7 @@ func RunHTTPProxy(
 		}
 
 		// Scan and forward response.
-		_, scanErr := ForwardScanned(respReader, safeClientOut, safeLogW, sc, approver, fwdToolCfg)
+		_, scanErr := ForwardScanned(respReader, safeClientOut, safeLogW, sc, approver, fwdToolCfg, tracker)
 		if scanErr != nil {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
 			lastScanErr = scanErr
@@ -415,7 +421,9 @@ func startGETStream(
 			// Reset backoff on successful connection.
 			backoff = time.Second
 
-			_, scanErr := ForwardScanned(reader, safeClientOut, safeLogW, sc, approver, toolCfg)
+			// nil tracker: GET stream carries server-initiated messages,
+			// not responses to client requests.
+			_, scanErr := ForwardScanned(reader, safeClientOut, safeLogW, sc, approver, toolCfg, nil)
 			if scanErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: GET stream scan error: %v\n", scanErr)
 			}
@@ -650,10 +658,12 @@ func RunHTTPListenerProxy(
 		}
 
 		// Read upstream response body and scan it.
+		// nil tracker: HTTP reverse proxy pairs each request/response via HTTP
+		// semantics, so confused deputy tracking is handled at the transport level.
 		reader := &transport.SingleMessageReader{Body: upResp.Body}
 		var buf bytes.Buffer
 		bufWriter := &syncWriter{w: &buf}
-		_, scanErr := ForwardScanned(reader, bufWriter, safeLogW, sc, approver, fwdToolCfg)
+		_, scanErr := ForwardScanned(reader, bufWriter, safeLogW, sc, approver, fwdToolCfg, nil)
 		if scanErr != nil {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
 		}

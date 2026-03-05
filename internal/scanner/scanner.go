@@ -396,6 +396,11 @@ func (s *Scanner) checkSSRF(hostname string) Result {
 	}
 
 	for _, ipStr := range ips {
+		// Strip IPv6 zone ID (e.g. "::1%eth0" → "::1"). Zone IDs cause
+		// net.ParseIP to return nil, silently skipping the CIDR check.
+		if idx := strings.Index(ipStr, "%"); idx != -1 {
+			ipStr = ipStr[:idx]
+		}
 		ip := net.ParseIP(ipStr)
 		if ip == nil {
 			continue

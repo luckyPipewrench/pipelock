@@ -277,7 +277,7 @@ See [docs/guides/siem-integration.md](docs/guides/siem-integration.md) for log s
 
 ## Configuration
 
-Generate a starter config, or use one of the 6 presets:
+Generate a starter config, or use one of the 7 presets:
 
 ```bash
 pipelock generate config --preset balanced > pipelock.yaml
@@ -292,6 +292,7 @@ pipelock audit ./my-project -o pipelock.yaml  # tailored to your project
 | `configs/claude-code.yaml` | balanced | block | Claude Code (unattended) |
 | `configs/cursor.yaml` | balanced | block | Cursor IDE |
 | `configs/generic-agent.yaml` | balanced | warn | New agents (tuning) |
+| `configs/hostile-model.yaml` | strict | block | Uncensored/abliterated models |
 
 Config changes are picked up automatically via file watcher or SIGHUP (most fields hot-reload without restart).
 
@@ -316,7 +317,7 @@ Scan your project for agent security risks on every PR. No Go toolchain needed.
 
 ```yaml
 # .github/workflows/pipelock.yaml
-- uses: luckyPipewrench/pipelock@v0.3.4
+- uses: luckyPipewrench/pipelock@v0.3.5
   with:
     scan-diff: 'true'
     fail-on-findings: 'true'
@@ -472,7 +473,7 @@ internal/
   signing/             Ed25519 key management
   gitprotect/          Git diff scanning for secrets
   hitl/                Human-in-the-loop terminal approval
-configs/               6 preset config files
+configs/               7 preset config files
 docs/                  Guides, references, compliance mappings
 ```
 
@@ -482,7 +483,7 @@ Canonical metrics, updated each release.
 
 | Metric | Value |
 |--------|-------|
-| Go tests (with `-race`) | 3,900+ |
+| Go tests (with `-race`) | 4,400+ |
 | Statement coverage | 95%+ |
 | Evasion techniques tested | 230+ |
 | Scanner pipeline overhead | ~25us per URL scan |

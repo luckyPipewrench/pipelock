@@ -637,13 +637,15 @@ internal:
   - "::1/128"
   - "fc00::/7"
   - "fe80::/10"
+  - "224.0.0.0/4"
+  - "ff00::/8"
 ```
 
-All RFC 1918, RFC 4193, link-local, loopback, CGN (Tailscale/Carrier-Grade NAT), and cloud metadata ranges are blocked by default.
+All RFC 1918, RFC 4193, link-local, loopback, CGN (Tailscale/Carrier-Grade NAT), multicast, and cloud metadata ranges are blocked by default. IPv6 zone IDs (e.g. `::1%eth0`) are stripped before IP parsing to prevent bypass.
 
 ## Presets
 
-Six starter configs in `configs/`:
+Seven starter configs in `configs/`:
 
 | Preset | Mode | Response Action | MCP Policy | Best For |
 |--------|------|----------------|------------|----------|
@@ -653,6 +655,7 @@ Six starter configs in `configs/`:
 | `claude-code.yaml` | balanced | block | warn | Claude Code (unattended) |
 | `cursor.yaml` | balanced | block | warn | Cursor IDE |
 | `generic-agent.yaml` | balanced | warn | warn | New agents (tuning) |
+| `hostile-model.yaml` | strict | block | block | Uncensored/abliterated models |
 
 Key differences between presets:
 

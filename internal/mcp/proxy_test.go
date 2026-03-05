@@ -111,7 +111,7 @@ func TestSyncWriter_WriteMessage_Success(t *testing.T) {
 // fwdScanned wraps ForwardScanned with StdioReader/StdioWriter for test convenience.
 // The transport types are unit-tested in transport_test.go.
 func fwdScanned(r io.Reader, w io.Writer, logW io.Writer, sc *scanner.Scanner, approver *hitl.Approver, toolCfg *tools.ToolScanConfig) (bool, error) {
-	return ForwardScanned(transport.NewStdioReader(r), transport.NewStdioWriter(w), logW, sc, approver, toolCfg)
+	return ForwardScanned(transport.NewStdioReader(r), transport.NewStdioWriter(w), logW, sc, approver, toolCfg, nil)
 }
 
 // --- ForwardScanned tests ---
@@ -1984,3 +1984,173 @@ func TestStripOrBlock_NonRedactable_FallsBackToBlock(t *testing.T) {
 }
 
 // makeResponse helper is defined in scan_test.go
+
+// --- Confused Deputy tests ---
+
+func TestForwardScanned_ConfusedDeputy_UnsolicitedResponseBlocked(t *testing.T) {
+	sc := testScannerWithAction(t, "warn")
+	var out, log bytes.Buffer
+
+	tracker := NewRequestTracker()
+	// Track ID 1, but server sends response with ID 99.
+	tracker.Track(json.RawMessage(`1`))
+
+	unsolicited := makeResponse(99, "hijacked result") + "\n"
+	reader := transport.NewStdioReader(strings.NewReader(unsolicited))
+	writer := transport.NewStdioWriter(&out)
+
+	_, err := ForwardScanned(reader, writer, &log, sc, nil, nil, tracker)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(log.String(), "confused deputy") {
+		t.Errorf("expected 'confused deputy' in log, got: %s", log.String())
+	}
+	// Output should be a block response, not the original content.
+	if strings.Contains(out.String(), "hijacked") {
+		t.Error("unsolicited response should not be forwarded")
+	}
+	if !strings.Contains(out.String(), "injection detected") {
+		t.Error("expected block response for unsolicited ID")
+	}
+}
+
+func TestForwardScanned_ConfusedDeputy_SolicitedResponsePassed(t *testing.T) {
+	sc := testScannerWithAction(t, "warn")
+	var out, log bytes.Buffer
+
+	tracker := NewRequestTracker()
+	tracker.Track(json.RawMessage(`1`))
+
+	solicited := makeResponse(1, "legitimate result") + "\n"
+	reader := transport.NewStdioReader(strings.NewReader(solicited))
+	writer := transport.NewStdioWriter(&out)
+
+	_, err := ForwardScanned(reader, writer, &log, sc, nil, nil, tracker)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if strings.Contains(log.String(), "confused deputy") {
+		t.Error("solicited response should not trigger confused deputy")
+	}
+	if !strings.Contains(out.String(), "legitimate result") {
+		t.Error("solicited response should be forwarded")
+	}
+}
+
+func TestForwardScanned_ConfusedDeputy_NotificationPassedThrough(t *testing.T) {
+	sc := testScannerWithAction(t, "warn")
+	var out, log bytes.Buffer
+
+	tracker := NewRequestTracker()
+
+	// A notification from the server (has method, no result/error) should pass.
+	notification := `{"jsonrpc":"2.0","method":"notifications/progress","params":{"progress":50}}` + "\n"
+	reader := transport.NewStdioReader(strings.NewReader(notification))
+	writer := transport.NewStdioWriter(&out)
+
+	_, err := ForwardScanned(reader, writer, &log, sc, nil, nil, tracker)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if strings.Contains(log.String(), "confused deputy") {
+		t.Error("server notification should not trigger confused deputy check")
+	}
+	if !strings.Contains(out.String(), "notifications/progress") {
+		t.Error("server notification should be forwarded")
+	}
+}
+
+func TestForwardScanned_ConfusedDeputy_ServerInitiatedRequestPassedThrough(t *testing.T) {
+	sc := testScannerWithAction(t, "warn")
+	var out, log bytes.Buffer
+
+	tracker := NewRequestTracker()
+
+	// Server-initiated request (has method AND id) should pass through.
+	// These are requests FROM the server TO the client (e.g. sampling/createMessage).
+	serverReq := `{"jsonrpc":"2.0","id":42,"method":"sampling/createMessage","params":{}}` + "\n"
+	reader := transport.NewStdioReader(strings.NewReader(serverReq))
+	writer := transport.NewStdioWriter(&out)
+
+	_, err := ForwardScanned(reader, writer, &log, sc, nil, nil, tracker)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if strings.Contains(log.String(), "confused deputy") {
+		t.Error("server-initiated request should not trigger confused deputy")
+	}
+	if !strings.Contains(out.String(), "sampling/createMessage") {
+		t.Error("server-initiated request should be forwarded")
+	}
+}
+
+func TestForwardScanned_ConfusedDeputy_NilTrackerDisabled(t *testing.T) {
+	sc := testScannerWithAction(t, "warn")
+	var out, log bytes.Buffer
+
+	// nil tracker: all responses pass (feature disabled).
+	response := makeResponse(999, "any result") + "\n"
+	reader := transport.NewStdioReader(strings.NewReader(response))
+	writer := transport.NewStdioWriter(&out)
+
+	_, err := ForwardScanned(reader, writer, &log, sc, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if strings.Contains(log.String(), "confused deputy") {
+		t.Error("nil tracker should not trigger confused deputy check")
+	}
+	if !strings.Contains(out.String(), "any result") {
+		t.Error("response should be forwarded with nil tracker")
+	}
+}
+
+func TestForwardScanned_ConfusedDeputy_NullIDResponsePassedThrough(t *testing.T) {
+	sc := testScannerWithAction(t, "warn")
+	var out, log bytes.Buffer
+
+	tracker := NewRequestTracker()
+
+	// Response with null ID (error response for unparseable request) should pass.
+	nullIDResp := `{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"parse error"}}` + "\n"
+	reader := transport.NewStdioReader(strings.NewReader(nullIDResp))
+	writer := transport.NewStdioWriter(&out)
+
+	_, err := ForwardScanned(reader, writer, &log, sc, nil, nil, tracker)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if strings.Contains(log.String(), "confused deputy") {
+		t.Error("null ID response should not trigger confused deputy")
+	}
+}
+
+func TestIsResponse(t *testing.T) {
+	tests := []struct {
+		name string
+		msg  string
+		want bool
+	}{
+		{"result response", `{"jsonrpc":"2.0","id":1,"result":{"content":"ok"}}`, true},
+		{"error response", `{"jsonrpc":"2.0","id":1,"error":{"code":-1,"message":"fail"}}`, true},
+		{"request with method", `{"jsonrpc":"2.0","id":1,"method":"tools/call"}`, false},
+		{"notification", `{"jsonrpc":"2.0","method":"notifications/progress"}`, false},
+		{"invalid JSON", `not json`, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isResponse([]byte(tt.msg))
+			if got != tt.want {
+				t.Errorf("isResponse(%s) = %v, want %v", tt.name, got, tt.want)
+			}
+		})
+	}
+}

@@ -62,6 +62,9 @@ func RunWSProxy(
 		}
 	}()
 
+	// Request tracker for confused deputy protection.
+	tracker := NewRequestTracker()
+
 	// Tool scanning baseline for this session.
 	var fwdToolCfg *tools.ToolScanConfig
 	if toolCfg != nil && toolCfg.Action != "" {
@@ -87,7 +90,7 @@ func RunWSProxy(
 	go func() {
 		defer wg.Done()
 		defer cancel() // Signal main goroutine if upstream closes first.
-		_, scanErr := ForwardScanned(wsClient, safeClientOut, safeLogW, sc, approver, fwdToolCfg)
+		_, scanErr := ForwardScanned(wsClient, safeClientOut, safeLogW, sc, approver, fwdToolCfg, tracker)
 		if scanErr != nil {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream scan error: %v\n", scanErr)
 			lastScanErr = scanErr
@@ -149,6 +152,9 @@ func RunWSProxy(
 			}
 			continue
 		}
+
+		// Track request ID before forwarding for confused deputy protection.
+		tracker.Track(extractRPCID(msg))
 
 		// Forward to upstream.
 		if writeErr := wsClient.WriteMessage(msg); writeErr != nil {

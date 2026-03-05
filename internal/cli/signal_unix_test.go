@@ -47,6 +47,7 @@ func TestRegisterKillSwitchSignal(t *testing.T) {
 	cmd.SetErr(buf)
 
 	cleanup := registerKillSwitchSignal(ks, cmd)
+	defer cleanup()
 
 	// Send SIGUSR1 to toggle kill switch ON.
 	if err := syscall.Kill(syscall.Getpid(), syscall.SIGUSR1); err != nil {
@@ -71,9 +72,6 @@ func TestRegisterKillSwitchSignal(t *testing.T) {
 	if !buf.contains("DEACTIVATED") {
 		t.Error("expected DEACTIVATED message after second SIGUSR1")
 	}
-
-	// Cleanup stops signal handling and closes the channel.
-	cleanup()
 }
 
 func TestReloadSignalHint(t *testing.T) {

@@ -49,6 +49,9 @@ func TestTechniqueForScanner_AllMappedEntries(t *testing.T) {
 
 		// Session anomaly
 		{"session_anomaly", "T1078"},
+
+		// Domain fronting
+		{"sni_mismatch", "T1090.004"},
 	}
 
 	for _, tt := range tests {
@@ -96,7 +99,7 @@ func TestTechniqueMap_NoDuplicateKeys(t *testing.T) {
 	// This test is a compile-time guarantee in Go (duplicate map keys are a
 	// compile error), but we verify the map has the expected number of entries
 	// to catch accidental deletions during refactoring.
-	const expectedEntries = 19
+	const expectedEntries = 20
 	if len(techniqueMap) != expectedEntries {
 		t.Errorf("techniqueMap has %d entries, expected %d (was an entry added or removed?)", len(techniqueMap), expectedEntries)
 	}

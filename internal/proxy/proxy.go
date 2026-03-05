@@ -609,6 +609,17 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Request header DLP scanning (fetch is GET-only, no body to scan).
+	if p.evalHeaderDLP(r.Header, cfg, sc, log, "GET", displayURL, parsed.Hostname(), clientIP, requestID, start) {
+		writeJSON(w, http.StatusForbidden, FetchResponse{
+			URL:         displayURL,
+			Agent:       agent,
+			Blocked:     true,
+			BlockReason: "request header contains secret",
+		})
+		return
+	}
+
 	// Fetch the URL — attach clientIP/requestID/agent to context for redirect logging
 	ctx := context.WithValue(r.Context(), ctxKeyClientIP, clientIP)
 	ctx = context.WithValue(ctx, ctxKeyRequestID, requestID)
@@ -888,33 +899,35 @@ func extractRawURLParam(rawQuery string) string {
 
 // healthResponse is the JSON response returned by the /health endpoint.
 type healthResponse struct {
-	Status                string  `json:"status"`
-	Version               string  `json:"version"`
-	Mode                  string  `json:"mode"`
-	UptimeSeconds         float64 `json:"uptime_seconds"`
-	DLPPatterns           int     `json:"dlp_patterns"`
-	ResponseScanEnabled   bool    `json:"response_scan_enabled"`
-	GitProtectionEnabled  bool    `json:"git_protection_enabled"`
-	RateLimitEnabled      bool    `json:"rate_limit_enabled"`
-	ForwardProxyEnabled   bool    `json:"forward_proxy_enabled"`
-	WebSocketProxyEnabled bool    `json:"websocket_proxy_enabled"`
-	KillSwitchActive      bool    `json:"kill_switch_active"`
+	Status                 string  `json:"status"`
+	Version                string  `json:"version"`
+	Mode                   string  `json:"mode"`
+	UptimeSeconds          float64 `json:"uptime_seconds"`
+	DLPPatterns            int     `json:"dlp_patterns"`
+	ResponseScanEnabled    bool    `json:"response_scan_enabled"`
+	GitProtectionEnabled   bool    `json:"git_protection_enabled"`
+	RateLimitEnabled       bool    `json:"rate_limit_enabled"`
+	ForwardProxyEnabled    bool    `json:"forward_proxy_enabled"`
+	WebSocketProxyEnabled  bool    `json:"websocket_proxy_enabled"`
+	RequestBodyScanEnabled bool    `json:"request_body_scan_enabled"`
+	KillSwitchActive       bool    `json:"kill_switch_active"`
 }
 
 // handleHealth returns proxy health status including uptime and feature flags.
 func (p *Proxy) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	cfg := p.cfgPtr.Load()
 	resp := healthResponse{
-		Status:                "healthy",
-		Version:               Version,
-		Mode:                  cfg.Mode,
-		UptimeSeconds:         time.Since(p.startTime).Seconds(),
-		DLPPatterns:           len(cfg.DLP.Patterns),
-		ResponseScanEnabled:   cfg.ResponseScanning.Enabled,
-		GitProtectionEnabled:  cfg.GitProtection.Enabled,
-		RateLimitEnabled:      cfg.FetchProxy.Monitoring.MaxReqPerMinute > 0,
-		ForwardProxyEnabled:   cfg.ForwardProxy.Enabled,
-		WebSocketProxyEnabled: cfg.WebSocketProxy.Enabled,
+		Status:                 "healthy",
+		Version:                Version,
+		Mode:                   cfg.Mode,
+		UptimeSeconds:          time.Since(p.startTime).Seconds(),
+		DLPPatterns:            len(cfg.DLP.Patterns),
+		ResponseScanEnabled:    cfg.ResponseScanning.Enabled,
+		GitProtectionEnabled:   cfg.GitProtection.Enabled,
+		RateLimitEnabled:       cfg.FetchProxy.Monitoring.MaxReqPerMinute > 0,
+		ForwardProxyEnabled:    cfg.ForwardProxy.Enabled,
+		WebSocketProxyEnabled:  cfg.WebSocketProxy.Enabled,
+		RequestBodyScanEnabled: cfg.RequestBodyScanning.Enabled,
 	}
 	if p.ks != nil {
 		// Read-only kill switch status — no auth needed. Lets operators

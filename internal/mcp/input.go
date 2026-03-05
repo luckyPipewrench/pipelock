@@ -6,10 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strconv"
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
@@ -34,45 +34,6 @@ type InputVerdict struct {
 	Matches []scanner.TextDLPMatch  `json:"dlp_matches,omitempty"`
 	Inject  []scanner.ResponseMatch `json:"injection_matches,omitempty"`
 	Error   string                  `json:"error,omitempty"`
-}
-
-// extractAllStringsFromJSON recursively extracts all string values AND keys
-// from arbitrary JSON. Unlike jsonrpc.ExtractStringsFromJSON (values only), this
-// version also extracts map keys because an agent can exfiltrate secrets
-// by encoding them as JSON object keys in tool arguments.
-// Recursion is bounded by jsonrpc.maxExtractDepth (via the same constant) to
-// prevent stack overflow from deeply-nested payloads.
-func extractAllStringsFromJSON(raw json.RawMessage) []string {
-	var result []string
-	var extract func(v interface{}, depth int)
-	extract = func(v interface{}, depth int) {
-		if depth > 64 { // matches jsonrpc.maxExtractDepth
-			return
-		}
-		switch val := v.(type) {
-		case string:
-			result = append(result, val)
-		case float64:
-			// Numeric values could encode secrets (e.g., ASCII code points).
-			result = append(result, strconv.FormatFloat(val, 'f', -1, 64))
-		case bool:
-			result = append(result, strconv.FormatBool(val))
-		case []interface{}:
-			for _, item := range val {
-				extract(item, depth+1)
-			}
-		case map[string]interface{}:
-			for _, k := range jsonrpc.SortedKeys(val) {
-				result = append(result, k) // Extract keys too.
-				extract(val[k], depth+1)
-			}
-		}
-	}
-	var parsed interface{}
-	if err := json.Unmarshal(raw, &parsed); err == nil {
-		extract(parsed, 0)
-	}
-	return result
 }
 
 // extractToolCallName extracts the tool name from a tools/call JSON-RPC request.
@@ -133,7 +94,7 @@ func ScanRequest(line []byte, sc *scanner.Scanner, action, onParseError string) 
 		raw := string(trimmed)
 
 		// Extract individual strings for per-field encoded DLP checks.
-		strs := extractAllStringsFromJSON(trimmed)
+		strs := extract.AllStringsFromJSON(trimmed)
 		joined := joinStrings(strs)
 
 		// Run DLP on joined strings first (catches raw patterns).
@@ -197,7 +158,7 @@ func ScanRequest(line []byte, sc *scanner.Scanner, action, onParseError string) 
 	}
 
 	// Extract all strings (keys + values) from params.
-	strs := extractAllStringsFromJSON(rpc.Params)
+	strs := extract.AllStringsFromJSON(rpc.Params)
 	if len(strs) == 0 {
 		// Fallback: serialize params to string for non-string JSON values.
 		strs = []string{string(rpc.Params)}
@@ -280,7 +241,7 @@ func scanRawBeforeForward(raw []byte, sc *scanner.Scanner, action string) InputV
 	text := string(raw)
 
 	// Extract individual strings for encoded DLP checks.
-	strs := extractAllStringsFromJSON(raw)
+	strs := extract.AllStringsFromJSON(raw)
 	joined := joinStrings(strs)
 
 	dlpResult := sc.ScanTextForDLP(joined)
@@ -691,7 +652,7 @@ func joinStrings(ss []string) string {
 
 // scanSplitSecret checks for secrets split across multiple JSON fields by
 // concatenating values without separators. Keys are excluded (via
-// jsonrpc.ExtractStringsFromJSON, not extractAllStringsFromJSON) because interleaved
+// jsonrpc.ExtractStringsFromJSON, not extract.AllStringsFromJSON) because interleaved
 // keys break DLP regex adjacency. Returns the original result if clean or if
 // concat adds no new information.
 func scanSplitSecret(raw json.RawMessage, joined string, sc *scanner.Scanner, result scanner.TextDLPResult) scanner.TextDLPResult {

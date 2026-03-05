@@ -92,6 +92,27 @@ These techniques target the MCP proxy layer.
 | JSON key exfiltration | Secret encoded as JSON object key | Tested | Both keys and values extracted from JSON |
 | Batch response poisoning | N clean + 1 injected response in batch | Tested | Each batch element scanned individually |
 
+## Request Body and Header Evasion
+
+These techniques try to exfiltrate secrets through request bodies or headers instead of URLs.
+
+| Technique | Example | Status | How |
+|-----------|---------|--------|-----|
+| Secret in POST body (JSON) | `{"key": "sk-ant-..."}` | Tested | Recursive JSON string extraction, DLP scan per field + joined |
+| Secret in JSON object key | `{"AKIA1234...": "value"}` | Tested | Both keys and values extracted from JSON |
+| Secret in form field | `token=sk-ant-...` | Tested | Form-urlencoded parsed, keys + values scanned |
+| Secret in multipart field | File upload form with secret in text field | Tested | Multipart text parts extracted, binary parts skipped |
+| Secret in multipart filename | `Content-Disposition: ...; filename="sk-ant-..."` | Tested | Filenames extracted and scanned; oversized filenames blocked |
+| Content-Type spoofing | JSON body sent as `application/octet-stream` | Tested | Unknown types get fallback raw-text scan (never skipped) |
+| Compressed body bypass | gzip-encoded body to evade regex matching | Tested | Any non-identity Content-Encoding is fail-closed blocked |
+| Split secret across headers | `X-A: sk-ant-` + `X-B: api03-rest` | Tested | Joined scan concatenates all scanned header values |
+| Split secret across name:value | `X-AKIA1234: EXAMPLE` | Tested | Header name + value concatenated and scanned (all mode) |
+| Secret in Authorization header | `Bearer sk-ant-...` to allowlisted host | Tested | Headers scanned regardless of destination (no allowlist skip) |
+| Malformed form body | Invalid urlencoded to trigger raw fallback | Tested | Fail-closed block on parse error (prevents parser differential) |
+| Multipart boundary omission | `multipart/form-data` without boundary | Tested | Fail-closed block (missing boundary) |
+
+**Scope note:** Request body and header scanning applies to forward HTTP proxy (absolute-URI requests) and fetch handler headers. CONNECT tunnels carry TLS-encrypted traffic where bodies and headers are not visible without TLS interception.
+
 ## Known Limitations
 
 These are things pipelock does not protect against. If your threat model includes these, you need additional controls.
@@ -110,6 +131,7 @@ These are things pipelock does not protect against. If your threat model include
 | Limitation | Detail | Impact |
 |------------|--------|--------|
 | **Regex-based injection detection** | Injection patterns are syntactic, not semantic. An LLM-crafted injection that doesn't match known patterns will pass. | Add custom patterns for your domain. Future: pluggable detector interface. |
+| **CONNECT tunnel body blindness** | HTTPS traffic uses CONNECT tunnels where the TLS session is end-to-end between client and server. Pipelock only sees the hostname, not request bodies or headers. | Use fetch proxy or forward HTTP proxy for body/header DLP. TLS interception is planned. |
 | **DNS rebinding TOCTOU** | Hostname resolves to public IP at scan time, then to internal IP at connect time. Classic time-of-check/time-of-use race. | DNS pinning mitigates most cases. For high-security: use strict mode (allowlist only). |
 | **Very slow exfiltration** | 1 byte per hour over days. Below any practical rate limit or entropy threshold. | Container isolation prevents this entirely. Without isolation, this is the residual risk. |
 | **ReDoS in custom patterns** | User-supplied DLP or response patterns could have catastrophic backtracking. Built-in patterns are tested, but custom ones aren't analyzed for ReDoS. | Test custom patterns before deploying. |

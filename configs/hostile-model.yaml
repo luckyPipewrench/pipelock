@@ -1,54 +1,32 @@
-# Pipelock config — Claude Code preset
-# Optimized for Claude Code acting through MCP proxy or HTTP fetch proxy.
+# Pipelock config — hostile model preset
+# For agents running uncensored, abliterated, or jailbroken models.
+# Assumes the model has ZERO safety guardrails and will comply with any instruction.
 #
-# Use this for: Claude Code with pipelock as MCP server wrapper.
-# Blocks prompt injection (unattended agent), allows broad coding domains,
-# relaxed entropy (code has high-entropy strings like commit hashes).
+# Use this for: red-team testing, self-hosted uncensored models, models with
+# safety refusals removed via weight ablation (e.g. OBLITERATUS), or any agent
+# where you cannot trust the model to refuse harmful requests.
 #
-# Example:
-#   pipelock mcp proxy --config configs/claude-code.yaml -- npx @mcp/server
+# This preset enables every defense layer and sets all ambiguous decisions to block.
+# The model won't protect you. The network layer will.
 
 version: 1
-mode: balanced
+mode: strict
 
 api_allowlist:
   - "*.anthropic.com"
   - "*.openai.com"
-  - "github.com"
-  - "*.github.com"
-  - "*.githubusercontent.com"
-  - "registry.npmjs.org"
-  - "*.npmjs.com"
-  - "pypi.org"
-  - "*.python.org"
-  - "*.pythonhosted.org"
-  - "pkg.go.dev"
-  - "proxy.golang.org"
-  - "sum.golang.org"
-  - "crates.io"
-  - "*.crates.io"
-  - "*.docs.rs"
-  - "*.rubygems.org"
-  - "*.maven.org"
-  - "*.googleapis.com"
-  - "*.google.com"
-  - "*.stackoverflow.com"
-  - "*.stackexchange.com"
-  - "*.discord.com"
-  - "gateway.discord.gg"
-  - "*.slack.com"
-  - "api.telegram.org"
 
 fetch_proxy:
-  listen: "127.0.0.1:8888"  # customize if running multiple presets simultaneously
-  timeout_seconds: 30
-  max_response_mb: 10
+  listen: "127.0.0.1:8888"
+  timeout_seconds: 15
+  max_response_mb: 5
   user_agent: "Pipelock Fetch/1.0"
   monitoring:
-    max_url_length: 4096
-    # Higher threshold for code: commit hashes, base64 in configs, UUIDs are common.
-    entropy_threshold: 5.0
-    max_requests_per_minute: 120
+    max_url_length: 300
+    # 3.0 is aggressive: catches more encoded secrets, more false positives.
+    # Acceptable trade-off when the model is actively hostile.
+    entropy_threshold: 3.0
+    max_requests_per_minute: 15
     blocklist:
       - "*.pastebin.com"
       - "*.hastebin.com"
@@ -56,20 +34,26 @@ fetch_proxy:
       - "*.transfer.sh"
       - "*.file.io"
       - "*.requestbin.com"
-      - "*.webhook.site"
+      - "*.ngrok.io"
+      - "*.ngrok-free.app"
       - "*.pipedream.net"
+      - "*.webhook.site"
+      - "*.hookbin.com"
+      - "*.beeceptor.com"
+      - "*.requestcatcher.com"
+      - "*.burpcollaborator.net"
 
 forward_proxy:
   enabled: true
-  max_tunnel_seconds: 300
-  idle_timeout_seconds: 120
+  max_tunnel_seconds: 120
+  idle_timeout_seconds: 30
 
 request_body_scanning:
   enabled: true
   action: block
   max_body_bytes: 5242880
   scan_headers: true
-  header_mode: sensitive
+  header_mode: all
   sensitive_headers:
     - Authorization
     - Cookie
@@ -79,20 +63,20 @@ request_body_scanning:
     - X-Goog-Api-Key
 
 websocket_proxy:
-  enabled: false
-  max_message_bytes: 1048576
-  max_concurrent_connections: 128
+  enabled: true
+  max_message_bytes: 524288
+  max_concurrent_connections: 16
   scan_text_frames: true
   allow_binary_frames: false
   forward_cookies: false
   strip_compression: true
-  max_connection_seconds: 3600
-  idle_timeout_seconds: 300
+  max_connection_seconds: 1800
+  idle_timeout_seconds: 120
   origin_policy: rewrite
 
 dlp:
   scan_env: true
-  include_defaults: false  # Preset defines the complete pattern set
+  include_defaults: false
   patterns:
     # Provider API keys
     - name: "Anthropic API Key"
@@ -109,7 +93,7 @@ dlp:
       severity: critical
     - name: "Google API Key"
       regex: 'AIza[0-9A-Za-z\-_]{35}'
-      severity: high
+      severity: critical
     - name: "Google OAuth Client Secret"
       regex: 'GOCSPX-[A-Za-z0-9_\-]{28,}'
       severity: critical
@@ -143,33 +127,33 @@ dlp:
     # Communication service keys
     - name: "Twilio API Key"
       regex: 'SK[a-f0-9]{32}'
-      severity: high
+      severity: critical
     - name: "SendGrid API Key"
       regex: 'SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}'
       severity: critical
     - name: "Mailgun API Key"
       regex: 'key-[a-zA-Z0-9]{32}'
-      severity: high
+      severity: critical
     # Cryptographic material
     - name: "Private Key Header"
       regex: '-----BEGIN\s+(RSA\s+|EC\s+|DSA\s+|OPENSSH\s+)?PRIVATE\s+KEY-----'
       severity: critical
     - name: "JWT Token"
       regex: '(ey[a-zA-Z0-9_\-=]{10,}\.){2}[a-zA-Z0-9_\-=]{10,}'
-      severity: high
+      severity: critical
     # Identity / PII
     - name: "Google OAuth Client ID"
       regex: '[0-9]{6,}-[0-9A-Za-z_]{32}\.apps\.googleusercontent\.com'
-      severity: medium
+      severity: critical
     # Generic credential patterns
     - name: "Credential in URL"
       regex: '\b(?:password|passwd|secret|token|apikey|api_key|api-key)\s*=\s*[^\s&]{4,}'
-      severity: high
+      severity: critical
 
 response_scanning:
   enabled: true
   action: block
-  include_defaults: false  # Preset defines the complete pattern set
+  include_defaults: false
   patterns:
     - name: "Prompt Injection"
       regex: '(?i)(ignore|disregard|forget|abandon)[-,;:.\s]+\s*(?:all\s+\w+\s+|\w+\s+all\s+|all\s+|\w+\s+)?(previous|prior|above|earlier)\s+(\w+\s+)?(instructions|prompts|rules|context|directives|constraints|policies|guardrails)'
@@ -224,7 +208,7 @@ mcp_tool_scanning:
 
 mcp_tool_policy:
   enabled: true
-  action: warn
+  action: block
   rules:
     - name: "Destructive File Delete"
       tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
@@ -233,13 +217,15 @@ mcp_tool_policy:
     - name: "Recursive Permission Change"
       tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
       arg_pattern: '(?i)\b(chmod\s+(-R|--recursive)\s+(777|666)|chmod\s+(777|666)\s+(-R|--recursive)|chown\s+(-R|--recursive))\b'
+      action: block
     - name: "Credential File Access"
       tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec|read_file|file_read)$'
-      arg_pattern: '(?i)(\.ssh/(id_|authorized)|\.aws/credentials|\.env\b|\.netrc|/etc/shadow)'
+      arg_pattern: '(?i)(\.ssh/(id_|authorized)|\.aws/credentials|\.env\b|\.netrc|/etc/shadow|\.kube/config|\.docker/config)'
       action: block
     - name: "Network Exfiltration"
       tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
-      arg_pattern: '(?i)\b(curl|wget)\b.*(-d\s|--data|--upload-file|-T\s|-X\s+POST|--post-data)'
+      arg_pattern: '(?i)\b(curl|wget|nc|ncat|socat)\b'
+      action: block
     - name: "Reverse Shell"
       tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
       arg_pattern: '(?i)(bash\s+-i\s+>&|/dev/tcp/|mkfifo\s+|nc\s+-e|ncat\s+-e)'
@@ -251,6 +237,7 @@ mcp_tool_policy:
     - name: "Package Install"
       tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
       arg_pattern: '(?i)\b(pip|npm|gem|cargo|go)\s+install\b'
+      action: block
     - name: "Destructive Git Operation"
       tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec|git)$'
       arg_pattern: '(?i)(\bgit\s+)?(push\s+(--force(\s|$)|-f\b)|reset\s+--hard\b|clean\s+-fd\b)'
@@ -259,18 +246,34 @@ mcp_tool_policy:
       tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
       arg_pattern: '(?i)(\beval\b.*\bbase64\b|\bbase64\s+(-d|--decode)\b.*\|\s*(ba)?sh\b)'
       action: block
+    - name: "Environment Dump"
+      tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
+      arg_pattern: '(?i)\b(printenv|env\b|set\b|export\s+-p)'
+      action: block
 
-# Session behavioral profiling (warn-only, no blocking by default)
+# Session binding: pin tool inventory per session. New tools mid-session = block.
+mcp_session_binding:
+  enabled: true
+
+# Session behavioral profiling
 session_profiling:
   enabled: true
 
-# Adaptive enforcement (scoring-only in v1, observability only)
+# Adaptive enforcement
 adaptive_enforcement:
   enabled: true
 
-# MCP session binding (opt-in)
-mcp_session_binding:
+# Tool chain detection
+tool_chain_detection:
+  enabled: true
+  action: block
+
+# Kill switch preconfigured with sentinel file.
+# Touch /tmp/pipelock-kill to instantly deny all traffic.
+kill_switch:
   enabled: false
+  sentinel_file: /tmp/pipelock-kill
+  message: "Emergency deny-all active"
 
 logging:
   format: json

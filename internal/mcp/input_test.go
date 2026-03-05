@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
@@ -174,7 +175,7 @@ func TestScanRequest(t *testing.T) {
 			wantClean:    true,
 		},
 		{
-			name: "secret encoded as JSON key - caught by extractAllStringsFromJSON",
+			name: "secret encoded as JSON key - caught by extract.AllStringsFromJSON",
 			line: func() string {
 				// Put the secret as a JSON object KEY
 				secret := testSecretPrefix + strings.Repeat("b", 25)
@@ -305,7 +306,7 @@ func TestScanRequest_PreservesMethod(t *testing.T) {
 	}
 }
 
-// --- extractAllStringsFromJSON tests ---
+// --- extract.AllStringsFromJSON tests ---
 
 func TestExtractAllStringsFromJSON(t *testing.T) {
 	tests := []struct {
@@ -372,7 +373,7 @@ func TestExtractAllStringsFromJSON(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := extractAllStringsFromJSON(json.RawMessage(tt.input))
+			result := extract.AllStringsFromJSON(json.RawMessage(tt.input))
 
 			if tt.wantLen >= 0 && len(result) != tt.wantLen {
 				t.Errorf("got %d strings, want %d: %v", len(result), tt.wantLen, result)
@@ -1389,7 +1390,7 @@ func TestScanRequest_ForwardModeEncodedSecret(t *testing.T) {
 
 func TestScanRequest_ParamsWithNoStrings(t *testing.T) {
 	// Exercise the empty-extraction fallback at line 154-157.
-	// Params contain only numbers/booleans — extractAllStringsFromJSON returns empty.
+	// Params contain only numbers/booleans — extract.AllStringsFromJSON returns empty.
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	sc := scanner.New(cfg)
@@ -1404,7 +1405,7 @@ func TestScanRequest_ParamsWithNoStrings(t *testing.T) {
 }
 
 func TestScanRequest_ParamsArrayOfNumbers(t *testing.T) {
-	// Array of non-string values — extractAllStringsFromJSON returns empty.
+	// Array of non-string values — extract.AllStringsFromJSON returns empty.
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	sc := scanner.New(cfg)
@@ -1514,7 +1515,7 @@ func TestForwardScannedInput_EmptyMethodFallback(t *testing.T) {
 
 func TestScanRequest_KeyValueSplitSecret(t *testing.T) {
 	// Secret split across JSON key and value: key=testSecretPrefix, value="api03-AAAA..."
-	// extractAllStringsFromJSON captures both keys and values, concatenation
+	// extract.AllStringsFromJSON captures both keys and values, concatenation
 	// reassembles the full Anthropic API key pattern.
 	sc := testInputScanner(t)
 	key := "sk-ant-api03-" + strings.Repeat("A", 40)
@@ -2198,7 +2199,7 @@ func TestExtractAllStringsFromJSON_DepthLimit(t *testing.T) {
 	for range 70 {
 		b.WriteString(`}`)
 	}
-	result := extractAllStringsFromJSON(json.RawMessage(b.String()))
+	result := extract.AllStringsFromJSON(json.RawMessage(b.String()))
 
 	// The leaf value should NOT appear — recursion stopped at depth 64.
 	for _, s := range result {

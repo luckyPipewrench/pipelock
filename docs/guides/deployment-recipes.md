@@ -128,7 +128,7 @@ spec:
       # Init container: copy pipelock binary for MCP stdio wrapping
       initContainers:
         - name: pipelock-init
-          image: ghcr.io/luckypipewrench/pipelock-init:0.3.4
+          image: ghcr.io/luckypipewrench/pipelock-init:latest
           command: ["cp", "/pipelock", "/shared-bin/pipelock"]
           volumeMounts:
             - name: shared-bin
@@ -137,7 +137,7 @@ spec:
       containers:
         # Pipelock sidecar
         - name: pipelock
-          image: ghcr.io/luckypipewrench/pipelock:0.3.4
+          image: ghcr.io/luckypipewrench/pipelock:latest
           args:
             - run
             - --config

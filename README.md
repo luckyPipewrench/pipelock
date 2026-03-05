@@ -317,7 +317,7 @@ Scan your project for agent security risks on every PR. No Go toolchain needed.
 
 ```yaml
 # .github/workflows/pipelock.yaml
-- uses: luckyPipewrench/pipelock@v0.3.5
+- uses: luckyPipewrench/pipelock@v1
   with:
     scan-diff: 'true'
     fail-on-findings: 'true'

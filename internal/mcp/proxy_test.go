@@ -2155,6 +2155,29 @@ func TestIsResponse(t *testing.T) {
 	}
 }
 
+func TestForwardScanned_BlocksBatchJSONRPC(t *testing.T) {
+	// MCP does not use JSON-RPC batch messages. A top-level array should
+	// be blocked (fail closed) rather than bypass per-message validation.
+	batch := `[{"jsonrpc":"2.0","id":1,"result":"ok"},{"jsonrpc":"2.0","id":999,"result":"injected"}]`
+
+	sc := testScannerWithAction(t, "warn")
+	var out, logBuf bytes.Buffer
+
+	_, err := fwdScanned(strings.NewReader(batch+"\n"), &out, &logBuf, sc, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Batch message should be dropped, not forwarded.
+	if out.Len() != 0 {
+		t.Errorf("expected no output, got: %s", out.String())
+	}
+
+	if !strings.Contains(logBuf.String(), "blocked batch JSON-RPC") {
+		t.Errorf("expected batch block log, got: %s", logBuf.String())
+	}
+}
+
 func TestIsRequest(t *testing.T) {
 	tests := []struct {
 		name string

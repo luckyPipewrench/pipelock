@@ -166,18 +166,43 @@ The proxy listens on `127.0.0.1:8888` by default and exposes:
 | `/metrics` | Prometheus metrics |
 | `/stats` | JSON statistics |
 
-### Claude Code Hooks
+### Claude Code Hooks (PreToolUse)
 
-You can configure a Claude Code hook to route WebFetch requests through
-pipelock. Example hook script:
+Pipelock integrates with Claude Code's hook system to scan tool calls before
+execution. The `pipelock claude setup` command installs hooks automatically:
 
 ```bash
-#!/bin/bash
-# pipelock-scan.sh: scan URLs before Claude Code fetches them
-URL="$1"
-ENCODED=$(python3 -c "import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=''))" "$URL")
-RESULT=$(curl -s "http://127.0.0.1:8888/fetch?url=${ENCODED}")
-echo "$RESULT"
+# Install hooks (writes to ~/.claude/settings.json)
+pipelock claude setup
+
+# Or install to a project-local settings file
+pipelock claude setup --project
+
+# Preview without writing
+pipelock claude setup --dry-run
+
+# Remove hooks
+pipelock claude remove
+```
+
+This registers pipelock as a `PreToolUse` hook for security-relevant tools:
+
+| Matcher | Tools | What's scanned |
+|---------|-------|----------------|
+| `Bash\|WebFetch\|Write\|Edit` | Built-in tools | Commands, URLs, file content for DLP and policy |
+| `mcp__.*` | All MCP tools | Tool arguments for DLP and injection |
+
+Unknown tools (Read, Glob, Grep, Agent, etc.) are allowed by default.
+
+The hook reads JSON from stdin and returns allow/deny decisions. An `--exit-code`
+mode is also available (exit 0 for allow, exit 2 for deny):
+
+```bash
+# Default mode (JSON response on stdout)
+echo '{"session_id":"s1","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"ls"},"tool_use_id":"t1"}' | pipelock claude hook
+
+# Exit-code mode
+echo '...' | pipelock claude hook --exit-code
 ```
 
 ## Choosing a Config

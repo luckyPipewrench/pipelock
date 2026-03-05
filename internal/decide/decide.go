@@ -203,9 +203,9 @@ func decideWebFetch(cfg *config.Config, sc *scanner.Scanner, p *WebFetchPayload)
 		return deny("pipelock: missing WebFetch payload")
 	}
 
-	// Empty URL: nothing to scan.
+	// Empty URL: fail-closed on missing input.
 	if p.URL == "" {
-		return Decision{Outcome: Allow}
+		return deny("pipelock: missing WebFetch URL")
 	}
 
 	// Run the full URL scanner pipeline (scheme, blocklist, DLP, SSRF, etc.).

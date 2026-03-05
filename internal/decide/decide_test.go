@@ -691,7 +691,7 @@ func TestDecide_WebFetch(t *testing.T) {
 		{
 			name: "empty URL",
 			url:  "",
-			want: Allow,
+			want: Deny,
 		},
 	}
 
@@ -720,6 +720,20 @@ func TestDecide_WebFetch_NilPayload(t *testing.T) {
 	decision := Decide(cfg, sc, nil, action)
 	if decision.Outcome != Deny {
 		t.Errorf("nil WebFetch payload should deny, got %s", decision.Outcome)
+	}
+}
+
+func TestDecide_WebFetch_EmptyURL(t *testing.T) {
+	cfg, sc, _ := testSetup(t)
+
+	action := Action{
+		Source:   "claude-code",
+		Kind:     EventWebFetch,
+		WebFetch: &WebFetchPayload{URL: ""},
+	}
+	decision := Decide(cfg, sc, nil, action)
+	if decision.Outcome != Deny {
+		t.Errorf("empty WebFetch URL should deny, got %s", decision.Outcome)
 	}
 }
 

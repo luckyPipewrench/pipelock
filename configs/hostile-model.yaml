@@ -73,6 +73,7 @@ websocket_proxy:
   strip_compression: true
   max_connection_seconds: 1800
   idle_timeout_seconds: 120
+  sni_verification: true
   origin_policy: rewrite
 
 dlp:

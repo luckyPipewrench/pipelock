@@ -478,7 +478,7 @@ kill_switch:
 | `health_exempt` | `true` | No | /health bypasses kill switch |
 | `metrics_exempt` | `true` | No | /metrics bypasses kill switch |
 | `api_exempt` | `true` | No | /api/v1/* bypasses kill switch |
-| `api_token` | `""` | No | Bearer token for API endpoints; it can be overridden by `PIPELOCK_KILLSWITCH_API_TOKEN` env var. |
+| `api_token` | `""` | No | Bearer token for API endpoints. Can be overridden by `PIPELOCK_KILLSWITCH_API_TOKEN` env var. |
 | `api_listen` | `""` | **Yes** | Separate listen address for API |
 | `allowlist_ips` | `[]` | No | IPs always allowed through |
 

@@ -41,27 +41,30 @@ const fixtureJSONL = `{"level":"info","time":"2026-03-05T10:00:00Z","component":
 // ---- Parsing tests ----
 
 func TestParseEvents_Basic(t *testing.T) {
-	events, err := ParseEvents(strings.NewReader(fixtureJSONL), ParseOptions{})
+	result, err := ParseEvents(strings.NewReader(fixtureJSONL), ParseOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(events) != 7 {
-		t.Fatalf("expected 7 events, got %d", len(events))
+	if len(result.Events) != 7 {
+		t.Fatalf("expected 7 events, got %d", len(result.Events))
+	}
+	if result.SkippedLines != 0 {
+		t.Errorf("expected 0 skipped lines, got %d", result.SkippedLines)
 	}
 
 	// Verify sorted by time.
-	for i := 1; i < len(events); i++ {
-		if events[i].Time.Before(events[i-1].Time) {
+	for i := 1; i < len(result.Events); i++ {
+		if result.Events[i].Time.Before(result.Events[i-1].Time) {
 			t.Errorf("events not sorted at index %d", i)
 		}
 	}
 
 	// Verify first event is startup.
-	if events[0].Event != testEvStartup {
-		t.Errorf("expected first event to be startup, got %q", events[0].Event)
+	if result.Events[0].Event != testEvStartup {
+		t.Errorf("expected first event to be startup, got %q", result.Events[0].Event)
 	}
-	if events[0].Version != testVersion {
-		t.Errorf("expected version %q, got %q", testVersion, events[0].Version)
+	if result.Events[0].Version != testVersion {
+		t.Errorf("expected version %q, got %q", testVersion, result.Events[0].Version)
 	}
 }
 
@@ -69,7 +72,7 @@ func TestParseEvents_TimeFilter(t *testing.T) {
 	since := time.Date(2026, 3, 5, 10, 0, 3, 0, time.UTC)
 	until := time.Date(2026, 3, 5, 10, 0, 5, 0, time.UTC)
 
-	events, err := ParseEvents(strings.NewReader(fixtureJSONL), ParseOptions{
+	result, err := ParseEvents(strings.NewReader(fixtureJSONL), ParseOptions{
 		Since: since,
 		Until: until,
 	})
@@ -78,14 +81,14 @@ func TestParseEvents_TimeFilter(t *testing.T) {
 	}
 
 	// Should include events at 10:00:03 and 10:00:04, but not 10:00:05 (at or after Until).
-	if len(events) != 2 {
-		t.Fatalf("expected 2 events with time filter, got %d", len(events))
+	if len(result.Events) != 2 {
+		t.Fatalf("expected 2 events with time filter, got %d", len(result.Events))
 	}
-	if events[0].Event != testEvRespScan {
-		t.Errorf("expected response_scan, got %q", events[0].Event)
+	if result.Events[0].Event != testEvRespScan {
+		t.Errorf("expected response_scan, got %q", result.Events[0].Event)
 	}
-	if events[1].Event != testEvCfgReload {
-		t.Errorf("expected config_reload, got %q", events[1].Event)
+	if result.Events[1].Event != testEvCfgReload {
+		t.Errorf("expected config_reload, got %q", result.Events[1].Event)
 	}
 }
 
@@ -96,22 +99,25 @@ this is not json
 {broken json
 `
 
-	events, err := ParseEvents(strings.NewReader(input), ParseOptions{})
+	result, err := ParseEvents(strings.NewReader(input), ParseOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(events) != 2 {
-		t.Fatalf("expected 2 events (malformed skipped), got %d", len(events))
+	if len(result.Events) != 2 {
+		t.Fatalf("expected 2 events (malformed skipped), got %d", len(result.Events))
+	}
+	if result.SkippedLines != 2 {
+		t.Errorf("expected 2 skipped lines, got %d", result.SkippedLines)
 	}
 }
 
 func TestParseEvents_Empty(t *testing.T) {
-	events, err := ParseEvents(strings.NewReader(""), ParseOptions{})
+	result, err := ParseEvents(strings.NewReader(""), ParseOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(events) != 0 {
-		t.Fatalf("expected 0 events, got %d", len(events))
+	if len(result.Events) != 0 {
+		t.Fatalf("expected 0 events, got %d", len(result.Events))
 	}
 }
 
@@ -120,12 +126,31 @@ func TestParseEvents_EmptyLines(t *testing.T) {
 {"level":"info","time":"2026-03-05T10:00:00Z","event":"startup","message":"ok"}
 
 `
-	events, err := ParseEvents(strings.NewReader(input), ParseOptions{})
+	result, err := ParseEvents(strings.NewReader(input), ParseOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
+	if len(result.Events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(result.Events))
+	}
+	if result.SkippedLines != 0 {
+		t.Errorf("empty lines should not count as skipped, got %d", result.SkippedLines)
+	}
+}
+
+func TestGenerate_SkippedLinesInReport(t *testing.T) {
+	input := `{"level":"info","time":"2026-03-05T10:00:00Z","event":"startup","message":"ok"}
+this is not json
+{"level":"info","time":"2026-03-05T10:00:01Z","event":"allowed","message":"ok2"}
+{broken json
+`
+
+	r, err := Generate(strings.NewReader(input), ParseOptions{}, Options{})
+	if err != nil {
+		t.Fatalf("Generate error: %v", err)
+	}
+	if r.Summary.SkippedLines != 2 {
+		t.Errorf("expected 2 skipped lines in report summary, got %d", r.Summary.SkippedLines)
 	}
 }
 
@@ -295,6 +320,51 @@ func TestAggregate_Redaction(t *testing.T) {
 				t.Error("expected URL query to be stripped in sample evidence")
 			}
 		}
+	}
+}
+
+func TestAggregate_RedactionSNIFields(t *testing.T) {
+	events := []Event{
+		{Time: time.Date(2026, 3, 5, 10, 0, 0, 0, time.UTC), Event: testEvStartup, Version: testVersion, Mode: testMode, ConfigHash: testHash},
+		{
+			Time: time.Date(2026, 3, 5, 10, 0, 1, 0, time.UTC), Event: "sni_mismatch",
+			ConnectHost: "169.254.169.254", SNIHost: "192.168.1.100",
+			ClientIP: testClientIP, MITRETechnique: "T1090",
+		},
+	}
+
+	r := Aggregate(events, Options{Redact: true})
+
+	for _, ev := range r.Evidence {
+		if ev.Event != "sni_mismatch" {
+			continue
+		}
+		if strings.Contains(ev.ConnectHost, "169.254") {
+			t.Error("expected connect_host IP to be redacted")
+		}
+		if strings.Contains(ev.SNIHost, "192.168") {
+			t.Error("expected sni_host IP to be redacted")
+		}
+		if strings.Contains(ev.ClientIP, "10.0.0") {
+			t.Error("expected client_ip to be redacted")
+		}
+	}
+}
+
+func TestEventSeverity_PlainBlockedIsHigh(t *testing.T) {
+	// Plain "blocked" events (URL/DLP/SSRF blocks) have no action field,
+	// but should be high severity because the event type itself means blocked.
+	ev := &Event{Event: "blocked", Scanner: "dlp", URL: "https://evil.com"}
+	sev := eventSeverity(ev)
+	if sev != severityHigh {
+		t.Errorf("expected blocked event to be high severity, got %q", sev)
+	}
+
+	// ws_blocked should also be high.
+	wsEv := &Event{Event: "ws_blocked", Scanner: "dlp"}
+	wsSev := eventSeverity(wsEv)
+	if wsSev != severityHigh {
+		t.Errorf("expected ws_blocked event to be high severity, got %q", wsSev)
 	}
 }
 

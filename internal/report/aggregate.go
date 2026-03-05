@@ -342,7 +342,9 @@ func eventSeverity(ev *Event) string {
 	if ev.Severity != "" {
 		return ev.Severity
 	}
-	if ev.Action == actionBlock {
+	// Events whose type itself means "blocked" (e.g. "blocked", "ws_blocked")
+	// don't carry an action field, but are high severity.
+	if blockEventTypes[ev.Event] || ev.Action == actionBlock {
 		return severityHigh
 	}
 	return severityMedium
@@ -544,6 +546,12 @@ func buildEvidence(events []Event, maxCount int, redact bool) []Event {
 			}
 			if evCopy.Target != "" {
 				evCopy.Target = redactURL(evCopy.Target)
+			}
+			if evCopy.ConnectHost != "" {
+				evCopy.ConnectHost = redactIP(evCopy.ConnectHost)
+			}
+			if evCopy.SNIHost != "" {
+				evCopy.SNIHost = redactIP(evCopy.SNIHost)
 			}
 		}
 		evidence = append(evidence, evCopy)

@@ -86,6 +86,7 @@ type Summary struct {
 	Criticals     int `json:"criticals"`
 	Allowed       int `json:"allowed"`
 	UniqueDomains int `json:"unique_domains"`
+	SkippedLines  int `json:"skipped_lines,omitempty"` // malformed JSONL lines
 }
 
 // CategoryStats groups events by attack category.
@@ -120,9 +121,11 @@ const DefaultTitle = "Pipelock Agent Egress Report"
 
 // Generate reads JSONL events, applies time filters, aggregates, and produces a Report.
 func Generate(r io.Reader, popts ParseOptions, opts Options) (*Report, error) {
-	events, err := ParseEvents(r, popts)
+	result, err := ParseEvents(r, popts)
 	if err != nil {
 		return nil, err
 	}
-	return Aggregate(events, opts), nil
+	rpt := Aggregate(result.Events, opts)
+	rpt.Summary.SkippedLines = result.SkippedLines
+	return rpt, nil
 }

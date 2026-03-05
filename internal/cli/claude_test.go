@@ -1026,6 +1026,9 @@ func TestClaudeHookCmd_ExitCodeMode_Deny(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected exit code error for secret in exit-code mode")
 	}
+	if code := ExitCodeOf(err); code != 2 {
+		t.Errorf("expected exit code 2, got %d", code)
+	}
 }
 
 func TestClaudeHookCmd_ExitCodeMode_BadJSON(t *testing.T) {
@@ -1039,6 +1042,9 @@ func TestClaudeHookCmd_ExitCodeMode_BadJSON(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected exit code error for bad JSON")
 	}
+	if code := ExitCodeOf(err); code != 2 {
+		t.Errorf("expected exit code 2, got %d", code)
+	}
 }
 
 func TestClaudeHookCmd_ExitCodeMode_EmptyStdin(t *testing.T) {
@@ -1051,6 +1057,9 @@ func TestClaudeHookCmd_ExitCodeMode_EmptyStdin(t *testing.T) {
 	err := cmd.Execute()
 	if err == nil {
 		t.Fatal("expected exit code error for empty stdin")
+	}
+	if code := ExitCodeOf(err); code != 2 {
+		t.Errorf("expected exit code 2, got %d", code)
 	}
 }
 

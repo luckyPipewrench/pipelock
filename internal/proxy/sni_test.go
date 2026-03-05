@@ -681,6 +681,214 @@ func TestVerifySNI_DomainFrontingAttack(t *testing.T) {
 	}
 }
 
+func TestExtractSNI_HandshakeHeaderTooShort(t *testing.T) {
+	// Valid record header, payload is only 2 bytes (need 4 for handshake header).
+	payload := []byte{0x01, 0x00} // start of ClientHello but too short
+	var record []byte
+	record = append(record, tlsRecordTypeHandshake)
+	record = append(record, 0x03, 0x01)
+	record = appendU16BE(record, len(payload))
+	record = append(record, payload...)
+
+	_, err := extractSNI(record)
+	if !errors.Is(err, errTLSMalformed) {
+		t.Errorf("expected errTLSMalformed for short handshake header, got: %v", err)
+	}
+}
+
+func TestExtractSNI_HandshakeLenExceedsPayload(t *testing.T) {
+	// Handshake header claims 200 bytes but only 10 follow.
+	var payload []byte
+	payload = append(payload, tlsHandshakeClientHello)
+	payload = appendU24BE(payload, 200) // claims 200 bytes
+	payload = append(payload, make([]byte, 10)...)
+
+	var record []byte
+	record = append(record, tlsRecordTypeHandshake)
+	record = append(record, 0x03, 0x01)
+	record = appendU16BE(record, len(payload))
+	record = append(record, payload...)
+
+	_, err := extractSNI(record)
+	if !errors.Is(err, errTLSMalformed) {
+		t.Errorf("expected errTLSMalformed for handshake len exceeding payload, got: %v", err)
+	}
+}
+
+func TestExtractSNI_NoSessionIDLengthByte(t *testing.T) {
+	// ClientHello with exactly 34 fixed bytes and nothing after.
+	chBody := make([]byte, tlsClientHelloFixedLen) // version(2) + random(32), no session ID length
+
+	var handshake []byte
+	handshake = append(handshake, tlsHandshakeClientHello)
+	handshake = appendU24BE(handshake, len(chBody))
+	handshake = append(handshake, chBody...)
+
+	var record []byte
+	record = append(record, tlsRecordTypeHandshake)
+	record = append(record, 0x03, 0x01)
+	record = appendU16BE(record, len(handshake))
+	record = append(record, handshake...)
+
+	_, err := extractSNI(record)
+	if !errors.Is(err, errTLSMalformed) {
+		t.Errorf("expected errTLSMalformed for missing session ID length, got: %v", err)
+	}
+}
+
+func TestExtractSNI_NoCipherSuitesLength(t *testing.T) {
+	// ClientHello ends right after session ID (no cipher suites length bytes).
+	var chBody []byte
+	chBody = append(chBody, 0x03, 0x03)          // version
+	chBody = append(chBody, make([]byte, 32)...) // random
+	chBody = append(chBody, 0x00)                // session_id_len = 0
+	// No cipher suites length bytes
+
+	var handshake []byte
+	handshake = append(handshake, tlsHandshakeClientHello)
+	handshake = appendU24BE(handshake, len(chBody))
+	handshake = append(handshake, chBody...)
+
+	var record []byte
+	record = append(record, tlsRecordTypeHandshake)
+	record = append(record, 0x03, 0x01)
+	record = appendU16BE(record, len(handshake))
+	record = append(record, handshake...)
+
+	_, err := extractSNI(record)
+	if !errors.Is(err, errTLSMalformed) {
+		t.Errorf("expected errTLSMalformed for missing cipher suites length, got: %v", err)
+	}
+}
+
+func TestExtractSNI_NoCompressionLength(t *testing.T) {
+	// ClientHello ends right after cipher suites (no compression length byte).
+	var chBody []byte
+	chBody = append(chBody, 0x03, 0x03)             // version
+	chBody = append(chBody, make([]byte, 32)...)    // random
+	chBody = append(chBody, 0x00)                   // session_id_len = 0
+	chBody = append(chBody, 0x00, 0x02, 0x00, 0x9C) // cipher suites
+	// No compression length byte
+
+	var handshake []byte
+	handshake = append(handshake, tlsHandshakeClientHello)
+	handshake = appendU24BE(handshake, len(chBody))
+	handshake = append(handshake, chBody...)
+
+	var record []byte
+	record = append(record, tlsRecordTypeHandshake)
+	record = append(record, 0x03, 0x01)
+	record = appendU16BE(record, len(handshake))
+	record = append(record, handshake...)
+
+	_, err := extractSNI(record)
+	if !errors.Is(err, errTLSMalformed) {
+		t.Errorf("expected errTLSMalformed for missing compression length, got: %v", err)
+	}
+}
+
+func TestExtractSNI_NonSNIExtensionSkipped(t *testing.T) {
+	// ClientHello with a non-SNI extension (type 0xFF01) and no SNI extension.
+	// Covers the extension skip path (line 150) and no-SNI-found return (line 154).
+	var chBody []byte
+	chBody = append(chBody, 0x03, 0x03)             // version
+	chBody = append(chBody, make([]byte, 32)...)    // random
+	chBody = append(chBody, 0x00)                   // session_id_len = 0
+	chBody = append(chBody, 0x00, 0x02, 0x00, 0x9C) // cipher suites
+	chBody = append(chBody, 0x01, 0x00)             // compression
+
+	// Extension: renegotiation_info (0xFF01), 1 byte data
+	ext := []byte{0xFF, 0x01, 0x00, 0x01, 0x00}
+	chBody = appendU16BE(chBody, len(ext))
+	chBody = append(chBody, ext...)
+
+	var handshake []byte
+	handshake = append(handshake, tlsHandshakeClientHello)
+	handshake = appendU24BE(handshake, len(chBody))
+	handshake = append(handshake, chBody...)
+
+	var record []byte
+	record = append(record, tlsRecordTypeHandshake)
+	record = append(record, 0x03, 0x01)
+	record = appendU16BE(record, len(handshake))
+	record = append(record, handshake...)
+
+	sni, err := extractSNI(record)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if sni != "" {
+		t.Errorf("expected empty SNI, got %q", sni)
+	}
+}
+
+func TestParseSNIExtension_NameLenExceedsData(t *testing.T) {
+	// SNI entry where name_length claims more bytes than available.
+	var data []byte
+	entryLen := sniEntryHeaderLen + 3 // header + 3 bytes of name
+	data = appendU16BE(data, entryLen)
+	data = append(data, sniTypeHostName) // name_type = host_name
+	data = appendU16BE(data, 50)         // name_length claims 50 bytes
+	data = append(data, 'a', 'b', 'c')   // only 3 bytes
+
+	_, err := parseSNIExtension(data)
+	if !errors.Is(err, errTLSMalformed) {
+		t.Errorf("expected errTLSMalformed for name len exceeding data, got: %v", err)
+	}
+}
+
+func TestVerifySNI_HeaderPeekTooShort(t *testing.T) {
+	// Send 0x16 then close immediately. Peek(5) gets < 5 bytes.
+	clientConn, serverConn := net.Pipe()
+	defer func() { _ = clientConn.Close() }()
+
+	go func() {
+		_, _ = serverConn.Write([]byte{0x16, 0x03}) // only 2 bytes after record type
+		_ = serverConn.Close()
+	}()
+
+	reader := bufio.NewReaderSize(clientConn, sniPeekSize)
+	_, _, category, err := verifySNI(reader, clientConn, "example.com", 2*time.Second)
+
+	if category != sniCategoryMalformed {
+		t.Errorf("category = %q, want %q", category, sniCategoryMalformed)
+	}
+	if !errors.Is(err, errTLSMalformed) {
+		t.Errorf("expected errTLSMalformed, got: %v", err)
+	}
+}
+
+func TestVerifySNI_OversizedRecordClamped(t *testing.T) {
+	// Record header claims 20000 bytes (>sniPeekSize). verifySNI clamps to
+	// sniPeekSize. Since the record payload is truncated relative to the
+	// claimed length, extractSNI returns malformed (fail-closed).
+	hello := buildClientHello("example.com")
+	// Overwrite record length to claim 20000 bytes
+	binary.BigEndian.PutUint16(hello[3:5], 20000)
+	// Pad to sniPeekSize so the peek succeeds at the clamped size
+	padded := make([]byte, sniPeekSize+tlsRecordHeaderLen)
+	copy(padded, hello)
+
+	clientConn, serverConn := net.Pipe()
+	defer func() { _ = clientConn.Close() }()
+
+	go func() {
+		_, _ = serverConn.Write(padded)
+		_ = serverConn.Close()
+	}()
+
+	reader := bufio.NewReaderSize(clientConn, sniPeekSize)
+	_, _, category, err := verifySNI(reader, clientConn, "example.com", 2*time.Second)
+
+	// Oversized record claim with truncated data = fail-closed (malformed)
+	if category != sniCategoryMalformed {
+		t.Errorf("category = %q, want %q", category, sniCategoryMalformed)
+	}
+	if !errors.Is(err, errTLSMalformed) {
+		t.Errorf("expected errTLSMalformed, got: %v", err)
+	}
+}
+
 func TestVerifySNI_ReaderResize(t *testing.T) {
 	// Build a ClientHello with a long SNI to create a record larger than
 	// a small bufio buffer. Verify the reader is transparently resized.

@@ -132,6 +132,49 @@ forward_proxy:
 | `idle_timeout_seconds` | `120` | No | Kill idle tunnels |
 | `redirect_websocket_hosts` | `[]` | No | Redirect matching hosts to /ws |
 
+## Request Body Scanning
+
+Scans request bodies and headers on the forward proxy path for secret exfiltration. Catches secrets in POST/PUT bodies and Authorization/Cookie headers that bypass URL-level scanning.
+
+**Scope:** Forward HTTP proxy (`HTTPS_PROXY` absolute-URI requests) and fetch handler headers only. CONNECT tunnels are TLS-encrypted and cannot be scanned without MITM (out of scope).
+
+```yaml
+request_body_scanning:
+  enabled: false
+  action: warn              # warn or block (no strip for bodies)
+  max_body_bytes: 5242880   # 5MB; fail-closed above this
+  scan_headers: true        # scan request headers for DLP
+  header_mode: sensitive    # "sensitive" (listed headers) or "all" (everything except ignore list)
+  sensitive_headers:
+    - Authorization
+    - Cookie
+    - X-Api-Key
+    - X-Token
+    - Proxy-Authorization
+    - X-Goog-Api-Key
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `false` | Enable request body and header DLP scanning |
+| `action` | `warn` | `warn` logs only, `block` rejects (requires enforce mode) |
+| `max_body_bytes` | `5242880` | Max body size to buffer; bodies exceeding this are always blocked (fail-closed) |
+| `scan_headers` | `true` | Scan request headers for DLP patterns |
+| `header_mode` | `sensitive` | `sensitive`: scan only listed headers. `all`: scan all headers except ignore list |
+| `sensitive_headers` | (see above) | Headers to scan in `sensitive` mode |
+| `ignore_headers` | (hop-by-hop + structural) | Headers to skip in `all` mode |
+
+**Content-type dispatch:** JSON bodies have string values extracted recursively. Form-urlencoded bodies are parsed as key-value pairs. Multipart form data has text fields extracted (binary parts skipped, max 100 parts). Text/* and XML bodies are scanned as raw text. Unknown content types get a fallback raw-text scan (never skipped, prevents Content-Type spoofing bypass).
+
+**Fail-closed behaviors:**
+- Bodies exceeding `max_body_bytes`: always blocked regardless of action setting
+- Compressed bodies (`Content-Encoding: gzip/deflate/br`): always blocked (compressed bytes evade regex DLP)
+- Body read errors: always blocked (prevents forwarding empty/corrupt bodies)
+
+**Header scanning:** Headers are scanned regardless of destination host. An agent can exfiltrate secrets via `Authorization: Bearer <secret>` to any host, including allowlisted ones. The URL allowlist controls URL-level blocking, not header DLP bypass.
+
+**Note on `scan_headers`:** Due to Go's YAML bool unmarshaling, omitting `scan_headers` is equivalent to setting it to `false`. Always set `scan_headers: true` explicitly in your config if you want header scanning enabled.
+
 ## WebSocket Proxy
 
 Bidirectional WebSocket scanning via `/ws?url=ws://upstream:9090/path`. Text frames are scanned through the full DLP + injection pipeline. Fragment reassembly handles split messages.

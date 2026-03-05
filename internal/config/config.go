@@ -44,6 +44,12 @@ const (
 	OriginPolicyRewrite = "rewrite"
 )
 
+// Header mode constants for request body scanning.
+const (
+	HeaderModeSensitive = "sensitive" // scan only explicitly listed headers
+	HeaderModeAll       = "all"       // scan all headers except ignore list
+)
+
 // Output/format constants for configuration defaults.
 const (
 	DefaultListen    = "127.0.0.1:8888"
@@ -147,6 +153,7 @@ type Config struct {
 	SessionProfiling    SessionProfiling    `yaml:"session_profiling"`
 	AdaptiveEnforcement AdaptiveEnforcement `yaml:"adaptive_enforcement"`
 	MCPSessionBinding   MCPSessionBinding   `yaml:"mcp_session_binding"`
+	RequestBodyScanning RequestBodyScanning `yaml:"request_body_scanning"`
 	KillSwitch          KillSwitch          `yaml:"kill_switch"`
 	MetricsListen       string              `yaml:"metrics_listen"` // separate listen address for /metrics and /stats
 	Emit                EmitConfig          `yaml:"emit"`
@@ -331,6 +338,20 @@ type MCPSessionBinding struct {
 	Enabled           bool   `yaml:"enabled"`
 	UnknownToolAction string `yaml:"unknown_tool_action"` // warn, block
 	NoBaselineAction  string `yaml:"no_baseline_action"`  // warn, block
+}
+
+// RequestBodyScanning configures DLP scanning of request bodies and headers
+// on the forward proxy path. Catches secrets exfiltrated via POST bodies or
+// smuggled in Authorization/Cookie headers. CONNECT tunnels are out of scope
+// (TLS-encrypted, can't scan without MITM).
+type RequestBodyScanning struct {
+	Enabled          bool     `yaml:"enabled"`
+	Action           string   `yaml:"action"`            // warn, block (no strip for bodies)
+	MaxBodyBytes     int      `yaml:"max_body_bytes"`    // fail-closed above this limit
+	ScanHeaders      bool     `yaml:"scan_headers"`      // scan request headers for DLP
+	HeaderMode       string   `yaml:"header_mode"`       // "sensitive" (listed headers) or "all" (everything except ignore list)
+	SensitiveHeaders []string `yaml:"sensitive_headers"` // headers to scan in sensitive mode
+	IgnoreHeaders    []string `yaml:"ignore_headers"`    // headers to skip in all mode
 }
 
 // KillSwitch configures the emergency deny-all kill switch.
@@ -645,6 +666,41 @@ func (c *Config) ApplyDefaults() {
 		}
 		if c.MCPSessionBinding.NoBaselineAction == "" {
 			c.MCPSessionBinding.NoBaselineAction = ActionWarn
+		}
+	}
+
+	// Request body scanning defaults
+	if c.RequestBodyScanning.Enabled {
+		if c.RequestBodyScanning.Action == "" {
+			c.RequestBodyScanning.Action = ActionWarn
+		}
+		if c.RequestBodyScanning.MaxBodyBytes == 0 {
+			c.RequestBodyScanning.MaxBodyBytes = 5 * 1024 * 1024 // 5MB default
+		}
+		// Note: ScanHeaders defaults to false (Go bool zero value). YAML must
+		// explicitly set scan_headers: true to enable header scanning. This is a
+		// known limitation of Go's YAML bool unmarshaling (can't distinguish
+		// "omitted" from "explicitly false").
+		if c.RequestBodyScanning.HeaderMode == "" {
+			c.RequestBodyScanning.HeaderMode = HeaderModeSensitive
+		}
+		if len(c.RequestBodyScanning.SensitiveHeaders) == 0 {
+			c.RequestBodyScanning.SensitiveHeaders = []string{
+				"Authorization",
+				"Cookie",
+				"X-Api-Key",
+				"X-Token",
+				"Proxy-Authorization",
+				"X-Goog-Api-Key",
+			}
+		}
+		if len(c.RequestBodyScanning.IgnoreHeaders) == 0 {
+			c.RequestBodyScanning.IgnoreHeaders = []string{
+				"Connection", "Keep-Alive", "Proxy-Authenticate",
+				"Te", "Trailer", "Transfer-Encoding", "Upgrade",
+				"Host", "Content-Length", "Content-Type",
+				"Accept", "Accept-Encoding", "User-Agent",
+			}
 		}
 	}
 }
@@ -962,6 +1018,25 @@ func (c *Config) Validate() error {
 			// valid
 		default:
 			return fmt.Errorf("invalid mcp_session_binding.no_baseline_action %q: must be warn or block", c.MCPSessionBinding.NoBaselineAction)
+		}
+	}
+
+	// Validate request body scanning config
+	if c.RequestBodyScanning.Enabled {
+		switch c.RequestBodyScanning.Action {
+		case ActionWarn, ActionBlock:
+			// valid
+		default:
+			return fmt.Errorf("invalid request_body_scanning.action %q: must be warn or block", c.RequestBodyScanning.Action)
+		}
+		if c.RequestBodyScanning.MaxBodyBytes <= 0 {
+			return fmt.Errorf("request_body_scanning.max_body_bytes must be positive")
+		}
+		switch c.RequestBodyScanning.HeaderMode {
+		case HeaderModeSensitive, HeaderModeAll:
+			// valid
+		default:
+			return fmt.Errorf("invalid request_body_scanning.header_mode %q: must be sensitive or all", c.RequestBodyScanning.HeaderMode)
 		}
 	}
 
@@ -1292,6 +1367,14 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		warnings = append(warnings, ReloadWarning{
 			Field:   "mcp_session_binding.enabled",
 			Message: "MCP session binding disabled",
+		})
+	}
+
+	// Request body scanning disabled
+	if old.RequestBodyScanning.Enabled && !updated.RequestBodyScanning.Enabled {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "request_body_scanning.enabled",
+			Message: "request body scanning disabled",
 		})
 	}
 

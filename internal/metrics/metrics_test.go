@@ -880,14 +880,11 @@ func TestRecordSNI(t *testing.T) {
 	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	body := rec.Body.String()
 
-	if !strings.Contains(body, "pipelock_sni_total") {
-		t.Error("expected pipelock_sni_total in /metrics output")
+	if !strings.Contains(body, `pipelock_sni_total{category="match"} 2`) {
+		t.Errorf("expected 2 SNI match hits:\n%s", body)
 	}
-	if !strings.Contains(body, `category="match"`) {
-		t.Error("expected category=match label in /metrics output")
-	}
-	if !strings.Contains(body, `category="mismatch"`) {
-		t.Error("expected category=mismatch label in /metrics output")
+	if !strings.Contains(body, `pipelock_sni_total{category="mismatch"} 1`) {
+		t.Errorf("expected 1 SNI mismatch hit:\n%s", body)
 	}
 }
 

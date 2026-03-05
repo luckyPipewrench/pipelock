@@ -4092,3 +4092,104 @@ func TestMergeResponsePatterns_FalseIncludeDefaults_UserOnly(t *testing.T) {
 		t.Fatalf("expected 1 pattern, got %d", len(result))
 	}
 }
+
+// --- RequestBodyScanning config tests ---
+
+func TestValidate_RequestBodyScanning_InvalidAction(t *testing.T) {
+	cfg := Defaults()
+	cfg.RequestBodyScanning.Enabled = true
+	cfg.RequestBodyScanning.Action = "strip"
+	cfg.ApplyDefaults()
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected validation error for invalid action")
+	}
+}
+
+func TestValidate_RequestBodyScanning_InvalidMaxBodyBytes(t *testing.T) {
+	cfg := Defaults()
+	cfg.RequestBodyScanning.Enabled = true
+	cfg.RequestBodyScanning.MaxBodyBytes = -1
+	cfg.ApplyDefaults()
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected validation error for negative max_body_bytes")
+	}
+}
+
+func TestValidate_RequestBodyScanning_InvalidHeaderMode(t *testing.T) {
+	cfg := Defaults()
+	cfg.RequestBodyScanning.Enabled = true
+	cfg.RequestBodyScanning.HeaderMode = "custom"
+	cfg.ApplyDefaults()
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected validation error for invalid header_mode")
+	}
+}
+
+func TestValidate_RequestBodyScanning_ValidActions(t *testing.T) {
+	for _, action := range []string{ActionWarn, ActionBlock} {
+		cfg := Defaults()
+		cfg.RequestBodyScanning.Enabled = true
+		cfg.RequestBodyScanning.Action = action
+		cfg.ApplyDefaults()
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("unexpected validation error for action %q: %v", action, err)
+		}
+	}
+}
+
+func TestApplyDefaults_RequestBodyScanning_ConditionalDefaults(t *testing.T) {
+	cfg := &Config{}
+	cfg.RequestBodyScanning.Enabled = true
+	cfg.ApplyDefaults()
+
+	if cfg.RequestBodyScanning.Action != ActionWarn {
+		t.Fatalf("expected default action %q, got %q", ActionWarn, cfg.RequestBodyScanning.Action)
+	}
+	if cfg.RequestBodyScanning.MaxBodyBytes != 5*1024*1024 {
+		t.Fatalf("expected default max_body_bytes 5MB, got %d", cfg.RequestBodyScanning.MaxBodyBytes)
+	}
+	if cfg.RequestBodyScanning.HeaderMode != HeaderModeSensitive {
+		t.Fatalf("expected default header_mode %q, got %q", HeaderModeSensitive, cfg.RequestBodyScanning.HeaderMode)
+	}
+	if len(cfg.RequestBodyScanning.SensitiveHeaders) == 0 {
+		t.Fatal("expected default sensitive_headers to be populated")
+	}
+	if len(cfg.RequestBodyScanning.IgnoreHeaders) == 0 {
+		t.Fatal("expected default ignore_headers to be populated")
+	}
+}
+
+func TestApplyDefaults_RequestBodyScanning_DisabledSkipsDefaults(t *testing.T) {
+	cfg := &Config{}
+	// Enabled defaults to false (zero value).
+	cfg.ApplyDefaults()
+
+	if cfg.RequestBodyScanning.Action != "" {
+		t.Fatalf("expected empty action when disabled, got %q", cfg.RequestBodyScanning.Action)
+	}
+	if len(cfg.RequestBodyScanning.SensitiveHeaders) != 0 {
+		t.Fatal("expected no sensitive_headers when disabled")
+	}
+}
+
+func TestReloadWarnings_RequestBodyScanning_DisabledWarning(t *testing.T) {
+	old := Defaults()
+	old.RequestBodyScanning.Enabled = true
+	old.ApplyDefaults()
+
+	updated := Defaults()
+	updated.RequestBodyScanning.Enabled = false
+	updated.ApplyDefaults()
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == "request_body_scanning.enabled" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected reload warning when request_body_scanning is disabled")
+	}
+}

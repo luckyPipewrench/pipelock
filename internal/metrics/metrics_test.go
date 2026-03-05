@@ -891,6 +891,46 @@ func TestRecordSNI(t *testing.T) {
 	}
 }
 
+func TestRecordBodyDLP(t *testing.T) {
+	m := New()
+	m.RecordBodyDLP("block")
+	m.RecordBodyDLP("block")
+	m.RecordBodyDLP("warn")
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	m.PrometheusHandler().ServeHTTP(w, req)
+
+	body, _ := io.ReadAll(w.Body)
+	text := string(body)
+	if !strings.Contains(text, `pipelock_body_dlp_hits_total{action="block"} 2`) {
+		t.Errorf("expected 2 body DLP block hits:\n%s", text)
+	}
+	if !strings.Contains(text, `pipelock_body_dlp_hits_total{action="warn"} 1`) {
+		t.Errorf("expected 1 body DLP warn hit:\n%s", text)
+	}
+}
+
+func TestRecordHeaderDLP(t *testing.T) {
+	m := New()
+	m.RecordHeaderDLP("block")
+	m.RecordHeaderDLP("warn")
+	m.RecordHeaderDLP("warn")
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	m.PrometheusHandler().ServeHTTP(w, req)
+
+	body, _ := io.ReadAll(w.Body)
+	text := string(body)
+	if !strings.Contains(text, `pipelock_header_dlp_hits_total{action="block"} 1`) {
+		t.Errorf("expected 1 header DLP block hit:\n%s", text)
+	}
+	if !strings.Contains(text, `pipelock_header_dlp_hits_total{action="warn"} 2`) {
+		t.Errorf("expected 2 header DLP warn hits:\n%s", text)
+	}
+}
+
 func TestRegisterInfo(t *testing.T) {
 	m := New()
 	m.RegisterInfo("0.3.1-test")

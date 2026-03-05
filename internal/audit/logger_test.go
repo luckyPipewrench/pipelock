@@ -1684,6 +1684,130 @@ func TestEmit_DefensiveEvents_NoMITRETechnique(t *testing.T) {
 	}
 }
 
+func TestLogBodyDLP_JSONFormat(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogBodyDLP("POST", "https://api.example.com/v1/chat", testActionWarn, testClientIP, "req-50", 2, []string{"AWS Access Key", "GitHub PAT"})
+	logger.Close()
+
+	data, _ := os.ReadFile(filepath.Clean(path))
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+
+	if entry["event"] != string(EventBodyDLP) {
+		t.Errorf("expected event=body_dlp, got %v", entry["event"])
+	}
+	if entry["method"] != "POST" {
+		t.Errorf("expected method=POST, got %v", entry["method"])
+	}
+	if entry["url"] != "https://api.example.com/v1/chat" {
+		t.Errorf("expected url, got %v", entry["url"])
+	}
+	if entry["action"] != testActionWarn {
+		t.Errorf("expected action=warn, got %v", entry["action"])
+	}
+	if entry["client_ip"] != testClientIP {
+		t.Errorf("expected client_ip, got %v", entry["client_ip"])
+	}
+	if entry["request_id"] != "req-50" {
+		t.Errorf("expected request_id=req-50, got %v", entry["request_id"])
+	}
+	matchCount, ok := entry["match_count"].(float64)
+	if !ok || matchCount != 2 {
+		t.Errorf("expected match_count=2, got %v", entry["match_count"])
+	}
+	patterns, ok := entry["patterns"].([]any)
+	if !ok || len(patterns) != 2 {
+		t.Errorf("expected 2 patterns, got %v", entry["patterns"])
+	}
+	if entry["mitre_technique"] != mitreT1048 {
+		t.Errorf("expected mitre_technique=T1048, got %v", entry["mitre_technique"])
+	}
+}
+
+func TestLogHeaderDLP_JSONFormat(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogHeaderDLP("POST", "https://api.example.com/v1/chat", "Authorization", "block", testClientIP, "req-51", []string{"AWS Access Key"})
+	logger.Close()
+
+	data, _ := os.ReadFile(filepath.Clean(path))
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+
+	if entry["event"] != string(EventHeaderDLP) {
+		t.Errorf("expected event=header_dlp, got %v", entry["event"])
+	}
+	if entry["method"] != "POST" {
+		t.Errorf("expected method=POST, got %v", entry["method"])
+	}
+	if entry["header"] != "Authorization" {
+		t.Errorf("expected header=Authorization, got %v", entry["header"])
+	}
+	if entry["action"] != "block" {
+		t.Errorf("expected action=block, got %v", entry["action"])
+	}
+	if entry["mitre_technique"] != mitreT1048 {
+		t.Errorf("expected mitre_technique=T1048, got %v", entry["mitre_technique"])
+	}
+}
+
+func TestEmit_LogBodyDLP(t *testing.T) {
+	logger, sink := newLoggerWithEmitter(t)
+	defer logger.Close()
+
+	logger.LogBodyDLP("POST", "https://api.example.com", "block", testClientIP, "req-52", 1, []string{"AWS Key"})
+
+	ev, ok := sink.lastEvent()
+	if !ok {
+		t.Fatal("expected emitted event")
+	}
+	if ev.Type != string(EventBodyDLP) {
+		t.Errorf("type = %q, want body_dlp", ev.Type)
+	}
+	if ev.Fields["mitre_technique"] != mitreT1048 {
+		t.Errorf("fields[mitre_technique] = %v, want T1048", ev.Fields["mitre_technique"])
+	}
+	if ev.Fields["match_count"] != 1 {
+		t.Errorf("fields[match_count] = %v, want 1", ev.Fields["match_count"])
+	}
+}
+
+func TestEmit_LogHeaderDLP(t *testing.T) {
+	logger, sink := newLoggerWithEmitter(t)
+	defer logger.Close()
+
+	logger.LogHeaderDLP("GET", "https://api.example.com", "Authorization", "block", testClientIP, "req-53", []string{"GitHub PAT"})
+
+	ev, ok := sink.lastEvent()
+	if !ok {
+		t.Fatal("expected emitted event")
+	}
+	if ev.Type != string(EventHeaderDLP) {
+		t.Errorf("type = %q, want header_dlp", ev.Type)
+	}
+	if ev.Fields["header"] != "Authorization" {
+		t.Errorf("fields[header] = %v, want Authorization", ev.Fields["header"])
+	}
+	if ev.Fields["mitre_technique"] != mitreT1048 {
+		t.Errorf("fields[mitre_technique] = %v, want T1048", ev.Fields["mitre_technique"])
+	}
+}
+
 func TestEmit_LogAnomaly_NoScanner_NoTechnique(t *testing.T) {
 	logger, sink := newLoggerWithEmitter(t)
 	defer logger.Close()

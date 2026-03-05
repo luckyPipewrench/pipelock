@@ -37,6 +37,13 @@ func setupForwardProxy(t *testing.T, cfgMod func(*config.Config)) (string, func(
 		cfgMod(cfg)
 	}
 
+	// Re-apply defaults so features enabled by cfgMod get conditional defaults
+	// (e.g. RequestBodyScanning.SensitiveHeaders). Preserve Internal to keep
+	// SSRF isolation (nil disables SSRF checks in tests).
+	savedInternal := cfg.Internal
+	cfg.ApplyDefaults()
+	cfg.Internal = savedInternal
+
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
 	m := metrics.New()

@@ -78,6 +78,8 @@ const (
 	EventMCPUnknownTool     EventType = "mcp_unknown_tool"
 	EventKillSwitchDeny     EventType = "kill_switch_deny"
 	EventSNIMismatch        EventType = "sni_mismatch"
+	EventBodyDLP            EventType = "body_dlp"
+	EventHeaderDLP          EventType = "header_dlp"
 )
 
 // WebSocket frame direction constants used in audit log entries.
@@ -631,6 +633,66 @@ func (l *Logger) LogKillSwitchDeny(transport, endpoint, source, message, clientI
 			"source":       sanitizeString(source),
 			"deny_message": sanitizeString(message),
 			"client_ip":    sanitizeString(clientIP),
+		})
+	}
+}
+
+// LogBodyDLP logs a request body DLP scan detection.
+func (l *Logger) LogBodyDLP(method, url, action, clientIP, requestID string, matchCount int, patternNames []string) {
+	technique := TechniqueForScanner(ScannerDLP)
+
+	l.zl.Warn().
+		Str("event", string(EventBodyDLP)).
+		Str("method", method).
+		Str("url", sanitizeString(url)).
+		Str("action", action).
+		Str("client_ip", clientIP).
+		Str("request_id", requestID).
+		Int("match_count", matchCount).
+		Strs("patterns", patternNames).
+		Str("mitre_technique", technique).
+		Msg("request body DLP scan hit")
+
+	if l.emitter != nil {
+		l.emitter.Emit(context.Background(), string(EventBodyDLP), map[string]any{
+			"method":          method,
+			"url":             sanitizeString(url),
+			"action":          action,
+			"client_ip":       clientIP,
+			"request_id":      requestID,
+			"match_count":     matchCount,
+			"patterns":        patternNames,
+			"mitre_technique": technique,
+		})
+	}
+}
+
+// LogHeaderDLP logs a request header DLP scan detection.
+func (l *Logger) LogHeaderDLP(method, url, headerName, action, clientIP, requestID string, patternNames []string) {
+	technique := TechniqueForScanner(ScannerDLP)
+
+	l.zl.Warn().
+		Str("event", string(EventHeaderDLP)).
+		Str("method", method).
+		Str("url", sanitizeString(url)).
+		Str("header", sanitizeString(headerName)).
+		Str("action", action).
+		Str("client_ip", clientIP).
+		Str("request_id", requestID).
+		Strs("patterns", patternNames).
+		Str("mitre_technique", technique).
+		Msg("request header DLP scan hit")
+
+	if l.emitter != nil {
+		l.emitter.Emit(context.Background(), string(EventHeaderDLP), map[string]any{
+			"method":          method,
+			"url":             sanitizeString(url),
+			"header":          sanitizeString(headerName),
+			"action":          action,
+			"client_ip":       clientIP,
+			"request_id":      requestID,
+			"patterns":        patternNames,
+			"mitre_technique": technique,
 		})
 	}
 }

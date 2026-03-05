@@ -46,6 +46,20 @@ forward_proxy:
   idle_timeout_seconds: 120
   sni_verification: true
 
+request_body_scanning:
+  enabled: true
+  action: block
+  max_body_bytes: 5242880
+  scan_headers: true
+  header_mode: all  # scans all headers except ignore list; sensitive_headers unused in all mode
+  sensitive_headers:
+    - Authorization
+    - Cookie
+    - X-Api-Key
+    - X-Token
+    - Proxy-Authorization
+    - X-Goog-Api-Key
+
 websocket_proxy:
   enabled: false
   max_message_bytes: 1048576

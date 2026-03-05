@@ -610,25 +610,14 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Request header DLP scanning (fetch is GET-only, no body to scan).
-	if cfg.RequestBodyScanning.Enabled && cfg.RequestBodyScanning.ScanHeaders {
-		if headerResult := scanRequestHeaders(r.Header, cfg, sc); headerResult != nil {
-			action := cfg.RequestBodyScanning.Action
-			patternNames := dlpMatchNames(headerResult.DLPMatches)
-
-			log.LogHeaderDLP("GET", displayURL, headerResult.HeaderName, action, clientIP, requestID, patternNames)
-			p.metrics.RecordHeaderDLP(action)
-
-			if action == config.ActionBlock && cfg.EnforceEnabled() {
-				p.metrics.RecordBlocked(parsed.Hostname(), "header_dlp", time.Since(start))
-				writeJSON(w, http.StatusForbidden, FetchResponse{
-					URL:         displayURL,
-					Agent:       agent,
-					Blocked:     true,
-					BlockReason: "request header contains secret",
-				})
-				return
-			}
-		}
+	if p.evalHeaderDLP(r.Header, cfg, sc, log, "GET", displayURL, parsed.Hostname(), clientIP, requestID, start) {
+		writeJSON(w, http.StatusForbidden, FetchResponse{
+			URL:         displayURL,
+			Agent:       agent,
+			Blocked:     true,
+			BlockReason: "request header contains secret",
+		})
+		return
 	}
 
 	// Fetch the URL — attach clientIP/requestID/agent to context for redirect logging

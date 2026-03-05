@@ -10,7 +10,9 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -410,4 +412,31 @@ func scanRequestHeaders(headers http.Header, cfg *config.Config, sc *scanner.Sca
 	}
 
 	return nil
+}
+
+// evalHeaderDLP scans request headers, logs matches, and records metrics.
+// Returns true if the request should be blocked (match found, action=block,
+// enforce enabled). The caller handles the response format (http.Error vs
+// writeJSON) since it differs between forward proxy and fetch handler.
+func (p *Proxy) evalHeaderDLP(headers http.Header, cfg *config.Config, sc *scanner.Scanner,
+	logger *audit.Logger, method, url, hostname, clientIP, requestID string, start time.Time,
+) bool {
+	if !cfg.RequestBodyScanning.Enabled || !cfg.RequestBodyScanning.ScanHeaders {
+		return false
+	}
+	headerResult := scanRequestHeaders(headers, cfg, sc)
+	if headerResult == nil {
+		return false
+	}
+	action := cfg.RequestBodyScanning.Action
+	patternNames := dlpMatchNames(headerResult.DLPMatches)
+
+	logger.LogHeaderDLP(method, url, headerResult.HeaderName, action, clientIP, requestID, patternNames)
+	p.metrics.RecordHeaderDLP(action)
+
+	if action == config.ActionBlock && cfg.EnforceEnabled() {
+		p.metrics.RecordBlocked(hostname, "header_dlp", time.Since(start))
+		return true
+	}
+	return false
 }

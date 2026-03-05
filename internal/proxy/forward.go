@@ -346,20 +346,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Request header DLP scanning.
-	if cfg.RequestBodyScanning.Enabled && cfg.RequestBodyScanning.ScanHeaders {
-		if headerResult := scanRequestHeaders(r.Header, cfg, sc); headerResult != nil {
-			action := cfg.RequestBodyScanning.Action
-			patternNames := dlpMatchNames(headerResult.DLPMatches)
-
-			p.logger.LogHeaderDLP(r.Method, targetURL, headerResult.HeaderName, action, clientIP, requestID, patternNames)
-			p.metrics.RecordHeaderDLP(action)
-
-			if action == config.ActionBlock && cfg.EnforceEnabled() {
-				p.metrics.RecordBlocked(r.URL.Hostname(), "header_dlp", time.Since(start))
-				http.Error(w, "blocked: request header contains secret", http.StatusForbidden)
-				return
-			}
-		}
+	if p.evalHeaderDLP(r.Header, cfg, sc, p.logger, r.Method, targetURL, r.URL.Hostname(), clientIP, requestID, start) {
+		http.Error(w, "blocked: request header contains secret", http.StatusForbidden)
+		return
 	}
 
 	// Clone request with context keys so CheckRedirect can attribute audit logs

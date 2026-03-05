@@ -122,6 +122,7 @@ forward_proxy:
   enabled: false                # Requires restart to change
   max_tunnel_seconds: 300
   idle_timeout_seconds: 120
+  sni_verification: true        # Verify TLS SNI matches CONNECT target
   redirect_websocket_hosts: []  # Redirect WS hosts to /ws proxy
 ```
 
@@ -130,6 +131,7 @@ forward_proxy:
 | `enabled` | `false` | **Yes** | Enable CONNECT tunnel proxy |
 | `max_tunnel_seconds` | `300` | No | Max tunnel lifetime |
 | `idle_timeout_seconds` | `120` | No | Kill idle tunnels |
+| `sni_verification` | `true` | No | Verify TLS ClientHello SNI matches the CONNECT target hostname. Blocks domain fronting (MITRE T1090.004). Set to `false` to disable. |
 | `redirect_websocket_hosts` | `[]` | No | Redirect matching hosts to /ws |
 
 ## WebSocket Proxy

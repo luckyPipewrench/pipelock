@@ -40,6 +40,8 @@ type Metrics struct {
 
 	chainDetections *prometheus.CounterVec
 
+	sniTotal *prometheus.CounterVec
+
 	sessionAnomalies   *prometheus.CounterVec
 	sessionEscalations *prometheus.CounterVec
 	sessionsActive     prometheus.Gauge
@@ -165,6 +167,12 @@ func New() *Metrics {
 		Help:      "Total tool call chain pattern detections.",
 	}, []string{"pattern", "severity", "action"})
 
+	sniTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "pipelock",
+		Name:      "sni_total",
+		Help:      "Total SNI verification results by category.",
+	}, []string{"category"})
+
 	sessionAnomalies := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "pipelock",
 		Name:      "session_anomalies_total",
@@ -192,7 +200,7 @@ func New() *Metrics {
 	reg.MustRegister(requestsTotal, scannerHits, requestLatency,
 		tunnelsTotal, tunnelDuration, tunnelBytes, activeTunnels,
 		wsConnectionsTotal, wsDuration, wsBytes, activeWS, wsFrames, wsScanHits, wsRedirectHints,
-		killSwitchDenials, chainDetections,
+		killSwitchDenials, chainDetections, sniTotal,
 		sessionAnomalies, sessionEscalations, sessionsActive, sessionsEvicted)
 
 	return &Metrics{
@@ -213,6 +221,7 @@ func New() *Metrics {
 		wsRedirectHints:    wsRedirectHints,
 		killSwitchDenials:  killSwitchDenials,
 		chainDetections:    chainDetections,
+		sniTotal:           sniTotal,
 		sessionAnomalies:   sessionAnomalies,
 		sessionEscalations: sessionEscalations,
 		sessionsActive:     sessionsActive,
@@ -336,6 +345,11 @@ func (m *Metrics) RecordKillSwitchDenial(transport, endpoint string) {
 // RecordChainDetection increments the chain detection counter.
 func (m *Metrics) RecordChainDetection(pattern, severity, action string) {
 	m.chainDetections.WithLabelValues(pattern, severity, action).Inc()
+}
+
+// RecordSNI increments the SNI verification counter for the given category.
+func (m *Metrics) RecordSNI(category string) {
+	m.sniTotal.WithLabelValues(category).Inc()
 }
 
 // RecordSessionAnomaly increments the session anomaly counter by type.

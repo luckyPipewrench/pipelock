@@ -1702,3 +1702,72 @@ func TestEmit_LogAnomaly_NoScanner_NoTechnique(t *testing.T) {
 		t.Error("expected mitre_technique to be omitted when scanner is empty")
 	}
 }
+
+func TestLogSNIMismatch(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogSNIMismatch("allowed.com", "evil.com", testClientIP, testReqID, "mismatch")
+	logger.Close()
+
+	data, _ := os.ReadFile(filepath.Clean(path))
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("unmarshal: %v\ndata: %s", err, data)
+	}
+
+	if entry["event"] != string(EventSNIMismatch) {
+		t.Errorf("event = %v, want %s", entry["event"], EventSNIMismatch)
+	}
+	if entry["connect_host"] != "allowed.com" {
+		t.Errorf("connect_host = %v, want allowed.com", entry["connect_host"])
+	}
+	if entry["sni_host"] != "evil.com" {
+		t.Errorf("sni_host = %v, want evil.com", entry["sni_host"])
+	}
+	if entry["category"] != "mismatch" {
+		t.Errorf("category = %v, want mismatch", entry["category"])
+	}
+	if entry["mitre_technique"] != "T1090.004" {
+		t.Errorf("mitre_technique = %v, want T1090.004", entry["mitre_technique"])
+	}
+}
+
+func TestLogSNIMismatch_Emitter(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sink := &collectingSink{}
+	emitter := emit.NewEmitter("test", sink)
+	logger.SetEmitter(emitter)
+
+	logger.LogSNIMismatch("allowed.com", "evil.com", testClientIP, testReqID, "mismatch")
+	logger.Close()
+	_ = emitter.Close()
+
+	ev, ok := sink.lastEvent()
+	if !ok {
+		t.Fatal("expected emitted event")
+	}
+	if ev.Type != string(EventSNIMismatch) {
+		t.Errorf("emitted type = %q, want %q", ev.Type, EventSNIMismatch)
+	}
+	if ev.Fields["connect_host"] != "allowed.com" {
+		t.Errorf("connect_host = %v, want allowed.com", ev.Fields["connect_host"])
+	}
+	if ev.Fields["sni_host"] != "evil.com" {
+		t.Errorf("sni_host = %v, want evil.com", ev.Fields["sni_host"])
+	}
+	if ev.Fields["mitre_technique"] != "T1090.004" {
+		t.Errorf("mitre_technique = %v, want T1090.004", ev.Fields["mitre_technique"])
+	}
+}

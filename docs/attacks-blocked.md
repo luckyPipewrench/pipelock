@@ -237,6 +237,44 @@ tool_chain_detection:
 
 ---
 
+## Domain Fronting via SNI Mismatch
+
+**Technique:** T1090.004 (Proxy: Domain Fronting)
+
+An agent uses `CONNECT allowed.com:443` to establish a tunnel through the proxy, passing the hostname allowlist check. After the tunnel is established, it sends a TLS ClientHello with `SNI=evil.com`, reaching a completely different server via shared CDN/ALB infrastructure.
+
+**Attack:**
+```
+CONNECT allowed.com:443 HTTP/1.1    ← passes hostname scanning
+Host: allowed.com:443
+
+HTTP/1.1 200 OK                     ← tunnel established
+
+ClientHello(SNI=evil.com)           ← TLS handshake to wrong server
+```
+
+**Audit log:**
+```json
+{
+  "event": "sni_mismatch",
+  "connect_host": "allowed.com",
+  "sni_host": "evil.com",
+  "category": "mismatch",
+  "mitre_technique": "T1090.004"
+}
+```
+
+**Config that blocks it:**
+```yaml
+forward_proxy:
+  enabled: true
+  sni_verification: true
+```
+
+**Why it works:** After sending the `200 OK` response, pipelock peeks at the first bytes of tunnel data using `bufio.Reader.Peek()`. If the data starts with a TLS ClientHello (record type `0x16`), pipelock parses it to extract the SNI extension and compares it to the CONNECT target. A mismatch causes immediate connection close. Malformed TLS data (starts with `0x16` but fails to parse) is also blocked (fail-closed). Non-TLS CONNECT traffic and valid TLS without an SNI extension pass through normally.
+
+---
+
 ## Adding Entries
 
 To add a new attack to this gallery:

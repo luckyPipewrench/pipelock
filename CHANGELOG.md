@@ -5,6 +5,11 @@ All notable changes to Pipelock will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Forward proxy SNI verification: parses TLS ClientHello from CONNECT tunnels and verifies the SNI hostname matches the CONNECT target. Blocks domain fronting bypass attempts (MITRE T1090.004). Enabled by default via `forward_proxy.sni_verification`. Fail-closed on timeout and malformed TLS.
+
 ## [0.3.4] - 2026-03-04
 
 ### Fixed

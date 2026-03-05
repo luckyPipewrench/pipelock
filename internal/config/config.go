@@ -215,7 +215,17 @@ type ForwardProxy struct {
 	Enabled                bool     `yaml:"enabled"`
 	MaxTunnelSeconds       int      `yaml:"max_tunnel_seconds"`
 	IdleTimeoutSeconds     int      `yaml:"idle_timeout_seconds"`
+	SNIVerification        *bool    `yaml:"sni_verification"`
 	RedirectWebSocketHosts []string `yaml:"redirect_websocket_hosts"`
+}
+
+// SNIVerificationEnabled returns whether SNI verification is active.
+// Defaults to true when not explicitly set.
+func (f ForwardProxy) SNIVerificationEnabled() bool {
+	if f.SNIVerification == nil {
+		return true
+	}
+	return *f.SNIVerification
 }
 
 // WebSocketProxy configures the /ws WebSocket proxy endpoint.
@@ -1392,6 +1402,7 @@ func Defaults() *Config {
 			Enabled:            false,
 			MaxTunnelSeconds:   300,
 			IdleTimeoutSeconds: 120,
+			SNIVerification:    ptrBool(true),
 		},
 		WebSocketProxy: WebSocketProxy{
 			Enabled:                  false,

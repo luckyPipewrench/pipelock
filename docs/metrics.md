@@ -54,6 +54,7 @@ traffic metrics for forward-proxy deployments.
 | `pipelock_tunnel_duration_seconds` | histogram | (none) | Tunnel lifetime. Buckets: 1s to 300s. |
 | `pipelock_tunnel_bytes_total` | counter | (none) | Total bytes transferred through all tunnels. |
 | `pipelock_active_tunnels` | gauge | (none) | Currently open CONNECT tunnels. |
+| `pipelock_sni_total` | counter | `category` | SNI verification results. `category` is `match`, `mismatch`, `not_tls`, `no_extension`, `malformed_tls`, or `timeout`. |
 
 ## WebSocket Proxy Metrics
 

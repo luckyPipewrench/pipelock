@@ -869,6 +869,28 @@ func TestRegisterKillSwitchState_AllActive(t *testing.T) {
 	}
 }
 
+func TestRecordSNI(t *testing.T) {
+	m := New()
+	m.RecordSNI("match")
+	m.RecordSNI("match")
+	m.RecordSNI("mismatch")
+
+	handler := m.PrometheusHandler()
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := rec.Body.String()
+
+	if !strings.Contains(body, "pipelock_sni_total") {
+		t.Error("expected pipelock_sni_total in /metrics output")
+	}
+	if !strings.Contains(body, `category="match"`) {
+		t.Error("expected category=match label in /metrics output")
+	}
+	if !strings.Contains(body, `category="mismatch"`) {
+		t.Error("expected category=mismatch label in /metrics output")
+	}
+}
+
 func TestRegisterInfo(t *testing.T) {
 	m := New()
 	m.RegisterInfo("0.3.1-test")

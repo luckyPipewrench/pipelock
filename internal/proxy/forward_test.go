@@ -1308,6 +1308,220 @@ func TestForwardHTTPSessionBlocked(t *testing.T) {
 	}
 }
 
+func TestConnectSNIMatch(t *testing.T) {
+	// CONNECT + TLS ClientHello with matching SNI: tunnel should work.
+	echoLn := listenEcho(t)
+	defer func() { _ = echoLn.Close() }()
+
+	proxyAddr, cleanup := setupForwardProxy(t, nil)
+	defer cleanup()
+
+	conn := dialProxy(t, proxyAddr)
+	defer func() { _ = conn.Close() }()
+
+	target := echoLn.Addr().String()
+	_, _ = fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target)
+
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	// Send a TLS ClientHello with SNI matching the target host.
+	// Extract host from target (strip port).
+	host, _, _ := net.SplitHostPort(target)
+	ch := buildClientHello(host)
+	_, err = conn.Write(ch)
+	if err != nil {
+		t.Fatalf("write ClientHello: %v", err)
+	}
+
+	// The echo server echoes the ClientHello back. Read it.
+	echoed := make([]byte, len(ch))
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	n, readErr := io.ReadFull(br, echoed)
+	if readErr != nil {
+		t.Fatalf("read echo: %v (got %d bytes)", readErr, n)
+	}
+	if string(echoed) != string(ch) {
+		t.Error("echoed data does not match sent ClientHello")
+	}
+}
+
+func TestConnectSNIMismatch(t *testing.T) {
+	// CONNECT + TLS ClientHello with mismatching SNI: connection should close.
+	echoLn := listenEcho(t)
+	defer func() { _ = echoLn.Close() }()
+
+	proxyAddr, cleanup := setupForwardProxy(t, nil)
+	defer cleanup()
+
+	conn := dialProxy(t, proxyAddr)
+	defer func() { _ = conn.Close() }()
+
+	target := echoLn.Addr().String()
+	_, _ = fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target)
+
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	// Send a TLS ClientHello with SNI=evil.com (mismatches the target).
+	ch := buildClientHello("evil.com")
+	_, err = conn.Write(ch)
+	if err != nil {
+		t.Fatalf("write ClientHello: %v", err)
+	}
+
+	// Connection should be closed by proxy. Read should return EOF or error.
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	buf := make([]byte, 1024)
+	_, readErr := br.Read(buf)
+	if readErr == nil {
+		t.Error("expected read error after SNI mismatch, got nil")
+	}
+}
+
+func TestConnectSNINonTLS(t *testing.T) {
+	// CONNECT + non-TLS data: should pass through without blocking.
+	echoLn := listenEcho(t)
+	defer func() { _ = echoLn.Close() }()
+
+	proxyAddr, cleanup := setupForwardProxy(t, nil)
+	defer cleanup()
+
+	conn := dialProxy(t, proxyAddr)
+	defer func() { _ = conn.Close() }()
+
+	target := echoLn.Addr().String()
+	_, _ = fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target)
+
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	// Send non-TLS data (plain HTTP). Should pass through since it's not TLS.
+	msg := "GET / HTTP/1.1\r\nHost: example.com\r\n\r\n"
+	_, err = conn.Write([]byte(msg))
+	if err != nil {
+		t.Fatalf("write non-TLS data: %v", err)
+	}
+
+	// Echo server echoes back
+	echoed := make([]byte, len(msg))
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	n, readErr := io.ReadFull(br, echoed)
+	if readErr != nil {
+		t.Fatalf("read echo: %v (got %d bytes)", readErr, n)
+	}
+	if string(echoed) != msg {
+		t.Error("echoed data does not match sent data")
+	}
+}
+
+func TestConnectSNIDisabled(t *testing.T) {
+	// SNI verification disabled: mismatching SNI should be allowed through.
+	echoLn := listenEcho(t)
+	defer func() { _ = echoLn.Close() }()
+
+	sniOff := false
+	proxyAddr, cleanup := setupForwardProxy(t, func(cfg *config.Config) {
+		cfg.ForwardProxy.SNIVerification = &sniOff
+	})
+	defer cleanup()
+
+	conn := dialProxy(t, proxyAddr)
+	defer func() { _ = conn.Close() }()
+
+	target := echoLn.Addr().String()
+	_, _ = fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target)
+
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	// Send a TLS ClientHello with mismatching SNI. Should be allowed through
+	// since SNI verification is disabled.
+	ch := buildClientHello("evil.com")
+	_, err = conn.Write(ch)
+	if err != nil {
+		t.Fatalf("write ClientHello: %v", err)
+	}
+
+	// Echo server should echo back the data (mismatch ignored)
+	echoed := make([]byte, len(ch))
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	n, readErr := io.ReadFull(br, echoed)
+	if readErr != nil {
+		t.Fatalf("read echo: %v (got %d bytes)", readErr, n)
+	}
+	if string(echoed) != string(ch) {
+		t.Error("echoed data does not match (SNI disabled should allow mismatch)")
+	}
+}
+
+func TestConnectSNIMalformed(t *testing.T) {
+	// CONNECT + malformed TLS (0x16 but truncated): should block (fail-closed).
+	echoLn := listenEcho(t)
+	defer func() { _ = echoLn.Close() }()
+
+	proxyAddr, cleanup := setupForwardProxy(t, nil)
+	defer cleanup()
+
+	conn := dialProxy(t, proxyAddr)
+	defer func() { _ = conn.Close() }()
+
+	target := echoLn.Addr().String()
+	_, _ = fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target)
+
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	// Send malformed TLS: starts with 0x16 but claims a large record length.
+	_, err = conn.Write([]byte{0x16, 0x03, 0x01, 0x00, 0xFF})
+	if err != nil {
+		t.Fatalf("write malformed TLS: %v", err)
+	}
+
+	// Connection should be closed by proxy (fail-closed on malformed TLS).
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	buf := make([]byte, 1024)
+	_, readErr := br.Read(buf)
+	if readErr == nil {
+		t.Error("expected read error after malformed TLS, got nil")
+	}
+}
+
 func TestBidirectionalCopy(t *testing.T) {
 	// Test bidirectional copy with a near-immediate deadline
 	server, client := net.Pipe()

@@ -18,6 +18,7 @@ const (
 	testToken       = "test-token"
 	testBearerToken = "Bearer test-token"
 	bearerNewToken  = "Bearer new-token"
+	testConfigToken = "config-" + "token" //nolint:gosec // test credential
 	srcAPI          = "api"
 	srcConfig       = "config"
 	srcSignal       = "signal"
@@ -1074,6 +1075,101 @@ func TestController_Reload_InvalidCIDR(t *testing.T) {
 	d2 := c.IsActiveHTTP(r2)
 	if d2.Active {
 		t.Error("expected inactive — IP should be in allowlist from the valid CIDR")
+	}
+}
+
+func TestBuildRuntime_EnvOverridesConfigToken(t *testing.T) {
+	cfg := testConfig()
+	cfg.KillSwitch.APIToken = testConfigToken
+
+	t.Setenv(EnvAPIToken, "env-token")
+
+	rt := buildRuntime(cfg)
+	if rt.apiToken != "env-token" {
+		t.Errorf("expected env var to override config token, got %q", rt.apiToken)
+	}
+}
+
+func TestBuildRuntime_ConfigTokenUsedWhenEnvUnset(t *testing.T) {
+	cfg := testConfig()
+	cfg.KillSwitch.APIToken = testConfigToken
+
+	// Explicitly clear env var to ensure test isolation.
+	t.Setenv(EnvAPIToken, "")
+
+	rt := buildRuntime(cfg)
+	if rt.apiToken != testConfigToken {
+		t.Errorf("expected config token when env var is empty, got %q", rt.apiToken)
+	}
+}
+
+func TestBuildRuntime_EnvTokenUsedWhenConfigEmpty(t *testing.T) {
+	cfg := testConfig()
+	// No config token set (zero value).
+
+	t.Setenv(EnvAPIToken, "env-only-token")
+
+	rt := buildRuntime(cfg)
+	if rt.apiToken != "env-only-token" {
+		t.Errorf("expected env token when config is empty, got %q", rt.apiToken)
+	}
+}
+
+func TestController_Reload_PicksUpEnvToken(t *testing.T) {
+	cfg := testConfig()
+	cfg.KillSwitch.APIToken = "original" //nolint:gosec // test value
+	c := New(cfg)
+
+	// Set env var and reload.
+	t.Setenv(EnvAPIToken, "reloaded-env-token")
+
+	cfg2 := testConfig()
+	cfg2.KillSwitch.APIToken = "new-config" //nolint:gosec // test value
+	c.Reload(cfg2)
+
+	rt := c.cfg.Load()
+	if rt.apiToken != "reloaded-env-token" {
+		t.Errorf("expected reload to pick up env token, got %q", rt.apiToken)
+	}
+}
+
+func TestAPIHandler_EnvTokenAuthenticates(t *testing.T) {
+	// No config token — only the env var provides it.
+	cfg := testConfig()
+
+	envToken := "env-api-" + "secret" //nolint:gosec // test credential
+	t.Setenv(EnvAPIToken, envToken)
+
+	c := New(cfg)
+	h := NewAPIHandler(c)
+
+	// Activate via API using the env-sourced token.
+	body := bytes.NewBufferString(`{"active": true}`)
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/killswitch", body)
+	r.Header.Set("Authorization", "Bearer "+envToken)
+	w := httptest.NewRecorder()
+	h.HandleToggle(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 with env token auth, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Verify kill switch is now active.
+	req := httptest.NewRequest(http.MethodGet, "/fetch", nil)
+	d := c.IsActiveHTTP(req)
+	if !d.Active || d.Source != srcAPI {
+		t.Errorf("expected active from api source, got active=%v source=%q", d.Active, d.Source)
+	}
+
+	// Wrong token should fail.
+	body2 := bytes.NewBufferString(`{"active": false}`)
+	r2 := httptest.NewRequest(http.MethodPost, "/api/v1/killswitch", body2)
+	r2.Header.Set("Authorization", "Bearer wrong-token")
+	w2 := httptest.NewRecorder()
+	h.HandleToggle(w2, r2)
+
+	if w2.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 with wrong token, got %d", w2.Code)
 	}
 }
 

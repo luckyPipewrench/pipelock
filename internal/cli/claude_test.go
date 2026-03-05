@@ -830,3 +830,73 @@ func TestClaudeRemoveCmd_DryRun(t *testing.T) {
 		t.Error("dry-run should not modify the file")
 	}
 }
+
+func TestClaudeRemoveCmd_InvalidFlags(t *testing.T) {
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"claude", "remove", "--global", "--project"})
+	cmd.SetOut(&strings.Builder{})
+	cmd.SetErr(&strings.Builder{})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when both --global and --project are set")
+	}
+}
+
+func TestClaudeRemoveCmd_CorruptFile(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	claudeDir := filepath.Join(dir, ".claude")
+	if err := os.MkdirAll(claudeDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	settingsPath := filepath.Join(claudeDir, "settings.json")
+	if err := os.WriteFile(settingsPath, []byte("{corrupt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"claude", "remove"})
+	cmd.SetOut(&strings.Builder{})
+	cmd.SetErr(&strings.Builder{})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for corrupt settings.json")
+	}
+}
+
+func TestMarshalClaudeSettings_NilRawMap(t *testing.T) {
+	settings := &claudeSettings{
+		Hooks: map[string][]claudeMatcherGroup{
+			"PreToolUse": {{Matcher: "Bash", Hooks: []claudeHookEntry{{Type: "command", Command: "test"}}}},
+		},
+	}
+	data, err := marshalClaudeSettings(settings, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(string(data), "PreToolUse") {
+		t.Error("output should contain hooks")
+	}
+}
+
+func TestParseClaudeSettingsRaw_EmptyData(t *testing.T) {
+	settings, rawMap, err := parseClaudeSettingsRaw(nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if settings.Hooks == nil {
+		t.Error("expected non-nil hooks map")
+	}
+	if len(rawMap) != 0 {
+		t.Error("expected empty raw map for nil data")
+	}
+}
+
+func TestParseClaudeSettingsRaw_Corrupt(t *testing.T) {
+	_, _, err := parseClaudeSettingsRaw([]byte("{corrupt"))
+	if err == nil {
+		t.Fatal("expected error for corrupt data")
+	}
+}

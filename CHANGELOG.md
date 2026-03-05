@@ -5,6 +5,11 @@ All notable changes to Pipelock will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Windows build support: GoReleaser produces Windows amd64/arm64 binaries (zip archives). Kill switch signal toggle and config reload signal are no-ops on Windows; all other features work identically.
+
 ## [0.3.4] - 2026-03-04
 
 ### Fixed

@@ -201,6 +201,13 @@ func extractMetadata(events []Event, r *Report) {
 				seen[ev.ConfigHash] = true
 				hashes = append(hashes, ev.ConfigHash)
 			}
+			// Extract mode from detail field (e.g. "mode=strict") when
+			// the log window doesn't contain a startup event.
+			if r.Mode == "" && ev.Detail != "" {
+				if m := extractModeFromDetail(ev.Detail); m != "" {
+					r.Mode = m
+				}
+			}
 		}
 	}
 
@@ -236,6 +243,20 @@ func extractDomain(ev *Event) string {
 	}
 
 	return strings.ToLower(raw)
+}
+
+// modePrefix is the key prefix in config_reload detail fields.
+const modePrefix = "mode="
+
+// extractModeFromDetail parses "mode=strict" from a config_reload detail string.
+func extractModeFromDetail(detail string) string {
+	for _, part := range strings.Split(detail, ",") {
+		part = strings.TrimSpace(part)
+		if strings.HasPrefix(part, modePrefix) {
+			return strings.TrimPrefix(part, modePrefix)
+		}
+	}
+	return ""
 }
 
 // classifyEvent updates summary counters based on the event type and action.
@@ -472,9 +493,14 @@ func buildTimeline(events []Event, tr TimeRange) []TimeBucket {
 		return []TimeBucket{}
 	}
 
-	// Fill buckets.
+	// Fill buckets. Skip administrative events (startup, shutdown, config_reload)
+	// that are not actual network traffic.
 	for i := range events {
 		ev := &events[i]
+		if ev.Event == eventStartup || ev.Event == eventShutdown || ev.Event == eventConfigReload {
+			continue
+		}
+
 		idx := int(ev.Time.Sub(start) / step)
 		if idx < 0 {
 			idx = 0

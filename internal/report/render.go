@@ -54,6 +54,9 @@ func RenderHTML(w io.Writer, r *Report) error {
 				return "#94a3b8"
 			}
 		},
+		"eventSeverity": func(ev Event) string {
+			return eventSeverity(&ev)
+		},
 		"eventJSON": func(ev Event) template.HTML {
 			b, err := json.MarshalIndent(ev, "", "  ")
 			if err != nil {

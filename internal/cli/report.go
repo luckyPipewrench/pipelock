@@ -161,6 +161,10 @@ Examples:
 			// Summary to stderr.
 			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Report generated: %s risk, %d events, %d blocks\n",
 				rpt.Risk, rpt.Summary.TotalEvents, rpt.Summary.Blocks)
+			if rpt.Summary.SkippedLines > 0 {
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "WARNING: %d malformed line(s) skipped during parsing\n",
+					rpt.Summary.SkippedLines)
+			}
 
 			return nil
 		},

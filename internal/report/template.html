@@ -235,6 +235,12 @@
             </div>
         </header>
 
+        {{if gt .Summary.SkippedLines 0}}
+        <div style="background: #7f1d1d; border: 1px solid #ef4444; border-radius: 0.5rem; padding: 0.75rem 1rem; margin-bottom: 1.5rem; font-size: 0.875rem;">
+            &#9888; <strong>Data integrity warning:</strong> {{.Summary.SkippedLines}} malformed line(s) skipped during parsing. This report may be incomplete.
+        </div>
+        {{end}}
+
         <section class="kpi-grid">
             <div class="kpi-card kpi-total">
                 <div class="kpi-value">{{.Summary.TotalEvents}}</div>
@@ -326,7 +332,7 @@
             {{range .Evidence}}
             <div class="event-card">
                 <div class="event-card-header">
-                    <span class="event-type" style="color: {{severityColor .Level}};">{{.Event}}</span>
+                    <span class="event-type" style="color: {{severityColor (eventSeverity .)}};">{{.Event}}</span>
                     <span class="event-time">{{formatTime .Time}}</span>
                 </div>
                 <div class="event-detail">{{eventJSON .}}</div>

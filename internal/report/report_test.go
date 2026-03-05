@@ -808,6 +808,92 @@ func TestGenerate_DefaultTitle(t *testing.T) {
 	}
 }
 
+func TestAggregate_TimelineSkipsAdminEvents(t *testing.T) {
+	events := []Event{
+		{Time: time.Date(2026, 3, 5, 10, 0, 0, 0, time.UTC), Event: testEvStartup, Version: testVersion, Mode: testMode, ConfigHash: testHash},
+		{Time: time.Date(2026, 3, 5, 10, 0, 1, 0, time.UTC), Event: "allowed", URL: "https://api.com"},
+		{Time: time.Date(2026, 3, 5, 10, 0, 2, 0, time.UTC), Event: testEvCfgReload, ConfigHash: testHash2},
+		{Time: time.Date(2026, 3, 5, 10, 0, 3, 0, time.UTC), Event: "shutdown"},
+	}
+
+	r := Aggregate(events, Options{})
+
+	totalAllowed := 0
+	for _, b := range r.Timeline {
+		totalAllowed += b.Allowed
+	}
+	// Only the "allowed" event should count; startup, config_reload, and shutdown are admin.
+	if totalAllowed != 1 {
+		t.Errorf("expected 1 allowed in timeline (admin events excluded), got %d", totalAllowed)
+	}
+}
+
+func TestExtractModeFromDetail(t *testing.T) {
+	tests := []struct {
+		detail   string
+		expected string
+	}{
+		{"mode=strict", "strict"},
+		{"mode=balanced", "balanced"},
+		{"mode=audit, enforce=true", "audit"},
+		{"enforce=true", ""},
+		{"", ""},
+	}
+
+	for _, tt := range tests {
+		got := extractModeFromDetail(tt.detail)
+		if got != tt.expected {
+			t.Errorf("extractModeFromDetail(%q) = %q, want %q", tt.detail, got, tt.expected)
+		}
+	}
+}
+
+func TestAggregate_ModeFromReload(t *testing.T) {
+	// When the log window has only a config_reload (no startup), mode should
+	// be extracted from the detail field.
+	events := []Event{
+		{Time: time.Date(2026, 3, 5, 10, 0, 0, 0, time.UTC), Event: testEvCfgReload, Detail: "mode=strict", ConfigHash: testHash},
+		{Time: time.Date(2026, 3, 5, 10, 0, 1, 0, time.UTC), Event: "allowed", URL: "https://api.com"},
+	}
+
+	r := Aggregate(events, Options{})
+
+	if r.Mode != "strict" {
+		t.Errorf("expected mode %q from reload detail, got %q", "strict", r.Mode)
+	}
+}
+
+func TestRenderHTML_SkippedLinesWarning(t *testing.T) {
+	r := makeTestReport()
+	r.Summary.SkippedLines = 5
+
+	var buf bytes.Buffer
+	if err := RenderHTML(&buf, r); err != nil {
+		t.Fatalf("RenderHTML error: %v", err)
+	}
+
+	html := buf.String()
+	if !strings.Contains(html, "malformed") {
+		t.Error("expected HTML to show malformed lines warning")
+	}
+	if !strings.Contains(html, "5") {
+		t.Error("expected HTML to show count of 5 skipped lines")
+	}
+}
+
+func TestRenderHTML_NoWarningWhenClean(t *testing.T) {
+	r := makeTestReport()
+
+	var buf bytes.Buffer
+	if err := RenderHTML(&buf, r); err != nil {
+		t.Fatalf("RenderHTML error: %v", err)
+	}
+
+	if strings.Contains(buf.String(), "malformed") {
+		t.Error("expected no malformed warning when SkippedLines is 0")
+	}
+}
+
 // ---- Timeline tests ----
 
 func TestAggregate_TimelineHourly(t *testing.T) {

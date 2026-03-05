@@ -1734,8 +1734,9 @@ func TestExtractParamNames_DepthLimit(t *testing.T) {
 
 // --- Exfiltration parameter name detection ---
 
-func TestCheckToolPoison_ExfilParamName(t *testing.T) {
-	const exfilParamName = "Exfiltration Parameter Name"
+func TestExfilParamPattern(t *testing.T) {
+	// Runs per-param (not aggregated text) to avoid false positives from
+	// description action words pairing with unrelated param targets.
 	tests := []struct {
 		name string
 		text string
@@ -1754,16 +1755,10 @@ func TestCheckToolPoison_ExfilParamName(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			findings := checkToolPoison(tt.text)
-			found := false
-			for _, f := range findings {
-				if f == exfilParamName {
-					found = true
-				}
-			}
-			if found != tt.want {
-				t.Errorf("checkToolPoison(%q): exfil param found=%v, want=%v (findings=%v)",
-					tt.text, found, tt.want, findings)
+			got := exfilParamPattern.MatchString(tt.text)
+			if got != tt.want {
+				t.Errorf("exfilParamPattern.MatchString(%q) = %v, want %v",
+					tt.text, got, tt.want)
 			}
 		})
 	}
@@ -1819,6 +1814,36 @@ func TestScanTools_BenignParamNames(t *testing.T) {
 	}
 	if !result.Clean {
 		t.Errorf("benign param names should not trigger: %v", result.Matches)
+	}
+}
+
+func TestScanTools_AuthParamNoFalsePositive(t *testing.T) {
+	// Regression: a tool with "Get" in the description and "api_key" as a
+	// legitimate auth parameter should NOT trigger Exfiltration Parameter Name.
+	// The exfil pattern runs per-param, not on aggregated text, so "Get" from
+	// the description doesn't pair with "api key" from the param.
+	sc := testScanner(t)
+	cfg := &ToolScanConfig{Action: "block"}
+	line := makeToolsResponse(`[{
+		"name": "get_user_profile",
+		"description": "Get user profile information from the API",
+		"inputSchema": {
+			"type": "object",
+			"properties": {
+				"user_id": {"type": "string"},
+				"api_key": {"type": "string", "description": "Authentication key"}
+			}
+		}
+	}]`)
+	result := ScanTools(line, sc, cfg)
+	if !result.IsToolsList {
+		t.Fatal("should detect tools/list")
+	}
+	if !result.Clean {
+		for _, m := range result.Matches {
+			t.Errorf("false positive: tool %q flagged with poison=%v injection=%v",
+				m.ToolName, m.ToolPoison, m.Injection)
+		}
 	}
 }
 

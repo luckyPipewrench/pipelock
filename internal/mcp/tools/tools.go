@@ -340,19 +340,20 @@ var toolPoisonPatterns = []*compiledToolPattern{
 		// different objects.
 		re: regexp.MustCompile(`(?i)(download|fetch|retriev)\w*\s+.{0,60}(execut|run|launch)\w*\s+(?:it|them)\b`),
 	},
-	{
-		// Detects parameter names that encode exfiltration intent.
-		// Catches names like "content_from_reading_ssh_id_rsa" where the
-		// param name itself directs the agent to read sensitive files.
-		// Runs on underscore-expanded text ("content from reading ssh id rsa").
-		// Requires an action word + sensitive target in the same name.
-		name: "Exfiltration Parameter Name",
-		re: regexp.MustCompile(`(?i)\b(content|data|value|result|output|read|fetch|get|dump|steal|exfil|extract|copy|upload|send)\b` +
-			`.{0,40}` +
-			`\b(ssh.{0,5}(?:id.rsa|key)|id.rsa|private.key|api.key|secret.key|` +
-			`credentials?|passwd|env.(?:secret|key|file|var)|aws.secret|access.token|auth.token)\b`),
-	},
 }
+
+// exfilParamPattern detects parameter names that encode exfiltration intent.
+// Catches names like "content_from_reading_ssh_id_rsa" where the param name
+// itself directs the agent to read sensitive files. Runs per-param on the
+// expanded name (not aggregated tool text) to avoid false positives from
+// action words in the description pairing with sensitive targets in unrelated
+// params. Requires an action word + sensitive target in the same param name.
+var exfilParamPattern = regexp.MustCompile(
+	`(?i)\b(content|data|value|result|output|read|fetch|get|dump|steal|exfil|extract|copy|upload|send)\b` +
+		`.{0,40}` +
+		`\b(ssh.{0,5}(?:id.rsa|key)|id.rsa|private.key|api.key|secret.key|` +
+		`credentials?|passwd|env.(?:secret|key|file|var)|aws.secret|access.token|auth.token)\b`,
+)
 
 // hashTool computes a SHA256 hash of a tool's description and inputSchema.
 func hashTool(t ToolDef) string {
@@ -690,6 +691,18 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) []T
 			if len(poison) > 0 {
 				match.ToolPoison = poison
 				hasFinding = true
+			}
+
+			// Exfiltration param pattern: runs per-param to avoid false
+			// positives from action words in the description pairing with
+			// sensitive targets in unrelated parameters.
+			for _, name := range paramNames {
+				expanded := normalize.ForToolText(expandParamName(name))
+				if exfilParamPattern.MatchString(expanded) {
+					match.ToolPoison = append(match.ToolPoison, "Exfiltration Parameter Name")
+					hasFinding = true
+					break
+				}
 			}
 		}
 

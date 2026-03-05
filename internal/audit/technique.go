@@ -42,6 +42,9 @@ var techniqueMap = map[string]string{
 
 	// Session behavioral anomaly
 	"session_anomaly": "T1078", // Valid Accounts (anomalous session behavior)
+
+	// Domain fronting (SNI mismatch)
+	"sni_mismatch": "T1090.004", // Proxy: Domain Fronting
 }
 
 // TechniqueForScanner returns the MITRE ATT&CK technique ID for a scanner

@@ -4058,6 +4058,27 @@ func TestValidateReload_MetricsListenChanged(t *testing.T) {
 	}
 }
 
+func TestSNIVerificationEnabled(t *testing.T) {
+	tests := []struct {
+		name string
+		val  *bool
+		want bool
+	}{
+		{"nil defaults to true", nil, true},
+		{"explicit true", ptrBool(true), true},
+		{"explicit false", ptrBool(false), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fp := ForwardProxy{SNIVerification: tt.val}
+			if got := fp.SNIVerificationEnabled(); got != tt.want {
+				t.Errorf("SNIVerificationEnabled() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestMergeResponsePatterns_FalseIncludeDefaults_UserOnly(t *testing.T) {
 	f := false
 	user := []ResponseScanPattern{

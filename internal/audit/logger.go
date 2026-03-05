@@ -77,6 +77,7 @@ const (
 	EventAdaptiveEscalation EventType = "adaptive_escalation"
 	EventMCPUnknownTool     EventType = "mcp_unknown_tool"
 	EventKillSwitchDeny     EventType = "kill_switch_deny"
+	EventSNIMismatch        EventType = "sni_mismatch"
 	EventBodyDLP            EventType = "body_dlp"
 	EventHeaderDLP          EventType = "header_dlp"
 )
@@ -581,6 +582,34 @@ func (l *Logger) LogMCPUnknownTool(toolName, action string) {
 		l.emitter.Emit(context.Background(), string(EventMCPUnknownTool), map[string]any{
 			"tool":            sanitizeString(toolName),
 			"action":          action,
+			"mitre_technique": technique,
+		})
+	}
+}
+
+// LogSNIMismatch logs an SNI verification failure (domain fronting, malformed
+// TLS, or timeout). Fields are structured per audit policy: connect_host and
+// sni_host are explicit, never parsed from error text.
+func (l *Logger) LogSNIMismatch(connectHost, sniHost, clientIP, requestID, category string) {
+	technique := TechniqueForScanner("sni_mismatch")
+
+	l.zl.Warn().
+		Str("event", string(EventSNIMismatch)).
+		Str("connect_host", sanitizeString(connectHost)).
+		Str("sni_host", sanitizeString(sniHost)).
+		Str("client_ip", clientIP).
+		Str("request_id", requestID).
+		Str("category", category).
+		Str("mitre_technique", technique).
+		Msg("SNI verification failed")
+
+	if l.emitter != nil {
+		l.emitter.Emit(context.Background(), string(EventSNIMismatch), map[string]any{
+			"connect_host":    sanitizeString(connectHost),
+			"sni_host":        sanitizeString(sniHost),
+			"client_ip":       clientIP,
+			"request_id":      requestID,
+			"category":        category,
 			"mitre_technique": technique,
 		})
 	}

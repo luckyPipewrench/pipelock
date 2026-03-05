@@ -47,6 +47,7 @@ forward_proxy:
   enabled: true
   max_tunnel_seconds: 120
   idle_timeout_seconds: 30
+  sni_verification: true
 
 request_body_scanning:
   enabled: true

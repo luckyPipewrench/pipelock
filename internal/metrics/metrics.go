@@ -40,6 +40,8 @@ type Metrics struct {
 
 	chainDetections *prometheus.CounterVec
 
+	sniTotal *prometheus.CounterVec
+
 	bodyDLPHits   *prometheus.CounterVec
 	headerDLPHits *prometheus.CounterVec
 
@@ -168,6 +170,12 @@ func New() *Metrics {
 		Help:      "Total tool call chain pattern detections.",
 	}, []string{"pattern", "severity", "action"})
 
+	sniTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "pipelock",
+		Name:      "sni_total",
+		Help:      "Total SNI verification results by category.",
+	}, []string{"category"})
+
 	bodyDLPHits := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "pipelock",
 		Name:      "body_dlp_hits_total",
@@ -207,7 +215,7 @@ func New() *Metrics {
 	reg.MustRegister(requestsTotal, scannerHits, requestLatency,
 		tunnelsTotal, tunnelDuration, tunnelBytes, activeTunnels,
 		wsConnectionsTotal, wsDuration, wsBytes, activeWS, wsFrames, wsScanHits, wsRedirectHints,
-		killSwitchDenials, chainDetections,
+		killSwitchDenials, chainDetections, sniTotal,
 		bodyDLPHits, headerDLPHits,
 		sessionAnomalies, sessionEscalations, sessionsActive, sessionsEvicted)
 
@@ -229,6 +237,7 @@ func New() *Metrics {
 		wsRedirectHints:    wsRedirectHints,
 		killSwitchDenials:  killSwitchDenials,
 		chainDetections:    chainDetections,
+		sniTotal:           sniTotal,
 		bodyDLPHits:        bodyDLPHits,
 		headerDLPHits:      headerDLPHits,
 		sessionAnomalies:   sessionAnomalies,
@@ -354,6 +363,11 @@ func (m *Metrics) RecordKillSwitchDenial(transport, endpoint string) {
 // RecordChainDetection increments the chain detection counter.
 func (m *Metrics) RecordChainDetection(pattern, severity, action string) {
 	m.chainDetections.WithLabelValues(pattern, severity, action).Inc()
+}
+
+// RecordSNI increments the SNI verification counter for the given category.
+func (m *Metrics) RecordSNI(category string) {
+	m.sniTotal.WithLabelValues(category).Inc()
 }
 
 // RecordBodyDLP increments the request body DLP scan counter by action.

@@ -869,6 +869,25 @@ func TestRegisterKillSwitchState_AllActive(t *testing.T) {
 	}
 }
 
+func TestRecordSNI(t *testing.T) {
+	m := New()
+	m.RecordSNI("match")
+	m.RecordSNI("match")
+	m.RecordSNI("mismatch")
+
+	handler := m.PrometheusHandler()
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := rec.Body.String()
+
+	if !strings.Contains(body, `pipelock_sni_total{category="match"} 2`) {
+		t.Errorf("expected 2 SNI match hits:\n%s", body)
+	}
+	if !strings.Contains(body, `pipelock_sni_total{category="mismatch"} 1`) {
+		t.Errorf("expected 1 SNI mismatch hit:\n%s", body)
+	}
+}
+
 func TestRecordBodyDLP(t *testing.T) {
 	m := New()
 	m.RecordBodyDLP("block")

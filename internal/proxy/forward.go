@@ -184,10 +184,25 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// Send 200 Connection Established
 	_, _ = clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
 
+	// SNI verification: read ClientHello via Peek, check SNI matches CONNECT
+	// target. Peek() leaves bytes in the buffer for the relay to forward.
+	// verifySNI may return a resized reader if the TLS record exceeds the
+	// default 4KB bufio buffer (common with large extension sets).
+	clientReader := buf.Reader
+	if cfg.ForwardProxy.SNIVerificationEnabled() {
+		resized, sniHost, category, sniErr := verifySNI(clientReader, clientConn, host, sniReadTimeoutDefault)
+		clientReader = resized
+		p.metrics.RecordSNI(category)
+		if sniErr != nil {
+			p.logger.LogSNIMismatch(host, sniHost, clientIP, requestID, category)
+			return // close both connections via deferred Close()
+		}
+	}
+
 	// Flush any buffered data from the HTTP parsing layer
-	if buf.Reader.Buffered() > 0 {
-		buffered := make([]byte, buf.Reader.Buffered())
-		_, _ = buf.Read(buffered)
+	if clientReader.Buffered() > 0 {
+		buffered := make([]byte, clientReader.Buffered())
+		_, _ = clientReader.Read(buffered)
 		_, _ = targetConn.Write(buffered)
 	}
 

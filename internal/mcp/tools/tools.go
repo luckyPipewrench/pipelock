@@ -407,11 +407,14 @@ func extractToolTextWithParams(t ToolDef, paramNames []string) string {
 }
 
 // expandParamName expands a parameter name into space-separated words by:
-// 1. Replacing underscores and hyphens with spaces
-// 2. Splitting camelCase boundaries (lowercase→uppercase transitions)
-// 3. Lowercasing the result
+//  1. Replacing underscores and hyphens with spaces.
+//  2. Splitting camelCase boundaries (lowercase to uppercase transitions).
+//  3. Splitting acronym boundaries (uppercase run followed by uppercase+lowercase,
+//     e.g. "APIKey" becomes "api key", "SSHKey" becomes "ssh key").
+//  4. Lowercasing the result.
+//
 // Example: "contentFromReadingSshIdRsa" becomes "content from reading ssh id rsa".
-// Example: "read_env_api_key" becomes "read env api key".
+// Example: "fetchAPIKey" becomes "fetch api key".
 func expandParamName(name string) string {
 	var b strings.Builder
 	runes := []rune(name)
@@ -420,11 +423,18 @@ func expandParamName(name string) string {
 			b.WriteRune(' ')
 			continue
 		}
-		// Insert space at camelCase boundary: lowercase followed by uppercase.
 		if i > 0 && r >= 'A' && r <= 'Z' {
 			prev := runes[i-1]
+			// Split at lowercase to uppercase: fooBar -> foo Bar.
 			if prev >= 'a' && prev <= 'z' {
 				b.WriteRune(' ')
+			} else if prev >= 'A' && prev <= 'Z' {
+				// Split at acronym boundary: APIKey -> API Key.
+				// Only split when current uppercase is followed by lowercase,
+				// indicating the start of a new word after an acronym run.
+				if i+1 < len(runes) && runes[i+1] >= 'a' && runes[i+1] <= 'z' {
+					b.WriteRune(' ')
+				}
 			}
 		}
 		b.WriteRune(r)

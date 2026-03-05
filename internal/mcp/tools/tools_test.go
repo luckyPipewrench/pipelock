@@ -2048,9 +2048,9 @@ func TestExpandParamName(t *testing.T) {
 		{"all_upper", "URL", "url"},
 		{"single_char", "x", "x"},
 		{"empty", "", ""},
-		{"consecutive_upper", "getSSHKey", "get sshkey"},
-		{"acronym_jwt", "readJWTToken", "read jwttoken"},
-		{"acronym_api", "fetchAPIKey", "fetch apikey"},
+		{"consecutive_upper", "getSSHKey", "get ssh key"},
+		{"acronym_jwt", "readJWTToken", "read jwt token"},
+		{"acronym_api", "fetchAPIKey", "fetch api key"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -16,6 +16,10 @@ const (
 	EventShellExecution EventKind = "beforeShellExecution"
 	EventMCPExecution   EventKind = "beforeMCPExecution"
 	EventReadFile       EventKind = "beforeReadFile"
+
+	// Claude Code hook event kinds (tool_name values, no "before" prefix).
+	EventWebFetch  EventKind = "WebFetch"
+	EventWriteFile EventKind = "WriteFile"
 )
 
 // ShellPayload holds fields specific to shell execution events.
@@ -38,15 +42,32 @@ type FilePayload struct {
 	Content  string `json:"content"`
 }
 
+// WebFetchPayload holds fields specific to URL fetch events.
+type WebFetchPayload struct {
+	URL string `json:"url"`
+}
+
+// WritePayload holds fields specific to file write/edit events.
+type WritePayload struct {
+	FilePath string `json:"file_path"`
+	Content  string `json:"content"`
+	// OldString is the content being replaced (Edit tool). It is intentionally
+	// not scanned: it represents text already in the file, not new output from
+	// the agent, so it carries no exfiltration or injection risk.
+	OldString string `json:"old_string,omitempty"`
+}
+
 // Action describes an agent action to be evaluated.
 type Action struct {
 	Source string    // originating IDE (e.g., "cursor")
 	Kind   EventKind // event type
 
 	// Exactly one payload is set, matching Kind.
-	Shell *ShellPayload
-	MCP   *MCPPayload
-	File  *FilePayload
+	Shell    *ShellPayload
+	MCP      *MCPPayload
+	File     *FilePayload
+	WebFetch *WebFetchPayload
+	Write    *WritePayload
 }
 
 // Outcome is the decision result: allow or deny.
@@ -85,6 +106,10 @@ func Decide(cfg *config.Config, sc *scanner.Scanner, policyCfg *policy.Config, a
 		return decideMCP(cfg, sc, policyCfg, action.MCP)
 	case EventReadFile:
 		return decideFile(cfg, sc, policyCfg, action.File)
+	case EventWebFetch:
+		return decideWebFetch(cfg, sc, action.WebFetch)
+	case EventWriteFile:
+		return decideWrite(cfg, sc, policyCfg, action.Write)
 	default:
 		return Decision{
 			Outcome:     Deny,
@@ -137,7 +162,7 @@ func decideMCP(cfg *config.Config, sc *scanner.Scanner, policyCfg *policy.Config
 			evidence = append(evidence, Evidence{
 				Scanner:  "decide",
 				Pattern:  "Malformed MCP Input",
-				Severity: "high",
+				Severity: config.SeverityHigh,
 				Detail:   "tool_input is not valid JSON",
 				Action:   config.ActionBlock,
 			})
@@ -170,23 +195,59 @@ func decideFile(cfg *config.Config, sc *scanner.Scanner, policyCfg *policy.Confi
 	if p == nil {
 		return deny("pipelock: missing file payload")
 	}
+	return decideFileContent(cfg, sc, policyCfg, "read_file", p.FilePath, p.Content)
+}
 
+func decideWebFetch(cfg *config.Config, sc *scanner.Scanner, p *WebFetchPayload) Decision {
+	if p == nil {
+		return deny("pipelock: missing WebFetch payload")
+	}
+
+	// Empty URL: nothing to scan.
+	if p.URL == "" {
+		return Decision{Outcome: Allow}
+	}
+
+	// Run the full URL scanner pipeline (scheme, blocklist, DLP, SSRF, etc.).
+	result := sc.Scan(p.URL)
+	if result.Allowed {
+		return Decision{Outcome: Allow}
+	}
+
+	evidence := []Evidence{{
+		Scanner:  result.Scanner,
+		Pattern:  result.Reason,
+		Severity: config.SeverityHigh,
+		Action:   config.ActionBlock,
+	}}
+
+	return buildDecision(cfg, evidence)
+}
+
+func decideWrite(cfg *config.Config, sc *scanner.Scanner, policyCfg *policy.Config, p *WritePayload) Decision {
+	if p == nil {
+		return deny("pipelock: missing WriteFile payload")
+	}
+	return decideFileContent(cfg, sc, policyCfg, "write_file", p.FilePath, p.Content)
+}
+
+// decideFileContent is the shared logic for file read and write events.
+// It runs policy checks (using toolName to distinguish read vs write rules),
+// then DLP and injection scanning on the file content.
+func decideFileContent(cfg *config.Config, sc *scanner.Scanner, policyCfg *policy.Config, toolName, filePath, content string) Decision {
 	var evidence []Evidence
 
-	// Policy: check file path against credential file access rules.
-	// Map to "read_file" tool name to match the Credential File Access rule.
 	if policyCfg != nil {
-		policyVerdict := policyCfg.CheckToolCall("read_file", []string{p.FilePath})
+		policyVerdict := policyCfg.CheckToolCall(toolName, []string{filePath})
 		evidence = append(evidence, evidenceFromPolicy(policyVerdict)...)
 	}
 
-	// Content scanning only when content is present and non-empty.
-	if p.Content != "" {
-		dlpResult := sc.ScanTextForDLP(p.Content)
+	if content != "" {
+		dlpResult := sc.ScanTextForDLP(content)
 		evidence = append(evidence, evidenceFromDLP(dlpResult)...)
 
 		if cfg.ResponseScanning.Enabled {
-			injResult := sc.ScanResponse(p.Content)
+			injResult := sc.ScanResponse(content)
 			evidence = append(evidence, evidenceFromInjection(injResult, cfg.ResponseScanning.Action)...)
 		}
 	}

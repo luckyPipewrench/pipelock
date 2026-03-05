@@ -1018,14 +1018,61 @@ func TestScanRequestBody_FormURLEncoded_ParseFailure(t *testing.T) {
 	defer sc.Close()
 
 	// Malformed query string that url.ParseQuery rejects: bare % without hex digits.
-	malformed := "field=%zz&" + "AKIA" + "IOSFODNN7EXAMPLE" + "ABCDEFGH=val"
+	// Fail-closed: parse error blocks regardless of body content.
+	malformed := "field=%zz&value=clean"
 	_, result := scanRequestBody(
 		strings.NewReader(malformed),
 		"application/x-www-form-urlencoded", "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
 	)
-	// Should fall back to raw text scan, which catches the AWS key.
 	if result.Clean {
-		t.Fatal("expected DLP match on malformed form body via raw text fallback")
+		t.Fatal("expected fail-closed block for malformed form body")
+	}
+	if result.Action != config.ActionBlock {
+		t.Fatalf("expected block action for form parse error, got %q", result.Action)
+	}
+}
+
+func TestScanRequestBody_MultipartMissingBoundary(t *testing.T) {
+	cfg := testScannerConfig()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+
+	// multipart/form-data without boundary parameter: fail-closed block.
+	_, result := scanRequestBody(
+		strings.NewReader("some body content"),
+		"multipart/form-data", "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
+	)
+	if result.Clean {
+		t.Fatal("expected fail-closed block for multipart missing boundary")
+	}
+	if result.Action != config.ActionBlock {
+		t.Fatalf("expected block action for missing boundary, got %q", result.Action)
+	}
+}
+
+func TestScanRequestBody_MultipartOversizedFilename(t *testing.T) {
+	cfg := testScannerConfig()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+
+	boundary := testMultipartBoundary
+	// Filename exceeding maxFilenameBytes (256): fail-closed block.
+	longFilename := strings.Repeat("x", maxFilenameBytes+1)
+	body := "--" + boundary + "\r\n" +
+		"Content-Disposition: form-data; name=\"file\"; filename=\"" + longFilename + "\"\r\n" +
+		"Content-Type: text/plain\r\n\r\n" +
+		"clean content\r\n" +
+		"--" + boundary + "--\r\n"
+
+	_, result := scanRequestBody(
+		strings.NewReader(body),
+		"multipart/form-data; boundary="+boundary, "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
+	)
+	if result.Clean {
+		t.Fatal("expected fail-closed block for oversized multipart filename")
+	}
+	if result.Action != config.ActionBlock {
+		t.Fatalf("expected block action for oversized filename, got %q", result.Action)
 	}
 }
 

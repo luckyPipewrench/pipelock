@@ -166,10 +166,16 @@ request_body_scanning:
 
 **Content-type dispatch:** JSON bodies have string values extracted recursively. Form-urlencoded bodies are parsed as key-value pairs. Multipart form data has text fields extracted (binary parts skipped, max 100 parts). Text/* and XML bodies are scanned as raw text. Unknown content types get a fallback raw-text scan (never skipped, prevents Content-Type spoofing bypass).
 
-**Fail-closed behaviors:**
-- Bodies exceeding `max_body_bytes`: always blocked regardless of action setting
-- Compressed bodies (`Content-Encoding: gzip/deflate/br`): always blocked (compressed bytes evade regex DLP)
-- Body read errors: always blocked (prevents forwarding empty/corrupt bodies)
+**Fail-closed behaviors** (always blocked regardless of `action` setting):
+- Bodies exceeding `max_body_bytes`
+- Compressed bodies (`Content-Encoding: gzip/deflate/br`): compressed bytes evade regex DLP
+- Body read errors: prevents forwarding empty/corrupt bodies
+- Invalid JSON bodies
+- Invalid form-urlencoded bodies: prevents parser differential attacks
+- Multipart missing `boundary` parameter
+- Multipart with more than 100 parts
+- Multipart part exceeding `max_body_bytes`
+- Multipart filename exceeding 256 bytes: prevents secret exfiltration via long filenames
 
 **Header scanning:** Headers are scanned regardless of destination host. An agent can exfiltrate secrets via `Authorization: Bearer <secret>` to any host, including allowlisted ones. The URL allowlist controls URL-level blocking, not header DLP bypass.
 

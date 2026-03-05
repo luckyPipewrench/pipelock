@@ -111,7 +111,7 @@ Pipelock is an [agent firewall](https://pipelab.org/agent-firewall/): like a WAF
 Three proxy modes, same port:
 
 - **Fetch proxy** (`/fetch?url=...`): Pipelock fetches the URL, extracts text, scans the response for prompt injection, and returns clean content. Best for agents that use a dedicated fetch tool.
-- **Forward proxy** (`HTTPS_PROXY`): Standard HTTP CONNECT tunneling and absolute-URI forwarding. Agents use Pipelock as their system proxy with zero code changes. Hostname scanning catches blocked domains and SSRF before the tunnel opens.
+- **Forward proxy** (`HTTPS_PROXY`): Standard HTTP CONNECT tunneling and absolute-URI forwarding. Agents use Pipelock as their system proxy with zero code changes. Hostname scanning catches blocked domains and SSRF before the tunnel opens. Request body and header DLP scanning catches secrets in POST bodies and auth headers.
 - **WebSocket proxy** (`/ws?url=ws://...`): Bidirectional frame scanning with DLP + injection detection on text frames. Fragment reassembly, message size limits, idle timeout, and connection lifetime controls are all built in.
 
 ```mermaid

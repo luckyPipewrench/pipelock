@@ -149,9 +149,12 @@ func extractBodyText(body []byte, contentType string, maxBytes int) ([]string, s
 		return extract.AllStringsFromJSON(json.RawMessage(body)), ""
 
 	case mediaType == "application/x-www-form-urlencoded":
-		return extractFormURLEncoded(body), ""
+		return extractFormURLEncoded(body)
 
 	case mediaType == "multipart/form-data":
+		if params["boundary"] == "" {
+			return nil, "multipart/form-data missing boundary"
+		}
 		return extractMultipart(body, params["boundary"], maxBytes)
 
 	case strings.HasPrefix(mediaType, "text/") || strings.HasSuffix(mediaType, "+xml"):
@@ -166,29 +169,25 @@ func extractBodyText(body []byte, contentType string, maxBytes int) ([]string, s
 }
 
 // extractFormURLEncoded parses application/x-www-form-urlencoded bodies
-// and extracts both keys and values.
-func extractFormURLEncoded(body []byte) []string {
+// and extracts both keys and values. Returns an error string on parse failure
+// (fail-closed: caller blocks).
+func extractFormURLEncoded(body []byte) ([]string, string) {
 	values, err := url.ParseQuery(string(body))
 	if err != nil {
-		// Fall back to raw text on parse failure.
-		return []string{string(body)}
+		return nil, "invalid application/x-www-form-urlencoded body"
 	}
 	var result []string
 	for k, vv := range values {
 		result = append(result, k)
 		result = append(result, vv...)
 	}
-	return result
+	return result, ""
 }
 
 // extractMultipart parses multipart/form-data bodies with hard limits.
 // Returns extracted strings and an error message if any limit is exceeded.
 // On limit violation: fail-closed (returns error, caller blocks).
 func extractMultipart(body []byte, boundary string, maxBytes int) ([]string, string) {
-	if boundary == "" {
-		return []string{string(body)}, ""
-	}
-
 	reader := multipart.NewReader(strings.NewReader(string(body)), boundary)
 
 	var result []string
@@ -213,7 +212,7 @@ func extractMultipart(body []byte, boundary string, maxBytes int) ([]string, str
 		formName := part.FormName()
 		filename := part.FileName()
 		if len(filename) > maxFilenameBytes {
-			filename = filename[:maxFilenameBytes]
+			return nil, fmt.Sprintf("multipart filename exceeds %d bytes", maxFilenameBytes)
 		}
 
 		// Determine if this part is binary by checking its Content-Type.

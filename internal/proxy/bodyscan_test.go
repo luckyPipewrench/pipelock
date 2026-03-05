@@ -927,6 +927,39 @@ func TestFetchHandler_HeaderScan_SecretInAuth(t *testing.T) {
 	}
 }
 
+func TestFetchHandler_HeaderScan_WarnMode(t *testing.T) {
+	// In warn mode, fetch handler should allow the request but still log.
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("hello"))
+	}))
+	defer upstream.Close()
+
+	cfg := config.Defaults()
+	cfg.APIAllowlist = []string{"*"} // allow all URLs so we reach header scanning
+	cfg.RequestBodyScanning.Enabled = true
+	cfg.RequestBodyScanning.Action = config.ActionWarn
+	cfg.RequestBodyScanning.ScanHeaders = true
+	cfg.ApplyDefaults()
+	cfg.Internal = nil // disable SSRF after ApplyDefaults (avoids localhost block)
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+	m := metrics.New()
+	p := New(cfg, logger, sc, m)
+
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+upstream.URL, nil)
+	req.Header.Set("Authorization", "Bearer "+fakeAPIKey())
+	w := httptest.NewRecorder()
+
+	p.handleFetch(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 from fetch handler in warn mode, got %d", w.Code)
+	}
+}
+
 // --- hasNonIdentityEncoding tests ---
 
 func TestHasNonIdentityEncoding(t *testing.T) {
@@ -974,6 +1007,127 @@ func TestScanRequestBody_InvalidJSON_FailClosed(t *testing.T) {
 	}
 	if result.Action != config.ActionBlock {
 		t.Fatalf("expected block action for invalid JSON, got %q", result.Action)
+	}
+}
+
+// --- extractFormURLEncoded edge cases ---
+
+func TestScanRequestBody_FormURLEncoded_ParseFailure(t *testing.T) {
+	cfg := testScannerConfig()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+
+	// Malformed query string that url.ParseQuery rejects: bare % without hex digits.
+	malformed := "field=%zz&" + "AKIA" + "IOSFODNN7EXAMPLE" + "ABCDEFGH=val"
+	_, result := scanRequestBody(
+		strings.NewReader(malformed),
+		"application/x-www-form-urlencoded", "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
+	)
+	// Should fall back to raw text scan, which catches the AWS key.
+	if result.Clean {
+		t.Fatal("expected DLP match on malformed form body via raw text fallback")
+	}
+}
+
+// --- extractMultipart edge cases ---
+
+func TestScanRequestBody_MultipartOversizedPart(t *testing.T) {
+	cfg := testScannerConfig()
+	cfg.RequestBodyScanning.MaxBodyBytes = 500
+	sc := scanner.New(cfg)
+	defer sc.Close()
+
+	boundary := testMultipartBoundary
+	// Create a part body larger than maxBodyBytes (500).
+	bigValue := strings.Repeat("A", 501)
+	body := "--" + boundary + "\r\n" +
+		"Content-Disposition: form-data; name=\"data\"\r\n\r\n" +
+		bigValue + "\r\n" +
+		"--" + boundary + "--\r\n"
+
+	_, result := scanRequestBody(
+		strings.NewReader(body),
+		"multipart/form-data; boundary="+boundary, "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
+	)
+	if result.Clean {
+		t.Fatal("expected fail-closed block for oversized multipart part")
+	}
+	if result.Action != config.ActionBlock {
+		t.Fatalf("expected block action, got %q", result.Action)
+	}
+}
+
+func TestScanRequestBody_MultipartFilename(t *testing.T) {
+	cfg := testScannerConfig()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+
+	boundary := testMultipartBoundary
+	// Put a secret in the filename field (exfil via metadata).
+	body := "--" + boundary + "\r\n" +
+		"Content-Disposition: form-data; name=\"upload\"; filename=\"" + "AKIA" + "IOSFODNN7EXAMPLE" + "ABCDEFGH.txt\"\r\n" +
+		"Content-Type: text/plain\r\n\r\n" +
+		"clean content\r\n" +
+		"--" + boundary + "--\r\n"
+
+	_, result := scanRequestBody(
+		strings.NewReader(body),
+		"multipart/form-data; boundary="+boundary, "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
+	)
+	if result.Clean {
+		t.Fatal("expected DLP match for secret in multipart filename")
+	}
+}
+
+func TestScanRequestBody_MultipartBinaryWithMetadata(t *testing.T) {
+	cfg := testScannerConfig()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+
+	boundary := testMultipartBoundary
+	// Binary part (image/png) with secret in form name.
+	body := "--" + boundary + "\r\n" +
+		"Content-Disposition: form-data; name=\"" + "AKIA" + "IOSFODNN7EXAMPLE" + "ABCDEFGH\"; filename=\"photo.png\"\r\n" +
+		"Content-Type: image/png\r\n\r\n" +
+		"\x89PNG\r\n\x1a\n\r\n" +
+		"--" + boundary + "--\r\n"
+
+	_, result := scanRequestBody(
+		strings.NewReader(body),
+		"multipart/form-data; boundary="+boundary, "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
+	)
+	if result.Clean {
+		t.Fatal("expected DLP match for secret in binary part form name")
+	}
+}
+
+// --- isNoisyHeaderName coverage ---
+
+func TestIsNoisyHeaderName(t *testing.T) {
+	tests := []struct {
+		name  string
+		noisy bool
+	}{
+		{"Sec-Fetch-Site", true},
+		{"Sec-Ch-Ua", true},
+		{"X-Forwarded-For", true},
+		{"X-Forwarded-Proto", true},
+		{"Traceparent", true},
+		{"Tracestate", true},
+		{"X-Request-Id", true},
+		{"X-Trace-Id", true},
+		{"X-Correlation-Id", true},
+		{"X-Amzn-Trace-Id", true},
+		{"Authorization", false},
+		{"Cookie", false},
+		{"X-Custom-Header", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isNoisyHeaderName(tt.name); got != tt.noisy {
+				t.Errorf("isNoisyHeaderName(%q) = %v, want %v", tt.name, got, tt.noisy)
+			}
+		})
 	}
 }
 

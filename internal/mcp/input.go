@@ -8,6 +8,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
@@ -412,6 +413,7 @@ func ForwardScannedInput(
 	ks *killswitch.Controller,
 	chainMatcher *chains.Matcher,
 	tracker *RequestTracker,
+	auditLogger *audit.Logger,
 ) {
 	defer close(blockedCh)
 
@@ -510,6 +512,9 @@ func ForwardScannedInput(
 			if cv.Matched {
 				_, _ = fmt.Fprintf(logW, "pipelock: chain detected: %s (severity=%s, action=%s)\n",
 					cv.PatternName, cv.Severity, cv.Action)
+				if auditLogger != nil {
+					auditLogger.LogChainDetection(cv.PatternName, cv.Severity, cv.Action, toolCallName, "default")
+				}
 				if cv.Action == config.ActionBlock {
 					// Use verdict.ID from the already-parsed ScanRequest result
 					// rather than re-parsing via extractRPCID. A tools/call always

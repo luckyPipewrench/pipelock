@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{.Title}}</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #0b0f17;
+            color: #e2e8f0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            line-height: 1.6;
+            padding: 2rem;
+        }
+
+        .container {
+            max-width: 1100px;
+            margin: 0 auto;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 2.5rem;
+            padding-bottom: 1.5rem;
+            border-bottom: 1px solid #1e293b;
+        }
+
+        h1 {
+            font-size: 1.75rem;
+            font-weight: 600;
+            color: #f1f5f9;
+            margin-bottom: 1rem;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 0.4rem 1.2rem;
+            border-radius: 9999px;
+            font-size: 0.875rem;
+            font-weight: 700;
+            letter-spacing: 0.05em;
+            color: #0b0f17;
+            margin-bottom: 0.75rem;
+        }
+
+        .meta {
+            font-size: 0.8125rem;
+            color: #94a3b8;
+        }
+
+        .meta span {
+            margin: 0 0.5rem;
+        }
+
+        h2 {
+            font-size: 1.25rem;
+            font-weight: 600;
+            color: #f1f5f9;
+            margin-bottom: 1rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 1px solid #1e293b;
+        }
+
+        section {
+            margin-bottom: 2rem;
+        }
+
+        /* KPI Grid */
+        .kpi-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 1rem;
+            margin-bottom: 2rem;
+        }
+
+        .kpi-card {
+            background: #121a27;
+            border: 1px solid #1e293b;
+            border-radius: 0.5rem;
+            padding: 1.25rem;
+            text-align: center;
+        }
+
+        .kpi-value {
+            font-size: 2rem;
+            font-weight: 700;
+            line-height: 1.2;
+        }
+
+        .kpi-label {
+            font-size: 0.75rem;
+            color: #94a3b8;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-top: 0.25rem;
+        }
+
+        .kpi-blocks .kpi-value { color: #f97316; }
+        .kpi-warnings .kpi-value { color: #eab308; }
+        .kpi-criticals .kpi-value { color: #ef4444; }
+        .kpi-total .kpi-value { color: #38bdf8; }
+
+        /* Tables */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background: #121a27;
+            border: 1px solid #1e293b;
+            border-radius: 0.5rem;
+            overflow: hidden;
+        }
+
+        th {
+            background: #1a2332;
+            color: #94a3b8;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            padding: 0.75rem 1rem;
+            text-align: left;
+            font-weight: 600;
+        }
+
+        td {
+            padding: 0.625rem 1rem;
+            border-top: 1px solid #1e293b;
+            font-size: 0.875rem;
+        }
+
+        tr:hover {
+            background: #162032;
+        }
+
+        .severity-badge {
+            display: inline-block;
+            padding: 0.125rem 0.5rem;
+            border-radius: 0.25rem;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        /* Timeline bars */
+        .timeline-bar {
+            display: flex;
+            height: 1.25rem;
+            border-radius: 0.125rem;
+            overflow: hidden;
+            min-width: 2px;
+        }
+
+        .bar-block { background: #ef4444; }
+        .bar-warn { background: #eab308; }
+        .bar-allowed { background: #22c55e; }
+
+        .timeline-time {
+            font-size: 0.75rem;
+            color: #64748b;
+            font-family: "SF Mono", "Fira Code", monospace;
+            white-space: nowrap;
+        }
+
+        /* Evidence */
+        .event-card {
+            background: #121a27;
+            border: 1px solid #1e293b;
+            border-radius: 0.5rem;
+            padding: 1rem;
+            margin-bottom: 0.75rem;
+        }
+
+        .event-card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.5rem;
+        }
+
+        .event-type {
+            font-weight: 600;
+            font-size: 0.875rem;
+        }
+
+        .event-time {
+            font-size: 0.75rem;
+            color: #64748b;
+            font-family: "SF Mono", "Fira Code", monospace;
+        }
+
+        .event-detail {
+            font-family: "SF Mono", "Fira Code", monospace;
+            font-size: 0.8125rem;
+            color: #94a3b8;
+            background: #0b0f17;
+            padding: 0.75rem;
+            border-radius: 0.375rem;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        footer {
+            text-align: center;
+            padding-top: 1.5rem;
+            border-top: 1px solid #1e293b;
+            font-size: 0.75rem;
+            color: #475569;
+        }
+
+        @media (max-width: 768px) {
+            .kpi-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+            body {
+                padding: 1rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>{{.Title}}</h1>
+            <div class="badge" style="background: {{riskColor .Risk}}">{{riskLabel .Risk}}</div>
+            <div class="meta">
+                {{formatTime .TimeRange.Start}} to {{formatTime .TimeRange.End}}
+                <span>|</span> Mode: {{.Mode}}
+                <span>|</span> Version: {{.Version}}
+            </div>
+        </header>
+
+        <section class="kpi-grid">
+            <div class="kpi-card kpi-total">
+                <div class="kpi-value">{{.Summary.TotalEvents}}</div>
+                <div class="kpi-label">Total Events</div>
+            </div>
+            <div class="kpi-card kpi-blocks">
+                <div class="kpi-value">{{.Summary.Blocks}}</div>
+                <div class="kpi-label">Blocks</div>
+            </div>
+            <div class="kpi-card kpi-warnings">
+                <div class="kpi-value">{{.Summary.Warnings}}</div>
+                <div class="kpi-label">Warnings</div>
+            </div>
+            <div class="kpi-card kpi-criticals">
+                <div class="kpi-value">{{.Summary.Criticals}}</div>
+                <div class="kpi-label">Criticals</div>
+            </div>
+        </section>
+
+        {{if .Categories}}
+        <section>
+            <h2>Findings by Category</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Category</th>
+                        <th>Count</th>
+                        <th>Severity</th>
+                        <th>MITRE Techniques</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{range .Categories}}
+                    <tr>
+                        <td>{{.Name}}</td>
+                        <td>{{.Count}}</td>
+                        <td>
+                            <span class="severity-badge" style="background: {{severityColor .Severity}}; color: #0b0f17;">
+                                {{.Severity}}
+                            </span>
+                        </td>
+                        <td style="font-family: monospace; font-size: 0.8125rem;">{{join .MITRETechniques}}</td>
+                    </tr>
+                    {{end}}
+                </tbody>
+            </table>
+        </section>
+        {{end}}
+
+        {{if .Timeline}}
+        <section>
+            <h2>Activity Timeline</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th style="width: 12rem;">Time</th>
+                        <th>Activity</th>
+                        <th style="width: 5rem; text-align: right;">Blocks</th>
+                        <th style="width: 5rem; text-align: right;">Warns</th>
+                        <th style="width: 5rem; text-align: right;">Allowed</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{range .Timeline}}
+                    {{if or (gt .Blocks 0) (gt .Warns 0) (gt .Allowed 0)}}
+                    <tr>
+                        <td class="timeline-time">{{formatTime .Start}}</td>
+                        <td>
+                            <div class="timeline-bar">
+                                {{if gt .Blocks 0}}<div class="bar-block" style="flex: {{.Blocks}};"></div>{{end}}
+                                {{if gt .Warns 0}}<div class="bar-warn" style="flex: {{.Warns}};"></div>{{end}}
+                                {{if gt .Allowed 0}}<div class="bar-allowed" style="flex: {{.Allowed}};"></div>{{end}}
+                            </div>
+                        </td>
+                        <td style="text-align: right; color: #ef4444;">{{.Blocks}}</td>
+                        <td style="text-align: right; color: #eab308;">{{.Warns}}</td>
+                        <td style="text-align: right; color: #22c55e;">{{.Allowed}}</td>
+                    </tr>
+                    {{end}}
+                    {{end}}
+                </tbody>
+            </table>
+        </section>
+        {{end}}
+
+        {{if .Evidence}}
+        <section>
+            <h2>Evidence Appendix ({{len .Evidence}} events)</h2>
+            {{range .Evidence}}
+            <div class="event-card">
+                <div class="event-card-header">
+                    <span class="event-type" style="color: {{severityColor .Level}};">{{.Event}}</span>
+                    <span class="event-time">{{formatTime .Time}}</span>
+                </div>
+                <div class="event-detail">{{eventJSON .}}</div>
+            </div>
+            {{end}}
+        </section>
+        {{end}}
+
+        <footer>
+            Generated: {{formatTime .Generated}}
+            {{if .ConfigHashes}}| Config hashes: {{join .ConfigHashes}}{{end}}
+        </footer>
+    </div>
+</body>
+</html>

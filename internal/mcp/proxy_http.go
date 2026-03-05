@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
@@ -40,6 +41,7 @@ func RunHTTPProxy(
 	policyCfg *policy.Config,
 	ks *killswitch.Controller,
 	chainMatcher *chains.Matcher,
+	auditLogger *audit.Logger,
 ) error {
 	// Create a child context so we can stop the GET stream when stdin EOF is reached.
 	ctx, cancel := context.WithCancel(ctx)
@@ -102,7 +104,7 @@ func RunHTTPProxy(
 
 		// Input scanning — call ScanRequest and CheckRequest directly.
 		// The sequential (non-concurrent) architecture means no channel needed.
-		if blocked := scanHTTPInput(msg, sc, safeLogW, inputCfg, policyCfg, chainMatcher, "default"); blocked != nil {
+		if blocked := scanHTTPInput(msg, sc, safeLogW, inputCfg, policyCfg, chainMatcher, "default", auditLogger); blocked != nil {
 			if !blocked.IsNotification {
 				resp := blockRequestResponse(*blocked)
 				if wErr := safeClientOut.WriteMessage(resp); wErr != nil {
@@ -168,7 +170,7 @@ func RunHTTPProxy(
 // Returns a *BlockedRequest if the message should be blocked, nil if clean.
 // This is the HTTP proxy equivalent of ForwardScannedInput's per-message logic,
 // but returns a verdict instead of writing to a channel.
-func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *InputScanConfig, policyCfg *policy.Config, chainMatcher *chains.Matcher, sessionKey string) *BlockedRequest {
+func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *InputScanConfig, policyCfg *policy.Config, chainMatcher *chains.Matcher, sessionKey string, auditLogger *audit.Logger) *BlockedRequest {
 	// Determine input scanning parameters.
 	action := config.ActionWarn
 	onParseError := config.ActionBlock
@@ -214,6 +216,9 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 			if cv.Matched {
 				_, _ = fmt.Fprintf(logW, "pipelock: chain detected: %s (severity=%s, action=%s)\n",
 					cv.PatternName, cv.Severity, cv.Action)
+				if auditLogger != nil {
+					auditLogger.LogChainDetection(cv.PatternName, cv.Severity, cv.Action, toolName, sessionKey)
+				}
 				if cv.Action == config.ActionBlock {
 					return &BlockedRequest{
 						ID:             verdict.ID,
@@ -470,6 +475,7 @@ func RunHTTPListenerProxy(
 	policyCfg *policy.Config,
 	ks *killswitch.Controller,
 	chainMatcher *chains.Matcher,
+	auditLogger *audit.Logger,
 ) error {
 	safeLogW := &syncWriter{w: logW}
 
@@ -607,7 +613,7 @@ func RunHTTPListenerProxy(
 		}
 
 		// Input scanning: DLP, injection, policy, chain detection.
-		if blocked := scanHTTPInput(body, sc, safeLogW, inputCfg, policyCfg, chainMatcher, chainSessionKey); blocked != nil {
+		if blocked := scanHTTPInput(body, sc, safeLogW, inputCfg, policyCfg, chainMatcher, chainSessionKey, auditLogger); blocked != nil {
 			w.Header().Set("Content-Type", "application/json")
 			if blocked.IsNotification {
 				w.WriteHeader(http.StatusAccepted)

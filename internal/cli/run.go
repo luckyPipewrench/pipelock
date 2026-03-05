@@ -261,7 +261,7 @@ Examples:
 							if newCfg.ResponseScanning.Action == config.ActionAsk && !hasApprover {
 								cmd.PrintErrln("WARNING: config reloaded to ask mode but HITL approver was not initialized at startup; detections will be blocked")
 							}
-							logger.LogConfigReload("success", fmt.Sprintf("mode=%s", newCfg.Mode))
+							logger.LogConfigReload("success", fmt.Sprintf("mode=%s", newCfg.Mode), newCfg.Hash())
 						}()
 					}
 				}()
@@ -453,7 +453,7 @@ Examples:
 
 				mcpErr = make(chan error, 1)
 				go func() {
-					mcpErr <- mcp.RunHTTPListenerProxy(ctx, mcpLn, mcpUpstream, cmd.ErrOrStderr(), sc, mcpApprover, inputCfg, toolCfg, policyCfg, ks, mcpChainMatcher)
+					mcpErr <- mcp.RunHTTPListenerProxy(ctx, mcpLn, mcpUpstream, cmd.ErrOrStderr(), sc, mcpApprover, inputCfg, toolCfg, policyCfg, ks, mcpChainMatcher, logger)
 				}()
 			}
 

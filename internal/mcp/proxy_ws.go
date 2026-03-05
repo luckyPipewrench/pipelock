@@ -7,6 +7,7 @@ import (
 	"io"
 	"sync"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
@@ -33,6 +34,7 @@ func RunWSProxy(
 	policyCfg *policy.Config,
 	ks *killswitch.Controller,
 	chainMatcher *chains.Matcher,
+	auditLogger *audit.Logger,
 ) error {
 	// Separate parent and inner context. The parent context comes from
 	// signal handling (SIGINT/SIGTERM). The inner context is cancelled
@@ -143,7 +145,7 @@ func RunWSProxy(
 		}
 
 		// Input scanning: DLP, injection, policy, chain detection.
-		if blocked := scanHTTPInput(msg, sc, safeLogW, inputCfg, policyCfg, chainMatcher, sessionKey); blocked != nil {
+		if blocked := scanHTTPInput(msg, sc, safeLogW, inputCfg, policyCfg, chainMatcher, sessionKey, auditLogger); blocked != nil {
 			if !blocked.IsNotification {
 				resp := blockRequestResponse(*blocked)
 				if wErr := safeClientOut.WriteMessage(resp); wErr != nil {

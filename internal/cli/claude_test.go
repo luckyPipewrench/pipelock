@@ -900,3 +900,217 @@ func TestParseClaudeSettingsRaw_Corrupt(t *testing.T) {
 		t.Fatal("expected error for corrupt data")
 	}
 }
+
+func TestClaudePayloadToAction_BadToolInput(t *testing.T) {
+	tests := []struct {
+		name     string
+		toolName string
+	}{
+		{"bad Bash input", "Bash"},
+		{"bad WebFetch input", "WebFetch"},
+		{"bad Write input", "Write"},
+		{"bad Edit input", "Edit"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := claudeCodePayload{
+				ToolName:  tt.toolName,
+				ToolInput: json.RawMessage(`{invalid`),
+			}
+			_, err := claudePayloadToAction(p)
+			if err == nil {
+				t.Errorf("expected error for bad %s tool_input", tt.toolName)
+			}
+		})
+	}
+}
+
+func TestClaudeHookCmd_BadToolInputDenies(t *testing.T) {
+	// Valid JSON payload but tool_input that fails parsing (bad JSON inside).
+	input := `{"session_id":"s1","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":"not-an-object","tool_use_id":"t1"}`
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"claude", "hook"})
+	cmd.SetIn(bytes.NewReader([]byte(input)))
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	_ = cmd.Execute()
+
+	var resp claudeCodeResponse
+	if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &resp); err != nil {
+		t.Fatalf("output not valid JSON: %v\noutput: %s", err, buf.String())
+	}
+	if resp.HookSpecificOutput.PermissionDecision != decisionDeny {
+		t.Errorf("expected deny for bad tool_input, got %s", resp.HookSpecificOutput.PermissionDecision)
+	}
+}
+
+func TestClaudeHookCmd_ConfigError(t *testing.T) {
+	input := `{"session_id":"s1","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"ls"},"tool_use_id":"t1"}`
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"claude", "hook", "--config", "/nonexistent/path/config.yaml"})
+	cmd.SetIn(bytes.NewReader([]byte(input)))
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	_ = cmd.Execute()
+
+	var resp claudeCodeResponse
+	if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &resp); err != nil {
+		t.Fatalf("output not valid JSON: %v\noutput: %s", err, buf.String())
+	}
+	if resp.HookSpecificOutput.PermissionDecision != decisionDeny {
+		t.Errorf("expected deny for config error, got %s", resp.HookSpecificOutput.PermissionDecision)
+	}
+}
+
+func TestWriteClaudeResponse_MarshalError(t *testing.T) {
+	// A response with a channel in it cannot be marshaled.
+	// But claude response types are all marshalable. Instead, test the
+	// happy path to ensure writeClaudeResponse works end-to-end.
+	buf := &strings.Builder{}
+	writeClaudeResponse(buf, claudeCodeFullResponse{
+		HookSpecificOutput: claudeCodeHookOutput{
+			HookEventName:      claudeHookEventPreToolUse,
+			PermissionDecision: decisionAllow,
+		},
+	})
+	if !strings.Contains(buf.String(), `"permissionDecision":"allow"`) {
+		t.Errorf("expected allow in output, got: %s", buf.String())
+	}
+}
+
+func TestWriteClaudeSettingsFile_HappyPath(t *testing.T) {
+	dir := t.TempDir()
+	targetDir := filepath.Join(dir, "subdir")
+	targetPath := filepath.Join(targetDir, "settings.json")
+
+	cmd := rootCmd()
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	existing := []byte(`{"old": true}`)
+	output := []byte(`{"hooks": {}}` + "\n")
+
+	// With existing data (triggers backup)
+	err := writeClaudeSettingsFile(cmd, targetPath, targetDir, existing, nil, output)
+	if err != nil {
+		t.Fatalf("writeClaudeSettingsFile failed: %v", err)
+	}
+
+	// Verify file was written
+	written, readErr := os.ReadFile(filepath.Clean(targetPath))
+	if readErr != nil {
+		t.Fatalf("reading written file: %v", readErr)
+	}
+	if string(written) != string(output) {
+		t.Errorf("written content mismatch: got %q, want %q", written, output)
+	}
+
+	// Verify backup was created
+	backupPath := filepath.Clean(targetPath + ".bak")
+	backup, backupErr := os.ReadFile(backupPath)
+	if backupErr != nil {
+		t.Fatalf("reading backup: %v", backupErr)
+	}
+	if string(backup) != string(existing) {
+		t.Errorf("backup content mismatch: got %q, want %q", backup, existing)
+	}
+}
+
+func TestWriteClaudeSettingsFile_NoExisting(t *testing.T) {
+	dir := t.TempDir()
+	targetDir := filepath.Join(dir, "newdir")
+	targetPath := filepath.Join(targetDir, "settings.json")
+
+	cmd := rootCmd()
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	output := []byte(`{"hooks": {}}` + "\n")
+
+	// With no existing data (readErr != nil, skips backup)
+	err := writeClaudeSettingsFile(cmd, targetPath, targetDir, nil, os.ErrNotExist, output)
+	if err != nil {
+		t.Fatalf("writeClaudeSettingsFile failed: %v", err)
+	}
+
+	written, readErr := os.ReadFile(filepath.Clean(targetPath))
+	if readErr != nil {
+		t.Fatalf("reading written file: %v", readErr)
+	}
+	if string(written) != string(output) {
+		t.Errorf("written content mismatch: got %q, want %q", written, output)
+	}
+
+	// Verify NO backup was created
+	backupPath := filepath.Clean(targetPath + ".bak")
+	_, backupErr := os.ReadFile(backupPath)
+	if backupErr == nil {
+		t.Error("backup should not exist when there was no existing file")
+	}
+}
+
+func TestWriteClaudeSettingsFile_ReadOnlyDir(t *testing.T) {
+	// MkdirAll fails on read-only parent
+	cmd := rootCmd()
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	err := writeClaudeSettingsFile(cmd, "/proc/fake/settings.json", "/proc/fake", nil, os.ErrNotExist, []byte("{}"))
+	if err == nil {
+		t.Error("expected error for read-only directory")
+	}
+}
+
+func TestClaudeSetupCmd_ReadError(t *testing.T) {
+	// settings.json exists as a directory (causes non-ENOENT read error)
+	dir := t.TempDir()
+	settingsDir := filepath.Join(dir, ".claude")
+	if err := os.MkdirAll(filepath.Join(settingsDir, "settings.json"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"claude", "setup", "--project"})
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+
+	// Run from dir where .claude/settings.json is a directory
+	origDir, _ := os.Getwd()
+	_ = os.Chdir(dir)
+	defer func() { _ = os.Chdir(origDir) }()
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Error("expected error when settings.json is a directory")
+	}
+}
+
+func TestClaudeRemoveCmd_ReadError(t *testing.T) {
+	// settings.json exists as a directory (non-ENOENT read error)
+	dir := t.TempDir()
+	settingsDir := filepath.Join(dir, ".claude")
+	if err := os.MkdirAll(filepath.Join(settingsDir, "settings.json"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"claude", "remove", "--project"})
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+
+	origDir, _ := os.Getwd()
+	_ = os.Chdir(dir)
+	defer func() { _ = os.Chdir(origDir) }()
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Error("expected error when settings.json is a directory")
+	}
+}

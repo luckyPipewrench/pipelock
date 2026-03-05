@@ -7,15 +7,14 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
 )
 
 // Reloader watches a config file for changes and emits new validated
-// configs on a channel. It supports both fsnotify file watching and
-// SIGHUP signal-based reload.
+// configs on a channel. It supports fsnotify file watching and
+// signal-based reload (SIGHUP on Unix).
 type Reloader struct {
 	path      string
 	onChange  chan *Config
@@ -38,7 +37,7 @@ func (r *Reloader) Changes() <-chan *Config {
 	return r.onChange
 }
 
-// Start watches the config file and listens for SIGHUP. It blocks until
+// Start watches the config file and listens for reload signals (SIGHUP on Unix). It blocks until
 // ctx is cancelled or Close is called. When Start returns, the onChange
 // channel is closed. Reload failures are logged to stderr via tryReload;
 // the old config remains active.
@@ -59,7 +58,7 @@ func (r *Reloader) Start(ctx context.Context) error {
 	}
 
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGHUP)
+	notifyReloadSignal(sigCh) // SIGHUP on Unix, no-op on Windows
 	defer signal.Stop(sigCh)
 
 	baseName := filepath.Base(r.path)

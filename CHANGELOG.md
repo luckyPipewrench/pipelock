@@ -8,11 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- `pipelock claude hook`: PreToolUse hook for Claude Code, scanning Bash commands, WebFetch URLs, Write/Edit content, and MCP tool calls
-- `pipelock claude setup`: installs pipelock hooks into Claude Code's settings.json (global or project-level), with idempotent merge and .bak backup
-- `pipelock claude remove`: cleanly uninstalls pipelock hooks from Claude Code's settings.json
-- `--exit-code` mode for `pipelock claude hook` (exit 2 for deny instead of structured JSON)
-- WebFetch and WriteFile event kinds in the decide package for URL and file content scanning
+- Kill switch API token can now be set via `PIPELOCK_KILLSWITCH_API_TOKEN` environment variable, overriding the `kill_switch.api_token` config field. Enables Kubernetes deployments to source the token from a Secret instead of a ConfigMap.
 - Request body DLP scanning for the forward HTTP proxy. Scans POST/PUT/PATCH bodies for secrets across JSON (recursive string extraction), form-urlencoded, multipart/form-data, and raw text. Unknown content types get a fallback raw-text scan to prevent Content-Type spoofing bypass. Fail-closed on oversized bodies, compressed bodies, parse errors, and multipart limit violations.
 - Request header DLP scanning for the forward proxy and fetch handler. Two modes: `sensitive` (scan listed headers only) and `all` (scan everything except structural headers, including header names). Joined scan catches secrets split across multiple headers.
 - `request_body_scanning` config section with `enabled`, `action`, `max_body_bytes`, `scan_headers`, `header_mode`, `sensitive_headers`, and `ignore_headers` fields

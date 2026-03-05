@@ -7,7 +7,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"os/signal"
 	"syscall"
 	"time"
@@ -49,7 +48,7 @@ accepts JSON-RPC POST requests and proxies them to an upstream MCP server with
 bidirectional scanning (DLP, injection, tool poisoning, policy).
 
 The proxy runs until interrupted (SIGINT/SIGTERM). When started with --config,
-file changes and SIGHUP signals trigger a hot-reload of config and scanner.
+file changes (and SIGHUP on Unix) trigger a hot-reload of config and scanner.
 
 Examples:
   pipelock run                                       # standalone proxy
@@ -172,24 +171,9 @@ Examples:
 			)
 			defer cancel()
 
-			// SIGUSR1 toggles the kill switch (separate from SIGINT/SIGTERM).
-			sigusr1Ch := make(chan os.Signal, 1)
-			signal.Notify(sigusr1Ch, syscall.SIGUSR1)
-			defer signal.Stop(sigusr1Ch)
-			defer close(sigusr1Ch)
-			go func() {
-				for sig := range sigusr1Ch {
-					if sig == nil {
-						return
-					}
-					active := ks.ToggleSignal()
-					if active {
-						cmd.PrintErrln("pipelock: kill switch ACTIVATED via SIGUSR1")
-					} else {
-						cmd.PrintErrln("pipelock: kill switch DEACTIVATED via SIGUSR1")
-					}
-				}
-			}()
+			// Toggle kill switch via SIGUSR1 on Unix (no-op on Windows).
+			cleanupSignal := registerKillSwitchSignal(ks, cmd)
+			defer cleanupSignal()
 
 			// Start config hot-reload if a config file is provided
 			if configFile != "" {
@@ -318,7 +302,7 @@ Examples:
 				}
 			}
 			if configFile != "" {
-				cmd.PrintErrf("  Config: %s (hot-reload enabled, SIGHUP to reload)\n", configFile)
+				cmd.PrintErrf("  Config: %s (hot-reload enabled%s)\n", configFile, reloadSignalHint())
 			}
 			if hasMCPListen {
 				cmd.PrintErrf("  MCP:    http://%s -> %s\n", mcpListen, mcpUpstream)

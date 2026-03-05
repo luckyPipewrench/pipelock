@@ -179,7 +179,7 @@ request_body_scanning:
 
 **Header scanning:** Headers are scanned regardless of destination host. An agent can exfiltrate secrets via `Authorization: Bearer <secret>` to any host, including allowlisted ones. The URL allowlist controls URL-level blocking, not header DLP bypass.
 
-**Note on `scan_headers`:** Due to Go's YAML bool unmarshaling, omitting `scan_headers` is equivalent to setting it to `false`. Always set `scan_headers: true` explicitly in your config if you want header scanning enabled.
+**Note on `scan_headers`:** The config default is `true`, but omitting the field from your YAML file gives `false` (Go's zero value overrides the default). Always set `scan_headers: true` explicitly in your config if you want header scanning enabled.
 
 ## WebSocket Proxy
 

@@ -353,8 +353,9 @@ func scanRequestHeaders(headers http.Header, cfg *config.Config, sc *scanner.Sca
 	var allValues []string
 	for name, values := range headersToScan {
 		// In "all" mode, scan header names too (catches exfil via custom
-		// header names like X-AKIA1234). Skip noisy prefixes.
-		if bodyCfg.HeaderMode == config.HeaderModeAll && !isNoisyHeaderName(name) {
+		// header names like X-AKIA1234). No noisy prefix skip: agents
+		// (unlike browsers) control all header names, including Sec-*.
+		if bodyCfg.HeaderMode == config.HeaderModeAll {
 			result := sc.ScanTextForDLP(name)
 			if !result.Clean {
 				return &BodyScanResult{
@@ -380,7 +381,7 @@ func scanRequestHeaders(headers http.Header, cfg *config.Config, sc *scanner.Sca
 			}
 			// In "all" mode, scan name+value concatenation to catch secrets
 			// split across the header name:value boundary.
-			if bodyCfg.HeaderMode == config.HeaderModeAll && !isNoisyHeaderName(name) {
+			if bodyCfg.HeaderMode == config.HeaderModeAll {
 				combined := name + v
 				combinedResult := sc.ScanTextForDLP(combined)
 				if !combinedResult.Clean {

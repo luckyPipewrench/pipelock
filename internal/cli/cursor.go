@@ -172,7 +172,7 @@ func runCursorHook(cmd *cobra.Command, configFile string) error {
 	defer func() {
 		if r := recover(); r != nil {
 			writeResponse(stdout, cursorResponse{
-				Permission:  "deny",
+				Permission:  decisionDeny,
 				UserMessage: "pipelock: internal error",
 			})
 		}
@@ -183,7 +183,7 @@ func runCursorHook(cmd *cobra.Command, configFile string) error {
 	data, err := io.ReadAll(reader)
 	if err != nil {
 		writeResponse(stdout, cursorResponse{
-			Permission:  "deny",
+			Permission:  decisionDeny,
 			UserMessage: "pipelock: failed to read stdin",
 		})
 		return nil //nolint:nilerr // always exit 0
@@ -191,7 +191,7 @@ func runCursorHook(cmd *cobra.Command, configFile string) error {
 
 	if len(data) > maxStdinBytes {
 		writeResponse(stdout, cursorResponse{
-			Permission:  "deny",
+			Permission:  decisionDeny,
 			UserMessage: "pipelock: input too large",
 		})
 		return nil
@@ -201,7 +201,7 @@ func runCursorHook(cmd *cobra.Command, configFile string) error {
 	var payload cursorHookPayload
 	if err := json.Unmarshal(data, &payload); err != nil {
 		writeResponse(stdout, cursorResponse{
-			Permission:  "deny",
+			Permission:  decisionDeny,
 			UserMessage: "pipelock: invalid JSON input",
 		})
 		return nil
@@ -211,7 +211,7 @@ func runCursorHook(cmd *cobra.Command, configFile string) error {
 	cfg, err := loadCursorConfig(configFile)
 	if err != nil {
 		writeResponse(stdout, cursorResponse{
-			Permission:  "deny",
+			Permission:  decisionDeny,
 			UserMessage: "pipelock: config error: " + err.Error(),
 		})
 		return nil

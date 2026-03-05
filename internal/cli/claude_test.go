@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -298,5 +300,459 @@ func TestClaudeHookCmd_ExitCodeMode_Allow(t *testing.T) {
 	err := cmd.Execute()
 	if err != nil {
 		t.Fatalf("expected no error for allowed action in exit-code mode, got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Settings.json parsing tests (Task 3)
+// ---------------------------------------------------------------------------
+
+func TestParseClaudeSettings_Empty(t *testing.T) {
+	settings, err := parseClaudeSettings([]byte("{}"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if settings.Hooks == nil {
+		t.Error("expected non-nil hooks map")
+	}
+}
+
+func TestParseClaudeSettings_WithExistingHooks(t *testing.T) {
+	data := `{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"other-tool check"}]}]}}`
+	settings, err := parseClaudeSettings([]byte(data))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(settings.Hooks["PreToolUse"]) != 1 {
+		t.Errorf("expected 1 PreToolUse group, got %d", len(settings.Hooks["PreToolUse"]))
+	}
+}
+
+func TestParseClaudeSettings_Malformed(t *testing.T) {
+	_, err := parseClaudeSettings([]byte("{bad"))
+	if err == nil {
+		t.Fatal("expected error for malformed JSON")
+	}
+}
+
+func TestMergeClaudeHooks_Fresh(t *testing.T) {
+	settings := &claudeSettings{Hooks: make(map[string][]claudeMatcherGroup)}
+	merged := mergeClaudeHooks(settings, "/usr/local/bin/pipelock")
+
+	groups := merged.Hooks["PreToolUse"]
+	if len(groups) != 2 {
+		t.Fatalf("expected 2 matcher groups (builtin + MCP), got %d", len(groups))
+	}
+}
+
+func TestMergeClaudeHooks_PreservesOtherHooks(t *testing.T) {
+	settings := &claudeSettings{
+		Hooks: map[string][]claudeMatcherGroup{
+			"PreToolUse": {
+				{Matcher: "Bash", Hooks: []claudeHookEntry{{Type: "command", Command: "other-tool"}}},
+			},
+			"SessionStart": {
+				{Hooks: []claudeHookEntry{{Type: "command", Command: "startup.sh"}}},
+			},
+		},
+	}
+	merged := mergeClaudeHooks(settings, "/usr/local/bin/pipelock")
+
+	// SessionStart untouched.
+	if len(merged.Hooks["SessionStart"]) != 1 {
+		t.Error("SessionStart hooks were modified")
+	}
+
+	// PreToolUse: other-tool preserved + 2 pipelock groups added.
+	groups := merged.Hooks["PreToolUse"]
+	otherFound := false
+	for _, g := range groups {
+		for _, h := range g.Hooks {
+			if h.Command == "other-tool" {
+				otherFound = true
+			}
+		}
+	}
+	if !otherFound {
+		t.Error("non-pipelock hook was lost during merge")
+	}
+}
+
+func TestMergeClaudeHooks_Idempotent(t *testing.T) {
+	settings := &claudeSettings{Hooks: make(map[string][]claudeMatcherGroup)}
+	first := mergeClaudeHooks(settings, "/usr/local/bin/pipelock")
+	second := mergeClaudeHooks(first, "/usr/local/bin/pipelock")
+
+	// Count pipelock groups (should be same after second merge).
+	count := 0
+	for _, g := range second.Hooks["PreToolUse"] {
+		for _, h := range g.Hooks {
+			if isClaudePipelockHook(h) {
+				count++
+			}
+		}
+	}
+	// Expect exactly 2 pipelock hook entries (builtin + MCP matchers).
+	if count != 2 {
+		t.Errorf("expected 2 pipelock entries after idempotent merge, got %d", count)
+	}
+}
+
+func TestRemoveClaudeHooks(t *testing.T) {
+	settings := &claudeSettings{Hooks: make(map[string][]claudeMatcherGroup)}
+	installed := mergeClaudeHooks(settings, "/usr/local/bin/pipelock")
+	removed := removeClaudeHooks(installed)
+
+	if len(removed.Hooks["PreToolUse"]) != 0 {
+		t.Errorf("expected 0 PreToolUse groups after remove, got %d", len(removed.Hooks["PreToolUse"]))
+	}
+}
+
+func TestRemoveClaudeHooks_PreservesOthers(t *testing.T) {
+	settings := &claudeSettings{
+		Hooks: map[string][]claudeMatcherGroup{
+			"PreToolUse": {
+				{Matcher: "Bash", Hooks: []claudeHookEntry{{Type: "command", Command: "other-tool"}}},
+				{Matcher: claudeBuiltinMatcher, Hooks: []claudeHookEntry{{Type: "command", Command: "/usr/bin/pipelock claude hook"}}},
+			},
+		},
+	}
+	removed := removeClaudeHooks(settings)
+
+	groups := removed.Hooks["PreToolUse"]
+	if len(groups) != 1 {
+		t.Fatalf("expected 1 group after remove, got %d", len(groups))
+	}
+	if groups[0].Hooks[0].Command != "other-tool" {
+		t.Error("non-pipelock hook was removed")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Setup command tests (Task 4)
+// ---------------------------------------------------------------------------
+
+func TestClaudeSetupCmd_DryRun(t *testing.T) {
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"claude", "setup", "--dry-run"})
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	output := buf.String()
+	if !strings.Contains(output, "Would write to") {
+		t.Error("dry-run should show 'Would write to'")
+	}
+	if !strings.Contains(output, "claude hook") {
+		t.Error("dry-run should show 'claude hook' command")
+	}
+}
+
+func TestClaudeSetupCmd_Global(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"claude", "setup", "--global"})
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	settingsPath := filepath.Join(dir, ".claude", "settings.json")
+	data, err := os.ReadFile(filepath.Clean(settingsPath))
+	if err != nil {
+		t.Fatalf("settings.json not created: %v", err)
+	}
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("invalid settings.json: %v", err)
+	}
+	if _, ok := raw["hooks"]; !ok {
+		t.Error("settings.json missing hooks section")
+	}
+}
+
+func TestClaudeSetupCmd_MergeExisting(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	claudeDir := filepath.Join(dir, ".claude")
+	if err := os.MkdirAll(claudeDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	existing := `{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"startup.sh"}]}]},"effortLevel":"high"}`
+	settingsPath := filepath.Join(claudeDir, "settings.json")
+	if err := os.WriteFile(settingsPath, []byte(existing), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"claude", "setup"})
+	cmd.SetOut(&strings.Builder{})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Clean(settingsPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// effortLevel preserved.
+	if !strings.Contains(string(data), `"effortLevel"`) {
+		t.Error("effortLevel field was lost during merge")
+	}
+	// SessionStart preserved.
+	if !strings.Contains(string(data), "startup.sh") {
+		t.Error("SessionStart hook was lost during merge")
+	}
+	// PreToolUse added.
+	if !strings.Contains(string(data), "PreToolUse") {
+		t.Error("PreToolUse hooks not added")
+	}
+}
+
+func TestClaudeSetupCmd_Idempotent(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+
+	for i := range 2 {
+		cmd := rootCmd()
+		cmd.SetArgs([]string{"claude", "setup"})
+		cmd.SetOut(&strings.Builder{})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("run %d: unexpected error: %v", i+1, err)
+		}
+	}
+
+	settingsPath := filepath.Join(dir, ".claude", "settings.json")
+	data, err := os.ReadFile(filepath.Clean(settingsPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Count occurrences of "claude hook" (should be exactly 2: builtin + MCP).
+	count := strings.Count(string(data), "claude hook")
+	if count != 2 {
+		t.Errorf("expected 2 'claude hook' entries after idempotent setup, got %d", count)
+	}
+}
+
+func TestClaudeSetupCmd_Backup(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	claudeDir := filepath.Join(dir, ".claude")
+	if err := os.MkdirAll(claudeDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	original := `{"effortLevel":"high"}`
+	settingsPath := filepath.Join(claudeDir, "settings.json")
+	if err := os.WriteFile(settingsPath, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"claude", "setup"})
+	cmd.SetOut(&strings.Builder{})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	backupData, err := os.ReadFile(filepath.Clean(settingsPath + ".bak"))
+	if err != nil {
+		t.Fatalf("backup not created: %v", err)
+	}
+	if string(backupData) != original {
+		t.Errorf("backup mismatch: got %q, want %q", string(backupData), original)
+	}
+}
+
+func TestClaudeSetupCmd_Project(t *testing.T) {
+	dir := t.TempDir()
+	chdirTemp(t, dir)
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"claude", "setup", "--project"})
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	settingsPath := filepath.Join(dir, ".claude", "settings.json")
+	if _, err := os.Stat(settingsPath); err != nil {
+		t.Fatalf("project settings.json not created: %v", err)
+	}
+}
+
+func TestClaudeSetupCmd_CorruptExisting(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	claudeDir := filepath.Join(dir, ".claude")
+	if err := os.MkdirAll(claudeDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	settingsPath := filepath.Join(claudeDir, "settings.json")
+	if err := os.WriteFile(settingsPath, []byte("{corrupt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"claude", "setup"})
+	cmd.SetOut(&strings.Builder{})
+	cmd.SetErr(&strings.Builder{})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for corrupt settings.json")
+	}
+	if !strings.Contains(err.Error(), "parsing") {
+		t.Errorf("unexpected error: %s", err.Error())
+	}
+}
+
+func TestClaudeSetupCmd_InvalidFlags(t *testing.T) {
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"claude", "setup", "--global", "--project"})
+	cmd.SetOut(&strings.Builder{})
+	cmd.SetErr(&strings.Builder{})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when both --global and --project are set")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Remove command tests (Task 5)
+// ---------------------------------------------------------------------------
+
+func TestClaudeRemoveCmd_RemovesHooks(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+
+	// Install first.
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"claude", "setup"})
+	cmd.SetOut(&strings.Builder{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	// Remove.
+	cmd = rootCmd()
+	cmd.SetArgs([]string{"claude", "remove"})
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+
+	settingsPath := filepath.Join(dir, ".claude", "settings.json")
+	data, err := os.ReadFile(filepath.Clean(settingsPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if strings.Contains(string(data), "claude hook") {
+		t.Error("pipelock hooks not removed")
+	}
+}
+
+func TestClaudeRemoveCmd_PreservesOtherHooks(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	claudeDir := filepath.Join(dir, ".claude")
+	if err := os.MkdirAll(claudeDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	existing := `{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"other-tool"}]},{"matcher":"Bash|WebFetch|Write|Edit","hooks":[{"type":"command","command":"/usr/bin/pipelock claude hook","timeout":10}]}]}}`
+	settingsPath := filepath.Join(claudeDir, "settings.json")
+	if err := os.WriteFile(settingsPath, []byte(existing), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"claude", "remove"})
+	cmd.SetOut(&strings.Builder{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Clean(settingsPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "other-tool") {
+		t.Error("non-pipelock hook was removed")
+	}
+	if strings.Contains(string(data), "claude hook") {
+		t.Error("pipelock hook not removed")
+	}
+}
+
+func TestClaudeRemoveCmd_NoSettingsFile(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"claude", "remove"})
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	// Should succeed gracefully (nothing to remove).
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "no settings") {
+		t.Error("expected 'no settings' message")
+	}
+}
+
+func TestClaudeRemoveCmd_DryRun(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+
+	// Install first.
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"claude", "setup"})
+	cmd.SetOut(&strings.Builder{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Dry-run remove.
+	cmd = rootCmd()
+	cmd.SetArgs([]string{"claude", "remove", "--dry-run"})
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(buf.String(), "Would write to") {
+		t.Error("dry-run should show 'Would write to'")
+	}
+
+	// Hooks should still exist (dry-run didn't modify).
+	settingsPath := filepath.Join(dir, ".claude", "settings.json")
+	data, err := os.ReadFile(filepath.Clean(settingsPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "claude hook") {
+		t.Error("dry-run should not modify the file")
 	}
 }

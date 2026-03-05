@@ -5,6 +5,15 @@ All notable changes to Pipelock will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- `pipelock claude hook`: PreToolUse hook for Claude Code, scanning Bash commands, WebFetch URLs, Write/Edit content, and MCP tool calls
+- `pipelock claude setup`: installs pipelock hooks into Claude Code's settings.json (global or project-level), with idempotent merge and .bak backup
+- `pipelock claude remove`: cleanly uninstalls pipelock hooks from Claude Code's settings.json
+- `--exit-code` mode for `pipelock claude hook` (exit 2 for deny instead of structured JSON)
+- WebFetch and WriteFile event kinds in the decide package for URL and file content scanning
+
 ## [0.3.4] - 2026-03-04
 
 ### Fixed

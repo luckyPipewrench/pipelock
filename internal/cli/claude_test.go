@@ -437,17 +437,26 @@ func TestMergeClaudeHooks_PreservesSharedGroupHooks(t *testing.T) {
 	}
 }
 
-func TestIsClaudePipelockHook_NoFalsePositive(t *testing.T) {
-	// "echo claude hook" should NOT match; only commands ending with "claude hook".
-	h := claudeHookEntry{Type: "command", Command: "echo claude hook something"}
-	if isClaudePipelockHook(h) {
-		t.Error("false positive: unrelated command matched as pipelock hook")
+func TestIsClaudePipelockHook_Detection(t *testing.T) {
+	cases := []struct {
+		name    string
+		command string
+		want    bool
+	}{
+		{"actual pipelock hook", "/usr/bin/pipelock claude hook", true},
+		{"quoted path", "'/usr/local/bin/pipelock' claude hook", true},
+		{"trailing whitespace", "/usr/bin/pipelock claude hook ", true},
+		{"unrelated command", "echo hello", false},
+		{"partial match", "pipelock claude", false},
+		{"empty command", "", false},
 	}
-
-	// Actual pipelock hook should match.
-	h2 := claudeHookEntry{Type: "command", Command: "/usr/bin/pipelock claude hook"}
-	if !isClaudePipelockHook(h2) {
-		t.Error("actual pipelock hook not detected")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := claudeHookEntry{Type: "command", Command: tc.command}
+			if got := isClaudePipelockHook(h); got != tc.want {
+				t.Errorf("isClaudePipelockHook(%q) = %v, want %v", tc.command, got, tc.want)
+			}
+		})
 	}
 }
 

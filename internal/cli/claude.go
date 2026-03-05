@@ -350,7 +350,8 @@ func parseClaudeSettings(data []byte) (*claudeSettings, error) {
 
 // isClaudePipelockHook returns true if a hook entry was installed by pipelock.
 // The command always ends with "claude hook" because mergeClaudeHooks
-// constructs it as `<binary> claude hook`.
+// constructs it as `<binary> claude hook`. Mirrors cursor.go's HasSuffix
+// detection pattern.
 func isClaudePipelockHook(h claudeHookEntry) bool {
 	return strings.HasSuffix(strings.TrimSpace(h.Command), "claude hook")
 }

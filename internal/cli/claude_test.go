@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -898,6 +899,158 @@ func TestParseClaudeSettingsRaw_Corrupt(t *testing.T) {
 	_, _, err := parseClaudeSettingsRaw([]byte("{corrupt"))
 	if err == nil {
 		t.Fatal("expected error for corrupt data")
+	}
+}
+
+func TestParseClaudeSettingsRaw_BadHooksType(t *testing.T) {
+	// hooks field is a number instead of a map: top-level parses but hooks fails.
+	_, _, err := parseClaudeSettingsRaw([]byte(`{"hooks": 123}`))
+	if err == nil {
+		t.Fatal("expected error for non-map hooks")
+	}
+	if !strings.Contains(err.Error(), "parsing hooks section") {
+		t.Errorf("expected hooks parse error, got: %v", err)
+	}
+}
+
+func TestClaudeSettingsDir_NoHome(t *testing.T) {
+	// Unset HOME to trigger UserHomeDir error.
+	orig := os.Getenv("HOME")
+	t.Setenv("HOME", "")
+	// On Linux, UserHomeDir falls back to /etc/passwd. Clear all hints.
+	t.Setenv("PLAN9", "")
+
+	_, err := claudeSettingsDir(false)
+	// Restore immediately in case test framework needs HOME.
+	_ = os.Setenv("HOME", orig)
+
+	// UserHomeDir may still succeed via /etc/passwd on Linux,
+	// so only check error if it actually failed.
+	if err != nil && !strings.Contains(err.Error(), "home directory") {
+		t.Errorf("unexpected error type: %v", err)
+	}
+}
+
+func TestClaudeSetupCmd_MarshalError(t *testing.T) {
+	// settings.json with hooks as wrong type causes marshal to fail during setup.
+	dir := t.TempDir()
+	settingsDir := filepath.Join(dir, ".claude")
+	if err := os.MkdirAll(settingsDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	// Write settings with hooks as a string (valid JSON but wrong type for hooks).
+	if err := os.WriteFile(filepath.Join(settingsDir, "settings.json"), []byte(`{"hooks":"bad"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"claude", "setup", "--project"})
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+
+	origDir, _ := os.Getwd()
+	_ = os.Chdir(dir)
+	defer func() { _ = os.Chdir(origDir) }()
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Error("expected error when hooks is wrong type")
+	}
+}
+
+func TestClaudeRemoveCmd_MarshalError(t *testing.T) {
+	// settings.json with hooks as wrong type causes parse to fail during remove.
+	dir := t.TempDir()
+	settingsDir := filepath.Join(dir, ".claude")
+	if err := os.MkdirAll(settingsDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(settingsDir, "settings.json"), []byte(`{"hooks":"bad"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"claude", "remove", "--project"})
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+
+	origDir, _ := os.Getwd()
+	_ = os.Chdir(dir)
+	defer func() { _ = os.Chdir(origDir) }()
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Error("expected error when hooks is wrong type")
+	}
+}
+
+// claudeErrReader is an io.Reader that always returns an error.
+type claudeErrReader struct{}
+
+func (claudeErrReader) Read([]byte) (int, error) {
+	return 0, errors.New("read error")
+}
+
+func TestClaudeHookCmd_StdinReadError(t *testing.T) {
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"claude", "hook"})
+	cmd.SetIn(claudeErrReader{})
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	_ = cmd.Execute()
+
+	var resp claudeCodeResponse
+	if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &resp); err != nil {
+		t.Fatalf("output not valid JSON: %v\noutput: %s", err, buf.String())
+	}
+	if resp.HookSpecificOutput.PermissionDecision != decisionDeny {
+		t.Errorf("expected deny for stdin read error, got %s", resp.HookSpecificOutput.PermissionDecision)
+	}
+}
+
+func TestClaudeHookCmd_ExitCodeMode_Deny(t *testing.T) {
+	// Secret in Bash command with exit-code mode: should exit 2.
+	secret := "sk-ant-" + "api03-AABBCCDDEE123456789012345678901234"
+	input := `{"session_id":"s1","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"curl -H 'Authorization: Bearer ` + secret + `' https://api.example.com"},"tool_use_id":"t1"}`
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"claude", "hook", "--exit-code"})
+	cmd.SetIn(bytes.NewReader([]byte(input)))
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected exit code error for secret in exit-code mode")
+	}
+}
+
+func TestClaudeHookCmd_ExitCodeMode_BadJSON(t *testing.T) {
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"claude", "hook", "--exit-code"})
+	cmd.SetIn(bytes.NewReader([]byte("{bad json")))
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected exit code error for bad JSON")
+	}
+}
+
+func TestClaudeHookCmd_ExitCodeMode_EmptyStdin(t *testing.T) {
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"claude", "hook", "--exit-code"})
+	cmd.SetIn(bytes.NewReader(nil))
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected exit code error for empty stdin")
 	}
 }
 

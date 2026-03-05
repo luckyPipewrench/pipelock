@@ -2,6 +2,7 @@ package projectscan
 
 import (
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -210,9 +211,9 @@ func parsePythonRequirements(content string) []string {
 		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "-") {
 			continue
 		}
-		// Extract package name before version specifier
+		// Extract package name before version specifier or inline comment
 		for i, ch := range line {
-			if ch == '=' || ch == '>' || ch == '<' || ch == '!' || ch == '[' || ch == ';' {
+			if ch == '=' || ch == '>' || ch == '<' || ch == '!' || ch == '[' || ch == ';' || ch == '#' {
 				line = line[:i]
 				break
 			}
@@ -257,6 +258,112 @@ func hasDependency(path, pkg string) bool {
 	}
 	_, ok := pj.DevDependencies[pkg]
 	return ok
+}
+
+// hostileToolingPackages are Python packages associated with guardrail removal,
+// model ablation, or safety bypass toolchains.
+var hostileToolingPackages = []string{
+	"obliteratus",
+	"abliterator",
+	"refusal-ablation",
+	"llm-abliterator",
+}
+
+// detectHostileTooling checks project dependencies for guardrail-removal toolchains.
+// Returns findings for each detected package.
+func detectHostileTooling(dir string) []Finding {
+	var findings []Finding
+
+	// Check requirements.txt (parsed line-by-line, exact match)
+	deps := readPythonDeps(dir)
+	for _, dep := range deps {
+		for _, hostile := range hostileToolingPackages {
+			if dep == hostile {
+				findings = append(findings, Finding{
+					Severity: "warning",
+					Category: "tooling",
+					Message:  fmt.Sprintf("Guardrail-removal toolchain detected: %s. Consider using the hostile-model config preset.", dep),
+					Pattern:  hostile,
+				})
+			}
+		}
+	}
+
+	// Also check pyproject.toml directly for hostile packages.
+	// readPythonDeps/parsePyprojectDeps only looks for agent frameworks,
+	// so we do a separate check. Two dependency formats exist:
+	//   PEP 621:  dependencies = ["obliteratus>=0.1"]  (quoted in array)
+	//   Poetry:   obliteratus = "^0.1"                 (TOML key = value)
+	// We match both while avoiding false positives from prose descriptions.
+	pyprojectPath := filepath.Join(dir, "pyproject.toml")
+	if data, err := os.ReadFile(filepath.Clean(pyprojectPath)); err == nil {
+		lower := strings.ToLower(string(data))
+		for _, hostile := range hostileToolingPackages {
+			if pyprojectHasHostileDep(lower, hostile) {
+				if !hasHostileFinding(findings, hostile) {
+					findings = append(findings, Finding{
+						Severity: "warning",
+						Category: "tooling",
+						Message:  fmt.Sprintf("Guardrail-removal toolchain detected: %s. Consider using the hostile-model config preset.", hostile),
+						Pattern:  hostile,
+					})
+				}
+			}
+		}
+	}
+
+	// Check for HuggingFace ablation configs
+	ablationFiles := []string{
+		"abliterate.py",
+		"abliteration.py",
+		"remove_refusals.py",
+		"uncensor.py",
+	}
+	for _, name := range ablationFiles {
+		if fileExists(filepath.Join(dir, name)) {
+			findings = append(findings, Finding{
+				Severity: "warning",
+				Category: "tooling",
+				File:     name,
+				Message:  fmt.Sprintf("Ablation script detected: %s. The model in this project may have safety guardrails removed.", name),
+			})
+		}
+	}
+
+	return findings
+}
+
+// pyprojectHasHostileDep checks if a lowercased pyproject.toml contains a
+// hostile package as an actual dependency (not in prose). Matches per-line:
+//   - PEP 621 array entries: line starts with "pkg or 'pkg (indented items)
+//   - Poetry table keys: line starts with pkg followed by space or = sign
+func pyprojectHasHostileDep(lower, pkg string) bool {
+	for _, line := range strings.Split(lower, "\n") {
+		trimmed := strings.TrimSpace(line)
+		// PEP 621: dependency array entry starts with quoted package name
+		//   e.g. "obliteratus>=0.1",
+		if strings.HasPrefix(trimmed, `"`+pkg) || strings.HasPrefix(trimmed, `'`+pkg) {
+			return true
+		}
+		// Poetry: package name as a TOML key at the start of a line
+		//   e.g. obliteratus = "^0.1"
+		if strings.HasPrefix(trimmed, pkg) {
+			rest := trimmed[len(pkg):]
+			if len(rest) > 0 && (rest[0] == ' ' || rest[0] == '=') {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func hasHostileFinding(findings []Finding, pattern string) bool {
+	for _, f := range findings {
+		if f.Category == "tooling" && f.Pattern == pattern {
+			return true
+		}
+	}
+	return false
 }
 
 func fileExists(path string) bool {

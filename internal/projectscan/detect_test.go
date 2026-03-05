@@ -7,6 +7,8 @@ import (
 	"testing"
 )
 
+const testHostilePkg = "obliteratus"
+
 func TestDetectAgent_ClaudeCode_DotClaude(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(dir, ".claude"), 0o750); err != nil {
@@ -396,5 +398,172 @@ crewai = "^0.1"
 	}
 	if got := detectAgent(dir); got != AgentCrewAI {
 		t.Errorf("detectAgent = %q, want %q", got, AgentCrewAI)
+	}
+}
+
+func TestDetectHostileTooling_PythonPackage(t *testing.T) {
+	tests := []struct {
+		name    string
+		deps    string
+		wantLen int
+	}{
+		{"obliteratus", "obliteratus\ntorch\n", 1},
+		{"abliterator", "transformers\nabliterator>=1.0\n", 1},
+		{"refusal-ablation", "refusal-ablation\n", 1},
+		{"llm-abliterator", "llm-abliterator\nopenai\n", 1},
+		{"inline comment", "obliteratus # guardrail removal\n", 1},
+		{"clean project", "torch\ntransformers\nopenai\n", 0},
+		{"empty", "", 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if tt.deps != "" {
+				if err := os.WriteFile(filepath.Join(dir, "requirements.txt"), []byte(tt.deps), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			findings := detectHostileTooling(dir)
+			if len(findings) != tt.wantLen {
+				t.Errorf("detectHostileTooling() returned %d findings, want %d: %v", len(findings), tt.wantLen, findings)
+			}
+			for _, f := range findings {
+				if f.Severity != "warning" {
+					t.Errorf("expected severity warning, got %q", f.Severity)
+				}
+				if f.Category != "tooling" {
+					t.Errorf("expected category tooling, got %q", f.Category)
+				}
+			}
+		})
+	}
+}
+
+func TestDetectHostileTooling_AblationScript(t *testing.T) {
+	scripts := []string{"abliterate.py", "abliteration.py", "remove_refusals.py", "uncensor.py"}
+
+	for _, script := range scripts {
+		t.Run(script, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, script), []byte("# ablation script"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			findings := detectHostileTooling(dir)
+			if len(findings) != 1 {
+				t.Fatalf("expected 1 finding for %s, got %d", script, len(findings))
+			}
+			if findings[0].File != script {
+				t.Errorf("expected file %q, got %q", script, findings[0].File)
+			}
+		})
+	}
+}
+
+func TestDetectHostileTooling_PyprojectToml(t *testing.T) {
+	dir := t.TempDir()
+	pyproject := `[project]
+name = "my-project"
+dependencies = [
+    "torch>=2.0",
+    "obliteratus>=0.1",
+    "transformers",
+]
+`
+	if err := os.WriteFile(filepath.Join(dir, "pyproject.toml"), []byte(pyproject), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	findings := detectHostileTooling(dir)
+	if len(findings) != 1 {
+		t.Errorf("expected 1 finding for obliteratus in pyproject.toml, got %d", len(findings))
+	}
+	if len(findings) > 0 && findings[0].Pattern != testHostilePkg {
+		t.Errorf("expected pattern obliteratus, got %q", findings[0].Pattern)
+	}
+}
+
+func TestDetectHostileTooling_PyprojectNoDuplicate(t *testing.T) {
+	dir := t.TempDir()
+	// Both requirements.txt and pyproject.toml have obliteratus; should produce 1 finding, not 2
+	if err := os.WriteFile(filepath.Join(dir, "requirements.txt"), []byte("obliteratus\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pyproject := `[project]
+dependencies = ["obliteratus"]
+`
+	if err := os.WriteFile(filepath.Join(dir, "pyproject.toml"), []byte(pyproject), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	findings := detectHostileTooling(dir)
+	count := 0
+	for _, f := range findings {
+		if f.Pattern == testHostilePkg {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected 1 obliteratus finding (deduplicated), got %d", count)
+	}
+}
+
+func TestDetectHostileTooling_PyprojectPoetryStyle(t *testing.T) {
+	dir := t.TempDir()
+	pyproject := `[tool.poetry.dependencies]
+python = "^3.11"
+obliteratus = "^0.1"
+torch = "^2.0"
+`
+	if err := os.WriteFile(filepath.Join(dir, "pyproject.toml"), []byte(pyproject), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	findings := detectHostileTooling(dir)
+	if len(findings) != 1 {
+		t.Errorf("expected 1 finding for Poetry-style obliteratus dep, got %d", len(findings))
+	}
+	if len(findings) > 0 && findings[0].Pattern != testHostilePkg {
+		t.Errorf("expected pattern obliteratus, got %q", findings[0].Pattern)
+	}
+}
+
+func TestDetectHostileTooling_PyprojectDescriptionFalsePositive(t *testing.T) {
+	dir := t.TempDir()
+	// Package name in description (not as a dependency) should NOT trigger
+	pyproject := `[project]
+name = "safe-project"
+description = "research notes about obliteratus and model ablation"
+dependencies = ["numpy", "torch"]
+`
+	if err := os.WriteFile(filepath.Join(dir, "pyproject.toml"), []byte(pyproject), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	findings := detectHostileTooling(dir)
+	if len(findings) != 0 {
+		t.Errorf("expected 0 findings for mention in description, got %d: %v", len(findings), findings)
+	}
+}
+
+func TestDetectHostileTooling_NoMatch(t *testing.T) {
+	dir := t.TempDir()
+	// Normal Python file should not trigger
+	if err := os.WriteFile(filepath.Join(dir, "train.py"), []byte("import torch"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	findings := detectHostileTooling(dir)
+	if len(findings) != 0 {
+		t.Errorf("expected 0 findings for clean project, got %d", len(findings))
+	}
+}
+
+func TestDetectHostileTooling_BothPackageAndScript(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "requirements.txt"), []byte("obliteratus\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "abliterate.py"), []byte("# script"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	findings := detectHostileTooling(dir)
+	if len(findings) != 2 {
+		t.Errorf("expected 2 findings (package + script), got %d", len(findings))
 	}
 }

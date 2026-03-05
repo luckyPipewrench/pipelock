@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Shared JSON string extractor (`internal/extract`) used by both proxy body scanning and MCP input scanning
 - `hostile-model` config preset for agents running uncensored or jailbroken models
 - Kill switch API token can now be set via `PIPELOCK_KILLSWITCH_API_TOKEN` environment variable, overriding the `kill_switch.api_token` config field. Enables Kubernetes deployments to source the token from a Secret instead of a ConfigMap.
+- Windows build support: GoReleaser produces Windows amd64/arm64 binaries (zip archives). Kill switch signal toggle and config reload signal are no-ops on Windows; all other features work identically.
 
 ## [0.3.4] - 2026-03-04
 

@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -9,6 +10,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 const (
@@ -299,6 +303,54 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Request body DLP scanning: read and scan body before Clone so the
+	// cloned request gets the re-wrapped buffered bytes.
+	if cfg.RequestBodyScanning.Enabled && r.Body != nil && r.Body != http.NoBody {
+		buf, bodyResult := scanRequestBody(r.Body, r.Header.Get("Content-Type"),
+			r.Header.Get("Content-Encoding"), cfg.RequestBodyScanning.MaxBodyBytes, sc)
+
+		if !bodyResult.Clean {
+			action := bodyResult.Action
+			if action == "" {
+				action = cfg.RequestBodyScanning.Action
+			}
+			patternNames := dlpMatchNames(bodyResult.DLPMatches)
+			reason := bodyResult.Reason
+			if reason == "" {
+				reason = fmt.Sprintf("request body contains secret: %s", strings.Join(patternNames, ", "))
+			}
+
+			p.logger.LogBodyDLP(r.Method, targetURL, action, clientIP, requestID, len(bodyResult.DLPMatches), patternNames)
+			p.metrics.RecordBodyDLP(action)
+
+			// Fail-closed: when buf is nil the body was consumed but couldn't
+			// be buffered (oversize, compressed, read error, multipart parse
+			// error). Always block regardless of enforce mode — forwarding an
+			// empty body corrupts the upstream request.
+			if buf == nil {
+				p.metrics.RecordBlocked(r.URL.Hostname(), "body_dlp", time.Since(start))
+				http.Error(w, "blocked: "+reason, http.StatusForbidden)
+				return
+			}
+
+			if action == config.ActionBlock && cfg.EnforceEnabled() {
+				p.metrics.RecordBlocked(r.URL.Hostname(), "body_dlp", time.Since(start))
+				http.Error(w, "blocked: "+reason, http.StatusForbidden)
+				return
+			}
+		}
+
+		// Re-wrap body so the forwarded request gets the buffered bytes.
+		r.Body = io.NopCloser(bytes.NewReader(buf))
+		r.ContentLength = int64(len(buf))
+	}
+
+	// Request header DLP scanning.
+	if p.evalHeaderDLP(r.Header, cfg, sc, p.logger, r.Method, targetURL, r.URL.Hostname(), clientIP, requestID, start) {
+		http.Error(w, "blocked: request header contains secret", http.StatusForbidden)
+		return
+	}
+
 	// Clone request with context keys so CheckRedirect can attribute audit logs
 	ctx := context.WithValue(r.Context(), ctxKeyClientIP, clientIP)
 	ctx = context.WithValue(ctx, ctxKeyRequestID, requestID)
@@ -342,6 +394,15 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	duration := time.Since(start)
 	p.metrics.RecordAllowed(duration)
 	p.logger.LogForwardHTTP(r.Method, targetURL, clientIP, requestID, resp.StatusCode, int(written), duration)
+}
+
+// dlpMatchNames extracts pattern names from a slice of DLP matches.
+func dlpMatchNames(matches []scanner.TextDLPMatch) []string {
+	names := make([]string, len(matches))
+	for i, m := range matches {
+		names[i] = m.PatternName
+	}
+	return names
 }
 
 // removeHopByHopHeaders strips RFC 7230 section 6.1 hop-by-hop headers

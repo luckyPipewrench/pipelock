@@ -13,6 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `pipelock claude remove`: cleanly uninstalls pipelock hooks from Claude Code's settings.json
 - `--exit-code` mode for `pipelock claude hook` (exit 2 for deny instead of structured JSON)
 - WebFetch and WriteFile event kinds in the decide package for URL and file content scanning
+- Request body DLP scanning for the forward HTTP proxy. Scans POST/PUT/PATCH bodies for secrets across JSON (recursive string extraction), form-urlencoded, multipart/form-data, and raw text. Unknown content types get a fallback raw-text scan to prevent Content-Type spoofing bypass. Fail-closed on oversized bodies, compressed bodies, parse errors, and multipart limit violations.
+- Request header DLP scanning for the forward proxy and fetch handler. Two modes: `sensitive` (scan listed headers only) and `all` (scan everything except structural headers, including header names). Joined scan catches secrets split across multiple headers.
+- `request_body_scanning` config section with `enabled`, `action`, `max_body_bytes`, `scan_headers`, `header_mode`, `sensitive_headers`, and `ignore_headers` fields
+- `pipelock_body_dlp_hits_total` and `pipelock_header_dlp_hits_total` Prometheus counters
+- `body_dlp` and `header_dlp` audit event types
+- Shared JSON string extractor (`internal/extract`) used by both proxy body scanning and MCP input scanning
+- `hostile-model` config preset for agents running uncensored or jailbroken models
 
 ## [0.3.4] - 2026-03-04
 

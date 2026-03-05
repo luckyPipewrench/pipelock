@@ -72,6 +72,20 @@ forward_proxy:
   max_tunnel_seconds: 300
   idle_timeout_seconds: 120
 
+request_body_scanning:
+  enabled: true
+  action: warn
+  max_body_bytes: 5242880
+  scan_headers: true
+  header_mode: sensitive
+  sensitive_headers:
+    - Authorization
+    - Cookie
+    - X-Api-Key
+    - X-Token
+    - Proxy-Authorization
+    - X-Goog-Api-Key
+
 websocket_proxy:
   enabled: false
   max_message_bytes: 1048576

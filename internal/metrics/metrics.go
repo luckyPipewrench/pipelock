@@ -40,6 +40,9 @@ type Metrics struct {
 
 	chainDetections *prometheus.CounterVec
 
+	bodyDLPHits   *prometheus.CounterVec
+	headerDLPHits *prometheus.CounterVec
+
 	sessionAnomalies   *prometheus.CounterVec
 	sessionEscalations *prometheus.CounterVec
 	sessionsActive     prometheus.Gauge
@@ -165,6 +168,18 @@ func New() *Metrics {
 		Help:      "Total tool call chain pattern detections.",
 	}, []string{"pattern", "severity", "action"})
 
+	bodyDLPHits := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "pipelock",
+		Name:      "body_dlp_hits_total",
+		Help:      "Total request body DLP scan detections by action.",
+	}, []string{"action"})
+
+	headerDLPHits := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "pipelock",
+		Name:      "header_dlp_hits_total",
+		Help:      "Total request header DLP scan detections by action.",
+	}, []string{"action"})
+
 	sessionAnomalies := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "pipelock",
 		Name:      "session_anomalies_total",
@@ -193,6 +208,7 @@ func New() *Metrics {
 		tunnelsTotal, tunnelDuration, tunnelBytes, activeTunnels,
 		wsConnectionsTotal, wsDuration, wsBytes, activeWS, wsFrames, wsScanHits, wsRedirectHints,
 		killSwitchDenials, chainDetections,
+		bodyDLPHits, headerDLPHits,
 		sessionAnomalies, sessionEscalations, sessionsActive, sessionsEvicted)
 
 	return &Metrics{
@@ -213,6 +229,8 @@ func New() *Metrics {
 		wsRedirectHints:    wsRedirectHints,
 		killSwitchDenials:  killSwitchDenials,
 		chainDetections:    chainDetections,
+		bodyDLPHits:        bodyDLPHits,
+		headerDLPHits:      headerDLPHits,
 		sessionAnomalies:   sessionAnomalies,
 		sessionEscalations: sessionEscalations,
 		sessionsActive:     sessionsActive,
@@ -336,6 +354,16 @@ func (m *Metrics) RecordKillSwitchDenial(transport, endpoint string) {
 // RecordChainDetection increments the chain detection counter.
 func (m *Metrics) RecordChainDetection(pattern, severity, action string) {
 	m.chainDetections.WithLabelValues(pattern, severity, action).Inc()
+}
+
+// RecordBodyDLP increments the request body DLP scan counter by action.
+func (m *Metrics) RecordBodyDLP(action string) {
+	m.bodyDLPHits.WithLabelValues(action).Inc()
+}
+
+// RecordHeaderDLP increments the request header DLP scan counter by action.
+func (m *Metrics) RecordHeaderDLP(action string) {
+	m.headerDLPHits.WithLabelValues(action).Inc()
 }
 
 // RecordSessionAnomaly increments the session anomaly counter by type.

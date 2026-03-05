@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 
@@ -68,10 +69,11 @@ type ToolScanConfig struct {
 // and session binding (known tool inventory). Safe for concurrent use.
 type ToolBaseline struct {
 	mu          sync.Mutex
-	hashes      map[string]string // tool name → SHA256(description + inputSchema)
-	descs       map[string]string // tool name → last known description text
-	knownTools  map[string]bool   // session binding: tool name set from first tools/list
-	hasBaseline bool              // true after first SetKnownTools call
+	hashes      map[string]string   // tool name → SHA256(description + inputSchema)
+	descs       map[string]string   // tool name → last known description text
+	params      map[string][]string // tool name → last known parameter names (sorted)
+	knownTools  map[string]bool     // session binding: tool name set from first tools/list
+	hasBaseline bool                // true after first SetKnownTools call
 }
 
 // NewToolBaseline creates a new empty tool baseline.
@@ -79,6 +81,7 @@ func NewToolBaseline() *ToolBaseline {
 	return &ToolBaseline{
 		hashes: make(map[string]string),
 		descs:  make(map[string]string),
+		params: make(map[string][]string),
 	}
 }
 
@@ -131,41 +134,99 @@ func (tb *ToolBaseline) StoreDesc(name, desc string) {
 	tb.descs[name] = desc
 }
 
-// DiffSummary returns a human-readable summary of what changed between the
-// stored description and the new one. Returns "" if no previous description.
-func (tb *ToolBaseline) DiffSummary(name, newDesc string) string {
+// StoreParams saves a tool's parameter names for later diff generation.
+// Called alongside CheckAndUpdate. Respects maxBaselineTools capacity.
+// Names should be pre-sorted for deterministic comparison.
+func (tb *ToolBaseline) StoreParams(name string, paramNames []string) {
 	tb.mu.Lock()
-	prev, exists := tb.descs[name]
+	defer tb.mu.Unlock()
+	if _, exists := tb.params[name]; !exists && len(tb.params) >= maxBaselineTools {
+		return
+	}
+	// Store a copy to prevent mutation.
+	cp := make([]string, len(paramNames))
+	copy(cp, paramNames)
+	tb.params[name] = cp
+}
+
+// DiffSummary returns a human-readable summary of what changed between the
+// stored description/params and the new ones. Returns "" if no previous data.
+func (tb *ToolBaseline) DiffSummary(name, newDesc string, newParams []string) string {
+	tb.mu.Lock()
+	prevDesc, hasDesc := tb.descs[name]
+	prevParams, hasParams := tb.params[name]
 	tb.mu.Unlock()
 
-	if !exists {
+	if !hasDesc && !hasParams {
 		return ""
 	}
 
-	prevLen := len([]rune(prev))
-	newLen := len([]rune(newDesc))
-
 	var parts []string
-	if newLen > prevLen {
-		parts = append(parts, fmt.Sprintf("description grew from %d to %d chars (+%d)", prevLen, newLen, newLen-prevLen))
-	} else if newLen < prevLen {
-		parts = append(parts, fmt.Sprintf("description shrank from %d to %d chars (-%d)", prevLen, newLen, prevLen-newLen))
-	} else {
-		parts = append(parts, fmt.Sprintf("description changed (%d chars)", newLen))
+
+	// Description diff.
+	if hasDesc {
+		prevLen := len([]rune(prevDesc))
+		newLen := len([]rune(newDesc))
+
+		if prevDesc != newDesc {
+			if newLen > prevLen {
+				parts = append(parts, fmt.Sprintf("description grew from %d to %d chars (+%d)", prevLen, newLen, newLen-prevLen))
+			} else if newLen < prevLen {
+				parts = append(parts, fmt.Sprintf("description shrank from %d to %d chars (-%d)", prevLen, newLen, prevLen-newLen))
+			} else {
+				parts = append(parts, fmt.Sprintf("description changed (%d chars)", newLen))
+			}
+
+			// Show added text (tail of new description beyond previous length).
+			// Use rune slicing to avoid splitting multi-byte characters.
+			if newLen > prevLen {
+				newRunes := []rune(newDesc)
+				added := string(newRunes[prevLen:])
+				// 200: truncation limit for readable drift summaries
+				if len(newRunes)-prevLen > 200 {
+					added = string(newRunes[prevLen:prevLen+200]) + "..."
+				}
+				parts = append(parts, fmt.Sprintf("added: %q", added))
+			}
+		}
 	}
 
-	// Show added text (tail of new description beyond previous length).
-	// Use rune slicing to avoid splitting multi-byte characters.
-	if newLen > prevLen {
-		newRunes := []rune(newDesc)
-		added := string(newRunes[prevLen:])
-		if len(newRunes)-prevLen > 200 {
-			added = string(newRunes[prevLen:prevLen+200]) + "..."
+	// Parameter diff.
+	if hasParams {
+		added, removed := diffStringSlices(prevParams, newParams)
+		if len(added) > 0 {
+			parts = append(parts, fmt.Sprintf("parameters added: %v", added))
 		}
-		parts = append(parts, fmt.Sprintf("added: %q", added))
+		if len(removed) > 0 {
+			parts = append(parts, fmt.Sprintf("parameters removed: %v", removed))
+		}
 	}
 
 	return strings.Join(parts, "; ")
+}
+
+// diffStringSlices compares two sorted string slices and returns elements
+// present only in b (added) and elements present only in a (removed).
+func diffStringSlices(a, b []string) (added, removed []string) {
+	setA := make(map[string]bool, len(a))
+	for _, s := range a {
+		setA[s] = true
+	}
+	setB := make(map[string]bool, len(b))
+	for _, s := range b {
+		setB[s] = true
+	}
+	for _, s := range b {
+		if !setA[s] {
+			added = append(added, s)
+		}
+	}
+	for _, s := range a {
+		if !setB[s] {
+			removed = append(removed, s)
+		}
+	}
+	return added, removed
 }
 
 // SetKnownTools sets the session baseline from a tools/list response.
@@ -279,6 +340,18 @@ var toolPoisonPatterns = []*compiledToolPattern{
 		// different objects.
 		re: regexp.MustCompile(`(?i)(download|fetch|retriev)\w*\s+.{0,60}(execut|run|launch)\w*\s+(?:it|them)\b`),
 	},
+	{
+		// Detects parameter names that encode exfiltration intent.
+		// Catches names like "content_from_reading_ssh_id_rsa" where the
+		// param name itself directs the agent to read sensitive files.
+		// Runs on underscore-expanded text ("content from reading ssh id rsa").
+		// Requires an action word + sensitive target in the same name.
+		name: "Exfiltration Parameter Name",
+		re: regexp.MustCompile(`(?i)\b(content|data|value|result|output|read|fetch|get|dump|steal|exfil|extract|copy|upload|send)\b` +
+			`.{0,40}` +
+			`\b(ssh.{0,5}(?:id.rsa|key)|id.rsa|private.key|api.key|secret.key|` +
+			`credentials?|passwd|env.(?:secret|key|file|var)|aws.secret|access.token|auth.token)\b`),
+	},
 }
 
 // hashTool computes a SHA256 hash of a tool's description and inputSchema.
@@ -293,16 +366,115 @@ func hashTool(t ToolDef) string {
 }
 
 // extractToolText extracts all scannable text from a tool definition.
-// Includes the description and any nested "description" fields from inputSchema.
+// Convenience wrapper that extracts param names internally.
 func extractToolText(t ToolDef) string {
+	var paramNames []string
+	if len(t.InputSchema) > 0 {
+		paramNames = extractParamNames(t.InputSchema)
+	}
+	return extractToolTextWithParams(t, paramNames)
+}
+
+// extractToolTextWithParams extracts all scannable text from a tool definition
+// using pre-extracted parameter names. Includes the description, nested
+// "description" fields from inputSchema, and parameter key names (with
+// underscores and camelCase expanded to spaces) so that suspicious names like
+// "content_from_reading_ssh_id_rsa" or "contentFromReadingSshIdRsa" pass
+// through the injection and DLP scanners.
+func extractToolTextWithParams(t ToolDef, paramNames []string) string {
 	var parts []string
 	if t.Description != "" {
 		parts = append(parts, t.Description)
 	}
 	if len(t.InputSchema) > 0 {
 		parts = append(parts, extractSchemaDescriptions(t.InputSchema)...)
+		// Add parameter names with underscores and camelCase expanded to spaces.
+		// This feeds names like "content_from_reading_ssh_id_rsa" and
+		// "contentFromReadingSshIdRsa" through injection/DLP scanning as
+		// "content from reading ssh id rsa".
+		for _, name := range paramNames {
+			expanded := expandParamName(name)
+			if expanded != name {
+				parts = append(parts, expanded)
+			}
+			parts = append(parts, name)
+		}
 	}
-	return strings.Join(parts, "\n")
+	// Space separator ensures word boundaries survive Unicode normalization,
+	// which strips newlines. Without this, adjacent parts merge into one word
+	// (e.g., "contextcontent") and \b patterns fail to match.
+	return strings.Join(parts, " ")
+}
+
+// expandParamName expands a parameter name into space-separated words by:
+// 1. Replacing underscores and hyphens with spaces
+// 2. Splitting camelCase boundaries (lowercase→uppercase transitions)
+// 3. Lowercasing the result
+// Example: "contentFromReadingSshIdRsa" becomes "content from reading ssh id rsa".
+// Example: "read_env_api_key" becomes "read env api key".
+func expandParamName(name string) string {
+	var b strings.Builder
+	runes := []rune(name)
+	for i, r := range runes {
+		if r == '_' || r == '-' {
+			b.WriteRune(' ')
+			continue
+		}
+		// Insert space at camelCase boundary: lowercase followed by uppercase.
+		if i > 0 && r >= 'A' && r <= 'Z' {
+			prev := runes[i-1]
+			if prev >= 'a' && prev <= 'z' {
+				b.WriteRune(' ')
+			}
+		}
+		b.WriteRune(r)
+	}
+	return strings.ToLower(b.String())
+}
+
+// extractParamNames extracts all property key names from a JSON Schema.
+// Walks "properties" at all nesting levels (including allOf/oneOf/anyOf branches,
+// definitions, items, and additionalProperties). Returns sorted, deduplicated names.
+func extractParamNames(schema json.RawMessage) []string {
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(schema, &parsed); err != nil {
+		return nil
+	}
+	seen := make(map[string]bool)
+	collectParamNames(parsed, seen, 0)
+	names := make([]string, 0, len(seen))
+	for n := range seen {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// collectParamNames walks a JSON Schema tree collecting property key names.
+// Recurses into all nested objects/arrays to find properties at any depth.
+func collectParamNames(obj map[string]interface{}, seen map[string]bool, depth int) {
+	if depth > maxSchemaDepth {
+		return
+	}
+	// Collect property names from "properties" object.
+	if props, ok := obj["properties"].(map[string]interface{}); ok {
+		for key := range props {
+			seen[key] = true
+		}
+	}
+	// Recurse into all nested objects and arrays.
+	for _, v := range obj {
+		switch val := v.(type) {
+		case map[string]interface{}:
+			collectParamNames(val, seen, depth+1)
+		case []interface{}:
+			for _, item := range val {
+				if m, ok := item.(map[string]interface{}); ok {
+					collectParamNames(m, seen, depth+1)
+				}
+			}
+		}
+	}
 }
 
 // extractSchemaDescriptions recursively extracts text field values from a
@@ -485,7 +657,13 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) []T
 		match.ToolName = tool.Name
 		hasFinding := false
 
-		text := extractToolText(tool)
+		// Extract param names once for both text scanning and drift tracking.
+		var paramNames []string
+		if len(tool.InputSchema) > 0 {
+			paramNames = extractParamNames(tool.InputSchema)
+		}
+
+		text := extractToolTextWithParams(tool, paramNames)
 
 		if text != "" {
 			// General injection patterns (reuses response scanning pipeline).
@@ -511,15 +689,19 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) []T
 		if cfg.DetectDrift && cfg.Baseline != nil && !cfg.Baseline.ShouldSkip(tool.Name) {
 			hash := hashTool(tool)
 			drifted, prevHash := cfg.Baseline.CheckAndUpdate(tool.Name, hash)
+
 			if drifted {
 				match.DriftDetected = true
 				match.PreviousHash = prevHash
 				match.CurrentHash = hash
-				match.DriftDetail = cfg.Baseline.DiffSummary(tool.Name, text)
+				match.DriftDetail = cfg.Baseline.DiffSummary(tool.Name, tool.Description, paramNames)
 				hasFinding = true
 			}
-			// Store description AFTER diff so next drift compares against current.
-			cfg.Baseline.StoreDesc(tool.Name, text)
+			// Store the actual tool description (not the full scan text which
+			// includes param names) so DiffSummary reports description changes
+			// accurately without false "description grew" when only params change.
+			cfg.Baseline.StoreDesc(tool.Name, tool.Description)
+			cfg.Baseline.StoreParams(tool.Name, paramNames)
 		}
 
 		if hasFinding {

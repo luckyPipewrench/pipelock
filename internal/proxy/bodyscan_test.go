@@ -937,6 +937,26 @@ func TestHasNonIdentityEncoding(t *testing.T) {
 	}
 }
 
+// --- Invalid JSON fail-closed ---
+
+func TestScanRequestBody_InvalidJSON_FailClosed(t *testing.T) {
+	cfg := testScannerConfig()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+
+	// Invalid JSON declared as application/json must fail-closed (not pass as clean).
+	_, result := scanRequestBody(
+		strings.NewReader(`{invalid json`),
+		"application/json", "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
+	)
+	if result.Clean {
+		t.Fatal("expected fail-closed block for invalid JSON body")
+	}
+	if result.Action != config.ActionBlock {
+		t.Fatalf("expected block action for invalid JSON, got %q", result.Action)
+	}
+}
+
 // --- Multipart limit tests ---
 
 func TestScanRequestBody_MultipartTooManyParts(t *testing.T) {
@@ -962,6 +982,37 @@ func TestScanRequestBody_MultipartTooManyParts(t *testing.T) {
 		t.Fatal("expected fail-closed block when multipart part limit exceeded")
 	}
 	if result.Action != config.ActionBlock {
-		t.Fatalf("expected block action, got %q", result.Action)
+		t.Fatalf("expected block action for multipart limit, got %q", result.Action)
+	}
+}
+
+// --- isBinaryContentType unit tests ---
+
+func TestIsBinaryContentType(t *testing.T) {
+	tests := []struct {
+		ct     string
+		binary bool
+	}{
+		{"", false},
+		{"text/plain", false},
+		{"text/html", false},
+		{"application/json", false},
+		{"application/xml", false},
+		{"application/octet-stream", false}, // fallback raw scan, not skipped
+		{"image/png", true},
+		{"image/jpeg", true},
+		{"image/gif", true},
+		{"audio/mpeg", true},
+		{"audio/ogg", true},
+		{"video/mp4", true},
+		{"video/webm", true},
+		{"application/pdf", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.ct, func(t *testing.T) {
+			if got := isBinaryContentType(tt.ct); got != tt.binary {
+				t.Errorf("isBinaryContentType(%q) = %v, want %v", tt.ct, got, tt.binary)
+			}
+		})
 	}
 }

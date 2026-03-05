@@ -12,10 +12,13 @@ func TestAllStringsFromJSON_NestedObjects(t *testing.T) {
 	if len(result) == 0 {
 		t.Fatal("expected non-empty result")
 	}
-	joined := strings.Join(result, "|")
+	got := make(map[string]struct{}, len(result))
+	for _, s := range result {
+		got[s] = struct{}{}
+	}
 	for _, want := range []string{"a", "b", "value1", "c", "value2", "d", "value3"} {
-		if !strings.Contains(joined, want) {
-			t.Errorf("missing %q in result: %s", want, joined)
+		if _, ok := got[want]; !ok {
+			t.Errorf("missing exact token %q in result: %v", want, result)
 		}
 	}
 }
@@ -23,10 +26,13 @@ func TestAllStringsFromJSON_NestedObjects(t *testing.T) {
 func TestAllStringsFromJSON_Arrays(t *testing.T) {
 	raw := json.RawMessage(`["hello", "world", 42, true]`)
 	result := AllStringsFromJSON(raw)
-	joined := strings.Join(result, "|")
+	got := make(map[string]struct{}, len(result))
+	for _, s := range result {
+		got[s] = struct{}{}
+	}
 	for _, want := range []string{"hello", "world", "42", "true"} {
-		if !strings.Contains(joined, want) {
-			t.Errorf("missing %q in result: %s", want, joined)
+		if _, ok := got[want]; !ok {
+			t.Errorf("missing exact token %q in result: %v", want, result)
 		}
 	}
 }
@@ -49,10 +55,17 @@ func TestAllStringsFromJSON_DepthLimit(t *testing.T) {
 	if len(result) == 0 {
 		t.Fatal("expected some strings extracted from outer levels")
 	}
-	// Verify we got keys from the outer levels
-	joined := strings.Join(result, "|")
-	if !strings.Contains(joined, "a") {
+	// Verify we got keys from the outer levels.
+	got := make(map[string]struct{}, len(result))
+	for _, s := range result {
+		got[s] = struct{}{}
+	}
+	if _, ok := got["a"]; !ok {
 		t.Error("expected at least the key 'a' from outer levels")
+	}
+	// "deep" is nested at depth 70, beyond maxExtractDepth (64).
+	if _, present := got["deep"]; present {
+		t.Error("did not expect \"deep\" beyond maxExtractDepth")
 	}
 }
 
@@ -78,14 +91,17 @@ func TestAllStringsFromJSON_InvalidJSON(t *testing.T) {
 func TestAllStringsFromJSON_NumericAndBool(t *testing.T) {
 	raw := json.RawMessage(`{"count": 123, "active": false, "rate": 3.14}`)
 	result := AllStringsFromJSON(raw)
-	joined := strings.Join(result, "|")
-	if !strings.Contains(joined, "123") {
+	got := make(map[string]struct{}, len(result))
+	for _, s := range result {
+		got[s] = struct{}{}
+	}
+	if _, ok := got["123"]; !ok {
 		t.Error("missing numeric value 123")
 	}
-	if !strings.Contains(joined, "false") {
+	if _, ok := got["false"]; !ok {
 		t.Error("missing boolean value false")
 	}
-	if !strings.Contains(joined, "3.14") {
+	if _, ok := got["3.14"]; !ok {
 		t.Error("missing float value 3.14")
 	}
 }

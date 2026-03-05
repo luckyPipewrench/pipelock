@@ -141,6 +141,9 @@ func extractBodyText(body []byte, contentType string, maxBytes int) ([]string, s
 
 	switch {
 	case mediaType == "application/json" || strings.HasSuffix(mediaType, "+json"):
+		if !json.Valid(body) {
+			return nil, "invalid JSON body"
+		}
 		return extract.AllStringsFromJSON(json.RawMessage(body)), ""
 
 	case mediaType == "application/x-www-form-urlencoded":

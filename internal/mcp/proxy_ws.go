@@ -154,7 +154,11 @@ func RunWSProxy(
 		}
 
 		// Track request ID before forwarding for confused deputy protection.
-		tracker.Track(extractRPCID(msg))
+		// Only track requests (have "method"), not client responses to
+		// server-initiated calls, to prevent tracker pollution.
+		if isRequest(msg) {
+			tracker.Track(extractRPCID(msg))
+		}
 
 		// Forward to upstream.
 		if writeErr := wsClient.WriteMessage(msg); writeErr != nil {

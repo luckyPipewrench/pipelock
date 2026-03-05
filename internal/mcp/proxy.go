@@ -71,6 +71,21 @@ func isResponse(msg []byte) bool {
 	return len(probe.Result) > 0 || len(probe.Error) > 0
 }
 
+// isRequest returns true if msg is a JSON-RPC request (has "method" field and
+// is not a response). Used to guard tracker.Track so only outbound client
+// requests are tracked, not client responses to server-initiated calls.
+func isRequest(msg []byte) bool {
+	var probe struct {
+		Method string          `json:"method"`
+		Result json.RawMessage `json:"result"`
+		Error  json.RawMessage `json:"error"`
+	}
+	if json.Unmarshal(msg, &probe) != nil {
+		return false
+	}
+	return probe.Method != "" && len(probe.Result) == 0 && len(probe.Error) == 0
+}
+
 // ForwardScanned reads JSON-RPC 2.0 messages from reader, scans each for prompt
 // injection, and forwards to writer based on the scanner's configured action
 // (warn, block, strip). Scan verdicts are logged to logW.
@@ -104,9 +119,10 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		// Only check actual responses (have "result" or "error"), not
 		// server-initiated requests (have "method") which use their own IDs.
 		// The Seeded() gate defers validation until the first client request
-		// is tracked, allowing server initialization messages (which arrive
-		// before any client request) to pass through. This is acceptable
-		// because no client request ID exists to hijack during that window.
+		// is tracked. This prevents a race where a fast server response
+		// arrives before ForwardScannedInput tracks the outbound request ID
+		// (concurrent goroutines). The window is not exploitable: before any
+		// client request, no valid request ID exists to hijack.
 		if tracker != nil && tracker.Seeded() && isResponse(line) {
 			rpcID := extractRPCID(line)
 			if rpcID != nil && !tracker.Validate(rpcID) {

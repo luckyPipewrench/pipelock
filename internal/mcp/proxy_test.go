@@ -2154,3 +2154,27 @@ func TestIsResponse(t *testing.T) {
 		})
 	}
 }
+
+func TestIsRequest(t *testing.T) {
+	tests := []struct {
+		name string
+		msg  string
+		want bool
+	}{
+		{"request with method", `{"jsonrpc":"2.0","id":1,"method":"tools/call"}`, true},
+		{"notification", `{"jsonrpc":"2.0","method":"notifications/progress"}`, true},
+		{"result response", `{"jsonrpc":"2.0","id":1,"result":{"content":"ok"}}`, false},
+		{"error response", `{"jsonrpc":"2.0","id":1,"error":{"code":-1,"message":"fail"}}`, false},
+		{"method+result hybrid", `{"jsonrpc":"2.0","id":1,"method":"foo","result":"bar"}`, false},
+		{"invalid JSON", `not json`, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isRequest([]byte(tt.msg))
+			if got != tt.want {
+				t.Errorf("isRequest(%s) = %v, want %v", tt.name, got, tt.want)
+			}
+		})
+	}
+}

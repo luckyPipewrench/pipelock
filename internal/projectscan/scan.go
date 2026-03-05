@@ -144,6 +144,10 @@ func Scan(dir string) (*Report, error) {
 		})
 	}
 
+	// Check for hostile tooling (ablation/uncensor packages)
+	hostileFindings := detectHostileTooling(dir)
+	r.Findings = append(r.Findings, hostileFindings...)
+
 	// Compile DLP patterns once for both scans
 	patterns := compileDLPPatterns()
 

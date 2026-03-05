@@ -522,6 +522,26 @@ func TestScanRequestHeaders_AllowlistedHost(t *testing.T) {
 	}
 }
 
+// TestScanRequestHeaders_NameValueBoundarySplit verifies that a secret split
+// across a header name and its value is caught via the joined scan in all mode.
+func TestScanRequestHeaders_NameValueBoundarySplit(t *testing.T) {
+	cfg := testScannerConfig()
+	cfg.RequestBodyScanning.HeaderMode = config.HeaderModeAll
+	sc := scanner.New(cfg)
+	defer sc.Close()
+
+	// Split a fake AWS key across header name and value.
+	// The key prefix goes into the header name, the rest into the value.
+	// Individual scans won't match, but joined scan should.
+	headers := http.Header{}
+	headers.Set("X-"+"AKIA"+"IOSFODNN", "7EXAMPLE"+"ABCDEFGH")
+
+	result := scanRequestHeaders(headers, cfg, sc)
+	if result == nil || result.Clean {
+		t.Fatal("expected DLP match for secret split across header name and value boundary")
+	}
+}
+
 // TestScanRequestBody_ChunkedTransfer verifies that chunked bodies
 // (ContentLength == -1) are still scanned.
 func TestScanRequestBody_ChunkedTransfer(t *testing.T) {

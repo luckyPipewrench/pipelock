@@ -124,9 +124,9 @@ func hasNonIdentityEncoding(ce string) bool {
 	if ce == "" {
 		return false
 	}
-	for _, token := range strings.Split(ce, ",") {
-		token = strings.TrimSpace(strings.ToLower(token))
-		if token != "" && token != "identity" {
+	for _, enc := range strings.Split(ce, ",") {
+		enc = strings.TrimSpace(strings.ToLower(enc))
+		if enc != "" && enc != "identity" {
 			return true
 		}
 	}
@@ -362,6 +362,9 @@ func scanRequestHeaders(headers http.Header, cfg *config.Config, sc *scanner.Sca
 					HeaderName: name,
 				}
 			}
+			// Include header name in joined scan to catch secrets split
+			// across the name:value boundary (e.g., X-AKIA1234: EXAMPLE).
+			allValues = append(allValues, name)
 		}
 
 		for _, v := range values {
@@ -372,6 +375,19 @@ func scanRequestHeaders(headers http.Header, cfg *config.Config, sc *scanner.Sca
 					Clean:      false,
 					DLPMatches: result.Matches,
 					HeaderName: name,
+				}
+			}
+			// In "all" mode, scan name+value concatenation to catch secrets
+			// split across the header name:value boundary.
+			if bodyCfg.HeaderMode == config.HeaderModeAll && !isNoisyHeaderName(name) {
+				combined := name + v
+				combinedResult := sc.ScanTextForDLP(combined)
+				if !combinedResult.Clean {
+					return &BodyScanResult{
+						Clean:      false,
+						DLPMatches: combinedResult.Matches,
+						HeaderName: name,
+					}
 				}
 			}
 		}

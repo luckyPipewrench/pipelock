@@ -10,11 +10,7 @@ import (
 	"testing"
 )
 
-const (
-	decisionAllow = "allow"
-	decisionDeny  = "deny"
-	testArgFix    = "--fix"
-)
+const testArgFix = "--fix"
 
 // errReader is an io.Reader that always returns an error.
 type errReader struct {

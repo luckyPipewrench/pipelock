@@ -349,32 +349,37 @@ func parseClaudeSettings(data []byte) (*claudeSettings, error) {
 }
 
 // isClaudePipelockHook returns true if a hook entry was installed by pipelock.
-// Detection: the command contains "claude hook" (the subcommand pipelock uses).
+// The command always ends with "claude hook" because mergeClaudeHooks
+// constructs it as `<binary> claude hook`.
 func isClaudePipelockHook(h claudeHookEntry) bool {
-	return strings.Contains(h.Command, "claude hook")
+	return strings.HasSuffix(strings.TrimSpace(h.Command), "claude hook")
 }
 
-// isClaudePipelockGroup returns true if a matcher group contains any pipelock hook.
-func isClaudePipelockGroup(g claudeMatcherGroup) bool {
-	for _, h := range g.Hooks {
-		if isClaudePipelockHook(h) {
-			return true
-		}
-	}
-	return false
-}
-
-// mergeClaudeHooks removes existing pipelock groups from PreToolUse and adds
-// fresh ones. All other events and non-pipelock groups are preserved.
+// mergeClaudeHooks removes existing pipelock hooks from PreToolUse and adds
+// fresh ones. Non-pipelock hooks are preserved even if they share a matcher
+// group with a pipelock hook. All other events are copied unchanged.
 func mergeClaudeHooks(settings *claudeSettings, exe string) *claudeSettings {
 	result := &claudeSettings{
 		Hooks: make(map[string][]claudeMatcherGroup),
 	}
 
-	// Copy all existing groups, skipping pipelock groups in PreToolUse.
+	// Copy existing groups, filtering out pipelock hooks from PreToolUse.
 	for event, groups := range settings.Hooks {
 		for _, g := range groups {
-			if event == claudeHookEventPreToolUse && isClaudePipelockGroup(g) {
+			if event == claudeHookEventPreToolUse {
+				// Filter individual hooks, keeping non-pipelock ones.
+				var kept []claudeHookEntry
+				for _, h := range g.Hooks {
+					if !isClaudePipelockHook(h) {
+						kept = append(kept, h)
+					}
+				}
+				if len(kept) > 0 {
+					result.Hooks[event] = append(result.Hooks[event], claudeMatcherGroup{
+						Matcher: g.Matcher,
+						Hooks:   kept,
+					})
+				}
 				continue
 			}
 			result.Hooks[event] = append(result.Hooks[event], g)
@@ -407,7 +412,8 @@ func mergeClaudeHooks(settings *claudeSettings, exe string) *claudeSettings {
 	return result
 }
 
-// removeClaudeHooks removes all pipelock matcher groups from all events.
+// removeClaudeHooks removes all pipelock hooks from all events.
+// Non-pipelock hooks are preserved even if they share a matcher group.
 func removeClaudeHooks(settings *claudeSettings) *claudeSettings {
 	result := &claudeSettings{
 		Hooks: make(map[string][]claudeMatcherGroup),
@@ -415,8 +421,17 @@ func removeClaudeHooks(settings *claudeSettings) *claudeSettings {
 
 	for event, groups := range settings.Hooks {
 		for _, g := range groups {
-			if !isClaudePipelockGroup(g) {
-				result.Hooks[event] = append(result.Hooks[event], g)
+			var kept []claudeHookEntry
+			for _, h := range g.Hooks {
+				if !isClaudePipelockHook(h) {
+					kept = append(kept, h)
+				}
+			}
+			if len(kept) > 0 {
+				result.Hooks[event] = append(result.Hooks[event], claudeMatcherGroup{
+					Matcher: g.Matcher,
+					Hooks:   kept,
+				})
 			}
 		}
 	}

@@ -408,6 +408,71 @@ func TestRemoveClaudeHooks(t *testing.T) {
 	}
 }
 
+func TestMergeClaudeHooks_PreservesSharedGroupHooks(t *testing.T) {
+	// A user has their own hook AND a pipelock hook in the same matcher group.
+	// Merge should keep the user hook and replace only pipelock.
+	settings := &claudeSettings{
+		Hooks: map[string][]claudeMatcherGroup{
+			"PreToolUse": {
+				{Matcher: "Bash", Hooks: []claudeHookEntry{
+					{Type: "command", Command: "my-linter check"},
+					{Type: "command", Command: "/usr/bin/pipelock claude hook"},
+				}},
+			},
+		},
+	}
+	merged := mergeClaudeHooks(settings, "/usr/local/bin/pipelock")
+
+	// User hook preserved.
+	found := false
+	for _, g := range merged.Hooks["PreToolUse"] {
+		for _, h := range g.Hooks {
+			if h.Command == "my-linter check" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Error("user hook in shared group was lost during merge")
+	}
+}
+
+func TestIsClaudePipelockHook_NoFalsePositive(t *testing.T) {
+	// "echo claude hook" should NOT match; only commands ending with "claude hook".
+	h := claudeHookEntry{Type: "command", Command: "echo claude hook something"}
+	if isClaudePipelockHook(h) {
+		t.Error("false positive: unrelated command matched as pipelock hook")
+	}
+
+	// Actual pipelock hook should match.
+	h2 := claudeHookEntry{Type: "command", Command: "/usr/bin/pipelock claude hook"}
+	if !isClaudePipelockHook(h2) {
+		t.Error("actual pipelock hook not detected")
+	}
+}
+
+func TestRemoveClaudeHooks_PreservesSharedGroupHooks(t *testing.T) {
+	settings := &claudeSettings{
+		Hooks: map[string][]claudeMatcherGroup{
+			"PreToolUse": {
+				{Matcher: "Bash", Hooks: []claudeHookEntry{
+					{Type: "command", Command: "my-hook"},
+					{Type: "command", Command: "/usr/bin/pipelock claude hook"},
+				}},
+			},
+		},
+	}
+	removed := removeClaudeHooks(settings)
+
+	groups := removed.Hooks["PreToolUse"]
+	if len(groups) != 1 {
+		t.Fatalf("expected 1 group (user hook preserved), got %d", len(groups))
+	}
+	if groups[0].Hooks[0].Command != "my-hook" {
+		t.Error("user hook in shared group was lost during remove")
+	}
+}
+
 func TestRemoveClaudeHooks_PreservesOthers(t *testing.T) {
 	settings := &claudeSettings{
 		Hooks: map[string][]claudeMatcherGroup{

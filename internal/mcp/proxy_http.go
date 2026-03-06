@@ -3,6 +3,8 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
@@ -40,6 +43,7 @@ func RunHTTPProxy(
 	policyCfg *policy.Config,
 	ks *killswitch.Controller,
 	chainMatcher *chains.Matcher,
+	auditLogger *audit.Logger,
 ) error {
 	// Create a child context so we can stop the GET stream when stdin EOF is reached.
 	ctx, cancel := context.WithCancel(ctx)
@@ -102,7 +106,7 @@ func RunHTTPProxy(
 
 		// Input scanning — call ScanRequest and CheckRequest directly.
 		// The sequential (non-concurrent) architecture means no channel needed.
-		if blocked := scanHTTPInput(msg, sc, safeLogW, inputCfg, policyCfg, chainMatcher, "default"); blocked != nil {
+		if blocked := scanHTTPInput(msg, sc, safeLogW, inputCfg, policyCfg, chainMatcher, "default", "default", auditLogger); blocked != nil {
 			if !blocked.IsNotification {
 				resp := blockRequestResponse(*blocked)
 				if wErr := safeClientOut.WriteMessage(resp); wErr != nil {
@@ -168,7 +172,7 @@ func RunHTTPProxy(
 // Returns a *BlockedRequest if the message should be blocked, nil if clean.
 // This is the HTTP proxy equivalent of ForwardScannedInput's per-message logic,
 // but returns a verdict instead of writing to a channel.
-func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *InputScanConfig, policyCfg *policy.Config, chainMatcher *chains.Matcher, sessionKey string) *BlockedRequest {
+func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *InputScanConfig, policyCfg *policy.Config, chainMatcher *chains.Matcher, sessionKey, auditSessionKey string, auditLogger *audit.Logger) *BlockedRequest {
 	// Determine input scanning parameters.
 	action := config.ActionWarn
 	onParseError := config.ActionBlock
@@ -214,6 +218,9 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 			if cv.Matched {
 				_, _ = fmt.Fprintf(logW, "pipelock: chain detected: %s (severity=%s, action=%s)\n",
 					cv.PatternName, cv.Severity, cv.Action)
+				if auditLogger != nil {
+					auditLogger.LogChainDetection(cv.PatternName, cv.Severity, cv.Action, toolName, auditSessionKey)
+				}
 				if cv.Action == config.ActionBlock {
 					return &BlockedRequest{
 						ID:             verdict.ID,
@@ -315,6 +322,13 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 		}
 		return nil // forward
 	}
+}
+
+// hashSessionKey produces a short, non-reversible identifier from a raw IP
+// for use in audit logs, so client IPs don't leak through the session field.
+func hashSessionKey(ip string) string {
+	h := sha256.Sum256([]byte(ip))
+	return "ip:" + hex.EncodeToString(h[:8]) // 16 hex chars, enough to correlate
 }
 
 // extractRPCID extracts the "id" field from a JSON-RPC message.
@@ -470,6 +484,7 @@ func RunHTTPListenerProxy(
 	policyCfg *policy.Config,
 	ks *killswitch.Controller,
 	chainMatcher *chains.Matcher,
+	auditLogger *audit.Logger,
 ) error {
 	safeLogW := &syncWriter{w: logW}
 
@@ -598,16 +613,20 @@ func RunHTTPListenerProxy(
 		// port) so all requests from the same agent share chain history
 		// even across separate TCP connections.
 		chainSessionKey := r.Header.Get("Mcp-Session-Id")
+		auditSessionKey := chainSessionKey
 		if chainSessionKey == "" {
 			host, _, err := net.SplitHostPort(r.RemoteAddr)
 			if err != nil {
 				host = r.RemoteAddr
 			}
 			chainSessionKey = host
+			// Hash the IP for audit logs to avoid persisting raw client
+			// addresses in a field that bypasses report IP redaction.
+			auditSessionKey = hashSessionKey(host)
 		}
 
 		// Input scanning: DLP, injection, policy, chain detection.
-		if blocked := scanHTTPInput(body, sc, safeLogW, inputCfg, policyCfg, chainMatcher, chainSessionKey); blocked != nil {
+		if blocked := scanHTTPInput(body, sc, safeLogW, inputCfg, policyCfg, chainMatcher, chainSessionKey, auditSessionKey, auditLogger); blocked != nil {
 			w.Header().Set("Content-Type", "application/json")
 			if blocked.IsNotification {
 				w.WriteHeader(http.StatusAccepted)

@@ -2,6 +2,8 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"net/url"
@@ -61,6 +63,9 @@ const (
 	// DefaultMaxGap is the default maximum number of non-matching tool calls
 	// allowed between consecutive steps in a chain pattern.
 	DefaultMaxGap = 3
+
+	// HashDefaults is returned by Config.Hash() when no config file was loaded.
+	HashDefaults = "defaults"
 )
 
 // SuppressEntry defines a finding suppression rule for false positives.
@@ -160,6 +165,10 @@ type Config struct {
 	ToolChainDetection  ToolChainDetection  `yaml:"tool_chain_detection"`
 	MCPWSListener       MCPWSListener       `yaml:"mcp_ws_listener"`
 	Internal            []string            `yaml:"internal"`
+
+	// rawBytes stores the original config file bytes for deterministic hashing.
+	// Not serialized to YAML. Set by Load(), nil for Defaults().
+	rawBytes []byte `yaml:"-"`
 }
 
 // MCPInputScanning configures scanning of MCP JSON-RPC requests going from
@@ -446,6 +455,8 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parsing config %s: %w", path, err)
 	}
 
+	cfg.rawBytes = data
+
 	cfg.ApplyDefaults()
 
 	// Resolve relative secrets_file path relative to config file directory.
@@ -458,6 +469,16 @@ func Load(path string) (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// Hash returns the SHA256 hex digest of the raw config file bytes.
+// Returns "defaults" if the config was created via Defaults() (no file).
+func (c *Config) Hash() string {
+	if len(c.rawBytes) == 0 {
+		return HashDefaults
+	}
+	h := sha256.Sum256(c.rawBytes)
+	return hex.EncodeToString(h[:])
 }
 
 // ApplyDefaults fills in zero-value fields with sensible defaults.

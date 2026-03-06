@@ -203,22 +203,22 @@ func InstallCA(w io.Writer, certPath string) error {
 		_, _ = fmt.Fprintf(w, "Installing CA certificate on Linux...\n\n")
 		_, _ = fmt.Fprintf(w, "Run one of the following (requires root):\n\n")
 		_, _ = fmt.Fprintf(w, "  # Debian/Ubuntu:\n")
-		_, _ = fmt.Fprintf(w, "  sudo cp %s /usr/local/share/ca-certificates/pipelock-ca.crt\n", certPath)
+		_, _ = fmt.Fprintf(w, "  sudo cp %q /usr/local/share/ca-certificates/pipelock-ca.crt\n", certPath)
 		_, _ = fmt.Fprintf(w, "  sudo update-ca-certificates\n\n")
 		_, _ = fmt.Fprintf(w, "  # RHEL/Fedora:\n")
-		_, _ = fmt.Fprintf(w, "  sudo cp %s /etc/pki/ca-trust/source/anchors/pipelock-ca.crt\n", certPath)
+		_, _ = fmt.Fprintf(w, "  sudo cp %q /etc/pki/ca-trust/source/anchors/pipelock-ca.crt\n", certPath)
 		_, _ = fmt.Fprintf(w, "  sudo update-ca-trust extract\n")
 	case "darwin":
 		_, _ = fmt.Fprintf(w, "Installing CA certificate on macOS...\n\n")
 		_, _ = fmt.Fprintf(w, "Run (requires admin password):\n\n")
-		_, _ = fmt.Fprintf(w, "  sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain %s\n", certPath)
+		_, _ = fmt.Fprintf(w, "  sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain %q\n", certPath)
 	case "windows":
 		_, _ = fmt.Fprintf(w, "Installing CA certificate on Windows...\n\n")
 		_, _ = fmt.Fprintf(w, "Run in elevated Command Prompt:\n\n")
-		_, _ = fmt.Fprintf(w, "  certutil -addstore -f \"ROOT\" %s\n", certPath)
+		_, _ = fmt.Fprintf(w, "  certutil -addstore -f \"ROOT\" %q\n", certPath)
 	default:
 		_, _ = fmt.Fprintf(w, "Unsupported OS: %s\n", runtime.GOOS)
-		_, _ = fmt.Fprintf(w, "Manually add %s to your system trust store.\n", certPath)
+		_, _ = fmt.Fprintf(w, "Manually add %q to your system trust store.\n", certPath)
 	}
 	return nil
 }

@@ -96,11 +96,12 @@ func ScanResponse(line []byte, sc *scanner.Scanner) jsonrpc.ScanVerdict {
 	}
 }
 
-// scanToolsListNonToolFields scans a tools/list response for injection only in
-// non-tool fields (error, params). The result field contains tool descriptions
-// which include instructional text that would trigger false positives in the
-// general injection scanner. Tool descriptions are scanned separately by the
-// dedicated tool scanning subsystem (internal/mcp/tools).
+// scanToolsListNonToolFields scans a tools/list response for injection in
+// non-tool fields (error, params, and any sibling keys in result besides "tools").
+// Tool descriptions are scanned separately by the dedicated tool scanning
+// subsystem (internal/mcp/tools), so we skip result.tools to avoid FPs from
+// instructional text. However, a malicious server can inject into sibling fields
+// like result.note or result.cursor, so those must be scanned.
 func scanToolsListNonToolFields(line []byte, sc *scanner.Scanner) jsonrpc.ScanVerdict {
 	var rpc jsonrpc.RPCResponse
 	if err := json.Unmarshal(line, &rpc); err != nil {
@@ -117,16 +118,41 @@ func scanToolsListNonToolFields(line []byte, sc *scanner.Scanner) jsonrpc.ScanVe
 
 	var text string
 
+	// Scan non-"tools" sibling fields in the result object.
+	// A malicious server can include extra fields alongside tools[].
+	if len(rpc.Result) > 0 && string(rpc.Result) != jsonrpc.Null {
+		var resultMap map[string]json.RawMessage
+		if json.Unmarshal(rpc.Result, &resultMap) == nil {
+			for key, val := range resultMap {
+				if key == "tools" {
+					continue // scanned by dedicated tool scanner
+				}
+				if siblingText := jsonrpc.ExtractText(val); siblingText != "" {
+					if text != "" {
+						text += "\n"
+					}
+					text += siblingText
+				}
+			}
+		}
+	}
+
 	// Scan error field (injection can hide in error messages).
 	if len(rpc.Error) > 0 && string(rpc.Error) != jsonrpc.Null {
 		var rpcErr jsonrpc.RPCError
 		if err := json.Unmarshal(rpc.Error, &rpcErr); err == nil && rpcErr.Message != "" {
-			text = rpcErr.Message
+			if text != "" {
+				text += "\n"
+			}
+			text += rpcErr.Message
 			if errData := jsonrpc.ExtractText(rpcErr.Data); errData != "" {
 				text += "\n" + errData
 			}
 		} else if errText := jsonrpc.ExtractText(rpc.Error); errText != "" {
-			text = errText
+			if text != "" {
+				text += "\n"
+			}
+			text += errText
 		}
 	}
 

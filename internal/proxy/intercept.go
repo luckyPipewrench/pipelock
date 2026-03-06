@@ -178,15 +178,22 @@ func interceptTunnel(
 
 	// Shut down the server when the context expires (tunnel deadline) to
 	// prevent goroutine leaks from srv.Serve blocking on Accept forever.
+	// The done channel stops this goroutine when Serve returns normally,
+	// preventing accumulation under high CONNECT throughput.
+	done := make(chan struct{})
 	go func() {
-		<-ctx.Done()
-		_ = srv.Close()
+		select {
+		case <-ctx.Done():
+			_ = srv.Close()
+		case <-done:
+		}
 	}()
 
 	// Serve blocks until the connection closes or the server is shut down.
 	// Normal termination returns http.ErrServerClosed (from srv.Close above)
 	// or net.ErrClosed (from listener). Both are expected.
 	err := srv.Serve(ln)
+	close(done)
 	if errors.Is(err, http.ErrServerClosed) || errors.Is(err, net.ErrClosed) {
 		return nil
 	}

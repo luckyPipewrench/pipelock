@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -220,18 +221,16 @@ func TestTLSInstallCACmd_OutputContent(t *testing.T) {
 }
 
 func TestTLSInstallCACmd_MissingCert(t *testing.T) {
-	buf := &bytes.Buffer{}
 	installCmd := tlsInstallCACmd()
-	installCmd.SetOut(buf)
+	installCmd.SetOut(&bytes.Buffer{})
 	installCmd.SetErr(&bytes.Buffer{})
 	installCmd.SetArgs([]string{"--cert", "/nonexistent/path/ca.pem"})
-	// InstallCA does not validate cert existence; it just prints instructions.
-	// So this should succeed (InstallCA returns nil).
-	if err := installCmd.Execute(); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	err := installCmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for nonexistent cert file")
 	}
-	if buf.Len() == 0 {
-		t.Error("install-ca should produce output even for nonexistent path")
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("expected 'not found' in error, got: %v", err)
 	}
 }
 

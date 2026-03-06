@@ -86,7 +86,11 @@ func tlsInstallCACmd() *cobra.Command {
 				}
 				certPath = filepath.Join(dir, "ca.pem")
 			}
-			return certgen.InstallCA(cmd.OutOrStdout(), filepath.Clean(certPath))
+			certPath = filepath.Clean(certPath)
+			if _, err := os.Stat(certPath); err != nil {
+				return fmt.Errorf("CA cert not found at %s (run 'pipelock tls init' first): %w", certPath, err)
+			}
+			return certgen.InstallCA(cmd.OutOrStdout(), certPath)
 		},
 	}
 	cmd.Flags().StringVar(&certPath, "cert", "", "Path to CA certificate (default ~/.pipelock/ca.pem)")

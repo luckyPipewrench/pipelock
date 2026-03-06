@@ -4,6 +4,7 @@ package config
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -66,6 +68,9 @@ const (
 
 	// HashDefaults is returned by Config.Hash() when no config file was loaded.
 	HashDefaults = "defaults"
+
+	// DefaultCertTTL is the default TLS interception leaf certificate TTL.
+	DefaultCertTTL = "24h"
 )
 
 // SuppressEntry defines a finding suppression rule for false positives.
@@ -164,6 +169,7 @@ type Config struct {
 	Emit                EmitConfig          `yaml:"emit"`
 	ToolChainDetection  ToolChainDetection  `yaml:"tool_chain_detection"`
 	MCPWSListener       MCPWSListener       `yaml:"mcp_ws_listener"`
+	TLSInterception     TLSInterception     `yaml:"tls_interception"`
 	Internal            []string            `yaml:"internal"`
 
 	// rawBytes stores the original config file bytes for deterministic hashing.
@@ -242,6 +248,17 @@ func (f ForwardProxy) SNIVerificationEnabled() bool {
 		return true
 	}
 	return *f.SNIVerification
+}
+
+// TLSInterception configures CONNECT tunnel decryption for body/header scanning.
+type TLSInterception struct {
+	Enabled            bool     `yaml:"enabled"`
+	CACertPath         string   `yaml:"ca_cert"`
+	CAKeyPath          string   `yaml:"ca_key"`
+	PassthroughDomains []string `yaml:"passthrough_domains"`
+	CertTTL            string   `yaml:"cert_ttl"`
+	CertCacheSize      int      `yaml:"cert_cache_size"`
+	MaxResponseBytes   int64    `yaml:"max_response_bytes"`
 }
 
 // WebSocketProxy configures the /ws WebSocket proxy endpoint.
@@ -474,7 +491,7 @@ func Load(path string) (*Config, error) {
 // Hash returns the SHA256 hex digest of the raw config file bytes.
 // Returns "defaults" if the config was created via Defaults() (no file).
 func (c *Config) Hash() string {
-	if len(c.rawBytes) == 0 {
+	if c.rawBytes == nil {
 		return HashDefaults
 	}
 	h := sha256.Sum256(c.rawBytes)
@@ -685,6 +702,17 @@ func (c *Config) ApplyDefaults() {
 	if c.ToolChainDetection.MaxGap == nil {
 		d := DefaultMaxGap
 		c.ToolChainDetection.MaxGap = &d
+	}
+
+	// TLS interception defaults
+	if c.TLSInterception.CertTTL == "" {
+		c.TLSInterception.CertTTL = DefaultCertTTL
+	}
+	if c.TLSInterception.CertCacheSize <= 0 {
+		c.TLSInterception.CertCacheSize = 10000
+	}
+	if c.TLSInterception.MaxResponseBytes <= 0 {
+		c.TLSInterception.MaxResponseBytes = 5 * 1024 * 1024 // 5MB
 	}
 
 	// MCP WS listener defaults
@@ -1073,6 +1101,37 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// Validate TLS interception config
+	if c.TLSInterception.Enabled {
+		ttl, err := time.ParseDuration(c.TLSInterception.CertTTL)
+		if err != nil {
+			return fmt.Errorf("tls_interception.cert_ttl: %w", err)
+		}
+		if ttl <= 0 {
+			return errors.New("tls_interception.cert_ttl must be positive")
+		}
+		if c.TLSInterception.CertCacheSize <= 0 {
+			return errors.New("tls_interception.cert_cache_size must be > 0")
+		}
+		if c.TLSInterception.MaxResponseBytes <= 0 {
+			return errors.New("tls_interception.max_response_bytes must be > 0")
+		}
+		certPath, keyPath, resolveErr := c.ResolveCAPath()
+		if resolveErr != nil {
+			return fmt.Errorf("tls_interception: %w", resolveErr)
+		}
+		if _, err := os.Stat(certPath); err != nil {
+			return fmt.Errorf("CA cert not found at %s (run 'pipelock tls init'): %w", certPath, err)
+		}
+		keyInfo, err := os.Stat(keyPath)
+		if err != nil {
+			return fmt.Errorf("CA key not found at %s (run 'pipelock tls init'): %w", keyPath, err)
+		}
+		if keyInfo.Mode().Perm()&0o077 != 0 {
+			return fmt.Errorf("CA key %s is too permissive (mode %04o): restrict to 0600", keyPath, keyInfo.Mode().Perm())
+		}
+	}
+
 	// Validate tool chain detection config
 	if c.ToolChainDetection.Enabled {
 		switch c.ToolChainDetection.Action {
@@ -1269,6 +1328,28 @@ func (c *Config) Validate() error {
 	return nil
 }
 
+// ResolveCAPath returns resolved CA cert and key paths.
+// Empty config values resolve to ~/.pipelock/ca.pem and ~/.pipelock/ca-key.pem.
+// Returns an error if $HOME cannot be determined and paths are not set explicitly.
+func (c *Config) ResolveCAPath() (certPath, keyPath string, err error) {
+	certPath = c.TLSInterception.CACertPath
+	keyPath = c.TLSInterception.CAKeyPath
+	if certPath == "" || keyPath == "" {
+		home, homeErr := os.UserHomeDir()
+		if homeErr != nil {
+			return "", "", fmt.Errorf("resolve CA path: %w (set ca_cert and ca_key explicitly)", homeErr)
+		}
+		dir := filepath.Join(home, ".pipelock")
+		if certPath == "" {
+			certPath = filepath.Join(dir, "ca.pem")
+		}
+		if keyPath == "" {
+			keyPath = filepath.Join(dir, "ca-key.pem")
+		}
+	}
+	return certPath, keyPath, nil
+}
+
 // ReloadWarning describes a potential security downgrade from a config reload.
 type ReloadWarning struct {
 	Field   string
@@ -1400,6 +1481,14 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		warnings = append(warnings, ReloadWarning{
 			Field:   "mcp_session_binding.enabled",
 			Message: "MCP session binding disabled",
+		})
+	}
+
+	// TLS interception disabled
+	if old.TLSInterception.Enabled && !updated.TLSInterception.Enabled {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "tls_interception.enabled",
+			Message: "TLS interception disabled — CONNECT tunnel body/header scanning lost",
 		})
 	}
 
@@ -1616,6 +1705,12 @@ func Defaults() *Config {
 			MaxSessions:            1000,
 			SessionTTLMinutes:      30,
 			CleanupIntervalSeconds: 60,
+		},
+		TLSInterception: TLSInterception{
+			Enabled:          false,
+			CertTTL:          DefaultCertTTL,
+			CertCacheSize:    10000,
+			MaxResponseBytes: 5 * 1024 * 1024, // 5MB
 		},
 		Internal: []string{
 			"0.0.0.0/8",

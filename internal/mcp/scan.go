@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
@@ -70,6 +71,98 @@ func ScanResponse(line []byte, sc *scanner.Scanner) jsonrpc.ScanVerdict {
 
 	// Scan notification params for injection content.
 	// MCP server notifications (method+params, no id) can carry payloads.
+	if len(rpc.Params) > 0 && string(rpc.Params) != jsonrpc.Null {
+		if paramsText := jsonrpc.ExtractText(rpc.Params); paramsText != "" {
+			if text != "" {
+				text += "\n"
+			}
+			text += paramsText
+		}
+	}
+
+	if text == "" {
+		return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: true}
+	}
+
+	result := sc.ScanResponse(text)
+	if result.Clean {
+		return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: true}
+	}
+
+	return jsonrpc.ScanVerdict{
+		ID:      rpc.ID,
+		Clean:   false,
+		Action:  sc.ResponseAction(),
+		Matches: result.Matches,
+	}
+}
+
+// scanToolsListNonToolFields scans a tools/list response for injection in
+// non-tool fields (error, params, and any sibling keys in result besides "tools").
+// Tool descriptions are scanned separately by the dedicated tool scanning
+// subsystem (internal/mcp/tools), so we skip result.tools to avoid FPs from
+// instructional text. However, a malicious server can inject into sibling fields
+// like result.note or result.cursor, so those must be scanned.
+func scanToolsListNonToolFields(line []byte, sc *scanner.Scanner) jsonrpc.ScanVerdict {
+	var rpc jsonrpc.RPCResponse
+	if err := json.Unmarshal(line, &rpc); err != nil {
+		return jsonrpc.ScanVerdict{Clean: false, Error: fmt.Sprintf("invalid JSON: %v", err)}
+	}
+
+	if rpc.JSONRPC != jsonrpc.Version {
+		return jsonrpc.ScanVerdict{
+			ID:    rpc.ID,
+			Clean: false,
+			Error: fmt.Sprintf("not a JSON-RPC 2.0 response: jsonrpc=%q", rpc.JSONRPC),
+		}
+	}
+
+	var text string
+
+	// Scan non-"tools" sibling fields in the result object.
+	// A malicious server can include extra fields alongside tools[].
+	// Keys are sorted for deterministic concatenation order.
+	if len(rpc.Result) > 0 && string(rpc.Result) != jsonrpc.Null {
+		var resultMap map[string]json.RawMessage
+		if json.Unmarshal(rpc.Result, &resultMap) == nil {
+			keys := make([]string, 0, len(resultMap))
+			for k := range resultMap {
+				if k != "tools" {
+					keys = append(keys, k)
+				}
+			}
+			sort.Strings(keys)
+			for _, key := range keys {
+				if siblingText := jsonrpc.ExtractText(resultMap[key]); siblingText != "" {
+					if text != "" {
+						text += "\n"
+					}
+					text += siblingText
+				}
+			}
+		}
+	}
+
+	// Scan error field (injection can hide in error messages).
+	if len(rpc.Error) > 0 && string(rpc.Error) != jsonrpc.Null {
+		var rpcErr jsonrpc.RPCError
+		if err := json.Unmarshal(rpc.Error, &rpcErr); err == nil && rpcErr.Message != "" {
+			if text != "" {
+				text += "\n"
+			}
+			text += rpcErr.Message
+			if errData := jsonrpc.ExtractText(rpcErr.Data); errData != "" {
+				text += "\n" + errData
+			}
+		} else if errText := jsonrpc.ExtractText(rpc.Error); errText != "" {
+			if text != "" {
+				text += "\n"
+			}
+			text += errText
+		}
+	}
+
+	// Scan params (server notifications can carry payloads).
 	if len(rpc.Params) > 0 && string(rpc.Params) != jsonrpc.Null {
 		if paramsText := jsonrpc.ExtractText(rpc.Params); paramsText != "" {
 			if text != "" {

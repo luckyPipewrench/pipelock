@@ -162,6 +162,11 @@ Examples:
 			}
 			p := proxy.New(cfg, logger, sc, m, proxyOpts...)
 
+			// Load TLS interception CA if configured.
+			if err := p.LoadCertCache(cfg); err != nil {
+				return err
+			}
+
 			// Context with signal handling for graceful shutdown.
 			// Uses cmd.Context() as parent so tests can inject a cancellable context.
 			ctx, cancel := signal.NotifyContext(
@@ -240,6 +245,10 @@ Examples:
 							}
 							newSc := scanner.New(newCfg)
 							p.Reload(newCfg, newSc)
+							if reloadErr := p.LoadCertCache(newCfg); reloadErr != nil {
+								logger.LogError("CONFIG_RELOAD", configFile, "", "",
+									fmt.Errorf("TLS cert cache reload failed: %w", reloadErr))
+							}
 							ks.Reload(newCfg)
 
 							// Reload emit sinks: build new sinks from config,

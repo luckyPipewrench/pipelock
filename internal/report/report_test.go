@@ -1087,7 +1087,7 @@ func TestClassifyEvent_AllPaths(t *testing.T) {
 		criticals int
 	}{
 		{"response_scan_warn", Event{Event: testEvRespScan, Action: actionWarn}, 0, 1, 0, 0},
-		{"response_scan_block", Event{Event: testEvRespScan, Action: actionBlock}, 0, 0, 0, 0},
+		{"response_scan_block", Event{Event: testEvRespScan, Action: actionBlock}, 1, 0, 0, 0},
 		{"chain_warn", Event{Event: "chain_detection", Action: actionWarn}, 0, 1, 0, 0},
 		{"chain_block", Event{Event: "chain_detection", Action: actionBlock}, 1, 0, 0, 1},
 		{"mcp_unknown_tool_warn", Event{Event: "mcp_unknown_tool", Action: actionWarn}, 0, 1, 0, 0},
@@ -1095,6 +1095,7 @@ func TestClassifyEvent_AllPaths(t *testing.T) {
 		{"body_dlp_warn", Event{Event: "body_dlp", Action: actionWarn}, 0, 1, 0, 0},
 		{"header_dlp_block", Event{Event: "header_dlp", Action: actionBlock}, 1, 0, 0, 0},
 		{"ws_scan_warn", Event{Event: "ws_scan", Action: actionWarn}, 0, 1, 0, 0},
+		{"ws_scan_block", Event{Event: "ws_scan", Action: actionBlock}, 1, 0, 0, 0},
 		{"anomaly", Event{Event: "anomaly"}, 0, 1, 0, 0},
 		{"startup", Event{Event: testEvStartup}, 0, 0, 0, 0},
 		{"allowed", Event{Event: "allowed"}, 0, 0, 1, 0},
@@ -1136,7 +1137,9 @@ func TestIsBlockEvent(t *testing.T) {
 		{Event{Event: "chain_detection", Action: actionWarn}, false, true},
 		{Event{Event: "mcp_unknown_tool", Action: actionBlock}, true, false},
 		{Event{Event: "anomaly"}, false, true},
+		{Event{Event: "response_scan", Action: actionBlock}, true, false},
 		{Event{Event: "response_scan", Action: actionWarn}, false, true},
+		{Event{Event: "ws_scan", Action: actionBlock}, true, false},
 		{Event{Event: "ws_scan", Action: actionWarn}, false, true},
 	}
 	for _, tt := range tests {

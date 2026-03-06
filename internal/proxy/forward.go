@@ -163,7 +163,11 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "tunnel dial failed", http.StatusBadGateway)
 		return
 	}
-	defer targetConn.Close() //nolint:errcheck // best effort
+	defer func() {
+		if targetConn != nil {
+			_ = targetConn.Close()
+		}
+	}()
 
 	// Hijack the client connection
 	hijacker, ok := w.(http.Hijacker)
@@ -197,6 +201,37 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			p.logger.LogSNIMismatch(host, sniHost, clientIP, requestID, category)
 			return // close both connections via deferred Close()
 		}
+	}
+
+	// TLS interception: decrypt tunnel and scan body/headers/responses.
+	// Branch here after SNI verification but before raw splice. If interception
+	// is enabled and the host is not on the passthrough list, interceptTunnel
+	// takes over the client connection and handles the full request lifecycle.
+	_, port, _ := net.SplitHostPort(target)
+	if cfg.TLSInterception.Enabled && !isPassthrough(host, cfg.TLSInterception.PassthroughDomains) {
+		certCache := p.certCachePtr.Load()
+		if certCache == nil {
+			// Fail-closed: TLS interception is enabled but cert cache is missing.
+			// Connection is already hijacked, so close both sides (deferred).
+			p.logger.LogError(http.MethodConnect, host, clientIP, requestID, fmt.Errorf("TLS interception enabled but cert cache unavailable"))
+			p.metrics.RecordTLSIntercept("failed")
+			return
+		}
+		// Close the pre-established upstream TCP connection since interceptTunnel
+		// creates its own via the SSRF-safe dialer. This prevents a dangling connection.
+		_ = targetConn.Close()
+		targetConn = nil
+		p.metrics.RecordTLSIntercept("intercepted")
+		p.logger.LogAnomaly(http.MethodConnect, host, "tls_intercept", "TLS MITM interception active", clientIP, requestID, 0) // 0: informational, not anomalous
+		// Wrap clientConn with buffered reader so any bytes peeked during
+		// SNI verification (ClientHello) are available to the TLS server.
+		interceptConn := wrapBuffered(clientConn, clientReader)
+		interceptCtx, interceptCancel := context.WithDeadline(r.Context(), deadline)
+		defer interceptCancel()
+		if err := interceptTunnel(interceptCtx, interceptConn, host, port, cfg, sc, certCache, p.logger, p.metrics, clientIP, requestID, nil, p.ssrfSafeDialContext); err != nil {
+			p.logger.LogError(http.MethodConnect, host, clientIP, requestID, err)
+		}
+		return
 	}
 
 	// Flush any buffered data from the HTTP parsing layer

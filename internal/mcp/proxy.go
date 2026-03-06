@@ -178,11 +178,14 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			}
 		}
 
-		// Skip general injection scanning for tools/list responses.
-		// These are handled by the dedicated tool scanner above.
-		verdict := ScanResponse(line, sc)
+		// For tools/list responses, skip general scanning of the result field
+		// (tool descriptions contain instructional text that triggers FPs).
+		// Still scan the error field: injection could hide in non-tool fields.
+		var verdict jsonrpc.ScanVerdict
 		if isToolsList {
-			verdict = jsonrpc.ScanVerdict{Clean: true}
+			verdict = scanToolsListNonToolFields(line, sc)
+		} else {
+			verdict = ScanResponse(line, sc)
 		}
 
 		if verdict.Clean {

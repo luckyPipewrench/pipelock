@@ -7,7 +7,8 @@ Pipelock supports multiple proxy modes, each with different scanning capabilitie
 | Mode | Endpoint | Protocol | Content Inspection | Response Scanning | Best For |
 |------|----------|----------|-------------------|-------------------|----------|
 | Fetch | `/fetch?url=...` | HTTP | Full body | Injection detection | AI agents that need extracted text |
-| CONNECT | `HTTPS_PROXY` | HTTPS tunnel | Hostname only | None | Standard HTTPS clients |
+| CONNECT | `HTTPS_PROXY` | HTTPS tunnel | Hostname only | None | Standard HTTPS clients (no interception) |
+| CONNECT + TLS interception | `HTTPS_PROXY` | HTTPS tunnel (MITM) | Full body + headers | Injection detection | Full DLP on HTTPS traffic |
 | Absolute-URI | `HTTP_PROXY` | HTTP | Full URL | None | Plaintext HTTP clients |
 | WebSocket | `/ws?url=...` | WS/WSS | Bidirectional frames | DLP + injection | Real-time agent communication |
 | MCP stdio | `pipelock mcp proxy -- CMD` | stdio | Full messages | Full (6 layers) | Local MCP servers |
@@ -37,19 +38,33 @@ curl "http://localhost:8888/fetch?url=https://example.com"
 
 ### CONNECT Tunnel (via `HTTPS_PROXY`)
 
-Standard HTTP CONNECT proxy. After the tunnel is established, pipelock cannot see the encrypted traffic.
+Standard HTTP CONNECT proxy. Without TLS interception, pipelock cannot see the encrypted traffic after the tunnel is established.
 
-**Scanning:**
+**Scanning (without TLS interception):**
 - 9-layer URL scan on the target hostname (before tunnel)
 - No content inspection during the tunnel (encrypted bytes)
 - No response scanning
 
-**What the agent receives:** Raw HTTPS response from the origin server.
+**Scanning (with `tls_interception.enabled: true`):**
+- 9-layer URL scan on the target hostname (before tunnel)
+- Full request body DLP (JSON, form, multipart extraction)
+- Request header DLP scanning
+- Authority enforcement (Host must match CONNECT target)
+- Response injection detection (buffered scan-then-send)
+- Compressed response blocking (fail-closed)
 
-**Use when:** Your agent or SDK uses `HTTPS_PROXY` natively and you want hostname-level protection. Be aware that DLP cannot scan the response body.
+**What the agent receives:** Without interception: raw HTTPS response from the origin server. With interception: response re-encrypted by pipelock after scanning.
+
+**Use when:** Your agent or SDK uses `HTTPS_PROXY` natively. Enable TLS interception for full DLP and injection scanning. Without interception, only hostname-level protection applies.
 
 ```bash
+# Without TLS interception (hostname scanning only)
 HTTPS_PROXY=http://localhost:8888 curl https://example.com
+
+# With TLS interception (full body/header DLP + response scanning)
+# Requires: tls_interception.enabled: true in config
+# Requires: pipelock CA trusted by the agent (pipelock tls install-ca)
+HTTPS_PROXY=http://localhost:8888 curl --cacert ~/.pipelock/ca.pem https://example.com
 ```
 
 ### Absolute-URI Forward Proxy (via `HTTP_PROXY`)
@@ -153,28 +168,37 @@ Proxies a remote MCP server over WebSocket with the same scanning as stdio mode.
 
 ## Security Implications
 
-### CONNECT Tunnels Do Not Inspect Content
+### CONNECT Tunnels: With and Without TLS Interception
 
-This is the most important distinction. When your agent uses `HTTPS_PROXY`, pipelock creates an encrypted tunnel. It scans the hostname before the tunnel, but once established, all traffic is opaque encrypted bytes.
+Without TLS interception (`tls_interception.enabled: false`, the default), CONNECT tunnels are opaque encrypted bytes after the hostname scan. DLP cannot detect secrets in bodies or headers, and response injection scanning does not apply.
 
-This means:
+With TLS interception enabled, pipelock performs a TLS MITM: it terminates TLS with the client (forged certificate), scans the decrypted traffic, then forwards to the upstream server over a separate TLS connection. This closes the body-blindness gap.
+
+**Without interception:**
 - DLP cannot detect secrets in HTTPS request/response bodies
 - Response injection scanning does not apply
 - Only the 9-layer URL scan provides protection
 
-If your agent handles secrets and you need content-level DLP, use the **fetch proxy** or **MCP proxy** modes instead of CONNECT tunnels.
+**With interception:**
+- Full request body DLP (JSON, form, multipart)
+- Request header DLP (Authorization, Cookie, etc.)
+- Response injection scanning (buffered, scan-then-send)
+- Authority enforcement (Host must match CONNECT target)
+
+If your agent handles secrets and you need content-level DLP on HTTPS traffic, either enable TLS interception or use the **fetch proxy** or **MCP proxy** modes.
 
 ### Fetch Proxy vs CONNECT: Trade-offs
 
-| Concern | Fetch Proxy | CONNECT Tunnel |
-|---------|-------------|----------------|
-| URL scanning | 9 layers | 9 layers |
-| DLP on responses | Yes | No (encrypted) |
-| Injection detection | Yes | No (encrypted) |
-| Agent receives | Extracted text | Raw HTTPS response |
-| TLS termination | Pipelock terminates | End-to-end (agent to origin) |
-| SDK compatibility | Requires `/fetch` API | Native `HTTPS_PROXY` support |
-| Performance | Slower (extraction) | Faster (pass-through) |
+| Concern | Fetch Proxy | CONNECT (no interception) | CONNECT (TLS interception) |
+|---------|-------------|---------------------------|---------------------------|
+| URL scanning | 9 layers | 9 layers | 9 layers |
+| DLP on request bodies | N/A | No (encrypted) | Yes |
+| DLP on responses | Yes | No (encrypted) | Yes |
+| Injection detection | Yes | No (encrypted) | Yes |
+| Agent receives | Extracted text | Raw HTTPS response | Raw HTTPS response (re-encrypted) |
+| TLS termination | Pipelock terminates | End-to-end | Pipelock MITM (forged cert) |
+| SDK compatibility | Requires `/fetch` API | Native `HTTPS_PROXY` | Native `HTTPS_PROXY` + CA trust |
+| Performance | Slower (extraction) | Fastest (pass-through) | Moderate (decrypt + scan + re-encrypt) |
 
 ## See Also
 

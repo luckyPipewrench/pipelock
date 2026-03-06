@@ -96,6 +96,7 @@ Quick start:
 		reportCmd(),
 		signCmd(),
 		testCmd(),
+		tlsCmd(),
 		verifyCmd(),
 		verifyInstallCmd(),
 		trustCmd(),

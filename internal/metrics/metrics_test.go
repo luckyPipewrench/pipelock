@@ -941,3 +941,178 @@ func TestRegisterInfo(t *testing.T) {
 		t.Errorf("expected pipelock_info with version label:\n%s", body)
 	}
 }
+
+func TestRegisterKillSwitchState_Nil(t *testing.T) {
+	m := New()
+	// Nil sourceFunc should be a no-op (no panic, no registration).
+	m.RegisterKillSwitchState(nil)
+
+	handler := m.PrometheusHandler()
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := rec.Body.String()
+
+	if strings.Contains(body, "pipelock_kill_switch_active") {
+		t.Error("nil sourceFunc should not register kill switch metric")
+	}
+}
+
+func TestRecordTLSIntercept(t *testing.T) {
+	m := New()
+	m.RecordTLSIntercept("success")
+	m.RecordTLSIntercept("success")
+	m.RecordTLSIntercept("error")
+
+	handler := m.PrometheusHandler()
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := rec.Body.String()
+
+	if !strings.Contains(body, `pipelock_tls_intercept_total{outcome="success"} 2`) {
+		t.Errorf("expected 2 TLS intercept success hits:\n%s", body)
+	}
+	if !strings.Contains(body, `pipelock_tls_intercept_total{outcome="error"} 1`) {
+		t.Errorf("expected 1 TLS intercept error hit:\n%s", body)
+	}
+}
+
+func TestSetTLSCertCacheSize(t *testing.T) {
+	m := New()
+	m.SetTLSCertCacheSize(42)
+
+	handler := m.PrometheusHandler()
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := rec.Body.String()
+
+	if !strings.Contains(body, "pipelock_tls_cert_cache_size 42") {
+		t.Errorf("expected tls_cert_cache_size gauge at 42:\n%s", body)
+	}
+}
+
+func TestRecordTLSHandshake(t *testing.T) {
+	m := New()
+	m.RecordTLSHandshake("client", 10*time.Millisecond)
+	m.RecordTLSHandshake("upstream", 25*time.Millisecond)
+
+	handler := m.PrometheusHandler()
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := rec.Body.String()
+
+	if !strings.Contains(body, `pipelock_tls_handshake_duration_seconds_count{side="client"} 1`) {
+		t.Errorf("expected 1 client handshake observation:\n%s", body)
+	}
+	if !strings.Contains(body, `pipelock_tls_handshake_duration_seconds_count{side="upstream"} 1`) {
+		t.Errorf("expected 1 upstream handshake observation:\n%s", body)
+	}
+}
+
+func TestRecordTLSRequestBlocked(t *testing.T) {
+	m := New()
+	m.RecordTLSRequestBlocked("dlp")
+	m.RecordTLSRequestBlocked("dlp")
+	m.RecordTLSRequestBlocked("ssrf")
+
+	handler := m.PrometheusHandler()
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := rec.Body.String()
+
+	if !strings.Contains(body, `pipelock_tls_request_blocked_total{reason="dlp"} 2`) {
+		t.Errorf("expected 2 TLS request blocked by dlp:\n%s", body)
+	}
+	if !strings.Contains(body, `pipelock_tls_request_blocked_total{reason="ssrf"} 1`) {
+		t.Errorf("expected 1 TLS request blocked by ssrf:\n%s", body)
+	}
+}
+
+func TestRecordTLSResponseBlocked(t *testing.T) {
+	m := New()
+	m.RecordTLSResponseBlocked("injection")
+	m.RecordTLSResponseBlocked("injection")
+	m.RecordTLSResponseBlocked("size_limit")
+
+	handler := m.PrometheusHandler()
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := rec.Body.String()
+
+	if !strings.Contains(body, `pipelock_tls_response_blocked_total{reason="injection"} 2`) {
+		t.Errorf("expected 2 TLS response blocked by injection:\n%s", body)
+	}
+	if !strings.Contains(body, `pipelock_tls_response_blocked_total{reason="size_limit"} 1`) {
+		t.Errorf("expected 1 TLS response blocked by size_limit:\n%s", body)
+	}
+}
+
+func TestConcurrentTLSMetrics(t *testing.T) {
+	m := New()
+	var wg sync.WaitGroup
+	for range 50 {
+		wg.Add(5)
+		go func() {
+			defer wg.Done()
+			m.RecordTLSIntercept("success")
+		}()
+		go func() {
+			defer wg.Done()
+			m.SetTLSCertCacheSize(10)
+		}()
+		go func() {
+			defer wg.Done()
+			m.RecordTLSHandshake("client", time.Millisecond)
+		}()
+		go func() {
+			defer wg.Done()
+			m.RecordTLSRequestBlocked("dlp")
+		}()
+		go func() {
+			defer wg.Done()
+			m.RecordTLSResponseBlocked("injection")
+		}()
+	}
+	wg.Wait()
+
+	// Verify counters via /metrics (no panics, correct registration).
+	handler := m.PrometheusHandler()
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := rec.Body.String()
+
+	if !strings.Contains(body, "pipelock_tls_intercept_total") {
+		t.Error("expected pipelock_tls_intercept_total in /metrics after concurrent writes")
+	}
+	if !strings.Contains(body, "pipelock_tls_request_blocked_total") {
+		t.Error("expected pipelock_tls_request_blocked_total in /metrics after concurrent writes")
+	}
+	if !strings.Contains(body, "pipelock_tls_response_blocked_total") {
+		t.Error("expected pipelock_tls_response_blocked_total in /metrics after concurrent writes")
+	}
+}
+
+func TestPrometheusHandler_TLSMetrics(t *testing.T) {
+	m := New()
+	m.RecordTLSIntercept("success")
+	m.SetTLSCertCacheSize(5)
+	m.RecordTLSHandshake("client", 10*time.Millisecond)
+	m.RecordTLSRequestBlocked("dlp")
+	m.RecordTLSResponseBlocked("injection")
+
+	handler := m.PrometheusHandler()
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := rec.Body.String()
+
+	for _, metric := range []string{
+		"pipelock_tls_intercept_total",
+		"pipelock_tls_cert_cache_size",
+		"pipelock_tls_handshake_duration_seconds",
+		"pipelock_tls_request_blocked_total",
+		"pipelock_tls_response_blocked_total",
+	} {
+		if !strings.Contains(body, metric) {
+			t.Errorf("expected %s in /metrics output", metric)
+		}
+	}
+}

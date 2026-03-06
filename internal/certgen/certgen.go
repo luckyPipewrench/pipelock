@@ -35,6 +35,7 @@ func GenerateCA(org string, validity time.Duration) (*x509.Certificate, *ecdsa.P
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("generate serial: %w", err)
 	}
+	serial.Add(serial, big.NewInt(1)) // X.509 serials must be positive
 
 	template := &x509.Certificate{
 		SerialNumber: serial,
@@ -77,6 +78,7 @@ func GenerateLeaf(ca *x509.Certificate, caKey crypto.PrivateKey, host string, tt
 	if err != nil {
 		return nil, fmt.Errorf("generate serial: %w", err)
 	}
+	serial.Add(serial, big.NewInt(1)) // X.509 serials must be positive
 
 	template := &x509.Certificate{
 		SerialNumber: serial,

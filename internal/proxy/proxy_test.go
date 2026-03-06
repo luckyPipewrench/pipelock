@@ -8,12 +8,15 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/certgen"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
@@ -3527,5 +3530,149 @@ func TestFetchResponseHint_Disabled(t *testing.T) {
 	}
 	if fr.Hint != "" {
 		t.Errorf("expected empty hint when explain_blocks is disabled, got %q", fr.Hint)
+	}
+}
+
+func TestLoadCertCache_Disabled(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.TLSInterception.Enabled = false
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	t.Cleanup(func() { sc.Close() })
+	p := New(cfg, logger, sc, metrics.New())
+
+	if err := p.LoadCertCache(cfg); err != nil {
+		t.Fatalf("LoadCertCache with disabled TLS should not error: %v", err)
+	}
+	// certCachePtr should be nil when disabled.
+	if p.certCachePtr.Load() != nil {
+		t.Error("expected nil cert cache when TLS interception disabled")
+	}
+}
+
+func TestLoadCertCache_ValidCA(t *testing.T) {
+	// Generate a CA, save to temp dir, then LoadCertCache.
+	tmpDir := t.TempDir()
+	certPath := filepath.Join(tmpDir, "ca.pem")
+	keyPath := filepath.Join(tmpDir, "ca-key.pem")
+
+	ca, caKey, _, err := certgen.GenerateCA("Test", 24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := certgen.SaveCAForce(certPath, keyPath, ca, caKey); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.TLSInterception.Enabled = true
+	cfg.TLSInterception.CACertPath = certPath
+	cfg.TLSInterception.CAKeyPath = keyPath
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	t.Cleanup(func() { sc.Close() })
+	p := New(cfg, logger, sc, metrics.New())
+
+	if err := p.LoadCertCache(cfg); err != nil {
+		t.Fatalf("LoadCertCache: %v", err)
+	}
+	if p.certCachePtr.Load() == nil {
+		t.Error("expected non-nil cert cache after loading valid CA")
+	}
+}
+
+func TestLoadCertCache_MissingFile(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.TLSInterception.Enabled = true
+	cfg.TLSInterception.CACertPath = filepath.Join(tmpDir, "nonexistent-ca.pem")
+	cfg.TLSInterception.CAKeyPath = filepath.Join(tmpDir, "nonexistent-key.pem")
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	t.Cleanup(func() { sc.Close() })
+	p := New(cfg, logger, sc, metrics.New())
+
+	err := p.LoadCertCache(cfg)
+	if err == nil {
+		t.Fatal("expected error for missing CA files")
+	}
+	if !strings.Contains(err.Error(), "load TLS CA") {
+		t.Errorf("error = %q, want to contain 'load TLS CA'", err.Error())
+	}
+}
+
+func TestLoadCertCache_BadPEM(t *testing.T) {
+	tmpDir := t.TempDir()
+	certPath := filepath.Join(tmpDir, "ca.pem")
+	keyPath := filepath.Join(tmpDir, "ca-key.pem")
+
+	// Write invalid PEM content.
+	if err := os.WriteFile(certPath, []byte("not a valid PEM"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, []byte("not a valid key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.TLSInterception.Enabled = true
+	cfg.TLSInterception.CACertPath = certPath
+	cfg.TLSInterception.CAKeyPath = keyPath
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	t.Cleanup(func() { sc.Close() })
+	p := New(cfg, logger, sc, metrics.New())
+
+	err := p.LoadCertCache(cfg)
+	if err == nil {
+		t.Fatal("expected error for bad PEM files")
+	}
+	if !strings.Contains(err.Error(), "load TLS CA") {
+		t.Errorf("error = %q, want to contain 'load TLS CA'", err.Error())
+	}
+}
+
+func TestHealthEndpoint_TLSInterceptionEnabled(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.APIAllowlist = nil
+	cfg.TLSInterception.Enabled = true
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	t.Cleanup(func() { sc.Close() })
+	p := New(cfg, logger, sc, metrics.New())
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	w := httptest.NewRecorder()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", p.handleHealth)
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+
+	tlsEnabled, ok := resp["tls_interception_enabled"].(bool)
+	if !ok {
+		t.Fatalf("expected tls_interception_enabled as bool, got %T", resp["tls_interception_enabled"])
+	}
+	if !tlsEnabled {
+		t.Error("expected tls_interception_enabled=true")
 	}
 }

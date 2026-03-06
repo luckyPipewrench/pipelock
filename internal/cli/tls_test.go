@@ -137,3 +137,229 @@ func TestTLSShowCACmd_MissingFile(t *testing.T) {
 		t.Error("expected error for missing cert file")
 	}
 }
+
+func TestTLSInitCmd_ForceOverwrite_ContentChanged(t *testing.T) {
+	dir := t.TempDir()
+
+	// First init: generate CA.
+	cmd1 := tlsInitCmd()
+	cmd1.SetOut(&bytes.Buffer{})
+	cmd1.SetErr(&bytes.Buffer{})
+	cmd1.SetArgs([]string{"--out", dir})
+	if err := cmd1.Execute(); err != nil {
+		t.Fatalf("first init: %v", err)
+	}
+
+	certFile := filepath.Join(dir, "ca.pem")
+	origCert, err := os.ReadFile(filepath.Clean(certFile))
+	if err != nil {
+		t.Fatalf("read original cert: %v", err)
+	}
+
+	// Force overwrite: should succeed and produce different cert.
+	buf := &bytes.Buffer{}
+	cmd2 := tlsInitCmd()
+	cmd2.SetOut(buf)
+	cmd2.SetErr(&bytes.Buffer{})
+	cmd2.SetArgs([]string{"--out", dir, "--force"})
+	if err := cmd2.Execute(); err != nil {
+		t.Fatalf("tls init --force: %v", err)
+	}
+
+	newCert, err := os.ReadFile(filepath.Clean(certFile))
+	if err != nil {
+		t.Fatalf("read new cert: %v", err)
+	}
+
+	if bytes.Equal(origCert, newCert) {
+		t.Error("--force should generate a new CA, but cert content is identical")
+	}
+
+	// Verify output still contains expected messages.
+	output := buf.String()
+	if !bytes.Contains([]byte(output), []byte("CA certificate:")) {
+		t.Error("force output missing certificate path")
+	}
+	if !bytes.Contains([]byte(output), []byte("CA private key:")) {
+		t.Error("force output missing key path")
+	}
+	if !bytes.Contains([]byte(output), []byte("install-ca")) {
+		t.Error("force output missing next-step hint")
+	}
+}
+
+func TestTLSInstallCACmd_OutputContent(t *testing.T) {
+	dir := t.TempDir()
+	initCmd := tlsInitCmd()
+	initCmd.SetOut(&bytes.Buffer{})
+	initCmd.SetErr(&bytes.Buffer{})
+	initCmd.SetArgs([]string{"--out", dir})
+	if err := initCmd.Execute(); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	buf := &bytes.Buffer{}
+	installCmd := tlsInstallCACmd()
+	installCmd.SetOut(buf)
+	installCmd.SetErr(&bytes.Buffer{})
+	installCmd.SetArgs([]string{"--cert", filepath.Join(dir, "ca.pem")})
+	if err := installCmd.Execute(); err != nil {
+		t.Fatalf("tls install-ca: %v", err)
+	}
+
+	output := buf.String()
+	// Should contain the cert path in the platform-specific instructions.
+	certPath := filepath.Join(dir, "ca.pem")
+	if !bytes.Contains([]byte(output), []byte(certPath)) {
+		t.Errorf("install-ca output should reference cert path %s, got: %s", certPath, output)
+	}
+	// Should contain platform-specific install instructions (at least one keyword).
+	if !bytes.Contains([]byte(output), []byte("Installing CA certificate")) {
+		t.Error("install-ca output missing platform header")
+	}
+}
+
+func TestTLSInstallCACmd_MissingCert(t *testing.T) {
+	buf := &bytes.Buffer{}
+	installCmd := tlsInstallCACmd()
+	installCmd.SetOut(buf)
+	installCmd.SetErr(&bytes.Buffer{})
+	installCmd.SetArgs([]string{"--cert", "/nonexistent/path/ca.pem"})
+	// InstallCA does not validate cert existence; it just prints instructions.
+	// So this should succeed (InstallCA returns nil).
+	if err := installCmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if buf.Len() == 0 {
+		t.Error("install-ca should produce output even for nonexistent path")
+	}
+}
+
+func TestTLSInitCmd_DefaultPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	cmd := tlsInitCmd()
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(&bytes.Buffer{})
+	// No --out flag: uses DefaultKeystorePath ($HOME/.pipelock).
+	cmd.SetArgs([]string{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("tls init (default path): %v", err)
+	}
+
+	expected := filepath.Join(home, ".pipelock", "ca.pem")
+	if _, err := os.Stat(expected); err != nil {
+		t.Errorf("CA cert not created at default path %s: %v", expected, err)
+	}
+	if !bytes.Contains(buf.Bytes(), []byte(expected)) {
+		t.Errorf("output should reference default cert path %s", expected)
+	}
+}
+
+func TestTLSShowCACmd_DefaultPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// First generate a CA at the default location.
+	initCmd := tlsInitCmd()
+	initCmd.SetOut(&bytes.Buffer{})
+	initCmd.SetErr(&bytes.Buffer{})
+	initCmd.SetArgs([]string{})
+	if err := initCmd.Execute(); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	// show-ca with no --cert flag should use the default path.
+	buf := &bytes.Buffer{}
+	showCmd := tlsShowCACmd()
+	showCmd.SetOut(buf)
+	showCmd.SetErr(&bytes.Buffer{})
+	showCmd.SetArgs([]string{})
+	if err := showCmd.Execute(); err != nil {
+		t.Fatalf("tls show-ca (default path): %v", err)
+	}
+	if !bytes.Contains(buf.Bytes(), []byte("BEGIN CERTIFICATE")) {
+		t.Error("show-ca with default path should output PEM certificate")
+	}
+}
+
+func TestTLSShowCACmd_DefaultPathMissing(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// No init: default path has no CA file.
+	showCmd := tlsShowCACmd()
+	showCmd.SetOut(&bytes.Buffer{})
+	showCmd.SetErr(&bytes.Buffer{})
+	showCmd.SetArgs([]string{})
+	err := showCmd.Execute()
+	if err == nil {
+		t.Error("expected error when CA does not exist at default path")
+	}
+}
+
+func TestTLSInstallCACmd_DefaultPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// Generate CA at default location.
+	initCmd := tlsInitCmd()
+	initCmd.SetOut(&bytes.Buffer{})
+	initCmd.SetErr(&bytes.Buffer{})
+	initCmd.SetArgs([]string{})
+	if err := initCmd.Execute(); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	// install-ca with no --cert flag should use the default path.
+	buf := &bytes.Buffer{}
+	installCmd := tlsInstallCACmd()
+	installCmd.SetOut(buf)
+	installCmd.SetErr(&bytes.Buffer{})
+	installCmd.SetArgs([]string{})
+	if err := installCmd.Execute(); err != nil {
+		t.Fatalf("tls install-ca (default path): %v", err)
+	}
+	if buf.Len() == 0 {
+		t.Error("install-ca with default path should produce output")
+	}
+}
+
+func TestTLSShowCACmd_VerifiesPEMContent(t *testing.T) {
+	dir := t.TempDir()
+	initCmd := tlsInitCmd()
+	initCmd.SetOut(&bytes.Buffer{})
+	initCmd.SetErr(&bytes.Buffer{})
+	initCmd.SetArgs([]string{"--out", dir})
+	if err := initCmd.Execute(); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	buf := &bytes.Buffer{}
+	showCmd := tlsShowCACmd()
+	showCmd.SetOut(buf)
+	showCmd.SetErr(&bytes.Buffer{})
+	showCmd.SetArgs([]string{"--cert", filepath.Join(dir, "ca.pem")})
+	if err := showCmd.Execute(); err != nil {
+		t.Fatalf("tls show-ca: %v", err)
+	}
+
+	output := buf.String()
+	if !bytes.Contains([]byte(output), []byte("BEGIN CERTIFICATE")) {
+		t.Error("output missing BEGIN CERTIFICATE header")
+	}
+	if !bytes.Contains([]byte(output), []byte("END CERTIFICATE")) {
+		t.Error("output missing END CERTIFICATE footer")
+	}
+
+	// Verify output matches the actual file content.
+	fileData, err := os.ReadFile(filepath.Clean(filepath.Join(dir, "ca.pem")))
+	if err != nil {
+		t.Fatalf("read cert file: %v", err)
+	}
+	if output != string(fileData) {
+		t.Error("show-ca output does not match cert file content")
+	}
+}

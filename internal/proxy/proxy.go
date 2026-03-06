@@ -215,39 +215,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 		},
 	}
 
-	// Shared Transport for TLS interception upstream connections. Pools TCP+TLS
-	// connections across CONNECT tunnels to the same host, avoiding per-tunnel
-	// connection setup overhead. The DialTLSContext uses the addr from the request
-	// URL (set by the intercept handler to the CONNECT target).
-	p.tlsTransport = &http.Transport{
-		DialTLSContext: func(dialCtx context.Context, network, addr string) (net.Conn, error) {
-			// Use SSRF-safe dialer for the TCP connection to prevent
-			// DNS rebinding TOCTOU between the scanner check and dial.
-			rawConn, dialErr := p.ssrfSafeDialContext(dialCtx, network, addr)
-			if dialErr != nil {
-				return nil, dialErr
-			}
-			host, _, _ := net.SplitHostPort(addr)
-			// Layer TLS on top of the SSRF-validated TCP connection.
-			tlsCfg := &tls.Config{
-				ServerName: host,
-				NextProtos: []string{"h2", "http/1.1"},
-				MinVersion: tls.VersionTLS12,
-			}
-			start := time.Now()
-			tlsUpstream := tls.Client(rawConn, tlsCfg)
-			if err := tlsUpstream.HandshakeContext(dialCtx); err != nil {
-				_ = rawConn.Close()
-				return nil, err
-			}
-			m.RecordTLSHandshake("upstream", time.Since(start))
-			return tlsUpstream, nil
-		},
-		ForceAttemptHTTP2:  true, // required with custom DialTLSContext for h2
-		DisableCompression: true, // force identity encoding for scanning
-		MaxIdleConns:       100,  // pool up to 100 idle connections across all hosts
-		IdleConnTimeout:    90 * time.Second,
-	}
+	p.tlsTransport = newTLSInterceptTransport(p.ssrfSafeDialContext, m.RecordTLSHandshake)
 
 	return p
 }
@@ -325,6 +293,44 @@ func (p *Proxy) Close() {
 	}
 	if p.tlsTransport != nil {
 		p.tlsTransport.CloseIdleConnections()
+	}
+}
+
+// newTLSInterceptTransport creates a shared http.Transport for TLS interception
+// upstream connections. Pools TCP+TLS connections across CONNECT tunnels to the
+// same host, avoiding per-tunnel connection setup overhead.
+func newTLSInterceptTransport(
+	ssrfDial func(ctx context.Context, network, addr string) (net.Conn, error),
+	recordHandshake func(stage string, d time.Duration),
+) *http.Transport {
+	return &http.Transport{
+		DialTLSContext: func(dialCtx context.Context, network, addr string) (net.Conn, error) {
+			// Use SSRF-safe dialer for the TCP connection to prevent
+			// DNS rebinding TOCTOU between the scanner check and dial.
+			rawConn, dialErr := ssrfDial(dialCtx, network, addr)
+			if dialErr != nil {
+				return nil, dialErr
+			}
+			host, _, _ := net.SplitHostPort(addr)
+			// Layer TLS on top of the SSRF-validated TCP connection.
+			tlsCfg := &tls.Config{
+				ServerName: host,
+				NextProtos: []string{"h2", "http/1.1"},
+				MinVersion: tls.VersionTLS12,
+			}
+			start := time.Now()
+			tlsUpstream := tls.Client(rawConn, tlsCfg)
+			if err := tlsUpstream.HandshakeContext(dialCtx); err != nil {
+				_ = rawConn.Close()
+				return nil, err
+			}
+			recordHandshake("upstream", time.Since(start))
+			return tlsUpstream, nil
+		},
+		ForceAttemptHTTP2:  true, // required with custom DialTLSContext for h2
+		DisableCompression: true, // force identity encoding for scanning
+		MaxIdleConns:       100,  // pool up to 100 idle connections across all hosts
+		IdleConnTimeout:    90 * time.Second,
 	}
 }
 

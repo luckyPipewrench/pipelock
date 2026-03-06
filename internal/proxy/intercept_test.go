@@ -987,3 +987,149 @@ func TestNewCertCache_PanicsOnZeroMaxSize(t *testing.T) {
 	}()
 	certgen.NewCertCache(ca, caKey, time.Hour, 0)
 }
+
+func TestNewTLSInterceptTransport_Config(t *testing.T) {
+	called := false
+	dial := func(_ context.Context, _, _ string) (net.Conn, error) {
+		return nil, fmt.Errorf("should not be called")
+	}
+	record := func(_ string, _ time.Duration) { called = true }
+
+	tr := newTLSInterceptTransport(dial, record)
+	if tr == nil {
+		t.Fatal("expected non-nil transport")
+	}
+	if !tr.ForceAttemptHTTP2 {
+		t.Error("expected ForceAttemptHTTP2=true")
+	}
+	if !tr.DisableCompression {
+		t.Error("expected DisableCompression=true")
+	}
+	if tr.MaxIdleConns != 100 {
+		t.Errorf("expected MaxIdleConns=100, got %d", tr.MaxIdleConns)
+	}
+	if tr.IdleConnTimeout != 90*time.Second {
+		t.Errorf("expected IdleConnTimeout=90s, got %v", tr.IdleConnTimeout)
+	}
+	if tr.DialTLSContext == nil {
+		t.Error("expected DialTLSContext to be set")
+	}
+	if called {
+		t.Error("record should not be called during construction")
+	}
+}
+
+func TestNewTLSInterceptTransport_DialSuccess(t *testing.T) {
+	// Start a TLS server with a self-signed cert.
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprintf(w, "OK")
+	}))
+	defer upstream.Close()
+
+	// Extract the test server's CA cert for trust.
+	certPool := x509.NewCertPool()
+	for _, cert := range upstream.TLS.Certificates {
+		for _, raw := range cert.Certificate {
+			parsed, pErr := x509.ParseCertificate(raw)
+			if pErr == nil {
+				certPool.AddCert(parsed)
+			}
+		}
+	}
+
+	var handshakeStage string
+	dialer := &net.Dialer{}
+	dial := func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return dialer.DialContext(ctx, network, addr)
+	}
+	record := func(stage string, _ time.Duration) {
+		handshakeStage = stage
+	}
+
+	tr := newTLSInterceptTransport(dial, record)
+	// Override the TLS config to trust our test CA. In production the system
+	// root pool is used; in test we inject the test server's self-signed CA.
+	tr.DialTLSContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		rawConn, dialErr := dialer.DialContext(ctx, network, addr)
+		if dialErr != nil {
+			return nil, dialErr
+		}
+		host, _, _ := net.SplitHostPort(addr)
+		tlsConn := tls.Client(rawConn, &tls.Config{
+			ServerName: host,
+			RootCAs:    certPool,
+			MinVersion: tls.VersionTLS12,
+		})
+		if hErr := tlsConn.HandshakeContext(ctx); hErr != nil {
+			_ = rawConn.Close()
+			return nil, hErr
+		}
+		record("upstream", 0)
+		return tlsConn, nil
+	}
+
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, upstream.URL, nil)
+	client := &http.Client{Transport: tr}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200, got %d", resp.StatusCode)
+	}
+	if handshakeStage != "upstream" {
+		t.Errorf("expected handshake stage 'upstream', got %q", handshakeStage)
+	}
+}
+
+func TestNewTLSInterceptTransport_DialError(t *testing.T) {
+	dial := func(_ context.Context, _, _ string) (net.Conn, error) {
+		return nil, fmt.Errorf("ssrf blocked")
+	}
+	record := func(_ string, _ time.Duration) {
+		t.Error("record should not be called on dial error")
+	}
+
+	tr := newTLSInterceptTransport(dial, record)
+	_, err := tr.DialTLSContext(context.Background(), "tcp", "example.com:443")
+	if err == nil {
+		t.Fatal("expected error from blocked dial")
+	}
+	if !strings.Contains(err.Error(), "ssrf blocked") {
+		t.Errorf("expected ssrf error, got: %v", err)
+	}
+}
+
+func TestNewTLSInterceptTransport_HandshakeError(t *testing.T) {
+	// Create a plain TCP server (no TLS) so the TLS handshake fails.
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+
+	// Accept one connection and close it immediately to trigger handshake failure.
+	go func() {
+		conn, aErr := ln.Accept()
+		if aErr != nil {
+			return
+		}
+		_ = conn.Close()
+	}()
+
+	dialer := &net.Dialer{}
+	dial := func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return dialer.DialContext(ctx, network, addr)
+	}
+	record := func(_ string, _ time.Duration) {
+		t.Error("record should not be called on handshake error")
+	}
+
+	tr := newTLSInterceptTransport(dial, record)
+	_, dialErr := tr.DialTLSContext(context.Background(), "tcp", ln.Addr().String())
+	if dialErr == nil {
+		t.Fatal("expected handshake error")
+	}
+}

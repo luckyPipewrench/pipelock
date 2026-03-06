@@ -93,6 +93,7 @@ Quick start:
 		keygenCmd(),
 		mcpCmd(),
 		preflightCmd(),
+		reportCmd(),
 		signCmd(),
 		testCmd(),
 		tlsCmd(),

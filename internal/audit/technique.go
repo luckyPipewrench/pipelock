@@ -55,6 +55,9 @@ var techniqueMap = map[string]string{
 	"tls_response_blocked":   "T1659",     // Content Injection
 	"tls_authority_mismatch": "T1090.004", // Proxy: Domain Fronting
 	"tls_handshake_error":    "T1573",     // Encrypted Channel
+
+	// Tool call chain pattern detection
+	"chain_detection": "T1059", // Command and Scripting Interpreter (multi-step attack chain)
 }
 
 // TechniqueForScanner returns the MITRE ATT&CK technique ID for a scanner

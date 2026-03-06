@@ -529,7 +529,7 @@ func (p *Proxy) Start(ctx context.Context) error {
 		}
 	}
 
-	p.logger.LogStartup(cfg.FetchProxy.Listen, cfg.Mode)
+	p.logger.LogStartup(cfg.FetchProxy.Listen, cfg.Mode, Version, cfg.Hash())
 
 	err := p.server.ListenAndServe()
 	close(done) // unblock shutdown goroutine if server failed immediately

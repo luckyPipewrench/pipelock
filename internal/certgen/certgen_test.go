@@ -1003,3 +1003,25 @@ func TestGenerateLeaf_CertProperties(t *testing.T) {
 		t.Errorf("private key type = %T, want *ecdsa.PrivateKey", leaf.PrivateKey)
 	}
 }
+
+func TestGenerateCA_RejectsNonPositiveValidity(t *testing.T) {
+	for _, dur := range []time.Duration{0, -time.Hour} {
+		_, _, _, err := GenerateCA(testOrg, dur)
+		if err == nil {
+			t.Errorf("GenerateCA(validity=%v): expected error, got nil", dur)
+		}
+	}
+}
+
+func TestGenerateLeaf_RejectsNonPositiveTTL(t *testing.T) {
+	ca, key, _, err := GenerateCA(testOrg, testValidityDay)
+	if err != nil {
+		t.Fatalf("GenerateCA: %v", err)
+	}
+	for _, dur := range []time.Duration{0, -time.Hour} {
+		_, err := GenerateLeaf(ca, key, testHost, dur)
+		if err == nil {
+			t.Errorf("GenerateLeaf(ttl=%v): expected error, got nil", dur)
+		}
+	}
+}

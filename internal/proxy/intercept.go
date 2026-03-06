@@ -265,7 +265,8 @@ func newInterceptHandler(
 				// Fail-closed: nil bodyBytes means body was consumed but couldn't
 				// be buffered (oversize, compressed, read error). Always block
 				// regardless of enforce mode to prevent forwarding an empty body.
-				if bodyBytes == nil || (action == config.ActionBlock && cfg.EnforceEnabled()) {
+				// ActionAsk: no HITL terminal in intercepted tunnels, fail closed.
+				if bodyBytes == nil || action == config.ActionAsk || (action == config.ActionBlock && cfg.EnforceEnabled()) {
 					logger.LogBlocked(r.Method, r.URL.String(), "body_dlp", reason, clientIP, requestID)
 					m.RecordTLSRequestBlocked("body_dlp")
 					http.Error(w, "blocked: "+reason, http.StatusForbidden)
@@ -288,7 +289,8 @@ func newInterceptHandler(
 			headerResult := scanRequestHeaders(r.Header, cfg, sc)
 			if headerResult != nil && !headerResult.Clean {
 				action := cfg.RequestBodyScanning.Action
-				if action == config.ActionBlock && cfg.EnforceEnabled() {
+				// ActionAsk: no HITL terminal in intercepted tunnels, fail closed.
+				if action == config.ActionAsk || (action == config.ActionBlock && cfg.EnforceEnabled()) {
 					logger.LogBlocked(r.Method, r.URL.String(), "header_dlp", "request header contains secret", clientIP, requestID)
 					m.RecordTLSRequestBlocked("header_dlp")
 					http.Error(w, "blocked: request header contains secret", http.StatusForbidden)
@@ -366,7 +368,7 @@ func newInterceptHandler(
 					logger.LogResponseScan(r.URL.String(), clientIP, requestID, config.ActionStrip, len(scanResult.Matches), patternNames)
 				default:
 					// warn/forward: log and forward unmodified.
-					logger.LogResponseScan(r.URL.String(), clientIP, requestID, config.ActionWarn, len(scanResult.Matches), patternNames)
+					logger.LogResponseScan(r.URL.String(), clientIP, requestID, action, len(scanResult.Matches), patternNames)
 				}
 			}
 		}

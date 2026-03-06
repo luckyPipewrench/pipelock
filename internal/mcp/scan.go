@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
@@ -120,14 +121,19 @@ func scanToolsListNonToolFields(line []byte, sc *scanner.Scanner) jsonrpc.ScanVe
 
 	// Scan non-"tools" sibling fields in the result object.
 	// A malicious server can include extra fields alongside tools[].
+	// Keys are sorted for deterministic concatenation order.
 	if len(rpc.Result) > 0 && string(rpc.Result) != jsonrpc.Null {
 		var resultMap map[string]json.RawMessage
 		if json.Unmarshal(rpc.Result, &resultMap) == nil {
-			for key, val := range resultMap {
-				if key == "tools" {
-					continue // scanned by dedicated tool scanner
+			keys := make([]string, 0, len(resultMap))
+			for k := range resultMap {
+				if k != "tools" {
+					keys = append(keys, k)
 				}
-				if siblingText := jsonrpc.ExtractText(val); siblingText != "" {
+			}
+			sort.Strings(keys)
+			for _, key := range keys {
+				if siblingText := jsonrpc.ExtractText(resultMap[key]); siblingText != "" {
 					if text != "" {
 						text += "\n"
 					}

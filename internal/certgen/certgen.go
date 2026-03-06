@@ -26,6 +26,9 @@ const serialBits = 128
 
 // GenerateCA creates a self-signed ECDSA P-256 CA certificate.
 func GenerateCA(org string, validity time.Duration) (*x509.Certificate, *ecdsa.PrivateKey, []byte, error) {
+	if validity <= 0 {
+		return nil, nil, nil, errors.New("CA validity must be positive")
+	}
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("generate CA key: %w", err)
@@ -69,6 +72,9 @@ func GenerateCA(org string, validity time.Duration) (*x509.Certificate, *ecdsa.P
 
 // GenerateLeaf creates a leaf certificate for a hostname or IP, signed by the CA.
 func GenerateLeaf(ca *x509.Certificate, caKey crypto.PrivateKey, host string, ttl time.Duration) (*tls.Certificate, error) {
+	if ttl <= 0 {
+		return nil, errors.New("leaf certificate TTL must be positive")
+	}
 	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, fmt.Errorf("generate leaf key: %w", err)

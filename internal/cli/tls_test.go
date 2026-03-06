@@ -237,6 +237,7 @@ func TestTLSInstallCACmd_MissingCert(t *testing.T) {
 func TestTLSInitCmd_DefaultPath(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // Windows: os.UserHomeDir reads %USERPROFILE%
 
 	cmd := tlsInitCmd()
 	buf := &bytes.Buffer{}
@@ -260,6 +261,7 @@ func TestTLSInitCmd_DefaultPath(t *testing.T) {
 func TestTLSShowCACmd_DefaultPath(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // Windows: os.UserHomeDir reads %USERPROFILE%
 
 	// First generate a CA at the default location.
 	initCmd := tlsInitCmd()
@@ -287,6 +289,7 @@ func TestTLSShowCACmd_DefaultPath(t *testing.T) {
 func TestTLSShowCACmd_DefaultPathMissing(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // Windows: os.UserHomeDir reads %USERPROFILE%
 
 	// No init: default path has no CA file.
 	showCmd := tlsShowCACmd()
@@ -302,6 +305,7 @@ func TestTLSShowCACmd_DefaultPathMissing(t *testing.T) {
 func TestTLSInstallCACmd_DefaultPath(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // Windows: os.UserHomeDir reads %USERPROFILE%
 
 	// Generate CA at default location.
 	initCmd := tlsInitCmd()

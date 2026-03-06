@@ -1495,6 +1495,19 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		})
 	}
 
+	// TLS passthrough domains changed (scanning coverage may be reduced).
+	// Uses set-diff semantics: warns when new domains are added that weren't
+	// in the old list, even if the total count stays the same or shrinks.
+	if updated.TLSInterception.Enabled {
+		added := passthroughDomainsAdded(old.TLSInterception.PassthroughDomains, updated.TLSInterception.PassthroughDomains)
+		if len(added) > 0 {
+			warnings = append(warnings, ReloadWarning{
+				Field:   "tls_interception.passthrough_domains",
+				Message: fmt.Sprintf("passthrough domains added: %s — these CONNECT tunnels now bypass body scanning", strings.Join(added, ", ")),
+			})
+		}
+	}
+
 	// Request body scanning disabled
 	if old.RequestBodyScanning.Enabled && !updated.RequestBodyScanning.Enabled {
 		warnings = append(warnings, ReloadWarning{
@@ -1558,6 +1571,21 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 	}
 
 	return warnings
+}
+
+// passthroughDomainsAdded returns domains present in updated but not in old.
+func passthroughDomainsAdded(old, updated []string) []string {
+	oldSet := make(map[string]struct{}, len(old))
+	for _, d := range old {
+		oldSet[strings.ToLower(d)] = struct{}{}
+	}
+	var added []string
+	for _, d := range updated {
+		if _, exists := oldSet[strings.ToLower(d)]; !exists {
+			added = append(added, d)
+		}
+	}
+	return added
 }
 
 // Defaults returns a Config with sensible defaults for balanced mode.

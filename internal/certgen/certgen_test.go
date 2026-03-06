@@ -760,6 +760,45 @@ func TestInstallCA_CurrentPlatformOutput(t *testing.T) {
 	}
 }
 
+func TestInstallCAForOS_AllPlatforms(t *testing.T) {
+	tests := []struct {
+		goos     string
+		contains []string
+	}{
+		{
+			goos:     "linux",
+			contains: []string{"Linux", "update-ca-certificates", "update-ca-trust", testCertPath},
+		},
+		{
+			goos:     "darwin",
+			contains: []string{"macOS", "security add-trusted-cert", testCertPath},
+		},
+		{
+			goos:     "windows",
+			contains: []string{"Windows", "certutil", testCertPath},
+		},
+		{
+			goos:     "freebsd",
+			contains: []string{"Unsupported OS: freebsd", testCertPath},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.goos, func(t *testing.T) {
+			var buf bytes.Buffer
+			if err := installCAForOS(&buf, testCertPath, tc.goos); err != nil {
+				t.Fatalf("installCAForOS(%q): %v", tc.goos, err)
+			}
+			output := buf.String()
+			for _, want := range tc.contains {
+				if !strings.Contains(output, want) {
+					t.Errorf("output for %q should contain %q", tc.goos, want)
+				}
+			}
+		})
+	}
+}
+
 func TestCertCache_GetReturnsErrorOnBadCA(t *testing.T) {
 	// Create a valid CA but use an Ed25519 key as the signing key.
 	// This makes GenerateLeaf fail because x509.CreateCertificate will reject

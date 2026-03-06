@@ -207,7 +207,12 @@ func LoadCA(certPath, keyPath string) (*x509.Certificate, *ecdsa.PrivateKey, err
 
 // InstallCA prints platform-specific instructions for installing the CA cert.
 func InstallCA(w io.Writer, certPath string) error {
-	switch runtime.GOOS {
+	return installCAForOS(w, certPath, runtime.GOOS)
+}
+
+// installCAForOS prints platform-specific CA install instructions for the given OS.
+func installCAForOS(w io.Writer, certPath, goos string) error {
+	switch goos {
 	case "linux":
 		_, _ = fmt.Fprintf(w, "Installing CA certificate on Linux...\n\n")
 		_, _ = fmt.Fprintf(w, "Run one of the following (requires root):\n\n")
@@ -226,7 +231,7 @@ func InstallCA(w io.Writer, certPath string) error {
 		_, _ = fmt.Fprintf(w, "Run in elevated Command Prompt:\n\n")
 		_, _ = fmt.Fprintf(w, "  certutil -addstore -f \"ROOT\" %q\n", certPath)
 	default:
-		_, _ = fmt.Fprintf(w, "Unsupported OS: %s\n", runtime.GOOS)
+		_, _ = fmt.Fprintf(w, "Unsupported OS: %s\n", goos)
 		_, _ = fmt.Fprintf(w, "Manually add %q to your system trust store.\n", certPath)
 	}
 	return nil

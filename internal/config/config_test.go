@@ -13,18 +13,19 @@ import (
 )
 
 const (
-	testInvalid      = "invalid"
-	testSecretsPath  = "/path/to/secrets.txt"
-	testWebhookURL   = "https://example.com/hook"
-	testSyslogAddr   = "udp://syslog.example.com:514"
-	testAPIListen    = "0.0.0.0:9090"
-	testAPIListen2   = "0.0.0.0:9091"
-	testPatternName  = "Test Pattern"
-	testCustomName   = "Custom"
-	testToken        = "test-token"       //nolint:gosec // test credential
-	fieldDLPSecrets  = "dlp.secrets_file" //nolint:gosec // config field path, not a credential
-	fieldFwdProxy    = "forward_proxy.enabled"
-	fieldKSAPIListen = "kill_switch.api_listen"
+	testInvalid         = "invalid"
+	testSecretsPath     = "/path/to/secrets.txt"
+	testWebhookURL      = "https://example.com/hook"
+	testSyslogAddr      = "udp://syslog.example.com:514"
+	testAPIListen       = "0.0.0.0:9090"
+	testAPIListen2      = "0.0.0.0:9091"
+	testPatternName     = "Test Pattern"
+	testCustomName      = "Custom"
+	testToken           = "test-token"       //nolint:gosec // test credential
+	fieldDLPSecrets     = "dlp.secrets_file" //nolint:gosec // config field path, not a credential
+	fieldFwdProxy       = "forward_proxy.enabled"
+	fieldKSAPIListen    = "kill_switch.api_listen"
+	fieldTLSPassthrough = "tls_interception.passthrough_domains"
 )
 
 func TestDefaults(t *testing.T) {
@@ -4474,6 +4475,88 @@ func TestValidateReload_TLSInterceptionBothEnabled_NoWarning(t *testing.T) {
 	for _, w := range warnings {
 		if w.Field == "tls_interception.enabled" {
 			t.Errorf("both enabled should not produce warning, got: %s", w.Message)
+		}
+	}
+}
+
+func TestValidateReload_TLSPassthroughExpanded(t *testing.T) {
+	old := Defaults()
+	old.TLSInterception.Enabled = true
+	old.TLSInterception.PassthroughDomains = []string{"*.bank.com"}
+	updated := Defaults()
+	updated.TLSInterception.Enabled = true
+	updated.TLSInterception.PassthroughDomains = []string{"*.bank.com", "*.evil.com"}
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == fieldTLSPassthrough {
+			found = true
+			if !strings.Contains(w.Message, "*.evil.com") {
+				t.Errorf("warning should name the added domain, got: %s", w.Message)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("expected passthrough domain expansion warning")
+	}
+}
+
+func TestValidateReload_TLSPassthroughReplaced(t *testing.T) {
+	// Same-size swap: ["*.bank.com"] → ["*.com"]. Must still warn because
+	// *.com is a new domain that bypasses scanning.
+	old := Defaults()
+	old.TLSInterception.Enabled = true
+	old.TLSInterception.PassthroughDomains = []string{"*.bank.com"}
+	updated := Defaults()
+	updated.TLSInterception.Enabled = true
+	updated.TLSInterception.PassthroughDomains = []string{"*.com"}
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == fieldTLSPassthrough {
+			found = true
+			if !strings.Contains(w.Message, "*.com") {
+				t.Errorf("warning should name the added domain, got: %s", w.Message)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("expected warning for same-size domain replacement")
+	}
+}
+
+func TestValidateReload_TLSPassthroughReduced_NoWarning(t *testing.T) {
+	old := Defaults()
+	old.TLSInterception.Enabled = true
+	old.TLSInterception.PassthroughDomains = []string{"*.bank.com", "*.evil.com"}
+	updated := Defaults()
+	updated.TLSInterception.Enabled = true
+	updated.TLSInterception.PassthroughDomains = []string{"*.bank.com"}
+
+	warnings := ValidateReload(old, updated)
+	for _, w := range warnings {
+		if w.Field == fieldTLSPassthrough {
+			t.Errorf("pure reduction should not produce warning, got: %s", w.Message)
+		}
+	}
+}
+
+func TestValidateReload_TLSPassthroughUnchanged_NoWarning(t *testing.T) {
+	old := Defaults()
+	old.TLSInterception.Enabled = true
+	old.TLSInterception.PassthroughDomains = []string{"*.bank.com"}
+	updated := Defaults()
+	updated.TLSInterception.Enabled = true
+	updated.TLSInterception.PassthroughDomains = []string{"*.bank.com"}
+
+	warnings := ValidateReload(old, updated)
+	for _, w := range warnings {
+		if w.Field == fieldTLSPassthrough {
+			t.Errorf("unchanged list should not produce warning, got: %s", w.Message)
 		}
 	}
 }

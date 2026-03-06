@@ -231,7 +231,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		interceptConn := wrapBuffered(clientConn, clientReader)
 		interceptCtx, interceptCancel := context.WithDeadline(r.Context(), deadline)
 		defer interceptCancel()
-		if err := interceptTunnel(interceptCtx, interceptConn, host, port, cfg, sc, certCache, p.logger, p.metrics, clientIP, requestID, nil, p.ssrfSafeDialContext); err != nil {
+		if err := interceptTunnel(interceptCtx, interceptConn, host, port, cfg, sc, certCache, p.logger, p.metrics, clientIP, requestID, p.tlsTransport, p.ssrfSafeDialContext); err != nil {
 			p.logger.LogError(http.MethodConnect, host, clientIP, requestID, err)
 		}
 		return

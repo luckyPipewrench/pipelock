@@ -83,6 +83,7 @@ const (
 	EventSNIMismatch        EventType = "sni_mismatch"
 	EventBodyDLP            EventType = "body_dlp"
 	EventHeaderDLP          EventType = "header_dlp"
+	EventChainDetection     EventType = "chain_detection"
 )
 
 // WebSocket frame direction constants used in audit log entries.
@@ -93,6 +94,16 @@ const (
 
 // Scanner label for DLP audit events (used in technique mapping).
 const ScannerDLP = "dlp"
+
+// actionBlock mirrors config.ActionBlock without importing the config package
+// (which would create a dependency cycle). Used for emit severity mapping.
+const actionBlock = "block"
+
+// Severity constants mirroring config.Severity* to avoid a dependency cycle.
+const (
+	severityCritical = "critical"
+	severityWarn     = "warn"
+)
 
 // Logger handles structured audit logging using zerolog.
 type Logger struct {
@@ -371,27 +382,31 @@ func (l *Logger) LogRedirect(originalURL, redirectURL, clientIP, requestID strin
 }
 
 // LogConfigReload logs a configuration reload event.
-func (l *Logger) LogConfigReload(status, detail string) {
+func (l *Logger) LogConfigReload(status, detail, configHash string) {
 	l.zl.Info().
 		Str("event", string(EventConfigReload)).
 		Str("status", status).
 		Str("detail", detail).
+		Str("config_hash", configHash).
 		Msg("configuration reloaded")
 
 	if l.emitter != nil {
 		l.emitter.Emit(context.Background(), string(EventConfigReload), map[string]any{
-			"status": status,
-			"detail": detail,
+			"status":      status,
+			"detail":      detail,
+			"config_hash": configHash,
 		})
 	}
 }
 
 // LogStartup logs that the proxy has started.
-func (l *Logger) LogStartup(listenAddr, mode string) {
+func (l *Logger) LogStartup(listenAddr, mode, version, configHash string) {
 	l.zl.Info().
 		Str("event", "startup").
 		Str("listen", listenAddr).
 		Str("mode", mode).
+		Str("version", version).
+		Str("config_hash", configHash).
 		Msg("pipelock started")
 }
 
@@ -696,6 +711,48 @@ func (l *Logger) LogHeaderDLP(method, url, headerName, action, clientIP, request
 			"request_id":      requestID,
 			"patterns":        patternNames,
 			"mitre_technique": technique,
+		})
+	}
+}
+
+// LogChainDetection logs a tool call chain pattern detection.
+// LogChainDetection logs a tool call chain pattern match.
+// Severity is derived from action (block=critical, warn=warn) per the
+// architectural rule that event severity is hardcoded, not caller-controlled.
+// The pattern's own severity is preserved as pattern_severity metadata.
+func (l *Logger) LogChainDetection(pattern, patternSeverity, action, toolName, sessionKey string) {
+	technique := TechniqueForScanner("chain_detection")
+
+	// Derive severity from action, not from caller input.
+	derivedSev := severityWarn
+	if action == actionBlock {
+		derivedSev = severityCritical
+	}
+
+	l.zl.Warn().
+		Str("event", string(EventChainDetection)).
+		Str("pattern", sanitizeString(pattern)).
+		Str("pattern_severity", patternSeverity).
+		Str("severity", derivedSev).
+		Str("action", action).
+		Str("tool", sanitizeString(toolName)).
+		Str("session", sanitizeString(sessionKey)).
+		Str("mitre_technique", technique).
+		Msg("chain pattern detected")
+
+	if l.emitter != nil {
+		sev := emit.SeverityWarn
+		if action == actionBlock {
+			sev = emit.SeverityCritical
+		}
+		l.emitter.EmitWithSeverity(context.Background(), sev, string(EventChainDetection), map[string]any{
+			"pattern":          sanitizeString(pattern),
+			"pattern_severity": patternSeverity,
+			"severity":         derivedSev,
+			"action":           action,
+			"tool":             sanitizeString(toolName),
+			"session":          sanitizeString(sessionKey),
+			"mitre_technique":  technique,
 		})
 	}
 }

@@ -294,3 +294,12 @@ internal:
   - "fe80::/10"
   - "224.0.0.0/4"
   - "ff00::/8"
+
+tls_interception:
+  enabled: false
+  ca_cert: ""
+  ca_key: ""
+  passthrough_domains: []
+  cert_ttl: 24h
+  cert_cache_size: 10000
+  max_response_bytes: 5242880

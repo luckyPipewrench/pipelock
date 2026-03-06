@@ -864,8 +864,71 @@ func matchSecretEncodings(secret string, texts, lowerTexts []string) (bool, stri
 	return false, ""
 }
 
+// nonSecretEnvNames lists environment variable names that are never secrets.
+// These are well-known system/shell/runtime variables whose values (paths,
+// locale strings, color codes) routinely exceed the length and entropy
+// thresholds but carry zero secret content. Skipping them prevents false
+// positives when agents legitimately send values like $PWD in tool arguments.
+var nonSecretEnvNames = map[string]struct{}{
+	// Working directory and paths
+	"PWD": {}, "OLDPWD": {}, "HOME": {}, "PATH": {},
+	"TMPDIR": {}, "TEMP": {}, "TMP": {},
+	// User identity (public, not secret)
+	"USER": {}, "LOGNAME": {}, "USERNAME": {}, "HOSTNAME": {}, "HOST": {},
+	// Shell and terminal
+	"SHELL": {}, "SHLVL": {}, "TERM": {}, "TERM_PROGRAM": {},
+	"COLORTERM": {}, "COLORFGBG": {},
+	// Locale
+	"LANG": {}, "LANGUAGE": {},
+	// Display
+	"DISPLAY": {}, "WAYLAND_DISPLAY": {},
+	// Editor
+	"EDITOR": {}, "VISUAL": {}, "PAGER": {}, "LESS": {},
+	// Color codes (LS_COLORS is often very long and high-entropy)
+	"LS_COLORS": {}, "LSCOLORS": {},
+	// D-Bus / SSH agent (socket paths, not credentials)
+	"DBUS_SESSION_BUS_ADDRESS": {}, "SSH_AUTH_SOCK": {},
+	// Language runtimes (paths, not secrets)
+	"GOPATH": {}, "GOROOT": {}, "GOBIN": {},
+	"PYTHONPATH": {}, "PYTHONHOME": {}, "NODE_PATH": {},
+	"MANPATH": {}, "INFOPATH": {},
+	// Prompt strings
+	"PS1": {}, "PS2": {}, "PS3": {}, "PS4": {},
+	// Windows equivalents (matched case-insensitively via ToUpper)
+	"USERPROFILE": {}, "APPDATA": {}, "LOCALAPPDATA": {},
+	"PROGRAMFILES": {}, "PROGRAMDATA": {},
+	"SYSTEMROOT": {}, "WINDIR": {}, "COMSPEC": {},
+	"COMPUTERNAME": {}, "PATHEXT": {}, "SESSIONNAME": {},
+}
+
+// nonSecretEnvPrefixes lists prefixes for env var names that are never secrets.
+// Matched against the uppercased variable name (case-insensitive).
+var nonSecretEnvPrefixes = []string{
+	"LC_",  // LC_ALL, LC_CTYPE, LC_MESSAGES, etc.
+	"XDG_", // XDG_DATA_HOME, XDG_RUNTIME_DIR, etc.
+}
+
+// isNonSecretEnvName returns true if the environment variable name is a
+// well-known non-secret variable that should be excluded from leak detection.
+// Comparison is case-insensitive: on Windows, env var names like "Path" and
+// "UserProfile" are common mixed-case variants of the uppercase originals.
+func isNonSecretEnvName(name string) bool {
+	upper := strings.ToUpper(name)
+	if _, ok := nonSecretEnvNames[upper]; ok {
+		return true
+	}
+	for _, prefix := range nonSecretEnvPrefixes {
+		if strings.HasPrefix(upper, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // extractEnvSecrets filters environment variables for likely secrets.
 // Returns values >= minLen chars with Shannon entropy >3.0.
+// Skips well-known non-secret variable names (PWD, PATH, HOME, etc.)
+// to avoid false positives on paths and locale strings.
 func extractEnvSecrets(minLen int) []string {
 	const minEntropy = 3.0
 
@@ -880,7 +943,14 @@ func extractEnvSecrets(minLen int) []string {
 			continue
 		}
 
+		name := parts[0]
 		value := parts[1]
+
+		// Skip well-known non-secret variables (paths, locale, shell config).
+		if isNonSecretEnvName(name) {
+			continue
+		}
+
 		if len(value) < minLen {
 			continue
 		}

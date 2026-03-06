@@ -23,6 +23,8 @@ const (
 	testReqID      = "req-7"
 	testComponent  = "pipelock"
 	testActionWarn = "warn"
+	testConfigHash = "testhash"
+	testVersion    = "0.1.0-dev"
 	mitreT1048     = "T1048"
 	mitreT1059     = "T1059"
 )
@@ -94,7 +96,7 @@ func TestNewNop(_ *testing.T) {
 	logger.LogBlocked("GET", "https://evil.com", "blocklist", "domain blocked", "127.0.0.1", "req-2")
 	logger.LogError("GET", "https://fail.com", "127.0.0.1", "req-3", os.ErrNotExist)
 	logger.LogAnomaly("GET", "https://sus.com", "entropy", "high entropy", "127.0.0.1", "req-4", 0.9)
-	logger.LogStartup(":8888", "balanced")
+	logger.LogStartup(":8888", "balanced", testVersion, testConfigHash)
 	logger.LogShutdown("test")
 	logger.LogRedirect("https://a.com", "https://b.com", "127.0.0.1", "req-6", 1)
 	logger.LogResponseScan("https://example.com", "127.0.0.1", "req-8", testActionWarn, 2, []string{"Prompt Injection", "Jailbreak Attempt"})
@@ -260,7 +262,7 @@ func TestLogStartup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogStartup(":8888", "balanced")
+	logger.LogStartup(":8888", "balanced", testVersion, testConfigHash)
 	logger.Close()
 
 	data, _ := os.ReadFile(filepath.Clean(path))
@@ -274,6 +276,12 @@ func TestLogStartup(t *testing.T) {
 	}
 	if entry["mode"] != "balanced" {
 		t.Errorf("expected mode=balanced, got %v", entry["mode"])
+	}
+	if entry["version"] != testVersion {
+		t.Errorf("expected version=%s, got %v", testVersion, entry["version"])
+	}
+	if entry["config_hash"] != testConfigHash {
+		t.Errorf("expected config_hash=%s, got %v", testConfigHash, entry["config_hash"])
 	}
 }
 
@@ -355,7 +363,7 @@ func TestNew_BothOutput(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	logger.LogStartup(":8888", "balanced")
+	logger.LogStartup(":8888", "balanced", testVersion, testConfigHash)
 	logger.Close()
 
 	// Verify file was written
@@ -374,7 +382,7 @@ func TestNew_TextFormat(t *testing.T) {
 	defer logger.Close()
 
 	// Should not panic
-	logger.LogStartup(":8888", "balanced")
+	logger.LogStartup(":8888", "balanced", testVersion, testConfigHash)
 }
 
 func TestNew_DefaultsToStdout(t *testing.T) {
@@ -516,7 +524,7 @@ func TestLogger_FilePermissions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogStartup(":8888", "test")
+	logger.LogStartup(":8888", "test", testVersion, testConfigHash)
 	logger.Close()
 
 	info, _ := os.Stat(path)
@@ -535,7 +543,7 @@ func TestLogger_MultipleEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	logger.LogStartup(":8888", "balanced")
+	logger.LogStartup(":8888", "balanced", testVersion, testConfigHash)
 	logger.LogAllowed("GET", "https://a.com", testClientIP, "req-1", 200, 100, time.Millisecond)
 	logger.LogBlocked("GET", "https://b.com", ScannerDLP, "secret found", testClientIP, "req-2")
 	logger.LogError("GET", "https://c.com", testClientIP, "req-3", os.ErrNotExist)
@@ -942,7 +950,7 @@ func TestLogAdaptiveEscalation_JSONFormat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogAdaptiveEscalation(testClientIP, testActionWarn, "block", testClientIP, "req-30", 5.5)
+	logger.LogAdaptiveEscalation(testClientIP, testActionWarn, actionBlock, testClientIP, "req-30", 5.5)
 	logger.Close()
 
 	data, _ := os.ReadFile(filepath.Clean(path))
@@ -960,7 +968,7 @@ func TestLogAdaptiveEscalation_JSONFormat(t *testing.T) {
 	if entry["from"] != testActionWarn {
 		t.Errorf("expected from=warn, got %v", entry["from"])
 	}
-	if entry["to"] != "block" {
+	if entry["to"] != actionBlock {
 		t.Errorf("expected to=block, got %v", entry["to"])
 	}
 	score, ok := entry["score"].(float64)
@@ -1001,7 +1009,7 @@ func TestNewNop_SessionEvents(_ *testing.T) {
 	logger := NewNop()
 	// Should not panic
 	logger.LogSessionAnomaly(testClientIP, "domain_burst", "test", testClientIP, "req-1", 1.0)
-	logger.LogAdaptiveEscalation(testClientIP, testActionWarn, "block", testClientIP, "req-2", 5.0)
+	logger.LogAdaptiveEscalation(testClientIP, testActionWarn, actionBlock, testClientIP, "req-2", 5.0)
 	logger.LogMCPUnknownTool("bad_tool", testActionWarn)
 	logger.Close()
 }
@@ -1014,7 +1022,7 @@ func TestLogConfigReload_JSONFormat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogConfigReload("success", "hot-reload via SIGHUP")
+	logger.LogConfigReload("success", "hot-reload via SIGHUP", testConfigHash)
 	logger.Close()
 
 	data, _ := os.ReadFile(filepath.Clean(path))
@@ -1031,6 +1039,9 @@ func TestLogConfigReload_JSONFormat(t *testing.T) {
 	}
 	if entry["detail"] != "hot-reload via SIGHUP" {
 		t.Errorf("expected detail, got %v", entry["detail"])
+	}
+	if entry["config_hash"] != testConfigHash {
+		t.Errorf("expected config_hash=%s, got %v", testConfigHash, entry["config_hash"])
 	}
 }
 
@@ -1450,7 +1461,7 @@ func TestEmit_LogResponseScan(t *testing.T) {
 	logger, sink := newLoggerWithEmitter(t)
 	defer logger.Close()
 
-	logger.LogResponseScan("https://example.com", testClientIP, "req-4", "block", 2, []string{"injection", "jailbreak"})
+	logger.LogResponseScan("https://example.com", testClientIP, "req-4", actionBlock, 2, []string{"injection", "jailbreak"})
 
 	ev, ok := sink.lastEvent()
 	if !ok {
@@ -1471,7 +1482,7 @@ func TestEmit_LogConfigReload(t *testing.T) {
 	logger, sink := newLoggerWithEmitter(t)
 	defer logger.Close()
 
-	logger.LogConfigReload("success", "SIGHUP")
+	logger.LogConfigReload("success", "SIGHUP", testConfigHash)
 
 	ev, ok := sink.lastEvent()
 	if !ok {
@@ -1482,6 +1493,9 @@ func TestEmit_LogConfigReload(t *testing.T) {
 	}
 	if ev.Fields["status"] != "success" {
 		t.Errorf("fields[status] = %v", ev.Fields["status"])
+	}
+	if ev.Fields["config_hash"] != testConfigHash {
+		t.Errorf("fields[config_hash] = %v, want %s", ev.Fields["config_hash"], testConfigHash)
 	}
 }
 
@@ -1583,7 +1597,7 @@ func TestEmit_LogAdaptiveEscalation(t *testing.T) {
 	logger, sink := newLoggerWithEmitter(t)
 	defer logger.Close()
 
-	logger.LogAdaptiveEscalation(testClientIP, testActionWarn, "block", testClientIP, "req-8", 5.5)
+	logger.LogAdaptiveEscalation(testClientIP, testActionWarn, actionBlock, testClientIP, "req-8", 5.5)
 
 	ev, ok := sink.lastEvent()
 	if !ok {
@@ -1602,7 +1616,7 @@ func TestEmit_LogAdaptiveEscalation_OmitsEmptyFields(t *testing.T) {
 	logger, sink := newLoggerWithEmitter(t)
 	defer logger.Close()
 
-	logger.LogAdaptiveEscalation("session-1", testActionWarn, "block", "", "", 5.0)
+	logger.LogAdaptiveEscalation("session-1", testActionWarn, actionBlock, "", "", 5.0)
 
 	ev, ok := sink.lastEvent()
 	if !ok {
@@ -1667,7 +1681,7 @@ func TestEmit_DefensiveEvents_NoMITRETechnique(t *testing.T) {
 	}
 
 	// Config reload is normal operation.
-	logger.LogConfigReload("success", "SIGHUP")
+	logger.LogConfigReload("success", "SIGHUP", testConfigHash)
 	ev, ok = sink.lastEvent()
 	if !ok {
 		t.Fatal("expected emitted event for config_reload")
@@ -1677,7 +1691,7 @@ func TestEmit_DefensiveEvents_NoMITRETechnique(t *testing.T) {
 	}
 
 	// Adaptive escalation is a defensive response.
-	logger.LogAdaptiveEscalation("session-1", testActionWarn, "block", testClientIP, "req-1", 5.0)
+	logger.LogAdaptiveEscalation("session-1", testActionWarn, actionBlock, testClientIP, "req-1", 5.0)
 	ev, ok = sink.lastEvent()
 	if !ok {
 		t.Fatal("expected emitted event for adaptive_escalation")
@@ -1743,7 +1757,7 @@ func TestLogHeaderDLP_JSONFormat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogHeaderDLP("POST", "https://api.example.com/v1/chat", "Authorization", "block", testClientIP, "req-51", []string{"AWS Access Key"})
+	logger.LogHeaderDLP("POST", "https://api.example.com/v1/chat", "Authorization", actionBlock, testClientIP, "req-51", []string{"AWS Access Key"})
 	logger.Close()
 
 	data, _ := os.ReadFile(filepath.Clean(path))
@@ -1761,7 +1775,7 @@ func TestLogHeaderDLP_JSONFormat(t *testing.T) {
 	if entry["header"] != "Authorization" {
 		t.Errorf("expected header=Authorization, got %v", entry["header"])
 	}
-	if entry["action"] != "block" {
+	if entry["action"] != actionBlock {
 		t.Errorf("expected action=block, got %v", entry["action"])
 	}
 	if entry["mitre_technique"] != mitreT1048 {
@@ -1773,7 +1787,7 @@ func TestEmit_LogBodyDLP(t *testing.T) {
 	logger, sink := newLoggerWithEmitter(t)
 	defer logger.Close()
 
-	logger.LogBodyDLP("POST", "https://api.example.com", "block", testClientIP, "req-52", 1, []string{"AWS Key"})
+	logger.LogBodyDLP("POST", "https://api.example.com", actionBlock, testClientIP, "req-52", 1, []string{"AWS Key"})
 
 	ev, ok := sink.lastEvent()
 	if !ok {
@@ -1794,7 +1808,7 @@ func TestEmit_LogHeaderDLP(t *testing.T) {
 	logger, sink := newLoggerWithEmitter(t)
 	defer logger.Close()
 
-	logger.LogHeaderDLP("GET", "https://api.example.com", "Authorization", "block", testClientIP, "req-53", []string{"GitHub PAT"})
+	logger.LogHeaderDLP("GET", "https://api.example.com", "Authorization", actionBlock, testClientIP, "req-53", []string{"GitHub PAT"})
 
 	ev, ok := sink.lastEvent()
 	if !ok {
@@ -1896,5 +1910,103 @@ func TestLogSNIMismatch_Emitter(t *testing.T) {
 	}
 	if ev.Fields["mitre_technique"] != "T1090.004" {
 		t.Errorf("mitre_technique = %v, want T1090.004", ev.Fields["mitre_technique"])
+	}
+}
+
+func TestLogChainDetection_JSONFormat(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogChainDetection("exfil_then_delete", severityCritical, actionBlock, "filesystem_delete", "session-abc")
+	logger.Close()
+
+	data, _ := os.ReadFile(filepath.Clean(path))
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("unmarshal: %v\ndata: %s", err, data)
+	}
+
+	if entry["event"] != string(EventChainDetection) {
+		t.Errorf("event = %v, want %s", entry["event"], EventChainDetection)
+	}
+	if entry["pattern"] != "exfil_then_delete" {
+		t.Errorf("pattern = %v, want exfil_then_delete", entry["pattern"])
+	}
+	// pattern_severity is the caller-provided metadata; severity is derived from action.
+	if entry["pattern_severity"] != severityCritical {
+		t.Errorf("pattern_severity = %v, want %s", entry["pattern_severity"], severityCritical)
+	}
+	if entry["severity"] != severityCritical {
+		t.Errorf("severity = %v, want %s (derived from block action)", entry["severity"], severityCritical)
+	}
+	if entry["action"] != actionBlock {
+		t.Errorf("action = %v, want block", entry["action"])
+	}
+	if entry["tool"] != "filesystem_delete" {
+		t.Errorf("tool = %v, want filesystem_delete", entry["tool"])
+	}
+	if entry["session"] != "session-abc" {
+		t.Errorf("session = %v, want session-abc", entry["session"])
+	}
+	if entry["mitre_technique"] != mitreT1059 {
+		t.Errorf("mitre_technique = %v, want %s", entry["mitre_technique"], mitreT1059)
+	}
+}
+
+func TestLogChainDetection_Emitter_Block(t *testing.T) {
+	logger, sink := newLoggerWithEmitter(t)
+	defer logger.Close()
+
+	logger.LogChainDetection("exfil_then_delete", severityCritical, actionBlock, "filesystem_delete", "session-abc")
+
+	ev, ok := sink.lastEvent()
+	if !ok {
+		t.Fatal("expected emitted event")
+	}
+	if ev.Type != string(EventChainDetection) {
+		t.Errorf("emitted type = %q, want %q", ev.Type, EventChainDetection)
+	}
+	if ev.Severity != emit.SeverityCritical {
+		t.Errorf("severity = %v, want %v", ev.Severity, emit.SeverityCritical)
+	}
+	if ev.Fields["pattern"] != "exfil_then_delete" {
+		t.Errorf("pattern = %v, want exfil_then_delete", ev.Fields["pattern"])
+	}
+	if ev.Fields["pattern_severity"] != severityCritical {
+		t.Errorf("pattern_severity = %v, want %s", ev.Fields["pattern_severity"], severityCritical)
+	}
+	if ev.Fields["severity"] != severityCritical {
+		t.Errorf("severity = %v, want %s (derived from block action)", ev.Fields["severity"], severityCritical)
+	}
+	if ev.Fields["tool"] != "filesystem_delete" {
+		t.Errorf("tool = %v, want filesystem_delete", ev.Fields["tool"])
+	}
+	if ev.Fields["session"] != "session-abc" {
+		t.Errorf("session = %v, want session-abc", ev.Fields["session"])
+	}
+	if ev.Fields["mitre_technique"] != mitreT1059 {
+		t.Errorf("mitre_technique = %v, want %s", ev.Fields["mitre_technique"], mitreT1059)
+	}
+}
+
+func TestLogChainDetection_Emitter_Warn(t *testing.T) {
+	logger, sink := newLoggerWithEmitter(t)
+	defer logger.Close()
+
+	logger.LogChainDetection("read_then_exfil", "warn", "warn", "http_fetch", "session-xyz")
+
+	ev, ok := sink.lastEvent()
+	if !ok {
+		t.Fatal("expected emitted event")
+	}
+	if ev.Severity != emit.SeverityWarn {
+		t.Errorf("severity = %v, want %v", ev.Severity, emit.SeverityWarn)
+	}
+	if ev.Fields["action"] != "warn" {
+		t.Errorf("action = %v, want warn", ev.Fields["action"])
 	}
 }

@@ -48,6 +48,19 @@ var techniqueMap = map[string]string{
 
 	// Domain fronting (SNI mismatch)
 	"sni_mismatch": "T1090.004", // Proxy: Domain Fronting
+
+	// Request body/header DLP (forward proxy + TLS interception)
+	"body_dlp":   "T1048", // Exfiltration Over Alternative Protocol
+	"header_dlp": "T1048", // Exfiltration via HTTP headers
+
+	// TLS interception events
+	"tls_intercept":          "T1557",     // Adversary-in-the-Middle
+	"tls_response_blocked":   "T1659",     // Content Injection
+	"tls_authority_mismatch": "T1090.004", // Proxy: Domain Fronting
+	"tls_handshake_error":    "T1573",     // Encrypted Channel
+
+	// Tool call chain pattern detection
+	"chain_detection": "T1059", // Command and Scripting Interpreter (multi-step attack chain)
 }
 
 // TechniqueForScanner returns the MITRE ATT&CK technique ID for a scanner

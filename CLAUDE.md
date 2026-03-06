@@ -65,11 +65,12 @@ internal/
   normalize/            Unicode normalization (NFKC, confusables, combining marks, leetspeak)
   hitl/                 Human-in-the-loop terminal approval
   integrity/            SHA256 file manifests
+  certgen/              ECDSA P-256 CA + leaf cert generation, bounded TTL cache
   signing/              Ed25519 key management
   gitprotect/           Git diff scanning for secrets
   metrics/              Prometheus counters/histograms/gauges + JSON /stats
   projectscan/          Project directory scanning for audit command
-configs/                Presets: balanced, strict, audit, claude-code, cursor, generic-agent
+configs/                Presets: balanced, strict, audit, claude-code, cursor, generic-agent, hostile-model
 docs/                   Guides, OWASP mapping, comparison
 ```
 

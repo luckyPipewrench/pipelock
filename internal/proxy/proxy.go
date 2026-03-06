@@ -25,6 +25,7 @@ import (
 
 	readability "github.com/go-shiori/go-readability"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/certgen"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
@@ -104,7 +105,8 @@ var Version = "0.1.0-dev"
 type Proxy struct {
 	cfgPtr        atomic.Pointer[config.Config]
 	scannerPtr    atomic.Pointer[scanner.Scanner]
-	sessionMgrPtr atomic.Pointer[SessionManager] // nil when profiling disabled
+	sessionMgrPtr atomic.Pointer[SessionManager]    // nil when profiling disabled
+	certCachePtr  atomic.Pointer[certgen.CertCache] // nil when TLS interception disabled
 	logger        *audit.Logger
 	metrics       *metrics.Metrics
 	ks            *killswitch.Controller
@@ -254,6 +256,27 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
 			sm.UpdateConfig(&cfg.SessionProfiling)
 		}
 	}
+}
+
+// LoadCertCache creates or replaces the cert cache based on current config.
+// Called at startup and on hot-reload when TLS interception config changes.
+func (p *Proxy) LoadCertCache(cfg *config.Config) error {
+	if !cfg.TLSInterception.Enabled {
+		p.certCachePtr.Store(nil)
+		return nil
+	}
+	certPath, keyPath, resolveErr := cfg.ResolveCAPath()
+	if resolveErr != nil {
+		return fmt.Errorf("load TLS CA: %w", resolveErr)
+	}
+	ca, caKey, err := certgen.LoadCA(certPath, keyPath)
+	if err != nil {
+		return fmt.Errorf("load TLS CA: %w (run 'pipelock tls init' to generate)", err)
+	}
+	ttl, _ := time.ParseDuration(cfg.TLSInterception.CertTTL) // already validated
+	cache := certgen.NewCertCache(ca, caKey, ttl, cfg.TLSInterception.CertCacheSize)
+	p.certCachePtr.Store(cache)
+	return nil
 }
 
 // Close releases resources owned by the proxy (session manager goroutine).
@@ -509,7 +532,7 @@ func (p *Proxy) Start(ctx context.Context) error {
 		}
 	}
 
-	p.logger.LogStartup(cfg.FetchProxy.Listen, cfg.Mode)
+	p.logger.LogStartup(cfg.FetchProxy.Listen, cfg.Mode, Version, cfg.Hash())
 
 	err := p.server.ListenAndServe()
 	close(done) // unblock shutdown goroutine if server failed immediately
@@ -913,6 +936,7 @@ type healthResponse struct {
 	ForwardProxyEnabled    bool    `json:"forward_proxy_enabled"`
 	WebSocketProxyEnabled  bool    `json:"websocket_proxy_enabled"`
 	RequestBodyScanEnabled bool    `json:"request_body_scan_enabled"`
+	TLSInterceptionEnabled bool    `json:"tls_interception_enabled"`
 	KillSwitchActive       bool    `json:"kill_switch_active"`
 }
 
@@ -931,6 +955,7 @@ func (p *Proxy) handleHealth(w http.ResponseWriter, _ *http.Request) {
 		ForwardProxyEnabled:    cfg.ForwardProxy.Enabled,
 		WebSocketProxyEnabled:  cfg.WebSocketProxy.Enabled,
 		RequestBodyScanEnabled: cfg.RequestBodyScanning.Enabled,
+		TLSInterceptionEnabled: cfg.TLSInterception.Enabled,
 	}
 	if p.ks != nil {
 		// Read-only kill switch status — no auth needed. Lets operators

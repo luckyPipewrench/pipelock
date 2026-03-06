@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
@@ -116,8 +117,6 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		}
 		lineNum++
 
-		verdict := ScanResponse(line, sc)
-
 		// MCP does not use JSON-RPC batch messages (top-level arrays).
 		// A batch from the server is either malformed or an attempt to
 		// bypass per-message ID validation. Fail closed.
@@ -147,10 +146,15 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			}
 		}
 
-		// Tool scanning runs on every response, independent of general scan
-		// verdict. A general scan "warn" must not bypass a tool scan "block".
+		// Tool scanning runs first. tools/list responses contain instructional
+		// text ("you must call this tool") that the general injection scanner
+		// would flag as false positives. The dedicated tool scanner uses
+		// purpose-built poisoning patterns instead. When tool scanning
+		// identifies a message as tools/list, skip the general scan entirely.
+		isToolsList := false
 		if toolCfg != nil {
 			toolResult := tools.ScanTools(line, sc, toolCfg)
+			isToolsList = toolResult.IsToolsList
 			// Session binding: capture tool names from tools/list responses.
 			if toolResult.IsToolsList && toolCfg.Baseline != nil && len(toolResult.ToolNames) > 0 {
 				if !toolCfg.Baseline.HasBaseline() {
@@ -175,6 +179,16 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				}
 				// warn: logged above, fall through to general handling
 			}
+		}
+
+		// For tools/list responses, skip general scanning of the result field
+		// (tool descriptions contain instructional text that triggers FPs).
+		// Still scan the error field: injection could hide in non-tool fields.
+		var verdict jsonrpc.ScanVerdict
+		if isToolsList {
+			verdict = scanToolsListNonToolFields(line, sc)
+		} else {
+			verdict = ScanResponse(line, sc)
 		}
 
 		if verdict.Clean {
@@ -449,7 +463,7 @@ type InputScanConfig struct {
 // Both clientOut and logW are wrapped in mutex adapters to prevent concurrent
 // write races between the input scanning goroutine, blocked request drainer,
 // child process stderr, and the main goroutine's response scanning.
-func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW io.Writer, command []string, sc *scanner.Scanner, approver *hitl.Approver, inputCfg *InputScanConfig, toolCfg *tools.ToolScanConfig, policyCfg *policy.Config, ks *killswitch.Controller, chainMatcher *chains.Matcher, extraEnv ...string) error {
+func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW io.Writer, command []string, sc *scanner.Scanner, approver *hitl.Approver, inputCfg *InputScanConfig, toolCfg *tools.ToolScanConfig, policyCfg *policy.Config, ks *killswitch.Controller, chainMatcher *chains.Matcher, auditLogger *audit.Logger, extraEnv ...string) error {
 	cmd := exec.CommandContext(ctx, command[0], command[1:]...) //nolint:gosec // command comes from user CLI args
 
 	// Wrap shared writers in mutex adapters. Multiple goroutines write to
@@ -525,21 +539,21 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		if inputCfg != nil && inputCfg.Enabled {
 			clientReader := transport.NewStdioReader(clientIn)
 			serverWriter := transport.NewStdioWriter(serverIn)
-			ForwardScannedInput(clientReader, serverWriter, safeLogW, sc, inputCfg.Action, inputCfg.OnParseError, blockedCh, policyCfg, bindingCfg, ks, chainMatcher, tracker)
+			ForwardScannedInput(clientReader, serverWriter, safeLogW, sc, inputCfg.Action, inputCfg.OnParseError, blockedCh, policyCfg, bindingCfg, ks, chainMatcher, tracker, auditLogger)
 		} else if policyCfg != nil || bindingCfg != nil || chainMatcher != nil {
 			// Policy checking, session binding, or chain detection enabled but content scanning disabled.
 			// Route through ForwardScannedInput with pass-through content scanning.
 			// Use onParseError="block" (fail-closed) so malformed JSON can't bypass policy.
 			clientReader := transport.NewStdioReader(clientIn)
 			serverWriter := transport.NewStdioWriter(serverIn)
-			ForwardScannedInput(clientReader, serverWriter, safeLogW, sc, config.ActionWarn, config.ActionBlock, blockedCh, policyCfg, bindingCfg, ks, chainMatcher, tracker)
+			ForwardScannedInput(clientReader, serverWriter, safeLogW, sc, config.ActionWarn, config.ActionBlock, blockedCh, policyCfg, bindingCfg, ks, chainMatcher, tracker, auditLogger)
 		} else {
 			// No content scanning, but still route through ForwardScannedInput
 			// so request IDs are tracked for confused deputy protection.
 			// ActionWarn = pass-through, ActionBlock on parse error = fail-closed.
 			clientReader := transport.NewStdioReader(clientIn)
 			serverWriter := transport.NewStdioWriter(serverIn)
-			ForwardScannedInput(clientReader, serverWriter, safeLogW, sc, config.ActionWarn, config.ActionBlock, blockedCh, nil, nil, ks, nil, tracker)
+			ForwardScannedInput(clientReader, serverWriter, safeLogW, sc, config.ActionWarn, config.ActionBlock, blockedCh, nil, nil, ks, nil, tracker, auditLogger)
 		}
 	}()
 

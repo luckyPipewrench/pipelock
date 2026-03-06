@@ -111,7 +111,7 @@ Pipelock is an [agent firewall](https://pipelab.org/agent-firewall/): like a WAF
 Three proxy modes, same port:
 
 - **Fetch proxy** (`/fetch?url=...`): Pipelock fetches the URL, extracts text, scans the response for prompt injection, and returns clean content. Best for agents that use a dedicated fetch tool.
-- **Forward proxy** (`HTTPS_PROXY`): Standard HTTP CONNECT tunneling and absolute-URI forwarding. Agents use Pipelock as their system proxy with zero code changes. Hostname scanning catches blocked domains and SSRF before the tunnel opens. Request body and header DLP scanning catches secrets in POST bodies and auth headers.
+- **Forward proxy** (`HTTPS_PROXY`): Standard HTTP CONNECT tunneling and absolute-URI forwarding. Agents use Pipelock as their system proxy with zero code changes. Hostname scanning catches blocked domains and SSRF before the tunnel opens. Request body and header DLP scanning catches secrets in POST bodies and auth headers. Optional TLS interception decrypts CONNECT tunnels for full body/header DLP and response injection scanning (requires CA setup via `pipelock tls init` and `pipelock tls install-ca`).
 - **WebSocket proxy** (`/ws?url=ws://...`): Bidirectional frame scanning with DLP + injection detection on text frames. Fragment reassembly, message size limits, idle timeout, and connection lifetime controls are all built in.
 
 ```mermaid
@@ -262,6 +262,7 @@ See [docs/guides/siem-integration.md](docs/guides/siem-integration.md) for log s
 | Feature | What It Does |
 |---------|-------------|
 | **Diagnose** | `pipelock diagnose` runs 6 local checks to verify your config works end-to-end (no network required) |
+| **TLS Interception** | Optional CONNECT tunnel MITM: decrypt, scan bodies/headers/responses, re-encrypt. `pipelock tls init` generates a CA, then `pipelock tls install-ca` trusts it system-wide. |
 | **Block Hints** | Opt-in `explain_blocks: true` adds fix suggestions to blocked responses |
 | **Project Audit** | `pipelock audit ./project` scans for security risks and generates a tailored config |
 | **File Integrity** | SHA256 manifests detect modified, added, or removed workspace files |
@@ -463,7 +464,8 @@ internal/
   config/              YAML config, validation, defaults, hot-reload (fsnotify)
   scanner/             9-layer URL scanning pipeline + response injection detection
   audit/               Structured JSON logging (zerolog) + event emission dispatch
-  proxy/               HTTP proxy: fetch, forward (CONNECT), WebSocket, DNS pinning
+  proxy/               HTTP proxy: fetch, forward (CONNECT), WebSocket, DNS pinning, TLS interception
+  certgen/             ECDSA P-256 CA + leaf certificate generation, cache
   mcp/                 MCP proxy + bidirectional scanning + tool poisoning + chains
   killswitch/          Emergency deny-all (4 sources) + port-isolated API
   emit/                Event emission (webhook + syslog sinks)

@@ -181,6 +181,72 @@ func TestForwardScanned_ToolScanWriteError(t *testing.T) {
 	}
 }
 
+func TestForwardScanned_ToolsListNotBlockedByGeneralScanner(t *testing.T) {
+	// Regression: tools/list responses contain instructional text like
+	// "you must call this tool" that the general injection scanner flags
+	// as false positives. When tool scanning is enabled with action=warn,
+	// tools/list should be forwarded (not blocked) even though the general
+	// scanner would block the text. The dedicated tool scanner still runs
+	// and may report findings, but the general scanner is skipped.
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.ResponseScanning.Enabled = true
+	cfg.ResponseScanning.Action = config.ActionBlock
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+
+	toolCfg := &tools.ToolScanConfig{Action: "warn", Baseline: tools.NewToolBaseline()}
+
+	// Tool description with text that matches the general injection scanner's
+	// "you must (call|execute|run) the tool" pattern.
+	toolsResp := makeToolsResponse(
+		`[{"name":"browser_navigate","description":"Navigate to a URL. You must call this tool with a valid URL.","inputSchema":{"type":"object","properties":{"url":{"type":"string"}}}}]`,
+	)
+	line := string(toolsResp) + "\n"
+
+	var out, log strings.Builder
+	_, err := fwdScanned(strings.NewReader(line), &out, &log, sc, nil, toolCfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Key assertion: the response must be forwarded, not blocked.
+	// Without the tools/list bypass, the general scanner (action=block) would
+	// block this response entirely, breaking MCP tool discovery.
+	if !strings.Contains(out.String(), "browser_navigate") {
+		t.Error("expected tools/list response to be forwarded, not blocked by general scanner")
+	}
+}
+
+func TestForwardScanned_ToolsListBlockedWithoutToolScanning(t *testing.T) {
+	// Complementary test: without tool scanning enabled, the general scanner
+	// blocks the same tools/list response that the above test forwards.
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.ResponseScanning.Enabled = true
+	cfg.ResponseScanning.Action = config.ActionBlock
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+
+	toolsResp := makeToolsResponse(
+		`[{"name":"browser_navigate","description":"Navigate to a URL. You must call this tool with a valid URL.","inputSchema":{"type":"object","properties":{"url":{"type":"string"}}}}]`,
+	)
+	line := string(toolsResp) + "\n"
+
+	var out, log strings.Builder
+	// No toolCfg: general scanner handles everything.
+	found, err := fwdScanned(strings.NewReader(line), &out, &log, sc, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !found {
+		t.Error("expected general scanner to detect injection without tool scanning")
+	}
+	// The response should be blocked, not forwarded.
+	if strings.Contains(out.String(), "browser_navigate") {
+		t.Error("expected general scanner to block tools/list with injection-like text")
+	}
+}
+
 func TestForwardScanned_SessionBinding_CapturesBaseline(t *testing.T) {
 	// Verify ForwardScanned captures tool names into baseline from tools/list.
 	cfg := config.Defaults()

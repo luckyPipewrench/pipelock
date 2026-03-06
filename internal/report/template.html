@@ -11,60 +11,115 @@
             box-sizing: border-box;
         }
 
+        :root {
+            --bg-primary: #0a0a0f;
+            --bg-card: rgba(255, 255, 255, 0.04);
+            --bg-hover: rgba(255, 255, 255, 0.07);
+            --bg-header: rgba(255, 255, 255, 0.06);
+            --border: rgba(255, 255, 255, 0.08);
+            --text-primary: #e2e8f0;
+            --text-secondary: #e2e8f0;
+            --text-muted: #94a3b8;
+            --text-dim: #64748b;
+            --text-footer: #64748b;
+            --color-red: #f44336;
+            --color-orange: #f97316;
+            --color-yellow: #eab308;
+            --color-green: #00CC66;
+            --color-blue: #00AEEF;
+            --color-accent: #00ffc8;
+            --color-purple: #7c3aed;
+            --mono: "JetBrains Mono", "Fira Code", "Consolas", monospace;
+            --radius: 12px;
+        }
+
+        *, *::before, *::after { box-sizing: border-box; }
+
         body {
-            background: #0b0f17;
-            color: #e2e8f0;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-            line-height: 1.6;
+            background: var(--bg-primary);
+            color: var(--text-secondary);
+            font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+            line-height: 1.7;
             padding: 2rem;
+            margin: 0;
         }
 
         .container {
             max-width: 1100px;
             margin: 0 auto;
+            overflow-x: hidden;
         }
 
+        /* Header */
         header {
             text-align: center;
-            margin-bottom: 2.5rem;
+            margin-bottom: 2rem;
             padding-bottom: 1.5rem;
-            border-bottom: 1px solid #1e293b;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.75rem;
+            margin-bottom: 1rem;
+        }
+
+        .brand svg {
+            width: 40px;
+            height: 40px;
+            flex-shrink: 0;
         }
 
         h1 {
             font-size: 1.75rem;
             font-weight: 600;
-            color: #f1f5f9;
-            margin-bottom: 1rem;
+            color: var(--text-primary);
         }
 
-        .badge {
+        .risk-badge {
             display: inline-block;
-            padding: 0.4rem 1.2rem;
+            padding: 0.5rem 1.5rem;
             border-radius: 9999px;
-            font-size: 0.875rem;
+            font-size: 0.9rem;
             font-weight: 700;
-            letter-spacing: 0.05em;
-            color: #0b0f17;
+            letter-spacing: 0.08em;
+            color: var(--bg-primary);
             margin-bottom: 0.75rem;
+            box-shadow: 0 0 20px rgba(0,0,0,0.3);
         }
 
         .meta {
             font-size: 0.8125rem;
-            color: #94a3b8;
+            color: var(--text-muted);
         }
 
         .meta span {
             margin: 0 0.5rem;
         }
 
+        /* Executive Summary */
+        .exec-summary {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 1.25rem 1.5rem;
+            margin-bottom: 2rem;
+            font-size: 0.9375rem;
+            line-height: 1.7;
+            color: var(--text-muted);
+            border-left: 3px solid var(--color-blue);
+        }
+
+        /* Section headings */
         h2 {
-            font-size: 1.25rem;
+            font-size: 1.125rem;
             font-weight: 600;
-            color: #f1f5f9;
+            color: var(--text-primary);
             margin-bottom: 1rem;
             padding-bottom: 0.5rem;
-            border-bottom: 1px solid #1e293b;
+            border-bottom: 1px solid var(--border);
         }
 
         section {
@@ -74,177 +129,324 @@
         /* KPI Grid */
         .kpi-grid {
             display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            gap: 1rem;
+            grid-template-columns: repeat(6, 1fr);
+            gap: 0.75rem;
             margin-bottom: 2rem;
         }
 
         .kpi-card {
-            background: #121a27;
-            border: 1px solid #1e293b;
-            border-radius: 0.5rem;
-            padding: 1.25rem;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 1rem;
             text-align: center;
+            transition: border-color 0.2s;
+        }
+
+        .kpi-card:hover {
+            border-color: #334155;
         }
 
         .kpi-value {
-            font-size: 2rem;
+            font-size: 1.75rem;
             font-weight: 700;
             line-height: 1.2;
         }
 
         .kpi-label {
-            font-size: 0.75rem;
-            color: #94a3b8;
+            font-size: 0.6875rem;
+            color: var(--text-muted);
             text-transform: uppercase;
-            letter-spacing: 0.05em;
+            letter-spacing: 0.06em;
             margin-top: 0.25rem;
         }
 
-        .kpi-blocks .kpi-value { color: #f97316; }
-        .kpi-warnings .kpi-value { color: #eab308; }
-        .kpi-criticals .kpi-value { color: #ef4444; }
-        .kpi-total .kpi-value { color: #38bdf8; }
+        .kpi-blocks .kpi-value { color: var(--color-orange); }
+        .kpi-warnings .kpi-value { color: var(--color-yellow); }
+        .kpi-criticals .kpi-value { color: var(--color-red); }
+        .kpi-total .kpi-value { color: var(--color-blue); }
+        .kpi-allowed .kpi-value { color: var(--color-green); }
+        .kpi-domains .kpi-value { color: var(--color-purple); }
+
+        /* Two-column layout */
+        .two-col {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1.5rem;
+        }
+
+        .two-col > * {
+            min-width: 0;
+            margin-bottom: 2rem;
+        }
 
         /* Tables */
         table {
             width: 100%;
+            table-layout: fixed;
             border-collapse: collapse;
-            background: #121a27;
-            border: 1px solid #1e293b;
-            border-radius: 0.5rem;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
             overflow: hidden;
         }
 
         th {
-            background: #1a2332;
-            color: #94a3b8;
-            font-size: 0.75rem;
+            background: var(--bg-header);
+            color: var(--text-muted);
+            font-size: 0.6875rem;
             text-transform: uppercase;
-            letter-spacing: 0.05em;
-            padding: 0.75rem 1rem;
+            letter-spacing: 0.06em;
+            padding: 0.625rem 0.75rem;
             text-align: left;
             font-weight: 600;
         }
 
         td {
-            padding: 0.625rem 1rem;
-            border-top: 1px solid #1e293b;
-            font-size: 0.875rem;
+            padding: 0.5rem 0.75rem;
+            border-top: 1px solid var(--border);
+            font-size: 0.8125rem;
+            overflow-wrap: break-word;
+            word-break: break-all;
         }
 
         tr:hover {
-            background: #162032;
+            background: var(--bg-hover);
         }
 
         .severity-badge {
             display: inline-block;
             padding: 0.125rem 0.5rem;
             border-radius: 0.25rem;
-            font-size: 0.75rem;
+            font-size: 0.6875rem;
             font-weight: 600;
             text-transform: uppercase;
         }
 
-        /* Timeline bars */
-        .timeline-bar {
+        /* Domain bar */
+        .domain-bar {
             display: flex;
-            height: 1.25rem;
-            border-radius: 0.125rem;
+            height: 0.5rem;
+            border-radius: 0.25rem;
             overflow: hidden;
             min-width: 2px;
         }
 
-        .bar-block { background: #ef4444; }
-        .bar-warn { background: #eab308; }
-        .bar-allowed { background: #22c55e; }
+        .domain-bar-block { background: var(--color-red); }
+        .domain-bar-warn { background: var(--color-yellow); }
+        .domain-bar-allowed { background: var(--color-green); }
 
-        .timeline-time {
+        /* Timeline chart */
+        .chart-container {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 1.25rem;
+            overflow-x: auto;
+        }
+
+        .chart-svg {
+            display: block;
+            width: 100%;
+        }
+
+        .chart-bar:hover rect {
+            opacity: 0.8;
+        }
+
+        .chart-label {
+            fill: var(--text-dim);
+            font-size: 14px;
+            font-family: var(--mono);
+        }
+
+        .chart-legend {
+            display: flex;
+            gap: 1.5rem;
+            justify-content: center;
+            margin-top: 0.75rem;
             font-size: 0.75rem;
-            color: #64748b;
-            font-family: "SF Mono", "Fira Code", monospace;
-            white-space: nowrap;
+            color: var(--text-muted);
+        }
+
+        .chart-legend-dot {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 2px;
+            margin-right: 0.375rem;
+            vertical-align: middle;
         }
 
         /* Evidence */
-        .event-card {
-            background: #121a27;
-            border: 1px solid #1e293b;
-            border-radius: 0.5rem;
-            padding: 1rem;
-            margin-bottom: 0.75rem;
-        }
-
-        .event-card-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
+        .evidence-group {
             margin-bottom: 0.5rem;
         }
 
-        .event-type {
-            font-weight: 600;
+        .evidence-group summary {
+            cursor: pointer;
+            padding: 0.75rem 1rem;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 0.5rem;
             font-size: 0.875rem;
+            font-weight: 500;
+            color: var(--text-primary);
+            list-style: none;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
         }
 
-        .event-time {
-            font-size: 0.75rem;
-            color: #64748b;
-            font-family: "SF Mono", "Fira Code", monospace;
+        .evidence-group summary::-webkit-details-marker { display: none; }
+
+        .evidence-group summary::before {
+            content: "\25B6";
+            font-size: 0.625rem;
+            margin-right: 0.75rem;
+            transition: transform 0.15s;
+            color: var(--text-dim);
+        }
+
+        .evidence-group[open] summary::before {
+            transform: rotate(90deg);
+        }
+
+        .evidence-group[open] summary {
+            border-radius: 0.5rem 0.5rem 0 0;
+            border-bottom-color: transparent;
         }
 
         .event-detail {
-            font-family: "SF Mono", "Fira Code", monospace;
-            font-size: 0.8125rem;
-            color: #94a3b8;
-            background: #0b0f17;
-            padding: 0.75rem;
-            border-radius: 0.375rem;
+            font-family: var(--mono);
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            background: var(--bg-primary);
+            padding: 0.75rem 1rem;
+            border: 1px solid var(--border);
+            border-top: none;
+            border-radius: 0 0 0.5rem 0.5rem;
             overflow-x: auto;
             white-space: pre-wrap;
             word-break: break-all;
         }
 
+        .event-time {
+            font-size: 0.6875rem;
+            color: var(--text-dim);
+            font-family: var(--mono);
+        }
+
+        /* Warning banner */
+        .warning-banner {
+            background: #7f1d1d;
+            border: 1px solid var(--color-red);
+            border-radius: 0.5rem;
+            padding: 0.75rem 1rem;
+            margin-bottom: 1.5rem;
+            font-size: 0.875rem;
+        }
+
+        /* Footer */
         footer {
             text-align: center;
             padding-top: 1.5rem;
-            border-top: 1px solid #1e293b;
+            border-top: 1px solid var(--border);
             font-size: 0.75rem;
-            color: #475569;
+            color: var(--text-footer);
         }
 
-        @media (max-width: 768px) {
+        footer a {
+            color: #00ffc8;
+            text-decoration: none;
+        }
+
+        footer a:hover {
+            text-decoration: underline;
+        }
+
+        .footer-brand {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+        }
+
+        .footer-brand svg {
+            width: 14px;
+            height: 14px;
+            vertical-align: middle;
+        }
+
+        @media (max-width: 900px) {
             .kpi-grid {
-                grid-template-columns: repeat(2, 1fr);
+                grid-template-columns: repeat(3, 1fr);
+            }
+            .two-col {
+                grid-template-columns: 1fr;
             }
             body {
                 padding: 1rem;
             }
+        }
+
+        @media (max-width: 600px) {
+            .kpi-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+
+        @media print {
+            body { background: #fff; color: #1e293b; padding: 0.5rem; }
+            .container { max-width: 100%; }
+            .kpi-card, .chart-container, table, .exec-summary, .evidence-group summary {
+                background: #f8fafc; border-color: #e2e8f0;
+            }
+            .kpi-value, h1, h2, .evidence-group summary { color: #0f172a; }
+            .event-detail { background: #f1f5f9; }
         }
     </style>
 </head>
 <body>
     <div class="container">
         <header>
-            <h1>{{.Title}}</h1>
-            <div class="badge" style="background: {{riskColor .Risk}}">{{riskLabel .Risk}}</div>
+            <div class="brand">
+                <svg viewBox="0 0 400 360" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                    <path d="M130 180 L130 110 C130 65 160 40 200 40 C240 40 270 65 270 110 L270 180" stroke="#00ffc8" stroke-width="28" stroke-linecap="round" fill="none"/>
+                    <rect x="114" y="165" width="32" height="16" rx="3" fill="#00ffc8" opacity="0.7"/>
+                    <rect x="254" y="165" width="32" height="16" rx="3" fill="#00ffc8" opacity="0.7"/>
+                    <rect x="90" y="180" width="220" height="160" rx="16" fill="#0a0a0f" stroke="#00ffc8" stroke-width="2.5"/>
+                    <circle cx="200" cy="248" r="18" fill="#00ffc8" opacity="0.9"/>
+                    <circle cx="200" cy="248" r="10" fill="#0a0a0f"/>
+                    <rect x="196" y="256" width="8" height="24" rx="3" fill="#00ffc8" opacity="0.9"/>
+                </svg>
+                <h1>{{.Title}}</h1>
+            </div>
+            <div class="risk-badge" style="background: {{riskColor .Risk}};">{{riskLabel .Risk}}</div>
             <div class="meta">
                 {{formatTime .TimeRange.Start}} to {{formatTime .TimeRange.End}}
-                <span>|</span> Mode: {{.Mode}}
-                <span>|</span> Version: {{.Version}}
+                {{if .Mode}}<span>|</span> Mode: {{.Mode}}{{end}}
+                {{if .Version}}<span>|</span> v{{.Version}}{{end}}
             </div>
         </header>
 
         {{if gt .Summary.SkippedLines 0}}
-        <div style="background: #7f1d1d; border: 1px solid #ef4444; border-radius: 0.5rem; padding: 0.75rem 1rem; margin-bottom: 1.5rem; font-size: 0.875rem;">
+        <div class="warning-banner">
             &#9888; <strong>Data integrity warning:</strong> {{.Summary.SkippedLines}} malformed line(s) skipped during parsing. This report may be incomplete.
         </div>
         {{end}}
 
+        <!-- Executive Summary -->
+        <div class="exec-summary">{{execSummary .}}</div>
+
+        <!-- KPI Cards -->
         <section class="kpi-grid">
             <div class="kpi-card kpi-total">
                 <div class="kpi-value">{{.Summary.TotalEvents}}</div>
                 <div class="kpi-label">Total Events</div>
+            </div>
+            <div class="kpi-card kpi-allowed">
+                <div class="kpi-value">{{.Summary.Allowed}}</div>
+                <div class="kpi-label">Allowed</div>
             </div>
             <div class="kpi-card kpi-blocks">
                 <div class="kpi-value">{{.Summary.Blocks}}</div>
@@ -258,92 +460,147 @@
                 <div class="kpi-value">{{.Summary.Criticals}}</div>
                 <div class="kpi-label">Criticals</div>
             </div>
+            <div class="kpi-card kpi-domains">
+                <div class="kpi-value">{{.Summary.UniqueDomains}}</div>
+                <div class="kpi-label">Domains</div>
+            </div>
         </section>
 
-        {{if .Categories}}
-        <section>
-            <h2>Findings by Category</h2>
-            <table>
-                <thead>
-                    <tr>
-                        <th>Category</th>
-                        <th>Count</th>
-                        <th>Severity</th>
-                        <th>MITRE Techniques</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {{range .Categories}}
-                    <tr>
-                        <td>{{.Name}}</td>
-                        <td>{{.Count}}</td>
-                        <td>
-                            <span class="severity-badge" style="background: {{severityColor .Severity}}; color: #0b0f17;">
-                                {{.Severity}}
-                            </span>
-                        </td>
-                        <td style="font-family: monospace; font-size: 0.8125rem;">{{join .MITRETechniques}}</td>
-                    </tr>
-                    {{end}}
-                </tbody>
-            </table>
-        </section>
-        {{end}}
-
-        {{if .Timeline}}
+        {{$bars := timelineBars .Timeline}}
+        {{if $bars}}
+        <!-- Timeline Chart (SVG) -->
         <section>
             <h2>Activity Timeline</h2>
-            <table>
-                <thead>
-                    <tr>
-                        <th style="width: 12rem;">Time</th>
-                        <th>Activity</th>
-                        <th style="width: 5rem; text-align: right;">Blocks</th>
-                        <th style="width: 5rem; text-align: right;">Warns</th>
-                        <th style="width: 5rem; text-align: right;">Allowed</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {{range .Timeline}}
-                    {{if or (gt .Blocks 0) (gt .Warns 0) (gt .Allowed 0)}}
-                    <tr>
-                        <td class="timeline-time">{{formatTime .Start}}</td>
-                        <td>
-                            <div class="timeline-bar">
-                                {{if gt .Blocks 0}}<div class="bar-block" style="flex: {{.Blocks}};"></div>{{end}}
-                                {{if gt .Warns 0}}<div class="bar-warn" style="flex: {{.Warns}};"></div>{{end}}
-                                {{if gt .Allowed 0}}<div class="bar-allowed" style="flex: {{.Allowed}};"></div>{{end}}
-                            </div>
-                        </td>
-                        <td style="text-align: right; color: #ef4444;">{{.Blocks}}</td>
-                        <td style="text-align: right; color: #eab308;">{{.Warns}}</td>
-                        <td style="text-align: right; color: #22c55e;">{{.Allowed}}</td>
-                    </tr>
+            <div class="chart-container">
+                <svg class="chart-svg" viewBox="0 0 1000 220">
+                    {{range $bars}}
+                    {{if gt .Total 0}}
+                    <!-- Count label above bar -->
+                    <text x="{{printf "%.1f" .CX}}" y="12" text-anchor="middle" class="chart-label">{{.Total}}</text>
+                    <!-- Stacked bar segments -->
+                    {{if gt .Allowed 0}}
+                    <rect x="{{printf "%.1f" .X}}" y="{{printf "%.1f" .AY}}" width="{{printf "%.1f" .W}}" height="{{printf "%.1f" .AH}}" fill="#00CC66" opacity="0.85" rx="2">
+                        <title>{{.Label}} | Allowed: {{.Allowed}} Warns: {{.Warns}} Blocks: {{.Blocks}}</title>
+                    </rect>
+                    {{end}}
+                    {{if gt .Warns 0}}
+                    <rect x="{{printf "%.1f" .X}}" y="{{printf "%.1f" .WY}}" width="{{printf "%.1f" .W}}" height="{{printf "%.1f" .WH}}" fill="#eab308" opacity="0.85" rx="2">
+                        <title>{{.Label}} | Allowed: {{.Allowed}} Warns: {{.Warns}} Blocks: {{.Blocks}}</title>
+                    </rect>
+                    {{end}}
+                    {{if gt .Blocks 0}}
+                    <rect x="{{printf "%.1f" .X}}" y="{{printf "%.1f" .BY}}" width="{{printf "%.1f" .W}}" height="{{printf "%.1f" .BH}}" fill="#f44336" opacity="0.85" rx="2">
+                        <title>{{.Label}} | Allowed: {{.Allowed}} Warns: {{.Warns}} Blocks: {{.Blocks}}</title>
+                    </rect>
                     {{end}}
                     {{end}}
-                </tbody>
-            </table>
+                    <!-- Time label below bar -->
+                    <text x="{{printf "%.1f" .CX}}" y="210" text-anchor="middle" class="chart-label">{{.Label}}</text>
+                    {{end}}
+                </svg>
+                <div class="chart-legend">
+                    <span><span class="chart-legend-dot" style="background: #f44336;"></span>Blocks</span>
+                    <span><span class="chart-legend-dot" style="background: #eab308;"></span>Warnings</span>
+                    <span><span class="chart-legend-dot" style="background: #00CC66;"></span>Allowed</span>
+                </div>
+            </div>
         </section>
         {{end}}
+
+        <!-- Categories and Domains side by side -->
+        <div class="two-col">
+            {{if .Categories}}
+            <section>
+                <h2>Findings by Category</h2>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Category</th>
+                            <th>Count</th>
+                            <th>Severity</th>
+                            <th>MITRE</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {{range .Categories}}
+                        <tr>
+                            <td>{{.Name}}</td>
+                            <td>{{.Count}}</td>
+                            <td>
+                                <span class="severity-badge" style="background: {{severityColor .Severity}}; color: #1a1a1a;">
+                                    {{.Severity}}
+                                </span>
+                            </td>
+                            <td style="font-family: var(--mono); font-size: 0.75rem;">{{join .MITRETechniques}}</td>
+                        </tr>
+                        {{end}}
+                    </tbody>
+                </table>
+            </section>
+            {{end}}
+
+            {{if .Domains}}
+            <section>
+                <h2>Top Domains</h2>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Domain</th>
+                            <th style="text-align: right;">Total</th>
+                            <th style="width: 40%;">Breakdown</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {{range .Domains}}
+                        <tr>
+                            <td style="font-family: var(--mono); font-size: 0.75rem;">{{.Domain}}</td>
+                            <td style="text-align: right;">{{.Total}}</td>
+                            <td>
+                                <div class="domain-bar">
+                                    {{if gt .Blocks 0}}<div class="domain-bar-block" style="flex: {{.Blocks}};" title="Blocks: {{.Blocks}}"></div>{{end}}
+                                    {{if gt .Warns 0}}<div class="domain-bar-warn" style="flex: {{.Warns}};" title="Warns: {{.Warns}}"></div>{{end}}
+                                    {{if gt .Allowed 0}}<div class="domain-bar-allowed" style="flex: {{.Allowed}};" title="Allowed: {{.Allowed}}"></div>{{end}}
+                                </div>
+                            </td>
+                        </tr>
+                        {{end}}
+                    </tbody>
+                </table>
+            </section>
+            {{end}}
+        </div>
 
         {{if .Evidence}}
         <section>
             <h2>Evidence Appendix ({{len .Evidence}} events)</h2>
             {{range .Evidence}}
-            <div class="event-card">
-                <div class="event-card-header">
-                    <span class="event-type" style="color: {{severityColor (eventSeverity .)}};">{{.Event}}</span>
+            <details class="evidence-group">
+                <summary>
+                    <span>
+                        <span style="color: {{severityColor (eventSeverity .)}};">{{.Event}}</span>
+                        {{if .Scanner}} <span style="color: var(--text-dim);">({{.Scanner}})</span>{{end}}
+                        {{if .Reason}}: {{.Reason}}{{end}}
+                    </span>
                     <span class="event-time">{{formatTime .Time}}</span>
-                </div>
+                </summary>
                 <div class="event-detail">{{eventJSON .}}</div>
-            </div>
+            </details>
             {{end}}
         </section>
         {{end}}
 
         <footer>
-            Generated: {{formatTime .Generated}}
-            {{if .ConfigHashes}}| Config hashes: {{join .ConfigHashes}}{{end}}
+            <span class="footer-brand">
+                <svg viewBox="0 0 400 360" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                    <path d="M130 180 L130 110 C130 65 160 40 200 40 C240 40 270 65 270 110 L270 180" stroke="#00ffc8" stroke-width="28" stroke-linecap="round" fill="none"/>
+                    <rect x="90" y="180" width="220" height="160" rx="16" fill="#0a0a0f" stroke="#00ffc8" stroke-width="2.5"/>
+                    <circle cx="200" cy="248" r="18" fill="#00ffc8" opacity="0.9"/>
+                    <circle cx="200" cy="248" r="10" fill="#0a0a0f"/>
+                    <rect x="196" y="256" width="8" height="24" rx="3" fill="#00ffc8" opacity="0.9"/>
+                </svg>
+                Generated by <a href="https://pipelab.org/pipelock">Pipelock</a>{{if .Version}} v{{.Version}}{{end}}
+            </span>
+            <br>{{formatTime .Generated}}{{if .ConfigHashes}} | Config: {{join .ConfigHashes}}{{end}}
         </footer>
     </div>
 </body>

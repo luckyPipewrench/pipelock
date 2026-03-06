@@ -93,6 +93,10 @@ const maxSampleEvidence = 3
 // hourlyThresholdDays is the day count below which hourly buckets are used.
 const hourlyThresholdDays = 3
 
+// minBucketTarget is the minimum number of buckets to aim for in the timeline.
+// Prevents single-bar timelines for short observation windows.
+const minBucketTarget = 6
+
 // ipPattern matches IPv4 and IPv6 addresses for redaction.
 // IPv6 pattern requires colon-separated hex groups to avoid matching generic hex strings.
 var ipPattern = regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b|` +
@@ -133,17 +137,32 @@ func Aggregate(events []Event, opts Options) *Report {
 		End:   events[len(events)-1].Time,
 	}
 
-	// Compute summary and collect category data.
-	domains := make(map[string]bool)
+	// Compute summary and collect category + domain data.
+	domainSet := make(map[string]bool)
+	domainStats := make(map[string]*DomainStats)
 	catData := make(map[string]*categoryAccumulator)
 
 	for i := range events {
 		ev := &events[i]
 		r.Summary.TotalEvents++
 
-		// Track unique domains.
+		// Track unique domains and per-domain stats.
 		if d := extractDomain(ev); d != "" {
-			domains[d] = true
+			domainSet[d] = true
+			ds, ok := domainStats[d]
+			if !ok {
+				ds = &DomainStats{Domain: d}
+				domainStats[d] = ds
+			}
+			ds.Total++
+			switch {
+			case isBlockEvent(ev):
+				ds.Blocks++
+			case isWarnEvent(ev):
+				ds.Warns++
+			default:
+				ds.Allowed++
+			}
 		}
 
 		// Classify into summary buckets.
@@ -153,10 +172,13 @@ func Aggregate(events []Event, opts Options) *Report {
 		categorizeEvent(ev, catData, opts.Redact)
 	}
 
-	r.Summary.UniqueDomains = len(domains)
+	r.Summary.UniqueDomains = len(domainSet)
 
 	// Build category stats.
 	r.Categories = buildCategories(catData)
+
+	// Build domain stats (top 20 by total events).
+	r.Domains = buildDomainStats(domainStats)
 
 	// Compute risk rating.
 	r.Risk = computeRisk(r.Summary)
@@ -268,6 +290,10 @@ func classifyEvent(ev *Event, s *Summary) {
 		s.Blocks++
 		if evType == eventKillSwitchDeny {
 			s.Criticals++
+			return
+		}
+		if eventSeverity(ev) == severityCritical {
+			s.Criticals++
 		}
 		return
 	}
@@ -283,6 +309,8 @@ func classifyEvent(ev *Event, s *Summary) {
 	}
 
 	// Action-based classification for scan events.
+	countedCritical := false
+
 	switch evType {
 	case eventBodyDLP, eventHeaderDLP:
 		if ev.Action == actionBlock {
@@ -299,6 +327,7 @@ func classifyEvent(ev *Event, s *Summary) {
 		case actionBlock:
 			s.Blocks++
 			s.Criticals++
+			countedCritical = true
 		case actionWarn:
 			s.Warnings++
 		}
@@ -308,6 +337,11 @@ func classifyEvent(ev *Event, s *Summary) {
 		} else {
 			s.Warnings++
 		}
+	}
+
+	// Count criticals from resolved severity for events not already counted above.
+	if !countedCritical && eventSeverity(ev) == severityCritical {
+		s.Criticals++
 	}
 }
 
@@ -463,6 +497,34 @@ func buildCategories(cats map[string]*categoryAccumulator) []CategoryStats {
 	return result
 }
 
+// maxDomains is the max domains shown in the domain breakdown.
+const maxDomains = 20
+
+// buildDomainStats converts the domain map to a sorted, capped slice.
+func buildDomainStats(stats map[string]*DomainStats) []DomainStats {
+	result := make([]DomainStats, 0, len(stats))
+	for _, ds := range stats {
+		result = append(result, *ds)
+	}
+
+	// Sort: domains with blocks first, then by total descending.
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Blocks != result[j].Blocks {
+			return result[i].Blocks > result[j].Blocks
+		}
+		if result[i].Total != result[j].Total {
+			return result[i].Total > result[j].Total
+		}
+		return result[i].Domain < result[j].Domain
+	})
+
+	if len(result) > maxDomains {
+		result = result[:maxDomains]
+	}
+
+	return result
+}
+
 // computeRisk determines the traffic-light risk rating.
 func computeRisk(s Summary) RiskRating {
 	if s.Criticals > 0 {
@@ -481,12 +543,7 @@ func buildTimeline(events []Event, tr TimeRange) []TimeBucket {
 	}
 
 	duration := tr.End.Sub(tr.Start)
-	var step time.Duration
-	if duration < time.Duration(hourlyThresholdDays)*24*time.Hour {
-		step = time.Hour
-	} else {
-		step = 24 * time.Hour
-	}
+	step := timelineStep(duration)
 
 	// Build buckets.
 	start := tr.Start.Truncate(step)
@@ -526,7 +583,41 @@ func buildTimeline(events []Event, tr TimeRange) []TimeBucket {
 		}
 	}
 
+	// Trim trailing empty buckets so the chart doesn't waste space.
+	for len(buckets) > 1 {
+		last := buckets[len(buckets)-1]
+		if last.Blocks+last.Warns+last.Allowed > 0 {
+			break
+		}
+		buckets = buckets[:len(buckets)-1]
+	}
+
 	return buckets
+}
+
+// timelineStep picks a bucket duration that produces at least minBucketTarget
+// bars for the observation window, clamped to human-readable intervals.
+func timelineStep(duration time.Duration) time.Duration {
+	switch {
+	case duration >= time.Duration(hourlyThresholdDays)*24*time.Hour:
+		return 24 * time.Hour
+	case duration >= 12*time.Hour:
+		return time.Hour
+	case duration >= 2*time.Hour:
+		return 15 * time.Minute // 2-12h: quarter-hour bars
+	case duration >= 30*time.Minute:
+		return 5 * time.Minute // 30m-2h: five-minute bars
+	default:
+		// Under 30 minutes: pick step so we get ~minBucketTarget bars.
+		step := duration / minBucketTarget
+		// Floor to whole minutes (minimum 1 minute).
+		if step < time.Minute {
+			step = time.Minute
+		} else {
+			step = step.Truncate(time.Minute)
+		}
+		return step
+	}
 }
 
 // isBlockEvent checks if an event counts as a block for timeline purposes.

@@ -59,8 +59,18 @@ type Report struct {
 	Risk         RiskRating      `json:"risk"`
 	Summary      Summary         `json:"summary"`
 	Categories   []CategoryStats `json:"categories"`
+	Domains      []DomainStats   `json:"domains"`
 	Timeline     []TimeBucket    `json:"timeline"`
 	Evidence     []Event         `json:"evidence"`
+}
+
+// DomainStats shows per-domain event breakdown.
+type DomainStats struct {
+	Domain  string `json:"domain"`
+	Total   int    `json:"total"`
+	Blocks  int    `json:"blocks"`
+	Warns   int    `json:"warns"`
+	Allowed int    `json:"allowed"`
 }
 
 // RiskRating is Red, Yellow, or Green.

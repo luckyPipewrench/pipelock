@@ -553,9 +553,9 @@ func TestRenderHTML_AllRiskLevels(t *testing.T) {
 		label    string
 		colorHex string
 	}{
-		{RiskRed, "HIGH RISK", "#ef4444"},
+		{RiskRed, "HIGH RISK", "#f44336"},
 		{RiskYellow, "MODERATE", "#eab308"},
-		{RiskGreen, "LOW RISK", "#22c55e"},
+		{RiskGreen, "LOW RISK", "#00CC66"},
 	}
 
 	for _, tt := range tests {

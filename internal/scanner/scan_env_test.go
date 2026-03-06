@@ -259,6 +259,7 @@ func TestScan_EnvLeakDetection_PWDNotBlocked(t *testing.T) {
 	cfg := testConfig()
 	cfg.DLP.ScanEnv = true
 	cfg.DLP.Patterns = nil
+	cfg.FetchProxy.Monitoring.EntropyThreshold = 0 // isolate test to env-name filter
 
 	// Simulate the exact scenario: PWD value appears in MCP tool argument.
 	pwdValue := "/home/testuser/dev/pipelock-project"

@@ -167,6 +167,13 @@ func interceptTunnel(
 	srv := &http.Server{
 		Handler:           handler,
 		ReadHeaderTimeout: interceptReadHeaderTimeout,
+		ConnState: func(_ net.Conn, state http.ConnState) {
+			// Close the listener when the connection finishes so Serve()
+			// exits promptly instead of blocking on Accept() forever.
+			if state == http.StateClosed {
+				_ = ln.Close()
+			}
+		},
 	}
 
 	// Shut down the server when the context expires (tunnel deadline) to

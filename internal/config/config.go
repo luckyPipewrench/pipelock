@@ -491,7 +491,7 @@ func Load(path string) (*Config, error) {
 // Hash returns the SHA256 hex digest of the raw config file bytes.
 // Returns "defaults" if the config was created via Defaults() (no file).
 func (c *Config) Hash() string {
-	if len(c.rawBytes) == 0 {
+	if c.rawBytes == nil {
 		return HashDefaults
 	}
 	h := sha256.Sum256(c.rawBytes)

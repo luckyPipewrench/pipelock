@@ -16,6 +16,7 @@ import (
 	"github.com/gobwas/ws"
 	gobwasutil "github.com/gobwas/ws/wsutil"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
@@ -417,6 +418,49 @@ func TestRunWSProxy_ChainDetectionBlocks(t *testing.T) {
 
 	if !strings.Contains(stderr.String(), "chain detected") {
 		t.Errorf("expected chain detection log, got stderr: %s", stderr.String())
+	}
+}
+
+func TestRunWSProxy_InputDLPWithAuditLogger(t *testing.T) {
+	// Exercises the non-nil auditLogger path in scanHTTPInput via RunWSProxy.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, _, _, err := ws.UpgradeHTTP(r, w)
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		time.Sleep(200 * time.Millisecond)
+	}))
+	defer srv.Close()
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+
+	fakeKey := "AKIA" + "IOSFODNN7EXAMPLE"
+	stdin := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"text":"` + fakeKey + `"}}}` + "\n")
+	var stdout, stderr bytes.Buffer
+
+	inputCfg := &InputScanConfig{
+		Enabled:      true,
+		Action:       config.ActionBlock,
+		OnParseError: config.ActionBlock,
+	}
+
+	al := audit.NewNop()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := RunWSProxy(ctx, stdin, &stdout, &stderr, wsURL(srv), sc, nil, inputCfg, nil, nil, nil, nil, al)
+	if err != nil {
+		t.Fatalf("RunWSProxy: %v", err)
+	}
+
+	output := strings.TrimSpace(stdout.String())
+	if !strings.Contains(output, "-32001") {
+		t.Errorf("expected input block error code -32001, got: %s", output)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
@@ -2077,6 +2078,47 @@ func TestForwardScannedInput_ChainDetectionBlock(t *testing.T) {
 	}
 	if !strings.Contains(logBuf.String(), "chain detected") {
 		t.Errorf("expected chain detection log, got: %s", logBuf.String())
+	}
+}
+
+func TestForwardScannedInput_ChainDetectionBlock_WithAuditLogger(t *testing.T) {
+	sc := testScanner(t)
+	al := audit.NewNop()
+
+	chainCfg := &config.ToolChainDetection{
+		Enabled:       true,
+		Action:        config.ActionBlock,
+		WindowSize:    20,
+		WindowSeconds: 300,
+		MaxGap:        intPtrInput(3),
+		PatternOverrides: map[string]string{
+			"read-then-exec": "block",
+		},
+	}
+	cm := chains.New(chainCfg)
+
+	input := makeRequest(1, "tools/call", map[string]string{"name": "read_file"}) + "\n" +
+		makeRequest(2, "tools/call", map[string]string{"name": "execute_command"}) + "\n"
+	clientReader := transport.NewStdioReader(strings.NewReader(input))
+
+	var serverBuf bytes.Buffer
+	serverWriter := transport.NewStdioWriter(&serverBuf)
+
+	var logBuf bytes.Buffer
+	blockedCh := make(chan BlockedRequest, 16)
+
+	go ForwardScannedInput(clientReader, serverWriter, &logBuf, sc, "warn", "block", blockedCh, nil, nil, nil, cm, nil, al)
+
+	var blocked []BlockedRequest
+	for b := range blockedCh {
+		blocked = append(blocked, b)
+	}
+
+	if len(blocked) != 1 {
+		t.Fatalf("expected 1 blocked request from chain detection with audit logger, got %d", len(blocked))
+	}
+	if blocked[0].ErrorCode != -32004 {
+		t.Errorf("expected error code -32004, got %d", blocked[0].ErrorCode)
 	}
 }
 

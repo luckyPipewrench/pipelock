@@ -249,6 +249,12 @@ func extractDomain(ev *Event) string {
 		raw = ev.Target
 	}
 	if raw == "" {
+		raw = ev.ConnectHost
+	}
+	if raw == "" {
+		raw = ev.SNIHost
+	}
+	if raw == "" {
 		return ""
 	}
 
@@ -320,7 +326,10 @@ func classifyEvent(ev *Event, s *Summary) {
 			s.Warnings++
 		}
 	case eventResponseScan, eventWSScan:
-		if ev.Action == actionWarn {
+		switch ev.Action {
+		case actionBlock:
+			s.Blocks++
+		case actionWarn:
 			s.Warnings++
 		}
 	case eventChainDetection:
@@ -633,7 +642,7 @@ func isBlockEvent(ev *Event) bool {
 		return true
 	}
 	switch ev.Event {
-	case eventBodyDLP, eventHeaderDLP, eventChainDetection, eventMCPUnknownTool:
+	case eventResponseScan, eventWSScan, eventBodyDLP, eventHeaderDLP, eventChainDetection, eventMCPUnknownTool:
 		return ev.Action == actionBlock
 	}
 	return false

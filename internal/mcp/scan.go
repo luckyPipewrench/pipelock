@@ -96,6 +96,67 @@ func ScanResponse(line []byte, sc *scanner.Scanner) jsonrpc.ScanVerdict {
 	}
 }
 
+// scanToolsListNonToolFields scans a tools/list response for injection only in
+// non-tool fields (error, params). The result field contains tool descriptions
+// which include instructional text that would trigger false positives in the
+// general injection scanner. Tool descriptions are scanned separately by the
+// dedicated tool scanning subsystem (internal/mcp/tools).
+func scanToolsListNonToolFields(line []byte, sc *scanner.Scanner) jsonrpc.ScanVerdict {
+	var rpc jsonrpc.RPCResponse
+	if err := json.Unmarshal(line, &rpc); err != nil {
+		return jsonrpc.ScanVerdict{Clean: false, Error: fmt.Sprintf("invalid JSON: %v", err)}
+	}
+
+	if rpc.JSONRPC != jsonrpc.Version {
+		return jsonrpc.ScanVerdict{
+			ID:    rpc.ID,
+			Clean: false,
+			Error: fmt.Sprintf("not a JSON-RPC 2.0 response: jsonrpc=%q", rpc.JSONRPC),
+		}
+	}
+
+	var text string
+
+	// Scan error field (injection can hide in error messages).
+	if len(rpc.Error) > 0 && string(rpc.Error) != jsonrpc.Null {
+		var rpcErr jsonrpc.RPCError
+		if err := json.Unmarshal(rpc.Error, &rpcErr); err == nil && rpcErr.Message != "" {
+			text = rpcErr.Message
+			if errData := jsonrpc.ExtractText(rpcErr.Data); errData != "" {
+				text += "\n" + errData
+			}
+		} else if errText := jsonrpc.ExtractText(rpc.Error); errText != "" {
+			text = errText
+		}
+	}
+
+	// Scan params (server notifications can carry payloads).
+	if len(rpc.Params) > 0 && string(rpc.Params) != jsonrpc.Null {
+		if paramsText := jsonrpc.ExtractText(rpc.Params); paramsText != "" {
+			if text != "" {
+				text += "\n"
+			}
+			text += paramsText
+		}
+	}
+
+	if text == "" {
+		return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: true}
+	}
+
+	result := sc.ScanResponse(text)
+	if result.Clean {
+		return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: true}
+	}
+
+	return jsonrpc.ScanVerdict{
+		ID:      rpc.ID,
+		Clean:   false,
+		Action:  sc.ResponseAction(),
+		Matches: result.Matches,
+	}
+}
+
 // scanBatch scans a JSON-RPC 2.0 batch response (array of responses).
 // Returns a combined verdict aggregating matches from all elements.
 func scanBatch(line []byte, sc *scanner.Scanner) jsonrpc.ScanVerdict {

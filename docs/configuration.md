@@ -466,6 +466,22 @@ mcp_session_binding:
 
 Tool baseline caps at 10,000 tools per session to prevent memory exhaustion.
 
+## MCP WebSocket Listener
+
+Controls inbound WebSocket connections when the MCP proxy runs in listener mode with a `ws://` or `wss://` upstream. Loopback origins are always allowed.
+
+```yaml
+mcp_ws_listener:
+  allowed_origins:
+    - "https://example.com"
+  max_connections: 100
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `allowed_origins` | `[]` | Additional browser origins to allow (loopback always allowed) |
+| `max_connections` | `100` | Max concurrent inbound WebSocket connections |
+
 ## Session Profiling
 
 Per-session behavioral analysis that detects domain bursts and volume spikes.

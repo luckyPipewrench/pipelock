@@ -296,6 +296,11 @@ internal:
   - "224.0.0.0/4"
   - "ff00::/8"
 
+# TLS interception: disabled by default because it requires CA setup.
+# To enable: run 'pipelock tls init' to generate a CA, then
+# 'pipelock tls install-ca' to trust it, and set enabled: true below
+# with ca_cert/ca_key paths. Without interception, HTTPS CONNECT traffic
+# is tunneled opaquely (hostname-only scanning).
 tls_interception:
   enabled: false
   ca_cert: ""

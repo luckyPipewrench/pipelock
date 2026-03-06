@@ -37,6 +37,7 @@ func testInterceptSetup(t *testing.T) (*certgen.CertCache, *x509.CertPool, *conf
 	cfg.TLSInterception.MaxResponseBytes = 1024 * 1024
 
 	sc := scanner.New(cfg)
+	t.Cleanup(func() { sc.Close() })
 	logger := audit.NewNop()
 	m := metrics.New()
 	return cache, pool, cfg, sc, logger, m
@@ -93,8 +94,8 @@ func TestInterceptTunnel_BasicRequest(t *testing.T) {
 
 	cache, pool, cfg, sc, logger, m := testInterceptSetup(t)
 
-	host := upstream.Listener.Addr().(*net.TCPAddr).IP.String()
-	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+host+"/test", nil)
+	addr := upstream.Listener.Addr().String() // host:port
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/test", nil)
 
 	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req) //nolint:bodyclose // closed in t.Cleanup inside helper
 	body, _ := io.ReadAll(resp.Body)
@@ -118,11 +119,12 @@ func TestInterceptTunnel_BlocksSecretInBody(t *testing.T) {
 	cfg.RequestBodyScanning.Action = config.ActionBlock
 	// Recreate scanner with body scanning config.
 	sc := scanner.New(cfg)
+	t.Cleanup(func() { sc.Close() })
 
-	host := upstream.Listener.Addr().(*net.TCPAddr).IP.String()
+	addr := upstream.Listener.Addr().String()
 	secret := "AKIA" + "IOSFODNN7EXAMPLE"
 	body := fmt.Sprintf(`{"data": "%s"}`, secret)
-	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://"+host+"/api", strings.NewReader(body))
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://"+addr+"/api", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 
 	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req) //nolint:bodyclose // closed in t.Cleanup inside helper
@@ -188,9 +190,10 @@ func TestInterceptTunnel_BlocksInjection(t *testing.T) {
 	cfg.ResponseScanning.Action = config.ActionBlock
 	// Recreate scanner with response scanning enabled.
 	sc := scanner.New(cfg)
+	t.Cleanup(func() { sc.Close() })
 
-	host := upstream.Listener.Addr().(*net.TCPAddr).IP.String()
-	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+host+"/page", nil)
+	addr := upstream.Listener.Addr().String()
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/page", nil)
 
 	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req) //nolint:bodyclose // closed in t.Cleanup inside helper
 
@@ -211,9 +214,10 @@ func TestInterceptTunnel_AskActionBlocksWithoutHITL(t *testing.T) {
 	cfg.ResponseScanning.Enabled = true
 	cfg.ResponseScanning.Action = config.ActionAsk
 	sc := scanner.New(cfg)
+	t.Cleanup(func() { sc.Close() })
 
-	host := upstream.Listener.Addr().(*net.TCPAddr).IP.String()
-	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+host+"/page", nil)
+	addr := upstream.Listener.Addr().String()
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/page", nil)
 
 	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req) //nolint:bodyclose // closed in t.Cleanup inside helper
 
@@ -231,8 +235,8 @@ func TestInterceptTunnel_BlocksCompressedResponse(t *testing.T) {
 
 	cache, pool, cfg, sc, logger, m := testInterceptSetup(t)
 
-	host := upstream.Listener.Addr().(*net.TCPAddr).IP.String()
-	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+host+"/data", nil)
+	addr := upstream.Listener.Addr().String()
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/data", nil)
 
 	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req) //nolint:bodyclose // closed in t.Cleanup inside helper
 
@@ -251,8 +255,8 @@ func TestInterceptTunnel_OversizedResponseBlocked(t *testing.T) {
 	cache, pool, cfg, sc, logger, m := testInterceptSetup(t)
 	cfg.TLSInterception.MaxResponseBytes = 1024 // 1KB limit
 
-	host := upstream.Listener.Addr().(*net.TCPAddr).IP.String()
-	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+host+"/large", nil)
+	addr := upstream.Listener.Addr().String()
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/large", nil)
 
 	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req) //nolint:bodyclose // closed in t.Cleanup inside helper
 
@@ -274,10 +278,11 @@ func TestInterceptTunnel_HeaderDLPBlocked(t *testing.T) {
 	cfg.RequestBodyScanning.HeaderMode = config.HeaderModeSensitive
 	cfg.RequestBodyScanning.SensitiveHeaders = []string{"Authorization", "Cookie", "X-Api-Key"}
 	sc := scanner.New(cfg)
+	t.Cleanup(func() { sc.Close() })
 
-	host := upstream.Listener.Addr().(*net.TCPAddr).IP.String()
+	addr := upstream.Listener.Addr().String()
 	secret := "sk-ant-" + "api03-test123456789abcdef"
-	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+host+"/api", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/api", nil)
 	req.Header.Set("Authorization", "Bearer "+secret)
 
 	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req) //nolint:bodyclose // closed in t.Cleanup inside helper
@@ -311,7 +316,7 @@ func TestInterceptTunnel_UpstreamError(t *testing.T) {
 	})
 	defer tlsConn.Close() //nolint:errcheck
 
-	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+host+"/test", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+net.JoinHostPort(host, port)+"/test", nil)
 	if err := req.Write(tlsConn); err != nil {
 		t.Fatalf("write: %v", err)
 	}

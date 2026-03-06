@@ -19,6 +19,8 @@
 /internal/wsutil/ @luckyPipewrench @DeathCamel58
 /internal/metrics/ @luckyPipewrench @DeathCamel58
 /internal/preflight/ @luckyPipewrench @DeathCamel58
+/internal/certgen/ @luckyPipewrench @DeathCamel58
+/internal/report/ @luckyPipewrench @DeathCamel58
 /.github/workflows/ @luckyPipewrench @DeathCamel58
 /.goreleaser.yaml @luckyPipewrench @DeathCamel58
 /Dockerfile @luckyPipewrench @DeathCamel58

@@ -3,6 +3,7 @@ package certgen
 import (
 	"bytes"
 	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -312,6 +313,66 @@ func TestLoadCA_MissingKeyFile(t *testing.T) {
 	}
 }
 
+func TestLoadCA_RejectsNonCA(t *testing.T) {
+	// Generate a CA and then create a non-CA leaf cert.
+	ca, caKey, _, err := GenerateCA("Test", 24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := NewCertCache(ca, caKey, time.Hour, 100)
+	// Get a leaf cert (not a CA).
+	leafCert, err := cache.Get("example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	certPath := filepath.Join(dir, "leaf.pem")
+	keyPath := filepath.Join(dir, "leaf-key.pem")
+
+	// Write the leaf cert PEM.
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafCert.Certificate[0]})
+	if err := os.WriteFile(certPath, certPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Write the CA key PEM (mismatched with leaf cert).
+	keyDER, _ := x509.MarshalECPrivateKey(caKey)
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = LoadCA(certPath, keyPath)
+	if err == nil {
+		t.Error("expected error for non-CA certificate")
+	}
+}
+
+func TestLoadCA_RejectsMismatchedKey(t *testing.T) {
+	dir := t.TempDir()
+	certPath := filepath.Join(dir, "ca.pem")
+	keyPath := filepath.Join(dir, "ca-key.pem")
+
+	// Generate two CAs.
+	ca1, _, _, err := GenerateCA("CA1", 24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, key2, _, err := GenerateCA("CA2", 24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Save cert from CA1 with key from CA2.
+	if err := SaveCAForce(certPath, keyPath, ca1, key2); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = LoadCA(certPath, keyPath)
+	if err == nil {
+		t.Error("expected error for mismatched key")
+	}
+}
+
 func TestInstallCA_PrintsInstructions(t *testing.T) {
 	var buf bytes.Buffer
 	if err := InstallCA(&buf, "/tmp/ca.pem"); err != nil {
@@ -346,7 +407,7 @@ func TestWriteCAFiles_ReadOnlyDir(t *testing.T) {
 	if err := os.Chmod(roDir, 0o444); err != nil { //nolint:gosec // test: intentionally restrictive perms
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(roDir, 0o600) })
+	t.Cleanup(func() { _ = os.Chmod(roDir, 0o750) }) //nolint:gosec // test: restore dir permissions for cleanup
 
 	err = writeCAFiles(certPath, keyPath, ca, key)
 	if err == nil {

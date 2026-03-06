@@ -4264,6 +4264,56 @@ func TestTLSInterception_ValidateMissingCert(t *testing.T) {
 	}
 }
 
+func TestTLSInterception_ValidateNegativeTTL(t *testing.T) {
+	cfg := Defaults()
+	cfg.Internal = nil
+	cfg.TLSInterception.Enabled = true
+	cfg.TLSInterception.CertTTL = "-1h"
+	err := cfg.Validate()
+	if err == nil {
+		t.Error("expected error for negative cert_ttl")
+	}
+}
+
+func TestTLSInterception_ValidatePermissiveKey(t *testing.T) {
+	dir := t.TempDir()
+	certPath := filepath.Join(dir, "ca.pem")
+	keyPath := filepath.Join(dir, "ca-key.pem")
+	if err := os.WriteFile(certPath, []byte("fake"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, []byte("fake"), 0o644); err != nil { //nolint:gosec // test: intentionally permissive
+		t.Fatal(err)
+	}
+
+	cfg := Defaults()
+	cfg.Internal = nil
+	cfg.TLSInterception.Enabled = true
+	cfg.TLSInterception.CACertPath = certPath
+	cfg.TLSInterception.CAKeyPath = keyPath
+	err := cfg.Validate()
+	if err == nil {
+		t.Error("expected error for world-readable CA key")
+	}
+	if err != nil && !strings.Contains(err.Error(), "too permissive") {
+		t.Errorf("error = %q, want 'too permissive'", err)
+	}
+}
+
+func TestTLSInterception_ApplyDefaultsTLS(t *testing.T) {
+	cfg := &Config{}
+	cfg.ApplyDefaults()
+	if cfg.TLSInterception.CertTTL != "24h" {
+		t.Errorf("cert_ttl = %q after ApplyDefaults, want 24h", cfg.TLSInterception.CertTTL)
+	}
+	if cfg.TLSInterception.CertCacheSize != 10000 {
+		t.Errorf("cert_cache_size = %d after ApplyDefaults, want 10000", cfg.TLSInterception.CertCacheSize)
+	}
+	if cfg.TLSInterception.MaxResponseBytes != 5*1024*1024 {
+		t.Errorf("max_response_bytes = %d after ApplyDefaults, want 5MB", cfg.TLSInterception.MaxResponseBytes)
+	}
+}
+
 func TestTLSInterception_ResolveCAPath(t *testing.T) {
 	cfg := Defaults()
 

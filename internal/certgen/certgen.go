@@ -177,6 +177,20 @@ func LoadCA(certPath, keyPath string) (*x509.Certificate, *ecdsa.PrivateKey, err
 		return nil, nil, fmt.Errorf("parse CA key: %w", err)
 	}
 
+	if !cert.IsCA {
+		return nil, nil, errors.New("certificate is not a CA")
+	}
+	if cert.KeyUsage&x509.KeyUsageCertSign == 0 {
+		return nil, nil, errors.New("CA certificate missing KeyUsageCertSign")
+	}
+	certPub, ok := cert.PublicKey.(*ecdsa.PublicKey)
+	if !ok {
+		return nil, nil, errors.New("CA certificate public key is not ECDSA")
+	}
+	if !certPub.Equal(key.Public()) {
+		return nil, nil, errors.New("CA key does not match certificate")
+	}
+
 	return cert, key, nil
 }
 

@@ -200,15 +200,19 @@ func newInterceptHandler(
 ) http.Handler {
 	target := net.JoinHostPort(targetHost, targetPort)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Authority check: Host must match CONNECT target.
+		// Authority check: Host must match CONNECT target (host:port).
 		// Prevents domain fronting where the agent CONNECTs to allowed.com
-		// but sends Host: evil.com inside the encrypted tunnel.
-		reqHost := r.Host
-		if h, _, err := net.SplitHostPort(reqHost); err == nil {
-			reqHost = h
+		// but sends Host: evil.com inside the encrypted tunnel. Also prevents
+		// port mismatch (e.g. Host: example.com:8443 inside tunnel to :443).
+		reqHost, reqPort, splitErr := net.SplitHostPort(r.Host)
+		if splitErr != nil {
+			// No port in Host header: treat as default HTTPS port.
+			reqHost = r.Host
+			reqPort = "443"
 		}
-		if !strings.EqualFold(reqHost, targetHost) {
-			logger.LogBlocked(r.Method, r.URL.Path, "tls_authority_mismatch", "authority mismatch: "+reqHost+" vs "+targetHost, clientIP, requestID)
+		if !strings.EqualFold(reqHost, targetHost) || reqPort != targetPort {
+			mismatch := r.Host + " vs " + target
+			logger.LogBlocked(r.Method, r.URL.Path, "tls_authority_mismatch", "authority mismatch: "+mismatch, clientIP, requestID)
 			m.RecordTLSRequestBlocked("authority_mismatch")
 			http.Error(w, "authority mismatch: blocked", http.StatusForbidden)
 			return

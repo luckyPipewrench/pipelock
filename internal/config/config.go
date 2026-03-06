@@ -68,6 +68,9 @@ const (
 
 	// HashDefaults is returned by Config.Hash() when no config file was loaded.
 	HashDefaults = "defaults"
+
+	// DefaultCertTTL is the default TLS interception leaf certificate TTL.
+	DefaultCertTTL = "24h"
 )
 
 // SuppressEntry defines a finding suppression rule for false positives.
@@ -701,6 +704,17 @@ func (c *Config) ApplyDefaults() {
 		c.ToolChainDetection.MaxGap = &d
 	}
 
+	// TLS interception defaults
+	if c.TLSInterception.CertTTL == "" {
+		c.TLSInterception.CertTTL = DefaultCertTTL
+	}
+	if c.TLSInterception.CertCacheSize <= 0 {
+		c.TLSInterception.CertCacheSize = 10000
+	}
+	if c.TLSInterception.MaxResponseBytes <= 0 {
+		c.TLSInterception.MaxResponseBytes = 5 * 1024 * 1024 // 5MB
+	}
+
 	// MCP WS listener defaults
 	if c.MCPWSListener.MaxConnections <= 0 {
 		c.MCPWSListener.MaxConnections = 100
@@ -1089,8 +1103,12 @@ func (c *Config) Validate() error {
 
 	// Validate TLS interception config
 	if c.TLSInterception.Enabled {
-		if _, err := time.ParseDuration(c.TLSInterception.CertTTL); err != nil {
+		ttl, err := time.ParseDuration(c.TLSInterception.CertTTL)
+		if err != nil {
 			return fmt.Errorf("tls_interception.cert_ttl: %w", err)
+		}
+		if ttl <= 0 {
+			return errors.New("tls_interception.cert_ttl must be positive")
 		}
 		if c.TLSInterception.CertCacheSize <= 0 {
 			return errors.New("tls_interception.cert_cache_size must be > 0")
@@ -1105,8 +1123,12 @@ func (c *Config) Validate() error {
 		if _, err := os.Stat(certPath); err != nil {
 			return fmt.Errorf("CA cert not found at %s (run 'pipelock tls init'): %w", certPath, err)
 		}
-		if _, err := os.Stat(keyPath); err != nil {
+		keyInfo, err := os.Stat(keyPath)
+		if err != nil {
 			return fmt.Errorf("CA key not found at %s (run 'pipelock tls init'): %w", keyPath, err)
+		}
+		if keyInfo.Mode().Perm()&0o077 != 0 {
+			return fmt.Errorf("CA key %s is too permissive (mode %04o): restrict to 0600", keyPath, keyInfo.Mode().Perm())
 		}
 	}
 
@@ -1686,7 +1708,7 @@ func Defaults() *Config {
 		},
 		TLSInterception: TLSInterception{
 			Enabled:          false,
-			CertTTL:          "24h",
+			CertTTL:          DefaultCertTTL,
 			CertCacheSize:    10000,
 			MaxResponseBytes: 5 * 1024 * 1024, // 5MB
 		},

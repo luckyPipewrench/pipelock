@@ -178,6 +178,12 @@ Pipelock has 8 direct dependencies. This is intentional. Any new dependency must
 - **Features**: Open a GitHub issue describing the use case
 - **Scanner bypasses**: Use the security bypass issue template
 
+## Contributor License Agreement
+
+We use a [Contributor License Agreement](https://cla-assistant.io/luckyPipewrench/pipelock) (CLA) for all contributions. When you open your first PR, the CLA Assistant bot will ask you to sign electronically. This is a one-time process that takes about 30 seconds.
+
+The CLA is based on the [Apache Individual Contributor License Agreement](https://www.apache.org/licenses/icla.pdf). It grants the project the right to use your contribution under the project's license terms while you retain ownership of your work.
+
 ## License
 
 By contributing, you agree that your contributions will be licensed under the [Apache License 2.0](LICENSE).

@@ -292,8 +292,8 @@ dlp:
 | `scan_env` | `true` | Scan environment variables for leaked values |
 | `secrets_file` | `""` | Path to file with known secrets (one per line) |
 | `min_env_secret_length` | `16` | Min env var value length to consider |
-| `include_defaults` | `true` | Merge your patterns with the 35 built-in patterns |
-| `patterns` | 35 built-in | DLP pattern list (22 credential + 13 injection) |
+| `include_defaults` | `true` | Merge your patterns with the 22 built-in patterns |
+| `patterns` | 22 built-in | DLP credential detection patterns |
 
 ### Pattern Merging
 
@@ -301,7 +301,7 @@ When `include_defaults` is true (default), your patterns are merged with the bui
 
 Set `include_defaults: false` to use only your patterns.
 
-### Built-in DLP Patterns (35)
+### Built-in DLP Patterns (22)
 
 | Pattern | Regex Prefix | Severity |
 |---------|-------------|----------|

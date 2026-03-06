@@ -230,7 +230,7 @@ func TestIsNonSecretEnvName(t *testing.T) {
 		{"XDG_RUNTIME_DIR", true},
 		// Mixed-case variants (Windows-style)
 		{"Path", true},
-		{"UserProfile", true}, // upper = USERPROFILE — not in list, but check below
+		{"UserProfile", true},
 		{"Pwd", true},
 		{"Home", true},
 		{"Shell", true},

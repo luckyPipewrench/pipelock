@@ -212,10 +212,9 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		certCache := p.certCachePtr.Load()
 		if certCache == nil {
 			// Fail-closed: TLS interception is enabled but cert cache is missing.
-			// Block rather than silently downgrading to raw tunneling.
+			// Connection is already hijacked, so close both sides (deferred).
 			p.logger.LogError(http.MethodConnect, host, clientIP, requestID, fmt.Errorf("TLS interception enabled but cert cache unavailable"))
 			p.metrics.RecordTLSIntercept("failed")
-			http.Error(w, "TLS interception unavailable", http.StatusServiceUnavailable)
 			return
 		}
 		// Close the pre-established upstream TCP connection since interceptTunnel

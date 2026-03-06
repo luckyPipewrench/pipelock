@@ -1529,6 +1529,47 @@ func TestConnectSNIMalformed(t *testing.T) {
 	}
 }
 
+func TestConnectTLSInterceptNoCertCache(t *testing.T) {
+	// TLS interception enabled but no cert cache loaded: must fail-closed (503).
+	echoLn := listenEcho(t)
+	defer func() { _ = echoLn.Close() }()
+
+	proxyAddr, cleanup := setupForwardProxy(t, func(cfg *config.Config) {
+		cfg.TLSInterception.Enabled = true
+	})
+	defer cleanup()
+
+	conn := dialProxy(t, proxyAddr)
+	defer func() { _ = conn.Close() }()
+
+	target := echoLn.Addr().String()
+	_, _ = fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target)
+
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	// After 200 Connection Established, send TLS ClientHello.
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	host, _, _ := net.SplitHostPort(target)
+	ch := buildClientHello(host)
+	_, _ = conn.Write(ch)
+
+	// Fail-closed: connection should be closed (deferred cleanup).
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	buf := make([]byte, 1024)
+	_, readErr := br.Read(buf)
+	if readErr == nil {
+		t.Error("expected read error (connection closed), got nil")
+	}
+}
+
 func TestBidirectionalCopy(t *testing.T) {
 	// Test bidirectional copy with a near-immediate deadline
 	server, client := net.Pipe()

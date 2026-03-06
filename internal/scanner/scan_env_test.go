@@ -158,6 +158,121 @@ func TestExtractEnvSecrets_FiltersCorrectly(t *testing.T) {
 	}
 }
 
+func TestExtractEnvSecrets_SkipsNonSecretNames(t *testing.T) {
+	// Set well-known non-secret vars with values that would otherwise
+	// pass length and entropy filters.
+	highEntropyPath := "/home/testuser/dev/pipelock-project"
+	t.Setenv("PWD", highEntropyPath)
+	t.Setenv("HOME", "/home/testuser/complex-dirname")
+	t.Setenv("PATH", "/usr/local/bin:/usr/bin:/home/testuser/.local/bin:/opt/go/bin")
+	t.Setenv("LS_COLORS", "rs=0:di=01;34:ln=01;36:mh=00:pi=40;33")
+	t.Setenv("XDG_DATA_HOME", "/home/testuser/.local/share/data")
+	t.Setenv("LC_ALL", "en_US.UTF-8-something-long-enough")
+
+	// Also set a real secret to confirm those still get collected.
+	// Split at regex boundary to avoid self-scan false positive.
+	realSecret := "sk-" + "ant-realkey-abcdefghij12345"
+	t.Setenv("PIPELOCK_REAL_SECRET", realSecret)
+
+	secrets := extractEnvSecrets(16)
+
+	for _, s := range secrets {
+		if s == highEntropyPath {
+			t.Error("PWD value should be skipped (non-secret env var name)")
+		}
+		if s == "/home/testuser/complex-dirname" {
+			t.Error("HOME value should be skipped")
+		}
+		if strings.Contains(s, "/usr/local/bin") {
+			t.Error("PATH value should be skipped")
+		}
+		if strings.Contains(s, "rs=0:di=01") {
+			t.Error("LS_COLORS value should be skipped")
+		}
+		if strings.Contains(s, ".local/share/data") {
+			t.Error("XDG_DATA_HOME value should be skipped (XDG_ prefix)")
+		}
+		if strings.Contains(s, "UTF-8-something") {
+			t.Error("LC_ALL value should be skipped (LC_ prefix)")
+		}
+	}
+
+	// The real secret must still be collected.
+	found := false
+	for _, s := range secrets {
+		if s == realSecret {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("real secret should still be collected after skipping non-secret names")
+	}
+}
+
+func TestIsNonSecretEnvName(t *testing.T) {
+	tests := []struct {
+		name string
+		want bool
+	}{
+		{"PWD", true},
+		{"HOME", true},
+		{"PATH", true},
+		{"LS_COLORS", true},
+		{"SHELL", true},
+		{"USER", true},
+		{"DISPLAY", true},
+		{"GOPATH", true},
+		{"EDITOR", true},
+		// Prefix matches
+		{"LC_ALL", true},
+		{"LC_CTYPE", true},
+		{"XDG_DATA_HOME", true},
+		{"XDG_RUNTIME_DIR", true},
+		// Mixed-case variants (Windows-style)
+		{"Path", true},
+		{"UserProfile", true},
+		{"Pwd", true},
+		{"Home", true},
+		{"Shell", true},
+		{"xdg_data_home", true},
+		{"lc_all", true},
+		// Actual secrets should NOT match
+		{"API_KEY", false},
+		{"AWS_SECRET_ACCESS_KEY", false},
+		{"DATABASE_URL", false},
+		{"ANTHROPIC_API_KEY", false},
+		{"PIPELOCK_TOKEN", false},
+		{"GITHUB_TOKEN", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isNonSecretEnvName(tt.name)
+			if got != tt.want {
+				t.Errorf("isNonSecretEnvName(%q) = %v, want %v", tt.name, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestScan_EnvLeakDetection_PWDNotBlocked(t *testing.T) {
+	cfg := testConfig()
+	cfg.DLP.ScanEnv = true
+	cfg.DLP.Patterns = nil
+
+	// Simulate the exact scenario: PWD value appears in MCP tool argument.
+	pwdValue := "/home/testuser/dev/pipelock-project"
+	t.Setenv("PWD", pwdValue)
+	s := New(cfg)
+
+	// The PWD value should NOT trigger env leak detection.
+	result := s.Scan("https://example.com/?cwd=" + pwdValue)
+	if !result.Allowed {
+		t.Errorf("PWD value in URL should not be blocked, got: scanner=%s reason=%s",
+			result.Scanner, result.Reason)
+	}
+}
+
 func TestScan_EnvLeakDetection_GenericMessage(t *testing.T) {
 	cfg := testConfig()
 	cfg.DLP.ScanEnv = true

@@ -1918,7 +1918,7 @@ func TestLogChainDetection_JSONFormat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogChainDetection("exfil_then_delete", "critical", actionBlock, "filesystem_delete", "session-abc")
+	logger.LogChainDetection("exfil_then_delete", severityCritical, actionBlock, "filesystem_delete", "session-abc")
 	logger.Close()
 
 	data, _ := os.ReadFile(filepath.Clean(path))
@@ -1933,8 +1933,12 @@ func TestLogChainDetection_JSONFormat(t *testing.T) {
 	if entry["pattern"] != "exfil_then_delete" {
 		t.Errorf("pattern = %v, want exfil_then_delete", entry["pattern"])
 	}
-	if entry["severity"] != "critical" {
-		t.Errorf("severity = %v, want critical", entry["severity"])
+	// pattern_severity is the caller-provided metadata; severity is derived from action.
+	if entry["pattern_severity"] != severityCritical {
+		t.Errorf("pattern_severity = %v, want %s", entry["pattern_severity"], severityCritical)
+	}
+	if entry["severity"] != severityCritical {
+		t.Errorf("severity = %v, want %s (derived from block action)", entry["severity"], severityCritical)
 	}
 	if entry["action"] != actionBlock {
 		t.Errorf("action = %v, want block", entry["action"])
@@ -1954,7 +1958,7 @@ func TestLogChainDetection_Emitter_Block(t *testing.T) {
 	logger, sink := newLoggerWithEmitter(t)
 	defer logger.Close()
 
-	logger.LogChainDetection("exfil_then_delete", "critical", actionBlock, "filesystem_delete", "session-abc")
+	logger.LogChainDetection("exfil_then_delete", severityCritical, actionBlock, "filesystem_delete", "session-abc")
 
 	ev, ok := sink.lastEvent()
 	if !ok {
@@ -1968,6 +1972,12 @@ func TestLogChainDetection_Emitter_Block(t *testing.T) {
 	}
 	if ev.Fields["pattern"] != "exfil_then_delete" {
 		t.Errorf("pattern = %v, want exfil_then_delete", ev.Fields["pattern"])
+	}
+	if ev.Fields["pattern_severity"] != severityCritical {
+		t.Errorf("pattern_severity = %v, want %s", ev.Fields["pattern_severity"], severityCritical)
+	}
+	if ev.Fields["severity"] != severityCritical {
+		t.Errorf("severity = %v, want %s (derived from block action)", ev.Fields["severity"], severityCritical)
 	}
 	if ev.Fields["tool"] != "filesystem_delete" {
 		t.Errorf("tool = %v, want filesystem_delete", ev.Fields["tool"])

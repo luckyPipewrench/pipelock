@@ -495,12 +495,13 @@ func TestParseTimeFlag(t *testing.T) {
 		name    string
 		input   string
 		wantErr bool
-		check   func(time.Time)
+		check   func(*testing.T, time.Time)
 	}{
 		{
 			name:  "RFC3339",
 			input: "2026-03-05T10:00:00Z",
-			check: func(got time.Time) {
+			check: func(t *testing.T, got time.Time) {
+				t.Helper()
 				want := time.Date(2026, 3, 5, 10, 0, 0, 0, time.UTC)
 				if !got.Equal(want) {
 					t.Errorf("RFC3339: got %v, want %v", got, want)
@@ -510,7 +511,8 @@ func TestParseTimeFlag(t *testing.T) {
 		{
 			name:  "date only",
 			input: "2026-03-05",
-			check: func(got time.Time) {
+			check: func(t *testing.T, got time.Time) {
+				t.Helper()
 				want := time.Date(2026, 3, 5, 0, 0, 0, 0, time.UTC)
 				if !got.Equal(want) {
 					t.Errorf("date: got %v, want %v", got, want)
@@ -536,7 +538,7 @@ func TestParseTimeFlag(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			tt.check(got)
+			tt.check(t, got)
 		})
 	}
 }

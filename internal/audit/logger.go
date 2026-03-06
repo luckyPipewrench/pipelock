@@ -96,6 +96,12 @@ const ScannerDLP = "dlp"
 // (which would create a dependency cycle). Used for emit severity mapping.
 const actionBlock = "block"
 
+// Severity constants mirroring config.Severity* to avoid a dependency cycle.
+const (
+	severityCritical = "critical"
+	severityWarn     = "warn"
+)
+
 // Logger handles structured audit logging using zerolog.
 type Logger struct {
 	zl             zerolog.Logger
@@ -707,14 +713,24 @@ func (l *Logger) LogHeaderDLP(method, url, headerName, action, clientIP, request
 }
 
 // LogChainDetection logs a tool call chain pattern detection.
-// Severity tracks the action: block is critical, warn is warn.
-func (l *Logger) LogChainDetection(pattern, severity, action, toolName, sessionKey string) {
+// LogChainDetection logs a tool call chain pattern match.
+// Severity is derived from action (block=critical, warn=warn) per the
+// architectural rule that event severity is hardcoded, not caller-controlled.
+// The pattern's own severity is preserved as pattern_severity metadata.
+func (l *Logger) LogChainDetection(pattern, patternSeverity, action, toolName, sessionKey string) {
 	technique := TechniqueForScanner("chain_detection")
+
+	// Derive severity from action, not from caller input.
+	derivedSev := severityWarn
+	if action == actionBlock {
+		derivedSev = severityCritical
+	}
 
 	l.zl.Warn().
 		Str("event", string(EventChainDetection)).
 		Str("pattern", sanitizeString(pattern)).
-		Str("severity", severity).
+		Str("pattern_severity", patternSeverity).
+		Str("severity", derivedSev).
 		Str("action", action).
 		Str("tool", sanitizeString(toolName)).
 		Str("session", sanitizeString(sessionKey)).
@@ -727,12 +743,13 @@ func (l *Logger) LogChainDetection(pattern, severity, action, toolName, sessionK
 			sev = emit.SeverityCritical
 		}
 		l.emitter.EmitWithSeverity(context.Background(), sev, string(EventChainDetection), map[string]any{
-			"pattern":         sanitizeString(pattern),
-			"severity":        severity,
-			"action":          action,
-			"tool":            sanitizeString(toolName),
-			"session":         sanitizeString(sessionKey),
-			"mitre_technique": technique,
+			"pattern":          sanitizeString(pattern),
+			"pattern_severity": patternSeverity,
+			"severity":         derivedSev,
+			"action":           action,
+			"tool":             sanitizeString(toolName),
+			"session":          sanitizeString(sessionKey),
+			"mitre_technique":  technique,
 		})
 	}
 }

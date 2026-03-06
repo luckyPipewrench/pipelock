@@ -114,8 +114,6 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		}
 		lineNum++
 
-		verdict := ScanResponse(line, sc)
-
 		// MCP does not use JSON-RPC batch messages (top-level arrays).
 		// A batch from the server is either malformed or an attempt to
 		// bypass per-message ID validation. Fail closed.
@@ -145,10 +143,15 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			}
 		}
 
-		// Tool scanning runs on every response, independent of general scan
-		// verdict. A general scan "warn" must not bypass a tool scan "block".
+		// Tool scanning runs first. tools/list responses contain instructional
+		// text ("you must call this tool") that the general injection scanner
+		// would flag as false positives. The dedicated tool scanner uses
+		// purpose-built poisoning patterns instead. When tool scanning
+		// identifies a message as tools/list, skip the general scan entirely.
+		isToolsList := false
 		if toolCfg != nil {
 			toolResult := tools.ScanTools(line, sc, toolCfg)
+			isToolsList = toolResult.IsToolsList
 			// Session binding: capture tool names from tools/list responses.
 			if toolResult.IsToolsList && toolCfg.Baseline != nil && len(toolResult.ToolNames) > 0 {
 				if !toolCfg.Baseline.HasBaseline() {
@@ -173,6 +176,13 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				}
 				// warn: logged above, fall through to general handling
 			}
+		}
+
+		// Skip general injection scanning for tools/list responses.
+		// These are handled by the dedicated tool scanner above.
+		verdict := ScanResponse(line, sc)
+		if isToolsList {
+			verdict = jsonrpc.ScanVerdict{Clean: true}
 		}
 
 		if verdict.Clean {

@@ -3,6 +3,7 @@ package report
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"io"
 	"sort"
 	"time"
@@ -55,7 +56,12 @@ func ParseEvents(r io.Reader, opts ParseOptions) (ParseResult, error) {
 	}
 
 	if err := scanner.Err(); err != nil {
-		return ParseResult{}, err
+		// bufio.ErrTooLong means a single line exceeded the buffer.
+		// Count it as a skipped line rather than aborting the whole report.
+		if !errors.Is(err, bufio.ErrTooLong) {
+			return ParseResult{}, err
+		}
+		result.SkippedLines++
 	}
 
 	sort.Slice(result.Events, func(i, j int) bool {

@@ -77,6 +77,7 @@ const (
 	eventBodyDLP        = "body_dlp"
 	eventHeaderDLP      = "header_dlp"
 	eventChainDetection = "chain_detection"
+	eventMCPUnknownTool = "mcp_unknown_tool"
 	eventStartup        = "startup"
 	eventConfigReload   = "config_reload"
 	eventKillSwitchDeny = "kill_switch_deny"
@@ -299,6 +300,12 @@ func classifyEvent(ev *Event, s *Summary) {
 			s.Blocks++
 			s.Criticals++
 		case actionWarn:
+			s.Warnings++
+		}
+	case eventMCPUnknownTool:
+		if ev.Action == actionBlock {
+			s.Blocks++
+		} else {
 			s.Warnings++
 		}
 	}
@@ -528,7 +535,7 @@ func isBlockEvent(ev *Event) bool {
 		return true
 	}
 	switch ev.Event {
-	case eventBodyDLP, eventHeaderDLP, eventChainDetection:
+	case eventBodyDLP, eventHeaderDLP, eventChainDetection, eventMCPUnknownTool:
 		return ev.Action == actionBlock
 	}
 	return false
@@ -542,7 +549,7 @@ func isWarnEvent(ev *Event) bool {
 	switch ev.Event {
 	case eventResponseScan, eventWSScan:
 		return ev.Action == actionWarn
-	case eventChainDetection:
+	case eventChainDetection, eventMCPUnknownTool:
 		return ev.Action == actionWarn
 	case eventBodyDLP, eventHeaderDLP:
 		return ev.Action != actionBlock

@@ -82,15 +82,19 @@ func WriteBundle(dir string, r *Report, privKey ed25519.PrivateKey) error {
 		return fmt.Errorf("writing %s: %w", fileManifest, err)
 	}
 
-	// Sign manifest if key provided.
+	// Sign manifest if key provided; otherwise clean up stale signatures
+	// from a previous signed run in the same directory.
+	sigPath := manifestPath + signing.SigExtension
 	if privKey != nil {
 		sig, err := signing.SignFile(manifestPath, privKey)
 		if err != nil {
 			return fmt.Errorf("signing manifest: %w", err)
 		}
-		if err := signing.SaveSignature(sig, manifestPath+signing.SigExtension); err != nil {
+		if err := signing.SaveSignature(sig, sigPath); err != nil {
 			return fmt.Errorf("saving signature: %w", err)
 		}
+	} else {
+		_ = os.Remove(sigPath) // best-effort cleanup of stale signature
 	}
 
 	return nil

@@ -37,7 +37,7 @@ func RenderHTML(w io.Writer, r *Report) error {
 			}
 		},
 		"formatTime": func(t time.Time) string {
-			return t.Format("2006-01-02 15:04:05 UTC")
+			return t.UTC().Format("2006-01-02 15:04:05 UTC")
 		},
 		"join": func(items []string) string {
 			return strings.Join(items, ", ")

@@ -22,6 +22,7 @@ import (
 
 	readability "github.com/go-shiori/go-readability"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/certgen"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
@@ -101,7 +102,8 @@ var Version = "0.1.0-dev"
 type Proxy struct {
 	cfgPtr        atomic.Pointer[config.Config]
 	scannerPtr    atomic.Pointer[scanner.Scanner]
-	sessionMgrPtr atomic.Pointer[SessionManager] // nil when profiling disabled
+	sessionMgrPtr atomic.Pointer[SessionManager]    // nil when profiling disabled
+	certCachePtr  atomic.Pointer[certgen.CertCache] // nil when TLS interception disabled
 	logger        *audit.Logger
 	metrics       *metrics.Metrics
 	ks            *killswitch.Controller
@@ -251,6 +253,24 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
 			sm.UpdateConfig(&cfg.SessionProfiling)
 		}
 	}
+}
+
+// LoadCertCache creates or replaces the cert cache based on current config.
+// Called at startup and on hot-reload when TLS interception config changes.
+func (p *Proxy) LoadCertCache(cfg *config.Config) error {
+	if !cfg.TLSInterception.Enabled {
+		p.certCachePtr.Store(nil)
+		return nil
+	}
+	certPath, keyPath := cfg.ResolveCAPath()
+	ca, caKey, err := certgen.LoadCA(certPath, keyPath)
+	if err != nil {
+		return fmt.Errorf("load TLS CA: %w (run 'pipelock tls init' to generate)", err)
+	}
+	ttl, _ := time.ParseDuration(cfg.TLSInterception.CertTTL) // already validated
+	cache := certgen.NewCertCache(ca, caKey, ttl, cfg.TLSInterception.CertCacheSize)
+	p.certCachePtr.Store(cache)
+	return nil
 }
 
 // Close releases resources owned by the proxy (session manager goroutine).

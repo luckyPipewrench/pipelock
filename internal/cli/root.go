@@ -95,6 +95,7 @@ Quick start:
 		preflightCmd(),
 		signCmd(),
 		testCmd(),
+		tlsCmd(),
 		verifyCmd(),
 		verifyInstallCmd(),
 		trustCmd(),

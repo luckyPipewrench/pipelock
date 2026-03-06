@@ -2,6 +2,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -159,6 +161,7 @@ type Config struct {
 	Emit                EmitConfig          `yaml:"emit"`
 	ToolChainDetection  ToolChainDetection  `yaml:"tool_chain_detection"`
 	MCPWSListener       MCPWSListener       `yaml:"mcp_ws_listener"`
+	TLSInterception     TLSInterception     `yaml:"tls_interception"`
 	Internal            []string            `yaml:"internal"`
 }
 
@@ -233,6 +236,18 @@ func (f ForwardProxy) SNIVerificationEnabled() bool {
 		return true
 	}
 	return *f.SNIVerification
+}
+
+// TLSInterception configures CONNECT tunnel decryption for body/header scanning.
+type TLSInterception struct {
+	Enabled            bool     `yaml:"enabled"`
+	CACertPath         string   `yaml:"ca_cert"`
+	CAKeyPath          string   `yaml:"ca_key"`
+	PassthroughDomains []string `yaml:"passthrough_domains"`
+	CertTTL            string   `yaml:"cert_ttl"`
+	CertCacheSize      int      `yaml:"cert_cache_size"`
+	MaxResponseBytes   int64    `yaml:"max_response_bytes"`
+	StreamingScan      bool     `yaml:"streaming_scan"`
 }
 
 // WebSocketProxy configures the /ws WebSocket proxy endpoint.
@@ -1052,6 +1067,26 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// Validate TLS interception config
+	if c.TLSInterception.Enabled {
+		if _, err := time.ParseDuration(c.TLSInterception.CertTTL); err != nil {
+			return fmt.Errorf("tls_interception.cert_ttl: %w", err)
+		}
+		if c.TLSInterception.CertCacheSize <= 0 {
+			return errors.New("tls_interception.cert_cache_size must be > 0")
+		}
+		if c.TLSInterception.MaxResponseBytes <= 0 {
+			return errors.New("tls_interception.max_response_bytes must be > 0")
+		}
+		certPath, keyPath := c.ResolveCAPath()
+		if _, err := os.Stat(certPath); err != nil {
+			return fmt.Errorf("CA cert not found at %s (run 'pipelock tls init'): %w", certPath, err)
+		}
+		if _, err := os.Stat(keyPath); err != nil {
+			return fmt.Errorf("CA key not found at %s (run 'pipelock tls init'): %w", keyPath, err)
+		}
+	}
+
 	// Validate tool chain detection config
 	if c.ToolChainDetection.Enabled {
 		switch c.ToolChainDetection.Action {
@@ -1246,6 +1281,27 @@ func (c *Config) Validate() error {
 	}
 
 	return nil
+}
+
+// defaultPipelockDir is the directory name under $HOME for pipelock data.
+const defaultPipelockDir = ".pipelock"
+
+// ResolveCAPath returns resolved CA cert and key paths.
+// Empty config values resolve to ~/.pipelock/ca.pem and ~/.pipelock/ca-key.pem.
+func (c *Config) ResolveCAPath() (certPath, keyPath string) {
+	certPath = c.TLSInterception.CACertPath
+	keyPath = c.TLSInterception.CAKeyPath
+	if certPath == "" || keyPath == "" {
+		home, _ := os.UserHomeDir()
+		dir := filepath.Join(home, defaultPipelockDir)
+		if certPath == "" {
+			certPath = filepath.Join(dir, "ca.pem")
+		}
+		if keyPath == "" {
+			keyPath = filepath.Join(dir, "ca-key.pem")
+		}
+	}
+	return certPath, keyPath
 }
 
 // ReloadWarning describes a potential security downgrade from a config reload.
@@ -1595,6 +1651,13 @@ func Defaults() *Config {
 			MaxSessions:            1000,
 			SessionTTLMinutes:      30,
 			CleanupIntervalSeconds: 60,
+		},
+		TLSInterception: TLSInterception{
+			Enabled:          false,
+			CertTTL:          "24h",
+			CertCacheSize:    10000,
+			MaxResponseBytes: 5 * 1024 * 1024, // 5MB
+			StreamingScan:    true,
 		},
 		Internal: []string{
 			"0.0.0.0/8",

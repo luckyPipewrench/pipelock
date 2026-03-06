@@ -111,7 +111,7 @@ These techniques try to exfiltrate secrets through request bodies or headers ins
 | Malformed form body | Invalid urlencoded to trigger raw fallback | Tested | Fail-closed block on parse error (prevents parser differential) |
 | Multipart boundary omission | `multipart/form-data` without boundary | Tested | Fail-closed block (missing boundary) |
 
-**Scope note:** Request body and header scanning applies to forward HTTP proxy (absolute-URI requests) and fetch handler headers. CONNECT tunnels carry TLS-encrypted traffic where bodies and headers are not visible without TLS interception.
+**Scope note:** Request body and header scanning applies to forward HTTP proxy (absolute-URI requests), fetch handler headers, and intercepted CONNECT tunnels (when `tls_interception.enabled` is true). Unintercepted CONNECT tunnels carry TLS-encrypted traffic where bodies and headers are not visible.
 
 ## Known Limitations
 
@@ -131,7 +131,7 @@ These are things pipelock does not protect against. If your threat model include
 | Limitation | Detail | Impact |
 |------------|--------|--------|
 | **Regex-based injection detection** | Injection patterns are syntactic, not semantic. An LLM-crafted injection that doesn't match known patterns will pass. | Add custom patterns for your domain. Future: pluggable detector interface. |
-| **CONNECT tunnel body blindness** | HTTPS traffic uses CONNECT tunnels where the TLS session is end-to-end between client and server. Pipelock only sees the hostname, not request bodies or headers. | Use fetch proxy or forward HTTP proxy for body/header DLP. TLS interception is planned. |
+| **CONNECT tunnel body blindness** | Without TLS interception, CONNECT tunnels carry end-to-end TLS where pipelock only sees the hostname. | Enable `tls_interception.enabled: true` to decrypt, scan, and re-encrypt tunnel traffic. Bodies, headers, and responses are fully scanned. Domains that pin certificates can be excluded via `passthrough_domains`. |
 | **DNS rebinding TOCTOU** | Hostname resolves to public IP at scan time, then to internal IP at connect time. Classic time-of-check/time-of-use race. | DNS pinning mitigates most cases. For high-security: use strict mode (allowlist only). |
 | **Very slow exfiltration** | 1 byte per hour over days. Below any practical rate limit or entropy threshold. | Container isolation prevents this entirely. Without isolation, this is the residual risk. |
 | **ReDoS in custom patterns** | User-supplied DLP or response patterns could have catastrophic backtracking. Built-in patterns are tested, but custom ones aren't analyzed for ReDoS. | Test custom patterns before deploying. |

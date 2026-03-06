@@ -199,6 +199,25 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// TLS interception: decrypt tunnel and scan body/headers/responses.
+	// Branch here after SNI verification but before raw splice. If interception
+	// is enabled and the host is not on the passthrough list, interceptTunnel
+	// takes over the client connection and handles the full request lifecycle.
+	_, port, _ := net.SplitHostPort(target)
+	if certCache := p.certCachePtr.Load(); certCache != nil && cfg.TLSInterception.Enabled &&
+		!isPassthrough(host, cfg.TLSInterception.PassthroughDomains) {
+		// Close upstream TCP connection: interceptTunnel creates its own.
+		_ = targetConn.Close()
+		p.metrics.RecordTLSIntercept("intercepted")
+		// Wrap clientConn with buffered reader so any bytes peeked during
+		// SNI verification (ClientHello) are available to the TLS server.
+		interceptConn := wrapBuffered(clientConn, clientReader)
+		if err := interceptTunnel(interceptConn, host, port, cfg, sc, certCache, nil); err != nil {
+			p.logger.LogError(http.MethodConnect, host, clientIP, requestID, err)
+		}
+		return
+	}
+
 	// Flush any buffered data from the HTTP parsing layer
 	if clientReader.Buffered() > 0 {
 		buffered := make([]byte, clientReader.Buffered())

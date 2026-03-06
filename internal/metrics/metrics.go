@@ -50,6 +50,12 @@ type Metrics struct {
 	sessionsActive     prometheus.Gauge
 	sessionsEvicted    prometheus.Counter
 
+	tlsInterceptTotal    *prometheus.CounterVec
+	tlsCertCacheSize     prometheus.Gauge
+	tlsHandshakeDuration *prometheus.HistogramVec
+	tlsRequestBlocked    *prometheus.CounterVec
+	tlsResponseBlocked   *prometheus.CounterVec
+
 	wsConnectionCount int64
 
 	mu                sync.Mutex
@@ -212,42 +218,79 @@ func New() *Metrics {
 		Help:      "Total sessions evicted by TTL or capacity.",
 	})
 
+	tlsInterceptTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "pipelock",
+		Name:      "tls_intercept_total",
+		Help:      "Total TLS-intercepted CONNECT tunnels by outcome.",
+	}, []string{"outcome"})
+
+	tlsCertCacheSize := prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: "pipelock",
+		Name:      "tls_cert_cache_size",
+		Help:      "Current number of cached TLS leaf certificates.",
+	})
+
+	tlsHandshakeDuration := prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "pipelock",
+		Name:      "tls_handshake_duration_seconds",
+		Help:      "TLS handshake latency in seconds.",
+		Buckets:   []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5},
+	}, []string{"side"})
+
+	tlsRequestBlocked := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "pipelock",
+		Name:      "tls_request_blocked_total",
+		Help:      "Total TLS-intercepted requests blocked by reason.",
+	}, []string{"reason"})
+
+	tlsResponseBlocked := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "pipelock",
+		Name:      "tls_response_blocked_total",
+		Help:      "Total TLS-intercepted responses blocked by reason.",
+	}, []string{"reason"})
+
 	reg.MustRegister(requestsTotal, scannerHits, requestLatency,
 		tunnelsTotal, tunnelDuration, tunnelBytes, activeTunnels,
 		wsConnectionsTotal, wsDuration, wsBytes, activeWS, wsFrames, wsScanHits, wsRedirectHints,
 		killSwitchDenials, chainDetections, sniTotal,
 		bodyDLPHits, headerDLPHits,
-		sessionAnomalies, sessionEscalations, sessionsActive, sessionsEvicted)
+		sessionAnomalies, sessionEscalations, sessionsActive, sessionsEvicted,
+		tlsInterceptTotal, tlsCertCacheSize, tlsHandshakeDuration, tlsRequestBlocked, tlsResponseBlocked)
 
 	return &Metrics{
-		registry:           reg,
-		requestsTotal:      requestsTotal,
-		scannerHits:        scannerHits,
-		requestLatency:     requestLatency,
-		tunnelsTotal:       tunnelsTotal,
-		tunnelDuration:     tunnelDuration,
-		tunnelBytes:        tunnelBytes,
-		activeTunnels:      activeTunnels,
-		wsConnectionsTotal: wsConnectionsTotal,
-		wsDuration:         wsDuration,
-		wsBytes:            wsBytes,
-		activeWS:           activeWS,
-		wsFrames:           wsFrames,
-		wsScanHits:         wsScanHits,
-		wsRedirectHints:    wsRedirectHints,
-		killSwitchDenials:  killSwitchDenials,
-		chainDetections:    chainDetections,
-		sniTotal:           sniTotal,
-		bodyDLPHits:        bodyDLPHits,
-		headerDLPHits:      headerDLPHits,
-		sessionAnomalies:   sessionAnomalies,
-		sessionEscalations: sessionEscalations,
-		sessionsActive:     sessionsActive,
-		sessionsEvicted:    sessionsEvicted,
-		startTime:          time.Now(),
-		topBlockedDomains:  make(map[string]int64),
-		topScannerHits:     make(map[string]int64),
-		topAnomalyTypes:    make(map[string]int64),
+		registry:             reg,
+		requestsTotal:        requestsTotal,
+		scannerHits:          scannerHits,
+		requestLatency:       requestLatency,
+		tunnelsTotal:         tunnelsTotal,
+		tunnelDuration:       tunnelDuration,
+		tunnelBytes:          tunnelBytes,
+		activeTunnels:        activeTunnels,
+		wsConnectionsTotal:   wsConnectionsTotal,
+		wsDuration:           wsDuration,
+		wsBytes:              wsBytes,
+		activeWS:             activeWS,
+		wsFrames:             wsFrames,
+		wsScanHits:           wsScanHits,
+		wsRedirectHints:      wsRedirectHints,
+		killSwitchDenials:    killSwitchDenials,
+		chainDetections:      chainDetections,
+		sniTotal:             sniTotal,
+		bodyDLPHits:          bodyDLPHits,
+		headerDLPHits:        headerDLPHits,
+		sessionAnomalies:     sessionAnomalies,
+		sessionEscalations:   sessionEscalations,
+		sessionsActive:       sessionsActive,
+		sessionsEvicted:      sessionsEvicted,
+		tlsInterceptTotal:    tlsInterceptTotal,
+		tlsCertCacheSize:     tlsCertCacheSize,
+		tlsHandshakeDuration: tlsHandshakeDuration,
+		tlsRequestBlocked:    tlsRequestBlocked,
+		tlsResponseBlocked:   tlsResponseBlocked,
+		startTime:            time.Now(),
+		topBlockedDomains:    make(map[string]int64),
+		topScannerHits:       make(map[string]int64),
+		topAnomalyTypes:      make(map[string]int64),
 	}
 }
 
@@ -415,6 +458,31 @@ func (m *Metrics) SetSessionsActive(n float64) {
 // RecordSessionEvicted increments the evicted sessions counter.
 func (m *Metrics) RecordSessionEvicted() {
 	m.sessionsEvicted.Inc()
+}
+
+// RecordTLSIntercept increments the TLS interception counter by outcome.
+func (m *Metrics) RecordTLSIntercept(outcome string) {
+	m.tlsInterceptTotal.WithLabelValues(outcome).Inc()
+}
+
+// SetTLSCertCacheSize sets the current TLS certificate cache size gauge.
+func (m *Metrics) SetTLSCertCacheSize(n float64) {
+	m.tlsCertCacheSize.Set(n)
+}
+
+// RecordTLSHandshake records a TLS handshake duration by side (client/upstream).
+func (m *Metrics) RecordTLSHandshake(side string, d time.Duration) {
+	m.tlsHandshakeDuration.WithLabelValues(side).Observe(d.Seconds())
+}
+
+// RecordTLSRequestBlocked increments the TLS request blocked counter by reason.
+func (m *Metrics) RecordTLSRequestBlocked(reason string) {
+	m.tlsRequestBlocked.WithLabelValues(reason).Inc()
+}
+
+// RecordTLSResponseBlocked increments the TLS response blocked counter by reason.
+func (m *Metrics) RecordTLSResponseBlocked(reason string) {
+	m.tlsResponseBlocked.WithLabelValues(reason).Inc()
 }
 
 // RegisterKillSwitchState registers a custom collector that reports the

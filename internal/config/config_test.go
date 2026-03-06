@@ -4193,3 +4193,96 @@ func TestReloadWarnings_RequestBodyScanning_DisabledWarning(t *testing.T) {
 		t.Error("expected reload warning when request_body_scanning is disabled")
 	}
 }
+
+func TestTLSInterception_Defaults(t *testing.T) {
+	cfg := Defaults()
+	if cfg.TLSInterception.Enabled {
+		t.Error("TLS interception should be disabled by default")
+	}
+	if cfg.TLSInterception.CertCacheSize != 10000 {
+		t.Errorf("cert_cache_size = %d, want 10000", cfg.TLSInterception.CertCacheSize)
+	}
+	if cfg.TLSInterception.CertTTL != "24h" {
+		t.Errorf("cert_ttl = %q, want 24h", cfg.TLSInterception.CertTTL)
+	}
+	if cfg.TLSInterception.MaxResponseBytes != 5*1024*1024 {
+		t.Errorf("max_response_bytes = %d, want 5MB", cfg.TLSInterception.MaxResponseBytes)
+	}
+}
+
+func TestTLSInterception_ValidateDisabledNoError(t *testing.T) {
+	cfg := Defaults()
+	cfg.TLSInterception.Enabled = false
+	cfg.Internal = nil
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("disabled TLS interception should not error: %v", err)
+	}
+}
+
+func TestTLSInterception_ValidateBadTTL(t *testing.T) {
+	cfg := Defaults()
+	cfg.Internal = nil
+	cfg.TLSInterception.Enabled = true
+	cfg.TLSInterception.CertTTL = "not-a-duration"
+	err := cfg.Validate()
+	if err == nil {
+		t.Error("expected error for bad cert_ttl")
+	}
+}
+
+func TestTLSInterception_ValidateBadCacheSize(t *testing.T) {
+	cfg := Defaults()
+	cfg.Internal = nil
+	cfg.TLSInterception.Enabled = true
+	cfg.TLSInterception.CertCacheSize = 0
+	err := cfg.Validate()
+	if err == nil {
+		t.Error("expected error for zero cert_cache_size")
+	}
+}
+
+func TestTLSInterception_ValidateBadMaxResponse(t *testing.T) {
+	cfg := Defaults()
+	cfg.Internal = nil
+	cfg.TLSInterception.Enabled = true
+	cfg.TLSInterception.MaxResponseBytes = 0
+	err := cfg.Validate()
+	if err == nil {
+		t.Error("expected error for zero max_response_bytes")
+	}
+}
+
+func TestTLSInterception_ValidateMissingCert(t *testing.T) {
+	cfg := Defaults()
+	cfg.Internal = nil
+	cfg.TLSInterception.Enabled = true
+	cfg.TLSInterception.CACertPath = "/nonexistent/ca.pem"
+	cfg.TLSInterception.CAKeyPath = "/nonexistent/ca-key.pem"
+	err := cfg.Validate()
+	if err == nil {
+		t.Error("expected error for missing CA cert")
+	}
+}
+
+func TestTLSInterception_ResolveCAPath(t *testing.T) {
+	cfg := Defaults()
+
+	// Custom paths.
+	cfg.TLSInterception.CACertPath = "/custom/ca.pem"
+	cfg.TLSInterception.CAKeyPath = "/custom/ca-key.pem"
+	certPath, keyPath := cfg.ResolveCAPath()
+	if certPath != "/custom/ca.pem" {
+		t.Errorf("certPath = %q, want /custom/ca.pem", certPath)
+	}
+	if keyPath != "/custom/ca-key.pem" {
+		t.Errorf("keyPath = %q, want /custom/ca-key.pem", keyPath)
+	}
+
+	// Default paths (empty).
+	cfg.TLSInterception.CACertPath = ""
+	cfg.TLSInterception.CAKeyPath = ""
+	certPath, keyPath = cfg.ResolveCAPath()
+	if certPath == "" || keyPath == "" {
+		t.Error("default paths should not be empty")
+	}
+}

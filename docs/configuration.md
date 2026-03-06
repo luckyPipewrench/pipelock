@@ -134,11 +134,68 @@ forward_proxy:
 | `sni_verification` | `true` | No | Verify TLS ClientHello SNI matches the CONNECT target hostname. Blocks domain fronting (MITRE T1090.004). Set to `false` to disable. |
 | `redirect_websocket_hosts` | `[]` | No | Redirect matching hosts to /ws |
 
+## TLS Interception
+
+Enables TLS MITM on CONNECT tunnels, allowing pipelock to decrypt, scan, and re-encrypt HTTPS traffic. When enabled, request bodies and headers are scanned for secret exfiltration, and responses are scanned for prompt injection, closing the CONNECT tunnel body-blindness gap.
+
+Requires a CA certificate trusted by the agent. Generate one with `pipelock tls init` and install it with `pipelock tls install-ca`.
+
+```yaml
+tls_interception:
+  enabled: false
+  ca_cert: ""                    # path to CA cert PEM (default: ~/.pipelock/ca.pem)
+  ca_key: ""                     # path to CA key PEM (default: ~/.pipelock/ca-key.pem)
+  passthrough_domains:           # domains to splice (not intercept)
+    - "*.anthropic.com"
+  cert_ttl: "24h"
+  cert_cache_size: 10000
+  max_response_bytes: 5242880    # 5MB; responses larger than this are blocked
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `false` | Enable TLS interception on CONNECT tunnels |
+| `ca_cert` | `""` | Path to CA certificate PEM. Empty resolves to `~/.pipelock/ca.pem` |
+| `ca_key` | `""` | Path to CA private key PEM. Empty resolves to `~/.pipelock/ca-key.pem` |
+| `passthrough_domains` | `[]` | Domains to splice (pass through without interception). Supports `*.example.com` wildcards. |
+| `cert_ttl` | `"24h"` | TTL for forged leaf certificates (Go duration string) |
+| `cert_cache_size` | `10000` | Max cached leaf certificates. Evicts oldest when full. |
+| `max_response_bytes` | `5242880` | Max response body to buffer for scanning. Responses exceeding this are blocked (fail-closed). |
+
+**Setup:**
+
+```bash
+# Generate a CA key pair
+pipelock tls init
+
+# Install the CA into the system trust store (macOS/Linux)
+pipelock tls install-ca
+
+# Or export the CA cert for manual installation
+pipelock tls show-ca
+```
+
+**Scanning behavior:** When a CONNECT tunnel is intercepted, pipelock terminates TLS with the client using a forged certificate, then opens a separate TLS connection to the upstream server. Inner HTTP requests are served via Go's `http.Server`, enabling:
+
+- **Request body DLP:** same scanning as `request_body_scanning` (JSON, form, multipart extraction + DLP patterns)
+- **Request header DLP:** same scanning as `request_body_scanning.scan_headers`
+- **Authority enforcement:** the `Host` header must match the CONNECT target. Mismatches are blocked (prevents domain fronting inside encrypted tunnels).
+- **Response injection scanning:** buffered responses scanned through the `response_scanning` pipeline before forwarding to the agent
+- **Compressed response blocking:** responses with non-identity `Content-Encoding` are blocked (fail-closed, since compressed bytes evade regex DLP)
+
+**Fail-closed behaviors:**
+- Responses exceeding `max_response_bytes` are blocked
+- Compressed responses (gzip, deflate, br) are blocked
+- Response read errors are blocked
+- Authority mismatch (Host header differs from CONNECT target) is blocked
+
+**Passthrough domains:** Domains in `passthrough_domains` are spliced (bidirectional byte copy) without interception, preserving end-to-end TLS. Use this for domains where certificate pinning prevents interception or where you trust the destination. Supports exact match and wildcard prefix (`*.example.com` matches `sub.example.com`).
+
 ## Request Body Scanning
 
 Scans request bodies and headers on the forward proxy path for secret exfiltration. Catches secrets in POST/PUT bodies and Authorization/Cookie headers that bypass URL-level scanning.
 
-**Scope:** Forward HTTP proxy (`HTTPS_PROXY` absolute-URI requests) and fetch handler headers only. CONNECT tunnels are TLS-encrypted and cannot be scanned without MITM (out of scope).
+**Scope:** Forward HTTP proxy (`HTTPS_PROXY` absolute-URI requests), fetch handler headers, and intercepted CONNECT tunnels (when `tls_interception.enabled` is true).
 
 ```yaml
 request_body_scanning:

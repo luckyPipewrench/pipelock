@@ -261,6 +261,7 @@ See [docs/guides/siem-integration.md](docs/guides/siem-integration.md) for log s
 
 | Feature | What It Does |
 |---------|-------------|
+| **Audit Reports** | `pipelock report --input events.jsonl` generates HTML/JSON reports with risk rating, timeline, and evidence appendix. Ed25519 signing with `--sign`. ([Sample report](examples/sample-report.html)) |
 | **Diagnose** | `pipelock diagnose` runs 6 local checks to verify your config works end-to-end (no network required) |
 | **TLS Interception** | Optional CONNECT tunnel MITM: decrypt, scan bodies/headers/responses, re-encrypt. `pipelock tls init` generates a CA, then `pipelock tls install-ca` trusts it system-wide. |
 | **Block Hints** | Opt-in `explain_blocks: true` adds fix suggestions to blocked responses |
@@ -273,6 +274,8 @@ See [docs/guides/siem-integration.md](docs/guides/siem-integration.md) for log s
 | **Finding Suppression** | Silence known false positives via config rules or inline `pipelock:ignore` comments |
 | **Multi-Agent Support** | Agent identification via `X-Pipelock-Agent` header for per-agent filtering |
 | **Fleet Monitoring** | Prometheus metrics + ready-to-import [Grafana dashboard](configs/grafana-dashboard.json) |
+
+![Pipelock Agent Egress Report showing risk rating, timeline, findings by category, and evidence appendix](examples/sample-report.png)
 
 ![Pipelock Fleet Monitor — Grafana dashboard showing traffic, security events, and WebSocket metrics](docs/assets/fleet-dashboard.jpg)
 

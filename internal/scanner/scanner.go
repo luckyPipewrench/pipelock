@@ -1,3 +1,6 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
 // Package scanner provides URL scanning for the Pipelock fetch proxy.
 // It checks URLs against blocklists, DLP patterns, and entropy thresholds
 // before allowing the fetch proxy to retrieve them.

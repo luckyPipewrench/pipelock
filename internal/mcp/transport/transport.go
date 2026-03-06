@@ -1,3 +1,6 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
 // Package transport provides message framing for MCP JSON-RPC 2.0 transports.
 // It includes stdio (newline-delimited), SSE (Server-Sent Events), and HTTP
 // client implementations.

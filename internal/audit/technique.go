@@ -1,3 +1,6 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
 package audit
 
 // techniqueMap maps scanner/event labels to MITRE ATT&CK technique IDs.

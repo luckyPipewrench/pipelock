@@ -292,8 +292,8 @@ dlp:
 | `scan_env` | `true` | Scan environment variables for leaked values |
 | `secrets_file` | `""` | Path to file with known secrets (one per line) |
 | `min_env_secret_length` | `16` | Min env var value length to consider |
-| `include_defaults` | `true` | Merge your patterns with the 35 built-in patterns |
-| `patterns` | 35 built-in | DLP pattern list (22 credential + 13 injection) |
+| `include_defaults` | `true` | Merge your patterns with the 22 built-in patterns |
+| `patterns` | 22 built-in | DLP credential detection patterns |
 
 ### Pattern Merging
 
@@ -301,7 +301,7 @@ When `include_defaults` is true (default), your patterns are merged with the bui
 
 Set `include_defaults: false` to use only your patterns.
 
-### Built-in DLP Patterns (35)
+### Built-in DLP Patterns (22)
 
 | Pattern | Regex Prefix | Severity |
 |---------|-------------|----------|
@@ -465,6 +465,22 @@ mcp_session_binding:
 | `no_baseline_action` | `"warn"` | Action if no baseline exists |
 
 Tool baseline caps at 10,000 tools per session to prevent memory exhaustion.
+
+## MCP WebSocket Listener
+
+Controls inbound WebSocket connections when the MCP proxy runs in listener mode with a `ws://` or `wss://` upstream. Loopback origins are always allowed.
+
+```yaml
+mcp_ws_listener:
+  allowed_origins:
+    - "https://example.com"
+  max_connections: 100
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `allowed_origins` | `[]` | Additional browser origins to allow (loopback always allowed) |
+| `max_connections` | `100` | Max concurrent inbound WebSocket connections |
 
 ## Session Profiling
 

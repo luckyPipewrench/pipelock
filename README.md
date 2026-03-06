@@ -210,7 +210,7 @@ What each mode prevents, detects, or logs:
 
 ### 9-Layer URL Scanner
 
-Every request passes through: scheme validation, domain blocklist, DLP pattern matching (35 built-in patterns for API keys, tokens, credentials, and injection attempts), path entropy analysis, subdomain entropy analysis, SSRF protection with DNS rebinding prevention, per-domain rate limiting, URL length limits, and per-domain data budgets.
+Every request passes through: scheme validation, domain blocklist, DLP pattern matching (22 built-in patterns for API keys, tokens, and credentials), path entropy analysis, subdomain entropy analysis, SSRF protection with DNS rebinding prevention, per-domain rate limiting, URL length limits, and per-domain data budgets.
 
 DLP runs before DNS resolution. Secrets are caught before any DNS query leaves the proxy. See [docs/bypass-resistance.md](docs/bypass-resistance.md) for the full evasion test matrix.
 
@@ -261,6 +261,7 @@ See [docs/guides/siem-integration.md](docs/guides/siem-integration.md) for log s
 
 | Feature | What It Does |
 |---------|-------------|
+| **Audit Reports** | `pipelock report --input events.jsonl` generates HTML/JSON reports with risk rating, timeline, and evidence appendix. Ed25519 signing with `--sign`. ([Sample report](examples/sample-report.html)) |
 | **Diagnose** | `pipelock diagnose` runs 6 local checks to verify your config works end-to-end (no network required) |
 | **TLS Interception** | Optional CONNECT tunnel MITM: decrypt, scan bodies/headers/responses, re-encrypt. `pipelock tls init` generates a CA, then `pipelock tls install-ca` trusts it system-wide. |
 | **Block Hints** | Opt-in `explain_blocks: true` adds fix suggestions to blocked responses |
@@ -274,7 +275,9 @@ See [docs/guides/siem-integration.md](docs/guides/siem-integration.md) for log s
 | **Multi-Agent Support** | Agent identification via `X-Pipelock-Agent` header for per-agent filtering |
 | **Fleet Monitoring** | Prometheus metrics + ready-to-import [Grafana dashboard](configs/grafana-dashboard.json) |
 
-![Pipelock Fleet Monitor — Grafana dashboard showing traffic, security events, and WebSocket metrics](docs/assets/fleet-dashboard.jpg)
+![Pipelock Agent Egress Report showing risk rating, timeline, findings by category, and evidence appendix](examples/sample-report.png)
+
+![Pipelock Fleet Monitor: Grafana dashboard showing traffic, security events, and WebSocket metrics](docs/assets/fleet-dashboard.jpg)
 
 ## Configuration
 
@@ -409,7 +412,7 @@ curl http://localhost:9090/api/v1/killswitch/status \
   "version": "x.y.z",
   "mode": "balanced",
   "uptime_seconds": 3600.5,
-  "dlp_patterns": 35,
+  "dlp_patterns": 22,
   "response_scan_enabled": true,
   "kill_switch_active": false
 }
@@ -453,6 +456,7 @@ Details, config examples, and gap analysis: [docs/owasp-mapping.md](docs/owasp-m
 | [Finding Suppression](docs/guides/suppression.md) | Rule names, path matching, inline comments, CI integration |
 | [OpenClaw Guide](docs/guides/openclaw.md) | Gateway sidecar, init container, `generate mcporter` wrapping |
 | [Security Assurance](docs/security-assurance.md) | Security model, trust boundaries, supply chain |
+| [Transport Modes](docs/guides/transport-modes.md) | Comparison of all proxy modes and their scanning capabilities |
 | [EU AI Act Mapping](docs/compliance/eu-ai-act-mapping.md) | Article-by-article compliance mapping |
 
 ## Project Structure
@@ -475,6 +479,8 @@ internal/
   signing/             Ed25519 key management
   gitprotect/          Git diff scanning for secrets
   hitl/                Human-in-the-loop terminal approval
+  report/              HTML/JSON audit report generation from JSONL event logs
+  projectscan/         Project directory scanning for audit command
 configs/               7 preset config files
 docs/                  Guides, references, compliance mappings
 ```
@@ -485,7 +491,7 @@ Canonical metrics, updated each release.
 
 | Metric | Value |
 |--------|-------|
-| Go tests (with `-race`) | 4,400+ |
+| Go tests (with `-race`) | 4,850+ |
 | Statement coverage | 95%+ |
 | Evasion techniques tested | 230+ |
 | Scanner pipeline overhead | ~25us per URL scan |

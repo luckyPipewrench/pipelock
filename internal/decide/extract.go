@@ -1,3 +1,6 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
 // Package decide implements a shared decision engine for evaluating agent
 // actions (shell commands, MCP tool calls, file reads) against pipelock's
 // scanning pipeline. It is the core logic behind IDE hook integrations.

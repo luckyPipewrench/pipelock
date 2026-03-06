@@ -1,3 +1,6 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
 // Package killswitch implements an emergency deny-all controller for Pipelock.
 // Four activation sources (config, API, SIGUSR1, sentinel file) are OR-composed:
 // any one being active engages the kill switch and denies all requests.

@@ -1,3 +1,6 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
 // Package audit provides structured JSON audit logging for all Pipelock events.
 package audit
 

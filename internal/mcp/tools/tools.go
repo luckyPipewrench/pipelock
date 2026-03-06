@@ -1,3 +1,6 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
 // Package tools provides MCP tool description scanning for poisoning detection,
 // rug-pull (drift) detection, and session binding (tool inventory validation).
 package tools

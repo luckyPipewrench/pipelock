@@ -1,3 +1,6 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
 // Package policy provides MCP tool call policy rules for pre-execution checking.
 // Rules match tool names and argument patterns to detect dangerous operations.
 package policy

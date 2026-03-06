@@ -1,3 +1,6 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
 // Package jsonrpc provides shared JSON-RPC 2.0 types used across the mcp
 // sub-packages. Extracting these into a dedicated package breaks circular
 // imports between tools/, policy/, and the parent mcp package.

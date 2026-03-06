@@ -1,3 +1,6 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
 // Package gitprotect provides git-aware security features for Pipelock,
 // including pre-push secret scanning and branch validation.
 package gitprotect

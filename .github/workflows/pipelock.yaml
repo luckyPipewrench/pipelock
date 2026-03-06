@@ -32,3 +32,4 @@ jobs:
             docs/configuration.md
             docs/guides/deployment-recipes.md
             examples/demo-readme.sh
+            examples/sample-events.jsonl

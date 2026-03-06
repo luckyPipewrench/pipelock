@@ -1,3 +1,6 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
 // Package mcp provides scanning of MCP (Model Context Protocol) JSON-RPC 2.0
 // responses for prompt injection. It extracts text content from tool result
 // blocks and runs them through scanner.ScanResponse for pattern matching.

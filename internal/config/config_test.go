@@ -4270,7 +4270,10 @@ func TestTLSInterception_ResolveCAPath(t *testing.T) {
 	// Custom paths.
 	cfg.TLSInterception.CACertPath = "/custom/ca.pem"
 	cfg.TLSInterception.CAKeyPath = "/custom/ca-key.pem"
-	certPath, keyPath := cfg.ResolveCAPath()
+	certPath, keyPath, err := cfg.ResolveCAPath()
+	if err != nil {
+		t.Fatalf("ResolveCAPath: %v", err)
+	}
 	if certPath != "/custom/ca.pem" {
 		t.Errorf("certPath = %q, want /custom/ca.pem", certPath)
 	}
@@ -4281,7 +4284,10 @@ func TestTLSInterception_ResolveCAPath(t *testing.T) {
 	// Default paths (empty).
 	cfg.TLSInterception.CACertPath = ""
 	cfg.TLSInterception.CAKeyPath = ""
-	certPath, keyPath = cfg.ResolveCAPath()
+	certPath, keyPath, err = cfg.ResolveCAPath()
+	if err != nil {
+		t.Fatalf("ResolveCAPath default: %v", err)
+	}
 	if certPath == "" || keyPath == "" {
 		t.Error("default paths should not be empty")
 	}

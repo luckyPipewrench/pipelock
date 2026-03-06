@@ -262,7 +262,10 @@ func (p *Proxy) LoadCertCache(cfg *config.Config) error {
 		p.certCachePtr.Store(nil)
 		return nil
 	}
-	certPath, keyPath := cfg.ResolveCAPath()
+	certPath, keyPath, resolveErr := cfg.ResolveCAPath()
+	if resolveErr != nil {
+		return fmt.Errorf("load TLS CA: %w", resolveErr)
+	}
 	ca, caKey, err := certgen.LoadCA(certPath, keyPath)
 	if err != nil {
 		return fmt.Errorf("load TLS CA: %w (run 'pipelock tls init' to generate)", err)
@@ -930,6 +933,7 @@ type healthResponse struct {
 	ForwardProxyEnabled    bool    `json:"forward_proxy_enabled"`
 	WebSocketProxyEnabled  bool    `json:"websocket_proxy_enabled"`
 	RequestBodyScanEnabled bool    `json:"request_body_scan_enabled"`
+	TLSInterceptionEnabled bool    `json:"tls_interception_enabled"`
 	KillSwitchActive       bool    `json:"kill_switch_active"`
 }
 
@@ -948,6 +952,7 @@ func (p *Proxy) handleHealth(w http.ResponseWriter, _ *http.Request) {
 		ForwardProxyEnabled:    cfg.ForwardProxy.Enabled,
 		WebSocketProxyEnabled:  cfg.WebSocketProxy.Enabled,
 		RequestBodyScanEnabled: cfg.RequestBodyScanning.Enabled,
+		TLSInterceptionEnabled: cfg.TLSInterception.Enabled,
 	}
 	if p.ks != nil {
 		// Read-only kill switch status — no auth needed. Lets operators

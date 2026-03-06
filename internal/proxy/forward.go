@@ -163,7 +163,11 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "tunnel dial failed", http.StatusBadGateway)
 		return
 	}
-	defer targetConn.Close() //nolint:errcheck // best effort
+	defer func() {
+		if targetConn != nil {
+			_ = targetConn.Close()
+		}
+	}()
 
 	// Hijack the client connection
 	hijacker, ok := w.(http.Hijacker)
@@ -206,13 +210,18 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	_, port, _ := net.SplitHostPort(target)
 	if certCache := p.certCachePtr.Load(); certCache != nil && cfg.TLSInterception.Enabled &&
 		!isPassthrough(host, cfg.TLSInterception.PassthroughDomains) {
-		// Close upstream TCP connection: interceptTunnel creates its own.
+		// Close the pre-established upstream TCP connection since interceptTunnel
+		// creates its own via the SSRF-safe dialer. This prevents a dangling connection.
 		_ = targetConn.Close()
+		targetConn = nil
 		p.metrics.RecordTLSIntercept("intercepted")
+		p.logger.LogAnomaly(http.MethodConnect, host, "tls_intercept", "TLS MITM interception active", clientIP, requestID, 0) // 0: informational, not anomalous
 		// Wrap clientConn with buffered reader so any bytes peeked during
 		// SNI verification (ClientHello) are available to the TLS server.
 		interceptConn := wrapBuffered(clientConn, clientReader)
-		if err := interceptTunnel(interceptConn, host, port, cfg, sc, certCache, nil); err != nil {
+		interceptCtx, interceptCancel := context.WithDeadline(r.Context(), deadline)
+		defer interceptCancel()
+		if err := interceptTunnel(interceptCtx, interceptConn, host, port, cfg, sc, certCache, p.logger, p.metrics, clientIP, requestID, nil, p.ssrfSafeDialContext); err != nil {
 			p.logger.LogError(http.MethodConnect, host, clientIP, requestID, err)
 		}
 		return

@@ -723,6 +723,25 @@ Key differences between presets:
 | Rate Limit | 60/min | 30/min | 120/min |
 | API Allowlist | LLM + comms | LLM + comms | LLM + dev tools |
 
+### Hostile-Model Preset
+
+The `hostile-model` preset is for agents running uncensored, abliterated, or jailbroken models where the model itself has zero safety guardrails. It assumes the model will comply with any instruction, including exfiltrating secrets or executing injected prompts.
+
+Use this preset for:
+- **Red-team testing:** exercising agent attack paths against the network layer
+- **Self-hosted uncensored models:** weight-ablated models (e.g. OBLITERATUS variants) with safety refusals removed
+- **Jailbroken agents:** any model that can be trivially steered past its own guardrails
+
+What it enables beyond `strict`:
+- **Every defense layer active:** forward proxy, request body scanning, WebSocket scanning, MCP input/tool/policy scanning, session binding, session profiling, adaptive enforcement, tool chain detection
+- **Aggressive entropy threshold (3.0):** catches more encoded secrets at the cost of higher false-positive rates
+- **Lower rate limit (15/min):** constrains exfiltration bandwidth
+- **Shorter URL limit (300 chars):** reduces data budget per request
+- **All MCP tool policy rules enabled:** blocks shell obfuscation, file writes outside allowed paths, and network access patterns
+- **TLS interception pre-configured** (disabled by default; enable and generate a CA to activate)
+
+The core principle: the model won't protect you, so the network layer must.
+
 ## Validation Rules
 
 The following are enforced at startup:

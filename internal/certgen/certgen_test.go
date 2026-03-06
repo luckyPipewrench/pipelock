@@ -1,8 +1,10 @@
 package certgen
 
 import (
+	"bytes"
 	"crypto/x509"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -254,4 +256,122 @@ func TestLoadCA_MissingFiles(t *testing.T) {
 	if err == nil {
 		t.Error("expected error for missing files")
 	}
+}
+
+func TestLoadCA_InvalidCertPEM(t *testing.T) {
+	dir := t.TempDir()
+	certPath := filepath.Join(dir, "bad.pem")
+	keyPath := filepath.Join(dir, "ca-key.pem")
+	if err := os.WriteFile(certPath, []byte("not a PEM block"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := LoadCA(certPath, keyPath)
+	if err == nil {
+		t.Error("expected error for invalid cert PEM")
+	}
+}
+
+func TestLoadCA_InvalidKeyPEM(t *testing.T) {
+	dir := t.TempDir()
+	certPath := filepath.Join(dir, "ca.pem")
+	keyPath := filepath.Join(dir, "bad-key.pem")
+
+	ca, key, _, err := GenerateCA("Test", 24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveCAForce(certPath, keyPath, ca, key); err != nil {
+		t.Fatal(err)
+	}
+	// Overwrite key with invalid PEM.
+	if err := os.WriteFile(keyPath, []byte("not a PEM block"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = LoadCA(certPath, keyPath)
+	if err == nil {
+		t.Error("expected error for invalid key PEM")
+	}
+}
+
+func TestLoadCA_MissingKeyFile(t *testing.T) {
+	dir := t.TempDir()
+	certPath := filepath.Join(dir, "ca.pem")
+	keyPath := filepath.Join(dir, "ca-key.pem")
+
+	ca, key, _, err := GenerateCA("Test", 24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveCAForce(certPath, keyPath, ca, key); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Remove(keyPath)
+	_, _, err = LoadCA(certPath, keyPath)
+	if err == nil {
+		t.Error("expected error for missing key file")
+	}
+}
+
+func TestInstallCA_PrintsInstructions(t *testing.T) {
+	var buf bytes.Buffer
+	if err := InstallCA(&buf, "/tmp/ca.pem"); err != nil {
+		t.Fatalf("InstallCA: %v", err)
+	}
+	output := buf.String()
+	if len(output) == 0 {
+		t.Error("InstallCA produced no output")
+	}
+	// Should contain the cert path in the output.
+	if !bytes.Contains(buf.Bytes(), []byte("/tmp/ca.pem")) {
+		t.Error("output does not contain cert path")
+	}
+}
+
+func TestWriteCAFiles_ReadOnlyDir(t *testing.T) {
+	dir := t.TempDir()
+	roDir := filepath.Join(dir, "readonly")
+	if err := os.MkdirAll(roDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	// Write cert to writable dir, key to read-only dir.
+	certPath := filepath.Join(dir, "ca.pem")
+	keyPath := filepath.Join(roDir, "subdir", "ca-key.pem")
+
+	ca, key, _, err := GenerateCA("Test", 24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Make roDir read-only so MkdirAll for keyPath fails.
+	if err := os.Chmod(roDir, 0o444); err != nil { //nolint:gosec // test: intentionally restrictive perms
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(roDir, 0o600) })
+
+	err = writeCAFiles(certPath, keyPath, ca, key)
+	if err == nil {
+		t.Error("expected error for read-only key directory")
+	}
+}
+
+func TestNewCertCache_PanicsOnNilCA(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("expected panic for nil CA")
+		}
+	}()
+	NewCertCache(nil, nil, time.Hour, 100)
+}
+
+func TestNewCertCache_PanicsOnZeroMaxSize(t *testing.T) {
+	ca, caKey, _, err := GenerateCA("Test", 24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("expected panic for zero maxSize")
+		}
+	}()
+	NewCertCache(ca, caKey, time.Hour, 0)
 }

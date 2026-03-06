@@ -42,13 +42,13 @@ func GenerateCA(org string, validity time.Duration) (*x509.Certificate, *ecdsa.P
 			Organization: []string{org},
 			CommonName:   "Pipelock CA",
 		},
-		NotBefore:             time.Now().Add(-1 * time.Hour),
+		NotBefore:             time.Now().Add(-1 * time.Hour), // backdate 1h for clock skew tolerance
 		NotAfter:              time.Now().Add(validity),
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
 		BasicConstraintsValid: true,
 		IsCA:                  true,
-		MaxPathLen:            0,
-		MaxPathLenZero:        true,
+		MaxPathLen:            0,    // CA can only sign leaf certs, not intermediates
+		MaxPathLenZero:        true, // explicitly encode MaxPathLen=0 in the certificate
 	}
 
 	certDER, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
@@ -81,9 +81,9 @@ func GenerateLeaf(ca *x509.Certificate, caKey crypto.PrivateKey, host string, tt
 	template := &x509.Certificate{
 		SerialNumber: serial,
 		Subject:      pkix.Name{CommonName: host},
-		NotBefore:    time.Now().Add(-1 * time.Hour),
+		NotBefore:    time.Now().Add(-1 * time.Hour), // backdate 1h for clock skew tolerance
 		NotAfter:     time.Now().Add(ttl),
-		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		KeyUsage:     x509.KeyUsageDigitalSignature, // ECDSA: DigitalSignature only (RFC 5480 Section 3)
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}
 
@@ -223,7 +223,14 @@ type CertCache struct {
 }
 
 // NewCertCache creates a certificate cache that generates leaf certs on demand.
+// Panics if ca or caKey is nil, or maxSize <= 0 (programming errors after config validation).
 func NewCertCache(ca *x509.Certificate, caKey crypto.PrivateKey, ttl time.Duration, maxSize int) *CertCache {
+	if ca == nil || caKey == nil {
+		panic("certgen: NewCertCache called with nil CA certificate or key")
+	}
+	if maxSize <= 0 {
+		panic("certgen: NewCertCache called with non-positive maxSize")
+	}
 	return &CertCache{
 		certs:   make(map[string]*cachedCert),
 		maxSize: maxSize,

@@ -266,4 +266,3 @@ tls_interception:
   cert_ttl: 24h
   cert_cache_size: 10000
   max_response_bytes: 5242880
-  streaming_scan: true

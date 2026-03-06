@@ -68,7 +68,7 @@ func tlsInitCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&org, "org", "Pipelock", "Organization name for CA subject")
 	cmd.Flags().StringVar(&validity, "validity", "87600h", "CA certificate validity period")
-	cmd.Flags().StringVar(&outDir, "out", "", "Output directory (default ~/.pipelock)")
+	cmd.Flags().StringVar(&outDir, "out", "", "Output directory (default $HOME/.pipelock)")
 	cmd.Flags().BoolVar(&force, "force", false, "Overwrite existing CA files")
 	return cmd
 }

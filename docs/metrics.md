@@ -56,6 +56,20 @@ traffic metrics for forward-proxy deployments.
 | `pipelock_active_tunnels` | gauge | (none) | Currently open CONNECT tunnels. |
 | `pipelock_sni_total` | counter | `category` | SNI verification results. `category` is `match`, `mismatch`, `not_tls`, `no_extension`, `malformed_tls`, or `timeout`. |
 
+## TLS Interception Metrics
+
+When `tls_interception.enabled` is true, pipelock performs TLS MITM on
+CONNECT tunnels and records additional metrics for interception outcomes,
+handshake latency, and per-request/response blocking.
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `pipelock_tls_intercept_total` | counter | `outcome` | Total TLS-intercepted CONNECT tunnels. `outcome` is `intercepted` or `handshake_error`. |
+| `pipelock_tls_handshake_duration_seconds` | histogram | `side` | TLS handshake latency. `side` is `client` or `upstream`. Buckets: 1ms to 500ms. |
+| `pipelock_tls_request_blocked_total` | counter | `reason` | Requests blocked inside intercepted tunnels. `reason` is `authority_mismatch`, `body_dlp`, or `header_dlp`. |
+| `pipelock_tls_response_blocked_total` | counter | `reason` | Responses blocked inside intercepted tunnels. `reason` is `compressed`, `read_error`, `oversized`, or `injection`. |
+| `pipelock_tls_cert_cache_size` | gauge | (none) | Current number of cached forged leaf certificates. |
+
 ## Request Scanning Metrics
 
 Request body and header scanning detects secrets in POST/PUT/PATCH bodies,
@@ -162,9 +176,9 @@ An importable Grafana dashboard is included at
 [`configs/grafana-dashboard.json`](../configs/grafana-dashboard.json).
 Import it via **Dashboards → Import → Upload JSON file** in Grafana.
 
-The dashboard covers all 25 metric families across six sections: fleet
-overview, agent status table, traffic, connection details, security events,
-and WebSocket proxy.
+The dashboard covers all 30 metric families across seven sections: fleet
+overview, agent status table, traffic, connection details, TLS interception,
+security events, and WebSocket proxy.
 
 ## Alert Rules
 

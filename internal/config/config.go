@@ -247,7 +247,6 @@ type TLSInterception struct {
 	CertTTL            string   `yaml:"cert_ttl"`
 	CertCacheSize      int      `yaml:"cert_cache_size"`
 	MaxResponseBytes   int64    `yaml:"max_response_bytes"`
-	StreamingScan      bool     `yaml:"streaming_scan"`
 }
 
 // WebSocketProxy configures the /ws WebSocket proxy endpoint.
@@ -1078,7 +1077,10 @@ func (c *Config) Validate() error {
 		if c.TLSInterception.MaxResponseBytes <= 0 {
 			return errors.New("tls_interception.max_response_bytes must be > 0")
 		}
-		certPath, keyPath := c.ResolveCAPath()
+		certPath, keyPath, resolveErr := c.ResolveCAPath()
+		if resolveErr != nil {
+			return fmt.Errorf("tls_interception: %w", resolveErr)
+		}
 		if _, err := os.Stat(certPath); err != nil {
 			return fmt.Errorf("CA cert not found at %s (run 'pipelock tls init'): %w", certPath, err)
 		}
@@ -1283,17 +1285,18 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// defaultPipelockDir is the directory name under $HOME for pipelock data.
-const defaultPipelockDir = ".pipelock"
-
 // ResolveCAPath returns resolved CA cert and key paths.
 // Empty config values resolve to ~/.pipelock/ca.pem and ~/.pipelock/ca-key.pem.
-func (c *Config) ResolveCAPath() (certPath, keyPath string) {
+// Returns an error if $HOME cannot be determined and paths are not set explicitly.
+func (c *Config) ResolveCAPath() (certPath, keyPath string, err error) {
 	certPath = c.TLSInterception.CACertPath
 	keyPath = c.TLSInterception.CAKeyPath
 	if certPath == "" || keyPath == "" {
-		home, _ := os.UserHomeDir()
-		dir := filepath.Join(home, defaultPipelockDir)
+		home, homeErr := os.UserHomeDir()
+		if homeErr != nil {
+			return "", "", fmt.Errorf("resolve CA path: %w (set ca_cert and ca_key explicitly)", homeErr)
+		}
+		dir := filepath.Join(home, ".pipelock")
 		if certPath == "" {
 			certPath = filepath.Join(dir, "ca.pem")
 		}
@@ -1301,7 +1304,7 @@ func (c *Config) ResolveCAPath() (certPath, keyPath string) {
 			keyPath = filepath.Join(dir, "ca-key.pem")
 		}
 	}
-	return certPath, keyPath
+	return certPath, keyPath, nil
 }
 
 // ReloadWarning describes a potential security downgrade from a config reload.
@@ -1435,6 +1438,14 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		warnings = append(warnings, ReloadWarning{
 			Field:   "mcp_session_binding.enabled",
 			Message: "MCP session binding disabled",
+		})
+	}
+
+	// TLS interception disabled
+	if old.TLSInterception.Enabled && !updated.TLSInterception.Enabled {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "tls_interception.enabled",
+			Message: "TLS interception disabled — CONNECT tunnel body/header scanning lost",
 		})
 	}
 
@@ -1657,7 +1668,6 @@ func Defaults() *Config {
 			CertTTL:          "24h",
 			CertCacheSize:    10000,
 			MaxResponseBytes: 5 * 1024 * 1024, // 5MB
-			StreamingScan:    true,
 		},
 		Internal: []string{
 			"0.0.0.0/8",

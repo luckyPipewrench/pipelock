@@ -1,3 +1,6 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
 // Package projectscan implements project directory scanning for the
 // pipelock audit command. It detects agent types, programming languages,
 // package ecosystems, MCP servers, and secrets to generate a suggested

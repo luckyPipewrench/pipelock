@@ -1,3 +1,6 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
 // Package integrity provides file integrity monitoring for agent workspaces.
 //
 // It generates SHA256 manifests of directory contents and detects unauthorized

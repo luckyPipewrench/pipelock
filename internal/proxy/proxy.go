@@ -1,3 +1,6 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
 // Package proxy implements the Pipelock fetch proxy HTTP server.
 // The fetch proxy runs in an unprivileged zone with NO access to secrets.
 // It receives URL requests from the agent, scans them, fetches content,

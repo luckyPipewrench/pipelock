@@ -1,3 +1,6 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
 // Package signing provides Ed25519 key generation, file signing, and
 // signature verification for securing inter-agent communication.
 package signing

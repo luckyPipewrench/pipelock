@@ -1,3 +1,6 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
 // Package metrics provides Prometheus instrumentation and a JSON stats endpoint
 // for the Pipelock fetch proxy.
 package metrics

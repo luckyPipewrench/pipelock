@@ -1,3 +1,6 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
 // ws-helper: WebSocket pen test helper for pipelock.
 //
 // Modes:

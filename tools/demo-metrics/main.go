@@ -1,3 +1,6 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
 // demo-metrics generates fake Prometheus metrics that simulate a fleet of
 // pipelock instances. Run it, point Prometheus at the four ports, wait
 // ~10 minutes, and screenshot the Grafana dashboard for marketing material.

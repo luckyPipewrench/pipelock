@@ -1,3 +1,6 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
 // Package hitl provides human-in-the-loop terminal approval for pipelock.
 // When the response scanning action is "ask", detected threats are presented
 // to the terminal operator who decides whether to allow, block, or strip.

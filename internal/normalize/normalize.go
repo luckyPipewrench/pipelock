@@ -1,3 +1,6 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
 // Package normalize provides Unicode normalization pipelines for security scanning.
 // All scanning paths (DLP, response injection, tool poisoning, policy matching)
 // use these functions to strip evasion techniques before pattern matching.

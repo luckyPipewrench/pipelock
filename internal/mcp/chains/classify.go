@@ -1,3 +1,6 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
 // Package chains implements MCP tool call chain pattern detection.
 // It classifies tool names into categories and detects attack patterns
 // in sequences of tool calls using subsequence matching.

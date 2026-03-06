@@ -1,3 +1,6 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
 // Package cli implements the Pipelock command-line interface using cobra.
 package cli
 

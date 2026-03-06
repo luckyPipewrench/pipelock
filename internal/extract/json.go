@@ -1,3 +1,6 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
 // Package extract provides shared text extraction utilities used by both the
 // HTTP proxy body scanner and the MCP input scanner.
 package extract

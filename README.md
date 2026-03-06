@@ -277,7 +277,7 @@ See [docs/guides/siem-integration.md](docs/guides/siem-integration.md) for log s
 
 ![Pipelock Agent Egress Report showing risk rating, timeline, findings by category, and evidence appendix](examples/sample-report.png)
 
-![Pipelock Fleet Monitor — Grafana dashboard showing traffic, security events, and WebSocket metrics](docs/assets/fleet-dashboard.jpg)
+![Pipelock Fleet Monitor: Grafana dashboard showing traffic, security events, and WebSocket metrics](docs/assets/fleet-dashboard.jpg)
 
 ## Configuration
 
@@ -456,6 +456,7 @@ Details, config examples, and gap analysis: [docs/owasp-mapping.md](docs/owasp-m
 | [Finding Suppression](docs/guides/suppression.md) | Rule names, path matching, inline comments, CI integration |
 | [OpenClaw Guide](docs/guides/openclaw.md) | Gateway sidecar, init container, `generate mcporter` wrapping |
 | [Security Assurance](docs/security-assurance.md) | Security model, trust boundaries, supply chain |
+| [Transport Modes](docs/guides/transport-modes.md) | Comparison of all proxy modes and their scanning capabilities |
 | [EU AI Act Mapping](docs/compliance/eu-ai-act-mapping.md) | Article-by-article compliance mapping |
 
 ## Project Structure
@@ -478,6 +479,8 @@ internal/
   signing/             Ed25519 key management
   gitprotect/          Git diff scanning for secrets
   hitl/                Human-in-the-loop terminal approval
+  report/              HTML/JSON audit report generation from JSONL event logs
+  projectscan/         Project directory scanning for audit command
 configs/               7 preset config files
 docs/                  Guides, references, compliance mappings
 ```

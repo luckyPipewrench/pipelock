@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-03-06
+
+### Added
+- `pipelock report` command: reads JSONL audit logs and produces HTML, JSON, or Ed25519-signed evidence bundle reports with risk rating, event categories, timeline histogram, and evidence appendix. Supports `--format`, `--output`, `--sign`, and `--config` flags.
+- MCP tool poisoning: parameter schema scanning extracts parameter key names from `inputSchema` at all nesting depths, expands underscore/hyphen/camelCase names, and scans for exfiltration intent (catches the CyberArk attack variant where data theft is encoded in parameter names while descriptions stay clean)
+- Exfiltration Parameter Name poison pattern: detects action+target combinations in tool parameter names (read+private_key, steal+credentials, fetch+access_token)
+- MCP tool drift summaries now report which parameters were added or removed instead of generic "description changed" messages
+- Audit schema: chain detection structured events, startup/reload config hash metadata, version tracking
+- `Config.Hash()` for deterministic SHA256 of raw config file bytes (used in signed reports)
+- Dependency review GitHub Actions workflow: blocks PRs that introduce dependencies with known vulnerabilities
+- CI concurrency groups: in-progress runs cancelled when new commits push to the same branch
+- Granular CODEOWNERS paths for CI workflows, config presets, and documentation
+- SPDX Apache 2.0 license headers on all Go source files
+- GitHub Sponsors funding configuration
+- Contributor License Agreement (Apache ICLA) section in CONTRIBUTING.md
+- SPONSORS.md for sponsor recognition
+
+### Fixed
+- Environment variable leak scanner: ~50 well-known non-secret variables (HOME, PATH, USER, PWD, SHELL, TERM, LANG, EDITOR, GOPATH, LS_COLORS, and others) are now skipped by name, reducing false positives when agents send standard environment values in tool arguments. Case-insensitive matching handles Windows-style mixed-case names.
+- Report: plain blocked events without an action field now get high severity instead of medium
+- Report: evidence appendix redacts connect_host and sni_host IP addresses
+- Report: admin events (startup, shutdown, config_reload) excluded from timeline histogram
+- Report: skipped JSONL lines tracked and surfaced in summary and HTML template
+
+### Changed
+- Documentation version references use `v1`/`latest` instead of pinned version numbers so guides stay current across releases
+
 ## [0.3.5] - 2026-03-05
 
 ### Added

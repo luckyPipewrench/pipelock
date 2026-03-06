@@ -1,3 +1,6 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
 // Package report generates HTML and JSON audit reports from JSONL event logs.
 package report
 

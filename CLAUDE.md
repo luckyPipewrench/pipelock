@@ -8,7 +8,7 @@ These are non-negotiable. Violating any of them breaks the security model.
 
 - **Never weaken capability separation.** The proxy runs in the unprivileged zone (no secrets, full network). The agent runs in the privileged zone (has secrets, no direct network). If pipelock ever needs access to agent secrets, the architecture is wrong.
 - **Never bypass fail-closed defaults.** HITL timeout, non-terminal input, parse errors, context cancellation: all default to **block**. If in doubt, block.
-- **Never add dependencies without justification.** 8 direct deps is intentional, not a limitation. Every dependency is attack surface. Propose additions in the PR description with rationale.
+- **Never add dependencies without justification.** 9 direct deps is intentional, not a limitation. Every dependency is attack surface. Propose additions in the PR description with rationale.
 - **Never panic on runtime input.** All `panic()` calls in the codebase are post-validation programming errors caught at startup (invalid DLP regex, bad CIDR after config validation). User/agent input must never cause a panic.
 - **DLP runs before DNS resolution.** Layers 2-3 (blocklist, DLP) execute before layer 6 (SSRF/DNS). Reordering them would allow secret exfiltration via DNS queries.
 
@@ -20,7 +20,7 @@ These are non-negotiable. Violating any of them breaks the security model.
 | Go | 1.24+ (CI tests 1.24 and 1.25) |
 | License | Apache 2.0 |
 | Binary | Single static binary, ~12MB |
-| Deps | cobra, zerolog, go-readability, yaml.v3, prometheus, fsnotify, x/text, gobwas/ws |
+| Deps | cobra, zerolog, go-readability, yaml.v3, prometheus, fsnotify, x/text, x/net, gobwas/ws |
 
 ## Build, Test, Lint
 
@@ -50,7 +50,7 @@ CI runs lint and tests on **all** code, not just changed files.
 cmd/pipelock/           Entry point
 internal/
   cli/                  Cobra commands (20+ subcommands)
-  proxy/                HTTP proxy: /fetch, CONNECT, /ws, /health, /metrics, /stats
+  proxy/                HTTP proxy: /fetch, CONNECT, /ws, TLS interception, /health, /metrics, /stats
   scanner/              9-layer URL scanning pipeline + response injection detection
   config/               YAML config, validation, hot-reload (fsnotify + SIGHUP)
   audit/                Structured JSON logging (zerolog) + event emission dispatch
@@ -66,6 +66,7 @@ internal/
   hitl/                 Human-in-the-loop terminal approval
   integrity/            SHA256 file manifests
   certgen/              ECDSA P-256 CA + leaf cert generation, bounded TTL cache
+  report/               HTML/JSON audit report generation from JSONL event logs
   signing/              Ed25519 key management
   gitprotect/           Git diff scanning for secrets
   metrics/              Prometheus counters/histograms/gauges + JSON /stats
@@ -111,7 +112,7 @@ Scanning layers:
 
 YAML config loaded at startup. Hot-reload via fsnotify file watch + SIGHUP signal (100ms debounce). Reload atomically swaps config, scanner, and session manager via `atomic.Pointer[T]`. Kill switch state (all 4 sources) is preserved across reloads.
 
-Top-level sections: `mode`, `enforce`, `api_allowlist`, `suppress`, `fetch_proxy`, `forward_proxy`, `websocket_proxy`, `dlp`, `response_scanning`, `mcp_input_scanning`, `mcp_tool_scanning`, `mcp_tool_policy`, `mcp_session_binding`, `session_profiling`, `adaptive_enforcement`, `kill_switch`, `emit`, `tool_chain_detection`, `git_protection`, `logging`, `internal`.
+Top-level sections: `mode`, `enforce`, `api_allowlist`, `suppress`, `fetch_proxy`, `forward_proxy`, `websocket_proxy`, `tls_interception`, `dlp`, `response_scanning`, `mcp_input_scanning`, `mcp_tool_scanning`, `mcp_tool_policy`, `mcp_session_binding`, `session_profiling`, `adaptive_enforcement`, `kill_switch`, `emit`, `tool_chain_detection`, `git_protection`, `logging`, `internal`.
 
 Action constants: `config.ActionBlock`, `ActionWarn`, `ActionAsk`, `ActionStrip`, `ActionForward`.
 

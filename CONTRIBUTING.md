@@ -110,23 +110,25 @@ make docker   # Build Docker image
 ```text
 cmd/pipelock/          CLI entry point
 internal/
-  cli/                 Cobra commands (audit, check, demo, generate, git, healthcheck,
-                         integrity, keygen, logs, mcp, run, sign, test, trust, verify, version)
+  cli/                 20+ Cobra commands (run, check, report, tls, mcp, audit, generate, ...)
   config/              YAML config loading, validation, defaults, hot-reload (fsnotify)
-  scanner/             URL scanning (SSRF, blocklist, rate limit, DLP, entropy, env leak)
-  audit/               Structured JSON audit logging (zerolog)
-  proxy/               HTTP proxy: fetch, forward (CONNECT + absolute-URI), WebSocket (/ws)
+  scanner/             9-layer URL scanning pipeline + response injection detection
+  audit/               Structured JSON audit logging (zerolog) + event emission dispatch
+  proxy/               HTTP proxy: fetch, forward (CONNECT), WebSocket, TLS interception
+  certgen/             ECDSA P-256 CA + leaf certificate generation, cache
+  mcp/                 MCP proxy + bidirectional scanning + tool poisoning + chains
+  report/              HTML/JSON audit report generation from JSONL event logs
+  killswitch/          Emergency deny-all (4 sources) + port-isolated API
+  emit/                Event emission (webhook + syslog sinks)
   metrics/             Prometheus metrics + JSON stats endpoint
-  gitprotect/          Git-aware security (diff scanning, branch validation, hooks)
-  integrity/           File integrity monitoring (SHA256 manifests, check/diff, exclusions)
+  normalize/           Unicode normalization (NFKC, confusables, combining marks)
+  hitl/                Human-in-the-loop terminal approval
+  integrity/           File integrity monitoring (SHA256 manifests)
   signing/             Ed25519 key management, file signing, signature verification
-  mcp/                 MCP stdio proxy + bidirectional JSON-RPC 2.0 scanning + tool poisoning detection
-  hitl/                Human-in-the-loop terminal approval (ask action)
-  normalize/           Unicode normalization pipeline (NFKC, homoglyphs, combining marks)
+  gitprotect/          Git diff scanning for secrets
   projectscan/         Project directory scanner for audit command
-configs/               Preset config files (strict, balanced, audit, claude-code, cursor, generic-agent)
-docs/                  OWASP mapping, tool comparison
-blog/                  Blog posts (mirrored at pipelab.org/blog/)
+configs/               7 preset config files (balanced, strict, audit, claude-code, cursor, generic-agent, hostile-model)
+docs/                  Guides, OWASP mapping, comparison
 ```
 
 ## Architecture
@@ -162,7 +164,7 @@ See [CLAUDE.md](CLAUDE.md) for the full architecture guide, including:
 
 ## Dependencies
 
-Pipelock has 8 direct dependencies. This is intentional. Any new dependency must be justified in the PR description. We prefer the standard library.
+Pipelock has 9 direct dependencies. This is intentional. Any new dependency must be justified in the PR description. We prefer the standard library.
 
 ## Security
 

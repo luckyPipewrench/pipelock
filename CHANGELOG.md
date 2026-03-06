@@ -10,6 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.3.6] - 2026-03-06
 
 ### Added
+- TLS interception for CONNECT tunnels: opt-in MITM decrypts tunnel traffic for full request body DLP, header DLP, and response injection scanning. ECDSA P-256 CA with bounded TTL certificate cache.
+- `pipelock tls init` command: generates a local CA key pair for TLS interception
+- `pipelock tls show-ca` command: displays the CA certificate (PEM) for manual trust
+- `pipelock tls install-ca` command: installs the CA into the system trust store
+- `tls_interception` config section with `enabled`, `ca_cert`, `ca_key`, `cert_ttl`, and `bypass_domains` fields. Hot-reload wiring for CA config changes.
+- TLS interception SSRF-safe upstream dialer prevents DNS rebinding during intercepted connections
+- TLS interception status reported in `/health` endpoint
+- `pipelock_tls_intercept_total`, `pipelock_tls_intercept_errors_total`, `pipelock_tls_upstream_errors_total`, `pipelock_tls_cert_cache_size`, `pipelock_tls_cert_gen_duration_seconds` Prometheus metrics
+- `tls_authority_mismatch`, `tls_response_blocked` audit events with MITRE technique labels
+- All 7 config presets updated with `tls_interception` section defaults
 - `pipelock report` command: reads JSONL audit logs and produces HTML, JSON, or Ed25519-signed evidence bundle reports with risk rating, event categories, timeline histogram, and evidence appendix. Supports `--format`, `--output`, `--sign`, and `--config` flags.
 - MCP tool poisoning: parameter schema scanning extracts parameter key names from `inputSchema` at all nesting depths, expands underscore/hyphen/camelCase names, and scans for exfiltration intent (catches the CyberArk attack variant where data theft is encoded in parameter names while descriptions stay clean)
 - Exfiltration Parameter Name poison pattern: detects action+target combinations in tool parameter names (read+private_key, steal+credentials, fetch+access_token)
@@ -26,10 +36,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Environment variable leak scanner: ~50 well-known non-secret variables (HOME, PATH, USER, PWD, SHELL, TERM, LANG, EDITOR, GOPATH, LS_COLORS, and others) are now skipped by name, reducing false positives when agents send standard environment values in tool arguments. Case-insensitive matching handles Windows-style mixed-case names.
+- TLS interception: `ActionAsk` treated as block inside intercepted tunnels (no HITL terminal available in TLS context)
+- TLS interception: `LoadCA` validates cert.IsCA, KeyUsageCertSign, and key correspondence. Rejects cert_ttl <= 0 and group/world-readable CA keys.
+- MCP: skip general injection scanner for tools/list responses when tool scanning is enabled, preventing false positives on instructional tool descriptions (e.g. "you must call this tool")
+- Report: chain detection severity derived from action (block=critical, warn=warn) instead of storing caller-provided value
+- Report: hash raw client IP in audit session field when Mcp-Session-Id absent, preventing IP leak
 - Report: plain blocked events without an action field now get high severity instead of medium
 - Report: evidence appendix redacts connect_host and sni_host IP addresses
 - Report: admin events (startup, shutdown, config_reload) excluded from timeline histogram
 - Report: skipped JSONL lines tracked and surfaced in summary and HTML template
+- Report: criticals KPI counter uses severity:critical count (was always 0)
+- Report: exec summary uses traffic-only event count as denominator (excludes admin events)
+- Report: multi-day timeline labels use "Jan 2" date format instead of "00:00" for all bars
 
 ### Changed
 - Documentation version references use `v1`/`latest` instead of pinned version numbers so guides stay current across releases

@@ -190,12 +190,18 @@ func buildTimelineBars(buckets []TimeBucket) []timelineBar {
 		return nil
 	}
 
-	// Choose label format based on span. Multi-day spans use date labels
-	// since time-of-day would collapse to "00:00" for daily buckets.
-	span := buckets[len(buckets)-1].Start.Sub(buckets[0].Start)
+	// Choose label format based on bucket step, not total span. Hourly
+	// buckets always show time-of-day; daily buckets show date-only.
 	labelFmt := "15:04"
-	if span >= 24*time.Hour {
-		labelFmt = "Jan 2"
+	if len(buckets) > 1 {
+		step := buckets[1].Start.Sub(buckets[0].Start)
+		span := buckets[len(buckets)-1].Start.Sub(buckets[0].Start)
+		switch {
+		case step >= 24*time.Hour:
+			labelFmt = "Jan 2"
+		case span >= 24*time.Hour:
+			labelFmt = "Jan 2 15:04"
+		}
 	}
 
 	n := len(buckets)

@@ -123,6 +123,7 @@ func Aggregate(events []Event, opts Options) *Report {
 	if len(events) == 0 {
 		r.ConfigHashes = []string{}
 		r.Categories = []CategoryStats{}
+		r.Domains = []DomainStats{}
 		r.Timeline = []TimeBucket{}
 		r.Evidence = []Event{}
 		return r
@@ -448,13 +449,19 @@ func eventSample(ev *Event, redact bool) string {
 }
 
 // redactURL strips path and query from a URL, keeping only the domain.
+// IP-based hosts are fully redacted to prevent leaking internal addresses.
 func redactURL(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return "[redacted-url]"
 	}
 	if u.Host == "" {
-		return raw
+		// Bare target (no scheme): could be "ip:port" or bare IP.
+		return redactIP(raw)
+	}
+	// Redact IP-based hosts entirely.
+	if host := u.Hostname(); net.ParseIP(host) != nil {
+		return "[redacted-url]"
 	}
 	return u.Scheme + "://" + u.Host
 }

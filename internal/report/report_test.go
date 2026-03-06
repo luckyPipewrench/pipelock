@@ -419,6 +419,9 @@ func TestAggregate_EmptyEvents(t *testing.T) {
 	if r.Evidence == nil {
 		t.Error("expected non-nil Evidence slice")
 	}
+	if r.Domains == nil {
+		t.Error("expected non-nil Domains slice")
+	}
 }
 
 func TestAggregate_BodyDLPBlock(t *testing.T) {
@@ -924,6 +927,32 @@ func TestAggregate_TimelineHourly(t *testing.T) {
 	}
 }
 
+func TestBuildTimelineBars_HourlyMultiDay(t *testing.T) {
+	// 36-hour span with hourly buckets: labels should include date AND time.
+	base := time.Date(2026, 3, 5, 10, 0, 0, 0, time.UTC)
+	buckets := make([]TimeBucket, 36)
+	for i := range buckets {
+		buckets[i] = TimeBucket{
+			Start:   base.Add(time.Duration(i) * time.Hour),
+			Allowed: 1,
+		}
+	}
+
+	bars := buildTimelineBars(buckets)
+	if len(bars) == 0 {
+		t.Fatal("expected timeline bars")
+	}
+
+	// First label should include both date and time (Jan 2 15:04 format).
+	first := bars[0].Label
+	if first == "10:00" {
+		t.Error("expected date+time label for multi-day hourly timeline, got time-only")
+	}
+	if first == "Mar 5" {
+		t.Error("expected date+time label for hourly buckets, got date-only")
+	}
+}
+
 // ---- Redaction helper tests ----
 
 func TestRedactURL(t *testing.T) {
@@ -934,6 +963,11 @@ func TestRedactURL(t *testing.T) {
 		{"https://evil.com/exfil?key=secret", "https://evil.com"},
 		{"https://api.example.com:8443/path", "https://api.example.com:8443"},
 		{"not-a-url", "not-a-url"},
+		// IP-based URLs must be fully redacted.
+		{"http://169.254.169.254/latest/meta-data", "[redacted-url]"},
+		{"https://10.0.0.1:8080/admin", "[redacted-url]"},
+		// Bare IP targets use redactIP fallback.
+		{"192.168.1.1", "[redacted]"},
 	}
 
 	for _, tt := range tests {

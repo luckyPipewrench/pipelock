@@ -1029,6 +1029,398 @@ func TestWriteBundle_VerifyKeyTypes(t *testing.T) {
 	}
 }
 
+// ---- timelineStep tests ----
+
+func TestTimelineStep(t *testing.T) {
+	tests := []struct {
+		name     string
+		duration time.Duration
+		expected time.Duration
+	}{
+		{"5min", 5 * time.Minute, time.Minute},
+		{"20min", 20 * time.Minute, 3 * time.Minute},
+		{"45min", 45 * time.Minute, 5 * time.Minute},
+		{"90min", 90 * time.Minute, 5 * time.Minute},
+		{"6h", 6 * time.Hour, 15 * time.Minute},
+		{"14h", 14 * time.Hour, time.Hour},
+		{"2d", 48 * time.Hour, time.Hour},
+		{"5d", 5 * 24 * time.Hour, 24 * time.Hour},
+		{"zero", 0, time.Minute},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := timelineStep(tt.duration)
+			if got != tt.expected {
+				t.Errorf("timelineStep(%v) = %v, want %v", tt.duration, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestSeverityOrder(t *testing.T) {
+	tests := []struct {
+		sev      string
+		expected int
+	}{
+		{severityCritical, 4},
+		{severityHigh, 3},
+		{severityMedium, 2},
+		{"low", 1},
+		{"", 1},
+		{"unknown", 1},
+	}
+	for _, tt := range tests {
+		if got := severityOrder(tt.sev); got != tt.expected {
+			t.Errorf("severityOrder(%q) = %d, want %d", tt.sev, got, tt.expected)
+		}
+	}
+}
+
+func TestClassifyEvent_AllPaths(t *testing.T) {
+	tests := []struct {
+		name      string
+		ev        Event
+		blocks    int
+		warns     int
+		allowed   int
+		criticals int
+	}{
+		{"response_scan_warn", Event{Event: testEvRespScan, Action: actionWarn}, 0, 1, 0, 0},
+		{"response_scan_block", Event{Event: testEvRespScan, Action: actionBlock}, 0, 0, 0, 0},
+		{"chain_warn", Event{Event: "chain_detection", Action: actionWarn}, 0, 1, 0, 0},
+		{"chain_block", Event{Event: "chain_detection", Action: actionBlock}, 1, 0, 0, 1},
+		{"mcp_unknown_tool_warn", Event{Event: "mcp_unknown_tool", Action: actionWarn}, 0, 1, 0, 0},
+		{"mcp_unknown_tool_block", Event{Event: "mcp_unknown_tool", Action: actionBlock}, 1, 0, 0, 0},
+		{"body_dlp_warn", Event{Event: "body_dlp", Action: actionWarn}, 0, 1, 0, 0},
+		{"header_dlp_block", Event{Event: "header_dlp", Action: actionBlock}, 1, 0, 0, 0},
+		{"ws_scan_warn", Event{Event: "ws_scan", Action: actionWarn}, 0, 1, 0, 0},
+		{"anomaly", Event{Event: "anomaly"}, 0, 1, 0, 0},
+		{"startup", Event{Event: testEvStartup}, 0, 0, 0, 0},
+		{"allowed", Event{Event: "allowed"}, 0, 0, 1, 0},
+		{"kill_switch_deny", Event{Event: "kill_switch_deny"}, 1, 0, 0, 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var s Summary
+			classifyEvent(&tt.ev, &s)
+			if s.Blocks != tt.blocks {
+				t.Errorf("blocks = %d, want %d", s.Blocks, tt.blocks)
+			}
+			if s.Warnings != tt.warns {
+				t.Errorf("warnings = %d, want %d", s.Warnings, tt.warns)
+			}
+			if s.Allowed != tt.allowed {
+				t.Errorf("allowed = %d, want %d", s.Allowed, tt.allowed)
+			}
+			if s.Criticals != tt.criticals {
+				t.Errorf("criticals = %d, want %d", s.Criticals, tt.criticals)
+			}
+		})
+	}
+}
+
+func TestIsBlockEvent(t *testing.T) {
+	tests := []struct {
+		ev     Event
+		isBlk  bool
+		isWarn bool
+	}{
+		{Event{Event: "blocked"}, true, false},
+		{Event{Event: "ws_blocked"}, true, false},
+		{Event{Event: "kill_switch_deny"}, true, false},
+		{Event{Event: "body_dlp", Action: actionBlock}, true, false},
+		{Event{Event: "body_dlp", Action: actionWarn}, false, true},
+		{Event{Event: "chain_detection", Action: actionBlock}, true, false},
+		{Event{Event: "chain_detection", Action: actionWarn}, false, true},
+		{Event{Event: "mcp_unknown_tool", Action: actionBlock}, true, false},
+		{Event{Event: "anomaly"}, false, true},
+		{Event{Event: "response_scan", Action: actionWarn}, false, true},
+		{Event{Event: "ws_scan", Action: actionWarn}, false, true},
+	}
+	for _, tt := range tests {
+		if got := isBlockEvent(&tt.ev); got != tt.isBlk {
+			t.Errorf("isBlockEvent(%q/%q) = %v, want %v", tt.ev.Event, tt.ev.Action, got, tt.isBlk)
+		}
+		if got := isWarnEvent(&tt.ev); got != tt.isWarn {
+			t.Errorf("isWarnEvent(%q/%q) = %v, want %v", tt.ev.Event, tt.ev.Action, got, tt.isWarn)
+		}
+	}
+}
+
+func TestBuildDomainStats_CapAt20(t *testing.T) {
+	stats := make(map[string]*DomainStats)
+	for i := range 25 {
+		d := &DomainStats{
+			Domain:  "d" + string(rune('a'+i)) + ".example.com",
+			Total:   25 - i,
+			Allowed: 25 - i,
+		}
+		stats[d.Domain] = d
+	}
+	result := buildDomainStats(stats)
+	if len(result) != maxDomains {
+		t.Errorf("expected %d domains (cap), got %d", maxDomains, len(result))
+	}
+}
+
+func TestBuildDomainStats_SortOrder(t *testing.T) {
+	stats := map[string]*DomainStats{
+		"a.com": {Domain: "a.com", Total: 10, Blocks: 0, Allowed: 10},
+		"b.com": {Domain: "b.com", Total: 5, Blocks: 3, Allowed: 2},
+		"c.com": {Domain: "c.com", Total: 5, Blocks: 0, Allowed: 5},
+	}
+	result := buildDomainStats(stats)
+	if result[0].Domain != "b.com" {
+		t.Errorf("expected b.com first (has blocks), got %q", result[0].Domain)
+	}
+}
+
+func TestGenerateExecSummary_AllRisks(t *testing.T) {
+	base := Report{
+		TimeRange: TimeRange{
+			Start: time.Date(2026, 3, 5, 10, 0, 0, 0, time.UTC),
+			End:   time.Date(2026, 3, 5, 11, 0, 0, 0, time.UTC),
+		},
+	}
+
+	// Green: no blocks/warns.
+	green := base
+	green.Risk = RiskGreen
+	green.Summary = Summary{Allowed: 100, UniqueDomains: 5}
+	s := generateExecSummary(&green)
+	if !strings.Contains(s, "No security events") {
+		t.Errorf("green summary missing 'No security events': %s", s)
+	}
+
+	// Yellow: blocks and warns.
+	yellow := base
+	yellow.Risk = RiskYellow
+	yellow.Summary = Summary{Blocks: 3, Warnings: 2, Allowed: 95, UniqueDomains: 10}
+	s = generateExecSummary(&yellow)
+	if !strings.Contains(s, "3 blocks") {
+		t.Errorf("yellow summary missing '3 blocks': %s", s)
+	}
+
+	// Red: criticals.
+	red := base
+	red.Risk = RiskRed
+	red.Summary = Summary{Criticals: 1, Blocks: 1, Allowed: 0, UniqueDomains: 1}
+	s = generateExecSummary(&red)
+	if !strings.Contains(s, "critical") {
+		t.Errorf("red summary missing 'critical': %s", s)
+	}
+
+	// Short duration (1 minute).
+	short := base
+	short.TimeRange.End = short.TimeRange.Start.Add(30 * time.Second)
+	short.Risk = RiskGreen
+	short.Summary = Summary{Allowed: 1, UniqueDomains: 1}
+	s = generateExecSummary(&short)
+	if !strings.Contains(s, "1-minute") {
+		t.Errorf("short summary missing '1-minute': %s", s)
+	}
+
+	// Multi-day.
+	multiDay := base
+	multiDay.TimeRange.End = multiDay.TimeRange.Start.Add(48 * time.Hour)
+	multiDay.Risk = RiskGreen
+	multiDay.Summary = Summary{Allowed: 500, UniqueDomains: 20}
+	s = generateExecSummary(&multiDay)
+	if !strings.Contains(s, "day") {
+		t.Errorf("multi-day summary missing 'day': %s", s)
+	}
+
+	// Zero duration.
+	zero := base
+	zero.TimeRange.End = zero.TimeRange.Start
+	zero.Risk = RiskGreen
+	zero.Summary = Summary{Allowed: 1, UniqueDomains: 1}
+	s = generateExecSummary(&zero)
+	if !strings.Contains(s, "single-point") {
+		t.Errorf("zero duration summary missing 'single-point': %s", s)
+	}
+}
+
+func TestRenderHTML_WithEvidence(t *testing.T) {
+	r := &Report{
+		Title:        "Evidence Test",
+		Generated:    time.Date(2026, 3, 5, 12, 0, 0, 0, time.UTC),
+		Version:      testVersion,
+		ConfigHashes: []string{testHash},
+		Mode:         testMode,
+		Risk:         RiskRed,
+		TimeRange: TimeRange{
+			Start: time.Date(2026, 3, 5, 10, 0, 0, 0, time.UTC),
+			End:   time.Date(2026, 3, 5, 11, 0, 0, 0, time.UTC),
+		},
+		Summary: Summary{
+			TotalEvents:   10,
+			Blocks:        3,
+			Warnings:      2,
+			Criticals:     1,
+			Allowed:       5,
+			UniqueDomains: 3,
+			SkippedLines:  1,
+		},
+		Categories: []CategoryStats{
+			{
+				Name: "DLP / Exfiltration", Count: 3, Severity: severityHigh,
+				MITRETechniques: []string{"T1048"},
+				SampleEvidence:  []string{"https://evil.com"},
+			},
+			{
+				Name: "Injection", Count: 2, Severity: severityMedium,
+				MITRETechniques: []string{"T1059"},
+			},
+		},
+		Domains: []DomainStats{
+			{Domain: "evil.com", Total: 3, Blocks: 3},
+			{Domain: "api.com", Total: 5, Allowed: 5},
+		},
+		Timeline: []TimeBucket{
+			{Start: time.Date(2026, 3, 5, 10, 0, 0, 0, time.UTC), Blocks: 2, Warns: 1, Allowed: 3},
+			{Start: time.Date(2026, 3, 5, 10, 15, 0, 0, time.UTC), Blocks: 1, Warns: 1, Allowed: 2},
+		},
+		Evidence: []Event{
+			{
+				Time: time.Date(2026, 3, 5, 10, 0, 1, 0, time.UTC), Event: "blocked",
+				URL: "https://evil.com/exfil", Scanner: "dlp", Reason: "AWS key",
+				ClientIP: testClientIP, RequestID: testRequestID,
+				MITRETechnique: "T1048", Severity: severityHigh,
+			},
+			{
+				Time: time.Date(2026, 3, 5, 10, 0, 2, 0, time.UTC), Event: "kill_switch_deny",
+				Transport: "http", Source: "api",
+			},
+		},
+	}
+
+	var buf bytes.Buffer
+	if err := RenderHTML(&buf, r); err != nil {
+		t.Fatalf("RenderHTML error: %v", err)
+	}
+
+	html := buf.String()
+	// Exercises template functions: riskColor, riskLabel, severityColor,
+	// eventSeverity, execSummary, pct, add, sub, timelineBars, eventJSON,
+	// formatTime, join.
+	for _, want := range []string{
+		"Evidence Test",
+		"HIGH RISK",
+		"#f44336",
+		"evil.com",
+		"T1048",
+		"malformed",   // skipped lines warning
+		testRequestID, // evidence detail
+		"kill_switch", // evidence event type
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("HTML missing %q", want)
+		}
+	}
+}
+
+func TestRenderHTML_WithDomainStats(t *testing.T) {
+	r := makeTestReport()
+	r.Domains = []DomainStats{
+		{Domain: "api.example.com", Total: 50, Allowed: 48, Warns: 2},
+	}
+
+	var buf bytes.Buffer
+	if err := RenderHTML(&buf, r); err != nil {
+		t.Fatalf("RenderHTML error: %v", err)
+	}
+
+	if !strings.Contains(buf.String(), "api.example.com") {
+		t.Error("expected domain in HTML output")
+	}
+}
+
+func TestEventSeverity_AllPaths(t *testing.T) {
+	tests := []struct {
+		name string
+		ev   Event
+		want string
+	}{
+		{"kill_switch", Event{Event: "kill_switch_deny"}, severityCritical},
+		{"chain_block", Event{Event: "chain_detection", Action: actionBlock}, severityCritical},
+		{"explicit_sev", Event{Event: "some_event", Severity: "low"}, "low"},
+		{"block_type", Event{Event: "blocked"}, severityHigh},
+		{"action_block", Event{Event: "body_dlp", Action: actionBlock}, severityHigh},
+		{"default", Event{Event: "anomaly"}, severityMedium},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := eventSeverity(&tt.ev)
+			if got != tt.want {
+				t.Errorf("eventSeverity(%q) = %q, want %q", tt.ev.Event, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWriteBundle_CleansStaleSig(t *testing.T) {
+	dir := t.TempDir()
+	r := makeTestReport()
+
+	// First, write with signing.
+	_, priv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("key gen: %v", err)
+	}
+	if err := WriteBundle(dir, r, priv); err != nil {
+		t.Fatalf("WriteBundle (signed): %v", err)
+	}
+	sigPath := filepath.Join(dir, fileManifest+signing.SigExtension)
+	if _, err := os.Stat(sigPath); err != nil {
+		t.Fatal("expected .sig after signed write")
+	}
+
+	// Write again without signing: should clean up stale .sig.
+	if err := WriteBundle(dir, r, nil); err != nil {
+		t.Fatalf("WriteBundle (unsigned): %v", err)
+	}
+	if _, err := os.Stat(sigPath); err == nil {
+		t.Error("expected stale .sig to be removed on unsigned write")
+	}
+}
+
+func TestBuildTimelineBars_Empty(t *testing.T) {
+	if bars := buildTimelineBars(nil); bars != nil {
+		t.Errorf("expected nil for empty buckets, got %d bars", len(bars))
+	}
+}
+
+func TestBuildTimelineBars_AllZero(t *testing.T) {
+	buckets := []TimeBucket{
+		{Start: time.Date(2026, 3, 5, 10, 0, 0, 0, time.UTC)},
+		{Start: time.Date(2026, 3, 5, 11, 0, 0, 0, time.UTC)},
+	}
+	if bars := buildTimelineBars(buckets); bars != nil {
+		t.Error("expected nil for all-zero buckets")
+	}
+}
+
+func TestBuildTimelineBars_DailyLabels(t *testing.T) {
+	// Daily buckets (step >= 24h): labels should be date-only.
+	base := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	buckets := []TimeBucket{
+		{Start: base, Allowed: 10},
+		{Start: base.Add(24 * time.Hour), Allowed: 5},
+		{Start: base.Add(48 * time.Hour), Allowed: 3},
+	}
+	bars := buildTimelineBars(buckets)
+	if len(bars) != 3 {
+		t.Fatalf("expected 3 bars, got %d", len(bars))
+	}
+	// "Jan 2" format: "Mar 1"
+	if bars[0].Label != "Mar 1" {
+		t.Errorf("expected 'Mar 1' label for daily bucket, got %q", bars[0].Label)
+	}
+}
+
 // makeTestReport creates a minimal Report for bundle tests.
 func makeTestReport() *Report {
 	return &Report{

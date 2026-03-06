@@ -4561,6 +4561,22 @@ func TestValidateReload_TLSPassthroughUnchanged_NoWarning(t *testing.T) {
 	}
 }
 
+func TestValidateReload_TLSPassthroughDisabledToEnabled_NoWarning(t *testing.T) {
+	// disabled → enabled with passthrough domains is not a downgrade.
+	old := Defaults()
+	old.TLSInterception.Enabled = false
+	updated := Defaults()
+	updated.TLSInterception.Enabled = true
+	updated.TLSInterception.PassthroughDomains = []string{"*.bank.com"}
+
+	warnings := ValidateReload(old, updated)
+	for _, w := range warnings {
+		if w.Field == fieldTLSPassthrough {
+			t.Errorf("disabled→enabled should not produce passthrough warning, got: %s", w.Message)
+		}
+	}
+}
+
 func TestValidateReload_ToolChainDetectionDisabled(t *testing.T) {
 	old := Defaults()
 	old.ToolChainDetection.Enabled = true

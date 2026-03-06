@@ -10,6 +10,7 @@ package proxy
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -215,7 +216,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 		},
 	}
 
-	p.tlsTransport = newTLSInterceptTransport(p.ssrfSafeDialContext, m.RecordTLSHandshake)
+	p.tlsTransport = newTLSInterceptTransport(p.ssrfSafeDialContext, m.RecordTLSHandshake, nil)
 
 	return p
 }
@@ -298,10 +299,12 @@ func (p *Proxy) Close() {
 
 // newTLSInterceptTransport creates a shared http.Transport for TLS interception
 // upstream connections. Pools TCP+TLS connections across CONNECT tunnels to the
-// same host, avoiding per-tunnel connection setup overhead.
+// same host, avoiding per-tunnel connection setup overhead. Pass nil rootCAs to
+// use the system default trust store.
 func newTLSInterceptTransport(
 	ssrfDial func(ctx context.Context, network, addr string) (net.Conn, error),
 	recordHandshake func(stage string, d time.Duration),
+	rootCAs *x509.CertPool,
 ) *http.Transport {
 	return &http.Transport{
 		DialTLSContext: func(dialCtx context.Context, network, addr string) (net.Conn, error) {
@@ -315,6 +318,7 @@ func newTLSInterceptTransport(
 			// Layer TLS on top of the SSRF-validated TCP connection.
 			tlsCfg := &tls.Config{
 				ServerName: host,
+				RootCAs:    rootCAs,
 				NextProtos: []string{"h2", "http/1.1"},
 				MinVersion: tls.VersionTLS12,
 			}

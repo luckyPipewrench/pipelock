@@ -1498,7 +1498,7 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 	// TLS passthrough domains changed (scanning coverage may be reduced).
 	// Uses set-diff semantics: warns when new domains are added that weren't
 	// in the old list, even if the total count stays the same or shrinks.
-	if updated.TLSInterception.Enabled {
+	if old.TLSInterception.Enabled && updated.TLSInterception.Enabled {
 		added := passthroughDomainsAdded(old.TLSInterception.PassthroughDomains, updated.TLSInterception.PassthroughDomains)
 		if len(added) > 0 {
 			warnings = append(warnings, ReloadWarning{

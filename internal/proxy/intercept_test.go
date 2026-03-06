@@ -995,7 +995,7 @@ func TestNewTLSInterceptTransport_Config(t *testing.T) {
 	}
 	record := func(_ string, _ time.Duration) { called = true }
 
-	tr := newTLSInterceptTransport(dial, record)
+	tr := newTLSInterceptTransport(dial, record, nil)
 	if tr == nil {
 		t.Fatal("expected non-nil transport")
 	}
@@ -1046,27 +1046,7 @@ func TestNewTLSInterceptTransport_DialSuccess(t *testing.T) {
 		handshakeStage = stage
 	}
 
-	tr := newTLSInterceptTransport(dial, record)
-	// Override the TLS config to trust our test CA. In production the system
-	// root pool is used; in test we inject the test server's self-signed CA.
-	tr.DialTLSContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-		rawConn, dialErr := dialer.DialContext(ctx, network, addr)
-		if dialErr != nil {
-			return nil, dialErr
-		}
-		host, _, _ := net.SplitHostPort(addr)
-		tlsConn := tls.Client(rawConn, &tls.Config{
-			ServerName: host,
-			RootCAs:    certPool,
-			MinVersion: tls.VersionTLS12,
-		})
-		if hErr := tlsConn.HandshakeContext(ctx); hErr != nil {
-			_ = rawConn.Close()
-			return nil, hErr
-		}
-		record("upstream", 0)
-		return tlsConn, nil
-	}
+	tr := newTLSInterceptTransport(dial, record, certPool)
 
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, upstream.URL, nil)
 	client := &http.Client{Transport: tr}
@@ -1091,7 +1071,7 @@ func TestNewTLSInterceptTransport_DialError(t *testing.T) {
 		t.Error("record should not be called on dial error")
 	}
 
-	tr := newTLSInterceptTransport(dial, record)
+	tr := newTLSInterceptTransport(dial, record, nil)
 	_, err := tr.DialTLSContext(context.Background(), "tcp", "example.com:443")
 	if err == nil {
 		t.Fatal("expected error from blocked dial")
@@ -1127,7 +1107,7 @@ func TestNewTLSInterceptTransport_HandshakeError(t *testing.T) {
 		t.Error("record should not be called on handshake error")
 	}
 
-	tr := newTLSInterceptTransport(dial, record)
+	tr := newTLSInterceptTransport(dial, record, nil)
 	_, dialErr := tr.DialTLSContext(context.Background(), "tcp", ln.Addr().String())
 	if dialErr == nil {
 		t.Fatal("expected handshake error")

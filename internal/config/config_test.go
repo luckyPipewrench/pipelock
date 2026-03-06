@@ -4379,3 +4379,186 @@ func TestConfigHash_FromFile(t *testing.T) {
 		t.Errorf("hash length = %d, want 64", len(cfg1.Hash()))
 	}
 }
+
+func TestTLSInterception_ResolveCAPath_OnlyOneExplicit(t *testing.T) {
+	// When only ca_cert is set explicitly, ca_key should resolve to default.
+	cfg := Defaults()
+	cfg.TLSInterception.CACertPath = "/explicit/ca.pem"
+	cfg.TLSInterception.CAKeyPath = ""
+
+	certPath, keyPath, err := cfg.ResolveCAPath()
+	if err != nil {
+		t.Fatalf("ResolveCAPath: %v", err)
+	}
+	if certPath != "/explicit/ca.pem" {
+		t.Errorf("certPath = %q, want /explicit/ca.pem", certPath)
+	}
+	if keyPath == "" {
+		t.Error("keyPath should resolve to default, not empty")
+	}
+	if !strings.HasSuffix(keyPath, "ca-key.pem") {
+		t.Errorf("keyPath = %q, want suffix ca-key.pem", keyPath)
+	}
+
+	// When only ca_key is set explicitly, ca_cert should resolve to default.
+	cfg.TLSInterception.CACertPath = ""
+	cfg.TLSInterception.CAKeyPath = "/explicit/ca-key.pem"
+
+	certPath, keyPath, err = cfg.ResolveCAPath()
+	if err != nil {
+		t.Fatalf("ResolveCAPath: %v", err)
+	}
+	if !strings.HasSuffix(certPath, "ca.pem") {
+		t.Errorf("certPath = %q, want suffix ca.pem", certPath)
+	}
+	if keyPath != "/explicit/ca-key.pem" {
+		t.Errorf("keyPath = %q, want /explicit/ca-key.pem", keyPath)
+	}
+}
+
+func TestTLSInterception_ValidateMissingKey(t *testing.T) {
+	dir := t.TempDir()
+	certPath := filepath.Join(dir, "ca.pem")
+	keyPath := filepath.Join(dir, "ca-key.pem")
+	// Create cert but not key.
+	if err := os.WriteFile(certPath, []byte("fake"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := Defaults()
+	cfg.Internal = nil
+	cfg.TLSInterception.Enabled = true
+	cfg.TLSInterception.CACertPath = certPath
+	cfg.TLSInterception.CAKeyPath = keyPath
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for missing CA key")
+	}
+	if !strings.Contains(err.Error(), "CA key not found") {
+		t.Errorf("error = %q, want 'CA key not found'", err)
+	}
+}
+
+func TestValidateReload_TLSInterceptionDisabled(t *testing.T) {
+	old := Defaults()
+	old.TLSInterception.Enabled = true
+	updated := Defaults()
+	updated.TLSInterception.Enabled = false
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == "tls_interception.enabled" {
+			found = true
+			if !strings.Contains(w.Message, "TLS interception disabled") {
+				t.Errorf("unexpected message: %s", w.Message)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("expected TLS interception disabled warning")
+	}
+}
+
+func TestValidateReload_TLSInterceptionBothEnabled_NoWarning(t *testing.T) {
+	old := Defaults()
+	old.TLSInterception.Enabled = true
+	updated := Defaults()
+	updated.TLSInterception.Enabled = true
+
+	warnings := ValidateReload(old, updated)
+	for _, w := range warnings {
+		if w.Field == "tls_interception.enabled" {
+			t.Errorf("both enabled should not produce warning, got: %s", w.Message)
+		}
+	}
+}
+
+func TestValidateReload_ToolChainDetectionDisabled(t *testing.T) {
+	old := Defaults()
+	old.ToolChainDetection.Enabled = true
+	updated := Defaults()
+	updated.ToolChainDetection.Enabled = false
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == "tool_chain_detection.enabled" {
+			found = true
+			if !strings.Contains(w.Message, "tool chain detection disabled") {
+				t.Errorf("unexpected message: %s", w.Message)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("expected tool chain detection disabled warning")
+	}
+}
+
+func TestValidateReload_DLPIncludeDefaultsDisabled(t *testing.T) {
+	old := Defaults()
+	// old.DLP.IncludeDefaults nil means "true" by convention.
+	f := false
+	updated := Defaults()
+	updated.DLP.IncludeDefaults = &f
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == "dlp.include_defaults" {
+			found = true
+			if !strings.Contains(w.Message, "include_defaults disabled") {
+				t.Errorf("unexpected message: %s", w.Message)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("expected DLP include_defaults disabled warning")
+	}
+}
+
+func TestValidateReload_DLPIncludeDefaultsBothTrue_NoWarning(t *testing.T) {
+	old := Defaults()
+	updated := Defaults()
+	// Both nil (defaults to true).
+	warnings := ValidateReload(old, updated)
+	for _, w := range warnings {
+		if w.Field == "dlp.include_defaults" {
+			t.Errorf("both true should not produce warning, got: %s", w.Message)
+		}
+	}
+}
+
+func TestConfigHash_DifferentTLSConfig(t *testing.T) {
+	dir := t.TempDir()
+
+	// TLS interception disabled in both, but different cert_ttl values.
+	// Hash is based on raw YAML bytes, so any content difference changes the hash.
+	cfg1YAML := []byte("mode: balanced\n")
+	cfg2YAML := []byte("mode: balanced\ntls_interception:\n  cert_ttl: 12h\n")
+
+	path1 := filepath.Join(dir, "cfg1.yaml")
+	path2 := filepath.Join(dir, "cfg2.yaml")
+	if err := os.WriteFile(path1, cfg1YAML, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path2, cfg2YAML, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	c1, err := Load(path1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c2, err := Load(path2)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if c1.Hash() == c2.Hash() {
+		t.Error("configs with different TLS settings should produce different hashes")
+	}
+}

@@ -1,2 +1,32 @@
 # Default owner for all files
 * @luckyPipewrench
+
+# Security-critical code: require technical reviewer
+/internal/proxy/ @luckyPipewrench @DeathCamel58
+/internal/scanner/ @luckyPipewrench @DeathCamel58
+/internal/mcp/ @luckyPipewrench @DeathCamel58
+/internal/killswitch/ @luckyPipewrench @DeathCamel58
+/internal/signing/ @luckyPipewrench @DeathCamel58
+/internal/integrity/ @luckyPipewrench @DeathCamel58
+/internal/config/ @luckyPipewrench @DeathCamel58
+/internal/hitl/ @luckyPipewrench @DeathCamel58
+/internal/normalize/ @luckyPipewrench @DeathCamel58
+/internal/emit/ @luckyPipewrench @DeathCamel58
+/internal/decide/ @luckyPipewrench @DeathCamel58
+/internal/audit/ @luckyPipewrench @DeathCamel58
+/internal/gitprotect/ @luckyPipewrench @DeathCamel58
+/internal/extract/ @luckyPipewrench @DeathCamel58
+/internal/wsutil/ @luckyPipewrench @DeathCamel58
+/internal/metrics/ @luckyPipewrench @DeathCamel58
+/internal/preflight/ @luckyPipewrench @DeathCamel58
+/.github/workflows/ @luckyPipewrench @DeathCamel58
+/.goreleaser.yaml @luckyPipewrench @DeathCamel58
+/Dockerfile @luckyPipewrench @DeathCamel58
+/go.mod @luckyPipewrench @DeathCamel58
+/go.sum @luckyPipewrench @DeathCamel58
+
+# Docs and low-risk: helper reviewer
+/docs/ @luckyPipewrench @BlueAceFrost
+/README.md @luckyPipewrench @BlueAceFrost
+/assets/ @luckyPipewrench @BlueAceFrost
+/CONTRIBUTING.md @luckyPipewrench @BlueAceFrost

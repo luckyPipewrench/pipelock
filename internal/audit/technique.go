@@ -45,6 +45,9 @@ var techniqueMap = map[string]string{
 
 	// Domain fronting (SNI mismatch)
 	"sni_mismatch": "T1090.004", // Proxy: Domain Fronting
+
+	// Tool call chain pattern detection
+	"chain_detection": "T1059", // Command and Scripting Interpreter (multi-step attack chain)
 }
 
 // TechniqueForScanner returns the MITRE ATT&CK technique ID for a scanner

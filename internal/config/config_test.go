@@ -4193,3 +4193,40 @@ func TestReloadWarnings_RequestBodyScanning_DisabledWarning(t *testing.T) {
 		t.Error("expected reload warning when request_body_scanning is disabled")
 	}
 }
+
+func TestConfigHash_Deterministic(t *testing.T) {
+	cfg := Defaults()
+	if cfg.Hash() != HashDefaults {
+		t.Errorf("Defaults().Hash() = %q, want %q", cfg.Hash(), HashDefaults)
+	}
+}
+
+func TestConfigHash_FromFile(t *testing.T) {
+	// Write a config file, load it twice, hashes must match.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	content := []byte("mode: balanced\n")
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg1, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg2, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg1.Hash() != cfg2.Hash() {
+		t.Errorf("same file produced different hashes: %s vs %s", cfg1.Hash(), cfg2.Hash())
+	}
+	if cfg1.Hash() == HashDefaults {
+		t.Error("file-loaded config should not hash to 'defaults'")
+	}
+	// SHA256 hex is 64 chars
+	if len(cfg1.Hash()) != 64 {
+		t.Errorf("hash length = %d, want 64", len(cfg1.Hash()))
+	}
+}

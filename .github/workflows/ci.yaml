@@ -77,11 +77,12 @@ jobs:
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
 
-      # continue-on-error: GO-2026-4600 and GO-2026-4599 (crypto/x509) need
-      # go1.26.1 which doesn't exist yet. Remove when go1.26.1 ships.
+      # GO-2026-4600 and GO-2026-4599 (crypto/x509) need go1.26.1 which
+      # doesn't exist yet. Remove suppression when go1.26.1 ships.
       - name: Run govulncheck
-        continue-on-error: true
-        run: govulncheck ./...
+        run: |
+          govulncheck -json ./... > vulns.json || true
+          jq -s -e '[.[] | .finding // empty | select(.osv != "GO-2026-4600" and .osv != "GO-2026-4599")] | length == 0' vulns.json
 
   build:
     runs-on: ubuntu-latest

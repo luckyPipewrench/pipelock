@@ -14,10 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `pipelock tls init` command: generates a local CA key pair for TLS interception
 - `pipelock tls show-ca` command: displays the CA certificate (PEM) for manual trust
 - `pipelock tls install-ca` command: installs the CA into the system trust store
-- `tls_interception` config section with `enabled`, `ca_cert`, `ca_key`, `cert_ttl`, and `bypass_domains` fields. Hot-reload wiring for CA config changes.
+- `tls_interception` config section with `enabled`, `ca_cert`, `ca_key`, `cert_ttl`, and `passthrough_domains` fields. Hot-reload wiring for CA config changes.
 - TLS interception SSRF-safe upstream dialer prevents DNS rebinding during intercepted connections
 - TLS interception status reported in `/health` endpoint
-- `pipelock_tls_intercept_total`, `pipelock_tls_intercept_errors_total`, `pipelock_tls_upstream_errors_total`, `pipelock_tls_cert_cache_size`, `pipelock_tls_cert_gen_duration_seconds` Prometheus metrics
+- `pipelock_tls_intercept_total`, `pipelock_tls_handshake_duration_seconds`, `pipelock_tls_request_blocked_total`, `pipelock_tls_response_blocked_total`, `pipelock_tls_cert_cache_size` Prometheus metrics
 - `tls_authority_mismatch`, `tls_response_blocked` audit events with MITRE technique labels
 - All 7 config presets updated with `tls_interception` section defaults
 - `pipelock report` command: reads JSONL audit logs and produces HTML, JSON, or Ed25519-signed evidence bundle reports with risk rating, event categories, timeline histogram, and evidence appendix. Supports `--format`, `--output`, `--sign`, and `--config` flags.
@@ -28,7 +28,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Config.Hash()` for deterministic SHA256 of raw config file bytes (used in signed reports)
 - Dependency review GitHub Actions workflow: blocks PRs that introduce dependencies with known vulnerabilities
 - CI concurrency groups: in-progress runs cancelled when new commits push to the same branch
-- Granular CODEOWNERS paths for CI workflows, config presets, and documentation
 - SPDX Apache 2.0 license headers on all Go source files
 - GitHub Sponsors funding configuration
 - Contributor License Agreement (Apache ICLA) section in CONTRIBUTING.md

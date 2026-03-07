@@ -25,6 +25,7 @@ jobs:
           exclude-paths: |
             internal/scanner/scanner_test.go
             internal/scanner/text_dlp_test.go
+            internal/cli/license_test.go
             README.md
             assets/demo.cast
             docs/attacks-blocked.md

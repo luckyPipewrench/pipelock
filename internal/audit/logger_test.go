@@ -2225,6 +2225,144 @@ func TestLogChainDetection_NonPersistPatternEmitsT1059(t *testing.T) {
 	}
 }
 
+func TestLogResponseScanIncludesAgent(t *testing.T) {
+	tmp := t.TempDir()
+	logFile := filepath.Join(tmp, "audit.jsonl")
+	logger, err := New("json", "file", logFile, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogResponseScan("http://example.com", testClientIP, "req-1", testAgentName, "block", 1, []string{"injection"})
+	logger.Close()
+
+	data, err := os.ReadFile(filepath.Clean(logFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entry map[string]any
+	if err := json.Unmarshal(data, &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry["agent"] != testAgentName {
+		t.Errorf("agent = %v, want %s", entry["agent"], testAgentName)
+	}
+}
+
+func TestLogTunnelCloseIncludesAgent(t *testing.T) {
+	tmp := t.TempDir()
+	logFile := filepath.Join(tmp, "audit.jsonl")
+	logger, err := New("json", "file", logFile, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogTunnelClose("example.com:443", testClientIP, "req-1", testAgentName, 1024, time.Second)
+	logger.Close()
+
+	data, err := os.ReadFile(filepath.Clean(logFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entry map[string]any
+	if err := json.Unmarshal(data, &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry["agent"] != testAgentName {
+		t.Errorf("agent = %v, want %s", entry["agent"], testAgentName)
+	}
+}
+
+func TestLogForwardHTTPIncludesAgent(t *testing.T) {
+	tmp := t.TempDir()
+	logFile := filepath.Join(tmp, "audit.jsonl")
+	logger, err := New("json", "file", logFile, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogForwardHTTP("GET", "http://example.com", testClientIP, "req-1", testAgentName, 200, 512, time.Second)
+	logger.Close()
+
+	data, err := os.ReadFile(filepath.Clean(logFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entry map[string]any
+	if err := json.Unmarshal(data, &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry["agent"] != testAgentName {
+		t.Errorf("agent = %v, want %s", entry["agent"], testAgentName)
+	}
+}
+
+func TestLogRedirectIncludesAgent(t *testing.T) {
+	tmp := t.TempDir()
+	logFile := filepath.Join(tmp, "audit.jsonl")
+	logger, err := New("json", "file", logFile, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogRedirect("http://a.com", "http://b.com", testClientIP, "req-1", testAgentName, 1)
+	logger.Close()
+
+	data, err := os.ReadFile(filepath.Clean(logFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entry map[string]any
+	if err := json.Unmarshal(data, &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry["agent"] != testAgentName {
+		t.Errorf("agent = %v, want %s", entry["agent"], testAgentName)
+	}
+}
+
+func TestLogBodyDLPIncludesAgent(t *testing.T) {
+	tmp := t.TempDir()
+	logFile := filepath.Join(tmp, "audit.jsonl")
+	logger, err := New("json", "file", logFile, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogBodyDLP("POST", "http://example.com", "block", testClientIP, "req-1", testAgentName, 1, []string{"aws_key"})
+	logger.Close()
+
+	data, err := os.ReadFile(filepath.Clean(logFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entry map[string]any
+	if err := json.Unmarshal(data, &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry["agent"] != testAgentName {
+		t.Errorf("agent = %v, want %s", entry["agent"], testAgentName)
+	}
+}
+
+func TestLogHeaderDLPIncludesAgent(t *testing.T) {
+	tmp := t.TempDir()
+	logFile := filepath.Join(tmp, "audit.jsonl")
+	logger, err := New("json", "file", logFile, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogHeaderDLP("GET", "http://example.com", "Authorization", "warn", testClientIP, "req-1", testAgentName, []string{"bearer"})
+	logger.Close()
+
+	data, err := os.ReadFile(filepath.Clean(logFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entry map[string]any
+	if err := json.Unmarshal(data, &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry["agent"] != testAgentName {
+		t.Errorf("agent = %v, want %s", entry["agent"], testAgentName)
+	}
+}
+
 func TestLogAgentListener(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.log")

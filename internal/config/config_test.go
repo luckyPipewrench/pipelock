@@ -5231,6 +5231,28 @@ func TestValidateMergedAgentStrictWithAllowlist(t *testing.T) {
 	}
 }
 
+func TestValidateMergedAgentBadSessionProfilingAction(t *testing.T) {
+	cfg := Defaults()
+	cfg.SessionProfiling.Enabled = true
+	cfg.SessionProfiling.AnomalyAction = "invalid"
+
+	err := ValidateMergedAgent("bad-session", cfg)
+	if err == nil {
+		t.Fatal("expected error for invalid anomaly_action")
+	}
+}
+
+func TestValidateMergedAgentBadMCPToolPolicyAction(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPToolPolicy.Enabled = true
+	cfg.MCPToolPolicy.Action = "invalid"
+
+	err := ValidateMergedAgent("bad-policy", cfg)
+	if err == nil {
+		t.Fatal("expected error for invalid mcp_tool_policy action")
+	}
+}
+
 func TestValidateAgentsNegativeBudget(t *testing.T) {
 	fields := []struct {
 		name   string

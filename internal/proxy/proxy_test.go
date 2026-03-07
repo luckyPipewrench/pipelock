@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -4582,6 +4583,27 @@ func TestAgentListenerBinding(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	t.Cleanup(func() { p.Close() })
+
+	// Start agent listener manually (proxy.Start() no longer manages these;
+	// the CLI layer owns agent listener lifecycle).
+	handler := p.Handler()
+	agentLn2, agentLnErr := (&net.ListenConfig{}).Listen(ctx, "tcp", agentAddr)
+	if agentLnErr != nil {
+		t.Fatalf("bind agent listener: %v", agentLnErr)
+	}
+	agentSrv := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r = r.WithContext(WithAgentOverride(r.Context(), testListenerAgent))
+			handler.ServeHTTP(w, r)
+		}),
+		ReadHeaderTimeout: 5 * time.Second, // Slowloris protection
+	}
+	p.RegisterAgentServer(agentSrv)
+	go func() {
+		if srvErr := agentSrv.Serve(agentLn2); srvErr != nil && !errors.Is(srvErr, http.ErrServerClosed) {
+			t.Logf("agent listener error: %v", srvErr)
+		}
+	}()
 
 	// Start proxy in background (Start() blocks).
 	startErr := make(chan error, 1)

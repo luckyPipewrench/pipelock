@@ -908,7 +908,7 @@ license_public_key: "a1b2c3d4..."  # hex-encoded Ed25519 public key
 
 Multi-agent profiles (the `agents:` section) require a signed license token in `license_key`. The token is an Ed25519-signed JWT-like string issued by `pipelock license issue`. At startup, pipelock verifies the signature, checks expiration, and confirms the token includes the `agents` feature. If any check fails, agent profiles are disabled with a warning. All single-agent protection remains active.
 
-The `license_public_key` field provides the hex-encoded Ed25519 public key for verification. If omitted, pipelock falls back to the build-time embedded key (set via ldflags in official releases).
+Official release builds embed the signing public key at compile time via ldflags. The embedded key takes priority over `license_public_key` and cannot be overridden by config, preventing self-signing bypasses. The `license_public_key` config field is only used in development builds where no key is embedded.
 
 Generate a keypair and issue licenses with:
 

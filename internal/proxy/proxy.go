@@ -120,7 +120,7 @@ type Proxy struct {
 	client        *http.Client
 	tlsTransport  *http.Transport // shared Transport for TLS interception upstream connections
 	server        *http.Server
-	agentServers  []*http.Server // per-agent listeners (listener binding)
+	agentServers  []*http.Server // per-agent listeners (managed by CLI)
 	startTime     time.Time
 	reloadMu      sync.Mutex // serializes Reload calls
 	approver      *hitl.Approver
@@ -322,6 +322,13 @@ func (p *Proxy) LoadCertCache(cfg *config.Config) error {
 // Close releases resources owned by the proxy (session manager goroutine,
 // agent registry scanners). Safe to call multiple times. Does not stop the
 // HTTP server — use context cancellation in Start() for that.
+// RegisterAgentServer adds an externally-managed agent server to the
+// proxy's shutdown list. Called by the CLI layer after binding agent
+// listeners, so Start()'s shutdown goroutine can gracefully stop them.
+func (p *Proxy) RegisterAgentServer(srv *http.Server) {
+	p.agentServers = append(p.agentServers, srv)
+}
+
 func (p *Proxy) Close() {
 	if sm := p.sessionMgrPtr.Load(); sm != nil {
 		sm.Close()
@@ -676,35 +683,9 @@ func (p *Proxy) Start(ctx context.Context) error {
 		IdleTimeout:       120 * time.Second,
 	}
 
-	// Start per-agent listeners. Each binds a dedicated port that injects
-	// the agent profile via context (spoof-proof, not header-based).
-	if reg := p.registryPtr.Load(); reg != nil {
-		for addr, profile := range reg.Ports() {
-			agentProfile := profile // capture for closure
-			agentHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				r = r.WithContext(WithAgentOverride(r.Context(), agentProfile))
-				handler.ServeHTTP(w, r)
-			})
-			srv := &http.Server{
-				Addr:    addr,
-				Handler: agentHandler,
-				BaseContext: func(_ net.Listener) context.Context {
-					return ctx
-				},
-				ReadTimeout:       10 * time.Second,
-				ReadHeaderTimeout: 5 * time.Second, // Slowloris protection
-				WriteTimeout:      writeTimeout,
-				IdleTimeout:       120 * time.Second,
-			}
-			p.agentServers = append(p.agentServers, srv)
-			go func(s *http.Server, a, prof string) {
-				p.logger.LogAgentListener(a, prof)
-				if listenErr := s.ListenAndServe(); listenErr != nil && !errors.Is(listenErr, http.ErrServerClosed) {
-					p.logger.LogError("AGENT_LISTENER", a, "", "", prof, listenErr)
-				}
-			}(srv, addr, agentProfile)
-		}
-	}
+	// Agent listeners are managed by the CLI layer (run.go) which
+	// pre-binds ports for fail-fast error reporting. proxy.Start()
+	// only manages the main server lifecycle.
 
 	// Graceful shutdown on context cancellation.
 	// The done channel ensures this goroutine exits if ListenAndServe

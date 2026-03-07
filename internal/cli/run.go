@@ -513,12 +513,9 @@ Examples:
 							WriteTimeout:      agentWriteTimeout,
 							IdleTimeout:       120 * time.Second, // matches main server idle timeout
 						}
-						go func() {
-							<-ctx.Done()
-							shutdownCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
-							defer shutCancel()
-							_ = srv.Shutdown(shutdownCtx)
-						}()
+						// Register with proxy so its shutdown goroutine
+						// gracefully stops agent servers alongside the main server.
+						p.RegisterAgentServer(srv)
 						errCh := agentListenerErrs
 						go func(s *http.Server, listener net.Listener) {
 							srvErr := s.Serve(listener)

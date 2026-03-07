@@ -22,6 +22,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
+	"github.com/luckyPipewrench/pipelock/internal/proxy"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -97,6 +98,7 @@ func mcpProxyCmd() *cobra.Command {
 	var upstreamURL string
 	var listenAddr string
 	var envVars []string
+	var agentName string
 
 	cmd := &cobra.Command{
 		Use:   "proxy [flags] [-- COMMAND [ARGS...]]",
@@ -192,6 +194,17 @@ Environment passthrough (subprocess mode only):
 			if err != nil {
 				return err
 			}
+
+			// Build registry so _default fallback works the same as HTTP proxy.
+			reg, regErr := proxy.NewAgentRegistry(cfg)
+			if regErr != nil {
+				return fmt.Errorf("agent registry: %w", regErr)
+			}
+			defer reg.Close()
+
+			// Resolve agent: known name -> that profile, unknown -> _default, empty -> _default.
+			resolved := reg.Lookup(agentName)
+			cfg = resolved.Config
 
 			if !cfg.ResponseScanning.Enabled {
 				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning: response scanning was disabled in config, enabling with defaults")
@@ -357,5 +370,6 @@ Environment passthrough (subprocess mode only):
 	cmd.Flags().StringVar(&upstreamURL, "upstream", "", "upstream MCP server URL (Streamable HTTP transport)")
 	cmd.Flags().StringVar(&listenAddr, "listen", "", "listen address for HTTP reverse proxy mode (e.g. 0.0.0.0:8889)")
 	cmd.Flags().StringArrayVar(&envVars, "env", nil, "pass environment variable to child process (KEY or KEY=VALUE, repeatable)")
+	cmd.Flags().StringVar(&agentName, "agent", "", "agent profile name (resolves to config profile for policy/scanner)")
 	return cmd
 }

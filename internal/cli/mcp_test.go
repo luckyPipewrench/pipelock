@@ -879,6 +879,101 @@ func TestMcpProxyCmd_SessionBindingWiring(t *testing.T) {
 	}
 }
 
+func TestMcpProxyCmd_AgentFlagInHelp(t *testing.T) {
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"mcp", "proxy", "--help"})
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	_ = cmd.Execute()
+	if !strings.Contains(buf.String(), "--agent") {
+		t.Error("help should mention --agent flag")
+	}
+}
+
+func TestMcpProxyCmd_AgentResolvesProfile(t *testing.T) {
+	if runtime.GOOS == osWindows {
+		t.Skip("echo subprocess test requires unix")
+	}
+
+	// Config with an agent profile "strict-bot" that sets mode: strict.
+	// The base config defaults to balanced, so the resolved config should be strict.
+	cfgContent := "agents:\n  strict-bot:\n    mode: strict\n"
+	cfgFile := t.TempDir() + "/agent.yaml"
+	if err := os.WriteFile(cfgFile, []byte(cfgContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cleanJSON := testSafeReply
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"mcp", "proxy", "--config", cfgFile, "--agent", "strict-bot", "--", "echo", cleanJSON})
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(&strings.Builder{})
+	cmd.SetIn(bytes.NewReader(nil))
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify the clean response was forwarded (proxy ran successfully with the resolved profile).
+	output := strings.TrimSpace(buf.String())
+	if output != cleanJSON {
+		t.Errorf("expected clean response forwarded, got: %s", output)
+	}
+}
+
+func TestMcpProxyCmd_AgentUnknownFallsBackToDefault(t *testing.T) {
+	if runtime.GOOS == osWindows {
+		t.Skip("echo subprocess test requires unix")
+	}
+
+	cleanJSON := testSafeReply
+
+	// No agent profiles defined, so unknown name falls back to base config.
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"mcp", "proxy", "--agent", "nonexistent", "--", "echo", cleanJSON})
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(&strings.Builder{})
+	cmd.SetIn(bytes.NewReader(nil))
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := strings.TrimSpace(buf.String())
+	if output != cleanJSON {
+		t.Errorf("expected clean response forwarded, got: %s", output)
+	}
+}
+
+func TestMcpProxyCmd_AgentEmptyUsesDefault(t *testing.T) {
+	if runtime.GOOS == osWindows {
+		t.Skip("echo subprocess test requires unix")
+	}
+
+	cleanJSON := testSafeReply
+
+	// Empty --agent (or not specified) should work identically to no agent flag.
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"mcp", "proxy", "--agent", "", "--", "echo", cleanJSON})
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(&strings.Builder{})
+	cmd.SetIn(bytes.NewReader(nil))
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := strings.TrimSpace(buf.String())
+	if output != cleanJSON {
+		t.Errorf("expected clean response forwarded, got: %s", output)
+	}
+}
+
 func TestMcpProxyCmd_ChainDetectionWiring(t *testing.T) {
 	if runtime.GOOS == osWindows {
 		t.Skip("echo subprocess test requires unix")

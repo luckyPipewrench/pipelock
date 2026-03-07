@@ -54,4 +54,5 @@ docker:
 		--build-arg VERSION=$(VERSION) \
 		--build-arg BUILD_DATE=$(BUILD_DATE) \
 		--build-arg GIT_COMMIT=$(GIT_COMMIT) \
+		--build-arg LICENSE_PUBLIC_KEY=$(LICENSE_PUBLIC_KEY) \
 		-t $(BINARY):$(VERSION) -t $(BINARY):latest .

@@ -20,6 +20,7 @@ type DataBudget struct {
 	maxBytesPerMin int
 	records        map[string][]dataEntry
 	stopCleanup    chan struct{}
+	closeOnce      sync.Once
 }
 
 // NewDataBudget creates a data budget tracker with the given limit in bytes/minute.
@@ -60,14 +61,9 @@ func (db *DataBudget) Record(domain string, bytes int) {
 	})
 }
 
-// Close stops the cleanup goroutine.
+// Close stops the cleanup goroutine. Safe to call multiple times.
 func (db *DataBudget) Close() {
-	select {
-	case <-db.stopCleanup:
-		return
-	default:
-		close(db.stopCleanup)
-	}
+	db.closeOnce.Do(func() { close(db.stopCleanup) })
 }
 
 func (db *DataBudget) cleanupLoop() {

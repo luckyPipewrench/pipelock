@@ -16,6 +16,7 @@ type RateLimiter struct {
 	maxPerMinute int
 	requests     map[string][]time.Time
 	stopCleanup  chan struct{}
+	closeOnce    sync.Once
 }
 
 // NewRateLimiter creates a rate limiter with the specified limit.
@@ -91,12 +92,7 @@ func (rl *RateLimiter) CheckAndRecord(domain string) bool {
 
 // Close stops the cleanup goroutine. Safe to call multiple times.
 func (rl *RateLimiter) Close() {
-	select {
-	case <-rl.stopCleanup:
-		return
-	default:
-		close(rl.stopCleanup)
-	}
+	rl.closeOnce.Do(func() { close(rl.stopCleanup) })
 }
 
 func (rl *RateLimiter) cleanupLoop() {

@@ -294,3 +294,59 @@ func TestDecodeRejectsOversizedToken(t *testing.T) {
 		t.Errorf("error = %q, want 'maximum size'", err.Error())
 	}
 }
+
+func TestDecodeValidToken(t *testing.T) {
+	_, priv := testKeyPair(t)
+	lic := License{
+		ID:        "lic_decode_test",
+		Email:     "decode@example.com",
+		Org:       "Test Org",
+		IssuedAt:  time.Now().Unix(),
+		ExpiresAt: time.Now().Add(365 * 24 * time.Hour).Unix(),
+		Features:  []string{FeatureAgents},
+	}
+	token, err := Issue(lic, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := Decode(token)
+	if err != nil {
+		t.Fatalf("Decode failed: %v", err)
+	}
+	if got.ID != lic.ID {
+		t.Errorf("ID = %q, want %q", got.ID, lic.ID)
+	}
+	if got.Email != lic.Email {
+		t.Errorf("Email = %q, want %q", got.Email, lic.Email)
+	}
+	if got.Org != lic.Org {
+		t.Errorf("Org = %q, want %q", got.Org, lic.Org)
+	}
+}
+
+func TestDecodeBadFormat(t *testing.T) {
+	tests := []struct {
+		name  string
+		token string
+	}{
+		{"no prefix", "not_a_license_token"},
+		{"bad base64", tokenPrefix + "!!!invalid!!!"},
+		{"too short", tokenPrefix + "YQ"}, // just "a"
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Decode(tt.token)
+			if err == nil {
+				t.Error("expected error")
+			}
+		})
+	}
+}
+
+func TestIssueRejectsInvalidKeySize(t *testing.T) {
+	lic := License{ID: "lic_test", Email: "t@t.com", Features: []string{FeatureAgents}}
+	_, err := Issue(lic, []byte("too-short"))
+	if err == nil {
+		t.Fatal("expected error for invalid key size")
+	}
+}

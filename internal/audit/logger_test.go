@@ -2181,6 +2181,51 @@ func TestLogBlockedEmitterOmitsEmptyAgent(t *testing.T) {
 	}
 }
 
+func TestLogResponseScanEmitterIncludesAgent(t *testing.T) {
+	logger, sink := newLoggerWithEmitter(t)
+	defer logger.Close()
+
+	logger.LogResponseScan("http://example.com", testClientIP, "req-1", testAgentName, "block", 1, []string{"injection"})
+
+	ev, ok := sink.lastEvent()
+	if !ok {
+		t.Fatal("expected emitted event")
+	}
+	if ev.Fields["agent"] != testAgentName {
+		t.Errorf("emitter agent = %v, want %s", ev.Fields["agent"], testAgentName)
+	}
+}
+
+func TestLogAnomalyEmitterIncludesAgent(t *testing.T) {
+	logger, sink := newLoggerWithEmitter(t)
+	defer logger.Close()
+
+	logger.LogAnomaly("GET", "http://example.com", "dlp", "suspicious", testClientIP, "req-1", testAgentName, 0.5)
+
+	ev, ok := sink.lastEvent()
+	if !ok {
+		t.Fatal("expected emitted event")
+	}
+	if ev.Fields["agent"] != testAgentName {
+		t.Errorf("emitter agent = %v, want %s", ev.Fields["agent"], testAgentName)
+	}
+}
+
+func TestLogErrorEmitterIncludesAgent(t *testing.T) {
+	logger, sink := newLoggerWithEmitter(t)
+	defer logger.Close()
+
+	logger.LogError("GET", "http://example.com", testClientIP, "req-1", testAgentName, fmt.Errorf("test"))
+
+	ev, ok := sink.lastEvent()
+	if !ok {
+		t.Fatal("expected emitted event")
+	}
+	if ev.Fields["agent"] != testAgentName {
+		t.Errorf("emitter agent = %v, want %s", ev.Fields["agent"], testAgentName)
+	}
+}
+
 func TestLogChainDetection_PersistPatternEmitsT1053(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.log")

@@ -202,8 +202,11 @@ Environment passthrough (subprocess mode only):
 			}
 			defer reg.Close()
 
-			// Resolve agent: known name -> that profile, unknown -> _default, empty -> _default.
+			// Resolve agent: known name -> that profile, unknown -> error, empty -> _default.
 			resolved := reg.Lookup(agentName)
+			if agentName != "" && resolved.Name != agentName {
+				return fmt.Errorf("unknown agent profile %q", agentName)
+			}
 			cfg = resolved.Config
 
 			if !cfg.ResponseScanning.Enabled {

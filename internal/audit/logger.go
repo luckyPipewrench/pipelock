@@ -319,10 +319,10 @@ func (l *Logger) LogAnomaly(method, url, scanner, reason, clientIP, requestID, a
 }
 
 // LogResponseScan logs a response content scan that found prompt injection patterns.
-func (l *Logger) LogResponseScan(url, clientIP, requestID, action string, matchCount int, patternNames []string) {
+func (l *Logger) LogResponseScan(url, clientIP, requestID, agent, action string, matchCount int, patternNames []string) {
 	technique := TechniqueForScanner("response_scan")
 
-	l.zl.Warn().
+	event := l.zl.Warn().
 		Str("event", string(EventResponseScan)).
 		Str("url", sanitizeString(url)).
 		Str("client_ip", clientIP).
@@ -330,11 +330,14 @@ func (l *Logger) LogResponseScan(url, clientIP, requestID, action string, matchC
 		Str("action", action).
 		Int("match_count", matchCount).
 		Strs("patterns", patternNames).
-		Str("mitre_technique", technique).
-		Msg("response scan detected prompt injection")
+		Str("mitre_technique", technique)
+	if agent != "" {
+		event = event.Str("agent", agent)
+	}
+	event.Msg("response scan detected prompt injection")
 
 	if l.emitter != nil {
-		l.emitter.Emit(context.Background(), string(EventResponseScan), map[string]any{
+		data := map[string]any{
 			"url":             sanitizeString(url),
 			"client_ip":       clientIP,
 			"request_id":      requestID,
@@ -342,7 +345,11 @@ func (l *Logger) LogResponseScan(url, clientIP, requestID, action string, matchC
 			"match_count":     matchCount,
 			"patterns":        patternNames,
 			"mitre_technique": technique,
-		})
+		}
+		if agent != "" {
+			data["agent"] = agent
+		}
+		l.emitter.Emit(context.Background(), string(EventResponseScan), data)
 	}
 }
 

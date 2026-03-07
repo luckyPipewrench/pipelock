@@ -32,11 +32,16 @@ type AgentRegistry struct {
 
 // NewAgentRegistry builds a registry from the base config. Each agent profile
 // is deep-merged with the base, and a scanner is built from the merged config.
-func NewAgentRegistry(base *config.Config) (*AgentRegistry, error) {
+func NewAgentRegistry(base *config.Config) (_ *AgentRegistry, err error) {
 	reg := &AgentRegistry{
 		agents: make(map[string]*ResolvedAgent, len(base.Agents)),
 		ports:  make(map[string]string),
 	}
+	defer func() {
+		if err != nil {
+			reg.Close()
+		}
+	}()
 
 	for name, profile := range base.Agents {
 		merged, err := config.MergeAgentProfile(base, &profile)
@@ -91,9 +96,16 @@ func (r *AgentRegistry) ProfileForPort(addr string) (string, bool) {
 }
 
 // Close releases resources (scanners) held by the registry.
+// Nil-safe: a nil registry is a no-op.
 func (r *AgentRegistry) Close() {
+	if r == nil {
+		return
+	}
 	for _, agent := range r.agents {
 		agent.Scanner.Close()
+	}
+	if r.fallback == nil {
+		return
 	}
 	if _, isMapped := r.agents[r.fallback.Name]; !isMapped {
 		// fallback was built from base, not from agents map

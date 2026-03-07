@@ -249,7 +249,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		interceptConn := wrapBuffered(clientConn, clientReader)
 		interceptCtx, interceptCancel := context.WithDeadline(r.Context(), deadline)
 		defer interceptCancel()
-		if err := interceptTunnel(interceptCtx, interceptConn, host, port, cfg, sc, certCache, p.logger, p.metrics, clientIP, requestID, p.tlsTransport, p.ssrfSafeDialContext); err != nil {
+		if err := interceptTunnel(interceptCtx, interceptConn, host, port, cfg, sc, certCache, p.logger, p.metrics, clientIP, requestID, agent, p.tlsTransport, p.ssrfSafeDialContext); err != nil {
 			p.logger.LogError(http.MethodConnect, host, clientIP, requestID, agent, err)
 		}
 		return
@@ -280,7 +280,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// Record tunnel bytes for per-agent budget tracking. CONNECT tunnels
 	// are streaming: bytes are tracked after close and enforced on the next
 	// admission check, not mid-stream (can't un-send tunnel data).
-	resolved.Budget.RecordBytes(int(totalBytes))
+	resolved.Budget.RecordBytes(totalBytes)
 }
 
 // bidirectionalCopy relays data between two connections with idle timeout.
@@ -486,8 +486,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// and remaining byte budget so forward-proxy responses are truncated
 	// when the per-agent byte budget is exhausted.
 	maxBytes := int64(cfg.FetchProxy.MaxResponseMB) * 1024 * 1024
-	if remaining := resolved.Budget.RemainingBytes(); remaining >= 0 && remaining < maxBytes {
-		maxBytes = remaining
+	budgetRemaining := resolved.Budget.RemainingBytes()
+	if budgetRemaining >= 0 && budgetRemaining < maxBytes {
+		maxBytes = budgetRemaining
 	}
 	written, _ := io.Copy(w, io.LimitReader(resp.Body, maxBytes))
 
@@ -495,7 +496,16 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	sc.RecordRequest(strings.ToLower(r.URL.Hostname()), int(written))
 
 	// Record bytes for per-agent budget tracking.
-	resolved.Budget.RecordBytes(int(written))
+	resolved.Budget.RecordBytes(written)
+
+	// Detect truncated response due to budget exhaustion. If budget was the
+	// effective limit and all available bytes were consumed, the response was
+	// likely truncated. Log as budget exhaustion instead of normal success.
+	if budgetRemaining >= 0 && written >= budgetRemaining {
+		reason := fmt.Sprintf("response truncated at byte budget: %d bytes written", written)
+		p.logger.LogAnomaly(r.Method, targetURL, "budget_truncated", reason, clientIP, requestID, agent, 0)
+		return
+	}
 
 	duration := time.Since(start)
 	p.metrics.RecordAllowed(duration, agentLabel)

@@ -95,7 +95,7 @@ This is separate from the [OWASP Top 10 for Agentic Applications](owasp-mapping.
 **Pipelock coverage:**
 
 - **Structured audit logging:** every proxy request is logged as structured JSON (zerolog) with URL, domain, agent name, result (allowed/blocked), scanner reason, and timestamp.
-- **Per-agent identification:** agents identify via `X-Pipelock-Agent` header. All log entries include the agent name.
+- **Per-agent identification:** agents identify via listener binding (spoof-proof), `X-Pipelock-Agent` header, or `?agent=` query param. Each agent gets its own config profile with independent mode, allowlist, DLP, rate limits, and budget. All log entries include the agent name.
 - **Prometheus metrics:** `/metrics` endpoint exports request counts, scanner hits, and latency histograms for dashboards.
 - **JSON stats:** `/stats` endpoint provides real-time top domains and block reasons.
 - **Grafana dashboard:** `configs/grafana-dashboard.json` provides a ready-to-import security overview.
@@ -177,7 +177,7 @@ This is separate from the [OWASP Top 10 for Agentic Applications](owasp-mapping.
 
 **Threat:** Adversaries impersonate agents or users for unauthorized access.
 
-**Coverage: Partial.** Ed25519 signing provides agent identity verification for file-level operations. `X-Pipelock-Agent` header identifies agents in proxy traffic. No certificate-based agent authentication yet.
+**Coverage: Partial.** Ed25519 signing provides agent identity verification for file-level operations. Per-agent profiles with listener binding provide spoof-proof identity for proxy traffic. `X-Pipelock-Agent` header and `?agent=` query param provide convenience identification (trust the caller). No certificate-based agent authentication yet.
 
 ### T14: Human Attacks on Multi-Agent Systems
 

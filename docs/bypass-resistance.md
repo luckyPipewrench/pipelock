@@ -142,7 +142,7 @@ These are things pipelock does not protect against. If your threat model include
 | Risk | Detail | Mitigation |
 |------|--------|------------|
 | **Misconfiguration** | Audit mode logs but doesn't block. If an operator forgets to switch to balanced/strict, nothing is enforced. | Start with balanced mode. Use `pipelock audit .` to generate a config tuned for your project. |
-| **Agent identity spoofing** | Any process that can reach pipelock can claim any agent name via `X-Pipelock-Agent` header. | Network isolation. Only the intended agent should be able to reach pipelock. |
+| **Agent identity spoofing** | Any process that can reach pipelock can claim any agent name via `X-Pipelock-Agent` header or `?agent=` query param. | Use listener binding (dedicated ports per agent) for spoof-proof identity. Header/query methods trust the caller. Network isolation adds defense in depth. |
 | **IPv6 bypass** | If `internal` CIDR list doesn't include IPv6 ranges, agents could reach internal services via IPv6. Zone IDs (e.g. `::1%eth0`) could bypass `net.ParseIP` if not stripped. | Default config includes `::1/128`, `fc00::/7`, `fe80::/10`, `224.0.0.0/4` (IPv4 multicast), `ff00::/8` (IPv6 multicast). Zone IDs are stripped before IP parsing. |
 | **MCP confused deputy** | A malicious MCP server sends JSON-RPC responses with IDs the client never used, hijacking the agent's execution flow. | Response ID validation tracks outbound request IDs and rejects unsolicited responses. One-shot consumption prevents replay. |
 

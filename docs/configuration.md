@@ -807,13 +807,14 @@ agents:
 
 Pipelock resolves the agent name for each request using this priority order:
 
-1. **Context** (set programmatically via `AgentContext`): highest priority, used by MCP `--agent` flag
+1. **Listener binding**: matched by the port the request arrived on (injected as a context override, spoof-proof)
 2. **Header** (`X-Pipelock-Agent`): set by the calling agent or orchestrator
 3. **Query parameter** (`?agent=name`): appended to fetch/WebSocket URLs
-4. **Listener binding**: matched by the port the request arrived on (spoof-proof)
-5. **Fallback**: `_default` profile if defined, otherwise base config
+4. **Fallback**: `_default` profile if defined, otherwise base config
 
-Listener-based resolution is the only method that cannot be spoofed by the agent. Header and query param methods are convenient but trust the caller. Use listeners when isolation matters.
+Listener-based resolution is the only method that cannot be spoofed by the agent. It injects a context override that takes priority over header and query param. Header and query param methods are convenient but trust the caller. Use listeners when isolation matters.
+
+For MCP proxy mode, the `--agent` flag resolves the profile directly at startup (not through the HTTP resolution chain).
 
 ### Override Fields
 

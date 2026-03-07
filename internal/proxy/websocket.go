@@ -229,7 +229,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Record WebSocket bytes for per-agent budget tracking. WebSocket
 	// connections are streaming: bytes are tracked after close and enforced
 	// on the next admission check, not mid-stream.
-	resolved.Budget.RecordBytes(int(stats.clientToServer + stats.serverToClient))
+	resolved.Budget.RecordBytes(stats.clientToServer + stats.serverToClient)
 }
 
 // buildWSForwardHeaders builds the HTTP headers to forward during upstream WS handshake.

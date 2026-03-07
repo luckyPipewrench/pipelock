@@ -925,14 +925,15 @@ func TestMcpProxyCmd_AgentResolvesProfile(t *testing.T) {
 	}
 }
 
-func TestMcpProxyCmd_AgentUnknownFallsBackToDefault(t *testing.T) {
+func TestMcpProxyCmd_AgentUnknownReturnsError(t *testing.T) {
 	if runtime.GOOS == osWindows {
 		t.Skip("echo subprocess test requires unix")
 	}
 
 	cleanJSON := testSafeReply
 
-	// No agent profiles defined, so unknown name falls back to base config.
+	// Explicitly specifying an unknown --agent name should return an error,
+	// not silently fall back to the default profile.
 	cmd := rootCmd()
 	cmd.SetArgs([]string{"mcp", "proxy", "--agent", "nonexistent", "--", "echo", cleanJSON})
 	buf := &strings.Builder{}
@@ -940,13 +941,12 @@ func TestMcpProxyCmd_AgentUnknownFallsBackToDefault(t *testing.T) {
 	cmd.SetErr(&strings.Builder{})
 	cmd.SetIn(bytes.NewReader(nil))
 
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for unknown agent profile, got nil")
 	}
-
-	output := strings.TrimSpace(buf.String())
-	if output != cleanJSON {
-		t.Errorf("expected clean response forwarded, got: %s", output)
+	if !strings.Contains(err.Error(), "unknown agent profile") {
+		t.Fatalf("expected 'unknown agent profile' error, got: %v", err)
 	}
 }
 

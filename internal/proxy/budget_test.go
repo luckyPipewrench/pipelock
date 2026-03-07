@@ -388,13 +388,13 @@ func TestRecordBytesLimit(t *testing.T) {
 	tracker := NewBudgetTracker(&budget)
 
 	// Record 150 bytes: within budget.
-	exceeded, _ := tracker.RecordBytes(150)
+	exceeded, _ := tracker.RecordBytes(int64(150))
 	if exceeded {
 		t.Fatal("150 bytes should fit in 200-byte budget")
 	}
 
 	// Record 100 more: 250 > 200, should exceed.
-	exceeded, reason := tracker.RecordBytes(100)
+	exceeded, reason := tracker.RecordBytes(int64(100))
 	if !exceeded {
 		t.Fatal("expected byte budget exceeded at 250/200")
 	}
@@ -405,7 +405,7 @@ func TestRecordBytesLimit(t *testing.T) {
 
 func TestRecordBytesNil(t *testing.T) {
 	var tracker *BudgetTracker
-	exceeded, reason := tracker.RecordBytes(1000)
+	exceeded, reason := tracker.RecordBytes(int64(1000))
 	if exceeded {
 		t.Fatal("nil tracker should never report exceeded")
 	}
@@ -427,13 +427,13 @@ func TestRemainingBytesTracking(t *testing.T) {
 	}
 
 	// Record 100 bytes: 200 remaining.
-	tracker.RecordBytes(100)
+	tracker.RecordBytes(int64(100))
 	if r := tracker.RemainingBytes(); r != 200 {
 		t.Fatalf("remaining = %d, want 200", r)
 	}
 
 	// Record 250 more: exceeded (0 remaining, not negative).
-	tracker.RecordBytes(250)
+	tracker.RecordBytes(int64(250))
 	if r := tracker.RemainingBytes(); r != 0 {
 		t.Fatalf("remaining = %d, want 0", r)
 	}

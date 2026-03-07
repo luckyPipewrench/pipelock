@@ -100,7 +100,7 @@ func TestNewNop(_ *testing.T) {
 	logger.LogStartup(":8888", "balanced", testVersion, testConfigHash)
 	logger.LogShutdown("test")
 	logger.LogRedirect("https://a.com", "https://b.com", "127.0.0.1", "req-6", "", 1)
-	logger.LogResponseScan("https://example.com", "127.0.0.1", "req-8", testActionWarn, 2, []string{"Prompt Injection", "Jailbreak Attempt"})
+	logger.LogResponseScan("https://example.com", "127.0.0.1", "req-8", "", testActionWarn, 2, []string{"Prompt Injection", "Jailbreak Attempt"})
 	logger.Close()
 }
 
@@ -575,7 +575,7 @@ func TestLogResponseScan_JSONFormat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogResponseScan("https://example.com/page", testClientIP, "req-10", testActionWarn, 2, []string{"Prompt Injection", "Jailbreak Attempt"})
+	logger.LogResponseScan("https://example.com/page", testClientIP, "req-10", "", testActionWarn, 2, []string{"Prompt Injection", "Jailbreak Attempt"})
 	logger.Close()
 
 	data, _ := os.ReadFile(filepath.Clean(path))
@@ -620,7 +620,7 @@ func TestLogResponseScan_StripAction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogResponseScan("https://example.com/page", testClientIP, "req-11", "strip", 1, []string{"System Override"})
+	logger.LogResponseScan("https://example.com/page", testClientIP, "req-11", "", "strip", 1, []string{"System Override"})
 	logger.Close()
 
 	data, _ := os.ReadFile(filepath.Clean(path))
@@ -1462,7 +1462,7 @@ func TestEmit_LogResponseScan(t *testing.T) {
 	logger, sink := newLoggerWithEmitter(t)
 	defer logger.Close()
 
-	logger.LogResponseScan("https://example.com", testClientIP, "req-4", actionBlock, 2, []string{"injection", "jailbreak"})
+	logger.LogResponseScan("https://example.com", testClientIP, "req-4", "", actionBlock, 2, []string{"injection", "jailbreak"})
 
 	ev, ok := sink.lastEvent()
 	if !ok {

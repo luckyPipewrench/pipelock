@@ -841,8 +841,10 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// Limit response body size: use the tighter of max_response_mb and the
 	// remaining per-agent byte budget, so oversized responses are blocked
 	// at read time rather than after the full body has been consumed.
-	maxBytes := int64(cfg.FetchProxy.MaxResponseMB) * 1024 * 1024
-	if remaining := resolved.Budget.RemainingBytes(); remaining >= 0 && remaining < maxBytes {
+	configMaxBytes := int64(cfg.FetchProxy.MaxResponseMB) * 1024 * 1024
+	maxBytes := configMaxBytes
+	remaining := resolved.Budget.RemainingBytes()
+	if remaining >= 0 && remaining < maxBytes {
 		maxBytes = remaining
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1)) // +1 to detect truncation
@@ -856,11 +858,26 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if int64(len(body)) > maxBytes {
-		// Response exceeded the byte budget. Return 429 without delivering content.
+		// Determine which limit was the actual constraint.
+		if remaining < 0 || configMaxBytes <= remaining {
+			// Config max_response_mb was the limiter, not budget.
+			// Return 502 (response too large) without recording against budget.
+			reason := fmt.Sprintf("response size %d exceeds max_response_mb %d", len(body), configMaxBytes)
+			log.LogBlocked("GET", displayURL, "response_size", reason, clientIP, requestID, agent)
+			p.metrics.RecordBlocked(parsed.Hostname(), "response_size", time.Since(start), agentLabel)
+			writeJSON(w, http.StatusBadGateway, FetchResponse{
+				URL:         displayURL,
+				Agent:       agent,
+				Blocked:     true,
+				BlockReason: reason,
+			})
+			return
+		}
+		// Budget was the limiter: return 429.
 		reason := fmt.Sprintf("response size %d exceeds byte budget %d", len(body), maxBytes)
 		log.LogBlocked("GET", displayURL, "budget", reason, clientIP, requestID, agent)
 		p.metrics.RecordBlocked(parsed.Hostname(), "budget", time.Since(start), agentLabel)
-		resolved.Budget.RecordBytes(len(body))
+		resolved.Budget.RecordBytes(int64(len(body)))
 		writeJSON(w, http.StatusTooManyRequests, FetchResponse{
 			URL:         displayURL,
 			Agent:       agent,
@@ -933,7 +950,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// Record response bytes against the per-agent byte budget. Oversize
 	// responses are already blocked during the read phase above, so this
 	// records the actual bytes consumed for successful responses.
-	resolved.Budget.RecordBytes(len(body))
+	resolved.Budget.RecordBytes(int64(len(body)))
 
 	duration := time.Since(start)
 	p.metrics.RecordAllowed(duration, agentLabel)
@@ -1010,10 +1027,10 @@ func (p *Proxy) filterAndActOnResponseScan(
 		})
 		switch d {
 		case hitl.DecisionAllow:
-			log.LogResponseScan(displayURL, clientIP, requestID, "ask:allow", len(result.Matches), patternNames)
+			log.LogResponseScan(displayURL, clientIP, requestID, agent, "ask:allow", len(result.Matches), patternNames)
 		case hitl.DecisionStrip:
 			out = result.TransformedContent
-			log.LogResponseScan(displayURL, clientIP, requestID, "ask:strip", len(result.Matches), patternNames)
+			log.LogResponseScan(displayURL, clientIP, requestID, agent, "ask:strip", len(result.Matches), patternNames)
 		default:
 			reason := fmt.Sprintf("response blocked by operator: %s", strings.Join(patternNames, ", "))
 			log.LogBlocked("GET", displayURL, "response_scan", reason, clientIP, requestID, agent)
@@ -1022,11 +1039,11 @@ func (p *Proxy) filterAndActOnResponseScan(
 		}
 	case config.ActionStrip:
 		out = result.TransformedContent
-		log.LogResponseScan(displayURL, clientIP, requestID, config.ActionStrip, len(result.Matches), patternNames)
+		log.LogResponseScan(displayURL, clientIP, requestID, agent, config.ActionStrip, len(result.Matches), patternNames)
 	case config.ActionWarn:
-		log.LogResponseScan(displayURL, clientIP, requestID, config.ActionWarn, len(result.Matches), patternNames)
+		log.LogResponseScan(displayURL, clientIP, requestID, agent, config.ActionWarn, len(result.Matches), patternNames)
 	default:
-		log.LogResponseScan(displayURL, clientIP, requestID, sc.ResponseAction(), len(result.Matches), patternNames)
+		log.LogResponseScan(displayURL, clientIP, requestID, agent, sc.ResponseAction(), len(result.Matches), patternNames)
 	}
 	return false, out, true
 }

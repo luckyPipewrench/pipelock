@@ -4,6 +4,7 @@
 package proxy
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -122,5 +123,62 @@ func TestExtractAgent_AllSpecialChars_BecomesAnonymous(t *testing.T) {
 	// Unicode checkmarks → replaced with underscores → "__" (not empty)
 	if got == "" {
 		t.Error("should not return empty string")
+	}
+}
+
+func TestResolveAgent(t *testing.T) {
+	knownProfiles := map[string]bool{
+		"claude-code": true,
+		"my-agent":    true,
+		"q-agent":     true,
+	}
+
+	tests := []struct {
+		name        string
+		ctxProfile  string // context override (listener mode)
+		header      string // X-Pipelock-Agent header
+		query       string // ?agent= param
+		wantName    string
+		wantProfile string
+	}{
+		{"context override wins", "claude-code", "other-agent", "", "claude-code", "claude-code"},
+		{"header without context", "", "my-agent", "", "my-agent", "my-agent"},
+		{"query without header", "", "", "q-agent", "q-agent", "q-agent"},
+		{"fallback to _default", "", "", "", "", profileDefault},
+		{"unrecognized agent uses _default profile", "", "unknown", "", "unknown", profileDefault},
+		{"nil knownProfiles is safe", "", "my-agent", "", "my-agent", profileDefault},
+		{"context override unknown profile still trusts context", "custom-port-agent", "", "", "custom-port-agent", "custom-port-agent"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/fetch?url=http://example.com", nil)
+			if tt.header != "" {
+				req.Header.Set(AgentHeader, tt.header)
+			}
+			if tt.query != "" {
+				q := req.URL.Query()
+				q.Set("agent", tt.query)
+				req.URL.RawQuery = q.Encode()
+			}
+			if tt.ctxProfile != "" {
+				ctx := context.WithValue(req.Context(), ctxKeyAgentOverride, tt.ctxProfile)
+				req = req.WithContext(ctx)
+			}
+
+			// Use nil knownProfiles for the specific nil-safety test case.
+			profiles := knownProfiles
+			if tt.name == "nil knownProfiles is safe" {
+				profiles = nil
+			}
+
+			id := ResolveAgent(req, profiles)
+			if id.Name != tt.wantName {
+				t.Errorf("Name = %q, want %q", id.Name, tt.wantName)
+			}
+			if id.Profile != tt.wantProfile {
+				t.Errorf("Profile = %q, want %q", id.Profile, tt.wantProfile)
+			}
+		})
 	}
 }

@@ -190,7 +190,7 @@ Examples:
 
 				go func() {
 					if err := reloader.Start(ctx); err != nil {
-						logger.LogError("CONFIG_RELOAD", configFile, "", "", err)
+						logger.LogError("CONFIG_RELOAD", configFile, "", "", "", err)
 					}
 				}()
 
@@ -199,7 +199,7 @@ Examples:
 						func() {
 							defer func() {
 								if r := recover(); r != nil {
-									logger.LogError("CONFIG_RELOAD", configFile, "", "",
+									logger.LogError("CONFIG_RELOAD", configFile, "", "", "",
 										fmt.Errorf("scanner construction panic: %v", r))
 								}
 							}()
@@ -212,7 +212,7 @@ Examples:
 								}
 								// Block downgrades from strict mode (security-critical).
 								if oldCfg.Mode == config.ModeStrict && len(warnings) > 0 {
-									logger.LogError("CONFIG_RELOAD", configFile, "", "",
+									logger.LogError("CONFIG_RELOAD", configFile, "", "", "",
 										fmt.Errorf("rejected: security downgrade from strict mode"))
 									return
 								}
@@ -220,14 +220,14 @@ Examples:
 								// set at server start and cannot change at runtime; tunnels
 								// would be killed prematurely. Restart to enable.
 								if !oldCfg.ForwardProxy.Enabled && newCfg.ForwardProxy.Enabled {
-									logger.LogError("CONFIG_RELOAD", configFile, "", "",
+									logger.LogError("CONFIG_RELOAD", configFile, "", "", "",
 										fmt.Errorf("rejected: forward proxy cannot be enabled via reload (requires restart)"))
 									return
 								}
 								// Block enabling WebSocket proxy via reload for the same
 								// reason: WriteTimeout must be 0 at server start.
 								if !oldCfg.WebSocketProxy.Enabled && newCfg.WebSocketProxy.Enabled {
-									logger.LogError("CONFIG_RELOAD", configFile, "", "",
+									logger.LogError("CONFIG_RELOAD", configFile, "", "", "",
 										fmt.Errorf("rejected: WebSocket proxy cannot be enabled via reload (requires restart)"))
 									return
 								}
@@ -249,7 +249,7 @@ Examples:
 							newSc := scanner.New(newCfg)
 							p.Reload(newCfg, newSc)
 							if reloadErr := p.LoadCertCache(newCfg); reloadErr != nil {
-								logger.LogError("CONFIG_RELOAD", configFile, "", "",
+								logger.LogError("CONFIG_RELOAD", configFile, "", "", "",
 									fmt.Errorf("TLS cert cache reload failed: %w", reloadErr))
 							}
 							ks.Reload(newCfg)
@@ -258,13 +258,13 @@ Examples:
 							// swap into emitter, close old sinks.
 							newSinks, sinkErr := buildEmitSinks(newCfg)
 							if sinkErr != nil {
-								logger.LogError("CONFIG_RELOAD", configFile, "", "",
+								logger.LogError("CONFIG_RELOAD", configFile, "", "", "",
 									fmt.Errorf("emit sink rebuild failed: %w", sinkErr))
 							} else {
 								oldSinks := emitter.ReloadSinks(newSinks)
 								for _, s := range oldSinks {
 									if closeErr := s.Close(); closeErr != nil {
-										logger.LogError("CONFIG_RELOAD", configFile, "", "",
+										logger.LogError("CONFIG_RELOAD", configFile, "", "", "",
 											fmt.Errorf("closing old emit sink: %w", closeErr))
 									}
 								}

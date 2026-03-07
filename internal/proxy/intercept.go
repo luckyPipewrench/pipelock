@@ -114,7 +114,7 @@ func interceptTunnel(
 	handshakeStart := time.Now()
 	if err := tlsConn.HandshakeContext(ctx); err != nil {
 		m.RecordTLSIntercept("handshake_error")
-		logger.LogBlocked("CONNECT", targetHost, "tls_handshake_error", err.Error(), clientIP, requestID)
+		logger.LogBlocked("CONNECT", targetHost, "tls_handshake_error", err.Error(), clientIP, requestID, "")
 		return fmt.Errorf("client TLS handshake: %w", err)
 	}
 	m.RecordTLSHandshake("client", time.Since(handshakeStart))
@@ -229,7 +229,7 @@ func newInterceptHandler(
 		}
 		if !strings.EqualFold(reqHost, targetHost) || reqPort != targetPort {
 			mismatch := r.Host + " vs " + target
-			logger.LogBlocked(r.Method, r.URL.Path, "tls_authority_mismatch", "authority mismatch: "+mismatch, clientIP, requestID)
+			logger.LogBlocked(r.Method, r.URL.Path, "tls_authority_mismatch", "authority mismatch: "+mismatch, clientIP, requestID, "")
 			m.RecordTLSRequestBlocked("authority_mismatch")
 			http.Error(w, "authority mismatch: blocked", http.StatusForbidden)
 			return
@@ -270,13 +270,13 @@ func newInterceptHandler(
 				// regardless of enforce mode to prevent forwarding an empty body.
 				// ActionAsk: no HITL terminal in intercepted tunnels, fail closed.
 				if bodyBytes == nil || action == config.ActionAsk || (action == config.ActionBlock && cfg.EnforceEnabled()) {
-					logger.LogBlocked(r.Method, r.URL.String(), "body_dlp", reason, clientIP, requestID)
+					logger.LogBlocked(r.Method, r.URL.String(), "body_dlp", reason, clientIP, requestID, "")
 					m.RecordTLSRequestBlocked("body_dlp")
 					http.Error(w, "blocked: "+reason, http.StatusForbidden)
 					return
 				}
 				// Audit/warn mode: log finding but forward the request.
-				logger.LogAnomaly(r.Method, r.URL.String(), "body_dlp", reason, clientIP, requestID, 0.8) // 0.8: high confidence DLP match
+				logger.LogAnomaly(r.Method, r.URL.String(), "body_dlp", reason, clientIP, requestID, "", 0.8) // 0.8: high confidence DLP match
 			}
 
 			// Re-wrap body so the forwarded request gets the buffered bytes.
@@ -294,13 +294,13 @@ func newInterceptHandler(
 				action := cfg.RequestBodyScanning.Action
 				// ActionAsk: no HITL terminal in intercepted tunnels, fail closed.
 				if action == config.ActionAsk || (action == config.ActionBlock && cfg.EnforceEnabled()) {
-					logger.LogBlocked(r.Method, r.URL.String(), "header_dlp", "request header contains secret", clientIP, requestID)
+					logger.LogBlocked(r.Method, r.URL.String(), "header_dlp", "request header contains secret", clientIP, requestID, "")
 					m.RecordTLSRequestBlocked("header_dlp")
 					http.Error(w, "blocked: request header contains secret", http.StatusForbidden)
 					return
 				}
 				// Audit mode: log but forward.
-				logger.LogAnomaly(r.Method, r.URL.String(), "header_dlp", "request header contains secret", clientIP, requestID, 0.8) // 0.8: high confidence DLP match
+				logger.LogAnomaly(r.Method, r.URL.String(), "header_dlp", "request header contains secret", clientIP, requestID, "", 0.8) // 0.8: high confidence DLP match
 			}
 		}
 
@@ -310,7 +310,7 @@ func newInterceptHandler(
 		// Forward to upstream.
 		resp, err := upstream.RoundTrip(r)
 		if err != nil {
-			logger.LogError(r.Method, r.URL.String(), clientIP, requestID, err)
+			logger.LogError(r.Method, r.URL.String(), clientIP, requestID, "", err)
 			http.Error(w, "upstream error", http.StatusBadGateway)
 			return
 		}
@@ -319,7 +319,7 @@ func newInterceptHandler(
 		// Fail-closed on compressed responses: DLP regex can't match
 		// compressed content. Block rather than forward unscanned data.
 		if hasNonIdentityEncoding(resp.Header.Get("Content-Encoding")) {
-			logger.LogBlocked(r.Method, r.URL.String(), "tls_response_blocked", "compressed response cannot be scanned", clientIP, requestID)
+			logger.LogBlocked(r.Method, r.URL.String(), "tls_response_blocked", "compressed response cannot be scanned", clientIP, requestID, "")
 			m.RecordTLSResponseBlocked("compressed")
 			http.Error(w, "blocked: compressed response cannot be scanned", http.StatusForbidden)
 			return
@@ -332,13 +332,13 @@ func newInterceptHandler(
 		}
 		respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResp+1))
 		if readErr != nil {
-			logger.LogError(r.Method, r.URL.String(), clientIP, requestID, readErr)
+			logger.LogError(r.Method, r.URL.String(), clientIP, requestID, "", readErr)
 			m.RecordTLSResponseBlocked("read_error")
 			http.Error(w, "blocked: response read error", http.StatusForbidden)
 			return
 		}
 		if int64(len(respBody)) > maxResp {
-			logger.LogBlocked(r.Method, r.URL.String(), "tls_response_blocked", "response too large for scanning", clientIP, requestID)
+			logger.LogBlocked(r.Method, r.URL.String(), "tls_response_blocked", "response too large for scanning", clientIP, requestID, "")
 			m.RecordTLSResponseBlocked("oversized")
 			http.Error(w, "blocked: response too large for scanning", http.StatusForbidden)
 			return
@@ -359,7 +359,7 @@ func newInterceptHandler(
 				case config.ActionBlock, config.ActionAsk:
 					// ActionAsk: no HITL terminal available inside intercepted tunnels,
 					// so fail-closed to block (consistent with HITL non-terminal default).
-					logger.LogBlocked(r.Method, r.URL.String(), "response_scan", reason, clientIP, requestID)
+					logger.LogBlocked(r.Method, r.URL.String(), "response_scan", reason, clientIP, requestID, "")
 					m.RecordTLSResponseBlocked("injection")
 					http.Error(w, "blocked: response contains injection", http.StatusForbidden)
 					return

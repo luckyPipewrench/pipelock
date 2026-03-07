@@ -112,7 +112,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	if !result.Allowed {
 		if cfg.EnforceEnabled() {
-			log.LogBlocked("WS", targetURL, result.Scanner, result.Reason, clientIP, requestID)
+			log.LogBlocked("WS", targetURL, result.Scanner, result.Reason, clientIP, requestID, agent)
 			p.metrics.RecordWSBlocked()
 			if cfg.ExplainBlocksEnabled() && result.Hint != "" {
 				w.Header().Set("X-Pipelock-Hint", result.Hint)
@@ -121,7 +121,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		log.LogAnomaly("WS", targetURL, result.Scanner,
-			result.Reason, clientIP, requestID, result.Score)
+			result.Reason, clientIP, requestID, agent, result.Score)
 	}
 
 	if sessionBlocked {
@@ -156,7 +156,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	clientConn, _, _, upgradeErr := upgrader.Upgrade(r, w)
 	if upgradeErr != nil {
-		log.LogError("WS", targetURL, clientIP, requestID, fmt.Errorf("client upgrade: %w", upgradeErr))
+		log.LogError("WS", targetURL, clientIP, requestID, agent, fmt.Errorf("client upgrade: %w", upgradeErr))
 		// If Upgrade fails, it already wrote the HTTP error response.
 		return
 	}
@@ -165,7 +165,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Dial upstream via SSRF-safe dialer.
 	upstreamConn, dialErr := p.wsDialUpstream(r.Context(), targetURL, fwdHeaders, cfg)
 	if dialErr != nil {
-		log.LogError("WS", targetURL, clientIP, requestID, fmt.Errorf("upstream dial: %w", dialErr))
+		log.LogError("WS", targetURL, clientIP, requestID, agent, fmt.Errorf("upstream dial: %w", dialErr))
 		plwsutil.WriteCloseFrame(clientConn, ws.StatusInternalServerError, "upstream dial failed")
 		return
 	}

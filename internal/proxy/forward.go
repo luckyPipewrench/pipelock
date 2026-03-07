@@ -115,7 +115,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	if !result.Allowed {
 		if cfg.EnforceEnabled() {
-			p.logger.LogBlocked(http.MethodConnect, target, result.Scanner, result.Reason, clientIP, requestID)
+			p.logger.LogBlocked(http.MethodConnect, target, result.Scanner, result.Reason, clientIP, requestID, agent)
 			p.metrics.RecordTunnelBlocked()
 			if cfg.ExplainBlocksEnabled() && result.Hint != "" {
 				w.Header().Set("X-Pipelock-Hint", result.Hint)
@@ -125,7 +125,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		}
 		// Audit mode: log anomaly but allow through
 		p.logger.LogAnomaly(http.MethodConnect, target, result.Scanner,
-			result.Reason, clientIP, requestID, result.Score)
+			result.Reason, clientIP, requestID, agent, result.Score)
 	}
 
 	if sessionBlocked {
@@ -141,7 +141,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			p.metrics.RecordWSRedirectHint()
 			p.logger.LogAnomaly(http.MethodConnect, target, "",
 				fmt.Sprintf("hint: %s supports WebSocket; consider using /ws endpoint for frame-level scanning", host),
-				clientIP, requestID, 0.2)
+				clientIP, requestID, agent, 0.2)
 		}
 	}
 
@@ -162,7 +162,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	targetConn, err := p.ssrfSafeDialContext(dialCtx, "tcp", target)
 	if err != nil {
-		p.logger.LogError(http.MethodConnect, target, clientIP, requestID, err)
+		p.logger.LogError(http.MethodConnect, target, clientIP, requestID, agent, err)
 		http.Error(w, "tunnel dial failed", http.StatusBadGateway)
 		return
 	}
@@ -175,7 +175,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// Hijack the client connection
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
-		p.logger.LogError(http.MethodConnect, target, clientIP, requestID,
+		p.logger.LogError(http.MethodConnect, target, clientIP, requestID, agent,
 			fmt.Errorf("response writer does not support hijacking"))
 		http.Error(w, "hijack not supported", http.StatusInternalServerError)
 		return
@@ -183,7 +183,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	clientConn, buf, err := hijacker.Hijack()
 	if err != nil {
-		p.logger.LogError(http.MethodConnect, target, clientIP, requestID, err)
+		p.logger.LogError(http.MethodConnect, target, clientIP, requestID, agent, err)
 		return
 	}
 	defer clientConn.Close() //nolint:errcheck // best effort
@@ -216,7 +216,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		if certCache == nil {
 			// Fail-closed: TLS interception is enabled but cert cache is missing.
 			// Connection is already hijacked, so close both sides (deferred).
-			p.logger.LogError(http.MethodConnect, host, clientIP, requestID, fmt.Errorf("TLS interception enabled but cert cache unavailable"))
+			p.logger.LogError(http.MethodConnect, host, clientIP, requestID, agent, fmt.Errorf("TLS interception enabled but cert cache unavailable"))
 			p.metrics.RecordTLSIntercept("failed")
 			return
 		}
@@ -225,14 +225,14 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		_ = targetConn.Close()
 		targetConn = nil
 		p.metrics.RecordTLSIntercept("intercepted")
-		p.logger.LogAnomaly(http.MethodConnect, host, "tls_intercept", "TLS MITM interception active", clientIP, requestID, 0) // 0: informational, not anomalous
+		p.logger.LogAnomaly(http.MethodConnect, host, "tls_intercept", "TLS MITM interception active", clientIP, requestID, agent, 0) // 0: informational, not anomalous
 		// Wrap clientConn with buffered reader so any bytes peeked during
 		// SNI verification (ClientHello) are available to the TLS server.
 		interceptConn := wrapBuffered(clientConn, clientReader)
 		interceptCtx, interceptCancel := context.WithDeadline(r.Context(), deadline)
 		defer interceptCancel()
 		if err := interceptTunnel(interceptCtx, interceptConn, host, port, cfg, sc, certCache, p.logger, p.metrics, clientIP, requestID, p.tlsTransport, p.ssrfSafeDialContext); err != nil {
-			p.logger.LogError(http.MethodConnect, host, clientIP, requestID, err)
+			p.logger.LogError(http.MethodConnect, host, clientIP, requestID, agent, err)
 		}
 		return
 	}
@@ -245,7 +245,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	p.metrics.IncrActiveTunnels()
-	p.logger.LogTunnelOpen(target, clientIP, requestID)
+	p.logger.LogTunnelOpen(target, clientIP, requestID, agent)
 
 	// Bidirectional relay with idle timeout
 	idleTimeout := time.Duration(cfg.ForwardProxy.IdleTimeoutSeconds) * time.Second
@@ -254,7 +254,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	p.metrics.DecrActiveTunnels()
 	duration := time.Since(start)
 	p.metrics.RecordTunnel(duration, totalBytes)
-	p.logger.LogTunnelClose(target, clientIP, requestID, totalBytes, duration)
+	p.logger.LogTunnelClose(target, clientIP, requestID, agent, totalBytes, duration)
 
 	// Record data budget for the target domain
 	sc.RecordRequest(strings.ToLower(host), int(totalBytes))
@@ -339,7 +339,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if !result.Allowed {
 		if cfg.EnforceEnabled() {
-			p.logger.LogBlocked(r.Method, targetURL, result.Scanner, result.Reason, clientIP, requestID)
+			p.logger.LogBlocked(r.Method, targetURL, result.Scanner, result.Reason, clientIP, requestID, agent)
 			p.metrics.RecordBlocked(r.URL.Hostname(), result.Scanner, time.Since(start))
 			if cfg.ExplainBlocksEnabled() && result.Hint != "" {
 				w.Header().Set("X-Pipelock-Hint", result.Hint)
@@ -348,7 +348,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		p.logger.LogAnomaly(r.Method, targetURL, result.Scanner,
-			result.Reason, clientIP, requestID, result.Score)
+			result.Reason, clientIP, requestID, agent, result.Score)
 	}
 
 	if sessionBlocked {
@@ -373,7 +373,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				reason = fmt.Sprintf("request body contains secret: %s", strings.Join(patternNames, ", "))
 			}
 
-			p.logger.LogBodyDLP(r.Method, targetURL, action, clientIP, requestID, len(bodyResult.DLPMatches), patternNames)
+			p.logger.LogBodyDLP(r.Method, targetURL, action, clientIP, requestID, agent, len(bodyResult.DLPMatches), patternNames)
 			p.metrics.RecordBodyDLP(action)
 
 			// Fail-closed: when buf is nil the body was consumed but couldn't
@@ -413,7 +413,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := p.client.Do(outReq)
 	if err != nil {
-		p.logger.LogError(r.Method, targetURL, clientIP, requestID, err)
+		p.logger.LogError(r.Method, targetURL, clientIP, requestID, agent, err)
 		http.Error(w, "forward proxy fetch failed", http.StatusBadGateway)
 		return
 	}
@@ -446,7 +446,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 	duration := time.Since(start)
 	p.metrics.RecordAllowed(duration)
-	p.logger.LogForwardHTTP(r.Method, targetURL, clientIP, requestID, resp.StatusCode, int(written), duration)
+	p.logger.LogForwardHTTP(r.Method, targetURL, clientIP, requestID, agent, resp.StatusCode, int(written), duration)
 }
 
 // dlpMatchNames extracts pattern names from a slice of DLP matches.

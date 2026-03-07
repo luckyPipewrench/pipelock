@@ -28,12 +28,14 @@ import (
 )
 
 const (
-	testFinalPath   = "/final"
-	testRemoteAddr  = "192.168.1.1:12345"
-	testRemoteAddr2 = "10.0.0.1:9999"
-	testProfileNorm = "normal"
-	testProfileElev = "elevated"
-	testContentJSON = "application/json"
+	testFinalPath        = "/final"
+	testRemoteAddr       = "192.168.1.1:12345"
+	testRemoteAddr2      = "10.0.0.1:9999"
+	testProfileNorm      = "normal"
+	testProfileElev      = "elevated"
+	testContentJSON      = "application/json"
+	testAgentPermissive  = "permissive-agent"
+	testAgentRestrictive = "restrictive-agent"
 )
 
 // newIPv4Server creates an httptest.Server bound to 127.0.0.1 (IPv4 only).
@@ -3677,5 +3679,254 @@ func TestHealthEndpoint_TLSInterceptionEnabled(t *testing.T) {
 	}
 	if !tlsEnabled {
 		t.Error("expected tls_interception_enabled=true")
+	}
+}
+
+// --- Agent Registry Integration Tests ---
+
+// TestFetchEndpoint_PerAgentScanner verifies that requests with different
+// X-Pipelock-Agent headers use per-agent config and scanner. The permissive
+// agent's config allowlists the test backend, while the restrictive agent's
+// strict-mode config does not, causing its requests to be blocked.
+func TestFetchEndpoint_PerAgentScanner(t *testing.T) {
+	// Create a backend that returns plain text.
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = fmt.Fprint(w, "hello from backend")
+	}))
+	defer backend.Close()
+
+	// Extract backend hostname (IP only, no port) for allowlisting.
+	// The scanner checks parsed.Hostname() which strips the port.
+	backendHostPort := strings.TrimPrefix(backend.URL, "http://")
+	backendHost, _, _ := net.SplitHostPort(backendHostPort)
+
+	cfg := config.Defaults()
+	cfg.FetchProxy.TimeoutSeconds = 5
+	cfg.Internal = nil // disable SSRF for test backend on 127.0.0.1
+	cfg.APIAllowlist = nil
+	// Base mode is balanced (permissive by default).
+	cfg.Mode = config.ModeBalanced
+
+	// Configure two agent profiles with different modes:
+	// - permissive-agent: strict mode BUT allowlists the backend host
+	// - restrictive-agent: strict mode with NO allowlist (blocks everything)
+	cfg.Agents = map[string]config.AgentProfile{
+		testAgentPermissive: {
+			Mode:         config.ModeStrict,
+			APIAllowlist: []string{backendHost},
+		},
+		testAgentRestrictive: {
+			Mode:         config.ModeStrict,
+			APIAllowlist: []string{"only-this-domain.example.com"},
+		},
+	}
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	t.Cleanup(func() { sc.Close() })
+	p := New(cfg, logger, sc, metrics.New())
+	t.Cleanup(func() { p.Close() })
+
+	handler := p.Handler()
+
+	tests := []struct {
+		name       string
+		agentHdr   string
+		wantStatus int
+		wantBlock  bool
+	}{
+		{
+			name:       "permissive agent allows backend",
+			agentHdr:   testAgentPermissive,
+			wantStatus: http.StatusOK,
+			wantBlock:  false,
+		},
+		{
+			name:       "restrictive agent blocks backend",
+			agentHdr:   testAgentRestrictive,
+			wantStatus: http.StatusForbidden,
+			wantBlock:  true,
+		},
+		{
+			name:       "anonymous uses base config (balanced, allows)",
+			agentHdr:   "",
+			wantStatus: http.StatusOK,
+			wantBlock:  false,
+		},
+		{
+			name:       "unknown agent falls back to base config",
+			agentHdr:   "unknown-agent",
+			wantStatus: http.StatusOK,
+			wantBlock:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/text", nil)
+			if tt.agentHdr != "" {
+				req.Header.Set(AgentHeader, tt.agentHdr)
+			}
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, req)
+
+			if w.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d (body: %s)", w.Code, tt.wantStatus, w.Body.String())
+			}
+
+			var resp FetchResponse
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("invalid JSON response: %v", err)
+			}
+			if resp.Blocked != tt.wantBlock {
+				t.Errorf("blocked = %v, want %v (reason: %s)", resp.Blocked, tt.wantBlock, resp.BlockReason)
+			}
+		})
+	}
+}
+
+// TestFetchEndpoint_PerAgentScanner_AgentInResponse verifies the agent name
+// appears in the fetch response JSON when per-agent resolution is active.
+func TestFetchEndpoint_PerAgentScanner_AgentInResponse(t *testing.T) {
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = fmt.Fprint(w, "ok")
+	}))
+	defer backend.Close()
+
+	cfg := config.Defaults()
+	cfg.FetchProxy.TimeoutSeconds = 5
+	cfg.Internal = nil
+	cfg.APIAllowlist = nil
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	t.Cleanup(func() { sc.Close() })
+	p := New(cfg, logger, sc, metrics.New())
+	t.Cleanup(func() { p.Close() })
+
+	handler := p.Handler()
+
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/text", nil)
+	req.Header.Set(AgentHeader, "my-test-agent")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	var resp FetchResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if resp.Agent != "my-test-agent" {
+		t.Errorf("agent = %q, want %q", resp.Agent, "my-test-agent")
+	}
+}
+
+// TestProxy_Reload_RebuildRegistry verifies that Reload rebuilds the agent
+// registry so that per-agent config changes take effect.
+func TestProxy_Reload_RebuildRegistry(t *testing.T) {
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = fmt.Fprint(w, "ok")
+	}))
+	defer backend.Close()
+
+	backendHostPort := strings.TrimPrefix(backend.URL, "http://")
+	backendHost, _, _ := net.SplitHostPort(backendHostPort)
+
+	// Start with no agent profiles.
+	cfg := config.Defaults()
+	cfg.FetchProxy.TimeoutSeconds = 5
+	cfg.Internal = nil
+	cfg.APIAllowlist = nil
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	p := New(cfg, logger, sc, metrics.New())
+	t.Cleanup(func() { p.Close() })
+
+	handler := p.Handler()
+
+	// Before reload: request from "strict-bot" should succeed (no profiles, fallback is balanced).
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/text", nil)
+	req.Header.Set(AgentHeader, "strict-bot")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("before reload: expected 200, got %d", w.Code)
+	}
+
+	// Reload with a strict profile that blocks the backend.
+	cfg2 := config.Defaults()
+	cfg2.FetchProxy.TimeoutSeconds = 5
+	cfg2.Internal = nil
+	cfg2.APIAllowlist = nil
+	cfg2.Agents = map[string]config.AgentProfile{
+		"strict-bot": {
+			Mode:         config.ModeStrict,
+			APIAllowlist: []string{"other.example.com"},
+		},
+	}
+	// Also allowlist the backend in base so anonymous still works.
+	cfg2.APIAllowlist = []string{backendHost}
+
+	sc2 := scanner.New(cfg2)
+	p.Reload(cfg2, sc2)
+
+	// After reload: "strict-bot" should be blocked (strict + no backend in allowlist).
+	req2 := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/text", nil)
+	req2.Header.Set(AgentHeader, "strict-bot")
+	w2 := httptest.NewRecorder()
+	handler.ServeHTTP(w2, req2)
+
+	if w2.Code != http.StatusForbidden {
+		t.Errorf("after reload: expected 403 for strict-bot, got %d (body: %s)", w2.Code, w2.Body.String())
+	}
+}
+
+// TestProxy_KnownProfiles verifies the knownProfiles helper returns the
+// correct set of profile names.
+func TestProxy_KnownProfiles(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.Agents = map[string]config.AgentProfile{
+		"agent-a": {Mode: config.ModeStrict},
+		"agent-b": {Mode: config.ModeAudit},
+	}
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	t.Cleanup(func() { sc.Close() })
+	p := New(cfg, logger, sc, metrics.New())
+	t.Cleanup(func() { p.Close() })
+
+	profiles := p.knownProfiles()
+	if len(profiles) != 2 {
+		t.Fatalf("expected 2 profiles, got %d: %v", len(profiles), profiles)
+	}
+	if !profiles["agent-a"] {
+		t.Error("expected agent-a in knownProfiles")
+	}
+	if !profiles["agent-b"] {
+		t.Error("expected agent-b in knownProfiles")
+	}
+}
+
+// TestProxy_KnownProfiles_NoAgents verifies knownProfiles returns empty map
+// when no agent profiles are configured.
+func TestProxy_KnownProfiles_NoAgents(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	t.Cleanup(func() { sc.Close() })
+	p := New(cfg, logger, sc, metrics.New())
+	t.Cleanup(func() { p.Close() })
+
+	profiles := p.knownProfiles()
+	if len(profiles) != 0 {
+		t.Errorf("expected 0 profiles, got %d: %v", len(profiles), profiles)
 	}
 }

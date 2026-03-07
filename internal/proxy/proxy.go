@@ -107,6 +107,7 @@ var Version = "0.1.0-dev"
 type Proxy struct {
 	cfgPtr        atomic.Pointer[config.Config]
 	scannerPtr    atomic.Pointer[scanner.Scanner]
+	registryPtr   atomic.Pointer[AgentRegistry]
 	sessionMgrPtr atomic.Pointer[SessionManager]    // nil when profiling disabled
 	certCachePtr  atomic.Pointer[certgen.CertCache] // nil when TLS interception disabled
 	logger        *audit.Logger
@@ -166,6 +167,16 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 	}
 	p.cfgPtr.Store(cfg)
 	p.scannerPtr.Store(sc)
+
+	// Build agent registry for per-agent config/scanner resolution.
+	// NewAgentRegistry only fails on pathological configs that should have
+	// been caught by config.Validate(), so log.Fatal is appropriate here.
+	reg, regErr := NewAgentRegistry(cfg)
+	if regErr != nil {
+		// Startup failure: config validation should have caught this.
+		panic(fmt.Sprintf("agent registry: %v", regErr))
+	}
+	p.registryPtr.Store(reg)
 
 	if cfg.SessionProfiling.Enabled {
 		p.sessionMgrPtr.Store(NewSessionManager(&cfg.SessionProfiling, m))
@@ -246,6 +257,16 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
 		old.Close()
 	}
 
+	// Rebuild agent registry for per-agent config/scanner resolution.
+	newReg, regErr := NewAgentRegistry(cfg)
+	if regErr != nil {
+		p.logger.LogError("RELOAD", "", "", "", "", fmt.Errorf("agent registry rebuild failed, keeping old: %w", regErr))
+	} else {
+		if oldReg := p.registryPtr.Swap(newReg); oldReg != nil {
+			oldReg.Close()
+		}
+	}
+
 	// Toggle session manager lifecycle on config change.
 	wasEnabled := oldCfg.SessionProfiling.Enabled
 	isEnabled := cfg.SessionProfiling.Enabled
@@ -285,16 +306,50 @@ func (p *Proxy) LoadCertCache(cfg *config.Config) error {
 	return nil
 }
 
-// Close releases resources owned by the proxy (session manager goroutine).
-// Safe to call multiple times. Does not stop the HTTP server — use context
-// cancellation in Start() for that.
+// Close releases resources owned by the proxy (session manager goroutine,
+// agent registry scanners). Safe to call multiple times. Does not stop the
+// HTTP server — use context cancellation in Start() for that.
 func (p *Proxy) Close() {
 	if sm := p.sessionMgrPtr.Load(); sm != nil {
 		sm.Close()
 	}
+	if reg := p.registryPtr.Load(); reg != nil {
+		reg.Close()
+	}
 	if p.tlsTransport != nil {
 		p.tlsTransport.CloseIdleConnections()
 	}
+}
+
+// resolveAgent returns the ResolvedAgent for the given profile name.
+// If the registry has not been initialized, falls back to the base config
+// and scanner stored on the proxy (backward-compatible default).
+func (p *Proxy) resolveAgent(profile string) *ResolvedAgent {
+	reg := p.registryPtr.Load()
+	if reg == nil {
+		return &ResolvedAgent{
+			Name:    profileDefault,
+			Config:  p.cfgPtr.Load(),
+			Scanner: p.scannerPtr.Load(),
+		}
+	}
+	return reg.Lookup(profile)
+}
+
+// knownProfiles returns a set of profile names from the current agent registry.
+// Used by ResolveAgent to determine whether a header-supplied agent name maps
+// to a configured profile (bounded cardinality) or falls back to _default.
+func (p *Proxy) knownProfiles() map[string]bool {
+	reg := p.registryPtr.Load()
+	if reg == nil {
+		return nil
+	}
+	profiles := reg.Profiles()
+	m := make(map[string]bool, len(profiles))
+	for _, name := range profiles {
+		m[name] = true
+	}
+	return m
 }
 
 // newTLSInterceptTransport creates a shared http.Transport for TLS interception
@@ -595,11 +650,21 @@ func (p *Proxy) Start(ctx context.Context) error {
 // handleFetch processes URL fetch requests.
 func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
-	cfg := p.cfgPtr.Load()
-	sc := p.scannerPtr.Load()
 
 	clientIP, requestID := requestMeta(r)
-	agent := ExtractAgent(r)
+
+	// Resolve per-agent config and scanner. When agent profiles are
+	// configured, each agent gets its own merged config (mode, allowlist,
+	// DLP patterns, etc.) and pre-built scanner. When no profiles exist,
+	// the fallback uses the base config — identical to pre-agent behavior.
+	id := ResolveAgent(r, p.knownProfiles())
+	resolved := p.resolveAgent(id.Profile)
+	cfg := resolved.Config
+	sc := resolved.Scanner
+	agent := id.Name
+	if agent == "" {
+		agent = agentAnonymous
+	}
 
 	// Create a per-request sub-logger tagged with the agent name
 	log := p.logger.With("agent", agent)

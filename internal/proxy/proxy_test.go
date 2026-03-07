@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -4524,4 +4525,156 @@ func TestByteBudgetBlocksFetchResponse(t *testing.T) {
 	if resp.BlockReason == "" {
 		t.Error("expected non-empty block_reason")
 	}
+}
+
+// TestAgentListenerBinding verifies that per-agent listeners inject the
+// correct agent identity via context override (spoof-proof path).
+// Requests to the agent listener port should resolve to that agent's
+// profile regardless of the X-Pipelock-Agent header.
+func TestAgentListenerBinding(t *testing.T) {
+	const testListenerAgent = "listener-agent"
+
+	// Backend that returns plain text.
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = fmt.Fprint(w, "hello from backend")
+	}))
+	t.Cleanup(func() { backend.Close() })
+
+	// Bind free ports for the agent and main listeners.
+	lc := net.ListenConfig{}
+	agentLn, listenErr := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if listenErr != nil {
+		t.Fatalf("failed to get free port: %v", listenErr)
+	}
+	agentAddr := agentLn.Addr().String()
+	_ = agentLn.Close() // free the port for the proxy to bind
+
+	enforceFalse := false
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.APIAllowlist = nil
+	cfg.FetchProxy.TimeoutSeconds = 5
+	mainLn, mainErr := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if mainErr != nil {
+		t.Fatalf("failed to get free port for main: %v", mainErr)
+	}
+	cfg.FetchProxy.Listen = mainLn.Addr().String()
+	_ = mainLn.Close()
+
+	cfg.Agents = map[string]config.AgentProfile{
+		testListenerAgent: {
+			Mode:      config.ModeAudit,
+			Enforce:   &enforceFalse,
+			Listeners: []string{agentAddr},
+		},
+	}
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	t.Cleanup(func() { sc.Close() })
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	t.Cleanup(func() { p.Close() })
+
+	// Start proxy in background (Start() blocks).
+	startErr := make(chan error, 1)
+	go func() { startErr <- p.Start(ctx) }()
+
+	// Wait for both listeners to be ready.
+	waitForListener(t, cfg.FetchProxy.Listen)
+	waitForListener(t, agentAddr)
+
+	// Request to the agent listener: should get listener-agent identity
+	// even without X-Pipelock-Agent header. The agent is in audit mode
+	// (enforce=false), so a blocklisted domain should be allowed.
+	blockedURL := "https://pastebin.com/raw/abc"
+	fetchReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+agentAddr+"/fetch?url="+blockedURL, nil)
+	resp, respErr := http.DefaultClient.Do(fetchReq)
+	if respErr != nil {
+		t.Fatalf("GET agent listener: %v", respErr)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, _ := io.ReadAll(resp.Body)
+	var fetchResp FetchResponse
+	if jsonErr := json.Unmarshal(body, &fetchResp); jsonErr != nil {
+		t.Fatalf("invalid JSON: %v\nbody: %s", jsonErr, string(body))
+	}
+
+	// Audit mode + enforce=false: blocklisted domain should NOT be blocked.
+	if fetchResp.Blocked {
+		t.Errorf("expected blocked=false (audit mode), got blocked=true: %s", fetchResp.BlockReason)
+	}
+	if fetchResp.Agent != testListenerAgent {
+		t.Errorf("agent = %q, want %q", fetchResp.Agent, testListenerAgent)
+	}
+
+	// Request to the same agent listener WITH a spoofed header: context
+	// override should take priority over the header.
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+agentAddr+"/fetch?url="+backend.URL+"/text", nil)
+	req.Header.Set(AgentHeader, "spoofed-name")
+	spoofResp, spoofErr := http.DefaultClient.Do(req)
+	if spoofErr != nil {
+		t.Fatalf("GET with spoofed header: %v", spoofErr)
+	}
+	defer func() { _ = spoofResp.Body.Close() }()
+
+	spoofBody, _ := io.ReadAll(spoofResp.Body)
+	var spoofFetch FetchResponse
+	if jsonErr := json.Unmarshal(spoofBody, &spoofFetch); jsonErr != nil {
+		t.Fatalf("invalid JSON: %v", jsonErr)
+	}
+
+	// Context override is priority #1: agent should be listener-agent, not spoofed-name.
+	if spoofFetch.Agent != testListenerAgent {
+		t.Errorf("spoofed request: agent = %q, want %q (context override should win)", spoofFetch.Agent, testListenerAgent)
+	}
+
+	// Request to main listener: should NOT have listener-agent identity.
+	mainReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+cfg.FetchProxy.Listen+"/fetch?url="+blockedURL, nil)
+	mainResp, mainRespErr := http.DefaultClient.Do(mainReq)
+	if mainRespErr != nil {
+		t.Fatalf("GET main listener: %v", mainRespErr)
+	}
+	defer func() { _ = mainResp.Body.Close() }()
+
+	mainBody, _ := io.ReadAll(mainResp.Body)
+	var mainFetch FetchResponse
+	if jsonErr := json.Unmarshal(mainBody, &mainFetch); jsonErr != nil {
+		t.Fatalf("invalid JSON: %v", jsonErr)
+	}
+
+	// Main listener with no header should fall back to _default (which enforces),
+	// so blocklisted domain should be blocked.
+	if !mainFetch.Blocked {
+		t.Errorf("main listener: expected blocked=true for blocklisted domain")
+	}
+	if mainFetch.Agent != agentAnonymous {
+		t.Errorf("main listener: agent = %q, want %q", mainFetch.Agent, agentAnonymous)
+	}
+
+	cancel() // shutdown
+}
+
+// waitForListener polls a TCP address until it accepts connections.
+func waitForListener(t *testing.T, addr string) {
+	t.Helper()
+	d := net.Dialer{Timeout: 100 * time.Millisecond}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		conn, err := d.DialContext(context.Background(), "tcp", addr)
+		if err == nil {
+			_ = conn.Close()
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("listener %s did not start within 3s", addr)
 }

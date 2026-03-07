@@ -68,12 +68,22 @@ type Metrics struct {
 	allowedCount      int64
 	blockedCount      int64
 	tunnelCount       int64
+	agentStats        map[string]*agentCounters // per-agent allowed/blocked/tunnel counts
 
 	// Session profiling stats (for JSON /stats endpoint)
 	sessionActiveCount     int64
 	sessionAnomalyCount    int64
 	sessionEscalationCount int64
 	topAnomalyTypes        map[string]int64
+}
+
+// agentCounters tracks per-agent request counts for the /stats endpoint.
+// Cardinality is bounded because callers pass the resolved profile name
+// (not the raw header value), which falls back to "_default" for unknown agents.
+type agentCounters struct {
+	Allowed int64
+	Blocked int64
+	Tunnels int64
 }
 
 // New creates a Metrics instance with its own Prometheus registry.
@@ -294,12 +304,24 @@ func New() *Metrics {
 		topBlockedDomains:    make(map[string]int64),
 		topScannerHits:       make(map[string]int64),
 		topAnomalyTypes:      make(map[string]int64),
+		agentStats:           make(map[string]*agentCounters),
 	}
 }
 
 // Registry returns the underlying Prometheus registry for test assertions.
 func (m *Metrics) Registry() *prometheus.Registry {
 	return m.registry
+}
+
+// agentCounter returns the per-agent counters, creating them on first access.
+// Must be called with m.mu held.
+func (m *Metrics) agentCounter(agent string) *agentCounters {
+	ac := m.agentStats[agent]
+	if ac == nil {
+		ac = &agentCounters{}
+		m.agentStats[agent] = ac
+	}
+	return ac
 }
 
 // RecordAllowed records a successful (allowed) request.
@@ -309,6 +331,7 @@ func (m *Metrics) RecordAllowed(duration time.Duration, agent string) {
 
 	m.mu.Lock()
 	m.allowedCount++
+	m.agentCounter(agent).Allowed++
 	m.mu.Unlock()
 }
 
@@ -320,6 +343,7 @@ func (m *Metrics) RecordBlocked(domain, scannerName string, duration time.Durati
 
 	m.mu.Lock()
 	m.blockedCount++
+	m.agentCounter(agent).Blocked++
 	if len(m.topBlockedDomains) < maxTopEntries {
 		m.topBlockedDomains[domain]++
 	} else if _, exists := m.topBlockedDomains[domain]; exists {
@@ -341,6 +365,7 @@ func (m *Metrics) RecordTunnel(duration time.Duration, totalBytes int64, agent s
 
 	m.mu.Lock()
 	m.tunnelCount++
+	m.agentCounter(agent).Tunnels++
 	m.mu.Unlock()
 }
 
@@ -576,6 +601,16 @@ func (m *Metrics) StatsHandler() http.HandlerFunc {
 		if total > 0 {
 			stats.Requests.BlockRate = float64(m.blockedCount) / float64(total)
 		}
+		if len(m.agentStats) > 0 {
+			stats.Agents = make(map[string]agentStatsOut, len(m.agentStats))
+			for name, ac := range m.agentStats {
+				stats.Agents[name] = agentStatsOut{
+					Allowed: ac.Allowed,
+					Blocked: ac.Blocked,
+					Tunnels: ac.Tunnels,
+				}
+			}
+		}
 		m.mu.Unlock()
 
 		w.Header().Set("Content-Type", "application/json")
@@ -584,13 +619,20 @@ func (m *Metrics) StatsHandler() http.HandlerFunc {
 }
 
 type statsResponse struct {
-	UptimeSeconds     float64       `json:"uptime_seconds"`
-	Requests          requestStats  `json:"requests"`
-	Tunnels           int64         `json:"tunnels"`
-	WebSockets        int64         `json:"websockets"`
-	TopBlockedDomains []rankedEntry `json:"top_blocked_domains"`
-	TopScanners       []rankedEntry `json:"top_scanners"`
-	Sessions          sessionStats  `json:"sessions"`
+	UptimeSeconds     float64                  `json:"uptime_seconds"`
+	Requests          requestStats             `json:"requests"`
+	Tunnels           int64                    `json:"tunnels"`
+	WebSockets        int64                    `json:"websockets"`
+	TopBlockedDomains []rankedEntry            `json:"top_blocked_domains"`
+	TopScanners       []rankedEntry            `json:"top_scanners"`
+	Sessions          sessionStats             `json:"sessions"`
+	Agents            map[string]agentStatsOut `json:"agents,omitempty"`
+}
+
+type agentStatsOut struct {
+	Allowed int64 `json:"allowed"`
+	Blocked int64 `json:"blocked"`
+	Tunnels int64 `json:"tunnels"`
 }
 
 type sessionStats struct {

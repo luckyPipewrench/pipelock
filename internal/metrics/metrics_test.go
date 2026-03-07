@@ -1153,3 +1153,55 @@ func TestRequestsTotalAgentLabel(t *testing.T) {
 		t.Error("expected agent label on pipelock_requests_total")
 	}
 }
+
+func TestStatsHandler_PerAgentBreakdown(t *testing.T) {
+	m := New()
+	m.RecordAllowed(10*time.Millisecond, testAgent)
+	m.RecordAllowed(10*time.Millisecond, testAgent)
+	m.RecordBlocked("evil.com", "dlp", 10*time.Millisecond, testAgent)
+	m.RecordAllowed(10*time.Millisecond, testAgentAlt)
+	m.RecordTunnel(5*time.Second, 1024, testAgentAlt)
+
+	req := httptest.NewRequest(http.MethodGet, "/stats", nil)
+	w := httptest.NewRecorder()
+	m.StatsHandler().ServeHTTP(w, req)
+
+	var stats statsResponse
+	if err := json.NewDecoder(w.Body).Decode(&stats); err != nil {
+		t.Fatalf("failed to decode stats: %v", err)
+	}
+
+	if len(stats.Agents) != 2 {
+		t.Fatalf("expected 2 agents, got %d", len(stats.Agents))
+	}
+
+	ta := stats.Agents[testAgent]
+	if ta.Allowed != 2 {
+		t.Errorf("%s allowed = %d, want 2", testAgent, ta.Allowed)
+	}
+	if ta.Blocked != 1 {
+		t.Errorf("%s blocked = %d, want 1", testAgent, ta.Blocked)
+	}
+
+	alt := stats.Agents[testAgentAlt]
+	if alt.Allowed != 1 {
+		t.Errorf("%s allowed = %d, want 1", testAgentAlt, alt.Allowed)
+	}
+	if alt.Tunnels != 1 {
+		t.Errorf("%s tunnels = %d, want 1", testAgentAlt, alt.Tunnels)
+	}
+}
+
+func TestStatsHandler_NoAgentsWhenEmpty(t *testing.T) {
+	m := New()
+
+	req := httptest.NewRequest(http.MethodGet, "/stats", nil)
+	w := httptest.NewRecorder()
+	m.StatsHandler().ServeHTTP(w, req)
+
+	// Raw JSON should not contain "agents" key when no traffic has been recorded.
+	body, _ := io.ReadAll(w.Body)
+	if strings.Contains(string(body), `"agents"`) {
+		t.Error("expected no agents key in empty stats response")
+	}
+}

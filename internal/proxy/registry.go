@@ -116,6 +116,15 @@ func (r *AgentRegistry) Close() {
 	}
 }
 
+// Ports returns a copy of the listen-address-to-profile mapping.
+func (r *AgentRegistry) Ports() map[string]string {
+	out := make(map[string]string, len(r.ports))
+	for addr, name := range r.ports {
+		out[addr] = name
+	}
+	return out
+}
+
 // Profiles returns all configured agent profile names (excluding fallback
 // if it was synthesized from the base config).
 func (r *AgentRegistry) Profiles() []string {

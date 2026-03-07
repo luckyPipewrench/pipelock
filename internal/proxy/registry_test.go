@@ -100,6 +100,41 @@ func TestAgentRegistryPortLookup(t *testing.T) {
 	}
 }
 
+func TestAgentRegistryPorts(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.Agents = map[string]config.AgentProfile{
+		testProfileClaudeCode: {
+			Listeners: []string{testListenAddr, ":8890"},
+			Mode:      config.ModeStrict,
+		},
+	}
+
+	reg, err := NewAgentRegistry(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reg.Close()
+
+	ports := reg.Ports()
+	if len(ports) != 2 {
+		t.Fatalf("Ports() = %d entries, want 2", len(ports))
+	}
+	if ports[testListenAddr] != testProfileClaudeCode {
+		t.Errorf("Ports()[%s] = %q, want %s", testListenAddr, ports[testListenAddr], testProfileClaudeCode)
+	}
+	if ports[":8890"] != testProfileClaudeCode {
+		t.Errorf("Ports()[:8890] = %q, want %s", ports[":8890"], testProfileClaudeCode)
+	}
+
+	// Verify the returned map is a copy (mutations don't affect registry).
+	ports["injected"] = "bad"
+	_, ok := reg.ProfileForPort("injected")
+	if ok {
+		t.Error("Ports() returned a reference to internal map, not a copy")
+	}
+}
+
 func TestAgentRegistryNoAgents(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil

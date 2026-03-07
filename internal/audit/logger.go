@@ -84,6 +84,7 @@ const (
 	EventBodyDLP            EventType = "body_dlp"
 	EventHeaderDLP          EventType = "header_dlp"
 	EventChainDetection     EventType = "chain_detection"
+	EventAgentListener      EventType = "agent_listener"
 )
 
 // WebSocket frame direction constants used in audit log entries.
@@ -457,6 +458,15 @@ func (l *Logger) LogShutdown(reason string) {
 		Str("event", "shutdown").
 		Str("reason", reason).
 		Msg("pipelock stopping")
+}
+
+// LogAgentListener logs that a per-agent listener has started.
+func (l *Logger) LogAgentListener(addr, agent string) {
+	l.zl.Info().
+		Str("event", string(EventAgentListener)).
+		Str("listen", addr).
+		Str("agent", sanitizeString(agent)).
+		Msg("agent listener started")
 }
 
 // LogWSOpen logs a WebSocket proxy connection establishment.

@@ -68,16 +68,26 @@ type wsRelayStats struct {
 // handleWebSocket handles /ws WebSocket proxy requests.
 func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
-	cfg := p.cfgPtr.Load()
-	sc := p.scannerPtr.Load()
+
+	clientIP, requestID := requestMeta(r)
+
+	// Resolve per-agent config and scanner. When agent profiles are
+	// configured, each agent gets its own merged config (mode, allowlist,
+	// DLP patterns, etc.) and pre-built scanner.
+	id := ResolveAgent(r, p.knownProfiles())
+	resolved := p.resolveAgent(id.Profile)
+	cfg := resolved.Config
+	sc := resolved.Scanner
+	agent := id.Name
+	if agent == "" {
+		agent = agentAnonymous
+	}
 
 	if !cfg.WebSocketProxy.Enabled {
 		http.Error(w, "WebSocket proxy not enabled", http.StatusNotFound)
 		return
 	}
 
-	clientIP, requestID := requestMeta(r)
-	agent := ExtractAgent(r)
 	log := p.logger.With("agent", agent)
 
 	// Extract and validate target URL. Uses the same extraction logic as /fetch

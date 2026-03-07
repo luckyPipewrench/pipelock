@@ -758,6 +758,129 @@ What it enables beyond `strict`:
 
 The core principle: the model won't protect you, so the network layer must.
 
+## Agent Profiles
+
+Per-agent policy overrides. When multiple agents share one pipelock instance, each agent can have its own mode, allowlist, DLP patterns, rate limits, and request budgets. Unset fields inherit from the base config.
+
+```yaml
+agents:
+  claude-code:
+    listeners: [":8889"]
+    mode: strict
+    api_allowlist: ["github.com", "*.githubusercontent.com"]
+    dlp:
+      include_defaults: true
+      patterns:
+        - name: "Internal Token"
+          regex: 'internal_[a-zA-Z0-9]{32}'
+          severity: critical
+    rate_limit:
+      max_requests_per_minute: 30
+    session_profiling:
+      domain_burst: 3
+      anomaly_action: block
+    mcp_tool_policy:
+      enabled: true
+      action: block
+      rules:
+        - name: "Block shell"
+          tool_pattern: "bash|shell"
+          action: block
+    budget:
+      max_requests_per_session: 500
+      max_bytes_per_session: 52428800
+      max_unique_domains_per_session: 50
+      window_minutes: 60
+
+  rook:
+    listeners: [":8890"]
+    mode: balanced
+    enforce: false
+    budget:
+      max_unique_domains_per_session: 200
+
+  _default:
+    mode: balanced
+```
+
+### Agent Resolution
+
+Pipelock resolves the agent name for each request using this priority order:
+
+1. **Context** (set programmatically via `AgentContext`): highest priority, used by MCP `--agent` flag
+2. **Header** (`X-Pipelock-Agent`): set by the calling agent or orchestrator
+3. **Query parameter** (`?agent=name`): appended to fetch/WebSocket URLs
+4. **Listener binding**: matched by the port the request arrived on (spoof-proof)
+5. **Fallback**: `_default` profile if defined, otherwise base config
+
+Listener-based resolution is the only method that cannot be spoofed by the agent. Header and query param methods are convenient but trust the caller. Use listeners when isolation matters.
+
+### Override Fields
+
+Each agent profile can override these fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `listeners` | `[]string` | Dedicated listen addresses (e.g., `":8889"`). Pipelock opens extra ports for these. |
+| `mode` | `string` | `strict`, `balanced`, or `audit` |
+| `enforce` | `bool` | Override global enforce setting |
+| `api_allowlist` | `[]string` | Replaces the base allowlist entirely |
+| `dlp` | object | DLP pattern overrides (see below) |
+| `rate_limit` | object | Per-agent rate limits |
+| `session_profiling` | object | Per-agent profiling thresholds |
+| `mcp_tool_policy` | object | Per-agent MCP tool policy |
+| `budget` | object | Request budgets (see below) |
+
+### DLP Merge Behavior
+
+Agent DLP overrides follow the same `include_defaults` pattern as the global DLP section:
+
+- `include_defaults: true` (or omitted): agent patterns are appended to the base config patterns. If an agent pattern shares a name with a base pattern, the agent version wins.
+- `include_defaults: false`: agent patterns replace the base patterns entirely.
+
+### Budget Config
+
+Budgets cap what an agent can do within a rolling time window. All fields default to `0` (unlimited).
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `max_requests_per_session` | `int` | `0` | Max HTTP requests per window |
+| `max_bytes_per_session` | `int` | `0` | Max response bytes per window |
+| `max_unique_domains_per_session` | `int` | `0` | Max distinct domains per window |
+| `window_minutes` | `int` | `0` | Rolling window duration in minutes. `0` means the budget never resets. |
+
+When a budget is exceeded, the request is blocked with a `429 Too Many Requests` response.
+
+### Listener Binding
+
+Each agent can bind to one or more dedicated ports via the `listeners` field. Pipelock opens these ports at startup alongside the main proxy port. Requests arriving on an agent's listener are automatically resolved to that agent without relying on headers or query params.
+
+This is the only spoof-proof resolution method. The agent process connects to its assigned port, and pipelock knows which profile to apply based on the port alone.
+
+```yaml
+agents:
+  trusted-agent:
+    listeners: [":8889"]
+    mode: balanced
+  untrusted-agent:
+    listeners: [":8890"]
+    mode: strict
+    budget:
+      max_requests_per_session: 100
+```
+
+### The `_default` Profile
+
+If defined, `_default` applies to any request that does not match a named agent. Without `_default`, unmatched requests use the base config directly.
+
+## License Key
+
+```yaml
+license_key: "pl_..."
+```
+
+Parsed from config but not enforced yet. Reserved for future use.
+
 ## Validation Rules
 
 The following are enforced at startup:

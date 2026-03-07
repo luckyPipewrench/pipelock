@@ -303,3 +303,19 @@ tls_interception:
   cert_ttl: 24h
   cert_cache_size: 10000
   max_response_bytes: 5242880
+
+# --- Agent Profiles (optional) ---
+# Per-agent policy overrides. Each agent gets its own merged config.
+# Agents are identified by X-Pipelock-Agent header, ?agent= query param,
+# or port-based listener binding (spoof-proof).
+#
+# agents:
+#   claude-code:
+#     listeners: [":8889"]
+#     mode: strict
+#     api_allowlist: ["github.com", "*.githubusercontent.com"]
+#     budget:
+#       max_unique_domains_per_session: 50
+#       window_minutes: 60
+#   _default:
+#     mode: balanced

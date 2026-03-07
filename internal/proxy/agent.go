@@ -4,6 +4,7 @@
 package proxy
 
 import (
+	"context"
 	"net/http"
 	"regexp"
 )
@@ -53,6 +54,13 @@ func ResolveAgent(r *http.Request, knownProfiles map[string]bool) AgentIdentity 
 
 	// 4. Unrecognized: name preserved for audit, profile = _default.
 	return AgentIdentity{Name: name, Profile: profileDefault}
+}
+
+// WithAgentOverride returns a context with the agent profile override set.
+// Used by CLI agent listener binding to inject identity via context
+// instead of trusting the X-Pipelock-Agent header.
+func WithAgentOverride(ctx context.Context, profile string) context.Context {
+	return context.WithValue(ctx, ctxKeyAgentOverride, profile)
 }
 
 // ExtractAgent reads the agent name from the request. It checks the

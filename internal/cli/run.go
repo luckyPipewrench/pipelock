@@ -319,6 +319,11 @@ Examples:
 			if hasMCPListen {
 				cmd.PrintErrf("  MCP:    http://%s -> %s\n", mcpListen, mcpUpstream)
 			}
+			for name, profile := range cfg.Agents {
+				for _, addr := range profile.Listeners {
+					cmd.PrintErrf("  Agent:  %s -> http://%s\n", name, addr)
+				}
+			}
 
 			// Check for agent command after --
 			dashIdx := cmd.ArgsLenAtDash()
@@ -469,9 +474,62 @@ Examples:
 				}()
 			}
 
+			// Bind per-agent listener servers. Each listener injects the
+			// agent profile via context so identity is port-based, not
+			// header-based (spoof-proof).
+			var agentListenerCount int
+			var agentListenerErrs chan error
+			if len(cfg.Agents) > 0 {
+				// Count total listeners to size the error channel.
+				for _, profile := range cfg.Agents {
+					agentListenerCount += len(profile.Listeners)
+				}
+			}
+			if agentListenerCount > 0 {
+				handler := p.Handler()
+				agentListenerErrs = make(chan error, agentListenerCount)
+				for name, profile := range cfg.Agents {
+					for _, addr := range profile.Listeners {
+						ln, lnErr := (&net.ListenConfig{}).Listen(ctx, "tcp", addr)
+						if lnErr != nil {
+							return fmt.Errorf("agent %q listener bind %s: %w", name, addr, lnErr)
+						}
+						srv := &http.Server{
+							Handler:           agentHandler(name, handler),
+							ReadTimeout:       10 * time.Second,
+							ReadHeaderTimeout: 5 * time.Second,
+							WriteTimeout:      10 * time.Second,
+							IdleTimeout:       120 * time.Second, // matches main server idle timeout
+						}
+						go func() {
+							<-ctx.Done()
+							shutdownCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
+							defer shutCancel()
+							_ = srv.Shutdown(shutdownCtx)
+						}()
+						errCh := agentListenerErrs
+						go func(s *http.Server, listener net.Listener) {
+							srvErr := s.Serve(listener)
+							if errors.Is(srvErr, http.ErrServerClosed) {
+								srvErr = nil
+							}
+							errCh <- srvErr
+						}(srv, ln)
+						cmd.PrintErrf("pipelock: agent %q listening on %s\n", name, addr)
+					}
+				}
+			}
+
 			// Start the fetch proxy (blocks until context cancelled or error).
 			if err := p.Start(ctx); err != nil {
 				return fmt.Errorf("proxy error: %w", err)
+			}
+
+			// If agent listeners were running, drain their error channels.
+			for range agentListenerCount {
+				if aErr := <-agentListenerErrs; aErr != nil {
+					cmd.PrintErrf("pipelock: agent listener error: %v\n", aErr)
+				}
 			}
 
 			// If MCP listener was running, check for errors.
@@ -561,4 +619,14 @@ func redactEndpoint(raw string) string {
 	u.RawQuery = ""
 	u.Fragment = ""
 	return u.String()
+}
+
+// agentHandler wraps a proxy handler with a context-injected agent profile.
+// Requests through this handler are identified by the bound port, not by
+// the X-Pipelock-Agent header, making them spoof-proof.
+func agentHandler(profile string, handler http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := proxy.WithAgentOverride(r.Context(), profile)
+		handler.ServeHTTP(w, r.WithContext(ctx))
+	})
 }

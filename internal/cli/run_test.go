@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/proxy"
 )
 
 func listenUDP(t *testing.T) net.PacketConn {
@@ -419,6 +420,265 @@ logging:
 	// Verify metrics listening message appears.
 	if !bytes.Contains([]byte(output), []byte("metrics listening on")) {
 		t.Errorf("expected 'metrics listening on' in output, got:\n%s", output)
+	}
+}
+
+func TestRunCmd_AgentListenerBinding(t *testing.T) {
+	mainAddr := freePort(t)
+	agentAddr := freePort(t)
+
+	cfgYAML := fmt.Sprintf(`version: 1
+mode: balanced
+fetch_proxy:
+  listen: %q
+  timeout_seconds: 5
+  max_response_mb: 1
+agents:
+  test-agent:
+    listeners:
+      - %q
+logging:
+  format: json
+  output: stdout
+`, mainAddr, agentAddr)
+
+	tmpFile, err := os.CreateTemp(t.TempDir(), "pipelock-*.yaml")
+	if err != nil {
+		t.Fatalf("create temp config: %v", err)
+	}
+	if _, err := tmpFile.WriteString(cfgYAML); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	_ = tmpFile.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cmd := runCmd()
+	cmd.SetContext(ctx)
+	cmd.SetArgs([]string{"--config", tmpFile.Name()})
+	var stderr bytes.Buffer
+	cmd.SetErr(&stderr)
+	cmd.SetOut(&stderr)
+
+	cmdErr := make(chan error, 1)
+	go func() {
+		cmdErr <- cmd.Execute()
+	}()
+
+	// Wait for both ports.
+	waitForPort(t, mainAddr)
+	waitForPort(t, agentAddr)
+
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	// Main port: /health should work.
+	resp := doGet(t, client, "http://"+mainAddr+"/health")
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("main /health: want 200, got %d", resp.StatusCode)
+	}
+
+	// Agent port: /health should also work (same handler, different context).
+	resp = doGet(t, client, "http://"+agentAddr+"/health")
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("agent /health: want 200, got %d", resp.StatusCode)
+	}
+
+	// Agent port: /fetch should respond (validates handler is wired).
+	// Without a URL param, it should return 400 (bad request).
+	resp = doGet(t, client, "http://"+agentAddr+"/fetch")
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("agent /fetch without url: want 400, got %d", resp.StatusCode)
+	}
+
+	// Shut down.
+	cancel()
+	select {
+	case err := <-cmdErr:
+		if err != nil {
+			t.Errorf("runCmd returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("runCmd did not exit within 5s")
+	}
+
+	// Verify startup output contains agent listener messages.
+	output := stderr.String()
+	if !bytes.Contains([]byte(output), []byte("test-agent")) {
+		t.Errorf("expected 'test-agent' in startup output, got:\n%s", output)
+	}
+	if !bytes.Contains([]byte(output), []byte(agentAddr)) {
+		t.Errorf("expected agent addr %q in startup output, got:\n%s", agentAddr, output)
+	}
+}
+
+func TestRunCmd_AgentListenerMultipleAgents(t *testing.T) {
+	mainAddr := freePort(t)
+	agentAAddr := freePort(t)
+	agentBAddr := freePort(t)
+
+	cfgYAML := fmt.Sprintf(`version: 1
+mode: balanced
+fetch_proxy:
+  listen: %q
+  timeout_seconds: 5
+  max_response_mb: 1
+agents:
+  agent-a:
+    listeners:
+      - %q
+  agent-b:
+    listeners:
+      - %q
+logging:
+  format: json
+  output: stdout
+`, mainAddr, agentAAddr, agentBAddr)
+
+	tmpFile, err := os.CreateTemp(t.TempDir(), "pipelock-*.yaml")
+	if err != nil {
+		t.Fatalf("create temp config: %v", err)
+	}
+	if _, err := tmpFile.WriteString(cfgYAML); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	_ = tmpFile.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cmd := runCmd()
+	cmd.SetContext(ctx)
+	cmd.SetArgs([]string{"--config", tmpFile.Name()})
+	var stderr bytes.Buffer
+	cmd.SetErr(&stderr)
+	cmd.SetOut(&stderr)
+
+	cmdErr := make(chan error, 1)
+	go func() {
+		cmdErr <- cmd.Execute()
+	}()
+
+	// Wait for all three ports.
+	waitForPort(t, mainAddr)
+	waitForPort(t, agentAAddr)
+	waitForPort(t, agentBAddr)
+
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	// All three ports should serve /health.
+	for _, addr := range []string{mainAddr, agentAAddr, agentBAddr} {
+		resp := doGet(t, client, "http://"+addr+"/health")
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("/health on %s: want 200, got %d", addr, resp.StatusCode)
+		}
+	}
+
+	// Shut down.
+	cancel()
+	select {
+	case err := <-cmdErr:
+		if err != nil {
+			t.Errorf("runCmd returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("runCmd did not exit within 5s")
+	}
+}
+
+func TestRunCmd_NoAgentListeners(t *testing.T) {
+	// Verify the no-agent path works exactly as before.
+	mainAddr := freePort(t)
+
+	cfgYAML := fmt.Sprintf(`version: 1
+mode: balanced
+fetch_proxy:
+  listen: %q
+  timeout_seconds: 5
+  max_response_mb: 1
+logging:
+  format: json
+  output: stdout
+`, mainAddr)
+
+	tmpFile, err := os.CreateTemp(t.TempDir(), "pipelock-*.yaml")
+	if err != nil {
+		t.Fatalf("create temp config: %v", err)
+	}
+	if _, err := tmpFile.WriteString(cfgYAML); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	_ = tmpFile.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cmd := runCmd()
+	cmd.SetContext(ctx)
+	cmd.SetArgs([]string{"--config", tmpFile.Name()})
+	var stderr bytes.Buffer
+	cmd.SetErr(&stderr)
+	cmd.SetOut(&stderr)
+
+	cmdErr := make(chan error, 1)
+	go func() {
+		cmdErr <- cmd.Execute()
+	}()
+
+	waitForPort(t, mainAddr)
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp := doGet(t, client, "http://"+mainAddr+"/health")
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("/health: want 200, got %d", resp.StatusCode)
+	}
+
+	cancel()
+	select {
+	case err := <-cmdErr:
+		if err != nil {
+			t.Errorf("runCmd returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("runCmd did not exit within 5s")
+	}
+
+	// Verify no agent listener messages in output.
+	output := stderr.String()
+	if bytes.Contains([]byte(output), []byte("agent listener")) {
+		t.Errorf("unexpected 'agent listener' in output when no agents configured:\n%s", output)
+	}
+}
+
+func TestAgentHandler(t *testing.T) {
+	// Unit test for agentHandler context injection.
+	// Uses proxy.ResolveAgent to verify the context override round-trips.
+	const testProfile = "my-agent"
+	var resolved proxy.AgentIdentity
+
+	inner := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		resolved = proxy.ResolveAgent(r, map[string]bool{testProfile: true})
+	})
+
+	handler := agentHandler(testProfile, inner)
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "/test", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+
+	handler.ServeHTTP(nil, req)
+
+	if resolved.Profile != testProfile {
+		t.Errorf("resolved profile = %q, want %q", resolved.Profile, testProfile)
+	}
+	if resolved.Name != testProfile {
+		t.Errorf("resolved name = %q, want %q", resolved.Name, testProfile)
 	}
 }
 

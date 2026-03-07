@@ -147,33 +147,34 @@ func toSlash(s string) string {
 
 // Config is the top-level Pipelock configuration.
 type Config struct {
-	Version             int                 `yaml:"version"`
-	Mode                string              `yaml:"mode"`           // strict, balanced, audit
-	Enforce             *bool               `yaml:"enforce"`        // nil = true (default); false = detect & log without blocking
-	ExplainBlocks       *bool               `yaml:"explain_blocks"` // nil = false (default); true = include hints in block responses
-	APIAllowlist        []string            `yaml:"api_allowlist"`
-	Suppress            []SuppressEntry     `yaml:"suppress"`
-	FetchProxy          FetchProxy          `yaml:"fetch_proxy"`
-	ForwardProxy        ForwardProxy        `yaml:"forward_proxy"`
-	WebSocketProxy      WebSocketProxy      `yaml:"websocket_proxy"`
-	DLP                 DLP                 `yaml:"dlp"`
-	ResponseScanning    ResponseScanning    `yaml:"response_scanning"`
-	MCPInputScanning    MCPInputScanning    `yaml:"mcp_input_scanning"`
-	MCPToolScanning     MCPToolScanning     `yaml:"mcp_tool_scanning"`
-	MCPToolPolicy       MCPToolPolicy       `yaml:"mcp_tool_policy"`
-	GitProtection       GitProtection       `yaml:"git_protection"`
-	Logging             LoggingConfig       `yaml:"logging"`
-	SessionProfiling    SessionProfiling    `yaml:"session_profiling"`
-	AdaptiveEnforcement AdaptiveEnforcement `yaml:"adaptive_enforcement"`
-	MCPSessionBinding   MCPSessionBinding   `yaml:"mcp_session_binding"`
-	RequestBodyScanning RequestBodyScanning `yaml:"request_body_scanning"`
-	KillSwitch          KillSwitch          `yaml:"kill_switch"`
-	MetricsListen       string              `yaml:"metrics_listen"` // separate listen address for /metrics and /stats
-	Emit                EmitConfig          `yaml:"emit"`
-	ToolChainDetection  ToolChainDetection  `yaml:"tool_chain_detection"`
-	MCPWSListener       MCPWSListener       `yaml:"mcp_ws_listener"`
-	TLSInterception     TLSInterception     `yaml:"tls_interception"`
-	Internal            []string            `yaml:"internal"`
+	Version             int                     `yaml:"version"`
+	Mode                string                  `yaml:"mode"`           // strict, balanced, audit
+	Enforce             *bool                   `yaml:"enforce"`        // nil = true (default); false = detect & log without blocking
+	ExplainBlocks       *bool                   `yaml:"explain_blocks"` // nil = false (default); true = include hints in block responses
+	APIAllowlist        []string                `yaml:"api_allowlist"`
+	Suppress            []SuppressEntry         `yaml:"suppress"`
+	FetchProxy          FetchProxy              `yaml:"fetch_proxy"`
+	ForwardProxy        ForwardProxy            `yaml:"forward_proxy"`
+	WebSocketProxy      WebSocketProxy          `yaml:"websocket_proxy"`
+	DLP                 DLP                     `yaml:"dlp"`
+	ResponseScanning    ResponseScanning        `yaml:"response_scanning"`
+	MCPInputScanning    MCPInputScanning        `yaml:"mcp_input_scanning"`
+	MCPToolScanning     MCPToolScanning         `yaml:"mcp_tool_scanning"`
+	MCPToolPolicy       MCPToolPolicy           `yaml:"mcp_tool_policy"`
+	GitProtection       GitProtection           `yaml:"git_protection"`
+	Logging             LoggingConfig           `yaml:"logging"`
+	SessionProfiling    SessionProfiling        `yaml:"session_profiling"`
+	AdaptiveEnforcement AdaptiveEnforcement     `yaml:"adaptive_enforcement"`
+	MCPSessionBinding   MCPSessionBinding       `yaml:"mcp_session_binding"`
+	RequestBodyScanning RequestBodyScanning     `yaml:"request_body_scanning"`
+	KillSwitch          KillSwitch              `yaml:"kill_switch"`
+	MetricsListen       string                  `yaml:"metrics_listen"` // separate listen address for /metrics and /stats
+	Emit                EmitConfig              `yaml:"emit"`
+	ToolChainDetection  ToolChainDetection      `yaml:"tool_chain_detection"`
+	MCPWSListener       MCPWSListener           `yaml:"mcp_ws_listener"`
+	TLSInterception     TLSInterception         `yaml:"tls_interception"`
+	Agents              map[string]AgentProfile `yaml:"agents,omitempty"`
+	Internal            []string                `yaml:"internal"`
 
 	// rawBytes stores the original config file bytes for deterministic hashing.
 	// Not serialized to YAML. Set by Load(), nil for Defaults().
@@ -461,6 +462,49 @@ type ChainPattern struct {
 	Sequence []string `yaml:"sequence"` // category names
 	Severity string   `yaml:"severity"` // medium, high, critical
 	Action   string   `yaml:"action"`   // optional per-pattern override
+}
+
+// AgentProfile defines per-agent policy overrides. Fields that are set
+// override the base config; fields left at zero value inherit from base.
+type AgentProfile struct {
+	Listeners        []string          `yaml:"listeners,omitempty"`
+	Mode             string            `yaml:"mode,omitempty"`
+	Enforce          *bool             `yaml:"enforce,omitempty"`
+	APIAllowlist     []string          `yaml:"api_allowlist,omitempty"`
+	DLP              *AgentDLP         `yaml:"dlp,omitempty"`
+	RateLimit        *AgentRateLimit   `yaml:"rate_limit,omitempty"`
+	SessionProfiling *AgentSessionProf `yaml:"session_profiling,omitempty"`
+	MCPToolPolicy    *MCPToolPolicy    `yaml:"mcp_tool_policy,omitempty"`
+	Budget           BudgetConfig      `yaml:"budget,omitempty"`
+}
+
+// AgentDLP controls DLP pattern merging for agent profiles.
+type AgentDLP struct {
+	IncludeDefaults *bool        `yaml:"include_defaults,omitempty"` // nil/true: append to base; false: replace
+	Patterns        []DLPPattern `yaml:"patterns,omitempty"`
+}
+
+// AgentRateLimit overrides rate limit settings per agent.
+type AgentRateLimit struct {
+	MaxRequestsPerMinute int `yaml:"max_requests_per_minute,omitempty"`
+	MaxDataPerMinute     int `yaml:"max_data_per_minute,omitempty"`
+}
+
+// AgentSessionProf overrides per-agent session profiling thresholds.
+// Global-only fields (max_sessions, session_ttl_minutes, cleanup_interval_seconds)
+// are NOT included; validation rejects them in agent profiles.
+type AgentSessionProf struct {
+	DomainBurst      int     `yaml:"domain_burst,omitempty"`
+	AnomalyAction    string  `yaml:"anomaly_action,omitempty"`
+	VolumeSpikeRatio float64 `yaml:"volume_spike_ratio,omitempty"`
+}
+
+// BudgetConfig defines per-agent request budgets. Zero values mean unlimited.
+type BudgetConfig struct {
+	MaxRequestsPerSession      int `yaml:"max_requests_per_session,omitempty"`
+	MaxBytesPerSession         int `yaml:"max_bytes_per_session,omitempty"`
+	MaxUniqueDomainsPerSession int `yaml:"max_unique_domains_per_session,omitempty"`
+	WindowMinutes              int `yaml:"window_minutes,omitempty"`
 }
 
 // Load reads, parses, defaults, and validates a Pipelock config file.

@@ -4664,3 +4664,114 @@ func TestConfigHash_DifferentTLSConfig(t *testing.T) {
 		t.Error("configs with different TLS settings should produce different hashes")
 	}
 }
+
+func TestAgentProfileParsing(t *testing.T) {
+	yamlContent := `
+mode: balanced
+agents:
+  claude-code:
+    mode: strict
+    enforce: true
+    api_allowlist:
+      - github.com
+    dlp:
+      include_defaults: true
+      patterns:
+        - name: "Internal Token"
+          regex: "int_tok_[A-Za-z0-9]{32}"
+          severity: critical
+    budget:
+      max_requests_per_session: 500
+      max_bytes_per_session: 10485760
+      max_unique_domains_per_session: 50
+      window_minutes: 60
+  _default:
+    mode: balanced
+    budget:
+      max_unique_domains_per_session: 25
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(yamlContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(cfg.Agents) != 2 {
+		t.Fatalf("expected 2 agents, got %d", len(cfg.Agents))
+	}
+
+	cc := cfg.Agents["claude-code"]
+	if cc.Mode != ModeStrict {
+		t.Errorf("claude-code mode = %q, want strict", cc.Mode)
+	}
+	if cc.Enforce == nil || !*cc.Enforce {
+		t.Error("claude-code enforce should be true")
+	}
+	if len(cc.APIAllowlist) != 1 || cc.APIAllowlist[0] != "github.com" {
+		t.Errorf("claude-code api_allowlist = %v, want [github.com]", cc.APIAllowlist)
+	}
+	if cc.DLP == nil {
+		t.Fatal("claude-code dlp should not be nil")
+	}
+	if cc.DLP.IncludeDefaults == nil || !*cc.DLP.IncludeDefaults {
+		t.Error("claude-code dlp.include_defaults should be true")
+	}
+	if len(cc.DLP.Patterns) != 1 {
+		t.Fatalf("expected 1 dlp pattern, got %d", len(cc.DLP.Patterns))
+	}
+	if cc.DLP.Patterns[0].Name != "Internal Token" {
+		t.Errorf("dlp pattern name = %q, want %q", cc.DLP.Patterns[0].Name, "Internal Token")
+	}
+	if cc.Budget.MaxRequestsPerSession != 500 {
+		t.Errorf("budget.max_requests = %d, want 500", cc.Budget.MaxRequestsPerSession)
+	}
+	if cc.Budget.MaxBytesPerSession != 10485760 {
+		t.Errorf("budget.max_bytes = %d, want 10485760", cc.Budget.MaxBytesPerSession)
+	}
+	if cc.Budget.MaxUniqueDomainsPerSession != 50 {
+		t.Errorf("budget.max_unique_domains = %d, want 50", cc.Budget.MaxUniqueDomainsPerSession)
+	}
+	if cc.Budget.WindowMinutes != 60 {
+		t.Errorf("budget.window_minutes = %d, want 60", cc.Budget.WindowMinutes)
+	}
+
+	def := cfg.Agents["_default"]
+	if def.Mode != ModeBalanced {
+		t.Errorf("_default mode = %q, want balanced", def.Mode)
+	}
+	if def.Budget.MaxUniqueDomainsPerSession != 25 {
+		t.Errorf("_default budget.max_unique_domains = %d, want 25", def.Budget.MaxUniqueDomainsPerSession)
+	}
+	// _default should have zero values for unset budget fields
+	if def.Budget.MaxRequestsPerSession != 0 {
+		t.Errorf("_default budget.max_requests should be 0, got %d", def.Budget.MaxRequestsPerSession)
+	}
+}
+
+func TestAgentProfileEmpty(t *testing.T) {
+	cfg := Defaults()
+	if cfg.Agents != nil {
+		t.Errorf("default config should have nil Agents map, got %v", cfg.Agents)
+	}
+}
+
+func TestAgentProfileZeroBudget(t *testing.T) {
+	var b BudgetConfig
+	if b.MaxRequestsPerSession != 0 {
+		t.Error("zero BudgetConfig should have MaxRequestsPerSession = 0")
+	}
+	if b.MaxBytesPerSession != 0 {
+		t.Error("zero BudgetConfig should have MaxBytesPerSession = 0")
+	}
+	if b.MaxUniqueDomainsPerSession != 0 {
+		t.Error("zero BudgetConfig should have MaxUniqueDomainsPerSession = 0")
+	}
+	if b.WindowMinutes != 0 {
+		t.Error("zero BudgetConfig should have WindowMinutes = 0")
+	}
+}

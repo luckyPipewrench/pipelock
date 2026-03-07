@@ -51,6 +51,15 @@ jobs:
       - name: Set GOVERSION
         run: echo "GOVERSION=$(go env GOVERSION)" >> "$GITHUB_ENV"
 
+      - name: Verify embedded license public key is configured
+        env:
+          LICENSE_PUBLIC_KEY: ${{ secrets.LICENSE_PUBLIC_KEY }}
+        run: |
+          test -n "$LICENSE_PUBLIC_KEY" || {
+            echo "::error::LICENSE_PUBLIC_KEY secret is required for release builds"
+            exit 1
+          }
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@ec59f474b9834571250b370d4735c50f8e2d1e29 # v7.0.0
         with:

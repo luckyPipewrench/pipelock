@@ -211,11 +211,10 @@ func TestLicenseIssue_NoExpiry(t *testing.T) {
 
 func TestLicenseInspect(t *testing.T) {
 	// Create a token to inspect.
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = pub
 
 	lic := license.License{
 		ID:        "lic_inspect_test",

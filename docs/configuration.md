@@ -760,7 +760,7 @@ The core principle: the model won't protect you, so the network layer must.
 
 ## Agent Profiles
 
-Per-agent policy overrides. When multiple agents share one pipelock instance, each agent can have its own mode, allowlist, DLP patterns, rate limits, and request budgets. Unset fields inherit from the base config.
+Per-agent policy overrides. When multiple agents share one pipelock instance, each agent can have its own mode, allowlist, DLP patterns, rate limits, and request budgets. Scalar fields (mode, enforce) inherit from the base config when unset. Nested sections (`rate_limit`, `session_profiling`, `mcp_tool_policy`) replace the base section entirely when present on an agent profile (no deep merge). DLP merging follows separate rules (see below).
 
 ```yaml
 agents:
@@ -809,9 +809,10 @@ agents:
 Pipelock resolves the agent name for each request using this priority order:
 
 1. **Listener binding**: matched by the port the request arrived on (injected as a context override, spoof-proof)
-2. **Header** (`X-Pipelock-Agent`): set by the calling agent or orchestrator
-3. **Query parameter** (`?agent=name`): appended to fetch/WebSocket URLs
-4. **Fallback**: `_default` profile if defined, otherwise base config
+2. **Source CIDRs**: matched by client IP against `source_cidrs` ranges defined on each agent profile
+3. **Header** (`X-Pipelock-Agent`): set by the calling agent or orchestrator
+4. **Query parameter** (`?agent=name`): appended to fetch/WebSocket URLs
+5. **Fallback**: `_default` profile if defined, otherwise base config
 
 Listener-based resolution is the only method that cannot be spoofed by the agent. It injects a context override that takes priority over header and query param. Header and query param methods are convenient but trust the caller. Use listeners when isolation matters.
 
@@ -824,6 +825,7 @@ Each agent profile can override these fields:
 | Field | Type | Description |
 |-------|------|-------------|
 | `listeners` | `[]string` | Dedicated listen addresses (e.g., `":8889"`). Pipelock opens extra ports for these. |
+| `source_cidrs` | `[]string` | Client IP ranges that identify this agent (e.g., `["10.42.3.0/24"]`). |
 | `mode` | `string` | `strict`, `balanced`, or `audit` |
 | `enforce` | `bool` | Override global enforce setting |
 | `api_allowlist` | `[]string` | Replaces the base allowlist entirely |

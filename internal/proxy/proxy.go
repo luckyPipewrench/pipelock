@@ -207,11 +207,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			clientIP, _ := req.Context().Value(ctxKeyClientIP).(string)
 			requestID, _ := req.Context().Value(ctxKeyRequestID).(string)
 			agentName, _ := req.Context().Value(ctxKeyAgent).(string)
-			rlog := logger
-			if agentName != "" {
-				rlog = logger.With("agent", agentName)
-			}
-			rlog.LogRedirect(originalURL, redirectURL, clientIP, requestID, agentName, len(via))
+			logger.LogRedirect(originalURL, redirectURL, clientIP, requestID, agentName, len(via))
 			// Scan redirect URL with the per-agent scanner when available.
 			// Handlers attach the resolved agent config/scanner to the
 			// request context so redirect enforcement matches the agent
@@ -228,10 +224,10 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			result := currentScanner.Scan(redirectURL)
 			if !result.Allowed {
 				if currentCfg.EnforceEnabled() {
-					rlog.LogBlocked("GET", redirectURL, "redirect", fmt.Sprintf("redirect from %s blocked: %s", originalURL, result.Reason), clientIP, requestID, agentName)
+					logger.LogBlocked("GET", redirectURL, "redirect", fmt.Sprintf("redirect from %s blocked: %s", originalURL, result.Reason), clientIP, requestID, agentName)
 					return fmt.Errorf("redirect blocked: %s", result.Reason)
 				}
-				rlog.LogAnomaly("GET", redirectURL, result.Scanner, fmt.Sprintf("redirect from %s: %s", originalURL, result.Reason), clientIP, requestID, agentName, result.Score)
+				logger.LogAnomaly("GET", redirectURL, result.Scanner, fmt.Sprintf("redirect from %s: %s", originalURL, result.Reason), clientIP, requestID, agentName, result.Score)
 			}
 			return nil
 		},
@@ -1001,6 +997,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	if hiddenInjectionFound && !readabilityOK {
 		reason := "hidden injection detected and readability extraction failed (fail-closed)"
 		log.LogBlocked("GET", displayURL, "response_scan", reason, clientIP, requestID, agent)
+		p.metrics.RecordBlocked(parsed.Hostname(), "response_scan", time.Since(start), agentLabel)
 		writeJSON(w, http.StatusForbidden, FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
 		return
 	}
@@ -1010,6 +1007,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		scanResult := sc.ScanResponse(content)
 		blocked, newContent, _ := p.filterAndActOnResponseScan(w, scanResult, content, displayURL, agent, clientIP, requestID, sc, cfg, log)
 		if blocked {
+			p.metrics.RecordBlocked(parsed.Hostname(), "response_scan", time.Since(start), agentLabel)
 			return
 		}
 		content = newContent

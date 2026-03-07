@@ -5115,7 +5115,9 @@ func TestAgentProfileEmpty(t *testing.T) {
 func TestLicenseKeyParsing(t *testing.T) {
 	tmp := t.TempDir()
 	cfgPath := filepath.Join(tmp, "cfg.yaml")
-	_ = os.WriteFile(cfgPath, []byte("mode: balanced\nlicense_key: test-license\n"), 0o600)
+	if err := os.WriteFile(cfgPath, []byte("mode: balanced\nlicense_key: test-license\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
 	cfg, err := Load(cfgPath)
 	if err != nil {
 		t.Fatal(err)
@@ -5476,7 +5478,9 @@ func TestLicenseGateViaLoad(t *testing.T) {
 
 	// Config with agents but no license key.
 	data := "mode: balanced\nagents:\n  claude-code:\n    mode: audit\n"
-	_ = os.WriteFile(cfgPath, []byte(data), 0o600)
+	if err := os.WriteFile(cfgPath, []byte(data), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
 
 	cfg, err := Load(cfgPath)
 	if err != nil {
@@ -5493,7 +5497,9 @@ func TestLicenseGateViaLoad_WithValidToken(t *testing.T) {
 	cfgPath := filepath.Join(tmp, "cfg.yaml")
 
 	data := "mode: balanced\nlicense_key: " + token + "\nlicense_public_key: " + pubHex + "\nagents:\n  claude-code:\n    mode: audit\n"
-	_ = os.WriteFile(cfgPath, []byte(data), 0o600)
+	if err := os.WriteFile(cfgPath, []byte(data), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
 
 	cfg, err := Load(cfgPath)
 	if err != nil {

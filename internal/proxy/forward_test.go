@@ -89,7 +89,10 @@ func setupForwardProxy(t *testing.T, cfgMod func(*config.Config)) (string, func(
 	}()
 
 	proxyAddr := ln.Addr().String()
-	return proxyAddr, cancel
+	return proxyAddr, func() {
+		cancel()
+		sc.Close()
+	}
 }
 
 // dialProxy connects to the proxy via TCP.

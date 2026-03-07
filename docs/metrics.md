@@ -174,6 +174,8 @@ curl http://localhost:8888/stats | jq .
 }
 ```
 
+The `agents` field is omitted when no agent-scoped traffic has been recorded. Fresh deployments or single-profile setups without agent configuration will not include this key.
+
 ## Grafana Dashboard
 
 An importable Grafana dashboard is included at

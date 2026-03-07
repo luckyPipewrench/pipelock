@@ -385,6 +385,140 @@ sudo pfctl -e
 
 **Note:** macOS PF rules don't survive reboots by default. Create a LaunchDaemon to load them at boot.
 
+## TLS Interception (CA Distribution)
+
+When TLS interception is enabled, the agent must trust pipelock's CA certificate. The distribution method depends on your deployment pattern. Generate the CA first with `pipelock tls init` (see the [TLS Interception Guide](tls-interception.md) for full setup).
+
+### Docker Compose
+
+Mount the CA certificate into the agent container and set the appropriate environment variable:
+
+```yaml
+services:
+  pipelock:
+    image: ghcr.io/luckypipewrench/pipelock:latest
+    command: run --config /config/pipelock.yaml --listen 0.0.0.0:8888
+    volumes:
+      - ./pipelock.yaml:/config/pipelock.yaml:ro
+      - ./ca.pem:/etc/pipelock/ca.pem:ro
+      - ./ca-key.pem:/etc/pipelock/ca-key.pem:ro
+    networks:
+      - agent-internal
+      - proxy-external
+
+  agent:
+    image: your-agent-image
+    environment:
+      - HTTPS_PROXY=http://pipelock:8888
+      - HTTP_PROXY=http://pipelock:8888
+      - NO_PROXY=localhost,127.0.0.1
+      # Trust pipelock's CA (pick the one matching your runtime)
+      - SSL_CERT_FILE=/etc/pipelock/ca.pem          # Python, Go
+      - REQUESTS_CA_BUNDLE=/etc/pipelock/ca.pem      # Python requests/httpx
+      - NODE_EXTRA_CA_CERTS=/etc/pipelock/ca.pem     # Node.js
+    volumes:
+      - ./ca.pem:/etc/pipelock/ca.pem:ro
+    networks:
+      - agent-internal
+```
+
+The pipelock config should reference the mounted paths:
+
+```yaml
+tls_interception:
+  enabled: true
+  ca_cert: /etc/pipelock/ca.pem
+  ca_key: /etc/pipelock/ca-key.pem
+```
+
+### Kubernetes (ConfigMap + Secret)
+
+Store the CA certificate in a ConfigMap and the private key in a Secret:
+
+```bash
+kubectl create configmap pipelock-ca --from-file=ca.pem=~/.pipelock/ca.pem -n agents
+kubectl create secret generic pipelock-ca-key --from-file=ca-key.pem=~/.pipelock/ca-key.pem -n agents
+```
+
+Mount both into the pipelock sidecar, and the CA (not the key) into the agent container:
+
+```yaml
+containers:
+  - name: pipelock
+    image: ghcr.io/luckypipewrench/pipelock:latest
+    args: ["run", "--config", "/etc/pipelock/pipelock.yaml"]
+    volumeMounts:
+      - name: pipelock-config
+        mountPath: /etc/pipelock/pipelock.yaml
+        subPath: pipelock.yaml
+      - name: pipelock-ca
+        mountPath: /etc/pipelock/ca.pem
+        subPath: ca.pem
+      - name: pipelock-ca-key
+        mountPath: /etc/pipelock/ca-key.pem
+        subPath: ca-key.pem
+
+  - name: agent
+    image: your-agent-image
+    env:
+      - name: HTTPS_PROXY
+        value: "http://127.0.0.1:8888"
+      - name: SSL_CERT_FILE
+        value: "/etc/pipelock/ca.pem"
+      - name: NODE_EXTRA_CA_CERTS
+        value: "/etc/pipelock/ca.pem"
+    volumeMounts:
+      - name: pipelock-ca
+        mountPath: /etc/pipelock/ca.pem
+        subPath: ca.pem
+
+volumes:
+  - name: pipelock-ca
+    configMap:
+      name: pipelock-ca
+  - name: pipelock-ca-key
+    secret:
+      secretName: pipelock-ca-key
+```
+
+### Bare-Metal / iptables
+
+Install the CA into the system trust store so all applications trust it:
+
+```bash
+# Debian/Ubuntu
+sudo cp ~/.pipelock/ca.pem /usr/local/share/ca-certificates/pipelock-ca.crt
+sudo update-ca-certificates
+
+# RHEL/Fedora
+sudo cp ~/.pipelock/ca.pem /etc/pki/ca-trust/source/anchors/pipelock-ca.crt
+sudo update-ca-trust extract
+```
+
+Some runtimes ignore the system store. Set the environment variable for the agent user:
+
+```bash
+# In the agent user's shell profile
+export SSL_CERT_FILE=~/.pipelock/ca.pem
+export NODE_EXTRA_CA_CERTS=~/.pipelock/ca.pem
+```
+
+### macOS
+
+Add the CA to the system keychain:
+
+```bash
+sudo security add-trusted-cert -d -r trustRoot \
+  -k /Library/Keychains/System.keychain ~/.pipelock/ca.pem
+```
+
+For Node.js and Python, also set environment variables (they may not use the system keychain):
+
+```bash
+export NODE_EXTRA_CA_CERTS=~/.pipelock/ca.pem
+export SSL_CERT_FILE=~/.pipelock/ca.pem
+```
+
 ## Verifying Isolation
 
 After setting up any of these recipes, verify the agent can't bypass pipelock:

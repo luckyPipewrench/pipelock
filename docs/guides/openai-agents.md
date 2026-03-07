@@ -322,6 +322,28 @@ def fetch_through_pipelock(url: str) -> str:
     return data.get("content", "")
 ```
 
+## TLS Interception
+
+When using pipelock as an HTTP forward proxy (`HTTPS_PROXY`), CONNECT tunnels
+are opaque by default: pipelock only sees the hostname, not the request body or
+response content. Enabling TLS interception closes this gap by performing a MITM
+on HTTPS connections, giving you full DLP on request bodies and response
+injection detection through CONNECT tunnels.
+
+To enable it:
+
+1. Generate a CA and enable TLS interception (see the [TLS Interception Guide](tls-interception.md))
+2. Trust the CA in your Python environment:
+
+```bash
+export SSL_CERT_FILE=~/.pipelock/ca.pem
+# Or for requests/httpx specifically:
+export REQUESTS_CA_BUNDLE=~/.pipelock/ca.pem
+```
+
+MCP proxy mode (stdio wrapping) does not require TLS interception. It scans
+traffic in both directions without certificates.
+
 ## Choosing a Config
 
 | Config | Action | Best For |

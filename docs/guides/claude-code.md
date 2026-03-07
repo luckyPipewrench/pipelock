@@ -205,6 +205,26 @@ echo '{"session_id":"s1","hook_event_name":"PreToolUse","tool_name":"Bash","tool
 echo '...' | pipelock claude hook --exit-code
 ```
 
+## TLS Interception
+
+When using pipelock as an HTTP forward proxy, CONNECT tunnels are opaque by
+default: pipelock only sees the hostname, not the request body or response
+content. Enabling TLS interception closes this gap by performing a MITM on
+HTTPS connections, giving you full DLP and response injection detection through
+CONNECT tunnels.
+
+To enable it:
+
+1. Generate a CA and enable TLS interception (see the [TLS Interception Guide](tls-interception.md))
+2. Trust the CA for Node.js (used by Claude Code's MCP servers):
+
+```bash
+export NODE_EXTRA_CA_CERTS=~/.pipelock/ca.pem
+```
+
+MCP proxy mode (stdio wrapping) and Claude Code hooks do not require TLS
+interception. They scan traffic directly without certificates.
+
 ## Choosing a Config
 
 Pipelock ships with agent-specific presets in `configs/`:

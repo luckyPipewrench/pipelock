@@ -250,6 +250,30 @@ Mapped to the CVE-2026-25253 attack chain:
 
 Pipelock does not patch the CVE itself (that requires OpenClaw origin validation). It adds defense-in-depth by scanning all traffic between agent and gateway, catching exploitation attempts at multiple points in the attack chain.
 
+## TLS Interception
+
+When using pipelock as an HTTP forward proxy (`HTTPS_PROXY`), CONNECT tunnels
+are opaque by default: pipelock only sees the hostname, not the request body or
+response content. Enabling TLS interception closes this gap by performing a MITM
+on HTTPS connections, giving you full DLP on request bodies and response
+injection detection through CONNECT tunnels.
+
+To enable it:
+
+1. Generate a CA and enable TLS interception (see the [TLS Interception Guide](tls-interception.md))
+2. Trust the CA in your agent's runtime:
+
+```bash
+# Node.js agents
+export NODE_EXTRA_CA_CERTS=~/.pipelock/ca.pem
+
+# Python agents
+export SSL_CERT_FILE=~/.pipelock/ca.pem
+```
+
+MCP proxy mode (stdio wrapping and `--upstream`) does not require TLS
+interception. It scans traffic directly without certificates.
+
 ## Troubleshooting
 
 ### Connection refused to upstream

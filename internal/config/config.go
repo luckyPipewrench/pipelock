@@ -175,6 +175,7 @@ type Config struct {
 	MCPWSListener       MCPWSListener           `yaml:"mcp_ws_listener"`
 	TLSInterception     TLSInterception         `yaml:"tls_interception"`
 	Agents              map[string]AgentProfile `yaml:"agents,omitempty"`
+	LicenseKey          string                  `yaml:"license_key,omitempty"` // parsed but not enforced yet
 	Internal            []string                `yaml:"internal"`
 
 	// rawBytes stores the original config file bytes for deterministic hashing.

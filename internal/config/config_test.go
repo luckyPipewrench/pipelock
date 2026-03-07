@@ -5102,6 +5102,26 @@ func TestAgentProfileEmpty(t *testing.T) {
 	}
 }
 
+func TestLicenseKeyParsing(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "cfg.yaml")
+	_ = os.WriteFile(cfgPath, []byte("mode: balanced\nlicense_key: test-license\n"), 0o600)
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LicenseKey != "test-license" {
+		t.Errorf("license_key = %q, want test-license", cfg.LicenseKey)
+	}
+}
+
+func TestLicenseKeyOmitted(t *testing.T) {
+	cfg := Defaults()
+	if cfg.LicenseKey != "" {
+		t.Errorf("default license_key should be empty, got %q", cfg.LicenseKey)
+	}
+}
+
 func TestAgentProfileZeroBudget(t *testing.T) {
 	var b BudgetConfig
 	if b.MaxRequestsPerSession != 0 {

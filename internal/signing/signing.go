@@ -187,17 +187,30 @@ func LoadPublicKeyFile(path string) (ed25519.PublicKey, error) {
 }
 
 // LoadPrivateKeyFile reads and decodes a private key from a file.
-// Warns to stderr if the file is readable by group or others (mode & 0o077 != 0).
+// Fails if the file is readable by group or others (mode & 0o077 != 0)
+// to prevent accidental key exposure.
 func LoadPrivateKeyFile(path string) (ed25519.PrivateKey, error) {
-	info, err := os.Stat(path)
+	cleanPath := filepath.Clean(path)
+
+	// Reject symlinks to prevent following links to unexpected locations.
+	info, err := os.Lstat(cleanPath)
+	if err != nil {
+		return nil, fmt.Errorf("reading private key: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("private key %s is a symlink (not allowed for security)", cleanPath)
+	}
+
+	// Re-stat after symlink check to get real file info.
+	info, err = os.Stat(cleanPath)
 	if err != nil {
 		return nil, fmt.Errorf("reading private key: %w", err)
 	}
 	if info.Mode().Perm()&0o077 != 0 {
-		fmt.Fprintf(os.Stderr, "WARNING: private key %s has permissions %04o — should be 0600\n", path, info.Mode().Perm())
+		return nil, fmt.Errorf("private key %s has permissions %04o, must be 0600 (run: chmod 600 %s)", cleanPath, info.Mode().Perm(), cleanPath)
 	}
 
-	data, err := os.ReadFile(filepath.Clean(path))
+	data, err := os.ReadFile(cleanPath)
 	if err != nil {
 		return nil, fmt.Errorf("reading private key: %w", err)
 	}

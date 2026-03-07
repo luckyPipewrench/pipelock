@@ -213,13 +213,15 @@ func licenseInspectCmd() *cobra.Command {
 			if lic.ExpiresAt > 0 {
 				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Expires:  %s\n", time.Unix(lic.ExpiresAt, 0).UTC().Format(time.DateOnly))
 				if time.Now().Unix() > lic.ExpiresAt {
-					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Status:   EXPIRED\n")
+					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Status:   EXPIRED (signature not checked)\n")
 				} else {
-					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Status:   valid\n")
+					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Status:   not expired (signature not checked)\n")
 				}
 			} else {
 				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Expires:  never\n")
 			}
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "\n  WARNING: inspect does not verify the signature.\n"+
+				"  This token may be forged or tampered. Use pipelock check to verify.\n")
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Features: %v\n", lic.Features)
 
 			return nil
@@ -257,7 +259,16 @@ func appendLedger(path string, lic license.License, token string) error {
 	}
 	data = append(data, '\n')
 
-	f, err := os.OpenFile(filepath.Clean(path), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	cleanPath := filepath.Clean(path)
+
+	// Reject symlinks to prevent writing to unexpected locations.
+	if info, err := os.Lstat(cleanPath); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("ledger path %s is a symlink (not allowed for security)", cleanPath)
+		}
+	}
+
+	f, err := os.OpenFile(cleanPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}

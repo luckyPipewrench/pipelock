@@ -5506,3 +5506,51 @@ func TestLicenseGateViaLoad_WithValidToken(t *testing.T) {
 		t.Error("claude-code profile should be present")
 	}
 }
+
+func TestEnforceLicenseGate_EmbeddedKeyOverridesConfig(t *testing.T) {
+	// Simulate official build: set embedded key to one keypair, but provide
+	// a different keypair in config (self-signed bypass attempt).
+	officialPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := license.PublicKeyHex
+	license.PublicKeyHex = hex.EncodeToString(officialPub)
+	defer func() { license.PublicKeyHex = original }()
+
+	// Generate attacker's keypair and self-sign a token.
+	attackerToken, attackerPubHex := testLicenseKeyPair(t)
+
+	cfg := Defaults()
+	cfg.LicenseKey = attackerToken
+	cfg.LicensePublicKey = attackerPubHex // attacker supplies their own pubkey
+	cfg.Agents = map[string]AgentProfile{
+		"agent-a": {Mode: ModeAudit},
+	}
+	var buf bytes.Buffer
+	cfg.EnforceLicenseGate(&buf)
+
+	// The embedded key should win, and the attacker's self-signed token
+	// should fail verification against the official embedded key.
+	if cfg.Agents != nil {
+		t.Error("agents should be disabled: embedded key must override config-supplied public key")
+	}
+	if !strings.Contains(buf.String(), "signature") {
+		t.Errorf("expected signature failure warning, got: %s", buf.String())
+	}
+}
+
+func TestEnforceLicenseGate_StoresExpiresAt(t *testing.T) {
+	token, pubHex := testLicenseKeyPair(t)
+	cfg := Defaults()
+	cfg.LicenseKey = token
+	cfg.LicensePublicKey = pubHex
+	cfg.Agents = map[string]AgentProfile{
+		"agent-a": {Mode: ModeAudit},
+	}
+	var buf bytes.Buffer
+	cfg.EnforceLicenseGate(&buf)
+	if cfg.LicenseExpiresAt == 0 {
+		t.Error("LicenseExpiresAt should be set for non-perpetual license")
+	}
+}

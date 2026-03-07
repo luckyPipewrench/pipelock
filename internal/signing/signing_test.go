@@ -460,7 +460,7 @@ func TestLoadSignature_WrongLength(t *testing.T) {
 	}
 }
 
-func TestLoadPrivateKeyFile_PermissionWarning(t *testing.T) {
+func TestLoadPrivateKeyFile_FailsOnLoosePermissions(t *testing.T) {
 	_, priv, _ := GenerateKeyPair()
 
 	dir := t.TempDir()
@@ -470,19 +470,18 @@ func TestLoadPrivateKeyFile_PermissionWarning(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Make the key readable by group/others (insecure)
+	// Make the key readable by group/others (insecure).
 	if err := os.Chmod(path, 0o644); err != nil { //nolint:gosec // intentionally insecure for test
 		t.Fatal(err)
 	}
 
-	// LoadPrivateKeyFile should still succeed but emit a warning to stderr.
-	// We can't easily capture stderr, but we verify it loads correctly.
-	loaded, err := LoadPrivateKeyFile(path)
-	if err != nil {
-		t.Fatalf("LoadPrivateKeyFile should succeed despite bad perms: %v", err)
+	// LoadPrivateKeyFile must fail closed on loose permissions.
+	_, err := LoadPrivateKeyFile(path)
+	if err == nil {
+		t.Fatal("expected error for loose permissions, got nil")
 	}
-	if !bytes.Equal(priv, loaded) {
-		t.Fatal("loaded key does not match saved key")
+	if !strings.Contains(err.Error(), "0644") {
+		t.Errorf("error should mention the bad permissions, got: %v", err)
 	}
 }
 

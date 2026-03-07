@@ -7,6 +7,7 @@ import (
 	"net"
 	"sort"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
@@ -325,6 +326,57 @@ func TestAgentRegistryMatchCIDR(t *testing.T) {
 				t.Errorf("MatchCIDR(%s) = %q, want %q", tt.ip, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestAgentRegistryLookup_ExpiredLicense(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.Agents = map[string]config.AgentProfile{
+		testProfileClaudeCode: {Mode: config.ModeStrict},
+		testProfileDefault:    {Mode: config.ModeAudit},
+	}
+	// Simulate a license that expired 1 hour ago.
+	cfg.LicenseExpiresAt = time.Now().Add(-1 * time.Hour).Unix()
+
+	reg, err := NewAgentRegistry(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reg.Close()
+
+	// Non-default profile should fall back when license is expired.
+	agent := reg.Lookup(testProfileClaudeCode)
+	if agent.Name != testProfileDefault {
+		t.Errorf("expired license: got profile %q, want %q (fallback)", agent.Name, testProfileDefault)
+	}
+
+	// _default profile should still work.
+	agent = reg.Lookup(testProfileDefault)
+	if agent.Name != testProfileDefault {
+		t.Errorf("_default lookup failed: got %q", agent.Name)
+	}
+}
+
+func TestAgentRegistryLookup_PerpetualLicense(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.Agents = map[string]config.AgentProfile{
+		testProfileClaudeCode: {Mode: config.ModeStrict},
+	}
+	// Perpetual license: LicenseExpiresAt = 0 (zero value).
+	cfg.LicenseExpiresAt = 0
+
+	reg, err := NewAgentRegistry(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reg.Close()
+
+	// Perpetual license should never expire.
+	agent := reg.Lookup(testProfileClaudeCode)
+	if agent.Name != testProfileClaudeCode {
+		t.Errorf("perpetual license: got profile %q, want %q", agent.Name, testProfileClaudeCode)
 	}
 }
 

@@ -6,6 +6,7 @@ package proxy
 import (
 	"fmt"
 	"net"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -32,18 +33,20 @@ type ResolvedAgent struct {
 // AgentRegistry maps agent profile names to resolved agents. Built at
 // startup and on hot-reload, then swapped atomically.
 type AgentRegistry struct {
-	agents   map[string]*ResolvedAgent
-	ports    map[string]string // listen addr -> profile name
-	cidrs    []cidrMapping     // source CIDR -> profile name
-	fallback *ResolvedAgent
+	agents           map[string]*ResolvedAgent
+	ports            map[string]string // listen addr -> profile name
+	cidrs            []cidrMapping     // source CIDR -> profile name
+	fallback         *ResolvedAgent
+	licenseExpiresAt int64 // Unix timestamp; 0 = perpetual. Checked on Lookup().
 }
 
 // NewAgentRegistry builds a registry from the base config. Each agent profile
 // is deep-merged with the base, and a scanner is built from the merged config.
 func NewAgentRegistry(base *config.Config) (_ *AgentRegistry, err error) {
 	reg := &AgentRegistry{
-		agents: make(map[string]*ResolvedAgent, len(base.Agents)),
-		ports:  make(map[string]string),
+		agents:           make(map[string]*ResolvedAgent, len(base.Agents)),
+		ports:            make(map[string]string),
+		licenseExpiresAt: base.LicenseExpiresAt,
 	}
 	defer func() {
 		if err != nil {
@@ -99,8 +102,15 @@ func NewAgentRegistry(base *config.Config) (_ *AgentRegistry, err error) {
 
 // Lookup returns the ResolvedAgent for the given profile name.
 // Unknown names return the fallback (either _default or base config).
+// If the license has expired since startup, non-default profiles are
+// rejected and the fallback is returned instead.
 func (r *AgentRegistry) Lookup(profile string) *ResolvedAgent {
 	if agent, ok := r.agents[profile]; ok {
+		// Runtime license expiry: if the license has a non-zero expiry
+		// and it's past, fall back for non-default profiles.
+		if profile != profileDefault && r.licenseExpiresAt > 0 && time.Now().Unix() > r.licenseExpiresAt {
+			return r.fallback
+		}
 		return agent
 	}
 	return r.fallback

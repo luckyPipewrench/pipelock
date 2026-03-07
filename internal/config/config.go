@@ -179,8 +179,13 @@ type Config struct {
 	TLSInterception     TLSInterception         `yaml:"tls_interception"`
 	Agents              map[string]AgentProfile `yaml:"agents,omitempty"`
 	LicenseKey          string                  `yaml:"license_key,omitempty"`        // signed license token (from pipelock license issue)
-	LicensePublicKey    string                  `yaml:"license_public_key,omitempty"` // hex-encoded Ed25519 public key for license verification
+	LicensePublicKey    string                  `yaml:"license_public_key,omitempty"` // hex-encoded Ed25519 public key for license verification (dev builds only)
 	Internal            []string                `yaml:"internal"`
+
+	// LicenseExpiresAt is the Unix timestamp of the license expiry, populated
+	// by EnforceLicenseGate(). Zero means perpetual. Used for runtime expiry
+	// enforcement so agents are disabled even without a config reload.
+	LicenseExpiresAt int64 `yaml:"-"`
 
 	// rawBytes stores the original config file bytes for deterministic hashing.
 	// Not serialized to YAML. Set by Load(), nil for Defaults().
@@ -622,11 +627,13 @@ func ValidateMergedAgent(name string, cfg *Config) error {
 //
 // The gate only fires when the agents map has at least one profile that is NOT
 // "_default". A bare _default profile is allowed without a license key because
-// it doesn't add multi-agent functionality.
+// it represents single-agent config customization (mode, allowlist overrides),
+// not multi-agent coordination. Listeners and source CIDRs on _default are
+// intentionally allowed as single-profile convenience features.
 //
-// Public key resolution order:
-//  1. license_public_key config field (hex-encoded)
-//  2. Embedded build-time key (set via ldflags)
+// Public key resolution order (embedded key wins to prevent self-signing bypass):
+//  1. Embedded build-time key (set via ldflags in official releases)
+//  2. license_public_key config field (hex-encoded, dev builds only)
 //  3. No key available: agents disabled
 func (c *Config) EnforceLicenseGate(w io.Writer) {
 	if len(c.Agents) == 0 {
@@ -679,18 +686,27 @@ func (c *Config) EnforceLicenseGate(w io.Writer) {
 		c.Agents = nil
 		return
 	}
+
+	// Store expiry for runtime enforcement. Zero means perpetual.
+	c.LicenseExpiresAt = lic.ExpiresAt
 }
 
 // resolvePublicKey returns the Ed25519 public key for license verification.
-// Priority: config field > embedded build-time key.
+// Priority: embedded build-time key > config field.
+// The embedded key (set via ldflags in official releases) always wins to
+// prevent users from supplying their own public key to self-sign licenses.
+// The config field is only used for dev builds that have no embedded key.
 func (c *Config) resolvePublicKey() ed25519.PublicKey {
+	if key := license.EmbeddedPublicKey(); key != nil {
+		return key
+	}
 	if c.LicensePublicKey != "" {
 		keyBytes, err := hex.DecodeString(c.LicensePublicKey)
 		if err == nil && len(keyBytes) == ed25519.PublicKeySize {
 			return ed25519.PublicKey(keyBytes)
 		}
 	}
-	return license.EmbeddedPublicKey()
+	return nil
 }
 
 // Load reads, parses, defaults, and validates a Pipelock config file.

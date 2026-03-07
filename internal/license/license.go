@@ -17,6 +17,11 @@ import (
 	"time"
 )
 
+// maxTokenBytes caps the decoded token size to prevent memory exhaustion
+// from maliciously large tokens. 64 KiB is generous for any realistic
+// license payload (~200 bytes JSON + 64 bytes signature).
+const maxTokenBytes = 64 * 1024
+
 // tokenPrefix identifies the license token format version.
 const tokenPrefix = "pipelock_lic_" + "v1_" //nolint:gosec // G101: not a credential, license format prefix
 
@@ -59,7 +64,12 @@ func Verify(token string, publicKey ed25519.PublicKey) (License, error) {
 	if !strings.HasPrefix(token, tokenPrefix) {
 		return License{}, errors.New("invalid license format: missing prefix")
 	}
-	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(token, tokenPrefix))
+	encoded := strings.TrimPrefix(token, tokenPrefix)
+	// Reject oversized tokens before allocating memory for base64 decode.
+	if len(encoded) > maxTokenBytes {
+		return License{}, errors.New("license token exceeds maximum size")
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(encoded)
 	if err != nil {
 		return License{}, fmt.Errorf("decode license: %w", err)
 	}
@@ -77,6 +87,14 @@ func Verify(token string, publicKey ed25519.PublicKey) (License, error) {
 	var l License
 	if err := json.Unmarshal(payload, &l); err != nil {
 		return License{}, fmt.Errorf("parse license payload: %w", err)
+	}
+
+	// Validate required claims.
+	if l.ID == "" {
+		return License{}, errors.New("license missing required field: id")
+	}
+	if l.Email == "" {
+		return License{}, errors.New("license missing required field: sub")
 	}
 
 	if l.ExpiresAt > 0 && time.Now().Unix() > l.ExpiresAt {
@@ -102,7 +120,11 @@ func Decode(token string) (License, error) {
 	if !strings.HasPrefix(token, tokenPrefix) {
 		return License{}, errors.New("invalid license format: missing prefix")
 	}
-	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(token, tokenPrefix))
+	encoded := strings.TrimPrefix(token, tokenPrefix)
+	if len(encoded) > maxTokenBytes {
+		return License{}, errors.New("license token exceeds maximum size")
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(encoded)
 	if err != nil {
 		return License{}, fmt.Errorf("decode license: %w", err)
 	}

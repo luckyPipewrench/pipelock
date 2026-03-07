@@ -228,3 +228,69 @@ func TestEmbeddedPublicKey_InvalidHex(t *testing.T) {
 		t.Error("expected nil for invalid hex")
 	}
 }
+
+func TestVerifyRequiresID(t *testing.T) {
+	pub, priv := testKeyPair(t)
+	lic := License{
+		ID:       "", // empty
+		Email:    "test@example.com",
+		IssuedAt: time.Now().Unix(),
+		Features: []string{FeatureAgents},
+	}
+	token, err := Issue(lic, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = Verify(token, pub)
+	if err == nil {
+		t.Fatal("expected error for empty id")
+	}
+	if !strings.Contains(err.Error(), "id") {
+		t.Errorf("error = %q, want mention of 'id'", err.Error())
+	}
+}
+
+func TestVerifyRequiresEmail(t *testing.T) {
+	pub, priv := testKeyPair(t)
+	lic := License{
+		ID:       "lic_test",
+		Email:    "", // empty
+		IssuedAt: time.Now().Unix(),
+		Features: []string{FeatureAgents},
+	}
+	token, err := Issue(lic, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = Verify(token, pub)
+	if err == nil {
+		t.Fatal("expected error for empty sub")
+	}
+	if !strings.Contains(err.Error(), "sub") {
+		t.Errorf("error = %q, want mention of 'sub'", err.Error())
+	}
+}
+
+func TestVerifyRejectsOversizedToken(t *testing.T) {
+	pub, _ := testKeyPair(t)
+	// Build a token that exceeds maxTokenBytes.
+	huge := tokenPrefix + strings.Repeat("A", maxTokenBytes+1)
+	_, err := Verify(huge, pub)
+	if err == nil {
+		t.Fatal("expected error for oversized token")
+	}
+	if !strings.Contains(err.Error(), "maximum size") {
+		t.Errorf("error = %q, want 'maximum size'", err.Error())
+	}
+}
+
+func TestDecodeRejectsOversizedToken(t *testing.T) {
+	huge := tokenPrefix + strings.Repeat("A", maxTokenBytes+1)
+	_, err := Decode(huge)
+	if err == nil {
+		t.Fatal("expected error for oversized token")
+	}
+	if !strings.Contains(err.Error(), "maximum size") {
+		t.Errorf("error = %q, want 'maximum size'", err.Error())
+	}
+}

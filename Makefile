@@ -4,12 +4,14 @@ VERSION    ?= $(shell (git describe --tags --always --dirty 2>/dev/null || echo 
 BUILD_DATE := $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
 GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 GO_VERSION := $(shell go version | awk '{print $$3}')
+LICENSE_PUBLIC_KEY ?=
 LDFLAGS := -ldflags "-s -w \
 	-X $(MODULE)/internal/cli.Version=$(VERSION) \
 	-X $(MODULE)/internal/cli.BuildDate=$(BUILD_DATE) \
 	-X $(MODULE)/internal/cli.GitCommit=$(GIT_COMMIT) \
 	-X $(MODULE)/internal/cli.GoVersion=$(GO_VERSION) \
-	-X $(MODULE)/internal/proxy.Version=$(VERSION)"
+	-X $(MODULE)/internal/proxy.Version=$(VERSION) \
+	-X $(MODULE)/internal/license.PublicKeyHex=$(LICENSE_PUBLIC_KEY)"
 
 .PHONY: build test bench lint clean docker install fmt vet tidy-check
 

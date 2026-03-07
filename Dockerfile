@@ -9,6 +9,7 @@ COPY . .
 ARG VERSION=0.1.0-dev
 ARG BUILD_DATE=unknown
 ARG GIT_COMMIT=unknown
+ARG LICENSE_PUBLIC_KEY=""
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
@@ -17,7 +18,8 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
       -X github.com/luckyPipewrench/pipelock/internal/cli.BuildDate=${BUILD_DATE} \
       -X github.com/luckyPipewrench/pipelock/internal/cli.GitCommit=${GIT_COMMIT} \
       -X github.com/luckyPipewrench/pipelock/internal/cli.GoVersion=$(go version | awk '{print $3}') \
-      -X github.com/luckyPipewrench/pipelock/internal/proxy.Version=${VERSION}" \
+      -X github.com/luckyPipewrench/pipelock/internal/proxy.Version=${VERSION} \
+      -X github.com/luckyPipewrench/pipelock/internal/license.PublicKeyHex=${LICENSE_PUBLIC_KEY}" \
     -o /pipelock ./cmd/pipelock
 
 # Scratch-based final image (~15MB)

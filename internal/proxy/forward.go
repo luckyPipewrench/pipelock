@@ -277,8 +277,9 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// Record data budget for the target domain
 	sc.RecordRequest(strings.ToLower(host), int(totalBytes))
 
-	// Record tunnel bytes for per-agent budget tracking (not enforced
-	// retroactively; the next request will be admission-blocked).
+	// Record tunnel bytes for per-agent budget tracking. CONNECT tunnels
+	// are streaming: bytes are tracked after close and enforced on the next
+	// admission check, not mid-stream (can't un-send tunnel data).
 	resolved.Budget.RecordBytes(int(totalBytes))
 }
 
@@ -481,8 +482,13 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(resp.StatusCode)
 
-	// Stream body with size limit
+	// Stream body with size limit. Cap at the tighter of max_response_mb
+	// and remaining byte budget so forward-proxy responses are truncated
+	// when the per-agent byte budget is exhausted.
 	maxBytes := int64(cfg.FetchProxy.MaxResponseMB) * 1024 * 1024
+	if remaining := resolved.Budget.RemainingBytes(); remaining >= 0 && remaining < maxBytes {
+		maxBytes = remaining
+	}
 	written, _ := io.Copy(w, io.LimitReader(resp.Body, maxBytes))
 
 	// Record data budget for the target domain

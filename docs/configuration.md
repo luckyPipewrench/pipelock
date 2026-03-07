@@ -849,7 +849,11 @@ Budgets cap what an agent can do within a rolling time window. All fields defaul
 | `max_unique_domains_per_session` | `int` | `0` | Max distinct domains per window |
 | `window_minutes` | `int` | `0` | Rolling window duration in minutes. `0` means the budget never resets. |
 
-When a budget is exceeded, the request is blocked with a `429 Too Many Requests` response.
+When a budget limit is reached:
+
+- **Request count and domain limits** are checked before the outbound request. Exceeding either returns `429 Too Many Requests`.
+- **Byte limit (fetch proxy):** the response body read is capped at the remaining byte budget. If the response exceeds the limit, it is discarded and a `429` is returned.
+- **Byte limit (CONNECT/WebSocket):** streaming connections track bytes after close. The byte budget is enforced on the next admission check, not mid-stream, because tunnel data cannot be recalled after transmission.
 
 ### Listener Binding
 

@@ -226,7 +226,9 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	sc.RecordRequest(relay.hostname, int(stats.clientToServer+stats.serverToClient))
 
-	// Record bytes for per-agent budget tracking.
+	// Record WebSocket bytes for per-agent budget tracking. WebSocket
+	// connections are streaming: bytes are tracked after close and enforced
+	// on the next admission check, not mid-stream.
 	resolved.Budget.RecordBytes(int(stats.clientToServer + stats.serverToClient))
 }
 

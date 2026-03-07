@@ -43,6 +43,9 @@ func NewAgentRegistry(base *config.Config) (*AgentRegistry, error) {
 		if err != nil {
 			return nil, fmt.Errorf("agent %q: %w", name, err)
 		}
+		if err := config.ValidateMergedAgent(name, merged); err != nil {
+			return nil, err
+		}
 		sc := scanner.New(merged)
 		resolved := &ResolvedAgent{
 			Name:    name,

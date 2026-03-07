@@ -838,15 +838,34 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close() //nolint:errcheck // response body
 
-	// Limit response body size
+	// Limit response body size: use the tighter of max_response_mb and the
+	// remaining per-agent byte budget, so oversized responses are blocked
+	// at read time rather than after the full body has been consumed.
 	maxBytes := int64(cfg.FetchProxy.MaxResponseMB) * 1024 * 1024
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes))
+	if remaining := resolved.Budget.RemainingBytes(); remaining >= 0 && remaining < maxBytes {
+		maxBytes = remaining
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1)) // +1 to detect truncation
 	if err != nil {
 		log.LogError("GET", displayURL, clientIP, requestID, agent, err)
 		writeJSON(w, http.StatusBadGateway, FetchResponse{
 			URL:   displayURL,
 			Agent: agent,
 			Error: fmt.Sprintf("reading response: %v", err),
+		})
+		return
+	}
+	if int64(len(body)) > maxBytes {
+		// Response exceeded the byte budget. Return 429 without delivering content.
+		reason := fmt.Sprintf("response size %d exceeds byte budget %d", len(body), maxBytes)
+		log.LogBlocked("GET", displayURL, "budget", reason, clientIP, requestID, agent)
+		p.metrics.RecordBlocked(parsed.Hostname(), "budget", time.Since(start), agentLabel)
+		resolved.Budget.RecordBytes(len(body))
+		writeJSON(w, http.StatusTooManyRequests, FetchResponse{
+			URL:         displayURL,
+			Agent:       agent,
+			Blocked:     true,
+			BlockReason: reason,
 		})
 		return
 	}
@@ -911,12 +930,10 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// Record response size for per-domain data budget tracking
 	sc.RecordRequest(strings.ToLower(parsed.Hostname()), len(body))
 
-	// Byte budget: record after response is read. If exceeded, the request
-	// already succeeded so we log but don't block retroactively. The next
-	// request will be admission-blocked by CheckAdmission.
-	if exceeded, reason := resolved.Budget.RecordBytes(len(body)); exceeded {
-		log.LogAnomaly("GET", displayURL, "budget", reason, clientIP, requestID, agent, 0.8)
-	}
+	// Record response bytes against the per-agent byte budget. Oversize
+	// responses are already blocked during the read phase above, so this
+	// records the actual bytes consumed for successful responses.
+	resolved.Budget.RecordBytes(len(body))
 
 	duration := time.Since(start)
 	p.metrics.RecordAllowed(duration, agentLabel)

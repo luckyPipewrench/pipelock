@@ -3990,6 +3990,25 @@ func TestProxy_ResolveAgent_NilRegistry(t *testing.T) {
 	}
 }
 
+// TestNewAgentRegistryRejectsStrictWithoutAllowlist verifies that building a
+// registry fails when an agent profile merges to mode: strict without an
+// api_allowlist. This prevents fail-open strict profiles.
+func TestNewAgentRegistryRejectsStrictWithoutAllowlist(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.APIAllowlist = nil // no global allowlist
+	cfg.Agents = map[string]config.AgentProfile{
+		"strict-no-allowlist": {
+			Mode: config.ModeStrict,
+		},
+	}
+
+	_, err := NewAgentRegistry(cfg)
+	if err == nil {
+		t.Fatal("expected error: strict agent without api_allowlist should be rejected")
+	}
+}
+
 // TestProxy_KnownProfiles_NilRegistry verifies that knownProfiles returns nil
 // when no agent registry has been set on the proxy.
 func TestProxy_KnownProfiles_NilRegistry(t *testing.T) {
@@ -4034,8 +4053,9 @@ func TestAgentIdentityEndToEnd(t *testing.T) {
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Agents = map[string]config.AgentProfile{
 		testStrictAgent: {
-			Mode:    config.ModeStrict,
-			Enforce: &enforceTrue,
+			Mode:         config.ModeStrict,
+			Enforce:      &enforceTrue,
+			APIAllowlist: []string{"127.0.0.1"}, // only allow test backend
 		},
 		testAuditAgent: {
 			Mode:    config.ModeAudit,
@@ -4249,5 +4269,64 @@ func TestMetricLabelBoundsUnknownAgent(t *testing.T) {
 	// agent resolves to fallback without error).
 	if resp.Agent != "arbitrary-attacker-chosen-name" {
 		t.Errorf("agent = %q, want raw header value", resp.Agent)
+	}
+}
+
+// TestByteBudgetBlocksFetchResponse verifies that a fetch response whose body
+// exceeds the per-agent byte budget is blocked with 429 at read time, rather
+// than being delivered and only tracked after the fact.
+func TestByteBudgetBlocksFetchResponse(t *testing.T) {
+	const testByteBudgetAgent = "byte-budget-agent"
+
+	// Backend returns a 500-byte response body.
+	body500 := strings.Repeat("x", 500)
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = fmt.Fprint(w, body500)
+	}))
+	t.Cleanup(func() { backend.Close() })
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.APIAllowlist = nil
+	cfg.FetchProxy.TimeoutSeconds = 5
+	cfg.Agents = map[string]config.AgentProfile{
+		testByteBudgetAgent: {
+			Budget: config.BudgetConfig{
+				MaxBytesPerSession: 100, // 100 bytes, backend returns 500
+				WindowMinutes:      60,
+			},
+		},
+	}
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	t.Cleanup(func() { sc.Close() })
+	p := New(cfg, logger, sc, metrics.New())
+	t.Cleanup(func() { p.Close() })
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+
+	// First request: response body (500 bytes) exceeds byte budget (100).
+	// Should be blocked with 429 at read time.
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/text", nil)
+	req.Header.Set(AgentHeader, testByteBudgetAgent)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d (byte budget should block oversize response)", w.Code, http.StatusTooManyRequests)
+	}
+
+	var resp FetchResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if !resp.Blocked {
+		t.Error("expected blocked=true")
+	}
+	if resp.BlockReason == "" {
+		t.Error("expected non-empty block_reason")
 	}
 }

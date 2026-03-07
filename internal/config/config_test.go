@@ -5122,6 +5122,43 @@ func TestLicenseKeyOmitted(t *testing.T) {
 	}
 }
 
+func TestValidateMergedAgentStrictWithoutAllowlist(t *testing.T) {
+	cfg := Defaults()
+	cfg.Mode = ModeBalanced
+	cfg.APIAllowlist = nil
+
+	// Agent switches to strict without providing an allowlist.
+	merged, err := MergeAgentProfile(cfg, &AgentProfile{Mode: ModeStrict})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = ValidateMergedAgent("strict-no-allowlist", merged)
+	if err == nil {
+		t.Fatal("expected error: strict mode without api_allowlist should be rejected")
+	}
+}
+
+func TestValidateMergedAgentStrictWithAllowlist(t *testing.T) {
+	cfg := Defaults()
+	cfg.Mode = ModeBalanced
+	cfg.APIAllowlist = nil
+
+	// Agent switches to strict AND provides an allowlist.
+	merged, err := MergeAgentProfile(cfg, &AgentProfile{
+		Mode:         ModeStrict,
+		APIAllowlist: []string{"example.com"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = ValidateMergedAgent("strict-with-allowlist", merged)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestValidateAgentsNegativeBudget(t *testing.T) {
 	fields := []struct {
 		name   string

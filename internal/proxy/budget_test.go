@@ -414,6 +414,49 @@ func TestRecordBytesNil(t *testing.T) {
 	}
 }
 
+func TestRemainingBytesTracking(t *testing.T) {
+	budget := config.BudgetConfig{
+		MaxBytesPerSession: 300,
+		WindowMinutes:      60,
+	}
+	tracker := NewBudgetTracker(&budget)
+
+	// Initially: 300 remaining.
+	if r := tracker.RemainingBytes(); r != 300 {
+		t.Fatalf("remaining = %d, want 300", r)
+	}
+
+	// Record 100 bytes: 200 remaining.
+	tracker.RecordBytes(100)
+	if r := tracker.RemainingBytes(); r != 200 {
+		t.Fatalf("remaining = %d, want 200", r)
+	}
+
+	// Record 250 more: exceeded (0 remaining, not negative).
+	tracker.RecordBytes(250)
+	if r := tracker.RemainingBytes(); r != 0 {
+		t.Fatalf("remaining = %d, want 0", r)
+	}
+}
+
+func TestRemainingBytesNil(t *testing.T) {
+	var tracker *BudgetTracker
+	if r := tracker.RemainingBytes(); r != -1 {
+		t.Fatalf("nil tracker remaining = %d, want -1 (unlimited)", r)
+	}
+}
+
+func TestRemainingBytesNoLimit(t *testing.T) {
+	budget := config.BudgetConfig{
+		MaxRequestsPerSession: 10, // only request limit, no byte limit
+		WindowMinutes:         60,
+	}
+	tracker := NewBudgetTracker(&budget)
+	if r := tracker.RemainingBytes(); r != -1 {
+		t.Fatalf("no byte limit: remaining = %d, want -1 (unlimited)", r)
+	}
+}
+
 func TestBudgetWindowResetsAllCounters(t *testing.T) {
 	budget := config.BudgetConfig{
 		MaxRequestsPerSession:      2,

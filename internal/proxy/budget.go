@@ -96,6 +96,25 @@ func (b *BudgetTracker) RecordBytes(bytes int) (bool, string) {
 	return false, ""
 }
 
+// RemainingBytes returns the number of bytes still available before the byte
+// budget is exceeded. Returns -1 if no byte limit is configured or the
+// tracker is nil (unlimited). Thread-safe.
+func (b *BudgetTracker) RemainingBytes() int64 {
+	if b == nil {
+		return -1
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.cfg.MaxBytesPerSession <= 0 {
+		return -1
+	}
+	remaining := b.cfg.MaxBytesPerSession - b.byteCount
+	if remaining < 0 {
+		return 0
+	}
+	return int64(remaining)
+}
+
 // RecordRequest checks budget limits and records the request if within budget.
 // Returns (exceeded bool, reason string). Thread-safe.
 // A nil tracker always returns (false, "").

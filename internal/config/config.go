@@ -580,6 +580,17 @@ func MergeAgentProfile(base *Config, profile *AgentProfile) (*Config, error) {
 	return merged, nil
 }
 
+// ValidateMergedAgent checks invariants on a fully merged per-agent config
+// that the base Validate() enforces globally. This catches configurations
+// like mode: strict without an api_allowlist that only become invalid after
+// the profile overrides are applied.
+func ValidateMergedAgent(name string, cfg *Config) error {
+	if cfg.Mode == ModeStrict && len(cfg.APIAllowlist) == 0 {
+		return fmt.Errorf("agent %q: strict mode requires at least one domain in api_allowlist", name)
+	}
+	return nil
+}
+
 // Load reads, parses, defaults, and validates a Pipelock config file.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(filepath.Clean(path))

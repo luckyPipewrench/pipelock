@@ -15,6 +15,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -505,6 +506,77 @@ type BudgetConfig struct {
 	MaxBytesPerSession         int `yaml:"max_bytes_per_session,omitempty"`
 	MaxUniqueDomainsPerSession int `yaml:"max_unique_domains_per_session,omitempty"`
 	WindowMinutes              int `yaml:"window_minutes,omitempty"`
+}
+
+// deepCopyConfig returns a fully independent copy of cfg. Uses yaml
+// marshal/unmarshal roundtrip so every slice and map is a new allocation.
+// This is called once per agent at startup/reload, not on the hot path.
+func deepCopyConfig(cfg *Config) (*Config, error) {
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("deep copy marshal: %w", err)
+	}
+	var out Config
+	if err := yaml.Unmarshal(data, &out); err != nil {
+		return nil, fmt.Errorf("deep copy unmarshal: %w", err)
+	}
+	return &out, nil
+}
+
+// MergeAgentProfile creates a new Config by deep-merging profile overrides
+// into a deep copy of the base config. The base config is not modified.
+// If profile is nil, a deep copy of base is returned with no modifications.
+func MergeAgentProfile(base *Config, profile *AgentProfile) (*Config, error) {
+	merged, err := deepCopyConfig(base)
+	if err != nil {
+		return nil, err
+	}
+
+	if profile == nil {
+		return merged, nil
+	}
+
+	if profile.Mode != "" {
+		merged.Mode = profile.Mode
+	}
+	if profile.Enforce != nil {
+		merged.Enforce = profile.Enforce
+	}
+	if profile.APIAllowlist != nil {
+		merged.APIAllowlist = profile.APIAllowlist // replace
+	}
+	if profile.RateLimit != nil {
+		if profile.RateLimit.MaxRequestsPerMinute > 0 {
+			merged.FetchProxy.Monitoring.MaxReqPerMinute = profile.RateLimit.MaxRequestsPerMinute
+		}
+		if profile.RateLimit.MaxDataPerMinute > 0 {
+			merged.FetchProxy.Monitoring.MaxDataPerMinute = profile.RateLimit.MaxDataPerMinute
+		}
+	}
+	if profile.DLP != nil {
+		includeDefaults := profile.DLP.IncludeDefaults == nil || *profile.DLP.IncludeDefaults
+		if includeDefaults {
+			merged.DLP.Patterns = append(merged.DLP.Patterns, profile.DLP.Patterns...)
+		} else {
+			merged.DLP.Patterns = profile.DLP.Patterns
+		}
+	}
+	if profile.SessionProfiling != nil {
+		if profile.SessionProfiling.DomainBurst > 0 {
+			merged.SessionProfiling.DomainBurst = profile.SessionProfiling.DomainBurst
+		}
+		if profile.SessionProfiling.AnomalyAction != "" {
+			merged.SessionProfiling.AnomalyAction = profile.SessionProfiling.AnomalyAction
+		}
+		if profile.SessionProfiling.VolumeSpikeRatio > 0 {
+			merged.SessionProfiling.VolumeSpikeRatio = profile.SessionProfiling.VolumeSpikeRatio
+		}
+	}
+	if profile.MCPToolPolicy != nil {
+		merged.MCPToolPolicy = *profile.MCPToolPolicy
+	}
+
+	return merged, nil
 }
 
 // Load reads, parses, defaults, and validates a Pipelock config file.
@@ -1359,6 +1431,11 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// Validate agent profiles
+	if err := c.validateAgents(); err != nil {
+		return err
+	}
+
 	// Warn if listen address is not loopback (exposed to network).
 	// NOTE: these warnings print to stderr as a side effect. The proxy startup
 	// also logs non-loopback warnings via the audit logger (proxy.go Start).
@@ -1369,6 +1446,80 @@ func (c *Config) Validate() error {
 		}
 		if host == "" || host == "0.0.0.0" || host == "::" {
 			fmt.Fprintf(os.Stderr, "WARNING: listen address %s binds to all interfaces - consider using 127.0.0.1 for local-only access\n", c.FetchProxy.Listen)
+		}
+	}
+
+	return nil
+}
+
+// validateAgents checks all agent profiles for correctness:
+// no empty agent names, valid modes, no duplicate listeners across agents
+// and reserved addresses (main listen, metrics, API listen), valid listener
+// address formats, and valid DLP regex patterns in agent profiles.
+func (c *Config) validateAgents() error {
+	if len(c.Agents) == 0 {
+		return nil
+	}
+
+	// Collect all reserved addresses for collision detection.
+	// Map from normalized address to source label for error messages.
+	reserved := make(map[string]string)
+	reserved[c.FetchProxy.Listen] = "fetch_proxy.listen"
+	if c.MetricsListen != "" {
+		reserved[c.MetricsListen] = "metrics_listen"
+	}
+	if c.KillSwitch.APIListen != "" {
+		reserved[c.KillSwitch.APIListen] = "kill_switch.api_listen"
+	}
+
+	// Sort agent names for deterministic validation order
+	agentNames := make([]string, 0, len(c.Agents))
+	for name := range c.Agents {
+		agentNames = append(agentNames, name)
+	}
+	slices.Sort(agentNames)
+
+	for _, name := range agentNames {
+		profile := c.Agents[name]
+
+		if name == "" {
+			return fmt.Errorf("agent profile has empty name")
+		}
+
+		// Validate mode if set
+		if profile.Mode != "" {
+			switch profile.Mode {
+			case ModeStrict, ModeBalanced, ModeAudit:
+				// valid
+			default:
+				return fmt.Errorf("agent %q: invalid mode %q: must be strict, balanced, or audit", name, profile.Mode)
+			}
+		}
+
+		// Validate listeners: no duplicates, valid format
+		for _, addr := range profile.Listeners {
+			if _, _, err := net.SplitHostPort(addr); err != nil {
+				return fmt.Errorf("agent %q: invalid listener address %q: %w", name, addr, err)
+			}
+			if source, exists := reserved[addr]; exists {
+				return fmt.Errorf("agent %q: listener %q collides with %s", name, addr, source)
+			}
+			reserved[addr] = fmt.Sprintf("agent %q listener", name)
+		}
+
+		// Validate DLP patterns in agent profile
+		if profile.DLP != nil {
+			for _, p := range profile.DLP.Patterns {
+				if p.Name == "" {
+					return fmt.Errorf("agent %q: DLP pattern missing name", name)
+				}
+				if p.Regex == "" {
+					return fmt.Errorf("agent %q: DLP pattern %q missing regex", name, p.Name)
+				}
+				if _, err := regexp.Compile(p.Regex); err != nil {
+					return fmt.Errorf("agent %q: DLP pattern %q has invalid regex: %w", name, p.Name, err)
+				}
+			}
 		}
 	}
 

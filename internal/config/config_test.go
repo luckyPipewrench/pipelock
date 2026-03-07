@@ -4753,6 +4753,348 @@ agents:
 	}
 }
 
+func TestMergeAgentProfile(t *testing.T) {
+	base := Defaults()
+	base.Mode = ModeBalanced
+	base.APIAllowlist = []string{"example.com", "api.github.com"}
+
+	profile := AgentProfile{
+		Mode:         ModeStrict,
+		APIAllowlist: []string{"github.com"},
+		DLP: &AgentDLP{
+			Patterns: []DLPPattern{
+				{Name: testCustomName, Regex: "custom_[a-z]+", Severity: SeverityHigh},
+			},
+		},
+		Budget: BudgetConfig{
+			MaxRequestsPerSession:      500,
+			MaxUniqueDomainsPerSession: 30,
+			WindowMinutes:              60,
+		},
+	}
+
+	merged, err := MergeAgentProfile(base, &profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if merged.Mode != ModeStrict {
+		t.Errorf("mode = %q, want strict", merged.Mode)
+	}
+	// api_allowlist: replaced, not appended
+	if len(merged.APIAllowlist) != 1 || merged.APIAllowlist[0] != "github.com" {
+		t.Errorf("api_allowlist = %v, want [github.com]", merged.APIAllowlist)
+	}
+	// DLP patterns: appended by default (include_defaults nil = true)
+	baseDLPCount := len(base.DLP.Patterns)
+	if len(merged.DLP.Patterns) != baseDLPCount+1 {
+		t.Errorf("DLP patterns = %d, want %d", len(merged.DLP.Patterns), baseDLPCount+1)
+	}
+	// Budget is on AgentProfile, not Config. Verified in TestAgentProfileParsing.
+}
+
+func TestMergeAgentProfileDLPReplace(t *testing.T) {
+	base := Defaults()
+	f := false
+	profile := AgentProfile{
+		DLP: &AgentDLP{
+			IncludeDefaults: &f,
+			Patterns: []DLPPattern{
+				{Name: "Only", Regex: "only_[a-z]+", Severity: SeverityHigh},
+			},
+		},
+	}
+	merged, err := MergeAgentProfile(base, &profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(merged.DLP.Patterns) != 1 {
+		t.Errorf("DLP patterns = %d, want 1 (replaced)", len(merged.DLP.Patterns))
+	}
+}
+
+func TestMergeAgentProfileNoAlias(t *testing.T) {
+	base := Defaults()
+	base.APIAllowlist = []string{"example.com"}
+
+	profile := AgentProfile{
+		APIAllowlist: []string{"github.com"},
+	}
+	merged, err := MergeAgentProfile(base, &profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Modify the merged config's APIAllowlist and verify the base is unaffected
+	merged.APIAllowlist[0] = "mutated.com"
+	if base.APIAllowlist[0] != "example.com" {
+		t.Errorf("base APIAllowlist was aliased: got %q, want example.com", base.APIAllowlist[0])
+	}
+}
+
+func TestMergeAgentProfileDeepCopyNoAlias(t *testing.T) {
+	base := Defaults()
+
+	profile := AgentProfile{} // no overrides
+	merged, err := MergeAgentProfile(base, &profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Mutate deep copy DLP patterns
+	if len(merged.DLP.Patterns) > 0 {
+		merged.DLP.Patterns[0].Name = "mutated"
+	}
+	if base.DLP.Patterns[0].Name == "mutated" {
+		t.Error("deep copy aliases base DLP patterns")
+	}
+}
+
+func TestMergeAgentProfileRateLimit(t *testing.T) {
+	base := Defaults()
+	profile := AgentProfile{
+		RateLimit: &AgentRateLimit{
+			MaxRequestsPerMinute: 120,
+			MaxDataPerMinute:     5000,
+		},
+	}
+	merged, err := MergeAgentProfile(base, &profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if merged.FetchProxy.Monitoring.MaxReqPerMinute != 120 {
+		t.Errorf("max_req_per_minute = %d, want 120", merged.FetchProxy.Monitoring.MaxReqPerMinute)
+	}
+	if merged.FetchProxy.Monitoring.MaxDataPerMinute != 5000 {
+		t.Errorf("max_data_per_minute = %d, want 5000", merged.FetchProxy.Monitoring.MaxDataPerMinute)
+	}
+}
+
+func TestMergeAgentProfileSessionProfiling(t *testing.T) {
+	base := Defaults()
+	base.SessionProfiling.Enabled = true
+	base.SessionProfiling.AnomalyAction = ActionWarn
+	base.SessionProfiling.DomainBurst = 5
+	base.SessionProfiling.VolumeSpikeRatio = 3.0
+
+	profile := AgentProfile{
+		SessionProfiling: &AgentSessionProf{
+			DomainBurst:      10,
+			AnomalyAction:    ActionBlock,
+			VolumeSpikeRatio: 5.0,
+		},
+	}
+	merged, err := MergeAgentProfile(base, &profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if merged.SessionProfiling.DomainBurst != 10 {
+		t.Errorf("domain_burst = %d, want 10", merged.SessionProfiling.DomainBurst)
+	}
+	if merged.SessionProfiling.AnomalyAction != ActionBlock {
+		t.Errorf("anomaly_action = %q, want block", merged.SessionProfiling.AnomalyAction)
+	}
+	if merged.SessionProfiling.VolumeSpikeRatio != 5.0 {
+		t.Errorf("volume_spike_ratio = %f, want 5.0", merged.SessionProfiling.VolumeSpikeRatio)
+	}
+}
+
+func TestMergeAgentProfileMCPToolPolicy(t *testing.T) {
+	base := Defaults()
+	profile := AgentProfile{
+		MCPToolPolicy: &MCPToolPolicy{
+			Enabled: true,
+			Action:  ActionBlock,
+			Rules: []ToolPolicyRule{
+				{Name: "no-exec", ToolPattern: "exec_.*", Action: ActionBlock},
+			},
+		},
+	}
+	merged, err := MergeAgentProfile(base, &profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !merged.MCPToolPolicy.Enabled {
+		t.Error("MCPToolPolicy should be enabled")
+	}
+	if merged.MCPToolPolicy.Action != ActionBlock {
+		t.Errorf("MCPToolPolicy.Action = %q, want block", merged.MCPToolPolicy.Action)
+	}
+	if len(merged.MCPToolPolicy.Rules) != 1 {
+		t.Errorf("MCPToolPolicy.Rules = %d, want 1", len(merged.MCPToolPolicy.Rules))
+	}
+}
+
+func TestMergeAgentProfileEnforce(t *testing.T) {
+	base := Defaults()
+	f := false
+	profile := AgentProfile{
+		Enforce: &f,
+	}
+	merged, err := MergeAgentProfile(base, &profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if merged.Enforce == nil || *merged.Enforce {
+		t.Error("enforce should be false after merge")
+	}
+}
+
+func TestMergeAgentProfileNilProfile(t *testing.T) {
+	base := Defaults()
+	merged, err := MergeAgentProfile(base, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// With nil profile, merged should equal base (deep copy)
+	if merged.Mode != base.Mode {
+		t.Errorf("mode = %q, want %q", merged.Mode, base.Mode)
+	}
+	if len(merged.DLP.Patterns) != len(base.DLP.Patterns) {
+		t.Errorf("DLP patterns = %d, want %d", len(merged.DLP.Patterns), len(base.DLP.Patterns))
+	}
+}
+
+func TestValidateAgentsDuplicateListeners(t *testing.T) {
+	cfg := Defaults()
+	cfg.Agents = map[string]AgentProfile{
+		"a": {Listeners: []string{":8889"}},
+		"b": {Listeners: []string{":8889"}}, // duplicate
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for duplicate listener")
+	}
+	if !strings.Contains(err.Error(), "collides") {
+		t.Errorf("error should mention collision, got: %v", err)
+	}
+}
+
+func TestValidateAgentsDuplicateListenerWithMain(t *testing.T) {
+	cfg := Defaults()
+	cfg.Agents = map[string]AgentProfile{
+		"a": {Listeners: []string{DefaultListen}}, // collides with main listen
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for listener colliding with main listen")
+	}
+	if !strings.Contains(err.Error(), "collides") {
+		t.Errorf("error should mention collision, got: %v", err)
+	}
+}
+
+func TestValidateAgentsDuplicateListenerWithMetrics(t *testing.T) {
+	cfg := Defaults()
+	cfg.MetricsListen = "0.0.0.0:9100"
+	cfg.Agents = map[string]AgentProfile{
+		"a": {Listeners: []string{"0.0.0.0:9100"}}, // collides with metrics
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for listener colliding with metrics_listen")
+	}
+}
+
+func TestValidateAgentsDuplicateListenerWithAPIListen(t *testing.T) {
+	cfg := Defaults()
+	cfg.KillSwitch.APIListen = testAPIListen
+	cfg.KillSwitch.APIToken = testToken
+	cfg.Agents = map[string]AgentProfile{
+		"a": {Listeners: []string{testAPIListen}}, // collides with kill switch API
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for listener colliding with kill_switch.api_listen")
+	}
+}
+
+func TestValidateAgentsInvalidMode(t *testing.T) {
+	cfg := Defaults()
+	cfg.Agents = map[string]AgentProfile{
+		"bad-agent": {Mode: testInvalid},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for invalid agent mode")
+	}
+	if !strings.Contains(err.Error(), "bad-agent") {
+		t.Errorf("error should mention agent name, got: %v", err)
+	}
+}
+
+func TestValidateAgentsEmptyName(t *testing.T) {
+	cfg := Defaults()
+	cfg.Agents = map[string]AgentProfile{
+		"": {Mode: ModeStrict},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for empty agent name")
+	}
+}
+
+func TestValidateAgentsGlobalOnlyFields(t *testing.T) {
+	cfg := Defaults()
+	cfg.Agents = map[string]AgentProfile{
+		"a": {
+			SessionProfiling: &AgentSessionProf{
+				DomainBurst: 10,
+			},
+		},
+	}
+	// This should be valid: DomainBurst is per-agent
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateAgentsValidConfig(t *testing.T) {
+	cfg := Defaults()
+	cfg.Agents = map[string]AgentProfile{
+		"agent-a": {
+			Listeners:    []string{":8889"},
+			Mode:         ModeStrict,
+			APIAllowlist: []string{"github.com"},
+		},
+		"agent-b": {
+			Listeners: []string{":8890"},
+			Mode:      ModeAudit,
+		},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateAgentsInvalidListenerFormat(t *testing.T) {
+	cfg := Defaults()
+	cfg.Agents = map[string]AgentProfile{
+		"a": {Listeners: []string{"not-a-valid-address"}},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for invalid listener address")
+	}
+}
+
+func TestValidateAgentsDLPPatternInvalid(t *testing.T) {
+	cfg := Defaults()
+	cfg.Agents = map[string]AgentProfile{
+		"a": {
+			DLP: &AgentDLP{
+				Patterns: []DLPPattern{
+					{Name: "bad", Regex: "[invalid", Severity: SeverityHigh},
+				},
+			},
+		},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for invalid agent DLP regex")
+	}
+}
+
 func TestAgentProfileEmpty(t *testing.T) {
 	cfg := Defaults()
 	if cfg.Agents != nil {

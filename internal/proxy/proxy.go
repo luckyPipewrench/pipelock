@@ -42,6 +42,8 @@ const (
 	ctxKeyClientIP contextKey = iota
 	ctxKeyRequestID
 	ctxKeyAgent
+	ctxKeyAgentConfig  // per-agent resolved config for redirect scanning
+	ctxKeyAgentScanner // per-agent resolved scanner for redirect scanning
 )
 
 const (
@@ -212,9 +214,19 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 				rlog = logger.With("agent", agentName)
 			}
 			rlog.LogRedirect(originalURL, redirectURL, clientIP, requestID, agentName, len(via))
-			// Scan each redirect URL through the current scanner
-			currentCfg := p.cfgPtr.Load()
-			currentScanner := p.scannerPtr.Load()
+			// Scan redirect URL with the per-agent scanner when available.
+			// Handlers attach the resolved agent config/scanner to the
+			// request context so redirect enforcement matches the agent
+			// profile, not the global default. Falls back to the global
+			// config/scanner for backward compatibility (pre-agent paths).
+			currentCfg, _ := req.Context().Value(ctxKeyAgentConfig).(*config.Config)
+			if currentCfg == nil {
+				currentCfg = p.cfgPtr.Load()
+			}
+			currentScanner, _ := req.Context().Value(ctxKeyAgentScanner).(*scanner.Scanner)
+			if currentScanner == nil {
+				currentScanner = p.scannerPtr.Load()
+			}
 			result := currentScanner.Scan(redirectURL)
 			if !result.Allowed {
 				if currentCfg.EnforceEnabled() {
@@ -665,6 +677,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	if agent == "" {
 		agent = agentAnonymous
 	}
+	agentLabel := id.Profile // bounded cardinality for Prometheus labels
 
 	// Create a per-request sub-logger tagged with the agent name
 	log := p.logger.With("agent", agent)
@@ -719,7 +732,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	if !result.Allowed {
 		if cfg.EnforceEnabled() {
 			log.LogBlocked("GET", displayURL, result.Scanner, result.Reason, clientIP, requestID, agent)
-			p.metrics.RecordBlocked(parsed.Hostname(), result.Scanner, time.Since(start), agent)
+			p.metrics.RecordBlocked(parsed.Hostname(), result.Scanner, time.Since(start), agentLabel)
 			status := http.StatusForbidden
 			if result.Scanner == scanner.ScannerRateLimit {
 				status = http.StatusTooManyRequests
@@ -761,10 +774,27 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Fetch the URL — attach clientIP/requestID/agent to context for redirect logging
+	// Budget admission check: enforce request count and domain limits before
+	// making the outbound request. Byte budget is checked after the response.
+	if exceeded, reason := resolved.Budget.CheckAdmission(strings.ToLower(parsed.Hostname())); exceeded {
+		log.LogBlocked("GET", displayURL, "budget", reason, clientIP, requestID, agent)
+		p.metrics.RecordBlocked(parsed.Hostname(), "budget", time.Since(start), agentLabel)
+		writeJSON(w, http.StatusTooManyRequests, FetchResponse{
+			URL:         displayURL,
+			Agent:       agent,
+			Blocked:     true,
+			BlockReason: reason,
+		})
+		return
+	}
+
+	// Fetch the URL — attach clientIP/requestID/agent and resolved agent
+	// config/scanner to context for redirect logging and per-agent redirect enforcement.
 	ctx := context.WithValue(r.Context(), ctxKeyClientIP, clientIP)
 	ctx = context.WithValue(ctx, ctxKeyRequestID, requestID)
 	ctx = context.WithValue(ctx, ctxKeyAgent, agent)
+	ctx = context.WithValue(ctx, ctxKeyAgentConfig, cfg)
+	ctx = context.WithValue(ctx, ctxKeyAgentScanner, sc)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
 	if err != nil {
 		log.LogError("GET", displayURL, clientIP, requestID, agent, err)
@@ -785,7 +815,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(err.Error(), "redirect blocked:") {
 			reason := err.Error()
 			log.LogBlocked("GET", displayURL, "redirect", reason, clientIP, requestID, agent)
-			p.metrics.RecordBlocked(parsed.Hostname(), "redirect", time.Since(start), agent)
+			p.metrics.RecordBlocked(parsed.Hostname(), "redirect", time.Since(start), agentLabel)
 			resp := FetchResponse{
 				URL:         displayURL,
 				Agent:       agent,
@@ -881,8 +911,15 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// Record response size for per-domain data budget tracking
 	sc.RecordRequest(strings.ToLower(parsed.Hostname()), len(body))
 
+	// Byte budget: record after response is read. If exceeded, the request
+	// already succeeded so we log but don't block retroactively. The next
+	// request will be admission-blocked by CheckAdmission.
+	if exceeded, reason := resolved.Budget.RecordBytes(len(body)); exceeded {
+		log.LogAnomaly("GET", displayURL, "budget", reason, clientIP, requestID, agent, 0.8)
+	}
+
 	duration := time.Since(start)
-	p.metrics.RecordAllowed(duration, agent)
+	p.metrics.RecordAllowed(duration, agentLabel)
 	log.LogAllowed("GET", displayURL, clientIP, requestID, resp.StatusCode, len(body), duration, agent)
 
 	writeJSON(w, http.StatusOK, FetchResponse{

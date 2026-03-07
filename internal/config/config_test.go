@@ -5122,6 +5122,32 @@ func TestLicenseKeyOmitted(t *testing.T) {
 	}
 }
 
+func TestValidateAgentsNegativeBudget(t *testing.T) {
+	fields := []struct {
+		name   string
+		modify func(*BudgetConfig)
+	}{
+		{"max_requests_per_session", func(b *BudgetConfig) { b.MaxRequestsPerSession = -1 }},
+		{"max_bytes_per_session", func(b *BudgetConfig) { b.MaxBytesPerSession = -1 }},
+		{"max_unique_domains_per_session", func(b *BudgetConfig) { b.MaxUniqueDomainsPerSession = -1 }},
+		{"window_minutes", func(b *BudgetConfig) { b.WindowMinutes = -1 }},
+	}
+	for _, tt := range fields {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Defaults()
+			budget := BudgetConfig{}
+			tt.modify(&budget)
+			cfg.Agents = map[string]AgentProfile{
+				"test": {Budget: budget},
+			}
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatalf("expected validation error for negative %s", tt.name)
+			}
+		})
+	}
+}
+
 func TestAgentProfileZeroBudget(t *testing.T) {
 	var b BudgetConfig
 	if b.MaxRequestsPerSession != 0 {

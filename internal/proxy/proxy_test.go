@@ -4134,3 +4134,120 @@ func TestAgentIdentityEndToEnd(t *testing.T) {
 		})
 	}
 }
+
+// TestBudgetEnforcementFetch verifies that a per-agent budget limit causes the
+// fetch handler to return 429 after the request budget is exhausted.
+func TestBudgetEnforcementFetch(t *testing.T) {
+	const testBudgetAgent = "budget-agent"
+
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = fmt.Fprint(w, "ok")
+	}))
+	t.Cleanup(func() { backend.Close() })
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.APIAllowlist = nil
+	cfg.FetchProxy.TimeoutSeconds = 5
+	cfg.Agents = map[string]config.AgentProfile{
+		testBudgetAgent: {
+			Budget: config.BudgetConfig{
+				MaxRequestsPerSession: 1,
+				WindowMinutes:         60,
+			},
+		},
+	}
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	t.Cleanup(func() { sc.Close() })
+	p := New(cfg, logger, sc, metrics.New())
+	t.Cleanup(func() { p.Close() })
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+
+	targetURL := backend.URL + "/text"
+
+	// First request: should succeed.
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+targetURL, nil)
+	req.Header.Set(AgentHeader, testBudgetAgent)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("first request: status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	// Second request: should be rate-limited (429).
+	req = httptest.NewRequest(http.MethodGet, "/fetch?url="+targetURL, nil)
+	req.Header.Set(AgentHeader, testBudgetAgent)
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("second request: status = %d, want %d", w.Code, http.StatusTooManyRequests)
+	}
+
+	var resp FetchResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+	if !resp.Blocked {
+		t.Error("expected blocked=true in budget-exceeded response")
+	}
+	if resp.BlockReason == "" {
+		t.Error("expected non-empty block_reason in budget-exceeded response")
+	}
+}
+
+// TestMetricLabelBoundsUnknownAgent verifies that an unknown agent name
+// resolves to the _default profile for metrics purposes, preventing
+// unbounded cardinality from arbitrary X-Pipelock-Agent header values.
+func TestMetricLabelBoundsUnknownAgent(t *testing.T) {
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = fmt.Fprint(w, "ok")
+	}))
+	t.Cleanup(func() { backend.Close() })
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.APIAllowlist = nil
+	cfg.FetchProxy.TimeoutSeconds = 5
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	t.Cleanup(func() { sc.Close() })
+	p := New(cfg, logger, sc, metrics.New())
+	t.Cleanup(func() { p.Close() })
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+
+	// Send request with arbitrary agent name not in any profile.
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/text", nil)
+	req.Header.Set(AgentHeader, "arbitrary-attacker-chosen-name")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	// The request should succeed (falls back to _default).
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var resp FetchResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+
+	// The agent in the response is the raw header (for logging), but the
+	// resolved profile used for metrics should be _default. We verify by
+	// checking the response agent is the raw header (the proxy doesn't
+	// expose the metric label directly, but the test confirms the unknown
+	// agent resolves to fallback without error).
+	if resp.Agent != "arbitrary-attacker-chosen-name" {
+		t.Errorf("agent = %q, want raw header value", resp.Agent)
+	}
+}

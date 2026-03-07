@@ -42,6 +42,60 @@ func NewBudgetTracker(cfg *config.BudgetConfig) *BudgetTracker {
 	}
 }
 
+// CheckAdmission verifies request count and domain budget limits, then records
+// the request. Call BEFORE making the outbound request. Byte budget is tracked
+// separately via RecordBytes. Thread-safe.
+// A nil tracker always returns (false, "").
+func (b *BudgetTracker) CheckAdmission(domain string) (bool, string) {
+	if b == nil {
+		return false, ""
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	b.maybeResetWindow()
+
+	if b.cfg.MaxRequestsPerSession > 0 && b.requestCount >= b.cfg.MaxRequestsPerSession {
+		return true, fmt.Sprintf("request budget exceeded: %d/%d requests",
+			b.requestCount, b.cfg.MaxRequestsPerSession)
+	}
+
+	if b.cfg.MaxUniqueDomainsPerSession > 0 {
+		if _, seen := b.uniqueDomains[domain]; !seen {
+			if len(b.uniqueDomains) >= b.cfg.MaxUniqueDomainsPerSession {
+				return true, fmt.Sprintf("domain budget exceeded: %d/%d unique domains",
+					len(b.uniqueDomains)+1, b.cfg.MaxUniqueDomainsPerSession)
+			}
+		}
+	}
+
+	b.requestCount++
+	b.uniqueDomains[domain] = struct{}{}
+
+	return false, ""
+}
+
+// RecordBytes adds bytes to the budget counter and checks the byte limit.
+// Call AFTER reading the response. Thread-safe.
+// A nil tracker always returns (false, "").
+func (b *BudgetTracker) RecordBytes(bytes int) (bool, string) {
+	if b == nil {
+		return false, ""
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	b.byteCount += bytes
+	if b.cfg.MaxBytesPerSession > 0 && b.byteCount > b.cfg.MaxBytesPerSession {
+		return true, fmt.Sprintf("byte budget exceeded: %d/%d bytes",
+			b.byteCount, b.cfg.MaxBytesPerSession)
+	}
+
+	return false, ""
+}
+
 // RecordRequest checks budget limits and records the request if within budget.
 // Returns (exceeded bool, reason string). Thread-safe.
 // A nil tracker always returns (false, "").

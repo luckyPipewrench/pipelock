@@ -1522,6 +1522,20 @@ func (c *Config) validateAgents() error {
 				}
 			}
 		}
+
+		// Validate budget fields are non-negative
+		if profile.Budget.MaxRequestsPerSession < 0 {
+			return fmt.Errorf("agent %q: budget.max_requests_per_session must be >= 0", name)
+		}
+		if profile.Budget.MaxBytesPerSession < 0 {
+			return fmt.Errorf("agent %q: budget.max_bytes_per_session must be >= 0", name)
+		}
+		if profile.Budget.MaxUniqueDomainsPerSession < 0 {
+			return fmt.Errorf("agent %q: budget.max_unique_domains_per_session must be >= 0", name)
+		}
+		if profile.Budget.WindowMinutes < 0 {
+			return fmt.Errorf("agent %q: budget.window_minutes must be >= 0", name)
+		}
 	}
 
 	return nil

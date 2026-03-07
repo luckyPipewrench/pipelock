@@ -315,6 +315,105 @@ func TestBudgetPartialConfig(t *testing.T) {
 	}
 }
 
+func TestCheckAdmissionRequestLimit(t *testing.T) {
+	budget := config.BudgetConfig{
+		MaxRequestsPerSession: 2,
+		WindowMinutes:         60,
+	}
+	tracker := NewBudgetTracker(&budget)
+
+	// Two admissions should succeed.
+	for i := range 2 {
+		exceeded, _ := tracker.CheckAdmission(testDomainA)
+		if exceeded {
+			t.Fatalf("admission %d should not exceed", i+1)
+		}
+	}
+
+	// Third should be rejected.
+	exceeded, reason := tracker.CheckAdmission(testDomainA)
+	if !exceeded {
+		t.Fatal("expected admission rejected after 2 requests")
+	}
+	if reason == "" {
+		t.Fatal("expected non-empty reason")
+	}
+}
+
+func TestCheckAdmissionDomainLimit(t *testing.T) {
+	budget := config.BudgetConfig{
+		MaxUniqueDomainsPerSession: 1,
+		WindowMinutes:              60,
+	}
+	tracker := NewBudgetTracker(&budget)
+
+	// First domain: allowed.
+	exceeded, _ := tracker.CheckAdmission(testDomainA)
+	if exceeded {
+		t.Fatal("first domain should be admitted")
+	}
+
+	// Same domain again: allowed (not new).
+	exceeded, _ = tracker.CheckAdmission(testDomainA)
+	if exceeded {
+		t.Fatal("same domain should still be admitted")
+	}
+
+	// New domain: rejected.
+	exceeded, reason := tracker.CheckAdmission(testDomainB)
+	if !exceeded {
+		t.Fatal("second unique domain should be rejected")
+	}
+	if reason == "" {
+		t.Fatal("expected non-empty reason")
+	}
+}
+
+func TestCheckAdmissionNil(t *testing.T) {
+	var tracker *BudgetTracker
+	exceeded, reason := tracker.CheckAdmission(testDomainA)
+	if exceeded {
+		t.Fatal("nil tracker should never report exceeded")
+	}
+	if reason != "" {
+		t.Fatalf("nil tracker should return empty reason, got %q", reason)
+	}
+}
+
+func TestRecordBytesLimit(t *testing.T) {
+	budget := config.BudgetConfig{
+		MaxBytesPerSession: 200,
+		WindowMinutes:      60,
+	}
+	tracker := NewBudgetTracker(&budget)
+
+	// Record 150 bytes: within budget.
+	exceeded, _ := tracker.RecordBytes(150)
+	if exceeded {
+		t.Fatal("150 bytes should fit in 200-byte budget")
+	}
+
+	// Record 100 more: 250 > 200, should exceed.
+	exceeded, reason := tracker.RecordBytes(100)
+	if !exceeded {
+		t.Fatal("expected byte budget exceeded at 250/200")
+	}
+	if reason == "" {
+		t.Fatal("expected non-empty reason")
+	}
+}
+
+func TestRecordBytesNil(t *testing.T) {
+	var tracker *BudgetTracker
+	exceeded, reason := tracker.RecordBytes(1000)
+	if exceeded {
+		t.Fatal("nil tracker should never report exceeded")
+	}
+	if reason != "" {
+		t.Fatalf("nil tracker should return empty reason, got %q", reason)
+	}
+}
+
 func TestBudgetWindowResetsAllCounters(t *testing.T) {
 	budget := config.BudgetConfig{
 		MaxRequestsPerSession:      2,

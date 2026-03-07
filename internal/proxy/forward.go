@@ -91,6 +91,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if agent == "" {
 		agent = agentAnonymous
 	}
+	agentLabel := id.Profile // bounded cardinality for Prometheus labels
 
 	target := r.Host
 	if target == "" {
@@ -125,7 +126,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if !result.Allowed {
 		if cfg.EnforceEnabled() {
 			p.logger.LogBlocked(http.MethodConnect, target, result.Scanner, result.Reason, clientIP, requestID, agent)
-			p.metrics.RecordTunnelBlocked(agent)
+			p.metrics.RecordTunnelBlocked(agentLabel)
 			if cfg.ExplainBlocksEnabled() && result.Hint != "" {
 				w.Header().Set("X-Pipelock-Hint", result.Hint)
 			}
@@ -139,6 +140,14 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	if sessionBlocked {
 		http.Error(w, sessionDetail, http.StatusForbidden)
+		return
+	}
+
+	// Budget admission check: enforce request count and domain limits.
+	if exceeded, reason := resolved.Budget.CheckAdmission(strings.ToLower(host)); exceeded {
+		p.logger.LogBlocked(http.MethodConnect, target, "budget", reason, clientIP, requestID, agent)
+		p.metrics.RecordTunnelBlocked(agentLabel)
+		http.Error(w, "CONNECT blocked: "+reason, http.StatusTooManyRequests)
 		return
 	}
 
@@ -208,7 +217,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if cfg.ForwardProxy.SNIVerificationEnabled() {
 		resized, sniHost, category, sniErr := verifySNI(clientReader, clientConn, host, sniReadTimeoutDefault)
 		clientReader = resized
-		p.metrics.RecordSNI(category, agent)
+		p.metrics.RecordSNI(category, agentLabel)
 		if sniErr != nil {
 			p.logger.LogSNIMismatch(host, sniHost, clientIP, requestID, category)
 			return // close both connections via deferred Close()
@@ -262,11 +271,15 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	p.metrics.DecrActiveTunnels()
 	duration := time.Since(start)
-	p.metrics.RecordTunnel(duration, totalBytes, agent)
+	p.metrics.RecordTunnel(duration, totalBytes, agentLabel)
 	p.logger.LogTunnelClose(target, clientIP, requestID, agent, totalBytes, duration)
 
 	// Record data budget for the target domain
 	sc.RecordRequest(strings.ToLower(host), int(totalBytes))
+
+	// Record tunnel bytes for per-agent budget tracking (not enforced
+	// retroactively; the next request will be admission-blocked).
+	resolved.Budget.RecordBytes(int(totalBytes))
 }
 
 // bidirectionalCopy relays data between two connections with idle timeout.
@@ -345,6 +358,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	if agent == "" {
 		agent = agentAnonymous
 	}
+	agentLabel := id.Profile // bounded cardinality for Prometheus labels
 
 	targetURL := r.URL.String()
 
@@ -358,7 +372,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	if !result.Allowed {
 		if cfg.EnforceEnabled() {
 			p.logger.LogBlocked(r.Method, targetURL, result.Scanner, result.Reason, clientIP, requestID, agent)
-			p.metrics.RecordBlocked(r.URL.Hostname(), result.Scanner, time.Since(start), agent)
+			p.metrics.RecordBlocked(r.URL.Hostname(), result.Scanner, time.Since(start), agentLabel)
 			if cfg.ExplainBlocksEnabled() && result.Hint != "" {
 				w.Header().Set("X-Pipelock-Hint", result.Hint)
 			}
@@ -371,6 +385,14 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if sessionBlocked {
 		http.Error(w, sessionDetail, http.StatusForbidden)
+		return
+	}
+
+	// Budget admission check: enforce request count and domain limits.
+	if exceeded, reason := resolved.Budget.CheckAdmission(strings.ToLower(r.URL.Hostname())); exceeded {
+		p.logger.LogBlocked(r.Method, targetURL, "budget", reason, clientIP, requestID, agent)
+		p.metrics.RecordBlocked(r.URL.Hostname(), "budget", time.Since(start), agentLabel)
+		http.Error(w, "blocked: "+reason, http.StatusTooManyRequests)
 		return
 	}
 
@@ -392,20 +414,20 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 
 			p.logger.LogBodyDLP(r.Method, targetURL, action, clientIP, requestID, agent, len(bodyResult.DLPMatches), patternNames)
-			p.metrics.RecordBodyDLP(action, agent)
+			p.metrics.RecordBodyDLP(action, agentLabel)
 
 			// Fail-closed: when buf is nil the body was consumed but couldn't
 			// be buffered (oversize, compressed, read error, multipart parse
 			// error). Always block regardless of enforce mode — forwarding an
 			// empty body corrupts the upstream request.
 			if buf == nil {
-				p.metrics.RecordBlocked(r.URL.Hostname(), "body_dlp", time.Since(start), agent)
+				p.metrics.RecordBlocked(r.URL.Hostname(), "body_dlp", time.Since(start), agentLabel)
 				http.Error(w, "blocked: "+reason, http.StatusForbidden)
 				return
 			}
 
 			if action == config.ActionBlock && cfg.EnforceEnabled() {
-				p.metrics.RecordBlocked(r.URL.Hostname(), "body_dlp", time.Since(start), agent)
+				p.metrics.RecordBlocked(r.URL.Hostname(), "body_dlp", time.Since(start), agentLabel)
 				http.Error(w, "blocked: "+reason, http.StatusForbidden)
 				return
 			}
@@ -422,10 +444,13 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Clone request with context keys so CheckRedirect can attribute audit logs
+	// Clone request with context keys so CheckRedirect uses the per-agent
+	// config/scanner for redirect enforcement, not the global default.
 	ctx := context.WithValue(r.Context(), ctxKeyClientIP, clientIP)
 	ctx = context.WithValue(ctx, ctxKeyRequestID, requestID)
 	ctx = context.WithValue(ctx, ctxKeyAgent, agent)
+	ctx = context.WithValue(ctx, ctxKeyAgentConfig, cfg)
+	ctx = context.WithValue(ctx, ctxKeyAgentScanner, sc)
 	outReq := r.Clone(ctx)
 	outReq.RequestURI = "" // required for http.Client
 	removeHopByHopHeaders(outReq.Header)
@@ -463,8 +488,11 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// Record data budget for the target domain
 	sc.RecordRequest(strings.ToLower(r.URL.Hostname()), int(written))
 
+	// Record bytes for per-agent budget tracking.
+	resolved.Budget.RecordBytes(int(written))
+
 	duration := time.Since(start)
-	p.metrics.RecordAllowed(duration, agent)
+	p.metrics.RecordAllowed(duration, agentLabel)
 	p.logger.LogForwardHTTP(r.Method, targetURL, clientIP, requestID, agent, resp.StatusCode, int(written), duration)
 }
 

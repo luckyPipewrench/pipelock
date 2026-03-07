@@ -488,6 +488,15 @@ Examples:
 			if agentListenerCount > 0 {
 				handler := p.Handler()
 				agentListenerErrs = make(chan error, agentListenerCount)
+
+				// Agent listeners use the same WriteTimeout logic as the main
+				// server: disabled when forward proxy or WebSocket proxy is
+				// enabled (CONNECT tunnels and /ws sessions are long-lived).
+				agentWriteTimeout := time.Duration(cfg.FetchProxy.TimeoutSeconds+10) * time.Second
+				if cfg.ForwardProxy.Enabled || cfg.WebSocketProxy.Enabled {
+					agentWriteTimeout = 0
+				}
+
 				for name, profile := range cfg.Agents {
 					for _, addr := range profile.Listeners {
 						ln, lnErr := (&net.ListenConfig{}).Listen(ctx, "tcp", addr)
@@ -498,7 +507,7 @@ Examples:
 							Handler:           agentHandler(name, handler),
 							ReadTimeout:       10 * time.Second,
 							ReadHeaderTimeout: 5 * time.Second,
-							WriteTimeout:      10 * time.Second,
+							WriteTimeout:      agentWriteTimeout,
 							IdleTimeout:       120 * time.Second, // matches main server idle timeout
 						}
 						go func() {

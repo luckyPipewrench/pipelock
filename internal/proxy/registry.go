@@ -19,6 +19,7 @@ type ResolvedAgent struct {
 	Name    string
 	Config  *config.Config
 	Scanner *scanner.Scanner
+	Budget  *BudgetTracker
 }
 
 // AgentRegistry maps agent profile names to resolved agents. Built at
@@ -47,6 +48,7 @@ func NewAgentRegistry(base *config.Config) (*AgentRegistry, error) {
 			Name:    name,
 			Config:  merged,
 			Scanner: sc,
+			Budget:  NewBudgetTracker(&profile.Budget),
 		}
 		reg.agents[name] = resolved
 

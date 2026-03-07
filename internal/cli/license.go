@@ -273,7 +273,9 @@ func appendLedger(path string, lic license.License, token string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close() //nolint:errcheck // best-effort
-	_, err = f.Write(data)
-	return err
+	if _, err = f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
 }

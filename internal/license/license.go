@@ -47,6 +47,12 @@ func Issue(l License, privateKey ed25519.PrivateKey) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("marshal license: %w", err)
 	}
+	// Cap payload size to prevent overflow in the allocation below.
+	// License JSON is a small struct; 64KB is generous.
+	const maxPayload = 64 * 1024
+	if len(payload) > maxPayload {
+		return "", fmt.Errorf("license payload too large: %d bytes", len(payload))
+	}
 	sig := ed25519.Sign(privateKey, payload)
 	token := make([]byte, len(payload)+ed25519.SignatureSize)
 	copy(token, payload)

@@ -3930,3 +3930,207 @@ func TestProxy_KnownProfiles_NoAgents(t *testing.T) {
 		t.Errorf("expected 0 profiles, got %d: %v", len(profiles), profiles)
 	}
 }
+
+// TestWithAgentOverride_ContextWins verifies that WithAgentOverride injects a
+// context value that ResolveAgent prefers over the X-Pipelock-Agent header.
+func TestWithAgentOverride_ContextWins(t *testing.T) {
+	const (
+		testOverrideProfile = "port-bound-agent"
+		testHeaderAgent     = "header-agent"
+	)
+
+	known := map[string]bool{
+		testHeaderAgent:     true,
+		testOverrideProfile: true,
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url=http://example.com", nil)
+	req.Header.Set(AgentHeader, testHeaderAgent)
+
+	// Inject context override (simulating port-bound listener).
+	ctx := WithAgentOverride(req.Context(), testOverrideProfile)
+	req = req.WithContext(ctx)
+
+	id := ResolveAgent(req, known)
+	if id.Name != testOverrideProfile {
+		t.Errorf("Name = %q, want %q", id.Name, testOverrideProfile)
+	}
+	if id.Profile != testOverrideProfile {
+		t.Errorf("Profile = %q, want %q", id.Profile, testOverrideProfile)
+	}
+}
+
+// TestProxy_ResolveAgent_NilRegistry verifies that resolveAgent returns the
+// base config fallback when no agent registry has been set on the proxy.
+func TestProxy_ResolveAgent_NilRegistry(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+
+	sc := scanner.New(cfg)
+	t.Cleanup(func() { sc.Close() })
+
+	// Construct a proxy without calling New() so registryPtr stays nil.
+	p := &Proxy{
+		logger:  audit.NewNop(),
+		metrics: metrics.New(),
+	}
+	p.cfgPtr.Store(cfg)
+	p.scannerPtr.Store(sc)
+	// registryPtr intentionally not set (zero value = nil).
+
+	resolved := p.resolveAgent("any-profile")
+	if resolved.Name != profileDefault {
+		t.Errorf("Name = %q, want %q", resolved.Name, profileDefault)
+	}
+	if resolved.Config != cfg {
+		t.Error("expected resolved config to be the base config")
+	}
+	if resolved.Scanner != sc {
+		t.Error("expected resolved scanner to be the base scanner")
+	}
+}
+
+// TestProxy_KnownProfiles_NilRegistry verifies that knownProfiles returns nil
+// when no agent registry has been set on the proxy.
+func TestProxy_KnownProfiles_NilRegistry(t *testing.T) {
+	// Construct a minimal proxy without calling New() so registryPtr stays nil.
+	p := &Proxy{
+		logger:  audit.NewNop(),
+		metrics: metrics.New(),
+	}
+
+	profiles := p.knownProfiles()
+	if profiles != nil {
+		t.Errorf("expected nil, got %v", profiles)
+	}
+}
+
+// TestAgentIdentityEndToEnd exercises per-agent scanner behavior through the
+// fetch proxy. Two agent profiles are configured: "strict-agent" (mode=strict,
+// enforce=true) and "audit-agent" (mode=audit, enforce=false). A request to a
+// blocklisted domain is sent with each agent header. The strict agent should
+// block (403), the audit agent should allow (200), and an unknown agent should
+// fall back to _default behavior (balanced, enforce=true = block).
+func TestAgentIdentityEndToEnd(t *testing.T) {
+	const (
+		testStrictAgent  = "strict-agent"
+		testAuditAgent   = "audit-agent"
+		testUnknownAgent = "unknown-agent"
+	)
+
+	// Backend that always responds with plain text.
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = fmt.Fprint(w, "hello from backend")
+	}))
+	t.Cleanup(func() { backend.Close() })
+
+	enforceTrue := true
+	enforceFalse := false
+
+	cfg := config.Defaults()
+	cfg.Internal = nil // disable SSRF for test backend on 127.0.0.1
+	cfg.APIAllowlist = nil
+	cfg.FetchProxy.TimeoutSeconds = 5
+	cfg.Agents = map[string]config.AgentProfile{
+		testStrictAgent: {
+			Mode:    config.ModeStrict,
+			Enforce: &enforceTrue,
+		},
+		testAuditAgent: {
+			Mode:    config.ModeAudit,
+			Enforce: &enforceFalse,
+		},
+	}
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	t.Cleanup(func() { sc.Close() })
+	p := New(cfg, logger, sc, metrics.New())
+	t.Cleanup(func() { p.Close() })
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+
+	// blocklisted URL (*.pastebin.com is in the default blocklist).
+	blockedURL := "https://pastebin.com/raw/abc"
+	// allowed URL (the test backend, which is not blocklisted).
+	allowedURL := backend.URL + "/text"
+
+	tests := []struct {
+		name       string
+		agent      string
+		url        string
+		wantStatus int
+		wantBlock  bool
+		wantAgent  string // expected agent name in response
+	}{
+		{
+			name:       "strict agent blocks blocklisted domain",
+			agent:      testStrictAgent,
+			url:        blockedURL,
+			wantStatus: http.StatusForbidden,
+			wantBlock:  true,
+			wantAgent:  testStrictAgent,
+		},
+		{
+			name:       "audit agent allows blocklisted domain",
+			agent:      testAuditAgent,
+			url:        blockedURL,
+			wantStatus: http.StatusOK,
+			wantBlock:  false,
+			wantAgent:  testAuditAgent,
+		},
+		{
+			name:       "strict agent allows clean URL",
+			agent:      testStrictAgent,
+			url:        allowedURL,
+			wantStatus: http.StatusOK,
+			wantBlock:  false,
+			wantAgent:  testStrictAgent,
+		},
+		{
+			name:       "unknown agent falls back to _default and blocks",
+			agent:      testUnknownAgent,
+			url:        blockedURL,
+			wantStatus: http.StatusForbidden,
+			wantBlock:  true,
+			wantAgent:  testUnknownAgent,
+		},
+		{
+			name:       "no agent header falls back to _default and blocks",
+			agent:      "",
+			url:        blockedURL,
+			wantStatus: http.StatusForbidden,
+			wantBlock:  true,
+			wantAgent:  agentAnonymous,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/fetch?url="+tt.url, nil)
+			if tt.agent != "" {
+				req.Header.Set(AgentHeader, tt.agent)
+			}
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, req)
+
+			if w.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d", w.Code, tt.wantStatus)
+			}
+
+			var resp FetchResponse
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("invalid JSON response: %v", err)
+			}
+
+			if resp.Blocked != tt.wantBlock {
+				t.Errorf("blocked = %v, want %v", resp.Blocked, tt.wantBlock)
+			}
+			if resp.Agent != tt.wantAgent {
+				t.Errorf("agent = %q, want %q", resp.Agent, tt.wantAgent)
+			}
+		})
+	}
+}

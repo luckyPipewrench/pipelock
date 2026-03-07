@@ -5,10 +5,17 @@ package proxy
 
 import (
 	"fmt"
+	"net"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
+
+// cidrMapping maps a parsed network to the agent profile name that owns it.
+type cidrMapping struct {
+	network *net.IPNet
+	profile string
+}
 
 // profileDefault is the reserved name for the default agent profile.
 const profileDefault = "_default"
@@ -27,6 +34,7 @@ type ResolvedAgent struct {
 type AgentRegistry struct {
 	agents   map[string]*ResolvedAgent
 	ports    map[string]string // listen addr -> profile name
+	cidrs    []cidrMapping     // source CIDR -> profile name
 	fallback *ResolvedAgent
 }
 
@@ -65,6 +73,12 @@ func NewAgentRegistry(base *config.Config) (_ *AgentRegistry, err error) {
 				return nil, fmt.Errorf("listener %q is assigned to both %q and %q", addr, prev, name)
 			}
 			reg.ports[addr] = name
+		}
+
+		// Parse source CIDRs (already validated in config.Validate).
+		for _, cidr := range profile.SourceCIDRs {
+			_, network, _ := net.ParseCIDR(cidr) // safe: validated at config load
+			reg.cidrs = append(reg.cidrs, cidrMapping{network: network, profile: name})
 		}
 	}
 
@@ -123,6 +137,18 @@ func (r *AgentRegistry) Ports() map[string]string {
 		out[addr] = name
 	}
 	return out
+}
+
+// MatchCIDR returns the agent profile name whose source_cidrs contain ip.
+// Returns ("", false) if no CIDR matches. Linear scan is acceptable because
+// the number of agent profiles is small (typically <20).
+func (r *AgentRegistry) MatchCIDR(ip net.IP) (string, bool) {
+	for _, m := range r.cidrs {
+		if m.network.Contains(ip) {
+			return m.profile, true
+		}
+	}
+	return "", false
 }
 
 // Profiles returns all configured agent profile names (excluding fallback

@@ -4,6 +4,7 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -4668,6 +4669,7 @@ func TestConfigHash_DifferentTLSConfig(t *testing.T) {
 func TestAgentProfileParsing(t *testing.T) {
 	yamlContent := `
 mode: balanced
+license_key: test-license
 agents:
   claude-code:
     mode: strict
@@ -5198,5 +5200,152 @@ func TestAgentProfileZeroBudget(t *testing.T) {
 	}
 	if b.WindowMinutes != 0 {
 		t.Error("zero BudgetConfig should have WindowMinutes = 0")
+	}
+}
+
+func TestValidateAgentSourceCIDRs(t *testing.T) {
+	cfg := Defaults()
+	cfg.Agents = map[string]AgentProfile{
+		"agent-a": {SourceCIDRs: []string{"10.0.0.0/24"}},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid CIDR should pass: %v", err)
+	}
+}
+
+func TestValidateAgentSourceCIDRsInvalid(t *testing.T) {
+	cfg := Defaults()
+	cfg.Agents = map[string]AgentProfile{
+		"agent-a": {SourceCIDRs: []string{"not-a-cidr"}},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for invalid CIDR")
+	}
+}
+
+func TestValidateAgentSourceCIDRsDuplicate(t *testing.T) {
+	cfg := Defaults()
+	cfg.Agents = map[string]AgentProfile{
+		"agent-a": {SourceCIDRs: []string{"10.0.0.0/24"}},
+		"agent-b": {SourceCIDRs: []string{"10.0.0.0/24"}},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for duplicate CIDR across agents")
+	}
+}
+
+func TestValidateAgentSourceCIDRsContainmentOverlap(t *testing.T) {
+	cfg := Defaults()
+	cfg.Agents = map[string]AgentProfile{
+		"agent-a": {SourceCIDRs: []string{"10.0.0.0/16"}},
+		"agent-b": {SourceCIDRs: []string{"10.0.1.0/24"}}, // contained within /16
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for CIDR containment overlap")
+	}
+}
+
+func TestValidateAgentSourceCIDRsSameAgentOverlapAllowed(t *testing.T) {
+	cfg := Defaults()
+	cfg.Agents = map[string]AgentProfile{
+		"claude": {SourceCIDRs: []string{"10.0.0.0/16", "10.0.1.0/24"}},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("same-agent CIDR overlap should be allowed, got: %v", err)
+	}
+}
+
+func TestEnforceLicenseGate_NoAgents(t *testing.T) {
+	cfg := Defaults()
+	var buf bytes.Buffer
+	cfg.EnforceLicenseGate(&buf)
+	if buf.Len() > 0 {
+		t.Error("no warning expected when no agents configured")
+	}
+}
+
+func TestEnforceLicenseGate_WithLicenseKey(t *testing.T) {
+	cfg := Defaults()
+	cfg.LicenseKey = "test-license-key"
+	cfg.Agents = map[string]AgentProfile{
+		"agent-a": {Mode: ModeAudit},
+	}
+	var buf bytes.Buffer
+	cfg.EnforceLicenseGate(&buf)
+	if buf.Len() > 0 {
+		t.Error("no warning expected when license key is present")
+	}
+	if cfg.Agents == nil {
+		t.Error("agents should NOT be disabled when license key is present")
+	}
+}
+
+func TestEnforceLicenseGate_NoLicenseKey(t *testing.T) {
+	cfg := Defaults()
+	cfg.Agents = map[string]AgentProfile{
+		"agent-a": {Mode: ModeAudit},
+	}
+	var buf bytes.Buffer
+	cfg.EnforceLicenseGate(&buf)
+	if buf.Len() == 0 {
+		t.Error("expected warning when agents configured without license key")
+	}
+	if cfg.Agents != nil {
+		t.Error("agents should be disabled (nil) without license key")
+	}
+}
+
+func TestEnforceLicenseGate_OnlyDefault(t *testing.T) {
+	cfg := Defaults()
+	cfg.Agents = map[string]AgentProfile{
+		"_default": {Mode: ModeAudit},
+	}
+	var buf bytes.Buffer
+	cfg.EnforceLicenseGate(&buf)
+	if buf.Len() > 0 {
+		t.Error("no warning expected for _default-only agents (no premium features)")
+	}
+	if cfg.Agents == nil {
+		t.Error("_default agent should NOT be disabled")
+	}
+}
+
+func TestLicenseGateViaLoad(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "cfg.yaml")
+
+	// Config with agents but no license key.
+	data := "mode: balanced\nagents:\n  claude-code:\n    mode: audit\n"
+	_ = os.WriteFile(cfgPath, []byte(data), 0o600)
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Agents != nil {
+		t.Error("agents should be disabled by license gate when loaded without license_key")
+	}
+}
+
+func TestLicenseGateViaLoad_WithKey(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "cfg.yaml")
+
+	// Config with agents AND license key.
+	data := "mode: balanced\nlicense_key: pro-license-123\nagents:\n  claude-code:\n    mode: audit\n"
+	_ = os.WriteFile(cfgPath, []byte(data), 0o600)
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Agents == nil {
+		t.Error("agents should NOT be disabled when license_key is present")
+	}
+	if _, ok := cfg.Agents["claude-code"]; !ok {
+		t.Error("claude-code profile should be present")
 	}
 }

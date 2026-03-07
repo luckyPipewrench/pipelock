@@ -4,6 +4,7 @@
 package proxy
 
 import (
+	"net"
 	"sort"
 	"testing"
 
@@ -279,5 +280,70 @@ func TestAgentRegistryDefaultProfileOverridesFallback(t *testing.T) {
 	agent := reg.Lookup("nonexistent")
 	if agent.Config.Mode != config.ModeStrict {
 		t.Errorf("fallback mode = %q, want strict (_default profile should override base)", agent.Config.Mode)
+	}
+}
+
+func TestAgentRegistryMatchCIDR(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.Agents = map[string]config.AgentProfile{
+		testProfileClaudeCode: {SourceCIDRs: []string{"10.0.0.0/24"}},
+		testProfileCursor:     {SourceCIDRs: []string{"172.16.5.0/24", "192.168.1.0/24"}},
+	}
+
+	reg, err := NewAgentRegistry(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reg.Close()
+
+	tests := []struct {
+		ip     string
+		want   string
+		wantOK bool
+	}{
+		{"10.0.0.42", testProfileClaudeCode, true},
+		{"10.0.0.1", testProfileClaudeCode, true},
+		{"172.16.5.100", testProfileCursor, true},
+		{"192.168.1.1", testProfileCursor, true},
+		{"8.8.8.8", "", false},    // no match
+		{"10.0.1.1", "", false},   // outside /24
+		{"172.16.6.1", "", false}, // wrong subnet
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.ip, func(t *testing.T) {
+			ip := net.ParseIP(tt.ip)
+			if ip == nil {
+				t.Fatalf("failed to parse IP %q", tt.ip)
+			}
+			got, ok := reg.MatchCIDR(ip)
+			if ok != tt.wantOK {
+				t.Errorf("MatchCIDR(%s) ok = %v, want %v", tt.ip, ok, tt.wantOK)
+			}
+			if got != tt.want {
+				t.Errorf("MatchCIDR(%s) = %q, want %q", tt.ip, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAgentRegistryMatchCIDR_NoCIDRs(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.Agents = map[string]config.AgentProfile{
+		testProfileClaudeCode: {Mode: config.ModeStrict},
+	}
+
+	reg, err := NewAgentRegistry(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reg.Close()
+
+	// No CIDRs configured, all IPs should return false
+	_, ok := reg.MatchCIDR(net.ParseIP("10.0.0.1"))
+	if ok {
+		t.Error("expected no match when no CIDRs configured")
 	}
 }

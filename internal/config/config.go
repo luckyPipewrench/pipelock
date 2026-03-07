@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"os"
@@ -175,7 +176,7 @@ type Config struct {
 	MCPWSListener       MCPWSListener           `yaml:"mcp_ws_listener"`
 	TLSInterception     TLSInterception         `yaml:"tls_interception"`
 	Agents              map[string]AgentProfile `yaml:"agents,omitempty"`
-	LicenseKey          string                  `yaml:"license_key,omitempty"` // parsed but not enforced yet
+	LicenseKey          string                  `yaml:"license_key,omitempty"` // soft-gates agents: section; any non-empty value enables multi-agent profiles
 	Internal            []string                `yaml:"internal"`
 
 	// rawBytes stores the original config file bytes for deterministic hashing.
@@ -470,6 +471,7 @@ type ChainPattern struct {
 // override the base config; fields left at zero value inherit from base.
 type AgentProfile struct {
 	Listeners        []string          `yaml:"listeners,omitempty"`
+	SourceCIDRs      []string          `yaml:"source_cidrs,omitempty"`
 	Mode             string            `yaml:"mode,omitempty"`
 	Enforce          *bool             `yaml:"enforce,omitempty"`
 	APIAllowlist     []string          `yaml:"api_allowlist,omitempty"`
@@ -611,6 +613,43 @@ func ValidateMergedAgent(name string, cfg *Config) error {
 	return nil
 }
 
+// EnforceLicenseGate checks whether premium features (agents section) are
+// configured without a license key. If so, it disables them with a warning.
+// This is a soft-gate: pipelock still starts and protects traffic, but
+// multi-agent features are disabled. The key is a presence check only
+// (any non-empty string is accepted); cryptographic verification is planned.
+//
+// The gate only fires when the agents map has at least one profile that is NOT
+// "_default". A bare _default profile is allowed without a license key because
+// it doesn't add multi-agent functionality.
+func (c *Config) EnforceLicenseGate(w io.Writer) {
+	if len(c.Agents) == 0 {
+		return
+	}
+
+	// Check if there are any non-default agent profiles.
+	hasNonDefault := false
+	for name := range c.Agents {
+		if name != "_default" {
+			hasNonDefault = true
+			break
+		}
+	}
+	if !hasNonDefault {
+		return
+	}
+
+	if c.LicenseKey != "" {
+		return
+	}
+
+	// No license key: disable agents section (soft-gate).
+	_, _ = fmt.Fprintf(w, "WARNING: agents: section requires a license key. "+
+		"Multi-agent profiles disabled. Single-agent protection is active.\n"+
+		"Get a license key at https://pipelab.org/pricing\n")
+	c.Agents = nil
+}
+
 // Load reads, parses, defaults, and validates a Pipelock config file.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(filepath.Clean(path))
@@ -626,6 +665,9 @@ func Load(path string) (*Config, error) {
 	cfg.rawBytes = data
 
 	cfg.ApplyDefaults()
+
+	// Soft-gate premium features: disable agents section if no license key.
+	cfg.EnforceLicenseGate(os.Stderr)
 
 	// Resolve relative secrets_file path relative to config file directory.
 	if cfg.DLP.SecretsFile != "" && !filepath.IsAbs(cfg.DLP.SecretsFile) {
@@ -1504,6 +1546,15 @@ func (c *Config) validateAgents() error {
 		reserved[c.KillSwitch.APIListen] = "kill_switch.api_listen"
 	}
 
+	// Track parsed CIDRs for cross-agent containment-based overlap detection.
+	// Overlapping CIDRs within the same agent are harmless (same identity).
+	type cidrOwner struct {
+		network *net.IPNet
+		agent   string
+		label   string
+	}
+	var cidrNets []cidrOwner
+
 	// Sort agent names for deterministic validation order
 	agentNames := make([]string, 0, len(c.Agents))
 	for name := range c.Agents {
@@ -1552,6 +1603,24 @@ func (c *Config) validateAgents() error {
 					return fmt.Errorf("agent %q: DLP pattern %q has invalid regex: %w", name, p.Name, err)
 				}
 			}
+		}
+
+		// Validate source CIDRs are parseable and non-overlapping across agents.
+		// Overlapping CIDRs within the same agent are allowed (same identity).
+		for _, cidr := range profile.SourceCIDRs {
+			_, network, err := net.ParseCIDR(cidr)
+			if err != nil {
+				return fmt.Errorf("agent %q: invalid source_cidrs entry %q: %w", name, cidr, err)
+			}
+			for _, prev := range cidrNets {
+				if prev.agent == name {
+					continue // same agent, overlap is harmless
+				}
+				if prev.network.Contains(network.IP) || network.Contains(prev.network.IP) {
+					return fmt.Errorf("agent %q: source_cidrs %q overlaps with %s", name, cidr, prev.label)
+				}
+			}
+			cidrNets = append(cidrNets, cidrOwner{network: network, agent: name, label: fmt.Sprintf("agent %q source_cidrs", name)})
 		}
 
 		// Validate budget fields are non-negative

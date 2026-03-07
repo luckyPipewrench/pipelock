@@ -4678,3 +4678,61 @@ func waitForListener(t *testing.T, addr string) {
 	}
 	t.Fatalf("listener %s did not start within 3s", addr)
 }
+
+// TestResolveAgentFromRequest_CIDRMatch verifies that source CIDR matching
+// correctly identifies agents by their client IP, even without headers.
+func TestResolveAgentFromRequest_CIDRMatch(t *testing.T) {
+	const cidrAgent = "cidr-agent"
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.Agents = map[string]config.AgentProfile{
+		cidrAgent: {
+			SourceCIDRs: []string{"10.42.0.0/16"},
+			Mode:        config.ModeAudit,
+		},
+	}
+
+	reg, err := NewAgentRegistry(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reg.Close()
+
+	p := &Proxy{}
+	p.cfgPtr.Store(cfg)
+	p.registryPtr.Store(reg)
+
+	// Request from IP within the CIDR range, no agent header.
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://example.com", nil)
+	req.RemoteAddr = "10.42.3.7:54321"
+
+	resolved, id := p.resolveAgentFromRequest(req)
+	if id.Profile != cidrAgent {
+		t.Errorf("profile = %q, want %q (CIDR match should identify agent)", id.Profile, cidrAgent)
+	}
+	if resolved.Config.Mode != config.ModeAudit {
+		t.Errorf("mode = %q, want audit", resolved.Config.Mode)
+	}
+
+	// Request from IP outside the CIDR range, no header -> _default.
+	req2, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://example.com", nil)
+	req2.RemoteAddr = "192.168.1.5:54321"
+
+	_, id2 := p.resolveAgentFromRequest(req2)
+	if id2.Profile != profileDefault {
+		t.Errorf("profile = %q, want %q (IP outside CIDR should fall back)", id2.Profile, profileDefault)
+	}
+
+	// Context override takes precedence over CIDR match.
+	ctx := WithAgentOverride(context.Background(), "override-agent")
+	req3, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://example.com", nil)
+	req3.RemoteAddr = "10.42.3.7:54321"
+
+	// "override-agent" is not in the registry, so it falls through to _default lookup.
+	// But the ID should reflect the override.
+	_, id3 := p.resolveAgentFromRequest(req3)
+	if id3.Profile != "override-agent" {
+		t.Errorf("profile = %q, want override-agent (context override beats CIDR)", id3.Profile)
+	}
+}

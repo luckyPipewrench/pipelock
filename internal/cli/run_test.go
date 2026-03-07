@@ -429,6 +429,7 @@ func TestRunCmd_AgentListenerBinding(t *testing.T) {
 
 	cfgYAML := fmt.Sprintf(`version: 1
 mode: balanced
+license_key: test-license
 fetch_proxy:
   listen: %q
   timeout_seconds: 5
@@ -522,6 +523,7 @@ func TestRunCmd_AgentListenerMultipleAgents(t *testing.T) {
 
 	cfgYAML := fmt.Sprintf(`version: 1
 mode: balanced
+license_key: test-license
 fetch_proxy:
   listen: %q
   timeout_seconds: 5

@@ -372,6 +372,12 @@ func (p *Proxy) knownProfiles() map[string]bool {
 // resolved agent from a single registry snapshot. This prevents TOCTOU
 // races during hot-reload where knownProfiles() and resolveAgent() could
 // read different registries.
+//
+// Resolution priority:
+//  1. Context override (listener binding, spoof-proof)
+//  2. Source CIDR match (client IP -> profile, zero agent-side config)
+//  3. Header / query param (X-Pipelock-Agent / ?agent=)
+//  4. Fallback (_default)
 func (p *Proxy) resolveAgentFromRequest(r *http.Request) (*ResolvedAgent, AgentIdentity) {
 	reg := p.registryPtr.Load()
 	if reg == nil {
@@ -381,6 +387,22 @@ func (p *Proxy) resolveAgentFromRequest(r *http.Request) (*ResolvedAgent, AgentI
 			Scanner: p.scannerPtr.Load(),
 		}, AgentIdentity{Name: "", Profile: profileDefault}
 	}
+
+	// 1. Context override (set by per-agent listener binding).
+	if profile, ok := r.Context().Value(ctxKeyAgentOverride).(string); ok && profile != "" {
+		id := AgentIdentity{Name: profile, Profile: profile}
+		return reg.Lookup(id.Profile), id
+	}
+
+	// 2. Source CIDR match: map client IP to profile.
+	if clientIP := extractIP(r); clientIP != nil {
+		if profile, ok := reg.MatchCIDR(clientIP); ok {
+			id := AgentIdentity{Name: profile, Profile: profile}
+			return reg.Lookup(id.Profile), id
+		}
+	}
+
+	// 3+4. Header/query/fallback via ResolveAgent.
 	profiles := reg.Profiles()
 	known := make(map[string]bool, len(profiles))
 	for _, name := range profiles {
@@ -388,6 +410,15 @@ func (p *Proxy) resolveAgentFromRequest(r *http.Request) (*ResolvedAgent, AgentI
 	}
 	id := ResolveAgent(r, known)
 	return reg.Lookup(id.Profile), id
+}
+
+// extractIP parses the client IP from r.RemoteAddr, stripping the port.
+func extractIP(r *http.Request) net.IP {
+	host := r.RemoteAddr
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	return net.ParseIP(host)
 }
 
 // newTLSInterceptTransport creates a shared http.Transport for TLS interception

@@ -766,6 +766,7 @@ Per-agent policy overrides. When multiple agents share one pipelock instance, ea
 agents:
   claude-code:
     listeners: [":8889"]
+    source_cidrs: ["10.42.3.0/24"]
     mode: strict
     api_allowlist: ["github.com", "*.githubusercontent.com"]
     dlp:
@@ -874,6 +875,26 @@ agents:
       max_requests_per_session: 100
 ```
 
+### Source CIDR Matching
+
+Each agent can define one or more `source_cidrs` entries. Pipelock matches the client IP of every incoming request against these CIDRs. This works for all traffic types including CONNECT tunnels, where header-based identification is not possible.
+
+In Kubernetes, each pod has a unique IP. In Docker Compose, each container has its own. Source CIDR matching maps those IPs to agent profiles with zero agent-side configuration.
+
+```yaml
+agents:
+  claude-code:
+    source_cidrs: ["10.42.3.0/24"]
+    mode: strict
+  cursor:
+    source_cidrs: ["10.42.5.0/24", "10.42.6.0/24"]
+    mode: balanced
+```
+
+Resolution priority: listener binding > source CIDR > header > query param > `_default`.
+
+CIDRs must not overlap between different agents (containment and exact matches are both rejected). Overlapping CIDRs within the same agent are allowed.
+
 ### The `_default` Profile
 
 If defined, `_default` applies to any request that does not match a named agent. Without `_default`, unmatched requests use the base config directly.
@@ -881,10 +902,12 @@ If defined, `_default` applies to any request that does not match a named agent.
 ## License Key
 
 ```yaml
-license_key: "pl_..."
+license_key: "your-license-key"
 ```
 
-Parsed from config but not enforced yet. Reserved for future use.
+Multi-agent profiles (the `agents:` section) require a `license_key` value. Without one, pipelock prints a warning and disables agent profiles at startup. All single-agent protection remains active. The key is currently a presence check only (any non-empty value is accepted); cryptographic verification will be added in a future release.
+
+A `_default` profile without any named agents does not require a license key.
 
 ## Validation Rules
 

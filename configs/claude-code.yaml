@@ -304,12 +304,13 @@ tls_interception:
 
 # --- Agent Profiles (optional) ---
 # Per-agent policy overrides. Each agent gets its own merged config.
-# Agents are identified by X-Pipelock-Agent header, ?agent= query param,
-# or port-based listener binding (spoof-proof).
+# Agents are identified by listener binding (spoof-proof), source CIDR matching,
+# X-Pipelock-Agent header, or ?agent= query param. Requires license_key.
 #
 # agents:
 #   claude-code:
 #     listeners: [":8889"]
+#     source_cidrs: ["10.42.3.0/24"]
 #     mode: strict
 #     api_allowlist: ["github.com", "*.githubusercontent.com"]
 #     budget:

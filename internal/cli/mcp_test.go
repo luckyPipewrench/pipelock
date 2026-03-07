@@ -899,7 +899,7 @@ func TestMcpProxyCmd_AgentResolvesProfile(t *testing.T) {
 	// Config with an agent profile "strict-bot" that sets mode: strict.
 	// The base config defaults to balanced, so the resolved config should be strict.
 	// Strict mode requires an api_allowlist, so we include one.
-	cfgContent := "agents:\n  strict-bot:\n    mode: strict\n    api_allowlist:\n      - example.com\n"
+	cfgContent := "license_key: test-license\nagents:\n  strict-bot:\n    mode: strict\n    api_allowlist:\n      - example.com\n"
 	cfgFile := t.TempDir() + "/agent.yaml"
 	if err := os.WriteFile(cfgFile, []byte(cfgContent), 0o600); err != nil {
 		t.Fatal(err)

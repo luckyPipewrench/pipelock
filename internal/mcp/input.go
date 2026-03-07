@@ -511,7 +511,7 @@ func ForwardScannedInput(
 		// Stdio proxy has exactly one client session per process instance.
 		// "default" is the correct session key for this 1:1 architecture.
 		if chainMatcher != nil && toolCallName != "" {
-			cv := chainMatcher.Record("default", toolCallName)
+			cv := chainMatcher.Record("default", toolCallName, string(line))
 			if cv.Matched {
 				_, _ = fmt.Fprintf(logW, "pipelock: chain detected: %s (severity=%s, action=%s)\n",
 					cv.PatternName, cv.Severity, cv.Action)

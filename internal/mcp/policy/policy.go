@@ -504,5 +504,60 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 			ArgPattern:  `(?i)(\beval\b.*\bbase64\b|\bbase64\s+(-d|--decode)\b.*\|\s*(ba)?sh\b)`,
 			Action:      config.ActionBlock,
 		},
+		{
+			Name:        "Cron Job Persistence",
+			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$`,
+			ArgPattern:  `(?i)(\bcrontab\s+(-\w+\s+\S+\s+)*-e\b|\bcrontab\s+(-\w+\s+\S+\s+)*[^-\s]|>{1,2}\s*/(?:var/spool/cron|etc/cron)|\|\s*crontab\b)`,
+			Action:      config.ActionBlock,
+		},
+		{
+			Name:        "Systemd Service Persistence",
+			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$`,
+			ArgPattern:  `(?i)\bsystemctl\s+(-{1,2}\w+\s+)*(enable|daemon-reload)\b`,
+			Action:      config.ActionBlock,
+		},
+		{
+			// File write tools targeting cron/systemd/init/launchd persistence paths.
+			// Covers system-wide (/etc/systemd, /lib/systemd) and user-scoped
+			// (~/.config/systemd/user/) systemd paths, plus macOS LaunchAgents/Daemons.
+			Name:        "Persistence Path Write",
+			ToolPattern: `(?i)^(write_file|file_write|edit_file|create_file|modify_file|append_file)$`,
+			ArgPattern:  `(?i)(/etc/crontab\b|/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|/usr/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/)`,
+			Action:      config.ActionBlock,
+		},
+		{
+			// Shell commands writing into cron/systemd/init/launchd persistence paths.
+			// Covers cp, mv, install, ln (destination-aware via (\S+\s+)+ prefix),
+			// tee, sed -i, and shell redirects. Read operations pass through.
+			Name:        "Persistence Path Write via Command",
+			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$`,
+			ArgPattern:  `(?i)(>{1,2}\s*[^;|&]*(/etc/crontab\b|/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|/usr/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/)|\b(tee|sed\s+-i)\s+[^;|&]*(/etc/crontab\b|/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|/usr/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/)|\b(cp|mv|install|ln)\b\s+(\S+\s+)+\S*(/etc/crontab\b|/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|/usr/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/))`,
+			Action:      config.ActionBlock,
+		},
+		{
+			// File write tools: any mention of a profile file implies modification.
+			Name:        "Shell Profile Modification",
+			ToolPattern: `(?i)^(write_file|file_write|edit_file|create_file|modify_file|append_file)$`,
+			ArgPattern:  `(?i)((?:^|/)\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|/etc/profile\b)`,
+			Action:      config.ActionBlock,
+		},
+		{
+			// Exec tools: require a write indicator near a profile file, or an
+			// alias definition. Reads like cat/grep pass through.
+			// Redirect/tee branches use [^;|&]*(?:^|[/\s]) so the engine can
+			// backtrack and consume a slash (full path) or space (bare dotfile).
+			// The cp/mv branch keeps (\S+\s+)+ to require at least one arg
+			// before the dotfile, defeating pairwise token false positives.
+			// (?:\S*/)? matches an optional path prefix before the dotfile.
+			Name:        "Shell Profile Write via Command",
+			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$`,
+			ArgPattern:  `(?i)(>{1,2}[^;|&]*(?:^|[/\s])\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|\b(tee|sed\s+-i)[^;|&]*(?:^|[/\s])\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|\b(cp|mv|install|ln)\b\s+(\S+\s+)+(?:\S*/)?\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\s*$|\balias\s+\w+=|>{1,2}[^;|&]*/etc/profile\b|\b(tee|sed\s+-i)[^;|&]*/etc/profile\b|\b(cp|mv|install|ln)\b\s+(\S+\s+)+\S*/etc/profile\s*$)`,
+			Action:      config.ActionBlock,
+		},
+		{
+			Name:        "Detached Process Spawning",
+			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$`,
+			ArgPattern:  `(?i)(\bnohup\s+|\bdisown\b|\bsetsid\s+|\bscreen\s+(-\S+\s+)*-[dDm]|\btmux\s+(new-session|new)\s+-d)`,
+		},
 	}
 }

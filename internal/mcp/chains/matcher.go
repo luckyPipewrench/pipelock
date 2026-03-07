@@ -52,7 +52,7 @@ type sessionHistory struct {
 	records []toolCallRecord
 }
 
-// builtInPatterns defines the 8 default attack chain patterns.
+// builtInPatterns defines the default attack chain patterns.
 var builtInPatterns = []pattern{
 	{name: "read-then-exec", sequence: []string{"read", "exec"}, severity: "high", action: "warn"},
 	{name: "read-write-send", sequence: []string{"read", "write", "network"}, severity: "critical", action: "warn"},
@@ -62,6 +62,8 @@ var builtInPatterns = []pattern{
 	{name: "write-chmod-execute", sequence: []string{"write", "exec", "exec"}, severity: "critical", action: "warn"},
 	{name: "read-sensitive-write", sequence: []string{"read", "write"}, severity: "medium", action: "warn"},
 	{name: "shell-burst", sequence: []string{"exec", "exec", "exec", "exec"}, severity: "high", action: "warn"},
+	{name: "write-persist", sequence: []string{"write", "persist"}, severity: "critical", action: "warn"},
+	{name: "persist-callback", sequence: []string{"persist", "network"}, severity: "critical", action: "warn"},
 }
 
 // severityRank maps severity strings to numeric rank for comparison.
@@ -135,13 +137,21 @@ func (m *Matcher) WithMetrics(mr MetricsRecorder) *Matcher {
 // all patterns against the updated history. Returns the highest-severity match.
 //
 // If the tool classifies as "unknown", it is not recorded and no match is returned.
-func (m *Matcher) Record(sessionKey, toolName string) Verdict {
+//
+// The optional argHint parameter provides the raw tool arguments (e.g., the
+// JSON-RPC message body) for argument-aware reclassification. When a tool
+// name classifies as "exec" but the arguments contain persistence commands
+// (crontab, systemctl enable, etc.), the category is upgraded to "persist".
+func (m *Matcher) Record(sessionKey, toolName string, argHint ...string) Verdict {
 	if !m.cfg.Enabled || len(m.patterns) == 0 {
 		return Verdict{}
 	}
 
-	// Classify tool.
+	// Classify tool by name, then refine by arguments if provided.
 	category := classifyTool(toolName, m.cfg)
+	if len(argHint) > 0 {
+		category = reclassifyByArgs(category, argHint[0])
+	}
 	if category == "unknown" {
 		return Verdict{}
 	}

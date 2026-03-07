@@ -3,6 +3,8 @@
 
 package audit
 
+import "strings"
+
 // techniqueMap maps scanner/event labels to MITRE ATT&CK technique IDs.
 // Scanner labels come from scanner.Result.Scanner (e.g. "dlp", "ssrf") and
 // from hardcoded event-specific values (e.g. "response_scan", "mcp_unknown_tool").
@@ -61,6 +63,9 @@ var techniqueMap = map[string]string{
 
 	// Tool call chain pattern detection
 	"chain_detection": "T1059", // Command and Scripting Interpreter (multi-step attack chain)
+
+	// Persistence techniques (policy + chain detection)
+	"persist": "T1053", // Scheduled Task/Job (cron, systemd, launchd)
 }
 
 // TechniqueForScanner returns the MITRE ATT&CK technique ID for a scanner
@@ -68,4 +73,22 @@ var techniqueMap = map[string]string{
 // events, operational warnings, unknown labels).
 func TechniqueForScanner(scanner string) string {
 	return techniqueMap[scanner]
+}
+
+// persistChainPatterns lists built-in chain pattern names that map to T1053.
+var persistChainPatterns = map[string]bool{
+	"write-persist":    true,
+	"persist-callback": true,
+}
+
+// TechniqueForChainPattern returns the MITRE ATT&CK technique ID for a
+// chain detection pattern. Built-in persistence patterns and any custom
+// pattern whose name contains "persist" map to T1053 (Scheduled Task/Job);
+// all others fall back to T1059 (Command and Scripting Interpreter).
+func TechniqueForChainPattern(pattern string) string {
+	lower := strings.ToLower(pattern)
+	if persistChainPatterns[lower] || strings.Contains(lower, "persist") {
+		return techniqueMap["persist"]
+	}
+	return techniqueMap["chain_detection"]
 }

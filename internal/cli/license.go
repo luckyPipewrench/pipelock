@@ -84,7 +84,8 @@ func licenseKeygenCmd() *cobra.Command {
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "\nPublic key (hex, for ldflags or config):\n  %s\n", pubHex)
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "\nBuild with embedded key:\n")
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  go build -ldflags \"-X github.com/luckyPipewrench/pipelock/internal/license.PublicKeyHex=%s\" ./cmd/pipelock\n", pubHex)
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "\nOr set license_public_key in your config YAML.\n")
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "\nFor dev builds, set license_public_key in your config YAML.\n")
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Official releases use the embedded key (ldflags) and ignore the config field.\n")
 
 			return nil
 		},
@@ -221,7 +222,7 @@ func licenseInspectCmd() *cobra.Command {
 				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Expires:  never\n")
 			}
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "\n  WARNING: inspect does not verify the signature.\n"+
-				"  This token may be forged or tampered. Use pipelock check to verify.\n")
+				"  This token may be forged or tampered. Run pipelock with this token to verify at startup.\n")
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Features: %v\n", lic.Features)
 
 			return nil

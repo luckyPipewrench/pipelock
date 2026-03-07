@@ -654,7 +654,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	if !result.Allowed {
 		if cfg.EnforceEnabled() {
 			log.LogBlocked("GET", displayURL, result.Scanner, result.Reason, clientIP, requestID, agent)
-			p.metrics.RecordBlocked(parsed.Hostname(), result.Scanner, time.Since(start))
+			p.metrics.RecordBlocked(parsed.Hostname(), result.Scanner, time.Since(start), agent)
 			status := http.StatusForbidden
 			if result.Scanner == scanner.ScannerRateLimit {
 				status = http.StatusTooManyRequests
@@ -686,7 +686,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Request header DLP scanning (fetch is GET-only, no body to scan).
-	if p.evalHeaderDLP(r.Header, cfg, sc, log, "GET", displayURL, parsed.Hostname(), clientIP, requestID, start) {
+	if p.evalHeaderDLP(r.Header, cfg, sc, log, "GET", displayURL, parsed.Hostname(), clientIP, requestID, agent, start) {
 		writeJSON(w, http.StatusForbidden, FetchResponse{
 			URL:         displayURL,
 			Agent:       agent,
@@ -720,7 +720,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(err.Error(), "redirect blocked:") {
 			reason := err.Error()
 			log.LogBlocked("GET", displayURL, "redirect", reason, clientIP, requestID, agent)
-			p.metrics.RecordBlocked(parsed.Hostname(), "redirect", time.Since(start))
+			p.metrics.RecordBlocked(parsed.Hostname(), "redirect", time.Since(start), agent)
 			resp := FetchResponse{
 				URL:         displayURL,
 				Agent:       agent,
@@ -817,7 +817,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	sc.RecordRequest(strings.ToLower(parsed.Hostname()), len(body))
 
 	duration := time.Since(start)
-	p.metrics.RecordAllowed(duration)
+	p.metrics.RecordAllowed(duration, agent)
 	log.LogAllowed("GET", displayURL, clientIP, requestID, resp.StatusCode, len(body), duration, agent)
 
 	writeJSON(w, http.StatusOK, FetchResponse{

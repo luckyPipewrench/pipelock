@@ -116,7 +116,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if !result.Allowed {
 		if cfg.EnforceEnabled() {
 			p.logger.LogBlocked(http.MethodConnect, target, result.Scanner, result.Reason, clientIP, requestID, agent)
-			p.metrics.RecordTunnelBlocked()
+			p.metrics.RecordTunnelBlocked(agent)
 			if cfg.ExplainBlocksEnabled() && result.Hint != "" {
 				w.Header().Set("X-Pipelock-Hint", result.Hint)
 			}
@@ -199,7 +199,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if cfg.ForwardProxy.SNIVerificationEnabled() {
 		resized, sniHost, category, sniErr := verifySNI(clientReader, clientConn, host, sniReadTimeoutDefault)
 		clientReader = resized
-		p.metrics.RecordSNI(category)
+		p.metrics.RecordSNI(category, agent)
 		if sniErr != nil {
 			p.logger.LogSNIMismatch(host, sniHost, clientIP, requestID, category)
 			return // close both connections via deferred Close()
@@ -253,7 +253,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	p.metrics.DecrActiveTunnels()
 	duration := time.Since(start)
-	p.metrics.RecordTunnel(duration, totalBytes)
+	p.metrics.RecordTunnel(duration, totalBytes, agent)
 	p.logger.LogTunnelClose(target, clientIP, requestID, agent, totalBytes, duration)
 
 	// Record data budget for the target domain
@@ -340,7 +340,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	if !result.Allowed {
 		if cfg.EnforceEnabled() {
 			p.logger.LogBlocked(r.Method, targetURL, result.Scanner, result.Reason, clientIP, requestID, agent)
-			p.metrics.RecordBlocked(r.URL.Hostname(), result.Scanner, time.Since(start))
+			p.metrics.RecordBlocked(r.URL.Hostname(), result.Scanner, time.Since(start), agent)
 			if cfg.ExplainBlocksEnabled() && result.Hint != "" {
 				w.Header().Set("X-Pipelock-Hint", result.Hint)
 			}
@@ -374,20 +374,20 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 
 			p.logger.LogBodyDLP(r.Method, targetURL, action, clientIP, requestID, agent, len(bodyResult.DLPMatches), patternNames)
-			p.metrics.RecordBodyDLP(action)
+			p.metrics.RecordBodyDLP(action, agent)
 
 			// Fail-closed: when buf is nil the body was consumed but couldn't
 			// be buffered (oversize, compressed, read error, multipart parse
 			// error). Always block regardless of enforce mode — forwarding an
 			// empty body corrupts the upstream request.
 			if buf == nil {
-				p.metrics.RecordBlocked(r.URL.Hostname(), "body_dlp", time.Since(start))
+				p.metrics.RecordBlocked(r.URL.Hostname(), "body_dlp", time.Since(start), agent)
 				http.Error(w, "blocked: "+reason, http.StatusForbidden)
 				return
 			}
 
 			if action == config.ActionBlock && cfg.EnforceEnabled() {
-				p.metrics.RecordBlocked(r.URL.Hostname(), "body_dlp", time.Since(start))
+				p.metrics.RecordBlocked(r.URL.Hostname(), "body_dlp", time.Since(start), agent)
 				http.Error(w, "blocked: "+reason, http.StatusForbidden)
 				return
 			}
@@ -399,7 +399,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Request header DLP scanning.
-	if p.evalHeaderDLP(r.Header, cfg, sc, p.logger, r.Method, targetURL, r.URL.Hostname(), clientIP, requestID, start) {
+	if p.evalHeaderDLP(r.Header, cfg, sc, p.logger, r.Method, targetURL, r.URL.Hostname(), clientIP, requestID, agent, start) {
 		http.Error(w, "blocked: request header contains secret", http.StatusForbidden)
 		return
 	}
@@ -445,7 +445,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	sc.RecordRequest(strings.ToLower(r.URL.Hostname()), int(written))
 
 	duration := time.Since(start)
-	p.metrics.RecordAllowed(duration)
+	p.metrics.RecordAllowed(duration, agent)
 	p.logger.LogForwardHTTP(r.Method, targetURL, clientIP, requestID, agent, resp.StatusCode, int(written), duration)
 }
 

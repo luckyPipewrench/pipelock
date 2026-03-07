@@ -84,13 +84,13 @@ func New() *Metrics {
 		Namespace: "pipelock",
 		Name:      "requests_total",
 		Help:      "Total number of fetch proxy requests by result.",
-	}, []string{"result"})
+	}, []string{"result", "agent"})
 
 	scannerHits := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "pipelock",
 		Name:      "scanner_hits_total",
 		Help:      "Total blocks by scanner type.",
-	}, []string{"scanner"})
+	}, []string{"scanner", "agent"})
 
 	requestLatency := prometheus.NewHistogram(prometheus.HistogramOpts{
 		Namespace: "pipelock",
@@ -103,7 +103,7 @@ func New() *Metrics {
 		Namespace: "pipelock",
 		Name:      "tunnels_total",
 		Help:      "Total CONNECT tunnels by result.",
-	}, []string{"result"})
+	}, []string{"result", "agent"})
 
 	tunnelDuration := prometheus.NewHistogram(prometheus.HistogramOpts{
 		Namespace: "pipelock",
@@ -183,19 +183,19 @@ func New() *Metrics {
 		Namespace: "pipelock",
 		Name:      "sni_total",
 		Help:      "Total SNI verification results by category.",
-	}, []string{"category"})
+	}, []string{"category", "agent"})
 
 	bodyDLPHits := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "pipelock",
 		Name:      "body_dlp_hits_total",
 		Help:      "Total request body DLP scan detections by action.",
-	}, []string{"action"})
+	}, []string{"action", "agent"})
 
 	headerDLPHits := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "pipelock",
 		Name:      "header_dlp_hits_total",
 		Help:      "Total request header DLP scan detections by action.",
-	}, []string{"action"})
+	}, []string{"action", "agent"})
 
 	sessionAnomalies := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "pipelock",
@@ -297,9 +297,14 @@ func New() *Metrics {
 	}
 }
 
+// Registry returns the underlying Prometheus registry for test assertions.
+func (m *Metrics) Registry() *prometheus.Registry {
+	return m.registry
+}
+
 // RecordAllowed records a successful (allowed) request.
-func (m *Metrics) RecordAllowed(duration time.Duration) {
-	m.requestsTotal.WithLabelValues("allowed").Inc()
+func (m *Metrics) RecordAllowed(duration time.Duration, agent string) {
+	m.requestsTotal.WithLabelValues("allowed", agent).Inc()
 	m.requestLatency.Observe(duration.Seconds())
 
 	m.mu.Lock()
@@ -308,9 +313,9 @@ func (m *Metrics) RecordAllowed(duration time.Duration) {
 }
 
 // RecordBlocked records a blocked request with domain and scanner info.
-func (m *Metrics) RecordBlocked(domain, scannerName string, duration time.Duration) {
-	m.requestsTotal.WithLabelValues("blocked").Inc()
-	m.scannerHits.WithLabelValues(scannerName).Inc()
+func (m *Metrics) RecordBlocked(domain, scannerName string, duration time.Duration, agent string) {
+	m.requestsTotal.WithLabelValues("blocked", agent).Inc()
+	m.scannerHits.WithLabelValues(scannerName, agent).Inc()
 	m.requestLatency.Observe(duration.Seconds())
 
 	m.mu.Lock()
@@ -329,8 +334,8 @@ func (m *Metrics) RecordBlocked(domain, scannerName string, duration time.Durati
 }
 
 // RecordTunnel records a completed CONNECT tunnel.
-func (m *Metrics) RecordTunnel(duration time.Duration, totalBytes int64) {
-	m.tunnelsTotal.WithLabelValues("completed").Inc()
+func (m *Metrics) RecordTunnel(duration time.Duration, totalBytes int64, agent string) {
+	m.tunnelsTotal.WithLabelValues("completed", agent).Inc()
 	m.tunnelDuration.Observe(duration.Seconds())
 	m.tunnelBytes.Add(float64(totalBytes))
 
@@ -340,8 +345,8 @@ func (m *Metrics) RecordTunnel(duration time.Duration, totalBytes int64) {
 }
 
 // RecordTunnelBlocked records a blocked CONNECT tunnel attempt.
-func (m *Metrics) RecordTunnelBlocked() {
-	m.tunnelsTotal.WithLabelValues("blocked").Inc()
+func (m *Metrics) RecordTunnelBlocked(agent string) {
+	m.tunnelsTotal.WithLabelValues("blocked", agent).Inc()
 }
 
 // IncrActiveTunnels increments the active tunnel gauge.
@@ -412,18 +417,18 @@ func (m *Metrics) RecordChainDetection(pattern, severity, action string) {
 }
 
 // RecordSNI increments the SNI verification counter for the given category.
-func (m *Metrics) RecordSNI(category string) {
-	m.sniTotal.WithLabelValues(category).Inc()
+func (m *Metrics) RecordSNI(category, agent string) {
+	m.sniTotal.WithLabelValues(category, agent).Inc()
 }
 
 // RecordBodyDLP increments the request body DLP scan counter by action.
-func (m *Metrics) RecordBodyDLP(action string) {
-	m.bodyDLPHits.WithLabelValues(action).Inc()
+func (m *Metrics) RecordBodyDLP(action, agent string) {
+	m.bodyDLPHits.WithLabelValues(action, agent).Inc()
 }
 
 // RecordHeaderDLP increments the request header DLP scan counter by action.
-func (m *Metrics) RecordHeaderDLP(action string) {
-	m.headerDLPHits.WithLabelValues(action).Inc()
+func (m *Metrics) RecordHeaderDLP(action, agent string) {
+	m.headerDLPHits.WithLabelValues(action, agent).Inc()
 }
 
 // RecordSessionAnomaly increments the session anomaly counter by type.

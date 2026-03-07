@@ -15,10 +15,15 @@ import (
 	"time"
 )
 
+const (
+	testAgent    = "test-agent"
+	testAgentAlt = "claude-code"
+)
+
 func TestRecordAllowed(t *testing.T) {
 	m := New()
-	m.RecordAllowed(100 * time.Millisecond)
-	m.RecordAllowed(200 * time.Millisecond)
+	m.RecordAllowed(100*time.Millisecond, testAgent)
+	m.RecordAllowed(200*time.Millisecond, testAgent)
 
 	m.mu.Lock()
 	if m.allowedCount != 2 {
@@ -29,9 +34,9 @@ func TestRecordAllowed(t *testing.T) {
 
 func TestRecordBlocked(t *testing.T) {
 	m := New()
-	m.RecordBlocked("evil.com", "blocklist", 50*time.Millisecond)
-	m.RecordBlocked("evil.com", "blocklist", 50*time.Millisecond)
-	m.RecordBlocked("bad.org", "dlp", 30*time.Millisecond)
+	m.RecordBlocked("evil.com", "blocklist", 50*time.Millisecond, testAgent)
+	m.RecordBlocked("evil.com", "blocklist", 50*time.Millisecond, testAgent)
+	m.RecordBlocked("bad.org", "dlp", 30*time.Millisecond, testAgent)
 
 	m.mu.Lock()
 	if m.blockedCount != 3 {
@@ -48,8 +53,8 @@ func TestRecordBlocked(t *testing.T) {
 
 func TestPrometheusHandler(t *testing.T) {
 	m := New()
-	m.RecordAllowed(100 * time.Millisecond)
-	m.RecordBlocked("evil.com", "dlp", 50*time.Millisecond)
+	m.RecordAllowed(100*time.Millisecond, testAgent)
+	m.RecordBlocked("evil.com", "dlp", 50*time.Millisecond, testAgent)
 
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	w := httptest.NewRecorder()
@@ -64,6 +69,9 @@ func TestPrometheusHandler(t *testing.T) {
 
 	if !strings.Contains(text, "pipelock_requests_total") {
 		t.Error("expected pipelock_requests_total in /metrics output")
+	}
+	if !strings.Contains(text, `agent="test-agent"`) {
+		t.Error("expected agent label in /metrics output")
 	}
 	if !strings.Contains(text, `result="allowed"`) {
 		t.Error("expected allowed label in /metrics output")
@@ -81,9 +89,9 @@ func TestPrometheusHandler(t *testing.T) {
 
 func TestStatsHandler(t *testing.T) {
 	m := New()
-	m.RecordAllowed(100 * time.Millisecond)
-	m.RecordAllowed(200 * time.Millisecond)
-	m.RecordBlocked("evil.com", "dlp", 50*time.Millisecond)
+	m.RecordAllowed(100*time.Millisecond, testAgent)
+	m.RecordAllowed(200*time.Millisecond, testAgent)
+	m.RecordBlocked("evil.com", "dlp", 50*time.Millisecond, testAgent)
 
 	req := httptest.NewRequest(http.MethodGet, "/stats", nil)
 	w := httptest.NewRecorder()
@@ -123,8 +131,8 @@ func TestStatsHandler(t *testing.T) {
 
 func TestStatsHandler_BlockRate(t *testing.T) {
 	m := New()
-	m.RecordAllowed(10 * time.Millisecond)
-	m.RecordBlocked("x.com", "dlp", 10*time.Millisecond)
+	m.RecordAllowed(10*time.Millisecond, testAgent)
+	m.RecordBlocked("x.com", "dlp", 10*time.Millisecond, testAgent)
 
 	req := httptest.NewRequest(http.MethodGet, "/stats", nil)
 	w := httptest.NewRecorder()
@@ -162,11 +170,11 @@ func TestTopDomainsCapped(t *testing.T) {
 	m := New()
 	// Fill to the cap
 	for i := range maxTopEntries {
-		m.RecordBlocked("domain"+string(rune('A'+i%26))+string(rune('0'+i/26))+".com", "dlp", time.Millisecond)
+		m.RecordBlocked("domain"+string(rune('A'+i%26))+string(rune('0'+i/26))+".com", "dlp", time.Millisecond, testAgent)
 	}
 
 	// This domain should be ignored (cap reached, new key)
-	m.RecordBlocked("overflow.com", "dlp", time.Millisecond)
+	m.RecordBlocked("overflow.com", "dlp", time.Millisecond, testAgent)
 
 	m.mu.Lock()
 	if len(m.topBlockedDomains) > maxTopEntries {
@@ -182,10 +190,10 @@ func TestTopDomainsExistingKeyStillIncrements(t *testing.T) {
 	m := New()
 	// Fill to the cap with one domain
 	for range maxTopEntries {
-		m.RecordBlocked("same.com", "dlp", time.Millisecond)
+		m.RecordBlocked("same.com", "dlp", time.Millisecond, testAgent)
 	}
 	// Existing key should still increment even after cap
-	m.RecordBlocked("same.com", "dlp", time.Millisecond)
+	m.RecordBlocked("same.com", "dlp", time.Millisecond, testAgent)
 
 	m.mu.Lock()
 	if m.topBlockedDomains["same.com"] != maxTopEntries+1 {
@@ -201,11 +209,11 @@ func TestConcurrentAccess(t *testing.T) {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			m.RecordAllowed(time.Millisecond)
+			m.RecordAllowed(time.Millisecond, testAgent)
 		}()
 		go func() {
 			defer wg.Done()
-			m.RecordBlocked("x.com", "dlp", time.Millisecond)
+			m.RecordBlocked("x.com", "dlp", time.Millisecond, testAgent)
 		}()
 	}
 	wg.Wait()
@@ -224,11 +232,11 @@ func TestTopScannersCapped(t *testing.T) {
 	// Fill scanner hits to the cap with unique scanner names
 	for i := range maxTopEntries {
 		name := "scanner" + string(rune('A'+i%26)) + string(rune('0'+i/26))
-		m.RecordBlocked("test.com", name, time.Millisecond)
+		m.RecordBlocked("test.com", name, time.Millisecond, testAgent)
 	}
 
 	// This scanner should be ignored (cap reached, new key)
-	m.RecordBlocked("test.com", "overflow_scanner", time.Millisecond)
+	m.RecordBlocked("test.com", "overflow_scanner", time.Millisecond, testAgent)
 
 	m.mu.Lock()
 	if len(m.topScannerHits) > maxTopEntries {
@@ -323,10 +331,10 @@ func TestTopScannersExistingKeyStillIncrements(t *testing.T) {
 	m := New()
 	// Fill scanners to cap with same key
 	for range maxTopEntries {
-		m.RecordBlocked("test.com", "dlp", time.Millisecond)
+		m.RecordBlocked("test.com", "dlp", time.Millisecond, testAgent)
 	}
 	// Existing key should still increment
-	m.RecordBlocked("test.com", "dlp", time.Millisecond)
+	m.RecordBlocked("test.com", "dlp", time.Millisecond, testAgent)
 
 	m.mu.Lock()
 	if m.topScannerHits["dlp"] != int64(maxTopEntries)+1 {
@@ -337,9 +345,9 @@ func TestTopScannersExistingKeyStillIncrements(t *testing.T) {
 
 func TestRecordBlocked_MultipleScanners(t *testing.T) {
 	m := New()
-	m.RecordBlocked("evil.com", "dlp", time.Millisecond)
-	m.RecordBlocked("evil.com", "ssrf", time.Millisecond)
-	m.RecordBlocked("evil.com", "ratelimit", time.Millisecond)
+	m.RecordBlocked("evil.com", "dlp", time.Millisecond, testAgent)
+	m.RecordBlocked("evil.com", "ssrf", time.Millisecond, testAgent)
+	m.RecordBlocked("evil.com", "ratelimit", time.Millisecond, testAgent)
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -372,8 +380,8 @@ func TestTopN_SortedByCount(t *testing.T) {
 
 func TestRecordTunnel(t *testing.T) {
 	m := New()
-	m.RecordTunnel(5*time.Second, 4096)
-	m.RecordTunnel(10*time.Second, 8192)
+	m.RecordTunnel(5*time.Second, 4096, testAgent)
+	m.RecordTunnel(10*time.Second, 8192, testAgent)
 
 	m.mu.Lock()
 	if m.tunnelCount != 2 {
@@ -384,8 +392,8 @@ func TestRecordTunnel(t *testing.T) {
 
 func TestRecordTunnelBlocked(t *testing.T) {
 	m := New()
-	m.RecordTunnelBlocked()
-	m.RecordTunnelBlocked()
+	m.RecordTunnelBlocked(testAgent)
+	m.RecordTunnelBlocked(testAgent)
 
 	// Verify the Prometheus counter was incremented (check via /metrics)
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
@@ -394,8 +402,8 @@ func TestRecordTunnelBlocked(t *testing.T) {
 
 	body, _ := io.ReadAll(w.Body)
 	text := string(body)
-	if !strings.Contains(text, `pipelock_tunnels_total{result="blocked"}`) {
-		t.Error("expected pipelock_tunnels_total with blocked label in /metrics output")
+	if !strings.Contains(text, `pipelock_tunnels_total{agent="test-agent",result="blocked"}`) {
+		t.Error("expected pipelock_tunnels_total with blocked and agent labels in /metrics output")
 	}
 }
 
@@ -420,8 +428,8 @@ func TestIncrDecrActiveTunnels(t *testing.T) {
 
 func TestStatsHandler_IncludesTunnels(t *testing.T) {
 	m := New()
-	m.RecordTunnel(5*time.Second, 4096)
-	m.RecordTunnel(10*time.Second, 8192)
+	m.RecordTunnel(5*time.Second, 4096, testAgent)
+	m.RecordTunnel(10*time.Second, 8192, testAgent)
 
 	req := httptest.NewRequest(http.MethodGet, "/stats", nil)
 	w := httptest.NewRecorder()
@@ -438,7 +446,7 @@ func TestStatsHandler_IncludesTunnels(t *testing.T) {
 
 func TestPrometheusHandler_TunnelMetrics(t *testing.T) {
 	m := New()
-	m.RecordTunnel(5*time.Second, 4096)
+	m.RecordTunnel(5*time.Second, 4096, testAgent)
 	m.IncrActiveTunnels()
 
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
@@ -469,7 +477,7 @@ func TestConcurrentTunnelAccess(t *testing.T) {
 		wg.Add(3)
 		go func() {
 			defer wg.Done()
-			m.RecordTunnel(time.Millisecond, 100)
+			m.RecordTunnel(time.Millisecond, 100, testAgent)
 		}()
 		go func() {
 			defer wg.Done()
@@ -874,28 +882,28 @@ func TestRegisterKillSwitchState_AllActive(t *testing.T) {
 
 func TestRecordSNI(t *testing.T) {
 	m := New()
-	m.RecordSNI("match")
-	m.RecordSNI("match")
-	m.RecordSNI("mismatch")
+	m.RecordSNI("match", testAgent)
+	m.RecordSNI("match", testAgent)
+	m.RecordSNI("mismatch", testAgent)
 
 	handler := m.PrometheusHandler()
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	body := rec.Body.String()
 
-	if !strings.Contains(body, `pipelock_sni_total{category="match"} 2`) {
+	if !strings.Contains(body, `pipelock_sni_total{agent="test-agent",category="match"} 2`) {
 		t.Errorf("expected 2 SNI match hits:\n%s", body)
 	}
-	if !strings.Contains(body, `pipelock_sni_total{category="mismatch"} 1`) {
+	if !strings.Contains(body, `pipelock_sni_total{agent="test-agent",category="mismatch"} 1`) {
 		t.Errorf("expected 1 SNI mismatch hit:\n%s", body)
 	}
 }
 
 func TestRecordBodyDLP(t *testing.T) {
 	m := New()
-	m.RecordBodyDLP("block")
-	m.RecordBodyDLP("block")
-	m.RecordBodyDLP("warn")
+	m.RecordBodyDLP("block", testAgent)
+	m.RecordBodyDLP("block", testAgent)
+	m.RecordBodyDLP("warn", testAgent)
 
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	w := httptest.NewRecorder()
@@ -903,19 +911,19 @@ func TestRecordBodyDLP(t *testing.T) {
 
 	body, _ := io.ReadAll(w.Body)
 	text := string(body)
-	if !strings.Contains(text, `pipelock_body_dlp_hits_total{action="block"} 2`) {
+	if !strings.Contains(text, `pipelock_body_dlp_hits_total{action="block",agent="test-agent"} 2`) {
 		t.Errorf("expected 2 body DLP block hits:\n%s", text)
 	}
-	if !strings.Contains(text, `pipelock_body_dlp_hits_total{action="warn"} 1`) {
+	if !strings.Contains(text, `pipelock_body_dlp_hits_total{action="warn",agent="test-agent"} 1`) {
 		t.Errorf("expected 1 body DLP warn hit:\n%s", text)
 	}
 }
 
 func TestRecordHeaderDLP(t *testing.T) {
 	m := New()
-	m.RecordHeaderDLP("block")
-	m.RecordHeaderDLP("warn")
-	m.RecordHeaderDLP("warn")
+	m.RecordHeaderDLP("block", testAgent)
+	m.RecordHeaderDLP("warn", testAgent)
+	m.RecordHeaderDLP("warn", testAgent)
 
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	w := httptest.NewRecorder()
@@ -923,10 +931,10 @@ func TestRecordHeaderDLP(t *testing.T) {
 
 	body, _ := io.ReadAll(w.Body)
 	text := string(body)
-	if !strings.Contains(text, `pipelock_header_dlp_hits_total{action="block"} 1`) {
+	if !strings.Contains(text, `pipelock_header_dlp_hits_total{action="block",agent="test-agent"} 1`) {
 		t.Errorf("expected 1 header DLP block hit:\n%s", text)
 	}
-	if !strings.Contains(text, `pipelock_header_dlp_hits_total{action="warn"} 2`) {
+	if !strings.Contains(text, `pipelock_header_dlp_hits_total{action="warn",agent="test-agent"} 2`) {
 		t.Errorf("expected 2 header DLP warn hits:\n%s", text)
 	}
 }
@@ -1117,5 +1125,31 @@ func TestPrometheusHandler_TLSMetrics(t *testing.T) {
 		if !strings.Contains(body, metric) {
 			t.Errorf("expected %s in /metrics output", metric)
 		}
+	}
+}
+
+func TestRequestsTotalAgentLabel(t *testing.T) {
+	m := New()
+	m.RecordAllowed(time.Millisecond, testAgentAlt)
+	m.RecordBlocked("evil.com", "dlp", time.Millisecond, testAgent)
+
+	gathering, err := m.Registry().Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, mf := range gathering {
+		if mf.GetName() == "pipelock_requests_total" {
+			for _, metric := range mf.GetMetric() {
+				for _, label := range metric.GetLabel() {
+					if label.GetName() == "agent" {
+						found = true
+					}
+				}
+			}
+		}
+	}
+	if !found {
+		t.Error("expected agent label on pipelock_requests_total")
 	}
 }

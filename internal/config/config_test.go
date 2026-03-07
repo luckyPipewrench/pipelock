@@ -5,12 +5,18 @@ package config
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/license"
 )
 
 const (
@@ -4667,9 +4673,11 @@ func TestConfigHash_DifferentTLSConfig(t *testing.T) {
 }
 
 func TestAgentProfileParsing(t *testing.T) {
+	token, pubHex := testLicenseKeyPair(t)
 	yamlContent := `
 mode: balanced
-license_key: test-license
+license_key: ` + token + `
+license_public_key: ` + pubHex + `
 agents:
   claude-code:
     mode: strict
@@ -5258,6 +5266,28 @@ func TestValidateAgentSourceCIDRsSameAgentOverlapAllowed(t *testing.T) {
 	}
 }
 
+// testLicenseKeyPair generates an Ed25519 keypair and a valid signed license
+// token for testing. Returns the token string and the hex-encoded public key.
+func testLicenseKeyPair(t *testing.T) (token, pubKeyHex string) {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lic := license.License{
+		ID:        "lic_test",
+		Email:     "test@example.com",
+		IssuedAt:  time.Now().Unix(),
+		ExpiresAt: time.Now().Add(365 * 24 * time.Hour).Unix(),
+		Features:  []string{license.FeatureAgents},
+	}
+	tok, err := license.Issue(lic, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tok, hex.EncodeToString(pub)
+}
+
 func TestEnforceLicenseGate_NoAgents(t *testing.T) {
 	cfg := Defaults()
 	var buf bytes.Buffer
@@ -5267,19 +5297,146 @@ func TestEnforceLicenseGate_NoAgents(t *testing.T) {
 	}
 }
 
-func TestEnforceLicenseGate_WithLicenseKey(t *testing.T) {
+func TestEnforceLicenseGate_WithValidLicense(t *testing.T) {
+	token, pubHex := testLicenseKeyPair(t)
+
 	cfg := Defaults()
-	cfg.LicenseKey = "test-license-key"
+	cfg.LicenseKey = token
+	cfg.LicensePublicKey = pubHex
 	cfg.Agents = map[string]AgentProfile{
 		"agent-a": {Mode: ModeAudit},
 	}
 	var buf bytes.Buffer
 	cfg.EnforceLicenseGate(&buf)
 	if buf.Len() > 0 {
-		t.Error("no warning expected when license key is present")
+		t.Errorf("no warning expected with valid license, got: %s", buf.String())
 	}
 	if cfg.Agents == nil {
-		t.Error("agents should NOT be disabled when license key is present")
+		t.Error("agents should NOT be disabled with valid license")
+	}
+}
+
+func TestEnforceLicenseGate_InvalidToken(t *testing.T) {
+	_, pubHex := testLicenseKeyPair(t)
+
+	cfg := Defaults()
+	cfg.LicenseKey = "not-a-valid-token"
+	cfg.LicensePublicKey = pubHex
+	cfg.Agents = map[string]AgentProfile{
+		"agent-a": {Mode: ModeAudit},
+	}
+	var buf bytes.Buffer
+	cfg.EnforceLicenseGate(&buf)
+	if buf.Len() == 0 {
+		t.Error("expected warning for invalid license token")
+	}
+	if cfg.Agents != nil {
+		t.Error("agents should be disabled with invalid token")
+	}
+}
+
+func TestEnforceLicenseGate_WrongPublicKey(t *testing.T) {
+	token, _ := testLicenseKeyPair(t)
+	_, otherPubHex := testLicenseKeyPair(t) // different keypair
+
+	cfg := Defaults()
+	cfg.LicenseKey = token
+	cfg.LicensePublicKey = otherPubHex
+	cfg.Agents = map[string]AgentProfile{
+		"agent-a": {Mode: ModeAudit},
+	}
+	var buf bytes.Buffer
+	cfg.EnforceLicenseGate(&buf)
+	if buf.Len() == 0 {
+		t.Error("expected warning for wrong public key")
+	}
+	if cfg.Agents != nil {
+		t.Error("agents should be disabled when signature doesn't match")
+	}
+}
+
+func TestEnforceLicenseGate_NoPublicKey(t *testing.T) {
+	token, _ := testLicenseKeyPair(t)
+
+	cfg := Defaults()
+	cfg.LicenseKey = token
+	// No LicensePublicKey set, no embedded key either.
+	cfg.Agents = map[string]AgentProfile{
+		"agent-a": {Mode: ModeAudit},
+	}
+	var buf bytes.Buffer
+	cfg.EnforceLicenseGate(&buf)
+	if buf.Len() == 0 {
+		t.Error("expected warning when no public key available")
+	}
+	if cfg.Agents != nil {
+		t.Error("agents should be disabled without public key")
+	}
+}
+
+func TestEnforceLicenseGate_ExpiredLicense(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lic := license.License{
+		ID:        "lic_expired",
+		Email:     "expired@example.com",
+		IssuedAt:  time.Now().Add(-730 * 24 * time.Hour).Unix(),
+		ExpiresAt: time.Now().Add(-24 * time.Hour).Unix(), // yesterday
+		Features:  []string{license.FeatureAgents},
+	}
+	token, err := license.Issue(lic, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := Defaults()
+	cfg.LicenseKey = token
+	cfg.LicensePublicKey = hex.EncodeToString(pub)
+	cfg.Agents = map[string]AgentProfile{
+		"agent-a": {Mode: ModeAudit},
+	}
+	var buf bytes.Buffer
+	cfg.EnforceLicenseGate(&buf)
+	if !strings.Contains(buf.String(), "expired") {
+		t.Errorf("expected 'expired' in warning, got: %s", buf.String())
+	}
+	if cfg.Agents != nil {
+		t.Error("agents should be disabled with expired license")
+	}
+}
+
+func TestEnforceLicenseGate_MissingFeature(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lic := license.License{
+		ID:        "lic_no_agents",
+		Email:     "limited@example.com",
+		IssuedAt:  time.Now().Unix(),
+		ExpiresAt: time.Now().Add(365 * 24 * time.Hour).Unix(),
+		Features:  []string{"reports"}, // has reports, NOT agents
+	}
+	token, err := license.Issue(lic, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := Defaults()
+	cfg.LicenseKey = token
+	cfg.LicensePublicKey = hex.EncodeToString(pub)
+	cfg.Agents = map[string]AgentProfile{
+		"agent-a": {Mode: ModeAudit},
+	}
+	var buf bytes.Buffer
+	cfg.EnforceLicenseGate(&buf)
+	if !strings.Contains(buf.String(), "agents") {
+		t.Errorf("expected 'agents' feature warning, got: %s", buf.String())
+	}
+	if cfg.Agents != nil {
+		t.Error("agents should be disabled without agents feature")
 	}
 }
 
@@ -5330,12 +5487,12 @@ func TestLicenseGateViaLoad(t *testing.T) {
 	}
 }
 
-func TestLicenseGateViaLoad_WithKey(t *testing.T) {
+func TestLicenseGateViaLoad_WithValidToken(t *testing.T) {
+	token, pubHex := testLicenseKeyPair(t)
 	tmp := t.TempDir()
 	cfgPath := filepath.Join(tmp, "cfg.yaml")
 
-	// Config with agents AND license key.
-	data := "mode: balanced\nlicense_key: pro-license-123\nagents:\n  claude-code:\n    mode: audit\n"
+	data := "mode: balanced\nlicense_key: " + token + "\nlicense_public_key: " + pubHex + "\nagents:\n  claude-code:\n    mode: audit\n"
 	_ = os.WriteFile(cfgPath, []byte(data), 0o600)
 
 	cfg, err := Load(cfgPath)
@@ -5343,7 +5500,7 @@ func TestLicenseGateViaLoad_WithKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	if cfg.Agents == nil {
-		t.Error("agents should NOT be disabled when license_key is present")
+		t.Error("agents should NOT be disabled with valid license token")
 	}
 	if _, ok := cfg.Agents["claude-code"]; !ok {
 		t.Error("claude-code profile should be present")

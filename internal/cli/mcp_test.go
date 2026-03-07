@@ -6,12 +6,17 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 )
 
@@ -899,7 +904,21 @@ func TestMcpProxyCmd_AgentResolvesProfile(t *testing.T) {
 	// Config with an agent profile "strict-bot" that sets mode: strict.
 	// The base config defaults to balanced, so the resolved config should be strict.
 	// Strict mode requires an api_allowlist, so we include one.
-	cfgContent := "license_key: test-license\nagents:\n  strict-bot:\n    mode: strict\n    api_allowlist:\n      - example.com\n"
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lic := license.License{
+		ID: "lic_mcp_test", Email: "test@example.com",
+		IssuedAt: time.Now().Unix(), ExpiresAt: time.Now().Add(24 * time.Hour).Unix(),
+		Features: []string{license.FeatureAgents},
+	}
+	licToken, err := license.Issue(lic, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubHex := hex.EncodeToString(pub)
+	cfgContent := "license_key: " + licToken + "\nlicense_public_key: " + pubHex + "\nagents:\n  strict-bot:\n    mode: strict\n    api_allowlist:\n      - example.com\n"
 	cfgFile := t.TempDir() + "/agent.yaml"
 	if err := os.WriteFile(cfgFile, []byte(cfgContent), 0o600); err != nil {
 		t.Fatal(err)

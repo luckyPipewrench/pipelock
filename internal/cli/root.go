@@ -94,6 +94,7 @@ Quick start:
 		gitCmd(),
 		integrityCmd(),
 		keygenCmd(),
+		licenseCmd(),
 		mcpCmd(),
 		preflightCmd(),
 		reportCmd(),

@@ -5,6 +5,7 @@
 package config
 
 import (
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -20,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/license"
 	"gopkg.in/yaml.v3"
 )
 
@@ -176,7 +178,8 @@ type Config struct {
 	MCPWSListener       MCPWSListener           `yaml:"mcp_ws_listener"`
 	TLSInterception     TLSInterception         `yaml:"tls_interception"`
 	Agents              map[string]AgentProfile `yaml:"agents,omitempty"`
-	LicenseKey          string                  `yaml:"license_key,omitempty"` // soft-gates agents: section; any non-empty value enables multi-agent profiles
+	LicenseKey          string                  `yaml:"license_key,omitempty"`        // signed license token (from pipelock license issue)
+	LicensePublicKey    string                  `yaml:"license_public_key,omitempty"` // hex-encoded Ed25519 public key for license verification
 	Internal            []string                `yaml:"internal"`
 
 	// rawBytes stores the original config file bytes for deterministic hashing.
@@ -613,15 +616,18 @@ func ValidateMergedAgent(name string, cfg *Config) error {
 	return nil
 }
 
-// EnforceLicenseGate checks whether premium features (agents section) are
-// configured without a license key. If so, it disables them with a warning.
-// This is a soft-gate: pipelock still starts and protects traffic, but
-// multi-agent features are disabled. The key is a presence check only
-// (any non-empty string is accepted); cryptographic verification is planned.
+// EnforceLicenseGate verifies the license_key token using Ed25519 signature
+// verification. If the license is missing, invalid, expired, or lacks the
+// "agents" feature, named agent profiles are disabled with a warning.
 //
 // The gate only fires when the agents map has at least one profile that is NOT
 // "_default". A bare _default profile is allowed without a license key because
 // it doesn't add multi-agent functionality.
+//
+// Public key resolution order:
+//  1. license_public_key config field (hex-encoded)
+//  2. Embedded build-time key (set via ldflags)
+//  3. No key available: agents disabled
 func (c *Config) EnforceLicenseGate(w io.Writer) {
 	if len(c.Agents) == 0 {
 		return
@@ -639,15 +645,52 @@ func (c *Config) EnforceLicenseGate(w io.Writer) {
 		return
 	}
 
-	if c.LicenseKey != "" {
+	if c.LicenseKey == "" {
+		_, _ = fmt.Fprintf(w, "WARNING: agents: section requires a license key. "+
+			"Multi-agent profiles disabled. Single-agent protection is active.\n"+
+			"Get a license key at https://pipelab.org/pricing\n")
+		c.Agents = nil
 		return
 	}
 
-	// No license key: disable agents section (soft-gate).
-	_, _ = fmt.Fprintf(w, "WARNING: agents: section requires a license key. "+
-		"Multi-agent profiles disabled. Single-agent protection is active.\n"+
-		"Get a license key at https://pipelab.org/pricing\n")
-	c.Agents = nil
+	// Resolve public key: config field > embedded build-time key.
+	pubKey := c.resolvePublicKey()
+	if pubKey == nil {
+		_, _ = fmt.Fprintf(w, "WARNING: no license public key available. "+
+			"Set license_public_key in config or build with embedded key.\n"+
+			"Multi-agent profiles disabled.\n")
+		c.Agents = nil
+		return
+	}
+
+	// Verify the license token signature and expiration.
+	lic, err := license.Verify(c.LicenseKey, pubKey)
+	if err != nil {
+		_, _ = fmt.Fprintf(w, "WARNING: license verification failed: %v\n"+
+			"Multi-agent profiles disabled. Single-agent protection is active.\n", err)
+		c.Agents = nil
+		return
+	}
+
+	// Check that the license includes the "agents" feature.
+	if !lic.HasFeature(license.FeatureAgents) {
+		_, _ = fmt.Fprintf(w, "WARNING: license %s does not include the 'agents' feature.\n"+
+			"Multi-agent profiles disabled.\n", lic.ID)
+		c.Agents = nil
+		return
+	}
+}
+
+// resolvePublicKey returns the Ed25519 public key for license verification.
+// Priority: config field > embedded build-time key.
+func (c *Config) resolvePublicKey() ed25519.PublicKey {
+	if c.LicensePublicKey != "" {
+		keyBytes, err := hex.DecodeString(c.LicensePublicKey)
+		if err == nil && len(keyBytes) == ed25519.PublicKeySize {
+			return ed25519.PublicKey(keyBytes)
+		}
+	}
+	return license.EmbeddedPublicKey()
 }
 
 // Load reads, parses, defaults, and validates a Pipelock config file.

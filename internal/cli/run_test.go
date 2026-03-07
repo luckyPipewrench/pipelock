@@ -6,6 +6,9 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"net/http"
@@ -15,8 +18,30 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
 )
+
+// testLicenseToken generates a valid signed license token and hex public key for tests.
+func testLicenseToken(t *testing.T) (token, pubKeyHex string) {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lic := license.License{
+		ID:        "lic_test",
+		Email:     "test@example.com",
+		IssuedAt:  time.Now().Unix(),
+		ExpiresAt: time.Now().Add(365 * 24 * time.Hour).Unix(),
+		Features:  []string{license.FeatureAgents},
+	}
+	tok, err := license.Issue(lic, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tok, hex.EncodeToString(pub)
+}
 
 func listenUDP(t *testing.T) net.PacketConn {
 	t.Helper()
@@ -426,10 +451,12 @@ logging:
 func TestRunCmd_AgentListenerBinding(t *testing.T) {
 	mainAddr := freePort(t)
 	agentAddr := freePort(t)
+	licToken, licPubHex := testLicenseToken(t)
 
 	cfgYAML := fmt.Sprintf(`version: 1
 mode: balanced
-license_key: test-license
+license_key: %s
+license_public_key: %s
 fetch_proxy:
   listen: %q
   timeout_seconds: 5
@@ -441,7 +468,7 @@ agents:
 logging:
   format: json
   output: stdout
-`, mainAddr, agentAddr)
+`, licToken, licPubHex, mainAddr, agentAddr)
 
 	tmpFile, err := os.CreateTemp(t.TempDir(), "pipelock-*.yaml")
 	if err != nil {
@@ -520,10 +547,12 @@ func TestRunCmd_AgentListenerMultipleAgents(t *testing.T) {
 	mainAddr := freePort(t)
 	agentAAddr := freePort(t)
 	agentBAddr := freePort(t)
+	licToken, licPubHex := testLicenseToken(t)
 
 	cfgYAML := fmt.Sprintf(`version: 1
 mode: balanced
-license_key: test-license
+license_key: %s
+license_public_key: %s
 fetch_proxy:
   listen: %q
   timeout_seconds: 5
@@ -538,7 +567,7 @@ agents:
 logging:
   format: json
   output: stdout
-`, mainAddr, agentAAddr, agentBAddr)
+`, licToken, licPubHex, mainAddr, agentAAddr, agentBAddr)
 
 	tmpFile, err := os.CreateTemp(t.TempDir(), "pipelock-*.yaml")
 	if err != nil {

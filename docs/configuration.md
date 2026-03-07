@@ -902,10 +902,21 @@ If defined, `_default` applies to any request that does not match a named agent.
 ## License Key
 
 ```yaml
-license_key: "your-license-key"
+license_key: "pipelock_lic_v1_eyJ..."
+license_public_key: "a1b2c3d4..."  # hex-encoded Ed25519 public key
 ```
 
-Multi-agent profiles (the `agents:` section) require a `license_key` value. Without one, pipelock prints a warning and disables agent profiles at startup. All single-agent protection remains active. The key is currently a presence check only (any non-empty value is accepted); cryptographic verification will be added in a future release.
+Multi-agent profiles (the `agents:` section) require a signed license token in `license_key`. The token is an Ed25519-signed JWT-like string issued by `pipelock license issue`. At startup, pipelock verifies the signature, checks expiration, and confirms the token includes the `agents` feature. If any check fails, agent profiles are disabled with a warning. All single-agent protection remains active.
+
+The `license_public_key` field provides the hex-encoded Ed25519 public key for verification. If omitted, pipelock falls back to the build-time embedded key (set via ldflags in official releases).
+
+Generate a keypair and issue licenses with:
+
+```bash
+pipelock license keygen              # generates ~/.config/pipelock/license.key + license.pub
+pipelock license issue --email customer@company.com --expires 2027-03-07
+pipelock license inspect TOKEN       # decode without verifying
+```
 
 A `_default` profile without any named agents does not require a license key.
 

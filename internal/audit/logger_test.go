@@ -1853,7 +1853,7 @@ func TestLogSNIMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogSNIMismatch("allowed.com", "evil.com", testClientIP, testReqID, "mismatch")
+	logger.LogSNIMismatch("allowed.com", "evil.com", testClientIP, testReqID, "test-agent", "mismatch")
 	logger.Close()
 
 	data, _ := os.ReadFile(filepath.Clean(path))
@@ -1892,7 +1892,7 @@ func TestLogSNIMismatch_Emitter(t *testing.T) {
 	emitter := emit.NewEmitter("test", sink)
 	logger.SetEmitter(emitter)
 
-	logger.LogSNIMismatch("allowed.com", "evil.com", testClientIP, testReqID, "mismatch")
+	logger.LogSNIMismatch("allowed.com", "evil.com", testClientIP, testReqID, "test-agent", "mismatch")
 	logger.Close()
 	_ = emitter.Close()
 

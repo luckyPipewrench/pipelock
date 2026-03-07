@@ -211,7 +211,10 @@ func runVerifyInstall(cmd *cobra.Command, configFile string, jsonOut, noColor bo
 	logger := audit.NewNop()
 	defer logger.Close()
 	m := metrics.New()
-	p := proxy.New(cfg, logger, sc, m)
+	p, pErr := proxy.New(cfg, logger, sc, m)
+	if pErr != nil {
+		return ExitCodeError(2, fmt.Errorf("creating proxy: %w", pErr))
+	}
 
 	proxyLn, err := lc.Listen(cmd.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {

@@ -574,7 +574,15 @@ func MergeAgentProfile(base *Config, profile *AgentProfile) (*Config, error) {
 		}
 	}
 	if profile.MCPToolPolicy != nil {
-		merged.MCPToolPolicy = *profile.MCPToolPolicy
+		// Deep-merge: only override fields the profile explicitly sets.
+		// Enabled is always overridden since the pointer was non-nil.
+		merged.MCPToolPolicy.Enabled = profile.MCPToolPolicy.Enabled
+		if profile.MCPToolPolicy.Action != "" {
+			merged.MCPToolPolicy.Action = profile.MCPToolPolicy.Action
+		}
+		if profile.MCPToolPolicy.Rules != nil {
+			merged.MCPToolPolicy.Rules = append([]ToolPolicyRule(nil), profile.MCPToolPolicy.Rules...)
+		}
 	}
 
 	return merged, nil
@@ -587,6 +595,18 @@ func MergeAgentProfile(base *Config, profile *AgentProfile) (*Config, error) {
 func ValidateMergedAgent(name string, cfg *Config) error {
 	if cfg.Mode == ModeStrict && len(cfg.APIAllowlist) == 0 {
 		return fmt.Errorf("agent %q: strict mode requires at least one domain in api_allowlist", name)
+	}
+	if cfg.SessionProfiling.Enabled && cfg.SessionProfiling.AnomalyAction != "" {
+		validActions := map[string]bool{ActionBlock: true, ActionWarn: true}
+		if !validActions[cfg.SessionProfiling.AnomalyAction] {
+			return fmt.Errorf("agent %q: session_profiling.anomaly_action must be %q or %q, got %q", name, ActionBlock, ActionWarn, cfg.SessionProfiling.AnomalyAction)
+		}
+	}
+	if cfg.MCPToolPolicy.Enabled && cfg.MCPToolPolicy.Action != "" {
+		validActions := map[string]bool{ActionBlock: true, ActionWarn: true}
+		if !validActions[cfg.MCPToolPolicy.Action] {
+			return fmt.Errorf("agent %q: mcp_tool_policy.action must be %q or %q, got %q", name, ActionBlock, ActionWarn, cfg.MCPToolPolicy.Action)
+		}
 	}
 	return nil
 }

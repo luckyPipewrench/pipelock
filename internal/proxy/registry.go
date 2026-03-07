@@ -61,6 +61,9 @@ func NewAgentRegistry(base *config.Config) (_ *AgentRegistry, err error) {
 		reg.agents[name] = resolved
 
 		for _, addr := range profile.Listeners {
+			if prev, exists := reg.ports[addr]; exists {
+				return nil, fmt.Errorf("listener %q is assigned to both %q and %q", addr, prev, name)
+			}
 			reg.ports[addr] = name
 		}
 	}

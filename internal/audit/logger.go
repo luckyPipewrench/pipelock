@@ -189,7 +189,7 @@ func (l *Logger) LogAllowed(method, url, clientIP, requestID string, statusCode,
 		Int("size_bytes", sizeBytes).
 		Dur("duration_ms", duration)
 	if agent != "" {
-		ev = ev.Str("agent", agent)
+		ev = ev.Str("agent", sanitizeString(agent))
 	}
 	ev.Msg("request allowed")
 }
@@ -210,7 +210,7 @@ func (l *Logger) LogBlocked(method, url, scanner, reason, clientIP, requestID, a
 			Str("scanner", scanner).
 			Str("reason", sanitizeString(reason))
 		if agent != "" {
-			event = event.Str("agent", agent)
+			event = event.Str("agent", sanitizeString(agent))
 		}
 		if technique != "" {
 			event = event.Str("mitre_technique", technique)
@@ -228,7 +228,7 @@ func (l *Logger) LogBlocked(method, url, scanner, reason, clientIP, requestID, a
 			"request_id": requestID,
 		}
 		if agent != "" {
-			fields["agent"] = agent
+			fields["agent"] = sanitizeString(agent)
 		}
 		if technique != "" {
 			fields["mitre_technique"] = technique
@@ -246,7 +246,7 @@ func (l *Logger) LogError(method, url, clientIP, requestID, agent string, err er
 		Str("client_ip", clientIP).
 		Str("request_id", requestID)
 	if agent != "" {
-		ev = ev.Str("agent", agent)
+		ev = ev.Str("agent", sanitizeString(agent))
 	}
 	ev.Err(err).
 		Msg("request error")
@@ -264,7 +264,7 @@ func (l *Logger) LogError(method, url, clientIP, requestID, agent string, err er
 			"error":      errStr,
 		}
 		if agent != "" {
-			fields["agent"] = agent
+			fields["agent"] = sanitizeString(agent)
 		}
 		l.emitter.Emit(context.Background(), string(EventError), fields)
 	}
@@ -284,7 +284,7 @@ func (l *Logger) LogAnomaly(method, url, scanner, reason, clientIP, requestID, a
 		Str("client_ip", clientIP).
 		Str("request_id", requestID)
 	if agent != "" {
-		event = event.Str("agent", agent)
+		event = event.Str("agent", sanitizeString(agent))
 	}
 	if scanner != "" {
 		event = event.Str("scanner", scanner)
@@ -306,7 +306,7 @@ func (l *Logger) LogAnomaly(method, url, scanner, reason, clientIP, requestID, a
 			"score":      score,
 		}
 		if agent != "" {
-			fields["agent"] = agent
+			fields["agent"] = sanitizeString(agent)
 		}
 		if scanner != "" {
 			fields["scanner"] = scanner
@@ -332,7 +332,7 @@ func (l *Logger) LogResponseScan(url, clientIP, requestID, agent, action string,
 		Strs("patterns", patternNames).
 		Str("mitre_technique", technique)
 	if agent != "" {
-		event = event.Str("agent", agent)
+		event = event.Str("agent", sanitizeString(agent))
 	}
 	event.Msg("response scan detected prompt injection")
 
@@ -347,7 +347,7 @@ func (l *Logger) LogResponseScan(url, clientIP, requestID, agent, action string,
 			"mitre_technique": technique,
 		}
 		if agent != "" {
-			data["agent"] = agent
+			data["agent"] = sanitizeString(agent)
 		}
 		l.emitter.Emit(context.Background(), string(EventResponseScan), data)
 	}
@@ -364,7 +364,7 @@ func (l *Logger) LogTunnelOpen(target, clientIP, requestID, agent string) {
 		Str("client_ip", clientIP).
 		Str("request_id", requestID)
 	if agent != "" {
-		ev = ev.Str("agent", agent)
+		ev = ev.Str("agent", sanitizeString(agent))
 	}
 	ev.Msg("tunnel opened")
 }
@@ -380,7 +380,7 @@ func (l *Logger) LogTunnelClose(target, clientIP, requestID, agent string, total
 		Str("client_ip", clientIP).
 		Str("request_id", requestID)
 	if agent != "" {
-		ev = ev.Str("agent", agent)
+		ev = ev.Str("agent", sanitizeString(agent))
 	}
 	ev.Int64("total_bytes", totalBytes).
 		Dur("duration_ms", duration).
@@ -399,7 +399,7 @@ func (l *Logger) LogForwardHTTP(method, url, clientIP, requestID, agent string, 
 		Str("client_ip", clientIP).
 		Str("request_id", requestID)
 	if agent != "" {
-		ev = ev.Str("agent", agent)
+		ev = ev.Str("agent", sanitizeString(agent))
 	}
 	ev.Int("status_code", statusCode).
 		Int("size_bytes", sizeBytes).
@@ -416,7 +416,7 @@ func (l *Logger) LogRedirect(originalURL, redirectURL, clientIP, requestID, agen
 		Str("client_ip", clientIP).
 		Str("request_id", requestID)
 	if agent != "" {
-		ev = ev.Str("agent", agent)
+		ev = ev.Str("agent", sanitizeString(agent))
 	}
 	ev.Int("hop", hop).
 		Msg("redirect followed")
@@ -649,28 +649,35 @@ func (l *Logger) LogMCPUnknownTool(toolName, action string) {
 // LogSNIMismatch logs an SNI verification failure (domain fronting, malformed
 // TLS, or timeout). Fields are structured per audit policy: connect_host and
 // sni_host are explicit, never parsed from error text.
-func (l *Logger) LogSNIMismatch(connectHost, sniHost, clientIP, requestID, category string) {
+func (l *Logger) LogSNIMismatch(connectHost, sniHost, clientIP, requestID, agent, category string) {
 	technique := TechniqueForScanner("sni_mismatch")
 
-	l.zl.Warn().
+	ev := l.zl.Warn().
 		Str("event", string(EventSNIMismatch)).
 		Str("connect_host", sanitizeString(connectHost)).
 		Str("sni_host", sanitizeString(sniHost)).
 		Str("client_ip", clientIP).
-		Str("request_id", requestID).
-		Str("category", category).
+		Str("request_id", requestID)
+	if agent != "" {
+		ev = ev.Str("agent", sanitizeString(agent))
+	}
+	ev.Str("category", category).
 		Str("mitre_technique", technique).
 		Msg("SNI verification failed")
 
 	if l.emitter != nil {
-		l.emitter.Emit(context.Background(), string(EventSNIMismatch), map[string]any{
+		fields := map[string]any{
 			"connect_host":    sanitizeString(connectHost),
 			"sni_host":        sanitizeString(sniHost),
 			"client_ip":       clientIP,
 			"request_id":      requestID,
 			"category":        category,
 			"mitre_technique": technique,
-		})
+		}
+		if agent != "" {
+			fields["agent"] = sanitizeString(agent)
+		}
+		l.emitter.Emit(context.Background(), string(EventSNIMismatch), fields)
 	}
 }
 
@@ -708,7 +715,7 @@ func (l *Logger) LogBodyDLP(method, url, action, clientIP, requestID, agent stri
 		Str("client_ip", clientIP).
 		Str("request_id", requestID)
 	if agent != "" {
-		ev = ev.Str("agent", agent)
+		ev = ev.Str("agent", sanitizeString(agent))
 	}
 	ev.Int("match_count", matchCount).
 		Strs("patterns", patternNames).
@@ -727,7 +734,7 @@ func (l *Logger) LogBodyDLP(method, url, action, clientIP, requestID, agent stri
 			"mitre_technique": technique,
 		}
 		if agent != "" {
-			fields["agent"] = agent
+			fields["agent"] = sanitizeString(agent)
 		}
 		l.emitter.Emit(context.Background(), string(EventBodyDLP), fields)
 	}
@@ -746,7 +753,7 @@ func (l *Logger) LogHeaderDLP(method, url, headerName, action, clientIP, request
 		Str("client_ip", clientIP).
 		Str("request_id", requestID)
 	if agent != "" {
-		ev = ev.Str("agent", agent)
+		ev = ev.Str("agent", sanitizeString(agent))
 	}
 	ev.Strs("patterns", patternNames).
 		Str("mitre_technique", technique).
@@ -764,7 +771,7 @@ func (l *Logger) LogHeaderDLP(method, url, headerName, action, clientIP, request
 			"mitre_technique": technique,
 		}
 		if agent != "" {
-			fields["agent"] = agent
+			fields["agent"] = sanitizeString(agent)
 		}
 		l.emitter.Emit(context.Background(), string(EventHeaderDLP), fields)
 	}

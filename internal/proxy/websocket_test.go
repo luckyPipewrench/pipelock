@@ -111,7 +111,10 @@ func setupWSProxy(t *testing.T, cfgMod func(*config.Config)) (string, func()) {
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
 	m := metrics.New()
-	p := New(cfg, logger, sc, m)
+	p, err := New(cfg, logger, sc, m)
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
 	lc := net.ListenConfig{}
 	ln, err := lc.Listen(context.Background(), "tcp4", "127.0.0.1:0")

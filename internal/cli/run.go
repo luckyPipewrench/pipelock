@@ -163,7 +163,10 @@ Examples:
 			} else {
 				ks.SetSeparateAPIPort(true)
 			}
-			p := proxy.New(cfg, logger, sc, m, proxyOpts...)
+			p, pErr := proxy.New(cfg, logger, sc, m, proxyOpts...)
+			if pErr != nil {
+				return fmt.Errorf("creating proxy: %w", pErr)
+			}
 
 			// Load TLS interception CA if configured.
 			if err := p.LoadCertCache(cfg); err != nil {

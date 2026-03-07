@@ -158,7 +158,7 @@ type FetchResponse struct {
 }
 
 // New creates a new fetch proxy from config.
-func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metrics.Metrics, opts ...Option) *Proxy {
+func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metrics.Metrics, opts ...Option) (*Proxy, error) {
 	p := &Proxy{
 		logger:    logger,
 		metrics:   m,
@@ -171,12 +171,9 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 	p.scannerPtr.Store(sc)
 
 	// Build agent registry for per-agent config/scanner resolution.
-	// NewAgentRegistry only fails on pathological configs that should have
-	// been caught by config.Validate(), so log.Fatal is appropriate here.
 	reg, regErr := NewAgentRegistry(cfg)
 	if regErr != nil {
-		// Startup failure: config validation should have caught this.
-		panic(fmt.Sprintf("agent registry: %v", regErr))
+		return nil, fmt.Errorf("agent registry: %w", regErr)
 	}
 	p.registryPtr.Store(reg)
 
@@ -241,7 +238,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 
 	p.tlsTransport = newTLSInterceptTransport(p.ssrfSafeDialContext, m.RecordTLSHandshake, nil)
 
-	return p
+	return p, nil
 }
 
 // CurrentConfig returns the currently active config. Used for reload comparison.
@@ -261,6 +258,15 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
 	p.reloadMu.Lock()
 	defer p.reloadMu.Unlock()
 
+	// Build new agent registry BEFORE swapping config/scanner.
+	// If this fails, keep all existing state unchanged (fail-safe).
+	newReg, regErr := NewAgentRegistry(cfg)
+	if regErr != nil {
+		p.logger.LogError("RELOAD", "", "", "", "", fmt.Errorf("agent registry rebuild failed, keeping old config: %w", regErr))
+		sc.Close() // caller-allocated scanner must be closed since we're not using it
+		return
+	}
+
 	oldCfg := p.cfgPtr.Load()
 	p.cfgPtr.Store(cfg)
 	old := p.scannerPtr.Swap(sc)
@@ -269,14 +275,8 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
 		old.Close()
 	}
 
-	// Rebuild agent registry for per-agent config/scanner resolution.
-	newReg, regErr := NewAgentRegistry(cfg)
-	if regErr != nil {
-		p.logger.LogError("RELOAD", "", "", "", "", fmt.Errorf("agent registry rebuild failed, keeping old: %w", regErr))
-	} else {
-		if oldReg := p.registryPtr.Swap(newReg); oldReg != nil {
-			oldReg.Close()
-		}
+	if oldReg := p.registryPtr.Swap(newReg); oldReg != nil {
+		oldReg.Close()
 	}
 
 	// Toggle session manager lifecycle on config change.
@@ -325,6 +325,9 @@ func (p *Proxy) Close() {
 	if sm := p.sessionMgrPtr.Load(); sm != nil {
 		sm.Close()
 	}
+	if sc := p.scannerPtr.Load(); sc != nil {
+		sc.Close()
+	}
 	if reg := p.registryPtr.Load(); reg != nil {
 		reg.Close()
 	}
@@ -362,6 +365,28 @@ func (p *Proxy) knownProfiles() map[string]bool {
 		m[name] = true
 	}
 	return m
+}
+
+// resolveAgentFromRequest resolves the agent identity and returns the
+// resolved agent from a single registry snapshot. This prevents TOCTOU
+// races during hot-reload where knownProfiles() and resolveAgent() could
+// read different registries.
+func (p *Proxy) resolveAgentFromRequest(r *http.Request) (*ResolvedAgent, AgentIdentity) {
+	reg := p.registryPtr.Load()
+	if reg == nil {
+		return &ResolvedAgent{
+			Name:    profileDefault,
+			Config:  p.cfgPtr.Load(),
+			Scanner: p.scannerPtr.Load(),
+		}, AgentIdentity{Name: "", Profile: profileDefault}
+	}
+	profiles := reg.Profiles()
+	known := make(map[string]bool, len(profiles))
+	for _, name := range profiles {
+		known[name] = true
+	}
+	id := ResolveAgent(r, known)
+	return reg.Lookup(id.Profile), id
 }
 
 // newTLSInterceptTransport creates a shared http.Transport for TLS interception
@@ -665,12 +690,10 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 	clientIP, requestID := requestMeta(r)
 
-	// Resolve per-agent config and scanner. When agent profiles are
-	// configured, each agent gets its own merged config (mode, allowlist,
-	// DLP patterns, etc.) and pre-built scanner. When no profiles exist,
-	// the fallback uses the base config — identical to pre-agent behavior.
-	id := ResolveAgent(r, p.knownProfiles())
-	resolved := p.resolveAgent(id.Profile)
+	// Resolve per-agent config and scanner from a single registry snapshot.
+	// This prevents TOCTOU races during hot-reload where knownProfiles()
+	// and resolveAgent() could read different registries.
+	resolved, id := p.resolveAgentFromRequest(r)
 	cfg := resolved.Config
 	sc := resolved.Scanner
 	agent := id.Name

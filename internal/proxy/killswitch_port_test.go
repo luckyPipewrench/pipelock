@@ -71,7 +71,10 @@ func TestKillSwitchPortIsolation_APIOnSeparatePort(t *testing.T) {
 	ksAPI := killswitch.NewAPIHandler(ks)
 
 	// Build proxy WITHOUT kill switch API routes (simulates api_listen set).
-	p := New(cfg, logger, sc, m, WithKillSwitch(ks))
+	p, err := New(cfg, logger, sc, m, WithKillSwitch(ks))
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
 	// Start the main proxy on a free port.
 	ctx, cancel := context.WithCancel(context.Background())
@@ -225,7 +228,10 @@ func TestKillSwitchPortIsolation_DefaultBehavior(t *testing.T) {
 	ksAPI := killswitch.NewAPIHandler(ks)
 
 	// Build proxy WITH kill switch API routes (default behavior).
-	p := New(cfg, logger, sc, m, WithKillSwitch(ks), WithKillSwitchAPI(ksAPI))
+	p, err := New(cfg, logger, sc, m, WithKillSwitch(ks), WithKillSwitchAPI(ksAPI))
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
 	// Allocate a free port by binding and immediately closing.
 	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp4", "127.0.0.1:0")
@@ -284,7 +290,10 @@ func TestKillSwitchHealthReportsActive(t *testing.T) {
 	m := metrics.New()
 
 	ks := killswitch.New(cfg)
-	p := New(cfg, logger, sc, m, WithKillSwitch(ks))
+	p, err := New(cfg, logger, sc, m, WithKillSwitch(ks))
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
 	// Health with kill switch inactive.
 	w := httptest.NewRecorder()

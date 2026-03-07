@@ -916,7 +916,10 @@ func TestFetchHandler_HeaderScan_SecretInAuth(t *testing.T) {
 	sc := scanner.New(cfg)
 	defer sc.Close()
 	m := metrics.New()
-	p := New(cfg, logger, sc, m)
+	p, err := New(cfg, logger, sc, m)
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
 	// Create a request to the fetch handler with a secret in the header.
 	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+upstream.URL, nil)
@@ -950,7 +953,10 @@ func TestFetchHandler_HeaderScan_WarnMode(t *testing.T) {
 	sc := scanner.New(cfg)
 	defer sc.Close()
 	m := metrics.New()
-	p := New(cfg, logger, sc, m)
+	p, err := New(cfg, logger, sc, m)
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+upstream.URL, nil)
 	req.Header.Set("Authorization", "Bearer "+fakeAPIKey())

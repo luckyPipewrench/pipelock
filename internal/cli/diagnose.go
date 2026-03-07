@@ -143,7 +143,10 @@ func runDiagnose(cmd *cobra.Command, cfg *config.Config, cfgLabel string, jsonOu
 	defer logger.Close()
 	m := metrics.New()
 
-	p := proxy.New(cfg, logger, sc, m)
+	p, pErr := proxy.New(cfg, logger, sc, m)
+	if pErr != nil {
+		return fmt.Errorf("creating proxy: %w", pErr)
+	}
 
 	// Start temp proxy using the composed handler.
 	proxyLn, err := lc.Listen(cmd.Context(), "tcp", "127.0.0.1:0")

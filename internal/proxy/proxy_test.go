@@ -85,7 +85,10 @@ func setupTestProxy(t *testing.T) (*Proxy, *httptest.Server) {
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
-	p := New(cfg, logger, sc, metrics.New())
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
 	return p, backend
 }
@@ -400,7 +403,10 @@ func TestFetchEndpoint_BackendError(t *testing.T) {
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
-	p := New(cfg, logger, sc, metrics.New())
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/broken", nil)
 	w := httptest.NewRecorder()
@@ -526,7 +532,10 @@ func setupResponseScanProxy(t *testing.T, action string) (*Proxy, *httptest.Serv
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
-	p := New(cfg, logger, sc, metrics.New())
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
 	return p, backend
 }
@@ -716,7 +725,10 @@ func TestFetchEndpoint_ResponseScan_Disabled(t *testing.T) {
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
-	p := New(cfg, logger, sc, metrics.New())
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/", nil)
 	w := httptest.NewRecorder()
@@ -785,7 +797,10 @@ func TestFetchEndpoint_ResponseScan_AskAllowLongContent(t *testing.T) {
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
 	defer sc.Close()
-	p := New(cfg, logger, sc, metrics.New())
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
 	approver := hitl.New(5,
 		hitl.WithInput(strings.NewReader("y\n")),
@@ -939,7 +954,10 @@ func TestWithApprover(t *testing.T) {
 	cfg.APIAllowlist = nil
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
-	p := New(cfg, logger, sc, metrics.New(), WithApprover(approver))
+	p, err := New(cfg, logger, sc, metrics.New(), WithApprover(approver))
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
 	if p.approver != approver {
 		t.Error("expected WithApprover to set the approver")
@@ -1120,7 +1138,10 @@ func TestFetchEndpoint_RedirectToBlockedDomain(t *testing.T) {
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
-	p := New(cfg, logger, sc, metrics.New())
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/start", nil)
 	w := httptest.NewRecorder()
@@ -1160,7 +1181,10 @@ func TestFetchEndpoint_RedirectToDLPMatch(t *testing.T) {
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
-	p := New(cfg, logger, sc, metrics.New())
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/start", nil)
 	w := httptest.NewRecorder()
@@ -1201,7 +1225,10 @@ func TestFetchEndpoint_RedirectChainExceedsMax(t *testing.T) {
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
-	p := New(cfg, logger, sc, metrics.New())
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/a", nil)
 	w := httptest.NewRecorder()
@@ -1247,7 +1274,10 @@ func TestFetchEndpoint_RedirectInAuditMode(t *testing.T) {
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
-	p := New(cfg, logger, sc, metrics.New())
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/start", nil)
 	w := httptest.NewRecorder()
@@ -1294,7 +1324,10 @@ func TestFetchEndpoint_RedirectInEnforceMode_Blocks(t *testing.T) {
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
-	p := New(cfg, logger, sc, metrics.New())
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/start", nil)
 	w := httptest.NewRecorder()
@@ -1339,7 +1372,10 @@ func TestFetchEndpoint_RedirectToSafeURL(t *testing.T) {
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
-	p := New(cfg, logger, sc, metrics.New())
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/start", nil)
 	w := httptest.NewRecorder()
@@ -1380,7 +1416,10 @@ func TestFetchEndpoint_RateLimitReturns429(t *testing.T) {
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
 	defer sc.Close()
-	p := New(cfg, logger, sc, metrics.New())
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/fetch", p.handleFetch)
@@ -1435,7 +1474,10 @@ func TestFetchEndpoint_AuditMode_AllowsBlockedURL(t *testing.T) {
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
-	p := New(cfg, logger, sc, metrics.New())
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
 	// URL with AWS key triggers DLP but audit mode lets it through
 	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/data?key=AKIAIOSFODNN7EXAMPLE", nil)
@@ -1477,7 +1519,10 @@ func TestFetchEndpoint_AuditMode_EnforceTrue_Blocks(t *testing.T) {
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
-	p := New(cfg, logger, sc, metrics.New())
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/data?key=AKIAIOSFODNN7EXAMPLE", nil)
 	w := httptest.NewRecorder()
@@ -1517,7 +1562,10 @@ func TestProxy_Reload_SwapsConfig(t *testing.T) {
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
 	m := metrics.New()
-	p := New(cfg, logger, sc, m)
+	p, err := New(cfg, logger, sc, m)
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/fetch", p.handleFetch)
@@ -1576,7 +1624,10 @@ func TestProxy_Reload_NewScannerTakesEffect(t *testing.T) {
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
 	m := metrics.New()
-	p := New(cfg, logger, sc, m)
+	p, err := New(cfg, logger, sc, m)
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/fetch", p.handleFetch)
@@ -1634,7 +1685,10 @@ func TestProxy_Reload_ConcurrentRequestsSafe(t *testing.T) {
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
 	m := metrics.New()
-	p := New(cfg, logger, sc, m)
+	p, err := New(cfg, logger, sc, m)
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/fetch", p.handleFetch)
@@ -1706,7 +1760,10 @@ func TestFetchEndpoint_SSRFBlocksInternalIP(t *testing.T) {
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
-	p := New(cfg, logger, sc, metrics.New())
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
 	// Target 127.0.0.1 — blocked by scanner's SSRF check at URL scan phase
 	req := httptest.NewRequest(http.MethodGet, "/fetch?url=http://127.0.0.1:9999/test", nil)
@@ -1764,7 +1821,10 @@ func TestFetchEndpoint_BodyReadError(t *testing.T) {
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
-	p := New(cfg, logger, sc, metrics.New())
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/data", nil)
 	w := httptest.NewRecorder()
@@ -1791,12 +1851,15 @@ func TestProxy_StartReturnsErrorOnBadAddress(t *testing.T) {
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
-	p := New(cfg, logger, sc, metrics.New())
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	err := p.Start(ctx)
+	err = p.Start(ctx)
 	if err == nil {
 		t.Error("expected error for invalid listen address")
 	}
@@ -1821,7 +1884,10 @@ func TestFetchEndpoint_ReadabilityExtractError(t *testing.T) {
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
-	p := New(cfg, logger, sc, metrics.New())
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/page", nil)
 	w := httptest.NewRecorder()
@@ -1852,7 +1918,10 @@ func TestProxy_StartAndShutdown(t *testing.T) {
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
-	p := New(cfg, logger, sc, metrics.New())
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -1960,7 +2029,10 @@ func TestProxy_Start_AlreadyBound(t *testing.T) {
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
 	defer sc.Close()
-	p := New(cfg, logger, sc, metrics.New())
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
 	err = p.Start(context.Background())
 	if err == nil {
@@ -1997,7 +2069,10 @@ func TestProxy_FetchViaHostname(t *testing.T) {
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
 	defer sc.Close()
-	p := New(cfg, logger, sc, metrics.New())
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
 	handler := http.HandlerFunc(p.handleFetch)
 	rr := httptest.NewRecorder()
@@ -2027,7 +2102,10 @@ func TestProxy_SSRF_DirectIP(t *testing.T) {
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
 	defer sc.Close()
-	p := New(cfg, logger, sc, metrics.New())
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
 	handler := http.HandlerFunc(p.handleFetch)
 	rr := httptest.NewRecorder()
@@ -2050,7 +2128,10 @@ func TestProxy_SSRF_DNSRebind(t *testing.T) {
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
 	defer sc.Close()
-	p := New(cfg, logger, sc, metrics.New())
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
 	handler := http.HandlerFunc(p.handleFetch)
 	rr := httptest.NewRecorder()
@@ -2360,7 +2441,10 @@ func TestProxy_SessionProfiling_DomainBurst(t *testing.T) {
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
 	defer sc.Close()
-	p := New(cfg, logger, sc, metrics.New())
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 	defer p.Close()
 
 	mux := http.NewServeMux()
@@ -2425,7 +2509,10 @@ func TestProxy_SessionProfiling_WarnMode(t *testing.T) {
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
 	defer sc.Close()
-	p := New(cfg, logger, sc, metrics.New())
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 	defer p.Close()
 
 	mux := http.NewServeMux()
@@ -2486,7 +2573,10 @@ func TestProxy_AdaptiveEscalation(t *testing.T) {
 	sc := scanner.New(cfg)
 	defer sc.Close()
 	m := metrics.New()
-	p := New(cfg, logger, sc, m)
+	p, err := New(cfg, logger, sc, m)
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 	defer p.Close()
 
 	mux := http.NewServeMux()
@@ -2552,7 +2642,10 @@ func TestProxy_Close_SessionManager(t *testing.T) {
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
 	defer sc.Close()
-	p := New(cfg, logger, sc, metrics.New())
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
 	if p.sessionMgrPtr.Load() == nil {
 		t.Fatal("sessionMgr should be non-nil when profiling enabled")
@@ -2573,7 +2666,10 @@ func TestProxy_Reload_TogglesSessionManager(t *testing.T) {
 	sc := scanner.New(cfg)
 	defer sc.Close()
 	m := metrics.New()
-	p := New(cfg, logger, sc, m)
+	p, err := New(cfg, logger, sc, m)
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 	defer p.Close()
 
 	if p.sessionMgrPtr.Load() != nil {
@@ -2625,7 +2721,10 @@ func TestProxy_SessionProfiling_AgentKeying(t *testing.T) {
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
 	defer sc.Close()
-	p := New(cfg, logger, sc, metrics.New())
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 	defer p.Close()
 
 	mux := http.NewServeMux()
@@ -2673,7 +2772,10 @@ func TestProxy_SessionProfiling_IPDomainBurst_HeaderRotation(t *testing.T) {
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
 	defer sc.Close()
-	p := New(cfg, logger, sc, metrics.New())
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 	defer p.Close()
 
 	mux := http.NewServeMux()
@@ -2724,7 +2826,10 @@ func TestProxy_AdaptiveSignalBlock_InEnforceMode(t *testing.T) {
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
 	defer sc.Close()
-	p := New(cfg, logger, sc, metrics.New())
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 	defer p.Close()
 
 	mux := http.NewServeMux()
@@ -2767,7 +2872,10 @@ func TestProxy_Reload_UpdatesSessionConfig(t *testing.T) {
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
 	defer sc.Close()
-	p := New(cfg, logger, sc, metrics.New())
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 	defer p.Close()
 
 	sm := p.sessionMgrPtr.Load()
@@ -2819,7 +2927,10 @@ func TestProxy_SessionMgr_ConcurrentReloadRequest(t *testing.T) {
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
 	defer sc.Close()
-	p := New(cfg, logger, sc, metrics.New())
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 	defer p.Close()
 
 	mux := http.NewServeMux()
@@ -2868,7 +2979,10 @@ func TestKillSwitch_DeniesHTTPRequest(t *testing.T) {
 	sc := scanner.New(cfg)
 	m := metrics.New()
 	ks := killswitch.New(cfg)
-	p := New(cfg, logger, sc, m, WithKillSwitch(ks))
+	p, err := New(cfg, logger, sc, m, WithKillSwitch(ks))
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
 	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		t.Error("request should not reach backend")
@@ -2908,7 +3022,10 @@ func TestKillSwitch_ExemptsHealthEndpoint(t *testing.T) {
 	sc := scanner.New(cfg)
 	m := metrics.New()
 	ks := killswitch.New(cfg)
-	p := New(cfg, logger, sc, m, WithKillSwitch(ks))
+	p, err := New(cfg, logger, sc, m, WithKillSwitch(ks))
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
@@ -2935,7 +3052,10 @@ func TestKillSwitch_ExemptsMetricsEndpoint(t *testing.T) {
 	sc := scanner.New(cfg)
 	m := metrics.New()
 	ks := killswitch.New(cfg)
-	p := New(cfg, logger, sc, m, WithKillSwitch(ks))
+	p, err := New(cfg, logger, sc, m, WithKillSwitch(ks))
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/metrics", func(w http.ResponseWriter, _ *http.Request) {
@@ -2963,7 +3083,10 @@ func TestKillSwitch_AllowlistIP(t *testing.T) {
 	sc := scanner.New(cfg)
 	m := metrics.New()
 	ks := killswitch.New(cfg)
-	p := New(cfg, logger, sc, m, WithKillSwitch(ks))
+	p, err := New(cfg, logger, sc, m, WithKillSwitch(ks))
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/fetch", p.handleFetch)
@@ -2989,7 +3112,10 @@ func TestWithKillSwitch_NilSafe(t *testing.T) {
 	sc := scanner.New(cfg)
 	m := metrics.New()
 	// No kill switch — nil controller.
-	p := New(cfg, logger, sc, m)
+	p, err := New(cfg, logger, sc, m)
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
 	mux := http.NewServeMux()
 	handler := p.buildHandler(mux)
@@ -3008,7 +3134,10 @@ func TestMetricsNotOnMainPort_WhenMetricsListenSet(t *testing.T) {
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
 	m := metrics.New()
-	p := New(cfg, logger, sc, m)
+	p, err := New(cfg, logger, sc, m)
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
 	// Start populates the mux; we call it directly via the exported path.
 	// Instead of starting the server, manually build the mux as Start() does.
@@ -3086,7 +3215,10 @@ func TestFetchEndpoint_ResponseScan_RawHTML(t *testing.T) {
 
 			logger := audit.NewNop()
 			sc := scanner.New(cfg)
-			p := New(cfg, logger, sc, metrics.New())
+			p, err := New(cfg, logger, sc, metrics.New())
+			if err != nil {
+				t.Fatalf("proxy.New: %v", err)
+			}
 
 			req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL, nil)
 			w := httptest.NewRecorder()
@@ -3153,7 +3285,10 @@ func TestFetchEndpoint_ResponseScan_RawHTML_DeterminerBeforeModifier(t *testing.
 
 			logger := audit.NewNop()
 			sc := scanner.New(cfg)
-			p := New(cfg, logger, sc, metrics.New())
+			p, err := New(cfg, logger, sc, metrics.New())
+			if err != nil {
+				t.Fatalf("proxy.New: %v", err)
+			}
 
 			req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL, nil)
 			w := httptest.NewRecorder()
@@ -3213,7 +3348,10 @@ func TestFetchEndpoint_ResponseScan_RawHTML_NoFalsePositive(t *testing.T) {
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
-	p := New(cfg, logger, sc, metrics.New())
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL, nil)
 	w := httptest.NewRecorder()
@@ -3255,7 +3393,10 @@ func TestFetchEndpoint_ResponseScan_RawHTML_ReadabilityFail_FailClosed(t *testin
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
-	p := New(cfg, logger, sc, metrics.New())
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL, nil)
 	w := httptest.NewRecorder()
@@ -3307,7 +3448,10 @@ func TestFetchEndpoint_ResponseScan_RawHTML_SuppressedHiddenInjection(t *testing
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
-	p := New(cfg, logger, sc, metrics.New())
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL, nil)
 	w := httptest.NewRecorder()
@@ -3354,7 +3498,10 @@ func TestFetchEndpoint_ResponseScan_RawHTML_WarnAction(t *testing.T) {
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
-	p := New(cfg, logger, sc, metrics.New())
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL, nil)
 	w := httptest.NewRecorder()
@@ -3480,7 +3627,10 @@ func TestFetchResponseHint_Enabled(t *testing.T) {
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
 	m := metrics.New()
-	p := New(cfg, logger, sc, m)
+	p, err := New(cfg, logger, sc, m)
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
 	ts := httptest.NewServer(p.Handler())
 	defer ts.Close()
@@ -3514,7 +3664,10 @@ func TestFetchResponseHint_Disabled(t *testing.T) {
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
 	m := metrics.New()
-	p := New(cfg, logger, sc, m)
+	p, err := New(cfg, logger, sc, m)
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
 	ts := httptest.NewServer(p.Handler())
 	defer ts.Close()
@@ -3546,7 +3699,10 @@ func TestLoadCertCache_Disabled(t *testing.T) {
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
 	t.Cleanup(func() { sc.Close() })
-	p := New(cfg, logger, sc, metrics.New())
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
 	if err := p.LoadCertCache(cfg); err != nil {
 		t.Fatalf("LoadCertCache with disabled TLS should not error: %v", err)
@@ -3580,7 +3736,10 @@ func TestLoadCertCache_ValidCA(t *testing.T) {
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
 	t.Cleanup(func() { sc.Close() })
-	p := New(cfg, logger, sc, metrics.New())
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
 	if err := p.LoadCertCache(cfg); err != nil {
 		t.Fatalf("LoadCertCache: %v", err)
@@ -3602,9 +3761,12 @@ func TestLoadCertCache_MissingFile(t *testing.T) {
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
 	t.Cleanup(func() { sc.Close() })
-	p := New(cfg, logger, sc, metrics.New())
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
-	err := p.LoadCertCache(cfg)
+	err = p.LoadCertCache(cfg)
 	if err == nil {
 		t.Fatal("expected error for missing CA files")
 	}
@@ -3635,9 +3797,12 @@ func TestLoadCertCache_BadPEM(t *testing.T) {
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
 	t.Cleanup(func() { sc.Close() })
-	p := New(cfg, logger, sc, metrics.New())
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
-	err := p.LoadCertCache(cfg)
+	err = p.LoadCertCache(cfg)
 	if err == nil {
 		t.Fatal("expected error for bad PEM files")
 	}
@@ -3655,7 +3820,10 @@ func TestHealthEndpoint_TLSInterceptionEnabled(t *testing.T) {
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
 	t.Cleanup(func() { sc.Close() })
-	p := New(cfg, logger, sc, metrics.New())
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	w := httptest.NewRecorder()
@@ -3725,7 +3893,10 @@ func TestFetchEndpoint_PerAgentScanner(t *testing.T) {
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
 	t.Cleanup(func() { sc.Close() })
-	p := New(cfg, logger, sc, metrics.New())
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 	t.Cleanup(func() { p.Close() })
 
 	handler := p.Handler()
@@ -3803,7 +3974,10 @@ func TestFetchEndpoint_PerAgentScanner_AgentInResponse(t *testing.T) {
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
 	t.Cleanup(func() { sc.Close() })
-	p := New(cfg, logger, sc, metrics.New())
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 	t.Cleanup(func() { p.Close() })
 
 	handler := p.Handler()
@@ -3842,7 +4016,10 @@ func TestProxy_Reload_RebuildRegistry(t *testing.T) {
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
-	p := New(cfg, logger, sc, metrics.New())
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 	t.Cleanup(func() { p.Close() })
 
 	handler := p.Handler()
@@ -3898,7 +4075,10 @@ func TestProxy_KnownProfiles(t *testing.T) {
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
 	t.Cleanup(func() { sc.Close() })
-	p := New(cfg, logger, sc, metrics.New())
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 	t.Cleanup(func() { p.Close() })
 
 	profiles := p.knownProfiles()
@@ -3922,7 +4102,10 @@ func TestProxy_KnownProfiles_NoAgents(t *testing.T) {
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
 	t.Cleanup(func() { sc.Close() })
-	p := New(cfg, logger, sc, metrics.New())
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 	t.Cleanup(func() { p.Close() })
 
 	profiles := p.knownProfiles()
@@ -4066,7 +4249,10 @@ func TestAgentIdentityEndToEnd(t *testing.T) {
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
 	t.Cleanup(func() { sc.Close() })
-	p := New(cfg, logger, sc, metrics.New())
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 	t.Cleanup(func() { p.Close() })
 
 	mux := http.NewServeMux()
@@ -4182,7 +4368,10 @@ func TestBudgetEnforcementFetch(t *testing.T) {
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
 	t.Cleanup(func() { sc.Close() })
-	p := New(cfg, logger, sc, metrics.New())
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 	t.Cleanup(func() { p.Close() })
 
 	mux := http.NewServeMux()
@@ -4240,7 +4429,10 @@ func TestMetricLabelBoundsUnknownAgent(t *testing.T) {
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
 	t.Cleanup(func() { sc.Close() })
-	p := New(cfg, logger, sc, metrics.New())
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 	t.Cleanup(func() { p.Close() })
 
 	mux := http.NewServeMux()
@@ -4302,7 +4494,10 @@ func TestByteBudgetBlocksFetchResponse(t *testing.T) {
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
 	t.Cleanup(func() { sc.Close() })
-	p := New(cfg, logger, sc, metrics.New())
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
 	t.Cleanup(func() { p.Close() })
 
 	mux := http.NewServeMux()

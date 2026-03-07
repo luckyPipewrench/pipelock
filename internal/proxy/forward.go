@@ -80,11 +80,10 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	clientIP, requestID := requestMeta(r)
 
-	// Resolve per-agent config and scanner. When agent profiles are
-	// configured, each agent gets its own merged config (mode, allowlist,
-	// DLP patterns, etc.) and pre-built scanner.
-	id := ResolveAgent(r, p.knownProfiles())
-	resolved := p.resolveAgent(id.Profile)
+	// Resolve per-agent config and scanner from a single registry snapshot.
+	// This prevents TOCTOU races during hot-reload where knownProfiles()
+	// and resolveAgent() could read different registries.
+	resolved, id := p.resolveAgentFromRequest(r)
 	cfg := resolved.Config
 	sc := resolved.Scanner
 	agent := id.Name
@@ -219,7 +218,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		clientReader = resized
 		p.metrics.RecordSNI(category, agentLabel)
 		if sniErr != nil {
-			p.logger.LogSNIMismatch(host, sniHost, clientIP, requestID, category)
+			p.logger.LogSNIMismatch(host, sniHost, clientIP, requestID, agent, category)
 			return // close both connections via deferred Close()
 		}
 	}
@@ -348,11 +347,10 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 	clientIP, requestID := requestMeta(r)
 
-	// Resolve per-agent config and scanner. When agent profiles are
-	// configured, each agent gets its own merged config (mode, allowlist,
-	// DLP patterns, etc.) and pre-built scanner.
-	id := ResolveAgent(r, p.knownProfiles())
-	resolved := p.resolveAgent(id.Profile)
+	// Resolve per-agent config and scanner from a single registry snapshot.
+	// This prevents TOCTOU races during hot-reload where knownProfiles()
+	// and resolveAgent() could read different registries.
+	resolved, id := p.resolveAgentFromRequest(r)
 	cfg := resolved.Config
 	sc := resolved.Scanner
 	agent := id.Name

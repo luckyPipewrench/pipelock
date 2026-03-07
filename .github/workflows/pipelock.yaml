@@ -31,5 +31,6 @@ jobs:
             docs/bypass-resistance.md
             docs/configuration.md
             docs/guides/deployment-recipes.md
+            docs/guides/tls-interception.md
             examples/demo-readme.sh
             examples/sample-events.jsonl

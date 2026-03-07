@@ -517,6 +517,41 @@ func TestForwardHTTPHopByHop(t *testing.T) {
 	}
 }
 
+func TestForwardHTTPAgentHeaderStripped(t *testing.T) {
+	// X-Pipelock-Agent is an internal identity header. It must be stripped
+	// before forwarding to the upstream server to prevent information leakage.
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if v := r.Header.Get(AgentHeader); v != "" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = fmt.Fprintf(w, "agent header leaked: %s", v)
+			return
+		}
+		_, _ = fmt.Fprint(w, "ok")
+	}))
+	defer backend.Close()
+
+	proxyAddr, cleanup := setupForwardProxy(t, nil)
+	defer cleanup()
+
+	conn := dialProxy(t, proxyAddr)
+	defer func() { _ = conn.Close() }()
+
+	reqStr := fmt.Sprintf("GET %s/leak-test HTTP/1.1\r\nHost: %s\r\n%s: my-agent\r\n\r\n",
+		backend.URL, backend.Listener.Addr().String(), AgentHeader)
+	_, _ = conn.Write([]byte(reqStr))
+
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("agent header leaked to upstream: %s", body)
+	}
+}
+
 func TestForwardHTTPContentLengthStripped(t *testing.T) {
 	// Verify the proxy strips upstream Content-Length before writing the
 	// response. Go's ResponseWriter may re-add a correct Content-Length for

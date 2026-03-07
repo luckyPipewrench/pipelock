@@ -4935,6 +4935,66 @@ func TestMergeAgentProfileMCPToolPolicy(t *testing.T) {
 	}
 }
 
+func TestMergeAgentProfileMCPToolPolicy_WholesaleReplacement(t *testing.T) {
+	base := Defaults()
+	base.MCPToolPolicy.Enabled = true
+	base.MCPToolPolicy.Action = ActionWarn
+	base.MCPToolPolicy.Rules = []ToolPolicyRule{
+		{Name: "base-rule", ToolPattern: ".*", Action: ActionWarn},
+	}
+
+	// Profile sets only Enabled; Action and Rules should NOT inherit from base.
+	profile := AgentProfile{
+		MCPToolPolicy: &MCPToolPolicy{
+			Enabled: true,
+		},
+	}
+	merged, err := MergeAgentProfile(base, &profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if merged.MCPToolPolicy.Action != "" {
+		t.Errorf("MCPToolPolicy.Action = %q, want empty (wholesale replacement)", merged.MCPToolPolicy.Action)
+	}
+	if len(merged.MCPToolPolicy.Rules) != 0 {
+		t.Errorf("MCPToolPolicy.Rules = %d, want 0 (wholesale replacement)", len(merged.MCPToolPolicy.Rules))
+	}
+}
+
+func TestMergeAgentProfileSessionProfiling_WholesaleReplacement(t *testing.T) {
+	base := Defaults()
+	base.SessionProfiling.DomainBurst = 5
+	base.SessionProfiling.AnomalyAction = ActionBlock
+	base.SessionProfiling.VolumeSpikeRatio = 3.0
+
+	// Profile sets only DomainBurst; other fields should NOT inherit.
+	profile := AgentProfile{
+		SessionProfiling: &AgentSessionProf{
+			DomainBurst: 10,
+		},
+	}
+	merged, err := MergeAgentProfile(base, &profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if merged.SessionProfiling.DomainBurst != 10 {
+		t.Errorf("DomainBurst = %d, want 10", merged.SessionProfiling.DomainBurst)
+	}
+	if merged.SessionProfiling.AnomalyAction != "" {
+		t.Errorf("AnomalyAction = %q, want empty (wholesale replacement)", merged.SessionProfiling.AnomalyAction)
+	}
+	if merged.SessionProfiling.VolumeSpikeRatio != 0 {
+		t.Errorf("VolumeSpikeRatio = %f, want 0 (wholesale replacement)", merged.SessionProfiling.VolumeSpikeRatio)
+	}
+	// Global-only fields must be preserved from base.
+	if merged.SessionProfiling.MaxSessions != base.SessionProfiling.MaxSessions {
+		t.Errorf("MaxSessions = %d, want %d (global field preserved)", merged.SessionProfiling.MaxSessions, base.SessionProfiling.MaxSessions)
+	}
+	if merged.SessionProfiling.SessionTTLMinutes != base.SessionProfiling.SessionTTLMinutes {
+		t.Errorf("SessionTTLMinutes = %d, want %d (global field preserved)", merged.SessionProfiling.SessionTTLMinutes, base.SessionProfiling.SessionTTLMinutes)
+	}
+}
+
 func TestMergeAgentProfileEnforce(t *testing.T) {
 	base := Defaults()
 	f := false

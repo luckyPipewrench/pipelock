@@ -605,7 +605,7 @@ func TestLicenseIssueAndInspectRoundTrip(t *testing.T) {
 	for _, line := range strings.Split(issueOutput, "\n") {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, testLicPrefix) {
-			token = line
+			token = line // pipelock:ignore -- variable assignment, not a credential
 			break
 		}
 	}

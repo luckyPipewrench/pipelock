@@ -573,26 +573,19 @@ func MergeAgentProfile(base *Config, profile *AgentProfile) (*Config, error) {
 		}
 	}
 	if profile.SessionProfiling != nil {
-		if profile.SessionProfiling.DomainBurst > 0 {
-			merged.SessionProfiling.DomainBurst = profile.SessionProfiling.DomainBurst
-		}
-		if profile.SessionProfiling.AnomalyAction != "" {
-			merged.SessionProfiling.AnomalyAction = profile.SessionProfiling.AnomalyAction
-		}
-		if profile.SessionProfiling.VolumeSpikeRatio > 0 {
-			merged.SessionProfiling.VolumeSpikeRatio = profile.SessionProfiling.VolumeSpikeRatio
-		}
+		// Wholesale replacement: agent values unconditionally override all
+		// per-agent fields (even zero values win). Global-only fields
+		// (MaxSessions, SessionTTLMinutes, CleanupIntervalSeconds) are
+		// preserved from the base config.
+		merged.SessionProfiling.DomainBurst = profile.SessionProfiling.DomainBurst
+		merged.SessionProfiling.AnomalyAction = profile.SessionProfiling.AnomalyAction
+		merged.SessionProfiling.VolumeSpikeRatio = profile.SessionProfiling.VolumeSpikeRatio
 	}
 	if profile.MCPToolPolicy != nil {
-		// Deep-merge: only override fields the profile explicitly sets.
-		// Enabled is always overridden since the pointer was non-nil.
-		merged.MCPToolPolicy.Enabled = profile.MCPToolPolicy.Enabled
-		if profile.MCPToolPolicy.Action != "" {
-			merged.MCPToolPolicy.Action = profile.MCPToolPolicy.Action
-		}
-		if profile.MCPToolPolicy.Rules != nil {
-			merged.MCPToolPolicy.Rules = append([]ToolPolicyRule(nil), profile.MCPToolPolicy.Rules...)
-		}
+		// Wholesale replacement: setting mcp_tool_policy on an agent
+		// replaces the entire base section, consistent with rate_limit
+		// and session_profiling behavior.
+		merged.MCPToolPolicy = *profile.MCPToolPolicy
 	}
 
 	return merged, nil

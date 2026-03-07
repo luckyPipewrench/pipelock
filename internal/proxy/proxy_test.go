@@ -4457,12 +4457,28 @@ func TestMetricLabelBoundsUnknownAgent(t *testing.T) {
 	}
 
 	// The agent in the response is the raw header (for logging), but the
-	// resolved profile used for metrics should be _default. We verify by
-	// checking the response agent is the raw header (the proxy doesn't
-	// expose the metric label directly, but the test confirms the unknown
-	// agent resolves to fallback without error).
+	// resolved profile used for metrics should be _default.
 	if resp.Agent != "arbitrary-attacker-chosen-name" {
 		t.Errorf("agent = %q, want raw header value", resp.Agent)
+	}
+
+	// Verify the Prometheus metric uses the bounded fallback label, not the
+	// raw attacker-chosen header value. This prevents unbounded cardinality.
+	gathering, gatherErr := p.metrics.Registry().Gather()
+	if gatherErr != nil {
+		t.Fatalf("gather metrics: %v", gatherErr)
+	}
+	for _, mf := range gathering {
+		if mf.GetName() != "pipelock_requests_total" {
+			continue
+		}
+		for _, metric := range mf.GetMetric() {
+			for _, label := range metric.GetLabel() {
+				if label.GetName() == "agent" && label.GetValue() == "arbitrary-attacker-chosen-name" {
+					t.Error("attacker-chosen agent name leaked into Prometheus label; expected bounded fallback")
+				}
+			}
+		}
 	}
 }
 

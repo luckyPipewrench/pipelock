@@ -2224,3 +2224,31 @@ func TestLogChainDetection_NonPersistPatternEmitsT1059(t *testing.T) {
 		t.Errorf("mitre_technique = %v, want %s for non-persistence pattern", entry["mitre_technique"], mitreT1059)
 	}
 }
+
+func TestLogAgentListener(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogAgentListener("127.0.0.1:9100", "strict-bot")
+	logger.Close()
+
+	data, _ := os.ReadFile(filepath.Clean(path))
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("unmarshal: %v\ndata: %s", err, data)
+	}
+
+	if entry["event"] != string(EventAgentListener) {
+		t.Errorf("event = %v, want %s", entry["event"], EventAgentListener)
+	}
+	if entry["listen"] != "127.0.0.1:9100" {
+		t.Errorf("listen = %v, want 127.0.0.1:9100", entry["listen"])
+	}
+	if entry["agent"] != "strict-bot" {
+		t.Errorf("agent = %v, want strict-bot", entry["agent"])
+	}
+}

@@ -77,11 +77,20 @@ func getTunnelSemaphore() *tunnelSemaphore {
 // via the SSRF-safe dialer, and relays data bidirectionally.
 func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
-	cfg := p.cfgPtr.Load()
-	sc := p.scannerPtr.Load()
 
 	clientIP, requestID := requestMeta(r)
-	agent := ExtractAgent(r)
+
+	// Resolve per-agent config and scanner. When agent profiles are
+	// configured, each agent gets its own merged config (mode, allowlist,
+	// DLP patterns, etc.) and pre-built scanner.
+	id := ResolveAgent(r, p.knownProfiles())
+	resolved := p.resolveAgent(id.Profile)
+	cfg := resolved.Config
+	sc := resolved.Scanner
+	agent := id.Name
+	if agent == "" {
+		agent = agentAnonymous
+	}
 
 	target := r.Host
 	if target == "" {
@@ -322,11 +331,20 @@ func copyWithIdleTimeout(dst, src net.Conn, idleTimeout time.Duration, deadline 
 // request, and streams the raw response back to the client.
 func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
-	cfg := p.cfgPtr.Load()
-	sc := p.scannerPtr.Load()
 
 	clientIP, requestID := requestMeta(r)
-	agent := ExtractAgent(r)
+
+	// Resolve per-agent config and scanner. When agent profiles are
+	// configured, each agent gets its own merged config (mode, allowlist,
+	// DLP patterns, etc.) and pre-built scanner.
+	id := ResolveAgent(r, p.knownProfiles())
+	resolved := p.resolveAgent(id.Profile)
+	cfg := resolved.Config
+	sc := resolved.Scanner
+	agent := id.Name
+	if agent == "" {
+		agent = agentAnonymous
+	}
 
 	targetURL := r.URL.String()
 
@@ -407,6 +425,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// Clone request with context keys so CheckRedirect can attribute audit logs
 	ctx := context.WithValue(r.Context(), ctxKeyClientIP, clientIP)
 	ctx = context.WithValue(ctx, ctxKeyRequestID, requestID)
+	ctx = context.WithValue(ctx, ctxKeyAgent, agent)
 	outReq := r.Clone(ctx)
 	outReq.RequestURI = "" // required for http.Client
 	removeHopByHopHeaders(outReq.Header)

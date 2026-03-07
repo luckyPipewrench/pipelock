@@ -507,13 +507,13 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 		{
 			Name:        "Cron Job Persistence",
 			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$`,
-			ArgPattern:  `(?i)(\bcrontab\s+-e\b|\bcrontab\s+[^-\s]|>{1,2}\s*/(?:var/spool/cron|etc/cron)|\|\s*crontab\b)`,
+			ArgPattern:  `(?i)(\bcrontab\s+(-\w+\s+\S+\s+)*-e\b|\bcrontab\s+(-\w+\s+\S+\s+)*[^-\s]|>{1,2}\s*/(?:var/spool/cron|etc/cron)|\|\s*crontab\b)`,
 			Action:      config.ActionBlock,
 		},
 		{
 			Name:        "Systemd Service Persistence",
 			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$`,
-			ArgPattern:  `(?i)\bsystemctl\s+(--\w+\s+)*(enable|daemon-reload)\b`,
+			ArgPattern:  `(?i)\bsystemctl\s+(-{1,2}\w+\s+)*(enable|daemon-reload)\b`,
 			Action:      config.ActionBlock,
 		},
 		{
@@ -522,7 +522,7 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 			// (~/.config/systemd/user/) systemd paths, plus macOS LaunchAgents/Daemons.
 			Name:        "Persistence Path Write",
 			ToolPattern: `(?i)^(write_file|file_write|edit_file|create_file|modify_file|append_file)$`,
-			ArgPattern:  `(?i)(/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/)`,
+			ArgPattern:  `(?i)(/etc/crontab\b|/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/)`,
 			Action:      config.ActionBlock,
 		},
 		{
@@ -531,7 +531,7 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 			// tee, sed -i, and shell redirects. Read operations pass through.
 			Name:        "Persistence Path Write via Command",
 			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$`,
-			ArgPattern:  `(?i)(>{1,2}\s*[^;|&]*(/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/)|\b(tee|sed\s+-i)\s+[^;|&]*(/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/)|\b(cp|mv|install|ln)\b\s+(\S+\s+)+\S*(/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/))`,
+			ArgPattern:  `(?i)(>{1,2}\s*[^;|&]*(/etc/crontab\b|/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/)|\b(tee|sed\s+-i)\s+[^;|&]*(/etc/crontab\b|/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/)|\b(cp|mv|install|ln)\b\s+(\S+\s+)+\S*(/etc/crontab\b|/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/))`,
 			Action:      config.ActionBlock,
 		},
 		{

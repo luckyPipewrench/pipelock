@@ -160,7 +160,7 @@ func matchByPriority(segments []string) string {
 // like "cat /etc/cron.d/backup". Path-based write detection is handled
 // separately by MCP tool policy rules ("Persistence Path Write via Command").
 var persistArgPattern = regexp.MustCompile(
-	`(?i)(\bcrontab\s+-e\b|\bcrontab\s+[^-\s]|\|\s*crontab\b|\bsystemctl\s+(--\w+\s+)*(enable|daemon-reload)\b|\blaunchctl\s+(load|enable)\b)`,
+	`(?i)(\bcrontab\s+(-\w+\s+\S+\s+)*-e\b|\bcrontab\s+(-\w+\s+\S+\s+)*[^-\s]|\|\s*crontab\b|\bsystemctl\s+(-{1,2}\w+\s+)*(enable|daemon-reload)\b|\blaunchctl\s+(load|enable)\b)`,
 )
 
 // reclassifyByArgs upgrades an "exec" classification to "persist" when

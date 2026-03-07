@@ -227,16 +227,16 @@ mcp_tool_policy:
       arg_pattern: '(?i)(\beval\b.*\bbase64\b|\bbase64\s+(-d|--decode)\b.*\|\s*(ba)?sh\b)'
     - name: "Cron Job Persistence"
       tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
-      arg_pattern: '(?i)(\bcrontab\s+-e\b|\bcrontab\s+[^-\s]|>{1,2}\s*/(?:var/spool/cron|etc/cron)|\|\s*crontab\b)'
+      arg_pattern: '(?i)(\bcrontab\s+(-\w+\s+\S+\s+)*-e\b|\bcrontab\s+(-\w+\s+\S+\s+)*[^-\s]|>{1,2}\s*/(?:var/spool/cron|etc/cron)|\|\s*crontab\b)'
     - name: "Systemd Service Persistence"
       tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
-      arg_pattern: '(?i)\bsystemctl\s+(--\w+\s+)*(enable|daemon-reload)\b'
+      arg_pattern: '(?i)\bsystemctl\s+(-{1,2}\w+\s+)*(enable|daemon-reload)\b'
     - name: "Persistence Path Write"
       tool_pattern: '(?i)^(write_file|file_write|edit_file|create_file|modify_file|append_file)$'
-      arg_pattern: '(?i)(/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/)'
+      arg_pattern: '(?i)(/etc/crontab\b|/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/)'
     - name: "Persistence Path Write via Command"
       tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
-      arg_pattern: '(?i)(>{1,2}\s*[^;|&]*(/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/)|\b(tee|sed\s+-i)\s+[^;|&]*(/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/)|\b(cp|mv|install|ln)\b\s+(\S+\s+)+\S*(/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/))'
+      arg_pattern: '(?i)(>{1,2}\s*[^;|&]*(/etc/crontab\b|/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/)|\b(tee|sed\s+-i)\s+[^;|&]*(/etc/crontab\b|/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/)|\b(cp|mv|install|ln)\b\s+(\S+\s+)+\S*(/etc/crontab\b|/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/))'
 
     - name: "Shell Profile Modification"
       tool_pattern: '(?i)^(write_file|file_write|edit_file|create_file|modify_file|append_file)$'

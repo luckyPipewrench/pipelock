@@ -86,7 +86,8 @@ var persistChainPatterns = map[string]bool{
 // pattern whose name contains "persist" map to T1053 (Scheduled Task/Job);
 // all others fall back to T1059 (Command and Scripting Interpreter).
 func TechniqueForChainPattern(pattern string) string {
-	if persistChainPatterns[pattern] || strings.Contains(pattern, "persist") {
+	lower := strings.ToLower(pattern)
+	if persistChainPatterns[lower] || strings.Contains(lower, "persist") {
 		return techniqueMap["persist"]
 	}
 	return techniqueMap["chain_detection"]

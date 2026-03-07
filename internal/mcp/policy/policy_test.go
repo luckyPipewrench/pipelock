@@ -2044,6 +2044,64 @@ func TestDefaultToolPolicyRules_MatchCronSpoolOverwrite(t *testing.T) {
 	}
 }
 
+func TestDefaultToolPolicyRules_MatchCrontabWithFlags(t *testing.T) {
+	pc := defaultConfig(t)
+	for _, tc := range []struct {
+		name string
+		cmd  string
+	}{
+		{"crontab -u root file", "crontab -u root /tmp/evil.cron"},
+		{"crontab -u root -e", "crontab -u root -e"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := pc.CheckToolCall("bash", []string{tc.cmd})
+			if !v.Matched {
+				t.Errorf("expected match for bash %q", tc.cmd)
+			}
+		})
+	}
+}
+
+func TestDefaultToolPolicyRules_MatchSystemctlWithShortFlags(t *testing.T) {
+	pc := defaultConfig(t)
+	for _, tc := range []struct {
+		name string
+		cmd  string
+	}{
+		{"systemctl -q enable", "systemctl -q enable backdoor.service"},
+		{"systemctl --now enable", "systemctl --now enable evil.service"},
+		{"systemctl --user -q enable", "systemctl --user -q enable evil.timer"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := pc.CheckToolCall("bash", []string{tc.cmd})
+			if !v.Matched {
+				t.Errorf("expected match for bash %q", tc.cmd)
+			}
+		})
+	}
+}
+
+func TestDefaultToolPolicyRules_MatchEtcCrontab(t *testing.T) {
+	pc := defaultConfig(t)
+	for _, tc := range []struct {
+		name string
+		tool string
+		args []string
+	}{
+		{"write_file /etc/crontab", "write_file", []string{"/etc/crontab"}},
+		{"tee /etc/crontab", "bash", []string{"tee /etc/crontab < /tmp/payload"}},
+		{"redirect to /etc/crontab", "bash", []string{"echo '* * * * * /tmp/evil' > /etc/crontab"}},
+		{"cp to /etc/crontab", "bash", []string{"cp /tmp/evil /etc/crontab"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := pc.CheckToolCall(tc.tool, tc.args)
+			if !v.Matched {
+				t.Errorf("expected match for %s %v", tc.tool, tc.args)
+			}
+		})
+	}
+}
+
 func TestDefaultToolPolicyRules_MatchScreenNamedDetach(t *testing.T) {
 	pc := defaultConfig(t)
 	v := pc.CheckToolCall("bash", []string{"screen -S miner -dm /tmp/miner"})

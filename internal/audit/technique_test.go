@@ -90,6 +90,9 @@ func TestTechniqueForChainPattern_PersistReturnsT1053(t *testing.T) {
 	}{
 		{"write-persist", "T1053"},
 		{"persist-callback", "T1053"},
+		{"Write-Persist", "T1053"},
+		{"PERSIST-CALLBACK", "T1053"},
+		{"custom-persist-chain", "T1053"},
 		{"exfil_then_delete", "T1059"},
 		{"read-then-exec", "T1059"},
 		{"env-exfil", "T1059"},

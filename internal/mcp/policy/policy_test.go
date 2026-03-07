@@ -1007,6 +1007,8 @@ func TestDefaultToolPolicyRules_MatchPersistencePathWrite(t *testing.T) {
 		{"user systemd tilde", "write_file", []string{"~/.config/systemd/user/backdoor.service"}},
 		{"user systemd abs", "write_file", []string{"/home/alice/.config/systemd/user/backdoor.service"}},
 		{"user systemd timer", "write_file", []string{"/root/.config/systemd/user/evil.timer"}},
+		{"vendor systemd unit", "write_file", []string{"/usr/lib/systemd/system/evil.service"}},
+		{"vendor systemd timer", "write_file", []string{"/usr/lib/systemd/system/exfil.timer"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			v := pc.CheckToolCall(tc.tool, tc.args)
@@ -1033,6 +1035,8 @@ func TestDefaultToolPolicyRules_NoMatchSafeWriteFile(t *testing.T) {
 		{"bare service file", []string{"docs/demo.service"}},
 		{"bare timer file", []string{"tests/mock.timer"}},
 		{"service in project", []string{"internal/config/backup.service"}},
+		{"cpu profile not shell profile", []string{"/tmp/cpu.profile"}},
+		{"go pprof profile", []string{"/home/user/project/cpu.profile"}},
 	} {
 		v := pc.CheckToolCall("write_file", tc.args)
 		if v.Matched {
@@ -2132,6 +2136,8 @@ func TestDefaultToolPolicyRules_MatchPersistencePathWriteViaCommand(t *testing.T
 		{"redirect to LaunchDaemons", "cat payload > /Library/LaunchDaemons/com.evil.plist"},
 		{"cp to user systemd", "cp /tmp/evil.service ~/.config/systemd/user/backdoor.service"},
 		{"redirect to user systemd", "echo '[Service]' > /home/alice/.config/systemd/user/evil.service"},
+		{"cp to vendor systemd", "cp /tmp/evil.service /usr/lib/systemd/system/backdoor.service"},
+		{"redirect to vendor systemd", "cat payload > /usr/lib/systemd/system/evil.service"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			v := pc.CheckToolCall("bash", []string{tc.cmd})

@@ -538,18 +538,20 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 			// File write tools: any mention of a profile file implies modification.
 			Name:        "Shell Profile Modification",
 			ToolPattern: `(?i)^(write_file|file_write|edit_file|create_file|modify_file|append_file)$`,
-			ArgPattern:  `(?i)(?:^|/)\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b`,
+			ArgPattern:  `(?i)((?:^|/)\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|/etc/profile\b)`,
 			Action:      config.ActionBlock,
 		},
 		{
 			// Exec tools: require a write indicator near a profile file, or an
 			// alias definition. Reads like cat/grep pass through.
-			// For cp/mv/install/ln, (\S+\s+)+ requires at least one argument
-			// before the profile path, ensuring it's the destination (last arg).
-			// This also defeats pairwise matching (which has no preceding arg).
+			// Redirect/tee branches use [^;|&]*(?:^|[/\s]) so the engine can
+			// backtrack and consume a slash (full path) or space (bare dotfile).
+			// The cp/mv branch keeps (\S+\s+)+ to require at least one arg
+			// before the dotfile, defeating pairwise token false positives.
+			// (?:\S*/)? matches an optional path prefix before the dotfile.
 			Name:        "Shell Profile Write via Command",
 			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$`,
-			ArgPattern:  `(?i)(>{1,2}\s*[^;|&]*(?:^|/)\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|\b(tee|sed\s+-i)\s+[^;|&]*(?:^|/)\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|\b(cp|mv|install|ln)\b\s+(\S+\s+)+\S*(?:^|/)\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\s*$|\balias\s+\w+=)`,
+			ArgPattern:  `(?i)(>{1,2}[^;|&]*(?:^|[/\s])\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|\b(tee|sed\s+-i)[^;|&]*(?:^|[/\s])\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|\b(cp|mv|install|ln)\b\s+(\S+\s+)+(?:\S*/)?\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\s*$|\balias\s+\w+=|>{1,2}[^;|&]*/etc/profile\b|\b(tee|sed\s+-i)[^;|&]*/etc/profile\b|\b(cp|mv|install|ln)\b\s+(\S+\s+)+\S*/etc/profile\s*$)`,
 			Action:      config.ActionBlock,
 		},
 		{

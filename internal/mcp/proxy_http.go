@@ -217,7 +217,7 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 	if chainMatcher != nil && verdict.Method == methodToolsCall {
 		toolName := extractToolCallName(msg)
 		if toolName != "" {
-			cv := chainMatcher.Record(sessionKey, toolName)
+			cv := chainMatcher.Record(sessionKey, toolName, string(msg))
 			if cv.Matched {
 				_, _ = fmt.Fprintf(logW, "pipelock: chain detected: %s (severity=%s, action=%s)\n",
 					cv.PatternName, cv.Severity, cv.Action)

@@ -26,6 +26,7 @@ const (
 	testConfigHash = "testhash"
 	testVersion    = "0.1.0-dev"
 	mitreT1048     = "T1048"
+	mitreT1053     = "T1053"
 	mitreT1059     = "T1059"
 )
 
@@ -2008,5 +2009,49 @@ func TestLogChainDetection_Emitter_Warn(t *testing.T) {
 	}
 	if ev.Fields["action"] != "warn" {
 		t.Errorf("action = %v, want warn", ev.Fields["action"])
+	}
+}
+
+func TestLogChainDetection_PersistPatternEmitsT1053(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogChainDetection("write-persist", severityCritical, actionBlock, "systemctl_enable", "session-1")
+	logger.Close()
+
+	data, _ := os.ReadFile(filepath.Clean(path))
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("unmarshal: %v\ndata: %s", err, data)
+	}
+
+	if entry["mitre_technique"] != mitreT1053 {
+		t.Errorf("mitre_technique = %v, want %s for persistence pattern", entry["mitre_technique"], mitreT1053)
+	}
+}
+
+func TestLogChainDetection_NonPersistPatternEmitsT1059(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogChainDetection("read-then-exec", severityWarn, testActionWarn, "bash_exec", "session-2")
+	logger.Close()
+
+	data, _ := os.ReadFile(filepath.Clean(path))
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("unmarshal: %v\ndata: %s", err, data)
+	}
+
+	if entry["mitre_technique"] != mitreT1059 {
+		t.Errorf("mitre_technique = %v, want %s for non-persistence pattern", entry["mitre_technique"], mitreT1059)
 	}
 }

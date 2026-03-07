@@ -68,6 +68,9 @@ func TestTechniqueForScanner_AllMappedEntries(t *testing.T) {
 
 		// Chain detection
 		{"chain_detection", "T1059"},
+
+		// Persistence
+		{"persist", "T1053"},
 	}
 
 	for _, tt := range tests {
@@ -75,6 +78,27 @@ func TestTechniqueForScanner_AllMappedEntries(t *testing.T) {
 			got := TechniqueForScanner(tt.scanner)
 			if got != tt.technique {
 				t.Errorf("TechniqueForScanner(%q) = %q, want %q", tt.scanner, got, tt.technique)
+			}
+		})
+	}
+}
+
+func TestTechniqueForChainPattern_PersistReturnsT1053(t *testing.T) {
+	tests := []struct {
+		pattern string
+		want    string
+	}{
+		{"write-persist", "T1053"},
+		{"persist-callback", "T1053"},
+		{"exfil_then_delete", "T1059"},
+		{"read-then-exec", "T1059"},
+		{"env-exfil", "T1059"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.pattern, func(t *testing.T) {
+			got := TechniqueForChainPattern(tt.pattern)
+			if got != tt.want {
+				t.Errorf("TechniqueForChainPattern(%q) = %q, want %q", tt.pattern, got, tt.want)
 			}
 		})
 	}
@@ -115,7 +139,7 @@ func TestTechniqueMap_NoDuplicateKeys(t *testing.T) {
 	// This test is a compile-time guarantee in Go (duplicate map keys are a
 	// compile error), but we verify the map has the expected number of entries
 	// to catch accidental deletions during refactoring.
-	const expectedEntries = 27
+	const expectedEntries = 28
 	if len(techniqueMap) != expectedEntries {
 		t.Errorf("techniqueMap has %d entries, expected %d (was an entry added or removed?)", len(techniqueMap), expectedEntries)
 	}

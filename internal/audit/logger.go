@@ -721,7 +721,7 @@ func (l *Logger) LogHeaderDLP(method, url, headerName, action, clientIP, request
 // architectural rule that event severity is hardcoded, not caller-controlled.
 // The pattern's own severity is preserved as pattern_severity metadata.
 func (l *Logger) LogChainDetection(pattern, patternSeverity, action, toolName, sessionKey string) {
-	technique := TechniqueForScanner("chain_detection")
+	technique := TechniqueForChainPattern(pattern)
 
 	// Derive severity from action, not from caller input.
 	derivedSev := severityWarn

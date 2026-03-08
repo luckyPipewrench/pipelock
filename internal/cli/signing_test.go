@@ -611,3 +611,188 @@ func TestTrustCmd_BadKeystoreDir(t *testing.T) {
 		t.Fatal("expected error for read-only keystore dir")
 	}
 }
+
+func TestHomeFlagKeygen(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Cleanup(func() { pipelockHome = "" })
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"--home", homeDir, "keygen", "homer"})
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("keygen with --home error: %v", err)
+	}
+
+	// Verify key files were created under the --home directory.
+	privPath := filepath.Join(homeDir, "agents", "homer", "id_ed25519")
+	if _, err := os.Stat(privPath); err != nil {
+		t.Errorf("private key not created under --home dir: %v", err)
+	}
+	if !strings.Contains(buf.String(), "homer") {
+		t.Errorf("output should mention agent name, got: %s", buf.String())
+	}
+}
+
+func TestHomeFlagSignVerify(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Cleanup(func() { pipelockHome = "" })
+
+	// Generate key with --home.
+	ks := signing.NewKeystore(homeDir)
+	if _, err := ks.GenerateAgent("homer"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a file to sign.
+	testFile := filepath.Join(t.TempDir(), "data.txt")
+	if err := os.WriteFile(testFile, []byte("home flag test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Sign with --home (no --keystore).
+	signC := rootCmd()
+	signC.SetArgs([]string{"--home", homeDir, "sign", testFile, "--agent", "homer"})
+	signC.SetOut(&strings.Builder{})
+	if err := signC.Execute(); err != nil {
+		t.Fatalf("sign with --home error: %v", err)
+	}
+
+	// Verify with --home (no --keystore).
+	verifyC := rootCmd()
+	verifyC.SetArgs([]string{"--home", homeDir, "verify", testFile, "--agent", "homer"})
+	buf := &strings.Builder{}
+	verifyC.SetOut(buf)
+	if err := verifyC.Execute(); err != nil {
+		t.Fatalf("verify with --home error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "OK") {
+		t.Errorf("expected OK, got: %s", buf.String())
+	}
+}
+
+func TestHomeFlagTrust(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Cleanup(func() { pipelockHome = "" })
+
+	// Generate a key to get a valid public key file.
+	ks := signing.NewKeystore(homeDir)
+	if _, err := ks.GenerateAgent("remote-agent"); err != nil {
+		t.Fatal(err)
+	}
+	pubKeyPath := ks.PublicKeyPath("remote-agent")
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"--home", homeDir, "trust", "remote-agent", pubKeyPath})
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("trust with --home error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "Trusted") {
+		t.Errorf("expected 'Trusted' in output, got: %s", buf.String())
+	}
+
+	// Verify the trusted key is stored under --home.
+	_, err := ks.LoadTrustedKey("remote-agent")
+	if err != nil {
+		t.Fatalf("trusted key not loadable under --home dir: %v", err)
+	}
+}
+
+func TestHomeFlagEnvVar(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("PIPELOCK_HOME", homeDir)
+	old := pipelockHome
+	pipelockHome = "" // Clear so resolvedHome() reads the env var.
+	t.Cleanup(func() { pipelockHome = old })
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"keygen", "env-homer"})
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("keygen with PIPELOCK_HOME error: %v", err)
+	}
+
+	// Verify key files were created under the env var directory.
+	privPath := filepath.Join(homeDir, "agents", "env-homer", "id_ed25519")
+	if _, err := os.Stat(privPath); err != nil {
+		t.Errorf("private key not created under PIPELOCK_HOME dir: %v", err)
+	}
+}
+
+func TestHomeFlagKeystoreOverridesHome(t *testing.T) {
+	// --keystore should take precedence over --home.
+	homeDir := t.TempDir()
+	keystoreDir := t.TempDir()
+	t.Cleanup(func() { pipelockHome = "" })
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"--home", homeDir, "keygen", "precedence", "--keystore", keystoreDir})
+	cmd.SetOut(&strings.Builder{})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("keygen with --home and --keystore error: %v", err)
+	}
+
+	// Keys should be in --keystore, NOT in --home.
+	ksPriv := filepath.Join(keystoreDir, "agents", "precedence", "id_ed25519")
+	if _, err := os.Stat(ksPriv); err != nil {
+		t.Errorf("private key not created in --keystore dir: %v", err)
+	}
+	homePriv := filepath.Join(homeDir, "agents", "precedence", "id_ed25519")
+	if _, err := os.Stat(homePriv); !os.IsNotExist(err) {
+		t.Errorf("private key should NOT be in --home dir when --keystore is set")
+	}
+}
+
+func TestResolveKeystoreDir_HomeFlag(t *testing.T) {
+	homeDir := t.TempDir()
+	old := pipelockHome
+	pipelockHome = homeDir
+	t.Cleanup(func() { pipelockHome = old })
+
+	result, err := resolveKeystoreDir("")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != homeDir {
+		t.Errorf("expected %q from --home, got %q", homeDir, result)
+	}
+}
+
+func TestResolveKeystoreDir_EnvFallback(t *testing.T) {
+	homeDir := t.TempDir()
+	old := pipelockHome
+	pipelockHome = ""
+	t.Cleanup(func() { pipelockHome = old })
+	t.Setenv("PIPELOCK_HOME", homeDir)
+
+	result, err := resolveKeystoreDir("")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != homeDir {
+		t.Errorf("expected %q from PIPELOCK_HOME, got %q", homeDir, result)
+	}
+}
+
+func TestResolveKeystoreDir_ExplicitOverridesHome(t *testing.T) {
+	homeDir := t.TempDir()
+	explicit := t.TempDir()
+	old := pipelockHome
+	pipelockHome = homeDir
+	t.Cleanup(func() { pipelockHome = old })
+
+	result, err := resolveKeystoreDir(explicit)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != explicit {
+		t.Errorf("expected explicit %q to override --home %q, got %q", explicit, homeDir, result)
+	}
+}

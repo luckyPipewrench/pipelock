@@ -54,7 +54,11 @@ func Issue(l License, privateKey ed25519.PrivateKey) (string, error) {
 		return "", fmt.Errorf("license payload too large: %d bytes", len(payload))
 	}
 	sig := ed25519.Sign(privateKey, payload)
-	token := make([]byte, len(payload)+ed25519.SignatureSize)
+	size := len(payload) + ed25519.SignatureSize
+	if size < len(payload) { // integer overflow guard
+		return "", errors.New("token size overflow")
+	}
+	token := make([]byte, size)
 	copy(token, payload)
 	copy(token[len(payload):], sig)
 	return tokenPrefix + base64.RawURLEncoding.EncodeToString(token), nil

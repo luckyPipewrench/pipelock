@@ -2,7 +2,7 @@
 
 High-level direction for Pipelock development. Priorities may shift based on community feedback and the evolving AI agent security landscape.
 
-## Current (v0.2.x)
+## Current (v1.0)
 
 Shipped capabilities:
 

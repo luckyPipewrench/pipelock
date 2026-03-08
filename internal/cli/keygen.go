@@ -62,5 +62,8 @@ func resolveKeystoreDir(explicit string) (string, error) {
 	if explicit != "" {
 		return explicit, nil
 	}
+	if home := resolvedHome(); home != "" {
+		return home, nil
+	}
 	return signing.DefaultKeystorePath()
 }

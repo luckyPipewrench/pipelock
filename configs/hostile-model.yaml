@@ -142,6 +142,9 @@ dlp:
     - name: "JWT Token"
       regex: '(ey[a-zA-Z0-9_\-=]{10,}\.){2}[a-zA-Z0-9_\-=]{10,}'
       severity: critical
+    - name: "Social Security Number"
+      regex: '\b\d{3}-\d{2}-\d{4}\b'
+      severity: low
     # Identity / PII
     - name: "Google OAuth Client ID"
       regex: '[0-9]{6,}-[0-9A-Za-z_]{32}\.apps\.googleusercontent\.com'
@@ -274,6 +277,10 @@ mcp_tool_policy:
     - name: "Detached Process Spawning"
       tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
       arg_pattern: '(?i)(\bnohup\s+|\bdisown\b|\bsetsid\s+|\bscreen\s+(-\S+\s+)*-[dDm]|\btmux\s+(new-session|new)\s+-d)'
+      action: block
+    - name: "Audit Log Tampering"
+      tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec|write_file|file_write|edit_file|create_file|modify_file|append_file)$'
+      arg_pattern: '(?i)(\b(rm|truncate|shred)\b[^;|&]*/var/log/|\b(rm|truncate|shred)\b[^;|&]*\.(log|audit|jsonl)\b|>{1,2}\s*[^;|&]*(/var/log/|\.(log|audit|jsonl)\b)|\bhistory\s+-c\b|\bunset\s+HISTFILE\b|\bexport\s+HISTFILE=/dev/null\b)'
       action: block
     - name: "Environment Dump"
       tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$'

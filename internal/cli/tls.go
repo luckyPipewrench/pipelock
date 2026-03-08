@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/certgen"
-	"github.com/luckyPipewrench/pipelock/internal/signing"
 	"github.com/spf13/cobra"
 )
 
@@ -41,7 +40,7 @@ func tlsInitCmd() *cobra.Command {
 				return fmt.Errorf("invalid validity: %w", err)
 			}
 			if outDir == "" {
-				outDir, err = signing.DefaultKeystorePath()
+				outDir, err = resolveKeystoreDir("")
 				if err != nil {
 					return fmt.Errorf("resolve default path: %w", err)
 				}
@@ -83,7 +82,7 @@ func tlsInstallCACmd() *cobra.Command {
 		Short: "Install the Pipelock CA certificate in the system trust store",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if certPath == "" {
-				dir, err := signing.DefaultKeystorePath()
+				dir, err := resolveKeystoreDir("")
 				if err != nil {
 					return err
 				}
@@ -107,7 +106,7 @@ func tlsShowCACmd() *cobra.Command {
 		Short: "Print the Pipelock CA certificate PEM to stdout",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if certPath == "" {
-				dir, err := signing.DefaultKeystorePath()
+				dir, err := resolveKeystoreDir("")
 				if err != nil {
 					return err
 				}

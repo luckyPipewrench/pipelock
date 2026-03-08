@@ -247,6 +247,9 @@ mcp_tool_policy:
     - name: "Detached Process Spawning"
       tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
       arg_pattern: '(?i)(\bnohup\s+|\bdisown\b|\bsetsid\s+|\bscreen\s+(-\S+\s+)*-[dDm]|\btmux\s+(new-session|new)\s+-d)'
+    - name: "Audit Log Tampering"
+      tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec|write_file|file_write|edit_file|create_file|modify_file|append_file)$'
+      arg_pattern: '(?i)(\b(rm|truncate|shred)\b[^;|&]*/var/log/|\b(rm|truncate|shred)\b[^;|&]*\.(log|audit|jsonl)\b|>{1,2}\s*[^;|&]*(/var/log/|\.(log|audit|jsonl)\b)|\bhistory\s+-c\b|\bunset\s+HISTFILE\b|\bexport\s+HISTFILE=/dev/null\b)'
 
 # Session behavioral profiling (warn-only, no blocking by default)
 session_profiling:
@@ -288,6 +291,10 @@ tls_interception:
   cert_ttl: 24h
   cert_cache_size: 10000
   max_response_bytes: 5242880
+
+tool_chain_detection:
+  enabled: true
+  action: warn
 
 # --- Agent Profiles (optional) ---
 # Per-agent policy overrides. Each agent gets its own merged config.

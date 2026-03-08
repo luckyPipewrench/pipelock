@@ -557,17 +557,27 @@ func MergeAgentProfile(base *Config, profile *AgentProfile) (*Config, error) {
 		merged.APIAllowlist = profile.APIAllowlist // replace
 	}
 	if profile.RateLimit != nil {
-		if profile.RateLimit.MaxRequestsPerMinute > 0 {
-			merged.FetchProxy.Monitoring.MaxReqPerMinute = profile.RateLimit.MaxRequestsPerMinute
-		}
-		if profile.RateLimit.MaxDataPerMinute > 0 {
-			merged.FetchProxy.Monitoring.MaxDataPerMinute = profile.RateLimit.MaxDataPerMinute
-		}
+		// Wholesale replacement: setting rate_limit on an agent replaces
+		// both fields, so explicit zero means "unlimited" (no inherited limit).
+		merged.FetchProxy.Monitoring.MaxReqPerMinute = profile.RateLimit.MaxRequestsPerMinute
+		merged.FetchProxy.Monitoring.MaxDataPerMinute = profile.RateLimit.MaxDataPerMinute
 	}
 	if profile.DLP != nil {
 		includeDefaults := profile.DLP.IncludeDefaults == nil || *profile.DLP.IncludeDefaults
 		if includeDefaults {
-			merged.DLP.Patterns = append(merged.DLP.Patterns, profile.DLP.Patterns...)
+			// Build a set of agent pattern names for dedup.
+			agentNames := make(map[string]struct{}, len(profile.DLP.Patterns))
+			for _, p := range profile.DLP.Patterns {
+				agentNames[p.Name] = struct{}{}
+			}
+			// Keep base patterns that aren't overridden by agent.
+			filtered := make([]DLPPattern, 0, len(merged.DLP.Patterns))
+			for _, p := range merged.DLP.Patterns {
+				if _, overridden := agentNames[p.Name]; !overridden {
+					filtered = append(filtered, p)
+				}
+			}
+			merged.DLP.Patterns = append(filtered, profile.DLP.Patterns...)
 		} else {
 			merged.DLP.Patterns = profile.DLP.Patterns
 		}
@@ -724,6 +734,17 @@ func Load(path string) (*Config, error) {
 	// Resolve relative secrets_file path relative to config file directory.
 	if cfg.DLP.SecretsFile != "" && !filepath.IsAbs(cfg.DLP.SecretsFile) {
 		cfg.DLP.SecretsFile = filepath.Join(filepath.Dir(path), cfg.DLP.SecretsFile)
+	}
+
+	// Resolve relative CA cert/key paths relative to config file directory.
+	// This ensures TLS interception works under systemd (CWD=/), containers,
+	// and when --config points to a non-local path.
+	configDir := filepath.Dir(path)
+	if cfg.TLSInterception.CACertPath != "" && !filepath.IsAbs(cfg.TLSInterception.CACertPath) {
+		cfg.TLSInterception.CACertPath = filepath.Join(configDir, cfg.TLSInterception.CACertPath)
+	}
+	if cfg.TLSInterception.CAKeyPath != "" && !filepath.IsAbs(cfg.TLSInterception.CAKeyPath) {
+		cfg.TLSInterception.CAKeyPath = filepath.Join(configDir, cfg.TLSInterception.CAKeyPath)
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -1688,6 +1709,16 @@ func (c *Config) validateAgents() error {
 		if profile.Budget.WindowMinutes < 0 {
 			return fmt.Errorf("agent %q: budget.window_minutes must be >= 0", name)
 		}
+
+		// Validate rate limit fields are non-negative
+		if profile.RateLimit != nil {
+			if profile.RateLimit.MaxRequestsPerMinute < 0 {
+				return fmt.Errorf("agent %q: rate_limit.max_requests_per_minute must be >= 0", name)
+			}
+			if profile.RateLimit.MaxDataPerMinute < 0 {
+				return fmt.Errorf("agent %q: rate_limit.max_data_per_minute must be >= 0", name)
+			}
+		}
 	}
 
 	return nil
@@ -2105,6 +2136,21 @@ func Defaults() *Config {
 			CertCacheSize:    10000,
 			MaxResponseBytes: 5 * 1024 * 1024, // 5MB
 		},
+		RequestBodyScanning: RequestBodyScanning{
+			Enabled:      true,
+			Action:       ActionWarn,
+			MaxBodyBytes: 5 * 1024 * 1024, // 5MB
+			ScanHeaders:  true,
+			HeaderMode:   HeaderModeSensitive,
+			SensitiveHeaders: []string{
+				"Authorization",
+				"Cookie",
+				"X-Api-Key",
+				"X-Token",
+				"Proxy-Authorization",
+				"X-Goog-Api-Key",
+			},
+		},
 		Internal: []string{
 			"0.0.0.0/8",
 			"127.0.0.0/8",
@@ -2113,9 +2159,11 @@ func Defaults() *Config {
 			"192.168.0.0/16",
 			"169.254.0.0/16",
 			"100.64.0.0/10",
+			"224.0.0.0/4", // IPv4 multicast
 			"::1/128",
 			"fc00::/7",
 			"fe80::/10",
+			"ff00::/8", // IPv6 multicast
 		},
 	}
 	return cfg

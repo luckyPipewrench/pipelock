@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -274,7 +275,10 @@ func appendLedger(path string, lic license.License, token string) error {
 		return err
 	}
 	if _, err = f.Write(data); err != nil {
-		_ = f.Close()
+		closeErr := f.Close()
+		if closeErr != nil {
+			return errors.Join(err, closeErr)
+		}
 		return err
 	}
 	return f.Close()

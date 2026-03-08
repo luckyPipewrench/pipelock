@@ -1,4 +1,4 @@
-{"level":"info","time":"2026-03-06T09:00:01Z","event":"startup","version":"0.3.6","mode":"balanced","config_hash":"a1b2c3d4e5f6","detail":"proxy started on :8888"}
+{"level":"info","time":"2026-03-06T09:00:01Z","event":"startup","version":"1.0.0","mode":"balanced","config_hash":"a1b2c3d4e5f6","detail":"proxy started on :8888"}
 {"level":"info","time":"2026-03-06T09:00:15Z","event":"allowed","url":"https://api.github.com/repos/example/repo","method":"GET","agent":"claude-code","scanner":"","latency_ms":45}
 {"level":"info","time":"2026-03-06T09:00:18Z","event":"allowed","url":"https://registry.npmjs.org/express","method":"GET","agent":"claude-code","scanner":"","latency_ms":62}
 {"level":"info","time":"2026-03-06T09:00:22Z","event":"allowed","url":"https://docs.python.org/3/library/json.html","method":"GET","agent":"claude-code","scanner":"","latency_ms":88}

@@ -1868,6 +1868,144 @@ dlp:
 	}
 }
 
+func TestLoad_CACertRelativePathResolved(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create fake CA cert and key in same directory as config.
+	certPath := filepath.Join(dir, "my-ca.pem")
+	keyPath := filepath.Join(dir, "my-ca-key.pem")
+	if err := os.WriteFile(certPath, []byte("fake-cert"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, []byte("fake-key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name         string
+		caCert       string
+		caKey        string
+		wantCertPath string
+		wantKeyPath  string
+	}{
+		{
+			name:         "both relative",
+			caCert:       "my-ca.pem",
+			caKey:        "my-ca-key.pem",
+			wantCertPath: certPath,
+			wantKeyPath:  keyPath,
+		},
+		{
+			name:         "absolute paths unchanged",
+			caCert:       certPath,
+			caKey:        keyPath,
+			wantCertPath: certPath,
+			wantKeyPath:  keyPath,
+		},
+		{
+			name:         "empty paths stay empty",
+			caCert:       "",
+			caKey:        "",
+			wantCertPath: "",
+			wantKeyPath:  "",
+		},
+		{
+			name:         "mixed absolute cert and relative key",
+			caCert:       certPath,
+			caKey:        "my-ca-key.pem",
+			wantCertPath: certPath,
+			wantKeyPath:  keyPath,
+		},
+		{
+			name:         "mixed relative cert and absolute key",
+			caCert:       "my-ca.pem",
+			caKey:        keyPath,
+			wantCertPath: certPath,
+			wantKeyPath:  keyPath,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// TLS interception is disabled so Validate won't check cert contents.
+			cfgYAML := fmt.Sprintf(`
+version: 1
+mode: balanced
+tls_interception:
+  ca_cert: %q
+  ca_key: %q
+`, tt.caCert, tt.caKey)
+
+			configPath := filepath.Join(dir, "config-"+tt.name+".yaml")
+			if err := os.WriteFile(configPath, []byte(cfgYAML), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			cfg, err := Load(configPath)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+
+			if cfg.TLSInterception.CACertPath != tt.wantCertPath {
+				t.Errorf("CACertPath = %q, want %q", cfg.TLSInterception.CACertPath, tt.wantCertPath)
+			}
+			if cfg.TLSInterception.CAKeyPath != tt.wantKeyPath {
+				t.Errorf("CAKeyPath = %q, want %q", cfg.TLSInterception.CAKeyPath, tt.wantKeyPath)
+			}
+
+			// Relative paths must be resolved to absolute.
+			if cfg.TLSInterception.CACertPath != "" && !filepath.IsAbs(cfg.TLSInterception.CACertPath) {
+				t.Errorf("CACertPath should be absolute, got %q", cfg.TLSInterception.CACertPath)
+			}
+			if cfg.TLSInterception.CAKeyPath != "" && !filepath.IsAbs(cfg.TLSInterception.CAKeyPath) {
+				t.Errorf("CAKeyPath should be absolute, got %q", cfg.TLSInterception.CAKeyPath)
+			}
+		})
+	}
+}
+
+func TestLoad_CACertRelativePath_Subdirectory(t *testing.T) {
+	// Config in a subdirectory referencing certs via relative path with subdir prefix.
+	dir := t.TempDir()
+	certsDir := filepath.Join(dir, "certs")
+	if err := os.MkdirAll(certsDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	certPath := filepath.Join(certsDir, "ca.pem")
+	keyPath := filepath.Join(certsDir, "ca-key.pem")
+	if err := os.WriteFile(certPath, []byte("fake-cert"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, []byte("fake-key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfgYAML := `
+version: 1
+mode: balanced
+tls_interception:
+  ca_cert: "certs/ca.pem"
+  ca_key: "certs/ca-key.pem"
+`
+	configPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte(cfgYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if cfg.TLSInterception.CACertPath != certPath {
+		t.Errorf("CACertPath = %q, want %q", cfg.TLSInterception.CACertPath, certPath)
+	}
+	if cfg.TLSInterception.CAKeyPath != keyPath {
+		t.Errorf("CAKeyPath = %q, want %q", cfg.TLSInterception.CAKeyPath, keyPath)
+	}
+}
+
 func TestValidate_SecretsFileEmptyString_NoValidation(t *testing.T) {
 	cfg := Defaults()
 	cfg.DLP.SecretsFile = ""
@@ -5640,5 +5778,98 @@ func TestEnforceLicenseGate_StoresExpiresAt(t *testing.T) {
 	cfg.EnforceLicenseGate(&buf)
 	if cfg.LicenseExpiresAt == 0 {
 		t.Error("LicenseExpiresAt should be set for non-perpetual license")
+	}
+}
+
+func TestMergeAgentProfileDLPDedup(t *testing.T) {
+	base := Defaults()
+	// Agent overrides "AWS Access ID" (matching the Defaults() pattern name)
+	// with a custom regex. Dedup should replace the base pattern, not append.
+	profile := AgentProfile{
+		DLP: &AgentDLP{
+			Patterns: []DLPPattern{
+				{Name: "AWS Access ID", Regex: "CUSTOM_AWS_[A-Z0-9]+", Severity: SeverityCritical},
+			},
+		},
+	}
+	merged, err := MergeAgentProfile(base, &profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Count how many patterns named "AWS Access ID" exist.
+	count := 0
+	for _, p := range merged.DLP.Patterns {
+		if p.Name == "AWS Access ID" {
+			count++
+			if p.Regex != "CUSTOM_AWS_[A-Z0-9]+" {
+				t.Errorf("expected agent regex override, got %q", p.Regex)
+			}
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected 1 'AWS Access ID' pattern (deduped), got %d", count)
+	}
+}
+
+func TestValidateAgentsNegativeRateLimits(t *testing.T) {
+	cfg := Defaults()
+	cfg.Agents = map[string]AgentProfile{
+		"bad-agent": {
+			RateLimit: &AgentRateLimit{
+				MaxRequestsPerMinute: -1,
+			},
+		},
+	}
+	cfg.ApplyDefaults()
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for negative rate limit")
+	}
+	if !strings.Contains(err.Error(), "max_requests_per_minute must be >= 0") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateAgentsNegativeDataRate(t *testing.T) {
+	cfg := Defaults()
+	cfg.Agents = map[string]AgentProfile{
+		"bad-agent": {
+			RateLimit: &AgentRateLimit{
+				MaxDataPerMinute: -500,
+			},
+		},
+	}
+	cfg.ApplyDefaults()
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for negative data rate")
+	}
+	if !strings.Contains(err.Error(), "max_data_per_minute must be >= 0") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestMergeAgentProfileRateLimitWholesale(t *testing.T) {
+	base := Defaults()
+	// Set non-zero base rate limits.
+	base.FetchProxy.Monitoring.MaxReqPerMinute = 100
+	base.FetchProxy.Monitoring.MaxDataPerMinute = 50000
+
+	// Agent sets rate limit to zero (meaning unlimited).
+	profile := AgentProfile{
+		RateLimit: &AgentRateLimit{
+			MaxRequestsPerMinute: 0,
+			MaxDataPerMinute:     0,
+		},
+	}
+	merged, err := MergeAgentProfile(base, &profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if merged.FetchProxy.Monitoring.MaxReqPerMinute != 0 {
+		t.Errorf("expected 0 (unlimited), got %d", merged.FetchProxy.Monitoring.MaxReqPerMinute)
+	}
+	if merged.FetchProxy.Monitoring.MaxDataPerMinute != 0 {
+		t.Errorf("expected 0 (unlimited), got %d", merged.FetchProxy.Monitoring.MaxDataPerMinute)
 	}
 }

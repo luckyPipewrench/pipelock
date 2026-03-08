@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-03-07
+
+Pipelock 1.0.0 is the production-ready release. All scanning layers, proxy modes, and MCP security features are stable and commercially supported.
+
+### Added
+- Per-agent identity profiles: named agent configurations with independent mode, enforce flag, API allowlist, DLP patterns, rate limits, and session profiling overrides
+- Agent identity resolution chain: context override > `X-Pipelock-Agent` header > `?agent=` query param > `_default` fallback
+- Per-agent request budgets: configurable request count, byte transfer, and unique domain limits with rolling window enforcement
+- Dedicated listener ports per agent for spoof-proof identity without relying on headers
+- Source CIDR matching for agent identity
+- `--agent` flag for MCP proxy: select agent profile for MCP proxy sessions
+- Agent identity threaded through audit logs, Prometheus metrics, and JSON `/stats` breakdown
+- `X-Pipelock-Agent` header stripped before forwarding to upstream (prevents agent impersonation)
+- Ed25519 license key system: `pipelock license keygen`, `pipelock license issue`, and `pipelock license inspect` CLI commands with build-time public key embedding
+- MCP tool policy: audit log tamper protection (blocks rm/truncate/shred on log files, history clearing)
+- MCP tool policy: persistence detection for cron, systemd, init.d, launchd, and shell profile write paths with destination-aware matching
+- Chain detection: `write-persist` and `persist-callback` patterns with argument-aware exec-to-persist reclassification
+- Read-indicator downgrade: introspection tools no longer trigger false-positive persistence alerts
+- `request_body_scanning` defaults in programmatic config (previously only available via preset files)
+- IPv4/IPv6 multicast ranges added to default SSRF protection
+- Social Security Number DLP pattern added to all config presets
+- `tool_chain_detection` section added to all config presets
+- `--home` flag for signing/keygen/verify CLI commands (container and rootless environment support)
+- Config-relative CA path resolution for TLS interception (paths resolve relative to config file, not CWD)
+
+### Fixed
+- TLS interception shared transport: single `http.Transport` with connection pooling across intercepted CONNECT tunnels
+- TLS passthrough domain reload warnings: set-diff detection catches same-size domain list replacements during config hot-reload
+- TLS `InstallCA` refactored for testable OS-specific branches (certgen coverage improved)
+- Config preset sync: all 7 presets now match `Defaults()` for DLP patterns, tool chain detection, and policy rules
+
+### Changed
+- Minimum version bump from 0.x to 1.0: public API (config format, CLI flags, audit schema, Prometheus metrics) is now stable. Breaking changes will follow semver.
+
 ## [0.3.6] - 2026-03-06
 
 ### Added

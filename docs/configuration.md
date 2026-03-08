@@ -877,6 +877,8 @@ agents:
       max_requests_per_session: 100
 ```
 
+> **Note:** Listener bindings are set at startup. Changing `listeners` requires a process restart (not hot-reloadable).
+
 ### Source CIDR Matching
 
 Each agent can define one or more `source_cidrs` entries. Pipelock matches the client IP of every incoming request against these CIDRs. This works for all traffic types including CONNECT tunnels, where header-based identification is not possible.

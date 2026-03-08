@@ -2239,3 +2239,54 @@ func TestDefaultToolPolicyRules_NoMatchPersistencePathRead(t *testing.T) {
 		})
 	}
 }
+
+func TestDefaultToolPolicyRules_MatchAuditLogTampering(t *testing.T) {
+	pc := defaultConfig(t)
+	for _, tc := range []struct {
+		name string
+		tool string
+		args []string
+	}{
+		{"rm var/log via bash", "bash", []string{"rm -rf /var/log/auth.log"}},
+		{"truncate log file", "bash", []string{"truncate -s 0 /var/log/syslog"}},
+		{"shred audit file", "bash", []string{"shred agent.audit"}},
+		{"append redirect to log", "bash", []string{"echo garbage >> /var/log/pipelock.log"}},
+		{"overwrite redirect to jsonl", "bash", []string{"echo '' > events.jsonl"}},
+		{"history clear", "bash", []string{"history -c"}},
+		{"unset HISTFILE", "bash", []string{"unset HISTFILE"}},
+		{"export HISTFILE null", "bash", []string{"export HISTFILE=/dev/null"}},
+		{"file_write rm log", "file_write", []string{"rm -f /var/log/auth.log"}},
+		{"create_file rm log", "create_file", []string{"rm -f /var/log/agent.log"}},
+		{"modify_file truncate audit", "modify_file", []string{"truncate -s 0 events.audit"}},
+		{"append_file shred jsonl", "append_file", []string{"shred data.jsonl"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := pc.CheckToolCall(tc.tool, tc.args)
+			if !v.Matched {
+				t.Errorf("%s(%q) should match Audit Log Tampering", tc.tool, tc.args)
+			}
+		})
+	}
+}
+
+func TestDefaultToolPolicyRules_NoMatchAuditLogSafeOps(t *testing.T) {
+	pc := defaultConfig(t)
+	for _, tc := range []struct {
+		name string
+		tool string
+		args []string
+	}{
+		{"cat log file", "bash", []string{"cat /var/log/syslog"}},
+		{"tail log", "bash", []string{"tail -f /var/log/auth.log"}},
+		{"ls log dir", "bash", []string{"ls /var/log/"}},
+		{"read_file tool", "read_file", []string{"/var/log/pipelock.log"}},
+		{"echo to stdout", "bash", []string{"echo hello"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := pc.CheckToolCall(tc.tool, tc.args)
+			if v.Matched {
+				t.Errorf("false positive: %s(%q) should not match, got rules %v", tc.tool, tc.args, v.Rules)
+			}
+		})
+	}
+}

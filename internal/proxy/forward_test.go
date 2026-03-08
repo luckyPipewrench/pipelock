@@ -91,7 +91,7 @@ func setupForwardProxy(t *testing.T, cfgMod func(*config.Config)) (string, func(
 	proxyAddr := ln.Addr().String()
 	return proxyAddr, func() {
 		cancel()
-		sc.Close()
+		p.Close() // closes scanner, registry, session manager
 	}
 }
 
@@ -772,7 +772,7 @@ func startProxyOnFreePort(t *testing.T, cfg *config.Config) (string, func()) {
 		case <-errCh:
 		case <-time.After(3 * time.Second):
 		}
-		sc.Close()
+		p.Close() // closes scanner, registry, session manager
 	}
 	return addr, cleanup
 }

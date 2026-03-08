@@ -6,11 +6,26 @@ package cli
 
 import (
 	"errors"
+	"os"
 	"strconv"
 
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
 	"github.com/spf13/cobra"
 )
+
+// pipelockHome holds the --home persistent flag value. It overrides the
+// default ~/.pipelock/ directory for key storage and TLS certificates.
+// Resolution order in resolveKeystoreDir: --keystore > --home > PIPELOCK_HOME > default.
+var pipelockHome string
+
+// resolvedHome returns the pipelock home directory from --home flag or
+// PIPELOCK_HOME env var. Returns empty string if neither is set.
+func resolvedHome() string {
+	if pipelockHome != "" {
+		return pipelockHome
+	}
+	return os.Getenv("PIPELOCK_HOME")
+}
 
 // ExitError wraps an error with a specific exit code for main() to use.
 type ExitError struct {
@@ -80,6 +95,9 @@ Quick start:
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
+
+	cmd.PersistentFlags().StringVar(&pipelockHome, "home", "",
+		"pipelock home directory (default ~/.pipelock, or set PIPELOCK_HOME)")
 
 	cmd.AddCommand(
 		auditCmd(),

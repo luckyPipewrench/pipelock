@@ -67,6 +67,35 @@ func TestGenerateWrapperUnknown(t *testing.T) {
 	}
 }
 
+func TestGenerateWrapperStdioWithEnv(t *testing.T) {
+	server := MCPServer{
+		ServerName: "brain",
+		Client:     "claude-code",
+		Command:    "node",
+		Args:       []string{"server.js"},
+		Env:        map[string]string{"BRAIN_DIR": "/data", "API_KEY": "secret"},
+		Transport:  "stdio",
+		Protection: Unprotected,
+	}
+
+	suggestion := GenerateWrapper(server)
+	if !strings.Contains(suggestion, `"--env"`) {
+		t.Error("suggestion should contain --env flags for env vars")
+	}
+	if !strings.Contains(suggestion, `"API_KEY"`) {
+		t.Error("suggestion should contain API_KEY env var name")
+	}
+	if !strings.Contains(suggestion, `"BRAIN_DIR"`) {
+		t.Error("suggestion should contain BRAIN_DIR env var name")
+	}
+	// Verify --env flags come before the -- separator
+	envIdx := strings.Index(suggestion, `"--env"`)
+	sepIdx := strings.Index(suggestion, `"--"`)
+	if envIdx > sepIdx {
+		t.Error("--env flags should appear before -- separator")
+	}
+}
+
 func TestGenerateWrapperNoArgs(t *testing.T) {
 	server := MCPServer{
 		ServerName: "simple",

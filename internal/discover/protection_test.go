@@ -56,6 +56,16 @@ func TestClassifyProtection(t *testing.T) {
 			server: MCPServer{Command: "node", Args: []string{"server.js"}},
 			want:   Unprotected,
 		},
+		{
+			name:   "windows exe path",
+			server: MCPServer{Command: `C:\Program Files\pipelock.exe`, Args: []string{"mcp", "proxy", "--", "node", "s.js"}},
+			want:   ProtectedPipelock,
+		},
+		{
+			name:   "false positive pipelock-helper",
+			server: MCPServer{Command: "/opt/pipelock-helper", Args: []string{"mcp", "proxy"}},
+			want:   Unprotected,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

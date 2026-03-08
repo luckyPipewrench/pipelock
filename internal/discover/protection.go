@@ -24,9 +24,12 @@ func classifyProtection(s MCPServer) ProtectionStatus {
 }
 
 // isPipelockWrapped checks if the server command is pipelock with mcp proxy args.
+// Handles Windows paths (pipelock.exe) and avoids false positives on names
+// like "pipelock-helper" by stripping the extension and comparing exactly.
 func isPipelockWrapped(s MCPServer) bool {
-	base := filepath.Base(s.Command)
-	if base != "pipelock" && !strings.Contains(s.Command, "/pipelock") {
+	base := commandBase(s.Command)
+	name := strings.TrimSuffix(base, filepath.Ext(base))
+	if !strings.EqualFold(name, "pipelock") {
 		return false
 	}
 
@@ -41,6 +44,20 @@ func isPipelockWrapped(s MCPServer) bool {
 		}
 	}
 	return hasMCP && hasProxy
+}
+
+// commandBase extracts the final path component from a command string,
+// handling both forward slashes and backslashes. This is needed because
+// JSON configs may contain Windows paths (e.g., C:\Program Files\pipelock.exe)
+// that are read on Linux where filepath.Base only splits on forward slashes.
+func commandBase(cmd string) string {
+	// Use filepath.Base for the native separator, then also check for
+	// the non-native separator in case the path uses the other convention.
+	base := filepath.Base(cmd)
+	if i := strings.LastIndexByte(base, '\\'); i >= 0 {
+		base = base[i+1:]
+	}
+	return base
 }
 
 // protectionEvidence returns a human-readable explanation for a protection classification.

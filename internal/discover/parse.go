@@ -140,6 +140,7 @@ func parseServerMap(raw json.RawMessage, path, client string) ([]MCPServer, erro
 			ServerName: name,
 			Command:    rs.Command,
 			Args:       rs.Args,
+			Env:        rs.Env,
 		}
 
 		switch {

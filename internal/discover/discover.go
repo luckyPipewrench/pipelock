@@ -37,18 +37,19 @@ const (
 
 // MCPServer is a single discovered MCP server configuration.
 type MCPServer struct {
-	Client        string           `json:"client"`
-	ConfigPath    string           `json:"config_path"`
-	ProjectPath   string           `json:"project_path,omitempty"`
-	ServerName    string           `json:"server_name"`
-	Transport     string           `json:"transport"` // "stdio", "http", "sse", "unknown"
-	Command       string           `json:"command"`
-	Args          []string         `json:"args"`
-	URL           string           `json:"url"`
-	Protection    ProtectionStatus `json:"protection_state"`
-	Risk          RiskLevel        `json:"risk"`
-	Evidence      string           `json:"evidence"`
-	ParseWarnings []string         `json:"parse_warnings"`
+	Client        string            `json:"client"`
+	ConfigPath    string            `json:"config_path"`
+	ProjectPath   string            `json:"project_path,omitempty"`
+	ServerName    string            `json:"server_name"`
+	Transport     string            `json:"transport"` // "stdio", "http", "sse", "unknown"
+	Command       string            `json:"command"`
+	Args          []string          `json:"args"`
+	Env           map[string]string `json:"env,omitempty"`
+	URL           string            `json:"url"`
+	Protection    ProtectionStatus  `json:"protection_state"`
+	Risk          RiskLevel         `json:"risk"`
+	Evidence      string            `json:"evidence"`
+	ParseWarnings []string          `json:"parse_warnings"`
 }
 
 // ClientConfig is one discovered agent client installation.

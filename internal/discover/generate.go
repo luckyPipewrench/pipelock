@@ -5,6 +5,7 @@ package discover
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -20,11 +21,15 @@ func GenerateWrapper(s MCPServer) string {
 		_, _ = fmt.Fprintf(&b, "    \"command\": %q,\n", s.Command)
 		_, _ = fmt.Fprintf(&b, "    \"args\": %s\n\n", formatArgs(s.Args))
 
-		// After
+		// After: include --env flags for each env var so they are passed through
 		_, _ = fmt.Fprintf(&b, "  After:\n")
 		_, _ = fmt.Fprintf(&b, "    \"command\": \"pipelock\",\n")
 
-		afterArgs := []string{"mcp", "proxy", "--config", "~/.config/pipelock/local.yaml", "--", s.Command}
+		afterArgs := []string{"mcp", "proxy", "--config", "~/.config/pipelock/local.yaml"}
+		for _, k := range sortedEnvKeys(s.Env) {
+			afterArgs = append(afterArgs, "--env", k)
+		}
+		afterArgs = append(afterArgs, "--", s.Command)
 		afterArgs = append(afterArgs, s.Args...)
 		_, _ = fmt.Fprintf(&b, "    \"args\": %s\n", formatArgs(afterArgs))
 
@@ -45,6 +50,19 @@ func GenerateWrapper(s MCPServer) string {
 	}
 
 	return "  (no suggestion available for this transport type)"
+}
+
+// sortedEnvKeys returns the keys from a map in sorted order for deterministic output.
+func sortedEnvKeys(env map[string]string) []string {
+	if len(env) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func formatArgs(args []string) string {

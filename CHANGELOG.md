@@ -29,7 +29,7 @@ Pipelock 1.0.0 is the production-ready release. All scanning layers, proxy modes
 - IPv4/IPv6 multicast ranges added to default SSRF protection
 - Social Security Number DLP pattern added to all config presets
 - `tool_chain_detection` section added to all config presets
-- `--home` flag for signing/keygen/verify CLI commands (container and rootless environment support)
+- `--home` flag for signing/keygen/verify/TLS CLI commands (container and rootless environment support)
 - Config-relative CA path resolution for TLS interception (paths resolve relative to config file, not CWD)
 
 ### Fixed

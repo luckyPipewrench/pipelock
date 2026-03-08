@@ -5849,6 +5849,30 @@ func TestValidateAgentsNegativeDataRate(t *testing.T) {
 	}
 }
 
+func TestValidateGlobalNegativeReqRate(t *testing.T) {
+	cfg := Defaults()
+	cfg.FetchProxy.Monitoring.MaxReqPerMinute = -10
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for negative global max_requests_per_minute")
+	}
+	if !strings.Contains(err.Error(), "max_requests_per_minute must be >= 0") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateGlobalNegativeDataRate(t *testing.T) {
+	cfg := Defaults()
+	cfg.FetchProxy.Monitoring.MaxDataPerMinute = -1000
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for negative global max_data_per_minute")
+	}
+	if !strings.Contains(err.Error(), "max_data_per_minute must be >= 0") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
 func TestMergeAgentProfileRateLimitWholesale(t *testing.T) {
 	base := Defaults()
 	// Set non-zero base rate limits.

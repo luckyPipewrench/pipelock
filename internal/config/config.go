@@ -1146,6 +1146,14 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// Validate global rate limits are non-negative
+	if c.FetchProxy.Monitoring.MaxReqPerMinute < 0 {
+		return fmt.Errorf("fetch_proxy.monitoring.max_requests_per_minute must be >= 0")
+	}
+	if c.FetchProxy.Monitoring.MaxDataPerMinute < 0 {
+		return fmt.Errorf("fetch_proxy.monitoring.max_data_per_minute must be >= 0")
+	}
+
 	// Validate response scanning config
 	if c.ResponseScanning.Enabled {
 		switch c.ResponseScanning.Action {

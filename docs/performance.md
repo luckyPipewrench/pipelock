@@ -1,6 +1,6 @@
 # Performance
 
-Pipelock adds microseconds of overhead per request. The proxy is I/O bound (waiting for upstream responses), not CPU bound. At platform scale, CPU is never the bottleneck.
+Pipelock adds microseconds of overhead per request. The proxy is I/O bound (waiting for upstream responses), not CPU bound. For the request-side URL scanning hot path, CPU is never the bottleneck. Response scanning and MCP scanning on large payloads can use measurable CPU at high throughput (see tables below).
 
 All numbers from Go benchmarks on AMD Ryzen 7 7800X3D (16 cores) / Go 1.24 / Linux. Run `make bench` to reproduce on your hardware. See [benchmarks.md](benchmarks.md) for raw ns/op data.
 
@@ -12,11 +12,11 @@ All numbers from Go benchmarks on AMD Ryzen 7 7800X3D (16 cores) / Go 1.24 / Lin
 
 | Operation | Latency | Throughput (1 core) | Throughput (16 cores) |
 |-----------|---------|--------------------:|----------------------:|
-| Full pipeline (allowed URL) | 38us | ~26,000/sec | ~416,000/sec |
-| Blocklist block (early exit) | 440ns | ~2,300,000/sec | ~37,000,000/sec |
-| DLP pattern match (22 patterns) | 11.5us | ~87,000/sec | ~1,400,000/sec |
-| Entropy detection | 68us | ~14,700/sec | ~235,000/sec |
-| Complex URL (ports, query params) | 53us | ~19,000/sec | ~300,000/sec |
+| Full pipeline (allowed URL) | ~37us | ~27,000/sec | ~432,000/sec |
+| Blocklist block (early exit) | ~400ns | ~2,500,000/sec | ~40,000,000/sec |
+| DLP pattern match (22 patterns) | ~11us | ~91,000/sec | ~1,460,000/sec |
+| Entropy detection | ~65us | ~15,400/sec | ~246,000/sec |
+| Complex URL (ports, query params) | ~50us | ~20,000/sec | ~320,000/sec |
 
 ### MCP Scanning (tool call/response inspection)
 
@@ -24,9 +24,9 @@ JSON-RPC parsing + text extraction + prompt injection pattern matching.
 
 | Operation | Latency | Throughput (1 core) | Throughput (16 cores) |
 |-----------|---------|--------------------:|----------------------:|
-| Clean tool response | 107us | ~9,300/sec | ~149,000/sec |
-| Injection detected (early exit) | 38us | ~26,000/sec | ~416,000/sec |
-| Text extraction | 2.5us | ~400,000/sec | ~6,400,000/sec |
+| Clean tool response | ~104us | ~9,600/sec | ~154,000/sec |
+| Injection detected (early exit) | ~36us | ~27,700/sec | ~443,000/sec |
+| Text extraction | ~2.3us | ~435,000/sec | ~6,960,000/sec |
 
 ### Response Scanning (fetched content injection detection)
 
@@ -34,24 +34,33 @@ Pattern matching against 20 prompt injection patterns on fetched page content.
 
 | Operation | Latency | Throughput (1 core) | Throughput (16 cores) |
 |-----------|---------|--------------------:|----------------------:|
-| Short clean text (~90B) | 122us | ~8,200/sec | ~131,000/sec |
-| 10KB clean text | 16ms | ~63/sec | ~1,000/sec |
-| Injection detected (early exit) | 47us | ~21,000/sec | ~336,000/sec |
+| Short clean text (~90B) | ~118us | ~8,500/sec | ~136,000/sec |
+| 10KB clean text | ~15ms | ~65/sec | ~1,040/sec |
+| Injection detected (early exit) | ~45us | ~22,000/sec | ~352,000/sec |
 
-The 10KB response scan is the current ceiling. It runs 6 sequential normalization passes (NFKC, confusable mapping, combining mark removal, zero-width removal, leetspeak expansion, vowel-fold) before pattern matching. Content size tiering (skipping passes 3-6 for large content) is planned and will reduce this to ~4ms.
+The 10KB response scan is the current ceiling. It runs 6 sequential normalization passes (NFKC, confusable mapping, combining mark removal, zero-width removal, leetspeak expansion, vowel-fold) before pattern matching. Content size tiering (skipping passes 3-6 for large content) is planned.
 
 ## CPU Cost at Scale
 
 How much CPU does scanning consume at various request rates? These numbers cover scanning overhead only, not network I/O.
 
+### Request-side scanning (URL + MCP)
+
 | Request rate | CPU (URL scan) | CPU (MCP scan) |
 |-------------|---------------:|---------------:|
-| 100/sec | 0.4% of 1 core | 1.1% of 1 core |
-| 1,000/sec | 3.8% of 1 core | 10.7% of 1 core |
-| 10,000/sec | 38% of 1 core | 1.07 cores |
-| 100,000/sec | 3.8 cores | 10.7 cores |
+| 100/sec | 0.4% of 1 core | 1.0% of 1 core |
+| 1,000/sec | 3.7% of 1 core | 10.4% of 1 core |
+| 10,000/sec | 37% of 1 core | 1.04 cores |
+| 100,000/sec | 3.7 cores | 10.4 cores |
 
-At 1,000 requests per second, pipelock uses less than 15% of a single CPU core for all scanning combined. Network latency (waiting for upstream HTTP responses) dominates total request time by orders of magnitude.
+### Response-side scanning
+
+| Request rate | CPU (short ~90B) | CPU (10KB content) |
+|-------------|---------------:|---------------:|
+| 100/sec | 1.2% of 1 core | 150% of 1 core (1.5 cores) |
+| 1,000/sec | 12% of 1 core | 15 cores |
+
+Response scanning is the most CPU-intensive path. At high throughput with large payloads, it dominates. For request-side scanning only, 1,000 requests per second uses less than 15% of a single CPU core. Network latency (waiting for upstream HTTP responses) dominates total request time by orders of magnitude.
 
 ## Deployment Sizing
 
@@ -66,7 +75,7 @@ The binary is ~12MB static. Memory usage is dominated by the DLP regex compilati
 
 ## Design Decisions That Affect Performance
 
-**Early exit on block.** Blocked URLs short-circuit at the first failing layer. Blocklist hits resolve in ~440ns. DLP matches exit before DNS resolution.
+**Early exit on block.** Blocked URLs short-circuit at the first failing layer. Blocklist hits resolve in ~400ns. DLP matches exit before DNS resolution.
 
 **Layers 2-3 run before DNS.** DLP and blocklist checks execute before any network call. This prevents secret exfiltration via DNS queries and keeps the fast path fast.
 
@@ -84,8 +93,8 @@ make bench
 go test -bench=BenchmarkScan -benchmem ./internal/scanner/
 
 # MCP scanner only
-go test -bench=BenchmarkMCP -benchmem ./internal/mcp/
+go test -bench=BenchmarkMCPScanResponse -benchmem ./internal/mcp/
 
 # Response scanner only
-go test -bench=BenchmarkResponse -benchmem ./internal/scanner/
+go test -bench=BenchmarkScanResponse -benchmem ./internal/scanner/
 ```

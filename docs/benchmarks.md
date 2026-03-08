@@ -10,7 +10,7 @@ Configuration used for these benchmarks (balanced defaults):
 - Response scanning: 20 prompt injection patterns
 - DLP: 22 patterns
 
-> **Note:** Overhead scales linearly with pattern count. Typical URLs scan in ~25μs. Very long URLs (near the configured limit) can take ~1.4ms due to full normalization. Run `make bench` with your config to measure.
+> **Note:** Overhead scales linearly with pattern count. Typical URLs scan in ~37us. Very long URLs (near the configured limit) can take ~6ms due to full normalization. Run `make bench` with your config to measure.
 
 Run `make bench` to reproduce on your hardware.
 
@@ -20,12 +20,12 @@ Full 9-layer URL scanning: scheme, blocklist, DLP (pre-DNS), path entropy, subdo
 
 | Benchmark | ns/op | B/op | allocs/op |
 |-----------|------:|-----:|----------:|
-| AllowedURL | 24,428 | 1,213 | 19 |
-| BlockedByBlocklist | 378 | 288 | 5 |
-| BlockedByDLP | 5,927 | 1,314 | 18 |
-| BlockedByEntropy | 29,161 | 2,990 | 23 |
-| BlockedByURLLength | 1,443,271 | 5,478 | 19 |
-| ComplexAllowedURL | 29,473 | 2,693 | 42 |
+| AllowedURL | 36,935 | 1,412 | 26 |
+| BlockedByBlocklist | 404 | 288 | 5 |
+| BlockedByDLP | 10,842 | 2,262 | 41 |
+| BlockedByEntropy | 64,945 | 4,286 | 50 |
+| BlockedByURLLength | 6,074,933 | 70,386 | 52 |
+| ComplexAllowedURL | 49,894 | 3,456 | 84 |
 
 ## Response Scanning (`ScanResponse()`)
 
@@ -33,9 +33,9 @@ Pattern matching for prompt injection on fetched content. Benchmarked with 20 pa
 
 | Benchmark | ns/op | B/op | allocs/op |
 |-----------|------:|-----:|----------:|
-| Clean (~90B) | 44,211 | 1 | 0 |
-| WithInjection (~100B) | 44,547 | 385 | 3 |
-| LargeClean (~10KB) | 6,142,581 | 487 | 0 |
+| Clean (~90B) | 117,775 | 504 | 7 |
+| WithInjection (~100B) | 46,443 | 377 | 3 |
+| LargeClean (~10KB) | 15,353,183 | 53,340 | 9 |
 
 ## MCP Response Scanning (`mcp.ScanResponse()`)
 
@@ -43,19 +43,19 @@ JSON-RPC 2.0 response parsing + text extraction + prompt injection scanning.
 
 | Benchmark | ns/op | B/op | allocs/op |
 |-----------|------:|-----:|----------:|
-| Clean | 42,231 | 985 | 21 |
-| Injection | 39,570 | 1,462 | 25 |
-| ExtractText (5 blocks) | 2,451 | 1,080 | 23 |
+| Clean | 103,641 | 1,408 | 28 |
+| Injection | 36,130 | 1,457 | 25 |
+| ExtractText (5 blocks) | 2,340 | 1,080 | 23 |
 
 ## Key Takeaways
 
-- **Full 9-layer scan on a typical URL: ~25 microseconds.** Well under 1ms.
-- Blocked URLs short-circuit early: blocklist check is ~378ns.
-- DLP regex matching (22 patterns) adds ~6 microseconds.
-- Response scanning with 20 patterns on small content: ~44 microseconds. Large content (~10KB) takes ~6ms due to regex cost scaling with input size.
-- MCP scanning (JSON parse + text extraction + pattern match): ~42 microseconds.
-- The scanner pipeline adds **~0.025ms overhead for typical requests**. Network latency dominates.
-- Exception: `BlockedByURLLength` (~1.4ms) exercises the full URL normalization pipeline on very long URLs. This path only triggers when a URL exceeds the configured limit.
+- **Full 9-layer scan on a typical URL: ~37 microseconds.** Well under 1ms.
+- Blocked URLs short-circuit early: blocklist check is ~400ns.
+- DLP regex matching (22 patterns) adds ~11 microseconds.
+- Response scanning with 20 patterns on small content: ~118 microseconds. Large content (~10KB) takes ~15ms due to 6 normalization passes plus regex cost scaling with input size.
+- MCP scanning (JSON parse + text extraction + pattern match): ~104 microseconds.
+- The scanner pipeline adds **~0.037ms overhead for typical URL requests**. Network latency dominates.
+- Exception: `BlockedByURLLength` (~6ms) exercises the full URL normalization pipeline on very long URLs. This path only triggers when a URL exceeds the configured limit.
 
 ## Running Benchmarks
 

@@ -13,7 +13,7 @@
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/11948/badge?level=silver)](https://www.bestpractices.dev/projects/11948)
 [![codecov](https://codecov.io/gh/luckyPipewrench/pipelock/graph/badge.svg)](https://codecov.io/gh/luckyPipewrench/pipelock)
 [![CodeRabbit Reviews](https://img.shields.io/coderabbit/prs/github/luckyPipewrench/pipelock?labelColor=171717&color=FF570A&label=CodeRabbit+Reviews)](https://coderabbit.ai)
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![License](https://img.shields.io/badge/Core-Apache_2.0-blue.svg)](LICENSE) [![License](https://img.shields.io/badge/Enterprise-ELv2-orange.svg)](enterprise/LICENSE)
 
 **Open-source [agent firewall](https://pipelab.org/agent-firewall/) for AI agents.** Single binary, zero runtime dependencies.
 
@@ -238,11 +238,11 @@ pipelock run --config pipelock.yaml --mcp-listen 0.0.0.0:8889 --mcp-upstream htt
 
 ### MCP Tool Policy
 
-Pre-execution rules that block dangerous tool calls before they reach MCP servers. Ships with 9 built-in rules covering destructive operations, credential access, reverse shells, and encoded command execution. Shell obfuscation detection is built-in.
+Pre-execution rules that block dangerous tool calls before they reach MCP servers. Ships with 17 built-in rules covering destructive operations, credential access, reverse shells, persistence mechanisms, and encoded command execution. Shell obfuscation detection is built-in.
 
 ### Tool Call Chain Detection
 
-Detects attack patterns in sequences of MCP tool calls. Ships with 8 built-in patterns covering reconnaissance, credential theft, data staging, and exfiltration chains. Uses subsequence matching with configurable gap tolerance, so inserting innocent calls between attack steps doesn't evade detection.
+Detects attack patterns in sequences of MCP tool calls. Ships with 10 built-in patterns covering reconnaissance, credential theft, data staging, persistence, and exfiltration chains. Uses subsequence matching with configurable gap tolerance, so inserting innocent calls between attack steps doesn't evade detection.
 
 ### Kill Switch
 
@@ -453,7 +453,7 @@ Details, config examples, and gap analysis: [docs/owasp-mapping.md](docs/owasp-m
 | [Known Attacks Blocked](docs/attacks-blocked.md) | Real attacks with repro snippets and pipelock config that stops them |
 | [Policy Spec v0.1](docs/policy-spec-v0.1.md) | Portable agent firewall policy format |
 | [SIEM Integration](docs/guides/siem-integration.md) | Log schema, forwarding patterns, KQL/SPL/EQL queries |
-| [Metrics Reference](docs/metrics.md) | All 20 Prometheus metrics, alert rule templates |
+| [Metrics Reference](docs/metrics.md) | All 30 Prometheus metrics, alert rule templates |
 | [OWASP Mapping](docs/owasp-mapping.md) | Coverage against OWASP Agentic AI Top 10 |
 | [Comparison](docs/comparison.md) | How pipelock compares to agent-scan, srt, agentsh, MCP Gateway |
 | [Finding Suppression](docs/guides/suppression.md) | Rule names, path matching, inline comments, CI integration |
@@ -484,6 +484,7 @@ internal/
   hitl/                Human-in-the-loop terminal approval
   report/              HTML/JSON audit report generation from JSONL event logs
   projectscan/         Project directory scanning for audit command
+enterprise/            Multi-agent features (ELv2, see enterprise/LICENSE)
 configs/               7 preset config files
 docs/                  Guides, references, compliance mappings
 ```
@@ -522,8 +523,9 @@ If Pipelock is useful, please [star this repository](https://github.com/luckyPip
 Pipelock core is licensed under the **Apache License 2.0**. Copyright 2026 Joshua Waldrep.
 
 Multi-agent features (per-agent identity, budgets, and configuration isolation)
-are in the `enterprise/` directory, licensed under the **Elastic License 2.0 (ELv2)**.
-These features require a valid enterprise license key.
+are gated by the `enterprise` build tag and licensed under the **Elastic License 2.0 (ELv2)**.
+The primary implementation is in the `enterprise/` directory, with build-tag-gated integration
+code in `cmd/` and `internal/`. These features require a valid enterprise license key.
 
 The open-source core works independently without enterprise features.
 

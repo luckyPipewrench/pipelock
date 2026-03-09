@@ -1097,7 +1097,7 @@ func TestRunCmd_ModeFlag(t *testing.T) {
 			var health map[string]any
 			_ = json.NewDecoder(resp.Body).Decode(&health)
 			_ = resp.Body.Close()
-			if health["mode"] == "strict" {
+			if health["mode"] == config.ModeStrict {
 				break
 			}
 		}
@@ -1855,14 +1855,14 @@ func TestRunCmd_ReloadRejectsMetricsListenChange(t *testing.T) {
 	if listenErr != nil {
 		t.Fatal(listenErr)
 	}
-	mainAddr := ln.Addr().String()
-	_ = ln.Close()
-
 	ln2, listenErr2 := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if listenErr2 != nil {
+		_ = ln.Close()
 		t.Fatal(listenErr2)
 	}
+	mainAddr := ln.Addr().String()
 	metricsAddr := ln2.Addr().String()
+	_ = ln.Close()
 	_ = ln2.Close()
 
 	dir := t.TempDir()
@@ -1943,6 +1943,415 @@ fetch_proxy:
 	// Safe to read stderr now that the command has exited.
 	if !bytes.Contains(stderr.Bytes(), []byte("metrics_listen changed")) {
 		t.Errorf("expected metrics_listen reload warning, got:\n%s", stderr.String())
+	}
+}
+
+func TestAgentListenersChanged(t *testing.T) {
+	tests := []struct {
+		name string
+		old  map[string]config.AgentProfile
+		new  map[string]config.AgentProfile
+		want bool
+	}{
+		{
+			"no agents",
+			nil, nil, false,
+		},
+		{
+			"same listeners",
+			map[string]config.AgentProfile{"a": {Listeners: []string{":9001"}}},
+			map[string]config.AgentProfile{"a": {Listeners: []string{":9001"}}},
+			false,
+		},
+		{
+			"listener changed",
+			map[string]config.AgentProfile{"a": {Listeners: []string{":9001"}}},
+			map[string]config.AgentProfile{"a": {Listeners: []string{":9002"}}},
+			true,
+		},
+		{
+			"listener added to existing agent",
+			map[string]config.AgentProfile{"a": {}},
+			map[string]config.AgentProfile{"a": {Listeners: []string{":9001"}}},
+			true,
+		},
+		{
+			"listener removed from agent",
+			map[string]config.AgentProfile{"a": {Listeners: []string{":9001"}}},
+			map[string]config.AgentProfile{"a": {}},
+			true,
+		},
+		{
+			"new agent with listener",
+			map[string]config.AgentProfile{"a": {}},
+			map[string]config.AgentProfile{"a": {}, "b": {Listeners: []string{":9002"}}},
+			true,
+		},
+		{
+			"agent removed with listener",
+			map[string]config.AgentProfile{"a": {Listeners: []string{":9001"}}},
+			map[string]config.AgentProfile{},
+			true,
+		},
+		{
+			"agent added without listener",
+			map[string]config.AgentProfile{},
+			map[string]config.AgentProfile{"a": {Mode: config.ModeStrict}},
+			false,
+		},
+		{
+			"non-listener config change",
+			map[string]config.AgentProfile{"a": {Mode: config.ModeBalanced, Listeners: []string{":9001"}}},
+			map[string]config.AgentProfile{"a": {Mode: config.ModeStrict, Listeners: []string{":9001"}}},
+			false,
+		},
+		{
+			"renamed agent with listener same count",
+			map[string]config.AgentProfile{"a": {Listeners: []string{":9001"}}},
+			map[string]config.AgentProfile{"b": {Listeners: []string{":9001"}}},
+			true,
+		},
+		{
+			"renamed agent without listener same count",
+			map[string]config.AgentProfile{"a": {Mode: config.ModeBalanced}},
+			map[string]config.AgentProfile{"b": {Mode: config.ModeStrict}},
+			false,
+		},
+		{
+			"renamed agent old has listener new does not",
+			map[string]config.AgentProfile{"a": {Listeners: []string{":9001"}}},
+			map[string]config.AgentProfile{"b": {}},
+			true,
+		},
+		{
+			"renamed agent old no listener new has listener",
+			map[string]config.AgentProfile{"a": {}},
+			map[string]config.AgentProfile{"b": {Listeners: []string{":9001"}}},
+			true,
+		},
+		{
+			"different count neither has listeners",
+			map[string]config.AgentProfile{"a": {Mode: config.ModeBalanced}},
+			map[string]config.AgentProfile{"a": {}, "b": {}},
+			false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			old := config.Defaults()
+			old.Internal = nil
+			old.Agents = tt.old
+
+			newCfg := config.Defaults()
+			newCfg.Internal = nil
+			newCfg.Agents = tt.new
+
+			got := agentListenersChanged(old, newCfg)
+			if got != tt.want {
+				t.Errorf("agentListenersChanged = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPreserveAgentListeners(t *testing.T) {
+	t.Run("both configs have same agents", func(t *testing.T) {
+		old := config.Defaults()
+		old.Internal = nil
+		old.Agents = map[string]config.AgentProfile{
+			"a": {Listeners: []string{":9001"}, Mode: config.ModeBalanced},
+			"b": {Listeners: []string{":9002"}},
+		}
+
+		newCfg := config.Defaults()
+		newCfg.Internal = nil
+		newCfg.Agents = map[string]config.AgentProfile{
+			"a": {Listeners: []string{":9999"}, Mode: config.ModeStrict},
+			"b": {Listeners: []string{":8888"}},
+		}
+
+		preserveAgentListeners(old, newCfg)
+
+		if newCfg.Agents["a"].Listeners[0] != ":9001" {
+			t.Errorf("agent a listener = %q, want :9001", newCfg.Agents["a"].Listeners[0])
+		}
+		if newCfg.Agents["b"].Listeners[0] != ":9002" {
+			t.Errorf("agent b listener = %q, want :9002", newCfg.Agents["b"].Listeners[0])
+		}
+		if newCfg.Agents["a"].Mode != config.ModeStrict {
+			t.Errorf("agent a mode = %q, want %s", newCfg.Agents["a"].Mode, config.ModeStrict)
+		}
+	})
+
+	t.Run("listener-bearing agent removed re-added", func(t *testing.T) {
+		old := config.Defaults()
+		old.Internal = nil
+		old.Agents = map[string]config.AgentProfile{
+			"a": {Listeners: []string{":9001"}, Mode: config.ModeBalanced},
+		}
+
+		newCfg := config.Defaults()
+		newCfg.Internal = nil
+		newCfg.Agents = map[string]config.AgentProfile{}
+
+		preserveAgentListeners(old, newCfg)
+
+		// Removed listener-bearing agent must be re-added to prevent
+		// policy downgrade on the still-bound socket.
+		restored, ok := newCfg.Agents["a"]
+		if !ok {
+			t.Fatal("agent a should be re-added when removed with active listeners")
+		}
+		if restored.Listeners[0] != ":9001" {
+			t.Errorf("restored listener = %q, want :9001", restored.Listeners[0])
+		}
+		if restored.Mode != config.ModeBalanced {
+			t.Errorf("restored mode = %q, want %s", restored.Mode, config.ModeBalanced)
+		}
+	})
+
+	t.Run("non-listener agent removed stays removed", func(t *testing.T) {
+		old := config.Defaults()
+		old.Internal = nil
+		old.Agents = map[string]config.AgentProfile{
+			"a": {Mode: config.ModeBalanced}, // no listeners
+		}
+
+		newCfg := config.Defaults()
+		newCfg.Internal = nil
+		newCfg.Agents = map[string]config.AgentProfile{}
+
+		preserveAgentListeners(old, newCfg)
+
+		if _, ok := newCfg.Agents["a"]; ok {
+			t.Error("agent a without listeners should not be re-added")
+		}
+	})
+
+	t.Run("new agent listeners stripped", func(t *testing.T) {
+		old := config.Defaults()
+		old.Internal = nil
+		old.Agents = map[string]config.AgentProfile{}
+
+		newCfg := config.Defaults()
+		newCfg.Internal = nil
+		newCfg.Agents = map[string]config.AgentProfile{
+			"b": {Listeners: []string{":9002"}, Mode: config.ModeStrict},
+		}
+
+		preserveAgentListeners(old, newCfg)
+
+		// New agent's listeners should be stripped (can't bind without
+		// restart), but non-listener config should remain.
+		p := newCfg.Agents["b"]
+		if len(p.Listeners) > 0 {
+			t.Errorf("new agent listeners should be stripped, got %v", p.Listeners)
+		}
+		if p.Mode != config.ModeStrict {
+			t.Errorf("new agent mode = %q, want %s", p.Mode, config.ModeStrict)
+		}
+	})
+
+	t.Run("nil new agents map initialized", func(t *testing.T) {
+		old := config.Defaults()
+		old.Internal = nil
+		old.Agents = map[string]config.AgentProfile{
+			"a": {Listeners: []string{":9001"}},
+		}
+
+		newCfg := config.Defaults()
+		newCfg.Internal = nil
+		newCfg.Agents = nil
+
+		preserveAgentListeners(old, newCfg)
+
+		if newCfg.Agents == nil {
+			t.Fatal("newCfg.Agents should be initialized")
+		}
+		if _, ok := newCfg.Agents["a"]; !ok {
+			t.Error("agent a should be re-added")
+		}
+	})
+}
+
+func TestRunCmd_ReloadLicenseKeyChange(t *testing.T) {
+	lc := net.ListenConfig{}
+	ln, listenErr := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if listenErr != nil {
+		t.Fatal(listenErr)
+	}
+	mainAddr := ln.Addr().String()
+	_ = ln.Close()
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "test.yaml")
+	cfgContent := fmt.Sprintf(`version: 1
+mode: balanced
+license_key: "old-key"
+fetch_proxy:
+  listen: "%s"
+  timeout_seconds: 5
+`, mainAddr)
+	if writeErr := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cmd := rootCmd()
+	cmd.SetContext(ctx)
+	cmd.SetArgs([]string{"run", "--config", cfgPath})
+	var stderr bytes.Buffer
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(&stderr)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- cmd.Execute()
+	}()
+
+	// Wait for healthy.
+	client := &http.Client{Timeout: time.Second}
+	healthURL := "http://" + mainAddr + "/health"
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case cmdErr := <-errCh:
+			cancel()
+			t.Fatalf("run exited early: %v", cmdErr)
+		default:
+		}
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+		resp, rerr := client.Do(req) //nolint:gosec // test-only
+		if rerr == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// Hot-reload: change license_key (should warn).
+	updatedCfg := fmt.Sprintf(`version: 1
+mode: balanced
+license_key: "new-key"
+fetch_proxy:
+  listen: "%s"
+  timeout_seconds: 5
+`, mainAddr)
+	if writeErr := os.WriteFile(cfgPath, []byte(updatedCfg), 0o600); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+
+	// Wait for reload to process.
+	time.Sleep(500 * time.Millisecond)
+
+	cancel()
+	select {
+	case cmdErr := <-errCh:
+		if cmdErr != nil {
+			t.Errorf("unexpected error: %v", cmdErr)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("run did not shut down")
+	}
+
+	// Verify license change warning appeared.
+	if !bytes.Contains(stderr.Bytes(), []byte("license_key or license_public_key changed")) {
+		t.Errorf("expected license reload warning, got:\n%s", stderr.String())
+	}
+}
+
+func TestRunCmd_ReloadLicenseNoSpuriousWarning(t *testing.T) {
+	lc := net.ListenConfig{}
+	ln, listenErr := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if listenErr != nil {
+		t.Fatal(listenErr)
+	}
+	mainAddr := ln.Addr().String()
+	_ = ln.Close()
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "test.yaml")
+	cfgContent := fmt.Sprintf(`version: 1
+mode: balanced
+license_key: "same-key"
+fetch_proxy:
+  listen: "%s"
+  timeout_seconds: 5
+`, mainAddr)
+	if writeErr := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cmd := rootCmd()
+	cmd.SetContext(ctx)
+	cmd.SetArgs([]string{"run", "--config", cfgPath})
+	var stderr bytes.Buffer
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(&stderr)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- cmd.Execute()
+	}()
+
+	// Wait for healthy.
+	client := &http.Client{Timeout: time.Second}
+	healthURL := "http://" + mainAddr + "/health"
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case cmdErr := <-errCh:
+			cancel()
+			t.Fatalf("run exited early: %v", cmdErr)
+		default:
+		}
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+		resp, rerr := client.Do(req) //nolint:gosec // test-only
+		if rerr == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// Hot-reload: same license_key, change something else (mode).
+	updatedCfg := fmt.Sprintf(`version: 1
+mode: audit
+license_key: "same-key"
+fetch_proxy:
+  listen: "%s"
+  timeout_seconds: 5
+`, mainAddr)
+	if writeErr := os.WriteFile(cfgPath, []byte(updatedCfg), 0o600); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+
+	// Wait for reload to process.
+	time.Sleep(500 * time.Millisecond)
+
+	cancel()
+	select {
+	case cmdErr := <-errCh:
+		if cmdErr != nil {
+			t.Errorf("unexpected error: %v", cmdErr)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("run did not shut down")
+	}
+
+	// Verify NO license warning appeared (same key, just mode change).
+	if bytes.Contains(stderr.Bytes(), []byte("license")) {
+		t.Errorf("unexpected license warning on non-license reload:\n%s", stderr.String())
 	}
 }
 

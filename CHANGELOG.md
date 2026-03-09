@@ -7,11 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-03-09
+
+### Added
+- `pipelock discover` command: scans MCP server configs (Claude Code, Cursor, Windsurf, VS Code) and shows which servers lack pipelock wrapping (#194)
+- Parallel scanner benchmarks and concurrent scaling tests with performance documentation (#201)
+- Security, Pipelock Scan, and CodeRabbit badges to README (#193)
+
+### Fixed
+- IPv6 listener collision detection: `[::]:8888`, `0.0.0.0:8888`, and `:8888` now correctly collide in agent listener validation (dual-stack systems bind all three to the same port)
+- Non-canonical IPv6 addresses (e.g. `[0000::1]`) normalized via `net.ParseIP` for consistent collision detection
+- Config hot-reload preserves agent listener state across reloads: removing a listener-bearing agent re-adds its full profile (prevents policy downgrade on bound ports), and new agent listeners are stripped (can't bind without restart). License expiry timestamps also preserved (watchdog timer set at startup only).
+
 ### Changed
-- Enterprise module split: multi-agent features (per-agent identity, budgets, config isolation) moved to `enterprise/` directory under Elastic License 2.0 (ELv2). Core remains Apache 2.0.
+- Enterprise module split: multi-agent features (per-agent identity, budgets, config isolation) moved to `enterprise/` directory under Elastic License 2.0 (ELv2). Core remains Apache 2.0. (#202)
 - Enterprise features require `//go:build enterprise` tag at compile time and a valid license key at runtime
 - OSS builds silently ignore `agents` config section (no error, agents just don't activate)
 - CI tests both OSS and enterprise build modes
+- CI dependency updates: actions/checkout v6, docker/setup-buildx-action v4, docker/setup-qemu-action v4, actions/dependency-review-action v4.9, github/codeql-action v4.32.6
 
 ## [1.0.0] - 2026-03-07
 

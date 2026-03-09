@@ -103,15 +103,186 @@ func TestValidateAgents_ListenerCollidesWithMain(t *testing.T) {
 }
 
 func TestValidateAgents_ListenerCollisionCanonical(t *testing.T) {
-	cfg := testConfig()
-	// ":8888" binds 0.0.0.0:8888, same as "0.0.0.0:8888".
-	cfg.FetchProxy.Listen = "0.0.0.0:8888"
-	cfg.Agents = map[string]config.AgentProfile{
-		"agent-a": {Listeners: []string{":8888"}},
+	tests := []struct {
+		name          string
+		fetchListen   string
+		agentListener string
+		wantCollision bool
+	}{
+		// IPv4: empty host and 0.0.0.0 are both "all interfaces"
+		{"empty vs explicit ipv4", "0.0.0.0:8888", ":8888", true},
+		{"explicit ipv4 vs empty", ":8888", "0.0.0.0:8888", true},
+
+		// IPv6: [::] is "all interfaces" and conflicts with 0.0.0.0 on dual-stack
+		{"ipv6 all vs empty", ":8888", "[::]:8888", true},
+		{"ipv6 all vs ipv4 all", "0.0.0.0:8888", "[::]:8888", true},
+		{"ipv4 all vs ipv6 all", "[::]:8888", "0.0.0.0:8888", true},
+
+		// Verbose IPv6 zero forms
+		{"verbose ipv6 zero", "0.0.0.0:8888", "[0:0:0:0:0:0:0:0]:8888", true},
+
+		// Loopback addresses conflict with bind-all on the same port:
+		// 0.0.0.0 grabs all interfaces including loopback.
+		{"ipv4 loopback vs all", "0.0.0.0:8888", "127.0.0.1:8888", true},
+		{"ipv6 loopback vs all", "0.0.0.0:8888", "[::1]:8888", true},
+
+		// Different ports never collide
+		{"same host different port", "0.0.0.0:8888", "0.0.0.0:9999", false},
 	}
-	err := ValidateAgents(cfg)
-	if err == nil {
-		t.Fatal("expected error: ':8888' and '0.0.0.0:8888' bind the same port")
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testConfig()
+			cfg.FetchProxy.Listen = tt.fetchListen
+			cfg.Agents = map[string]config.AgentProfile{
+				"agent-a": {Listeners: []string{tt.agentListener}},
+			}
+			err := ValidateAgents(cfg)
+			if tt.wantCollision && err == nil {
+				t.Fatalf("expected collision: %s vs %s", tt.fetchListen, tt.agentListener)
+			}
+			if !tt.wantCollision && err != nil {
+				t.Fatalf("unexpected collision: %v", err)
+			}
+		})
+	}
+}
+
+func TestCanonicalizeAddr(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"empty host", ":8888", "0.0.0.0:8888"},
+		{"ipv4 all", "0.0.0.0:8888", "0.0.0.0:8888"},
+		{"ipv6 all", "[::]:8888", "0.0.0.0:8888"},
+		{"verbose ipv6 zero", "[0:0:0:0:0:0:0:0]:8888", "0.0.0.0:8888"},
+		{"ipv4 loopback", "127.0.0.1:8888", "127.0.0.1:8888"},
+		{"ipv6 loopback", "[::1]:8888", "[::1]:8888"},
+		{"non-canonical ipv6", "[0000::1]:8888", "[::1]:8888"},
+		{"invalid", "not-valid", "not-valid"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := canonicalizeAddr(tt.input)
+			if got != tt.want {
+				t.Errorf("canonicalizeAddr(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidateAgents_WildcardVsSpecificCollision(t *testing.T) {
+	tests := []struct {
+		name          string
+		fetchListen   string
+		agentListener string
+		wantErr       bool
+	}{
+		// Wildcard main + specific agent: conflict
+		{"wildcard main loopback agent", "0.0.0.0:8888", "127.0.0.1:8888", true},
+		{"wildcard main ipv6 loopback agent", "0.0.0.0:8888", "[::1]:8888", true},
+		// Specific main + wildcard agent: conflict
+		{"loopback main wildcard agent", "127.0.0.1:8888", "0.0.0.0:8888", true},
+		// Different ports: no conflict
+		{"wildcard main loopback agent different port", "0.0.0.0:8888", "127.0.0.1:9999", false},
+		// Two specific addresses on same port: no conflict
+		{"two specific same port", "127.0.0.1:8888", "127.0.0.2:8888", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testConfig()
+			cfg.FetchProxy.Listen = tt.fetchListen
+			cfg.Agents = map[string]config.AgentProfile{
+				"agent-a": {Listeners: []string{tt.agentListener}},
+			}
+			err := ValidateAgents(cfg)
+			if tt.wantErr && err == nil {
+				t.Fatalf("expected collision between %s and %s", tt.fetchListen, tt.agentListener)
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateAgents_WildcardVsSpecificBetweenAgents(t *testing.T) {
+	cfg := testConfig()
+	cfg.FetchProxy.Listen = "127.0.0.1:7777" // avoid collision with agents
+	cfg.Agents = map[string]config.AgentProfile{
+		"agent-a": {Listeners: []string{"0.0.0.0:9001"}},
+		"agent-b": {Listeners: []string{"127.0.0.1:9001"}},
+	}
+	if err := ValidateAgents(cfg); err == nil {
+		t.Fatal("expected collision: 0.0.0.0:9001 vs 127.0.0.1:9001")
+	}
+}
+
+func TestWildcardPortConflict(t *testing.T) {
+	tests := []struct {
+		name     string
+		canon    string
+		reserved map[string]string
+		wantHit  bool
+	}{
+		{
+			"wildcard vs specific same port",
+			"0.0.0.0:8888",
+			map[string]string{"127.0.0.1:8888": "main"},
+			true,
+		},
+		{
+			"specific vs wildcard same port",
+			"127.0.0.1:8888",
+			map[string]string{"0.0.0.0:8888": "main"},
+			true,
+		},
+		{
+			"different ports",
+			"0.0.0.0:8888",
+			map[string]string{"127.0.0.1:9999": "main"},
+			false,
+		},
+		{
+			"two wildcards same port (caught by exact match)",
+			"0.0.0.0:8888",
+			map[string]string{"0.0.0.0:8888": "main"},
+			false, // both wildcard, not a wildcard-vs-specific
+		},
+		{
+			"two specifics same port",
+			"127.0.0.1:8888",
+			map[string]string{"127.0.0.2:8888": "main"},
+			false,
+		},
+		{
+			"invalid canon",
+			"not-valid",
+			map[string]string{"0.0.0.0:8888": "main"},
+			false,
+		},
+		{
+			"empty reserved",
+			"0.0.0.0:8888",
+			map[string]string{},
+			false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := wildcardPortConflict(tt.canon, tt.reserved)
+			if tt.wantHit && got == "" {
+				t.Error("expected conflict, got none")
+			}
+			if !tt.wantHit && got != "" {
+				t.Errorf("unexpected conflict: %s", got)
+			}
+		})
 	}
 }
 
@@ -200,6 +371,62 @@ func TestValidateAgents_InvalidDLPPattern(t *testing.T) {
 	}
 	if err := ValidateAgents(cfg); err == nil {
 		t.Fatal("expected error for invalid DLP regex")
+	}
+}
+
+func TestValidateAgents_DLPMissingName(t *testing.T) {
+	cfg := testConfig()
+	cfg.Agents = map[string]config.AgentProfile{
+		"agent": {
+			DLP: &config.AgentDLP{
+				Patterns: []config.DLPPattern{{Name: "", Regex: "foo"}},
+			},
+		},
+	}
+	if err := ValidateAgents(cfg); err == nil {
+		t.Fatal("expected error for DLP pattern with missing name")
+	}
+}
+
+func TestValidateAgents_DLPMissingRegex(t *testing.T) {
+	cfg := testConfig()
+	cfg.Agents = map[string]config.AgentProfile{
+		"agent": {
+			DLP: &config.AgentDLP{
+				Patterns: []config.DLPPattern{{Name: "test", Regex: ""}},
+			},
+		},
+	}
+	if err := ValidateAgents(cfg); err == nil {
+		t.Fatal("expected error for DLP pattern with missing regex")
+	}
+}
+
+func TestValidateAgents_NegativeRateDataPerMinute(t *testing.T) {
+	cfg := testConfig()
+	cfg.Agents = map[string]config.AgentProfile{
+		"agent": {
+			RateLimit: &config.AgentRateLimit{MaxDataPerMinute: -1},
+		},
+	}
+	if err := ValidateAgents(cfg); err == nil {
+		t.Fatal("expected error for negative max_data_per_minute")
+	}
+}
+
+func TestValidateAgents_ValidDLPPatterns(t *testing.T) {
+	cfg := testConfig()
+	cfg.Agents = map[string]config.AgentProfile{
+		"agent": {
+			DLP: &config.AgentDLP{
+				Patterns: []config.DLPPattern{
+					{Name: "custom-key", Regex: "sk-[a-z]+"},
+				},
+			},
+		},
+	}
+	if err := ValidateAgents(cfg); err != nil {
+		t.Fatalf("expected valid DLP patterns: %v", err)
 	}
 }
 

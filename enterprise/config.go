@@ -20,17 +20,59 @@ import (
 )
 
 // canonicalizeAddr normalizes a listen address so equivalent forms collide.
-// ":8888" and "0.0.0.0:8888" both bind all interfaces, so we treat empty host
-// as "0.0.0.0". "127.0.0.1:8888" stays distinct (loopback only).
+// All "bind all interfaces" forms (empty host, "0.0.0.0", "::") are treated
+// as equivalent because on dual-stack Linux, [::] grabs IPv4 too, causing
+// EADDRINUSE. Loopback addresses (127.0.0.1, ::1) stay distinct.
+// Non-canonical IP representations (e.g. [0000::1]) are normalized via
+// net.ParseIP so string comparison catches them.
 func canonicalizeAddr(addr string) string {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		return addr // invalid; let downstream validation catch it
 	}
 	if host == "" {
-		host = "0.0.0.0"
+		return net.JoinHostPort("0.0.0.0", port)
+	}
+	ip := net.ParseIP(host)
+	if ip != nil && ip.IsUnspecified() {
+		// All unspecified addresses (0.0.0.0, ::, ::ffff:0.0.0.0) collapse
+		// to a single form so they collide in the reserved map.
+		return net.JoinHostPort("0.0.0.0", port)
+	}
+	if ip != nil {
+		// Normalize parsed IP to canonical string (e.g. 0000::1 -> ::1).
+		return net.JoinHostPort(ip.String(), port)
 	}
 	return net.JoinHostPort(host, port)
+}
+
+// wildcardPortConflict checks whether a canonicalized address conflicts with
+// any existing reserved address via wildcard-vs-specific binding. On Linux,
+// binding 0.0.0.0:PORT grabs all interfaces including loopback, so a
+// subsequent 127.0.0.1:PORT would fail with EADDRINUSE.
+// Returns the source label of the conflicting address, or "" if no conflict.
+func wildcardPortConflict(canon string, reserved map[string]string) string {
+	host, port, err := net.SplitHostPort(canon)
+	if err != nil {
+		return ""
+	}
+	ip := net.ParseIP(host)
+	isWildcard := ip != nil && ip.IsUnspecified()
+
+	for existingCanon, source := range reserved {
+		existingHost, existingPort, err2 := net.SplitHostPort(existingCanon)
+		if err2 != nil || existingPort != port {
+			continue
+		}
+		existingIP := net.ParseIP(existingHost)
+		existingIsWildcard := existingIP != nil && existingIP.IsUnspecified()
+
+		// Same port, one side wildcard and the other specific: conflict.
+		if isWildcard != existingIsWildcard {
+			return source
+		}
+	}
+	return ""
 }
 
 // ValidateAgents validates agent profiles in config. This is the implementation
@@ -96,6 +138,12 @@ func ValidateAgents(cfg *config.Config) error {
 			canon := canonicalizeAddr(addr)
 			if source, exists := reserved[canon]; exists {
 				return fmt.Errorf("agent %q: listener %q collides with %s", name, addr, source)
+			}
+			// Wildcard-vs-specific port conflict: on Linux, 0.0.0.0:P
+			// binds all interfaces including loopback, so 127.0.0.1:P
+			// would EADDRINUSE. Detect both directions.
+			if source := wildcardPortConflict(canon, reserved); source != "" {
+				return fmt.Errorf("agent %q: listener %q collides with %s (wildcard binds all interfaces)", name, addr, source)
 			}
 			reserved[canon] = fmt.Sprintf("agent %q listener", name)
 		}

@@ -850,6 +850,15 @@ func TestAgentListenerBinding(t *testing.T) {
 	}
 
 	cancel() // shutdown
+
+	select {
+	case err := <-startErr:
+		if err != nil {
+			t.Errorf("proxy.Start returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("proxy.Start did not exit within 5s")
+	}
 }
 
 // waitForListener polls a TCP address until it accepts connections.

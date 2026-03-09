@@ -275,6 +275,49 @@ func TestResolveAgentIdentity(t *testing.T) {
 	}
 }
 
+func TestNoopBudget(t *testing.T) {
+	b := NoopBudget
+
+	if err := b.CheckAdmission("example.com"); err != nil {
+		t.Errorf("CheckAdmission error = %v, want nil", err)
+	}
+	if err := b.RecordBytes(1024); err != nil {
+		t.Errorf("RecordBytes error = %v, want nil", err)
+	}
+	if err := b.RecordRequest("example.com", 512); err != nil {
+		t.Errorf("RecordRequest error = %v, want nil", err)
+	}
+	if remaining := b.RemainingBytes(); remaining != -1 {
+		t.Errorf("RemainingBytes = %d, want -1 (unlimited)", remaining)
+	}
+}
+
+func TestValidateAgentName(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		wantErr bool
+	}{
+		{"valid simple", "claude-code", false},
+		{"valid with dots", "agent.v2", false},
+		{"valid with underscore", "my_agent", false},
+		{"empty", "", true},
+		{"spaces", "my agent", true},
+		{"special chars", "agent!@#", true},
+		{"too long", strings.Repeat("a", 65), true},
+		{"max length", strings.Repeat("a", 64), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateAgentName(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateAgentName(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestResetHooks(t *testing.T) {
 	// Set hooks to non-default values
 	config.ValidateAgentsFunc = func(_ *config.Config) error { return nil }

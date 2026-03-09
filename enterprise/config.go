@@ -14,6 +14,7 @@ import (
 	"slices"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/edition"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"gopkg.in/yaml.v3"
 )
@@ -68,8 +69,13 @@ func ValidateAgents(cfg *config.Config) error {
 	for _, name := range agentNames {
 		profile := cfg.Agents[name]
 
-		if name == "" {
-			return fmt.Errorf("agent profile has empty name")
+		// Validate name against the request-side sanitizer. Names that
+		// would be rewritten by ExtractAgent silently fall back to
+		// _default at runtime; reject them at config load instead.
+		if name != edition.ProfileDefault {
+			if err := edition.ValidateAgentName(name); err != nil {
+				return err
+			}
 		}
 
 		// Validate mode if set.

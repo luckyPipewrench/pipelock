@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
 
 func TestExitError_Error(t *testing.T) {
@@ -60,6 +62,36 @@ func TestExitCodeError(t *testing.T) {
 func TestExitCodeError_NilErr(t *testing.T) {
 	if got := ExitCodeError(2, nil); got != nil {
 		t.Errorf("ExitCodeError(2, nil) = %v, want nil", got)
+	}
+}
+
+func TestRegisterCommand(t *testing.T) {
+	// Save and restore global state.
+	saved := extraCommands
+	extraCommands = nil
+	t.Cleanup(func() { extraCommands = saved })
+
+	// Register a test command.
+	RegisterCommand(&cobra.Command{Use: "test-cmd", Short: "test"})
+
+	if len(extraCommands) != 1 {
+		t.Fatalf("expected 1 registered command, got %d", len(extraCommands))
+	}
+	if extraCommands[0].Use != "test-cmd" {
+		t.Errorf("command.Use = %q, want %q", extraCommands[0].Use, "test-cmd")
+	}
+
+	// Verify rootCmd picks up extra commands.
+	cmd := rootCmd()
+	found := false
+	for _, sub := range cmd.Commands() {
+		if sub.Use == "test-cmd" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("registered command not found in rootCmd subcommands")
 	}
 }
 

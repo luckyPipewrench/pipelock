@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -3851,3 +3852,109 @@ func TestProxy_KnownProfiles_NoopEdition(t *testing.T) {
 // TestResolveAgentFromRequest_CIDRMatch is gated behind enterprise build tag
 // because CIDR matching requires the enterprise AgentRegistry.
 // See enterprise/registry_test.go for CIDR tests.
+
+func TestProxy_Edition(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+
+	sc := scanner.New(cfg)
+	t.Cleanup(func() { sc.Close() })
+
+	p, err := New(cfg, audit.NewNop(), sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	t.Cleanup(func() { p.Close() })
+
+	ed := p.Edition()
+	if ed == nil {
+		t.Fatal("Edition() should not return nil")
+	}
+
+	// No agents configured: known profiles should be empty.
+	if profiles := ed.KnownProfiles(); len(profiles) != 0 {
+		t.Errorf("KnownProfiles = %v, want empty", profiles)
+	}
+}
+
+func TestProxy_Ports(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+
+	sc := scanner.New(cfg)
+	t.Cleanup(func() { sc.Close() })
+
+	p, err := New(cfg, audit.NewNop(), sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	t.Cleanup(func() { p.Close() })
+
+	ports := p.Ports()
+	if len(ports) != 0 {
+		t.Errorf("Ports = %v, want empty", ports)
+	}
+}
+
+func TestProxy_RegisterAndShutdownAgentServers(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+
+	sc := scanner.New(cfg)
+	t.Cleanup(func() { sc.Close() })
+
+	p, err := New(cfg, audit.NewNop(), sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	t.Cleanup(func() { p.Close() })
+
+	// ShutdownAgentServers with no servers should be a no-op.
+	p.ShutdownAgentServers()
+
+	// Register an actual HTTP server, start it, then shut it down.
+	ln, lnErr := (&net.ListenConfig{}).Listen(context.Background(), "tcp4", "127.0.0.1:0")
+	if lnErr != nil {
+		t.Fatalf("listen: %v", lnErr)
+	}
+	srv := &http.Server{
+		Handler:           http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	p.RegisterAgentServer(srv)
+
+	srvErr := make(chan error, 1)
+	go func() { srvErr <- srv.Serve(ln) }()
+
+	// Wait for server to be serving.
+	addr := ln.Addr().String()
+	dialer := &net.Dialer{Timeout: 50 * time.Millisecond}
+	for i := 0; i < 50; i++ {
+		conn, dialErr := dialer.DialContext(context.Background(), "tcp4", addr)
+		if dialErr == nil {
+			_ = conn.Close()
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// ShutdownAgentServers should cleanly stop it.
+	p.ShutdownAgentServers()
+
+	select {
+	case err := <-srvErr:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			t.Errorf("agent server error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("agent server did not shut down within 5s")
+	}
+
+	// Port should be closed now.
+	checkDialer := &net.Dialer{Timeout: 200 * time.Millisecond}
+	conn, dialErr := checkDialer.DialContext(context.Background(), "tcp4", addr)
+	if dialErr == nil {
+		_ = conn.Close()
+		t.Error("expected port to be closed after shutdown")
+	}
+}

@@ -196,10 +196,12 @@ Environment passthrough (subprocess mode only):
 			}
 
 			// Build edition so _default fallback works the same as HTTP proxy.
-			sc := scanner.New(cfg)
-			ed, edErr := edition.NewEditionFunc(cfg, sc)
+			// Bootstrap scanner is used only for edition init; closed before
+			// rebuilding with the resolved config.
+			bootSC := scanner.New(cfg)
+			ed, edErr := edition.NewEditionFunc(cfg, bootSC)
 			if edErr != nil {
-				sc.Close()
+				bootSC.Close()
 				return fmt.Errorf("edition init: %w", edErr)
 			}
 			defer ed.Close()
@@ -211,10 +213,12 @@ Environment passthrough (subprocess mode only):
 				if known := ed.KnownProfiles(); known[agentName] {
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "WARNING: agent profile %q exists but license has expired; using default profile\n", agentName)
 				} else {
+					bootSC.Close()
 					return fmt.Errorf("unknown agent profile %q", agentName)
 				}
 			}
 			cfg = resolved.Config
+			bootSC.Close() // done with bootstrap scanner
 
 			if !cfg.ResponseScanning.Enabled {
 				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning: response scanning was disabled in config, enabling with defaults")
@@ -232,8 +236,7 @@ Environment passthrough (subprocess mode only):
 			}
 
 			// Rebuild scanner with the (possibly modified) resolved config.
-			sc.Close()
-			sc = scanner.New(cfg)
+			sc := scanner.New(cfg)
 			defer sc.Close()
 
 			ks := killswitch.New(cfg)

@@ -8,6 +8,7 @@ package edition
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"regexp"
 
@@ -122,6 +123,23 @@ func WithAgentOverride(ctx context.Context, profile string) context.Context {
 func AgentOverrideFromContext(ctx context.Context) (string, bool) {
 	profile, ok := ctx.Value(keyAgentOverride).(string)
 	return profile, ok && profile != ""
+}
+
+// ValidateAgentName checks that a profile name is valid for agent config.
+// Returns an error if the name would be altered by the request-side sanitizer
+// (ExtractAgent) or exceeds the length limit. This prevents profiles that
+// silently fall back to _default because the header value doesn't round-trip.
+func ValidateAgentName(name string) error {
+	if name == "" {
+		return fmt.Errorf("agent profile name must not be empty")
+	}
+	if len(name) > maxAgentNameLen {
+		return fmt.Errorf("agent profile name %q exceeds %d character limit", name, maxAgentNameLen)
+	}
+	if agentNameRe.MatchString(name) {
+		return fmt.Errorf("agent profile name %q contains invalid characters (allowed: a-z, A-Z, 0-9, '.', '_', '-')", name)
+	}
+	return nil
 }
 
 // --- Agent name extraction ---

@@ -44,6 +44,31 @@ func TestValidateAgents_EmptyName(t *testing.T) {
 	}
 }
 
+func TestValidateAgents_InvalidName(t *testing.T) {
+	cfg := testConfig()
+	tests := []struct {
+		name    string
+		agent   string
+		wantErr bool
+	}{
+		{"spaces", "my agent", true},
+		{"special chars", "agent!@#", true},
+		{"too long", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", true}, // 69 chars > 64
+		{"_default allowed", "_default", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg.Agents = map[string]config.AgentProfile{
+				tt.agent: {Mode: config.ModeBalanced},
+			}
+			err := ValidateAgents(cfg)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateAgents(%q) error = %v, wantErr %v", tt.agent, err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestValidateAgents_InvalidMode(t *testing.T) {
 	cfg := testConfig()
 	cfg.Agents = map[string]config.AgentProfile{

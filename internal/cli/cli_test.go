@@ -1855,14 +1855,14 @@ func TestRunCmd_ReloadRejectsMetricsListenChange(t *testing.T) {
 	if listenErr != nil {
 		t.Fatal(listenErr)
 	}
-	mainAddr := ln.Addr().String()
-	_ = ln.Close()
-
 	ln2, listenErr2 := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if listenErr2 != nil {
+		_ = ln.Close()
 		t.Fatal(listenErr2)
 	}
+	mainAddr := ln.Addr().String()
 	metricsAddr := ln2.Addr().String()
+	_ = ln.Close()
 	_ = ln2.Close()
 
 	dir := t.TempDir()

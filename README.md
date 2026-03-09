@@ -5,11 +5,14 @@
 # Pipelock
 
 [![CI](https://github.com/luckyPipewrench/pipelock/actions/workflows/ci.yaml/badge.svg)](https://github.com/luckyPipewrench/pipelock/actions/workflows/ci.yaml)
+[![Security](https://github.com/luckyPipewrench/pipelock/actions/workflows/security.yaml/badge.svg)](https://github.com/luckyPipewrench/pipelock/actions/workflows/security.yaml)
+[![Pipelock Security Scan](https://github.com/luckyPipewrench/pipelock/actions/workflows/pipelock.yaml/badge.svg)](https://github.com/luckyPipewrench/pipelock/actions/workflows/pipelock.yaml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/luckyPipewrench/pipelock)](https://goreportcard.com/report/github.com/luckyPipewrench/pipelock)
 [![GitHub Release](https://img.shields.io/github/v/release/luckyPipewrench/pipelock)](https://github.com/luckyPipewrench/pipelock/releases)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/luckyPipewrench/pipelock/badge)](https://scorecard.dev/viewer/?uri=github.com/luckyPipewrench/pipelock)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/11948/badge?level=silver)](https://www.bestpractices.dev/projects/11948)
 [![codecov](https://codecov.io/gh/luckyPipewrench/pipelock/graph/badge.svg)](https://codecov.io/gh/luckyPipewrench/pipelock)
+[![CodeRabbit Reviews](https://img.shields.io/coderabbit/prs/github/luckyPipewrench/pipelock?labelColor=171717&color=FF570A&label=CodeRabbit+Reviews)](https://coderabbit.ai)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
 **Open-source [agent firewall](https://pipelab.org/agent-firewall/) for AI agents.** Single binary, zero runtime dependencies.
@@ -500,6 +503,8 @@ Canonical metrics, updated each release.
 | OpenSSF Scorecard | [Live score](https://scorecard.dev/viewer/?uri=github.com/luckyPipewrench/pipelock) |
 
 Run `make test` to verify locally. Performance data: [docs/performance.md](docs/performance.md). Raw benchmarks: [docs/benchmarks.md](docs/benchmarks.md).
+
+Independent benchmark: [agent-egress-bench](https://github.com/luckyPipewrench/agent-egress-bench) (72 attack cases across 8 categories, tool-neutral).
 
 ## Credits
 

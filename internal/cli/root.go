@@ -105,6 +105,7 @@ Quick start:
 		cursorCmd(),
 		demoCmd(),
 		diagnoseCmd(),
+		discoverCmd(),
 		runCmd(),
 		logsCmd(),
 		checkCmd(),

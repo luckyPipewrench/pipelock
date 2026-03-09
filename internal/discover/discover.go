@@ -36,6 +36,12 @@ const (
 	TransportUnknown = "unknown"
 )
 
+// OS name constants for platform-aware logic.
+const (
+	osDarwin  = "darwin"
+	osWindows = "windows"
+)
+
 // MCPServer is a single discovered MCP server configuration.
 type MCPServer struct {
 	Client        string            `json:"client"`
@@ -269,16 +275,16 @@ func configPaths(home string) []clientPath {
 	}
 }
 
-// appDataDir returns the platform-specific application data directory.
-// Linux: ~/.config, macOS: ~/Library/Application Support, Windows: %APPDATA%.
+// appDataDir returns the platform-specific application data directory
+// derived from the given home directory. This keeps discovery deterministic
+// from its inputs (important for testing with temp dirs).
+// Linux: home/.config, macOS: home/Library/Application Support,
+// Windows: home/AppData/Roaming.
 func appDataDir(home string) string {
 	switch runtime.GOOS {
-	case "darwin":
+	case osDarwin:
 		return filepath.Join(home, "Library", "Application Support")
-	case "windows":
-		if appdata := os.Getenv("APPDATA"); appdata != "" {
-			return appdata
-		}
+	case osWindows:
 		return filepath.Join(home, "AppData", "Roaming")
 	default:
 		return filepath.Join(home, ".config")

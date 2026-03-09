@@ -12,8 +12,6 @@ import (
 	"testing"
 )
 
-const osDarwin = "darwin"
-
 func TestConfigPathsNotEmpty(t *testing.T) {
 	paths := configPaths("/fake/home")
 	if len(paths) == 0 {
@@ -58,6 +56,10 @@ func TestConfigPathsPlatformAware(t *testing.T) {
 				if !strings.Contains(p.Path, ".config") {
 					t.Errorf("linux: claude-desktop path = %q, want .config", p.Path)
 				}
+			case "windows":
+				if !strings.Contains(p.Path, "AppData") {
+					t.Errorf("windows: claude-desktop path = %q, want AppData", p.Path)
+				}
 			}
 			return
 		}
@@ -81,6 +83,20 @@ func TestAppDataDir(t *testing.T) {
 		if !strings.HasSuffix(dir, ".config") {
 			t.Errorf("linux: appDataDir = %q", dir)
 		}
+	case "windows":
+		if !strings.HasSuffix(dir, filepath.Join("AppData", "Roaming")) {
+			t.Errorf("windows: appDataDir = %q", dir)
+		}
+	}
+}
+
+func TestAppDataDirDerivedFromHome(t *testing.T) {
+	// appDataDir must always derive from the supplied home, never from env vars.
+	// This keeps Discover(t.TempDir()) deterministic in tests.
+	home := "/custom/home"
+	dir := appDataDir(home)
+	if !strings.HasPrefix(dir, home) {
+		t.Errorf("appDataDir(%q) = %q, should be derived from home", home, dir)
 	}
 }
 

@@ -167,7 +167,12 @@ func parseServerMap(raw json.RawMessage, path, client string) ([]MCPServer, erro
 }
 
 // inferTransport determines the transport type from the server config.
+// If the config has an explicit "type" field, that takes precedence.
 func inferTransport(rs rawServer, url string) string {
+	switch rs.Type {
+	case TransportStdio, TransportHTTP, "sse":
+		return rs.Type
+	}
 	if rs.Command != "" {
 		return TransportStdio
 	}

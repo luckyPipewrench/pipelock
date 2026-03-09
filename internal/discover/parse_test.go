@@ -545,3 +545,41 @@ func TestParseUnknownTransport(t *testing.T) {
 		t.Errorf("transport = %q, want unknown", servers[0].Transport)
 	}
 }
+
+func TestParseExplicitTransportType(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	// Explicit "type":"sse" should be honored over URL-based inference
+	content := `{"servers":{"remote":{"type":"sse","url":"https://api.example.com/mcp"}}}`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	servers, err := parseConfigFile(path, "servers", "vscode")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(servers) != 1 {
+		t.Fatalf("expected 1 server, got %d", len(servers))
+	}
+	if servers[0].Transport != "sse" {
+		t.Errorf("transport = %q, want sse", servers[0].Transport)
+	}
+}
+
+func TestParseExplicitStdioType(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	content := `{"servers":{"local":{"type":"stdio","command":"node","args":["server.js"]}}}`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	servers, err := parseConfigFile(path, "servers", "vscode")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if servers[0].Transport != "stdio" {
+		t.Errorf("transport = %q, want stdio", servers[0].Transport)
+	}
+}

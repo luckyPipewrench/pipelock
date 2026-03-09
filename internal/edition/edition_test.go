@@ -302,6 +302,7 @@ func TestValidateAgentName(t *testing.T) {
 		{"valid with dots", "agent.v2", false},
 		{"valid with underscore", "my_agent", false},
 		{"empty", "", true},
+		{"reserved anonymous", "anonymous", true},
 		{"spaces", "my agent", true},
 		{"special chars", "agent!@#", true},
 		{"too long", strings.Repeat("a", 65), true},

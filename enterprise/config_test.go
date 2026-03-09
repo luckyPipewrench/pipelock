@@ -52,6 +52,7 @@ func TestValidateAgents_InvalidName(t *testing.T) {
 		wantErr bool
 	}{
 		{"spaces", "my agent", true},
+		{"reserved anonymous", "anonymous", true},
 		{"special chars", "agent!@#", true},
 		{"too long", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", true}, // 69 chars > 64
 		{"_default allowed", "_default", false},

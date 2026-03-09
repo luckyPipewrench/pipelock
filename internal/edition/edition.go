@@ -28,8 +28,10 @@ type Edition interface {
 	ResolveAgent(ctx context.Context, r *http.Request) (*ResolvedAgent, AgentIdentity)
 
 	// LookupProfile resolves a named profile without an HTTP request.
-	// Returns (resolved, true) for known or default profiles.
-	// Returns (default, false) for unknown names.
+	// Returns (resolved, true) for known, current, or default profiles.
+	// Returns (fallback, false) for unknown names or known-but-expired
+	// profiles. Callers use KnownProfiles() to distinguish unknown from
+	// expired (expired entries appear in KnownProfiles, unknown do not).
 	// Always returns a non-nil ResolvedAgent.
 	LookupProfile(name string) (*ResolvedAgent, bool)
 
@@ -132,6 +134,9 @@ func AgentOverrideFromContext(ctx context.Context) (string, bool) {
 func ValidateAgentName(name string) error {
 	if name == "" {
 		return fmt.Errorf("agent profile name must not be empty")
+	}
+	if name == agentAnonymous {
+		return fmt.Errorf("agent profile name %q is reserved", name)
 	}
 	if len(name) > maxAgentNameLen {
 		return fmt.Errorf("agent profile name %q exceeds %d character limit", name, maxAgentNameLen)

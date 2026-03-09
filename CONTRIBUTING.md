@@ -191,8 +191,8 @@ The CLA is based on the [Apache Individual Contributor License Agreement](https:
 
 Pipelock uses two licenses:
 
-- **Apache License 2.0** for the core (everything outside `enterprise/`)
-- **Elastic License 2.0 (ELv2)** for multi-agent enterprise features (the `enterprise/` directory and files with the `//go:build enterprise` build tag)
+- **Apache License 2.0** for the core (files without the `enterprise` build tag)
+- **Elastic License 2.0 (ELv2)** for multi-agent enterprise features (files with the `//go:build enterprise` build tag, primarily in `enterprise/` with integration code in `cmd/` and `internal/`)
 
 By contributing to the core, you agree that your contributions will be licensed under the [Apache License 2.0](LICENSE). Contributions to enterprise-licensed code are licensed under the [Elastic License 2.0](enterprise/LICENSE).
 

@@ -55,7 +55,7 @@ internal/
   config/               YAML config, validation, hot-reload (fsnotify + SIGHUP)
   audit/                Structured JSON logging (zerolog) + event emission dispatch
   mcp/                  MCP proxy: bidirectional scanning, tool poisoning, input scanning
-    chains/             Tool call chain detection (subsequence matching, 8 built-in patterns)
+    chains/             Tool call chain detection (subsequence matching, 10 built-in patterns)
     jsonrpc/            JSON-RPC 2.0 types and text extraction
     policy/             Pre-execution tool call policy rules
     tools/              Tool description scanning + rug-pull (drift) detection

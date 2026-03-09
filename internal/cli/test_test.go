@@ -76,7 +76,7 @@ func TestTestCmd_JSON(t *testing.T) {
 	}
 
 	t.Run("mode", func(t *testing.T) {
-		if report.Mode != "balanced" {
+		if report.Mode != config.ModeBalanced {
 			t.Errorf("mode = %q, want balanced", report.Mode)
 		}
 	})
@@ -168,7 +168,7 @@ mcp_tool_scanning:
 		t.Fatalf("invalid JSON: %v", err)
 	}
 
-	if report.Mode != "balanced" {
+	if report.Mode != config.ModeBalanced {
 		t.Errorf("mode = %q, want balanced", report.Mode)
 	}
 

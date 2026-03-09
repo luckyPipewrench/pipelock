@@ -103,15 +103,73 @@ func TestValidateAgents_ListenerCollidesWithMain(t *testing.T) {
 }
 
 func TestValidateAgents_ListenerCollisionCanonical(t *testing.T) {
-	cfg := testConfig()
-	// ":8888" binds 0.0.0.0:8888, same as "0.0.0.0:8888".
-	cfg.FetchProxy.Listen = "0.0.0.0:8888"
-	cfg.Agents = map[string]config.AgentProfile{
-		"agent-a": {Listeners: []string{":8888"}},
+	tests := []struct {
+		name          string
+		fetchListen   string
+		agentListener string
+		wantCollision bool
+	}{
+		// IPv4: empty host and 0.0.0.0 are both "all interfaces"
+		{"empty vs explicit ipv4", "0.0.0.0:8888", ":8888", true},
+		{"explicit ipv4 vs empty", ":8888", "0.0.0.0:8888", true},
+
+		// IPv6: [::] is "all interfaces" and conflicts with 0.0.0.0 on dual-stack
+		{"ipv6 all vs empty", ":8888", "[::]:8888", true},
+		{"ipv6 all vs ipv4 all", "0.0.0.0:8888", "[::]:8888", true},
+		{"ipv4 all vs ipv6 all", "[::]:8888", "0.0.0.0:8888", true},
+
+		// Verbose IPv6 zero forms
+		{"verbose ipv6 zero", "0.0.0.0:8888", "[0:0:0:0:0:0:0:0]:8888", true},
+
+		// Loopback addresses are distinct from bind-all
+		{"ipv4 loopback vs all", "0.0.0.0:8888", "127.0.0.1:8888", false},
+		{"ipv6 loopback vs all", "0.0.0.0:8888", "[::1]:8888", false},
+
+		// Different ports never collide
+		{"same host different port", "0.0.0.0:8888", "0.0.0.0:9999", false},
 	}
-	err := ValidateAgents(cfg)
-	if err == nil {
-		t.Fatal("expected error: ':8888' and '0.0.0.0:8888' bind the same port")
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testConfig()
+			cfg.FetchProxy.Listen = tt.fetchListen
+			cfg.Agents = map[string]config.AgentProfile{
+				"agent-a": {Listeners: []string{tt.agentListener}},
+			}
+			err := ValidateAgents(cfg)
+			if tt.wantCollision && err == nil {
+				t.Fatalf("expected collision: %s vs %s", tt.fetchListen, tt.agentListener)
+			}
+			if !tt.wantCollision && err != nil {
+				t.Fatalf("unexpected collision: %v", err)
+			}
+		})
+	}
+}
+
+func TestCanonicalizeAddr(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"empty host", ":8888", "0.0.0.0:8888"},
+		{"ipv4 all", "0.0.0.0:8888", "0.0.0.0:8888"},
+		{"ipv6 all", "[::]:8888", "0.0.0.0:8888"},
+		{"verbose ipv6 zero", "[0:0:0:0:0:0:0:0]:8888", "0.0.0.0:8888"},
+		{"ipv4 loopback", "127.0.0.1:8888", "127.0.0.1:8888"},
+		{"ipv6 loopback", "[::1]:8888", "[::1]:8888"},
+		{"non-canonical ipv6", "[0000::1]:8888", "[::1]:8888"},
+		{"invalid", "not-valid", "not-valid"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := canonicalizeAddr(tt.input)
+			if got != tt.want {
+				t.Errorf("canonicalizeAddr(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
 	}
 }
 

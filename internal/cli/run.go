@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os/signal"
+	"slices"
 	"syscall"
 	"time"
 
@@ -248,6 +249,22 @@ Examples:
 									cmd.PrintErrf("WARNING: config reload: metrics_listen changed from %q to %q — requires restart, ignoring\n",
 										oldCfg.MetricsListen, newCfg.MetricsListen)
 									newCfg.MetricsListen = oldCfg.MetricsListen
+								}
+								// Block agent listener changes via reload. Listener
+								// sockets are bound at startup and cannot be rebound
+								// at runtime. Warn and preserve old listener config.
+								if agentListenersChanged(oldCfg, newCfg) {
+									cmd.PrintErrf("WARNING: config reload: agents[*].listeners changed — requires restart, ignoring listener changes\n")
+									preserveAgentListeners(oldCfg, newCfg)
+								}
+								// Block license_expires_at changes via reload. The
+								// expiry watchdog timer is set once at startup. Warn
+								// so operators know a restart is needed to pick up
+								// renewed or shortened license deadlines.
+								if oldCfg.LicenseExpiresAt != newCfg.LicenseExpiresAt {
+									cmd.PrintErrf("WARNING: config reload: license_expires_at changed (%d → %d) — requires restart for watchdog update\n",
+										oldCfg.LicenseExpiresAt, newCfg.LicenseExpiresAt)
+									newCfg.LicenseExpiresAt = oldCfg.LicenseExpiresAt
 								}
 							}
 							newSc := scanner.New(newCfg)
@@ -655,4 +672,81 @@ func agentHandler(profile string, handler http.Handler) http.Handler {
 		ctx := edition.WithAgentOverride(r.Context(), profile)
 		handler.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// agentListenersChanged returns true if any agent's listener addresses differ
+// between old and new config. Listener sockets bind at startup and cannot be
+// rebound at runtime, so changes require a restart.
+func agentListenersChanged(oldCfg, newCfg *config.Config) bool {
+	if len(oldCfg.Agents) != len(newCfg.Agents) {
+		// Agent count changed; check if any had listeners.
+		for _, p := range oldCfg.Agents {
+			if len(p.Listeners) > 0 {
+				return true
+			}
+		}
+		for _, p := range newCfg.Agents {
+			if len(p.Listeners) > 0 {
+				return true
+			}
+		}
+		return false
+	}
+	for name, oldProfile := range oldCfg.Agents {
+		newProfile, ok := newCfg.Agents[name]
+		if !ok {
+			if len(oldProfile.Listeners) > 0 {
+				return true
+			}
+			continue
+		}
+		if !slices.Equal(oldProfile.Listeners, newProfile.Listeners) {
+			return true
+		}
+	}
+	// Check for new agents with listeners.
+	for name, newProfile := range newCfg.Agents {
+		if _, ok := oldCfg.Agents[name]; !ok && len(newProfile.Listeners) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// preserveAgentListeners keeps the new config's agent listener state
+// consistent with the actually-bound sockets from startup. Three cases:
+//
+//  1. Agent in both configs: copy old listeners into new entry.
+//  2. Listener-bearing agent removed: re-add old entry so the bound
+//     socket keeps its policy (prevents fallback to default profile).
+//  3. Listener-bearing agent added: strip listeners (can't bind without
+//     restart).
+func preserveAgentListeners(oldCfg, newCfg *config.Config) {
+	if newCfg.Agents == nil {
+		newCfg.Agents = make(map[string]config.AgentProfile)
+	}
+
+	// Case 1 + 2: iterate old agents.
+	for name, oldProfile := range oldCfg.Agents {
+		if newProfile, ok := newCfg.Agents[name]; ok {
+			// Case 1: agent in both configs. Preserve old listeners,
+			// keep other new config fields.
+			newProfile.Listeners = oldProfile.Listeners
+			newCfg.Agents[name] = newProfile
+		} else if len(oldProfile.Listeners) > 0 {
+			// Case 2: listener-bearing agent removed. Socket is still
+			// bound, so re-add the full old entry to prevent policy
+			// downgrade on the spoof-proof port.
+			newCfg.Agents[name] = oldProfile
+		}
+	}
+
+	// Case 3: new agents with listeners that weren't in old config.
+	// Can't bind sockets without restart, so strip the listeners.
+	for name, newProfile := range newCfg.Agents {
+		if _, ok := oldCfg.Agents[name]; !ok && len(newProfile.Listeners) > 0 {
+			newProfile.Listeners = nil
+			newCfg.Agents[name] = newProfile
+		}
+	}
 }

@@ -20,15 +20,28 @@ import (
 )
 
 // canonicalizeAddr normalizes a listen address so equivalent forms collide.
-// ":8888" and "0.0.0.0:8888" both bind all interfaces, so we treat empty host
-// as "0.0.0.0". "127.0.0.1:8888" stays distinct (loopback only).
+// All "bind all interfaces" forms (empty host, "0.0.0.0", "::") are treated
+// as equivalent because on dual-stack Linux, [::] grabs IPv4 too, causing
+// EADDRINUSE. Loopback addresses (127.0.0.1, ::1) stay distinct.
+// Non-canonical IP representations (e.g. [0000::1]) are normalized via
+// net.ParseIP so string comparison catches them.
 func canonicalizeAddr(addr string) string {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		return addr // invalid; let downstream validation catch it
 	}
 	if host == "" {
-		host = "0.0.0.0"
+		return net.JoinHostPort("0.0.0.0", port)
+	}
+	ip := net.ParseIP(host)
+	if ip != nil && ip.IsUnspecified() {
+		// All unspecified addresses (0.0.0.0, ::, ::ffff:0.0.0.0) collapse
+		// to a single form so they collide in the reserved map.
+		return net.JoinHostPort("0.0.0.0", port)
+	}
+	if ip != nil {
+		// Normalize parsed IP to canonical string (e.g. 0000::1 -> ::1).
+		return net.JoinHostPort(ip.String(), port)
 	}
 	return net.JoinHostPort(host, port)
 }

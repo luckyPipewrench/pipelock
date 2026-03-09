@@ -1097,7 +1097,7 @@ func TestRunCmd_ModeFlag(t *testing.T) {
 			var health map[string]any
 			_ = json.NewDecoder(resp.Body).Decode(&health)
 			_ = resp.Body.Close()
-			if health["mode"] == "strict" {
+			if health["mode"] == config.ModeStrict {
 				break
 			}
 		}
@@ -1944,6 +1944,205 @@ fetch_proxy:
 	if !bytes.Contains(stderr.Bytes(), []byte("metrics_listen changed")) {
 		t.Errorf("expected metrics_listen reload warning, got:\n%s", stderr.String())
 	}
+}
+
+func TestAgentListenersChanged(t *testing.T) {
+	tests := []struct {
+		name string
+		old  map[string]config.AgentProfile
+		new  map[string]config.AgentProfile
+		want bool
+	}{
+		{
+			"no agents",
+			nil, nil, false,
+		},
+		{
+			"same listeners",
+			map[string]config.AgentProfile{"a": {Listeners: []string{":9001"}}},
+			map[string]config.AgentProfile{"a": {Listeners: []string{":9001"}}},
+			false,
+		},
+		{
+			"listener changed",
+			map[string]config.AgentProfile{"a": {Listeners: []string{":9001"}}},
+			map[string]config.AgentProfile{"a": {Listeners: []string{":9002"}}},
+			true,
+		},
+		{
+			"listener added to existing agent",
+			map[string]config.AgentProfile{"a": {}},
+			map[string]config.AgentProfile{"a": {Listeners: []string{":9001"}}},
+			true,
+		},
+		{
+			"listener removed from agent",
+			map[string]config.AgentProfile{"a": {Listeners: []string{":9001"}}},
+			map[string]config.AgentProfile{"a": {}},
+			true,
+		},
+		{
+			"new agent with listener",
+			map[string]config.AgentProfile{"a": {}},
+			map[string]config.AgentProfile{"a": {}, "b": {Listeners: []string{":9002"}}},
+			true,
+		},
+		{
+			"agent removed with listener",
+			map[string]config.AgentProfile{"a": {Listeners: []string{":9001"}}},
+			map[string]config.AgentProfile{},
+			true,
+		},
+		{
+			"agent added without listener",
+			map[string]config.AgentProfile{},
+			map[string]config.AgentProfile{"a": {Mode: config.ModeStrict}},
+			false,
+		},
+		{
+			"non-listener config change",
+			map[string]config.AgentProfile{"a": {Mode: config.ModeBalanced, Listeners: []string{":9001"}}},
+			map[string]config.AgentProfile{"a": {Mode: config.ModeStrict, Listeners: []string{":9001"}}},
+			false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			old := config.Defaults()
+			old.Internal = nil
+			old.Agents = tt.old
+
+			newCfg := config.Defaults()
+			newCfg.Internal = nil
+			newCfg.Agents = tt.new
+
+			got := agentListenersChanged(old, newCfg)
+			if got != tt.want {
+				t.Errorf("agentListenersChanged = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPreserveAgentListeners(t *testing.T) {
+	t.Run("both configs have same agents", func(t *testing.T) {
+		old := config.Defaults()
+		old.Internal = nil
+		old.Agents = map[string]config.AgentProfile{
+			"a": {Listeners: []string{":9001"}, Mode: config.ModeBalanced},
+			"b": {Listeners: []string{":9002"}},
+		}
+
+		newCfg := config.Defaults()
+		newCfg.Internal = nil
+		newCfg.Agents = map[string]config.AgentProfile{
+			"a": {Listeners: []string{":9999"}, Mode: config.ModeStrict},
+			"b": {Listeners: []string{":8888"}},
+		}
+
+		preserveAgentListeners(old, newCfg)
+
+		if newCfg.Agents["a"].Listeners[0] != ":9001" {
+			t.Errorf("agent a listener = %q, want :9001", newCfg.Agents["a"].Listeners[0])
+		}
+		if newCfg.Agents["b"].Listeners[0] != ":9002" {
+			t.Errorf("agent b listener = %q, want :9002", newCfg.Agents["b"].Listeners[0])
+		}
+		if newCfg.Agents["a"].Mode != config.ModeStrict {
+			t.Errorf("agent a mode = %q, want %s", newCfg.Agents["a"].Mode, config.ModeStrict)
+		}
+	})
+
+	t.Run("listener-bearing agent removed re-added", func(t *testing.T) {
+		old := config.Defaults()
+		old.Internal = nil
+		old.Agents = map[string]config.AgentProfile{
+			"a": {Listeners: []string{":9001"}, Mode: config.ModeBalanced},
+		}
+
+		newCfg := config.Defaults()
+		newCfg.Internal = nil
+		newCfg.Agents = map[string]config.AgentProfile{}
+
+		preserveAgentListeners(old, newCfg)
+
+		// Removed listener-bearing agent must be re-added to prevent
+		// policy downgrade on the still-bound socket.
+		restored, ok := newCfg.Agents["a"]
+		if !ok {
+			t.Fatal("agent a should be re-added when removed with active listeners")
+		}
+		if restored.Listeners[0] != ":9001" {
+			t.Errorf("restored listener = %q, want :9001", restored.Listeners[0])
+		}
+		if restored.Mode != config.ModeBalanced {
+			t.Errorf("restored mode = %q, want %s", restored.Mode, config.ModeBalanced)
+		}
+	})
+
+	t.Run("non-listener agent removed stays removed", func(t *testing.T) {
+		old := config.Defaults()
+		old.Internal = nil
+		old.Agents = map[string]config.AgentProfile{
+			"a": {Mode: config.ModeBalanced}, // no listeners
+		}
+
+		newCfg := config.Defaults()
+		newCfg.Internal = nil
+		newCfg.Agents = map[string]config.AgentProfile{}
+
+		preserveAgentListeners(old, newCfg)
+
+		if _, ok := newCfg.Agents["a"]; ok {
+			t.Error("agent a without listeners should not be re-added")
+		}
+	})
+
+	t.Run("new agent listeners stripped", func(t *testing.T) {
+		old := config.Defaults()
+		old.Internal = nil
+		old.Agents = map[string]config.AgentProfile{}
+
+		newCfg := config.Defaults()
+		newCfg.Internal = nil
+		newCfg.Agents = map[string]config.AgentProfile{
+			"b": {Listeners: []string{":9002"}, Mode: config.ModeStrict},
+		}
+
+		preserveAgentListeners(old, newCfg)
+
+		// New agent's listeners should be stripped (can't bind without
+		// restart), but non-listener config should remain.
+		p := newCfg.Agents["b"]
+		if len(p.Listeners) > 0 {
+			t.Errorf("new agent listeners should be stripped, got %v", p.Listeners)
+		}
+		if p.Mode != config.ModeStrict {
+			t.Errorf("new agent mode = %q, want %s", p.Mode, config.ModeStrict)
+		}
+	})
+
+	t.Run("nil new agents map initialized", func(t *testing.T) {
+		old := config.Defaults()
+		old.Internal = nil
+		old.Agents = map[string]config.AgentProfile{
+			"a": {Listeners: []string{":9001"}},
+		}
+
+		newCfg := config.Defaults()
+		newCfg.Internal = nil
+		newCfg.Agents = nil
+
+		preserveAgentListeners(old, newCfg)
+
+		if newCfg.Agents == nil {
+			t.Fatal("newCfg.Agents should be initialized")
+		}
+		if _, ok := newCfg.Agents["a"]; !ok {
+			t.Error("agent a should be re-added")
+		}
+	})
 }
 
 func TestRunCmd_WebSocketBanner(t *testing.T) {

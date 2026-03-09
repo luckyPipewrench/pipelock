@@ -257,14 +257,14 @@ Examples:
 									cmd.PrintErrf("WARNING: config reload: agents[*].listeners changed — requires restart, ignoring listener changes\n")
 									preserveAgentListeners(oldCfg, newCfg)
 								}
-								// Block license_expires_at changes via reload. The
-								// expiry watchdog timer is set once at startup. Warn
-								// so operators know a restart is needed to pick up
-								// renewed or shortened license deadlines.
-								if oldCfg.LicenseExpiresAt != newCfg.LicenseExpiresAt {
-									cmd.PrintErrf("WARNING: config reload: license_expires_at changed (%d → %d) — requires restart for watchdog update\n",
-										oldCfg.LicenseExpiresAt, newCfg.LicenseExpiresAt)
-									newCfg.LicenseExpiresAt = oldCfg.LicenseExpiresAt
+								// Carry forward runtime-derived license expiry.
+								// LicenseExpiresAt is set by EnforceLicenseGate at
+								// startup, not parsed from YAML. Always preserve the
+								// old value. Warn if license inputs changed, since a
+								// restart is needed to re-verify the license.
+								newCfg.LicenseExpiresAt = oldCfg.LicenseExpiresAt
+								if oldCfg.LicenseKey != newCfg.LicenseKey || oldCfg.LicensePublicKey != newCfg.LicensePublicKey {
+									cmd.PrintErrf("WARNING: config reload: license_key or license_public_key changed — requires restart for license re-verification\n")
 								}
 							}
 							newSc := scanner.New(newCfg)

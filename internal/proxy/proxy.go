@@ -29,6 +29,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/certgen"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/edition"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
@@ -105,11 +106,14 @@ func requestMeta(r *http.Request) (clientIP, requestID string) {
 // Version is set at build time via ldflags.
 var Version = "0.1.0-dev"
 
+// editionSnapshot wraps an Edition for atomic pointer storage.
+type editionSnapshot struct{ edition.Edition }
+
 // Proxy is the Pipelock fetch proxy server.
 type Proxy struct {
 	cfgPtr        atomic.Pointer[config.Config]
 	scannerPtr    atomic.Pointer[scanner.Scanner]
-	registryPtr   atomic.Pointer[AgentRegistry]
+	editionPtr    atomic.Pointer[editionSnapshot]
 	sessionMgrPtr atomic.Pointer[SessionManager]    // nil when profiling disabled
 	certCachePtr  atomic.Pointer[certgen.CertCache] // nil when TLS interception disabled
 	logger        *audit.Logger
@@ -171,12 +175,12 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 	p.cfgPtr.Store(cfg)
 	p.scannerPtr.Store(sc)
 
-	// Build agent registry for per-agent config/scanner resolution.
-	reg, regErr := NewAgentRegistry(cfg)
-	if regErr != nil {
-		return nil, fmt.Errorf("agent registry: %w", regErr)
+	// Build edition (agent registry in enterprise, noop in OSS).
+	ed, edErr := edition.NewEditionFunc(cfg, sc)
+	if edErr != nil {
+		return nil, fmt.Errorf("edition init: %w", edErr)
 	}
-	p.registryPtr.Store(reg)
+	p.editionPtr.Store(&editionSnapshot{ed})
 
 	if cfg.SessionProfiling.Enabled {
 		p.sessionMgrPtr.Store(NewSessionManager(&cfg.SessionProfiling, m))
@@ -255,11 +259,12 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
 	p.reloadMu.Lock()
 	defer p.reloadMu.Unlock()
 
-	// Build new agent registry BEFORE swapping config/scanner.
+	// Build new edition BEFORE swapping config/scanner.
 	// If this fails, keep all existing state unchanged (fail-safe).
-	newReg, regErr := NewAgentRegistry(cfg)
-	if regErr != nil {
-		p.logger.LogError("RELOAD", "", "", "", "", fmt.Errorf("agent registry rebuild failed, keeping old config: %w", regErr))
+	oldSnap := p.editionPtr.Load()
+	newEd, edErr := oldSnap.Reload(cfg, sc)
+	if edErr != nil {
+		p.logger.LogError("RELOAD", "", "", "", "", fmt.Errorf("edition rebuild failed, keeping old config: %w", edErr))
 		sc.Close() // caller-allocated scanner must be closed since we're not using it
 		return
 	}
@@ -272,8 +277,8 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
 		old.Close()
 	}
 
-	if oldReg := p.registryPtr.Swap(newReg); oldReg != nil {
-		oldReg.Close()
+	if oldSnap := p.editionPtr.Swap(&editionSnapshot{newEd}); oldSnap != nil {
+		oldSnap.Close()
 	}
 
 	// Toggle session manager lifecycle on config change.
@@ -325,6 +330,17 @@ func (p *Proxy) RegisterAgentServer(srv *http.Server) {
 	p.agentServers = append(p.agentServers, srv)
 }
 
+// ShutdownAgentServers gracefully shuts down all registered agent servers.
+// Used by the license expiry watchdog to unbind per-agent listeners when
+// the enterprise license expires at runtime.
+func (p *Proxy) ShutdownAgentServers() {
+	for _, srv := range p.agentServers {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = srv.Shutdown(ctx)
+		cancel()
+	}
+}
+
 func (p *Proxy) Close() {
 	if sm := p.sessionMgrPtr.Load(); sm != nil {
 		sm.Close()
@@ -332,8 +348,8 @@ func (p *Proxy) Close() {
 	if sc := p.scannerPtr.Load(); sc != nil {
 		sc.Close()
 	}
-	if reg := p.registryPtr.Load(); reg != nil {
-		reg.Close()
+	if snap := p.editionPtr.Load(); snap != nil {
+		snap.Close()
 	}
 	if p.tlsTransport != nil {
 		p.tlsTransport.CloseIdleConnections()
@@ -341,87 +357,32 @@ func (p *Proxy) Close() {
 }
 
 // resolveAgent returns the ResolvedAgent for the given profile name.
-// If the registry has not been initialized, falls back to the base config
-// and scanner stored on the proxy (backward-compatible default).
-func (p *Proxy) resolveAgent(profile string) *ResolvedAgent {
-	reg := p.registryPtr.Load()
-	if reg == nil {
-		return &ResolvedAgent{
-			Name:    profileDefault,
-			Config:  p.cfgPtr.Load(),
-			Scanner: p.scannerPtr.Load(),
-		}
-	}
-	return reg.Lookup(profile)
+// Delegates to the current Edition's LookupProfile.
+func (p *Proxy) resolveAgent(profile string) *edition.ResolvedAgent {
+	resolved, _ := p.editionPtr.Load().LookupProfile(profile)
+	return resolved
 }
 
-// knownProfiles returns a set of profile names from the current agent registry.
-// Used by ResolveAgent to determine whether a header-supplied agent name maps
-// to a configured profile (bounded cardinality) or falls back to _default.
+// knownProfiles returns a set of profile names from the current edition.
+// Used by proxy-local agent resolution for bounded-cardinality metrics.
 func (p *Proxy) knownProfiles() map[string]bool {
-	reg := p.registryPtr.Load()
-	if reg == nil {
-		return nil
-	}
-	profiles := reg.Profiles()
-	m := make(map[string]bool, len(profiles))
-	for _, name := range profiles {
-		m[name] = true
-	}
-	return m
+	return p.editionPtr.Load().KnownProfiles()
 }
 
-// resolveAgentFromRequest resolves the agent identity and returns the
-// resolved agent from a single registry snapshot. This prevents TOCTOU
-// races during hot-reload where knownProfiles() and resolveAgent() could
-// read different registries.
-//
-// Resolution priority:
-//  1. Context override (listener binding, spoof-proof)
-//  2. Source CIDR match (client IP -> profile, zero agent-side config)
-//  3. Header / query param (X-Pipelock-Agent / ?agent=)
-//  4. Fallback (_default)
-func (p *Proxy) resolveAgentFromRequest(r *http.Request) (*ResolvedAgent, AgentIdentity) {
-	reg := p.registryPtr.Load()
-	if reg == nil {
-		return &ResolvedAgent{
-			Name:    profileDefault,
-			Config:  p.cfgPtr.Load(),
-			Scanner: p.scannerPtr.Load(),
-		}, AgentIdentity{Name: "", Profile: profileDefault}
-	}
-
-	// 1. Context override (set by per-agent listener binding).
-	if profile, ok := r.Context().Value(ctxKeyAgentOverride).(string); ok && profile != "" {
-		id := AgentIdentity{Name: profile, Profile: profile}
-		return reg.Lookup(id.Profile), id
-	}
-
-	// 2. Source CIDR match: map client IP to profile.
-	if clientIP := extractIP(r); clientIP != nil {
-		if profile, ok := reg.MatchCIDR(clientIP); ok {
-			id := AgentIdentity{Name: profile, Profile: profile}
-			return reg.Lookup(id.Profile), id
-		}
-	}
-
-	// 3+4. Header/query/fallback via ResolveAgent.
-	profiles := reg.Profiles()
-	known := make(map[string]bool, len(profiles))
-	for _, name := range profiles {
-		known[name] = true
-	}
-	id := ResolveAgent(r, known)
-	return reg.Lookup(id.Profile), id
+// resolveAgentFromRequest delegates to the Edition's ResolveAgent.
+// The Edition handles context override, CIDR, header/query, and fallback.
+func (p *Proxy) resolveAgentFromRequest(r *http.Request) (*edition.ResolvedAgent, edition.AgentIdentity) {
+	return p.editionPtr.Load().ResolveAgent(r.Context(), r)
 }
 
-// extractIP parses the client IP from r.RemoteAddr, stripping the port.
-func extractIP(r *http.Request) net.IP {
-	host := r.RemoteAddr
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		host = h
-	}
-	return net.ParseIP(host)
+// Edition returns the current active Edition.
+func (p *Proxy) Edition() edition.Edition {
+	return p.editionPtr.Load().Edition
+}
+
+// Ports returns the per-agent listener port mappings from the current edition.
+func (p *Proxy) Ports() map[string]string {
+	return p.editionPtr.Load().Ports()
 }
 
 // newTLSInterceptTransport creates a shared http.Transport for TLS interception
@@ -843,7 +804,8 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 	// Budget admission check: enforce request count and domain limits before
 	// making the outbound request. Byte budget is checked after the response.
-	if exceeded, reason := resolved.Budget.CheckAdmission(strings.ToLower(parsed.Hostname())); exceeded {
+	if err := resolved.Budget.CheckAdmission(strings.ToLower(parsed.Hostname())); err != nil {
+		reason := err.Error()
 		log.LogBlocked("GET", displayURL, "budget", reason, clientIP, requestID, agent)
 		p.metrics.RecordBlocked(parsed.Hostname(), "budget", time.Since(start), agentLabel)
 		writeJSON(w, http.StatusTooManyRequests, FetchResponse{
@@ -944,7 +906,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		reason := fmt.Sprintf("response size %d exceeds byte budget %d", len(body), maxBytes)
 		log.LogBlocked("GET", displayURL, "budget", reason, clientIP, requestID, agent)
 		p.metrics.RecordBlocked(parsed.Hostname(), "budget", time.Since(start), agentLabel)
-		resolved.Budget.RecordBytes(int64(len(body)))
+		_ = resolved.Budget.RecordBytes(int64(len(body)))
 		writeJSON(w, http.StatusTooManyRequests, FetchResponse{
 			URL:         displayURL,
 			Agent:       agent,
@@ -1019,7 +981,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// Record response bytes against the per-agent byte budget. Oversize
 	// responses are already blocked during the read phase above, so this
 	// records the actual bytes consumed for successful responses.
-	resolved.Budget.RecordBytes(int64(len(body)))
+	_ = resolved.Budget.RecordBytes(int64(len(body)))
 
 	duration := time.Since(start)
 	p.metrics.RecordAllowed(duration, agentLabel)

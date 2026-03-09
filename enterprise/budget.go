@@ -1,7 +1,8 @@
-// Copyright 2026 Josh Waldrep
-// SPDX-License-Identifier: Apache-2.0
+//go:build enterprise
 
-package proxy
+// Licensed under the Elastic License 2.0. See enterprise/LICENSE.
+
+package enterprise
 
 import (
 	"fmt"
@@ -14,6 +15,8 @@ import (
 // BudgetTracker enforces per-agent request budgets within a rolling window.
 // Zero-value budget fields mean unlimited (no enforcement).
 // All methods are nil-safe: a nil tracker permits everything.
+//
+// BudgetTracker implements edition.BudgetChecker.
 type BudgetTracker struct {
 	mu            sync.Mutex
 	cfg           *config.BudgetConfig
@@ -45,10 +48,11 @@ func NewBudgetTracker(cfg *config.BudgetConfig) *BudgetTracker {
 // CheckAdmission verifies request count and domain budget limits, then records
 // the request. Call BEFORE making the outbound request. Byte budget is tracked
 // separately via RecordBytes. Thread-safe.
-// A nil tracker always returns (false, "").
-func (b *BudgetTracker) CheckAdmission(domain string) (bool, string) {
+// Returns nil when within budget, or an error describing the exceeded limit.
+// A nil tracker always returns nil (unlimited).
+func (b *BudgetTracker) CheckAdmission(domain string) error {
 	if b == nil {
-		return false, ""
+		return nil
 	}
 
 	b.mu.Lock()
@@ -57,14 +61,14 @@ func (b *BudgetTracker) CheckAdmission(domain string) (bool, string) {
 	b.maybeResetWindow()
 
 	if b.cfg.MaxRequestsPerSession > 0 && b.requestCount >= b.cfg.MaxRequestsPerSession {
-		return true, fmt.Sprintf("request budget exceeded: %d/%d requests",
+		return fmt.Errorf("request budget exceeded: %d/%d requests",
 			b.requestCount, b.cfg.MaxRequestsPerSession)
 	}
 
 	if b.cfg.MaxUniqueDomainsPerSession > 0 {
 		if _, seen := b.uniqueDomains[domain]; !seen {
 			if len(b.uniqueDomains) >= b.cfg.MaxUniqueDomainsPerSession {
-				return true, fmt.Sprintf("domain budget exceeded: %d/%d unique domains",
+				return fmt.Errorf("domain budget exceeded: %d/%d unique domains",
 					len(b.uniqueDomains)+1, b.cfg.MaxUniqueDomainsPerSession)
 			}
 		}
@@ -75,15 +79,16 @@ func (b *BudgetTracker) CheckAdmission(domain string) (bool, string) {
 		b.uniqueDomains[domain] = struct{}{}
 	}
 
-	return false, ""
+	return nil
 }
 
 // RecordBytes adds bytes to the budget counter and checks the byte limit.
 // Call AFTER reading the response. Thread-safe.
-// A nil tracker always returns (false, "").
-func (b *BudgetTracker) RecordBytes(bytes int64) (bool, string) {
+// Returns nil when within budget, or an error describing the exceeded limit.
+// A nil tracker always returns nil (unlimited).
+func (b *BudgetTracker) RecordBytes(n int64) error {
 	if b == nil {
-		return false, ""
+		return nil
 	}
 
 	b.mu.Lock()
@@ -91,13 +96,13 @@ func (b *BudgetTracker) RecordBytes(bytes int64) (bool, string) {
 
 	b.maybeResetWindow()
 
-	b.byteCount += bytes
+	b.byteCount += n
 	if b.cfg.MaxBytesPerSession > 0 && b.byteCount > int64(b.cfg.MaxBytesPerSession) {
-		return true, fmt.Sprintf("byte budget exceeded: %d/%d bytes",
+		return fmt.Errorf("byte budget exceeded: %d/%d bytes",
 			b.byteCount, b.cfg.MaxBytesPerSession)
 	}
 
-	return false, ""
+	return nil
 }
 
 // RemainingBytes returns the number of bytes still available before the byte
@@ -122,12 +127,13 @@ func (b *BudgetTracker) RemainingBytes() int64 {
 	return remaining
 }
 
-// RecordRequest checks budget limits and records the request if within budget.
-// Returns (exceeded bool, reason string). Thread-safe.
-// A nil tracker always returns (false, "").
-func (b *BudgetTracker) RecordRequest(domain string, bytes int) (bool, string) {
+// RecordRequest checks all budget limits and records the request if within
+// budget. Combines admission check and byte recording in a single call.
+// Returns nil when within budget, or an error describing the exceeded limit.
+// Thread-safe. A nil tracker always returns nil (unlimited).
+func (b *BudgetTracker) RecordRequest(domain string, bodyBytes int64) error {
 	if b == nil {
-		return false, ""
+		return nil
 	}
 
 	b.mu.Lock()
@@ -137,21 +143,21 @@ func (b *BudgetTracker) RecordRequest(domain string, bytes int) (bool, string) {
 
 	// Check request count limit.
 	if b.cfg.MaxRequestsPerSession > 0 && b.requestCount >= b.cfg.MaxRequestsPerSession {
-		return true, fmt.Sprintf("request budget exceeded: %d/%d requests",
+		return fmt.Errorf("request budget exceeded: %d/%d requests",
 			b.requestCount, b.cfg.MaxRequestsPerSession)
 	}
 
 	// Check byte count limit.
-	if b.cfg.MaxBytesPerSession > 0 && b.byteCount+int64(bytes) > int64(b.cfg.MaxBytesPerSession) {
-		return true, fmt.Sprintf("byte budget exceeded: %d/%d bytes",
-			b.byteCount+int64(bytes), b.cfg.MaxBytesPerSession)
+	if b.cfg.MaxBytesPerSession > 0 && b.byteCount+bodyBytes > int64(b.cfg.MaxBytesPerSession) {
+		return fmt.Errorf("byte budget exceeded: %d/%d bytes",
+			b.byteCount+bodyBytes, b.cfg.MaxBytesPerSession)
 	}
 
 	// Check unique domain limit.
 	if b.cfg.MaxUniqueDomainsPerSession > 0 {
 		if _, seen := b.uniqueDomains[domain]; !seen {
 			if len(b.uniqueDomains) >= b.cfg.MaxUniqueDomainsPerSession {
-				return true, fmt.Sprintf("domain budget exceeded: %d/%d unique domains",
+				return fmt.Errorf("domain budget exceeded: %d/%d unique domains",
 					len(b.uniqueDomains)+1, b.cfg.MaxUniqueDomainsPerSession)
 			}
 		}
@@ -159,12 +165,12 @@ func (b *BudgetTracker) RecordRequest(domain string, bytes int) (bool, string) {
 
 	// All checks passed: record the request.
 	b.requestCount++
-	b.byteCount += int64(bytes)
+	b.byteCount += bodyBytes
 	if b.cfg.MaxUniqueDomainsPerSession > 0 {
 		b.uniqueDomains[domain] = struct{}{}
 	}
 
-	return false, ""
+	return nil
 }
 
 // Reset clears all counters and starts a new window.

@@ -139,7 +139,8 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Budget admission check: enforce request count and domain limits.
-	if exceeded, reason := resolved.Budget.CheckAdmission(strings.ToLower(parsed.Hostname())); exceeded {
+	if err := resolved.Budget.CheckAdmission(strings.ToLower(parsed.Hostname())); err != nil {
+		reason := err.Error()
 		log.LogBlocked("WS", targetURL, "budget", reason, clientIP, requestID, agent)
 		p.metrics.RecordWSBlocked()
 		http.Error(w, "WebSocket blocked: "+reason, http.StatusTooManyRequests)
@@ -228,7 +229,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Record WebSocket bytes for per-agent budget tracking. WebSocket
 	// connections are streaming: bytes are tracked after close and enforced
 	// on the next admission check, not mid-stream.
-	resolved.Budget.RecordBytes(stats.clientToServer + stats.serverToClient)
+	_ = resolved.Budget.RecordBytes(stats.clientToServer + stats.serverToClient)
 }
 
 // buildWSForwardHeaders builds the HTTP headers to forward during upstream WS handshake.

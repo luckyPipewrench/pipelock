@@ -18,6 +18,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/edition"
 	"github.com/luckyPipewrench/pipelock/internal/emit"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
@@ -322,10 +323,8 @@ Examples:
 			if hasMCPListen {
 				cmd.PrintErrf("  MCP:    http://%s -> %s\n", mcpListen, mcpUpstream)
 			}
-			for name, profile := range cfg.Agents {
-				for _, addr := range profile.Listeners {
-					cmd.PrintErrf("  Agent:  %s -> http://%s\n", name, addr)
-				}
+			for addr, name := range p.Ports() {
+				cmd.PrintErrf("  Agent:  %s -> http://%s\n", name, addr)
 			}
 
 			// Check for agent command after --
@@ -479,15 +478,11 @@ Examples:
 
 			// Bind per-agent listener servers. Each listener injects the
 			// agent profile via context so identity is port-based, not
-			// header-based (spoof-proof).
-			var agentListenerCount int
+			// header-based (spoof-proof). Ports() returns addr->profile
+			// mapping from the edition (empty in OSS mode).
+			agentPorts := p.Ports()
+			agentListenerCount := len(agentPorts)
 			var agentListenerErrs chan error
-			if len(cfg.Agents) > 0 {
-				// Count total listeners to size the error channel.
-				for _, profile := range cfg.Agents {
-					agentListenerCount += len(profile.Listeners)
-				}
-			}
 			if agentListenerCount > 0 {
 				handler := p.Handler()
 				agentListenerErrs = make(chan error, agentListenerCount)
@@ -500,33 +495,55 @@ Examples:
 					agentWriteTimeout = 0
 				}
 
-				for name, profile := range cfg.Agents {
-					for _, addr := range profile.Listeners {
-						ln, lnErr := (&net.ListenConfig{}).Listen(ctx, "tcp", addr)
-						if lnErr != nil {
-							return fmt.Errorf("agent %q listener bind %s: %w", name, addr, lnErr)
-						}
-						srv := &http.Server{
-							Handler:           agentHandler(name, handler),
-							ReadTimeout:       10 * time.Second,
-							ReadHeaderTimeout: 5 * time.Second,
-							WriteTimeout:      agentWriteTimeout,
-							IdleTimeout:       120 * time.Second, // matches main server idle timeout
-						}
-						// Register with proxy so its shutdown goroutine
-						// gracefully stops agent servers alongside the main server.
-						p.RegisterAgentServer(srv)
-						errCh := agentListenerErrs
-						go func(s *http.Server, listener net.Listener) {
-							srvErr := s.Serve(listener)
-							if errors.Is(srvErr, http.ErrServerClosed) {
-								srvErr = nil
-							}
-							errCh <- srvErr
-						}(srv, ln)
-						cmd.PrintErrf("pipelock: agent %q listening on %s\n", name, addr)
+				for addr, name := range agentPorts {
+					ln, lnErr := (&net.ListenConfig{}).Listen(ctx, "tcp", addr)
+					if lnErr != nil {
+						return fmt.Errorf("agent %q listener bind %s: %w", name, addr, lnErr)
 					}
+					srv := &http.Server{
+						Handler:           agentHandler(name, handler),
+						ReadTimeout:       10 * time.Second,
+						ReadHeaderTimeout: 5 * time.Second,
+						WriteTimeout:      agentWriteTimeout,
+						IdleTimeout:       120 * time.Second, // matches main server idle timeout
+					}
+					// Register with proxy so its shutdown goroutine
+					// gracefully stops agent servers alongside the main server.
+					p.RegisterAgentServer(srv)
+					errCh := agentListenerErrs
+					go func(s *http.Server, listener net.Listener) {
+						srvErr := s.Serve(listener)
+						if errors.Is(srvErr, http.ErrServerClosed) {
+							srvErr = nil
+						}
+						errCh <- srvErr
+					}(srv, ln)
+					cmd.PrintErrf("pipelock: agent %q listening on %s\n", name, addr)
 				}
+			}
+
+			// License expiry watchdog: shut down agent listeners when the
+			// enterprise license expires at runtime. Only active when agent
+			// listeners exist and the license has a non-zero expiry.
+			if agentListenerCount > 0 && cfg.LicenseExpiresAt > 0 {
+				go func() {
+					remaining := time.Until(time.Unix(cfg.LicenseExpiresAt, 0))
+					if remaining <= 0 {
+						// Already expired; shut down immediately.
+						cmd.PrintErrf("pipelock: license expired, shutting down agent listeners\n")
+						p.ShutdownAgentServers()
+						return
+					}
+					timer := time.NewTimer(remaining)
+					defer timer.Stop()
+					select {
+					case <-timer.C:
+						cmd.PrintErrf("pipelock: license expired, shutting down agent listeners\n")
+						p.ShutdownAgentServers()
+					case <-ctx.Done():
+						// Normal shutdown; agent servers handled by proxy.
+					}
+				}()
 			}
 
 			// Start the fetch proxy (blocks until context cancelled or error).
@@ -635,7 +652,7 @@ func redactEndpoint(raw string) string {
 // the X-Pipelock-Agent header, making them spoof-proof.
 func agentHandler(profile string, handler http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx := proxy.WithAgentOverride(r.Context(), profile)
+		ctx := edition.WithAgentOverride(r.Context(), profile)
 		handler.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

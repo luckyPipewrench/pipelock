@@ -519,6 +519,12 @@ If Pipelock is useful, please [star this repository](https://github.com/luckyPip
 
 ## License
 
-Apache License 2.0. Copyright 2026 Joshua Waldrep.
+Pipelock core is licensed under the **Apache License 2.0**. Copyright 2026 Joshua Waldrep.
 
-See [LICENSE](LICENSE) for the full text.
+Multi-agent features (per-agent identity, budgets, and configuration isolation)
+are in the `enterprise/` directory, licensed under the **Elastic License 2.0 (ELv2)**.
+These features require a valid enterprise license key.
+
+The open-source core works independently without enterprise features.
+
+See [LICENSE](LICENSE) for the Apache 2.0 text and [enterprise/LICENSE](enterprise/LICENSE) for the ELv2 text.

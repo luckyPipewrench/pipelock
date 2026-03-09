@@ -18,6 +18,15 @@ import (
 // Resolution order in resolveKeystoreDir: --keystore > --home > PIPELOCK_HOME > default.
 var pipelockHome string
 
+// extraCommands holds commands registered by enterprise packages via init().
+var extraCommands []*cobra.Command
+
+// RegisterCommand adds a subcommand to the root command. Called by enterprise
+// CLI packages during init() to register license management commands.
+func RegisterCommand(cmd *cobra.Command) {
+	extraCommands = append(extraCommands, cmd)
+}
+
 // resolvedHome returns the pipelock home directory from --home flag or
 // PIPELOCK_HOME env var. Returns empty string if neither is set.
 func resolvedHome() string {
@@ -113,7 +122,6 @@ Quick start:
 		gitCmd(),
 		integrityCmd(),
 		keygenCmd(),
-		licenseCmd(),
 		mcpCmd(),
 		preflightCmd(),
 		reportCmd(),
@@ -126,6 +134,11 @@ Quick start:
 		versionCmd(),
 		healthcheckCmd(),
 	)
+
+	// Enterprise packages register extra commands via RegisterCommand().
+	for _, extra := range extraCommands {
+		cmd.AddCommand(extra)
+	}
 
 	return cmd
 }

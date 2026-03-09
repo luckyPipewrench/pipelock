@@ -1,7 +1,8 @@
-// Copyright 2026 Josh Waldrep
-// SPDX-License-Identifier: Apache-2.0
+//go:build enterprise
 
-package cli
+// Licensed under the Elastic License 2.0. See enterprise/LICENSE.
+
+package entcli
 
 import (
 	"crypto/ed25519"
@@ -26,7 +27,8 @@ const (
 	licenseLedgerFile  = "licenses.jsonl"
 )
 
-func licenseCmd() *cobra.Command {
+// LicenseCmd returns the license command tree: keygen, issue, inspect.
+func LicenseCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "license",
 		Short: "Manage license keys for premium features",

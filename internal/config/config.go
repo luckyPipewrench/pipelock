@@ -5,23 +5,19 @@
 package config
 
 import (
-	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/url"
 	"os"
 	"path"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strings"
 	"time"
 
-	"github.com/luckyPipewrench/pipelock/internal/license"
 	"gopkg.in/yaml.v3"
 )
 
@@ -30,6 +26,19 @@ const (
 	ModeStrict   = "strict"
 	ModeBalanced = "balanced"
 	ModeAudit    = "audit"
+)
+
+// Hook variables set by enterprise builds. Nil in OSS mode.
+// These live in config (not edition) to avoid import cycles.
+var (
+	// ValidateAgentsFunc validates agent profiles in config.
+	ValidateAgentsFunc func(cfg *Config) error
+
+	// EnforceLicenseGateFunc verifies license and disables agents if invalid.
+	EnforceLicenseGateFunc func(c *Config)
+
+	// MergeAgentProfileFunc merges agent profile overrides into base config.
+	MergeAgentProfileFunc func(base *Config, profile *AgentProfile) (*Config, error)
 )
 
 // Action constants for scanner and policy responses.
@@ -519,199 +528,6 @@ type BudgetConfig struct {
 	WindowMinutes              int `yaml:"window_minutes,omitempty"`
 }
 
-// deepCopyConfig returns a fully independent copy of cfg. Uses yaml
-// marshal/unmarshal roundtrip so every slice and map is a new allocation.
-// This is called once per agent at startup/reload, not on the hot path.
-func deepCopyConfig(cfg *Config) (*Config, error) {
-	data, err := yaml.Marshal(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("deep copy marshal: %w", err)
-	}
-	var out Config
-	if err := yaml.Unmarshal(data, &out); err != nil {
-		return nil, fmt.Errorf("deep copy unmarshal: %w", err)
-	}
-	return &out, nil
-}
-
-// MergeAgentProfile creates a new Config by deep-merging profile overrides
-// into a deep copy of the base config. The base config is not modified.
-// If profile is nil, a deep copy of base is returned with no modifications.
-func MergeAgentProfile(base *Config, profile *AgentProfile) (*Config, error) {
-	merged, err := deepCopyConfig(base)
-	if err != nil {
-		return nil, err
-	}
-
-	if profile == nil {
-		return merged, nil
-	}
-
-	if profile.Mode != "" {
-		merged.Mode = profile.Mode
-	}
-	if profile.Enforce != nil {
-		merged.Enforce = profile.Enforce
-	}
-	if profile.APIAllowlist != nil {
-		merged.APIAllowlist = profile.APIAllowlist // replace
-	}
-	if profile.RateLimit != nil {
-		// Wholesale replacement: setting rate_limit on an agent replaces
-		// both fields, so explicit zero means "unlimited" (no inherited limit).
-		merged.FetchProxy.Monitoring.MaxReqPerMinute = profile.RateLimit.MaxRequestsPerMinute
-		merged.FetchProxy.Monitoring.MaxDataPerMinute = profile.RateLimit.MaxDataPerMinute
-	}
-	if profile.DLP != nil {
-		includeDefaults := profile.DLP.IncludeDefaults == nil || *profile.DLP.IncludeDefaults
-		if includeDefaults {
-			// Build a set of agent pattern names for dedup.
-			agentNames := make(map[string]struct{}, len(profile.DLP.Patterns))
-			for _, p := range profile.DLP.Patterns {
-				agentNames[p.Name] = struct{}{}
-			}
-			// Keep base patterns that aren't overridden by agent.
-			filtered := make([]DLPPattern, 0, len(merged.DLP.Patterns))
-			for _, p := range merged.DLP.Patterns {
-				if _, overridden := agentNames[p.Name]; !overridden {
-					filtered = append(filtered, p)
-				}
-			}
-			merged.DLP.Patterns = append(filtered, profile.DLP.Patterns...)
-		} else {
-			merged.DLP.Patterns = profile.DLP.Patterns
-		}
-	}
-	if profile.SessionProfiling != nil {
-		// Wholesale replacement: agent values unconditionally override all
-		// per-agent fields (even zero values win). Global-only fields
-		// (MaxSessions, SessionTTLMinutes, CleanupIntervalSeconds) are
-		// preserved from the base config.
-		merged.SessionProfiling.DomainBurst = profile.SessionProfiling.DomainBurst
-		merged.SessionProfiling.AnomalyAction = profile.SessionProfiling.AnomalyAction
-		merged.SessionProfiling.VolumeSpikeRatio = profile.SessionProfiling.VolumeSpikeRatio
-	}
-	if profile.MCPToolPolicy != nil {
-		// Wholesale replacement: setting mcp_tool_policy on an agent
-		// replaces the entire base section, consistent with rate_limit
-		// and session_profiling behavior.
-		merged.MCPToolPolicy = *profile.MCPToolPolicy
-	}
-
-	return merged, nil
-}
-
-// ValidateMergedAgent checks invariants on a fully merged per-agent config
-// that the base Validate() enforces globally. This catches configurations
-// like mode: strict without an api_allowlist that only become invalid after
-// the profile overrides are applied.
-func ValidateMergedAgent(name string, cfg *Config) error {
-	if cfg.Mode == ModeStrict && len(cfg.APIAllowlist) == 0 {
-		return fmt.Errorf("agent %q: strict mode requires at least one domain in api_allowlist", name)
-	}
-	if cfg.SessionProfiling.Enabled && cfg.SessionProfiling.AnomalyAction != "" {
-		validActions := map[string]bool{ActionBlock: true, ActionWarn: true}
-		if !validActions[cfg.SessionProfiling.AnomalyAction] {
-			return fmt.Errorf("agent %q: session_profiling.anomaly_action must be %q or %q, got %q", name, ActionBlock, ActionWarn, cfg.SessionProfiling.AnomalyAction)
-		}
-	}
-	if cfg.MCPToolPolicy.Enabled && cfg.MCPToolPolicy.Action != "" {
-		validActions := map[string]bool{ActionBlock: true, ActionWarn: true}
-		if !validActions[cfg.MCPToolPolicy.Action] {
-			return fmt.Errorf("agent %q: mcp_tool_policy.action must be %q or %q, got %q", name, ActionBlock, ActionWarn, cfg.MCPToolPolicy.Action)
-		}
-	}
-	return nil
-}
-
-// EnforceLicenseGate verifies the license_key token using Ed25519 signature
-// verification. If the license is missing, invalid, expired, or lacks the
-// "agents" feature, named agent profiles are disabled with a warning.
-//
-// The gate only fires when the agents map has at least one profile that is NOT
-// "_default". A bare _default profile is allowed without a license key because
-// it represents single-agent config customization (mode, allowlist overrides),
-// not multi-agent coordination. Listeners and source CIDRs on _default are
-// intentionally allowed as single-profile convenience features.
-//
-// Public key resolution order (embedded key wins to prevent self-signing bypass):
-//  1. Embedded build-time key (set via ldflags in official releases)
-//  2. license_public_key config field (hex-encoded, dev builds only)
-//  3. No key available: agents disabled
-func (c *Config) EnforceLicenseGate(w io.Writer) {
-	if len(c.Agents) == 0 {
-		return
-	}
-
-	// Check if there are any non-default agent profiles.
-	hasNonDefault := false
-	for name := range c.Agents {
-		if name != "_default" {
-			hasNonDefault = true
-			break
-		}
-	}
-	if !hasNonDefault {
-		return
-	}
-
-	if c.LicenseKey == "" {
-		_, _ = fmt.Fprintf(w, "WARNING: agents: section requires a license key. "+
-			"Multi-agent profiles disabled. Single-agent protection is active.\n"+
-			"Get a license key at https://pipelab.org/pricing\n")
-		c.Agents = nil
-		return
-	}
-
-	// Resolve public key: config field > embedded build-time key.
-	pubKey := c.resolvePublicKey()
-	if pubKey == nil {
-		_, _ = fmt.Fprintf(w, "WARNING: no license public key available. "+
-			"Set license_public_key in config or build with embedded key.\n"+
-			"Multi-agent profiles disabled.\n")
-		c.Agents = nil
-		return
-	}
-
-	// Verify the license token signature and expiration.
-	lic, err := license.Verify(c.LicenseKey, pubKey)
-	if err != nil {
-		_, _ = fmt.Fprintf(w, "WARNING: license verification failed: %v\n"+
-			"Multi-agent profiles disabled. Single-agent protection is active.\n", err)
-		c.Agents = nil
-		return
-	}
-
-	// Check that the license includes the "agents" feature.
-	if !lic.HasFeature(license.FeatureAgents) {
-		_, _ = fmt.Fprintf(w, "WARNING: license %s does not include the 'agents' feature.\n"+
-			"Multi-agent profiles disabled.\n", lic.ID)
-		c.Agents = nil
-		return
-	}
-
-	// Store expiry for runtime enforcement. Zero means perpetual.
-	c.LicenseExpiresAt = lic.ExpiresAt
-}
-
-// resolvePublicKey returns the Ed25519 public key for license verification.
-// Priority: embedded build-time key > config field.
-// The embedded key (set via ldflags in official releases) always wins to
-// prevent users from supplying their own public key to self-sign licenses.
-// The config field is only used for dev builds that have no embedded key.
-func (c *Config) resolvePublicKey() ed25519.PublicKey {
-	if key := license.EmbeddedPublicKey(); key != nil {
-		return key
-	}
-	if c.LicensePublicKey != "" {
-		keyBytes, err := hex.DecodeString(c.LicensePublicKey)
-		if err == nil && len(keyBytes) == ed25519.PublicKeySize {
-			return ed25519.PublicKey(keyBytes)
-		}
-	}
-	return nil
-}
-
 // Load reads, parses, defaults, and validates a Pipelock config file.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(filepath.Clean(path))
@@ -729,7 +545,9 @@ func Load(path string) (*Config, error) {
 	cfg.ApplyDefaults()
 
 	// Soft-gate premium features: disable agents section if no license key.
-	cfg.EnforceLicenseGate(os.Stderr)
+	if EnforceLicenseGateFunc != nil {
+		EnforceLicenseGateFunc(cfg)
+	}
 
 	// Resolve relative secrets_file path relative to config file directory.
 	if cfg.DLP.SecretsFile != "" && !filepath.IsAbs(cfg.DLP.SecretsFile) {
@@ -1586,9 +1404,11 @@ func (c *Config) Validate() error {
 		}
 	}
 
-	// Validate agent profiles
-	if err := c.validateAgents(); err != nil {
-		return err
+	// Validate agent profiles (enterprise hook; nil in OSS).
+	if ValidateAgentsFunc != nil {
+		if err := ValidateAgentsFunc(c); err != nil {
+			return err
+		}
 	}
 
 	// Warn if listen address is not loopback (exposed to network).
@@ -1601,131 +1421,6 @@ func (c *Config) Validate() error {
 		}
 		if host == "" || host == "0.0.0.0" || host == "::" {
 			fmt.Fprintf(os.Stderr, "WARNING: listen address %s binds to all interfaces - consider using 127.0.0.1 for local-only access\n", c.FetchProxy.Listen)
-		}
-	}
-
-	return nil
-}
-
-// validateAgents checks all agent profiles for correctness:
-// no empty agent names, valid modes, no duplicate listeners across agents
-// and reserved addresses (main listen, metrics, API listen), valid listener
-// address formats, and valid DLP regex patterns in agent profiles.
-func (c *Config) validateAgents() error {
-	if len(c.Agents) == 0 {
-		return nil
-	}
-
-	// Collect all reserved addresses for collision detection.
-	// Map from normalized address to source label for error messages.
-	reserved := make(map[string]string)
-	reserved[c.FetchProxy.Listen] = "fetch_proxy.listen"
-	if c.MetricsListen != "" {
-		reserved[c.MetricsListen] = "metrics_listen"
-	}
-	if c.KillSwitch.APIListen != "" {
-		reserved[c.KillSwitch.APIListen] = "kill_switch.api_listen"
-	}
-
-	// Track parsed CIDRs for cross-agent containment-based overlap detection.
-	// Overlapping CIDRs within the same agent are harmless (same identity).
-	type cidrOwner struct {
-		network *net.IPNet
-		agent   string
-		label   string
-	}
-	var cidrNets []cidrOwner
-
-	// Sort agent names for deterministic validation order
-	agentNames := make([]string, 0, len(c.Agents))
-	for name := range c.Agents {
-		agentNames = append(agentNames, name)
-	}
-	slices.Sort(agentNames)
-
-	for _, name := range agentNames {
-		profile := c.Agents[name]
-
-		if name == "" {
-			return fmt.Errorf("agent profile has empty name")
-		}
-
-		// Validate mode if set
-		if profile.Mode != "" {
-			switch profile.Mode {
-			case ModeStrict, ModeBalanced, ModeAudit:
-				// valid
-			default:
-				return fmt.Errorf("agent %q: invalid mode %q: must be strict, balanced, or audit", name, profile.Mode)
-			}
-		}
-
-		// Validate listeners: no duplicates, valid format
-		for _, addr := range profile.Listeners {
-			if _, _, err := net.SplitHostPort(addr); err != nil {
-				return fmt.Errorf("agent %q: invalid listener address %q: %w", name, addr, err)
-			}
-			if source, exists := reserved[addr]; exists {
-				return fmt.Errorf("agent %q: listener %q collides with %s", name, addr, source)
-			}
-			reserved[addr] = fmt.Sprintf("agent %q listener", name)
-		}
-
-		// Validate DLP patterns in agent profile
-		if profile.DLP != nil {
-			for _, p := range profile.DLP.Patterns {
-				if p.Name == "" {
-					return fmt.Errorf("agent %q: DLP pattern missing name", name)
-				}
-				if p.Regex == "" {
-					return fmt.Errorf("agent %q: DLP pattern %q missing regex", name, p.Name)
-				}
-				if _, err := regexp.Compile(p.Regex); err != nil {
-					return fmt.Errorf("agent %q: DLP pattern %q has invalid regex: %w", name, p.Name, err)
-				}
-			}
-		}
-
-		// Validate source CIDRs are parseable and non-overlapping across agents.
-		// Overlapping CIDRs within the same agent are allowed (same identity).
-		for _, cidr := range profile.SourceCIDRs {
-			_, network, err := net.ParseCIDR(cidr)
-			if err != nil {
-				return fmt.Errorf("agent %q: invalid source_cidrs entry %q: %w", name, cidr, err)
-			}
-			for _, prev := range cidrNets {
-				if prev.agent == name {
-					continue // same agent, overlap is harmless
-				}
-				if prev.network.Contains(network.IP) || network.Contains(prev.network.IP) {
-					return fmt.Errorf("agent %q: source_cidrs %q overlaps with %s", name, cidr, prev.label)
-				}
-			}
-			cidrNets = append(cidrNets, cidrOwner{network: network, agent: name, label: fmt.Sprintf("agent %q source_cidrs", name)})
-		}
-
-		// Validate budget fields are non-negative
-		if profile.Budget.MaxRequestsPerSession < 0 {
-			return fmt.Errorf("agent %q: budget.max_requests_per_session must be >= 0", name)
-		}
-		if profile.Budget.MaxBytesPerSession < 0 {
-			return fmt.Errorf("agent %q: budget.max_bytes_per_session must be >= 0", name)
-		}
-		if profile.Budget.MaxUniqueDomainsPerSession < 0 {
-			return fmt.Errorf("agent %q: budget.max_unique_domains_per_session must be >= 0", name)
-		}
-		if profile.Budget.WindowMinutes < 0 {
-			return fmt.Errorf("agent %q: budget.window_minutes must be >= 0", name)
-		}
-
-		// Validate rate limit fields are non-negative
-		if profile.RateLimit != nil {
-			if profile.RateLimit.MaxRequestsPerMinute < 0 {
-				return fmt.Errorf("agent %q: rate_limit.max_requests_per_minute must be >= 0", name)
-			}
-			if profile.RateLimit.MaxDataPerMinute < 0 {
-				return fmt.Errorf("agent %q: rate_limit.max_data_per_minute must be >= 0", name)
-			}
 		}
 	}
 

@@ -6,9 +6,6 @@ package cli
 import (
 	"bytes"
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"net"
 	"net/http"
@@ -18,30 +15,8 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
-	"github.com/luckyPipewrench/pipelock/internal/license"
-	"github.com/luckyPipewrench/pipelock/internal/proxy"
+	"github.com/luckyPipewrench/pipelock/internal/edition"
 )
-
-// testLicenseToken generates a valid signed license token and hex public key for tests.
-func testLicenseToken(t *testing.T) (token, pubKeyHex string) {
-	t.Helper()
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	lic := license.License{
-		ID:        "lic_test",
-		Email:     "test@example.com",
-		IssuedAt:  time.Now().Unix(),
-		ExpiresAt: time.Now().Add(365 * 24 * time.Hour).Unix(),
-		Features:  []string{license.FeatureAgents},
-	}
-	tok, err := license.Issue(lic, priv)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return tok, hex.EncodeToString(pub)
-}
 
 func listenUDP(t *testing.T) net.PacketConn {
 	t.Helper()
@@ -448,179 +423,6 @@ logging:
 	}
 }
 
-func TestRunCmd_AgentListenerBinding(t *testing.T) {
-	mainAddr := freePort(t)
-	agentAddr := freePort(t)
-	licToken, licPubHex := testLicenseToken(t)
-
-	cfgYAML := fmt.Sprintf(`version: 1
-mode: balanced
-license_key: %s
-license_public_key: %s
-fetch_proxy:
-  listen: %q
-  timeout_seconds: 5
-  max_response_mb: 1
-agents:
-  test-agent:
-    listeners:
-      - %q
-logging:
-  format: json
-  output: stdout
-`, licToken, licPubHex, mainAddr, agentAddr)
-
-	tmpFile, err := os.CreateTemp(t.TempDir(), "pipelock-*.yaml")
-	if err != nil {
-		t.Fatalf("create temp config: %v", err)
-	}
-	if _, err := tmpFile.WriteString(cfgYAML); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-	_ = tmpFile.Close()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	cmd := runCmd()
-	cmd.SetContext(ctx)
-	cmd.SetArgs([]string{"--config", tmpFile.Name()})
-	var stderr bytes.Buffer
-	cmd.SetErr(&stderr)
-	cmd.SetOut(&stderr)
-
-	cmdErr := make(chan error, 1)
-	go func() {
-		cmdErr <- cmd.Execute()
-	}()
-
-	// Wait for both ports.
-	waitForPort(t, mainAddr)
-	waitForPort(t, agentAddr)
-
-	client := &http.Client{Timeout: 2 * time.Second}
-
-	// Main port: /health should work.
-	resp := doGet(t, client, "http://"+mainAddr+"/health")
-	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("main /health: want 200, got %d", resp.StatusCode)
-	}
-
-	// Agent port: /health should also work (same handler, different context).
-	resp = doGet(t, client, "http://"+agentAddr+"/health")
-	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("agent /health: want 200, got %d", resp.StatusCode)
-	}
-
-	// Agent port: /fetch should respond (validates handler is wired).
-	// Without a URL param, it should return 400 (bad request).
-	resp = doGet(t, client, "http://"+agentAddr+"/fetch")
-	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("agent /fetch without url: want 400, got %d", resp.StatusCode)
-	}
-
-	// Shut down.
-	cancel()
-	select {
-	case err := <-cmdErr:
-		if err != nil {
-			t.Errorf("runCmd returned error: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("runCmd did not exit within 5s")
-	}
-
-	// Verify startup output contains agent listener messages.
-	output := stderr.String()
-	if !bytes.Contains([]byte(output), []byte("test-agent")) {
-		t.Errorf("expected 'test-agent' in startup output, got:\n%s", output)
-	}
-	if !bytes.Contains([]byte(output), []byte(agentAddr)) {
-		t.Errorf("expected agent addr %q in startup output, got:\n%s", agentAddr, output)
-	}
-}
-
-func TestRunCmd_AgentListenerMultipleAgents(t *testing.T) {
-	mainAddr := freePort(t)
-	agentAAddr := freePort(t)
-	agentBAddr := freePort(t)
-	licToken, licPubHex := testLicenseToken(t)
-
-	cfgYAML := fmt.Sprintf(`version: 1
-mode: balanced
-license_key: %s
-license_public_key: %s
-fetch_proxy:
-  listen: %q
-  timeout_seconds: 5
-  max_response_mb: 1
-agents:
-  agent-a:
-    listeners:
-      - %q
-  agent-b:
-    listeners:
-      - %q
-logging:
-  format: json
-  output: stdout
-`, licToken, licPubHex, mainAddr, agentAAddr, agentBAddr)
-
-	tmpFile, err := os.CreateTemp(t.TempDir(), "pipelock-*.yaml")
-	if err != nil {
-		t.Fatalf("create temp config: %v", err)
-	}
-	if _, err := tmpFile.WriteString(cfgYAML); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-	_ = tmpFile.Close()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	cmd := runCmd()
-	cmd.SetContext(ctx)
-	cmd.SetArgs([]string{"--config", tmpFile.Name()})
-	var stderr bytes.Buffer
-	cmd.SetErr(&stderr)
-	cmd.SetOut(&stderr)
-
-	cmdErr := make(chan error, 1)
-	go func() {
-		cmdErr <- cmd.Execute()
-	}()
-
-	// Wait for all three ports.
-	waitForPort(t, mainAddr)
-	waitForPort(t, agentAAddr)
-	waitForPort(t, agentBAddr)
-
-	client := &http.Client{Timeout: 2 * time.Second}
-
-	// All three ports should serve /health.
-	for _, addr := range []string{mainAddr, agentAAddr, agentBAddr} {
-		resp := doGet(t, client, "http://"+addr+"/health")
-		_ = resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			t.Errorf("/health on %s: want 200, got %d", addr, resp.StatusCode)
-		}
-	}
-
-	// Shut down.
-	cancel()
-	select {
-	case err := <-cmdErr:
-		if err != nil {
-			t.Errorf("runCmd returned error: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("runCmd did not exit within 5s")
-	}
-}
-
 func TestRunCmd_NoAgentListeners(t *testing.T) {
 	// Verify the no-agent path works exactly as before.
 	mainAddr := freePort(t)
@@ -688,12 +490,12 @@ logging:
 
 func TestAgentHandler(t *testing.T) {
 	// Unit test for agentHandler context injection.
-	// Uses proxy.ResolveAgent to verify the context override round-trips.
+	// Uses edition.ResolveAgentIdentity to verify the context override round-trips.
 	const testProfile = "my-agent"
-	var resolved proxy.AgentIdentity
+	var resolved edition.AgentIdentity
 
 	inner := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		resolved = proxy.ResolveAgent(r, map[string]bool{testProfile: true})
+		resolved = edition.ResolveAgentIdentity(r, map[string]bool{testProfile: true})
 	})
 
 	handler := agentHandler(testProfile, inner)

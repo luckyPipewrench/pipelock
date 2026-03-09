@@ -1,7 +1,8 @@
-// Copyright 2026 Josh Waldrep
-// SPDX-License-Identifier: Apache-2.0
+//go:build enterprise
 
-package proxy
+// Licensed under the Elastic License 2.0. See enterprise/LICENSE.
+
+package enterprise
 
 import (
 	"sync"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/edition"
 )
 
 const (
@@ -17,8 +19,11 @@ const (
 	testDomainC = "c.com"
 
 	// testByteSize is a small payload used in most budget tests.
-	testByteSize = 100
+	testByteSize int64 = 100
 )
+
+// Compile-time check: *BudgetTracker satisfies edition.BudgetChecker.
+var _ edition.BudgetChecker = (*BudgetTracker)(nil)
 
 func TestBudgetMaxRequests(t *testing.T) {
 	budget := config.BudgetConfig{
@@ -28,18 +33,13 @@ func TestBudgetMaxRequests(t *testing.T) {
 	tracker := NewBudgetTracker(&budget)
 
 	for i := range 3 {
-		exceeded, _ := tracker.RecordRequest(testDomainA, testByteSize)
-		if exceeded {
-			t.Fatalf("request %d should not exceed budget", i+1)
+		if err := tracker.RecordRequest(testDomainA, testByteSize); err != nil {
+			t.Fatalf("request %d should not exceed budget: %v", i+1, err)
 		}
 	}
 
-	exceeded, reason := tracker.RecordRequest(testDomainA, testByteSize)
-	if !exceeded {
+	if err := tracker.RecordRequest(testDomainA, testByteSize); err == nil {
 		t.Fatal("expected budget exceeded after 3 requests")
-	}
-	if reason == "" {
-		t.Fatal("expected non-empty reason")
 	}
 }
 
@@ -53,19 +53,14 @@ func TestBudgetMaxBytes(t *testing.T) {
 
 	// 100 + 100 = 200, within budget.
 	for i := range 2 {
-		exceeded, _ := tracker.RecordRequest(testDomainA, testByteSize)
-		if exceeded {
-			t.Fatalf("request %d (100 bytes) should not exceed 250-byte budget", i+1)
+		if err := tracker.RecordRequest(testDomainA, testByteSize); err != nil {
+			t.Fatalf("request %d (100 bytes) should not exceed 250-byte budget: %v", i+1, err)
 		}
 	}
 
 	// 200 + 100 = 300 > 250: should exceed.
-	exceeded, reason := tracker.RecordRequest(testDomainA, testByteSize)
-	if !exceeded {
+	if err := tracker.RecordRequest(testDomainA, testByteSize); err == nil {
 		t.Fatal("expected byte budget exceeded")
-	}
-	if reason == "" {
-		t.Fatal("expected non-empty reason for byte budget")
 	}
 }
 
@@ -77,38 +72,29 @@ func TestBudgetMaxUniqueDomains(t *testing.T) {
 	tracker := NewBudgetTracker(&budget)
 
 	// First two unique domains are fine.
-	if exceeded, _ := tracker.RecordRequest(testDomainA, testByteSize); exceeded {
-		t.Fatal("first domain should not exceed budget")
+	if err := tracker.RecordRequest(testDomainA, testByteSize); err != nil {
+		t.Fatalf("first domain should not exceed budget: %v", err)
 	}
-	if exceeded, _ := tracker.RecordRequest(testDomainB, testByteSize); exceeded {
-		t.Fatal("second domain should not exceed budget")
+	if err := tracker.RecordRequest(testDomainB, testByteSize); err != nil {
+		t.Fatalf("second domain should not exceed budget: %v", err)
 	}
 
 	// Third unique domain should exceed.
-	exceeded, reason := tracker.RecordRequest(testDomainC, testByteSize)
-	if !exceeded {
+	if err := tracker.RecordRequest(testDomainC, testByteSize); err == nil {
 		t.Fatal("expected budget exceeded on 3rd unique domain")
-	}
-	if reason == "" {
-		t.Fatal("expected non-empty reason for domain budget")
 	}
 
 	// Repeating a known domain should NOT exceed.
-	exceeded, _ = tracker.RecordRequest(testDomainA, testByteSize)
-	if exceeded {
-		t.Fatal("repeated domain should not exceed budget")
+	if err := tracker.RecordRequest(testDomainA, testByteSize); err != nil {
+		t.Fatalf("repeated domain should not exceed budget: %v", err)
 	}
 }
 
 func TestBudgetNilTracker(t *testing.T) {
 	var tracker *BudgetTracker
 
-	exceeded, reason := tracker.RecordRequest(testDomainA, testByteSize)
-	if exceeded {
-		t.Fatal("nil tracker should never report exceeded")
-	}
-	if reason != "" {
-		t.Fatalf("nil tracker should return empty reason, got %q", reason)
+	if err := tracker.RecordRequest(testDomainA, testByteSize); err != nil {
+		t.Fatalf("nil tracker should never report exceeded: %v", err)
 	}
 
 	// Reset on nil should not panic.
@@ -144,10 +130,9 @@ func TestBudgetWindowReset(t *testing.T) {
 
 	// Exhaust the budget.
 	for range 2 {
-		tracker.RecordRequest(testDomainA, testByteSize)
+		_ = tracker.RecordRequest(testDomainA, testByteSize)
 	}
-	exceeded, _ := tracker.RecordRequest(testDomainA, testByteSize)
-	if !exceeded {
+	if err := tracker.RecordRequest(testDomainA, testByteSize); err == nil {
 		t.Fatal("expected budget exceeded before window reset")
 	}
 
@@ -155,9 +140,8 @@ func TestBudgetWindowReset(t *testing.T) {
 	now = now.Add(11 * time.Minute)
 
 	// Budget should have reset: requests succeed again.
-	exceeded, _ = tracker.RecordRequest(testDomainA, testByteSize)
-	if exceeded {
-		t.Fatal("expected budget reset after window expiry")
+	if err := tracker.RecordRequest(testDomainA, testByteSize); err != nil {
+		t.Fatalf("expected budget reset after window expiry: %v", err)
 	}
 }
 
@@ -169,18 +153,16 @@ func TestBudgetExplicitReset(t *testing.T) {
 	tracker := NewBudgetTracker(&budget)
 
 	// Use up the budget.
-	tracker.RecordRequest(testDomainA, testByteSize)
-	exceeded, _ := tracker.RecordRequest(testDomainA, testByteSize)
-	if !exceeded {
+	_ = tracker.RecordRequest(testDomainA, testByteSize)
+	if err := tracker.RecordRequest(testDomainA, testByteSize); err == nil {
 		t.Fatal("expected budget exceeded before reset")
 	}
 
 	// Explicit reset should clear counters.
 	tracker.Reset()
 
-	exceeded, _ = tracker.RecordRequest(testDomainA, testByteSize)
-	if exceeded {
-		t.Fatal("expected budget available after explicit reset")
+	if err := tracker.RecordRequest(testDomainA, testByteSize); err != nil {
+		t.Fatalf("expected budget available after explicit reset: %v", err)
 	}
 }
 
@@ -197,14 +179,13 @@ func TestBudgetNoWindowExpiry(t *testing.T) {
 	tracker.windowStart = now
 
 	for range 2 {
-		tracker.RecordRequest(testDomainA, testByteSize)
+		_ = tracker.RecordRequest(testDomainA, testByteSize)
 	}
 
 	// Advance time by a year: should still be exceeded (no window reset).
 	now = now.Add(365 * 24 * time.Hour)
 
-	exceeded, _ := tracker.RecordRequest(testDomainA, testByteSize)
-	if !exceeded {
+	if err := tracker.RecordRequest(testDomainA, testByteSize); err == nil {
 		t.Fatal("expected budget exceeded even after long time with WindowMinutes=0")
 	}
 }
@@ -228,7 +209,7 @@ func TestBudgetConcurrentAccess(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for range requestsPerGoroutine {
-				tracker.RecordRequest(testDomainA, testByteSize)
+				_ = tracker.RecordRequest(testDomainA, testByteSize)
 			}
 		}()
 	}
@@ -245,18 +226,13 @@ func TestBudgetByteExactBoundary(t *testing.T) {
 	tracker := NewBudgetTracker(&budget)
 
 	// 200 bytes exactly should succeed.
-	exceeded, _ := tracker.RecordRequest(testDomainA, 200)
-	if exceeded {
-		t.Fatal("200 bytes should fit in 200-byte budget")
+	if err := tracker.RecordRequest(testDomainA, 200); err != nil {
+		t.Fatalf("200 bytes should fit in 200-byte budget: %v", err)
 	}
 
 	// 1 more byte should exceed.
-	exceeded, reason := tracker.RecordRequest(testDomainA, 1)
-	if !exceeded {
+	if err := tracker.RecordRequest(testDomainA, 1); err == nil {
 		t.Fatal("201 bytes should exceed 200-byte budget")
-	}
-	if reason == "" {
-		t.Fatal("expected reason for byte budget exceeded")
 	}
 }
 
@@ -268,20 +244,17 @@ func TestBudgetDomainExactBoundary(t *testing.T) {
 	tracker := NewBudgetTracker(&budget)
 
 	// First domain succeeds.
-	exceeded, _ := tracker.RecordRequest(testDomainA, testByteSize)
-	if exceeded {
-		t.Fatal("first domain should fit in 1-domain budget")
+	if err := tracker.RecordRequest(testDomainA, testByteSize); err != nil {
+		t.Fatalf("first domain should fit in 1-domain budget: %v", err)
 	}
 
 	// Same domain again should succeed (not a new unique domain).
-	exceeded, _ = tracker.RecordRequest(testDomainA, testByteSize)
-	if exceeded {
-		t.Fatal("same domain should not exceed budget")
+	if err := tracker.RecordRequest(testDomainA, testByteSize); err != nil {
+		t.Fatalf("same domain should not exceed budget: %v", err)
 	}
 
 	// New domain should exceed.
-	exceeded, _ = tracker.RecordRequest(testDomainB, testByteSize)
-	if !exceeded {
+	if err := tracker.RecordRequest(testDomainB, testByteSize); err == nil {
 		t.Fatal("second unique domain should exceed 1-domain budget")
 	}
 }
@@ -297,20 +270,17 @@ func TestBudgetPartialConfig(t *testing.T) {
 	}
 
 	// Large byte payloads should not trigger any byte limit.
-	exceeded, _ := tracker.RecordRequest(testDomainA, 999999999)
-	if exceeded {
-		t.Fatal("no byte limit set, should not exceed")
+	if err := tracker.RecordRequest(testDomainA, 999999999); err != nil {
+		t.Fatalf("no byte limit set, should not exceed: %v", err)
 	}
 
 	// Many unique domains should not trigger domain limit.
-	exceeded, _ = tracker.RecordRequest(testDomainB, 1)
-	if exceeded {
-		t.Fatal("no domain limit set, should not exceed")
+	if err := tracker.RecordRequest(testDomainB, 1); err != nil {
+		t.Fatalf("no domain limit set, should not exceed: %v", err)
 	}
 
 	// But the third request should exceed the request limit.
-	exceeded, _ = tracker.RecordRequest(testDomainC, 1)
-	if !exceeded {
+	if err := tracker.RecordRequest(testDomainC, 1); err == nil {
 		t.Fatal("expected request budget exceeded")
 	}
 }
@@ -324,19 +294,14 @@ func TestCheckAdmissionRequestLimit(t *testing.T) {
 
 	// Two admissions should succeed.
 	for i := range 2 {
-		exceeded, _ := tracker.CheckAdmission(testDomainA)
-		if exceeded {
-			t.Fatalf("admission %d should not exceed", i+1)
+		if err := tracker.CheckAdmission(testDomainA); err != nil {
+			t.Fatalf("admission %d should not exceed: %v", i+1, err)
 		}
 	}
 
 	// Third should be rejected.
-	exceeded, reason := tracker.CheckAdmission(testDomainA)
-	if !exceeded {
+	if err := tracker.CheckAdmission(testDomainA); err == nil {
 		t.Fatal("expected admission rejected after 2 requests")
-	}
-	if reason == "" {
-		t.Fatal("expected non-empty reason")
 	}
 }
 
@@ -348,35 +313,25 @@ func TestCheckAdmissionDomainLimit(t *testing.T) {
 	tracker := NewBudgetTracker(&budget)
 
 	// First domain: allowed.
-	exceeded, _ := tracker.CheckAdmission(testDomainA)
-	if exceeded {
-		t.Fatal("first domain should be admitted")
+	if err := tracker.CheckAdmission(testDomainA); err != nil {
+		t.Fatalf("first domain should be admitted: %v", err)
 	}
 
 	// Same domain again: allowed (not new).
-	exceeded, _ = tracker.CheckAdmission(testDomainA)
-	if exceeded {
-		t.Fatal("same domain should still be admitted")
+	if err := tracker.CheckAdmission(testDomainA); err != nil {
+		t.Fatalf("same domain should still be admitted: %v", err)
 	}
 
 	// New domain: rejected.
-	exceeded, reason := tracker.CheckAdmission(testDomainB)
-	if !exceeded {
+	if err := tracker.CheckAdmission(testDomainB); err == nil {
 		t.Fatal("second unique domain should be rejected")
-	}
-	if reason == "" {
-		t.Fatal("expected non-empty reason")
 	}
 }
 
 func TestCheckAdmissionNil(t *testing.T) {
 	var tracker *BudgetTracker
-	exceeded, reason := tracker.CheckAdmission(testDomainA)
-	if exceeded {
-		t.Fatal("nil tracker should never report exceeded")
-	}
-	if reason != "" {
-		t.Fatalf("nil tracker should return empty reason, got %q", reason)
+	if err := tracker.CheckAdmission(testDomainA); err != nil {
+		t.Fatalf("nil tracker should never report exceeded: %v", err)
 	}
 }
 
@@ -388,29 +343,20 @@ func TestRecordBytesLimit(t *testing.T) {
 	tracker := NewBudgetTracker(&budget)
 
 	// Record 150 bytes: within budget.
-	exceeded, _ := tracker.RecordBytes(int64(150))
-	if exceeded {
-		t.Fatal("150 bytes should fit in 200-byte budget")
+	if err := tracker.RecordBytes(150); err != nil {
+		t.Fatalf("150 bytes should fit in 200-byte budget: %v", err)
 	}
 
 	// Record 100 more: 250 > 200, should exceed.
-	exceeded, reason := tracker.RecordBytes(int64(100))
-	if !exceeded {
+	if err := tracker.RecordBytes(100); err == nil {
 		t.Fatal("expected byte budget exceeded at 250/200")
-	}
-	if reason == "" {
-		t.Fatal("expected non-empty reason")
 	}
 }
 
 func TestRecordBytesNil(t *testing.T) {
 	var tracker *BudgetTracker
-	exceeded, reason := tracker.RecordBytes(int64(1000))
-	if exceeded {
-		t.Fatal("nil tracker should never report exceeded")
-	}
-	if reason != "" {
-		t.Fatalf("nil tracker should return empty reason, got %q", reason)
+	if err := tracker.RecordBytes(1000); err != nil {
+		t.Fatalf("nil tracker should never report exceeded: %v", err)
 	}
 }
 
@@ -427,13 +373,13 @@ func TestRemainingBytesTracking(t *testing.T) {
 	}
 
 	// Record 100 bytes: 200 remaining.
-	tracker.RecordBytes(int64(100))
+	_ = tracker.RecordBytes(100)
 	if r := tracker.RemainingBytes(); r != 200 {
 		t.Fatalf("remaining = %d, want 200", r)
 	}
 
 	// Record 250 more: exceeded (0 remaining, not negative).
-	tracker.RecordBytes(int64(250))
+	_ = tracker.RecordBytes(250)
 	if r := tracker.RemainingBytes(); r != 0 {
 		t.Fatalf("remaining = %d, want 0", r)
 	}
@@ -471,12 +417,11 @@ func TestBudgetWindowResetsAllCounters(t *testing.T) {
 	tracker.windowStart = now
 
 	// Exhaust all budgets.
-	tracker.RecordRequest(testDomainA, testByteSize)
-	tracker.RecordRequest(testDomainB, testByteSize)
+	_ = tracker.RecordRequest(testDomainA, testByteSize)
+	_ = tracker.RecordRequest(testDomainB, testByteSize)
 
 	// All three limits should be at their boundaries now.
-	exceeded, _ := tracker.RecordRequest(testDomainC, testByteSize)
-	if !exceeded {
+	if err := tracker.RecordRequest(testDomainC, testByteSize); err == nil {
 		t.Fatal("expected exceeded on all three limits")
 	}
 
@@ -484,8 +429,7 @@ func TestBudgetWindowResetsAllCounters(t *testing.T) {
 	now = now.Add(6 * time.Minute)
 
 	// All counters should reset: request, bytes, and domains.
-	exceeded, _ = tracker.RecordRequest(testDomainA, testByteSize)
-	if exceeded {
-		t.Fatal("all counters should reset after window expiry")
+	if err := tracker.RecordRequest(testDomainA, testByteSize); err != nil {
+		t.Fatalf("all counters should reset after window expiry: %v", err)
 	}
 }

@@ -1,14 +1,18 @@
-// Copyright 2026 Josh Waldrep
-// SPDX-License-Identifier: Apache-2.0
+//go:build enterprise
 
-package proxy
+// Licensed under the Elastic License 2.0. See enterprise/LICENSE.
+
+package enterprise
 
 import (
+	"context"
 	"fmt"
 	"net"
+	"net/http"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/edition"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -18,25 +22,13 @@ type cidrMapping struct {
 	profile string
 }
 
-// profileDefault is the reserved name for the default agent profile.
-const profileDefault = "_default"
-
-// ResolvedAgent holds the fully merged config and pre-built scanner for a
-// named agent profile.
-type ResolvedAgent struct {
-	Name    string
-	Config  *config.Config
-	Scanner *scanner.Scanner
-	Budget  *BudgetTracker
-}
-
 // AgentRegistry maps agent profile names to resolved agents. Built at
-// startup and on hot-reload, then swapped atomically.
+// startup and on hot-reload, then swapped atomically via Edition.
 type AgentRegistry struct {
-	agents           map[string]*ResolvedAgent
+	agents           map[string]*edition.ResolvedAgent
 	ports            map[string]string // listen addr -> profile name
 	cidrs            []cidrMapping     // source CIDR -> profile name
-	fallback         *ResolvedAgent
+	fallback         *edition.ResolvedAgent
 	licenseExpiresAt int64 // Unix timestamp; 0 = perpetual. Checked on Lookup().
 }
 
@@ -44,7 +36,7 @@ type AgentRegistry struct {
 // is deep-merged with the base, and a scanner is built from the merged config.
 func NewAgentRegistry(base *config.Config) (_ *AgentRegistry, err error) {
 	reg := &AgentRegistry{
-		agents:           make(map[string]*ResolvedAgent, len(base.Agents)),
+		agents:           make(map[string]*edition.ResolvedAgent, len(base.Agents)),
 		ports:            make(map[string]string),
 		licenseExpiresAt: base.LicenseExpiresAt,
 	}
@@ -55,19 +47,29 @@ func NewAgentRegistry(base *config.Config) (_ *AgentRegistry, err error) {
 	}()
 
 	for name, profile := range base.Agents {
-		merged, err := config.MergeAgentProfile(base, &profile)
-		if err != nil {
-			return nil, fmt.Errorf("agent %q: %w", name, err)
+		merged, mergeErr := MergeAgentProfile(base, &profile)
+		if mergeErr != nil {
+			return nil, fmt.Errorf("agent %q: %w", name, mergeErr)
 		}
-		if err := config.ValidateMergedAgent(name, merged); err != nil {
+		if err := ValidateMergedAgent(name, merged); err != nil {
 			return nil, err
 		}
 		sc := scanner.New(merged)
-		resolved := &ResolvedAgent{
+		bt := NewBudgetTracker(&profile.Budget)
+
+		// BudgetTracker → BudgetChecker interface.
+		// Use NoopBudget when no budget is configured to avoid nil-interface
+		// panics in proxy handlers.
+		budget := edition.NoopBudget
+		if bt != nil {
+			budget = bt
+		}
+
+		resolved := &edition.ResolvedAgent{
 			Name:    name,
 			Config:  merged,
 			Scanner: sc,
-			Budget:  NewBudgetTracker(&profile.Budget),
+			Budget:  budget,
 		}
 		reg.agents[name] = resolved
 
@@ -80,40 +82,90 @@ func NewAgentRegistry(base *config.Config) (_ *AgentRegistry, err error) {
 
 		// Parse source CIDRs (already validated in config.Validate).
 		for _, cidr := range profile.SourceCIDRs {
-			_, network, _ := net.ParseCIDR(cidr) // safe: validated at config load
+			_, network, err := net.ParseCIDR(cidr)
+			if err != nil {
+				return nil, fmt.Errorf("agent %q: invalid source_cidr %q: %w", name, cidr, err)
+			}
 			reg.cidrs = append(reg.cidrs, cidrMapping{network: network, profile: name})
 		}
 	}
 
 	// Set fallback: _default profile if defined, else base config.
-	if def, ok := reg.agents[profileDefault]; ok {
+	if def, ok := reg.agents[edition.ProfileDefault]; ok {
 		reg.fallback = def
 	} else {
 		sc := scanner.New(base)
-		reg.fallback = &ResolvedAgent{
-			Name:    profileDefault,
+		reg.fallback = &edition.ResolvedAgent{
+			Name:    edition.ProfileDefault,
 			Config:  base,
 			Scanner: sc,
+			Budget:  edition.NoopBudget,
 		}
 	}
 
 	return reg, nil
 }
 
+// Fallback returns the registry's default ResolvedAgent. This is the _default
+// profile if configured, otherwise a base-config agent. Always non-nil.
+func (r *AgentRegistry) Fallback() *edition.ResolvedAgent { return r.fallback }
+
 // Lookup returns the ResolvedAgent for the given profile name.
 // Unknown names return the fallback (either _default or base config).
 // If the license has expired since startup, non-default profiles are
 // rejected and the fallback is returned instead.
-func (r *AgentRegistry) Lookup(profile string) *ResolvedAgent {
+func (r *AgentRegistry) Lookup(profile string) *edition.ResolvedAgent {
 	if agent, ok := r.agents[profile]; ok {
 		// Runtime license expiry: if the license has a non-zero expiry
 		// and it's past, fall back for non-default profiles.
-		if profile != profileDefault && r.licenseExpiresAt > 0 && time.Now().Unix() > r.licenseExpiresAt {
+		if profile != edition.ProfileDefault && r.licenseExpiresAt > 0 && time.Now().Unix() > r.licenseExpiresAt {
 			return r.fallback
 		}
 		return agent
 	}
 	return r.fallback
+}
+
+// LookupByName resolves a named profile for Edition.LookupProfile.
+// Returns (resolved, true) for known profiles.
+// Returns (fallback, false) for unknown profiles.
+// Enforces runtime license expiry: expired non-default profiles return fallback.
+func (r *AgentRegistry) LookupByName(name string) (*edition.ResolvedAgent, bool) {
+	if agent, ok := r.agents[name]; ok {
+		// Runtime license expiry: same check as Lookup().
+		if name != edition.ProfileDefault && r.licenseExpiresAt > 0 && time.Now().Unix() > r.licenseExpiresAt {
+			return r.fallback, false
+		}
+		return agent, true
+	}
+	return r.fallback, false
+}
+
+// ResolveFromRequest implements the 4-step agent resolution for Edition.ResolveAgent.
+// Priority: context override > CIDR > header/query > fallback.
+func (r *AgentRegistry) ResolveFromRequest(ctx context.Context, req *http.Request, defaultCfg *config.Config, defaultSc *scanner.Scanner) (*edition.ResolvedAgent, edition.AgentIdentity) {
+	// 1. Context override (set by per-agent listener binding).
+	if profile, ok := edition.AgentOverrideFromContext(ctx); ok {
+		id := edition.AgentIdentity{Name: profile, Profile: profile}
+		return r.Lookup(id.Profile), id
+	}
+
+	// 2. Source CIDR match: map client IP to profile.
+	if clientIP := extractIP(req); clientIP != nil {
+		if profile, ok := r.MatchCIDR(clientIP); ok {
+			id := edition.AgentIdentity{Name: profile, Profile: profile}
+			return r.Lookup(id.Profile), id
+		}
+	}
+
+	// 3+4. Header/query/fallback via ResolveAgentIdentity.
+	profiles := r.Profiles()
+	known := make(map[string]bool, len(profiles))
+	for _, name := range profiles {
+		known[name] = true
+	}
+	id := edition.ResolveAgentIdentity(req, known)
+	return r.Lookup(id.Profile), id
 }
 
 // ProfileForPort returns the agent profile name bound to a listen address.
@@ -169,4 +221,13 @@ func (r *AgentRegistry) Profiles() []string {
 		names = append(names, name)
 	}
 	return names
+}
+
+// extractIP parses the client IP from r.RemoteAddr, stripping the port.
+func extractIP(r *http.Request) net.IP {
+	host := r.RemoteAddr
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	return net.ParseIP(host)
 }

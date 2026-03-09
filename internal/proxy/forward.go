@@ -143,7 +143,8 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Budget admission check: enforce request count and domain limits.
-	if exceeded, reason := resolved.Budget.CheckAdmission(strings.ToLower(host)); exceeded {
+	if err := resolved.Budget.CheckAdmission(strings.ToLower(host)); err != nil {
+		reason := err.Error()
 		p.logger.LogBlocked(http.MethodConnect, target, "budget", reason, clientIP, requestID, agent)
 		p.metrics.RecordTunnelBlocked(agentLabel)
 		http.Error(w, "CONNECT blocked: "+reason, http.StatusTooManyRequests)
@@ -279,7 +280,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// Record tunnel bytes for per-agent budget tracking. CONNECT tunnels
 	// are streaming: bytes are tracked after close and enforced on the next
 	// admission check, not mid-stream (can't un-send tunnel data).
-	resolved.Budget.RecordBytes(totalBytes)
+	_ = resolved.Budget.RecordBytes(totalBytes)
 }
 
 // bidirectionalCopy relays data between two connections with idle timeout.
@@ -388,7 +389,8 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Budget admission check: enforce request count and domain limits.
-	if exceeded, reason := resolved.Budget.CheckAdmission(strings.ToLower(r.URL.Hostname())); exceeded {
+	if err := resolved.Budget.CheckAdmission(strings.ToLower(r.URL.Hostname())); err != nil {
+		reason := err.Error()
 		p.logger.LogBlocked(r.Method, targetURL, "budget", reason, clientIP, requestID, agent)
 		p.metrics.RecordBlocked(r.URL.Hostname(), "budget", time.Since(start), agentLabel)
 		http.Error(w, "blocked: "+reason, http.StatusTooManyRequests)
@@ -495,7 +497,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	sc.RecordRequest(strings.ToLower(r.URL.Hostname()), int(written))
 
 	// Record bytes for per-agent budget tracking.
-	resolved.Budget.RecordBytes(written)
+	_ = resolved.Budget.RecordBytes(written)
 
 	// Detect truncated response due to budget exhaustion. If budget was the
 	// effective limit and all available bytes were consumed, the response was

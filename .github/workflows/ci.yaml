@@ -34,8 +34,11 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
-      - name: Run tests
+      - name: Run tests (OSS)
         run: go test -race -count=1 -coverprofile=coverage.out ./...
+
+      - name: Run tests (enterprise)
+        run: go test -tags enterprise -race -count=1 ./...
 
       - name: Upload coverage
         if: matrix.go-version == '1.24'
@@ -57,11 +60,14 @@ jobs:
         with:
           go-version: '1.24'
 
-      - name: golangci-lint
+      - name: golangci-lint (OSS)
         uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9
         with:
           version: v2.10.1
           skip-cache: true
+
+      - name: golangci-lint (enterprise)
+        run: golangci-lint run --build-tags enterprise ./...
 
   govulncheck:
     runs-on: ubuntu-latest
@@ -108,3 +114,14 @@ jobs:
 
       - name: Verify binary runs
         run: ./pipelock --version
+
+      - name: Build binary (enterprise)
+        run: |
+          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "0.1.0-dev")
+          go build -tags enterprise -trimpath -ldflags "-s -w \
+            -X github.com/luckyPipewrench/pipelock/internal/cli.Version=$VERSION \
+            -X github.com/luckyPipewrench/pipelock/internal/proxy.Version=$VERSION" \
+            -o pipelock-enterprise ./cmd/pipelock
+
+      - name: Verify enterprise binary runs
+        run: ./pipelock-enterprise --version

@@ -1,15 +1,20 @@
-// Copyright 2026 Josh Waldrep
-// SPDX-License-Identifier: Apache-2.0
+//go:build enterprise
 
-package proxy
+// Licensed under the Elastic License 2.0. See enterprise/LICENSE.
+
+package enterprise
 
 import (
+	"context"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"sort"
 	"testing"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/edition"
 )
 
 const (
@@ -21,9 +26,14 @@ const (
 	testListenAddr2       = ":8890"
 )
 
-func TestAgentRegistryLookup(t *testing.T) {
+func testConfig() *config.Config {
 	cfg := config.Defaults()
-	cfg.Internal = nil // no SSRF in tests
+	cfg.Internal = nil // disable SSRF checks (no DNS in unit tests)
+	return cfg
+}
+
+func TestAgentRegistryLookup(t *testing.T) {
+	cfg := testConfig()
 	cfg.Agents = map[string]config.AgentProfile{
 		testProfileClaudeCode: {Mode: config.ModeStrict},
 		testProfileDefault:    {Mode: config.ModeAudit},
@@ -35,7 +45,7 @@ func TestAgentRegistryLookup(t *testing.T) {
 	}
 	defer reg.Close()
 
-	// Known profile
+	// Known profile.
 	agent := reg.Lookup(testProfileClaudeCode)
 	if agent.Name != testProfileClaudeCode {
 		t.Errorf("name = %q, want %s", agent.Name, testProfileClaudeCode)
@@ -44,7 +54,7 @@ func TestAgentRegistryLookup(t *testing.T) {
 		t.Errorf("mode = %q, want strict", agent.Config.Mode)
 	}
 
-	// Unknown agent -> _default
+	// Unknown agent -> _default.
 	agent = reg.Lookup("unknown-agent")
 	if agent.Name != testProfileDefault {
 		t.Errorf("name = %q, want %s", agent.Name, testProfileDefault)
@@ -53,9 +63,8 @@ func TestAgentRegistryLookup(t *testing.T) {
 		t.Errorf("mode = %q, want audit", agent.Config.Mode)
 	}
 
-	// When no _default is configured, fallback uses base config
-	cfg2 := config.Defaults()
-	cfg2.Internal = nil
+	// When no _default is configured, fallback uses base config.
+	cfg2 := testConfig()
 	cfg2.Mode = config.ModeBalanced
 	cfg2.Agents = map[string]config.AgentProfile{
 		testProfileOnlyOne: {Mode: config.ModeStrict},
@@ -72,8 +81,7 @@ func TestAgentRegistryLookup(t *testing.T) {
 }
 
 func TestAgentRegistryPortLookup(t *testing.T) {
-	cfg := config.Defaults()
-	cfg.Internal = nil
+	cfg := testConfig()
 	cfg.Agents = map[string]config.AgentProfile{
 		testProfileClaudeCode: {
 			Listeners: []string{testListenAddr},
@@ -95,7 +103,7 @@ func TestAgentRegistryPortLookup(t *testing.T) {
 		t.Errorf("port profile = %q, want %s", name, testProfileClaudeCode)
 	}
 
-	// Unregistered port returns false
+	// Unregistered port returns false.
 	_, ok = reg.ProfileForPort(":9999")
 	if ok {
 		t.Error("expected no mapping for unregistered port")
@@ -103,11 +111,10 @@ func TestAgentRegistryPortLookup(t *testing.T) {
 }
 
 func TestAgentRegistryPorts(t *testing.T) {
-	cfg := config.Defaults()
-	cfg.Internal = nil
+	cfg := testConfig()
 	cfg.Agents = map[string]config.AgentProfile{
 		testProfileClaudeCode: {
-			Listeners: []string{testListenAddr, ":8890"},
+			Listeners: []string{testListenAddr, testListenAddr2},
 			Mode:      config.ModeStrict,
 		},
 	}
@@ -125,8 +132,8 @@ func TestAgentRegistryPorts(t *testing.T) {
 	if ports[testListenAddr] != testProfileClaudeCode {
 		t.Errorf("Ports()[%s] = %q, want %s", testListenAddr, ports[testListenAddr], testProfileClaudeCode)
 	}
-	if ports[":8890"] != testProfileClaudeCode {
-		t.Errorf("Ports()[:8890] = %q, want %s", ports[":8890"], testProfileClaudeCode)
+	if ports[testListenAddr2] != testProfileClaudeCode {
+		t.Errorf("Ports()[%s] = %q, want %s", testListenAddr2, ports[testListenAddr2], testProfileClaudeCode)
 	}
 
 	// Verify the returned map is a copy (mutations don't affect registry).
@@ -138,10 +145,8 @@ func TestAgentRegistryPorts(t *testing.T) {
 }
 
 func TestAgentRegistryNoAgents(t *testing.T) {
-	cfg := config.Defaults()
-	cfg.Internal = nil
+	cfg := testConfig()
 	cfg.Mode = config.ModeBalanced
-	// No agents configured at all
 	cfg.Agents = nil
 
 	reg, err := NewAgentRegistry(cfg)
@@ -150,10 +155,9 @@ func TestAgentRegistryNoAgents(t *testing.T) {
 	}
 	defer reg.Close()
 
-	// Should still produce a valid registry with base fallback
 	agent := reg.Lookup("anything")
-	if agent.Name != testProfileDefault {
-		t.Errorf("name = %q, want %s", agent.Name, testProfileDefault)
+	if agent.Name != edition.ProfileDefault {
+		t.Errorf("name = %q, want %s", agent.Name, edition.ProfileDefault)
 	}
 	if agent.Config.Mode != config.ModeBalanced {
 		t.Errorf("mode = %q, want balanced", agent.Config.Mode)
@@ -162,7 +166,6 @@ func TestAgentRegistryNoAgents(t *testing.T) {
 		t.Error("expected non-nil scanner on fallback agent")
 	}
 
-	// Profiles() should return empty
 	profiles := reg.Profiles()
 	if len(profiles) != 0 {
 		t.Errorf("expected 0 profiles, got %d: %v", len(profiles), profiles)
@@ -170,8 +173,7 @@ func TestAgentRegistryNoAgents(t *testing.T) {
 }
 
 func TestAgentRegistryProfiles(t *testing.T) {
-	cfg := config.Defaults()
-	cfg.Internal = nil
+	cfg := testConfig()
 	cfg.Agents = map[string]config.AgentProfile{
 		testProfileClaudeCode: {Mode: config.ModeStrict},
 		testProfileCursor:     {Mode: config.ModeBalanced},
@@ -199,37 +201,8 @@ func TestAgentRegistryProfiles(t *testing.T) {
 	}
 }
 
-func TestAgentRegistryMultipleListeners(t *testing.T) {
-	cfg := config.Defaults()
-	cfg.Internal = nil
-	cfg.Agents = map[string]config.AgentProfile{
-		testProfileClaudeCode: {
-			Listeners: []string{testListenAddr, testListenAddr2},
-			Mode:      config.ModeStrict,
-		},
-	}
-
-	reg, err := NewAgentRegistry(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer reg.Close()
-
-	// Both listeners should map to the same profile
-	for _, addr := range []string{testListenAddr, testListenAddr2} {
-		name, ok := reg.ProfileForPort(addr)
-		if !ok {
-			t.Fatalf("expected port mapping for %s", addr)
-		}
-		if name != testProfileClaudeCode {
-			t.Errorf("port %s profile = %q, want %s", addr, name, testProfileClaudeCode)
-		}
-	}
-}
-
 func TestAgentRegistryCloseIdempotent(t *testing.T) {
-	cfg := config.Defaults()
-	cfg.Internal = nil
+	cfg := testConfig()
 	cfg.Agents = map[string]config.AgentProfile{
 		testProfileClaudeCode: {Mode: config.ModeStrict},
 	}
@@ -239,14 +212,12 @@ func TestAgentRegistryCloseIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Close should not panic when called multiple times
 	reg.Close()
-	reg.Close()
+	reg.Close() // should not panic
 }
 
 func TestAgentRegistryFallbackScannerNotNil(t *testing.T) {
-	cfg := config.Defaults()
-	cfg.Internal = nil
+	cfg := testConfig()
 
 	reg, err := NewAgentRegistry(cfg)
 	if err != nil {
@@ -264,8 +235,7 @@ func TestAgentRegistryFallbackScannerNotNil(t *testing.T) {
 }
 
 func TestAgentRegistryDefaultProfileOverridesFallback(t *testing.T) {
-	cfg := config.Defaults()
-	cfg.Internal = nil
+	cfg := testConfig()
 	cfg.Mode = config.ModeBalanced
 	cfg.Agents = map[string]config.AgentProfile{
 		testProfileDefault: {Mode: config.ModeStrict},
@@ -277,7 +247,6 @@ func TestAgentRegistryDefaultProfileOverridesFallback(t *testing.T) {
 	}
 	defer reg.Close()
 
-	// _default profile should be the fallback, not the base config
 	agent := reg.Lookup("nonexistent")
 	if agent.Config.Mode != config.ModeStrict {
 		t.Errorf("fallback mode = %q, want strict (_default profile should override base)", agent.Config.Mode)
@@ -285,8 +254,7 @@ func TestAgentRegistryDefaultProfileOverridesFallback(t *testing.T) {
 }
 
 func TestAgentRegistryMatchCIDR(t *testing.T) {
-	cfg := config.Defaults()
-	cfg.Internal = nil
+	cfg := testConfig()
 	cfg.Agents = map[string]config.AgentProfile{
 		testProfileClaudeCode: {SourceCIDRs: []string{"10.0.0.0/24"}},
 		testProfileCursor:     {SourceCIDRs: []string{"172.16.5.0/24", "192.168.1.0/24"}},
@@ -329,9 +297,26 @@ func TestAgentRegistryMatchCIDR(t *testing.T) {
 	}
 }
 
+func TestAgentRegistryMatchCIDR_NoCIDRs(t *testing.T) {
+	cfg := testConfig()
+	cfg.Agents = map[string]config.AgentProfile{
+		testProfileClaudeCode: {Mode: config.ModeStrict},
+	}
+
+	reg, err := NewAgentRegistry(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reg.Close()
+
+	_, ok := reg.MatchCIDR(net.ParseIP("10.0.0.1"))
+	if ok {
+		t.Error("expected no match when no CIDRs configured")
+	}
+}
+
 func TestAgentRegistryLookup_ExpiredLicense(t *testing.T) {
-	cfg := config.Defaults()
-	cfg.Internal = nil
+	cfg := testConfig()
 	cfg.Agents = map[string]config.AgentProfile{
 		testProfileClaudeCode: {Mode: config.ModeStrict},
 		testProfileDefault:    {Mode: config.ModeAudit},
@@ -359,12 +344,10 @@ func TestAgentRegistryLookup_ExpiredLicense(t *testing.T) {
 }
 
 func TestAgentRegistryLookup_PerpetualLicense(t *testing.T) {
-	cfg := config.Defaults()
-	cfg.Internal = nil
+	cfg := testConfig()
 	cfg.Agents = map[string]config.AgentProfile{
 		testProfileClaudeCode: {Mode: config.ModeStrict},
 	}
-	// Perpetual license: LicenseExpiresAt = 0 (zero value).
 	cfg.LicenseExpiresAt = 0
 
 	reg, err := NewAgentRegistry(cfg)
@@ -373,16 +356,80 @@ func TestAgentRegistryLookup_PerpetualLicense(t *testing.T) {
 	}
 	defer reg.Close()
 
-	// Perpetual license should never expire.
 	agent := reg.Lookup(testProfileClaudeCode)
 	if agent.Name != testProfileClaudeCode {
 		t.Errorf("perpetual license: got profile %q, want %q", agent.Name, testProfileClaudeCode)
 	}
 }
 
-func TestAgentRegistryMatchCIDR_NoCIDRs(t *testing.T) {
-	cfg := config.Defaults()
-	cfg.Internal = nil
+func TestAgentRegistryLookupByName(t *testing.T) {
+	cfg := testConfig()
+	cfg.Agents = map[string]config.AgentProfile{
+		testProfileClaudeCode: {Mode: config.ModeStrict},
+		testProfileDefault:    {Mode: config.ModeAudit},
+	}
+
+	reg, err := NewAgentRegistry(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reg.Close()
+
+	// Known profile.
+	ra, found := reg.LookupByName(testProfileClaudeCode)
+	if !found {
+		t.Error("expected found=true for known profile")
+	}
+	if ra.Name != testProfileClaudeCode {
+		t.Errorf("name = %q, want %q", ra.Name, testProfileClaudeCode)
+	}
+
+	// Unknown profile.
+	ra, found = reg.LookupByName("unknown")
+	if found {
+		t.Error("expected found=false for unknown profile")
+	}
+	if ra.Name != testProfileDefault {
+		t.Errorf("fallback name = %q, want %q", ra.Name, testProfileDefault)
+	}
+}
+
+func TestAgentRegistryLookupByName_ExpiredLicense(t *testing.T) {
+	cfg := testConfig()
+	cfg.Agents = map[string]config.AgentProfile{
+		testProfileClaudeCode: {Mode: config.ModeStrict},
+		testProfileDefault:    {Mode: config.ModeAudit},
+	}
+	// License expired 1 hour ago.
+	cfg.LicenseExpiresAt = time.Now().Add(-1 * time.Hour).Unix()
+
+	reg, err := NewAgentRegistry(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reg.Close()
+
+	// Non-default profile should fall back when license expired.
+	ra, found := reg.LookupByName(testProfileClaudeCode)
+	if found {
+		t.Error("expected found=false for expired non-default profile")
+	}
+	if ra.Name != testProfileDefault {
+		t.Errorf("expired: got %q, want fallback %q", ra.Name, testProfileDefault)
+	}
+
+	// _default should still resolve.
+	ra, found = reg.LookupByName(testProfileDefault)
+	if !found {
+		t.Error("expected found=true for _default even with expired license")
+	}
+	if ra.Name != testProfileDefault {
+		t.Errorf("_default: got %q", ra.Name)
+	}
+}
+
+func TestAgentRegistryResolveFromRequest_ContextOverride(t *testing.T) {
+	cfg := testConfig()
 	cfg.Agents = map[string]config.AgentProfile{
 		testProfileClaudeCode: {Mode: config.ModeStrict},
 	}
@@ -393,9 +440,139 @@ func TestAgentRegistryMatchCIDR_NoCIDRs(t *testing.T) {
 	}
 	defer reg.Close()
 
-	// No CIDRs configured, all IPs should return false
-	_, ok := reg.MatchCIDR(net.ParseIP("10.0.0.1"))
-	if ok {
-		t.Error("expected no match when no CIDRs configured")
+	r := httptest.NewRequest(http.MethodGet, "http://example.com", nil)
+	ctx := edition.WithAgentOverride(r.Context(), testProfileClaudeCode)
+	r = r.WithContext(ctx)
+
+	ra, id := reg.ResolveFromRequest(r.Context(), r, cfg, nil)
+	if id.Profile != testProfileClaudeCode {
+		t.Errorf("profile = %q, want %q", id.Profile, testProfileClaudeCode)
+	}
+	if ra.Name != testProfileClaudeCode {
+		t.Errorf("name = %q, want %q", ra.Name, testProfileClaudeCode)
+	}
+}
+
+func TestAgentRegistryResolveFromRequest_CIDR(t *testing.T) {
+	cfg := testConfig()
+	cfg.Agents = map[string]config.AgentProfile{
+		testProfileClaudeCode: {SourceCIDRs: []string{"10.0.0.0/24"}},
+	}
+
+	reg, err := NewAgentRegistry(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reg.Close()
+
+	r := httptest.NewRequest(http.MethodGet, "http://example.com", nil)
+	r.RemoteAddr = "10.0.0.42:12345"
+
+	ra, id := reg.ResolveFromRequest(context.Background(), r, cfg, nil)
+	if id.Profile != testProfileClaudeCode {
+		t.Errorf("profile = %q, want %q", id.Profile, testProfileClaudeCode)
+	}
+	if ra.Name != testProfileClaudeCode {
+		t.Errorf("name = %q, want %q", ra.Name, testProfileClaudeCode)
+	}
+}
+
+func TestAgentRegistryResolveFromRequest_Header(t *testing.T) {
+	cfg := testConfig()
+	cfg.Agents = map[string]config.AgentProfile{
+		testProfileClaudeCode: {Mode: config.ModeStrict},
+	}
+
+	reg, err := NewAgentRegistry(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reg.Close()
+
+	r := httptest.NewRequest(http.MethodGet, "http://example.com", nil)
+	r.Header.Set(edition.AgentHeader, testProfileClaudeCode)
+
+	ra, id := reg.ResolveFromRequest(context.Background(), r, cfg, nil)
+	if id.Profile != testProfileClaudeCode {
+		t.Errorf("profile = %q, want %q", id.Profile, testProfileClaudeCode)
+	}
+	if ra.Name != testProfileClaudeCode {
+		t.Errorf("name = %q, want %q", ra.Name, testProfileClaudeCode)
+	}
+}
+
+func TestAgentRegistryResolveFromRequest_Fallback(t *testing.T) {
+	cfg := testConfig()
+	cfg.Agents = map[string]config.AgentProfile{
+		testProfileClaudeCode: {Mode: config.ModeStrict},
+	}
+
+	reg, err := NewAgentRegistry(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reg.Close()
+
+	r := httptest.NewRequest(http.MethodGet, "http://example.com", nil)
+	// No override, no CIDR match, no header.
+
+	ra, id := reg.ResolveFromRequest(context.Background(), r, cfg, nil)
+	if id.Profile != edition.ProfileDefault {
+		t.Errorf("profile = %q, want %q", id.Profile, edition.ProfileDefault)
+	}
+	if ra.Name != edition.ProfileDefault {
+		t.Errorf("name = %q, want %q", ra.Name, edition.ProfileDefault)
+	}
+}
+
+func TestAgentRegistryNilClose(t *testing.T) {
+	var reg *AgentRegistry
+	reg.Close() // should not panic
+}
+
+func TestAgentRegistryBudgetIntegration(t *testing.T) {
+	cfg := testConfig()
+	cfg.Agents = map[string]config.AgentProfile{
+		testProfileClaudeCode: {
+			Mode: config.ModeStrict,
+			Budget: config.BudgetConfig{
+				MaxRequestsPerSession: 5,
+				WindowMinutes:         60,
+			},
+		},
+	}
+
+	reg, err := NewAgentRegistry(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reg.Close()
+
+	agent := reg.Lookup(testProfileClaudeCode)
+	if agent.Budget == nil {
+		t.Fatal("expected non-nil budget for agent with budget config")
+	}
+
+	// Budget should work through the BudgetChecker interface.
+	if err := agent.Budget.CheckAdmission("example.com"); err != nil {
+		t.Fatalf("first admission should succeed: %v", err)
+	}
+}
+
+func TestAgentRegistryNoBudget(t *testing.T) {
+	cfg := testConfig()
+	cfg.Agents = map[string]config.AgentProfile{
+		testProfileClaudeCode: {Mode: config.ModeStrict},
+	}
+
+	reg, err := NewAgentRegistry(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reg.Close()
+
+	agent := reg.Lookup(testProfileClaudeCode)
+	if agent.Budget != edition.NoopBudget {
+		t.Errorf("expected NoopBudget when no budget config, got %T", agent.Budget)
 	}
 }

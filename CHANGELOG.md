@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Enterprise module split: multi-agent features (per-agent identity, budgets, config isolation) moved to `enterprise/` directory under Elastic License 2.0 (ELv2). Core remains Apache 2.0.
+- Enterprise features require `//go:build enterprise` tag at compile time and a valid license key at runtime
+- OSS builds silently ignore `agents` config section (no error, agents just don't activate)
+- CI tests both OSS and enterprise build modes
+
 ## [1.0.0] - 2026-03-07
 
 Pipelock 1.0.0 is the production-ready release. All scanning layers, proxy modes, and MCP security features are stable and commercially supported.

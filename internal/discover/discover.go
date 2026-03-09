@@ -6,6 +6,7 @@ package discover
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 )
 
@@ -222,7 +223,12 @@ func fileExists(path string) bool {
 }
 
 // configPaths returns all known MCP client config paths for the given home directory.
+// Paths are platform-aware: Linux uses XDG (~/.config/), macOS uses
+// ~/Library/Application Support/, Windows uses %APPDATA%. Clients that store
+// config in the home directory (claude-code, cursor, continue) work on all platforms.
 func configPaths(home string) []clientPath {
+	appData := appDataDir(home)
+
 	return []clientPath{
 		{
 			Client: "claude-code",
@@ -232,7 +238,7 @@ func configPaths(home string) []clientPath {
 		},
 		{
 			Client: "claude-desktop",
-			Path:   filepath.Join(home, ".config", "Claude", "claude_desktop_config.json"),
+			Path:   filepath.Join(appData, "Claude", "claude_desktop_config.json"),
 			Key:    "mcpServers",
 			Scope:  "user",
 		},
@@ -244,13 +250,13 @@ func configPaths(home string) []clientPath {
 		},
 		{
 			Client: "vscode",
-			Path:   filepath.Join(home, ".config", "Code", "User", "mcp.json"),
+			Path:   filepath.Join(appData, "Code", "User", "mcp.json"),
 			Key:    "servers",
 			Scope:  "user",
 		},
 		{
 			Client: "cline",
-			Path:   filepath.Join(home, ".config", "Code", "User", "globalStorage", "saoudrizwan.claude-dev", "settings", "cline_mcp_settings.json"),
+			Path:   filepath.Join(appData, "Code", "User", "globalStorage", "saoudrizwan.claude-dev", "settings", "cline_mcp_settings.json"),
 			Key:    "mcpServers",
 			Scope:  "user",
 		},
@@ -260,5 +266,21 @@ func configPaths(home string) []clientPath {
 			Key:    "mcpServers",
 			Scope:  "user",
 		},
+	}
+}
+
+// appDataDir returns the platform-specific application data directory.
+// Linux: ~/.config, macOS: ~/Library/Application Support, Windows: %APPDATA%.
+func appDataDir(home string) string {
+	switch runtime.GOOS {
+	case "darwin":
+		return filepath.Join(home, "Library", "Application Support")
+	case "windows":
+		if appdata := os.Getenv("APPDATA"); appdata != "" {
+			return appdata
+		}
+		return filepath.Join(home, "AppData", "Roaming")
+	default:
+		return filepath.Join(home, ".config")
 	}
 }

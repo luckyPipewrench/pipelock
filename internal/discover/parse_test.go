@@ -61,6 +61,30 @@ func TestParseMCPServersHTTP(t *testing.T) {
 	if s.URL != "https://api.example.com/mcp" {
 		t.Errorf("url = %q", s.URL)
 	}
+	// Headers present should produce a parse warning
+	if len(s.ParseWarnings) == 0 {
+		t.Error("expected parse warning when headers are present")
+	}
+}
+
+func TestParseMCPServersNoHeadersNoWarning(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	content := `{"mcpServers":{"remote":{"url":"https://api.example.com/mcp"}}}`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	servers, err := parseConfigFile(path, "mcpServers", "cursor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(servers) != 1 {
+		t.Fatalf("expected 1 server, got %d", len(servers))
+	}
+	if len(servers[0].ParseWarnings) != 0 {
+		t.Errorf("expected no parse warnings without headers, got %v", servers[0].ParseWarnings)
+	}
 }
 
 func TestParseVSCodeServersKey(t *testing.T) {

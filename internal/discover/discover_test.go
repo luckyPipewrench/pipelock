@@ -8,8 +8,11 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
+
+const osDarwin = "darwin"
 
 func TestConfigPathsNotEmpty(t *testing.T) {
 	paths := configPaths("/fake/home")
@@ -34,10 +37,49 @@ func TestConfigPathsExpandHome(t *testing.T) {
 			t.Errorf("empty scope for client %s", p.Client)
 		}
 	}
-	// Linux should have all 6 clients
-	if runtime.GOOS == "linux" {
-		if len(paths) < 6 {
-			t.Errorf("expected at least 6 paths on linux, got %d", len(paths))
+	// All platforms should have all 6 clients
+	if len(paths) < 6 {
+		t.Errorf("expected at least 6 paths, got %d", len(paths))
+	}
+}
+
+func TestConfigPathsPlatformAware(t *testing.T) {
+	paths := configPaths("/home/testuser")
+
+	// Find the claude-desktop path and verify it uses the platform-appropriate directory
+	for _, p := range paths {
+		if p.Client == "claude-desktop" {
+			switch runtime.GOOS {
+			case osDarwin:
+				if !strings.Contains(p.Path, "Library/Application Support") {
+					t.Errorf("darwin: claude-desktop path = %q, want Library/Application Support", p.Path)
+				}
+			case "linux":
+				if !strings.Contains(p.Path, ".config") {
+					t.Errorf("linux: claude-desktop path = %q, want .config", p.Path)
+				}
+			}
+			return
+		}
+	}
+	t.Error("claude-desktop not found in paths")
+}
+
+func TestAppDataDir(t *testing.T) {
+	home := "/home/testuser"
+	dir := appDataDir(home)
+	if dir == "" {
+		t.Fatal("appDataDir returned empty string")
+	}
+
+	switch runtime.GOOS {
+	case osDarwin:
+		if !strings.HasSuffix(dir, "Library/Application Support") {
+			t.Errorf("darwin: appDataDir = %q", dir)
+		}
+	case "linux":
+		if !strings.HasSuffix(dir, ".config") {
+			t.Errorf("linux: appDataDir = %q", dir)
 		}
 	}
 }

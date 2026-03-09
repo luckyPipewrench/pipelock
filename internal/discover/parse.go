@@ -156,6 +156,10 @@ func parseServerMap(raw json.RawMessage, path, client string) ([]MCPServer, erro
 			s.Args = []string{}
 		}
 
+		if len(rs.Headers) > 0 {
+			s.ParseWarnings = append(s.ParseWarnings, "headers present but not preserved in wrapper suggestions")
+		}
+
 		servers = append(servers, s)
 	}
 

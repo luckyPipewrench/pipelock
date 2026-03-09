@@ -438,6 +438,173 @@ func TestEnforceLicenseGate_MissingFeature(t *testing.T) {
 	}
 }
 
+func TestValidateMergedAgent_InvalidAnomalyAction(t *testing.T) {
+	cfg := testConfig()
+	cfg.SessionProfiling.Enabled = true
+	cfg.SessionProfiling.AnomalyAction = "invalid"
+	if err := ValidateMergedAgent("test", cfg); err == nil {
+		t.Fatal("expected error for invalid anomaly_action")
+	}
+}
+
+func TestValidateMergedAgent_ValidAnomalyAction(t *testing.T) {
+	cfg := testConfig()
+	cfg.SessionProfiling.Enabled = true
+	cfg.SessionProfiling.AnomalyAction = config.ActionWarn
+	if err := ValidateMergedAgent("test", cfg); err != nil {
+		t.Fatalf("expected valid: %v", err)
+	}
+}
+
+func TestValidateMergedAgent_InvalidMCPToolPolicyAction(t *testing.T) {
+	cfg := testConfig()
+	cfg.MCPToolPolicy.Enabled = true
+	cfg.MCPToolPolicy.Action = "invalid"
+	if err := ValidateMergedAgent("test", cfg); err == nil {
+		t.Fatal("expected error for invalid mcp_tool_policy.action")
+	}
+}
+
+func TestValidateMergedAgent_ValidMCPToolPolicyAction(t *testing.T) {
+	cfg := testConfig()
+	cfg.MCPToolPolicy.Enabled = true
+	cfg.MCPToolPolicy.Action = config.ActionBlock
+	if err := ValidateMergedAgent("test", cfg); err != nil {
+		t.Fatalf("expected valid: %v", err)
+	}
+}
+
+func TestMergeAgentProfile_EnforceOverride(t *testing.T) {
+	cfg := testConfig()
+	cfg.Enforce = nil
+	enforceVal := true
+	profile := &config.AgentProfile{Enforce: &enforceVal}
+	merged, err := MergeAgentProfile(cfg, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if merged.Enforce == nil || !*merged.Enforce {
+		t.Error("expected enforce=true after merge")
+	}
+}
+
+func TestMergeAgentProfile_APIAllowlistOverride(t *testing.T) {
+	cfg := testConfig()
+	cfg.APIAllowlist = []string{"base.example.com"}
+	profile := &config.AgentProfile{APIAllowlist: []string{"agent.example.com"}}
+	merged, err := MergeAgentProfile(cfg, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(merged.APIAllowlist) != 1 || merged.APIAllowlist[0] != "agent.example.com" {
+		t.Errorf("expected agent allowlist, got %v", merged.APIAllowlist)
+	}
+}
+
+func TestMergeAgentProfile_RateLimitOverride(t *testing.T) {
+	cfg := testConfig()
+	profile := &config.AgentProfile{
+		RateLimit: &config.AgentRateLimit{
+			MaxRequestsPerMinute: 42,
+			MaxDataPerMinute:     1024,
+		},
+	}
+	merged, err := MergeAgentProfile(cfg, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if merged.FetchProxy.Monitoring.MaxReqPerMinute != 42 {
+		t.Errorf("max_req_per_minute = %d, want 42", merged.FetchProxy.Monitoring.MaxReqPerMinute)
+	}
+	if merged.FetchProxy.Monitoring.MaxDataPerMinute != 1024 {
+		t.Errorf("max_data_per_minute = %d, want 1024", merged.FetchProxy.Monitoring.MaxDataPerMinute)
+	}
+}
+
+func TestMergeAgentProfile_SessionProfilingOverride(t *testing.T) {
+	cfg := testConfig()
+	profile := &config.AgentProfile{
+		SessionProfiling: &config.AgentSessionProf{
+			DomainBurst:      10,
+			AnomalyAction:    config.ActionBlock,
+			VolumeSpikeRatio: 5.0,
+		},
+	}
+	merged, err := MergeAgentProfile(cfg, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if merged.SessionProfiling.DomainBurst != 10 {
+		t.Errorf("domain_burst = %d, want 10", merged.SessionProfiling.DomainBurst)
+	}
+	if merged.SessionProfiling.AnomalyAction != config.ActionBlock {
+		t.Errorf("anomaly_action = %q, want block", merged.SessionProfiling.AnomalyAction)
+	}
+	if merged.SessionProfiling.VolumeSpikeRatio != 5.0 {
+		t.Errorf("volume_spike_ratio = %f, want 5.0", merged.SessionProfiling.VolumeSpikeRatio)
+	}
+}
+
+func TestMergeAgentProfile_MCPToolPolicyOverride(t *testing.T) {
+	cfg := testConfig()
+	profile := &config.AgentProfile{
+		MCPToolPolicy: &config.MCPToolPolicy{
+			Enabled: true,
+			Action:  config.ActionBlock,
+		},
+	}
+	merged, err := MergeAgentProfile(cfg, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !merged.MCPToolPolicy.Enabled {
+		t.Error("expected mcp_tool_policy.enabled=true")
+	}
+	if merged.MCPToolPolicy.Action != config.ActionBlock {
+		t.Errorf("action = %q, want block", merged.MCPToolPolicy.Action)
+	}
+}
+
+func TestResolvePublicKey_InvalidHex(t *testing.T) {
+	cfg := testConfig()
+	cfg.LicensePublicKey = "not-valid-hex"
+	key := resolvePublicKey(cfg)
+	if key != nil {
+		t.Error("expected nil for invalid hex")
+	}
+}
+
+func TestResolvePublicKey_WrongLength(t *testing.T) {
+	cfg := testConfig()
+	cfg.LicensePublicKey = hex.EncodeToString([]byte("too-short"))
+	key := resolvePublicKey(cfg)
+	if key != nil {
+		t.Error("expected nil for wrong key length")
+	}
+}
+
+func TestResolvePublicKey_Empty(t *testing.T) {
+	cfg := testConfig()
+	cfg.LicensePublicKey = ""
+	key := resolvePublicKey(cfg)
+	if key != nil {
+		t.Error("expected nil when no key configured")
+	}
+}
+
+func TestEnforceLicenseGate_NoPublicKey(t *testing.T) {
+	cfg := testConfig()
+	cfg.Agents = map[string]config.AgentProfile{
+		"claude-code": {Mode: config.ModeStrict},
+	}
+	cfg.LicenseKey = "some-token"
+	cfg.LicensePublicKey = ""
+	EnforceLicenseGate(cfg)
+	if cfg.Agents != nil {
+		t.Error("expected agents disabled when no public key")
+	}
+}
+
 func TestDeepCopyConfig(t *testing.T) {
 	cfg := testConfig()
 	cfg.Mode = config.ModeStrict

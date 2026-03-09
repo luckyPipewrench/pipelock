@@ -273,6 +273,47 @@ func TestEnterpriseEdition_Ports(t *testing.T) {
 	}
 }
 
+func TestNewEdition_InvalidConfig(t *testing.T) {
+	cfg := testConfig()
+	cfg.Agents = map[string]config.AgentProfile{
+		"agent-a": {Listeners: []string{":9001"}},
+		"agent-b": {Listeners: []string{":9001"}}, // duplicate listener
+	}
+	sc := scanner.New(cfg)
+	defer sc.Close()
+
+	_, err := NewEdition(cfg, sc)
+	if err == nil {
+		t.Fatal("expected error for duplicate listeners")
+	}
+}
+
+func TestEnterpriseEdition_Reload_Error(t *testing.T) {
+	cfg := testConfig()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+
+	ed, err := NewEdition(cfg, sc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ed.Close()
+
+	// Reload with invalid config should return error.
+	cfg2 := testConfig()
+	cfg2.Agents = map[string]config.AgentProfile{
+		"agent-a": {Listeners: []string{":9001"}},
+		"agent-b": {Listeners: []string{":9001"}}, // duplicate
+	}
+	sc2 := scanner.New(cfg2)
+	defer sc2.Close()
+
+	_, err = ed.Reload(cfg2, sc2)
+	if err == nil {
+		t.Fatal("expected error for invalid config on reload")
+	}
+}
+
 func TestEnterpriseEdition_Close(t *testing.T) {
 	cfg := testConfig()
 	sc := scanner.New(cfg)

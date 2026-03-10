@@ -1,5 +1,7 @@
 //go:build enterprise
 
+// Licensed under the Elastic License 2.0. See enterprise/LICENSE.
+
 // Package testinit activates enterprise edition hooks for package-level tests.
 // Import with blank identifier in build-tagged test files:
 //

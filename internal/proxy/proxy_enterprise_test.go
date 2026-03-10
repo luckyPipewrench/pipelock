@@ -1,7 +1,6 @@
-// Copyright 2026 Josh Waldrep
-// SPDX-License-Identifier: ELv2
-
 //go:build enterprise
+
+// Licensed under the Elastic License 2.0. See enterprise/LICENSE.
 
 package proxy
 

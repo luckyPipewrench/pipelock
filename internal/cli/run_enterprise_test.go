@@ -1,7 +1,6 @@
 //go:build enterprise
 
-// Copyright 2026 Josh Waldrep
-// SPDX-License-Identifier: Apache-2.0
+// Licensed under the Elastic License 2.0. See enterprise/LICENSE.
 
 package cli
 

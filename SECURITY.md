@@ -37,7 +37,8 @@ The following are in scope:
 
 | Version | Supported |
 |---------|-----------|
-| 0.x     | Yes       |
+| 1.x     | Yes       |
+| 0.x     | No        |
 
 ## Security Design
 

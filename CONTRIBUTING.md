@@ -127,6 +127,7 @@ internal/
   signing/             Ed25519 key management, file signing, signature verification
   gitprotect/          Git diff scanning for secrets
   projectscan/         Project directory scanner for audit command
+enterprise/            Multi-agent features (ELv2, see enterprise/LICENSE)
 configs/               7 preset config files (balanced, strict, audit, claude-code, cursor, generic-agent, hostile-model)
 docs/                  Guides, OWASP mapping, comparison
 ```
@@ -188,4 +189,11 @@ The CLA is based on the [Apache Individual Contributor License Agreement](https:
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the [Apache License 2.0](LICENSE).
+Pipelock uses two licenses:
+
+- **Apache License 2.0** for the core (files without the `enterprise` build tag)
+- **Elastic License 2.0 (ELv2)** for multi-agent enterprise features (files with the `//go:build enterprise` build tag, primarily in `enterprise/` with integration code in `cmd/` and `internal/`)
+
+By contributing to the core, you agree that your contributions will be licensed under the [Apache License 2.0](LICENSE). Contributions to enterprise-licensed code are licensed under the [Elastic License 2.0](enterprise/LICENSE).
+
+Each file's license is indicated by its header. When in doubt, check the file's build tag and license notice.

@@ -417,7 +417,7 @@ mcp_tool_scanning:
 
 ## MCP Tool Policy
 
-Pre-execution rules that block or warn before tool calls reach the MCP server. Ships with 9 built-in rules covering destructive operations, credential access, network exfiltration, and encoded command execution.
+Pre-execution rules that block or warn before tool calls reach the MCP server. Ships with 17 built-in rules covering destructive operations, credential access, network exfiltration, persistence mechanisms, and encoded command execution.
 
 ```yaml
 mcp_tool_policy:
@@ -437,7 +437,7 @@ mcp_tool_policy:
 |-------|---------|-------------|
 | `enabled` | `false` | Enable tool policy |
 | `action` | `"warn"` | Default action for rules without override |
-| `rules` | 9 built-in | Policy rule list |
+| `rules` | 17 built-in | Policy rule list |
 
 **Rule fields:**
 - `name:` rule identifier
@@ -633,7 +633,7 @@ tool_chain_detection:
 | `pattern_overrides` | `{}` | Per-pattern action override |
 | `custom_patterns` | `[]` | Custom attack sequences |
 
-Ships with 8 built-in patterns covering reconnaissance, credential theft, data staging, and exfiltration chains.
+Ships with 10 built-in patterns covering reconnaissance, credential theft, data staging, persistence, and exfiltration chains.
 
 ## Finding Suppression
 

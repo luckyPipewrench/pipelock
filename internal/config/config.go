@@ -160,36 +160,37 @@ func toSlash(s string) string {
 
 // Config is the top-level Pipelock configuration.
 type Config struct {
-	Version             int                     `yaml:"version"`
-	Mode                string                  `yaml:"mode"`           // strict, balanced, audit
-	Enforce             *bool                   `yaml:"enforce"`        // nil = true (default); false = detect & log without blocking
-	ExplainBlocks       *bool                   `yaml:"explain_blocks"` // nil = false (default); true = include hints in block responses
-	APIAllowlist        []string                `yaml:"api_allowlist"`
-	Suppress            []SuppressEntry         `yaml:"suppress"`
-	FetchProxy          FetchProxy              `yaml:"fetch_proxy"`
-	ForwardProxy        ForwardProxy            `yaml:"forward_proxy"`
-	WebSocketProxy      WebSocketProxy          `yaml:"websocket_proxy"`
-	DLP                 DLP                     `yaml:"dlp"`
-	ResponseScanning    ResponseScanning        `yaml:"response_scanning"`
-	MCPInputScanning    MCPInputScanning        `yaml:"mcp_input_scanning"`
-	MCPToolScanning     MCPToolScanning         `yaml:"mcp_tool_scanning"`
-	MCPToolPolicy       MCPToolPolicy           `yaml:"mcp_tool_policy"`
-	GitProtection       GitProtection           `yaml:"git_protection"`
-	Logging             LoggingConfig           `yaml:"logging"`
-	SessionProfiling    SessionProfiling        `yaml:"session_profiling"`
-	AdaptiveEnforcement AdaptiveEnforcement     `yaml:"adaptive_enforcement"`
-	MCPSessionBinding   MCPSessionBinding       `yaml:"mcp_session_binding"`
-	RequestBodyScanning RequestBodyScanning     `yaml:"request_body_scanning"`
-	KillSwitch          KillSwitch              `yaml:"kill_switch"`
-	MetricsListen       string                  `yaml:"metrics_listen"` // separate listen address for /metrics and /stats
-	Emit                EmitConfig              `yaml:"emit"`
-	ToolChainDetection  ToolChainDetection      `yaml:"tool_chain_detection"`
-	MCPWSListener       MCPWSListener           `yaml:"mcp_ws_listener"`
-	TLSInterception     TLSInterception         `yaml:"tls_interception"`
-	Agents              map[string]AgentProfile `yaml:"agents,omitempty"`
-	LicenseKey          string                  `yaml:"license_key,omitempty"`        // signed license token (from pipelock license issue)
-	LicensePublicKey    string                  `yaml:"license_public_key,omitempty"` // hex-encoded Ed25519 public key for license verification (dev builds only)
-	Internal            []string                `yaml:"internal"`
+	Version               int                     `yaml:"version"`
+	Mode                  string                  `yaml:"mode"`           // strict, balanced, audit
+	Enforce               *bool                   `yaml:"enforce"`        // nil = true (default); false = detect & log without blocking
+	ExplainBlocks         *bool                   `yaml:"explain_blocks"` // nil = false (default); true = include hints in block responses
+	APIAllowlist          []string                `yaml:"api_allowlist"`
+	Suppress              []SuppressEntry         `yaml:"suppress"`
+	FetchProxy            FetchProxy              `yaml:"fetch_proxy"`
+	ForwardProxy          ForwardProxy            `yaml:"forward_proxy"`
+	WebSocketProxy        WebSocketProxy          `yaml:"websocket_proxy"`
+	DLP                   DLP                     `yaml:"dlp"`
+	ResponseScanning      ResponseScanning        `yaml:"response_scanning"`
+	MCPInputScanning      MCPInputScanning        `yaml:"mcp_input_scanning"`
+	MCPToolScanning       MCPToolScanning         `yaml:"mcp_tool_scanning"`
+	MCPToolPolicy         MCPToolPolicy           `yaml:"mcp_tool_policy"`
+	GitProtection         GitProtection           `yaml:"git_protection"`
+	Logging               LoggingConfig           `yaml:"logging"`
+	SessionProfiling      SessionProfiling        `yaml:"session_profiling"`
+	AdaptiveEnforcement   AdaptiveEnforcement     `yaml:"adaptive_enforcement"`
+	MCPSessionBinding     MCPSessionBinding       `yaml:"mcp_session_binding"`
+	RequestBodyScanning   RequestBodyScanning     `yaml:"request_body_scanning"`
+	KillSwitch            KillSwitch              `yaml:"kill_switch"`
+	MetricsListen         string                  `yaml:"metrics_listen"` // separate listen address for /metrics and /stats
+	Emit                  EmitConfig              `yaml:"emit"`
+	ToolChainDetection    ToolChainDetection      `yaml:"tool_chain_detection"`
+	MCPWSListener         MCPWSListener           `yaml:"mcp_ws_listener"`
+	TLSInterception       TLSInterception         `yaml:"tls_interception"`
+	CrossRequestDetection CrossRequestDetection   `yaml:"cross_request_detection"`
+	Agents                map[string]AgentProfile `yaml:"agents,omitempty"`
+	LicenseKey            string                  `yaml:"license_key,omitempty"`        // signed license token (from pipelock license issue)
+	LicensePublicKey      string                  `yaml:"license_public_key,omitempty"` // hex-encoded Ed25519 public key for license verification (dev builds only)
+	Internal              []string                `yaml:"internal"`
 
 	// LicenseExpiresAt is the Unix timestamp of the license expiry, populated
 	// by EnforceLicenseGate(). Zero means perpetual. Used for runtime expiry
@@ -412,6 +413,38 @@ type RequestBodyScanning struct {
 	HeaderMode       string   `yaml:"header_mode"`       // "sensitive" (listed headers) or "all" (everything except ignore list)
 	SensitiveHeaders []string `yaml:"sensitive_headers"` // headers to scan in sensitive mode
 	IgnoreHeaders    []string `yaml:"ignore_headers"`    // headers to skip in all mode
+}
+
+// CrossRequestDetection configures cross-request exfiltration detection.
+// Tracks cumulative entropy and reassembles outbound fragments per session
+// to catch secrets split across multiple requests.
+type CrossRequestDetection struct {
+	Enabled            bool                      `yaml:"enabled"`
+	Action             string                    `yaml:"action"` // block, warn (applies to fragment DLP match)
+	EntropyBudget      CrossRequestEntropyBudget `yaml:"entropy_budget"`
+	FragmentReassembly CrossRequestFragments     `yaml:"fragment_reassembly"`
+	Adaptive           CrossRequestAdaptive      `yaml:"adaptive"`
+}
+
+// CrossRequestEntropyBudget configures per-session entropy tracking.
+type CrossRequestEntropyBudget struct {
+	Enabled       bool    `yaml:"enabled"`
+	BitsPerWindow float64 `yaml:"bits_per_window"` // total Shannon entropy bits before signaling
+	WindowMinutes int     `yaml:"window_minutes"`  // sliding window duration
+	Action        string  `yaml:"action"`          // warn, block (entropy alone is medium-confidence)
+}
+
+// CrossRequestFragments configures outbound payload fragment reassembly.
+type CrossRequestFragments struct {
+	Enabled          bool `yaml:"enabled"`
+	MaxBufferBytes   int  `yaml:"max_buffer_bytes"`   // per-session rolling buffer cap
+	RescanDebounceMs int  `yaml:"rescan_debounce_ms"` // minimum ms between DLP re-scans
+}
+
+// CrossRequestAdaptive configures entropy rate signaling for adaptive enforcement.
+type CrossRequestAdaptive struct {
+	EntropyRateThreshold float64 `yaml:"entropy_rate_threshold"` // bits/request ratio triggering signal
+	LookbackRequests     int     `yaml:"lookback_requests"`      // requests to average over
 }
 
 // KillSwitch configures the emergency deny-all kill switch.
@@ -848,6 +881,38 @@ func (c *Config) ApplyDefaults() {
 			}
 		}
 	}
+
+	// Cross-request detection defaults
+	if c.CrossRequestDetection.Enabled {
+		if c.CrossRequestDetection.Action == "" {
+			c.CrossRequestDetection.Action = ActionBlock
+		}
+		if c.CrossRequestDetection.EntropyBudget.Enabled {
+			if c.CrossRequestDetection.EntropyBudget.BitsPerWindow <= 0 {
+				c.CrossRequestDetection.EntropyBudget.BitsPerWindow = 4096 // generous for legitimate traffic
+			}
+			if c.CrossRequestDetection.EntropyBudget.WindowMinutes <= 0 {
+				c.CrossRequestDetection.EntropyBudget.WindowMinutes = 5
+			}
+			if c.CrossRequestDetection.EntropyBudget.Action == "" {
+				c.CrossRequestDetection.EntropyBudget.Action = ActionWarn
+			}
+		}
+		if c.CrossRequestDetection.FragmentReassembly.Enabled {
+			if c.CrossRequestDetection.FragmentReassembly.MaxBufferBytes <= 0 {
+				c.CrossRequestDetection.FragmentReassembly.MaxBufferBytes = 65536 // 64KB per session
+			}
+			if c.CrossRequestDetection.FragmentReassembly.RescanDebounceMs <= 0 {
+				c.CrossRequestDetection.FragmentReassembly.RescanDebounceMs = 1000
+			}
+		}
+		if c.CrossRequestDetection.Adaptive.EntropyRateThreshold <= 0 {
+			c.CrossRequestDetection.Adaptive.EntropyRateThreshold = 0.7
+		}
+		if c.CrossRequestDetection.Adaptive.LookbackRequests <= 0 {
+			c.CrossRequestDetection.Adaptive.LookbackRequests = 10
+		}
+	}
 }
 
 // mergeDLPPatterns merges default DLP patterns with user-defined patterns.
@@ -1190,6 +1255,38 @@ func (c *Config) Validate() error {
 			// valid
 		default:
 			return fmt.Errorf("invalid request_body_scanning.header_mode %q: must be sensitive or all", c.RequestBodyScanning.HeaderMode)
+		}
+	}
+
+	// Validate cross-request detection config
+	if c.CrossRequestDetection.Enabled {
+		switch c.CrossRequestDetection.Action {
+		case ActionBlock, ActionWarn:
+			// valid
+		default:
+			return fmt.Errorf("invalid cross_request_detection.action %q: must be block or warn", c.CrossRequestDetection.Action)
+		}
+		if c.CrossRequestDetection.EntropyBudget.Enabled {
+			switch c.CrossRequestDetection.EntropyBudget.Action {
+			case ActionBlock, ActionWarn:
+				// valid
+			default:
+				return fmt.Errorf("invalid cross_request_detection.entropy_budget.action %q: must be block or warn", c.CrossRequestDetection.EntropyBudget.Action)
+			}
+			if c.CrossRequestDetection.EntropyBudget.BitsPerWindow <= 0 {
+				return fmt.Errorf("cross_request_detection.entropy_budget.bits_per_window must be > 0")
+			}
+			if c.CrossRequestDetection.EntropyBudget.WindowMinutes <= 0 {
+				return fmt.Errorf("cross_request_detection.entropy_budget.window_minutes must be > 0")
+			}
+		}
+		if c.CrossRequestDetection.FragmentReassembly.Enabled {
+			if c.CrossRequestDetection.FragmentReassembly.MaxBufferBytes <= 0 {
+				return fmt.Errorf("cross_request_detection.fragment_reassembly.max_buffer_bytes must be > 0")
+			}
+			if c.CrossRequestDetection.FragmentReassembly.RescanDebounceMs < 0 {
+				return fmt.Errorf("cross_request_detection.fragment_reassembly.rescan_debounce_ms must be >= 0")
+			}
 		}
 	}
 
@@ -1617,6 +1714,14 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		warnings = append(warnings, ReloadWarning{
 			Field:   "tool_chain_detection.enabled",
 			Message: "tool chain detection disabled",
+		})
+	}
+
+	// Cross-request detection disabled
+	if old.CrossRequestDetection.Enabled && !updated.CrossRequestDetection.Enabled {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "cross_request_detection.enabled",
+			Message: "cross-request exfiltration detection disabled",
 		})
 	}
 

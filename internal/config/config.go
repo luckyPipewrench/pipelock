@@ -423,7 +423,6 @@ type CrossRequestDetection struct {
 	Action             string                    `yaml:"action"` // block, warn (applies to fragment DLP match)
 	EntropyBudget      CrossRequestEntropyBudget `yaml:"entropy_budget"`
 	FragmentReassembly CrossRequestFragments     `yaml:"fragment_reassembly"`
-	Adaptive           CrossRequestAdaptive      `yaml:"adaptive"`
 }
 
 // CrossRequestEntropyBudget configures per-session entropy tracking.
@@ -436,16 +435,9 @@ type CrossRequestEntropyBudget struct {
 
 // CrossRequestFragments configures outbound payload fragment reassembly.
 type CrossRequestFragments struct {
-	Enabled          bool `yaml:"enabled"`
-	MaxBufferBytes   int  `yaml:"max_buffer_bytes"`   // per-session rolling buffer cap
-	WindowMinutes    int  `yaml:"window_minutes"`     // fragment retention window (independent of entropy budget)
-	RescanDebounceMs int  `yaml:"rescan_debounce_ms"` // minimum ms between DLP re-scans
-}
-
-// CrossRequestAdaptive configures entropy rate signaling for adaptive enforcement.
-type CrossRequestAdaptive struct {
-	EntropyRateThreshold float64 `yaml:"entropy_rate_threshold"` // bits/request ratio triggering signal
-	LookbackRequests     int     `yaml:"lookback_requests"`      // requests to average over
+	Enabled        bool `yaml:"enabled"`
+	MaxBufferBytes int  `yaml:"max_buffer_bytes"` // per-session rolling buffer cap
+	WindowMinutes  int  `yaml:"window_minutes"`   // fragment retention window (independent of entropy budget)
 }
 
 // KillSwitch configures the emergency deny-all kill switch.
@@ -906,15 +898,6 @@ func (c *Config) ApplyDefaults() {
 			if c.CrossRequestDetection.FragmentReassembly.WindowMinutes <= 0 {
 				c.CrossRequestDetection.FragmentReassembly.WindowMinutes = 5
 			}
-			if c.CrossRequestDetection.FragmentReassembly.RescanDebounceMs <= 0 {
-				c.CrossRequestDetection.FragmentReassembly.RescanDebounceMs = 1000
-			}
-		}
-		if c.CrossRequestDetection.Adaptive.EntropyRateThreshold <= 0 {
-			c.CrossRequestDetection.Adaptive.EntropyRateThreshold = 0.7
-		}
-		if c.CrossRequestDetection.Adaptive.LookbackRequests <= 0 {
-			c.CrossRequestDetection.Adaptive.LookbackRequests = 10
 		}
 	}
 }
@@ -1290,9 +1273,6 @@ func (c *Config) Validate() error {
 			}
 			if c.CrossRequestDetection.FragmentReassembly.WindowMinutes <= 0 {
 				return fmt.Errorf("cross_request_detection.fragment_reassembly.window_minutes must be > 0")
-			}
-			if c.CrossRequestDetection.FragmentReassembly.RescanDebounceMs < 0 {
-				return fmt.Errorf("cross_request_detection.fragment_reassembly.rescan_debounce_ms must be >= 0")
 			}
 		}
 	}

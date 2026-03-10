@@ -363,10 +363,6 @@ cross_request_detection:
     enabled: true
     max_buffer_bytes: 65536
     window_minutes: 5
-    rescan_debounce_ms: 1000
-  adaptive:
-    entropy_rate_threshold: 0.7
-    lookback_requests: 10
 
 # Kill switch preconfigured with sentinel file.
 # Touch /tmp/pipelock-kill to instantly deny all traffic.

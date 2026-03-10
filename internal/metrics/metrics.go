@@ -62,7 +62,6 @@ type Metrics struct {
 	// Cross-request exfiltration detection
 	CrossRequestEntropyExceeded prometheus.Counter
 	CrossRequestDLPMatch        prometheus.Counter
-	CrossRequestEntropyAnomaly  prometheus.Counter
 	CrossRequestFragmentBytes   prometheus.Gauge
 
 	wsConnectionCount int64
@@ -282,11 +281,6 @@ func New() *Metrics {
 		Name:      "cross_request_dlp_match_total",
 		Help:      "Fragment reassembly DLP match events.",
 	})
-	crossRequestEntropyAnomaly := prometheus.NewCounter(prometheus.CounterOpts{
-		Namespace: "pipelock",
-		Name:      "cross_request_entropy_anomaly_total",
-		Help:      "Adaptive entropy rate signal events.",
-	})
 	crossRequestFragmentBytes := prometheus.NewGauge(prometheus.GaugeOpts{
 		Namespace: "pipelock",
 		Name:      "cross_request_fragment_buffer_bytes",
@@ -300,7 +294,7 @@ func New() *Metrics {
 		bodyDLPHits, headerDLPHits,
 		sessionAnomalies, sessionEscalations, sessionsActive, sessionsEvicted,
 		tlsInterceptTotal, tlsCertCacheSize, tlsHandshakeDuration, tlsRequestBlocked, tlsResponseBlocked,
-		crossRequestEntropyExceeded, crossRequestDLPMatch, crossRequestEntropyAnomaly, crossRequestFragmentBytes)
+		crossRequestEntropyExceeded, crossRequestDLPMatch, crossRequestFragmentBytes)
 
 	return &Metrics{
 		registry:                    reg,
@@ -334,7 +328,6 @@ func New() *Metrics {
 		tlsResponseBlocked:          tlsResponseBlocked,
 		CrossRequestEntropyExceeded: crossRequestEntropyExceeded,
 		CrossRequestDLPMatch:        crossRequestDLPMatch,
-		CrossRequestEntropyAnomaly:  crossRequestEntropyAnomaly,
 		CrossRequestFragmentBytes:   crossRequestFragmentBytes,
 		startTime:                   time.Now(),
 		topBlockedDomains:           make(map[string]int64),
@@ -565,13 +558,6 @@ func (m *Metrics) RecordCrossRequestEntropyExceeded() {
 func (m *Metrics) RecordCrossRequestDLPMatch() {
 	if m != nil {
 		m.CrossRequestDLPMatch.Inc()
-	}
-}
-
-// RecordCrossRequestEntropyAnomaly increments the cross-request entropy anomaly counter.
-func (m *Metrics) RecordCrossRequestEntropyAnomaly() {
-	if m != nil {
-		m.CrossRequestEntropyAnomaly.Inc()
 	}
 }
 

@@ -87,6 +87,7 @@ func interceptTunnel(
 	safeDial dialFunc,
 	et *scanner.EntropyTracker,
 	fb *scanner.FragmentBuffer,
+	sm *SessionManager,
 ) error {
 	// Client-side TLS config with forged cert from cache.
 	tlsCfg := &tls.Config{
@@ -168,7 +169,7 @@ func interceptTunnel(
 	// Serve via http.Server on single-connection listener.
 	// http.Server handles HTTP/2 when negotiated via ALPN.
 	ln := newSingleConnListener(tlsConn)
-	handler := newInterceptHandler(targetHost, targetPort, upstreamRT, cfg, sc, logger, m, clientIP, requestID, agent, et, fb)
+	handler := newInterceptHandler(targetHost, targetPort, upstreamRT, cfg, sc, logger, m, clientIP, requestID, agent, et, fb, sm)
 	srv := &http.Server{
 		Handler:           handler,
 		ReadHeaderTimeout: interceptReadHeaderTimeout,
@@ -218,6 +219,7 @@ func newInterceptHandler(
 	clientIP, requestID, agent string,
 	et *scanner.EntropyTracker,
 	fb *scanner.FragmentBuffer,
+	sm *SessionManager,
 ) http.Handler {
 	target := net.JoinHostPort(targetHost, targetPort)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -319,8 +321,9 @@ func newInterceptHandler(
 			ceeRes := ceeAdmit(sessionKey, outbound, r.URL.String(), agent, clientIP, requestID,
 				ceeCfg, et, fb, sc, logger, m)
 
-			// No adaptive signal recording here: intercepted tunnels run inside
-			// a CONNECT that already recorded session activity in handleConnect.
+			if sm != nil && cfg.AdaptiveEnforcement.Enabled {
+				ceeRecordSignals(ceeRes, sm, sessionKey, cfg.AdaptiveEnforcement.EscalationThreshold, logger, m, clientIP, requestID)
+			}
 
 			if ceeRes.Blocked {
 				m.RecordTLSRequestBlocked("cross_request")

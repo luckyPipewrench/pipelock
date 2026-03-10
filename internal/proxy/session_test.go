@@ -409,10 +409,10 @@ func TestSessionState_EntropyRateSignal(t *testing.T) {
 	defer sm.Close()
 
 	sess := sm.GetOrCreate(testClientIP)
-	sess.RecordSignal(SignalEntropyRate, 10.0) // +1
+	sess.RecordSignal(SignalEntropyBudget, 10.0) // +2
 
-	if sess.ThreatScore() != 1.0 {
-		t.Errorf("expected score 1.0, got %f", sess.ThreatScore())
+	if sess.ThreatScore() != 2.0 {
+		t.Errorf("expected score 2.0, got %f", sess.ThreatScore())
 	}
 }
 
@@ -431,8 +431,8 @@ func TestSessionState_EntropySignals_Escalation(t *testing.T) {
 		t.Error("should not escalate below threshold")
 	}
 
-	// Entropy rate signal crosses threshold: +1, total 5
-	escalated, from, to := sess.RecordSignal(SignalEntropyRate, 5.0)
+	// Fragment DLP signal crosses threshold: +3, total 7
+	escalated, from, to := sess.RecordSignal(SignalFragmentDLP, 5.0)
 	if !escalated {
 		t.Error("should escalate when entropy signals cross threshold")
 	}

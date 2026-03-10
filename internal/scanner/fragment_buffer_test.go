@@ -35,7 +35,7 @@ func testFragmentScanner() *Scanner {
 
 func TestFragmentBuffer_AppendAndScan_SplitCredential(t *testing.T) {
 	// Split an AWS key across two fragments. DLP should catch the concatenated form.
-	fb := NewFragmentBuffer(65536, 1000, testWindowSecs, 0) // 0 debounce: scan immediately
+	fb := NewFragmentBuffer(65536, 1000, testWindowSecs)
 	defer fb.Close()
 
 	sc := testFragmentScanner()
@@ -66,7 +66,7 @@ func TestFragmentBuffer_AppendAndScan_SplitCredential(t *testing.T) {
 }
 
 func TestFragmentBuffer_NoMatch_NormalText(t *testing.T) {
-	fb := NewFragmentBuffer(65536, 1000, testWindowSecs, 0)
+	fb := NewFragmentBuffer(65536, 1000, testWindowSecs)
 	defer fb.Close()
 
 	sc := testFragmentScanner()
@@ -83,7 +83,7 @@ func TestFragmentBuffer_NoMatch_NormalText(t *testing.T) {
 
 func TestFragmentBuffer_SessionIsolation(t *testing.T) {
 	// Key split across two sessions should NOT match in either.
-	fb := NewFragmentBuffer(65536, 1000, testWindowSecs, 0)
+	fb := NewFragmentBuffer(65536, 1000, testWindowSecs)
 	defer fb.Close()
 
 	sc := testFragmentScanner()
@@ -109,7 +109,7 @@ func TestFragmentBuffer_SessionIsolation(t *testing.T) {
 func TestFragmentBuffer_MaxBytesEviction(t *testing.T) {
 	// 100 byte cap. Add 120 bytes. Oldest data should be evicted.
 	maxBytes := 100
-	fb := NewFragmentBuffer(maxBytes, 1000, testWindowSecs, 0)
+	fb := NewFragmentBuffer(maxBytes, 1000, testWindowSecs)
 	defer fb.Close()
 
 	// Add 60 bytes, then 60 more (total 120 > 100 cap).
@@ -137,7 +137,7 @@ func TestFragmentBuffer_MaxBytesEviction(t *testing.T) {
 
 func TestFragmentBuffer_MaxSessionsCap(t *testing.T) {
 	// Max 3 sessions. Add 4. Verify LRU eviction keeps only 3.
-	fb := NewFragmentBuffer(65536, 3, testWindowSecs, 0)
+	fb := NewFragmentBuffer(65536, 3, testWindowSecs)
 	defer fb.Close()
 
 	fb.Append(testSessionA, []byte("data-a"))
@@ -173,7 +173,7 @@ func TestFragmentBuffer_MaxSessionsCap(t *testing.T) {
 
 func TestFragmentBuffer_WindowExpiry(t *testing.T) {
 	// 1 second window. Backdate fragments, run cleanup, verify empty.
-	fb := NewFragmentBuffer(65536, 1000, 1, 0) // 1s window
+	fb := NewFragmentBuffer(65536, 1000, 1) // 1s window
 	defer fb.Close()
 
 	fb.Append(testSessionA, []byte("test data"))
@@ -197,67 +197,36 @@ func TestFragmentBuffer_WindowExpiry(t *testing.T) {
 	}
 }
 
-func TestFragmentBuffer_Debounce(t *testing.T) {
-	// Debounce window: 200ms. Second scan within window should return nil.
-	fb := NewFragmentBuffer(65536, 1000, testWindowSecs, 200) // 200ms debounce
+func TestFragmentBuffer_ScanAlwaysSynchronous(t *testing.T) {
+	// Every call to ScanForSecrets runs a synchronous DLP scan. A secret
+	// appended after the first scan must be detectable immediately on the
+	// next call, with no debounce window.
+	fb := NewFragmentBuffer(65536, 1000, testWindowSecs)
 	defer fb.Close()
 
 	sc := testFragmentScanner()
 	defer sc.Close()
 
-	fb.Append(testSessionA, []byte("some payload data"))
-
-	// First scan: should execute (outside debounce window).
+	fb.Append(testSessionA, []byte("harmless data"))
 	matches1 := fb.ScanForSecrets(testSessionA, sc)
-	// No secrets in payload, so nil is fine. The point is it ran.
-	_ = matches1
-
-	// Second scan immediately: should be debounced (return nil).
-	matches2 := fb.ScanForSecrets(testSessionA, sc)
-	if matches2 != nil {
-		t.Errorf("expected nil from debounced scan, got %v", matches2)
+	if matches1 != nil {
+		t.Fatal("first scan should find nothing")
 	}
-}
 
-func TestFragmentBuffer_DebounceSchedulesDelayedScan(t *testing.T) {
-	// Verify that debounce schedules a delayed rescan via time.AfterFunc.
-	fb := NewFragmentBuffer(65536, 1000, testWindowSecs, 100) // 100ms debounce
-	defer fb.Close()
-
-	sc := testFragmentScanner()
-	defer sc.Close()
-
-	// Build a credential split across fragments.
+	// Immediately append credential fragments and scan again.
 	part1 := "AKI" + "A"
 	part2 := testAWSKeySuffix
 	fb.Append(testSessionA, []byte(part1))
 	fb.Append(testSessionA, []byte(part2))
 
-	// First scan: runs immediately, should find the secret.
-	matches1 := fb.ScanForSecrets(testSessionA, sc)
-	if len(matches1) == 0 {
-		t.Fatal("first scan should find the split credential")
-	}
-
-	// Immediately try again: debounced, should return nil.
 	matches2 := fb.ScanForSecrets(testSessionA, sc)
-	if matches2 != nil {
-		t.Error("second scan within debounce window should return nil")
-	}
-
-	// Verify a timer was scheduled.
-	fb.mu.Lock()
-	sb := fb.sessions[testSessionA]
-	hasTimer := sb.scanTimer != nil
-	fb.mu.Unlock()
-
-	if !hasTimer {
-		t.Error("expected a pending scan timer to be scheduled")
+	if len(matches2) == 0 {
+		t.Fatal("second scan must detect secret synchronously, got nil (pre-forward guarantee broken)")
 	}
 }
 
 func TestFragmentBuffer_ConcurrentAccess(t *testing.T) {
-	fb := NewFragmentBuffer(65536, 1000, testWindowSecs, 0)
+	fb := NewFragmentBuffer(65536, 1000, testWindowSecs)
 	defer fb.Close()
 
 	sc := testFragmentScanner()
@@ -278,7 +247,7 @@ func TestFragmentBuffer_ConcurrentAccess(t *testing.T) {
 }
 
 func TestFragmentBuffer_TotalBufferBytes(t *testing.T) {
-	fb := NewFragmentBuffer(65536, 1000, testWindowSecs, 0)
+	fb := NewFragmentBuffer(65536, 1000, testWindowSecs)
 	defer fb.Close()
 
 	fb.Append(testSessionA, []byte("hello"))      // 5 bytes
@@ -291,13 +260,13 @@ func TestFragmentBuffer_TotalBufferBytes(t *testing.T) {
 }
 
 func TestFragmentBuffer_Close_Idempotent(t *testing.T) {
-	fb := NewFragmentBuffer(65536, 1000, testWindowSecs, 0)
+	fb := NewFragmentBuffer(65536, 1000, testWindowSecs)
 	fb.Close()
 	fb.Close() // should not panic
 }
 
 func TestFragmentBuffer_ScanEmptySession(t *testing.T) {
-	fb := NewFragmentBuffer(65536, 1000, testWindowSecs, 0)
+	fb := NewFragmentBuffer(65536, 1000, testWindowSecs)
 	defer fb.Close()
 
 	sc := testFragmentScanner()
@@ -313,7 +282,7 @@ func TestFragmentBuffer_ScanEmptySession(t *testing.T) {
 func TestFragmentBuffer_EvictionPreservesNewestData(t *testing.T) {
 	// After eviction, the newest fragment should remain.
 	maxBytes := 50
-	fb := NewFragmentBuffer(maxBytes, 1000, testWindowSecs, 0)
+	fb := NewFragmentBuffer(maxBytes, 1000, testWindowSecs)
 	defer fb.Close()
 
 	sc := testFragmentScanner()
@@ -340,7 +309,7 @@ func TestFragmentBuffer_EvictionPreservesNewestData(t *testing.T) {
 
 func TestFragmentBuffer_CleanupPartialExpiry(t *testing.T) {
 	// Mix old and new fragments within a session. Cleanup should remove only old ones.
-	fb := NewFragmentBuffer(65536, 1000, 1, 0) // 1s window
+	fb := NewFragmentBuffer(65536, 1000, 1) // 1s window
 	defer fb.Close()
 
 	fb.Append(testSessionA, []byte("new data"))
@@ -349,7 +318,6 @@ func TestFragmentBuffer_CleanupPartialExpiry(t *testing.T) {
 	fb.mu.Lock()
 	sb := fb.sessions[testSessionA]
 	sb.fragments[0].at = time.Now().Add(-2 * time.Second)
-	oldBytes := len(sb.fragments[0].data)
 	fb.mu.Unlock()
 
 	fb.Append(testSessionA, []byte("fresh"))
@@ -367,15 +335,13 @@ func TestFragmentBuffer_CleanupPartialExpiry(t *testing.T) {
 	}
 
 	expectedBytes := len("fresh")
-	// totalBytes should have been decremented by the evicted fragment.
-	_ = oldBytes
 	if totalBytes != expectedBytes {
 		t.Errorf("expected %d bytes after cleanup, got %d", expectedBytes, totalBytes)
 	}
 }
 
 func TestFragmentBuffer_AppendAfterClose(t *testing.T) {
-	fb := NewFragmentBuffer(65536, 1000, testWindowSecs, 0)
+	fb := NewFragmentBuffer(65536, 1000, testWindowSecs)
 	fb.Close()
 
 	// Append after close should not panic.
@@ -387,42 +353,4 @@ func TestFragmentBuffer_AppendAfterClose(t *testing.T) {
 	// Scan after close should not panic.
 	matches := fb.ScanForSecrets(testSessionA, sc)
 	_ = matches
-}
-
-func TestFragmentBuffer_DebounceTimerReset(t *testing.T) {
-	// Verify that repeated appends within debounce window reset the timer.
-	fb := NewFragmentBuffer(65536, 1000, testWindowSecs, 200) // 200ms debounce
-	defer fb.Close()
-
-	sc := testFragmentScanner()
-	defer sc.Close()
-
-	fb.Append(testSessionA, []byte("data1"))
-
-	// First scan triggers and sets lastScan.
-	_ = fb.ScanForSecrets(testSessionA, sc)
-
-	// Append again within debounce window.
-	fb.Append(testSessionA, []byte("data2"))
-
-	// Scan again: should be debounced and schedule a timer.
-	_ = fb.ScanForSecrets(testSessionA, sc)
-
-	fb.mu.Lock()
-	sb := fb.sessions[testSessionA]
-	timer1 := sb.scanTimer
-	fb.mu.Unlock()
-
-	// Append and scan again: timer should be reset (cancelled and rescheduled).
-	fb.Append(testSessionA, []byte("data3"))
-	_ = fb.ScanForSecrets(testSessionA, sc)
-
-	fb.mu.Lock()
-	timer2 := sb.scanTimer
-	fb.mu.Unlock()
-
-	// The timer should have been reset (new timer object).
-	if timer1 == nil || timer2 == nil {
-		t.Error("expected scan timers to be set")
-	}
 }

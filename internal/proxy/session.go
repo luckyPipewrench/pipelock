@@ -110,7 +110,6 @@ const (
 	SignalBlock                           // +3 points
 	SignalDomainAnomaly                   // +2 points
 	SignalEntropyBudget                   // +2 points (entropy budget exceeded, medium confidence)
-	SignalEntropyRate                     // +1 point (entropy rate anomaly, early warning)
 	SignalFragmentDLP                     // +3 points (fragment reassembly found secret, high confidence)
 )
 
@@ -120,7 +119,6 @@ var signalPoints = map[SignalType]float64{
 	SignalBlock:         3.0,
 	SignalDomainAnomaly: 2.0,
 	SignalEntropyBudget: 2.0,
-	SignalEntropyRate:   1.0,
 	SignalFragmentDLP:   3.0,
 }
 

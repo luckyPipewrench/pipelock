@@ -405,10 +405,6 @@ cross_request_detection:
     enabled: true
     max_buffer_bytes: 65536
     window_minutes: 5
-    rescan_debounce_ms: 1000
-  adaptive:
-    entropy_rate_threshold: 0.7
-    lookback_requests: 10
 
 # --- Agent Profiles (optional) ---
 # Per-agent policy overrides. Each agent gets its own merged config.

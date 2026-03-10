@@ -666,10 +666,6 @@ cross_request_detection:
     enabled: false
     max_buffer_bytes: 65536
     window_minutes: 5
-    rescan_debounce_ms: 1000
-  adaptive:
-    entropy_rate_threshold: 0.7
-    lookback_requests: 10
 ```
 
 | Field | Default | Description |
@@ -699,20 +695,10 @@ Buffers URL payloads per session and periodically re-scans the concatenated cont
 | `fragment_reassembly.enabled` | `false` | Enable fragment reassembly |
 | `fragment_reassembly.max_buffer_bytes` | `65536` | Max buffer size per session (64 KB). Older fragments are evicted when exceeded. |
 | `fragment_reassembly.window_minutes` | `5` | Fragment retention window in minutes. Fragments older than this are pruned. |
-| `fragment_reassembly.rescan_debounce_ms` | `1000` | Minimum milliseconds between DLP re-scans of the concatenated buffer |
 
 **Memory:** Each tracked session uses up to `max_buffer_bytes`. With 10,000 concurrent sessions (hard cap), the worst-case memory is `max_buffer_bytes * 10000` (640 MB at defaults). Reduce `max_buffer_bytes` in memory-constrained environments.
 
-### Adaptive Signals
-
-Cross-request detection feeds two signals into the adaptive enforcement score: an entropy rate signal and fragment DLP match signal.
-
-| Field | Default | Description |
-|-------|---------|-------------|
-| `adaptive.entropy_rate_threshold` | `0.7` | Entropy rate (bits per byte) above which the entropy anomaly signal fires |
-| `adaptive.lookback_requests` | `10` | Number of recent requests to average when computing entropy rate |
-
-**Scope note:** Cross-request detection scans URL content visible to the proxy. CONNECT tunnels without TLS interception only expose the target hostname. Enable `tls_interception` for full cross-request coverage on tunneled traffic.
+**Scope note:** Cross-request detection scans URL content visible to the proxy. CONNECT tunnels without TLS interception only expose the target hostname (entropy tracking only). Enable `tls_interception` for full cross-request coverage on tunneled traffic.
 
 ## Finding Suppression
 

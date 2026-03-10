@@ -41,14 +41,9 @@ func testCEEProxy(t *testing.T, ceeCfg config.CrossRequestDetection) (*httptest.
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.CrossRequestDetection = ceeCfg
 	cfg.ApplyDefaults()
-	// Override after ApplyDefaults to prevent re-population of defaults:
-	// - Internal=nil disables SSRF checks for localhost test servers
-	// - Restore zero debounce if requested (ApplyDefaults clamps 0 to 1000ms)
+	// Internal=nil disables SSRF checks for localhost test servers.
 	cfg.Internal = nil
 	cfg.APIAllowlist = nil
-	if ceeCfg.FragmentReassembly.Enabled && ceeCfg.FragmentReassembly.RescanDebounceMs == 0 {
-		cfg.CrossRequestDetection.FragmentReassembly.RescanDebounceMs = 0
-	}
 
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
@@ -163,9 +158,9 @@ func TestCEEIntegration_FragmentDLPDetection(t *testing.T) {
 		Enabled: true,
 		Action:  config.ActionBlock,
 		FragmentReassembly: config.CrossRequestFragments{
-			Enabled:          true,
-			MaxBufferBytes:   65536, // 64KB buffer per session
-			RescanDebounceMs: 0,     // no debounce, scan every request
+			Enabled:        true,
+			MaxBufferBytes: 65536, // 64KB buffer per session
+			WindowMinutes:  5,
 		},
 	}
 
@@ -206,9 +201,9 @@ func TestCEEIntegration_SessionIsolation(t *testing.T) {
 		Enabled: true,
 		Action:  config.ActionBlock,
 		FragmentReassembly: config.CrossRequestFragments{
-			Enabled:          true,
-			MaxBufferBytes:   65536,
-			RescanDebounceMs: 0,
+			Enabled:        true,
+			MaxBufferBytes: 65536,
+			WindowMinutes:  5,
 		},
 	}
 
@@ -218,7 +213,6 @@ func TestCEEIntegration_SessionIsolation(t *testing.T) {
 	cfg.ApplyDefaults()
 	cfg.Internal = nil
 	cfg.APIAllowlist = nil
-	cfg.CrossRequestDetection.FragmentReassembly.RescanDebounceMs = 0
 
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
@@ -320,9 +314,9 @@ func TestCEEIntegration_WarnMode(t *testing.T) {
 			Action:        config.ActionWarn, // entropy in warn mode
 		},
 		FragmentReassembly: config.CrossRequestFragments{
-			Enabled:          true,
-			MaxBufferBytes:   65536,
-			RescanDebounceMs: 0,
+			Enabled:        true,
+			MaxBufferBytes: 65536,
+			WindowMinutes:  5,
 		},
 	}
 

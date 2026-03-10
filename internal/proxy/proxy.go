@@ -206,7 +206,6 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 				cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes,
 				maxCEESessions,
 				cfg.CrossRequestDetection.FragmentReassembly.WindowMinutes*60, // minutes to seconds
-				cfg.CrossRequestDetection.FragmentReassembly.RescanDebounceMs,
 			)
 			p.fragmentBufferPtr.Store(fb)
 		}
@@ -347,7 +346,6 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
 				cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes,
 				maxCEESessions,
 				cfg.CrossRequestDetection.FragmentReassembly.WindowMinutes*60, // minutes to seconds
-				cfg.CrossRequestDetection.FragmentReassembly.RescanDebounceMs,
 			)
 			p.fragmentBufferPtr.Store(fb)
 		}

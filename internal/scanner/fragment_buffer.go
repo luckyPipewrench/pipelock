@@ -24,33 +24,30 @@ type fragment struct {
 type sessionBuffer struct {
 	fragments  []fragment
 	totalBytes int
-	lastScan   time.Time
-	lastAccess time.Time   // for LRU eviction across sessions
-	scanTimer  *time.Timer // delayed rescan at debounce expiry
+	lastAccess time.Time // for LRU eviction across sessions
 }
 
 // FragmentBuffer accumulates outbound payloads per session in rolling buffers.
-// Periodically runs DLP on the concatenated buffer to catch secrets split
-// across multiple requests. Thread-safe for concurrent access.
+// On each call to ScanForSecrets, the concatenated buffer is scanned against
+// DLP patterns synchronously. This guarantees pre-forward detection: a request
+// that completes a split secret is blocked before egress. Thread-safe.
 type FragmentBuffer struct {
 	mu          sync.Mutex
-	maxBytes    int           // per-session byte cap
-	maxSessions int           // global session count cap (LRU eviction)
-	windowSecs  int           // fragment retention window in seconds
-	debounceDur time.Duration // minimum interval between DLP re-scans
+	maxBytes    int // per-session byte cap
+	maxSessions int // global session count cap (LRU eviction)
+	windowSecs  int // fragment retention window in seconds
 	sessions    map[string]*sessionBuffer
 	stopCleanup chan struct{}
 	closeOnce   sync.Once
 }
 
 // NewFragmentBuffer creates a fragment buffer with the given per-session byte cap,
-// global session cap, fragment retention window, and debounce interval.
-func NewFragmentBuffer(maxBytesPerSession, maxSessions, windowSecs int, debounceMs int) *FragmentBuffer {
+// global session cap, and fragment retention window.
+func NewFragmentBuffer(maxBytesPerSession, maxSessions, windowSecs int) *FragmentBuffer {
 	fb := &FragmentBuffer{
 		maxBytes:    maxBytesPerSession,
 		maxSessions: maxSessions,
 		windowSecs:  windowSecs,
-		debounceDur: time.Duration(debounceMs) * time.Millisecond,
 		sessions:    make(map[string]*sessionBuffer),
 		stopCleanup: make(chan struct{}),
 	}
@@ -90,34 +87,14 @@ func (fb *FragmentBuffer) Append(sessionKey string, payload []byte) {
 }
 
 // ScanForSecrets runs DLP on the concatenated fragment buffer for the given session.
-// Returns nil if no matches are found, the session doesn't exist, or the scan is
-// debounced (within the debounce window from the last scan). When debounced, a
-// delayed rescan is scheduled via time.AfterFunc at the debounce expiry.
+// Always scans synchronously to guarantee pre-forward detection. Returns nil if
+// no matches are found or the session doesn't exist.
 func (fb *FragmentBuffer) ScanForSecrets(sessionKey string, sc *Scanner) []DLPMatch {
 	fb.mu.Lock()
 	sb, exists := fb.sessions[sessionKey]
 	if !exists || len(sb.fragments) == 0 {
 		fb.mu.Unlock()
 		return nil
-	}
-
-	// Two-phase debounce: if within debounce window, schedule delayed rescan.
-	if fb.debounceDur > 0 && !sb.lastScan.IsZero() {
-		elapsed := time.Since(sb.lastScan)
-		if elapsed < fb.debounceDur {
-			fb.scheduleDelayedScan(sessionKey, sb, sc)
-			fb.mu.Unlock()
-			return nil
-		}
-	}
-
-	// Update lastScan timestamp.
-	sb.lastScan = time.Now()
-
-	// Cancel any pending delayed scan since we're scanning now.
-	if sb.scanTimer != nil {
-		sb.scanTimer.Stop()
-		sb.scanTimer = nil
 	}
 
 	// Concatenate all fragments under lock, then release lock for DLP scan.
@@ -151,38 +128,10 @@ func (fb *FragmentBuffer) TotalBufferBytes() int {
 	return total
 }
 
-// Close stops the cleanup goroutine and cancels all pending scan timers.
-// Safe to call multiple times.
+// Close stops the cleanup goroutine. Safe to call multiple times.
 func (fb *FragmentBuffer) Close() {
 	fb.closeOnce.Do(func() {
 		close(fb.stopCleanup)
-		fb.mu.Lock()
-		defer fb.mu.Unlock()
-		for _, sb := range fb.sessions {
-			if sb.scanTimer != nil {
-				sb.scanTimer.Stop()
-				sb.scanTimer = nil
-			}
-		}
-	})
-}
-
-// scheduleDelayedScan sets up a time.AfterFunc to run a DLP scan after the
-// debounce window expires. Cancels any existing pending timer first.
-// Must be called with fb.mu held.
-func (fb *FragmentBuffer) scheduleDelayedScan(sessionKey string, sb *sessionBuffer, sc *Scanner) {
-	if sb.scanTimer != nil {
-		sb.scanTimer.Stop()
-	}
-	remaining := fb.debounceDur - time.Since(sb.lastScan)
-	if remaining <= 0 {
-		remaining = fb.debounceDur
-	}
-	sb.scanTimer = time.AfterFunc(remaining, func() {
-		// Delayed scan: just call ScanForSecrets which handles its own locking.
-		// Results are discarded here; the scan updates internal state and any
-		// future caller of ScanForSecrets will get fresh results.
-		_ = fb.ScanForSecrets(sessionKey, sc)
 	})
 }
 
@@ -210,10 +159,6 @@ func (fb *FragmentBuffer) evictLRUSession() {
 	}
 
 	if oldestKey != "" {
-		sb := fb.sessions[oldestKey]
-		if sb.scanTimer != nil {
-			sb.scanTimer.Stop()
-		}
 		delete(fb.sessions, oldestKey)
 	}
 }
@@ -252,9 +197,6 @@ func (fb *FragmentBuffer) cleanup() {
 
 		// Remove empty sessions entirely.
 		if len(sb.fragments) == 0 {
-			if sb.scanTimer != nil {
-				sb.scanTimer.Stop()
-			}
 			delete(fb.sessions, key)
 		}
 	}

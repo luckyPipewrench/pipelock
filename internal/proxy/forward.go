@@ -151,13 +151,29 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// CEE hostname recording for opaque CONNECT tunnels. Since we cannot
-	// inspect the encrypted tunnel contents, only record the hostname for
-	// entropy tracking. Fragment buffering is not useful without body data.
+	// CEE hostname entropy for opaque CONNECT tunnels. Since we cannot inspect
+	// the encrypted tunnel contents, only the hostname is available for entropy
+	// tracking. Fragment buffering is not useful without body data.
 	if ceeCfg := cfg.CrossRequestDetection; ceeCfg.Enabled {
 		sessionKey := ceeSessionKey(agent, clientIP)
 		if et := p.entropyTrackerPtr.Load(); et != nil && ceeCfg.EntropyBudget.Enabled {
 			et.Record(sessionKey, []byte(host))
+			if et.BudgetExceeded(sessionKey) {
+				p.metrics.RecordCrossRequestEntropyExceeded()
+				p.logger.LogBlocked(http.MethodConnect, target, "cross_request_entropy",
+					fmt.Sprintf("entropy budget exceeded: %.0f/%.0f bits",
+						et.CurrentUsage(sessionKey), et.Budget()),
+					clientIP, requestID, agent)
+				if sm := p.sessionMgrPtr.Load(); sm != nil && cfg.AdaptiveEnforcement.Enabled {
+					ceeRecordSignals(ceeResult{EntropyHit: true}, sm, sessionKey,
+						cfg.AdaptiveEnforcement.EscalationThreshold, p.logger, p.metrics, clientIP, requestID)
+				}
+				if ceeCfg.EntropyBudget.Action == config.ActionBlock {
+					p.metrics.RecordTunnelBlocked(agentLabel)
+					http.Error(w, "CONNECT blocked: cross-request entropy budget exceeded", http.StatusForbidden)
+					return
+				}
+			}
 		}
 	}
 
@@ -259,7 +275,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		interceptConn := wrapBuffered(clientConn, clientReader)
 		interceptCtx, interceptCancel := context.WithDeadline(r.Context(), deadline)
 		defer interceptCancel()
-		if err := interceptTunnel(interceptCtx, interceptConn, host, port, cfg, sc, certCache, p.logger, p.metrics, clientIP, requestID, agent, p.tlsTransport, p.ssrfSafeDialContext, p.entropyTrackerPtr.Load(), p.fragmentBufferPtr.Load()); err != nil {
+		if err := interceptTunnel(interceptCtx, interceptConn, host, port, cfg, sc, certCache, p.logger, p.metrics, clientIP, requestID, agent, p.tlsTransport, p.ssrfSafeDialContext, p.entropyTrackerPtr.Load(), p.fragmentBufferPtr.Load(), p.sessionMgrPtr.Load()); err != nil {
 			p.logger.LogError(http.MethodConnect, host, clientIP, requestID, agent, err)
 		}
 		return

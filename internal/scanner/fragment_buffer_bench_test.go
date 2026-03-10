@@ -10,7 +10,7 @@ import (
 )
 
 func BenchmarkFragmentBuffer_Append(b *testing.B) {
-	fb := NewFragmentBuffer(65536, 10000, 300, 1000) // 64KB cap, 10k sessions, 5min window, 1s debounce
+	fb := NewFragmentBuffer(65536, 10000, 300) // 64KB cap, 10k sessions, 5min window
 	b.Cleanup(fb.Close)
 
 	payload := []byte("typical-query-parameter-value-1234567890")
@@ -27,7 +27,7 @@ func BenchmarkFragmentBuffer_AppendAndScan(b *testing.B) {
 	sc := New(cfg)
 	b.Cleanup(sc.Close)
 
-	fb := NewFragmentBuffer(65536, 10000, 300, 0) // no debounce for benchmark
+	fb := NewFragmentBuffer(65536, 10000, 300) // 64KB cap, 10k sessions, 5min window
 	b.Cleanup(fb.Close)
 
 	payload := []byte("typical-query-parameter-value-1234567890")

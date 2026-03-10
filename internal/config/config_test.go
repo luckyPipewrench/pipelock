@@ -4896,14 +4896,8 @@ func TestApplyDefaults_CrossRequestDetection_Enabled(t *testing.T) {
 	if cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes != 65536 {
 		t.Fatalf("expected default max_buffer_bytes 65536, got %d", cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes)
 	}
-	if cfg.CrossRequestDetection.FragmentReassembly.RescanDebounceMs != 1000 {
-		t.Fatalf("expected default rescan_debounce_ms 1000, got %d", cfg.CrossRequestDetection.FragmentReassembly.RescanDebounceMs)
-	}
-	if cfg.CrossRequestDetection.Adaptive.EntropyRateThreshold != 0.7 {
-		t.Fatalf("expected default entropy_rate_threshold 0.7, got %f", cfg.CrossRequestDetection.Adaptive.EntropyRateThreshold)
-	}
-	if cfg.CrossRequestDetection.Adaptive.LookbackRequests != 10 {
-		t.Fatalf("expected default lookback_requests 10, got %d", cfg.CrossRequestDetection.Adaptive.LookbackRequests)
+	if cfg.CrossRequestDetection.FragmentReassembly.WindowMinutes != 5 {
+		t.Fatalf("expected default fragment window_minutes 5, got %d", cfg.CrossRequestDetection.FragmentReassembly.WindowMinutes)
 	}
 }
 
@@ -4920,9 +4914,6 @@ func TestApplyDefaults_CrossRequestDetection_DisabledSkipsDefaults(t *testing.T)
 	}
 	if cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes != 0 {
 		t.Fatalf("expected zero max_buffer_bytes when disabled, got %d", cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes)
-	}
-	if cfg.CrossRequestDetection.Adaptive.LookbackRequests != 0 {
-		t.Fatalf("expected zero lookback_requests when disabled, got %d", cfg.CrossRequestDetection.Adaptive.LookbackRequests)
 	}
 }
 
@@ -4943,10 +4934,6 @@ func TestApplyDefaults_CrossRequestDetection_SubsectionsDisabled(t *testing.T) {
 	if cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes != 0 {
 		t.Fatalf("expected zero max_buffer_bytes when fragment_reassembly disabled, got %d", cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes)
 	}
-	// Adaptive defaults still apply (no sub-section enable flag).
-	if cfg.CrossRequestDetection.Adaptive.EntropyRateThreshold != 0.7 {
-		t.Fatalf("expected default entropy_rate_threshold 0.7, got %f", cfg.CrossRequestDetection.Adaptive.EntropyRateThreshold)
-	}
 }
 
 func TestApplyDefaults_CrossRequestDetection_UserValuesPreserved(t *testing.T) {
@@ -4959,9 +4946,7 @@ func TestApplyDefaults_CrossRequestDetection_UserValuesPreserved(t *testing.T) {
 	cfg.CrossRequestDetection.EntropyBudget.Action = ActionBlock
 	cfg.CrossRequestDetection.FragmentReassembly.Enabled = true
 	cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes = 131072
-	cfg.CrossRequestDetection.FragmentReassembly.RescanDebounceMs = 500
-	cfg.CrossRequestDetection.Adaptive.EntropyRateThreshold = 0.5
-	cfg.CrossRequestDetection.Adaptive.LookbackRequests = 20
+	cfg.CrossRequestDetection.FragmentReassembly.WindowMinutes = 10
 	cfg.ApplyDefaults()
 
 	if cfg.CrossRequestDetection.Action != ActionWarn {
@@ -4979,14 +4964,8 @@ func TestApplyDefaults_CrossRequestDetection_UserValuesPreserved(t *testing.T) {
 	if cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes != 131072 {
 		t.Fatalf("user max_buffer_bytes overwritten: got %d", cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes)
 	}
-	if cfg.CrossRequestDetection.FragmentReassembly.RescanDebounceMs != 500 {
-		t.Fatalf("user rescan_debounce_ms overwritten: got %d", cfg.CrossRequestDetection.FragmentReassembly.RescanDebounceMs)
-	}
-	if cfg.CrossRequestDetection.Adaptive.EntropyRateThreshold != 0.5 {
-		t.Fatalf("user entropy_rate_threshold overwritten: got %f", cfg.CrossRequestDetection.Adaptive.EntropyRateThreshold)
-	}
-	if cfg.CrossRequestDetection.Adaptive.LookbackRequests != 20 {
-		t.Fatalf("user lookback_requests overwritten: got %d", cfg.CrossRequestDetection.Adaptive.LookbackRequests)
+	if cfg.CrossRequestDetection.FragmentReassembly.WindowMinutes != 10 {
+		t.Fatalf("user fragment window_minutes overwritten: got %d", cfg.CrossRequestDetection.FragmentReassembly.WindowMinutes)
 	}
 }
 
@@ -5079,22 +5058,6 @@ func TestValidate_CrossRequestDetection_InvalidMaxBufferBytes(t *testing.T) {
 	}
 }
 
-func TestValidate_CrossRequestDetection_InvalidRescanDebounceMs(t *testing.T) {
-	cfg := Defaults()
-	cfg.CrossRequestDetection.Enabled = true
-	cfg.CrossRequestDetection.FragmentReassembly.Enabled = true
-	cfg.ApplyDefaults()
-	// Set invalid value after defaults to bypass default population.
-	cfg.CrossRequestDetection.FragmentReassembly.RescanDebounceMs = -1
-	err := cfg.Validate()
-	if err == nil {
-		t.Fatal("expected validation error for negative rescan_debounce_ms")
-	}
-	if !strings.Contains(err.Error(), "rescan_debounce_ms") {
-		t.Errorf("error should mention rescan_debounce_ms: %v", err)
-	}
-}
-
 func TestValidate_CrossRequestDetection_DisabledSkipsValidation(t *testing.T) {
 	cfg := Defaults()
 	// Disabled, with invalid sub-values: should NOT error.
@@ -5103,17 +5066,6 @@ func TestValidate_CrossRequestDetection_DisabledSkipsValidation(t *testing.T) {
 	cfg.CrossRequestDetection.EntropyBudget.BitsPerWindow = -999
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("disabled cross_request_detection should skip validation, got: %v", err)
-	}
-}
-
-func TestValidate_CrossRequestDetection_RescanDebounceZeroValid(t *testing.T) {
-	cfg := Defaults()
-	cfg.CrossRequestDetection.Enabled = true
-	cfg.CrossRequestDetection.FragmentReassembly.Enabled = true
-	cfg.CrossRequestDetection.FragmentReassembly.RescanDebounceMs = 0
-	cfg.ApplyDefaults()
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("rescan_debounce_ms=0 should be valid: %v", err)
 	}
 }
 

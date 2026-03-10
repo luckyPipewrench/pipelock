@@ -78,7 +78,7 @@ func interceptAndRequest(
 	t.Cleanup(cancel)
 
 	go func() {
-		_ = interceptTunnel(ctx, proxyConn, host, port, cfg, sc, cache, logger, m, "10.0.0.1", "test-req-1", "", upstream.Client().Transport, nil, nil, nil)
+		_ = interceptTunnel(ctx, proxyConn, host, port, cfg, sc, cache, logger, m, "10.0.0.1", "test-req-1", "", upstream.Client().Transport, nil, nil, nil, nil)
 	}()
 
 	tlsConn := tls.Client(clientConn, &tls.Config{
@@ -167,7 +167,7 @@ func TestInterceptTunnel_AuthorityMismatch(t *testing.T) {
 	port := fmt.Sprintf("%d", upstream.Listener.Addr().(*net.TCPAddr).Port)
 
 	go func() {
-		_ = interceptTunnel(context.Background(), proxyConn, host, port, cfg, sc, cache, logger, m, "10.0.0.1", "test-req-1", "", upstream.Client().Transport, nil, nil, nil)
+		_ = interceptTunnel(context.Background(), proxyConn, host, port, cfg, sc, cache, logger, m, "10.0.0.1", "test-req-1", "", upstream.Client().Transport, nil, nil, nil, nil)
 	}()
 
 	tlsConn := tls.Client(clientConn, &tls.Config{
@@ -320,7 +320,7 @@ func TestInterceptTunnel_UpstreamError(t *testing.T) {
 	port := "9999"
 
 	go func() {
-		_ = interceptTunnel(context.Background(), proxyConn, host, port, cfg, sc, cache, logger, m, "10.0.0.1", "test-req-1", "", failingRT, nil, nil, nil)
+		_ = interceptTunnel(context.Background(), proxyConn, host, port, cfg, sc, cache, logger, m, "10.0.0.1", "test-req-1", "", failingRT, nil, nil, nil, nil)
 	}()
 
 	tlsConn := tls.Client(clientConn, &tls.Config{
@@ -502,7 +502,7 @@ func TestInterceptTunnel_HandshakeFailure(t *testing.T) {
 		testLoopbackIP, "443",
 		cfg, sc, cache, logger, m,
 		"10.0.0.1", "test-req-1", "", nil, nil,
-		nil, nil,
+		nil, nil, nil,
 	)
 
 	if err == nil {
@@ -531,7 +531,7 @@ func TestInterceptTunnel_ContextDeadline(t *testing.T) {
 		testLoopbackIP, "443",
 		cfg, sc, cache, logger, m,
 		"10.0.0.1", "test-req-1", "", nil, nil,
-		nil, nil,
+		nil, nil, nil,
 	)
 
 	if err == nil {
@@ -663,7 +663,7 @@ func TestInterceptTunnel_HostPortMismatch(t *testing.T) {
 		_ = interceptTunnel(context.Background(), proxyConn, host, port,
 			cfg, sc, cache, logger, m,
 			"10.0.0.1", "test-req-1", "", upstream.Client().Transport, nil,
-			nil, nil,
+			nil, nil, nil,
 		)
 	}()
 
@@ -826,7 +826,7 @@ func TestInterceptTunnel_ResponseReadError(t *testing.T) {
 		_ = interceptTunnel(context.Background(), proxyConn, host, port,
 			cfg, sc, cache, logger, m,
 			"10.0.0.1", "test-req-1", "", failRT, nil,
-			nil, nil,
+			nil, nil, nil,
 		)
 	}()
 
@@ -940,7 +940,7 @@ func TestInterceptTunnel_CompressedResponseBlockedViaRoundTripper(t *testing.T) 
 		_ = interceptTunnel(ctx, proxyConn, host, port,
 			cfg, sc, cache, logger, m,
 			"10.0.0.1", "test-req-1", "", compressedRT, nil,
-			nil, nil,
+			nil, nil, nil,
 		)
 	}()
 

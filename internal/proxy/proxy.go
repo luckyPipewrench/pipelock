@@ -871,6 +871,40 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// CEE pre-forward admission: check cross-request entropy and fragment
+	// reassembly before the outbound request leaves the proxy. Fetch is
+	// GET-only so the outbound data is the query parameters from the target URL.
+	ceeCfg := cfg.CrossRequestDetection
+	if ceeCfg.Enabled {
+		sessionKey := ceeSessionKey(agent, clientIP)
+		var outbound []byte
+		if qv := parsed.Query(); len(qv) > 0 {
+			var parts []string
+			for _, values := range qv {
+				parts = append(parts, values...)
+			}
+			outbound = []byte(strings.Join(parts, ""))
+		}
+
+		ceeRes := ceeAdmit(sessionKey, outbound, displayURL, agent, clientIP, requestID,
+			ceeCfg, p.entropyTrackerPtr.Load(), p.fragmentBufferPtr.Load(), sc, log, p.metrics)
+
+		if sm := p.sessionMgrPtr.Load(); sm != nil && cfg.AdaptiveEnforcement.Enabled {
+			ceeRecordSignals(ceeRes, sm, sessionKey, cfg.AdaptiveEnforcement.EscalationThreshold, log, p.metrics, clientIP, requestID)
+		}
+
+		if ceeRes.Blocked {
+			p.metrics.RecordBlocked(parsed.Hostname(), "cross_request", time.Since(start), agentLabel)
+			writeJSON(w, http.StatusForbidden, FetchResponse{
+				URL:         displayURL,
+				Agent:       agent,
+				Blocked:     true,
+				BlockReason: ceeRes.Reason,
+			})
+			return
+		}
+	}
+
 	// Fetch the URL — attach clientIP/requestID/agent and resolved agent
 	// config/scanner to context for redirect logging and per-agent redirect enforcement.
 	ctx := context.WithValue(r.Context(), ctxKeyClientIP, clientIP)

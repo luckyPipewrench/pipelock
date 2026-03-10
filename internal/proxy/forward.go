@@ -151,6 +151,16 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// CEE hostname recording for opaque CONNECT tunnels. Since we cannot
+	// inspect the encrypted tunnel contents, only record the hostname for
+	// entropy tracking. Fragment buffering is not useful without body data.
+	if ceeCfg := cfg.CrossRequestDetection; ceeCfg.Enabled {
+		sessionKey := ceeSessionKey(agent, clientIP)
+		if et := p.entropyTrackerPtr.Load(); et != nil && ceeCfg.EntropyBudget.Enabled {
+			et.Record(sessionKey, []byte(host))
+		}
+	}
+
 	// WebSocket redirect hint: if the target host matches the redirect list
 	// and WebSocket proxy is enabled, suggest using /ws instead of CONNECT.
 	// Checked BEFORE dial to avoid wasting a TCP connection.
@@ -249,7 +259,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		interceptConn := wrapBuffered(clientConn, clientReader)
 		interceptCtx, interceptCancel := context.WithDeadline(r.Context(), deadline)
 		defer interceptCancel()
-		if err := interceptTunnel(interceptCtx, interceptConn, host, port, cfg, sc, certCache, p.logger, p.metrics, clientIP, requestID, agent, p.tlsTransport, p.ssrfSafeDialContext); err != nil {
+		if err := interceptTunnel(interceptCtx, interceptConn, host, port, cfg, sc, certCache, p.logger, p.metrics, clientIP, requestID, agent, p.tlsTransport, p.ssrfSafeDialContext, p.entropyTrackerPtr.Load(), p.fragmentBufferPtr.Load()); err != nil {
 			p.logger.LogError(http.MethodConnect, host, clientIP, requestID, agent, err)
 		}
 		return
@@ -443,6 +453,28 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	if p.evalHeaderDLP(r.Header, cfg, sc, p.logger, r.Method, targetURL, r.URL.Hostname(), clientIP, requestID, agent, start) {
 		http.Error(w, "blocked: request header contains secret", http.StatusForbidden)
 		return
+	}
+
+	// CEE pre-forward admission: check cross-request entropy and fragment
+	// reassembly before the outbound request leaves. Forward proxy has both
+	// URL query params and request body as outbound data.
+	ceeCfg := cfg.CrossRequestDetection
+	if ceeCfg.Enabled {
+		sessionKey := ceeSessionKey(agent, clientIP)
+		outbound := extractOutboundPayload(r)
+
+		ceeRes := ceeAdmit(sessionKey, outbound, targetURL, agent, clientIP, requestID,
+			ceeCfg, p.entropyTrackerPtr.Load(), p.fragmentBufferPtr.Load(), sc, p.logger, p.metrics)
+
+		if sm := p.sessionMgrPtr.Load(); sm != nil && cfg.AdaptiveEnforcement.Enabled {
+			ceeRecordSignals(ceeRes, sm, sessionKey, cfg.AdaptiveEnforcement.EscalationThreshold, p.logger, p.metrics, clientIP, requestID)
+		}
+
+		if ceeRes.Blocked {
+			p.metrics.RecordBlocked(r.URL.Hostname(), "cross_request", time.Since(start), agentLabel)
+			http.Error(w, "blocked: "+ceeRes.Reason, http.StatusForbidden)
+			return
+		}
 	}
 
 	// Clone request with context keys so CheckRedirect uses the per-agent

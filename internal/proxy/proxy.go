@@ -207,6 +207,8 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 		}
 	}
 
+	p.updateCEEStats()
+
 	p.dialer = &net.Dialer{
 		Timeout:   10 * time.Second,
 		KeepAlive: 30 * time.Second,
@@ -345,6 +347,8 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
 			p.fragmentBufferPtr.Store(fb)
 		}
 	}
+
+	p.updateCEEStats()
 }
 
 // LoadCertCache creates or replaces the cert cache based on current config.
@@ -387,6 +391,23 @@ func (p *Proxy) ShutdownAgentServers() {
 		_ = srv.Shutdown(ctx)
 		cancel()
 	}
+}
+
+// updateCEEStats registers a callback that returns live CEE state for the
+// /stats endpoint. The callback reads atomic pointers, so it captures the
+// proxy reference once and queries current state on each /stats request.
+func (p *Proxy) updateCEEStats() {
+	p.metrics.SetCEEStatsFunc(func() metrics.CEEStats {
+		var stats metrics.CEEStats
+		if et := p.entropyTrackerPtr.Load(); et != nil {
+			stats.EntropyTrackerActive = true
+		}
+		if fb := p.fragmentBufferPtr.Load(); fb != nil {
+			stats.FragmentBufferActive = true
+			stats.FragmentBufferBytes = fb.TotalBufferBytes()
+		}
+		return stats
+	})
 }
 
 func (p *Proxy) Close() {

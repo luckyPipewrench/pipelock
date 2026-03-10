@@ -1205,3 +1205,55 @@ func TestStatsHandler_NoAgentsWhenEmpty(t *testing.T) {
 		t.Error("expected no agents key in empty stats response")
 	}
 }
+
+func TestStatsHandler_CEEDefaults(t *testing.T) {
+	m := New()
+
+	req := httptest.NewRequest(http.MethodGet, "/stats", nil)
+	w := httptest.NewRecorder()
+	m.StatsHandler().ServeHTTP(w, req)
+
+	var stats statsResponse
+	if err := json.NewDecoder(w.Body).Decode(&stats); err != nil {
+		t.Fatalf("failed to decode stats: %v", err)
+	}
+	// Without a CEE stats func, all CEE fields should be zero/false.
+	if stats.CEE.EntropyTrackerActive {
+		t.Error("expected entropy_tracker_active=false without callback")
+	}
+	if stats.CEE.FragmentBufferActive {
+		t.Error("expected fragment_buffer_active=false without callback")
+	}
+	if stats.CEE.FragmentBufferBytes != 0 {
+		t.Errorf("expected fragment_buffer_bytes=0, got %d", stats.CEE.FragmentBufferBytes)
+	}
+}
+
+func TestStatsHandler_CEEWithCallback(t *testing.T) {
+	m := New()
+	m.SetCEEStatsFunc(func() CEEStats {
+		return CEEStats{
+			EntropyTrackerActive: true,
+			FragmentBufferActive: true,
+			FragmentBufferBytes:  12345,
+		}
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/stats", nil)
+	w := httptest.NewRecorder()
+	m.StatsHandler().ServeHTTP(w, req)
+
+	var stats statsResponse
+	if err := json.NewDecoder(w.Body).Decode(&stats); err != nil {
+		t.Fatalf("failed to decode stats: %v", err)
+	}
+	if !stats.CEE.EntropyTrackerActive {
+		t.Error("expected entropy_tracker_active=true")
+	}
+	if !stats.CEE.FragmentBufferActive {
+		t.Error("expected fragment_buffer_active=true")
+	}
+	if stats.CEE.FragmentBufferBytes != 12345 {
+		t.Errorf("expected fragment_buffer_bytes=12345, got %d", stats.CEE.FragmentBufferBytes)
+	}
+}

@@ -113,6 +113,27 @@ These techniques try to exfiltrate secrets through request bodies or headers ins
 
 **Scope note:** Request body and header scanning applies to forward HTTP proxy (absolute-URI requests), fetch handler headers, and intercepted CONNECT tunnels (when `tls_interception.enabled` is true). Unintercepted CONNECT tunnels carry TLS-encrypted traffic where bodies and headers are not visible.
 
+## Cross-Request Exfiltration
+
+These techniques spread secret data across multiple independent requests to stay below per-request detection thresholds.
+
+| Technique | Variant | Status | How |
+|-----------|---------|--------|-----|
+| Split secret across requests | A: one piece per URL, separate requests | Tested | Fragment reassembly buffers URL payloads per session, re-scans concatenated content against DLP |
+| Encode-then-split | B: base64 the secret, split the encoded form | Tested | Fragment buffer decodes reassembled content through the same multi-encoding pipeline as single-request DLP |
+| Low-entropy drip | C1: small pieces that individually look benign | Tested | Entropy budget tracks cumulative Shannon entropy per session across a sliding window. Exceeding the budget triggers the configured action. |
+| Covert channel exfiltration | C2: timing, header ordering, HTTP/2 frame flags | Not covered | These channels carry bits outside the URL/body content layer. Detecting them requires protocol-level analysis beyond content inspection. Documented gap. |
+
+**Two detection mechanisms:**
+
+- **Entropy budget:** tracks the cumulative information content (Shannon entropy bits) of URL payloads per session within a sliding time window. When total bits exceed the configured threshold (`bits_per_window`), the request triggers the configured action. This catches slow-drip exfiltration where each individual request looks clean.
+
+- **Fragment reassembly:** buffers URL payloads per session and periodically re-scans the concatenated content against DLP patterns. A debounce timer prevents re-scanning on every request. When the concatenated buffer matches a DLP pattern, the match is reported. Buffer size is capped per session to prevent memory exhaustion.
+
+**Corroboration with adaptive enforcement:** Both entropy budget and fragment DLP hits feed into the per-session adaptive enforcement score. An agent that triggers both signals (high cumulative entropy AND a fragment DLP match) escalates faster than one triggering either alone. This stacking makes it harder for an attacker to stay below all thresholds simultaneously.
+
+**Coverage gap:** Cross-request detection scans URL content visible to the proxy. For CONNECT tunnels without TLS interception, only the target hostname is visible (not the request body or path). Enable `tls_interception.enabled: true` to get full cross-request coverage on CONNECT traffic.
+
 ## Known Limitations
 
 These are things pipelock does not protect against. If your threat model includes these, you need additional controls.

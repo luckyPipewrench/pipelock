@@ -81,6 +81,10 @@ type Metrics struct {
 	sessionAnomalyCount    int64
 	sessionEscalationCount int64
 	topAnomalyTypes        map[string]int64
+
+	// Cross-request exfiltration stats callback (for JSON /stats endpoint).
+	// Called on each /stats request to get live CEE state.
+	CEEStatsFunc func() CEEStats
 }
 
 // agentCounters tracks per-agent request counts for the /stats endpoint.
@@ -574,6 +578,17 @@ func (m *Metrics) SetCrossRequestFragmentBytes(bytes float64) {
 	}
 }
 
+// SetCEEStatsFunc registers a callback that returns live CEE state for the
+// /stats endpoint. Called on each /stats request (not on every proxy request).
+func (m *Metrics) SetCEEStatsFunc(fn func() CEEStats) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.CEEStatsFunc = fn
+	m.mu.Unlock()
+}
+
 // RegisterKillSwitchState registers a custom collector that reports the
 // current kill switch state as pipelock_kill_switch_active{source=...}
 // gauges. The sourceFunc is called once per Prometheus scrape and should
@@ -654,6 +669,7 @@ func (m *Metrics) StatsHandler() http.HandlerFunc {
 				TopAnomalies: topN(m.topAnomalyTypes),
 			},
 		}
+		ceeFunc := m.CEEStatsFunc
 		if total > 0 {
 			stats.Requests.BlockRate = float64(m.blockedCount) / float64(total)
 		}
@@ -669,6 +685,11 @@ func (m *Metrics) StatsHandler() http.HandlerFunc {
 		}
 		m.mu.Unlock()
 
+		// Call CEE stats func outside the lock (it accesses proxy atomic pointers).
+		if ceeFunc != nil {
+			stats.CEE = ceeFunc()
+		}
+
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(stats)
 	}
@@ -682,7 +703,14 @@ type statsResponse struct {
 	TopBlockedDomains []rankedEntry            `json:"top_blocked_domains"`
 	TopScanners       []rankedEntry            `json:"top_scanners"`
 	Sessions          sessionStats             `json:"sessions"`
+	CEE               CEEStats                 `json:"cross_request_detection"`
 	Agents            map[string]agentStatsOut `json:"agents,omitempty"`
+}
+
+type CEEStats struct {
+	EntropyTrackerActive bool `json:"entropy_tracker_active"`
+	FragmentBufferActive bool `json:"fragment_buffer_active"`
+	FragmentBufferBytes  int  `json:"fragment_buffer_bytes"`
 }
 
 type agentStatsOut struct {

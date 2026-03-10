@@ -350,6 +350,23 @@ tool_chain_detection:
   enabled: true
   action: block
 
+# Cross-request exfiltration detection
+cross_request_detection:
+  enabled: true
+  action: block
+  entropy_budget:
+    enabled: true
+    bits_per_window: 4096
+    window_minutes: 5
+    action: warn
+  fragment_reassembly:
+    enabled: true
+    max_buffer_bytes: 65536
+    rescan_debounce_ms: 1000
+  adaptive:
+    entropy_rate_threshold: 0.7
+    lookback_requests: 10
+
 # Kill switch preconfigured with sentinel file.
 # Touch /tmp/pipelock-kill to instantly deny all traffic.
 kill_switch:

@@ -404,6 +404,7 @@ cross_request_detection:
   fragment_reassembly:
     enabled: true
     max_buffer_bytes: 65536
+    window_minutes: 5
     rescan_debounce_ms: 1000
   adaptive:
     entropy_rate_threshold: 0.7

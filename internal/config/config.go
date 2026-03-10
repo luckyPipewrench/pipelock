@@ -438,6 +438,7 @@ type CrossRequestEntropyBudget struct {
 type CrossRequestFragments struct {
 	Enabled          bool `yaml:"enabled"`
 	MaxBufferBytes   int  `yaml:"max_buffer_bytes"`   // per-session rolling buffer cap
+	WindowMinutes    int  `yaml:"window_minutes"`     // fragment retention window (independent of entropy budget)
 	RescanDebounceMs int  `yaml:"rescan_debounce_ms"` // minimum ms between DLP re-scans
 }
 
@@ -902,6 +903,9 @@ func (c *Config) ApplyDefaults() {
 			if c.CrossRequestDetection.FragmentReassembly.MaxBufferBytes <= 0 {
 				c.CrossRequestDetection.FragmentReassembly.MaxBufferBytes = 65536 // 64KB per session
 			}
+			if c.CrossRequestDetection.FragmentReassembly.WindowMinutes <= 0 {
+				c.CrossRequestDetection.FragmentReassembly.WindowMinutes = 5
+			}
 			if c.CrossRequestDetection.FragmentReassembly.RescanDebounceMs <= 0 {
 				c.CrossRequestDetection.FragmentReassembly.RescanDebounceMs = 1000
 			}
@@ -1283,6 +1287,9 @@ func (c *Config) Validate() error {
 		if c.CrossRequestDetection.FragmentReassembly.Enabled {
 			if c.CrossRequestDetection.FragmentReassembly.MaxBufferBytes <= 0 {
 				return fmt.Errorf("cross_request_detection.fragment_reassembly.max_buffer_bytes must be > 0")
+			}
+			if c.CrossRequestDetection.FragmentReassembly.WindowMinutes <= 0 {
+				return fmt.Errorf("cross_request_detection.fragment_reassembly.window_minutes must be > 0")
 			}
 			if c.CrossRequestDetection.FragmentReassembly.RescanDebounceMs < 0 {
 				return fmt.Errorf("cross_request_detection.fragment_reassembly.rescan_debounce_ms must be >= 0")

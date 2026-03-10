@@ -273,20 +273,24 @@ func New() *Metrics {
 	}, []string{"reason"})
 
 	crossRequestEntropyExceeded := prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "pipelock_cross_request_entropy_exceeded_total",
-		Help: "Entropy budget exceeded events",
+		Namespace: "pipelock",
+		Name:      "cross_request_entropy_exceeded_total",
+		Help:      "Entropy budget exceeded events.",
 	})
 	crossRequestDLPMatch := prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "pipelock_cross_request_dlp_match_total",
-		Help: "Fragment reassembly DLP match events",
+		Namespace: "pipelock",
+		Name:      "cross_request_dlp_match_total",
+		Help:      "Fragment reassembly DLP match events.",
 	})
 	crossRequestEntropyAnomaly := prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "pipelock_cross_request_entropy_anomaly_total",
-		Help: "Adaptive entropy rate signal events",
+		Namespace: "pipelock",
+		Name:      "cross_request_entropy_anomaly_total",
+		Help:      "Adaptive entropy rate signal events.",
 	})
 	crossRequestFragmentBytes := prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "pipelock_cross_request_fragment_buffer_bytes",
-		Help: "Total fragment buffer memory across all sessions",
+		Namespace: "pipelock",
+		Name:      "cross_request_fragment_buffer_bytes",
+		Help:      "Total fragment buffer memory across all sessions.",
 	})
 
 	reg.MustRegister(requestsTotal, scannerHits, requestLatency,

@@ -665,6 +665,7 @@ cross_request_detection:
   fragment_reassembly:
     enabled: false
     max_buffer_bytes: 65536
+    window_minutes: 5
     rescan_debounce_ms: 1000
   adaptive:
     entropy_rate_threshold: 0.7
@@ -697,6 +698,7 @@ Buffers URL payloads per session and periodically re-scans the concatenated cont
 |-------|---------|-------------|
 | `fragment_reassembly.enabled` | `false` | Enable fragment reassembly |
 | `fragment_reassembly.max_buffer_bytes` | `65536` | Max buffer size per session (64 KB). Older fragments are evicted when exceeded. |
+| `fragment_reassembly.window_minutes` | `5` | Fragment retention window in minutes. Fragments older than this are pruned. |
 | `fragment_reassembly.rescan_debounce_ms` | `1000` | Minimum milliseconds between DLP re-scans of the concatenated buffer |
 
 **Memory:** Each tracked session uses up to `max_buffer_bytes`. With 10,000 concurrent sessions (hard cap), the worst-case memory is `max_buffer_bytes * 10000` (640 MB at defaults). Reduce `max_buffer_bytes` in memory-constrained environments.

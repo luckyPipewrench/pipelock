@@ -50,6 +50,11 @@ const (
 const (
 	schemeHTTP  = "http"
 	schemeHTTPS = "https"
+
+	// maxCEESessions bounds memory used by fragment tracking across all sessions.
+	// 10,000 sessions at 64KB each = ~640MB worst case. In practice, most
+	// deployments have <100 concurrent sessions.
+	maxCEESessions = 10000
 )
 
 // requestCounter provides monotonic request IDs.
@@ -199,8 +204,8 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 		if cfg.CrossRequestDetection.FragmentReassembly.Enabled {
 			fb := scanner.NewFragmentBuffer(
 				cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes,
-				10000, // max concurrent sessions for fragment tracking
-				cfg.CrossRequestDetection.EntropyBudget.WindowMinutes*60, // minutes to seconds
+				maxCEESessions,
+				cfg.CrossRequestDetection.FragmentReassembly.WindowMinutes*60, // minutes to seconds
 				cfg.CrossRequestDetection.FragmentReassembly.RescanDebounceMs,
 			)
 			p.fragmentBufferPtr.Store(fb)
@@ -340,8 +345,8 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
 		if cfg.CrossRequestDetection.FragmentReassembly.Enabled {
 			fb := scanner.NewFragmentBuffer(
 				cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes,
-				10000, // max concurrent sessions for fragment tracking
-				cfg.CrossRequestDetection.EntropyBudget.WindowMinutes*60, // minutes to seconds
+				maxCEESessions,
+				cfg.CrossRequestDetection.FragmentReassembly.WindowMinutes*60, // minutes to seconds
 				cfg.CrossRequestDetection.FragmentReassembly.RescanDebounceMs,
 			)
 			p.fragmentBufferPtr.Store(fb)
@@ -898,14 +903,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	ceeCfg := cfg.CrossRequestDetection
 	if ceeCfg.Enabled {
 		sessionKey := ceeSessionKey(agent, clientIP)
-		var outbound []byte
-		if qv := parsed.Query(); len(qv) > 0 {
-			var parts []string
-			for _, values := range qv {
-				parts = append(parts, values...)
-			}
-			outbound = []byte(strings.Join(parts, ""))
-		}
+		outbound := queryParamPayload(parsed)
 
 		ceeRes := ceeAdmit(sessionKey, outbound, displayURL, agent, clientIP, requestID,
 			ceeCfg, p.entropyTrackerPtr.Load(), p.fragmentBufferPtr.Load(), sc, log, p.metrics)

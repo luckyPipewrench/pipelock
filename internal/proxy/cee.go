@@ -4,9 +4,11 @@
 package proxy
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
@@ -29,9 +31,24 @@ func ceeSessionKey(agent, clientIP string) string {
 // Larger bodies are unlikely to be fragment-based exfiltration attempts.
 const maxCEEBodyRead = 65536 // 64KB
 
+// queryParamPayload extracts query parameter values from a URL as a single
+// byte slice. Keys are not included (they are not agent-controlled data).
+func queryParamPayload(u *url.URL) []byte {
+	qv := u.Query()
+	if len(qv) == 0 {
+		return nil
+	}
+	var parts []string
+	for _, values := range qv {
+		parts = append(parts, values...)
+	}
+	return []byte(strings.Join(parts, ""))
+}
+
 // extractOutboundPayload extracts the outbound data visible to the proxy
 // for entropy measurement and fragment buffering. Includes query parameter
-// values and request body content.
+// values and request body content. Re-wraps r.Body after reading so
+// downstream handlers can still consume it.
 func extractOutboundPayload(r *http.Request) []byte {
 	var parts []string
 
@@ -40,13 +57,16 @@ func extractOutboundPayload(r *http.Request) []byte {
 		parts = append(parts, values...)
 	}
 
-	// Request body (limited read to bound memory).
+	// Request body (limited read to bound memory). Re-wrap after reading
+	// so the forwarded request still has body data for the upstream.
 	if r.Body != nil && r.ContentLength != 0 {
 		limited := io.LimitReader(r.Body, maxCEEBodyRead)
 		bodyBytes, err := io.ReadAll(limited)
 		if err == nil && len(bodyBytes) > 0 {
 			parts = append(parts, string(bodyBytes))
 		}
+		// Concatenate read bytes with any remaining body data beyond the limit.
+		r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(bodyBytes), r.Body))
 	}
 
 	return []byte(strings.Join(parts, ""))
@@ -144,9 +164,9 @@ func ceeRecordSignals(result ceeResult, sm *SessionManager, sessionKey string, t
 		}
 	}
 	if result.FragmentHit {
-		// Fragment DLP match is a higher-confidence signal than entropy alone.
-		// Use the same escalation threshold for consistency.
-		if escalated, from, to := sess.RecordSignal(SignalEntropyBudget, threshold); escalated {
+		// Fragment DLP match is high-confidence (reconstructed secret from fragments).
+		// Use SignalFragmentDLP (3 points, same as SignalBlock) for strong escalation.
+		if escalated, from, to := sess.RecordSignal(SignalFragmentDLP, threshold); escalated {
 			logger.LogAdaptiveEscalation(sessionKey, from, to, clientIP, requestID, sess.ThreatScore())
 			m.RecordSessionEscalation(from, to)
 		}

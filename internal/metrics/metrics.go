@@ -59,6 +59,12 @@ type Metrics struct {
 	tlsRequestBlocked    *prometheus.CounterVec
 	tlsResponseBlocked   *prometheus.CounterVec
 
+	// Cross-request exfiltration detection
+	CrossRequestEntropyExceeded prometheus.Counter
+	CrossRequestDLPMatch        prometheus.Counter
+	CrossRequestEntropyAnomaly  prometheus.Counter
+	CrossRequestFragmentBytes   prometheus.Gauge
+
 	wsConnectionCount int64
 
 	mu                sync.Mutex
@@ -262,49 +268,71 @@ func New() *Metrics {
 		Help:      "Total TLS-intercepted responses blocked by reason.",
 	}, []string{"reason"})
 
+	crossRequestEntropyExceeded := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "pipelock_cross_request_entropy_exceeded_total",
+		Help: "Entropy budget exceeded events",
+	})
+	crossRequestDLPMatch := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "pipelock_cross_request_dlp_match_total",
+		Help: "Fragment reassembly DLP match events",
+	})
+	crossRequestEntropyAnomaly := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "pipelock_cross_request_entropy_anomaly_total",
+		Help: "Adaptive entropy rate signal events",
+	})
+	crossRequestFragmentBytes := prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "pipelock_cross_request_fragment_buffer_bytes",
+		Help: "Total fragment buffer memory across all sessions",
+	})
+
 	reg.MustRegister(requestsTotal, scannerHits, requestLatency,
 		tunnelsTotal, tunnelDuration, tunnelBytes, activeTunnels,
 		wsConnectionsTotal, wsDuration, wsBytes, activeWS, wsFrames, wsScanHits, wsRedirectHints,
 		killSwitchDenials, chainDetections, sniTotal,
 		bodyDLPHits, headerDLPHits,
 		sessionAnomalies, sessionEscalations, sessionsActive, sessionsEvicted,
-		tlsInterceptTotal, tlsCertCacheSize, tlsHandshakeDuration, tlsRequestBlocked, tlsResponseBlocked)
+		tlsInterceptTotal, tlsCertCacheSize, tlsHandshakeDuration, tlsRequestBlocked, tlsResponseBlocked,
+		crossRequestEntropyExceeded, crossRequestDLPMatch, crossRequestEntropyAnomaly, crossRequestFragmentBytes)
 
 	return &Metrics{
-		registry:             reg,
-		requestsTotal:        requestsTotal,
-		scannerHits:          scannerHits,
-		requestLatency:       requestLatency,
-		tunnelsTotal:         tunnelsTotal,
-		tunnelDuration:       tunnelDuration,
-		tunnelBytes:          tunnelBytes,
-		activeTunnels:        activeTunnels,
-		wsConnectionsTotal:   wsConnectionsTotal,
-		wsDuration:           wsDuration,
-		wsBytes:              wsBytes,
-		activeWS:             activeWS,
-		wsFrames:             wsFrames,
-		wsScanHits:           wsScanHits,
-		wsRedirectHints:      wsRedirectHints,
-		killSwitchDenials:    killSwitchDenials,
-		chainDetections:      chainDetections,
-		sniTotal:             sniTotal,
-		bodyDLPHits:          bodyDLPHits,
-		headerDLPHits:        headerDLPHits,
-		sessionAnomalies:     sessionAnomalies,
-		sessionEscalations:   sessionEscalations,
-		sessionsActive:       sessionsActive,
-		sessionsEvicted:      sessionsEvicted,
-		tlsInterceptTotal:    tlsInterceptTotal,
-		tlsCertCacheSize:     tlsCertCacheSize,
-		tlsHandshakeDuration: tlsHandshakeDuration,
-		tlsRequestBlocked:    tlsRequestBlocked,
-		tlsResponseBlocked:   tlsResponseBlocked,
-		startTime:            time.Now(),
-		topBlockedDomains:    make(map[string]int64),
-		topScannerHits:       make(map[string]int64),
-		topAnomalyTypes:      make(map[string]int64),
-		agentStats:           make(map[string]*agentCounters),
+		registry:                    reg,
+		requestsTotal:               requestsTotal,
+		scannerHits:                 scannerHits,
+		requestLatency:              requestLatency,
+		tunnelsTotal:                tunnelsTotal,
+		tunnelDuration:              tunnelDuration,
+		tunnelBytes:                 tunnelBytes,
+		activeTunnels:               activeTunnels,
+		wsConnectionsTotal:          wsConnectionsTotal,
+		wsDuration:                  wsDuration,
+		wsBytes:                     wsBytes,
+		activeWS:                    activeWS,
+		wsFrames:                    wsFrames,
+		wsScanHits:                  wsScanHits,
+		wsRedirectHints:             wsRedirectHints,
+		killSwitchDenials:           killSwitchDenials,
+		chainDetections:             chainDetections,
+		sniTotal:                    sniTotal,
+		bodyDLPHits:                 bodyDLPHits,
+		headerDLPHits:               headerDLPHits,
+		sessionAnomalies:            sessionAnomalies,
+		sessionEscalations:          sessionEscalations,
+		sessionsActive:              sessionsActive,
+		sessionsEvicted:             sessionsEvicted,
+		tlsInterceptTotal:           tlsInterceptTotal,
+		tlsCertCacheSize:            tlsCertCacheSize,
+		tlsHandshakeDuration:        tlsHandshakeDuration,
+		tlsRequestBlocked:           tlsRequestBlocked,
+		tlsResponseBlocked:          tlsResponseBlocked,
+		CrossRequestEntropyExceeded: crossRequestEntropyExceeded,
+		CrossRequestDLPMatch:        crossRequestDLPMatch,
+		CrossRequestEntropyAnomaly:  crossRequestEntropyAnomaly,
+		CrossRequestFragmentBytes:   crossRequestFragmentBytes,
+		startTime:                   time.Now(),
+		topBlockedDomains:           make(map[string]int64),
+		topScannerHits:              make(map[string]int64),
+		topAnomalyTypes:             make(map[string]int64),
+		agentStats:                  make(map[string]*agentCounters),
 	}
 }
 
@@ -516,6 +544,34 @@ func (m *Metrics) RecordTLSRequestBlocked(reason string) {
 // RecordTLSResponseBlocked increments the TLS response blocked counter by reason.
 func (m *Metrics) RecordTLSResponseBlocked(reason string) {
 	m.tlsResponseBlocked.WithLabelValues(reason).Inc()
+}
+
+// RecordCrossRequestEntropyExceeded increments the cross-request entropy exceeded counter.
+func (m *Metrics) RecordCrossRequestEntropyExceeded() {
+	if m != nil {
+		m.CrossRequestEntropyExceeded.Inc()
+	}
+}
+
+// RecordCrossRequestDLPMatch increments the cross-request fragment DLP match counter.
+func (m *Metrics) RecordCrossRequestDLPMatch() {
+	if m != nil {
+		m.CrossRequestDLPMatch.Inc()
+	}
+}
+
+// RecordCrossRequestEntropyAnomaly increments the cross-request entropy anomaly counter.
+func (m *Metrics) RecordCrossRequestEntropyAnomaly() {
+	if m != nil {
+		m.CrossRequestEntropyAnomaly.Inc()
+	}
+}
+
+// SetCrossRequestFragmentBytes sets the total fragment buffer memory gauge.
+func (m *Metrics) SetCrossRequestFragmentBytes(bytes float64) {
+	if m != nil {
+		m.CrossRequestFragmentBytes.Set(bytes)
+	}
 }
 
 // RegisterKillSwitchState registers a custom collector that reports the

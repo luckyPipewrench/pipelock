@@ -25,6 +25,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -2610,5 +2611,75 @@ func TestValidateRPCStructure(t *testing.T) {
 				t.Errorf("validateRPCStructure() = %q, want %q", got, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestScanHTTPInput_CEEBlocksClean(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+
+	// Tiny entropy budget so any message exceeds it.
+	et := scanner.NewEntropyTracker(1.0, 300)
+	t.Cleanup(et.Close)
+	m := metrics.New()
+	ceeCfg := &config.CrossRequestDetection{
+		EntropyBudget: config.CrossRequestEntropyBudget{
+			Enabled:       true,
+			BitsPerWindow: 1.0,
+			WindowMinutes: 5,
+			Action:        config.ActionBlock,
+		},
+	}
+	cee := &CEEDeps{Tracker: et, Metrics: m, Config: ceeCfg}
+
+	msg := makeRequest(1, "tools/list", nil)
+	blocked := scanHTTPInput([]byte(msg), sc, io.Discard, nil, nil, nil, "default", "default", nil, cee)
+	if blocked == nil {
+		t.Fatal("expected CEE to block clean message with exceeded entropy budget")
+	}
+	if blocked.ErrorCode != -32005 {
+		t.Errorf("ErrorCode = %d, want -32005", blocked.ErrorCode)
+	}
+}
+
+func TestScanHTTPInput_CEEBlocksWarnMode(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+
+	// Tiny entropy budget so any message exceeds it.
+	et := scanner.NewEntropyTracker(1.0, 300)
+	t.Cleanup(et.Close)
+	m := metrics.New()
+	ceeCfg := &config.CrossRequestDetection{
+		EntropyBudget: config.CrossRequestEntropyBudget{
+			Enabled:       true,
+			BitsPerWindow: 1.0,
+			WindowMinutes: 5,
+			Action:        config.ActionBlock,
+		},
+	}
+	cee := &CEEDeps{Tracker: et, Metrics: m, Config: ceeCfg}
+
+	inputCfg := &InputScanConfig{
+		Enabled:      true,
+		Action:       "warn",
+		OnParseError: config.ActionBlock,
+	}
+
+	// A clean tools/list triggers warn path with dirty-looking content flag.
+	// The content scan finds nothing, so it goes clean → CEE check.
+	// Use a message that triggers content warn instead.
+	secret := "sk-ant-" + strings.Repeat("x", 25)
+	msg := makeRequest(1, "tools/call", map[string]string{"data": secret})
+	blocked := scanHTTPInput([]byte(msg), sc, io.Discard, inputCfg, nil, nil, "default", "default", nil, cee)
+	if blocked == nil {
+		t.Fatal("expected CEE to block in warn mode path")
+	}
+	if blocked.ErrorCode != -32005 {
+		t.Errorf("ErrorCode = %d, want -32005", blocked.ErrorCode)
 	}
 }

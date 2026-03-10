@@ -9,11 +9,17 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
 )
 
 const (
-	testCEEClientIP = "10.0.0.1"
-	testCEEAgent    = "test-agent"
+	testCEEClientIP   = "10.0.0.1"
+	testCEEAgent      = "test-agent"
+	testCEERequestID  = "req-001"
+	testCEESessionKey = "test-session"
 )
 
 func TestCeeSessionKey_WithAgent(t *testing.T) {
@@ -123,4 +129,77 @@ func TestExtractOutboundPayload_ZeroContentLength(t *testing.T) {
 	if len(payload) != 0 {
 		t.Errorf("expected empty payload for zero content-length, got %q", string(payload))
 	}
+}
+
+func TestCeeRecordSignals_BothHits(t *testing.T) {
+	cfg := &config.SessionProfiling{
+		Enabled:                true,
+		AnomalyAction:          "warn",
+		DomainBurst:            5,
+		WindowMinutes:          5,
+		VolumeSpikeRatio:       3.0,
+		MaxSessions:            100,
+		SessionTTLMinutes:      30,
+		CleanupIntervalSeconds: 60,
+	}
+	m := metrics.New()
+	sm := NewSessionManager(cfg, m)
+	defer sm.Close()
+
+	logger, _ := audit.New("json", "stdout", "", false, false)
+
+	result := ceeResult{
+		EntropyHit:  true,
+		FragmentHit: true,
+	}
+
+	// Use a low threshold so signals trigger escalation.
+	// SignalEntropyBudget = 2 points, SignalFragmentDLP = 3 points.
+	// Total = 5 points, threshold = 1.0, so escalation should happen.
+	threshold := 1.0
+	ceeRecordSignals(result, sm, testCEESessionKey, threshold, logger, m, testCEEClientIP, testCEERequestID)
+
+	sess := sm.GetOrCreate(testCEESessionKey)
+	score := sess.ThreatScore()
+	// SignalEntropyBudget (2) + SignalFragmentDLP (3) = 5 points.
+	if score < 5.0 {
+		t.Errorf("expected threat score >= 5.0, got %.1f", score)
+	}
+}
+
+func TestCeeRecordSignals_NoHits(t *testing.T) {
+	cfg := &config.SessionProfiling{
+		Enabled:                true,
+		AnomalyAction:          "warn",
+		DomainBurst:            5,
+		WindowMinutes:          5,
+		VolumeSpikeRatio:       3.0,
+		MaxSessions:            100,
+		SessionTTLMinutes:      30,
+		CleanupIntervalSeconds: 60,
+	}
+	m := metrics.New()
+	sm := NewSessionManager(cfg, m)
+	defer sm.Close()
+
+	logger, _ := audit.New("json", "stdout", "", false, false)
+
+	result := ceeResult{
+		EntropyHit:  false,
+		FragmentHit: false,
+	}
+
+	ceeRecordSignals(result, sm, testCEESessionKey, 5.0, logger, m, testCEEClientIP, testCEERequestID)
+
+	sess := sm.GetOrCreate(testCEESessionKey)
+	score := sess.ThreatScore()
+	if score != 0 {
+		t.Errorf("expected threat score 0 for no hits, got %.1f", score)
+	}
+}
+
+func TestCeeRecordSignals_NilSessionManager(t *testing.T) {
+	// Nil session manager should be a no-op (no panic).
+	result := ceeResult{EntropyHit: true, FragmentHit: true}
+	ceeRecordSignals(result, nil, testCEESessionKey, 5.0, nil, nil, testCEEClientIP, testCEERequestID)
 }

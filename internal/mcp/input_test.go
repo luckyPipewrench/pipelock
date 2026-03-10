@@ -22,6 +22,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -2290,5 +2291,113 @@ func TestForwardScannedInput_BindingMissingToolName(t *testing.T) {
 	}
 	if !strings.Contains(logBuf.String(), "missing params.name") {
 		t.Errorf("expected log about missing params.name, got: %s", logBuf.String())
+	}
+}
+
+// --- ForwardScannedInput CEE tests ---
+
+// testCEEDepsBlock creates CEE deps with a tiny entropy budget that triggers
+// blocking after the first message.
+func testCEEDepsBlock(t *testing.T) *CEEDeps {
+	t.Helper()
+	// 1 bit budget: any real message exceeds this immediately.
+	et := scanner.NewEntropyTracker(1.0, 300)
+	t.Cleanup(et.Close)
+	m := metrics.New()
+	ceeCfg := &config.CrossRequestDetection{
+		EntropyBudget: config.CrossRequestEntropyBudget{
+			Enabled:       true,
+			BitsPerWindow: 1.0,
+			WindowMinutes: 5,
+			Action:        config.ActionBlock,
+		},
+	}
+	return &CEEDeps{Tracker: et, Metrics: m, Config: ceeCfg}
+}
+
+func TestForwardScannedInput_CEEBlocksCleanMessage(t *testing.T) {
+	sc := testInputScanner(t)
+	logger, err := audit.New("json", "stdout", "", false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cee := testCEEDepsBlock(t)
+
+	// Two clean messages: first may or may not exceed budget depending on
+	// entropy; second should definitely be blocked after cumulative recording.
+	msg1 := makeRequest(1, "tools/list", nil) + "\n"
+	msg2 := makeRequest(2, "resources/read", map[string]string{
+		"uri": "file:///etc/hosts",
+	}) + "\n"
+
+	var serverIn bytes.Buffer
+	var logBuf bytes.Buffer
+	blockedCh := make(chan BlockedRequest, 10)
+
+	clientIn := strings.NewReader(msg1 + msg2)
+	ForwardScannedInput(
+		transport.NewStdioReader(clientIn),
+		transport.NewStdioWriter(&serverIn),
+		&logBuf, sc, "block", "block", blockedCh,
+		nil, nil, nil, nil, nil, logger, cee,
+	)
+
+	// Collect blocked requests.
+	blocked := make([]BlockedRequest, 0)
+	for b := range blockedCh {
+		blocked = append(blocked, b)
+	}
+
+	// At least one message should be CEE-blocked.
+	if len(blocked) == 0 {
+		t.Fatal("expected at least one CEE-blocked request")
+	}
+
+	// Log should mention CEE.
+	if !strings.Contains(logBuf.String(), "CEE") {
+		t.Errorf("expected log to contain CEE, got: %s", logBuf.String())
+	}
+}
+
+func TestForwardScannedInput_CEEBlocksInWarnMode(t *testing.T) {
+	sc := testInputScanner(t)
+	logger, err := audit.New("json", "stdout", "", false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cee := testCEEDepsBlock(t)
+
+	// Content scan is warn mode but CEE is block mode.
+	// Send a message that triggers a warn-level content flag.
+	dirty := makeRequest(1, "tools/call", map[string]string{
+		"key": testSecretPrefix + strings.Repeat("d", 25),
+	}) + "\n"
+
+	var serverIn bytes.Buffer
+	var logBuf bytes.Buffer
+	blockedCh := make(chan BlockedRequest, 10)
+
+	clientIn := strings.NewReader(dirty)
+	ForwardScannedInput(
+		transport.NewStdioReader(clientIn),
+		transport.NewStdioWriter(&serverIn),
+		&logBuf, sc, "warn", "block", blockedCh,
+		nil, nil, nil, nil, nil, logger, cee,
+	)
+
+	// Collect blocked requests.
+	blocked := make([]BlockedRequest, 0)
+	for b := range blockedCh {
+		blocked = append(blocked, b)
+	}
+
+	// The message should be CEE-blocked even though content scan was warn.
+	if len(blocked) == 0 {
+		t.Fatal("expected CEE block in warn mode path")
+	}
+
+	// Log should mention both the content warning and CEE.
+	if !strings.Contains(logBuf.String(), "CEE") {
+		t.Errorf("expected log to contain CEE, got: %s", logBuf.String())
 	}
 }

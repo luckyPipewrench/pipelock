@@ -1257,3 +1257,66 @@ func TestStatsHandler_CEEWithCallback(t *testing.T) {
 		t.Errorf("expected fragment_buffer_bytes=12345, got %d", stats.CEE.FragmentBufferBytes)
 	}
 }
+
+func TestRecordCrossRequestEntropyExceeded(t *testing.T) {
+	m := New()
+	m.RecordCrossRequestEntropyExceeded()
+	m.RecordCrossRequestEntropyExceeded()
+
+	handler := m.PrometheusHandler()
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := rec.Body.String()
+
+	if !strings.Contains(body, "pipelock_cross_request_entropy_exceeded_total 2") {
+		t.Errorf("expected cross_request_entropy_exceeded_total 2:\n%s", body)
+	}
+}
+
+func TestRecordCrossRequestEntropyExceeded_NilReceiver(t *testing.T) {
+	// Nil receiver should be a no-op (no panic).
+	var m *Metrics
+	m.RecordCrossRequestEntropyExceeded()
+}
+
+func TestRecordCrossRequestDLPMatch(t *testing.T) {
+	m := New()
+	m.RecordCrossRequestDLPMatch()
+	m.RecordCrossRequestDLPMatch()
+	m.RecordCrossRequestDLPMatch()
+
+	handler := m.PrometheusHandler()
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := rec.Body.String()
+
+	if !strings.Contains(body, "pipelock_cross_request_dlp_match_total 3") {
+		t.Errorf("expected cross_request_dlp_match_total 3:\n%s", body)
+	}
+}
+
+func TestRecordCrossRequestDLPMatch_NilReceiver(t *testing.T) {
+	// Nil receiver should be a no-op (no panic).
+	var m *Metrics
+	m.RecordCrossRequestDLPMatch()
+}
+
+func TestSetCrossRequestFragmentBytes(t *testing.T) {
+	m := New()
+	m.SetCrossRequestFragmentBytes(42.0)
+
+	handler := m.PrometheusHandler()
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := rec.Body.String()
+
+	if !strings.Contains(body, "pipelock_cross_request_fragment_buffer_bytes 42") {
+		t.Errorf("expected cross_request_fragment_buffer_bytes 42:\n%s", body)
+	}
+}
+
+func TestSetCrossRequestFragmentBytes_NilReceiver(t *testing.T) {
+	// Nil receiver should be a no-op (no panic).
+	var m *Metrics
+	m.SetCrossRequestFragmentBytes(100.0)
+}

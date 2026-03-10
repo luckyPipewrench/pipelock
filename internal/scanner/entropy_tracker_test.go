@@ -255,3 +255,68 @@ func TestEntropyTrackerMultipleRecordings(t *testing.T) {
 		t.Fatalf("expected cumulative usage %f, got %f", expected, usage)
 	}
 }
+
+func TestEntropyTrackerCleanup(t *testing.T) {
+	// Use a 1-second window so entries expire quickly for the cleanup test.
+	et := NewEntropyTracker(testDefaultBudget, 1)
+	defer et.Close()
+
+	// Record data for two sessions.
+	et.Record(testSessionKey, []byte("data for session one"))
+	et.Record(testSessionKey2, []byte("data for session two"))
+
+	// Both sessions should have non-zero usage now.
+	if et.CurrentUsage(testSessionKey) == 0 {
+		t.Fatal("expected non-zero usage for session 1 immediately after recording")
+	}
+	if et.CurrentUsage(testSessionKey2) == 0 {
+		t.Fatal("expected non-zero usage for session 2 immediately after recording")
+	}
+
+	// Wait for the window to expire.
+	time.Sleep(1200 * time.Millisecond) // 1.2s: comfortably past the 1s window
+
+	// Call cleanup directly to evict expired entries without waiting
+	// for the 60-second cleanup ticker.
+	et.cleanup()
+
+	// After cleanup, the expired sessions should be removed entirely.
+	// Verify by checking that no entries exist (usage reports zero for
+	// expired entries, and cleanup removes the map keys).
+	et.mu.Lock()
+	sessionCount := len(et.sessions)
+	et.mu.Unlock()
+
+	if sessionCount != 0 {
+		t.Errorf("expected 0 sessions after cleanup, got %d", sessionCount)
+	}
+}
+
+func TestEntropyTrackerCleanup_RetainsValidEntries(t *testing.T) {
+	// Use a 2-second window.
+	et := NewEntropyTracker(testDefaultBudget, 2)
+	defer et.Close()
+
+	// Record old data, let it expire.
+	et.Record(testSessionKey, []byte("old data that will expire"))
+	time.Sleep(2200 * time.Millisecond) // 2.2s: past the 2s window
+
+	// Record fresh data for session 2 (still within window).
+	et.Record(testSessionKey2, []byte("fresh data still valid"))
+
+	// Run cleanup.
+	et.cleanup()
+
+	// Session 1 should be removed (all entries expired).
+	et.mu.Lock()
+	_, session1Exists := et.sessions[testSessionKey]
+	_, session2Exists := et.sessions[testSessionKey2]
+	et.mu.Unlock()
+
+	if session1Exists {
+		t.Error("expected session 1 to be removed after cleanup (all entries expired)")
+	}
+	if !session2Exists {
+		t.Error("expected session 2 to be retained (has valid entries)")
+	}
+}

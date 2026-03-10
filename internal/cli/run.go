@@ -253,7 +253,18 @@ Examples:
 								// Block agent listener changes via reload. Listener
 								// sockets are bound at startup and cannot be rebound
 								// at runtime. Warn and preserve old listener config.
-								if agentListenersChanged(oldCfg, newCfg) {
+								//
+								// Respect the license gate: if EnforceLicenseGate
+								// disabled agents on reload, do not re-add them via
+								// listener preservation.
+								agentsRevokedByLicense := oldCfg.Agents != nil && newCfg.Agents == nil
+								if agentsRevokedByLicense {
+									// License gate disabled agents on reload.
+									// Shut down already-bound listener servers so
+									// the agent ports stop accepting traffic.
+									p.ShutdownAgentServers()
+									cmd.PrintErrf("pipelock: license revoked agents, shutting down agent listeners\n")
+								} else if agentListenersChanged(oldCfg, newCfg) {
 									cmd.PrintErrf("WARNING: config reload: agents[*].listeners changed — requires restart, ignoring listener changes\n")
 									preserveAgentListeners(oldCfg, newCfg)
 								}

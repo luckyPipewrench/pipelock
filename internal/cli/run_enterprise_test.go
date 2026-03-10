@@ -327,3 +327,139 @@ logging:
 		t.Fatal("runCmd did not exit within 5s")
 	}
 }
+
+// TestRunCmd_ReloadAgentLifecycleRespected verifies that when a config
+// reload causes EnforceLicenseGate to disable agents, listener preservation
+// does not resurrect them. The license gate decision must be final.
+func TestRunCmd_ReloadAgentLifecycleRespected(t *testing.T) {
+	mainAddr := freePort(t)
+	agentAddr := freePort(t)
+	licToken, licPubHex := testLicenseToken(t)
+
+	// Start with valid license + agent with listener.
+	cfgYAML := fmt.Sprintf(`version: 1
+mode: balanced
+license_key: %s
+license_public_key: %s
+fetch_proxy:
+  listen: %q
+  timeout_seconds: 5
+  max_response_mb: 1
+agents:
+  secured-agent:
+    listeners:
+      - %q
+    mode: strict
+    api_allowlist:
+      - "api.example.com"
+logging:
+  format: json
+  output: stdout
+`, licToken, licPubHex, mainAddr, agentAddr)
+
+	dir := t.TempDir()
+	cfgPath := dir + "/test.yaml"
+	if err := os.WriteFile(cfgPath, []byte(cfgYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cmd := runCmd()
+	cmd.SetContext(ctx)
+	cmd.SetArgs([]string{"--config", cfgPath})
+	var stderr bytes.Buffer
+	cmd.SetErr(&stderr)
+	cmd.SetOut(&stderr)
+
+	cmdErr := make(chan error, 1)
+	go func() {
+		cmdErr <- cmd.Execute()
+	}()
+
+	// Wait for both ports to be serving.
+	waitForPort(t, mainAddr)
+	waitForPort(t, agentAddr)
+
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	// Confirm agent listener is working before reload.
+	resp := doGet(t, client, "http://"+agentAddr+"/health")
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("agent /health before reload: want 200, got %d", resp.StatusCode)
+	}
+
+	// Hot-reload: remove license_key. EnforceLicenseGate should
+	// disable agents, and they must stay disabled.
+	reloadedCfg := fmt.Sprintf(`version: 1
+mode: balanced
+fetch_proxy:
+  listen: %q
+  timeout_seconds: 5
+  max_response_mb: 1
+agents:
+  secured-agent:
+    listeners:
+      - %q
+    mode: strict
+    api_allowlist:
+      - "api.example.com"
+logging:
+  format: json
+  output: stdout
+`, mainAddr, agentAddr)
+	if err := os.WriteFile(cfgPath, []byte(reloadedCfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for reload to process (fsnotify debounce is 100ms)
+	// plus agent listener shutdown (5s graceful timeout max).
+	time.Sleep(800 * time.Millisecond)
+
+	// Agent port must be closed after license revocation on reload.
+	dialer := &net.Dialer{Timeout: 500 * time.Millisecond}
+	conn, dialErr := dialer.DialContext(context.Background(), "tcp4", agentAddr)
+	if dialErr == nil {
+		_ = conn.Close()
+		t.Error("expected agent port to be closed after license revocation on reload, but dial succeeded")
+	}
+
+	// Main port must still be running.
+	resp = doGet(t, client, "http://"+mainAddr+"/health")
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("main /health after reload: want 200, got %d", resp.StatusCode)
+	}
+
+	// Shut down the server, THEN read stderr to avoid data races.
+	cancel()
+	select {
+	case err := <-cmdErr:
+		if err != nil {
+			t.Errorf("runCmd returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("runCmd did not exit within 5s")
+	}
+
+	output := stderr.String()
+
+	// Verify the license change was detected on reload.
+	// EnforceLicenseGate writes to os.Stderr (not cmd buffer), so we
+	// check for the reload handler's own license-change warning instead.
+	if !bytes.Contains([]byte(output), []byte("license_key or license_public_key changed")) {
+		t.Errorf("expected license change warning after reload, got:\n%s", output)
+	}
+
+	// Verify agent listeners were shut down (not just config-blocked).
+	if !bytes.Contains([]byte(output), []byte("shutting down agent listeners")) {
+		t.Errorf("expected agent listener shutdown message after reload, got:\n%s", output)
+	}
+
+	// Listener preservation must not override the license gate.
+	if bytes.Contains([]byte(output), []byte("ignoring listener changes")) {
+		t.Error("listener preservation should not run when license gate disabled agents")
+	}
+}

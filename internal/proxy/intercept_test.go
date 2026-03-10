@@ -1118,3 +1118,85 @@ func TestNewTLSInterceptTransport_HandshakeError(t *testing.T) {
 		t.Fatal("expected handshake error")
 	}
 }
+
+func TestInterceptTunnel_CEEAdaptiveSignalRecording(t *testing.T) {
+	// Verify that CEE entropy budget exceedance on intercepted requests
+	// records adaptive enforcement signals via ceeRecordSignals.
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
+
+	// Enable CEE with a tiny entropy budget so a single request exceeds it.
+	cfg.CrossRequestDetection.Enabled = true
+	cfg.CrossRequestDetection.Action = config.ActionWarn // warn, not block, so request completes
+	cfg.CrossRequestDetection.EntropyBudget.Enabled = true
+	cfg.CrossRequestDetection.EntropyBudget.BitsPerWindow = 1 // 1-bit budget, instantly exceeded
+	cfg.CrossRequestDetection.EntropyBudget.WindowMinutes = 5
+	cfg.CrossRequestDetection.EntropyBudget.Action = config.ActionWarn
+
+	// Enable adaptive enforcement so signals are recorded.
+	cfg.AdaptiveEnforcement.Enabled = true
+	cfg.AdaptiveEnforcement.EscalationThreshold = 100 // high threshold, no escalation expected
+
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+
+	et := scanner.NewEntropyTracker(1, 300) // 1-bit budget, 5 min window
+	t.Cleanup(et.Close)
+
+	sm := NewSessionManager(&config.SessionProfiling{
+		MaxSessions:            100,
+		SessionTTLMinutes:      30,
+		CleanupIntervalSeconds: 60,
+	}, m)
+	t.Cleanup(sm.Close)
+
+	// Send a request through the intercepted tunnel with CEE deps wired.
+	clientConn, proxyConn := net.Pipe()
+	t.Cleanup(func() { _ = clientConn.Close() })
+
+	host := upstream.Listener.Addr().(*net.TCPAddr).IP.String()
+	port := fmt.Sprintf("%d", upstream.Listener.Addr().(*net.TCPAddr).Port)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	go func() {
+		_ = interceptTunnel(ctx, proxyConn, host, port, cfg, sc, cache, logger, m,
+			"10.0.0.1", "test-cee-1", "", upstream.Client().Transport, nil, et, nil, sm)
+	}()
+
+	tlsConn := tls.Client(clientConn, &tls.Config{
+		RootCAs:    pool,
+		ServerName: host,
+	})
+	t.Cleanup(func() { _ = tlsConn.Close() })
+
+	addr := upstream.Listener.Addr().String()
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/data?key=value", nil)
+
+	if err := req.Write(tlsConn); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(tlsConn), req)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	// The session key for CEE is ceeSessionKey(agent, clientIP) = "_default|10.0.0.1".
+	sessionKey := ceeSessionKey("", "10.0.0.1")
+	sess := sm.GetOrCreate(sessionKey)
+	score := sess.ThreatScore()
+	if score == 0 {
+		t.Fatal("expected non-zero threat score after CEE entropy signal, got 0 (adaptive signal not recorded)")
+	}
+	// SignalEntropyBudget is 2 points.
+	if score < 2.0 {
+		t.Errorf("expected threat score >= 2.0 (SignalEntropyBudget), got %.1f", score)
+	}
+}

@@ -1654,3 +1654,50 @@ func TestBidirectionalCopy(t *testing.T) {
 		t.Errorf("bidirectionalCopy took %v, expected ~100ms", elapsed)
 	}
 }
+
+func TestConnectCEEEntropyBlocked(t *testing.T) {
+	// CONNECT requests to high-entropy hostnames should be blocked when the
+	// cross-request entropy budget is exceeded and action is "block".
+	proxyAddr, cleanup := setupForwardProxy(t, func(cfg *config.Config) {
+		cfg.CrossRequestDetection.Enabled = true
+		cfg.CrossRequestDetection.Action = config.ActionBlock
+		cfg.CrossRequestDetection.EntropyBudget.Enabled = true
+		cfg.CrossRequestDetection.EntropyBudget.BitsPerWindow = 32 // 32-bit budget, tiny
+		cfg.CrossRequestDetection.EntropyBudget.WindowMinutes = 5
+		cfg.CrossRequestDetection.EntropyBudget.Action = config.ActionBlock
+	})
+	defer cleanup()
+
+	// Send CONNECT to high-entropy hostnames to exhaust the tiny 32-bit budget.
+	// Each unique hostname contributes entropy. After enough requests the budget
+	// should be exceeded and the next CONNECT blocked with 403.
+	highEntropyHosts := []string{
+		"a1b2c3d4.example.com:443",
+		"x9y8z7w6.example.com:443",
+		"q5r4s3t2.example.com:443",
+		"m7n6o5p4.example.com:443",
+		"j3k2l1h0.example.com:443",
+	}
+
+	var lastStatus int
+	for _, h := range highEntropyHosts {
+		conn := dialProxy(t, proxyAddr)
+		_, _ = fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", h, h)
+		resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+		if err != nil {
+			_ = conn.Close()
+			continue
+		}
+		lastStatus = resp.StatusCode
+		_ = resp.Body.Close()
+		_ = conn.Close()
+
+		if lastStatus == http.StatusForbidden {
+			break
+		}
+	}
+
+	if lastStatus != http.StatusForbidden {
+		t.Fatalf("expected 403 after entropy budget exceeded, last status was %d", lastStatus)
+	}
+}

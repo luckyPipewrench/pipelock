@@ -128,7 +128,7 @@ These techniques spread secret data across multiple independent requests to stay
 
 - **Entropy budget:** tracks the cumulative information content (Shannon entropy bits) of URL payloads per session within a sliding time window. When total bits exceed the configured threshold (`bits_per_window`), the request triggers the configured action. This catches slow-drip exfiltration where each individual request looks clean.
 
-- **Fragment reassembly:** buffers URL payloads per session and periodically re-scans the concatenated content against DLP patterns. A debounce timer prevents re-scanning on every request. When the concatenated buffer matches a DLP pattern, the match is reported. Buffer size is capped per session to prevent memory exhaustion.
+- **Fragment reassembly:** buffers URL payloads per session and re-scans the concatenated content against DLP patterns on every request (synchronous, pre-forward). When the concatenated buffer matches a DLP pattern, the completing request is blocked before it leaves. Buffer size is capped per session to prevent memory exhaustion.
 
 **Corroboration with adaptive enforcement:** Both entropy budget and fragment DLP hits feed into the per-session adaptive enforcement score. An agent that triggers both signals (high cumulative entropy AND a fragment DLP match) escalates faster than one triggering either alone. This stacking makes it harder for an attacker to stay below all thresholds simultaneously.
 

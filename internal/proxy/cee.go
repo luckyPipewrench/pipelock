@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
@@ -31,16 +32,23 @@ func ceeSessionKey(agent, clientIP string) string {
 // Larger bodies are unlikely to be fragment-based exfiltration attempts.
 const maxCEEBodyRead = 65536 // 64KB
 
-// queryParamPayload extracts query parameter values from a URL as a single
-// byte slice. Keys are not included (they are not agent-controlled data).
+// queryParamPayload extracts query parameter values from a URL in sorted key
+// order for deterministic concatenation. Only values are included (not key
+// names) so DLP pattern matching sees contiguous secret data when fragments
+// are reassembled across requests.
 func queryParamPayload(u *url.URL) []byte {
 	qv := u.Query()
 	if len(qv) == 0 {
 		return nil
 	}
+	keys := make([]string, 0, len(qv))
+	for k := range qv {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
 	var parts []string
-	for _, values := range qv {
-		parts = append(parts, values...)
+	for _, k := range keys {
+		parts = append(parts, qv[k]...)
 	}
 	return []byte(strings.Join(parts, ""))
 }
@@ -52,9 +60,9 @@ func queryParamPayload(u *url.URL) []byte {
 func extractOutboundPayload(r *http.Request) []byte {
 	var parts []string
 
-	// Query parameter values (keys are not agent-controlled data).
-	for _, values := range r.URL.Query() {
-		parts = append(parts, values...)
+	// Query parameter values in sorted key order for deterministic concatenation.
+	if qp := queryParamPayload(r.URL); len(qp) > 0 {
+		parts = append(parts, string(qp))
 	}
 
 	// Request body (limited read to bound memory). Re-wrap after reading
@@ -118,15 +126,15 @@ func ceeAdmit(
 		if et.BudgetExceeded(sessionKey) {
 			result.EntropyHit = true
 			m.RecordCrossRequestEntropyExceeded()
-			logger.LogBlocked("CEE", targetURL, "cross_request_entropy",
-				fmt.Sprintf("entropy budget exceeded: %.0f/%.0f bits",
-					et.CurrentUsage(sessionKey), et.Budget()),
-				clientIP, requestID, agent)
+			detail := fmt.Sprintf("entropy budget exceeded: %.0f/%.0f bits",
+				et.CurrentUsage(sessionKey), et.Budget())
 			if ceeCfg.EntropyBudget.Action == config.ActionBlock {
+				logger.LogBlocked("CEE", targetURL, "cross_request_entropy", detail, clientIP, requestID, agent)
 				result.Blocked = true
 				result.Reason = "cross-request entropy budget exceeded"
 				return result
 			}
+			logger.LogAnomaly("CEE", targetURL, "cross_request_entropy", detail, clientIP, requestID, agent, 0)
 		}
 	}
 
@@ -136,14 +144,14 @@ func ceeAdmit(
 		if matches := fb.ScanForSecrets(sessionKey, sc); len(matches) > 0 {
 			result.FragmentHit = true
 			m.RecordCrossRequestDLPMatch()
-			logger.LogBlocked("CEE", targetURL, "cross_request_fragment",
-				fmt.Sprintf("fragment reassembly DLP match: %s", matches[0].PatternName),
-				clientIP, requestID, agent)
+			detail := fmt.Sprintf("fragment reassembly DLP match: %s", matches[0].PatternName)
 			if ceeCfg.Action == config.ActionBlock {
+				logger.LogBlocked("CEE", targetURL, "cross_request_fragment", detail, clientIP, requestID, agent)
 				result.Blocked = true
 				result.Reason = fmt.Sprintf("cross-request secret detected: %s", matches[0].PatternName)
 				return result
 			}
+			logger.LogAnomaly("CEE", targetURL, "cross_request_fragment", detail, clientIP, requestID, agent, 0)
 		}
 	}
 

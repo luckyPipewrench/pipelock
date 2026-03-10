@@ -23,6 +23,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -294,6 +295,27 @@ Environment passthrough (subprocess mode only):
 				chainMatcher = chains.New(&cfg.ToolChainDetection)
 			}
 
+			// Build CEE deps when cross-request detection is enabled.
+			var cee *mcp.CEEDeps
+			if cfg.CrossRequestDetection.Enabled {
+				m := metrics.New()
+				ceeCfg := cfg.CrossRequestDetection
+				cee = &mcp.CEEDeps{Config: &ceeCfg, Metrics: m}
+				if ceeCfg.EntropyBudget.Enabled {
+					cee.Tracker = scanner.NewEntropyTracker(
+						ceeCfg.EntropyBudget.BitsPerWindow,
+						ceeCfg.EntropyBudget.WindowMinutes*60, // minutes to seconds
+					)
+				}
+				if ceeCfg.FragmentReassembly.Enabled {
+					cee.Buffer = scanner.NewFragmentBuffer(
+						ceeCfg.FragmentReassembly.MaxBufferBytes,
+						10000, // 10K max sessions, matching proxy constant
+						ceeCfg.FragmentReassembly.WindowMinutes*60,
+					)
+				}
+			}
+
 			toolAction := "disabled"
 			if toolCfg != nil {
 				toolAction = toolCfg.Action
@@ -321,20 +343,20 @@ Environment passthrough (subprocess mode only):
 					}
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: MCP reverse proxy %s -> %s (response=%s, input=%s, tools=%s, policy=%s)\n",
 						listenAddr, upstreamURL, sc.ResponseAction(), inputCfg.Action, toolAction, policyAction)
-					return mcp.RunHTTPListenerProxy(ctx, mcpLn, upstreamURL, cmd.ErrOrStderr(), sc, approver, inputCfg, toolCfg, policyCfg, ks, chainMatcher, nil, nil)
+					return mcp.RunHTTPListenerProxy(ctx, mcpLn, upstreamURL, cmd.ErrOrStderr(), sc, approver, inputCfg, toolCfg, policyCfg, ks, chainMatcher, nil, cee)
 				}
 
 				// Stdio-to-WebSocket mode: --upstream ws:// or wss://.
 				if isWSUpstream {
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: proxying WS upstream %s (response=%s, input=%s, tools=%s, policy=%s)\n",
 						upstreamURL, sc.ResponseAction(), inputCfg.Action, toolAction, policyAction)
-					return mcp.RunWSProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, sc, approver, inputCfg, toolCfg, policyCfg, ks, chainMatcher, nil, nil)
+					return mcp.RunWSProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, sc, approver, inputCfg, toolCfg, policyCfg, ks, chainMatcher, nil, cee)
 				}
 
 				// Stdio-to-HTTP mode: --upstream only.
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: proxying upstream %s (response=%s, input=%s, tools=%s, policy=%s)\n",
 					upstreamURL, sc.ResponseAction(), inputCfg.Action, toolAction, policyAction)
-				return mcp.RunHTTPProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, sc, approver, nil, inputCfg, toolCfg, policyCfg, ks, chainMatcher, nil, nil)
+				return mcp.RunHTTPProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, sc, approver, nil, inputCfg, toolCfg, policyCfg, ks, chainMatcher, nil, cee)
 			}
 
 			// Parse --env flags into KEY=VALUE pairs for the child process.
@@ -377,7 +399,7 @@ Environment passthrough (subprocess mode only):
 			ctx, cancel := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 			defer cancel()
 
-			return mcp.RunProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), serverCmd, sc, approver, inputCfg, toolCfg, policyCfg, ks, chainMatcher, nil, nil, extraEnv...)
+			return mcp.RunProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), serverCmd, sc, approver, inputCfg, toolCfg, policyCfg, ks, chainMatcher, nil, cee, extraEnv...)
 		},
 	}
 

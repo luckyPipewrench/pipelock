@@ -58,10 +58,10 @@ func ceeRecordMCP(
 			reason := fmt.Sprintf("cross-request entropy budget exceeded: %.0f/%.0f bits",
 				cee.Tracker.CurrentUsage(sessionKey), cee.Tracker.Budget())
 			_, _ = fmt.Fprintf(logW, "pipelock: CEE: %s (session=%s)\n", reason, sessionKey)
-			if logger != nil {
-				logger.LogBlocked("CEE", "mcp-input", "cross_request_entropy", reason, "", "", "")
-			}
 			if cee.Config.EntropyBudget.Action == config.ActionBlock {
+				if logger != nil {
+					logger.LogBlocked("CEE", "mcp-input", "cross_request_entropy", reason, "", "", "")
+				}
 				return reason
 			}
 		}
@@ -76,10 +76,10 @@ func ceeRecordMCP(
 			}
 			reason := fmt.Sprintf("cross-request fragment DLP match: %s", matches[0].PatternName)
 			_, _ = fmt.Fprintf(logW, "pipelock: CEE: %s (session=%s)\n", reason, sessionKey)
-			if logger != nil {
-				logger.LogBlocked("CEE", "mcp-input", "cross_request_fragment", reason, "", "", "")
-			}
 			if cee.Config.Action == config.ActionBlock {
+				if logger != nil {
+					logger.LogBlocked("CEE", "mcp-input", "cross_request_fragment", reason, "", "", "")
+				}
 				return reason
 			}
 		}

@@ -72,17 +72,27 @@ func (fb *FragmentBuffer) Append(sessionKey string, payload []byte) {
 		fb.sessions[sessionKey] = sb
 	}
 
-	sb.lastAccess = time.Now()
+	// Copy payload to prevent caller mutation of buffered data.
+	copied := make([]byte, len(payload))
+	copy(copied, payload)
+
+	now := time.Now()
+	sb.lastAccess = now
 	sb.fragments = append(sb.fragments, fragment{
-		data: payload,
-		at:   time.Now(),
+		data: copied,
+		at:   now,
 	})
-	sb.totalBytes += len(payload)
+	sb.totalBytes += len(copied)
 
 	// Evict oldest fragments until within per-session byte cap.
+	// A single fragment larger than maxBytes is truncated to maxBytes.
 	for sb.totalBytes > fb.maxBytes && len(sb.fragments) > 1 {
 		sb.totalBytes -= len(sb.fragments[0].data)
 		sb.fragments = sb.fragments[1:]
+	}
+	if sb.totalBytes > fb.maxBytes && len(sb.fragments) == 1 {
+		sb.fragments[0].data = sb.fragments[0].data[:fb.maxBytes]
+		sb.totalBytes = fb.maxBytes
 	}
 }
 
@@ -135,11 +145,16 @@ func (fb *FragmentBuffer) Close() {
 	})
 }
 
-// concatenateFragments builds a single byte slice from all session fragments.
-// Must be called with fb.mu held.
+// concatenateFragments builds a single byte slice from non-expired session
+// fragments. Filters by windowSecs so scans never include stale data, even
+// if the 60-second cleanup ticker hasn't run yet. Must be called with fb.mu held.
 func (fb *FragmentBuffer) concatenateFragments(sb *sessionBuffer) []byte {
+	cutoff := time.Now().Add(-time.Duration(fb.windowSecs) * time.Second)
 	buf := make([]byte, 0, sb.totalBytes)
 	for _, f := range sb.fragments {
+		if f.at.Before(cutoff) {
+			continue
+		}
 		buf = append(buf, f.data...)
 	}
 	return buf

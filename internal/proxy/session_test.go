@@ -403,16 +403,16 @@ func TestSessionState_EntropyBudgetSignal(t *testing.T) {
 	}
 }
 
-func TestSessionState_EntropyRateSignal(t *testing.T) {
+func TestSessionState_FragmentDLPSignal(t *testing.T) {
 	cfg := testSessionConfig()
 	sm := NewSessionManager(cfg, nil)
 	defer sm.Close()
 
 	sess := sm.GetOrCreate(testClientIP)
-	sess.RecordSignal(SignalEntropyBudget, 10.0) // +2
+	sess.RecordSignal(SignalFragmentDLP, 10.0) // +3
 
-	if sess.ThreatScore() != 2.0 {
-		t.Errorf("expected score 2.0, got %f", sess.ThreatScore())
+	if sess.ThreatScore() != 3.0 {
+		t.Errorf("expected score 3.0, got %f", sess.ThreatScore())
 	}
 }
 

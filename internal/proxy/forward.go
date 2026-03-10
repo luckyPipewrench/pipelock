@@ -160,19 +160,19 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			et.Record(sessionKey, []byte(host))
 			if et.BudgetExceeded(sessionKey) {
 				p.metrics.RecordCrossRequestEntropyExceeded()
-				p.logger.LogBlocked(http.MethodConnect, target, "cross_request_entropy",
-					fmt.Sprintf("entropy budget exceeded: %.0f/%.0f bits",
-						et.CurrentUsage(sessionKey), et.Budget()),
-					clientIP, requestID, agent)
+				detail := fmt.Sprintf("entropy budget exceeded: %.0f/%.0f bits",
+					et.CurrentUsage(sessionKey), et.Budget())
 				if sm := p.sessionMgrPtr.Load(); sm != nil && cfg.AdaptiveEnforcement.Enabled {
 					ceeRecordSignals(ceeResult{EntropyHit: true}, sm, sessionKey,
 						cfg.AdaptiveEnforcement.EscalationThreshold, p.logger, p.metrics, clientIP, requestID)
 				}
 				if ceeCfg.EntropyBudget.Action == config.ActionBlock {
+					p.logger.LogBlocked(http.MethodConnect, target, "cross_request_entropy", detail, clientIP, requestID, agent)
 					p.metrics.RecordTunnelBlocked(agentLabel)
 					http.Error(w, "CONNECT blocked: cross-request entropy budget exceeded", http.StatusForbidden)
 					return
 				}
+				p.logger.LogAnomaly(http.MethodConnect, target, "cross_request_entropy", detail, clientIP, requestID, agent, 0)
 			}
 		}
 	}

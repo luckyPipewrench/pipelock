@@ -111,23 +111,25 @@ type editionSnapshot struct{ edition.Edition }
 
 // Proxy is the Pipelock fetch proxy server.
 type Proxy struct {
-	cfgPtr        atomic.Pointer[config.Config]
-	scannerPtr    atomic.Pointer[scanner.Scanner]
-	editionPtr    atomic.Pointer[editionSnapshot]
-	sessionMgrPtr atomic.Pointer[SessionManager]    // nil when profiling disabled
-	certCachePtr  atomic.Pointer[certgen.CertCache] // nil when TLS interception disabled
-	logger        *audit.Logger
-	metrics       *metrics.Metrics
-	ks            *killswitch.Controller
-	ksAPI         *killswitch.APIHandler
-	dialer        *net.Dialer
-	client        *http.Client
-	tlsTransport  *http.Transport // shared Transport for TLS interception upstream connections
-	server        *http.Server
-	agentServers  []*http.Server // per-agent listeners (managed by CLI)
-	startTime     time.Time
-	reloadMu      sync.Mutex // serializes Reload calls
-	approver      *hitl.Approver
+	cfgPtr            atomic.Pointer[config.Config]
+	scannerPtr        atomic.Pointer[scanner.Scanner]
+	editionPtr        atomic.Pointer[editionSnapshot]
+	sessionMgrPtr     atomic.Pointer[SessionManager]         // nil when profiling disabled
+	certCachePtr      atomic.Pointer[certgen.CertCache]      // nil when TLS interception disabled
+	entropyTrackerPtr atomic.Pointer[scanner.EntropyTracker] // nil when entropy budget disabled
+	fragmentBufferPtr atomic.Pointer[scanner.FragmentBuffer] // nil when fragment reassembly disabled
+	logger            *audit.Logger
+	metrics           *metrics.Metrics
+	ks                *killswitch.Controller
+	ksAPI             *killswitch.APIHandler
+	dialer            *net.Dialer
+	client            *http.Client
+	tlsTransport      *http.Transport // shared Transport for TLS interception upstream connections
+	server            *http.Server
+	agentServers      []*http.Server // per-agent listeners (managed by CLI)
+	startTime         time.Time
+	reloadMu          sync.Mutex // serializes Reload calls
+	approver          *hitl.Approver
 }
 
 // Option configures optional Proxy behavior.
@@ -184,6 +186,25 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 
 	if cfg.SessionProfiling.Enabled {
 		p.sessionMgrPtr.Store(NewSessionManager(&cfg.SessionProfiling, m))
+	}
+
+	if cfg.CrossRequestDetection.Enabled {
+		if cfg.CrossRequestDetection.EntropyBudget.Enabled {
+			et := scanner.NewEntropyTracker(
+				cfg.CrossRequestDetection.EntropyBudget.BitsPerWindow,
+				cfg.CrossRequestDetection.EntropyBudget.WindowMinutes*60, // minutes to seconds
+			)
+			p.entropyTrackerPtr.Store(et)
+		}
+		if cfg.CrossRequestDetection.FragmentReassembly.Enabled {
+			fb := scanner.NewFragmentBuffer(
+				cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes,
+				10000, // max concurrent sessions for fragment tracking
+				cfg.CrossRequestDetection.EntropyBudget.WindowMinutes*60, // minutes to seconds
+				cfg.CrossRequestDetection.FragmentReassembly.RescanDebounceMs,
+			)
+			p.fragmentBufferPtr.Store(fb)
+		}
 	}
 
 	p.dialer = &net.Dialer{
@@ -297,6 +318,33 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
 			sm.UpdateConfig(&cfg.SessionProfiling)
 		}
 	}
+
+	// Toggle CEE components on config change. Entropy/fragment data is lost
+	// on reload, which is acceptable for short sliding windows (typically 5 min).
+	if oldET := p.entropyTrackerPtr.Swap(nil); oldET != nil {
+		oldET.Close()
+	}
+	if oldFB := p.fragmentBufferPtr.Swap(nil); oldFB != nil {
+		oldFB.Close()
+	}
+	if cfg.CrossRequestDetection.Enabled {
+		if cfg.CrossRequestDetection.EntropyBudget.Enabled {
+			et := scanner.NewEntropyTracker(
+				cfg.CrossRequestDetection.EntropyBudget.BitsPerWindow,
+				cfg.CrossRequestDetection.EntropyBudget.WindowMinutes*60, // minutes to seconds
+			)
+			p.entropyTrackerPtr.Store(et)
+		}
+		if cfg.CrossRequestDetection.FragmentReassembly.Enabled {
+			fb := scanner.NewFragmentBuffer(
+				cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes,
+				10000, // max concurrent sessions for fragment tracking
+				cfg.CrossRequestDetection.EntropyBudget.WindowMinutes*60, // minutes to seconds
+				cfg.CrossRequestDetection.FragmentReassembly.RescanDebounceMs,
+			)
+			p.fragmentBufferPtr.Store(fb)
+		}
+	}
 }
 
 // LoadCertCache creates or replaces the cert cache based on current config.
@@ -350,6 +398,12 @@ func (p *Proxy) Close() {
 	}
 	if snap := p.editionPtr.Load(); snap != nil {
 		snap.Close()
+	}
+	if et := p.entropyTrackerPtr.Load(); et != nil {
+		et.Close()
+	}
+	if fb := p.fragmentBufferPtr.Load(); fb != nil {
+		fb.Close()
 	}
 	if p.tlsTransport != nil {
 		p.tlsTransport.CloseIdleConnections()

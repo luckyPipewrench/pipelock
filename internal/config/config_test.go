@@ -5103,3 +5103,53 @@ func TestReloadWarnings_CrossRequestDetection_DisabledWarning(t *testing.T) {
 		t.Error("expected reload warning when cross_request_detection is disabled")
 	}
 }
+
+func TestReloadWarnings_CrossRequestDetection_EntropyBudgetDisabled(t *testing.T) {
+	old := Defaults()
+	old.CrossRequestDetection.Enabled = true
+	old.CrossRequestDetection.EntropyBudget.Enabled = true
+	old.ApplyDefaults()
+
+	updated := Defaults()
+	updated.CrossRequestDetection.Enabled = true
+	updated.CrossRequestDetection.EntropyBudget.Enabled = false
+	updated.CrossRequestDetection.FragmentReassembly.Enabled = true
+	updated.ApplyDefaults()
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == "cross_request_detection.entropy_budget.enabled" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected reload warning when entropy_budget is disabled")
+	}
+}
+
+func TestReloadWarnings_CrossRequestDetection_FragmentReassemblyDisabled(t *testing.T) {
+	old := Defaults()
+	old.CrossRequestDetection.Enabled = true
+	old.CrossRequestDetection.FragmentReassembly.Enabled = true
+	old.ApplyDefaults()
+
+	updated := Defaults()
+	updated.CrossRequestDetection.Enabled = true
+	updated.CrossRequestDetection.FragmentReassembly.Enabled = false
+	updated.CrossRequestDetection.EntropyBudget.Enabled = true
+	updated.ApplyDefaults()
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == "cross_request_detection.fragment_reassembly.enabled" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected reload warning when fragment_reassembly is disabled")
+	}
+}

@@ -675,7 +675,7 @@ cross_request_detection:
 
 ### Entropy Budget
 
-Tracks cumulative Shannon entropy of URL payloads per session within a sliding time window. When total entropy bits exceed the budget, the configured action fires.
+Tracks cumulative Shannon entropy of all outbound payloads (URLs, request bodies, MCP JSON-RPC payloads, WebSocket frames) per session within a sliding time window. When total entropy bits exceed the budget, the configured action fires.
 
 | Field | Default | Description |
 |-------|---------|-------------|
@@ -688,7 +688,7 @@ Tracks cumulative Shannon entropy of URL payloads per session within a sliding t
 
 ### Fragment Reassembly
 
-Buffers URL payloads per session and periodically re-scans the concatenated content against DLP patterns. Catches secrets split across multiple requests that individually look clean.
+Buffers outbound payloads (URLs, request bodies, MCP JSON-RPC payloads, WebSocket frames) per session and periodically re-scans the concatenated content against DLP patterns. Catches secrets split across multiple requests that individually look clean.
 
 | Field | Default | Description |
 |-------|---------|-------------|
@@ -698,7 +698,7 @@ Buffers URL payloads per session and periodically re-scans the concatenated cont
 
 **Memory:** Each tracked session uses up to `max_buffer_bytes`. With 10,000 concurrent sessions (hard cap), the worst-case memory is `max_buffer_bytes * 10000` (640 MB at defaults). Reduce `max_buffer_bytes` in memory-constrained environments.
 
-**Scope note:** Cross-request detection scans URL content visible to the proxy. CONNECT tunnels without TLS interception only expose the target hostname (entropy tracking only). Enable `tls_interception` for full cross-request coverage on tunneled traffic.
+**Scope note:** Cross-request detection scans all outbound content visible to the proxy: URLs, request bodies, MCP JSON-RPC payloads, and WebSocket frames. CONNECT tunnels without TLS interception only expose the target hostname (entropy tracking only). Enable `tls_interception` for full cross-request coverage on tunneled traffic.
 
 ## Finding Suppression
 

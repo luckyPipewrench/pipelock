@@ -2675,11 +2675,24 @@ func TestScanHTTPInput_CEEBlocksWarnMode(t *testing.T) {
 	// Use a message that triggers content warn instead.
 	secret := "sk-ant-" + strings.Repeat("x", 25)
 	msg := makeRequest(1, "tools/call", map[string]string{"data": secret})
-	blocked := scanHTTPInput([]byte(msg), sc, io.Discard, inputCfg, nil, nil, "default", "default", nil, cee)
+	var logBuf bytes.Buffer
+	blocked := scanHTTPInput([]byte(msg), sc, &logBuf, inputCfg, nil, nil, "default", "default", nil, cee)
 	if blocked == nil {
 		t.Fatal("expected CEE to block in warn mode path")
 	}
 	if blocked.ErrorCode != -32005 {
 		t.Errorf("ErrorCode = %d, want -32005", blocked.ErrorCode)
+	}
+
+	logOutput := logBuf.String()
+
+	// The warn path must have run first (content warning logged).
+	if !strings.Contains(logOutput, "warning") {
+		t.Errorf("expected log to contain content warning, got: %s", logOutput)
+	}
+
+	// Then CEE must have blocked the request.
+	if !strings.Contains(logOutput, "CEE") {
+		t.Errorf("expected log to contain CEE, got: %s", logOutput)
 	}
 }

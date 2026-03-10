@@ -4988,10 +4988,23 @@ func TestValidate_CrossRequestDetection_ValidActions(t *testing.T) {
 		cfg := Defaults()
 		cfg.CrossRequestDetection.Enabled = true
 		cfg.CrossRequestDetection.Action = action
+		cfg.CrossRequestDetection.EntropyBudget.Enabled = true // at least one detector required
 		cfg.ApplyDefaults()
 		if err := cfg.Validate(); err != nil {
 			t.Fatalf("unexpected validation error for action %q: %v", action, err)
 		}
+	}
+}
+
+func TestValidate_CrossRequestDetection_BothDetectorsDisabled(t *testing.T) {
+	cfg := Defaults()
+	cfg.CrossRequestDetection.Enabled = true
+	cfg.CrossRequestDetection.EntropyBudget.Enabled = false
+	cfg.CrossRequestDetection.FragmentReassembly.Enabled = false
+	cfg.ApplyDefaults()
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error when enabled but both detectors disabled")
 	}
 }
 

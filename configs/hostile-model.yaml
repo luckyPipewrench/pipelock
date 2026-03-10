@@ -358,7 +358,7 @@ cross_request_detection:
     enabled: true
     bits_per_window: 4096
     window_minutes: 5
-    action: warn
+    action: block
   fragment_reassembly:
     enabled: true
     max_buffer_bytes: 65536

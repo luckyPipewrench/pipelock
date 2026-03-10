@@ -91,7 +91,9 @@ func (fb *FragmentBuffer) Append(sessionKey string, payload []byte) {
 		sb.fragments = sb.fragments[1:]
 	}
 	if sb.totalBytes > fb.maxBytes && len(sb.fragments) == 1 {
-		sb.fragments[0].data = sb.fragments[0].data[:fb.maxBytes]
+		// Keep the newest suffix bytes: the most recent data is more likely
+		// to complete a split secret spanning multiple requests.
+		sb.fragments[0].data = sb.fragments[0].data[len(sb.fragments[0].data)-fb.maxBytes:]
 		sb.totalBytes = fb.maxBytes
 	}
 }

@@ -1247,6 +1247,9 @@ func (c *Config) Validate() error {
 
 	// Validate cross-request detection config
 	if c.CrossRequestDetection.Enabled {
+		if !c.CrossRequestDetection.EntropyBudget.Enabled && !c.CrossRequestDetection.FragmentReassembly.Enabled {
+			return fmt.Errorf("cross_request_detection.enabled is true but both entropy_budget and fragment_reassembly are disabled (silent no-op)")
+		}
 		switch c.CrossRequestDetection.Action {
 		case ActionBlock, ActionWarn:
 			// valid

@@ -2396,8 +2396,20 @@ func TestForwardScannedInput_CEEBlocksInWarnMode(t *testing.T) {
 		t.Fatal("expected CEE block in warn mode path")
 	}
 
-	// Log should mention both the content warning and CEE.
-	if !strings.Contains(logBuf.String(), "CEE") {
-		t.Errorf("expected log to contain CEE, got: %s", logBuf.String())
+	// The dirty message must NOT have been forwarded to the server.
+	if strings.Contains(serverIn.String(), testSecretPrefix) {
+		t.Errorf("dirty message was forwarded to server; serverIn contains secret prefix")
+	}
+
+	logOutput := logBuf.String()
+
+	// Log should contain the content warning (warn path ran before CEE).
+	if !strings.Contains(logOutput, "warning") {
+		t.Errorf("expected log to contain content warning, got: %s", logOutput)
+	}
+
+	// Log should mention CEE block.
+	if !strings.Contains(logOutput, "CEE") {
+		t.Errorf("expected log to contain CEE, got: %s", logOutput)
 	}
 }

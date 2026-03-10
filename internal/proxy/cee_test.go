@@ -75,6 +75,15 @@ func TestExtractOutboundPayload_Body(t *testing.T) {
 	if got != body {
 		t.Errorf("extractOutboundPayload = %q, want %q", got, body)
 	}
+
+	// Body must still be readable after extraction (re-wrapping).
+	remaining, err := io.ReadAll(r.Body)
+	if err != nil {
+		t.Fatalf("reading body after extraction: %v", err)
+	}
+	if string(remaining) != body {
+		t.Errorf("body after extraction = %q, want %q", string(remaining), body)
+	}
 }
 
 func TestExtractOutboundPayload_QueryAndBody(t *testing.T) {
@@ -94,6 +103,15 @@ func TestExtractOutboundPayload_QueryAndBody(t *testing.T) {
 	}
 	if !strings.Contains(got, body) {
 		t.Errorf("payload %q missing body %q", got, body)
+	}
+
+	// Body must still be readable after extraction (re-wrapping).
+	remaining, err := io.ReadAll(r.Body)
+	if err != nil {
+		t.Fatalf("reading body after extraction: %v", err)
+	}
+	if string(remaining) != body {
+		t.Errorf("body after extraction = %q, want %q", string(remaining), body)
 	}
 }
 

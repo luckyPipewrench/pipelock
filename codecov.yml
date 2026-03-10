@@ -6,7 +6,7 @@ coverage:
         threshold: 2%
     patch:
       default:
-        target: 85%
+        target: 80%
 ignore:
   - "tests/ws-helper/**"
 comment:

@@ -50,6 +50,11 @@ const (
 const (
 	schemeHTTP  = "http"
 	schemeHTTPS = "https"
+
+	// maxCEESessions bounds memory used by fragment tracking across all sessions.
+	// 10,000 sessions at 64KB each = ~640MB worst case. In practice, most
+	// deployments have <100 concurrent sessions.
+	maxCEESessions = 10000
 )
 
 // requestCounter provides monotonic request IDs.
@@ -111,23 +116,25 @@ type editionSnapshot struct{ edition.Edition }
 
 // Proxy is the Pipelock fetch proxy server.
 type Proxy struct {
-	cfgPtr        atomic.Pointer[config.Config]
-	scannerPtr    atomic.Pointer[scanner.Scanner]
-	editionPtr    atomic.Pointer[editionSnapshot]
-	sessionMgrPtr atomic.Pointer[SessionManager]    // nil when profiling disabled
-	certCachePtr  atomic.Pointer[certgen.CertCache] // nil when TLS interception disabled
-	logger        *audit.Logger
-	metrics       *metrics.Metrics
-	ks            *killswitch.Controller
-	ksAPI         *killswitch.APIHandler
-	dialer        *net.Dialer
-	client        *http.Client
-	tlsTransport  *http.Transport // shared Transport for TLS interception upstream connections
-	server        *http.Server
-	agentServers  []*http.Server // per-agent listeners (managed by CLI)
-	startTime     time.Time
-	reloadMu      sync.Mutex // serializes Reload calls
-	approver      *hitl.Approver
+	cfgPtr            atomic.Pointer[config.Config]
+	scannerPtr        atomic.Pointer[scanner.Scanner]
+	editionPtr        atomic.Pointer[editionSnapshot]
+	sessionMgrPtr     atomic.Pointer[SessionManager]         // nil when profiling disabled
+	certCachePtr      atomic.Pointer[certgen.CertCache]      // nil when TLS interception disabled
+	entropyTrackerPtr atomic.Pointer[scanner.EntropyTracker] // nil when entropy budget disabled
+	fragmentBufferPtr atomic.Pointer[scanner.FragmentBuffer] // nil when fragment reassembly disabled
+	logger            *audit.Logger
+	metrics           *metrics.Metrics
+	ks                *killswitch.Controller
+	ksAPI             *killswitch.APIHandler
+	dialer            *net.Dialer
+	client            *http.Client
+	tlsTransport      *http.Transport // shared Transport for TLS interception upstream connections
+	server            *http.Server
+	agentServers      []*http.Server // per-agent listeners (managed by CLI)
+	startTime         time.Time
+	reloadMu          sync.Mutex // serializes Reload calls
+	approver          *hitl.Approver
 }
 
 // Option configures optional Proxy behavior.
@@ -185,6 +192,8 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 	if cfg.SessionProfiling.Enabled {
 		p.sessionMgrPtr.Store(NewSessionManager(&cfg.SessionProfiling, m))
 	}
+
+	p.setupCEE(&cfg.CrossRequestDetection)
 
 	p.dialer = &net.Dialer{
 		Timeout:   10 * time.Second,
@@ -297,6 +306,19 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
 			sm.UpdateConfig(&cfg.SessionProfiling)
 		}
 	}
+
+	// Toggle CEE components on config change. Build new components before
+	// swapping to avoid a nil window where concurrent requests bypass CEE.
+	// Entropy/fragment data is lost on reload, which is acceptable for short
+	// sliding windows (typically 5 min).
+	newET, newFB := p.buildCEE(&cfg.CrossRequestDetection)
+	if oldET := p.entropyTrackerPtr.Swap(newET); oldET != nil {
+		oldET.Close()
+	}
+	if oldFB := p.fragmentBufferPtr.Swap(newFB); oldFB != nil {
+		oldFB.Close()
+	}
+	p.updateCEEStats()
 }
 
 // LoadCertCache creates or replaces the cert cache based on current config.
@@ -341,6 +363,55 @@ func (p *Proxy) ShutdownAgentServers() {
 	}
 }
 
+// buildCEE creates entropy tracker and fragment buffer based on the config.
+// Returns nil for disabled components. Called from setupCEE and Reload.
+func (p *Proxy) buildCEE(ceeCfg *config.CrossRequestDetection) (*scanner.EntropyTracker, *scanner.FragmentBuffer) {
+	var et *scanner.EntropyTracker
+	var fb *scanner.FragmentBuffer
+	if ceeCfg.Enabled {
+		if ceeCfg.EntropyBudget.Enabled {
+			et = scanner.NewEntropyTracker(
+				ceeCfg.EntropyBudget.BitsPerWindow,
+				ceeCfg.EntropyBudget.WindowMinutes*60, // minutes to seconds
+			)
+		}
+		if ceeCfg.FragmentReassembly.Enabled {
+			fb = scanner.NewFragmentBuffer(
+				ceeCfg.FragmentReassembly.MaxBufferBytes,
+				maxCEESessions,
+				ceeCfg.FragmentReassembly.WindowMinutes*60, // minutes to seconds
+			)
+		}
+	}
+	return et, fb
+}
+
+// setupCEE creates and stores entropy tracker and fragment buffer based on
+// the cross-request detection config. Called from New() at startup.
+func (p *Proxy) setupCEE(ceeCfg *config.CrossRequestDetection) {
+	et, fb := p.buildCEE(ceeCfg)
+	p.entropyTrackerPtr.Store(et)
+	p.fragmentBufferPtr.Store(fb)
+	p.updateCEEStats()
+}
+
+// updateCEEStats registers a callback so CEE state is available through the
+// /stats endpoint. The callback reads atomic pointers, so it captures the
+// proxy reference once and queries current state on each /stats request.
+func (p *Proxy) updateCEEStats() {
+	p.metrics.SetCEEStatsFunc(func() metrics.CEEStats {
+		var stats metrics.CEEStats
+		if et := p.entropyTrackerPtr.Load(); et != nil {
+			stats.EntropyTrackerActive = true
+		}
+		if fb := p.fragmentBufferPtr.Load(); fb != nil {
+			stats.FragmentBufferActive = true
+			stats.FragmentBufferBytes = fb.TotalBufferBytes()
+		}
+		return stats
+	})
+}
+
 func (p *Proxy) Close() {
 	if sm := p.sessionMgrPtr.Load(); sm != nil {
 		sm.Close()
@@ -350,6 +421,12 @@ func (p *Proxy) Close() {
 	}
 	if snap := p.editionPtr.Load(); snap != nil {
 		snap.Close()
+	}
+	if et := p.entropyTrackerPtr.Load(); et != nil {
+		et.Close()
+	}
+	if fb := p.fragmentBufferPtr.Load(); fb != nil {
+		fb.Close()
 	}
 	if p.tlsTransport != nil {
 		p.tlsTransport.CloseIdleConnections()
@@ -815,6 +892,34 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			BlockReason: reason,
 		})
 		return
+	}
+
+	// CEE pre-forward admission: check cross-request entropy and fragment
+	// reassembly before the outbound request leaves the proxy. Fetch is
+	// GET-only so the outbound data is the target URL path and query values.
+	ceeCfg := ceeEffectiveConfig(cfg.CrossRequestDetection, cfg.EnforceEnabled())
+	if ceeCfg.Enabled {
+		sessionKey := ceeSessionKey(agent, clientIP)
+		outbound := urlPayload(parsed)
+		keys := queryParamKeys(parsed)
+
+		ceeRes := ceeAdmit(sessionKey, outbound, keys, displayURL, agent, clientIP, requestID,
+			ceeCfg, p.entropyTrackerPtr.Load(), p.fragmentBufferPtr.Load(), sc, log, p.metrics)
+
+		if sm := p.sessionMgrPtr.Load(); sm != nil && cfg.AdaptiveEnforcement.Enabled {
+			ceeRecordSignals(ceeRes, sm, sessionKey, cfg.AdaptiveEnforcement.EscalationThreshold, log, p.metrics, clientIP, requestID)
+		}
+
+		if ceeRes.Blocked {
+			p.metrics.RecordBlocked(parsed.Hostname(), "cross_request", time.Since(start), agentLabel)
+			writeJSON(w, http.StatusForbidden, FetchResponse{
+				URL:         displayURL,
+				Agent:       agent,
+				Blocked:     true,
+				BlockReason: ceeRes.Reason,
+			})
+			return
+		}
 	}
 
 	// Fetch the URL — attach clientIP/requestID/agent and resolved agent

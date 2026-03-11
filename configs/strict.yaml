@@ -392,6 +392,20 @@ tool_chain_detection:
   enabled: true
   action: block
 
+# Cross-request exfiltration detection
+cross_request_detection:
+  enabled: true
+  action: block
+  entropy_budget:
+    enabled: true
+    bits_per_window: 4096
+    window_minutes: 5
+    action: warn
+  fragment_reassembly:
+    enabled: true
+    max_buffer_bytes: 65536
+    window_minutes: 5
+
 # --- Agent Profiles (optional) ---
 # Per-agent policy overrides. Each agent gets its own merged config.
 # Agents are identified by listener binding (spoof-proof), source CIDR matching,

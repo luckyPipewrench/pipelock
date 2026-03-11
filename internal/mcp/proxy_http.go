@@ -47,6 +47,7 @@ func RunHTTPProxy(
 	ks *killswitch.Controller,
 	chainMatcher *chains.Matcher,
 	auditLogger *audit.Logger,
+	cee *CEEDeps,
 ) error {
 	// Create a child context so we can stop the GET stream when stdin EOF is reached.
 	ctx, cancel := context.WithCancel(ctx)
@@ -109,7 +110,7 @@ func RunHTTPProxy(
 
 		// Input scanning — call ScanRequest and CheckRequest directly.
 		// The sequential (non-concurrent) architecture means no channel needed.
-		if blocked := scanHTTPInput(msg, sc, safeLogW, inputCfg, policyCfg, chainMatcher, "default", "default", auditLogger); blocked != nil {
+		if blocked := scanHTTPInput(msg, sc, safeLogW, inputCfg, policyCfg, chainMatcher, "default", "default", auditLogger, cee); blocked != nil {
 			if !blocked.IsNotification {
 				resp := blockRequestResponse(*blocked)
 				if wErr := safeClientOut.WriteMessage(resp); wErr != nil {
@@ -171,11 +172,13 @@ func RunHTTPProxy(
 	return lastScanErr
 }
 
-// scanHTTPInput checks a single input message for DLP/injection/policy.
+// scanHTTPInput checks a single input message for DLP/injection/policy/CEE.
 // Returns a *BlockedRequest if the message should be blocked, nil if clean.
 // This is the HTTP proxy equivalent of ForwardScannedInput's per-message logic,
 // but returns a verdict instead of writing to a channel.
-func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *InputScanConfig, policyCfg *policy.Config, chainMatcher *chains.Matcher, sessionKey, auditSessionKey string, auditLogger *audit.Logger) *BlockedRequest {
+// When cee is non-nil, outbound payloads are recorded for cross-request
+// exfiltration detection after content scanning passes.
+func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *InputScanConfig, policyCfg *policy.Config, chainMatcher *chains.Matcher, sessionKey, auditSessionKey string, auditLogger *audit.Logger, cee *CEEDeps) *BlockedRequest {
 	// Determine input scanning parameters.
 	action := config.ActionWarn
 	onParseError := config.ActionBlock
@@ -249,8 +252,19 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 		}
 	}
 
-	// All clean — proceed.
+	// All clean — proceed (with CEE check).
 	if verdict.Clean && !policyVerdict.Matched && chainAction == "" {
+		// Cross-request exfiltration check on clean outbound messages.
+		ceeKey := ceeSessionKeyMCP("", sessionKey)
+		if reason := ceeRecordMCP(ceeKey, msg, cee, sc, logW, auditLogger); reason != "" {
+			return &BlockedRequest{
+				ID:             verdict.ID,
+				IsNotification: isRPCNotification(verdict.ID),
+				LogMessage:     "CEE blocked",
+				ErrorCode:      -32005,
+				ErrorMessage:   fmt.Sprintf("pipelock: %s", reason),
+			}
+		}
 		return nil
 	}
 
@@ -322,6 +336,17 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 	default: // warn
 		if len(reasons) > 0 {
 			_, _ = fmt.Fprintf(logW, "pipelock: input: warning (%s)\n", joinStrings(reasons))
+		}
+		// Cross-request exfiltration check even in warn mode.
+		ceeKey := ceeSessionKeyMCP("", sessionKey)
+		if reason := ceeRecordMCP(ceeKey, msg, cee, sc, logW, auditLogger); reason != "" {
+			return &BlockedRequest{
+				ID:             verdict.ID,
+				IsNotification: isRPCNotification(verdict.ID),
+				LogMessage:     "CEE blocked",
+				ErrorCode:      -32005,
+				ErrorMessage:   fmt.Sprintf("pipelock: %s", reason),
+			}
 		}
 		return nil // forward
 	}
@@ -488,6 +513,7 @@ func RunHTTPListenerProxy(
 	ks *killswitch.Controller,
 	chainMatcher *chains.Matcher,
 	auditLogger *audit.Logger,
+	cee *CEEDeps,
 ) error {
 	safeLogW := &syncWriter{w: logW}
 
@@ -629,7 +655,7 @@ func RunHTTPListenerProxy(
 		}
 
 		// Input scanning: DLP, injection, policy, chain detection.
-		if blocked := scanHTTPInput(body, sc, safeLogW, inputCfg, policyCfg, chainMatcher, chainSessionKey, auditSessionKey, auditLogger); blocked != nil {
+		if blocked := scanHTTPInput(body, sc, safeLogW, inputCfg, policyCfg, chainMatcher, chainSessionKey, auditSessionKey, auditLogger, cee); blocked != nil {
 			w.Header().Set("Content-Type", "application/json")
 			if blocked.IsNotification {
 				w.WriteHeader(http.StatusAccepted)

@@ -109,6 +109,8 @@ const (
 	SignalDLPNearMiss   SignalType = iota // +1 point
 	SignalBlock                           // +3 points
 	SignalDomainAnomaly                   // +2 points
+	SignalEntropyBudget                   // +2 points (entropy budget exceeded, medium confidence)
+	SignalFragmentDLP                     // +3 points (fragment reassembly found secret, high confidence)
 )
 
 // signalPoints maps signal types to their score contribution.
@@ -116,6 +118,8 @@ var signalPoints = map[SignalType]float64{
 	SignalDLPNearMiss:   1.0,
 	SignalBlock:         3.0,
 	SignalDomainAnomaly: 2.0,
+	SignalEntropyBudget: 2.0,
+	SignalFragmentDLP:   3.0,
 }
 
 // escalationLabels maps escalation levels to human-readable names.

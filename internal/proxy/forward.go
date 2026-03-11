@@ -151,6 +151,32 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// CEE hostname entropy for opaque CONNECT tunnels. Since we cannot inspect
+	// the encrypted tunnel contents, only the hostname is available for entropy
+	// tracking. Fragment buffering is not useful without body data.
+	if ceeCfg := ceeEffectiveConfig(cfg.CrossRequestDetection, cfg.EnforceEnabled()); ceeCfg.Enabled {
+		sessionKey := ceeSessionKey(agent, clientIP)
+		if et := p.entropyTrackerPtr.Load(); et != nil && ceeCfg.EntropyBudget.Enabled {
+			et.Record(sessionKey, []byte(host))
+			if et.BudgetExceeded(sessionKey) {
+				p.metrics.RecordCrossRequestEntropyExceeded()
+				detail := fmt.Sprintf("entropy budget exceeded: %.0f/%.0f bits",
+					et.CurrentUsage(sessionKey), et.Budget())
+				if sm := p.sessionMgrPtr.Load(); sm != nil && cfg.AdaptiveEnforcement.Enabled {
+					ceeRecordSignals(ceeResult{EntropyHit: true}, sm, sessionKey,
+						cfg.AdaptiveEnforcement.EscalationThreshold, p.logger, p.metrics, clientIP, requestID)
+				}
+				if ceeCfg.EntropyBudget.Action == config.ActionBlock {
+					p.logger.LogBlocked(http.MethodConnect, target, "cross_request_entropy", detail, clientIP, requestID, agent)
+					p.metrics.RecordTunnelBlocked(agentLabel)
+					http.Error(w, "CONNECT blocked: cross-request entropy budget exceeded", http.StatusForbidden)
+					return
+				}
+				p.logger.LogAnomaly(http.MethodConnect, target, "cross_request_entropy", detail, clientIP, requestID, agent, 0)
+			}
+		}
+	}
+
 	// WebSocket redirect hint: if the target host matches the redirect list
 	// and WebSocket proxy is enabled, suggest using /ws instead of CONNECT.
 	// Checked BEFORE dial to avoid wasting a TCP connection.
@@ -249,7 +275,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		interceptConn := wrapBuffered(clientConn, clientReader)
 		interceptCtx, interceptCancel := context.WithDeadline(r.Context(), deadline)
 		defer interceptCancel()
-		if err := interceptTunnel(interceptCtx, interceptConn, host, port, cfg, sc, certCache, p.logger, p.metrics, clientIP, requestID, agent, p.tlsTransport, p.ssrfSafeDialContext); err != nil {
+		if err := interceptTunnel(interceptCtx, interceptConn, host, port, cfg, sc, certCache, p.logger, p.metrics, clientIP, requestID, agent, p.tlsTransport, p.ssrfSafeDialContext, p.entropyTrackerPtr.Load(), p.fragmentBufferPtr.Load(), p.sessionMgrPtr.Load(), p); err != nil {
 			p.logger.LogError(http.MethodConnect, host, clientIP, requestID, agent, err)
 		}
 		return
@@ -443,6 +469,29 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	if p.evalHeaderDLP(r.Header, cfg, sc, p.logger, r.Method, targetURL, r.URL.Hostname(), clientIP, requestID, agent, start) {
 		http.Error(w, "blocked: request header contains secret", http.StatusForbidden)
 		return
+	}
+
+	// CEE pre-forward admission: check cross-request entropy and fragment
+	// reassembly before the outbound request leaves. Forward proxy has
+	// URL path, query params, and request body as outbound data.
+	ceeCfg := ceeEffectiveConfig(cfg.CrossRequestDetection, cfg.EnforceEnabled())
+	if ceeCfg.Enabled {
+		sessionKey := ceeSessionKey(agent, clientIP)
+		outbound := extractOutboundPayload(r)
+		keys := queryParamKeys(r.URL)
+
+		ceeRes := ceeAdmit(sessionKey, outbound, keys, targetURL, agent, clientIP, requestID,
+			ceeCfg, p.entropyTrackerPtr.Load(), p.fragmentBufferPtr.Load(), sc, p.logger, p.metrics)
+
+		if sm := p.sessionMgrPtr.Load(); sm != nil && cfg.AdaptiveEnforcement.Enabled {
+			ceeRecordSignals(ceeRes, sm, sessionKey, cfg.AdaptiveEnforcement.EscalationThreshold, p.logger, p.metrics, clientIP, requestID)
+		}
+
+		if ceeRes.Blocked {
+			p.metrics.RecordBlocked(r.URL.Hostname(), "cross_request", time.Since(start), agentLabel)
+			http.Error(w, "blocked: "+ceeRes.Reason, http.StatusForbidden)
+			return
+		}
 	}
 
 	// Clone request with context keys so CheckRedirect uses the per-agent

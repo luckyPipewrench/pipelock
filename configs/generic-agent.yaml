@@ -382,6 +382,10 @@ tool_chain_detection:
   enabled: true
   action: warn
 
+# Cross-request exfiltration detection (opt-in)
+# cross_request_detection:
+#   enabled: false
+
 # --- Agent Profiles (optional) ---
 # Per-agent policy overrides. Each agent gets its own merged config.
 # Agents are identified by listener binding (spoof-proof), source CIDR matching,

@@ -85,6 +85,10 @@ const (
 	EventHeaderDLP          EventType = "header_dlp"
 	EventChainDetection     EventType = "chain_detection"
 	EventAgentListener      EventType = "agent_listener"
+
+	EventCrossRequestEntropyExceeded EventType = "cross_request_entropy_exceeded"
+	EventCrossRequestDLPMatch        EventType = "cross_request_dlp_match"
+	EventCrossRequestEntropyAnomaly  EventType = "cross_request_entropy_anomaly"
 )
 
 // WebSocket frame direction constants used in audit log entries.

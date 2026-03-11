@@ -85,6 +85,10 @@ func interceptTunnel(
 	clientIP, requestID, agent string,
 	upstreamRT http.RoundTripper,
 	safeDial dialFunc,
+	et *scanner.EntropyTracker,
+	fb *scanner.FragmentBuffer,
+	sm *SessionManager,
+	p *Proxy, // when non-nil, CEE state resolved per-request (avoids stale pointers after reload)
 ) error {
 	// Client-side TLS config with forged cert from cache.
 	tlsCfg := &tls.Config{
@@ -166,7 +170,7 @@ func interceptTunnel(
 	// Serve via http.Server on single-connection listener.
 	// http.Server handles HTTP/2 when negotiated via ALPN.
 	ln := newSingleConnListener(tlsConn)
-	handler := newInterceptHandler(targetHost, targetPort, upstreamRT, cfg, sc, logger, m, clientIP, requestID, agent)
+	handler := newInterceptHandler(targetHost, targetPort, upstreamRT, cfg, sc, logger, m, clientIP, requestID, agent, et, fb, sm, p)
 	srv := &http.Server{
 		Handler:           handler,
 		ReadHeaderTimeout: interceptReadHeaderTimeout,
@@ -214,6 +218,10 @@ func newInterceptHandler(
 	logger *audit.Logger,
 	m *metrics.Metrics,
 	clientIP, requestID, agent string,
+	et *scanner.EntropyTracker,
+	fb *scanner.FragmentBuffer,
+	sm *SessionManager,
+	p *Proxy, // when non-nil, CEE state resolved per-request (avoids stale pointers after reload)
 ) http.Handler {
 	target := net.JoinHostPort(targetHost, targetPort)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -301,6 +309,37 @@ func newInterceptHandler(
 				}
 				// Audit mode: log but forward.
 				logger.LogAnomaly(r.Method, r.URL.String(), "header_dlp", "request header contains secret", clientIP, requestID, agent, 0.8) // 0.8: high confidence DLP match
+			}
+		}
+
+		// CEE pre-forward admission for intercepted requests. The intercepted
+		// request has full body, headers, and URL available for entropy and
+		// fragment analysis. When p is non-nil, resolve CEE objects per-request
+		// so hot-reloads during long-lived CONNECT tunnels use fresh state.
+		ceeCfg := ceeEffectiveConfig(cfg.CrossRequestDetection, cfg.EnforceEnabled())
+		if ceeCfg.Enabled {
+			ceeET, ceeFB, ceeSM := et, fb, sm
+			if p != nil {
+				ceeET = p.entropyTrackerPtr.Load()
+				ceeFB = p.fragmentBufferPtr.Load()
+				ceeSM = p.sessionMgrPtr.Load()
+			}
+
+			sessionKey := ceeSessionKey(agent, clientIP)
+			outbound := extractOutboundPayload(r)
+			keys := queryParamKeys(r.URL)
+
+			ceeRes := ceeAdmit(sessionKey, outbound, keys, r.URL.String(), agent, clientIP, requestID,
+				ceeCfg, ceeET, ceeFB, sc, logger, m)
+
+			if ceeSM != nil && cfg.AdaptiveEnforcement.Enabled {
+				ceeRecordSignals(ceeRes, ceeSM, sessionKey, cfg.AdaptiveEnforcement.EscalationThreshold, logger, m, clientIP, requestID)
+			}
+
+			if ceeRes.Blocked {
+				m.RecordTLSRequestBlocked("cross_request")
+				http.Error(w, "blocked: "+ceeRes.Reason, http.StatusForbidden)
+				return
 			}
 		}
 

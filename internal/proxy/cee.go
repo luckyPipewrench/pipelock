@@ -322,7 +322,7 @@ func ceeFragmentScan(
 // ceeRecordSignals fires adaptive enforcement signals for CEE findings.
 // Called after ceeAdmit when session profiling is active.
 func ceeRecordSignals(result ceeResult, sm *SessionManager, sessionKey string, threshold float64, logger *audit.Logger, m *metrics.Metrics, clientIP, requestID string) {
-	if sm == nil {
+	if sm == nil || (!result.EntropyHit && !result.FragmentHit) {
 		return
 	}
 	sess := sm.GetOrCreate(sessionKey)

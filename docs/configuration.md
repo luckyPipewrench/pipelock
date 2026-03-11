@@ -970,16 +970,74 @@ If defined, `_default` applies to any request that does not match a named agent.
 
 ## License Key
 
-```yaml
-license_key: "pipelock_lic_v1_eyJ..."
-license_public_key: "a1b2c3d4..."  # hex-encoded Ed25519 public key
+Multi-agent profiles (the `agents:` section) require a signed license token. The token is an Ed25519-signed JWT-like string issued by `pipelock license issue`. At startup, pipelock verifies the signature, checks expiration, and confirms the token includes the `agents` feature. If any check fails, agent profiles are disabled with a warning. All single-agent protection remains active.
+
+### Loading Sources
+
+Pipelock checks three sources for the license token, in priority order:
+
+| Priority | Source | Use case |
+|----------|--------|----------|
+| 1 (highest) | `PIPELOCK_LICENSE_KEY` env var | Containers, CI, Kubernetes Secrets |
+| 2 | `license_file` config field (file path) | Secret volume mounts, file-based workflows |
+| 3 (lowest) | `license_key` config field (inline) | Simple single-machine setups |
+
+The first non-empty source wins. Later sources are not checked.
+
+**Env var (recommended for containers):**
+
+```bash
+export PIPELOCK_LICENSE_KEY="pipelock_lic_v1_eyJ..."
+pipelock run --config pipelock.yaml
 ```
 
-Multi-agent profiles (the `agents:` section) require a signed license token in `license_key`. The token is an Ed25519-signed JWT-like string issued by `pipelock license issue`. At startup, pipelock verifies the signature, checks expiration, and confirms the token includes the `agents` feature. If any check fails, agent profiles are disabled with a warning. All single-agent protection remains active.
+**File path:**
+
+```yaml
+license_file: /etc/pipelock/license.token    # absolute path
+license_file: license.token                  # relative to config file directory
+```
+
+The file should contain only the license token string. Leading and trailing whitespace is trimmed. The file is read at startup. Adding or changing a license requires a restart to take effect; a config-triggered reload will detect the change but will not apply it until restart. Revoking a license (removing `license_key` or `license_file` from config) takes effect immediately on reload.
+
+**Inline (simplest):**
+
+```yaml
+license_key: "pipelock_lic_v1_eyJ..."
+```
+
+**Full example with all license fields:**
+
+```yaml
+license_key: "pipelock_lic_v1_eyJ..."        # inline token (lowest priority)
+license_file: "/etc/pipelock/license.token"  # file path (medium priority)
+license_public_key: "a1b2c3d4..."            # hex-encoded Ed25519 public key (dev builds only)
+```
+
+### Kubernetes Secret Example
+
+Mount a license key from a Kubernetes Secret as an env var:
+
+```yaml
+env:
+  - name: PIPELOCK_LICENSE_KEY
+    valueFrom:
+      secretKeyRef:
+        name: pipelock-license
+        key: token
+```
+
+Or mount the Secret as a file and reference it in config:
+
+```yaml
+license_file: /etc/pipelock/license/token
+```
+
+### Key Verification
 
 Official release builds embed the signing public key at compile time via ldflags. The embedded key takes priority over `license_public_key` and cannot be overridden by config, preventing self-signing bypasses. The `license_public_key` config field is only used in development builds where no key is embedded.
 
-Generate a keypair and issue licenses with:
+### CLI Commands
 
 ```bash
 pipelock license keygen              # generates ~/.config/pipelock/license.key + license.pub

@@ -258,12 +258,28 @@ Examples:
 								// disabled agents on reload, do not re-add them via
 								// listener preservation.
 								agentsRevokedByLicense := oldCfg.Agents != nil && newCfg.Agents == nil
+								licenseInputsChanged := oldCfg.LicenseKey != newCfg.LicenseKey || oldCfg.LicensePublicKey != newCfg.LicensePublicKey || oldCfg.LicenseFile != newCfg.LicenseFile
+
 								if agentsRevokedByLicense {
 									// License gate disabled agents on reload.
 									// Shut down already-bound listener servers so
 									// the agent ports stop accepting traffic.
 									p.ShutdownAgentServers()
 									cmd.PrintErrf("pipelock: license revoked agents, shutting down agent listeners\n")
+								} else if licenseInputsChanged {
+									// License inputs changed but agents were not
+									// revoked. Preserve ALL old license state so a
+									// reload cannot activate licensed features without
+									// a restart. We must also preserve the old license
+									// input fields themselves; otherwise the new values
+									// get committed to the live config and a subsequent
+									// unrelated reload would see no diff, silently
+									// applying the staged license.
+									newCfg.Agents = oldCfg.Agents
+									newCfg.LicenseKey = oldCfg.LicenseKey
+									newCfg.LicenseFile = oldCfg.LicenseFile
+									newCfg.LicensePublicKey = oldCfg.LicensePublicKey
+									cmd.PrintErrf("WARNING: config reload: license key inputs changed (license_key, license_file, or license_public_key) - requires restart for license re-verification\n")
 								} else if agentListenersChanged(oldCfg, newCfg) {
 									cmd.PrintErrf("WARNING: config reload: agents[*].listeners changed — requires restart, ignoring listener changes\n")
 									preserveAgentListeners(oldCfg, newCfg)
@@ -271,12 +287,8 @@ Examples:
 								// Carry forward runtime-derived license expiry.
 								// LicenseExpiresAt is set by EnforceLicenseGate at
 								// startup, not parsed from YAML. Always preserve the
-								// old value. Warn if license inputs changed, since a
-								// restart is needed to re-verify the license.
+								// old value until restart.
 								newCfg.LicenseExpiresAt = oldCfg.LicenseExpiresAt
-								if oldCfg.LicenseKey != newCfg.LicenseKey || oldCfg.LicensePublicKey != newCfg.LicensePublicKey {
-									cmd.PrintErrf("WARNING: config reload: license_key or license_public_key changed — requires restart for license re-verification\n")
-								}
 							}
 							newSc := scanner.New(newCfg)
 							p.Reload(newCfg, newSc)

@@ -446,14 +446,10 @@ logging:
 
 	output := stderr.String()
 
-	// Verify the license change was detected on reload.
-	// EnforceLicenseGate writes to os.Stderr (not cmd buffer), so we
-	// check for the reload handler's own license-change warning instead.
-	if !bytes.Contains([]byte(output), []byte("license_key or license_public_key changed")) {
-		t.Errorf("expected license change warning after reload, got:\n%s", output)
-	}
-
-	// Verify agent listeners were shut down (not just config-blocked).
+	// Verify agent listeners were shut down via the revocation path.
+	// The revocation branch (agentsRevokedByLicense) takes priority over
+	// the license-inputs-changed branch in the if/else-if chain, so the
+	// "license key inputs changed" warning does not appear here.
 	if !bytes.Contains([]byte(output), []byte("shutting down agent listeners")) {
 		t.Errorf("expected agent listener shutdown message after reload, got:\n%s", output)
 	}
@@ -461,5 +457,199 @@ logging:
 	// Listener preservation must not override the license gate.
 	if bytes.Contains([]byte(output), []byte("ignoring listener changes")) {
 		t.Error("listener preservation should not run when license gate disabled agents")
+	}
+}
+
+// TestRunCmd_ReloadLicenseAddedNoActivation verifies that adding a valid
+// license via reload does NOT activate agent features. The old agent state
+// (nil) must be preserved; the operator must restart for the license to
+// take effect. This prevents partial activation with a stale
+// LicenseExpiresAt=0 (perpetual).
+func TestRunCmd_ReloadLicenseAddedNoActivation(t *testing.T) {
+	mainAddr := freePort(t)
+	licToken, licPubHex := testLicenseToken(t)
+
+	// Start with NO license — agents section present but will be gated.
+	initialCfg := fmt.Sprintf(`version: 1
+mode: balanced
+fetch_proxy:
+  listen: %q
+  timeout_seconds: 5
+agents:
+  header-agent:
+    source_cidrs:
+      - "10.0.0.0/8"
+`, mainAddr)
+
+	dir := t.TempDir()
+	cfgPath := dir + "/pipelock.yaml"
+	if err := os.WriteFile(cfgPath, []byte(initialCfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cmd := runCmd()
+	cmd.SetContext(ctx)
+	cmd.SetArgs([]string{"--config", cfgPath})
+	var stderr bytes.Buffer
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&stderr)
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- cmd.Execute() }()
+
+	// Wait for healthy.
+	waitForPort(t, mainAddr)
+
+	// Reload: add a valid license. EnforceLicenseGate in Load() will
+	// verify it and set Agents non-nil, but the reload handler must
+	// preserve old (nil) agents and warn.
+	reloadCfg := fmt.Sprintf(`version: 1
+mode: balanced
+license_key: %s
+license_public_key: %s
+fetch_proxy:
+  listen: %q
+  timeout_seconds: 5
+agents:
+  header-agent:
+    source_cidrs:
+      - "10.0.0.0/8"
+`, licToken, licPubHex, mainAddr)
+	if err := os.WriteFile(cfgPath, []byte(reloadCfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for reload.
+	time.Sleep(500 * time.Millisecond)
+
+	cancel()
+	select {
+	case cmdErr := <-errCh:
+		if cmdErr != nil {
+			t.Errorf("unexpected error: %v", cmdErr)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("run did not shut down")
+	}
+
+	output := stderr.String()
+
+	// Must warn about license inputs changing.
+	if !bytes.Contains([]byte(output), []byte("license key inputs changed")) {
+		t.Errorf("expected license change warning, got:\n%s", output)
+	}
+
+	// Must NOT have activated agents (no "agent listener bound"
+	// means they were never started, which is correct).
+	if bytes.Contains([]byte(output), []byte("agent listener bound")) {
+		t.Error("agents should not have been activated on reload without restart")
+	}
+}
+
+// TestRunCmd_ReloadLicenseTwoStepBypass verifies that a license staged on
+// one reload cannot sneak through on a second unrelated reload. The old
+// license input fields must be preserved in the live config so that
+// licenseInputsChanged remains true across subsequent reloads.
+func TestRunCmd_ReloadLicenseTwoStepBypass(t *testing.T) {
+	mainAddr := freePort(t)
+	licToken, licPubHex := testLicenseToken(t)
+
+	// Start with NO license.
+	initialCfg := fmt.Sprintf(`version: 1
+mode: balanced
+fetch_proxy:
+  listen: %q
+  timeout_seconds: 5
+agents:
+  header-agent:
+    source_cidrs:
+      - "10.0.0.0/8"
+`, mainAddr)
+
+	dir := t.TempDir()
+	cfgPath := dir + "/pipelock.yaml"
+	if err := os.WriteFile(cfgPath, []byte(initialCfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cmd := runCmd()
+	cmd.SetContext(ctx)
+	cmd.SetArgs([]string{"--config", cfgPath})
+	var stderr bytes.Buffer
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&stderr)
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- cmd.Execute() }()
+
+	waitForPort(t, mainAddr)
+
+	// Reload 1: add a valid license. Should warn and preserve old state.
+	reload1 := fmt.Sprintf(`version: 1
+mode: balanced
+license_key: %s
+license_public_key: %s
+fetch_proxy:
+  listen: %q
+  timeout_seconds: 5
+agents:
+  header-agent:
+    source_cidrs:
+      - "10.0.0.0/8"
+`, licToken, licPubHex, mainAddr)
+	if err := os.WriteFile(cfgPath, []byte(reload1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(500 * time.Millisecond)
+
+	// Reload 2: unrelated change (mode). License inputs stay the same in
+	// the config file. If the fix is correct, the live config still has the
+	// OLD (empty) license inputs, so this reload also detects the mismatch.
+	reload2 := fmt.Sprintf(`version: 1
+mode: audit
+license_key: %s
+license_public_key: %s
+fetch_proxy:
+  listen: %q
+  timeout_seconds: 5
+agents:
+  header-agent:
+    source_cidrs:
+      - "10.0.0.0/8"
+`, licToken, licPubHex, mainAddr)
+	if err := os.WriteFile(cfgPath, []byte(reload2), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(500 * time.Millisecond)
+
+	cancel()
+	select {
+	case cmdErr := <-errCh:
+		if cmdErr != nil {
+			t.Errorf("unexpected error: %v", cmdErr)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("run did not shut down")
+	}
+
+	output := stderr.String()
+
+	// The license change warning must appear TWICE: once per reload.
+	// If it only appears once, the second reload silently applied the
+	// staged license (the two-step bypass bug).
+	count := bytes.Count([]byte(output), []byte("license key inputs changed"))
+	if count < 2 {
+		t.Errorf("expected license change warning on BOTH reloads, got %d occurrence(s):\n%s", count, output)
+	}
+
+	// Agents must never have been activated.
+	if bytes.Contains([]byte(output), []byte("agent listener bound")) {
+		t.Error("agents should not have been activated across two reloads without restart")
 	}
 }

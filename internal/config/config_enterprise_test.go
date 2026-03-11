@@ -297,3 +297,53 @@ func TestLicenseGateViaLoad_WithValidToken(t *testing.T) {
 		t.Error("claude-code profile should be present")
 	}
 }
+
+func TestLicenseGateViaLoad_EnvVar(t *testing.T) {
+	token, pubHex := testLicenseKeyPair(t)
+	t.Setenv(config.EnvLicenseKey, token)
+
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "cfg.yaml")
+	// No inline license_key; env var is the only source.
+	data := "mode: balanced\nlicense_public_key: " + pubHex + "\nagents:\n  claude-code:\n    mode: audit\n"
+	if err := os.WriteFile(cfgPath, []byte(data), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Agents == nil {
+		t.Error("agents should be enabled when license comes from PIPELOCK_LICENSE_KEY env var")
+	}
+	if _, ok := cfg.Agents["claude-code"]; !ok {
+		t.Error("claude-code profile should be present")
+	}
+}
+
+func TestLicenseGateViaLoad_LicenseFile(t *testing.T) {
+	token, pubHex := testLicenseKeyPair(t)
+
+	tmp := t.TempDir()
+	tokenPath := filepath.Join(tmp, "license.token")
+	if err := os.WriteFile(tokenPath, []byte(token+"\n"), 0o600); err != nil {
+		t.Fatalf("write token file: %v", err)
+	}
+
+	cfgPath := filepath.Join(tmp, "cfg.yaml")
+	// No inline license_key; license_file is the only source.
+	data := "mode: balanced\nlicense_file: license.token\nlicense_public_key: " + pubHex + "\nagents:\n  claude-code:\n    mode: audit\n"
+	if err := os.WriteFile(cfgPath, []byte(data), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Agents == nil {
+		t.Error("agents should be enabled when license comes from license_file")
+	}
+	if _, ok := cfg.Agents["claude-code"]; !ok {
+		t.Error("claude-code profile should be present")
+	}
+}

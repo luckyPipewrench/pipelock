@@ -399,7 +399,8 @@ tool_chain_detection:
 # --- Agent Profiles (optional) ---
 # Per-agent policy overrides. Each agent gets its own merged config.
 # Agents are identified by listener binding (spoof-proof), source CIDR matching,
-# X-Pipelock-Agent header, or ?agent= query param. Requires license_key.
+# X-Pipelock-Agent header, or ?agent= query param. Requires a license key
+# (via PIPELOCK_LICENSE_KEY env var, license_file path, or inline license_key).
 #
 # agents:
 #   claude-code:

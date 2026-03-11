@@ -5153,3 +5153,35 @@ func TestReloadWarnings_CrossRequestDetection_FragmentReassemblyDisabled(t *test
 		t.Error("expected reload warning when fragment_reassembly is disabled")
 	}
 }
+
+func TestReloadWarnings_CrossRequestDetection_ParentDisabledNoNestedWarnings(t *testing.T) {
+	old := Defaults()
+	old.CrossRequestDetection.Enabled = true
+	old.CrossRequestDetection.EntropyBudget.Enabled = true
+	old.CrossRequestDetection.FragmentReassembly.Enabled = true
+	old.ApplyDefaults()
+
+	// Disable the parent, which also implicitly disables children.
+	updated := Defaults()
+	updated.CrossRequestDetection.Enabled = false
+	updated.CrossRequestDetection.EntropyBudget.Enabled = false
+	updated.CrossRequestDetection.FragmentReassembly.Enabled = false
+	updated.ApplyDefaults()
+
+	warnings := ValidateReload(old, updated)
+
+	// Should get the parent warning only, not nested detector warnings.
+	parentFound := false
+	for _, w := range warnings {
+		if w.Field == "cross_request_detection.enabled" {
+			parentFound = true
+		}
+		if w.Field == "cross_request_detection.entropy_budget.enabled" ||
+			w.Field == "cross_request_detection.fragment_reassembly.enabled" {
+			t.Errorf("unexpected nested warning %q when parent is disabled", w.Field)
+		}
+	}
+	if !parentFound {
+		t.Error("expected parent cross_request_detection.enabled warning")
+	}
+}

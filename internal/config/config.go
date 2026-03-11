@@ -1714,14 +1714,20 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 			Message: "cross-request exfiltration detection disabled",
 		})
 	}
-	if old.CrossRequestDetection.EntropyBudget.Enabled &&
+	// Per-detector warnings only matter when the parent stays enabled.
+	// If the parent is being disabled, the parent warning above covers it.
+	if old.CrossRequestDetection.Enabled &&
+		updated.CrossRequestDetection.Enabled &&
+		old.CrossRequestDetection.EntropyBudget.Enabled &&
 		!updated.CrossRequestDetection.EntropyBudget.Enabled {
 		warnings = append(warnings, ReloadWarning{
 			Field:   "cross_request_detection.entropy_budget.enabled",
 			Message: "cross-request entropy budget detection disabled",
 		})
 	}
-	if old.CrossRequestDetection.FragmentReassembly.Enabled &&
+	if old.CrossRequestDetection.Enabled &&
+		updated.CrossRequestDetection.Enabled &&
+		old.CrossRequestDetection.FragmentReassembly.Enabled &&
 		!updated.CrossRequestDetection.FragmentReassembly.Enabled {
 		warnings = append(warnings, ReloadWarning{
 			Field:   "cross_request_detection.fragment_reassembly.enabled",

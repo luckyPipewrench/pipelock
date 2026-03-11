@@ -123,34 +123,26 @@ func queryParamKeys(u *url.URL) []byte {
 	return buf.Bytes()
 }
 
-// urlPayload extracts the outbound data from a parsed URL: path components
-// (excluding bare root "/") followed by query parameter values in wire order.
+// urlPayload extracts query parameter values in wire order from a parsed URL.
+// Path components are intentionally excluded: repeated paths across requests
+// break DLP regex contiguity in the fragment buffer (e.g. "/get" inserted
+// between fragments makes "AKIA" + "IOSFODNN7EXAMPLE" become
+// "/getAKIA.../getIOSF..." which DLP cannot match). Path-based exfiltration
+// is already caught by per-request DLP (layer 3) and path entropy (layer 4).
 // Used by the fetch handler where the request body is always empty (GET-only).
 func urlPayload(u *url.URL) []byte {
-	var buf bytes.Buffer
-	if u.Path != "" && u.Path != "/" {
-		buf.WriteString(u.Path)
-	}
-	if qp := queryParamPayload(u); len(qp) > 0 {
-		buf.Write(qp)
-	}
-	if buf.Len() == 0 {
-		return nil
-	}
-	return buf.Bytes()
+	return queryParamPayload(u)
 }
 
 // extractOutboundPayload extracts the outbound data visible to the proxy for
-// entropy measurement and fragment buffering. Includes URL path (excluding bare
-// root "/"), query parameter values in wire order, and request body content.
-// Re-wraps r.Body after reading so downstream handlers can still consume it.
+// entropy measurement and fragment buffering. Includes query parameter values
+// in wire order and request body content. URL path is intentionally excluded:
+// repeated paths across requests break DLP regex contiguity in the fragment
+// buffer. Path-based exfiltration is already caught by per-request DLP (layer
+// 3) and path entropy (layer 4). Re-wraps r.Body after reading so downstream
+// handlers can still consume it.
 func extractOutboundPayload(r *http.Request) []byte {
 	var parts []string
-
-	// URL path (excluding bare root "/") so path-embedded secrets are tracked.
-	if r.URL.Path != "" && r.URL.Path != "/" {
-		parts = append(parts, r.URL.Path)
-	}
 
 	// Query parameter values in wire order for accurate fragment reconstruction.
 	if qp := queryParamPayload(r.URL); len(qp) > 0 {

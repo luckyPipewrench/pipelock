@@ -676,20 +676,21 @@ func TestCeeAdmit_KeyEntropyTracked(t *testing.T) {
 // --- urlPayload tests ---
 
 func TestUrlPayload_PathAndQuery(t *testing.T) {
+	// Path is excluded to prevent repeated paths from breaking DLP contiguity.
 	u := &url.URL{Path: "/api/v1/tokens", RawQuery: "key=value"}
 	got := string(urlPayload(u))
-	want := "/api/v1/tokensvalue"
+	want := "value"
 	if got != want {
 		t.Errorf("urlPayload = %q, want %q", got, want)
 	}
 }
 
 func TestUrlPayload_PathOnly(t *testing.T) {
+	// Path-only URLs produce nil payload (path excluded from fragment buffer).
 	u := &url.URL{Path: "/api/data"}
-	got := string(urlPayload(u))
-	want := "/api/data"
-	if got != want {
-		t.Errorf("urlPayload = %q, want %q", got, want)
+	payload := urlPayload(u)
+	if payload != nil {
+		t.Errorf("expected nil for path-only URL, got %q", string(payload))
 	}
 }
 
@@ -711,7 +712,8 @@ func TestUrlPayload_QueryOnly(t *testing.T) {
 	}
 }
 
-func TestExtractOutboundPayload_IncludesPath(t *testing.T) {
+func TestExtractOutboundPayload_ExcludesPath(t *testing.T) {
+	// Path is excluded to prevent repeated paths from breaking DLP contiguity.
 	r := &http.Request{
 		URL: &url.URL{
 			Path:     "/api/secret-data",
@@ -720,7 +722,7 @@ func TestExtractOutboundPayload_IncludesPath(t *testing.T) {
 	}
 	payload := extractOutboundPayload(r)
 	got := string(payload)
-	want := "/api/secret-datavalue"
+	want := "value"
 	if got != want {
 		t.Errorf("extractOutboundPayload = %q, want %q", got, want)
 	}
@@ -729,8 +731,9 @@ func TestExtractOutboundPayload_IncludesPath(t *testing.T) {
 // --- Path-split secret regression tests ---
 
 func TestCeeAdmit_PathContributesToEntropy(t *testing.T) {
-	// Path data now contributes to entropy budget. A request with a
-	// high-entropy path exceeds a tiny budget even with no query/body.
+	// Tests ceeAdmit directly with path-containing payload. HTTP handlers
+	// no longer include paths in the payload, but this validates ceeAdmit
+	// entropy tracking works for any input data shape.
 	et := scanner.NewEntropyTracker(1.0, 300) // 1-bit budget
 	defer et.Close()
 	m := metrics.New()
@@ -745,7 +748,7 @@ func TestCeeAdmit_PathContributesToEntropy(t *testing.T) {
 		},
 	}
 
-	// Simulate urlPayload output: path data with high entropy.
+	// Simulate path data with high entropy (passed directly, not via urlPayload).
 	pathPayload := []byte("/api/tokens/x7k9mQ2pR4wL8nJ5")
 	result := ceeAdmit(
 		testCEESessionKey, pathPayload, nil, "http://example.com/api/tokens/x7k9mQ2pR4wL8nJ5",
@@ -760,9 +763,9 @@ func TestCeeAdmit_PathContributesToEntropy(t *testing.T) {
 }
 
 func TestCeeAdmit_PathQueryBoundarySecret(t *testing.T) {
-	// Secret split: prefix at end of path, suffix in query of same request.
-	// urlPayload concatenates path + query values, so the secret becomes
-	// contiguous in the payload passed to fragment buffer.
+	// Tests ceeAdmit directly with path-containing payload. HTTP handlers
+	// no longer include paths, but this validates fragment reassembly DLP
+	// works for any input data shape.
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	sc := scanner.New(cfg)
@@ -782,8 +785,8 @@ func TestCeeAdmit_PathQueryBoundarySecret(t *testing.T) {
 		Action: config.ActionBlock,
 	}
 
-	// First request: secret prefix arrives as path-tail + query-start.
-	// urlPayload("/check/AKIA?x=IOSF") → "/check/AKIAIOSF"
+	// First request: secret prefix spans path and query data.
+	// Passed directly to ceeAdmit (not via urlPayload which excludes paths).
 	payload1 := []byte("/check/" + "AKI" + "A" + "IOSF")
 	result1 := ceeAdmit(
 		testCEESessionKey, payload1, nil, "http://example.com/check", testCEEAgent,

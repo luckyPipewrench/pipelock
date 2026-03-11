@@ -3,7 +3,10 @@
 
 package scanner
 
-import "strings"
+import (
+	"sort"
+	"strings"
+)
 
 // dlpPreFilter provides fast prefix-based pre-screening for DLP patterns.
 // Before running expensive regex evaluations, it checks whether any known
@@ -62,6 +65,7 @@ func (pf *dlpPreFilter) candidates(text string) []int {
 // patternsToCheck returns the combined set of pattern indices that should be
 // evaluated against the given text: prefix-matched candidates plus alwaysRun.
 // Returns nil only when both candidates and alwaysRun are empty.
+// Indices are returned in ascending order for deterministic match reporting.
 func (pf *dlpPreFilter) patternsToCheck(text string) []int {
 	hits := pf.candidates(text)
 	if len(hits) == 0 {
@@ -70,7 +74,9 @@ func (pf *dlpPreFilter) patternsToCheck(text string) []int {
 		}
 		return pf.alwaysRun
 	}
-	return append(hits, pf.alwaysRun...)
+	result := append(hits, pf.alwaysRun...)
+	sort.Ints(result)
+	return result
 }
 
 // extractLiteralPrefix extracts the longest leading literal string from a regex.
@@ -101,6 +107,14 @@ func extractLiteralPrefix(regex string) string {
 		groupContent := s[3:closeIdx]
 		if strings.Contains(groupContent, "|") {
 			return ""
+		}
+		// If the group is quantified (?, *, +, {n}), the prefix is optional
+		// and cannot be used as a required match gate.
+		if closeIdx+1 < len(s) {
+			switch s[closeIdx+1] {
+			case '?', '*', '+', '{':
+				return ""
+			}
 		}
 		// Single-alternative non-capturing group: treat content as literal prefix
 		// followed by rest of regex.

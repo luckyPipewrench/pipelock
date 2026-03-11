@@ -53,6 +53,12 @@ func TestExtractLiteralPrefix(t *testing.T) {
 		// Non-capturing group with single alternative
 		{"vercel", "(?i)(?:vercel|vc[piark])_[a-zA-Z0-9]{24,}", ""},
 
+		// Quantified non-capturing group: prefix is optional, can't gate on it
+		{"optional group ?", "(?i)(?:sk-)?proj-[A-Za-z0-9]+", ""},
+		{"optional group *", "(?i)(?:prefix)*suffix-[A-Za-z0-9]+", ""},
+		{"optional group +", "(?i)(?:prefix)+suffix-[A-Za-z0-9]+", ""},
+		{"optional group {}", "(?i)(?:prefix){0,3}suffix-[A-Za-z0-9]+", ""},
+
 		// Edge cases
 		{"empty", "", ""},
 		{"just flag", "(?i)", ""},

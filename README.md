@@ -495,7 +495,7 @@ Canonical metrics, updated each release.
 
 | Metric | Value |
 |--------|-------|
-| Go tests (with `-race`) | 5,350+ |
+| Go tests (with `-race`) | 5,450+ |
 | Statement coverage | 91%+ |
 | Evasion techniques tested | 230+ |
 | Scanner pipeline overhead | ~37μs per URL scan ([performance details](docs/performance.md)) |

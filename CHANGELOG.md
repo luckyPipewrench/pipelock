@@ -10,8 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.2.0] - 2026-03-11
 
 ### Added
+- Cross-request exfiltration detection (CEE): per-session entropy budget tracking and fragment reassembly with DLP re-scan catch secrets split across multiple requests. Integrated across all proxy paths (fetch, forward, TLS intercept, WebSocket, MCP). Strict and hostile-model presets enable CEE by default. (#206)
 - DLP pattern expansion from 22 to 36 built-in patterns: AI/ML provider keys (Hugging Face, Databricks, Replicate, Together AI, Pinecone), infrastructure tokens (DigitalOcean, HashiCorp Vault, Vercel, Supabase), package registry tokens (npm, PyPI), and developer platform keys (Linear, Notion, Sentry) (#208)
 - DLP prefix pre-filter: fast literal-prefix screening skips regex evaluation on URLs that contain no credential-like substrings, reducing DLP overhead on clean traffic (#209)
+
+### Changed
+- Release artifacts (Homebrew, GitHub releases, Docker images) now include enterprise features that activate with a valid license key. Building from source without the `enterprise` tag produces a Community-only binary. (#212)
 
 ### Fixed
 - Agent listeners now shut down on config reload when the license is revoked, preventing policy-free traffic after license expiry (#205)

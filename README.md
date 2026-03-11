@@ -529,4 +529,8 @@ code in `cmd/` and `internal/`. These features require a valid enterprise licens
 
 The open-source core works independently without enterprise features.
 
+Pre-built release artifacts (Homebrew, GitHub releases, Docker images) include enterprise
+code that activates with a valid license key. Building from source with `go install` or the
+repository `Dockerfile` produces a Community-only binary.
+
 See [LICENSE](LICENSE) for the Apache 2.0 text and [enterprise/LICENSE](enterprise/LICENSE) for the ELv2 text.

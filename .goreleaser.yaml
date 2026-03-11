@@ -10,6 +10,8 @@ builds:
     binary: pipelock
     env:
       - CGO_ENABLED=0
+    tags:
+      - enterprise
     flags:
       - -trimpath
     goos:
@@ -69,8 +71,8 @@ brews:
       branch: main
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     homepage: "https://github.com/luckyPipewrench/pipelock"
-    description: "Open-source firewall for AI agents"
-    license: "Apache-2.0"
+    description: "Security firewall for AI agents"
+    license: "Apache-2.0 AND Elastic-2.0"
     directory: Formula
     commit_author:
       name: goreleaserbot

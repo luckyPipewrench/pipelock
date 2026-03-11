@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-03-11
+
+### Added
+- DLP pattern expansion from 22 to 36 built-in patterns: AI/ML provider keys (Hugging Face, Databricks, Replicate, Together AI, Pinecone), infrastructure tokens (DigitalOcean, HashiCorp Vault, Vercel, Supabase), package registry tokens (npm, PyPI), and developer platform keys (Linear, Notion, Sentry) (#208)
+- DLP prefix pre-filter: fast literal-prefix screening skips regex evaluation on URLs that contain no credential-like substrings, reducing DLP overhead on clean traffic (#209)
+
+### Fixed
+- Agent listeners now shut down on config reload when the license is revoked, preventing policy-free traffic after license expiry (#205)
+- License headers normalized across all source files; documentation updated for dual-license clarity (#204)
+
 ## [1.1.0] - 2026-03-09
 
 ### Added

@@ -39,6 +39,14 @@ type EntropyTracker struct {
 // window) and window duration (seconds). A cleanup goroutine prunes expired
 // entries at an interval derived from the window size (at most 60s, at least 1s).
 func NewEntropyTracker(budgetBits float64, windowSecs int) *EntropyTracker {
+	// Guard non-positive inputs to avoid silent misbehavior outside
+	// config-validated paths (e.g. tests with hand-built trackers).
+	if budgetBits <= 0 {
+		budgetBits = 1
+	}
+	if windowSecs <= 0 {
+		windowSecs = 1
+	}
 	et := &EntropyTracker{
 		budget:      budgetBits,
 		windowSecs:  windowSecs,

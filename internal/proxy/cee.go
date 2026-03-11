@@ -151,14 +151,23 @@ func extractOutboundPayload(r *http.Request) []byte {
 
 	// Request body (limited read to bound memory). Re-wrap after reading
 	// so the forwarded request still has body data for the upstream.
+	// Preserve the original closer so downstream cleanup still closes the
+	// real request body (io.NopCloser would drop it, leaking resources).
 	if r.Body != nil && r.ContentLength != 0 {
-		limited := io.LimitReader(r.Body, maxCEEBodyRead)
+		origBody := r.Body
+		limited := io.LimitReader(origBody, maxCEEBodyRead)
 		bodyBytes, err := io.ReadAll(limited)
 		if err == nil && len(bodyBytes) > 0 {
 			parts = append(parts, string(bodyBytes))
 		}
 		// Concatenate read bytes with any remaining body data beyond the limit.
-		r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(bodyBytes), r.Body))
+		r.Body = struct {
+			io.Reader
+			io.Closer
+		}{
+			Reader: io.MultiReader(bytes.NewReader(bodyBytes), origBody),
+			Closer: origBody,
+		}
 	}
 
 	return []byte(strings.Join(parts, ""))

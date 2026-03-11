@@ -143,17 +143,17 @@ dlp:
       regex: 'hvs\.[a-zA-Z0-9]{23,}'
       severity: critical
     - name: "Vercel Token"
-      regex: 'vercel_[a-zA-Z0-9]{24,}'
+      regex: '(?:vercel|vc[piark])_[a-zA-Z0-9]{24,}'
       severity: critical
     - name: "Supabase Service Key"
-      regex: 'sbp_[a-f0-9]{40,}'
+      regex: 'sb_secret_[a-zA-Z0-9_-]{20,}'
       severity: critical
     # Package registry tokens
     - name: "npm Token"
       regex: 'npm_[A-Za-z0-9]{36,}'
       severity: critical
     - name: "PyPI Token"
-      regex: 'pypi-[A-Za-z0-9]{16,}'
+      regex: 'pypi-[A-Za-z0-9_-]{16,}'
       severity: critical
     # Developer platform tokens
     - name: "Linear API Key"

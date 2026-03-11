@@ -415,7 +415,7 @@ curl http://localhost:9090/api/v1/killswitch/status \
   "version": "x.y.z",
   "mode": "balanced",
   "uptime_seconds": 3600.5,
-  "dlp_patterns": 22,
+  "dlp_patterns": 36,
   "response_scan_enabled": true,
   "kill_switch_active": false
 }

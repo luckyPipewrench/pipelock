@@ -393,13 +393,13 @@ func TestScanTextForDLP(t *testing.T) {
 		},
 		{
 			name:        "raw DLP pattern match - Vercel Token",
-			text:        "My token is " + "vercel_" + strings.Repeat("f", 30),
+			text:        "My token is " + "vcp_" + strings.Repeat("f", 30),
 			wantClean:   false,
 			wantPattern: "Vercel Token",
 		},
 		{
 			name:        "raw DLP pattern match - Supabase Service Key",
-			text:        "My token is " + "sbp_" + strings.Repeat("a", 45),
+			text:        "My token is " + "sb_secret_" + strings.Repeat("a", 25),
 			wantClean:   false,
 			wantPattern: "Supabase Service Key",
 		},
@@ -412,7 +412,7 @@ func TestScanTextForDLP(t *testing.T) {
 		},
 		{
 			name:        "raw DLP pattern match - PyPI Token",
-			text:        "My token is " + "pypi-" + strings.Repeat("i", 20),
+			text:        "My token is " + "pypi-" + "aB3_-cD4_-eF5_-gH6i",
 			wantClean:   false,
 			wantPattern: "PyPI Token",
 		},

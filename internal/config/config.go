@@ -1781,12 +1781,12 @@ func Defaults() *Config {
 				// DigitalOcean personal access tokens: 64 hex chars after prefix.
 				{Name: "DigitalOcean Token", Regex: `dop_v1_[a-f0-9]{64}`, Severity: "critical"},
 				{Name: "HashiCorp Vault Token", Regex: `hvs\.[a-zA-Z0-9]{23,}`, Severity: "critical"},
-				{Name: "Vercel Token", Regex: `vercel_[a-zA-Z0-9]{24,}`, Severity: "critical"},
-				{Name: "Supabase Service Key", Regex: `sbp_[a-f0-9]{40,}`, Severity: "critical"},
+				{Name: "Vercel Token", Regex: `(?:vercel|vc[piark])_[a-zA-Z0-9]{24,}`, Severity: "critical"},
+				{Name: "Supabase Service Key", Regex: `sb_secret_[a-zA-Z0-9_-]{20,}`, Severity: "critical"},
 
 				// Package registry tokens
 				{Name: "npm Token", Regex: `npm_[A-Za-z0-9]{36,}`, Severity: "critical"},
-				{Name: "PyPI Token", Regex: `pypi-[A-Za-z0-9]{16,}`, Severity: "critical"},
+				{Name: "PyPI Token", Regex: `pypi-[A-Za-z0-9_-]{16,}`, Severity: "critical"},
 
 				// Developer platform tokens
 				{Name: "Linear API Key", Regex: `lin_api_[a-zA-Z0-9]{40,}`, Severity: "high"},

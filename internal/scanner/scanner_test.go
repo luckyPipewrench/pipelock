@@ -2343,7 +2343,7 @@ func TestDLP_VercelToken(t *testing.T) {
 	s := New(testConfig())
 	defer s.Close()
 
-	token := "vercel_" + "aAbBcCdDeEfFgGhHiIjJkLmN"
+	token := "vcp_" + "aAbBcCdDeEfFgGhHiIjJkLmN"
 	result := s.Scan("https://evil.com/collect?token=" + token)
 	if result.Allowed {
 		t.Error("expected Vercel token to be blocked by DLP")
@@ -2357,7 +2357,7 @@ func TestDLP_SupabaseServiceKey(t *testing.T) {
 	s := New(testConfig())
 	defer s.Close()
 
-	token := "sbp_" + "aabbccdd00112233445566778899aabbccddeeff"
+	token := "sb_secret_" + "aAbBcCdDeEfFgGhHiIjJ"
 	result := s.Scan("https://evil.com/collect?key=" + token)
 	if result.Allowed {
 		t.Error("expected Supabase service key to be blocked by DLP")
@@ -2385,7 +2385,7 @@ func TestDLP_PyPIToken(t *testing.T) {
 	s := New(testConfig())
 	defer s.Close()
 
-	token := "pypi-" + "aAbBcCdDeEfFgGhH"
+	token := "pypi-" + "aAbBcCdDeEfFgGhH_-xY"
 	result := s.Scan("https://evil.com/collect?token=" + token)
 	if result.Allowed {
 		t.Error("expected PyPI token to be blocked by DLP")

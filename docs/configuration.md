@@ -323,6 +323,20 @@ Set `include_defaults: false` to use only your patterns.
 | Twilio API Key | `SK[a-f0-9]{32}` | critical |
 | SendGrid API Key | `SG.` | critical |
 | Mailgun API Key | `key-[a-zA-Z0-9]{32}` | critical |
+| Hugging Face Token | `hf_` | critical |
+| Databricks Token | `dapi` | critical |
+| Replicate API Token | `r8_` | critical |
+| Together AI Key | `tok_` | critical |
+| Pinecone API Key | `pcsk_` | critical |
+| DigitalOcean Token | `dop_v1_` | critical |
+| HashiCorp Vault Token | `hvs.` | critical |
+| Vercel Token | `vercel_\|vc[piark]_` | critical |
+| Supabase Service Key | `sb_secret_` | critical |
+| npm Token | `npm_` | critical |
+| PyPI Token | `pypi-` | critical |
+| Linear API Key | `lin_api_` | high |
+| Notion API Key | `ntn_` | high |
+| Sentry Auth Token | `sntrys_` | high |
 | JWT Token | `ey...\..*\.` | high |
 | Private Key Header | `-----BEGIN.*PRIVATE KEY-----` | critical |
 | Social Security Number | `\b\d{3}-\d{2}-\d{4}\b` | critical |

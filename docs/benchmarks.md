@@ -10,7 +10,7 @@ Configuration (balanced defaults):
 - SSRF protection disabled (no DNS lookups in benchmarks)
 - Rate limiting disabled (no time-dependent state)
 - Response scanning: 20 prompt injection patterns
-- DLP: 22 patterns
+- DLP: 36 patterns
 
 Run `make bench` to reproduce on your hardware.
 
@@ -93,7 +93,7 @@ Unicode normalization overhead per string.
 
 - **Full 9-layer scan on a typical URL: ~37 microseconds.** Well under 1ms.
 - Blocked URLs short-circuit early: blocklist check is ~394ns.
-- DLP regex matching (22 patterns) adds ~11 microseconds.
+- DLP regex matching (36 patterns) adds ~11 microseconds.
 - Response scanning with 20 patterns on small content: ~122 microseconds. Large content (~10KB) takes ~16ms due to 6 normalization passes plus regex cost scaling with input size.
 - MCP scanning (JSON parse + text extraction + pattern match): ~108 microseconds.
 - **Parallel throughput scales linearly with cores** (benchmarks run with rate limiting and data budget disabled to isolate scanning overhead).

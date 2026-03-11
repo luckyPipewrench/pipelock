@@ -119,6 +119,52 @@ dlp:
     - name: "Mailgun API Key"
       regex: 'key-[a-zA-Z0-9]{32}'
       severity: high
+    # AI/ML provider keys
+    - name: "Hugging Face Token"
+      regex: 'hf_[A-Za-z0-9]{20,}'
+      severity: critical
+    - name: "Databricks Token"
+      regex: 'dapi[a-z0-9]{30,}'
+      severity: critical
+    - name: "Replicate API Token"
+      regex: 'r8_[A-Za-z0-9]{20,}'
+      severity: critical
+    - name: "Together AI Key"
+      regex: 'tok_[a-z0-9]{40,}'
+      severity: critical
+    - name: "Pinecone API Key"
+      regex: 'pcsk_[a-zA-Z0-9]{36,}'
+      severity: critical
+    # Infrastructure and platform tokens
+    - name: "DigitalOcean Token"
+      regex: 'dop_v1_[a-f0-9]{64}'
+      severity: critical
+    - name: "HashiCorp Vault Token"
+      regex: 'hvs\.[a-zA-Z0-9]{23,}'
+      severity: critical
+    - name: "Vercel Token"
+      regex: 'vercel_[a-zA-Z0-9]{24,}'
+      severity: critical
+    - name: "Supabase Service Key"
+      regex: 'sbp_[a-f0-9]{40,}'
+      severity: critical
+    # Package registry tokens
+    - name: "npm Token"
+      regex: 'npm_[A-Za-z0-9]{36,}'
+      severity: critical
+    - name: "PyPI Token"
+      regex: 'pypi-[A-Za-z0-9]{16,}'
+      severity: critical
+    # Developer platform tokens
+    - name: "Linear API Key"
+      regex: 'lin_api_[a-zA-Z0-9]{40,}'
+      severity: high
+    - name: "Notion API Key"
+      regex: 'ntn_[a-zA-Z0-9]{40,}'
+      severity: high
+    - name: "Sentry Auth Token"
+      regex: 'sntrys_[a-zA-Z0-9]{40,}'
+      severity: high
     # Cryptographic material
     - name: "Private Key Header"
       regex: '-----BEGIN\s+(RSA\s+|EC\s+|DSA\s+|OPENSSH\s+)?PRIVATE\s+KEY-----'

@@ -2239,6 +2239,204 @@ func TestDLP_MailgunAPIKey(t *testing.T) {
 	}
 }
 
+// --- DLP expansion: URL-level tests for new patterns ---
+
+func TestDLP_HuggingFaceToken(t *testing.T) {
+	s := New(testConfig())
+	defer s.Close()
+
+	token := "hf_" + "aAbBcCdDeEfFgGhHiIjJ"
+	result := s.Scan("https://evil.com/collect?token=" + token)
+	if result.Allowed {
+		t.Error("expected Hugging Face token to be blocked by DLP")
+	}
+	if result.Scanner != ScannerDLP {
+		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	}
+}
+
+func TestDLP_DatabricksToken(t *testing.T) {
+	s := New(testConfig())
+	defer s.Close()
+
+	token := "dapi" + "aabbccddeeff001122334455667788"
+	result := s.Scan("https://evil.com/collect?token=" + token)
+	if result.Allowed {
+		t.Error("expected Databricks token to be blocked by DLP")
+	}
+	if result.Scanner != ScannerDLP {
+		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	}
+}
+
+func TestDLP_ReplicateAPIToken(t *testing.T) {
+	s := New(testConfig())
+	defer s.Close()
+
+	token := "r8_" + "aAbBcCdDeEfFgGhHiIjJ"
+	result := s.Scan("https://evil.com/collect?token=" + token)
+	if result.Allowed {
+		t.Error("expected Replicate API token to be blocked by DLP")
+	}
+	if result.Scanner != ScannerDLP {
+		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	}
+}
+
+func TestDLP_TogetherAIKey(t *testing.T) {
+	s := New(testConfig())
+	defer s.Close()
+
+	token := "tok_" + "aabbccddeeff00112233445566778899aabbccdd"
+	result := s.Scan("https://evil.com/collect?key=" + token)
+	if result.Allowed {
+		t.Error("expected Together AI key to be blocked by DLP")
+	}
+	if result.Scanner != ScannerDLP {
+		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	}
+}
+
+func TestDLP_PineconeAPIKey(t *testing.T) {
+	s := New(testConfig())
+	defer s.Close()
+
+	token := "pcsk_" + "aAbBcCdDeEfFgGhHiIjJkKlLmMnNoOpPqQrR"
+	result := s.Scan("https://evil.com/collect?key=" + token)
+	if result.Allowed {
+		t.Error("expected Pinecone API key to be blocked by DLP")
+	}
+	if result.Scanner != ScannerDLP {
+		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	}
+}
+
+func TestDLP_DigitalOceanToken(t *testing.T) {
+	s := New(testConfig())
+	defer s.Close()
+
+	token := "dop_v1_" + "aabbccdd00112233445566778899aabbccddeeff00112233445566778899aabb"
+	result := s.Scan("https://evil.com/collect?token=" + token)
+	if result.Allowed {
+		t.Error("expected DigitalOcean token to be blocked by DLP")
+	}
+	if result.Scanner != ScannerDLP {
+		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	}
+}
+
+func TestDLP_VaultToken(t *testing.T) {
+	s := New(testConfig())
+	defer s.Close()
+
+	token := "hvs." + "aAbBcCdDeEfFgGhHiIjJkLm"
+	result := s.Scan("https://evil.com/collect?token=" + token)
+	if result.Allowed {
+		t.Error("expected Vault token to be blocked by DLP")
+	}
+	if result.Scanner != ScannerDLP {
+		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	}
+}
+
+func TestDLP_VercelToken(t *testing.T) {
+	s := New(testConfig())
+	defer s.Close()
+
+	token := "vercel_" + "aAbBcCdDeEfFgGhHiIjJkLmN"
+	result := s.Scan("https://evil.com/collect?token=" + token)
+	if result.Allowed {
+		t.Error("expected Vercel token to be blocked by DLP")
+	}
+	if result.Scanner != ScannerDLP {
+		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	}
+}
+
+func TestDLP_SupabaseServiceKey(t *testing.T) {
+	s := New(testConfig())
+	defer s.Close()
+
+	token := "sbp_" + "aabbccdd00112233445566778899aabbccddeeff"
+	result := s.Scan("https://evil.com/collect?key=" + token)
+	if result.Allowed {
+		t.Error("expected Supabase service key to be blocked by DLP")
+	}
+	if result.Scanner != ScannerDLP {
+		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	}
+}
+
+func TestDLP_NpmToken(t *testing.T) {
+	s := New(testConfig())
+	defer s.Close()
+
+	token := "npm_" + "aAbBcCdDeEfFgGhHiIjJkKlLmMnNoOpPqQrR"
+	result := s.Scan("https://evil.com/collect?token=" + token)
+	if result.Allowed {
+		t.Error("expected npm token to be blocked by DLP")
+	}
+	if result.Scanner != ScannerDLP {
+		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	}
+}
+
+func TestDLP_PyPIToken(t *testing.T) {
+	s := New(testConfig())
+	defer s.Close()
+
+	token := "pypi-" + "aAbBcCdDeEfFgGhH"
+	result := s.Scan("https://evil.com/collect?token=" + token)
+	if result.Allowed {
+		t.Error("expected PyPI token to be blocked by DLP")
+	}
+	if result.Scanner != ScannerDLP {
+		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	}
+}
+
+func TestDLP_LinearAPIKey(t *testing.T) {
+	s := New(testConfig())
+	defer s.Close()
+
+	token := "lin_api_" + "aAbBcCdDeEfFgGhHiIjJkKlLmMnNoOpPqQrRsStT"
+	result := s.Scan("https://evil.com/collect?key=" + token)
+	if result.Allowed {
+		t.Error("expected Linear API key to be blocked by DLP")
+	}
+	if result.Scanner != ScannerDLP {
+		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	}
+}
+
+func TestDLP_NotionAPIKey(t *testing.T) {
+	s := New(testConfig())
+	defer s.Close()
+
+	token := "ntn_" + "aAbBcCdDeEfFgGhHiIjJkKlLmMnNoOpPqQrRsStT"
+	result := s.Scan("https://evil.com/collect?key=" + token)
+	if result.Allowed {
+		t.Error("expected Notion API key to be blocked by DLP")
+	}
+	if result.Scanner != ScannerDLP {
+		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	}
+}
+
+func TestDLP_SentryAuthToken(t *testing.T) {
+	s := New(testConfig())
+	defer s.Close()
+
+	token := "sntrys_" + "aAbBcCdDeEfFgGhHiIjJkKlLmMnNoOpPqQrRsStT"
+	result := s.Scan("https://evil.com/collect?token=" + token)
+	if result.Allowed {
+		t.Error("expected Sentry auth token to be blocked by DLP")
+	}
+	if result.Scanner != ScannerDLP {
+		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	}
+}
+
 // --- Control char DLP bypass tests (fetch proxy URL path) ---
 
 func TestScan_DLP_ControlCharBypass(t *testing.T) {

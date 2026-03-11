@@ -1769,6 +1769,30 @@ func Defaults() *Config {
 				{Name: "SendGrid API Key", Regex: `SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}`, Severity: "critical"},
 				{Name: "Mailgun API Key", Regex: `key-[a-zA-Z0-9]{32}`, Severity: "high"},
 
+				// AI/ML provider keys
+				{Name: "Hugging Face Token", Regex: `hf_[A-Za-z0-9]{20,}`, Severity: "critical"},
+				{Name: "Databricks Token", Regex: `dapi[a-z0-9]{30,}`, Severity: "critical"},
+				{Name: "Replicate API Token", Regex: `r8_[A-Za-z0-9]{20,}`, Severity: "critical"},
+				{Name: "Together AI Key", Regex: `tok_[a-z0-9]{40,}`, Severity: "critical"},
+				// Pinecone API keys: "pcsk_" prefix followed by alphanumeric.
+				{Name: "Pinecone API Key", Regex: `pcsk_[a-zA-Z0-9]{36,}`, Severity: "critical"},
+
+				// Infrastructure and platform tokens
+				// DigitalOcean personal access tokens: 64 hex chars after prefix.
+				{Name: "DigitalOcean Token", Regex: `dop_v1_[a-f0-9]{64}`, Severity: "critical"},
+				{Name: "HashiCorp Vault Token", Regex: `hvs\.[a-zA-Z0-9]{23,}`, Severity: "critical"},
+				{Name: "Vercel Token", Regex: `vercel_[a-zA-Z0-9]{24,}`, Severity: "critical"},
+				{Name: "Supabase Service Key", Regex: `sbp_[a-f0-9]{40,}`, Severity: "critical"},
+
+				// Package registry tokens
+				{Name: "npm Token", Regex: `npm_[A-Za-z0-9]{36,}`, Severity: "critical"},
+				{Name: "PyPI Token", Regex: `pypi-[A-Za-z0-9]{16,}`, Severity: "critical"},
+
+				// Developer platform tokens
+				{Name: "Linear API Key", Regex: `lin_api_[a-zA-Z0-9]{40,}`, Severity: "high"},
+				{Name: "Notion API Key", Regex: `ntn_[a-zA-Z0-9]{40,}`, Severity: "high"},
+				{Name: "Sentry Auth Token", Regex: `sntrys_[a-zA-Z0-9]{40,}`, Severity: "high"},
+
 				// Cryptographic material
 				{Name: "Private Key Header", Regex: `-----BEGIN\s+(RSA\s+|EC\s+|DSA\s+|OPENSSH\s+)?PRIVATE\s+KEY-----`, Severity: "critical"},
 				{Name: "JWT Token", Regex: `(ey[a-zA-Z0-9_\-=]{10,}\.){2}[a-zA-Z0-9_\-=]{10,}`, Severity: "high"},

@@ -347,6 +347,93 @@ func TestScanTextForDLP(t *testing.T) {
 			text:      "12345-abcdefghij1234567890abcdefghij12.apps.googleusercontent.com",
 			wantClean: true,
 		},
+		// --- AI/ML platform tokens ---
+		{
+			name:        "raw DLP pattern match - Hugging Face Token",
+			text:        "My token is " + "hf_" + strings.Repeat("a", 25),
+			wantClean:   false,
+			wantPattern: "Hugging Face Token",
+		},
+		{
+			name:        "raw DLP pattern match - Databricks Token",
+			text:        "My token is " + "dapi" + strings.Repeat("a", 35),
+			wantClean:   false,
+			wantPattern: "Databricks Token",
+		},
+		{
+			name:        "raw DLP pattern match - Replicate API Token",
+			text:        "My token is " + "r8_" + strings.Repeat("b", 25),
+			wantClean:   false,
+			wantPattern: "Replicate API Token",
+		},
+		{
+			name:        "raw DLP pattern match - Together AI Key",
+			text:        "My token is " + "tok_" + strings.Repeat("c", 45),
+			wantClean:   false,
+			wantPattern: "Together AI Key",
+		},
+		{
+			name:        "raw DLP pattern match - Pinecone API Key",
+			text:        "My token is " + "pcsk_" + strings.Repeat("d", 40),
+			wantClean:   false,
+			wantPattern: "Pinecone API Key",
+		},
+		// --- Cloud/infra tokens ---
+		{
+			name:        "raw DLP pattern match - DigitalOcean Token",
+			text:        "My token is " + "dop_v1_" + strings.Repeat("a", 64),
+			wantClean:   false,
+			wantPattern: "DigitalOcean Token",
+		},
+		{
+			name:        "raw DLP pattern match - HashiCorp Vault Token",
+			text:        "My token is " + "hvs." + strings.Repeat("e", 30),
+			wantClean:   false,
+			wantPattern: "HashiCorp Vault Token",
+		},
+		{
+			name:        "raw DLP pattern match - Vercel Token",
+			text:        "My token is " + "vercel_" + strings.Repeat("f", 30),
+			wantClean:   false,
+			wantPattern: "Vercel Token",
+		},
+		{
+			name:        "raw DLP pattern match - Supabase Service Key",
+			text:        "My token is " + "sbp_" + strings.Repeat("a", 45),
+			wantClean:   false,
+			wantPattern: "Supabase Service Key",
+		},
+		// --- Developer platform tokens ---
+		{
+			name:        "raw DLP pattern match - npm Token",
+			text:        "My token is " + "npm_" + strings.Repeat("h", 40),
+			wantClean:   false,
+			wantPattern: "npm Token",
+		},
+		{
+			name:        "raw DLP pattern match - PyPI Token",
+			text:        "My token is " + "pypi-" + strings.Repeat("i", 20),
+			wantClean:   false,
+			wantPattern: "PyPI Token",
+		},
+		{
+			name:        "raw DLP pattern match - Linear API Key",
+			text:        "My token is " + "lin_api_" + strings.Repeat("j", 45),
+			wantClean:   false,
+			wantPattern: "Linear API Key",
+		},
+		{
+			name:        "raw DLP pattern match - Notion API Key",
+			text:        "My token is " + "ntn_" + strings.Repeat("k", 45),
+			wantClean:   false,
+			wantPattern: "Notion API Key",
+		},
+		{
+			name:        "raw DLP pattern match - Sentry Auth Token",
+			text:        "My token is " + "sntrys_" + strings.Repeat("m", 45),
+			wantClean:   false,
+			wantPattern: "Sentry Auth Token",
+		},
 	}
 
 	for _, tt := range tests {

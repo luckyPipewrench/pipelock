@@ -14,27 +14,36 @@ type entropyEntry struct {
 	timestamp time.Time
 }
 
+// entropySession holds entropy entries for a single session with LRU tracking.
+type entropySession struct {
+	entries    []entropyEntry
+	lastAccess time.Time
+}
+
 // EntropyTracker tracks cumulative Shannon entropy of outbound data per session
 // within a sliding window. High entropy is a scored signal (not proof of
 // exfiltration): legitimate traffic like JWTs, base64 uploads, and code can
-// also produce high entropy.
+// also produce high entropy. Bounded by maxSessions to prevent unbounded memory
+// growth under session churn.
 type EntropyTracker struct {
 	mu          sync.Mutex
 	budget      float64 // bits per window
 	windowSecs  int     // sliding window duration in seconds
-	sessions    map[string][]entropyEntry
+	maxSessions int     // global session count cap (LRU eviction)
+	sessions    map[string]*entropySession
 	stopCleanup chan struct{}
 	closeOnce   sync.Once
 }
 
 // NewEntropyTracker creates an entropy tracker with the given budget (bits per
-// window) and window duration (seconds). A cleanup goroutine runs every 60
-// seconds to evict expired entries.
+// window) and window duration (seconds). A cleanup goroutine prunes expired
+// entries at an interval derived from the window size (at most 60s, at least 1s).
 func NewEntropyTracker(budgetBits float64, windowSecs int) *EntropyTracker {
 	et := &EntropyTracker{
 		budget:      budgetBits,
 		windowSecs:  windowSecs,
-		sessions:    make(map[string][]entropyEntry),
+		maxSessions: 10000, // match FragmentBuffer and proxy maxCEESessions
+		sessions:    make(map[string]*entropySession),
 		stopCleanup: make(chan struct{}),
 	}
 	go et.cleanupLoop()
@@ -43,7 +52,8 @@ func NewEntropyTracker(budgetBits float64, windowSecs int) *EntropyTracker {
 
 // Record adds a payload's entropy to the session's running total and returns
 // the bits recorded. Total bits = ShannonEntropy(payload) * len(payload).
-// Returns 0 for nil or empty payloads.
+// Returns 0 for nil or empty payloads. Inline-prunes expired entries on the
+// hot path to keep currentUsageLocked O(active) instead of O(total).
 func (et *EntropyTracker) Record(sessionKey string, payload []byte) float64 {
 	if len(payload) == 0 {
 		return 0
@@ -55,9 +65,32 @@ func (et *EntropyTracker) Record(sessionKey string, payload []byte) float64 {
 	et.mu.Lock()
 	defer et.mu.Unlock()
 
-	et.sessions[sessionKey] = append(et.sessions[sessionKey], entropyEntry{
+	sess, exists := et.sessions[sessionKey]
+	if !exists {
+		// Check global session cap before creating a new session.
+		if len(et.sessions) >= et.maxSessions {
+			et.evictLRUSession()
+		}
+		sess = &entropySession{}
+		et.sessions[sessionKey] = sess
+	}
+
+	now := time.Now()
+	sess.lastAccess = now
+
+	// Inline-prune expired entries to bound memory and scan cost.
+	cutoff := now.Add(-time.Duration(et.windowSecs) * time.Second)
+	valid := sess.entries[:0]
+	for _, e := range sess.entries {
+		if e.timestamp.After(cutoff) {
+			valid = append(valid, e)
+		}
+	}
+	sess.entries = valid
+
+	sess.entries = append(sess.entries, entropyEntry{
 		bits:      bits,
-		timestamp: time.Now(),
+		timestamp: now,
 	})
 
 	return bits
@@ -108,9 +141,13 @@ func (et *EntropyTracker) Close() {
 // currentUsageLocked sums entropy bits within the sliding window.
 // Caller must hold et.mu.
 func (et *EntropyTracker) currentUsageLocked(sessionKey string) float64 {
+	sess := et.sessions[sessionKey]
+	if sess == nil {
+		return 0
+	}
 	cutoff := time.Now().Add(-time.Duration(et.windowSecs) * time.Second)
 	var total float64
-	for _, e := range et.sessions[sessionKey] {
+	for _, e := range sess.entries {
 		if e.timestamp.After(cutoff) {
 			total += e.bits
 		}
@@ -118,10 +155,36 @@ func (et *EntropyTracker) currentUsageLocked(sessionKey string) float64 {
 	return total
 }
 
-// cleanupLoop runs every 60 seconds to evict expired entries.
+// evictLRUSession removes the least-recently-used session.
+// Must be called with et.mu held.
+func (et *EntropyTracker) evictLRUSession() {
+	var oldestKey string
+	var oldestTime time.Time
+
+	for key, sess := range et.sessions {
+		if oldestKey == "" || sess.lastAccess.Before(oldestTime) {
+			oldestKey = key
+			oldestTime = sess.lastAccess
+		}
+	}
+
+	if oldestKey != "" {
+		delete(et.sessions, oldestKey)
+	}
+}
+
+// cleanupLoop periodically prunes expired entries from all sessions.
+// Interval is derived from the configured window: at most 60s, at least 1s,
+// so short windows get prompt memory reclamation.
 func (et *EntropyTracker) cleanupLoop() {
-	// 60s: matches DataBudget cleanup interval
-	ticker := time.NewTicker(60 * time.Second)
+	interval := time.Duration(et.windowSecs) * time.Second
+	if interval > 60*time.Second {
+		interval = 60 * time.Second
+	}
+	if interval < 1*time.Second {
+		interval = 1 * time.Second
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {
@@ -139,9 +202,9 @@ func (et *EntropyTracker) cleanup() {
 	defer et.mu.Unlock()
 
 	cutoff := time.Now().Add(-time.Duration(et.windowSecs) * time.Second)
-	for key, entries := range et.sessions {
-		valid := entries[:0]
-		for _, e := range entries {
+	for key, sess := range et.sessions {
+		valid := sess.entries[:0]
+		for _, e := range sess.entries {
 			if e.timestamp.After(cutoff) {
 				valid = append(valid, e)
 			}
@@ -149,7 +212,7 @@ func (et *EntropyTracker) cleanup() {
 		if len(valid) == 0 {
 			delete(et.sessions, key)
 		} else {
-			et.sessions[key] = valid
+			sess.entries = valid
 		}
 	}
 }

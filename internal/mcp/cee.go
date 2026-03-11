@@ -64,6 +64,10 @@ func ceeRecordMCP(
 				}
 				return reason
 			}
+			// Warn mode: emit structured anomaly event for audit trail.
+			if logger != nil {
+				logger.LogAnomaly("CEE", "mcp-input", "cross_request_entropy", reason, "", "", "", 0)
+			}
 		}
 	}
 
@@ -81,6 +85,10 @@ func ceeRecordMCP(
 					logger.LogBlocked("CEE", "mcp-input", "cross_request_fragment", reason, "", "", "")
 				}
 				return reason
+			}
+			// Warn mode: emit structured anomaly event for audit trail.
+			if logger != nil {
+				logger.LogAnomaly("CEE", "mcp-input", "cross_request_fragment", reason, "", "", "", 0)
 			}
 		}
 	}

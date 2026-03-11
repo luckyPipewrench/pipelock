@@ -320,3 +320,60 @@ func TestEntropyTrackerCleanup_RetainsValidEntries(t *testing.T) {
 		t.Error("expected session 2 to be retained (has valid entries)")
 	}
 }
+
+func TestEntropyTrackerSessionCapLRU(t *testing.T) {
+	et := NewEntropyTracker(testDefaultBudget, testDefaultWindow)
+	defer et.Close()
+
+	// Fill to maxSessions.
+	for i := range et.maxSessions {
+		et.Record(fmt.Sprintf("session-%d", i), []byte("payload"))
+	}
+
+	et.mu.Lock()
+	count := len(et.sessions)
+	et.mu.Unlock()
+	if count != et.maxSessions {
+		t.Fatalf("expected %d sessions, got %d", et.maxSessions, count)
+	}
+
+	// Adding one more should evict the LRU (session-0, recorded first).
+	et.Record("overflow-session", []byte("new payload"))
+
+	et.mu.Lock()
+	countAfter := len(et.sessions)
+	_, overflowExists := et.sessions["overflow-session"]
+	et.mu.Unlock()
+
+	if countAfter != et.maxSessions {
+		t.Fatalf("expected %d sessions after cap, got %d", et.maxSessions, countAfter)
+	}
+	if !overflowExists {
+		t.Fatal("expected overflow session to exist")
+	}
+}
+
+func TestEntropyTrackerInlinePruning(t *testing.T) {
+	// Use a 1-second window so entries expire between Record calls.
+	et := NewEntropyTracker(testDefaultBudget, 1)
+	defer et.Close()
+
+	// Record initial data.
+	et.Record(testSessionKey, []byte("data that will expire"))
+
+	// Wait for expiry.
+	time.Sleep(1200 * time.Millisecond)
+
+	// Record again on same session. Inline pruning should remove expired entries.
+	et.Record(testSessionKey, []byte("fresh data"))
+
+	et.mu.Lock()
+	sess := et.sessions[testSessionKey]
+	entryCount := len(sess.entries)
+	et.mu.Unlock()
+
+	// Only the fresh entry should remain (expired one pruned inline).
+	if entryCount != 1 {
+		t.Fatalf("expected 1 entry after inline pruning, got %d", entryCount)
+	}
+}

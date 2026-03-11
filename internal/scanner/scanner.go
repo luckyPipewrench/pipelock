@@ -60,6 +60,7 @@ type Scanner struct {
 	allowlist                 []string
 	blocklist                 []string
 	dlpPatterns               []*compiledPattern
+	dlpPreFilter              *dlpPreFilter
 	entropyThreshold          float64
 	entropyMinLen             int
 	maxURLLength              int
@@ -124,6 +125,9 @@ func New(cfg *config.Config) *Scanner {
 			severity: p.Severity,
 		})
 	}
+
+	// Build prefix pre-filter for fast DLP short-circuiting on clean input.
+	s.dlpPreFilter = newDLPPreFilter(s.dlpPatterns)
 
 	// Parse internal CIDRs — must succeed since config.Validate checks these
 	for _, cidr := range cfg.Internal {
@@ -665,7 +669,8 @@ func (s *Scanner) checkDLP(parsed *url.URL) Result {
 		// Must match response scanning depth — otherwise attackers use homoglyphs
 		// in key prefixes (e.g., sk-օnt-... with Armenian օ U+0585 for 'a').
 		cleaned := normalize.ForDLP(target)
-		for _, p := range s.dlpPatterns {
+		for _, idx := range s.dlpPreFilter.patternsToCheck(cleaned) {
+			p := s.dlpPatterns[idx]
 			if p.re.MatchString(cleaned) {
 				return Result{
 					Allowed: false,
@@ -752,7 +757,8 @@ func (s *Scanner) checkDLPCombinations(values []string, n, size int) Result {
 
 		cleaned := normalize.ForDLP(concat)
 
-		for _, p := range s.dlpPatterns {
+		for _, idx := range s.dlpPreFilter.patternsToCheck(cleaned) {
+			p := s.dlpPatterns[idx]
 			if p.re.MatchString(cleaned) {
 				return Result{
 					Allowed: false,

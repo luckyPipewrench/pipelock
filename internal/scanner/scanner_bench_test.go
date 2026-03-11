@@ -133,6 +133,56 @@ func BenchmarkScanResponse_LargeClean(b *testing.B) {
 	}
 }
 
+// --- Text DLP benchmarks ---
+
+func BenchmarkScanTextForDLP_Clean(b *testing.B) {
+	s := New(benchConfig())
+	b.Cleanup(s.Close)
+
+	const text = "This is a perfectly normal string with no secrets or tokens anywhere in it."
+	b.ResetTimer()
+	for b.Loop() {
+		s.ScanTextForDLP(text)
+	}
+}
+
+func BenchmarkScanTextForDLP_Match(b *testing.B) {
+	s := New(benchConfig())
+	b.Cleanup(s.Close)
+
+	// Build fake key at runtime to avoid gitleaks
+	text := "found token " + "sk-ant-" + "api03-AABBCCDDEEFF1234567890abcdef"
+	b.ResetTimer()
+	for b.Loop() {
+		s.ScanTextForDLP(text)
+	}
+}
+
+// --- Pre-filter benchmarks ---
+
+func BenchmarkPreFilter_CleanText(b *testing.B) {
+	s := New(benchConfig())
+	b.Cleanup(s.Close)
+
+	const text = "this is a normal url with no secret prefixes at all"
+	b.ResetTimer()
+	for b.Loop() {
+		s.dlpPreFilter.patternsToCheck(text)
+	}
+}
+
+func BenchmarkPreFilter_WithPrefix(b *testing.B) {
+	s := New(benchConfig())
+	b.Cleanup(s.Close)
+
+	// Contains sk-ant- prefix
+	text := "found " + "sk-ant-" + "something here"
+	b.ResetTimer()
+	for b.Loop() {
+		s.dlpPreFilter.patternsToCheck(text)
+	}
+}
+
 // --- Direct function benchmarks ---
 
 func BenchmarkShannonEntropy(b *testing.B) {

@@ -44,7 +44,8 @@ func (s *Scanner) ScanTextForDLP(text string) TextDLPResult {
 
 	// Check raw text against DLP patterns (before URL decoding).
 	// This catches secrets that aren't URL-encoded.
-	for _, p := range s.dlpPatterns {
+	for _, idx := range s.dlpPreFilter.patternsToCheck(cleaned) {
+		p := s.dlpPatterns[idx]
 		if p.re.MatchString(cleaned) {
 			matches = append(matches, TextDLPMatch{
 				PatternName: p.name,
@@ -123,7 +124,8 @@ func (s *Scanner) ScanTextForDLP(text string) TextDLPResult {
 func (s *Scanner) matchDLPPatterns(text, encoding string) []TextDLPMatch {
 	text = normalize.ForDLP(text)
 	var matches []TextDLPMatch
-	for _, p := range s.dlpPatterns {
+	for _, idx := range s.dlpPreFilter.patternsToCheck(text) {
+		p := s.dlpPatterns[idx]
 		if p.re.MatchString(text) {
 			matches = append(matches, TextDLPMatch{
 				PatternName: p.name,

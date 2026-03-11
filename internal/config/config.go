@@ -640,6 +640,11 @@ func (c *Config) resolveLicenseKey(configDir string) error {
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("license_file %s must be a regular file", c.LicenseFile)
 		}
+		// Reject group/world-readable files; license tokens are secrets.
+		if info.Mode().Perm()&0o077 != 0 {
+			return fmt.Errorf("license_file %s is too permissive (mode %04o): restrict to 0600",
+				c.LicenseFile, info.Mode().Perm())
+		}
 		if info.Size() > maxLicenseFileBytes {
 			return fmt.Errorf("license_file %s exceeds %d bytes", c.LicenseFile, maxLicenseFileBytes)
 		}

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -5015,6 +5016,81 @@ func TestLicenseKeyFileEmptyDoesNotFallBackToInline(t *testing.T) {
 	_, err := Load(cfgPath)
 	if err == nil {
 		t.Fatal("expected error for empty license_file, must not fall back to inline license_key")
+	}
+}
+
+func TestLicenseKeyFilePermissiveModeRejected(t *testing.T) {
+	tmp := t.TempDir()
+
+	tokenPath := filepath.Join(tmp, "license.token")
+	if err := os.WriteFile(tokenPath, []byte("valid-token"), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+	// Widen permissions to trigger the permissive-mode guard.
+	if err := os.Chmod(tokenPath, 0o644); err != nil { //nolint:gosec // intentionally permissive for test
+		t.Fatalf("chmod token: %v", err)
+	}
+
+	cfgPath := filepath.Join(tmp, "cfg.yaml")
+	if err := os.WriteFile(cfgPath, []byte(testLicenseFileCfg), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := Load(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for permissive license_file mode")
+	}
+	if !strings.Contains(err.Error(), "too permissive") {
+		t.Errorf("error should mention permissive mode, got: %v", err)
+	}
+}
+
+func TestLicenseKeyFileOversized(t *testing.T) {
+	tmp := t.TempDir()
+
+	tokenPath := filepath.Join(tmp, "license.token")
+	// Write a file exceeding the 16 KiB cap.
+	bigData := make([]byte, 17*1024)
+	for i := range bigData {
+		bigData[i] = 'A'
+	}
+	if err := os.WriteFile(tokenPath, bigData, 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+
+	cfgPath := filepath.Join(tmp, "cfg.yaml")
+	if err := os.WriteFile(cfgPath, []byte(testLicenseFileCfg), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := Load(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for oversized license_file")
+	}
+	if !strings.Contains(err.Error(), "exceeds") {
+		t.Errorf("error should mention exceeds, got: %v", err)
+	}
+}
+
+func TestLicenseKeyFileNonRegular(t *testing.T) {
+	tmp := t.TempDir()
+
+	fifoPath := filepath.Join(tmp, "license.token")
+	if err := syscall.Mkfifo(fifoPath, 0o600); err != nil {
+		t.Skipf("cannot create FIFO: %v", err)
+	}
+
+	cfgPath := filepath.Join(tmp, "cfg.yaml")
+	if err := os.WriteFile(cfgPath, []byte(testLicenseFileCfg), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := Load(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for non-regular license_file")
+	}
+	if !strings.Contains(err.Error(), "regular file") {
+		t.Errorf("error should mention regular file, got: %v", err)
 	}
 }
 

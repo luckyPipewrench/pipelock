@@ -982,7 +982,7 @@ Pipelock checks three sources for the license token, in priority order:
 | 2 | `license_file` config field (file path) | Secret volume mounts, file-based workflows |
 | 3 (lowest) | `license_key` config field (inline) | Simple single-machine setups |
 
-The first non-empty source wins. Later sources are not checked. If `license_file` is configured but the file is empty or contains only whitespace, pipelock fails with an error rather than falling back to inline `license_key`. This is fail-closed by design: a misconfigured Secret mount should not silently downgrade to an inline fallback.
+The first non-empty source wins. Later sources are not checked. `PIPELOCK_LICENSE_KEY` values containing only whitespace are treated as empty and fall through to lower-priority sources. If `license_file` is configured but the file is empty or contains only whitespace, pipelock fails with an error rather than falling back to inline `license_key`. This is fail-closed by design: a misconfigured Secret mount should not silently downgrade to an inline fallback.
 
 **Env var (recommended for containers):**
 
@@ -998,7 +998,7 @@ license_file: /etc/pipelock/license.token    # absolute path
 license_file: license.token                  # relative to config file directory
 ```
 
-The file should contain only the license token string. Leading and trailing whitespace is trimmed. The file is read at startup. Adding or changing a license requires a restart to take effect; a config-triggered reload will detect the change but will not apply it until restart. Revoking a license (removing `license_key` or `license_file` from config) takes effect immediately on reload.
+The file should contain only the license token string. Leading and trailing whitespace is trimmed. The file must have owner-only permissions (`0600`); group- or world-readable files are rejected. The file is read at startup. Adding or changing a license requires a restart to take effect; a config-triggered reload will detect the change but will not apply it until restart. Removing the currently active license source takes effect immediately on reload (for example, unsetting `PIPELOCK_LICENSE_KEY` or removing the active `license_file`/`license_key` entry).
 
 **Inline (simplest):**
 

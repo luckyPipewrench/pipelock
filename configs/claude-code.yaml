@@ -358,6 +358,12 @@ logging:
   include_allowed: true
   include_blocked: true
 
+sentry:
+  enabled: true
+  # dsn: ""  # Set via config or SENTRY_DSN env var
+  # environment: production
+  # sample_rate: 1.0
+
 internal:
   - "0.0.0.0/8"
   - "127.0.0.0/8"

@@ -25,6 +25,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	plsentry "github.com/luckyPipewrench/pipelock/internal/sentry"
 )
 
 // ErrInjectionDetected is returned when pipelock mcp scan detects prompt injection.
@@ -220,6 +221,15 @@ Environment passthrough (subprocess mode only):
 			}
 			cfg = resolved.Config
 			bootSC.Close() // done with bootstrap scanner
+
+			// Set up Sentry error reporting
+			sentryClient, sentryErr := plsentry.Init(cfg, Version)
+			if sentryErr != nil {
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: sentry init failed: %v\n", sentryErr)
+			}
+			if sentryClient != nil {
+				defer sentryClient.Close()
+			}
 
 			if !cfg.ResponseScanning.Enabled {
 				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning: response scanning was disabled in config, enabling with defaults")

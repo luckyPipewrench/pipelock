@@ -4,6 +4,7 @@ go 1.24.0
 
 require (
 	github.com/fsnotify/fsnotify v1.9.0
+	github.com/getsentry/sentry-go v0.43.0
 	github.com/go-shiori/go-readability v0.0.0-20251205110129-5db1dc9836f0
 	github.com/gobwas/ws v1.4.0
 	github.com/prometheus/client_golang v1.23.2

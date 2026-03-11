@@ -5782,3 +5782,111 @@ func TestLoad_ExplicitTruePreserved(t *testing.T) {
 		}
 	}
 }
+
+// --- Sentry tests ---
+
+func TestSentryEnabled_NilDefaultsTrue(t *testing.T) {
+	cfg := SentryConfig{}
+	if !cfg.SentryEnabled() {
+		t.Error("expected SentryEnabled() to return true when Enabled is nil")
+	}
+}
+
+func TestSentryEnabled_ExplicitlyFalse(t *testing.T) {
+	f := false
+	cfg := SentryConfig{Enabled: &f}
+	if cfg.SentryEnabled() {
+		t.Error("expected SentryEnabled() to return false when Enabled is explicitly false")
+	}
+}
+
+func TestSentryEnabled_ExplicitlyTrue(t *testing.T) {
+	tr := true
+	cfg := SentryConfig{Enabled: &tr}
+	if !cfg.SentryEnabled() {
+		t.Error("expected SentryEnabled() to return true when Enabled is explicitly true")
+	}
+}
+
+func TestApplyDefaults_SentrySampleRate(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	if cfg.Sentry.SampleRate != 1.0 {
+		t.Errorf("expected default sample_rate 1.0, got %f", cfg.Sentry.SampleRate)
+	}
+}
+
+func TestApplyDefaults_SentryEnvironment(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	if cfg.Sentry.Environment != "production" {
+		t.Errorf("expected default environment 'production', got %q", cfg.Sentry.Environment)
+	}
+}
+
+func TestApplyDefaults_SentryPreservesCustomValues(t *testing.T) {
+	cfg := Defaults()
+	cfg.Sentry.SampleRate = 0.5
+	cfg.Sentry.Environment = "staging"
+	cfg.ApplyDefaults()
+	if cfg.Sentry.SampleRate != 0.5 {
+		t.Errorf("expected preserved sample_rate 0.5, got %f", cfg.Sentry.SampleRate)
+	}
+	if cfg.Sentry.Environment != "staging" {
+		t.Errorf("expected preserved environment 'staging', got %q", cfg.Sentry.Environment)
+	}
+}
+
+func TestValidate_SentrySampleRateTooHigh(t *testing.T) {
+	cfg := Defaults()
+	cfg.Sentry.SampleRate = 1.5
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for sample_rate > 1.0")
+	}
+}
+
+func TestValidate_SentrySampleRateNegative(t *testing.T) {
+	cfg := Defaults()
+	cfg.Sentry.SampleRate = -0.1
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for negative sample_rate")
+	}
+}
+
+func TestValidate_SentrySampleRateValid(t *testing.T) {
+	cfg := Defaults()
+	cfg.Sentry.SampleRate = 0.5
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("expected valid config, got: %v", err)
+	}
+}
+
+func TestValidateReload_SentryDSNChanged(t *testing.T) {
+	old := Defaults()
+	old.Sentry.DSN = "https://old@sentry.io/1"
+	updated := Defaults()
+	updated.Sentry.DSN = "https://new@sentry.io/2"
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == "sentry.dsn" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected warning for sentry.dsn change")
+	}
+}
+
+func TestValidateReload_SentryDSNUnchanged_NoWarning(t *testing.T) {
+	old := Defaults()
+	old.Sentry.DSN = "https://same@sentry.io/1"
+	updated := Defaults()
+	updated.Sentry.DSN = "https://same@sentry.io/1"
+	warnings := ValidateReload(old, updated)
+	for _, w := range warnings {
+		if w.Field == "sentry.dsn" {
+			t.Error("expected no warning when sentry.dsn unchanged")
+		}
+	}
+}

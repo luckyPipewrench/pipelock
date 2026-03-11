@@ -30,6 +30,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	plsentry "github.com/luckyPipewrench/pipelock/internal/sentry"
 )
 
 func runCmd() *cobra.Command {
@@ -101,6 +102,15 @@ Examples:
 			cfg.ApplyDefaults()
 			if err := cfg.Validate(); err != nil {
 				return fmt.Errorf("invalid config: %w", err)
+			}
+
+			// Set up Sentry error reporting
+			sentryClient, sentryErr := plsentry.Init(cfg, Version)
+			if sentryErr != nil {
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: sentry init failed: %v\n", sentryErr)
+			}
+			if sentryClient != nil {
+				defer sentryClient.Close()
 			}
 
 			// Set up audit logger
@@ -204,6 +214,10 @@ Examples:
 						func() {
 							defer func() {
 								if r := recover(); r != nil {
+									panicMsg := fmt.Sprintf("panic during config reload: %v", r)
+									if sentryClient != nil {
+										sentryClient.CaptureMessage(panicMsg)
+									}
 									logger.LogError("CONFIG_RELOAD", configFile, "", "", "",
 										fmt.Errorf("scanner construction panic: %v", r))
 								}
@@ -608,6 +622,9 @@ Examples:
 
 			// Start the fetch proxy (blocks until context cancelled or error).
 			if err := p.Start(ctx); err != nil {
+				if sentryClient != nil {
+					sentryClient.CaptureError(err)
+				}
 				return fmt.Errorf("proxy error: %w", err)
 			}
 

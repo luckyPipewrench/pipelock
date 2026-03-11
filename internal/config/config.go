@@ -185,6 +185,7 @@ type Config struct {
 	MCPSessionBinding     MCPSessionBinding       `yaml:"mcp_session_binding"`
 	RequestBodyScanning   RequestBodyScanning     `yaml:"request_body_scanning"`
 	KillSwitch            KillSwitch              `yaml:"kill_switch"`
+	Sentry                SentryConfig            `yaml:"sentry"`
 	MetricsListen         string                  `yaml:"metrics_listen"` // separate listen address for /metrics and /stats
 	Emit                  EmitConfig              `yaml:"emit"`
 	ToolChainDetection    ToolChainDetection      `yaml:"tool_chain_detection"`
@@ -491,6 +492,21 @@ type SyslogConfig struct {
 type MCPWSListener struct {
 	AllowedOrigins []string `yaml:"allowed_origins"` // additional browser origins to allow (loopback always allowed)
 	MaxConnections int      `yaml:"max_connections"` // max concurrent inbound WS connections (default 100)
+}
+
+// SentryConfig configures Sentry error reporting with secret redaction.
+// All error data is scrubbed through DLP patterns before leaving the process.
+type SentryConfig struct {
+	Enabled     *bool   `yaml:"enabled"`     // nil = true (default enabled)
+	DSN         string  `yaml:"dsn"`         // Sentry DSN; also reads SENTRY_DSN env
+	Environment string  `yaml:"environment"` // e.g. "production" (default)
+	SampleRate  float64 `yaml:"sample_rate"` // 0.0-1.0, default 1.0
+	Debug       bool    `yaml:"debug"`       // SDK debug mode
+}
+
+// SentryEnabled returns true if Sentry is enabled (nil defaults to true).
+func (s *SentryConfig) SentryEnabled() bool {
+	return s.Enabled == nil || *s.Enabled
 }
 
 // ToolChainDetection configures MCP tool call chain pattern detection.
@@ -916,6 +932,14 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.Emit.Syslog.Tag == "" {
 		c.Emit.Syslog.Tag = "pipelock"
+	}
+
+	// Sentry defaults
+	if c.Sentry.SampleRate <= 0 {
+		c.Sentry.SampleRate = 1.0
+	}
+	if c.Sentry.Environment == "" {
+		c.Sentry.Environment = "production"
 	}
 
 	// Tool chain detection defaults
@@ -1603,6 +1627,11 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// Validate Sentry config
+	if c.Sentry.SampleRate < 0 || c.Sentry.SampleRate > 1 {
+		return fmt.Errorf("invalid sentry.sample_rate %f: must be between 0.0 and 1.0", c.Sentry.SampleRate)
+	}
+
 	// Validate internal CIDRs are parseable
 	for _, cidr := range c.Internal {
 		if _, _, err := net.ParseCIDR(cidr); err != nil {
@@ -1898,6 +1927,11 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 					old.DLP.SecretsFile, updated.DLP.SecretsFile),
 			})
 		}
+	}
+
+	// Sentry DSN changed (requires restart)
+	if old.Sentry.DSN != updated.Sentry.DSN {
+		warnings = append(warnings, ReloadWarning{Field: "sentry.dsn", Message: "Sentry DSN changes require restart"})
 	}
 
 	return warnings

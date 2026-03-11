@@ -21,6 +21,8 @@ const (
 	testClientIP      = "10.0.0.1"
 	testIPDomainBurst = "ip_domain_burst"
 	testDomainBurst   = "domain_burst"
+	testLevelNormal   = "normal"
+	testLevelElevated = "elevated"
 )
 
 func testSessionConfig() *config.SessionProfiling {
@@ -321,10 +323,10 @@ func TestSessionState_Escalation(t *testing.T) {
 	if !escalated {
 		t.Error("should escalate at threshold")
 	}
-	if from != "normal" {
+	if from != testLevelNormal {
 		t.Errorf("expected from=normal, got %s", from)
 	}
-	if to != "elevated" {
+	if to != testLevelElevated {
 		t.Errorf("expected to=elevated, got %s", to)
 	}
 
@@ -383,6 +385,64 @@ func TestSessionState_EscalationSticky(t *testing.T) {
 	if !sess.IsEscalated() {
 		t.Error("escalation should be sticky even after score decay")
 	}
+	if sess.EscalationLevel() != 1 {
+		t.Errorf("expected level 1, got %d", sess.EscalationLevel())
+	}
+}
+
+func TestSessionState_EntropyBudgetSignal(t *testing.T) {
+	cfg := testSessionConfig()
+	sm := NewSessionManager(cfg, nil)
+	defer sm.Close()
+
+	sess := sm.GetOrCreate(testClientIP)
+	sess.RecordSignal(SignalEntropyBudget, 10.0) // +2
+
+	if sess.ThreatScore() != 2.0 {
+		t.Errorf("expected score 2.0, got %f", sess.ThreatScore())
+	}
+}
+
+func TestSessionState_FragmentDLPSignal(t *testing.T) {
+	cfg := testSessionConfig()
+	sm := NewSessionManager(cfg, nil)
+	defer sm.Close()
+
+	sess := sm.GetOrCreate(testClientIP)
+	sess.RecordSignal(SignalFragmentDLP, 10.0) // +3
+
+	if sess.ThreatScore() != 3.0 {
+		t.Errorf("expected score 3.0, got %f", sess.ThreatScore())
+	}
+}
+
+func TestSessionState_EntropySignals_Escalation(t *testing.T) {
+	cfg := testSessionConfig()
+	sm := NewSessionManager(cfg, nil)
+	defer sm.Close()
+
+	sess := sm.GetOrCreate(testClientIP)
+
+	// Build up score: 2 entropy budget signals (+2 each = 4) below threshold 5
+	sess.RecordSignal(SignalEntropyBudget, 5.0) // +2, total 2
+	sess.RecordSignal(SignalEntropyBudget, 5.0) // +2, total 4
+
+	if sess.IsEscalated() {
+		t.Error("should not escalate below threshold")
+	}
+
+	// Fragment DLP signal crosses threshold: +3, total 7
+	escalated, from, to := sess.RecordSignal(SignalFragmentDLP, 5.0)
+	if !escalated {
+		t.Error("should escalate when entropy signals cross threshold")
+	}
+	if from != testLevelNormal {
+		t.Errorf("expected from=normal, got %s", from)
+	}
+	if to != testLevelElevated {
+		t.Errorf("expected to=elevated, got %s", to)
+	}
+
 	if sess.EscalationLevel() != 1 {
 		t.Errorf("expected level 1, got %d", sess.EscalationLevel())
 	}
@@ -660,10 +720,10 @@ func TestEscalationLabel_HighLevel(t *testing.T) {
 	}
 
 	// Test known labels
-	if got := escalationLabel(0); got != "normal" {
+	if got := escalationLabel(0); got != testLevelNormal {
 		t.Errorf("expected normal, got %s", got)
 	}
-	if got := escalationLabel(1); got != "elevated" {
+	if got := escalationLabel(1); got != testLevelElevated {
 		t.Errorf("expected elevated, got %s", got)
 	}
 	if got := escalationLabel(2); got != "high" {

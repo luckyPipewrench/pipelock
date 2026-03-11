@@ -548,6 +548,38 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 			}
 		}
 
+		// CEE: record outbound frame for cross-request exfiltration detection.
+		// Entropy tracking applies to all frame types (text + binary) since
+		// binary frames can carry high-entropy exfiltrated data. Fragment
+		// buffering only applies to text frames (DLP patterns match text).
+		if ceeCfg := ceeEffectiveConfig(r.cfg.CrossRequestDetection, r.cfg.EnforceEnabled()); ceeCfg.Enabled {
+			isText := frag.Opcode == ws.OpText || hdr.OpCode == ws.OpText
+			sessionKey := ceeSessionKey(r.agent, r.clientIP)
+
+			// Pass fragment buffer only for text frames; binary content
+			// doesn't match DLP text patterns.
+			var fb *scanner.FragmentBuffer
+			if isText {
+				fb = r.proxy.fragmentBufferPtr.Load()
+			}
+
+			ceeRes := ceeAdmit(sessionKey, msg, nil, r.targetURL, r.agent, r.clientIP, r.requestID,
+				ceeCfg, r.proxy.entropyTrackerPtr.Load(), fb, r.scanner, r.proxy.logger, r.proxy.metrics)
+
+			if sm := r.proxy.sessionMgrPtr.Load(); sm != nil && r.cfg.AdaptiveEnforcement.Enabled {
+				ceeRecordSignals(ceeRes, sm, sessionKey, r.cfg.AdaptiveEnforcement.EscalationThreshold, r.proxy.logger, r.proxy.metrics, r.clientIP, r.requestID)
+			}
+
+			if ceeRes.Blocked {
+				log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, "cross_request", ceeRes.Reason, r.clientIP, r.requestID)
+				r.proxy.metrics.RecordWSScanHit("cross_request")
+				plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "cross-request exfiltration detected")
+				plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "cross-request exfiltration detected")
+				blocked = true
+				return
+			}
+		}
+
 		// Forward complete message to upstream (proxy is CLIENT, so masked).
 		opCode := hdr.OpCode
 		if frag.Opcode != 0 {

@@ -59,6 +59,11 @@ type Metrics struct {
 	tlsRequestBlocked    *prometheus.CounterVec
 	tlsResponseBlocked   *prometheus.CounterVec
 
+	// Cross-request exfiltration detection
+	CrossRequestEntropyExceeded prometheus.Counter
+	CrossRequestDLPMatch        prometheus.Counter
+	CrossRequestFragmentBytes   prometheus.Gauge
+
 	wsConnectionCount int64
 
 	mu                sync.Mutex
@@ -75,6 +80,10 @@ type Metrics struct {
 	sessionAnomalyCount    int64
 	sessionEscalationCount int64
 	topAnomalyTypes        map[string]int64
+
+	// Cross-request exfiltration stats callback (for JSON /stats endpoint).
+	// Called on each /stats request to get live CEE state.
+	CEEStatsFunc func() CEEStats
 }
 
 // agentCounters tracks per-agent request counts for the /stats endpoint.
@@ -262,49 +271,69 @@ func New() *Metrics {
 		Help:      "Total TLS-intercepted responses blocked by reason.",
 	}, []string{"reason"})
 
+	crossRequestEntropyExceeded := prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: "pipelock",
+		Name:      "cross_request_entropy_exceeded_total",
+		Help:      "Entropy budget exceeded events.",
+	})
+	crossRequestDLPMatch := prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: "pipelock",
+		Name:      "cross_request_dlp_match_total",
+		Help:      "Fragment reassembly DLP match events.",
+	})
+	crossRequestFragmentBytes := prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: "pipelock",
+		Name:      "cross_request_fragment_buffer_bytes",
+		Help:      "Total fragment buffer memory across all sessions.",
+	})
+
 	reg.MustRegister(requestsTotal, scannerHits, requestLatency,
 		tunnelsTotal, tunnelDuration, tunnelBytes, activeTunnels,
 		wsConnectionsTotal, wsDuration, wsBytes, activeWS, wsFrames, wsScanHits, wsRedirectHints,
 		killSwitchDenials, chainDetections, sniTotal,
 		bodyDLPHits, headerDLPHits,
 		sessionAnomalies, sessionEscalations, sessionsActive, sessionsEvicted,
-		tlsInterceptTotal, tlsCertCacheSize, tlsHandshakeDuration, tlsRequestBlocked, tlsResponseBlocked)
+		tlsInterceptTotal, tlsCertCacheSize, tlsHandshakeDuration, tlsRequestBlocked, tlsResponseBlocked,
+		crossRequestEntropyExceeded, crossRequestDLPMatch, crossRequestFragmentBytes)
 
 	return &Metrics{
-		registry:             reg,
-		requestsTotal:        requestsTotal,
-		scannerHits:          scannerHits,
-		requestLatency:       requestLatency,
-		tunnelsTotal:         tunnelsTotal,
-		tunnelDuration:       tunnelDuration,
-		tunnelBytes:          tunnelBytes,
-		activeTunnels:        activeTunnels,
-		wsConnectionsTotal:   wsConnectionsTotal,
-		wsDuration:           wsDuration,
-		wsBytes:              wsBytes,
-		activeWS:             activeWS,
-		wsFrames:             wsFrames,
-		wsScanHits:           wsScanHits,
-		wsRedirectHints:      wsRedirectHints,
-		killSwitchDenials:    killSwitchDenials,
-		chainDetections:      chainDetections,
-		sniTotal:             sniTotal,
-		bodyDLPHits:          bodyDLPHits,
-		headerDLPHits:        headerDLPHits,
-		sessionAnomalies:     sessionAnomalies,
-		sessionEscalations:   sessionEscalations,
-		sessionsActive:       sessionsActive,
-		sessionsEvicted:      sessionsEvicted,
-		tlsInterceptTotal:    tlsInterceptTotal,
-		tlsCertCacheSize:     tlsCertCacheSize,
-		tlsHandshakeDuration: tlsHandshakeDuration,
-		tlsRequestBlocked:    tlsRequestBlocked,
-		tlsResponseBlocked:   tlsResponseBlocked,
-		startTime:            time.Now(),
-		topBlockedDomains:    make(map[string]int64),
-		topScannerHits:       make(map[string]int64),
-		topAnomalyTypes:      make(map[string]int64),
-		agentStats:           make(map[string]*agentCounters),
+		registry:                    reg,
+		requestsTotal:               requestsTotal,
+		scannerHits:                 scannerHits,
+		requestLatency:              requestLatency,
+		tunnelsTotal:                tunnelsTotal,
+		tunnelDuration:              tunnelDuration,
+		tunnelBytes:                 tunnelBytes,
+		activeTunnels:               activeTunnels,
+		wsConnectionsTotal:          wsConnectionsTotal,
+		wsDuration:                  wsDuration,
+		wsBytes:                     wsBytes,
+		activeWS:                    activeWS,
+		wsFrames:                    wsFrames,
+		wsScanHits:                  wsScanHits,
+		wsRedirectHints:             wsRedirectHints,
+		killSwitchDenials:           killSwitchDenials,
+		chainDetections:             chainDetections,
+		sniTotal:                    sniTotal,
+		bodyDLPHits:                 bodyDLPHits,
+		headerDLPHits:               headerDLPHits,
+		sessionAnomalies:            sessionAnomalies,
+		sessionEscalations:          sessionEscalations,
+		sessionsActive:              sessionsActive,
+		sessionsEvicted:             sessionsEvicted,
+		tlsInterceptTotal:           tlsInterceptTotal,
+		tlsCertCacheSize:            tlsCertCacheSize,
+		tlsHandshakeDuration:        tlsHandshakeDuration,
+		tlsRequestBlocked:           tlsRequestBlocked,
+		tlsResponseBlocked:          tlsResponseBlocked,
+		CrossRequestEntropyExceeded: crossRequestEntropyExceeded,
+		CrossRequestDLPMatch:        crossRequestDLPMatch,
+		CrossRequestFragmentBytes:   crossRequestFragmentBytes,
+		startTime:                   time.Now(),
+		topBlockedDomains:           make(map[string]int64),
+		topScannerHits:              make(map[string]int64),
+		topAnomalyTypes:             make(map[string]int64),
+		agentStats:                  make(map[string]*agentCounters),
 	}
 }
 
@@ -518,6 +547,38 @@ func (m *Metrics) RecordTLSResponseBlocked(reason string) {
 	m.tlsResponseBlocked.WithLabelValues(reason).Inc()
 }
 
+// RecordCrossRequestEntropyExceeded increments the cross-request entropy exceeded counter.
+func (m *Metrics) RecordCrossRequestEntropyExceeded() {
+	if m != nil {
+		m.CrossRequestEntropyExceeded.Inc()
+	}
+}
+
+// RecordCrossRequestDLPMatch increments the cross-request fragment DLP match counter.
+func (m *Metrics) RecordCrossRequestDLPMatch() {
+	if m != nil {
+		m.CrossRequestDLPMatch.Inc()
+	}
+}
+
+// SetCrossRequestFragmentBytes sets the total fragment buffer memory gauge.
+func (m *Metrics) SetCrossRequestFragmentBytes(bytes float64) {
+	if m != nil {
+		m.CrossRequestFragmentBytes.Set(bytes)
+	}
+}
+
+// SetCEEStatsFunc registers a callback that returns live CEE state for the
+// /stats endpoint. Called on each /stats request (not on every proxy request).
+func (m *Metrics) SetCEEStatsFunc(fn func() CEEStats) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.CEEStatsFunc = fn
+	m.mu.Unlock()
+}
+
 // RegisterKillSwitchState registers a custom collector that reports the
 // current kill switch state as pipelock_kill_switch_active{source=...}
 // gauges. The sourceFunc is called once per Prometheus scrape and should
@@ -598,6 +659,7 @@ func (m *Metrics) StatsHandler() http.HandlerFunc {
 				TopAnomalies: topN(m.topAnomalyTypes),
 			},
 		}
+		ceeFunc := m.CEEStatsFunc
 		if total > 0 {
 			stats.Requests.BlockRate = float64(m.blockedCount) / float64(total)
 		}
@@ -613,6 +675,11 @@ func (m *Metrics) StatsHandler() http.HandlerFunc {
 		}
 		m.mu.Unlock()
 
+		// Call CEE stats func outside the lock (it accesses proxy atomic pointers).
+		if ceeFunc != nil {
+			stats.CEE = ceeFunc()
+		}
+
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(stats)
 	}
@@ -626,7 +693,14 @@ type statsResponse struct {
 	TopBlockedDomains []rankedEntry            `json:"top_blocked_domains"`
 	TopScanners       []rankedEntry            `json:"top_scanners"`
 	Sessions          sessionStats             `json:"sessions"`
+	CEE               CEEStats                 `json:"cross_request_detection"`
 	Agents            map[string]agentStatsOut `json:"agents,omitempty"`
+}
+
+type CEEStats struct {
+	EntropyTrackerActive bool `json:"entropy_tracker_active"`
+	FragmentBufferActive bool `json:"fragment_buffer_active"`
+	FragmentBufferBytes  int  `json:"fragment_buffer_bytes"`
 }
 
 type agentStatsOut struct {

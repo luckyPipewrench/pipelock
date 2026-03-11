@@ -4871,3 +4871,317 @@ func TestValidateGlobalNegativeDataRate(t *testing.T) {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
+
+// --- Cross-Request Detection tests ---
+
+func TestApplyDefaults_CrossRequestDetection_Enabled(t *testing.T) {
+	cfg := &Config{}
+	cfg.CrossRequestDetection.Enabled = true
+	cfg.CrossRequestDetection.EntropyBudget.Enabled = true
+	cfg.CrossRequestDetection.FragmentReassembly.Enabled = true
+	cfg.ApplyDefaults()
+
+	if cfg.CrossRequestDetection.Action != ActionBlock {
+		t.Fatalf("expected default action %q, got %q", ActionBlock, cfg.CrossRequestDetection.Action)
+	}
+	if cfg.CrossRequestDetection.EntropyBudget.BitsPerWindow != 4096 {
+		t.Fatalf("expected default bits_per_window 4096, got %f", cfg.CrossRequestDetection.EntropyBudget.BitsPerWindow)
+	}
+	if cfg.CrossRequestDetection.EntropyBudget.WindowMinutes != 5 {
+		t.Fatalf("expected default window_minutes 5, got %d", cfg.CrossRequestDetection.EntropyBudget.WindowMinutes)
+	}
+	if cfg.CrossRequestDetection.EntropyBudget.Action != ActionWarn {
+		t.Fatalf("expected default entropy_budget action %q, got %q", ActionWarn, cfg.CrossRequestDetection.EntropyBudget.Action)
+	}
+	if cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes != 65536 {
+		t.Fatalf("expected default max_buffer_bytes 65536, got %d", cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes)
+	}
+	if cfg.CrossRequestDetection.FragmentReassembly.WindowMinutes != 5 {
+		t.Fatalf("expected default fragment window_minutes 5, got %d", cfg.CrossRequestDetection.FragmentReassembly.WindowMinutes)
+	}
+}
+
+func TestApplyDefaults_CrossRequestDetection_DisabledSkipsDefaults(t *testing.T) {
+	cfg := &Config{}
+	// Enabled defaults to false (zero value).
+	cfg.ApplyDefaults()
+
+	if cfg.CrossRequestDetection.Action != "" {
+		t.Fatalf("expected empty action when disabled, got %q", cfg.CrossRequestDetection.Action)
+	}
+	if cfg.CrossRequestDetection.EntropyBudget.BitsPerWindow != 0 {
+		t.Fatalf("expected zero bits_per_window when disabled, got %f", cfg.CrossRequestDetection.EntropyBudget.BitsPerWindow)
+	}
+	if cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes != 0 {
+		t.Fatalf("expected zero max_buffer_bytes when disabled, got %d", cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes)
+	}
+}
+
+func TestApplyDefaults_CrossRequestDetection_SubsectionsDisabled(t *testing.T) {
+	cfg := &Config{}
+	cfg.CrossRequestDetection.Enabled = true
+	// entropy_budget and fragment_reassembly both disabled (zero value).
+	cfg.ApplyDefaults()
+
+	// Top-level defaults still apply.
+	if cfg.CrossRequestDetection.Action != ActionBlock {
+		t.Fatalf("expected default action %q, got %q", ActionBlock, cfg.CrossRequestDetection.Action)
+	}
+	// Sub-section defaults should NOT be applied when sub-sections are disabled.
+	if cfg.CrossRequestDetection.EntropyBudget.BitsPerWindow != 0 {
+		t.Fatalf("expected zero bits_per_window when entropy_budget disabled, got %f", cfg.CrossRequestDetection.EntropyBudget.BitsPerWindow)
+	}
+	if cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes != 0 {
+		t.Fatalf("expected zero max_buffer_bytes when fragment_reassembly disabled, got %d", cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes)
+	}
+}
+
+func TestApplyDefaults_CrossRequestDetection_UserValuesPreserved(t *testing.T) {
+	cfg := &Config{}
+	cfg.CrossRequestDetection.Enabled = true
+	cfg.CrossRequestDetection.Action = ActionWarn
+	cfg.CrossRequestDetection.EntropyBudget.Enabled = true
+	cfg.CrossRequestDetection.EntropyBudget.BitsPerWindow = 2048
+	cfg.CrossRequestDetection.EntropyBudget.WindowMinutes = 10
+	cfg.CrossRequestDetection.EntropyBudget.Action = ActionBlock
+	cfg.CrossRequestDetection.FragmentReassembly.Enabled = true
+	cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes = 131072
+	cfg.CrossRequestDetection.FragmentReassembly.WindowMinutes = 10
+	cfg.ApplyDefaults()
+
+	if cfg.CrossRequestDetection.Action != ActionWarn {
+		t.Fatalf("user action overwritten: got %q", cfg.CrossRequestDetection.Action)
+	}
+	if cfg.CrossRequestDetection.EntropyBudget.BitsPerWindow != 2048 {
+		t.Fatalf("user bits_per_window overwritten: got %f", cfg.CrossRequestDetection.EntropyBudget.BitsPerWindow)
+	}
+	if cfg.CrossRequestDetection.EntropyBudget.WindowMinutes != 10 {
+		t.Fatalf("user window_minutes overwritten: got %d", cfg.CrossRequestDetection.EntropyBudget.WindowMinutes)
+	}
+	if cfg.CrossRequestDetection.EntropyBudget.Action != ActionBlock {
+		t.Fatalf("user entropy_budget action overwritten: got %q", cfg.CrossRequestDetection.EntropyBudget.Action)
+	}
+	if cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes != 131072 {
+		t.Fatalf("user max_buffer_bytes overwritten: got %d", cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes)
+	}
+	if cfg.CrossRequestDetection.FragmentReassembly.WindowMinutes != 10 {
+		t.Fatalf("user fragment window_minutes overwritten: got %d", cfg.CrossRequestDetection.FragmentReassembly.WindowMinutes)
+	}
+}
+
+func TestValidate_CrossRequestDetection_InvalidAction(t *testing.T) {
+	cfg := Defaults()
+	cfg.CrossRequestDetection.Enabled = true
+	cfg.CrossRequestDetection.Action = "strip"
+	cfg.ApplyDefaults()
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for invalid action")
+	}
+	if !strings.Contains(err.Error(), "cross_request_detection") {
+		t.Errorf("error should mention cross_request_detection: %v", err)
+	}
+}
+
+func TestValidate_CrossRequestDetection_ValidActions(t *testing.T) {
+	for _, action := range []string{ActionWarn, ActionBlock} {
+		cfg := Defaults()
+		cfg.CrossRequestDetection.Enabled = true
+		cfg.CrossRequestDetection.Action = action
+		cfg.CrossRequestDetection.EntropyBudget.Enabled = true // at least one detector required
+		cfg.ApplyDefaults()
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("unexpected validation error for action %q: %v", action, err)
+		}
+	}
+}
+
+func TestValidate_CrossRequestDetection_BothDetectorsDisabled(t *testing.T) {
+	cfg := Defaults()
+	cfg.CrossRequestDetection.Enabled = true
+	cfg.CrossRequestDetection.EntropyBudget.Enabled = false
+	cfg.CrossRequestDetection.FragmentReassembly.Enabled = false
+	cfg.ApplyDefaults()
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error when enabled but both detectors disabled")
+	}
+}
+
+func TestValidate_CrossRequestDetection_InvalidEntropyBudgetAction(t *testing.T) {
+	cfg := Defaults()
+	cfg.CrossRequestDetection.Enabled = true
+	cfg.CrossRequestDetection.EntropyBudget.Enabled = true
+	cfg.CrossRequestDetection.EntropyBudget.Action = "ask"
+	cfg.ApplyDefaults()
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for invalid entropy_budget action")
+	}
+	if !strings.Contains(err.Error(), "entropy_budget") {
+		t.Errorf("error should mention entropy_budget: %v", err)
+	}
+}
+
+func TestValidate_CrossRequestDetection_InvalidBitsPerWindow(t *testing.T) {
+	cfg := Defaults()
+	cfg.CrossRequestDetection.Enabled = true
+	cfg.CrossRequestDetection.EntropyBudget.Enabled = true
+	cfg.ApplyDefaults()
+	// Set invalid value after defaults to bypass default population.
+	cfg.CrossRequestDetection.EntropyBudget.BitsPerWindow = -1
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for negative bits_per_window")
+	}
+	if !strings.Contains(err.Error(), "bits_per_window") {
+		t.Errorf("error should mention bits_per_window: %v", err)
+	}
+}
+
+func TestValidate_CrossRequestDetection_InvalidWindowMinutes(t *testing.T) {
+	cfg := Defaults()
+	cfg.CrossRequestDetection.Enabled = true
+	cfg.CrossRequestDetection.EntropyBudget.Enabled = true
+	cfg.ApplyDefaults()
+	// Set invalid value after defaults to bypass default population.
+	cfg.CrossRequestDetection.EntropyBudget.WindowMinutes = -1
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for negative window_minutes")
+	}
+	if !strings.Contains(err.Error(), "window_minutes") {
+		t.Errorf("error should mention window_minutes: %v", err)
+	}
+}
+
+func TestValidate_CrossRequestDetection_InvalidMaxBufferBytes(t *testing.T) {
+	cfg := Defaults()
+	cfg.CrossRequestDetection.Enabled = true
+	cfg.CrossRequestDetection.FragmentReassembly.Enabled = true
+	cfg.ApplyDefaults()
+	// Set invalid value after defaults to bypass default population.
+	cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes = -1
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for negative max_buffer_bytes")
+	}
+	if !strings.Contains(err.Error(), "max_buffer_bytes") {
+		t.Errorf("error should mention max_buffer_bytes: %v", err)
+	}
+}
+
+func TestValidate_CrossRequestDetection_DisabledSkipsValidation(t *testing.T) {
+	cfg := Defaults()
+	// Disabled, with invalid sub-values: should NOT error.
+	cfg.CrossRequestDetection.Enabled = false
+	cfg.CrossRequestDetection.Action = "invalid-action"
+	cfg.CrossRequestDetection.EntropyBudget.BitsPerWindow = -999
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("disabled cross_request_detection should skip validation, got: %v", err)
+	}
+}
+
+func TestReloadWarnings_CrossRequestDetection_DisabledWarning(t *testing.T) {
+	old := Defaults()
+	old.CrossRequestDetection.Enabled = true
+	old.ApplyDefaults()
+
+	updated := Defaults()
+	updated.CrossRequestDetection.Enabled = false
+	updated.ApplyDefaults()
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == "cross_request_detection.enabled" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected reload warning when cross_request_detection is disabled")
+	}
+}
+
+func TestReloadWarnings_CrossRequestDetection_EntropyBudgetDisabled(t *testing.T) {
+	old := Defaults()
+	old.CrossRequestDetection.Enabled = true
+	old.CrossRequestDetection.EntropyBudget.Enabled = true
+	old.ApplyDefaults()
+
+	updated := Defaults()
+	updated.CrossRequestDetection.Enabled = true
+	updated.CrossRequestDetection.EntropyBudget.Enabled = false
+	updated.CrossRequestDetection.FragmentReassembly.Enabled = true
+	updated.ApplyDefaults()
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == "cross_request_detection.entropy_budget.enabled" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected reload warning when entropy_budget is disabled")
+	}
+}
+
+func TestReloadWarnings_CrossRequestDetection_FragmentReassemblyDisabled(t *testing.T) {
+	old := Defaults()
+	old.CrossRequestDetection.Enabled = true
+	old.CrossRequestDetection.FragmentReassembly.Enabled = true
+	old.ApplyDefaults()
+
+	updated := Defaults()
+	updated.CrossRequestDetection.Enabled = true
+	updated.CrossRequestDetection.FragmentReassembly.Enabled = false
+	updated.CrossRequestDetection.EntropyBudget.Enabled = true
+	updated.ApplyDefaults()
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == "cross_request_detection.fragment_reassembly.enabled" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected reload warning when fragment_reassembly is disabled")
+	}
+}
+
+func TestReloadWarnings_CrossRequestDetection_ParentDisabledNoNestedWarnings(t *testing.T) {
+	old := Defaults()
+	old.CrossRequestDetection.Enabled = true
+	old.CrossRequestDetection.EntropyBudget.Enabled = true
+	old.CrossRequestDetection.FragmentReassembly.Enabled = true
+	old.ApplyDefaults()
+
+	// Disable the parent, which also implicitly disables children.
+	updated := Defaults()
+	updated.CrossRequestDetection.Enabled = false
+	updated.CrossRequestDetection.EntropyBudget.Enabled = false
+	updated.CrossRequestDetection.FragmentReassembly.Enabled = false
+	updated.ApplyDefaults()
+
+	warnings := ValidateReload(old, updated)
+
+	// Should get the parent warning only, not nested detector warnings.
+	parentFound := false
+	for _, w := range warnings {
+		if w.Field == "cross_request_detection.enabled" {
+			parentFound = true
+		}
+		if w.Field == "cross_request_detection.entropy_budget.enabled" ||
+			w.Field == "cross_request_detection.fragment_reassembly.enabled" {
+			t.Errorf("unexpected nested warning %q when parent is disabled", w.Field)
+		}
+	}
+	if !parentFound {
+		t.Error("expected parent cross_request_detection.enabled warning")
+	}
+}

@@ -29,6 +29,10 @@ const methodToolsCall = "tools/call"
 // errPolicyBlocked is the error message returned when a tool call is denied by policy.
 const errPolicyBlocked = "pipelock: request blocked by tool call policy"
 
+// ceeStdioKey is the fixed CEE session key for stdio MCP proxies. A single
+// subprocess means one session per process, so a static key is correct.
+const ceeStdioKey = "_default|stdio"
+
 // InputVerdict describes the outcome of scanning a single MCP request.
 type InputVerdict struct {
 	ID      json.RawMessage         `json:"id"`
@@ -401,6 +405,8 @@ type SessionBindingConfig struct {
 // session tool baseline.
 // When tracker is non-nil, each forwarded request's ID is recorded so the
 // response-side (ForwardScanned) can validate that response IDs were solicited.
+// When cee is non-nil, outbound payloads are recorded for cross-request
+// exfiltration detection (entropy budget and fragment reassembly DLP).
 // Blocked request IDs are sent via blockedCh so the main goroutine (which owns
 // clientOut writes) can send error responses without concurrent write races.
 func ForwardScannedInput(
@@ -417,6 +423,7 @@ func ForwardScannedInput(
 	chainMatcher *chains.Matcher,
 	tracker *RequestTracker,
 	auditLogger *audit.Logger,
+	cee *CEEDeps,
 ) {
 	defer close(blockedCh)
 
@@ -551,6 +558,17 @@ func ForwardScannedInput(
 
 		// All clean — forward.
 		if verdict.Clean && !policyVerdict.Matched && bindingAction == "" && chainAction == "" {
+			// Cross-request exfiltration check on clean outbound messages.
+			if reason := ceeRecordMCP(ceeStdioKey, line, cee, sc, logW, auditLogger); reason != "" {
+				blockedCh <- BlockedRequest{
+					ID:             verdict.ID,
+					IsNotification: isRPCNotification(verdict.ID),
+					LogMessage:     fmt.Sprintf("pipelock: input line %d: CEE blocked", lineNum),
+					ErrorCode:      -32005,
+					ErrorMessage:   fmt.Sprintf("pipelock: %s", reason),
+				}
+				continue
+			}
 			// Track request ID before forwarding so response-side can validate.
 			// Must happen before write to prevent race: response could arrive
 			// before Track completes in concurrent stdio paths.
@@ -644,6 +662,17 @@ func ForwardScannedInput(
 		default: // warn
 			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: warning — %s request contains flagged content (%s)\n",
 				lineNum, method, reasonStr)
+			// Cross-request exfiltration check even in warn mode.
+			if reason := ceeRecordMCP(ceeStdioKey, line, cee, sc, logW, auditLogger); reason != "" {
+				blockedCh <- BlockedRequest{
+					ID:             verdict.ID,
+					IsNotification: isRPCNotification(verdict.ID),
+					LogMessage:     fmt.Sprintf("pipelock: input line %d: CEE blocked", lineNum),
+					ErrorCode:      -32005,
+					ErrorMessage:   fmt.Sprintf("pipelock: %s", reason),
+				}
+				continue
+			}
 			// Track ID before forwarding (warn mode still sends the request).
 			tracker.Track(verdict.ID)
 			// Forward anyway (warn mode).

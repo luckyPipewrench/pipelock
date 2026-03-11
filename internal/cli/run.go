@@ -498,9 +498,29 @@ Examples:
 					mcpChainMatcher = chains.New(&cfg.ToolChainDetection).WithMetrics(m)
 				}
 
+				// Build CEE deps for the MCP listener path.
+				var mcpCEE *mcp.CEEDeps
+				if cfg.CrossRequestDetection.Enabled {
+					ceeCfg := cfg.CrossRequestDetection
+					mcpCEE = &mcp.CEEDeps{Config: &ceeCfg, Metrics: m}
+					if ceeCfg.EntropyBudget.Enabled {
+						mcpCEE.Tracker = scanner.NewEntropyTracker(
+							ceeCfg.EntropyBudget.BitsPerWindow,
+							ceeCfg.EntropyBudget.WindowMinutes*60,
+						)
+					}
+					if ceeCfg.FragmentReassembly.Enabled {
+						mcpCEE.Buffer = scanner.NewFragmentBuffer(
+							ceeCfg.FragmentReassembly.MaxBufferBytes,
+							10000,
+							ceeCfg.FragmentReassembly.WindowMinutes*60,
+						)
+					}
+				}
+
 				mcpErr = make(chan error, 1)
 				go func() {
-					mcpErr <- mcp.RunHTTPListenerProxy(ctx, mcpLn, mcpUpstream, cmd.ErrOrStderr(), sc, mcpApprover, inputCfg, toolCfg, policyCfg, ks, mcpChainMatcher, logger)
+					mcpErr <- mcp.RunHTTPListenerProxy(ctx, mcpLn, mcpUpstream, cmd.ErrOrStderr(), sc, mcpApprover, inputCfg, toolCfg, policyCfg, ks, mcpChainMatcher, logger, mcpCEE)
 				}()
 			}
 

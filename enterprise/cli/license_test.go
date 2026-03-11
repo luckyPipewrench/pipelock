@@ -19,6 +19,14 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
+// setTestHome overrides both HOME (Unix) and USERPROFILE (Windows) so
+// os.UserHomeDir() returns the temp directory on all platforms.
+func setTestHome(t *testing.T, dir string) {
+	t.Helper()
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
+}
+
 func TestLicenseCmd(t *testing.T) {
 	cmd := LicenseCmd()
 	if cmd.Use != "license" {
@@ -370,7 +378,7 @@ func TestLicenseInstall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Errorf("token file mode = %04o, want 0600", info.Mode().Perm())
 	}
 }
@@ -474,7 +482,7 @@ func TestLicenseInstall_OverwritesExisting(t *testing.T) {
 func TestLicenseInstall_DefaultPath(t *testing.T) {
 	// Override HOME so the default path lands in a temp dir.
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)
+	setTestHome(t, dir)
 
 	_, priv, _ := ed25519.GenerateKey(rand.Reader)
 	lic := license.License{
@@ -541,7 +549,7 @@ func TestLicenseInstall_NoExpiryOutput(t *testing.T) {
 
 func TestLicenseKeygen_DefaultPath(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)
+	setTestHome(t, dir)
 
 	cmd := licenseKeygenCmd()
 	var buf bytes.Buffer
@@ -565,7 +573,7 @@ func TestLicenseKeygen_DefaultPath(t *testing.T) {
 
 func TestLicenseIssue_DefaultKeyPath(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)
+	setTestHome(t, dir)
 
 	// Generate keypair at default location.
 	_, priv, _ := ed25519.GenerateKey(rand.Reader)

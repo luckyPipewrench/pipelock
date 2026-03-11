@@ -45,21 +45,20 @@ func TestCeeSessionKey_AnonymousAgent(t *testing.T) {
 }
 
 func TestExtractOutboundPayload_QueryParams(t *testing.T) {
+	// Keys are intentionally out of alphabetical order to prove sorted extraction.
 	r := &http.Request{
 		URL: &url.URL{
-			RawQuery: "key=secret_value&other=data",
+			RawQuery: "other=data&key=secret_value",
 		},
 	}
 	payload := extractOutboundPayload(r)
 	got := string(payload)
 
-	// Query parameter iteration order is not guaranteed, so check both values
-	// are present rather than exact string equality.
-	if !strings.Contains(got, "secret_value") {
-		t.Errorf("payload %q missing query value %q", got, "secret_value")
-	}
-	if !strings.Contains(got, "data") {
-		t.Errorf("payload %q missing query value %q", got, "data")
+	// queryParamPayload sorts keys alphabetically: "key" < "other",
+	// so values concatenate as "secret_value" + "data".
+	want := "secret_valuedata"
+	if got != want {
+		t.Errorf("extractOutboundPayload = %q, want %q", got, want)
 	}
 }
 
@@ -98,11 +97,10 @@ func TestExtractOutboundPayload_QueryAndBody(t *testing.T) {
 	payload := extractOutboundPayload(r)
 	got := string(payload)
 
-	if !strings.Contains(got, "query-data") {
-		t.Errorf("payload %q missing query value %q", got, "query-data")
-	}
-	if !strings.Contains(got, body) {
-		t.Errorf("payload %q missing body %q", got, body)
+	// Query values first, then body, concatenated without separator.
+	want := "query-data" + body
+	if got != want {
+		t.Errorf("extractOutboundPayload = %q, want %q", got, want)
 	}
 
 	// Body must still be readable after extraction (re-wrapping).
@@ -179,9 +177,9 @@ func TestCeeRecordSignals_BothHits(t *testing.T) {
 
 	sess := sm.GetOrCreate(testCEESessionKey)
 	score := sess.ThreatScore()
-	// SignalEntropyBudget (2) + SignalFragmentDLP (3) = 5 points.
-	if score < 5.0 {
-		t.Errorf("expected threat score >= 5.0, got %.1f", score)
+	// SignalEntropyBudget (2) + SignalFragmentDLP (3) = 5 points exactly.
+	if score != 5.0 {
+		t.Errorf("expected threat score 5.0, got %.1f", score)
 	}
 }
 

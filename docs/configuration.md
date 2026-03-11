@@ -982,7 +982,7 @@ Pipelock checks three sources for the license token, in priority order:
 | 2 | `license_file` config field (file path) | Secret volume mounts, file-based workflows |
 | 3 (lowest) | `license_key` config field (inline) | Simple single-machine setups |
 
-The first non-empty source wins. Later sources are not checked.
+The first non-empty source wins. Later sources are not checked. If `license_file` is configured but the file is empty or contains only whitespace, pipelock fails with an error rather than falling back to inline `license_key`. This is fail-closed by design: a misconfigured Secret mount should not silently downgrade to an inline fallback.
 
 **Env var (recommended for containers):**
 

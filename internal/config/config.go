@@ -630,6 +630,19 @@ func (c *Config) resolveLicenseKey(configDir string) error {
 			p = filepath.Join(configDir, p)
 		}
 		p = filepath.Clean(p)
+		// Reject non-regular files (FIFOs, devices) that could hang
+		// startup, and oversized files since tokens are ~200 bytes.
+		const maxLicenseFileBytes int64 = 16 * 1024
+		info, err := os.Stat(p)
+		if err != nil {
+			return fmt.Errorf("stat license_file %s: %w", c.LicenseFile, err)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("license_file %s must be a regular file", c.LicenseFile)
+		}
+		if info.Size() > maxLicenseFileBytes {
+			return fmt.Errorf("license_file %s exceeds %d bytes", c.LicenseFile, maxLicenseFileBytes)
+		}
 		data, err := os.ReadFile(p)
 		if err != nil {
 			return fmt.Errorf("reading license_file %s: %w", c.LicenseFile, err)

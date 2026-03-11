@@ -4996,6 +4996,28 @@ func TestLicenseKeyFileWhitespaceOnly(t *testing.T) {
 	}
 }
 
+func TestLicenseKeyFileEmptyDoesNotFallBackToInline(t *testing.T) {
+	// When license_file is configured but empty, pipelock must error
+	// rather than silently falling back to the inline license_key.
+	tmp := t.TempDir()
+
+	tokenPath := filepath.Join(tmp, "license.token")
+	if err := os.WriteFile(tokenPath, []byte(""), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+
+	cfgPath := filepath.Join(tmp, "cfg.yaml")
+	cfgContent := "mode: balanced\nlicense_file: license.token\nlicense_key: inline-should-not-be-used\n"
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := Load(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for empty license_file, must not fall back to inline license_key")
+	}
+}
+
 func TestLicenseKeyEnvOverridesFile(t *testing.T) {
 	t.Setenv(EnvLicenseKey, "env-wins")
 

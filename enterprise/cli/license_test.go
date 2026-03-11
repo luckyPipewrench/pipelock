@@ -19,6 +19,8 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
+const testOSWindows = "windows"
+
 // setTestHome overrides both HOME (Unix) and USERPROFILE (Windows) so
 // os.UserHomeDir() returns the temp directory on all platforms.
 func setTestHome(t *testing.T, dir string) {
@@ -32,8 +34,14 @@ func TestLicenseCmd(t *testing.T) {
 	if cmd.Use != "license" {
 		t.Errorf("Use = %q, want license", cmd.Use)
 	}
-	if len(cmd.Commands()) != 4 {
-		t.Errorf("expected 4 subcommands (keygen, issue, inspect, install), got %d", len(cmd.Commands()))
+	got := make(map[string]bool, len(cmd.Commands()))
+	for _, sub := range cmd.Commands() {
+		got[strings.Fields(sub.Use)[0]] = true
+	}
+	for _, want := range []string{"keygen", "issue", "inspect", "install"} {
+		if !got[want] {
+			t.Errorf("missing %q subcommand", want)
+		}
 	}
 }
 
@@ -378,7 +386,7 @@ func TestLicenseInstall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+	if runtime.GOOS != testOSWindows && info.Mode().Perm() != 0o600 {
 		t.Errorf("token file mode = %04o, want 0600", info.Mode().Perm())
 	}
 }
@@ -425,6 +433,15 @@ func TestLicenseInstall_CreatesDirectory(t *testing.T) {
 
 	if _, err := os.Stat(tokenPath); err != nil {
 		t.Errorf("token file not created: %v", err)
+	}
+	if runtime.GOOS != testOSWindows {
+		info, err := os.Stat(filepath.Dir(tokenPath))
+		if err != nil {
+			t.Fatalf("stat parent dir: %v", err)
+		}
+		if info.Mode().Perm() != 0o750 {
+			t.Errorf("parent dir mode = %04o, want 0750", info.Mode().Perm())
+		}
 	}
 }
 
@@ -628,9 +645,11 @@ func TestLicenseIssue_BadExpiresFormat(t *testing.T) {
 }
 
 func TestLicenseIssue_MissingKeyFile(t *testing.T) {
+	missingKey := filepath.Join(t.TempDir(), licensePrivKeyFile)
+
 	cmd := licenseIssueCmd()
 	cmd.SetArgs([]string{
-		"--key", "/nonexistent/path/license.key",
+		"--key", missingKey,
 		"--email", "test@example.com",
 	})
 
@@ -707,7 +726,8 @@ func TestLicenseIssue_LedgerWriteFailWarns(t *testing.T) {
 }
 
 func TestAppendLedger_UnwritablePath(t *testing.T) {
-	// Use a path inside a non-existent-and-unwritable directory.
+	ledgerPath := filepath.Join(t.TempDir(), "missing", "ledger.jsonl")
+
 	lic := license.License{
 		ID:        "lic_unwritable",
 		Email:     "test@example.com",
@@ -715,7 +735,7 @@ func TestAppendLedger_UnwritablePath(t *testing.T) {
 		ExpiresAt: time.Now().Add(24 * time.Hour).Unix(),
 		Features:  []string{license.FeatureAgents},
 	}
-	err := appendLedger("/nonexistent/path/ledger.jsonl", lic, "token")
+	err := appendLedger(ledgerPath, lic, "token")
 	if err == nil {
 		t.Fatal("expected error for unwritable ledger path")
 	}
@@ -799,7 +819,7 @@ func TestLicenseInstall_MkdirAllFails(t *testing.T) {
 }
 
 func TestLicenseInstall_WriteFileFails(t *testing.T) {
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == testOSWindows {
 		t.Skip("os.Chmod does not enforce Unix permission semantics on Windows")
 	}
 

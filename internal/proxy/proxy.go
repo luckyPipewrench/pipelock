@@ -307,15 +307,18 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
 		}
 	}
 
-	// Toggle CEE components on config change. Entropy/fragment data is lost
-	// on reload, which is acceptable for short sliding windows (typically 5 min).
-	if oldET := p.entropyTrackerPtr.Swap(nil); oldET != nil {
+	// Toggle CEE components on config change. Build new components before
+	// swapping to avoid a nil window where concurrent requests bypass CEE.
+	// Entropy/fragment data is lost on reload, which is acceptable for short
+	// sliding windows (typically 5 min).
+	newET, newFB := p.buildCEE(&cfg.CrossRequestDetection)
+	if oldET := p.entropyTrackerPtr.Swap(newET); oldET != nil {
 		oldET.Close()
 	}
-	if oldFB := p.fragmentBufferPtr.Swap(nil); oldFB != nil {
+	if oldFB := p.fragmentBufferPtr.Swap(newFB); oldFB != nil {
 		oldFB.Close()
 	}
-	p.setupCEE(&cfg.CrossRequestDetection)
+	p.updateCEEStats()
 }
 
 // LoadCertCache creates or replaces the cert cache based on current config.
@@ -360,27 +363,35 @@ func (p *Proxy) ShutdownAgentServers() {
 	}
 }
 
-// updateCEEStats registers a callback that returns live CEE state for the
-// setupCEE creates and stores entropy tracker and fragment buffer based on
-// the cross-request detection config. Called from both New() and Reload().
-func (p *Proxy) setupCEE(ceeCfg *config.CrossRequestDetection) {
+// buildCEE creates entropy tracker and fragment buffer based on the config.
+// Returns nil for disabled components. Called from setupCEE and Reload.
+func (p *Proxy) buildCEE(ceeCfg *config.CrossRequestDetection) (*scanner.EntropyTracker, *scanner.FragmentBuffer) {
+	var et *scanner.EntropyTracker
+	var fb *scanner.FragmentBuffer
 	if ceeCfg.Enabled {
 		if ceeCfg.EntropyBudget.Enabled {
-			et := scanner.NewEntropyTracker(
+			et = scanner.NewEntropyTracker(
 				ceeCfg.EntropyBudget.BitsPerWindow,
 				ceeCfg.EntropyBudget.WindowMinutes*60, // minutes to seconds
 			)
-			p.entropyTrackerPtr.Store(et)
 		}
 		if ceeCfg.FragmentReassembly.Enabled {
-			fb := scanner.NewFragmentBuffer(
+			fb = scanner.NewFragmentBuffer(
 				ceeCfg.FragmentReassembly.MaxBufferBytes,
 				maxCEESessions,
 				ceeCfg.FragmentReassembly.WindowMinutes*60, // minutes to seconds
 			)
-			p.fragmentBufferPtr.Store(fb)
 		}
 	}
+	return et, fb
+}
+
+// setupCEE creates and stores entropy tracker and fragment buffer based on
+// the cross-request detection config. Called from New() at startup.
+func (p *Proxy) setupCEE(ceeCfg *config.CrossRequestDetection) {
+	et, fb := p.buildCEE(ceeCfg)
+	p.entropyTrackerPtr.Store(et)
+	p.fragmentBufferPtr.Store(fb)
 	p.updateCEEStats()
 }
 
@@ -886,7 +897,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// CEE pre-forward admission: check cross-request entropy and fragment
 	// reassembly before the outbound request leaves the proxy. Fetch is
 	// GET-only so the outbound data is the target URL path and query values.
-	ceeCfg := cfg.CrossRequestDetection
+	ceeCfg := ceeEffectiveConfig(cfg.CrossRequestDetection, cfg.EnforceEnabled())
 	if ceeCfg.Enabled {
 		sessionKey := ceeSessionKey(agent, clientIP)
 		outbound := urlPayload(parsed)

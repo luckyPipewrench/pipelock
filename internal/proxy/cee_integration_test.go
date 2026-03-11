@@ -55,6 +55,7 @@ func testCEEProxy(t *testing.T, ceeCfg config.CrossRequestDetection) (*httptest.
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
 	}
+	t.Cleanup(p.Close)
 
 	ts := httptest.NewServer(p.Handler())
 	t.Cleanup(ts.Close)
@@ -422,6 +423,9 @@ func TestCEEIntegration_FalsePositiveResilience(t *testing.T) {
 			t.Errorf("legitimate query %q should not be blocked: status=%d reason=%q",
 				q, status, fr.BlockReason)
 		}
+		if status != http.StatusOK {
+			t.Errorf("legitimate query %q: expected status 200, got %d", q, status)
+		}
 	}
 }
 
@@ -466,9 +470,12 @@ func TestCEEIntegration_WarnMode(t *testing.T) {
 	secondHalf := testCEEFakeAWSKey[half:]
 
 	targetURL1 := target.URL + "?" + firstHalf
-	fr1, _ := fetchThroughProxy(t, ts.URL, targetURL1)
+	fr1, status1 := fetchThroughProxy(t, ts.URL, targetURL1)
 	if fr1.Blocked {
 		t.Fatalf("warn mode: first fragment should not block: %q", fr1.BlockReason)
+	}
+	if status1 != http.StatusOK {
+		t.Errorf("warn mode: first fragment expected status 200, got %d", status1)
 	}
 
 	targetURL2 := target.URL + "?" + secondHalf
@@ -476,7 +483,7 @@ func TestCEEIntegration_WarnMode(t *testing.T) {
 	if fr2.Blocked {
 		t.Fatalf("warn mode: fragment DLP match should not block: %q", fr2.BlockReason)
 	}
-	if status2 == http.StatusForbidden {
-		t.Errorf("expected 200 in warn mode for fragment DLP, got %d", status2)
+	if status2 != http.StatusOK {
+		t.Errorf("warn mode: fragment DLP expected status 200, got %d", status2)
 	}
 }

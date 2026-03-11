@@ -661,7 +661,7 @@ cross_request_detection:
     enabled: false
     bits_per_window: 4096
     window_minutes: 5
-    action: warn
+    action: block
   fragment_reassembly:
     enabled: false
     max_buffer_bytes: 65536
@@ -671,7 +671,7 @@ cross_request_detection:
 | Field | Default | Description |
 |-------|---------|-------------|
 | `enabled` | `false` | Enable cross-request detection |
-| `action` | `"warn"` | Default action for sub-features that don't override |
+| `action` | `"block"` | Default action for sub-features that don't override |
 
 ### Entropy Budget
 

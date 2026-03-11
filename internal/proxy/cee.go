@@ -172,6 +172,18 @@ func extractOutboundPayload(r *http.Request) []byte {
 	return []byte(strings.Join(parts, ""))
 }
 
+// ceeEffectiveConfig returns a copy of the CEE config with actions downgraded
+// to warn when global enforcement is disabled. This ensures ceeAdmit uses
+// LogAnomaly (not LogBlocked) in detect-only mode, keeping the audit log
+// consistent with the actual traffic decision.
+func ceeEffectiveConfig(ceeCfg config.CrossRequestDetection, enforcing bool) config.CrossRequestDetection {
+	if !enforcing {
+		ceeCfg.Action = config.ActionWarn
+		ceeCfg.EntropyBudget.Action = config.ActionWarn
+	}
+	return ceeCfg
+}
+
 // ceeResult holds the outcome of a CEE admission check.
 type ceeResult struct {
 	Blocked     bool

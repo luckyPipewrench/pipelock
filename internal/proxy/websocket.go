@@ -552,7 +552,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		// Entropy tracking applies to all frame types (text + binary) since
 		// binary frames can carry high-entropy exfiltrated data. Fragment
 		// buffering only applies to text frames (DLP patterns match text).
-		if ceeCfg := r.cfg.CrossRequestDetection; ceeCfg.Enabled {
+		if ceeCfg := ceeEffectiveConfig(r.cfg.CrossRequestDetection, r.cfg.EnforceEnabled()); ceeCfg.Enabled {
 			isText := frag.Opcode == ws.OpText || hdr.OpCode == ws.OpText
 			sessionKey := ceeSessionKey(r.agent, r.clientIP)
 

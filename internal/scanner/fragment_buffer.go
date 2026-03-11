@@ -181,10 +181,17 @@ func (fb *FragmentBuffer) evictLRUSession() {
 }
 
 // cleanupLoop periodically prunes expired fragments from all sessions.
-// Runs every 60 seconds until Close() is called.
+// Interval is derived from the configured window: at most 60s, at least 1s,
+// so short windows get prompt memory reclamation.
 func (fb *FragmentBuffer) cleanupLoop() {
-	// 60s cleanup interval, matching databudget.go pattern.
-	ticker := time.NewTicker(60 * time.Second)
+	interval := time.Duration(fb.windowSecs) * time.Second
+	if interval > 60*time.Second {
+		interval = 60 * time.Second
+	}
+	if interval < 1*time.Second {
+		interval = 1 * time.Second
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {

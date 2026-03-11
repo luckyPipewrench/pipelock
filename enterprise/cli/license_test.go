@@ -130,6 +130,58 @@ func TestLicenseIssue(t *testing.T) {
 	}
 }
 
+func TestLicenseIssue_WithTierAndSubscription(t *testing.T) {
+	dir := t.TempDir()
+
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privPath := filepath.Join(dir, licensePrivKeyFile)
+	if err := signing.SavePrivateKey(priv, privPath); err != nil {
+		t.Fatal(err)
+	}
+
+	ledgerPath := filepath.Join(dir, licenseLedgerFile)
+
+	cmd := licenseIssueCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{
+		"--key", privPath,
+		"--email", "pro@example.com",
+		"--tier", "founding_pro",
+		"--subscription-id", "sub_polar_test123",
+		"--expires", time.Now().Add(45 * 24 * time.Hour).Format(time.DateOnly),
+		"--ledger", ledgerPath,
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("issue with tier: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "founding_pro") {
+		t.Error("expected tier in output")
+	}
+	if !strings.Contains(output, "sub_polar_test123") {
+		t.Error("expected subscription ID in output")
+	}
+
+	// Verify ledger contains the new fields.
+	data, err := os.ReadFile(filepath.Clean(ledgerPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "founding_pro") {
+		t.Error("expected tier in ledger")
+	}
+	if !strings.Contains(string(data), "sub_polar_test123") {
+		t.Error("expected subscription_id in ledger")
+	}
+}
+
 func TestLicenseIssue_NoEmail(t *testing.T) {
 	dir := t.TempDir()
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
@@ -207,6 +259,40 @@ func TestLicenseInspect(t *testing.T) {
 	}
 	if !strings.Contains(output, "not expired") {
 		t.Error("expected 'not expired' status")
+	}
+}
+
+func TestLicenseInspect_WithTierFields(t *testing.T) {
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	lic := license.License{
+		ID:             "lic_tier",
+		Email:          "pro@example.com",
+		IssuedAt:       time.Now().Unix(),
+		ExpiresAt:      time.Now().Add(24 * time.Hour).Unix(),
+		Features:       []string{license.FeatureAgents},
+		Tier:           "pro",
+		SubscriptionID: "sub_abc",
+	}
+	token, err := license.Issue(lic, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := licenseInspectCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{token})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "pro") {
+		t.Error("expected tier in inspect output")
+	}
+	if !strings.Contains(output, "sub_abc") {
+		t.Error("expected subscription ID in inspect output")
 	}
 }
 

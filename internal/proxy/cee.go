@@ -199,14 +199,14 @@ type ceeResult struct {
 // writing the HTTP response and recording metrics/signals based on the result.
 //
 // Two fragment streams are scanned independently:
-//   - outbound (values + bare tokens + path + body): reconstructs secrets split
+//   - outbound (values + bare tokens + body): reconstructs secrets split
 //     across parameter values or request bodies
 //   - keyPayload (query parameter names only): reconstructs secrets split across
 //     parameter names (e.g. ?AKIA=1 then ?IOSFODNN7EXAMPLE=2)
 //
 // Parameters:
 //   - sessionKey: the session identity from ceeSessionKey()
-//   - outbound: payload bytes (query values + bare tokens + path + body)
+//   - outbound: payload bytes (query values + bare tokens + body)
 //   - keyPayload: query parameter keys only (nil for WebSocket/MCP)
 //   - targetURL: the destination URL (for audit logging)
 //   - ceeCfg: cross-request detection config section
@@ -232,7 +232,7 @@ func ceeAdmit(
 
 	var result ceeResult
 
-	// Entropy budget check (values + bare tokens + path + body + keys).
+	// Entropy budget check (values + bare tokens + body + keys).
 	if et != nil && ceeCfg.EntropyBudget.Enabled && (len(outbound) > 0 || len(keyPayload) > 0) {
 		if len(outbound) > 0 {
 			et.Record(sessionKey, outbound)
@@ -257,7 +257,7 @@ func ceeAdmit(
 
 	// Fragment reassembly DLP check (two independent streams).
 	if fb != nil && ceeCfg.FragmentReassembly.Enabled {
-		// Stream 1: values + bare tokens + path + body.
+		// Stream 1: values + bare tokens + body.
 		if res := ceeFragmentScan(sessionKey, outbound, targetURL, agent, clientIP, requestID, ceeCfg, fb, sc, logger, m); res != nil {
 			result.FragmentHit = true
 			if res.Blocked {

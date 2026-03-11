@@ -1191,7 +1191,7 @@ func TestInterceptTunnel_CEEAdaptiveSignalRecording(t *testing.T) {
 		t.Fatalf("expected 200 in warn mode (request should be forwarded), got %d", resp.StatusCode)
 	}
 
-	// The session key for CEE is ceeSessionKey(agent, clientIP) = "_default|10.0.0.1".
+	// The session key for CEE is ceeSessionKey("", clientIP) = "10.0.0.1".
 	sessionKey := ceeSessionKey("", "10.0.0.1")
 	sess := sm.GetOrCreate(sessionKey)
 	score := sess.ThreatScore()

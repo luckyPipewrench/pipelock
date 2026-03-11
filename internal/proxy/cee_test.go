@@ -23,6 +23,7 @@ const (
 	testCEEAgent      = "test-agent"
 	testCEERequestID  = "req-001"
 	testCEESessionKey = "test-session"
+	testCEEParamValue = "value"
 )
 
 func TestCeeSessionKey_WithAgent(t *testing.T) {
@@ -679,7 +680,7 @@ func TestUrlPayload_PathAndQuery(t *testing.T) {
 	// Path is excluded to prevent repeated paths from breaking DLP contiguity.
 	u := &url.URL{Path: "/api/v1/tokens", RawQuery: "key=value"}
 	got := string(urlPayload(u))
-	want := "value"
+	want := testCEEParamValue
 	if got != want {
 		t.Errorf("urlPayload = %q, want %q", got, want)
 	}
@@ -722,7 +723,7 @@ func TestExtractOutboundPayload_ExcludesPath(t *testing.T) {
 	}
 	payload := extractOutboundPayload(r)
 	got := string(payload)
-	want := "value"
+	want := testCEEParamValue
 	if got != want {
 		t.Errorf("extractOutboundPayload = %q, want %q", got, want)
 	}

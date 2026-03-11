@@ -166,26 +166,111 @@ func TestCEEIntegration_FragmentDLPDetection(t *testing.T) {
 
 	ts, target := testCEEProxy(t, ceeCfg)
 
-	// Split the fake AWS key across two requests via query parameters.
+	// Split the fake AWS key across two requests as bare query tokens.
+	// Bare tokens (no key=value) are a realistic exfiltration vector and
+	// test that queryParamPayload includes valueless parameters.
 	half := len(testCEEFakeAWSKey) / 2
 	firstHalf := testCEEFakeAWSKey[:half]
 	secondHalf := testCEEFakeAWSKey[half:]
 
-	// Request 1: first fragment (should pass).
-	targetURL1 := target.URL + "?data=" + firstHalf
+	// Request 1: first fragment as bare query token (should pass).
+	targetURL1 := target.URL + "?" + firstHalf
 	fr1, status1 := fetchThroughProxy(t, ts.URL, targetURL1)
 	if fr1.Blocked {
 		t.Fatalf("first fragment should not be blocked, got status %d reason %q", status1, fr1.BlockReason)
 	}
 
 	// Request 2: second fragment completes the key (should be caught).
-	targetURL2 := target.URL + "?data=" + secondHalf
+	targetURL2 := target.URL + "?" + secondHalf
 	fr2, status2 := fetchThroughProxy(t, ts.URL, targetURL2)
 	if !fr2.Blocked {
 		t.Fatal("expected fragment reassembly to detect split AWS key")
 	}
 	if status2 != http.StatusForbidden {
 		t.Errorf("expected 403 for fragment DLP, got %d", status2)
+	}
+	if !strings.Contains(fr2.BlockReason, "cross-request secret detected") {
+		t.Errorf("expected block reason to contain 'cross-request secret detected', got %q", fr2.BlockReason)
+	}
+}
+
+func TestCEEIntegration_FragmentDLPKeyValueSplit(t *testing.T) {
+	// Regression test: secret split across key=value params (not bare tokens).
+	// queryParamPayload extracts values only, so "data=AKIA" + "data=IOSF..."
+	// produces contiguous "AKIA" + "IOSF..." in the fragment buffer.
+	ceeCfg := config.CrossRequestDetection{
+		Enabled: true,
+		Action:  config.ActionBlock,
+		FragmentReassembly: config.CrossRequestFragments{
+			Enabled:        true,
+			MaxBufferBytes: 65536,
+			WindowMinutes:  5,
+		},
+	}
+
+	ts, target := testCEEProxy(t, ceeCfg)
+
+	half := len(testCEEFakeAWSKey) / 2
+	firstHalf := testCEEFakeAWSKey[:half]
+	secondHalf := testCEEFakeAWSKey[half:]
+
+	// Request 1: first fragment as key=value param (should pass).
+	targetURL1 := target.URL + "?data=" + firstHalf
+	fr1, status1 := fetchThroughProxy(t, ts.URL, targetURL1)
+	if fr1.Blocked {
+		t.Fatalf("first fragment should not be blocked, got status %d reason %q", status1, fr1.BlockReason)
+	}
+
+	// Request 2: second fragment as key=value param (should be caught).
+	// Values "AKIA..." + "IOSF..." are contiguous because keys are excluded.
+	targetURL2 := target.URL + "?data=" + secondHalf
+	fr2, status2 := fetchThroughProxy(t, ts.URL, targetURL2)
+	if !fr2.Blocked {
+		t.Fatal("expected fragment reassembly to detect split AWS key in key=value params")
+	}
+	if status2 != http.StatusForbidden {
+		t.Errorf("expected 403 for fragment DLP, got %d", status2)
+	}
+	if !strings.Contains(fr2.BlockReason, "cross-request secret detected") {
+		t.Errorf("expected block reason to contain 'cross-request secret detected', got %q", fr2.BlockReason)
+	}
+}
+
+func TestCEEIntegration_FragmentDLPKeySplit(t *testing.T) {
+	// Regression: secret split across query parameter KEYS (not values).
+	// ?AKIA=1 followed by ?IOSFODNN7EXAMPLE=2 must be caught by the key
+	// fragment stream in ceeAdmit.
+	ceeCfg := config.CrossRequestDetection{
+		Enabled: true,
+		Action:  config.ActionBlock,
+		FragmentReassembly: config.CrossRequestFragments{
+			Enabled:        true,
+			MaxBufferBytes: 65536,
+			WindowMinutes:  5,
+		},
+	}
+
+	ts, target := testCEEProxy(t, ceeCfg)
+
+	half := len(testCEEFakeAWSKey) / 2
+	firstHalf := testCEEFakeAWSKey[:half]
+	secondHalf := testCEEFakeAWSKey[half:]
+
+	// Request 1: first half of secret as parameter key name.
+	targetURL1 := target.URL + "?" + firstHalf + "=1"
+	fr1, status1 := fetchThroughProxy(t, ts.URL, targetURL1)
+	if fr1.Blocked {
+		t.Fatalf("first key fragment should not be blocked, got status %d reason %q", status1, fr1.BlockReason)
+	}
+
+	// Request 2: second half of secret as parameter key name.
+	targetURL2 := target.URL + "?" + secondHalf + "=2"
+	fr2, status2 := fetchThroughProxy(t, ts.URL, targetURL2)
+	if !fr2.Blocked {
+		t.Fatal("expected fragment reassembly to detect split AWS key in parameter names")
+	}
+	if status2 != http.StatusForbidden {
+		t.Errorf("expected 403 for key-split fragment DLP, got %d", status2)
 	}
 	if !strings.Contains(fr2.BlockReason, "cross-request secret detected") {
 		t.Errorf("expected block reason to contain 'cross-request secret detected', got %q", fr2.BlockReason)
@@ -233,8 +318,8 @@ func TestCEEIntegration_SessionIsolation(t *testing.T) {
 	firstHalf := testCEEFakeAWSKey[:half]
 	secondHalf := testCEEFakeAWSKey[half:]
 
-	// Send first half from client A (10.0.0.1).
-	targetURL1 := target.URL + "?data=" + firstHalf
+	// Send first half from client A (10.0.0.1) as bare query token.
+	targetURL1 := target.URL + "?" + firstHalf
 	req1 := httptest.NewRequest(http.MethodGet, "/fetch?url="+url.QueryEscape(targetURL1), nil)
 	req1.RemoteAddr = "10.0.0.1:12345"
 	w1 := httptest.NewRecorder()
@@ -248,9 +333,9 @@ func TestCEEIntegration_SessionIsolation(t *testing.T) {
 		t.Fatalf("first half to session A should not be blocked: %q", fr1.BlockReason)
 	}
 
-	// Send second half from client B (10.0.0.2). Different session, so
-	// fragment buffers are isolated: neither session has the full key.
-	targetURL2 := target.URL + "?data=" + secondHalf
+	// Send second half from client B (10.0.0.2) as bare query token.
+	// Different session, so fragment buffers are isolated.
+	targetURL2 := target.URL + "?" + secondHalf
 	req2 := httptest.NewRequest(http.MethodGet, "/fetch?url="+url.QueryEscape(targetURL2), nil)
 	req2.RemoteAddr = "10.0.0.2:12345"
 	w2 := httptest.NewRecorder()
@@ -262,6 +347,45 @@ func TestCEEIntegration_SessionIsolation(t *testing.T) {
 	}
 	if fr2.Blocked {
 		t.Fatalf("second half to session B should not be blocked (sessions are isolated): %q", fr2.BlockReason)
+	}
+}
+
+func TestCEEIntegration_KeyEntropyBudgetBlock(t *testing.T) {
+	// High-entropy data in query parameter keys (not values) must still
+	// trigger entropy budget. Covers the full HTTP path: fetch handler →
+	// queryParamKeys → ceeAdmit → et.Record.
+	ceeCfg := config.CrossRequestDetection{
+		Enabled: true,
+		Action:  config.ActionBlock,
+		EntropyBudget: config.CrossRequestEntropyBudget{
+			Enabled:       true,
+			BitsPerWindow: 256, // low budget
+			WindowMinutes: 5,
+			Action:        config.ActionBlock,
+		},
+	}
+
+	ts, target := testCEEProxy(t, ceeCfg)
+
+	var blocked bool
+	var blockReason string
+	for i := range 10 {
+		entropy := highEntropyString(100)
+		// Secret data in key names, trivial values.
+		targetURL := target.URL + fmt.Sprintf("?%s=%d", entropy, i)
+		fr, status := fetchThroughProxy(t, ts.URL, targetURL)
+		if fr.Blocked && status == http.StatusForbidden {
+			blocked = true
+			blockReason = fr.BlockReason
+			break
+		}
+	}
+
+	if !blocked {
+		t.Fatal("expected entropy budget to be exceeded from key-only entropy")
+	}
+	if !strings.Contains(blockReason, "entropy budget exceeded") {
+		t.Errorf("expected block reason to contain 'entropy budget exceeded', got %q", blockReason)
 	}
 }
 
@@ -336,18 +460,18 @@ func TestCEEIntegration_WarnMode(t *testing.T) {
 		}
 	}
 
-	// Split a fake AWS key across requests (should warn, not block).
+	// Split a fake AWS key across requests as bare tokens (should warn, not block).
 	half := len(testCEEFakeAWSKey) / 2
 	firstHalf := testCEEFakeAWSKey[:half]
 	secondHalf := testCEEFakeAWSKey[half:]
 
-	targetURL1 := target.URL + "?data=" + firstHalf
+	targetURL1 := target.URL + "?" + firstHalf
 	fr1, _ := fetchThroughProxy(t, ts.URL, targetURL1)
 	if fr1.Blocked {
 		t.Fatalf("warn mode: first fragment should not block: %q", fr1.BlockReason)
 	}
 
-	targetURL2 := target.URL + "?data=" + secondHalf
+	targetURL2 := target.URL + "?" + secondHalf
 	fr2, status2 := fetchThroughProxy(t, ts.URL, targetURL2)
 	if fr2.Blocked {
 		t.Fatalf("warn mode: fragment DLP match should not block: %q", fr2.BlockReason)

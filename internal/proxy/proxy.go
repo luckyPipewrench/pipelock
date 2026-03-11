@@ -885,13 +885,14 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 	// CEE pre-forward admission: check cross-request entropy and fragment
 	// reassembly before the outbound request leaves the proxy. Fetch is
-	// GET-only so the outbound data is the query parameters from the target URL.
+	// GET-only so the outbound data is the target URL path and query values.
 	ceeCfg := cfg.CrossRequestDetection
 	if ceeCfg.Enabled {
 		sessionKey := ceeSessionKey(agent, clientIP)
-		outbound := queryParamPayload(parsed)
+		outbound := urlPayload(parsed)
+		keys := queryParamKeys(parsed)
 
-		ceeRes := ceeAdmit(sessionKey, outbound, displayURL, agent, clientIP, requestID,
+		ceeRes := ceeAdmit(sessionKey, outbound, keys, displayURL, agent, clientIP, requestID,
 			ceeCfg, p.entropyTrackerPtr.Load(), p.fragmentBufferPtr.Load(), sc, log, p.metrics)
 
 		if sm := p.sessionMgrPtr.Load(); sm != nil && cfg.AdaptiveEnforcement.Enabled {

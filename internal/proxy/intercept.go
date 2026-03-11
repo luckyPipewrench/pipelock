@@ -317,8 +317,9 @@ func newInterceptHandler(
 		if ceeCfg.Enabled {
 			sessionKey := ceeSessionKey(agent, clientIP)
 			outbound := extractOutboundPayload(r)
+			keys := queryParamKeys(r.URL)
 
-			ceeRes := ceeAdmit(sessionKey, outbound, r.URL.String(), agent, clientIP, requestID,
+			ceeRes := ceeAdmit(sessionKey, outbound, keys, r.URL.String(), agent, clientIP, requestID,
 				ceeCfg, et, fb, sc, logger, m)
 
 			if sm != nil && cfg.AdaptiveEnforcement.Enabled {

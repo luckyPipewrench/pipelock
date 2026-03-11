@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"sort"
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
@@ -32,35 +31,128 @@ func ceeSessionKey(agent, clientIP string) string {
 // Larger bodies are unlikely to be fragment-based exfiltration attempts.
 const maxCEEBodyRead = 65536 // 64KB
 
-// queryParamPayload extracts query parameter values from a URL in sorted key
-// order for deterministic concatenation. Only values are included (not key
-// names) so DLP pattern matching sees contiguous secret data when fragments
-// are reassembled across requests.
+// queryParamPayload extracts query values from a URL in wire order (the order
+// tokens appear in RawQuery). For key=value pairs, only the value is extracted.
+// Bare tokens (no '=') are included in full because an agent can embed secret
+// fragments as valueless query params (e.g. ?AKIAIOSFODNN7EXAMPLE).
+//
+// Keys are intentionally excluded from the output because including them
+// (e.g. "data=AKIA" + "data=IOSF") would break fragment reconstruction by
+// inserting non-secret text ("data=") between value fragments. Secrets embedded
+// in key names are caught by per-request DLP, which scans the full URL on every
+// individual request. CEE fragment reconstruction only needs contiguous values.
 func queryParamPayload(u *url.URL) []byte {
-	qv := u.Query()
-	if len(qv) == 0 {
+	raw := u.RawQuery
+	if raw == "" {
 		return nil
 	}
-	keys := make([]string, 0, len(qv))
-	for k := range qv {
-		keys = append(keys, k)
+	var buf bytes.Buffer
+	for raw != "" {
+		var pair string
+		if idx := strings.IndexByte(raw, '&'); idx >= 0 {
+			pair, raw = raw[:idx], raw[idx+1:]
+		} else {
+			pair, raw = raw, ""
+		}
+		if pair == "" {
+			continue
+		}
+		// For key=value: extract only the value (contiguous across requests).
+		// For bare tokens (no '='): include the entire token.
+		var token string
+		if eqIdx := strings.IndexByte(pair, '='); eqIdx >= 0 {
+			token = pair[eqIdx+1:]
+		} else {
+			token = pair
+		}
+		if token == "" {
+			continue
+		}
+		decoded, err := url.QueryUnescape(token)
+		if err != nil {
+			decoded = token
+		}
+		buf.WriteString(decoded)
 	}
-	sort.Strings(keys)
-	var parts []string
-	for _, k := range keys {
-		parts = append(parts, qv[k]...)
+	if buf.Len() == 0 {
+		return nil
 	}
-	return []byte(strings.Join(parts, ""))
+	return buf.Bytes()
 }
 
-// extractOutboundPayload extracts the outbound data visible to the proxy
-// for entropy measurement and fragment buffering. Includes query parameter
-// values and request body content. Re-wraps r.Body after reading so
-// downstream handlers can still consume it.
+// queryParamKeys extracts query parameter keys (names) from a URL in wire
+// order. For key=value pairs, only the key is extracted. Bare tokens (no '=')
+// are excluded (they are already covered by queryParamPayload as full tokens).
+// Used as a second fragment stream so secrets split across parameter names
+// (e.g. ?AKIA=1 then ?IOSFODNN7EXAMPLE=2) are reconstructed and DLP-scanned.
+func queryParamKeys(u *url.URL) []byte {
+	raw := u.RawQuery
+	if raw == "" {
+		return nil
+	}
+	var buf bytes.Buffer
+	for raw != "" {
+		var pair string
+		if idx := strings.IndexByte(raw, '&'); idx >= 0 {
+			pair, raw = raw[:idx], raw[idx+1:]
+		} else {
+			pair, raw = raw, ""
+		}
+		if pair == "" {
+			continue
+		}
+		// For key=value: extract only the key.
+		// Bare tokens (no '='): skip (handled by queryParamPayload).
+		eqIdx := strings.IndexByte(pair, '=')
+		if eqIdx < 0 {
+			continue
+		}
+		key := pair[:eqIdx]
+		if key == "" {
+			continue
+		}
+		decoded, err := url.QueryUnescape(key)
+		if err != nil {
+			decoded = key
+		}
+		buf.WriteString(decoded)
+	}
+	if buf.Len() == 0 {
+		return nil
+	}
+	return buf.Bytes()
+}
+
+// urlPayload extracts the outbound data from a parsed URL: path components
+// (excluding bare root "/") followed by query parameter values in wire order.
+// Used by the fetch handler where the request body is always empty (GET-only).
+func urlPayload(u *url.URL) []byte {
+	var buf bytes.Buffer
+	if u.Path != "" && u.Path != "/" {
+		buf.WriteString(u.Path)
+	}
+	if qp := queryParamPayload(u); len(qp) > 0 {
+		buf.Write(qp)
+	}
+	if buf.Len() == 0 {
+		return nil
+	}
+	return buf.Bytes()
+}
+
+// extractOutboundPayload extracts the outbound data visible to the proxy for
+// entropy measurement and fragment buffering. Includes URL path (excluding bare
+// root "/"), query parameter values in wire order, and request body content.
+// Re-wraps r.Body after reading so downstream handlers can still consume it.
 func extractOutboundPayload(r *http.Request) []byte {
 	var parts []string
 
-	// Query parameter values in sorted key order for deterministic concatenation.
+	// URL path (excluding bare root "/") so path-embedded secrets are tracked.
+	if r.URL.Path != "" && r.URL.Path != "/" {
+		parts = append(parts, r.URL.Path)
+	}
+
+	// Query parameter values in wire order for accurate fragment reconstruction.
 	if qp := queryParamPayload(r.URL); len(qp) > 0 {
 		parts = append(parts, string(qp))
 	}
@@ -93,9 +185,16 @@ type ceeResult struct {
 // indicating whether the request should be blocked. Callers are responsible for
 // writing the HTTP response and recording metrics/signals based on the result.
 //
+// Two fragment streams are scanned independently:
+//   - outbound (values + bare tokens + path + body): reconstructs secrets split
+//     across parameter values or request bodies
+//   - keyPayload (query parameter names only): reconstructs secrets split across
+//     parameter names (e.g. ?AKIA=1 then ?IOSFODNN7EXAMPLE=2)
+//
 // Parameters:
 //   - sessionKey: the session identity from ceeSessionKey()
-//   - outbound: payload bytes to analyze (query params + body)
+//   - outbound: payload bytes (query values + bare tokens + path + body)
+//   - keyPayload: query parameter keys only (nil for WebSocket/MCP)
 //   - targetURL: the destination URL (for audit logging)
 //   - ceeCfg: cross-request detection config section
 //   - et: entropy tracker (may be nil if budget tracking disabled)
@@ -105,7 +204,7 @@ type ceeResult struct {
 //   - m: metrics recorder
 func ceeAdmit(
 	sessionKey string,
-	outbound []byte,
+	outbound, keyPayload []byte,
 	targetURL, agent, clientIP, requestID string,
 	ceeCfg config.CrossRequestDetection,
 	et *scanner.EntropyTracker,
@@ -114,15 +213,20 @@ func ceeAdmit(
 	logger *audit.Logger,
 	m *metrics.Metrics,
 ) ceeResult {
-	if len(outbound) == 0 {
+	if len(outbound) == 0 && len(keyPayload) == 0 {
 		return ceeResult{}
 	}
 
 	var result ceeResult
 
-	// Entropy budget check.
-	if et != nil && ceeCfg.EntropyBudget.Enabled {
-		et.Record(sessionKey, outbound)
+	// Entropy budget check (values + bare tokens + path + body + keys).
+	if et != nil && ceeCfg.EntropyBudget.Enabled && (len(outbound) > 0 || len(keyPayload) > 0) {
+		if len(outbound) > 0 {
+			et.Record(sessionKey, outbound)
+		}
+		if len(keyPayload) > 0 {
+			et.Record(sessionKey, keyPayload)
+		}
 		if et.BudgetExceeded(sessionKey) {
 			result.EntropyHit = true
 			m.RecordCrossRequestEntropyExceeded()
@@ -138,24 +242,68 @@ func ceeAdmit(
 		}
 	}
 
-	// Fragment reassembly DLP check.
+	// Fragment reassembly DLP check (two independent streams).
 	if fb != nil && ceeCfg.FragmentReassembly.Enabled {
-		fb.Append(sessionKey, outbound)
-		if matches := fb.ScanForSecrets(sessionKey, sc); len(matches) > 0 {
+		// Stream 1: values + bare tokens + path + body.
+		if res := ceeFragmentScan(sessionKey, outbound, targetURL, agent, clientIP, requestID, ceeCfg, fb, sc, logger, m); res != nil {
 			result.FragmentHit = true
-			m.RecordCrossRequestDLPMatch()
-			detail := fmt.Sprintf("fragment reassembly DLP match: %s", matches[0].PatternName)
-			if ceeCfg.Action == config.ActionBlock {
-				logger.LogBlocked("CEE", targetURL, "cross_request_fragment", detail, clientIP, requestID, agent)
+			if res.Blocked {
 				result.Blocked = true
-				result.Reason = fmt.Sprintf("cross-request secret detected: %s", matches[0].PatternName)
+				result.Reason = res.Reason
 				return result
 			}
-			logger.LogAnomaly("CEE", targetURL, "cross_request_fragment", detail, clientIP, requestID, agent, 0)
+		}
+
+		// Stream 2: query parameter keys (separate buffer, catches secrets
+		// split across param names like ?AKIA=1 then ?IOSFODNN7EXAMPLE=2).
+		if len(keyPayload) > 0 {
+			keySessionKey := sessionKey + "|keys"
+			if res := ceeFragmentScan(keySessionKey, keyPayload, targetURL, agent, clientIP, requestID, ceeCfg, fb, sc, logger, m); res != nil {
+				result.FragmentHit = true
+				if res.Blocked {
+					result.Blocked = true
+					result.Reason = res.Reason
+					return result
+				}
+			}
 		}
 	}
 
 	return result
+}
+
+// ceeFragmentScan appends data to a fragment buffer stream and scans for DLP
+// matches. Returns non-nil result if a match is found (blocked or warned).
+func ceeFragmentScan(
+	bufferKey string,
+	data []byte,
+	targetURL, agent, clientIP, requestID string,
+	ceeCfg config.CrossRequestDetection,
+	fb *scanner.FragmentBuffer,
+	sc *scanner.Scanner,
+	logger *audit.Logger,
+	m *metrics.Metrics,
+) *ceeResult {
+	if len(data) == 0 {
+		return nil
+	}
+	fb.Append(bufferKey, data)
+	matches := fb.ScanForSecrets(bufferKey, sc)
+	if len(matches) == 0 {
+		return nil
+	}
+	m.RecordCrossRequestDLPMatch()
+	detail := fmt.Sprintf("fragment reassembly DLP match: %s", matches[0].PatternName)
+	if ceeCfg.Action == config.ActionBlock {
+		logger.LogBlocked("CEE", targetURL, "cross_request_fragment", detail, clientIP, requestID, agent)
+		return &ceeResult{
+			Blocked:     true,
+			FragmentHit: true,
+			Reason:      fmt.Sprintf("cross-request secret detected: %s", matches[0].PatternName),
+		}
+	}
+	logger.LogAnomaly("CEE", targetURL, "cross_request_fragment", detail, clientIP, requestID, agent, 0)
+	return &ceeResult{FragmentHit: true}
 }
 
 // ceeRecordSignals fires adaptive enforcement signals for CEE findings.

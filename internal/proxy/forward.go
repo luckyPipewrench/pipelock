@@ -472,14 +472,15 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// CEE pre-forward admission: check cross-request entropy and fragment
-	// reassembly before the outbound request leaves. Forward proxy has both
-	// URL query params and request body as outbound data.
+	// reassembly before the outbound request leaves. Forward proxy has
+	// URL path, query params, and request body as outbound data.
 	ceeCfg := cfg.CrossRequestDetection
 	if ceeCfg.Enabled {
 		sessionKey := ceeSessionKey(agent, clientIP)
 		outbound := extractOutboundPayload(r)
+		keys := queryParamKeys(r.URL)
 
-		ceeRes := ceeAdmit(sessionKey, outbound, targetURL, agent, clientIP, requestID,
+		ceeRes := ceeAdmit(sessionKey, outbound, keys, targetURL, agent, clientIP, requestID,
 			ceeCfg, p.entropyTrackerPtr.Load(), p.fragmentBufferPtr.Load(), sc, p.logger, p.metrics)
 
 		if sm := p.sessionMgrPtr.Load(); sm != nil && cfg.AdaptiveEnforcement.Enabled {

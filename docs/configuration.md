@@ -688,7 +688,7 @@ Tracks cumulative Shannon entropy of all outbound payloads (URLs, request bodies
 
 ### Fragment Reassembly
 
-Buffers outbound payloads (URLs, request bodies, MCP JSON-RPC payloads, WebSocket frames) per session and periodically re-scans the concatenated content against DLP patterns. Catches secrets split across multiple requests that individually look clean.
+Buffers outbound payloads (URLs, request bodies, MCP JSON-RPC payloads, WebSocket frames) per session and re-scans the concatenated content against DLP patterns on every request (synchronous, pre-forward). Catches secrets split across multiple requests that individually look clean.
 
 | Field | Default | Description |
 |-------|---------|-------------|

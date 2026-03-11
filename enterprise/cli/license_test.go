@@ -10,6 +10,7 @@ import (
 	"crypto/rand"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -358,7 +359,7 @@ func TestLicenseInstall(t *testing.T) {
 	}
 
 	// Verify file was written with correct content and permissions.
-	data, err := os.ReadFile(tokenPath)
+	data, err := os.ReadFile(filepath.Clean(tokenPath))
 	if err != nil {
 		t.Fatalf("read token file: %v", err)
 	}
@@ -456,7 +457,7 @@ func TestLicenseInstall_OverwritesExisting(t *testing.T) {
 		t.Fatalf("install overwrite: %v", err)
 	}
 
-	data, err := os.ReadFile(tokenPath)
+	data, err := os.ReadFile(filepath.Clean(tokenPath))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -467,6 +468,364 @@ func TestLicenseInstall_OverwritesExisting(t *testing.T) {
 	}
 	if installed.ID != "lic_new" {
 		t.Errorf("installed token ID = %q, want lic_new", installed.ID)
+	}
+}
+
+func TestLicenseInstall_DefaultPath(t *testing.T) {
+	// Override HOME so the default path lands in a temp dir.
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	lic := license.License{
+		ID:       "lic_default_path",
+		Email:    "default@example.com",
+		IssuedAt: time.Now().Unix(),
+		Features: []string{license.FeatureAgents},
+	}
+	token, err := license.Issue(lic, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := licenseInstallCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{token}) // no --path flag
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("install default path: %v", err)
+	}
+
+	expectedPath := filepath.Join(dir, licenseDefaultDir, licenseDefaultTokenFile)
+	if _, err := os.Stat(expectedPath); err != nil {
+		t.Errorf("token file not created at default path %s: %v", expectedPath, err)
+	}
+	output := buf.String()
+	if !strings.Contains(output, expectedPath) {
+		t.Error("expected default path in output")
+	}
+}
+
+func TestLicenseInstall_NoExpiryOutput(t *testing.T) {
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	lic := license.License{
+		ID:       "lic_perpetual_install",
+		Email:    "forever@example.com",
+		IssuedAt: time.Now().Unix(),
+		Features: []string{license.FeatureAgents},
+		// No ExpiresAt = perpetual
+	}
+	token, err := license.Issue(lic, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	tokenPath := filepath.Join(dir, "license.token")
+
+	cmd := licenseInstallCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"--path", tokenPath, token})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if !strings.Contains(buf.String(), "never") {
+		t.Error("expected 'never' for perpetual license install")
+	}
+}
+
+func TestLicenseKeygen_DefaultPath(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+
+	cmd := licenseKeygenCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{}) // no --out flag
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("keygen default path: %v", err)
+	}
+
+	expectedPriv := filepath.Join(dir, licenseDefaultDir, licensePrivKeyFile)
+	if _, err := os.Stat(expectedPriv); err != nil {
+		t.Errorf("private key not created at default path: %v", err)
+	}
+	expectedPub := filepath.Join(dir, licenseDefaultDir, licensePubKeyFile)
+	if _, err := os.Stat(expectedPub); err != nil {
+		t.Errorf("public key not created at default path: %v", err)
+	}
+}
+
+func TestLicenseIssue_DefaultKeyPath(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+
+	// Generate keypair at default location.
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	keyDir := filepath.Join(dir, licenseDefaultDir)
+	if err := os.MkdirAll(keyDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	privPath := filepath.Join(keyDir, licensePrivKeyFile)
+	if err := signing.SavePrivateKey(priv, privPath); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := licenseIssueCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	// No --key flag; should use default path.
+	cmd.SetArgs([]string{
+		"--email", "default@example.com",
+		"--ledger", filepath.Join(dir, licenseLedgerFile),
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("issue with default key path: %v", err)
+	}
+	if !strings.Contains(buf.String(), "License issued") {
+		t.Error("expected successful issue output")
+	}
+}
+
+func TestLicenseIssue_BadExpiresFormat(t *testing.T) {
+	dir := t.TempDir()
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	privPath := filepath.Join(dir, licensePrivKeyFile)
+	_ = signing.SavePrivateKey(priv, privPath)
+
+	cmd := licenseIssueCmd()
+	cmd.SetArgs([]string{
+		"--key", privPath,
+		"--email", "test@example.com",
+		"--expires", "not-a-date",
+		"--ledger", filepath.Join(dir, licenseLedgerFile),
+	})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for bad date format")
+	}
+	if !strings.Contains(err.Error(), "parse --expires") {
+		t.Errorf("expected date parse error, got: %v", err)
+	}
+}
+
+func TestLicenseIssue_MissingKeyFile(t *testing.T) {
+	cmd := licenseIssueCmd()
+	cmd.SetArgs([]string{
+		"--key", "/nonexistent/path/license.key",
+		"--email", "test@example.com",
+	})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for missing key file")
+	}
+	if !strings.Contains(err.Error(), "load private key") {
+		t.Errorf("expected key load error, got: %v", err)
+	}
+}
+
+func TestLicenseIssue_DefaultLedgerPath(t *testing.T) {
+	dir := t.TempDir()
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	privPath := filepath.Join(dir, licensePrivKeyFile)
+	_ = signing.SavePrivateKey(priv, privPath)
+
+	cmd := licenseIssueCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	// No --ledger flag; should default to alongside the private key.
+	cmd.SetArgs([]string{
+		"--key", privPath,
+		"--email", "test@example.com",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("issue with default ledger: %v", err)
+	}
+
+	expectedLedger := filepath.Join(dir, licenseLedgerFile)
+	if _, err := os.Stat(expectedLedger); err != nil {
+		t.Errorf("ledger not created at default path %s: %v", expectedLedger, err)
+	}
+	if !strings.Contains(buf.String(), expectedLedger) {
+		t.Error("expected default ledger path in output")
+	}
+}
+
+func TestLicenseIssue_LedgerWriteFailWarns(t *testing.T) {
+	dir := t.TempDir()
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	privPath := filepath.Join(dir, licensePrivKeyFile)
+	_ = signing.SavePrivateKey(priv, privPath)
+
+	// Point ledger to a directory (can't write a file there).
+	ledgerDir := filepath.Join(dir, "ledger-is-a-dir")
+	if err := os.MkdirAll(ledgerDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := licenseIssueCmd()
+	var stdout, stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{
+		"--key", privPath,
+		"--email", "test@example.com",
+		"--ledger", ledgerDir, // directory, not a file
+	})
+
+	// Should succeed (ledger failure is a warning, not fatal).
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("issue should succeed despite ledger failure: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "WARNING: failed to write ledger") {
+		t.Error("expected ledger warning on stderr")
+	}
+	if !strings.Contains(stdout.String(), "License issued") {
+		t.Error("expected successful issue output despite ledger warning")
+	}
+}
+
+func TestAppendLedger_UnwritablePath(t *testing.T) {
+	// Use a path inside a non-existent-and-unwritable directory.
+	lic := license.License{
+		ID:        "lic_unwritable",
+		Email:     "test@example.com",
+		IssuedAt:  time.Now().Unix(),
+		ExpiresAt: time.Now().Add(24 * time.Hour).Unix(),
+		Features:  []string{license.FeatureAgents},
+	}
+	err := appendLedger("/nonexistent/path/ledger.jsonl", lic, "token")
+	if err == nil {
+		t.Fatal("expected error for unwritable ledger path")
+	}
+}
+
+func TestAppendLedger_WithExpiry(t *testing.T) {
+	dir := t.TempDir()
+	ledgerPath := filepath.Join(dir, "test-ledger.jsonl")
+
+	lic := license.License{
+		ID:        "lic_expiry",
+		Email:     "expiry@example.com",
+		IssuedAt:  time.Now().Unix(),
+		ExpiresAt: time.Now().Add(45 * 24 * time.Hour).Unix(),
+		Features:  []string{license.FeatureAgents},
+	}
+
+	if err := appendLedger(ledgerPath, lic, "fake-token"); err != nil {
+		t.Fatalf("appendLedger: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Clean(ledgerPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "expires_at") {
+		t.Error("expected expires_at in ledger entry")
+	}
+}
+
+func TestLicenseKeygen_MkdirAllFails(t *testing.T) {
+	dir := t.TempDir()
+	// Create a regular file where MkdirAll expects a directory.
+	blocker := filepath.Join(dir, "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := licenseKeygenCmd()
+	cmd.SetArgs([]string{"--out", filepath.Join(blocker, "subdir")})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when MkdirAll fails")
+	}
+	if !strings.Contains(err.Error(), "create output dir") {
+		t.Errorf("expected 'create output dir' error, got: %v", err)
+	}
+}
+
+func TestLicenseInstall_MkdirAllFails(t *testing.T) {
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	lic := license.License{
+		ID:       "lic_mkdirfail",
+		Email:    "mkdir@example.com",
+		IssuedAt: time.Now().Unix(),
+		Features: []string{license.FeatureAgents},
+	}
+	token, err := license.Issue(lic, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	// Create a regular file where MkdirAll expects a directory.
+	blocker := filepath.Join(dir, "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := licenseInstallCmd()
+	cmd.SetArgs([]string{"--path", filepath.Join(blocker, "subdir", "license.token"), token})
+
+	err = cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when MkdirAll fails")
+	}
+	if !strings.Contains(err.Error(), "create directory") {
+		t.Errorf("expected 'create directory' error, got: %v", err)
+	}
+}
+
+func TestLicenseInstall_WriteFileFails(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("os.Chmod does not enforce Unix permission semantics on Windows")
+	}
+
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	lic := license.License{
+		ID:       "lic_writefail",
+		Email:    "write@example.com",
+		IssuedAt: time.Now().Unix(),
+		Features: []string{license.FeatureAgents},
+	}
+	token, err := license.Issue(lic, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	// Make the directory read-only so WriteFile fails.
+	tokenPath := filepath.Join(dir, "license.token")
+	if err := os.Chmod(dir, 0o500); err != nil { //nolint:gosec // directories need execute bit to be traversable; 0o500 is read-only for owner
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(dir, 0o750) //nolint:gosec // restoring standard directory permissions for test cleanup
+	})
+
+	cmd := licenseInstallCmd()
+	cmd.SetArgs([]string{"--path", tokenPath, token})
+
+	err = cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when WriteFile fails")
+	}
+	if !strings.Contains(err.Error(), "write license file") {
+		t.Errorf("expected 'write license file' error, got: %v", err)
 	}
 }
 

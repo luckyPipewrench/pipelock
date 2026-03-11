@@ -4,6 +4,7 @@
 package scanner
 
 import (
+	"sort"
 	"testing"
 )
 
@@ -50,7 +51,10 @@ func TestExtractLiteralPrefix(t *testing.T) {
 		{"ssn", `(?i)\b\d{3}-\d{2}-\d{4}\b`, ""},
 		{"credential url", `(?i)\b(?:password|token)=[^\s&]+`, ""},
 
-		// Non-capturing group with single alternative
+		// Non-capturing group with single literal alternative (unwrapped)
+		{"single alt group", "(?i)(?:prefix)_[A-Za-z0-9]+", "prefix_"},
+
+		// Non-capturing group with alternation: no single prefix
 		{"vercel", "(?i)(?:vercel|vc[piark])_[a-zA-Z0-9]{24,}", ""},
 
 		// Quantified non-capturing group: prefix is optional, can't gate on it
@@ -125,6 +129,33 @@ func TestDLPPreFilter_Candidates(t *testing.T) {
 			t.Error("expected candidates for hf_ prefix, got none")
 		}
 	})
+
+	t.Run("patternsToCheck returns sorted indices", func(t *testing.T) {
+		// Input with multiple prefixes to trigger multiple candidate indices.
+		text := "sk-ant-" + "fake and " + "github_pat_" + "fake and " + "hf_" + "fake"
+		indices := pf.patternsToCheck(text)
+		if len(indices) == 0 {
+			t.Fatal("expected non-empty indices for multi-prefix input")
+		}
+		if !sort.IntsAreSorted(indices) {
+			t.Errorf("patternsToCheck returned unsorted indices: %v", indices)
+		}
+	})
+}
+
+func TestDLPPreFilter_EndToEndAlwaysRun(t *testing.T) {
+	// Verify always-run patterns are evaluated through the full scanner path
+	// even when the input contains no literal prefix from prefix-gated patterns.
+	s := New(testConfig())
+	defer s.Close()
+
+	// AWS key has no extractable prefix (alternation). It must still be caught
+	// via alwaysRun when scanning text that looks otherwise clean.
+	key := "AKIA" + "IOSFODNN7" + "EXAMPLE"
+	result := s.ScanTextForDLP("check this " + key + " value")
+	if result.Clean {
+		t.Error("expected AWS key to be caught by always-run pattern, got clean")
+	}
 }
 
 func TestDLPPreFilter_AlwaysRunPatterns(t *testing.T) {

@@ -989,6 +989,32 @@ pipelock license inspect TOKEN       # decode without verifying
 
 A `_default` profile without any named agents does not require a license key.
 
+### Installing a License
+
+Use `pipelock license install` to write a license token to a file:
+
+```bash
+pipelock license install <TOKEN>                    # writes to ~/.config/pipelock/license.token
+pipelock license install --path /etc/pipelock/license.token <TOKEN>  # custom path
+```
+
+The command validates the token format, writes it atomically (temp file + rename), and prints setup instructions. Point your config at the file:
+
+```yaml
+license_file: /etc/pipelock/license.token
+```
+
+Then restart pipelock to activate Pro features.
+
+### Renewal
+
+License tokens have a fixed expiry (typically 45 days). When your subscription renews, you receive a new token by email. To update:
+
+1. Run `pipelock license install <NEW_TOKEN>` (overwrites the existing file)
+2. Restart pipelock
+
+The new token activates on restart. Your current token continues working until its expiry date, so there is no rush to update immediately. A config reload detects the changed license inputs but does not apply them until restart (activation requires restart; revocation is immediate).
+
 ## Validation Rules
 
 The following are enforced at startup:

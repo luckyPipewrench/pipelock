@@ -23,8 +23,8 @@ func TestLicenseCmd(t *testing.T) {
 	if cmd.Use != "license" {
 		t.Errorf("Use = %q, want license", cmd.Use)
 	}
-	if len(cmd.Commands()) != 3 {
-		t.Errorf("expected 3 subcommands (keygen, issue, inspect), got %d", len(cmd.Commands()))
+	if len(cmd.Commands()) != 4 {
+		t.Errorf("expected 4 subcommands (keygen, issue, inspect, install), got %d", len(cmd.Commands()))
 	}
 }
 
@@ -316,6 +316,157 @@ func TestAppendLedger(t *testing.T) {
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
 	if len(lines) != 2 {
 		t.Errorf("expected 2 ledger lines, got %d", len(lines))
+	}
+}
+
+func TestLicenseInstall(t *testing.T) {
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	lic := license.License{
+		ID:        "lic_install",
+		Email:     "install@example.com",
+		IssuedAt:  time.Now().Unix(),
+		ExpiresAt: time.Now().Add(45 * 24 * time.Hour).Unix(),
+		Features:  []string{license.FeatureAgents},
+	}
+	token, err := license.Issue(lic, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	tokenPath := filepath.Join(dir, "license.token")
+
+	cmd := licenseInstallCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"--path", tokenPath, token})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "License installed") {
+		t.Error("expected 'License installed' in output")
+	}
+	if !strings.Contains(output, "lic_install") {
+		t.Error("expected license ID in output")
+	}
+	if !strings.Contains(output, "license_file:") {
+		t.Error("expected config hint in output")
+	}
+
+	// Verify file was written with correct content and permissions.
+	data, err := os.ReadFile(tokenPath)
+	if err != nil {
+		t.Fatalf("read token file: %v", err)
+	}
+	if strings.TrimSpace(string(data)) != token {
+		t.Error("token file content doesn't match")
+	}
+	info, err := os.Stat(tokenPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("token file mode = %04o, want 0600", info.Mode().Perm())
+	}
+}
+
+func TestLicenseInstall_InvalidToken(t *testing.T) {
+	cmd := licenseInstallCmd()
+	cmd.SetArgs([]string{"not-a-valid-token"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for invalid token")
+	}
+	if !strings.Contains(err.Error(), "invalid license token") {
+		t.Errorf("expected 'invalid license token' error, got: %v", err)
+	}
+}
+
+func TestLicenseInstall_CreatesDirectory(t *testing.T) {
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	lic := license.License{
+		ID:       "lic_mkdir",
+		Email:    "mkdir@example.com",
+		IssuedAt: time.Now().Unix(),
+		Features: []string{license.FeatureAgents},
+	}
+	token, err := license.Issue(lic, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	// Nested path that doesn't exist yet.
+	tokenPath := filepath.Join(dir, "nested", "dir", "license.token")
+
+	cmd := licenseInstallCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"--path", tokenPath, token})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("install with nested dir: %v", err)
+	}
+
+	if _, err := os.Stat(tokenPath); err != nil {
+		t.Errorf("token file not created: %v", err)
+	}
+}
+
+func TestLicenseInstall_OverwritesExisting(t *testing.T) {
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+
+	// Write first token.
+	lic1 := license.License{
+		ID:       "lic_old",
+		Email:    "old@example.com",
+		IssuedAt: time.Now().Unix(),
+		Features: []string{license.FeatureAgents},
+	}
+	token1, _ := license.Issue(lic1, priv)
+
+	dir := t.TempDir()
+	tokenPath := filepath.Join(dir, "license.token")
+	if err := os.WriteFile(tokenPath, []byte(token1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Install second token over it.
+	lic2 := license.License{
+		ID:       "lic_new",
+		Email:    "new@example.com",
+		IssuedAt: time.Now().Unix(),
+		Features: []string{license.FeatureAgents},
+	}
+	token2, _ := license.Issue(lic2, priv)
+
+	cmd := licenseInstallCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"--path", tokenPath, token2})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("install overwrite: %v", err)
+	}
+
+	data, err := os.ReadFile(tokenPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Decode the installed token to verify it's the new one.
+	installed, err := license.Decode(strings.TrimSpace(string(data)))
+	if err != nil {
+		t.Fatalf("decode installed token: %v", err)
+	}
+	if installed.ID != "lic_new" {
+		t.Errorf("installed token ID = %q, want lic_new", installed.ID)
 	}
 }
 

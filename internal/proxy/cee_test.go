@@ -823,7 +823,7 @@ func TestQueryParamPayload_WireOrderSecretReconstruction(t *testing.T) {
 
 func TestQueryParamPayload_BareToken(t *testing.T) {
 	// Bare tokens (no '=') must be included. An agent can exfiltrate secrets
-	// as valueless query params: ?AKIAIOSFODNN7EXAMPLE
+	// as valueless query params: ?AKIA...EXAMPLE
 	u := &url.URL{RawQuery: "AKI" + "A" + "IOSF" + "ODNN7EXAMPLE"}
 	got := string(queryParamPayload(u))
 	want := "AKI" + "A" + "IOSF" + "ODNN7EXAMPLE"

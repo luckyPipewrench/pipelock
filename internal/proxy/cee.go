@@ -34,7 +34,7 @@ const maxCEEBodyRead = 65536 // 64KB
 // queryParamPayload extracts query values from a URL in wire order (the order
 // tokens appear in RawQuery). For key=value pairs, only the value is extracted.
 // Bare tokens (no '=') are included in full because an agent can embed secret
-// fragments as valueless query params (e.g. ?AKIAIOSFODNN7EXAMPLE).
+// fragments as valueless query params (e.g. ?AKIA + IOSFODNN7EXAMPLE).
 //
 // Keys are intentionally excluded from the output because including them
 // (e.g. "data=AKIA" + "data=IOSF") would break fragment reconstruction by
@@ -58,19 +58,19 @@ func queryParamPayload(u *url.URL) []byte {
 			continue
 		}
 		// For key=value: extract only the value (contiguous across requests).
-		// For bare tokens (no '='): include the entire token.
-		var token string
+		// For bare items (no '='): include the entire item.
+		var val string
 		if eqIdx := strings.IndexByte(pair, '='); eqIdx >= 0 {
-			token = pair[eqIdx+1:]
+			val = pair[eqIdx+1:]
 		} else {
-			token = pair
+			val = pair
 		}
-		if token == "" {
+		if val == "" {
 			continue
 		}
-		decoded, err := url.QueryUnescape(token)
+		decoded, err := url.QueryUnescape(val)
 		if err != nil {
-			decoded = token
+			decoded = val
 		}
 		buf.WriteString(decoded)
 	}

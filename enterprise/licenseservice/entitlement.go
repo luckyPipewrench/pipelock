@@ -171,6 +171,7 @@ func (e *EntitlementDB) Upsert(ctx context.Context, ent *Entitlement) error {
 		updated_at             = datetime('now')
 	`
 
+	//nolint:gosec // G701 false positive: query is a const with parameterized placeholders, not concatenated
 	_, err := e.db.ExecContext(ctx, query,
 		ent.SubscriptionID, ent.CustomerEmail, ent.ProductID, ent.Tier, ent.BillingInterval,
 		ent.Status, ent.CurrentPeriodEnd, ent.Founding, ent.Org, ent.Features,

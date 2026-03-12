@@ -379,6 +379,8 @@ func (h *WebhookHandler) mapProductToTier(sub *PolarSubscription) (tier string, 
 }
 
 // tierToFeatures returns the feature list for a given tier.
+// Returns nil for unknown tiers (fail-closed). Callers must validate
+// tiers via mapProductToTier before reaching this point.
 func (h *WebhookHandler) tierToFeatures(tier string) []string {
 	switch tier {
 	case tierFoundingPro, tierPro:
@@ -387,7 +389,7 @@ func (h *WebhookHandler) tierToFeatures(tier string) []string {
 		// TODO: Define enterprise-specific features as they're built.
 		return []string{license.FeatureAgents}
 	default:
-		return []string{license.FeatureAgents}
+		return nil
 	}
 }
 

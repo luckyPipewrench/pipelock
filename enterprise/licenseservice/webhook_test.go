@@ -203,7 +203,7 @@ func TestTierToFeatures(t *testing.T) {
 		{"pro", tierPro, []string{license.FeatureAgents}},
 		{"founding pro", tierFoundingPro, []string{license.FeatureAgents}},
 		{"enterprise", tierEnterprise, []string{license.FeatureAgents}},
-		{"unknown defaults to agents", "unknown", []string{license.FeatureAgents}},
+		{"unknown returns nil (fail-closed)", "unknown", nil},
 	}
 
 	for _, tt := range tests {

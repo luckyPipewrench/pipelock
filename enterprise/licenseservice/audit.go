@@ -94,6 +94,13 @@ func OpenAuditLedger(path string) (*AuditLedger, error) {
 		return nil, fmt.Errorf("open audit ledger: %w", err)
 	}
 
+	// Normalize permissions on existing files. OpenFile's mode only applies
+	// to newly created files; pre-existing ledgers may have broader perms.
+	if err := f.Chmod(0o600); err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("chmod audit ledger: %w", err)
+	}
+
 	return &AuditLedger{file: f, path: cleanPath}, nil
 }
 
@@ -200,7 +207,7 @@ func RedactPII(data json.RawMessage) json.RawMessage {
 
 	redactedFields := []string{
 		"card", "billing_address", "phone", "address",
-		"payment_method", "tax_id", "ip_address",
+		"payment_method", "tax_id", "ip_address", "email",
 	}
 
 	redactMap(m, redactedFields)

@@ -605,6 +605,56 @@ func TestAuditCmd_SARIFSubdirectory(t *testing.T) {
 	}
 }
 
+func TestAuditCmd_SARIFAbsolutePath(t *testing.T) {
+	// When auditing with an absolute path, SARIF URIs must still be
+	// CWD-relative, not absolute (absolute URIs break upload-sarif).
+	root := t.TempDir()
+	envContent := "API_KEY=" + "sk-ant-" + "api03-XXXXXXXXXXXX" + "XXXXXXXXXXXXXXXX\n"
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte(envContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// CWD = root, scan with absolute path = root (same dir).
+	oldDir, _ := os.Getwd()
+	_ = os.Chdir(root)
+	defer func() { _ = os.Chdir(oldDir) }()
+
+	cmd := rootCmd()
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"audit", root, "--format", "sarif"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var parsed struct {
+		Runs []struct {
+			Results []struct {
+				Locations []struct {
+					PhysicalLocation struct {
+						ArtifactLocation struct {
+							URI string `json:"uri"`
+						} `json:"artifactLocation"`
+					} `json:"physicalLocation"`
+				} `json:"locations"`
+			} `json:"results"`
+		} `json:"runs"`
+	}
+	if err := json.Unmarshal([]byte(buf.String()), &parsed); err != nil {
+		t.Fatalf("invalid SARIF JSON: %v", err)
+	}
+	for _, r := range parsed.Runs[0].Results {
+		for _, loc := range r.Locations {
+			uri := loc.PhysicalLocation.ArtifactLocation.URI
+			if filepath.IsAbs(uri) {
+				t.Errorf("URI = %q, should be relative not absolute", uri)
+			}
+		}
+	}
+}
+
 func TestAuditCmd_SARIFSeverityMapping(t *testing.T) {
 	// Audit findings from projectscan use "critical" and "warning" severities.
 	// Verify they map correctly in SARIF output.

@@ -165,10 +165,15 @@ func writeAuditSARIF(cmd *cobra.Command, report *projectscan.Report, scanDir, ou
 
 	// Rebase file URIs: projectscan returns paths relative to scanDir,
 	// but SARIF needs paths relative to the repository root (CWD).
-	// If scanDir is "." or "", no prefix is needed.
-	prefix := filepath.Clean(scanDir)
-	if prefix == "." {
-		prefix = ""
+	// Use filepath.Rel to handle both relative and absolute scanDir values,
+	// ensuring SARIF URIs are always CWD-relative for upload-sarif compatibility.
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("getting working directory: %w", err)
+	}
+	scanRoot, err := filepath.Abs(scanDir)
+	if err != nil {
+		return fmt.Errorf("resolving scan directory: %w", err)
 	}
 
 	for _, f := range report.Findings {
@@ -180,8 +185,12 @@ func writeAuditSARIF(cmd *cobra.Command, report *projectscan.Report, scanDir, ou
 		idx := log.AddRule(ruleID, description)
 
 		file := f.File
-		if file != "" && prefix != "" {
-			file = filepath.Join(prefix, file)
+		if file != "" {
+			absFile := filepath.Join(scanRoot, file)
+			relFile, relErr := filepath.Rel(cwd, absFile)
+			if relErr == nil {
+				file = relFile
+			}
 		}
 		// Convert OS separators to forward slashes for SARIF URIs.
 		file = filepath.ToSlash(file)

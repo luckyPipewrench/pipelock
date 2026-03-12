@@ -15,7 +15,10 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
-const testToken = "test-" + "scan-token"
+const (
+	testToken   = "test-" + "scan-token"
+	testDLPSafe = `{"kind":"dlp","input":{"text":"safe"}}`
+)
 
 func newTestHandler(t *testing.T) *Handler {
 	t.Helper()
@@ -206,6 +209,9 @@ func TestHandler_KillSwitch(t *testing.T) {
 	if resp.Errors[0].Code != "kill_switch_active" {
 		t.Errorf("expected kill_switch_active error code, got %q", resp.Errors[0].Code)
 	}
+	if resp.Errors[0].Retryable {
+		t.Error("kill switch errors should not be retryable")
+	}
 }
 
 func TestHandler_KindDisabled(t *testing.T) {
@@ -248,7 +254,7 @@ func TestHandler_MissingRequiredField(t *testing.T) {
 
 func TestHandler_EngineVersionInResponse(t *testing.T) {
 	h := newTestHandler(t)
-	body := `{"kind":"dlp","input":{"text":"safe"}}`
+	body := testDLPSafe
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/scan", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+testToken)
@@ -263,7 +269,7 @@ func TestHandler_EngineVersionInResponse(t *testing.T) {
 
 func TestHandler_DurationMSPopulated(t *testing.T) {
 	h := newTestHandler(t)
-	body := `{"kind":"dlp","input":{"text":"safe"}}`
+	body := testDLPSafe
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/scan", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+testToken)
@@ -273,5 +279,93 @@ func TestHandler_DurationMSPopulated(t *testing.T) {
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
 	if resp.DurationMS < 0 {
 		t.Errorf("expected non-negative duration_ms, got %d", resp.DurationMS)
+	}
+}
+
+func TestHandler_RateLimiting(t *testing.T) {
+	h := newTestHandler(t)
+	// Set very low rate limit: 1 request per minute, burst of 1.
+	// First request consumes the only token; second is rate-limited immediately.
+	h.cfg.ScanAPI.RateLimit.RequestsPerMinute = 1
+	h.cfg.ScanAPI.RateLimit.Burst = 1
+
+	body := testDLPSafe
+
+	req1 := httptest.NewRequest(http.MethodPost, "/api/v1/scan", strings.NewReader(body))
+	req1.Header.Set("Content-Type", "application/json")
+	req1.Header.Set("Authorization", "Bearer "+testToken)
+	w1 := httptest.NewRecorder()
+	h.ServeHTTP(w1, req1)
+	if w1.Code != http.StatusOK {
+		t.Fatalf("first request: expected 200, got %d", w1.Code)
+	}
+
+	req2 := httptest.NewRequest(http.MethodPost, "/api/v1/scan", strings.NewReader(body))
+	req2.Header.Set("Content-Type", "application/json")
+	req2.Header.Set("Authorization", "Bearer "+testToken)
+	w2 := httptest.NewRecorder()
+	h.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusTooManyRequests {
+		t.Errorf("second request: expected 429, got %d", w2.Code)
+	}
+}
+
+func TestHandler_FieldSizeLimit(t *testing.T) {
+	h := newTestHandler(t)
+	// 10 bytes max; test string is longer.
+	h.cfg.ScanAPI.FieldLimits.Text = 10
+
+	body := `{"kind":"dlp","input":{"text":"this text is longer than ten bytes"}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/scan", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for oversized field, got %d", w.Code)
+	}
+}
+
+func TestHandler_ToolCallInputScanningDisabled(t *testing.T) {
+	h := newTestHandler(t)
+	h.cfg.MCPInputScanning.Enabled = false
+	// policyCfg is nil in newTestHandler, so policy check is skipped too.
+	body := `{"kind":"tool_call","input":{"tool_name":"bash","arguments":{"cmd":"echo hello"}}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/scan", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	var resp Response
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp.Decision != DecisionAllow {
+		t.Errorf("expected allow when both input scanning and policy disabled, got %q", resp.Decision)
+	}
+}
+
+func TestHandler_ResponseInvariants(t *testing.T) {
+	h := newTestHandler(t)
+	body := `{"kind":"dlp","input":{"text":"safe text"}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/scan", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	var resp Response
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.EngineVersion == "" {
+		t.Error("engine_version must always be present")
+	}
+	if resp.ScanID == "" {
+		t.Error("scan_id must always be present")
+	}
+	if resp.Status != StatusCompleted {
+		t.Errorf("expected %q, got %q", StatusCompleted, resp.Status)
+	}
+	if resp.Decision != DecisionAllow && resp.Decision != DecisionDeny {
+		t.Errorf("decision must be %q or %q, got %q", DecisionAllow, DecisionDeny, resp.Decision)
 	}
 }

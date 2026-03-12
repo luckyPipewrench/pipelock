@@ -19,7 +19,7 @@ These must be proven by tests, not assumed from docs or deployment.
 - **"Enforced" means the binary enforces it.** If a property depends on deployment, user separation, containers, or network policy, describe it as deployment guidance, not product enforcement.
 - **Allowlist/suppression must not bypass content scanning.** Any allowlist, trusted-destination, or suppression logic must not skip DLP, header scanning, body scanning, or explicit secret detection unless the exception is deliberate, documented, and tested.
 - **Security-sensitive config defaults must have one source of truth.** If docs say "default true," omitting the field from YAML must produce true. New security-sensitive boolean fields must be tested in 6 states: omitted, YAML null/blank, explicit false, explicit true, reload with change, reload without change.
-- **Transport parity must be proven, not claimed.** If a scanning feature works on one surface, verify it works on all: fetch, forward proxy, CONNECT, WebSocket, MCP stdio, MCP HTTP/SSE. Don't claim parity in docs without tests.
+- **Transport parity must be proven, not claimed.** If a scanning feature applies to multiple surfaces, verify it on each applicable one: fetch, forward proxy, CONNECT, WebSocket, MCP stdio, MCP HTTP/SSE. Not every feature applies to every transport (e.g., MCP stdio has no URL scanning path). Document exceptions explicitly and don't claim parity in docs without tests.
 - **Docs are security surface.** Don't claim "automatic escalation" if the code only scores or logs. Don't claim enforcement that only exists at the deployment layer. Review docs when changing behavior.
 - **Hot reload must preserve security state.** Test: first load, first reload, second unrelated reload, downgrade/revocation, stale cached state. Kill switch state (all 4 sources) must survive reloads.
 
@@ -156,7 +156,7 @@ net.ListenConfig{}.Listen(ctx, ...)   // Free port binding (noctx compliant)
 These tasks have steps that are easy to miss:
 
 - **Adding a DLP pattern:** URL tests (`scanner_test.go`), text tests (`text_dlp_test.go`), all preset YAML files in `configs/`, and docs if the default count changes.
-- **Any transport or security change:** verify parity across all surfaces (fetch, forward, CONNECT, WebSocket, MCP stdio, MCP HTTP/SSE). Add exploit-style regression tests, not just happy paths.
+- **Any transport or security change:** verify parity across all applicable surfaces (fetch, forward, CONNECT, WebSocket, MCP stdio, MCP HTTP/SSE). Document transport-specific exceptions and add exploit-style regression tests, not just happy paths.
 
 ## CI Pipeline
 

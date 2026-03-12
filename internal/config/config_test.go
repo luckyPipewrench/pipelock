@@ -5379,3 +5379,29 @@ func TestLoad_NullBooleanDefaultsToTrue(t *testing.T) {
 		}
 	}
 }
+
+func TestApplySecurityDefaults_InvalidYAMLFailsClosed(t *testing.T) {
+	// If raw YAML introspection fails (defensive path), all security
+	// booleans must default to true so we never fail open.
+	cfg := &Config{} // all booleans zero (false)
+	applySecurityDefaults([]byte(":\n\t- :\n\t\t["), cfg)
+
+	checks := []struct {
+		name string
+		got  bool
+	}{
+		{"DLP.ScanEnv", cfg.DLP.ScanEnv},
+		{"ResponseScanning.Enabled", cfg.ResponseScanning.Enabled},
+		{"RequestBodyScanning.Enabled", cfg.RequestBodyScanning.Enabled},
+		{"RequestBodyScanning.ScanHeaders", cfg.RequestBodyScanning.ScanHeaders},
+		{"GitProtection.PrePushScan", cfg.GitProtection.PrePushScan},
+		{"Logging.IncludeAllowed", cfg.Logging.IncludeAllowed},
+		{"Logging.IncludeBlocked", cfg.Logging.IncludeBlocked},
+	}
+
+	for _, c := range checks {
+		if !c.got {
+			t.Errorf("%s = false, want true (invalid YAML must fail closed)", c.name)
+		}
+	}
+}

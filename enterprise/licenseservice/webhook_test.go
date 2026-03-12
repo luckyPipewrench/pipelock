@@ -74,7 +74,7 @@ func newTestSetup(t *testing.T) *testSetup {
 		DBPath:              ":memory:",
 		LedgerPath:          filepath.Join(t.TempDir(), "test.jsonl"),
 		FoundingProCap:      50,
-		FoundingProDeadline: time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC),
+		FoundingProDeadline: time.Date(2099, 6, 30, 0, 0, 0, 0, time.UTC),
 		ListenAddr:          ":0",
 		FromEmail:           "test@pipelock.dev",
 		PolarAPIBase:        polarSrv.URL,
@@ -542,9 +542,11 @@ func TestProcessSubscription_IdempotentSkipsReissue(t *testing.T) {
 
 	periodEnd := time.Date(2026, 4, 12, 0, 0, 0, 0, time.UTC)
 
-	// Pre-insert an entitlement that matches the incoming subscription state.
+	// Pre-insert an entitlement that matches the incoming subscription state
+	// exactly (email, org, tier, interval, product, period, delivery status).
 	now := time.Now().UTC()
 	existing := testEntitlement(testSubscriptionID)
+	existing.Org = "testcorp"
 	existing.LastLicenseID = "lic_existing"
 	existing.LastLicenseIssuedAt = &now
 	existing.LastLicensePeriodEnd = &periodEnd
@@ -579,6 +581,116 @@ func TestProcessSubscription_IdempotentSkipsReissue(t *testing.T) {
 	}
 	if ent.LastLicenseID != "lic_existing" {
 		t.Errorf("LastLicenseID = %q, want %q (should be preserved)", ent.LastLicenseID, "lic_existing")
+	}
+}
+
+func TestProcessSubscription_IdempotentReissuesOnEmailChange(t *testing.T) {
+	ts := newTestSetup(t)
+	ctx := t.Context()
+
+	periodEnd := time.Date(2026, 4, 12, 0, 0, 0, 0, time.UTC)
+
+	// Pre-insert an entitlement with a delivered license.
+	now := time.Now().UTC()
+	existing := testEntitlement(testSubscriptionID)
+	existing.LastLicenseID = "lic_old_email"
+	existing.LastLicenseIssuedAt = &now
+	existing.LastLicensePeriodEnd = &periodEnd
+	existing.LastLicenseTier = tierPro
+	existing.LastLicenseInterval = testIntervalMonth
+	existing.LastLicenseProductID = testProductID
+	existing.LastDeliveryStatus = testDeliveryStatusSent
+	existing.CustomerEmail = "old@example.com"
+	if err := ts.db.Upsert(ctx, existing); err != nil {
+		t.Fatalf("Upsert existing: %v", err)
+	}
+
+	// Same plan but different email. Should re-mint.
+	sub := &PolarSubscription{
+		ID:                testSubscriptionID,
+		Status:            "active",
+		RecurringInterval: testIntervalMonth,
+		CurrentPeriodEnd:  periodEnd,
+	}
+	sub.Customer.Email = testEmailNew
+	sub.Customer.Metadata = map[string]string{"org": "testcorp"}
+	sub.Product.ID = testProductID
+	sub.Product.Name = testProductName
+	sub.Product.Metadata = map[string]string{"pipelock_tier": "pro"}
+
+	ts.handler.email = &EmailSender{
+		apiKey:    "re_" + "test_key",
+		fromEmail: "test@pipelock.dev",
+		client:    ts.emailSrv.Client(),
+		apiURL:    ts.emailSrv.URL,
+	}
+
+	if err := ts.handler.processSubscription(ctx, sub); err != nil {
+		t.Fatalf("processSubscription: %v", err)
+	}
+
+	ent, err := ts.db.GetBySubscriptionID(ctx, testSubscriptionID)
+	if err != nil {
+		t.Fatalf("GetBySubscriptionID: %v", err)
+	}
+	if ent.LastLicenseID == "lic_old_email" {
+		t.Error("license should have been re-minted for email change")
+	}
+}
+
+func TestProcessSubscription_IdempotentRetriesFailedDelivery(t *testing.T) {
+	ts := newTestSetup(t)
+	ctx := t.Context()
+
+	periodEnd := time.Date(2026, 4, 12, 0, 0, 0, 0, time.UTC)
+
+	// Pre-insert an entitlement where delivery failed.
+	now := time.Now().UTC()
+	existing := testEntitlement(testSubscriptionID)
+	existing.LastLicenseID = "lic_failed_delivery"
+	existing.LastLicenseIssuedAt = &now
+	existing.LastLicensePeriodEnd = &periodEnd
+	existing.LastLicenseTier = tierPro
+	existing.LastLicenseInterval = testIntervalMonth
+	existing.LastLicenseProductID = testProductID
+	existing.LastDeliveryStatus = "failed"
+	if err := ts.db.Upsert(ctx, existing); err != nil {
+		t.Fatalf("Upsert existing: %v", err)
+	}
+
+	// Same plan, same email. But delivery failed, so should re-mint and retry.
+	sub := &PolarSubscription{
+		ID:                testSubscriptionID,
+		Status:            "active",
+		RecurringInterval: testIntervalMonth,
+		CurrentPeriodEnd:  periodEnd,
+	}
+	sub.Customer.Email = testCustomerEmail
+	sub.Customer.Metadata = map[string]string{"org": "testorg"}
+	sub.Product.ID = testProductID
+	sub.Product.Name = testProductName
+	sub.Product.Metadata = map[string]string{"pipelock_tier": "pro"}
+
+	ts.handler.email = &EmailSender{
+		apiKey:    "re_" + "test_key",
+		fromEmail: "test@pipelock.dev",
+		client:    ts.emailSrv.Client(),
+		apiURL:    ts.emailSrv.URL,
+	}
+
+	if err := ts.handler.processSubscription(ctx, sub); err != nil {
+		t.Fatalf("processSubscription: %v", err)
+	}
+
+	ent, err := ts.db.GetBySubscriptionID(ctx, testSubscriptionID)
+	if err != nil {
+		t.Fatalf("GetBySubscriptionID: %v", err)
+	}
+	if ent.LastLicenseID == "lic_failed_delivery" {
+		t.Error("license should have been re-minted to retry failed delivery")
+	}
+	if ent.LastDeliveryStatus != testDeliveryStatusSent {
+		t.Errorf("LastDeliveryStatus = %q, want %q", ent.LastDeliveryStatus, testDeliveryStatusSent)
 	}
 }
 
@@ -804,7 +916,7 @@ func TestNewWebhookHandler_InitializesFoundingCount(t *testing.T) {
 
 	cfg := &Config{
 		FoundingProCap:      50,
-		FoundingProDeadline: time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC),
+		FoundingProDeadline: time.Date(2099, 6, 30, 0, 0, 0, 0, time.UTC),
 	}
 	polar := NewPolarClient("token", "http://localhost")
 	email := NewEmailSender("key", "from@test.com")
@@ -1066,7 +1178,7 @@ func TestNewWebhookHandler_DBError(t *testing.T) {
 
 	cfg := &Config{
 		FoundingProCap:      50,
-		FoundingProDeadline: time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC),
+		FoundingProDeadline: time.Date(2099, 6, 30, 0, 0, 0, 0, time.UTC),
 	}
 	polar := NewPolarClient("token", "http://localhost")
 	email := NewEmailSender("key", "from@test.com")

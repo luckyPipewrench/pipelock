@@ -199,7 +199,7 @@ func TestEntitlementDB_UpdateDeliveryStatus(t *testing.T) {
 	}
 
 	now := time.Now().UTC()
-	if err := db.UpdateDeliveryStatus(ctx, testSubscriptionID, "sent", now); err != nil {
+	if err := db.UpdateDeliveryStatus(ctx, testSubscriptionID, testDeliveryStatusSent, now); err != nil {
 		t.Fatalf("UpdateDeliveryStatus: %v", err)
 	}
 
@@ -207,8 +207,8 @@ func TestEntitlementDB_UpdateDeliveryStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetBySubscriptionID: %v", err)
 	}
-	if got.LastDeliveryStatus != "sent" {
-		t.Errorf("LastDeliveryStatus = %q, want %q", got.LastDeliveryStatus, "sent")
+	if got.LastDeliveryStatus != testDeliveryStatusSent {
+		t.Errorf("LastDeliveryStatus = %q, want %q", got.LastDeliveryStatus, testDeliveryStatusSent)
 	}
 }
 
@@ -299,7 +299,7 @@ func TestEntitlementDB_ClosedDBErrors(t *testing.T) {
 		t.Error("CountFounding on closed DB should error")
 	}
 
-	if err := db.UpdateDeliveryStatus(ctx, "sub_x", "sent", time.Now()); err == nil {
+	if err := db.UpdateDeliveryStatus(ctx, "sub_x", testDeliveryStatusSent, time.Now()); err == nil {
 		t.Error("UpdateDeliveryStatus on closed DB should error")
 	}
 
@@ -320,14 +320,14 @@ func TestEntitlementDB_UpsertPreservesLicenseState(t *testing.T) {
 	ent.LastLicenseTier = tierPro
 	ent.LastLicenseInterval = "month"
 	ent.LastLicenseProductID = testProductID
-	ent.LastDeliveryStatus = "sent"
+	ent.LastDeliveryStatus = testDeliveryStatusSent
 
 	if err := db.Upsert(ctx, ent); err != nil {
 		t.Fatalf("Upsert: %v", err)
 	}
 
 	// Update metadata only (new email), keeping license state.
-	ent.CustomerEmail = "new@example.com"
+	ent.CustomerEmail = testEmailNew
 	if err := db.Upsert(ctx, ent); err != nil {
 		t.Fatalf("Upsert update: %v", err)
 	}
@@ -339,7 +339,7 @@ func TestEntitlementDB_UpsertPreservesLicenseState(t *testing.T) {
 	if got.LastLicenseID != "lic_test123" {
 		t.Errorf("LastLicenseID = %q, want %q", got.LastLicenseID, "lic_test123")
 	}
-	if got.CustomerEmail != "new@example.com" {
-		t.Errorf("CustomerEmail = %q, want %q", got.CustomerEmail, "new@example.com")
+	if got.CustomerEmail != testEmailNew {
+		t.Errorf("CustomerEmail = %q, want %q", got.CustomerEmail, testEmailNew)
 	}
 }

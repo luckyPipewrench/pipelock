@@ -180,10 +180,14 @@ func (h *WebhookHandler) processSubscription(ctx context.Context, sub *PolarSubs
 // handleActive processes an active subscription: checks idempotency,
 // mints a license if needed, persists state, then attempts email delivery.
 func (h *WebhookHandler) handleActive(ctx context.Context, ent *Entitlement, existing *Entitlement) error {
-	// Idempotency check: compare the tuple that determines license content.
-	// If all match, no new token is needed. But we still upsert because
-	// metadata (email, org) may have changed since last issuance.
-	if existing != nil && h.isIdempotent(ent, existing) {
+	// Idempotency check: compare the full set of fields that affect the
+	// signed token (period, tier, interval, product, email, org). Also
+	// skip the fast path if delivery never succeeded so we retry sending.
+	if existing != nil &&
+		h.isIdempotent(ent, existing) &&
+		existing.CustomerEmail == ent.CustomerEmail &&
+		existing.Org == ent.Org &&
+		existing.LastDeliveryStatus == "sent" {
 		// Preserve existing license state so upsert doesn't blank it out.
 		ent.LastLicenseID = existing.LastLicenseID
 		ent.LastLicenseIssuedAt = existing.LastLicenseIssuedAt

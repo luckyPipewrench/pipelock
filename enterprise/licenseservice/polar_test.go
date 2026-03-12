@@ -34,6 +34,7 @@ const (
 	testStatusPending      = "pending"
 	testIntervalMonth      = "month"
 	testDeliveryStatusSent = "sent"
+	testEmailNew           = "new@example.com"
 	testLicenseIDOld       = "lic_old"
 )
 

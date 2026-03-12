@@ -78,7 +78,7 @@ func TestScrubString_EnvSecrets(t *testing.T) {
 
 func TestScrubString_URLQueryParams(t *testing.T) {
 	s := NewScrubber(nil, nil)
-	input := "error fetching https://example.com/api?" + "token=secretvalue" + "&user=admin"
+	input := "error fetching https://example.com/api?token=secretvalue&user=admin" // pipelock:ignore Credential in URL
 	result := s.ScrubString(input)
 	if result == input {
 		t.Error("expected URL query params to be scrubbed")

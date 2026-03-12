@@ -30,12 +30,14 @@ const FeatureAgents = "agents"
 
 // License represents the claims in a signed license token.
 type License struct {
-	ID        string   `json:"id"`
-	Email     string   `json:"sub"`
-	Org       string   `json:"org,omitempty"`
-	IssuedAt  int64    `json:"iat"`
-	ExpiresAt int64    `json:"exp"`
-	Features  []string `json:"features"`
+	ID             string   `json:"id"`
+	Email          string   `json:"sub"`
+	Org            string   `json:"org,omitempty"`
+	IssuedAt       int64    `json:"iat"`
+	ExpiresAt      int64    `json:"exp"`
+	Features       []string `json:"features"`
+	Tier           string   `json:"tier,omitempty"`            // e.g. "pro", "founding_pro"
+	SubscriptionID string   `json:"subscription_id,omitempty"` // external billing reference
 }
 
 // Issue creates a signed license token string from the license data.

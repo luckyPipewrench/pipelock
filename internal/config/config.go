@@ -87,6 +87,10 @@ const (
 
 	// DefaultCertTTL is the default TLS interception leaf certificate TTL.
 	DefaultCertTTL = "24h"
+
+	// EnvLicenseKey is the environment variable for license token override.
+	// Takes highest priority over license_file and license_key config fields.
+	EnvLicenseKey = "PIPELOCK_LICENSE_KEY"
 )
 
 // SuppressEntry defines a finding suppression rule for false positives.
@@ -189,6 +193,7 @@ type Config struct {
 	CrossRequestDetection CrossRequestDetection   `yaml:"cross_request_detection"`
 	Agents                map[string]AgentProfile `yaml:"agents,omitempty"`
 	LicenseKey            string                  `yaml:"license_key,omitempty"`        // signed license token (from pipelock license issue)
+	LicenseFile           string                  `yaml:"license_file,omitempty"`       // path to file containing the license token (read at startup)
 	LicensePublicKey      string                  `yaml:"license_public_key,omitempty"` // hex-encoded Ed25519 public key for license verification (dev builds only)
 	Internal              []string                `yaml:"internal"`
 
@@ -570,6 +575,14 @@ func Load(path string) (*Config, error) {
 
 	cfg.ApplyDefaults()
 
+	// Resolve license key from multiple sources. Priority:
+	// 1. PIPELOCK_LICENSE_KEY env var (containers, CI)
+	// 2. license_file config field (file path, read at startup)
+	// 3. license_key config field (inline YAML, lowest priority)
+	if err := cfg.resolveLicenseKey(filepath.Dir(path)); err != nil {
+		return nil, fmt.Errorf("license key: %w", err)
+	}
+
 	// Soft-gate premium features: disable agents section if no license key.
 	if EnforceLicenseGateFunc != nil {
 		EnforceLicenseGateFunc(cfg)
@@ -596,6 +609,59 @@ func Load(path string) (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// resolveLicenseKey populates LicenseKey from the highest-priority source:
+// env var > license_file > inline license_key. The configDir is used to
+// resolve relative license_file paths.
+func (c *Config) resolveLicenseKey(configDir string) error {
+	// 1. Env var takes highest priority. Trim before checking so that a
+	// whitespace-only value (e.g. trailing newline) falls through to
+	// lower-priority sources instead of winning with an empty token.
+	if envKey := strings.TrimSpace(os.Getenv(EnvLicenseKey)); envKey != "" {
+		c.LicenseKey = envKey
+		return nil
+	}
+
+	// 2. File path: read token from the file.
+	if c.LicenseFile != "" {
+		p := c.LicenseFile
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(configDir, p)
+		}
+		p = filepath.Clean(p)
+		// Reject non-regular files (FIFOs, devices) that could hang
+		// startup, and oversized files since tokens are ~200 bytes.
+		const maxLicenseFileBytes int64 = 16 * 1024
+		info, err := os.Stat(p)
+		if err != nil {
+			return fmt.Errorf("stat license_file %s: %w", c.LicenseFile, err)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("license_file %s must be a regular file", c.LicenseFile)
+		}
+		// Reject group/world-readable files; license tokens are secrets.
+		if info.Mode().Perm()&0o077 != 0 {
+			return fmt.Errorf("license_file %s is too permissive (mode %04o): restrict to 0600",
+				c.LicenseFile, info.Mode().Perm())
+		}
+		if info.Size() > maxLicenseFileBytes {
+			return fmt.Errorf("license_file %s exceeds %d bytes", c.LicenseFile, maxLicenseFileBytes)
+		}
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return fmt.Errorf("reading license_file %s: %w", c.LicenseFile, err)
+		}
+		token := strings.TrimSpace(string(data))
+		if token == "" {
+			return fmt.Errorf("license_file %s is empty", c.LicenseFile)
+		}
+		c.LicenseKey = token
+		return nil
+	}
+
+	// 3. Inline license_key from YAML stays as-is (already parsed).
+	return nil
 }
 
 // Hash returns the SHA256 hex digest of the raw config file bytes.

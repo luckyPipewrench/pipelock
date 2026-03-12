@@ -101,12 +101,14 @@ func licenseKeygenCmd() *cobra.Command {
 
 func licenseIssueCmd() *cobra.Command {
 	var (
-		keyPath    string
-		email      string
-		org        string
-		expiresStr string
-		features   []string
-		ledgerPath string
+		keyPath        string
+		email          string
+		org            string
+		expiresStr     string
+		features       []string
+		ledgerPath     string
+		tier           string
+		subscriptionID string
 	)
 
 	cmd := &cobra.Command{
@@ -148,12 +150,14 @@ func licenseIssueCmd() *cobra.Command {
 			}
 
 			lic := license.License{
-				ID:        "lic_" + hex.EncodeToString(idBytes),
-				Email:     email,
-				Org:       org,
-				IssuedAt:  time.Now().Unix(),
-				ExpiresAt: expiresAt,
-				Features:  features,
+				ID:             "lic_" + hex.EncodeToString(idBytes),
+				Email:          email,
+				Org:            org,
+				IssuedAt:       time.Now().Unix(),
+				ExpiresAt:      expiresAt,
+				Features:       features,
+				Tier:           tier,
+				SubscriptionID: subscriptionID,
 			}
 
 			token, err := license.Issue(lic, priv)
@@ -175,6 +179,12 @@ func licenseIssueCmd() *cobra.Command {
 			if lic.Org != "" {
 				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Org:      %s\n", lic.Org)
 			}
+			if lic.Tier != "" {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Tier:     %s\n", lic.Tier)
+			}
+			if lic.SubscriptionID != "" {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Sub ID:   %s\n", lic.SubscriptionID)
+			}
 			if lic.ExpiresAt > 0 {
 				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Expires:  %s\n", time.Unix(lic.ExpiresAt, 0).UTC().Format(time.DateOnly))
 			} else {
@@ -194,6 +204,8 @@ func licenseIssueCmd() *cobra.Command {
 	cmd.Flags().StringVar(&expiresStr, "expires", "", "expiration date YYYY-MM-DD (omit for no expiration)")
 	cmd.Flags().StringSliceVar(&features, "features", nil, "feature list (default: [agents])")
 	cmd.Flags().StringVar(&ledgerPath, "ledger", "", "ledger file path (default: alongside private key)")
+	cmd.Flags().StringVar(&tier, "tier", "", "license tier (e.g. pro, founding_pro)")
+	cmd.Flags().StringVar(&subscriptionID, "subscription-id", "", "external billing subscription ID")
 	return cmd
 }
 
@@ -213,6 +225,12 @@ func licenseInspectCmd() *cobra.Command {
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Email:    %s\n", lic.Email)
 			if lic.Org != "" {
 				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Org:      %s\n", lic.Org)
+			}
+			if lic.Tier != "" {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Tier:     %s\n", lic.Tier)
+			}
+			if lic.SubscriptionID != "" {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Sub ID:   %s\n", lic.SubscriptionID)
 			}
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Issued:   %s\n", time.Unix(lic.IssuedAt, 0).UTC().Format(time.RFC3339))
 			if lic.ExpiresAt > 0 {
@@ -306,23 +324,27 @@ Default path: ~/.config/pipelock/license.token`,
 
 // ledgerEntry records an issued license for tracking.
 type ledgerEntry struct {
-	ID        string   `json:"id"`
-	Email     string   `json:"email"`
-	Org       string   `json:"org,omitempty"`
-	IssuedAt  string   `json:"issued_at"`
-	ExpiresAt string   `json:"expires_at,omitempty"`
-	Features  []string `json:"features"`
-	Token     string   `json:"token"`
+	ID             string   `json:"id"`
+	Email          string   `json:"email"`
+	Org            string   `json:"org,omitempty"`
+	Tier           string   `json:"tier,omitempty"`
+	SubscriptionID string   `json:"subscription_id,omitempty"`
+	IssuedAt       string   `json:"issued_at"`
+	ExpiresAt      string   `json:"expires_at,omitempty"`
+	Features       []string `json:"features"`
+	Token          string   `json:"token"`
 }
 
 func appendLedger(path string, lic license.License, token string) error {
 	entry := ledgerEntry{
-		ID:       lic.ID,
-		Email:    lic.Email,
-		Org:      lic.Org,
-		IssuedAt: time.Unix(lic.IssuedAt, 0).UTC().Format(time.RFC3339),
-		Features: lic.Features,
-		Token:    token,
+		ID:             lic.ID,
+		Email:          lic.Email,
+		Org:            lic.Org,
+		Tier:           lic.Tier,
+		SubscriptionID: lic.SubscriptionID,
+		IssuedAt:       time.Unix(lic.IssuedAt, 0).UTC().Format(time.RFC3339),
+		Features:       lic.Features,
+		Token:          token,
 	}
 	if lic.ExpiresAt > 0 {
 		entry.ExpiresAt = time.Unix(lic.ExpiresAt, 0).UTC().Format(time.DateOnly)

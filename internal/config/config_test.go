@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -26,6 +27,10 @@ const (
 	fieldFwdProxy       = "forward_proxy.enabled"
 	fieldKSAPIListen    = "kill_switch.api_listen"
 	fieldTLSPassthrough = "tls_interception.passthrough_domains"
+
+	// testLicenseFileCfg is a minimal config with license_file pointing to a
+	// relative file name. Used in multiple license loading tests.
+	testLicenseFileCfg = "mode: balanced\nlicense_file: license.token\n"
 )
 
 func TestDefaults(t *testing.T) {
@@ -4829,6 +4834,327 @@ func TestLicenseKeyOmitted(t *testing.T) {
 	cfg := Defaults()
 	if cfg.LicenseKey != "" {
 		t.Errorf("default license_key should be empty, got %q", cfg.LicenseKey)
+	}
+}
+
+func TestLicenseKeyFromEnvVar(t *testing.T) {
+	t.Setenv(EnvLicenseKey, "env-license-token")
+
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "cfg.yaml")
+	// Inline license_key should be overridden by env var.
+	if err := os.WriteFile(cfgPath, []byte("mode: balanced\nlicense_key: inline-token\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LicenseKey != "env-license-token" {
+		t.Errorf("license_key = %q, want env-license-token", cfg.LicenseKey)
+	}
+}
+
+func TestLicenseKeyFromEnvVarTrimsWhitespace(t *testing.T) {
+	t.Setenv(EnvLicenseKey, "  spaced-token\n")
+
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "cfg.yaml")
+	if err := os.WriteFile(cfgPath, []byte("mode: balanced\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LicenseKey != "spaced-token" {
+		t.Errorf("license_key = %q, want spaced-token", cfg.LicenseKey)
+	}
+}
+
+func TestLicenseKeyEnvWhitespaceOnlyFallsThrough(t *testing.T) {
+	// Whitespace-only env var should not win; fall through to file source.
+	t.Setenv(EnvLicenseKey, "  \n\t")
+
+	tmp := t.TempDir()
+	tokenPath := filepath.Join(tmp, "license.token")
+	if err := os.WriteFile(tokenPath, []byte("file-fallback"), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+
+	cfgPath := filepath.Join(tmp, "cfg.yaml")
+	if err := os.WriteFile(cfgPath, []byte(testLicenseFileCfg), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LicenseKey != "file-fallback" {
+		t.Errorf("license_key = %q, want file-fallback (whitespace env should fall through)", cfg.LicenseKey)
+	}
+}
+
+func TestLicenseKeyFromFile(t *testing.T) {
+	tmp := t.TempDir()
+
+	// Write license token file.
+	tokenPath := filepath.Join(tmp, "license.token")
+	if err := os.WriteFile(tokenPath, []byte("file-license-token\n"), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+
+	cfgPath := filepath.Join(tmp, "cfg.yaml")
+	if err := os.WriteFile(cfgPath, []byte(testLicenseFileCfg), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LicenseKey != "file-license-token" {
+		t.Errorf("license_key = %q, want file-license-token", cfg.LicenseKey)
+	}
+}
+
+func TestLicenseKeyFromFileAbsolutePath(t *testing.T) {
+	tmp := t.TempDir()
+
+	// Write license token file outside config directory.
+	tokenDir := t.TempDir()
+	tokenPath := filepath.Join(tokenDir, "license.token")
+	if err := os.WriteFile(tokenPath, []byte("abs-path-token"), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+
+	cfgPath := filepath.Join(tmp, "cfg.yaml")
+	cfgContent := "mode: balanced\nlicense_file: " + tokenPath + "\n"
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LicenseKey != "abs-path-token" {
+		t.Errorf("license_key = %q, want abs-path-token", cfg.LicenseKey)
+	}
+}
+
+func TestLicenseKeyFileMissing(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "cfg.yaml")
+	cfgContent := "mode: balanced\nlicense_file: nonexistent.token\n"
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	_, err := Load(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for missing license_file")
+	}
+	if !strings.Contains(err.Error(), "license_file") {
+		t.Errorf("error should mention license_file, got: %v", err)
+	}
+}
+
+func TestLicenseKeyFileEmpty(t *testing.T) {
+	tmp := t.TempDir()
+
+	tokenPath := filepath.Join(tmp, "license.token")
+	if err := os.WriteFile(tokenPath, []byte(""), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+
+	cfgPath := filepath.Join(tmp, "cfg.yaml")
+	if err := os.WriteFile(cfgPath, []byte(testLicenseFileCfg), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	_, err := Load(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for empty license_file")
+	}
+	if !strings.Contains(err.Error(), "empty") {
+		t.Errorf("error should mention empty, got: %v", err)
+	}
+}
+
+func TestLicenseKeyFileWhitespaceOnly(t *testing.T) {
+	tmp := t.TempDir()
+
+	tokenPath := filepath.Join(tmp, "license.token")
+	// File with only whitespace should be treated as empty.
+	if err := os.WriteFile(tokenPath, []byte("  \n\t\n"), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+
+	cfgPath := filepath.Join(tmp, "cfg.yaml")
+	if err := os.WriteFile(cfgPath, []byte(testLicenseFileCfg), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	_, err := Load(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for whitespace-only license_file")
+	}
+}
+
+func TestLicenseKeyFileEmptyDoesNotFallBackToInline(t *testing.T) {
+	// When license_file is configured but empty, pipelock must error
+	// rather than silently falling back to the inline license_key.
+	tmp := t.TempDir()
+
+	tokenPath := filepath.Join(tmp, "license.token")
+	if err := os.WriteFile(tokenPath, []byte(""), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+
+	cfgPath := filepath.Join(tmp, "cfg.yaml")
+	cfgContent := "mode: balanced\nlicense_file: license.token\nlicense_key: inline-should-not-be-used\n"
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := Load(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for empty license_file, must not fall back to inline license_key")
+	}
+}
+
+func TestLicenseKeyFilePermissiveModeRejected(t *testing.T) {
+	tmp := t.TempDir()
+
+	tokenPath := filepath.Join(tmp, "license.token")
+	if err := os.WriteFile(tokenPath, []byte("valid-token"), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+	// Widen permissions to trigger the permissive-mode guard.
+	if err := os.Chmod(tokenPath, 0o644); err != nil { //nolint:gosec // intentionally permissive for test
+		t.Fatalf("chmod token: %v", err)
+	}
+
+	cfgPath := filepath.Join(tmp, "cfg.yaml")
+	if err := os.WriteFile(cfgPath, []byte(testLicenseFileCfg), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := Load(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for permissive license_file mode")
+	}
+	if !strings.Contains(err.Error(), "too permissive") {
+		t.Errorf("error should mention permissive mode, got: %v", err)
+	}
+}
+
+func TestLicenseKeyFileOversized(t *testing.T) {
+	tmp := t.TempDir()
+
+	tokenPath := filepath.Join(tmp, "license.token")
+	// Write a file exceeding the 16 KiB cap.
+	bigData := make([]byte, 17*1024)
+	for i := range bigData {
+		bigData[i] = 'A'
+	}
+	if err := os.WriteFile(tokenPath, bigData, 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+
+	cfgPath := filepath.Join(tmp, "cfg.yaml")
+	if err := os.WriteFile(cfgPath, []byte(testLicenseFileCfg), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := Load(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for oversized license_file")
+	}
+	if !strings.Contains(err.Error(), "exceeds") {
+		t.Errorf("error should mention exceeds, got: %v", err)
+	}
+}
+
+func TestLicenseKeyFileNonRegular(t *testing.T) {
+	tmp := t.TempDir()
+
+	fifoPath := filepath.Join(tmp, "license.token")
+	if err := syscall.Mkfifo(fifoPath, 0o600); err != nil {
+		t.Skipf("cannot create FIFO: %v", err)
+	}
+
+	cfgPath := filepath.Join(tmp, "cfg.yaml")
+	if err := os.WriteFile(cfgPath, []byte(testLicenseFileCfg), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := Load(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for non-regular license_file")
+	}
+	if !strings.Contains(err.Error(), "regular file") {
+		t.Errorf("error should mention regular file, got: %v", err)
+	}
+}
+
+func TestLicenseKeyEnvOverridesFile(t *testing.T) {
+	t.Setenv(EnvLicenseKey, "env-wins")
+
+	tmp := t.TempDir()
+
+	tokenPath := filepath.Join(tmp, "license.token")
+	if err := os.WriteFile(tokenPath, []byte("file-loses"), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+
+	cfgPath := filepath.Join(tmp, "cfg.yaml")
+	cfgContent := "mode: balanced\nlicense_file: license.token\nlicense_key: inline-loses\n"
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LicenseKey != "env-wins" {
+		t.Errorf("license_key = %q, want env-wins (env var should take priority)", cfg.LicenseKey)
+	}
+}
+
+func TestLicenseKeyFileOverridesInline(t *testing.T) {
+	tmp := t.TempDir()
+
+	tokenPath := filepath.Join(tmp, "license.token")
+	if err := os.WriteFile(tokenPath, []byte("file-wins"), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+
+	cfgPath := filepath.Join(tmp, "cfg.yaml")
+	cfgContent := "mode: balanced\nlicense_file: license.token\nlicense_key: inline-loses\n"
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LicenseKey != "file-wins" {
+		t.Errorf("license_key = %q, want file-wins (file should override inline)", cfg.LicenseKey)
+	}
+}
+
+func TestLicenseFileParsedFromYAML(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "cfg.yaml")
+	cfgContent := "mode: balanced\nlicense_file: /some/path/license.token\n"
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	// Load will fail because the file doesn't exist, but verify
+	// the field is parsed correctly from the error message.
+	_, err := Load(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for missing license_file")
+	}
+	if !strings.Contains(err.Error(), "/some/path/license.token") {
+		t.Errorf("error should reference the configured path, got: %v", err)
 	}
 }
 

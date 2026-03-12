@@ -214,12 +214,7 @@ Examples:
 						func() {
 							defer func() {
 								if r := recover(); r != nil {
-									panicMsg := fmt.Sprintf("panic during config reload: %v", r)
-									if sentryClient != nil {
-										sentryClient.CaptureMessage(panicMsg)
-									}
-									logger.LogError("CONFIG_RELOAD", configFile, "", "", "",
-										fmt.Errorf("scanner construction panic: %v", r))
+									reloadPanicHandler(r, sentryClient, logger, configFile)
 								}
 							}()
 							// Check for security downgrades before applying
@@ -771,6 +766,21 @@ func agentListenersChanged(oldCfg, newCfg *config.Config) bool {
 		}
 	}
 	return false
+}
+
+// reloadPanicHandler captures panics during config reload, reports them to
+// Sentry, and logs the error. Extracted from the reload goroutine for
+// testability.
+func reloadPanicHandler(r any, sentryClient *plsentry.Client, logger *audit.Logger, configFile string) {
+	if r == nil {
+		return
+	}
+	panicMsg := fmt.Sprintf("panic during config reload: %v", r)
+	if sentryClient != nil {
+		sentryClient.CaptureMessage(panicMsg)
+	}
+	logger.LogError("CONFIG_RELOAD", configFile, "", "", "",
+		fmt.Errorf("scanner construction panic: %v", r))
 }
 
 // preserveAgentListeners keeps the new config's agent listener state

@@ -64,6 +64,13 @@ type Metrics struct {
 	CrossRequestDLPMatch        prometheus.Counter
 	CrossRequestFragmentBytes   prometheus.Gauge
 
+	// Scan API metrics
+	ScanAPIRequests    *prometheus.CounterVec
+	ScanAPIDuration    *prometheus.HistogramVec
+	ScanAPIFindings    *prometheus.CounterVec
+	ScanAPIErrors      *prometheus.CounterVec
+	ScanAPIConnections prometheus.Gauge
+
 	wsConnectionCount int64
 
 	mu                sync.Mutex
@@ -287,6 +294,28 @@ func New() *Metrics {
 		Help:      "Total fragment buffer memory across all sessions.",
 	})
 
+	scanAPIRequests := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "pipelock_scan_api_requests_total",
+		Help: "Total scan API requests by kind, decision, and status code.",
+	}, []string{"kind", "decision", "status_code"})
+	scanAPIDuration := prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "pipelock_scan_api_duration_seconds",
+		Help:    "Scan API scan latency in seconds.",
+		Buckets: prometheus.DefBuckets,
+	}, []string{"kind"})
+	scanAPIFindings := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "pipelock_scan_api_findings_total",
+		Help: "Total scan API findings by kind, scanner, and severity.",
+	}, []string{"kind", "scanner", "severity"})
+	scanAPIErrors := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "pipelock_scan_api_errors_total",
+		Help: "Total scan API errors by kind and error code.",
+	}, []string{"kind", "error_code"})
+	scanAPIConnections := prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "pipelock_scan_api_connections",
+		Help: "Current number of scan API connections.",
+	})
+
 	reg.MustRegister(requestsTotal, scannerHits, requestLatency,
 		tunnelsTotal, tunnelDuration, tunnelBytes, activeTunnels,
 		wsConnectionsTotal, wsDuration, wsBytes, activeWS, wsFrames, wsScanHits, wsRedirectHints,
@@ -294,7 +323,8 @@ func New() *Metrics {
 		bodyDLPHits, headerDLPHits,
 		sessionAnomalies, sessionEscalations, sessionsActive, sessionsEvicted,
 		tlsInterceptTotal, tlsCertCacheSize, tlsHandshakeDuration, tlsRequestBlocked, tlsResponseBlocked,
-		crossRequestEntropyExceeded, crossRequestDLPMatch, crossRequestFragmentBytes)
+		crossRequestEntropyExceeded, crossRequestDLPMatch, crossRequestFragmentBytes,
+		scanAPIRequests, scanAPIDuration, scanAPIFindings, scanAPIErrors, scanAPIConnections)
 
 	return &Metrics{
 		registry:                    reg,
@@ -329,6 +359,11 @@ func New() *Metrics {
 		CrossRequestEntropyExceeded: crossRequestEntropyExceeded,
 		CrossRequestDLPMatch:        crossRequestDLPMatch,
 		CrossRequestFragmentBytes:   crossRequestFragmentBytes,
+		ScanAPIRequests:             scanAPIRequests,
+		ScanAPIDuration:             scanAPIDuration,
+		ScanAPIFindings:             scanAPIFindings,
+		ScanAPIErrors:               scanAPIErrors,
+		ScanAPIConnections:          scanAPIConnections,
 		startTime:                   time.Now(),
 		topBlockedDomains:           make(map[string]int64),
 		topScannerHits:              make(map[string]int64),

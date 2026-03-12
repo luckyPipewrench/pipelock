@@ -3416,6 +3416,41 @@ func TestScan_CanceledContextWithSSRFDisabled(t *testing.T) {
 	}
 }
 
+func TestScan_ContextTimeoutDuringDNS(t *testing.T) {
+	cfg := config.Defaults()
+	// SSRF enabled (non-nil Internal) so checkSSRF runs the DNS path.
+	cfg.DLP.Patterns = nil
+	cfg.DLP.ScanEnv = false
+	cfg.FetchProxy.Monitoring.EntropyThreshold = 0
+	sc := New(cfg)
+	defer sc.Close()
+
+	// 10ms timeout: passes the entry guard (ctx not yet expired) but
+	// expires during or before DNS resolution, proving LookupHost
+	// inherits the caller's context rather than the 5s ceiling.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond) //nolint:mnd // test timeout
+	defer cancel()
+
+	// Random subdomain forces a DNS cache miss so the resolver does real work.
+	domain := fmt.Sprintf("ctx-test-%d.test.invalid", time.Now().UnixNano())
+	start := time.Now()
+	result := sc.Scan(ctx, "https://"+domain+"/path")
+	elapsed := time.Since(start)
+
+	// Must return near the 10ms caller timeout, not the 5s DNS ceiling.
+	if elapsed > 2*time.Second {
+		t.Errorf("expected return near caller timeout, got %v", elapsed)
+	}
+	if result.Allowed {
+		t.Error("expected blocked when context expires during DNS resolution")
+	}
+	// DNS failure via caller timeout is ScannerSSRF; if the 10ms fires
+	// before checkSSRF starts it may be ScannerContext instead.
+	if result.Scanner != ScannerSSRF && result.Scanner != ScannerContext {
+		t.Errorf("expected scanner=%s or %s, got %s", ScannerSSRF, ScannerContext, result.Scanner)
+	}
+}
+
 func TestScanHintEmptyOnAllowed(t *testing.T) {
 	cfg := testConfig()
 	sc := New(cfg)

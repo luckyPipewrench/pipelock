@@ -568,6 +568,10 @@ func Load(path string) (*Config, error) {
 
 	cfg.rawBytes = data
 
+	// Detect omitted security booleans via raw YAML introspection and
+	// default them to true (fail-closed). Must run before ApplyDefaults().
+	applySecurityDefaults(data, cfg)
+
 	cfg.ApplyDefaults()
 
 	// Soft-gate premium features: disable agents section if no license key.
@@ -606,6 +610,55 @@ func (c *Config) Hash() string {
 	}
 	h := sha256.Sum256(c.rawBytes)
 	return hex.EncodeToString(h[:])
+}
+
+// applySecurityDefaults sets security-sensitive booleans to true when they are
+// omitted or null in the config YAML. YAML unmarshal into a plain bool cannot
+// distinguish "field omitted" (should default to true, fail-closed) from "field
+// explicitly set to false" (user intent). We unmarshal into a raw map to detect
+// which fields are actually present with a non-nil value, then default the rest.
+func applySecurityDefaults(rawYAML []byte, cfg *Config) {
+	var raw map[string]interface{}
+	if err := yaml.Unmarshal(rawYAML, &raw); err != nil {
+		// Primary unmarshal already succeeded; treat parse errors as "all omitted"
+		// so we fail closed with all security defaults enabled.
+		cfg.DLP.ScanEnv = true
+		cfg.ResponseScanning.Enabled = true
+		cfg.RequestBodyScanning.Enabled = true
+		cfg.RequestBodyScanning.ScanHeaders = true
+		cfg.GitProtection.PrePushScan = true
+		cfg.Logging.IncludeAllowed = true
+		cfg.Logging.IncludeBlocked = true
+		return
+	}
+
+	setBoolDefault := func(section map[string]interface{}, key string, target *bool) {
+		if section == nil {
+			*target = true
+			return
+		}
+		val, present := section[key]
+		if !present || val == nil { // omitted or YAML null/blank: fail closed
+			*target = true
+		}
+	}
+
+	dlp, _ := raw["dlp"].(map[string]interface{})
+	setBoolDefault(dlp, "scan_env", &cfg.DLP.ScanEnv)
+
+	resp, _ := raw["response_scanning"].(map[string]interface{})
+	setBoolDefault(resp, "enabled", &cfg.ResponseScanning.Enabled)
+
+	reqBody, _ := raw["request_body_scanning"].(map[string]interface{})
+	setBoolDefault(reqBody, "enabled", &cfg.RequestBodyScanning.Enabled)
+	setBoolDefault(reqBody, "scan_headers", &cfg.RequestBodyScanning.ScanHeaders)
+
+	git, _ := raw["git_protection"].(map[string]interface{})
+	setBoolDefault(git, "pre_push_scan", &cfg.GitProtection.PrePushScan)
+
+	logging, _ := raw["logging"].(map[string]interface{})
+	setBoolDefault(logging, "include_allowed", &cfg.Logging.IncludeAllowed)
+	setBoolDefault(logging, "include_blocked", &cfg.Logging.IncludeBlocked)
 }
 
 // ApplyDefaults fills in zero-value fields with sensible defaults.
@@ -1004,8 +1057,8 @@ func (c *Config) Validate() error {
 		if err != nil {
 			return fmt.Errorf("secrets_file %q: %w", c.DLP.SecretsFile, err)
 		}
-		if info.Mode().Perm()&0o004 != 0 {
-			return fmt.Errorf("secrets_file %q is world-readable (mode %04o): restrict to 0600", c.DLP.SecretsFile, info.Mode().Perm())
+		if info.Mode().Perm()&0o077 != 0 { // reject any group or world access
+			return fmt.Errorf("secrets_file %q has unsafe permissions (mode %04o): must have owner-only permissions (no group or world access)", c.DLP.SecretsFile, info.Mode().Perm())
 		}
 	}
 

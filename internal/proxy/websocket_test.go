@@ -738,7 +738,7 @@ func TestWSProxyHeaderDLPBlock(t *testing.T) {
 	}
 }
 
-func TestWSProxyHeaderDLPSkipAllowlisted(t *testing.T) {
+func TestWSProxyHeaderDLPBlocksAllowlistedHost(t *testing.T) {
 	backendAddr, backendCleanup := wsEchoServer(t)
 	defer backendCleanup()
 
@@ -752,7 +752,8 @@ func TestWSProxyHeaderDLPSkipAllowlisted(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// This "secret" would normally trip DLP, but should pass for allowlisted hosts.
+	// Secret in Authorization header must be caught even for allowlisted hosts.
+	// Allowlist controls URL-level blocking, not header DLP bypass.
 	secret := "sk-ant-" + "IOSFODNN7EXAMPLE1234567890abcdef"
 	wsURL := fmt.Sprintf("ws://%s/ws?url=ws://%s", proxyAddr, backendAddr)
 
@@ -764,22 +765,11 @@ func TestWSProxyHeaderDLPSkipAllowlisted(t *testing.T) {
 	}
 
 	conn, _, _, err := dialer.Dial(ctx, wsURL)
-	if err != nil {
-		t.Fatalf("expected dial to succeed for allowlisted host, got: %v", err)
+	if err == nil {
+		_ = conn.Close()
+		t.Fatal("expected dial to fail: header DLP must block secrets regardless of allowlist")
 	}
-	defer conn.Close() //nolint:errcheck // test
-
-	// Verify the connection works.
-	if writeErr := wsutil.WriteClientMessage(conn, ws.OpText, []byte(testWSHello)); writeErr != nil {
-		t.Fatalf("write: %v", writeErr)
-	}
-	reply, _, readErr := wsutil.ReadServerData(conn)
-	if readErr != nil {
-		t.Fatalf("read: %v", readErr)
-	}
-	if string(reply) != testWSHello {
-		t.Errorf("expected 'hello', got %q", reply)
-	}
+	// Connection should be rejected with DLP match.
 }
 
 func TestWSProxyHeaderDLPBlockCookie(t *testing.T) {

@@ -1805,8 +1805,8 @@ func TestValidate_SecretsFileWorldReadable(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for world-readable secrets file")
 	}
-	if !strings.Contains(err.Error(), "world-readable") {
-		t.Errorf("error should mention world-readable, got: %v", err)
+	if !strings.Contains(err.Error(), "unsafe permissions") {
+		t.Errorf("error should mention unsafe permissions, got: %v", err)
 	}
 }
 
@@ -1822,6 +1822,26 @@ func TestValidate_SecretsFileValid(t *testing.T) {
 	cfg.DLP.SecretsFile = secretsPath
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("valid secrets file should pass validation: %v", err)
+	}
+}
+
+func TestValidate_SecretsFileGroupReadable(t *testing.T) {
+	dir := t.TempDir()
+	secretsPath := filepath.Join(dir, "secrets.txt")
+	if err := os.WriteFile(secretsPath, []byte("my-secret-value"), 0o640); err != nil { //nolint:gosec // G306: intentionally group-readable for test
+		t.Fatal(err)
+	}
+
+	cfg := Defaults()
+	cfg.Internal = nil
+	cfg.DLP.SecretsFile = secretsPath
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for group-readable secrets_file (0640)")
+	}
+	if !strings.Contains(err.Error(), "unsafe permissions") {
+		t.Errorf("error should mention unsafe permissions, got: %v", err)
 	}
 }
 
@@ -5183,5 +5203,179 @@ func TestReloadWarnings_CrossRequestDetection_ParentDisabledNoNestedWarnings(t *
 	}
 	if !parentFound {
 		t.Error("expected parent cross_request_detection.enabled warning")
+	}
+}
+
+func TestLoad_PreservesSecurityBooleanDefaults(t *testing.T) {
+	// A minimal config that omits all security booleans.
+	// These must default to true (fail-closed), not false (Go zero value).
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "minimal.yaml")
+	if err := os.WriteFile(cfgPath, []byte("mode: balanced\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	// Every security-sensitive boolean that Defaults() sets to true
+	// must remain true when omitted from config YAML.
+	checks := []struct {
+		name string
+		got  bool
+	}{
+		{"DLP.ScanEnv", cfg.DLP.ScanEnv},
+		{"ResponseScanning.Enabled", cfg.ResponseScanning.Enabled},
+		{"RequestBodyScanning.Enabled", cfg.RequestBodyScanning.Enabled},
+		{"RequestBodyScanning.ScanHeaders", cfg.RequestBodyScanning.ScanHeaders},
+		{"GitProtection.PrePushScan", cfg.GitProtection.PrePushScan},
+		{"Logging.IncludeAllowed", cfg.Logging.IncludeAllowed},
+		{"Logging.IncludeBlocked", cfg.Logging.IncludeBlocked},
+	}
+
+	for _, c := range checks {
+		if !c.got {
+			t.Errorf("%s = false, want true (security default lost during Load)", c.name)
+		}
+	}
+}
+
+func TestLoad_PartialSubsectionPreservesBoolDefaults(t *testing.T) {
+	// Sections are present but only contain non-boolean fields.
+	// Omitted booleans inside present sections must still default to true.
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "partial.yaml")
+	content := "mode: balanced\n" +
+		"request_body_scanning:\n" +
+		"  max_body_bytes: 4096\n" +
+		"logging:\n" +
+		"  format: json\n" +
+		"dlp:\n" +
+		"  min_entropy: 4.0\n" +
+		"response_scanning:\n" +
+		"  action: warn\n" +
+		"git_protection:\n" +
+		"  secrets_in_diff: true\n"
+	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	checks := []struct {
+		name string
+		got  bool
+	}{
+		{"DLP.ScanEnv", cfg.DLP.ScanEnv},
+		{"ResponseScanning.Enabled", cfg.ResponseScanning.Enabled},
+		{"RequestBodyScanning.Enabled", cfg.RequestBodyScanning.Enabled},
+		{"RequestBodyScanning.ScanHeaders", cfg.RequestBodyScanning.ScanHeaders},
+		{"GitProtection.PrePushScan", cfg.GitProtection.PrePushScan},
+		{"Logging.IncludeAllowed", cfg.Logging.IncludeAllowed},
+		{"Logging.IncludeBlocked", cfg.Logging.IncludeBlocked},
+	}
+
+	for _, c := range checks {
+		if !c.got {
+			t.Errorf("%s = false, want true (security default lost in partial subsection)", c.name)
+		}
+	}
+}
+
+func TestLoad_ExplicitFalseOverridesDefaults(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "explicit-false.yaml")
+	content := "mode: balanced\n" +
+		"dlp:\n" +
+		"  scan_env: false\n" +
+		"response_scanning:\n" +
+		"  enabled: false\n" +
+		"request_body_scanning:\n" +
+		"  enabled: false\n" +
+		"  scan_headers: false\n" +
+		"git_protection:\n" +
+		"  pre_push_scan: false\n" +
+		"logging:\n" +
+		"  include_allowed: false\n" +
+		"  include_blocked: false\n"
+	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	checks := []struct {
+		name string
+		got  bool
+	}{
+		{"DLP.ScanEnv", cfg.DLP.ScanEnv},
+		{"ResponseScanning.Enabled", cfg.ResponseScanning.Enabled},
+		{"RequestBodyScanning.Enabled", cfg.RequestBodyScanning.Enabled},
+		{"RequestBodyScanning.ScanHeaders", cfg.RequestBodyScanning.ScanHeaders},
+		{"GitProtection.PrePushScan", cfg.GitProtection.PrePushScan},
+		{"Logging.IncludeAllowed", cfg.Logging.IncludeAllowed},
+		{"Logging.IncludeBlocked", cfg.Logging.IncludeBlocked},
+	}
+
+	for _, c := range checks {
+		if c.got {
+			t.Errorf("%s = true, want false (explicit false in YAML must override default)", c.name)
+		}
+	}
+}
+
+func TestLoad_NullBooleanDefaultsToTrue(t *testing.T) {
+	// YAML null (bare key, explicit null, tilde) must default to true,
+	// not silently disable security features. This is a bypass regression:
+	// "scan_env:" (null) is different from "scan_env: false" (explicit opt-out).
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "null-bools.yaml")
+	content := "mode: balanced\n" +
+		"dlp:\n" +
+		"  scan_env:\n" + // bare key (YAML null)
+		"response_scanning:\n" +
+		"  enabled: null\n" + // explicit null
+		"request_body_scanning:\n" +
+		"  enabled: ~\n" + // tilde null
+		"  scan_headers:\n" +
+		"git_protection:\n" +
+		"  pre_push_scan: null\n" +
+		"logging:\n" +
+		"  include_allowed: ~\n" +
+		"  include_blocked:\n"
+	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	checks := []struct {
+		name string
+		got  bool
+	}{
+		{"DLP.ScanEnv", cfg.DLP.ScanEnv},
+		{"ResponseScanning.Enabled", cfg.ResponseScanning.Enabled},
+		{"RequestBodyScanning.Enabled", cfg.RequestBodyScanning.Enabled},
+		{"RequestBodyScanning.ScanHeaders", cfg.RequestBodyScanning.ScanHeaders},
+		{"GitProtection.PrePushScan", cfg.GitProtection.PrePushScan},
+		{"Logging.IncludeAllowed", cfg.Logging.IncludeAllowed},
+		{"Logging.IncludeBlocked", cfg.Logging.IncludeBlocked},
+	}
+
+	for _, c := range checks {
+		if !c.got {
+			t.Errorf("%s = false, want true (YAML null must fail closed, not disable security)", c.name)
+		}
 	}
 }

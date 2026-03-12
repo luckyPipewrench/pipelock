@@ -16,13 +16,13 @@ These map to the [OWASP Top 10 for Agentic Applications](owasp-mapping.md) and a
 
 ## Trust Boundaries
 
-Pipelock enforces a capability separation architecture:
+Pipelock is designed to be deployed in a capability-separated architecture:
 
 ```text
 +-----------------------+          +------------------------+          +----------+
 |       Agent           |   --->   |     Pipelock Proxy     |   --->   | Internet |
 | (has secrets/API keys |          | (has network access,   |          |          |
-|  no network access)   |          |  no secrets)           |          |          |
+|  no network access)   |          |  no agent secrets)     |          |          |
 +-----------------------+          +------------------------+          +----------+
 ```
 

@@ -63,7 +63,7 @@ This is separate from the [OWASP Top 10 for Agentic Applications](owasp-mapping.
 
 **Pipelock coverage:**
 
-- **Capability separation:** the agent process (holds secrets, no network) and the proxy (has network, no secrets) run separately. Neither has both.
+- **Capability separation:** the agent process (holds secrets, no network) and the proxy (has network, no agent secrets) run separately. Deployment enforces the boundary. Neither has both capabilities.
 - **Domain allowlisting:** agents can only reach explicitly allowed API endpoints.
 - **SSRF protection:** blocks requests to internal/private IP ranges with DNS rebinding prevention.
 - **DLP scanning:** 36 built-in patterns detect API keys, tokens, and credentials in outbound traffic.

@@ -295,7 +295,17 @@ func HintForBlock(r *Result) string {
 
 // Scan checks a URL against all scanners and returns the result.
 // Blocked results include a Hint field with actionable guidance.
+// Fail-closed: nil or already-cancelled contexts are rejected before scanning.
 func (s *Scanner) Scan(ctx context.Context, rawURL string) Result {
+	if ctx == nil || ctx.Err() != nil {
+		return Result{
+			Allowed: false,
+			Reason:  "request context unavailable",
+			Scanner: ScannerParser,
+			Score:   1.0,
+			Hint:    "The request context was nil or already cancelled.",
+		}
+	}
 	r := s.scan(ctx, rawURL)
 	if !r.Allowed {
 		r.Hint = HintForBlock(&r)

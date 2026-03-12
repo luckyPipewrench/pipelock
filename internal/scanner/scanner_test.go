@@ -3362,8 +3362,6 @@ func TestScanPopulatesHintOnBlock(t *testing.T) {
 
 func TestScan_RespectsContextCancellation(t *testing.T) {
 	cfg := config.Defaults()
-	// SSRF must be enabled (non-nil Internal) so the DNS lookup path runs.
-	// DLP/entropy/env disabled to isolate the SSRF layer.
 	cfg.DLP.Patterns = nil
 	cfg.DLP.ScanEnv = false
 	cfg.FetchProxy.Monitoring.EntropyThreshold = 0
@@ -3377,16 +3375,44 @@ func TestScan_RespectsContextCancellation(t *testing.T) {
 	result := sc.Scan(ctx, "https://example.com/test")
 	elapsed := time.Since(start)
 
-	// A cancelled context should short-circuit DNS, not wait 5s.
+	// Cancelled context is caught by the fail-closed guard before scanning.
 	if elapsed > 2*time.Second {
 		t.Errorf("Scan with cancelled context took %v, expected fast return", elapsed)
 	}
-	// Fail-closed: cancelled context means DNS fails, so request is blocked.
 	if result.Allowed {
 		t.Error("expected blocked result when context is cancelled")
 	}
-	if result.Scanner != ScannerSSRF {
-		t.Errorf("expected scanner=%s, got %s", ScannerSSRF, result.Scanner)
+	if result.Scanner != ScannerParser {
+		t.Errorf("expected scanner=%s, got %s", ScannerParser, result.Scanner)
+	}
+}
+
+func TestScan_NilContext(t *testing.T) {
+	sc := New(testConfig())
+	defer sc.Close()
+
+	// nil context must not panic; fail-closed guard blocks it.
+	result := sc.Scan(nil, "https://example.com/test") //nolint:staticcheck // intentional nil context test
+	if result.Allowed {
+		t.Error("expected blocked result for nil context")
+	}
+	if result.Scanner != ScannerParser {
+		t.Errorf("expected scanner=%s, got %s", ScannerParser, result.Scanner)
+	}
+}
+
+func TestScan_CanceledContextWithSSRFDisabled(t *testing.T) {
+	cfg := testConfig() // cfg.Internal = nil disables SSRF
+	sc := New(cfg)
+	defer sc.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// Even with SSRF disabled, a cancelled context must block.
+	result := sc.Scan(ctx, "https://example.com/test")
+	if result.Allowed {
+		t.Error("expected blocked result for cancelled context even with SSRF disabled")
 	}
 }
 

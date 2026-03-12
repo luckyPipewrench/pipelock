@@ -19,6 +19,12 @@ type Client struct {
 // Init initializes a Sentry client from config. Returns a no-op client when
 // Sentry is disabled or no DSN is available (config or SENTRY_DSN env).
 func Init(cfg *config.Config, version string) (*Client, error) {
+	return initClient(cfg, version, nil)
+}
+
+// initClient is the internal initializer. When transport is non-nil it is
+// injected into the Sentry SDK options (used by tests to capture events).
+func initClient(cfg *config.Config, version string, transport sentry.Transport) (*Client, error) {
 	if !cfg.Sentry.SentryEnabled() {
 		return &Client{enabled: false}, nil
 	}
@@ -49,7 +55,7 @@ func Init(cfg *config.Config, version string) (*Client, error) {
 
 	scrubber := NewScrubber(cfg.DLP.Patterns, envSecrets)
 
-	err := sentry.Init(sentry.ClientOptions{
+	opts := sentry.ClientOptions{
 		Dsn:              dsn,
 		Release:          version,
 		Environment:      cfg.Sentry.Environment,
@@ -59,7 +65,12 @@ func Init(cfg *config.Config, version string) (*Client, error) {
 		BeforeSend: func(event *sentry.Event, hint *sentry.EventHint) *sentry.Event {
 			return scrubber.ScrubEvent(event, hint)
 		},
-	})
+	}
+	if transport != nil {
+		opts.Transport = transport
+	}
+
+	err := sentry.Init(opts)
 	if err != nil {
 		return nil, err
 	}

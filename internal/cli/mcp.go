@@ -344,12 +344,20 @@ Environment passthrough (subprocess mode only):
 
 				// HTTP reverse proxy mode: --listen + --upstream.
 				if hasListen && isWSUpstream {
-					return fmt.Errorf("--listen with WebSocket upstream (ws/wss) is not yet supported; use stdio mode: pipelock mcp proxy --upstream %s", upstreamURL)
+					err := fmt.Errorf("--listen with WebSocket upstream (ws/wss) is not yet supported; use stdio mode: pipelock mcp proxy --upstream %s", upstreamURL)
+					if sentryClient != nil {
+						sentryClient.CaptureError(err)
+					}
+					return err
 				}
 				if hasListen {
 					mcpLn, lnErr := (&net.ListenConfig{}).Listen(ctx, "tcp", listenAddr)
 					if lnErr != nil {
-						return fmt.Errorf("MCP listener bind %s: %w", listenAddr, lnErr)
+						err := fmt.Errorf("MCP listener bind %s: %w", listenAddr, lnErr)
+						if sentryClient != nil {
+							sentryClient.CaptureError(err)
+						}
+						return err
 					}
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: MCP reverse proxy %s -> %s (response=%s, input=%s, tools=%s, policy=%s)\n",
 						listenAddr, upstreamURL, sc.ResponseAction(), inputCfg.Action, toolAction, policyAction)

@@ -2260,7 +2260,7 @@ fetch_proxy:
 	}
 
 	// Verify license change warning appeared.
-	if !bytes.Contains(stderr.Bytes(), []byte("license_key or license_public_key changed")) {
+	if !bytes.Contains(stderr.Bytes(), []byte("license key inputs changed")) {
 		t.Errorf("expected license reload warning, got:\n%s", stderr.String())
 	}
 }
@@ -2352,6 +2352,101 @@ fetch_proxy:
 	// Verify NO license warning appeared (same key, just mode change).
 	if bytes.Contains(stderr.Bytes(), []byte("license")) {
 		t.Errorf("unexpected license warning on non-license reload:\n%s", stderr.String())
+	}
+}
+
+func TestRunCmd_ReloadLicenseFileChange(t *testing.T) {
+	lc := net.ListenConfig{}
+	ln, listenErr := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if listenErr != nil {
+		t.Fatal(listenErr)
+	}
+	mainAddr := ln.Addr().String()
+	_ = ln.Close()
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "test.yaml")
+	cfgContent := fmt.Sprintf(`version: 1
+mode: balanced
+fetch_proxy:
+  listen: "%s"
+  timeout_seconds: 5
+`, mainAddr)
+	if writeErr := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cmd := rootCmd()
+	cmd.SetContext(ctx)
+	cmd.SetArgs([]string{"run", "--config", cfgPath})
+	var stderr bytes.Buffer
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(&stderr)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- cmd.Execute()
+	}()
+
+	// Wait for healthy.
+	client := &http.Client{Timeout: time.Second}
+	healthURL := "http://" + mainAddr + "/health"
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case cmdErr := <-errCh:
+			cancel()
+			t.Fatalf("run exited early: %v", cmdErr)
+		default:
+		}
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+		resp, rerr := client.Do(req) //nolint:gosec // test-only
+		if rerr == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// Write a license token file so the config reload succeeds.
+	tokenPath := filepath.Join(dir, "license.token")
+	if writeErr := os.WriteFile(tokenPath, []byte("some-token"), 0o600); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+
+	// Hot-reload: add license_file (should warn about license inputs change).
+	updatedCfg := fmt.Sprintf(`version: 1
+mode: balanced
+license_file: "license.token"
+fetch_proxy:
+  listen: "%s"
+  timeout_seconds: 5
+`, mainAddr)
+	if writeErr := os.WriteFile(cfgPath, []byte(updatedCfg), 0o600); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+
+	// Wait for reload to process.
+	time.Sleep(500 * time.Millisecond)
+
+	cancel()
+	select {
+	case cmdErr := <-errCh:
+		if cmdErr != nil {
+			t.Errorf("unexpected error: %v", cmdErr)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("run did not shut down")
+	}
+
+	// Verify license change warning appeared from license_file addition.
+	if !bytes.Contains(stderr.Bytes(), []byte("license key inputs changed")) {
+		t.Errorf("expected license reload warning from license_file change, got:\n%s", stderr.String())
 	}
 }
 

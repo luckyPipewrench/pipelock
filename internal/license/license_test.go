@@ -25,12 +25,14 @@ func TestIssueAndVerify(t *testing.T) {
 	pub, priv := testKeyPair(t)
 
 	lic := License{
-		ID:        "lic_test_001",
-		Email:     "customer@example.com",
-		Org:       "Acme Corp",
-		IssuedAt:  time.Now().Unix(),
-		ExpiresAt: time.Now().Add(365 * 24 * time.Hour).Unix(),
-		Features:  []string{FeatureAgents},
+		ID:             "lic_test_001",
+		Email:          "customer@example.com",
+		Org:            "Acme Corp",
+		IssuedAt:       time.Now().Unix(),
+		ExpiresAt:      time.Now().Add(365 * 24 * time.Hour).Unix(),
+		Features:       []string{FeatureAgents},
+		Tier:           "pro",
+		SubscriptionID: "sub_polar_abc123",
 	}
 
 	token, err := Issue(lic, priv)
@@ -54,6 +56,12 @@ func TestIssueAndVerify(t *testing.T) {
 	}
 	if got.Org != lic.Org {
 		t.Errorf("Org = %q, want %q", got.Org, lic.Org)
+	}
+	if got.Tier != lic.Tier {
+		t.Errorf("Tier = %q, want %q", got.Tier, lic.Tier)
+	}
+	if got.SubscriptionID != lic.SubscriptionID {
+		t.Errorf("SubscriptionID = %q, want %q", got.SubscriptionID, lic.SubscriptionID)
 	}
 	if !got.HasFeature(FeatureAgents) {
 		t.Error("expected agents feature")
@@ -340,6 +348,70 @@ func TestDecodeBadFormat(t *testing.T) {
 				t.Error("expected error")
 			}
 		})
+	}
+}
+
+func TestBackwardCompatibility_NoTierFields(t *testing.T) {
+	// Tokens issued before tier/subscription_id fields were added must
+	// still verify. The new fields should default to empty strings.
+	pub, priv := testKeyPair(t)
+
+	lic := License{
+		ID:        "lic_legacy",
+		Email:     "old@example.com",
+		IssuedAt:  time.Now().Unix(),
+		ExpiresAt: time.Now().Add(365 * 24 * time.Hour).Unix(),
+		Features:  []string{FeatureAgents},
+		// Tier and SubscriptionID intentionally omitted (zero values).
+	}
+
+	token, err := Issue(lic, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Verify(token, pub)
+	if err != nil {
+		t.Fatalf("legacy token should verify: %v", err)
+	}
+	if got.Tier != "" {
+		t.Errorf("Tier = %q, want empty for legacy token", got.Tier)
+	}
+	if got.SubscriptionID != "" {
+		t.Errorf("SubscriptionID = %q, want empty for legacy token", got.SubscriptionID)
+	}
+	if !got.HasFeature(FeatureAgents) {
+		t.Error("expected agents feature on legacy token")
+	}
+}
+
+func TestDecodeWithTierFields(t *testing.T) {
+	_, priv := testKeyPair(t)
+
+	lic := License{
+		ID:             "lic_decode_tier",
+		Email:          "tier@example.com",
+		IssuedAt:       time.Now().Unix(),
+		ExpiresAt:      time.Now().Add(365 * 24 * time.Hour).Unix(),
+		Features:       []string{FeatureAgents},
+		Tier:           "founding_pro",
+		SubscriptionID: "sub_xyz789",
+	}
+
+	token, err := Issue(lic, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Decode(token)
+	if err != nil {
+		t.Fatalf("Decode failed: %v", err)
+	}
+	if got.Tier != "founding_pro" {
+		t.Errorf("Tier = %q, want founding_pro", got.Tier)
+	}
+	if got.SubscriptionID != "sub_xyz789" {
+		t.Errorf("SubscriptionID = %q, want sub_xyz789", got.SubscriptionID)
 	}
 }
 

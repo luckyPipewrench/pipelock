@@ -5,6 +5,7 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -5891,6 +5892,15 @@ func TestValidate_SampleRateZeroIsValid(t *testing.T) {
 	cfg.Sentry.SampleRate = floatPtr(0.0)
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("expected sample_rate 0.0 to be valid (disables sampling), got: %v", err)
+	}
+}
+
+func TestValidate_SampleRateNaN(t *testing.T) {
+	cfg := Defaults()
+	nan := math.NaN()
+	cfg.Sentry.SampleRate = &nan
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for NaN sample_rate")
 	}
 }
 

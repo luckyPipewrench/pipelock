@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/url"
 	"os"
@@ -1634,6 +1635,9 @@ func (c *Config) Validate() error {
 
 	// Validate Sentry config
 	sr := c.Sentry.EffectiveSampleRate()
+	if math.IsNaN(sr) {
+		return fmt.Errorf("invalid sentry.sample_rate: NaN not allowed")
+	}
 	if sr < 0 || sr > 1 {
 		return fmt.Errorf("invalid sentry.sample_rate %f: must be between 0.0 and 1.0", sr)
 	}

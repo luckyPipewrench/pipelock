@@ -739,6 +739,7 @@ fetch_proxy:
 	client := &http.Client{Timeout: time.Second}
 	healthURL := "http://" + addr + "/health"
 	deadline := time.Now().Add(5 * time.Second)
+	healthy := false
 	for time.Now().Before(deadline) {
 		select {
 		case runErr := <-errCh:
@@ -751,10 +752,15 @@ fetch_proxy:
 		if rerr == nil {
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
+				healthy = true
 				break
 			}
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+	if !healthy {
+		cancel()
+		t.Fatal("proxy never became healthy within 5s")
 	}
 
 	cancel()
@@ -769,7 +775,7 @@ fetch_proxy:
 	}
 }
 
-func TestRunCmd_ProxyStartError_SentryCapture(t *testing.T) {
+func TestRunCmd_ProxyStartError_BindFailure(t *testing.T) {
 	// Bind a port so the proxy will fail with "address already in use".
 	lc := net.ListenConfig{}
 	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
@@ -804,10 +810,12 @@ fetch_proxy:
 	}
 }
 
-func TestRunCmd_ReloadPanicRecovery(t *testing.T) {
-	// Start with a valid config, then write a config that triggers a panic
-	// in the reload path. The reload path wraps scanner construction in a
-	// recover(), so the proxy should continue running.
+func TestRunCmd_ReloadRejectedConfig(t *testing.T) {
+	// Start with a valid config, then write a config with an invalid DLP
+	// regex. config.Load() rejects the invalid config before scanner
+	// construction, so the proxy should continue running with the original
+	// config. (The recover() panic-recovery path is tested separately in
+	// TestReloadPanicHandler_EndToEnd.)
 	lc := net.ListenConfig{}
 	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
@@ -865,10 +873,9 @@ fetch_proxy:
 		time.Sleep(50 * time.Millisecond)
 	}
 
-	// Write a config with an invalid DLP regex. The reloader validates via
-	// config.Load() which catches this, so the panic recovery path is not
-	// exercised. We verify the proxy survives a rejected reload and
-	// continues serving.
+	// Write a config with an invalid DLP regex. config.Load() rejects this
+	// before scanner construction, so the proxy survives and continues
+	// serving with the original config.
 	invalidCfg := fmt.Sprintf(`version: 1
 mode: balanced
 fetch_proxy:

@@ -7,6 +7,7 @@ package licenseservice
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -210,7 +211,7 @@ func (e *EntitlementDB) GetBySubscriptionID(ctx context.Context, subID string) (
 		&ent.LastLicenseProductID, &ent.LastDeliveryStatus, &ent.LastDeliveryAttemptAt,
 		&ent.NextRefreshAt, &ent.CreatedAt, &ent.UpdatedAt,
 	)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {

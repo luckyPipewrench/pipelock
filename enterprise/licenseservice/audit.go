@@ -131,11 +131,15 @@ func (a *AuditLedger) LogEmailSent(subscriptionID, email, detail string) error {
 
 // LogEmailFailed records a failed email delivery attempt.
 func (a *AuditLedger) LogEmailFailed(subscriptionID, email string, sendErr error) error {
+	errStr := ""
+	if sendErr != nil {
+		errStr = sendErr.Error()
+	}
 	return a.Log(AuditEntry{
 		Event:          AuditEmailFailed,
 		SubscriptionID: subscriptionID,
 		CustomerEmail:  email,
-		Error:          sendErr.Error(),
+		Error:          errStr,
 	})
 }
 
@@ -185,10 +189,17 @@ func redactMap(m map[string]interface{}, fields []string) {
 		}
 	}
 
-	// Recurse into nested objects.
+	// Recurse into nested objects and arrays.
 	for _, v := range m {
 		if nested, ok := v.(map[string]interface{}); ok {
 			redactMap(nested, fields)
+		}
+		if arr, ok := v.([]interface{}); ok {
+			for _, elem := range arr {
+				if nested, ok := elem.(map[string]interface{}); ok {
+					redactMap(nested, fields)
+				}
+			}
 		}
 	}
 }

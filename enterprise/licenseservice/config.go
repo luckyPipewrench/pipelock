@@ -84,6 +84,9 @@ func LoadConfig() (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse FOUNDING_PRO_CAP: %w", err)
 	}
+	if foundingCap < 0 {
+		return nil, fmt.Errorf("FOUNDING_PRO_CAP must be non-negative, got %d", foundingCap)
+	}
 	cfg.FoundingProCap = foundingCap
 
 	// Parse founding pro deadline.

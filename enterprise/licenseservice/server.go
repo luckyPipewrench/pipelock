@@ -122,6 +122,7 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		s.log.Debug().
 			Str("event_type", event.Type).
 			Msg("ignoring non-subscription event")
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprintf(w, `{"status":"ignored","event_type":%q}`, event.Type)
 		return
@@ -133,10 +134,13 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		s.log.Error().Err(err).
 			Str("event_type", event.Type).
 			Msg("webhook processing error")
-		http.Error(w, `{"status":"error"}`, http.StatusInternalServerError)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = fmt.Fprintf(w, `{"status":"error"}`)
 		return
 	}
 
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = fmt.Fprintf(w, `{"status":"ok"}`)
 }

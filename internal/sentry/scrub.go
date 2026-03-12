@@ -82,6 +82,25 @@ func (s *Scrubber) ScrubString(input string) string {
 	return result
 }
 
+// scrubStacktrace redacts secrets in stacktrace frame variables.
+// Shared by exception and thread scrubbing paths.
+func (s *Scrubber) scrubStacktrace(st *sentry.Stacktrace) {
+	if st == nil {
+		return
+	}
+	for i := range st.Frames {
+		for k, v := range st.Frames[i].Vars {
+			if sv, ok := v.(string); ok {
+				st.Frames[i].Vars[k] = s.ScrubString(sv)
+			} else {
+				// Fail-closed: delete non-string vars rather than
+				// risk leaking secrets in serialized form.
+				delete(st.Frames[i].Vars, k)
+			}
+		}
+	}
+}
+
 // ScrubEvent scrubs all string fields in a Sentry event before transmission.
 // This is used as the BeforeSend hook in sentry.ClientOptions.
 //
@@ -107,19 +126,12 @@ func (s *Scrubber) ScrubEvent(event *sentry.Event, _ *sentry.EventHint) *sentry.
 	for i := range event.Exception {
 		event.Exception[i].Type = s.ScrubString(event.Exception[i].Type)
 		event.Exception[i].Value = s.ScrubString(event.Exception[i].Value)
-		if event.Exception[i].Stacktrace != nil {
-			for j := range event.Exception[i].Stacktrace.Frames {
-				for k, v := range event.Exception[i].Stacktrace.Frames[j].Vars {
-					if sv, ok := v.(string); ok {
-						event.Exception[i].Stacktrace.Frames[j].Vars[k] = s.ScrubString(sv)
-					} else {
-						// Fail-closed: delete non-string vars rather than
-						// risk leaking secrets in serialized form.
-						delete(event.Exception[i].Stacktrace.Frames[j].Vars, k)
-					}
-				}
-			}
-		}
+		s.scrubStacktrace(event.Exception[i].Stacktrace)
+	}
+
+	// Scrub threads — same Stacktrace structure as exceptions.
+	for i := range event.Threads {
+		s.scrubStacktrace(event.Threads[i].Stacktrace)
 	}
 
 	// Scrub breadcrumbs.

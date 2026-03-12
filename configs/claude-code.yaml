@@ -358,10 +358,10 @@ logging:
   include_allowed: true
   include_blocked: true
 
-# Defaults to luckyPipewrench Sentry to allow us to squash bugs even if they're unreported
+# Set dsn here or via SENTRY_DSN env var to enable crash reporting.
 sentry:
   enabled: true
-  dsn: "https://b1902c1ea2d87902780bfbf59c0fb343@o4511026551783424.ingest.us.sentry.io/4511026559254528"  # Set via config or SENTRY_DSN env var
+  dsn: ""  # Your Sentry DSN (or set SENTRY_DSN env var)
   environment: production
   sample_rate: 1.0
 

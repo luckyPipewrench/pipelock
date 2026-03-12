@@ -2614,7 +2614,7 @@ func TestScan_AllowlistRunsBeforeBlocklist(t *testing.T) {
 	}
 }
 
-// --- loadSecretsFile Tests ---
+// --- LoadSecretsFile Tests ---
 
 func TestLoadSecretsFile_Basic(t *testing.T) {
 	dir := t.TempDir()
@@ -2627,7 +2627,7 @@ func TestLoadSecretsFile_Basic(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	secrets, err := loadSecretsFile(path, 16)
+	secrets, err := LoadSecretsFile(path, 16)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2647,7 +2647,7 @@ func TestLoadSecretsFile_CommentsAndBlankLines(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	secrets, err := loadSecretsFile(path, 16)
+	secrets, err := LoadSecretsFile(path, 16)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2664,7 +2664,7 @@ func TestLoadSecretsFile_InlineHashPreserved(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	secrets, err := loadSecretsFile(path, 16)
+	secrets, err := LoadSecretsFile(path, 16)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2681,7 +2681,7 @@ func TestLoadSecretsFile_TrailingWhitespaceStripped(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	secrets, err := loadSecretsFile(path, 16)
+	secrets, err := LoadSecretsFile(path, 16)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2700,7 +2700,7 @@ func TestLoadSecretsFile_CRLFLineEndings(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	secrets, err := loadSecretsFile(path, 16)
+	secrets, err := LoadSecretsFile(path, 16)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2723,7 +2723,7 @@ func TestLoadSecretsFile_UTF8BOMStripped(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	secrets, err := loadSecretsFile(path, 16)
+	secrets, err := LoadSecretsFile(path, 16)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2746,7 +2746,7 @@ func TestLoadSecretsFile_NullBytesSkipped(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	secrets, err := loadSecretsFile(path, 16)
+	secrets, err := LoadSecretsFile(path, 16)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2763,7 +2763,7 @@ func TestLoadSecretsFile_MinLengthFiltered(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	secrets, err := loadSecretsFile(path, 16)
+	secrets, err := LoadSecretsFile(path, 16)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2781,7 +2781,7 @@ func TestLoadSecretsFile_MaxLineLengthEnforced(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	secrets, err := loadSecretsFile(path, 16)
+	secrets, err := LoadSecretsFile(path, 16)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2801,7 +2801,7 @@ func TestLoadSecretsFile_MaxEntriesEnforced(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	secrets, err := loadSecretsFile(path, 16)
+	secrets, err := LoadSecretsFile(path, 16)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2817,7 +2817,7 @@ func TestLoadSecretsFile_EmptyFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	secrets, err := loadSecretsFile(path, 16)
+	secrets, err := LoadSecretsFile(path, 16)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2827,7 +2827,7 @@ func TestLoadSecretsFile_EmptyFile(t *testing.T) {
 }
 
 func TestLoadSecretsFile_FileNotFound(t *testing.T) {
-	_, err := loadSecretsFile("/nonexistent/secrets.txt", 16)
+	_, err := LoadSecretsFile("/nonexistent/secrets.txt", 16)
 	if err == nil {
 		t.Error("expected error for nonexistent file")
 	}
@@ -2841,7 +2841,7 @@ func TestLoadSecretsFile_DuplicatesPreserved(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	secrets, err := loadSecretsFile(path, 16)
+	secrets, err := LoadSecretsFile(path, 16)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3254,7 +3254,7 @@ func TestLoadSecretsFile_LeadingWhitespaceStripped(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	secrets, err := loadSecretsFile(path, 16)
+	secrets, err := LoadSecretsFile(path, 16)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

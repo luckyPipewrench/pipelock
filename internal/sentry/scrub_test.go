@@ -391,6 +391,73 @@ func TestScrubEvent_VarsNonStringDeleted(t *testing.T) {
 	}
 }
 
+func TestScrubEvent_ThreadsVarsScrubbed(t *testing.T) {
+	awsKey := "AKIA" + "IOSFODNN7EXAMPLE"
+	s := NewScrubber(testDLPPatterns(), nil)
+	event := &sentry.Event{
+		Threads: []sentry.Thread{
+			{
+				ID:   "1",
+				Name: "main",
+				Stacktrace: &sentry.Stacktrace{
+					Frames: []sentry.Frame{
+						{Vars: map[string]interface{}{"key": awsKey, "safe": "hello"}},
+					},
+				},
+			},
+		},
+	}
+	result := s.ScrubEvent(event, nil)
+	sv, ok := result.Threads[0].Stacktrace.Frames[0].Vars["key"].(string)
+	if !ok || !containsRedacted(sv) {
+		t.Errorf("expected [REDACTED] in thread frame vars, got %v", result.Threads[0].Stacktrace.Frames[0].Vars["key"])
+	}
+	if _, ok := result.Threads[0].Stacktrace.Frames[0].Vars["safe"]; !ok {
+		t.Error("expected safe string var to be preserved in thread")
+	}
+}
+
+func TestScrubEvent_ThreadsVarsNonStringDeleted(t *testing.T) {
+	s := NewScrubber(nil, nil)
+	event := &sentry.Event{
+		Threads: []sentry.Thread{
+			{
+				ID: "1",
+				Stacktrace: &sentry.Stacktrace{
+					Frames: []sentry.Frame{
+						{Vars: map[string]interface{}{
+							"safe":      "value",
+							"dangerous": 42,
+						}},
+					},
+				},
+			},
+		},
+	}
+	result := s.ScrubEvent(event, nil)
+	vars := result.Threads[0].Stacktrace.Frames[0].Vars
+	if _, ok := vars["dangerous"]; ok {
+		t.Error("expected non-string thread var to be deleted (fail-closed)")
+	}
+	if _, ok := vars["safe"]; !ok {
+		t.Error("expected string thread var to be preserved")
+	}
+}
+
+func TestScrubEvent_ThreadsNilStacktrace(t *testing.T) {
+	s := NewScrubber(nil, nil)
+	event := &sentry.Event{
+		Threads: []sentry.Thread{
+			{ID: "1", Stacktrace: nil},
+		},
+	}
+	// Should not panic on nil stacktrace.
+	result := s.ScrubEvent(event, nil)
+	if len(result.Threads) != 1 {
+		t.Errorf("expected 1 thread, got %d", len(result.Threads))
+	}
+}
+
 func containsRedacted(s string) bool {
 	return strings.Contains(s, redacted)
 }

@@ -3,6 +3,8 @@ package plsentry
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -267,6 +269,67 @@ func TestClose_FlushesEvents(t *testing.T) {
 	events := transport.Events()
 	if len(events) == 0 {
 		t.Fatal("expected Close to flush pending events")
+	}
+}
+
+func TestInit_FileSecretsLoaded(t *testing.T) {
+	// Build secret at runtime to avoid DLP false positive (gosec G101).
+	fileSecret := "superSecretVault" + "TokenValue1234"
+
+	dir := t.TempDir()
+	secretsFile := filepath.Join(dir, "secrets.txt")
+	if err := os.WriteFile(secretsFile, []byte(fileSecret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	transport := &mockTransport{}
+	cfg := config.Defaults()
+	cfg.Sentry.DSN = testDSN
+	cfg.DLP.ScanEnv = false
+	cfg.DLP.SecretsFile = secretsFile
+	c, err := initClient(cfg, "test", transport)
+	if err != nil {
+		t.Fatalf("unexpected Init error: %v", err)
+	}
+
+	// The file secret should be in the scrubber's secrets list.
+	found := false
+	for _, s := range c.scrubber.secrets {
+		if s == fileSecret {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected file secret to be loaded into scrubber")
+	}
+
+	// Verify it actually scrubs: send a message containing the file secret.
+	c.CaptureMessage("error with " + fileSecret)
+	_ = c.Flush(2 * time.Second)
+
+	events := transport.Events()
+	if len(events) == 0 {
+		t.Fatal("expected at least one event")
+	}
+	for _, e := range events {
+		if strings.Contains(e.Message, fileSecret) {
+			t.Errorf("file secret leaked in message: %q", e.Message)
+		}
+	}
+}
+
+func TestInit_FileSecretsFileNotFound_WarnsAndContinues(t *testing.T) {
+	transport := &mockTransport{}
+	cfg := config.Defaults()
+	cfg.Sentry.DSN = testDSN
+	cfg.DLP.SecretsFile = "/nonexistent/secrets.txt"
+	c, err := initClient(cfg, "test", transport)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !c.enabled {
+		t.Error("expected client to still be enabled despite missing secrets file")
 	}
 }
 

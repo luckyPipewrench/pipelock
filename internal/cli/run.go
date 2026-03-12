@@ -775,12 +775,11 @@ func reloadPanicHandler(r any, sentryClient *plsentry.Client, logger *audit.Logg
 	if r == nil {
 		return
 	}
-	panicMsg := fmt.Sprintf("panic during config reload: %v", r)
+	reloadErr := fmt.Errorf("scanner construction panic during config reload: %v", r)
 	if sentryClient != nil {
-		sentryClient.CaptureMessage(panicMsg)
+		sentryClient.CaptureError(reloadErr)
 	}
-	logger.LogError("CONFIG_RELOAD", configFile, "", "", "",
-		fmt.Errorf("scanner construction panic: %v", r))
+	logger.LogError("CONFIG_RELOAD", configFile, "", "", "", reloadErr)
 }
 
 // preserveAgentListeners keeps the new config's agent listener state

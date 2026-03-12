@@ -156,7 +156,7 @@ func New(cfg *config.Config) *Scanner {
 
 	// Load explicit secrets from secrets file
 	if cfg.DLP.SecretsFile != "" {
-		fileSecrets, err := loadSecretsFile(cfg.DLP.SecretsFile, s.minEnvSecretLen)
+		fileSecrets, err := LoadSecretsFile(cfg.DLP.SecretsFile, s.minEnvSecretLen)
 		if err != nil {
 			panic(fmt.Sprintf("BUG: secrets file %q failed after validation: %v",
 				cfg.DLP.SecretsFile, err))
@@ -986,11 +986,11 @@ func dedupSecrets(fileSecrets, envSecrets []string) []string {
 	return result
 }
 
-// loadSecretsFile reads explicit secret values from a file, one per line.
+// LoadSecretsFile reads explicit secret values from a file, one per line.
 // Lines starting with # (after optional whitespace) are comments.
 // Blank lines, null-byte lines, and lines below minLen are skipped.
 // Max 4096 bytes per line, max 1000 entries.
-func loadSecretsFile(path string, minLen int) ([]string, error) { //nolint:unparam // minLen varies in tests
+func LoadSecretsFile(path string, minLen int) ([]string, error) {
 	f, err := os.Open(filepath.Clean(path))
 	if err != nil {
 		return nil, fmt.Errorf("opening secrets file: %w", err)

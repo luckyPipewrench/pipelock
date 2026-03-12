@@ -4,6 +4,7 @@
 package mcp
 
 import (
+	"context"
 	"fmt"
 	"io"
 
@@ -74,7 +75,7 @@ func ceeRecordMCP(
 	// Fragment reassembly DLP check.
 	if cee.Buffer != nil && cee.Config != nil && cee.Config.FragmentReassembly.Enabled {
 		cee.Buffer.Append(sessionKey, payload)
-		if matches := cee.Buffer.ScanForSecrets(sessionKey, sc); len(matches) > 0 {
+		if matches := cee.Buffer.ScanForSecrets(context.Background(), sessionKey, sc); len(matches) > 0 {
 			if cee.Metrics != nil {
 				cee.Metrics.RecordCrossRequestDLPMatch()
 			}

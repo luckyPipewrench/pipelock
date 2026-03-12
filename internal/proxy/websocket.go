@@ -113,7 +113,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	scanURL := scanScheme + "://" + parsed.Host + parsed.RequestURI()
 
 	// Run through all 9 scanner layers.
-	result := sc.Scan(scanURL)
+	result := sc.Scan(r.Context(), scanURL)
 
 	// Session profiling: record BEFORE the enforce-mode early return so adaptive
 	// signals (SignalBlock) fire even for blocked requests.
@@ -160,7 +160,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	// DLP-scan forwarded auth header values (unless target is allowlisted).
 	if cfg.EnforceEnabled() {
-		if blocked, reason := p.dlpScanWSHeaders(fwdHeaders, parsed.Hostname(), sc, cfg); blocked {
+		if blocked, reason := p.dlpScanWSHeaders(r.Context(), fwdHeaders, parsed.Hostname(), sc, cfg); blocked {
 			log.LogWSBlocked(targetURL, audit.DirectionClientToServer, audit.ScannerDLP, reason, clientIP, requestID)
 			p.metrics.RecordWSBlocked()
 			http.Error(w, "WebSocket blocked: "+reason, http.StatusForbidden)
@@ -290,7 +290,7 @@ func (p *Proxy) buildWSForwardHeaders(r *http.Request, parsed *url.URL, cfg *con
 // dlpScanWSHeaders runs DLP scanning on auth header values before the upstream
 // handshake. Skips scanning when the target host matches the api_allowlist,
 // since auth tokens to trusted providers are expected.
-func (p *Proxy) dlpScanWSHeaders(headers http.Header, hostname string, sc *scanner.Scanner, cfg *config.Config) (blocked bool, reason string) {
+func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, hostname string, sc *scanner.Scanner, cfg *config.Config) (blocked bool, reason string) {
 	// If the target is allowlisted, auth headers are expected and should not
 	// be flagged. The allowlist is only enforced in strict mode by the scanner,
 	// but for WS auth header policy we check it in all modes.
@@ -305,7 +305,7 @@ func (p *Proxy) dlpScanWSHeaders(headers http.Header, hostname string, sc *scann
 		if val == "" {
 			continue
 		}
-		result := sc.ScanTextForDLP(val)
+		result := sc.ScanTextForDLP(ctx, val)
 		if !result.Clean {
 			names := make([]string, len(result.Matches))
 			for i, m := range result.Matches {
@@ -516,7 +516,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 				} else {
 					scanInput = msg
 				}
-				dlpResult := r.scanner.ScanTextForDLP(string(scanInput))
+				dlpResult := r.scanner.ScanTextForDLP(context.Background(), string(scanInput))
 
 				// Update rolling tail for next message (always, regardless of result).
 				if len(msg) >= crossMsgOverlap {
@@ -563,7 +563,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 				fb = r.proxy.fragmentBufferPtr.Load()
 			}
 
-			ceeRes := ceeAdmit(sessionKey, msg, nil, r.targetURL, r.agent, r.clientIP, r.requestID,
+			ceeRes := ceeAdmit(context.Background(), sessionKey, msg, nil, r.targetURL, r.agent, r.clientIP, r.requestID,
 				ceeCfg, r.proxy.entropyTrackerPtr.Load(), fb, r.scanner, r.proxy.logger, r.proxy.metrics)
 
 			if sm := r.proxy.sessionMgrPtr.Load(); sm != nil && r.cfg.AdaptiveEnforcement.Enabled {
@@ -713,7 +713,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 
 			// Response injection scanning.
 			if r.scanText && r.scanner.ResponseScanningEnabled() {
-				scanResult := r.scanner.ScanResponse(string(msg))
+				scanResult := r.scanner.ScanResponse(context.Background(), string(msg))
 				if !scanResult.Clean {
 					patternNames := make([]string, len(scanResult.Matches))
 					for i, m := range scanResult.Matches {

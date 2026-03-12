@@ -4,6 +4,7 @@
 package scanner
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"testing"
@@ -48,7 +49,7 @@ func TestFragmentBuffer_AppendAndScan_SplitCredential(t *testing.T) {
 	fb.Append(testSessionA, []byte(part1))
 	fb.Append(testSessionA, []byte(part2))
 
-	matches := fb.ScanForSecrets(testSessionA, sc)
+	matches := fb.ScanForSecrets(context.Background(), testSessionA, sc)
 	if len(matches) == 0 {
 		t.Fatal("expected DLP match on concatenated AWS key fragments, got none")
 	}
@@ -75,7 +76,7 @@ func TestFragmentBuffer_NoMatch_NormalText(t *testing.T) {
 	fb.Append(testSessionA, []byte("hello "))
 	fb.Append(testSessionA, []byte("world, this is normal text"))
 
-	matches := fb.ScanForSecrets(testSessionA, sc)
+	matches := fb.ScanForSecrets(context.Background(), testSessionA, sc)
 	if len(matches) != 0 {
 		t.Errorf("expected no matches for normal text, got %d", len(matches))
 	}
@@ -95,8 +96,8 @@ func TestFragmentBuffer_SessionIsolation(t *testing.T) {
 	fb.Append(testSessionA, []byte(part1))
 	fb.Append(testSessionB, []byte(part2))
 
-	matchesA := fb.ScanForSecrets(testSessionA, sc)
-	matchesB := fb.ScanForSecrets(testSessionB, sc)
+	matchesA := fb.ScanForSecrets(context.Background(), testSessionA, sc)
+	matchesB := fb.ScanForSecrets(context.Background(), testSessionB, sc)
 
 	if len(matchesA) != 0 {
 		t.Errorf("session A should not match with only key prefix, got %d matches", len(matchesA))
@@ -208,7 +209,7 @@ func TestFragmentBuffer_ScanAlwaysSynchronous(t *testing.T) {
 	defer sc.Close()
 
 	fb.Append(testSessionA, []byte("harmless data"))
-	matches1 := fb.ScanForSecrets(testSessionA, sc)
+	matches1 := fb.ScanForSecrets(context.Background(), testSessionA, sc)
 	if matches1 != nil {
 		t.Fatal("first scan should find nothing")
 	}
@@ -219,7 +220,7 @@ func TestFragmentBuffer_ScanAlwaysSynchronous(t *testing.T) {
 	fb.Append(testSessionA, []byte(part1))
 	fb.Append(testSessionA, []byte(part2))
 
-	matches2 := fb.ScanForSecrets(testSessionA, sc)
+	matches2 := fb.ScanForSecrets(context.Background(), testSessionA, sc)
 	if len(matches2) == 0 {
 		t.Fatal("second scan must detect secret synchronously, got nil (pre-forward guarantee broken)")
 	}
@@ -240,7 +241,7 @@ func TestFragmentBuffer_ConcurrentAccess(t *testing.T) {
 			defer wg.Done()
 			key := fmt.Sprintf("session-%d", id%10)
 			fb.Append(key, []byte(fmt.Sprintf("payload-%d", id)))
-			fb.ScanForSecrets(key, sc)
+			fb.ScanForSecrets(context.Background(), key, sc)
 		}(i)
 	}
 	wg.Wait()
@@ -273,7 +274,7 @@ func TestFragmentBuffer_ScanEmptySession(t *testing.T) {
 	defer sc.Close()
 
 	// Scan a session that has never been appended to.
-	matches := fb.ScanForSecrets("nonexistent", sc)
+	matches := fb.ScanForSecrets(context.Background(), "nonexistent", sc)
 	if matches != nil {
 		t.Errorf("expected nil for nonexistent session, got %v", matches)
 	}
@@ -301,7 +302,7 @@ func TestFragmentBuffer_EvictionPreservesNewestData(t *testing.T) {
 	fb.Append(testSessionA, newData)
 
 	// The newest fragment (containing the credential) should survive.
-	matches := fb.ScanForSecrets(testSessionA, sc)
+	matches := fb.ScanForSecrets(context.Background(), testSessionA, sc)
 	if len(matches) == 0 {
 		t.Error("newest fragment should survive eviction and trigger DLP match")
 	}
@@ -351,6 +352,6 @@ func TestFragmentBuffer_AppendAfterClose(t *testing.T) {
 	defer sc.Close()
 
 	// Scan after close should not panic.
-	matches := fb.ScanForSecrets(testSessionA, sc)
+	matches := fb.ScanForSecrets(context.Background(), testSessionA, sc)
 	_ = matches
 }

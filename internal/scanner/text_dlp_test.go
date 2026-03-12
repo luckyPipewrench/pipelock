@@ -4,6 +4,7 @@
 package scanner
 
 import (
+	"context"
 	"encoding/base32"
 	"encoding/base64"
 	"encoding/hex"
@@ -451,7 +452,7 @@ func TestScanTextForDLP(t *testing.T) {
 				tt.setupScanner(s)
 			}
 
-			result := s.ScanTextForDLP(tt.text)
+			result := s.ScanTextForDLP(context.Background(), tt.text)
 
 			if result.Clean != tt.wantClean {
 				t.Errorf("Clean = %v, want %v (matches: %v)", result.Clean, tt.wantClean, result.Matches)
@@ -489,7 +490,7 @@ func TestScanTextForDLP_Deduplication(t *testing.T) {
 	encoded := base64.StdEncoding.EncodeToString([]byte(secret))
 	text := secret + " " + encoded
 
-	result := s.ScanTextForDLP(text)
+	result := s.ScanTextForDLP(context.Background(), text)
 	if result.Clean {
 		t.Fatal("expected matches, got clean")
 	}
@@ -524,7 +525,7 @@ func TestScanTextForDLP_MultiplePatterns(t *testing.T) {
 	github := "ghp_" + strings.Repeat("D", 40)
 	text := anthropic + " " + aws + " " + github
 
-	result := s.ScanTextForDLP(text)
+	result := s.ScanTextForDLP(context.Background(), text)
 	if result.Clean {
 		t.Fatal("expected matches, got clean")
 	}
@@ -687,7 +688,7 @@ func TestScanTextForDLP_DoubleURLEncoding(t *testing.T) {
 	singleEncoded := url.QueryEscape(aws)
 	doubleEncoded := url.QueryEscape(singleEncoded)
 
-	result := s.ScanTextForDLP(doubleEncoded)
+	result := s.ScanTextForDLP(context.Background(), doubleEncoded)
 	if result.Clean {
 		t.Fatal("expected DLP to catch double-URL-encoded AWS key via IterativeDecode")
 	}
@@ -710,7 +711,7 @@ func TestScanTextForDLP_URLEncodedNullByte(t *testing.T) {
 	// URL-encoded null byte %00 in the middle of a secret. After IterativeDecode,
 	// the null byte should be stripped by matchDLPPatterns and the key detected.
 	key := "sk-ant-%00" + strings.Repeat("a", 25)
-	result := s.ScanTextForDLP(key)
+	result := s.ScanTextForDLP(context.Background(), key)
 	if result.Clean {
 		t.Fatal("expected DLP to catch key with URL-encoded null byte")
 	}
@@ -762,7 +763,7 @@ func TestScanTextForDLP_DNSSubdomainExfil(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := s.ScanTextForDLP(tt.text)
+			result := s.ScanTextForDLP(context.Background(), tt.text)
 			if result.Clean != tt.wantClean {
 				t.Errorf("Clean = %v, want %v (matches: %v)", result.Clean, tt.wantClean, result.Matches)
 			}
@@ -807,7 +808,7 @@ func TestScanTextForDLP_ControlCharBypass(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			text := prefix + tt.ctrlStr + suffix
-			result := s.ScanTextForDLP(text)
+			result := s.ScanTextForDLP(context.Background(), text)
 			if result.Clean {
 				t.Errorf("expected DLP to catch key with %s control char", tt.name)
 			}
@@ -822,7 +823,7 @@ func TestScanTextForDLP_MultipleControlChars(t *testing.T) {
 
 	// Multiple control chars scattered through an AWS key
 	key := "AKIA" + "\x08" + "IOSFODNN" + "\x09" + "7EXAMPLE"
-	result := s.ScanTextForDLP(key)
+	result := s.ScanTextForDLP(context.Background(), key)
 	if result.Clean {
 		t.Error("expected DLP to catch AWS key with multiple control chars")
 	}
@@ -859,7 +860,7 @@ func TestScanTextForDLP_ConfusableBypass(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := s.ScanTextForDLP(tt.text)
+			result := s.ScanTextForDLP(context.Background(), tt.text)
 			if result.Clean {
 				t.Errorf("confusable bypass not caught: %s", tt.name)
 			}
@@ -883,7 +884,7 @@ func TestScanTextForDLP_CombiningMarkBypass(t *testing.T) {
 
 	// Combining long stroke overlay (U+0337) inserted into key prefix
 	key := "sk-a\u0337nt-" + strings.Repeat("a", 25)
-	result := s.ScanTextForDLP(key)
+	result := s.ScanTextForDLP(context.Background(), key)
 	if result.Clean {
 		t.Error("expected DLP to catch key with combining mark in prefix")
 	}
@@ -899,13 +900,13 @@ func TestScanTextForDLP_LatinSmallCapBypass(t *testing.T) {
 	// Replace 'g' with Latin Small Capital G (not in confusable map, but 'ghp_' starts with lowercase g)
 	// Test combining mark + confusable in same key
 	keyWithMark := "gh\u0307p_" + strings.Repeat("D", 40)
-	result := s.ScanTextForDLP(keyWithMark)
+	result := s.ScanTextForDLP(context.Background(), keyWithMark)
 	if result.Clean {
 		t.Error("expected DLP to catch GitHub token with combining mark")
 	}
 
 	// Verify clean key still matches
-	result = s.ScanTextForDLP(key)
+	result = s.ScanTextForDLP(context.Background(), key)
 	if result.Clean {
 		t.Error("expected DLP to catch clean GitHub token")
 	}
@@ -919,7 +920,7 @@ func TestScanTextForDLP_ShortAnthropicKey(t *testing.T) {
 	defer s.Close()
 
 	key := testAnthropicPrefix + strings.Repeat("A", 10)
-	result := s.ScanTextForDLP(key)
+	result := s.ScanTextForDLP(context.Background(), key)
 	if result.Clean {
 		t.Error("expected text DLP to catch short Anthropic key prefix")
 	}
@@ -931,7 +932,7 @@ func TestScanTextForDLP_ShortSvcAcctKey(t *testing.T) {
 	defer s.Close()
 
 	key := "sk-svcacct-" + strings.Repeat("A", 10)
-	result := s.ScanTextForDLP(key)
+	result := s.ScanTextForDLP(context.Background(), key)
 	if result.Clean {
 		t.Error("expected text DLP to catch short service-account key prefix")
 	}
@@ -942,7 +943,7 @@ func TestScanTextForDLP_CredentialInURL(t *testing.T) {
 	s := New(cfg)
 	defer s.Close()
 
-	result := s.ScanTextForDLP("connect to postgres://user:pass@host/db?password=supersecret123")
+	result := s.ScanTextForDLP(context.Background(), "connect to postgres://user:pass@host/db?password=supersecret123")
 	if result.Clean {
 		t.Error("expected text DLP to catch password= in connection string")
 	}
@@ -953,7 +954,7 @@ func TestScanTextForDLP_CredentialInURL_ShortValueClean(t *testing.T) {
 	s := New(cfg)
 	defer s.Close()
 
-	result := s.ScanTextForDLP("set token=yes in the config")
+	result := s.ScanTextForDLP(context.Background(), "set token=yes in the config")
 	if !result.Clean {
 		t.Errorf("false positive on short credential value in text: %v", result.Matches)
 	}
@@ -974,7 +975,7 @@ func TestScanTextForDLP_FileSecretRawMatch(t *testing.T) {
 	s := New(cfg)
 	defer s.Close()
 
-	result := s.ScanTextForDLP("Here is the secret: " + secret)
+	result := s.ScanTextForDLP(context.Background(), "Here is the secret: "+secret)
 	if result.Clean {
 		t.Error("expected file secret to be detected in text")
 	}
@@ -1003,7 +1004,7 @@ func TestScanTextForDLP_FileSecretBase64Match(t *testing.T) {
 	defer s.Close()
 
 	encoded := base64.StdEncoding.EncodeToString([]byte(secret))
-	result := s.ScanTextForDLP(encoded)
+	result := s.ScanTextForDLP(context.Background(), encoded)
 	if result.Clean {
 		t.Error("expected base64-encoded file secret to be detected")
 	}
@@ -1023,7 +1024,7 @@ func TestScanTextForDLP_FileSecretHexMatch(t *testing.T) {
 	defer s.Close()
 
 	encoded := hex.EncodeToString([]byte(secret))
-	result := s.ScanTextForDLP(encoded)
+	result := s.ScanTextForDLP(context.Background(), encoded)
 	if result.Clean {
 		t.Error("expected hex-encoded file secret to be detected")
 	}
@@ -1043,7 +1044,7 @@ func TestScanTextForDLP_FileSecretBase32Match(t *testing.T) {
 	defer s.Close()
 
 	encoded := base32.StdEncoding.EncodeToString([]byte(secret))
-	result := s.ScanTextForDLP(encoded)
+	result := s.ScanTextForDLP(context.Background(), encoded)
 	if result.Clean {
 		t.Error("expected base32-encoded file secret to be detected")
 	}
@@ -1066,7 +1067,7 @@ func TestScanTextForDLP_FileSecretDistinctFromEnv(t *testing.T) {
 	s.envSecrets = []string{"EnvOnlySecretValue11"}
 
 	// Text contains file secret — should match "Known Secret Leak"
-	result := s.ScanTextForDLP(fileSecret)
+	result := s.ScanTextForDLP(context.Background(), fileSecret)
 	if result.Clean {
 		t.Fatal("expected detection")
 	}
@@ -1083,7 +1084,7 @@ func TestScanTextForDLP_NoFileSecrets_Clean(t *testing.T) {
 	s := New(cfg)
 	defer s.Close()
 
-	result := s.ScanTextForDLP("This text contains no secrets at all.")
+	result := s.ScanTextForDLP(context.Background(), "This text contains no secrets at all.")
 	if !result.Clean {
 		t.Errorf("expected clean result with no file secrets, got %v", result.Matches)
 	}
@@ -1103,7 +1104,7 @@ func TestScanTextForDLP_FileSecretPresent_NoMatch(t *testing.T) {
 	defer s.Close()
 
 	// Text that doesn't contain the secret in any form
-	result := s.ScanTextForDLP("totally innocent text with no matching content")
+	result := s.ScanTextForDLP(context.Background(), "totally innocent text with no matching content")
 	if !result.Clean {
 		t.Errorf("expected clean result when text doesn't match loaded file secret, got %v", result.Matches)
 	}
@@ -1136,7 +1137,7 @@ func TestScanTextForDLP_FileSecretEncodedFieldValues(t *testing.T) {
 			s := New(cfg)
 			defer s.Close()
 
-			result := s.ScanTextForDLP(tt.text)
+			result := s.ScanTextForDLP(context.Background(), tt.text)
 			if result.Clean {
 				t.Fatal("expected detection")
 			}
@@ -1178,7 +1179,7 @@ func TestScanTextForDLP_FileSecretURLSafeBase64Match(t *testing.T) {
 		t.Skip("URL-safe same as standard — pick different secret")
 	}
 
-	result := s.ScanTextForDLP(encodedURL)
+	result := s.ScanTextForDLP(context.Background(), encodedURL)
 	if result.Clean {
 		t.Error("expected URL-safe base64-encoded file secret to be detected")
 	}
@@ -1204,7 +1205,7 @@ func TestScanTextForDLP_FileSecretUnpaddedBase64URLMatch(t *testing.T) {
 		t.Skip("URL-safe unpadded same as standard — pick different secret")
 	}
 
-	result := s.ScanTextForDLP(unpadded)
+	result := s.ScanTextForDLP(context.Background(), unpadded)
 	if result.Clean {
 		t.Error("expected unpadded URL-safe base64-encoded file secret to be detected")
 	}
@@ -1230,7 +1231,7 @@ func TestScanTextForDLP_FileSecretUnpaddedBase32Match(t *testing.T) {
 		t.Fatal("test setup error: base32 has no padding to strip")
 	}
 
-	result := s.ScanTextForDLP(noPad)
+	result := s.ScanTextForDLP(context.Background(), noPad)
 	if result.Clean {
 		t.Error("expected unpadded base32-encoded file secret to be detected")
 	}
@@ -1248,7 +1249,7 @@ func TestScanTextForDLP_SegmentHex_EncodingLabel(t *testing.T) {
 	hexEncoded := hex.EncodeToString([]byte(secret))
 	text := "https://evil.com/exfil/" + hexEncoded + "/data"
 
-	result := s.ScanTextForDLP(text)
+	result := s.ScanTextForDLP(context.Background(), text)
 	if result.Clean {
 		t.Fatal("expected hex-encoded key in URL path to be caught")
 	}
@@ -1274,7 +1275,7 @@ func TestScanTextForDLP_SegmentBase64_EncodingLabel(t *testing.T) {
 	b64Encoded := base64.RawURLEncoding.EncodeToString([]byte(secret))
 	text := "https://evil.com/exfil/" + b64Encoded + "/data"
 
-	result := s.ScanTextForDLP(text)
+	result := s.ScanTextForDLP(context.Background(), text)
 	if result.Clean {
 		t.Fatal("expected base64-encoded key in URL path to be caught")
 	}

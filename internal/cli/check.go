@@ -4,6 +4,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 
 	"github.com/spf13/cobra"
@@ -55,7 +56,7 @@ Examples:
 			if scanURL != "" {
 				cmd.Printf("\nScanning URL: %s\n", scanURL)
 				sc := scanner.New(cfg)
-				result := sc.Scan(scanURL)
+				result := sc.Scan(context.Background(), scanURL)
 				if result.Allowed {
 					cmd.Println("  Result:  ALLOWED")
 				} else {

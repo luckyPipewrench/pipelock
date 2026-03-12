@@ -4,6 +4,7 @@
 package scanner
 
 import (
+	"context"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -35,6 +36,6 @@ func BenchmarkFragmentBuffer_AppendAndScan(b *testing.B) {
 	b.ResetTimer()
 	for b.Loop() {
 		fb.Append("session1", payload)
-		fb.ScanForSecrets("session1", sc)
+		fb.ScanForSecrets(context.Background(), "session1", sc)
 	}
 }

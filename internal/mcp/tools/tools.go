@@ -6,6 +6,7 @@
 package tools
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -682,7 +683,7 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) []T
 		if text != "" {
 			// General injection patterns (reuses response scanning pipeline).
 			// ScanResponse does its own Unicode normalization internally.
-			result := sc.ScanResponse(text)
+			result := sc.ScanResponse(context.Background(), text)
 			if !result.Clean {
 				match.Injection = result.Matches
 				hasFinding = true

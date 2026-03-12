@@ -50,7 +50,7 @@ func TestScanRequestBody_JSONWithSecret(t *testing.T) {
 
 	body := `{"key": "` + fakeAPIKey() + `"}`
 	_, result := scanRequestBody(
-		strings.NewReader(body),
+		context.Background(), strings.NewReader(body),
 		"application/json", "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
 	)
 	if result.Clean {
@@ -69,7 +69,7 @@ func TestScanRequestBody_JSONKeyExfil(t *testing.T) {
 	// Secret encoded as a JSON object key
 	body := `{"` + fakeAPIKey() + `": "value"}`
 	_, result := scanRequestBody(
-		strings.NewReader(body),
+		context.Background(), strings.NewReader(body),
 		"application/json", "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
 	)
 	if result.Clean {
@@ -84,7 +84,7 @@ func TestScanRequestBody_FormURLEncoded(t *testing.T) {
 
 	body := "secret=" + fakeAPIKey() + "&name=test"
 	_, result := scanRequestBody(
-		strings.NewReader(body),
+		context.Background(), strings.NewReader(body),
 		"application/x-www-form-urlencoded", "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
 	)
 	if result.Clean {
@@ -99,7 +99,7 @@ func TestScanRequestBody_PlainText(t *testing.T) {
 
 	body := "my secret key is " + fakeAPIKey()
 	_, result := scanRequestBody(
-		strings.NewReader(body),
+		context.Background(), strings.NewReader(body),
 		"text/plain", "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
 	)
 	if result.Clean {
@@ -115,7 +115,7 @@ func TestScanRequestBody_ContentTypeBypass_OctetStream(t *testing.T) {
 	// JSON secret sent as application/octet-stream: fallback raw scan catches it
 	body := `{"key": "` + fakeAPIKey() + `"}`
 	_, result := scanRequestBody(
-		strings.NewReader(body),
+		context.Background(), strings.NewReader(body),
 		"application/octet-stream", "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
 	)
 	if result.Clean {
@@ -131,7 +131,7 @@ func TestScanRequestBody_ContentTypeBypass_ImagePNG(t *testing.T) {
 	// JSON secret sent as image/png: fallback raw scan catches it
 	body := `{"key": "` + fakeAPIKey() + `"}`
 	_, result := scanRequestBody(
-		strings.NewReader(body),
+		context.Background(), strings.NewReader(body),
 		"image/png", "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
 	)
 	if result.Clean {
@@ -145,7 +145,7 @@ func TestScanRequestBody_CompressedGzip(t *testing.T) {
 	defer sc.Close()
 
 	_, result := scanRequestBody(
-		strings.NewReader("compressed data"),
+		context.Background(), strings.NewReader("compressed data"),
 		"application/json", "gzip", cfg.RequestBodyScanning.MaxBodyBytes, sc,
 	)
 	if result.Clean {
@@ -162,7 +162,7 @@ func TestScanRequestBody_CompressedDeflate(t *testing.T) {
 	defer sc.Close()
 
 	_, result := scanRequestBody(
-		strings.NewReader("compressed data"),
+		context.Background(), strings.NewReader("compressed data"),
 		"application/json", "deflate", cfg.RequestBodyScanning.MaxBodyBytes, sc,
 	)
 	if result.Clean {
@@ -176,7 +176,7 @@ func TestScanRequestBody_CompressedCaseMismatch(t *testing.T) {
 	defer sc.Close()
 
 	_, result := scanRequestBody(
-		strings.NewReader("data"),
+		context.Background(), strings.NewReader("data"),
 		"application/json", "GZip", cfg.RequestBodyScanning.MaxBodyBytes, sc,
 	)
 	if result.Clean {
@@ -190,7 +190,7 @@ func TestScanRequestBody_CompressedCommaSeparated(t *testing.T) {
 	defer sc.Close()
 
 	_, result := scanRequestBody(
-		strings.NewReader("data"),
+		context.Background(), strings.NewReader("data"),
 		"application/json", "gzip, identity", cfg.RequestBodyScanning.MaxBodyBytes, sc,
 	)
 	if result.Clean {
@@ -204,7 +204,7 @@ func TestScanRequestBody_IdentityEncodingAllowed(t *testing.T) {
 	defer sc.Close()
 
 	_, result := scanRequestBody(
-		strings.NewReader("clean body text"),
+		context.Background(), strings.NewReader("clean body text"),
 		"text/plain", "identity", cfg.RequestBodyScanning.MaxBodyBytes, sc,
 	)
 	if !result.Clean {
@@ -218,7 +218,7 @@ func TestScanRequestBody_EmptyBody(t *testing.T) {
 	defer sc.Close()
 
 	buf, result := scanRequestBody(
-		strings.NewReader(""),
+		context.Background(), strings.NewReader(""),
 		"application/json", "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
 	)
 	if !result.Clean {
@@ -237,7 +237,7 @@ func TestScanRequestBody_OversizedBody(t *testing.T) {
 	// Create body larger than 1MB max
 	body := strings.Repeat("x", cfg.RequestBodyScanning.MaxBodyBytes+1)
 	_, result := scanRequestBody(
-		strings.NewReader(body),
+		context.Background(), strings.NewReader(body),
 		"text/plain", "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
 	)
 	if result.Clean {
@@ -259,7 +259,7 @@ func TestScanRequestBody_SplitSecretAcrossFields(t *testing.T) {
 	half2 := key[len(key)/2:]
 	body := `{"part1": "` + half1 + `", "part2": "` + half2 + `"}`
 	_, result := scanRequestBody(
-		strings.NewReader(body),
+		context.Background(), strings.NewReader(body),
 		"application/json", "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
 	)
 	if result.Clean {
@@ -274,7 +274,7 @@ func TestScanRequestBody_CleanJSON(t *testing.T) {
 
 	body := `{"name": "test", "value": 42}`
 	buf, result := scanRequestBody(
-		strings.NewReader(body),
+		context.Background(), strings.NewReader(body),
 		"application/json", "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
 	)
 	if !result.Clean {
@@ -292,7 +292,7 @@ func TestScanRequestBody_XMLWithSecret(t *testing.T) {
 
 	body := `<root><key>` + fakeAPIKey() + `</key></root>`
 	_, result := scanRequestBody(
-		strings.NewReader(body),
+		context.Background(), strings.NewReader(body),
 		"application/xml", "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
 	)
 	if result.Clean {
@@ -312,7 +312,7 @@ func TestScanRequestBody_MultipartText(t *testing.T) {
 		"--" + boundary + "--\r\n"
 
 	_, result := scanRequestBody(
-		strings.NewReader(body),
+		context.Background(), strings.NewReader(body),
 		"multipart/form-data; boundary="+boundary, "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
 	)
 	if result.Clean {
@@ -333,7 +333,7 @@ func TestScanRequestBody_MultipartBinarySkipped(t *testing.T) {
 		"--" + boundary + "--\r\n"
 
 	_, result := scanRequestBody(
-		strings.NewReader(body),
+		context.Background(), strings.NewReader(body),
 		"multipart/form-data; boundary="+boundary, "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
 	)
 	if !result.Clean {
@@ -357,7 +357,7 @@ func TestScanRequestBody_MultipartBinaryMetadataExfil(t *testing.T) {
 		"--" + boundary + "--\r\n"
 
 	_, result := scanRequestBody(
-		strings.NewReader(body),
+		context.Background(), strings.NewReader(body),
 		"multipart/form-data; boundary="+boundary, "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
 	)
 	if result.Clean {
@@ -375,7 +375,7 @@ func TestScanRequestHeaders_AuthorizationBearer(t *testing.T) {
 	headers := http.Header{}
 	headers.Set("Authorization", "Bearer "+fakeAPIKey())
 
-	result := scanRequestHeaders(headers, cfg, sc)
+	result := scanRequestHeaders(context.Background(), headers, cfg, sc)
 	if result == nil || result.Clean {
 		t.Fatal("expected DLP match in Authorization header")
 	}
@@ -389,7 +389,7 @@ func TestScanRequestHeaders_Cookie(t *testing.T) {
 	headers := http.Header{}
 	headers.Set("Cookie", "session="+fakeAPIKey())
 
-	result := scanRequestHeaders(headers, cfg, sc)
+	result := scanRequestHeaders(context.Background(), headers, cfg, sc)
 	if result == nil || result.Clean {
 		t.Fatal("expected DLP match in Cookie header")
 	}
@@ -403,7 +403,7 @@ func TestScanRequestHeaders_XApiKey(t *testing.T) {
 	headers := http.Header{}
 	headers.Set("X-Api-Key", fakeAPIKey())
 
-	result := scanRequestHeaders(headers, cfg, sc)
+	result := scanRequestHeaders(context.Background(), headers, cfg, sc)
 	if result == nil || result.Clean {
 		t.Fatal("expected DLP match in X-Api-Key header")
 	}
@@ -418,7 +418,7 @@ func TestScanRequestHeaders_CustomHeaderSensitiveMode(t *testing.T) {
 	headers := http.Header{}
 	headers.Set("X-Custom-Exfil", fakeAPIKey())
 
-	result := scanRequestHeaders(headers, cfg, sc)
+	result := scanRequestHeaders(context.Background(), headers, cfg, sc)
 	if result != nil {
 		t.Fatal("custom header should not be scanned in sensitive mode")
 	}
@@ -433,7 +433,7 @@ func TestScanRequestHeaders_CustomHeaderAllMode(t *testing.T) {
 	headers := http.Header{}
 	headers.Set("X-Custom-Exfil", fakeAPIKey())
 
-	result := scanRequestHeaders(headers, cfg, sc)
+	result := scanRequestHeaders(context.Background(), headers, cfg, sc)
 	if result == nil || result.Clean {
 		t.Fatal("expected DLP match in custom header in all mode")
 	}
@@ -449,7 +449,7 @@ func TestScanRequestHeaders_HopByHopIgnoredInAllMode(t *testing.T) {
 	// Transfer-Encoding is in the ignore list, should not be scanned.
 	headers.Set("Transfer-Encoding", fakeAPIKey())
 
-	result := scanRequestHeaders(headers, cfg, sc)
+	result := scanRequestHeaders(context.Background(), headers, cfg, sc)
 	if result != nil {
 		t.Fatal("hop-by-hop header should be ignored in all mode")
 	}
@@ -460,7 +460,7 @@ func TestScanRequestHeaders_EmptyHeaders(t *testing.T) {
 	sc := scanner.New(cfg)
 	defer sc.Close()
 
-	result := scanRequestHeaders(http.Header{}, cfg, sc)
+	result := scanRequestHeaders(context.Background(), http.Header{}, cfg, sc)
 	if result != nil {
 		t.Fatal("empty headers should be clean")
 	}
@@ -480,7 +480,7 @@ func TestScanRequestHeaders_SplitSecretAcrossHeaders(t *testing.T) {
 	headers.Set("X-Part-A", half1)
 	headers.Set("X-Part-B", half2)
 
-	result := scanRequestHeaders(headers, cfg, sc)
+	result := scanRequestHeaders(context.Background(), headers, cfg, sc)
 	if result == nil || result.Clean {
 		t.Fatal("expected DLP match from joined scan of split secret across headers")
 	}
@@ -499,7 +499,7 @@ func TestScanRequestHeaders_SplitSecretRepeatedValues(t *testing.T) {
 	headers.Add("Authorization", half1)
 	headers.Add("Authorization", half2)
 
-	result := scanRequestHeaders(headers, cfg, sc)
+	result := scanRequestHeaders(context.Background(), headers, cfg, sc)
 	if result == nil || result.Clean {
 		t.Fatal("expected DLP match from joined scan of repeated header values")
 	}
@@ -519,7 +519,7 @@ func TestScanRequestHeaders_AllowlistedHost(t *testing.T) {
 	headers := http.Header{}
 	headers.Set("Authorization", "Bearer "+fakeAPIKey())
 
-	result := scanRequestHeaders(headers, cfg, sc)
+	result := scanRequestHeaders(context.Background(), headers, cfg, sc)
 	if result == nil || result.Clean {
 		t.Fatal("expected DLP match for secret in Authorization header (allowlist must not bypass header DLP)")
 	}
@@ -539,7 +539,7 @@ func TestScanRequestHeaders_NameValueBoundarySplit(t *testing.T) {
 	headers := http.Header{}
 	headers.Set("X-"+"AKIA"+"IOSFODNN", "7EXAMPLE"+"ABCDEFGH")
 
-	result := scanRequestHeaders(headers, cfg, sc)
+	result := scanRequestHeaders(context.Background(), headers, cfg, sc)
 	if result == nil || result.Clean {
 		t.Fatal("expected DLP match for secret split across header name and value boundary")
 	}
@@ -556,7 +556,7 @@ func TestScanRequestBody_ChunkedTransfer(t *testing.T) {
 	// Simulate chunked encoding by using a reader without known length.
 	reader := strings.NewReader(body)
 
-	buf, result := scanRequestBody(reader, "application/json", "", cfg.RequestBodyScanning.MaxBodyBytes, sc)
+	buf, result := scanRequestBody(context.Background(), reader, "application/json", "", cfg.RequestBodyScanning.MaxBodyBytes, sc)
 	if result.Clean {
 		t.Fatal("expected DLP match in chunked JSON body")
 	}
@@ -1008,7 +1008,7 @@ func TestScanRequestBody_InvalidJSON_FailClosed(t *testing.T) {
 
 	// Invalid JSON declared as application/json must fail-closed (not pass as clean).
 	_, result := scanRequestBody(
-		strings.NewReader(`{invalid json`),
+		context.Background(), strings.NewReader(`{invalid json`),
 		"application/json", "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
 	)
 	if result.Clean {
@@ -1030,7 +1030,7 @@ func TestScanRequestBody_FormURLEncoded_ParseFailure(t *testing.T) {
 	// Fail-closed: parse error blocks regardless of body content.
 	malformed := "field=%zz&value=clean"
 	_, result := scanRequestBody(
-		strings.NewReader(malformed),
+		context.Background(), strings.NewReader(malformed),
 		"application/x-www-form-urlencoded", "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
 	)
 	if result.Clean {
@@ -1048,7 +1048,7 @@ func TestScanRequestBody_MultipartMissingBoundary(t *testing.T) {
 
 	// multipart/form-data without boundary parameter: fail-closed block.
 	_, result := scanRequestBody(
-		strings.NewReader("some body content"),
+		context.Background(), strings.NewReader("some body content"),
 		"multipart/form-data", "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
 	)
 	if result.Clean {
@@ -1074,7 +1074,7 @@ func TestScanRequestBody_MultipartOversizedFilename(t *testing.T) {
 		"--" + boundary + "--\r\n"
 
 	_, result := scanRequestBody(
-		strings.NewReader(body),
+		context.Background(), strings.NewReader(body),
 		"multipart/form-data; boundary="+boundary, "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
 	)
 	if result.Clean {
@@ -1102,7 +1102,7 @@ func TestScanRequestBody_MultipartOversizedPart(t *testing.T) {
 		"--" + boundary + "--\r\n"
 
 	_, result := scanRequestBody(
-		strings.NewReader(body),
+		context.Background(), strings.NewReader(body),
 		"multipart/form-data; boundary="+boundary, "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
 	)
 	if result.Clean {
@@ -1127,7 +1127,7 @@ func TestScanRequestBody_MultipartFilename(t *testing.T) {
 		"--" + boundary + "--\r\n"
 
 	_, result := scanRequestBody(
-		strings.NewReader(body),
+		context.Background(), strings.NewReader(body),
 		"multipart/form-data; boundary="+boundary, "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
 	)
 	if result.Clean {
@@ -1149,7 +1149,7 @@ func TestScanRequestBody_MultipartBinaryWithMetadata(t *testing.T) {
 		"--" + boundary + "--\r\n"
 
 	_, result := scanRequestBody(
-		strings.NewReader(body),
+		context.Background(), strings.NewReader(body),
 		"multipart/form-data; boundary="+boundary, "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
 	)
 	if result.Clean {
@@ -1205,7 +1205,7 @@ func TestScanRequestBody_MultipartTooManyParts(t *testing.T) {
 	sb.WriteString("--" + boundary + "--\r\n")
 
 	_, result := scanRequestBody(
-		strings.NewReader(sb.String()),
+		context.Background(), strings.NewReader(sb.String()),
 		"multipart/form-data; boundary="+boundary, "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
 	)
 	if result.Clean {

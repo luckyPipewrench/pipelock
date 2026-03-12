@@ -4,6 +4,7 @@
 package scanner
 
 import (
+	"context"
 	"sync"
 	"time"
 )
@@ -101,7 +102,7 @@ func (fb *FragmentBuffer) Append(sessionKey string, payload []byte) {
 // ScanForSecrets runs DLP on the concatenated fragment buffer for the given session.
 // Always scans synchronously to guarantee pre-forward detection. Returns nil if
 // no matches are found or the session doesn't exist.
-func (fb *FragmentBuffer) ScanForSecrets(sessionKey string, sc *Scanner) []DLPMatch {
+func (fb *FragmentBuffer) ScanForSecrets(ctx context.Context, sessionKey string, sc *Scanner) []DLPMatch {
 	fb.mu.Lock()
 	sb, exists := fb.sessions[sessionKey]
 	if !exists || len(sb.fragments) == 0 {
@@ -114,7 +115,7 @@ func (fb *FragmentBuffer) ScanForSecrets(sessionKey string, sc *Scanner) []DLPMa
 	fb.mu.Unlock()
 
 	// Run DLP scan outside the lock (may be expensive).
-	result := sc.ScanTextForDLP(string(buf))
+	result := sc.ScanTextForDLP(ctx, string(buf))
 	if result.Clean {
 		return nil
 	}

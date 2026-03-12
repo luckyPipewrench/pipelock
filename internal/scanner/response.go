@@ -4,6 +4,7 @@
 package scanner
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
@@ -32,7 +33,7 @@ type ResponseMatch struct {
 // Zero-width Unicode characters are stripped before scanning to prevent
 // evasion via invisible character insertion.
 // For "strip" action, replaces matches with [REDACTED: PatternName].
-func (s *Scanner) ScanResponse(content string) ResponseScanResult {
+func (s *Scanner) ScanResponse(_ context.Context, content string) ResponseScanResult {
 	if !s.responseEnabled {
 		return ResponseScanResult{Clean: true}
 	}

@@ -8,6 +8,7 @@ package mcp
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -87,7 +88,7 @@ func ScanResponse(line []byte, sc *scanner.Scanner) jsonrpc.ScanVerdict {
 		return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: true}
 	}
 
-	result := sc.ScanResponse(text)
+	result := sc.ScanResponse(context.Background(), text)
 	if result.Clean {
 		return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: true}
 	}
@@ -179,7 +180,7 @@ func scanToolsListNonToolFields(line []byte, sc *scanner.Scanner) jsonrpc.ScanVe
 		return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: true}
 	}
 
-	result := sc.ScanResponse(text)
+	result := sc.ScanResponse(context.Background(), text)
 	if result.Clean {
 		return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: true}
 	}

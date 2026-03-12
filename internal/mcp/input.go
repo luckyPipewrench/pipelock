@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -106,7 +107,7 @@ func ScanRequest(line []byte, sc *scanner.Scanner, action, onParseError string) 
 		joined := joinStrings(strs)
 
 		// Run DLP on joined strings first (catches raw patterns).
-		dlpResult := sc.ScanTextForDLP(joined)
+		dlpResult := sc.ScanTextForDLP(context.Background(), joined)
 
 		// Catch secrets split across multiple JSON fields.
 		dlpResult = scanSplitSecret(trimmed, joined, sc, dlpResult)
@@ -116,7 +117,7 @@ func ScanRequest(line []byte, sc *scanner.Scanner, action, onParseError string) 
 		// unit, so encoding checks only work on individual field values.
 		if dlpResult.Clean {
 			for _, s := range strs {
-				if r := sc.ScanTextForDLP(s); !r.Clean {
+				if r := sc.ScanTextForDLP(context.Background(), s); !r.Clean {
 					dlpResult = r
 					break
 				}
@@ -126,18 +127,18 @@ func ScanRequest(line []byte, sc *scanner.Scanner, action, onParseError string) 
 		// Fall back to scanning full raw JSON for DLP patterns that span
 		// across JSON structure (catches patterns split by JSON syntax).
 		if dlpResult.Clean {
-			dlpResult = sc.ScanTextForDLP(raw)
+			dlpResult = sc.ScanTextForDLP(context.Background(), raw)
 		}
 
 		// Run injection patterns on the full raw text (injection patterns
 		// match phrases, not encoded blobs -- full text is appropriate).
-		injResult := sc.ScanResponse(raw)
+		injResult := sc.ScanResponse(context.Background(), raw)
 
 		// Also scan each extracted string individually for encoded injection
 		// (e.g. base64-encoded phrases) that don't decode in the full blob.
 		if injResult.Clean {
 			for _, s := range strs {
-				if r := sc.ScanResponse(s); !r.Clean {
+				if r := sc.ScanResponse(context.Background(), s); !r.Clean {
 					injResult = r
 					break
 				}
@@ -184,7 +185,7 @@ func ScanRequest(line []byte, sc *scanner.Scanner, action, onParseError string) 
 	joined := joinStrings(strs)
 
 	// Run DLP patterns + env leak checks.
-	dlpResult := sc.ScanTextForDLP(joined)
+	dlpResult := sc.ScanTextForDLP(context.Background(), joined)
 
 	// Catch secrets split across multiple JSON fields.
 	dlpResult = scanSplitSecret(rpc.Params, joined, sc, dlpResult)
@@ -194,7 +195,7 @@ func ScanRequest(line []byte, sc *scanner.Scanner, action, onParseError string) 
 	// checks only work on individual field values.
 	if dlpResult.Clean {
 		for _, s := range strs {
-			if r := sc.ScanTextForDLP(s); !r.Clean {
+			if r := sc.ScanTextForDLP(context.Background(), s); !r.Clean {
 				dlpResult = r
 				break
 			}
@@ -203,14 +204,14 @@ func ScanRequest(line []byte, sc *scanner.Scanner, action, onParseError string) 
 
 	// Run injection patterns (reuses response scanning patterns).
 	// First scan joined text for injection phrases that span fields.
-	injResult := sc.ScanResponse(joined)
+	injResult := sc.ScanResponse(context.Background(), joined)
 
 	// Also scan each extracted string individually for injection. Catches
 	// encoded injection (e.g. base64) in a single field that doesn't decode
 	// cleanly when concatenated with other fields.
 	if injResult.Clean {
 		for _, s := range strs {
-			if r := sc.ScanResponse(s); !r.Clean {
+			if r := sc.ScanResponse(context.Background(), s); !r.Clean {
 				injResult = r
 				break
 			}
@@ -252,7 +253,7 @@ func scanRawBeforeForward(raw []byte, sc *scanner.Scanner, action string) InputV
 	strs := extract.AllStringsFromJSON(raw)
 	joined := joinStrings(strs)
 
-	dlpResult := sc.ScanTextForDLP(joined)
+	dlpResult := sc.ScanTextForDLP(context.Background(), joined)
 
 	// Catch secrets split across multiple JSON fields.
 	dlpResult = scanSplitSecret(raw, joined, sc, dlpResult)
@@ -260,7 +261,7 @@ func scanRawBeforeForward(raw []byte, sc *scanner.Scanner, action string) InputV
 	// Scan each extracted string individually for encoded secrets.
 	if dlpResult.Clean {
 		for _, s := range strs {
-			if r := sc.ScanTextForDLP(s); !r.Clean {
+			if r := sc.ScanTextForDLP(context.Background(), s); !r.Clean {
 				dlpResult = r
 				break
 			}
@@ -269,16 +270,16 @@ func scanRawBeforeForward(raw []byte, sc *scanner.Scanner, action string) InputV
 
 	// Fall back to full raw text for cross-structure patterns.
 	if dlpResult.Clean {
-		dlpResult = sc.ScanTextForDLP(text)
+		dlpResult = sc.ScanTextForDLP(context.Background(), text)
 	}
 
-	injResult := sc.ScanResponse(text)
+	injResult := sc.ScanResponse(context.Background(), text)
 
 	// Also scan each extracted string individually for encoded injection
 	// (e.g. base64-encoded phrases) that don't decode in the full blob.
 	if injResult.Clean {
 		for _, s := range strs {
-			if r := sc.ScanResponse(s); !r.Clean {
+			if r := sc.ScanResponse(context.Background(), s); !r.Clean {
 				injResult = r
 				break
 			}
@@ -713,5 +714,5 @@ func scanSplitSecret(raw json.RawMessage, joined string, sc *scanner.Scanner, re
 	if concat == joined {
 		return result
 	}
-	return sc.ScanTextForDLP(concat)
+	return sc.ScanTextForDLP(context.Background(), concat)
 }

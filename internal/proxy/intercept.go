@@ -255,6 +255,7 @@ func newInterceptHandler(
 		// Request body DLP scanning.
 		if cfg.RequestBodyScanning.Enabled && r.Body != nil && r.Body != http.NoBody {
 			bodyBytes, result := scanRequestBody(
+				r.Context(),
 				r.Body,
 				r.Header.Get("Content-Type"),
 				r.Header.Get("Content-Encoding"),
@@ -297,7 +298,7 @@ func newInterceptHandler(
 
 		// Request header DLP scanning.
 		if cfg.RequestBodyScanning.Enabled && cfg.RequestBodyScanning.ScanHeaders {
-			headerResult := scanRequestHeaders(r.Header, cfg, sc)
+			headerResult := scanRequestHeaders(r.Context(), r.Header, cfg, sc)
 			if headerResult != nil && !headerResult.Clean {
 				action := cfg.RequestBodyScanning.Action
 				// ActionAsk: no HITL terminal in intercepted tunnels, fail closed.
@@ -329,7 +330,7 @@ func newInterceptHandler(
 			outbound := extractOutboundPayload(r)
 			keys := queryParamKeys(r.URL)
 
-			ceeRes := ceeAdmit(sessionKey, outbound, keys, r.URL.String(), agent, clientIP, requestID,
+			ceeRes := ceeAdmit(r.Context(), sessionKey, outbound, keys, r.URL.String(), agent, clientIP, requestID,
 				ceeCfg, ceeET, ceeFB, sc, logger, m)
 
 			if ceeSM != nil && cfg.AdaptiveEnforcement.Enabled {
@@ -385,7 +386,7 @@ func newInterceptHandler(
 
 		// Response injection scanning.
 		if sc.ResponseScanningEnabled() {
-			scanResult := sc.ScanResponse(string(respBody))
+			scanResult := sc.ScanResponse(r.Context(), string(respBody))
 			if !scanResult.Clean {
 				action := sc.ResponseAction()
 				patternNames := make([]string, len(scanResult.Matches))

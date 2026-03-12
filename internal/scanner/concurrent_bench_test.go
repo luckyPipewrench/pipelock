@@ -4,6 +4,7 @@
 package scanner
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -25,7 +26,7 @@ func BenchmarkParallel_URLScan(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			s.Scan(target)
+			s.Scan(context.Background(), target)
 		}
 	})
 }
@@ -39,7 +40,7 @@ func BenchmarkParallel_DLPBlock(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			s.Scan(target)
+			s.Scan(context.Background(), target)
 		}
 	})
 }
@@ -52,7 +53,7 @@ func BenchmarkParallel_ResponseScan(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			s.ScanResponse(content)
+			s.ScanResponse(context.Background(), content)
 		}
 	})
 }
@@ -65,7 +66,7 @@ func BenchmarkParallel_ResponseLarge(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			s.ScanResponse(content)
+			s.ScanResponse(context.Background(), content)
 		}
 	})
 }
@@ -78,7 +79,7 @@ func BenchmarkParallel_Blocklist(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			s.Scan(target)
+			s.Scan(context.Background(), target)
 		}
 	})
 }
@@ -92,7 +93,7 @@ func BenchmarkParallel_Entropy(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			s.Scan(target)
+			s.Scan(context.Background(), target)
 		}
 	})
 }
@@ -137,7 +138,7 @@ func TestConcurrentThroughputScaling(t *testing.T) {
 				defer wg.Done()
 				var local int64
 				for time.Now().Before(deadline) {
-					s.Scan(target)
+					s.Scan(context.Background(), target)
 					local++
 				}
 				totalOps.Add(local)
@@ -191,7 +192,7 @@ func TestConcurrentThroughputScaling(t *testing.T) {
 				defer wg.Done()
 				var local int64
 				for time.Now().Before(deadline) {
-					sResp.ScanResponse(content)
+					sResp.ScanResponse(context.Background(), content)
 					local++
 				}
 				totalOps.Add(local)

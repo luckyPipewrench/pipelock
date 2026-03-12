@@ -116,7 +116,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	syntheticURL := "https://" + syntheticHost + "/"
 
 	// Scan through all 9 layers
-	result := sc.Scan(syntheticURL)
+	result := sc.Scan(r.Context(), syntheticURL)
 
 	// Session profiling: record BEFORE the enforce-mode early return so adaptive
 	// signals (SignalBlock) fire even for blocked requests.
@@ -389,7 +389,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	targetURL := r.URL.String()
 
 	// Scan through all 9 layers
-	result := sc.Scan(targetURL)
+	result := sc.Scan(r.Context(), targetURL)
 
 	// Session profiling: record BEFORE the enforce-mode early return so adaptive
 	// signals (SignalBlock) fire even for blocked requests.
@@ -426,7 +426,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// Request body DLP scanning: read and scan body before Clone so the
 	// cloned request gets the re-wrapped buffered bytes.
 	if cfg.RequestBodyScanning.Enabled && r.Body != nil && r.Body != http.NoBody {
-		buf, bodyResult := scanRequestBody(r.Body, r.Header.Get("Content-Type"),
+		buf, bodyResult := scanRequestBody(r.Context(), r.Body, r.Header.Get("Content-Type"),
 			r.Header.Get("Content-Encoding"), cfg.RequestBodyScanning.MaxBodyBytes, sc)
 
 		if !bodyResult.Clean {
@@ -466,7 +466,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Request header DLP scanning.
-	if p.evalHeaderDLP(r.Header, cfg, sc, p.logger, r.Method, targetURL, r.URL.Hostname(), clientIP, requestID, agent, start) {
+	if p.evalHeaderDLP(r.Context(), r.Header, cfg, sc, p.logger, r.Method, targetURL, r.URL.Hostname(), clientIP, requestID, agent, start) {
 		http.Error(w, "blocked: request header contains secret", http.StatusForbidden)
 		return
 	}
@@ -480,7 +480,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		outbound := extractOutboundPayload(r)
 		keys := queryParamKeys(r.URL)
 
-		ceeRes := ceeAdmit(sessionKey, outbound, keys, targetURL, agent, clientIP, requestID,
+		ceeRes := ceeAdmit(r.Context(), sessionKey, outbound, keys, targetURL, agent, clientIP, requestID,
 			ceeCfg, p.entropyTrackerPtr.Load(), p.fragmentBufferPtr.Load(), sc, p.logger, p.metrics)
 
 		if sm := p.sessionMgrPtr.Load(); sm != nil && cfg.AdaptiveEnforcement.Enabled {

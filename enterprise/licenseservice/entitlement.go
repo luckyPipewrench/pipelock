@@ -64,6 +64,11 @@ func OpenEntitlementDB(ctx context.Context, path string) (*EntitlementDB, error)
 		return nil, fmt.Errorf("open entitlement db: %w", err)
 	}
 
+	// SQLite with database/sql uses a connection pool. For :memory: databases,
+	// each connection gets a separate in-memory DB. Limit to 1 connection to
+	// ensure all queries hit the same underlying database.
+	db.SetMaxOpenConns(1)
+
 	// WAL mode for better concurrent read performance.
 	if _, err := db.ExecContext(ctx, "PRAGMA journal_mode=WAL"); err != nil {
 		_ = db.Close()

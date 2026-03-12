@@ -237,13 +237,13 @@ func TestIsIdempotent(t *testing.T) {
 			current: &Entitlement{
 				CurrentPeriodEnd: periodEnd,
 				Tier:             tierPro,
-				BillingInterval:  "month",
+				BillingInterval:  testIntervalMonth,
 				ProductID:        testProductID,
 			},
 			existing: &Entitlement{
 				LastLicensePeriodEnd: &periodEnd,
 				LastLicenseTier:      tierPro,
-				LastLicenseInterval:  "month",
+				LastLicenseInterval:  testIntervalMonth,
 				LastLicenseProductID: testProductID,
 			},
 			want: true,
@@ -253,13 +253,13 @@ func TestIsIdempotent(t *testing.T) {
 			current: &Entitlement{
 				CurrentPeriodEnd: periodEnd.Add(30 * 24 * time.Hour),
 				Tier:             tierPro,
-				BillingInterval:  "month",
+				BillingInterval:  testIntervalMonth,
 				ProductID:        testProductID,
 			},
 			existing: &Entitlement{
 				LastLicensePeriodEnd: &periodEnd,
 				LastLicenseTier:      tierPro,
-				LastLicenseInterval:  "month",
+				LastLicenseInterval:  testIntervalMonth,
 				LastLicenseProductID: testProductID,
 			},
 			want: false,
@@ -269,13 +269,13 @@ func TestIsIdempotent(t *testing.T) {
 			current: &Entitlement{
 				CurrentPeriodEnd: periodEnd,
 				Tier:             tierEnterprise,
-				BillingInterval:  "month",
+				BillingInterval:  testIntervalMonth,
 				ProductID:        testProductID,
 			},
 			existing: &Entitlement{
 				LastLicensePeriodEnd: &periodEnd,
 				LastLicenseTier:      tierPro,
-				LastLicenseInterval:  "month",
+				LastLicenseInterval:  testIntervalMonth,
 				LastLicenseProductID: testProductID,
 			},
 			want: false,
@@ -285,7 +285,7 @@ func TestIsIdempotent(t *testing.T) {
 			current: &Entitlement{
 				CurrentPeriodEnd: periodEnd,
 				Tier:             tierPro,
-				BillingInterval:  "month",
+				BillingInterval:  testIntervalMonth,
 				ProductID:        testProductID,
 			},
 			existing: &Entitlement{
@@ -304,7 +304,7 @@ func TestIsIdempotent(t *testing.T) {
 			existing: &Entitlement{
 				LastLicensePeriodEnd: &periodEnd,
 				LastLicenseTier:      tierPro,
-				LastLicenseInterval:  "month",
+				LastLicenseInterval:  testIntervalMonth,
 				LastLicenseProductID: testProductID,
 			},
 			want: false,
@@ -327,12 +327,9 @@ func TestCheckFoundingCap_ReservesSlot(t *testing.T) {
 
 	ctx := t.Context()
 
-	ent := &Entitlement{
-		SubscriptionID: "sub_founding_new",
-		CustomerEmail:  testCustomerEmail,
-		Tier:           tierFoundingPro,
-		Founding:       true,
-	}
+	ent := testEntitlement("sub_founding_new")
+	ent.Tier = tierFoundingPro
+	ent.Founding = true
 
 	if err := ts.handler.checkFoundingCap(ctx, ent); err != nil {
 		t.Fatalf("checkFoundingCap: %v", err)
@@ -349,16 +346,22 @@ func TestCheckFoundingCap_ReservesSlot(t *testing.T) {
 func TestCheckFoundingCap_CapReached(t *testing.T) {
 	ts := newTestSetup(t)
 	ts.cfg.FoundingProCap = 2
-	ts.handler.foundingCount = 2 // already at cap
-
 	ctx := t.Context()
 
-	ent := &Entitlement{
-		SubscriptionID: "sub_over_cap",
-		CustomerEmail:  testCustomerEmail,
-		Tier:           tierFoundingPro,
-		Founding:       true,
+	// Insert 2 founding entitlements so DB count matches the cap.
+	for i := 0; i < 2; i++ {
+		e := testEntitlement(fmt.Sprintf("sub_cap_fill_%d", i))
+		e.Founding = true
+		e.Tier = tierFoundingPro
+		if err := ts.db.Upsert(ctx, e); err != nil {
+			t.Fatalf("Upsert cap fill %d: %v", i, err)
+		}
 	}
+	ts.handler.foundingCount = 2
+
+	ent := testEntitlement("sub_over_cap")
+	ent.Tier = tierFoundingPro
+	ent.Founding = true
 
 	if err := ts.handler.checkFoundingCap(ctx, ent); err != nil {
 		t.Fatalf("checkFoundingCap: %v", err)
@@ -379,12 +382,9 @@ func TestCheckFoundingCap_DeadlinePassed(t *testing.T) {
 
 	ctx := t.Context()
 
-	ent := &Entitlement{
-		SubscriptionID: "sub_past_deadline",
-		CustomerEmail:  testCustomerEmail,
-		Tier:           tierFoundingPro,
-		Founding:       true,
-	}
+	ent := testEntitlement("sub_past_deadline")
+	ent.Tier = tierFoundingPro
+	ent.Founding = true
 
 	if err := ts.handler.checkFoundingCap(ctx, ent); err != nil {
 		t.Fatalf("checkFoundingCap: %v", err)
@@ -413,12 +413,9 @@ func TestCheckFoundingCap_AlreadyHasSlot(t *testing.T) {
 		t.Fatalf("Upsert existing: %v", err)
 	}
 
-	ent := &Entitlement{
-		SubscriptionID: "sub_existing_founding",
-		CustomerEmail:  testCustomerEmail,
-		Tier:           tierFoundingPro,
-		Founding:       true,
-	}
+	ent := testEntitlement("sub_existing_founding")
+	ent.Tier = tierFoundingPro
+	ent.Founding = true
 
 	// Should not downgrade because this sub already has a founding slot.
 	if err := ts.handler.checkFoundingCap(ctx, ent); err != nil {
@@ -437,7 +434,7 @@ func TestProcessSubscription_ActiveMintsCertificate(t *testing.T) {
 	sub := &PolarSubscription{
 		ID:                testSubscriptionID,
 		Status:            "active",
-		RecurringInterval: "month",
+		RecurringInterval: testIntervalMonth,
 		CurrentPeriodEnd:  time.Date(2026, 4, 12, 0, 0, 0, 0, time.UTC),
 	}
 	sub.Customer.Email = testCustomerEmail
@@ -506,7 +503,7 @@ func TestProcessSubscription_CanceledClearsRefresh(t *testing.T) {
 	sub := &PolarSubscription{
 		ID:                testSubscriptionID,
 		Status:            "canceled",
-		RecurringInterval: "month",
+		RecurringInterval: testIntervalMonth,
 		CurrentPeriodEnd:  time.Date(2026, 4, 12, 0, 0, 0, 0, time.UTC),
 	}
 	sub.Customer.Email = testCustomerEmail
@@ -552,7 +549,7 @@ func TestProcessSubscription_IdempotentSkipsReissue(t *testing.T) {
 	existing.LastLicenseIssuedAt = &now
 	existing.LastLicensePeriodEnd = &periodEnd
 	existing.LastLicenseTier = tierPro
-	existing.LastLicenseInterval = "month"
+	existing.LastLicenseInterval = testIntervalMonth
 	existing.LastLicenseProductID = testProductID
 	existing.LastDeliveryStatus = testDeliveryStatusSent
 	if err := ts.db.Upsert(ctx, existing); err != nil {
@@ -562,7 +559,7 @@ func TestProcessSubscription_IdempotentSkipsReissue(t *testing.T) {
 	sub := &PolarSubscription{
 		ID:                testSubscriptionID,
 		Status:            "active",
-		RecurringInterval: "month",
+		RecurringInterval: testIntervalMonth,
 		CurrentPeriodEnd:  periodEnd,
 	}
 	sub.Customer.Email = testCustomerEmail
@@ -592,7 +589,7 @@ func TestProcessSubscription_RejectsUnknownTier(t *testing.T) {
 	sub := &PolarSubscription{
 		ID:                "sub_bad_tier",
 		Status:            "active",
-		RecurringInterval: "month",
+		RecurringInterval: testIntervalMonth,
 		CurrentPeriodEnd:  time.Date(2026, 4, 12, 0, 0, 0, 0, time.UTC),
 	}
 	sub.Customer.Email = testCustomerEmail
@@ -619,8 +616,8 @@ func TestProcessSubscription_UnknownStatusRecorded(t *testing.T) {
 
 	sub := &PolarSubscription{
 		ID:                "sub_unknown_status",
-		Status:            "pending",
-		RecurringInterval: "month",
+		Status:            testStatusPending,
+		RecurringInterval: testIntervalMonth,
 		CurrentPeriodEnd:  time.Date(2026, 4, 12, 0, 0, 0, 0, time.UTC),
 	}
 	sub.Customer.Email = testCustomerEmail
@@ -641,8 +638,67 @@ func TestProcessSubscription_UnknownStatusRecorded(t *testing.T) {
 	if ent == nil {
 		t.Fatal("entitlement should be recorded for unknown status")
 	}
-	if ent.Status != "pending" {
-		t.Errorf("Status = %q, want %q", ent.Status, "pending")
+	if ent.Status != testStatusPending {
+		t.Errorf("Status = %q, want %q", ent.Status, testStatusPending)
+	}
+}
+
+func TestProcessSubscription_UnknownStatusPreservesLicense(t *testing.T) {
+	ts := newTestSetup(t)
+	ctx := t.Context()
+
+	// Pre-insert an active entitlement with full license state.
+	now := time.Now().UTC()
+	expires := now.Add(45 * 24 * time.Hour)
+	refresh := now.Add(30 * 24 * time.Hour)
+	periodEnd := time.Date(2026, 4, 12, 0, 0, 0, 0, time.UTC)
+	existing := testEntitlement("sub_unknown_preserve")
+	existing.LastLicenseID = "lic_preserve_me"
+	existing.LastLicenseIssuedAt = &now
+	existing.LastLicenseExpiresAt = &expires
+	existing.LastLicensePeriodEnd = &periodEnd
+	existing.LastLicenseTier = tierPro
+	existing.LastLicenseInterval = testIntervalMonth
+	existing.LastLicenseProductID = testProductID
+	existing.LastDeliveryStatus = testDeliveryStatusSent
+	existing.LastDeliveryAttemptAt = &now
+	existing.NextRefreshAt = &refresh
+	if err := ts.db.Upsert(ctx, existing); err != nil {
+		t.Fatalf("Upsert existing: %v", err)
+	}
+
+	sub := &PolarSubscription{
+		ID:                "sub_unknown_preserve",
+		Status:            testStatusPending,
+		RecurringInterval: testIntervalMonth,
+		CurrentPeriodEnd:  periodEnd,
+	}
+	sub.Customer.Email = testCustomerEmail
+	sub.Customer.Metadata = map[string]string{}
+	sub.Product.ID = testProductID
+	sub.Product.Name = testProductName
+	sub.Product.Metadata = map[string]string{"pipelock_tier": "pro"}
+
+	if err := ts.handler.processSubscription(ctx, sub); err != nil {
+		t.Fatalf("processSubscription unknown status: %v", err)
+	}
+
+	ent, err := ts.db.GetBySubscriptionID(ctx, "sub_unknown_preserve")
+	if err != nil {
+		t.Fatalf("GetBySubscriptionID: %v", err)
+	}
+	if ent.Status != testStatusPending {
+		t.Errorf("Status = %q, want %q", ent.Status, testStatusPending)
+	}
+	// License state must be preserved, not wiped.
+	if ent.LastLicenseID != "lic_preserve_me" {
+		t.Errorf("LastLicenseID = %q, want %q (should be preserved)", ent.LastLicenseID, "lic_preserve_me")
+	}
+	if ent.NextRefreshAt == nil {
+		t.Error("NextRefreshAt should be preserved for unknown status")
+	}
+	if ent.LastDeliveryStatus != testDeliveryStatusSent {
+		t.Errorf("LastDeliveryStatus = %q, want %q", ent.LastDeliveryStatus, testDeliveryStatusSent)
 	}
 }
 
@@ -822,7 +878,7 @@ func TestProcessSubscription_RevokedClearsRefresh(t *testing.T) {
 	sub := &PolarSubscription{
 		ID:                testSubscriptionID,
 		Status:            "revoked",
-		RecurringInterval: "month",
+		RecurringInterval: testIntervalMonth,
 		CurrentPeriodEnd:  time.Date(2026, 4, 12, 0, 0, 0, 0, time.UTC),
 	}
 	sub.Customer.Email = testCustomerEmail
@@ -876,7 +932,7 @@ func TestProcessSubscription_EmailFailureStillPersists(t *testing.T) {
 	sub := &PolarSubscription{
 		ID:                "sub_email_fail",
 		Status:            "active",
-		RecurringInterval: "month",
+		RecurringInterval: testIntervalMonth,
 		CurrentPeriodEnd:  time.Date(2026, 4, 12, 0, 0, 0, 0, time.UTC),
 	}
 	sub.Customer.Email = testCustomerEmail
@@ -910,7 +966,7 @@ func TestProcessSubscription_HandleEndedNoExistingLicense(t *testing.T) {
 	sub := &PolarSubscription{
 		ID:                "sub_cancel_fresh",
 		Status:            "canceled",
-		RecurringInterval: "month",
+		RecurringInterval: testIntervalMonth,
 		CurrentPeriodEnd:  time.Date(2026, 4, 12, 0, 0, 0, 0, time.UTC),
 	}
 	sub.Customer.Email = testCustomerEmail
@@ -972,7 +1028,7 @@ func TestProcessSubscription_EndedEmailFailure(t *testing.T) {
 	sub := &PolarSubscription{
 		ID:                testSubscriptionID,
 		Status:            "canceled",
-		RecurringInterval: "month",
+		RecurringInterval: testIntervalMonth,
 		CurrentPeriodEnd:  time.Date(2026, 4, 12, 0, 0, 0, 0, time.UTC),
 	}
 	sub.Customer.Email = testCustomerEmail
@@ -1030,7 +1086,7 @@ func TestProcessSubscription_DBErrorOnGetExisting(t *testing.T) {
 	sub := &PolarSubscription{
 		ID:                "sub_db_error",
 		Status:            "active",
-		RecurringInterval: "month",
+		RecurringInterval: testIntervalMonth,
 		CurrentPeriodEnd:  time.Date(2026, 4, 12, 0, 0, 0, 0, time.UTC),
 	}
 	sub.Customer.Email = testCustomerEmail
@@ -1055,7 +1111,7 @@ func TestProcessSubscription_LicenseIssueError(t *testing.T) {
 	sub := &PolarSubscription{
 		ID:                "sub_bad_key",
 		Status:            "active",
-		RecurringInterval: "month",
+		RecurringInterval: testIntervalMonth,
 		CurrentPeriodEnd:  time.Date(2026, 4, 12, 0, 0, 0, 0, time.UTC),
 	}
 	sub.Customer.Email = testCustomerEmail
@@ -1079,7 +1135,7 @@ func TestProcessSubscription_FoundingCapDBError(t *testing.T) {
 	sub := &PolarSubscription{
 		ID:                "sub_founding_db_err",
 		Status:            "active",
-		RecurringInterval: "month",
+		RecurringInterval: testIntervalMonth,
 		CurrentPeriodEnd:  time.Date(2026, 4, 12, 0, 0, 0, 0, time.UTC),
 	}
 	sub.Customer.Email = testCustomerEmail
@@ -1101,7 +1157,7 @@ func TestProcessSubscription_UnpaidStatus(t *testing.T) {
 	sub := &PolarSubscription{
 		ID:                "sub_unpaid",
 		Status:            "unpaid",
-		RecurringInterval: "month",
+		RecurringInterval: testIntervalMonth,
 		CurrentPeriodEnd:  time.Date(2026, 4, 12, 0, 0, 0, 0, time.UTC),
 	}
 	sub.Customer.Email = testCustomerEmail

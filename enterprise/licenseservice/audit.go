@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -29,18 +30,31 @@ const (
 )
 
 // AuditEntry is a single line in the append-only JSONL audit ledger.
-// PII is explicitly excluded: no card numbers, billing addresses, or
-// full webhook payloads.
+// PII is minimized: emails are masked (first char + ***@domain),
+// no card numbers, billing addresses, or full webhook payloads.
 type AuditEntry struct {
 	Timestamp      time.Time `json:"ts"`
 	Event          string    `json:"event"`
 	SubscriptionID string    `json:"subscription_id,omitempty"`
-	CustomerEmail  string    `json:"customer_email,omitempty"`
+	CustomerEmail  string    `json:"customer_email,omitempty"` // masked on write via maskEmail
 	LicenseID      string    `json:"license_id,omitempty"`
 	Tier           string    `json:"tier,omitempty"`
 	ExpiresAt      string    `json:"expires_at,omitempty"`
 	Detail         string    `json:"detail,omitempty"`
 	Error          string    `json:"error,omitempty"`
+}
+
+// maskEmail returns a masked version of an email address for audit logging.
+// "alice@example.com" becomes "a***@example.com". Empty input returns empty.
+func maskEmail(email string) string {
+	if email == "" {
+		return ""
+	}
+	at := strings.LastIndex(email, "@")
+	if at <= 0 {
+		return "***"
+	}
+	return string(email[0]) + "***" + email[at:]
 }
 
 // AuditLedger is a concurrency-safe, append-only JSONL file writer.
@@ -56,11 +70,23 @@ type AuditLedger struct {
 func OpenAuditLedger(path string) (*AuditLedger, error) {
 	cleanPath := filepath.Clean(path)
 
-	// Reject symlinks to prevent writing to unexpected locations.
+	// Reject symlinks at the leaf path.
 	if info, err := os.Lstat(cleanPath); err == nil {
 		if info.Mode()&os.ModeSymlink != 0 {
 			return nil, fmt.Errorf("ledger path %s is a symlink (not allowed for security)", cleanPath)
 		}
+	}
+
+	// Reject symlinks in parent directories to prevent redirection attacks.
+	// A path like "logs-link/audit.jsonl" where logs-link is a symlink
+	// would bypass the leaf-only Lstat check above.
+	parentDir := filepath.Dir(cleanPath)
+	resolvedParent, err := filepath.EvalSymlinks(parentDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve ledger parent directory: %w", err)
+	}
+	if resolvedParent != parentDir {
+		return nil, fmt.Errorf("ledger parent directory %s contains a symlink (resolved to %s)", parentDir, resolvedParent)
 	}
 
 	f, err := os.OpenFile(cleanPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
@@ -85,6 +111,8 @@ func (a *AuditLedger) Log(entry AuditEntry) error {
 	if entry.Timestamp.IsZero() {
 		entry.Timestamp = time.Now().UTC()
 	}
+	// Mask PII before persisting to the append-only ledger.
+	entry.CustomerEmail = maskEmail(entry.CustomerEmail)
 
 	data, err := json.Marshal(entry)
 	if err != nil {

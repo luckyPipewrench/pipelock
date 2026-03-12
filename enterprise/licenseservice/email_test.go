@@ -6,6 +6,7 @@ package licenseservice
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,8 +18,7 @@ func TestEmailSender_SendLicenseDelivery(t *testing.T) {
 	var gotAuth, gotBody string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
-		b := make([]byte, r.ContentLength)
-		_, _ = r.Body.Read(b)
+		b, _ := io.ReadAll(r.Body)
 		gotBody = string(b)
 		w.Header().Set("Content-Type", testContentTypeJSON)
 		_, _ = w.Write([]byte(`{"id":"msg_delivery_test"}`))
@@ -50,8 +50,7 @@ func TestEmailSender_SendLicenseDelivery(t *testing.T) {
 func TestEmailSender_SendLicenseDelivery_FoundingPro(t *testing.T) {
 	var gotBody string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		b := make([]byte, r.ContentLength)
-		_, _ = r.Body.Read(b)
+		b, _ := io.ReadAll(r.Body)
 		gotBody = string(b)
 		w.Header().Set("Content-Type", testContentTypeJSON)
 		_, _ = w.Write([]byte(`{"id":"msg_founding"}`))
@@ -200,20 +199,42 @@ func TestEmailSender_Send_CanceledContext(t *testing.T) {
 
 func TestEmailSender_Send_EmptyAPIURL(t *testing.T) {
 	// When apiURL is empty, send() should fall back to resendAPIURL.
-	// This will fail with a network error (not a real API), but the
-	// fallback path is exercised.
+	// Use a custom transport to capture the outgoing URL without making
+	// a real network request.
+	var gotURL string
+	stubTransport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		gotURL = req.URL.String()
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"id":"msg_fallback"}`)),
+			Header:     http.Header{"Content-Type": []string{testContentTypeJSON}},
+		}, nil
+	})
+
 	sender := &EmailSender{
 		apiKey:    "re_" + "test_fallback",
 		fromEmail: "noreply@pipelock.dev",
-		client:    &http.Client{Timeout: 1 * time.Second},
+		client:    &http.Client{Transport: stubTransport},
 		apiURL:    "", // empty, triggers fallback
 	}
 
-	_, err := sender.SendLicenseDelivery(t.Context(), testCustomerEmail, "token", tierPro)
-	// Expect error (network failure to real Resend API).
-	if err == nil {
-		t.Fatal("expected error sending to real API without auth, got nil")
+	msgID, err := sender.SendLicenseDelivery(t.Context(), testCustomerEmail, "token", tierPro)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
+	if msgID != "msg_fallback" {
+		t.Errorf("msgID = %q, want %q", msgID, "msg_fallback")
+	}
+	if gotURL != resendAPIURL {
+		t.Errorf("fallback URL = %q, want %q", gotURL, resendAPIURL)
+	}
+}
+
+// roundTripFunc adapts a function into an http.RoundTripper for test stubs.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }
 
 func TestNewEmailSender(t *testing.T) {

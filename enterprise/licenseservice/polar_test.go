@@ -31,6 +31,8 @@ const (
 	testSubscriptionJSON   = `{"id":"sub_test123"}`
 	testContentTypeJSON    = "application/json"
 	testStatusCanceled     = "canceled"
+	testStatusPending      = "pending"
+	testIntervalMonth      = "month"
 	testDeliveryStatusSent = "sent"
 	testLicenseIDOld       = "lic_old"
 )
@@ -133,7 +135,7 @@ func TestValidateWebhookSignature(t *testing.T) {
 			body:      body,
 			msgID:     testWebhookMsgID,
 			timestamp: strconv.FormatInt(time.Now().Add(-10*time.Minute).Unix(), 10),
-			signature: sig,
+			signature: signWebhook(t, body, strconv.FormatInt(time.Now().Add(-10*time.Minute).Unix(), 10), secret),
 			secret:    secret,
 			wantErr:   true,
 		},
@@ -142,7 +144,7 @@ func TestValidateWebhookSignature(t *testing.T) {
 			body:      body,
 			msgID:     testWebhookMsgID,
 			timestamp: strconv.FormatInt(time.Now().Add(10*time.Minute).Unix(), 10),
-			signature: sig,
+			signature: signWebhook(t, body, strconv.FormatInt(time.Now().Add(10*time.Minute).Unix(), 10), secret),
 			secret:    secret,
 			wantErr:   true,
 		},
@@ -151,7 +153,7 @@ func TestValidateWebhookSignature(t *testing.T) {
 			body:      body,
 			msgID:     testWebhookMsgID,
 			timestamp: "not-a-number",
-			signature: sig,
+			signature: signWebhook(t, body, "not-a-number", secret),
 			secret:    secret,
 			wantErr:   true,
 		},

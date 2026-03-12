@@ -159,6 +159,20 @@ func (h *WebhookHandler) processSubscription(ctx context.Context, sub *PolarSubs
 			Str("subscription_id", sub.ID).
 			Str("status", sub.Status).
 			Msg("unrecognized subscription status, recording without action")
+		// Preserve existing license state so an unknown status doesn't
+		// wipe previously-tracked fields (LastLicense*, NextRefreshAt, etc.).
+		if existing != nil {
+			ent.LastLicenseID = existing.LastLicenseID
+			ent.LastLicenseIssuedAt = existing.LastLicenseIssuedAt
+			ent.LastLicenseExpiresAt = existing.LastLicenseExpiresAt
+			ent.LastLicensePeriodEnd = existing.LastLicensePeriodEnd
+			ent.LastLicenseTier = existing.LastLicenseTier
+			ent.LastLicenseInterval = existing.LastLicenseInterval
+			ent.LastLicenseProductID = existing.LastLicenseProductID
+			ent.LastDeliveryStatus = existing.LastDeliveryStatus
+			ent.LastDeliveryAttemptAt = existing.LastDeliveryAttemptAt
+			ent.NextRefreshAt = existing.NextRefreshAt
+		}
 		return h.db.Upsert(ctx, ent)
 	}
 }
@@ -379,6 +393,10 @@ func (h *WebhookHandler) tierToFeatures(tier string) []string {
 
 // checkFoundingCap verifies that the Founding Pro cap has not been reached.
 // If the cap is hit or the deadline has passed, downgrades to regular pro.
+//
+// The reservation is atomic: the mutex serializes access, and the founding
+// count is read from the DB (not an in-memory cache) to prevent drift
+// between the counter and persisted state.
 func (h *WebhookHandler) checkFoundingCap(ctx context.Context, ent *Entitlement) error {
 	h.foundingMu.Lock()
 	defer h.foundingMu.Unlock()
@@ -410,25 +428,39 @@ func (h *WebhookHandler) checkFoundingCap(ctx context.Context, ent *Entitlement)
 		return nil
 	}
 
-	if h.foundingCount >= h.cfg.FoundingProCap {
+	// Read authoritative founding count from DB, not in-memory cache.
+	// This prevents drift if the process restarted or a previous Upsert
+	// changed the DB state outside the mutex.
+	count, err := h.db.CountFounding(ctx)
+	if err != nil {
+		return fmt.Errorf("count founding slots: %w", err)
+	}
+
+	if count >= h.cfg.FoundingProCap {
 		_ = h.ledger.Log(AuditEntry{
 			Event:          AuditFoundingCapHit,
 			SubscriptionID: ent.SubscriptionID,
 			CustomerEmail:  ent.CustomerEmail,
-			Detail:         fmt.Sprintf("founding pro cap reached (%d/%d)", h.foundingCount, h.cfg.FoundingProCap),
+			Detail:         fmt.Sprintf("founding pro cap reached (%d/%d)", count, h.cfg.FoundingProCap),
 		})
 		ent.Tier = tierPro
 		ent.Founding = false
 		h.log.Warn().
 			Str("subscription_id", ent.SubscriptionID).
-			Int("current_count", h.foundingCount).
+			Int("current_count", count).
 			Int("cap", h.cfg.FoundingProCap).
 			Msg("founding pro cap reached, downgrading to pro")
 		return nil
 	}
 
-	// Reserve the slot. This counter never decreases.
-	h.foundingCount++
+	// Reserve the slot atomically by persisting to DB within the mutex.
+	// This ensures concurrent calls see the reservation immediately via
+	// CountFounding, preventing double-allocation of founding slots.
+	if err := h.db.Upsert(ctx, ent); err != nil {
+		return fmt.Errorf("reserve founding slot: %w", err)
+	}
+
+	h.foundingCount = count + 1
 	h.log.Info().
 		Str("subscription_id", ent.SubscriptionID).
 		Int("founding_count", h.foundingCount).

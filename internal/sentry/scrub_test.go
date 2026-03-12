@@ -341,6 +341,29 @@ func TestScrubEvent_ContextsStringScrubbed(t *testing.T) {
 	}
 }
 
+func TestScrubEvent_ContextsNonStringDeleted(t *testing.T) {
+	s := NewScrubber(nil, nil)
+	event := &sentry.Event{
+		Contexts: map[string]sentry.Context{
+			"custom": {
+				"safe":      "value",
+				"dangerous": []byte("secret bytes"),
+				"number":    42,
+			},
+		},
+	}
+	result := s.ScrubEvent(event, nil)
+	if _, ok := result.Contexts["custom"]["dangerous"]; ok {
+		t.Error("expected non-string Context value to be deleted (fail-closed)")
+	}
+	if _, ok := result.Contexts["custom"]["number"]; ok {
+		t.Error("expected non-string Context value to be deleted (fail-closed)")
+	}
+	if _, ok := result.Contexts["custom"]["safe"]; !ok {
+		t.Error("expected string Context value to be preserved")
+	}
+}
+
 func TestScrubEvent_VarsNonStringDeleted(t *testing.T) {
 	s := NewScrubber(nil, nil)
 	event := &sentry.Event{

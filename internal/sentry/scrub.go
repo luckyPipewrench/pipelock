@@ -148,12 +148,15 @@ func (s *Scrubber) ScrubEvent(event *sentry.Event, _ *sentry.EventHint) *sentry.
 		}
 	}
 
-	// Scrub contexts — auto-populated with device/os/runtime info (benign)
-	// but custom contexts could contain secrets in string values.
+	// Scrub contexts — auto-populated with device/os/runtime info (ints,
+	// bools for OS/device/runtime) but custom contexts could contain secrets.
+	// Fail-closed: delete non-string values to prevent serialization leaks.
 	for ctxName, ctx := range event.Contexts {
 		for k, v := range ctx {
 			if sv, ok := v.(string); ok {
 				event.Contexts[ctxName][k] = s.ScrubString(sv)
+			} else {
+				delete(event.Contexts[ctxName], k)
 			}
 		}
 	}

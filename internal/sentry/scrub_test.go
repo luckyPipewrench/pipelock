@@ -46,6 +46,45 @@ func TestScrubString_DLPPatterns(t *testing.T) {
 	}
 }
 
+func TestScrubString_DLPPatterns_CaseInsensitive(t *testing.T) {
+	// DLP patterns are auto-prefixed with (?i) so mixed-case variants must
+	// still be scrubbed. This mirrors the scanner.New() behavior.
+	s := NewScrubber(testDLPPatterns(), nil)
+
+	// "ghp_" token with the prefix chars in different case won't match the
+	// original regex literally, but the real vector is an agent upper-casing
+	// secrets. Use a Slack token variant since xox is case-sensitive in the
+	// regex but agents can uppercase.
+	mixedCase := "webhook " + "XOXb-" + "123456789012345"
+	result := s.ScrubString(mixedCase)
+	if result == mixedCase {
+		t.Errorf("expected mixed-case Slack token to be scrubbed, got %q", result)
+	}
+	if !containsRedacted(result) {
+		t.Errorf("expected [REDACTED] in result %q", result)
+	}
+}
+
+func TestScrubString_SafetyNet_CaseInsensitive(t *testing.T) {
+	s := NewScrubber(nil, nil)
+
+	// Lowercase "bearer" and "authorization" must still be caught.
+	lower := "header: bearer " + "eyJhbGciOiJIUzI1NiJ9.test"
+	result := s.ScrubString(lower)
+	if result == lower {
+		t.Errorf("expected lowercase bearer to be scrubbed, got %q", result)
+	}
+	if !containsRedacted(result) {
+		t.Errorf("expected [REDACTED] in result %q", result)
+	}
+
+	authLower := "authorization: Basic dXNlcjpwYXNz"
+	result = s.ScrubString(authLower)
+	if result == authLower {
+		t.Errorf("expected lowercase authorization to be scrubbed, got %q", result)
+	}
+}
+
 func TestScrubString_NonSecretPassesThrough(t *testing.T) {
 	s := NewScrubber(testDLPPatterns(), nil)
 	input := "normal error message without secrets"

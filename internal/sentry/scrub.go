@@ -14,8 +14,8 @@ import (
 // safetyNetPatterns are always applied regardless of user config.
 // They catch common secret formats as a defense-in-depth measure.
 var safetyNetPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`Bearer\s+\S+`),
-	regexp.MustCompile(`Authorization:\s*\S+`),
+	regexp.MustCompile(`(?i)Bearer\s+\S+`),
+	regexp.MustCompile(`(?i)Authorization:\s*\S+`),
 	regexp.MustCompile(`(?:sk-ant-|sk-)[a-zA-Z0-9_-]{20,}`),
 	regexp.MustCompile(`AKIA[0-9A-Z]{16}`),
 	regexp.MustCompile(`ghp_[a-zA-Z0-9]{36}`),
@@ -41,9 +41,14 @@ func NewScrubber(dlpPatterns []config.DLPPattern, envSecrets []string) *Scrubber
 		secrets: envSecrets,
 	}
 
-	// Add config DLP patterns.
+	// Add config DLP patterns with case-insensitive matching,
+	// mirroring the (?i) auto-prefix applied by scanner.New().
 	for _, p := range dlpPatterns {
-		re, err := regexp.Compile(p.Regex)
+		pattern := p.Regex
+		if !strings.HasPrefix(pattern, "(?i)") {
+			pattern = "(?i)" + pattern
+		}
+		re, err := regexp.Compile(pattern)
 		if err != nil {
 			continue // skip invalid patterns (already validated by config)
 		}

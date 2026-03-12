@@ -4,6 +4,7 @@
 package scanner
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
@@ -193,13 +194,13 @@ func TestScanner_Scan_RateLimitIntegration(t *testing.T) {
 	// CheckAndRecord records each allowed request atomically.
 	// With limit=3, first 3 scans should pass, 4th should be blocked.
 	for i := 0; i < 3; i++ {
-		result := s.Scan("https://example.com/page")
+		result := s.Scan(context.Background(), "https://example.com/page")
 		if !result.Allowed {
 			t.Errorf("scan %d should be allowed", i)
 		}
 	}
 
-	result := s.Scan("https://example.com/page")
+	result := s.Scan(context.Background(), "https://example.com/page")
 	if result.Allowed {
 		t.Error("fourth scan should be blocked by rate limiter")
 	}
@@ -233,19 +234,19 @@ func TestScanner_RateLimit_DifferentDomainsIndependent(t *testing.T) {
 	defer s.Close()
 
 	// First scan for a.com is allowed (CheckAndRecord records it)
-	result := s.Scan("https://a.com/page")
+	result := s.Scan(context.Background(), "https://a.com/page")
 	if !result.Allowed {
 		t.Error("first a.com request should be allowed")
 	}
 
 	// a.com should now be blocked (limit=1, already used)
-	result = s.Scan("https://a.com/page")
+	result = s.Scan(context.Background(), "https://a.com/page")
 	if result.Allowed {
 		t.Error("expected a.com blocked after rate limit reached")
 	}
 
 	// b.com should still work (independent counter)
-	result = s.Scan("https://b.com/page")
+	result = s.Scan(context.Background(), "https://b.com/page")
 	if !result.Allowed {
 		t.Errorf("expected b.com allowed (independent limit), got: %s", result.Reason)
 	}

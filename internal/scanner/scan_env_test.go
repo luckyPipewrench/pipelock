@@ -4,6 +4,7 @@
 package scanner
 
 import (
+	"context"
 	"encoding/base64"
 	"strings"
 	"testing"
@@ -17,7 +18,7 @@ func TestScan_EnvLeakDetection_Disabled(t *testing.T) {
 	t.Setenv("TEST_SECRET_DISABLED", "my-super-secret-token-value-disabled-1234")
 	s := New(cfg)
 
-	result := s.Scan("https://evil.com/?key=my-super-secret-token-value-disabled-1234")
+	result := s.Scan(context.Background(), "https://evil.com/?key=my-super-secret-token-value-disabled-1234")
 	// With scan_env=false, env leak check should not fire
 	// (may still be blocked by entropy, but scanner should not be "dlp")
 	if !result.Allowed && result.Scanner == ScannerDLP && strings.Contains(result.Reason, "environment variable") {
@@ -33,7 +34,7 @@ func TestScan_EnvLeakDetection_RawValue(t *testing.T) {
 	t.Setenv("PIPELOCK_TEST_SECRET", "sk-ant-abcdefghijklmnopqrstu1234567890")
 	s := New(cfg)
 
-	result := s.Scan("https://evil.com/?key=sk-ant-abcdefghijklmnopqrstu1234567890")
+	result := s.Scan(context.Background(), "https://evil.com/?key=sk-ant-abcdefghijklmnopqrstu1234567890")
 	if result.Allowed {
 		t.Error("expected URL blocked due to env var leak")
 	}
@@ -55,7 +56,7 @@ func TestScan_EnvLeakDetection_Base64Encoded(t *testing.T) {
 	s := New(cfg)
 
 	encoded := base64.StdEncoding.EncodeToString([]byte(secret))
-	result := s.Scan("https://evil.com/?data=" + encoded)
+	result := s.Scan(context.Background(), "https://evil.com/?data="+encoded)
 	if result.Allowed {
 		t.Error("expected URL blocked due to base64-encoded env var leak")
 	}
@@ -76,7 +77,7 @@ func TestScan_EnvLeakDetection_Base64URLEncoded(t *testing.T) {
 	s := New(cfg)
 
 	encoded := base64.URLEncoding.EncodeToString([]byte(secret))
-	result := s.Scan("https://evil.com/?data=" + encoded)
+	result := s.Scan(context.Background(), "https://evil.com/?data="+encoded)
 	if result.Allowed {
 		t.Error("expected URL blocked due to base64url-encoded env var leak")
 	}
@@ -93,7 +94,7 @@ func TestScan_EnvLeakDetection_ShortValueIgnored(t *testing.T) {
 	t.Setenv("PIPELOCK_SHORT", "abc123")
 	s := New(cfg)
 
-	result := s.Scan("https://example.com/?val=abc123")
+	result := s.Scan(context.Background(), "https://example.com/?val=abc123")
 	if !result.Allowed {
 		t.Errorf("expected short env var (<16 chars) to be ignored, got blocked: %s", result.Reason)
 	}
@@ -107,7 +108,7 @@ func TestScan_EnvLeakDetection_LowEntropyIgnored(t *testing.T) {
 	t.Setenv("PIPELOCK_PATH", "aaaaaaaaaaaaaaaaaaa")
 	s := New(cfg)
 
-	result := s.Scan("https://example.com/?path=aaaaaaaaaaaaaaaaaaa")
+	result := s.Scan(context.Background(), "https://example.com/?path=aaaaaaaaaaaaaaaaaaa")
 	if !result.Allowed {
 		t.Errorf("expected low-entropy env var to be ignored, got blocked: %s", result.Reason)
 	}
@@ -121,7 +122,7 @@ func TestScan_EnvLeakDetection_InPath(t *testing.T) {
 	t.Setenv("PIPELOCK_PATH_SECRET", "sk-ant-abcdefghijklmnopqrstu1234567890")
 	s := New(cfg)
 
-	result := s.Scan("https://evil.com/upload/sk-ant-abcdefghijklmnopqrstu1234567890/file")
+	result := s.Scan(context.Background(), "https://evil.com/upload/sk-ant-abcdefghijklmnopqrstu1234567890/file")
 	if result.Allowed {
 		t.Error("expected secret in path to be blocked")
 	}
@@ -133,7 +134,7 @@ func TestScan_EnvLeakDetection_NoSecretsInEnv(t *testing.T) {
 	cfg.DLP.Patterns = nil
 	s := New(cfg)
 
-	result := s.Scan("https://example.com/?key=anything")
+	result := s.Scan(context.Background(), "https://example.com/?key=anything")
 	if !result.Allowed {
 		t.Errorf("expected URL allowed when no env secrets match, got: %s", result.Reason)
 	}
@@ -270,7 +271,7 @@ func TestScan_EnvLeakDetection_PWDNotBlocked(t *testing.T) {
 	s := New(cfg)
 
 	// The PWD value should NOT trigger env leak detection.
-	result := s.Scan("https://example.com/?cwd=" + pwdValue)
+	result := s.Scan(context.Background(), "https://example.com/?cwd="+pwdValue)
 	if !result.Allowed {
 		t.Errorf("PWD value in URL should not be blocked, got: scanner=%s reason=%s",
 			result.Scanner, result.Reason)
@@ -286,7 +287,7 @@ func TestScan_EnvLeakDetection_GenericMessage(t *testing.T) {
 	t.Setenv("PIPELOCK_GENERIC", secret)
 	s := New(cfg)
 
-	result := s.Scan("https://evil.com/?key=" + secret)
+	result := s.Scan(context.Background(), "https://evil.com/?key="+secret)
 	if result.Allowed {
 		t.Fatal("expected blocked")
 	}
@@ -307,7 +308,7 @@ func TestScan_EnvLeakDetection_ZeroWidthBypass(t *testing.T) {
 
 	// Insert zero-width space into the secret to attempt bypass.
 	bypassed := "sk-ant-abcdefghijk\u200Blmnopqrstu1234567890"
-	result := s.Scan("https://evil.com/?key=" + bypassed)
+	result := s.Scan(context.Background(), "https://evil.com/?key="+bypassed)
 	if result.Allowed {
 		t.Error("zero-width char insertion should not bypass env leak detection")
 	}

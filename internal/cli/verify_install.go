@@ -387,7 +387,7 @@ func checkScanningDLP(env *verifyEnv) verifyResult {
 			ToolInput: `{"query": "` + "sk-ant-" + `api03-AABBCCDDEE123456789012345678901234"}`,
 		},
 	}
-	decision := decide.Decide(env.Cfg, env.Sc, env.PolicyCfg, action)
+	decision := decide.Decide(context.Background(), env.Cfg, env.Sc, env.PolicyCfg, action)
 	if decision.Outcome != decide.Deny {
 		return verifyResult{Status: verifyStatusFail, Detail: "DLP did not catch secret in MCP input"}
 	}
@@ -410,7 +410,7 @@ func checkScanningInjection(env *verifyEnv) verifyResult {
 			CWD:     "/tmp",
 		},
 	}
-	decision := decide.Decide(env.Cfg, env.Sc, env.PolicyCfg, action)
+	decision := decide.Decide(context.Background(), env.Cfg, env.Sc, env.PolicyCfg, action)
 	if decision.Outcome != decide.Deny {
 		return verifyResult{Status: verifyStatusFail, Detail: "injection detection did not trigger"}
 	}
@@ -430,7 +430,7 @@ func checkScanningPolicy(env *verifyEnv) verifyResult {
 		Kind:   decide.EventShellExecution,
 		Shell:  &decide.ShellPayload{Command: "rm -rf /", CWD: "/tmp"},
 	}
-	decision := decide.Decide(env.Cfg, env.Sc, env.PolicyCfg, action)
+	decision := decide.Decide(context.Background(), env.Cfg, env.Sc, env.PolicyCfg, action)
 	if decision.Outcome != decide.Deny {
 		return verifyResult{Status: verifyStatusFail, Detail: "tool policy did not block rm -rf"}
 	}

@@ -4,6 +4,7 @@
 package decide
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -41,7 +42,7 @@ func BenchmarkColdStart(b *testing.B) {
 			Shell:  &ShellPayload{Command: "git status", CWD: "/tmp/project"},
 		}
 
-		decision := Decide(cfg, sc, pc, action)
+		decision := Decide(context.Background(), cfg, sc, pc, action)
 
 		out, err := json.Marshal(decision)
 		if err != nil {

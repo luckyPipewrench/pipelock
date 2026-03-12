@@ -4,6 +4,7 @@
 package scanner
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -34,7 +35,7 @@ func BenchmarkScan_AllowedURL(b *testing.B) {
 	const target = "https://example.com/articles/how-to-write-golang-tests"
 	b.ResetTimer()
 	for b.Loop() {
-		s.Scan(target)
+		s.Scan(context.Background(), target)
 	}
 }
 
@@ -45,7 +46,7 @@ func BenchmarkScan_BlockedByBlocklist(b *testing.B) {
 	const target = "https://pastebin.com/raw/abc123"
 	b.ResetTimer()
 	for b.Loop() {
-		s.Scan(target)
+		s.Scan(context.Background(), target)
 	}
 }
 
@@ -58,7 +59,7 @@ func BenchmarkScan_BlockedByDLP(b *testing.B) {
 	target := "https://example.com/api?key=" + key
 	b.ResetTimer()
 	for b.Loop() {
-		s.Scan(target)
+		s.Scan(context.Background(), target)
 	}
 }
 
@@ -71,7 +72,7 @@ func BenchmarkScan_BlockedByEntropy(b *testing.B) {
 	target := "https://example.com/data/" + entropy
 	b.ResetTimer()
 	for b.Loop() {
-		s.Scan(target)
+		s.Scan(context.Background(), target)
 	}
 }
 
@@ -82,7 +83,7 @@ func BenchmarkScan_BlockedByURLLength(b *testing.B) {
 	target := "https://example.com/" + strings.Repeat("a", 2100)
 	b.ResetTimer()
 	for b.Loop() {
-		s.Scan(target)
+		s.Scan(context.Background(), target)
 	}
 }
 
@@ -93,7 +94,7 @@ func BenchmarkScan_ComplexAllowedURL(b *testing.B) {
 	const target = "https://api.example.com:8443/v2/search?q=golang+testing&page=3&limit=50"
 	b.ResetTimer()
 	for b.Loop() {
-		s.Scan(target)
+		s.Scan(context.Background(), target)
 	}
 }
 

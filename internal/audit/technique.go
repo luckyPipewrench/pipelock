@@ -40,7 +40,8 @@ var techniqueMap = map[string]string{
 	"ws_protocol": "T1071", // Application Layer Protocol (binary frame / fragment violation)
 
 	// Exploitation / parsing
-	"parser": "T1190", // Exploit Public-Facing Application
+	"parser":  "T1190", // Exploit Public-Facing Application
+	"context": "T1190", // Exploit Public-Facing Application (cancelled/nil request context)
 
 	// Supply chain (MCP tool inventory)
 	"mcp_unknown_tool": "T1195.002", // Supply Chain Compromise: Software Supply Chain

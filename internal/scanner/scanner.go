@@ -43,6 +43,7 @@ const (
 	ScannerEntropy          = "entropy"
 	ScannerSubdomainEntropy = "subdomain_entropy"
 	ScannerDataBudget       = "databudget"
+	ScannerContext          = "context"
 	ScannerAll              = "all"
 )
 
@@ -282,6 +283,7 @@ var scannerHints = map[string]string{
 	ScannerScheme:           "Only http and https schemes are allowed.",
 	ScannerAllowlist:        "Domain not on the allowlist. In strict mode, only allowlisted domains are reachable.",
 	ScannerParser:           "The URL could not be parsed.",
+	ScannerContext:          "The request context was nil or cancelled before the scan completed.",
 }
 
 // HintForBlock returns actionable guidance for a blocked scan result.
@@ -295,8 +297,18 @@ func HintForBlock(r *Result) string {
 
 // Scan checks a URL against all scanners and returns the result.
 // Blocked results include a Hint field with actionable guidance.
-func (s *Scanner) Scan(rawURL string) Result {
-	r := s.scan(rawURL)
+// Fail-closed: nil or already-cancelled contexts are rejected before scanning.
+func (s *Scanner) Scan(ctx context.Context, rawURL string) Result {
+	if ctx == nil || ctx.Err() != nil {
+		return Result{
+			Allowed: false,
+			Reason:  "request context unavailable",
+			Scanner: ScannerContext,
+			Score:   1.0,
+			Hint:    scannerHints[ScannerContext],
+		}
+	}
+	r := s.scan(ctx, rawURL)
 	if !r.Allowed {
 		r.Hint = HintForBlock(&r)
 	}
@@ -306,7 +318,7 @@ func (s *Scanner) Scan(rawURL string) Result {
 // scan checks a URL against all scanners and returns the result.
 // DLP runs on the hostname BEFORE DNS resolution to prevent secret exfiltration
 // via DNS queries (e.g., "sk-ant-xxx.evil.com" leaks the key during resolution).
-func (s *Scanner) scan(rawURL string) Result {
+func (s *Scanner) scan(ctx context.Context, rawURL string) Result {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return Result{Allowed: false, Reason: "invalid URL", Scanner: ScannerParser, Score: 1.0}
@@ -353,7 +365,7 @@ func (s *Scanner) scan(rawURL string) Result {
 	}
 
 	// 5. SSRF protection — DNS resolution happens here, safe after DLP.
-	if result := s.checkSSRF(hostname); !result.Allowed {
+	if result := s.checkSSRF(ctx, hostname); !result.Allowed {
 		return result
 	}
 
@@ -377,20 +389,41 @@ func (s *Scanner) scan(rawURL string) Result {
 		return result
 	}
 
+	// Final context check: catch cancellations that arrived during in-memory
+	// scanning (blocklist, DLP, entropy) before returning an allow verdict.
+	if ctx.Err() != nil {
+		return Result{
+			Allowed: false,
+			Reason:  "request context cancelled",
+			Scanner: ScannerContext,
+			Score:   1.0,
+		}
+	}
+
 	return Result{Allowed: true, Scanner: ScannerAll, Score: 0.0}
 }
 
 // checkSSRF blocks requests to internal/private IP ranges.
 // When no internal CIDRs are configured (nil slice), SSRF protection is disabled.
 // To block loopback, link-local, etc., include those CIDRs in config.Internal.
-func (s *Scanner) checkSSRF(hostname string) Result {
+func (s *Scanner) checkSSRF(ctx context.Context, hostname string) Result {
+	// Check context before the SSRF-disabled fast path so cancelled requests
+	// don't slip through when internalCIDRs is empty.
+	if ctx.Err() != nil {
+		return Result{
+			Allowed: false,
+			Reason:  "request context cancelled",
+			Scanner: ScannerContext,
+			Score:   1.0,
+		}
+	}
 	if len(s.internalCIDRs) == 0 {
 		return Result{Allowed: true}
 	}
 
 	// Resolve hostname to IP for SSRF check.
 	// Fail closed: if we can't resolve DNS, we can't verify the IP is safe.
-	dnsCtx, dnsCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	dnsCtx, dnsCancel := context.WithTimeout(ctx, 5*time.Second) // 5s: DNS resolution ceiling; inherits caller cancellation
 	defer dnsCancel()
 	ips, err := net.DefaultResolver.LookupHost(dnsCtx, hostname)
 	if err != nil {

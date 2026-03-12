@@ -1828,7 +1828,11 @@ func TestValidate_SecretsFileValid(t *testing.T) {
 func TestValidate_SecretsFileGroupReadable(t *testing.T) {
 	dir := t.TempDir()
 	secretsPath := filepath.Join(dir, "secrets.txt")
-	if err := os.WriteFile(secretsPath, []byte("my-secret-value"), 0o640); err != nil { //nolint:gosec // G306: intentionally group-readable for test
+	if err := os.WriteFile(secretsPath, []byte("my-secret-value"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Chmod after creation to avoid umask filtering the mode.
+	if err := os.Chmod(secretsPath, 0o640); err != nil { //nolint:gosec // G302: intentionally group-readable for test
 		t.Fatal(err)
 	}
 
@@ -5402,6 +5406,53 @@ func TestApplySecurityDefaults_InvalidYAMLFailsClosed(t *testing.T) {
 	for _, c := range checks {
 		if !c.got {
 			t.Errorf("%s = false, want true (invalid YAML must fail closed)", c.name)
+		}
+	}
+}
+
+func TestLoad_ExplicitTruePreserved(t *testing.T) {
+	// Explicit true in YAML must survive raw-YAML introspection without
+	// being clobbered. Proves setBoolDefault does not touch present values.
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "explicit-true.yaml")
+	content := "mode: balanced\n" +
+		"dlp:\n" +
+		"  scan_env: true\n" +
+		"response_scanning:\n" +
+		"  enabled: true\n" +
+		"request_body_scanning:\n" +
+		"  enabled: true\n" +
+		"  scan_headers: true\n" +
+		"git_protection:\n" +
+		"  pre_push_scan: true\n" +
+		"logging:\n" +
+		"  include_allowed: true\n" +
+		"  include_blocked: true\n"
+	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	checks := []struct {
+		name string
+		got  bool
+	}{
+		{"DLP.ScanEnv", cfg.DLP.ScanEnv},
+		{"ResponseScanning.Enabled", cfg.ResponseScanning.Enabled},
+		{"RequestBodyScanning.Enabled", cfg.RequestBodyScanning.Enabled},
+		{"RequestBodyScanning.ScanHeaders", cfg.RequestBodyScanning.ScanHeaders},
+		{"GitProtection.PrePushScan", cfg.GitProtection.PrePushScan},
+		{"Logging.IncludeAllowed", cfg.Logging.IncludeAllowed},
+		{"Logging.IncludeBlocked", cfg.Logging.IncludeBlocked},
+	}
+
+	for _, c := range checks {
+		if !c.got {
+			t.Errorf("%s = false, want true (explicit true must survive introspection)", c.name)
 		}
 	}
 }

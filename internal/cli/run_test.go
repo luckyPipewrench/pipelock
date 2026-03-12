@@ -855,6 +855,7 @@ fetch_proxy:
 	client := &http.Client{Timeout: time.Second}
 	healthURL := "http://" + addr + "/health"
 	deadline := time.Now().Add(5 * time.Second)
+	healthy := false
 	for time.Now().Before(deadline) {
 		select {
 		case runErr := <-errCh:
@@ -867,10 +868,15 @@ fetch_proxy:
 		if rerr == nil {
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
+				healthy = true
 				break
 			}
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+	if !healthy {
+		cancel()
+		t.Fatal("proxy never became healthy within 5s")
 	}
 
 	// Write a config with an invalid DLP regex. config.Load() rejects this

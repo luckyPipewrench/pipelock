@@ -228,7 +228,7 @@ func runCursorHook(cmd *cobra.Command, configFile string) error {
 	action := payloadToAction(payload)
 
 	// Decide.
-	decision := decide.Decide(cfg, sc, pc, action)
+	decision := decide.Decide(cmd.Context(), cfg, sc, pc, action)
 
 	// Map to Cursor response.
 	resp := cursorResponse{

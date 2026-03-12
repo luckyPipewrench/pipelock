@@ -234,7 +234,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			if currentScanner == nil {
 				currentScanner = p.scannerPtr.Load()
 			}
-			result := currentScanner.Scan(redirectURL)
+			result := currentScanner.Scan(req.Context(), redirectURL)
 			if !result.Allowed {
 				if currentCfg.EnforceEnabled() {
 					logger.LogBlocked("GET", redirectURL, "redirect", fmt.Sprintf("redirect from %s blocked: %s", originalURL, result.Reason), clientIP, requestID, agentName)
@@ -828,7 +828,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	displayURL := scanner.IterativeDecode(targetURL)
 
 	// Scan URL through all scanners
-	result := sc.Scan(targetURL)
+	result := sc.Scan(r.Context(), targetURL)
 
 	// Session profiling: record BEFORE the enforce-mode early return so adaptive
 	// signals (SignalBlock) fire even for blocked requests.

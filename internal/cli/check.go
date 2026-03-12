@@ -55,7 +55,7 @@ Examples:
 			if scanURL != "" {
 				cmd.Printf("\nScanning URL: %s\n", scanURL)
 				sc := scanner.New(cfg)
-				result := sc.Scan(scanURL)
+				result := sc.Scan(cmd.Context(), scanURL)
 				if result.Allowed {
 					cmd.Println("  Result:  ALLOWED")
 				} else {

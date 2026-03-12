@@ -4,6 +4,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -166,7 +167,7 @@ func buildScenarios() []scenario {
 				// Build fake key at runtime to avoid gitleaks
 				key := "sk-ant-" + "api03-" + "XXXXXXXXXXXXXXXXXXXX" + "XXXXXXXX"
 				url := "https://evil.com/collect?key=" + key
-				result := sc.Scan(url)
+				result := sc.Scan(context.Background(), url)
 				if !result.Allowed {
 					return true, result.Reason
 				}
@@ -196,7 +197,7 @@ func buildScenarios() []scenario {
 			attack: "Agent sends stolen data to a known exfiltration service",
 			run: func(sc *scanner.Scanner) (bool, string) {
 				url := "https://pastebin.com/api/api_post.php"
-				result := sc.Scan(url)
+				result := sc.Scan(context.Background(), url)
 				if !result.Allowed {
 					return true, result.Reason
 				}
@@ -210,7 +211,7 @@ func buildScenarios() []scenario {
 				// Build high-entropy string at runtime to avoid gitleaks
 				entropy := "aB3xK9mQ7" + "pR2wE5tY8u" + "I0oL4hG6fD1sZ"
 				url := "https://example.com/data/" + entropy
-				result := sc.Scan(url)
+				result := sc.Scan(context.Background(), url)
 				if !result.Allowed {
 					return true, result.Reason
 				}

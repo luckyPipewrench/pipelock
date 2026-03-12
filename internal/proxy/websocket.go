@@ -113,7 +113,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	scanURL := scanScheme + "://" + parsed.Host + parsed.RequestURI()
 
 	// Run through all 9 scanner layers.
-	result := sc.Scan(scanURL)
+	result := sc.Scan(r.Context(), scanURL)
 
 	// Session profiling: record BEFORE the enforce-mode early return so adaptive
 	// signals (SignalBlock) fire even for blocked requests.

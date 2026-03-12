@@ -116,7 +116,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	syntheticURL := "https://" + syntheticHost + "/"
 
 	// Scan through all 9 layers
-	result := sc.Scan(syntheticURL)
+	result := sc.Scan(r.Context(), syntheticURL)
 
 	// Session profiling: record BEFORE the enforce-mode early return so adaptive
 	// signals (SignalBlock) fire even for blocked requests.
@@ -389,7 +389,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	targetURL := r.URL.String()
 
 	// Scan through all 9 layers
-	result := sc.Scan(targetURL)
+	result := sc.Scan(r.Context(), targetURL)
 
 	// Session profiling: record BEFORE the enforce-mode early return so adaptive
 	// signals (SignalBlock) fire even for blocked requests.

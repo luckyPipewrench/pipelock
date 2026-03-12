@@ -4,6 +4,7 @@
 package scanner
 
 import (
+	"context"
 	"math"
 	"net/url"
 	"strings"
@@ -49,7 +50,7 @@ func FuzzScanURL(f *testing.F) {
 	f.Add("https://example.com/path?key=val\x00ue")
 
 	f.Fuzz(func(t *testing.T, rawURL string) {
-		result := sc.Scan(rawURL)
+		result := sc.Scan(context.Background(), rawURL)
 
 		// Score must be in [0.0, 1.0]
 		if result.Score < 0 || result.Score > 1.0 {

@@ -158,9 +158,11 @@ func TestEntitlementDB_CountFounding(t *testing.T) {
 		t.Errorf("initial founding count = %d, want 0", count)
 	}
 
-	// Add founding entitlement.
+	// Add founding entitlement with reservation timestamp.
+	reserved := time.Now().UTC()
 	ent := testEntitlement("sub_founding1")
 	ent.Founding = true
+	ent.FoundingReservedAt = &reserved
 	ent.Tier = tierFoundingPro
 	if err := db.Upsert(ctx, ent); err != nil {
 		t.Fatalf("Upsert founding: %v", err)

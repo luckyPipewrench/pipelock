@@ -341,6 +341,9 @@ func TestCheckFoundingCap_ReservesSlot(t *testing.T) {
 	if ts.handler.foundingCount != 1 {
 		t.Errorf("foundingCount = %d, want 1", ts.handler.foundingCount)
 	}
+	if ent.FoundingReservedAt == nil {
+		t.Error("FoundingReservedAt should be set after reservation")
+	}
 }
 
 func TestCheckFoundingCap_CapReached(t *testing.T) {
@@ -349,9 +352,11 @@ func TestCheckFoundingCap_CapReached(t *testing.T) {
 	ctx := t.Context()
 
 	// Insert 2 founding entitlements so DB count matches the cap.
+	reserved := time.Now().UTC()
 	for i := 0; i < 2; i++ {
 		e := testEntitlement(fmt.Sprintf("sub_cap_fill_%d", i))
 		e.Founding = true
+		e.FoundingReservedAt = &reserved
 		e.Tier = tierFoundingPro
 		if err := ts.db.Upsert(ctx, e); err != nil {
 			t.Fatalf("Upsert cap fill %d: %v", i, err)
@@ -406,8 +411,10 @@ func TestCheckFoundingCap_AlreadyHasSlot(t *testing.T) {
 	ctx := t.Context()
 
 	// Insert an existing founding entitlement in the DB.
+	reserved := time.Now().UTC()
 	existing := testEntitlement("sub_existing_founding")
 	existing.Founding = true
+	existing.FoundingReservedAt = &reserved
 	existing.Tier = tierFoundingPro
 	if err := ts.db.Upsert(ctx, existing); err != nil {
 		t.Fatalf("Upsert existing: %v", err)
@@ -424,6 +431,41 @@ func TestCheckFoundingCap_AlreadyHasSlot(t *testing.T) {
 
 	if ent.Tier != tierFoundingPro {
 		t.Errorf("Tier = %q, want %q (already has slot)", ent.Tier, tierFoundingPro)
+	}
+}
+
+func TestCheckFoundingCap_ProductChangeCantReopenSlot(t *testing.T) {
+	ts := newTestSetup(t)
+	ts.cfg.FoundingProCap = 1
+	ctx := t.Context()
+
+	// A subscriber reserved the only founding slot, then changed products.
+	// The founding bool is now false (current product), but
+	// FoundingReservedAt is still set (immutable reservation).
+	reserved := time.Now().UTC()
+	original := testEntitlement("sub_switched_product")
+	original.Founding = false // product changed away from founding
+	original.FoundingReservedAt = &reserved
+	original.Tier = tierPro
+	if err := ts.db.Upsert(ctx, original); err != nil {
+		t.Fatalf("Upsert original: %v", err)
+	}
+
+	// A new subscriber tries to claim the "freed" slot.
+	ent := testEntitlement("sub_new_claimant")
+	ent.Tier = tierFoundingPro
+	ent.Founding = true
+
+	if err := ts.handler.checkFoundingCap(ctx, ent); err != nil {
+		t.Fatalf("checkFoundingCap: %v", err)
+	}
+
+	// Should be downgraded because the slot is still reserved (count=1, cap=1).
+	if ent.Tier != tierPro {
+		t.Errorf("Tier = %q, want %q (slot should not reopen)", ent.Tier, tierPro)
+	}
+	if ent.Founding {
+		t.Error("Founding should be false (slot not available)")
 	}
 }
 
@@ -958,10 +1000,12 @@ func TestNewWebhookHandler_InitializesFoundingCount(t *testing.T) {
 	ledger, _ := openTestLedger(t)
 	ctx := context.Background()
 
-	// Insert 3 founding entitlements.
+	// Insert 3 founding entitlements with reservation timestamps.
+	reserved := time.Now().UTC()
 	for i := 0; i < 3; i++ {
 		ent := testEntitlement(fmt.Sprintf("sub_founding_%d", i))
 		ent.Founding = true
+		ent.FoundingReservedAt = &reserved
 		ent.Tier = tierFoundingPro
 		if err := db.Upsert(ctx, ent); err != nil {
 			t.Fatalf("Upsert founding %d: %v", i, err)

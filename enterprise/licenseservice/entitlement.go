@@ -20,16 +20,17 @@ import (
 // idempotency: if the current subscription state matches the last-issued
 // state, we skip re-issuing.
 type Entitlement struct {
-	SubscriptionID   string
-	CustomerEmail    string
-	ProductID        string
-	Tier             string // "community", "founding_pro", "pro", "enterprise"
-	BillingInterval  string // "month", "year"
-	Status           string // "active", "canceled", "past_due", "unpaid"
-	CurrentPeriodEnd time.Time
-	Founding         bool
-	Org              string
-	Features         string // JSON array of feature strings
+	SubscriptionID     string
+	CustomerEmail      string
+	ProductID          string
+	Tier               string // "community", "founding_pro", "pro", "enterprise"
+	BillingInterval    string // "month", "year"
+	Status             string // "active", "canceled", "past_due", "unpaid"
+	CurrentPeriodEnd   time.Time
+	Founding           bool
+	FoundingReservedAt *time.Time // set once when a founding slot is claimed; never cleared
+	Org                string
+	Features           string // JSON array of feature strings
 
 	// Last-issued license state (for idempotency comparison).
 	LastLicenseID        string
@@ -107,6 +108,7 @@ func (e *EntitlementDB) migrate(ctx context.Context) error {
 		status                 TEXT NOT NULL,
 		current_period_end     DATETIME NOT NULL,
 		founding               BOOLEAN NOT NULL DEFAULT 0,
+		founding_reserved_at   DATETIME,
 		org                    TEXT NOT NULL DEFAULT '',
 		features               TEXT NOT NULL DEFAULT '[]',
 
@@ -130,6 +132,7 @@ func (e *EntitlementDB) migrate(ctx context.Context) error {
 	CREATE INDEX IF NOT EXISTS idx_entitlements_status ON entitlements(status);
 	CREATE INDEX IF NOT EXISTS idx_entitlements_next_refresh ON entitlements(next_refresh_at);
 	CREATE INDEX IF NOT EXISTS idx_entitlements_founding ON entitlements(founding);
+	CREATE INDEX IF NOT EXISTS idx_entitlements_founding_reserved ON entitlements(founding_reserved_at);
 	`
 	_, err := e.db.ExecContext(ctx, ddl)
 	return err
@@ -141,7 +144,7 @@ func (e *EntitlementDB) Upsert(ctx context.Context, ent *Entitlement) error {
 	const query = `
 	INSERT INTO entitlements (
 		subscription_id, customer_email, product_id, tier, billing_interval,
-		status, current_period_end, founding, org, features,
+		status, current_period_end, founding, founding_reserved_at, org, features,
 		last_license_id, last_license_issued_at, last_license_expires_at,
 		last_license_period_end, last_license_tier, last_license_interval,
 		last_license_product_id, last_delivery_status, last_delivery_attempt_at,
@@ -149,6 +152,7 @@ func (e *EntitlementDB) Upsert(ctx context.Context, ent *Entitlement) error {
 	) VALUES (
 		?, ?, ?, ?, ?,
 		?, ?, ?, ?, ?,
+		?,
 		?, ?, ?,
 		?, ?, ?,
 		?, ?, ?,
@@ -162,6 +166,7 @@ func (e *EntitlementDB) Upsert(ctx context.Context, ent *Entitlement) error {
 		status                 = excluded.status,
 		current_period_end     = excluded.current_period_end,
 		founding               = excluded.founding,
+		founding_reserved_at   = COALESCE(entitlements.founding_reserved_at, excluded.founding_reserved_at),
 		org                    = excluded.org,
 		features               = excluded.features,
 		last_license_id        = excluded.last_license_id,
@@ -180,7 +185,8 @@ func (e *EntitlementDB) Upsert(ctx context.Context, ent *Entitlement) error {
 	//nolint:gosec // G701 false positive: query is a const with parameterized placeholders, not concatenated
 	_, err := e.db.ExecContext(ctx, query,
 		ent.SubscriptionID, ent.CustomerEmail, ent.ProductID, ent.Tier, ent.BillingInterval,
-		ent.Status, ent.CurrentPeriodEnd, ent.Founding, ent.Org, ent.Features,
+		ent.Status, ent.CurrentPeriodEnd, ent.Founding, ent.FoundingReservedAt, ent.Org,
+		ent.Features,
 		ent.LastLicenseID, ent.LastLicenseIssuedAt, ent.LastLicenseExpiresAt,
 		ent.LastLicensePeriodEnd, ent.LastLicenseTier, ent.LastLicenseInterval,
 		ent.LastLicenseProductID, ent.LastDeliveryStatus, ent.LastDeliveryAttemptAt,
@@ -198,7 +204,7 @@ func (e *EntitlementDB) GetBySubscriptionID(ctx context.Context, subID string) (
 	const query = `
 	SELECT
 		subscription_id, customer_email, product_id, tier, billing_interval,
-		status, current_period_end, founding, org, features,
+		status, current_period_end, founding, founding_reserved_at, org, features,
 		last_license_id, last_license_issued_at, last_license_expires_at,
 		last_license_period_end, last_license_tier, last_license_interval,
 		last_license_product_id, last_delivery_status, last_delivery_attempt_at,
@@ -210,7 +216,8 @@ func (e *EntitlementDB) GetBySubscriptionID(ctx context.Context, subID string) (
 	ent := &Entitlement{}
 	err := e.db.QueryRowContext(ctx, query, subID).Scan(
 		&ent.SubscriptionID, &ent.CustomerEmail, &ent.ProductID, &ent.Tier, &ent.BillingInterval,
-		&ent.Status, &ent.CurrentPeriodEnd, &ent.Founding, &ent.Org, &ent.Features,
+		&ent.Status, &ent.CurrentPeriodEnd, &ent.Founding, &ent.FoundingReservedAt, &ent.Org,
+		&ent.Features,
 		&ent.LastLicenseID, &ent.LastLicenseIssuedAt, &ent.LastLicenseExpiresAt,
 		&ent.LastLicensePeriodEnd, &ent.LastLicenseTier, &ent.LastLicenseInterval,
 		&ent.LastLicenseProductID, &ent.LastDeliveryStatus, &ent.LastDeliveryAttemptAt,
@@ -231,7 +238,7 @@ func (e *EntitlementDB) ListDueForRefresh(ctx context.Context, before time.Time)
 	const query = `
 	SELECT
 		subscription_id, customer_email, product_id, tier, billing_interval,
-		status, current_period_end, founding, org, features,
+		status, current_period_end, founding, founding_reserved_at, org, features,
 		last_license_id, last_license_issued_at, last_license_expires_at,
 		last_license_period_end, last_license_tier, last_license_interval,
 		last_license_product_id, last_delivery_status, last_delivery_attempt_at,
@@ -254,7 +261,8 @@ func (e *EntitlementDB) ListDueForRefresh(ctx context.Context, before time.Time)
 		ent := &Entitlement{}
 		if err := rows.Scan(
 			&ent.SubscriptionID, &ent.CustomerEmail, &ent.ProductID, &ent.Tier, &ent.BillingInterval,
-			&ent.Status, &ent.CurrentPeriodEnd, &ent.Founding, &ent.Org, &ent.Features,
+			&ent.Status, &ent.CurrentPeriodEnd, &ent.Founding, &ent.FoundingReservedAt, &ent.Org,
+			&ent.Features,
 			&ent.LastLicenseID, &ent.LastLicenseIssuedAt, &ent.LastLicenseExpiresAt,
 			&ent.LastLicensePeriodEnd, &ent.LastLicenseTier, &ent.LastLicenseInterval,
 			&ent.LastLicenseProductID, &ent.LastDeliveryStatus, &ent.LastDeliveryAttemptAt,
@@ -267,11 +275,15 @@ func (e *EntitlementDB) ListDueForRefresh(ctx context.Context, before time.Time)
 	return results, rows.Err()
 }
 
-// CountFounding returns the total number of entitlements that were ever
-// marked as founding (including canceled/refunded). This count never decreases.
+// CountFounding returns the total number of entitlements that ever reserved
+// a founding slot. Uses founding_reserved_at (immutable once set) instead of
+// the founding bool (which tracks current product state and can change).
+// This ensures the count never decreases when a subscriber changes products.
 func (e *EntitlementDB) CountFounding(ctx context.Context) (int, error) {
 	var count int
-	err := e.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM entitlements WHERE founding = 1").Scan(&count)
+	err := e.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM entitlements WHERE founding_reserved_at IS NOT NULL",
+	).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("count founding: %w", err)
 	}

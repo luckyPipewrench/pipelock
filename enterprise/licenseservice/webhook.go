@@ -414,12 +414,13 @@ func (h *WebhookHandler) checkFoundingCap(ctx context.Context, ent *Entitlement)
 	defer h.foundingMu.Unlock()
 
 	// Check if this subscription already holds a founding slot.
-	// Prevents double-counting on Polar webhook retries.
+	// Uses FoundingReservedAt (immutable) instead of Founding (mutable)
+	// so a product change can't reopen slots.
 	existing, err := h.db.GetBySubscriptionID(ctx, ent.SubscriptionID)
 	if err != nil {
 		return fmt.Errorf("check existing founding status: %w", err)
 	}
-	if existing != nil && existing.Founding {
+	if existing != nil && existing.FoundingReservedAt != nil {
 		return nil // already has a slot
 	}
 
@@ -464,6 +465,12 @@ func (h *WebhookHandler) checkFoundingCap(ctx context.Context, ent *Entitlement)
 			Msg("founding pro cap reached, downgrading to pro")
 		return nil
 	}
+
+	// Stamp the reservation time. COALESCE in the Upsert ON CONFLICT clause
+	// ensures this value is never overwritten once set, so product changes
+	// can't reopen founding slots.
+	reservedAt := time.Now().UTC()
+	ent.FoundingReservedAt = &reservedAt
 
 	// Reserve the slot atomically by persisting to DB within the mutex.
 	// This ensures concurrent calls see the reservation immediately via

@@ -32,10 +32,8 @@ func TestReloadPanicHandler_LogsError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("creating logger: %v", err)
 	}
-	defer logger.Close()
 
 	reloadPanicHandler("test panic value", nil, logger, "/tmp/test.yaml")
-
 	logger.Close()
 
 	data, err := os.ReadFile(filepath.Clean(logPath))
@@ -58,11 +56,9 @@ func TestReloadPanicHandler_NilRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("creating logger: %v", err)
 	}
-	defer logger.Close()
 
 	// nil recovery value should be a no-op.
 	reloadPanicHandler(nil, nil, logger, "/tmp/test.yaml")
-
 	logger.Close()
 
 	data, err := os.ReadFile(filepath.Clean(logPath))
@@ -81,13 +77,11 @@ func TestReloadPanicHandler_WithSentryClient(t *testing.T) {
 	if err != nil {
 		t.Fatalf("creating logger: %v", err)
 	}
-	defer logger.Close()
 
 	// Use a disabled sentry client — verifies the nil-check branch
 	// (sentryClient != nil) is exercised without actually sending.
 	sentryClient := &plsentry.Client{}
 	reloadPanicHandler("boom", sentryClient, logger, "/tmp/test.yaml")
-
 	logger.Close()
 
 	data, err := os.ReadFile(filepath.Clean(logPath))
@@ -106,7 +100,6 @@ func TestReloadPanicHandler_EndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("creating logger: %v", err)
 	}
-	defer logger.Close()
 
 	// Simulate the exact pattern used in runCmd: a deferred recover
 	// calling reloadPanicHandler after a panic.
@@ -118,7 +111,6 @@ func TestReloadPanicHandler_EndToEnd(t *testing.T) {
 		}()
 		panic("simulated scanner panic")
 	}()
-
 	logger.Close()
 
 	data, err := os.ReadFile(filepath.Clean(logPath))

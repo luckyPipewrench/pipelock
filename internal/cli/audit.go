@@ -97,7 +97,7 @@ Examples:
 				return enc.Encode(report)
 
 			case formatSARIF:
-				return writeAuditSARIF(cmd, report, output)
+				return writeAuditSARIF(cmd, report, args[0], output)
 			}
 
 			// Default: text output
@@ -134,6 +134,7 @@ Examples:
 	cmd.Flags().StringArrayVar(&excludePaths, "exclude", nil, "exclude paths from findings (glob or directory prefix, repeatable)")
 	cmd.Flags().StringVarP(&configFile, "config", "c", "", "config file path (for suppress entries)")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "print suppressed findings to stderr")
+	cmd.MarkFlagsMutuallyExclusive("json", "format")
 
 	return cmd
 }
@@ -159,8 +160,16 @@ func auditRuleID(f projectscan.Finding) string {
 	}
 }
 
-func writeAuditSARIF(cmd *cobra.Command, report *projectscan.Report, outputPath string) error {
+func writeAuditSARIF(cmd *cobra.Command, report *projectscan.Report, scanDir, outputPath string) error {
 	log := sarif.New("pipelock audit", Version)
+
+	// Rebase file URIs: projectscan returns paths relative to scanDir,
+	// but SARIF needs paths relative to the repository root (CWD).
+	// If scanDir is "." or "", no prefix is needed.
+	prefix := filepath.Clean(scanDir)
+	if prefix == "." {
+		prefix = ""
+	}
 
 	for _, f := range report.Findings {
 		ruleID := auditRuleID(f)
@@ -169,26 +178,22 @@ func writeAuditSARIF(cmd *cobra.Command, report *projectscan.Report, outputPath 
 			description = f.Pattern
 		}
 		idx := log.AddRule(ruleID, description)
+
+		file := f.File
+		if file != "" && prefix != "" {
+			file = filepath.Join(prefix, file)
+		}
+		// Convert OS separators to forward slashes for SARIF URIs.
+		file = filepath.ToSlash(file)
+
 		log.AddResult(
 			ruleID, idx,
 			sarif.SeverityToLevel(f.Severity),
-			f.Message, f.File, f.Line, "",
+			f.Message, file, f.Line, "",
 		)
 	}
 
-	if outputPath != "" {
-		outFile, err := os.OpenFile(filepath.Clean(outputPath), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-		if err != nil {
-			return fmt.Errorf("creating SARIF output: %w", err)
-		}
-		defer outFile.Close() //nolint:errcheck // best-effort close on write path
-		if err := log.Write(outFile); err != nil {
-			return fmt.Errorf("writing SARIF: %w", err)
-		}
-		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "SARIF written to: %s\n", outputPath)
-		return nil
-	}
-	return log.Write(cmd.OutOrStdout())
+	return log.WriteToTarget(cmd.OutOrStdout(), cmd.ErrOrStderr(), outputPath)
 }
 
 func printReport(cmd *cobra.Command, r *projectscan.Report) {

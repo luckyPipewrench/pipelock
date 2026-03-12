@@ -151,6 +151,7 @@ Examples:
 	cmd.Flags().StringVarP(&outputFile, "output", "o", "", "write SARIF output to file")
 	cmd.Flags().StringArrayVar(&excludePaths, "exclude", nil, "exclude paths from findings (glob or directory prefix, repeatable)")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "print suppressed findings to stderr")
+	cmd.MarkFlagsMutuallyExclusive("json", "format")
 	return cmd
 }
 
@@ -217,27 +218,17 @@ func writeGitSARIF(cmd *cobra.Command, findings []gitprotect.Finding, outputPath
 	for _, f := range findings {
 		ruleID := "DLP-" + strings.ReplaceAll(f.Pattern, " ", "-")
 		idx := log.AddRule(ruleID, f.Pattern)
+		// Do not include f.Content in snippet: it contains the matched
+		// secret and would be leaked into SARIF artifacts / upload-sarif.
 		log.AddResult(
 			ruleID, idx,
 			sarif.SeverityToLevel(f.Severity),
 			fmt.Sprintf("Secret detected: %s", f.Pattern),
-			f.File, f.Line, f.Content,
+			f.File, f.Line, "",
 		)
 	}
 
-	if outputPath != "" {
-		outFile, err := os.OpenFile(filepath.Clean(outputPath), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-		if err != nil {
-			return fmt.Errorf("creating SARIF output: %w", err)
-		}
-		defer outFile.Close() //nolint:errcheck // best-effort close on write path
-		if err := log.Write(outFile); err != nil {
-			return fmt.Errorf("writing SARIF: %w", err)
-		}
-		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "SARIF written to: %s\n", outputPath)
-		return nil
-	}
-	return log.Write(cmd.OutOrStdout())
+	return log.WriteToTarget(cmd.OutOrStdout(), cmd.ErrOrStderr(), outputPath)
 }
 
 func loadConfigOrDefault(path string) (*config.Config, error) {

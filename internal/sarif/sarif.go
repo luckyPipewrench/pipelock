@@ -8,10 +8,20 @@ package sarif
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 )
 
 const sarifVersion = "2.1.0"
+
+// SARIF result level constants.
+const (
+	LevelError   = "error"
+	LevelWarning = "warning"
+	LevelNote    = "note"
+)
 
 // Log is the top-level SARIF container.
 type Log struct {
@@ -88,14 +98,16 @@ type Message struct {
 }
 
 // SeverityToLevel maps pipelock severity strings to SARIF levels.
+// Pipelock uses: critical, high, medium, low, warning, info.
+// SARIF uses: error, warning, note.
 func SeverityToLevel(severity string) string {
 	switch severity {
-	case "critical":
-		return "error"
-	case "warning":
-		return "warning"
+	case "critical", "high":
+		return LevelError
+	case "warning", "medium":
+		return LevelWarning
 	default:
-		return "note"
+		return LevelNote
 	}
 }
 
@@ -164,4 +176,25 @@ func (l *Log) Write(w io.Writer) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(l)
+}
+
+// WriteToTarget writes SARIF to outputPath (if non-empty) or stdout via cmd.
+// When writing to a file, a confirmation message is printed to stderr.
+func (l *Log) WriteToTarget(stdout io.Writer, stderr io.Writer, outputPath string) error {
+	if outputPath != "" {
+		outFile, err := os.OpenFile(filepath.Clean(outputPath), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+		if err != nil {
+			return fmt.Errorf("creating SARIF output: %w", err)
+		}
+		if err := l.Write(outFile); err != nil {
+			_ = outFile.Close()
+			return fmt.Errorf("writing SARIF: %w", err)
+		}
+		if err := outFile.Close(); err != nil {
+			return fmt.Errorf("closing SARIF output: %w", err)
+		}
+		_, _ = fmt.Fprintf(stderr, "SARIF written to: %s\n", outputPath)
+		return nil
+	}
+	return l.Write(stdout)
 }

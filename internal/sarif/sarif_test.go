@@ -6,6 +6,9 @@ package sarif
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -137,11 +140,14 @@ func TestSeverityToLevel(t *testing.T) {
 		severity string
 		want     string
 	}{
-		{"critical", "error"},
-		{"warning", "warning"},
-		{"info", "note"},
-		{"", "note"},
-		{"unknown", "note"},
+		{"critical", LevelError},
+		{"high", LevelError},
+		{"warning", LevelWarning},
+		{"medium", LevelWarning},
+		{"low", LevelNote},
+		{"info", LevelNote},
+		{"", LevelNote},
+		{"unknown", LevelNote},
 	}
 	for _, tt := range tests {
 		t.Run(tt.severity, func(t *testing.T) {
@@ -180,5 +186,59 @@ func TestWrite(t *testing.T) {
 	}
 	if len(parsed.Runs[0].Tool.Driver.Rules) != 1 {
 		t.Errorf("parsed Rules = %d, want 1", len(parsed.Runs[0].Tool.Driver.Rules))
+	}
+}
+
+func TestWriteToTarget_Stdout(t *testing.T) {
+	log := New(testToolName, testVersion)
+	log.AddRule("DLP-001", "AWS Key")
+
+	var stdout, stderr bytes.Buffer
+	if err := log.WriteToTarget(&stdout, &stderr, ""); err != nil {
+		t.Fatalf("WriteToTarget error: %v", err)
+	}
+	if !strings.Contains(stdout.String(), `"version": "2.1.0"`) {
+		t.Error("expected SARIF output on stdout")
+	}
+	if stderr.Len() != 0 {
+		t.Errorf("expected empty stderr, got %q", stderr.String())
+	}
+}
+
+func TestWriteToTarget_File(t *testing.T) {
+	log := New(testToolName, testVersion)
+	log.AddRule("DLP-001", "AWS Key")
+	log.AddResult("DLP-001", 0, LevelError, "found", "x.go", 1, "")
+
+	outPath := filepath.Join(t.TempDir(), "out.sarif")
+	var stdout, stderr bytes.Buffer
+	if err := log.WriteToTarget(&stdout, &stderr, outPath); err != nil {
+		t.Fatalf("WriteToTarget error: %v", err)
+	}
+	if stdout.Len() != 0 {
+		t.Errorf("expected empty stdout when writing to file, got %d bytes", stdout.Len())
+	}
+	if !strings.Contains(stderr.String(), "SARIF written to:") {
+		t.Error("expected confirmation on stderr")
+	}
+	data, err := os.ReadFile(filepath.Clean(outPath))
+	if err != nil {
+		t.Fatalf("reading output: %v", err)
+	}
+	if !strings.Contains(string(data), `"version": "2.1.0"`) {
+		t.Error("expected SARIF content in file")
+	}
+}
+
+func TestWriteToTarget_BadPath(t *testing.T) {
+	log := New(testToolName, testVersion)
+	var stdout, stderr bytes.Buffer
+	// Write to a path inside a nonexistent directory.
+	err := log.WriteToTarget(&stdout, &stderr, filepath.Join(t.TempDir(), "no", "such", "dir", "out.sarif"))
+	if err == nil {
+		t.Fatal("expected error for bad path")
+	}
+	if !strings.Contains(err.Error(), "creating SARIF output") {
+		t.Errorf("expected 'creating SARIF output' error, got: %v", err)
 	}
 }

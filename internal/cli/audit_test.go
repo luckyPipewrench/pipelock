@@ -726,6 +726,24 @@ func TestAuditCmd_JSONAndFormatConflict(t *testing.T) {
 	}
 }
 
+func TestAuditCmd_JSONOutputRejectsO(t *testing.T) {
+	dir := t.TempDir()
+
+	cmd := rootCmd()
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"audit", dir, "--format", "json", "-o", "out.json"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when --format json combined with -o")
+	}
+	if !strings.Contains(err.Error(), "-o/--output is not supported") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
 func TestAuditRuleID(t *testing.T) {
 	tests := []struct {
 		name    string

@@ -55,6 +55,10 @@ Examples:
 				return fmt.Errorf("unsupported format %q (valid: text, json, sarif)", effectiveFormat)
 			}
 
+			if effectiveFormat == formatJSON && output != "" {
+				return fmt.Errorf("-o/--output is not supported with --format json (use shell redirection)")
+			}
+
 			report, err := projectscan.Scan(args[0])
 			if err != nil {
 				return err

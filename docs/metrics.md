@@ -117,13 +117,14 @@ investigation.
 ## Session Profiling Metrics
 
 Pipelock tracks per-session behavioral profiles. Sessions that deviate
-from established patterns trigger anomalies; sustained anomalies cause
-enforcement escalation.
+from established patterns trigger anomalies and escalation events. In v1,
+escalation is observability-only (scoring and event emission); it does not
+automatically change enforcement behavior (warn vs block).
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
 | `pipelock_session_anomalies_total` | counter | `type` | Behavioral anomalies by type. |
-| `pipelock_session_escalations_total` | counter | `from`, `to` | Enforcement escalations by transition (e.g. `warn` → `block`). |
+| `pipelock_session_escalations_total` | counter | `from`, `to` | Escalation events by level transition (e.g. `warn` → `block`). In v1, these are observability events, not enforcement changes. |
 | `pipelock_sessions_active` | gauge | (none) | Currently tracked sessions. |
 | `pipelock_sessions_evicted_total` | counter | (none) | Sessions evicted by TTL or capacity limit. |
 

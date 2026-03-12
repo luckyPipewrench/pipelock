@@ -525,7 +525,7 @@ session_profiling:
 
 ## Adaptive Enforcement
 
-Per-session threat score that accumulates across scanner hits and decays on clean requests. When the score exceeds the threshold, enforcement escalates (warn becomes block).
+Per-session threat score that accumulates across scanner hits and decays on clean requests. When the score exceeds the threshold, an escalation event is logged and metriced. In v1 this is scoring and observability only: enforcement behavior (warn vs block) is not changed by escalation level. Escalation-aware blocking is planned for v2.
 
 ```yaml
 adaptive_enforcement:
@@ -616,7 +616,7 @@ emit:
 | `syslog.tag` | `"pipelock"` | Syslog tag |
 
 **Severity levels** (hardcoded per event type, not configurable):
-- **critical:** kill switch deny, adaptive escalation to block
+- **critical:** kill switch deny, adaptive escalation to block (event emitted; v1 does not auto-block, see above)
 - **warn:** blocked requests, anomalies, session events, MCP unknown tools, scan hits
 - **info:** allowed requests, tunnel open/close, WebSocket open/close, config reload
 

@@ -1,6 +1,6 @@
 # Pipelock Quickstart
 
-Run any AI agent behind pipelock with enforced network isolation. The agent gets secrets but no internet. Pipelock gets internet but no secrets. Docker's `internal: true` network flag enforces this at the iptables level, not the `HTTPS_PROXY` honor system.
+Run any AI agent behind pipelock with enforced network isolation. The agent gets secrets but no internet. Pipelock gets internet but no agent secrets. Docker's `internal: true` network flag enforces this at the iptables level, not the `HTTPS_PROXY` honor system.
 
 ## Start
 

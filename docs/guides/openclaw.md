@@ -61,7 +61,7 @@ pipelock generate mcporter -i servers.json --in-place --backup
 └─────────────────────────────────────────────────────────┘
 ```
 
-The agent has secrets but no direct network access. Pipelock has no secrets but full network access. This capability separation prevents a compromised agent from exfiltrating secrets directly.
+The agent has secrets but no direct network access. Pipelock has no agent secrets but full network access. Deployment (Docker networking, K8s NetworkPolicy) enforces this boundary. This capability separation prevents a compromised agent from exfiltrating secrets directly.
 
 ## Two Protection Layers
 

@@ -187,6 +187,7 @@ type Config struct {
 	MCPWSListener         MCPWSListener           `yaml:"mcp_ws_listener"`
 	TLSInterception       TLSInterception         `yaml:"tls_interception"`
 	CrossRequestDetection CrossRequestDetection   `yaml:"cross_request_detection"`
+	ScanAPI               ScanAPI                 `yaml:"scan_api"`
 	Agents                map[string]AgentProfile `yaml:"agents,omitempty"`
 	LicenseKey            string                  `yaml:"license_key,omitempty"`        // signed license token (from pipelock license issue)
 	LicensePublicKey      string                  `yaml:"license_public_key,omitempty"` // hex-encoded Ed25519 public key for license verification (dev builds only)
@@ -554,6 +555,55 @@ type BudgetConfig struct {
 	WindowMinutes              int `yaml:"window_minutes,omitempty"`
 }
 
+// ScanAPI configures the evaluation-plane HTTP listener.
+// Disabled by default (Listen: ""). When enabled, serves POST /api/v1/scan
+// on a dedicated port with independent timeouts and connection limits.
+type ScanAPI struct {
+	Listen          string             `yaml:"listen"`
+	Auth            ScanAPIAuth        `yaml:"auth"`
+	RateLimit       ScanAPIRateLimit   `yaml:"rate_limit"`
+	MaxBodyBytes    int64              `yaml:"max_body_bytes"`
+	FieldLimits     ScanAPIFieldLimits `yaml:"field_limits"`
+	Timeouts        ScanAPITimeouts    `yaml:"timeouts"`
+	ConnectionLimit int                `yaml:"connection_limit"`
+	Kinds           ScanAPIKinds       `yaml:"kinds"`
+}
+
+// ScanAPIAuth holds bearer token credentials for the Scan API.
+type ScanAPIAuth struct {
+	BearerTokens []string `yaml:"bearer_tokens"` //nolint:gosec // G117: config field, not a hardcoded credential
+}
+
+// ScanAPIRateLimit configures per-client request rate limiting for the Scan API.
+type ScanAPIRateLimit struct {
+	RequestsPerMinute int `yaml:"requests_per_minute"`
+	Burst             int `yaml:"burst"`
+}
+
+// ScanAPIFieldLimits caps the byte length of individual input fields in scan requests.
+type ScanAPIFieldLimits struct {
+	URL       int `yaml:"url"`
+	Text      int `yaml:"text"`
+	Content   int `yaml:"content"`
+	Arguments int `yaml:"arguments"`
+}
+
+// ScanAPITimeouts controls per-request timing for the Scan API listener.
+type ScanAPITimeouts struct {
+	Read  string `yaml:"read"`
+	Write string `yaml:"write"`
+	Scan  string `yaml:"scan"`
+}
+
+// ScanAPIKinds selects which scan kinds are enabled on the Scan API.
+// All kinds are enabled by default; set a field to false to disable it.
+type ScanAPIKinds struct {
+	URL             bool `yaml:"url"`
+	DLP             bool `yaml:"dlp"`
+	PromptInjection bool `yaml:"prompt_injection"`
+	ToolCall        bool `yaml:"tool_call"`
+}
+
 // Load reads, parses, defaults, and validates a Pipelock config file.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(filepath.Clean(path))
@@ -873,6 +923,41 @@ func (c *Config) ApplyDefaults() {
 				"Accept", "Accept-Encoding", "User-Agent",
 			}
 		}
+	}
+
+	// Scan API defaults (applied regardless of Listen, so a partial config gets sane values)
+	if c.ScanAPI.RateLimit.RequestsPerMinute <= 0 {
+		c.ScanAPI.RateLimit.RequestsPerMinute = 600
+	}
+	if c.ScanAPI.RateLimit.Burst <= 0 {
+		c.ScanAPI.RateLimit.Burst = 50
+	}
+	if c.ScanAPI.MaxBodyBytes <= 0 {
+		c.ScanAPI.MaxBodyBytes = 1 << 20 // 1MB
+	}
+	if c.ScanAPI.FieldLimits.URL <= 0 {
+		c.ScanAPI.FieldLimits.URL = 8192
+	}
+	if c.ScanAPI.FieldLimits.Text <= 0 {
+		c.ScanAPI.FieldLimits.Text = 512 * 1024 // 512KB
+	}
+	if c.ScanAPI.FieldLimits.Content <= 0 {
+		c.ScanAPI.FieldLimits.Content = 512 * 1024 // 512KB
+	}
+	if c.ScanAPI.FieldLimits.Arguments <= 0 {
+		c.ScanAPI.FieldLimits.Arguments = 512 * 1024 // 512KB
+	}
+	if c.ScanAPI.Timeouts.Read == "" {
+		c.ScanAPI.Timeouts.Read = "2s"
+	}
+	if c.ScanAPI.Timeouts.Write == "" {
+		c.ScanAPI.Timeouts.Write = "2s"
+	}
+	if c.ScanAPI.Timeouts.Scan == "" {
+		c.ScanAPI.Timeouts.Scan = "5s"
+	}
+	if c.ScanAPI.ConnectionLimit <= 0 {
+		c.ScanAPI.ConnectionLimit = 100
 	}
 
 	// Cross-request detection defaults
@@ -1498,6 +1583,34 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// Validate scan API config
+	if c.ScanAPI.Listen != "" {
+		if len(c.ScanAPI.Auth.BearerTokens) == 0 {
+			return fmt.Errorf("scan_api.auth.bearer_tokens required when scan_api.listen is set")
+		}
+		if c.ScanAPI.Timeouts.Scan != "" {
+			if _, err := time.ParseDuration(c.ScanAPI.Timeouts.Scan); err != nil {
+				return fmt.Errorf("scan_api.timeouts.scan: %w", err)
+			}
+		}
+		if c.ScanAPI.Timeouts.Read != "" {
+			if _, err := time.ParseDuration(c.ScanAPI.Timeouts.Read); err != nil {
+				return fmt.Errorf("scan_api.timeouts.read: %w", err)
+			}
+		}
+		if c.ScanAPI.Timeouts.Write != "" {
+			if _, err := time.ParseDuration(c.ScanAPI.Timeouts.Write); err != nil {
+				return fmt.Errorf("scan_api.timeouts.write: %w", err)
+			}
+		}
+		if c.ScanAPI.ConnectionLimit < 0 {
+			return fmt.Errorf("scan_api.connection_limit must be >= 0")
+		}
+		if c.ScanAPI.MaxBodyBytes < 0 {
+			return fmt.Errorf("scan_api.max_body_bytes must be >= 0")
+		}
+	}
+
 	// Warn if listen address is not loopback (exposed to network).
 	// NOTE: these warnings print to stderr as a side effect. The proxy startup
 	// also logs non-loopback warnings via the audit logger (proxy.go Start).
@@ -2006,6 +2119,32 @@ func Defaults() *Config {
 			"fc00::/7",
 			"fe80::/10",
 			"ff00::/8", // IPv6 multicast
+		},
+		ScanAPI: ScanAPI{
+			Listen: "", // disabled by default
+			RateLimit: ScanAPIRateLimit{
+				RequestsPerMinute: 600,
+				Burst:             50,
+			},
+			MaxBodyBytes: 1 << 20, // 1MB
+			FieldLimits: ScanAPIFieldLimits{
+				URL:       8192,
+				Text:      512 * 1024, // 512KB
+				Content:   512 * 1024, // 512KB
+				Arguments: 512 * 1024, // 512KB
+			},
+			Timeouts: ScanAPITimeouts{
+				Read:  "2s",
+				Write: "2s",
+				Scan:  "5s",
+			},
+			ConnectionLimit: 100,
+			Kinds: ScanAPIKinds{
+				URL:             true,
+				DLP:             true,
+				PromptInjection: true,
+				ToolCall:        true,
+			},
 		},
 	}
 	return cfg

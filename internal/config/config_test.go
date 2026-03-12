@@ -5185,3 +5185,50 @@ func TestReloadWarnings_CrossRequestDetection_ParentDisabledNoNestedWarnings(t *
 		t.Error("expected parent cross_request_detection.enabled warning")
 	}
 }
+
+func TestScanAPIConfig_Validate(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     ScanAPI
+		wantErr bool
+	}{
+		{
+			name: "disabled is valid",
+			cfg:  ScanAPI{Listen: ""},
+		},
+		{
+			name: "valid config",
+			cfg: ScanAPI{
+				Listen: "127.0.0.1:9191",
+				Auth:   ScanAPIAuth{BearerTokens: []string{"test-token"}},
+			},
+		},
+		{
+			name:    "enabled without tokens",
+			cfg:     ScanAPI{Listen: "127.0.0.1:9191"},
+			wantErr: true,
+		},
+		{
+			name: "invalid scan timeout",
+			cfg: ScanAPI{
+				Listen:   "127.0.0.1:9191",
+				Auth:     ScanAPIAuth{BearerTokens: []string{"t"}},
+				Timeouts: ScanAPITimeouts{Scan: "not-a-duration"},
+			},
+			wantErr: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c := Defaults()
+			c.ScanAPI = tc.cfg
+			err := c.Validate()
+			if tc.wantErr && err == nil {
+				t.Error("expected validation error")
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}

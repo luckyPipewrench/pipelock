@@ -158,9 +158,9 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Build headers for upstream handshake.
 	fwdHeaders := p.buildWSForwardHeaders(r, parsed, cfg, sc)
 
-	// DLP-scan forwarded auth header values (unless target is allowlisted).
+	// DLP-scan forwarded auth header values regardless of destination.
 	if cfg.EnforceEnabled() {
-		if blocked, reason := p.dlpScanWSHeaders(r.Context(), fwdHeaders, parsed.Hostname(), sc, cfg); blocked {
+		if blocked, reason := p.dlpScanWSHeaders(r.Context(), fwdHeaders, sc); blocked {
 			log.LogWSBlocked(targetURL, audit.DirectionClientToServer, audit.ScannerDLP, reason, clientIP, requestID)
 			p.metrics.RecordWSBlocked()
 			http.Error(w, "WebSocket blocked: "+reason, http.StatusForbidden)
@@ -288,16 +288,9 @@ func (p *Proxy) buildWSForwardHeaders(r *http.Request, parsed *url.URL, cfg *con
 }
 
 // dlpScanWSHeaders runs DLP scanning on auth header values before the upstream
-// handshake. Skips scanning when the target host matches the api_allowlist,
-// since auth tokens to trusted providers are expected.
-func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, hostname string, sc *scanner.Scanner, cfg *config.Config) (blocked bool, reason string) {
-	// If the target is allowlisted, auth headers are expected and should not
-	// be flagged. The allowlist is only enforced in strict mode by the scanner,
-	// but for WS auth header policy we check it in all modes.
-	if isHostAllowlisted(hostname, cfg.APIAllowlist) {
-		return false, ""
-	}
-
+// handshake. Headers are scanned regardless of destination (no allowlist skip)
+// because agents can exfiltrate secrets in auth headers to any host.
+func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, sc *scanner.Scanner) (blocked bool, reason string) {
 	// Scan auth-bearing header values. Cookie is included because
 	// buildWSForwardHeaders copies it when ForwardCookies is enabled.
 	for _, key := range []string{"Authorization", "X-Api-Key", "X-Goog-Api-Key", "Cookie"} {

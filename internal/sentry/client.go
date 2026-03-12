@@ -1,14 +1,16 @@
 package plsentry
 
 import (
+	"bufio"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/getsentry/sentry-go"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
-	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 // Client wraps the Sentry SDK with secret scrubbing. When disabled (enabled=false),
@@ -30,13 +32,15 @@ func Init(cfg *config.Config, version string) (*Client, error) {
 // initClient is the internal initializer. When transport is non-nil it is
 // injected into the Sentry SDK options (used by tests to capture events).
 func initClient(cfg *config.Config, version string, transport sentry.Transport) (*Client, error) {
-	if !cfg.Sentry.SentryEnabled() {
+	if !cfg.Sentry.IsEnabled() {
 		return &Client{enabled: false}, nil
 	}
 
-	dsn := cfg.Sentry.DSN
+	// SENTRY_DSN env overrides config so users can redirect crash reports
+	// away from the maintainer DSN shipped in preset configs.
+	dsn := os.Getenv("SENTRY_DSN")
 	if dsn == "" {
-		dsn = os.Getenv("SENTRY_DSN")
+		dsn = cfg.Sentry.DSN
 	}
 	if dsn == "" {
 		return &Client{enabled: false}, nil
@@ -60,7 +64,7 @@ func initClient(cfg *config.Config, version string, transport sentry.Transport) 
 
 	// Load file-backed explicit secrets (same file the scanner uses).
 	if cfg.DLP.SecretsFile != "" {
-		fileSecrets, err := scanner.LoadSecretsFile(cfg.DLP.SecretsFile, 8)
+		fileSecrets, err := loadFileSecrets(cfg.DLP.SecretsFile)
 		if err != nil {
 			_, _ = fmt.Fprintf(os.Stderr, "pipelock: warning: sentry scrubber could not load secrets_file: %v\n", err)
 		} else {
@@ -74,7 +78,7 @@ func initClient(cfg *config.Config, version string, transport sentry.Transport) 
 		Dsn:              dsn,
 		Release:          version,
 		Environment:      cfg.Sentry.Environment,
-		SampleRate:       cfg.Sentry.SentrySampleRate(),
+		SampleRate:       cfg.Sentry.EffectiveSampleRate(),
 		Debug:            cfg.Sentry.Debug,
 		AttachStacktrace: true,
 		BeforeSend: func(event *sentry.Event, hint *sentry.EventHint) *sentry.Event {
@@ -123,4 +127,35 @@ func (c *Client) Close() {
 		return
 	}
 	sentry.Flush(2 * time.Second)
+}
+
+// loadFileSecrets reads literal secret values from a file, one per line.
+// Skips blank lines, comment lines (# prefix), and values shorter than 8 chars.
+// The scanner has a more robust version with BOM stripping and caps; this
+// simplified version is sufficient for the scrubber's redaction needs.
+func loadFileSecrets(path string) ([]string, error) {
+	f, err := os.Open(filepath.Clean(path))
+	if err != nil {
+		return nil, fmt.Errorf("opening secrets file: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+
+	const minLen = 8 // match the env secret minimum
+
+	var secrets []string
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if len(line) < minLen {
+			continue
+		}
+		secrets = append(secrets, line)
+	}
+	if err := sc.Err(); err != nil {
+		return nil, fmt.Errorf("reading secrets file: %w", err)
+	}
+	return secrets, nil
 }

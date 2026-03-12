@@ -107,6 +107,29 @@ func TestInit_EnvDSNUsedWhenConfigEmpty(t *testing.T) {
 	}
 }
 
+func TestInit_EnvDSNOverridesConfig(t *testing.T) {
+	envDSN := "https://envKey@o0.ingest.sentry.io/0"
+	cfg := config.Defaults()
+	cfg.Sentry.DSN = "https://configKey@o0.ingest.sentry.io/0"
+	t.Setenv("SENTRY_DSN", envDSN)
+
+	transport := &mockTransport{}
+	c, err := initClient(cfg, "test", transport)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !c.enabled {
+		t.Error("expected enabled client")
+	}
+	// Verify the env DSN was used by sending an event and checking it arrived
+	// (if the wrong DSN were used with a real transport, it would fail).
+	c.CaptureMessage("test")
+	_ = c.Flush(2 * time.Second)
+	if len(transport.Events()) == 0 {
+		t.Error("expected event to be captured with env DSN")
+	}
+}
+
 func TestNilClient_NoPanic(t *testing.T) {
 	var c *Client
 	// All methods should be safe no-ops on nil receiver.

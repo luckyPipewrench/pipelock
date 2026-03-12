@@ -5787,57 +5787,57 @@ func TestLoad_ExplicitTruePreserved(t *testing.T) {
 
 // --- Sentry tests ---
 
-func TestSentryEnabled_NilDefaultsTrue(t *testing.T) {
+func TestEnabled_NilDefaultsTrue(t *testing.T) {
 	cfg := SentryConfig{}
-	if !cfg.SentryEnabled() {
-		t.Error("expected SentryEnabled() to return true when Enabled is nil")
+	if !cfg.IsEnabled() {
+		t.Error("expected Enabled() to return true when Enabled is nil")
 	}
 }
 
-func TestSentryEnabled_ExplicitlyFalse(t *testing.T) {
+func TestEnabled_ExplicitlyFalse(t *testing.T) {
 	f := false
 	cfg := SentryConfig{Enabled: &f}
-	if cfg.SentryEnabled() {
-		t.Error("expected SentryEnabled() to return false when Enabled is explicitly false")
+	if cfg.IsEnabled() {
+		t.Error("expected Enabled() to return false when Enabled is explicitly false")
 	}
 }
 
-func TestSentryEnabled_ExplicitlyTrue(t *testing.T) {
+func TestEnabled_ExplicitlyTrue(t *testing.T) {
 	tr := true
 	cfg := SentryConfig{Enabled: &tr}
-	if !cfg.SentryEnabled() {
-		t.Error("expected SentryEnabled() to return true when Enabled is explicitly true")
+	if !cfg.IsEnabled() {
+		t.Error("expected Enabled() to return true when Enabled is explicitly true")
 	}
 }
 
 func floatPtr(f float64) *float64 { return &f }
 
-func TestSentrySampleRate_NilDefaultsToOne(t *testing.T) {
+func TestSampleRate_NilDefaultsToOne(t *testing.T) {
 	cfg := SentryConfig{}
-	if cfg.SentrySampleRate() != 1.0 {
-		t.Errorf("expected 1.0 for nil, got %f", cfg.SentrySampleRate())
+	if cfg.EffectiveSampleRate() != 1.0 {
+		t.Errorf("expected 1.0 for nil, got %f", cfg.EffectiveSampleRate())
 	}
 }
 
-func TestSentrySampleRate_ExplicitZero(t *testing.T) {
+func TestSampleRate_ExplicitZero(t *testing.T) {
 	cfg := SentryConfig{SampleRate: floatPtr(0.0)}
-	if cfg.SentrySampleRate() != 0.0 {
-		t.Errorf("expected 0.0 for explicit zero, got %f", cfg.SentrySampleRate())
+	if cfg.EffectiveSampleRate() != 0.0 {
+		t.Errorf("expected 0.0 for explicit zero, got %f", cfg.EffectiveSampleRate())
 	}
 }
 
-func TestSentrySampleRate_ExplicitValue(t *testing.T) {
+func TestSampleRate_ExplicitValue(t *testing.T) {
 	cfg := SentryConfig{SampleRate: floatPtr(0.5)}
-	if cfg.SentrySampleRate() != 0.5 {
-		t.Errorf("expected 0.5, got %f", cfg.SentrySampleRate())
+	if cfg.EffectiveSampleRate() != 0.5 {
+		t.Errorf("expected 0.5, got %f", cfg.EffectiveSampleRate())
 	}
 }
 
-func TestApplyDefaults_SentrySampleRate(t *testing.T) {
+func TestApplyDefaults_SampleRate(t *testing.T) {
 	cfg := Defaults()
 	cfg.ApplyDefaults()
-	if cfg.Sentry.SentrySampleRate() != 1.0 {
-		t.Errorf("expected default sample_rate 1.0, got %f", cfg.Sentry.SentrySampleRate())
+	if cfg.Sentry.EffectiveSampleRate() != 1.0 {
+		t.Errorf("expected default sample_rate 1.0, got %f", cfg.Sentry.EffectiveSampleRate())
 	}
 }
 
@@ -5854,15 +5854,15 @@ func TestApplyDefaults_SentryPreservesCustomValues(t *testing.T) {
 	cfg.Sentry.SampleRate = floatPtr(0.5)
 	cfg.Sentry.Environment = "staging"
 	cfg.ApplyDefaults()
-	if cfg.Sentry.SentrySampleRate() != 0.5 {
-		t.Errorf("expected preserved sample_rate 0.5, got %f", cfg.Sentry.SentrySampleRate())
+	if cfg.Sentry.EffectiveSampleRate() != 0.5 {
+		t.Errorf("expected preserved sample_rate 0.5, got %f", cfg.Sentry.EffectiveSampleRate())
 	}
 	if cfg.Sentry.Environment != "staging" {
 		t.Errorf("expected preserved environment 'staging', got %q", cfg.Sentry.Environment)
 	}
 }
 
-func TestValidate_SentrySampleRateTooHigh(t *testing.T) {
+func TestValidate_SampleRateTooHigh(t *testing.T) {
 	cfg := Defaults()
 	cfg.Sentry.SampleRate = floatPtr(1.5)
 	if err := cfg.Validate(); err == nil {
@@ -5870,7 +5870,7 @@ func TestValidate_SentrySampleRateTooHigh(t *testing.T) {
 	}
 }
 
-func TestValidate_SentrySampleRateNegative(t *testing.T) {
+func TestValidate_SampleRateNegative(t *testing.T) {
 	cfg := Defaults()
 	cfg.Sentry.SampleRate = floatPtr(-0.1)
 	if err := cfg.Validate(); err == nil {
@@ -5878,7 +5878,7 @@ func TestValidate_SentrySampleRateNegative(t *testing.T) {
 	}
 }
 
-func TestValidate_SentrySampleRateValid(t *testing.T) {
+func TestValidate_SampleRateValid(t *testing.T) {
 	cfg := Defaults()
 	cfg.Sentry.SampleRate = floatPtr(0.5)
 	if err := cfg.Validate(); err != nil {
@@ -5886,7 +5886,7 @@ func TestValidate_SentrySampleRateValid(t *testing.T) {
 	}
 }
 
-func TestValidate_SentrySampleRateZeroIsValid(t *testing.T) {
+func TestValidate_SampleRateZeroIsValid(t *testing.T) {
 	cfg := Defaults()
 	cfg.Sentry.SampleRate = floatPtr(0.0)
 	if err := cfg.Validate(); err != nil {

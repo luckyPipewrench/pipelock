@@ -504,13 +504,13 @@ type SentryConfig struct {
 	Debug       bool     `yaml:"debug"`       // SDK debug mode
 }
 
-// SentryEnabled returns true if Sentry is enabled (nil defaults to true).
-func (s *SentryConfig) SentryEnabled() bool {
+// IsEnabled returns true if Sentry is enabled (nil defaults to true).
+func (s *SentryConfig) IsEnabled() bool {
 	return s.Enabled == nil || *s.Enabled
 }
 
-// SentrySampleRate returns the configured sample rate (nil defaults to 1.0).
-func (s *SentryConfig) SentrySampleRate() float64 {
+// EffectiveSampleRate returns the configured sample rate (nil defaults to 1.0).
+func (s *SentryConfig) EffectiveSampleRate() float64 {
 	if s.SampleRate == nil {
 		return 1.0
 	}
@@ -942,7 +942,7 @@ func (c *Config) ApplyDefaults() {
 		c.Emit.Syslog.Tag = "pipelock"
 	}
 
-	// Sentry defaults (nil sample_rate = 1.0, handled by SentrySampleRate())
+	// Sentry defaults (nil sample_rate = 1.0, handled by EffectiveSampleRate())
 	if c.Sentry.Environment == "" {
 		c.Sentry.Environment = "production"
 	}
@@ -1633,7 +1633,7 @@ func (c *Config) Validate() error {
 	}
 
 	// Validate Sentry config
-	sr := c.Sentry.SentrySampleRate()
+	sr := c.Sentry.EffectiveSampleRate()
 	if sr < 0 || sr > 1 {
 		return fmt.Errorf("invalid sentry.sample_rate %f: must be between 0.0 and 1.0", sr)
 	}

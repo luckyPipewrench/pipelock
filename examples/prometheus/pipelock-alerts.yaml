@@ -90,11 +90,11 @@ groups:
         labels:
           severity: critical
         annotations:
-          summary: "Session escalated to block on {{ $labels.instance }}"
+          summary: "Session threat score reached block level on {{ $labels.instance }}"
           description: >-
-            A session was escalated from {{ $labels.from }} to block due to
-            sustained anomalous behavior. The agent is now being actively
-            blocked.
+            A session's threat score escalated from {{ $labels.from }} to block
+            due to sustained anomalous behavior. In v1 this is an observability
+            event; enforcement behavior is not automatically changed.
 
       - alert: PipelockHighAnomalyRate
         expr: rate(pipelock_session_anomalies_total[10m]) > 1

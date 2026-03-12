@@ -1,6 +1,6 @@
 # Pipelock config — balanced preset
 # Capability separation: agent has secrets but restricted network,
-# fetch proxy has full internet but no secrets.
+# fetch proxy has full internet but no agent secrets.
 #
 # Use this for: most developers and companies running AI agents.
 # Blocks naive attacks, detects sophisticated ones, logs everything.

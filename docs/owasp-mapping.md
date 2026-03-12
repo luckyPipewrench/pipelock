@@ -68,7 +68,7 @@ Use `pipelock generate config --preset balanced` for the complete default patter
 
 **Pipelock coverage:**
 
-- **Capability separation:** the agent process (which holds secrets) runs in a network-restricted environment. The fetch proxy (which has network access) holds no secrets. Neither process has both.
+- **Capability separation:** the agent process (which holds secrets) runs in a network-restricted environment. The fetch proxy (which has network access) holds no agent secrets. Deployment (Docker, Kubernetes NetworkPolicy) enforces the boundary. Neither process has both capabilities.
 - **Domain allowlisting:** the agent can only reach explicitly allowed API endpoints (e.g., `*.anthropic.com`, `github.com`).
 - **SSRF protection:** blocks requests to internal/private IP ranges (RFC 1918, link-local, loopback) with DNS rebinding prevention. Custom DialContext resolves DNS and validates all returned IPs before connecting.
 - **Docker Compose isolation:** `pipelock generate docker-compose` creates a network topology where the agent container has no direct internet access.
@@ -169,7 +169,7 @@ Use `pipelock generate config --preset balanced` for the complete default patter
 **Pipelock coverage:**
 
 - **Principle of least privilege:** the agent only reaches allowed API domains. Everything else is blocked.
-- **Capability separation:** the agent process has no direct network access. Only the proxy (which has no secrets) can reach the internet.
+- **Capability separation:** the agent process has no direct network access. Only the proxy (which holds no agent secrets) can reach the internet. Deployment enforces the network boundary.
 - **Configurable enforcement modes:** strict (block on detection, tight thresholds), balanced (warn on detection, default thresholds), audit (detect and log without blocking).
 - **Domain blocklist:** known exfiltration targets (pastebin, transfer.sh) are explicitly blocked.
 - **Rate limiting:** per-domain sliding window prevents bulk data transfer even to allowed domains.

@@ -3382,8 +3382,8 @@ func TestScan_RespectsContextCancellation(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected blocked result when context is cancelled")
 	}
-	if result.Scanner != ScannerParser {
-		t.Errorf("expected scanner=%s, got %s", ScannerParser, result.Scanner)
+	if result.Scanner != ScannerContext {
+		t.Errorf("expected scanner=%s, got %s", ScannerContext, result.Scanner)
 	}
 }
 
@@ -3396,8 +3396,8 @@ func TestScan_NilContext(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected blocked result for nil context")
 	}
-	if result.Scanner != ScannerParser {
-		t.Errorf("expected scanner=%s, got %s", ScannerParser, result.Scanner)
+	if result.Scanner != ScannerContext {
+		t.Errorf("expected scanner=%s, got %s", ScannerContext, result.Scanner)
 	}
 }
 

@@ -43,6 +43,7 @@ const (
 	ScannerEntropy          = "entropy"
 	ScannerSubdomainEntropy = "subdomain_entropy"
 	ScannerDataBudget       = "databudget"
+	ScannerContext          = "context"
 	ScannerAll              = "all"
 )
 
@@ -282,6 +283,7 @@ var scannerHints = map[string]string{
 	ScannerScheme:           "Only http and https schemes are allowed.",
 	ScannerAllowlist:        "Domain not on the allowlist. In strict mode, only allowlisted domains are reachable.",
 	ScannerParser:           "The URL could not be parsed.",
+	ScannerContext:          "The request context was nil or cancelled before the scan completed.",
 }
 
 // HintForBlock returns actionable guidance for a blocked scan result.
@@ -301,9 +303,9 @@ func (s *Scanner) Scan(ctx context.Context, rawURL string) Result {
 		return Result{
 			Allowed: false,
 			Reason:  "request context unavailable",
-			Scanner: ScannerParser,
+			Scanner: ScannerContext,
 			Score:   1.0,
-			Hint:    "The request context was nil or already cancelled.",
+			Hint:    scannerHints[ScannerContext],
 		}
 	}
 	r := s.scan(ctx, rawURL)
@@ -387,6 +389,17 @@ func (s *Scanner) scan(ctx context.Context, rawURL string) Result {
 		return result
 	}
 
+	// Final context check: catch cancellations that arrived during in-memory
+	// scanning (blocklist, DLP, entropy) before returning an allow verdict.
+	if ctx.Err() != nil {
+		return Result{
+			Allowed: false,
+			Reason:  "request context cancelled",
+			Scanner: ScannerContext,
+			Score:   1.0,
+		}
+	}
+
 	return Result{Allowed: true, Scanner: ScannerAll, Score: 0.0}
 }
 
@@ -394,6 +407,16 @@ func (s *Scanner) scan(ctx context.Context, rawURL string) Result {
 // When no internal CIDRs are configured (nil slice), SSRF protection is disabled.
 // To block loopback, link-local, etc., include those CIDRs in config.Internal.
 func (s *Scanner) checkSSRF(ctx context.Context, hostname string) Result {
+	// Check context before the SSRF-disabled fast path so cancelled requests
+	// don't slip through when internalCIDRs is empty.
+	if ctx.Err() != nil {
+		return Result{
+			Allowed: false,
+			Reason:  "request context cancelled",
+			Scanner: ScannerContext,
+			Score:   1.0,
+		}
+	}
 	if len(s.internalCIDRs) == 0 {
 		return Result{Allowed: true}
 	}

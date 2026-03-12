@@ -4,12 +4,14 @@
 package cli
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/projectscan"
+	"github.com/luckyPipewrench/pipelock/internal/sarif"
 )
 
 func TestAuditCmd_EmptyDir(t *testing.T) {
@@ -419,6 +421,350 @@ func TestAuditCmd_ExcludeRecomputesScore(t *testing.T) {
 	}
 	if unfiltered == filtered {
 		t.Error("expected filtered output to differ from unfiltered (score should change)")
+	}
+}
+
+func TestAuditCmd_SARIFOutput(t *testing.T) {
+	dir := t.TempDir()
+
+	cmd := rootCmd()
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"audit", dir, "--format", "sarif"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := buf.String()
+	var parsed map[string]interface{}
+	if err := json.Unmarshal([]byte(output), &parsed); err != nil {
+		t.Fatalf("SARIF output is not valid JSON: %v", err)
+	}
+	if parsed["version"] != "2.1.0" {
+		t.Errorf("version = %v, want 2.1.0", parsed["version"])
+	}
+}
+
+func TestAuditCmd_SARIFWithFindings(t *testing.T) {
+	dir := t.TempDir()
+	// Create a .env file with a fake secret to trigger findings
+	envContent := "API_KEY=" + "sk-ant-" + "api03-XXXXXXXXXXXX" + "XXXXXXXXXXXXXXXX\n"
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(envContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := rootCmd()
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"audit", dir, "--format", "sarif"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var parsed struct {
+		Version string `json:"version"`
+		Runs    []struct {
+			Tool struct {
+				Driver struct {
+					Rules []struct {
+						ID string `json:"id"`
+					} `json:"rules"`
+				} `json:"driver"`
+			} `json:"tool"`
+			Results []struct {
+				RuleID  string `json:"ruleId"`
+				Level   string `json:"level"`
+				Message struct {
+					Text string `json:"text"`
+				} `json:"message"`
+				Locations []struct {
+					PhysicalLocation struct {
+						ArtifactLocation struct {
+							URI string `json:"uri"`
+						} `json:"artifactLocation"`
+					} `json:"physicalLocation"`
+				} `json:"locations"`
+			} `json:"results"`
+		} `json:"runs"`
+	}
+	if err := json.Unmarshal([]byte(buf.String()), &parsed); err != nil {
+		t.Fatalf("invalid SARIF JSON: %v", err)
+	}
+	if len(parsed.Runs) != 1 {
+		t.Fatalf("runs = %d, want 1", len(parsed.Runs))
+	}
+	if len(parsed.Runs[0].Results) == 0 {
+		t.Fatal("expected at least 1 SARIF result from .env findings")
+	}
+	// Check that findings reference the .env file
+	foundEnv := false
+	for _, r := range parsed.Runs[0].Results {
+		for _, loc := range r.Locations {
+			if strings.Contains(loc.PhysicalLocation.ArtifactLocation.URI, ".env") {
+				foundEnv = true
+			}
+		}
+	}
+	if !foundEnv {
+		t.Error("expected at least one finding referencing .env file")
+	}
+}
+
+func TestAuditCmd_SARIFToFile(t *testing.T) {
+	dir := t.TempDir()
+	outFile := filepath.Join(t.TempDir(), "results.sarif")
+
+	cmd := rootCmd()
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"audit", dir, "--format", "sarif", "-o", outFile})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Clean(outFile))
+	if err != nil {
+		t.Fatalf("failed to read SARIF file: %v", err)
+	}
+	if !strings.Contains(string(data), `"version": "2.1.0"`) {
+		t.Error("expected SARIF version in output file")
+	}
+	if !strings.Contains(buf.String(), "SARIF written to:") {
+		t.Error("expected confirmation message on stderr")
+	}
+}
+
+func TestAuditCmd_SARIFSubdirectory(t *testing.T) {
+	// When auditing a subdirectory, SARIF URIs must be relative to CWD (repo root),
+	// not relative to the scanned directory.
+	root := t.TempDir()
+	sub := filepath.Join(root, "service")
+	if err := os.MkdirAll(sub, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	envContent := "API_KEY=" + "sk-ant-" + "api03-XXXXXXXXXXXX" + "XXXXXXXXXXXXXXXX\n"
+	if err := os.WriteFile(filepath.Join(sub, ".env"), []byte(envContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Change CWD to root so "service" is the relative scan dir.
+	oldDir, _ := os.Getwd()
+	_ = os.Chdir(root)
+	defer func() { _ = os.Chdir(oldDir) }()
+
+	cmd := rootCmd()
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"audit", "service", "--format", "sarif"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var parsed struct {
+		Runs []struct {
+			Results []struct {
+				Locations []struct {
+					PhysicalLocation struct {
+						ArtifactLocation struct {
+							URI string `json:"uri"`
+						} `json:"artifactLocation"`
+					} `json:"physicalLocation"`
+				} `json:"locations"`
+			} `json:"results"`
+		} `json:"runs"`
+	}
+	if err := json.Unmarshal([]byte(buf.String()), &parsed); err != nil {
+		t.Fatalf("invalid SARIF JSON: %v", err)
+	}
+	if len(parsed.Runs[0].Results) == 0 {
+		t.Fatal("expected findings for .env with secret")
+	}
+	// URI should be "service/.env", not just ".env".
+	foundPrefixed := false
+	for _, r := range parsed.Runs[0].Results {
+		for _, loc := range r.Locations {
+			uri := loc.PhysicalLocation.ArtifactLocation.URI
+			if strings.HasPrefix(uri, "service/") {
+				foundPrefixed = true
+			}
+			if uri == ".env" {
+				t.Errorf("URI = %q, should be prefixed with scan directory", uri)
+			}
+		}
+	}
+	if !foundPrefixed {
+		t.Error("expected at least one URI prefixed with 'service/'")
+	}
+}
+
+func TestAuditCmd_SARIFAbsolutePath(t *testing.T) {
+	// When auditing with an absolute path, SARIF URIs must still be
+	// CWD-relative, not absolute (absolute URIs break upload-sarif).
+	root := t.TempDir()
+	envContent := "API_KEY=" + "sk-ant-" + "api03-XXXXXXXXXXXX" + "XXXXXXXXXXXXXXXX\n"
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte(envContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// CWD = root, scan with absolute path = root (same dir).
+	oldDir, _ := os.Getwd()
+	_ = os.Chdir(root)
+	defer func() { _ = os.Chdir(oldDir) }()
+
+	cmd := rootCmd()
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"audit", root, "--format", "sarif"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var parsed struct {
+		Runs []struct {
+			Results []struct {
+				Locations []struct {
+					PhysicalLocation struct {
+						ArtifactLocation struct {
+							URI string `json:"uri"`
+						} `json:"artifactLocation"`
+					} `json:"physicalLocation"`
+				} `json:"locations"`
+			} `json:"results"`
+		} `json:"runs"`
+	}
+	if err := json.Unmarshal([]byte(buf.String()), &parsed); err != nil {
+		t.Fatalf("invalid SARIF JSON: %v", err)
+	}
+	for _, r := range parsed.Runs[0].Results {
+		for _, loc := range r.Locations {
+			uri := loc.PhysicalLocation.ArtifactLocation.URI
+			if filepath.IsAbs(uri) {
+				t.Errorf("URI = %q, should be relative not absolute", uri)
+			}
+		}
+	}
+}
+
+func TestAuditCmd_SARIFSeverityMapping(t *testing.T) {
+	// Audit findings from projectscan use "critical" and "warning" severities.
+	// Verify they map correctly in SARIF output.
+	dir := t.TempDir()
+	envContent := "API_KEY=" + "sk-ant-" + "api03-XXXXXXXXXXXX" + "XXXXXXXXXXXXXXXX\n"
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(envContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := rootCmd()
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"audit", dir, "--format", "sarif"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var parsed struct {
+		Runs []struct {
+			Results []struct {
+				Level string `json:"level"`
+			} `json:"results"`
+		} `json:"runs"`
+	}
+	if err := json.Unmarshal([]byte(buf.String()), &parsed); err != nil {
+		t.Fatalf("invalid SARIF JSON: %v", err)
+	}
+	// All secret-pattern findings from projectscan have severity "critical",
+	// which should map to SARIF "error".
+	for i, r := range parsed.Runs[0].Results {
+		if r.Level != sarif.LevelError && r.Level != sarif.LevelWarning && r.Level != sarif.LevelNote {
+			t.Errorf("result[%d].level = %q, not a valid SARIF level", i, r.Level)
+		}
+	}
+}
+
+func TestAuditCmd_InvalidFormat(t *testing.T) {
+	dir := t.TempDir()
+
+	cmd := rootCmd()
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"audit", dir, "--format", "xml"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for invalid format")
+	}
+	if !strings.Contains(err.Error(), "unsupported format") {
+		t.Errorf("expected 'unsupported format' error, got: %v", err)
+	}
+}
+
+func TestAuditCmd_JSONAndFormatConflict(t *testing.T) {
+	dir := t.TempDir()
+
+	cmd := rootCmd()
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"audit", dir, "--json", "--format", "sarif"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when --json and --format are both specified")
+	}
+}
+
+func TestAuditCmd_JSONOutputRejectsO(t *testing.T) {
+	dir := t.TempDir()
+
+	cmd := rootCmd()
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"audit", dir, "--format", "json", "-o", "out.json"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when --format json combined with -o")
+	}
+	if !strings.Contains(err.Error(), "-o/--output is not supported") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestAuditRuleID(t *testing.T) {
+	tests := []struct {
+		name    string
+		finding projectscan.Finding
+		want    string
+	}{
+		{"with pattern", projectscan.Finding{Pattern: "AWS Access ID"}, "DLP-AWS-Access-ID"},
+		{"secret category", projectscan.Finding{Category: "secret"}, "SEC-SECRET"},
+		{"config category", projectscan.Finding{Category: "config"}, "SEC-CONFIG"},
+		{"ecosystem category", projectscan.Finding{Category: "ecosystem"}, "SEC-ECOSYSTEM"},
+		{"agent category", projectscan.Finding{Category: "agent"}, "SEC-AGENT"},
+		{"unknown category", projectscan.Finding{Category: "other"}, "SEC-UNKNOWN"},
+		{"pattern takes precedence", projectscan.Finding{Pattern: "GitHub Token", Category: "secret"}, "DLP-GitHub-Token"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := auditRuleID(tt.finding)
+			if got != tt.want {
+				t.Errorf("auditRuleID() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

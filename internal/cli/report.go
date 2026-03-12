@@ -26,6 +26,8 @@ const (
 	formatHTML   = "html"
 	formatJSON   = "json"
 	formatBundle = "bundle"
+	formatText   = "text"
+	formatSARIF  = "sarif"
 )
 
 func reportCmd() *cobra.Command {

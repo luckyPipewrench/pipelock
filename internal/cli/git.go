@@ -15,6 +15,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/gitprotect"
+	"github.com/luckyPipewrench/pipelock/internal/sarif"
 )
 
 // ErrSecretsFound is returned when pipelock git scan-diff detects secrets.
@@ -39,6 +40,8 @@ Examples:
 func scanDiffCmd() *cobra.Command {
 	var configFile string
 	var jsonOutput bool
+	var format string
+	var outputFile string
 	var excludePaths []string
 	var verbose bool
 
@@ -53,8 +56,23 @@ Examples:
   git diff HEAD~1 | pipelock git scan-diff
   git diff --cached | pipelock git scan-diff --config pipelock.yaml
   git diff HEAD~1 | pipelock git scan-diff --json
+  git diff HEAD~1 | pipelock git scan-diff --format sarif -o results.sarif
   git diff HEAD~1 | pipelock git scan-diff --exclude vendor/ --exclude "*.generated.go"`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			// Resolve format: --json is shorthand for --format json
+			effectiveFormat := format
+			if jsonOutput && effectiveFormat == "" {
+				effectiveFormat = formatJSON
+			}
+			if effectiveFormat == "" {
+				effectiveFormat = formatText
+			}
+			switch effectiveFormat {
+			case formatText, formatJSON, formatSARIF:
+			default:
+				return fmt.Errorf("unsupported format %q (valid: text, json, sarif)", effectiveFormat)
+			}
+
 			cfg, err := loadConfigOrDefault(configFile)
 			if err != nil {
 				return err
@@ -70,9 +88,12 @@ Examples:
 			}
 
 			if len(diffData) == 0 {
-				if jsonOutput {
+				if effectiveFormat == formatJSON {
 					_, _ = fmt.Fprintln(cmd.OutOrStdout(), "[]")
 					return nil
+				}
+				if effectiveFormat == formatSARIF {
+					return writeGitSARIF(cmd, nil, outputFile)
 				}
 				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "No diff content on stdin.")
 				return nil
@@ -102,13 +123,18 @@ Examples:
 				findings = filtered
 			}
 
-			if jsonOutput {
+			switch effectiveFormat {
+			case formatJSON:
 				data, jsonErr := gitprotect.FindingsJSON(findings)
 				if jsonErr != nil {
 					return fmt.Errorf("encoding findings: %w", jsonErr)
 				}
 				_, _ = fmt.Fprintln(cmd.OutOrStdout(), string(data)) //nolint:gosec // G705: CLI output, not web
-			} else {
+			case formatSARIF:
+				if sarifErr := writeGitSARIF(cmd, findings, outputFile); sarifErr != nil {
+					return sarifErr
+				}
+			default:
 				_, _ = fmt.Fprint(cmd.ErrOrStderr(), gitprotect.FormatFindings(findings)) //nolint:gosec // G705: CLI output, not web
 			}
 
@@ -120,9 +146,12 @@ Examples:
 	}
 
 	cmd.Flags().StringVarP(&configFile, "config", "c", "", "config file path")
-	cmd.Flags().BoolVar(&jsonOutput, "json", false, "output findings as JSON")
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "output findings as JSON (shorthand for --format json)")
+	cmd.Flags().StringVar(&format, "format", "", "output format: text, json, or sarif")
+	cmd.Flags().StringVarP(&outputFile, "output", "o", "", "write SARIF output to file")
 	cmd.Flags().StringArrayVar(&excludePaths, "exclude", nil, "exclude paths from findings (glob or directory prefix, repeatable)")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "print suppressed findings to stderr")
+	cmd.MarkFlagsMutuallyExclusive("json", "format")
 	return cmd
 }
 
@@ -181,6 +210,25 @@ Examples:
 	cmd.Flags().StringVar(&binary, "binary", "", "path to pipelock binary (default: "+mcporterBinaryName+" in PATH)")
 	cmd.Flags().BoolVar(&force, "force", false, "overwrite existing hook")
 	return cmd
+}
+
+func writeGitSARIF(cmd *cobra.Command, findings []gitprotect.Finding, outputPath string) error {
+	log := sarif.New("pipelock git scan-diff", Version)
+
+	for _, f := range findings {
+		ruleID := "DLP-" + strings.ReplaceAll(f.Pattern, " ", "-")
+		idx := log.AddRule(ruleID, f.Pattern)
+		// Do not include f.Content in snippet: it contains the matched
+		// secret and would be leaked into SARIF artifacts / upload-sarif.
+		log.AddResult(
+			ruleID, idx,
+			sarif.SeverityToLevel(f.Severity),
+			fmt.Sprintf("Secret detected: %s", f.Pattern),
+			f.File, f.Line, "",
+		)
+	}
+
+	return log.WriteToTarget(cmd.OutOrStdout(), cmd.ErrOrStderr(), outputPath)
 }
 
 func loadConfigOrDefault(path string) (*config.Config, error) {

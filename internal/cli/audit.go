@@ -7,15 +7,19 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/projectscan"
+	"github.com/luckyPipewrench/pipelock/internal/sarif"
 )
 
 func auditCmd() *cobra.Command {
 	var output string
 	var jsonOutput bool
+	var format string
 	var excludePaths []string
 	var configFile string
 	var verbose bool
@@ -33,9 +37,24 @@ Examples:
   pipelock audit ./my-project -o pipelock-suggested.yaml
   pipelock audit ./my-project --json
   pipelock audit . --exclude vendor/ --exclude "*.generated.go"
-  pipelock audit . --config pipelock.yaml --verbose`,
+  pipelock audit . --config pipelock.yaml --verbose
+  pipelock audit . --format sarif -o results.sarif`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Resolve format: --json is shorthand for --format json
+			effectiveFormat := format
+			if jsonOutput && effectiveFormat == "" {
+				effectiveFormat = formatJSON
+			}
+			if effectiveFormat == "" {
+				effectiveFormat = formatText
+			}
+			switch effectiveFormat {
+			case formatText, formatJSON, formatSARIF:
+			default:
+				return fmt.Errorf("unsupported format %q (valid: text, json, sarif)", effectiveFormat)
+			}
+
 			report, err := projectscan.Scan(args[0])
 			if err != nil {
 				return err
@@ -71,12 +90,17 @@ Examples:
 				report.AdjustScoreForFindings()
 			}
 
-			if jsonOutput {
+			switch effectiveFormat {
+			case formatJSON:
 				enc := json.NewEncoder(cmd.OutOrStdout())
 				enc.SetIndent("", "  ")
 				return enc.Encode(report)
+
+			case formatSARIF:
+				return writeAuditSARIF(cmd, report, output)
 			}
 
+			// Default: text output
 			printReport(cmd, report)
 
 			if report.Config != nil {
@@ -104,13 +128,67 @@ Examples:
 		},
 	}
 
-	cmd.Flags().StringVarP(&output, "output", "o", "", "write suggested config to file")
-	cmd.Flags().BoolVar(&jsonOutput, "json", false, "output findings as JSON")
+	cmd.Flags().StringVarP(&output, "output", "o", "", "write output to file (config YAML for text, SARIF JSON for sarif)")
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "output findings as JSON (shorthand for --format json)")
+	cmd.Flags().StringVar(&format, "format", "", "output format: text, json, or sarif")
 	cmd.Flags().StringArrayVar(&excludePaths, "exclude", nil, "exclude paths from findings (glob or directory prefix, repeatable)")
 	cmd.Flags().StringVarP(&configFile, "config", "c", "", "config file path (for suppress entries)")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "print suppressed findings to stderr")
 
 	return cmd
+}
+
+// auditRuleID builds a SARIF rule ID from the finding's category and pattern.
+func auditRuleID(f projectscan.Finding) string {
+	if f.Pattern != "" {
+		// Normalize pattern name to ID form: "AWS Access ID" -> "DLP-AWS-Access-ID"
+		id := strings.ReplaceAll(f.Pattern, " ", "-")
+		return "DLP-" + id
+	}
+	switch f.Category {
+	case "secret":
+		return "SEC-SECRET"
+	case "config":
+		return "SEC-CONFIG"
+	case "ecosystem":
+		return "SEC-ECOSYSTEM"
+	case "agent":
+		return "SEC-AGENT"
+	default:
+		return "SEC-UNKNOWN"
+	}
+}
+
+func writeAuditSARIF(cmd *cobra.Command, report *projectscan.Report, outputPath string) error {
+	log := sarif.New("pipelock audit", Version)
+
+	for _, f := range report.Findings {
+		ruleID := auditRuleID(f)
+		description := f.Message
+		if f.Pattern != "" {
+			description = f.Pattern
+		}
+		idx := log.AddRule(ruleID, description)
+		log.AddResult(
+			ruleID, idx,
+			sarif.SeverityToLevel(f.Severity),
+			f.Message, f.File, f.Line, "",
+		)
+	}
+
+	if outputPath != "" {
+		outFile, err := os.OpenFile(filepath.Clean(outputPath), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+		if err != nil {
+			return fmt.Errorf("creating SARIF output: %w", err)
+		}
+		defer outFile.Close() //nolint:errcheck // best-effort close on write path
+		if err := log.Write(outFile); err != nil {
+			return fmt.Errorf("writing SARIF: %w", err)
+		}
+		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "SARIF written to: %s\n", outputPath)
+		return nil
+	}
+	return log.Write(cmd.OutOrStdout())
 }
 
 func printReport(cmd *cobra.Command, r *projectscan.Report) {

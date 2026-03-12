@@ -182,8 +182,14 @@ func (h *WebhookHandler) processSubscription(ctx context.Context, sub *PolarSubs
 func (h *WebhookHandler) handleActive(ctx context.Context, ent *Entitlement, existing *Entitlement) error {
 	// Idempotency check: compare the full set of fields that affect the
 	// signed token (period, tier, interval, product, email, org). Also
-	// skip the fast path if delivery never succeeded so we retry sending.
+	// skip the fast path if delivery never succeeded (retry), or if the
+	// scheduled refresh is due (cron needs to mint a fresh token even
+	// when the subscription state hasn't changed).
+	refreshDue := existing != nil &&
+		existing.NextRefreshAt != nil &&
+		!time.Now().Before(*existing.NextRefreshAt)
 	if existing != nil &&
+		!refreshDue &&
 		h.isIdempotent(ent, existing) &&
 		existing.CustomerEmail == ent.CustomerEmail &&
 		existing.Org == ent.Org &&

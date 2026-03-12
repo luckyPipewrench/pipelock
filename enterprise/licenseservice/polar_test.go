@@ -35,6 +35,7 @@ const (
 	testIntervalMonth      = "month"
 	testDeliveryStatusSent = "sent"
 	testEmailNew           = "new@example.com"
+	testIntervalYear       = "year"
 	testLicenseIDOld       = "lic_old"
 )
 

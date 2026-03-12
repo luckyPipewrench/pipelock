@@ -298,7 +298,7 @@ func TestIsIdempotent(t *testing.T) {
 			current: &Entitlement{
 				CurrentPeriodEnd: periodEnd,
 				Tier:             tierPro,
-				BillingInterval:  "year",
+				BillingInterval:  testIntervalYear,
 				ProductID:        testProductID,
 			},
 			existing: &Entitlement{
@@ -584,6 +584,65 @@ func TestProcessSubscription_IdempotentSkipsReissue(t *testing.T) {
 	}
 }
 
+func TestProcessSubscription_RefreshDueBypassesIdempotency(t *testing.T) {
+	ts := newTestSetup(t)
+	ctx := t.Context()
+
+	periodEnd := time.Date(2027, 3, 12, 0, 0, 0, 0, time.UTC) // annual plan
+
+	// Pre-insert an entitlement with an overdue refresh (simulates cron pickup).
+	now := time.Now().UTC()
+	pastDue := now.Add(-1 * time.Hour) // refresh was due 1 hour ago
+	existing := testEntitlement(testSubscriptionID)
+	existing.Org = "testcorp"
+	existing.BillingInterval = testIntervalYear
+	existing.CurrentPeriodEnd = periodEnd
+	existing.LastLicenseID = "lic_annual_old"
+	existing.LastLicenseIssuedAt = &now
+	existing.LastLicensePeriodEnd = &periodEnd
+	existing.LastLicenseTier = tierPro
+	existing.LastLicenseInterval = testIntervalYear
+	existing.LastLicenseProductID = testProductID
+	existing.LastDeliveryStatus = testDeliveryStatusSent
+	existing.NextRefreshAt = &pastDue
+	if err := ts.db.Upsert(ctx, existing); err != nil {
+		t.Fatalf("Upsert existing: %v", err)
+	}
+
+	// Same subscription state (annual plan, nothing changed).
+	sub := &PolarSubscription{
+		ID:                testSubscriptionID,
+		Status:            "active",
+		RecurringInterval: testIntervalYear,
+		CurrentPeriodEnd:  periodEnd,
+	}
+	sub.Customer.Email = testCustomerEmail
+	sub.Customer.Metadata = map[string]string{"org": "testcorp"}
+	sub.Product.ID = testProductID
+	sub.Product.Name = testProductName
+	sub.Product.Metadata = map[string]string{"pipelock_tier": "pro"}
+
+	ts.handler.email = &EmailSender{
+		apiKey:    "re_" + "test_key",
+		fromEmail: "test@pipelock.dev",
+		client:    ts.emailSrv.Client(),
+		apiURL:    ts.emailSrv.URL,
+	}
+
+	if err := ts.handler.processSubscription(ctx, sub); err != nil {
+		t.Fatalf("processSubscription: %v", err)
+	}
+
+	ent, err := ts.db.GetBySubscriptionID(ctx, testSubscriptionID)
+	if err != nil {
+		t.Fatalf("GetBySubscriptionID: %v", err)
+	}
+	// Must get a new token even though subscription state is unchanged.
+	if ent.LastLicenseID == "lic_annual_old" {
+		t.Error("license should have been re-minted for due refresh")
+	}
+}
+
 func TestProcessSubscription_IdempotentReissuesOnEmailChange(t *testing.T) {
 	ts := newTestSetup(t)
 	ctx := t.Context()
@@ -854,7 +913,7 @@ func TestSubscriptionToEntitlement(t *testing.T) {
 	sub := &PolarSubscription{
 		ID:                testSubscriptionID,
 		Status:            "active",
-		RecurringInterval: "year",
+		RecurringInterval: testIntervalYear,
 		CurrentPeriodEnd:  time.Date(2027, 3, 12, 0, 0, 0, 0, time.UTC),
 	}
 	sub.Customer.Email = testCustomerEmail
@@ -874,8 +933,8 @@ func TestSubscriptionToEntitlement(t *testing.T) {
 	if ent.Tier != tierEnterprise {
 		t.Errorf("Tier = %q, want %q", ent.Tier, tierEnterprise)
 	}
-	if ent.BillingInterval != "year" {
-		t.Errorf("BillingInterval = %q, want %q", ent.BillingInterval, "year")
+	if ent.BillingInterval != testIntervalYear {
+		t.Errorf("BillingInterval = %q, want %q", ent.BillingInterval, testIntervalYear)
 	}
 	if ent.Org != "acme-corp" {
 		t.Errorf("Org = %q, want %q", ent.Org, "acme-corp")

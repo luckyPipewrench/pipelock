@@ -23,7 +23,7 @@ import (
 	plsentry "github.com/luckyPipewrench/pipelock/internal/sentry"
 )
 
-// syncBuffer is declared in signal_unix_test.go (same package).
+// syncBuffer is defined in helpers_test.go (no build constraint).
 
 func TestReloadPanicHandler_LogsError(t *testing.T) {
 	dir := t.TempDir()

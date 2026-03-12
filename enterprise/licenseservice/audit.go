@@ -13,6 +13,9 @@ import (
 	"time"
 )
 
+// redactedValue is the replacement string for sensitive PII fields.
+const redactedValue = "[REDACTED]"
+
 // AuditEvent types for the append-only JSONL ledger.
 const (
 	AuditWebhookReceived = "webhook_received"
@@ -185,7 +188,7 @@ func RedactPII(data json.RawMessage) json.RawMessage {
 func redactMap(m map[string]interface{}, fields []string) {
 	for _, field := range fields {
 		if _, ok := m[field]; ok {
-			m[field] = "[REDACTED]"
+			m[field] = redactedValue
 		}
 	}
 

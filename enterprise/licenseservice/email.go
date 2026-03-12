@@ -24,6 +24,7 @@ type EmailSender struct {
 	apiKey    string
 	fromEmail string
 	client    *http.Client
+	apiURL    string // defaults to resendAPIURL; override in tests
 }
 
 // NewEmailSender creates an email sender configured with the Resend API key
@@ -32,6 +33,7 @@ func NewEmailSender(apiKey, fromEmail string) *EmailSender {
 	return &EmailSender{
 		apiKey:    apiKey,
 		fromEmail: fromEmail,
+		apiURL:    resendAPIURL,
 		client: &http.Client{
 			Timeout: 10 * time.Second, // 10s: sufficient for Resend API
 		},
@@ -101,7 +103,12 @@ func (e *EmailSender) send(ctx context.Context, to, subject, html string) (strin
 		return "", fmt.Errorf("marshal email request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, resendAPIURL, bytes.NewReader(payload))
+	apiURL := e.apiURL
+	if apiURL == "" {
+		apiURL = resendAPIURL
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(payload))
 	if err != nil {
 		return "", fmt.Errorf("create email request: %w", err)
 	}

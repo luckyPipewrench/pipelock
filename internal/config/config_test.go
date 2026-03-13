@@ -4474,6 +4474,30 @@ func TestTLSInterception_ValidatePermissiveKey(t *testing.T) {
 	}
 }
 
+func TestTLSInterception_ValidateGroupReadableKeyAllowed(t *testing.T) {
+	// Kubernetes fsGroup sets the group-read bit on secret volumes (0o440).
+	// The validator should accept this since only group-read is added, not world-read.
+	dir := t.TempDir()
+	certPath := filepath.Join(dir, "ca.pem")
+	keyPath := filepath.Join(dir, "ca-key.pem")
+	if err := os.WriteFile(certPath, []byte("fake"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, []byte("fake"), 0o640); err != nil { //nolint:gosec // test: k8s-compatible group-read
+		t.Fatal(err)
+	}
+
+	cfg := Defaults()
+	cfg.Internal = nil
+	cfg.TLSInterception.Enabled = true
+	cfg.TLSInterception.CACertPath = certPath
+	cfg.TLSInterception.CAKeyPath = keyPath
+	err := cfg.Validate()
+	if err != nil {
+		t.Errorf("expected 0o640 (k8s fsGroup) to be accepted, got error: %v", err)
+	}
+}
+
 func TestTLSInterception_ApplyDefaultsTLS(t *testing.T) {
 	cfg := &Config{}
 	cfg.ApplyDefaults()

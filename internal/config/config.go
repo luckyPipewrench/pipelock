@@ -1555,8 +1555,10 @@ func (c *Config) Validate() error {
 		if err != nil {
 			return fmt.Errorf("CA key not found at %s (run 'pipelock tls init'): %w", keyPath, err)
 		}
-		if keyInfo.Mode().Perm()&0o077 != 0 {
-			return fmt.Errorf("CA key %s is too permissive (mode %04o): restrict to 0600", keyPath, keyInfo.Mode().Perm())
+		// Reject world-readable, any writable, or any executable bits. Allow
+		// group-read (0o040) because Kubernetes fsGroup sets it on secret volumes.
+		if keyInfo.Mode().Perm()&0o037 != 0 {
+			return fmt.Errorf("CA key %s is too permissive (mode %04o): restrict to 0600 or 0640", keyPath, keyInfo.Mode().Perm())
 		}
 	}
 

@@ -26,6 +26,7 @@ fetch_proxy:
       - "*.transfer.sh"
       - "*.file.io"
       - "*.requestbin.com"
+    subdomain_entropy_exclusions: []
 
 forward_proxy:
   enabled: true

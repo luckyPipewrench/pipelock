@@ -343,11 +343,12 @@ type FetchProxy struct {
 
 // Monitoring configures IPC channel anomaly detection.
 type Monitoring struct {
-	MaxURLLength     int      `yaml:"max_url_length"`
-	EntropyThreshold float64  `yaml:"entropy_threshold"`
-	MaxReqPerMinute  int      `yaml:"max_requests_per_minute"`
-	MaxDataPerMinute int      `yaml:"max_data_per_minute"` // bytes per domain per minute (0 = disabled)
-	Blocklist        []string `yaml:"blocklist"`
+	MaxURLLength               int      `yaml:"max_url_length"`
+	EntropyThreshold           float64  `yaml:"entropy_threshold"`
+	MaxReqPerMinute            int      `yaml:"max_requests_per_minute"`
+	MaxDataPerMinute           int      `yaml:"max_data_per_minute"` // bytes per domain per minute (0 = disabled)
+	Blocklist                  []string `yaml:"blocklist"`
+	SubdomainEntropyExclusions []string `yaml:"subdomain_entropy_exclusions"` // domains excluded from subdomain entropy checks (exact or *.example.com wildcard)
 }
 
 // DLP configures data loss prevention scanning.
@@ -1265,6 +1266,29 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// Validate subdomain entropy exclusions are well-formed hostname patterns.
+	// Accepted formats: exact hostnames ("runpod.net") and wildcard prefixes
+	// ("*.runpod.net"). Reject URLs, host:port, and over-broad patterns.
+	for i, raw := range c.FetchProxy.Monitoring.SubdomainEntropyExclusions {
+		d := strings.TrimSpace(strings.ToLower(raw))
+		if d == "" {
+			return fmt.Errorf("subdomain_entropy_exclusions[%d] is empty", i)
+		}
+		if strings.Contains(d, "://") || strings.Contains(d, "/") || strings.Contains(d, ":") {
+			return fmt.Errorf("subdomain_entropy_exclusions[%d] %q: use a hostname pattern, not a URL or host:port", i, raw)
+		}
+		if strings.HasPrefix(d, "*.") {
+			// Wildcard must target a concrete domain (*.com is too broad)
+			if strings.Count(d[2:], ".") < 1 {
+				return fmt.Errorf("subdomain_entropy_exclusions[%d] %q: wildcard must target a concrete domain like *.example.com", i, raw)
+			}
+		} else if strings.ContainsAny(d, "*?[]") {
+			return fmt.Errorf("subdomain_entropy_exclusions[%d] %q: only exact hosts and *.example.com wildcards are supported", i, raw)
+		}
+		// Normalize: store lowercase, trimmed, trailing-dot-stripped version
+		c.FetchProxy.Monitoring.SubdomainEntropyExclusions[i] = strings.TrimSuffix(d, ".")
+	}
+
 	// Validate global rate limits are non-negative
 	if c.FetchProxy.Monitoring.MaxReqPerMinute < 0 {
 		return fmt.Errorf("fetch_proxy.monitoring.max_requests_per_minute must be >= 0")
@@ -1991,6 +2015,17 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		}
 	}
 
+	// Subdomain entropy exclusions expanded (reduces detection coverage)
+	if added := passthroughDomainsAdded(
+		old.FetchProxy.Monitoring.SubdomainEntropyExclusions,
+		updated.FetchProxy.Monitoring.SubdomainEntropyExclusions,
+	); len(added) > 0 {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "fetch_proxy.monitoring.subdomain_entropy_exclusions",
+			Message: fmt.Sprintf("subdomain entropy exclusions added: %s — entropy detection coverage reduced", strings.Join(added, ", ")),
+		})
+	}
+
 	// Request body scanning disabled
 	if old.RequestBodyScanning.Enabled && !updated.RequestBodyScanning.Enabled {
 		warnings = append(warnings, ReloadWarning{
@@ -2173,6 +2208,7 @@ func Defaults() *Config {
 					"*.file.io",
 					"*.requestbin.com",
 				},
+				SubdomainEntropyExclusions: []string{},
 			},
 		},
 		ForwardProxy: ForwardProxy{

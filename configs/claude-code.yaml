@@ -58,6 +58,7 @@ fetch_proxy:
       - "*.requestbin.com"
       - "*.webhook.site"
       - "*.pipedream.net"
+    subdomain_entropy_exclusions: []
 
 forward_proxy:
   enabled: true

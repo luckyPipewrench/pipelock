@@ -3464,3 +3464,113 @@ func TestScanHintEmptyOnAllowed(t *testing.T) {
 		t.Errorf("expected empty hint on allowed result, got %q", result.Hint)
 	}
 }
+
+// TestCheckSubdomainEntropy_Exclusions tests the subdomain entropy exclusion
+// feature, which allows users to whitelist domains that legitimately use
+// high-entropy subdomains (e.g., RunPod GPU instances, cloud preview URLs).
+func TestCheckSubdomainEntropy_Exclusions(t *testing.T) {
+	// 21-char label with entropy well above the 4.0 threshold used by
+	// checkSubdomainEntropy (hardcoded constant, not the config threshold).
+	const highEntropyLabel = "r7km2np9qw4xb5vy8za3b"
+
+	tests := []struct {
+		name           string
+		exclusions     []string
+		url            string
+		shouldAllow    bool
+		expectedReason string
+	}{
+		{
+			name:           "no exclusions blocks high entropy",
+			exclusions:     []string{},
+			url:            fmt.Sprintf("https://%s.evil.com/", highEntropyLabel),
+			shouldAllow:    false,
+			expectedReason: ScannerSubdomainEntropy,
+		},
+		{
+			name:        "wildcard exclusion allows matching domain",
+			exclusions:  []string{"*.evil.com"},
+			url:         fmt.Sprintf("https://%s.evil.com/", highEntropyLabel),
+			shouldAllow: true,
+		},
+		{
+			name:           "wildcard exclusion does not match different domain",
+			exclusions:     []string{"*.evil.com"},
+			url:            fmt.Sprintf("https://%s.different.com/", highEntropyLabel),
+			shouldAllow:    false,
+			expectedReason: ScannerSubdomainEntropy,
+		},
+		{
+			name:        "exact match exclusion allows",
+			exclusions:  []string{fmt.Sprintf("%s.trusted.example.com", highEntropyLabel)},
+			url:         fmt.Sprintf("https://%s.trusted.example.com/", highEntropyLabel),
+			shouldAllow: true,
+		},
+		{
+			name:           "exact match exclusion does not match other subdomains",
+			exclusions:     []string{"other.trusted.example.com"},
+			url:            fmt.Sprintf("https://%s.trusted.example.com/", highEntropyLabel),
+			shouldAllow:    false,
+			expectedReason: ScannerSubdomainEntropy,
+		},
+		{
+			name:        "wildcard matches multi-level subdomains",
+			exclusions:  []string{"*.example.com"},
+			url:         fmt.Sprintf("https://%s.deep.sub.example.com/", highEntropyLabel),
+			shouldAllow: true,
+		},
+		{
+			name:        "wildcard matches base domain itself",
+			exclusions:  []string{"*.runpod.net"},
+			url:         fmt.Sprintf("https://%s.runpod.net/", highEntropyLabel),
+			shouldAllow: true,
+		},
+		{
+			name:        "case insensitive matching",
+			exclusions:  []string{"*.RunPod.NET"},
+			url:         fmt.Sprintf("https://%s.runpod.net/", highEntropyLabel),
+			shouldAllow: true,
+		},
+		{
+			name:        "trailing dot normalization",
+			exclusions:  []string{"*.runpod.net."},
+			url:         fmt.Sprintf("https://%s.runpod.net/", highEntropyLabel),
+			shouldAllow: true,
+		},
+		{
+			name:        "multiple exclusions first match",
+			exclusions:  []string{"*.evil.com", "*.trusted.com"},
+			url:         fmt.Sprintf("https://%s.evil.com/", highEntropyLabel),
+			shouldAllow: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testConfig()
+			cfg.DLP.Patterns = nil
+			cfg.Internal = nil
+			cfg.APIAllowlist = nil
+			cfg.FetchProxy.Monitoring.Blocklist = nil
+			cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions = tt.exclusions
+			s := New(cfg)
+			defer s.Close()
+
+			result := s.Scan(context.Background(), tt.url)
+
+			if result.Allowed != tt.shouldAllow {
+				if tt.shouldAllow {
+					t.Errorf("expected allowed, got blocked by %s: %s", result.Scanner, result.Reason)
+				} else {
+					t.Errorf("expected blocked by %s, got allowed", tt.expectedReason)
+				}
+			}
+			if !tt.shouldAllow && result.Scanner != tt.expectedReason {
+				t.Errorf("expected scanner=%s, got %s", tt.expectedReason, result.Scanner)
+			}
+			if tt.shouldAllow && result.Scanner != ScannerAll {
+				t.Errorf("expected scanner=all for allowed URL, got %s", result.Scanner)
+			}
+		})
+	}
+}

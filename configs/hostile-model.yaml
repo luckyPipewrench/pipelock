@@ -42,6 +42,7 @@ fetch_proxy:
       - "*.beeceptor.com"
       - "*.requestcatcher.com"
       - "*.burpcollaborator.net"
+    subdomain_entropy_exclusions: []
 
 forward_proxy:
   enabled: true

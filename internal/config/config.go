@@ -1761,6 +1761,11 @@ func (c *Config) Validate() error {
 		if len(c.ScanAPI.Auth.BearerTokens) == 0 {
 			return fmt.Errorf("scan_api.auth.bearer_tokens required when scan_api.listen is set")
 		}
+		for i, tok := range c.ScanAPI.Auth.BearerTokens {
+			if strings.TrimSpace(tok) == "" {
+				return fmt.Errorf("scan_api.auth.bearer_tokens[%d] must be non-empty", i)
+			}
+		}
 		// Validate timeouts: must parse as valid durations and be positive.
 		// Zero or negative timeouts would disable deadlines or expire instantly.
 		validatePositiveDuration := func(name, value string) error {

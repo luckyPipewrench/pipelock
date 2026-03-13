@@ -5651,6 +5651,24 @@ func TestScanAPIConfig_Validate(t *testing.T) {
 			wantErr:       true,
 			wantErrSubstr: "max_body_bytes",
 		},
+		{
+			name: "blank bearer token rejected",
+			cfg: ScanAPI{
+				Listen: "127.0.0.1:9191",
+				Auth:   ScanAPIAuth{BearerTokens: []string{"valid", ""}},
+			},
+			wantErr:       true,
+			wantErrSubstr: "bearer_tokens[1] must be non-empty",
+		},
+		{
+			name: "whitespace-only bearer token rejected",
+			cfg: ScanAPI{
+				Listen: "127.0.0.1:9191",
+				Auth:   ScanAPIAuth{BearerTokens: []string{"  \t"}},
+			},
+			wantErr:       true,
+			wantErrSubstr: "bearer_tokens[0] must be non-empty",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

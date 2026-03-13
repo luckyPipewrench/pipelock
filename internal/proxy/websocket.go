@@ -509,7 +509,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 				} else {
 					scanInput = msg
 				}
-				dlpResult := r.scanner.ScanTextForDLP(context.Background(), string(scanInput))
+				dlpResult := r.scanner.ScanTextForDLP(ctx, string(scanInput))
 
 				// Update rolling tail for next message (always, regardless of result).
 				if len(msg) >= crossMsgOverlap {
@@ -556,7 +556,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 				fb = r.proxy.fragmentBufferPtr.Load()
 			}
 
-			ceeRes := ceeAdmit(context.Background(), sessionKey, msg, nil, r.targetURL, r.agent, r.clientIP, r.requestID,
+			ceeRes := ceeAdmit(ctx, sessionKey, msg, nil, r.targetURL, r.agent, r.clientIP, r.requestID,
 				ceeCfg, r.proxy.entropyTrackerPtr.Load(), fb, r.scanner, r.proxy.logger, r.proxy.metrics)
 
 			if sm := r.proxy.sessionMgrPtr.Load(); sm != nil && r.cfg.AdaptiveEnforcement.Enabled {

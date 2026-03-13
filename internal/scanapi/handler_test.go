@@ -91,8 +91,8 @@ func TestHandler_BearerCaseInsensitive(t *testing.T) {
 			req.Header.Set("Authorization", scheme+" "+testToken)
 			w := httptest.NewRecorder()
 			h.ServeHTTP(w, req)
-			if w.Code == http.StatusUnauthorized {
-				t.Errorf("scheme %q rejected, want accepted per RFC 7235", scheme)
+			if w.Code != http.StatusOK {
+				t.Errorf("scheme %q: expected 200, got %d: %s", scheme, w.Code, w.Body.String())
 			}
 		})
 	}

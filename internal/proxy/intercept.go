@@ -248,6 +248,25 @@ func newInterceptHandler(
 		r.URL.Host = target
 		r.RequestURI = "" // required for http.Transport
 
+		// Scan the full URL through the DLP pipeline. The CONNECT handler only
+		// scans the synthetic host URL; inside the intercepted tunnel we have
+		// the real path and query, which may contain exfiltrated secrets.
+		targetURL := r.URL.String()
+		urlResult := sc.Scan(r.Context(), targetURL)
+		if !urlResult.Allowed {
+			if cfg.EnforceEnabled() {
+				logger.LogBlocked(r.Method, targetURL, urlResult.Scanner, urlResult.Reason, clientIP, requestID, agent)
+				m.RecordTLSRequestBlocked("url_scan")
+				if cfg.ExplainBlocksEnabled() && urlResult.Hint != "" {
+					w.Header().Set("X-Pipelock-Hint", urlResult.Hint)
+				}
+				http.Error(w, "blocked: "+urlResult.Reason, http.StatusForbidden)
+				return
+			}
+			// Audit mode: log anomaly but forward the request.
+			logger.LogAnomaly(r.Method, targetURL, urlResult.Scanner, urlResult.Reason, clientIP, requestID, agent, urlResult.Score)
+		}
+
 		// Strip Accept-Encoding to force identity encoding upstream.
 		// This ensures responses arrive uncompressed so we can scan them.
 		r.Header.Del("Accept-Encoding")

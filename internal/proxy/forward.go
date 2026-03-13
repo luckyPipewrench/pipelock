@@ -123,6 +123,8 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// may contain secrets. Tunneled HTTP headers are only visible with TLS
 	// interception; this covers the handshake itself.
 	if p.evalHeaderDLP(r.Context(), r.Header, cfg, sc, p.logger, http.MethodConnect, syntheticURL, host, clientIP, requestID, agent, start) {
+		// Record session activity so adaptive enforcement sees header-DLP blocks.
+		p.recordSessionActivity(clientIP, agent, host, requestID, false, 0.9, cfg, p.logger)
 		p.metrics.RecordTunnelBlocked(agentLabel)
 		http.Error(w, "CONNECT blocked: header DLP match", http.StatusForbidden)
 		return

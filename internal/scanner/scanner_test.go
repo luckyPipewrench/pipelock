@@ -3530,6 +3530,9 @@ func TestScan_BlocksPathTraversal(t *testing.T) {
 		{"partial_encode_dot_second", "https://example.com/.%2e/etc/passwd"},
 		{"double_encoded", "https://example.com/%252e%252e%252f%252e%252e/etc/passwd"},
 		{"trailing_dotdot", "https://example.com/app/.."},
+		{"both_seps_encoded", "https://example.com/foo%2f..%2fbar"},
+		{"trailing_encoded_sep_dotdot", "https://example.com/foo%2f.."},
+		{"backslash_both_seps", "https://example.com/foo%5c..%5cbar"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

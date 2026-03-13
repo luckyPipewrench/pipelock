@@ -592,10 +592,20 @@ func checkPathTraversal(parsed *url.URL) Result {
 			if strings.Contains(lowerPath, sep+dd+"/") {
 				return Result{Allowed: false, Reason: "path traversal sequence in URL", Scanner: ScannerPathTraversal, Score: 0.7}
 			}
+			// <sep><dd><sep>  e.g. %2f..%2f — both boundaries encoded
+			if strings.Contains(lowerPath, sep+dd+sep) {
+				return Result{Allowed: false, Reason: "path traversal sequence in URL", Scanner: ScannerPathTraversal, Score: 0.7}
+			}
 		}
 		// trailing /<dd> with no following separator
 		if strings.HasSuffix(lowerPath, "/"+dd) {
 			return Result{Allowed: false, Reason: "path traversal sequence in URL", Scanner: ScannerPathTraversal, Score: 0.7}
+		}
+		// trailing <sep><dd> — encoded separator before dotdot at end
+		for _, sep := range seps {
+			if strings.HasSuffix(lowerPath, sep+dd) {
+				return Result{Allowed: false, Reason: "path traversal sequence in URL", Scanner: ScannerPathTraversal, Score: 0.7}
+			}
 		}
 	}
 

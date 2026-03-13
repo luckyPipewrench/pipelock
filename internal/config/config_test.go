@@ -5771,6 +5771,44 @@ func TestLoad_ScanAPIExplicitOverrides(t *testing.T) {
 	}
 }
 
+// TestLoad_ScanAPINegativeLimitsRejected verifies that negative values for
+// connection_limit and max_body_bytes are rejected by Validate() through the
+// full Load() path (not silently normalized by ApplyDefaults()).
+func TestLoad_ScanAPINegativeLimitsRejected(t *testing.T) {
+	dir := t.TempDir()
+
+	for _, tc := range []struct {
+		name    string
+		yaml    string
+		wantErr string
+	}{
+		{
+			name:    "negative_connection_limit",
+			yaml:    "mode: balanced\nscan_api:\n  listen: \"127.0.0.1:9191\"\n  auth:\n    bearer_tokens:\n      - tok\n  connection_limit: -5\n",
+			wantErr: "connection_limit",
+		},
+		{
+			name:    "negative_max_body_bytes",
+			yaml:    "mode: balanced\nscan_api:\n  listen: \"127.0.0.1:9191\"\n  auth:\n    bearer_tokens:\n      - tok\n  max_body_bytes: -1\n",
+			wantErr: "max_body_bytes",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfgPath := filepath.Join(dir, tc.name+".yaml")
+			if err := os.WriteFile(cfgPath, []byte(tc.yaml), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := Load(cfgPath)
+			if err == nil {
+				t.Fatal("expected Load() to reject negative value")
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("error %q does not contain %q", err.Error(), tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestLoad_PreservesSecurityBooleanDefaults(t *testing.T) {
 	// A minimal config that omits all security booleans.
 	// These must default to true (fail-closed), not false (Go zero value).

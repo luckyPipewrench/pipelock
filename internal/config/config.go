@@ -1096,7 +1096,7 @@ func (c *Config) ApplyDefaults() {
 	if c.ScanAPI.RateLimit.Burst <= 0 {
 		c.ScanAPI.RateLimit.Burst = 50
 	}
-	if c.ScanAPI.MaxBodyBytes <= 0 {
+	if c.ScanAPI.MaxBodyBytes == 0 {
 		c.ScanAPI.MaxBodyBytes = 1 << 20 // 1MB
 	}
 	if c.ScanAPI.FieldLimits.URL <= 0 {
@@ -1120,7 +1120,7 @@ func (c *Config) ApplyDefaults() {
 	if c.ScanAPI.Timeouts.Scan == "" {
 		c.ScanAPI.Timeouts.Scan = "5s"
 	}
-	if c.ScanAPI.ConnectionLimit <= 0 {
+	if c.ScanAPI.ConnectionLimit == 0 {
 		c.ScanAPI.ConnectionLimit = 100
 	}
 

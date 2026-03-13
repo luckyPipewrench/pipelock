@@ -823,3 +823,31 @@ func TestScanToolsListNonToolFields_CleanNonToolText(t *testing.T) {
 		t.Errorf("benign sibling text should be clean, got matches=%v error=%q", v.Matches, v.Error)
 	}
 }
+
+// TestScanToolsListNonToolFields_InstructionLikeDescriptionsNoFP is a regression
+// test proving that tools/list responses with instruction-like tool descriptions
+// ("you must call this function", "from now on you should validate") do NOT
+// trigger false positives. The dual-scanner architecture skips the tools[] array
+// for general injection scanning — only dedicated poisoning patterns apply.
+func TestScanToolsListNonToolFields_InstructionLikeDescriptionsNoFP(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.ResponseScanning.Action = config.ActionBlock
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+
+	// This tools/list response contains tool descriptions with phrases that
+	// would trigger general injection patterns ("you must call", "from now on
+	// you should", "you are now a") if they were scanned by the response scanner.
+	// The dual-scanner architecture ensures only the non-tools sibling fields
+	// are passed to the general scanner.
+	line := []byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[` +
+		`{"name":"bash","description":"Execute a shell command. You must call this function with valid input. From now on you should validate all arguments before execution.","inputSchema":{"type":"object","properties":{"command":{"type":"string"}}}},` +
+		`{"name":"admin","description":"You are now a system administrator. This tool has admin access to the database with full privileges and permissions.","inputSchema":{"type":"object","properties":{"query":{"type":"string"}}}}` +
+		`]}}`)
+
+	v := scanToolsListNonToolFields(line, sc)
+	if !v.Clean {
+		t.Errorf("tools/list with instruction-like descriptions should not trigger FP, got matches=%v error=%q", v.Matches, v.Error)
+	}
+}

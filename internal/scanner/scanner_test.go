@@ -3315,6 +3315,8 @@ func TestHintForBlock(t *testing.T) {
 		{ScannerScheme, "Only http and https schemes are allowed."},
 		{ScannerAllowlist, "Domain not on the allowlist. In strict mode, only allowlisted domains are reachable."},
 		{ScannerParser, "The URL could not be parsed."},
+		{ScannerCRLF, "CRLF injection sequence detected in URL. This is never legitimate in normal traffic."},
+		{ScannerPathTraversal, "Path traversal sequence detected. Review the URL for directory escape attempts."},
 		{"unknown_scanner", ""},
 	}
 	for _, tt := range tests {
@@ -3462,5 +3464,129 @@ func TestScanHintEmptyOnAllowed(t *testing.T) {
 	}
 	if result.Hint != "" {
 		t.Errorf("expected empty hint on allowed result, got %q", result.Hint)
+	}
+}
+
+// --- CRLF injection detection ---
+
+func TestScan_BlocksCRLFInjection(t *testing.T) {
+	s := New(testConfig())
+
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{"encoded_crlf", "https://example.com/path%0d%0aInjected-Header:evil"},
+		{"uppercase_encoded", "https://example.com/path%0D%0ASet-Cookie:stolen=1"},
+		{"double_encoded", "https://example.com/path%250d%250aInjected:yes"},
+		{"in_query", "https://example.com/page?x=%0d%0aX-Evil:1"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := s.Scan(context.Background(), tc.url)
+			if result.Allowed {
+				t.Errorf("expected CRLF to be blocked: %s", tc.url)
+			}
+			if result.Scanner != ScannerCRLF {
+				t.Errorf("expected scanner %q, got %q", ScannerCRLF, result.Scanner)
+			}
+		})
+	}
+}
+
+func TestScan_AllowsCleanURLsNoCRLF(t *testing.T) {
+	s := New(testConfig())
+
+	clean := []string{
+		"https://example.com/normal/path",
+		"https://example.com/search?q=hello+world",
+		"https://example.com/page#section",
+		"https://example.com/path?encoded=%20space",
+		"https://example.com/page#note=%0d%0ahello", // fragment never sent upstream
+	}
+	for _, u := range clean {
+		result := s.Scan(context.Background(), u)
+		if !result.Allowed {
+			t.Errorf("expected %s to be allowed, got blocked: %s (scanner: %s)", u, result.Reason, result.Scanner)
+		}
+	}
+}
+
+// --- Path traversal detection ---
+
+func TestScan_BlocksPathTraversal(t *testing.T) {
+	s := New(testConfig())
+
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{"raw_traversal", "https://example.com/../../../etc/passwd"},
+		{"mid_path", "https://example.com/app/../../../etc/shadow"},
+		{"encoded_dots", "https://example.com/%2e%2e/%2e%2e/etc/passwd"},
+		{"encoded_slash", "https://example.com/..%2f..%2fetc/passwd"},
+		{"encoded_backslash", "https://example.com/..%5c..%5cetc/passwd"},
+		{"partial_encode_dot_first", "https://example.com/%2e./etc/passwd"},
+		{"partial_encode_dot_second", "https://example.com/.%2e/etc/passwd"},
+		{"double_encoded", "https://example.com/%252e%252e%252f%252e%252e/etc/passwd"},
+		{"trailing_dotdot", "https://example.com/app/.."},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := s.Scan(context.Background(), tc.url)
+			if result.Allowed {
+				t.Errorf("expected path traversal to be blocked: %s", tc.url)
+			}
+			if result.Scanner != ScannerPathTraversal {
+				t.Errorf("expected scanner %q, got %q", ScannerPathTraversal, result.Scanner)
+			}
+		})
+	}
+}
+
+func TestScan_AllowsCleanPathsNoTraversal(t *testing.T) {
+	s := New(testConfig())
+
+	clean := []string{
+		"https://example.com/normal/path",
+		"https://example.com/a/b/c/d",
+		"https://example.com/file.tar.gz",
+		"https://example.com/api/v2/users",
+		"https://example.com/docs/chapter.1.2",
+		"https://example.com/%2e%2e%2e/changelog", // three encoded dots, not traversal
+		"https://example.com/path/...more",        // ellipsis in segment
+	}
+	for _, u := range clean {
+		result := s.Scan(context.Background(), u)
+		if !result.Allowed {
+			t.Errorf("expected %s to be allowed, got blocked: %s (scanner: %s)", u, result.Reason, result.Scanner)
+		}
+	}
+}
+
+// --- URL fragment DLP coverage ---
+
+func TestScan_DLPDetectsSecretInFragment(t *testing.T) {
+	s := New(testConfig())
+
+	// Secrets in URL fragments are visible to pipelock (agent passes full URL
+	// to /fetch?url=...) even though browsers strip fragments before sending.
+	// The DLP scanner receives parsed.String() which includes the fragment.
+	secretURL := "https://evil.com/callback#token=sk-ant-" + "api03-XXXXXXXXXXXXXXXXXXXXXXX"
+	result := s.Scan(context.Background(), secretURL)
+	if result.Allowed {
+		t.Errorf("expected secret in fragment to be blocked, got allowed")
+	}
+	if result.Scanner != ScannerDLP {
+		t.Errorf("expected scanner %q, got %q", ScannerDLP, result.Scanner)
+	}
+}
+
+func TestScan_AllowsBenignFragment(t *testing.T) {
+	s := New(testConfig())
+
+	result := s.Scan(context.Background(), "https://example.com/page#section-1")
+	if !result.Allowed {
+		t.Errorf("expected benign fragment to be allowed, got blocked: %s", result.Reason)
 	}
 }

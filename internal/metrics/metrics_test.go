@@ -1320,3 +1320,154 @@ func TestSetCrossRequestFragmentBytes_NilReceiver(t *testing.T) {
 	var m *Metrics
 	m.SetCrossRequestFragmentBytes(100.0)
 }
+
+func TestRecordScanAPIRequest(t *testing.T) {
+	m := New()
+	m.RecordScanAPIRequest("dlp", "allow", "200")
+	m.RecordScanAPIRequest("dlp", "deny", "200")
+	m.RecordScanAPIRequest("url", "allow", "200")
+
+	handler := m.PrometheusHandler()
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := rec.Body.String()
+
+	if !strings.Contains(body, `pipelock_scan_api_requests_total{decision="allow",kind="dlp",status_code="200"} 1`) {
+		t.Errorf("expected dlp/allow/200 = 1:\n%s", body)
+	}
+	if !strings.Contains(body, `pipelock_scan_api_requests_total{decision="deny",kind="dlp",status_code="200"} 1`) {
+		t.Errorf("expected dlp/deny/200 = 1:\n%s", body)
+	}
+	if !strings.Contains(body, `pipelock_scan_api_requests_total{decision="allow",kind="url",status_code="200"} 1`) {
+		t.Errorf("expected url/allow/200 = 1:\n%s", body)
+	}
+}
+
+func TestObserveScanAPIDuration(t *testing.T) {
+	m := New()
+	m.ObserveScanAPIDuration("dlp", 100*time.Millisecond)
+	m.ObserveScanAPIDuration("url", 200*time.Millisecond)
+
+	handler := m.PrometheusHandler()
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := rec.Body.String()
+
+	if !strings.Contains(body, `pipelock_scan_api_duration_seconds_count{kind="dlp"} 1`) {
+		t.Errorf("expected 1 dlp duration observation:\n%s", body)
+	}
+	if !strings.Contains(body, `pipelock_scan_api_duration_seconds_count{kind="url"} 1`) {
+		t.Errorf("expected 1 url duration observation:\n%s", body)
+	}
+}
+
+func TestRecordScanAPIFinding(t *testing.T) {
+	m := New()
+	m.RecordScanAPIFinding("dlp", "dlp", "critical")
+	m.RecordScanAPIFinding("dlp", "dlp", "critical")
+	m.RecordScanAPIFinding("url", "ssrf", "high")
+
+	handler := m.PrometheusHandler()
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := rec.Body.String()
+
+	if !strings.Contains(body, `pipelock_scan_api_findings_total{kind="dlp",scanner="dlp",severity="critical"} 2`) {
+		t.Errorf("expected dlp/dlp/critical = 2:\n%s", body)
+	}
+	if !strings.Contains(body, `pipelock_scan_api_findings_total{kind="url",scanner="ssrf",severity="high"} 1`) {
+		t.Errorf("expected url/ssrf/high = 1:\n%s", body)
+	}
+}
+
+func TestRecordScanAPIError(t *testing.T) {
+	m := New()
+	m.RecordScanAPIError("dlp", "invalid_json")
+	m.RecordScanAPIError("dlp", "invalid_json")
+	m.RecordScanAPIError("", "unauthorized")
+
+	handler := m.PrometheusHandler()
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := rec.Body.String()
+
+	if !strings.Contains(body, `pipelock_scan_api_errors_total{error_code="invalid_json",kind="dlp"} 2`) {
+		t.Errorf("expected dlp/invalid_json = 2:\n%s", body)
+	}
+	if !strings.Contains(body, `pipelock_scan_api_errors_total{error_code="unauthorized",kind=""} 1`) {
+		t.Errorf("expected empty/unauthorized = 1:\n%s", body)
+	}
+}
+
+func TestIncrDecrScanAPIInflight(t *testing.T) {
+	m := New()
+	m.IncrScanAPIInflight()
+	m.IncrScanAPIInflight()
+	m.IncrScanAPIInflight()
+	m.DecrScanAPIInflight()
+
+	handler := m.PrometheusHandler()
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := rec.Body.String()
+
+	if !strings.Contains(body, "pipelock_scan_api_inflight_requests 2") {
+		t.Errorf("expected inflight gauge at 2:\n%s", body)
+	}
+}
+
+func TestConcurrentScanAPIMetrics(t *testing.T) {
+	m := New()
+	var wg sync.WaitGroup
+	for range 50 {
+		wg.Add(5)
+		go func() {
+			defer wg.Done()
+			m.RecordScanAPIRequest("dlp", "allow", "200")
+		}()
+		go func() {
+			defer wg.Done()
+			m.ObserveScanAPIDuration("dlp", time.Millisecond)
+		}()
+		go func() {
+			defer wg.Done()
+			m.RecordScanAPIFinding("dlp", "dlp", "critical")
+		}()
+		go func() {
+			defer wg.Done()
+			m.RecordScanAPIError("dlp", "timeout")
+		}()
+		go func() {
+			defer wg.Done()
+			m.IncrScanAPIInflight()
+			m.DecrScanAPIInflight()
+		}()
+	}
+	wg.Wait()
+
+	// Verify no panics and metrics registered via /metrics.
+	handler := m.PrometheusHandler()
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := rec.Body.String()
+
+	for _, metric := range []string{
+		"pipelock_scan_api_requests_total",
+		"pipelock_scan_api_duration_seconds",
+		"pipelock_scan_api_findings_total",
+		"pipelock_scan_api_errors_total",
+		"pipelock_scan_api_inflight_requests",
+	} {
+		if !strings.Contains(body, metric) {
+			t.Errorf("expected %s in /metrics after concurrent writes", metric)
+		}
+	}
+}
+
+func TestSetCEEStatsFunc_NilReceiver(t *testing.T) {
+	// Nil receiver should be a no-op (no panic).
+	var m *Metrics
+	m.SetCEEStatsFunc(func() CEEStats {
+		return CEEStats{EntropyTrackerActive: true}
+	})
+}

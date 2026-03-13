@@ -99,6 +99,14 @@ func buildRuntime(cfg *config.Config) *runtime {
 	return rt
 }
 
+// IsActive returns true if the kill switch is currently active from any source.
+// It checks the four activation sources without applying any endpoint or IP
+// exemptions. Use this for non-HTTP callers (e.g. the Scan API handler) that
+// perform their own exemption logic.
+func (c *Controller) IsActive() bool {
+	return c.computeDecision(c.cfg.Load()).Active
+}
+
 // IsActiveHTTP checks whether the kill switch should deny an HTTP request.
 // Checks exemptions (health/metrics/API endpoints, allowlisted IPs) before
 // computing the active state from the four sources.

@@ -203,7 +203,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		if verdict.Error != "" {
 			_, _ = fmt.Fprintf(logW, "pipelock: line %d: %s\n", lineNum, verdict.Error)
 			// Scan raw text for injection even when not valid JSON-RPC.
-			rawResult := sc.ScanResponse(string(line))
+			rawResult := sc.ScanResponse(context.Background(), string(line))
 			if !rawResult.Clean {
 				foundInjection = true
 				names := matchNames(rawResult.Matches)
@@ -358,7 +358,7 @@ func stripResponseDepth(line []byte, sc *scanner.Scanner, depth int) ([]byte, er
 			if block.Text == "" {
 				continue
 			}
-			result := sc.ScanResponse(block.Text)
+			result := sc.ScanResponse(context.Background(), block.Text)
 			if !result.Clean {
 				if result.TransformedContent != "" {
 					rpc.Result.Content[i].Text = result.TransformedContent
@@ -381,7 +381,7 @@ func stripResponseDepth(line []byte, sc *scanner.Scanner, depth int) ([]byte, er
 		if json.Unmarshal(rpc.Error, &errObj) == nil {
 			changed := false
 			if errObj.Message != "" {
-				result := sc.ScanResponse(errObj.Message)
+				result := sc.ScanResponse(context.Background(), errObj.Message)
 				if !result.Clean {
 					if result.TransformedContent != "" {
 						errObj.Message = result.TransformedContent
@@ -394,7 +394,7 @@ func stripResponseDepth(line []byte, sc *scanner.Scanner, depth int) ([]byte, er
 			if len(errObj.Data) > 0 {
 				var dataStr string
 				if json.Unmarshal(errObj.Data, &dataStr) == nil && dataStr != "" {
-					result := sc.ScanResponse(dataStr)
+					result := sc.ScanResponse(context.Background(), dataStr)
 					if !result.Clean {
 						if result.TransformedContent != "" {
 							if newData, mErr := json.Marshal(result.TransformedContent); mErr == nil {

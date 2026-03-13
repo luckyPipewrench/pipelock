@@ -5,6 +5,7 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -216,6 +217,7 @@ type ceeResult struct {
 //   - logger: audit logger for event recording
 //   - m: metrics recorder
 func ceeAdmit(
+	ctx context.Context,
 	sessionKey string,
 	outbound, keyPayload []byte,
 	targetURL, agent, clientIP, requestID string,
@@ -258,7 +260,7 @@ func ceeAdmit(
 	// Fragment reassembly DLP check (two independent streams).
 	if fb != nil && ceeCfg.FragmentReassembly.Enabled {
 		// Stream 1: values + bare tokens + body.
-		if res := ceeFragmentScan(sessionKey, outbound, targetURL, agent, clientIP, requestID, ceeCfg, fb, sc, logger, m); res != nil {
+		if res := ceeFragmentScan(ctx, sessionKey, outbound, targetURL, agent, clientIP, requestID, ceeCfg, fb, sc, logger, m); res != nil {
 			result.FragmentHit = true
 			if res.Blocked {
 				result.Blocked = true
@@ -271,7 +273,7 @@ func ceeAdmit(
 		// split across param names like ?AKIA=1 then ?IOSFODNN7EXAMPLE=2).
 		if len(keyPayload) > 0 {
 			keySessionKey := sessionKey + "|keys"
-			if res := ceeFragmentScan(keySessionKey, keyPayload, targetURL, agent, clientIP, requestID, ceeCfg, fb, sc, logger, m); res != nil {
+			if res := ceeFragmentScan(ctx, keySessionKey, keyPayload, targetURL, agent, clientIP, requestID, ceeCfg, fb, sc, logger, m); res != nil {
 				result.FragmentHit = true
 				if res.Blocked {
 					result.Blocked = true
@@ -288,6 +290,7 @@ func ceeAdmit(
 // ceeFragmentScan appends data to a fragment buffer stream and scans for DLP
 // matches. Returns non-nil result if a match is found (blocked or warned).
 func ceeFragmentScan(
+	ctx context.Context,
 	bufferKey string,
 	data []byte,
 	targetURL, agent, clientIP, requestID string,
@@ -301,7 +304,7 @@ func ceeFragmentScan(
 		return nil
 	}
 	fb.Append(bufferKey, data)
-	matches := fb.ScanForSecrets(bufferKey, sc)
+	matches := fb.ScanForSecrets(ctx, bufferKey, sc)
 	if len(matches) == 0 {
 		return nil
 	}

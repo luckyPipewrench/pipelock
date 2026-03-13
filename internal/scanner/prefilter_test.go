@@ -4,6 +4,7 @@
 package scanner
 
 import (
+	"context"
 	"sort"
 	"testing"
 )
@@ -152,7 +153,7 @@ func TestDLPPreFilter_EndToEndAlwaysRun(t *testing.T) {
 	// AWS key has no extractable prefix (alternation). It must still be caught
 	// via alwaysRun when scanning text that looks otherwise clean.
 	key := "AKIA" + "IOSFODNN7" + "EXAMPLE"
-	result := s.ScanTextForDLP("check this " + key + " value")
+	result := s.ScanTextForDLP(context.Background(), "check this "+key+" value")
 	if result.Clean {
 		t.Error("expected AWS key to be caught by always-run pattern, got clean")
 	}

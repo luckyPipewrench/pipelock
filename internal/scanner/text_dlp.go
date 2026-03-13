@@ -4,6 +4,7 @@
 package scanner
 
 import (
+	"context"
 	"encoding/base32"
 	"encoding/base64"
 	"encoding/hex"
@@ -29,7 +30,7 @@ type TextDLPResult struct {
 // Unlike checkDLP (which operates on URLs), this method works on raw text strings
 // from MCP tool arguments. It applies zero-width stripping, NFKC normalization,
 // and checks encoded variants (base64, hex, base32) of the text for patterns.
-func (s *Scanner) ScanTextForDLP(text string) TextDLPResult {
+func (s *Scanner) ScanTextForDLP(_ context.Context, text string) TextDLPResult {
 	if len(s.dlpPatterns) == 0 && len(s.envSecrets) == 0 && len(s.fileSecrets) == 0 {
 		return TextDLPResult{Clean: true}
 	}

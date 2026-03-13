@@ -621,7 +621,7 @@ func RunHTTPListenerProxy(
 		// doesn't see HTTP headers, so an agent could leak credentials
 		// via the Authorization header without triggering DLP.
 		if auth := r.Header.Get("Authorization"); auth != "" {
-			dlpResult := sc.ScanTextForDLP(auth)
+			dlpResult := sc.ScanTextForDLP(r.Context(), auth)
 			if !dlpResult.Clean {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: DLP match in Authorization header: %s\n", dlpResult.Matches[0].PatternName)
 				w.Header().Set("Content-Type", "application/json")

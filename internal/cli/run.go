@@ -17,6 +17,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"golang.org/x/net/netutil"
+
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
@@ -29,6 +31,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
+	"github.com/luckyPipewrench/pipelock/internal/scanapi"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	plsentry "github.com/luckyPipewrench/pipelock/internal/sentry"
 )
@@ -262,6 +265,18 @@ Examples:
 										oldCfg.MetricsListen, newCfg.MetricsListen)
 									newCfg.MetricsListen = oldCfg.MetricsListen
 								}
+								// Block scan_api listener setting changes via reload. The
+								// Scan API server binds at startup and cannot rebind or
+								// reconfigure connection limits / deadlines at runtime.
+								if oldCfg.ScanAPI.Listen != newCfg.ScanAPI.Listen ||
+									oldCfg.ScanAPI.ConnectionLimit != newCfg.ScanAPI.ConnectionLimit ||
+									oldCfg.ScanAPI.Timeouts.Read != newCfg.ScanAPI.Timeouts.Read ||
+									oldCfg.ScanAPI.Timeouts.Write != newCfg.ScanAPI.Timeouts.Write {
+									cmd.PrintErrf("WARNING: config reload: scan_api listener settings changed — requires restart, ignoring\n")
+									newCfg.ScanAPI.Listen = oldCfg.ScanAPI.Listen
+									newCfg.ScanAPI.ConnectionLimit = oldCfg.ScanAPI.ConnectionLimit
+									newCfg.ScanAPI.Timeouts = oldCfg.ScanAPI.Timeouts
+								}
 								// Block agent listener changes via reload. Listener
 								// sockets are bound at startup and cannot be rebound
 								// at runtime. Warn and preserve old listener config.
@@ -471,6 +486,62 @@ Examples:
 				cmd.PrintErrf("pipelock: metrics listening on %s\n", cfg.MetricsListen)
 			}
 
+			// Start Scan API server on a dedicated port if configured.
+			// Follows the same pattern as kill switch API and metrics server:
+			// bind synchronously so port conflicts are caught early.
+			var scanAPIErr chan error
+			if cfg.ScanAPI.Listen != "" {
+				scanAPIMux := http.NewServeMux()
+				var scanPolicyCfg *policy.Config
+				if cfg.MCPToolPolicy.Enabled {
+					scanPolicyCfg = policy.New(cfg.MCPToolPolicy)
+				}
+				scanHandler := scanapi.NewHandler(cfg, sc, scanPolicyCfg, m, Version)
+				scanHandler.SetKillSwitchFn(ks.IsActive)
+				scanAPIMux.Handle("/api/v1/scan", scanHandler)
+
+				scanAPILn, lnErr := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.ScanAPI.Listen)
+				if lnErr != nil {
+					return fmt.Errorf("scan API bind %s: %w", cfg.ScanAPI.Listen, lnErr)
+				}
+				if cfg.ScanAPI.ConnectionLimit > 0 {
+					scanAPILn = netutil.LimitListener(scanAPILn, cfg.ScanAPI.ConnectionLimit)
+				}
+
+				readTimeout := 2 * time.Second
+				writeTimeout := 2 * time.Second
+				if d, parseErr := time.ParseDuration(cfg.ScanAPI.Timeouts.Read); parseErr == nil {
+					readTimeout = d
+				}
+				if d, parseErr := time.ParseDuration(cfg.ScanAPI.Timeouts.Write); parseErr == nil {
+					writeTimeout = d
+				}
+
+				scanAPISrv := &http.Server{
+					Handler:           scanAPIMux,
+					ReadTimeout:       readTimeout,
+					ReadHeaderTimeout: readTimeout,
+					WriteTimeout:      writeTimeout,
+					IdleTimeout:       120 * time.Second, // matches main server idle timeout
+				}
+				go func() {
+					<-ctx.Done()
+					shutdownCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer shutCancel()
+					_ = scanAPISrv.Shutdown(shutdownCtx)
+				}()
+
+				scanAPIErr = make(chan error, 1)
+				go func() {
+					srvErr := scanAPISrv.Serve(scanAPILn)
+					if errors.Is(srvErr, http.ErrServerClosed) {
+						srvErr = nil
+					}
+					scanAPIErr <- srvErr
+				}()
+				cmd.PrintErrf("pipelock: scan API listening on %s\n", cfg.ScanAPI.Listen)
+			}
+
 			// Start MCP HTTP listener in background if configured.
 			var mcpErr chan error
 			if hasMCPListen {
@@ -653,6 +724,13 @@ Examples:
 			if mcpErr != nil {
 				if mErr := <-mcpErr; mErr != nil {
 					cmd.PrintErrf("pipelock: MCP listener error: %v\n", mErr)
+				}
+			}
+
+			// If Scan API server was running, check for errors.
+			if scanAPIErr != nil {
+				if sErr := <-scanAPIErr; sErr != nil {
+					cmd.PrintErrf("pipelock: scan API listener error: %v\n", sErr)
 				}
 			}
 

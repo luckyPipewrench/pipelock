@@ -743,7 +743,6 @@ func TestWSProxyHeaderDLPBlocksAllowlistedHost(t *testing.T) {
 	defer backendCleanup()
 
 	proxyAddr, proxyCleanup := setupWSProxy(t, func(cfg *config.Config) {
-		// Add the backend to the allowlist.
 		host, _, _ := net.SplitHostPort(backendAddr)
 		cfg.APIAllowlist = []string{host}
 	})

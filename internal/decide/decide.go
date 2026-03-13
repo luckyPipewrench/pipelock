@@ -131,12 +131,12 @@ func decideShell(cfg *config.Config, sc *scanner.Scanner, policyCfg *policy.Conf
 	var evidence []Evidence
 
 	// DLP: scan the command for secrets. DLP findings are always block-level.
-	dlpResult := sc.ScanTextForDLP(p.Command)
+	dlpResult := sc.ScanTextForDLP(context.Background(), p.Command)
 	evidence = append(evidence, evidenceFromDLP(dlpResult)...)
 
 	// Injection: scan command for prompt injection relay.
 	if cfg.ResponseScanning.Enabled {
-		injResult := sc.ScanResponse(p.Command)
+		injResult := sc.ScanResponse(context.Background(), p.Command)
 		evidence = append(evidence, evidenceFromInjection(injResult, cfg.ResponseScanning.Action)...)
 	}
 
@@ -179,10 +179,10 @@ func decideMCP(cfg *config.Config, sc *scanner.Scanner, policyCfg *policy.Config
 
 	// DLP + injection: respect MCP input scanning toggle and action.
 	if scanText != "" && cfg.MCPInputScanning.Enabled {
-		dlpResult := sc.ScanTextForDLP(scanText)
+		dlpResult := sc.ScanTextForDLP(context.Background(), scanText)
 		evidence = append(evidence, evidenceFromDLP(dlpResult)...)
 
-		injResult := sc.ScanResponse(scanText)
+		injResult := sc.ScanResponse(context.Background(), scanText)
 		evidence = append(evidence, evidenceFromInjection(injResult, cfg.MCPInputScanning.Action)...)
 	}
 
@@ -247,11 +247,11 @@ func decideFileContent(cfg *config.Config, sc *scanner.Scanner, policyCfg *polic
 	}
 
 	if content != "" {
-		dlpResult := sc.ScanTextForDLP(content)
+		dlpResult := sc.ScanTextForDLP(context.Background(), content)
 		evidence = append(evidence, evidenceFromDLP(dlpResult)...)
 
 		if cfg.ResponseScanning.Enabled {
-			injResult := sc.ScanResponse(content)
+			injResult := sc.ScanResponse(context.Background(), content)
 			evidence = append(evidence, evidenceFromInjection(injResult, cfg.ResponseScanning.Action)...)
 		}
 	}

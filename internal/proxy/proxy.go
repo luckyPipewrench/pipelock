@@ -869,7 +869,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Request header DLP scanning (fetch is GET-only, no body to scan).
-	if p.evalHeaderDLP(r.Header, cfg, sc, log, "GET", displayURL, parsed.Hostname(), clientIP, requestID, agent, start) {
+	if p.evalHeaderDLP(r.Context(), r.Header, cfg, sc, log, "GET", displayURL, parsed.Hostname(), clientIP, requestID, agent, start) {
 		writeJSON(w, http.StatusForbidden, FetchResponse{
 			URL:         displayURL,
 			Agent:       agent,
@@ -903,7 +903,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		outbound := urlPayload(parsed)
 		keys := queryParamKeys(parsed)
 
-		ceeRes := ceeAdmit(sessionKey, outbound, keys, displayURL, agent, clientIP, requestID,
+		ceeRes := ceeAdmit(r.Context(), sessionKey, outbound, keys, displayURL, agent, clientIP, requestID,
 			ceeCfg, p.entropyTrackerPtr.Load(), p.fragmentBufferPtr.Load(), sc, log, p.metrics)
 
 		if sm := p.sessionMgrPtr.Load(); sm != nil && cfg.AdaptiveEnforcement.Enabled {
@@ -1034,7 +1034,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	if sc.ResponseScanningEnabled() && isHTML {
 		hidden := extractHiddenContent(content)
 		if hidden != "" {
-			rawResult := sc.ScanResponse(hidden)
+			rawResult := sc.ScanResponse(r.Context(), hidden)
 			blocked, _, found := p.filterAndActOnResponseScan(w, rawResult, content, displayURL, agent, clientIP, requestID, sc, cfg, log)
 			if blocked {
 				return
@@ -1071,7 +1071,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 	// Response scanning: check extracted content for prompt injection.
 	if sc.ResponseScanningEnabled() {
-		scanResult := sc.ScanResponse(content)
+		scanResult := sc.ScanResponse(r.Context(), content)
 		blocked, newContent, _ := p.filterAndActOnResponseScan(w, scanResult, content, displayURL, agent, clientIP, requestID, sc, cfg, log)
 		if blocked {
 			p.metrics.RecordBlocked(parsed.Hostname(), "response_scan", time.Since(start), agentLabel)

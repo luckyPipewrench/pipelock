@@ -4,6 +4,7 @@
 package scanner
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -39,7 +40,7 @@ func FuzzScanResponseContent(f *testing.F) {
 	f.Add(strings.Repeat("a", 100000))
 
 	f.Fuzz(func(t *testing.T, content string) {
-		result := sc.ScanResponse(content)
+		result := sc.ScanResponse(context.Background(), content)
 
 		// Clean results must have no matches
 		if result.Clean && len(result.Matches) > 0 {

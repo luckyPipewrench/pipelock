@@ -413,6 +413,11 @@ tls_interception:
   cert_cache_size: 10000
   max_response_bytes: 5242880
 
+# Scan API: evaluation-plane listener for external integrations.
+# Disabled by default. Set listen address to enable.
+scan_api:
+  listen: ""
+
 # --- Agent Profiles (optional) ---
 # Per-agent policy overrides. Each agent gets its own merged config.
 # Agents are identified by listener binding (spoof-proof), source CIDR matching,

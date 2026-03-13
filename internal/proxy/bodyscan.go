@@ -4,6 +4,7 @@
 package proxy
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -45,7 +46,7 @@ type BodyScanResult struct {
 // scanRequestBody reads, buffers, and DLP-scans an HTTP request body.
 // Returns the buffered body bytes (for re-wrapping) and the scan result.
 // Fail-closed: oversized bodies and compressed bodies are always blocked.
-func scanRequestBody(body io.Reader, contentType, contentEncoding string, maxBytes int, sc *scanner.Scanner) ([]byte, BodyScanResult) {
+func scanRequestBody(ctx context.Context, body io.Reader, contentType, contentEncoding string, maxBytes int, sc *scanner.Scanner) ([]byte, BodyScanResult) {
 	// Content-Encoding check: compressed bodies evade DLP regex matching.
 	// Parse as comma-separated tokens (RFC 7231 section 3.1.2.2).
 	if hasNonIdentityEncoding(contentEncoding) {
@@ -97,7 +98,7 @@ func scanRequestBody(body io.Reader, contentType, contentEncoding string, maxByt
 
 	// Scan each extracted string individually (catches per-field encoded secrets).
 	for _, text := range texts {
-		result := sc.ScanTextForDLP(text)
+		result := sc.ScanTextForDLP(ctx, text)
 		if !result.Clean {
 			return buf, BodyScanResult{
 				Clean:      false,
@@ -112,7 +113,7 @@ func scanRequestBody(body io.Reader, contentType, contentEncoding string, maxByt
 	copy(sorted, texts)
 	sort.Strings(sorted)
 	joined := strings.Join(sorted, "\n")
-	result := sc.ScanTextForDLP(joined)
+	result := sc.ScanTextForDLP(ctx, joined)
 	if !result.Clean {
 		return buf, BodyScanResult{
 			Clean:      false,
@@ -316,7 +317,7 @@ func isNoisyHeaderName(name string) bool {
 // except the ignore list. Headers are scanned regardless of destination
 // (no allowlist skip) because agents can exfiltrate secrets in auth headers
 // to any host.
-func scanRequestHeaders(headers http.Header, cfg *config.Config, sc *scanner.Scanner) *BodyScanResult {
+func scanRequestHeaders(ctx context.Context, headers http.Header, cfg *config.Config, sc *scanner.Scanner) *BodyScanResult {
 	bodyCfg := cfg.RequestBodyScanning
 
 	// Build the set of headers to scan based on mode.
@@ -359,7 +360,7 @@ func scanRequestHeaders(headers http.Header, cfg *config.Config, sc *scanner.Sca
 		// header names like X-AKIA1234). No noisy prefix skip: agents
 		// (unlike browsers) control all header names, including Sec-*.
 		if bodyCfg.HeaderMode == config.HeaderModeAll {
-			result := sc.ScanTextForDLP(name)
+			result := sc.ScanTextForDLP(ctx, name)
 			if !result.Clean {
 				return &BodyScanResult{
 					Clean:      false,
@@ -374,7 +375,7 @@ func scanRequestHeaders(headers http.Header, cfg *config.Config, sc *scanner.Sca
 
 		for _, v := range values {
 			allValues = append(allValues, v)
-			result := sc.ScanTextForDLP(v)
+			result := sc.ScanTextForDLP(ctx, v)
 			if !result.Clean {
 				return &BodyScanResult{
 					Clean:      false,
@@ -386,7 +387,7 @@ func scanRequestHeaders(headers http.Header, cfg *config.Config, sc *scanner.Sca
 			// split across the header name:value boundary.
 			if bodyCfg.HeaderMode == config.HeaderModeAll {
 				combined := name + v
-				combinedResult := sc.ScanTextForDLP(combined)
+				combinedResult := sc.ScanTextForDLP(ctx, combined)
 				if !combinedResult.Clean {
 					return &BodyScanResult{
 						Clean:      false,
@@ -404,7 +405,7 @@ func scanRequestHeaders(headers http.Header, cfg *config.Config, sc *scanner.Sca
 	if len(allValues) > 1 {
 		sort.Strings(allValues)
 		joined := strings.Join(allValues, "\n")
-		result := sc.ScanTextForDLP(joined)
+		result := sc.ScanTextForDLP(ctx, joined)
 		if !result.Clean {
 			return &BodyScanResult{
 				Clean:      false,
@@ -421,13 +422,13 @@ func scanRequestHeaders(headers http.Header, cfg *config.Config, sc *scanner.Sca
 // Returns true if the request should be blocked (match found, action=block,
 // enforce enabled). The caller handles the response format (http.Error vs
 // writeJSON) since it differs between forward proxy and fetch handler.
-func (p *Proxy) evalHeaderDLP(headers http.Header, cfg *config.Config, sc *scanner.Scanner,
+func (p *Proxy) evalHeaderDLP(ctx context.Context, headers http.Header, cfg *config.Config, sc *scanner.Scanner,
 	logger *audit.Logger, method, url, hostname, clientIP, requestID, agent string, start time.Time,
 ) bool {
 	if !cfg.RequestBodyScanning.Enabled || !cfg.RequestBodyScanning.ScanHeaders {
 		return false
 	}
-	headerResult := scanRequestHeaders(headers, cfg, sc)
+	headerResult := scanRequestHeaders(ctx, headers, cfg, sc)
 	if headerResult == nil {
 		return false
 	}

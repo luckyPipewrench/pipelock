@@ -53,7 +53,7 @@ func BenchmarkParallel_ResponseScan(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			s.ScanResponse(content)
+			s.ScanResponse(context.Background(), content)
 		}
 	})
 }
@@ -66,7 +66,7 @@ func BenchmarkParallel_ResponseLarge(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			s.ScanResponse(content)
+			s.ScanResponse(context.Background(), content)
 		}
 	})
 }
@@ -192,7 +192,7 @@ func TestConcurrentThroughputScaling(t *testing.T) {
 				defer wg.Done()
 				var local int64
 				for time.Now().Before(deadline) {
-					sResp.ScanResponse(content)
+					sResp.ScanResponse(context.Background(), content)
 					local++
 				}
 				totalOps.Add(local)

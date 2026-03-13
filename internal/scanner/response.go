@@ -4,6 +4,7 @@
 package scanner
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
@@ -32,7 +33,17 @@ type ResponseMatch struct {
 // Zero-width Unicode characters are stripped before scanning to prevent
 // evasion via invisible character insertion.
 // For "strip" action, replaces matches with [REDACTED: PatternName].
-func (s *Scanner) ScanResponse(content string) ResponseScanResult {
+func (s *Scanner) ScanResponse(ctx context.Context, content string) ResponseScanResult {
+	// Fail-closed: if context is already canceled, block immediately.
+	if ctx != nil && ctx.Err() != nil {
+		return ResponseScanResult{
+			Clean: false,
+			Matches: []ResponseMatch{{
+				PatternName: "context_canceled",
+				MatchText:   ctx.Err().Error(),
+			}},
+		}
+	}
 	if !s.responseEnabled {
 		return ResponseScanResult{Clean: true}
 	}
@@ -92,6 +103,17 @@ func (s *Scanner) ScanResponse(content string) ResponseScanResult {
 	// tool arguments). Parallels ScanTextForDLP's encoding checks.
 	if len(matches) == 0 {
 		matches = s.matchDecodedResponse(content)
+	}
+
+	// Post-scan context check: if context expired during scanning, fail closed.
+	if ctx != nil && ctx.Err() != nil {
+		return ResponseScanResult{
+			Clean: false,
+			Matches: []ResponseMatch{{
+				PatternName: "context_canceled",
+				MatchText:   ctx.Err().Error(),
+			}},
+		}
 	}
 
 	if len(matches) == 0 {

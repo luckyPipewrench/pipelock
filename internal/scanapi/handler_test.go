@@ -690,6 +690,79 @@ func TestPolicyFindings_UnnamedMatch(t *testing.T) {
 	}
 }
 
+// TestHandler_URLSchemeValidation verifies that non-HTTP(S) URLs are rejected
+// at validation time with 400, not forwarded to the scanner for a 200/deny.
+func TestHandler_URLSchemeValidation(t *testing.T) {
+	h := newTestHandler(t)
+	tests := []struct {
+		name string
+		url  string
+		want int
+	}{
+		{"http allowed", "http://example.com", http.StatusOK},
+		{"https allowed", "https://example.com", http.StatusOK},
+		{"ftp rejected", "ftp://example.com/file", http.StatusBadRequest},
+		{"file rejected", "file:///etc/passwd", http.StatusBadRequest},
+		{"javascript rejected", "javascript:alert(1)", http.StatusBadRequest},
+		{"data rejected", "data:text/html,<h1>hi</h1>", http.StatusBadRequest},
+		{"no scheme rejected", "example.com", http.StatusBadRequest},
+		{"bare https scheme no host", "https://", http.StatusBadRequest},
+		{"bare http scheme no host", "http://", http.StatusBadRequest},
+		{"https with path but no host", "https:///path", http.StatusBadRequest},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := `{"kind":"url","input":{"url":"` + tt.url + `"}}`
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/scan", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+testToken)
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, req)
+			if w.Code != tt.want {
+				t.Errorf("URL %q: expected %d, got %d: %s", tt.url, tt.want, w.Code, w.Body.String())
+			}
+			if tt.want == http.StatusBadRequest {
+				var resp Response
+				_ = json.Unmarshal(w.Body.Bytes(), &resp)
+				if resp.Errors[0].Code != "invalid_input" {
+					t.Errorf("expected invalid_input error code, got %q", resp.Errors[0].Code)
+				}
+			}
+		})
+	}
+}
+
+// TestHandler_MetricsRecorded verifies Scan API Prometheus metrics are actually incremented.
+func TestHandler_MetricsRecorded(t *testing.T) {
+	h := newTestHandler(t)
+
+	body := `{"kind":"dlp","input":{"text":"safe text"}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/scan", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	// Gather all metrics and verify scan_api counters were incremented.
+	fams, err := h.metrics.Registry().Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	found := false
+	for _, fam := range fams {
+		if fam.GetName() == "pipelock_scan_api_requests_total" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected pipelock_scan_api_requests_total to be recorded")
+	}
+}
+
 // TestHandler_ValidateInput_URLFieldLimit exercises the URL length limit in validateInput.
 func TestHandler_ValidateInput_URLFieldLimit(t *testing.T) {
 	h := newTestHandler(t)

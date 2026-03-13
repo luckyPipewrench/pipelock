@@ -65,6 +65,11 @@ func (h *Handler) scanDLP(ctx context.Context, req *Request) (Response, int) {
 	}
 
 	result := h.scanner.ScanTextForDLP(ctx, req.Input.Text)
+
+	if err := ctx.Err(); err != nil {
+		return h.contextErrorResponse(req.Kind, err), h.contextErrorStatus(err)
+	}
+
 	resp := Response{
 		Status: StatusCompleted,
 		Kind:   req.Kind,
@@ -85,6 +90,11 @@ func (h *Handler) scanPromptInjection(ctx context.Context, req *Request) (Respon
 	}
 
 	result := h.scanner.ScanResponse(ctx, req.Input.Content)
+
+	if err := ctx.Err(); err != nil {
+		return h.contextErrorResponse(req.Kind, err), h.contextErrorStatus(err)
+	}
+
 	resp := Response{
 		Status: StatusCompleted,
 		Kind:   req.Kind,
@@ -123,12 +133,18 @@ func (h *Handler) scanToolCall(ctx context.Context, req *Request) (Response, int
 	// Stage 2: DLP + injection sub-scans (independent of tool policy).
 	if scanText != "" && h.cfg.MCPInputScanning.Enabled {
 		dlpResult := h.scanner.ScanTextForDLP(ctx, scanText)
+		if err := ctx.Err(); err != nil {
+			return h.contextErrorResponse(req.Kind, err), h.contextErrorStatus(err)
+		}
 		if !dlpResult.Clean {
 			resp.Decision = DecisionDeny
 			resp.Findings = append(resp.Findings, dlpFindings(dlpResult, req.Options)...)
 		}
 
 		injResult := h.scanner.ScanResponse(ctx, scanText)
+		if err := ctx.Err(); err != nil {
+			return h.contextErrorResponse(req.Kind, err), h.contextErrorStatus(err)
+		}
 		if !injResult.Clean {
 			resp.Decision = DecisionDeny
 			resp.Findings = append(resp.Findings, injectionFindings(injResult, req.Options)...)

@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strconv"
 	"sync"
 	"time"
 
@@ -101,6 +103,9 @@ func (h *Handler) SetKillSwitchFn(fn func() bool) {
 
 // ServeHTTP handles POST /api/v1/scan.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h.metrics.IncrScanAPIInflight()
+	defer h.metrics.DecrScanAPIInflight()
+
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
 		h.writeError(w, http.StatusMethodNotAllowed, "", "method_not_allowed", "Only POST is accepted", false)
@@ -187,10 +192,29 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	resp, status := h.executeScan(ctx, &req)
 
-	resp.DurationMS = time.Since(start).Milliseconds()
+	elapsed := time.Since(start)
+	resp.DurationMS = elapsed.Milliseconds()
 	resp.EngineVersion = h.version
 	if req.Context != nil && req.Context.RequestID != "" {
 		resp.RequestID = req.Context.RequestID
+	}
+
+	// Record Prometheus metrics.
+	h.metrics.ObserveScanAPIDuration(req.Kind, elapsed)
+	decision := resp.Decision
+	if decision == "" {
+		decision = StatusError
+	}
+	h.metrics.RecordScanAPIRequest(req.Kind, decision, strconv.Itoa(status))
+	for _, f := range resp.Findings {
+		h.metrics.RecordScanAPIFinding(req.Kind, f.Scanner, f.Severity)
+	}
+	if resp.Status == StatusError {
+		code := "unknown"
+		if len(resp.Errors) > 0 {
+			code = resp.Errors[0].Code
+		}
+		h.metrics.RecordScanAPIError(req.Kind, code)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -251,6 +275,12 @@ func (h *Handler) validateInput(kind string, input *Input) error {
 		if len(input.URL) > h.fieldLimit(h.cfg.ScanAPI.FieldLimits.URL, defaultURLLimit) {
 			return fmt.Errorf("input.url exceeds field limit")
 		}
+		// Full semantic validation: scheme must be http/https and host must be present.
+		// Rejects bare schemes ("https://"), non-HTTP schemes, and schemeless strings.
+		parsed, parseErr := url.Parse(input.URL)
+		if parseErr != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+			return fmt.Errorf("input.url must be a valid http:// or https:// URL with a host")
+		}
 	case KindDLP:
 		if input.Text == "" {
 			return fmt.Errorf("input.text is required for kind %q", KindDLP)
@@ -293,6 +323,9 @@ func extractBearerToken(r *http.Request) string {
 }
 
 func (h *Handler) writeError(w http.ResponseWriter, status int, kind, code, message string, retryable bool) {
+	h.metrics.RecordScanAPIError(kind, code)
+	h.metrics.RecordScanAPIRequest(kind, StatusError, strconv.Itoa(status))
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	resp := Response{

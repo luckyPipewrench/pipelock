@@ -78,6 +78,7 @@ type Scanner struct {
 	responseVowelFoldPatterns []*compiledPattern // vowel-folded variants for confusable vowel attacks
 	responseAction            string
 	responseEnabled           bool
+	subdomainExclusions       []string // domains excluded from subdomain entropy checks
 }
 
 type compiledPattern struct {
@@ -98,11 +99,12 @@ func New(cfg *config.Config) *Scanner {
 	}
 
 	s := &Scanner{
-		allowlist:        allowlist,
-		blocklist:        cfg.FetchProxy.Monitoring.Blocklist,
-		entropyThreshold: cfg.FetchProxy.Monitoring.EntropyThreshold,
-		entropyMinLen:    20,
-		maxURLLength:     cfg.FetchProxy.Monitoring.MaxURLLength,
+		allowlist:           allowlist,
+		blocklist:           cfg.FetchProxy.Monitoring.Blocklist,
+		entropyThreshold:    cfg.FetchProxy.Monitoring.EntropyThreshold,
+		entropyMinLen:       20,
+		maxURLLength:        cfg.FetchProxy.Monitoring.MaxURLLength,
+		subdomainExclusions: cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions,
 	}
 
 	// Initialize rate limiter if enabled
@@ -1333,6 +1335,8 @@ const subdomainMinLabelLen = 8
 // checkSubdomainEntropy flags hostnames where subdomain labels contain
 // high-entropy data, indicating base64/hex exfiltration via DNS queries.
 // Only checks hostnames with 3+ labels (at least one subdomain beyond base domain).
+// Excludes domains listed in subdomainExclusions (e.g., RunPod, cloud services
+// that use high-entropy subdomains for legitimate purposes).
 func (s *Scanner) checkSubdomainEntropy(hostname string) Result {
 	if s.entropyThreshold <= 0 {
 		return Result{Allowed: true}
@@ -1340,6 +1344,11 @@ func (s *Scanner) checkSubdomainEntropy(hostname string) Result {
 
 	// Skip IP addresses
 	if net.ParseIP(hostname) != nil {
+		return Result{Allowed: true}
+	}
+
+	// Skip domains on the exclusion list (exact match or wildcard suffix)
+	if s.isExcludedFromSubdomainEntropy(hostname) {
 		return Result{Allowed: true}
 	}
 
@@ -1365,6 +1374,36 @@ func (s *Scanner) checkSubdomainEntropy(hostname string) Result {
 	}
 
 	return Result{Allowed: true}
+}
+
+// isExcludedFromSubdomainEntropy checks if the hostname matches any exclusion
+// rule. Supports exact hostnames and wildcard prefixes (*.example.com matches
+// any subdomain of example.com, including example.com itself).
+// All comparisons are case-insensitive with trailing-dot normalization.
+func (s *Scanner) isExcludedFromSubdomainEntropy(hostname string) bool {
+	host := strings.ToLower(strings.TrimSuffix(hostname, "."))
+	for _, pattern := range s.subdomainExclusions {
+		// Defensive: patterns should already be normalized by config.Validate(),
+		// but we re-normalize here as defense-in-depth for security-sensitive matching.
+		p := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(pattern), "."))
+		if p == "" {
+			continue
+		}
+		// Wildcard prefix: *.example.com matches sub.example.com and example.com
+		if strings.HasPrefix(p, "*.") {
+			suffix := p[1:] // ".example.com"
+			base := p[2:]   // "example.com"
+			if host == base || strings.HasSuffix(host, suffix) {
+				return true
+			}
+			continue
+		}
+		// Exact match
+		if host == p {
+			return true
+		}
+	}
+	return false
 }
 
 // baseDomain returns the registrable domain (eTLD+1) for budget tracking,

@@ -29,6 +29,7 @@ const (
 	fieldKSAPIListen    = "kill_switch.api_listen"
 	fieldTLSPassthrough = "tls_interception.passthrough_domains"
 	fieldSentry         = "sentry"
+	fieldSubEntExcl     = "fetch_proxy.monitoring.subdomain_entropy_exclusions"
 
 	// testLicenseFileCfg is a minimal config with license_file pointing to a
 	// relative file name. Used in multiple license loading tests.
@@ -278,6 +279,147 @@ func TestValidate_EmptyBlocklistEntry(t *testing.T) {
 	cfg.FetchProxy.Monitoring.Blocklist = []string{"*.pastebin.com", ""}
 	if err := cfg.Validate(); err == nil {
 		t.Error("expected error for empty blocklist entry")
+	}
+}
+
+func TestValidate_SubdomainEntropyExclusions_Valid(t *testing.T) {
+	cfg := Defaults()
+	cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions = []string{
+		"*.runpod.net",
+		"trusted.example.com",
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("expected validation to pass, got: %v", err)
+	}
+}
+
+func TestValidate_SubdomainEntropyExclusions_Empty(t *testing.T) {
+	cfg := Defaults()
+	cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions = []string{"*.example.com", ""}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for empty subdomain_entropy_exclusions entry")
+	}
+}
+
+func TestValidate_SubdomainEntropyExclusions_URL(t *testing.T) {
+	cfg := Defaults()
+	cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions = []string{"https://example.com"}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for URL in subdomain_entropy_exclusions")
+	}
+	if !strings.Contains(err.Error(), "not a URL") {
+		t.Errorf("error should mention URL, got: %v", err)
+	}
+}
+
+func TestValidate_SubdomainEntropyExclusions_HostPort(t *testing.T) {
+	cfg := Defaults()
+	cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions = []string{"example.com:8080"}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for host:port in subdomain_entropy_exclusions")
+	}
+	if !strings.Contains(err.Error(), "not a URL or host:port") {
+		t.Errorf("error should mention host:port, got: %v", err)
+	}
+}
+
+func TestValidate_SubdomainEntropyExclusions_OverBroad(t *testing.T) {
+	cfg := Defaults()
+	cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions = []string{"*.com"}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for over-broad wildcard *.com")
+	}
+	if !strings.Contains(err.Error(), "concrete domain") {
+		t.Errorf("error should mention concrete domain, got: %v", err)
+	}
+}
+
+func TestValidate_SubdomainEntropyExclusions_BadWildcard(t *testing.T) {
+	cfg := Defaults()
+	cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions = []string{"example.*.com"}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for non-prefix wildcard")
+	}
+	if !strings.Contains(err.Error(), "only exact hosts") {
+		t.Errorf("error should mention supported formats, got: %v", err)
+	}
+}
+
+func TestValidate_SubdomainEntropyExclusions_Normalized(t *testing.T) {
+	cfg := Defaults()
+	cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions = []string{"  *.RunPod.NET  "}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected validation to pass, got: %v", err)
+	}
+	// After validation, entry should be lowercase and trimmed
+	if cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions[0] != "*.runpod.net" {
+		t.Errorf("expected normalized entry, got %q", cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions[0])
+	}
+}
+
+func TestValidate_SubdomainEntropyExclusions_TrailingDot(t *testing.T) {
+	cfg := Defaults()
+	cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions = []string{"*.runpod.net."}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected validation to pass, got: %v", err)
+	}
+	// After validation, trailing dot should be stripped
+	if cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions[0] != "*.runpod.net" {
+		t.Errorf("expected trailing dot stripped, got %q", cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions[0])
+	}
+}
+
+func TestValidateReload_SubdomainExclusionsExpanded(t *testing.T) {
+	old := Defaults()
+	old.FetchProxy.Monitoring.SubdomainEntropyExclusions = []string{"*.runpod.net"}
+	updated := Defaults()
+	updated.FetchProxy.Monitoring.SubdomainEntropyExclusions = []string{"*.runpod.net", "*.modal.run"}
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == fieldSubEntExcl {
+			found = true
+			if !strings.Contains(w.Message, "*.modal.run") {
+				t.Errorf("warning should name the added domain, got: %s", w.Message)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("expected warning when subdomain entropy exclusions are expanded")
+	}
+}
+
+func TestValidateReload_SubdomainExclusionsUnchanged_NoWarning(t *testing.T) {
+	old := Defaults()
+	old.FetchProxy.Monitoring.SubdomainEntropyExclusions = []string{"*.runpod.net"}
+	updated := Defaults()
+	updated.FetchProxy.Monitoring.SubdomainEntropyExclusions = []string{"*.runpod.net"}
+
+	warnings := ValidateReload(old, updated)
+	for _, w := range warnings {
+		if w.Field == fieldSubEntExcl {
+			t.Errorf("unexpected warning for unchanged exclusions: %s", w.Message)
+		}
+	}
+}
+
+func TestValidateReload_SubdomainExclusionsReduced_NoWarning(t *testing.T) {
+	old := Defaults()
+	old.FetchProxy.Monitoring.SubdomainEntropyExclusions = []string{"*.runpod.net", "*.modal.run"}
+	updated := Defaults()
+	updated.FetchProxy.Monitoring.SubdomainEntropyExclusions = []string{"*.runpod.net"}
+
+	warnings := ValidateReload(old, updated)
+	for _, w := range warnings {
+		if w.Field == fieldSubEntExcl {
+			t.Errorf("unexpected warning when exclusions are reduced: %s", w.Message)
+		}
 	}
 }
 

@@ -9,7 +9,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
@@ -17,9 +19,32 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
+// delayedCancelCtx returns nil from Err() for the first N calls, then returns
+// context.DeadlineExceeded. This exercises post-scan context checks: the scan
+// function's first ctx.Err() call passes (returns nil), but the second call
+// after the scan completes returns an error, triggering the fail-closed path.
+type delayedCancelCtx struct {
+	threshold int32 // Err() returns nil for calls 0..threshold-1
+	calls     atomic.Int32
+}
+
+func (c *delayedCancelCtx) Deadline() (time.Time, bool) { return time.Time{}, false }
+func (c *delayedCancelCtx) Done() <-chan struct{}       { return nil }
+func (c *delayedCancelCtx) Value(any) any               { return nil }
+
+func (c *delayedCancelCtx) Err() error {
+	n := c.calls.Add(1)
+	if n > c.threshold {
+		return context.DeadlineExceeded
+	}
+	return nil
+}
+
 const (
-	testToken   = "test-" + "scan-token"
-	testDLPSafe = `{"kind":"dlp","input":{"text":"safe"}}`
+	testToken       = "test-" + "scan-token"
+	testDLPSafe     = `{"kind":"dlp","input":{"text":"safe"}}`
+	testDLPHello    = `{"kind":"dlp","input":{"text":"hello"}}`
+	testDLPSafeText = `{"kind":"dlp","input":{"text":"safe text"}}`
 )
 
 func newTestHandler(t *testing.T) *Handler {
@@ -34,7 +59,7 @@ func newTestHandler(t *testing.T) *Handler {
 
 func TestHandler_MissingAuth(t *testing.T) {
 	h := newTestHandler(t)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/scan", strings.NewReader(`{"kind":"dlp","input":{"text":"hello"}}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/scan", strings.NewReader(testDLPHello))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
@@ -45,7 +70,7 @@ func TestHandler_MissingAuth(t *testing.T) {
 
 func TestHandler_InvalidAuth(t *testing.T) {
 	h := newTestHandler(t)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/scan", strings.NewReader(`{"kind":"dlp","input":{"text":"hello"}}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/scan", strings.NewReader(testDLPHello))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer wrong-token")
 	w := httptest.NewRecorder()
@@ -197,7 +222,7 @@ func TestHandler_ResponseEchoesRequestID(t *testing.T) {
 func TestHandler_KillSwitch(t *testing.T) {
 	h := newTestHandler(t)
 	h.SetKillSwitchFn(func() bool { return true })
-	body := `{"kind":"dlp","input":{"text":"hello"}}`
+	body := testDLPHello
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/scan", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+testToken)
@@ -219,7 +244,7 @@ func TestHandler_KillSwitch(t *testing.T) {
 func TestHandler_KindDisabled(t *testing.T) {
 	h := newTestHandler(t)
 	h.cfg.ScanAPI.Kinds.DLP = false
-	body := `{"kind":"dlp","input":{"text":"hello"}}`
+	body := testDLPHello
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/scan", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+testToken)
@@ -347,7 +372,7 @@ func TestHandler_ToolCallInputScanningDisabled(t *testing.T) {
 
 func TestHandler_ResponseInvariants(t *testing.T) {
 	h := newTestHandler(t)
-	body := `{"kind":"dlp","input":{"text":"safe text"}}`
+	body := testDLPSafeText
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/scan", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+testToken)
@@ -460,8 +485,8 @@ func TestContextTimeout(t *testing.T) {
 	if len(resp.Errors) == 0 {
 		t.Fatal("expected at least one error")
 	}
-	if resp.Errors[0].Code != "scan_deadline_exceeded" {
-		t.Errorf("expected scan_deadline_exceeded, got %q", resp.Errors[0].Code)
+	if resp.Errors[0].Code != errorCodeScanDeadlineExceeded {
+		t.Errorf("expected %s, got %q", errorCodeScanDeadlineExceeded, resp.Errors[0].Code)
 	}
 	if !resp.Errors[0].Retryable {
 		t.Error("deadline exceeded should be retryable")
@@ -736,7 +761,7 @@ func TestHandler_URLSchemeValidation(t *testing.T) {
 func TestHandler_MetricsRecorded(t *testing.T) {
 	h := newTestHandler(t)
 
-	body := `{"kind":"dlp","input":{"text":"safe text"}}`
+	body := testDLPSafeText
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/scan", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+testToken)
@@ -842,5 +867,350 @@ func TestHandler_ValidateInput_ArgumentsFieldLimit(t *testing.T) {
 	h.ServeHTTP(w, req)
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 for oversized arguments, got %d", w.Code)
+	}
+}
+
+// TestHandler_TrailingText rejects valid JSON followed by non-JSON trailing text.
+func TestHandler_TrailingText(t *testing.T) {
+	h := newTestHandler(t)
+	body := `{"kind":"dlp","input":{"text":"safe"}}extra trailing text`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/scan", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for trailing text, got %d", w.Code)
+	}
+	var resp Response
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if len(resp.Errors) == 0 || resp.Errors[0].Code != "invalid_json" {
+		t.Errorf("expected invalid_json error code, got %v", resp.Errors)
+	}
+}
+
+// TestHandler_InvalidKindMetricsNormalized_VerifyUnknownLabel ensures the "unknown" label
+// is used for metrics when an invalid kind is sent, preventing unbounded cardinality.
+func TestHandler_InvalidKindMetricsNormalized_VerifyUnknownLabel(t *testing.T) {
+	h := newTestHandler(t)
+	body := `{"kind":"xss_attack_vector_2024","input":{"text":"test"}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/scan", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+
+	// Verify the metrics used "unknown" as the kind label, not the raw input.
+	fams, err := h.metrics.Registry().Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	for _, fam := range fams {
+		if fam.GetName() == "pipelock_scan_api_errors_total" {
+			for _, metric := range fam.GetMetric() {
+				for _, label := range metric.GetLabel() {
+					if label.GetName() == "kind" && label.GetValue() == "xss_attack_vector_2024" {
+						t.Error("raw invalid kind leaked into metrics label; expected 'unknown'")
+					}
+					if label.GetName() == "kind" && label.GetValue() == "unknown" {
+						return // found the normalized label
+					}
+				}
+			}
+		}
+	}
+	t.Error("expected kind='unknown' label in pipelock_scan_api_errors_total metric")
+}
+
+// TestHandler_MetricsRecorded_AssertCounterValue verifies the scan_api request counter
+// has a value > 0 after a successful request, not just that the metric family exists.
+func TestHandler_MetricsRecorded_AssertCounterValue(t *testing.T) {
+	h := newTestHandler(t)
+
+	body := testDLPSafeText
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/scan", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	fams, err := h.metrics.Registry().Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	for _, fam := range fams {
+		if fam.GetName() == "pipelock_scan_api_requests_total" {
+			for _, metric := range fam.GetMetric() {
+				if metric.GetCounter().GetValue() > 0 {
+					return // found a counter > 0
+				}
+			}
+			t.Error("pipelock_scan_api_requests_total exists but all counters are 0")
+			return
+		}
+	}
+	t.Error("pipelock_scan_api_requests_total not found")
+}
+
+// TestHandler_RateLimiting_RetryAfterHeader verifies the Retry-After header is set on 429.
+func TestHandler_RateLimiting_RetryAfterHeader(t *testing.T) {
+	h := newTestHandler(t)
+	h.cfg.ScanAPI.RateLimit.RequestsPerMinute = 1
+	h.cfg.ScanAPI.RateLimit.Burst = 1
+
+	body := testDLPSafe
+
+	// First request succeeds and consumes the token.
+	req1 := httptest.NewRequest(http.MethodPost, "/api/v1/scan", strings.NewReader(body))
+	req1.Header.Set("Content-Type", "application/json")
+	req1.Header.Set("Authorization", "Bearer "+testToken)
+	w1 := httptest.NewRecorder()
+	h.ServeHTTP(w1, req1)
+	if w1.Code != http.StatusOK {
+		t.Fatalf("first request: expected 200, got %d", w1.Code)
+	}
+
+	// Second request is rate limited.
+	req2 := httptest.NewRequest(http.MethodPost, "/api/v1/scan", strings.NewReader(body))
+	req2.Header.Set("Content-Type", "application/json")
+	req2.Header.Set("Authorization", "Bearer "+testToken)
+	w2 := httptest.NewRecorder()
+	h.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusTooManyRequests {
+		t.Errorf("expected 429, got %d", w2.Code)
+	}
+	if retryAfter := w2.Header().Get("Retry-After"); retryAfter != "1" {
+		t.Errorf("expected Retry-After=1, got %q", retryAfter)
+	}
+	var resp Response
+	_ = json.Unmarshal(w2.Body.Bytes(), &resp)
+	if len(resp.Errors) == 0 || resp.Errors[0].Code != "rate_limited" {
+		t.Errorf("expected rate_limited error code, got %v", resp.Errors)
+	}
+	if !resp.Errors[0].Retryable {
+		t.Error("rate limit errors should be retryable")
+	}
+}
+
+// TestHandler_KillSwitch_Metrics verifies kill switch denial records a scan API error metric.
+func TestHandler_KillSwitch_Metrics(t *testing.T) {
+	h := newTestHandler(t)
+	h.SetKillSwitchFn(func() bool { return true })
+	body := testDLPHello
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/scan", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503, got %d", w.Code)
+	}
+
+	// Verify the error metric was recorded.
+	fams, err := h.metrics.Registry().Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	found := false
+	for _, fam := range fams {
+		if fam.GetName() == "pipelock_scan_api_errors_total" {
+			for _, metric := range fam.GetMetric() {
+				if metric.GetCounter().GetValue() > 0 {
+					found = true
+				}
+			}
+		}
+	}
+	if !found {
+		t.Error("expected pipelock_scan_api_errors_total > 0 after kill switch denial")
+	}
+}
+
+// TestHandler_KindDisabled_AllKinds exercises kindEnabled returning false for each kind type.
+func TestHandler_KindDisabled_AllKinds(t *testing.T) {
+	tests := []struct {
+		name string
+		kind string
+		body string
+		// The disable function mutates cfg to disable this kind.
+		disable func(h *Handler)
+	}{
+		{
+			name: "url disabled",
+			kind: KindURL,
+			body: `{"kind":"url","input":{"url":"https://example.com"}}`,
+			disable: func(h *Handler) {
+				h.cfg.ScanAPI.Kinds.URL = false
+			},
+		},
+		{
+			name: "prompt_injection disabled",
+			kind: KindPromptInjection,
+			body: `{"kind":"prompt_injection","input":{"content":"test content"}}`,
+			disable: func(h *Handler) {
+				h.cfg.ScanAPI.Kinds.PromptInjection = false
+			},
+		},
+		{
+			name: "tool_call disabled",
+			kind: KindToolCall,
+			body: `{"kind":"tool_call","input":{"tool_name":"bash"}}`,
+			disable: func(h *Handler) {
+				h.cfg.ScanAPI.Kinds.ToolCall = false
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newTestHandler(t)
+			tt.disable(h)
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/scan", strings.NewReader(tt.body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+testToken)
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, req)
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("expected 400 for disabled %s kind, got %d", tt.kind, w.Code)
+			}
+			var resp Response
+			_ = json.Unmarshal(w.Body.Bytes(), &resp)
+			if resp.Errors[0].Code != "kind_disabled" {
+				t.Errorf("expected kind_disabled error code, got %q", resp.Errors[0].Code)
+			}
+		})
+	}
+}
+
+// TestHandler_BodyTooLarge verifies oversized request bodies are rejected.
+func TestHandler_BodyTooLarge(t *testing.T) {
+	h := newTestHandler(t)
+	h.cfg.ScanAPI.MaxBodyBytes = 50 // very small limit
+	bigBody := `{"kind":"dlp","input":{"text":"` + strings.Repeat("x", 100) + `"}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/scan", strings.NewReader(bigBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for body too large, got %d", w.Code)
+	}
+	var resp Response
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp.Errors[0].Code != "body_too_large" {
+		t.Errorf("expected body_too_large error code, got %q", resp.Errors[0].Code)
+	}
+}
+
+// TestHandler_ContextTimeout_PostScan exercises the post-scan context timeout paths
+// in all four scan kinds. Uses delayedCancelCtx to pass the pre-scan check
+// (first Err() call returns nil) but fail on the post-scan check (second
+// Err() call returns DeadlineExceeded).
+func TestHandler_ContextTimeout_PostScan(t *testing.T) {
+	tests := []struct {
+		name      string
+		req       *Request
+		threshold int32 // how many Err() calls return nil before failing
+	}{
+		{
+			// scanner.Scan() calls ctx.Err() 3 times internally (line 302, 412, 394),
+			// plus 1 pre-scan check = 4 calls before post-scan check.
+			name:      "url post-scan timeout",
+			req:       &Request{Kind: KindURL, Input: Input{URL: "https://example.com"}},
+			threshold: 4,
+		},
+		{
+			// ScanTextForDLP doesn't call ctx.Err(), so only 1 pre-scan call.
+			name:      "dlp post-scan timeout",
+			req:       &Request{Kind: KindDLP, Input: Input{Text: "hello"}},
+			threshold: 1,
+		},
+		{
+			// ScanResponse calls ctx.Err() at pre-scan (line 38) and post-scan
+			// (line 109) internally. Total: 1 (scan.go:88) + 2 (response.go) = 3
+			// calls before scan.go:94.
+			name:      "prompt_injection post-scan timeout",
+			req:       &Request{Kind: KindPromptInjection, Input: Input{Content: "hello"}},
+			threshold: 3,
+		},
+		{
+			// scanToolCall pre-scan is the only ctx.Err() call when input
+			// scanning is disabled. threshold=0 means the first call fails.
+			name:      "tool_call pre-scan timeout",
+			req:       &Request{Kind: KindToolCall, Input: Input{ToolName: "test"}},
+			threshold: 0,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newTestHandler(t)
+			ctx := &delayedCancelCtx{threshold: tt.threshold}
+
+			resp, status := h.executeScan(ctx, tt.req)
+			if status != http.StatusServiceUnavailable {
+				t.Errorf("expected 503 for deadline exceeded, got %d", status)
+			}
+			if resp.Status != StatusError {
+				t.Errorf("expected status=error, got %q", resp.Status)
+			}
+			if len(resp.Errors) == 0 {
+				t.Fatal("expected at least one error")
+			}
+			if resp.Errors[0].Code != errorCodeScanDeadlineExceeded {
+				t.Errorf("expected %s, got %q", errorCodeScanDeadlineExceeded, resp.Errors[0].Code)
+			}
+		})
+	}
+}
+
+// TestHandler_ContextTimeout_ToolCallDLPPostScan exercises the post-DLP context
+// check in scanToolCall (scan.go line ~136-138). The context is valid for the
+// pre-scan check and the DLP scan but fails on the post-DLP check.
+func TestHandler_ContextTimeout_ToolCallDLPPostScan(t *testing.T) {
+	h := newTestHandler(t)
+	h.cfg.MCPInputScanning.Enabled = true
+	// Flow: #1 pre-scan (scan.go:113), ScanTextForDLP has no ctx.Err() calls,
+	// #2 post-DLP (scan.go:136). threshold=1 passes #1, fails at #2.
+	ctx := &delayedCancelCtx{threshold: 1}
+	req := &Request{
+		Kind:  KindToolCall,
+		Input: Input{ToolName: "test", Arguments: RawJSON(`{"key":"value"}`)},
+	}
+	resp, status := h.executeScan(ctx, req)
+	if status != http.StatusServiceUnavailable {
+		t.Errorf("expected 503, got %d", status)
+	}
+	if resp.Status != StatusError {
+		t.Errorf("expected status=error, got %q", resp.Status)
+	}
+}
+
+// TestHandler_ContextTimeout_ToolCallInjPostScan exercises the post-injection
+// context check in scanToolCall (scan.go line ~145-147).
+func TestHandler_ContextTimeout_ToolCallInjPostScan(t *testing.T) {
+	h := newTestHandler(t)
+	h.cfg.MCPInputScanning.Enabled = true
+	// Flow: #1 pre-scan (scan.go:113), ScanTextForDLP no ctx.Err calls,
+	// #2 post-DLP (scan.go:136), ScanResponse calls ctx.Err() at
+	// response.go:38 (#3) and response.go:109 (#4).
+	// #5 post-injection (scan.go:145). threshold=4 passes #1-#4, fails at #5.
+	ctx := &delayedCancelCtx{threshold: 4}
+	req := &Request{
+		Kind:  KindToolCall,
+		Input: Input{ToolName: "test", Arguments: RawJSON(`{"key":"value"}`)},
+	}
+	resp, status := h.executeScan(ctx, req)
+	if status != http.StatusServiceUnavailable {
+		t.Errorf("expected 503, got %d", status)
+	}
+	if resp.Status != StatusError {
+		t.Errorf("expected status=error, got %q", resp.Status)
 	}
 }

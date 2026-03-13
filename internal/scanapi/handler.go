@@ -44,6 +44,12 @@ const (
 	StatusError     = "error"
 )
 
+// Error codes used in API error responses and metrics labels.
+const (
+	errorCodeUnknown              = "unknown"
+	errorCodeScanDeadlineExceeded = "scan_deadline_exceeded"
+)
+
 // validKinds defines the accepted scan kind values.
 var validKinds = map[string]bool{
 	KindURL:             true,
@@ -216,7 +222,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.metrics.RecordScanAPIFinding(req.Kind, f.Scanner, f.Severity)
 	}
 	if resp.Status == StatusError {
-		code := "unknown"
+		code := errorCodeUnknown
 		if len(resp.Errors) > 0 {
 			code = resp.Errors[0].Code
 		}
@@ -332,7 +338,7 @@ func (h *Handler) writeError(w http.ResponseWriter, status int, kind, code, mess
 	// Normalize invalid kind to prevent unbounded Prometheus label cardinality.
 	metricKind := kind
 	if metricKind != "" && !validKinds[metricKind] {
-		metricKind = "unknown"
+		metricKind = errorCodeUnknown
 	}
 	h.metrics.RecordScanAPIError(metricKind, code)
 	h.metrics.RecordScanAPIRequest(metricKind, StatusError, strconv.Itoa(status))

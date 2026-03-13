@@ -5588,6 +5588,59 @@ func TestScanAPIConfig_Validate(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "invalid write timeout rejected",
+			cfg: ScanAPI{
+				Listen:   "127.0.0.1:9191",
+				Auth:     ScanAPIAuth{BearerTokens: []string{"t"}},
+				Timeouts: ScanAPITimeouts{Write: "not-valid"},
+			},
+			wantErr: true,
+		},
+		{
+			name: "zero write timeout rejected",
+			cfg: ScanAPI{
+				Listen:   "127.0.0.1:9191",
+				Auth:     ScanAPIAuth{BearerTokens: []string{"t"}},
+				Timeouts: ScanAPITimeouts{Write: "0s"},
+			},
+			wantErr: true,
+		},
+		{
+			name: "negative write timeout rejected",
+			cfg: ScanAPI{
+				Listen:   "127.0.0.1:9191",
+				Auth:     ScanAPIAuth{BearerTokens: []string{"t"}},
+				Timeouts: ScanAPITimeouts{Write: "-1s"},
+			},
+			wantErr: true,
+		},
+		{
+			name: "valid positive timeouts accepted",
+			cfg: ScanAPI{
+				Listen:   "127.0.0.1:9191",
+				Auth:     ScanAPIAuth{BearerTokens: []string{"t"}},
+				Timeouts: ScanAPITimeouts{Scan: "5s", Read: "2s", Write: "2s"},
+			},
+		},
+		{
+			name: "negative connection limit rejected",
+			cfg: ScanAPI{
+				Listen:          "127.0.0.1:9191",
+				Auth:            ScanAPIAuth{BearerTokens: []string{"t"}},
+				ConnectionLimit: -1,
+			},
+			wantErr: true,
+		},
+		{
+			name: "negative max body bytes rejected",
+			cfg: ScanAPI{
+				Listen:       "127.0.0.1:9191",
+				Auth:         ScanAPIAuth{BearerTokens: []string{"t"}},
+				MaxBodyBytes: -1,
+			},
+			wantErr: true,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

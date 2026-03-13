@@ -170,7 +170,7 @@ func (h *Handler) contextErrorResponse(kind string, err error) Response {
 	retryable := false
 
 	if errors.Is(err, context.DeadlineExceeded) {
-		code = "scan_deadline_exceeded"
+		code = errorCodeScanDeadlineExceeded
 		message = "Scan timed out"
 		retryable = true
 	} else if errors.Is(err, context.Canceled) {

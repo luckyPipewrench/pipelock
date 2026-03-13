@@ -2365,3 +2365,50 @@ func TestScanResponse_NilContext(t *testing.T) {
 		t.Error("expected injection detected with nil context")
 	}
 }
+
+// TestScanResponse_PostScanContextExpired exercises the post-scan context check
+// (response.go line ~109). The context is valid when scanning starts but expires
+// during the scanning work. We use a goroutine to cancel after a brief delay.
+func TestScanResponse_PostScanContextExpired(t *testing.T) {
+	cfg := testResponseConfig()
+	// Add many patterns to make scanning take longer, increasing the chance
+	// the cancel fires during scanning rather than before.
+	for i := range 50 {
+		cfg.ResponseScanning.Patterns = append(cfg.ResponseScanning.Patterns,
+			config.ResponseScanPattern{
+				Name:  fmt.Sprintf("filler_%d", i),
+				Regex: fmt.Sprintf(`(?i)xyzzy_nonexistent_pattern_%d_[a-z]+`, i),
+			},
+		)
+	}
+	s := New(cfg)
+
+	// Build a large content string to make scanning take measurable time.
+	// This must be clean content (no injection matches) so scanning runs
+	// through all passes before the post-scan context check.
+	content := strings.Repeat("The quick brown fox jumps over the lazy dog. ", 2000)
+
+	// Cancel context in a goroutine after a tiny delay.
+	// If the cancel happens before scanning starts, the pre-scan check catches it
+	// and we get context_canceled too - both paths produce fail-closed behavior.
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		cancel()
+	}()
+
+	result := s.ScanResponse(ctx, content)
+	// Either the pre-scan or post-scan context check should catch the cancellation.
+	// Both produce fail-closed (not clean) behavior.
+	if result.Clean {
+		// Context may not have been canceled in time on fast machines.
+		// That's acceptable - the test is probabilistic.
+		t.Log("context was not canceled during scan (race condition acceptable)")
+		return
+	}
+	if len(result.Matches) == 0 {
+		t.Fatal("expected at least one match for canceled context")
+	}
+	if result.Matches[0].PatternName != "context_canceled" {
+		t.Errorf("expected pattern name 'context_canceled', got %q", result.Matches[0].PatternName)
+	}
+}

@@ -67,7 +67,7 @@ func (e *EmailSender) SendLicenseDelivery(ctx context.Context, to, licenseToken,
 <p>Your license token (add this to your pipelock config as <code>license_key</code>):</p>
 <pre style="background:#f4f4f4;padding:16px;border-radius:4px;overflow-x:auto;font-size:13px;">%s</pre>
 <p>This token is valid for 45 days and will be automatically refreshed before expiration.</p>
-<p>Setup guide: <a href="https://pipelock.dev/docs/guides/license-setup">pipelock.dev/docs/guides/license-setup</a></p>
+<p>Setup guide: <a href="https://pipelab.org/pipelock/guides/license-setup/">pipelab.org/pipelock/guides/license-setup</a></p>
 <p>Questions? Reply to this email.</p>`,
 		tier, licenseToken)
 
@@ -83,7 +83,7 @@ func (e *EmailSender) SendSubscriptionEnded(ctx context.Context, to string, expi
 <p>Your current license token remains valid until <strong>%s</strong>.
 After that date, enterprise features will be disabled but Pipelock's
 core security scanning continues to work.</p>
-<p>To resubscribe: <a href="https://pipelock.dev/pricing">pipelock.dev/pricing</a></p>`,
+<p>To resubscribe: <a href="https://pipelab.org/pricing/">pipelab.org/pricing</a></p>`,
 		expiresAt.UTC().Format("January 2, 2006"))
 
 	return e.send(ctx, to, subject, html)

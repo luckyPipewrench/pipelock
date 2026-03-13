@@ -9,9 +9,12 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -372,12 +375,12 @@ func TestCheckFoundingCap_CapReached(t *testing.T) {
 		t.Fatalf("checkFoundingCap: %v", err)
 	}
 
-	// Should be downgraded to pro.
-	if ent.Tier != tierPro {
-		t.Errorf("Tier = %q, want %q (should be downgraded)", ent.Tier, tierPro)
+	// Should preserve founding_pro — customer paid the founding price.
+	if ent.Tier != tierFoundingPro {
+		t.Errorf("Tier = %q, want %q (paid checkout honored)", ent.Tier, tierFoundingPro)
 	}
-	if ent.Founding {
-		t.Error("Founding should be false after cap downgrade")
+	if !ent.Founding {
+		t.Error("Founding should remain true (paid checkout honored)")
 	}
 }
 
@@ -395,11 +398,12 @@ func TestCheckFoundingCap_DeadlinePassed(t *testing.T) {
 		t.Fatalf("checkFoundingCap: %v", err)
 	}
 
-	if ent.Tier != tierPro {
-		t.Errorf("Tier = %q, want %q (deadline passed)", ent.Tier, tierPro)
+	// Should preserve founding_pro — customer paid the founding price.
+	if ent.Tier != tierFoundingPro {
+		t.Errorf("Tier = %q, want %q (paid checkout honored despite deadline)", ent.Tier, tierFoundingPro)
 	}
-	if ent.Founding {
-		t.Error("Founding should be false after deadline")
+	if !ent.Founding {
+		t.Error("Founding should remain true (paid checkout honored)")
 	}
 }
 
@@ -460,12 +464,14 @@ func TestCheckFoundingCap_ProductChangeCantReopenSlot(t *testing.T) {
 		t.Fatalf("checkFoundingCap: %v", err)
 	}
 
-	// Should be downgraded because the slot is still reserved (count=1, cap=1).
-	if ent.Tier != tierPro {
-		t.Errorf("Tier = %q, want %q (slot should not reopen)", ent.Tier, tierPro)
+	// Should preserve founding_pro — customer paid the founding price.
+	// The slot is over cap but the checkout is honored; archiving the
+	// Polar product is the real enforcement.
+	if ent.Tier != tierFoundingPro {
+		t.Errorf("Tier = %q, want %q (paid checkout honored despite cap)", ent.Tier, tierFoundingPro)
 	}
-	if ent.Founding {
-		t.Error("Founding should be false (slot not available)")
+	if !ent.Founding {
+		t.Error("Founding should remain true (paid checkout honored)")
 	}
 }
 
@@ -1267,6 +1273,79 @@ func TestProcessSubscription_EndedEmailFailure(t *testing.T) {
 	}
 }
 
+func TestProcessSubscription_EndedPreservesLicenseFields(t *testing.T) {
+	ts := newTestSetup(t)
+	ctx := t.Context()
+
+	// Pre-insert an entitlement with full license state.
+	now := time.Now().UTC()
+	expires := now.Add(45 * 24 * time.Hour)
+	periodEnd := time.Date(2026, 4, 12, 0, 0, 0, 0, time.UTC)
+	existing := testEntitlement(testSubscriptionID)
+	existing.LastLicenseID = testLicenseIDOld
+	existing.LastLicenseIssuedAt = &now
+	existing.LastLicenseExpiresAt = &expires
+	existing.LastLicensePeriodEnd = &periodEnd
+	existing.LastLicenseTier = tierPro
+	existing.LastLicenseInterval = testIntervalMonth
+	existing.LastLicenseProductID = testProductID
+	existing.LastDeliveryStatus = testDeliveryStatusSent
+	existing.LastDeliveryAttemptAt = &now
+	if err := ts.db.Upsert(ctx, existing); err != nil {
+		t.Fatalf("Upsert existing: %v", err)
+	}
+
+	ts.handler.email = &EmailSender{
+		apiKey:    "re_" + "test_key",
+		fromEmail: "test@example.com",
+		client:    ts.emailSrv.Client(),
+		apiURL:    ts.emailSrv.URL,
+	}
+
+	sub := &PolarSubscription{
+		ID:                testSubscriptionID,
+		Status:            "canceled",
+		RecurringInterval: testIntervalMonth,
+		CurrentPeriodEnd:  periodEnd,
+	}
+	sub.Customer.Email = testCustomerEmail
+	sub.Customer.Metadata = map[string]string{}
+	sub.Product.ID = testProductID
+	sub.Product.Name = testProductName
+	sub.Product.Metadata = map[string]string{"pipelock_tier": "pro"}
+
+	if err := ts.handler.processSubscription(ctx, sub); err != nil {
+		t.Fatalf("processSubscription: %v", err)
+	}
+
+	ent, err := ts.db.GetBySubscriptionID(ctx, testSubscriptionID)
+	if err != nil {
+		t.Fatalf("GetBySubscriptionID: %v", err)
+	}
+
+	// Verify cancellation was recorded.
+	if ent.Status != testStatusCanceled {
+		t.Errorf("Status = %q, want %q", ent.Status, testStatusCanceled)
+	}
+
+	// Verify LastLicense* fields survived the upsert.
+	if ent.LastLicenseID != testLicenseIDOld {
+		t.Errorf("LastLicenseID = %q, want %q", ent.LastLicenseID, testLicenseIDOld)
+	}
+	if ent.LastLicenseIssuedAt == nil {
+		t.Error("LastLicenseIssuedAt is nil, want non-nil")
+	}
+	if ent.LastLicenseExpiresAt == nil {
+		t.Error("LastLicenseExpiresAt is nil, want non-nil")
+	}
+	if ent.LastLicenseTier != tierPro {
+		t.Errorf("LastLicenseTier = %q, want %q", ent.LastLicenseTier, tierPro)
+	}
+	if ent.LastDeliveryStatus != testDeliveryStatusSent {
+		t.Errorf("LastDeliveryStatus = %q, want %q", ent.LastDeliveryStatus, testDeliveryStatusSent)
+	}
+}
+
 func TestNewWebhookHandler_DBError(t *testing.T) {
 	db := openTestDB(t)
 	ledger, _ := openTestLedger(t)
@@ -1398,5 +1477,151 @@ func TestProcessSubscription_UnpaidStatus(t *testing.T) {
 	}
 	if ent.Status != "unpaid" {
 		t.Errorf("Status = %q, want %q", ent.Status, "unpaid")
+	}
+}
+
+func TestProcessSubscription_LicenseTierAndSubscriptionIDPopulated(t *testing.T) {
+	ts := newTestSetup(t)
+	ctx := t.Context()
+
+	// Capture the email request body to extract the minted token.
+	var capturedBody []byte
+	emailSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_test789"}`))
+	}))
+	t.Cleanup(emailSrv.Close)
+
+	sub := &PolarSubscription{
+		ID:                "sub_tier_check",
+		Status:            "active",
+		RecurringInterval: testIntervalMonth,
+		CurrentPeriodEnd:  time.Date(2026, 4, 12, 0, 0, 0, 0, time.UTC),
+	}
+	sub.Customer.Email = testCustomerEmail
+	sub.Customer.Metadata = map[string]string{"org": "tiercorp"}
+	sub.Product.ID = testProductID
+	sub.Product.Name = testProductName
+	sub.Product.Metadata = map[string]string{"pipelock_tier": "pro"}
+
+	ts.handler.email = &EmailSender{
+		apiKey:    "re_" + "test_key",
+		fromEmail: "test@example.com",
+		client:    emailSrv.Client(),
+		apiURL:    emailSrv.URL,
+	}
+
+	if err := ts.handler.processSubscription(ctx, sub); err != nil {
+		t.Fatalf("processSubscription: %v", err)
+	}
+
+	ent, err := ts.db.GetBySubscriptionID(ctx, "sub_tier_check")
+	if err != nil {
+		t.Fatalf("GetBySubscriptionID: %v", err)
+	}
+	if ent.LastLicenseID == "" {
+		t.Fatal("no license issued")
+	}
+	if ent.LastLicenseTier != tierPro {
+		t.Errorf("LastLicenseTier = %q, want %q", ent.LastLicenseTier, tierPro)
+	}
+
+	// Decode the actual minted token from the email body to verify
+	// Tier and SubscriptionID are populated in the signed payload.
+	var emailReq resendRequest
+	if err := json.Unmarshal(capturedBody, &emailReq); err != nil {
+		t.Fatalf("unmarshal email request: %v", err)
+	}
+
+	// Extract token from HTML: it's between <pre ...> and </pre>.
+	html := emailReq.HTML
+	preStart := strings.Index(html, "<pre")
+	preEnd := strings.Index(html, "</pre>")
+	if preStart < 0 || preEnd < 0 {
+		t.Fatal("could not find token in email HTML")
+	}
+	// Find the closing > of the <pre> opening tag.
+	tokenStart := strings.Index(html[preStart:], ">") + preStart + 1
+	token := html[tokenStart:preEnd]
+
+	decoded, err := license.Decode(token)
+	if err != nil {
+		t.Fatalf("decode minted token: %v", err)
+	}
+	if decoded.Tier != tierPro {
+		t.Errorf("token Tier = %q, want %q", decoded.Tier, tierPro)
+	}
+	if decoded.SubscriptionID != "sub_tier_check" {
+		t.Errorf("token SubscriptionID = %q, want %q", decoded.SubscriptionID, "sub_tier_check")
+	}
+}
+
+func TestProcessSubscription_ConcurrentCallsOnlyMintOnce(t *testing.T) {
+	ts := newTestSetup(t)
+	ctx := t.Context()
+
+	// Count email sends to prove single-mint under concurrent calls.
+	var emailCount atomic.Int32
+	emailSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		emailCount.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_test789"}`))
+	}))
+	t.Cleanup(emailSrv.Close)
+
+	ts.handler.email = &EmailSender{
+		apiKey:    "re_" + "test_key",
+		fromEmail: "test@example.com",
+		client:    emailSrv.Client(),
+		apiURL:    emailSrv.URL,
+	}
+
+	sub := &PolarSubscription{
+		ID:                "sub_concurrent",
+		Status:            "active",
+		RecurringInterval: testIntervalMonth,
+		CurrentPeriodEnd:  time.Date(2026, 4, 12, 0, 0, 0, 0, time.UTC),
+	}
+	sub.Customer.Email = testCustomerEmail
+	sub.Customer.Metadata = map[string]string{"org": "concorp"}
+	sub.Product.ID = testProductID
+	sub.Product.Name = testProductName
+	sub.Product.Metadata = map[string]string{"pipelock_tier": "pro"}
+
+	// Run two concurrent processSubscription calls for the same subscription.
+	errs := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			errs <- ts.handler.processSubscription(ctx, sub)
+		}()
+	}
+
+	for i := 0; i < 2; i++ {
+		if err := <-errs; err != nil {
+			t.Fatalf("concurrent processSubscription[%d]: %v", i, err)
+		}
+	}
+
+	// Verify only one license ID exists (second call should be idempotent).
+	ent, err := ts.db.GetBySubscriptionID(ctx, "sub_concurrent")
+	if err != nil {
+		t.Fatalf("GetBySubscriptionID: %v", err)
+	}
+	if ent == nil {
+		t.Fatal("entitlement not found")
+	}
+	if ent.LastLicenseID == "" {
+		t.Error("expected a license to be issued")
+	}
+	// The mutex ensures the second call sees the first call's result and
+	// takes the idempotent path (no double-mint).
+	if ent.LastDeliveryStatus != testDeliveryStatusSent {
+		t.Errorf("delivery status = %q, want %q", ent.LastDeliveryStatus, testDeliveryStatusSent)
+	}
+	// Email send count proves single-mint: the first call mints + sends,
+	// the second call hits the idempotent path and skips minting entirely.
+	if got := emailCount.Load(); got != 1 {
+		t.Errorf("email send count = %d, want 1 (single mint)", got)
 	}
 }

@@ -31,7 +31,7 @@ func TestScanResponse_MarshalClean(t *testing.T) {
 		Decision:      "allow",
 		Kind:          "url",
 		ScanID:        "scan-abc123",
-		EngineVersion: "1.2.0",
+		EngineVersion: "1.3.0",
 		DurationMS:    12,
 	}
 	// Findings should be omitted when nil

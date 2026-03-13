@@ -495,8 +495,8 @@ Canonical metrics, updated each release.
 
 | Metric | Value |
 |--------|-------|
-| Go tests (with `-race`) | 5,450+ |
-| Statement coverage | 91%+ |
+| Go tests (with `-race`) | 5,750+ |
+| Statement coverage | 90%+ |
 | Evasion techniques tested | 230+ |
 | Scanner pipeline overhead | ~37μs per URL scan ([performance details](docs/performance.md)) |
 | CI matrix | Go 1.24 + 1.25, CodeQL, golangci-lint |

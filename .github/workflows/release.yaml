@@ -122,6 +122,7 @@ jobs:
           fi
 
       - name: Attest container image
+        id: attest-pipelock-container
         if: steps.digest.outputs.digest != ''
         continue-on-error: true
         uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
@@ -130,10 +131,57 @@ jobs:
           subject-digest: ${{ steps.digest.outputs.digest }}
           push-to-registry: true
 
-      - name: Verify attestation
-        if: steps.attest-binaries.outcome == 'failure' || steps.attest-checksums.outcome == 'failure'
+      - name: Get pipelock-init container digest
+        id: init-digest
         run: |
-          echo "::error::Binary or checksum attestation failed — release provenance is incomplete"
+          TAG="${GITHUB_REF_NAME#v}"
+          if ! DIGEST=$(crane digest "ghcr.io/luckypipewrench/pipelock-init:${TAG}" 2>/dev/null); then
+            echo "::warning::Failed to resolve pipelock-init container digest for tag ${TAG}"
+            echo "digest=" >> "$GITHUB_OUTPUT"
+          else
+            echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Attest pipelock-init container image
+        id: attest-pipelock-init-container
+        if: steps.init-digest.outputs.digest != ''
+        continue-on-error: true
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          subject-name: ghcr.io/luckypipewrench/pipelock-init
+          subject-digest: ${{ steps.init-digest.outputs.digest }}
+          push-to-registry: true
+
+      - name: Get license-service container digest
+        id: license-service-digest
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          if ! DIGEST=$(crane digest "ghcr.io/luckypipewrench/pipelock-license-service:${TAG}" 2>/dev/null); then
+            echo "::warning::Failed to resolve license-service container digest for tag ${TAG}"
+            echo "digest=" >> "$GITHUB_OUTPUT"
+          else
+            echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Attest license-service container image
+        id: attest-license-service-container
+        if: steps.license-service-digest.outputs.digest != ''
+        continue-on-error: true
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          subject-name: ghcr.io/luckypipewrench/pipelock-license-service
+          subject-digest: ${{ steps.license-service-digest.outputs.digest }}
+          push-to-registry: true
+
+      - name: Verify attestation
+        if: >-
+          steps.attest-binaries.outcome == 'failure' ||
+          steps.attest-checksums.outcome == 'failure' ||
+          steps.attest-pipelock-container.outcome == 'failure' ||
+          steps.attest-pipelock-init-container.outcome == 'failure' ||
+          steps.attest-license-service-container.outcome == 'failure'
+        run: |
+          echo "::error::Attestation failed — release provenance is incomplete"
           exit 1
 
       # Move the v1 floating tag so `uses: luckyPipewrench/pipelock@v1`

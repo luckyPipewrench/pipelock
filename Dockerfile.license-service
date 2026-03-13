@@ -1,0 +1,19 @@
+# Used by GoReleaser — copies the pre-built binary instead of building from source.
+# Alpine-based because the license service needs a writable filesystem for
+# SQLite (entitlement DB) and the append-only audit ledger.
+FROM alpine:3.21@sha256:c3f8e73fdb79deaebaa2037150150191b9dcbfba68b4a46d70103204c53f4709
+
+RUN apk add --no-cache ca-certificates \
+    && adduser -D -u 65534 -h /data licenseservice
+
+COPY license-service /usr/local/bin/license-service
+
+USER 65534
+WORKDIR /data
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
+  CMD ["wget", "-qO-", "http://localhost:8080/health"]
+
+ENTRYPOINT ["license-service"]

@@ -7,6 +7,7 @@ package entcli
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -332,10 +333,14 @@ type ledgerEntry struct {
 	IssuedAt       string   `json:"issued_at"`
 	ExpiresAt      string   `json:"expires_at,omitempty"`
 	Features       []string `json:"features"`
-	Token          string   `json:"token"`
+	TokenHash      string   `json:"token_hash"`
 }
 
 func appendLedger(path string, lic license.License, token string) error {
+	// Store a truncated SHA-256 hash instead of the raw token.
+	// 16 bytes (32 hex chars) is enough for log correlation but
+	// not enough to reconstruct the credential.
+	h := sha256.Sum256([]byte(token))
 	entry := ledgerEntry{
 		ID:             lic.ID,
 		Email:          lic.Email,
@@ -344,7 +349,7 @@ func appendLedger(path string, lic license.License, token string) error {
 		SubscriptionID: lic.SubscriptionID,
 		IssuedAt:       time.Unix(lic.IssuedAt, 0).UTC().Format(time.RFC3339),
 		Features:       lic.Features,
-		Token:          token,
+		TokenHash:      hex.EncodeToString(h[:16]),
 	}
 	if lic.ExpiresAt > 0 {
 		entry.ExpiresAt = time.Unix(lic.ExpiresAt, 0).UTC().Format(time.DateOnly)

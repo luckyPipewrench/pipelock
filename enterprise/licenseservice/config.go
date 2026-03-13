@@ -58,7 +58,7 @@ const (
 	defaultFoundingDeadline = "2026-06-30"
 	defaultDBPath           = "licenses.db"
 	defaultLedgerPath       = "audit.jsonl"
-	defaultFromEmail        = "licenses@pipelock.dev"
+	defaultFromEmail        = "licenses@mail.pipelab.org"
 	defaultPolarAPIBase     = "https://api.polar.sh"
 )
 

@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-03-13
+
+### Added
+- Scan API endpoint (`POST /api/v1/scan`): evaluate URLs, text, and MCP payloads against the scanner pipeline via HTTP. Returns structured findings with MITRE ATT&CK technique IDs, severity, and per-layer results. Configurable via `scan_api` config section. (#223)
+- SARIF output for `pipelock audit` and `pipelock git scan-diff`: `--format sarif` produces SARIF v2.1.0 for GitHub Code Scanning integration. Findings appear as inline annotations on PR diffs via the `upload-sarif` action. (#217)
+- CRLF injection detection: blocks `%0d%0a`, double-encoded `%250d%250a`, and raw CR/LF in URL scheme, authority, path, and query components. Fragments excluded (never reach upstream). (#224)
+- Path traversal detection: blocks `/../`, encoded variants (`%2e%2e/`, `..%2f`, `..%5c`), partial encoding, double-encoded `%252e%252e`, and mixed-boundary patterns using segment-bounded matching to avoid false positives. (#224)
+- CONNECT header DLP scanning: scans Proxy-Authorization and other headers on CONNECT handshake for leaked secrets before tunnel establishment. (#224)
+- Subdomain entropy exclusions: `subdomain_entropy_exclusions` config field whitelists domains with legitimately high-entropy subdomains (e.g., RunPod GPU instances). Wildcard matching (`*.runpod.net`) covers all subdomain depths. (#222)
+- License service scaffold: cluster-only webhook handler for Polar subscription events. Alpine-based Docker image, SQLite entitlement store, append-only audit ledger. ELv2 licensed. (#218)
+- License service build artifacts: GoReleaser pipeline builds linux/amd64+arm64 Docker images for the license service with multi-arch manifests and build provenance attestation. (#226)
+- `pipelock license install` command: accepts a license token and writes it to the local license file for pipelock to read at startup. (#216)
+- Runtime license loading: load license from `PIPELOCK_LICENSE_KEY` env var or `license_file` config path. (#213)
+- License tier and subscription fields: `tier` and `subscription_id` in license tokens for entitlement gating. (#215)
+- Sentry error tracking: opt-in Sentry integration for crash reporting in production deployments. (#211)
+- OWASP LLM Top 10 mapping document: article-by-article coverage analysis against OWASP LLM Top 10 2025. (#220)
+
+### Changed
+- Scanner context threading: `Scanner.Scan` now accepts `context.Context` for DNS cancellation propagation. All proxy paths pass request context through. (#221)
+- Metrics refactored: structured initialization, per-transport counters, scan API metrics. (#223)
+- License token enrichment: `tier` and `subscription_id` fields are now populated during license service minting. (#226)
+
+### Fixed
+- Config fail-open on omitted security booleans: `response_scanning.enabled`, `mcp_input_scanning.enabled`, and `mcp_tool_scanning.enabled` now default to `true` when omitted from YAML (previously defaulted to Go zero value `false`). (#219)
+- WebSocket header DLP bypass: headers on WebSocket upgrade requests are now scanned for DLP patterns. (#219)
+- `secrets_file` permission gap: file permission check now enforces `0o600` on secrets files. (#219)
+- Capability separation language in docs: corrected claims about enforcement vs. deployment guidance. (#220)
+- Adaptive enforcement accuracy in docs: clarified that v1 is scoring-only, not enforcement-aware. (#220)
+- MCP `tools/list` false positive: instruction-like tool descriptions no longer trigger injection detection. (#224)
+- URL fragment DLP coverage: URL fragments containing credential-like parameters are now detected by DLP scanning. (#224)
+- Webhook idempotency: concurrent Polar webhook deliveries no longer double-mint licenses. (#226)
+- Founding cap honor: paid founding checkouts are honored when cap is reached instead of silently downgrading to regular Pro. (#226)
+- CLI license ledger: `pipelock license issue` no longer stores raw signed tokens in the ledger file (stores truncated SHA-256 hash for correlation). (#226)
+- License service email and config defaults: corrected domain references from stale addresses to current domains. (#226)
+
 ## [1.2.0] - 2026-03-11
 
 ### Added

@@ -55,6 +55,11 @@ type WebhookHandler struct {
 	privateKey ed25519.PrivateKey
 	log        zerolog.Logger
 
+	// processMu serializes processSubscription calls to prevent concurrent
+	// webhook deliveries for the same subscription_id from double-minting.
+	// Single-pod SQLite deployment with <50 customers — global mutex is fine.
+	processMu sync.Mutex
+
 	// Founding Pro cap tracking. Loaded from DB at startup, mutex-protected.
 	// Count includes all founding subscriptions ever created, including
 	// canceled and refunded. Slots never reopen.
@@ -132,6 +137,9 @@ func (h *WebhookHandler) HandleEvent(ctx context.Context, event *PolarWebhookEve
 //  4. If active: mint license token, persist, attempt email delivery
 //  5. If ended: persist, send cancellation email
 func (h *WebhookHandler) processSubscription(ctx context.Context, sub *PolarSubscription) error {
+	h.processMu.Lock()
+	defer h.processMu.Unlock()
+
 	ent, err := h.subscriptionToEntitlement(sub)
 	if err != nil {
 		_ = h.ledger.LogError(sub.ID, "map subscription to entitlement", err)
@@ -224,12 +232,14 @@ func (h *WebhookHandler) handleActive(ctx context.Context, ent *Entitlement, exi
 	features := h.tierToFeatures(ent.Tier)
 
 	lic := license.License{
-		ID:        "lic_" + hex.EncodeToString(idBytes),
-		Email:     ent.CustomerEmail,
-		Org:       ent.Org,
-		IssuedAt:  now.Unix(),
-		ExpiresAt: expiresAt.Unix(),
-		Features:  features,
+		ID:             "lic_" + hex.EncodeToString(idBytes),
+		Email:          ent.CustomerEmail,
+		Org:            ent.Org,
+		IssuedAt:       now.Unix(),
+		ExpiresAt:      expiresAt.Unix(),
+		Features:       features,
+		Tier:           ent.Tier,
+		SubscriptionID: ent.SubscriptionID,
 	}
 
 	token, err := license.Issue(lic, h.privateKey)
@@ -295,6 +305,21 @@ func (h *WebhookHandler) handleActive(ctx context.Context, ent *Entitlement, exi
 func (h *WebhookHandler) handleEnded(ctx context.Context, ent *Entitlement, existing *Entitlement) error {
 	// Clear the refresh schedule.
 	ent.NextRefreshAt = nil
+
+	// Preserve license state from existing entitlement so the upsert
+	// doesn't wipe last-issued license fields (needed for support
+	// lookups, email retry, and the cancellation email below).
+	if existing != nil {
+		ent.LastLicenseID = existing.LastLicenseID
+		ent.LastLicenseIssuedAt = existing.LastLicenseIssuedAt
+		ent.LastLicenseExpiresAt = existing.LastLicenseExpiresAt
+		ent.LastLicensePeriodEnd = existing.LastLicensePeriodEnd
+		ent.LastLicenseTier = existing.LastLicenseTier
+		ent.LastLicenseInterval = existing.LastLicenseInterval
+		ent.LastLicenseProductID = existing.LastLicenseProductID
+		ent.LastDeliveryStatus = existing.LastDeliveryStatus
+		ent.LastDeliveryAttemptAt = existing.LastDeliveryAttemptAt
+	}
 
 	// Upsert the entitlement to record the ended status.
 	if err := h.db.Upsert(ctx, ent); err != nil {
@@ -404,7 +429,9 @@ func (h *WebhookHandler) tierToFeatures(tier string) []string {
 }
 
 // checkFoundingCap verifies that the Founding Pro cap has not been reached.
-// If the cap is hit or the deadline has passed, downgrades to regular pro.
+// If the cap is hit or the deadline has passed, the checkout is still honored
+// (customer paid the founding price). Logs a warning to archive the Polar
+// product so no further founding checkouts are possible.
 //
 // The reservation is atomic: the mutex serializes access, and the founding
 // count is read from the DB (not an in-memory cache) to prevent drift
@@ -431,14 +458,14 @@ func (h *WebhookHandler) checkFoundingCap(ctx context.Context, ent *Entitlement)
 			Event:          AuditFoundingCapHit,
 			SubscriptionID: ent.SubscriptionID,
 			CustomerEmail:  ent.CustomerEmail,
-			Detail:         "founding pro deadline passed",
+			Detail:         "founding pro deadline passed, honoring paid checkout",
 		})
-		ent.Tier = tierPro
-		ent.Founding = false
 		h.log.Warn().
 			Str("subscription_id", ent.SubscriptionID).
-			Msg("founding pro deadline passed, downgrading to pro")
-		return nil
+			Msg("founding pro deadline passed, honoring paid checkout — archive Polar products")
+		// Fall through to reserve the founding slot. The customer paid the
+		// founding price, so they get founding. The real defense is archiving
+		// the Polar product so no new checkouts are possible.
 	}
 
 	// Read authoritative founding count from DB, not in-memory cache.
@@ -454,16 +481,16 @@ func (h *WebhookHandler) checkFoundingCap(ctx context.Context, ent *Entitlement)
 			Event:          AuditFoundingCapHit,
 			SubscriptionID: ent.SubscriptionID,
 			CustomerEmail:  ent.CustomerEmail,
-			Detail:         fmt.Sprintf("founding pro cap reached (%d/%d)", count, h.cfg.FoundingProCap),
+			Detail:         fmt.Sprintf("founding pro cap reached (%d/%d), honoring paid checkout", count, h.cfg.FoundingProCap),
 		})
-		ent.Tier = tierPro
-		ent.Founding = false
 		h.log.Warn().
 			Str("subscription_id", ent.SubscriptionID).
 			Int("current_count", count).
 			Int("cap", h.cfg.FoundingProCap).
-			Msg("founding pro cap reached, downgrading to pro")
-		return nil
+			Msg("founding pro cap reached, honoring paid checkout — archive Polar products")
+		// Fall through to reserve the slot. The customer paid the founding
+		// price, so they get founding. Archive the Polar product to prevent
+		// further checkouts at the founding price.
 	}
 
 	// Stamp the reservation time. COALESCE in the Upsert ON CONFLICT clause

@@ -793,6 +793,43 @@ func TestHandler_ValidateInput_ContentFieldLimit(t *testing.T) {
 	}
 }
 
+// TestHandler_TrailingJSONRejected ensures concatenated payloads are rejected.
+func TestHandler_TrailingJSONRejected(t *testing.T) {
+	h := newTestHandler(t)
+	// Two valid JSON objects concatenated.
+	body := `{"kind":"dlp","input":{"text":"safe"}}{"kind":"dlp","input":{"text":"extra"}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/scan", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for trailing JSON, got %d", w.Code)
+	}
+	var resp Response
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if len(resp.Errors) == 0 || resp.Errors[0].Code != "invalid_json" {
+		t.Errorf("expected invalid_json error code, got %v", resp.Errors)
+	}
+}
+
+// TestHandler_InvalidKindMetricsNormalized ensures invalid kind values don't
+// create unbounded Prometheus label cardinality.
+func TestHandler_InvalidKindMetricsNormalized(t *testing.T) {
+	h := newTestHandler(t)
+	body := `{"kind":"sql_injection_attack_vector","input":{"text":"test"}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/scan", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for invalid kind, got %d", w.Code)
+	}
+}
+
 // TestHandler_ValidateInput_ArgumentsFieldLimit exercises the arguments length limit in validateInput.
 func TestHandler_ValidateInput_ArgumentsFieldLimit(t *testing.T) {
 	h := newTestHandler(t)

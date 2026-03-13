@@ -7,12 +7,12 @@ How Pipelock addresses the [OWASP Top 10 for Large Language Model Applications (
 | LLM01 Prompt Injection | Strong | Shipped |
 | LLM02 Sensitive Information Disclosure | Strong | Shipped |
 | LLM03 Supply Chain Vulnerabilities | Partial | Shipped |
-| LLM04 Data and Model Poisoning | | Out of scope |
+| LLM04 Data and Model Poisoning | N/A | Out of scope |
 | LLM05 Improper Output Handling | Moderate | Shipped |
 | LLM06 Excessive Agency | Strong | Shipped |
 | LLM07 System Prompt Leakage | Moderate | Shipped |
-| LLM08 Vector and Embedding Weaknesses | | Out of scope |
-| LLM09 Misinformation | | Out of scope |
+| LLM08 Vector and Embedding Weaknesses | N/A | Out of scope |
+| LLM09 Misinformation | N/A | Out of scope |
 | LLM10 Unbounded Consumption | Partial | Shipped |
 
 ---

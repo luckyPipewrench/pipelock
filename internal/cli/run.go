@@ -265,12 +265,17 @@ Examples:
 										oldCfg.MetricsListen, newCfg.MetricsListen)
 									newCfg.MetricsListen = oldCfg.MetricsListen
 								}
-								// Block scan_api.listen changes via reload. The Scan API
-								// server binds at startup and cannot rebind at runtime.
-								if oldCfg.ScanAPI.Listen != newCfg.ScanAPI.Listen {
-									cmd.PrintErrf("WARNING: config reload: scan_api.listen changed from %q to %q — requires restart, ignoring\n",
-										oldCfg.ScanAPI.Listen, newCfg.ScanAPI.Listen)
+								// Block scan_api listener setting changes via reload. The
+								// Scan API server binds at startup and cannot rebind or
+								// reconfigure connection limits / deadlines at runtime.
+								if oldCfg.ScanAPI.Listen != newCfg.ScanAPI.Listen ||
+									oldCfg.ScanAPI.ConnectionLimit != newCfg.ScanAPI.ConnectionLimit ||
+									oldCfg.ScanAPI.Timeouts.Read != newCfg.ScanAPI.Timeouts.Read ||
+									oldCfg.ScanAPI.Timeouts.Write != newCfg.ScanAPI.Timeouts.Write {
+									cmd.PrintErrf("WARNING: config reload: scan_api listener settings changed — requires restart, ignoring\n")
 									newCfg.ScanAPI.Listen = oldCfg.ScanAPI.Listen
+									newCfg.ScanAPI.ConnectionLimit = oldCfg.ScanAPI.ConnectionLimit
+									newCfg.ScanAPI.Timeouts = oldCfg.ScanAPI.Timeouts
 								}
 								// Block agent listener changes via reload. Listener
 								// sockets are bound at startup and cannot be rebound

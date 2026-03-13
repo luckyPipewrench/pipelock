@@ -1746,20 +1746,29 @@ func (c *Config) Validate() error {
 		if len(c.ScanAPI.Auth.BearerTokens) == 0 {
 			return fmt.Errorf("scan_api.auth.bearer_tokens required when scan_api.listen is set")
 		}
-		if c.ScanAPI.Timeouts.Scan != "" {
-			if _, err := time.ParseDuration(c.ScanAPI.Timeouts.Scan); err != nil {
-				return fmt.Errorf("scan_api.timeouts.scan: %w", err)
+		// Validate timeouts: must parse as valid durations and be positive.
+		// Zero or negative timeouts would disable deadlines or expire instantly.
+		validatePositiveDuration := func(name, value string) error {
+			if value == "" {
+				return nil
 			}
+			d, err := time.ParseDuration(value)
+			if err != nil {
+				return fmt.Errorf("%s: %w", name, err)
+			}
+			if d <= 0 {
+				return fmt.Errorf("%s must be positive", name)
+			}
+			return nil
 		}
-		if c.ScanAPI.Timeouts.Read != "" {
-			if _, err := time.ParseDuration(c.ScanAPI.Timeouts.Read); err != nil {
-				return fmt.Errorf("scan_api.timeouts.read: %w", err)
-			}
+		if err := validatePositiveDuration("scan_api.timeouts.scan", c.ScanAPI.Timeouts.Scan); err != nil {
+			return err
 		}
-		if c.ScanAPI.Timeouts.Write != "" {
-			if _, err := time.ParseDuration(c.ScanAPI.Timeouts.Write); err != nil {
-				return fmt.Errorf("scan_api.timeouts.write: %w", err)
-			}
+		if err := validatePositiveDuration("scan_api.timeouts.read", c.ScanAPI.Timeouts.Read); err != nil {
+			return err
+		}
+		if err := validatePositiveDuration("scan_api.timeouts.write", c.ScanAPI.Timeouts.Write); err != nil {
+			return err
 		}
 		if c.ScanAPI.ConnectionLimit < 0 {
 			return fmt.Errorf("scan_api.connection_limit must be >= 0")

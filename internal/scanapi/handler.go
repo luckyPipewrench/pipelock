@@ -157,6 +157,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("Invalid request: %v", err), false)
 		return
 	}
+	// Reject trailing data after JSON object (concatenated payloads).
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		h.writeError(w, http.StatusBadRequest, "", "invalid_json",
+			"Invalid request: trailing data after JSON object", false)
+		return
+	}
 
 	// Validate kind (post-parse: kind is available for error responses).
 	if !validKinds[req.Kind] {
@@ -323,8 +329,13 @@ func extractBearerToken(r *http.Request) string {
 }
 
 func (h *Handler) writeError(w http.ResponseWriter, status int, kind, code, message string, retryable bool) {
-	h.metrics.RecordScanAPIError(kind, code)
-	h.metrics.RecordScanAPIRequest(kind, StatusError, strconv.Itoa(status))
+	// Normalize invalid kind to prevent unbounded Prometheus label cardinality.
+	metricKind := kind
+	if metricKind != "" && !validKinds[metricKind] {
+		metricKind = "unknown"
+	}
+	h.metrics.RecordScanAPIError(metricKind, code)
+	h.metrics.RecordScanAPIRequest(metricKind, StatusError, strconv.Itoa(status))
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

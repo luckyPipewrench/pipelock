@@ -5570,6 +5570,24 @@ func TestScanAPIConfig_Validate(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "zero scan timeout rejected",
+			cfg: ScanAPI{
+				Listen:   "127.0.0.1:9191",
+				Auth:     ScanAPIAuth{BearerTokens: []string{"t"}},
+				Timeouts: ScanAPITimeouts{Scan: "0s"},
+			},
+			wantErr: true,
+		},
+		{
+			name: "negative read timeout rejected",
+			cfg: ScanAPI{
+				Listen:   "127.0.0.1:9191",
+				Auth:     ScanAPIAuth{BearerTokens: []string{"t"}},
+				Timeouts: ScanAPITimeouts{Read: "-5s"},
+			},
+			wantErr: true,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

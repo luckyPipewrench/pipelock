@@ -26,6 +26,8 @@ jobs:
             internal/scanner/scanner_test.go
             internal/scanner/scan_env_test.go
             internal/scanner/text_dlp_test.go
+            internal/proxy/intercept_test.go
+            internal/proxy/forward_test.go
             internal/cli/test.go
             internal/cli/license_test.go
             enterprise/licenseservice/*_test.go

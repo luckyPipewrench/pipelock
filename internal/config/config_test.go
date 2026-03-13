@@ -5541,9 +5541,10 @@ func TestReloadWarnings_CrossRequestDetection_ParentDisabledNoNestedWarnings(t *
 
 func TestScanAPIConfig_Validate(t *testing.T) {
 	tests := []struct {
-		name    string
-		cfg     ScanAPI
-		wantErr bool
+		name          string
+		cfg           ScanAPI
+		wantErr       bool
+		wantErrSubstr string // when non-empty, error must contain this substring
 	}{
 		{
 			name: "disabled is valid",
@@ -5557,9 +5558,10 @@ func TestScanAPIConfig_Validate(t *testing.T) {
 			},
 		},
 		{
-			name:    "enabled without tokens",
-			cfg:     ScanAPI{Listen: "127.0.0.1:9191"},
-			wantErr: true,
+			name:          "enabled without tokens",
+			cfg:           ScanAPI{Listen: "127.0.0.1:9191"},
+			wantErr:       true,
+			wantErrSubstr: "bearer_tokens required",
 		},
 		{
 			name: "invalid scan timeout",
@@ -5568,7 +5570,8 @@ func TestScanAPIConfig_Validate(t *testing.T) {
 				Auth:     ScanAPIAuth{BearerTokens: []string{"t"}},
 				Timeouts: ScanAPITimeouts{Scan: "not-a-duration"},
 			},
-			wantErr: true,
+			wantErr:       true,
+			wantErrSubstr: "scan_api.timeouts.scan",
 		},
 		{
 			name: "zero scan timeout rejected",
@@ -5577,7 +5580,8 @@ func TestScanAPIConfig_Validate(t *testing.T) {
 				Auth:     ScanAPIAuth{BearerTokens: []string{"t"}},
 				Timeouts: ScanAPITimeouts{Scan: "0s"},
 			},
-			wantErr: true,
+			wantErr:       true,
+			wantErrSubstr: "must be positive",
 		},
 		{
 			name: "negative read timeout rejected",
@@ -5586,7 +5590,8 @@ func TestScanAPIConfig_Validate(t *testing.T) {
 				Auth:     ScanAPIAuth{BearerTokens: []string{"t"}},
 				Timeouts: ScanAPITimeouts{Read: "-5s"},
 			},
-			wantErr: true,
+			wantErr:       true,
+			wantErrSubstr: "must be positive",
 		},
 		{
 			name: "invalid write timeout rejected",
@@ -5595,7 +5600,8 @@ func TestScanAPIConfig_Validate(t *testing.T) {
 				Auth:     ScanAPIAuth{BearerTokens: []string{"t"}},
 				Timeouts: ScanAPITimeouts{Write: "not-valid"},
 			},
-			wantErr: true,
+			wantErr:       true,
+			wantErrSubstr: "scan_api.timeouts.write",
 		},
 		{
 			name: "zero write timeout rejected",
@@ -5604,7 +5610,8 @@ func TestScanAPIConfig_Validate(t *testing.T) {
 				Auth:     ScanAPIAuth{BearerTokens: []string{"t"}},
 				Timeouts: ScanAPITimeouts{Write: "0s"},
 			},
-			wantErr: true,
+			wantErr:       true,
+			wantErrSubstr: "must be positive",
 		},
 		{
 			name: "negative write timeout rejected",
@@ -5613,7 +5620,8 @@ func TestScanAPIConfig_Validate(t *testing.T) {
 				Auth:     ScanAPIAuth{BearerTokens: []string{"t"}},
 				Timeouts: ScanAPITimeouts{Write: "-1s"},
 			},
-			wantErr: true,
+			wantErr:       true,
+			wantErrSubstr: "must be positive",
 		},
 		{
 			name: "valid positive timeouts accepted",
@@ -5630,7 +5638,8 @@ func TestScanAPIConfig_Validate(t *testing.T) {
 				Auth:            ScanAPIAuth{BearerTokens: []string{"t"}},
 				ConnectionLimit: -1,
 			},
-			wantErr: true,
+			wantErr:       true,
+			wantErrSubstr: "connection_limit",
 		},
 		{
 			name: "negative max body bytes rejected",
@@ -5639,7 +5648,8 @@ func TestScanAPIConfig_Validate(t *testing.T) {
 				Auth:         ScanAPIAuth{BearerTokens: []string{"t"}},
 				MaxBodyBytes: -1,
 			},
-			wantErr: true,
+			wantErr:       true,
+			wantErrSubstr: "max_body_bytes",
 		},
 	}
 	for _, tc := range tests {
@@ -5653,7 +5663,93 @@ func TestScanAPIConfig_Validate(t *testing.T) {
 			if !tc.wantErr && err != nil {
 				t.Errorf("unexpected error: %v", err)
 			}
+			if tc.wantErr && err != nil && tc.wantErrSubstr != "" {
+				if !strings.Contains(err.Error(), tc.wantErrSubstr) {
+					t.Errorf("error %q does not contain %q", err.Error(), tc.wantErrSubstr)
+				}
+			}
 		})
+	}
+}
+
+// TestLoad_ScanAPIDefaultsPreserved verifies that omitting scan_api fields
+// from YAML preserves defaults from Defaults()+ApplyDefaults(). Tests through
+// the full Load() path (YAML unmarshal -> ApplyDefaults -> Validate).
+func TestLoad_ScanAPIDefaultsPreserved(t *testing.T) {
+	dir := t.TempDir()
+
+	// Minimal config enabling scan_api with only the required fields.
+	yamlContent := "mode: balanced\nscan_api:\n  listen: \"127.0.0.1:9191\"\n  auth:\n    bearer_tokens:\n      - test-token\n"
+	cfgPath := filepath.Join(dir, "scanapi.yaml")
+	if err := os.WriteFile(cfgPath, []byte(yamlContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	// Verify defaults survived YAML unmarshal.
+	checks := []struct {
+		name string
+		got  any
+		want any
+	}{
+		{"Kinds.URL", cfg.ScanAPI.Kinds.URL, true},
+		{"Kinds.DLP", cfg.ScanAPI.Kinds.DLP, true},
+		{"Kinds.PromptInjection", cfg.ScanAPI.Kinds.PromptInjection, true},
+		{"Kinds.ToolCall", cfg.ScanAPI.Kinds.ToolCall, true},
+		{"RateLimit.RequestsPerMinute", cfg.ScanAPI.RateLimit.RequestsPerMinute, 600},
+		{"RateLimit.Burst", cfg.ScanAPI.RateLimit.Burst, 50},
+		{"ConnectionLimit", cfg.ScanAPI.ConnectionLimit, 100},
+		{"Timeouts.Scan", cfg.ScanAPI.Timeouts.Scan, "5s"},
+		{"Timeouts.Read", cfg.ScanAPI.Timeouts.Read, "2s"},
+		{"Timeouts.Write", cfg.ScanAPI.Timeouts.Write, "2s"},
+	}
+	for _, c := range checks {
+		if fmt.Sprintf("%v", c.got) != fmt.Sprintf("%v", c.want) {
+			t.Errorf("ScanAPI.%s = %v, want %v (default lost during Load)", c.name, c.got, c.want)
+		}
+	}
+}
+
+// TestLoad_ScanAPIExplicitOverrides verifies that explicit YAML values
+// override defaults for scan_api fields.
+func TestLoad_ScanAPIExplicitOverrides(t *testing.T) {
+	dir := t.TempDir()
+
+	yamlContent := "mode: balanced\nscan_api:\n  listen: \"0.0.0.0:9191\"\n  auth:\n    bearer_tokens:\n      - tok\n  kinds:\n    url: false\n    dlp: true\n    prompt_injection: false\n    tool_call: true\n  rate_limit:\n    requests_per_minute: 100\n    burst: 10\n  connection_limit: 50\n  timeouts:\n    scan: \"10s\"\n    read: \"5s\"\n    write: \"5s\"\n"
+	cfgPath := filepath.Join(dir, "scanapi-explicit.yaml")
+	if err := os.WriteFile(cfgPath, []byte(yamlContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	checks := []struct {
+		name string
+		got  any
+		want any
+	}{
+		{"Kinds.URL", cfg.ScanAPI.Kinds.URL, false},
+		{"Kinds.DLP", cfg.ScanAPI.Kinds.DLP, true},
+		{"Kinds.PromptInjection", cfg.ScanAPI.Kinds.PromptInjection, false},
+		{"Kinds.ToolCall", cfg.ScanAPI.Kinds.ToolCall, true},
+		{"RateLimit.RequestsPerMinute", cfg.ScanAPI.RateLimit.RequestsPerMinute, 100},
+		{"RateLimit.Burst", cfg.ScanAPI.RateLimit.Burst, 10},
+		{"ConnectionLimit", cfg.ScanAPI.ConnectionLimit, 50},
+		{"Timeouts.Scan", cfg.ScanAPI.Timeouts.Scan, "10s"},
+		{"Timeouts.Read", cfg.ScanAPI.Timeouts.Read, "5s"},
+		{"Timeouts.Write", cfg.ScanAPI.Timeouts.Write, "5s"},
+	}
+	for _, c := range checks {
+		if fmt.Sprintf("%v", c.got) != fmt.Sprintf("%v", c.want) {
+			t.Errorf("ScanAPI.%s = %v, want %v (explicit override lost)", c.name, c.got, c.want)
+		}
 	}
 }
 
@@ -5684,6 +5780,10 @@ func TestLoad_PreservesSecurityBooleanDefaults(t *testing.T) {
 		{"GitProtection.PrePushScan", cfg.GitProtection.PrePushScan},
 		{"Logging.IncludeAllowed", cfg.Logging.IncludeAllowed},
 		{"Logging.IncludeBlocked", cfg.Logging.IncludeBlocked},
+		{"ScanAPI.Kinds.URL", cfg.ScanAPI.Kinds.URL},
+		{"ScanAPI.Kinds.DLP", cfg.ScanAPI.Kinds.DLP},
+		{"ScanAPI.Kinds.PromptInjection", cfg.ScanAPI.Kinds.PromptInjection},
+		{"ScanAPI.Kinds.ToolCall", cfg.ScanAPI.Kinds.ToolCall},
 	}
 
 	for _, c := range checks {
@@ -5729,6 +5829,10 @@ func TestLoad_PartialSubsectionPreservesBoolDefaults(t *testing.T) {
 		{"GitProtection.PrePushScan", cfg.GitProtection.PrePushScan},
 		{"Logging.IncludeAllowed", cfg.Logging.IncludeAllowed},
 		{"Logging.IncludeBlocked", cfg.Logging.IncludeBlocked},
+		{"ScanAPI.Kinds.URL", cfg.ScanAPI.Kinds.URL},
+		{"ScanAPI.Kinds.DLP", cfg.ScanAPI.Kinds.DLP},
+		{"ScanAPI.Kinds.PromptInjection", cfg.ScanAPI.Kinds.PromptInjection},
+		{"ScanAPI.Kinds.ToolCall", cfg.ScanAPI.Kinds.ToolCall},
 	}
 
 	for _, c := range checks {

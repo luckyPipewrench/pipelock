@@ -706,7 +706,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 
 			// Response injection scanning.
 			if r.scanText && r.scanner.ResponseScanningEnabled() {
-				scanResult := r.scanner.ScanResponse(context.Background(), string(msg))
+				scanResult := r.scanner.ScanResponse(ctx, string(msg))
 				if !scanResult.Clean {
 					patternNames := make([]string, len(scanResult.Matches))
 					for i, m := range scanResult.Matches {

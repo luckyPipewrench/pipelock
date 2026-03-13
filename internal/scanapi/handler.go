@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -235,12 +236,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) validToken(token string) bool {
+	tokenBytes := []byte(token)
+	match := 0
 	for _, t := range h.cfg.ScanAPI.Auth.BearerTokens {
-		if subtle.ConstantTimeCompare([]byte(token), []byte(t)) == 1 {
-			return true
-		}
+		match |= subtle.ConstantTimeCompare(tokenBytes, []byte(t))
 	}
-	return false
+	return match == 1
 }
 
 func (h *Handler) allowRequest(token string) bool {
@@ -327,9 +328,11 @@ func (h *Handler) fieldLimit(configured, defaultVal int) int {
 
 func extractBearerToken(r *http.Request) string {
 	auth := r.Header.Get("Authorization")
-	const prefix = "Bearer "
-	if len(auth) > len(prefix) && auth[:len(prefix)] == prefix {
-		return auth[len(prefix):]
+	// RFC 7235: auth-scheme is a case-insensitive token.
+	// Accept "Bearer", "bearer", "BEARER", etc.
+	const prefixLen = len("Bearer ")
+	if len(auth) > prefixLen && strings.EqualFold(auth[:prefixLen], "Bearer ") {
+		return auth[prefixLen:]
 	}
 	return ""
 }

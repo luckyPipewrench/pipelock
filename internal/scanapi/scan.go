@@ -153,7 +153,13 @@ func (h *Handler) scanToolCall(ctx context.Context, req *Request) (Response, int
 
 	// Stage 3: Policy check.
 	if h.policyCfg != nil {
+		if err := ctx.Err(); err != nil {
+			return h.contextErrorResponse(req.Kind, err), h.contextErrorStatus(err)
+		}
 		verdict := h.policyCfg.CheckToolCall(req.Input.ToolName, argStrings)
+		if err := ctx.Err(); err != nil {
+			return h.contextErrorResponse(req.Kind, err), h.contextErrorStatus(err)
+		}
 		if verdict.Matched {
 			resp.Decision = DecisionDeny
 			resp.Findings = append(resp.Findings, policyFindings(verdict)...)

@@ -770,6 +770,10 @@ func applySecurityDefaults(rawYAML []byte, cfg *Config) {
 		cfg.GitProtection.PrePushScan = true
 		cfg.Logging.IncludeAllowed = true
 		cfg.Logging.IncludeBlocked = true
+		cfg.ScanAPI.Kinds.URL = true
+		cfg.ScanAPI.Kinds.DLP = true
+		cfg.ScanAPI.Kinds.PromptInjection = true
+		cfg.ScanAPI.Kinds.ToolCall = true
 		return
 	}
 
@@ -800,6 +804,17 @@ func applySecurityDefaults(rawYAML []byte, cfg *Config) {
 	logging, _ := raw["logging"].(map[string]interface{})
 	setBoolDefault(logging, "include_allowed", &cfg.Logging.IncludeAllowed)
 	setBoolDefault(logging, "include_blocked", &cfg.Logging.IncludeBlocked)
+
+	// Scan API kind enable flags default to true (all kinds enabled).
+	scanAPI, _ := raw["scan_api"].(map[string]interface{})
+	var kinds map[string]interface{}
+	if scanAPI != nil {
+		kinds, _ = scanAPI["kinds"].(map[string]interface{})
+	}
+	setBoolDefault(kinds, "url", &cfg.ScanAPI.Kinds.URL)
+	setBoolDefault(kinds, "dlp", &cfg.ScanAPI.Kinds.DLP)
+	setBoolDefault(kinds, "prompt_injection", &cfg.ScanAPI.Kinds.PromptInjection)
+	setBoolDefault(kinds, "tool_call", &cfg.ScanAPI.Kinds.ToolCall)
 }
 
 // ApplyDefaults fills in zero-value fields with sensible defaults.

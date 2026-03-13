@@ -80,6 +80,24 @@ func TestHandler_InvalidAuth(t *testing.T) {
 	}
 }
 
+// TestHandler_BearerCaseInsensitive verifies RFC 7235 case-insensitive auth-scheme.
+func TestHandler_BearerCaseInsensitive(t *testing.T) {
+	h := newTestHandler(t)
+	for _, scheme := range []string{"bearer", "BEARER", "Bearer", "bEaReR"} {
+		t.Run(scheme, func(t *testing.T) {
+			body := testDLPSafe
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/scan", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", scheme+" "+testToken)
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, req)
+			if w.Code == http.StatusUnauthorized {
+				t.Errorf("scheme %q rejected, want accepted per RFC 7235", scheme)
+			}
+		})
+	}
+}
+
 func TestHandler_MethodNotAllowed(t *testing.T) {
 	h := newTestHandler(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/scan", nil)
@@ -757,7 +775,8 @@ func TestHandler_URLSchemeValidation(t *testing.T) {
 	}
 }
 
-// TestHandler_MetricsRecorded verifies Scan API Prometheus metrics are actually incremented.
+// TestHandler_MetricsRecorded verifies Scan API Prometheus metrics are actually
+// incremented (counter > 0), not just registered.
 func TestHandler_MetricsRecorded(t *testing.T) {
 	h := newTestHandler(t)
 
@@ -771,21 +790,23 @@ func TestHandler_MetricsRecorded(t *testing.T) {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
 
-	// Gather all metrics and verify scan_api counters were incremented.
+	// Gather all metrics and verify scan_api request counter was incremented.
 	fams, err := h.metrics.Registry().Gather()
 	if err != nil {
 		t.Fatalf("gather: %v", err)
 	}
-	found := false
 	for _, fam := range fams {
 		if fam.GetName() == "pipelock_scan_api_requests_total" {
-			found = true
-			break
+			for _, metric := range fam.GetMetric() {
+				if metric.GetCounter().GetValue() > 0 {
+					return // counter incremented
+				}
+			}
+			t.Error("pipelock_scan_api_requests_total exists but all counters are 0")
+			return
 		}
 	}
-	if !found {
-		t.Error("expected pipelock_scan_api_requests_total to be recorded")
-	}
+	t.Error("pipelock_scan_api_requests_total not found")
 }
 
 // TestHandler_ValidateInput_URLFieldLimit exercises the URL length limit in validateInput.
@@ -841,18 +862,41 @@ func TestHandler_TrailingJSONRejected(t *testing.T) {
 }
 
 // TestHandler_InvalidKindMetricsNormalized ensures invalid kind values don't
-// create unbounded Prometheus label cardinality.
+// create unbounded Prometheus label cardinality. The raw invalid kind must not
+// appear in metrics labels; the normalized "unknown" bucket must be used instead.
 func TestHandler_InvalidKindMetricsNormalized(t *testing.T) {
 	h := newTestHandler(t)
-	body := `{"kind":"sql_injection_attack_vector","input":{"text":"test"}}`
+	const rawKind = "sql_injection_attack_vector"
+	body := `{"kind":"` + rawKind + `","input":{"text":"test"}}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/scan", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+testToken)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 	if w.Code != http.StatusBadRequest {
-		t.Errorf("expected 400 for invalid kind, got %d", w.Code)
+		t.Fatalf("expected 400 for invalid kind, got %d", w.Code)
 	}
+
+	// Verify metrics used "unknown", not the raw invalid kind.
+	fams, err := h.metrics.Registry().Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	for _, fam := range fams {
+		if fam.GetName() == "pipelock_scan_api_errors_total" {
+			for _, metric := range fam.GetMetric() {
+				for _, label := range metric.GetLabel() {
+					if label.GetName() == "kind" && label.GetValue() == rawKind {
+						t.Error("raw invalid kind leaked into metrics label; expected 'unknown'")
+					}
+					if label.GetName() == "kind" && label.GetValue() == "unknown" {
+						return // normalized correctly
+					}
+				}
+			}
+		}
+	}
+	t.Error("expected kind='unknown' label in pipelock_scan_api_errors_total metric")
 }
 
 // TestHandler_ValidateInput_ArgumentsFieldLimit exercises the arguments length limit in validateInput.
@@ -889,75 +933,6 @@ func TestHandler_TrailingText(t *testing.T) {
 	if len(resp.Errors) == 0 || resp.Errors[0].Code != "invalid_json" {
 		t.Errorf("expected invalid_json error code, got %v", resp.Errors)
 	}
-}
-
-// TestHandler_InvalidKindMetricsNormalized_VerifyUnknownLabel ensures the "unknown" label
-// is used for metrics when an invalid kind is sent, preventing unbounded cardinality.
-func TestHandler_InvalidKindMetricsNormalized_VerifyUnknownLabel(t *testing.T) {
-	h := newTestHandler(t)
-	body := `{"kind":"xss_attack_vector_2024","input":{"text":"test"}}`
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/scan", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+testToken)
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("expected 400, got %d", w.Code)
-	}
-
-	// Verify the metrics used "unknown" as the kind label, not the raw input.
-	fams, err := h.metrics.Registry().Gather()
-	if err != nil {
-		t.Fatalf("gather: %v", err)
-	}
-	for _, fam := range fams {
-		if fam.GetName() == "pipelock_scan_api_errors_total" {
-			for _, metric := range fam.GetMetric() {
-				for _, label := range metric.GetLabel() {
-					if label.GetName() == "kind" && label.GetValue() == "xss_attack_vector_2024" {
-						t.Error("raw invalid kind leaked into metrics label; expected 'unknown'")
-					}
-					if label.GetName() == "kind" && label.GetValue() == "unknown" {
-						return // found the normalized label
-					}
-				}
-			}
-		}
-	}
-	t.Error("expected kind='unknown' label in pipelock_scan_api_errors_total metric")
-}
-
-// TestHandler_MetricsRecorded_AssertCounterValue verifies the scan_api request counter
-// has a value > 0 after a successful request, not just that the metric family exists.
-func TestHandler_MetricsRecorded_AssertCounterValue(t *testing.T) {
-	h := newTestHandler(t)
-
-	body := testDLPSafeText
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/scan", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+testToken)
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-
-	fams, err := h.metrics.Registry().Gather()
-	if err != nil {
-		t.Fatalf("gather: %v", err)
-	}
-	for _, fam := range fams {
-		if fam.GetName() == "pipelock_scan_api_requests_total" {
-			for _, metric := range fam.GetMetric() {
-				if metric.GetCounter().GetValue() > 0 {
-					return // found a counter > 0
-				}
-			}
-			t.Error("pipelock_scan_api_requests_total exists but all counters are 0")
-			return
-		}
-	}
-	t.Error("pipelock_scan_api_requests_total not found")
 }
 
 // TestHandler_RateLimiting_RetryAfterHeader verifies the Retry-After header is set on 429.
@@ -1202,6 +1177,29 @@ func TestHandler_ContextTimeout_ToolCallInjPostScan(t *testing.T) {
 	// response.go:38 (#3) and response.go:109 (#4).
 	// #5 post-injection (scan.go:145). threshold=4 passes #1-#4, fails at #5.
 	ctx := &delayedCancelCtx{threshold: 4}
+	req := &Request{
+		Kind:  KindToolCall,
+		Input: Input{ToolName: "test", Arguments: RawJSON(`{"key":"value"}`)},
+	}
+	resp, status := h.executeScan(ctx, req)
+	if status != http.StatusServiceUnavailable {
+		t.Errorf("expected 503, got %d", status)
+	}
+	if resp.Status != StatusError {
+		t.Errorf("expected status=error, got %q", resp.Status)
+	}
+}
+
+// TestHandler_ContextTimeout_ToolCallPolicyPreCheck exercises the pre-policy
+// context check in scanToolCall. Timeout fires just before CheckToolCall.
+func TestHandler_ContextTimeout_ToolCallPolicyPreCheck(t *testing.T) {
+	h := newTestHandler(t)
+	h.cfg.MCPInputScanning.Enabled = true
+	h.policyCfg = &policy.Config{}
+	// Flow: #1 pre-scan, ScanTextForDLP (no ctx calls), #2 post-DLP,
+	// ScanResponse #3 and #4, #5 post-injection, #6 pre-policy.
+	// threshold=5 passes #1-#5, fails at #6 (pre-policy check).
+	ctx := &delayedCancelCtx{threshold: 5}
 	req := &Request{
 		Kind:  KindToolCall,
 		Input: Input{ToolName: "test", Arguments: RawJSON(`{"key":"value"}`)},

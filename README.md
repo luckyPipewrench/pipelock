@@ -109,7 +109,7 @@ gh attestation verify oci://ghcr.io/luckypipewrench/pipelock:<version> --owner l
 
 ## How It Works
 
-Pipelock is an [agent firewall](https://pipelab.org/agent-firewall/): like a WAF for web apps, it sits inline between your AI agent and the internet. It uses **capability separation**: the agent process (which has secrets) is network-restricted, while Pipelock (which has NO secrets) inspects all traffic through a 9-layer scanner pipeline.
+Pipelock is an [agent firewall](https://pipelab.org/agent-firewall/): like a WAF for web apps, it sits inline between your AI agent and the internet. It uses **capability separation**: the agent process (which has secrets) is network-restricted, while Pipelock (which holds no agent secrets) inspects all traffic through a 9-layer scanner pipeline. Deployment (Docker network isolation, Kubernetes NetworkPolicy, etc.) enforces the separation boundary.
 
 Three proxy modes, same port:
 
@@ -123,7 +123,7 @@ flowchart LR
         Agent["AI Agent\n(has API keys)"]
     end
     subgraph FETCH["Firewall Zone"]
-        Proxy["Pipelock\n(NO secrets)"]
+        Proxy["Pipelock\n(no agent secrets)"]
         Scanner["Scanner Pipeline\nSSRF · Blocklist · Rate Limit\nDLP · Env Leak · Entropy · Length"]
     end
     subgraph NET["Internet"]
@@ -150,7 +150,7 @@ flowchart LR
 │  PRIVILEGED ZONE     │         │  FIREWALL ZONE        │
 │                      │         │                       │
 │  AI Agent            │  IPC    │  Pipelock             │
-│  - Has API keys      │────────>│  - NO secrets         │
+│  - Has API keys      │────────>│  - No agent secrets   │
 │  - Has credentials   │ fetch / │  - Full internet      │
 │  - Restricted network│ CONNECT │  - Returns text       │
 │                      │ /ws     │  - WS frame scanning  │
@@ -273,7 +273,7 @@ See [docs/guides/siem-integration.md](docs/guides/siem-integration.md) for log s
 | **Git Protection** | `git diff \| pipelock git scan-diff` catches secrets before they're committed |
 | **Ed25519 Signing** | Key management, file signing, and signature verification for multi-agent trust |
 | **Session Profiling** | Per-session behavioral analysis (domain bursts, volume spikes) |
-| **Adaptive Enforcement** | Threat score accumulation with automatic escalation |
+| **Adaptive Enforcement** | Per-session threat score accumulation with escalation events (scoring and logging in v1) |
 | **Finding Suppression** | Silence known false positives via config rules or inline `pipelock:ignore` comments |
 | **Multi-Agent Support** | Agent identification via `X-Pipelock-Agent` header for per-agent filtering |
 | **Fleet Monitoring** | Prometheus metrics + ready-to-import [Grafana dashboard](configs/grafana-dashboard.json) |

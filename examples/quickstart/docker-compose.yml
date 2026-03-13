@@ -7,7 +7,7 @@
 #   docker compose --profile verify up --abort-on-container-exit --exit-code-from verify
 #
 # Architecture:
-#   agent (has secrets, no internet) --> pipelock (no secrets, has internet) --> web
+#   agent (has secrets, no internet) --> pipelock (no agent secrets, has internet) --> web
 #
 # The agent network uses Docker's "internal: true" flag, which removes the
 # default gateway and blocks all outbound traffic at the iptables level.

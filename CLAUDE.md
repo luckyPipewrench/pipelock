@@ -6,11 +6,22 @@ Pipelock is an agent firewall: a network proxy that sits between AI agents and t
 
 These are non-negotiable. Violating any of them breaks the security model.
 
-- **Never weaken capability separation.** The proxy runs in the unprivileged zone (no secrets, full network). The agent runs in the privileged zone (has secrets, no direct network). If pipelock ever needs access to agent secrets, the architecture is wrong.
+- **Never weaken capability separation.** The proxy holds no agent secrets by design; deployment must enforce separation. The agent runs in the privileged zone (has secrets, no direct network). If pipelock ever needs access to agent secrets, the architecture is wrong. Note: pipelock reads local environment variables for env leak scanning, but this is detection, not credential storage.
 - **Never bypass fail-closed defaults.** HITL timeout, non-terminal input, parse errors, context cancellation: all default to **block**. If in doubt, block.
-- **Never add dependencies without justification.** 9 direct deps is intentional, not a limitation. Every dependency is attack surface. Propose additions in the PR description with rationale.
+- **Never add dependencies without justification.** Minimal direct deps is intentional, not a limitation. Every dependency is attack surface. Propose additions in the PR description with rationale.
 - **Never panic on runtime input.** All `panic()` calls in the codebase are post-validation programming errors caught at startup (invalid DLP regex, bad CIDR after config validation). User/agent input must never cause a panic.
 - **DLP runs before DNS resolution.** Layers 2-3 (blocklist, DLP) execute before layer 6 (SSRF/DNS). Reordering them would allow secret exfiltration via DNS queries.
+
+## Security Invariants
+
+These must be proven by tests, not assumed from docs or deployment.
+
+- **"Enforced" means the binary enforces it.** If a property depends on deployment, user separation, containers, or network policy, describe it as deployment guidance, not product enforcement.
+- **Allowlist/suppression must not bypass content scanning.** Any allowlist, trusted-destination, or suppression logic must not skip DLP, header scanning, body scanning, or explicit secret detection unless the exception is deliberate, documented, and tested.
+- **Security-sensitive config defaults must have one source of truth.** If docs say "default true," omitting the field from YAML must produce true. New security-sensitive boolean fields must be tested in 6 states: omitted, YAML null/blank, explicit false, explicit true, reload with change, reload without change.
+- **Transport parity must be proven, not claimed.** If a scanning feature applies to multiple surfaces, verify it on each applicable one: fetch, forward proxy, CONNECT, WebSocket, MCP stdio, MCP HTTP/SSE. Not every feature applies to every transport (e.g., MCP stdio has no URL scanning path). Document exceptions explicitly and don't claim parity in docs without tests.
+- **Docs are security surface.** Don't claim "automatic escalation" if the code only scores or logs. Don't claim enforcement that only exists at the deployment layer. Review docs when changing behavior.
+- **Hot reload must preserve security state.** Test: first load, first reload, second unrelated reload, downgrade/revocation, stale cached state. Kill switch state (all 4 sources) must survive reloads.
 
 ## Quick Reference
 
@@ -18,7 +29,7 @@ These are non-negotiable. Violating any of them breaks the security model.
 |------|-------|
 | Module | `github.com/luckyPipewrench/pipelock` |
 | Go | 1.24+ (CI tests 1.24 and 1.25) |
-| License | Apache 2.0 |
+| License | Apache 2.0 (core), ELv2 (`enterprise/`) |
 | Binary | Single static binary, ~12MB |
 | Deps | cobra, zerolog, go-readability, yaml.v3, prometheus, fsnotify, x/text, x/net, gobwas/ws |
 
@@ -44,52 +55,21 @@ go test -race -count=1 ./...
 
 CI runs lint and tests on **all** code, not just changed files.
 
-## Project Structure
-
-```
-cmd/pipelock/           Entry point
-internal/
-  cli/                  Cobra commands (20+ subcommands)
-  proxy/                HTTP proxy: /fetch, CONNECT, /ws, TLS interception, /health, /metrics, /stats
-  scanner/              9-layer URL scanning pipeline + response injection detection
-  config/               YAML config, validation, hot-reload (fsnotify + SIGHUP)
-  audit/                Structured JSON logging (zerolog) + event emission dispatch
-  mcp/                  MCP proxy: bidirectional scanning, tool poisoning, input scanning
-    chains/             Tool call chain detection (subsequence matching, 10 built-in patterns)
-    jsonrpc/            JSON-RPC 2.0 types and text extraction
-    policy/             Pre-execution tool call policy rules
-    tools/              Tool description scanning + rug-pull (drift) detection
-    transport/          Message framing (stdio newline-delimited, SSE, HTTP)
-  killswitch/           Emergency deny-all (4 sources: config, API, SIGUSR1, sentinel file)
-  emit/                 Event emission (webhook + syslog sinks, fire-and-forget)
-  normalize/            Unicode normalization (NFKC, confusables, combining marks, leetspeak)
-  hitl/                 Human-in-the-loop terminal approval
-  integrity/            SHA256 file manifests
-  certgen/              ECDSA P-256 CA + leaf cert generation, bounded TTL cache
-  report/               HTML/JSON audit report generation from JSONL event logs
-  signing/              Ed25519 key management
-  gitprotect/           Git diff scanning for secrets
-  metrics/              Prometheus counters/histograms/gauges + JSON /stats
-  projectscan/          Project directory scanning for audit command
-configs/                Presets: balanced, strict, audit, claude-code, cursor, generic-agent, hostile-model
-docs/                   Guides, OWASP mapping, comparison
-```
-
 ## Architecture
 
-**Capability separation:** the agent (secrets, no network) talks to pipelock (no secrets, full network) which talks to the internet. Three proxy modes on the same port:
+**Capability separation:** the agent (secrets, no network) talks to pipelock (no agent secrets, full network) which talks to the internet. Three proxy modes on the same port:
 
 - **Fetch** (`/fetch?url=...`): fetches URL, extracts text, scans response for injection
 - **Forward** (CONNECT + absolute-URI): standard HTTP proxy via `HTTPS_PROXY`, scans hostname through 9-layer pipeline
 - **WebSocket** (`/ws?url=...`): bidirectional frame scanning, DLP on headers, fragment reassembly
 
 ```text
-Agent (secrets, no network) → Pipelock (no secrets, full network) → Internet
+Agent (secrets, no network) → Pipelock (no agent secrets, full network) → Internet
 ```
 
 ### Scanner Pipeline
 
-1. Scheme (http/https only) → 2. Domain blocklist → 3. DLP (36 patterns, env leak detection, entropy) → 4. Path entropy → 5. Subdomain entropy → 6. SSRF (private IPs, metadata, DNS rebinding) → 7. Rate limiting → 8. URL length → 9. Data budget
+1. Scheme (http/https only) → 2. Domain blocklist → 3. DLP (patterns, env leak detection, entropy) → 4. Path entropy → 5. Subdomain entropy → 6. SSRF (private IPs, metadata, DNS rebinding) → 7. Rate limiting → 8. URL length → 9. Data budget
 
 Layers 2-3 run **before** DNS resolution. Layer 6 runs **after**. This ordering prevents DNS-based exfiltration.
 
@@ -161,7 +141,7 @@ net.ListenConfig{}.Listen(ctx, ...)   // Free port binding (noctx compliant)
 | errcheck | cleanup error | `_ = os.Remove(path)` in error-return cleanup paths |
 | errcheck | fmt output | `_, _ = fmt.Fprintf(w, ...)` when writing to cmd output |
 | usestdlibvars | `"GET"` | `http.MethodGet` |
-| goconst | repeated string | Extract a `const`. Never use `//nolint:goconst`. See below. |
+| goconst | repeated string | Extract a `const`. Never use `//nolint:goconst`. |
 | gosec | G301 dir perms | `0o750` not `0o755` for directories |
 | gosec | G302/G306 file perms | `0o600` not `0o644` for files |
 | gosec | G304 file inclusion | Use `filepath.Clean(path)` to satisfy G304 lint. For trust boundaries, also validate containment (EvalSymlinks + filepath.Rel). |
@@ -169,29 +149,14 @@ net.ListenConfig{}.Listen(ctx, ...)   // Free port binding (noctx compliant)
 | unparam | unused param | `_` prefix |
 | gofumpt | formatting | Stricter than gofmt. Run `gofumpt -w .` before committing |
 
-### goconst: Always Extract Constants
+**goconst:** always extract a named constant. Production code: package-level `const`. Test code: `const` block at file top. Check existing `config.Action*`, `config.Mode*`, `config.Severity*` before creating new ones. Re-stage `go.mod` after the tidy pre-commit hook runs.
 
-**Never suppress goconst with `//nolint:goconst`.** Extract a named constant instead.
+## Non-Obvious Task Traps
 
-**Production code:** use exported or unexported package-level constants.
-```go
-const methodToolsCall = "tools/call"       // unexported, used within package
-const ActionBlock     = "block"            // exported, used across packages
-```
+These tasks have steps that are easy to miss:
 
-**Test code:** add a `const` block near the top of the test file.
-```go
-const (
-    testClientIP = "10.0.0.1"
-    testToken    = "test-" + "token"
-)
-```
-
-**Existing constants:** the codebase has `config.ActionBlock`, `ActionWarn`, `ActionAsk`, `ActionStrip`, `ActionForward`, `ModeStrict`, `ModeBalanced`, `ModeAudit`, `SeverityInfo`, `SeverityWarn`, `SeverityCritical`, `SeverityHigh`, `SeverityMedium`. Use them. Check for existing constants before creating new ones.
-
-**Inside raw string literals (backticks):** Go constants can't be interpolated inside backtick strings. Use string concatenation: `` `prefix` + constant + `suffix` ``. If the string is a JSON template, keep the literal value inside the template and use the constant only in Go comparisons.
-
-Re-stage `go.mod` after the tidy pre-commit hook runs.
+- **Adding a DLP pattern:** URL tests (`scanner_test.go`), text tests (`text_dlp_test.go`), all preset YAML files in `configs/`, and docs if the default count changes.
+- **Any transport or security change:** verify parity across all applicable surfaces (fetch, forward, CONNECT, WebSocket, MCP stdio, MCP HTTP/SSE). Document transport-specific exceptions and add exploit-style regression tests, not just happy paths.
 
 ## CI Pipeline
 
@@ -205,42 +170,6 @@ Six required checks on `main`:
 6. **pipelock:** self-scan (dogfooding the GitHub Action on every PR)
 
 **Release:** Tag push (`v*`) → GoReleaser v2 → multi-arch binaries + GHCR image + Homebrew formula.
-
-## Common Development Tasks
-
-### Adding a DLP pattern
-1. Add regex to `internal/config/config.go` (`Defaults()` DLP Patterns slice)
-2. Add test cases in `internal/scanner/text_dlp_test.go` and `scanner_test.go`
-3. Update all 7 `configs/` preset YAML files with the new pattern
-4. Verify no false positives: `make test`
-
-### Adding a scanner layer
-1. Create check function in `internal/scanner/`
-2. Wire into `Scanner.Scan()` pipeline
-3. Add Prometheus counter in `internal/metrics/`
-4. Add audit event type in `internal/audit/`
-
-### Adding an emit sink
-1. Implement the `Sink` interface in `internal/emit/` (Emit + Close)
-2. Add config struct + fields in `internal/config/config.go`
-3. Wire construction in `internal/cli/run.go` (follow webhook/syslog pattern)
-4. Add validation in `config.Validate()`
-
-### Adding a chain detection pattern
-1. Add pattern to `builtinPatterns` in `internal/mcp/chains/matcher.go`
-2. Define tool categories for any new tool names
-3. Add test case in `matcher_test.go`
-
-### Adding a finding suppression rule
-1. Config: add `suppress` entry with `rule`, `path` (glob/exact/URL suffix), `reason`
-2. Inline: add `// pipelock:ignore` comment to source file
-3. Test: verify `config.IsSuppressed()` matches correctly
-
-### Adding a CLI command
-1. Create `internal/cli/<command>.go` with `<command>Cmd()` function
-2. Register in `rootCmd()` in `root.go`
-3. Use `cmd.OutOrStdout()` for output, `cmd.ErrOrStderr()` for diagnostics
-4. Add tests in `internal/cli/<command>_test.go`
 
 ## Code Style
 
@@ -260,17 +189,3 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full contributor guide. PRs are s
 ## Security
 
 Report vulnerabilities via [GitHub Security Advisories](https://github.com/luckyPipewrench/pipelock/security/advisories), not public issues.
-
-## Documentation
-
-| Resource | Location |
-|----------|----------|
-| Configuration reference | [docs/configuration.md](docs/configuration.md) |
-| Attacks blocked gallery | [docs/attacks-blocked.md](docs/attacks-blocked.md) |
-| Bypass resistance matrix | [docs/bypass-resistance.md](docs/bypass-resistance.md) |
-| OWASP Agentic Top 10 mapping | [docs/owasp-mapping.md](docs/owasp-mapping.md) |
-| Competitive comparison | [docs/comparison.md](docs/comparison.md) |
-| Integration guides | [docs/guides/](docs/guides/) |
-| Deployment recipes | [docs/guides/deployment-recipes.md](docs/guides/deployment-recipes.md) |
-| Metrics reference | [docs/metrics.md](docs/metrics.md) |
-| Changelog | [CHANGELOG.md](CHANGELOG.md) |

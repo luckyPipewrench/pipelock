@@ -525,7 +525,7 @@ session_profiling:
 
 ## Adaptive Enforcement
 
-Per-session threat score that accumulates across scanner hits and decays on clean requests. When the score exceeds the threshold, enforcement escalates (warn becomes block).
+Per-session threat score that accumulates across scanner hits and decays on clean requests. When the score exceeds the threshold, an escalation event is logged and metriced. In v1 this is scoring and observability only: enforcement behavior (warn vs block) is not changed by escalation level. Escalation-aware blocking is planned for v2.
 
 ```yaml
 adaptive_enforcement:
@@ -616,7 +616,7 @@ emit:
 | `syslog.tag` | `"pipelock"` | Syslog tag |
 
 **Severity levels** (hardcoded per event type, not configurable):
-- **critical:** kill switch deny, adaptive escalation to block
+- **critical:** kill switch deny, adaptive escalation to block (event emitted; v1 does not auto-block, see above)
 - **warn:** blocked requests, anomalies, session events, MCP unknown tools, scan hits
 - **info:** allowed requests, tunnel open/close, WebSocket open/close, config reload
 
@@ -970,16 +970,74 @@ If defined, `_default` applies to any request that does not match a named agent.
 
 ## License Key
 
-```yaml
-license_key: "pipelock_lic_v1_eyJ..."
-license_public_key: "a1b2c3d4..."  # hex-encoded Ed25519 public key
+Multi-agent profiles (the `agents:` section) require a signed license token. The token is an Ed25519-signed JWT-like string issued by `pipelock license issue`. At startup, pipelock verifies the signature, checks expiration, and confirms the token includes the `agents` feature. If any check fails, agent profiles are disabled with a warning. All single-agent protection remains active.
+
+### Loading Sources
+
+Pipelock checks three sources for the license token, in priority order:
+
+| Priority | Source | Use case |
+|----------|--------|----------|
+| 1 (highest) | `PIPELOCK_LICENSE_KEY` env var | Containers, CI, Kubernetes Secrets |
+| 2 | `license_file` config field (file path) | Secret volume mounts, file-based workflows |
+| 3 (lowest) | `license_key` config field (inline) | Simple single-machine setups |
+
+The first non-empty source wins. Later sources are not checked. `PIPELOCK_LICENSE_KEY` values containing only whitespace are treated as empty and fall through to lower-priority sources. If `license_file` is configured but the file is empty or contains only whitespace, pipelock fails with an error rather than falling back to inline `license_key`. This is fail-closed by design: a misconfigured Secret mount should not silently downgrade to an inline fallback.
+
+**Env var (recommended for containers):**
+
+```bash
+export PIPELOCK_LICENSE_KEY="pipelock_lic_v1_eyJ..."
+pipelock run --config pipelock.yaml
 ```
 
-Multi-agent profiles (the `agents:` section) require a signed license token in `license_key`. The token is an Ed25519-signed JWT-like string issued by `pipelock license issue`. At startup, pipelock verifies the signature, checks expiration, and confirms the token includes the `agents` feature. If any check fails, agent profiles are disabled with a warning. All single-agent protection remains active.
+**File path:**
+
+```yaml
+license_file: /etc/pipelock/license.token    # absolute path
+license_file: license.token                  # relative to config file directory
+```
+
+The file should contain only the license token string. Leading and trailing whitespace is trimmed. The file must have owner-only permissions (`0600`); group- or world-readable files are rejected. The file is read at startup. Adding or changing a license requires a restart to take effect; a config-triggered reload will detect the change but will not apply it until restart. Removing the currently active license source takes effect immediately on reload (for example, unsetting `PIPELOCK_LICENSE_KEY` or removing the active `license_file`/`license_key` entry).
+
+**Inline (simplest):**
+
+```yaml
+license_key: "pipelock_lic_v1_eyJ..."
+```
+
+**Full example with all license fields:**
+
+```yaml
+license_key: "pipelock_lic_v1_eyJ..."        # inline token (lowest priority)
+license_file: "/etc/pipelock/license.token"  # file path (medium priority)
+license_public_key: "a1b2c3d4..."            # hex-encoded Ed25519 public key (dev builds only)
+```
+
+### Kubernetes Secret Example
+
+Mount a license key from a Kubernetes Secret as an env var:
+
+```yaml
+env:
+  - name: PIPELOCK_LICENSE_KEY
+    valueFrom:
+      secretKeyRef:
+        name: pipelock-license
+        key: token
+```
+
+Or mount the Secret as a file and reference it in config:
+
+```yaml
+license_file: /etc/pipelock/license/token
+```
+
+### Key Verification
 
 Official release builds embed the signing public key at compile time via ldflags. The embedded key takes priority over `license_public_key` and cannot be overridden by config, preventing self-signing bypasses. The `license_public_key` config field is only used in development builds where no key is embedded.
 
-Generate a keypair and issue licenses with:
+### CLI Commands
 
 ```bash
 pipelock license keygen              # generates ~/.config/pipelock/license.key + license.pub
@@ -988,6 +1046,32 @@ pipelock license inspect TOKEN       # decode without verifying
 ```
 
 A `_default` profile without any named agents does not require a license key.
+
+### Installing a License
+
+Use `pipelock license install` to write a license token to a file:
+
+```bash
+pipelock license install <TOKEN>                    # writes to ~/.config/pipelock/license.token
+pipelock license install --path /etc/pipelock/license.token <TOKEN>  # custom path
+```
+
+The command validates the token format, writes it atomically (temp file + rename), and prints setup instructions. Point your config at the file:
+
+```yaml
+license_file: /etc/pipelock/license.token
+```
+
+Then restart pipelock to activate Pro features.
+
+### Renewal
+
+License tokens have a fixed expiry (typically 45 days). When your subscription renews, you receive a new token by email. To update:
+
+1. Run `pipelock license install <NEW_TOKEN>` (overwrites the existing file)
+2. Restart pipelock
+
+The new token activates on restart. Your current token continues working until its expiry date, so there is no rush to update immediately. A config reload detects the changed license inputs but does not apply them until restart (activation requires restart; revocation is immediate).
 
 ## Validation Rules
 

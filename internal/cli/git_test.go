@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/gitprotect"
+	"github.com/luckyPipewrench/pipelock/internal/sarif"
 )
 
 const cleanDiff = `diff --git a/main.go b/main.go
@@ -833,6 +834,257 @@ func TestScanDiffCmd_ExcludeDoesNotAffectOtherFiles(t *testing.T) {
 	err := cmd.Execute()
 	if !errors.Is(err, ErrSecretsFound) {
 		t.Fatalf("expected ErrSecretsFound for non-excluded file, got: %v", err)
+	}
+}
+
+func TestScanDiffCmd_SARIF_CleanDiff(t *testing.T) {
+	diff := cleanDiff
+	r, w, _ := os.Pipe()
+	_, _ = w.WriteString(diff)
+	_ = w.Close()
+
+	oldStdin := os.Stdin
+	os.Stdin = r
+	defer func() { os.Stdin = oldStdin }()
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"git", "scan-diff", "--format", "sarif"})
+
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	var parsed map[string]interface{}
+	if err := json.Unmarshal([]byte(buf.String()), &parsed); err != nil {
+		t.Fatalf("SARIF output is not valid JSON: %v", err)
+	}
+	if parsed["version"] != "2.1.0" {
+		t.Errorf("version = %v, want 2.1.0", parsed["version"])
+	}
+}
+
+func TestScanDiffCmd_SARIF_FindsSecret(t *testing.T) {
+	key := fakeKey()
+	diff := fmt.Sprintf(`diff --git a/config.go b/config.go
+--- a/config.go
++++ b/config.go
+@@ -1,2 +1,3 @@
+ package config
++var key = "%s"
+
+`, key)
+
+	r, w, _ := os.Pipe()
+	_, _ = w.WriteString(diff)
+	_ = w.Close()
+
+	oldStdin := os.Stdin
+	os.Stdin = r
+	defer func() { os.Stdin = oldStdin }()
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"git", "scan-diff", "--format", "sarif"})
+
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+
+	err := cmd.Execute()
+	if !errors.Is(err, ErrSecretsFound) {
+		t.Fatalf("expected ErrSecretsFound, got: %v", err)
+	}
+
+	var parsed struct {
+		Runs []struct {
+			Results []struct {
+				RuleID  string `json:"ruleId"`
+				Level   string `json:"level"`
+				Message struct {
+					Text string `json:"text"`
+				} `json:"message"`
+			} `json:"results"`
+		} `json:"runs"`
+	}
+	if err := json.Unmarshal([]byte(buf.String()), &parsed); err != nil {
+		t.Fatalf("invalid SARIF JSON: %v\nraw: %q", err, buf.String())
+	}
+	if len(parsed.Runs) != 1 {
+		t.Fatalf("runs = %d, want 1", len(parsed.Runs))
+	}
+	if len(parsed.Runs[0].Results) == 0 {
+		t.Fatal("expected at least 1 SARIF result")
+	}
+	r0 := parsed.Runs[0].Results[0]
+	if r0.Level != sarif.LevelError {
+		t.Errorf("level = %q, want %q", r0.Level, sarif.LevelError)
+	}
+	if !strings.Contains(r0.RuleID, "DLP-") {
+		t.Errorf("ruleId = %q, expected DLP- prefix", r0.RuleID)
+	}
+	// Verify the raw SARIF output does not contain the actual secret value.
+	if strings.Contains(buf.String(), key) {
+		t.Error("SARIF output must not contain the actual secret value")
+	}
+}
+
+func TestScanDiffCmd_SARIF_EmptyStdin(t *testing.T) {
+	r, w, _ := os.Pipe()
+	_ = w.Close()
+
+	oldStdin := os.Stdin
+	os.Stdin = r
+	defer func() { os.Stdin = oldStdin }()
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"git", "scan-diff", "--format", "sarif"})
+
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	var parsed map[string]interface{}
+	if err := json.Unmarshal([]byte(buf.String()), &parsed); err != nil {
+		t.Fatalf("SARIF output is not valid JSON: %v", err)
+	}
+}
+
+func TestScanDiffCmd_SARIF_ToFile(t *testing.T) {
+	key := fakeKey()
+	diff := fmt.Sprintf(`diff --git a/config.go b/config.go
+--- a/config.go
++++ b/config.go
+@@ -1,2 +1,3 @@
+ package config
++var key = "%s"
+
+`, key)
+
+	r, w, _ := os.Pipe()
+	_, _ = w.WriteString(diff)
+	_ = w.Close()
+
+	oldStdin := os.Stdin
+	os.Stdin = r
+	defer func() { os.Stdin = oldStdin }()
+
+	outFile := filepath.Join(t.TempDir(), "results.sarif")
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"git", "scan-diff", "--format", "sarif", "-o", outFile})
+
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+
+	err := cmd.Execute()
+	if !errors.Is(err, ErrSecretsFound) {
+		t.Fatalf("expected ErrSecretsFound, got: %v", err)
+	}
+
+	data, readErr := os.ReadFile(filepath.Clean(outFile))
+	if readErr != nil {
+		t.Fatalf("failed to read SARIF file: %v", readErr)
+	}
+	if !strings.Contains(string(data), `"version": "2.1.0"`) {
+		t.Error("expected SARIF version in output file")
+	}
+	if !strings.Contains(buf.String(), "SARIF written to:") {
+		t.Error("expected confirmation message on stderr")
+	}
+}
+
+func TestScanDiffCmd_InvalidFormat(t *testing.T) {
+	r, w, _ := os.Pipe()
+	_, _ = w.WriteString(cleanDiff)
+	_ = w.Close()
+
+	oldStdin := os.Stdin
+	os.Stdin = r
+	defer func() { os.Stdin = oldStdin }()
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"git", "scan-diff", "--format", "xml"})
+
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for invalid format")
+	}
+	if !strings.Contains(err.Error(), "unsupported format") {
+		t.Errorf("expected 'unsupported format' error, got: %v", err)
+	}
+}
+
+func TestScanDiffCmd_SARIF_HighSeverity(t *testing.T) {
+	// Google API Key has severity "high" — should map to SARIF "error", not "note".
+	diff := "diff --git a/config.go b/config.go\n--- a/config.go\n+++ b/config.go\n@@ -1,2 +1,3 @@\n package config\n+var key = \"" + "AIza" + "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" + "A\"\n\n"
+
+	r, w, _ := os.Pipe()
+	_, _ = w.WriteString(diff)
+	_ = w.Close()
+
+	oldStdin := os.Stdin
+	os.Stdin = r
+	defer func() { os.Stdin = oldStdin }()
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"git", "scan-diff", "--format", "sarif"})
+
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+
+	err := cmd.Execute()
+	if !errors.Is(err, ErrSecretsFound) {
+		t.Fatalf("expected ErrSecretsFound, got: %v", err)
+	}
+
+	var parsed struct {
+		Runs []struct {
+			Results []struct {
+				RuleID  string `json:"ruleId"`
+				Level   string `json:"level"`
+				Message struct {
+					Text string `json:"text"`
+				} `json:"message"`
+				Locations []struct {
+					PhysicalLocation struct {
+						Region *struct {
+							Snippet *struct {
+								Text string `json:"text"`
+							} `json:"snippet"`
+						} `json:"region"`
+					} `json:"physicalLocation"`
+				} `json:"locations"`
+			} `json:"results"`
+		} `json:"runs"`
+	}
+	if err := json.Unmarshal([]byte(buf.String()), &parsed); err != nil {
+		t.Fatalf("invalid SARIF JSON: %v\nraw: %q", err, buf.String())
+	}
+	if len(parsed.Runs[0].Results) == 0 {
+		t.Fatal("expected at least 1 SARIF result")
+	}
+	r0 := parsed.Runs[0].Results[0]
+	// High severity should map to "error", not "note".
+	if r0.Level != sarif.LevelError {
+		t.Errorf("level = %q, want %q (high -> error)", r0.Level, sarif.LevelError)
+	}
+	// Verify no snippet (secrets must not leak into SARIF).
+	for _, loc := range r0.Locations {
+		if loc.PhysicalLocation.Region != nil && loc.PhysicalLocation.Region.Snippet != nil {
+			t.Error("snippet should be nil: SARIF must not contain secret content")
+		}
 	}
 }
 

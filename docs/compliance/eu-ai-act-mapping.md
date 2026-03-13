@@ -36,7 +36,7 @@ Article 9 requires a continuous, iterative risk management process throughout th
 | Identify and analyze known risks (Art. 9(2)(a)) | 9-layer scanner pipeline classifies network-level risks: scheme validation, SSRF, domain blocklist, rate limiting, DLP (inc. env leak), path entropy, subdomain entropy, URL length, data budget | Partial |
 | Evaluate risks under foreseeable misuse (Art. 9(2)(b)) | Adversarial testing of bypass attempts (encoded secrets, DNS exfiltration, zero-width injection, split-key attacks) | Partial |
 | Post-market monitoring data (Art. 9(2)(c)) | Prometheus metrics (`/metrics`), JSON stats (`/stats`), structured audit logs | Partial |
-| Eliminate risks through design (Art. 9(5)(a)) | Capability separation eliminates network-based credential exfiltration: agent holds secrets with no network; proxy has network with no secrets | Partial |
+| Eliminate risks through design (Art. 9(5)(a)) | Capability separation reduces network-based credential exfiltration risk: agent holds secrets with no network; proxy has network with no agent secrets. Deployment enforces the boundary | Partial |
 | Mitigation and control measures (Art. 9(5)(b)) | Multi-layer scanning, domain blocklist, rate limiting, DLP patterns, HITL approval | Full |
 | Residual risk information to deployers (Art. 9(5)(c)) | Audit logs document every scan decision; `/stats` endpoint surfaces top threats | Partial |
 | Prior defined metrics and thresholds (Art. 9(8)) | Configurable thresholds per scanner layer; Prometheus counters for block rates by category | Full |
@@ -201,7 +201,7 @@ Mapping from individual Pipelock controls to both frameworks.
 
 | Control | Description | EU AI Act | NIST AI RMF |
 |---------|-------------|-----------|-------------|
-| Capability separation | Agent has secrets, no network; proxy has network, no secrets | Art. 15(5) | GOVERN 1.2, MAP 1.1 |
+| Capability separation | Agent has secrets, no network; proxy has network, no agent secrets. Deployment enforces boundary | Art. 15(5) | GOVERN 1.2, MAP 1.1 |
 | SSRF protection | Private IP blocking, DNS rebinding prevention, metadata endpoint blocking | Art. 15(4-5) | MAP 2.1, MEASURE 2.7 |
 | Domain blocklist | Configurable deny/allow lists with wildcard support | Art. 9(5) | GOVERN 1.2, MANAGE 1.1 |
 | Rate limiting | Per-domain sliding window, base domain normalization | Art. 15(4) | MANAGE 1.1 |

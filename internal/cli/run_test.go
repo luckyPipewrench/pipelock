@@ -7,16 +7,124 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
+	plsentry "github.com/luckyPipewrench/pipelock/internal/sentry"
 )
+
+// syncBuffer is defined in helpers_test.go (no build constraint).
+
+func TestReloadPanicHandler_LogsError(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "audit.log")
+	logger, err := audit.New("json", "file", logPath, false, false)
+	if err != nil {
+		t.Fatalf("creating logger: %v", err)
+	}
+
+	reloadPanicHandler("test panic value", nil, logger, "/tmp/test.yaml")
+	logger.Close()
+
+	data, err := os.ReadFile(filepath.Clean(logPath))
+	if err != nil {
+		t.Fatalf("reading log: %v", err)
+	}
+	logOutput := string(data)
+	if !strings.Contains(logOutput, "scanner construction panic") {
+		t.Errorf("expected panic logged, got: %q", logOutput)
+	}
+	if !strings.Contains(logOutput, "test panic value") {
+		t.Errorf("expected panic value in log, got: %q", logOutput)
+	}
+}
+
+func TestReloadPanicHandler_NilRecovery(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "audit.log")
+	logger, err := audit.New("json", "file", logPath, false, false)
+	if err != nil {
+		t.Fatalf("creating logger: %v", err)
+	}
+
+	// nil recovery value should be a no-op.
+	reloadPanicHandler(nil, nil, logger, "/tmp/test.yaml")
+	logger.Close()
+
+	data, err := os.ReadFile(filepath.Clean(logPath))
+	if err != nil {
+		t.Fatalf("reading log: %v", err)
+	}
+	if strings.Contains(string(data), "panic") {
+		t.Error("expected no log output for nil recovery")
+	}
+}
+
+func TestReloadPanicHandler_WithSentryClient(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "audit.log")
+	logger, err := audit.New("json", "file", logPath, false, false)
+	if err != nil {
+		t.Fatalf("creating logger: %v", err)
+	}
+
+	// Use a disabled sentry client — verifies the nil-check branch
+	// (sentryClient != nil) is exercised without actually sending.
+	sentryClient := &plsentry.Client{}
+	reloadPanicHandler("boom", sentryClient, logger, "/tmp/test.yaml")
+	logger.Close()
+
+	data, err := os.ReadFile(filepath.Clean(logPath))
+	if err != nil {
+		t.Fatalf("reading log: %v", err)
+	}
+	if !strings.Contains(string(data), "boom") {
+		t.Error("expected panic value in log")
+	}
+}
+
+func TestReloadPanicHandler_EndToEnd(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "audit.log")
+	logger, err := audit.New("json", "file", logPath, false, false)
+	if err != nil {
+		t.Fatalf("creating logger: %v", err)
+	}
+
+	// Simulate the exact pattern used in runCmd: a deferred recover
+	// calling reloadPanicHandler after a panic.
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				reloadPanicHandler(r, nil, logger, "/tmp/test.yaml")
+			}
+		}()
+		panic("simulated scanner panic")
+	}()
+	logger.Close()
+
+	data, err := os.ReadFile(filepath.Clean(logPath))
+	if err != nil {
+		t.Fatalf("reading log: %v", err)
+	}
+	logOutput := string(data)
+	if !strings.Contains(logOutput, "simulated scanner panic") {
+		t.Errorf("expected panic message in log, got: %q", logOutput)
+	}
+	if !strings.Contains(logOutput, "scanner construction panic") {
+		t.Errorf("expected error context in log, got: %q", logOutput)
+	}
+}
 
 func listenUDP(t *testing.T) net.PacketConn {
 	t.Helper()
@@ -586,5 +694,228 @@ logging:
 	case <-cmdErr:
 	case <-time.After(5 * time.Second):
 		t.Fatal("runCmd did not exit")
+	}
+}
+
+func TestRunCmd_SentryInitFailureWarning(t *testing.T) {
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "test.yaml")
+	cfgContent := fmt.Sprintf(`version: 1
+mode: balanced
+sentry:
+  enabled: true
+  dsn: "not-a-valid-dsn"
+fetch_proxy:
+  listen: "%s"
+`, addr)
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	stderr := &syncBuffer{}
+	cmd := rootCmd()
+	cmd.SetContext(ctx)
+	cmd.SetArgs([]string{"run", "--config", cfgPath})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(stderr)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- cmd.Execute()
+	}()
+
+	// Wait for the proxy to become healthy, then shut down.
+	client := &http.Client{Timeout: time.Second}
+	healthURL := "http://" + addr + "/health"
+	deadline := time.Now().Add(5 * time.Second)
+	healthy := false
+	for time.Now().Before(deadline) {
+		select {
+		case runErr := <-errCh:
+			cancel()
+			t.Fatalf("run exited early: %v", runErr)
+		default:
+		}
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+		resp, rerr := client.Do(req) //nolint:gosec // test-only URL
+		if rerr == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				healthy = true
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !healthy {
+		cancel()
+		t.Fatal("proxy never became healthy within 5s")
+	}
+
+	cancel()
+	select {
+	case <-errCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("run did not shut down")
+	}
+
+	if !stderr.contains("sentry init failed") {
+		t.Error("expected sentry init warning on stderr")
+	}
+}
+
+func TestRunCmd_ProxyStartError_BindFailure(t *testing.T) {
+	// Bind a port so the proxy will fail with "address already in use".
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	addr := ln.Addr().String()
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "test.yaml")
+	cfgContent := fmt.Sprintf(`version: 1
+mode: balanced
+fetch_proxy:
+  listen: "%s"
+`, addr)
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"run", "--config", cfgPath})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+
+	err = cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when port is already in use")
+	}
+	if !strings.Contains(err.Error(), "proxy error") {
+		t.Errorf("expected 'proxy error' in error message, got: %v", err)
+	}
+}
+
+func TestRunCmd_ReloadRejectedConfig(t *testing.T) {
+	// Start with a valid config, then write a config with an invalid DLP
+	// regex. config.Load() rejects the invalid config before scanner
+	// construction, so the proxy should continue running with the original
+	// config. (The recover() panic-recovery path is tested separately in
+	// TestReloadPanicHandler_EndToEnd.)
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "test.yaml")
+	cfgContent := fmt.Sprintf(`version: 1
+mode: balanced
+fetch_proxy:
+  listen: "%s"
+  timeout_seconds: 5
+`, addr)
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	stderr := &syncBuffer{}
+	cmd := rootCmd()
+	cmd.SetContext(ctx)
+	cmd.SetArgs([]string{"run", "--config", cfgPath})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(stderr)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- cmd.Execute()
+	}()
+
+	// Wait for healthy.
+	client := &http.Client{Timeout: time.Second}
+	healthURL := "http://" + addr + "/health"
+	deadline := time.Now().Add(5 * time.Second)
+	healthy := false
+	for time.Now().Before(deadline) {
+		select {
+		case runErr := <-errCh:
+			cancel()
+			t.Fatalf("run exited early: %v", runErr)
+		default:
+		}
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+		resp, rerr := client.Do(req) //nolint:gosec // test-only URL
+		if rerr == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				healthy = true
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !healthy {
+		cancel()
+		t.Fatal("proxy never became healthy within 5s")
+	}
+
+	// Write a config with an invalid DLP regex. config.Load() rejects this
+	// before scanner construction, so the proxy survives and continues
+	// serving with the original config.
+	invalidCfg := fmt.Sprintf(`version: 1
+mode: balanced
+fetch_proxy:
+  listen: "%s"
+  timeout_seconds: 5
+dlp:
+  patterns:
+    - name: "Bad Pattern"
+      regex: "[invalid"
+      severity: "high"
+`, addr)
+	if err := os.WriteFile(cfgPath, []byte(invalidCfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for the reload attempt (fsnotify + debounce).
+	time.Sleep(500 * time.Millisecond)
+
+	// Proxy should still be healthy — the invalid reload was rejected.
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+	resp, err := client.Do(req) //nolint:gosec // test-only URL
+	if err != nil {
+		cancel()
+		t.Fatalf("proxy not healthy after bad reload: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 after bad reload, got %d", resp.StatusCode)
+	}
+
+	cancel()
+	select {
+	case <-errCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("run did not shut down")
 	}
 }

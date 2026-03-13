@@ -5,10 +5,12 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -26,6 +28,11 @@ const (
 	fieldFwdProxy       = "forward_proxy.enabled"
 	fieldKSAPIListen    = "kill_switch.api_listen"
 	fieldTLSPassthrough = "tls_interception.passthrough_domains"
+	fieldSentry         = "sentry"
+
+	// testLicenseFileCfg is a minimal config with license_file pointing to a
+	// relative file name. Used in multiple license loading tests.
+	testLicenseFileCfg = "mode: balanced\nlicense_file: license.token\n"
 )
 
 func TestDefaults(t *testing.T) {
@@ -1301,8 +1308,9 @@ func TestValidateReload_MultipleWarnings(t *testing.T) {
 	updated.ResponseScanning.Enabled = false
 
 	warnings := ValidateReload(old, updated)
-	if len(warnings) != 5 {
-		t.Errorf("expected 5 warnings, got %d", len(warnings))
+	// 5 original warnings + 1 sentry DLP pattern count warning
+	if len(warnings) != 6 {
+		t.Errorf("expected 6 warnings, got %d", len(warnings))
 		for _, w := range warnings {
 			t.Logf("  %s: %s", w.Field, w.Message)
 		}
@@ -1805,8 +1813,8 @@ func TestValidate_SecretsFileWorldReadable(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for world-readable secrets file")
 	}
-	if !strings.Contains(err.Error(), "world-readable") {
-		t.Errorf("error should mention world-readable, got: %v", err)
+	if !strings.Contains(err.Error(), "unsafe permissions") {
+		t.Errorf("error should mention unsafe permissions, got: %v", err)
 	}
 }
 
@@ -1822,6 +1830,30 @@ func TestValidate_SecretsFileValid(t *testing.T) {
 	cfg.DLP.SecretsFile = secretsPath
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("valid secrets file should pass validation: %v", err)
+	}
+}
+
+func TestValidate_SecretsFileGroupReadable(t *testing.T) {
+	dir := t.TempDir()
+	secretsPath := filepath.Join(dir, "secrets.txt")
+	if err := os.WriteFile(secretsPath, []byte("my-secret-value"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Chmod after creation to avoid umask filtering the mode.
+	if err := os.Chmod(secretsPath, 0o640); err != nil { //nolint:gosec // G302: intentionally group-readable for test
+		t.Fatal(err)
+	}
+
+	cfg := Defaults()
+	cfg.Internal = nil
+	cfg.DLP.SecretsFile = secretsPath
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for group-readable secrets_file (0640)")
+	}
+	if !strings.Contains(err.Error(), "unsafe permissions") {
+		t.Errorf("error should mention unsafe permissions, got: %v", err)
 	}
 }
 
@@ -4832,6 +4864,327 @@ func TestLicenseKeyOmitted(t *testing.T) {
 	}
 }
 
+func TestLicenseKeyFromEnvVar(t *testing.T) {
+	t.Setenv(EnvLicenseKey, "env-license-token")
+
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "cfg.yaml")
+	// Inline license_key should be overridden by env var.
+	if err := os.WriteFile(cfgPath, []byte("mode: balanced\nlicense_key: inline-token\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LicenseKey != "env-license-token" {
+		t.Errorf("license_key = %q, want env-license-token", cfg.LicenseKey)
+	}
+}
+
+func TestLicenseKeyFromEnvVarTrimsWhitespace(t *testing.T) {
+	t.Setenv(EnvLicenseKey, "  spaced-token\n")
+
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "cfg.yaml")
+	if err := os.WriteFile(cfgPath, []byte("mode: balanced\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LicenseKey != "spaced-token" {
+		t.Errorf("license_key = %q, want spaced-token", cfg.LicenseKey)
+	}
+}
+
+func TestLicenseKeyEnvWhitespaceOnlyFallsThrough(t *testing.T) {
+	// Whitespace-only env var should not win; fall through to file source.
+	t.Setenv(EnvLicenseKey, "  \n\t")
+
+	tmp := t.TempDir()
+	tokenPath := filepath.Join(tmp, "license.token")
+	if err := os.WriteFile(tokenPath, []byte("file-fallback"), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+
+	cfgPath := filepath.Join(tmp, "cfg.yaml")
+	if err := os.WriteFile(cfgPath, []byte(testLicenseFileCfg), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LicenseKey != "file-fallback" {
+		t.Errorf("license_key = %q, want file-fallback (whitespace env should fall through)", cfg.LicenseKey)
+	}
+}
+
+func TestLicenseKeyFromFile(t *testing.T) {
+	tmp := t.TempDir()
+
+	// Write license token file.
+	tokenPath := filepath.Join(tmp, "license.token")
+	if err := os.WriteFile(tokenPath, []byte("file-license-token\n"), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+
+	cfgPath := filepath.Join(tmp, "cfg.yaml")
+	if err := os.WriteFile(cfgPath, []byte(testLicenseFileCfg), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LicenseKey != "file-license-token" {
+		t.Errorf("license_key = %q, want file-license-token", cfg.LicenseKey)
+	}
+}
+
+func TestLicenseKeyFromFileAbsolutePath(t *testing.T) {
+	tmp := t.TempDir()
+
+	// Write license token file outside config directory.
+	tokenDir := t.TempDir()
+	tokenPath := filepath.Join(tokenDir, "license.token")
+	if err := os.WriteFile(tokenPath, []byte("abs-path-token"), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+
+	cfgPath := filepath.Join(tmp, "cfg.yaml")
+	cfgContent := "mode: balanced\nlicense_file: " + tokenPath + "\n"
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LicenseKey != "abs-path-token" {
+		t.Errorf("license_key = %q, want abs-path-token", cfg.LicenseKey)
+	}
+}
+
+func TestLicenseKeyFileMissing(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "cfg.yaml")
+	cfgContent := "mode: balanced\nlicense_file: nonexistent.token\n"
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	_, err := Load(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for missing license_file")
+	}
+	if !strings.Contains(err.Error(), "license_file") {
+		t.Errorf("error should mention license_file, got: %v", err)
+	}
+}
+
+func TestLicenseKeyFileEmpty(t *testing.T) {
+	tmp := t.TempDir()
+
+	tokenPath := filepath.Join(tmp, "license.token")
+	if err := os.WriteFile(tokenPath, []byte(""), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+
+	cfgPath := filepath.Join(tmp, "cfg.yaml")
+	if err := os.WriteFile(cfgPath, []byte(testLicenseFileCfg), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	_, err := Load(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for empty license_file")
+	}
+	if !strings.Contains(err.Error(), "empty") {
+		t.Errorf("error should mention empty, got: %v", err)
+	}
+}
+
+func TestLicenseKeyFileWhitespaceOnly(t *testing.T) {
+	tmp := t.TempDir()
+
+	tokenPath := filepath.Join(tmp, "license.token")
+	// File with only whitespace should be treated as empty.
+	if err := os.WriteFile(tokenPath, []byte("  \n\t\n"), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+
+	cfgPath := filepath.Join(tmp, "cfg.yaml")
+	if err := os.WriteFile(cfgPath, []byte(testLicenseFileCfg), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	_, err := Load(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for whitespace-only license_file")
+	}
+}
+
+func TestLicenseKeyFileEmptyDoesNotFallBackToInline(t *testing.T) {
+	// When license_file is configured but empty, pipelock must error
+	// rather than silently falling back to the inline license_key.
+	tmp := t.TempDir()
+
+	tokenPath := filepath.Join(tmp, "license.token")
+	if err := os.WriteFile(tokenPath, []byte(""), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+
+	cfgPath := filepath.Join(tmp, "cfg.yaml")
+	cfgContent := "mode: balanced\nlicense_file: license.token\nlicense_key: inline-should-not-be-used\n"
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := Load(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for empty license_file, must not fall back to inline license_key")
+	}
+}
+
+func TestLicenseKeyFilePermissiveModeRejected(t *testing.T) {
+	tmp := t.TempDir()
+
+	tokenPath := filepath.Join(tmp, "license.token")
+	if err := os.WriteFile(tokenPath, []byte("valid-token"), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+	// Widen permissions to trigger the permissive-mode guard.
+	if err := os.Chmod(tokenPath, 0o644); err != nil { //nolint:gosec // intentionally permissive for test
+		t.Fatalf("chmod token: %v", err)
+	}
+
+	cfgPath := filepath.Join(tmp, "cfg.yaml")
+	if err := os.WriteFile(cfgPath, []byte(testLicenseFileCfg), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := Load(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for permissive license_file mode")
+	}
+	if !strings.Contains(err.Error(), "too permissive") {
+		t.Errorf("error should mention permissive mode, got: %v", err)
+	}
+}
+
+func TestLicenseKeyFileOversized(t *testing.T) {
+	tmp := t.TempDir()
+
+	tokenPath := filepath.Join(tmp, "license.token")
+	// Write a file exceeding the 16 KiB cap.
+	bigData := make([]byte, 17*1024)
+	for i := range bigData {
+		bigData[i] = 'A'
+	}
+	if err := os.WriteFile(tokenPath, bigData, 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+
+	cfgPath := filepath.Join(tmp, "cfg.yaml")
+	if err := os.WriteFile(cfgPath, []byte(testLicenseFileCfg), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := Load(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for oversized license_file")
+	}
+	if !strings.Contains(err.Error(), "exceeds") {
+		t.Errorf("error should mention exceeds, got: %v", err)
+	}
+}
+
+func TestLicenseKeyFileNonRegular(t *testing.T) {
+	tmp := t.TempDir()
+
+	fifoPath := filepath.Join(tmp, "license.token")
+	if err := syscall.Mkfifo(fifoPath, 0o600); err != nil {
+		t.Skipf("cannot create FIFO: %v", err)
+	}
+
+	cfgPath := filepath.Join(tmp, "cfg.yaml")
+	if err := os.WriteFile(cfgPath, []byte(testLicenseFileCfg), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := Load(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for non-regular license_file")
+	}
+	if !strings.Contains(err.Error(), "regular file") {
+		t.Errorf("error should mention regular file, got: %v", err)
+	}
+}
+
+func TestLicenseKeyEnvOverridesFile(t *testing.T) {
+	t.Setenv(EnvLicenseKey, "env-wins")
+
+	tmp := t.TempDir()
+
+	tokenPath := filepath.Join(tmp, "license.token")
+	if err := os.WriteFile(tokenPath, []byte("file-loses"), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+
+	cfgPath := filepath.Join(tmp, "cfg.yaml")
+	cfgContent := "mode: balanced\nlicense_file: license.token\nlicense_key: inline-loses\n"
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LicenseKey != "env-wins" {
+		t.Errorf("license_key = %q, want env-wins (env var should take priority)", cfg.LicenseKey)
+	}
+}
+
+func TestLicenseKeyFileOverridesInline(t *testing.T) {
+	tmp := t.TempDir()
+
+	tokenPath := filepath.Join(tmp, "license.token")
+	if err := os.WriteFile(tokenPath, []byte("file-wins"), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+
+	cfgPath := filepath.Join(tmp, "cfg.yaml")
+	cfgContent := "mode: balanced\nlicense_file: license.token\nlicense_key: inline-loses\n"
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LicenseKey != "file-wins" {
+		t.Errorf("license_key = %q, want file-wins (file should override inline)", cfg.LicenseKey)
+	}
+}
+
+func TestLicenseFileParsedFromYAML(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "cfg.yaml")
+	cfgContent := "mode: balanced\nlicense_file: /some/path/license.token\n"
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	// Load will fail because the file doesn't exist, but verify
+	// the field is parsed correctly from the error message.
+	_, err := Load(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for missing license_file")
+	}
+	if !strings.Contains(err.Error(), "/some/path/license.token") {
+		t.Errorf("error should reference the configured path, got: %v", err)
+	}
+}
+
 func TestAgentProfileZeroBudget(t *testing.T) {
 	var b BudgetConfig
 	if b.MaxRequestsPerSession != 0 {
@@ -5230,5 +5583,480 @@ func TestScanAPIConfig_Validate(t *testing.T) {
 				t.Errorf("unexpected error: %v", err)
 			}
 		})
+	}
+}
+
+func TestLoad_PreservesSecurityBooleanDefaults(t *testing.T) {
+	// A minimal config that omits all security booleans.
+	// These must default to true (fail-closed), not false (Go zero value).
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "minimal.yaml")
+	if err := os.WriteFile(cfgPath, []byte("mode: balanced\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	// Every security-sensitive boolean that Defaults() sets to true
+	// must remain true when omitted from config YAML.
+	checks := []struct {
+		name string
+		got  bool
+	}{
+		{"DLP.ScanEnv", cfg.DLP.ScanEnv},
+		{"ResponseScanning.Enabled", cfg.ResponseScanning.Enabled},
+		{"RequestBodyScanning.Enabled", cfg.RequestBodyScanning.Enabled},
+		{"RequestBodyScanning.ScanHeaders", cfg.RequestBodyScanning.ScanHeaders},
+		{"GitProtection.PrePushScan", cfg.GitProtection.PrePushScan},
+		{"Logging.IncludeAllowed", cfg.Logging.IncludeAllowed},
+		{"Logging.IncludeBlocked", cfg.Logging.IncludeBlocked},
+	}
+
+	for _, c := range checks {
+		if !c.got {
+			t.Errorf("%s = false, want true (security default lost during Load)", c.name)
+		}
+	}
+}
+
+func TestLoad_PartialSubsectionPreservesBoolDefaults(t *testing.T) {
+	// Sections are present but only contain non-boolean fields.
+	// Omitted booleans inside present sections must still default to true.
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "partial.yaml")
+	content := "mode: balanced\n" +
+		"request_body_scanning:\n" +
+		"  max_body_bytes: 4096\n" +
+		"logging:\n" +
+		"  format: json\n" +
+		"dlp:\n" +
+		"  min_entropy: 4.0\n" +
+		"response_scanning:\n" +
+		"  action: warn\n" +
+		"git_protection:\n" +
+		"  secrets_in_diff: true\n"
+	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	checks := []struct {
+		name string
+		got  bool
+	}{
+		{"DLP.ScanEnv", cfg.DLP.ScanEnv},
+		{"ResponseScanning.Enabled", cfg.ResponseScanning.Enabled},
+		{"RequestBodyScanning.Enabled", cfg.RequestBodyScanning.Enabled},
+		{"RequestBodyScanning.ScanHeaders", cfg.RequestBodyScanning.ScanHeaders},
+		{"GitProtection.PrePushScan", cfg.GitProtection.PrePushScan},
+		{"Logging.IncludeAllowed", cfg.Logging.IncludeAllowed},
+		{"Logging.IncludeBlocked", cfg.Logging.IncludeBlocked},
+	}
+
+	for _, c := range checks {
+		if !c.got {
+			t.Errorf("%s = false, want true (security default lost in partial subsection)", c.name)
+		}
+	}
+}
+
+func TestLoad_ExplicitFalseOverridesDefaults(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "explicit-false.yaml")
+	content := "mode: balanced\n" +
+		"dlp:\n" +
+		"  scan_env: false\n" +
+		"response_scanning:\n" +
+		"  enabled: false\n" +
+		"request_body_scanning:\n" +
+		"  enabled: false\n" +
+		"  scan_headers: false\n" +
+		"git_protection:\n" +
+		"  pre_push_scan: false\n" +
+		"logging:\n" +
+		"  include_allowed: false\n" +
+		"  include_blocked: false\n"
+	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	checks := []struct {
+		name string
+		got  bool
+	}{
+		{"DLP.ScanEnv", cfg.DLP.ScanEnv},
+		{"ResponseScanning.Enabled", cfg.ResponseScanning.Enabled},
+		{"RequestBodyScanning.Enabled", cfg.RequestBodyScanning.Enabled},
+		{"RequestBodyScanning.ScanHeaders", cfg.RequestBodyScanning.ScanHeaders},
+		{"GitProtection.PrePushScan", cfg.GitProtection.PrePushScan},
+		{"Logging.IncludeAllowed", cfg.Logging.IncludeAllowed},
+		{"Logging.IncludeBlocked", cfg.Logging.IncludeBlocked},
+	}
+
+	for _, c := range checks {
+		if c.got {
+			t.Errorf("%s = true, want false (explicit false in YAML must override default)", c.name)
+		}
+	}
+}
+
+func TestLoad_NullBooleanDefaultsToTrue(t *testing.T) {
+	// YAML null (bare key, explicit null, tilde) must default to true,
+	// not silently disable security features. This is a bypass regression:
+	// "scan_env:" (null) is different from "scan_env: false" (explicit opt-out).
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "null-bools.yaml")
+	content := "mode: balanced\n" +
+		"dlp:\n" +
+		"  scan_env:\n" + // bare key (YAML null)
+		"response_scanning:\n" +
+		"  enabled: null\n" + // explicit null
+		"request_body_scanning:\n" +
+		"  enabled: ~\n" + // tilde null
+		"  scan_headers:\n" +
+		"git_protection:\n" +
+		"  pre_push_scan: null\n" +
+		"logging:\n" +
+		"  include_allowed: ~\n" +
+		"  include_blocked:\n"
+	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	checks := []struct {
+		name string
+		got  bool
+	}{
+		{"DLP.ScanEnv", cfg.DLP.ScanEnv},
+		{"ResponseScanning.Enabled", cfg.ResponseScanning.Enabled},
+		{"RequestBodyScanning.Enabled", cfg.RequestBodyScanning.Enabled},
+		{"RequestBodyScanning.ScanHeaders", cfg.RequestBodyScanning.ScanHeaders},
+		{"GitProtection.PrePushScan", cfg.GitProtection.PrePushScan},
+		{"Logging.IncludeAllowed", cfg.Logging.IncludeAllowed},
+		{"Logging.IncludeBlocked", cfg.Logging.IncludeBlocked},
+	}
+
+	for _, c := range checks {
+		if !c.got {
+			t.Errorf("%s = false, want true (YAML null must fail closed, not disable security)", c.name)
+		}
+	}
+}
+
+func TestApplySecurityDefaults_InvalidYAMLFailsClosed(t *testing.T) {
+	// If raw YAML introspection fails (defensive path), all security
+	// booleans must default to true so we never fail open.
+	cfg := &Config{} // all booleans zero (false)
+	applySecurityDefaults([]byte(":\n\t- :\n\t\t["), cfg)
+
+	checks := []struct {
+		name string
+		got  bool
+	}{
+		{"DLP.ScanEnv", cfg.DLP.ScanEnv},
+		{"ResponseScanning.Enabled", cfg.ResponseScanning.Enabled},
+		{"RequestBodyScanning.Enabled", cfg.RequestBodyScanning.Enabled},
+		{"RequestBodyScanning.ScanHeaders", cfg.RequestBodyScanning.ScanHeaders},
+		{"GitProtection.PrePushScan", cfg.GitProtection.PrePushScan},
+		{"Logging.IncludeAllowed", cfg.Logging.IncludeAllowed},
+		{"Logging.IncludeBlocked", cfg.Logging.IncludeBlocked},
+	}
+
+	for _, c := range checks {
+		if !c.got {
+			t.Errorf("%s = false, want true (invalid YAML must fail closed)", c.name)
+		}
+	}
+}
+
+func TestLoad_ExplicitTruePreserved(t *testing.T) {
+	// Explicit true in YAML must survive raw-YAML introspection without
+	// being clobbered. Proves setBoolDefault does not touch present values.
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "explicit-true.yaml")
+	content := "mode: balanced\n" +
+		"dlp:\n" +
+		"  scan_env: true\n" +
+		"response_scanning:\n" +
+		"  enabled: true\n" +
+		"request_body_scanning:\n" +
+		"  enabled: true\n" +
+		"  scan_headers: true\n" +
+		"git_protection:\n" +
+		"  pre_push_scan: true\n" +
+		"logging:\n" +
+		"  include_allowed: true\n" +
+		"  include_blocked: true\n"
+	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	checks := []struct {
+		name string
+		got  bool
+	}{
+		{"DLP.ScanEnv", cfg.DLP.ScanEnv},
+		{"ResponseScanning.Enabled", cfg.ResponseScanning.Enabled},
+		{"RequestBodyScanning.Enabled", cfg.RequestBodyScanning.Enabled},
+		{"RequestBodyScanning.ScanHeaders", cfg.RequestBodyScanning.ScanHeaders},
+		{"GitProtection.PrePushScan", cfg.GitProtection.PrePushScan},
+		{"Logging.IncludeAllowed", cfg.Logging.IncludeAllowed},
+		{"Logging.IncludeBlocked", cfg.Logging.IncludeBlocked},
+	}
+
+	for _, c := range checks {
+		if !c.got {
+			t.Errorf("%s = false, want true (explicit true must survive introspection)", c.name)
+		}
+	}
+}
+
+// --- Sentry tests ---
+
+func TestEnabled_NilDefaultsTrue(t *testing.T) {
+	cfg := SentryConfig{}
+	if !cfg.IsEnabled() {
+		t.Error("expected Enabled() to return true when Enabled is nil")
+	}
+}
+
+func TestEnabled_ExplicitlyFalse(t *testing.T) {
+	f := false
+	cfg := SentryConfig{Enabled: &f}
+	if cfg.IsEnabled() {
+		t.Error("expected Enabled() to return false when Enabled is explicitly false")
+	}
+}
+
+func TestEnabled_ExplicitlyTrue(t *testing.T) {
+	tr := true
+	cfg := SentryConfig{Enabled: &tr}
+	if !cfg.IsEnabled() {
+		t.Error("expected Enabled() to return true when Enabled is explicitly true")
+	}
+}
+
+func floatPtr(f float64) *float64 { return &f }
+
+func TestSampleRate_NilDefaultsToOne(t *testing.T) {
+	cfg := SentryConfig{}
+	if cfg.EffectiveSampleRate() != 1.0 {
+		t.Errorf("expected 1.0 for nil, got %f", cfg.EffectiveSampleRate())
+	}
+}
+
+func TestSampleRate_ExplicitZero(t *testing.T) {
+	cfg := SentryConfig{SampleRate: floatPtr(0.0)}
+	if cfg.EffectiveSampleRate() != 0.0 {
+		t.Errorf("expected 0.0 for explicit zero, got %f", cfg.EffectiveSampleRate())
+	}
+}
+
+func TestSampleRate_ExplicitValue(t *testing.T) {
+	cfg := SentryConfig{SampleRate: floatPtr(0.5)}
+	if cfg.EffectiveSampleRate() != 0.5 {
+		t.Errorf("expected 0.5, got %f", cfg.EffectiveSampleRate())
+	}
+}
+
+func TestApplyDefaults_SampleRate(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	if cfg.Sentry.EffectiveSampleRate() != 1.0 {
+		t.Errorf("expected default sample_rate 1.0, got %f", cfg.Sentry.EffectiveSampleRate())
+	}
+}
+
+func TestApplyDefaults_SentryEnvironment(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	if cfg.Sentry.Environment != "production" {
+		t.Errorf("expected default environment 'production', got %q", cfg.Sentry.Environment)
+	}
+}
+
+func TestApplyDefaults_SentryPreservesCustomValues(t *testing.T) {
+	cfg := Defaults()
+	cfg.Sentry.SampleRate = floatPtr(0.5)
+	cfg.Sentry.Environment = "staging"
+	cfg.ApplyDefaults()
+	if cfg.Sentry.EffectiveSampleRate() != 0.5 {
+		t.Errorf("expected preserved sample_rate 0.5, got %f", cfg.Sentry.EffectiveSampleRate())
+	}
+	if cfg.Sentry.Environment != "staging" {
+		t.Errorf("expected preserved environment 'staging', got %q", cfg.Sentry.Environment)
+	}
+}
+
+func TestValidate_SampleRateTooHigh(t *testing.T) {
+	cfg := Defaults()
+	cfg.Sentry.SampleRate = floatPtr(1.5)
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for sample_rate > 1.0")
+	}
+}
+
+func TestValidate_SampleRateNegative(t *testing.T) {
+	cfg := Defaults()
+	cfg.Sentry.SampleRate = floatPtr(-0.1)
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for negative sample_rate")
+	}
+}
+
+func TestValidate_SampleRateValid(t *testing.T) {
+	cfg := Defaults()
+	cfg.Sentry.SampleRate = floatPtr(0.5)
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("expected valid config, got: %v", err)
+	}
+}
+
+func TestValidate_SampleRateZeroIsValid(t *testing.T) {
+	cfg := Defaults()
+	cfg.Sentry.SampleRate = floatPtr(0.0)
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("expected sample_rate 0.0 to be valid (disables sampling), got: %v", err)
+	}
+}
+
+func TestValidate_SampleRateNaN(t *testing.T) {
+	cfg := Defaults()
+	nan := math.NaN()
+	cfg.Sentry.SampleRate = &nan
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for NaN sample_rate")
+	}
+}
+
+func TestValidateReload_SentryDSNChanged(t *testing.T) {
+	old := Defaults()
+	old.Sentry.DSN = "https://old@sentry.io/1"
+	updated := Defaults()
+	updated.Sentry.DSN = "https://new@sentry.io/2"
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == "sentry.dsn" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected warning for sentry.dsn change")
+	}
+}
+
+func TestValidateReload_SentryDSNUnchanged_NoWarning(t *testing.T) {
+	old := Defaults()
+	old.Sentry.DSN = "https://same@sentry.io/1"
+	updated := Defaults()
+	updated.Sentry.DSN = "https://same@sentry.io/1"
+	warnings := ValidateReload(old, updated)
+	for _, w := range warnings {
+		if w.Field == "sentry.dsn" {
+			t.Error("expected no warning when sentry.dsn unchanged")
+		}
+	}
+}
+
+func TestValidateReload_DLPPatternCountChanged_SentryWarning(t *testing.T) {
+	old := Defaults()
+	updated := Defaults()
+	updated.DLP.Patterns = append(updated.DLP.Patterns, DLPPattern{
+		Name: "Extra", Regex: `extra`, Severity: "high",
+	})
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == fieldSentry {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected sentry warning when DLP pattern count changes")
+	}
+}
+
+func TestValidateReload_DLPPatternCountSame_NoSentryWarning(t *testing.T) {
+	old := Defaults()
+	updated := Defaults()
+	warnings := ValidateReload(old, updated)
+	for _, w := range warnings {
+		if w.Field == fieldSentry {
+			t.Error("expected no sentry warning when DLP patterns unchanged")
+		}
+	}
+}
+
+func TestValidateReload_DLPPatternRegexChanged_SentryWarning(t *testing.T) {
+	old := Defaults()
+	updated := Defaults()
+	// Same count, but change the regex content of the first pattern.
+	updated.DLP.Patterns[0].Regex = `different-regex-[a-z]+`
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == fieldSentry {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected sentry warning when DLP pattern regex content changes")
+	}
+}
+
+func TestValidateReload_ScanEnvToggled_SentryWarning(t *testing.T) {
+	old := Defaults()
+	old.DLP.ScanEnv = true
+	updated := Defaults()
+	updated.DLP.ScanEnv = false
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == fieldSentry && strings.Contains(w.Message, "scan_env") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected sentry warning when dlp.scan_env changes")
+	}
+}
+
+func TestValidateReload_SecretsFileChanged_SentryWarning(t *testing.T) {
+	old := Defaults()
+	old.DLP.SecretsFile = "/old/secrets.txt"
+	updated := Defaults()
+	updated.DLP.SecretsFile = "/new/secrets.txt"
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == fieldSentry && strings.Contains(w.Message, "secrets_file") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected sentry warning when dlp.secrets_file changes")
 	}
 }

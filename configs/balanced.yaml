@@ -1,6 +1,6 @@
 # Pipelock config — balanced preset
 # Capability separation: agent has secrets but restricted network,
-# fetch proxy has full internet but no secrets.
+# fetch proxy has full internet but no agent secrets.
 #
 # Use this for: most developers and companies running AI agents.
 # Blocks naive attacks, detects sophisticated ones, logs everything.
@@ -365,6 +365,14 @@ logging:
   include_allowed: true
   include_blocked: true
 
+# Defaults to pipelock maintainer Sentry for crash reporting.
+# Override via SENTRY_DSN env var or set dsn below.
+sentry:
+  enabled: true
+  dsn: "https://b1902c1ea2d87902780bfbf59c0fb343@o4511026551783424.ingest.us.sentry.io/4511026559254528"
+  environment: production
+  sample_rate: 1.0
+
 internal:
   - "0.0.0.0/8"
   - "127.0.0.0/8"
@@ -404,7 +412,8 @@ scan_api:
 # --- Agent Profiles (optional) ---
 # Per-agent policy overrides. Each agent gets its own merged config.
 # Agents are identified by listener binding (spoof-proof), source CIDR matching,
-# X-Pipelock-Agent header, or ?agent= query param. Requires license_key.
+# X-Pipelock-Agent header, or ?agent= query param. Requires a license key
+# (via PIPELOCK_LICENSE_KEY env var, license_file path, or inline license_key).
 #
 # agents:
 #   claude-code:

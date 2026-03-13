@@ -44,9 +44,9 @@ Info-level events go to local logs only, with one exception noted below.
 | Type | Description | Key Fields |
 |------|-------------|------------|
 | `kill_switch_deny` | All traffic denied by emergency kill switch | `transport`, `endpoint`, `source`, `deny_message`, `client_ip` |
-| `adaptive_escalation`* | Session escalated to block level | `session`, `from`, `to`, `client_ip`, `request_id`, `score` |
+| `adaptive_escalation`* | Session threat score escalated to block level (event only; v1 does not auto-block) | `session`, `from`, `to`, `client_ip`, `request_id`, `score` |
 
-\* Critical when `to` is `block`. Otherwise warn.
+\* Critical when `to` is `block`. Otherwise warn. In v1, escalation is scoring and event emission only.
 
 ### Warn (suspicious activity)
 
@@ -59,7 +59,7 @@ Info-level events go to local logs only, with one exception noted below.
 | `ws_blocked` | WebSocket frame blocked | `target`, `direction`, `scanner`, `reason`, `client_ip`, `request_id` |
 | `response_scan` | Prompt injection detected in response | `url`, `client_ip`, `request_id`, `action`, `match_count`, `patterns` |
 | `ws_scan` | Prompt injection in WebSocket frame | `target`, `direction`, `client_ip`, `request_id`, `action`, `match_count`, `patterns` |
-| `adaptive_escalation`* | Session escalated (not to block) | `session`, `from`, `to`, `client_ip`, `request_id`, `score` |
+| `adaptive_escalation`* | Session threat score escalated (not to block level) | `session`, `from`, `to`, `client_ip`, `request_id`, `score` |
 | `error` | Internal error during request processing | `method`, `url`, `client_ip`, `request_id`, `error` |
 
 ### Info (local logs only)
@@ -272,7 +272,7 @@ index=pipelock type IN ("anomaly", "session_anomaly") fields.score>0.7
 | timechart span=5m count by type
 ```
 
-Adaptive escalation to block (agent misbehaving):
+Adaptive escalation events reaching block level:
 
 ```spl
 index=pipelock type="adaptive_escalation" fields.to="block"

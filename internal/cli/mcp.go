@@ -25,6 +25,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	plsentry "github.com/luckyPipewrench/pipelock/internal/sentry"
 )
 
 // ErrInjectionDetected is returned when pipelock mcp scan detects prompt injection.
@@ -221,6 +222,15 @@ Environment passthrough (subprocess mode only):
 			cfg = resolved.Config
 			bootSC.Close() // done with bootstrap scanner
 
+			// Set up Sentry error reporting
+			sentryClient, sentryErr := plsentry.Init(cfg, Version)
+			if sentryErr != nil {
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: sentry init failed: %v\n", sentryErr)
+			}
+			if sentryClient != nil {
+				defer sentryClient.Close()
+			}
+
 			if !cfg.ResponseScanning.Enabled {
 				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning: response scanning was disabled in config, enabling with defaults")
 				cfg.ResponseScanning = config.Defaults().ResponseScanning
@@ -334,29 +344,55 @@ Environment passthrough (subprocess mode only):
 
 				// HTTP reverse proxy mode: --listen + --upstream.
 				if hasListen && isWSUpstream {
-					return fmt.Errorf("--listen with WebSocket upstream (ws/wss) is not yet supported; use stdio mode: pipelock mcp proxy --upstream %s", upstreamURL)
+					err := fmt.Errorf("--listen with WebSocket upstream (ws/wss) is not yet supported; use stdio mode: pipelock mcp proxy --upstream %s", upstreamURL)
+					if sentryClient != nil {
+						sentryClient.CaptureError(err)
+					}
+					return err
 				}
 				if hasListen {
 					mcpLn, lnErr := (&net.ListenConfig{}).Listen(ctx, "tcp", listenAddr)
 					if lnErr != nil {
-						return fmt.Errorf("MCP listener bind %s: %w", listenAddr, lnErr)
+						err := fmt.Errorf("MCP listener bind %s: %w", listenAddr, lnErr)
+						if sentryClient != nil {
+							sentryClient.CaptureError(err)
+						}
+						return err
 					}
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: MCP reverse proxy %s -> %s (response=%s, input=%s, tools=%s, policy=%s)\n",
 						listenAddr, upstreamURL, sc.ResponseAction(), inputCfg.Action, toolAction, policyAction)
-					return mcp.RunHTTPListenerProxy(ctx, mcpLn, upstreamURL, cmd.ErrOrStderr(), sc, approver, inputCfg, toolCfg, policyCfg, ks, chainMatcher, nil, cee)
+					if err := mcp.RunHTTPListenerProxy(ctx, mcpLn, upstreamURL, cmd.ErrOrStderr(), sc, approver, inputCfg, toolCfg, policyCfg, ks, chainMatcher, nil, cee); err != nil {
+						if sentryClient != nil {
+							sentryClient.CaptureError(err)
+						}
+						return err
+					}
+					return nil
 				}
 
 				// Stdio-to-WebSocket mode: --upstream ws:// or wss://.
 				if isWSUpstream {
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: proxying WS upstream %s (response=%s, input=%s, tools=%s, policy=%s)\n",
 						upstreamURL, sc.ResponseAction(), inputCfg.Action, toolAction, policyAction)
-					return mcp.RunWSProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, sc, approver, inputCfg, toolCfg, policyCfg, ks, chainMatcher, nil, cee)
+					if err := mcp.RunWSProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, sc, approver, inputCfg, toolCfg, policyCfg, ks, chainMatcher, nil, cee); err != nil {
+						if sentryClient != nil {
+							sentryClient.CaptureError(err)
+						}
+						return err
+					}
+					return nil
 				}
 
 				// Stdio-to-HTTP mode: --upstream only.
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: proxying upstream %s (response=%s, input=%s, tools=%s, policy=%s)\n",
 					upstreamURL, sc.ResponseAction(), inputCfg.Action, toolAction, policyAction)
-				return mcp.RunHTTPProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, sc, approver, nil, inputCfg, toolCfg, policyCfg, ks, chainMatcher, nil, cee)
+				if err := mcp.RunHTTPProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, sc, approver, nil, inputCfg, toolCfg, policyCfg, ks, chainMatcher, nil, cee); err != nil {
+					if sentryClient != nil {
+						sentryClient.CaptureError(err)
+					}
+					return err
+				}
+				return nil
 			}
 
 			// Parse --env flags into KEY=VALUE pairs for the child process.
@@ -399,7 +435,13 @@ Environment passthrough (subprocess mode only):
 			ctx, cancel := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 			defer cancel()
 
-			return mcp.RunProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), serverCmd, sc, approver, inputCfg, toolCfg, policyCfg, ks, chainMatcher, nil, cee, extraEnv...)
+			if err := mcp.RunProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), serverCmd, sc, approver, inputCfg, toolCfg, policyCfg, ks, chainMatcher, nil, cee, extraEnv...); err != nil {
+				if sentryClient != nil {
+					sentryClient.CaptureError(err)
+				}
+				return err
+			}
+			return nil
 		},
 	}
 

@@ -102,7 +102,7 @@ type Decision struct {
 // Decide evaluates an agent action against pipelock's scanning pipeline.
 // policyCfg may be nil if tool policy is disabled. The cfg.Enforce flag
 // controls whether block-level findings deny the action or just warn.
-func Decide(cfg *config.Config, sc *scanner.Scanner, policyCfg *policy.Config, action Action) Decision {
+func Decide(ctx context.Context, cfg *config.Config, sc *scanner.Scanner, policyCfg *policy.Config, action Action) Decision {
 	switch action.Kind {
 	case EventShellExecution:
 		return decideShell(cfg, sc, policyCfg, action.Shell)
@@ -111,7 +111,7 @@ func Decide(cfg *config.Config, sc *scanner.Scanner, policyCfg *policy.Config, a
 	case EventReadFile:
 		return decideFile(cfg, sc, policyCfg, action.File)
 	case EventWebFetch:
-		return decideWebFetch(cfg, sc, action.WebFetch)
+		return decideWebFetch(ctx, cfg, sc, action.WebFetch)
 	case EventWriteFile:
 		return decideWrite(cfg, sc, policyCfg, action.Write)
 	default:
@@ -202,7 +202,7 @@ func decideFile(cfg *config.Config, sc *scanner.Scanner, policyCfg *policy.Confi
 	return decideFileContent(cfg, sc, policyCfg, "read_file", p.FilePath, p.Content)
 }
 
-func decideWebFetch(cfg *config.Config, sc *scanner.Scanner, p *WebFetchPayload) Decision {
+func decideWebFetch(ctx context.Context, cfg *config.Config, sc *scanner.Scanner, p *WebFetchPayload) Decision {
 	if p == nil {
 		return deny("pipelock: missing WebFetch payload")
 	}
@@ -213,7 +213,7 @@ func decideWebFetch(cfg *config.Config, sc *scanner.Scanner, p *WebFetchPayload)
 	}
 
 	// Run the full URL scanner pipeline (scheme, blocklist, DLP, SSRF, etc.).
-	result := sc.Scan(context.Background(), p.URL)
+	result := sc.Scan(ctx, p.URL)
 	if result.Allowed {
 		return Decision{Outcome: Allow}
 	}

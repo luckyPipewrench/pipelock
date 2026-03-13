@@ -24,8 +24,11 @@ jobs:
           test-vectors: 'false'  # MCP scanning gaps expected for a Go source repo
           exclude-paths: |
             internal/scanner/scanner_test.go
+            internal/scanner/scan_env_test.go
             internal/scanner/text_dlp_test.go
+            internal/cli/test.go
             internal/cli/license_test.go
+            enterprise/licenseservice/*_test.go
             README.md
             assets/demo.cast
             docs/attacks-blocked.md

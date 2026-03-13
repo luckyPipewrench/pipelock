@@ -27,7 +27,7 @@ const (
 	licenseLedgerFile  = "licenses.jsonl"
 )
 
-// LicenseCmd returns the license command tree: keygen, issue, inspect.
+// LicenseCmd returns the license command tree: keygen, issue, inspect, install.
 func LicenseCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "license",
@@ -37,6 +37,7 @@ func LicenseCmd() *cobra.Command {
 		licenseKeygenCmd(),
 		licenseIssueCmd(),
 		licenseInspectCmd(),
+		licenseInstallCmd(),
 	)
 	return cmd
 }
@@ -100,12 +101,14 @@ func licenseKeygenCmd() *cobra.Command {
 
 func licenseIssueCmd() *cobra.Command {
 	var (
-		keyPath    string
-		email      string
-		org        string
-		expiresStr string
-		features   []string
-		ledgerPath string
+		keyPath        string
+		email          string
+		org            string
+		expiresStr     string
+		features       []string
+		ledgerPath     string
+		tier           string
+		subscriptionID string
 	)
 
 	cmd := &cobra.Command{
@@ -147,12 +150,14 @@ func licenseIssueCmd() *cobra.Command {
 			}
 
 			lic := license.License{
-				ID:        "lic_" + hex.EncodeToString(idBytes),
-				Email:     email,
-				Org:       org,
-				IssuedAt:  time.Now().Unix(),
-				ExpiresAt: expiresAt,
-				Features:  features,
+				ID:             "lic_" + hex.EncodeToString(idBytes),
+				Email:          email,
+				Org:            org,
+				IssuedAt:       time.Now().Unix(),
+				ExpiresAt:      expiresAt,
+				Features:       features,
+				Tier:           tier,
+				SubscriptionID: subscriptionID,
 			}
 
 			token, err := license.Issue(lic, priv)
@@ -174,6 +179,12 @@ func licenseIssueCmd() *cobra.Command {
 			if lic.Org != "" {
 				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Org:      %s\n", lic.Org)
 			}
+			if lic.Tier != "" {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Tier:     %s\n", lic.Tier)
+			}
+			if lic.SubscriptionID != "" {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Sub ID:   %s\n", lic.SubscriptionID)
+			}
 			if lic.ExpiresAt > 0 {
 				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Expires:  %s\n", time.Unix(lic.ExpiresAt, 0).UTC().Format(time.DateOnly))
 			} else {
@@ -193,6 +204,8 @@ func licenseIssueCmd() *cobra.Command {
 	cmd.Flags().StringVar(&expiresStr, "expires", "", "expiration date YYYY-MM-DD (omit for no expiration)")
 	cmd.Flags().StringSliceVar(&features, "features", nil, "feature list (default: [agents])")
 	cmd.Flags().StringVar(&ledgerPath, "ledger", "", "ledger file path (default: alongside private key)")
+	cmd.Flags().StringVar(&tier, "tier", "", "license tier (e.g. pro, founding_pro)")
+	cmd.Flags().StringVar(&subscriptionID, "subscription-id", "", "external billing subscription ID")
 	return cmd
 }
 
@@ -212,6 +225,12 @@ func licenseInspectCmd() *cobra.Command {
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Email:    %s\n", lic.Email)
 			if lic.Org != "" {
 				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Org:      %s\n", lic.Org)
+			}
+			if lic.Tier != "" {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Tier:     %s\n", lic.Tier)
+			}
+			if lic.SubscriptionID != "" {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Sub ID:   %s\n", lic.SubscriptionID)
 			}
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Issued:   %s\n", time.Unix(lic.IssuedAt, 0).UTC().Format(time.RFC3339))
 			if lic.ExpiresAt > 0 {
@@ -234,25 +253,98 @@ func licenseInspectCmd() *cobra.Command {
 	return cmd
 }
 
+// licenseDefaultTokenFile is the default filename for installed license tokens.
+const licenseDefaultTokenFile = "license.token"
+
+func licenseInstallCmd() *cobra.Command {
+	var tokenPath string
+
+	cmd := &cobra.Command{
+		Use:   "install TOKEN",
+		Short: "Install a license token to a file for pipelock to read at startup",
+		Long: `Writes the license token to a file. Point your config at this file
+with license_file, or set PIPELOCK_LICENSE_KEY to the token value.
+
+Default path: ~/.config/pipelock/license.token`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			token := args[0]
+
+			// Decode to validate format before writing.
+			lic, err := license.Decode(token)
+			if err != nil {
+				return fmt.Errorf("invalid license token: %w", err)
+			}
+
+			if tokenPath == "" {
+				home, err := os.UserHomeDir()
+				if err != nil {
+					return fmt.Errorf("find home dir: %w", err)
+				}
+				tokenPath = filepath.Join(home, licenseDefaultDir, licenseDefaultTokenFile)
+			}
+
+			// Ensure parent directory exists.
+			dir := filepath.Dir(tokenPath)
+			if err := os.MkdirAll(dir, 0o750); err != nil {
+				return fmt.Errorf("create directory %s: %w", dir, err)
+			}
+
+			// Atomic write: temp file then rename to prevent partial writes.
+			cleanPath := filepath.Clean(tokenPath)
+			tmpPath := cleanPath + ".tmp"
+			if err := os.WriteFile(tmpPath, []byte(token+"\n"), 0o600); err != nil {
+				return fmt.Errorf("write license file: %w", err)
+			}
+			if err := os.Rename(tmpPath, cleanPath); err != nil {
+				_ = os.Remove(tmpPath)
+				return fmt.Errorf("install license file: %w", err)
+			}
+
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "License installed:\n")
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  ID:       %s\n", lic.ID)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Email:    %s\n", lic.Email)
+			if lic.ExpiresAt > 0 {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Expires:  %s\n", time.Unix(lic.ExpiresAt, 0).UTC().Format(time.DateOnly))
+			} else {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Expires:  never\n")
+			}
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Path:     %s\n", cleanPath)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "\nAdd to your pipelock config:\n")
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  license_file: %s\n", cleanPath)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "\nRestart pipelock to activate.\n")
+
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&tokenPath, "path", "", "file path to write the token (default: ~/.config/pipelock/license.token)")
+	return cmd
+}
+
 // ledgerEntry records an issued license for tracking.
 type ledgerEntry struct {
-	ID        string   `json:"id"`
-	Email     string   `json:"email"`
-	Org       string   `json:"org,omitempty"`
-	IssuedAt  string   `json:"issued_at"`
-	ExpiresAt string   `json:"expires_at,omitempty"`
-	Features  []string `json:"features"`
-	Token     string   `json:"token"`
+	ID             string   `json:"id"`
+	Email          string   `json:"email"`
+	Org            string   `json:"org,omitempty"`
+	Tier           string   `json:"tier,omitempty"`
+	SubscriptionID string   `json:"subscription_id,omitempty"`
+	IssuedAt       string   `json:"issued_at"`
+	ExpiresAt      string   `json:"expires_at,omitempty"`
+	Features       []string `json:"features"`
+	Token          string   `json:"token"`
 }
 
 func appendLedger(path string, lic license.License, token string) error {
 	entry := ledgerEntry{
-		ID:       lic.ID,
-		Email:    lic.Email,
-		Org:      lic.Org,
-		IssuedAt: time.Unix(lic.IssuedAt, 0).UTC().Format(time.RFC3339),
-		Features: lic.Features,
-		Token:    token,
+		ID:             lic.ID,
+		Email:          lic.Email,
+		Org:            lic.Org,
+		Tier:           lic.Tier,
+		SubscriptionID: lic.SubscriptionID,
+		IssuedAt:       time.Unix(lic.IssuedAt, 0).UTC().Format(time.RFC3339),
+		Features:       lic.Features,
+		Token:          token,
 	}
 	if lic.ExpiresAt > 0 {
 		entry.ExpiresAt = time.Unix(lic.ExpiresAt, 0).UTC().Format(time.DateOnly)

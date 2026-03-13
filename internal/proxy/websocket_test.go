@@ -738,9 +738,7 @@ func TestWSProxyHeaderDLPBlock(t *testing.T) {
 	}
 }
 
-func TestWSProxyHeaderDLPBlockAllowlisted(t *testing.T) {
-	// Auth header DLP must block even when the target host is allowlisted.
-	// Allowlist controls URL-level blocking, not header DLP bypass.
+func TestWSProxyHeaderDLPBlocksAllowlistedHost(t *testing.T) {
 	backendAddr, backendCleanup := wsEchoServer(t)
 	defer backendCleanup()
 
@@ -753,6 +751,8 @@ func TestWSProxyHeaderDLPBlockAllowlisted(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	// Secret in Authorization header must be caught even for allowlisted hosts.
+	// Allowlist controls URL-level blocking, not header DLP bypass.
 	secret := "sk-ant-" + "IOSFODNN7EXAMPLE1234567890abcdef"
 	wsURL := fmt.Sprintf("ws://%s/ws?url=ws://%s", proxyAddr, backendAddr)
 
@@ -763,11 +763,12 @@ func TestWSProxyHeaderDLPBlockAllowlisted(t *testing.T) {
 		Timeout: 5 * time.Second,
 	}
 
-	_, _, _, err := dialer.Dial(ctx, wsURL)
-	// Auth header DLP blocks regardless of allowlist.
+	conn, _, _, err := dialer.Dial(ctx, wsURL)
 	if err == nil {
-		t.Fatal("expected dial to fail: DLP must block auth header secrets even for allowlisted hosts")
+		_ = conn.Close()
+		t.Fatal("expected dial to fail: header DLP must block secrets regardless of allowlist")
 	}
+	// Connection should be rejected with DLP match.
 }
 
 func TestWSProxyHeaderDLPBlockCookie(t *testing.T) {

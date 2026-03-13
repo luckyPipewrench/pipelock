@@ -6,8 +6,6 @@
 package cli
 
 import (
-	"bytes"
-	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -18,29 +16,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 )
 
-// syncBuffer is a thread-safe bytes.Buffer for capturing goroutine output.
-type syncBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *syncBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *syncBuffer) contains(s string) bool {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return bytes.Contains(b.buf.Bytes(), []byte(s))
-}
-
-func (b *syncBuffer) reset() {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.buf.Reset()
-}
+// syncBuffer is defined in helpers_test.go (no build constraint).
 
 func TestRegisterKillSwitchSignal(t *testing.T) {
 	cfg := config.Defaults()

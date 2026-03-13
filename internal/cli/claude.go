@@ -187,7 +187,7 @@ func runClaudeHook(cmd *cobra.Command, configFile string, exitCodeMode bool) (re
 	}
 
 	// Decide.
-	decision := decide.Decide(cfg, sc, pc, *action)
+	decision := decide.Decide(cmd.Context(), cfg, sc, pc, *action)
 
 	// Map outcome.
 	perm := decisionAllow

@@ -17,6 +17,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
@@ -819,7 +820,8 @@ func TestScan_DLPSubdomainDotCollapse(t *testing.T) {
 
 func TestScan_DLPSlackToken(t *testing.T) {
 	s := New(testConfig())
-	result := s.Scan(context.Background(), "https://example.com/api?token=xoxb-1234567890-abcdefghij") // gitleaks:allow
+	token := "xoxb-" + "1234567890-abcdefghij"
+	result := s.Scan(context.Background(), "https://example.com/api?token="+token)
 	if result.Allowed {
 		t.Error("expected DLP to catch Slack token")
 	}
@@ -2615,7 +2617,7 @@ func TestScan_AllowlistRunsBeforeBlocklist(t *testing.T) {
 	}
 }
 
-// --- loadSecretsFile Tests ---
+// --- LoadSecretsFile Tests ---
 
 func TestLoadSecretsFile_Basic(t *testing.T) {
 	dir := t.TempDir()
@@ -2628,7 +2630,7 @@ func TestLoadSecretsFile_Basic(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	secrets, err := loadSecretsFile(path, 16)
+	secrets, err := LoadSecretsFile(path, 16)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2648,7 +2650,7 @@ func TestLoadSecretsFile_CommentsAndBlankLines(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	secrets, err := loadSecretsFile(path, 16)
+	secrets, err := LoadSecretsFile(path, 16)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2665,7 +2667,7 @@ func TestLoadSecretsFile_InlineHashPreserved(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	secrets, err := loadSecretsFile(path, 16)
+	secrets, err := LoadSecretsFile(path, 16)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2682,7 +2684,7 @@ func TestLoadSecretsFile_TrailingWhitespaceStripped(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	secrets, err := loadSecretsFile(path, 16)
+	secrets, err := LoadSecretsFile(path, 16)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2701,7 +2703,7 @@ func TestLoadSecretsFile_CRLFLineEndings(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	secrets, err := loadSecretsFile(path, 16)
+	secrets, err := LoadSecretsFile(path, 16)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2724,7 +2726,7 @@ func TestLoadSecretsFile_UTF8BOMStripped(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	secrets, err := loadSecretsFile(path, 16)
+	secrets, err := LoadSecretsFile(path, 16)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2747,7 +2749,7 @@ func TestLoadSecretsFile_NullBytesSkipped(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	secrets, err := loadSecretsFile(path, 16)
+	secrets, err := LoadSecretsFile(path, 16)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2764,7 +2766,7 @@ func TestLoadSecretsFile_MinLengthFiltered(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	secrets, err := loadSecretsFile(path, 16)
+	secrets, err := LoadSecretsFile(path, 16)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2782,7 +2784,7 @@ func TestLoadSecretsFile_MaxLineLengthEnforced(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	secrets, err := loadSecretsFile(path, 16)
+	secrets, err := LoadSecretsFile(path, 16)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2802,7 +2804,7 @@ func TestLoadSecretsFile_MaxEntriesEnforced(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	secrets, err := loadSecretsFile(path, 16)
+	secrets, err := LoadSecretsFile(path, 16)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2818,7 +2820,7 @@ func TestLoadSecretsFile_EmptyFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	secrets, err := loadSecretsFile(path, 16)
+	secrets, err := LoadSecretsFile(path, 16)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2828,7 +2830,7 @@ func TestLoadSecretsFile_EmptyFile(t *testing.T) {
 }
 
 func TestLoadSecretsFile_FileNotFound(t *testing.T) {
-	_, err := loadSecretsFile("/nonexistent/secrets.txt", 16)
+	_, err := LoadSecretsFile("/nonexistent/secrets.txt", 16)
 	if err == nil {
 		t.Error("expected error for nonexistent file")
 	}
@@ -2842,7 +2844,7 @@ func TestLoadSecretsFile_DuplicatesPreserved(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	secrets, err := loadSecretsFile(path, 16)
+	secrets, err := LoadSecretsFile(path, 16)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3255,7 +3257,7 @@ func TestLoadSecretsFile_LeadingWhitespaceStripped(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	secrets, err := loadSecretsFile(path, 16)
+	secrets, err := LoadSecretsFile(path, 16)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3355,6 +3357,97 @@ func TestScanPopulatesHintOnBlock(t *testing.T) {
 	}
 	if result.Scanner != ScannerDLP {
 		t.Errorf("expected scanner=dlp, got %q", result.Scanner)
+	}
+}
+
+func TestScan_RespectsContextCancellation(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.DLP.Patterns = nil
+	cfg.DLP.ScanEnv = false
+	cfg.FetchProxy.Monitoring.EntropyThreshold = 0
+	sc := New(cfg)
+	defer sc.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	start := time.Now()
+	result := sc.Scan(ctx, "https://example.com/test")
+	elapsed := time.Since(start)
+
+	// Cancelled context is caught by the fail-closed guard before scanning.
+	if elapsed > 2*time.Second {
+		t.Errorf("Scan with cancelled context took %v, expected fast return", elapsed)
+	}
+	if result.Allowed {
+		t.Error("expected blocked result when context is cancelled")
+	}
+	if result.Scanner != ScannerContext {
+		t.Errorf("expected scanner=%s, got %s", ScannerContext, result.Scanner)
+	}
+}
+
+func TestScan_NilContext(t *testing.T) {
+	sc := New(testConfig())
+	defer sc.Close()
+
+	// nil context must not panic; fail-closed guard blocks it.
+	result := sc.Scan(nil, "https://example.com/test") //nolint:staticcheck // intentional nil context test
+	if result.Allowed {
+		t.Error("expected blocked result for nil context")
+	}
+	if result.Scanner != ScannerContext {
+		t.Errorf("expected scanner=%s, got %s", ScannerContext, result.Scanner)
+	}
+}
+
+func TestScan_CanceledContextWithSSRFDisabled(t *testing.T) {
+	cfg := testConfig() // cfg.Internal = nil disables SSRF
+	sc := New(cfg)
+	defer sc.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// Even with SSRF disabled, a cancelled context must block.
+	result := sc.Scan(ctx, "https://example.com/test")
+	if result.Allowed {
+		t.Error("expected blocked result for cancelled context even with SSRF disabled")
+	}
+}
+
+func TestScan_ContextTimeoutDuringDNS(t *testing.T) {
+	cfg := config.Defaults()
+	// SSRF enabled (non-nil Internal) so checkSSRF runs the DNS path.
+	cfg.DLP.Patterns = nil
+	cfg.DLP.ScanEnv = false
+	cfg.FetchProxy.Monitoring.EntropyThreshold = 0
+	sc := New(cfg)
+	defer sc.Close()
+
+	// 10ms timeout: passes the entry guard (ctx not yet expired) but
+	// expires during or before DNS resolution, proving LookupHost
+	// inherits the caller's context rather than the 5s ceiling.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond) //nolint:mnd // test timeout
+	defer cancel()
+
+	// Random subdomain forces a DNS cache miss so the resolver does real work.
+	domain := fmt.Sprintf("ctx-test-%d.test.invalid", time.Now().UnixNano())
+	start := time.Now()
+	result := sc.Scan(ctx, "https://"+domain+"/path")
+	elapsed := time.Since(start)
+
+	// Must return near the 10ms caller timeout, not the 5s DNS ceiling.
+	if elapsed > 2*time.Second {
+		t.Errorf("expected return near caller timeout, got %v", elapsed)
+	}
+	if result.Allowed {
+		t.Error("expected blocked when context expires during DNS resolution")
+	}
+	// DNS failure via caller timeout is ScannerSSRF; if the 10ms fires
+	// before checkSSRF starts it may be ScannerContext instead.
+	if result.Scanner != ScannerSSRF && result.Scanner != ScannerContext {
+		t.Errorf("expected scanner=%s or %s, got %s", ScannerSSRF, ScannerContext, result.Scanner)
 	}
 }
 

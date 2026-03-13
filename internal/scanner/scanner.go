@@ -43,6 +43,7 @@ const (
 	ScannerEntropy          = "entropy"
 	ScannerSubdomainEntropy = "subdomain_entropy"
 	ScannerDataBudget       = "databudget"
+	ScannerContext          = "context"
 	ScannerAll              = "all"
 )
 
@@ -156,7 +157,7 @@ func New(cfg *config.Config) *Scanner {
 
 	// Load explicit secrets from secrets file
 	if cfg.DLP.SecretsFile != "" {
-		fileSecrets, err := loadSecretsFile(cfg.DLP.SecretsFile, s.minEnvSecretLen)
+		fileSecrets, err := LoadSecretsFile(cfg.DLP.SecretsFile, s.minEnvSecretLen)
 		if err != nil {
 			panic(fmt.Sprintf("BUG: secrets file %q failed after validation: %v",
 				cfg.DLP.SecretsFile, err))
@@ -282,6 +283,7 @@ var scannerHints = map[string]string{
 	ScannerScheme:           "Only http and https schemes are allowed.",
 	ScannerAllowlist:        "Domain not on the allowlist. In strict mode, only allowlisted domains are reachable.",
 	ScannerParser:           "The URL could not be parsed.",
+	ScannerContext:          "The request context was nil or cancelled before the scan completed.",
 }
 
 // HintForBlock returns actionable guidance for a blocked scan result.
@@ -295,7 +297,17 @@ func HintForBlock(r *Result) string {
 
 // Scan checks a URL against all scanners and returns the result.
 // Blocked results include a Hint field with actionable guidance.
+// Fail-closed: nil or already-cancelled contexts are rejected before scanning.
 func (s *Scanner) Scan(ctx context.Context, rawURL string) Result {
+	if ctx == nil || ctx.Err() != nil {
+		return Result{
+			Allowed: false,
+			Reason:  "request context unavailable",
+			Scanner: ScannerContext,
+			Score:   1.0,
+			Hint:    scannerHints[ScannerContext],
+		}
+	}
 	r := s.scan(ctx, rawURL)
 	if !r.Allowed {
 		r.Hint = HintForBlock(&r)
@@ -377,6 +389,17 @@ func (s *Scanner) scan(ctx context.Context, rawURL string) Result {
 		return result
 	}
 
+	// Final context check: catch cancellations that arrived during in-memory
+	// scanning (blocklist, DLP, entropy) before returning an allow verdict.
+	if ctx.Err() != nil {
+		return Result{
+			Allowed: false,
+			Reason:  "request context cancelled",
+			Scanner: ScannerContext,
+			Score:   1.0,
+		}
+	}
+
 	return Result{Allowed: true, Scanner: ScannerAll, Score: 0.0}
 }
 
@@ -384,13 +407,23 @@ func (s *Scanner) scan(ctx context.Context, rawURL string) Result {
 // When no internal CIDRs are configured (nil slice), SSRF protection is disabled.
 // To block loopback, link-local, etc., include those CIDRs in config.Internal.
 func (s *Scanner) checkSSRF(ctx context.Context, hostname string) Result {
+	// Check context before the SSRF-disabled fast path so cancelled requests
+	// don't slip through when internalCIDRs is empty.
+	if ctx.Err() != nil {
+		return Result{
+			Allowed: false,
+			Reason:  "request context cancelled",
+			Scanner: ScannerContext,
+			Score:   1.0,
+		}
+	}
 	if len(s.internalCIDRs) == 0 {
 		return Result{Allowed: true}
 	}
 
 	// Resolve hostname to IP for SSRF check.
 	// Fail closed: if we can't resolve DNS, we can't verify the IP is safe.
-	dnsCtx, dnsCancel := context.WithTimeout(ctx, 5*time.Second)
+	dnsCtx, dnsCancel := context.WithTimeout(ctx, 5*time.Second) // 5s: DNS resolution ceiling; inherits caller cancellation
 	defer dnsCancel()
 	ips, err := net.DefaultResolver.LookupHost(dnsCtx, hostname)
 	if err != nil {
@@ -986,11 +1019,11 @@ func dedupSecrets(fileSecrets, envSecrets []string) []string {
 	return result
 }
 
-// loadSecretsFile reads explicit secret values from a file, one per line.
+// LoadSecretsFile reads explicit secret values from a file, one per line.
 // Lines starting with # (after optional whitespace) are comments.
 // Blank lines, null-byte lines, and lines below minLen are skipped.
 // Max 4096 bytes per line, max 1000 entries.
-func loadSecretsFile(path string, minLen int) ([]string, error) { //nolint:unparam // minLen varies in tests
+func LoadSecretsFile(path string, minLen int) ([]string, error) {
 	f, err := os.Open(filepath.Clean(path))
 	if err != nil {
 		return nil, fmt.Errorf("opening secrets file: %w", err)

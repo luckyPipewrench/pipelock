@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/url"
 	"os"
@@ -87,6 +88,10 @@ const (
 
 	// DefaultCertTTL is the default TLS interception leaf certificate TTL.
 	DefaultCertTTL = "24h"
+
+	// EnvLicenseKey is the environment variable for license token override.
+	// Takes highest priority over license_file and license_key config fields.
+	EnvLicenseKey = "PIPELOCK_LICENSE_KEY"
 )
 
 // SuppressEntry defines a finding suppression rule for false positives.
@@ -181,6 +186,7 @@ type Config struct {
 	MCPSessionBinding     MCPSessionBinding       `yaml:"mcp_session_binding"`
 	RequestBodyScanning   RequestBodyScanning     `yaml:"request_body_scanning"`
 	KillSwitch            KillSwitch              `yaml:"kill_switch"`
+	Sentry                SentryConfig            `yaml:"sentry"`
 	MetricsListen         string                  `yaml:"metrics_listen"` // separate listen address for /metrics and /stats
 	Emit                  EmitConfig              `yaml:"emit"`
 	ToolChainDetection    ToolChainDetection      `yaml:"tool_chain_detection"`
@@ -190,6 +196,7 @@ type Config struct {
 	ScanAPI               ScanAPI                 `yaml:"scan_api"`
 	Agents                map[string]AgentProfile `yaml:"agents,omitempty"`
 	LicenseKey            string                  `yaml:"license_key,omitempty"`        // signed license token (from pipelock license issue)
+	LicenseFile           string                  `yaml:"license_file,omitempty"`       // path to file containing the license token (read at startup)
 	LicensePublicKey      string                  `yaml:"license_public_key,omitempty"` // hex-encoded Ed25519 public key for license verification (dev builds only)
 	Internal              []string                `yaml:"internal"`
 
@@ -489,6 +496,29 @@ type MCPWSListener struct {
 	MaxConnections int      `yaml:"max_connections"` // max concurrent inbound WS connections (default 100)
 }
 
+// SentryConfig configures Sentry error reporting with secret redaction.
+// All error data is scrubbed through DLP patterns before leaving the process.
+type SentryConfig struct {
+	Enabled     *bool    `yaml:"enabled"`     // nil = true (default enabled)
+	DSN         string   `yaml:"dsn"`         // Sentry DSN; also reads SENTRY_DSN env
+	Environment string   `yaml:"environment"` // e.g. "production" (default)
+	SampleRate  *float64 `yaml:"sample_rate"` // nil = 1.0; 0.0-1.0
+	Debug       bool     `yaml:"debug"`       // SDK debug mode
+}
+
+// IsEnabled returns true if Sentry is enabled (nil defaults to true).
+func (s *SentryConfig) IsEnabled() bool {
+	return s.Enabled == nil || *s.Enabled
+}
+
+// EffectiveSampleRate returns the configured sample rate (nil defaults to 1.0).
+func (s *SentryConfig) EffectiveSampleRate() float64 {
+	if s.SampleRate == nil {
+		return 1.0
+	}
+	return *s.SampleRate
+}
+
 // ToolChainDetection configures MCP tool call chain pattern detection.
 // Detects attack patterns in sequences of tool calls using subsequence
 // matching with a configurable max_gap constraint.
@@ -618,7 +648,19 @@ func Load(path string) (*Config, error) {
 
 	cfg.rawBytes = data
 
+	// Detect omitted security booleans via raw YAML introspection and
+	// default them to true (fail-closed). Must run before ApplyDefaults().
+	applySecurityDefaults(data, cfg)
+
 	cfg.ApplyDefaults()
+
+	// Resolve license key from multiple sources. Priority:
+	// 1. PIPELOCK_LICENSE_KEY env var (containers, CI)
+	// 2. license_file config field (file path, read at startup)
+	// 3. license_key config field (inline YAML, lowest priority)
+	if err := cfg.resolveLicenseKey(filepath.Dir(path)); err != nil {
+		return nil, fmt.Errorf("license key: %w", err)
+	}
 
 	// Soft-gate premium features: disable agents section if no license key.
 	if EnforceLicenseGateFunc != nil {
@@ -648,6 +690,59 @@ func Load(path string) (*Config, error) {
 	return cfg, nil
 }
 
+// resolveLicenseKey populates LicenseKey from the highest-priority source:
+// env var > license_file > inline license_key. The configDir is used to
+// resolve relative license_file paths.
+func (c *Config) resolveLicenseKey(configDir string) error {
+	// 1. Env var takes highest priority. Trim before checking so that a
+	// whitespace-only value (e.g. trailing newline) falls through to
+	// lower-priority sources instead of winning with an empty token.
+	if envKey := strings.TrimSpace(os.Getenv(EnvLicenseKey)); envKey != "" {
+		c.LicenseKey = envKey
+		return nil
+	}
+
+	// 2. File path: read token from the file.
+	if c.LicenseFile != "" {
+		p := c.LicenseFile
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(configDir, p)
+		}
+		p = filepath.Clean(p)
+		// Reject non-regular files (FIFOs, devices) that could hang
+		// startup, and oversized files since tokens are ~200 bytes.
+		const maxLicenseFileBytes int64 = 16 * 1024
+		info, err := os.Stat(p)
+		if err != nil {
+			return fmt.Errorf("stat license_file %s: %w", c.LicenseFile, err)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("license_file %s must be a regular file", c.LicenseFile)
+		}
+		// Reject group/world-readable files; license tokens are secrets.
+		if info.Mode().Perm()&0o077 != 0 {
+			return fmt.Errorf("license_file %s is too permissive (mode %04o): restrict to 0600",
+				c.LicenseFile, info.Mode().Perm())
+		}
+		if info.Size() > maxLicenseFileBytes {
+			return fmt.Errorf("license_file %s exceeds %d bytes", c.LicenseFile, maxLicenseFileBytes)
+		}
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return fmt.Errorf("reading license_file %s: %w", c.LicenseFile, err)
+		}
+		token := strings.TrimSpace(string(data))
+		if token == "" {
+			return fmt.Errorf("license_file %s is empty", c.LicenseFile)
+		}
+		c.LicenseKey = token
+		return nil
+	}
+
+	// 3. Inline license_key from YAML stays as-is (already parsed).
+	return nil
+}
+
 // Hash returns the SHA256 hex digest of the raw config file bytes.
 // Returns "defaults" if the config was created via Defaults() (no file).
 func (c *Config) Hash() string {
@@ -656,6 +751,55 @@ func (c *Config) Hash() string {
 	}
 	h := sha256.Sum256(c.rawBytes)
 	return hex.EncodeToString(h[:])
+}
+
+// applySecurityDefaults sets security-sensitive booleans to true when they are
+// omitted or null in the config YAML. YAML unmarshal into a plain bool cannot
+// distinguish "field omitted" (should default to true, fail-closed) from "field
+// explicitly set to false" (user intent). We unmarshal into a raw map to detect
+// which fields are actually present with a non-nil value, then default the rest.
+func applySecurityDefaults(rawYAML []byte, cfg *Config) {
+	var raw map[string]interface{}
+	if err := yaml.Unmarshal(rawYAML, &raw); err != nil {
+		// Primary unmarshal already succeeded; treat parse errors as "all omitted"
+		// so we fail closed with all security defaults enabled.
+		cfg.DLP.ScanEnv = true
+		cfg.ResponseScanning.Enabled = true
+		cfg.RequestBodyScanning.Enabled = true
+		cfg.RequestBodyScanning.ScanHeaders = true
+		cfg.GitProtection.PrePushScan = true
+		cfg.Logging.IncludeAllowed = true
+		cfg.Logging.IncludeBlocked = true
+		return
+	}
+
+	setBoolDefault := func(section map[string]interface{}, key string, target *bool) {
+		if section == nil {
+			*target = true
+			return
+		}
+		val, present := section[key]
+		if !present || val == nil { // omitted or YAML null/blank: fail closed
+			*target = true
+		}
+	}
+
+	dlp, _ := raw["dlp"].(map[string]interface{})
+	setBoolDefault(dlp, "scan_env", &cfg.DLP.ScanEnv)
+
+	resp, _ := raw["response_scanning"].(map[string]interface{})
+	setBoolDefault(resp, "enabled", &cfg.ResponseScanning.Enabled)
+
+	reqBody, _ := raw["request_body_scanning"].(map[string]interface{})
+	setBoolDefault(reqBody, "enabled", &cfg.RequestBodyScanning.Enabled)
+	setBoolDefault(reqBody, "scan_headers", &cfg.RequestBodyScanning.ScanHeaders)
+
+	git, _ := raw["git_protection"].(map[string]interface{})
+	setBoolDefault(git, "pre_push_scan", &cfg.GitProtection.PrePushScan)
+
+	logging, _ := raw["logging"].(map[string]interface{})
+	setBoolDefault(logging, "include_allowed", &cfg.Logging.IncludeAllowed)
+	setBoolDefault(logging, "include_blocked", &cfg.Logging.IncludeBlocked)
 }
 
 // ApplyDefaults fills in zero-value fields with sensible defaults.
@@ -847,6 +991,11 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.Emit.Syslog.Tag == "" {
 		c.Emit.Syslog.Tag = "pipelock"
+	}
+
+	// Sentry defaults (nil sample_rate = 1.0, handled by EffectiveSampleRate())
+	if c.Sentry.Environment == "" {
+		c.Sentry.Environment = "production"
 	}
 
 	// Tool chain detection defaults
@@ -1089,8 +1238,8 @@ func (c *Config) Validate() error {
 		if err != nil {
 			return fmt.Errorf("secrets_file %q: %w", c.DLP.SecretsFile, err)
 		}
-		if info.Mode().Perm()&0o004 != 0 {
-			return fmt.Errorf("secrets_file %q is world-readable (mode %04o): restrict to 0600", c.DLP.SecretsFile, info.Mode().Perm())
+		if info.Mode().Perm()&0o077 != 0 { // reject any group or world access
+			return fmt.Errorf("secrets_file %q has unsafe permissions (mode %04o): must have owner-only permissions (no group or world access)", c.DLP.SecretsFile, info.Mode().Perm())
 		}
 	}
 
@@ -1569,6 +1718,15 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// Validate Sentry config
+	sr := c.Sentry.EffectiveSampleRate()
+	if math.IsNaN(sr) {
+		return fmt.Errorf("invalid sentry.sample_rate: NaN not allowed")
+	}
+	if sr < 0 || sr > 1 {
+		return fmt.Errorf("invalid sentry.sample_rate %f: must be between 0.0 and 1.0", sr)
+	}
+
 	// Validate internal CIDRs are parseable
 	for _, cidr := range c.Internal {
 		if _, _, err := net.ParseCIDR(cidr); err != nil {
@@ -1894,7 +2052,47 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		}
 	}
 
+	// Sentry DSN changed (requires restart — scrubber is built once at init)
+	if old.Sentry.DSN != updated.Sentry.DSN {
+		warnings = append(warnings, ReloadWarning{Field: "sentry.dsn", Message: "Sentry DSN changes require restart"})
+	}
+
+	// Sentry scrubber uses DLP patterns, env secrets, and file secrets from
+	// init time. Warn on ANY change that would affect scrubbing coverage.
+	if dlpPatternsChanged(old.DLP.Patterns, updated.DLP.Patterns) {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "sentry",
+			Message: "DLP patterns changed; Sentry scrubber uses init-time patterns until restart",
+		})
+	}
+	if old.DLP.ScanEnv != updated.DLP.ScanEnv {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "sentry",
+			Message: "dlp.scan_env changed; Sentry scrubber uses init-time env secrets until restart",
+		})
+	}
+	if old.DLP.SecretsFile != updated.DLP.SecretsFile {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "sentry",
+			Message: "dlp.secrets_file changed; Sentry scrubber uses init-time file secrets until restart",
+		})
+	}
+
 	return warnings
+}
+
+// dlpPatternsChanged returns true if the DLP pattern set differs between old
+// and new configs (count change or regex content change).
+func dlpPatternsChanged(old, updated []DLPPattern) bool {
+	if len(old) != len(updated) {
+		return true
+	}
+	for i := range old {
+		if old[i].Regex != updated[i].Regex {
+			return true
+		}
+	}
+	return false
 }
 
 // passthroughDomainsAdded returns domains present in updated but not in old.

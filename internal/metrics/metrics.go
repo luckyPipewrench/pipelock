@@ -71,6 +71,9 @@ type Metrics struct {
 	ScanAPIErrors   *prometheus.CounterVec
 	ScanAPIInflight prometheus.Gauge
 
+	// Address protection: crypto address poisoning detection.
+	AddressFindings *prometheus.CounterVec
+
 	wsConnectionCount int64
 
 	mu                sync.Mutex
@@ -316,6 +319,12 @@ func New() *Metrics {
 		Help: "Current number of in-flight scan API requests.",
 	})
 
+	addressFindings := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "pipelock",
+		Name:      "address_findings_total",
+		Help:      "Address protection findings by chain and verdict.",
+	}, []string{"chain", "verdict"})
+
 	reg.MustRegister(requestsTotal, scannerHits, requestLatency,
 		tunnelsTotal, tunnelDuration, tunnelBytes, activeTunnels,
 		wsConnectionsTotal, wsDuration, wsBytes, activeWS, wsFrames, wsScanHits, wsRedirectHints,
@@ -324,7 +333,8 @@ func New() *Metrics {
 		sessionAnomalies, sessionEscalations, sessionsActive, sessionsEvicted,
 		tlsInterceptTotal, tlsCertCacheSize, tlsHandshakeDuration, tlsRequestBlocked, tlsResponseBlocked,
 		crossRequestEntropyExceeded, crossRequestDLPMatch, crossRequestFragmentBytes,
-		scanAPIRequests, scanAPIDuration, scanAPIFindings, scanAPIErrors, scanAPIInflight)
+		scanAPIRequests, scanAPIDuration, scanAPIFindings, scanAPIErrors, scanAPIInflight,
+		addressFindings)
 
 	return &Metrics{
 		registry:                    reg,
@@ -364,6 +374,7 @@ func New() *Metrics {
 		ScanAPIFindings:             scanAPIFindings,
 		ScanAPIErrors:               scanAPIErrors,
 		ScanAPIInflight:             scanAPIInflight,
+		AddressFindings:             addressFindings,
 		startTime:                   time.Now(),
 		topBlockedDomains:           make(map[string]int64),
 		topScannerHits:              make(map[string]int64),
@@ -802,4 +813,9 @@ func topN(m map[string]int64) []rankedEntry {
 		return entries[i].Count > entries[j].Count
 	})
 	return entries
+}
+
+// RecordAddressFinding increments the address findings counter.
+func (m *Metrics) RecordAddressFinding(chain, verdict string) {
+	m.AddressFindings.WithLabelValues(chain, verdict).Inc()
 }

@@ -127,7 +127,8 @@ const webhookTimestampTolerance = 5 * time.Minute
 //   - webhook-signature: "v1,<base64-hmac>" (space-separated if multiple)
 //
 // The signed content is "{msg_id}.{timestamp}.{body}". The secret may
-// have a "whsec_" prefix and is base64-encoded.
+// have a "polar_whs_" or "whsec_" prefix and is base64-encoded (standard
+// or unpadded base64url).
 func ValidateWebhookSignature(body []byte, msgID, timestamp, signatureHeader, secret string) error {
 	if msgID == "" {
 		return fmt.Errorf("missing webhook-id header")
@@ -149,14 +150,26 @@ func ValidateWebhookSignature(body []byte, msgID, timestamp, signatureHeader, se
 		return fmt.Errorf("webhook timestamp outside %s tolerance", webhookTimestampTolerance)
 	}
 
-	// Decode the signing secret (strip "whsec_" prefix, base64 decode).
+	// Decode the signing secret. Strip vendor prefix (Polar uses
+	// "polar_whs_", Standard Webhooks uses "whsec_"), then base64
+	// decode. Polar secrets use base64url without padding; Standard
+	// Webhooks uses padded standard base64. Try both.
 	secretStr := secret
-	if len(secretStr) > 6 && secretStr[:6] == "whsec_" {
-		secretStr = secretStr[6:]
+	const polarPrefix = "polar_whs_"
+	const whsecPrefix = "whsec_"
+	switch {
+	case len(secretStr) > len(polarPrefix) && secretStr[:len(polarPrefix)] == polarPrefix:
+		secretStr = secretStr[len(polarPrefix):]
+	case len(secretStr) > len(whsecPrefix) && secretStr[:len(whsecPrefix)] == whsecPrefix:
+		secretStr = secretStr[len(whsecPrefix):]
 	}
 	secretBytes, err := base64.StdEncoding.DecodeString(secretStr)
 	if err != nil {
-		return fmt.Errorf("decode webhook secret: %w", err)
+		// Polar secrets use unpadded base64url encoding.
+		secretBytes, err = base64.RawURLEncoding.DecodeString(secretStr)
+		if err != nil {
+			return fmt.Errorf("decode webhook secret: %w", err)
+		}
 	}
 
 	// Construct the signed content per Standard Webhooks spec.

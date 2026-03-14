@@ -39,14 +39,30 @@ const (
 	testLicenseIDOld       = "lic_old"
 )
 
+// signWebhookRaw computes a Standard Webhooks HMAC-SHA256 signature using raw
+// secret bytes (not base64-encoded). Used for testing base64url fallback path.
+func signWebhookRaw(t *testing.T, body []byte, timestamp string, secretBytes []byte) string {
+	t.Helper()
+
+	signedContent := testWebhookMsgID + "." + timestamp + "." + string(body)
+	mac := hmac.New(sha256.New, secretBytes)
+	mac.Write([]byte(signedContent))
+	sig := mac.Sum(nil)
+
+	return "v1," + base64.StdEncoding.EncodeToString(sig)
+}
+
 // signWebhook computes a Standard Webhooks HMAC-SHA256 signature for testing.
 // Always uses testWebhookMsgID as the message ID.
 func signWebhook(t *testing.T, body []byte, timestamp, secret string) string {
 	t.Helper()
 
-	// Strip whsec_ prefix if present.
+	// Strip vendor prefix if present.
 	rawSecret := secret
-	if len(rawSecret) > 6 && rawSecret[:6] == "whsec_" {
+	switch {
+	case len(rawSecret) > 10 && rawSecret[:10] == "polar_whs_":
+		rawSecret = rawSecret[10:]
+	case len(rawSecret) > 6 && rawSecret[:6] == "whsec_":
 		rawSecret = rawSecret[6:]
 	}
 	secretBytes, err := base64.StdEncoding.DecodeString(rawSecret)
@@ -203,6 +219,24 @@ func TestValidateWebhookSignature(t *testing.T) {
 			signature: sig,
 			secret:    "whsec_" + "!!!not-base64",
 			wantErr:   true,
+		},
+		{
+			name:      "polar_whs_ prefix",
+			body:      body,
+			msgID:     testWebhookMsgID,
+			timestamp: timestamp,
+			signature: signWebhook(t, body, timestamp, testWebhookSecretB64),
+			secret:    "polar_whs_" + testWebhookSecretB64,
+			wantErr:   false,
+		},
+		{
+			name:      "base64url unpadded secret (Polar format)",
+			body:      body,
+			msgID:     testWebhookMsgID,
+			timestamp: timestamp,
+			signature: signWebhookRaw(t, body, timestamp, []byte("test-secret-key-1234567890")),
+			secret:    "polar_whs_" + base64.RawURLEncoding.EncodeToString([]byte("test-secret-key-1234567890")),
+			wantErr:   false,
 		},
 	}
 

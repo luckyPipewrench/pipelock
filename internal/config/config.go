@@ -721,9 +721,11 @@ func (c *Config) resolveLicenseKey(configDir string) error {
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("license_file %s must be a regular file", c.LicenseFile)
 		}
-		// Reject group/world-readable files; license tokens are secrets.
-		if info.Mode().Perm()&0o077 != 0 {
-			return fmt.Errorf("license_file %s is too permissive (mode %04o): restrict to 0600",
+		// Reject group-write/execute and all other access. Group-read
+		// (0o040) is allowed for k8s Secret volumes where fsGroup adds
+		// group-read automatically.
+		if info.Mode().Perm()&0o037 != 0 {
+			return fmt.Errorf("license_file %s is too permissive (mode %04o): restrict to 0600 or 0640",
 				c.LicenseFile, info.Mode().Perm())
 		}
 		if info.Size() > maxLicenseFileBytes {
@@ -1273,8 +1275,10 @@ func (c *Config) Validate() error {
 		if err != nil {
 			return fmt.Errorf("secrets_file %q: %w", c.DLP.SecretsFile, err)
 		}
-		if info.Mode().Perm()&0o077 != 0 { // reject any group or world access
-			return fmt.Errorf("secrets_file %q has unsafe permissions (mode %04o): must have owner-only permissions (no group or world access)", c.DLP.SecretsFile, info.Mode().Perm())
+		// Reject group-write/execute and all other access. Group-read
+		// allowed for k8s Secret volume compatibility.
+		if info.Mode().Perm()&0o037 != 0 {
+			return fmt.Errorf("secrets_file %q has unsafe permissions (mode %04o): restrict to 0600 or 0640", c.DLP.SecretsFile, info.Mode().Perm())
 		}
 	}
 

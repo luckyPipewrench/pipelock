@@ -476,6 +476,7 @@ func TestLoadPrivateKeyFile_FailsOnLoosePermissions(t *testing.T) {
 	}
 
 	// LoadPrivateKeyFile must fail closed on loose permissions.
+	// 0644 has others-read (0o004) which trips the 0o037 mask.
 	_, err := LoadPrivateKeyFile(path)
 	if err == nil {
 		t.Fatal("expected error for loose permissions, got nil")
@@ -510,6 +511,129 @@ func TestLoadPrivateKeyFile_GoodPermissions(t *testing.T) {
 	}
 	if !bytes.Equal(priv, loaded) {
 		t.Fatal("loaded key does not match")
+	}
+}
+
+// TestLoadPrivateKeyFile_GroupReadAllowed verifies that k8s fsGroup
+// permissions (0640) are accepted. K8s Secret volumes with fsGroup
+// automatically add group-read, so the loader must allow it.
+func TestLoadPrivateKeyFile_GroupReadAllowed(t *testing.T) {
+	_, priv, _ := GenerateKeyPair()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "k8s-secret.key")
+
+	if err := SavePrivateKey(priv, path); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate k8s fsGroup: defaultMode 0600 becomes 0640 at runtime.
+	if err := os.Chmod(path, 0o640); err != nil { //nolint:gosec // G302: intentionally testing k8s fsGroup permissions
+		t.Fatal(err)
+	}
+
+	loaded, err := LoadPrivateKeyFile(path)
+	if err != nil {
+		t.Fatalf("LoadPrivateKeyFile should accept 0640 (k8s fsGroup): %v", err)
+	}
+	if !bytes.Equal(priv, loaded) {
+		t.Fatal("loaded key does not match")
+	}
+}
+
+// TestLoadPrivateKeyFile_GroupWriteRejected verifies that group-write
+// is still rejected even though group-read is allowed.
+func TestLoadPrivateKeyFile_GroupWriteRejected(t *testing.T) {
+	_, priv, _ := GenerateKeyPair()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "group-write.key")
+
+	if err := SavePrivateKey(priv, path); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.Chmod(path, 0o660); err != nil { //nolint:gosec // intentionally insecure for test
+		t.Fatal(err)
+	}
+
+	_, err := LoadPrivateKeyFile(path)
+	if err == nil {
+		t.Fatal("expected error for group-write permissions, got nil")
+	}
+}
+
+// TestLoadPrivateKeyFile_GroupExecuteRejected verifies that group-execute
+// is rejected. Group-execute on a key file is dangerous.
+func TestLoadPrivateKeyFile_GroupExecuteRejected(t *testing.T) {
+	_, priv, _ := GenerateKeyPair()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "group-exec.key")
+
+	if err := SavePrivateKey(priv, path); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.Chmod(path, 0o650); err != nil { //nolint:gosec // intentionally insecure for test
+		t.Fatal(err)
+	}
+
+	_, err := LoadPrivateKeyFile(path)
+	if err == nil {
+		t.Fatal("expected error for group-execute permissions, got nil")
+	}
+}
+
+// TestLoadPrivateKeyFile_SymlinkAllowed verifies that symlinks to
+// properly-permissioned key files are resolved and loaded. K8s Secret
+// volumes mount all files as symlinks.
+func TestLoadPrivateKeyFile_SymlinkAllowed(t *testing.T) {
+	_, priv, _ := GenerateKeyPair()
+
+	dir := t.TempDir()
+	realPath := filepath.Join(dir, "real.key")
+	linkPath := filepath.Join(dir, "link.key")
+
+	if err := SavePrivateKey(priv, realPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realPath, linkPath); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := LoadPrivateKeyFile(linkPath)
+	if err != nil {
+		t.Fatalf("LoadPrivateKeyFile should follow symlinks: %v", err)
+	}
+	if !bytes.Equal(priv, loaded) {
+		t.Fatal("loaded key does not match")
+	}
+}
+
+// TestLoadPrivateKeyFile_SymlinkToLoosePermsRejected verifies that
+// even though symlinks are followed, the resolved file must still
+// have proper permissions.
+func TestLoadPrivateKeyFile_SymlinkToLoosePermsRejected(t *testing.T) {
+	_, priv, _ := GenerateKeyPair()
+
+	dir := t.TempDir()
+	realPath := filepath.Join(dir, "loose.key")
+	linkPath := filepath.Join(dir, "link-to-loose.key")
+
+	if err := SavePrivateKey(priv, realPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(realPath, 0o644); err != nil { //nolint:gosec // intentionally insecure for test
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realPath, linkPath); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadPrivateKeyFile(linkPath)
+	if err == nil {
+		t.Fatal("expected error for symlink to loose-permissioned file")
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -46,7 +47,7 @@ func signWebhook(t *testing.T, body []byte, timestamp, secret string) string {
 	t.Helper()
 
 	var secretBytes []byte
-	if len(secret) > 6 && secret[:6] == "whsec_" {
+	if strings.HasPrefix(secret, "whsec_") {
 		var err error
 		secretBytes, err = base64.StdEncoding.DecodeString(secret[6:])
 		if err != nil {

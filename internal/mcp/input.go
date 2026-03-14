@@ -619,6 +619,9 @@ func ForwardScannedInput(
 		for _, m := range verdict.Inject {
 			reasons = append(reasons, m.PatternName)
 		}
+		for _, f := range verdict.AddressFindings {
+			reasons = append(reasons, "address:"+f.Explanation)
+		}
 		for _, r := range policyVerdict.Rules {
 			reasons = append(reasons, "policy:"+r)
 		}
@@ -645,7 +648,13 @@ func ForwardScannedInput(
 			return policy.StricterAction(cur, next)
 		}
 		if !verdict.Clean {
-			effectiveAction = action
+			if len(verdict.Matches) > 0 || len(verdict.Inject) > 0 {
+				effectiveAction = action
+			}
+			// Address findings use the address protection action, not DLP action.
+			if len(verdict.AddressFindings) > 0 {
+				effectiveAction = mergeAction(effectiveAction, verdict.Action)
+			}
 		}
 		if policyVerdict.Matched {
 			effectiveAction = mergeAction(effectiveAction, policyVerdict.Action)

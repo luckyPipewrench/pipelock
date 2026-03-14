@@ -25,6 +25,7 @@ const (
 	EventSubscriptionActive   = "subscription.active"
 	EventSubscriptionRevoked  = "subscription.revoked"
 	EventSubscriptionCanceled = "subscription.canceled"
+	EventOrderCreated         = "order.created"
 )
 
 // PolarWebhookEvent is the top-level envelope for all Polar webhook deliveries.
@@ -221,4 +222,34 @@ func ExtractSubscriptionID(data json.RawMessage) (string, error) {
 		return "", fmt.Errorf("subscription ID is empty in event data")
 	}
 	return partial.ID, nil
+}
+
+// PolarOrder represents an order object from Polar's order.created webhook.
+// Used for one-time purchases (e.g., trial tier).
+type PolarOrder struct {
+	ID            string `json:"id"`
+	BillingReason string `json:"billing_reason"` // "purchase", "subscription_create", "subscription_cycle", "subscription_update"
+
+	Customer struct {
+		Email    string            `json:"email"`
+		Metadata map[string]string `json:"metadata"`
+	} `json:"customer"`
+
+	Product struct {
+		ID       string            `json:"id"`
+		Name     string            `json:"name"`
+		Metadata map[string]string `json:"metadata"`
+	} `json:"product"`
+}
+
+// extractOrderData unmarshals the webhook event data into a PolarOrder.
+func extractOrderData(data json.RawMessage) (*PolarOrder, error) {
+	var order PolarOrder
+	if err := json.Unmarshal(data, &order); err != nil {
+		return nil, fmt.Errorf("parse order data: %w", err)
+	}
+	if order.ID == "" {
+		return nil, fmt.Errorf("order ID is empty in event data")
+	}
+	return &order, nil
 }

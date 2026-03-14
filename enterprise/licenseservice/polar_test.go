@@ -39,35 +39,21 @@ const (
 	testLicenseIDOld       = "lic_old"
 )
 
-// signWebhookRaw computes a Standard Webhooks HMAC-SHA256 signature using raw
-// secret bytes (not base64-encoded). Used for testing base64url fallback path.
-func signWebhookRaw(t *testing.T, body []byte, timestamp string, secretBytes []byte) string {
-	t.Helper()
-
-	signedContent := testWebhookMsgID + "." + timestamp + "." + string(body)
-	mac := hmac.New(sha256.New, secretBytes)
-	mac.Write([]byte(signedContent))
-	sig := mac.Sum(nil)
-
-	return "v1," + base64.StdEncoding.EncodeToString(sig)
-}
-
-// signWebhook computes a Standard Webhooks HMAC-SHA256 signature for testing.
-// Always uses testWebhookMsgID as the message ID.
+// signWebhook computes a webhook HMAC-SHA256 signature for testing, mirroring
+// the production key derivation: whsec_ secrets are prefix-stripped + base64
+// decoded; all other secrets (including polar_whs_) use raw string bytes.
 func signWebhook(t *testing.T, body []byte, timestamp, secret string) string {
 	t.Helper()
 
-	// Strip vendor prefix if present.
-	rawSecret := secret
-	switch {
-	case len(rawSecret) > 10 && rawSecret[:10] == "polar_whs_":
-		rawSecret = rawSecret[10:]
-	case len(rawSecret) > 6 && rawSecret[:6] == "whsec_":
-		rawSecret = rawSecret[6:]
-	}
-	secretBytes, err := base64.StdEncoding.DecodeString(rawSecret)
-	if err != nil {
-		t.Fatalf("decode test secret: %v", err)
+	var secretBytes []byte
+	if len(secret) > 6 && secret[:6] == "whsec_" {
+		var err error
+		secretBytes, err = base64.StdEncoding.DecodeString(secret[6:])
+		if err != nil {
+			t.Fatalf("decode test secret: %v", err)
+		}
+	} else {
+		secretBytes = []byte(secret)
 	}
 
 	signedContent := testWebhookMsgID + "." + timestamp + "." + string(body)
@@ -221,21 +207,21 @@ func TestValidateWebhookSignature(t *testing.T) {
 			wantErr:   true,
 		},
 		{
-			name:      "polar_whs_ prefix",
+			name:      "polar_whs_ prefix uses raw bytes",
 			body:      body,
 			msgID:     testWebhookMsgID,
 			timestamp: timestamp,
-			signature: signWebhook(t, body, timestamp, testWebhookSecretB64),
-			secret:    "polar_whs_" + testWebhookSecretB64,
+			signature: signWebhook(t, body, timestamp, "polar_whs_"+"test-polar-secret"),
+			secret:    "polar_whs_" + "test-polar-secret",
 			wantErr:   false,
 		},
 		{
-			name:      "base64url unpadded secret (Polar format)",
+			name:      "bare secret without prefix uses raw bytes",
 			body:      body,
 			msgID:     testWebhookMsgID,
 			timestamp: timestamp,
-			signature: signWebhookRaw(t, body, timestamp, []byte("test-secret-key-1234567890")),
-			secret:    "polar_whs_" + base64.RawURLEncoding.EncodeToString([]byte("test-secret-key-1234567890")),
+			signature: signWebhook(t, body, timestamp, "raw-secret"+"-no-prefix"), //nolint:gosec // test value, not real secret
+			secret:    "raw-secret" + "-no-prefix",                                //nolint:gosec // test value, not real secret
 			wantErr:   false,
 		},
 	}

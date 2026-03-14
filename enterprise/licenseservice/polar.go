@@ -126,9 +126,10 @@ const webhookTimestampTolerance = 5 * time.Minute
 //   - webhook-timestamp: Unix timestamp (seconds)
 //   - webhook-signature: "v1,<base64-hmac>" (space-separated if multiple)
 //
-// The signed content is "{msg_id}.{timestamp}.{body}". The secret may
-// have a "polar_whs_" or "whsec_" prefix and is base64-encoded (standard
-// or unpadded base64url).
+// The signed content is "{msg_id}.{timestamp}.{body}". Standard Webhooks
+// secrets have a "whsec_" prefix with base64-encoded key material. Polar
+// secrets (prefixed "polar_whs_") use the full secret string as raw HMAC
+// key bytes — no prefix stripping, no base64 decoding.
 func ValidateWebhookSignature(body []byte, msgID, timestamp, signatureHeader, secret string) error {
 	if msgID == "" {
 		return fmt.Errorf("missing webhook-id header")
@@ -150,26 +151,24 @@ func ValidateWebhookSignature(body []byte, msgID, timestamp, signatureHeader, se
 		return fmt.Errorf("webhook timestamp outside %s tolerance", webhookTimestampTolerance)
 	}
 
-	// Decode the signing secret. Strip vendor prefix (Polar uses
-	// "polar_whs_", Standard Webhooks uses "whsec_"), then base64
-	// decode. Polar secrets use base64url without padding; Standard
-	// Webhooks uses padded standard base64. Try both.
-	secretStr := secret
-	const polarPrefix = "polar_whs_"
-	const whsecPrefix = "whsec_"
-	switch {
-	case len(secretStr) > len(polarPrefix) && secretStr[:len(polarPrefix)] == polarPrefix:
-		secretStr = secretStr[len(polarPrefix):]
-	case len(secretStr) > len(whsecPrefix) && secretStr[:len(whsecPrefix)] == whsecPrefix:
-		secretStr = secretStr[len(whsecPrefix):]
-	}
-	secretBytes, err := base64.StdEncoding.DecodeString(secretStr)
-	if err != nil {
-		// Polar secrets use unpadded base64url encoding.
-		secretBytes, err = base64.RawURLEncoding.DecodeString(secretStr)
+	// Derive the HMAC key from the webhook secret.
+	//
+	// Standard Webhooks (whsec_ prefix): strip prefix, base64 decode
+	// the remainder to get the raw key bytes.
+	//
+	// Polar (polar_whs_ prefix or other): use the ENTIRE secret string
+	// as raw HMAC key bytes. Polar does NOT follow Standard Webhooks
+	// key derivation despite using the same signing envelope. Confirmed
+	// empirically — no prefix stripping, no base64 decoding.
+	var secretBytes []byte
+	if strings.HasPrefix(secret, "whsec_") {
+		decoded, err := base64.StdEncoding.DecodeString(secret[6:])
 		if err != nil {
 			return fmt.Errorf("decode webhook secret: %w", err)
 		}
+		secretBytes = decoded
+	} else {
+		secretBytes = []byte(secret)
 	}
 
 	// Construct the signed content per Standard Webhooks spec.

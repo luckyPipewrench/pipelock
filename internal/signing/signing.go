@@ -187,30 +187,33 @@ func LoadPublicKeyFile(path string) (ed25519.PublicKey, error) {
 }
 
 // LoadPrivateKeyFile reads and decodes a private key from a file.
-// Fails if the file is readable by group or others (mode & 0o077 != 0)
-// to prevent accidental key exposure.
+// Resolves symlinks before checking permissions (required for k8s Secret
+// volumes, which mount all files as symlinks). Fails if the resolved
+// file is writable by group or readable/writable/executable by others
+// (mode & 0o037 != 0). Group-read (0o040) is allowed because k8s
+// fsGroup sets it automatically on Secret volume mounts.
 func LoadPrivateKeyFile(path string) (ed25519.PrivateKey, error) {
-	cleanPath := filepath.Clean(path)
-
-	// Reject symlinks to prevent following links to unexpected locations.
-	info, err := os.Lstat(cleanPath)
+	// Resolve symlinks to get the real path. K8s Secret volumes mount
+	// files as symlinks (e.g., ..data/key -> ..2026_03_14.../key),
+	// so we must follow them to reach the actual file.
+	resolved, err := filepath.EvalSymlinks(filepath.Clean(path))
 	if err != nil {
 		return nil, fmt.Errorf("reading private key: %w", err)
 	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("private key %s is a symlink (not allowed for security)", cleanPath)
-	}
 
-	// Re-stat after symlink check to get real file info.
-	info, err = os.Stat(cleanPath)
+	// Check permissions on the resolved file, not the symlink.
+	// Mask 0o037: reject group-write (0o020), group-execute (0o010),
+	// and all other-access (0o007). Allow owner-rw (0o600) and
+	// group-read (0o040) for k8s fsGroup compatibility.
+	info, err := os.Stat(resolved)
 	if err != nil {
 		return nil, fmt.Errorf("reading private key: %w", err)
 	}
-	if info.Mode().Perm()&0o077 != 0 {
-		return nil, fmt.Errorf("private key %s has permissions %04o, must be 0600 (run: chmod 600 %s)", cleanPath, info.Mode().Perm(), cleanPath)
+	if info.Mode().Perm()&0o037 != 0 {
+		return nil, fmt.Errorf("private key %s has permissions %04o, want 0600 or 0640 (run: chmod 640 %s)", resolved, info.Mode().Perm(), resolved)
 	}
 
-	data, err := os.ReadFile(cleanPath)
+	data, err := os.ReadFile(resolved)
 	if err != nil {
 		return nil, fmt.Errorf("reading private key: %w", err)
 	}

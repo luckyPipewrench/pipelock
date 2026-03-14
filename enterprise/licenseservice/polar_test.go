@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -39,19 +40,21 @@ const (
 	testLicenseIDOld       = "lic_old"
 )
 
-// signWebhook computes a Standard Webhooks HMAC-SHA256 signature for testing.
-// Always uses testWebhookMsgID as the message ID.
+// signWebhook computes a webhook HMAC-SHA256 signature for testing, mirroring
+// the production key derivation: whsec_ secrets are prefix-stripped + base64
+// decoded; all other secrets (including polar_whs_) use raw string bytes.
 func signWebhook(t *testing.T, body []byte, timestamp, secret string) string {
 	t.Helper()
 
-	// Strip whsec_ prefix if present.
-	rawSecret := secret
-	if len(rawSecret) > 6 && rawSecret[:6] == "whsec_" {
-		rawSecret = rawSecret[6:]
-	}
-	secretBytes, err := base64.StdEncoding.DecodeString(rawSecret)
-	if err != nil {
-		t.Fatalf("decode test secret: %v", err)
+	var secretBytes []byte
+	if strings.HasPrefix(secret, "whsec_") {
+		var err error
+		secretBytes, err = base64.StdEncoding.DecodeString(secret[6:])
+		if err != nil {
+			t.Fatalf("decode test secret: %v", err)
+		}
+	} else {
+		secretBytes = []byte(secret)
 	}
 
 	signedContent := testWebhookMsgID + "." + timestamp + "." + string(body)
@@ -203,6 +206,24 @@ func TestValidateWebhookSignature(t *testing.T) {
 			signature: sig,
 			secret:    "whsec_" + "!!!not-base64",
 			wantErr:   true,
+		},
+		{
+			name:      "polar_whs_ prefix uses raw bytes",
+			body:      body,
+			msgID:     testWebhookMsgID,
+			timestamp: timestamp,
+			signature: signWebhook(t, body, timestamp, "polar_whs_"+"test-polar-secret"),
+			secret:    "polar_whs_" + "test-polar-secret",
+			wantErr:   false,
+		},
+		{
+			name:      "bare secret without prefix uses raw bytes",
+			body:      body,
+			msgID:     testWebhookMsgID,
+			timestamp: timestamp,
+			signature: signWebhook(t, body, timestamp, "raw-secret"+"-no-prefix"), //nolint:gosec // test value, not real secret
+			secret:    "raw-secret" + "-no-prefix",                                //nolint:gosec // test value, not real secret
+			wantErr:   false,
 		},
 	}
 

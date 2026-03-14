@@ -2057,14 +2057,36 @@ func TestValidate_SecretsFileValid(t *testing.T) {
 	}
 }
 
-func TestValidate_SecretsFileGroupReadable(t *testing.T) {
+// TestValidate_SecretsFileGroupReadAllowed verifies that group-read (0640)
+// is accepted for k8s Secret volume compatibility (fsGroup adds group-read).
+func TestValidate_SecretsFileGroupReadAllowed(t *testing.T) {
 	dir := t.TempDir()
 	secretsPath := filepath.Join(dir, "secrets.txt")
 	if err := os.WriteFile(secretsPath, []byte("my-secret-value"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// Chmod after creation to avoid umask filtering the mode.
-	if err := os.Chmod(secretsPath, 0o640); err != nil { //nolint:gosec // G302: intentionally group-readable for test
+	if err := os.Chmod(secretsPath, 0o640); err != nil { //nolint:gosec // G302: intentionally testing k8s fsGroup permissions
+		t.Fatal(err)
+	}
+
+	cfg := Defaults()
+	cfg.Internal = nil
+	cfg.DLP.SecretsFile = secretsPath
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("secrets_file with 0640 should be accepted (k8s fsGroup): %v", err)
+	}
+}
+
+// TestValidate_SecretsFileGroupWriteRejected verifies that group-write is
+// still rejected even though group-read is allowed.
+func TestValidate_SecretsFileGroupWriteRejected(t *testing.T) {
+	dir := t.TempDir()
+	secretsPath := filepath.Join(dir, "secrets.txt")
+	if err := os.WriteFile(secretsPath, []byte("my-secret-value"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(secretsPath, 0o660); err != nil { //nolint:gosec // intentionally insecure for test
 		t.Fatal(err)
 	}
 
@@ -2074,7 +2096,7 @@ func TestValidate_SecretsFileGroupReadable(t *testing.T) {
 
 	err := cfg.Validate()
 	if err == nil {
-		t.Fatal("expected validation error for group-readable secrets_file (0640)")
+		t.Fatal("expected validation error for group-writable secrets_file (0660)")
 	}
 	if !strings.Contains(err.Error(), "unsafe permissions") {
 		t.Errorf("error should mention unsafe permissions, got: %v", err)
@@ -5343,6 +5365,59 @@ func TestLicenseKeyFilePermissiveModeRejected(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "too permissive") {
 		t.Errorf("error should mention permissive mode, got: %v", err)
+	}
+}
+
+// TestLicenseKeyFileGroupReadAllowed verifies that k8s fsGroup
+// permissions (0640) are accepted on the Load() path.
+func TestLicenseKeyFileGroupReadAllowed(t *testing.T) {
+	tmp := t.TempDir()
+
+	tokenPath := filepath.Join(tmp, "license.token")
+	if err := os.WriteFile(tokenPath, []byte("valid-token"), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+	if err := os.Chmod(tokenPath, 0o640); err != nil { //nolint:gosec // G302: testing k8s fsGroup permissions
+		t.Fatalf("chmod token: %v", err)
+	}
+
+	cfgPath := filepath.Join(tmp, "cfg.yaml")
+	if err := os.WriteFile(cfgPath, []byte(testLicenseFileCfg), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := Load(cfgPath)
+	// Load will fail downstream (invalid token format) but must NOT fail
+	// on the permission check. Check that the error is not about permissions.
+	if err != nil && strings.Contains(err.Error(), "too permissive") {
+		t.Fatalf("license_file with 0640 should pass permission check (k8s fsGroup): %v", err)
+	}
+}
+
+// TestLicenseKeyFileGroupWriteRejected verifies that group-write is
+// still rejected on the Load() path.
+func TestLicenseKeyFileGroupWriteRejected(t *testing.T) {
+	tmp := t.TempDir()
+
+	tokenPath := filepath.Join(tmp, "license.token")
+	if err := os.WriteFile(tokenPath, []byte("valid-token"), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+	if err := os.Chmod(tokenPath, 0o660); err != nil { //nolint:gosec // intentionally insecure for test
+		t.Fatalf("chmod token: %v", err)
+	}
+
+	cfgPath := filepath.Join(tmp, "cfg.yaml")
+	if err := os.WriteFile(cfgPath, []byte(testLicenseFileCfg), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := Load(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for group-writable license_file")
+	}
+	if !strings.Contains(err.Error(), "too permissive") {
+		t.Errorf("error should mention too permissive, got: %v", err)
 	}
 }
 

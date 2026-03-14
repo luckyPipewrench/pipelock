@@ -80,7 +80,7 @@ Wraps the OpenClaw gateway connection with bidirectional scanning:
 
 When the agent makes outbound HTTP requests through pipelock's fetch proxy:
 
-- 9-layer URL scanning (blocklist, DLP, SSRF, rate limiting, entropy checks)
+- 11-layer URL scanning (CRLF, path traversal, blocklist, DLP, SSRF, rate limiting, entropy checks)
 - Response injection detection on fetched content
 - Data budget tracking per domain
 
@@ -246,7 +246,7 @@ Mapped to the CVE-2026-25253 attack chain:
 | Data exfiltration via tool args | Input scanning catches secrets in outbound calls | MCP proxy |
 | Prompt injection in tool results | Response scanning detects injection attempts | MCP proxy |
 | Read-then-exfil tool sequences | Chain detection catches multi-step patterns | MCP proxy |
-| Outbound HTTP exfiltration | 9-layer URL scanning, DLP on request URLs | HTTP proxy |
+| Outbound HTTP exfiltration | 11-layer URL scanning, DLP on request URLs | HTTP proxy |
 
 Pipelock does not patch the CVE itself (that requires OpenClaw origin validation). It adds defense-in-depth by scanning all traffic between agent and gateway, catching exploitation attempts at multiple points in the attack chain.
 

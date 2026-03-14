@@ -60,7 +60,7 @@ CI runs lint and tests on **all** code, not just changed files.
 **Capability separation:** the agent (secrets, no network) talks to pipelock (no agent secrets, full network) which talks to the internet. Three proxy modes on the same port:
 
 - **Fetch** (`/fetch?url=...`): fetches URL, extracts text, scans response for injection
-- **Forward** (CONNECT + absolute-URI): standard HTTP proxy via `HTTPS_PROXY`, scans hostname through 9-layer pipeline
+- **Forward** (CONNECT + absolute-URI): standard HTTP proxy via `HTTPS_PROXY`, scans hostname through 11-layer pipeline
 - **WebSocket** (`/ws?url=...`): bidirectional frame scanning, DLP on headers, fragment reassembly
 
 ```text

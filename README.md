@@ -109,7 +109,7 @@ gh attestation verify oci://ghcr.io/luckypipewrench/pipelock:<version> --owner l
 
 ## How It Works
 
-Pipelock is an [agent firewall](https://pipelab.org/agent-firewall/): like a WAF for web apps, it sits inline between your AI agent and the internet. It uses **capability separation**: the agent process (which has secrets) is network-restricted, while Pipelock (which holds no agent secrets) inspects all traffic through a 9-layer scanner pipeline. Deployment (Docker network isolation, Kubernetes NetworkPolicy, etc.) enforces the separation boundary.
+Pipelock is an [agent firewall](https://pipelab.org/agent-firewall/): like a WAF for web apps, it sits inline between your AI agent and the internet. It uses **capability separation**: the agent process (which has secrets) is network-restricted, while Pipelock (which holds no agent secrets) inspects all traffic through an 11-layer scanner pipeline. Deployment (Docker network isolation, Kubernetes NetworkPolicy, etc.) enforces the separation boundary.
 
 Three proxy modes, same port:
 
@@ -469,7 +469,7 @@ cmd/pipelock/          CLI entry point
 internal/
   cli/                 20+ Cobra commands (run, check, generate, mcp, integrity, ...)
   config/              YAML config, validation, defaults, hot-reload (fsnotify)
-  scanner/             9-layer URL scanning pipeline + response injection detection
+  scanner/             11-layer URL scanning pipeline + response injection detection
   audit/               Structured JSON logging (zerolog) + event emission dispatch
   proxy/               HTTP proxy: fetch, forward (CONNECT), WebSocket, DNS pinning, TLS interception
   certgen/             ECDSA P-256 CA + leaf certificate generation, cache

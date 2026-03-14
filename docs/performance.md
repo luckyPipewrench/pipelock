@@ -8,7 +8,7 @@ All numbers from Go benchmarks on AMD Ryzen 7 7800X3D (8 cores / 16 threads) / G
 
 ### URL Scanning (fetch/forward proxy hot path)
 
-9-layer pipeline: scheme, CRLF injection, path traversal, blocklist, DLP, path entropy, subdomain entropy, SSRF, rate limit, URL length, data budget.
+11-layer pipeline: scheme, CRLF injection, path traversal, blocklist, DLP, path entropy, subdomain entropy, SSRF, rate limit, URL length, data budget.
 
 | Operation | Latency | Throughput (1 core) |
 |-----------|---------|--------------------:|
@@ -195,9 +195,9 @@ The binary is ~12MB static. Memory usage is dominated by the DLP regex compilati
 
 ## Design Decisions That Affect Performance
 
-**Early exit on block.** Blocked URLs short-circuit at the first failing layer. Blocklist hits resolve in ~394ns. DLP matches exit before DNS resolution.
+**Early exit on block.** Blocked URLs short-circuit at the first failing layer. Blocklist hits resolve in ~1.9μs. DLP matches exit before DNS resolution.
 
-**Layers 2-3 run before DNS.** DLP and blocklist checks execute before any network call. This prevents secret exfiltration via DNS queries and keeps the fast path fast.
+**Layers 2-5 run before DNS.** CRLF, path traversal, blocklist, and DLP checks all execute before any network call. This prevents secret exfiltration via DNS queries and keeps the fast path fast.
 
 **Stateless detection pipeline.** Each scan allocates its own working state. The core detection layers (scheme through SSRF) have no shared mutable state, enabling linear scaling with cores. Rate limiting and data budget use per-scanner mutexes but are low-contention.
 

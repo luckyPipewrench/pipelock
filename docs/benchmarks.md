@@ -16,7 +16,7 @@ Run `make bench` to reproduce on your hardware.
 
 ## Scanner Pipeline (`Scanner.Scan()`)
 
-Full 9-layer URL scanning: scheme, CRLF injection, path traversal, blocklist, DLP (pre-DNS), path entropy, subdomain entropy, SSRF (post-DNS), rate limit, URL length, data budget.
+Full 11-layer URL scanning: scheme, CRLF injection, path traversal, blocklist, DLP (pre-DNS), path entropy, subdomain entropy, SSRF (post-DNS), rate limit, URL length, data budget.
 
 | Benchmark | ns/op | B/op | allocs/op |
 |-----------|------:|-----:|----------:|
@@ -98,7 +98,7 @@ True concurrent throughput across all available goroutines.
 
 ## Key Takeaways
 
-- **Full 9-layer scan on a typical URL: ~21 microseconds** (down from ~37μs in v1.2.0, thanks to DLP pre-filter). Well under 1ms.
+- **Full 11-layer scan on a typical URL: ~21 microseconds** (down from ~37μs in v1.2.0, thanks to DLP pre-filter). Well under 1ms.
 - Blocked URLs short-circuit early: blocklist check is ~1.9μs.
 - DLP regex matching (36 patterns) with pre-filter: ~6.7μs. Pre-filter alone: ~418ns with zero allocations on clean text.
 - Response scanning with 20 patterns on small content: ~115μs. Large content (~10KB) takes ~16ms due to 6 normalization passes plus regex cost scaling with input size.

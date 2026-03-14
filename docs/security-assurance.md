@@ -36,11 +36,13 @@ Pipelock is designed to be deployed in a capability-separated architecture:
 
 ### Defense in Depth
 
-No single control is assumed to be sufficient. The scanner pipeline applies 9 layers:
+No single control is assumed to be sufficient. The scanner pipeline applies 11 layers:
 
 | Layer | Protects Against |
 |-------|-----------------|
 | Scheme enforcement | Non-HTTP protocol abuse |
+| CRLF injection detection | HTTP header injection via encoded CR/LF |
+| Path traversal detection | Directory escape attempts via encoded dot-dot sequences |
 | Domain blocklist/allowlist | Known-bad destinations, scope control |
 | DLP pattern matching | Credential leakage (36 patterns, encoding-aware) |
 | Path entropy analysis | Exfiltration via high-entropy URL segments |

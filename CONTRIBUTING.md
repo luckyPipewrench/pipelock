@@ -112,7 +112,7 @@ cmd/pipelock/          CLI entry point
 internal/
   cli/                 20+ Cobra commands (run, check, report, tls, mcp, audit, generate, ...)
   config/              YAML config loading, validation, defaults, hot-reload (fsnotify)
-  scanner/             9-layer URL scanning pipeline + response injection detection
+  scanner/             11-layer URL scanning pipeline + response injection detection
   audit/               Structured JSON audit logging (zerolog) + event emission dispatch
   proxy/               HTTP proxy: fetch, forward (CONNECT), WebSocket, TLS interception
   certgen/             ECDSA P-256 CA + leaf certificate generation, cache
@@ -136,7 +136,7 @@ docs/                  Guides, OWASP mapping, comparison
 
 See [CLAUDE.md](CLAUDE.md) for the full architecture guide, including:
 
-- Scanner pipeline (9 layers)
+- Scanner pipeline (11 layers)
 - MCP proxy design
 - Config system and hot-reload
 - Package structure and conventions

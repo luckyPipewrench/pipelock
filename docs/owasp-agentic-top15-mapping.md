@@ -48,7 +48,7 @@ This is separate from the [OWASP Top 10 for Agentic Applications](owasp-mapping.
 
 **Pipelock coverage:**
 
-- **Fetch proxy as controlled tool:** the agent's only network access is through the proxy. Every request goes through the 9-layer scanner pipeline.
+- **Fetch proxy as controlled tool:** the agent's only network access is through the proxy. Every request goes through the 11-layer scanner pipeline.
 - **MCP proxy:** `pipelock mcp proxy` wraps MCP servers and scans tool responses for injection payloads.
 - **Tool description scanning:** `tools/list` responses are scanned for poisoned descriptions containing hidden instructions, file exfiltration directives, or cross-tool manipulation. Rug-pull detection tracks SHA256 hashes per session and alerts on mid-session changes.
 - **HITL approvals:** suspicious requests can trigger human-in-the-loop terminal approval before proceeding.

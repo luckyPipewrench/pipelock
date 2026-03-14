@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/extract"
@@ -36,11 +37,12 @@ const (
 
 // BodyScanResult describes the outcome of scanning a request body or headers.
 type BodyScanResult struct {
-	Clean      bool
-	Action     string
-	DLPMatches []scanner.TextDLPMatch
-	HeaderName string // set when a header triggered the match
-	Reason     string // human-readable block reason
+	Clean           bool
+	Action          string
+	DLPMatches      []scanner.TextDLPMatch
+	AddressFindings []addressprotect.Finding // crypto address poisoning findings
+	HeaderName      string                   // set when a header triggered the match
+	Reason          string                   // human-readable block reason
 }
 
 // scanRequestBody reads, buffers, and DLP-scans an HTTP request body.
@@ -118,6 +120,19 @@ func scanRequestBody(ctx context.Context, body io.Reader, contentType, contentEn
 		return buf, BodyScanResult{
 			Clean:      false,
 			DLPMatches: result.Matches,
+		}
+	}
+
+	// Address poisoning detection alongside DLP.
+	// agentID="" for v1 — no agent ID parameter in scanRequestBody signature.
+	if checker := sc.AddressChecker(); checker != nil {
+		addrResult := checker.CheckText(joined, "")
+		if len(addrResult.Findings) > 0 {
+			return buf, BodyScanResult{
+				Clean:           false,
+				Action:          checker.Action(),
+				AddressFindings: addrResult.Findings,
+			}
 		}
 	}
 

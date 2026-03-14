@@ -12,6 +12,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/extract"
@@ -36,13 +37,14 @@ const ceeStdioKey = "_default|stdio"
 
 // InputVerdict describes the outcome of scanning a single MCP request.
 type InputVerdict struct {
-	ID      json.RawMessage         `json:"id"`
-	Method  string                  `json:"method,omitempty"`
-	Clean   bool                    `json:"clean"`
-	Action  string                  `json:"action,omitempty"`
-	Matches []scanner.TextDLPMatch  `json:"dlp_matches,omitempty"`
-	Inject  []scanner.ResponseMatch `json:"injection_matches,omitempty"`
-	Error   string                  `json:"error,omitempty"`
+	ID              json.RawMessage          `json:"id"`
+	Method          string                   `json:"method,omitempty"`
+	Clean           bool                     `json:"clean"`
+	Action          string                   `json:"action,omitempty"`
+	Matches         []scanner.TextDLPMatch   `json:"dlp_matches,omitempty"`
+	Inject          []scanner.ResponseMatch  `json:"injection_matches,omitempty"`
+	AddressFindings []addressprotect.Finding `json:"address_findings,omitempty"`
+	Error           string                   `json:"error,omitempty"`
 }
 
 // extractToolCallName extracts the tool name from a tools/call JSON-RPC request.
@@ -145,7 +147,16 @@ func ScanRequest(line []byte, sc *scanner.Scanner, action, onParseError string) 
 			}
 		}
 
-		if dlpResult.Clean && injResult.Clean {
+		// Address poisoning detection (agentID="" for stdio).
+		var addrFindings []addressprotect.Finding
+		if checker := sc.AddressChecker(); checker != nil {
+			addrResult := checker.CheckText(joined, "")
+			if len(addrResult.Findings) > 0 {
+				addrFindings = addrResult.Findings
+			}
+		}
+
+		if dlpResult.Clean && injResult.Clean && len(addrFindings) == 0 {
 			return InputVerdict{ID: rpc.ID, Method: rpc.Method, Clean: true}
 		}
 		var dlpMatches []scanner.TextDLPMatch
@@ -157,12 +168,13 @@ func ScanRequest(line []byte, sc *scanner.Scanner, action, onParseError string) 
 			injMatches = injResult.Matches
 		}
 		return InputVerdict{
-			ID:      rpc.ID,
-			Method:  rpc.Method,
-			Clean:   false,
-			Action:  action,
-			Matches: dlpMatches,
-			Inject:  injMatches,
+			ID:              rpc.ID,
+			Method:          rpc.Method,
+			Clean:           false,
+			Action:          action,
+			Matches:         dlpMatches,
+			Inject:          injMatches,
+			AddressFindings: addrFindings,
 		}
 	}
 
@@ -228,17 +240,35 @@ func ScanRequest(line []byte, sc *scanner.Scanner, action, onParseError string) 
 		injMatches = injResult.Matches
 	}
 
-	if len(dlpMatches) == 0 && len(injMatches) == 0 {
+	// Run address poisoning detection alongside DLP.
+	// agentID="" for MCP stdio (one agent per process, global allowlist only).
+	var addrFindings []addressprotect.Finding
+	if checker := sc.AddressChecker(); checker != nil {
+		addrResult := checker.CheckText(joined, "")
+		if len(addrResult.Findings) > 0 {
+			addrFindings = addrResult.Findings
+		}
+	}
+
+	if len(dlpMatches) == 0 && len(injMatches) == 0 && len(addrFindings) == 0 {
 		return InputVerdict{ID: rpc.ID, Method: rpc.Method, Clean: true}
 	}
 
+	verdictAction := action
+	if len(addrFindings) > 0 && verdictAction == "" {
+		if checker := sc.AddressChecker(); checker != nil {
+			verdictAction = checker.Action()
+		}
+	}
+
 	return InputVerdict{
-		ID:      rpc.ID,
-		Method:  rpc.Method,
-		Clean:   false,
-		Action:  action,
-		Matches: dlpMatches,
-		Inject:  injMatches,
+		ID:              rpc.ID,
+		Method:          rpc.Method,
+		Clean:           false,
+		Action:          verdictAction,
+		Matches:         dlpMatches,
+		Inject:          injMatches,
+		AddressFindings: addrFindings,
 	}
 }
 

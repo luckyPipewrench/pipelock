@@ -24,6 +24,7 @@ import (
 
 	"golang.org/x/net/publicsuffix"
 
+	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
@@ -79,6 +80,7 @@ type Scanner struct {
 	responseAction            string
 	responseEnabled           bool
 	subdomainExclusions       []string // domains excluded from subdomain entropy checks
+	addressChecker            *addressprotect.Checker
 }
 
 type compiledPattern struct {
@@ -234,7 +236,23 @@ func New(cfg *config.Config) *Scanner {
 		}
 	}
 
+	// Build address protection checker if enabled.
+	if cfg.AddressProtection.Enabled {
+		agentAddrs := make(map[string][]string)
+		for name, agent := range cfg.Agents {
+			if len(agent.AllowedAddresses) > 0 {
+				agentAddrs[name] = agent.AllowedAddresses
+			}
+		}
+		s.addressChecker = addressprotect.NewChecker(&cfg.AddressProtection, agentAddrs)
+	}
+
 	return s
+}
+
+// AddressChecker returns the address protection checker, or nil if disabled.
+func (s *Scanner) AddressChecker() *addressprotect.Checker {
+	return s.addressChecker
 }
 
 // IsInternalIP checks whether the given IP falls within any configured

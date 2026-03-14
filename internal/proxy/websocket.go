@@ -538,6 +538,19 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 					}
 					log.LogWSScan(r.targetURL, audit.DirectionClientToServer, r.clientIP, r.requestID, "audit", len(dlpResult.Matches), names)
 				}
+
+				// Address poisoning detection alongside DLP.
+				if checker := r.scanner.AddressChecker(); checker != nil {
+					addrResult := checker.CheckText(string(scanInput), r.agent)
+					if len(addrResult.Findings) > 0 && r.cfg.EnforceEnabled() {
+						reason := fmt.Sprintf("address poisoning: %s", addrResult.Findings[0].Explanation)
+						log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, "address_protection", reason, r.clientIP, r.requestID)
+						plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "address poisoning detected")
+						plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "address poisoning detected")
+						blocked = true
+						return
+					}
+				}
 			}
 		}
 

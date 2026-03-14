@@ -6,7 +6,7 @@ High-level direction for Pipelock development. Priorities may shift based on com
 
 Shipped capabilities:
 
-- HTTP and MCP traffic scanning with 9-layer scanner pipeline
+- HTTP and MCP traffic scanning with 11-layer scanner pipeline
 - MCP stdio and Streamable HTTP proxy with bidirectional scanning
 - DLP detection (15+ credential patterns, entropy analysis, encoding-aware)
 - Prompt injection detection (20+ pattern categories, Unicode-aware)

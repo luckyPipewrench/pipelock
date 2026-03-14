@@ -22,11 +22,11 @@ Pipelock supports multiple proxy modes, each with different scanning capabilitie
 The highest-protection mode. Designed for AI agents that need web content.
 
 **Scanning:**
-- 9-layer URL scan (scheme, blocklist, DLP, path entropy, subdomain entropy, SSRF, rate limit, URL length, data budget)
+- 11-layer URL scan (scheme, CRLF injection, path traversal, blocklist, DLP, path entropy, subdomain entropy, SSRF, rate limit, URL length, data budget)
 - Raw HTML scan for injection in hidden elements (script, style, comments, hidden divs)
 - Readability text extraction (strips HTML, returns clean text)
 - Response injection detection on extracted content
-- Redirect chain: each hop scanned through all 9 layers
+- Redirect chain: each hop scanned through all 11 layers
 
 **What the agent receives:** Extracted text content, not raw HTML. Hidden injection is detected even though the agent never sees it.
 
@@ -41,12 +41,12 @@ curl "http://localhost:8888/fetch?url=https://example.com"
 Standard HTTP CONNECT proxy. Without TLS interception, pipelock cannot see the encrypted traffic after the tunnel is established.
 
 **Scanning (without TLS interception):**
-- 9-layer URL scan on the target hostname (before tunnel)
+- 11-layer URL scan on the target hostname (before tunnel)
 - No content inspection during the tunnel (encrypted bytes)
 - No response scanning
 
 **Scanning (with `tls_interception.enabled: true`):**
-- 9-layer URL scan on the target hostname (before tunnel)
+- 11-layer URL scan on the target hostname (before tunnel)
 - Full request body DLP (JSON, form, multipart extraction)
 - Request header DLP scanning
 - Authority enforcement (Host must match CONNECT target)
@@ -72,7 +72,7 @@ HTTPS_PROXY=http://localhost:8888 curl --cacert ~/.pipelock/ca.pem https://examp
 Handles plaintext HTTP requests where the client sends the full URL as the request target.
 
 **Scanning:**
-- 9-layer URL scan on the full URL
+- 11-layer URL scan on the full URL
 - No response injection scanning
 - Response body streamed through with size limit (MaxResponseMB)
 - Data budget tracking on response size
@@ -90,7 +90,7 @@ HTTP_PROXY=http://localhost:8888 curl http://example.com
 Bidirectional WebSocket proxy with frame-level scanning.
 
 **Scanning:**
-- 9-layer URL scan on the target URL
+- 11-layer URL scan on the target URL
 - DLP scanning on WebSocket upgrade request headers
 - Bidirectional frame scanning (both client-to-server and server-to-client)
 - Fragment reassembly for multi-frame messages
@@ -177,7 +177,7 @@ With TLS interception enabled, pipelock performs a TLS MITM: it terminates TLS w
 **Without interception:**
 - DLP cannot detect secrets in HTTPS request/response bodies
 - Response injection scanning does not apply
-- Only the 9-layer URL scan provides protection
+- Only the 11-layer URL scan provides protection
 
 **With interception:**
 - Full request body DLP (JSON, form, multipart)
@@ -191,7 +191,7 @@ If your agent handles secrets and you need content-level DLP on HTTPS traffic, e
 
 | Concern | Fetch Proxy | CONNECT (no interception) | CONNECT (TLS interception) |
 |---------|-------------|---------------------------|---------------------------|
-| URL scanning | 9 layers | 9 layers | 9 layers |
+| URL scanning | 11 layers | 11 layers | 11 layers |
 | DLP on request bodies | N/A | No (encrypted) | Yes |
 | DLP on responses | Yes | No (encrypted) | Yes |
 | Injection detection | Yes | No (encrypted) | Yes |

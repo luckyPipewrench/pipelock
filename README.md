@@ -109,7 +109,7 @@ gh attestation verify oci://ghcr.io/luckypipewrench/pipelock:<version> --owner l
 
 ## How It Works
 
-Pipelock is an [agent firewall](https://pipelab.org/agent-firewall/): like a WAF for web apps, it sits inline between your AI agent and the internet. It uses **capability separation**: the agent process (which has secrets) is network-restricted, while Pipelock (which holds no agent secrets) inspects all traffic through a 9-layer scanner pipeline. Deployment (Docker network isolation, Kubernetes NetworkPolicy, etc.) enforces the separation boundary.
+Pipelock is an [agent firewall](https://pipelab.org/agent-firewall/): like a WAF for web apps, it sits inline between your AI agent and the internet. It uses **capability separation**: the agent process (which has secrets) is network-restricted, while Pipelock (which holds no agent secrets) inspects all traffic through an 11-layer scanner pipeline. Deployment (Docker network isolation, Kubernetes NetworkPolicy, etc.) enforces the separation boundary.
 
 Three proxy modes, same port:
 
@@ -469,7 +469,7 @@ cmd/pipelock/          CLI entry point
 internal/
   cli/                 20+ Cobra commands (run, check, generate, mcp, integrity, ...)
   config/              YAML config, validation, defaults, hot-reload (fsnotify)
-  scanner/             9-layer URL scanning pipeline + response injection detection
+  scanner/             11-layer URL scanning pipeline + response injection detection
   audit/               Structured JSON logging (zerolog) + event emission dispatch
   proxy/               HTTP proxy: fetch, forward (CONNECT), WebSocket, DNS pinning, TLS interception
   certgen/             ECDSA P-256 CA + leaf certificate generation, cache
@@ -491,14 +491,24 @@ docs/                  Guides, references, compliance mappings
 
 ## Testing
 
+Pipelock is tested like a security product, not just a developer tool. The open-source core is covered by thousands of unit, integration, and end-to-end tests across the proxy, scanner, MCP, WebSocket, and policy layers. In addition, we maintain a separate private adversarial test suite that exercises real-world attack classes against the production binary.
+
+That suite covers the problems an agent firewall actually has to stop: secret exfiltration, prompt injection, SSRF, tool poisoning, and transport-layer evasions across HTTP, WebSocket, and MCP. We publish the methodology and coverage areas; we do not publish live bypass payloads that would lower attacker cost. Every bypass graduates into a regression test before release.
+
+This is not security through obscurity. Pipelock's detection and enforcement logic is open source and inspectable. Public tests remain extensive. The private adversarial suite exists to continuously regression-test bypass classes without handing out a replay script.
+
+For more detail on the security model, trust boundaries, and known limitations, see the [Security Assurance Case](docs/security-assurance.md).
+
+### Metrics
+
 Canonical metrics, updated each release.
 
 | Metric | Value |
 |--------|-------|
-| Go tests (with `-race`) | 5,750+ |
+| Go tests (with `-race`) | 5,800+ |
 | Statement coverage | 90%+ |
 | Evasion techniques tested | 230+ |
-| Scanner pipeline overhead | ~37μs per URL scan ([performance details](docs/performance.md)) |
+| Scanner pipeline overhead | ~21μs per URL scan ([performance details](docs/performance.md)) |
 | CI matrix | Go 1.24 + 1.25, CodeQL, golangci-lint |
 | Supply chain | SLSA provenance, CycloneDX SBOM, cosign signatures |
 | OpenSSF Scorecard | [Live score](https://scorecard.dev/viewer/?uri=github.com/luckyPipewrench/pipelock) |

@@ -33,7 +33,7 @@ Article 9 requires a continuous, iterative risk management process throughout th
 
 | Requirement | Pipelock Feature | Coverage |
 |-------------|-----------------|----------|
-| Identify and analyze known risks (Art. 9(2)(a)) | 9-layer scanner pipeline classifies network-level risks: scheme validation, SSRF, domain blocklist, rate limiting, DLP (inc. env leak), path entropy, subdomain entropy, URL length, data budget | Partial |
+| Identify and analyze known risks (Art. 9(2)(a)) | 11-layer scanner pipeline classifies network-level risks: scheme validation, CRLF injection, path traversal, domain blocklist, DLP (inc. env leak), path entropy, subdomain entropy, SSRF, rate limiting, URL length, data budget | Partial |
 | Evaluate risks under foreseeable misuse (Art. 9(2)(b)) | Adversarial testing of bypass attempts (encoded secrets, DNS exfiltration, zero-width injection, split-key attacks) | Partial |
 | Post-market monitoring data (Art. 9(2)(c)) | Prometheus metrics (`/metrics`), JSON stats (`/stats`), structured audit logs | Partial |
 | Eliminate risks through design (Art. 9(5)(a)) | Capability separation reduces network-based credential exfiltration risk: agent holds secrets with no network; proxy has network with no agent secrets. Deployment enforces the boundary | Partial |

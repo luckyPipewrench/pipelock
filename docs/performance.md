@@ -8,15 +8,16 @@ All numbers from Go benchmarks on AMD Ryzen 7 7800X3D (8 cores / 16 threads) / G
 
 ### URL Scanning (fetch/forward proxy hot path)
 
-9-layer pipeline: scheme, blocklist, DLP, path entropy, subdomain entropy, SSRF, rate limit, URL length, data budget.
+11-layer pipeline: scheme, CRLF injection, path traversal, blocklist, DLP, path entropy, subdomain entropy, SSRF, rate limit, URL length, data budget.
 
 | Operation | Latency | Throughput (1 core) |
 |-----------|---------|--------------------:|
-| Full pipeline (allowed URL) | ~37 μs | ~27,000/sec |
-| Blocklist block (early exit) | ~394 ns | ~2,500,000/sec |
-| DLP pattern match (36 patterns) | ~11 μs | ~92,000/sec |
-| Entropy detection | ~65 μs | ~15,400/sec |
-| Complex URL (ports, query params) | ~51 μs | ~19,800/sec |
+| Full pipeline (allowed URL) | ~21 μs | ~48,000/sec |
+| Blocklist block (early exit) | ~1.9 μs | ~528,000/sec |
+| DLP pattern match (36 patterns, pre-filtered) | ~6.7 μs | ~149,000/sec |
+| DLP pre-filter only (clean text, zero alloc) | ~418 ns | ~2,390,000/sec |
+| Entropy detection | ~41 μs | ~24,300/sec |
+| Complex URL (ports, query params) | ~41 μs | ~24,700/sec |
 
 ### MCP Scanning (tool call/response inspection)
 
@@ -24,9 +25,9 @@ JSON-RPC parsing + text extraction + prompt injection pattern matching.
 
 | Operation | Latency | Throughput (1 core) |
 |-----------|---------|--------------------:|
-| Clean tool response | ~108 μs | ~9,200/sec |
-| Injection detected (early exit) | ~40 μs | ~25,200/sec |
-| Text extraction | ~2.4 μs | ~415,000/sec |
+| Clean tool response | ~110 μs | ~9,100/sec |
+| Injection detected (early exit) | ~42 μs | ~23,800/sec |
+| Text extraction | ~2.3 μs | ~430,000/sec |
 
 ### Response Scanning (fetched content injection detection)
 
@@ -34,9 +35,9 @@ Pattern matching against 20 prompt injection patterns on fetched page content.
 
 | Operation | Latency | Throughput (1 core) |
 |-----------|---------|--------------------:|
-| Short clean text (~90B) | ~122 μs | ~8,200/sec |
-| 10KB clean text | ~16 ms | ~63/sec |
-| Injection detected (early exit) | ~47 μs | ~21,500/sec |
+| Short clean text (~90B) | ~115 μs | ~8,700/sec |
+| 10KB clean text | ~16 ms | ~61/sec |
+| Injection detected (early exit) | ~45 μs | ~22,000/sec |
 
 The 10KB response scan is the current ceiling. It runs 6 sequential normalization passes (NFKC, confusable mapping, combining mark removal, zero-width removal, leetspeak expansion, vowel-fold) before pattern matching. Content size tiering (skipping passes 3-6 for large content) is planned.
 
@@ -194,9 +195,9 @@ The binary is ~12MB static. Memory usage is dominated by the DLP regex compilati
 
 ## Design Decisions That Affect Performance
 
-**Early exit on block.** Blocked URLs short-circuit at the first failing layer. Blocklist hits resolve in ~394ns. DLP matches exit before DNS resolution.
+**Early exit on block.** Blocked URLs short-circuit at the first failing layer. Blocklist hits resolve in ~1.9μs. DLP matches exit before DNS resolution.
 
-**Layers 2-3 run before DNS.** DLP and blocklist checks execute before any network call. This prevents secret exfiltration via DNS queries and keeps the fast path fast.
+**Pre-DNS checks.** CRLF injection, path traversal, allowlist, blocklist, and DLP checks all execute before any network call. This prevents secret exfiltration via DNS queries and keeps the fast path fast.
 
 **Stateless detection pipeline.** Each scan allocates its own working state. The core detection layers (scheme through SSRF) have no shared mutable state, enabling linear scaling with cores. Rate limiting and data budget use per-scanner mutexes but are low-contention.
 

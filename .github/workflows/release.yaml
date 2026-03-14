@@ -87,7 +87,8 @@ jobs:
 
       # Attestation steps use continue-on-error so one failure doesn't
       # cascade and kill the rest. The final verification step checks
-      # that at least the binary attestation succeeded.
+      # that ALL attestation steps succeeded (binaries, checksums,
+      # and all container images).
       - name: Attest binary archives
         id: attest-binaries
         continue-on-error: true

@@ -115,8 +115,20 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	syntheticURL := "https://" + syntheticHost + "/"
 
-	// Scan through all 9 layers
+	// Scan through all layers (URL pipeline).
 	result := sc.Scan(r.Context(), syntheticURL)
+
+	// Scan CONNECT request headers for DLP patterns. The CONNECT handshake
+	// can carry Proxy-Authorization, Authorization, or custom headers that
+	// may contain secrets. Tunneled HTTP headers are only visible with TLS
+	// interception; this covers the handshake itself.
+	if p.evalHeaderDLP(r.Context(), r.Header, cfg, sc, p.logger, http.MethodConnect, syntheticURL, host, clientIP, requestID, agent, start) {
+		// Record session activity so adaptive enforcement sees header-DLP blocks.
+		p.recordSessionActivity(clientIP, agent, host, requestID, false, 0.9, cfg, p.logger)
+		p.metrics.RecordTunnelBlocked(agentLabel)
+		http.Error(w, "CONNECT blocked: header DLP match", http.StatusForbidden)
+		return
+	}
 
 	// Session profiling: record BEFORE the enforce-mode early return so adaptive
 	// signals (SignalBlock) fire even for blocked requests.
@@ -388,7 +400,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 	targetURL := r.URL.String()
 
-	// Scan through all 9 layers
+	// Scan through all layers (URL pipeline)
 	result := sc.Scan(r.Context(), targetURL)
 
 	// Session profiling: record BEFORE the enforce-mode early return so adaptive

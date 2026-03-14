@@ -43,6 +43,8 @@ const (
 	ScannerEntropy          = "entropy"
 	ScannerSubdomainEntropy = "subdomain_entropy"
 	ScannerDataBudget       = "databudget"
+	ScannerPathTraversal    = "path_traversal"
+	ScannerCRLF             = "crlf_injection"
 	ScannerContext          = "context"
 	ScannerAll              = "all"
 )
@@ -80,9 +82,10 @@ type Scanner struct {
 }
 
 type compiledPattern struct {
-	name     string
-	re       *regexp.Regexp
-	severity string
+	name          string
+	re            *regexp.Regexp
+	severity      string
+	exemptDomains []string // domains where this pattern is skipped (wildcard supported)
 }
 
 // New creates a Scanner from config. Config must be validated first via
@@ -123,9 +126,10 @@ func New(cfg *config.Config) *Scanner {
 			panic(fmt.Sprintf("BUG: DLP pattern %q failed to compile after validation: %v", p.Name, err))
 		}
 		s.dlpPatterns = append(s.dlpPatterns, &compiledPattern{
-			name:     p.Name,
-			re:       re,
-			severity: p.Severity,
+			name:          p.Name,
+			re:            re,
+			severity:      p.Severity,
+			exemptDomains: p.ExemptDomains,
 		})
 	}
 
@@ -286,6 +290,8 @@ var scannerHints = map[string]string{
 	ScannerAllowlist:        "Domain not on the allowlist. In strict mode, only allowlisted domains are reachable.",
 	ScannerParser:           "The URL could not be parsed.",
 	ScannerContext:          "The request context was nil or cancelled before the scan completed.",
+	ScannerCRLF:             "CRLF injection sequence detected in URL. This is never legitimate in normal traffic.",
+	ScannerPathTraversal:    "Path traversal sequence detected. Review the URL for directory escape attempts.",
 }
 
 // HintForBlock returns actionable guidance for a blocked scan result.
@@ -339,18 +345,29 @@ func (s *Scanner) scan(ctx context.Context, rawURL string) Result {
 		}
 	}
 
-	// 2. Allowlist check — if configured, only allowlisted domains are permitted.
+	// 2. CRLF injection check — %0D%0A in URLs enables header injection.
+	// Runs early because CRLF is never legitimate in a URL.
+	if result := checkCRLF(rawURL); !result.Allowed {
+		return result
+	}
+
+	// 3. Path traversal check — /../ sequences are defense-in-depth.
+	if result := checkPathTraversal(parsed); !result.Allowed {
+		return result
+	}
+
+	// 4. Allowlist check — if configured, only allowlisted domains are permitted.
 	// Runs before DNS to reject disallowed domains without any network I/O.
 	if result := s.checkAllowlist(hostname); !result.Allowed {
 		return result
 	}
 
-	// 3. Blocklist check — before DNS to avoid resolving known-bad domains.
+	// 5. Blocklist check — before DNS to avoid resolving known-bad domains.
 	if result := s.checkBlocklist(hostname); !result.Allowed {
 		return result
 	}
 
-	// 4. DLP + entropy on hostname BEFORE DNS resolution.
+	// 6. DLP + entropy on hostname BEFORE DNS resolution.
 	// Prevents secret exfiltration via DNS queries for domains like
 	// "sk-ant-xxxx.evil.com" where the subdomain encodes a secret.
 	if result := s.checkDLP(parsed); !result.Allowed {
@@ -360,23 +377,23 @@ func (s *Scanner) scan(ctx context.Context, rawURL string) Result {
 		return result
 	}
 
-	// 4b. Subdomain entropy check — catches base64/hex encoded data in subdomains
+	// 6b. Subdomain entropy check — catches base64/hex encoded data in subdomains
 	// (e.g., "aGVsbG8.evil.com" exfiltrating data via DNS queries).
 	if result := s.checkSubdomainEntropy(hostname); !result.Allowed {
 		return result
 	}
 
-	// 5. SSRF protection — DNS resolution happens here, safe after DLP.
+	// 7. SSRF protection — DNS resolution happens here, safe after DLP.
 	if result := s.checkSSRF(ctx, hostname); !result.Allowed {
 		return result
 	}
 
-	// 6. Rate limit check (per-domain)
+	// 8. Rate limit check (per-domain)
 	if result := s.checkRateLimit(hostname); !result.Allowed {
 		return result
 	}
 
-	// 7. URL length check
+	// 9. URL length check
 	if s.maxURLLength > 0 && len(rawURL) > s.maxURLLength {
 		return Result{
 			Allowed: false,
@@ -386,7 +403,7 @@ func (s *Scanner) scan(ctx context.Context, rawURL string) Result {
 		}
 	}
 
-	// 8. Data budget check (per-domain sliding window)
+	// 10. Data budget check (per-domain sliding window)
 	if result := s.checkDataBudget(hostname); !result.Allowed {
 		return result
 	}
@@ -501,6 +518,123 @@ func (s *Scanner) checkBlocklist(hostname string) Result {
 			}
 		}
 	}
+	return Result{Allowed: true}
+}
+
+// checkCRLF detects CRLF injection sequences in URLs. CR+LF bytes in a URL
+// enable HTTP header injection at the target server. Go's http library rejects
+// raw \r\n in requests, but we detect encoded variants (%0d%0a, double-encoded)
+// for defense-in-depth visibility.
+//
+// Fragments are excluded: they are never sent to the upstream server, so CRLF
+// in a fragment cannot inject headers.
+func checkCRLF(rawURL string) Result {
+	// Strip fragment — it never reaches the server.
+	if idx := strings.IndexByte(rawURL, '#'); idx != -1 {
+		rawURL = rawURL[:idx]
+	}
+	lower := strings.ToLower(rawURL)
+
+	// Check for encoded CRLF pair: %0d%0a (the primary attack vector).
+	if strings.Contains(lower, "%0d%0a") {
+		return Result{
+			Allowed: false,
+			Reason:  "CRLF injection sequence in URL",
+			Scanner: ScannerCRLF,
+			Score:   0.9,
+		}
+	}
+
+	// Check for double-encoded CRLF pair: %250d%250a.
+	if strings.Contains(lower, "%250d%250a") {
+		return Result{
+			Allowed: false,
+			Reason:  "double-encoded CRLF injection sequence in URL",
+			Scanner: ScannerCRLF,
+			Score:   0.9,
+		}
+	}
+
+	// Check for bare encoded LF or CR. Some servers (e.g., Node.js HTTP
+	// parsers) accept a bare LF as a header terminator, so %0a alone is
+	// enough to inject headers without a preceding %0d.
+	if strings.Contains(lower, "%0a") || strings.Contains(lower, "%0d") {
+		return Result{
+			Allowed: false,
+			Reason:  "encoded CR or LF in URL",
+			Scanner: ScannerCRLF,
+			Score:   0.9,
+		}
+	}
+
+	// Check for double-encoded bare LF or CR: %250a, %250d.
+	if strings.Contains(lower, "%250a") || strings.Contains(lower, "%250d") {
+		return Result{
+			Allowed: false,
+			Reason:  "double-encoded CR or LF in URL",
+			Scanner: ScannerCRLF,
+			Score:   0.9,
+		}
+	}
+
+	// Check for raw CR or LF bytes (should not appear in URLs).
+	if strings.ContainsAny(rawURL, "\r\n") {
+		return Result{
+			Allowed: false,
+			Reason:  "raw CRLF bytes in URL",
+			Scanner: ScannerCRLF,
+			Score:   0.9,
+		}
+	}
+
+	return Result{Allowed: true}
+}
+
+// checkPathTraversal detects directory traversal sequences in URL paths.
+// Target servers are responsible for path safety, but detecting traversal
+// provides defense-in-depth and visibility into potential attacks.
+func checkPathTraversal(parsed *url.URL) Result {
+	// Check the raw path to catch encoded variants. url.Parse decodes %2e
+	// to '.' in Path but preserves encoding in RawPath (when it differs).
+	rawPath := parsed.RawPath
+	if rawPath == "" {
+		rawPath = parsed.Path
+	}
+	lowerPath := strings.ToLower(rawPath)
+
+	// Detect ".." as a path segment in raw and encoded forms.
+	// Match segment-bounded traversal: /<dotdot><sep> or trailing /<dotdot>,
+	// where sep is / \ %2f %5c and dots may be encoded as %2e.
+	dotdots := []string{"..", "%2e.", ".%2e", "%2e%2e"}
+	seps := []string{"/", "\\", "%2f", "%5c"}
+
+	for _, dd := range dotdots {
+		for _, left := range seps {
+			for _, right := range seps {
+				// <left><dd><right>  e.g. /../, %2f..%5c, \..%2f
+				if strings.Contains(lowerPath, left+dd+right) {
+					return Result{Allowed: false, Reason: "path traversal sequence in URL", Scanner: ScannerPathTraversal, Score: 0.7}
+				}
+			}
+			// <left><dd> at end of path — no trailing separator
+			if strings.HasSuffix(lowerPath, left+dd) {
+				return Result{Allowed: false, Reason: "path traversal sequence in URL", Scanner: ScannerPathTraversal, Score: 0.7}
+			}
+		}
+	}
+
+	// Double-encoded variants: %252e%252e bounded by separators.
+	if strings.Contains(lowerPath, "/%252e%252e/") ||
+		strings.Contains(lowerPath, "/%252e%252e%252f") ||
+		strings.HasSuffix(lowerPath, "/%252e%252e") {
+		return Result{
+			Allowed: false,
+			Reason:  "double-encoded path traversal in URL",
+			Scanner: ScannerPathTraversal,
+			Score:   0.7,
+		}
+	}
+
 	return Result{Allowed: true}
 }
 
@@ -707,6 +841,10 @@ func (s *Scanner) checkDLP(parsed *url.URL) Result {
 		for _, idx := range s.dlpPreFilter.patternsToCheck(cleaned) {
 			p := s.dlpPatterns[idx]
 			if p.re.MatchString(cleaned) {
+				// Skip pattern if the destination domain is explicitly exempted.
+				if len(p.exemptDomains) > 0 && matchesDomainList(parsed.Hostname(), p.exemptDomains) {
+					continue
+				}
 				return Result{
 					Allowed: false,
 					Reason:  fmt.Sprintf("DLP match: %s (%s)", p.name, p.severity),
@@ -721,7 +859,7 @@ func (s *Scanner) checkDLP(parsed *url.URL) Result {
 	// to catch secrets split across params with junk values interleaved.
 	// E.g., "?a=sk-&x=junk&b=ant-&y=junk&c=api03-&z=junk&d=AAAA..." —
 	// combination (0,2,4,6) reconstructs "sk-ant-api03-AAAA...".
-	if result := s.querySubsequenceDLP(parsed.RawQuery); !result.Allowed {
+	if result := s.querySubsequenceDLP(parsed.RawQuery, parsed.Hostname()); !result.Allowed {
 		return result
 	}
 
@@ -743,7 +881,7 @@ func (s *Scanner) checkDLP(parsed *url.URL) Result {
 // multiple parameters with arbitrary junk values interleaved between fragments.
 // Tries subsequences of size 2-4 for URLs with 3-20 query params.
 // Cost: O(n^4) worst case, bounded at ~6k combinations for n=20.
-func (s *Scanner) querySubsequenceDLP(rawQuery string) Result {
+func (s *Scanner) querySubsequenceDLP(rawQuery, hostname string) Result {
 	if rawQuery == "" || !strings.Contains(rawQuery, "&") {
 		return Result{Allowed: true}
 	}
@@ -767,7 +905,7 @@ func (s *Scanner) querySubsequenceDLP(rawQuery string) Result {
 	}
 
 	for size := 2; size <= 4 && size <= n; size++ {
-		if result := s.checkDLPCombinations(values, n, size); !result.Allowed {
+		if result := s.checkDLPCombinations(values, n, size, hostname); !result.Allowed {
 			return result
 		}
 	}
@@ -777,7 +915,7 @@ func (s *Scanner) querySubsequenceDLP(rawQuery string) Result {
 
 // checkDLPCombinations generates all ordered combinations of the given size
 // from the values slice and checks each concatenation against DLP patterns.
-func (s *Scanner) checkDLPCombinations(values []string, n, size int) Result {
+func (s *Scanner) checkDLPCombinations(values []string, n, size int, hostname string) Result {
 	indices := make([]int, size)
 	for i := range indices {
 		indices[i] = i
@@ -795,6 +933,9 @@ func (s *Scanner) checkDLPCombinations(values []string, n, size int) Result {
 		for _, idx := range s.dlpPreFilter.patternsToCheck(cleaned) {
 			p := s.dlpPatterns[idx]
 			if p.re.MatchString(cleaned) {
+				if len(p.exemptDomains) > 0 && matchesDomainList(hostname, p.exemptDomains) {
+					continue
+				}
 				return Result{
 					Allowed: false,
 					Reason:  fmt.Sprintf("DLP match: %s (%s)", p.name, p.severity),
@@ -1106,21 +1247,28 @@ func LoadSecretsFile(path string, minLen int) ([]string, error) {
 }
 
 // checkEntropy calculates Shannon entropy on URL path segments and query values.
+// Domains listed in subdomain_entropy_exclusions skip path entropy checks only
+// (APIs that use high-entropy subdomains often embed tokens in URL paths too).
+// Query entropy is always checked regardless of exclusions.
 func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 	if s.entropyThreshold <= 0 {
 		return Result{Allowed: true}
 	}
 
-	// Check path segments
-	for _, segment := range strings.Split(parsed.Path, "/") {
-		if len(segment) >= s.entropyMinLen {
-			entropy := ShannonEntropy(segment)
-			if entropy > s.entropyThreshold {
-				return Result{
-					Allowed: false,
-					Reason:  fmt.Sprintf("high entropy path segment (%.2f > %.2f threshold)", entropy, s.entropyThreshold),
-					Scanner: ScannerEntropy,
-					Score:   math.Min(entropy/8.0, 1.0), // normalize to 0-1
+	excluded := s.isExcludedFromSubdomainEntropy(parsed.Hostname())
+
+	// Check path segments (skipped for excluded domains).
+	if !excluded {
+		for _, segment := range strings.Split(parsed.Path, "/") {
+			if len(segment) >= s.entropyMinLen {
+				entropy := ShannonEntropy(segment)
+				if entropy > s.entropyThreshold {
+					return Result{
+						Allowed: false,
+						Reason:  fmt.Sprintf("high entropy path segment (%.2f > %.2f threshold)", entropy, s.entropyThreshold),
+						Scanner: ScannerEntropy,
+						Score:   math.Min(entropy/8.0, 1.0), // normalize to 0-1
+					}
 				}
 			}
 		}
@@ -1254,13 +1402,13 @@ func (s *Scanner) checkSubdomainEntropy(hostname string) Result {
 	return Result{Allowed: true}
 }
 
-// isExcludedFromSubdomainEntropy checks if the hostname matches any exclusion
-// rule. Supports exact hostnames and wildcard prefixes (*.example.com matches
+// matchesDomainList checks if the hostname matches any entry in a domain list.
+// Supports exact hostnames and wildcard prefixes (*.example.com matches
 // any subdomain of example.com, including example.com itself).
 // All comparisons are case-insensitive with trailing-dot normalization.
-func (s *Scanner) isExcludedFromSubdomainEntropy(hostname string) bool {
+func matchesDomainList(hostname string, domains []string) bool {
 	host := strings.ToLower(strings.TrimSuffix(hostname, "."))
-	for _, pattern := range s.subdomainExclusions {
+	for _, pattern := range domains {
 		// Defensive: patterns should already be normalized by config.Validate(),
 		// but we re-normalize here as defense-in-depth for security-sensitive matching.
 		p := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(pattern), "."))
@@ -1282,6 +1430,12 @@ func (s *Scanner) isExcludedFromSubdomainEntropy(hostname string) bool {
 		}
 	}
 	return false
+}
+
+// isExcludedFromSubdomainEntropy checks if the hostname matches any subdomain
+// entropy exclusion rule.
+func (s *Scanner) isExcludedFromSubdomainEntropy(hostname string) bool {
+	return matchesDomainList(hostname, s.subdomainExclusions)
 }
 
 // baseDomain returns the registrable domain (eTLD+1) for budget tracking,

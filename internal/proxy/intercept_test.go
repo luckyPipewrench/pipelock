@@ -1119,6 +1119,79 @@ func TestNewTLSInterceptTransport_HandshakeError(t *testing.T) {
 	}
 }
 
+func TestInterceptTunnel_BlocksSecretInQueryParam(t *testing.T) {
+	// Verify that the intercepted handler scans the full URL (including query
+	// params) through the DLP pipeline. Before this fix, only the CONNECT
+	// synthetic URL (host-only) was scanned; query params were invisible.
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, sc, logger, m := testInterceptSetup(t)
+
+	addr := upstream.Listener.Addr().String()
+	secret := "AKIA" + "IOSFODNN7EXAMPLE"
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/api?token="+secret, nil)
+
+	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req) //nolint:bodyclose // closed in t.Cleanup inside helper
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 (URL DLP should block secret in query param)", resp.StatusCode)
+	}
+}
+
+func TestInterceptTunnel_URLScanExplainBlocksHint(t *testing.T) {
+	// Verify that URL scan blocks include the X-Pipelock-Hint header when
+	// explain_blocks is enabled.
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, sc, logger, m := testInterceptSetup(t)
+	explainOn := true
+	cfg.ExplainBlocks = &explainOn
+
+	addr := upstream.Listener.Addr().String()
+	secret := "AKIA" + "IOSFODNN7EXAMPLE"
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/api?token="+secret, nil)
+
+	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req) //nolint:bodyclose // closed in t.Cleanup inside helper
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	hint := resp.Header.Get("X-Pipelock-Hint")
+	if hint == "" {
+		t.Error("expected X-Pipelock-Hint header when explain_blocks is enabled")
+	}
+}
+
+func TestInterceptTunnel_URLScanAuditMode(t *testing.T) {
+	// Verify that URL scan finding in audit (non-enforce) mode logs but forwards.
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprintf(w, "ok")
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
+	enforceOff := false
+	cfg.Enforce = &enforceOff
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+
+	addr := upstream.Listener.Addr().String()
+	secret := "AKIA" + "IOSFODNN7EXAMPLE"
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/api?token="+secret, nil)
+
+	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req) //nolint:bodyclose // closed in t.Cleanup inside helper
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200 (audit mode should forward despite URL DLP match)", resp.StatusCode)
+	}
+}
+
 func TestInterceptTunnel_CEEAdaptiveSignalRecording(t *testing.T) {
 	// Verify that CEE entropy budget exceedance on intercepted requests
 	// records adaptive enforcement signals via ceeRecordSignals.

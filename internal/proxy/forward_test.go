@@ -1708,3 +1708,35 @@ func TestConnectCEEEntropyBlocked(t *testing.T) {
 		t.Fatalf("first request was blocked (budget should not be exceeded by a single hostname)")
 	}
 }
+
+// TestConnectHeaderDLPBlocked verifies that CONNECT request headers are scanned
+// for DLP patterns. A secret in Authorization or Proxy-Authorization headers
+// should be detected and blocked.
+func TestConnectHeaderDLPBlocked(t *testing.T) {
+	proxyAddr, cleanup := setupForwardProxy(t, func(cfg *config.Config) {
+		cfg.Mode = config.ModeStrict
+		cfg.RequestBodyScanning.Enabled = true
+		cfg.RequestBodyScanning.ScanHeaders = true
+		cfg.RequestBodyScanning.Action = config.ActionBlock
+	})
+	defer cleanup()
+
+	conn := dialProxy(t, proxyAddr)
+	defer func() { _ = conn.Close() }()
+
+	// Send CONNECT with a secret in Authorization header.
+	// Split the secret at regex match boundary to avoid self-scan FP.
+	secret := "sk-ant-" + "api03-XXXXXXXXXXXXXXXXXXXXXXX"
+	_, _ = fmt.Fprintf(conn, "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\nAuthorization: Bearer %s\r\n\r\n", secret)
+
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 (header DLP block), got %d", resp.StatusCode)
+	}
+}

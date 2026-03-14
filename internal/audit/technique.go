@@ -26,7 +26,11 @@ var techniqueMap = map[string]string{
 	// Network discovery / SSRF (scanner pipeline layer 6)
 	"ssrf": "T1046", // Network Service Discovery
 
-	// Application layer protocol abuse (scanner pipeline layers 1-2)
+	// URL injection (scanner pipeline layers 2-3)
+	"crlf_injection": "T1190", // Exploit Public-Facing Application (header injection)
+	"path_traversal": "T1083", // File and Directory Discovery
+
+	// Application layer protocol abuse (scanner pipeline layers 4-5)
 	"blocklist": "T1071.001", // Application Layer Protocol: Web Protocols
 	"allowlist": "T1071.001", // Domain not in allowlist
 	"scheme":    "T1071",     // Application Layer Protocol (non-HTTP scheme)

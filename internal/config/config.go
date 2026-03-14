@@ -1248,7 +1248,7 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("DLP pattern %q has invalid regex: %w", p.Name, err)
 		}
 		for j, raw := range p.ExemptDomains {
-			d := strings.TrimSpace(strings.ToLower(raw))
+			d := strings.TrimSuffix(strings.TrimSpace(strings.ToLower(raw)), ".")
 			if d == "" {
 				return fmt.Errorf("DLP pattern %q exempt_domains[%d] is empty", p.Name, j)
 			}
@@ -1263,8 +1263,7 @@ func (c *Config) Validate() error {
 			} else if strings.ContainsAny(d, "*?[]") {
 				return fmt.Errorf("DLP pattern %q exempt_domains[%d] %q: only exact hosts and *.example.com wildcards are supported", p.Name, j, raw)
 			}
-			// Normalize: lowercase, trimmed, trailing-dot-stripped.
-			p.ExemptDomains[j] = strings.TrimSuffix(d, ".")
+			p.ExemptDomains[j] = d
 		}
 	}
 
@@ -1601,7 +1600,7 @@ func (c *Config) Validate() error {
 		}
 		// Reject world-readable, any writable, or any executable bits. Allow
 		// group-read (0o040) because Kubernetes fsGroup sets it on secret volumes.
-		if keyInfo.Mode().Perm()&0o037 != 0 {
+		if keyInfo.Mode().Perm()&0o137 != 0 {
 			return fmt.Errorf("CA key %s is too permissive (mode %04o): restrict to 0600 or 0640", keyPath, keyInfo.Mode().Perm())
 		}
 	}

@@ -609,27 +609,15 @@ func checkPathTraversal(parsed *url.URL) Result {
 	seps := []string{"/", "\\", "%2f", "%5c"}
 
 	for _, dd := range dotdots {
-		for _, sep := range seps {
-			// /<dd><sep>  e.g. /../  or /%2e%2e%2f
-			if strings.Contains(lowerPath, "/"+dd+sep) {
-				return Result{Allowed: false, Reason: "path traversal sequence in URL", Scanner: ScannerPathTraversal, Score: 0.7}
+		for _, left := range seps {
+			for _, right := range seps {
+				// <left><dd><right>  e.g. /../, %2f..%5c, \..%2f
+				if strings.Contains(lowerPath, left+dd+right) {
+					return Result{Allowed: false, Reason: "path traversal sequence in URL", Scanner: ScannerPathTraversal, Score: 0.7}
+				}
 			}
-			// <sep><dd>/  e.g. \../
-			if strings.Contains(lowerPath, sep+dd+"/") {
-				return Result{Allowed: false, Reason: "path traversal sequence in URL", Scanner: ScannerPathTraversal, Score: 0.7}
-			}
-			// <sep><dd><sep>  e.g. %2f..%2f — both boundaries encoded
-			if strings.Contains(lowerPath, sep+dd+sep) {
-				return Result{Allowed: false, Reason: "path traversal sequence in URL", Scanner: ScannerPathTraversal, Score: 0.7}
-			}
-		}
-		// trailing /<dd> with no following separator
-		if strings.HasSuffix(lowerPath, "/"+dd) {
-			return Result{Allowed: false, Reason: "path traversal sequence in URL", Scanner: ScannerPathTraversal, Score: 0.7}
-		}
-		// trailing <sep><dd> — encoded separator before dotdot at end
-		for _, sep := range seps {
-			if strings.HasSuffix(lowerPath, sep+dd) {
+			// <left><dd> at end of path — no trailing separator
+			if strings.HasSuffix(lowerPath, left+dd) {
 				return Result{Allowed: false, Reason: "path traversal sequence in URL", Scanner: ScannerPathTraversal, Score: 0.7}
 			}
 		}

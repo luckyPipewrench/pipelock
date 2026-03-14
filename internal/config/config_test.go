@@ -176,6 +176,18 @@ func TestValidate_DLPExemptDomainsBroadWildcard(t *testing.T) {
 	}
 }
 
+func TestValidate_DLPExemptDomainsBroadWildcardTrailingDot(t *testing.T) {
+	// *.com. must be rejected: trailing dot is stripped before breadth check,
+	// so this would otherwise become *.com (TLD-wide exemption).
+	cfg := Defaults()
+	cfg.DLP.Patterns = []DLPPattern{
+		{Name: "test", Regex: `sk-test-[a-z]+`, Severity: "high", ExemptDomains: []string{"*.com."}},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for overly broad wildcard *.com. in exempt_domains")
+	}
+}
+
 func TestValidate_DLPExemptDomainsValid(t *testing.T) {
 	cfg := Defaults()
 	cfg.DLP.Patterns = []DLPPattern{
@@ -4707,6 +4719,32 @@ func TestTLSInterception_ValidateGroupReadableKeyAllowed(t *testing.T) {
 	err := cfg.Validate()
 	if err != nil {
 		t.Errorf("expected 0o640 (k8s fsGroup) to be accepted, got error: %v", err)
+	}
+}
+
+func TestTLSInterception_ValidateOwnerExecuteKeyRejected(t *testing.T) {
+	// Owner-execute (0o700/0o740) should be rejected — PEM keys are never executable.
+	dir := t.TempDir()
+	certPath := filepath.Join(dir, "ca.pem")
+	keyPath := filepath.Join(dir, "ca-key.pem")
+	if err := os.WriteFile(certPath, []byte("fake"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, []byte("fake"), 0o700); err != nil { //nolint:gosec // test: intentionally executable for test
+		t.Fatal(err)
+	}
+
+	cfg := Defaults()
+	cfg.Internal = nil
+	cfg.TLSInterception.Enabled = true
+	cfg.TLSInterception.CACertPath = certPath
+	cfg.TLSInterception.CAKeyPath = keyPath
+	err := cfg.Validate()
+	if err == nil {
+		t.Error("expected error for owner-executable CA key (0o700)")
+	}
+	if err != nil && !strings.Contains(err.Error(), "too permissive") {
+		t.Errorf("error = %q, want 'too permissive'", err)
 	}
 }
 

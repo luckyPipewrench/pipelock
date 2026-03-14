@@ -116,6 +116,76 @@ func TestValidate_DLPPatternMissingRegex(t *testing.T) {
 	}
 }
 
+func TestValidate_DLPExemptDomainsEmpty(t *testing.T) {
+	cfg := Defaults()
+	cfg.DLP.Patterns = []DLPPattern{
+		{Name: "test", Regex: `sk-test-[a-z]+`, Severity: "high", ExemptDomains: []string{""}},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for empty exempt_domains entry")
+	}
+}
+
+func TestValidate_DLPExemptDomainsBareWildcard(t *testing.T) {
+	cfg := Defaults()
+	cfg.DLP.Patterns = []DLPPattern{
+		{Name: "test", Regex: `sk-test-[a-z]+`, Severity: "high", ExemptDomains: []string{"*"}},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for bare wildcard '*' in exempt_domains")
+	}
+}
+
+func TestValidate_DLPExemptDomainsURL(t *testing.T) {
+	cfg := Defaults()
+	cfg.DLP.Patterns = []DLPPattern{
+		{Name: "test", Regex: `sk-test-[a-z]+`, Severity: "high", ExemptDomains: []string{"https://api.telegram.org"}},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for URL in exempt_domains")
+	}
+}
+
+func TestValidate_DLPExemptDomainsHostPort(t *testing.T) {
+	cfg := Defaults()
+	cfg.DLP.Patterns = []DLPPattern{
+		{Name: "test", Regex: `sk-test-[a-z]+`, Severity: "high", ExemptDomains: []string{"api.telegram.org:443"}},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for host:port in exempt_domains")
+	}
+}
+
+func TestValidate_DLPExemptDomainsNonPrefixWildcard(t *testing.T) {
+	cfg := Defaults()
+	cfg.DLP.Patterns = []DLPPattern{
+		{Name: "test", Regex: `sk-test-[a-z]+`, Severity: "high", ExemptDomains: []string{"api.*.telegram.org"}},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for non-prefix wildcard in exempt_domains")
+	}
+}
+
+func TestValidate_DLPExemptDomainsBroadWildcard(t *testing.T) {
+	cfg := Defaults()
+	cfg.DLP.Patterns = []DLPPattern{
+		{Name: "test", Regex: `sk-test-[a-z]+`, Severity: "high", ExemptDomains: []string{"*.com"}},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for overly broad wildcard *.com in exempt_domains")
+	}
+}
+
+func TestValidate_DLPExemptDomainsValid(t *testing.T) {
+	cfg := Defaults()
+	cfg.DLP.Patterns = []DLPPattern{
+		{Name: "test", Regex: `sk-test-[a-z]+`, Severity: "high", ExemptDomains: []string{"*.example.com", "api.telegram.org"}},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("valid exempt_domains should not error: %v", err)
+	}
+}
+
 func TestValidate_InvalidLoggingFormat(t *testing.T) {
 	cfg := Defaults()
 	cfg.Logging.Format = "xml"
@@ -6421,6 +6491,20 @@ func TestValidateReload_DLPPatternRegexChanged_SentryWarning(t *testing.T) {
 	}
 	if !found {
 		t.Error("expected sentry warning when DLP pattern regex content changes")
+	}
+}
+
+func TestValidateReload_DLPExemptDomainsChanged_NoSentryWarning(t *testing.T) {
+	old := Defaults()
+	updated := Defaults()
+	// Same patterns, but add exempt_domains to the first pattern.
+	// Sentry scrubber does not use exempt_domains, so no warning expected.
+	updated.DLP.Patterns[0].ExemptDomains = []string{"*.example.com"}
+	warnings := ValidateReload(old, updated)
+	for _, w := range warnings {
+		if w.Field == fieldSentry {
+			t.Errorf("exempt_domains change should not trigger sentry warning, got: %s", w.Message)
+		}
 	}
 }
 

@@ -104,6 +104,7 @@ fetch_proxy:
 | `monitoring.max_requests_per_minute` | `60` | Per-domain rate limit |
 | `monitoring.max_data_per_minute` | `0` | Per-domain byte budget (0 = disabled) |
 | `monitoring.blocklist` | 5 domains | Blocked exfiltration targets |
+| `monitoring.subdomain_entropy_exclusions` | `[]` | Domains excluded from subdomain and path entropy checks (query entropy still checked) |
 
 **Entropy guidance:**
 - English text: 3.5-4.0 bits/char
@@ -112,6 +113,15 @@ fetch_proxy:
 - Random/encrypted: 5.5-8.0
 
 The default threshold (4.5) allows commit hashes and base64-encoded filenames while flagging encrypted blobs. Lower it (3.5) for strict mode. Raise it (5.0) for development environments where base64 URLs are common.
+
+**Subdomain entropy exclusions** skip subdomain and path entropy checks for specific domains, but query parameter entropy is still checked. Useful for APIs that embed tokens in URL paths (e.g., Telegram bot API). Supports wildcard matching (`*.example.com`).
+
+```yaml
+fetch_proxy:
+  monitoring:
+    subdomain_entropy_exclusions:
+      - "api.telegram.org"
+```
 
 ## Forward Proxy
 
@@ -285,6 +295,11 @@ dlp:
     - name: "Custom Token"
       regex: 'myapp_[a-zA-Z0-9]{32}'
       severity: critical
+    - name: "Telegram Bot Token"
+      regex: '[0-9]{8,10}:[A-Za-z0-9_-]{35}'
+      severity: critical
+      exempt_domains:            # skip this pattern for these destinations
+        - "api.telegram.org"
 ```
 
 | Field | Default | Description |
@@ -294,12 +309,33 @@ dlp:
 | `min_env_secret_length` | `16` | Min env var value length to consider |
 | `include_defaults` | `true` | Merge your patterns with the 36 built-in patterns |
 | `patterns` | 36 built-in | DLP credential detection patterns |
+| `patterns[].exempt_domains` | `[]` | Domains where this pattern is not enforced (wildcard supported) |
 
 ### Pattern Merging
 
 When `include_defaults` is true (default), your patterns are merged with the built-in set by name. If you define a pattern with the same name as a built-in, yours overrides it. New built-in patterns added in future versions are automatically included.
 
 Set `include_defaults: false` to use only your patterns.
+
+### Per-Pattern Domain Exemptions
+
+Use `exempt_domains` to skip a specific DLP pattern for specific destination domains. Other patterns still fire, and response scanning remains active. Supports wildcard matching (`*.example.com` matches `sub.example.com` and `example.com`).
+
+**Scope:** `exempt_domains` applies to URL-based scanning only (fetch proxy, forward proxy, WebSocket, TLS intercept). It does not apply to MCP input scanning (which has no destination domain) or environment variable leak detection (`scan_env`). To suppress those, use the `suppress` section.
+
+This is useful for APIs that embed credentials in URL paths by design (e.g., Telegram bot API uses `/bot<token>/sendMessage`). The token should be allowed when talking to Telegram but blocked if it appears in requests to other domains.
+
+To exempt a built-in pattern, override it by name and add `exempt_domains`:
+
+```yaml
+dlp:
+  patterns:
+    - name: "Anthropic API Key"    # same name as built-in — overrides it
+      regex: 'sk-ant-[a-zA-Z0-9\-_]{10,}'
+      severity: critical
+      exempt_domains:
+        - "*.anthropic.com"
+```
 
 ### Built-in DLP Patterns (36)
 

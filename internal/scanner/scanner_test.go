@@ -3604,6 +3604,29 @@ func TestCheckSubdomainEntropy_Exclusions(t *testing.T) {
 	}
 }
 
+func TestScan_SubdomainEntropyExclusion_QueryEntropyStillChecked(t *testing.T) {
+	// Regression: subdomain_entropy_exclusions must NOT skip query entropy.
+	// Only subdomain and path entropy should be skipped.
+	cfg := testConfig()
+	cfg.DLP.Patterns = nil
+	cfg.Internal = nil
+	cfg.APIAllowlist = nil
+	cfg.FetchProxy.Monitoring.Blocklist = nil
+	cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions = []string{"api.telegram.org"}
+	s := New(cfg)
+	defer s.Close()
+
+	// High-entropy query value on an excluded domain should still be blocked.
+	highEntropy := "aB3xK9mZ2wQ7rL5yN8vC4jF6hD1eG0t" // 32 chars, high entropy
+	result := s.Scan(context.Background(), "https://api.telegram.org/send?payload="+highEntropy)
+	if result.Allowed {
+		t.Error("expected query entropy to still fire on excluded domain, but got allowed")
+	}
+	if result.Scanner != ScannerEntropy {
+		t.Errorf("expected scanner=entropy, got %s", result.Scanner)
+	}
+}
+
 func TestScan_AllowsCleanURLsNoCRLF(t *testing.T) {
 	s := New(testConfig())
 
@@ -3701,5 +3724,109 @@ func TestScan_AllowsBenignFragment(t *testing.T) {
 	result := s.Scan(context.Background(), "https://example.com/page#section-1")
 	if !result.Allowed {
 		t.Errorf("expected benign fragment to be allowed, got blocked: %s", result.Reason)
+	}
+}
+
+// --- DLP exempt_domains ---
+
+func TestScan_DLPExemptDomains(t *testing.T) {
+	tests := []struct {
+		name        string
+		exempt      []string
+		url         string
+		shouldAllow bool
+	}{
+		{
+			name:        "exempt exact domain allows token in path",
+			exempt:      []string{"api.telegram.org"},
+			url:         "https://api.telegram.org/bot" + "1234567890:AABBCCDDEEFFGGHHIIJJKKLLMMNNOOPPqqr/getMe",
+			shouldAllow: true,
+		},
+		{
+			name:        "exempt wildcard allows subdomain",
+			exempt:      []string{"*.telegram.org"},
+			url:         "https://api.telegram.org/bot" + "1234567890:AABBCCDDEEFFGGHHIIJJKKLLMMNNOOPPqqr/getMe",
+			shouldAllow: true,
+		},
+		{
+			name:        "non-exempt domain still blocked",
+			exempt:      []string{"api.telegram.org"},
+			url:         "https://evil.com/steal?token=" + "1234567890:AABBCCDDEEFFGGHHIIJJKKLLMMNNOOPPqqr",
+			shouldAllow: false,
+		},
+		{
+			name:        "no exemptions blocks everywhere",
+			exempt:      nil,
+			url:         "https://api.telegram.org/bot" + "1234567890:AABBCCDDEEFFGGHHIIJJKKLLMMNNOOPPqqr/getMe",
+			shouldAllow: false,
+		},
+		{
+			name:        "case insensitive exemption",
+			exempt:      []string{"API.Telegram.ORG"},
+			url:         "https://api.telegram.org/bot" + "1234567890:AABBCCDDEEFFGGHHIIJJKKLLMMNNOOPPqqr/getMe",
+			shouldAllow: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testConfig()
+			cfg.Internal = nil
+			cfg.FetchProxy.Monitoring.EntropyThreshold = 0 // disable entropy to isolate DLP
+			cfg.DLP.Patterns = []config.DLPPattern{
+				{
+					Name:          "Telegram Bot Token",
+					Regex:         `[0-9]{8,10}:[A-Za-z0-9_-]{35}`,
+					Severity:      "critical",
+					ExemptDomains: tt.exempt,
+				},
+			}
+			s := New(cfg)
+			defer s.Close()
+
+			result := s.Scan(context.Background(), tt.url)
+			if result.Allowed != tt.shouldAllow {
+				if tt.shouldAllow {
+					t.Errorf("expected allowed, got blocked: %s (scanner: %s)", result.Reason, result.Scanner)
+				} else {
+					t.Errorf("expected blocked, got allowed")
+				}
+			}
+		})
+	}
+}
+
+func TestScan_DLPExemptDomainsOtherPatternsStillFire(t *testing.T) {
+	// Exempt domain for one pattern should not affect other patterns.
+	cfg := testConfig()
+	cfg.Internal = nil
+	cfg.FetchProxy.Monitoring.EntropyThreshold = 0 // disable entropy to isolate DLP
+	cfg.DLP.Patterns = []config.DLPPattern{
+		{
+			Name:          "Telegram Bot Token",
+			Regex:         `[0-9]{8,10}:[A-Za-z0-9_-]{35}`,
+			Severity:      "critical",
+			ExemptDomains: []string{"api.telegram.org"},
+		},
+		{
+			Name:     "AWS Access Key",
+			Regex:    `AKIA[0-9A-Z]{16}`,
+			Severity: "critical",
+		},
+	}
+	s := New(cfg)
+	defer s.Close()
+
+	// Telegram token to Telegram: allowed (exempt)
+	result := s.Scan(context.Background(), "https://api.telegram.org/bot"+"1234567890:AABBCCDDEEFFGGHHIIJJKKLLMMNNOOPPqqr/getMe")
+	if !result.Allowed {
+		t.Errorf("expected Telegram token to Telegram to be allowed, got blocked: %s", result.Reason)
+	}
+
+	// AWS key to Telegram: still blocked (no exemption on AWS pattern)
+	awsKey := "AKIA" + "IOSFODNN7EXAMPLE"
+	result = s.Scan(context.Background(), "https://api.telegram.org/path?key="+awsKey)
+	if result.Allowed {
+		t.Errorf("expected AWS key to Telegram to be blocked, got allowed")
 	}
 }

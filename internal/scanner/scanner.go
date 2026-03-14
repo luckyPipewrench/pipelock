@@ -82,9 +82,10 @@ type Scanner struct {
 }
 
 type compiledPattern struct {
-	name     string
-	re       *regexp.Regexp
-	severity string
+	name          string
+	re            *regexp.Regexp
+	severity      string
+	exemptDomains []string // domains where this pattern is skipped (wildcard supported)
 }
 
 // New creates a Scanner from config. Config must be validated first via
@@ -125,9 +126,10 @@ func New(cfg *config.Config) *Scanner {
 			panic(fmt.Sprintf("BUG: DLP pattern %q failed to compile after validation: %v", p.Name, err))
 		}
 		s.dlpPatterns = append(s.dlpPatterns, &compiledPattern{
-			name:     p.Name,
-			re:       re,
-			severity: p.Severity,
+			name:          p.Name,
+			re:            re,
+			severity:      p.Severity,
+			exemptDomains: p.ExemptDomains,
 		})
 	}
 
@@ -829,6 +831,10 @@ func (s *Scanner) checkDLP(parsed *url.URL) Result {
 		for _, idx := range s.dlpPreFilter.patternsToCheck(cleaned) {
 			p := s.dlpPatterns[idx]
 			if p.re.MatchString(cleaned) {
+				// Skip pattern if the destination domain is explicitly exempted.
+				if len(p.exemptDomains) > 0 && matchesDomainList(parsed.Hostname(), p.exemptDomains) {
+					continue
+				}
 				return Result{
 					Allowed: false,
 					Reason:  fmt.Sprintf("DLP match: %s (%s)", p.name, p.severity),
@@ -843,7 +849,7 @@ func (s *Scanner) checkDLP(parsed *url.URL) Result {
 	// to catch secrets split across params with junk values interleaved.
 	// E.g., "?a=sk-&x=junk&b=ant-&y=junk&c=api03-&z=junk&d=AAAA..." —
 	// combination (0,2,4,6) reconstructs "sk-ant-api03-AAAA...".
-	if result := s.querySubsequenceDLP(parsed.RawQuery); !result.Allowed {
+	if result := s.querySubsequenceDLP(parsed.RawQuery, parsed.Hostname()); !result.Allowed {
 		return result
 	}
 
@@ -865,7 +871,7 @@ func (s *Scanner) checkDLP(parsed *url.URL) Result {
 // multiple parameters with arbitrary junk values interleaved between fragments.
 // Tries subsequences of size 2-4 for URLs with 3-20 query params.
 // Cost: O(n^4) worst case, bounded at ~6k combinations for n=20.
-func (s *Scanner) querySubsequenceDLP(rawQuery string) Result {
+func (s *Scanner) querySubsequenceDLP(rawQuery, hostname string) Result {
 	if rawQuery == "" || !strings.Contains(rawQuery, "&") {
 		return Result{Allowed: true}
 	}
@@ -889,7 +895,7 @@ func (s *Scanner) querySubsequenceDLP(rawQuery string) Result {
 	}
 
 	for size := 2; size <= 4 && size <= n; size++ {
-		if result := s.checkDLPCombinations(values, n, size); !result.Allowed {
+		if result := s.checkDLPCombinations(values, n, size, hostname); !result.Allowed {
 			return result
 		}
 	}
@@ -899,7 +905,7 @@ func (s *Scanner) querySubsequenceDLP(rawQuery string) Result {
 
 // checkDLPCombinations generates all ordered combinations of the given size
 // from the values slice and checks each concatenation against DLP patterns.
-func (s *Scanner) checkDLPCombinations(values []string, n, size int) Result {
+func (s *Scanner) checkDLPCombinations(values []string, n, size int, hostname string) Result {
 	indices := make([]int, size)
 	for i := range indices {
 		indices[i] = i
@@ -917,6 +923,9 @@ func (s *Scanner) checkDLPCombinations(values []string, n, size int) Result {
 		for _, idx := range s.dlpPreFilter.patternsToCheck(cleaned) {
 			p := s.dlpPatterns[idx]
 			if p.re.MatchString(cleaned) {
+				if len(p.exemptDomains) > 0 && matchesDomainList(hostname, p.exemptDomains) {
+					continue
+				}
 				return Result{
 					Allowed: false,
 					Reason:  fmt.Sprintf("DLP match: %s (%s)", p.name, p.severity),
@@ -1228,21 +1237,28 @@ func LoadSecretsFile(path string, minLen int) ([]string, error) {
 }
 
 // checkEntropy calculates Shannon entropy on URL path segments and query values.
+// Domains listed in subdomain_entropy_exclusions skip path entropy checks only
+// (APIs that use high-entropy subdomains often embed tokens in URL paths too).
+// Query entropy is always checked regardless of exclusions.
 func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 	if s.entropyThreshold <= 0 {
 		return Result{Allowed: true}
 	}
 
-	// Check path segments
-	for _, segment := range strings.Split(parsed.Path, "/") {
-		if len(segment) >= s.entropyMinLen {
-			entropy := ShannonEntropy(segment)
-			if entropy > s.entropyThreshold {
-				return Result{
-					Allowed: false,
-					Reason:  fmt.Sprintf("high entropy path segment (%.2f > %.2f threshold)", entropy, s.entropyThreshold),
-					Scanner: ScannerEntropy,
-					Score:   math.Min(entropy/8.0, 1.0), // normalize to 0-1
+	excluded := s.isExcludedFromSubdomainEntropy(parsed.Hostname())
+
+	// Check path segments (skipped for excluded domains).
+	if !excluded {
+		for _, segment := range strings.Split(parsed.Path, "/") {
+			if len(segment) >= s.entropyMinLen {
+				entropy := ShannonEntropy(segment)
+				if entropy > s.entropyThreshold {
+					return Result{
+						Allowed: false,
+						Reason:  fmt.Sprintf("high entropy path segment (%.2f > %.2f threshold)", entropy, s.entropyThreshold),
+						Scanner: ScannerEntropy,
+						Score:   math.Min(entropy/8.0, 1.0), // normalize to 0-1
+					}
 				}
 			}
 		}
@@ -1376,13 +1392,13 @@ func (s *Scanner) checkSubdomainEntropy(hostname string) Result {
 	return Result{Allowed: true}
 }
 
-// isExcludedFromSubdomainEntropy checks if the hostname matches any exclusion
-// rule. Supports exact hostnames and wildcard prefixes (*.example.com matches
+// matchesDomainList checks if the hostname matches any entry in a domain list.
+// Supports exact hostnames and wildcard prefixes (*.example.com matches
 // any subdomain of example.com, including example.com itself).
 // All comparisons are case-insensitive with trailing-dot normalization.
-func (s *Scanner) isExcludedFromSubdomainEntropy(hostname string) bool {
+func matchesDomainList(hostname string, domains []string) bool {
 	host := strings.ToLower(strings.TrimSuffix(hostname, "."))
-	for _, pattern := range s.subdomainExclusions {
+	for _, pattern := range domains {
 		// Defensive: patterns should already be normalized by config.Validate(),
 		// but we re-normalize here as defense-in-depth for security-sensitive matching.
 		p := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(pattern), "."))
@@ -1404,6 +1420,12 @@ func (s *Scanner) isExcludedFromSubdomainEntropy(hostname string) bool {
 		}
 	}
 	return false
+}
+
+// isExcludedFromSubdomainEntropy checks if the hostname matches any subdomain
+// entropy exclusion rule.
+func (s *Scanner) isExcludedFromSubdomainEntropy(hostname string) bool {
+	return matchesDomainList(hostname, s.subdomainExclusions)
 }
 
 // baseDomain returns the registrable domain (eTLD+1) for budget tracking,

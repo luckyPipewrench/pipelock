@@ -362,9 +362,10 @@ type DLP struct {
 
 // DLPPattern is a named regex pattern for detecting secrets in URLs.
 type DLPPattern struct {
-	Name     string `yaml:"name"`
-	Regex    string `yaml:"regex"`
-	Severity string `yaml:"severity"` // critical, high, medium, low
+	Name          string   `yaml:"name"`
+	Regex         string   `yaml:"regex"`
+	Severity      string   `yaml:"severity"`       // critical, high, medium, low
+	ExemptDomains []string `yaml:"exempt_domains"` // domains where this pattern is not enforced
 }
 
 // LoggingConfig configures audit logging.
@@ -1245,6 +1246,25 @@ func (c *Config) Validate() error {
 		}
 		if _, err := regexp.Compile(p.Regex); err != nil {
 			return fmt.Errorf("DLP pattern %q has invalid regex: %w", p.Name, err)
+		}
+		for j, raw := range p.ExemptDomains {
+			d := strings.TrimSpace(strings.ToLower(raw))
+			if d == "" {
+				return fmt.Errorf("DLP pattern %q exempt_domains[%d] is empty", p.Name, j)
+			}
+			if strings.Contains(d, "://") || strings.Contains(d, "/") || strings.Contains(d, ":") {
+				return fmt.Errorf("DLP pattern %q exempt_domains[%d] %q: use a hostname pattern, not a URL or host:port", p.Name, j, raw)
+			}
+			if strings.HasPrefix(d, "*.") {
+				// Wildcard must target a concrete domain (*.com is too broad).
+				if strings.Count(d[2:], ".") < 1 {
+					return fmt.Errorf("DLP pattern %q exempt_domains[%d] %q: wildcard must target a concrete domain like *.example.com", p.Name, j, raw)
+				}
+			} else if strings.ContainsAny(d, "*?[]") {
+				return fmt.Errorf("DLP pattern %q exempt_domains[%d] %q: only exact hosts and *.example.com wildcards are supported", p.Name, j, raw)
+			}
+			// Normalize: lowercase, trimmed, trailing-dot-stripped.
+			p.ExemptDomains[j] = strings.TrimSuffix(d, ".")
 		}
 	}
 
@@ -2147,14 +2167,19 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 	return warnings
 }
 
-// dlpPatternsChanged returns true if the DLP pattern set differs between old
-// and new configs (count change or regex content change).
+// dlpPatternsChanged returns true if the DLP pattern set differs in ways that
+// affect the Sentry scrubber (count, name, or regex content). exempt_domains
+// changes are intentionally excluded — the scrubber compiles regexes only and
+// does not use destination-domain exemptions.
 func dlpPatternsChanged(old, updated []DLPPattern) bool {
 	if len(old) != len(updated) {
 		return true
 	}
 	for i := range old {
 		if old[i].Regex != updated[i].Regex {
+			return true
+		}
+		if old[i].Name != updated[i].Name {
 			return true
 		}
 	}

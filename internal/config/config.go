@@ -194,6 +194,7 @@ type Config struct {
 	TLSInterception       TLSInterception         `yaml:"tls_interception"`
 	CrossRequestDetection CrossRequestDetection   `yaml:"cross_request_detection"`
 	ScanAPI               ScanAPI                 `yaml:"scan_api"`
+	AddressProtection     AddressProtection       `yaml:"address_protection"`
 	Agents                map[string]AgentProfile `yaml:"agents,omitempty"`
 	LicenseKey            string                  `yaml:"license_key,omitempty"`        // signed license token (from pipelock license issue)
 	LicenseFile           string                  `yaml:"license_file,omitempty"`       // path to file containing the license token (read at startup)
@@ -366,6 +367,35 @@ type DLPPattern struct {
 	Regex         string   `yaml:"regex"`
 	Severity      string   `yaml:"severity"`       // critical, high, medium, low
 	ExemptDomains []string `yaml:"exempt_domains"` // domains where this pattern is not enforced
+}
+
+// AddressProtection configures crypto address poisoning detection.
+// This is destination verification, not secret detection — separate from DLP.
+// Detects lookalike blockchain addresses compared against a user-supplied
+// allowlist of known-good destinations.
+type AddressProtection struct {
+	Enabled          bool             `yaml:"enabled"`
+	Action           string           `yaml:"action"`            // block or warn (for poisoning/lookalike findings)
+	UnknownAction    string           `yaml:"unknown_action"`    // allow, warn, or block (for valid addresses not in allowlist)
+	AllowedAddresses []string         `yaml:"allowed_addresses"` // global baseline allowlist (free tier)
+	Chains           AddressChains    `yaml:"chains"`
+	Similarity       SimilarityConfig `yaml:"similarity"`
+}
+
+// AddressChains toggles which blockchain address formats to detect.
+// nil = use chain-specific default (ETH/BTC/BNB: true, SOL: false).
+type AddressChains struct {
+	ETH *bool `yaml:"eth"` // nil = true when feature enabled
+	BTC *bool `yaml:"btc"` // nil = true when feature enabled
+	SOL *bool `yaml:"sol"` // nil = false (disabled by default, high FP risk from base58 regex)
+	BNB *bool `yaml:"bnb"` // nil = true when feature enabled
+}
+
+// SimilarityConfig controls the prefix/suffix comparison for address poisoning detection.
+// Compared on chain-specific CompareKey (payload), not the full address string.
+type SimilarityConfig struct {
+	PrefixLength int `yaml:"prefix_length"` // default 4
+	SuffixLength int `yaml:"suffix_length"` // default 4
 }
 
 // LoggingConfig configures audit logging.
@@ -556,6 +586,7 @@ type AgentProfile struct {
 	SessionProfiling *AgentSessionProf `yaml:"session_profiling,omitempty"`
 	MCPToolPolicy    *MCPToolPolicy    `yaml:"mcp_tool_policy,omitempty"`
 	Budget           BudgetConfig      `yaml:"budget,omitempty"`
+	AllowedAddresses []string          `yaml:"allowed_addresses,omitempty"` // per-agent crypto address allowlist (enterprise, additive with global)
 }
 
 // AgentDLP controls DLP pattern merging for agent profiles.

@@ -124,7 +124,14 @@ func scanRequestBody(ctx context.Context, body io.Reader, contentType, contentEn
 	}
 
 	// Address poisoning detection alongside DLP.
-	// agentID="" for v1 — no agent ID parameter in scanRequestBody signature.
+	// v1 limitation: agentID="" (global allowlist only). Per-agent allowlists
+	// are not consulted here because scanRequestBody has no agent parameter.
+	// Threading agent ID requires changing 4+ call sites (forward.go,
+	// intercept.go, tests). Tracked for v2 when edition system provides
+	// agent resolution at this layer.
+	// v1 limitation: body address findings are emitted/counted as body_dlp
+	// by callers (forward.go, intercept.go). Dedicated address_protection
+	// log/metric path deferred to v2.
 	if checker := sc.AddressChecker(); checker != nil {
 		addrResult := checker.CheckText(joined, "")
 		if len(addrResult.Findings) > 0 {

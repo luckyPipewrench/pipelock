@@ -33,6 +33,10 @@ const (
 	// exfiltration via long filenames. 256 bytes covers any legitimate
 	// filename while blocking multi-KB exfil payloads.
 	maxFilenameBytes = 256
+
+	// scannerLabelAddressProtection is the scanner label for address poisoning
+	// findings in logs and metrics, distinguishing from body_dlp (secret exfil).
+	scannerLabelAddressProtection = "address_protection"
 )
 
 // BodyScanResult describes the outcome of scanning a request body or headers.
@@ -48,7 +52,7 @@ type BodyScanResult struct {
 // scanRequestBody reads, buffers, and DLP-scans an HTTP request body.
 // Returns the buffered body bytes (for re-wrapping) and the scan result.
 // Fail-closed: oversized bodies and compressed bodies are always blocked.
-func scanRequestBody(ctx context.Context, body io.Reader, contentType, contentEncoding string, maxBytes int, sc *scanner.Scanner) ([]byte, BodyScanResult) {
+func scanRequestBody(ctx context.Context, body io.Reader, contentType, contentEncoding string, maxBytes int, sc *scanner.Scanner, agentID string) ([]byte, BodyScanResult) {
 	// Content-Encoding check: compressed bodies evade DLP regex matching.
 	// Parse as comma-separated tokens (RFC 7231 section 3.1.2.2).
 	if hasNonIdentityEncoding(contentEncoding) {
@@ -124,16 +128,11 @@ func scanRequestBody(ctx context.Context, body io.Reader, contentType, contentEn
 	}
 
 	// Address poisoning detection alongside DLP.
-	// v1 limitation: agentID="" (global allowlist only). Per-agent allowlists
-	// are not consulted here because scanRequestBody has no agent parameter.
-	// Threading agent ID requires changing 4+ call sites (forward.go,
-	// intercept.go, tests). Tracked for v2 when edition system provides
-	// agent resolution at this layer.
-	// v1 limitation: body address findings are emitted/counted as body_dlp
+	// Note: body address findings are currently emitted/counted as body_dlp
 	// by callers (forward.go, intercept.go). Dedicated address_protection
 	// log/metric path deferred to v2.
 	if checker := sc.AddressChecker(); checker != nil {
-		addrResult := checker.CheckText(joined, "")
+		addrResult := checker.CheckText(joined, agentID)
 		if len(addrResult.Findings) > 0 {
 			return buf, BodyScanResult{
 				Clean:           false,

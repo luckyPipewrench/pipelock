@@ -197,7 +197,7 @@ The binary is ~12MB static. Memory usage is dominated by the DLP regex compilati
 
 **Early exit on block.** Blocked URLs short-circuit at the first failing layer. Blocklist hits resolve in ~1.9μs. DLP matches exit before DNS resolution.
 
-**Layers 2-5 run before DNS.** CRLF, path traversal, blocklist, and DLP checks all execute before any network call. This prevents secret exfiltration via DNS queries and keeps the fast path fast.
+**Pre-DNS checks.** CRLF injection, path traversal, allowlist, blocklist, and DLP checks all execute before any network call. This prevents secret exfiltration via DNS queries and keeps the fast path fast.
 
 **Stateless detection pipeline.** Each scan allocates its own working state. The core detection layers (scheme through SSRF) have no shared mutable state, enabling linear scaling with cores. Rate limiting and data budget use per-scanner mutexes but are low-contention.
 

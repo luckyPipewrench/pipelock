@@ -29,6 +29,7 @@ An honest feature matrix and guidance on when to use what.
 | **Config format** | YAML + presets | YAML (agent.yaml) | CLI flags | Code |
 | **Hot-reload** | Yes (fsnotify + SIGHUP) | No | No | No |
 | **CI/CD friendly** | Yes (exit codes, JSON output) | Yes | Limited | Yes |
+| **Testing depth** | 5,800+ tests, 90%+ coverage, private adversarial suite | Unit tests | Unit tests | Unit tests |
 
 ## When to Use What
 

@@ -508,7 +508,7 @@ Canonical metrics, updated each release.
 | Go tests (with `-race`) | 5,800+ |
 | Statement coverage | 90%+ |
 | Evasion techniques tested | 230+ |
-| Scanner pipeline overhead | ~37μs per URL scan ([performance details](docs/performance.md)) |
+| Scanner pipeline overhead | ~21μs per URL scan ([performance details](docs/performance.md)) |
 | CI matrix | Go 1.24 + 1.25, CodeQL, golangci-lint |
 | Supply chain | SLSA provenance, CycloneDX SBOM, cosign signatures |
 | OpenSSF Scorecard | [Live score](https://scorecard.dev/viewer/?uri=github.com/luckyPipewrench/pipelock) |

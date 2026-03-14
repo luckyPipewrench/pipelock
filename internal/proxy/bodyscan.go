@@ -132,6 +132,7 @@ func scanRequestBody(ctx context.Context, body io.Reader, contentType, contentEn
 				Clean:           false,
 				Action:          checker.Action(),
 				AddressFindings: addrResult.Findings,
+				Reason:          fmt.Sprintf("address poisoning detected: %s", addrResult.Findings[0].Explanation),
 			}
 		}
 	}

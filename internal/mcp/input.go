@@ -354,8 +354,10 @@ func scanRequestBatch(line []byte, sc *scanner.Scanner, action, onParseError str
 
 	var allDLP []scanner.TextDLPMatch
 	var allInj []scanner.ResponseMatch
+	var allAddr []addressprotect.Finding
 	var firstID json.RawMessage
 	var hasError bool
+	var batchAction string // track strictest action across batch elements
 
 	for _, elem := range batch {
 		v := ScanRequest(elem, sc, action, onParseError)
@@ -368,17 +370,29 @@ func scanRequestBatch(line []byte, sc *scanner.Scanner, action, onParseError str
 		if !v.Clean && v.Error == "" {
 			allDLP = append(allDLP, v.Matches...)
 			allInj = append(allInj, v.Inject...)
+			allAddr = append(allAddr, v.AddressFindings...)
+			if v.Action != "" {
+				if batchAction == "" {
+					batchAction = v.Action
+				} else if v.Action == config.ActionBlock {
+					batchAction = config.ActionBlock
+				}
+			}
 		}
 	}
 
-	if len(allDLP) == 0 && len(allInj) == 0 {
+	if len(allDLP) == 0 && len(allInj) == 0 && len(allAddr) == 0 {
 		if hasError {
 			return InputVerdict{ID: firstID, Clean: false, Error: "one or more batch elements failed to parse"}
 		}
 		return InputVerdict{ID: firstID, Clean: true}
 	}
+	if batchAction == "" {
+		batchAction = action
+	}
 	v := InputVerdict{
-		ID: firstID, Clean: false, Action: action, Matches: allDLP, Inject: allInj,
+		ID: firstID, Clean: false, Action: batchAction,
+		Matches: allDLP, Inject: allInj, AddressFindings: allAddr,
 	}
 	if hasError {
 		v.Error = "one or more batch elements also failed to parse"

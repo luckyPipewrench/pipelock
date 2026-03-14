@@ -535,7 +535,7 @@ func checkCRLF(rawURL string) Result {
 	}
 	lower := strings.ToLower(rawURL)
 
-	// Check for encoded CRLF: %0d%0a (the primary attack vector).
+	// Check for encoded CRLF pair: %0d%0a (the primary attack vector).
 	if strings.Contains(lower, "%0d%0a") {
 		return Result{
 			Allowed: false,
@@ -545,11 +545,33 @@ func checkCRLF(rawURL string) Result {
 		}
 	}
 
-	// Check for double-encoded CRLF: %250d%250a.
+	// Check for double-encoded CRLF pair: %250d%250a.
 	if strings.Contains(lower, "%250d%250a") {
 		return Result{
 			Allowed: false,
 			Reason:  "double-encoded CRLF injection sequence in URL",
+			Scanner: ScannerCRLF,
+			Score:   0.9,
+		}
+	}
+
+	// Check for bare encoded LF or CR. Some servers (e.g., Node.js HTTP
+	// parsers) accept a bare LF as a header terminator, so %0a alone is
+	// enough to inject headers without a preceding %0d.
+	if strings.Contains(lower, "%0a") || strings.Contains(lower, "%0d") {
+		return Result{
+			Allowed: false,
+			Reason:  "encoded CR or LF in URL",
+			Scanner: ScannerCRLF,
+			Score:   0.9,
+		}
+	}
+
+	// Check for double-encoded bare LF or CR: %250a, %250d.
+	if strings.Contains(lower, "%250a") || strings.Contains(lower, "%250d") {
+		return Result{
+			Allowed: false,
+			Reason:  "double-encoded CR or LF in URL",
 			Scanner: ScannerCRLF,
 			Score:   0.9,
 		}

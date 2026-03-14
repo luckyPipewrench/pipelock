@@ -3480,6 +3480,12 @@ func TestScan_BlocksCRLFInjection(t *testing.T) {
 		{"uppercase_encoded", "https://example.com/path%0D%0ASet-Cookie:stolen=1"},
 		{"double_encoded", "https://example.com/path%250d%250aInjected:yes"},
 		{"in_query", "https://example.com/page?x=%0d%0aX-Evil:1"},
+		{"bare_lf", "https://example.com/path%0aX-Injected:1"},
+		{"bare_cr", "https://example.com/path%0dX-Injected:1"},
+		{"bare_lf_uppercase", "https://example.com/path%0AX-Injected:1"},
+		{"bare_cr_uppercase", "https://example.com/path%0DX-Injected:1"},
+		{"double_encoded_bare_lf", "https://example.com/path%250aX-Injected:1"},
+		{"double_encoded_bare_cr", "https://example.com/path%250dX-Injected:1"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

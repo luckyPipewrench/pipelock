@@ -252,16 +252,50 @@ func TestCheckerHotReload(t *testing.T) {
 	}
 }
 
-func TestCheckerAction(t *testing.T) {
+func TestStrictestAction(t *testing.T) {
+	tests := []struct {
+		name     string
+		findings []Finding
+		want     string
+	}{
+		{"empty", nil, ""},
+		{"single block", []Finding{{Action: "block"}}, "block"},
+		{"single warn", []Finding{{Action: "warn"}}, "warn"},
+		{"warn + block = block", []Finding{{Action: "warn"}, {Action: "block"}}, "block"},
+		{"block + warn = block", []Finding{{Action: "block"}, {Action: "warn"}}, "block"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := StrictestAction(tt.findings)
+			if got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCheckTextLookalikePolicyAction(t *testing.T) {
 	cfg := enabledConfig()
-	cfg.Action = "warn"
+	cfg.Action = testActionWarn // lookalike uses warn
+	cfg.UnknownAction = "block" // unknown uses block
+	cfg.AllowedAddresses = []string{"0x742d35cc6634c0532925a3b844bc9e7595f2bd3e"}
 	c := NewChecker(cfg, nil)
-	if c.Action() != "warn" {
-		t.Errorf("Action: got %q, want %q", c.Action(), "warn")
+
+	// Lookalike finding should carry action="warn".
+	result := c.CheckText("send to 0x742daaaaaaaaaaaaaaaaaaaaaaaaaaaaaaf2bd3e", "")
+	if len(result.Findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d", len(result.Findings))
+	}
+	if result.Findings[0].Action != testActionWarn {
+		t.Errorf("lookalike action: got %q, want %q", result.Findings[0].Action, testActionWarn)
 	}
 
-	var nilChecker *Checker
-	if nilChecker.Action() != "" {
-		t.Error("nil checker Action should return empty string")
+	// Unknown finding should carry action="block".
+	result = c.CheckText("send to 0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef", "")
+	if len(result.Findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d", len(result.Findings))
+	}
+	if result.Findings[0].Action != "block" {
+		t.Errorf("unknown action: got %q, want %q", result.Findings[0].Action, "block")
 	}
 }

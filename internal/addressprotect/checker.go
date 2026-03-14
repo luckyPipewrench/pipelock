@@ -179,7 +179,7 @@ func (c *Checker) CheckText(text, agentID string) Result {
 		if len(chainAllowed) == 0 {
 			continue // no allowlisted addresses for this chain
 		}
-		f := compareHit(hit, chainAllowed, c.prefixLen, c.suffixLen, c.unknownAct, v)
+		f := compareHit(hit, chainAllowed, c.prefixLen, c.suffixLen, c.action, c.unknownAct, v)
 		if f != nil {
 			findings = append(findings, *f)
 		}
@@ -288,10 +288,17 @@ func stripZeroWidth(s string) string {
 	}, s)
 }
 
-// Action returns the configured action for lookalike findings.
-func (c *Checker) Action() string {
-	if c == nil {
-		return ""
+// StrictestAction returns the strictest action across a set of findings.
+// block > warn > allow. Used by transports to determine the effective action.
+func StrictestAction(findings []Finding) string {
+	action := ""
+	for _, f := range findings {
+		if f.Action == config.ActionBlock {
+			return config.ActionBlock
+		}
+		if f.Action == config.ActionWarn {
+			action = config.ActionWarn
+		}
 	}
-	return c.action
+	return action
 }

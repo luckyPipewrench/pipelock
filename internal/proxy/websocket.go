@@ -18,6 +18,7 @@ import (
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
 
+	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -543,14 +544,19 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 				if checker := r.scanner.AddressChecker(); checker != nil {
 					addrResult := checker.CheckText(string(scanInput), r.agent)
 					if len(addrResult.Findings) > 0 {
+						addrAction := addressprotect.StrictestAction(addrResult.Findings)
 						names := make([]string, len(addrResult.Findings))
 						for i, f := range addrResult.Findings {
 							names[i] = f.Explanation
 						}
-						if r.cfg.EnforceEnabled() && checker.Action() == config.ActionBlock {
+						verdictLabel := "unknown"
+						if addrResult.Findings[0].Verdict == addressprotect.VerdictLookalike {
+							verdictLabel = "lookalike"
+						}
+						r.proxy.metrics.RecordAddressFinding(addrResult.Findings[0].Chain, verdictLabel)
+						if r.cfg.EnforceEnabled() && addrAction == config.ActionBlock {
 							reason := fmt.Sprintf("address poisoning: %s", addrResult.Findings[0].Explanation)
 							log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, "address_protection", reason, r.clientIP, r.requestID)
-							r.proxy.metrics.RecordAddressFinding(addrResult.Findings[0].Chain, "lookalike")
 							plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "address poisoning detected")
 							plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "address poisoning detected")
 							blocked = true
@@ -558,7 +564,6 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 						}
 						// Warn/audit mode: log finding but allow through.
 						log.LogWSScan(r.targetURL, audit.DirectionClientToServer, r.clientIP, r.requestID, "address_protection", len(addrResult.Findings), names)
-						r.proxy.metrics.RecordAddressFinding(addrResult.Findings[0].Chain, "lookalike")
 					}
 				}
 			}

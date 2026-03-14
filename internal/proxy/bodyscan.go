@@ -130,7 +130,7 @@ func scanRequestBody(ctx context.Context, body io.Reader, contentType, contentEn
 		if len(addrResult.Findings) > 0 {
 			return buf, BodyScanResult{
 				Clean:           false,
-				Action:          checker.Action(),
+				Action:          addressprotect.StrictestAction(addrResult.Findings),
 				AddressFindings: addrResult.Findings,
 				Reason:          fmt.Sprintf("address poisoning detected: %s", addrResult.Findings[0].Explanation),
 			}

@@ -30,6 +30,7 @@ type Hit struct {
 type Finding struct {
 	Hit
 	Verdict     Verdict `json:"verdict"`
+	Action      string  `json:"action"`                 // resolved action: block or warn (from config, verdict-specific)
 	MatchedAddr string  `json:"matched_addr,omitempty"` // truncated allowlist address (lookalike only)
 	Explanation string  `json:"explanation"`
 }
@@ -82,7 +83,7 @@ func truncateAddr(normalized string, v chainValidator) string {
 // compareHit checks a single Hit against the allowlist for one chain.
 // Returns a Finding if the address is a lookalike or unknown (when actioned).
 // Returns nil for exact matches (allow through, no Finding).
-func compareHit(hit Hit, allowedKeys []string, prefixLen, suffixLen int, unknownAction string, v chainValidator) *Finding {
+func compareHit(hit Hit, allowedKeys []string, prefixLen, suffixLen int, action, unknownAction string, v chainValidator) *Finding {
 	hitKey := v.CompareKey(hit.Normalized)
 
 	// Check for exact match first — short-circuit, no Finding.
@@ -99,6 +100,7 @@ func compareHit(hit Hit, allowedKeys []string, prefixLen, suffixLen int, unknown
 			return &Finding{
 				Hit:         hit,
 				Verdict:     VerdictLookalike,
+				Action:      action,
 				MatchedAddr: truncateAddr(allowed, v),
 				Explanation: fmt.Sprintf(
 					"%s address %s resembles allowlisted %s: first %d and last %d payload characters match, middle differs (possible address poisoning)",
@@ -118,6 +120,7 @@ func compareHit(hit Hit, allowedKeys []string, prefixLen, suffixLen int, unknown
 	return &Finding{
 		Hit:     hit,
 		Verdict: VerdictUnknown,
+		Action:  unknownAction,
 		Explanation: fmt.Sprintf(
 			"%s address %s is not in the allowlist",
 			chainLabel(hit.Chain),

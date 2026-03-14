@@ -68,14 +68,17 @@ func TestAddressSimilarity_LookalikeDetected(t *testing.T) {
 	if len(results) == 0 {
 		t.Fatal("expected lookalike alert for address poisoning")
 	}
-	if results[0].KnownAddress != legit {
-		t.Errorf("expected known address %s, got %s", legit, results[0].KnownAddress)
+	// Canonicalized to lowercase.
+	legitLower := strings.ToLower(legit)
+	fakeLower := strings.ToLower(fake)
+	if results[0].KnownAddress != legitLower {
+		t.Errorf("expected known address %s, got %s", legitLower, results[0].KnownAddress)
 	}
-	if results[0].NewAddress != fake {
-		t.Errorf("expected new address %s, got %s", fake, results[0].NewAddress)
+	if results[0].NewAddress != fakeLower {
+		t.Errorf("expected new address %s, got %s", fakeLower, results[0].NewAddress)
 	}
-	expectedPrefix := legit[:fingerprintLen]
-	expectedSuffix := legit[len(legit)-fingerprintLen:]
+	expectedPrefix := legitLower[:fingerprintLen]
+	expectedSuffix := legitLower[len(legitLower)-fingerprintLen:]
 	if results[0].Prefix != expectedPrefix {
 		t.Errorf("expected prefix %q, got %q", expectedPrefix, results[0].Prefix)
 	}
@@ -163,26 +166,71 @@ func TestAddressSimilarity_NoPatterns(t *testing.T) {
 	}
 }
 
-func TestAddressSimilarity_CaseSensitiveFingerprint(t *testing.T) {
+func TestAddressSimilarity_CaseCanonicalizedNoFalsePositive(t *testing.T) {
 	tracker := NewAddressSimilarityTracker(testAddrPatterns)
 
-	// ETH addresses are case-insensitive in practice (EIP-55 uses mixed
-	// case for checksum). The tracker uses raw extracted chars for
-	// fingerprinting. Two addresses that differ only in case of the
-	// middle but have identical prefix+suffix should NOT alert.
-	addr1 := "0xAb" + strings.Repeat("aa", 17) + "1234" // 42 chars
-	addr2 := "0xAb" + strings.Repeat("AA", 17) + "1234" // same fingerprint, case differs in middle
+	// EIP-55 checksum vs lowercase: same logical address, different case.
+	// Canonicalization lowercases both, so they match as the same address
+	// and should NOT alert.
+	addr1 := "0xAb" + strings.Repeat("aA", 17) + "1234" // 42 chars, mixed case
+	addr2 := "0xab" + strings.Repeat("aa", 17) + "1234" // same address, all lowercase
 
 	tracker.Check("sess1", fmt.Sprintf("send to %s", addr1))
 	results := tracker.Check("sess1", fmt.Sprintf("send to %s", addr2))
 
-	// These WILL alert because the full addresses differ (case differs).
-	// This is a conservative choice: case variants of the same logical
-	// address are unusual in legitimate traffic.
+	if len(results) > 0 {
+		t.Error("case-different versions of the same address should NOT alert after canonicalization")
+	}
+}
+
+func TestAddressSimilarity_EvictionOnlyOnNewSession(t *testing.T) {
+	tracker := NewAddressSimilarityTracker(testAddrPatterns)
+	tracker.maxSessions = 2
+
+	// addr and poisoned share fingerprint (first 4 + last 4) but differ in middle.
+	addr := "0xab" + strings.Repeat("11", 17) + "cd00"     // fingerprint: 0xab...cd00
+	poisoned := "0xab" + strings.Repeat("99", 17) + "cd00" // same fingerprint, different middle
+
+	// Fill two sessions.
+	tracker.Check("sess1", fmt.Sprintf("send to %s", addr))
+	tracker.Check("sess2", fmt.Sprintf("send to %s", addr))
+
+	// Access existing session at capacity: should NOT evict anything.
+	tracker.Check("sess1", fmt.Sprintf("confirm %s", addr))
+	if tracker.SessionCount() != 2 {
+		t.Fatalf("expected 2 sessions after accessing existing, got %d", tracker.SessionCount())
+	}
+
+	// Verify sess1 fingerprints survived: a lookalike should still alert.
+	results := tracker.Check("sess1", fmt.Sprintf("send to %s", poisoned))
 	if len(results) == 0 {
-		t.Log("case-different addresses did not alert (fingerprint matches, full differs)")
-	} else {
-		t.Log("case-different addresses alerted (conservative: full address differs)")
+		t.Error("expected lookalike alert — sess1 fingerprints should not have been evicted")
+	}
+}
+
+func TestAddressSimilarity_PerSessionCap(t *testing.T) {
+	tracker := NewAddressSimilarityTracker(testAddrPatterns)
+
+	// Feed more than maxFingerprintsPerSession unique addresses.
+	for i := 0; i < maxFingerprintsPerSession+100; i++ {
+		// Each address has a unique fingerprint.
+		hex := fmt.Sprintf("%04x", i)
+		addr := fmt.Sprintf("0x%s%s%s", hex[:4], strings.Repeat("00", 16), hex[:4])
+		if len(addr) != 42 {
+			// Pad to exactly 42 chars.
+			addr = fmt.Sprintf("0x%04x%s%04x", i, strings.Repeat("0", 32), i)
+		}
+		tracker.Check("sess1", addr)
+	}
+
+	// The session's index should be capped.
+	tracker.mu.Lock()
+	sess := tracker.sessions["sess1"]
+	indexSize := len(sess.index)
+	tracker.mu.Unlock()
+
+	if indexSize > maxFingerprintsPerSession {
+		t.Errorf("per-session index should be capped at %d, got %d", maxFingerprintsPerSession, indexSize)
 	}
 }
 

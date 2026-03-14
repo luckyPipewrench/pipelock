@@ -167,11 +167,24 @@ func ScanRequest(line []byte, sc *scanner.Scanner, action, onParseError string) 
 		if !injResult.Clean {
 			injMatches = injResult.Matches
 		}
+
+		// Resolve strictest action: DLP/injection use MCP input action,
+		// address findings carry their own per-verdict action.
+		verdictAction := ""
+		if len(dlpMatches) > 0 || len(injMatches) > 0 {
+			verdictAction = action
+		}
+		if addrAction := addressprotect.StrictestAction(addrFindings); addrAction != "" {
+			if verdictAction == "" || addrAction == config.ActionBlock {
+				verdictAction = addrAction
+			}
+		}
+
 		return InputVerdict{
 			ID:              rpc.ID,
 			Method:          rpc.Method,
 			Clean:           false,
-			Action:          action,
+			Action:          verdictAction,
 			Matches:         dlpMatches,
 			Inject:          injMatches,
 			AddressFindings: addrFindings,

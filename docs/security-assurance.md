@@ -86,10 +86,31 @@ Detailed mappings to security frameworks:
 
 ## Verification
 
-Security claims are verified through:
+Security claims are verified through four testing layers, static analysis, and supply chain controls.
 
-- **Unit and integration tests:** Full test suite with race detector enabled in CI. See [README testing metrics](../README.md#testing) for current numbers.
-- **Evasion test suite:** Encoding chains, Unicode confusables, field splitting, control characters, and other bypass techniques tested against all scanner layers
+### Testing Layers
+
+1. **Unit and integration tests:** Full test suite with race detector enabled in CI. See [README testing metrics](../README.md#testing) for current numbers.
+2. **Evasion test suite:** Encoding chains (base64, hex, base32, double-encoding), Unicode confusables (Cyrillic, Greek, Armenian, Cherokee), combining marks, control character insertion, field splitting, and whitespace manipulation tested against all scanner layers.
+3. **Black-box binary tests:** End-to-end tests run against a built binary, exercising the full proxy and scanner pipeline through real HTTP, WebSocket, and MCP requests.
+4. **Private adversarial corpus:** A separate adversarial test suite covers real-world evasion and attack classes against the production binary. This corpus is private for the same reason mature security vendors do not publish every regression: a test suite should improve defense, not double as an attacker playbook.
+
+The adversarial suite covers:
+
+- Encoded data exfiltration via DNS subdomains and HTTP parameters
+- Traffic blending with legitimate request profiles
+- Multi-encoding evasion chains (layered encoding, interleaved noise)
+- Scanner layer boundary testing (entropy thresholds, label length limits)
+- Config downgrade and hot-reload state attacks
+- Operator terminal injection (escape sequences, bidirectional overrides)
+- MCP response injection via non-standard result shapes
+- Tool description manipulation and session binding attacks
+- Scan API authentication, rate limiting, and fail-closed behavior
+
+The suite is updated alongside every release and whenever new evasion classes are discovered. Every confirmed finding becomes a permanent regression test.
+
+### Static Analysis and Supply Chain
+
 - **Static analysis:** CodeQL (security-and-quality) and golangci-lint with gosec
 - **Dependency monitoring:** Dependabot alerts, govulncheck in CI
 - **Signed releases:** Cosign signatures, SLSA provenance attestations, CycloneDX SBOM

@@ -491,11 +491,21 @@ docs/                  Guides, references, compliance mappings
 
 ## Testing
 
+Pipelock is tested like a security product, not just a developer tool. The open-source core is covered by thousands of unit, integration, and end-to-end tests across the proxy, scanner, MCP, WebSocket, and policy layers. In addition, we maintain a separate private adversarial test suite that exercises real-world attack classes against the production binary.
+
+That suite covers the problems an agent firewall actually has to stop: secret exfiltration, prompt injection, SSRF, tool poisoning, and transport-layer evasions across HTTP, WebSocket, and MCP. We publish the methodology and coverage areas; we do not publish live bypass payloads that would lower attacker cost. Every bypass graduates into a regression test before release.
+
+This is not security through obscurity. Pipelock's detection and enforcement logic is open source and inspectable. Public tests remain extensive. The private adversarial suite exists to continuously regression-test bypass classes without handing out a replay script.
+
+For more detail on the security model, trust boundaries, and known limitations, see the [Security Assurance Case](docs/security-assurance.md).
+
+### Metrics
+
 Canonical metrics, updated each release.
 
 | Metric | Value |
 |--------|-------|
-| Go tests (with `-race`) | 5,750+ |
+| Go tests (with `-race`) | 5,800+ |
 | Statement coverage | 90%+ |
 | Evasion techniques tested | 230+ |
 | Scanner pipeline overhead | ~37μs per URL scan ([performance details](docs/performance.md)) |

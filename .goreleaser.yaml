@@ -50,7 +50,8 @@ builds:
       - -s -w
 
 archives:
-  - ids: [pipelock]
+  - id: pipelock
+    ids: [pipelock]
     format: tar.gz
     format_overrides:
       - goos: windows

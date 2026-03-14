@@ -1908,6 +1908,110 @@ func TestHandleOrderEvent_IgnoresSubscriptionOrders(t *testing.T) {
 	}
 }
 
+func TestHandleOrderEvent_RejectsInvalidOrderData(t *testing.T) {
+	ts := newTestSetup(t)
+	ctx := t.Context()
+
+	event := &PolarWebhookEvent{
+		Type: EventOrderCreated,
+		Data: json.RawMessage(`{not valid json`),
+	}
+	err := ts.handler.HandleOrderEvent(ctx, event)
+	if err == nil {
+		t.Fatal("expected error for invalid JSON order data")
+	}
+}
+
+func TestHandleOrderEvent_RejectsEmptyOrderID(t *testing.T) {
+	ts := newTestSetup(t)
+	ctx := t.Context()
+
+	orderData, _ := json.Marshal(map[string]interface{}{
+		"id":             "",
+		"billing_reason": "purchase",
+		"customer": map[string]interface{}{
+			"email":    testCustomerEmail,
+			"metadata": map[string]string{},
+		},
+		"product": map[string]interface{}{
+			"id":       "prod_trial",
+			"name":     "Trial",
+			"metadata": map[string]string{"pipelock_tier": "trial"},
+		},
+	})
+
+	event := &PolarWebhookEvent{
+		Type: EventOrderCreated,
+		Data: json.RawMessage(orderData),
+	}
+	err := ts.handler.HandleOrderEvent(ctx, event)
+	if err == nil {
+		t.Fatal("expected error for empty order ID")
+	}
+}
+
+func TestHandleOrderEvent_RejectsMissingTierMetadata(t *testing.T) {
+	ts := newTestSetup(t)
+	ctx := t.Context()
+
+	orderData, _ := json.Marshal(map[string]interface{}{
+		"id":             "order_no_tier",
+		"billing_reason": "purchase",
+		"customer": map[string]interface{}{
+			"email":    testCustomerEmail,
+			"metadata": map[string]string{},
+		},
+		"product": map[string]interface{}{
+			"id":       "prod_bad",
+			"name":     "Bad Product",
+			"metadata": map[string]string{},
+		},
+	})
+
+	event := &PolarWebhookEvent{
+		Type: EventOrderCreated,
+		Data: json.RawMessage(orderData),
+	}
+	err := ts.handler.HandleOrderEvent(ctx, event)
+	if err == nil {
+		t.Fatal("expected error for missing pipelock_tier metadata")
+	}
+	if !strings.Contains(err.Error(), "no pipelock_tier metadata") {
+		t.Errorf("error = %q, want 'no pipelock_tier metadata'", err)
+	}
+}
+
+func TestHandleOrderEvent_RejectsUnknownTier(t *testing.T) {
+	ts := newTestSetup(t)
+	ctx := t.Context()
+
+	orderData, _ := json.Marshal(map[string]interface{}{
+		"id":             "order_bad_tier",
+		"billing_reason": "purchase",
+		"customer": map[string]interface{}{
+			"email":    testCustomerEmail,
+			"metadata": map[string]string{},
+		},
+		"product": map[string]interface{}{
+			"id":       "prod_bad",
+			"name":     "Bad Product",
+			"metadata": map[string]string{"pipelock_tier": "premium"},
+		},
+	})
+
+	event := &PolarWebhookEvent{
+		Type: EventOrderCreated,
+		Data: json.RawMessage(orderData),
+	}
+	err := ts.handler.HandleOrderEvent(ctx, event)
+	if err == nil {
+		t.Fatal("expected error for unrecognized tier")
+	}
+	if !strings.Contains(err.Error(), "unrecognized pipelock_tier") {
+		t.Errorf("error = %q, want 'unrecognized pipelock_tier'", err)
+	}
+}
+
 func TestHandleOrderEvent_TrialNeverSchedulesRefresh(t *testing.T) {
 	ts := newTestSetup(t)
 	ctx := t.Context()

@@ -225,7 +225,11 @@ func TestAddressSimilarity_PerSessionCap(t *testing.T) {
 
 	// The session's index should be capped.
 	tracker.mu.Lock()
-	sess := tracker.sessions["sess1"]
+	sess, ok := tracker.sessions["sess1"]
+	if !ok || sess == nil {
+		tracker.mu.Unlock()
+		t.Fatal("expected sess1 to exist in tracker")
+	}
 	indexSize := len(sess.index)
 	tracker.mu.Unlock()
 

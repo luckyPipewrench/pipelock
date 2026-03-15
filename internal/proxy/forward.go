@@ -461,7 +461,13 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				reason = fmt.Sprintf("request body contains secret: %s", strings.Join(patternNames, ", "))
 			}
 
-			if scannerLabel == scannerLabelAddressProtection {
+			// Emit telemetry for both finding types independently.
+			// A request can trigger both DLP and address findings simultaneously.
+			if len(bodyResult.DLPMatches) > 0 {
+				p.metrics.RecordBodyDLP(action, agentLabel)
+				p.logger.LogBodyDLP(r.Method, targetURL, action, clientIP, requestID, agent, len(bodyResult.DLPMatches), patternNames)
+			}
+			if len(bodyResult.AddressFindings) > 0 {
 				for _, f := range bodyResult.AddressFindings {
 					verdictLabel := "unknown"
 					if f.Verdict == addressprotect.VerdictLookalike {
@@ -469,17 +475,11 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					}
 					p.metrics.RecordAddressFinding(f.Chain, verdictLabel)
 				}
-			} else {
-				p.metrics.RecordBodyDLP(action, agentLabel)
-			}
-			if scannerLabel == scannerLabelAddressProtection {
 				addrNames := make([]string, len(bodyResult.AddressFindings))
 				for i, f := range bodyResult.AddressFindings {
 					addrNames[i] = f.Explanation
 				}
 				p.logger.LogBodyScan(r.Method, targetURL, audit.EventAddressProtection, action, clientIP, requestID, agent, len(bodyResult.AddressFindings), addrNames)
-			} else {
-				p.logger.LogBodyDLP(r.Method, targetURL, action, clientIP, requestID, agent, len(bodyResult.DLPMatches), patternNames)
 			}
 
 			// Fail-closed: when buf is nil the body was consumed but couldn't

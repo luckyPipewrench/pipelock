@@ -17,7 +17,7 @@ func enabledConfig() *config.AddressProtection {
 	return &config.AddressProtection{
 		Enabled:       true,
 		Action:        "block",
-		UnknownAction: "allow",
+		UnknownAction: config.ActionAllow,
 		Chains: config.AddressChains{
 			ETH: boolPtr(true),
 			BTC: boolPtr(true),
@@ -118,7 +118,7 @@ func TestCheckTextLookalike(t *testing.T) {
 func TestCheckTextUnknownAllow(t *testing.T) {
 	cfg := enabledConfig()
 	cfg.AllowedAddresses = []string{"0x742d35cc6634c0532925a3b844bc9e7595f2bd3e"}
-	cfg.UnknownAction = "allow"
+	cfg.UnknownAction = config.ActionAllow
 	c := NewChecker(cfg, nil)
 
 	// Completely different address — unknown.

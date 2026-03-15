@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -476,7 +477,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				for i, f := range bodyResult.AddressFindings {
 					addrNames[i] = f.Explanation
 				}
-				p.logger.LogBodyScan(r.Method, targetURL, scannerLabelAddressProtection, action, clientIP, requestID, agent, len(bodyResult.AddressFindings), addrNames)
+				p.logger.LogBodyScan(r.Method, targetURL, audit.EventAddressProtection, action, clientIP, requestID, agent, len(bodyResult.AddressFindings), addrNames)
 			} else {
 				p.logger.LogBodyDLP(r.Method, targetURL, action, clientIP, requestID, agent, len(bodyResult.DLPMatches), patternNames)
 			}

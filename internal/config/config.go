@@ -49,6 +49,7 @@ const (
 	ActionAsk     = "ask"
 	ActionStrip   = "strip"
 	ActionForward = "forward"
+	ActionAllow   = "allow"
 )
 
 // Severity constants for chain detection and emit thresholds.
@@ -1184,6 +1185,22 @@ func (c *Config) ApplyDefaults() {
 			}
 		}
 	}
+
+	// Address protection defaults
+	if c.AddressProtection.Enabled {
+		if c.AddressProtection.Action == "" {
+			c.AddressProtection.Action = ActionBlock
+		}
+		if c.AddressProtection.UnknownAction == "" {
+			c.AddressProtection.UnknownAction = ActionAllow
+		}
+		if c.AddressProtection.Similarity.PrefixLength <= 0 {
+			c.AddressProtection.Similarity.PrefixLength = 4
+		}
+		if c.AddressProtection.Similarity.SuffixLength <= 0 {
+			c.AddressProtection.Similarity.SuffixLength = 4
+		}
+	}
 }
 
 // mergeDLPPatterns merges default DLP patterns with user-defined patterns.
@@ -1813,6 +1830,37 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// Validate address protection config
+	if c.AddressProtection.Enabled {
+		switch c.AddressProtection.Action {
+		case ActionBlock, ActionWarn:
+			// valid
+		default:
+			return fmt.Errorf("invalid address_protection.action %q: must be block or warn", c.AddressProtection.Action)
+		}
+		switch c.AddressProtection.UnknownAction {
+		case ActionAllow, ActionWarn, ActionBlock:
+			// valid
+		default:
+			return fmt.Errorf("invalid address_protection.unknown_action %q: must be allow, warn, or block", c.AddressProtection.UnknownAction)
+		}
+		if c.AddressProtection.Similarity.PrefixLength <= 0 {
+			return fmt.Errorf("address_protection.similarity.prefix_length must be positive")
+		}
+		if c.AddressProtection.Similarity.SuffixLength <= 0 {
+			return fmt.Errorf("address_protection.similarity.suffix_length must be positive")
+		}
+		// Require at least one chain enabled. All chains disabled means the
+		// feature is a silent no-op, which is a config error when enabled: true.
+		eth := c.AddressProtection.Chains.ETH == nil || *c.AddressProtection.Chains.ETH
+		btc := c.AddressProtection.Chains.BTC == nil || *c.AddressProtection.Chains.BTC
+		sol := c.AddressProtection.Chains.SOL != nil && *c.AddressProtection.Chains.SOL
+		bnb := c.AddressProtection.Chains.BNB == nil || *c.AddressProtection.Chains.BNB
+		if !eth && !btc && !sol && !bnb {
+			return fmt.Errorf("address_protection.enabled is true but all chains are disabled (silent no-op)")
+		}
+	}
+
 	// Validate Sentry config
 	sr := c.Sentry.EffectiveSampleRate()
 	if math.IsNaN(sr) {
@@ -2123,6 +2171,14 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		warnings = append(warnings, ReloadWarning{
 			Field:   "cross_request_detection.fragment_reassembly.enabled",
 			Message: "cross-request fragment reassembly disabled",
+		})
+	}
+
+	// Address protection disabled
+	if old.AddressProtection.Enabled && !updated.AddressProtection.Enabled {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "address_protection.enabled",
+			Message: "address protection disabled",
 		})
 	}
 

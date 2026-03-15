@@ -425,7 +425,7 @@ scan_api:
 # address_protection:
 #   enabled: false
 #   action: block
-#   unknown_action: allow
+#   unknown_action: block
 #   allowed_addresses: []
 #   chains:
 #     eth: true

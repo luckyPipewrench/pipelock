@@ -3,7 +3,11 @@
 
 package addressprotect
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
+)
 
 // Verdict represents the result of comparing a detected address against the allowlist.
 type Verdict int
@@ -114,7 +118,7 @@ func compareHit(hit Hit, allowedKeys []string, prefixLen, suffixLen int, action,
 	}
 
 	// Unknown: valid address not in allowlist.
-	if unknownAction == "allow" {
+	if unknownAction == config.ActionAllow {
 		return nil // no Finding for unknown when action is allow
 	}
 	return &Finding{

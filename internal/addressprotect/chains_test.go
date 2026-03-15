@@ -222,6 +222,8 @@ func TestBNBDetect(t *testing.T) {
 		text  string
 		count int
 	}{
+		{"valid bnb1 address", "send to bnb1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq38lnxn please", 1},
+		{"uppercase input", "addr: BNB1QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ38LNXN", 1},
 		{"no match", "hello world", 0},
 	}
 	for _, tt := range tests {
@@ -229,6 +231,28 @@ func TestBNBDetect(t *testing.T) {
 			matches := v.Detect(tt.text)
 			if len(matches) != tt.count {
 				t.Errorf("got %d matches, want %d", len(matches), tt.count)
+			}
+		})
+	}
+}
+
+func TestBNBValidate(t *testing.T) {
+	v := bnbValidator{}
+	tests := []struct {
+		name  string
+		addr  string
+		valid bool
+	}{
+		{"valid all-zero payload", "bnb1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq38lnxn", true},
+		{"valid sequential payload", "bnb1qpzry9x8gf2tvdw0s3jn54khce6mua7l9puvd9", true},
+		{"bad checksum", "bnb1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq38lnxq", false},
+		{"wrong HRP", "bc1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq38lnxn", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := v.Validate(tt.addr)
+			if got != tt.valid {
+				t.Errorf("Validate(%q) = %v, want %v", tt.addr, got, tt.valid)
 			}
 		})
 	}

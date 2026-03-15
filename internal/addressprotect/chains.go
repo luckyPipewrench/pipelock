@@ -209,7 +209,7 @@ func (bnbValidator) Detect(text string) []rawMatch {
 	locs := bnbRegex.FindAllStringIndex(lower, -1)
 	matches := make([]rawMatch, 0, len(locs))
 	for _, loc := range locs {
-		matches = append(matches, rawMatch{text: text[loc[0]:loc[1]], offset: loc[0]})
+		matches = append(matches, rawMatch{text: lower[loc[0]:loc[1]], offset: loc[0]})
 	}
 	return matches
 }

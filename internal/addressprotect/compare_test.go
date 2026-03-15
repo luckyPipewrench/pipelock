@@ -9,8 +9,9 @@ import (
 )
 
 const (
-	testActionBlock = "block"
-	testActionWarnC = "warn" // compare_test constant (testActionWarn is in checker_test.go)
+	testActionBlock    = "block"
+	testActionWarnC    = "warn"  // compare_test constant (testActionWarn is in checker_test.go)
+	testActionAllowCmp = "allow" // unknown_action: allow for compare_test
 )
 
 func TestIsSimilar(t *testing.T) {
@@ -115,7 +116,7 @@ func TestCompareHitExactMatch(t *testing.T) {
 	hit := Hit{Chain: ChainETH, Raw: "0x742d35cc6634c0532925a3b844bc9e7595f2bd3e", Normalized: "0x742d35cc6634c0532925a3b844bc9e7595f2bd3e"}
 	allowed := []string{"0x742d35cc6634c0532925a3b844bc9e7595f2bd3e"}
 
-	finding := compareHit(hit, allowed, 4, 4, testActionBlock, "allow", ev)
+	finding := compareHit(hit, allowed, 4, 4, testActionBlock, testActionAllowCmp, ev)
 	if finding != nil {
 		t.Error("exact match should return nil (allow through)")
 	}
@@ -132,7 +133,7 @@ func TestCompareHitLookalike(t *testing.T) {
 	}
 	allowed := []string{"0x742d35cc6634c0532925a3b844bc9e7595f2bd3e"}
 
-	finding := compareHit(hit, allowed, 4, 4, testActionBlock, "allow", ev)
+	finding := compareHit(hit, allowed, 4, 4, testActionBlock, testActionAllowCmp, ev)
 	if finding == nil {
 		t.Fatal("lookalike should return a Finding")
 	}
@@ -153,7 +154,7 @@ func TestCompareHitUnknownAllow(t *testing.T) {
 	allowed := []string{"0x742d35cc6634c0532925a3b844bc9e7595f2bd3e"}
 
 	// unknown_action: allow → no Finding.
-	finding := compareHit(hit, allowed, 4, 4, testActionBlock, "allow", ev)
+	finding := compareHit(hit, allowed, 4, 4, testActionBlock, testActionAllowCmp, ev)
 	if finding != nil {
 		t.Error("unknown with allow action should return nil")
 	}
@@ -184,7 +185,7 @@ func TestCompareHitLookalikePrefixThree(t *testing.T) {
 	}
 	allowed := []string{"0x742d35cc6634c0532925a3b844bc9e7595f2bd3e"}
 
-	finding := compareHit(hit, allowed, 3, 3, testActionBlock, "allow", ev)
+	finding := compareHit(hit, allowed, 3, 3, testActionBlock, testActionAllowCmp, ev)
 	if finding == nil {
 		t.Fatal("lookalike with prefix=3, suffix=3 should return a Finding")
 	}
@@ -203,7 +204,7 @@ func TestCompareHitLookalineCarriesAction(t *testing.T) {
 	allowed := []string{"0x742d35cc6634c0532925a3b844bc9e7595f2bd3e"}
 
 	// Lookalike finding should carry action="warn" when configured as warn.
-	finding := compareHit(hit, allowed, 4, 4, testActionWarnC, "allow", ev)
+	finding := compareHit(hit, allowed, 4, 4, testActionWarnC, testActionAllowCmp, ev)
 	if finding == nil {
 		t.Fatal("expected finding")
 	}
@@ -236,7 +237,7 @@ func TestCompareHitBTCExactMatch(t *testing.T) {
 	}
 	allowed := []string{"bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"}
 
-	finding := compareHit(hit, allowed, 4, 4, testActionBlock, "allow", bv)
+	finding := compareHit(hit, allowed, 4, 4, testActionBlock, testActionAllowCmp, bv)
 	if finding != nil {
 		t.Error("exact BTC bech32 match should return nil")
 	}
@@ -247,7 +248,7 @@ func TestCompareHitEmptyAllowlist(t *testing.T) {
 	hit := Hit{Chain: ChainETH, Raw: "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef", Normalized: "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"}
 
 	// Empty allowlist with allow action → no Finding (inert).
-	finding := compareHit(hit, nil, 4, 4, testActionBlock, "allow", ev)
+	finding := compareHit(hit, nil, 4, 4, testActionBlock, testActionAllowCmp, ev)
 	if finding != nil {
 		t.Error("empty allowlist with allow action should return nil")
 	}

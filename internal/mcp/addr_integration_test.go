@@ -10,7 +10,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
-const testUnknownActionAllow = "allow"
+const testUnknownActionAllow = config.ActionAllow
 
 func TestScanRequestAddressPoisoning(t *testing.T) {
 	cfg := config.Defaults()

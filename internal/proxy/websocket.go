@@ -549,21 +549,32 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 						for i, f := range addrResult.Findings {
 							names[i] = f.Explanation
 						}
-						verdictLabel := "unknown"
-						if addrResult.Findings[0].Verdict == addressprotect.VerdictLookalike {
-							verdictLabel = "lookalike"
+						// Record metrics for every finding, not just the first.
+						for _, f := range addrResult.Findings {
+							verdictLabel := "unknown"
+							if f.Verdict == addressprotect.VerdictLookalike {
+								verdictLabel = "lookalike"
+							}
+							r.proxy.metrics.RecordAddressFinding(f.Chain, verdictLabel)
 						}
-						r.proxy.metrics.RecordAddressFinding(addrResult.Findings[0].Chain, verdictLabel)
 						if r.cfg.EnforceEnabled() && addrAction == config.ActionBlock {
-							reason := fmt.Sprintf("address poisoning: %s", addrResult.Findings[0].Explanation)
-							log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, "address_protection", reason, r.clientIP, r.requestID)
+							// Use the blocking finding for the reason, not necessarily Findings[0].
+							var blockExplanation string
+							for _, f := range addrResult.Findings {
+								if f.Action == config.ActionBlock {
+									blockExplanation = f.Explanation
+									break
+								}
+							}
+							reason := fmt.Sprintf("address poisoning: %s", blockExplanation)
+							log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, scannerLabelAddressProtection, reason, r.clientIP, r.requestID)
 							plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "address poisoning detected")
 							plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "address poisoning detected")
 							blocked = true
 							return
 						}
 						// Warn/audit mode: log finding but allow through.
-						log.LogWSScan(r.targetURL, audit.DirectionClientToServer, r.clientIP, r.requestID, "address_protection", len(addrResult.Findings), names)
+						log.LogWSScan(r.targetURL, audit.DirectionClientToServer, r.clientIP, r.requestID, scannerLabelAddressProtection, len(addrResult.Findings), names)
 					}
 				}
 			}

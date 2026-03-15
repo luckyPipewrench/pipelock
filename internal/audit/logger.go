@@ -84,6 +84,7 @@ const (
 	EventBodyDLP            EventType = "body_dlp"
 	EventHeaderDLP          EventType = "header_dlp"
 	EventChainDetection     EventType = "chain_detection"
+	EventAddressProtection  EventType = "address_protection"
 	EventAgentListener      EventType = "agent_listener"
 
 	EventCrossRequestEntropyExceeded EventType = "cross_request_entropy_exceeded"
@@ -754,11 +755,12 @@ func (l *Logger) LogBodyDLP(method, url, action, clientIP, requestID, agent stri
 	}
 }
 
-// LogBodyScan logs a request body scan hit with a configurable scanner label.
+// LogBodyScan logs a request body scan hit with a configurable event type.
 // Used to distinguish address_protection from body_dlp in audit output.
-func (l *Logger) LogBodyScan(method, url, scannerLabel, action, clientIP, requestID, agent string, matchCount int, findingNames []string) {
+func (l *Logger) LogBodyScan(method, url string, eventType EventType, action, clientIP, requestID, agent string, matchCount int, findingNames []string) {
+	label := string(eventType)
 	ev := l.zl.Warn().
-		Str("event", scannerLabel).
+		Str("event", label).
 		Str("method", method).
 		Str("url", sanitizeString(url)).
 		Str("action", action).
@@ -769,7 +771,7 @@ func (l *Logger) LogBodyScan(method, url, scannerLabel, action, clientIP, reques
 	}
 	ev.Int("match_count", matchCount).
 		Strs("findings", findingNames).
-		Msg("request body " + scannerLabel + " scan hit")
+		Msg("request body " + label + " scan hit")
 
 	if l.emitter != nil {
 		fields := map[string]any{
@@ -784,7 +786,7 @@ func (l *Logger) LogBodyScan(method, url, scannerLabel, action, clientIP, reques
 		if agent != "" {
 			fields["agent"] = sanitizeString(agent)
 		}
-		l.emitter.Emit(context.Background(), scannerLabel, fields)
+		l.emitter.Emit(context.Background(), label, fields)
 	}
 }
 

@@ -1810,7 +1810,7 @@ func TestEmit_LogBodyScanAddressProtection(t *testing.T) {
 	logger, sink := newLoggerWithEmitter(t)
 	defer logger.Close()
 
-	logger.LogBodyScan("POST", "https://api.example.com", "address_protection", actionBlock,
+	logger.LogBodyScan("POST", "https://api.example.com", EventAddressProtection, actionBlock,
 		testClientIP, "req-addr-1", "trader-bot", 1, []string{"ETH lookalike detected"})
 
 	ev, ok := sink.lastEvent()

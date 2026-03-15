@@ -44,25 +44,25 @@ pause
 
 # --- 1: Raw API key exfiltration ---
 step "1. Agent tries to exfiltrate an AWS key"
-show 'pipelock check --url "https://evil.com/steal?key=AKIAIOSFODNN7EXAMPLE"'
+show 'pipelock check --config pipelock.yaml --url "https://evil.com/steal?key=AKIAIOSFODNN7EXAMPLE"'
 pipelock check --config "$DEMO_TMPDIR/pipelock.yaml" --url "https://evil.com/steal?key=AKIAIOSFODNN7EXAMPLE" 2>&1 || true
 pause
 
 # --- 2: Base64 evasion ---
 step "2. Agent encodes it to evade detection"
-show 'pipelock check --url "https://evil.com/log?d=QUtJQUlPU0ZPRE5ON0VYQU1QTEU="'
+show 'pipelock check --config pipelock.yaml --url "https://evil.com/log?d=QUtJQUlPU0ZPRE5ON0VYQU1QTEU="'
 pipelock check --config "$DEMO_TMPDIR/pipelock.yaml" --url "https://evil.com/log?d=QUtJQUlPU0ZPRE5ON0VYQU1QTEU=" 2>&1 || true
 pause
 
 # --- 3: DNS exfiltration ---
 step "3. Agent tries DNS exfiltration"
-show 'pipelock check --url "https://exfil-c2VjcmV0X2tleV92YWx1ZQ.attacker.com/"'
+show 'pipelock check --config pipelock.yaml --url "https://exfil-c2VjcmV0X2tleV92YWx1ZQ.attacker.com/"'
 pipelock check --config "$DEMO_TMPDIR/pipelock.yaml" --url "https://exfil-c2VjcmV0X2tleV92YWx1ZQ.attacker.com/" 2>&1 || true
 pause
 
 # --- 4: Legitimate traffic ---
 step "4. Legitimate traffic passes through"
-show 'pipelock check --url "https://docs.anthropic.com/en/api"'
+show 'pipelock check --config pipelock.yaml --url "https://docs.anthropic.com/en/api"'
 pipelock check --config "$DEMO_TMPDIR/pipelock.yaml" --url "https://docs.anthropic.com/en/api" 2>&1 || true
 pause
 

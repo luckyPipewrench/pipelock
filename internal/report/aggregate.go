@@ -16,28 +16,29 @@ import (
 
 // categoryMap maps scanner names and event types to human-readable categories.
 var categoryMap = map[string]string{
-	"dlp":               "DLP / Exfiltration",
-	"entropy":           "DLP / Exfiltration",
-	"subdomain_entropy": "DLP / Exfiltration",
-	"path_entropy":      "DLP / Exfiltration",
-	"env_leak":          "DLP / Exfiltration",
-	"length":            "DLP / Exfiltration",
-	"databudget":        "DLP / Exfiltration",
-	"ratelimit":         "DLP / Exfiltration",
-	"body_dlp":          "DLP / Exfiltration",
-	"header_dlp":        "DLP / Exfiltration",
-	"response_scan":     "Prompt Injection",
-	"ws_scan":           "Prompt Injection",
-	"ssrf":              "SSRF",
-	"chain_detection":   "MCP / Tool Abuse",
-	"policy":            "MCP / Tool Abuse",
-	"mcp_unknown_tool":  "MCP / Tool Abuse",
-	"sni_mismatch":      "Domain Fronting",
-	"blocklist":         "Domain Policy",
-	"allowlist":         "Domain Policy",
-	"scheme":            "Domain Policy",
-	"redirect":          "Domain Policy",
-	"kill_switch_deny":  "Kill Switch",
+	"dlp":                  "DLP / Exfiltration",
+	"entropy":              "DLP / Exfiltration",
+	"subdomain_entropy":    "DLP / Exfiltration",
+	"path_entropy":         "DLP / Exfiltration",
+	"env_leak":             "DLP / Exfiltration",
+	"length":               "DLP / Exfiltration",
+	"databudget":           "DLP / Exfiltration",
+	"ratelimit":            "DLP / Exfiltration",
+	"body_dlp":             "DLP / Exfiltration",
+	"header_dlp":           "DLP / Exfiltration",
+	eventAddressProtection: "DLP / Exfiltration",
+	"response_scan":        "Prompt Injection",
+	"ws_scan":              "Prompt Injection",
+	"ssrf":                 "SSRF",
+	"chain_detection":      "MCP / Tool Abuse",
+	"policy":               "MCP / Tool Abuse",
+	"mcp_unknown_tool":     "MCP / Tool Abuse",
+	"sni_mismatch":         "Domain Fronting",
+	"blocklist":            "Domain Policy",
+	"allowlist":            "Domain Policy",
+	"scheme":               "Domain Policy",
+	"redirect":             "Domain Policy",
+	"kill_switch_deny":     "Kill Switch",
 }
 
 // Event types classified as blocks.
@@ -77,17 +78,18 @@ const (
 
 // Event type constants for repeated string references.
 const (
-	eventBodyDLP        = "body_dlp"
-	eventHeaderDLP      = "header_dlp"
-	eventChainDetection = "chain_detection"
-	eventMCPUnknownTool = "mcp_unknown_tool"
-	eventStartup        = "startup"
-	eventConfigReload   = "config_reload"
-	eventKillSwitchDeny = "kill_switch_deny"
-	eventResponseScan   = "response_scan"
-	eventWSScan         = "ws_scan"
-	eventSNIMismatch    = "sni_mismatch"
-	eventShutdown       = "shutdown"
+	eventBodyDLP           = "body_dlp"
+	eventHeaderDLP         = "header_dlp"
+	eventChainDetection    = "chain_detection"
+	eventMCPUnknownTool    = "mcp_unknown_tool"
+	eventStartup           = "startup"
+	eventConfigReload      = "config_reload"
+	eventKillSwitchDeny    = "kill_switch_deny"
+	eventResponseScan      = "response_scan"
+	eventWSScan            = "ws_scan"
+	eventSNIMismatch       = "sni_mismatch"
+	eventShutdown          = "shutdown"
+	eventAddressProtection = "address_protection"
 )
 
 // maxSampleEvidence is the max samples per category.
@@ -192,6 +194,12 @@ func Aggregate(events []Event, opts Options) *Report {
 
 	// Build evidence appendix.
 	r.Evidence = buildEvidence(events, maxEvidence, opts.Redact)
+
+	// v1.3.0+ breakdowns.
+	r.DLPBreakdown = buildDLPBreakdown(events)
+	r.TransportBreakdown = buildTransportBreakdown(events)
+	r.AgentBreakdown = buildAgentBreakdown(events)
+	r.MITRETechniques = buildMITRETechniques(events)
 
 	return r
 }
@@ -322,7 +330,7 @@ func classifyEvent(ev *Event, s *Summary) {
 	countedCritical := false
 
 	switch evType {
-	case eventBodyDLP, eventHeaderDLP:
+	case eventBodyDLP, eventHeaderDLP, eventAddressProtection:
 		if ev.Action == actionBlock {
 			s.Blocks++
 		} else {
@@ -645,7 +653,7 @@ func isBlockEvent(ev *Event) bool {
 		return true
 	}
 	switch ev.Event {
-	case eventResponseScan, eventWSScan, eventBodyDLP, eventHeaderDLP, eventChainDetection, eventMCPUnknownTool:
+	case eventResponseScan, eventWSScan, eventBodyDLP, eventHeaderDLP, eventAddressProtection, eventChainDetection, eventMCPUnknownTool:
 		return ev.Action == actionBlock
 	}
 	return false
@@ -661,7 +669,7 @@ func isWarnEvent(ev *Event) bool {
 		return ev.Action == actionWarn
 	case eventChainDetection, eventMCPUnknownTool:
 		return ev.Action == actionWarn
-	case eventBodyDLP, eventHeaderDLP:
+	case eventBodyDLP, eventHeaderDLP, eventAddressProtection:
 		return ev.Action != actionBlock
 	case eventSNIMismatch:
 		return true
@@ -715,6 +723,203 @@ func buildEvidence(events []Event, maxCount int, redact bool) []Event {
 	}
 
 	return evidence
+}
+
+// buildDLPBreakdown computes DLP hits by detection surface.
+func buildDLPBreakdown(events []Event) []DLPBreakdownEntry {
+	type acc struct{ blocks, warns int }
+	surfaces := map[string]*acc{
+		"URL":            {},
+		"Request Body":   {},
+		"Request Header": {},
+		"MCP Arguments":  {},
+	}
+
+	for i := range events {
+		ev := &events[i]
+		var surface string
+		switch ev.Event {
+		case "blocked":
+			if ev.Scanner == "dlp" || ev.Scanner == "env_leak" {
+				surface = "URL"
+			}
+		case eventBodyDLP:
+			surface = "Request Body"
+		case eventHeaderDLP:
+			surface = "Request Header"
+		case "mcp_input":
+			if ev.Scanner == "mcp_input" || ev.Scanner == "" {
+				surface = "MCP Arguments"
+			}
+		case eventAddressProtection:
+			surface = "Request Body"
+		default:
+			continue
+		}
+		if surface == "" {
+			continue
+		}
+		a := surfaces[surface]
+		if ev.Action == actionBlock {
+			a.blocks++
+		} else {
+			a.warns++
+		}
+	}
+
+	var result []DLPBreakdownEntry
+	for _, name := range []string{"URL", "Request Body", "Request Header", "MCP Arguments"} {
+		a := surfaces[name]
+		total := a.blocks + a.warns
+		if total > 0 {
+			result = append(result, DLPBreakdownEntry{
+				Surface: name,
+				Blocks:  a.blocks,
+				Warns:   a.warns,
+				Total:   total,
+			})
+		}
+	}
+	return result
+}
+
+// buildTransportBreakdown computes events by transport surface.
+func buildTransportBreakdown(events []Event) []TransportBreakdownEntry {
+	type acc struct{ blocks, warns, allowed int }
+	transports := make(map[string]*acc)
+
+	for i := range events {
+		ev := &events[i]
+
+		// Determine transport from event type or transport field.
+		transport := "HTTP Fetch" // default
+		switch {
+		case ev.Transport == "mcp":
+			transport = "MCP"
+		case ev.Transport == "ws" || ev.Transport == "websocket":
+			transport = "WebSocket"
+		case ev.Event == "tunnel_open" || ev.Event == "tunnel_close" || ev.Transport == "connect":
+			transport = "CONNECT Tunnel"
+		case strings.HasPrefix(ev.Event, "ws_"):
+			transport = "WebSocket"
+		case strings.HasPrefix(ev.Event, "mcp_") || ev.Event == eventChainDetection:
+			transport = "MCP"
+		case ev.Event == eventStartup || ev.Event == eventShutdown || ev.Event == eventConfigReload:
+			continue // skip admin events
+		}
+
+		a, ok := transports[transport]
+		if !ok {
+			a = &acc{}
+			transports[transport] = a
+		}
+
+		switch {
+		case isBlockEvent(ev):
+			a.blocks++
+		case isWarnEvent(ev):
+			a.warns++
+		default:
+			a.allowed++
+		}
+	}
+
+	// Sort by total descending.
+	var result []TransportBreakdownEntry
+	for name, a := range transports {
+		total := a.blocks + a.warns + a.allowed
+		if total > 0 {
+			result = append(result, TransportBreakdownEntry{
+				Transport: name,
+				Blocks:    a.blocks,
+				Warns:     a.warns,
+				Allowed:   a.allowed,
+				Total:     total,
+			})
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Total > result[j].Total
+	})
+	return result
+}
+
+// buildAgentBreakdown computes events per client/agent.
+func buildAgentBreakdown(events []Event) []AgentBreakdownEntry {
+	type acc struct{ blocks, warns, allowed int }
+	agents := make(map[string]*acc)
+
+	for i := range events {
+		ev := &events[i]
+		agent := ev.ClientIP
+		if agent == "" {
+			continue
+		}
+		if ev.Event == eventStartup || ev.Event == eventShutdown || ev.Event == eventConfigReload {
+			continue
+		}
+
+		a, ok := agents[agent]
+		if !ok {
+			a = &acc{}
+			agents[agent] = a
+		}
+
+		switch {
+		case isBlockEvent(ev):
+			a.blocks++
+		case isWarnEvent(ev):
+			a.warns++
+		default:
+			a.allowed++
+		}
+	}
+
+	var result []AgentBreakdownEntry
+	for agent, a := range agents {
+		total := a.blocks + a.warns + a.allowed
+		result = append(result, AgentBreakdownEntry{
+			Agent:   agent,
+			Blocks:  a.blocks,
+			Warns:   a.warns,
+			Allowed: a.allowed,
+			Total:   total,
+		})
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Blocks != result[j].Blocks {
+			return result[i].Blocks > result[j].Blocks
+		}
+		return result[i].Total > result[j].Total
+	})
+
+	// Cap at 10 agents.
+	if len(result) > 10 {
+		result = result[:10]
+	}
+	return result
+}
+
+// buildMITRETechniques aggregates MITRE ATT&CK technique counts.
+func buildMITRETechniques(events []Event) []MITRETechniqueEntry {
+	counts := make(map[string]int)
+	for i := range events {
+		if events[i].MITRETechnique != "" {
+			counts[events[i].MITRETechnique]++
+		}
+	}
+
+	var result []MITRETechniqueEntry
+	for tech, count := range counts {
+		result = append(result, MITRETechniqueEntry{
+			Technique: tech,
+			Count:     count,
+		})
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Count > result[j].Count
+	})
+	return result
 }
 
 // severityOrder returns a numeric ordering for severity labels.

@@ -18,21 +18,32 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// tokenLifetime is the validity period for all issued license tokens,
-// regardless of billing interval. 45 days gives enough buffer for
-// monthly subscribers to receive their refresh before expiration.
+// tokenLifetime is the default validity period for issued license tokens.
+// 45 days gives enough buffer for monthly subscribers to receive their
+// refresh before expiration.
 const tokenLifetime = 45 * 24 * time.Hour
+
+// trialTokenLifetime is the validity period for trial license tokens.
+// 30 days matches the one-time purchase duration (no renewal).
+const trialTokenLifetime = 30 * 24 * time.Hour
 
 // refreshLeadDays is how many days before a token expires we schedule
 // the next refresh. 15 days means monthly subscribers get refreshed
 // at day 30 (15 days before the 45-day expiry).
 const refreshLeadDays = 15
 
+// billingIntervalOneTime identifies one-time purchases (trials).
+const billingIntervalOneTime = "one_time"
+
+// statusActive is the active subscription/entitlement status.
+const statusActive = "active"
+
 // Tier constants for Pipelock subscription levels.
 const (
 	tierFoundingPro = "founding_pro"
 	tierPro         = "pro"
 	tierEnterprise  = "enterprise"
+	tierTrial       = "trial"
 )
 
 // validTiers is the allowlist of accepted pipelock_tier metadata values.
@@ -42,6 +53,7 @@ var validTiers = map[string]bool{
 	tierFoundingPro: true,
 	tierPro:         true,
 	tierEnterprise:  true,
+	tierTrial:       true,
 }
 
 // WebhookHandler processes Polar webhook events and coordinates license
@@ -158,7 +170,7 @@ func (h *WebhookHandler) processSubscription(ctx context.Context, sub *PolarSubs
 	}
 
 	switch sub.Status {
-	case "active":
+	case statusActive:
 		return h.handleActive(ctx, ent, existing)
 	case "canceled", "revoked", "unpaid":
 		return h.handleEnded(ctx, ent, existing)
@@ -222,7 +234,7 @@ func (h *WebhookHandler) handleActive(ctx context.Context, ent *Entitlement, exi
 
 	// Mint a new license token.
 	now := time.Now()
-	expiresAt := now.Add(tokenLifetime)
+	expiresAt := now.Add(h.tokenLifetimeForTier(ent.Tier))
 
 	idBytes := make([]byte, 6) // 6 bytes = 12 hex chars
 	if _, err := rand.Read(idBytes); err != nil {
@@ -261,9 +273,12 @@ func (h *WebhookHandler) handleActive(ctx context.Context, ent *Entitlement, exi
 	ent.LastLicenseInterval = ent.BillingInterval
 	ent.LastLicenseProductID = ent.ProductID
 
-	// Schedule next refresh: 15 days before token expiry.
-	nextRefresh := expiresAt.Add(-time.Duration(refreshLeadDays) * 24 * time.Hour)
-	ent.NextRefreshAt = &nextRefresh
+	// Schedule next refresh for subscription tiers only. One-time purchases
+	// (trials) expire and are done — no refresh, no cron pickup.
+	if ent.BillingInterval != billingIntervalOneTime {
+		nextRefresh := expiresAt.Add(-time.Duration(refreshLeadDays) * 24 * time.Hour)
+		ent.NextRefreshAt = &nextRefresh
+	}
 
 	// Persist entitlement BEFORE external side effects (email).
 	// If email fails, we still have the issuance record and can retry later.
@@ -353,6 +368,81 @@ func (h *WebhookHandler) handleEnded(ctx context.Context, ent *Entitlement, exis
 	return nil
 }
 
+// HandleOrderEvent processes a Polar order.created webhook event for
+// one-time purchases (e.g., trial tier). Subscription-related billing
+// reasons are ignored because subscription.* events handle those.
+func (h *WebhookHandler) HandleOrderEvent(ctx context.Context, event *PolarWebhookEvent) error {
+	order, err := extractOrderData(event.Data)
+	if err != nil {
+		return fmt.Errorf("extract order data: %w", err)
+	}
+
+	_ = h.ledger.LogWebhookReceived(event.Type, order.ID)
+
+	// Only process one-time purchases. Subscription-related billing reasons
+	// (subscription_create, subscription_cycle, subscription_update) are
+	// handled by subscription.* events via HandleEvent.
+	if order.BillingReason != "purchase" {
+		h.log.Info().
+			Str("order_id", order.ID).
+			Str("billing_reason", order.BillingReason).
+			Msg("ignoring non-purchase order (subscription events handle these)")
+		return nil
+	}
+
+	// Map product metadata to tier.
+	tier, ok := order.Product.Metadata["pipelock_tier"]
+	if !ok {
+		return fmt.Errorf("order %s product %s (%s) has no pipelock_tier metadata",
+			order.ID, order.Product.ID, order.Product.Name)
+	}
+	if !validTiers[tier] {
+		return fmt.Errorf("order %s product %s has unrecognized pipelock_tier %q",
+			order.ID, order.Product.ID, tier)
+	}
+
+	features, err := json.Marshal(h.tierToFeatures(tier))
+	if err != nil {
+		return fmt.Errorf("marshal features: %w", err)
+	}
+
+	org := order.Customer.Metadata["org"]
+
+	h.processMu.Lock()
+	defer h.processMu.Unlock()
+
+	// Load existing entitlement for idempotency. If a previous webhook
+	// delivery already processed this order, reuse its period end so the
+	// idempotency check in handleActive sees matching state. Without this,
+	// time.Now() drift would bypass idempotency on replays.
+	existing, err := h.db.GetBySubscriptionID(ctx, order.ID)
+	if err != nil {
+		return fmt.Errorf("load existing entitlement for order %s: %w", order.ID, err)
+	}
+
+	var periodEnd time.Time
+	if existing != nil {
+		periodEnd = existing.CurrentPeriodEnd
+	} else {
+		periodEnd = time.Now().Add(h.tokenLifetimeForTier(tier))
+	}
+
+	ent := &Entitlement{
+		SubscriptionID:   order.ID, // Use order_id as unique key.
+		CustomerEmail:    order.Customer.Email,
+		ProductID:        order.Product.ID,
+		Tier:             tier,
+		BillingInterval:  billingIntervalOneTime,
+		Status:           statusActive,
+		CurrentPeriodEnd: periodEnd,
+		Founding:         false, // Trials are never founding.
+		Org:              org,
+		Features:         string(features),
+	}
+
+	return h.handleActive(ctx, ent, existing)
+}
+
 // isIdempotent returns true if the current subscription state matches
 // the last-issued license state. If all four fields match, re-issuing
 // would produce a functionally identical token.
@@ -418,7 +508,7 @@ func (h *WebhookHandler) mapProductToTier(sub *PolarSubscription) (tier string, 
 // tiers via mapProductToTier before reaching this point.
 func (h *WebhookHandler) tierToFeatures(tier string) []string {
 	switch tier {
-	case tierFoundingPro, tierPro:
+	case tierFoundingPro, tierPro, tierTrial:
 		return []string{license.FeatureAgents}
 	case tierEnterprise:
 		// TODO: Define enterprise-specific features as they're built.
@@ -426,6 +516,16 @@ func (h *WebhookHandler) tierToFeatures(tier string) []string {
 	default:
 		return nil
 	}
+}
+
+// tokenLifetimeForTier returns the token validity period for a given tier.
+// Trials get 30 days (one-time, no renewal). All other tiers get 45 days
+// with rolling refresh.
+func (h *WebhookHandler) tokenLifetimeForTier(tier string) time.Duration {
+	if tier == tierTrial {
+		return trialTokenLifetime
+	}
+	return tokenLifetime
 }
 
 // checkFoundingCap verifies that the Founding Pro cap has not been reached.

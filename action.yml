@@ -1,5 +1,5 @@
 name: 'Pipelock Agent Security Scan'
-description: 'Scan your project for AI agent security risks. Detects secrets, misconfigurations, and generates a tailored security config.'
+description: 'Scan your project for AI agent security risks. Pattern-based detection of credentials and misconfigurations with tailored config generation. See docs for coverage details.'
 author: 'luckyPipewrench'
 
 branding:
@@ -38,7 +38,7 @@ inputs:
 
 outputs:
   score:
-    description: 'Security score (0-100) for the scanned project.'
+    description: 'Risk score (0-100) based on pattern-matched findings. Higher means more issues detected. Not an absolute security rating.'
     value: ${{ steps.audit.outputs.score }}
   findings-count:
     description: 'Total number of findings.'

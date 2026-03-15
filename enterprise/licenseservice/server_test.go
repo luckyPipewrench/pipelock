@@ -204,13 +204,13 @@ func TestServer_WebhookInvalidJSON(t *testing.T) {
 func TestServer_WebhookNonSubscriptionEvent(t *testing.T) {
 	srv := newTestServer(t)
 
-	body := `{"type":"order.created","data":{"id":"order_123"}}`
+	body := `{"type":"checkout.created","data":{"id":"checkout_123"}}`
 	req := signedWebhookRequest(t, srv, body)
 	w := httptest.NewRecorder()
 
 	srv.mux.ServeHTTP(w, req)
 
-	// Non-subscription events should get 200 with "ignored" status.
+	// Unhandled event types should get 200 with "ignored" status.
 	if w.Code != http.StatusOK {
 		t.Errorf("webhook status = %d, want %d", w.Code, http.StatusOK)
 	}

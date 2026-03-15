@@ -77,6 +77,7 @@ type Scanner struct {
 	responsePatterns          []*compiledPattern
 	responseOptSpacePatterns  []*compiledPattern // \s+ → \s* variants for ZW-stripped pass
 	responseVowelFoldPatterns []*compiledPattern // vowel-folded variants for confusable vowel attacks
+	responsePreFilter         *responsePreFilter // keyword candidate gate for regex passes
 	responseAction            string
 	responseEnabled           bool
 	subdomainExclusions       []string // domains excluded from subdomain entropy checks
@@ -234,6 +235,11 @@ func New(cfg *config.Config) *Scanner {
 				}
 			}
 		}
+	}
+
+	// Build response pre-filter for keyword-gated regex skipping.
+	if len(s.responsePatterns) > 0 {
+		s.responsePreFilter = newResponsePreFilter(s.responsePatterns)
 	}
 
 	// Build address protection checker if enabled.

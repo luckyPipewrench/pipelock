@@ -53,12 +53,34 @@ type resendResponse struct {
 	ID string `json:"id"`
 }
 
+// tierDisplayName returns a human-readable display name for a tier.
+func tierDisplayName(tier string) string {
+	switch tier {
+	case tierFoundingPro:
+		return "Founding Pro"
+	case tierTrial:
+		return "Pro Trial"
+	case tierPro:
+		return "Pro"
+	case tierEnterprise:
+		return "Enterprise"
+	default:
+		return tier
+	}
+}
+
 // SendLicenseDelivery sends the license token to the customer via email.
 // Returns the Resend message ID on success.
 func (e *EmailSender) SendLicenseDelivery(ctx context.Context, to, licenseToken, tier string) (string, error) {
-	subject := "Your Pipelock License"
-	if tier == tierFoundingPro {
-		subject = "Your Pipelock Founding Pro License"
+	displayName := tierDisplayName(tier)
+	subject := fmt.Sprintf("Your Pipelock %s License", displayName)
+
+	// Token validity description varies by tier.
+	var validityNote string
+	if tier == tierTrial {
+		validityNote = "This token is valid for 30 days. To continue using Pro features after the trial, subscribe at <a href=\"https://pipelab.org/pricing/\">pipelab.org/pricing</a>."
+	} else {
+		validityNote = "This token is valid for 45 days and will be automatically refreshed before expiration."
 	}
 
 	// TODO: use a proper HTML template. For the scaffold, inline HTML is fine.
@@ -66,10 +88,10 @@ func (e *EmailSender) SendLicenseDelivery(ctx context.Context, to, licenseToken,
 <p>Thanks for subscribing to Pipelock %s!</p>
 <p>Your license token (add this to your pipelock config as <code>license_key</code>):</p>
 <pre style="background:#f4f4f4;padding:16px;border-radius:4px;overflow-x:auto;font-size:13px;">%s</pre>
-<p>This token is valid for 45 days and will be automatically refreshed before expiration.</p>
+<p>%s</p>
 <p>Setup guide: <a href="https://pipelab.org/pipelock/guides/license-setup/">pipelab.org/pipelock/guides/license-setup</a></p>
 <p>Questions? Reply to this email.</p>`,
-		tier, licenseToken)
+		displayName, licenseToken, validityNote)
 
 	return e.send(ctx, to, subject, html)
 }

@@ -131,6 +131,10 @@ func Aggregate(events []Event, opts Options) *Report {
 		r.Domains = []DomainStats{}
 		r.Timeline = []TimeBucket{}
 		r.Evidence = []Event{}
+		r.DLPBreakdown = []DLPBreakdownEntry{}
+		r.TransportBreakdown = []TransportBreakdownEntry{}
+		r.AgentBreakdown = []AgentBreakdownEntry{}
+		r.MITRETechniques = []MITRETechniqueEntry{}
 		return r
 	}
 
@@ -725,14 +729,22 @@ func buildEvidence(events []Event, maxCount int, redact bool) []Event {
 	return evidence
 }
 
+// DLP surface label constants.
+const (
+	surfaceURL     = "URL"
+	surfaceBody    = "Request Body"
+	surfaceHeader  = "Request Header"
+	surfaceMCPArgs = "MCP Arguments"
+)
+
 // buildDLPBreakdown computes DLP hits by detection surface.
 func buildDLPBreakdown(events []Event) []DLPBreakdownEntry {
 	type acc struct{ blocks, warns int }
 	surfaces := map[string]*acc{
-		"URL":            {},
-		"Request Body":   {},
-		"Request Header": {},
-		"MCP Arguments":  {},
+		surfaceURL:     {},
+		surfaceBody:    {},
+		surfaceHeader:  {},
+		surfaceMCPArgs: {},
 	}
 
 	for i := range events {
@@ -740,19 +752,20 @@ func buildDLPBreakdown(events []Event) []DLPBreakdownEntry {
 		var surface string
 		switch ev.Event {
 		case "blocked":
-			if ev.Scanner == "dlp" || ev.Scanner == "env_leak" {
-				surface = "URL"
+			switch ev.Scanner {
+			case "dlp", "env_leak", "entropy", "subdomain_entropy", "path_entropy", "length", "databudget", "ratelimit":
+				surface = surfaceURL
 			}
 		case eventBodyDLP:
-			surface = "Request Body"
+			surface = surfaceBody
 		case eventHeaderDLP:
-			surface = "Request Header"
+			surface = surfaceHeader
 		case "mcp_input":
 			if ev.Scanner == "mcp_input" || ev.Scanner == "" {
-				surface = "MCP Arguments"
+				surface = surfaceMCPArgs
 			}
 		case eventAddressProtection:
-			surface = "Request Body"
+			surface = surfaceBody
 		default:
 			continue
 		}
@@ -768,7 +781,7 @@ func buildDLPBreakdown(events []Event) []DLPBreakdownEntry {
 	}
 
 	var result []DLPBreakdownEntry
-	for _, name := range []string{"URL", "Request Body", "Request Header", "MCP Arguments"} {
+	for _, name := range []string{surfaceURL, surfaceBody, surfaceHeader, surfaceMCPArgs} {
 		a := surfaces[name]
 		total := a.blocks + a.warns
 		if total > 0 {
@@ -839,7 +852,10 @@ func buildTransportBreakdown(events []Event) []TransportBreakdownEntry {
 		}
 	}
 	sort.Slice(result, func(i, j int) bool {
-		return result[i].Total > result[j].Total
+		if result[i].Total != result[j].Total {
+			return result[i].Total > result[j].Total
+		}
+		return result[i].Transport < result[j].Transport
 	})
 	return result
 }
@@ -893,7 +909,10 @@ func buildAgentBreakdown(events []Event, redact bool) []AgentBreakdownEntry {
 		if result[i].Blocks != result[j].Blocks {
 			return result[i].Blocks > result[j].Blocks
 		}
-		return result[i].Total > result[j].Total
+		if result[i].Total != result[j].Total {
+			return result[i].Total > result[j].Total
+		}
+		return result[i].Agent < result[j].Agent
 	})
 
 	// Cap at 10 agents.
@@ -920,7 +939,10 @@ func buildMITRETechniques(events []Event) []MITRETechniqueEntry {
 		})
 	}
 	sort.Slice(result, func(i, j int) bool {
-		return result[i].Count > result[j].Count
+		if result[i].Count != result[j].Count {
+			return result[i].Count > result[j].Count
+		}
+		return result[i].Technique < result[j].Technique
 	})
 	return result
 }

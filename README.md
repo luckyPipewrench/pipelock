@@ -119,27 +119,29 @@ Three proxy modes, same port:
 
 ```mermaid
 flowchart LR
-    subgraph PRIVILEGED["Privileged Zone"]
-        Agent["AI Agent\n(has API keys)"]
-    end
-    subgraph FETCH["Firewall Zone"]
-        Proxy["Pipelock\n(no agent secrets)"]
-        Scanner["Scanner Pipeline\nSSRF · Blocklist · Rate Limit\nDLP · Env Leak · Entropy · Length"]
-    end
-    subgraph NET["Internet"]
-        Web["Web"]
+    subgraph PRIV["PRIVILEGED ZONE"]
+        Agent["AI Agent\nAPI keys + credentials + source code\nNo direct network access"]
     end
 
-    Agent -- "fetch URL\nCONNECT\nor WebSocket" --> Proxy
-    Proxy --> Scanner
-    Scanner -- "content or\ntunnel" --> Agent
-    Scanner -- "request" --> Web
-    Web -- "response" --> Scanner
-    Scanner -- "clean content" --> Agent
+    subgraph FW["FIREWALL ZONE"]
+        Proxy["Pipelock\n11-layer scanner pipeline\nNo agent secrets"]
+    end
 
-    style PRIVILEGED fill:#fee,stroke:#c33
-    style FETCH fill:#efe,stroke:#3a3
-    style NET fill:#eef,stroke:#33c
+    subgraph NET["INTERNET"]
+        Web["APIs + MCP Servers + Web"]
+    end
+
+    Agent -- "fetch / CONNECT / ws / MCP" --> Proxy
+    Proxy -- "scanned request" --> Web
+    Web -- "response" --> Proxy
+    Proxy -- "scanned content" --> Agent
+
+    style PRIV fill:#2d1117,stroke:#f85149,color:#e6edf3
+    style FW fill:#0d2818,stroke:#3fb950,color:#e6edf3
+    style NET fill:#0d1b2e,stroke:#58a6ff,color:#e6edf3
+    style Agent fill:#1a1a2e,stroke:#f85149,color:#e6edf3
+    style Proxy fill:#0d2818,stroke:#3fb950,color:#e6edf3
+    style Web fill:#0d1b2e,stroke:#58a6ff,color:#e6edf3
 ```
 
 <details>

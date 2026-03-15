@@ -2,6 +2,8 @@
 
 How Pipelock addresses the [OWASP Top 10 for Agentic Applications (2026)](https://genai.owasp.org/resource/owasp-top-10-for-agentic-applications-for-2026/).
 
+> **Note:** Coverage levels reflect architectural capabilities against known attack patterns, not guarantees of threat prevention. "Strong" means the feature addresses the threat effectively for known techniques. "Partial" means it contributes but is not sufficient alone. No security tool prevents all instances of any threat class. This mapping is for informational purposes and does not constitute compliance certification.
+
 | Threat | Coverage | Status |
 |--------|----------|--------|
 | ASI01 Agent Goal Hijack | Strong | Shipped |

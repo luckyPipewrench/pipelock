@@ -132,8 +132,9 @@ func TestChainLabel(t *testing.T) {
 	}
 }
 
-func TestCheckTextBase64EncodedAddress(t *testing.T) {
-	cfg := &config.AddressProtection{
+// addrProtectCfg returns a reusable address protection config for coverage tests.
+func addrProtectCfg() *config.AddressProtection {
+	return &config.AddressProtection{
 		Enabled:       true,
 		Action:        config.ActionBlock,
 		UnknownAction: config.ActionAllow,
@@ -151,43 +152,41 @@ func TestCheckTextBase64EncodedAddress(t *testing.T) {
 			SuffixLength: 4,
 		},
 	}
-	c := NewChecker(cfg, nil)
+}
 
-	// Base64-encoded poisoned address.
-	poisoned := "0x742daaaaaaaaaaaaaaaaaaaaaaaaaaaaaaf2bd3e"
-	encoded := base64.StdEncoding.EncodeToString([]byte(poisoned))
+const testPoisonedETH = "0x742daaaaaaaaaaaaaaaaaaaaaaaaaaaaaaf2bd3e"
+
+func TestCheckTextBase64EncodedAddress(t *testing.T) {
+	c := NewChecker(addrProtectCfg(), nil)
+
+	encoded := base64.StdEncoding.EncodeToString([]byte(testPoisonedETH))
 	result := c.CheckText(encoded, "")
 	if len(result.Hits) == 0 {
-		t.Error("should detect address in base64-encoded text")
+		t.Fatal("should detect address in base64-encoded text")
+	}
+	if result.Hits[0].Chain != ChainETH {
+		t.Errorf("chain: got %q, want %q", result.Hits[0].Chain, ChainETH)
+	}
+	if len(result.Findings) == 0 {
+		t.Fatal("should produce poisoning finding")
+	}
+	if result.Findings[0].Verdict != VerdictLookalike {
+		t.Errorf("verdict: got %d, want VerdictLookalike", result.Findings[0].Verdict)
+	}
+	if result.Findings[0].Action != config.ActionBlock {
+		t.Errorf("action: got %q, want %q", result.Findings[0].Action, config.ActionBlock)
 	}
 }
 
 func TestCheckTextHexEncodedAddress(t *testing.T) {
-	cfg := &config.AddressProtection{
-		Enabled:       true,
-		Action:        config.ActionBlock,
-		UnknownAction: config.ActionAllow,
-		AllowedAddresses: []string{
-			testAllowedETH,
-		},
-		Chains: config.AddressChains{
-			ETH: boolPtr(true),
-			BTC: boolPtr(false),
-			SOL: boolPtr(false),
-			BNB: boolPtr(false),
-		},
-		Similarity: config.SimilarityConfig{
-			PrefixLength: 4,
-			SuffixLength: 4,
-		},
-	}
-	c := NewChecker(cfg, nil)
+	c := NewChecker(addrProtectCfg(), nil)
 
-	// Hex-encoded poisoned address.
-	poisoned := "0x742daaaaaaaaaaaaaaaaaaaaaaaaaaaaaaf2bd3e"
-	encoded := hex.EncodeToString([]byte(poisoned))
+	encoded := hex.EncodeToString([]byte(testPoisonedETH))
 	result := c.CheckText(encoded, "")
 	if len(result.Hits) == 0 {
-		t.Error("should detect address in hex-encoded text")
+		t.Fatal("should detect address in hex-encoded text")
+	}
+	if result.Hits[0].Chain != ChainETH {
+		t.Errorf("chain: got %q, want %q", result.Hits[0].Chain, ChainETH)
 	}
 }

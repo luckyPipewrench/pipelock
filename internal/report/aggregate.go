@@ -760,7 +760,7 @@ func buildDLPBreakdown(events []Event) []DLPBreakdownEntry {
 			continue
 		}
 		a := surfaces[surface]
-		if ev.Action == actionBlock {
+		if ev.Action == actionBlock || blockEventTypes[ev.Event] {
 			a.blocks++
 		} else {
 			a.warns++

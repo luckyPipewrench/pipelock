@@ -117,11 +117,29 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check if this is an order event (one-time purchases like trials).
+	if isOrderEvent(event.Type) {
+		if err := s.handler.HandleOrderEvent(r.Context(), event); err != nil {
+			s.log.Error().Err(err).
+				Str("event_type", event.Type).
+				Msg("order webhook processing error")
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = fmt.Fprintf(w, `{"status":"error"}`)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprintf(w, `{"status":"ok"}`)
+		return
+	}
+
 	// Check if this is a subscription event we care about.
 	if !isSubscriptionEvent(event.Type) {
 		s.log.Debug().
 			Str("event_type", event.Type).
-			Msg("ignoring non-subscription event")
+			Msg("ignoring unhandled event type")
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprintf(w, `{"status":"ignored","event_type":%q}`, event.Type)
@@ -165,4 +183,9 @@ func isSubscriptionEvent(eventType string) bool {
 	default:
 		return false
 	}
+}
+
+// isOrderEvent returns true for Polar order event types (one-time purchases).
+func isOrderEvent(eventType string) bool {
+	return eventType == EventOrderCreated
 }

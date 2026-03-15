@@ -198,7 +198,7 @@ func Aggregate(events []Event, opts Options) *Report {
 	// v1.3.0+ breakdowns.
 	r.DLPBreakdown = buildDLPBreakdown(events)
 	r.TransportBreakdown = buildTransportBreakdown(events)
-	r.AgentBreakdown = buildAgentBreakdown(events)
+	r.AgentBreakdown = buildAgentBreakdown(events, opts.Redact)
 	r.MITRETechniques = buildMITRETechniques(events)
 
 	return r
@@ -844,14 +844,17 @@ func buildTransportBreakdown(events []Event) []TransportBreakdownEntry {
 	return result
 }
 
-// buildAgentBreakdown computes events per client/agent.
-func buildAgentBreakdown(events []Event) []AgentBreakdownEntry {
+// buildAgentBreakdown computes events per source IP.
+func buildAgentBreakdown(events []Event, redact bool) []AgentBreakdownEntry {
 	type acc struct{ blocks, warns, allowed int }
 	agents := make(map[string]*acc)
 
 	for i := range events {
 		ev := &events[i]
 		agent := ev.ClientIP
+		if redact && agent != "" {
+			agent = redactIP(agent)
+		}
 		if agent == "" {
 			continue
 		}

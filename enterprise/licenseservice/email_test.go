@@ -237,6 +237,57 @@ func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
 
+func TestTierDisplayName(t *testing.T) {
+	tests := []struct {
+		tier string
+		want string
+	}{
+		{tierFoundingPro, "Founding Pro"},
+		{tierTrial, "Pro Trial"},
+		{tierPro, "Pro"},
+		{tierEnterprise, "Enterprise"},
+		{"unknown", "unknown"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.tier, func(t *testing.T) {
+			got := tierDisplayName(tt.tier)
+			if got != tt.want {
+				t.Errorf("tierDisplayName(%q) = %q, want %q", tt.tier, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEmailSender_SendLicenseDelivery_TrialSubject(t *testing.T) {
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Header().Set("Content-Type", testContentTypeJSON)
+		_, _ = w.Write([]byte(`{"id":"msg_trial"}`))
+	}))
+	defer srv.Close()
+
+	sender := &EmailSender{
+		apiKey:    "re_" + "test_trial",
+		fromEmail: "noreply@pipelock.dev",
+		client:    srv.Client(),
+		apiURL:    srv.URL,
+	}
+
+	_, err := sender.SendLicenseDelivery(t.Context(), testCustomerEmail, "token789", tierTrial)
+	if err != nil {
+		t.Fatalf("SendLicenseDelivery trial: %v", err)
+	}
+	if !strings.Contains(gotBody, "Pro Trial") {
+		t.Error("trial email should have 'Pro Trial' in subject")
+	}
+	if !strings.Contains(gotBody, "Your Pipelock Pro Trial License") {
+		t.Errorf("trial email subject should be 'Your Pipelock Pro Trial License', body = %s", gotBody)
+	}
+}
+
 func TestNewEmailSender(t *testing.T) {
 	sender := NewEmailSender("re_"+"test_new", "from@test.com")
 	if sender.apiKey != "re_"+"test_new" {

@@ -102,7 +102,7 @@ func (c *RefreshCron) refreshOne(ctx context.Context, ent *Entitlement) error {
 		return err
 	}
 
-	if sub.Status != "active" {
+	if sub.Status != statusActive {
 		c.log.Info().
 			Str("subscription_id", ent.SubscriptionID).
 			Str("status", sub.Status).

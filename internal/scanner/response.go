@@ -54,7 +54,13 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) ResponseScan
 	// Primary: drop invisible chars, then normalize. Catches mid-word ZW insertion
 	// where the attacker splits a keyword: "igno\u200bre" → "ignore" (detected).
 	content = normalize.ForMatching(content)
-	matches := s.matchResponsePatterns(content)
+
+	// Primary: run response patterns whose keywords appear in content.
+	// Pre-filter checks are per-pass: each normalized variant gets its
+	// own keyword check because normalization reveals new keywords
+	// (e.g., leetspeak "1gnore" → "ignore" after normalization).
+	var matches []ResponseMatch
+	matches = s.matchResponsePatternsPreFiltered(content)
 
 	// Secondary: replace invisible chars with spaces, then normalize. Catches
 	// word-boundary collapse where the attacker uses ZW instead of space:
@@ -63,19 +69,19 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) ResponseScan
 	if len(matches) == 0 {
 		spaced := normalize.ForMatching(normalize.ReplaceInvisibleWithSpace(original))
 		if spaced != content {
-			matches = s.matchResponsePatterns(spaced)
+			matches = s.matchResponsePatternsPreFiltered(spaced)
 			if len(matches) > 0 {
 				content = spaced // use spaced version for strip action
 			}
 		}
 	}
 
-	// Tertiary: leetspeak normalization. Only fires when both prior passes found
-	// nothing, avoiding FPs on digit-heavy text (e.g., "API v3.0").
+	// Tertiary: leetspeak normalization. Pre-filter runs on the LEETED
+	// content, catching keywords that emerge after digit-to-letter conversion.
 	if len(matches) == 0 {
 		leeted := normalize.Leetspeak(content)
 		if leeted != content {
-			matches = s.matchResponsePatterns(leeted)
+			matches = s.matchResponsePatternsPreFiltered(leeted)
 		}
 	}
 
@@ -98,10 +104,11 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) ResponseScan
 		}
 	}
 
-	// Senary: base64/hex decode pass. Catches injection phrases hidden in
-	// encoded content (e.g., base64 "ignore all previous instructions" in MCP
-	// tool arguments). Parallels ScanTextForDLP's encoding checks.
-	if len(matches) == 0 {
+	// Senary: base64/hex decode pass. Only runs when content contains a
+	// contiguous run of base64/hex alphabet characters long enough to be
+	// a meaningful encoded payload. Skips expensive decode attempts on
+	// normal text content.
+	if len(matches) == 0 && hasEncodedRun(content) {
 		matches = s.matchDecodedResponse(content)
 	}
 
@@ -172,9 +179,39 @@ func matchPatternsAgainst(patterns []*compiledPattern, content string) []Respons
 	return matches
 }
 
-// matchResponsePatterns runs all response patterns against content and returns matches.
-func (s *Scanner) matchResponsePatterns(content string) []ResponseMatch {
-	return matchPatternsAgainst(s.responsePatterns, content)
+// matchResponsePatternsPreFiltered checks the response pre-filter for
+// keyword candidates in the given content, then runs ONLY the matching
+// patterns' regex. If no pre-filter is configured, falls back to running
+// all patterns. This is the primary optimization: on clean 10KB content,
+// the pre-filter finds no candidates and zero regex patterns execute.
+func (s *Scanner) matchResponsePatternsPreFiltered(content string) []ResponseMatch {
+	if s.responsePreFilter == nil {
+		return matchPatternsAgainst(s.responsePatterns, content)
+	}
+	indices := s.responsePreFilter.patternsToCheck(content)
+	if len(indices) == 0 {
+		return nil
+	}
+	var matches []ResponseMatch
+	for _, idx := range indices {
+		if idx < 0 || idx >= len(s.responsePatterns) {
+			continue
+		}
+		p := s.responsePatterns[idx]
+		locs := p.re.FindAllStringIndex(content, -1)
+		for _, loc := range locs {
+			matchText := content[loc[0]:loc[1]]
+			if runes := []rune(matchText); len(runes) > 100 {
+				matchText = string(runes[:100])
+			}
+			matches = append(matches, ResponseMatch{
+				PatternName: p.name,
+				MatchText:   matchText,
+				Position:    loc[0],
+			})
+		}
+	}
+	return matches
 }
 
 // matchDecodedResponse tries base64/hex decoding content and checks the decoded

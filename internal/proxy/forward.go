@@ -471,7 +471,15 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			} else {
 				p.metrics.RecordBodyDLP(action, agentLabel)
 			}
-			p.logger.LogBodyDLP(r.Method, targetURL, action, clientIP, requestID, agent, len(bodyResult.DLPMatches)+len(bodyResult.AddressFindings), patternNames)
+			if scannerLabel == scannerLabelAddressProtection {
+				addrNames := make([]string, len(bodyResult.AddressFindings))
+				for i, f := range bodyResult.AddressFindings {
+					addrNames[i] = f.Explanation
+				}
+				p.logger.LogBodyScan(r.Method, targetURL, scannerLabelAddressProtection, action, clientIP, requestID, agent, len(bodyResult.AddressFindings), addrNames)
+			} else {
+				p.logger.LogBodyDLP(r.Method, targetURL, action, clientIP, requestID, agent, len(bodyResult.DLPMatches), patternNames)
+			}
 
 			// Fail-closed: when buf is nil the body was consumed but couldn't
 			// be buffered (oversize, compressed, read error, multipart parse

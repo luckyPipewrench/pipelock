@@ -754,6 +754,40 @@ func (l *Logger) LogBodyDLP(method, url, action, clientIP, requestID, agent stri
 	}
 }
 
+// LogBodyScan logs a request body scan hit with a configurable scanner label.
+// Used to distinguish address_protection from body_dlp in audit output.
+func (l *Logger) LogBodyScan(method, url, scannerLabel, action, clientIP, requestID, agent string, matchCount int, findingNames []string) {
+	ev := l.zl.Warn().
+		Str("event", scannerLabel).
+		Str("method", method).
+		Str("url", sanitizeString(url)).
+		Str("action", action).
+		Str("client_ip", clientIP).
+		Str("request_id", requestID)
+	if agent != "" {
+		ev = ev.Str("agent", sanitizeString(agent))
+	}
+	ev.Int("match_count", matchCount).
+		Strs("findings", findingNames).
+		Msg("request body " + scannerLabel + " scan hit")
+
+	if l.emitter != nil {
+		fields := map[string]any{
+			"method":      method,
+			"url":         sanitizeString(url),
+			"action":      action,
+			"client_ip":   clientIP,
+			"request_id":  requestID,
+			"match_count": matchCount,
+			"findings":    findingNames,
+		}
+		if agent != "" {
+			fields["agent"] = sanitizeString(agent)
+		}
+		l.emitter.Emit(context.Background(), scannerLabel, fields)
+	}
+}
+
 // LogHeaderDLP logs a request header DLP scan detection.
 func (l *Logger) LogHeaderDLP(method, url, headerName, action, clientIP, requestID, agent string, patternNames []string) {
 	technique := TechniqueForScanner(ScannerDLP)

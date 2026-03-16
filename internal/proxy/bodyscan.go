@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/extract"
@@ -32,21 +33,26 @@ const (
 	// exfiltration via long filenames. 256 bytes covers any legitimate
 	// filename while blocking multi-KB exfil payloads.
 	maxFilenameBytes = 256
+
+	// scannerLabelAddressProtection is the scanner label for address poisoning
+	// findings in logs and metrics, distinguishing from body_dlp (secret exfil).
+	scannerLabelAddressProtection = "address_protection"
 )
 
 // BodyScanResult describes the outcome of scanning a request body or headers.
 type BodyScanResult struct {
-	Clean      bool
-	Action     string
-	DLPMatches []scanner.TextDLPMatch
-	HeaderName string // set when a header triggered the match
-	Reason     string // human-readable block reason
+	Clean           bool
+	Action          string
+	DLPMatches      []scanner.TextDLPMatch
+	AddressFindings []addressprotect.Finding // crypto address poisoning findings
+	HeaderName      string                   // set when a header triggered the match
+	Reason          string                   // human-readable block reason
 }
 
 // scanRequestBody reads, buffers, and DLP-scans an HTTP request body.
 // Returns the buffered body bytes (for re-wrapping) and the scan result.
 // Fail-closed: oversized bodies and compressed bodies are always blocked.
-func scanRequestBody(ctx context.Context, body io.Reader, contentType, contentEncoding string, maxBytes int, sc *scanner.Scanner) ([]byte, BodyScanResult) {
+func scanRequestBody(ctx context.Context, body io.Reader, contentType, contentEncoding string, maxBytes int, sc *scanner.Scanner, agentID string) ([]byte, BodyScanResult) {
 	// Content-Encoding check: compressed bodies evade DLP regex matching.
 	// Parse as comma-separated tokens (RFC 7231 section 3.1.2.2).
 	if hasNonIdentityEncoding(contentEncoding) {
@@ -118,6 +124,22 @@ func scanRequestBody(ctx context.Context, body io.Reader, contentType, contentEn
 		return buf, BodyScanResult{
 			Clean:      false,
 			DLPMatches: result.Matches,
+		}
+	}
+
+	// Address poisoning detection alongside DLP.
+	// Note: body address findings are currently emitted/counted as body_dlp
+	// by callers (forward.go, intercept.go). Dedicated address_protection
+	// log/metric path deferred to v2.
+	if checker := sc.AddressChecker(); checker != nil {
+		addrResult := checker.CheckText(joined, agentID)
+		if len(addrResult.Findings) > 0 {
+			return buf, BodyScanResult{
+				Clean:           false,
+				Action:          addressprotect.StrictestAction(addrResult.Findings),
+				AddressFindings: addrResult.Findings,
+				Reason:          fmt.Sprintf("address poisoning detected: %s", addrResult.Findings[0].Explanation),
+			}
 		}
 	}
 

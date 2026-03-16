@@ -49,6 +49,7 @@ const (
 	ActionAsk     = "ask"
 	ActionStrip   = "strip"
 	ActionForward = "forward"
+	ActionAllow   = "allow"
 )
 
 // Severity constants for chain detection and emit thresholds.
@@ -194,6 +195,7 @@ type Config struct {
 	TLSInterception       TLSInterception         `yaml:"tls_interception"`
 	CrossRequestDetection CrossRequestDetection   `yaml:"cross_request_detection"`
 	ScanAPI               ScanAPI                 `yaml:"scan_api"`
+	AddressProtection     AddressProtection       `yaml:"address_protection"`
 	Agents                map[string]AgentProfile `yaml:"agents,omitempty"`
 	LicenseKey            string                  `yaml:"license_key,omitempty"`        // signed license token (from pipelock license issue)
 	LicenseFile           string                  `yaml:"license_file,omitempty"`       // path to file containing the license token (read at startup)
@@ -366,6 +368,35 @@ type DLPPattern struct {
 	Regex         string   `yaml:"regex"`
 	Severity      string   `yaml:"severity"`       // critical, high, medium, low
 	ExemptDomains []string `yaml:"exempt_domains"` // domains where this pattern is not enforced
+}
+
+// AddressProtection configures crypto address poisoning detection.
+// This is destination verification, not secret detection — separate from DLP.
+// Detects lookalike blockchain addresses compared against a user-supplied
+// allowlist of known-good destinations.
+type AddressProtection struct {
+	Enabled          bool             `yaml:"enabled"`
+	Action           string           `yaml:"action"`            // block or warn (for poisoning/lookalike findings)
+	UnknownAction    string           `yaml:"unknown_action"`    // allow, warn, or block (for valid addresses not in allowlist)
+	AllowedAddresses []string         `yaml:"allowed_addresses"` // global baseline allowlist (free tier)
+	Chains           AddressChains    `yaml:"chains"`
+	Similarity       SimilarityConfig `yaml:"similarity"`
+}
+
+// AddressChains toggles which blockchain address formats to detect.
+// nil = use chain-specific default (ETH/BTC/BNB: true, SOL: false).
+type AddressChains struct {
+	ETH *bool `yaml:"eth"` // nil = true when feature enabled
+	BTC *bool `yaml:"btc"` // nil = true when feature enabled
+	SOL *bool `yaml:"sol"` // nil = false (disabled by default, high FP risk from base58 regex)
+	BNB *bool `yaml:"bnb"` // nil = true when feature enabled
+}
+
+// SimilarityConfig controls the prefix/suffix comparison for address poisoning detection.
+// Compared on chain-specific CompareKey (payload), not the full address string.
+type SimilarityConfig struct {
+	PrefixLength int `yaml:"prefix_length"` // default 4
+	SuffixLength int `yaml:"suffix_length"` // default 4
 }
 
 // LoggingConfig configures audit logging.
@@ -556,6 +587,7 @@ type AgentProfile struct {
 	SessionProfiling *AgentSessionProf `yaml:"session_profiling,omitempty"`
 	MCPToolPolicy    *MCPToolPolicy    `yaml:"mcp_tool_policy,omitempty"`
 	Budget           BudgetConfig      `yaml:"budget,omitempty"`
+	AllowedAddresses []string          `yaml:"allowed_addresses,omitempty"` // per-agent crypto address allowlist (enterprise, additive with global)
 }
 
 // AgentDLP controls DLP pattern merging for agent profiles.
@@ -1151,6 +1183,22 @@ func (c *Config) ApplyDefaults() {
 			if c.CrossRequestDetection.FragmentReassembly.WindowMinutes <= 0 {
 				c.CrossRequestDetection.FragmentReassembly.WindowMinutes = 5
 			}
+		}
+	}
+
+	// Address protection defaults
+	if c.AddressProtection.Enabled {
+		if c.AddressProtection.Action == "" {
+			c.AddressProtection.Action = ActionBlock
+		}
+		if c.AddressProtection.UnknownAction == "" {
+			c.AddressProtection.UnknownAction = ActionAllow
+		}
+		if c.AddressProtection.Similarity.PrefixLength <= 0 {
+			c.AddressProtection.Similarity.PrefixLength = 4
+		}
+		if c.AddressProtection.Similarity.SuffixLength <= 0 {
+			c.AddressProtection.Similarity.SuffixLength = 4
 		}
 	}
 }
@@ -1782,6 +1830,37 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// Validate address protection config
+	if c.AddressProtection.Enabled {
+		switch c.AddressProtection.Action {
+		case ActionBlock, ActionWarn:
+			// valid
+		default:
+			return fmt.Errorf("invalid address_protection.action %q: must be block or warn", c.AddressProtection.Action)
+		}
+		switch c.AddressProtection.UnknownAction {
+		case ActionAllow, ActionWarn, ActionBlock:
+			// valid
+		default:
+			return fmt.Errorf("invalid address_protection.unknown_action %q: must be allow, warn, or block", c.AddressProtection.UnknownAction)
+		}
+		if c.AddressProtection.Similarity.PrefixLength <= 0 {
+			return fmt.Errorf("address_protection.similarity.prefix_length must be positive")
+		}
+		if c.AddressProtection.Similarity.SuffixLength <= 0 {
+			return fmt.Errorf("address_protection.similarity.suffix_length must be positive")
+		}
+		// Require at least one chain enabled. All chains disabled means the
+		// feature is a silent no-op, which is a config error when enabled: true.
+		eth := c.AddressProtection.Chains.ETH == nil || *c.AddressProtection.Chains.ETH
+		btc := c.AddressProtection.Chains.BTC == nil || *c.AddressProtection.Chains.BTC
+		sol := c.AddressProtection.Chains.SOL != nil && *c.AddressProtection.Chains.SOL
+		bnb := c.AddressProtection.Chains.BNB == nil || *c.AddressProtection.Chains.BNB
+		if !eth && !btc && !sol && !bnb {
+			return fmt.Errorf("address_protection.enabled is true but all chains are disabled (silent no-op)")
+		}
+	}
+
 	// Validate Sentry config
 	sr := c.Sentry.EffectiveSampleRate()
 	if math.IsNaN(sr) {
@@ -2092,6 +2171,14 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		warnings = append(warnings, ReloadWarning{
 			Field:   "cross_request_detection.fragment_reassembly.enabled",
 			Message: "cross-request fragment reassembly disabled",
+		})
+	}
+
+	// Address protection disabled
+	if old.AddressProtection.Enabled && !updated.AddressProtection.Enabled {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "address_protection.enabled",
+			Message: "address protection disabled",
 		})
 	}
 

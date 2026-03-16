@@ -12,6 +12,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/extract"
@@ -36,13 +37,14 @@ const ceeStdioKey = "_default|stdio"
 
 // InputVerdict describes the outcome of scanning a single MCP request.
 type InputVerdict struct {
-	ID      json.RawMessage         `json:"id"`
-	Method  string                  `json:"method,omitempty"`
-	Clean   bool                    `json:"clean"`
-	Action  string                  `json:"action,omitempty"`
-	Matches []scanner.TextDLPMatch  `json:"dlp_matches,omitempty"`
-	Inject  []scanner.ResponseMatch `json:"injection_matches,omitempty"`
-	Error   string                  `json:"error,omitempty"`
+	ID              json.RawMessage          `json:"id"`
+	Method          string                   `json:"method,omitempty"`
+	Clean           bool                     `json:"clean"`
+	Action          string                   `json:"action,omitempty"`
+	Matches         []scanner.TextDLPMatch   `json:"dlp_matches,omitempty"`
+	Inject          []scanner.ResponseMatch  `json:"injection_matches,omitempty"`
+	AddressFindings []addressprotect.Finding `json:"address_findings,omitempty"`
+	Error           string                   `json:"error,omitempty"`
 }
 
 // extractToolCallName extracts the tool name from a tools/call JSON-RPC request.
@@ -145,7 +147,16 @@ func ScanRequest(line []byte, sc *scanner.Scanner, action, onParseError string) 
 			}
 		}
 
-		if dlpResult.Clean && injResult.Clean {
+		// Address poisoning detection (agentID="" for stdio).
+		var addrFindings []addressprotect.Finding
+		if checker := sc.AddressChecker(); checker != nil {
+			addrResult := checker.CheckText(joined, "")
+			if len(addrResult.Findings) > 0 {
+				addrFindings = addrResult.Findings
+			}
+		}
+
+		if dlpResult.Clean && injResult.Clean && len(addrFindings) == 0 {
 			return InputVerdict{ID: rpc.ID, Method: rpc.Method, Clean: true}
 		}
 		var dlpMatches []scanner.TextDLPMatch
@@ -156,13 +167,27 @@ func ScanRequest(line []byte, sc *scanner.Scanner, action, onParseError string) 
 		if !injResult.Clean {
 			injMatches = injResult.Matches
 		}
+
+		// Resolve strictest action: DLP/injection use MCP input action,
+		// address findings carry their own per-verdict action.
+		verdictAction := ""
+		if len(dlpMatches) > 0 || len(injMatches) > 0 {
+			verdictAction = action
+		}
+		if addrAction := addressprotect.StrictestAction(addrFindings); addrAction != "" {
+			if verdictAction == "" || addrAction == config.ActionBlock {
+				verdictAction = addrAction
+			}
+		}
+
 		return InputVerdict{
-			ID:      rpc.ID,
-			Method:  rpc.Method,
-			Clean:   false,
-			Action:  action,
-			Matches: dlpMatches,
-			Inject:  injMatches,
+			ID:              rpc.ID,
+			Method:          rpc.Method,
+			Clean:           false,
+			Action:          verdictAction,
+			Matches:         dlpMatches,
+			Inject:          injMatches,
+			AddressFindings: addrFindings,
 		}
 	}
 
@@ -228,17 +253,41 @@ func ScanRequest(line []byte, sc *scanner.Scanner, action, onParseError string) 
 		injMatches = injResult.Matches
 	}
 
-	if len(dlpMatches) == 0 && len(injMatches) == 0 {
+	// Run address poisoning detection alongside DLP.
+	// agentID="" for MCP stdio (one agent per process, global allowlist only).
+	var addrFindings []addressprotect.Finding
+	if checker := sc.AddressChecker(); checker != nil {
+		addrResult := checker.CheckText(joined, "")
+		if len(addrResult.Findings) > 0 {
+			addrFindings = addrResult.Findings
+		}
+	}
+
+	if len(dlpMatches) == 0 && len(injMatches) == 0 && len(addrFindings) == 0 {
 		return InputVerdict{ID: rpc.ID, Method: rpc.Method, Clean: true}
 	}
 
+	// Resolve the strictest action: DLP/injection use the MCP input action,
+	// address findings carry their own per-verdict action (block or warn).
+	// The strictest across all finding types wins.
+	verdictAction := ""
+	if len(dlpMatches) > 0 || len(injMatches) > 0 {
+		verdictAction = action
+	}
+	if addrAction := addressprotect.StrictestAction(addrFindings); addrAction != "" {
+		if verdictAction == "" || addrAction == config.ActionBlock {
+			verdictAction = addrAction
+		}
+	}
+
 	return InputVerdict{
-		ID:      rpc.ID,
-		Method:  rpc.Method,
-		Clean:   false,
-		Action:  action,
-		Matches: dlpMatches,
-		Inject:  injMatches,
+		ID:              rpc.ID,
+		Method:          rpc.Method,
+		Clean:           false,
+		Action:          verdictAction,
+		Matches:         dlpMatches,
+		Inject:          injMatches,
+		AddressFindings: addrFindings,
 	}
 }
 
@@ -324,8 +373,10 @@ func scanRequestBatch(line []byte, sc *scanner.Scanner, action, onParseError str
 
 	var allDLP []scanner.TextDLPMatch
 	var allInj []scanner.ResponseMatch
+	var allAddr []addressprotect.Finding
 	var firstID json.RawMessage
 	var hasError bool
+	var batchAction string // track strictest action across batch elements
 
 	for _, elem := range batch {
 		v := ScanRequest(elem, sc, action, onParseError)
@@ -338,17 +389,29 @@ func scanRequestBatch(line []byte, sc *scanner.Scanner, action, onParseError str
 		if !v.Clean && v.Error == "" {
 			allDLP = append(allDLP, v.Matches...)
 			allInj = append(allInj, v.Inject...)
+			allAddr = append(allAddr, v.AddressFindings...)
+			if v.Action != "" {
+				if batchAction == "" {
+					batchAction = v.Action
+				} else if v.Action == config.ActionBlock {
+					batchAction = config.ActionBlock
+				}
+			}
 		}
 	}
 
-	if len(allDLP) == 0 && len(allInj) == 0 {
+	if len(allDLP) == 0 && len(allInj) == 0 && len(allAddr) == 0 {
 		if hasError {
 			return InputVerdict{ID: firstID, Clean: false, Error: "one or more batch elements failed to parse"}
 		}
 		return InputVerdict{ID: firstID, Clean: true}
 	}
+	if batchAction == "" {
+		batchAction = action
+	}
 	v := InputVerdict{
-		ID: firstID, Clean: false, Action: action, Matches: allDLP, Inject: allInj,
+		ID: firstID, Clean: false, Action: batchAction,
+		Matches: allDLP, Inject: allInj, AddressFindings: allAddr,
 	}
 	if hasError {
 		v.Error = "one or more batch elements also failed to parse"
@@ -589,6 +652,9 @@ func ForwardScannedInput(
 		for _, m := range verdict.Inject {
 			reasons = append(reasons, m.PatternName)
 		}
+		for _, f := range verdict.AddressFindings {
+			reasons = append(reasons, "address:"+f.Explanation)
+		}
 		for _, r := range policyVerdict.Rules {
 			reasons = append(reasons, "policy:"+r)
 		}
@@ -615,7 +681,13 @@ func ForwardScannedInput(
 			return policy.StricterAction(cur, next)
 		}
 		if !verdict.Clean {
-			effectiveAction = action
+			if len(verdict.Matches) > 0 || len(verdict.Inject) > 0 {
+				effectiveAction = action
+			}
+			// Address findings use the address protection action, not DLP action.
+			if len(verdict.AddressFindings) > 0 {
+				effectiveAction = mergeAction(effectiveAction, verdict.Action)
+			}
 		}
 		if policyVerdict.Matched {
 			effectiveAction = mergeAction(effectiveAction, policyVerdict.Action)

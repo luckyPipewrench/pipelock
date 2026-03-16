@@ -125,6 +125,7 @@ Quick start:
 		mcpCmd(),
 		preflightCmd(),
 		reportCmd(),
+		rulesCmd(),
 		signCmd(),
 		testCmd(),
 		tlsCmd(),

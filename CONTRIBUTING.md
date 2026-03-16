@@ -4,7 +4,7 @@ Thanks for your interest in making AI agents more secure.
 
 ## Prerequisites
 
-- Go 1.24+ (`go version`)
+- Go 1.25+ (`go version`)
 - [golangci-lint](https://golangci-lint.run/welcome/install/) v2
 - [gofumpt](https://github.com/mvdan/gofumpt) (`go install mvdan.cc/gofumpt@latest`)
 
@@ -44,7 +44,7 @@ go test -race -count=1 ./...     # All tests with race detector
 ## Pull Requests
 
 1. Fill in a clear description of what changed and why
-2. CI runs 3 required checks: **test** (Go 1.24 + 1.25 matrix), **lint**, **build**
+2. CI runs 3 required checks: **test** (Go 1.25 + 1.26 matrix), **lint**, **build**
 3. Address reviewer feedback and bot comments (CodeRabbit reviews automatically)
 4. PRs are squash-merged
 

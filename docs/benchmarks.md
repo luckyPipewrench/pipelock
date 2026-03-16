@@ -108,7 +108,7 @@ True concurrent throughput across all available goroutines.
 
 ## Hardware
 
-AMD Ryzen 7 7800X3D (8 cores / 16 threads) / Go 1.24 / Linux 6.18 / Fedora 43
+AMD Ryzen 7 7800X3D (8 cores / 16 threads) / Go 1.25 / Linux 6.18 / Fedora 43
 
 ## Running Benchmarks
 

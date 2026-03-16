@@ -1,6 +1,6 @@
 module github.com/pipelockdev/pipelock/tools/demo-metrics
 
-go 1.24.0
+go 1.25.0
 
 require github.com/prometheus/client_golang v1.23.2
 

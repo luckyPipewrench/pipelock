@@ -41,7 +41,7 @@ brew install luckyPipewrench/tap/pipelock
 # Or with Docker
 docker pull ghcr.io/luckypipewrench/pipelock:latest
 
-# Or from source (requires Go 1.24+)
+# Or from source (requires Go 1.25+)
 go install github.com/luckyPipewrench/pipelock/cmd/pipelock@latest
 ```
 
@@ -509,7 +509,7 @@ Canonical metrics, updated each release.
 | Statement coverage | 90%+ |
 | Evasion techniques tested | 230+ |
 | Scanner pipeline overhead | ~21μs per URL scan ([performance details](docs/performance.md)) |
-| CI matrix | Go 1.24 + 1.25, CodeQL, golangci-lint |
+| CI matrix | Go 1.25 + 1.26, CodeQL, golangci-lint |
 | Supply chain | SLSA provenance, CycloneDX SBOM, cosign signatures |
 | OpenSSF Scorecard | [Live score](https://scorecard.dev/viewer/?uri=github.com/luckyPipewrench/pipelock) |
 

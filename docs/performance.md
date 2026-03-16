@@ -2,7 +2,7 @@
 
 Pipelock adds microseconds of overhead per request. The proxy is I/O bound (waiting for upstream responses), not CPU bound. For the request-side URL scanning hot path, CPU is never the bottleneck. Response scanning and MCP scanning on large payloads can use measurable CPU at high throughput (see tables below).
 
-All numbers from Go benchmarks on AMD Ryzen 7 7800X3D (8 cores / 16 threads) / Go 1.24 / Linux. Run `make bench` to reproduce on your hardware. See [benchmarks.md](benchmarks.md) for raw ns/op data.
+All numbers from Go benchmarks on AMD Ryzen 7 7800X3D (8 cores / 16 threads) / Go 1.25 / Linux. Run `make bench` to reproduce on your hardware. See [benchmarks.md](benchmarks.md) for raw ns/op data.
 
 ## Scanning Latency (single request)
 

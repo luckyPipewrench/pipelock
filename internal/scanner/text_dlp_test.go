@@ -435,6 +435,106 @@ func TestScanTextForDLP(t *testing.T) {
 			wantClean:   false,
 			wantPattern: "Sentry Auth Token",
 		},
+		// --- Delimiter-separated hex decoding ---
+		{
+			name: "colon-separated hex-encoded secret",
+			text: func() string {
+				secret := testAnthropicPrefix + strings.Repeat("c", 25)
+				h := hex.EncodeToString([]byte(secret))
+				return hexByteSep(h, ":")
+			}(),
+			wantClean:   false,
+			wantPattern: testAnthropicName,
+			wantEncoded: "hex",
+		},
+		{
+			name: "space-separated hex-encoded secret",
+			text: func() string {
+				secret := testAnthropicPrefix + strings.Repeat("d", 25)
+				h := hex.EncodeToString([]byte(secret))
+				return hexByteSep(h, " ")
+			}(),
+			wantClean:   false,
+			wantPattern: testAnthropicName,
+			wantEncoded: "hex",
+		},
+		{
+			name: "hyphen-separated hex-encoded secret",
+			text: func() string {
+				secret := testAnthropicPrefix + strings.Repeat("e", 25)
+				h := hex.EncodeToString([]byte(secret))
+				return hexByteSep(h, "-")
+			}(),
+			wantClean:   false,
+			wantPattern: testAnthropicName,
+			wantEncoded: "hex",
+		},
+		{
+			name: "backslash-x notation hex-encoded secret",
+			text: func() string {
+				secret := testAnthropicPrefix + strings.Repeat("f", 25)
+				h := hex.EncodeToString([]byte(secret))
+				return hexBytePrefix(h, `\x`)
+			}(),
+			wantClean:   false,
+			wantPattern: testAnthropicName,
+			wantEncoded: "hex",
+		},
+		{
+			name: "0x-prefixed hex-encoded secret",
+			text: func() string {
+				secret := testAnthropicPrefix + strings.Repeat("a", 25)
+				return "0x" + hex.EncodeToString([]byte(secret))
+			}(),
+			wantClean:   false,
+			wantPattern: testAnthropicName,
+			wantEncoded: "hex",
+		},
+		{
+			name: "comma-separated hex-encoded secret",
+			text: func() string {
+				secret := testAnthropicPrefix + strings.Repeat("b", 25)
+				h := hex.EncodeToString([]byte(secret))
+				return hexByteSep(h, ",")
+			}(),
+			wantClean:   false,
+			wantPattern: testAnthropicName,
+			wantEncoded: "hex",
+		},
+		{
+			name: "0x per-byte contiguous hex-encoded secret",
+			text: func() string {
+				secret := testAnthropicPrefix + strings.Repeat("g", 25)
+				h := hex.EncodeToString([]byte(secret))
+				return hexBytePrefix(h, "0x")
+			}(),
+			wantClean:   false,
+			wantPattern: testAnthropicName,
+			wantEncoded: "hex",
+		},
+		{
+			name: "0x per-byte comma-separated hex-encoded secret",
+			text: func() string {
+				secret := testAnthropicPrefix + strings.Repeat("h", 25)
+				h := hex.EncodeToString([]byte(secret))
+				parts := make([]string, 0, len(h)/2)
+				for i := 0; i < len(h); i += 2 {
+					parts = append(parts, "0x"+h[i:i+2])
+				}
+				return strings.Join(parts, ",")
+			}(),
+			wantClean:   false,
+			wantPattern: testAnthropicName,
+			wantEncoded: "hex",
+		},
+		{
+			name: "delimiter-hex clean text not flagged",
+			text: func() string {
+				h := hex.EncodeToString([]byte("hello world!"))
+				return hexByteSep(h, ":")
+			}(),
+			wantClean: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -674,6 +774,36 @@ func TestCheckSecretsInText_URLSafeBase64EnvSecret(t *testing.T) {
 	matches := s.checkSecretsInText([]string{secret}, "data: "+urlEncoded, "Environment Variable Leak", "env")
 	if len(matches) == 0 {
 		t.Error("expected URL-safe base64-encoded env leak to be caught")
+	}
+}
+
+func TestCheckSecretsInText_DelimiterHexEnvSecret(t *testing.T) {
+	cfg := testConfig()
+	cfg.DLP.ScanEnv = true
+	s := New(cfg)
+	defer s.Close()
+
+	secret := "SuperSecretTestValue99"
+	contiguousHex := hex.EncodeToString([]byte(secret))
+
+	tests := []struct {
+		name string
+		text string
+	}{
+		{"colon-separated", "data: " + hexByteSep(contiguousHex, ":")},
+		{"space-separated", "data: " + hexByteSep(contiguousHex, " ")},
+		{"hyphen-separated", "data: " + hexByteSep(contiguousHex, "-")},
+		{"comma-separated", "data: " + hexByteSep(contiguousHex, ",")},
+		{"backslash-x notation", "data: " + hexBytePrefix(contiguousHex, `\x`)},
+		{"0x per-byte notation", "data: " + hexBytePrefix(contiguousHex, "0x")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			matches := s.checkSecretsInText([]string{secret}, tt.text, "Environment Variable Leak", "env")
+			if len(matches) == 0 {
+				t.Errorf("expected %s hex-encoded env leak to be caught", tt.name)
+			}
+		})
 	}
 }
 

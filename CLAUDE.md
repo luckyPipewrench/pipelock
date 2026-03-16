@@ -28,7 +28,7 @@ These must be proven by tests, not assumed from docs or deployment.
 | Item | Value |
 |------|-------|
 | Module | `github.com/luckyPipewrench/pipelock` |
-| Go | 1.24+ (CI tests 1.24 and 1.25) |
+| Go | 1.25+ (CI tests 1.25 and 1.26) |
 | License | Apache 2.0 (core), ELv2 (`enterprise/`) |
 | Binary | Single static binary, ~12MB |
 | Deps | cobra, zerolog, go-readability, yaml.v3, prometheus, fsnotify, x/text, x/net, gobwas/ws |
@@ -162,7 +162,7 @@ These tasks have steps that are easy to miss:
 
 Six required checks on `main`:
 
-1. **test:** Go 1.24 + 1.25 matrix, race detector, Codecov upload
+1. **test:** Go 1.25 + 1.26 matrix, race detector, Codecov upload
 2. **lint:** golangci-lint v2
 3. **build:** compile binary, verify `--version`
 4. **govulncheck:** known vulnerability scanning

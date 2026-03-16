@@ -29,6 +29,34 @@ import (
 // Official bundle registry base URL.
 const officialRegistryURL = "https://rules.pipelock.dev"
 
+// loadRulesConfig loads the pipelock config for trusted key resolution.
+// Resolution order: explicit --config flag, PIPELOCK_CONFIG env var,
+// ./pipelock.yaml in the current directory. Returns nil config (no
+// trusted keys) if none found — this is not an error.
+func loadRulesConfig(configFile string) *config.Config {
+	// Explicit flag takes priority.
+	if configFile != "" {
+		cfg, err := config.Load(configFile)
+		if err != nil {
+			return nil
+		}
+		return cfg
+	}
+	// Try PIPELOCK_CONFIG env var.
+	if envPath := os.Getenv("PIPELOCK_CONFIG"); envPath != "" {
+		cfg, err := config.Load(envPath)
+		if err != nil {
+			return nil
+		}
+		return cfg
+	}
+	// Try pipelock.yaml in current directory.
+	if cfg, err := config.Load("pipelock.yaml"); err == nil {
+		return cfg
+	}
+	return nil
+}
+
 // HTTP fetch timeout for remote bundle downloads.
 const httpFetchTimeout = 30 * time.Second
 
@@ -402,13 +430,9 @@ func installRemote(out io.Writer, rulesDir, bundleURL, configFile, expectedName 
 		return err
 	}
 
-	// Load trusted keys from config if provided.
+	// Load trusted keys from config (explicit flag, env, or cwd).
 	var trustedKeys []config.TrustedKey
-	if configFile != "" {
-		cfg, err := config.Load(configFile)
-		if err != nil {
-			return fmt.Errorf("loading config for trusted keys: %w", err)
-		}
+	if cfg := loadRulesConfig(configFile); cfg != nil {
 		trustedKeys = cfg.Rules.TrustedKeys
 	}
 
@@ -585,11 +609,7 @@ Local (unsigned) bundles are skipped during update.`,
 			defer unlock()
 
 			var trustedKeys []config.TrustedKey
-			if configFile != "" {
-				cfg, err := config.Load(configFile)
-				if err != nil {
-					return fmt.Errorf("loading config for trusted keys: %w", err)
-				}
+			if cfg := loadRulesConfig(configFile); cfg != nil {
 				trustedKeys = cfg.Rules.TrustedKeys
 			}
 
@@ -740,11 +760,7 @@ func rulesVerifyCmd() *cobra.Command {
 			dir := rules.ResolveRulesDir(rulesDir)
 
 			var trustedKeys []config.TrustedKey
-			if configFile != "" {
-				cfg, err := config.Load(configFile)
-				if err != nil {
-					return fmt.Errorf("loading config for trusted keys: %w", err)
-				}
+			if cfg := loadRulesConfig(configFile); cfg != nil {
 				trustedKeys = cfg.Rules.TrustedKeys
 			}
 

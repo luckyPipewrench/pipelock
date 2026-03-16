@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 func TestDiagnoseDefault(t *testing.T) {
@@ -45,21 +47,22 @@ func TestDiagnoseJSON(t *testing.T) {
 	if err := json.Unmarshal(buf.Bytes(), &report); err != nil {
 		t.Fatalf("invalid JSON output: %v\n%s", err, buf.String())
 	}
-	if report.Total != 6 {
-		t.Errorf("expected 6 checks, got %d", report.Total)
+	if report.Total != 7 {
+		t.Errorf("expected 7 checks, got %d", report.Total)
 	}
 	if report.Failed != 0 {
 		t.Errorf("expected 0 failures, got %d", report.Failed)
 	}
-	if report.Skipped != 1 {
-		t.Errorf("expected 1 skip (fetch_hint), got %d", report.Skipped)
+	// fetch_hint skipped (no explain_blocks) + rules skipped (no bundles).
+	if report.Skipped != 2 {
+		t.Errorf("expected 2 skips (fetch_hint + rules), got %d", report.Skipped)
 	}
 	// Verify check names.
 	names := make(map[string]bool)
 	for _, c := range report.Checks {
 		names[c.Name] = true
 	}
-	for _, expected := range []string{"health", "fetch_allowed", "fetch_blocked", "fetch_hint", "forward_allowed", "forward_blocked"} {
+	for _, expected := range []string{"health", "fetch_allowed", "fetch_blocked", "fetch_hint", "forward_allowed", "forward_blocked", "rules"} {
 		if !names[expected] {
 			t.Errorf("missing check %q in report", expected)
 		}
@@ -139,4 +142,67 @@ func TestDiagnoseHintEnabled(t *testing.T) {
 		}
 	}
 	t.Error("fetch_hint check not found in report")
+}
+
+func TestCheckRules_EmptyDir(t *testing.T) {
+	t.Parallel()
+
+	cfg := &config.Config{}
+	cfg.Rules.RulesDir = t.TempDir()
+
+	result := checkRules("", "", cfg)
+	if result.Status != statusSkip {
+		t.Errorf("expected skip, got %s", result.Status)
+	}
+	if !strings.Contains(result.Detail, "no bundles installed") {
+		t.Errorf("unexpected detail: %s", result.Detail)
+	}
+}
+
+func TestCheckRules_ValidBundle(t *testing.T) {
+	t.Parallel()
+
+	rulesDir := t.TempDir()
+	setupUnsignedBundle(t, rulesDir, testBundleName, []byte(validBundleYAML))
+
+	cfg := &config.Config{}
+	cfg.Rules.RulesDir = rulesDir
+
+	result := checkRules("", "", cfg)
+	if result.Status != statusPass {
+		t.Errorf("expected pass, got %s: %s", result.Status, result.Detail)
+	}
+	if !strings.Contains(result.Detail, "test-bundle") {
+		t.Errorf("expected bundle name in detail, got: %s", result.Detail)
+	}
+	if !strings.Contains(result.Detail, "1 rules") {
+		t.Errorf("expected rule count in detail, got: %s", result.Detail)
+	}
+	if !strings.Contains(result.Detail, "[unsigned]") {
+		t.Errorf("expected [unsigned] marker in detail, got: %s", result.Detail)
+	}
+}
+
+func TestCheckRules_TamperedBundle(t *testing.T) {
+	t.Parallel()
+
+	rulesDir := t.TempDir()
+	setupUnsignedBundle(t, rulesDir, testBundleName, []byte(validBundleYAML))
+
+	// Tamper: overwrite bundle.yaml with different content (hash mismatch).
+	bundlePath := filepath.Join(rulesDir, testBundleName, "bundle.yaml")
+	if err := os.WriteFile(bundlePath, []byte("tampered content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{}
+	cfg.Rules.RulesDir = rulesDir
+
+	result := checkRules("", "", cfg)
+	if result.Status != statusFail {
+		t.Errorf("expected fail, got %s: %s", result.Status, result.Detail)
+	}
+	if !strings.Contains(result.Detail, "FAILED") {
+		t.Errorf("expected FAILED in detail, got: %s", result.Detail)
+	}
 }

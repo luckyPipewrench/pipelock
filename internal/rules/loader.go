@@ -194,17 +194,17 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, minRank int, res
 				Regex:         r.Pattern.Regex,
 				Severity:      r.Severity,
 				ExemptDomains: r.Pattern.ExemptDomains,
-				// Bundle and BundleVersion fields will be set once Task 7
-				// adds provenance fields to config.DLPPattern.
+				Bundle:        bundle.Name,
+				BundleVersion: bundle.Version,
 			})
 			loaded.DLP++
 
 		case RuleTypeInjection:
 			result.Injection = append(result.Injection, config.ResponseScanPattern{
-				Name:  nsID,
-				Regex: r.Pattern.Regex,
-				// Bundle and BundleVersion fields will be set once Task 7
-				// adds provenance fields to config.ResponseScanPattern.
+				Name:          nsID,
+				Regex:         r.Pattern.Regex,
+				Bundle:        bundle.Name,
+				BundleVersion: bundle.Version,
 			})
 			loaded.Injection++
 

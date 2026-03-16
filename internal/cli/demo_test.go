@@ -112,7 +112,7 @@ func TestUseColor_NOCOLOREnv(t *testing.T) {
 }
 
 func TestBuildScenarios_Count(t *testing.T) {
-	scenarios := buildScenarios()
+	scenarios := buildScenarios(nil)
 	if len(scenarios) != 7 {
 		t.Errorf("expected 7 scenarios, got %d", len(scenarios))
 	}
@@ -155,7 +155,7 @@ func TestDemoCmd_OutputContainsSeparator(t *testing.T) {
 
 func TestDemoCmd_AllScenariosRunAndBlock(t *testing.T) {
 	// Directly run each scenario to cover all run functions
-	scenarios := buildScenarios()
+	scenarios := buildScenarios(nil)
 
 	for _, s := range scenarios {
 		t.Run(s.name, func(t *testing.T) {
@@ -232,7 +232,7 @@ func TestBuildScenarios_PermissiveScanner(t *testing.T) {
 	sc := scanner.New(cfg)
 	defer sc.Close()
 
-	scenarios := buildScenarios()
+	scenarios := buildScenarios(nil)
 
 	// Scenarios that should NOT block with a permissive scanner
 	expectAllow := map[string]string{

@@ -21,6 +21,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
+	"github.com/luckyPipewrench/pipelock/internal/rules"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -137,6 +138,10 @@ func runDiagnose(cmd *cobra.Command, cfg *config.Config, cfgLabel string, jsonOu
 	cfg.FetchProxy.Monitoring.Blocklist = append(cfg.FetchProxy.Monitoring.Blocklist, "malware.example.com")
 
 	// Nop logger avoids writing to stdout, which would corrupt --json output.
+	bundleResult := rules.MergeIntoConfig(cfg, Version)
+	for _, e := range bundleResult.Errors {
+		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: warning: bundle %s: %s\n", e.Name, e.Reason)
+	}
 	sc := scanner.New(cfg)
 	defer sc.Close()
 	logger := audit.NewNop()

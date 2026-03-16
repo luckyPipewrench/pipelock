@@ -65,6 +65,7 @@ func RunHTTPProxy(
 			Baseline:    tools.NewToolBaseline(),
 			Action:      toolCfg.Action,
 			DetectDrift: toolCfg.DetectDrift,
+			ExtraPoison: toolCfg.ExtraPoison,
 		}
 	}
 
@@ -524,6 +525,7 @@ func RunHTTPListenerProxy(
 			Baseline:    tools.NewToolBaseline(),
 			Action:      toolCfg.Action,
 			DetectDrift: toolCfg.DetectDrift,
+			ExtraPoison: toolCfg.ExtraPoison,
 		}
 	}
 

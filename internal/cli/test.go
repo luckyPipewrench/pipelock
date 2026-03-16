@@ -16,6 +16,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	mcptools "github.com/luckyPipewrench/pipelock/internal/mcp/tools"
+	"github.com/luckyPipewrench/pipelock/internal/rules"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -120,6 +121,13 @@ Examples:
 			cfg.Internal = nil
 			cfg.DLP.ScanEnv = false
 
+			// Merge community rule bundles before building scanner.
+			bundleResult := rules.MergeIntoConfig(cfg, Version)
+			for _, e := range bundleResult.Errors {
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: warning: bundle %s: %s\n", e.Name, e.Reason)
+			}
+			extraPoison := rules.ConvertToolPoison(bundleResult.ToolPoison)
+
 			color := !noColor && useColor()
 			catFilter := parseCategoryFilter(categories)
 
@@ -127,7 +135,7 @@ Examples:
 				return err
 			}
 
-			vectors := buildTestVectors()
+			vectors := buildTestVectors(extraPoison)
 			skipSet := buildSkipSet(cfg)
 
 			return runTests(cmd, cfg, cfgLabel, vectors, skipSet, catFilter, jsonOutput, color, failOnGap)
@@ -407,7 +415,7 @@ func formatResultLine(r testResult, color bool) (tag, detail string) {
 }
 
 //nolint:funlen // vector definitions are inherently long
-func buildTestVectors() []testVector {
+func buildTestVectors(extraPoison []*mcptools.ExtraPoisonPattern) []testVector {
 	return []testVector{
 		// ── DLP (6) ──────────────────────────────────────────────
 		{
@@ -735,6 +743,7 @@ func buildTestVectors() []testVector {
 					Baseline:    mcptools.NewToolBaseline(),
 					Action:      config.ActionBlock,
 					DetectDrift: false,
+					ExtraPoison: extraPoison,
 				}
 				r := mcptools.ScanTools(payload, sc, toolCfg)
 				if !r.Clean && len(r.Matches) > 0 {
@@ -764,6 +773,7 @@ func buildTestVectors() []testVector {
 					Baseline:    mcptools.NewToolBaseline(),
 					Action:      config.ActionBlock,
 					DetectDrift: false,
+					ExtraPoison: extraPoison,
 				}
 				r := mcptools.ScanTools(payload, sc, toolCfg)
 				if !r.Clean && len(r.Matches) > 0 {
@@ -801,6 +811,7 @@ func buildTestVectors() []testVector {
 					Baseline:    mcptools.NewToolBaseline(),
 					Action:      config.ActionBlock,
 					DetectDrift: false,
+					ExtraPoison: extraPoison,
 				}
 				r := mcptools.ScanTools(payload, sc, toolCfg)
 				if r.Clean {

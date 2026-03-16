@@ -510,6 +510,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 			DetectDrift:             toolCfg.DetectDrift,
 			BindingUnknownAction:    toolCfg.BindingUnknownAction,
 			BindingNoBaselineAction: toolCfg.BindingNoBaselineAction,
+			ExtraPoison:             toolCfg.ExtraPoison,
 		}
 	}
 

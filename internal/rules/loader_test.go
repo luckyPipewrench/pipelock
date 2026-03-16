@@ -20,6 +20,9 @@ import (
 // testPipelockVersion is used for tests that need a current pipelock version.
 const testPipelockVersion = "1.3.0"
 
+// testBundleName is the default bundle name used in loader tests.
+const testBundleName = "test-bundle"
+
 // testBundle is a minimal valid bundle for test helpers.
 func testBundle(name string, rules []Rule) *Bundle {
 	return &Bundle{
@@ -198,12 +201,12 @@ func TestLoadBundles_ValidUnsignedBundle(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	bundleDir := filepath.Join(dir, "test-bundle")
+	bundleDir := filepath.Join(dir, testBundleName)
 	if err := os.MkdirAll(bundleDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
 
-	b := testBundle("test-bundle", []Rule{
+	b := testBundle(testBundleName, []Rule{
 		testDLPRule("dlp-rule-001", confidenceHigh, StatusStable),
 		testInjectionRule("inj-rule-001", confidenceMedium, StatusStable),
 		testToolPoisonRule("tp-rule-001", confidenceHigh, StatusStable, scanFieldDescription),
@@ -258,8 +261,8 @@ func TestLoadBundles_ValidUnsignedBundle(t *testing.T) {
 	if tp.ScanField != scanFieldDescription {
 		t.Errorf("ToolPoison ScanField = %q, want %q", tp.ScanField, scanFieldDescription)
 	}
-	if tp.Bundle != "test-bundle" {
-		t.Errorf("ToolPoison Bundle = %q, want %q", tp.Bundle, "test-bundle")
+	if tp.Bundle != testBundleName {
+		t.Errorf("ToolPoison Bundle = %q, want %q", tp.Bundle, testBundleName)
 	}
 	if tp.BundleVersion != "2026.03.0" {
 		t.Errorf("ToolPoison BundleVersion = %q, want %q", tp.BundleVersion, "2026.03.0")
@@ -271,8 +274,8 @@ func TestLoadBundles_ValidUnsignedBundle(t *testing.T) {
 
 	// Check loaded bundle diagnostics.
 	lb := result.Loaded[0]
-	if lb.Name != "test-bundle" {
-		t.Errorf("Loaded.Name = %q, want %q", lb.Name, "test-bundle")
+	if lb.Name != testBundleName {
+		t.Errorf("Loaded.Name = %q, want %q", lb.Name, testBundleName)
 	}
 	if lb.Rules != 3 {
 		t.Errorf("Loaded.Rules = %d, want 3", lb.Rules)

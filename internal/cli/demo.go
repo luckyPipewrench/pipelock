@@ -17,6 +17,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
+	"github.com/luckyPipewrench/pipelock/internal/rules"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -85,10 +86,13 @@ func runDemo(cmd *cobra.Command, interactive, color bool) error {
 	cfg.ResponseScanning.Action = config.ActionBlock
 	cfg.DLP.ScanEnv = false // don't scan demo runner's env
 
+	bundleResult := rules.MergeIntoConfig(cfg, Version)
+	extraPoison := rules.ConvertToolPoison(bundleResult.ToolPoison)
+
 	sc := scanner.New(cfg)
 	defer sc.Close()
 
-	scenarios := buildScenarios()
+	scenarios := buildScenarios(extraPoison)
 
 	// Header.
 	title := fmt.Sprintf("Pipelock Demo — %d Attack Scenarios", len(scenarios))
@@ -158,7 +162,7 @@ func runDemo(cmd *cobra.Command, interactive, color bool) error {
 	return nil
 }
 
-func buildScenarios() []scenario {
+func buildScenarios(extraPoison []*tools.ExtraPoisonPattern) []scenario {
 	return []scenario{
 		{
 			name:   "Credential Exfiltration",
@@ -320,6 +324,7 @@ func buildScenarios() []scenario {
 					Baseline:    tools.NewToolBaseline(),
 					Action:      config.ActionBlock,
 					DetectDrift: false,
+					ExtraPoison: extraPoison,
 				}
 				result := tools.ScanTools(line, sc, toolCfg)
 				if !result.Clean && len(result.Matches) > 0 {

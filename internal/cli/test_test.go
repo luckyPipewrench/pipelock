@@ -273,7 +273,7 @@ func TestTestCmd_HelpRegistered(t *testing.T) {
 }
 
 func TestBuildTestVectors_Count(t *testing.T) {
-	vectors := buildTestVectors()
+	vectors := buildTestVectors(nil)
 	if len(vectors) != 30 {
 		t.Errorf("expected 30 vectors, got %d", len(vectors))
 	}
@@ -294,7 +294,7 @@ func TestBuildTestVectors_Count(t *testing.T) {
 }
 
 func TestBuildTestVectors_AllCategories(t *testing.T) {
-	vectors := buildTestVectors()
+	vectors := buildTestVectors(nil)
 	categories := make(map[string]int)
 	for _, v := range vectors {
 		categories[v.Category]++
@@ -466,7 +466,7 @@ func TestTestCmd_AllVectorsRunDefaultConfig(t *testing.T) {
 	sc := scanner.New(cfg)
 	defer sc.Close()
 
-	vectors := buildTestVectors()
+	vectors := buildTestVectors(nil)
 	for _, v := range vectors {
 		t.Run(v.Name, func(t *testing.T) {
 			vr := v.Run(sc)
@@ -628,7 +628,7 @@ func TestTestCmd_FailOnGap_NoGaps(t *testing.T) {
 	sc := scanner.New(cfg)
 	defer sc.Close()
 
-	vectors := buildTestVectors()
+	vectors := buildTestVectors(nil)
 	skipSet := buildSkipSet(cfg)
 	if len(skipSet) != 0 {
 		t.Fatalf("expected no skips with full config, got: %v", skipSet)
@@ -721,7 +721,7 @@ func TestTestCmd_ColorOutput(t *testing.T) {
 	cfg.Internal = nil
 	cfg.DLP.ScanEnv = false
 
-	vectors := buildTestVectors()
+	vectors := buildTestVectors(nil)
 	skipSet := buildSkipSet(cfg)
 
 	testSub, _, _ := cmd.Find([]string{"test"})

@@ -14,6 +14,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
+	"github.com/luckyPipewrench/pipelock/internal/rules"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/spf13/cobra"
 )
@@ -169,6 +170,9 @@ func runClaudeHook(cmd *cobra.Command, configFile string, exitCodeMode bool) (re
 		return claudeResult(cmd, exitCodeMode, payload.HookEventName, decisionDeny,
 			"pipelock: config error: "+err.Error())
 	}
+
+	// Merge community rules into config before building scanner.
+	rules.MergeIntoConfig(cfg, Version)
 
 	// Build scanner and policy.
 	sc := scanner.New(cfg)

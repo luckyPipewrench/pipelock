@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/rules"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -54,6 +55,10 @@ Examples:
 			// Optionally scan a URL
 			if scanURL != "" {
 				cmd.Printf("\nScanning URL: %s\n", scanURL)
+				bundleResult := rules.MergeIntoConfig(cfg, Version)
+				for _, e := range bundleResult.Errors {
+					cmd.PrintErrf("pipelock: warning: bundle %s: %s\n", e.Name, e.Reason)
+				}
 				sc := scanner.New(cfg)
 				result := sc.Scan(cmd.Context(), scanURL)
 				if result.Allowed {

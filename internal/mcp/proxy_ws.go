@@ -80,6 +80,7 @@ func RunWSProxy(
 			DetectDrift:             toolCfg.DetectDrift,
 			BindingUnknownAction:    toolCfg.BindingUnknownAction,
 			BindingNoBaselineAction: toolCfg.BindingNoBaselineAction,
+			ExtraPoison:             toolCfg.ExtraPoison,
 		}
 	}
 

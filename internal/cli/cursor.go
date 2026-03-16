@@ -15,6 +15,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
+	"github.com/luckyPipewrench/pipelock/internal/rules"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/spf13/cobra"
 )
@@ -219,6 +220,9 @@ func runCursorHook(cmd *cobra.Command, configFile string) error {
 		})
 		return nil
 	}
+
+	// Merge community rules into config before building scanner.
+	rules.MergeIntoConfig(cfg, Version)
 
 	// Build scanner and policy.
 	sc := scanner.New(cfg)

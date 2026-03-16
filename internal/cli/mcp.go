@@ -24,6 +24,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/rules"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	plsentry "github.com/luckyPipewrench/pipelock/internal/sentry"
 )
@@ -75,6 +76,10 @@ Examples:
 				cfg.ResponseScanning = config.Defaults().ResponseScanning
 			}
 
+			bundleResult := rules.MergeIntoConfig(cfg, Version)
+			for _, e := range bundleResult.Errors {
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: warning: bundle %s: %s\n", e.Name, e.Reason)
+			}
 			sc := scanner.New(cfg)
 			defer sc.Close()
 
@@ -246,6 +251,13 @@ Environment passthrough (subprocess mode only):
 				cfg.MCPInputScanning.Action = config.ActionBlock
 			}
 
+			// Merge community rule bundles before building the scanner.
+			bundleResult := rules.MergeIntoConfig(cfg, Version)
+			for _, e := range bundleResult.Errors {
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: warning: bundle %s: %s\n", e.Name, e.Reason)
+			}
+			extraPoison := rules.ConvertToolPoison(bundleResult.ToolPoison)
+
 			// Rebuild scanner with the (possibly modified) resolved config.
 			sc := scanner.New(cfg)
 			defer sc.Close()
@@ -277,6 +289,7 @@ Environment passthrough (subprocess mode only):
 				toolCfg = &tools.ToolScanConfig{
 					Action:      cfg.MCPToolScanning.Action,
 					DetectDrift: cfg.MCPToolScanning.DetectDrift,
+					ExtraPoison: extraPoison,
 				}
 				// Wire session binding into tool scanning when enabled.
 				if cfg.MCPSessionBinding.Enabled {

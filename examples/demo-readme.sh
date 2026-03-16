@@ -95,6 +95,6 @@ pause
 
 # --- Done ---
 echo ""
-echo -e "${GREEN}Single binary. Zero deps. 9-layer scanner pipeline.${RESET}"
+echo -e "${GREEN}Single binary. Zero deps. 11-layer scanner pipeline.${RESET}"
 echo -e "${GREEN}go install github.com/luckyPipewrench/pipelock/cmd/pipelock@latest${RESET}"
 echo ""

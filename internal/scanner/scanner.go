@@ -60,26 +60,28 @@ type Result struct {
 
 // Scanner checks URLs for suspicious content before fetching.
 type Scanner struct {
-	allowlist                 []string
-	blocklist                 []string
-	dlpPatterns               []*compiledPattern
-	dlpPreFilter              *dlpPreFilter
-	entropyThreshold          float64
-	entropyMinLen             int
-	maxURLLength              int
-	internalCIDRs             []*net.IPNet
-	rateLimiter               *RateLimiter
-	dataBudget                *DataBudget
-	envSecrets                []string // filtered high-entropy env var values
-	fileSecrets               []string // loaded from secrets_file config
-	minEnvSecretLen           int      // minimum env var length for leak detection
-	responsePatterns          []*compiledPattern
-	responseOptSpacePatterns  []*compiledPattern // \s+ → \s* variants for ZW-stripped pass
-	responseVowelFoldPatterns []*compiledPattern // vowel-folded variants for confusable vowel attacks
-	responsePreFilter         *responsePreFilter // keyword candidate gate for regex passes
-	responseAction            string
-	responseEnabled           bool
-	subdomainExclusions       []string // domains excluded from subdomain entropy checks
+	allowlist                  []string
+	blocklist                  []string
+	dlpPatterns                []*compiledPattern
+	dlpPreFilter               *dlpPreFilter
+	entropyThreshold           float64
+	entropyMinLen              int
+	maxURLLength               int
+	internalCIDRs              []*net.IPNet
+	rateLimiter                *RateLimiter
+	dataBudget                 *DataBudget
+	envSecrets                 []string // filtered high-entropy env var values
+	fileSecrets                []string // loaded from secrets_file config
+	minEnvSecretLen            int      // minimum env var length for leak detection
+	responsePatterns           []*compiledPattern
+	responseOptSpacePatterns   []*compiledPattern // \s+ → \s* variants for ZW-stripped pass
+	responseVowelFoldPatterns  []*compiledPattern // vowel-folded variants for confusable vowel attacks
+	responsePreFilter          *responsePreFilter // keyword candidate gate for primary regex passes
+	responseOptSpacePreFilter  *responsePreFilter // keyword candidate gate for opt-space pass
+	responseVowelFoldPreFilter *responsePreFilter // keyword candidate gate for vowel-fold pass
+	responseAction             string
+	responseEnabled            bool
+	subdomainExclusions        []string // domains excluded from subdomain entropy checks
 }
 
 type compiledPattern struct {
@@ -235,9 +237,17 @@ func New(cfg *config.Config) *Scanner {
 		}
 	}
 
-	// Build response pre-filter for keyword-gated regex skipping.
+	// Build response pre-filters for keyword-gated regex skipping.
+	// Each pattern set gets its own pre-filter because opt-space and
+	// vowel-fold transforms change which keywords appear in content.
 	if len(s.responsePatterns) > 0 {
 		s.responsePreFilter = newResponsePreFilter(s.responsePatterns)
+	}
+	if len(s.responseOptSpacePatterns) > 0 {
+		s.responseOptSpacePreFilter = newResponsePreFilter(s.responseOptSpacePatterns)
+	}
+	if len(s.responseVowelFoldPatterns) > 0 {
+		s.responseVowelFoldPreFilter = newResponsePreFilter(s.responseVowelFoldPatterns)
 	}
 
 	return s

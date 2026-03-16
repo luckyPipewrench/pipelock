@@ -90,7 +90,7 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) ResponseScan
 	// "i\u200bgnore\u200ball\u200bprevious" -> strip ZW -> "ignoreallprevious"
 	// Standard \s+ patterns fail on zero whitespace; \s* variants match.
 	if len(matches) == 0 && len(s.responseOptSpacePatterns) > 0 {
-		matches = matchPatternsAgainst(s.responseOptSpacePatterns, content)
+		matches = matchPatternsPreFiltered(s.responseOptSpacePreFilter, s.responseOptSpacePatterns, content)
 	}
 
 	// Quinary: vowel-folded matching. Catches confusable-vowel attacks where
@@ -100,7 +100,7 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) ResponseScan
 	if len(matches) == 0 && len(s.responseVowelFoldPatterns) > 0 {
 		folded := normalize.FoldVowels(content)
 		if folded != content {
-			matches = matchPatternsAgainst(s.responseVowelFoldPatterns, folded)
+			matches = matchPatternsPreFiltered(s.responseVowelFoldPreFilter, s.responseVowelFoldPatterns, folded)
 		}
 	}
 
@@ -179,25 +179,30 @@ func matchPatternsAgainst(patterns []*compiledPattern, content string) []Respons
 	return matches
 }
 
-// matchResponsePatternsPreFiltered checks the response pre-filter for
-// keyword candidates in the given content, then runs ONLY the matching
-// patterns' regex. If no pre-filter is configured, falls back to running
-// all patterns. This is the primary optimization: on clean 10KB content,
-// the pre-filter finds no candidates and zero regex patterns execute.
+// matchResponsePatternsPreFiltered checks the primary response pre-filter
+// for keyword candidates, then runs only matching patterns' regex.
 func (s *Scanner) matchResponsePatternsPreFiltered(content string) []ResponseMatch {
-	if s.responsePreFilter == nil {
-		return matchPatternsAgainst(s.responsePatterns, content)
+	return matchPatternsPreFiltered(s.responsePreFilter, s.responsePatterns, content)
+}
+
+// matchPatternsPreFiltered checks a pre-filter for keyword candidates in
+// content, then runs ONLY the matching patterns' regex. If no pre-filter
+// is configured, falls back to running all patterns. On clean 10KB content,
+// the pre-filter finds no candidates and zero regex patterns execute.
+func matchPatternsPreFiltered(pf *responsePreFilter, patterns []*compiledPattern, content string) []ResponseMatch {
+	if pf == nil {
+		return matchPatternsAgainst(patterns, content)
 	}
-	indices := s.responsePreFilter.patternsToCheck(content)
+	indices := pf.patternsToCheck(content)
 	if len(indices) == 0 {
 		return nil
 	}
 	var matches []ResponseMatch
 	for _, idx := range indices {
-		if idx < 0 || idx >= len(s.responsePatterns) {
+		if idx < 0 || idx >= len(patterns) {
 			continue
 		}
-		p := s.responsePatterns[idx]
+		p := patterns[idx]
 		locs := p.re.FindAllStringIndex(content, -1)
 		for _, loc := range locs {
 			matchText := content[loc[0]:loc[1]]
@@ -249,18 +254,18 @@ func (s *Scanner) matchDecodedResponse(content string) []ResponseMatch {
 // vowel-substituted or zero-width-separated injection would bypass detection.
 func (s *Scanner) matchDecodedNormalized(decoded string) []ResponseMatch {
 	normalized := normalize.ForMatching(decoded)
-	if matches := matchPatternsAgainst(s.responsePatterns, normalized); len(matches) > 0 {
+	if matches := matchPatternsPreFiltered(s.responsePreFilter, s.responsePatterns, normalized); len(matches) > 0 {
 		return matches
 	}
 	if len(s.responseOptSpacePatterns) > 0 {
-		if matches := matchPatternsAgainst(s.responseOptSpacePatterns, normalized); len(matches) > 0 {
+		if matches := matchPatternsPreFiltered(s.responseOptSpacePreFilter, s.responseOptSpacePatterns, normalized); len(matches) > 0 {
 			return matches
 		}
 	}
 	if len(s.responseVowelFoldPatterns) > 0 {
 		folded := normalize.FoldVowels(normalized)
 		if folded != normalized {
-			if matches := matchPatternsAgainst(s.responseVowelFoldPatterns, folded); len(matches) > 0 {
+			if matches := matchPatternsPreFiltered(s.responseVowelFoldPreFilter, s.responseVowelFoldPatterns, folded); len(matches) > 0 {
 				return matches
 			}
 		}

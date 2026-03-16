@@ -123,7 +123,7 @@
         }
 
         section {
-            margin-bottom: 2rem;
+            margin-bottom: 1.25rem;
         }
 
         /* KPI Grid */
@@ -172,12 +172,14 @@
         .two-col {
             display: grid;
             grid-template-columns: 1fr 1fr;
-            gap: 1.5rem;
+            gap: 1rem;
+            margin-bottom: 1.25rem;
+            align-items: start;
         }
 
         .two-col > * {
             min-width: 0;
-            margin-bottom: 2rem;
+            margin-bottom: 0;
         }
 
         /* Tables */
@@ -507,9 +509,8 @@
         </section>
         {{end}}
 
-        <!-- Categories and Domains side by side -->
-        <div class="two-col">
-            {{if .Categories}}
+        {{if and .Categories .DLPBreakdown}}<div class="two-col">{{end}}
+        {{if .Categories}}
             <section>
                 <h2>Findings by Category</h2>
                 <table>
@@ -538,6 +539,87 @@
                 </table>
             </section>
             {{end}}
+
+        {{if .DLPBreakdown}}
+            <section>
+                <h2>DLP by Surface</h2>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>SURFACE</th>
+                            <th>BLOCKS</th>
+                            <th>WARNS</th>
+                            <th>TOTAL</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {{range .DLPBreakdown}}
+                        <tr>
+                            <td>{{.Surface}}</td>
+                            <td style="color: #f44336;">{{.Blocks}}</td>
+                            <td style="color: #eab308;">{{.Warns}}</td>
+                            <td>{{.Total}}</td>
+                        </tr>
+                        {{end}}
+                    </tbody>
+                </table>
+            </section>
+        {{end}}
+        {{if and .Categories .DLPBreakdown}}</div>{{end}}
+
+        {{if and .AgentBreakdown .TransportBreakdown}}<div class="two-col">{{end}}
+            {{if .AgentBreakdown}}
+            <section>
+                <h2>Events by Source</h2>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>AGENT</th>
+                            <th>BLOCKS</th>
+                            <th>WARNS</th>
+                            <th>ALLOWED</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {{range .AgentBreakdown}}
+                        <tr>
+                            <td>{{.Agent}}</td>
+                            <td style="color: #f44336;">{{.Blocks}}</td>
+                            <td style="color: #eab308;">{{.Warns}}</td>
+                            <td style="color: #00CC66;">{{.Allowed}}</td>
+                        </tr>
+                        {{end}}
+                    </tbody>
+                </table>
+            </section>
+            {{end}}
+
+            {{if .TransportBreakdown}}
+            <section>
+                <h2>Events by Transport</h2>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>TRANSPORT</th>
+                            <th>BLOCKS</th>
+                            <th>WARNS</th>
+                            <th>ALLOWED</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {{range .TransportBreakdown}}
+                        <tr>
+                            <td>{{.Transport}}</td>
+                            <td style="color: #f44336;">{{.Blocks}}</td>
+                            <td style="color: #eab308;">{{.Warns}}</td>
+                            <td style="color: #00CC66;">{{.Allowed}}</td>
+                        </tr>
+                        {{end}}
+                    </tbody>
+                </table>
+            </section>
+            {{end}}
+        {{if and .AgentBreakdown .TransportBreakdown}}</div>{{end}}
 
             {{if .Domains}}
             <section>
@@ -568,7 +650,28 @@
                 </table>
             </section>
             {{end}}
-        </div>
+
+        {{if .MITRETechniques}}
+            <section>
+                <h2>MITRE ATT&amp;CK Techniques</h2>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>TECHNIQUE</th>
+                            <th>COUNT</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {{range .MITRETechniques}}
+                        <tr>
+                            <td><a href="https://attack.mitre.org/techniques/{{.Technique}}" target="_blank" rel="noopener" style="color: #00ffc8;">{{.Technique}}</a></td>
+                            <td>{{.Count}}</td>
+                        </tr>
+                        {{end}}
+                    </tbody>
+                </table>
+            </section>
+        {{end}}
 
         {{if .Evidence}}
         <section>

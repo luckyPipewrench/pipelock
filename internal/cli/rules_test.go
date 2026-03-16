@@ -16,6 +16,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/rules"
 )
 
@@ -1045,5 +1046,585 @@ func TestRuleChanged(t *testing.T) {
 	b.Pattern.Regex = "xyz"
 	if !ruleChanged(a, b) {
 		t.Error("rules with different regex should be marked as changed")
+	}
+}
+
+// ---------- coverage gap tests ----------
+
+func TestVerifyRemoteSignature_TrustedKey(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating key: %v", err)
+	}
+
+	bundleData := []byte("test bundle data")
+	sig := ed25519.Sign(priv, bundleData)
+	sigEncoded := base64.StdEncoding.EncodeToString(sig) + "\n"
+
+	// Not in embedded keyring — use trusted keys instead.
+	trustedKeys := []config.TrustedKey{
+		{Name: "test-signer", PublicKey: hex.EncodeToString(pub)},
+	}
+
+	result, err := verifyRemoteSignature(bundleData, []byte(sigEncoded), trustedKeys)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Tier != rules.TrustTierThirdParty {
+		t.Errorf("Tier = %q, want %q", result.Tier, rules.TrustTierThirdParty)
+	}
+	if result.SignerFingerprint == "" {
+		t.Error("expected non-empty signer fingerprint")
+	}
+}
+
+func TestVerifyRemoteSignature_NoMatchingSigner(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating key: %v", err)
+	}
+
+	bundleData := []byte("test bundle data")
+	sig := ed25519.Sign(priv, bundleData)
+	sigEncoded := base64.StdEncoding.EncodeToString(sig) + "\n"
+
+	// Empty embedded keyring, no trusted keys.
+	orig := rules.KeyringHex
+	rules.KeyringHex = ""
+	t.Cleanup(func() { rules.KeyringHex = orig })
+
+	_, err = verifyRemoteSignature(bundleData, []byte(sigEncoded), nil)
+	if err == nil {
+		t.Fatal("expected error for no matching signer")
+	}
+	if !strings.Contains(err.Error(), "no matching signer") {
+		t.Errorf("error should mention no matching signer, got: %v", err)
+	}
+}
+
+func TestVerifyRemoteSignature_TrustedKeyBadHex(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating key: %v", err)
+	}
+
+	bundleData := []byte("test bundle data")
+	sig := ed25519.Sign(priv, bundleData)
+	sigEncoded := base64.StdEncoding.EncodeToString(sig) + "\n"
+
+	orig := rules.KeyringHex
+	rules.KeyringHex = ""
+	t.Cleanup(func() { rules.KeyringHex = orig })
+
+	// Invalid hex and wrong-size key — both should be skipped, not panic.
+	trustedKeys := []config.TrustedKey{
+		{Name: "bad-hex", PublicKey: "not-hex!!!"},
+		{Name: "wrong-size", PublicKey: "aabbccdd"},
+	}
+
+	_, err = verifyRemoteSignature(bundleData, []byte(sigEncoded), trustedKeys)
+	if err == nil {
+		t.Fatal("expected error for no matching signer")
+	}
+}
+
+func TestRuleChanged_AllFields(t *testing.T) {
+	t.Parallel()
+
+	base := rules.Rule{
+		ID: "r1", Type: "dlp", Status: "stable",
+		Severity: "high", Description: "desc",
+		Pattern: rules.RulePattern{Regex: "abc"},
+	}
+
+	tests := []struct {
+		name   string
+		modify func(r *rules.Rule)
+	}{
+		{"type differs", func(r *rules.Rule) { r.Type = "response" }},
+		{"status differs", func(r *rules.Rule) { r.Status = "experimental" }},
+		{"severity differs", func(r *rules.Rule) { r.Severity = "critical" }},
+		{"description differs", func(r *rules.Rule) { r.Description = "different" }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			a := base
+			b := base
+			tt.modify(&b)
+			if !ruleChanged(&a, &b) {
+				t.Errorf("expected rules to differ when %s", tt.name)
+			}
+		})
+	}
+}
+
+func TestLoadRulesConfig_ExplicitPathSuccess(t *testing.T) {
+	// Create a minimal valid config file.
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "test-pipelock.yaml")
+	if err := os.WriteFile(cfgPath, []byte("mode: balanced\n"), 0o600); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+
+	cfg, err := loadRulesConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg == nil {
+		t.Fatal("expected non-nil config")
+	}
+}
+
+func TestLoadRulesConfig_EnvVarFallback(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "env-pipelock.yaml")
+	if err := os.WriteFile(cfgPath, []byte("mode: balanced\n"), 0o600); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+
+	t.Setenv("PIPELOCK_CONFIG", cfgPath)
+
+	cfg, err := loadRulesConfig("")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg == nil {
+		t.Fatal("expected non-nil config from env var fallback")
+	}
+}
+
+func TestFetchRemoteBundle_NonHTTPS(t *testing.T) {
+	t.Parallel()
+
+	_, _, err := fetchRemoteBundle(t.Context(), "http://evil.com/bundle.yaml")
+	if err == nil {
+		t.Fatal("expected error for non-HTTPS URL")
+	}
+	if !strings.Contains(err.Error(), "HTTPS") {
+		t.Errorf("error should mention HTTPS, got: %v", err)
+	}
+}
+
+func TestHttpGet_Non200(t *testing.T) {
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer ts.Close()
+
+	origClient := http.DefaultClient
+	http.DefaultClient = ts.Client()
+	t.Cleanup(func() { http.DefaultClient = origClient })
+
+	_, err := httpGet(t.Context(), ts.URL+"/missing")
+	if err == nil {
+		t.Fatal("expected error for 404 response")
+	}
+	if !strings.Contains(err.Error(), "status 404") {
+		t.Errorf("error should mention status 404, got: %v", err)
+	}
+}
+
+func TestHttpGet_ServerError(t *testing.T) {
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer ts.Close()
+
+	origClient := http.DefaultClient
+	http.DefaultClient = ts.Client()
+	t.Cleanup(func() { http.DefaultClient = origClient })
+
+	_, err := httpGet(t.Context(), ts.URL+"/fail")
+	if err == nil {
+		t.Fatal("expected error for 500 response")
+	}
+	if !strings.Contains(err.Error(), "status 500") {
+		t.Errorf("error should mention status 500, got: %v", err)
+	}
+}
+
+func TestDecodeSignatureBytes_WrongLength(t *testing.T) {
+	t.Parallel()
+
+	// Valid base64 but decodes to wrong length (not 64 bytes).
+	shortSig := base64.StdEncoding.EncodeToString([]byte("too-short"))
+	_, err := decodeSignatureBytes([]byte(shortSig))
+	if err == nil {
+		t.Fatal("expected error for wrong signature length")
+	}
+	if !strings.Contains(err.Error(), "invalid signature length") {
+		t.Errorf("error should mention invalid signature length, got: %v", err)
+	}
+}
+
+func TestCheckExistingInstall_DifferentDigest(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	bundleDir := filepath.Join(dir, testBundleName)
+	if err := os.MkdirAll(bundleDir, 0o750); err != nil {
+		t.Fatalf("creating dir: %v", err)
+	}
+
+	lf := &rules.LockFile{
+		InstalledVersion: "2026.03.1",
+		InstalledAt:      "2026-03-15T10:00:00Z",
+		Source:           "https://example.com/bundle.yaml",
+		BundleSHA256:     "aaaa",
+	}
+	if err := rules.WriteLockFile(filepath.Join(bundleDir, "bundle.lock"), lf); err != nil {
+		t.Fatalf("writing lock: %v", err)
+	}
+
+	err := checkExistingInstall(bundleDir, "2026.03.1", "bbbb")
+	if err == nil {
+		t.Fatal("expected error for same version different digest")
+	}
+	if !strings.Contains(err.Error(), "republish") {
+		t.Errorf("error should mention republish, got: %v", err)
+	}
+}
+
+func TestCheckExistingInstall_NotInstalled(t *testing.T) {
+	t.Parallel()
+
+	err := checkExistingInstall(filepath.Join(t.TempDir(), "nonexistent"), "2026.03.1", "abc")
+	if err != nil {
+		t.Errorf("expected nil error for not-installed bundle, got: %v", err)
+	}
+}
+
+func TestRulesVerify_NoBundles(t *testing.T) {
+	rulesDir := t.TempDir()
+
+	cmd := rootCmd()
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetArgs([]string{"rules", "verify", "--rules-dir", rulesDir})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(buf.String(), "No bundles installed") {
+		t.Errorf("expected 'No bundles installed', got %q", buf.String())
+	}
+}
+
+func TestRulesVerify_MissingLockFile(t *testing.T) {
+	rulesDir := t.TempDir()
+	// Create a bundle dir without a lock file.
+	bundleDir := filepath.Join(rulesDir, testBundleName)
+	if err := os.MkdirAll(bundleDir, 0o750); err != nil {
+		t.Fatalf("creating dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(bundleDir, "bundle.yaml"), []byte(validBundleYAML), 0o600); err != nil {
+		t.Fatalf("writing bundle: %v", err)
+	}
+
+	cmd := rootCmd()
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetArgs([]string{"rules", "verify", "--rules-dir", rulesDir})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for failed verification")
+	}
+	if !strings.Contains(buf.String(), "FAIL") {
+		t.Errorf("expected FAIL in output, got %q", buf.String())
+	}
+	if !strings.Contains(buf.String(), "missing lock file") {
+		t.Errorf("expected 'missing lock file' in output, got %q", buf.String())
+	}
+}
+
+func TestRulesUpdate_UpdateAll(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating key: %v", err)
+	}
+
+	newData := []byte(secondVersionBundleYAML)
+	sig := ed25519.Sign(priv, newData)
+	sigEncoded := base64.StdEncoding.EncodeToString(sig) + "\n"
+
+	orig := rules.KeyringHex
+	rules.KeyringHex = hex.EncodeToString(pub)
+	t.Cleanup(func() { rules.KeyringHex = orig })
+
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".sig") {
+			_, _ = w.Write([]byte(sigEncoded))
+			return
+		}
+		_, _ = w.Write(newData)
+	}))
+	defer ts.Close()
+
+	origClient := http.DefaultClient
+	http.DefaultClient = ts.Client()
+	t.Cleanup(func() { http.DefaultClient = origClient })
+
+	rulesDir := t.TempDir()
+
+	// Set up an installed signed bundle.
+	oldData := []byte(validBundleYAML)
+	bundleDir := filepath.Join(rulesDir, testBundleName)
+	if err := os.MkdirAll(bundleDir, 0o750); err != nil {
+		t.Fatalf("creating dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(bundleDir, "bundle.yaml"), oldData, 0o600); err != nil {
+		t.Fatalf("writing bundle: %v", err)
+	}
+
+	hash := sha256.Sum256(oldData)
+	lf := &rules.LockFile{
+		InstalledVersion:  "2026.03.1",
+		InstalledAt:       "2026-03-15T10:00:00Z",
+		Source:            ts.URL + testBundlePath,
+		LastCheck:         "2026-03-15T10:00:00Z",
+		BundleSHA256:      hex.EncodeToString(hash[:]),
+		SignerFingerprint: hex.EncodeToString(pub),
+	}
+	if err := rules.WriteLockFile(filepath.Join(bundleDir, "bundle.lock"), lf); err != nil {
+		t.Fatalf("writing lock: %v", err)
+	}
+
+	// Run update with no name arg (update all).
+	cmd := rootCmd()
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetArgs([]string{"rules", "update", "--rules-dir", rulesDir})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "Updated test-bundle") {
+		t.Errorf("expected update confirmation, got %q", output)
+	}
+}
+
+func TestRulesUpdate_RepublishAttack(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating key: %v", err)
+	}
+
+	// Same version but modified content (different digest).
+	modifiedYAML := strings.Replace(validBundleYAML, "Detects test patterns", "Modified description", 1)
+	newData := []byte(modifiedYAML)
+	sig := ed25519.Sign(priv, newData)
+	sigEncoded := base64.StdEncoding.EncodeToString(sig) + "\n"
+
+	orig := rules.KeyringHex
+	rules.KeyringHex = hex.EncodeToString(pub)
+	t.Cleanup(func() { rules.KeyringHex = orig })
+
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".sig") {
+			_, _ = w.Write([]byte(sigEncoded))
+			return
+		}
+		_, _ = w.Write(newData)
+	}))
+	defer ts.Close()
+
+	origClient := http.DefaultClient
+	http.DefaultClient = ts.Client()
+	t.Cleanup(func() { http.DefaultClient = origClient })
+
+	rulesDir := t.TempDir()
+	oldData := []byte(validBundleYAML)
+	bundleDir := filepath.Join(rulesDir, testBundleName)
+	if err := os.MkdirAll(bundleDir, 0o750); err != nil {
+		t.Fatalf("creating dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(bundleDir, "bundle.yaml"), oldData, 0o600); err != nil {
+		t.Fatalf("writing bundle: %v", err)
+	}
+
+	hash := sha256.Sum256(oldData)
+	lf := &rules.LockFile{
+		InstalledVersion:  "2026.03.1",
+		InstalledAt:       "2026-03-15T10:00:00Z",
+		Source:            ts.URL + testBundlePath,
+		LastCheck:         "2026-03-15T10:00:00Z",
+		BundleSHA256:      hex.EncodeToString(hash[:]),
+		SignerFingerprint: hex.EncodeToString(pub),
+	}
+	if err := rules.WriteLockFile(filepath.Join(bundleDir, "bundle.lock"), lf); err != nil {
+		t.Fatalf("writing lock: %v", err)
+	}
+
+	cmd := rootCmd()
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetArgs([]string{"rules", "update", testBundleName, "--rules-dir", rulesDir})
+
+	err = cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for republish attack")
+	}
+	if !strings.Contains(err.Error(), "republish") {
+		t.Errorf("error should mention republish, got: %v", err)
+	}
+}
+
+func TestRulesUpdate_DowngradeRejected(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating key: %v", err)
+	}
+
+	// Serve an OLDER version than what's installed.
+	olderYAML := strings.Replace(validBundleYAML, `version: "2026.03.1"`, `version: "2025.12.1"`, 1)
+	newData := []byte(olderYAML)
+	sig := ed25519.Sign(priv, newData)
+	sigEncoded := base64.StdEncoding.EncodeToString(sig) + "\n"
+
+	orig := rules.KeyringHex
+	rules.KeyringHex = hex.EncodeToString(pub)
+	t.Cleanup(func() { rules.KeyringHex = orig })
+
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".sig") {
+			_, _ = w.Write([]byte(sigEncoded))
+			return
+		}
+		_, _ = w.Write(newData)
+	}))
+	defer ts.Close()
+
+	origClient := http.DefaultClient
+	http.DefaultClient = ts.Client()
+	t.Cleanup(func() { http.DefaultClient = origClient })
+
+	rulesDir := t.TempDir()
+	oldData := []byte(validBundleYAML)
+	bundleDir := filepath.Join(rulesDir, testBundleName)
+	if err := os.MkdirAll(bundleDir, 0o750); err != nil {
+		t.Fatalf("creating dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(bundleDir, "bundle.yaml"), oldData, 0o600); err != nil {
+		t.Fatalf("writing bundle: %v", err)
+	}
+
+	hash := sha256.Sum256(oldData)
+	lf := &rules.LockFile{
+		InstalledVersion:  "2026.03.1",
+		InstalledAt:       "2026-03-15T10:00:00Z",
+		Source:            ts.URL + testBundlePath,
+		LastCheck:         "2026-03-15T10:00:00Z",
+		BundleSHA256:      hex.EncodeToString(hash[:]),
+		SignerFingerprint: hex.EncodeToString(pub),
+	}
+	if err := rules.WriteLockFile(filepath.Join(bundleDir, "bundle.lock"), lf); err != nil {
+		t.Fatalf("writing lock: %v", err)
+	}
+
+	cmd := rootCmd()
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetArgs([]string{"rules", "update", testBundleName, "--rules-dir", rulesDir})
+
+	err = cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for downgrade")
+	}
+	if !strings.Contains(err.Error(), "older") {
+		t.Errorf("error should mention older version, got: %v", err)
+	}
+}
+
+func TestRulesInstall_RemoteNameMismatch(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating key: %v", err)
+	}
+
+	bundleData := []byte(validBundleYAML) // name: test-bundle
+	sig := ed25519.Sign(priv, bundleData)
+	sigEncoded := base64.StdEncoding.EncodeToString(sig) + "\n"
+
+	orig := rules.KeyringHex
+	rules.KeyringHex = hex.EncodeToString(pub)
+	t.Cleanup(func() { rules.KeyringHex = orig })
+
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".sig") {
+			_, _ = w.Write([]byte(sigEncoded))
+			return
+		}
+		_, _ = w.Write(bundleData)
+	}))
+	defer ts.Close()
+
+	origClient := http.DefaultClient
+	http.DefaultClient = ts.Client()
+	t.Cleanup(func() { http.DefaultClient = origClient })
+
+	rulesDir := t.TempDir()
+	buf := &strings.Builder{}
+
+	// Call installRemote directly with an expectedName that doesn't match the bundle.
+	err = installRemote(buf, rulesDir, ts.URL+testBundlePath, "", "wrong-name")
+	if err == nil {
+		t.Fatal("expected error for name mismatch")
+	}
+	if !strings.Contains(err.Error(), "does not match") {
+		t.Errorf("error should mention name mismatch, got: %v", err)
+	}
+}
+
+func TestRulesInstall_RemoteSignatureFailure(t *testing.T) {
+	// Bundle signed with key A, but only key B in keyring → signature verification fails.
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating key: %v", err)
+	}
+
+	bundleData := []byte(validBundleYAML)
+	sig := ed25519.Sign(priv, bundleData)
+	sigEncoded := base64.StdEncoding.EncodeToString(sig) + "\n"
+
+	// Generate a DIFFERENT key for the keyring (won't match).
+	otherPub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating other key: %v", err)
+	}
+	orig := rules.KeyringHex
+	rules.KeyringHex = hex.EncodeToString(otherPub)
+	t.Cleanup(func() { rules.KeyringHex = orig })
+
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".sig") {
+			_, _ = w.Write([]byte(sigEncoded))
+			return
+		}
+		_, _ = w.Write(bundleData)
+	}))
+	defer ts.Close()
+
+	origClient := http.DefaultClient
+	http.DefaultClient = ts.Client()
+	t.Cleanup(func() { http.DefaultClient = origClient })
+
+	rulesDir := t.TempDir()
+	cmd := rootCmd()
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetArgs([]string{"rules", "install", "--source", ts.URL + testBundlePath, "--rules-dir", rulesDir})
+
+	err = cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for signature verification failure")
+	}
+	if !strings.Contains(err.Error(), "signature verification") {
+		t.Errorf("error should mention signature verification, got: %v", err)
 	}
 }

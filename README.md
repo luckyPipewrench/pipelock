@@ -120,7 +120,7 @@ Three proxy modes, same port:
 ```mermaid
 flowchart LR
     subgraph PRIV["PRIVILEGED ZONE"]
-        Agent["AI Agent\nAPI keys + credentials + source code\nNo direct network access"]
+        Agent["AI Agent\nAPI keys + credentials + source code\nNetwork-isolated by deployment"]
     end
 
     subgraph FW["FIREWALL ZONE"]

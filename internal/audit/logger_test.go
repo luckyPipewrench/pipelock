@@ -2014,6 +2014,28 @@ func TestEmit_LogBodyDLP(t *testing.T) {
 	}
 }
 
+func TestEmit_LogBodyScanAddressProtection(t *testing.T) {
+	logger, sink := newLoggerWithEmitter(t)
+	defer logger.Close()
+
+	logger.LogBodyScan("POST", "https://api.example.com", EventAddressProtection, actionBlock,
+		testClientIP, "req-addr-1", "trader-bot", 1, []string{"ETH lookalike detected"})
+
+	ev, ok := sink.lastEvent()
+	if !ok {
+		t.Fatal("expected emitted event")
+	}
+	if ev.Type != "address_protection" {
+		t.Errorf("type = %q, want address_protection", ev.Type)
+	}
+	if ev.Fields["match_count"] != 1 {
+		t.Errorf("fields[match_count] = %v, want 1", ev.Fields["match_count"])
+	}
+	if ev.Fields["agent"] != "trader-bot" {
+		t.Errorf("fields[agent] = %v, want trader-bot", ev.Fields["agent"])
+	}
+}
+
 func TestEmit_LogHeaderDLP(t *testing.T) {
 	logger, sink := newLoggerWithEmitter(t)
 	defer logger.Close()

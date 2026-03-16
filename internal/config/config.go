@@ -49,6 +49,7 @@ const (
 	ActionAsk     = "ask"
 	ActionStrip   = "strip"
 	ActionForward = "forward"
+	ActionAllow   = "allow"
 )
 
 // Severity constants for chain detection and emit thresholds.
@@ -216,6 +217,7 @@ type Config struct {
 	TLSInterception       TLSInterception         `yaml:"tls_interception"`
 	CrossRequestDetection CrossRequestDetection   `yaml:"cross_request_detection"`
 	ScanAPI               ScanAPI                 `yaml:"scan_api"`
+	AddressProtection     AddressProtection       `yaml:"address_protection"`
 	Rules                 Rules                   `yaml:"rules"`
 	Agents                map[string]AgentProfile `yaml:"agents,omitempty"`
 	LicenseKey            string                  `yaml:"license_key,omitempty"`        // signed license token (from pipelock license issue)
@@ -393,6 +395,35 @@ type DLPPattern struct {
 	ExemptDomains []string `yaml:"exempt_domains"` // domains where this pattern is not enforced
 	Bundle        string   `yaml:"-"`              // set by rules loader, not from YAML
 	BundleVersion string   `yaml:"-"`              // set by rules loader, not from YAML
+}
+
+// AddressProtection configures crypto address poisoning detection.
+// This is destination verification, not secret detection — separate from DLP.
+// Detects lookalike blockchain addresses compared against a user-supplied
+// allowlist of known-good destinations.
+type AddressProtection struct {
+	Enabled          bool             `yaml:"enabled"`
+	Action           string           `yaml:"action"`            // block or warn (for poisoning/lookalike findings)
+	UnknownAction    string           `yaml:"unknown_action"`    // allow, warn, or block (for valid addresses not in allowlist)
+	AllowedAddresses []string         `yaml:"allowed_addresses"` // global baseline allowlist (free tier)
+	Chains           AddressChains    `yaml:"chains"`
+	Similarity       SimilarityConfig `yaml:"similarity"`
+}
+
+// AddressChains toggles which blockchain address formats to detect.
+// nil = use chain-specific default (ETH/BTC/BNB: true, SOL: false).
+type AddressChains struct {
+	ETH *bool `yaml:"eth"` // nil = true when feature enabled
+	BTC *bool `yaml:"btc"` // nil = true when feature enabled
+	SOL *bool `yaml:"sol"` // nil = false (disabled by default, high FP risk from base58 regex)
+	BNB *bool `yaml:"bnb"` // nil = true when feature enabled
+}
+
+// SimilarityConfig controls the prefix/suffix comparison for address poisoning detection.
+// Compared on chain-specific CompareKey (payload), not the full address string.
+type SimilarityConfig struct {
+	PrefixLength int `yaml:"prefix_length"` // default 4
+	SuffixLength int `yaml:"suffix_length"` // default 4
 }
 
 // LoggingConfig configures audit logging.
@@ -583,6 +614,7 @@ type AgentProfile struct {
 	SessionProfiling *AgentSessionProf `yaml:"session_profiling,omitempty"`
 	MCPToolPolicy    *MCPToolPolicy    `yaml:"mcp_tool_policy,omitempty"`
 	Budget           BudgetConfig      `yaml:"budget,omitempty"`
+	AllowedAddresses []string          `yaml:"allowed_addresses,omitempty"` // per-agent crypto address allowlist (enterprise, additive with global)
 }
 
 // AgentDLP controls DLP pattern merging for agent profiles.
@@ -1178,6 +1210,22 @@ func (c *Config) ApplyDefaults() {
 			if c.CrossRequestDetection.FragmentReassembly.WindowMinutes <= 0 {
 				c.CrossRequestDetection.FragmentReassembly.WindowMinutes = 5
 			}
+		}
+	}
+
+	// Address protection defaults
+	if c.AddressProtection.Enabled {
+		if c.AddressProtection.Action == "" {
+			c.AddressProtection.Action = ActionBlock
+		}
+		if c.AddressProtection.UnknownAction == "" {
+			c.AddressProtection.UnknownAction = ActionAllow
+		}
+		if c.AddressProtection.Similarity.PrefixLength <= 0 {
+			c.AddressProtection.Similarity.PrefixLength = 4
+		}
+		if c.AddressProtection.Similarity.SuffixLength <= 0 {
+			c.AddressProtection.Similarity.SuffixLength = 4
 		}
 	}
 
@@ -1814,6 +1862,37 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// Validate address protection config
+	if c.AddressProtection.Enabled {
+		switch c.AddressProtection.Action {
+		case ActionBlock, ActionWarn:
+			// valid
+		default:
+			return fmt.Errorf("invalid address_protection.action %q: must be block or warn", c.AddressProtection.Action)
+		}
+		switch c.AddressProtection.UnknownAction {
+		case ActionAllow, ActionWarn, ActionBlock:
+			// valid
+		default:
+			return fmt.Errorf("invalid address_protection.unknown_action %q: must be allow, warn, or block", c.AddressProtection.UnknownAction)
+		}
+		if c.AddressProtection.Similarity.PrefixLength <= 0 {
+			return fmt.Errorf("address_protection.similarity.prefix_length must be positive")
+		}
+		if c.AddressProtection.Similarity.SuffixLength <= 0 {
+			return fmt.Errorf("address_protection.similarity.suffix_length must be positive")
+		}
+		// Require at least one chain enabled. All chains disabled means the
+		// feature is a silent no-op, which is a config error when enabled: true.
+		eth := c.AddressProtection.Chains.ETH == nil || *c.AddressProtection.Chains.ETH
+		btc := c.AddressProtection.Chains.BTC == nil || *c.AddressProtection.Chains.BTC
+		sol := c.AddressProtection.Chains.SOL != nil && *c.AddressProtection.Chains.SOL
+		bnb := c.AddressProtection.Chains.BNB == nil || *c.AddressProtection.Chains.BNB
+		if !eth && !btc && !sol && !bnb {
+			return fmt.Errorf("address_protection.enabled is true but all chains are disabled (silent no-op)")
+		}
+	}
+
 	// Validate Sentry config
 	sr := c.Sentry.EffectiveSampleRate()
 	if math.IsNaN(sr) {
@@ -2164,6 +2243,14 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		})
 	}
 
+	// Address protection disabled
+	if old.AddressProtection.Enabled && !updated.AddressProtection.Enabled {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "address_protection.enabled",
+			Message: "address protection disabled",
+		})
+	}
+
 	// Emit sinks removed
 	if old.Emit.Webhook.URL != "" && updated.Emit.Webhook.URL == "" {
 		warnings = append(warnings, ReloadWarning{
@@ -2337,10 +2424,14 @@ func Defaults() *Config {
 				{Name: "Google API Key", Regex: `AIza[0-9A-Za-z\-_]{35}`, Severity: "high"},
 				{Name: "Google OAuth Client Secret", Regex: `GOCSPX-[A-Za-z0-9_\-]{28,}`, Severity: "critical"},
 				{Name: "Stripe Key", Regex: `[sr]k_(live|test)_[a-zA-Z0-9]{20,}`, Severity: "critical"},
+				// Stripe webhook signing secrets: "whsec_" prefix.
+				{Name: "Stripe Webhook Secret", Regex: `whsec_[a-zA-Z0-9_\-]{20,}`, Severity: "critical"},
 
 				// Source control tokens
 				{Name: "GitHub Token", Regex: `gh[pousr]_[A-Za-z0-9_]{36,}`, Severity: "critical"},
 				{Name: "GitHub Fine-Grained PAT", Regex: `github_pat_[a-zA-Z0-9_]{36,}`, Severity: "critical"},
+				// GitLab personal access tokens: "glpat-" prefix, 20+ chars.
+				{Name: "GitLab PAT", Regex: `glpat-[a-zA-Z0-9\-_]{20,}`, Severity: "critical"},
 
 				// Cloud provider credentials
 				// All AWS credential prefixes: AKIA (access key), ASIA (STS temp), AROA (role),
@@ -2359,6 +2450,10 @@ func Defaults() *Config {
 				{Name: "SendGrid API Key", Regex: `SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}`, Severity: "critical"},
 				{Name: "Mailgun API Key", Regex: `key-[a-zA-Z0-9]{32}`, Severity: "high"},
 
+				// Observability / monitoring
+				// New Relic user API keys: "NRAK-" prefix, 27+ uppercase alphanumeric.
+				{Name: "New Relic API Key", Regex: `NRAK-[A-Z0-9]{27,}`, Severity: "critical"},
+
 				// AI/ML provider keys
 				{Name: "Hugging Face Token", Regex: `hf_[A-Za-z0-9]{20,}`, Severity: "critical"},
 				{Name: "Databricks Token", Regex: `dapi[a-z0-9]{30,}`, Severity: "critical"},
@@ -2366,6 +2461,10 @@ func Defaults() *Config {
 				{Name: "Together AI Key", Regex: `tok_[a-z0-9]{40,}`, Severity: "critical"},
 				// Pinecone API keys: "pcsk_" prefix followed by alphanumeric.
 				{Name: "Pinecone API Key", Regex: `pcsk_[a-zA-Z0-9]{36,}`, Severity: "critical"},
+				// Groq inference API keys: "gsk_" prefix, 48+ alphanumeric chars.
+				{Name: "Groq API Key", Regex: `gsk_[a-zA-Z0-9]{48,}`, Severity: "critical"},
+				// xAI (Grok) API keys: "xai-" prefix, 80+ chars including hyphens.
+				{Name: "xAI API Key", Regex: `xai-[a-zA-Z0-9\-_]{80,}`, Severity: "critical"},
 
 				// Infrastructure and platform tokens
 				// DigitalOcean personal access tokens: 64 hex chars after prefix.

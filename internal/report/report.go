@@ -74,6 +74,44 @@ type Report struct {
 	Domains      []DomainStats   `json:"domains"`
 	Timeline     []TimeBucket    `json:"timeline"`
 	Evidence     []Event         `json:"evidence"`
+
+	// v1.3.0+ breakdowns
+	DLPBreakdown       []DLPBreakdownEntry       `json:"dlp_breakdown,omitempty"`
+	TransportBreakdown []TransportBreakdownEntry `json:"transport_breakdown,omitempty"`
+	AgentBreakdown     []AgentBreakdownEntry     `json:"agent_breakdown,omitempty"`
+	MITRETechniques    []MITRETechniqueEntry     `json:"mitre_techniques,omitempty"`
+}
+
+// DLPBreakdownEntry shows DLP hits by detection surface.
+type DLPBreakdownEntry struct {
+	Surface string `json:"surface"` // "URL", "Request Body", "Request Header", "MCP Arguments"
+	Blocks  int    `json:"blocks"`
+	Warns   int    `json:"warns"`
+	Total   int    `json:"total"`
+}
+
+// TransportBreakdownEntry shows events by transport surface.
+type TransportBreakdownEntry struct {
+	Transport string `json:"transport"` // "HTTP Fetch", "CONNECT Tunnel", "WebSocket", "MCP"
+	Blocks    int    `json:"blocks"`
+	Warns     int    `json:"warns"`
+	Allowed   int    `json:"allowed"`
+	Total     int    `json:"total"`
+}
+
+// AgentBreakdownEntry shows events per source IP/agent.
+type AgentBreakdownEntry struct {
+	Agent   string `json:"agent"` // client_ip (source address)
+	Blocks  int    `json:"blocks"`
+	Warns   int    `json:"warns"`
+	Allowed int    `json:"allowed"`
+	Total   int    `json:"total"`
+}
+
+// MITRETechniqueEntry shows MITRE ATT&CK technique frequency.
+type MITRETechniqueEntry struct {
+	Technique string `json:"technique"`
+	Count     int    `json:"count"`
 }
 
 // DomainStats shows per-domain event breakdown.

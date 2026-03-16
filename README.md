@@ -41,7 +41,7 @@ brew install luckyPipewrench/tap/pipelock
 # Or with Docker
 docker pull ghcr.io/luckypipewrench/pipelock:latest
 
-# Or from source (requires Go 1.24+)
+# Or from source (requires Go 1.25+)
 go install github.com/luckyPipewrench/pipelock/cmd/pipelock@latest
 ```
 
@@ -119,27 +119,29 @@ Three proxy modes, same port:
 
 ```mermaid
 flowchart LR
-    subgraph PRIVILEGED["Privileged Zone"]
-        Agent["AI Agent\n(has API keys)"]
-    end
-    subgraph FETCH["Firewall Zone"]
-        Proxy["Pipelock\n(no agent secrets)"]
-        Scanner["Scanner Pipeline\nSSRF · Blocklist · Rate Limit\nDLP · Env Leak · Entropy · Length"]
-    end
-    subgraph NET["Internet"]
-        Web["Web"]
+    subgraph PRIV["PRIVILEGED ZONE"]
+        Agent["AI Agent\nAPI keys + credentials + source code\nNetwork-isolated by deployment"]
     end
 
-    Agent -- "fetch URL\nCONNECT\nor WebSocket" --> Proxy
-    Proxy --> Scanner
-    Scanner -- "content or\ntunnel" --> Agent
-    Scanner -- "request" --> Web
-    Web -- "response" --> Scanner
-    Scanner -- "clean content" --> Agent
+    subgraph FW["FIREWALL ZONE"]
+        Proxy["Pipelock\n11-layer scanner pipeline\nNo agent secrets"]
+    end
 
-    style PRIVILEGED fill:#fee,stroke:#c33
-    style FETCH fill:#efe,stroke:#3a3
-    style NET fill:#eef,stroke:#33c
+    subgraph NET["INTERNET"]
+        Web["APIs + MCP Servers + Web"]
+    end
+
+    Agent -- "fetch / CONNECT / ws / MCP" --> Proxy
+    Proxy -- "scanned request" --> Web
+    Web -- "response" --> Proxy
+    Proxy -- "scanned content" --> Agent
+
+    style PRIV fill:#2d1117,stroke:#f85149,color:#e6edf3
+    style FW fill:#0d2818,stroke:#3fb950,color:#e6edf3
+    style NET fill:#0d1b2e,stroke:#58a6ff,color:#e6edf3
+    style Agent fill:#1a1a2e,stroke:#f85149,color:#e6edf3
+    style Proxy fill:#0d2818,stroke:#3fb950,color:#e6edf3
+    style Web fill:#0d1b2e,stroke:#58a6ff,color:#e6edf3
 ```
 
 <details>
@@ -211,9 +213,9 @@ What each mode prevents, detects, or logs:
 
 ## Features
 
-### 9-Layer URL Scanner
+### 11-Layer URL Scanner
 
-Every request passes through: scheme validation, domain blocklist, DLP pattern matching (36 built-in patterns for API keys, tokens, and credentials), path entropy analysis, subdomain entropy analysis, SSRF protection with DNS rebinding prevention, per-domain rate limiting, URL length limits, and per-domain data budgets.
+Every request passes through: scheme validation, CRLF injection detection, path traversal blocking, domain blocklist, DLP pattern matching (41 built-in patterns for API keys, tokens, and credentials), path entropy analysis, subdomain entropy analysis, SSRF protection with DNS rebinding prevention, per-domain rate limiting, URL length limits, and per-domain data budgets.
 
 DLP runs before DNS resolution, designed to catch secrets before any DNS query leaves the proxy. See [docs/bypass-resistance.md](docs/bypass-resistance.md) for the full evasion test matrix.
 
@@ -415,7 +417,7 @@ curl http://localhost:9090/api/v1/killswitch/status \
   "version": "x.y.z",
   "mode": "balanced",
   "uptime_seconds": 3600.5,
-  "dlp_patterns": 36,
+  "dlp_patterns": 41,
   "response_scan_enabled": true,
   "kill_switch_active": false
 }
@@ -509,7 +511,7 @@ Canonical metrics, updated each release.
 | Statement coverage | 90%+ |
 | Evasion techniques tested | 230+ |
 | Scanner pipeline overhead | ~21μs per URL scan ([performance details](docs/performance.md)) |
-| CI matrix | Go 1.24 + 1.25, CodeQL, golangci-lint |
+| CI matrix | Go 1.25 + 1.26, CodeQL, golangci-lint |
 | Supply chain | SLSA provenance, CycloneDX SBOM, cosign signatures |
 | OpenSSF Scorecard | [Live score](https://scorecard.dev/viewer/?uri=github.com/luckyPipewrench/pipelock) |
 

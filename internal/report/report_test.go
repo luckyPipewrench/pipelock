@@ -1442,10 +1442,108 @@ func makeTestReport() *Report {
 			Start: time.Date(2026, 3, 5, 10, 0, 0, 0, time.UTC),
 			End:   time.Date(2026, 3, 5, 11, 0, 0, 0, time.UTC),
 		},
-		Summary:    Summary{TotalEvents: 1, Allowed: 1},
-		Categories: []CategoryStats{},
-		Timeline:   []TimeBucket{},
-		Evidence:   []Event{},
+		Summary:            Summary{TotalEvents: 1, Allowed: 1},
+		Categories:         []CategoryStats{},
+		Timeline:           []TimeBucket{},
+		Evidence:           []Event{},
+		DLPBreakdown:       []DLPBreakdownEntry{},
+		TransportBreakdown: []TransportBreakdownEntry{},
+		AgentBreakdown:     []AgentBreakdownEntry{},
+		MITRETechniques:    []MITRETechniqueEntry{},
+	}
+}
+
+func TestAggregate_DLPBreakdown(t *testing.T) {
+	events := []Event{
+		{Event: "blocked", Scanner: "dlp", Action: "block", ClientIP: "10.0.0.1", URL: "https://evil.com?key=REDACTED"},
+		{Event: "body_dlp", Scanner: "body_dlp", Action: "warn", ClientIP: "10.0.0.1", URL: "https://api.example.com"},
+		{Event: "body_dlp", Scanner: "body_dlp", Action: "block", ClientIP: "10.0.0.2", URL: "https://webhook.site/x"},
+		{Event: "header_dlp", Scanner: "header_dlp", Action: "block", ClientIP: "10.0.0.1", URL: "https://evil.com/api"},
+		{Event: "blocked", Scanner: "subdomain_entropy", Action: "block", ClientIP: "10.0.0.1", URL: "https://exfil.attacker.com"},
+	}
+	r := Aggregate(events, Options{})
+
+	if len(r.DLPBreakdown) == 0 {
+		t.Fatal("expected DLP breakdown entries")
+	}
+	// URL surface should have dlp + subdomain_entropy = 2 blocks
+	for _, entry := range r.DLPBreakdown {
+		if entry.Surface == "URL" && entry.Blocks != 2 {
+			t.Errorf("expected 2 URL blocks, got %d", entry.Blocks)
+		}
+		if entry.Surface == "Request Body" && (entry.Blocks != 1 || entry.Warns != 1) {
+			t.Errorf("expected body 1 block + 1 warn, got %d/%d", entry.Blocks, entry.Warns)
+		}
+	}
+}
+
+func TestAggregate_TransportBreakdown(t *testing.T) {
+	events := []Event{
+		{Event: "allowed", URL: "https://api.github.com", ClientIP: "10.0.0.1"},
+		{Event: "blocked", Scanner: "dlp", URL: "https://evil.com", ClientIP: "10.0.0.1"},
+		{Event: "ws_blocked", Scanner: "ws_scan", Transport: "ws", ClientIP: "10.0.0.1"},
+		{Event: "mcp_input", Scanner: "mcp_input", Transport: "mcp", Action: "block", ClientIP: "10.0.0.1"},
+	}
+	r := Aggregate(events, Options{})
+
+	if len(r.TransportBreakdown) == 0 {
+		t.Fatal("expected transport breakdown entries")
+	}
+	for _, entry := range r.TransportBreakdown {
+		if entry.Transport == "HTTP Fetch" && entry.Total != 2 {
+			t.Errorf("expected 2 HTTP Fetch events, got %d", entry.Total)
+		}
+	}
+}
+
+func TestAggregate_AgentBreakdownRedacted(t *testing.T) {
+	events := []Event{
+		{Event: "allowed", ClientIP: "10.0.0.1"},
+		{Event: "blocked", Scanner: "dlp", Action: "block", ClientIP: "10.0.0.1"},
+		{Event: "allowed", ClientIP: "10.0.0.2"},
+	}
+	r := Aggregate(events, Options{Redact: true})
+
+	if len(r.AgentBreakdown) == 0 {
+		t.Fatal("expected agent breakdown entries")
+	}
+	for _, entry := range r.AgentBreakdown {
+		if strings.Contains(entry.Agent, "10.0.0") {
+			t.Errorf("expected redacted IP, got %s", entry.Agent)
+		}
+	}
+}
+
+func TestAggregate_MITRETechniques(t *testing.T) {
+	events := []Event{
+		{Event: "blocked", Scanner: "dlp", MITRETechnique: "T1048"},
+		{Event: "blocked", Scanner: "ssrf", MITRETechnique: "T1552.005"},
+		{Event: "blocked", Scanner: "dlp", MITRETechnique: "T1048"},
+	}
+	r := Aggregate(events, Options{})
+
+	if len(r.MITRETechniques) != 2 {
+		t.Fatalf("expected 2 MITRE techniques, got %d", len(r.MITRETechniques))
+	}
+	if r.MITRETechniques[0].Technique != "T1048" || r.MITRETechniques[0].Count != 2 {
+		t.Errorf("expected T1048 count 2, got %s count %d", r.MITRETechniques[0].Technique, r.MITRETechniques[0].Count)
+	}
+}
+
+func TestAggregate_EmptyBreakdowns(t *testing.T) {
+	r := Aggregate([]Event{}, Options{})
+
+	if r.DLPBreakdown == nil {
+		t.Error("expected empty DLPBreakdown slice, got nil")
+	}
+	if r.TransportBreakdown == nil {
+		t.Error("expected empty TransportBreakdown slice, got nil")
+	}
+	if r.AgentBreakdown == nil {
+		t.Error("expected empty AgentBreakdown slice, got nil")
+	}
+	if r.MITRETechniques == nil {
+		t.Error("expected empty MITRETechniques slice, got nil")
 	}
 }
 

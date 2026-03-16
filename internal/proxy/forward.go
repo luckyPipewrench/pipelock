@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -440,13 +441,20 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// cloned request gets the re-wrapped buffered bytes.
 	if cfg.RequestBodyScanning.Enabled && r.Body != nil && r.Body != http.NoBody {
 		buf, bodyResult := scanRequestBody(r.Context(), r.Body, r.Header.Get("Content-Type"),
-			r.Header.Get("Content-Encoding"), cfg.RequestBodyScanning.MaxBodyBytes, sc)
+			r.Header.Get("Content-Encoding"), cfg.RequestBodyScanning.MaxBodyBytes, sc, agent)
 
 		if !bodyResult.Clean {
 			action := bodyResult.Action
 			if action == "" {
 				action = cfg.RequestBodyScanning.Action
 			}
+
+			// Determine scanner label: address_protection vs body_dlp.
+			scannerLabel := "body_dlp"
+			if len(bodyResult.AddressFindings) > 0 && len(bodyResult.DLPMatches) == 0 {
+				scannerLabel = scannerLabelAddressProtection
+			}
+
 			patternNames := dlpMatchNames(bodyResult.DLPMatches)
 			bundleRules := dlpBundleRules(bodyResult.DLPMatches)
 			reason := bodyResult.Reason
@@ -454,21 +462,39 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				reason = fmt.Sprintf("request body contains secret: %s", strings.Join(patternNames, ", "))
 			}
 
-			p.logger.LogBodyDLP(r.Method, targetURL, action, clientIP, requestID, agent, len(bodyResult.DLPMatches), patternNames, bundleRules)
-			p.metrics.RecordBodyDLP(action, agentLabel)
+			// Emit telemetry for both finding types independently.
+			// A request can trigger both DLP and address findings simultaneously.
+			if len(bodyResult.DLPMatches) > 0 {
+				p.metrics.RecordBodyDLP(action, agentLabel)
+				p.logger.LogBodyDLP(r.Method, targetURL, action, clientIP, requestID, agent, len(bodyResult.DLPMatches), patternNames, bundleRules)
+			}
+			if len(bodyResult.AddressFindings) > 0 {
+				for _, f := range bodyResult.AddressFindings {
+					verdictLabel := "unknown"
+					if f.Verdict == addressprotect.VerdictLookalike {
+						verdictLabel = "lookalike"
+					}
+					p.metrics.RecordAddressFinding(f.Chain, verdictLabel)
+				}
+				addrNames := make([]string, len(bodyResult.AddressFindings))
+				for i, f := range bodyResult.AddressFindings {
+					addrNames[i] = f.Explanation
+				}
+				p.logger.LogBodyScan(r.Method, targetURL, audit.EventAddressProtection, action, clientIP, requestID, agent, len(bodyResult.AddressFindings), addrNames)
+			}
 
 			// Fail-closed: when buf is nil the body was consumed but couldn't
 			// be buffered (oversize, compressed, read error, multipart parse
 			// error). Always block regardless of enforce mode — forwarding an
 			// empty body corrupts the upstream request.
 			if buf == nil {
-				p.metrics.RecordBlocked(r.URL.Hostname(), "body_dlp", time.Since(start), agentLabel)
+				p.metrics.RecordBlocked(r.URL.Hostname(), scannerLabel, time.Since(start), agentLabel)
 				http.Error(w, "blocked: "+reason, http.StatusForbidden)
 				return
 			}
 
 			if action == config.ActionBlock && cfg.EnforceEnabled() {
-				p.metrics.RecordBlocked(r.URL.Hostname(), "body_dlp", time.Since(start), agentLabel)
+				p.metrics.RecordBlocked(r.URL.Hostname(), scannerLabel, time.Since(start), agentLabel)
 				http.Error(w, "blocked: "+reason, http.StatusForbidden)
 				return
 			}

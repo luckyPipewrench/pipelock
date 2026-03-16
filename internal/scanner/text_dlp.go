@@ -90,9 +90,14 @@ func (s *Scanner) ScanTextForDLP(_ context.Context, text string) TextDLPResult {
 		}
 	}
 
-	// Try hex decoding.
+	// Try hex decoding. Falls back to delimiter-stripped hex if raw decode fails
+	// (catches "73:6b:2d:...", "\x73\x6b\x2d...", "0x736b2d..." notation).
 	if decoded, err := hex.DecodeString(cleaned); err == nil && len(decoded) > 0 {
 		matches = append(matches, s.matchDLPPatterns(string(decoded), "hex")...)
+	} else if normalized := normalizeHex(cleaned); normalized != "" {
+		if decoded, err := hex.DecodeString(normalized); err == nil && len(decoded) > 0 {
+			matches = append(matches, s.matchDLPPatterns(string(decoded), "hex")...)
+		}
 	}
 
 	// Try base32 decoding.

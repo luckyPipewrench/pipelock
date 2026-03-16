@@ -51,7 +51,7 @@ func TestScanRequestBody_JSONWithSecret(t *testing.T) {
 	body := `{"key": "` + fakeAPIKey() + `"}`
 	_, result := scanRequestBody(
 		context.Background(), strings.NewReader(body),
-		"application/json", "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
+		"application/json", "", cfg.RequestBodyScanning.MaxBodyBytes, sc, "",
 	)
 	if result.Clean {
 		t.Fatal("expected DLP match in JSON body with API key")
@@ -70,7 +70,7 @@ func TestScanRequestBody_JSONKeyExfil(t *testing.T) {
 	body := `{"` + fakeAPIKey() + `": "value"}`
 	_, result := scanRequestBody(
 		context.Background(), strings.NewReader(body),
-		"application/json", "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
+		"application/json", "", cfg.RequestBodyScanning.MaxBodyBytes, sc, "",
 	)
 	if result.Clean {
 		t.Fatal("expected DLP match in JSON key")
@@ -85,7 +85,7 @@ func TestScanRequestBody_FormURLEncoded(t *testing.T) {
 	body := "secret=" + fakeAPIKey() + "&name=test"
 	_, result := scanRequestBody(
 		context.Background(), strings.NewReader(body),
-		"application/x-www-form-urlencoded", "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
+		"application/x-www-form-urlencoded", "", cfg.RequestBodyScanning.MaxBodyBytes, sc, "",
 	)
 	if result.Clean {
 		t.Fatal("expected DLP match in form body")
@@ -100,7 +100,7 @@ func TestScanRequestBody_PlainText(t *testing.T) {
 	body := "my secret key is " + fakeAPIKey()
 	_, result := scanRequestBody(
 		context.Background(), strings.NewReader(body),
-		"text/plain", "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
+		"text/plain", "", cfg.RequestBodyScanning.MaxBodyBytes, sc, "",
 	)
 	if result.Clean {
 		t.Fatal("expected DLP match in plain text body")
@@ -116,7 +116,7 @@ func TestScanRequestBody_ContentTypeBypass_OctetStream(t *testing.T) {
 	body := `{"key": "` + fakeAPIKey() + `"}`
 	_, result := scanRequestBody(
 		context.Background(), strings.NewReader(body),
-		"application/octet-stream", "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
+		"application/octet-stream", "", cfg.RequestBodyScanning.MaxBodyBytes, sc, "",
 	)
 	if result.Clean {
 		t.Fatal("expected DLP match via fallback raw scan on octet-stream")
@@ -132,7 +132,7 @@ func TestScanRequestBody_ContentTypeBypass_ImagePNG(t *testing.T) {
 	body := `{"key": "` + fakeAPIKey() + `"}`
 	_, result := scanRequestBody(
 		context.Background(), strings.NewReader(body),
-		"image/png", "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
+		"image/png", "", cfg.RequestBodyScanning.MaxBodyBytes, sc, "",
 	)
 	if result.Clean {
 		t.Fatal("expected DLP match via fallback raw scan on image/png")
@@ -146,7 +146,7 @@ func TestScanRequestBody_CompressedGzip(t *testing.T) {
 
 	_, result := scanRequestBody(
 		context.Background(), strings.NewReader("compressed data"),
-		"application/json", "gzip", cfg.RequestBodyScanning.MaxBodyBytes, sc,
+		"application/json", "gzip", cfg.RequestBodyScanning.MaxBodyBytes, sc, "",
 	)
 	if result.Clean {
 		t.Fatal("expected fail-closed block on gzip Content-Encoding")
@@ -163,7 +163,7 @@ func TestScanRequestBody_CompressedDeflate(t *testing.T) {
 
 	_, result := scanRequestBody(
 		context.Background(), strings.NewReader("compressed data"),
-		"application/json", "deflate", cfg.RequestBodyScanning.MaxBodyBytes, sc,
+		"application/json", "deflate", cfg.RequestBodyScanning.MaxBodyBytes, sc, "",
 	)
 	if result.Clean {
 		t.Fatal("expected fail-closed block on deflate")
@@ -177,7 +177,7 @@ func TestScanRequestBody_CompressedCaseMismatch(t *testing.T) {
 
 	_, result := scanRequestBody(
 		context.Background(), strings.NewReader("data"),
-		"application/json", "GZip", cfg.RequestBodyScanning.MaxBodyBytes, sc,
+		"application/json", "GZip", cfg.RequestBodyScanning.MaxBodyBytes, sc, "",
 	)
 	if result.Clean {
 		t.Fatal("expected fail-closed block on case-insensitive gzip")
@@ -191,7 +191,7 @@ func TestScanRequestBody_CompressedCommaSeparated(t *testing.T) {
 
 	_, result := scanRequestBody(
 		context.Background(), strings.NewReader("data"),
-		"application/json", "gzip, identity", cfg.RequestBodyScanning.MaxBodyBytes, sc,
+		"application/json", "gzip, identity", cfg.RequestBodyScanning.MaxBodyBytes, sc, "",
 	)
 	if result.Clean {
 		t.Fatal("expected fail-closed block on comma-separated with gzip")
@@ -205,7 +205,7 @@ func TestScanRequestBody_IdentityEncodingAllowed(t *testing.T) {
 
 	_, result := scanRequestBody(
 		context.Background(), strings.NewReader("clean body text"),
-		"text/plain", "identity", cfg.RequestBodyScanning.MaxBodyBytes, sc,
+		"text/plain", "identity", cfg.RequestBodyScanning.MaxBodyBytes, sc, "",
 	)
 	if !result.Clean {
 		t.Fatal("identity encoding should be allowed")
@@ -219,7 +219,7 @@ func TestScanRequestBody_EmptyBody(t *testing.T) {
 
 	buf, result := scanRequestBody(
 		context.Background(), strings.NewReader(""),
-		"application/json", "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
+		"application/json", "", cfg.RequestBodyScanning.MaxBodyBytes, sc, "",
 	)
 	if !result.Clean {
 		t.Fatal("empty body should be clean")
@@ -238,7 +238,7 @@ func TestScanRequestBody_OversizedBody(t *testing.T) {
 	body := strings.Repeat("x", cfg.RequestBodyScanning.MaxBodyBytes+1)
 	_, result := scanRequestBody(
 		context.Background(), strings.NewReader(body),
-		"text/plain", "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
+		"text/plain", "", cfg.RequestBodyScanning.MaxBodyBytes, sc, "",
 	)
 	if result.Clean {
 		t.Fatal("expected fail-closed block on oversized body")
@@ -260,7 +260,7 @@ func TestScanRequestBody_SplitSecretAcrossFields(t *testing.T) {
 	body := `{"part1": "` + half1 + `", "part2": "` + half2 + `"}`
 	_, result := scanRequestBody(
 		context.Background(), strings.NewReader(body),
-		"application/json", "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
+		"application/json", "", cfg.RequestBodyScanning.MaxBodyBytes, sc, "",
 	)
 	if result.Clean {
 		t.Fatal("expected DLP match from joined scan of split secret")
@@ -275,7 +275,7 @@ func TestScanRequestBody_CleanJSON(t *testing.T) {
 	body := `{"name": "test", "value": 42}`
 	buf, result := scanRequestBody(
 		context.Background(), strings.NewReader(body),
-		"application/json", "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
+		"application/json", "", cfg.RequestBodyScanning.MaxBodyBytes, sc, "",
 	)
 	if !result.Clean {
 		t.Fatal("clean JSON body should not trigger DLP")
@@ -293,7 +293,7 @@ func TestScanRequestBody_XMLWithSecret(t *testing.T) {
 	body := `<root><key>` + fakeAPIKey() + `</key></root>`
 	_, result := scanRequestBody(
 		context.Background(), strings.NewReader(body),
-		"application/xml", "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
+		"application/xml", "", cfg.RequestBodyScanning.MaxBodyBytes, sc, "",
 	)
 	if result.Clean {
 		t.Fatal("expected DLP match in XML body")
@@ -313,7 +313,7 @@ func TestScanRequestBody_MultipartText(t *testing.T) {
 
 	_, result := scanRequestBody(
 		context.Background(), strings.NewReader(body),
-		"multipart/form-data; boundary="+boundary, "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
+		"multipart/form-data; boundary="+boundary, "", cfg.RequestBodyScanning.MaxBodyBytes, sc, "",
 	)
 	if result.Clean {
 		t.Fatal("expected DLP match in multipart text field")
@@ -334,7 +334,7 @@ func TestScanRequestBody_MultipartBinarySkipped(t *testing.T) {
 
 	_, result := scanRequestBody(
 		context.Background(), strings.NewReader(body),
-		"multipart/form-data; boundary="+boundary, "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
+		"multipart/form-data; boundary="+boundary, "", cfg.RequestBodyScanning.MaxBodyBytes, sc, "",
 	)
 	if !result.Clean {
 		t.Fatal("binary multipart part should be skipped")
@@ -358,7 +358,7 @@ func TestScanRequestBody_MultipartBinaryMetadataExfil(t *testing.T) {
 
 	_, result := scanRequestBody(
 		context.Background(), strings.NewReader(body),
-		"multipart/form-data; boundary="+boundary, "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
+		"multipart/form-data; boundary="+boundary, "", cfg.RequestBodyScanning.MaxBodyBytes, sc, "",
 	)
 	if result.Clean {
 		t.Fatal("expected DLP match for secret in binary part filename")
@@ -556,7 +556,7 @@ func TestScanRequestBody_ChunkedTransfer(t *testing.T) {
 	// Simulate chunked encoding by using a reader without known length.
 	reader := strings.NewReader(body)
 
-	buf, result := scanRequestBody(context.Background(), reader, "application/json", "", cfg.RequestBodyScanning.MaxBodyBytes, sc)
+	buf, result := scanRequestBody(context.Background(), reader, "application/json", "", cfg.RequestBodyScanning.MaxBodyBytes, sc, "")
 	if result.Clean {
 		t.Fatal("expected DLP match in chunked JSON body")
 	}
@@ -1009,7 +1009,7 @@ func TestScanRequestBody_InvalidJSON_FailClosed(t *testing.T) {
 	// Invalid JSON declared as application/json must fail-closed (not pass as clean).
 	_, result := scanRequestBody(
 		context.Background(), strings.NewReader(`{invalid json`),
-		"application/json", "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
+		"application/json", "", cfg.RequestBodyScanning.MaxBodyBytes, sc, "",
 	)
 	if result.Clean {
 		t.Fatal("expected fail-closed block for invalid JSON body")
@@ -1031,7 +1031,7 @@ func TestScanRequestBody_FormURLEncoded_ParseFailure(t *testing.T) {
 	malformed := "field=%zz&value=clean"
 	_, result := scanRequestBody(
 		context.Background(), strings.NewReader(malformed),
-		"application/x-www-form-urlencoded", "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
+		"application/x-www-form-urlencoded", "", cfg.RequestBodyScanning.MaxBodyBytes, sc, "",
 	)
 	if result.Clean {
 		t.Fatal("expected fail-closed block for malformed form body")
@@ -1049,7 +1049,7 @@ func TestScanRequestBody_MultipartMissingBoundary(t *testing.T) {
 	// multipart/form-data without boundary parameter: fail-closed block.
 	_, result := scanRequestBody(
 		context.Background(), strings.NewReader("some body content"),
-		"multipart/form-data", "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
+		"multipart/form-data", "", cfg.RequestBodyScanning.MaxBodyBytes, sc, "",
 	)
 	if result.Clean {
 		t.Fatal("expected fail-closed block for multipart missing boundary")
@@ -1075,7 +1075,7 @@ func TestScanRequestBody_MultipartOversizedFilename(t *testing.T) {
 
 	_, result := scanRequestBody(
 		context.Background(), strings.NewReader(body),
-		"multipart/form-data; boundary="+boundary, "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
+		"multipart/form-data; boundary="+boundary, "", cfg.RequestBodyScanning.MaxBodyBytes, sc, "",
 	)
 	if result.Clean {
 		t.Fatal("expected fail-closed block for oversized multipart filename")
@@ -1103,7 +1103,7 @@ func TestScanRequestBody_MultipartOversizedPart(t *testing.T) {
 
 	_, result := scanRequestBody(
 		context.Background(), strings.NewReader(body),
-		"multipart/form-data; boundary="+boundary, "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
+		"multipart/form-data; boundary="+boundary, "", cfg.RequestBodyScanning.MaxBodyBytes, sc, "",
 	)
 	if result.Clean {
 		t.Fatal("expected fail-closed block for oversized multipart part")
@@ -1128,7 +1128,7 @@ func TestScanRequestBody_MultipartFilename(t *testing.T) {
 
 	_, result := scanRequestBody(
 		context.Background(), strings.NewReader(body),
-		"multipart/form-data; boundary="+boundary, "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
+		"multipart/form-data; boundary="+boundary, "", cfg.RequestBodyScanning.MaxBodyBytes, sc, "",
 	)
 	if result.Clean {
 		t.Fatal("expected DLP match for secret in multipart filename")
@@ -1150,7 +1150,7 @@ func TestScanRequestBody_MultipartBinaryWithMetadata(t *testing.T) {
 
 	_, result := scanRequestBody(
 		context.Background(), strings.NewReader(body),
-		"multipart/form-data; boundary="+boundary, "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
+		"multipart/form-data; boundary="+boundary, "", cfg.RequestBodyScanning.MaxBodyBytes, sc, "",
 	)
 	if result.Clean {
 		t.Fatal("expected DLP match for secret in binary part form name")
@@ -1206,7 +1206,7 @@ func TestScanRequestBody_MultipartTooManyParts(t *testing.T) {
 
 	_, result := scanRequestBody(
 		context.Background(), strings.NewReader(sb.String()),
-		"multipart/form-data; boundary="+boundary, "", cfg.RequestBodyScanning.MaxBodyBytes, sc,
+		"multipart/form-data; boundary="+boundary, "", cfg.RequestBodyScanning.MaxBodyBytes, sc, "",
 	)
 	if result.Clean {
 		t.Fatal("expected fail-closed block when multipart part limit exceeded")

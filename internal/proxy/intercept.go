@@ -280,6 +280,7 @@ func newInterceptHandler(
 				r.Header.Get("Content-Encoding"),
 				cfg.RequestBodyScanning.MaxBodyBytes,
 				sc,
+				agent,
 			)
 
 			if !result.Clean {
@@ -287,6 +288,13 @@ func newInterceptHandler(
 				if action == "" {
 					action = cfg.RequestBodyScanning.Action
 				}
+
+				// Determine scanner label: address_protection vs body_dlp.
+				scannerLabel := "body_dlp"
+				if len(result.AddressFindings) > 0 && len(result.DLPMatches) == 0 {
+					scannerLabel = scannerLabelAddressProtection
+				}
+
 				reason := result.Reason
 				if reason == "" {
 					patternNames := dlpMatchNames(result.DLPMatches)
@@ -298,13 +306,13 @@ func newInterceptHandler(
 				// regardless of enforce mode to prevent forwarding an empty body.
 				// ActionAsk: no HITL terminal in intercepted tunnels, fail closed.
 				if bodyBytes == nil || action == config.ActionAsk || (action == config.ActionBlock && cfg.EnforceEnabled()) {
-					logger.LogBlocked(r.Method, r.URL.String(), "body_dlp", reason, clientIP, requestID, agent)
-					m.RecordTLSRequestBlocked("body_dlp")
+					logger.LogBlocked(r.Method, r.URL.String(), scannerLabel, reason, clientIP, requestID, agent)
+					m.RecordTLSRequestBlocked(scannerLabel)
 					http.Error(w, "blocked: "+reason, http.StatusForbidden)
 					return
 				}
 				// Audit/warn mode: log finding but forward the request.
-				logger.LogAnomaly(r.Method, r.URL.String(), "body_dlp", reason, clientIP, requestID, agent, 0.8) // 0.8: high confidence DLP match
+				logger.LogAnomaly(r.Method, r.URL.String(), scannerLabel, reason, clientIP, requestID, agent, 0.8)
 			}
 
 			// Re-wrap body so the forwarded request gets the buffered bytes.

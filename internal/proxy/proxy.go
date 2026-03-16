@@ -1136,6 +1136,7 @@ func (p *Proxy) filterAndActOnResponseScan(
 	for i, m := range result.Matches {
 		patternNames[i] = m.PatternName
 	}
+	bundleRules := responseBundleRules(result.Matches)
 
 	switch sc.ResponseAction() {
 	case config.ActionBlock:
@@ -1163,10 +1164,10 @@ func (p *Proxy) filterAndActOnResponseScan(
 		})
 		switch d {
 		case hitl.DecisionAllow:
-			log.LogResponseScan(displayURL, clientIP, requestID, agent, "ask:allow", len(result.Matches), patternNames)
+			log.LogResponseScan(displayURL, clientIP, requestID, agent, "ask:allow", len(result.Matches), patternNames, bundleRules)
 		case hitl.DecisionStrip:
 			out = result.TransformedContent
-			log.LogResponseScan(displayURL, clientIP, requestID, agent, "ask:strip", len(result.Matches), patternNames)
+			log.LogResponseScan(displayURL, clientIP, requestID, agent, "ask:strip", len(result.Matches), patternNames, bundleRules)
 		default:
 			reason := fmt.Sprintf("response blocked by operator: %s", strings.Join(patternNames, ", "))
 			log.LogBlocked("GET", displayURL, "response_scan", reason, clientIP, requestID, agent)
@@ -1175,11 +1176,11 @@ func (p *Proxy) filterAndActOnResponseScan(
 		}
 	case config.ActionStrip:
 		out = result.TransformedContent
-		log.LogResponseScan(displayURL, clientIP, requestID, agent, config.ActionStrip, len(result.Matches), patternNames)
+		log.LogResponseScan(displayURL, clientIP, requestID, agent, config.ActionStrip, len(result.Matches), patternNames, bundleRules)
 	case config.ActionWarn:
-		log.LogResponseScan(displayURL, clientIP, requestID, agent, config.ActionWarn, len(result.Matches), patternNames)
+		log.LogResponseScan(displayURL, clientIP, requestID, agent, config.ActionWarn, len(result.Matches), patternNames, bundleRules)
 	default:
-		log.LogResponseScan(displayURL, clientIP, requestID, agent, sc.ResponseAction(), len(result.Matches), patternNames)
+		log.LogResponseScan(displayURL, clientIP, requestID, agent, sc.ResponseAction(), len(result.Matches), patternNames, bundleRules)
 	}
 	return false, out, true
 }

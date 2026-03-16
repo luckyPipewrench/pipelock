@@ -434,8 +434,9 @@ func (p *Proxy) evalHeaderDLP(ctx context.Context, headers http.Header, cfg *con
 	}
 	action := cfg.RequestBodyScanning.Action
 	patternNames := dlpMatchNames(headerResult.DLPMatches)
+	bundleRules := dlpBundleRules(headerResult.DLPMatches)
 
-	logger.LogHeaderDLP(method, url, headerResult.HeaderName, action, clientIP, requestID, "", patternNames)
+	logger.LogHeaderDLP(method, url, headerResult.HeaderName, action, clientIP, requestID, "", patternNames, bundleRules)
 	p.metrics.RecordHeaderDLP(action, agent)
 
 	if action == config.ActionBlock && cfg.EnforceEnabled() {

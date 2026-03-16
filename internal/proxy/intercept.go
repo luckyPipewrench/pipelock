@@ -412,6 +412,7 @@ func newInterceptHandler(
 				for i, match := range scanResult.Matches {
 					patternNames[i] = match.PatternName
 				}
+				bundleRules := responseBundleRules(scanResult.Matches)
 				reason := fmt.Sprintf("response injection: %s", strings.Join(patternNames, ", "))
 
 				switch action {
@@ -427,10 +428,10 @@ func newInterceptHandler(
 					// Update Content-Length to match stripped body; prevents HTTP/1.1
 					// framing errors from a stale upstream Content-Length header.
 					resp.Header.Set("Content-Length", strconv.Itoa(len(respBody)))
-					logger.LogResponseScan(r.URL.String(), clientIP, requestID, agent, config.ActionStrip, len(scanResult.Matches), patternNames)
+					logger.LogResponseScan(r.URL.String(), clientIP, requestID, agent, config.ActionStrip, len(scanResult.Matches), patternNames, bundleRules)
 				default:
 					// warn/forward: log and forward unmodified.
-					logger.LogResponseScan(r.URL.String(), clientIP, requestID, agent, action, len(scanResult.Matches), patternNames)
+					logger.LogResponseScan(r.URL.String(), clientIP, requestID, agent, action, len(scanResult.Matches), patternNames, bundleRules)
 				}
 			}
 		}

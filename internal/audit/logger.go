@@ -110,6 +110,14 @@ const (
 	severityWarn     = "warn"
 )
 
+// BundleRuleHit records which community bundle rule triggered a detection.
+// Included in audit events and webhook payloads when bundle rules match.
+type BundleRuleHit struct {
+	RuleID        string `json:"rule_id"`
+	Bundle        string `json:"bundle"`
+	BundleVersion string `json:"bundle_version"`
+}
+
 // Logger handles structured audit logging using zerolog.
 type Logger struct {
 	zl             zerolog.Logger
@@ -324,7 +332,9 @@ func (l *Logger) LogAnomaly(method, url, scanner, reason, clientIP, requestID, a
 }
 
 // LogResponseScan logs a response content scan that found prompt injection patterns.
-func (l *Logger) LogResponseScan(url, clientIP, requestID, agent, action string, matchCount int, patternNames []string) {
+// When bundleRules is non-empty, bundle provenance is included in the audit event
+// and webhook payload so SIEM consumers can identify which community rules matched.
+func (l *Logger) LogResponseScan(url, clientIP, requestID, agent, action string, matchCount int, patternNames []string, bundleRules []BundleRuleHit) {
 	technique := TechniqueForScanner("response_scan")
 
 	event := l.zl.Warn().
@@ -338,6 +348,9 @@ func (l *Logger) LogResponseScan(url, clientIP, requestID, agent, action string,
 		Str("mitre_technique", technique)
 	if agent != "" {
 		event = event.Str("agent", sanitizeString(agent))
+	}
+	if len(bundleRules) > 0 {
+		event = event.Interface("bundle_rules", bundleRules)
 	}
 	event.Msg("response scan detected prompt injection")
 
@@ -353,6 +366,9 @@ func (l *Logger) LogResponseScan(url, clientIP, requestID, agent, action string,
 		}
 		if agent != "" {
 			data["agent"] = sanitizeString(agent)
+		}
+		if len(bundleRules) > 0 {
+			data["bundle_rules"] = bundleRules
 		}
 		l.emitter.Emit(context.Background(), string(EventResponseScan), data)
 	}
@@ -545,14 +561,15 @@ func (l *Logger) LogWSBlocked(target, direction, scannerName, reason, clientIP, 
 // LogWSScan logs a WebSocket frame scan hit (warn/strip action).
 // Direction determines the MITRE technique: client_to_server is DLP/exfil (T1048),
 // server_to_client is prompt injection detection (T1059).
-func (l *Logger) LogWSScan(target, direction, clientIP, requestID, action string, matchCount int, patternNames []string) {
+// When bundleRules is non-empty, bundle provenance is included in the audit event.
+func (l *Logger) LogWSScan(target, direction, clientIP, requestID, action string, matchCount int, patternNames []string, bundleRules []BundleRuleHit) {
 	scanner := string(EventResponseScan)
 	if direction == DirectionClientToServer {
 		scanner = ScannerDLP
 	}
 	technique := TechniqueForScanner(scanner)
 
-	l.zl.Warn().
+	event := l.zl.Warn().
 		Str("event", string(EventWSScan)).
 		Str("target", sanitizeString(target)).
 		Str("direction", direction).
@@ -561,11 +578,14 @@ func (l *Logger) LogWSScan(target, direction, clientIP, requestID, action string
 		Str("action", action).
 		Int("match_count", matchCount).
 		Strs("patterns", patternNames).
-		Str("mitre_technique", technique).
-		Msg("websocket scan hit")
+		Str("mitre_technique", technique)
+	if len(bundleRules) > 0 {
+		event = event.Interface("bundle_rules", bundleRules)
+	}
+	event.Msg("websocket scan hit")
 
 	if l.emitter != nil {
-		l.emitter.Emit(context.Background(), string(EventWSScan), map[string]any{
+		data := map[string]any{
 			"target":          sanitizeString(target),
 			"direction":       direction,
 			"client_ip":       clientIP,
@@ -574,7 +594,11 @@ func (l *Logger) LogWSScan(target, direction, clientIP, requestID, action string
 			"match_count":     matchCount,
 			"patterns":        patternNames,
 			"mitre_technique": technique,
-		})
+		}
+		if len(bundleRules) > 0 {
+			data["bundle_rules"] = bundleRules
+		}
+		l.emitter.Emit(context.Background(), string(EventWSScan), data)
 	}
 }
 
@@ -718,7 +742,8 @@ func (l *Logger) LogKillSwitchDeny(transport, endpoint, source, message, clientI
 }
 
 // LogBodyDLP logs a request body DLP scan detection.
-func (l *Logger) LogBodyDLP(method, url, action, clientIP, requestID, agent string, matchCount int, patternNames []string) {
+// When bundleRules is non-empty, bundle provenance is included in the audit event.
+func (l *Logger) LogBodyDLP(method, url, action, clientIP, requestID, agent string, matchCount int, patternNames []string, bundleRules []BundleRuleHit) {
 	technique := TechniqueForScanner(ScannerDLP)
 
 	ev := l.zl.Warn().
@@ -731,10 +756,13 @@ func (l *Logger) LogBodyDLP(method, url, action, clientIP, requestID, agent stri
 	if agent != "" {
 		ev = ev.Str("agent", sanitizeString(agent))
 	}
-	ev.Int("match_count", matchCount).
+	ev = ev.Int("match_count", matchCount).
 		Strs("patterns", patternNames).
-		Str("mitre_technique", technique).
-		Msg("request body DLP scan hit")
+		Str("mitre_technique", technique)
+	if len(bundleRules) > 0 {
+		ev = ev.Interface("bundle_rules", bundleRules)
+	}
+	ev.Msg("request body DLP scan hit")
 
 	if l.emitter != nil {
 		fields := map[string]any{
@@ -750,12 +778,16 @@ func (l *Logger) LogBodyDLP(method, url, action, clientIP, requestID, agent stri
 		if agent != "" {
 			fields["agent"] = sanitizeString(agent)
 		}
+		if len(bundleRules) > 0 {
+			fields["bundle_rules"] = bundleRules
+		}
 		l.emitter.Emit(context.Background(), string(EventBodyDLP), fields)
 	}
 }
 
 // LogHeaderDLP logs a request header DLP scan detection.
-func (l *Logger) LogHeaderDLP(method, url, headerName, action, clientIP, requestID, agent string, patternNames []string) {
+// When bundleRules is non-empty, bundle provenance is included in the audit event.
+func (l *Logger) LogHeaderDLP(method, url, headerName, action, clientIP, requestID, agent string, patternNames []string, bundleRules []BundleRuleHit) {
 	technique := TechniqueForScanner(ScannerDLP)
 
 	ev := l.zl.Warn().
@@ -769,9 +801,12 @@ func (l *Logger) LogHeaderDLP(method, url, headerName, action, clientIP, request
 	if agent != "" {
 		ev = ev.Str("agent", sanitizeString(agent))
 	}
-	ev.Strs("patterns", patternNames).
-		Str("mitre_technique", technique).
-		Msg("request header DLP scan hit")
+	ev = ev.Strs("patterns", patternNames).
+		Str("mitre_technique", technique)
+	if len(bundleRules) > 0 {
+		ev = ev.Interface("bundle_rules", bundleRules)
+	}
+	ev.Msg("request header DLP scan hit")
 
 	if l.emitter != nil {
 		fields := map[string]any{
@@ -786,6 +821,9 @@ func (l *Logger) LogHeaderDLP(method, url, headerName, action, clientIP, request
 		}
 		if agent != "" {
 			fields["agent"] = sanitizeString(agent)
+		}
+		if len(bundleRules) > 0 {
+			fields["bundle_rules"] = bundleRules
 		}
 		l.emitter.Emit(context.Background(), string(EventHeaderDLP), fields)
 	}

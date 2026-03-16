@@ -101,7 +101,7 @@ func TestNewNop(_ *testing.T) {
 	logger.LogStartup(":8888", "balanced", testVersion, testConfigHash)
 	logger.LogShutdown("test")
 	logger.LogRedirect("https://a.com", "https://b.com", "127.0.0.1", "req-6", "", 1)
-	logger.LogResponseScan("https://example.com", "127.0.0.1", "req-8", "", testActionWarn, 2, []string{"Prompt Injection", "Jailbreak Attempt"})
+	logger.LogResponseScan("https://example.com", "127.0.0.1", "req-8", "", testActionWarn, 2, []string{"Prompt Injection", "Jailbreak Attempt"}, nil)
 	logger.Close()
 }
 
@@ -576,7 +576,7 @@ func TestLogResponseScan_JSONFormat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogResponseScan("https://example.com/page", testClientIP, "req-10", "", testActionWarn, 2, []string{"Prompt Injection", "Jailbreak Attempt"})
+	logger.LogResponseScan("https://example.com/page", testClientIP, "req-10", "", testActionWarn, 2, []string{"Prompt Injection", "Jailbreak Attempt"}, nil)
 	logger.Close()
 
 	data, _ := os.ReadFile(filepath.Clean(path))
@@ -621,7 +621,7 @@ func TestLogResponseScan_StripAction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogResponseScan("https://example.com/page", testClientIP, "req-11", "", "strip", 1, []string{"System Override"})
+	logger.LogResponseScan("https://example.com/page", testClientIP, "req-11", "", "strip", 1, []string{"System Override"}, nil)
 	logger.Close()
 
 	data, _ := os.ReadFile(filepath.Clean(path))
@@ -635,6 +635,214 @@ func TestLogResponseScan_StripAction(t *testing.T) {
 	}
 	if entry["action"] != "strip" {
 		t.Errorf("expected action=strip, got %v", entry["action"])
+	}
+}
+
+func TestLogResponseScan_BundleRulesIncluded(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundleRules := []BundleRuleHit{
+		{RuleID: "owasp-injection-001", Bundle: "owasp-top10", BundleVersion: "1.2.0"},
+		{RuleID: "custom-xss-002", Bundle: "owasp-top10", BundleVersion: "1.2.0"},
+	}
+	logger.LogResponseScan("https://example.com/page", testClientIP, "req-12", "", testActionWarn, 2,
+		[]string{"owasp-injection-001", "custom-xss-002"}, bundleRules)
+	logger.Close()
+
+	data, _ := os.ReadFile(filepath.Clean(path))
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+
+	rawRules, ok := entry["bundle_rules"].([]any)
+	if !ok {
+		t.Fatalf("expected bundle_rules array, got %T (%v)", entry["bundle_rules"], entry["bundle_rules"])
+	}
+	if len(rawRules) != 2 {
+		t.Fatalf("expected 2 bundle rules, got %d", len(rawRules))
+	}
+	first, ok := rawRules[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected map for bundle rule, got %T", rawRules[0])
+	}
+	if first["rule_id"] != "owasp-injection-001" {
+		t.Errorf("rule_id = %v, want owasp-injection-001", first["rule_id"])
+	}
+	if first["bundle"] != "owasp-top10" {
+		t.Errorf("bundle = %v, want owasp-top10", first["bundle"])
+	}
+	if first["bundle_version"] != "1.2.0" {
+		t.Errorf("bundle_version = %v, want 1.2.0", first["bundle_version"])
+	}
+}
+
+func TestLogResponseScan_NilBundleRulesOmitsField(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogResponseScan("https://example.com/page", testClientIP, "req-13", "", testActionWarn, 1, []string{"injection"}, nil)
+	logger.Close()
+
+	data, _ := os.ReadFile(filepath.Clean(path))
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+
+	if _, exists := entry["bundle_rules"]; exists {
+		t.Error("bundle_rules field should be omitted when nil")
+	}
+}
+
+func TestEmit_LogResponseScan_BundleRules(t *testing.T) {
+	logger, sink := newLoggerWithEmitter(t)
+	defer logger.Close()
+
+	bundleRules := []BundleRuleHit{
+		{RuleID: "rule-1", Bundle: "test-bundle", BundleVersion: "0.1.0"},
+	}
+	logger.LogResponseScan("https://example.com", testClientIP, "req-14", "", testActionWarn, 1, []string{"rule-1"}, bundleRules)
+
+	ev, ok := sink.lastEvent()
+	if !ok {
+		t.Fatal("expected emitted event")
+	}
+	emittedRules, ok := ev.Fields["bundle_rules"].([]BundleRuleHit)
+	if !ok {
+		t.Fatalf("bundle_rules field type = %T, want []BundleRuleHit", ev.Fields["bundle_rules"])
+	}
+	if len(emittedRules) != 1 {
+		t.Fatalf("expected 1 bundle rule, got %d", len(emittedRules))
+	}
+	if emittedRules[0].RuleID != "rule-1" {
+		t.Errorf("rule_id = %q, want rule-1", emittedRules[0].RuleID)
+	}
+	if emittedRules[0].Bundle != "test-bundle" {
+		t.Errorf("bundle = %q, want test-bundle", emittedRules[0].Bundle)
+	}
+}
+
+func TestEmit_LogResponseScan_NilBundleRulesOmitsField(t *testing.T) {
+	logger, sink := newLoggerWithEmitter(t)
+	defer logger.Close()
+
+	logger.LogResponseScan("https://example.com", testClientIP, "req-15", "", testActionWarn, 1, []string{"injection"}, nil)
+
+	ev, ok := sink.lastEvent()
+	if !ok {
+		t.Fatal("expected emitted event")
+	}
+	if _, exists := ev.Fields["bundle_rules"]; exists {
+		t.Error("bundle_rules should not be in emitted fields when nil")
+	}
+}
+
+func TestLogWSScan_BundleRulesIncluded(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundleRules := []BundleRuleHit{
+		{RuleID: "ws-rule-1", Bundle: "ws-bundle", BundleVersion: "2.0.0"},
+	}
+	logger.LogWSScan("ws://example.com/chat", DirectionServerToClient, testClientIP, "req-402", testActionWarn, 1, []string{"ws-rule-1"}, bundleRules)
+	logger.Close()
+
+	data, _ := os.ReadFile(filepath.Clean(path))
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+
+	rawRules, ok := entry["bundle_rules"].([]any)
+	if !ok {
+		t.Fatalf("expected bundle_rules array, got %T", entry["bundle_rules"])
+	}
+	if len(rawRules) != 1 {
+		t.Fatalf("expected 1 bundle rule, got %d", len(rawRules))
+	}
+	first := rawRules[0].(map[string]any)
+	if first["rule_id"] != "ws-rule-1" {
+		t.Errorf("rule_id = %v, want ws-rule-1", first["rule_id"])
+	}
+}
+
+func TestLogBodyDLP_BundleRulesIncluded(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundleRules := []BundleRuleHit{
+		{RuleID: "dlp-rule-1", Bundle: "dlp-bundle", BundleVersion: "3.0.0"},
+	}
+	logger.LogBodyDLP("POST", "https://api.example.com", testActionWarn, testClientIP, "req-54", "", 1, []string{"dlp-rule-1"}, bundleRules)
+	logger.Close()
+
+	data, _ := os.ReadFile(filepath.Clean(path))
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+
+	rawRules, ok := entry["bundle_rules"].([]any)
+	if !ok {
+		t.Fatalf("expected bundle_rules array, got %T", entry["bundle_rules"])
+	}
+	if len(rawRules) != 1 {
+		t.Fatalf("expected 1 bundle rule, got %d", len(rawRules))
+	}
+	first := rawRules[0].(map[string]any)
+	if first["bundle"] != "dlp-bundle" {
+		t.Errorf("bundle = %v, want dlp-bundle", first["bundle"])
+	}
+}
+
+func TestLogHeaderDLP_BundleRulesIncluded(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundleRules := []BundleRuleHit{
+		{RuleID: "hdr-rule-1", Bundle: "hdr-bundle", BundleVersion: "1.0.0"},
+	}
+	logger.LogHeaderDLP("GET", "https://api.example.com", "Authorization", testActionWarn, testClientIP, "req-55", "", []string{"hdr-rule-1"}, bundleRules)
+	logger.Close()
+
+	data, _ := os.ReadFile(filepath.Clean(path))
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+
+	rawRules, ok := entry["bundle_rules"].([]any)
+	if !ok {
+		t.Fatalf("expected bundle_rules array, got %T", entry["bundle_rules"])
+	}
+	if len(rawRules) != 1 {
+		t.Fatalf("expected 1 bundle rule, got %d", len(rawRules))
+	}
+	first := rawRules[0].(map[string]any)
+	if first["bundle"] != "hdr-bundle" {
+		t.Errorf("bundle = %v, want hdr-bundle", first["bundle"])
 	}
 }
 
@@ -1204,7 +1412,7 @@ func TestLogWSScan_JSONFormat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogWSScan("ws://example.com/chat", DirectionServerToClient, testClientIP, "req-400", testActionWarn, 2, []string{"Prompt Injection", "Jailbreak"})
+	logger.LogWSScan("ws://example.com/chat", DirectionServerToClient, testClientIP, "req-400", testActionWarn, 2, []string{"Prompt Injection", "Jailbreak"}, nil)
 	logger.Close()
 
 	data, _ := os.ReadFile(filepath.Clean(path))
@@ -1244,7 +1452,7 @@ func TestLogWSScan_ClientToServer_DLPTechnique(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogWSScan("ws://example.com/chat", DirectionClientToServer, testClientIP, "req-401", "audit", 1, []string{"AWS Key"})
+	logger.LogWSScan("ws://example.com/chat", DirectionClientToServer, testClientIP, "req-401", "audit", 1, []string{"AWS Key"}, nil)
 	logger.Close()
 
 	data, _ := os.ReadFile(filepath.Clean(path))
@@ -1463,7 +1671,7 @@ func TestEmit_LogResponseScan(t *testing.T) {
 	logger, sink := newLoggerWithEmitter(t)
 	defer logger.Close()
 
-	logger.LogResponseScan("https://example.com", testClientIP, "req-4", "", actionBlock, 2, []string{"injection", "jailbreak"})
+	logger.LogResponseScan("https://example.com", testClientIP, "req-4", "", actionBlock, 2, []string{"injection", "jailbreak"}, nil)
 
 	ev, ok := sink.lastEvent()
 	if !ok {
@@ -1523,7 +1731,7 @@ func TestEmit_LogWSScan(t *testing.T) {
 	logger, sink := newLoggerWithEmitter(t)
 	defer logger.Close()
 
-	logger.LogWSScan("ws://example.com", DirectionServerToClient, testClientIP, "req-6", testActionWarn, 1, []string{"injection"})
+	logger.LogWSScan("ws://example.com", DirectionServerToClient, testClientIP, "req-6", testActionWarn, 1, []string{"injection"}, nil)
 
 	ev, ok := sink.lastEvent()
 	if !ok {
@@ -1541,7 +1749,7 @@ func TestEmit_LogWSScan_ClientToServer(t *testing.T) {
 	logger, sink := newLoggerWithEmitter(t)
 	defer logger.Close()
 
-	logger.LogWSScan("ws://example.com", DirectionClientToServer, testClientIP, "req-6b", "audit", 1, []string{"AWS Key"})
+	logger.LogWSScan("ws://example.com", DirectionClientToServer, testClientIP, "req-6b", "audit", 1, []string{"AWS Key"}, nil)
 
 	ev, ok := sink.lastEvent()
 	if !ok {
@@ -1711,7 +1919,7 @@ func TestLogBodyDLP_JSONFormat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogBodyDLP("POST", "https://api.example.com/v1/chat", testActionWarn, testClientIP, "req-50", "", 2, []string{"AWS Access Key", "GitHub PAT"})
+	logger.LogBodyDLP("POST", "https://api.example.com/v1/chat", testActionWarn, testClientIP, "req-50", "", 2, []string{"AWS Access Key", "GitHub PAT"}, nil)
 	logger.Close()
 
 	data, _ := os.ReadFile(filepath.Clean(path))
@@ -1759,7 +1967,7 @@ func TestLogHeaderDLP_JSONFormat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogHeaderDLP("POST", "https://api.example.com/v1/chat", "Authorization", actionBlock, testClientIP, "req-51", "", []string{"AWS Access Key"})
+	logger.LogHeaderDLP("POST", "https://api.example.com/v1/chat", "Authorization", actionBlock, testClientIP, "req-51", "", []string{"AWS Access Key"}, nil)
 	logger.Close()
 
 	data, _ := os.ReadFile(filepath.Clean(path))
@@ -1789,7 +1997,7 @@ func TestEmit_LogBodyDLP(t *testing.T) {
 	logger, sink := newLoggerWithEmitter(t)
 	defer logger.Close()
 
-	logger.LogBodyDLP("POST", "https://api.example.com", actionBlock, testClientIP, "req-52", "", 1, []string{"AWS Key"})
+	logger.LogBodyDLP("POST", "https://api.example.com", actionBlock, testClientIP, "req-52", "", 1, []string{"AWS Key"}, nil)
 
 	ev, ok := sink.lastEvent()
 	if !ok {
@@ -1810,7 +2018,7 @@ func TestEmit_LogHeaderDLP(t *testing.T) {
 	logger, sink := newLoggerWithEmitter(t)
 	defer logger.Close()
 
-	logger.LogHeaderDLP("GET", "https://api.example.com", "Authorization", actionBlock, testClientIP, "req-53", "", []string{"GitHub PAT"})
+	logger.LogHeaderDLP("GET", "https://api.example.com", "Authorization", actionBlock, testClientIP, "req-53", "", []string{"GitHub PAT"}, nil)
 
 	ev, ok := sink.lastEvent()
 	if !ok {
@@ -2185,7 +2393,7 @@ func TestLogResponseScanEmitterIncludesAgent(t *testing.T) {
 	logger, sink := newLoggerWithEmitter(t)
 	defer logger.Close()
 
-	logger.LogResponseScan("http://example.com", testClientIP, "req-1", testAgentName, "block", 1, []string{"injection"})
+	logger.LogResponseScan("http://example.com", testClientIP, "req-1", testAgentName, "block", 1, []string{"injection"}, nil)
 
 	ev, ok := sink.lastEvent()
 	if !ok {
@@ -2277,7 +2485,7 @@ func TestLogResponseScanIncludesAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogResponseScan("http://example.com", testClientIP, "req-1", testAgentName, "block", 1, []string{"injection"})
+	logger.LogResponseScan("http://example.com", testClientIP, "req-1", testAgentName, "block", 1, []string{"injection"}, nil)
 	logger.Close()
 
 	data, err := os.ReadFile(filepath.Clean(logFile))
@@ -2369,7 +2577,7 @@ func TestLogBodyDLPIncludesAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogBodyDLP("POST", "http://example.com", "block", testClientIP, "req-1", testAgentName, 1, []string{"aws_key"})
+	logger.LogBodyDLP("POST", "http://example.com", "block", testClientIP, "req-1", testAgentName, 1, []string{"aws_key"}, nil)
 	logger.Close()
 
 	data, err := os.ReadFile(filepath.Clean(logFile))
@@ -2392,7 +2600,7 @@ func TestLogHeaderDLPIncludesAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogHeaderDLP("GET", "http://example.com", "Authorization", "warn", testClientIP, "req-1", testAgentName, []string{"bearer"})
+	logger.LogHeaderDLP("GET", "http://example.com", "Authorization", "warn", testClientIP, "req-1", testAgentName, []string{"bearer"}, nil)
 	logger.Close()
 
 	data, err := os.ReadFile(filepath.Clean(logFile))

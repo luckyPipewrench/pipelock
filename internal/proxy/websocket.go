@@ -527,6 +527,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 					for i, m := range dlpResult.Matches {
 						names[i] = m.PatternName
 					}
+					wsBundleRules := dlpBundleRules(dlpResult.Matches)
 					if r.cfg.EnforceEnabled() {
 						reason := fmt.Sprintf("DLP match: %s", strings.Join(names, ", "))
 						log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, audit.ScannerDLP, reason, r.clientIP, r.requestID)
@@ -536,7 +537,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 						blocked = true
 						return
 					}
-					log.LogWSScan(r.targetURL, audit.DirectionClientToServer, r.clientIP, r.requestID, "audit", len(dlpResult.Matches), names)
+					log.LogWSScan(r.targetURL, audit.DirectionClientToServer, r.clientIP, r.requestID, "audit", len(dlpResult.Matches), names, wsBundleRules)
 				}
 			}
 		}
@@ -712,6 +713,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 					for i, m := range scanResult.Matches {
 						patternNames[i] = m.PatternName
 					}
+					respBundleRules := responseBundleRules(scanResult.Matches)
 					r.proxy.metrics.RecordWSScanHit("injection")
 
 					switch r.scanner.ResponseAction() {
@@ -734,9 +736,9 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 							blocked = true
 							return
 						}
-						log.LogWSScan(r.targetURL, audit.DirectionServerToClient, r.clientIP, r.requestID, config.ActionStrip, len(scanResult.Matches), patternNames)
+						log.LogWSScan(r.targetURL, audit.DirectionServerToClient, r.clientIP, r.requestID, config.ActionStrip, len(scanResult.Matches), patternNames, respBundleRules)
 					case config.ActionWarn:
-						log.LogWSScan(r.targetURL, audit.DirectionServerToClient, r.clientIP, r.requestID, config.ActionWarn, len(scanResult.Matches), patternNames)
+						log.LogWSScan(r.targetURL, audit.DirectionServerToClient, r.clientIP, r.requestID, config.ActionWarn, len(scanResult.Matches), patternNames, respBundleRules)
 					case config.ActionAsk:
 						// HITL not supported for WebSocket (no request/response cycle).
 						// Fail closed: block.
@@ -747,7 +749,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 						blocked = true
 						return
 					default:
-						log.LogWSScan(r.targetURL, audit.DirectionServerToClient, r.clientIP, r.requestID, r.scanner.ResponseAction(), len(scanResult.Matches), patternNames)
+						log.LogWSScan(r.targetURL, audit.DirectionServerToClient, r.clientIP, r.requestID, r.scanner.ResponseAction(), len(scanResult.Matches), patternNames, respBundleRules)
 					}
 				}
 			}

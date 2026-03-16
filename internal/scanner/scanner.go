@@ -60,26 +60,28 @@ type Result struct {
 
 // Scanner checks URLs for suspicious content before fetching.
 type Scanner struct {
-	allowlist                 []string
-	blocklist                 []string
-	dlpPatterns               []*compiledPattern
-	dlpPreFilter              *dlpPreFilter
-	entropyThreshold          float64
-	entropyMinLen             int
-	maxURLLength              int
-	internalCIDRs             []*net.IPNet
-	rateLimiter               *RateLimiter
-	dataBudget                *DataBudget
-	envSecrets                []string // filtered high-entropy env var values
-	fileSecrets               []string // loaded from secrets_file config
-	minEnvSecretLen           int      // minimum env var length for leak detection
-	responsePatterns          []*compiledPattern
-	responseOptSpacePatterns  []*compiledPattern // \s+ → \s* variants for ZW-stripped pass
-	responseVowelFoldPatterns []*compiledPattern // vowel-folded variants for confusable vowel attacks
-	responsePreFilter         *responsePreFilter // keyword candidate gate for regex passes
-	responseAction            string
-	responseEnabled           bool
-	subdomainExclusions       []string // domains excluded from subdomain entropy checks
+	allowlist                  []string
+	blocklist                  []string
+	dlpPatterns                []*compiledPattern
+	dlpPreFilter               *dlpPreFilter
+	entropyThreshold           float64
+	entropyMinLen              int
+	maxURLLength               int
+	internalCIDRs              []*net.IPNet
+	rateLimiter                *RateLimiter
+	dataBudget                 *DataBudget
+	envSecrets                 []string // filtered high-entropy env var values
+	fileSecrets                []string // loaded from secrets_file config
+	minEnvSecretLen            int      // minimum env var length for leak detection
+	responsePatterns           []*compiledPattern
+	responseOptSpacePatterns   []*compiledPattern // \s+ → \s* variants for ZW-stripped pass
+	responseVowelFoldPatterns  []*compiledPattern // vowel-folded variants for confusable vowel attacks
+	responsePreFilter          *responsePreFilter // keyword candidate gate for primary regex passes
+	responseOptSpacePreFilter  *responsePreFilter // keyword candidate gate for opt-space pass
+	responseVowelFoldPreFilter *responsePreFilter // keyword candidate gate for vowel-fold pass
+	responseAction             string
+	responseEnabled            bool
+	subdomainExclusions        []string // domains excluded from subdomain entropy checks
 }
 
 type compiledPattern struct {
@@ -235,9 +237,17 @@ func New(cfg *config.Config) *Scanner {
 		}
 	}
 
-	// Build response pre-filter for keyword-gated regex skipping.
+	// Build response pre-filters for keyword-gated regex skipping.
+	// Each pattern set gets its own pre-filter because opt-space and
+	// vowel-fold transforms change which keywords appear in content.
 	if len(s.responsePatterns) > 0 {
 		s.responsePreFilter = newResponsePreFilter(s.responsePatterns)
+	}
+	if len(s.responseOptSpacePatterns) > 0 {
+		s.responseOptSpacePreFilter = newResponsePreFilter(s.responseOptSpacePatterns)
+	}
+	if len(s.responseVowelFoldPatterns) > 0 {
+		s.responseVowelFoldPreFilter = newResponsePreFilter(s.responseVowelFoldPatterns)
 	}
 
 	return s
@@ -728,6 +738,86 @@ const (
 	encodingBase32 = "base32"
 )
 
+// hexPrefixReplacer strips two-char hex prefix notations (\x, \X, 0x, 0X).
+// Package-level to avoid repeated construction on every normalizeHex call.
+var hexPrefixReplacer = strings.NewReplacer(`\x`, "", `\X`, "", "0x", "", "0X", "")
+
+// normalizeHex strips common hex-notation delimiters so that delimiter-separated
+// hex strings can be decoded by hex.DecodeString. Handles:
+//   - \x / \X prefix notation: \x73\x6b → 736b
+//   - 0x / 0X prefix notation: 0x73 0x6b → 736b
+//   - Colon-separated:         73:6b     → 736b
+//   - Space-separated:         73 6b     → 736b
+//   - Hyphen-separated:        73-6b     → 736b
+//   - Comma-separated:         73,6b     → 736b
+//
+// Returns "" if the result is not valid hex (odd length or non-hex chars).
+func normalizeHex(s string) string {
+	if len(s) < 4 {
+		return ""
+	}
+
+	// Strip two-char prefix sequences first (\x, 0x).
+	// Must happen before single-char delimiter stripping to avoid
+	// leaving stray 'x' characters from partially-matched patterns.
+	out := hexPrefixReplacer.Replace(s)
+
+	// Strip single-char delimiters.
+	out = strings.Map(func(r rune) rune {
+		switch r {
+		case ':', ' ', '-', ',':
+			return -1
+		default:
+			return r
+		}
+	}, out)
+
+	// Validate: must be even-length, non-empty, and pure hex.
+	if len(out) == 0 || len(out)%2 != 0 {
+		return ""
+	}
+	for _, c := range out {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
+			return ""
+		}
+	}
+	return out
+}
+
+// hexByteSep formats a contiguous hex string with a separator between each byte
+// pair. Used by matchSecretEncodings to generate delimiter-separated variants
+// of known secrets for substring matching.
+// Example: hexByteSep("736b2d", ":") returns "73:6b:2d".
+func hexByteSep(hexStr, sep string) string {
+	if len(hexStr) < 4 || len(hexStr)%2 != 0 {
+		return hexStr
+	}
+	var b strings.Builder
+	b.Grow(len(hexStr) + (len(hexStr)/2-1)*len(sep))
+	for i := 0; i < len(hexStr); i += 2 {
+		if i > 0 {
+			b.WriteString(sep)
+		}
+		b.WriteString(hexStr[i : i+2])
+	}
+	return b.String()
+}
+
+// hexBytePrefix formats a contiguous hex string with a prefix before each byte pair.
+// Example: hexBytePrefix("736b2d", `\x`) returns `\x73\x6b\x2d`.
+func hexBytePrefix(hexStr, prefix string) string {
+	if len(hexStr) < 2 || len(hexStr)%2 != 0 {
+		return hexStr
+	}
+	var b strings.Builder
+	b.Grow(len(hexStr) + (len(hexStr)/2)*len(prefix))
+	for i := 0; i < len(hexStr); i += 2 {
+		b.WriteString(prefix)
+		b.WriteString(hexStr[i : i+2])
+	}
+	return b.String()
+}
+
 // decodeEncodings tries hex, base64, and base32 decoding on a string and returns
 // any successfully decoded variants with encoding labels. Used by checkDLP to
 // catch encoded secrets in query parameters (e.g. ?key=736b2d616e742d... is
@@ -736,6 +826,11 @@ func decodeEncodings(s string) []decodedResult {
 	var out []decodedResult
 	if decoded, err := hex.DecodeString(s); err == nil && len(decoded) > 0 {
 		out = append(out, decodedResult{string(decoded), encodingHex})
+	} else if normalized := normalizeHex(s); normalized != "" {
+		// Delimiter-separated hex (e.g., 73:6b:2d, \x73\x6b, 0x736b).
+		if decoded, err := hex.DecodeString(normalized); err == nil && len(decoded) > 0 {
+			out = append(out, decodedResult{string(decoded), encodingHex})
+		}
 	}
 	for _, enc := range []*base64.Encoding{
 		base64.StdEncoding, base64.URLEncoding,
@@ -1038,6 +1133,23 @@ func matchSecretEncodings(secret string, texts, lowerTexts []string) (bool, stri
 	// Hex (case-insensitive via pre-lowered texts).
 	hexEnc := hex.EncodeToString([]byte(secret))
 	if containsAny(hexEnc, lowerTexts...) {
+		return true, encodingHex
+	}
+
+	// Delimiter-separated hex variants for env/file secret detection.
+	// Matches all formats that normalizeHex can strip.
+	colonHex := hexByteSep(hexEnc, ":")
+	spaceHex := hexByteSep(hexEnc, " ")
+	hyphenHex := hexByteSep(hexEnc, "-")
+	commaHex := hexByteSep(hexEnc, ",")
+	bsxHex := hexBytePrefix(hexEnc, `\x`)
+	zxHex := hexBytePrefix(hexEnc, "0x")
+	if containsAny(colonHex, lowerTexts...) ||
+		containsAny(spaceHex, lowerTexts...) ||
+		containsAny(hyphenHex, lowerTexts...) ||
+		containsAny(commaHex, lowerTexts...) ||
+		containsAny(bsxHex, lowerTexts...) ||
+		containsAny(zxHex, lowerTexts...) {
 		return true, encodingHex
 	}
 

@@ -640,6 +640,83 @@ func TestIterativeDecode(t *testing.T) {
 	}
 }
 
+func TestNormalizeHex(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"colon-separated", "73:6b:2d:61:6e:74", "736b2d616e74"},
+		{"space-separated", "73 6b 2d 61 6e 74", "736b2d616e74"},
+		{"hyphen-separated", "73-6b-2d-61-6e-74", "736b2d616e74"},
+		{"backslash-x notation", `\x73\x6b\x2d\x61\x6e\x74`, "736b2d616e74"},
+		{"0x prefix only", "0x736b2d616e74", "736b2d616e74"},
+		{"comma-separated", "73,6b,2d,61,6e,74", "736b2d616e74"},
+		{"mixed delimiters", "73:6b 2d-61,6e:74", "736b2d616e74"},
+		{"already contiguous hex", "736b2d616e74", "736b2d616e74"},
+		{"odd length result", "73:6b:2", ""},
+		{"too short", "ab", ""},
+		{"empty", "", ""},
+		{"non-hex chars after strip", "zz:yy:xx", ""},
+		{"uppercase hex", "73:6B:2D:61:6E:74", "736B2D616E74"},
+		{"0x per-byte", "0x730x6b0x2d0x610x6e0x74", "736b2d616e74"},
+		{"0x per-byte with commas", "0x73,0x6b,0x2d,0x61,0x6e,0x74", "736b2d616e74"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := normalizeHex(tt.input)
+			if got != tt.want {
+				t.Errorf("normalizeHex(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHexByteSep(t *testing.T) {
+	tests := []struct {
+		name   string
+		hexStr string
+		sep    string
+		want   string
+	}{
+		{"colon", "736b2d", ":", "73:6b:2d"},
+		{"space", "736b2d", " ", "73 6b 2d"},
+		{"single byte", "73", ":", "73"},
+		{"empty", "", ":", ""},
+		{"two bytes", "736b", "-", "73-6b"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := hexByteSep(tt.hexStr, tt.sep)
+			if got != tt.want {
+				t.Errorf("hexByteSep(%q, %q) = %q, want %q", tt.hexStr, tt.sep, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHexBytePrefix(t *testing.T) {
+	tests := []struct {
+		name   string
+		hexStr string
+		prefix string
+		want   string
+	}{
+		{"backslash-x", "736b2d", `\x`, `\x73\x6b\x2d`},
+		{"0x", "736b2d", "0x", "0x730x6b0x2d"},
+		{"single byte", "73", `\x`, `\x73`},
+		{"empty", "", `\x`, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := hexBytePrefix(tt.hexStr, tt.prefix)
+			if got != tt.want {
+				t.Errorf("hexBytePrefix(%q, %q) = %q, want %q", tt.hexStr, tt.prefix, got, tt.want)
+			}
+		})
+	}
+}
+
 // --- Fix 2: IP address wildcard matching ---
 
 func TestMatchDomain_WildcardIgnoredForIPv4(t *testing.T) {
@@ -1939,6 +2016,106 @@ func TestScan_DLP_EncodedPathNoFalsePositives(t *testing.T) {
 	}
 }
 
+// --- Delimiter-separated hex DLP in query params and path segments ---
+
+func TestScan_DLP_DelimiterHexInQuery(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	prefix := testAnthropicPrefix
+	suffix := testAlphabet
+	secret := prefix + suffix
+	contiguousHex := hex.EncodeToString([]byte(secret))
+
+	tests := []struct {
+		name  string
+		value string
+	}{
+		{"colon-separated", hexByteSep(contiguousHex, ":")},
+		{"space-separated", hexByteSep(contiguousHex, " ")},
+		{"hyphen-separated", hexByteSep(contiguousHex, "-")},
+		{"comma-separated", hexByteSep(contiguousHex, ",")},
+		{"backslash-x notation", hexBytePrefix(contiguousHex, `\x`)},
+		{"0x prefix", "0x" + contiguousHex},
+		{"0x per-byte contiguous", hexBytePrefix(contiguousHex, "0x")},
+		{"0x per-byte comma-separated", func() string {
+			// "0x73,0x6b,0x2d,..." — each byte with 0x prefix, comma-separated
+			parts := make([]string, 0, len(contiguousHex)/2)
+			for i := 0; i < len(contiguousHex); i += 2 {
+				parts = append(parts, "0x"+contiguousHex[i:i+2])
+			}
+			return strings.Join(parts, ",")
+		}()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := s.Scan(context.Background(), "https://example.com/api?key="+tt.value)
+			if result.Allowed {
+				t.Errorf("expected delimiter-hex %s API key in query to be blocked", tt.name)
+			}
+			if result.Scanner != ScannerDLP {
+				t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+			}
+		})
+	}
+}
+
+func TestScan_DLP_DelimiterHexInPath(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	key := "AKIA" + "IOSFODNN7EXAMPLE1"
+	contiguousHex := hex.EncodeToString([]byte(key))
+
+	tests := []struct {
+		name  string
+		value string
+	}{
+		{"colon-separated", hexByteSep(contiguousHex, ":")},
+		{"comma-separated", hexByteSep(contiguousHex, ",")},
+		{"backslash-x notation", hexBytePrefix(contiguousHex, `\x`)},
+		{"0x prefix", "0x" + contiguousHex},
+		{"0x per-byte contiguous", hexBytePrefix(contiguousHex, "0x")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := s.Scan(context.Background(), "https://example.com/exfil/"+tt.value+"/data")
+			if result.Allowed {
+				t.Errorf("expected delimiter-hex %s AWS key in path to be blocked", tt.name)
+			}
+			if result.Scanner != ScannerDLP {
+				t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+			}
+		})
+	}
+}
+
+func TestScan_DLP_DelimiterHexNoFalsePositives(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{"colon-separated clean text", "https://example.com/api?data=" + hexByteSep(hex.EncodeToString([]byte("hello world!")), ":")},
+		{"hyphen-separated short", "https://example.com/api?color=ff-00-ff"},
+		{"0x prefixed clean", "https://example.com/api?data=0x" + hex.EncodeToString([]byte("hello world!"))},
+		{"backslash-x clean", `https://example.com/api?data=\x68\x65\x6c\x6c\x6f`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := s.Scan(context.Background(), tt.url)
+			if !result.Allowed {
+				t.Errorf("false positive on delimiter-hex clean data: %s (reason: %s)", tt.url, result.Reason)
+			}
+		})
+	}
+}
+
 // --- Env leak encoding tests ---
 
 func TestScan_EnvLeak_HexEncoded(t *testing.T) {
@@ -1963,6 +2140,39 @@ func TestScan_EnvLeak_HexEncoded(t *testing.T) {
 	}
 	if result.Scanner != ScannerDLP {
 		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	}
+}
+
+func TestScan_EnvLeak_DelimiterHex(t *testing.T) {
+	cfg := testConfig()
+	cfg.DLP.ScanEnv = true
+	s := New(cfg)
+	defer s.Close()
+
+	secret := testSecretVal
+	s.envSecrets = []string{secret}
+	contiguousHex := hex.EncodeToString([]byte(secret))
+
+	tests := []struct {
+		name  string
+		value string
+	}{
+		{"colon-separated", hexByteSep(contiguousHex, ":")},
+		{"space-separated", hexByteSep(contiguousHex, " ")},
+		{"hyphen-separated", hexByteSep(contiguousHex, "-")},
+		{"backslash-x notation", hexBytePrefix(contiguousHex, `\x`)},
+		{"0x per-byte notation", hexBytePrefix(contiguousHex, "0x")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := s.Scan(context.Background(), "https://example.com/exfil?data="+tt.value)
+			if result.Allowed {
+				t.Errorf("expected %s hex-encoded env leak to be caught", tt.name)
+			}
+			if result.Scanner != ScannerDLP {
+				t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+			}
+		})
 	}
 }
 

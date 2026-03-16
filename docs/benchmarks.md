@@ -33,9 +33,9 @@ Pattern matching for prompt injection on fetched content. 20 patterns.
 
 | Benchmark | ns/op | B/op | allocs/op |
 |-----------|------:|-----:|----------:|
-| Clean (~90B) | 115,165 | 500 | 7 |
-| WithInjection (~100B) | 45,460 | 371 | 3 |
-| LargeClean (~10KB) | 16,498,471 | 55,112 | 10 |
+| Clean (~90B) | 81,261 | 622 | 10 |
+| WithInjection (~100B) | 14,490 | 606 | 8 |
+| LargeClean (~10KB) | 12,117,866 | 22,187 | 6 |
 
 ## Text DLP Scanning (`ScanTextForDLP()`)
 
@@ -43,8 +43,8 @@ DLP pattern matching on arbitrary text (MCP arguments, request bodies). 41 patte
 
 | Benchmark | ns/op | B/op | allocs/op |
 |-----------|------:|-----:|----------:|
-| Clean | 25,092 | 855 | 10 |
-| Match | 9,197 | 510 | 11 |
+| Clean | 24,571 | 858 | 10 |
+| Match | 9,378 | 510 | 11 |
 
 ## DLP Pre-Filter
 
@@ -52,8 +52,8 @@ Aho-Corasick prefix automaton. Short-circuits clean text before regex evaluation
 
 | Benchmark | ns/op | B/op | allocs/op |
 |-----------|------:|-----:|----------:|
-| CleanText (no match) | 418 | 0 | 0 |
-| WithPrefix (match) | 435 | 104 | 3 |
+| CleanText (no match) | 405 | 0 | 0 |
+| WithPrefix (match) | 427 | 104 | 3 |
 
 ## MCP Response Scanning (`mcp.ScanResponse()`)
 
@@ -61,9 +61,9 @@ JSON-RPC 2.0 response parsing + text extraction + prompt injection scanning.
 
 | Benchmark | ns/op | B/op | allocs/op |
 |-----------|------:|-----:|----------:|
-| Clean | 110,027 | 1,397 | 28 |
-| Injection | 41,784 | 1,454 | 25 |
-| ExtractText (5 blocks) | 2,334 | 1,080 | 23 |
+| Clean | 89,260 | 1,609 | 33 |
+| Injection | 12,701 | 1,597 | 29 |
+| ExtractText (5 blocks) | 2,496 | 1,080 | 23 |
 
 ## Parallel Throughput (`b.RunParallel`, GOMAXPROCS=16)
 
@@ -73,42 +73,42 @@ True concurrent throughput across all available goroutines.
 
 | Benchmark | ns/op | B/op | allocs/op |
 |-----------|------:|-----:|----------:|
-| Parallel_URLScan | 7,623 | 3,839 | 85 |
-| Parallel_DLPBlock | 1,360 | 2,525 | 43 |
-| Parallel_ResponseScan | 15,248 | 509 | 7 |
-| Parallel_ResponseLarge | 2,695,906 | 75,509 | 30 |
-| Parallel_Blocklist | 337 | 288 | 5 |
-| Parallel_Entropy | 6,820 | 5,079 | 59 |
+| Parallel_URLScan | 6,500 | 3,724 | 85 |
+| Parallel_DLPBlock | 1,184 | 2,464 | 43 |
+| Parallel_ResponseScan | 12,900 | 634 | 10 |
+| Parallel_ResponseLarge | 1,928,156 | 31,767 | 16 |
+| Parallel_Blocklist | 364 | 288 | 5 |
+| Parallel_Entropy | 6,367 | 5,026 | 59 |
 
 ### MCP
 
 | Benchmark | ns/op | B/op | allocs/op |
 |-----------|------:|-----:|----------:|
-| Parallel_MCPScanClean | 14,449 | 1,435 | 28 |
-| Parallel_MCPScanInjection | 5,563 | 1,480 | 25 |
-| Parallel_ExtractText | 608 | 1,080 | 23 |
+| Parallel_MCPScanClean | 11,510 | 1,642 | 33 |
+| Parallel_MCPScanInjection | 1,828 | 1,640 | 29 |
+| Parallel_ExtractText | 616 | 1,080 | 23 |
 
 ## Other
 
 | Benchmark | ns/op | B/op | allocs/op |
 |-----------|------:|-----:|----------:|
-| ShannonEntropy | 2,295 | 2,120 | 7 |
-| MatchDomain/exact | 50 | 48 | 1 |
-| MatchDomain/wildcard | 55 | 48 | 1 |
+| ShannonEntropy | 2,310 | 2,120 | 7 |
+| MatchDomain/exact | 52 | 48 | 1 |
+| MatchDomain/wildcard | 54 | 48 | 1 |
 
 ## Key Takeaways
 
 - **Full 11-layer scan on a typical URL: ~21 microseconds** (down from ~37μs in v1.2.0, thanks to DLP pre-filter). Well under 1ms.
 - Blocked URLs short-circuit early: blocklist check is ~1.9μs.
-- DLP regex matching (41 patterns) with pre-filter: ~6.7μs. Pre-filter alone: ~418ns with zero allocations on clean text.
-- Response scanning with 20 patterns on small content: ~115μs. Large content (~10KB) takes ~16ms due to 6 normalization passes plus regex cost scaling with input size.
-- MCP scanning (JSON parse + text extraction + pattern match): ~110μs.
+- DLP regex matching (41 patterns) with pre-filter: ~6.7μs. Pre-filter alone: ~405ns with zero allocations on clean text.
+- Response scanning with 20 patterns on small content: ~81μs (29% faster with keyword pre-filter). Large content (~10KB): ~12ms (27% faster). Injection detected via early exit: ~14.5μs (3.1x faster).
+- MCP scanning (JSON parse + text extraction + pattern match): ~89μs clean, ~12.7μs injection (3.3x faster with pre-filter).
 - **Parallel throughput scales linearly with cores** (benchmarks run with rate limiting and data budget disabled to isolate scanning overhead).
 - The scanner pipeline adds **~0.021ms overhead for typical URL requests**. Network latency dominates.
 
 ## Hardware
 
-AMD Ryzen 7 7800X3D (8 cores / 16 threads) / Go 1.24 / Linux 6.18 / Fedora 43
+AMD Ryzen 7 7800X3D (8 cores / 16 threads) / Go 1.25 / Linux 6.18 / Fedora 43
 
 ## Running Benchmarks
 

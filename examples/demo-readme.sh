@@ -68,6 +68,6 @@ pause
 
 # --- Done ---
 echo ""
-echo -e "${GREEN}11-layer scanner. DLP, DNS exfil, SSRF, blocklists, and more.${RESET}"
+echo -e "${GREEN}Single binary. 11-layer scanner. DLP, DNS exfil, SSRF, and more.${RESET}"
 echo -e "${GREEN}brew install luckyPipewrench/tap/pipelock${RESET}"
 echo ""

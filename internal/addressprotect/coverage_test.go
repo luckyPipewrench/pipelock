@@ -13,33 +13,6 @@ import (
 
 const testAllowedETH = "0x742d35cc6634c0532925a3b844bc9e7595f2bd3e"
 
-func TestStripZeroWidth(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-		want  string
-	}{
-		{"no zero-width", "hello world", "hello world"},
-		{"zero-width space", "hello\u200Bworld", "helloworld"},
-		{"zero-width joiner", "hello\u200Dworld", "helloworld"},
-		{"BOM", "\uFEFFhello", "hello"},
-		{"soft hyphen", "hel\u00ADlo", "hello"},
-		{"LTR mark", "hello\u200Eworld", "helloworld"},
-		{"RTL mark", "hello\u200Fworld", "helloworld"},
-		{"word joiner", "hello\u2060world", "helloworld"},
-		{"multiple types", "\u200B\u200C\u200D\uFEFF\u00AD\u200E\u200F", ""},
-		{"empty", "", ""},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := stripZeroWidth(tt.input)
-			if got != tt.want {
-				t.Errorf("got %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestIterativeURLDecode(t *testing.T) {
 	tests := []struct {
 		name  string

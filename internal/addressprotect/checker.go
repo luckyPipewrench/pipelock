@@ -11,15 +11,11 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"net/url"
-	"strings"
 	"unicode/utf8"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
-
-// maxDecodeRounds limits iterative URL decoding to prevent infinite loops
-// on malformed input (same constant as scanner.IterativeDecode).
-const maxDecodeRounds = 10
 
 // Checker is the runtime orchestrator for address protection.
 // One shared instance per Scanner. Holds compiled validators and the
@@ -139,7 +135,7 @@ func (c *Checker) CheckText(text, agentID string) Result {
 	// Do NOT use StripControlChars (strips \n, \t which serve as word
 	// boundaries in joined text from extract.AllStringsFromJSON).
 	// Do NOT use ForDLP (NFKC/confusable mapping corrupts base58/bech32).
-	cleaned := stripZeroWidth(text)
+	cleaned := normalize.StripZeroWidth(text)
 
 	// Step 2: Iterative URL decode (inline, avoids circular import with scanner).
 	cleaned = iterativeURLDecode(cleaned)
@@ -225,9 +221,12 @@ func (c *Checker) effectiveAllowlist(agentID string) map[string][]string {
 	return merged
 }
 
+// maxDecodeRounds limits iterative URL decoding to prevent infinite loops.
+const maxDecodeRounds = 10
+
 // iterativeURLDecode applies URL decoding until the string stops changing.
-// Catches multi-layer encoding (e.g., %2530x → %30x → 0x).
-// Inlined to avoid circular import with internal/scanner.
+// Duplicates scanner.IterativeDecode because scanner imports addressprotect
+// (circular import). normalize.StripZeroWidth is fine — no cycle there.
 func iterativeURLDecode(s string) string {
 	for range maxDecodeRounds {
 		decoded, err := url.QueryUnescape(s)
@@ -264,28 +263,6 @@ func tryHexDecode(s string) (string, bool) {
 		return "", false
 	}
 	return string(decoded), true
-}
-
-// stripZeroWidth removes zero-width Unicode characters that attackers use
-// to break address detection. Only targets invisible Unicode chars — does
-// NOT strip ASCII whitespace (newlines, tabs) which serve as word boundaries
-// in joined text from extract.AllStringsFromJSON.
-func stripZeroWidth(s string) string {
-	// Fast path: most strings have no zero-width chars.
-	if !strings.ContainsAny(s, "\u200B\u200C\u200D\uFEFF\u00AD\u200E\u200F\u2060\u2061\u2062\u2063\u2064") {
-		return s
-	}
-	return strings.Map(func(r rune) rune {
-		switch r {
-		case '\u200B', '\u200C', '\u200D', '\uFEFF', // zero-width space, joiner, non-joiner, BOM
-			'\u00AD',           // soft hyphen
-			'\u200E', '\u200F', // LTR/RTL marks
-			'\u2060', '\u2061', '\u2062', '\u2063', '\u2064': // word joiner, function application, etc.
-			return -1
-		default:
-			return r
-		}
-	}, s)
 }
 
 // StrictestAction returns the strictest action across a set of findings.

@@ -307,8 +307,8 @@ dlp:
 | `scan_env` | `true` | Scan environment variables for leaked values |
 | `secrets_file` | `""` | Path to file with known secrets (one per line) |
 | `min_env_secret_length` | `16` | Min env var value length to consider |
-| `include_defaults` | `true` | Merge your patterns with the 36 built-in patterns |
-| `patterns` | 36 built-in | DLP credential detection patterns |
+| `include_defaults` | `true` | Merge your patterns with the 41 built-in patterns |
+| `patterns` | 41 built-in | DLP credential detection patterns |
 | `patterns[].exempt_domains` | `[]` | Domains where this pattern is not enforced (wildcard supported) |
 
 ### Pattern Merging
@@ -337,7 +337,7 @@ dlp:
         - "*.anthropic.com"
 ```
 
-### Built-in DLP Patterns (36)
+### Built-in DLP Patterns (41)
 
 | Pattern | Regex Prefix | Severity |
 |---------|-------------|----------|
@@ -351,19 +351,24 @@ dlp:
 | Google OAuth Token | `ya29.` | high |
 | Google OAuth Client ID | `*.apps.googleusercontent.com` | medium |
 | Stripe Key | `[sr]k_live\|test_` | critical |
+| Stripe Webhook Secret | `whsec_` | critical |
 | GitHub Token | `gh[pousr]_` | critical |
 | GitHub Fine-Grained PAT | `github_pat_` | critical |
+| GitLab PAT | `glpat-` | critical |
 | Slack Token | `xox[bpras]-` | critical |
 | Slack App Token | `xapp-` | critical |
 | Discord Bot Token | `[MN][A-Za-z0-9]{23,}` | critical |
 | Twilio API Key | `SK[a-f0-9]{32}` | critical |
 | SendGrid API Key | `SG.` | critical |
 | Mailgun API Key | `key-[a-zA-Z0-9]{32}` | critical |
+| New Relic API Key | `NRAK-` | critical |
 | Hugging Face Token | `hf_` | critical |
 | Databricks Token | `dapi` | critical |
 | Replicate API Token | `r8_` | critical |
 | Together AI Key | `tok_` | critical |
 | Pinecone API Key | `pcsk_` | critical |
+| Groq API Key | `gsk_` | critical |
+| xAI API Key | `xai-` | critical |
 | DigitalOcean Token | `dop_v1_` | critical |
 | HashiCorp Vault Token | `hvs.` | critical |
 | Vercel Token | `vercel_\|vc[piark]_` | critical |

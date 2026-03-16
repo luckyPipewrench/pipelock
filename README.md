@@ -213,7 +213,7 @@ What each mode prevents, detects, or logs:
 
 ### 9-Layer URL Scanner
 
-Every request passes through: scheme validation, domain blocklist, DLP pattern matching (36 built-in patterns for API keys, tokens, and credentials), path entropy analysis, subdomain entropy analysis, SSRF protection with DNS rebinding prevention, per-domain rate limiting, URL length limits, and per-domain data budgets.
+Every request passes through: scheme validation, domain blocklist, DLP pattern matching (41 built-in patterns for API keys, tokens, and credentials), path entropy analysis, subdomain entropy analysis, SSRF protection with DNS rebinding prevention, per-domain rate limiting, URL length limits, and per-domain data budgets.
 
 DLP runs before DNS resolution, designed to catch secrets before any DNS query leaves the proxy. See [docs/bypass-resistance.md](docs/bypass-resistance.md) for the full evasion test matrix.
 
@@ -415,7 +415,7 @@ curl http://localhost:9090/api/v1/killswitch/status \
   "version": "x.y.z",
   "mode": "balanced",
   "uptime_seconds": 3600.5,
-  "dlp_patterns": 36,
+  "dlp_patterns": 41,
   "response_scan_enabled": true,
   "kill_switch_active": false
 }

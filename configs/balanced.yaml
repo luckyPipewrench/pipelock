@@ -101,12 +101,18 @@ dlp:
     - name: "Stripe Key"
       regex: '[sr]k_(live|test)_[a-zA-Z0-9]{20,}'
       severity: critical
+    - name: "Stripe Webhook Secret"
+      regex: 'whsec_[a-zA-Z0-9_\-]{20,}'
+      severity: critical
     # Source control tokens
     - name: "GitHub Token"
       regex: 'gh[pousr]_[A-Za-z0-9_]{36,}'
       severity: critical
     - name: "GitHub Fine-Grained PAT"
       regex: 'github_pat_[a-zA-Z0-9_]{36,}'
+      severity: critical
+    - name: "GitLab PAT"
+      regex: 'glpat-[a-zA-Z0-9\-_]{20,}'
       severity: critical
     # Cloud provider credentials
     - name: "AWS Access ID"
@@ -135,6 +141,10 @@ dlp:
     - name: "Mailgun API Key"
       regex: 'key-[a-zA-Z0-9]{32}'
       severity: high
+    # Observability / monitoring
+    - name: "New Relic API Key"
+      regex: 'NRAK-[A-Z0-9]{27,}'
+      severity: critical
     # AI/ML provider keys
     - name: "Hugging Face Token"
       regex: 'hf_[A-Za-z0-9]{20,}'
@@ -150,6 +160,12 @@ dlp:
       severity: critical
     - name: "Pinecone API Key"
       regex: 'pcsk_[a-zA-Z0-9]{36,}'
+      severity: critical
+    - name: "Groq API Key"
+      regex: 'gsk_[a-zA-Z0-9]{48,}'
+      severity: critical
+    - name: "xAI API Key"
+      regex: 'xai-[a-zA-Z0-9\-_]{80,}'
       severity: critical
     # Infrastructure and platform tokens
     - name: "DigitalOcean Token"

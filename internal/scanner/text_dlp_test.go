@@ -273,6 +273,12 @@ func TestScanTextForDLP(t *testing.T) {
 			wantClean:   false,
 			wantPattern: "GitHub Token",
 		},
+		{
+			name:        "raw DLP pattern match - GitLab PAT",
+			text:        "My token is " + "glpat-" + strings.Repeat("aB1cD2eF3gH4iJ5k", 2),
+			wantClean:   false,
+			wantPattern: "GitLab PAT",
+		},
 		// --- New patterns ---
 		{
 			name:        "Fireworks API Key",
@@ -378,6 +384,30 @@ func TestScanTextForDLP(t *testing.T) {
 			text:        "My token is " + "pcsk_" + strings.Repeat("d", 40),
 			wantClean:   false,
 			wantPattern: "Pinecone API Key",
+		},
+		{
+			name:        "raw DLP pattern match - Groq API Key",
+			text:        "My key is " + "gsk_" + strings.Repeat("aB1c", 12),
+			wantClean:   false,
+			wantPattern: "Groq API Key",
+		},
+		{
+			name:        "raw DLP pattern match - xAI API Key",
+			text:        "My key is " + "xai-" + strings.Repeat("abcdef12", 10),
+			wantClean:   false,
+			wantPattern: "xAI API Key",
+		},
+		{
+			name:        "raw DLP pattern match - Stripe Webhook Secret",
+			text:        "My secret is " + "whsec_" + strings.Repeat("aB1cD2eF3gH4iJ5k", 2),
+			wantClean:   false,
+			wantPattern: "Stripe Webhook Secret",
+		},
+		{
+			name:        "raw DLP pattern match - New Relic API Key",
+			text:        "My key is " + "NRAK-" + strings.Repeat("ABCDEF1234567", 3),
+			wantClean:   false,
+			wantPattern: "New Relic API Key",
 		},
 		// --- Cloud/infra tokens ---
 		{

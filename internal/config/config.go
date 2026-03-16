@@ -2268,10 +2268,14 @@ func Defaults() *Config {
 				{Name: "Google API Key", Regex: `AIza[0-9A-Za-z\-_]{35}`, Severity: "high"},
 				{Name: "Google OAuth Client Secret", Regex: `GOCSPX-[A-Za-z0-9_\-]{28,}`, Severity: "critical"},
 				{Name: "Stripe Key", Regex: `[sr]k_(live|test)_[a-zA-Z0-9]{20,}`, Severity: "critical"},
+				// Stripe webhook signing secrets: "whsec_" prefix.
+				{Name: "Stripe Webhook Secret", Regex: `whsec_[a-zA-Z0-9_\-]{20,}`, Severity: "critical"},
 
 				// Source control tokens
 				{Name: "GitHub Token", Regex: `gh[pousr]_[A-Za-z0-9_]{36,}`, Severity: "critical"},
 				{Name: "GitHub Fine-Grained PAT", Regex: `github_pat_[a-zA-Z0-9_]{36,}`, Severity: "critical"},
+				// GitLab personal access tokens: "glpat-" prefix, 20+ chars.
+				{Name: "GitLab PAT", Regex: `glpat-[a-zA-Z0-9\-_]{20,}`, Severity: "critical"},
 
 				// Cloud provider credentials
 				// All AWS credential prefixes: AKIA (access key), ASIA (STS temp), AROA (role),
@@ -2290,6 +2294,10 @@ func Defaults() *Config {
 				{Name: "SendGrid API Key", Regex: `SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}`, Severity: "critical"},
 				{Name: "Mailgun API Key", Regex: `key-[a-zA-Z0-9]{32}`, Severity: "high"},
 
+				// Observability / monitoring
+				// New Relic user API keys: "NRAK-" prefix, 27+ uppercase alphanumeric.
+				{Name: "New Relic API Key", Regex: `NRAK-[A-Z0-9]{27,}`, Severity: "critical"},
+
 				// AI/ML provider keys
 				{Name: "Hugging Face Token", Regex: `hf_[A-Za-z0-9]{20,}`, Severity: "critical"},
 				{Name: "Databricks Token", Regex: `dapi[a-z0-9]{30,}`, Severity: "critical"},
@@ -2297,6 +2305,10 @@ func Defaults() *Config {
 				{Name: "Together AI Key", Regex: `tok_[a-z0-9]{40,}`, Severity: "critical"},
 				// Pinecone API keys: "pcsk_" prefix followed by alphanumeric.
 				{Name: "Pinecone API Key", Regex: `pcsk_[a-zA-Z0-9]{36,}`, Severity: "critical"},
+				// Groq inference API keys: "gsk_" prefix, 48+ alphanumeric chars.
+				{Name: "Groq API Key", Regex: `gsk_[a-zA-Z0-9]{48,}`, Severity: "critical"},
+				// xAI (Grok) API keys: "xai-" prefix, 80+ chars including hyphens.
+				{Name: "xAI API Key", Regex: `xai-[a-zA-Z0-9\-_]{80,}`, Severity: "critical"},
 
 				// Infrastructure and platform tokens
 				// DigitalOcean personal access tokens: 64 hex chars after prefix.

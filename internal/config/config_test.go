@@ -6654,3 +6654,123 @@ func TestValidateReload_SecretsFileChanged_SentryWarning(t *testing.T) {
 		t.Error("expected sentry warning when dlp.secrets_file changes")
 	}
 }
+
+func TestDefaults_Rules(t *testing.T) {
+	cfg := Defaults()
+	cfg.Internal = nil
+	if cfg.Rules.MinConfidence != ConfidenceMedium {
+		t.Errorf("expected default min_confidence %q, got %q", ConfidenceMedium, cfg.Rules.MinConfidence)
+	}
+	if cfg.Rules.IncludeExperimental {
+		t.Error("expected default include_experimental to be false")
+	}
+}
+
+func TestValidate_RulesMinConfidence(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		wantErr bool
+	}{
+		{name: "high", value: ConfidenceHigh, wantErr: false},
+		{name: "medium", value: ConfidenceMedium, wantErr: false},
+		{name: "low", value: ConfidenceLow, wantErr: false},
+		{name: "invalid", value: testInvalid, wantErr: true},
+		{name: "empty after override", value: "", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.Internal = nil
+			cfg.Rules.MinConfidence = tt.value
+			err := cfg.Validate()
+			if tt.wantErr && err == nil {
+				t.Error("expected validation error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidate_RulesDisabledFormat(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		wantErr bool
+	}{
+		{name: "namespaced", value: "community:sql-injection", wantErr: false},
+		{name: "glob star", value: "community:*", wantErr: false},
+		{name: "glob question", value: "test-rule?", wantErr: false},
+		{name: "bare name", value: "no-namespace", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.Internal = nil
+			cfg.Rules.Disabled = []string{tt.value}
+			err := cfg.Validate()
+			if tt.wantErr && err == nil {
+				t.Error("expected validation error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidate_RulesTrustedKeyFormat(t *testing.T) {
+	tests := []struct {
+		name    string
+		key     TrustedKey
+		wantErr bool
+	}{
+		{
+			name:    "empty name",
+			key:     TrustedKey{Name: "", PublicKey: strings.Repeat("ab", 32)},
+			wantErr: true,
+		},
+		{
+			name:    "too short",
+			key:     TrustedKey{Name: testCustomName, PublicKey: "abcd"},
+			wantErr: true,
+		},
+		{
+			name:    "uppercase hex",
+			key:     TrustedKey{Name: testCustomName, PublicKey: strings.Repeat("AB", 32)},
+			wantErr: true,
+		},
+		{
+			name:    "non-hex chars",
+			key:     TrustedKey{Name: testCustomName, PublicKey: strings.Repeat("zz", 32)},
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.Internal = nil
+			cfg.Rules.TrustedKeys = []TrustedKey{tt.key}
+			err := cfg.Validate()
+			if tt.wantErr && err == nil {
+				t.Error("expected validation error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidate_RulesTrustedKeyValidHex(t *testing.T) {
+	cfg := Defaults()
+	cfg.Internal = nil
+	cfg.Rules.TrustedKeys = []TrustedKey{
+		{Name: testCustomName, PublicKey: strings.Repeat("ab", 32)},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("expected valid trusted key to pass: %v", err)
+	}
+}

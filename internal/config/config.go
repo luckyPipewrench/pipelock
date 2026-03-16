@@ -60,6 +60,13 @@ const (
 	SeverityMedium   = "medium"
 )
 
+// Confidence constants for community rule minimum confidence filtering.
+const (
+	ConfidenceHigh   = "high"
+	ConfidenceMedium = "medium"
+	ConfidenceLow    = "low"
+)
+
 // Origin policy constants for WebSocket proxy.
 const (
 	OriginPolicyRewrite = "rewrite"
@@ -163,6 +170,21 @@ func toSlash(s string) string {
 	return strings.ReplaceAll(s, "\\", "/")
 }
 
+// Rules configures community rule bundle loading.
+type Rules struct {
+	RulesDir            string       `yaml:"rules_dir"`
+	MinConfidence       string       `yaml:"min_confidence"`
+	IncludeExperimental bool         `yaml:"include_experimental"`
+	Disabled            []string     `yaml:"disabled"`
+	TrustedKeys         []TrustedKey `yaml:"trusted_keys"`
+}
+
+// TrustedKey is a named Ed25519 public key for verifying third-party bundles.
+type TrustedKey struct {
+	Name      string `yaml:"name"`
+	PublicKey string `yaml:"public_key"` // 64 lowercase hex chars
+}
+
 // Config is the top-level Pipelock configuration.
 type Config struct {
 	Version               int                     `yaml:"version"`
@@ -194,6 +216,7 @@ type Config struct {
 	TLSInterception       TLSInterception         `yaml:"tls_interception"`
 	CrossRequestDetection CrossRequestDetection   `yaml:"cross_request_detection"`
 	ScanAPI               ScanAPI                 `yaml:"scan_api"`
+	Rules                 Rules                   `yaml:"rules"`
 	Agents                map[string]AgentProfile `yaml:"agents,omitempty"`
 	LicenseKey            string                  `yaml:"license_key,omitempty"`        // signed license token (from pipelock license issue)
 	LicenseFile           string                  `yaml:"license_file,omitempty"`       // path to file containing the license token (read at startup)
@@ -1153,6 +1176,11 @@ func (c *Config) ApplyDefaults() {
 			}
 		}
 	}
+
+	// Community rules defaults
+	if c.Rules.MinConfidence == "" {
+		c.Rules.MinConfidence = ConfidenceMedium
+	}
 }
 
 // mergeDLPPatterns merges default DLP patterns with user-defined patterns.
@@ -1798,6 +1826,43 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// Validate community rules config
+	switch c.Rules.MinConfidence {
+	case ConfidenceHigh, ConfidenceMedium, ConfidenceLow:
+		// valid
+	default:
+		return fmt.Errorf("rules: min_confidence %q must be high, medium, or low", c.Rules.MinConfidence)
+	}
+	for i, d := range c.Rules.Disabled {
+		if strings.Contains(d, ":") {
+			// Namespaced ID like "community:rule-name" — valid.
+			continue
+		}
+		if strings.ContainsAny(d, "*?") {
+			// Glob pattern like "community:*" or "test-*" — valid.
+			continue
+		}
+		return fmt.Errorf("rules: disabled[%d] %q must contain ':' (namespaced) or be a glob pattern with * or ?", i, d)
+	}
+	for i, k := range c.Rules.TrustedKeys {
+		if k.Name == "" {
+			return fmt.Errorf("rules: trusted_keys[%d] name must be non-empty", i)
+		}
+		if len(k.PublicKey) != 64 {
+			return fmt.Errorf("rules: trusted_keys[%d] %q public_key must be exactly 64 hex chars", i, k.Name)
+		}
+		if k.PublicKey != strings.ToLower(k.PublicKey) {
+			return fmt.Errorf("rules: trusted_keys[%d] %q public_key must be lowercase hex", i, k.Name)
+		}
+		decoded, err := hex.DecodeString(k.PublicKey)
+		if err != nil {
+			return fmt.Errorf("rules: trusted_keys[%d] %q public_key invalid hex: %w", i, k.Name, err)
+		}
+		if len(decoded) != 32 {
+			return fmt.Errorf("rules: trusted_keys[%d] %q public_key must decode to 32 bytes", i, k.Name)
+		}
+	}
+
 	// Validate agent profiles (enterprise hook; nil in OSS).
 	if ValidateAgentsFunc != nil {
 		if err := ValidateAgentsFunc(c); err != nil {
@@ -2438,6 +2503,9 @@ func Defaults() *Config {
 				PromptInjection: true,
 				ToolCall:        true,
 			},
+		},
+		Rules: Rules{
+			MinConfidence: ConfidenceMedium,
 		},
 	}
 	return cfg

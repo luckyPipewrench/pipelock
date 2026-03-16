@@ -118,6 +118,9 @@ func extractResponseKeywords(regex string) []string {
 	}
 
 	// Leading alternation group: (ignore|disregard|forget)
+	// ALL branches must produce a keyword. If any branch has no extractable
+	// keyword, the pattern goes to alwaysRun (conservative: never skip a
+	// pattern that could match through a keywordless branch).
 	if strings.HasPrefix(s, "(") {
 		closeIdx := findMatchingParen(s)
 		if closeIdx > 0 && strings.Contains(s[1:closeIdx], "|") {
@@ -129,6 +132,9 @@ func extractResponseKeywords(regex string) []string {
 				lit := extractLiteralRun(b)
 				if len(lit) >= 3 {
 					keywords = append(keywords, lit)
+				} else {
+					// Branch without keyword → can't gate this pattern.
+					return nil
 				}
 			}
 			if len(keywords) > 0 {
@@ -220,11 +226,13 @@ func extractLiteralRun(s string) string {
 			if i+1 < len(s) {
 				next := s[i+1]
 				switch next {
-				case '.', '\\', '-', '_', '\'':
+				case '.', '\\', '-', '_', '\'', '[', ']', '(', ')', '{', '}', '+', '*', '?', '^', '$', '|', '/', '!', ':':
+					// Escaped literal character — treat as keyword content.
 					result = append(result, next)
 					i++
 					continue
 				default:
+					// \s, \d, \b, \w, etc. are metacharacters — stop.
 					return string(result)
 				}
 			}

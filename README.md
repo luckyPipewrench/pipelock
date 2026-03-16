@@ -41,7 +41,7 @@ brew install luckyPipewrench/tap/pipelock
 # Or with Docker
 docker pull ghcr.io/luckypipewrench/pipelock:latest
 
-# Or from source (requires Go 1.24+)
+# Or from source (requires Go 1.25+)
 go install github.com/luckyPipewrench/pipelock/cmd/pipelock@latest
 ```
 
@@ -211,9 +211,9 @@ What each mode prevents, detects, or logs:
 
 ## Features
 
-### 9-Layer URL Scanner
+### 11-Layer URL Scanner
 
-Every request passes through: scheme validation, domain blocklist, DLP pattern matching (36 built-in patterns for API keys, tokens, and credentials), path entropy analysis, subdomain entropy analysis, SSRF protection with DNS rebinding prevention, per-domain rate limiting, URL length limits, and per-domain data budgets.
+Every request passes through: scheme validation, CRLF injection detection, path traversal blocking, domain blocklist, DLP pattern matching (36 built-in patterns for API keys, tokens, and credentials), path entropy analysis, subdomain entropy analysis, SSRF protection with DNS rebinding prevention, per-domain rate limiting, URL length limits, and per-domain data budgets.
 
 DLP runs before DNS resolution, designed to catch secrets before any DNS query leaves the proxy. See [docs/bypass-resistance.md](docs/bypass-resistance.md) for the full evasion test matrix.
 
@@ -509,7 +509,7 @@ Canonical metrics, updated each release.
 | Statement coverage | 90%+ |
 | Evasion techniques tested | 230+ |
 | Scanner pipeline overhead | ~21μs per URL scan ([performance details](docs/performance.md)) |
-| CI matrix | Go 1.24 + 1.25, CodeQL, golangci-lint |
+| CI matrix | Go 1.25 + 1.26, CodeQL, golangci-lint |
 | Supply chain | SLSA provenance, CycloneDX SBOM, cosign signatures |
 | OpenSSF Scorecard | [Live score](https://scorecard.dev/viewer/?uri=github.com/luckyPipewrench/pipelock) |
 

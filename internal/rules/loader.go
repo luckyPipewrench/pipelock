@@ -85,7 +85,9 @@ func LoadBundles(rulesDir string, opts LoadOptions) *LoadResult {
 	// Collect subdirectory names alphabetically (ReadDir returns sorted).
 	var dirs []os.DirEntry
 	for _, e := range entries {
-		if e.IsDir() {
+		// Skip non-directories, hidden staging dirs (.stage-*), and backup dirs (.bak suffix)
+		// left by interrupted install/update operations.
+		if e.IsDir() && !strings.HasPrefix(e.Name(), ".") && !strings.HasSuffix(e.Name(), ".bak") {
 			dirs = append(dirs, e)
 		}
 	}

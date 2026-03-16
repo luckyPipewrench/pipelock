@@ -9,46 +9,55 @@ import (
 	"time"
 )
 
+// BundleRuleHit records which community bundle rule triggered a detection.
+// Deserialized from audit JSONL and preserved in report output.
+type BundleRuleHit struct {
+	RuleID        string `json:"rule_id"`
+	Bundle        string `json:"bundle"`
+	BundleVersion string `json:"bundle_version"`
+}
+
 // Event represents a single parsed audit log entry.
 type Event struct {
-	Time           time.Time `json:"time"`
-	Level          string    `json:"level"`
-	Event          string    `json:"event"`
-	Component      string    `json:"component,omitempty"`
-	Message        string    `json:"message,omitempty"`
-	Method         string    `json:"method,omitempty"`
-	URL            string    `json:"url,omitempty"`
-	Target         string    `json:"target,omitempty"`
-	Scanner        string    `json:"scanner,omitempty"`
-	Reason         string    `json:"reason,omitempty"`
-	Action         string    `json:"action,omitempty"`
-	ClientIP       string    `json:"client_ip,omitempty"`
-	RequestID      string    `json:"request_id,omitempty"`
-	StatusCode     int       `json:"status_code,omitempty"`
-	SizeBytes      int       `json:"size_bytes,omitempty"`
-	MatchCount     int       `json:"match_count,omitempty"`
-	Patterns       []string  `json:"patterns,omitempty"`
-	MITRETechnique string    `json:"mitre_technique,omitempty"`
-	Score          float64   `json:"score,omitempty"`
-	Version        string    `json:"version,omitempty"`
-	ConfigHash     string    `json:"config_hash,omitempty"`
-	Mode           string    `json:"mode,omitempty"`
-	Pattern        string    `json:"pattern,omitempty"`
-	Severity       string    `json:"severity,omitempty"`
-	Session        string    `json:"session,omitempty"`
-	Tool           string    `json:"tool,omitempty"`
-	Direction      string    `json:"direction,omitempty"`
-	Header         string    `json:"header,omitempty"`
-	Listen         string    `json:"listen,omitempty"`
-	Status         string    `json:"status,omitempty"`
-	Detail         string    `json:"detail,omitempty"`
-	Transport      string    `json:"transport,omitempty"`
-	Endpoint       string    `json:"endpoint,omitempty"`
-	Source         string    `json:"source,omitempty"`
-	DenyMessage    string    `json:"deny_message,omitempty"`
-	ConnectHost    string    `json:"connect_host,omitempty"`
-	SNIHost        string    `json:"sni_host,omitempty"`
-	Category       string    `json:"category,omitempty"`
+	Time           time.Time       `json:"time"`
+	Level          string          `json:"level"`
+	Event          string          `json:"event"`
+	Component      string          `json:"component,omitempty"`
+	Message        string          `json:"message,omitempty"`
+	Method         string          `json:"method,omitempty"`
+	URL            string          `json:"url,omitempty"`
+	Target         string          `json:"target,omitempty"`
+	Scanner        string          `json:"scanner,omitempty"`
+	Reason         string          `json:"reason,omitempty"`
+	Action         string          `json:"action,omitempty"`
+	ClientIP       string          `json:"client_ip,omitempty"`
+	RequestID      string          `json:"request_id,omitempty"`
+	StatusCode     int             `json:"status_code,omitempty"`
+	SizeBytes      int             `json:"size_bytes,omitempty"`
+	MatchCount     int             `json:"match_count,omitempty"`
+	Patterns       []string        `json:"patterns,omitempty"`
+	BundleRules    []BundleRuleHit `json:"bundle_rules,omitempty"`
+	MITRETechnique string          `json:"mitre_technique,omitempty"`
+	Score          float64         `json:"score,omitempty"`
+	Version        string          `json:"version,omitempty"`
+	ConfigHash     string          `json:"config_hash,omitempty"`
+	Mode           string          `json:"mode,omitempty"`
+	Pattern        string          `json:"pattern,omitempty"`
+	Severity       string          `json:"severity,omitempty"`
+	Session        string          `json:"session,omitempty"`
+	Tool           string          `json:"tool,omitempty"`
+	Direction      string          `json:"direction,omitempty"`
+	Header         string          `json:"header,omitempty"`
+	Listen         string          `json:"listen,omitempty"`
+	Status         string          `json:"status,omitempty"`
+	Detail         string          `json:"detail,omitempty"`
+	Transport      string          `json:"transport,omitempty"`
+	Endpoint       string          `json:"endpoint,omitempty"`
+	Source         string          `json:"source,omitempty"`
+	DenyMessage    string          `json:"deny_message,omitempty"`
+	ConnectHost    string          `json:"connect_host,omitempty"`
+	SNIHost        string          `json:"sni_host,omitempty"`
+	Category       string          `json:"category,omitempty"`
 }
 
 // Report is the top-level report data structure.

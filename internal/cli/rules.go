@@ -30,31 +30,29 @@ import (
 const officialRegistryURL = "https://rules.pipelock.dev"
 
 // loadRulesConfig loads the pipelock config for trusted key resolution.
-// Resolution order: explicit --config flag, PIPELOCK_CONFIG env var,
-// ./pipelock.yaml in the current directory. Returns nil config (no
-// trusted keys) if none found — this is not an error.
-func loadRulesConfig(configFile string) *config.Config {
-	// Explicit flag takes priority.
+// When configFile is explicitly set (--config flag), load failures are fatal
+// (returned as error). Auto-discovery (PIPELOCK_CONFIG env, cwd pipelock.yaml)
+// is best-effort: failures return nil config, not an error.
+func loadRulesConfig(configFile string) (*config.Config, error) {
+	// Explicit flag: hard error on failure.
 	if configFile != "" {
 		cfg, err := config.Load(configFile)
 		if err != nil {
-			return nil
+			return nil, fmt.Errorf("loading config %q: %w", configFile, err)
 		}
-		return cfg
+		return cfg, nil
 	}
-	// Try PIPELOCK_CONFIG env var.
+	// Try PIPELOCK_CONFIG env var (best-effort).
 	if envPath := os.Getenv("PIPELOCK_CONFIG"); envPath != "" {
-		cfg, err := config.Load(envPath)
-		if err != nil {
-			return nil
+		if cfg, err := config.Load(envPath); err == nil {
+			return cfg, nil
 		}
-		return cfg
 	}
-	// Try pipelock.yaml in current directory.
+	// Try pipelock.yaml in current directory (best-effort).
 	if cfg, err := config.Load("pipelock.yaml"); err == nil {
-		return cfg
+		return cfg, nil
 	}
-	return nil
+	return nil, nil
 }
 
 // HTTP fetch timeout for remote bundle downloads.
@@ -258,7 +256,7 @@ func rulesListCmd() *cobra.Command {
 
 			var bundles []bundleListEntry
 			for _, e := range entries {
-				if !e.IsDir() {
+				if !e.IsDir() || strings.HasPrefix(e.Name(), ".") || strings.HasSuffix(e.Name(), ".bak") {
 					continue
 				}
 				lockPath := filepath.Join(dir, e.Name(), "bundle.lock")
@@ -432,7 +430,9 @@ func installRemote(out io.Writer, rulesDir, bundleURL, configFile, expectedName 
 
 	// Load trusted keys from config (explicit flag, env, or cwd).
 	var trustedKeys []config.TrustedKey
-	if cfg := loadRulesConfig(configFile); cfg != nil {
+	if cfg, cfgErr := loadRulesConfig(configFile); cfgErr != nil {
+		return cfgErr
+	} else if cfg != nil {
 		trustedKeys = cfg.Rules.TrustedKeys
 	}
 
@@ -609,7 +609,9 @@ Local (unsigned) bundles are skipped during update.`,
 			defer unlock()
 
 			var trustedKeys []config.TrustedKey
-			if cfg := loadRulesConfig(configFile); cfg != nil {
+			if cfg, cfgErr := loadRulesConfig(configFile); cfgErr != nil {
+				return cfgErr
+			} else if cfg != nil {
 				trustedKeys = cfg.Rules.TrustedKeys
 			}
 
@@ -629,7 +631,7 @@ Local (unsigned) bundles are skipped during update.`,
 
 			var updated int
 			for _, e := range entries {
-				if !e.IsDir() {
+				if !e.IsDir() || strings.HasPrefix(e.Name(), ".") || strings.HasSuffix(e.Name(), ".bak") {
 					continue
 				}
 				err := updateBundle(out, dir, e.Name(), trustedKeys, force, allowKeyRotate)
@@ -760,7 +762,9 @@ func rulesVerifyCmd() *cobra.Command {
 			dir := rules.ResolveRulesDir(rulesDir)
 
 			var trustedKeys []config.TrustedKey
-			if cfg := loadRulesConfig(configFile); cfg != nil {
+			if cfg, cfgErr := loadRulesConfig(configFile); cfgErr != nil {
+				return cfgErr
+			} else if cfg != nil {
 				trustedKeys = cfg.Rules.TrustedKeys
 			}
 
@@ -776,7 +780,7 @@ func rulesVerifyCmd() *cobra.Command {
 			var failures int
 			var checked int
 			for _, e := range entries {
-				if !e.IsDir() {
+				if !e.IsDir() || strings.HasPrefix(e.Name(), ".") || strings.HasSuffix(e.Name(), ".bak") {
 					continue
 				}
 				checked++

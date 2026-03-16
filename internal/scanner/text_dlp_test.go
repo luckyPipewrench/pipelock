@@ -502,7 +502,7 @@ func TestScanTextForDLP_Deduplication(t *testing.T) {
 		if m.PatternName == testAnthropicName && m.Encoded == "" {
 			rawCount++
 		}
-		if m.PatternName == testAnthropicName && m.Encoded == "base64" {
+		if m.PatternName == testAnthropicName && m.Encoded == encodingBase64 {
 			b64Count++
 		}
 	}
@@ -1281,12 +1281,119 @@ func TestScanTextForDLP_SegmentBase64_EncodingLabel(t *testing.T) {
 	}
 	found := false
 	for _, m := range result.Matches {
-		if m.PatternName == testAnthropicName && m.Encoded == "base64" {
+		if m.PatternName == testAnthropicName && m.Encoded == encodingBase64 {
 			found = true
 			break
 		}
 	}
 	if !found {
 		t.Errorf("expected match with encoding='base64', got matches: %+v", result.Matches)
+	}
+}
+
+func TestScanTextForDLP_BundleProvenance(t *testing.T) {
+	const (
+		bundleName    = "acme/dlp-extras"
+		bundleVersion = "2026.03"
+	)
+
+	cfg := testConfig()
+	// Add a DLP pattern with bundle provenance.
+	cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{
+		Name:          "Custom Bundle Secret",
+		Regex:         `custsecret_[A-Za-z0-9]{20,}`,
+		Severity:      "high",
+		Bundle:        bundleName,
+		BundleVersion: bundleVersion,
+	})
+	s := New(cfg)
+	defer s.Close()
+
+	result := s.ScanTextForDLP(context.Background(), "leak: custsecret_"+strings.Repeat("x", 25))
+	if result.Clean {
+		t.Fatal("expected DLP match for custom bundle pattern")
+	}
+
+	var found bool
+	for _, m := range result.Matches {
+		if m.PatternName == "Custom Bundle Secret" {
+			found = true
+			if m.Bundle != bundleName {
+				t.Errorf("Bundle = %q, want %q", m.Bundle, bundleName)
+			}
+			if m.BundleVersion != bundleVersion {
+				t.Errorf("BundleVersion = %q, want %q", m.BundleVersion, bundleVersion)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected 'Custom Bundle Secret' match, got: %v", result.Matches)
+	}
+}
+
+func TestScanTextForDLP_BuiltinPatternNoBundleProvenance(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// Built-in Anthropic key pattern should have empty bundle fields.
+	result := s.ScanTextForDLP(context.Background(), testAnthropicPrefix+strings.Repeat("a", 25))
+	if result.Clean {
+		t.Fatal("expected DLP match")
+	}
+	for _, m := range result.Matches {
+		if m.PatternName == testAnthropicName {
+			if m.Bundle != "" {
+				t.Errorf("built-in pattern should have empty Bundle, got %q", m.Bundle)
+			}
+			if m.BundleVersion != "" {
+				t.Errorf("built-in pattern should have empty BundleVersion, got %q", m.BundleVersion)
+			}
+			return
+		}
+	}
+	t.Error("expected Anthropic API Key match")
+}
+
+func TestScanTextForDLP_BundleProvenance_Encoded(t *testing.T) {
+	const (
+		bundleName    = "acme/dlp-extras"
+		bundleVersion = "2026.03"
+	)
+
+	cfg := testConfig()
+	cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{
+		Name:          "Custom Bundle Secret",
+		Regex:         `custsecret_[A-Za-z0-9]{20,}`,
+		Severity:      "high",
+		Bundle:        bundleName,
+		BundleVersion: bundleVersion,
+	})
+	s := New(cfg)
+	defer s.Close()
+
+	// Base64-encode the secret so it goes through matchDLPPatterns path.
+	secret := "custsecret_" + strings.Repeat("y", 25)
+	encoded := base64.StdEncoding.EncodeToString([]byte(secret))
+
+	result := s.ScanTextForDLP(context.Background(), encoded)
+	if result.Clean {
+		t.Fatal("expected DLP match for base64-encoded custom bundle secret")
+	}
+
+	var found bool
+	for _, m := range result.Matches {
+		if m.PatternName == "Custom Bundle Secret" && m.Encoded == encodingBase64 {
+			found = true
+			if m.Bundle != bundleName {
+				t.Errorf("Bundle = %q, want %q", m.Bundle, bundleName)
+			}
+			if m.BundleVersion != bundleVersion {
+				t.Errorf("BundleVersion = %q, want %q", m.BundleVersion, bundleVersion)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected base64 match with bundle provenance, got: %v", result.Matches)
 	}
 }

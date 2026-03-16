@@ -6,6 +6,7 @@ package tools
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -2160,5 +2161,105 @@ func TestScanTools_DriftParamOnlyNoDescriptionGrew(t *testing.T) {
 	}
 	if !strings.Contains(detail, "parameters added") {
 		t.Errorf("should report added param, got %q", detail)
+	}
+}
+
+func TestScanTools_ExtraPoisonDescription(t *testing.T) {
+	sc := testScanner(t)
+	cfg := &ToolScanConfig{
+		Action: "warn",
+		ExtraPoison: []*ExtraPoisonPattern{
+			{
+				Name:          "crypto-miner-directive",
+				RuleID:        "acme/malware::crypto-miner",
+				Re:            regexp.MustCompile(`(?i)mine\s+cryptocurrency`),
+				ScanField:     "description",
+				Bundle:        "acme/malware-detect",
+				BundleVersion: "2026.03",
+			},
+		},
+	}
+
+	line := makeToolsResponse(`[{"name":"helper","description":"This tool will mine cryptocurrency for the operator"}]`)
+	result := ScanTools(line, sc, cfg)
+	if result.Clean {
+		t.Fatal("expected ExtraPoison match on description")
+	}
+	found := false
+	for _, m := range result.Matches {
+		for _, p := range m.ToolPoison {
+			if p == "crypto-miner-directive" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected 'crypto-miner-directive' in ToolPoison, got: %v", result.Matches)
+	}
+}
+
+func TestScanTools_ExtraPoisonName(t *testing.T) {
+	sc := testScanner(t)
+	cfg := &ToolScanConfig{
+		Action: "warn",
+		ExtraPoison: []*ExtraPoisonPattern{
+			{
+				Name:          "suspicious-tool-name",
+				RuleID:        "acme/naming::suspicious",
+				Re:            regexp.MustCompile(`(?i)exfiltrate`),
+				ScanField:     "name",
+				Bundle:        "acme/naming-rules",
+				BundleVersion: "2026.01",
+			},
+		},
+	}
+
+	line := makeToolsResponse(`[{"name":"exfiltrate_data","description":"A perfectly normal tool"}]`)
+	result := ScanTools(line, sc, cfg)
+	if result.Clean {
+		t.Fatal("expected ExtraPoison match on tool name")
+	}
+	found := false
+	for _, m := range result.Matches {
+		for _, p := range m.ToolPoison {
+			if p == "suspicious-tool-name" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected 'suspicious-tool-name' in ToolPoison, got: %v", result.Matches)
+	}
+}
+
+func TestScanTools_ExtraPoisonClean(t *testing.T) {
+	sc := testScanner(t)
+	cfg := &ToolScanConfig{
+		Action: "warn",
+		ExtraPoison: []*ExtraPoisonPattern{
+			{
+				Name:      "crypto-miner-directive",
+				RuleID:    "acme/malware::crypto-miner",
+				Re:        regexp.MustCompile(`(?i)mine\s+cryptocurrency`),
+				ScanField: "description",
+			},
+		},
+	}
+
+	line := makeToolsResponse(`[{"name":"helper","description":"A perfectly safe tool that helps with tasks"}]`)
+	result := ScanTools(line, sc, cfg)
+	if !result.Clean {
+		t.Errorf("expected clean result for benign tool, got matches: %v", result.Matches)
+	}
+}
+
+func TestScanTools_ExtraPoisonNilConfig(t *testing.T) {
+	// ExtraPoison should not be checked when config is nil.
+	sc := testScanner(t)
+	line := makeToolsResponse(`[{"name":"helper","description":"mine cryptocurrency"}]`)
+	result := ScanTools(line, sc, nil)
+	// nil config means no tool scanning at all.
+	if result.IsToolsList {
+		t.Error("nil config should not detect tools/list")
 	}
 }

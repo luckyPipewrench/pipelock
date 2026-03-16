@@ -282,8 +282,10 @@ type ResponseScanning struct {
 
 // ResponseScanPattern is a named regex pattern for detecting prompt injection in responses.
 type ResponseScanPattern struct {
-	Name  string `yaml:"name"`
-	Regex string `yaml:"regex"`
+	Name          string `yaml:"name"`
+	Regex         string `yaml:"regex"`
+	Bundle        string `yaml:"-"` // set by rules loader, not from YAML
+	BundleVersion string `yaml:"-"` // set by rules loader, not from YAML
 }
 
 // ForwardProxy configures HTTP CONNECT and absolute-URI forward proxy support.
@@ -389,6 +391,8 @@ type DLPPattern struct {
 	Regex         string   `yaml:"regex"`
 	Severity      string   `yaml:"severity"`       // critical, high, medium, low
 	ExemptDomains []string `yaml:"exempt_domains"` // domains where this pattern is not enforced
+	Bundle        string   `yaml:"-"`              // set by rules loader, not from YAML
+	BundleVersion string   `yaml:"-"`              // set by rules loader, not from YAML
 }
 
 // LoggingConfig configures audit logging.

@@ -54,6 +54,16 @@ type ToolScanResult struct {
 	ToolNames   []string        `json:"-"` // tool names from tools/list (for session binding)
 }
 
+// ExtraPoisonPattern is a tool-poison pattern from a community rule bundle.
+type ExtraPoisonPattern struct {
+	Name          string
+	RuleID        string // namespaced rule ID
+	Re            *regexp.Regexp
+	ScanField     string // "description" or "name"
+	Bundle        string
+	BundleVersion string
+}
+
 // ToolScanConfig holds configuration for MCP tool description scanning.
 // A nil ToolScanConfig disables tool scanning entirely.
 // Session binding fields are optional: when BindingUnknownAction is non-empty,
@@ -67,6 +77,9 @@ type ToolScanConfig struct {
 	// RunProxy wires tools/call validation into the input scanner.
 	BindingUnknownAction    string // warn, block — action for unknown tool calls
 	BindingNoBaselineAction string // warn, block — action before baseline established
+
+	// ExtraPoison holds tool-poison patterns from community rule bundles.
+	ExtraPoison []*ExtraPoisonPattern
 }
 
 // ToolBaseline tracks SHA256 hashes of tool definitions for rug pull detection
@@ -706,6 +719,23 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) []T
 					match.ToolPoison = append(match.ToolPoison, "Exfiltration Parameter Name")
 					hasFinding = true
 					break
+				}
+			}
+
+			// Community rule bundle extra-poison patterns.
+			if cfg != nil && len(cfg.ExtraPoison) > 0 {
+				for _, ep := range cfg.ExtraPoison {
+					var target string
+					switch ep.ScanField {
+					case "name":
+						target = normalize.ForToolText(tool.Name)
+					default:
+						target = normalize.ForToolText(text)
+					}
+					if ep.Re.MatchString(target) {
+						match.ToolPoison = append(match.ToolPoison, ep.Name)
+						hasFinding = true
+					}
 				}
 			}
 		}

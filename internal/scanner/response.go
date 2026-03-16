@@ -23,9 +23,11 @@ type ResponseScanResult struct {
 
 // ResponseMatch describes a single pattern match in response content.
 type ResponseMatch struct {
-	PatternName string `json:"pattern_name"`
-	MatchText   string `json:"match_text"` // truncated to 100 chars
-	Position    int    `json:"position"`
+	PatternName   string `json:"pattern_name"`
+	MatchText     string `json:"match_text"` // truncated to 100 chars
+	Position      int    `json:"position"`
+	Bundle        string `json:"bundle,omitempty"`
+	BundleVersion string `json:"bundle_version,omitempty"`
 }
 
 // ScanResponse checks fetched content for prompt injection patterns.
@@ -170,9 +172,11 @@ func matchPatternsAgainst(patterns []*compiledPattern, content string) []Respons
 				matchText = string(runes[:100])
 			}
 			matches = append(matches, ResponseMatch{
-				PatternName: p.name,
-				MatchText:   matchText,
-				Position:    loc[0],
+				PatternName:   p.name,
+				MatchText:     matchText,
+				Position:      loc[0],
+				Bundle:        p.bundle,
+				BundleVersion: p.bundleVersion,
 			})
 		}
 	}
@@ -205,9 +209,11 @@ func (s *Scanner) matchResponsePatternsPreFiltered(content string) []ResponseMat
 				matchText = string(runes[:100])
 			}
 			matches = append(matches, ResponseMatch{
-				PatternName: p.name,
-				MatchText:   matchText,
-				Position:    loc[0],
+				PatternName:   p.name,
+				MatchText:     matchText,
+				Position:      loc[0],
+				Bundle:        p.bundle,
+				BundleVersion: p.bundleVersion,
 			})
 		}
 	}

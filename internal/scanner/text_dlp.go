@@ -15,9 +15,11 @@ import (
 
 // TextDLPMatch describes a single DLP pattern match in arbitrary text.
 type TextDLPMatch struct {
-	PatternName string `json:"pattern_name"`
-	Severity    string `json:"severity"`
-	Encoded     string `json:"encoded,omitempty"` // "", "base64", "hex", "base32", "env", "url", "subdomain"
+	PatternName   string `json:"pattern_name"`
+	Severity      string `json:"severity"`
+	Encoded       string `json:"encoded,omitempty"` // "", "base64", "hex", "base32", "env", "url", "subdomain"
+	Bundle        string `json:"bundle,omitempty"`
+	BundleVersion string `json:"bundle_version,omitempty"`
 }
 
 // TextDLPResult describes the outcome of scanning text for DLP patterns.
@@ -49,8 +51,10 @@ func (s *Scanner) ScanTextForDLP(_ context.Context, text string) TextDLPResult {
 		p := s.dlpPatterns[idx]
 		if p.re.MatchString(cleaned) {
 			matches = append(matches, TextDLPMatch{
-				PatternName: p.name,
-				Severity:    p.severity,
+				PatternName:   p.name,
+				Severity:      p.severity,
+				Bundle:        p.bundle,
+				BundleVersion: p.bundleVersion,
 			})
 		}
 	}
@@ -129,9 +133,11 @@ func (s *Scanner) matchDLPPatterns(text, encoding string) []TextDLPMatch {
 		p := s.dlpPatterns[idx]
 		if p.re.MatchString(text) {
 			matches = append(matches, TextDLPMatch{
-				PatternName: p.name,
-				Severity:    p.severity,
-				Encoded:     encoding,
+				PatternName:   p.name,
+				Severity:      p.severity,
+				Encoded:       encoding,
+				Bundle:        p.bundle,
+				BundleVersion: p.bundleVersion,
 			})
 		}
 	}

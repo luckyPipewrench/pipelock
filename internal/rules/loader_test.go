@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -1196,6 +1197,47 @@ func TestLoadBundles_AllRulesDisabled(t *testing.T) {
 	}
 	if result.Loaded[0].Rules != 0 {
 		t.Errorf("Loaded.Rules = %d, want 0", result.Loaded[0].Rules)
+	}
+}
+
+func TestLoadBundles_SkipsBakDirectories(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+
+	// Create a .bak directory that looks like a bundle.
+	bakDir := filepath.Join(dir, "test-bundle.bak")
+	if err := os.MkdirAll(bakDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bakDir, "bundle.yaml"), []byte("invalid"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a hidden staging directory.
+	stageDir := filepath.Join(dir, ".stage-test-abc123")
+	if err := os.MkdirAll(stageDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stageDir, "bundle.yaml"), []byte("invalid"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result := LoadBundles(dir, LoadOptions{
+		MinConfidence:   confidenceLow,
+		PipelockVersion: testPipelockVersion,
+	})
+
+	// Neither .bak nor .stage should appear as errors or loaded bundles.
+	for _, e := range result.Errors {
+		if strings.HasSuffix(e.Name, ".bak") || strings.HasPrefix(e.Name, ".") {
+			t.Errorf("staging artifact should be skipped, got error for %q", e.Name)
+		}
+	}
+	for _, b := range result.Loaded {
+		if strings.HasSuffix(b.Name, ".bak") || strings.HasPrefix(b.Name, ".") {
+			t.Errorf("staging artifact should be skipped, got loaded bundle %q", b.Name)
+		}
 	}
 }
 

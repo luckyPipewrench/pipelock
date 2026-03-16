@@ -994,6 +994,30 @@ func TestDecodeSignatureBytes_Invalid(t *testing.T) {
 	}
 }
 
+// ---------- loadRulesConfig tests ----------
+
+func TestLoadRulesConfig_ExplicitPathError(t *testing.T) {
+	// Explicit --config with nonexistent file must return error.
+	_, err := loadRulesConfig("/nonexistent/pipelock.yaml")
+	if err == nil {
+		t.Error("expected error for nonexistent explicit config path")
+	}
+}
+
+func TestLoadRulesConfig_EmptyFallback(t *testing.T) {
+	// Empty configFile + no env + no cwd config → nil, nil (not an error).
+	t.Setenv("PIPELOCK_CONFIG", "")
+	cfg, err := loadRulesConfig("")
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	// cfg may be nil (no config found) or non-nil (if pipelock.yaml exists in cwd).
+	// Either is OK — the key invariant is no error.
+	_ = cfg
+}
+
+// ---------- helper tests (no globals, safe for parallel) ----------
+
 func TestRuleChanged(t *testing.T) {
 	t.Parallel()
 

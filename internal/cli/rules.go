@@ -374,11 +374,7 @@ func installLocal(out io.Writer, rulesDir, localPath string, allowUnsigned bool)
 		return err
 	}
 
-	// Stage into temp dir then rename.
-	if err := stageBundle(rulesDir, bundle.Name, data, nil); err != nil {
-		return err
-	}
-
+	// Build lock file and stage everything atomically.
 	now := timeNowUTC()
 	lf := &rules.LockFile{
 		InstalledVersion: bundle.Version,
@@ -388,9 +384,8 @@ func installLocal(out io.Writer, rulesDir, localPath string, allowUnsigned bool)
 		BundleSHA256:     digest,
 		Unsigned:         true,
 	}
-	lockPath := filepath.Join(destDir, "bundle.lock")
-	if err := rules.WriteLockFile(lockPath, lf); err != nil {
-		return fmt.Errorf("writing lock file: %w", err)
+	if err := stageBundle(rulesDir, bundle.Name, data, nil, lf); err != nil {
+		return err
 	}
 
 	_, _ = fmt.Fprintf(out, "Installed %s v%s (unsigned, local)\n", bundle.Name, bundle.Version)
@@ -448,10 +443,7 @@ func installRemote(out io.Writer, rulesDir, bundleURL, configFile, expectedName 
 		return err
 	}
 
-	if err := stageBundle(rulesDir, bundle.Name, bundleData, sigData); err != nil {
-		return err
-	}
-
+	// Build lock file and stage everything atomically.
 	now := timeNowUTC()
 	lf := &rules.LockFile{
 		InstalledVersion:  bundle.Version,
@@ -461,9 +453,8 @@ func installRemote(out io.Writer, rulesDir, bundleURL, configFile, expectedName 
 		BundleSHA256:      digest,
 		SignerFingerprint: result.SignerFingerprint,
 	}
-	lockPath := filepath.Join(destDir, "bundle.lock")
-	if err := rules.WriteLockFile(lockPath, lf); err != nil {
-		return fmt.Errorf("writing lock file: %w", err)
+	if err := stageBundle(rulesDir, bundle.Name, bundleData, sigData, lf); err != nil {
+		return err
 	}
 
 	_, _ = fmt.Fprintf(out, "Installed %s v%s (%s)\n", bundle.Name, bundle.Version, result.Tier)
@@ -491,9 +482,12 @@ func checkExistingInstall(destDir, version, digest string) error {
 	return nil
 }
 
-// stageBundle writes bundle files into a temp directory under rulesDir,
-// then atomically renames to the final location.
-func stageBundle(rulesDir, bundleName string, bundleData, sigData []byte) error {
+// stageBundle writes bundle files and lock into a temp directory under rulesDir,
+// then atomically swaps to the final location. The lock file is included in the
+// staged directory so that no observer (startup, verify, concurrent CLI) can see
+// a bundle without matching provenance. If an existing bundle is present, it is
+// moved to a backup before the swap and removed only after success.
+func stageBundle(rulesDir, bundleName string, bundleData, sigData []byte, lf *rules.LockFile) error {
 	destDir := filepath.Join(rulesDir, bundleName)
 
 	// Create temp staging directory.
@@ -524,12 +518,36 @@ func stageBundle(rulesDir, bundleName string, bundleData, sigData []byte) error 
 		}
 	}
 
-	// Remove existing destination if present.
-	_ = os.RemoveAll(destDir)
+	// Write lock file inside the staged directory so the rename is fully atomic:
+	// no window where bundle exists without matching provenance.
+	lockPath := filepath.Join(tmpDir, "bundle.lock")
+	if err := rules.WriteLockFile(lockPath, lf); err != nil {
+		return fmt.Errorf("writing staged lock file: %w", err)
+	}
 
-	// Atomic rename.
+	// If the destination already exists, move it to a backup instead of deleting.
+	// This preserves the last known-good bundle if the rename fails.
+	backupDir := ""
+	if _, statErr := os.Stat(destDir); statErr == nil {
+		backupDir = destDir + ".bak"
+		_ = os.RemoveAll(backupDir) // remove stale backup from prior failed attempt
+		if err := os.Rename(destDir, backupDir); err != nil {
+			return fmt.Errorf("backing up existing bundle: %w", err)
+		}
+	}
+
+	// Atomic rename into final location.
 	if err := os.Rename(tmpDir, destDir); err != nil {
+		// Restore backup if rename failed.
+		if backupDir != "" {
+			_ = os.Rename(backupDir, destDir)
+		}
 		return fmt.Errorf("installing bundle (rename): %w", err)
+	}
+
+	// Remove backup after successful swap.
+	if backupDir != "" {
+		_ = os.RemoveAll(backupDir)
 	}
 
 	success = true
@@ -691,11 +709,7 @@ func updateBundle(out io.Writer, rulesDir, name string, trustedKeys []config.Tru
 		return fmt.Errorf("update %s: same version %s but different digest (possible republish attack, use --force to override)", name, bundle.Version)
 	}
 
-	// Perform update: stage + rename.
-	if err := stageBundle(rulesDir, name, bundleData, sigData); err != nil {
-		return err
-	}
-
+	// Build lock file and stage everything atomically.
 	newLF := &rules.LockFile{
 		InstalledVersion:  bundle.Version,
 		InstalledAt:       now,
@@ -704,9 +718,8 @@ func updateBundle(out io.Writer, rulesDir, name string, trustedKeys []config.Tru
 		BundleSHA256:      newDigest,
 		SignerFingerprint: result.SignerFingerprint,
 	}
-	newLockPath := filepath.Join(rulesDir, name, "bundle.lock")
-	if err := rules.WriteLockFile(newLockPath, newLF); err != nil {
-		return fmt.Errorf("writing lock file for %s: %w", name, err)
+	if err := stageBundle(rulesDir, name, bundleData, sigData, newLF); err != nil {
+		return err
 	}
 
 	_, _ = fmt.Fprintf(out, "Updated %s: v%s -> v%s\n", name, lf.InstalledVersion, bundle.Version)

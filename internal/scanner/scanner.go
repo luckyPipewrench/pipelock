@@ -1009,9 +1009,31 @@ func (s *Scanner) checkDLP(parsed *url.URL) Result {
 				}
 			}
 		}
-		// Decoded path variants (base64/hex/base32 encoded path segments).
-		if decodedPath != "" && decodedPath != parsed.Path {
-			seedTargets = append(seedTargets, decodedPath)
+		// Ordered query-value concatenation with spaces: catches seed phrases
+		// split across params (e.g., ?w1=abandon&w2=abandon&...&w12=about).
+		// orderedQueryConcat joins without separators (for regex DLP), so we
+		// build a space-separated version for seed word tokenization.
+		if parsed.RawQuery != "" && strings.Contains(parsed.RawQuery, "&") {
+			var seedConcat strings.Builder
+			for i, pair := range strings.Split(parsed.RawQuery, "&") {
+				_, value, _ := strings.Cut(pair, "=")
+				if value != "" {
+					if i > 0 {
+						seedConcat.WriteByte(' ')
+					}
+					seedConcat.WriteString(IterativeDecode(value))
+				}
+			}
+			seedTargets = append(seedTargets, seedConcat.String())
+		}
+		// Decoded path segments: base64/hex/base32 encoded seed phrases in path.
+		for _, seg := range strings.Split(parsed.Path, "/") {
+			if len(seg) < 20 {
+				continue
+			}
+			for _, d := range decodeEncodings(IterativeDecode(seg)) {
+				seedTargets = append(seedTargets, d.text)
+			}
 		}
 		// Hostname labels: catch seed words as subdomain labels
 		// (e.g., "abandon.abandon.abandon...evil.com" exfils via DNS).

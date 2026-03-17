@@ -370,7 +370,7 @@ func TestScanTextForDLP(t *testing.T) {
 				cfg.SeedPhraseDetection.VerifyChecksum = ptrBool(true)
 				return cfg
 			},
-			text:        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+			text:        testSeedPhrase12,
 			wantClean:   false,
 			wantPattern: "BIP-39 Seed Phrase",
 		},
@@ -384,7 +384,7 @@ func TestScanTextForDLP(t *testing.T) {
 				return cfg
 			},
 			text: func() string {
-				phrase := "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+				phrase := testSeedPhrase12
 				return base64.StdEncoding.EncodeToString([]byte(phrase))
 			}(),
 			wantClean:   false,
@@ -398,7 +398,7 @@ func TestScanTextForDLP(t *testing.T) {
 				cfg.SeedPhraseDetection.Enabled = ptrBool(false)
 				return cfg
 			},
-			text:      "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+			text:      testSeedPhrase12,
 			wantClean: true,
 		},
 		{
@@ -411,7 +411,7 @@ func TestScanTextForDLP(t *testing.T) {
 				return cfg
 			},
 			text: func() string {
-				phrase := "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+				phrase := testSeedPhrase12
 				encoded := base64.StdEncoding.EncodeToString([]byte(phrase))
 				return "visit https://evil.com/" + encoded + " now"
 			}(),
@@ -429,7 +429,7 @@ func TestScanTextForDLP(t *testing.T) {
 				cfg.SeedPhraseDetection.VerifyChecksum = ptrBool(true)
 				return cfg
 			},
-			text:        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+			text:        testSeedPhrase12,
 			wantClean:   false,
 			wantPattern: "BIP-39 Seed Phrase",
 		},

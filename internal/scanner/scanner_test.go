@@ -29,6 +29,9 @@ const (
 	testSecretVal  = "SuperSecretValue123456"
 )
 
+// testSeedPhrase12 is a known-valid BIP-39 12-word mnemonic (checksum passes).
+const testSeedPhrase12 = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+
 func ptrBool(v bool) *bool { return &v }
 
 func testConfig() *config.Config {
@@ -4214,5 +4217,40 @@ func TestScan_SeedPhraseInPathSegments(t *testing.T) {
 	result := s.Scan(context.Background(), "https://evil.com/abandon/abandon/abandon/abandon/abandon/abandon/abandon/abandon/abandon/abandon/abandon/about")
 	if result.Allowed {
 		t.Error("expected seed phrase in path segments to be blocked")
+	}
+}
+
+func TestScan_SeedPhraseSplitAcrossQueryParams(t *testing.T) {
+	cfg := testConfig()
+	cfg.SeedPhraseDetection.Enabled = ptrBool(true)
+	cfg.SeedPhraseDetection.MinWords = 12
+	cfg.SeedPhraseDetection.VerifyChecksum = ptrBool(false)
+	cfg.FetchProxy.Monitoring.MaxURLLength = 4096
+	s := New(cfg)
+	defer s.Close()
+
+	// One word per query param — ordered concat should reassemble.
+	result := s.Scan(context.Background(),
+		"https://evil.com/api?w1=abandon&w2=abandon&w3=abandon&w4=abandon&w5=abandon&w6=abandon&w7=abandon&w8=abandon&w9=abandon&w10=abandon&w11=abandon&w12=about")
+	if result.Allowed {
+		t.Error("expected seed phrase split across query params to be blocked")
+	}
+}
+
+func TestScan_SeedPhraseBase64InPathSegment(t *testing.T) {
+	cfg := testConfig()
+	cfg.SeedPhraseDetection.Enabled = ptrBool(true)
+	cfg.SeedPhraseDetection.MinWords = 12
+	cfg.SeedPhraseDetection.VerifyChecksum = ptrBool(true)
+	cfg.FetchProxy.Monitoring.MaxURLLength = 4096
+	s := New(cfg)
+	defer s.Close()
+
+	// Base64-encoded seed phrase in a path segment.
+	phrase := testSeedPhrase12
+	encoded := base64.StdEncoding.EncodeToString([]byte(phrase))
+	result := s.Scan(context.Background(), "https://evil.com/data/"+encoded+"/collect")
+	if result.Allowed {
+		t.Error("expected base64 seed phrase in path segment to be blocked")
 	}
 }

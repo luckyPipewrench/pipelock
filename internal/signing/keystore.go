@@ -23,7 +23,7 @@ const (
 	privateKeyFile   = "id_ed25519"
 	publicKeyFile    = "id_ed25519.pub"
 	maxAgentNameLen  = 64
-	dirPermission    = 0o700
+	dirPermission    = 0o750
 	trustedPubSuffix = ".pub"
 )
 

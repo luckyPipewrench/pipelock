@@ -337,7 +337,7 @@ dlp:
         - "*.anthropic.com"
 ```
 
-### Built-in DLP Patterns (41)
+### Built-in DLP Patterns (44)
 
 | Pattern | Regex Prefix | Severity |
 |---------|-------------|----------|
@@ -380,6 +380,9 @@ dlp:
 | Sentry Auth Token | `sntrys_` | high |
 | JWT Token | `ey...\..*\.` | high |
 | Private Key Header | `-----BEGIN.*PRIVATE KEY-----` | critical |
+| Bitcoin WIF Private Key | `[5KL]` + base58 | critical |
+| Extended Private Key | `[xyzt]prv` + base58 | critical |
+| Ethereum Private Key | `0x` + 64 hex | critical |
 | Social Security Number | `\b\d{3}-\d{2}-\d{4}\b` | critical |
 | Credential in URL | `password\|token\|secret=value` | high |
 | Prompt Injection | `(ignore\|disregard\|forget)...previous...instructions` | high |
@@ -404,6 +407,27 @@ When `scan_env: true`, pipelock reads all environment variables at startup and f
 - Checked in raw form, base64, hex, and base32 encodings
 
 This catches leaked API keys even without a specific DLP pattern for that provider.
+
+## Seed Phrase Detection
+
+Detects BIP-39 mnemonic seed phrases in URLs, request bodies, headers, MCP tool arguments, WebSocket frames, and cross-request fragment reassembly. Seed phrase compromise is permanent and irreversible, making this a critical detection layer for crypto-adjacent deployments.
+
+```yaml
+seed_phrase_detection:
+  enabled: true          # default: true (security default)
+  min_words: 12          # minimum consecutive BIP-39 words to trigger (12, 15, 18, 21, or 24)
+  verify_checksum: true  # default: true (validates BIP-39 SHA-256 checksum, eliminates FPs)
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `true` | Enable BIP-39 seed phrase detection |
+| `min_words` | int | `12` | Minimum consecutive BIP-39 words to trigger. Must be 12, 15, 18, 21, or 24. |
+| `verify_checksum` | bool | `true` | Validate the BIP-39 SHA-256 checksum. Reduces false positives by 16x for 12-word phrases, 256x for 24-word. |
+
+The detector uses a dedicated scanner (not regex). It tokenizes text, runs a sliding window over the 2048-word BIP-39 English dictionary, and validates the checksum. Detection covers varied separators (spaces, commas, newlines, dashes, tabs, pipes).
+
+Action follows the transport-level DLP action: URL scan always blocks, MCP input uses `mcp_input_scanning.action`, body/header uses `request_body_scanning.action`.
 
 ## Response Scanning
 

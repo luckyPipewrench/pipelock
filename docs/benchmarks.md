@@ -10,7 +10,7 @@ Configuration (balanced defaults):
 - SSRF protection disabled (no DNS lookups in benchmarks)
 - Rate limiting disabled (no time-dependent state)
 - Response scanning: 20 prompt injection patterns
-- DLP: 41 patterns
+- DLP: 44 patterns + BIP-39 seed phrase detection
 
 Run `make bench` to reproduce on your hardware.
 
@@ -122,4 +122,20 @@ go test -bench=BenchmarkParallel -benchtime=3s -cpu=1,4,8,16 ./internal/mcp/
 
 # Concurrent throughput scaling test (1-64 goroutines, ~28s)
 PIPELOCK_BENCH_SCALING=1 go test -v -run=TestConcurrentThroughputScaling ./internal/scanner/
+
+# Seed phrase detection
+go test -bench=BenchmarkSeed -benchmem ./internal/seedprotect/
 ```
+
+## BIP-39 Seed Phrase Detection (`seedprotect.Detect()`)
+
+Dedicated scanner for BIP-39 mnemonic seed phrases. Uses dictionary lookup + sliding window + SHA-256 checksum validation.
+
+| Benchmark | ns/op | B/op | allocs/op | Description |
+|-----------|-------|------|-----------|-------------|
+| `SeedDetect_CleanText` | 2,229 | 1,803 | 20 | Short text with no BIP-39 words (fast bail) |
+| `SeedDetect_ValidPhrase` | 2,926 | 1,756 | 18 | 12-word valid mnemonic (full pipeline + checksum) |
+| `SeedDetect_LongText` | 2,853,140 | 858,447 | 6,368 | 1000-word text, all BIP-39 words (worst case) |
+| `SeedChecksum` | 136 | 0 | 0 | Checksum validation in isolation |
+
+Clean text bails in ~2us. Valid phrase detection including checksum takes ~3us. The 1000-word worst case (all BIP-39 words) is a pathological input that doesn't occur in real traffic. Checksum validation is 136ns with zero allocations.

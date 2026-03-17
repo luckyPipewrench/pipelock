@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
+	"github.com/luckyPipewrench/pipelock/internal/seedprotect"
 )
 
 // TextDLPMatch describes a single DLP pattern match in arbitrary text.
@@ -107,6 +108,59 @@ func (s *Scanner) ScanTextForDLP(_ context.Context, text string) TextDLPResult {
 	// where whole-string decode fails because the text isn't pure hex/base64.
 	if len(matches) == 0 {
 		matches = append(matches, s.decodeTextSegments(cleaned)...)
+	}
+
+	// Seed phrase detection uses ForMatching() normalization (preserves whitespace)
+	// instead of ForDLP() (strips whitespace, destroying word boundaries).
+	if s.seedEnabled {
+		seedText := normalize.ForMatching(text)
+		type seedCandidate struct {
+			text    string
+			encoded string
+		}
+		candidates := []seedCandidate{{seedText, ""}}
+		// URL-decoded variant
+		if decoded := IterativeDecode(seedText); decoded != seedText {
+			candidates = append(candidates, seedCandidate{decoded, "url"})
+		}
+		// Base64-decoded variant
+		for _, enc := range []*base64.Encoding{
+			base64.StdEncoding, base64.URLEncoding,
+			base64.RawStdEncoding, base64.RawURLEncoding,
+		} {
+			if decoded, err := enc.DecodeString(strings.TrimSpace(seedText)); err == nil && len(decoded) > 0 {
+				candidates = append(candidates, seedCandidate{string(decoded), "base64"})
+			}
+		}
+		// Hex-decoded variant
+		if decoded, err := hex.DecodeString(strings.TrimSpace(seedText)); err == nil && len(decoded) > 0 {
+			candidates = append(candidates, seedCandidate{string(decoded), "hex"})
+		}
+		// Segment-level decoding: split on URL/path delimiters and try decoding
+		// each segment. Catches encoded seed phrases embedded in URLs within
+		// MCP tool arguments (parity with decodeTextSegments for regex DLP).
+		segments := strings.FieldsFunc(seedText, func(r rune) bool {
+			return r == '/' || r == '?' || r == '&' || r == '='
+		})
+		for _, seg := range segments {
+			if len(seg) < 20 { // seed phrases are long; skip short segments
+				continue
+			}
+			for _, d := range decodeEncodings(seg) {
+				candidates = append(candidates, seedCandidate{d.text, d.encoding})
+			}
+		}
+		for _, c := range candidates {
+			if seedMatches := seedprotect.Detect(c.text, s.seedMinWords, s.seedVerifyChecksum); len(seedMatches) > 0 {
+				encoded := c.encoded
+				matches = append(matches, TextDLPMatch{
+					PatternName: "BIP-39 Seed Phrase",
+					Severity:    "critical",
+					Encoded:     encoded,
+				})
+				break // one seed match per scan is sufficient
+			}
+		}
 	}
 
 	// Check for env secret leaks (raw + encoded forms).

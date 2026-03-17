@@ -196,6 +196,7 @@ type Config struct {
 	CrossRequestDetection CrossRequestDetection   `yaml:"cross_request_detection"`
 	ScanAPI               ScanAPI                 `yaml:"scan_api"`
 	AddressProtection     AddressProtection       `yaml:"address_protection"`
+	SeedPhraseDetection   SeedPhraseDetection     `yaml:"seed_phrase_detection"`
 	Agents                map[string]AgentProfile `yaml:"agents,omitempty"`
 	LicenseKey            string                  `yaml:"license_key,omitempty"`        // signed license token (from pipelock license issue)
 	LicenseFile           string                  `yaml:"license_file,omitempty"`       // path to file containing the license token (read at startup)
@@ -397,6 +398,15 @@ type AddressChains struct {
 type SimilarityConfig struct {
 	PrefixLength int `yaml:"prefix_length"` // default 4
 	SuffixLength int `yaml:"suffix_length"` // default 4
+}
+
+// SeedPhraseDetection configures BIP-39 mnemonic seed phrase detection.
+// Action is not configurable here — it follows the transport-level DLP action
+// (URL scan: block, MCP/body/header: transport config).
+type SeedPhraseDetection struct {
+	Enabled        *bool `yaml:"enabled"`         // nil = true (security default)
+	MinWords       int   `yaml:"min_words"`       // minimum consecutive BIP-39 words (default 12)
+	VerifyChecksum *bool `yaml:"verify_checksum"` // nil = true (validate BIP-39 checksum)
 }
 
 // LoggingConfig configures audit logging.
@@ -1589,6 +1599,17 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// Validate seed phrase detection config
+	if c.SeedPhraseDetection.Enabled == nil || *c.SeedPhraseDetection.Enabled {
+		if c.SeedPhraseDetection.MinWords == 0 {
+			c.SeedPhraseDetection.MinWords = 12
+		}
+		validMinWords := map[int]bool{12: true, 15: true, 18: true, 21: true, 24: true}
+		if !validMinWords[c.SeedPhraseDetection.MinWords] {
+			return fmt.Errorf("invalid seed_phrase_detection.min_words %d: must be 12, 15, 18, 21, or 24", c.SeedPhraseDetection.MinWords)
+		}
+	}
+
 	// Validate cross-request detection config
 	if c.CrossRequestDetection.Enabled {
 		if !c.CrossRequestDetection.EntropyBudget.Enabled && !c.CrossRequestDetection.FragmentReassembly.Enabled {
@@ -2182,6 +2203,32 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		})
 	}
 
+	// Seed phrase detection disabled
+	if (old.SeedPhraseDetection.Enabled == nil || *old.SeedPhraseDetection.Enabled) &&
+		updated.SeedPhraseDetection.Enabled != nil && !*updated.SeedPhraseDetection.Enabled {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "seed_phrase_detection.enabled",
+			Message: "seed phrase detection disabled",
+		})
+	}
+	// Seed phrase checksum verification disabled
+	if (old.SeedPhraseDetection.VerifyChecksum == nil || *old.SeedPhraseDetection.VerifyChecksum) &&
+		updated.SeedPhraseDetection.VerifyChecksum != nil && !*updated.SeedPhraseDetection.VerifyChecksum {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "seed_phrase_detection.verify_checksum",
+			Message: "seed phrase checksum verification disabled — increased false positive risk",
+		})
+	}
+	// Seed phrase min_words decreased
+	if old.SeedPhraseDetection.MinWords > 0 &&
+		updated.SeedPhraseDetection.MinWords > 0 &&
+		updated.SeedPhraseDetection.MinWords < old.SeedPhraseDetection.MinWords {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "seed_phrase_detection.min_words",
+			Message: fmt.Sprintf("seed phrase min_words decreased from %d to %d", old.SeedPhraseDetection.MinWords, updated.SeedPhraseDetection.MinWords),
+		})
+	}
+
 	// Emit sinks removed
 	if old.Emit.Webhook.URL != "" && updated.Emit.Webhook.URL == "" {
 		warnings = append(warnings, ReloadWarning{
@@ -2417,6 +2464,17 @@ func Defaults() *Config {
 				{Name: "Private Key Header", Regex: `-----BEGIN\s+(RSA\s+|EC\s+|DSA\s+|OPENSSH\s+)?PRIVATE\s+KEY-----`, Severity: "critical"},
 				{Name: "JWT Token", Regex: `(ey[a-zA-Z0-9_\-=]{10,}\.){2}[a-zA-Z0-9_\-=]{10,}`, Severity: "high"},
 
+				// Cryptocurrency private keys
+				// Bitcoin WIF: base58check, starts with 5 (uncompressed) or K/L (compressed).
+				// Mainnet only; testnet (9/c prefixes) deferred.
+				{Name: "Bitcoin WIF Private Key", Regex: `[5KL][1-9A-HJ-NP-Za-km-z]{50,51}`, Severity: "critical"},
+				// Extended private keys (BIP-32/49/84): xprv/yprv/zprv (mainnet) + tprv (testnet).
+				// 111 total chars, base58check encoded.
+				{Name: "Extended Private Key", Regex: `[xyzt]prv[1-9A-HJ-NP-Za-km-z]{107,108}`, Severity: "critical"},
+				// Ethereum/EVM private keys: 0x-prefixed 64-char hex (256-bit).
+				// Requires 0x to avoid SHA-256 hash false positives. (?i) auto-prefix covers 0X.
+				{Name: "Ethereum Private Key", Regex: `0x[0-9a-f]{64}\b`, Severity: "critical"},
+
 				// Identity / PII
 				{Name: "Social Security Number", Regex: `\b\d{3}-\d{2}-\d{4}\b`, Severity: "low"},
 				{Name: "Google OAuth Client ID", Regex: `[0-9]{6,}-[0-9A-Za-z_]{32}\.apps\.googleusercontent\.com`, Severity: "medium"},
@@ -2497,6 +2555,11 @@ func Defaults() *Config {
 				"Proxy-Authorization",
 				"X-Goog-Api-Key",
 			},
+		},
+		SeedPhraseDetection: SeedPhraseDetection{
+			Enabled:        ptrBool(true),
+			MinWords:       12,
+			VerifyChecksum: ptrBool(true),
 		},
 		Internal: []string{
 			"0.0.0.0/8",

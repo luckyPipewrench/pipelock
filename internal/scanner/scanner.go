@@ -27,6 +27,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
+	"github.com/luckyPipewrench/pipelock/internal/seedprotect"
 )
 
 // Scanner label constants. These values flow into Prometheus metrics
@@ -84,6 +85,9 @@ type Scanner struct {
 	responseEnabled            bool
 	subdomainExclusions        []string // domains excluded from subdomain entropy checks
 	addressChecker             *addressprotect.Checker
+	seedEnabled                bool
+	seedMinWords               int
+	seedVerifyChecksum         bool
 }
 
 type compiledPattern struct {
@@ -140,6 +144,14 @@ func New(cfg *config.Config) *Scanner {
 
 	// Build prefix pre-filter for fast DLP short-circuiting on clean input.
 	s.dlpPreFilter = newDLPPreFilter(s.dlpPatterns)
+
+	// Seed phrase detection config — stateless, reads from config.
+	s.seedEnabled = cfg.SeedPhraseDetection.Enabled == nil || *cfg.SeedPhraseDetection.Enabled
+	s.seedMinWords = cfg.SeedPhraseDetection.MinWords
+	if s.seedMinWords == 0 {
+		s.seedMinWords = 12
+	}
+	s.seedVerifyChecksum = cfg.SeedPhraseDetection.VerifyChecksum == nil || *cfg.SeedPhraseDetection.VerifyChecksum
 
 	// Parse internal CIDRs — must succeed since config.Validate checks these
 	for _, cidr := range cfg.Internal {
@@ -980,6 +992,44 @@ func (s *Scanner) checkDLP(parsed *url.URL) Result {
 	// combination (0,2,4,6) reconstructs "sk-ant-api03-AAAA...".
 	if result := s.querySubsequenceDLP(parsed.RawQuery, parsed.Hostname()); !result.Allowed {
 		return result
+	}
+
+	// Seed phrase detection on seed-safe candidates only.
+	// NOT on dot-collapsed or noise-stripped text (creates synthetic word runs).
+	// Covers: query values, path, hostname labels (pre-DNS exfil), path segments.
+	if s.seedEnabled {
+		seedTargets := []string{parsed.Path, decodedQuery}
+		// Individual query values (decoded).
+		for _, values := range parsed.Query() {
+			for _, v := range values {
+				seedTargets = append(seedTargets, IterativeDecode(v))
+			}
+		}
+		// Hostname labels: catch seed words as subdomain labels
+		// (e.g., "abandon.abandon.abandon...evil.com" exfils via DNS).
+		// Join labels with spaces so the tokenizer sees them as words.
+		hostname := parsed.Hostname()
+		if strings.Contains(hostname, ".") {
+			seedTargets = append(seedTargets, strings.ReplaceAll(hostname, ".", " "))
+		}
+		// Path segments: catch seed words as path components
+		// (e.g., "/abandon/abandon/abandon/.../about").
+		if strings.Contains(parsed.Path, "/") {
+			seedTargets = append(seedTargets, strings.ReplaceAll(parsed.Path, "/", " "))
+		}
+		for _, target := range seedTargets {
+			if target == "" {
+				continue
+			}
+			if matches := seedprotect.Detect(target, s.seedMinWords, s.seedVerifyChecksum); len(matches) > 0 {
+				return Result{
+					Allowed: false,
+					Reason:  "DLP match: BIP-39 Seed Phrase (critical)",
+					Scanner: ScannerDLP,
+					Score:   1.0,
+				}
+			}
+		}
 	}
 
 	// Check for environment variable leaks

@@ -160,10 +160,23 @@ func findSigner(data, sig []byte, trustedKeys []config.TrustedKey) (*VerifyResul
 	return nil, fmt.Errorf("bundle signature: no matching signer found")
 }
 
-// verifySignedIntegrity performs Ed25519 signature verification, signer
-// fingerprint matching, and SHA-256 digest comparison.
+// verifySignedIntegrity reads the bundle once, verifies the signature and
+// SHA-256 digest against that single snapshot, and checks the signer fingerprint.
+// This eliminates the TOCTOU window that would exist if the file were read twice.
 func verifySignedIntegrity(bundleDir, signerFP, expectedSHA256 string, trustedKeys []config.TrustedKey) error {
-	result, err := VerifyBundleSignature(bundleDir, trustedKeys)
+	bundlePath := filepath.Join(bundleDir, bundleFilename)
+	data, err := os.ReadFile(filepath.Clean(bundlePath))
+	if err != nil {
+		return fmt.Errorf("integrity check: reading bundle: %w", err)
+	}
+
+	sigPath := bundlePath + signing.SigExtension
+	sig, err := signing.LoadSignature(sigPath)
+	if err != nil {
+		return fmt.Errorf("integrity check: loading signature: %w", err)
+	}
+
+	result, err := findSigner(data, sig, trustedKeys)
 	if err != nil {
 		return fmt.Errorf("integrity check: %w", err)
 	}
@@ -172,13 +185,7 @@ func verifySignedIntegrity(bundleDir, signerFP, expectedSHA256 string, trustedKe
 		return fmt.Errorf("integrity check: signer fingerprint %q does not match expected %q", result.SignerFingerprint, signerFP)
 	}
 
-	// Also verify SHA-256 on signed bundles to detect content/lock divergence.
 	if expectedSHA256 != "" {
-		bundlePath := filepath.Join(bundleDir, bundleFilename)
-		data, err := os.ReadFile(filepath.Clean(bundlePath))
-		if err != nil {
-			return fmt.Errorf("integrity check: reading bundle for SHA-256: %w", err)
-		}
 		hash := sha256.Sum256(data)
 		actual := hex.EncodeToString(hash[:])
 		if actual != expectedSHA256 {

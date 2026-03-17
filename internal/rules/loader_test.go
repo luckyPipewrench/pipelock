@@ -1255,7 +1255,7 @@ func TestLoadBundles_PermissionError(t *testing.T) {
 	if err := os.Chmod(rulesDir, 0o000); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(rulesDir, 0o700) }) //nolint:gosec // G302: restoring directory permissions for t.TempDir cleanup
+	t.Cleanup(func() { _ = os.Chmod(rulesDir, 0o750) }) //nolint:gosec // G302: restoring directory permissions for t.TempDir cleanup
 
 	result := LoadBundles(rulesDir, LoadOptions{
 		MinConfidence:   confidenceLow,

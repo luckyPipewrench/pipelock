@@ -44,6 +44,7 @@ func ReadLockFile(path string) (*LockFile, error) {
 // WriteLockFile marshals the lock file to YAML and writes it atomically.
 // The file is written with 0o600 permissions.
 func WriteLockFile(path string, lf *LockFile) error {
+	path = filepath.Clean(path)
 	data, err := yaml.Marshal(lf)
 	if err != nil {
 		return fmt.Errorf("marshal lock file: %w", err)
@@ -60,6 +61,7 @@ func WriteLockFile(path string, lf *LockFile) error {
 // path, then renames it to the target. This ensures the target is never
 // partially written.
 func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
+	path = filepath.Clean(path)
 	dir := filepath.Dir(path)
 
 	tmp, err := os.CreateTemp(dir, ".lock-*")

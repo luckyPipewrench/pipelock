@@ -933,10 +933,10 @@ func TestValidate_ScanFieldOnNonToolPoison(t *testing.T) {
 		},
 	}
 
-	// scan_field is only validated for tool-poison. For other types it is ignored.
+	// scan_field must be rejected on non-tool-poison rules to catch authoring mistakes.
 	err := b.Validate()
-	if err != nil {
-		t.Errorf("Validate() unexpected error for scan_field on DLP: %v", err)
+	if err == nil {
+		t.Error("Validate() should reject scan_field on DLP rules")
 	}
 }
 

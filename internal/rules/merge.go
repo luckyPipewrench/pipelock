@@ -17,10 +17,13 @@ func ResolveRulesDir(override string) string {
 	if override != "" {
 		return override
 	}
-	if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" {
+	if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" && filepath.IsAbs(xdg) {
 		return filepath.Join(xdg, "pipelock", "rules")
 	}
-	home, _ := os.UserHomeDir()
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
 	return filepath.Join(home, ".local", "share", "pipelock", "rules")
 }
 

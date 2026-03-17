@@ -76,9 +76,20 @@ type LoadedBundle struct {
 func LoadBundles(rulesDir string, opts LoadOptions) *LoadResult {
 	result := &LoadResult{}
 
+	if rulesDir == "" {
+		return result
+	}
+
 	entries, err := os.ReadDir(rulesDir)
 	if err != nil {
-		// Non-existent dir is normal (no bundles installed).
+		if os.IsNotExist(err) {
+			return result
+		}
+		// Permission errors, ENOTDIR, I/O failures: report, don't swallow.
+		result.Errors = append(result.Errors, BundleError{
+			Name:   rulesDir,
+			Reason: fmt.Sprintf("reading rules directory: %v", err),
+		})
 		return result
 	}
 
@@ -125,8 +136,8 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, minRank int, res
 		return
 	}
 
-	// Verify integrity (signature or SHA-256).
-	if err := VerifyIntegrity(bundleDir, lock.Unsigned, lock.SignerFingerprint, lock.BundleSHA256, opts.TrustedKeys); err != nil {
+	// Verify integrity against the exact bytes we just read (no TOCTOU).
+	if err := VerifyIntegrityBytes(data, bundleDir, lock.Unsigned, lock.SignerFingerprint, lock.BundleSHA256, opts.TrustedKeys); err != nil {
 		result.Errors = append(result.Errors, BundleError{Name: dirName, Reason: fmt.Sprintf("integrity check: %v", err)})
 		return
 	}

@@ -207,7 +207,11 @@ func runVerifyInstall(cmd *cobra.Command, configFile string, jsonOut, noColor bo
 	cfg.FetchProxy.Monitoring.Blocklist = append(cfg.FetchProxy.Monitoring.Blocklist, "malware.example.com")
 
 	// Merge community rule bundles before building the scanner.
-	rules.MergeIntoConfig(cfg, Version)
+	bundleResult := rules.MergeIntoConfig(cfg, Version)
+	if len(bundleResult.Errors) > 0 {
+		first := bundleResult.Errors[0]
+		return ExitCodeError(2, fmt.Errorf("merging community rules: bundle %s: %s", first.Name, first.Reason))
+	}
 
 	// Build scanner and temp proxy.
 	sc := scanner.New(cfg)

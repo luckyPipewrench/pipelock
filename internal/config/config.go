@@ -1917,8 +1917,17 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("rules: min_confidence %q must be high, medium, or low", c.Rules.MinConfidence)
 	}
 	for i, d := range c.Rules.Disabled {
+		d = strings.TrimSpace(d)
+		if d == "" {
+			return fmt.Errorf("rules: disabled[%d] must be non-empty", i)
+		}
+		c.Rules.Disabled[i] = d
 		if strings.Contains(d, ":") {
-			// Namespaced ID like "community:rule-name" — valid.
+			// Namespaced ID like "community:rule-name" — validate structure.
+			parts := strings.SplitN(d, ":", 2)
+			if parts[0] == "" || parts[1] == "" {
+				return fmt.Errorf("rules: disabled[%d] %q must be bundle:rule or a glob pattern", i, d)
+			}
 			continue
 		}
 		if strings.ContainsAny(d, "*?") {

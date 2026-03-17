@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // CalVer represents a calendar version in YYYY.MM.patch format.
@@ -29,7 +30,7 @@ func ParseCalVer(s string) (CalVer, error) {
 
 	// Year: must be exactly 4 digits, no leading zeros for sub-1000 years.
 	yearStr := parts[0]
-	if len(yearStr) != 4 {
+	if len(yearStr) != 4 || !isDigits(yearStr) {
 		return CalVer{}, fmt.Errorf("calver: year must be exactly 4 digits, got %q", yearStr)
 	}
 
@@ -43,8 +44,11 @@ func ParseCalVer(s string) (CalVer, error) {
 		return CalVer{}, fmt.Errorf("calver: year must not have leading zero, got %q", yearStr)
 	}
 
-	// Month: must be 01-12.
+	// Month: must be 1-2 digits, digits only.
 	monthStr := parts[1]
+	if len(monthStr) == 0 || len(monthStr) > 2 || !isDigits(monthStr) {
+		return CalVer{}, fmt.Errorf("calver: month must be 1-2 digits, got %q", monthStr)
+	}
 
 	month, err := strconv.Atoi(monthStr)
 	if err != nil {
@@ -55,8 +59,11 @@ func ParseCalVer(s string) (CalVer, error) {
 		return CalVer{}, fmt.Errorf("calver: month must be 1-12, got %d", month)
 	}
 
-	// Patch: must be a non-negative integer.
+	// Patch: digits only, non-negative.
 	patchStr := parts[2]
+	if len(patchStr) == 0 || !isDigits(patchStr) {
+		return CalVer{}, fmt.Errorf("calver: patch must contain digits only, got %q", patchStr)
+	}
 
 	patch, err := strconv.Atoi(patchStr)
 	if err != nil {
@@ -99,4 +106,14 @@ func cmpInt(a, b int) int {
 	default:
 		return 0
 	}
+}
+
+// isDigits returns true if s is non-empty and contains only ASCII digits.
+func isDigits(s string) bool {
+	for _, r := range s {
+		if !unicode.IsDigit(r) {
+			return false
+		}
+	}
+	return len(s) > 0
 }

@@ -1453,8 +1453,8 @@ func TestScanTextForDLP_SegmentBase64_EncodingLabel(t *testing.T) {
 
 func TestScanTextForDLP_BundleProvenance(t *testing.T) {
 	const (
-		bundleName    = "acme/dlp-extras"
-		bundleVersion = "2026.03"
+		bundleName    = "acme-dlp-extras"
+		bundleVersion = "2026.03.1"
 	)
 
 	cfg := testConfig()
@@ -1517,8 +1517,8 @@ func TestScanTextForDLP_BuiltinPatternNoBundleProvenance(t *testing.T) {
 
 func TestScanTextForDLP_BundleProvenance_Encoded(t *testing.T) {
 	const (
-		bundleName    = "acme/dlp-extras"
-		bundleVersion = "2026.03"
+		bundleName    = "acme-dlp-extras"
+		bundleVersion = "2026.03.1"
 	)
 
 	cfg := testConfig()

@@ -121,12 +121,70 @@ func VerifyIntegrity(bundleDir string, unsigned bool, signerFP, expectedSHA256 s
 		return verifyUnsignedIntegrity(bundlePath, expectedSHA256)
 	}
 
-	return verifySignedIntegrity(bundleDir, signerFP, trustedKeys)
+	return verifySignedIntegrity(bundleDir, signerFP, expectedSHA256, trustedKeys)
 }
 
-// verifySignedIntegrity performs Ed25519 signature verification and signer
-// fingerprint matching.
-func verifySignedIntegrity(bundleDir, signerFP string, trustedKeys []config.TrustedKey) error {
+// VerifyIntegrityBytes checks integrity using pre-read bundle data, avoiding
+// TOCTOU issues where the file could change between read and verify. Used by
+// the loader which reads bundle.yaml once and needs to verify those exact bytes.
+func VerifyIntegrityBytes(data []byte, bundleDir string, unsigned bool, signerFP, expectedSHA256 string, trustedKeys []config.TrustedKey) error {
+	// SHA-256 check applies to both signed and unsigned bundles.
+	hash := sha256.Sum256(data)
+	actual := hex.EncodeToString(hash[:])
+	if expectedSHA256 != "" && actual != expectedSHA256 {
+		return fmt.Errorf("integrity check: SHA-256 mismatch: expected %q, got %q", expectedSHA256, actual)
+	}
+
+	if unsigned {
+		return nil
+	}
+
+	// Signature verification: load sig file and verify against pre-read data.
+	sigPath := filepath.Join(bundleDir, bundleFilename) + signing.SigExtension
+	sig, err := signing.LoadSignature(sigPath)
+	if err != nil {
+		return fmt.Errorf("integrity check: loading signature: %w", err)
+	}
+
+	fp, err := verifySignatureBytes(data, sig, trustedKeys)
+	if err != nil {
+		return fmt.Errorf("integrity check: %w", err)
+	}
+
+	if fp != signerFP {
+		return fmt.Errorf("integrity check: signer fingerprint %q does not match expected %q", fp, signerFP)
+	}
+
+	return nil
+}
+
+// verifySignatureBytes verifies data+sig against the embedded keyring and
+// trusted keys. Returns the matching signer fingerprint.
+func verifySignatureBytes(data, sig []byte, trustedKeys []config.TrustedKey) (string, error) {
+	for _, key := range EmbeddedKeyring() {
+		if ed25519.Verify(key, data, sig) {
+			return KeyFingerprint(key), nil
+		}
+	}
+	for _, tk := range trustedKeys {
+		raw, err := hex.DecodeString(tk.PublicKey)
+		if err != nil {
+			continue
+		}
+		if len(raw) != ed25519.PublicKeySize {
+			continue
+		}
+		key := ed25519.PublicKey(raw)
+		if ed25519.Verify(key, data, sig) {
+			return KeyFingerprint(key), nil
+		}
+	}
+	return "", fmt.Errorf("bundle signature: no matching signer found")
+}
+
+// verifySignedIntegrity performs Ed25519 signature verification, signer
+// fingerprint matching, and SHA-256 digest comparison.
+func verifySignedIntegrity(bundleDir, signerFP, expectedSHA256 string, trustedKeys []config.TrustedKey) error {
 	result, err := VerifyBundleSignature(bundleDir, trustedKeys)
 	if err != nil {
 		return fmt.Errorf("integrity check: %w", err)
@@ -134,6 +192,20 @@ func verifySignedIntegrity(bundleDir, signerFP string, trustedKeys []config.Trus
 
 	if result.SignerFingerprint != signerFP {
 		return fmt.Errorf("integrity check: signer fingerprint %q does not match expected %q", result.SignerFingerprint, signerFP)
+	}
+
+	// Also verify SHA-256 on signed bundles to detect content/lock divergence.
+	if expectedSHA256 != "" {
+		bundlePath := filepath.Join(bundleDir, bundleFilename)
+		data, err := os.ReadFile(filepath.Clean(bundlePath))
+		if err != nil {
+			return fmt.Errorf("integrity check: reading bundle for SHA-256: %w", err)
+		}
+		hash := sha256.Sum256(data)
+		actual := hex.EncodeToString(hash[:])
+		if actual != expectedSHA256 {
+			return fmt.Errorf("integrity check: SHA-256 mismatch: expected %q, got %q", expectedSHA256, actual)
+		}
 	}
 
 	return nil

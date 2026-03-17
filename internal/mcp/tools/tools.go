@@ -724,13 +724,20 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) []T
 
 			// Community rule bundle extra-poison patterns.
 			if cfg != nil && len(cfg.ExtraPoison) > 0 {
+				normName := normalize.ForToolText(tool.Name)
+				normDesc := normalize.ForToolText(text)
 				for _, ep := range cfg.ExtraPoison {
+					if ep == nil || ep.Re == nil || ep.Name == "" {
+						continue
+					}
 					var target string
 					switch ep.ScanField {
 					case "name":
-						target = normalize.ForToolText(tool.Name)
+						target = normName
+					case "", "description":
+						target = normDesc
 					default:
-						target = normalize.ForToolText(text)
+						continue
 					}
 					if ep.Re.MatchString(target) {
 						match.ToolPoison = append(match.ToolPoison, ep.Name)

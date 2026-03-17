@@ -362,9 +362,11 @@ func TestRulesInstall_RemoteSigned(t *testing.T) {
 	defer ts.Close()
 
 	// Override http.DefaultClient for TLS test server.
-	origClient := http.DefaultClient
-	http.DefaultClient = ts.Client()
-	t.Cleanup(func() { http.DefaultClient = origClient })
+	origClient := httpsOnlyClient
+	testClient := ts.Client()
+	testClient.CheckRedirect = httpsOnlyClient.CheckRedirect
+	httpsOnlyClient = testClient
+	t.Cleanup(func() { httpsOnlyClient = origClient })
 
 	rulesDir := t.TempDir()
 	cmd := rootCmd()
@@ -666,9 +668,11 @@ func TestRulesUpdate_RemoteUpToDate(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	origClient := http.DefaultClient
-	http.DefaultClient = ts.Client()
-	t.Cleanup(func() { http.DefaultClient = origClient })
+	origClient := httpsOnlyClient
+	testClient := ts.Client()
+	testClient.CheckRedirect = httpsOnlyClient.CheckRedirect
+	httpsOnlyClient = testClient
+	t.Cleanup(func() { httpsOnlyClient = origClient })
 
 	// Set up installed bundle with matching version and digest.
 	rulesDir := t.TempDir()
@@ -753,9 +757,11 @@ func TestRulesUpdate_NewerVersion(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	origClient := http.DefaultClient
-	http.DefaultClient = ts.Client()
-	t.Cleanup(func() { http.DefaultClient = origClient })
+	origClient := httpsOnlyClient
+	testClient := ts.Client()
+	testClient.CheckRedirect = httpsOnlyClient.CheckRedirect
+	httpsOnlyClient = testClient
+	t.Cleanup(func() { httpsOnlyClient = origClient })
 
 	// Set up installed bundle with old version.
 	rulesDir := t.TempDir()
@@ -839,9 +845,11 @@ func TestRulesDiff_NoDifferences(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	origClient := http.DefaultClient
-	http.DefaultClient = ts.Client()
-	t.Cleanup(func() { http.DefaultClient = origClient })
+	origClient := httpsOnlyClient
+	testClient := ts.Client()
+	testClient.CheckRedirect = httpsOnlyClient.CheckRedirect
+	httpsOnlyClient = testClient
+	t.Cleanup(func() { httpsOnlyClient = origClient })
 
 	rulesDir := t.TempDir()
 	bundleDir := filepath.Join(rulesDir, testBundleName)
@@ -896,9 +904,11 @@ func TestRulesDiff_WithChanges(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	origClient := http.DefaultClient
-	http.DefaultClient = ts.Client()
-	t.Cleanup(func() { http.DefaultClient = origClient })
+	origClient := httpsOnlyClient
+	testClient := ts.Client()
+	testClient.CheckRedirect = httpsOnlyClient.CheckRedirect
+	httpsOnlyClient = testClient
+	t.Cleanup(func() { httpsOnlyClient = origClient })
 
 	rulesDir := t.TempDir()
 	bundleDir := filepath.Join(rulesDir, testBundleName)
@@ -1213,9 +1223,11 @@ func TestHttpGet_Non200(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	origClient := http.DefaultClient
-	http.DefaultClient = ts.Client()
-	t.Cleanup(func() { http.DefaultClient = origClient })
+	origClient := httpsOnlyClient
+	testClient := ts.Client()
+	testClient.CheckRedirect = httpsOnlyClient.CheckRedirect
+	httpsOnlyClient = testClient
+	t.Cleanup(func() { httpsOnlyClient = origClient })
 
 	_, err := httpGet(t.Context(), ts.URL+"/missing")
 	if err == nil {
@@ -1232,9 +1244,11 @@ func TestHttpGet_ServerError(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	origClient := http.DefaultClient
-	http.DefaultClient = ts.Client()
-	t.Cleanup(func() { http.DefaultClient = origClient })
+	origClient := httpsOnlyClient
+	testClient := ts.Client()
+	testClient.CheckRedirect = httpsOnlyClient.CheckRedirect
+	httpsOnlyClient = testClient
+	t.Cleanup(func() { httpsOnlyClient = origClient })
 
 	_, err := httpGet(t.Context(), ts.URL+"/fail")
 	if err == nil {
@@ -1364,9 +1378,11 @@ func TestRulesUpdate_UpdateAll(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	origClient := http.DefaultClient
-	http.DefaultClient = ts.Client()
-	t.Cleanup(func() { http.DefaultClient = origClient })
+	origClient := httpsOnlyClient
+	testClient := ts.Client()
+	testClient.CheckRedirect = httpsOnlyClient.CheckRedirect
+	httpsOnlyClient = testClient
+	t.Cleanup(func() { httpsOnlyClient = origClient })
 
 	rulesDir := t.TempDir()
 
@@ -1434,9 +1450,11 @@ func TestRulesUpdate_RepublishAttack(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	origClient := http.DefaultClient
-	http.DefaultClient = ts.Client()
-	t.Cleanup(func() { http.DefaultClient = origClient })
+	origClient := httpsOnlyClient
+	testClient := ts.Client()
+	testClient.CheckRedirect = httpsOnlyClient.CheckRedirect
+	httpsOnlyClient = testClient
+	t.Cleanup(func() { httpsOnlyClient = origClient })
 
 	rulesDir := t.TempDir()
 	oldData := []byte(validBundleYAML)
@@ -1500,9 +1518,11 @@ func TestRulesUpdate_DowngradeRejected(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	origClient := http.DefaultClient
-	http.DefaultClient = ts.Client()
-	t.Cleanup(func() { http.DefaultClient = origClient })
+	origClient := httpsOnlyClient
+	testClient := ts.Client()
+	testClient.CheckRedirect = httpsOnlyClient.CheckRedirect
+	httpsOnlyClient = testClient
+	t.Cleanup(func() { httpsOnlyClient = origClient })
 
 	rulesDir := t.TempDir()
 	oldData := []byte(validBundleYAML)
@@ -1564,9 +1584,11 @@ func TestRulesInstall_RemoteNameMismatch(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	origClient := http.DefaultClient
-	http.DefaultClient = ts.Client()
-	t.Cleanup(func() { http.DefaultClient = origClient })
+	origClient := httpsOnlyClient
+	testClient := ts.Client()
+	testClient.CheckRedirect = httpsOnlyClient.CheckRedirect
+	httpsOnlyClient = testClient
+	t.Cleanup(func() { httpsOnlyClient = origClient })
 
 	rulesDir := t.TempDir()
 	buf := &strings.Builder{}
@@ -1610,9 +1632,11 @@ func TestRulesInstall_RemoteSignatureFailure(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	origClient := http.DefaultClient
-	http.DefaultClient = ts.Client()
-	t.Cleanup(func() { http.DefaultClient = origClient })
+	origClient := httpsOnlyClient
+	testClient := ts.Client()
+	testClient.CheckRedirect = httpsOnlyClient.CheckRedirect
+	httpsOnlyClient = testClient
+	t.Cleanup(func() { httpsOnlyClient = origClient })
 
 	rulesDir := t.TempDir()
 	cmd := rootCmd()

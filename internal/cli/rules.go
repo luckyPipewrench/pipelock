@@ -58,6 +58,9 @@ func loadRulesConfig(configFile string) (*config.Config, error) {
 // HTTP fetch timeout for remote bundle downloads.
 const httpFetchTimeout = 30 * time.Second
 
+// schemeHTTPS is the HTTPS URL scheme string.
+const schemeHTTPS = "https"
+
 // rulesCmd returns the top-level "rules" command with all subcommands.
 func rulesCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -104,6 +107,42 @@ func ensureDir(path string) error {
 	return os.MkdirAll(path, 0o750)
 }
 
+// validateBundlePath sanitizes a bundle name and returns the resolved bundle
+// directory. It rejects names that escape the rules directory via path traversal
+// or symlinks. This MUST be called before any filesystem operation on user-
+// supplied bundle names (update, diff, remove).
+func validateBundlePath(rulesDir, name string) (string, error) {
+	cleaned := filepath.Clean(name)
+	if cleaned != name || strings.Contains(cleaned, string(filepath.Separator)) || cleaned == "." || cleaned == ".." {
+		return "", fmt.Errorf("invalid bundle name %q: must be a plain directory name", name)
+	}
+
+	bundleDir := filepath.Join(rulesDir, cleaned)
+
+	// Resolve symlinks for containment check.
+	resolvedRules, err := filepath.EvalSymlinks(rulesDir)
+	if err != nil {
+		return "", fmt.Errorf("resolving rules directory: %w", err)
+	}
+
+	resolvedBundle, err := filepath.EvalSymlinks(bundleDir)
+	if err != nil {
+		// If the directory doesn't exist yet (install path), just verify the
+		// cleaned name doesn't escape. EvalSymlinks fails for non-existent paths.
+		if os.IsNotExist(err) {
+			return bundleDir, nil
+		}
+		return "", fmt.Errorf("resolving bundle directory: %w", err)
+	}
+
+	rel, err := filepath.Rel(resolvedRules, resolvedBundle)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return "", fmt.Errorf("bundle name %q escapes rules directory", name)
+	}
+
+	return bundleDir, nil
+}
+
 // fetchRemoteBundle fetches bundle.yaml and bundle.yaml.sig from a remote URL.
 // Requires HTTPS. Returns the bundle data and signature data.
 func fetchRemoteBundle(ctx context.Context, bundleURL string) ([]byte, []byte, error) {
@@ -125,6 +164,17 @@ func fetchRemoteBundle(ctx context.Context, bundleURL string) ([]byte, []byte, e
 	return bundleData, sigData, nil
 }
 
+// httpsOnlyClient is a shared HTTP client that rejects HTTPS-to-HTTP
+// redirect downgrades. Bundle fetches must stay on HTTPS.
+var httpsOnlyClient = &http.Client{
+	CheckRedirect: func(req *http.Request, _ []*http.Request) error {
+		if req.URL.Scheme != schemeHTTPS {
+			return fmt.Errorf("refusing redirect to non-HTTPS URL: %s", req.URL)
+		}
+		return nil
+	},
+}
+
 // httpGet performs an HTTP GET with context and timeout.
 func httpGet(ctx context.Context, url string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, httpFetchTimeout)
@@ -135,7 +185,7 @@ func httpGet(ctx context.Context, url string) ([]byte, error) {
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpsOnlyClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("HTTP GET %s: %w", url, err)
 	}
@@ -514,10 +564,13 @@ func checkExistingInstall(destDir, version, digest string) error {
 func stageBundle(rulesDir, bundleName string, bundleData, sigData []byte, lf *rules.LockFile) error {
 	destDir := filepath.Join(rulesDir, bundleName)
 
-	// Create temp staging directory.
+	// Create temp staging directory (MkdirTemp creates 0o700, tighten to 0o750).
 	tmpDir, err := os.MkdirTemp(rulesDir, ".stage-"+bundleName+"-*")
 	if err != nil {
 		return fmt.Errorf("creating staging directory: %w", err)
+	}
+	if err := os.Chmod(tmpDir, 0o750); err != nil { //nolint:gosec // G302: 0o750 is correct for directories per project policy
+		return fmt.Errorf("setting staging directory permissions: %w", err)
 	}
 
 	// Clean up staging dir on failure.
@@ -629,7 +682,7 @@ Local (unsigned) bundles are skipped during update.`,
 				return fmt.Errorf("reading rules directory: %w", err)
 			}
 
-			var updated int
+			var updated, failures int
 			for _, e := range entries {
 				if !e.IsDir() || strings.HasPrefix(e.Name(), ".") || strings.HasSuffix(e.Name(), ".bak") {
 					continue
@@ -637,13 +690,17 @@ Local (unsigned) bundles are skipped during update.`,
 				err := updateBundle(out, dir, e.Name(), trustedKeys, force, allowKeyRotate)
 				if err != nil {
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "error updating %s: %v\n", e.Name(), err)
+					failures++
 				} else {
 					updated++
 				}
 			}
 
-			if updated == 0 {
+			if updated == 0 && failures == 0 {
 				_, _ = fmt.Fprintln(out, "No bundles updated.")
+			}
+			if failures > 0 {
+				return fmt.Errorf("%d bundle(s) failed to update", failures)
 			}
 			return nil
 		},
@@ -658,7 +715,10 @@ Local (unsigned) bundles are skipped during update.`,
 
 // updateBundle updates a single installed bundle.
 func updateBundle(out io.Writer, rulesDir, name string, trustedKeys []config.TrustedKey, force, allowKeyRotation bool) error {
-	bundleDir := filepath.Join(rulesDir, name)
+	bundleDir, err := validateBundlePath(rulesDir, name)
+	if err != nil {
+		return err
+	}
 	lockPath := filepath.Join(bundleDir, "bundle.lock")
 
 	lf, err := rules.ReadLockFile(lockPath)
@@ -694,6 +754,16 @@ func updateBundle(out io.Writer, rulesDir, name string, trustedKeys []config.Tru
 	bundle, err := rules.ParseBundle(bundleData)
 	if err != nil {
 		return fmt.Errorf("parsing updated bundle %s: %w", name, err)
+	}
+
+	// Reject name changes: a source cannot silently rename a bundle on update.
+	if bundle.Name != name {
+		return fmt.Errorf("update %s: bundle manifest name changed from %q to %q (rejected)", name, name, bundle.Name)
+	}
+
+	// Re-run reserved prefix check: updates must also enforce pipelock-* reservation.
+	if strings.HasPrefix(bundle.Name, "pipelock-") && result.Tier != rules.TrustTierOfficial {
+		return fmt.Errorf("update %s: bundle name %q uses reserved prefix %q but signer is not official", name, bundle.Name, "pipelock-")
 	}
 
 	if err := rules.CheckMinPipelock(bundle.MinPipelock, Version); err != nil {
@@ -841,7 +911,10 @@ func rulesDiffCmd() *cobra.Command {
 			dir := rules.ResolveRulesDir(rulesDir)
 			name := args[0]
 
-			bundleDir := filepath.Join(dir, name)
+			bundleDir, pathErr := validateBundlePath(dir, name)
+			if pathErr != nil {
+				return pathErr
+			}
 			lockPath := filepath.Join(bundleDir, "bundle.lock")
 
 			lf, err := rules.ReadLockFile(lockPath)
@@ -995,7 +1068,10 @@ func rulesRemoveCmd() *cobra.Command {
 			}
 			defer unlock()
 
-			bundleDir := filepath.Join(dir, name)
+			bundleDir, pathErr := validateBundlePath(dir, name)
+			if pathErr != nil {
+				return pathErr
+			}
 			info, err := os.Stat(bundleDir)
 			if err != nil || !info.IsDir() {
 				return fmt.Errorf("bundle %q is not installed", name)

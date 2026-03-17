@@ -137,6 +137,10 @@ var validScanFields = map[string]bool{
 // ParseBundle unmarshals YAML data into a Bundle and validates it.
 // Unknown fields at any nesting level are rejected.
 func ParseBundle(data []byte) (*Bundle, error) {
+	if len(data) > MaxBundleFileSize {
+		return nil, fmt.Errorf("parse bundle: size %d exceeds maximum of %d bytes", len(data), MaxBundleFileSize)
+	}
+
 	var b Bundle
 
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
@@ -259,6 +263,8 @@ func validatePattern(p *RulePattern, ruleType, ruleID string) error {
 		} else if !validScanFields[p.ScanField] {
 			return fmt.Errorf("invalid scan_field %q for rule %q (must be %q or %q)", p.ScanField, ruleID, scanFieldDescription, scanFieldName)
 		}
+	} else if p.ScanField != "" {
+		return fmt.Errorf("scan_field is only valid for %s rules (rule %q)", RuleTypeToolPoison, ruleID)
 	}
 
 	return nil

@@ -77,7 +77,7 @@ Examples:
 			}
 			if hasMCPUpstream {
 				u, uErr := url.Parse(mcpUpstream)
-				if uErr != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+				if uErr != nil || (u.Scheme != "http" && u.Scheme != schemeHTTPS) || u.Host == "" {
 					return fmt.Errorf("invalid --mcp-upstream %q: must be http:// or https:// with a host", mcpUpstream)
 				}
 			}
@@ -324,7 +324,10 @@ Examples:
 								// old value until restart.
 								newCfg.LicenseExpiresAt = oldCfg.LicenseExpiresAt
 							}
-							rules.MergeIntoConfig(newCfg, Version)
+							reloadBundleResult := rules.MergeIntoConfig(newCfg, Version)
+							for _, e := range reloadBundleResult.Errors {
+								cmd.PrintErrf("WARNING: config reload: bundle %s: %s\n", e.Name, e.Reason)
+							}
 							newSc := scanner.New(newCfg)
 							p.Reload(newCfg, newSc)
 							if reloadErr := p.LoadCertCache(newCfg); reloadErr != nil {

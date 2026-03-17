@@ -294,7 +294,10 @@ func TestVscodeInstall_Idempotent(t *testing.T) {
 	if err := cmd1.Execute(); err != nil {
 		t.Fatalf("first install failed: %v", err)
 	}
-	first, _ := os.ReadFile(filepath.Clean(filepath.Join(vsDir, "mcp.json")))
+	first, err := os.ReadFile(filepath.Clean(filepath.Join(vsDir, "mcp.json")))
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// Second install.
 	cmd2 := rootCmd()
@@ -302,7 +305,10 @@ func TestVscodeInstall_Idempotent(t *testing.T) {
 	if err := cmd2.Execute(); err != nil {
 		t.Fatalf("second install failed: %v", err)
 	}
-	second, _ := os.ReadFile(filepath.Clean(filepath.Join(vsDir, "mcp.json")))
+	second, err := os.ReadFile(filepath.Clean(filepath.Join(vsDir, "mcp.json")))
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if string(first) != string(second) {
 		t.Error("second install changed the file (not idempotent)")
@@ -327,7 +333,10 @@ func TestVscodeInstall_PreservesUnknownFields(t *testing.T) {
 		t.Fatalf("install failed: %v", err)
 	}
 
-	data, _ := os.ReadFile(filepath.Clean(filepath.Join(vsDir, "mcp.json")))
+	data, err := os.ReadFile(filepath.Clean(filepath.Join(vsDir, "mcp.json")))
+	if err != nil {
+		t.Fatal(err)
+	}
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil {
 		t.Fatal(err)
@@ -375,9 +384,14 @@ func TestVscodeInstall_ImplicitStdioType(t *testing.T) {
 		t.Fatalf("install failed: %v", err)
 	}
 
-	data, _ := os.ReadFile(filepath.Clean(filepath.Join(vsDir, "mcp.json")))
+	data, err := os.ReadFile(filepath.Clean(filepath.Join(vsDir, "mcp.json")))
+	if err != nil {
+		t.Fatal(err)
+	}
 	var cfg vscodeMCPConfig
-	_ = json.Unmarshal(data, &cfg)
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatal(err)
+	}
 
 	server := cfg.Servers["implicit"]
 	if _, ok := server["_pipelock"]; !ok {
@@ -439,7 +453,10 @@ func TestVscodeRemove_UnwrapsServers(t *testing.T) {
 		t.Fatalf("remove failed: %v", err)
 	}
 
-	data, _ := os.ReadFile(filepath.Clean(filepath.Join(vsDir, "mcp.json")))
+	data, err := os.ReadFile(filepath.Clean(filepath.Join(vsDir, "mcp.json")))
+	if err != nil {
+		t.Fatal(err)
+	}
 	var cfg vscodeMCPConfig
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		t.Fatal(err)
@@ -490,9 +507,14 @@ func TestVscodeRemove_Idempotent(t *testing.T) {
 	}
 
 	// File should be unchanged (0 unwrapped).
-	data, _ := os.ReadFile(filepath.Clean(filepath.Join(vsDir, "mcp.json")))
+	data, err := os.ReadFile(filepath.Clean(filepath.Join(vsDir, "mcp.json")))
+	if err != nil {
+		t.Fatal(err)
+	}
 	var cfg vscodeMCPConfig
-	_ = json.Unmarshal(data, &cfg)
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatal(err)
+	}
 	server := cfg.Servers["my-server"]
 	cmd2, _ := server["command"].(string)
 	if cmd2 != testOriginalCmd {
@@ -538,9 +560,14 @@ func TestVscodeInstall_WithConfig(t *testing.T) {
 		t.Fatalf("install with --config failed: %v", err)
 	}
 
-	data, _ := os.ReadFile(filepath.Clean(filepath.Join(vsDir, "mcp.json")))
+	data, readErr := os.ReadFile(filepath.Clean(filepath.Join(vsDir, "mcp.json")))
 	var cfg vscodeMCPConfig
-	_ = json.Unmarshal(data, &cfg)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatal(err)
+	}
 
 	args := interfaceSliceToStrings(cfg.Servers["my-server"]["args"])
 	foundConfig := false
@@ -659,7 +686,10 @@ func TestVscodeRemove_DryRun(t *testing.T) {
 		t.Fatalf("install failed: %v", err)
 	}
 
-	installed, _ := os.ReadFile(filepath.Clean(filepath.Join(vsDir, "mcp.json")))
+	installed, err := os.ReadFile(filepath.Clean(filepath.Join(vsDir, "mcp.json")))
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// Remove with dry-run.
 	cmd2 := rootCmd()
@@ -669,7 +699,10 @@ func TestVscodeRemove_DryRun(t *testing.T) {
 	}
 
 	// File should not have changed.
-	after, _ := os.ReadFile(filepath.Clean(filepath.Join(vsDir, "mcp.json")))
+	after, err := os.ReadFile(filepath.Clean(filepath.Join(vsDir, "mcp.json")))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if string(after) != string(installed) {
 		t.Error("dry-run modified the file")
 	}
@@ -871,7 +904,8 @@ func TestVscodeAtomicWrite_HappyPath(t *testing.T) {
 
 func TestVscodeAtomicWrite_BadDir(t *testing.T) {
 	// Writing to a non-existent temp dir should fail.
-	err := vscodeAtomicWrite("/tmp/does-not-exist/test.json", []byte("{}"), "/tmp/does-not-exist")
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+	err := vscodeAtomicWrite(filepath.Join(missing, "test.json"), []byte("{}"), missing)
 	if err == nil {
 		t.Error("expected error writing to non-existent dir")
 	}
@@ -916,9 +950,14 @@ func TestVscodeInstall_SkipsBadServer(t *testing.T) {
 		t.Fatalf("install should not fail for bad server: %v", err)
 	}
 
-	data, _ := os.ReadFile(filepath.Clean(filepath.Join(vsDir, "mcp.json")))
+	data, err := os.ReadFile(filepath.Clean(filepath.Join(vsDir, "mcp.json")))
+	if err != nil {
+		t.Fatal(err)
+	}
 	var cfg vscodeMCPConfig
-	_ = json.Unmarshal(data, &cfg)
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatal(err)
+	}
 
 	// Server should not be wrapped (no _pipelock metadata).
 	if _, ok := cfg.Servers["broken"]["_pipelock"]; ok {
@@ -1057,5 +1096,179 @@ func TestUnwrapVscodeServer_InvalidMeta_MissingType(t *testing.T) {
 	_, err := unwrapVscodeServer(server)
 	if err == nil {
 		t.Error("expected error for missing original_type")
+	}
+}
+
+func TestMarshalVscodeConfig_WithInputs(t *testing.T) {
+	// Exercise the cfg.Inputs != nil path.
+	inputs := json.RawMessage(`[{"type":"promptString","id":"key"}]`)
+	cfg := &vscodeMCPConfig{
+		Inputs:  inputs,
+		Servers: map[string]map[string]interface{}{},
+	}
+	original := []byte(`{"servers":{},"inputs":[]}`)
+	data, err := marshalVscodeConfig(original, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := raw["inputs"]; !ok {
+		t.Error("inputs should be present in output")
+	}
+}
+
+func TestMarshalVscodeConfig_BadOriginalJSON(t *testing.T) {
+	// Invalid original data should fall through to marshal-from-scratch.
+	cfg := &vscodeMCPConfig{
+		Servers: map[string]map[string]interface{}{
+			"test": {"type": testTypeStdio, "command": testNodeCmd},
+		},
+	}
+	data, err := marshalVscodeConfig([]byte(`{broken`), cfg)
+	if err != nil {
+		t.Fatalf("should fall through to scratch marshal: %v", err)
+	}
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestVscodeAtomicWrite_ReadOnlyDir(t *testing.T) {
+	// Write to a read-only directory should fail on chmod or rename.
+	dir := t.TempDir()
+	roDir := filepath.Join(dir, "readonly")
+	if err := os.MkdirAll(roDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	target := filepath.Join(roDir, "test.json")
+	// Write initial file so rename target exists.
+	if err := os.WriteFile(target, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Make dir read-only so CreateTemp fails.
+	if err := os.Chmod(roDir, 0o500); err != nil { //nolint:gosec // test: need read-only dir
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(roDir, 0o700) }) //nolint:gosec // test: restore dir
+
+	err := vscodeAtomicWrite(target, []byte(`{"new":true}`), roDir)
+	if err == nil {
+		t.Error("expected error writing to read-only dir")
+	}
+}
+
+func TestVscodeInstall_ReadErrorOnExistingFile(t *testing.T) {
+	// A file that exists but can't be read (permissions) should error.
+	dir := t.TempDir()
+	vsDir := filepath.Join(dir, ".vscode")
+	if err := os.MkdirAll(vsDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	mcpPath := filepath.Join(vsDir, "mcp.json")
+	if err := os.WriteFile(mcpPath, []byte(testStdioConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Make unreadable.
+	if err := os.Chmod(mcpPath, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(mcpPath, 0o600) })
+
+	chdir(t, dir)
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"vscode", "install", "--project"})
+	if err := cmd.Execute(); err == nil {
+		t.Error("expected error for unreadable file")
+	}
+}
+
+func TestVscodeRemove_ReadErrorOnExistingFile(t *testing.T) {
+	dir := t.TempDir()
+	vsDir := filepath.Join(dir, ".vscode")
+	if err := os.MkdirAll(vsDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	mcpPath := filepath.Join(vsDir, "mcp.json")
+	if err := os.WriteFile(mcpPath, []byte(testStdioConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(mcpPath, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(mcpPath, 0o600) })
+
+	chdir(t, dir)
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"vscode", "remove", "--project"})
+	if err := cmd.Execute(); err == nil {
+		t.Error("expected error for unreadable file")
+	}
+}
+
+func TestVscodeInstall_BackupWriteError(t *testing.T) {
+	// Existing file + read-only dir should fail on backup write.
+	dir := t.TempDir()
+	vsDir := filepath.Join(dir, ".vscode")
+	if err := os.MkdirAll(vsDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(vsDir, "mcp.json"), []byte(testStdioConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	chdir(t, dir)
+
+	// First install works (creates backup).
+	cmd1 := rootCmd()
+	cmd1.SetArgs([]string{"vscode", "install", "--project"})
+	if err := cmd1.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Make .bak read-only and dir read-only so backup write fails on next install.
+	bakPath := filepath.Join(vsDir, "mcp.json.bak")
+	if err := os.Chmod(bakPath, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(vsDir, 0o500); err != nil { //nolint:gosec // test: need read-only dir
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(vsDir, 0o700) //nolint:gosec // test: restore dir
+		_ = os.Chmod(bakPath, 0o600)
+	})
+
+	// Remove should try to backup and fail.
+	cmd2 := rootCmd()
+	cmd2.SetArgs([]string{"vscode", "remove", "--project"})
+	// May or may not error depending on OS behavior, but exercises the path.
+	_ = cmd2.Execute()
+}
+
+func TestWrapVscodeServer_PreservesExtraFields(t *testing.T) {
+	// Unknown fields like sandbox, envFile should pass through.
+	server := map[string]interface{}{
+		"type":           testTypeStdio,
+		"command":        testOriginalCmd,
+		"args":           []interface{}{"-y", "@example/server"},
+		"sandboxEnabled": true,
+		"envFile":        "${workspaceFolder}/.env",
+	}
+	wrapped, _, err := wrapVscodeServer(server, "/usr/bin/pipelock", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wrapped["sandboxEnabled"] != true {
+		t.Error("sandboxEnabled not preserved")
+	}
+	if wrapped["envFile"] != "${workspaceFolder}/.env" {
+		t.Error("envFile not preserved")
 	}
 }

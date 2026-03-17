@@ -55,37 +55,7 @@ func VerifyBundleSignature(bundleDir string, trustedKeys []config.TrustedKey) (*
 		return nil, fmt.Errorf("loading bundle signature: %w", err)
 	}
 
-	// Try embedded keyring first (official tier).
-	for _, key := range EmbeddedKeyring() {
-		if ed25519.Verify(key, data, sig) {
-			return &VerifyResult{
-				Tier:              TrustTierOfficial,
-				SignerFingerprint: KeyFingerprint(key),
-			}, nil
-		}
-	}
-
-	// Try trusted keys (third-party tier).
-	for _, tk := range trustedKeys {
-		raw, err := hex.DecodeString(tk.PublicKey)
-		if err != nil {
-			continue
-		}
-
-		if len(raw) != ed25519.PublicKeySize {
-			continue
-		}
-
-		key := ed25519.PublicKey(raw)
-		if ed25519.Verify(key, data, sig) {
-			return &VerifyResult{
-				Tier:              TrustTierThirdParty,
-				SignerFingerprint: KeyFingerprint(key),
-			}, nil
-		}
-	}
-
-	return nil, fmt.Errorf("bundle signature: no matching signer found")
+	return findSigner(data, sig, trustedKeys)
 }
 
 // CheckSignerPinning verifies that the current signer fingerprint matches
@@ -146,24 +116,29 @@ func VerifyIntegrityBytes(data []byte, bundleDir string, unsigned bool, signerFP
 		return fmt.Errorf("integrity check: loading signature: %w", err)
 	}
 
-	fp, err := verifySignatureBytes(data, sig, trustedKeys)
+	result, err := findSigner(data, sig, trustedKeys)
 	if err != nil {
 		return fmt.Errorf("integrity check: %w", err)
 	}
 
-	if fp != signerFP {
-		return fmt.Errorf("integrity check: signer fingerprint %q does not match expected %q", fp, signerFP)
+	if result.SignerFingerprint != signerFP {
+		return fmt.Errorf("integrity check: signer fingerprint %q does not match expected %q", result.SignerFingerprint, signerFP)
 	}
 
 	return nil
 }
 
-// verifySignatureBytes verifies data+sig against the embedded keyring and
-// trusted keys. Returns the matching signer fingerprint.
-func verifySignatureBytes(data, sig []byte, trustedKeys []config.TrustedKey) (string, error) {
+// findSigner is the single key-scanning helper. It tries the embedded keyring
+// (official tier) then trusted keys (third-party tier) and returns the first
+// match. Both VerifyBundleSignature (disk I/O) and VerifyIntegrityBytes
+// (pre-read data) delegate here so the trust path cannot drift.
+func findSigner(data, sig []byte, trustedKeys []config.TrustedKey) (*VerifyResult, error) {
 	for _, key := range EmbeddedKeyring() {
 		if ed25519.Verify(key, data, sig) {
-			return KeyFingerprint(key), nil
+			return &VerifyResult{
+				Tier:              TrustTierOfficial,
+				SignerFingerprint: KeyFingerprint(key),
+			}, nil
 		}
 	}
 	for _, tk := range trustedKeys {
@@ -176,10 +151,13 @@ func verifySignatureBytes(data, sig []byte, trustedKeys []config.TrustedKey) (st
 		}
 		key := ed25519.PublicKey(raw)
 		if ed25519.Verify(key, data, sig) {
-			return KeyFingerprint(key), nil
+			return &VerifyResult{
+				Tier:              TrustTierThirdParty,
+				SignerFingerprint: KeyFingerprint(key),
+			}, nil
 		}
 	}
-	return "", fmt.Errorf("bundle signature: no matching signer found")
+	return nil, fmt.Errorf("bundle signature: no matching signer found")
 }
 
 // verifySignedIntegrity performs Ed25519 signature verification, signer

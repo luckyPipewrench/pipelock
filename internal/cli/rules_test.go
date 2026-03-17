@@ -1018,13 +1018,14 @@ func TestLoadRulesConfig_ExplicitPathError(t *testing.T) {
 func TestLoadRulesConfig_EmptyFallback(t *testing.T) {
 	// Empty configFile + no env + no cwd config → nil, nil (not an error).
 	t.Setenv("PIPELOCK_CONFIG", "")
+	t.Chdir(t.TempDir())
 	cfg, err := loadRulesConfig("")
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
-	// cfg may be nil (no config found) or non-nil (if pipelock.yaml exists in cwd).
-	// Either is OK — the key invariant is no error.
-	_ = cfg
+	if cfg != nil {
+		t.Fatal("expected nil config when no explicit, env, or cwd config is present")
+	}
 }
 
 // ---------- helper tests (no globals, safe for parallel) ----------

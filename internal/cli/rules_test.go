@@ -1604,6 +1604,262 @@ func TestRulesInstall_RemoteNameMismatch(t *testing.T) {
 	}
 }
 
+// ---------- validateBundlePath coverage tests ----------
+
+func TestValidateBundlePath_SymlinkEscape(t *testing.T) {
+	t.Parallel()
+
+	rulesDir := t.TempDir()
+	externalDir := t.TempDir()
+
+	// Create a symlink inside rulesDir that points outside.
+	symlinkPath := filepath.Join(rulesDir, "escape-link")
+	if err := os.Symlink(externalDir, symlinkPath); err != nil {
+		t.Fatalf("creating symlink: %v", err)
+	}
+
+	_, err := validateBundlePath(rulesDir, "escape-link")
+	if err == nil {
+		t.Fatal("expected error for symlink escaping rules directory")
+	}
+	if !strings.Contains(err.Error(), "escapes rules directory") {
+		t.Errorf("error should mention escape, got: %v", err)
+	}
+}
+
+func TestValidateBundlePath_NonExistentOK(t *testing.T) {
+	t.Parallel()
+
+	rulesDir := t.TempDir()
+
+	// Non-existent directory should succeed (install path).
+	got, err := validateBundlePath(rulesDir, "new-bundle")
+	if err != nil {
+		t.Fatalf("unexpected error for non-existent dir: %v", err)
+	}
+	want := filepath.Join(rulesDir, "new-bundle")
+	if got != want {
+		t.Errorf("path = %q, want %q", got, want)
+	}
+}
+
+func TestValidateBundlePath_PathSeparatorRejected(t *testing.T) {
+	t.Parallel()
+
+	rulesDir := t.TempDir()
+
+	_, err := validateBundlePath(rulesDir, "sub/dir")
+	if err == nil {
+		t.Fatal("expected error for name with path separator")
+	}
+	if !strings.Contains(err.Error(), "plain directory name") {
+		t.Errorf("error should mention plain directory name, got: %v", err)
+	}
+}
+
+// ---------- stageBundle chmod coverage test ----------
+
+func TestStageBundle_ChmodPath(t *testing.T) {
+	t.Parallel()
+
+	rulesDir := t.TempDir()
+	bundleData := []byte("test-content")
+	sigData := []byte("sig-data")
+
+	lf := &rules.LockFile{
+		InstalledVersion: "2026.03.1",
+		Source:           "test",
+		BundleSHA256:     "abc123",
+		Unsigned:         true,
+	}
+
+	err := stageBundle(rulesDir, "chmod-test", bundleData, sigData, lf)
+	if err != nil {
+		t.Fatalf("stageBundle() error: %v", err)
+	}
+
+	// Verify the bundle directory was created with correct permissions.
+	destDir := filepath.Join(rulesDir, "chmod-test")
+	info, err := os.Stat(destDir)
+	if err != nil {
+		t.Fatalf("stat dest dir: %v", err)
+	}
+	if !info.IsDir() {
+		t.Error("expected destination to be a directory")
+	}
+
+	// Verify contents were written.
+	bundlePath := filepath.Clean(filepath.Join(destDir, "bundle.yaml"))
+	data, err := os.ReadFile(bundlePath)
+	if err != nil {
+		t.Fatalf("reading bundle.yaml: %v", err)
+	}
+	if string(data) != "test-content" {
+		t.Errorf("bundle.yaml content = %q, want %q", string(data), "test-content")
+	}
+
+	sigPath := filepath.Clean(filepath.Join(destDir, "bundle.yaml.sig"))
+	sigOnDisk, err := os.ReadFile(sigPath)
+	if err != nil {
+		t.Fatalf("reading bundle.yaml.sig: %v", err)
+	}
+	if string(sigOnDisk) != "sig-data" {
+		t.Errorf("sig content = %q, want %q", string(sigOnDisk), "sig-data")
+	}
+
+	// Verify lock file was written.
+	lockLF, err := rules.ReadLockFile(filepath.Join(destDir, "bundle.lock"))
+	if err != nil {
+		t.Fatalf("reading lock file: %v", err)
+	}
+	if lockLF.InstalledVersion != "2026.03.1" {
+		t.Errorf("lock version = %q, want %q", lockLF.InstalledVersion, "2026.03.1")
+	}
+}
+
+// ---------- updateBundle coverage tests ----------
+
+func TestUpdateBundle_NameChangeRejected(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating key: %v", err)
+	}
+
+	// Remote serves a bundle whose manifest name differs from the installed directory name.
+	renamedYAML := strings.Replace(validBundleYAML, "name: test-bundle", "name: renamed-bundle", 1)
+	newData := []byte(renamedYAML)
+	newSig := ed25519.Sign(priv, newData)
+	newSigEncoded := base64.StdEncoding.EncodeToString(newSig) + "\n"
+
+	orig := rules.KeyringHex
+	rules.KeyringHex = hex.EncodeToString(pub)
+	t.Cleanup(func() { rules.KeyringHex = orig })
+
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".sig") {
+			_, _ = w.Write([]byte(newSigEncoded))
+			return
+		}
+		_, _ = w.Write(newData)
+	}))
+	defer ts.Close()
+
+	origClient := httpsOnlyClient
+	testClient := ts.Client()
+	testClient.CheckRedirect = httpsOnlyClient.CheckRedirect
+	httpsOnlyClient = testClient
+	t.Cleanup(func() { httpsOnlyClient = origClient })
+
+	rulesDir := t.TempDir()
+	oldData := []byte(validBundleYAML)
+	bundleDir := filepath.Join(rulesDir, testBundleName)
+	if err := os.MkdirAll(bundleDir, 0o750); err != nil {
+		t.Fatalf("creating dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(bundleDir, "bundle.yaml"), oldData, 0o600); err != nil {
+		t.Fatalf("writing bundle: %v", err)
+	}
+
+	hash := sha256.Sum256(oldData)
+	lf := &rules.LockFile{
+		InstalledVersion:  "2026.03.1",
+		InstalledAt:       "2026-03-15T10:00:00Z",
+		Source:            ts.URL + testBundlePath,
+		LastCheck:         "2026-03-15T10:00:00Z",
+		BundleSHA256:      hex.EncodeToString(hash[:]),
+		SignerFingerprint: hex.EncodeToString(pub),
+	}
+	if err := rules.WriteLockFile(filepath.Join(bundleDir, "bundle.lock"), lf); err != nil {
+		t.Fatalf("writing lock: %v", err)
+	}
+
+	buf := &strings.Builder{}
+	err = updateBundle(buf, rulesDir, testBundleName, nil, false, false)
+	if err == nil {
+		t.Fatal("expected error for name change during update")
+	}
+	if !strings.Contains(err.Error(), "name changed") {
+		t.Errorf("error should mention name change, got: %v", err)
+	}
+}
+
+func TestUpdateBundle_ReservedPrefixRecheckOnUpdate(t *testing.T) {
+	// A third-party signer cannot update a bundle with pipelock- prefix.
+	thirdPub, thirdPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating third-party key: %v", err)
+	}
+
+	// Official key for keyring (different from signer).
+	officialPub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating official key: %v", err)
+	}
+	orig := rules.KeyringHex
+	rules.KeyringHex = hex.EncodeToString(officialPub)
+	t.Cleanup(func() { rules.KeyringHex = orig })
+
+	// Remote bundle has pipelock-community name, signed by third-party.
+	pipelockYAML := strings.Replace(secondVersionBundleYAML, "name: test-bundle", "name: pipelock-community", 1)
+	newData := []byte(pipelockYAML)
+	newSig := ed25519.Sign(thirdPriv, newData)
+	newSigEncoded := base64.StdEncoding.EncodeToString(newSig) + "\n"
+
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".sig") {
+			_, _ = w.Write([]byte(newSigEncoded))
+			return
+		}
+		_, _ = w.Write(newData)
+	}))
+	defer ts.Close()
+
+	origClient := httpsOnlyClient
+	testClient := ts.Client()
+	testClient.CheckRedirect = httpsOnlyClient.CheckRedirect
+	httpsOnlyClient = testClient
+	t.Cleanup(func() { httpsOnlyClient = origClient })
+
+	// Set up installed bundle named pipelock-community with matching source URL.
+	rulesDir := t.TempDir()
+	installedName := "pipelock-community"
+	oldYAML := strings.Replace(validBundleYAML, "name: test-bundle", "name: pipelock-community", 1)
+	oldData := []byte(oldYAML)
+	bundleDir := filepath.Join(rulesDir, installedName)
+	if err := os.MkdirAll(bundleDir, 0o750); err != nil {
+		t.Fatalf("creating dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(bundleDir, "bundle.yaml"), oldData, 0o600); err != nil {
+		t.Fatalf("writing bundle: %v", err)
+	}
+
+	hash := sha256.Sum256(oldData)
+	lf := &rules.LockFile{
+		InstalledVersion:  "2026.03.1",
+		InstalledAt:       "2026-03-15T10:00:00Z",
+		Source:            ts.URL + "/pipelock-community/bundle.yaml",
+		LastCheck:         "2026-03-15T10:00:00Z",
+		BundleSHA256:      hex.EncodeToString(hash[:]),
+		SignerFingerprint: hex.EncodeToString(thirdPub),
+	}
+	if err := rules.WriteLockFile(filepath.Join(bundleDir, "bundle.lock"), lf); err != nil {
+		t.Fatalf("writing lock: %v", err)
+	}
+
+	trustedKeys := []config.TrustedKey{
+		{Name: "third-party", PublicKey: hex.EncodeToString(thirdPub)},
+	}
+
+	buf := &strings.Builder{}
+	err = updateBundle(buf, rulesDir, installedName, trustedKeys, false, true)
+	if err == nil {
+		t.Fatal("expected error for reserved prefix with non-official signer on update")
+	}
+	if !strings.Contains(err.Error(), "reserved prefix") {
+		t.Errorf("error should mention reserved prefix, got: %v", err)
+	}
+}
+
 func TestRulesInstall_RemoteSignatureFailure(t *testing.T) {
 	// Bundle signed with key A, but only key B in keyring → signature verification fails.
 	_, priv, err := ed25519.GenerateKey(nil)

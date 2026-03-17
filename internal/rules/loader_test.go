@@ -1241,6 +1241,56 @@ func TestLoadBundles_SkipsBakDirectories(t *testing.T) {
 	}
 }
 
+func TestLoadBundles_PermissionError(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+
+	// Create a subdirectory, then remove read permission so ReadDir fails
+	// with a permission error (not ENOENT).
+	rulesDir := filepath.Join(dir, "rules")
+	if err := os.MkdirAll(rulesDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(rulesDir, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(rulesDir, 0o700) }) //nolint:gosec // G302: restoring directory permissions for t.TempDir cleanup
+
+	result := LoadBundles(rulesDir, LoadOptions{
+		MinConfidence:   confidenceLow,
+		PipelockVersion: testPipelockVersion,
+	})
+
+	// Permission error should be reported, not silently swallowed.
+	if len(result.Errors) != 1 {
+		t.Fatalf("expected 1 error for permission denied, got %d: %v", len(result.Errors), result.Errors)
+	}
+	if !strings.Contains(result.Errors[0].Reason, "reading rules directory") {
+		t.Errorf("error reason should mention reading rules directory, got: %s", result.Errors[0].Reason)
+	}
+}
+
+func TestLoadBundles_EmptyRulesDirString(t *testing.T) {
+	t.Parallel()
+
+	result := LoadBundles("", LoadOptions{
+		MinConfidence:   confidenceLow,
+		PipelockVersion: testPipelockVersion,
+	})
+
+	// Empty string should return empty result with no errors.
+	if len(result.Errors) != 0 {
+		t.Errorf("expected 0 errors for empty rulesDir, got %d: %v", len(result.Errors), result.Errors)
+	}
+	if len(result.DLP) != 0 {
+		t.Errorf("expected 0 DLP rules, got %d", len(result.DLP))
+	}
+	if len(result.Loaded) != 0 {
+		t.Errorf("expected 0 loaded bundles, got %d", len(result.Loaded))
+	}
+}
+
 func TestLoadBundles_ConfidenceFilterLow(t *testing.T) {
 	t.Parallel()
 

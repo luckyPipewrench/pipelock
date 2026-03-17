@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -311,5 +312,139 @@ func TestVerifyIntegrity_UnsignedTampered(t *testing.T) {
 	err := VerifyIntegrity(dir, true, "", wrongSHA, nil)
 	if err == nil {
 		t.Fatal("expected error for tampered unsigned bundle, got nil")
+	}
+}
+
+// ---------- VerifyIntegrityBytes coverage tests ----------
+
+func TestVerifyIntegrityBytes_UnsignedSHAMismatch(t *testing.T) {
+	t.Parallel()
+
+	data := []byte("name: unsigned-bundle\n")
+	wrongSHA := "0000000000000000000000000000000000000000000000000000000000000000"
+
+	err := VerifyIntegrityBytes(data, t.TempDir(), true, "", wrongSHA, nil)
+	if err == nil {
+		t.Fatal("expected error for SHA mismatch on unsigned bundle")
+	}
+	if !strings.Contains(err.Error(), "SHA-256 mismatch") {
+		t.Errorf("error should mention SHA-256 mismatch, got: %v", err)
+	}
+}
+
+func TestVerifyIntegrityBytes_SignedSHAMismatch(t *testing.T) {
+	// Non-parallel: mutates KeyringHex.
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating key: %v", err)
+	}
+
+	orig := KeyringHex
+	KeyringHex = hex.EncodeToString(pub)
+	t.Cleanup(func() { KeyringHex = orig })
+
+	data := []byte("name: signed-bundle\n")
+	dir := t.TempDir()
+	bundlePath := filepath.Join(dir, testBundleFilename)
+	if err := os.WriteFile(bundlePath, data, 0o600); err != nil {
+		t.Fatalf("writing bundle: %v", err)
+	}
+
+	sig, err := signing.SignFile(bundlePath, priv)
+	if err != nil {
+		t.Fatalf("signing bundle: %v", err)
+	}
+	if err := signing.SaveSignature(sig, bundlePath+signing.SigExtension); err != nil {
+		t.Fatalf("saving signature: %v", err)
+	}
+
+	// Provide a wrong SHA-256 digest. The SHA check runs before signature
+	// verification, so it should fail with SHA mismatch.
+	wrongSHA := "0000000000000000000000000000000000000000000000000000000000000000"
+	signerFP := hex.EncodeToString(pub)
+
+	err = VerifyIntegrityBytes(data, dir, false, signerFP, wrongSHA, nil)
+	if err == nil {
+		t.Fatal("expected error for SHA mismatch on signed bundle")
+	}
+	if !strings.Contains(err.Error(), "SHA-256 mismatch") {
+		t.Errorf("error should mention SHA-256 mismatch, got: %v", err)
+	}
+}
+
+func TestVerifyIntegrityBytes_SignedHappyPath(t *testing.T) {
+	// Non-parallel: mutates KeyringHex.
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating key: %v", err)
+	}
+
+	orig := KeyringHex
+	KeyringHex = hex.EncodeToString(pub)
+	t.Cleanup(func() { KeyringHex = orig })
+
+	data := []byte("name: signed-bundle\n")
+	dir := t.TempDir()
+	bundlePath := filepath.Join(dir, testBundleFilename)
+	if err := os.WriteFile(bundlePath, data, 0o600); err != nil {
+		t.Fatalf("writing bundle: %v", err)
+	}
+
+	sig, err := signing.SignFile(bundlePath, priv)
+	if err != nil {
+		t.Fatalf("signing bundle: %v", err)
+	}
+	if err := signing.SaveSignature(sig, bundlePath+signing.SigExtension); err != nil {
+		t.Fatalf("saving signature: %v", err)
+	}
+
+	hash := sha256.Sum256(data)
+	expectedSHA := hex.EncodeToString(hash[:])
+	signerFP := hex.EncodeToString(pub)
+
+	err = VerifyIntegrityBytes(data, dir, false, signerFP, expectedSHA, nil)
+	if err != nil {
+		t.Fatalf("VerifyIntegrityBytes() signed happy path: %v", err)
+	}
+}
+
+// ---------- findSigner coverage tests ----------
+
+func TestFindSigner_TrustedKeyPath(t *testing.T) {
+	// Non-parallel: mutates KeyringHex.
+
+	// Official key in keyring (NOT the signer).
+	officialPub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating official key: %v", err)
+	}
+
+	orig := KeyringHex
+	KeyringHex = hex.EncodeToString(officialPub)
+	t.Cleanup(func() { KeyringHex = orig })
+
+	// Third-party key signs the data.
+	thirdPub, thirdPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating third-party key: %v", err)
+	}
+
+	data := []byte("test-data-for-trusted-key-path")
+	sig := ed25519.Sign(thirdPriv, data)
+
+	trustedKeys := []config.TrustedKey{
+		{Name: "test-third-party", PublicKey: hex.EncodeToString(thirdPub)},
+	}
+
+	result, err := findSigner(data, sig, trustedKeys)
+	if err != nil {
+		t.Fatalf("findSigner() error: %v", err)
+	}
+
+	if result.Tier != TrustTierThirdParty {
+		t.Errorf("Tier = %q, want %q", result.Tier, TrustTierThirdParty)
+	}
+	if result.SignerFingerprint != hex.EncodeToString(thirdPub) {
+		t.Errorf("SignerFingerprint = %q, want %q", result.SignerFingerprint, hex.EncodeToString(thirdPub))
 	}
 }

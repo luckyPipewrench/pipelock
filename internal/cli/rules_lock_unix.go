@@ -6,6 +6,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -25,7 +26,10 @@ func acquireRulesLock(rulesDir string) (func(), error) {
 	fd := int(f.Fd()) //nolint:gosec // G115: file descriptors always fit in int
 	if err := syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		_ = f.Close()
-		return nil, fmt.Errorf("another rules command is running (lock: %s)", lockPath)
+		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+			return nil, fmt.Errorf("another rules command is running (lock: %s)", lockPath)
+		}
+		return nil, fmt.Errorf("acquiring rules lock: %w", err)
 	}
 
 	return func() {

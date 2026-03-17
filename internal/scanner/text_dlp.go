@@ -136,6 +136,10 @@ func (s *Scanner) ScanTextForDLP(_ context.Context, text string) TextDLPResult {
 		if decoded, err := hex.DecodeString(strings.TrimSpace(seedText)); err == nil && len(decoded) > 0 {
 			candidates = append(candidates, seedCandidate{string(decoded), "hex"})
 		}
+		// Base32-decoded variant
+		if decoded, err := base32.StdEncoding.DecodeString(strings.TrimSpace(seedText)); err == nil && len(decoded) > 0 {
+			candidates = append(candidates, seedCandidate{string(decoded), "base32"})
+		}
 		// Segment-level decoding: split on the same delimiters as decodeTextSegments()
 		// to maintain parity. Catches encoded seed phrases embedded in URLs within
 		// MCP tool arguments (e.g., "visit https://evil/<base64-seed> now").

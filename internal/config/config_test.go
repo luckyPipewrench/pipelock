@@ -6782,3 +6782,66 @@ func TestSeedPhraseDetection_ReloadNoWarning_SameConfig(t *testing.T) {
 		}
 	}
 }
+
+func TestSeedPhraseDetection_LoadPath_Omitted(t *testing.T) {
+	// seed_phrase_detection entirely omitted from YAML — should default to enabled.
+	yaml := "version: 1\nmode: balanced\n"
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// nil Enabled means consumer treats as true.
+	if cfg.SeedPhraseDetection.Enabled != nil {
+		t.Error("expected Enabled=nil (treated as true) when omitted from YAML")
+	}
+	if cfg.SeedPhraseDetection.MinWords != 12 {
+		t.Errorf("expected MinWords=12 after Validate(), got %d", cfg.SeedPhraseDetection.MinWords)
+	}
+}
+
+func TestSeedPhraseDetection_LoadPath_ExplicitTrue(t *testing.T) {
+	yaml := "version: 1\nmode: balanced\nseed_phrase_detection:\n  enabled: true\n  verify_checksum: true\n  min_words: 24\n"
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.SeedPhraseDetection.Enabled == nil || !*cfg.SeedPhraseDetection.Enabled {
+		t.Error("expected Enabled=true")
+	}
+	if cfg.SeedPhraseDetection.VerifyChecksum == nil || !*cfg.SeedPhraseDetection.VerifyChecksum {
+		t.Error("expected VerifyChecksum=true")
+	}
+	if cfg.SeedPhraseDetection.MinWords != 24 {
+		t.Errorf("expected MinWords=24, got %d", cfg.SeedPhraseDetection.MinWords)
+	}
+}
+
+func TestSeedPhraseDetection_LoadPath_ExplicitNull(t *testing.T) {
+	// YAML null should behave like omitted (nil = true).
+	yaml := "version: 1\nmode: balanced\nseed_phrase_detection:\n  enabled: null\n  verify_checksum: null\n"
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.SeedPhraseDetection.Enabled != nil {
+		t.Errorf("expected Enabled=nil for YAML null, got %v", *cfg.SeedPhraseDetection.Enabled)
+	}
+	if cfg.SeedPhraseDetection.VerifyChecksum != nil {
+		t.Errorf("expected VerifyChecksum=nil for YAML null, got %v", *cfg.SeedPhraseDetection.VerifyChecksum)
+	}
+}

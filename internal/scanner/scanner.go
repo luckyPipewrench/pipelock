@@ -999,11 +999,19 @@ func (s *Scanner) checkDLP(parsed *url.URL) Result {
 	// Covers: query values, path, hostname labels (pre-DNS exfil), path segments.
 	if s.seedEnabled {
 		seedTargets := []string{parsed.Path, decodedQuery}
-		// Individual query values (decoded).
+		// Individual query values: raw decoded + encoding variants (base64/hex/base32).
 		for _, values := range parsed.Query() {
 			for _, v := range values {
-				seedTargets = append(seedTargets, IterativeDecode(v))
+				decoded := IterativeDecode(v)
+				seedTargets = append(seedTargets, decoded)
+				for _, d := range decodeEncodings(decoded) {
+					seedTargets = append(seedTargets, d.text)
+				}
 			}
+		}
+		// Decoded path variants (base64/hex/base32 encoded path segments).
+		if decodedPath != "" && decodedPath != parsed.Path {
+			seedTargets = append(seedTargets, decodedPath)
 		}
 		// Hostname labels: catch seed words as subdomain labels
 		// (e.g., "abandon.abandon.abandon...evil.com" exfils via DNS).

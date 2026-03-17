@@ -2465,9 +2465,9 @@ func Defaults() *Config {
 				{Name: "JWT Token", Regex: `(ey[a-zA-Z0-9_\-=]{10,}\.){2}[a-zA-Z0-9_\-=]{10,}`, Severity: "high"},
 
 				// Cryptocurrency private keys
-				// Bitcoin WIF: base58check, starts with 5 (uncompressed) or K/L (compressed).
-				// Mainnet only; testnet (9/c prefixes) deferred.
-				{Name: "Bitcoin WIF Private Key", Regex: `[5KL][1-9A-HJ-NP-Za-km-z]{50,51}`, Severity: "critical"},
+				// Bitcoin WIF: base58check. Uncompressed (5 + 50 base58 = 51 chars) or
+				// compressed (K/L + 51 base58 = 52 chars). Mainnet only; testnet deferred.
+				{Name: "Bitcoin WIF Private Key", Regex: `(?:5[1-9A-HJ-NP-Za-km-z]{50}|[KL][1-9A-HJ-NP-Za-km-z]{51})`, Severity: "critical"},
 				// Extended private keys (BIP-32/49/84): xprv/yprv/zprv (mainnet) + tprv (testnet).
 				// 111 total chars, base58check encoded.
 				{Name: "Extended Private Key", Regex: `[xyzt]prv[1-9A-HJ-NP-Za-km-z]{107,108}`, Severity: "critical"},

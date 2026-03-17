@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Delimiter-separated hex encoding detection: `normalizeHex()` strips 6 delimiter formats (`:`, `-`, ` `, `,`, `\x` prefix, `0x` prefix) across all DLP paths, catching secrets encoded as colon-separated, space-separated, or C-style hex notation. (#243)
 - DLP patterns for Groq, xAI, GitLab, New Relic, and Stripe webhooks: built-in pattern count expanded from 36 to 41. (#246)
 - Crypto secret DLP detection: BIP-39 seed phrase detection via dedicated `internal/seedprotect/` package with dictionary lookup, sliding window, and SHA-256 checksum validation. Three new regex patterns for Bitcoin WIF, extended private keys (xprv/yprv/zprv/tprv), and Ethereum private keys. DLP count now 44. New `seed_phrase_detection` config section. (#249)
+- VS Code MCP proxy integration: `pipelock vscode install` wraps VS Code MCP server configs through pipelock's MCP proxy for bidirectional scanning. `pipelock vscode remove` cleanly unwraps. Supports project and global scope, dry-run preview, atomic writes with backup. (#248)
 - Trial tier and one-time purchase support for license service: Polar webhook handler now processes trial and one-time purchase events alongside subscriptions. (#232)
 - Scan API reference documentation (`docs/scan-api.md`): full API reference for the `POST /api/v1/scan` endpoint covering all four scan kinds, auth, rate limiting, error codes, and integration patterns.
 - Address protection and scan API config reference sections added to `docs/configuration.md`.

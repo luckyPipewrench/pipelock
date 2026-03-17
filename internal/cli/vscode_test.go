@@ -54,7 +54,20 @@ const (
   }
 }`
 
-	testEmptyConfig  = `{"servers": {}}`
+	// Server with missing command — should trigger wrap warning and skip.
+	testBadStdioConfig = `{
+  "servers": {
+    "broken": {
+      "type": "stdio"
+    }
+  }
+}`
+
+	// Null servers field — exercises nil server map init path.
+	testNullServersConfig = `{"servers": null}`
+
+	// Invalid JSON — exercises parse error path.
+	testInvalidJSON  = `{not json`
 	testNoTypeConfig = `{
   "servers": {
     "implicit": {
@@ -893,6 +906,121 @@ func TestMarshalVscodeConfig_PreservesUnknownTopLevel(t *testing.T) {
 	}
 	if _, ok := raw["custom_field"]; !ok {
 		t.Error("custom_field was not preserved")
+	}
+}
+
+func TestVscodeInstall_SkipsBadServer(t *testing.T) {
+	// Server missing command should be skipped with a warning, not fail install.
+	dir := t.TempDir()
+	vsDir := filepath.Join(dir, ".vscode")
+	if err := os.MkdirAll(vsDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(vsDir, "mcp.json"), []byte(testBadStdioConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	oldWD, _ := os.Getwd()
+	_ = os.Chdir(dir)
+	defer func() { _ = os.Chdir(oldWD) }()
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"vscode", "install", "--project"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("install should not fail for bad server: %v", err)
+	}
+
+	data, _ := os.ReadFile(filepath.Clean(filepath.Join(vsDir, "mcp.json")))
+	var cfg vscodeMCPConfig
+	_ = json.Unmarshal(data, &cfg)
+
+	// Server should not be wrapped (no _pipelock metadata).
+	if _, ok := cfg.Servers["broken"]["_pipelock"]; ok {
+		t.Error("broken server should not have been wrapped")
+	}
+}
+
+func TestVscodeInstall_NullServers(t *testing.T) {
+	// "servers": null should be treated as empty.
+	dir := t.TempDir()
+	vsDir := filepath.Join(dir, ".vscode")
+	if err := os.MkdirAll(vsDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(vsDir, "mcp.json"), []byte(testNullServersConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	oldWD, _ := os.Getwd()
+	_ = os.Chdir(dir)
+	defer func() { _ = os.Chdir(oldWD) }()
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"vscode", "install", "--project"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("install with null servers failed: %v", err)
+	}
+}
+
+func TestVscodeInstall_InvalidJSON(t *testing.T) {
+	dir := t.TempDir()
+	vsDir := filepath.Join(dir, ".vscode")
+	if err := os.MkdirAll(vsDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(vsDir, "mcp.json"), []byte(testInvalidJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	oldWD, _ := os.Getwd()
+	_ = os.Chdir(dir)
+	defer func() { _ = os.Chdir(oldWD) }()
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"vscode", "install", "--project"})
+	if err := cmd.Execute(); err == nil {
+		t.Error("expected error for invalid JSON")
+	}
+}
+
+func TestVscodeRemove_InvalidJSON(t *testing.T) {
+	dir := t.TempDir()
+	vsDir := filepath.Join(dir, ".vscode")
+	if err := os.MkdirAll(vsDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(vsDir, "mcp.json"), []byte(testInvalidJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	oldWD, _ := os.Getwd()
+	_ = os.Chdir(dir)
+	defer func() { _ = os.Chdir(oldWD) }()
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"vscode", "remove", "--project"})
+	if err := cmd.Execute(); err == nil {
+		t.Error("expected error for invalid JSON")
+	}
+}
+
+func TestBuildEnvFlags(t *testing.T) {
+	// Server with env vars should produce --env flags.
+	server := map[string]interface{}{
+		"env": map[string]interface{}{
+			"FOO": "bar",
+			"BAZ": "qux",
+		},
+	}
+	flags := buildEnvFlags(server)
+	if len(flags) != 4 { // 2 keys * 2 (--env KEY)
+		t.Errorf("expected 4 flag elements, got %d: %v", len(flags), flags)
+	}
+
+	// Server with no env should return nil.
+	noEnv := map[string]interface{}{}
+	if flags := buildEnvFlags(noEnv); flags != nil {
+		t.Errorf("expected nil for no env, got %v", flags)
 	}
 }
 

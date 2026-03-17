@@ -128,6 +128,7 @@ internal/
   gitprotect/          Git diff scanning for secrets
   projectscan/         Project directory scanner for audit command
   addressprotect/      Blockchain address validation and poisoning detection
+  seedprotect/         BIP-39 seed phrase detection (dictionary, checksum)
 enterprise/            Multi-agent features (ELv2, see enterprise/LICENSE)
 configs/               7 preset config files (balanced, strict, audit, claude-code, cursor, generic-agent, hostile-model)
 docs/                  Guides, OWASP mapping, comparison

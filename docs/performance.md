@@ -14,7 +14,7 @@ All numbers from Go benchmarks on AMD Ryzen 7 7800X3D (8 cores / 16 threads) / G
 |-----------|---------|--------------------:|
 | Full pipeline (allowed URL) | ~21 μs | ~48,000/sec |
 | Blocklist block (early exit) | ~1.9 μs | ~528,000/sec |
-| DLP pattern match (41 patterns, pre-filtered) | ~6.7 μs | ~149,000/sec |
+| DLP pattern match (44 patterns, pre-filtered) | ~6.7 μs | ~149,000/sec |
 | DLP pre-filter only (clean text, zero alloc) | ~405 ns | ~2,470,000/sec |
 | Entropy detection | ~41 μs | ~24,300/sec |
 | Complex URL (ports, query params) | ~41 μs | ~24,700/sec |

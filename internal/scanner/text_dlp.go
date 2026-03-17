@@ -32,7 +32,7 @@ type TextDLPResult struct {
 // from MCP tool arguments. It applies zero-width stripping, NFKC normalization,
 // and checks encoded variants (base64, hex, base32) of the text for patterns.
 func (s *Scanner) ScanTextForDLP(_ context.Context, text string) TextDLPResult {
-	if len(s.dlpPatterns) == 0 && len(s.envSecrets) == 0 && len(s.fileSecrets) == 0 {
+	if len(s.dlpPatterns) == 0 && len(s.envSecrets) == 0 && len(s.fileSecrets) == 0 && !s.seedEnabled {
 		return TextDLPResult{Clean: true}
 	}
 
@@ -136,11 +136,11 @@ func (s *Scanner) ScanTextForDLP(_ context.Context, text string) TextDLPResult {
 		if decoded, err := hex.DecodeString(strings.TrimSpace(seedText)); err == nil && len(decoded) > 0 {
 			candidates = append(candidates, seedCandidate{string(decoded), "hex"})
 		}
-		// Segment-level decoding: split on URL/path delimiters and try decoding
-		// each segment. Catches encoded seed phrases embedded in URLs within
-		// MCP tool arguments (parity with decodeTextSegments for regex DLP).
+		// Segment-level decoding: split on the same delimiters as decodeTextSegments()
+		// to maintain parity. Catches encoded seed phrases embedded in URLs within
+		// MCP tool arguments (e.g., "visit https://evil/<base64-seed> now").
 		segments := strings.FieldsFunc(seedText, func(r rune) bool {
-			return r == '/' || r == '?' || r == '&' || r == '='
+			return r == '/' || r == '?' || r == '&' || r == '=' || r == ' ' || r == '\n' || r == '\t'
 		})
 		for _, seg := range segments {
 			if len(seg) < 20 { // seed phrases are long; skip short segments

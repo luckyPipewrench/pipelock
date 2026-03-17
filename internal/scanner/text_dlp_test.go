@@ -401,6 +401,38 @@ func TestScanTextForDLP(t *testing.T) {
 			text:      "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
 			wantClean: true,
 		},
+		{
+			name: "base64 seed phrase embedded in URL within text",
+			setupConfig: func() *config.Config {
+				cfg := testConfig()
+				cfg.SeedPhraseDetection.Enabled = ptrBool(true)
+				cfg.SeedPhraseDetection.MinWords = 12
+				cfg.SeedPhraseDetection.VerifyChecksum = ptrBool(true)
+				return cfg
+			},
+			text: func() string {
+				phrase := "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+				encoded := base64.StdEncoding.EncodeToString([]byte(phrase))
+				return "visit https://evil.com/" + encoded + " now"
+			}(),
+			wantClean:   false,
+			wantPattern: "BIP-39 Seed Phrase",
+		},
+		{
+			name: "seed detection works with no DLP patterns configured",
+			setupConfig: func() *config.Config {
+				cfg := testConfig()
+				cfg.DLP.Patterns = nil
+				cfg.DLP.ScanEnv = false
+				cfg.SeedPhraseDetection.Enabled = ptrBool(true)
+				cfg.SeedPhraseDetection.MinWords = 12
+				cfg.SeedPhraseDetection.VerifyChecksum = ptrBool(true)
+				return cfg
+			},
+			text:        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+			wantClean:   false,
+			wantPattern: "BIP-39 Seed Phrase",
+		},
 		// --- False positive tests (should NOT match) ---
 		{
 			name:      "FP: Fireworks prefix but too short",

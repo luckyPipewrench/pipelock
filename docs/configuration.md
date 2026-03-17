@@ -307,8 +307,8 @@ dlp:
 | `scan_env` | `true` | Scan environment variables for leaked values |
 | `secrets_file` | `""` | Path to file with known secrets (one per line) |
 | `min_env_secret_length` | `16` | Min env var value length to consider |
-| `include_defaults` | `true` | Merge your patterns with the 41 built-in patterns |
-| `patterns` | 41 built-in | DLP credential detection patterns |
+| `include_defaults` | `true` | Merge your patterns with the 44 built-in patterns |
+| `patterns` | 44 built-in | DLP credential detection patterns |
 | `patterns[].exempt_domains` | `[]` | Domains where this pattern is not enforced (wildcard supported) |
 
 ### Pattern Merging

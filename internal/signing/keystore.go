@@ -180,15 +180,22 @@ func (k *Keystore) TrustKey(name, pubKeyPath string) error {
 	if err := os.MkdirAll(dir, dirPermission); err != nil {
 		return fmt.Errorf("creating trusted keys directory: %w", err)
 	}
+	if err := k.validateContainment(dir); err != nil {
+		return fmt.Errorf("trusted keys directory containment check: %w", err)
+	}
 
 	dest := k.trustedKeyPath(name)
-	return atomicWrite(dest, data, 0o644)
+	return atomicWrite(dest, data, 0o600)
 }
 
 // LoadTrustedKey loads a trusted agent's public key.
 func (k *Keystore) LoadTrustedKey(name string) (ed25519.PublicKey, error) {
 	if err := ValidateAgentName(name); err != nil {
 		return nil, err
+	}
+	dir := filepath.Join(k.baseDir, trustedSubdir)
+	if err := k.validateContainment(dir); err != nil {
+		return nil, fmt.Errorf("trusted keys directory containment check: %w", err)
 	}
 	return LoadPublicKeyFile(k.trustedKeyPath(name))
 }

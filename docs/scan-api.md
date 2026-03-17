@@ -13,7 +13,7 @@ The scan API is an evaluation-plane listener, separate from the proxy port. It b
 
 ## Endpoint
 
-```
+```http
 POST /api/v1/scan
 ```
 
@@ -21,7 +21,7 @@ POST /api/v1/scan
 
 Bearer token in the `Authorization` header. Tokens are configured in YAML and compared in constant time.
 
-```
+```http
 Authorization: Bearer <token>
 ```
 

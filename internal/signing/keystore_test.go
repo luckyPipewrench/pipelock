@@ -658,7 +658,7 @@ func TestKeystoreGenerateAgent_SymlinkContainment(t *testing.T) {
 
 	// Create the agents/ directory so we can plant a symlink inside it.
 	agentsDir := filepath.Join(base, "agents")
-	if err := os.MkdirAll(agentsDir, 0o700); err != nil {
+	if err := os.MkdirAll(agentsDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
 
@@ -693,7 +693,7 @@ func TestKeystoreLoadPrivateKey_SymlinkContainment(t *testing.T) {
 
 	// Create agents/ and symlink agents/evil -> outside.
 	agentsDir := filepath.Join(base, "agents")
-	if err := os.MkdirAll(agentsDir, 0o700); err != nil {
+	if err := os.MkdirAll(agentsDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(outside, filepath.Join(agentsDir, "evil")); err != nil {

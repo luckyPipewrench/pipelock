@@ -1138,6 +1138,100 @@ License tokens have a fixed expiry (typically 45 days). When your subscription r
 
 The new token activates on restart. Your current token continues working until its expiry date, so there is no rush to update immediately. A config reload detects the changed license inputs but does not apply them until restart (activation requires restart; revocation is immediate).
 
+## Scan API
+
+Evaluation-plane HTTP listener for programmatic scanning. Disabled by default. When enabled, serves `POST /api/v1/scan` on a dedicated port with independent auth, rate limiting, and timeouts.
+
+```yaml
+scan_api:
+  listen: "127.0.0.1:9090"
+  auth:
+    bearer_tokens:
+      - "your-secret-token"
+  rate_limit:
+    requests_per_minute: 600   # per token
+    burst: 50
+  max_body_bytes: 1048576      # 1MB
+  field_limits:
+    url: 8192
+    text: 524288               # 512KB
+    content: 524288
+    arguments: 524288
+  timeouts:
+    read: "2s"
+    write: "2s"
+    scan: "5s"
+  connection_limit: 100
+  kinds:
+    url: true
+    dlp: true
+    prompt_injection: true
+    tool_call: true
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `listen` | `""` (disabled) | Bind address. Listener only starts when set and at least one bearer token is configured. |
+| `auth.bearer_tokens` | `[]` | Bearer tokens for `Authorization` header. Compared in constant time. Required when `listen` is set. |
+| `rate_limit.requests_per_minute` | `600` | Per-token rate limit. |
+| `rate_limit.burst` | `50` | Burst allowance above steady-state rate. |
+| `max_body_bytes` | `1048576` (1MB) | Maximum request body size. |
+| `field_limits.url` | `8192` | Max bytes for `input.url` field. |
+| `field_limits.text` | `524288` (512KB) | Max bytes for `input.text` field. |
+| `field_limits.content` | `524288` (512KB) | Max bytes for `input.content` field. |
+| `field_limits.arguments` | `524288` (512KB) | Max bytes for `input.arguments` field. |
+| `timeouts.read` | `"2s"` | HTTP read timeout. |
+| `timeouts.write` | `"2s"` | HTTP write timeout. |
+| `timeouts.scan` | `"5s"` | Per-scan deadline. Exceeded = `scan_deadline_exceeded` error, never partial `allow`. |
+| `connection_limit` | `100` | Max concurrent connections. |
+| `kinds.url` | `true` | Enable `url` scan kind. |
+| `kinds.dlp` | `true` | Enable `dlp` scan kind. |
+| `kinds.prompt_injection` | `true` | Enable `prompt_injection` scan kind. |
+| `kinds.tool_call` | `true` | Enable `tool_call` scan kind. |
+
+All kinds are enabled by default. Set any to `false` to disable. Full API reference: [docs/scan-api.md](scan-api.md).
+
+## Address Protection
+
+Detects blockchain address poisoning attacks. Compares outbound addresses against a user-supplied allowlist of known-good destinations and flags similar-looking addresses using prefix/suffix fingerprinting. This is destination verification, not secret detection — separate from DLP.
+
+Disabled by default. Users opt in explicitly.
+
+```yaml
+address_protection:
+  enabled: true
+  action: block
+  unknown_action: warn
+  allowed_addresses:
+    - "0x742d35Cc6634C0532925a3b844Bc9e7595f2bD18"
+    - "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh"
+  chains:
+    eth: true
+    btc: true
+    sol: false
+    bnb: true
+  similarity:
+    prefix_length: 4
+    suffix_length: 4
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `false` | Enable address protection. |
+| `action` | `"block"` | Action for poisoning/lookalike findings: `block` or `warn`. |
+| `unknown_action` | `"allow"` | Action for valid addresses not in allowlist: `allow`, `warn`, or `block`. |
+| `allowed_addresses` | `[]` | Known-good destination addresses (any supported chain format). |
+| `chains.eth` | `true` | Detect Ethereum addresses (0x-prefixed, EIP-55 checksum validated). |
+| `chains.btc` | `true` | Detect Bitcoin addresses (P2PKH, P2SH, Bech32/Bech32m). |
+| `chains.sol` | `false` | Detect Solana addresses (base58, 32-44 chars). Disabled by default due to higher false positive risk from base58 regex. |
+| `chains.bnb` | `true` | Detect BNB Smart Chain addresses (0x-prefixed, same format as ETH). |
+| `similarity.prefix_length` | `4` | Characters to compare at the start of the address payload. |
+| `similarity.suffix_length` | `4` | Characters to compare at the end of the address payload. |
+
+At least one chain must be enabled when `address_protection.enabled` is `true`. All-chains-disabled with the feature enabled is rejected at validation (silent no-op prevention).
+
+**Hot reload:** disabling address protection triggers a reload warning. Re-enabling takes effect immediately.
+
 ## Validation Rules
 
 The following are enforced at startup:

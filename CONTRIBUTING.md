@@ -127,6 +127,7 @@ internal/
   signing/             Ed25519 key management, file signing, signature verification
   gitprotect/          Git diff scanning for secrets
   projectscan/         Project directory scanner for audit command
+  addressprotect/      Blockchain address validation and poisoning detection
 enterprise/            Multi-agent features (ELv2, see enterprise/LICENSE)
 configs/               7 preset config files (balanced, strict, audit, claude-code, cursor, generic-agent, hostile-model)
 docs/                  Guides, OWASP mapping, comparison

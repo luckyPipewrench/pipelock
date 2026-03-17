@@ -198,6 +198,8 @@ Pipelock runs in three modes:
 | **balanced** | Blocks naive + detects sophisticated | Via fetch or forward proxy | Most developers (default) |
 | **audit** | Logging only | Unrestricted | Evaluation before enforcement |
 
+For agents running uncensored or abliterated models (e.g. OBLITERATUS), the [`hostile-model` preset](configs/hostile-model.yaml) layers additional defenses on top of strict mode: aggressive entropy thresholds (3.0), blanket network tool blocking, session binding, cross-request exfiltration detection, and a pre-configured kill switch. `pipelock audit` automatically recommends this preset when it detects guardrail-removal tooling in your project.
+
 What each mode prevents, detects, or logs:
 
 | Attack Vector | Strict | Balanced | Audit |
@@ -257,6 +259,16 @@ Emergency deny-all with four independent activation sources: config file, SIGUSR
 curl -X POST http://localhost:9090/api/v1/killswitch \
   -H "Authorization: Bearer TOKEN" -d '{"active": true}'
 ```
+
+### Scan API
+
+Evaluation endpoint for programmatic scanning. Any tool, pipeline, or control plane can submit URLs, text, or tool calls and get a structured verdict back — the proxy doesn't need to be in the request path. Four scan kinds: `url`, `dlp`, `prompt_injection`, and `tool_call`. Returns findings with scanner type, rule ID, and severity. Bearer token auth, per-token rate limiting, and Prometheus metrics.
+
+See [docs/scan-api.md](docs/scan-api.md) for the full API reference.
+
+### Address Protection
+
+Detects blockchain address poisoning attacks where a lookalike address is substituted for a legitimate one. Validates addresses for ETH, BTC, SOL, and BNB chains, compares against a user-supplied allowlist, and flags similar addresses using prefix/suffix fingerprinting. Designed for agents that interact with DeFi protocols or execute transactions.
 
 ### Event Emission
 
@@ -451,6 +463,7 @@ Details, config examples, and gap analysis: [docs/owasp-mapping.md](docs/owasp-m
 
 | Document | What's In It |
 |----------|-------------|
+| [Scan API](docs/scan-api.md) | Evaluation endpoint for programmatic URL/text/tool-call scanning |
 | [Configuration Reference](docs/configuration.md) | All config fields, defaults, hot-reload behavior, presets |
 | [Deployment Recipes](docs/guides/deployment-recipes.md) | Docker Compose, K8s sidecar + NetworkPolicy, iptables, macOS PF |
 | [Bypass Resistance](docs/bypass-resistance.md) | Known evasion techniques, mitigations, and honest limitations |
@@ -488,6 +501,7 @@ internal/
   hitl/                Human-in-the-loop terminal approval
   report/              HTML/JSON audit report generation from JSONL event logs
   projectscan/         Project directory scanning for audit command
+  addressprotect/      Blockchain address validation and poisoning detection
 enterprise/            Multi-agent features (ELv2, see enterprise/LICENSE)
 configs/               7 preset config files
 docs/                  Guides, references, compliance mappings

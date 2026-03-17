@@ -140,11 +140,11 @@ func (k *Keystore) LoadPrivateKey(name string) (ed25519.PrivateKey, error) {
 	if err := ValidateAgentName(name); err != nil {
 		return nil, err
 	}
-	dir := k.agentDir(name)
-	if err := k.validateContainment(dir); err != nil {
-		return nil, fmt.Errorf("agent directory containment check: %w", err)
+	path := filepath.Join(k.agentDir(name), privateKeyFile)
+	if err := k.validateContainment(path); err != nil {
+		return nil, fmt.Errorf("private key containment check: %w", err)
 	}
-	return LoadPrivateKeyFile(filepath.Join(dir, privateKeyFile))
+	return LoadPrivateKeyFile(path)
 }
 
 // LoadPublicKey loads an agent's own public key from the keystore.
@@ -152,11 +152,11 @@ func (k *Keystore) LoadPublicKey(name string) (ed25519.PublicKey, error) {
 	if err := ValidateAgentName(name); err != nil {
 		return nil, err
 	}
-	dir := k.agentDir(name)
-	if err := k.validateContainment(dir); err != nil {
-		return nil, fmt.Errorf("agent directory containment check: %w", err)
+	path := filepath.Join(k.agentDir(name), publicKeyFile)
+	if err := k.validateContainment(path); err != nil {
+		return nil, fmt.Errorf("public key containment check: %w", err)
 	}
-	return LoadPublicKeyFile(filepath.Join(dir, publicKeyFile))
+	return LoadPublicKeyFile(path)
 }
 
 // TrustKey copies a public key file into trusted_keys/<name>.pub.
@@ -193,11 +193,11 @@ func (k *Keystore) LoadTrustedKey(name string) (ed25519.PublicKey, error) {
 	if err := ValidateAgentName(name); err != nil {
 		return nil, err
 	}
-	dir := filepath.Join(k.baseDir, trustedSubdir)
-	if err := k.validateContainment(dir); err != nil {
-		return nil, fmt.Errorf("trusted keys directory containment check: %w", err)
+	path := k.trustedKeyPath(name)
+	if err := k.validateContainment(path); err != nil {
+		return nil, fmt.Errorf("trusted key containment check: %w", err)
 	}
-	return LoadPublicKeyFile(k.trustedKeyPath(name))
+	return LoadPublicKeyFile(path)
 }
 
 // ResolvePublicKey looks up a public key by agent name, checking the agent's

@@ -6413,6 +6413,45 @@ func TestLoad_ExplicitTruePreserved(t *testing.T) {
 	}
 }
 
+func TestLoad_AddressProtectionChainDefaults(t *testing.T) {
+	// When address_protection is enabled but chains are omitted from YAML,
+	// nil-coalescing in Validate() must produce the documented defaults:
+	// eth/btc/bnb true, sol false.
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "addr-chains.yaml")
+	content := "mode: balanced\n" +
+		"address_protection:\n" +
+		"  enabled: true\n" +
+		"  allowed_addresses:\n" +
+		"    - \"0x742d35cc6634c0532925a3b844bc9e7595f2bd3e\"\n"
+	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error: %v", err)
+	}
+
+	// ETH, BTC, BNB default to true (nil → true in validation).
+	if cfg.AddressProtection.Chains.ETH != nil && !*cfg.AddressProtection.Chains.ETH {
+		t.Error("ETH chain should default to true when omitted")
+	}
+	if cfg.AddressProtection.Chains.BTC != nil && !*cfg.AddressProtection.Chains.BTC {
+		t.Error("BTC chain should default to true when omitted")
+	}
+	if cfg.AddressProtection.Chains.BNB != nil && !*cfg.AddressProtection.Chains.BNB {
+		t.Error("BNB chain should default to true when omitted")
+	}
+	// SOL defaults to false (nil → false in validation).
+	if cfg.AddressProtection.Chains.SOL != nil && *cfg.AddressProtection.Chains.SOL {
+		t.Error("SOL chain should default to false when omitted")
+	}
+}
+
 // --- Sentry tests ---
 
 func TestEnabled_NilDefaultsTrue(t *testing.T) {

@@ -138,4 +138,4 @@ Dedicated scanner for BIP-39 mnemonic seed phrases. Uses dictionary lookup + sli
 | `SeedDetect_LongText` | 2,853,140 | 858,447 | 6,368 | 1000-word text, all BIP-39 words (worst case) |
 | `SeedChecksum` | 136 | 0 | 0 | Checksum validation in isolation |
 
-Clean text bails in ~2us. Valid phrase detection including checksum takes ~3us. The 1000-word worst case (all BIP-39 words) is a pathological input that doesn't occur in real traffic. Checksum validation is 136ns with zero allocations.
+Clean text bails in ~2μs. Valid phrase detection including checksum takes ~3μs. The 1000-word worst case (all BIP-39 words) is a pathological input that doesn't occur in real traffic. Checksum validation is 136ns with zero allocations.

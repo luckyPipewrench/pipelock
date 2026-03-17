@@ -569,8 +569,8 @@ func TestKeystoreGenerateAgent_MkdirError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for unwritable base directory")
 	}
-	if !strings.Contains(err.Error(), "creating agent directory") {
-		t.Errorf("expected 'creating agent directory' error, got: %v", err)
+	if !strings.Contains(err.Error(), "creating agents directory") {
+		t.Errorf("expected 'creating agents directory' error, got: %v", err)
 	}
 }
 
@@ -706,5 +706,35 @@ func TestKeystoreLoadPrivateKey_SymlinkContainment(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "containment") {
 		t.Fatalf("expected containment error, got: %v", err)
+	}
+}
+
+func TestKeystoreGenerateAgent_SymlinkedParentContainment(t *testing.T) {
+	base := t.TempDir()
+	outside := t.TempDir()
+	ks := NewKeystore(base)
+
+	// Symlink the entire agents/ directory to an external location.
+	// This tests that containment catches a symlinked parent, not
+	// just a symlinked leaf agent directory.
+	if err := os.Symlink(outside, filepath.Join(base, "agents")); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := ks.ForceGenerateAgent("victim")
+	if err == nil {
+		t.Fatal("expected containment error for symlinked agents/ parent")
+	}
+	if !strings.Contains(err.Error(), "containment") {
+		t.Fatalf("expected containment error, got: %v", err)
+	}
+
+	// Verify no directory was created outside the keystore.
+	entries, err := os.ReadDir(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("directory created outside keystore via symlinked parent: %v", entries)
 	}
 }

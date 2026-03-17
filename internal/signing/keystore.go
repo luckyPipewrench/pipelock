@@ -98,6 +98,18 @@ func (k *Keystore) generateAgent(name string) (ed25519.PublicKey, error) {
 	}
 
 	dir := k.agentDir(name)
+
+	// Validate containment of the agents/ parent BEFORE MkdirAll.
+	// If agents/ is a symlink to an external directory, MkdirAll would
+	// create the agent subdirectory outside the keystore. Check the parent
+	// first to prevent any filesystem writes outside the keystore boundary.
+	parent := filepath.Dir(dir)
+	if err := os.MkdirAll(parent, dirPermission); err != nil {
+		return nil, fmt.Errorf("creating agents directory: %w", err)
+	}
+	if err := k.validateContainment(parent); err != nil {
+		return nil, fmt.Errorf("agents directory containment check: %w", err)
+	}
 	if err := os.MkdirAll(dir, dirPermission); err != nil {
 		return nil, fmt.Errorf("creating agent directory: %w", err)
 	}

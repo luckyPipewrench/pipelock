@@ -313,7 +313,7 @@ All kinds are enabled by default. Set any to `false` to disable. The listener on
 | `pipelock_scan_api_duration_seconds` | histogram | `kind` |
 | `pipelock_scan_api_findings_total` | counter | `kind`, `scanner`, `severity` |
 | `pipelock_scan_api_errors_total` | counter | `kind`, `error_code` |
-| `pipelock_scan_api_inflight` | gauge | |
+| `pipelock_scan_api_inflight_requests` | gauge | |
 
 ## Integration patterns
 

@@ -27,7 +27,7 @@ import (
 )
 
 // Official bundle registry base URL.
-const officialRegistryURL = "https://rules.pipelock.dev"
+const officialRegistryURL = "https://rules.pipelab.org"
 
 // loadRulesConfig loads the pipelock config for trusted key resolution.
 // When configFile is explicitly set (--config flag), load failures are fatal

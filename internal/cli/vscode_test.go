@@ -21,7 +21,7 @@ const (
       "type": "stdio",
       "command": "npx",
       "args": ["-y", "@example/mcp-server"],
-      "env": { "API_KEY": "test" }
+      "env": { "MY_VAR": "test" }
     }
   }
 }`
@@ -162,8 +162,8 @@ func TestVscodeInstall_StdioServer(t *testing.T) {
 	if !ok {
 		t.Fatal("env not preserved")
 	}
-	if env["API_KEY"] != "test" {
-		t.Errorf("expected API_KEY=test, got %v", env["API_KEY"])
+	if env["MY_VAR"] != "test" {
+		t.Errorf("expected env key preserved, got %v", env["MY_VAR"])
 	}
 }
 

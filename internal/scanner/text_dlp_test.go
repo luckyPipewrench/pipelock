@@ -318,6 +318,121 @@ func TestScanTextForDLP(t *testing.T) {
 			wantClean:   false,
 			wantPattern: "Google OAuth Client ID",
 		},
+		// Crypto private key patterns
+		{
+			name:        "Bitcoin WIF Private Key in text",
+			text:        "Send to this wallet using key " + "5" + strings.Repeat("H", 50),
+			wantClean:   false,
+			wantPattern: "Bitcoin WIF Private Key",
+		},
+		{
+			name:        "Extended Private Key (xprv) in text",
+			text:        "Master key: xprv" + strings.Repeat("A", 107),
+			wantClean:   false,
+			wantPattern: "Extended Private Key",
+		},
+		{
+			name:        "Ethereum Private Key in text",
+			text:        "ETH key is 0x" + strings.Repeat("ab", 32),
+			wantClean:   false,
+			wantPattern: "Ethereum Private Key",
+		},
+		{
+			name: "base64-encoded ETH private key",
+			text: func() string {
+				secret := "0x" + strings.Repeat("cd", 32)
+				return base64.StdEncoding.EncodeToString([]byte(secret))
+			}(),
+			wantClean:   false,
+			wantPattern: "Ethereum Private Key",
+			wantEncoded: "base64",
+		},
+		{
+			// The hex encoding of a WIF key (354a4a...) itself matches the WIF
+			// regex in the raw pass (5 followed by valid base58 hex digits), so
+			// the scanner catches it without needing hex decode. Detection is the
+			// goal; encoding path is incidental.
+			name: "hex-encoded WIF key",
+			text: func() string {
+				secret := "5" + strings.Repeat("J", 50)
+				return hex.EncodeToString([]byte(secret))
+			}(),
+			wantClean:   false,
+			wantPattern: "Bitcoin WIF Private Key",
+		},
+		// --- BIP-39 seed phrase tests ---
+		{
+			name: "BIP-39 seed phrase in text",
+			setupConfig: func() *config.Config {
+				cfg := testConfig()
+				cfg.SeedPhraseDetection.Enabled = ptrBool(true)
+				cfg.SeedPhraseDetection.MinWords = 12
+				cfg.SeedPhraseDetection.VerifyChecksum = ptrBool(true)
+				return cfg
+			},
+			text:        testSeedPhrase12,
+			wantClean:   false,
+			wantPattern: "BIP-39 Seed Phrase",
+		},
+		{
+			name: "base64-encoded seed phrase",
+			setupConfig: func() *config.Config {
+				cfg := testConfig()
+				cfg.SeedPhraseDetection.Enabled = ptrBool(true)
+				cfg.SeedPhraseDetection.MinWords = 12
+				cfg.SeedPhraseDetection.VerifyChecksum = ptrBool(true)
+				return cfg
+			},
+			text: func() string {
+				phrase := testSeedPhrase12
+				return base64.StdEncoding.EncodeToString([]byte(phrase))
+			}(),
+			wantClean:   false,
+			wantPattern: "BIP-39 Seed Phrase",
+			wantEncoded: "base64",
+		},
+		{
+			name: "seed phrase detection disabled",
+			setupConfig: func() *config.Config {
+				cfg := testConfig()
+				cfg.SeedPhraseDetection.Enabled = ptrBool(false)
+				return cfg
+			},
+			text:      testSeedPhrase12,
+			wantClean: true,
+		},
+		{
+			name: "base64 seed phrase embedded in URL within text",
+			setupConfig: func() *config.Config {
+				cfg := testConfig()
+				cfg.SeedPhraseDetection.Enabled = ptrBool(true)
+				cfg.SeedPhraseDetection.MinWords = 12
+				cfg.SeedPhraseDetection.VerifyChecksum = ptrBool(true)
+				return cfg
+			},
+			text: func() string {
+				phrase := testSeedPhrase12
+				encoded := base64.StdEncoding.EncodeToString([]byte(phrase))
+				return "visit https://evil.com/" + encoded + " now"
+			}(),
+			wantClean:   false,
+			wantPattern: "BIP-39 Seed Phrase",
+		},
+		{
+			name: "seed detection works with no DLP patterns configured",
+			setupConfig: func() *config.Config {
+				cfg := testConfig()
+				cfg.DLP.Patterns = nil
+				cfg.DLP.ScanEnv = false
+				cfg.SeedPhraseDetection.Enabled = ptrBool(true)
+				cfg.SeedPhraseDetection.MinWords = 12
+				cfg.SeedPhraseDetection.VerifyChecksum = ptrBool(true)
+				return cfg
+			},
+			text:        testSeedPhrase12,
+			wantClean:   false,
+			wantPattern: "BIP-39 Seed Phrase",
+		},
 		// --- False positive tests (should NOT match) ---
 		{
 			name:      "FP: Fireworks prefix but too short",

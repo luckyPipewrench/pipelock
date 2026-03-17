@@ -112,6 +112,7 @@ Quick start:
 		auditCmd(),
 		claudeCmd(),
 		cursorCmd(),
+		vscodeCmd(),
 		demoCmd(),
 		diagnoseCmd(),
 		discoverCmd(),

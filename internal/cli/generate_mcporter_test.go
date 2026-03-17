@@ -15,6 +15,7 @@ import (
 const (
 	testMCPInput = `{"mcpServers":{"test":{"command":"node","args":["server.js"]}}}`
 	flagEnv      = "--env"
+	flagUpstream = "--upstream"
 )
 
 func TestGenerateMcporter_BasicWrap(t *testing.T) {
@@ -154,7 +155,7 @@ func TestGenerateMcporter_HTTPUpstream(t *testing.T) {
 	args := remote["args"].([]interface{})
 	hasUpstream := false
 	for i, a := range args {
-		if a == "--upstream" && i+1 < len(args) && args[i+1] == "http://localhost:8080/mcp" {
+		if a == flagUpstream && i+1 < len(args) && args[i+1] == "http://localhost:8080/mcp" {
 			hasUpstream = true
 		}
 	}
@@ -200,7 +201,7 @@ func TestGenerateMcporter_WSUpstream(t *testing.T) {
 	args := ws["args"].([]interface{})
 	hasUpstream := false
 	for i, a := range args {
-		if a == "--upstream" && i+1 < len(args) && args[i+1] == "ws://localhost:9000/mcp" {
+		if a == flagUpstream && i+1 < len(args) && args[i+1] == "ws://localhost:9000/mcp" {
 			hasUpstream = true
 		}
 	}

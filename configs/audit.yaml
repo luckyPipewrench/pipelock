@@ -189,6 +189,16 @@ dlp:
     - name: "JWT Token"
       regex: '(ey[a-zA-Z0-9_\-=]{10,}\.){2}[a-zA-Z0-9_\-=]{10,}'
       severity: high
+    # Cryptocurrency private keys
+    - name: "Bitcoin WIF Private Key"
+      regex: '(?:5[1-9A-HJ-NP-Za-km-z]{50}|[KL][1-9A-HJ-NP-Za-km-z]{51})'
+      severity: critical
+    - name: "Extended Private Key"
+      regex: '[xyzt]prv[1-9A-HJ-NP-Za-km-z]{107,108}'
+      severity: critical
+    - name: "Ethereum Private Key"
+      regex: '0x[0-9a-f]{64}\b'
+      severity: critical
     # Identity / PII
     - name: "Social Security Number"
       regex: '\b\d{3}-\d{2}-\d{4}\b'
@@ -392,6 +402,11 @@ scan_api:
 #   similarity:
 #     prefix_length: 4
 #     suffix_length: 4
+
+seed_phrase_detection:
+  enabled: true
+  min_words: 12
+  verify_checksum: true
 
 # --- Agent Profiles (optional) ---
 # Per-agent policy overrides. Each agent gets its own merged config.

@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
+	"github.com/luckyPipewrench/pipelock/internal/seedprotect"
 )
 
 // TextDLPMatch describes a single DLP pattern match in arbitrary text.
@@ -33,8 +34,70 @@ type TextDLPResult struct {
 // from MCP tool arguments. It applies zero-width stripping, NFKC normalization,
 // and checks encoded variants (base64, hex, base32) of the text for patterns.
 func (s *Scanner) ScanTextForDLP(_ context.Context, text string) TextDLPResult {
-	if len(s.dlpPatterns) == 0 && len(s.envSecrets) == 0 && len(s.fileSecrets) == 0 {
+	if len(s.dlpPatterns) == 0 && len(s.envSecrets) == 0 && len(s.fileSecrets) == 0 && !s.seedEnabled {
 		return TextDLPResult{Clean: true}
+	}
+
+	var matches []TextDLPMatch
+
+	// Seed phrase detection runs FIRST so seed phrases get the correct label
+	// ("BIP-39 Seed Phrase") instead of an accidental regex DLP match.
+	// A base64-encoded seed phrase can decode to text matching WIF/xprv regex,
+	// so seed detection must win the race.
+	// Uses ForMatching() normalization (preserves whitespace for word boundaries)
+	// instead of ForDLP() (strips whitespace, destroying word boundaries).
+	if s.seedEnabled {
+		seedText := normalize.ForMatching(text)
+		type seedCandidate struct {
+			text    string
+			encoded string
+		}
+		candidates := []seedCandidate{{seedText, ""}}
+		// URL-decoded variant
+		if decoded := IterativeDecode(seedText); decoded != seedText {
+			candidates = append(candidates, seedCandidate{decoded, "url"})
+		}
+		// Base64-decoded variant
+		for _, enc := range []*base64.Encoding{
+			base64.StdEncoding, base64.URLEncoding,
+			base64.RawStdEncoding, base64.RawURLEncoding,
+		} {
+			if decoded, err := enc.DecodeString(strings.TrimSpace(seedText)); err == nil && len(decoded) > 0 {
+				candidates = append(candidates, seedCandidate{string(decoded), "base64"})
+			}
+		}
+		// Hex-decoded variant
+		if decoded, err := hex.DecodeString(strings.TrimSpace(seedText)); err == nil && len(decoded) > 0 {
+			candidates = append(candidates, seedCandidate{string(decoded), "hex"})
+		}
+		// Base32-decoded variant
+		if decoded, err := base32.StdEncoding.DecodeString(strings.TrimSpace(seedText)); err == nil && len(decoded) > 0 {
+			candidates = append(candidates, seedCandidate{string(decoded), "base32"})
+		}
+		// Segment-level decoding: split on the same delimiters as decodeTextSegments()
+		// to maintain parity. Catches encoded seed phrases embedded in URLs within
+		// MCP tool arguments (e.g., "visit https://evil/<base64-seed> now").
+		segments := strings.FieldsFunc(seedText, func(r rune) bool {
+			return r == '/' || r == '?' || r == '&' || r == '=' || r == ' ' || r == '\n' || r == '\t'
+		})
+		for _, seg := range segments {
+			if len(seg) < 20 { // seed phrases are long; skip short segments
+				continue
+			}
+			for _, d := range decodeEncodings(seg) {
+				candidates = append(candidates, seedCandidate{d.text, d.encoding})
+			}
+		}
+		for _, c := range candidates {
+			if seedMatches := seedprotect.Detect(c.text, s.seedMinWords, s.seedVerifyChecksum); len(seedMatches) > 0 {
+				matches = append(matches, TextDLPMatch{
+					PatternName: "BIP-39 Seed Phrase",
+					Severity:    "critical",
+					Encoded:     c.encoded,
+				})
+				break // one seed match per scan is sufficient
+			}
+		}
 	}
 
 	// Full normalization before DLP pattern matching: strip control chars,
@@ -42,8 +105,6 @@ func (s *Scanner) ScanTextForDLP(_ context.Context, text string) TextDLPResult {
 	// Must match response scanning depth — otherwise attackers use homoglyphs
 	// in key prefixes (e.g., sk-օnt-... with Armenian օ U+0585 for 'a').
 	cleaned := normalize.ForDLP(text)
-
-	var matches []TextDLPMatch
 
 	// Check raw text against DLP patterns (before URL decoding).
 	// This catches secrets that aren't URL-encoded.

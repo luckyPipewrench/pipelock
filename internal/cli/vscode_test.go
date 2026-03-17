@@ -78,6 +78,19 @@ const (
 }`
 )
 
+// chdir changes to dir for the test and restores the original on cleanup.
+func chdir(t *testing.T, dir string) {
+	t.Helper()
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("Chdir %s: %v", dir, err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldWD) })
+}
+
 func TestVscodeInstall_DryRun(t *testing.T) {
 	dir := t.TempDir()
 	vsDir := filepath.Join(dir, ".vscode")
@@ -91,9 +104,7 @@ func TestVscodeInstall_DryRun(t *testing.T) {
 	cmd := rootCmd()
 	cmd.SetArgs([]string{"vscode", "install", "--project", "--dry-run"})
 	// Run from the temp dir so --project finds .vscode/mcp.json.
-	oldWD, _ := os.Getwd()
-	_ = os.Chdir(dir)
-	defer func() { _ = os.Chdir(oldWD) }()
+	chdir(t, dir)
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("install --dry-run failed: %v", err)
@@ -121,9 +132,7 @@ func TestVscodeInstall_StdioServer(t *testing.T) {
 
 	cmd := rootCmd()
 	cmd.SetArgs([]string{"vscode", "install", "--project"})
-	oldWD, _ := os.Getwd()
-	_ = os.Chdir(dir)
-	defer func() { _ = os.Chdir(oldWD) }()
+	chdir(t, dir)
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("install failed: %v", err)
@@ -207,9 +216,7 @@ func TestVscodeInstall_HTTPServer(t *testing.T) {
 
 	cmd := rootCmd()
 	cmd.SetArgs([]string{"vscode", "install", "--project"})
-	oldWD, _ := os.Getwd()
-	_ = os.Chdir(dir)
-	defer func() { _ = os.Chdir(oldWD) }()
+	chdir(t, dir)
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("install failed: %v", err)
@@ -279,9 +286,7 @@ func TestVscodeInstall_Idempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	oldWD, _ := os.Getwd()
-	_ = os.Chdir(dir)
-	defer func() { _ = os.Chdir(oldWD) }()
+	chdir(t, dir)
 
 	// First install.
 	cmd1 := rootCmd()
@@ -314,9 +319,7 @@ func TestVscodeInstall_PreservesUnknownFields(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	oldWD, _ := os.Getwd()
-	_ = os.Chdir(dir)
-	defer func() { _ = os.Chdir(oldWD) }()
+	chdir(t, dir)
 
 	cmd := rootCmd()
 	cmd.SetArgs([]string{"vscode", "install", "--project"})
@@ -340,9 +343,7 @@ func TestVscodeInstall_CreatesNewFile(t *testing.T) {
 	dir := t.TempDir()
 	// No .vscode dir exists yet.
 
-	oldWD, _ := os.Getwd()
-	_ = os.Chdir(dir)
-	defer func() { _ = os.Chdir(oldWD) }()
+	chdir(t, dir)
 
 	cmd := rootCmd()
 	cmd.SetArgs([]string{"vscode", "install", "--project"})
@@ -366,9 +367,7 @@ func TestVscodeInstall_ImplicitStdioType(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	oldWD, _ := os.Getwd()
-	_ = os.Chdir(dir)
-	defer func() { _ = os.Chdir(oldWD) }()
+	chdir(t, dir)
 
 	cmd := rootCmd()
 	cmd.SetArgs([]string{"vscode", "install", "--project"})
@@ -397,9 +396,7 @@ func TestVscodeInstall_BackupCreated(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	oldWD, _ := os.Getwd()
-	_ = os.Chdir(dir)
-	defer func() { _ = os.Chdir(oldWD) }()
+	chdir(t, dir)
 
 	cmd := rootCmd()
 	cmd.SetArgs([]string{"vscode", "install", "--project"})
@@ -426,9 +423,7 @@ func TestVscodeRemove_UnwrapsServers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	oldWD, _ := os.Getwd()
-	_ = os.Chdir(dir)
-	defer func() { _ = os.Chdir(oldWD) }()
+	chdir(t, dir)
 
 	// Install first.
 	cmd1 := rootCmd()
@@ -486,9 +481,7 @@ func TestVscodeRemove_Idempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	oldWD, _ := os.Getwd()
-	_ = os.Chdir(dir)
-	defer func() { _ = os.Chdir(oldWD) }()
+	chdir(t, dir)
 
 	cmd := rootCmd()
 	cmd.SetArgs([]string{"vscode", "remove", "--project"})
@@ -510,9 +503,7 @@ func TestVscodeRemove_Idempotent(t *testing.T) {
 func TestVscodeRemove_NoFile(t *testing.T) {
 	dir := t.TempDir()
 
-	oldWD, _ := os.Getwd()
-	_ = os.Chdir(dir)
-	defer func() { _ = os.Chdir(oldWD) }()
+	chdir(t, dir)
 
 	cmd := rootCmd()
 	cmd.SetArgs([]string{"vscode", "remove", "--project"})
@@ -539,9 +530,7 @@ func TestVscodeInstall_WithConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	oldWD, _ := os.Getwd()
-	_ = os.Chdir(dir)
-	defer func() { _ = os.Chdir(oldWD) }()
+	chdir(t, dir)
 
 	cmd := rootCmd()
 	cmd.SetArgs([]string{"vscode", "install", "--project", "--config", "/etc/pipelock.yaml"})
@@ -597,9 +586,7 @@ func TestVscodeInstall_ImplicitTypeRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	oldWD, _ := os.Getwd()
-	_ = os.Chdir(dir)
-	defer func() { _ = os.Chdir(oldWD) }()
+	chdir(t, dir)
 
 	// Install.
 	cmd1 := rootCmd()
@@ -663,9 +650,7 @@ func TestVscodeRemove_DryRun(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	oldWD, _ := os.Getwd()
-	_ = os.Chdir(dir)
-	defer func() { _ = os.Chdir(oldWD) }()
+	chdir(t, dir)
 
 	// Install first.
 	cmd1 := rootCmd()
@@ -875,7 +860,10 @@ func TestVscodeAtomicWrite_HappyPath(t *testing.T) {
 		t.Errorf("content mismatch: got %q, want %q", got, data)
 	}
 
-	info, _ := os.Stat(target)
+	info, statErr := os.Stat(target)
+	if statErr != nil {
+		t.Fatalf("stat failed: %v", statErr)
+	}
 	if info.Mode().Perm() != 0o600 {
 		t.Errorf("expected 0600 permissions, got %o", info.Mode().Perm())
 	}
@@ -920,9 +908,7 @@ func TestVscodeInstall_SkipsBadServer(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	oldWD, _ := os.Getwd()
-	_ = os.Chdir(dir)
-	defer func() { _ = os.Chdir(oldWD) }()
+	chdir(t, dir)
 
 	cmd := rootCmd()
 	cmd.SetArgs([]string{"vscode", "install", "--project"})
@@ -951,9 +937,7 @@ func TestVscodeInstall_NullServers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	oldWD, _ := os.Getwd()
-	_ = os.Chdir(dir)
-	defer func() { _ = os.Chdir(oldWD) }()
+	chdir(t, dir)
 
 	cmd := rootCmd()
 	cmd.SetArgs([]string{"vscode", "install", "--project"})
@@ -972,9 +956,7 @@ func TestVscodeInstall_InvalidJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	oldWD, _ := os.Getwd()
-	_ = os.Chdir(dir)
-	defer func() { _ = os.Chdir(oldWD) }()
+	chdir(t, dir)
 
 	cmd := rootCmd()
 	cmd.SetArgs([]string{"vscode", "install", "--project"})
@@ -993,9 +975,7 @@ func TestVscodeRemove_InvalidJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	oldWD, _ := os.Getwd()
-	_ = os.Chdir(dir)
-	defer func() { _ = os.Chdir(oldWD) }()
+	chdir(t, dir)
 
 	cmd := rootCmd()
 	cmd.SetArgs([]string{"vscode", "remove", "--project"})
@@ -1039,5 +1019,43 @@ func TestIsVscodeHTTPType(t *testing.T) {
 		if got := isVscodeHTTPType(tt.input); got != tt.want {
 			t.Errorf("isVscodeHTTPType(%q) = %v, want %v", tt.input, got, tt.want)
 		}
+	}
+}
+
+func TestUnwrapVscodeServer_InvalidMeta_MissingCommand(t *testing.T) {
+	server := map[string]interface{}{
+		"_pipelock": map[string]interface{}{
+			"original_type": testTypeStdio,
+			// Missing original_command.
+		},
+	}
+	_, err := unwrapVscodeServer(server)
+	if err == nil {
+		t.Error("expected error for missing original_command")
+	}
+}
+
+func TestUnwrapVscodeServer_InvalidMeta_MissingURL(t *testing.T) {
+	server := map[string]interface{}{
+		"_pipelock": map[string]interface{}{
+			"original_type": testTypeHTTP,
+			// Missing original_url.
+		},
+	}
+	_, err := unwrapVscodeServer(server)
+	if err == nil {
+		t.Error("expected error for missing original_url")
+	}
+}
+
+func TestUnwrapVscodeServer_InvalidMeta_MissingType(t *testing.T) {
+	server := map[string]interface{}{
+		"_pipelock": map[string]interface{}{
+			// Missing original_type entirely.
+		},
+	}
+	_, err := unwrapVscodeServer(server)
+	if err == nil {
+		t.Error("expected error for missing original_type")
 	}
 }

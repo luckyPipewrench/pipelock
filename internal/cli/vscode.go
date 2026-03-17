@@ -447,6 +447,20 @@ func unwrapVscodeServer(server map[string]interface{}) (map[string]interface{}, 
 		}
 	}
 
+	// Validate required metadata before restoring.
+	switch meta.OriginalType {
+	case vsTypeStdio:
+		if meta.OriginalCommand == "" {
+			return nil, fmt.Errorf("invalid _pipelock metadata: missing original_command")
+		}
+	case "":
+		return nil, fmt.Errorf("invalid _pipelock metadata: missing original_type")
+	default:
+		if meta.OriginalURL == "" {
+			return nil, fmt.Errorf("invalid _pipelock metadata: missing original_url for %s server", meta.OriginalType)
+		}
+	}
+
 	// Only set type if the original config had it explicitly.
 	if !meta.TypeOmitted {
 		result["type"] = meta.OriginalType

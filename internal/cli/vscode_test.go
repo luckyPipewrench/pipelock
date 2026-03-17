@@ -14,6 +14,9 @@ const (
 	testOriginalCmd = "npx"
 	testTypeHTTP    = "http" // VS Code MCP server type for HTTP upstream
 	testTypeStdio   = "stdio"
+	testExampleURL  = "https://api.example.com/mcp"
+	testNodeCmd     = "node"
+	testBearerTok   = "Bearer " + "vs-tok"
 
 	testStdioConfig = `{
   "servers": {
@@ -31,7 +34,7 @@ const (
     "remote": {
       "type": "http",
       "url": "https://api.example.com/mcp",
-      "headers": { "Authorization": "Bearer tok" }
+      "headers": { "Authorization": "Bearer vs-tok" }
     }
   }
 }`
@@ -157,7 +160,19 @@ func TestVscodeInstall_StdioServer(t *testing.T) {
 		t.Errorf("expected original command 'npx' after '--', got %q", args[dashIdx+1])
 	}
 
-	// Env should be preserved.
+	// --env flags should be present before "--" for passthrough.
+	foundEnvFlag := false
+	for i, a := range args {
+		if a == "--env" && i+1 < len(args) && args[i+1] == "MY_VAR" {
+			foundEnvFlag = true
+			break
+		}
+	}
+	if !foundEnvFlag {
+		t.Errorf("expected --env MY_VAR flag in args for env passthrough: %v", args)
+	}
+
+	// Env block should be preserved in JSON.
 	env, ok := server["env"].(map[string]interface{})
 	if !ok {
 		t.Fatal("env not preserved")
@@ -209,7 +224,7 @@ func TestVscodeInstall_HTTPServer(t *testing.T) {
 	foundUpstream := false
 	for i, a := range args {
 		if a == "--upstream" && i+1 < len(args) {
-			if args[i+1] != "https://api.example.com/mcp" {
+			if args[i+1] != testExampleURL {
 				t.Errorf("expected upstream URL, got %q", args[i+1])
 			}
 			foundUpstream = true
@@ -233,10 +248,10 @@ func TestVscodeInstall_HTTPServer(t *testing.T) {
 	if meta.OriginalType != testTypeHTTP {
 		t.Errorf("expected original_type=http, got %q", meta.OriginalType)
 	}
-	if meta.OriginalURL != "https://api.example.com/mcp" {
+	if meta.OriginalURL != testExampleURL {
 		t.Errorf("expected original URL, got %q", meta.OriginalURL)
 	}
-	if meta.OriginalHeaders["Authorization"] != "Bearer tok" {
+	if meta.OriginalHeaders["Authorization"] != testBearerTok {
 		t.Errorf("expected original headers preserved, got %v", meta.OriginalHeaders)
 	}
 }
@@ -428,7 +443,7 @@ func TestVscodeRemove_UnwrapsServers(t *testing.T) {
 		t.Error("_pipelock metadata should be removed after unwrap")
 	}
 	cmd, _ := stdioSrv["command"].(string)
-	if cmd != "node" {
+	if cmd != testNodeCmd {
 		t.Errorf("expected original command 'node', got %q", cmd)
 	}
 
@@ -713,14 +728,14 @@ func TestWrapVscodeServer_SSEType(t *testing.T) {
 func TestUnwrapVscodeServer_NoMeta(t *testing.T) {
 	server := map[string]interface{}{
 		"type":    testTypeStdio,
-		"command": "node",
+		"command": testNodeCmd,
 	}
 	result, err := unwrapVscodeServer(server)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Should return server unchanged.
-	if result["command"] != "node" {
+	if result["command"] != testNodeCmd {
 		t.Error("unwrap without metadata should return server as-is")
 	}
 }
@@ -729,12 +744,12 @@ func TestUnwrapVscodeServer_HTTPWithHeaders(t *testing.T) {
 	server := map[string]interface{}{
 		"type":    vsTypeStdio,
 		"command": "/usr/bin/pipelock",
-		"args":    []interface{}{"mcp", "proxy", "--upstream", "https://api.example.com/mcp"},
+		"args":    []interface{}{"mcp", "proxy", "--upstream", testExampleURL},
 		"_pipelock": map[string]interface{}{
 			"original_type": testTypeHTTP,
-			"original_url":  "https://api.example.com/mcp",
+			"original_url":  testExampleURL,
 			"original_headers": map[string]interface{}{
-				"Authorization": "Bearer tok",
+				"Authorization": testBearerTok,
 			},
 		},
 	}
@@ -747,14 +762,14 @@ func TestUnwrapVscodeServer_HTTPWithHeaders(t *testing.T) {
 	if result["type"] != testTypeHTTP {
 		t.Errorf("expected type=%s, got %v", testTypeHTTP, result["type"])
 	}
-	if result["url"] != "https://api.example.com/mcp" {
+	if result["url"] != testExampleURL {
 		t.Errorf("expected url restored, got %v", result["url"])
 	}
 	headers, ok := result["headers"].(map[string]interface{})
 	if !ok {
 		t.Fatal("headers not restored")
 	}
-	if headers["Authorization"] != "Bearer tok" {
+	if headers["Authorization"] != testBearerTok {
 		t.Errorf("expected Authorization header restored, got %v", headers["Authorization"])
 	}
 	if _, ok := result["_pipelock"]; ok {
@@ -770,7 +785,7 @@ func TestUnwrapVscodeServer_StdioNoArgs(t *testing.T) {
 		"args":    []interface{}{"mcp", "proxy", "--", "node"},
 		"_pipelock": map[string]interface{}{
 			"original_type":    testTypeStdio,
-			"original_command": "node",
+			"original_command": testNodeCmd,
 		},
 	}
 
@@ -778,7 +793,7 @@ func TestUnwrapVscodeServer_StdioNoArgs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result["command"] != "node" {
+	if result["command"] != testNodeCmd {
 		t.Errorf("expected command=node, got %v", result["command"])
 	}
 	if _, ok := result["args"]; ok {
@@ -804,7 +819,7 @@ func TestInterfaceSliceToStrings_MixedTypes(t *testing.T) {
 func TestMarshalVscodeConfig_NoOriginalData(t *testing.T) {
 	cfg := &vscodeMCPConfig{
 		Servers: map[string]map[string]interface{}{
-			"test": {"type": testTypeStdio, "command": "node"},
+			"test": {"type": testTypeStdio, "command": testNodeCmd},
 		},
 	}
 	data, err := marshalVscodeConfig(nil, cfg)
@@ -865,7 +880,7 @@ func TestMarshalVscodeConfig_PreservesUnknownTopLevel(t *testing.T) {
 	original := []byte(`{"servers":{},"custom_field":"preserved","inputs":[]}`)
 	cfg := &vscodeMCPConfig{
 		Servers: map[string]map[string]interface{}{
-			"test": {"type": testTypeStdio, "command": "node"},
+			"test": {"type": testTypeStdio, "command": testNodeCmd},
 		},
 	}
 	data, err := marshalVscodeConfig(original, cfg)

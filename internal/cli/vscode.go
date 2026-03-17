@@ -359,6 +359,12 @@ func wrapVscodeServer(server map[string]interface{}, exe, configFile string) (ma
 
 	meta := &pipelockMeta{OriginalType: serverType, TypeOmitted: typeOmitted}
 
+	// Collect --env flags for environment variable passthrough.
+	// pipelock mcp proxy strips the parent env and only passes safeEnvKeys
+	// plus explicit --env additions. Without these flags, the child MCP
+	// server won't receive the env vars VS Code sets.
+	envFlags := buildEnvFlags(server)
+
 	if serverType == vsTypeStdio {
 		originalCmd, _ := server["command"].(string)
 		if originalCmd == "" {
@@ -373,6 +379,7 @@ func wrapVscodeServer(server map[string]interface{}, exe, configFile string) (ma
 		if configFile != "" {
 			args = append(args, "--config", configFile)
 		}
+		args = append(args, envFlags...)
 		args = append(args, "--")
 		args = append(args, originalCmd)
 		args = append(args, originalArgs...)
@@ -398,6 +405,7 @@ func wrapVscodeServer(server map[string]interface{}, exe, configFile string) (ma
 		if configFile != "" {
 			args = append(args, "--config", configFile)
 		}
+		args = append(args, envFlags...)
 		args = append(args, "--upstream", originalURL)
 
 		result["type"] = vsTypeStdio
@@ -462,6 +470,22 @@ func unwrapVscodeServer(server map[string]interface{}) (map[string]interface{}, 
 	}
 
 	return result, nil
+}
+
+// buildEnvFlags extracts env var keys from a server's "env" block and returns
+// --env KEY flags for each. VS Code resolves ${input:*} and ${env:*} variables
+// before setting them on the process, so we only need the key names. pipelock
+// mcp proxy will read the values from its own environment (which VS Code set).
+func buildEnvFlags(server map[string]interface{}) []string {
+	envMap, ok := server["env"].(map[string]interface{})
+	if !ok || len(envMap) == 0 {
+		return nil
+	}
+	flags := make([]string, 0, len(envMap)*2)
+	for key := range envMap {
+		flags = append(flags, "--env", key)
+	}
+	return flags
 }
 
 // interfaceSliceToStrings converts []interface{} (from JSON unmarshal) to []string.

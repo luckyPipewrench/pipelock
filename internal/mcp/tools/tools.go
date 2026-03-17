@@ -6,6 +6,7 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -559,7 +560,11 @@ func isToolsListResult(result json.RawMessage) bool {
 		return false
 	}
 	// json.RawMessage("null") is non-nil in Go — must check string value.
-	return probe.Tools != nil && string(probe.Tools) != "null"
+	// Only treat as tools/list if tools is a JSON array (including empty []).
+	// A string or object in the tools field is malformed and must NOT suppress
+	// general response scanning — otherwise an attacker hides injection there.
+	trimmed := bytes.TrimSpace(probe.Tools)
+	return len(trimmed) > 0 && trimmed[0] == '['
 }
 
 func tryParseToolsList(result json.RawMessage) []ToolDef {

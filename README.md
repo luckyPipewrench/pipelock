@@ -503,6 +503,7 @@ internal/
   projectscan/         Project directory scanning for audit command
   addressprotect/      Blockchain address validation and poisoning detection
   seedprotect/         BIP-39 seed phrase detection (dictionary, sliding window, checksum)
+  rules/               Community rule bundle loading, verification, and CLI
 enterprise/            Multi-agent features (ELv2, see enterprise/LICENSE)
 configs/               7 preset config files
 docs/                  Guides, references, compliance mappings

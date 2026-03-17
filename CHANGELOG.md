@@ -7,7 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-03-17
+
 ### Added
+- Community rule bundles (infrastructure): signed YAML detection pattern bundles with Ed25519 keyring verification, `pipelock rules install/update/list/verify/diff/remove` CLI, CalVer versioning, lock file tracking, and bundle provenance threading through all scanner match types. New `rules` config section with `trusted_keys` and `auto_update`. Public rule bundle and hosting will follow in a point release. (#247)
 - Crypto address poisoning detection: validates ETH, BTC, SOL, and BNB blockchain addresses against a user-supplied allowlist and flags lookalike addresses using prefix/suffix similarity scoring. New `address_protection` config section. `internal/addressprotect/` package with chain-specific validators and Bech32/Base58/EIP-55 checksum support. (#233)
 - Address similarity tracker: session-scoped fingerprinting with LRU eviction detects when multiple similar-looking addresses appear in the same session, a key indicator of address poisoning attacks. (#231)
 - Response scanning pre-filter: keyword-gated regex skips expensive normalization and pattern matching when no injection keywords are present in the text. Cuts clean-text scan latency significantly. (#230)

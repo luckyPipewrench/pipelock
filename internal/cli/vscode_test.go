@@ -610,3 +610,291 @@ func TestVscodeInstall_ImplicitTypeRoundTrip(t *testing.T) {
 		t.Errorf("expected command 'npx', got %q", cmd)
 	}
 }
+
+func TestVscodeUserConfigPath(t *testing.T) {
+	// Just verify it returns a non-empty path without error.
+	path, err := vscodeUserConfigPath()
+	if err != nil {
+		t.Fatalf("vscodeUserConfigPath failed: %v", err)
+	}
+	if path == "" {
+		t.Error("expected non-empty path")
+	}
+	if filepath.Base(path) != "mcp.json" {
+		t.Errorf("expected path ending in mcp.json, got %q", path)
+	}
+}
+
+func TestVscodeRemove_DryRun(t *testing.T) {
+	dir := t.TempDir()
+	vsDir := filepath.Join(dir, ".vscode")
+	if err := os.MkdirAll(vsDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(vsDir, "mcp.json"), []byte(testStdioConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	oldWD, _ := os.Getwd()
+	_ = os.Chdir(dir)
+	defer func() { _ = os.Chdir(oldWD) }()
+
+	// Install first.
+	cmd1 := rootCmd()
+	cmd1.SetArgs([]string{"vscode", "install", "--project"})
+	if err := cmd1.Execute(); err != nil {
+		t.Fatalf("install failed: %v", err)
+	}
+
+	installed, _ := os.ReadFile(filepath.Clean(filepath.Join(vsDir, "mcp.json")))
+
+	// Remove with dry-run.
+	cmd2 := rootCmd()
+	cmd2.SetArgs([]string{"vscode", "remove", "--project", "--dry-run"})
+	if err := cmd2.Execute(); err != nil {
+		t.Fatalf("remove --dry-run failed: %v", err)
+	}
+
+	// File should not have changed.
+	after, _ := os.ReadFile(filepath.Clean(filepath.Join(vsDir, "mcp.json")))
+	if string(after) != string(installed) {
+		t.Error("dry-run modified the file")
+	}
+}
+
+func TestVscodeRemove_MutuallyExclusiveFlags(t *testing.T) {
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"vscode", "remove", "--global", "--project"})
+	if err := cmd.Execute(); err == nil {
+		t.Error("expected error with both --global and --project")
+	}
+}
+
+func TestWrapVscodeServer_MissingCommand(t *testing.T) {
+	server := map[string]interface{}{
+		"type": testTypeStdio,
+		// No command field.
+	}
+	_, _, err := wrapVscodeServer(server, "/usr/bin/pipelock", "")
+	if err == nil {
+		t.Error("expected error for stdio server missing command")
+	}
+}
+
+func TestWrapVscodeServer_MissingURL(t *testing.T) {
+	server := map[string]interface{}{
+		"type": testTypeHTTP,
+		// No url field.
+	}
+	_, _, err := wrapVscodeServer(server, "/usr/bin/pipelock", "")
+	if err == nil {
+		t.Error("expected error for http server missing url")
+	}
+}
+
+func TestWrapVscodeServer_SSEType(t *testing.T) {
+	server := map[string]interface{}{
+		"type": "sse",
+		"url":  "https://example.com/sse",
+	}
+	wrapped, meta, err := wrapVscodeServer(server, "/usr/bin/pipelock", "")
+	if err != nil {
+		t.Fatalf("wrap sse failed: %v", err)
+	}
+	if meta.OriginalType != "sse" {
+		t.Errorf("expected original_type=sse, got %q", meta.OriginalType)
+	}
+	// Should be converted to stdio.
+	if wrapped["type"] != vsTypeStdio {
+		t.Errorf("expected wrapped type=stdio, got %v", wrapped["type"])
+	}
+}
+
+func TestUnwrapVscodeServer_NoMeta(t *testing.T) {
+	server := map[string]interface{}{
+		"type":    testTypeStdio,
+		"command": "node",
+	}
+	result, err := unwrapVscodeServer(server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Should return server unchanged.
+	if result["command"] != "node" {
+		t.Error("unwrap without metadata should return server as-is")
+	}
+}
+
+func TestUnwrapVscodeServer_HTTPWithHeaders(t *testing.T) {
+	server := map[string]interface{}{
+		"type":    vsTypeStdio,
+		"command": "/usr/bin/pipelock",
+		"args":    []interface{}{"mcp", "proxy", "--upstream", "https://api.example.com/mcp"},
+		"_pipelock": map[string]interface{}{
+			"original_type": testTypeHTTP,
+			"original_url":  "https://api.example.com/mcp",
+			"original_headers": map[string]interface{}{
+				"Authorization": "Bearer tok",
+			},
+		},
+	}
+
+	result, err := unwrapVscodeServer(server)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if result["type"] != testTypeHTTP {
+		t.Errorf("expected type=%s, got %v", testTypeHTTP, result["type"])
+	}
+	if result["url"] != "https://api.example.com/mcp" {
+		t.Errorf("expected url restored, got %v", result["url"])
+	}
+	headers, ok := result["headers"].(map[string]interface{})
+	if !ok {
+		t.Fatal("headers not restored")
+	}
+	if headers["Authorization"] != "Bearer tok" {
+		t.Errorf("expected Authorization header restored, got %v", headers["Authorization"])
+	}
+	if _, ok := result["_pipelock"]; ok {
+		t.Error("_pipelock metadata should be removed")
+	}
+}
+
+func TestUnwrapVscodeServer_StdioNoArgs(t *testing.T) {
+	// Stdio server with no original args should not have args after unwrap.
+	server := map[string]interface{}{
+		"type":    vsTypeStdio,
+		"command": "/usr/bin/pipelock",
+		"args":    []interface{}{"mcp", "proxy", "--", "node"},
+		"_pipelock": map[string]interface{}{
+			"original_type":    testTypeStdio,
+			"original_command": "node",
+		},
+	}
+
+	result, err := unwrapVscodeServer(server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result["command"] != "node" {
+		t.Errorf("expected command=node, got %v", result["command"])
+	}
+	if _, ok := result["args"]; ok {
+		t.Error("args should not be present when original had none")
+	}
+}
+
+func TestInterfaceSliceToStrings_NonSlice(t *testing.T) {
+	result := interfaceSliceToStrings("not a slice")
+	if result != nil {
+		t.Errorf("expected nil for non-slice input, got %v", result)
+	}
+}
+
+func TestInterfaceSliceToStrings_MixedTypes(t *testing.T) {
+	input := []interface{}{"hello", 42, "world", true}
+	result := interfaceSliceToStrings(input)
+	if len(result) != 2 || result[0] != "hello" || result[1] != "world" {
+		t.Errorf("expected [hello world], got %v", result)
+	}
+}
+
+func TestMarshalVscodeConfig_NoOriginalData(t *testing.T) {
+	cfg := &vscodeMCPConfig{
+		Servers: map[string]map[string]interface{}{
+			"test": {"type": testTypeStdio, "command": "node"},
+		},
+	}
+	data, err := marshalVscodeConfig(nil, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) == 0 {
+		t.Error("expected non-empty output")
+	}
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+}
+
+func TestVscodeInstall_Global(t *testing.T) {
+	// Test --global path resolution (exercises vscodeConfigPath + vscodeUserConfigPath).
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"vscode", "install", "--global", "--dry-run"})
+	// Dry-run won't write, but exercises the path resolution.
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("global dry-run failed: %v", err)
+	}
+}
+
+func TestVscodeAtomicWrite_HappyPath(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "test.json")
+	data := []byte(`{"test": true}`)
+
+	if err := vscodeAtomicWrite(target, data, dir); err != nil {
+		t.Fatalf("atomic write failed: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Clean(target))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(data) {
+		t.Errorf("content mismatch: got %q, want %q", got, data)
+	}
+
+	info, _ := os.Stat(target)
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("expected 0600 permissions, got %o", info.Mode().Perm())
+	}
+}
+
+func TestVscodeAtomicWrite_BadDir(t *testing.T) {
+	// Writing to a non-existent temp dir should fail.
+	err := vscodeAtomicWrite("/tmp/does-not-exist/test.json", []byte("{}"), "/tmp/does-not-exist")
+	if err == nil {
+		t.Error("expected error writing to non-existent dir")
+	}
+}
+
+func TestMarshalVscodeConfig_PreservesUnknownTopLevel(t *testing.T) {
+	original := []byte(`{"servers":{},"custom_field":"preserved","inputs":[]}`)
+	cfg := &vscodeMCPConfig{
+		Servers: map[string]map[string]interface{}{
+			"test": {"type": testTypeStdio, "command": "node"},
+		},
+	}
+	data, err := marshalVscodeConfig(original, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := raw["custom_field"]; !ok {
+		t.Error("custom_field was not preserved")
+	}
+}
+
+func TestIsVscodeHTTPType(t *testing.T) {
+	tests := []struct {
+		input string
+		want  bool
+	}{
+		{vsTypeStdio, false},
+		{"", false},
+		{testTypeHTTP, true},
+		{"sse", true},
+		{"grpc", true}, // unknown type treated as HTTP-style
+	}
+	for _, tt := range tests {
+		if got := isVscodeHTTPType(tt.input); got != tt.want {
+			t.Errorf("isVscodeHTTPType(%q) = %v, want %v", tt.input, got, tt.want)
+		}
+	}
+}

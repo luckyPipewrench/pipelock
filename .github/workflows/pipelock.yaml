@@ -36,6 +36,7 @@ jobs:
             docs/attacks-blocked.md
             docs/bypass-resistance.md
             docs/configuration.md
+            docs/scan-api.md
             docs/guides/deployment-recipes.md
             docs/guides/tls-interception.md
             examples/demo-readme.sh

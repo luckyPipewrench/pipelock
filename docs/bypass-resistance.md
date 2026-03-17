@@ -17,6 +17,7 @@ These techniques hide secrets or injection payloads inside encoded data.
 | Base64 (standard + URL-safe) | `c2stYW50LWFwaTA=` | Tested | Tries 4 base64 variants on every segment > 10 chars |
 | Base32 | `ONQW2YLUMVWGY3DP` | Tested | Decoded and re-checked against DLP |
 | Hex encoding | `736b2d616e742d` | Tested | Hex-decoded, case-insensitive |
+| Delimiter-separated hex | `73:6b:2d:61:6e:74` | Tested | Strips 6 delimiter formats (`:`, `-`, ` `, `,`, `\x` prefix, `0x` prefix) before hex decode |
 | URL encoding (multi-layer) | `%25%32%44` (5-10 layers deep) | Tested | `IterativeDecode()` runs up to 500 rounds |
 | Mixed encoding chains | `base64(hex("secret"))` | Tested | Each layer decoded, re-normalized, re-checked |
 | Field-split encoding | Secret spread across `?a=sk-&b=ant-&c=api03` | Tested | Query subsequence matching (ordered 2-4 param combos) |

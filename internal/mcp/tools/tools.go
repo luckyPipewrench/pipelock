@@ -564,7 +564,23 @@ func isToolsListResult(result json.RawMessage) bool {
 	// A string or object in the tools field is malformed and must NOT suppress
 	// general response scanning — otherwise an attacker hides injection there.
 	trimmed := bytes.TrimSpace(probe.Tools)
-	return len(trimmed) > 0 && trimmed[0] == '['
+	if len(trimmed) == 0 || trimmed[0] != '[' {
+		return false
+	}
+	// Verify array elements are JSON objects. An array of strings like
+	// ["Ignore previous instructions"] would bypass general scanning
+	// since tryParseToolsList returns nil but IsToolsList would be true.
+	var elems []json.RawMessage
+	if err := json.Unmarshal(probe.Tools, &elems); err != nil {
+		return false
+	}
+	for _, elem := range elems {
+		e := bytes.TrimSpace(elem)
+		if len(e) == 0 || e[0] != '{' {
+			return false
+		}
+	}
+	return true
 }
 
 func tryParseToolsList(result json.RawMessage) []ToolDef {

@@ -70,7 +70,7 @@ func CheckSignerPinning(pinnedFP, currentFP string, allowRotation bool) error {
 		return nil
 	}
 
-	return fmt.Errorf("signer fingerprint mismatch: pinned %q, got %q (set allow_rotation to permit key changes)", pinnedFP, currentFP)
+	return fmt.Errorf("signer fingerprint mismatch: pinned %q, got %q (use --allow-key-rotation to permit key changes)", pinnedFP, currentFP)
 }
 
 // VerifyIntegrity checks the integrity of a bundle directory.

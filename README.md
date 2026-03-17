@@ -198,7 +198,7 @@ Pipelock runs in three modes:
 | **balanced** | Blocks naive + detects sophisticated | Via fetch or forward proxy | Most developers (default) |
 | **audit** | Logging only | Unrestricted | Evaluation before enforcement |
 
-For agents running uncensored or abliterated models (e.g. OBLITERATUS), the [`hostile-model` preset](configs/hostile-model.yaml) layers additional defenses on top of strict mode: aggressive entropy thresholds (3.0), blanket network tool blocking, session binding, cross-request exfiltration detection, and a pre-configured kill switch. `pipelock audit` automatically recommends this preset when it detects guardrail-removal tooling in your project.
+For agents running uncensored or abliterated models (e.g. OBLITERATUS), the [`hostile-model` preset](configs/hostile-model.yaml) layers additional defenses on top of strict mode: aggressive entropy thresholds (3.0), blanket network tool blocking, session binding, cross-request exfiltration detection, and a pre-configured kill switch. `pipelock audit` recommends this preset when it detects known guardrail-removal toolchains (currently dependency-based detection).
 
 What each mode prevents, detects, or logs:
 

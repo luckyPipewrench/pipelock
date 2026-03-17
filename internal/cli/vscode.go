@@ -322,12 +322,12 @@ func runVscodeRemove(cmd *cobra.Command, global, project, dryRun bool) error {
 	return nil
 }
 
-// VS Code MCP server type constants.
-const (
-	vscodeTypeStdio = "stdio"
-	vscodeTypeHTTP  = "http"
-	vscodeTypeSSE   = "sse"
-)
+// vsTypeStdio is the VS Code MCP server type for subprocess-based servers.
+const vsTypeStdio = "stdio"
+
+// isVscodeHTTPType returns true for server types that use URL-based upstream
+// (anything that is not stdio).
+func isVscodeHTTPType(t string) bool { return t != vsTypeStdio && t != "" }
 
 // isVscodeWrapped returns true if a server entry has pipelock metadata.
 func isVscodeWrapped(server map[string]interface{}) bool {
@@ -340,7 +340,7 @@ func wrapVscodeServer(server map[string]interface{}, exe, configFile string) (ma
 	serverType, _ := server["type"].(string)
 	typeOmitted := serverType == ""
 	if typeOmitted {
-		serverType = vscodeTypeStdio // VS Code defaults to stdio when type is omitted.
+		serverType = vsTypeStdio // VS Code defaults to stdio when type is omitted.
 	}
 
 	// VS Code mcp.json separates command and args, so use the raw path.
@@ -359,8 +359,7 @@ func wrapVscodeServer(server map[string]interface{}, exe, configFile string) (ma
 
 	meta := &pipelockMeta{OriginalType: serverType, TypeOmitted: typeOmitted}
 
-	switch serverType {
-	case vscodeTypeStdio:
+	if serverType == vsTypeStdio {
 		originalCmd, _ := server["command"].(string)
 		if originalCmd == "" {
 			return nil, nil, fmt.Errorf("stdio server missing command")
@@ -378,11 +377,10 @@ func wrapVscodeServer(server map[string]interface{}, exe, configFile string) (ma
 		args = append(args, originalCmd)
 		args = append(args, originalArgs...)
 
-		result["type"] = vscodeTypeStdio
+		result["type"] = vsTypeStdio
 		result["command"] = exe
 		result["args"] = args
-
-	case vscodeTypeHTTP, vscodeTypeSSE:
+	} else if isVscodeHTTPType(serverType) {
 		originalURL, _ := server["url"].(string)
 		if originalURL == "" {
 			return nil, nil, fmt.Errorf("%s server missing url", serverType)
@@ -402,11 +400,10 @@ func wrapVscodeServer(server map[string]interface{}, exe, configFile string) (ma
 		}
 		args = append(args, "--upstream", originalURL)
 
-		result["type"] = vscodeTypeStdio
+		result["type"] = vsTypeStdio
 		result["command"] = exe
 		result["args"] = args
-
-	default:
+	} else {
 		return nil, nil, fmt.Errorf("unsupported server type %q", serverType)
 	}
 
@@ -448,12 +445,12 @@ func unwrapVscodeServer(server map[string]interface{}) (map[string]interface{}, 
 	}
 
 	switch meta.OriginalType {
-	case vscodeTypeStdio:
+	case vsTypeStdio:
 		result["command"] = meta.OriginalCommand
 		if len(meta.OriginalArgs) > 0 {
 			result["args"] = meta.OriginalArgs
 		}
-	case vscodeTypeHTTP, vscodeTypeSSE:
+	default:
 		result["url"] = meta.OriginalURL
 		if len(meta.OriginalHeaders) > 0 {
 			headers := make(map[string]interface{}, len(meta.OriginalHeaders))

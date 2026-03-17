@@ -12,6 +12,8 @@ import (
 
 const (
 	testOriginalCmd = "npx"
+	testTypeHTTP    = "http" // VS Code MCP server type for HTTP upstream
+	testTypeStdio   = "stdio"
 
 	testStdioConfig = `{
   "servers": {
@@ -228,7 +230,7 @@ func TestVscodeInstall_HTTPServer(t *testing.T) {
 	if err := json.Unmarshal(metaJSON, &meta); err != nil {
 		t.Fatal(err)
 	}
-	if meta.OriginalType != "http" {
+	if meta.OriginalType != testTypeHTTP {
 		t.Errorf("expected original_type=http, got %q", meta.OriginalType)
 	}
 	if meta.OriginalURL != "https://api.example.com/mcp" {
@@ -436,7 +438,7 @@ func TestVscodeRemove_UnwrapsServers(t *testing.T) {
 		t.Error("_pipelock metadata should be removed after unwrap")
 	}
 	srvType, _ := httpSrv["type"].(string)
-	if srvType != "http" {
+	if srvType != testTypeHTTP {
 		t.Errorf("expected type restored to 'http', got %q", srvType)
 	}
 	url, _ := httpSrv["url"].(string)

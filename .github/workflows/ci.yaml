@@ -121,3 +121,8 @@ jobs:
 
       - name: Verify enterprise binary runs
         run: ./pipelock-enterprise --version
+
+      - name: Cross-build Windows binaries (enterprise)
+        run: |
+          GOOS=windows GOARCH=amd64 go build -tags enterprise -trimpath -o /tmp/pipelock-windows-amd64.exe ./cmd/pipelock
+          GOOS=windows GOARCH=arm64 go build -tags enterprise -trimpath -o /tmp/pipelock-windows-arm64.exe ./cmd/pipelock

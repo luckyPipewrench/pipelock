@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Windows release builds: `pipelock rules` now uses an OS-specific lock implementation so the CLI cross-compiles cleanly for Windows targets. CI now cross-builds the enterprise CLI for Windows to catch release-only breakage before tagging.
+
 ## [1.4.0] - 2026-03-17
 
 ### Added

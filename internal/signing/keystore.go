@@ -101,6 +101,9 @@ func (k *Keystore) generateAgent(name string) (ed25519.PublicKey, error) {
 	if err := os.MkdirAll(dir, dirPermission); err != nil {
 		return nil, fmt.Errorf("creating agent directory: %w", err)
 	}
+	if err := k.validateContainment(dir); err != nil {
+		return nil, fmt.Errorf("agent directory containment check: %w", err)
+	}
 
 	pub, priv, err := GenerateKeyPair()
 	if err != nil {
@@ -125,8 +128,11 @@ func (k *Keystore) LoadPrivateKey(name string) (ed25519.PrivateKey, error) {
 	if err := ValidateAgentName(name); err != nil {
 		return nil, err
 	}
-	path := filepath.Join(k.agentDir(name), privateKeyFile)
-	return LoadPrivateKeyFile(path)
+	dir := k.agentDir(name)
+	if err := k.validateContainment(dir); err != nil {
+		return nil, fmt.Errorf("agent directory containment check: %w", err)
+	}
+	return LoadPrivateKeyFile(filepath.Join(dir, privateKeyFile))
 }
 
 // LoadPublicKey loads an agent's own public key from the keystore.
@@ -134,8 +140,11 @@ func (k *Keystore) LoadPublicKey(name string) (ed25519.PublicKey, error) {
 	if err := ValidateAgentName(name); err != nil {
 		return nil, err
 	}
-	path := filepath.Join(k.agentDir(name), publicKeyFile)
-	return LoadPublicKeyFile(path)
+	dir := k.agentDir(name)
+	if err := k.validateContainment(dir); err != nil {
+		return nil, fmt.Errorf("agent directory containment check: %w", err)
+	}
+	return LoadPublicKeyFile(filepath.Join(dir, publicKeyFile))
 }
 
 // TrustKey copies a public key file into trusted_keys/<name>.pub.
@@ -244,6 +253,26 @@ func (k *Keystore) ListTrusted() ([]string, error) {
 
 func (k *Keystore) agentDir(name string) string {
 	return filepath.Join(k.baseDir, agentsSubdir, name)
+}
+
+// validateContainment resolves symlinks in path and verifies the result
+// is inside the keystore base directory. Prevents symlink escape attacks
+// where a malicious symlink in the agents/ directory redirects key writes
+// to an attacker-controlled location outside the keystore.
+func (k *Keystore) validateContainment(path string) error {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return fmt.Errorf("resolving path: %w", err)
+	}
+	base, err := filepath.EvalSymlinks(k.baseDir)
+	if err != nil {
+		return fmt.Errorf("resolving base dir: %w", err)
+	}
+	rel, err := filepath.Rel(base, resolved)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return fmt.Errorf("path %q resolves outside keystore %q", path, k.baseDir)
+	}
+	return nil
 }
 
 func (k *Keystore) trustedKeyPath(name string) string {

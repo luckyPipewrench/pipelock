@@ -650,3 +650,61 @@ func TestKeystoreTrustKey_ReadOnlyBase(t *testing.T) {
 		t.Fatal("expected error for read-only base directory")
 	}
 }
+
+func TestKeystoreGenerateAgent_SymlinkContainment(t *testing.T) {
+	base := t.TempDir()
+	outside := t.TempDir()
+	ks := NewKeystore(base)
+
+	// Create the agents/ directory so we can plant a symlink inside it.
+	agentsDir := filepath.Join(base, "agents")
+	if err := os.MkdirAll(agentsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	// Symlink agents/evil -> outside directory.
+	if err := os.Symlink(outside, filepath.Join(agentsDir, "evil")); err != nil {
+		t.Fatal(err)
+	}
+
+	// GenerateAgent should refuse because resolved path is outside keystore.
+	_, err := ks.ForceGenerateAgent("evil")
+	if err == nil {
+		t.Fatal("expected containment error for symlinked agent directory")
+	}
+	if !strings.Contains(err.Error(), "containment") {
+		t.Fatalf("expected containment error, got: %v", err)
+	}
+
+	// Verify no key was written to the outside directory.
+	entries, err := os.ReadDir(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("key was written outside keystore: %v", entries)
+	}
+}
+
+func TestKeystoreLoadPrivateKey_SymlinkContainment(t *testing.T) {
+	base := t.TempDir()
+	outside := t.TempDir()
+	ks := NewKeystore(base)
+
+	// Create agents/ and symlink agents/evil -> outside.
+	agentsDir := filepath.Join(base, "agents")
+	if err := os.MkdirAll(agentsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(agentsDir, "evil")); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := ks.LoadPrivateKey("evil")
+	if err == nil {
+		t.Fatal("expected containment error for symlinked agent directory")
+	}
+	if !strings.Contains(err.Error(), "containment") {
+		t.Fatalf("expected containment error, got: %v", err)
+	}
+}

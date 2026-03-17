@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Crypto address poisoning detection: validates ETH, BTC, SOL, and BNB blockchain addresses against a user-supplied allowlist and flags lookalike addresses using prefix/suffix similarity scoring. New `address_protection` config section. `internal/addressprotect/` package with chain-specific validators and Bech32/Base58/EIP-55 checksum support. (#233)
+- Address similarity tracker: session-scoped fingerprinting with LRU eviction detects when multiple similar-looking addresses appear in the same session, a key indicator of address poisoning attacks. (#231)
+- Response scanning pre-filter: keyword-gated regex skips expensive normalization and pattern matching when no injection keywords are present in the text. Cuts clean-text scan latency significantly. (#230)
+- Response pre-filter extended to opt-space and vowel-fold passes: all three normalization passes now use keyword pre-filtering, not just the first pass. (#245)
+- Delimiter-separated hex encoding detection: `normalizeHex()` strips 6 delimiter formats (`:`, `-`, ` `, `,`, `\x` prefix, `0x` prefix) across all DLP paths, catching secrets encoded as colon-separated, space-separated, or C-style hex notation. (#243)
+- DLP patterns for Groq, xAI, GitLab, New Relic, and Stripe webhooks: built-in pattern count expanded from 36 to 41. (#246)
+- Trial tier and one-time purchase support for license service: Polar webhook handler now processes trial and one-time purchase events alongside subscriptions. (#232)
+- Scan API reference documentation (`docs/scan-api.md`): full API reference for the `POST /api/v1/scan` endpoint covering all four scan kinds, auth, rate limiting, error codes, and integration patterns.
+- Address protection and scan API config reference sections added to `docs/configuration.md`.
+- Hostile-model preset surfaced in README Security Matrix with feature callout.
+
+### Changed
+- Minimum Go version bumped from 1.24 to 1.25. CI matrix now tests Go 1.25 and 1.26. (#242)
+
+### Fixed
+- K8s Secret volume compatibility: license key and signing key file loading now follows symlinks (required for Kubernetes Secret volume mounts where files are symlinked through `..data/`). (#229)
+
+### Docs
+- Adversarial testing methodology section added to security assurance docs. Benchmark data refreshed for Go 1.25. Scanner pipeline description updated from 9 to 11 layers. (#228)
+- Security claims hedged and coverage disclaimers added across docs. (#234)
+- Demo assets, fleet dashboard screenshot, and egress report updated. (#235)
+
+### CI
+- sigstore/cosign-installer bumped from 4.0.0 to 4.1.0. (#237)
+- docker/login-action bumped from 3.7.0 to 4.0.0. (#241)
+
 ## [1.3.0] - 2026-03-13
 
 ### Added

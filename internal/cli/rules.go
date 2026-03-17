@@ -16,7 +16,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -79,28 +78,9 @@ func rulesCmd() *cobra.Command {
 	return cmd
 }
 
-// acquireRulesLock acquires an advisory file lock for mutating operations.
-// Returns a release function and an error. The caller must call the release
-// function when done.
-func acquireRulesLock(rulesDir string) (func(), error) {
-	lockPath := filepath.Join(rulesDir, ".rules.lock")
-
-	f, err := os.OpenFile(filepath.Clean(lockPath), os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return nil, fmt.Errorf("opening lock file: %w", err)
-	}
-
-	fd := int(f.Fd()) //nolint:gosec // G115: file descriptors always fit in int
-	if err := syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		_ = f.Close()
-		return nil, fmt.Errorf("another rules command is running (lock: %s)", lockPath)
-	}
-
-	return func() {
-		_ = syscall.Flock(fd, syscall.LOCK_UN)
-		_ = f.Close()
-	}, nil
-}
+// acquireRulesLock is defined in rules_lock_unix.go and rules_lock_windows.go.
+// It acquires an advisory file lock for mutating operations. Returns a release
+// function and an error. The caller must call the release function when done.
 
 // ensureDir creates a directory with 0o750 permissions if it does not exist.
 func ensureDir(path string) error {

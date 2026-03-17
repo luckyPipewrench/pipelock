@@ -408,6 +408,130 @@ func TestVerifyIntegrityBytes_SignedHappyPath(t *testing.T) {
 	}
 }
 
+// ---------- verifySignedIntegrity SHA-256 mismatch ----------
+
+func TestVerifyIntegrity_SignedSHA256Mismatch(t *testing.T) {
+	// Non-parallel: mutates KeyringHex.
+	// Signature is valid but the lock file has a different SHA-256 digest.
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating key: %v", err)
+	}
+
+	orig := KeyringHex
+	KeyringHex = hex.EncodeToString(pub)
+	t.Cleanup(func() { KeyringHex = orig })
+
+	dir := t.TempDir()
+	bundlePath := filepath.Join(dir, testBundleFilename)
+	bundleContent := []byte("name: signed-sha-mismatch\n")
+	if err := os.WriteFile(bundlePath, bundleContent, 0o600); err != nil {
+		t.Fatalf("writing bundle: %v", err)
+	}
+
+	sig, err := signing.SignFile(bundlePath, priv)
+	if err != nil {
+		t.Fatalf("signing bundle: %v", err)
+	}
+	if err := signing.SaveSignature(sig, bundlePath+signing.SigExtension); err != nil {
+		t.Fatalf("saving signature: %v", err)
+	}
+
+	signerFP := hex.EncodeToString(pub)
+	// Provide a wrong SHA-256 that does not match the actual content.
+	wrongSHA := "0000000000000000000000000000000000000000000000000000000000000000"
+
+	err = VerifyIntegrity(dir, false, signerFP, wrongSHA, nil)
+	if err == nil {
+		t.Fatal("expected error for SHA-256 mismatch on signed bundle with valid signature")
+	}
+	if !strings.Contains(err.Error(), "SHA-256 mismatch") {
+		t.Errorf("error should mention SHA-256 mismatch, got: %v", err)
+	}
+}
+
+// ---------- VerifyIntegrityBytes signer fingerprint mismatch ----------
+
+func TestVerifyIntegrityBytes_SignerFingerprintMismatch(t *testing.T) {
+	// Non-parallel: mutates KeyringHex.
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating key: %v", err)
+	}
+
+	orig := KeyringHex
+	KeyringHex = hex.EncodeToString(pub)
+	t.Cleanup(func() { KeyringHex = orig })
+
+	data := []byte("name: signer-fp-mismatch\n")
+	dir := t.TempDir()
+	bundlePath := filepath.Join(dir, testBundleFilename)
+	if err := os.WriteFile(bundlePath, data, 0o600); err != nil {
+		t.Fatalf("writing bundle: %v", err)
+	}
+
+	sig, err := signing.SignFile(bundlePath, priv)
+	if err != nil {
+		t.Fatalf("signing bundle: %v", err)
+	}
+	if err := signing.SaveSignature(sig, bundlePath+signing.SigExtension); err != nil {
+		t.Fatalf("saving signature: %v", err)
+	}
+
+	hash := sha256.Sum256(data)
+	expectedSHA := hex.EncodeToString(hash[:])
+	wrongSignerFP := "wrong-fingerprint-that-does-not-match"
+
+	err = VerifyIntegrityBytes(data, dir, false, wrongSignerFP, expectedSHA, nil)
+	if err == nil {
+		t.Fatal("expected error for signer fingerprint mismatch")
+	}
+	if !strings.Contains(err.Error(), "signer fingerprint") {
+		t.Errorf("error should mention signer fingerprint mismatch, got: %v", err)
+	}
+}
+
+// ---------- verifySignedIntegrity signer fingerprint mismatch ----------
+
+func TestVerifyIntegrity_SignerFingerprintMismatch(t *testing.T) {
+	// Non-parallel: mutates KeyringHex.
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating key: %v", err)
+	}
+
+	orig := KeyringHex
+	KeyringHex = hex.EncodeToString(pub)
+	t.Cleanup(func() { KeyringHex = orig })
+
+	dir := t.TempDir()
+	bundlePath := filepath.Join(dir, testBundleFilename)
+	bundleContent := []byte("name: fp-mismatch-test\n")
+	if err := os.WriteFile(bundlePath, bundleContent, 0o600); err != nil {
+		t.Fatalf("writing bundle: %v", err)
+	}
+
+	sig, err := signing.SignFile(bundlePath, priv)
+	if err != nil {
+		t.Fatalf("signing bundle: %v", err)
+	}
+	if err := signing.SaveSignature(sig, bundlePath+signing.SigExtension); err != nil {
+		t.Fatalf("saving signature: %v", err)
+	}
+
+	hash := sha256.Sum256(bundleContent)
+	expectedSHA := hex.EncodeToString(hash[:])
+	wrongFP := "aaaa0000bbbb1111cccc2222dddd3333"
+
+	err = VerifyIntegrity(dir, false, wrongFP, expectedSHA, nil)
+	if err == nil {
+		t.Fatal("expected error for signer fingerprint mismatch")
+	}
+	if !strings.Contains(err.Error(), "signer fingerprint") {
+		t.Errorf("error should mention signer fingerprint, got: %v", err)
+	}
+}
+
 // ---------- findSigner coverage tests ----------
 
 func TestFindSigner_TrustedKeyPath(t *testing.T) {

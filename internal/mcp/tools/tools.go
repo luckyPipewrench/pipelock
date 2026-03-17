@@ -6,6 +6,7 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -544,6 +545,44 @@ func collectDescriptions(obj map[string]interface{}, result *[]string, depth int
 // tryParseToolsList attempts to parse a JSON-RPC result as a tools/list response.
 // Uses shape-based detection: result must have a "tools" array with named entries.
 // Returns nil if the shape doesn't match.
+// isToolsListResult returns true if the result JSON contains a "tools" key,
+// indicating this is a tools/list response. An empty tools array still counts
+// as a tools/list response — the response scanner must skip general injection
+// scanning regardless of whether there are tools to scan for poisoning.
+func isToolsListResult(result json.RawMessage) bool {
+	if len(result) == 0 || string(result) == jsonrpc.Null {
+		return false
+	}
+	var probe struct {
+		Tools json.RawMessage `json:"tools"`
+	}
+	if err := json.Unmarshal(result, &probe); err != nil {
+		return false
+	}
+	// json.RawMessage("null") is non-nil in Go — must check string value.
+	// Only treat as tools/list if tools is a JSON array (including empty []).
+	// A string or object in the tools field is malformed and must NOT suppress
+	// general response scanning — otherwise an attacker hides injection there.
+	trimmed := bytes.TrimSpace(probe.Tools)
+	if len(trimmed) == 0 || trimmed[0] != '[' {
+		return false
+	}
+	// Verify array elements are JSON objects. An array of strings like
+	// ["Ignore previous instructions"] would bypass general scanning
+	// since tryParseToolsList returns nil but IsToolsList would be true.
+	var elems []json.RawMessage
+	if err := json.Unmarshal(probe.Tools, &elems); err != nil {
+		return false
+	}
+	for _, elem := range elems {
+		e := bytes.TrimSpace(elem)
+		if len(e) == 0 || e[0] != '{' {
+			return false
+		}
+	}
+	return true
+}
+
 func tryParseToolsList(result json.RawMessage) []ToolDef {
 	if len(result) == 0 || string(result) == jsonrpc.Null {
 		return nil
@@ -607,9 +646,18 @@ func scanToolsSingle(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) Tool
 		return ToolScanResult{IsToolsList: false, Clean: true}
 	}
 
+	// Check if this is a tools/list response at all (even with empty tools array).
+	// This ensures the general response scanner skips tools/list responses
+	// regardless of whether there are tool definitions to scan for poisoning.
+	if !isToolsListResult(rpc.Result) {
+		return ToolScanResult{IsToolsList: false, Clean: true}
+	}
+
 	tools := tryParseToolsList(rpc.Result)
 	if tools == nil {
-		return ToolScanResult{IsToolsList: false, Clean: true}
+		// tools/list response with empty or all-unnamed tools — still a tools/list,
+		// just nothing to scan for poisoning.
+		return ToolScanResult{IsToolsList: true, Clean: true, RPCID: rpc.ID}
 	}
 
 	// Extract tool names for session binding.

@@ -10,7 +10,8 @@ An honest feature matrix and guidance on when to use what.
 | **Language** | Go | Go | Go | TypeScript |
 | **Binary** | Single, ~12MB | Single | Single + kernel modules | npm package |
 | **Domain allowlist** | Yes | Yes (MCP-level) | Yes (LLM proxy) | Yes |
-| **DLP (secret detection)** | Regex + entropy + env scan | Regex (per-argument) | Regex (LLM proxy) | No |
+| **DLP (secret detection)** | Regex + entropy + env scan + BIP-39 seed phrases | Regex (per-argument) | Regex (LLM proxy) | No |
+| **Crypto secret detection** | Yes (BIP-39, WIF, xprv, ETH hex) | No | No | No |
 | **SSRF protection** | Yes (DNS pinning) | No | N/A (kernel-level) | N/A |
 | **Prompt injection detection** | Bidirectional (response + request scanning) | No | No | No |
 | **File integrity monitoring** | SHA256 manifests | No | Workspace checkpoints | Filesystem restrictions |
@@ -72,7 +73,7 @@ An honest feature matrix and guidance on when to use what.
 mcp-scan has two modes: static scanning detects tool poisoning via hash comparison ("has this tool changed?"), while proxy mode monitors MCP traffic with PII/secrets guardrails. Pipelock scans bidirectionally with pattern matching, Unicode normalization, entropy analysis, and covers HTTP fetch traffic in addition to MCP. They're complementary: mcp-scan for MCP-specific auditing and guardrails, Pipelock for deep content inspection across both HTTP and MCP.
 
 ### Pipelock vs Docker MCP Gateway
-Docker MCP Gateway aggregates MCP servers and provides basic secret scanning. Pipelock provides deep content inspection (41 DLP patterns, 13 injection detection patterns, entropy analysis, tool poisoning). They're complementary: Pipelock could run as a Gateway interceptor for content inspection while Gateway handles routing and Docker-native lifecycle management.
+Docker MCP Gateway aggregates MCP servers and provides basic secret scanning. Pipelock provides deep content inspection (44 DLP patterns, BIP-39 seed phrase detection, 13 injection detection patterns, entropy analysis, tool poisoning). They're complementary: Pipelock could run as a Gateway interceptor for content inspection while Gateway handles routing and Docker-native lifecycle management.
 
 ## Using Tools Together
 

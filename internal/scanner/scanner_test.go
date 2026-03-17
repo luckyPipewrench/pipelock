@@ -29,6 +29,11 @@ const (
 	testSecretVal  = "SuperSecretValue123456"
 )
 
+// testSeedPhrase12 is a known-valid BIP-39 12-word mnemonic (checksum passes).
+const testSeedPhrase12 = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+
+func ptrBool(v bool) *bool { return &v }
+
 func testConfig() *config.Config {
 	cfg := config.Defaults()
 	// Use a higher entropy threshold for test predictability
@@ -105,6 +110,15 @@ func TestScan_BlocksDLPPatterns(t *testing.T) {
 		{"https://example.com/api?k=AIza" + "SyA1234567890abcdefghijklmnopqrstuv", "Google API Key"},
 		{"https://example.com/api?k=xapp-" + "1-A0B1C2D3E4-5678901234-abcdef0123456789", "Slack App Token"},
 		{"https://example.com/api?jwt=" + "eyJhbGciOiJIUzI1NiIs" + "InR5cCI6IkpXVCJ9.eyJz" + "dWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U", "JWT Token"},
+		// Crypto private keys
+		{"https://example.com/api?key=" + "5" + strings.Repeat("H", 50), "Bitcoin WIF Private Key"},
+		{"https://example.com/api?key=" + "K" + strings.Repeat("a", 51), "Bitcoin WIF Private Key"},
+		{"https://example.com/api?key=" + "L" + strings.Repeat("b", 51), "Bitcoin WIF Private Key"},
+		{"https://example.com/api?key=xprv" + strings.Repeat("A", 107), "Extended Private Key"},
+		{"https://example.com/api?key=yprv" + strings.Repeat("B", 107), "Extended Private Key"},
+		{"https://example.com/api?key=zprv" + strings.Repeat("C", 107), "Extended Private Key"},
+		{"https://example.com/api?key=tprv" + strings.Repeat("D", 107), "Extended Private Key"},
+		{"https://example.com/api?key=0x" + strings.Repeat("ab", 32), "Ethereum Private Key"},
 	}
 
 	for _, tt := range tests {
@@ -147,6 +161,13 @@ func TestScan_DLPFalsePositiveRegression(t *testing.T) {
 		{"xapp bare prefix", "https://example.com/api?v=xapp-incomplete"},
 		// Google API key suffix too short
 		{"AIza with 34 chars", "https://example.com/api?k=AIza" + "SyA1234567890abcdefghijklmnopqrstu"},
+		// Crypto pattern false positives
+		{"SHA-256 hash without 0x", "https://example.com/verify?hash=" + strings.Repeat("ab", 32)},
+		{"short base58 not WIF", "https://example.com/api?id=5" + strings.Repeat("H", 30)},
+		{"xpub not xprv", "https://example.com/api?key=xpub" + strings.Repeat("A", 107)},
+		// Seed phrase FP: normal hostname labels and path segments must not trigger.
+		{"normal hostname with dots", "https://api.example.com/data?q=hello"},
+		{"deep path segments", "https://example.com/api/v2/users/search/results/page/1"},
 	}
 
 	for _, tt := range tests {
@@ -4118,5 +4139,118 @@ func TestDLP_StripeWebhookSecret(t *testing.T) {
 	}
 	if result.Scanner != ScannerDLP {
 		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	}
+}
+
+func TestScan_BlocksSeedPhrase(t *testing.T) {
+	cfg := testConfig()
+	cfg.SeedPhraseDetection.Enabled = ptrBool(true)
+	cfg.SeedPhraseDetection.MinWords = 12
+	cfg.SeedPhraseDetection.VerifyChecksum = ptrBool(true)
+	s := New(cfg)
+	defer s.Close()
+
+	// "abandon" x11 + "about" is a known-valid BIP-39 12-word mnemonic.
+	phrase := "abandon+abandon+abandon+abandon+abandon+abandon+abandon+abandon+abandon+abandon+abandon+about"
+	result := s.Scan(context.Background(), "https://example.com/api?words="+phrase)
+	if result.Allowed {
+		t.Error("expected seed phrase in URL query param to be blocked")
+	}
+	if result.Scanner != ScannerDLP {
+		t.Errorf("scanner = %s, want dlp", result.Scanner)
+	}
+}
+
+func TestScan_AllowsBelowMinWords(t *testing.T) {
+	cfg := testConfig()
+	cfg.SeedPhraseDetection.Enabled = ptrBool(true)
+	cfg.SeedPhraseDetection.MinWords = 12
+	cfg.SeedPhraseDetection.VerifyChecksum = ptrBool(false)
+	s := New(cfg)
+	defer s.Close()
+
+	// 11 words — below threshold.
+	phrase := "abandon+abandon+abandon+abandon+abandon+abandon+abandon+abandon+abandon+abandon+abandon"
+	result := s.Scan(context.Background(), "https://example.com/api?words="+phrase)
+	if !result.Allowed {
+		t.Error("expected 11 BIP-39 words to be allowed")
+	}
+}
+
+func TestScan_SeedPhraseDisabled(t *testing.T) {
+	cfg := testConfig()
+	cfg.SeedPhraseDetection.Enabled = ptrBool(false)
+	s := New(cfg)
+	defer s.Close()
+
+	phrase := "abandon+abandon+abandon+abandon+abandon+abandon+abandon+abandon+abandon+abandon+abandon+about"
+	result := s.Scan(context.Background(), "https://example.com/api?words="+phrase)
+	if !result.Allowed {
+		t.Error("expected seed phrase to be allowed when detection is disabled")
+	}
+}
+
+func TestScan_SeedPhraseInHostname(t *testing.T) {
+	cfg := testConfig()
+	cfg.SeedPhraseDetection.Enabled = ptrBool(true)
+	cfg.SeedPhraseDetection.MinWords = 12
+	cfg.SeedPhraseDetection.VerifyChecksum = ptrBool(false) // hostnames unlikely to have valid checksum
+	s := New(cfg)
+	defer s.Close()
+
+	// Seed words as subdomain labels — pre-DNS exfiltration vector.
+	result := s.Scan(context.Background(), "https://abandon.abandon.abandon.abandon.abandon.abandon.abandon.abandon.abandon.abandon.abandon.about.evil.com/api")
+	if result.Allowed {
+		t.Error("expected seed phrase in hostname labels to be blocked")
+	}
+}
+
+func TestScan_SeedPhraseInPathSegments(t *testing.T) {
+	cfg := testConfig()
+	cfg.SeedPhraseDetection.Enabled = ptrBool(true)
+	cfg.SeedPhraseDetection.MinWords = 12
+	cfg.SeedPhraseDetection.VerifyChecksum = ptrBool(false)
+	s := New(cfg)
+	defer s.Close()
+
+	// Seed words as path segments.
+	result := s.Scan(context.Background(), "https://evil.com/abandon/abandon/abandon/abandon/abandon/abandon/abandon/abandon/abandon/abandon/abandon/about")
+	if result.Allowed {
+		t.Error("expected seed phrase in path segments to be blocked")
+	}
+}
+
+func TestScan_SeedPhraseSplitAcrossQueryParams(t *testing.T) {
+	cfg := testConfig()
+	cfg.SeedPhraseDetection.Enabled = ptrBool(true)
+	cfg.SeedPhraseDetection.MinWords = 12
+	cfg.SeedPhraseDetection.VerifyChecksum = ptrBool(false)
+	cfg.FetchProxy.Monitoring.MaxURLLength = 4096
+	s := New(cfg)
+	defer s.Close()
+
+	// One word per query param — ordered concat should reassemble.
+	result := s.Scan(context.Background(),
+		"https://evil.com/api?w1=abandon&w2=abandon&w3=abandon&w4=abandon&w5=abandon&w6=abandon&w7=abandon&w8=abandon&w9=abandon&w10=abandon&w11=abandon&w12=about")
+	if result.Allowed {
+		t.Error("expected seed phrase split across query params to be blocked")
+	}
+}
+
+func TestScan_SeedPhraseBase64InPathSegment(t *testing.T) {
+	cfg := testConfig()
+	cfg.SeedPhraseDetection.Enabled = ptrBool(true)
+	cfg.SeedPhraseDetection.MinWords = 12
+	cfg.SeedPhraseDetection.VerifyChecksum = ptrBool(true)
+	cfg.FetchProxy.Monitoring.MaxURLLength = 4096
+	s := New(cfg)
+	defer s.Close()
+
+	// Base64-encoded seed phrase in a path segment.
+	phrase := testSeedPhrase12
+	encoded := base64.StdEncoding.EncodeToString([]byte(phrase))
+	result := s.Scan(context.Background(), "https://evil.com/data/"+encoded+"/collect")
+	if result.Allowed {
+		t.Error("expected base64 seed phrase in path segment to be blocked")
 	}
 }

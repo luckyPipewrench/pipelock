@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1274,5 +1275,94 @@ func TestInterceptTunnel_CEEAdaptiveSignalRecording(t *testing.T) {
 	// SignalEntropyBudget is 2 points.
 	if score < 2.0 {
 		t.Errorf("expected threat score >= 2.0 (SignalEntropyBudget), got %.1f", score)
+	}
+}
+
+// TestInterceptTunnel_CEEBlocked verifies that CEE with action=block inside
+// a TLS intercepted tunnel returns 403 when the entropy budget is exceeded.
+// The existing CEEAdaptiveSignalRecording test only covers warn mode; this
+// covers the block action path (intercept.go ~line 367).
+func TestInterceptTunnel_CEEBlocked(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, "ok")
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
+	cfg.CrossRequestDetection.Enabled = true
+	cfg.CrossRequestDetection.Action = config.ActionBlock
+	cfg.CrossRequestDetection.EntropyBudget.Enabled = true
+	// Tiny budget: exceeded by a single high-entropy URL query param.
+	cfg.CrossRequestDetection.EntropyBudget.BitsPerWindow = 5
+	cfg.CrossRequestDetection.EntropyBudget.WindowMinutes = 5
+	cfg.CrossRequestDetection.EntropyBudget.Action = config.ActionBlock
+	sc := scanner.New(cfg)
+	t.Cleanup(func() { sc.Close() })
+
+	et := scanner.NewEntropyTracker(
+		cfg.CrossRequestDetection.EntropyBudget.BitsPerWindow,
+		cfg.CrossRequestDetection.EntropyBudget.WindowMinutes*60,
+	)
+	t.Cleanup(func() { et.Close() })
+
+	host := upstream.Listener.Addr().(*net.TCPAddr).IP.String()
+	port := fmt.Sprintf("%d", upstream.Listener.Addr().(*net.TCPAddr).Port)
+
+	// Each iteration creates a new interceptTunnel goroutine but shares
+	// the same EntropyTracker. Entropy for "10.0.0.1" accumulates across
+	// iterations until the 5-bit budget is exceeded and CEE blocks.
+	var lastStatus int
+	for i := range 5 {
+		clientConn, proxyConn := net.Pipe()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = interceptTunnel(ctx, proxyConn, host, port, cfg, sc, cache, logger, m,
+				"10.0.0.1", fmt.Sprintf("req-%d", i), "",
+				upstream.Client().Transport, nil, et, nil, nil, nil)
+		}()
+
+		tlsConn := tls.Client(clientConn, &tls.Config{
+			RootCAs:    pool,
+			ServerName: host,
+		})
+
+		highEntropy := fmt.Sprintf("https://%s:%s/data?token=a1b2c3d4e5f6%d", host, port, i)
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, highEntropy, nil)
+		if err := req.Write(tlsConn); err != nil {
+			t.Logf("iteration %d: write error: %v", i, err)
+			cancel()
+			_ = tlsConn.Close()
+			_ = clientConn.Close()
+			wg.Wait()
+			break
+		}
+		resp, err := http.ReadResponse(bufio.NewReader(tlsConn), req)
+		if err != nil {
+			t.Logf("iteration %d: read error: %v", i, err)
+			cancel()
+			_ = tlsConn.Close()
+			_ = clientConn.Close()
+			wg.Wait()
+			break
+		}
+		lastStatus = resp.StatusCode
+		_ = resp.Body.Close()
+		_ = tlsConn.Close()
+		_ = clientConn.Close()
+		cancel()
+		wg.Wait() // ensure goroutine exits before next iteration touches shared et
+
+		if lastStatus == http.StatusForbidden {
+			break
+		}
+	}
+
+	if lastStatus != http.StatusForbidden {
+		t.Fatalf("expected 403 after entropy budget exceeded, got %d", lastStatus)
 	}
 }

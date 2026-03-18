@@ -26,8 +26,10 @@ import (
 )
 
 const (
-	testWSHello   = "hello"
-	testWSExample = "EXAMPLE"
+	testWSHello         = "hello"
+	testWSExample       = "EXAMPLE"
+	testWSTrigger       = "trigger"
+	testPoisonedETHAddr = `{"to": "0x742daaaaaaaaaaaaaaaaaaaaaaaaaaaaaaf2bd3e", "amount": "1.0"}`
 )
 
 // wsEchoServer creates a WebSocket server that echoes text frames back.
@@ -476,7 +478,7 @@ func TestWSProxyCompressedFrameRejected_ServerSide(t *testing.T) {
 	defer conn.Close() //nolint:errcheck // test
 
 	// Send a clean message to trigger the server's compressed reply.
-	if writeErr := wsutil.WriteClientMessage(conn, ws.OpText, []byte("trigger")); writeErr != nil {
+	if writeErr := wsutil.WriteClientMessage(conn, ws.OpText, []byte(testWSTrigger)); writeErr != nil {
 		t.Fatalf("write: %v", writeErr)
 	}
 
@@ -1761,7 +1763,7 @@ func TestWSProxyBinaryBlocked_ServerSide(t *testing.T) {
 	conn := dialWS(t, proxyAddr, backendAddr)
 	defer conn.Close() //nolint:errcheck // test
 
-	if writeErr := wsutil.WriteClientMessage(conn, ws.OpText, []byte("trigger")); writeErr != nil {
+	if writeErr := wsutil.WriteClientMessage(conn, ws.OpText, []byte(testWSTrigger)); writeErr != nil {
 		t.Fatalf("write: %v", writeErr)
 	}
 
@@ -1809,7 +1811,7 @@ func TestWSProxyOversizedFrame_ServerSide(t *testing.T) {
 	conn := dialWS(t, proxyAddr, backendAddr)
 	defer conn.Close() //nolint:errcheck // test
 
-	if writeErr := wsutil.WriteClientMessage(conn, ws.OpText, []byte("trigger")); writeErr != nil {
+	if writeErr := wsutil.WriteClientMessage(conn, ws.OpText, []byte(testWSTrigger)); writeErr != nil {
 		t.Fatalf("write: %v", writeErr)
 	}
 
@@ -1883,7 +1885,7 @@ func TestWSProxyInvalidUTF8_ServerSide(t *testing.T) {
 	conn := dialWS(t, proxyAddr, backendAddr)
 	defer conn.Close() //nolint:errcheck // test
 
-	if writeErr := wsutil.WriteClientMessage(conn, ws.OpText, []byte("trigger")); writeErr != nil {
+	if writeErr := wsutil.WriteClientMessage(conn, ws.OpText, []byte(testWSTrigger)); writeErr != nil {
 		t.Fatalf("write: %v", writeErr)
 	}
 
@@ -1932,7 +1934,7 @@ func TestWSProxyFragmentError_ServerSide(t *testing.T) {
 	conn := dialWS(t, proxyAddr, backendAddr)
 	defer conn.Close() //nolint:errcheck // test
 
-	if writeErr := wsutil.WriteClientMessage(conn, ws.OpText, []byte("trigger")); writeErr != nil {
+	if writeErr := wsutil.WriteClientMessage(conn, ws.OpText, []byte(testWSTrigger)); writeErr != nil {
 		t.Fatalf("write: %v", writeErr)
 	}
 
@@ -2021,7 +2023,7 @@ func TestWSProxyOversizedControlFrame_ServerSide(t *testing.T) {
 	conn := dialWS(t, proxyAddr, backendAddr)
 	defer conn.Close() //nolint:errcheck // test
 
-	if writeErr := wsutil.WriteClientMessage(conn, ws.OpText, []byte("trigger")); writeErr != nil {
+	if writeErr := wsutil.WriteClientMessage(conn, ws.OpText, []byte(testWSTrigger)); writeErr != nil {
 		t.Fatalf("write: %v", writeErr)
 	}
 
@@ -2094,5 +2096,192 @@ func TestWSProxyAPIKeyHeader(t *testing.T) {
 	}
 	if string(msg) != "api" {
 		t.Errorf("expected echo, got %q", string(msg))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Proxy coverage hardening — transport integration tests for features already
+// unit-tested in their own packages. These prove the WS proxy wiring works.
+// ---------------------------------------------------------------------------
+
+// TestWSProxyAddressPoisoningBlocked verifies that address poisoning detection
+// works through the WebSocket proxy. The AddressChecker engine is tested in
+// addressprotect/; this proves the WS clientToUpstream integration (websocket.go:545-579).
+func TestWSProxyAddressPoisoningBlocked(t *testing.T) {
+	backendAddr, backendCleanup := wsEchoServer(t)
+	defer backendCleanup()
+
+	proxyAddr, proxyCleanup := setupWSProxy(t, func(cfg *config.Config) {
+		cfg.AddressProtection.Enabled = true
+		cfg.AddressProtection.Action = config.ActionBlock
+		cfg.AddressProtection.UnknownAction = config.ActionAllow
+		cfg.AddressProtection.Similarity.PrefixLength = 4
+		cfg.AddressProtection.Similarity.SuffixLength = 4
+		cfg.AddressProtection.AllowedAddresses = []string{
+			"0x742d35cc6634c0532925a3b844bc9e7595f2bd3e",
+		}
+		eth := true
+		f := false
+		cfg.AddressProtection.Chains.ETH = &eth
+		cfg.AddressProtection.Chains.BTC = &f
+		cfg.AddressProtection.Chains.SOL = &f
+		cfg.AddressProtection.Chains.BNB = &f
+	})
+	defer proxyCleanup()
+
+	conn := dialWS(t, proxyAddr, backendAddr)
+	defer conn.Close() //nolint:errcheck // test
+
+	// Send a lookalike ETH address (matches prefix/suffix of allowed address).
+	poisoned := testPoisonedETHAddr
+	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(poisoned)); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	// Connection should be closed with policy violation.
+	_, _, err := wsutil.ReadServerData(conn)
+	if err == nil {
+		t.Fatal("expected connection closed (address poisoning block), got nil error")
+	}
+}
+
+// TestWSProxyAddressPoisoningAudit verifies that address poisoning in audit
+// mode logs but allows through (websocket.go:578).
+func TestWSProxyAddressPoisoningAudit(t *testing.T) {
+	backendAddr, backendCleanup := wsEchoServer(t)
+	defer backendCleanup()
+
+	proxyAddr, proxyCleanup := setupWSProxy(t, func(cfg *config.Config) {
+		enforce := false
+		cfg.Enforce = &enforce
+		cfg.AddressProtection.Enabled = true
+		cfg.AddressProtection.Action = config.ActionBlock
+		cfg.AddressProtection.UnknownAction = config.ActionAllow
+		cfg.AddressProtection.Similarity.PrefixLength = 4
+		cfg.AddressProtection.Similarity.SuffixLength = 4
+		cfg.AddressProtection.AllowedAddresses = []string{
+			"0x742d35cc6634c0532925a3b844bc9e7595f2bd3e",
+		}
+		eth := true
+		f := false
+		cfg.AddressProtection.Chains.ETH = &eth
+		cfg.AddressProtection.Chains.BTC = &f
+		cfg.AddressProtection.Chains.SOL = &f
+		cfg.AddressProtection.Chains.BNB = &f
+	})
+	defer proxyCleanup()
+
+	conn := dialWS(t, proxyAddr, backendAddr)
+	defer conn.Close() //nolint:errcheck // test
+
+	// In audit mode, poisoned address should be logged but allowed through.
+	poisoned := testPoisonedETHAddr
+	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(poisoned)); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	reply, _, err := wsutil.ReadServerData(conn)
+	if err != nil {
+		t.Fatalf("expected echo in audit mode, got error: %v", err)
+	}
+	if string(reply) != poisoned {
+		t.Errorf("expected echo of poisoned message, got %q", reply)
+	}
+}
+
+// TestWSProxyCEEEntropyBlocked verifies that cross-request exfiltration
+// detection works through the WebSocket proxy. The entropy tracker and
+// fragment buffer are tested in scanner/; this proves the WS integration
+// (websocket.go:588-614).
+//
+// Budget math: the tracker records ShannonEntropy(payload) * len(payload).
+// A 6-char string with 6 unique chars contributes log2(6)*6 ≈ 15.5 bits.
+// Budget of 100 bits requires ~7 messages to exceed, proving accumulation
+// across multiple frames (not just single-frame blocking).
+func TestWSProxyCEEEntropyBlocked(t *testing.T) {
+	backendAddr, backendCleanup := wsEchoServer(t)
+	defer backendCleanup()
+
+	proxyAddr, proxyCleanup := setupWSProxy(t, func(cfg *config.Config) {
+		cfg.CrossRequestDetection.Enabled = true
+		cfg.CrossRequestDetection.Action = config.ActionBlock
+		cfg.CrossRequestDetection.EntropyBudget.Enabled = true
+		// Each 6-char unique-char message ≈ 15.5 bits. Budget of 100 requires
+		// ~7 messages to exceed, proving cross-frame accumulation.
+		cfg.CrossRequestDetection.EntropyBudget.BitsPerWindow = 100
+		cfg.CrossRequestDetection.EntropyBudget.WindowMinutes = 5
+		cfg.CrossRequestDetection.EntropyBudget.Action = config.ActionBlock
+	})
+	defer proxyCleanup()
+
+	conn := dialWS(t, proxyAddr, backendAddr)
+	defer conn.Close() //nolint:errcheck // test
+
+	// Short unique-char strings: each contributes ~15 bits of entropy.
+	highEntropy := []string{
+		"a1b2c3", "d4e5f6", "g7h8i9",
+		"j0k1l2", "m3n4o5", "p6q7r8",
+		"s9t0u1", "v2w3x4", "y5z6a7",
+		"b8c9d0",
+	}
+
+	blockedAt := -1
+	for i, msg := range highEntropy {
+		if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(msg)); err != nil {
+			blockedAt = i
+			break
+		}
+		_, _, err := wsutil.ReadServerData(conn)
+		if err != nil {
+			blockedAt = i
+			break
+		}
+	}
+
+	if blockedAt < 0 {
+		t.Fatal("expected CEE to block after entropy budget exceeded, but all messages passed")
+	}
+	// Must not block on the first message — proves accumulation, not single-frame blocking.
+	if blockedAt == 0 {
+		t.Fatalf("CEE blocked on first message (budget 100 bits should require multiple frames)")
+	}
+}
+
+// TestWSProxyInjectionStrip verifies that the response scanning strip action
+// works through the WS proxy (websocket.go:766-778). The injection server
+// sends a payload that matches the primary regex pass, producing a non-empty
+// TransformedContent — so the strip-succeeded path is exercised. The test
+// asserts strip actually succeeds (connection stays open, redaction marker
+// present) rather than accepting the block fallback.
+func TestWSProxyInjectionStrip(t *testing.T) {
+	backendAddr, backendCleanup := wsInjectionServer(t)
+	defer backendCleanup()
+
+	proxyAddr, proxyCleanup := setupWSProxy(t, func(cfg *config.Config) {
+		cfg.ResponseScanning.Enabled = true
+		cfg.ResponseScanning.Action = config.ActionStrip
+	})
+	defer proxyCleanup()
+
+	conn := dialWS(t, proxyAddr, backendAddr)
+	defer conn.Close() //nolint:errcheck // test
+
+	// Trigger injection response from backend.
+	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(testWSTrigger)); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	// Strip must succeed: the injection server's payload matches the primary
+	// regex pass, so TransformedContent is non-empty ([REDACTED: ...]).
+	reply, _, err := wsutil.ReadServerData(conn)
+	if err != nil {
+		t.Fatalf("expected strip to succeed (connection open with redacted content), got close: %v", err)
+	}
+
+	replyStr := string(reply)
+	if !strings.Contains(replyStr, "[REDACTED") {
+		t.Errorf("expected redaction marker in stripped response, got: %q", replyStr)
+	}
+	if strings.Contains(strings.ToLower(replyStr), "ignore all previous instructions") {
+		t.Error("injection payload was not stripped from response")
 	}
 }

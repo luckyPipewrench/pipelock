@@ -899,6 +899,25 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// block_all enforcement: deny ALL traffic (including clean) when the
+	// session is at an escalation level with block_all=true. UpgradeAction
+	// with an empty base action returns "block" only when block_all is set.
+	if sr.Level > 0 && decide.UpgradeAction("", sr.Level, &cfg.AdaptiveEnforcement) == config.ActionBlock {
+		sessionKey := clientIP
+		if agent != "" && agent != agentAnonymous {
+			sessionKey = agent + "|" + clientIP
+		}
+		log.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(sr.Level), "", config.ActionBlock, "session_deny", clientIP, requestID)
+		p.metrics.RecordAdaptiveUpgrade("", config.ActionBlock, session.EscalationLabel(sr.Level))
+		writeJSON(w, http.StatusForbidden, FetchResponse{
+			URL:         displayURL,
+			Agent:       agent,
+			Blocked:     true,
+			BlockReason: "session escalation level " + session.EscalationLabel(sr.Level),
+		})
+		return
+	}
+
 	// Request header DLP scanning (fetch is GET-only, no body to scan).
 	if p.evalHeaderDLP(r.Context(), r.Header, cfg, sc, log, "GET", displayURL, parsed.Hostname(), clientIP, requestID, agent, start) {
 		writeJSON(w, http.StatusForbidden, FetchResponse{
@@ -1231,6 +1250,10 @@ func (p *Proxy) filterAndActOnResponseScan(
 			if escalated, from, to := sess.RecordSignal(session.SignalStrip, cfg.AdaptiveEnforcement.EscalationThreshold); escalated {
 				log.LogAdaptiveEscalation(sessionKey, from, to, clientIP, requestID, sess.ThreatScore())
 				p.metrics.RecordSessionEscalation(from, to)
+				if from != session.EscalationLabel(0) {
+					p.metrics.SetAdaptiveSessionLevel(from, -1)
+				}
+				p.metrics.SetAdaptiveSessionLevel(to, 1)
 			}
 		}
 		out = result.TransformedContent

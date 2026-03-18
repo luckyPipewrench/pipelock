@@ -4047,7 +4047,10 @@ func TestFetchEndpoint_AdaptiveUpgrade_WarnToBlock(t *testing.T) {
 
 	// Pre-escalate the session to level 1 (elevated).
 	clientIP := "192.168.1.1"
-	escalateSession(sm, clientIP, "", cfg.AdaptiveEnforcement.EscalationThreshold, 1)
+	sessionKey := escalateSession(sm, clientIP, "", cfg.AdaptiveEnforcement.EscalationThreshold, 1)
+	if sessionKey != clientIP {
+		t.Fatalf("expected session key %q, got %q", clientIP, sessionKey)
+	}
 
 	// 1. First: verify that without escalation, the same request would pass
 	// (audit mode allows through). Use a different client IP for the
@@ -4126,5 +4129,97 @@ func TestFetchEndpoint_AdaptiveUpgrade_NoEscalation_Allowed(t *testing.T) {
 	// In audit mode with no escalation, DLP finding should warn but allow.
 	if w.Code == http.StatusForbidden {
 		t.Errorf("expected allowed (audit mode, no escalation), got 403; body: %s", w.Body.String())
+	}
+}
+
+// TestFetchEndpoint_BlockAll_CleanTrafficBlocked verifies that a session at
+// escalation level 3+ with block_all=true blocks even CLEAN requests (no
+// scanner findings). This is the core regression test for the block_all bypass
+// on clean traffic paths.
+func TestFetchEndpoint_BlockAll_CleanTrafficBlocked(t *testing.T) {
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = fmt.Fprint(w, "ok")
+	}))
+	defer backend.Close()
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.APIAllowlist = nil
+	cfg.FetchProxy.TimeoutSeconds = 5
+	cfg.Mode = config.ModeBalanced
+	auditMode := false
+	cfg.Enforce = &auditMode
+	cfg.SessionProfiling.Enabled = true
+	cfg.SessionProfiling.MaxSessions = 1000
+	cfg.SessionProfiling.DomainBurst = 100
+	cfg.SessionProfiling.WindowMinutes = 5
+	cfg.SessionProfiling.SessionTTLMinutes = 30
+	cfg.SessionProfiling.CleanupIntervalSeconds = 300
+	cfg.AdaptiveEnforcement.Enabled = true
+	cfg.AdaptiveEnforcement.EscalationThreshold = 3.0
+	cfg.AdaptiveEnforcement.DecayPerCleanRequest = 0.1
+	// Critical level (3+): block_all = true. Validate() sets this default;
+	// Defaults() alone leaves it nil. Set it explicitly for the test.
+	blockAll := true
+	cfg.AdaptiveEnforcement.Levels.Critical.BlockAll = &blockAll
+
+	m := metrics.New()
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+	p, err := New(cfg, logger, sc, m)
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	defer p.Close()
+
+	sm := NewSessionManager(&cfg.SessionProfiling, m)
+	p.sessionMgrPtr.Store(sm)
+	defer sm.Close()
+
+	clientIP := "10.50.50.50"
+	// Pre-escalate to level 3 (critical) where block_all=true.
+	_ = escalateSession(sm, clientIP, "", cfg.AdaptiveEnforcement.EscalationThreshold, 3)
+
+	// Verify the session is at level 3.
+	sess := sm.GetOrCreate(clientIP)
+	if sess.EscalationLevel() < 3 {
+		t.Fatalf("expected escalation level >= 3, got %d", sess.EscalationLevel())
+	}
+
+	// Send a CLEAN request (no DLP pattern, no blocklist hit).
+	cleanURL := backend.URL + "/safe-page"
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+cleanURL, nil)
+	req.RemoteAddr = clientIP + ":12345"
+	w := httptest.NewRecorder()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+	mux.ServeHTTP(w, req)
+
+	// block_all must deny even this clean request.
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403 Forbidden (block_all on clean traffic), got %d; body: %s", w.Code, w.Body.String())
+	}
+	var resp FetchResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("JSON parse: %v", err)
+	}
+	if !resp.Blocked {
+		t.Error("expected blocked=true from block_all enforcement")
+	}
+	if !strings.Contains(resp.BlockReason, "critical") {
+		t.Errorf("expected block reason to contain 'critical', got: %s", resp.BlockReason)
+	}
+
+	// Verify that a non-escalated session at the same time passes clean traffic.
+	otherIP := "10.99.99.99"
+	req2 := httptest.NewRequest(http.MethodGet, "/fetch?url="+cleanURL, nil)
+	req2.RemoteAddr = otherIP + ":12345"
+	w2 := httptest.NewRecorder()
+	mux.ServeHTTP(w2, req2)
+	// Clean request from non-escalated session should not be blocked.
+	if w2.Code == http.StatusForbidden {
+		t.Errorf("clean request from non-escalated session unexpectedly blocked: %s", w2.Body.String())
 	}
 }

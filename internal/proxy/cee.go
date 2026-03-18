@@ -334,6 +334,10 @@ func ceeRecordSignals(result ceeResult, sm *SessionManager, sessionKey string, t
 		if escalated, from, to := sess.RecordSignal(session.SignalEntropyBudget, threshold); escalated {
 			logger.LogAdaptiveEscalation(sessionKey, from, to, clientIP, requestID, sess.ThreatScore())
 			m.RecordSessionEscalation(from, to)
+			if from != session.EscalationLabel(0) {
+				m.SetAdaptiveSessionLevel(from, -1)
+			}
+			m.SetAdaptiveSessionLevel(to, 1)
 		}
 	}
 	if result.FragmentHit {
@@ -342,6 +346,10 @@ func ceeRecordSignals(result ceeResult, sm *SessionManager, sessionKey string, t
 		if escalated, from, to := sess.RecordSignal(session.SignalFragmentDLP, threshold); escalated {
 			logger.LogAdaptiveEscalation(sessionKey, from, to, clientIP, requestID, sess.ThreatScore())
 			m.RecordSessionEscalation(from, to)
+			if from != session.EscalationLabel(0) {
+				m.SetAdaptiveSessionLevel(from, -1)
+			}
+			m.SetAdaptiveSessionLevel(to, 1)
 		}
 	}
 }

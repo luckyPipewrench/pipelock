@@ -502,6 +502,10 @@ func newInterceptHandler(
 								logger.LogAdaptiveEscalation(sessionKey, from, to, clientIP, requestID, sess.ThreatScore())
 								if p != nil {
 									p.metrics.RecordSessionEscalation(from, to)
+									if from != session.EscalationLabel(0) {
+										p.metrics.SetAdaptiveSessionLevel(from, -1)
+									}
+									p.metrics.SetAdaptiveSessionLevel(to, 1)
 								}
 							}
 						}

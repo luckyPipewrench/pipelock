@@ -162,7 +162,7 @@ func RunWSProxy(
 		}
 
 		// Input scanning: DLP, injection, policy, chain detection.
-		if blocked := scanHTTPInput(msg, sc, safeLogW, inputCfg, policyCfg, chainMatcher, sessionKey, sessionKey, auditLogger, cee); blocked != nil {
+		if blocked := scanHTTPInput(msg, sc, safeLogW, inputCfg, policyCfg, chainMatcher, sessionKey, sessionKey, auditLogger, cee, rec, adaptiveCfg); blocked != nil {
 			if !blocked.IsNotification {
 				resp := blockRequestResponse(*blocked)
 				if wErr := safeClientOut.WriteMessage(resp); wErr != nil {

@@ -19,6 +19,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
@@ -122,7 +123,7 @@ func RunHTTPProxy(
 
 		// Input scanning — call ScanRequest and CheckRequest directly.
 		// The sequential (non-concurrent) architecture means no channel needed.
-		if blocked := scanHTTPInput(msg, sc, safeLogW, inputCfg, policyCfg, chainMatcher, "default", "default", auditLogger, cee); blocked != nil {
+		if blocked := scanHTTPInput(msg, sc, safeLogW, inputCfg, policyCfg, chainMatcher, "default", "default", auditLogger, cee, rec, adaptiveCfg); blocked != nil {
 			if !blocked.IsNotification {
 				resp := blockRequestResponse(*blocked)
 				if wErr := safeClientOut.WriteMessage(resp); wErr != nil {
@@ -190,7 +191,7 @@ func RunHTTPProxy(
 // but returns a verdict instead of writing to a channel.
 // When cee is non-nil, outbound payloads are recorded for cross-request
 // exfiltration detection after content scanning passes.
-func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *InputScanConfig, policyCfg *policy.Config, chainMatcher *chains.Matcher, sessionKey, auditSessionKey string, auditLogger *audit.Logger, cee *CEEDeps) *BlockedRequest {
+func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *InputScanConfig, policyCfg *policy.Config, chainMatcher *chains.Matcher, sessionKey, auditSessionKey string, auditLogger *audit.Logger, cee *CEEDeps, rec session.Recorder, adaptiveCfg *config.AdaptiveEnforcement) *BlockedRequest {
 	// Determine input scanning parameters.
 	action := config.ActionWarn
 	onParseError := config.ActionBlock
@@ -325,9 +326,18 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 		errMsg = errPolicyBlocked
 	}
 
+	// Escalation upgrade: may promote warn/ask to block for elevated sessions.
+	if rec != nil {
+		effectiveAction = decide.UpgradeAction(effectiveAction, rec.EscalationLevel(), adaptiveCfg)
+	}
+
 	switch effectiveAction {
 	case config.ActionBlock:
 		_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s)\n", joinStrings(reasons))
+		// Signal recording: block signal.
+		if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
+			rec.RecordSignal(session.SignalBlock, adaptiveCfg.EscalationThreshold)
+		}
 		return &BlockedRequest{
 			ID:             verdict.ID,
 			IsNotification: isNotification,
@@ -338,6 +348,10 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 	case config.ActionAsk:
 		// HITL for input scanning is impractical — fall back to block (same as stdio proxy).
 		_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s) [ask not supported for input scanning]\n", joinStrings(reasons))
+		// Signal recording: block signal (ask falls back to block).
+		if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
+			rec.RecordSignal(session.SignalBlock, adaptiveCfg.EscalationThreshold)
+		}
 		return &BlockedRequest{
 			ID:             verdict.ID,
 			IsNotification: isNotification,
@@ -348,6 +362,10 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 	default: // warn
 		if len(reasons) > 0 {
 			_, _ = fmt.Fprintf(logW, "pipelock: input: warning (%s)\n", joinStrings(reasons))
+			// Signal recording: near-miss for warned content.
+			if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
+				rec.RecordSignal(session.SignalNearMiss, adaptiveCfg.EscalationThreshold)
+			}
 		}
 		// Cross-request exfiltration check even in warn mode.
 		ceeKey := ceeSessionKeyMCP("", sessionKey)
@@ -684,7 +702,7 @@ func RunHTTPListenerProxy(
 		}
 
 		// Input scanning: DLP, injection, policy, chain detection.
-		if blocked := scanHTTPInput(body, sc, safeLogW, inputCfg, policyCfg, chainMatcher, chainSessionKey, auditSessionKey, auditLogger, cee); blocked != nil {
+		if blocked := scanHTTPInput(body, sc, safeLogW, inputCfg, policyCfg, chainMatcher, chainSessionKey, auditSessionKey, auditLogger, cee, reqRec, adaptiveCfg); blocked != nil {
 			w.Header().Set("Content-Type", "application/json")
 			if blocked.IsNotification {
 				w.WriteHeader(http.StatusAccepted)

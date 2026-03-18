@@ -105,6 +105,15 @@ func isRequest(msg []byte) bool {
 // and the effective action may be upgraded based on session escalation level.
 // Returns true if any injection was detected.
 func ForwardScanned(reader transport.MessageReader, writer transport.MessageWriter, logW io.Writer, sc *scanner.Scanner, approver *hitl.Approver, toolCfg *tools.ToolScanConfig, tracker *RequestTracker, rec session.Recorder, adaptiveCfg *config.AdaptiveEnforcement) (bool, error) {
+	// block_all enforcement: if the session is already at a critical escalation
+	// level with block_all=true, deny all further responses. This handles the
+	// listener proxy case where a previous request escalated the session.
+	if rec != nil && decide.UpgradeAction("", rec.EscalationLevel(), adaptiveCfg) == config.ActionBlock {
+		_, _ = fmt.Fprintf(logW, "pipelock: session deny — escalation level %s, blocking all responses\n",
+			session.EscalationLabel(rec.EscalationLevel()))
+		return false, nil
+	}
+
 	foundInjection := false
 	// lineNum counts non-empty messages, not raw lines. StdioReader skips
 	// empty lines internally, so this is a message index. ScanStream (scan.go)

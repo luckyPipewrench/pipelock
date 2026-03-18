@@ -157,6 +157,20 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// block_all enforcement: deny ALL traffic (including clean) when the
+	// session is at an escalation level with block_all=true.
+	if sr.Level > 0 && decide.UpgradeAction("", sr.Level, &cfg.AdaptiveEnforcement) == config.ActionBlock {
+		sessionKey := clientIP
+		if agent != "" && agent != agentAnonymous {
+			sessionKey = agent + "|" + clientIP
+		}
+		log.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(sr.Level), "", config.ActionBlock, "session_deny", clientIP, requestID)
+		p.metrics.RecordAdaptiveUpgrade("", config.ActionBlock, session.EscalationLabel(sr.Level))
+		p.metrics.RecordWSBlocked()
+		http.Error(w, "WebSocket blocked: session escalation level "+session.EscalationLabel(sr.Level), http.StatusForbidden)
+		return
+	}
+
 	// Budget admission check: enforce request count and domain limits.
 	if err := resolved.Budget.CheckAdmission(strings.ToLower(parsed.Hostname())); err != nil {
 		reason := err.Error()
@@ -852,6 +866,10 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 							if escalated, from, to := sess.RecordSignal(session.SignalStrip, r.cfg.AdaptiveEnforcement.EscalationThreshold); escalated {
 								log.LogAdaptiveEscalation(sessionKey, from, to, r.clientIP, r.requestID, sess.ThreatScore())
 								r.proxy.metrics.RecordSessionEscalation(from, to)
+								if from != session.EscalationLabel(0) {
+									r.proxy.metrics.SetAdaptiveSessionLevel(from, -1)
+								}
+								r.proxy.metrics.SetAdaptiveSessionLevel(to, 1)
 							}
 						}
 						if scanResult.TransformedContent != "" {

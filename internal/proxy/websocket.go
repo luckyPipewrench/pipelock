@@ -159,14 +159,16 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Build headers for upstream handshake.
 	fwdHeaders := p.buildWSForwardHeaders(r, parsed, cfg, sc)
 
-	// DLP-scan forwarded auth header values regardless of destination.
-	if cfg.EnforceEnabled() {
-		if blocked, reason := p.dlpScanWSHeaders(r.Context(), fwdHeaders, sc); blocked {
+	// DLP-scan forwarded header values regardless of destination or enforce mode.
+	// In audit mode, findings are logged as anomalies but traffic is allowed.
+	if blocked, reason := p.dlpScanWSHeaders(r.Context(), fwdHeaders, sc); blocked {
+		if cfg.EnforceEnabled() {
 			log.LogWSBlocked(targetURL, audit.DirectionClientToServer, audit.ScannerDLP, reason, clientIP, requestID)
 			p.metrics.RecordWSBlocked()
 			http.Error(w, "WebSocket blocked: "+reason, http.StatusForbidden)
 			return
 		}
+		log.LogAnomaly("WS", targetURL, audit.ScannerDLP, reason, clientIP, requestID, agent, 0)
 	}
 
 	// Upgrade the client connection.
@@ -257,7 +259,7 @@ func (p *Proxy) buildWSForwardHeaders(r *http.Request, parsed *url.URL, cfg *con
 
 	// Origin policy.
 	switch cfg.WebSocketProxy.OriginPolicy {
-	case "forward":
+	case config.OriginPolicyForward:
 		if v := r.Header.Get("Origin"); v != "" {
 			fwd.Set("Origin", v)
 		}
@@ -288,13 +290,17 @@ func (p *Proxy) buildWSForwardHeaders(r *http.Request, parsed *url.URL, cfg *con
 	return fwd
 }
 
-// dlpScanWSHeaders runs DLP scanning on auth header values before the upstream
-// handshake. Headers are scanned regardless of destination (no allowlist skip)
-// because agents can exfiltrate secrets in auth headers to any host.
+// dlpScanWSHeaders runs DLP scanning on all forwarded header values before the
+// upstream handshake. Headers are scanned regardless of destination (no
+// allowlist skip) because agents can exfiltrate secrets in any header value.
 func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, sc *scanner.Scanner) (blocked bool, reason string) {
-	// Scan auth-bearing header values. Cookie is included because
-	// buildWSForwardHeaders copies it when ForwardCookies is enabled.
-	for _, key := range []string{"Authorization", "X-Api-Key", "X-Goog-Api-Key", "Cookie"} {
+	// Scan all headers that buildWSForwardHeaders may forward. This covers
+	// auth headers, cookies, origin, subprotocol, and user-agent. An agent
+	// can exfiltrate data in any of these values.
+	for _, key := range []string{
+		"Authorization", "X-Api-Key", "X-Goog-Api-Key", "Cookie",
+		"Origin", "Sec-WebSocket-Protocol", "User-Agent",
+	} {
 		val := headers.Get(key)
 		if val == "" {
 			continue

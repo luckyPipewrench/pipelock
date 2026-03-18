@@ -71,6 +71,7 @@ const (
 // Origin policy constants for WebSocket proxy.
 const (
 	OriginPolicyRewrite = "rewrite"
+	OriginPolicyForward = "forward"
 )
 
 // Header mode constants for request body scanning.
@@ -1536,7 +1537,7 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("websocket_proxy.idle_timeout_seconds must be positive")
 		}
 		switch c.WebSocketProxy.OriginPolicy {
-		case OriginPolicyRewrite, "forward", ActionStrip:
+		case OriginPolicyRewrite, OriginPolicyForward, ActionStrip:
 			// valid
 		default:
 			return fmt.Errorf("invalid websocket_proxy.origin_policy %q: must be rewrite, forward, or strip", c.WebSocketProxy.OriginPolicy)

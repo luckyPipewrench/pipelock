@@ -35,7 +35,6 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanapi"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	plsentry "github.com/luckyPipewrench/pipelock/internal/sentry"
-	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 func runCmd() *cobra.Command {
@@ -640,16 +639,25 @@ Examples:
 
 				// Share the proxy's session manager with the MCP listener so both
 				// use the same store and the sessions gauge is not double-counted.
-				var mcpStore session.Store
-				var mcpAdaptiveCfg *config.AdaptiveEnforcement
-				mcpStore = p.SessionStore() // nil when session profiling is disabled
-				if cfg.AdaptiveEnforcement.Enabled {
-					mcpAdaptiveCfg = &cfg.AdaptiveEnforcement
-				}
+				// p.SessionStore() reads from the atomic pointer, so it returns the
+				// live store even after hot-reloads.
+				mcpStore := p.SessionStore() // nil when session profiling is disabled
+
+				// Pass a function that reads the adaptive config from the live
+				// proxy config on each request. This ensures the long-lived MCP
+				// listener picks up hot-reload changes instead of being frozen
+				// to the startup snapshot.
+				mcpAdaptiveFn := mcp.AdaptiveConfigFunc(func() *config.AdaptiveEnforcement {
+					c := p.CurrentConfig()
+					if c != nil && c.AdaptiveEnforcement.Enabled {
+						return &c.AdaptiveEnforcement
+					}
+					return nil
+				})
 
 				mcpErr = make(chan error, 1)
 				go func() {
-					mcpErr <- mcp.RunHTTPListenerProxy(ctx, mcpLn, mcpUpstream, cmd.ErrOrStderr(), sc, mcpApprover, inputCfg, toolCfg, policyCfg, ks, mcpChainMatcher, logger, mcpCEE, mcpStore, mcpAdaptiveCfg, m)
+					mcpErr <- mcp.RunHTTPListenerProxy(ctx, mcpLn, mcpUpstream, cmd.ErrOrStderr(), sc, mcpApprover, inputCfg, toolCfg, policyCfg, ks, mcpChainMatcher, logger, mcpCEE, mcpStore, mcpAdaptiveFn, m)
 				}()
 			}
 

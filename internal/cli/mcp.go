@@ -393,7 +393,12 @@ Environment passthrough (subprocess mode only):
 					}
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: MCP reverse proxy %s -> %s (response=%s, input=%s, tools=%s, policy=%s)\n",
 						listenAddr, upstreamURL, sc.ResponseAction(), inputCfg.Action, toolAction, policyAction)
-					if err := mcp.RunHTTPListenerProxy(ctx, mcpLn, upstreamURL, cmd.ErrOrStderr(), sc, approver, inputCfg, toolCfg, policyCfg, ks, chainMatcher, nil, cee, store, adaptiveCfg, mcpMetrics); err != nil {
+					// Wrap static adaptiveCfg in a function to satisfy the
+					// AdaptiveConfigFunc signature. Short-lived: no hot-reload concern.
+					adaptiveFn := mcp.AdaptiveConfigFunc(func() *config.AdaptiveEnforcement {
+						return adaptiveCfg
+					})
+					if err := mcp.RunHTTPListenerProxy(ctx, mcpLn, upstreamURL, cmd.ErrOrStderr(), sc, approver, inputCfg, toolCfg, policyCfg, ks, chainMatcher, nil, cee, store, adaptiveFn, mcpMetrics); err != nil {
 						if sentryClient != nil {
 							sentryClient.CaptureError(err)
 						}

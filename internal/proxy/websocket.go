@@ -458,6 +458,16 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		default:
 		}
 
+		// block_all check: if the session has escalated to a level with
+		// block_all=true, close the WebSocket immediately. This prevents
+		// clean frames from flowing after escalation during long-lived connections.
+		if decide.UpgradeAction("", r.escalationLevel(), &r.cfg.AdaptiveEnforcement) == config.ActionBlock {
+			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "session escalation")
+			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "session escalation")
+			blocked = true
+			return
+		}
+
 		_ = r.clientConn.SetReadDeadline(time.Now().Add(idleTimeout))
 
 		hdr, err := ws.ReadHeader(r.clientConn)
@@ -742,6 +752,15 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusGoingAway, "connection timeout")
 			return
 		default:
+		}
+
+		// block_all check: if the session has escalated to a level with
+		// block_all=true, close the WebSocket immediately.
+		if decide.UpgradeAction("", r.escalationLevel(), &r.cfg.AdaptiveEnforcement) == config.ActionBlock {
+			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "session escalation")
+			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "session escalation")
+			blocked = true
+			return
 		}
 
 		_ = r.upstreamConn.SetReadDeadline(time.Now().Add(idleTimeout))

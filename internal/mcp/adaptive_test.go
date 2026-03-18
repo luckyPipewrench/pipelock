@@ -474,9 +474,16 @@ func startListenerProxyWithStore(
 	var logBuf bytes.Buffer
 	ctx, cancel := context.WithCancel(context.Background())
 
+	// Wrap static adaptiveCfg in a function for the AdaptiveConfigFunc parameter.
+	var adaptiveFn AdaptiveConfigFunc
+	if adaptiveCfg != nil {
+		cfg := adaptiveCfg
+		adaptiveFn = func() *config.AdaptiveEnforcement { return cfg }
+	}
+
 	done := make(chan error, 1)
 	go func() {
-		done <- RunHTTPListenerProxy(ctx, ln, upstreamURL, &logBuf, sc, nil, inputCfg, nil, nil, nil, nil, nil, nil, store, adaptiveCfg, nil)
+		done <- RunHTTPListenerProxy(ctx, ln, upstreamURL, &logBuf, sc, nil, inputCfg, nil, nil, nil, nil, nil, nil, store, adaptiveFn, nil)
 	}()
 
 	baseURL := "http://" + addr
@@ -649,6 +656,85 @@ func TestRecordSignalWithEscalation_EscalatedPath(t *testing.T) {
 		})
 	}
 }
+
+// ptrBool returns a pointer to a bool value. Test helper for config structs.
+func ptrBool(v bool) *bool { return &v }
+
+// TestMCP_Adaptive_BlockAllDeniesCleanInput verifies that when the session
+// recorder is at an escalation level with block_all=true, clean MCP input
+// messages are blocked (session deny). This exercises the same block_all path
+// that RunWSProxy and RunHTTPListenerProxy use via scanHTTPInput.
+func TestMCP_Adaptive_BlockAllDeniesCleanInput(t *testing.T) {
+	sc := newAdaptiveTestScanner()
+	defer sc.Close()
+
+	// Pre-escalated recorder at level 3 (critical).
+	rec := &mockRecorder{level: 3}
+	adaptiveCfg := &config.AdaptiveEnforcement{
+		Enabled:             true,
+		EscalationThreshold: 5.0,
+		Levels: config.EscalationLevels{
+			Critical: config.EscalationActions{
+				BlockAll: ptrBool(true),
+			},
+		},
+	}
+
+	cleanMsg := []byte(makeRequest(301, "tools/list", nil))
+	inputCfg := newHTTPInputCfg(config.ActionBlock)
+
+	var logBuf bytes.Buffer
+	blocked := scanHTTPInput(cleanMsg, sc, &logBuf, inputCfg, nil, nil, "test-session", "test-session", nil, nil, rec, adaptiveCfg, nil)
+	if blocked == nil {
+		t.Fatal("expected clean request to be blocked by block_all at critical level")
+	}
+	if blocked.ErrorCode != -32001 {
+		t.Errorf("expected error code -32001, got %d", blocked.ErrorCode)
+	}
+	if !strings.Contains(logBuf.String(), "adaptive upgrade") {
+		t.Errorf("expected adaptive upgrade telemetry in log, got: %q", logBuf.String())
+	}
+}
+
+// TestMCP_Adaptive_EscalationEmitsUpgradeTelemetry verifies that when
+// UpgradeAction changes a warn to block, the adaptive upgrade log and
+// metric are emitted. This covers Comment 7 from the code review.
+func TestMCP_Adaptive_EscalationEmitsUpgradeTelemetry(t *testing.T) {
+	sc := newAdaptiveTestScanner()
+	defer sc.Close()
+
+	// Pre-escalated to elevated with upgrade_warn -> block.
+	rec := &mockRecorder{level: 1}
+	adaptiveCfg := &config.AdaptiveEnforcement{
+		Enabled:             true,
+		EscalationThreshold: 5.0,
+		Levels: config.EscalationLevels{
+			Elevated: config.EscalationActions{
+				UpgradeWarn: ptrStr(config.ActionBlock),
+			},
+		},
+	}
+
+	// DLP-triggering message that would normally warn.
+	secret := testSecretPrefix + strings.Repeat("w", 25)
+	dirtyMsg := []byte(makeRequest(302, methodToolsCall, map[string]string{"k": secret}))
+	inputCfg := newHTTPInputCfg(config.ActionWarn) // base action = warn
+
+	var logBuf bytes.Buffer
+	m := metrics.New()
+	blocked := scanHTTPInput(dirtyMsg, sc, &logBuf, inputCfg, nil, nil, "test-session", "test-session", nil, nil, rec, adaptiveCfg, m)
+	if blocked == nil {
+		t.Fatal("expected warn to be upgraded to block at elevated level")
+	}
+
+	// Verify the upgrade telemetry was emitted.
+	if !strings.Contains(logBuf.String(), "adaptive upgrade") {
+		t.Errorf("expected 'adaptive upgrade' in log output, got: %q", logBuf.String())
+	}
+}
+
+// ptrStr returns a pointer to a string value. Test helper for config structs.
+func ptrStr(s string) *string { return &s }
 
 // TestRecordSignalWithEscalation_NoEscalation verifies that when RecordSignal
 // returns escalated=false, recordSignalWithEscalation writes nothing to logW.

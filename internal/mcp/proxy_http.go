@@ -194,6 +194,14 @@ func RunHTTPProxy(
 // When cee is non-nil, outbound payloads are recorded for cross-request
 // exfiltration detection after content scanning passes.
 func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *InputScanConfig, policyCfg *policy.Config, chainMatcher *chains.Matcher, sessionKey, auditSessionKey string, auditLogger *audit.Logger, cee *CEEDeps, rec session.Recorder, adaptiveCfg *config.AdaptiveEnforcement, m *metrics.Metrics) *BlockedRequest {
+	// Helper: record an adaptive signal and handle escalation side-effects.
+	// Eliminates repeated nil/enabled guards at every call site.
+	recordAdaptiveSignal := func(sig session.SignalType) {
+		if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
+			recordSignalWithEscalation(rec, sig, adaptiveCfg.EscalationThreshold, logW, auditLogger, m, auditSessionKey, "", "")
+		}
+	}
+
 	// Determine input scanning parameters.
 	action := config.ActionWarn
 	onParseError := config.ActionBlock
@@ -243,9 +251,7 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 					auditLogger.LogChainDetection(cv.PatternName, cv.Severity, cv.Action, toolName, auditSessionKey)
 				}
 				if cv.Action == config.ActionBlock {
-					if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
-						recordSignalWithEscalation(rec, session.SignalBlock, adaptiveCfg.EscalationThreshold, logW, auditLogger, m, auditSessionKey, "", "")
-					}
+					recordAdaptiveSignal(session.SignalBlock)
 					return &BlockedRequest{
 						ID:             verdict.ID,
 						IsNotification: isRPCNotification(verdict.ID),
@@ -275,6 +281,10 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 		// block_all enforcement: deny ALL traffic (including clean) when the
 		// session is at an escalation level with block_all=true.
 		if rec != nil && decide.UpgradeAction("", rec.EscalationLevel(), adaptiveCfg) == config.ActionBlock {
+			_, _ = fmt.Fprintf(logW, "pipelock: adaptive upgrade (clean) -> block (level %s)\n", session.EscalationLabel(rec.EscalationLevel()))
+			if m != nil {
+				m.RecordAdaptiveUpgrade("", config.ActionBlock, session.EscalationLabel(rec.EscalationLevel()))
+			}
 			return &BlockedRequest{
 				ID:             verdict.ID,
 				IsNotification: isRPCNotification(verdict.ID),
@@ -346,17 +356,21 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 	}
 
 	// Escalation upgrade: may promote warn/ask to block for elevated sessions.
+	originalAction := effectiveAction
 	if rec != nil {
 		effectiveAction = decide.UpgradeAction(effectiveAction, rec.EscalationLevel(), adaptiveCfg)
+	}
+	if effectiveAction != originalAction {
+		_, _ = fmt.Fprintf(logW, "pipelock: adaptive upgrade %s -> %s (level %s)\n", originalAction, effectiveAction, session.EscalationLabel(rec.EscalationLevel()))
+		if m != nil {
+			m.RecordAdaptiveUpgrade(originalAction, effectiveAction, session.EscalationLabel(rec.EscalationLevel()))
+		}
 	}
 
 	switch effectiveAction {
 	case config.ActionBlock:
 		_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s)\n", joinStrings(reasons))
-		// Signal recording: block signal.
-		if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
-			recordSignalWithEscalation(rec, session.SignalBlock, adaptiveCfg.EscalationThreshold, logW, auditLogger, m, auditSessionKey, "", "")
-		}
+		recordAdaptiveSignal(session.SignalBlock)
 		return &BlockedRequest{
 			ID:             verdict.ID,
 			IsNotification: isNotification,
@@ -367,10 +381,7 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 	case config.ActionAsk:
 		// HITL for input scanning is impractical — fall back to block (same as stdio proxy).
 		_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s) [ask not supported for input scanning]\n", joinStrings(reasons))
-		// Signal recording: block signal (ask falls back to block).
-		if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
-			recordSignalWithEscalation(rec, session.SignalBlock, adaptiveCfg.EscalationThreshold, logW, auditLogger, m, auditSessionKey, "", "")
-		}
+		recordAdaptiveSignal(session.SignalBlock)
 		return &BlockedRequest{
 			ID:             verdict.ID,
 			IsNotification: isNotification,
@@ -381,10 +392,7 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 	default: // warn
 		if len(reasons) > 0 {
 			_, _ = fmt.Fprintf(logW, "pipelock: input: warning (%s)\n", joinStrings(reasons))
-			// Signal recording: near-miss for warned content.
-			if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
-				recordSignalWithEscalation(rec, session.SignalNearMiss, adaptiveCfg.EscalationThreshold, logW, auditLogger, m, auditSessionKey, "", "")
-			}
+			recordAdaptiveSignal(session.SignalNearMiss)
 		}
 		// Cross-request exfiltration check even in warn mode.
 		ceeKey := ceeSessionKeyMCP("", sessionKey)
@@ -572,7 +580,7 @@ func RunHTTPListenerProxy(
 	auditLogger *audit.Logger,
 	cee *CEEDeps,
 	store session.Store,
-	adaptiveCfg *config.AdaptiveEnforcement,
+	adaptiveCfgFn AdaptiveConfigFunc,
 	m *metrics.Metrics,
 ) error {
 	safeLogW := &syncWriter{w: logW}
@@ -609,6 +617,13 @@ func RunHTTPListenerProxy(
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
+		}
+
+		// Resolve adaptive config per-request so hot-reloads take effect
+		// without restarting the long-lived listener.
+		var adaptiveCfg *config.AdaptiveEnforcement
+		if adaptiveCfgFn != nil {
+			adaptiveCfg = adaptiveCfgFn()
 		}
 
 		// Cap request body to prevent memory exhaustion.

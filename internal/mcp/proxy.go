@@ -555,6 +555,12 @@ func recordSignalWithEscalation(rec session.Recorder, sig session.SignalType, th
 	}
 }
 
+// AdaptiveConfigFunc returns the current adaptive enforcement config.
+// Used by long-lived listeners (RunHTTPListenerProxy) so they read the
+// live config after each hot-reload instead of a stale startup snapshot.
+// Returns nil when adaptive enforcement is disabled.
+type AdaptiveConfigFunc func() *config.AdaptiveEnforcement
+
 // InputScanConfig holds the settings for MCP input scanning.
 // Passed to RunProxy to control request scanning behavior.
 type InputScanConfig struct {

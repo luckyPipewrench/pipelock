@@ -499,6 +499,14 @@ func ForwardScannedInput(
 ) {
 	defer close(blockedCh)
 
+	// Helper: record an adaptive signal and handle escalation side-effects.
+	// Eliminates repeated nil/enabled guards at every call site.
+	recordAdaptiveSignal := func(sig session.SignalType) {
+		if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
+			recordSignalWithEscalation(rec, sig, adaptiveCfg.EscalationThreshold, logW, auditLogger, m, "default", "", "")
+		}
+	}
+
 	// lineNum counts non-empty messages, not raw lines. StdioReader skips
 	// empty lines internally, so this is a message index.
 	lineNum := 0
@@ -602,9 +610,7 @@ func ForwardScannedInput(
 					// rather than re-parsing via extractRPCID. A tools/call always
 					// has an ID; using the parsed value avoids a silent-drop bug
 					// if re-parsing fails on unusual ID shapes.
-					if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
-						recordSignalWithEscalation(rec, session.SignalBlock, adaptiveCfg.EscalationThreshold, logW, auditLogger, m, "default", "", "")
-					}
+					recordAdaptiveSignal(session.SignalBlock)
 					blockedCh <- BlockedRequest{
 						ID:             verdict.ID,
 						IsNotification: isRPCNotification(verdict.ID),
@@ -636,6 +642,10 @@ func ForwardScannedInput(
 			// block_all enforcement: deny ALL traffic (including clean) when the
 			// session is at an escalation level with block_all=true.
 			if rec != nil && decide.UpgradeAction("", rec.EscalationLevel(), adaptiveCfg) == config.ActionBlock {
+				_, _ = fmt.Fprintf(logW, "pipelock: adaptive upgrade (clean) -> block (level %s)\n", session.EscalationLabel(rec.EscalationLevel()))
+				if m != nil {
+					m.RecordAdaptiveUpgrade("", config.ActionBlock, session.EscalationLabel(rec.EscalationLevel()))
+				}
 				blockedCh <- BlockedRequest{
 					ID:             verdict.ID,
 					IsNotification: isRPCNotification(verdict.ID),
@@ -737,8 +747,15 @@ func ForwardScannedInput(
 		}
 
 		// Escalation upgrade: may promote warn/ask to block for elevated sessions.
+		originalAction := effectiveAction
 		if rec != nil {
 			effectiveAction = decide.UpgradeAction(effectiveAction, rec.EscalationLevel(), adaptiveCfg)
+		}
+		if effectiveAction != originalAction {
+			_, _ = fmt.Fprintf(logW, "pipelock: adaptive upgrade %s -> %s (level %s)\n", originalAction, effectiveAction, session.EscalationLabel(rec.EscalationLevel()))
+			if m != nil {
+				m.RecordAdaptiveUpgrade(originalAction, effectiveAction, session.EscalationLabel(rec.EscalationLevel()))
+			}
 		}
 
 		switch effectiveAction {
@@ -787,16 +804,14 @@ func ForwardScannedInput(
 		}
 
 		// Signal recording: record after action is taken.
-		if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
-			switch effectiveAction {
-			case config.ActionBlock:
-				recordSignalWithEscalation(rec, session.SignalBlock, adaptiveCfg.EscalationThreshold, logW, auditLogger, m, "default", "", "")
-			default:
-				if len(reasons) > 0 {
-					recordSignalWithEscalation(rec, session.SignalNearMiss, adaptiveCfg.EscalationThreshold, logW, auditLogger, m, "default", "", "")
-				} else {
-					rec.RecordClean(adaptiveCfg.DecayPerCleanRequest)
-				}
+		switch {
+		case effectiveAction == config.ActionBlock:
+			recordAdaptiveSignal(session.SignalBlock)
+		case len(reasons) > 0:
+			recordAdaptiveSignal(session.SignalNearMiss)
+		default:
+			if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
+				rec.RecordClean(adaptiveCfg.DecayPerCleanRequest)
 			}
 		}
 	}

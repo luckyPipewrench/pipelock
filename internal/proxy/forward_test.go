@@ -2213,4 +2213,28 @@ func TestForwardHTTP_AdaptiveUpgrade_WarnToBlock(t *testing.T) {
 	if resp.StatusCode == http.StatusForbidden {
 		t.Fatalf("expected audit-mode allow (no escalation), got 403")
 	}
+
+	// Phase 2: send a second DLP request to accumulate enough signal points
+	// (2 x SignalBlock = 6.0 > threshold 5.0) to escalate the session.
+	// The first request already recorded one SignalBlock (3.0 points).
+	req2, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, reqURL, nil)
+	resp2, err := client.Do(req2)
+	if err != nil {
+		t.Fatalf("second request transport error: %v", err)
+	}
+	_ = resp2.Body.Close()
+
+	// Phase 3: the session should now be escalated. The next DLP-matching
+	// request should be blocked (403) because UpgradeAction upgrades
+	// warn -> block at the elevated level.
+	req3, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, reqURL, nil)
+	resp3, err := client.Do(req3)
+	if err != nil {
+		t.Fatalf("third request transport error: %v", err)
+	}
+	_ = resp3.Body.Close()
+
+	if resp3.StatusCode != http.StatusForbidden {
+		t.Errorf("expected 403 after escalation (warn->block upgrade), got %d", resp3.StatusCode)
+	}
 }

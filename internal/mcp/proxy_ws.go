@@ -18,6 +18,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
@@ -45,6 +46,7 @@ func RunWSProxy(
 	cee *CEEDeps,
 	store session.Store,
 	adaptiveCfg *config.AdaptiveEnforcement,
+	m *metrics.Metrics,
 ) error {
 	// Separate parent and inner context. The parent context comes from
 	// signal handling (SIGINT/SIGTERM). The inner context is cancelled
@@ -109,7 +111,7 @@ func RunWSProxy(
 	go func() {
 		defer wg.Done()
 		defer cancel() // Signal main goroutine if upstream closes first.
-		_, scanErr := ForwardScanned(wsClient, safeClientOut, safeLogW, sc, approver, fwdToolCfg, tracker, rec, adaptiveCfg)
+		_, scanErr := ForwardScanned(wsClient, safeClientOut, safeLogW, sc, approver, fwdToolCfg, tracker, rec, adaptiveCfg, m)
 		if scanErr != nil {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream scan error: %v\n", scanErr)
 			lastScanErr = scanErr
@@ -162,7 +164,7 @@ func RunWSProxy(
 		}
 
 		// Input scanning: DLP, injection, policy, chain detection.
-		if blocked := scanHTTPInput(msg, sc, safeLogW, inputCfg, policyCfg, chainMatcher, sessionKey, sessionKey, auditLogger, cee, rec, adaptiveCfg); blocked != nil {
+		if blocked := scanHTTPInput(msg, sc, safeLogW, inputCfg, policyCfg, chainMatcher, sessionKey, sessionKey, auditLogger, cee, rec, adaptiveCfg, m); blocked != nil {
 			if !blocked.IsNotification {
 				resp := blockRequestResponse(*blocked)
 				if wErr := safeClientOut.WriteMessage(resp); wErr != nil {

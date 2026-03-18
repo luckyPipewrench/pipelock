@@ -24,6 +24,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
@@ -104,7 +105,7 @@ func isRequest(msg []byte) bool {
 // When rec is non-nil and adaptiveCfg is enabled, threat signals are recorded
 // and the effective action may be upgraded based on session escalation level.
 // Returns true if any injection was detected.
-func ForwardScanned(reader transport.MessageReader, writer transport.MessageWriter, logW io.Writer, sc *scanner.Scanner, approver *hitl.Approver, toolCfg *tools.ToolScanConfig, tracker *RequestTracker, rec session.Recorder, adaptiveCfg *config.AdaptiveEnforcement) (bool, error) {
+func ForwardScanned(reader transport.MessageReader, writer transport.MessageWriter, logW io.Writer, sc *scanner.Scanner, approver *hitl.Approver, toolCfg *tools.ToolScanConfig, tracker *RequestTracker, rec session.Recorder, adaptiveCfg *config.AdaptiveEnforcement, m *metrics.Metrics) (bool, error) {
 	// blockAll tracks whether the session is at a critical escalation level
 	// with block_all=true. Checked once up front and refreshed after each
 	// message so mid-stream escalation takes effect immediately.
@@ -211,7 +212,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				if toolAction == config.ActionBlock {
 					// Signal: tool poisoning blocked.
 					if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
-						recordSignalWithEscalation(rec, session.SignalBlock, adaptiveCfg.EscalationThreshold, logW, nil, "", "", "")
+						recordSignalWithEscalation(rec, session.SignalBlock, adaptiveCfg.EscalationThreshold, logW, nil, m, "", "", "")
 					}
 					resp := blockResponse(toolResult.RPCID)
 					if err := writer.WriteMessage(resp); err != nil {
@@ -221,7 +222,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				}
 				// warn: logged above, record near-miss and fall through to general handling.
 				if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
-					recordSignalWithEscalation(rec, session.SignalNearMiss, adaptiveCfg.EscalationThreshold, logW, nil, "", "", "")
+					recordSignalWithEscalation(rec, session.SignalNearMiss, adaptiveCfg.EscalationThreshold, logW, nil, m, "", "", "")
 				}
 			}
 		}
@@ -337,12 +338,12 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
 			switch action {
 			case config.ActionBlock:
-				recordSignalWithEscalation(rec, session.SignalBlock, adaptiveCfg.EscalationThreshold, logW, nil, "", "", "")
+				recordSignalWithEscalation(rec, session.SignalBlock, adaptiveCfg.EscalationThreshold, logW, nil, m, "", "", "")
 			case config.ActionStrip:
-				recordSignalWithEscalation(rec, session.SignalStrip, adaptiveCfg.EscalationThreshold, logW, nil, "", "", "")
+				recordSignalWithEscalation(rec, session.SignalStrip, adaptiveCfg.EscalationThreshold, logW, nil, m, "", "", "")
 			default:
 				// Warn/ask: near-miss signal (injection detected but not blocked).
-				recordSignalWithEscalation(rec, session.SignalNearMiss, adaptiveCfg.EscalationThreshold, logW, nil, "", "", "")
+				recordSignalWithEscalation(rec, session.SignalNearMiss, adaptiveCfg.EscalationThreshold, logW, nil, m, "", "", "")
 			}
 		}
 	}
@@ -536,7 +537,7 @@ func matchNames(matches []scanner.ResponseMatch) []string {
 // the MCP proxy. auditLogger and m may be nil (stdio mode has no audit logger
 // or metrics). sessionKey and clientIP are used for audit log context; pass ""
 // when not available (e.g., stdio transports).
-func recordSignalWithEscalation(rec session.Recorder, sig session.SignalType, threshold float64, logW io.Writer, auditLogger *audit.Logger, sessionKey, _clientIP, _requestID string) {
+func recordSignalWithEscalation(rec session.Recorder, sig session.SignalType, threshold float64, logW io.Writer, auditLogger *audit.Logger, m *metrics.Metrics, sessionKey, _clientIP, _requestID string) {
 	escalated, from, to := rec.RecordSignal(sig, threshold)
 	if !escalated {
 		return
@@ -544,6 +545,13 @@ func recordSignalWithEscalation(rec session.Recorder, sig session.SignalType, th
 	_, _ = fmt.Fprintf(logW, "pipelock: session escalated %s -> %s (score=%.1f)\n", from, to, rec.ThreatScore())
 	if auditLogger != nil {
 		auditLogger.LogAdaptiveEscalation(sessionKey, from, to, _clientIP, _requestID, rec.ThreatScore())
+	}
+	if m != nil {
+		m.RecordSessionEscalation(from, to)
+		if from != "normal" {
+			m.SetAdaptiveSessionLevel(from, -1)
+		}
+		m.SetAdaptiveSessionLevel(to, 1)
 	}
 }
 
@@ -568,7 +576,7 @@ type InputScanConfig struct {
 // for adaptive enforcement signal recording across both input and response scanning.
 // adaptiveCfg provides escalation thresholds and upgrade rules; it is only consulted
 // when store is non-nil and rec is created.
-func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW io.Writer, command []string, sc *scanner.Scanner, approver *hitl.Approver, inputCfg *InputScanConfig, toolCfg *tools.ToolScanConfig, policyCfg *policy.Config, ks *killswitch.Controller, chainMatcher *chains.Matcher, auditLogger *audit.Logger, cee *CEEDeps, store session.Store, adaptiveCfg *config.AdaptiveEnforcement, extraEnv ...string) error {
+func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW io.Writer, command []string, sc *scanner.Scanner, approver *hitl.Approver, inputCfg *InputScanConfig, toolCfg *tools.ToolScanConfig, policyCfg *policy.Config, ks *killswitch.Controller, chainMatcher *chains.Matcher, auditLogger *audit.Logger, cee *CEEDeps, store session.Store, adaptiveCfg *config.AdaptiveEnforcement, m *metrics.Metrics, extraEnv ...string) error {
 	cmd := exec.CommandContext(ctx, command[0], command[1:]...) //nolint:gosec // command comes from user CLI args
 
 	// Per-invocation adaptive enforcement recorder. Nil when store is nil
@@ -652,21 +660,21 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		if inputCfg != nil && inputCfg.Enabled {
 			clientReader := transport.NewStdioReader(clientIn)
 			serverWriter := transport.NewStdioWriter(serverIn)
-			ForwardScannedInput(clientReader, serverWriter, safeLogW, sc, inputCfg.Action, inputCfg.OnParseError, blockedCh, policyCfg, bindingCfg, ks, chainMatcher, tracker, auditLogger, cee, rec, adaptiveCfg)
+			ForwardScannedInput(clientReader, serverWriter, safeLogW, sc, inputCfg.Action, inputCfg.OnParseError, blockedCh, policyCfg, bindingCfg, ks, chainMatcher, tracker, auditLogger, cee, rec, adaptiveCfg, m)
 		} else if policyCfg != nil || bindingCfg != nil || chainMatcher != nil {
 			// Policy checking, session binding, or chain detection enabled but content scanning disabled.
 			// Route through ForwardScannedInput with pass-through content scanning.
 			// Use onParseError="block" (fail-closed) so malformed JSON can't bypass policy.
 			clientReader := transport.NewStdioReader(clientIn)
 			serverWriter := transport.NewStdioWriter(serverIn)
-			ForwardScannedInput(clientReader, serverWriter, safeLogW, sc, config.ActionWarn, config.ActionBlock, blockedCh, policyCfg, bindingCfg, ks, chainMatcher, tracker, auditLogger, cee, rec, adaptiveCfg)
+			ForwardScannedInput(clientReader, serverWriter, safeLogW, sc, config.ActionWarn, config.ActionBlock, blockedCh, policyCfg, bindingCfg, ks, chainMatcher, tracker, auditLogger, cee, rec, adaptiveCfg, m)
 		} else {
 			// No content scanning, but still route through ForwardScannedInput
 			// so request IDs are tracked for confused deputy protection.
 			// ActionWarn = pass-through, ActionBlock on parse error = fail-closed.
 			clientReader := transport.NewStdioReader(clientIn)
 			serverWriter := transport.NewStdioWriter(serverIn)
-			ForwardScannedInput(clientReader, serverWriter, safeLogW, sc, config.ActionWarn, config.ActionBlock, blockedCh, nil, nil, ks, nil, tracker, auditLogger, cee, rec, adaptiveCfg)
+			ForwardScannedInput(clientReader, serverWriter, safeLogW, sc, config.ActionWarn, config.ActionBlock, blockedCh, nil, nil, ks, nil, tracker, auditLogger, cee, rec, adaptiveCfg, m)
 		}
 	}()
 
@@ -690,7 +698,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 
 	// Scan and forward server output to client.
 	serverReader := transport.NewStdioReader(serverOut)
-	_, scanErr := ForwardScanned(serverReader, safeClientOut, safeLogW, sc, approver, fwdToolCfg, tracker, rec, adaptiveCfg)
+	_, scanErr := ForwardScanned(serverReader, safeClientOut, safeLogW, sc, approver, fwdToolCfg, tracker, rec, adaptiveCfg, m)
 
 	// Wait for subprocess to exit.
 	waitErr := cmd.Wait()

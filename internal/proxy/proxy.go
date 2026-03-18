@@ -435,6 +435,15 @@ func (p *Proxy) Close() {
 	}
 }
 
+// SessionStore returns the proxy's session store for sharing with MCP transports.
+// Returns nil when session profiling is disabled.
+func (p *Proxy) SessionStore() session.Store {
+	if sm := p.sessionMgrPtr.Load(); sm != nil {
+		return sm.AsStore()
+	}
+	return nil
+}
+
 // resolveAgent returns the ResolvedAgent for the given profile name.
 // Delegates to the current Edition's LookupProfile.
 func (p *Proxy) resolveAgent(profile string) *edition.ResolvedAgent {

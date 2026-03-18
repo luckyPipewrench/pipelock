@@ -638,22 +638,18 @@ Examples:
 					}
 				}
 
-				// Create session store for MCP listener adaptive enforcement.
-				// Reuses the proxy's metrics for gauge consistency.
+				// Share the proxy's session manager with the MCP listener so both
+				// use the same store and the sessions gauge is not double-counted.
 				var mcpStore session.Store
 				var mcpAdaptiveCfg *config.AdaptiveEnforcement
-				if cfg.SessionProfiling.Enabled {
-					mcpSM := proxy.NewSessionManager(&cfg.SessionProfiling, m)
-					defer mcpSM.Close()
-					mcpStore = mcpSM.AsStore()
-				}
+				mcpStore = p.SessionStore() // nil when session profiling is disabled
 				if cfg.AdaptiveEnforcement.Enabled {
 					mcpAdaptiveCfg = &cfg.AdaptiveEnforcement
 				}
 
 				mcpErr = make(chan error, 1)
 				go func() {
-					mcpErr <- mcp.RunHTTPListenerProxy(ctx, mcpLn, mcpUpstream, cmd.ErrOrStderr(), sc, mcpApprover, inputCfg, toolCfg, policyCfg, ks, mcpChainMatcher, logger, mcpCEE, mcpStore, mcpAdaptiveCfg)
+					mcpErr <- mcp.RunHTTPListenerProxy(ctx, mcpLn, mcpUpstream, cmd.ErrOrStderr(), sc, mcpApprover, inputCfg, toolCfg, policyCfg, ks, mcpChainMatcher, logger, mcpCEE, mcpStore, mcpAdaptiveCfg, m)
 				}()
 			}
 

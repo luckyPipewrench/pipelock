@@ -23,6 +23,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
@@ -494,6 +495,7 @@ func ForwardScannedInput(
 	cee *CEEDeps,
 	rec session.Recorder,
 	adaptiveCfg *config.AdaptiveEnforcement,
+	m *metrics.Metrics,
 ) {
 	defer close(blockedCh)
 
@@ -782,10 +784,10 @@ func ForwardScannedInput(
 		if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
 			switch effectiveAction {
 			case config.ActionBlock:
-				recordSignalWithEscalation(rec, session.SignalBlock, adaptiveCfg.EscalationThreshold, logW, auditLogger, "default", "", "")
+				recordSignalWithEscalation(rec, session.SignalBlock, adaptiveCfg.EscalationThreshold, logW, auditLogger, m, "default", "", "")
 			default:
 				if len(reasons) > 0 {
-					recordSignalWithEscalation(rec, session.SignalNearMiss, adaptiveCfg.EscalationThreshold, logW, auditLogger, "default", "", "")
+					recordSignalWithEscalation(rec, session.SignalNearMiss, adaptiveCfg.EscalationThreshold, logW, auditLogger, m, "default", "", "")
 				} else {
 					rec.RecordClean(adaptiveCfg.DecayPerCleanRequest)
 				}

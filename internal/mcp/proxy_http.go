@@ -27,6 +27,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
@@ -54,6 +55,7 @@ func RunHTTPProxy(
 	cee *CEEDeps,
 	store session.Store,
 	adaptiveCfg *config.AdaptiveEnforcement,
+	m *metrics.Metrics,
 ) error {
 	// Create a child context so we can stop the GET stream when stdin EOF is reached.
 	ctx, cancel := context.WithCancel(ctx)
@@ -123,7 +125,7 @@ func RunHTTPProxy(
 
 		// Input scanning — call ScanRequest and CheckRequest directly.
 		// The sequential (non-concurrent) architecture means no channel needed.
-		if blocked := scanHTTPInput(msg, sc, safeLogW, inputCfg, policyCfg, chainMatcher, "default", "default", auditLogger, cee, rec, adaptiveCfg); blocked != nil {
+		if blocked := scanHTTPInput(msg, sc, safeLogW, inputCfg, policyCfg, chainMatcher, "default", "default", auditLogger, cee, rec, adaptiveCfg, m); blocked != nil {
 			if !blocked.IsNotification {
 				resp := blockRequestResponse(*blocked)
 				if wErr := safeClientOut.WriteMessage(resp); wErr != nil {
@@ -156,7 +158,7 @@ func RunHTTPProxy(
 		}
 
 		// Scan and forward response.
-		_, scanErr := ForwardScanned(respReader, safeClientOut, safeLogW, sc, approver, fwdToolCfg, tracker, rec, adaptiveCfg)
+		_, scanErr := ForwardScanned(respReader, safeClientOut, safeLogW, sc, approver, fwdToolCfg, tracker, rec, adaptiveCfg, m)
 		if scanErr != nil {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
 			lastScanErr = scanErr
@@ -168,7 +170,7 @@ func RunHTTPProxy(
 		// the Once and permanently prevent the GET stream.
 		if httpClient.SessionID() != "" {
 			getStreamOnce.Do(func() {
-				startGETStream(ctx, httpClient, safeClientOut, safeLogW, sc, approver, fwdToolCfg, rec, adaptiveCfg, &wg)
+				startGETStream(ctx, httpClient, safeClientOut, safeLogW, sc, approver, fwdToolCfg, rec, adaptiveCfg, &wg, m)
 			})
 		}
 	}
@@ -191,7 +193,7 @@ func RunHTTPProxy(
 // but returns a verdict instead of writing to a channel.
 // When cee is non-nil, outbound payloads are recorded for cross-request
 // exfiltration detection after content scanning passes.
-func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *InputScanConfig, policyCfg *policy.Config, chainMatcher *chains.Matcher, sessionKey, auditSessionKey string, auditLogger *audit.Logger, cee *CEEDeps, rec session.Recorder, adaptiveCfg *config.AdaptiveEnforcement) *BlockedRequest {
+func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *InputScanConfig, policyCfg *policy.Config, chainMatcher *chains.Matcher, sessionKey, auditSessionKey string, auditLogger *audit.Logger, cee *CEEDeps, rec session.Recorder, adaptiveCfg *config.AdaptiveEnforcement, m *metrics.Metrics) *BlockedRequest {
 	// Determine input scanning parameters.
 	action := config.ActionWarn
 	onParseError := config.ActionBlock
@@ -347,7 +349,7 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 		_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s)\n", joinStrings(reasons))
 		// Signal recording: block signal.
 		if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
-			recordSignalWithEscalation(rec, session.SignalBlock, adaptiveCfg.EscalationThreshold, logW, auditLogger, auditSessionKey, "", "")
+			recordSignalWithEscalation(rec, session.SignalBlock, adaptiveCfg.EscalationThreshold, logW, auditLogger, m, auditSessionKey, "", "")
 		}
 		return &BlockedRequest{
 			ID:             verdict.ID,
@@ -361,7 +363,7 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 		_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s) [ask not supported for input scanning]\n", joinStrings(reasons))
 		// Signal recording: block signal (ask falls back to block).
 		if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
-			recordSignalWithEscalation(rec, session.SignalBlock, adaptiveCfg.EscalationThreshold, logW, auditLogger, auditSessionKey, "", "")
+			recordSignalWithEscalation(rec, session.SignalBlock, adaptiveCfg.EscalationThreshold, logW, auditLogger, m, auditSessionKey, "", "")
 		}
 		return &BlockedRequest{
 			ID:             verdict.ID,
@@ -375,7 +377,7 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 			_, _ = fmt.Fprintf(logW, "pipelock: input: warning (%s)\n", joinStrings(reasons))
 			// Signal recording: near-miss for warned content.
 			if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
-				recordSignalWithEscalation(rec, session.SignalNearMiss, adaptiveCfg.EscalationThreshold, logW, auditLogger, auditSessionKey, "", "")
+				recordSignalWithEscalation(rec, session.SignalNearMiss, adaptiveCfg.EscalationThreshold, logW, auditLogger, m, auditSessionKey, "", "")
 			}
 		}
 		// Cross-request exfiltration check even in warn mode.
@@ -473,6 +475,7 @@ func startGETStream(
 	rec session.Recorder,
 	adaptiveCfg *config.AdaptiveEnforcement,
 	wg *sync.WaitGroup,
+	m *metrics.Metrics,
 ) {
 	wg.Add(1)
 	go func() {
@@ -513,7 +516,7 @@ func startGETStream(
 
 			// nil tracker: GET stream carries server-initiated messages,
 			// not responses to client requests.
-			_, scanErr := ForwardScanned(reader, safeClientOut, safeLogW, sc, approver, toolCfg, nil, rec, adaptiveCfg)
+			_, scanErr := ForwardScanned(reader, safeClientOut, safeLogW, sc, approver, toolCfg, nil, rec, adaptiveCfg, m)
 			if scanErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: GET stream scan error: %v\n", scanErr)
 			}
@@ -564,6 +567,7 @@ func RunHTTPListenerProxy(
 	cee *CEEDeps,
 	store session.Store,
 	adaptiveCfg *config.AdaptiveEnforcement,
+	m *metrics.Metrics,
 ) error {
 	safeLogW := &syncWriter{w: logW}
 
@@ -713,7 +717,7 @@ func RunHTTPListenerProxy(
 		}
 
 		// Input scanning: DLP, injection, policy, chain detection.
-		if blocked := scanHTTPInput(body, sc, safeLogW, inputCfg, policyCfg, chainMatcher, chainSessionKey, auditSessionKey, auditLogger, cee, reqRec, adaptiveCfg); blocked != nil {
+		if blocked := scanHTTPInput(body, sc, safeLogW, inputCfg, policyCfg, chainMatcher, chainSessionKey, auditSessionKey, auditLogger, cee, reqRec, adaptiveCfg, m); blocked != nil {
 			w.Header().Set("Content-Type", "application/json")
 			if blocked.IsNotification {
 				w.WriteHeader(http.StatusAccepted)
@@ -773,7 +777,7 @@ func RunHTTPListenerProxy(
 		reader := &transport.SingleMessageReader{Body: upResp.Body}
 		var buf bytes.Buffer
 		bufWriter := &syncWriter{w: &buf}
-		_, scanErr := ForwardScanned(reader, bufWriter, safeLogW, sc, approver, fwdToolCfg, nil, reqRec, adaptiveCfg)
+		_, scanErr := ForwardScanned(reader, bufWriter, safeLogW, sc, approver, fwdToolCfg, nil, reqRec, adaptiveCfg, m)
 		if scanErr != nil {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
 		}

@@ -78,6 +78,7 @@ func TestEventSeverity_CoverExpectedTypes(t *testing.T) {
 		{"response_scan", SeverityWarn},
 		{"ws_scan", SeverityWarn},
 		{"adaptive_escalation", SeverityWarn},
+		{EventAdaptiveUpgrade, SeverityWarn},
 		{"error", SeverityWarn},
 
 		// Info
@@ -115,6 +116,7 @@ func TestEventSeverity_NoUnexpectedEntries(t *testing.T) {
 		"response_scan":       true,
 		"ws_scan":             true,
 		"adaptive_escalation": true,
+		EventAdaptiveUpgrade:  true,
 		"error":               true,
 		"allowed":             true,
 		"tunnel_open":         true,
@@ -179,5 +181,36 @@ func TestDefaultInstanceID_NonEmpty(t *testing.T) {
 	id := DefaultInstanceID()
 	if id == "" {
 		t.Error("DefaultInstanceID() returned empty string")
+	}
+}
+
+func TestUpgradeSeverity(t *testing.T) {
+	tests := []struct {
+		name     string
+		toAction string
+		want     Severity
+	}{
+		{name: "block is critical", toAction: "block", want: SeverityCritical},
+		{name: "warn is warn", toAction: "warn", want: SeverityWarn},
+		{name: "strip is warn", toAction: "strip", want: SeverityWarn},
+		{name: "empty is warn", toAction: "", want: SeverityWarn},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := UpgradeSeverity(tt.toAction); got != tt.want {
+				t.Errorf("UpgradeSeverity(%q) = %v, want %v", tt.toAction, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEventAdaptiveUpgrade_InMap(t *testing.T) {
+	sev, ok := EventSeverity[EventAdaptiveUpgrade]
+	if !ok {
+		t.Fatalf("EventSeverity missing entry for EventAdaptiveUpgrade (%q)", EventAdaptiveUpgrade)
+	}
+	if sev != SeverityWarn {
+		t.Errorf("EventSeverity[EventAdaptiveUpgrade] = %v, want warn", sev)
 	}
 }

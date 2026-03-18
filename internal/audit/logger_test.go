@@ -2665,3 +2665,109 @@ func TestLogAgentListener(t *testing.T) {
 		t.Errorf("agent = %v, want strict-bot", entry["agent"])
 	}
 }
+
+func TestLogAdaptiveUpgrade_JSONFormat(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogAdaptiveUpgrade("agent|10.0.0.1", "elevated", testActionWarn, actionBlock, ScannerDLP, testClientIP, "req-123")
+	logger.Close()
+
+	data, _ := os.ReadFile(filepath.Clean(path))
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+
+	tests := []struct {
+		field string
+		want  any
+	}{
+		{"event", "adaptive_upgrade"},
+		{"session", "agent|10.0.0.1"},
+		{"escalation_level", "elevated"},
+		{"from_action", testActionWarn},
+		{"to_action", actionBlock},
+		{"scanner", ScannerDLP},
+		{"client_ip", testClientIP},
+		{"request_id", "req-123"},
+	}
+	for _, tt := range tests {
+		if entry[tt.field] != tt.want {
+			t.Errorf("field %q = %v, want %v", tt.field, entry[tt.field], tt.want)
+		}
+	}
+}
+
+func TestLogAdaptiveUpgrade_Nop(_ *testing.T) {
+	// Nop logger should not panic.
+	logger := NewNop()
+	logger.LogAdaptiveUpgrade("agent|10.0.0.1", "elevated", testActionWarn, actionBlock, ScannerDLP, testClientIP, "req-1")
+	logger.Close()
+}
+
+func TestEmit_LogAdaptiveUpgrade(t *testing.T) {
+	logger, sink := newLoggerWithEmitter(t)
+	defer logger.Close()
+
+	logger.LogAdaptiveUpgrade("agent|10.0.0.1", "elevated", testActionWarn, actionBlock, ScannerDLP, testClientIP, "req-99")
+
+	ev, ok := sink.lastEvent()
+	if !ok {
+		t.Fatal("expected emitted event")
+	}
+	if ev.Type != "adaptive_upgrade" {
+		t.Errorf("type = %q, want adaptive_upgrade", ev.Type)
+	}
+	// Upgrade to "block" must emit at critical severity.
+	if ev.Severity != emit.SeverityCritical {
+		t.Errorf("severity = %v, want critical", ev.Severity)
+	}
+	if ev.Fields["escalation_level"] != "elevated" {
+		t.Errorf("escalation_level = %v, want elevated", ev.Fields["escalation_level"])
+	}
+	if ev.Fields["from_action"] != testActionWarn {
+		t.Errorf("from_action = %v, want %s", ev.Fields["from_action"], testActionWarn)
+	}
+	if ev.Fields["to_action"] != actionBlock {
+		t.Errorf("to_action = %v, want %s", ev.Fields["to_action"], actionBlock)
+	}
+}
+
+func TestEmit_LogAdaptiveUpgrade_WarnSeverity(t *testing.T) {
+	logger, sink := newLoggerWithEmitter(t)
+	defer logger.Close()
+
+	// Upgrade to "warn" (not block) must emit at warn severity.
+	logger.LogAdaptiveUpgrade("agent|10.0.0.1", "suspicious", "forward", testActionWarn, ScannerDLP, testClientIP, "req-100")
+
+	ev, ok := sink.lastEvent()
+	if !ok {
+		t.Fatal("expected emitted event")
+	}
+	if ev.Severity != emit.SeverityWarn {
+		t.Errorf("severity = %v, want warn", ev.Severity)
+	}
+}
+
+func TestEmit_LogAdaptiveUpgrade_OmitsEmptyOptional(t *testing.T) {
+	logger, sink := newLoggerWithEmitter(t)
+	defer logger.Close()
+
+	logger.LogAdaptiveUpgrade("session-key", "elevated", testActionWarn, actionBlock, ScannerDLP, "", "")
+
+	ev, ok := sink.lastEvent()
+	if !ok {
+		t.Fatal("expected emitted event")
+	}
+	if _, exists := ev.Fields["client_ip"]; exists {
+		t.Error("expected client_ip to be omitted when empty")
+	}
+	if _, exists := ev.Fields["request_id"]; exists {
+		t.Error("expected request_id to be omitted when empty")
+	}
+}

@@ -60,24 +60,36 @@ func DefaultInstanceID() string {
 	return "pipelock"
 }
 
+// EventAdaptiveUpgrade is the event type emitted when adaptive enforcement
+// changes the action applied to a request (e.g. warn → block).
+const EventAdaptiveUpgrade = "adaptive_upgrade"
+
+// actionBlock is the action string that indicates a request was blocked.
+// Used internally for severity mapping — block actions map to SeverityCritical.
+const actionBlock = "block"
+
 // EventSeverity maps audit event type strings to their severity level.
 // Severity is hardcoded — users control emission threshold, not event severity.
 var EventSeverity = map[string]Severity{
 	// Critical: needs immediate attention
 	"kill_switch_deny": SeverityCritical,
-	// Note: chain_detection and adaptive_escalation severity depends on action,
-	// handled by the caller via ChainDetectionSeverity / EscalationSeverity helpers.
+	// Note: chain_detection, adaptive_escalation, and adaptive_upgrade severity
+	// depends on action, handled by the caller via ChainDetectionSeverity /
+	// EscalationSeverity / UpgradeSeverity helpers.
 
 	// Warn: suspicious, worth investigating
-	"blocked":             SeverityWarn,
-	"anomaly":             SeverityWarn,
-	"session_anomaly":     SeverityWarn,
-	"mcp_unknown_tool":    SeverityWarn,
-	"ws_blocked":          SeverityWarn,
-	"response_scan":       SeverityWarn,
-	"ws_scan":             SeverityWarn,
-	"adaptive_escalation": SeverityWarn, // default; overridden to Critical if escalating to block
-	"error":               SeverityWarn, // errors are suspicious
+	"blocked":          SeverityWarn,
+	"anomaly":          SeverityWarn,
+	"session_anomaly":  SeverityWarn,
+	"mcp_unknown_tool": SeverityWarn,
+	"ws_blocked":       SeverityWarn,
+	"response_scan":    SeverityWarn,
+	"ws_scan":          SeverityWarn,
+	// adaptive_escalation: default warn; overridden to Critical if escalating to block
+	"adaptive_escalation": SeverityWarn,
+	// adaptive_upgrade: default warn; overridden to Critical if upgrading to block
+	EventAdaptiveUpgrade: SeverityWarn,
+	"error":              SeverityWarn, // errors are suspicious
 
 	// Info: normal operations
 	"allowed":       SeverityInfo,
@@ -93,7 +105,7 @@ var EventSeverity = map[string]Severity{
 // ChainDetectionSeverity returns the severity for a chain detection event
 // based on the action taken.
 func ChainDetectionSeverity(action string) Severity {
-	if action == "block" {
+	if action == actionBlock {
 		return SeverityCritical
 	}
 	return SeverityWarn
@@ -102,7 +114,16 @@ func ChainDetectionSeverity(action string) Severity {
 // EscalationSeverity returns the severity for an adaptive escalation event.
 // Escalation to "block" is critical; everything else is warn.
 func EscalationSeverity(toLevel string) Severity {
-	if toLevel == "block" {
+	if toLevel == actionBlock {
+		return SeverityCritical
+	}
+	return SeverityWarn
+}
+
+// UpgradeSeverity returns the severity for an adaptive upgrade event.
+// Upgrading to "block" is critical; everything else is warn.
+func UpgradeSeverity(toAction string) Severity {
+	if toAction == actionBlock {
 		return SeverityCritical
 	}
 	return SeverityWarn

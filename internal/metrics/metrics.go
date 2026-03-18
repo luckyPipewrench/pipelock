@@ -74,6 +74,10 @@ type Metrics struct {
 	// Address protection: crypto address poisoning detection.
 	AddressFindings *prometheus.CounterVec
 
+	// Adaptive enforcement v2: action upgrades and escalated sessions.
+	adaptiveUpgrades        *prometheus.CounterVec
+	adaptiveSessionsCurrent *prometheus.GaugeVec
+
 	wsConnectionCount int64
 
 	mu                sync.Mutex
@@ -325,6 +329,18 @@ func New() *Metrics {
 		Help:      "Address protection findings by chain and verdict.",
 	}, []string{"chain", "verdict"})
 
+	adaptiveUpgrades := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "pipelock",
+		Name:      "adaptive_upgrades_total",
+		Help:      "Requests where adaptive enforcement upgraded the action (e.g. warn→block).",
+	}, []string{"from_action", "to_action", "level"})
+
+	adaptiveSessionsCurrent := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "pipelock",
+		Name:      "adaptive_sessions_current",
+		Help:      "Currently escalated sessions by enforcement level.",
+	}, []string{"level"})
+
 	reg.MustRegister(requestsTotal, scannerHits, requestLatency,
 		tunnelsTotal, tunnelDuration, tunnelBytes, activeTunnels,
 		wsConnectionsTotal, wsDuration, wsBytes, activeWS, wsFrames, wsScanHits, wsRedirectHints,
@@ -334,7 +350,8 @@ func New() *Metrics {
 		tlsInterceptTotal, tlsCertCacheSize, tlsHandshakeDuration, tlsRequestBlocked, tlsResponseBlocked,
 		crossRequestEntropyExceeded, crossRequestDLPMatch, crossRequestFragmentBytes,
 		scanAPIRequests, scanAPIDuration, scanAPIFindings, scanAPIErrors, scanAPIInflight,
-		addressFindings)
+		addressFindings,
+		adaptiveUpgrades, adaptiveSessionsCurrent)
 
 	return &Metrics{
 		registry:                    reg,
@@ -375,6 +392,8 @@ func New() *Metrics {
 		ScanAPIErrors:               scanAPIErrors,
 		ScanAPIInflight:             scanAPIInflight,
 		AddressFindings:             addressFindings,
+		adaptiveUpgrades:            adaptiveUpgrades,
+		adaptiveSessionsCurrent:     adaptiveSessionsCurrent,
 		startTime:                   time.Now(),
 		topBlockedDomains:           make(map[string]int64),
 		topScannerHits:              make(map[string]int64),
@@ -818,4 +837,22 @@ func topN(m map[string]int64) []rankedEntry {
 // RecordAddressFinding increments the address findings counter.
 func (m *Metrics) RecordAddressFinding(chain, verdict string) {
 	m.AddressFindings.WithLabelValues(chain, verdict).Inc()
+}
+
+// RecordAdaptiveUpgrade increments the adaptive upgrades counter for a request
+// where enforcement was upgraded from fromAction to toAction at the given level.
+func (m *Metrics) RecordAdaptiveUpgrade(fromAction, toAction, level string) {
+	if m == nil {
+		return
+	}
+	m.adaptiveUpgrades.WithLabelValues(fromAction, toAction, level).Inc()
+}
+
+// SetAdaptiveSessionLevel adjusts the gauge tracking currently escalated sessions
+// at the given level by delta (positive to increment, negative to decrement).
+func (m *Metrics) SetAdaptiveSessionLevel(level string, delta float64) {
+	if m == nil {
+		return
+	}
+	m.adaptiveSessionsCurrent.WithLabelValues(level).Add(delta)
 }

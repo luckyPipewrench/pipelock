@@ -34,6 +34,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 // contextKey is used for storing per-request values in context.
@@ -535,12 +536,12 @@ func (p *Proxy) recordSessionActivity(clientIP, agent, hostname, requestID strin
 	if cfg.AdaptiveEnforcement.Enabled {
 		adaptiveCfg := cfg.AdaptiveEnforcement
 		if !resultAllowed {
-			if escalated, from, to := sess.RecordSignal(SignalBlock, adaptiveCfg.EscalationThreshold); escalated {
+			if escalated, from, to := sess.RecordSignal(session.SignalBlock, adaptiveCfg.EscalationThreshold); escalated {
 				log.LogAdaptiveEscalation(key, from, to, clientIP, requestID, sess.ThreatScore())
 				p.metrics.RecordSessionEscalation(from, to)
 			}
 		} else if resultScore > 0 {
-			if escalated, from, to := sess.RecordSignal(SignalDLPNearMiss, adaptiveCfg.EscalationThreshold); escalated {
+			if escalated, from, to := sess.RecordSignal(session.SignalNearMiss, adaptiveCfg.EscalationThreshold); escalated {
 				log.LogAdaptiveEscalation(key, from, to, clientIP, requestID, sess.ThreatScore())
 				p.metrics.RecordSessionEscalation(from, to)
 			}

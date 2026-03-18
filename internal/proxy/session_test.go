@@ -15,6 +15,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 const (
@@ -267,13 +268,13 @@ func TestSessionState_ThreatScore(t *testing.T) {
 	sess := sm.GetOrCreate(testClientIP)
 
 	// DLP near-miss adds +1
-	sess.RecordSignal(SignalDLPNearMiss, 5.0)
+	sess.RecordSignal(session.SignalNearMiss, 5.0)
 	if sess.ThreatScore() != 1.0 {
 		t.Errorf("expected score 1.0, got %f", sess.ThreatScore())
 	}
 
 	// Block adds +3
-	sess.RecordSignal(SignalBlock, 5.0)
+	sess.RecordSignal(session.SignalBlock, 5.0)
 	if sess.ThreatScore() != 4.0 {
 		t.Errorf("expected score 4.0, got %f", sess.ThreatScore())
 	}
@@ -311,15 +312,15 @@ func TestSessionState_Escalation(t *testing.T) {
 	}
 
 	// Add signals to reach threshold of 5
-	sess.RecordSignal(SignalBlock, 5.0)       // +3, total 3
-	sess.RecordSignal(SignalDLPNearMiss, 5.0) // +1, total 4
+	sess.RecordSignal(session.SignalBlock, 5.0)    // +3, total 3
+	sess.RecordSignal(session.SignalNearMiss, 5.0) // +1, total 4
 
 	if sess.IsEscalated() {
 		t.Error("should not escalate below threshold")
 	}
 
 	// Cross threshold
-	escalated, from, to := sess.RecordSignal(SignalDomainAnomaly, 5.0) // +2, total 6
+	escalated, from, to := sess.RecordSignal(session.SignalDomainAnomaly, 5.0) // +2, total 6
 	if !escalated {
 		t.Error("should escalate at threshold")
 	}
@@ -347,7 +348,7 @@ func TestSessionState_EscalationThresholdDoubles(t *testing.T) {
 
 	// First escalation at threshold 5
 	for range 5 {
-		sess.RecordSignal(SignalDLPNearMiss, 5.0) // +1 each
+		sess.RecordSignal(session.SignalNearMiss, 5.0) // +1 each
 	}
 
 	if sess.EscalationLevel() != 1 {
@@ -356,7 +357,7 @@ func TestSessionState_EscalationThresholdDoubles(t *testing.T) {
 
 	// Threshold is now 10. Need to reach 10 total (currently at 5).
 	for range 5 {
-		sess.RecordSignal(SignalDLPNearMiss, 10.0) // +1 each, total reaches 10
+		sess.RecordSignal(session.SignalNearMiss, 10.0) // +1 each, total reaches 10
 	}
 
 	if sess.EscalationLevel() != 2 {
@@ -373,7 +374,7 @@ func TestSessionState_EscalationSticky(t *testing.T) {
 
 	// Escalate
 	for range 5 {
-		sess.RecordSignal(SignalDLPNearMiss, 5.0)
+		sess.RecordSignal(session.SignalNearMiss, 5.0)
 	}
 
 	// Decay score to near 0
@@ -396,7 +397,7 @@ func TestSessionState_EntropyBudgetSignal(t *testing.T) {
 	defer sm.Close()
 
 	sess := sm.GetOrCreate(testClientIP)
-	sess.RecordSignal(SignalEntropyBudget, 10.0) // +2
+	sess.RecordSignal(session.SignalEntropyBudget, 10.0) // +2
 
 	if sess.ThreatScore() != 2.0 {
 		t.Errorf("expected score 2.0, got %f", sess.ThreatScore())
@@ -409,7 +410,7 @@ func TestSessionState_FragmentDLPSignal(t *testing.T) {
 	defer sm.Close()
 
 	sess := sm.GetOrCreate(testClientIP)
-	sess.RecordSignal(SignalFragmentDLP, 10.0) // +3
+	sess.RecordSignal(session.SignalFragmentDLP, 10.0) // +3
 
 	if sess.ThreatScore() != 3.0 {
 		t.Errorf("expected score 3.0, got %f", sess.ThreatScore())
@@ -424,15 +425,15 @@ func TestSessionState_EntropySignals_Escalation(t *testing.T) {
 	sess := sm.GetOrCreate(testClientIP)
 
 	// Build up score: 2 entropy budget signals (+2 each = 4) below threshold 5
-	sess.RecordSignal(SignalEntropyBudget, 5.0) // +2, total 2
-	sess.RecordSignal(SignalEntropyBudget, 5.0) // +2, total 4
+	sess.RecordSignal(session.SignalEntropyBudget, 5.0) // +2, total 2
+	sess.RecordSignal(session.SignalEntropyBudget, 5.0) // +2, total 4
 
 	if sess.IsEscalated() {
 		t.Error("should not escalate below threshold")
 	}
 
 	// Fragment DLP signal crosses threshold: +3, total 7
-	escalated, from, to := sess.RecordSignal(SignalFragmentDLP, 5.0)
+	escalated, from, to := sess.RecordSignal(session.SignalFragmentDLP, 5.0)
 	if !escalated {
 		t.Error("should escalate when entropy signals cross threshold")
 	}
@@ -454,7 +455,7 @@ func TestSessionState_DomainAnomalySignal(t *testing.T) {
 	defer sm.Close()
 
 	sess := sm.GetOrCreate(testClientIP)
-	sess.RecordSignal(SignalDomainAnomaly, 5.0) // +2
+	sess.RecordSignal(session.SignalDomainAnomaly, 5.0) // +2
 
 	if sess.ThreatScore() != 2.0 {
 		t.Errorf("expected score 2.0, got %f", sess.ThreatScore())
@@ -713,20 +714,20 @@ func TestSessionManager_IPDomainBurst_DifferentIPs(t *testing.T) {
 }
 
 func TestEscalationLabel_HighLevel(t *testing.T) {
-	// Test the fallback format for levels beyond the label array
-	label := escalationLabel(5)
-	if label != "level_5" {
-		t.Errorf("expected level_5, got %s", label)
+	// Levels beyond the defined range clamp to the last label ("critical").
+	label := session.EscalationLabel(5)
+	if label != "critical" {
+		t.Errorf("expected critical, got %s", label)
 	}
 
 	// Test known labels
-	if got := escalationLabel(0); got != testLevelNormal {
+	if got := session.EscalationLabel(0); got != testLevelNormal {
 		t.Errorf("expected normal, got %s", got)
 	}
-	if got := escalationLabel(1); got != testLevelElevated {
+	if got := session.EscalationLabel(1); got != testLevelElevated {
 		t.Errorf("expected elevated, got %s", got)
 	}
-	if got := escalationLabel(2); got != "high" {
+	if got := session.EscalationLabel(2); got != "high" {
 		t.Errorf("expected high, got %s", got)
 	}
 }

@@ -27,6 +27,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 const (
@@ -2535,7 +2536,7 @@ func TestProxy_AdaptiveEscalation(t *testing.T) {
 
 	// Manually inject signals to test escalation integration.
 	// SignalBlock adds +3, which meets the threshold of 3.0.
-	escalated, from, to := sess.RecordSignal(SignalBlock, cfg.AdaptiveEnforcement.EscalationThreshold)
+	escalated, from, to := sess.RecordSignal(session.SignalBlock, cfg.AdaptiveEnforcement.EscalationThreshold)
 	if !escalated {
 		t.Error("should escalate when score reaches threshold")
 	}

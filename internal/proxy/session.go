@@ -11,6 +11,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 // Anomaly represents a behavioral anomaly detected in a session.
@@ -102,37 +103,14 @@ func pruneDomainWindow(entries []domainEntry, domain string, windowCutoff, now t
 	return pruned, countUniqueDomains(pruned)
 }
 
-// SignalType identifies a threat signal for adaptive enforcement.
-type SignalType int
-
-const (
-	SignalDLPNearMiss   SignalType = iota // +1 point
-	SignalBlock                           // +3 points
-	SignalDomainAnomaly                   // +2 points
-	SignalEntropyBudget                   // +2 points (entropy budget exceeded, medium confidence)
-	SignalFragmentDLP                     // +3 points (fragment reassembly found secret, high confidence)
-)
-
-// signalPoints maps signal types to their score contribution.
-var signalPoints = map[SignalType]float64{
-	SignalDLPNearMiss:   1.0,
-	SignalBlock:         3.0,
-	SignalDomainAnomaly: 2.0,
-	SignalEntropyBudget: 2.0,
-	SignalFragmentDLP:   3.0,
-}
-
-// escalationLabels maps escalation levels to human-readable names.
-var escalationLabels = []string{"normal", "elevated", "high"}
-
 // RecordSignal adds a threat signal to the session's score.
 // Returns (escalated, fromLevel, toLevel) if threshold was crossed.
 // Caller must hold no locks on SessionState.
-func (s *SessionState) RecordSignal(sig SignalType, threshold float64) (bool, string, string) {
+func (s *SessionState) RecordSignal(sig session.SignalType, threshold float64) (bool, string, string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	points := signalPoints[sig]
+	points := session.SignalPoints[sig]
 	s.threatScore += points
 
 	// Initialize threshold on first use
@@ -146,8 +124,8 @@ func (s *SessionState) RecordSignal(sig SignalType, threshold float64) (bool, st
 		// Double the threshold to prevent oscillation
 		s.currentThreshold *= 2
 
-		from := escalationLabel(oldLevel)
-		to := escalationLabel(s.escalationLevel)
+		from := session.EscalationLabel(oldLevel)
+		to := session.EscalationLabel(s.escalationLevel)
 		return true, from, to
 	}
 
@@ -184,13 +162,6 @@ func (s *SessionState) EscalationLevel() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.escalationLevel
-}
-
-func escalationLabel(level int) string {
-	if level >= 0 && level < len(escalationLabels) {
-		return escalationLabels[level]
-	}
-	return fmt.Sprintf("level_%d", level)
 }
 
 // SessionManager manages per-client sessions with eviction and cleanup.

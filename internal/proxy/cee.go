@@ -16,6 +16,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 // ceeSessionKey builds a consistent session identity for cross-request
@@ -330,7 +331,7 @@ func ceeRecordSignals(result ceeResult, sm *SessionManager, sessionKey string, t
 	}
 	sess := sm.GetOrCreate(sessionKey)
 	if result.EntropyHit {
-		if escalated, from, to := sess.RecordSignal(SignalEntropyBudget, threshold); escalated {
+		if escalated, from, to := sess.RecordSignal(session.SignalEntropyBudget, threshold); escalated {
 			logger.LogAdaptiveEscalation(sessionKey, from, to, clientIP, requestID, sess.ThreatScore())
 			m.RecordSessionEscalation(from, to)
 		}
@@ -338,7 +339,7 @@ func ceeRecordSignals(result ceeResult, sm *SessionManager, sessionKey string, t
 	if result.FragmentHit {
 		// Fragment DLP match is high-confidence (reconstructed secret from fragments).
 		// Use SignalFragmentDLP (3 points, same as SignalBlock) for strong escalation.
-		if escalated, from, to := sess.RecordSignal(SignalFragmentDLP, threshold); escalated {
+		if escalated, from, to := sess.RecordSignal(session.SignalFragmentDLP, threshold); escalated {
 			logger.LogAdaptiveEscalation(sessionKey, from, to, clientIP, requestID, sess.ThreatScore())
 			m.RecordSessionEscalation(from, to)
 		}

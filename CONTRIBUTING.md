@@ -168,7 +168,7 @@ See [CLAUDE.md](CLAUDE.md) for the full architecture guide, including:
 
 ## Dependencies
 
-Pipelock has 9 direct dependencies. This is intentional. Any new dependency must be justified in the PR description. We prefer the standard library.
+Pipelock keeps its direct dependency set intentionally small. Any new dependency must be justified in the PR description. We prefer the standard library.
 
 ## Security
 

@@ -15,9 +15,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
@@ -34,16 +36,26 @@ func (s *mockStore) GetOrCreate(_ string) session.Recorder { return s.rec }
 // mockRecorder is a test-only implementation of session.Recorder that captures
 // signal calls so tests can assert on adaptive side-effects without needing a
 // real SessionManager.
+//
+// Set escalateOnNext=true to make the next RecordSignal call return
+// (true, "normal", "elevated"), simulating a threshold crossing. The flag is
+// cleared after one use so subsequent calls return the default (false, "", "").
 type mockRecorder struct {
-	signals []session.SignalType
-	cleans  int
-	score   float64
-	level   int
+	signals        []session.SignalType
+	cleans         int
+	score          float64
+	level          int
+	escalateOnNext bool
 }
 
 func (m *mockRecorder) RecordSignal(sig session.SignalType, _ float64) (bool, string, string) {
 	m.signals = append(m.signals, sig)
 	m.score += session.SignalPoints[sig]
+	if m.escalateOnNext {
+		m.escalateOnNext = false
+		m.level = 1
+		return true, "normal", "elevated"
+	}
 	return false, "", ""
 }
 
@@ -560,5 +572,93 @@ func TestMCP_HTTP_Adaptive_AuthHeaderDLPRecordsSignalBlock(t *testing.T) {
 	}
 	if !hasBlock {
 		t.Errorf("expected SignalBlock in signals after Authorization-header DLP block, got: %v", rec.signals)
+	}
+}
+
+// escalatingMockRecorder is a test-only recorder that returns the configured
+// escalation result on the first RecordSignal call, then returns false for
+// subsequent calls.
+type escalatingMockRecorder struct {
+	from  string
+	to    string
+	level int
+	score float64
+}
+
+func (m *escalatingMockRecorder) RecordSignal(_ session.SignalType, _ float64) (bool, string, string) {
+	if m.from != "" {
+		from, to := m.from, m.to
+		m.from = "" // consume: only fire once
+		m.level++
+		return true, from, to
+	}
+	return false, "", ""
+}
+
+func (m *escalatingMockRecorder) RecordClean(_ float64) {}
+func (m *escalatingMockRecorder) EscalationLevel() int  { return m.level }
+func (m *escalatingMockRecorder) ThreatScore() float64  { return m.score }
+
+// TestRecordSignalWithEscalation_EscalatedPath verifies that when RecordSignal
+// returns escalated=true, recordSignalWithEscalation logs the transition to
+// logW, calls auditLogger, and updates the metrics gauges.
+func TestRecordSignalWithEscalation_EscalatedPath(t *testing.T) {
+	tests := []struct {
+		name        string
+		from        string
+		to          string
+		withAudit   bool
+		withMetrics bool
+	}{
+		{name: "normal_to_elevated_with_audit_and_metrics", from: "normal", to: "elevated", withAudit: true, withMetrics: true},
+		{name: "normal_to_elevated_nil_audit_nil_metrics", from: "normal", to: "elevated", withAudit: false, withMetrics: false},
+		{name: "normal_to_elevated_metrics_only", from: "normal", to: "elevated", withAudit: false, withMetrics: true},
+		{name: "normal_to_elevated_audit_only", from: "normal", to: "elevated", withAudit: true, withMetrics: false},
+		// from != "normal" exercises the SetAdaptiveSessionLevel(from, -1) branch.
+		{name: "elevated_to_high_decrements_from_gauge", from: "elevated", to: "high", withAudit: false, withMetrics: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := &escalatingMockRecorder{from: tt.from, to: tt.to}
+
+			var logBuf bytes.Buffer
+
+			var auditLogger *audit.Logger
+			if tt.withAudit {
+				auditLogger = audit.NewNop()
+			}
+
+			var m *metrics.Metrics
+			if tt.withMetrics {
+				m = metrics.New()
+			}
+
+			// recordSignalWithEscalation must not panic on any combination of
+			// nil/non-nil audit and metrics, and must write the escalation log
+			// message when logW is available.
+			recordSignalWithEscalation(rec, session.SignalBlock, 5.0, &logBuf, auditLogger, m, "sess-1", "10.0.0.1", "req-1")
+
+			// The escalated path must log the transition.
+			if !strings.Contains(logBuf.String(), "session escalated") {
+				t.Errorf("expected escalation log in logW, got: %q", logBuf.String())
+			}
+			if !strings.Contains(logBuf.String(), tt.from) || !strings.Contains(logBuf.String(), tt.to) {
+				t.Errorf("log should contain from=%q and to=%q levels, got: %q", tt.from, tt.to, logBuf.String())
+			}
+		})
+	}
+}
+
+// TestRecordSignalWithEscalation_NoEscalation verifies that when RecordSignal
+// returns escalated=false, recordSignalWithEscalation writes nothing to logW.
+func TestRecordSignalWithEscalation_NoEscalation(t *testing.T) {
+	rec := &mockRecorder{} // escalateOnNext is false
+
+	var logBuf bytes.Buffer
+	recordSignalWithEscalation(rec, session.SignalNearMiss, 100.0, &logBuf, nil, nil, "", "", "")
+
+	if logBuf.Len() != 0 {
+		t.Errorf("expected no log output when not escalated, got: %q", logBuf.String())
 	}
 }

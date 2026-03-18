@@ -7451,6 +7451,74 @@ func TestEscalationLevels_MonotonicValidation(t *testing.T) {
 			t.Fatalf("default ladder should be valid: %v", err)
 		}
 	})
+
+	t.Run("elevated_upgrade_warn_block_but_high_empty_is_violation", func(t *testing.T) {
+		cfg := adaptiveBase()
+		cfg.AdaptiveEnforcement.Levels.Elevated.UpgradeWarn = strPtr(ActionBlock)
+		cfg.AdaptiveEnforcement.Levels.High.UpgradeWarn = strPtr("")
+		cfg.ApplyDefaults()
+		err := cfg.Validate()
+		if err == nil {
+			t.Fatal("expected monotonic violation error")
+		}
+		if !strings.Contains(err.Error(), "high.upgrade_warn") {
+			t.Errorf("error should reference high.upgrade_warn: %v", err)
+		}
+		if !strings.Contains(err.Error(), "monotonic violation") {
+			t.Errorf("error should mention monotonic: %v", err)
+		}
+	})
+
+	t.Run("elevated_block_all_true_but_high_false_is_violation", func(t *testing.T) {
+		cfg := adaptiveBase()
+		cfg.AdaptiveEnforcement.Levels.Elevated.BlockAll = boolPtr(true)
+		cfg.AdaptiveEnforcement.Levels.High.BlockAll = boolPtr(false)
+		cfg.ApplyDefaults()
+		err := cfg.Validate()
+		if err == nil {
+			t.Fatal("expected monotonic violation error")
+		}
+		if !strings.Contains(err.Error(), "high.block_all") {
+			t.Errorf("error should reference high.block_all: %v", err)
+		}
+		if !strings.Contains(err.Error(), "monotonic violation") {
+			t.Errorf("error should mention monotonic: %v", err)
+		}
+	})
+
+	t.Run("critical_upgrade_warn_empty_but_high_block_is_violation", func(t *testing.T) {
+		cfg := adaptiveBase()
+		// high.upgrade_warn defaults to "block"; set critical to "" (weaker)
+		cfg.AdaptiveEnforcement.Levels.Critical.UpgradeWarn = strPtr("")
+		cfg.ApplyDefaults()
+		err := cfg.Validate()
+		if err == nil {
+			t.Fatal("expected monotonic violation error")
+		}
+		if !strings.Contains(err.Error(), "critical.upgrade_warn") {
+			t.Errorf("error should reference critical.upgrade_warn: %v", err)
+		}
+		if !strings.Contains(err.Error(), "monotonic violation") {
+			t.Errorf("error should mention monotonic: %v", err)
+		}
+	})
+
+	t.Run("critical_upgrade_ask_empty_but_high_block_is_violation", func(t *testing.T) {
+		cfg := adaptiveBase()
+		// high.upgrade_ask defaults to "block"; set critical to "" (weaker)
+		cfg.AdaptiveEnforcement.Levels.Critical.UpgradeAsk = strPtr("")
+		cfg.ApplyDefaults()
+		err := cfg.Validate()
+		if err == nil {
+			t.Fatal("expected monotonic violation error")
+		}
+		if !strings.Contains(err.Error(), "critical.upgrade_ask") {
+			t.Errorf("error should reference critical.upgrade_ask: %v", err)
+		}
+		if !strings.Contains(err.Error(), "monotonic violation") {
+			t.Errorf("error should mention monotonic: %v", err)
+		}
+	})
 }
 
 func TestEscalationLevels_LegalUnusualCombination(t *testing.T) {

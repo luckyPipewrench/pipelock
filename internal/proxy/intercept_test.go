@@ -23,6 +23,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 const (
@@ -1364,5 +1365,38 @@ func TestInterceptTunnel_CEEBlocked(t *testing.T) {
 
 	if lastStatus != http.StatusForbidden {
 		t.Fatalf("expected 403 after entropy budget exceeded, got %d", lastStatus)
+	}
+}
+
+// TestRecEscalationLevel_Nil verifies that recEscalationLevel returns 0 when
+// the recorder is nil (session profiling disabled).
+func TestRecEscalationLevel_Nil(t *testing.T) {
+	if got := recEscalationLevel(nil); got != 0 {
+		t.Errorf("expected 0 for nil recorder, got %d", got)
+	}
+}
+
+// TestRecEscalationLevel_NonNil verifies that recEscalationLevel delegates to
+// the recorder's EscalationLevel() method when the recorder is non-nil.
+func TestRecEscalationLevel_NonNil(t *testing.T) {
+	cfg := testSessionConfig()
+	sm := NewSessionManager(cfg, nil)
+	defer sm.Close()
+
+	sess := sm.GetOrCreate(testClientIP)
+
+	// Before any escalation, EscalationLevel is 0.
+	if got := recEscalationLevel(sess); got != 0 {
+		t.Errorf("expected 0 for unelevated recorder, got %d", got)
+	}
+
+	// Escalate the session by crossing threshold 5.
+	sess.RecordSignal(session.SignalBlock, 5.0)         // +3
+	sess.RecordSignal(session.SignalNearMiss, 5.0)      // +1
+	sess.RecordSignal(session.SignalDomainAnomaly, 5.0) // +2, total 6 >= 5
+
+	// After escalation, EscalationLevel must be > 0.
+	if got := recEscalationLevel(sess); got == 0 {
+		t.Errorf("expected non-zero escalation level after threshold crossing, got %d", got)
 	}
 }

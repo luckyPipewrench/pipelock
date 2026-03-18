@@ -326,7 +326,17 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		interceptConn := wrapBuffered(clientConn, clientReader)
 		interceptCtx, interceptCancel := context.WithDeadline(r.Context(), deadline)
 		defer interceptCancel()
-		if err := interceptTunnel(interceptCtx, interceptConn, host, port, cfg, sc, certCache, p.logger, p.metrics, clientIP, requestID, agent, p.tlsTransport, p.ssrfSafeDialContext, p.entropyTrackerPtr.Load(), p.fragmentBufferPtr.Load(), p.sessionMgrPtr.Load(), p, sr.Level); err != nil {
+		// Obtain a live session recorder for the tunnel. This provides live
+		// escalation level lookups instead of a stale snapshot from sr.Level.
+		var interceptRec session.Recorder
+		if sm := p.sessionMgrPtr.Load(); sm != nil {
+			interceptSessionKey := clientIP
+			if agent != "" && agent != agentAnonymous {
+				interceptSessionKey = agent + "|" + clientIP
+			}
+			interceptRec = sm.GetOrCreate(interceptSessionKey)
+		}
+		if err := interceptTunnel(interceptCtx, interceptConn, host, port, cfg, sc, certCache, p.logger, p.metrics, clientIP, requestID, agent, p.tlsTransport, p.ssrfSafeDialContext, p.entropyTrackerPtr.Load(), p.fragmentBufferPtr.Load(), p.sessionMgrPtr.Load(), p, interceptRec); err != nil {
 			p.logger.LogError(http.MethodConnect, host, clientIP, requestID, agent, err)
 		}
 		return

@@ -105,13 +105,13 @@ func isRequest(msg []byte) bool {
 // and the effective action may be upgraded based on session escalation level.
 // Returns true if any injection was detected.
 func ForwardScanned(reader transport.MessageReader, writer transport.MessageWriter, logW io.Writer, sc *scanner.Scanner, approver *hitl.Approver, toolCfg *tools.ToolScanConfig, tracker *RequestTracker, rec session.Recorder, adaptiveCfg *config.AdaptiveEnforcement) (bool, error) {
-	// block_all enforcement: if the session is already at a critical escalation
-	// level with block_all=true, deny all further responses. This handles the
-	// listener proxy case where a previous request escalated the session.
-	if rec != nil && decide.UpgradeAction("", rec.EscalationLevel(), adaptiveCfg) == config.ActionBlock {
+	// blockAll tracks whether the session is at a critical escalation level
+	// with block_all=true. Checked once up front and refreshed after each
+	// message so mid-stream escalation takes effect immediately.
+	blockAll := rec != nil && decide.UpgradeAction("", rec.EscalationLevel(), adaptiveCfg) == config.ActionBlock
+	if blockAll {
 		_, _ = fmt.Fprintf(logW, "pipelock: session deny — escalation level %s, blocking all responses\n",
 			session.EscalationLabel(rec.EscalationLevel()))
-		return false, nil
 	}
 
 	foundInjection := false
@@ -129,6 +129,25 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			return foundInjection, fmt.Errorf("reading input: %w", err)
 		}
 		lineNum++
+
+		// block_all enforcement: write a JSON-RPC error for every message when
+		// the session is at an escalation level with block_all=true. Re-check
+		// on each message so mid-stream escalation takes effect immediately.
+		if !blockAll && rec != nil {
+			blockAll = decide.UpgradeAction("", rec.EscalationLevel(), adaptiveCfg) == config.ActionBlock
+			if blockAll {
+				_, _ = fmt.Fprintf(logW, "pipelock: session deny — escalation level %s, blocking all responses\n",
+					session.EscalationLabel(rec.EscalationLevel()))
+			}
+		}
+		if blockAll {
+			rpcID := extractRPCID(line)
+			resp := blockSessionDenyResponse(rpcID)
+			if wErr := writer.WriteMessage(resp); wErr != nil {
+				return foundInjection, fmt.Errorf("writing session deny: %w", wErr)
+			}
+			continue
+		}
 
 		// MCP does not use JSON-RPC batch messages (top-level arrays).
 		// A batch from the server is either malformed or an attempt to
@@ -192,7 +211,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				if toolAction == config.ActionBlock {
 					// Signal: tool poisoning blocked.
 					if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
-						rec.RecordSignal(session.SignalBlock, adaptiveCfg.EscalationThreshold)
+						recordSignalWithEscalation(rec, session.SignalBlock, adaptiveCfg.EscalationThreshold, logW, nil, "", "", "")
 					}
 					resp := blockResponse(toolResult.RPCID)
 					if err := writer.WriteMessage(resp); err != nil {
@@ -202,7 +221,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				}
 				// warn: logged above, record near-miss and fall through to general handling.
 				if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
-					rec.RecordSignal(session.SignalNearMiss, adaptiveCfg.EscalationThreshold)
+					recordSignalWithEscalation(rec, session.SignalNearMiss, adaptiveCfg.EscalationThreshold, logW, nil, "", "", "")
 				}
 			}
 		}
@@ -318,12 +337,12 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
 			switch action {
 			case config.ActionBlock:
-				rec.RecordSignal(session.SignalBlock, adaptiveCfg.EscalationThreshold)
+				recordSignalWithEscalation(rec, session.SignalBlock, adaptiveCfg.EscalationThreshold, logW, nil, "", "", "")
 			case config.ActionStrip:
-				rec.RecordSignal(session.SignalStrip, adaptiveCfg.EscalationThreshold)
+				recordSignalWithEscalation(rec, session.SignalStrip, adaptiveCfg.EscalationThreshold, logW, nil, "", "", "")
 			default:
 				// Warn/ask: near-miss signal (injection detected but not blocked).
-				rec.RecordSignal(session.SignalNearMiss, adaptiveCfg.EscalationThreshold)
+				recordSignalWithEscalation(rec, session.SignalNearMiss, adaptiveCfg.EscalationThreshold, logW, nil, "", "", "")
 			}
 		}
 	}
@@ -363,6 +382,23 @@ func blockResponse(id json.RawMessage) []byte {
 		Error: rpcErrorDetail{
 			Code:    -32000,
 			Message: "pipelock: prompt injection detected in MCP response",
+		},
+	}
+	data, _ := json.Marshal(resp) //nolint:errcheck // marshaling known-good struct
+	return data
+}
+
+// blockSessionDenyResponse generates a JSON-RPC 2.0 error for block_all session
+// denial. Uses error code -32001 (implementation-defined) with a session-deny
+// message. Distinct from blockResponse to distinguish session-level blocks
+// from per-message injection blocks in logs and client error handling.
+func blockSessionDenyResponse(id json.RawMessage) []byte {
+	resp := rpcError{
+		JSONRPC: jsonrpc.Version,
+		ID:      id,
+		Error: rpcErrorDetail{
+			Code:    -32001,
+			Message: "pipelock: session escalation level critical",
 		},
 	}
 	data, _ := json.Marshal(resp) //nolint:errcheck // marshaling known-good struct
@@ -493,6 +529,22 @@ func matchNames(matches []scanner.ResponseMatch) []string {
 		names = append(names, m.PatternName)
 	}
 	return names
+}
+
+// recordSignalWithEscalation wraps RecordSignal and handles escalation returns:
+// logs the transition and updates metrics gauges. logW is the stderr writer for
+// the MCP proxy. auditLogger and m may be nil (stdio mode has no audit logger
+// or metrics). sessionKey and clientIP are used for audit log context; pass ""
+// when not available (e.g., stdio transports).
+func recordSignalWithEscalation(rec session.Recorder, sig session.SignalType, threshold float64, logW io.Writer, auditLogger *audit.Logger, sessionKey, _clientIP, _requestID string) {
+	escalated, from, to := rec.RecordSignal(sig, threshold)
+	if !escalated {
+		return
+	}
+	_, _ = fmt.Fprintf(logW, "pipelock: session escalated %s -> %s (score=%.1f)\n", from, to, rec.ThreatScore())
+	if auditLogger != nil {
+		auditLogger.LogAdaptiveEscalation(sessionKey, from, to, _clientIP, _requestID, rec.ThreatScore())
+	}
 }
 
 // InputScanConfig holds the settings for MCP input scanning.

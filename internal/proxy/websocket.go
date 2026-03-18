@@ -57,7 +57,16 @@ type wsRelay struct {
 	maxMsg       int
 	scanText     bool
 	allowBinary  bool
-	sessionLevel int // escalation level for UpgradeAction
+	rec          session.Recorder // live escalation level for UpgradeAction; nil when profiling disabled
+}
+
+// escalationLevel returns the live escalation level from the session recorder.
+// Returns 0 (normal) when the recorder is nil (profiling disabled).
+func (r *wsRelay) escalationLevel() int {
+	if r.rec != nil {
+		return r.rec.EscalationLevel()
+	}
+	return 0
 }
 
 // wsRelayStats collects per-connection counters for audit logging.
@@ -231,6 +240,18 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	scanTextFrames := cfg.WebSocketProxy.ScanTextFrames == nil || *cfg.WebSocketProxy.ScanTextFrames
 
+	// Obtain a live session recorder for the relay. This provides live
+	// escalation level lookups instead of a stale snapshot, so that
+	// escalation changes during long-lived WS connections take effect.
+	var wsRec session.Recorder
+	if sm := p.sessionMgrPtr.Load(); sm != nil {
+		sessionKey := clientIP
+		if agent != "" && agent != agentAnonymous {
+			sessionKey = agent + "|" + clientIP
+		}
+		wsRec = sm.GetOrCreate(sessionKey)
+	}
+
 	relay := &wsRelay{
 		clientConn:   clientConn,
 		upstreamConn: upstreamConn,
@@ -245,7 +266,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		maxMsg:       cfg.WebSocketProxy.MaxMessageBytes,
 		scanText:     scanTextFrames,
 		allowBinary:  cfg.WebSocketProxy.AllowBinaryFrames,
-		sessionLevel: sr.Level,
+		rec:          wsRec,
 	}
 
 	stats := relay.run(r.Context())
@@ -581,14 +602,14 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 					}
 					// Audit mode: adaptive escalation may upgrade warn to block.
 					baseAction := config.ActionWarn
-					effectiveAction := decide.UpgradeAction(baseAction, r.sessionLevel, &r.cfg.AdaptiveEnforcement)
+					effectiveAction := decide.UpgradeAction(baseAction, r.escalationLevel(), &r.cfg.AdaptiveEnforcement)
 					if effectiveAction == config.ActionBlock {
 						sessionKey := r.clientIP
 						if r.agent != "" && r.agent != agentAnonymous {
 							sessionKey = r.agent + "|" + r.clientIP
 						}
-						log.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(r.sessionLevel), baseAction, effectiveAction, audit.ScannerDLP, r.clientIP, r.requestID)
-						r.proxy.metrics.RecordAdaptiveUpgrade(baseAction, effectiveAction, session.EscalationLabel(r.sessionLevel))
+						log.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(r.escalationLevel()), baseAction, effectiveAction, audit.ScannerDLP, r.clientIP, r.requestID)
+						r.proxy.metrics.RecordAdaptiveUpgrade(baseAction, effectiveAction, session.EscalationLabel(r.escalationLevel()))
 						reason := fmt.Sprintf("DLP match: %s (escalated)", strings.Join(names, ", "))
 						log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, audit.ScannerDLP, reason, r.clientIP, r.requestID)
 						r.proxy.metrics.RecordWSScanHit(audit.ScannerDLP)
@@ -619,14 +640,14 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 						}
 						// Adaptive enforcement: upgrade the address action.
 						originalAddrAction := addrAction
-						addrAction = decide.UpgradeAction(addrAction, r.sessionLevel, &r.cfg.AdaptiveEnforcement)
+						addrAction = decide.UpgradeAction(addrAction, r.escalationLevel(), &r.cfg.AdaptiveEnforcement)
 						if addrAction != originalAddrAction {
 							sessionKey := r.clientIP
 							if r.agent != "" && r.agent != agentAnonymous {
 								sessionKey = r.agent + "|" + r.clientIP
 							}
-							log.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(r.sessionLevel), originalAddrAction, addrAction, scannerLabelAddressProtection, r.clientIP, r.requestID)
-							r.proxy.metrics.RecordAdaptiveUpgrade(originalAddrAction, addrAction, session.EscalationLabel(r.sessionLevel))
+							log.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(r.escalationLevel()), originalAddrAction, addrAction, scannerLabelAddressProtection, r.clientIP, r.requestID)
+							r.proxy.metrics.RecordAdaptiveUpgrade(originalAddrAction, addrAction, session.EscalationLabel(r.escalationLevel()))
 						}
 						if r.cfg.EnforceEnabled() && addrAction == config.ActionBlock {
 							// Use the blocking finding for the reason, not necessarily Findings[0].
@@ -837,14 +858,14 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 					// Adaptive enforcement: upgrade the response action before the switch.
 					wsAction := r.scanner.ResponseAction()
 					originalWSAction := wsAction
-					wsAction = decide.UpgradeAction(wsAction, r.sessionLevel, &r.cfg.AdaptiveEnforcement)
+					wsAction = decide.UpgradeAction(wsAction, r.escalationLevel(), &r.cfg.AdaptiveEnforcement)
 					if wsAction != originalWSAction {
 						sessionKey := r.clientIP
 						if r.agent != "" && r.agent != agentAnonymous {
 							sessionKey = r.agent + "|" + r.clientIP
 						}
-						log.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(r.sessionLevel), originalWSAction, wsAction, "response_scan", r.clientIP, r.requestID)
-						r.proxy.metrics.RecordAdaptiveUpgrade(originalWSAction, wsAction, session.EscalationLabel(r.sessionLevel))
+						log.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(r.escalationLevel()), originalWSAction, wsAction, "response_scan", r.clientIP, r.requestID)
+						r.proxy.metrics.RecordAdaptiveUpgrade(originalWSAction, wsAction, session.EscalationLabel(r.escalationLevel()))
 					}
 
 					switch wsAction {

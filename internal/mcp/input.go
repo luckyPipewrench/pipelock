@@ -626,8 +626,20 @@ func ForwardScannedInput(
 			continue
 		}
 
-		// All clean — forward.
+		// All clean — forward (with block_all and CEE checks).
 		if verdict.Clean && !policyVerdict.Matched && bindingAction == "" && chainAction == "" {
+			// block_all enforcement: deny ALL traffic (including clean) when the
+			// session is at an escalation level with block_all=true.
+			if rec != nil && decide.UpgradeAction("", rec.EscalationLevel(), adaptiveCfg) == config.ActionBlock {
+				blockedCh <- BlockedRequest{
+					ID:             verdict.ID,
+					IsNotification: isRPCNotification(verdict.ID),
+					LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked (session deny)", lineNum),
+					ErrorCode:      -32001,
+					ErrorMessage:   "pipelock: session escalation level critical",
+				}
+				continue
+			}
 			// Cross-request exfiltration check on clean outbound messages.
 			if reason := ceeRecordMCP(ceeStdioKey, line, cee, sc, logW, auditLogger); reason != "" {
 				blockedCh <- BlockedRequest{
@@ -770,10 +782,10 @@ func ForwardScannedInput(
 		if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
 			switch effectiveAction {
 			case config.ActionBlock:
-				rec.RecordSignal(session.SignalBlock, adaptiveCfg.EscalationThreshold)
+				recordSignalWithEscalation(rec, session.SignalBlock, adaptiveCfg.EscalationThreshold, logW, auditLogger, "default", "", "")
 			default:
 				if len(reasons) > 0 {
-					rec.RecordSignal(session.SignalNearMiss, adaptiveCfg.EscalationThreshold)
+					recordSignalWithEscalation(rec, session.SignalNearMiss, adaptiveCfg.EscalationThreshold, logW, auditLogger, "default", "", "")
 				} else {
 					rec.RecordClean(adaptiveCfg.DecayPerCleanRequest)
 				}

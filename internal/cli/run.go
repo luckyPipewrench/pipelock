@@ -35,6 +35,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanapi"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	plsentry "github.com/luckyPipewrench/pipelock/internal/sentry"
+	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 func runCmd() *cobra.Command {
@@ -637,9 +638,22 @@ Examples:
 					}
 				}
 
+				// Create session store for MCP listener adaptive enforcement.
+				// Reuses the proxy's metrics for gauge consistency.
+				var mcpStore session.Store
+				var mcpAdaptiveCfg *config.AdaptiveEnforcement
+				if cfg.SessionProfiling.Enabled {
+					mcpSM := proxy.NewSessionManager(&cfg.SessionProfiling, m)
+					defer mcpSM.Close()
+					mcpStore = mcpSM.AsStore()
+				}
+				if cfg.AdaptiveEnforcement.Enabled {
+					mcpAdaptiveCfg = &cfg.AdaptiveEnforcement
+				}
+
 				mcpErr = make(chan error, 1)
 				go func() {
-					mcpErr <- mcp.RunHTTPListenerProxy(ctx, mcpLn, mcpUpstream, cmd.ErrOrStderr(), sc, mcpApprover, inputCfg, toolCfg, policyCfg, ks, mcpChainMatcher, logger, mcpCEE, nil, nil)
+					mcpErr <- mcp.RunHTTPListenerProxy(ctx, mcpLn, mcpUpstream, cmd.ErrOrStderr(), sc, mcpApprover, inputCfg, toolCfg, policyCfg, ks, mcpChainMatcher, logger, mcpCEE, mcpStore, mcpAdaptiveCfg)
 				}()
 			}
 

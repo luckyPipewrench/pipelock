@@ -265,8 +265,19 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 		}
 	}
 
-	// All clean — proceed (with CEE check).
+	// All clean — proceed (with block_all and CEE checks).
 	if verdict.Clean && !policyVerdict.Matched && chainAction == "" {
+		// block_all enforcement: deny ALL traffic (including clean) when the
+		// session is at an escalation level with block_all=true.
+		if rec != nil && decide.UpgradeAction("", rec.EscalationLevel(), adaptiveCfg) == config.ActionBlock {
+			return &BlockedRequest{
+				ID:             verdict.ID,
+				IsNotification: isRPCNotification(verdict.ID),
+				LogMessage:     "blocked (session deny)",
+				ErrorCode:      -32001,
+				ErrorMessage:   "pipelock: session escalation level critical",
+			}
+		}
 		// Cross-request exfiltration check on clean outbound messages.
 		ceeKey := ceeSessionKeyMCP("", sessionKey)
 		if reason := ceeRecordMCP(ceeKey, msg, cee, sc, logW, auditLogger); reason != "" {
@@ -336,7 +347,7 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 		_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s)\n", joinStrings(reasons))
 		// Signal recording: block signal.
 		if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
-			rec.RecordSignal(session.SignalBlock, adaptiveCfg.EscalationThreshold)
+			recordSignalWithEscalation(rec, session.SignalBlock, adaptiveCfg.EscalationThreshold, logW, auditLogger, auditSessionKey, "", "")
 		}
 		return &BlockedRequest{
 			ID:             verdict.ID,
@@ -350,7 +361,7 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 		_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s) [ask not supported for input scanning]\n", joinStrings(reasons))
 		// Signal recording: block signal (ask falls back to block).
 		if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
-			rec.RecordSignal(session.SignalBlock, adaptiveCfg.EscalationThreshold)
+			recordSignalWithEscalation(rec, session.SignalBlock, adaptiveCfg.EscalationThreshold, logW, auditLogger, auditSessionKey, "", "")
 		}
 		return &BlockedRequest{
 			ID:             verdict.ID,
@@ -364,7 +375,7 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 			_, _ = fmt.Fprintf(logW, "pipelock: input: warning (%s)\n", joinStrings(reasons))
 			// Signal recording: near-miss for warned content.
 			if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
-				rec.RecordSignal(session.SignalNearMiss, adaptiveCfg.EscalationThreshold)
+				recordSignalWithEscalation(rec, session.SignalNearMiss, adaptiveCfg.EscalationThreshold, logW, auditLogger, auditSessionKey, "", "")
 			}
 		}
 		// Cross-request exfiltration check even in warn mode.

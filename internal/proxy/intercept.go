@@ -27,6 +27,15 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
+// recEscalationLevel returns the live escalation level from a session recorder.
+// Returns 0 (normal) when rec is nil (profiling disabled).
+func recEscalationLevel(rec session.Recorder) int {
+	if rec != nil {
+		return rec.EscalationLevel()
+	}
+	return 0
+}
+
 // interceptReadHeaderTimeout is the maximum time to read request headers on an
 // intercepted TLS connection. 30 seconds is generous for local proxy traffic.
 const interceptReadHeaderTimeout = 30 * time.Second
@@ -91,7 +100,7 @@ func interceptTunnel(
 	fb *scanner.FragmentBuffer,
 	sm *SessionManager,
 	p *Proxy, // when non-nil, CEE state resolved per-request (avoids stale pointers after reload)
-	sessionLevel int, // escalation level from recordSessionActivity, used by UpgradeAction
+	rec session.Recorder, // live escalation level; nil when profiling disabled
 ) error {
 	// Client-side TLS config with forged cert from cache.
 	tlsCfg := &tls.Config{
@@ -173,7 +182,7 @@ func interceptTunnel(
 	// Serve via http.Server on single-connection listener.
 	// http.Server handles HTTP/2 when negotiated via ALPN.
 	ln := newSingleConnListener(tlsConn)
-	handler := newInterceptHandler(targetHost, targetPort, upstreamRT, cfg, sc, logger, m, clientIP, requestID, agent, et, fb, sm, p, sessionLevel)
+	handler := newInterceptHandler(targetHost, targetPort, upstreamRT, cfg, sc, logger, m, clientIP, requestID, agent, et, fb, sm, p, rec)
 	srv := &http.Server{
 		Handler:           handler,
 		ReadHeaderTimeout: interceptReadHeaderTimeout,
@@ -225,7 +234,7 @@ func newInterceptHandler(
 	fb *scanner.FragmentBuffer,
 	sm *SessionManager,
 	p *Proxy, // when non-nil, CEE state resolved per-request (avoids stale pointers after reload)
-	sessionLevel int, // escalation level for UpgradeAction
+	rec session.Recorder, // live escalation level; nil when profiling disabled
 ) http.Handler {
 	target := net.JoinHostPort(targetHost, targetPort)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -269,15 +278,15 @@ func newInterceptHandler(
 			}
 			// Audit mode: base action is "warn". Adaptive escalation may upgrade to block.
 			baseAction := config.ActionWarn
-			effectiveAction := decide.UpgradeAction(baseAction, sessionLevel, &cfg.AdaptiveEnforcement)
+			effectiveAction := decide.UpgradeAction(baseAction, recEscalationLevel(rec), &cfg.AdaptiveEnforcement)
 			if effectiveAction == config.ActionBlock {
 				sessionKey := clientIP
 				if agent != "" && agent != agentAnonymous {
 					sessionKey = agent + "|" + clientIP
 				}
-				logger.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(sessionLevel), baseAction, effectiveAction, urlResult.Scanner, clientIP, requestID)
+				logger.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(recEscalationLevel(rec)), baseAction, effectiveAction, urlResult.Scanner, clientIP, requestID)
 				if p != nil {
-					p.metrics.RecordAdaptiveUpgrade(baseAction, effectiveAction, session.EscalationLabel(sessionLevel))
+					p.metrics.RecordAdaptiveUpgrade(baseAction, effectiveAction, session.EscalationLabel(recEscalationLevel(rec)))
 				}
 				logger.LogBlocked(r.Method, targetURL, urlResult.Scanner, urlResult.Reason+" (escalated)", clientIP, requestID, agent)
 				m.RecordTLSRequestBlocked("url_scan")
@@ -323,15 +332,15 @@ func newInterceptHandler(
 
 				// Adaptive enforcement: upgrade the body action.
 				originalBodyAction := action
-				action = decide.UpgradeAction(action, sessionLevel, &cfg.AdaptiveEnforcement)
+				action = decide.UpgradeAction(action, recEscalationLevel(rec), &cfg.AdaptiveEnforcement)
 				if action != originalBodyAction {
 					sessionKey := clientIP
 					if agent != "" && agent != agentAnonymous {
 						sessionKey = agent + "|" + clientIP
 					}
-					logger.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(sessionLevel), originalBodyAction, action, scannerLabel, clientIP, requestID)
+					logger.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(recEscalationLevel(rec)), originalBodyAction, action, scannerLabel, clientIP, requestID)
 					if p != nil {
-						p.metrics.RecordAdaptiveUpgrade(originalBodyAction, action, session.EscalationLabel(sessionLevel))
+						p.metrics.RecordAdaptiveUpgrade(originalBodyAction, action, session.EscalationLabel(recEscalationLevel(rec)))
 					}
 				}
 
@@ -459,15 +468,15 @@ func newInterceptHandler(
 				action := sc.ResponseAction()
 				// Adaptive enforcement: upgrade the response action before the switch.
 				originalAction := action
-				action = decide.UpgradeAction(action, sessionLevel, &cfg.AdaptiveEnforcement)
+				action = decide.UpgradeAction(action, recEscalationLevel(rec), &cfg.AdaptiveEnforcement)
 				if action != originalAction {
 					sessionKey := clientIP
 					if agent != "" && agent != agentAnonymous {
 						sessionKey = agent + "|" + clientIP
 					}
-					logger.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(sessionLevel), originalAction, action, "response_scan", clientIP, requestID)
+					logger.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(recEscalationLevel(rec)), originalAction, action, "response_scan", clientIP, requestID)
 					if p != nil {
-						p.metrics.RecordAdaptiveUpgrade(originalAction, action, session.EscalationLabel(sessionLevel))
+						p.metrics.RecordAdaptiveUpgrade(originalAction, action, session.EscalationLabel(recEscalationLevel(rec)))
 					}
 				}
 				patternNames := make([]string, len(scanResult.Matches))

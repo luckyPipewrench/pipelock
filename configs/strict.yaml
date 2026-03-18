@@ -364,9 +364,22 @@ mcp_tool_policy:
 session_profiling:
   enabled: true
 
-# Adaptive enforcement (scoring-only in v1, observability only)
+# Adaptive enforcement: aggressive — lower threshold, slower decay, ask→block at level 1.
 adaptive_enforcement:
   enabled: true
+  escalation_threshold: 3.0    # lower threshold = faster escalation for strict environments
+  decay_per_clean_request: 0.25  # slower decay; trust is earned back slowly
+  levels:
+    elevated:
+      upgrade_warn: block
+      upgrade_ask: block        # ask→block even at elevated; strict mode is uncompromising
+    high:
+      upgrade_warn: block
+      upgrade_ask: block
+    critical:
+      upgrade_warn: block
+      upgrade_ask: block
+      block_all: true           # deny all requests when session is critical
 
 # MCP session binding (opt-in)
 mcp_session_binding:

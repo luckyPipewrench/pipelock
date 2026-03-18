@@ -377,9 +377,22 @@ mcp_session_binding:
 session_profiling:
   enabled: true
 
-# Adaptive enforcement
+# Adaptive enforcement: aggressive — lower threshold, slower decay, ask→block at level 1.
 adaptive_enforcement:
   enabled: true
+  escalation_threshold: 3.0    # lower threshold = faster escalation for hostile models
+  decay_per_clean_request: 0.25  # slower decay; trust is earned back slowly
+  levels:
+    elevated:
+      upgrade_warn: block
+      upgrade_ask: block        # ask→block even at elevated; hostile models get no benefit of the doubt
+    high:
+      upgrade_warn: block
+      upgrade_ask: block
+    critical:
+      upgrade_warn: block
+      upgrade_ask: block
+      block_all: true           # deny all requests when session is critical
 
 # Tool chain detection
 tool_chain_detection:

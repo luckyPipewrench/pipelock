@@ -144,7 +144,7 @@ func RunHTTPProxy(
 		}
 
 		// Scan and forward response.
-		_, scanErr := ForwardScanned(respReader, safeClientOut, safeLogW, sc, approver, fwdToolCfg, tracker)
+		_, scanErr := ForwardScanned(respReader, safeClientOut, safeLogW, sc, approver, fwdToolCfg, tracker, nil, nil)
 		if scanErr != nil {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
 			lastScanErr = scanErr
@@ -470,7 +470,7 @@ func startGETStream(
 
 			// nil tracker: GET stream carries server-initiated messages,
 			// not responses to client requests.
-			_, scanErr := ForwardScanned(reader, safeClientOut, safeLogW, sc, approver, toolCfg, nil)
+			_, scanErr := ForwardScanned(reader, safeClientOut, safeLogW, sc, approver, toolCfg, nil, nil, nil)
 			if scanErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: GET stream scan error: %v\n", scanErr)
 			}
@@ -717,7 +717,7 @@ func RunHTTPListenerProxy(
 		reader := &transport.SingleMessageReader{Body: upResp.Body}
 		var buf bytes.Buffer
 		bufWriter := &syncWriter{w: &buf}
-		_, scanErr := ForwardScanned(reader, bufWriter, safeLogW, sc, approver, fwdToolCfg, nil)
+		_, scanErr := ForwardScanned(reader, bufWriter, safeLogW, sc, approver, fwdToolCfg, nil, nil, nil)
 		if scanErr != nil {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
 		}

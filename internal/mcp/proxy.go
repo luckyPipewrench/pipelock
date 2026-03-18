@@ -16,6 +16,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	decide "github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
@@ -24,6 +25,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 // syncWriter wraps an io.Writer with a mutex to make concurrent writes safe.
@@ -99,8 +101,10 @@ func isRequest(msg []byte) bool {
 // bypassed by a "warn" general action.
 // When tracker is non-nil, response IDs are validated against previously tracked
 // request IDs to prevent confused deputy attacks (unsolicited responses).
+// When rec is non-nil and adaptiveCfg is enabled, threat signals are recorded
+// and the effective action may be upgraded based on session escalation level.
 // Returns true if any injection was detected.
-func ForwardScanned(reader transport.MessageReader, writer transport.MessageWriter, logW io.Writer, sc *scanner.Scanner, approver *hitl.Approver, toolCfg *tools.ToolScanConfig, tracker *RequestTracker) (bool, error) {
+func ForwardScanned(reader transport.MessageReader, writer transport.MessageWriter, logW io.Writer, sc *scanner.Scanner, approver *hitl.Approver, toolCfg *tools.ToolScanConfig, tracker *RequestTracker, rec session.Recorder, adaptiveCfg *config.AdaptiveEnforcement) (bool, error) {
 	foundInjection := false
 	// lineNum counts non-empty messages, not raw lines. StdioReader skips
 	// empty lines internally, so this is a message index. ScanStream (scan.go)
@@ -170,14 +174,27 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				foundInjection = true
 				tools.LogToolFindings(logW, lineNum, toolResult)
 
-				if toolCfg.Action == config.ActionBlock {
+				toolAction := toolCfg.Action
+				// Escalation upgrade for tool poison detection.
+				if rec != nil {
+					toolAction = decide.UpgradeAction(toolAction, rec.EscalationLevel(), adaptiveCfg)
+				}
+
+				if toolAction == config.ActionBlock {
+					// Signal: tool poisoning blocked.
+					if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
+						rec.RecordSignal(session.SignalBlock, adaptiveCfg.EscalationThreshold)
+					}
 					resp := blockResponse(toolResult.RPCID)
 					if err := writer.WriteMessage(resp); err != nil {
 						return foundInjection, fmt.Errorf("writing tool block: %w", err)
 					}
 					continue
 				}
-				// warn: logged above, fall through to general handling
+				// warn: logged above, record near-miss and fall through to general handling.
+				if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
+					rec.RecordSignal(session.SignalNearMiss, adaptiveCfg.EscalationThreshold)
+				}
 			}
 		}
 
@@ -192,6 +209,10 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		}
 
 		if verdict.Clean {
+			// Clean message: decay threat score.
+			if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
+				rec.RecordClean(adaptiveCfg.DecayPerCleanRequest)
+			}
 			if err := writer.WriteMessage(line); err != nil {
 				return foundInjection, fmt.Errorf("writing line: %w", err)
 			}
@@ -222,6 +243,12 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		foundInjection = true
 		action := sc.ResponseAction()
 		names := matchNames(verdict.Matches)
+
+		// Escalation upgrade: may promote warn/ask to block for elevated sessions.
+		if rec != nil {
+			action = decide.UpgradeAction(action, rec.EscalationLevel(), adaptiveCfg)
+		}
+
 		_, _ = fmt.Fprintf(logW, "pipelock: line %d: injection detected (%s), action=%s\n",
 			lineNum, strings.Join(names, ", "), action)
 
@@ -275,6 +302,19 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		default: // warn
 			if err := writer.WriteMessage(line); err != nil {
 				return foundInjection, fmt.Errorf("writing line: %w", err)
+			}
+		}
+
+		// Signal recording: record after action is taken.
+		if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
+			switch action {
+			case config.ActionBlock:
+				rec.RecordSignal(session.SignalBlock, adaptiveCfg.EscalationThreshold)
+			case config.ActionStrip:
+				rec.RecordSignal(session.SignalStrip, adaptiveCfg.EscalationThreshold)
+			default:
+				// Warn/ask: near-miss signal (injection detected but not blocked).
+				rec.RecordSignal(session.SignalNearMiss, adaptiveCfg.EscalationThreshold)
 			}
 		}
 	}
@@ -578,7 +618,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 
 	// Scan and forward server output to client.
 	serverReader := transport.NewStdioReader(serverOut)
-	_, scanErr := ForwardScanned(serverReader, safeClientOut, safeLogW, sc, approver, fwdToolCfg, tracker)
+	_, scanErr := ForwardScanned(serverReader, safeClientOut, safeLogW, sc, approver, fwdToolCfg, tracker, nil, nil)
 
 	// Wait for subprocess to exit.
 	waitErr := cmd.Wait()

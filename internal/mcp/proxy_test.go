@@ -114,7 +114,7 @@ func TestSyncWriter_WriteMessage_Success(t *testing.T) {
 // fwdScanned wraps ForwardScanned with StdioReader/StdioWriter for test convenience.
 // The transport types are unit-tested in transport_test.go.
 func fwdScanned(r io.Reader, w io.Writer, logW io.Writer, sc *scanner.Scanner, approver *hitl.Approver, toolCfg *tools.ToolScanConfig) (bool, error) {
-	return ForwardScanned(transport.NewStdioReader(r), transport.NewStdioWriter(w), logW, sc, approver, toolCfg, nil)
+	return ForwardScanned(transport.NewStdioReader(r), transport.NewStdioWriter(w), logW, sc, approver, toolCfg, nil, nil, nil)
 }
 
 // --- ForwardScanned tests ---
@@ -2002,7 +2002,7 @@ func TestForwardScanned_ConfusedDeputy_UnsolicitedResponseBlocked(t *testing.T) 
 	reader := transport.NewStdioReader(strings.NewReader(unsolicited))
 	writer := transport.NewStdioWriter(&out)
 
-	_, err := ForwardScanned(reader, writer, &log, sc, nil, nil, tracker)
+	_, err := ForwardScanned(reader, writer, &log, sc, nil, nil, tracker, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2030,7 +2030,7 @@ func TestForwardScanned_ConfusedDeputy_SolicitedResponsePassed(t *testing.T) {
 	reader := transport.NewStdioReader(strings.NewReader(solicited))
 	writer := transport.NewStdioWriter(&out)
 
-	_, err := ForwardScanned(reader, writer, &log, sc, nil, nil, tracker)
+	_, err := ForwardScanned(reader, writer, &log, sc, nil, nil, tracker, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2054,7 +2054,7 @@ func TestForwardScanned_ConfusedDeputy_NotificationPassedThrough(t *testing.T) {
 	reader := transport.NewStdioReader(strings.NewReader(notification))
 	writer := transport.NewStdioWriter(&out)
 
-	_, err := ForwardScanned(reader, writer, &log, sc, nil, nil, tracker)
+	_, err := ForwardScanned(reader, writer, &log, sc, nil, nil, tracker, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2079,7 +2079,7 @@ func TestForwardScanned_ConfusedDeputy_ServerInitiatedRequestPassedThrough(t *te
 	reader := transport.NewStdioReader(strings.NewReader(serverReq))
 	writer := transport.NewStdioWriter(&out)
 
-	_, err := ForwardScanned(reader, writer, &log, sc, nil, nil, tracker)
+	_, err := ForwardScanned(reader, writer, &log, sc, nil, nil, tracker, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2101,7 +2101,7 @@ func TestForwardScanned_ConfusedDeputy_NilTrackerDisabled(t *testing.T) {
 	reader := transport.NewStdioReader(strings.NewReader(response))
 	writer := transport.NewStdioWriter(&out)
 
-	_, err := ForwardScanned(reader, writer, &log, sc, nil, nil, nil)
+	_, err := ForwardScanned(reader, writer, &log, sc, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2125,7 +2125,7 @@ func TestForwardScanned_ConfusedDeputy_NullIDResponsePassedThrough(t *testing.T)
 	reader := transport.NewStdioReader(strings.NewReader(nullIDResp))
 	writer := transport.NewStdioWriter(&out)
 
-	_, err := ForwardScanned(reader, writer, &log, sc, nil, nil, tracker)
+	_, err := ForwardScanned(reader, writer, &log, sc, nil, nil, tracker, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

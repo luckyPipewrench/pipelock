@@ -361,6 +361,22 @@ func (sm *SessionManager) cleanup() {
 	}
 }
 
+// storeAdapter wraps SessionManager to implement session.Store.
+// SessionState already satisfies session.Recorder via its RecordSignal,
+// RecordClean, EscalationLevel, and ThreatScore methods.
+type storeAdapter struct {
+	sm *SessionManager
+}
+
+func (a *storeAdapter) GetOrCreate(key string) session.Recorder {
+	return a.sm.GetOrCreate(key)
+}
+
+// AsStore returns a session.Store interface for this SessionManager.
+func (sm *SessionManager) AsStore() session.Store {
+	return &storeAdapter{sm: sm}
+}
+
 // evictOldest removes the session with the oldest lastActivity.
 // Must be called with sm.mu held for writing.
 func (sm *SessionManager) evictOldest() {

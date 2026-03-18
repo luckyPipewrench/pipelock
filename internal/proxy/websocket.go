@@ -21,7 +21,9 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 	plwsutil "github.com/luckyPipewrench/pipelock/internal/wsutil"
 )
 
@@ -55,6 +57,7 @@ type wsRelay struct {
 	maxMsg       int
 	scanText     bool
 	allowBinary  bool
+	sessionLevel int // escalation level for UpgradeAction
 }
 
 // wsRelayStats collects per-connection counters for audit logging.
@@ -128,6 +131,21 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("X-Pipelock-Hint", result.Hint)
 			}
 			http.Error(w, "WebSocket blocked: "+result.Reason, http.StatusForbidden)
+			return
+		}
+		// Audit mode: base action is "warn". Adaptive escalation may upgrade to block.
+		baseAction := config.ActionWarn
+		effectiveAction := decide.UpgradeAction(baseAction, sr.Level, &cfg.AdaptiveEnforcement)
+		if effectiveAction == config.ActionBlock {
+			sessionKey := clientIP
+			if agent != "" && agent != agentAnonymous {
+				sessionKey = agent + "|" + clientIP
+			}
+			log.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(sr.Level), baseAction, effectiveAction, result.Scanner, clientIP, requestID)
+			p.metrics.RecordAdaptiveUpgrade(baseAction, effectiveAction, session.EscalationLabel(sr.Level))
+			log.LogBlocked("WS", targetURL, result.Scanner, result.Reason+" (escalated)", clientIP, requestID, agent)
+			p.metrics.RecordWSBlocked()
+			http.Error(w, "WebSocket blocked: "+result.Reason+" (escalated)", http.StatusForbidden)
 			return
 		}
 		log.LogAnomaly("WS", targetURL, result.Scanner,
@@ -213,6 +231,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		maxMsg:       cfg.WebSocketProxy.MaxMessageBytes,
 		scanText:     scanTextFrames,
 		allowBinary:  cfg.WebSocketProxy.AllowBinaryFrames,
+		sessionLevel: sr.Level,
 	}
 
 	stats := relay.run(r.Context())
@@ -546,6 +565,24 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 						blocked = true
 						return
 					}
+					// Audit mode: adaptive escalation may upgrade warn to block.
+					baseAction := config.ActionWarn
+					effectiveAction := decide.UpgradeAction(baseAction, r.sessionLevel, &r.cfg.AdaptiveEnforcement)
+					if effectiveAction == config.ActionBlock {
+						sessionKey := r.clientIP
+						if r.agent != "" && r.agent != agentAnonymous {
+							sessionKey = r.agent + "|" + r.clientIP
+						}
+						log.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(r.sessionLevel), baseAction, effectiveAction, audit.ScannerDLP, r.clientIP, r.requestID)
+						r.proxy.metrics.RecordAdaptiveUpgrade(baseAction, effectiveAction, session.EscalationLabel(r.sessionLevel))
+						reason := fmt.Sprintf("DLP match: %s (escalated)", strings.Join(names, ", "))
+						log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, audit.ScannerDLP, reason, r.clientIP, r.requestID)
+						r.proxy.metrics.RecordWSScanHit(audit.ScannerDLP)
+						plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "DLP violation")
+						plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "DLP violation")
+						blocked = true
+						return
+					}
 					log.LogWSScan(r.targetURL, audit.DirectionClientToServer, r.clientIP, r.requestID, "audit", len(dlpResult.Matches), names, wsBundleRules)
 				}
 
@@ -566,6 +603,17 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 							}
 							r.proxy.metrics.RecordAddressFinding(f.Chain, verdictLabel)
 						}
+						// Adaptive enforcement: upgrade the address action.
+						originalAddrAction := addrAction
+						addrAction = decide.UpgradeAction(addrAction, r.sessionLevel, &r.cfg.AdaptiveEnforcement)
+						if addrAction != originalAddrAction {
+							sessionKey := r.clientIP
+							if r.agent != "" && r.agent != agentAnonymous {
+								sessionKey = r.agent + "|" + r.clientIP
+							}
+							log.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(r.sessionLevel), originalAddrAction, addrAction, scannerLabelAddressProtection, r.clientIP, r.requestID)
+							r.proxy.metrics.RecordAdaptiveUpgrade(originalAddrAction, addrAction, session.EscalationLabel(r.sessionLevel))
+						}
 						if r.cfg.EnforceEnabled() && addrAction == config.ActionBlock {
 							// Use the blocking finding for the reason, not necessarily Findings[0].
 							var blockExplanation string
@@ -576,6 +624,15 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 								}
 							}
 							reason := fmt.Sprintf("address poisoning: %s", blockExplanation)
+							log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, scannerLabelAddressProtection, reason, r.clientIP, r.requestID)
+							plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "address poisoning detected")
+							plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "address poisoning detected")
+							blocked = true
+							return
+						}
+						// Escalation can upgrade to block even in audit mode.
+						if !r.cfg.EnforceEnabled() && addrAction == config.ActionBlock {
+							reason := fmt.Sprintf("address poisoning: %s (escalated)", names[0])
 							log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, scannerLabelAddressProtection, reason, r.clientIP, r.requestID)
 							plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "address poisoning detected")
 							plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "address poisoning detected")
@@ -763,7 +820,20 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 					respBundleRules := responseBundleRules(scanResult.Matches)
 					r.proxy.metrics.RecordWSScanHit("injection")
 
-					switch r.scanner.ResponseAction() {
+					// Adaptive enforcement: upgrade the response action before the switch.
+					wsAction := r.scanner.ResponseAction()
+					originalWSAction := wsAction
+					wsAction = decide.UpgradeAction(wsAction, r.sessionLevel, &r.cfg.AdaptiveEnforcement)
+					if wsAction != originalWSAction {
+						sessionKey := r.clientIP
+						if r.agent != "" && r.agent != agentAnonymous {
+							sessionKey = r.agent + "|" + r.clientIP
+						}
+						log.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(r.sessionLevel), originalWSAction, wsAction, "response_scan", r.clientIP, r.requestID)
+						r.proxy.metrics.RecordAdaptiveUpgrade(originalWSAction, wsAction, session.EscalationLabel(r.sessionLevel))
+					}
+
+					switch wsAction {
 					case config.ActionBlock:
 						reason := fmt.Sprintf("injection detected: %s", strings.Join(patternNames, ", "))
 						log.LogWSBlocked(r.targetURL, audit.DirectionServerToClient, "response_scan", reason, r.clientIP, r.requestID)
@@ -772,6 +842,18 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 						blocked = true
 						return
 					case config.ActionStrip:
+						// Record SignalStrip for adaptive enforcement scoring.
+						if sm := r.proxy.sessionMgrPtr.Load(); sm != nil && r.cfg.AdaptiveEnforcement.Enabled {
+							sessionKey := r.clientIP
+							if r.agent != "" && r.agent != agentAnonymous {
+								sessionKey = r.agent + "|" + r.clientIP
+							}
+							sess := sm.GetOrCreate(sessionKey)
+							if escalated, from, to := sess.RecordSignal(session.SignalStrip, r.cfg.AdaptiveEnforcement.EscalationThreshold); escalated {
+								log.LogAdaptiveEscalation(sessionKey, from, to, r.clientIP, r.requestID, sess.ThreatScore())
+								r.proxy.metrics.RecordSessionEscalation(from, to)
+							}
+						}
 						if scanResult.TransformedContent != "" {
 							msg = []byte(scanResult.TransformedContent)
 						} else {
@@ -796,7 +878,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 						blocked = true
 						return
 					default:
-						log.LogWSScan(r.targetURL, audit.DirectionServerToClient, r.clientIP, r.requestID, r.scanner.ResponseAction(), len(scanResult.Matches), patternNames, respBundleRules)
+						log.LogWSScan(r.targetURL, audit.DirectionServerToClient, r.clientIP, r.requestID, wsAction, len(scanResult.Matches), patternNames, respBundleRules)
 					}
 				}
 			}

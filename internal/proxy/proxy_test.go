@@ -3959,3 +3959,172 @@ func TestProxy_RegisterAndShutdownAgentServers(t *testing.T) {
 		t.Error("expected port to be closed after shutdown")
 	}
 }
+
+// escalateSession pre-loads a session to the target escalation level by
+// recording enough block signals to cross the threshold repeatedly.
+// Returns the session key used.
+func escalateSession(sm *SessionManager, clientIP, agent string, threshold float64, targetLevel int) string {
+	key := clientIP
+	if agent != "" && agent != agentAnonymous {
+		key = agent + "|" + clientIP
+	}
+	sess := sm.GetOrCreate(key)
+	// Each escalation doubles the threshold. We need to accumulate enough
+	// points to cross the threshold 'targetLevel' times.
+	for range targetLevel {
+		for {
+			escalated, _, _ := sess.RecordSignal(session.SignalBlock, threshold)
+			if escalated {
+				break
+			}
+		}
+	}
+	return key
+}
+
+// newAdaptiveConfig returns a config with adaptive enforcement enabled,
+// enforce disabled (audit mode), session profiling on, and a DLP pattern
+// that matches URLs containing the testSecret.
+func newAdaptiveConfig(testSecret string) *config.Config {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.APIAllowlist = nil
+	cfg.FetchProxy.TimeoutSeconds = 5
+	cfg.Mode = config.ModeBalanced
+	auditMode := false
+	cfg.Enforce = &auditMode // audit mode: detect & log without blocking
+	cfg.SessionProfiling.Enabled = true
+	cfg.SessionProfiling.MaxSessions = 1000
+	cfg.SessionProfiling.DomainBurst = 100
+	cfg.SessionProfiling.WindowMinutes = 5
+	cfg.SessionProfiling.SessionTTLMinutes = 30
+	cfg.SessionProfiling.CleanupIntervalSeconds = 300
+	cfg.AdaptiveEnforcement.Enabled = true
+	cfg.AdaptiveEnforcement.EscalationThreshold = 5.0
+	cfg.AdaptiveEnforcement.DecayPerCleanRequest = 0.5
+	// Level 1 (elevated): upgrade warn -> block.
+	cfg.AdaptiveEnforcement.Levels.Elevated.UpgradeWarn = ptrStr(config.ActionBlock)
+	// DLP pattern that matches the test secret in URLs.
+	cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{
+		Name:  "test_secret",
+		Regex: testSecret,
+	})
+	return cfg
+}
+
+// ptrStr returns a pointer to a string value.
+func ptrStr(s string) *string {
+	return &s
+}
+
+// TestFetchEndpoint_AdaptiveUpgrade_WarnToBlock verifies that an escalated
+// session causes a URL scan "warn" (audit mode) to be upgraded to "block"
+// via UpgradeAction. This is the core adaptive enforcement integration test
+// for the fetch transport.
+func TestFetchEndpoint_AdaptiveUpgrade_WarnToBlock(t *testing.T) {
+	// Build a fake secret at runtime to avoid gosec G101.
+	testSecret := "TESTSECRET" + "VALUE123"
+
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = fmt.Fprint(w, "ok")
+	}))
+	defer backend.Close()
+
+	cfg := newAdaptiveConfig(testSecret)
+	m := metrics.New()
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	p, err := New(cfg, logger, sc, m)
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	defer p.Close()
+
+	sm := NewSessionManager(&cfg.SessionProfiling, m)
+	p.sessionMgrPtr.Store(sm)
+	defer sm.Close()
+
+	// Pre-escalate the session to level 1 (elevated).
+	clientIP := "192.168.1.1"
+	escalateSession(sm, clientIP, "", cfg.AdaptiveEnforcement.EscalationThreshold, 1)
+
+	// 1. First: verify that without escalation, the same request would pass
+	// (audit mode allows through). Use a different client IP for the
+	// non-escalated request.
+	cleanURL := backend.URL + "/text"
+	reqClean := httptest.NewRequest(http.MethodGet, "/fetch?url="+cleanURL, nil)
+	reqClean.RemoteAddr = "10.99.99.99:12345"
+	wClean := httptest.NewRecorder()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+	mux.ServeHTTP(wClean, reqClean)
+	// A clean URL should be allowed regardless.
+	if wClean.Code == http.StatusForbidden {
+		t.Fatalf("clean URL unexpectedly blocked: %s", wClean.Body.String())
+	}
+
+	// 2. Now send a request with the DLP-matching URL from the escalated IP.
+	// In audit mode (enforce=false), the scanner finds the pattern and would
+	// normally just warn. With adaptive enforcement at level 1, warn->block.
+	badURL := backend.URL + "/?" + testSecret + "=1"
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+badURL, nil)
+	req.RemoteAddr = clientIP + ":12345"
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403 Forbidden (adaptive upgrade), got %d; body: %s", w.Code, w.Body.String())
+	}
+
+	var resp FetchResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("JSON parse: %v", err)
+	}
+	if !resp.Blocked {
+		t.Error("expected blocked=true from adaptive escalation")
+	}
+	if !strings.Contains(resp.BlockReason, "escalated") {
+		t.Errorf("expected block reason to contain 'escalated', got: %s", resp.BlockReason)
+	}
+}
+
+// TestFetchEndpoint_AdaptiveUpgrade_NoEscalation_Allowed verifies that a
+// non-escalated session in audit mode allows DLP findings through (warn only).
+func TestFetchEndpoint_AdaptiveUpgrade_NoEscalation_Allowed(t *testing.T) {
+	testSecret := "TESTSECRET" + "VALUE456"
+
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = fmt.Fprint(w, "ok")
+	}))
+	defer backend.Close()
+
+	cfg := newAdaptiveConfig(testSecret)
+	m := metrics.New()
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	p, err := New(cfg, logger, sc, m)
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	defer p.Close()
+
+	sm := NewSessionManager(&cfg.SessionProfiling, m)
+	p.sessionMgrPtr.Store(sm)
+	defer sm.Close()
+
+	// No pre-escalation: session is at level 0 (normal).
+	badURL := backend.URL + "/?" + testSecret + "=1"
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+badURL, nil)
+	req.RemoteAddr = "192.168.1.1:12345"
+	w := httptest.NewRecorder()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+	mux.ServeHTTP(w, req)
+
+	// In audit mode with no escalation, DLP finding should warn but allow.
+	if w.Code == http.StatusForbidden {
+		t.Errorf("expected allowed (audit mode, no escalation), got 403; body: %s", w.Body.String())
+	}
+}

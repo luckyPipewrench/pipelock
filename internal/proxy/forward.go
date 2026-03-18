@@ -17,7 +17,9 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 const (
@@ -146,7 +148,21 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "CONNECT blocked: "+result.Reason, http.StatusForbidden)
 			return
 		}
-		// Audit mode: log anomaly but allow through
+		// Audit mode: base action is "warn". Adaptive escalation may upgrade to block.
+		baseAction := config.ActionWarn
+		effectiveAction := decide.UpgradeAction(baseAction, sr.Level, &cfg.AdaptiveEnforcement)
+		if effectiveAction == config.ActionBlock {
+			sessionKey := clientIP
+			if agent != "" && agent != agentAnonymous {
+				sessionKey = agent + "|" + clientIP
+			}
+			p.logger.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(sr.Level), baseAction, effectiveAction, result.Scanner, clientIP, requestID)
+			p.metrics.RecordAdaptiveUpgrade(baseAction, effectiveAction, session.EscalationLabel(sr.Level))
+			p.logger.LogBlocked(http.MethodConnect, target, result.Scanner, result.Reason+" (escalated)", clientIP, requestID, agent)
+			p.metrics.RecordTunnelBlocked(agentLabel)
+			http.Error(w, "CONNECT blocked: "+result.Reason+" (escalated)", http.StatusForbidden)
+			return
+		}
 		p.logger.LogAnomaly(http.MethodConnect, target, result.Scanner,
 			result.Reason, clientIP, requestID, agent, result.Score)
 	}
@@ -180,7 +196,14 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 					ceeRecordSignals(ceeResult{EntropyHit: true}, sm, sessionKey,
 						cfg.AdaptiveEnforcement.EscalationThreshold, p.logger, p.metrics, clientIP, requestID)
 				}
-				if ceeCfg.EntropyBudget.Action == config.ActionBlock {
+				ceeAction := ceeCfg.EntropyBudget.Action
+				originalCEEAction := ceeAction
+				ceeAction = decide.UpgradeAction(ceeAction, sr.Level, &cfg.AdaptiveEnforcement)
+				if ceeAction != originalCEEAction {
+					p.logger.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(sr.Level), originalCEEAction, ceeAction, "cross_request_entropy", clientIP, requestID)
+					p.metrics.RecordAdaptiveUpgrade(originalCEEAction, ceeAction, session.EscalationLabel(sr.Level))
+				}
+				if ceeAction == config.ActionBlock {
 					p.logger.LogBlocked(http.MethodConnect, target, "cross_request_entropy", detail, clientIP, requestID, agent)
 					p.metrics.RecordTunnelBlocked(agentLabel)
 					http.Error(w, "CONNECT blocked: cross-request entropy budget exceeded", http.StatusForbidden)
@@ -289,7 +312,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		interceptConn := wrapBuffered(clientConn, clientReader)
 		interceptCtx, interceptCancel := context.WithDeadline(r.Context(), deadline)
 		defer interceptCancel()
-		if err := interceptTunnel(interceptCtx, interceptConn, host, port, cfg, sc, certCache, p.logger, p.metrics, clientIP, requestID, agent, p.tlsTransport, p.ssrfSafeDialContext, p.entropyTrackerPtr.Load(), p.fragmentBufferPtr.Load(), p.sessionMgrPtr.Load(), p); err != nil {
+		if err := interceptTunnel(interceptCtx, interceptConn, host, port, cfg, sc, certCache, p.logger, p.metrics, clientIP, requestID, agent, p.tlsTransport, p.ssrfSafeDialContext, p.entropyTrackerPtr.Load(), p.fragmentBufferPtr.Load(), p.sessionMgrPtr.Load(), p, sr.Level); err != nil {
 			p.logger.LogError(http.MethodConnect, host, clientIP, requestID, agent, err)
 		}
 		return
@@ -419,6 +442,21 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "blocked: "+result.Reason, http.StatusForbidden)
 			return
 		}
+		// Audit mode: base action is "warn". Adaptive escalation may upgrade to block.
+		baseAction := config.ActionWarn
+		effectiveAction := decide.UpgradeAction(baseAction, sr.Level, &cfg.AdaptiveEnforcement)
+		if effectiveAction == config.ActionBlock {
+			sessionKey := clientIP
+			if agent != "" && agent != agentAnonymous {
+				sessionKey = agent + "|" + clientIP
+			}
+			p.logger.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(sr.Level), baseAction, effectiveAction, result.Scanner, clientIP, requestID)
+			p.metrics.RecordAdaptiveUpgrade(baseAction, effectiveAction, session.EscalationLabel(sr.Level))
+			p.logger.LogBlocked(r.Method, targetURL, result.Scanner, result.Reason+" (escalated)", clientIP, requestID, agent)
+			p.metrics.RecordBlocked(r.URL.Hostname(), result.Scanner, time.Since(start), agentLabel)
+			http.Error(w, "blocked: "+result.Reason+" (escalated)", http.StatusForbidden)
+			return
+		}
 		p.logger.LogAnomaly(r.Method, targetURL, result.Scanner,
 			result.Reason, clientIP, requestID, agent, result.Score)
 	}
@@ -493,9 +531,27 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
+			// Adaptive enforcement: upgrade the body action.
+			originalBodyAction := action
+			action = decide.UpgradeAction(action, sr.Level, &cfg.AdaptiveEnforcement)
+			if action != originalBodyAction {
+				sessionKey := clientIP
+				if agent != "" && agent != agentAnonymous {
+					sessionKey = agent + "|" + clientIP
+				}
+				p.logger.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(sr.Level), originalBodyAction, action, scannerLabel, clientIP, requestID)
+				p.metrics.RecordAdaptiveUpgrade(originalBodyAction, action, session.EscalationLabel(sr.Level))
+			}
+
 			if action == config.ActionBlock && cfg.EnforceEnabled() {
 				p.metrics.RecordBlocked(r.URL.Hostname(), scannerLabel, time.Since(start), agentLabel)
 				http.Error(w, "blocked: "+reason, http.StatusForbidden)
+				return
+			}
+			// Escalation can upgrade to block even in audit mode.
+			if action == config.ActionBlock && !cfg.EnforceEnabled() {
+				p.metrics.RecordBlocked(r.URL.Hostname(), scannerLabel, time.Since(start), agentLabel)
+				http.Error(w, "blocked: "+reason+" (escalated)", http.StatusForbidden)
 				return
 			}
 		}

@@ -29,6 +29,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/certgen"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
@@ -865,7 +866,26 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, status, resp)
 			return
 		}
-		// Audit mode: log anomaly but allow through
+		// Audit mode: base action is "warn". Adaptive escalation may upgrade to block.
+		baseAction := config.ActionWarn
+		effectiveAction := decide.UpgradeAction(baseAction, sr.Level, &cfg.AdaptiveEnforcement)
+		if effectiveAction == config.ActionBlock {
+			sessionKey := clientIP
+			if agent != "" && agent != agentAnonymous {
+				sessionKey = agent + "|" + clientIP
+			}
+			log.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(sr.Level), baseAction, effectiveAction, result.Scanner, clientIP, requestID)
+			p.metrics.RecordAdaptiveUpgrade(baseAction, effectiveAction, session.EscalationLabel(sr.Level))
+			log.LogBlocked("GET", displayURL, result.Scanner, result.Reason+" (escalated)", clientIP, requestID, agent)
+			p.metrics.RecordBlocked(parsed.Hostname(), result.Scanner, time.Since(start), agentLabel)
+			writeJSON(w, http.StatusForbidden, FetchResponse{
+				URL:         displayURL,
+				Agent:       agent,
+				Blocked:     true,
+				BlockReason: result.Reason + " (escalated)",
+			})
+			return
+		}
 		log.LogAnomaly("GET", displayURL, result.Scanner, result.Reason, clientIP, requestID, agent, result.Score)
 	}
 
@@ -1046,7 +1066,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		hidden := extractHiddenContent(content)
 		if hidden != "" {
 			rawResult := sc.ScanResponse(r.Context(), hidden)
-			blocked, _, found := p.filterAndActOnResponseScan(w, rawResult, content, displayURL, agent, clientIP, requestID, sc, cfg, log)
+			blocked, _, found := p.filterAndActOnResponseScan(w, rawResult, content, displayURL, agent, clientIP, requestID, sc, cfg, log, sr.Level)
 			if blocked {
 				return
 			}
@@ -1083,7 +1103,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// Response scanning: check extracted content for prompt injection.
 	if sc.ResponseScanningEnabled() {
 		scanResult := sc.ScanResponse(r.Context(), content)
-		blocked, newContent, _ := p.filterAndActOnResponseScan(w, scanResult, content, displayURL, agent, clientIP, requestID, sc, cfg, log)
+		blocked, newContent, _ := p.filterAndActOnResponseScan(w, scanResult, content, displayURL, agent, clientIP, requestID, sc, cfg, log, sr.Level)
 		if blocked {
 			p.metrics.RecordBlocked(parsed.Hostname(), "response_scan", time.Since(start), agentLabel)
 			return
@@ -1118,6 +1138,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 // response scanning action to a scan result. Returns blocked=true if the
 // request was blocked (HTTP response already written), the output content
 // (possibly stripped), and found=true if unsuppressed findings remain.
+// sessionLevel is the current adaptive escalation level from recordSessionActivity.
 func (p *Proxy) filterAndActOnResponseScan(
 	w http.ResponseWriter,
 	result scanner.ResponseScanResult,
@@ -1125,6 +1146,7 @@ func (p *Proxy) filterAndActOnResponseScan(
 	sc *scanner.Scanner,
 	cfg *config.Config,
 	log *audit.Logger,
+	sessionLevel int,
 ) (blocked bool, out string, found bool) {
 	out = content
 
@@ -1149,7 +1171,20 @@ func (p *Proxy) filterAndActOnResponseScan(
 	}
 	bundleRules := responseBundleRules(result.Matches)
 
-	switch sc.ResponseAction() {
+	// Adaptive enforcement: upgrade the response action before the switch.
+	action := sc.ResponseAction()
+	originalAction := action
+	action = decide.UpgradeAction(action, sessionLevel, &cfg.AdaptiveEnforcement)
+	if action != originalAction {
+		sessionKey := clientIP
+		if agent != "" && agent != agentAnonymous {
+			sessionKey = agent + "|" + clientIP
+		}
+		log.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(sessionLevel), originalAction, action, "response_scan", clientIP, requestID)
+		p.metrics.RecordAdaptiveUpgrade(originalAction, action, session.EscalationLabel(sessionLevel))
+	}
+
+	switch action {
 	case config.ActionBlock:
 		reason := fmt.Sprintf("response contains prompt injection: %s", strings.Join(patternNames, ", "))
 		log.LogBlocked("GET", displayURL, "response_scan", reason, clientIP, requestID, agent)
@@ -1186,12 +1221,24 @@ func (p *Proxy) filterAndActOnResponseScan(
 			return true, "", true
 		}
 	case config.ActionStrip:
+		// Record SignalStrip for adaptive enforcement scoring.
+		if sm := p.sessionMgrPtr.Load(); sm != nil && cfg.AdaptiveEnforcement.Enabled {
+			sessionKey := clientIP
+			if agent != "" && agent != agentAnonymous {
+				sessionKey = agent + "|" + clientIP
+			}
+			sess := sm.GetOrCreate(sessionKey)
+			if escalated, from, to := sess.RecordSignal(session.SignalStrip, cfg.AdaptiveEnforcement.EscalationThreshold); escalated {
+				log.LogAdaptiveEscalation(sessionKey, from, to, clientIP, requestID, sess.ThreatScore())
+				p.metrics.RecordSessionEscalation(from, to)
+			}
+		}
 		out = result.TransformedContent
 		log.LogResponseScan(displayURL, clientIP, requestID, agent, config.ActionStrip, len(result.Matches), patternNames, bundleRules)
 	case config.ActionWarn:
 		log.LogResponseScan(displayURL, clientIP, requestID, agent, config.ActionWarn, len(result.Matches), patternNames, bundleRules)
 	default:
-		log.LogResponseScan(displayURL, clientIP, requestID, agent, sc.ResponseAction(), len(result.Matches), patternNames, bundleRules)
+		log.LogResponseScan(displayURL, clientIP, requestID, agent, action, len(result.Matches), patternNames, bundleRules)
 	}
 	return false, out, true
 }

@@ -21,8 +21,10 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/certgen"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 // interceptReadHeaderTimeout is the maximum time to read request headers on an
@@ -89,6 +91,7 @@ func interceptTunnel(
 	fb *scanner.FragmentBuffer,
 	sm *SessionManager,
 	p *Proxy, // when non-nil, CEE state resolved per-request (avoids stale pointers after reload)
+	sessionLevel int, // escalation level from recordSessionActivity, used by UpgradeAction
 ) error {
 	// Client-side TLS config with forged cert from cache.
 	tlsCfg := &tls.Config{
@@ -170,7 +173,7 @@ func interceptTunnel(
 	// Serve via http.Server on single-connection listener.
 	// http.Server handles HTTP/2 when negotiated via ALPN.
 	ln := newSingleConnListener(tlsConn)
-	handler := newInterceptHandler(targetHost, targetPort, upstreamRT, cfg, sc, logger, m, clientIP, requestID, agent, et, fb, sm, p)
+	handler := newInterceptHandler(targetHost, targetPort, upstreamRT, cfg, sc, logger, m, clientIP, requestID, agent, et, fb, sm, p, sessionLevel)
 	srv := &http.Server{
 		Handler:           handler,
 		ReadHeaderTimeout: interceptReadHeaderTimeout,
@@ -222,6 +225,7 @@ func newInterceptHandler(
 	fb *scanner.FragmentBuffer,
 	sm *SessionManager,
 	p *Proxy, // when non-nil, CEE state resolved per-request (avoids stale pointers after reload)
+	sessionLevel int, // escalation level for UpgradeAction
 ) http.Handler {
 	target := net.JoinHostPort(targetHost, targetPort)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -263,7 +267,23 @@ func newInterceptHandler(
 				http.Error(w, "blocked: "+urlResult.Reason, http.StatusForbidden)
 				return
 			}
-			// Audit mode: log anomaly but forward the request.
+			// Audit mode: base action is "warn". Adaptive escalation may upgrade to block.
+			baseAction := config.ActionWarn
+			effectiveAction := decide.UpgradeAction(baseAction, sessionLevel, &cfg.AdaptiveEnforcement)
+			if effectiveAction == config.ActionBlock {
+				sessionKey := clientIP
+				if agent != "" && agent != agentAnonymous {
+					sessionKey = agent + "|" + clientIP
+				}
+				logger.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(sessionLevel), baseAction, effectiveAction, urlResult.Scanner, clientIP, requestID)
+				if p != nil {
+					p.metrics.RecordAdaptiveUpgrade(baseAction, effectiveAction, session.EscalationLabel(sessionLevel))
+				}
+				logger.LogBlocked(r.Method, targetURL, urlResult.Scanner, urlResult.Reason+" (escalated)", clientIP, requestID, agent)
+				m.RecordTLSRequestBlocked("url_scan")
+				http.Error(w, "blocked: "+urlResult.Reason+" (escalated)", http.StatusForbidden)
+				return
+			}
 			logger.LogAnomaly(r.Method, targetURL, urlResult.Scanner, urlResult.Reason, clientIP, requestID, agent, urlResult.Score)
 		}
 
@@ -301,6 +321,20 @@ func newInterceptHandler(
 					reason = fmt.Sprintf("request body contains secret: %s", strings.Join(patternNames, ", "))
 				}
 
+				// Adaptive enforcement: upgrade the body action.
+				originalBodyAction := action
+				action = decide.UpgradeAction(action, sessionLevel, &cfg.AdaptiveEnforcement)
+				if action != originalBodyAction {
+					sessionKey := clientIP
+					if agent != "" && agent != agentAnonymous {
+						sessionKey = agent + "|" + clientIP
+					}
+					logger.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(sessionLevel), originalBodyAction, action, scannerLabel, clientIP, requestID)
+					if p != nil {
+						p.metrics.RecordAdaptiveUpgrade(originalBodyAction, action, session.EscalationLabel(sessionLevel))
+					}
+				}
+
 				// Fail-closed: nil bodyBytes means body was consumed but couldn't
 				// be buffered (oversize, compressed, read error). Always block
 				// regardless of enforce mode to prevent forwarding an empty body.
@@ -309,6 +343,13 @@ func newInterceptHandler(
 					logger.LogBlocked(r.Method, r.URL.String(), scannerLabel, reason, clientIP, requestID, agent)
 					m.RecordTLSRequestBlocked(scannerLabel)
 					http.Error(w, "blocked: "+reason, http.StatusForbidden)
+					return
+				}
+				// Escalation can upgrade to block even in audit mode.
+				if action == config.ActionBlock && !cfg.EnforceEnabled() {
+					logger.LogBlocked(r.Method, r.URL.String(), scannerLabel, reason+" (escalated)", clientIP, requestID, agent)
+					m.RecordTLSRequestBlocked(scannerLabel)
+					http.Error(w, "blocked: "+reason+" (escalated)", http.StatusForbidden)
 					return
 				}
 				// Audit/warn mode: log finding but forward the request.
@@ -416,6 +457,19 @@ func newInterceptHandler(
 			scanResult := sc.ScanResponse(r.Context(), string(respBody))
 			if !scanResult.Clean {
 				action := sc.ResponseAction()
+				// Adaptive enforcement: upgrade the response action before the switch.
+				originalAction := action
+				action = decide.UpgradeAction(action, sessionLevel, &cfg.AdaptiveEnforcement)
+				if action != originalAction {
+					sessionKey := clientIP
+					if agent != "" && agent != agentAnonymous {
+						sessionKey = agent + "|" + clientIP
+					}
+					logger.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(sessionLevel), originalAction, action, "response_scan", clientIP, requestID)
+					if p != nil {
+						p.metrics.RecordAdaptiveUpgrade(originalAction, action, session.EscalationLabel(sessionLevel))
+					}
+				}
 				patternNames := make([]string, len(scanResult.Matches))
 				for i, match := range scanResult.Matches {
 					patternNames[i] = match.PatternName
@@ -432,6 +486,26 @@ func newInterceptHandler(
 					http.Error(w, "blocked: response contains injection", http.StatusForbidden)
 					return
 				case config.ActionStrip:
+					// Record SignalStrip for adaptive enforcement scoring.
+					if sm != nil && cfg.AdaptiveEnforcement.Enabled {
+						ceeSM := sm
+						if p != nil {
+							ceeSM = p.sessionMgrPtr.Load()
+						}
+						if ceeSM != nil {
+							sessionKey := clientIP
+							if agent != "" && agent != agentAnonymous {
+								sessionKey = agent + "|" + clientIP
+							}
+							sess := ceeSM.GetOrCreate(sessionKey)
+							if escalated, from, to := sess.RecordSignal(session.SignalStrip, cfg.AdaptiveEnforcement.EscalationThreshold); escalated {
+								logger.LogAdaptiveEscalation(sessionKey, from, to, clientIP, requestID, sess.ThreatScore())
+								if p != nil {
+									p.metrics.RecordSessionEscalation(from, to)
+								}
+							}
+						}
+					}
 					respBody = []byte(scanResult.TransformedContent)
 					// Update Content-Length to match stripped body; prevents HTTP/1.1
 					// framing errors from a stale upstream Content-Length header.

@@ -4,6 +4,7 @@
 package session_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -76,7 +77,7 @@ func TestEscalationLabel(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(strings.ReplaceAll(tt.want+"_level_"+strings.TrimLeft(strings.ReplaceAll(strings.ReplaceAll(tt.want, "normal", ""), "elevated", ""), " "), " ", ""), func(t *testing.T) {
+		t.Run(fmt.Sprintf("level_%d_expect_%s", tt.level, tt.want), func(t *testing.T) {
 			got := session.EscalationLabel(tt.level)
 			if got != tt.want {
 				t.Errorf("EscalationLabel(%d) = %q, want %q", tt.level, got, tt.want)

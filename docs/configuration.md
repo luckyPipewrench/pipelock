@@ -1232,6 +1232,29 @@ At least one chain must be enabled when `address_protection.enabled` is `true`. 
 
 **Hot reload:** disabling address protection triggers a reload warning. Re-enabling takes effect immediately.
 
+## Community Rules
+
+Optional signed rule bundles that extend built-in detection patterns. See [docs/rules.md](rules.md) for the full user guide.
+
+```yaml
+rules:
+  rules_dir: ~/.pipelock/rules    # default location for installed bundles
+  min_confidence: medium          # skip low-confidence (experimental) rules
+  include_experimental: false     # only load stable rules by default
+  trusted_keys:                   # additional signing keys (beyond embedded keyring)
+    - name: "acme-security"
+      public_key: "64-char-hex-encoded-ed25519-public-key"
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `rules_dir` | `~/.pipelock/rules` | Directory for installed bundles |
+| `min_confidence` | `""` (all) | Skip rules below this confidence level |
+| `include_experimental` | `false` | Include experimental rules from bundles |
+| `trusted_keys` | `[]` | Additional Ed25519 public keys to trust for signature verification |
+
+**Hot reload:** rule directory changes are not detected via hot-reload. Restart pipelock after installing or updating bundles.
+
 ## Validation Rules
 
 The following are enforced at startup:

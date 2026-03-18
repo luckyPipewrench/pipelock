@@ -425,3 +425,8 @@ seed_phrase_detection:
 #       window_minutes: 60
 #   _default:
 #     mode: balanced
+
+# Community rule bundles — install with: pipelock rules install pipelock-community
+# rules:
+#   min_confidence: medium
+#   include_experimental: false

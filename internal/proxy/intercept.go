@@ -354,8 +354,12 @@ func newInterceptHandler(
 					http.Error(w, "blocked: "+reason, http.StatusForbidden)
 					return
 				}
-				// Escalation can upgrade to block even in audit mode.
-				if action == config.ActionBlock && !cfg.EnforceEnabled() {
+				// Escalation can upgrade to block even in audit mode, but only
+				// when the upgrade actually changed the action (i.e. it wasn't
+				// already block from the scanner config). Without this guard,
+				// a base action that was already "block" would fire here even
+				// without any escalation, which is not the intent.
+				if action == config.ActionBlock && action != originalBodyAction && !cfg.EnforceEnabled() {
 					logger.LogBlocked(r.Method, r.URL.String(), scannerLabel, reason+" (escalated)", clientIP, requestID, agent)
 					m.RecordTLSRequestBlocked(scannerLabel)
 					http.Error(w, "blocked: "+reason+" (escalated)", http.StatusForbidden)

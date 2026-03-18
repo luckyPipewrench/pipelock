@@ -1488,11 +1488,11 @@ func TestRecordAdaptiveUpgrade(t *testing.T) {
 			wantMetric: `pipelock_adaptive_upgrades_total{from_action="warn",level="elevated",to_action="block"}`,
 		},
 		{
-			name:       "forward to warn at suspicious",
+			name:       "forward to warn at high",
 			fromAction: "forward",
 			toAction:   "warn",
-			level:      "suspicious",
-			wantMetric: `pipelock_adaptive_upgrades_total{from_action="forward",level="suspicious",to_action="warn"}`,
+			level:      "high",
+			wantMetric: `pipelock_adaptive_upgrades_total{from_action="forward",level="high",to_action="warn"}`,
 		},
 	}
 

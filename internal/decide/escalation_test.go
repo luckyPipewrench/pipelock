@@ -318,3 +318,18 @@ func TestUpgradeAction_NilPointerFields(t *testing.T) {
 		})
 	}
 }
+
+// TestUpgradeAction_NegativeLevel verifies that a negative level is treated as
+// normal (no upgrade) and must never fall through to the critical default case.
+// A negative level is invalid state; treat it as level 0 (no escalation).
+func TestUpgradeAction_NegativeLevel(t *testing.T) {
+	cfg := defaultAdaptiveConfig()
+	// Level -1 must return baseAction unchanged, not critical block_all.
+	if got := UpgradeAction(config.ActionWarn, -1, cfg); got != config.ActionWarn {
+		t.Errorf("UpgradeAction(warn, -1) = %q, want warn (negative level treated as normal)", got)
+	}
+	// Verify that level 0 is also unchanged (regression guard).
+	if got := UpgradeAction(config.ActionWarn, 0, cfg); got != config.ActionWarn {
+		t.Errorf("UpgradeAction(warn, 0) = %q, want warn", got)
+	}
+}

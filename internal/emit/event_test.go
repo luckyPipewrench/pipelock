@@ -158,20 +158,20 @@ func TestChainDetectionSeverity(t *testing.T) {
 
 func TestEscalationSeverity(t *testing.T) {
 	tests := []struct {
-		name    string
-		toLevel string
-		want    Severity
+		name     string
+		toAction string
+		want     Severity
 	}{
-		{name: "block is critical", toLevel: "block", want: SeverityCritical},
-		{name: "warn is warn", toLevel: "warn", want: SeverityWarn},
-		{name: "throttle is warn", toLevel: "throttle", want: SeverityWarn},
-		{name: "empty is warn", toLevel: "", want: SeverityWarn},
+		{name: "block is critical", toAction: "block", want: SeverityCritical},
+		{name: "warn is warn", toAction: "warn", want: SeverityWarn},
+		{name: "throttle is warn", toAction: "throttle", want: SeverityWarn},
+		{name: "empty is warn", toAction: "", want: SeverityWarn},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := EscalationSeverity(tt.toLevel); got != tt.want {
-				t.Errorf("EscalationSeverity(%q) = %v, want %v", tt.toLevel, got, tt.want)
+			if got := EscalationSeverity(tt.toAction); got != tt.want {
+				t.Errorf("EscalationSeverity(%q) = %v, want %v", tt.toAction, got, tt.want)
 			}
 		})
 	}

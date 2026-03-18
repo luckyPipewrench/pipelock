@@ -4041,9 +4041,12 @@ func TestFetchEndpoint_AdaptiveUpgrade_WarnToBlock(t *testing.T) {
 	}
 	defer p.Close()
 
-	sm := NewSessionManager(&cfg.SessionProfiling, m)
-	p.sessionMgrPtr.Store(sm)
-	defer sm.Close()
+	// proxy.New creates a SessionManager when SessionProfiling is enabled.
+	// Use it directly rather than replacing it, which would leak its goroutine.
+	sm := p.sessionMgrPtr.Load()
+	if sm == nil {
+		t.Fatal("expected session manager to be created by proxy.New")
+	}
 
 	// Pre-escalate the session to level 1 (elevated).
 	clientIP := "192.168.1.1"
@@ -4113,9 +4116,11 @@ func TestFetchEndpoint_AdaptiveUpgrade_NoEscalation_Allowed(t *testing.T) {
 	}
 	defer p.Close()
 
-	sm := NewSessionManager(&cfg.SessionProfiling, m)
-	p.sessionMgrPtr.Store(sm)
-	defer sm.Close()
+	// proxy.New creates a SessionManager when SessionProfiling is enabled.
+	// Use it directly rather than replacing it, which would leak its goroutine.
+	if sm := p.sessionMgrPtr.Load(); sm == nil {
+		t.Fatal("expected session manager to be created by proxy.New")
+	}
 
 	// No pre-escalation: session is at level 0 (normal).
 	badURL := backend.URL + "/?" + testSecret + "=1"
@@ -4126,9 +4131,16 @@ func TestFetchEndpoint_AdaptiveUpgrade_NoEscalation_Allowed(t *testing.T) {
 	mux.HandleFunc("/fetch", p.handleFetch)
 	mux.ServeHTTP(w, req)
 
-	// In audit mode with no escalation, DLP finding should warn but allow.
-	if w.Code == http.StatusForbidden {
-		t.Errorf("expected allowed (audit mode, no escalation), got 403; body: %s", w.Body.String())
+	// In audit mode with no escalation, DLP finding should warn but allow (200).
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 OK (audit mode, no escalation), got %d; body: %s", w.Code, w.Body.String())
+	}
+	var resp FetchResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("JSON parse: %v", err)
+	}
+	if resp.Blocked {
+		t.Error("expected blocked=false in audit mode with no escalation")
 	}
 }
 
@@ -4174,9 +4186,12 @@ func TestFetchEndpoint_BlockAll_CleanTrafficBlocked(t *testing.T) {
 	}
 	defer p.Close()
 
-	sm := NewSessionManager(&cfg.SessionProfiling, m)
-	p.sessionMgrPtr.Store(sm)
-	defer sm.Close()
+	// proxy.New creates a SessionManager when SessionProfiling is enabled.
+	// Use it directly rather than replacing it, which would leak its goroutine.
+	sm := p.sessionMgrPtr.Load()
+	if sm == nil {
+		t.Fatal("expected session manager to be created by proxy.New")
+	}
 
 	clientIP := "10.50.50.50"
 	// Pre-escalate to level 3 (critical) where block_all=true.
@@ -4218,8 +4233,8 @@ func TestFetchEndpoint_BlockAll_CleanTrafficBlocked(t *testing.T) {
 	req2.RemoteAddr = otherIP + ":12345"
 	w2 := httptest.NewRecorder()
 	mux.ServeHTTP(w2, req2)
-	// Clean request from non-escalated session should not be blocked.
-	if w2.Code == http.StatusForbidden {
-		t.Errorf("clean request from non-escalated session unexpectedly blocked: %s", w2.Body.String())
+	// Clean request from non-escalated session should return 200, not blocked.
+	if w2.Code != http.StatusOK {
+		t.Errorf("clean request from non-escalated session: expected 200 OK, got %d: %s", w2.Code, w2.Body.String())
 	}
 }

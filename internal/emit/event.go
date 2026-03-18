@@ -113,8 +113,8 @@ func ChainDetectionSeverity(action string) Severity {
 
 // EscalationSeverity returns the severity for an adaptive escalation event.
 // Escalation to "block" is critical; everything else is warn.
-func EscalationSeverity(toLevel string) Severity {
-	if toLevel == actionBlock {
+func EscalationSeverity(toAction string) Severity {
+	if toAction == actionBlock {
 		return SeverityCritical
 	}
 	return SeverityWarn

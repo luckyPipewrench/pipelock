@@ -641,7 +641,7 @@ func ForwardScannedInput(
 					IsNotification: isRPCNotification(verdict.ID),
 					LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked (session deny)", lineNum),
 					ErrorCode:      -32001,
-					ErrorMessage:   "pipelock: session escalation level critical",
+					ErrorMessage:   fmt.Sprintf("pipelock: session escalation level %s", session.EscalationLabel(rec.EscalationLevel())),
 				}
 				continue
 			}

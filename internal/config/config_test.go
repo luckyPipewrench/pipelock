@@ -7410,6 +7410,68 @@ func TestEscalationLevels_CriticalBlockAll_6State(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("yaml_omitted_block_all_defaults_true", func(t *testing.T) {
+		// When the critical section is present but block_all is omitted from
+		// YAML, Load() + ApplyDefaults() must produce true (fail-closed).
+		const yamlStr = `version: 1
+mode: balanced
+session_profiling:
+  enabled: true
+adaptive_enforcement:
+  enabled: true
+  escalation_threshold: 5.0
+  levels:
+    critical:
+      upgrade_warn: "block"
+`
+		dir := t.TempDir()
+		path := filepath.Join(dir, "config.yaml")
+		if err := os.WriteFile(path, []byte(yamlStr), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.AdaptiveEnforcement.Levels.Critical.BlockAll == nil {
+			t.Fatal("expected non-nil block_all after Load with omitted field")
+		}
+		if !*cfg.AdaptiveEnforcement.Levels.Critical.BlockAll {
+			t.Error("expected critical.block_all=true when omitted from YAML (fail-closed default)")
+		}
+	})
+
+	t.Run("yaml_null_block_all_defaults_true", func(t *testing.T) {
+		// When block_all is explicitly set to null in YAML, it decodes as nil
+		// and ApplyDefaults() must fill it with true (same as omitted).
+		const yamlStr = `version: 1
+mode: balanced
+session_profiling:
+  enabled: true
+adaptive_enforcement:
+  enabled: true
+  escalation_threshold: 5.0
+  levels:
+    critical:
+      block_all: null
+`
+		dir := t.TempDir()
+		path := filepath.Join(dir, "config.yaml")
+		if err := os.WriteFile(path, []byte(yamlStr), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.AdaptiveEnforcement.Levels.Critical.BlockAll == nil {
+			t.Fatal("expected non-nil block_all after Load with null field")
+		}
+		if !*cfg.AdaptiveEnforcement.Levels.Critical.BlockAll {
+			t.Error("expected critical.block_all=true when YAML null (fail-closed default)")
+		}
+	})
 }
 
 func TestEscalationLevels_MonotonicValidation(t *testing.T) {

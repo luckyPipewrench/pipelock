@@ -2743,7 +2743,7 @@ func TestEmit_LogAdaptiveUpgrade_WarnSeverity(t *testing.T) {
 	defer logger.Close()
 
 	// Upgrade to "warn" (not block) must emit at warn severity.
-	logger.LogAdaptiveUpgrade("agent|10.0.0.1", "suspicious", "forward", testActionWarn, ScannerDLP, testClientIP, "req-100")
+	logger.LogAdaptiveUpgrade("agent|10.0.0.1", "high", "forward", testActionWarn, ScannerDLP, testClientIP, "req-100")
 
 	ev, ok := sink.lastEvent()
 	if !ok {

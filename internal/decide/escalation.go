@@ -15,9 +15,9 @@ import "github.com/luckyPipewrench/pipelock/internal/config"
 //	2 = high
 //	3+ = critical
 //
-// Returns baseAction unchanged if cfg is nil, not enabled, or level is 0.
+// Returns baseAction unchanged if cfg is nil, not enabled, or level is <= 0.
 func UpgradeAction(baseAction string, level int, cfg *config.AdaptiveEnforcement) string {
-	if cfg == nil || !cfg.Enabled || level == 0 {
+	if cfg == nil || !cfg.Enabled || level <= 0 {
 		return baseAction
 	}
 

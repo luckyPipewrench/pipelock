@@ -29,6 +29,7 @@ builds:
       - -X github.com/luckyPipewrench/pipelock/internal/cli.GoVersion={{.Env.GOVERSION}}
       - -X github.com/luckyPipewrench/pipelock/internal/proxy.Version={{.Version}}
       - -X github.com/luckyPipewrench/pipelock/internal/license.PublicKeyHex={{.Env.LICENSE_PUBLIC_KEY}}
+      - -X github.com/luckyPipewrench/pipelock/internal/rules.KeyringHex={{.Env.LICENSE_PUBLIC_KEY}}
 
   # License service: cluster-only webhook handler for Polar subscription events.
   # Linux-only (runs in k8s), not distributed via Homebrew or public archives.

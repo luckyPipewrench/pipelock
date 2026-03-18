@@ -14,6 +14,13 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
+// SessionResult is the outcome of session profiling and adaptive signal recording.
+type SessionResult struct {
+	Blocked bool   // session-level block (anomaly in block mode)
+	Detail  string // human-readable reason
+	Level   int    // current escalation level for downstream UpgradeAction()
+}
+
 // Anomaly represents a behavioral anomaly detected in a session.
 type Anomaly struct {
 	Type   string  // domain_burst, volume_spike
@@ -316,9 +323,15 @@ func (sm *SessionManager) cleanup() {
 	for key, sess := range sm.sessions {
 		sess.mu.Lock()
 		idle := sess.lastActivity.Before(cutoff)
+		escLevel := sess.escalationLevel
 		sess.mu.Unlock()
 
 		if idle {
+			if escLevel > 0 {
+				if sm.metrics != nil {
+					sm.metrics.SetAdaptiveSessionLevel(session.EscalationLabel(escLevel), -1)
+				}
+			}
 			delete(sm.sessions, key)
 			evicted++
 		}
@@ -354,18 +367,27 @@ func (sm *SessionManager) evictOldest() {
 	var oldestKey string
 	var oldestTime time.Time
 
+	var oldestEscLevel int
+
 	for key, sess := range sm.sessions {
 		sess.mu.Lock()
 		la := sess.lastActivity
+		escLevel := sess.escalationLevel
 		sess.mu.Unlock()
 
 		if oldestKey == "" || la.Before(oldestTime) {
 			oldestKey = key
 			oldestTime = la
+			oldestEscLevel = escLevel
 		}
 	}
 
 	if oldestKey != "" {
+		if oldestEscLevel > 0 {
+			if sm.metrics != nil {
+				sm.metrics.SetAdaptiveSessionLevel(session.EscalationLabel(oldestEscLevel), -1)
+			}
+		}
 		delete(sm.sessions, oldestKey)
 		if sm.metrics != nil {
 			sm.metrics.RecordSessionEvicted()

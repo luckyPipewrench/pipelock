@@ -507,12 +507,13 @@ func newTLSInterceptTransport(
 // recordSessionActivity handles session profiling, adaptive signals, and anomaly
 // detection for any proxy handler. The agent parameter enables per-agent session
 // isolation (key becomes "agent|clientIP"); pass "" when agent is unavailable.
-// Returns (blocked, blockDetail) when the request should be rejected due to a
-// session anomaly in block mode.
-func (p *Proxy) recordSessionActivity(clientIP, agent, hostname, requestID string, resultAllowed bool, resultScore float64, cfg *config.Config, log *audit.Logger) (bool, string) {
+// Returns a SessionResult with Blocked set when the request should be rejected
+// due to a session anomaly in block mode, and Level set to the current
+// escalation level for downstream use by UpgradeAction().
+func (p *Proxy) recordSessionActivity(clientIP, agent, hostname, requestID string, resultAllowed bool, resultScore float64, cfg *config.Config, log *audit.Logger) SessionResult {
 	sm := p.sessionMgrPtr.Load()
 	if sm == nil || !cfg.SessionProfiling.Enabled {
-		return false, ""
+		return SessionResult{}
 	}
 
 	// Build session key: agent|clientIP when agent is known, else just clientIP.
@@ -530,36 +531,45 @@ func (p *Proxy) recordSessionActivity(clientIP, agent, hostname, requestID strin
 	anomalies = append(anomalies, ipAnomalies...)
 
 	// Record adaptive signals (only when adaptive enforcement is enabled).
-	// NOTE: v1 is scoring-only — signals accumulate and escalation events are
-	// logged/metriced for observability, but enforcement behavior is not yet
-	// changed by escalation level. Escalation-aware blocking is planned for v2.
 	if cfg.AdaptiveEnforcement.Enabled {
 		adaptiveCfg := cfg.AdaptiveEnforcement
 		if !resultAllowed {
 			if escalated, from, to := sess.RecordSignal(session.SignalBlock, adaptiveCfg.EscalationThreshold); escalated {
 				log.LogAdaptiveEscalation(key, from, to, clientIP, requestID, sess.ThreatScore())
 				p.metrics.RecordSessionEscalation(from, to)
+				// Adjust per-level gauge: decrement old level (if not normal), increment new.
+				if from != session.EscalationLabel(0) {
+					p.metrics.SetAdaptiveSessionLevel(from, -1)
+				}
+				p.metrics.SetAdaptiveSessionLevel(to, 1)
 			}
 		} else if resultScore > 0 {
 			if escalated, from, to := sess.RecordSignal(session.SignalNearMiss, adaptiveCfg.EscalationThreshold); escalated {
 				log.LogAdaptiveEscalation(key, from, to, clientIP, requestID, sess.ThreatScore())
 				p.metrics.RecordSessionEscalation(from, to)
+				// Adjust per-level gauge: decrement old level (if not normal), increment new.
+				if from != session.EscalationLabel(0) {
+					p.metrics.SetAdaptiveSessionLevel(from, -1)
+				}
+				p.metrics.SetAdaptiveSessionLevel(to, 1)
 			}
 		} else {
 			sess.RecordClean(adaptiveCfg.DecayPerCleanRequest)
 		}
 	}
 
+	level := sess.EscalationLevel()
+
 	for _, a := range anomalies {
 		log.LogSessionAnomaly(key, a.Type, a.Detail, clientIP, requestID, a.Score)
 		p.metrics.RecordSessionAnomaly(a.Type)
 
 		if cfg.SessionProfiling.AnomalyAction == config.ActionBlock && cfg.EnforceEnabled() {
-			return true, fmt.Sprintf("session anomaly: %s", a.Detail)
+			return SessionResult{Blocked: true, Detail: fmt.Sprintf("session anomaly: %s", a.Detail), Level: level}
 		}
 	}
 
-	return false, ""
+	return SessionResult{Level: level}
 }
 
 // ssrfSafeDialContext resolves DNS and validates all IPs against internal
@@ -833,7 +843,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 	// Session profiling: record BEFORE the enforce-mode early return so adaptive
 	// signals (SignalBlock) fire even for blocked requests.
-	sessionBlocked, sessionDetail := p.recordSessionActivity(clientIP, agent, parsed.Hostname(), requestID, result.Allowed, result.Score, cfg, log)
+	sr := p.recordSessionActivity(clientIP, agent, parsed.Hostname(), requestID, result.Allowed, result.Score, cfg, log)
 
 	if !result.Allowed {
 		if cfg.EnforceEnabled() {
@@ -859,12 +869,12 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		log.LogAnomaly("GET", displayURL, result.Scanner, result.Reason, clientIP, requestID, agent, result.Score)
 	}
 
-	if sessionBlocked {
+	if sr.Blocked {
 		writeJSON(w, http.StatusForbidden, FetchResponse{
 			URL:         displayURL,
 			Agent:       agent,
 			Blocked:     true,
-			BlockReason: sessionDetail,
+			BlockReason: sr.Detail,
 		})
 		return
 	}

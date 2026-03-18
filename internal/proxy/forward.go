@@ -134,7 +134,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	// Session profiling: record BEFORE the enforce-mode early return so adaptive
 	// signals (SignalBlock) fire even for blocked requests.
-	sessionBlocked, sessionDetail := p.recordSessionActivity(clientIP, agent, host, requestID, result.Allowed, result.Score, cfg, p.logger)
+	sr := p.recordSessionActivity(clientIP, agent, host, requestID, result.Allowed, result.Score, cfg, p.logger)
 
 	if !result.Allowed {
 		if cfg.EnforceEnabled() {
@@ -151,8 +151,8 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			result.Reason, clientIP, requestID, agent, result.Score)
 	}
 
-	if sessionBlocked {
-		http.Error(w, sessionDetail, http.StatusForbidden)
+	if sr.Blocked {
+		http.Error(w, sr.Detail, http.StatusForbidden)
 		return
 	}
 
@@ -407,7 +407,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Session profiling: record BEFORE the enforce-mode early return so adaptive
 	// signals (SignalBlock) fire even for blocked requests.
-	sessionBlocked, sessionDetail := p.recordSessionActivity(clientIP, agent, r.URL.Hostname(), requestID, result.Allowed, result.Score, cfg, p.logger)
+	sr := p.recordSessionActivity(clientIP, agent, r.URL.Hostname(), requestID, result.Allowed, result.Score, cfg, p.logger)
 
 	if !result.Allowed {
 		if cfg.EnforceEnabled() {
@@ -423,8 +423,8 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			result.Reason, clientIP, requestID, agent, result.Score)
 	}
 
-	if sessionBlocked {
-		http.Error(w, sessionDetail, http.StatusForbidden)
+	if sr.Blocked {
+		http.Error(w, sr.Detail, http.StatusForbidden)
 		return
 	}
 

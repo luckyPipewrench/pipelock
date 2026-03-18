@@ -665,8 +665,11 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 							blocked = true
 							return
 						}
-						// Escalation can upgrade to block even in audit mode.
-						if !r.cfg.EnforceEnabled() && addrAction == config.ActionBlock {
+						// Escalation can upgrade to block even in audit mode, but only
+						// when UpgradeAction actually changed the action. If addrAction
+						// was already block from config (not from escalation), audit
+						// mode allows it through and logs it below.
+						if !r.cfg.EnforceEnabled() && addrAction == config.ActionBlock && addrAction != originalAddrAction {
 							reason := fmt.Sprintf("address poisoning: %s (escalated)", names[0])
 							log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, scannerLabelAddressProtection, reason, r.clientIP, r.requestID)
 							plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "address poisoning detected")

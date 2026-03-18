@@ -1323,7 +1323,7 @@ func TestInterceptTunnel_CEEBlocked(t *testing.T) {
 			defer wg.Done()
 			_ = interceptTunnel(ctx, proxyConn, host, port, cfg, sc, cache, logger, m,
 				"10.0.0.1", fmt.Sprintf("req-%d", i), "",
-				upstream.Client().Transport, nil, et, nil, nil, nil)
+				upstream.Client().Transport, nil, et, nil, nil, nil, nil)
 		}()
 
 		tlsConn := tls.Client(clientConn, &tls.Config{

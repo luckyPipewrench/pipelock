@@ -2303,6 +2303,7 @@ func TestWSProxyHeaderDLPAuditMode(t *testing.T) {
 	if logErr != nil {
 		t.Fatalf("audit.New: %v", logErr)
 	}
+	defer logger.Close()
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
@@ -2384,7 +2385,10 @@ func TestWSProxyHeaderDLPAuditMode(t *testing.T) {
 	}
 
 	// Verify the anomaly was logged (proves scanning ran, not just skipped).
-	logData, _ := os.ReadFile(filepath.Clean(logFile))
+	logData, readErr := os.ReadFile(filepath.Clean(logFile))
+	if readErr != nil {
+		t.Fatalf("failed to read audit log: %v", readErr)
+	}
 	logOutput := string(logData)
 	if !strings.Contains(logOutput, "anomaly") {
 		t.Errorf("expected anomaly log entry for audit-mode header DLP, got logs: %s", logOutput)
@@ -2395,6 +2399,11 @@ func TestWSProxyHeaderDLPAuditMode(t *testing.T) {
 // header (expanded from the original 4-header hardcoded list). An agent
 // could exfiltrate data in Origin, Sec-WebSocket-Protocol, or User-Agent.
 func TestWSProxyHeaderDLPOrigin(t *testing.T) {
+	// Use a reachable backend so dial failure is attributable to DLP,
+	// not DNS/network errors from an unreachable host.
+	backendAddr, backendCleanup := wsEchoServer(t)
+	defer backendCleanup()
+
 	proxyAddr, cleanup := setupWSProxy(t, func(cfg *config.Config) {
 		cfg.WebSocketProxy.OriginPolicy = config.OriginPolicyForward
 	})
@@ -2405,7 +2414,7 @@ func TestWSProxyHeaderDLPOrigin(t *testing.T) {
 
 	// Secret hidden in Origin header value.
 	secret := "sk-ant-" + "IOSFODNN7EXAMPLE1234567890abcdef"
-	wsURL := fmt.Sprintf("ws://%s/ws?url=ws://evil.example.com:9999", proxyAddr)
+	wsURL := fmt.Sprintf("ws://%s/ws?url=ws://%s", proxyAddr, backendAddr)
 
 	dialer := ws.Dialer{
 		Header: ws.HandshakeHeaderHTTP(http.Header{

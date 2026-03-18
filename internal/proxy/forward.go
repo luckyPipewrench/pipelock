@@ -554,32 +554,91 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close() //nolint:errcheck // response body
 
-	// Copy response headers, stripping hop-by-hop
-	respHeader := w.Header()
-	for k, vv := range resp.Header {
-		for _, v := range vv {
-			respHeader.Add(k, v)
-		}
-	}
-	removeHopByHopHeaders(respHeader)
-
-	// Drop Content-Length: the upstream value may exceed MaxResponseMB. If
-	// we forward it and then cap the body with LimitReader, the client sees
-	// a Content-Length promising more data than it receives, corrupting
-	// HTTP/1.1 persistent connections. Without Content-Length, Go's HTTP
-	// server falls back to chunked transfer encoding.
-	respHeader.Del("Content-Length")
-
-	w.WriteHeader(resp.StatusCode)
-
-	// Stream body with size limit. Cap at the tighter of max_response_mb
-	// and remaining byte budget so forward-proxy responses are truncated
-	// when the per-agent byte budget is exhausted.
+	// Size limit: tighter of max_response_mb and remaining byte budget.
 	maxBytes := int64(cfg.FetchProxy.MaxResponseMB) * 1024 * 1024
 	budgetRemaining := resolved.Budget.RemainingBytes()
 	if budgetRemaining >= 0 && budgetRemaining < maxBytes {
 		maxBytes = budgetRemaining
 	}
+
+	// Response injection scanning: buffer-then-scan-then-send when enabled.
+	// Headers are copied AFTER the scan decision so blocked responses don't
+	// leak upstream headers (Set-Cookie, Content-Encoding, etc.) to the client.
+	if sc.ResponseScanningEnabled() {
+		// Fail-closed on compressed responses: regex can't match compressed content.
+		if hasNonIdentityEncoding(resp.Header.Get("Content-Encoding")) {
+			p.logger.LogBlocked(r.Method, targetURL, "response_scan", "compressed response cannot be scanned", clientIP, requestID, agent)
+			p.metrics.RecordBlocked(r.URL.Hostname(), "response_scan", time.Since(start), agentLabel)
+			http.Error(w, "blocked: compressed response cannot be scanned", http.StatusForbidden)
+			return
+		}
+
+		respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, maxBytes))
+		if readErr != nil {
+			p.logger.LogError(r.Method, targetURL, clientIP, requestID, agent, readErr)
+			http.Error(w, "blocked: response read error", http.StatusForbidden)
+			return
+		}
+
+		scanResult := sc.ScanResponse(r.Context(), string(respBody))
+		if !scanResult.Clean {
+			action := sc.ResponseAction()
+			patternNames := make([]string, len(scanResult.Matches))
+			for i, match := range scanResult.Matches {
+				patternNames[i] = match.PatternName
+			}
+			bundleRules := responseBundleRules(scanResult.Matches)
+			reason := fmt.Sprintf("response injection: %s", strings.Join(patternNames, ", "))
+
+			switch action {
+			case config.ActionBlock, config.ActionAsk:
+				p.logger.LogBlocked(r.Method, targetURL, "response_scan", reason, clientIP, requestID, agent)
+				p.metrics.RecordBlocked(r.URL.Hostname(), "response_scan", time.Since(start), agentLabel)
+				http.Error(w, "blocked: response contains injection", http.StatusForbidden)
+				return
+			case config.ActionStrip:
+				if scanResult.TransformedContent != "" {
+					respBody = []byte(scanResult.TransformedContent)
+					// Remove body-derived validators that no longer match the stripped content.
+					resp.Header.Del("Etag")
+					resp.Header.Del("Content-Md5")
+					resp.Header.Del("Digest")
+				} else {
+					p.logger.LogBlocked(r.Method, targetURL, "response_scan", reason+" (strip failed)", clientIP, requestID, agent)
+					p.metrics.RecordBlocked(r.URL.Hostname(), "response_scan", time.Since(start), agentLabel)
+					http.Error(w, "blocked: response contains injection", http.StatusForbidden)
+					return
+				}
+				p.logger.LogResponseScan(targetURL, clientIP, requestID, agent, config.ActionStrip, len(scanResult.Matches), patternNames, bundleRules)
+			default:
+				p.logger.LogResponseScan(targetURL, clientIP, requestID, agent, action, len(scanResult.Matches), patternNames, bundleRules)
+			}
+		}
+
+		// Scan passed — now copy upstream headers and write response.
+		copyResponseHeaders(w.Header(), resp.Header)
+		w.WriteHeader(resp.StatusCode)
+		n, _ := w.Write(respBody)
+		written := int64(n)
+
+		sc.RecordRequest(strings.ToLower(r.URL.Hostname()), int(written))
+		_ = resolved.Budget.RecordBytes(written)
+
+		if budgetRemaining >= 0 && written >= budgetRemaining {
+			reason := fmt.Sprintf("response truncated at byte budget: %d bytes written", written)
+			p.logger.LogAnomaly(r.Method, targetURL, "budget_truncated", reason, clientIP, requestID, agent, 0)
+			return
+		}
+
+		duration := time.Since(start)
+		p.metrics.RecordAllowed(duration, agentLabel)
+		p.logger.LogForwardHTTP(r.Method, targetURL, clientIP, requestID, agent, resp.StatusCode, int(written), duration)
+		return
+	}
+
+	// No response scanning: copy headers and stream directly for lower latency.
+	copyResponseHeaders(w.Header(), resp.Header)
+	w.WriteHeader(resp.StatusCode)
 	written, _ := io.Copy(w, io.LimitReader(resp.Body, maxBytes))
 
 	// Record data budget for the target domain
@@ -588,9 +647,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// Record bytes for per-agent budget tracking.
 	_ = resolved.Budget.RecordBytes(written)
 
-	// Detect truncated response due to budget exhaustion. If budget was the
-	// effective limit and all available bytes were consumed, the response was
-	// likely truncated. Log as budget exhaustion instead of normal success.
+	// Detect truncated response due to budget exhaustion.
 	if budgetRemaining >= 0 && written >= budgetRemaining {
 		reason := fmt.Sprintf("response truncated at byte budget: %d bytes written", written)
 		p.logger.LogAnomaly(r.Method, targetURL, "budget_truncated", reason, clientIP, requestID, agent, 0)
@@ -600,6 +657,19 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	duration := time.Since(start)
 	p.metrics.RecordAllowed(duration, agentLabel)
 	p.logger.LogForwardHTTP(r.Method, targetURL, clientIP, requestID, agent, resp.StatusCode, int(written), duration)
+}
+
+// copyResponseHeaders copies upstream response headers to the client response,
+// stripping hop-by-hop headers and Content-Length (which may be stale after
+// body truncation or stripping).
+func copyResponseHeaders(dst, src http.Header) {
+	for k, vv := range src {
+		for _, v := range vv {
+			dst.Add(k, v)
+		}
+	}
+	removeHopByHopHeaders(dst)
+	dst.Del("Content-Length")
 }
 
 // dlpMatchNames extracts pattern names from a slice of DLP matches.

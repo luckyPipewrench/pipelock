@@ -602,6 +602,9 @@ func ForwardScannedInput(
 					// rather than re-parsing via extractRPCID. A tools/call always
 					// has an ID; using the parsed value avoids a silent-drop bug
 					// if re-parsing fails on unusual ID shapes.
+					if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
+						recordSignalWithEscalation(rec, session.SignalBlock, adaptiveCfg.EscalationThreshold, logW, auditLogger, m, "default", "", "")
+					}
 					blockedCh <- BlockedRequest{
 						ID:             verdict.ID,
 						IsNotification: isRPCNotification(verdict.ID),
@@ -660,6 +663,9 @@ func ForwardScannedInput(
 			if err := writer.WriteMessage(line); err != nil {
 				_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
 				return
+			}
+			if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
+				rec.RecordClean(adaptiveCfg.DecayPerCleanRequest)
 			}
 			continue
 		}

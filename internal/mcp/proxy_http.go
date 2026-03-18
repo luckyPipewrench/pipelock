@@ -243,6 +243,9 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 					auditLogger.LogChainDetection(cv.PatternName, cv.Severity, cv.Action, toolName, auditSessionKey)
 				}
 				if cv.Action == config.ActionBlock {
+					if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
+						recordSignalWithEscalation(rec, session.SignalBlock, adaptiveCfg.EscalationThreshold, logW, auditLogger, m, auditSessionKey, "", "")
+					}
 					return &BlockedRequest{
 						ID:             verdict.ID,
 						IsNotification: isRPCNotification(verdict.ID),
@@ -290,6 +293,9 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 				ErrorCode:      -32005,
 				ErrorMessage:   fmt.Sprintf("pipelock: %s", reason),
 			}
+		}
+		if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
+			rec.RecordClean(adaptiveCfg.DecayPerCleanRequest)
 		}
 		return nil
 	}
@@ -672,25 +678,6 @@ func RunHTTPListenerProxy(
 			}
 		}
 
-		// Scan Authorization header for DLP patterns. The body scanner
-		// doesn't see HTTP headers, so an agent could leak credentials
-		// via the Authorization header without triggering DLP.
-		if auth := r.Header.Get("Authorization"); auth != "" {
-			dlpResult := sc.ScanTextForDLP(r.Context(), auth)
-			if !dlpResult.Clean {
-				_, _ = fmt.Fprintf(safeLogW, "pipelock: DLP match in Authorization header: %s\n", dlpResult.Matches[0].PatternName)
-				w.Header().Set("Content-Type", "application/json")
-				rpcID := extractRPCID(body)
-				resp, _ := json.Marshal(rpcError{
-					JSONRPC: jsonrpc.Version,
-					ID:      rpcID,
-					Error:   rpcErrorDetail{Code: -32001, Message: "pipelock: request blocked by MCP input scanning"},
-				})
-				_, _ = w.Write(resp)
-				return
-			}
-		}
-
 		// Use Mcp-Session-Id header as chain detection session key so
 		// concurrent clients don't share tool call history. When no
 		// session ID is present, fall back to the client IP (without
@@ -714,6 +701,28 @@ func RunHTTPListenerProxy(
 		var reqRec session.Recorder
 		if store != nil {
 			reqRec = store.GetOrCreate(chainSessionKey)
+		}
+
+		// Scan Authorization header for DLP patterns. The body scanner
+		// doesn't see HTTP headers, so an agent could leak credentials
+		// via the Authorization header without triggering DLP.
+		if auth := r.Header.Get("Authorization"); auth != "" {
+			dlpResult := sc.ScanTextForDLP(r.Context(), auth)
+			if !dlpResult.Clean {
+				_, _ = fmt.Fprintf(safeLogW, "pipelock: DLP match in Authorization header: %s\n", dlpResult.Matches[0].PatternName)
+				if reqRec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
+					recordSignalWithEscalation(reqRec, session.SignalBlock, adaptiveCfg.EscalationThreshold, safeLogW, auditLogger, m, auditSessionKey, "", "")
+				}
+				w.Header().Set("Content-Type", "application/json")
+				rpcID := extractRPCID(body)
+				resp, _ := json.Marshal(rpcError{
+					JSONRPC: jsonrpc.Version,
+					ID:      rpcID,
+					Error:   rpcErrorDetail{Code: -32001, Message: "pipelock: request blocked by MCP input scanning"},
+				})
+				_, _ = w.Write(resp)
+				return
+			}
 		}
 
 		// Input scanning: DLP, injection, policy, chain detection.

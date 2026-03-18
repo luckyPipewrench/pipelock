@@ -15,6 +15,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	decide "github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
@@ -23,6 +24,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 // methodToolsCall is the JSON-RPC method for MCP tool invocations.
@@ -471,6 +473,8 @@ type SessionBindingConfig struct {
 // response-side (ForwardScanned) can validate that response IDs were solicited.
 // When cee is non-nil, outbound payloads are recorded for cross-request
 // exfiltration detection (entropy budget and fragment reassembly DLP).
+// When rec is non-nil and adaptiveCfg is enabled, threat signals are recorded
+// and the effective action may be upgraded based on session escalation level.
 // Blocked request IDs are sent via blockedCh so the main goroutine (which owns
 // clientOut writes) can send error responses without concurrent write races.
 func ForwardScannedInput(
@@ -488,6 +492,8 @@ func ForwardScannedInput(
 	tracker *RequestTracker,
 	auditLogger *audit.Logger,
 	cee *CEEDeps,
+	rec session.Recorder,
+	adaptiveCfg *config.AdaptiveEnforcement,
 ) {
 	defer close(blockedCh)
 
@@ -710,6 +716,11 @@ func ForwardScannedInput(
 			errMsg = errPolicyBlocked
 		}
 
+		// Escalation upgrade: may promote warn/ask to block for elevated sessions.
+		if rec != nil {
+			effectiveAction = decide.UpgradeAction(effectiveAction, rec.EscalationLevel(), adaptiveCfg)
+		}
+
 		switch effectiveAction {
 		case config.ActionBlock:
 			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked %s request (%s)\n",
@@ -752,6 +763,20 @@ func ForwardScannedInput(
 			if err := writer.WriteMessage(line); err != nil {
 				_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
 				return
+			}
+		}
+
+		// Signal recording: record after action is taken.
+		if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
+			switch effectiveAction {
+			case config.ActionBlock:
+				rec.RecordSignal(session.SignalBlock, adaptiveCfg.EscalationThreshold)
+			default:
+				if len(reasons) > 0 {
+					rec.RecordSignal(session.SignalNearMiss, adaptiveCfg.EscalationThreshold)
+				} else {
+					rec.RecordClean(adaptiveCfg.DecayPerCleanRequest)
+				}
 			}
 		}
 	}

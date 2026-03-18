@@ -27,11 +27,14 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 // RunHTTPProxy bridges stdio (client) to an upstream HTTP MCP server with
 // bidirectional scanning. Reads JSON-RPC from clientIn, POSTs to upstreamURL,
 // scans responses via ForwardScanned, writes to clientOut.
+// When store is non-nil, a per-invocation session recorder is created and used
+// for adaptive enforcement signal recording across both input and response scanning.
 func RunHTTPProxy(
 	ctx context.Context,
 	clientIn io.Reader,
@@ -48,10 +51,18 @@ func RunHTTPProxy(
 	chainMatcher *chains.Matcher,
 	auditLogger *audit.Logger,
 	cee *CEEDeps,
+	store session.Store,
+	adaptiveCfg *config.AdaptiveEnforcement,
 ) error {
 	// Create a child context so we can stop the GET stream when stdin EOF is reached.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+
+	// Per-invocation adaptive enforcement recorder.
+	var rec session.Recorder
+	if store != nil {
+		rec = store.GetOrCreate(session.NextInvocationKey("mcp-http"))
+	}
 
 	safeClientOut := &syncWriter{w: clientOut}
 	safeLogW := &syncWriter{w: logW}
@@ -144,7 +155,7 @@ func RunHTTPProxy(
 		}
 
 		// Scan and forward response.
-		_, scanErr := ForwardScanned(respReader, safeClientOut, safeLogW, sc, approver, fwdToolCfg, tracker, nil, nil)
+		_, scanErr := ForwardScanned(respReader, safeClientOut, safeLogW, sc, approver, fwdToolCfg, tracker, rec, adaptiveCfg)
 		if scanErr != nil {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
 			lastScanErr = scanErr
@@ -156,7 +167,7 @@ func RunHTTPProxy(
 		// the Once and permanently prevent the GET stream.
 		if httpClient.SessionID() != "" {
 			getStreamOnce.Do(func() {
-				startGETStream(ctx, httpClient, safeClientOut, safeLogW, sc, approver, fwdToolCfg, &wg)
+				startGETStream(ctx, httpClient, safeClientOut, safeLogW, sc, approver, fwdToolCfg, rec, adaptiveCfg, &wg)
 			})
 		}
 	}
@@ -421,6 +432,7 @@ func upstreamErrorResponse(id json.RawMessage, upstreamErr error) []byte {
 // Reconnects with exponential backoff (1s base, 30s cap) on stream end or
 // transient errors. Exits permanently only on transport.ErrStreamNotSupported (HTTP 405)
 // or context cancellation.
+// rec and adaptiveCfg are passed through to ForwardScanned for adaptive enforcement.
 func startGETStream(
 	ctx context.Context,
 	httpClient *transport.HTTPClient,
@@ -429,6 +441,8 @@ func startGETStream(
 	sc *scanner.Scanner,
 	approver *hitl.Approver,
 	toolCfg *tools.ToolScanConfig,
+	rec session.Recorder,
+	adaptiveCfg *config.AdaptiveEnforcement,
 	wg *sync.WaitGroup,
 ) {
 	wg.Add(1)
@@ -470,7 +484,7 @@ func startGETStream(
 
 			// nil tracker: GET stream carries server-initiated messages,
 			// not responses to client requests.
-			_, scanErr := ForwardScanned(reader, safeClientOut, safeLogW, sc, approver, toolCfg, nil, nil, nil)
+			_, scanErr := ForwardScanned(reader, safeClientOut, safeLogW, sc, approver, toolCfg, nil, rec, adaptiveCfg)
 			if scanErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: GET stream scan error: %v\n", scanErr)
 			}
@@ -498,6 +512,10 @@ func startGETStream(
 // net.ListenConfig). This separates the bind step from serving, so callers
 // detect port conflicts synchronously instead of losing them inside a goroutine.
 //
+// When store is non-nil, per-request session recorders are created using the
+// Mcp-Session-Id header (or RemoteAddr fallback) as the session key, enabling
+// adaptive enforcement signal tracking per logical MCP session.
+//
 // Endpoints:
 //   - POST / : scan and forward JSON-RPC requests to upstream
 //   - GET /health : returns 200 OK for liveness probes
@@ -515,6 +533,8 @@ func RunHTTPListenerProxy(
 	chainMatcher *chains.Matcher,
 	auditLogger *audit.Logger,
 	cee *CEEDeps,
+	store session.Store,
+	adaptiveCfg *config.AdaptiveEnforcement,
 ) error {
 	safeLogW := &syncWriter{w: logW}
 
@@ -656,6 +676,13 @@ func RunHTTPListenerProxy(
 			auditSessionKey = hashSessionKey(host)
 		}
 
+		// Per-request adaptive enforcement recorder. Uses the same session key
+		// as chain detection so signals accumulate per logical MCP session.
+		var reqRec session.Recorder
+		if store != nil {
+			reqRec = store.GetOrCreate(chainSessionKey)
+		}
+
 		// Input scanning: DLP, injection, policy, chain detection.
 		if blocked := scanHTTPInput(body, sc, safeLogW, inputCfg, policyCfg, chainMatcher, chainSessionKey, auditSessionKey, auditLogger, cee); blocked != nil {
 			w.Header().Set("Content-Type", "application/json")
@@ -717,7 +744,7 @@ func RunHTTPListenerProxy(
 		reader := &transport.SingleMessageReader{Body: upResp.Body}
 		var buf bytes.Buffer
 		bufWriter := &syncWriter{w: &buf}
-		_, scanErr := ForwardScanned(reader, bufWriter, safeLogW, sc, approver, fwdToolCfg, nil, nil, nil)
+		_, scanErr := ForwardScanned(reader, bufWriter, safeLogW, sc, approver, fwdToolCfg, nil, reqRec, adaptiveCfg)
 		if scanErr != nil {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
 		}

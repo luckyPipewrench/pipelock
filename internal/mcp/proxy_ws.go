@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
@@ -18,12 +19,15 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 // RunWSProxy proxies MCP JSON-RPC between stdin/stdout and a WebSocket upstream.
 // Messages from stdin are scanned and forwarded as WS text frames to the upstream.
 // Messages from the upstream WS connection are scanned and written to stdout.
 // Returns when stdin reaches EOF or the upstream connection closes.
+// When store is non-nil, a per-invocation session recorder is created and used
+// for adaptive enforcement signal recording across both input and response scanning.
 func RunWSProxy(
 	ctx context.Context,
 	clientIn io.Reader,
@@ -39,12 +43,20 @@ func RunWSProxy(
 	chainMatcher *chains.Matcher,
 	auditLogger *audit.Logger,
 	cee *CEEDeps,
+	store session.Store,
+	adaptiveCfg *config.AdaptiveEnforcement,
 ) error {
 	// Separate parent and inner context. The parent context comes from
 	// signal handling (SIGINT/SIGTERM). The inner context is cancelled
 	// when either direction finishes (stdin EOF or upstream close).
 	innerCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+
+	// Per-invocation adaptive enforcement recorder.
+	var rec session.Recorder
+	if store != nil {
+		rec = store.GetOrCreate(session.NextInvocationKey("mcp-ws"))
+	}
 
 	safeClientOut := &syncWriter{w: clientOut}
 	safeLogW := &syncWriter{w: logW}
@@ -97,7 +109,7 @@ func RunWSProxy(
 	go func() {
 		defer wg.Done()
 		defer cancel() // Signal main goroutine if upstream closes first.
-		_, scanErr := ForwardScanned(wsClient, safeClientOut, safeLogW, sc, approver, fwdToolCfg, tracker, nil, nil)
+		_, scanErr := ForwardScanned(wsClient, safeClientOut, safeLogW, sc, approver, fwdToolCfg, tracker, rec, adaptiveCfg)
 		if scanErr != nil {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream scan error: %v\n", scanErr)
 			lastScanErr = scanErr

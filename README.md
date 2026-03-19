@@ -217,7 +217,7 @@ What each mode prevents, detects, or logs:
 
 ### 11-Layer URL Scanner
 
-Every request passes through: scheme validation, CRLF injection detection, path traversal blocking, domain blocklist, DLP pattern matching (44 built-in patterns for API keys, tokens, credentials, and cryptocurrency private keys), path entropy analysis, subdomain entropy analysis, SSRF protection with DNS rebinding prevention, per-domain rate limiting, URL length limits, and per-domain data budgets.
+Every request passes through: scheme validation, CRLF injection detection, path traversal blocking, domain blocklist, DLP pattern matching (46 built-in patterns for API keys, tokens, credentials, cryptocurrency private keys, and financial identifiers with checksum validation), path entropy analysis, subdomain entropy analysis, SSRF protection with DNS rebinding prevention, per-domain rate limiting, URL length limits, and per-domain data budgets.
 
 DLP runs before DNS resolution, designed to catch secrets before any DNS query leaves the proxy. BIP-39 seed phrase detection uses a dedicated scanner with dictionary lookup, sliding window matching, and SHA-256 checksum validation to catch cryptocurrency mnemonic exfiltration across all transport surfaces.
 
@@ -431,7 +431,7 @@ curl http://localhost:9090/api/v1/killswitch/status \
   "version": "x.y.z",
   "mode": "balanced",
   "uptime_seconds": 3600.5,
-  "dlp_patterns": 44,
+  "dlp_patterns": 46,
   "response_scan_enabled": true,
   "kill_switch_active": false
 }

@@ -1566,6 +1566,121 @@ func TestScanTextForDLP_SegmentBase64_EncodingLabel(t *testing.T) {
 	}
 }
 
+func TestScanTextForDLP_CreditCard(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// Valid Visa test card — should match.
+	result := s.ScanTextForDLP(context.Background(), "Please send payment to card 4111111111111111")
+	if result.Clean {
+		t.Error("expected credit card number to be detected in text")
+	}
+	if len(result.Matches) == 0 || result.Matches[0].PatternName != "Credit Card Number" {
+		t.Errorf("expected Credit Card Number match, got: %+v", result.Matches)
+	}
+}
+
+func TestScanTextForDLP_CreditCard_FalsePositiveRejected(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// Invalid Visa (fails Luhn) — should NOT match.
+	result := s.ScanTextForDLP(context.Background(), "Reference number 4111111111111112 for your order")
+	found := false
+	for _, m := range result.Matches {
+		if m.PatternName == "Credit Card Number" {
+			found = true
+		}
+	}
+	if found {
+		t.Error("expected invalid Luhn number to NOT trigger Credit Card DLP")
+	}
+}
+
+func TestScanTextForDLP_IBAN(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// Valid German IBAN — should match.
+	result := s.ScanTextForDLP(context.Background(), "Wire to DE89370400440532013000 immediately")
+	if result.Clean {
+		t.Error("expected IBAN to be detected in text")
+	}
+	if len(result.Matches) == 0 || result.Matches[0].PatternName != "IBAN" {
+		t.Errorf("expected IBAN match, got: %+v", result.Matches)
+	}
+}
+
+func TestScanTextForDLP_IBAN_FalsePositiveRejected(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// Invalid IBAN (zeroed check digits, fails mod-97) — should NOT match.
+	result := s.ScanTextForDLP(context.Background(), "Account ref DE00370400440532013000 in our system")
+	found := false
+	for _, m := range result.Matches {
+		if m.PatternName == "IBAN" {
+			found = true
+		}
+	}
+	if found {
+		t.Error("expected invalid IBAN (bad mod-97) to NOT trigger IBAN DLP")
+	}
+}
+
+func TestScanTextForDLP_CreditCard_WithSeparators(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// Visa with dashes — should match.
+	result := s.ScanTextForDLP(context.Background(), "Card: 4111-1111-1111-1111")
+	if result.Clean {
+		t.Error("expected dash-separated credit card to be detected")
+	}
+}
+
+func TestScanTextForDLP_ABA_OptIn(t *testing.T) {
+	// ABA is NOT in default presets. Test that adding it via config works.
+	cfg := testConfig()
+	cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{
+		Name:      "ABA Routing Number",
+		Regex:     `\b\d{9}\b`,
+		Severity:  "low",
+		Validator: config.ValidatorABA,
+	})
+	s := New(cfg)
+	defer s.Close()
+
+	// Valid ABA (JPMorgan Chase) — should match.
+	result := s.ScanTextForDLP(context.Background(), "Routing: 021000021")
+	found := false
+	for _, m := range result.Matches {
+		if m.PatternName == "ABA Routing Number" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected valid ABA routing number to be detected")
+	}
+
+	// Invalid ABA (bad checksum + bad prefix) — should NOT match.
+	result2 := s.ScanTextForDLP(context.Background(), "ID number 999999999")
+	found2 := false
+	for _, m := range result2.Matches {
+		if m.PatternName == "ABA Routing Number" {
+			found2 = true
+		}
+	}
+	if found2 {
+		t.Error("expected invalid ABA to NOT trigger DLP")
+	}
+}
+
 func TestScanTextForDLP_BundleProvenance(t *testing.T) {
 	const (
 		bundleName    = "acme-dlp-extras"

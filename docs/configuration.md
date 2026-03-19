@@ -307,9 +307,29 @@ dlp:
 | `scan_env` | `true` | Scan environment variables for leaked values |
 | `secrets_file` | `""` | Path to file with known secrets (one per line) |
 | `min_env_secret_length` | `16` | Min env var value length to consider |
-| `include_defaults` | `true` | Merge your patterns with the 44 built-in patterns |
-| `patterns` | 44 built-in | DLP credential detection patterns |
+| `include_defaults` | `true` | Merge your patterns with the 46 built-in patterns |
+| `patterns` | 46 built-in | DLP credential detection patterns |
+| `patterns[].validator` | `""` | Post-match checksum validator: `luhn`, `mod97`, or `aba` |
 | `patterns[].exempt_domains` | `[]` | Domains where this pattern is not enforced (wildcard supported) |
+
+### Validated Patterns (Financial DLP)
+
+Some patterns include a `validator` field for post-match checksum verification. When set, regex matches are passed through a checksum algorithm before being flagged. This eliminates false positives from random numbers that happen to match the pattern format.
+
+Built-in validated patterns:
+- **Credit Card Number** (`validator: luhn`) — Visa, Mastercard (including 2-series), Amex, Discover, JCB. Luhn checksum rejects ~90% of false positives.
+- **IBAN** (`validator: mod97`) — International Bank Account Numbers (80+ countries). ISO 7064 mod-97 rejects ~99% of false positives.
+
+To add ABA routing numbers (not in defaults due to higher false positive rate):
+
+```yaml
+dlp:
+  patterns:
+    - name: "ABA Routing Number"
+      regex: '\b\d{9}\b'
+      severity: low
+      validator: aba
+```
 
 ### Pattern Merging
 

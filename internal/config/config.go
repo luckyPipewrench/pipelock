@@ -61,6 +61,13 @@ const (
 	SeverityMedium   = "medium"
 )
 
+// DLP validator names for post-match checksum verification.
+const (
+	ValidatorLuhn  = "luhn"
+	ValidatorMod97 = "mod97"
+	ValidatorABA   = "aba"
+)
+
 // Confidence constants for community rule minimum confidence filtering.
 const (
 	ConfidenceHigh   = "high"
@@ -393,10 +400,11 @@ type DLP struct {
 type DLPPattern struct {
 	Name          string   `yaml:"name"`
 	Regex         string   `yaml:"regex"`
-	Severity      string   `yaml:"severity"`       // critical, high, medium, low
-	ExemptDomains []string `yaml:"exempt_domains"` // domains where this pattern is not enforced
-	Bundle        string   `yaml:"-"`              // set by rules loader, not from YAML
-	BundleVersion string   `yaml:"-"`              // set by rules loader, not from YAML
+	Severity      string   `yaml:"severity"`            // critical, high, medium, low
+	Validator     string   `yaml:"validator,omitempty"` // post-match checksum: "luhn", "mod97", "aba"
+	ExemptDomains []string `yaml:"exempt_domains"`      // domains where this pattern is not enforced
+	Bundle        string   `yaml:"-"`                   // set by rules loader, not from YAML
+	BundleVersion string   `yaml:"-"`                   // set by rules loader, not from YAML
 }
 
 // AddressProtection configures crypto address poisoning detection.
@@ -1339,6 +1347,13 @@ func (c *Config) Validate() error {
 		}
 		if _, err := regexp.Compile(p.Regex); err != nil {
 			return fmt.Errorf("DLP pattern %q has invalid regex: %w", p.Name, err)
+		}
+		if p.Validator != "" {
+			valid := p.Validator == ValidatorLuhn || p.Validator == ValidatorMod97 || p.Validator == ValidatorABA
+			if !valid {
+				return fmt.Errorf("DLP pattern %q has unknown validator %q (valid: %s, %s, %s)",
+					p.Name, p.Validator, ValidatorLuhn, ValidatorMod97, ValidatorABA)
+			}
 		}
 		for j, raw := range p.ExemptDomains {
 			d := strings.TrimSuffix(strings.TrimSpace(strings.ToLower(raw)), ".")
@@ -2564,6 +2579,14 @@ func Defaults() *Config {
 				// so \b still fires. Accepted tradeoff: such params are rare in agent traffic.
 				// Case-insensitive matching is added automatically by scanner.New() via (?i) prefix.
 				{Name: "Credential in URL", Regex: `\b(?:password|passwd|secret|token|apikey|api_key|api-key)\s*=\s*[^\s&]{4,}`, Severity: "high"},
+
+				// Financial identifiers — validated with post-match checksums to minimize
+				// false positives. Luhn drops ~90% of random 16-digit matches, mod-97
+				// drops ~99% of random IBAN-format matches. ABA is not in defaults due
+				// to high FP rate (~10% of random 9-digit numbers pass checksum); users
+				// can add it via config with validator: "aba".
+				{Name: "Credit Card Number", Regex: `\b(?:4\d{3}|5[1-5]\d{2}|2(?:2[2-9]\d|[3-6]\d{2}|7[01]\d|720)|3[47]\d{2}|6(?:011|[45]\d{2})|35(?:2[89]|[3-8]\d))[- ]?\d{4}[- ]?\d{4}[- ]?\d{1,4}\b`, Severity: "medium", Validator: ValidatorLuhn},
+				{Name: "IBAN", Regex: `\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b`, Severity: "medium", Validator: ValidatorMod97},
 			},
 		},
 		MCPInputScanning: MCPInputScanning{

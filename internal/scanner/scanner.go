@@ -94,9 +94,25 @@ type compiledPattern struct {
 	name          string
 	re            *regexp.Regexp
 	severity      string
-	exemptDomains []string // domains where this pattern is skipped (wildcard supported)
-	bundle        string   // empty for built-in/config patterns
+	validate      func(string) bool // post-match checksum (nil = regex-only)
+	exemptDomains []string          // domains where this pattern is skipped (wildcard supported)
+	bundle        string            // empty for built-in/config patterns
 	bundleVersion string
+}
+
+// matches returns true if text matches the regex AND passes the post-match
+// validator (if any). For patterns without a validator, this is equivalent
+// to re.MatchString. For validated patterns (credit cards, IBANs), the
+// validator eliminates false positives via checksum verification.
+func (p *compiledPattern) matches(text string) bool {
+	m := p.re.FindString(text)
+	if m == "" {
+		return false
+	}
+	if p.validate != nil {
+		return p.validate(m)
+	}
+	return true
 }
 
 // New creates a Scanner from config. Config must be validated first via
@@ -136,14 +152,22 @@ func New(cfg *config.Config) *Scanner {
 		if err != nil {
 			panic(fmt.Sprintf("BUG: DLP pattern %q failed to compile after validation: %v", p.Name, err))
 		}
-		s.dlpPatterns = append(s.dlpPatterns, &compiledPattern{
+		cp := &compiledPattern{
 			name:          p.Name,
 			re:            re,
 			severity:      p.Severity,
 			exemptDomains: p.ExemptDomains,
 			bundle:        p.Bundle,
 			bundleVersion: p.BundleVersion,
-		})
+		}
+		if p.Validator != "" {
+			fn, ok := dlpValidators[p.Validator]
+			if !ok {
+				panic(fmt.Sprintf("BUG: unknown DLP validator %q for pattern %q", p.Validator, p.Name))
+			}
+			cp.validate = fn
+		}
+		s.dlpPatterns = append(s.dlpPatterns, cp)
 	}
 
 	// Build prefix pre-filter for fast DLP short-circuiting on clean input.
@@ -990,7 +1014,7 @@ func (s *Scanner) checkDLP(parsed *url.URL) Result {
 		cleaned := normalize.ForDLP(target)
 		for _, idx := range s.dlpPreFilter.patternsToCheck(cleaned) {
 			p := s.dlpPatterns[idx]
-			if p.re.MatchString(cleaned) {
+			if p.matches(cleaned) {
 				// Skip pattern if the destination domain is explicitly exempted.
 				if len(p.exemptDomains) > 0 && matchesDomainList(parsed.Hostname(), p.exemptDomains) {
 					continue
@@ -1150,7 +1174,7 @@ func (s *Scanner) checkDLPCombinations(values []string, n, size int, hostname st
 
 		for _, idx := range s.dlpPreFilter.patternsToCheck(cleaned) {
 			p := s.dlpPatterns[idx]
-			if p.re.MatchString(cleaned) {
+			if p.matches(cleaned) {
 				if len(p.exemptDomains) > 0 && matchesDomainList(hostname, p.exemptDomains) {
 					continue
 				}

@@ -101,18 +101,18 @@ type compiledPattern struct {
 }
 
 // matches returns true if text matches the regex AND passes the post-match
-// validator (if any). For patterns without a validator, this is equivalent
-// to re.MatchString. For validated patterns (credit cards, IBANs), the
-// validator eliminates false positives via checksum verification.
+// validator (if any). For patterns without a validator, this uses the faster
+// MatchString (no string extraction). For validated patterns (credit cards,
+// IBANs), FindString extracts the match text for checksum verification.
 func (p *compiledPattern) matches(text string) bool {
+	if p.validate == nil {
+		return p.re.MatchString(text)
+	}
 	m := p.re.FindString(text)
 	if m == "" {
 		return false
 	}
-	if p.validate != nil {
-		return p.validate(m)
-	}
-	return true
+	return p.validate(m)
 }
 
 // New creates a Scanner from config. Config must be validated first via

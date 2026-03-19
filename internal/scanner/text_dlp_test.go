@@ -20,6 +20,9 @@ import (
 const (
 	testAnthropicPrefix = "sk-ant-"
 	testAnthropicName   = "Anthropic API Key"
+	testCreditCardName  = "Credit Card" + " Number"
+	testIBANName        = "IBAN"
+	testABARoutingName  = "ABA Routing Number"
 )
 
 func TestScanTextForDLP(t *testing.T) {
@@ -1576,7 +1579,7 @@ func TestScanTextForDLP_CreditCard(t *testing.T) {
 	if result.Clean {
 		t.Error("expected credit card number to be detected in text")
 	}
-	if len(result.Matches) == 0 || result.Matches[0].PatternName != "Credit Card Number" {
+	if len(result.Matches) == 0 || result.Matches[0].PatternName != testCreditCardName {
 		t.Errorf("expected Credit Card Number match, got: %+v", result.Matches)
 	}
 }
@@ -1590,7 +1593,7 @@ func TestScanTextForDLP_CreditCard_FalsePositiveRejected(t *testing.T) {
 	result := s.ScanTextForDLP(context.Background(), "Reference number 4111111111111112 for your order")
 	found := false
 	for _, m := range result.Matches {
-		if m.PatternName == "Credit Card Number" {
+		if m.PatternName == testCreditCardName {
 			found = true
 		}
 	}
@@ -1609,7 +1612,7 @@ func TestScanTextForDLP_IBAN(t *testing.T) {
 	if result.Clean {
 		t.Error("expected IBAN to be detected in text")
 	}
-	if len(result.Matches) == 0 || result.Matches[0].PatternName != "IBAN" {
+	if len(result.Matches) == 0 || result.Matches[0].PatternName != testIBANName {
 		t.Errorf("expected IBAN match, got: %+v", result.Matches)
 	}
 }
@@ -1623,7 +1626,7 @@ func TestScanTextForDLP_IBAN_FalsePositiveRejected(t *testing.T) {
 	result := s.ScanTextForDLP(context.Background(), "Account ref DE00370400440532013000 in our system")
 	found := false
 	for _, m := range result.Matches {
-		if m.PatternName == "IBAN" {
+		if m.PatternName == testIBANName {
 			found = true
 		}
 	}
@@ -1644,11 +1647,46 @@ func TestScanTextForDLP_CreditCard_WithSeparators(t *testing.T) {
 	}
 }
 
+func TestScanTextForDLP_CreditCard_WithSpaces(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// Visa with spaces — should match (regex allows space separators).
+	result := s.ScanTextForDLP(context.Background(), "Card: 4111 1111 1111 1111")
+	if result.Clean {
+		t.Error("expected space-separated credit card to be detected")
+	}
+}
+
+func TestScanTextForDLP_IBAN_FormattedWithSpaces_KnownLimitation(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// Space-separated IBANs (display format) are NOT detected by the text DLP
+	// path because the regex requires contiguous alphanumeric BBAN characters.
+	// The validator handles spaces, but the regex never matches to reach it.
+	// This is a known tradeoff: adding optional spaces to the IBAN regex would
+	// make it much broader and the pre-filter less effective. URL-path scanning
+	// strips spaces before matching, so URL-based exfiltration IS caught.
+	result := s.ScanTextForDLP(context.Background(), "Wire to GB29 NWBK 6016 1331 9268 19 immediately")
+	if !result.Clean {
+		t.Error("space-separated IBANs are a known limitation in text DLP — if this passes, the limitation was fixed")
+	}
+
+	// Contiguous IBAN IS detected.
+	result2 := s.ScanTextForDLP(context.Background(), "Wire to GB29NWBK60161331926819 immediately")
+	if result2.Clean {
+		t.Error("contiguous IBAN should be detected")
+	}
+}
+
 func TestScanTextForDLP_ABA_OptIn(t *testing.T) {
 	// ABA is NOT in default presets. Test that adding it via config works.
 	cfg := testConfig()
 	cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{
-		Name:      "ABA Routing Number",
+		Name:      testABARoutingName,
 		Regex:     `\b\d{9}\b`,
 		Severity:  "low",
 		Validator: config.ValidatorABA,
@@ -1660,7 +1698,7 @@ func TestScanTextForDLP_ABA_OptIn(t *testing.T) {
 	result := s.ScanTextForDLP(context.Background(), "Routing: 021000021")
 	found := false
 	for _, m := range result.Matches {
-		if m.PatternName == "ABA Routing Number" {
+		if m.PatternName == testABARoutingName {
 			found = true
 		}
 	}
@@ -1672,12 +1710,47 @@ func TestScanTextForDLP_ABA_OptIn(t *testing.T) {
 	result2 := s.ScanTextForDLP(context.Background(), "ID number 999999999")
 	found2 := false
 	for _, m := range result2.Matches {
-		if m.PatternName == "ABA Routing Number" {
+		if m.PatternName == testABARoutingName {
 			found2 = true
 		}
 	}
 	if found2 {
 		t.Error("expected invalid ABA to NOT trigger DLP")
+	}
+}
+
+func TestScanTextForDLP_ValidatorSurvivesReload(t *testing.T) {
+	// Verify that creating a new Scanner from the same config correctly
+	// wires validators. This simulates config hot-reload where the old
+	// scanner is replaced by a new one built from the reloaded config.
+	cfg := testConfig()
+
+	// First scanner — verify credit card detection works.
+	s1 := New(cfg)
+	result1 := s1.ScanTextForDLP(context.Background(), "Pay with 4111111111111111")
+	s1.Close()
+	if result1.Clean {
+		t.Fatal("first scanner should detect credit card")
+	}
+
+	// Second scanner from same config — simulates reload.
+	s2 := New(cfg)
+	defer s2.Close()
+	result2 := s2.ScanTextForDLP(context.Background(), "Pay with 4111111111111111")
+	if result2.Clean {
+		t.Error("second scanner (reload) should still detect credit card")
+	}
+
+	// Also verify false positive rejection survives reload.
+	result3 := s2.ScanTextForDLP(context.Background(), "Ref 4111111111111112")
+	found := false
+	for _, m := range result3.Matches {
+		if m.PatternName == testCreditCardName {
+			found = true
+		}
+	}
+	if found {
+		t.Error("false positive rejection should survive reload")
 	}
 }
 

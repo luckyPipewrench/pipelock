@@ -108,6 +108,10 @@ func TestValidateABA(t *testing.T) {
 		{name: "JPMorgan Chase NY", input: "021000021", want: true},
 		{name: "Bank of America CT", input: "011401533", want: true},
 		{name: "Wells Fargo MN", input: "091000019", want: true},
+		{name: "prefix 80 Federal Reserve", input: "080000004", want: true}, // prefix 80 is a valid isolated value
+
+		// Invalid: valid prefix but bad checksum.
+		{name: "prefix 01 bad checksum", input: "010000000", want: false},
 
 		// Invalid: bad checksum.
 		{name: "JPMorgan plus one", input: "021000022", want: false},

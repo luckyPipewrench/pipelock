@@ -8,10 +8,18 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
-const testMCPFilename = "mcp.json"
+const (
+	testMCPFilename  = "mcp.json"
+	testPipelockExe  = "/usr/local/bin/pipelock"
+	testTypeSSE      = "sse"
+	testConfigFlag   = "--config"
+	testPipelockConf = "/etc/pipelock.yaml"
+	testEchoCmd      = "echo"
+)
 
 func TestJetbrainsInstall_StdioServer(t *testing.T) {
 	dir := t.TempDir()
@@ -66,7 +74,7 @@ func TestJetbrainsInstall_DryRun(t *testing.T) {
 	cfg := map[string]interface{}{
 		"mcpServers": map[string]interface{}{
 			"test-srv": map[string]interface{}{
-				"command": "echo",
+				"command": testEchoCmd,
 				"args":    []interface{}{"hello"},
 			},
 		},
@@ -87,13 +95,13 @@ func TestJetbrainsInstall_DryRun(t *testing.T) {
 		t.Fatalf("expected 1 server, got %d", len(mcpCfg.Servers))
 	}
 
-	exe := "/usr/local/bin/pipelock"
+	exe := testPipelockExe
 	for name, server := range mcpCfg.Servers {
 		newServer, meta, err := wrapMCPServer(server, exe, "")
 		if err != nil {
 			t.Fatalf("wrapping %q: %v", name, err)
 		}
-		if meta.OriginalCommand != "echo" {
+		if meta.OriginalCommand != testEchoCmd {
 			t.Errorf("meta.OriginalCommand = %q, want echo", meta.OriginalCommand)
 		}
 
@@ -141,11 +149,11 @@ func TestJetbrainsRemove_Unwrap(t *testing.T) {
 		"mcpServers": map[string]interface{}{
 			"test-srv": map[string]interface{}{
 				"type":    "stdio",
-				"command": "/usr/local/bin/pipelock",
-				"args":    []interface{}{"mcp", "proxy", "--", "echo", "hello"},
+				"command": testPipelockExe,
+				"args":    []interface{}{"mcp", "proxy", "--", testEchoCmd, "hello"},
 				"_pipelock": map[string]interface{}{
 					"original_type":    "stdio",
-					"original_command": "echo",
+					"original_command": testEchoCmd,
 					"original_args":    []interface{}{"hello"},
 				},
 			},
@@ -171,7 +179,7 @@ func TestJetbrainsRemove_Unwrap(t *testing.T) {
 			t.Fatalf("unwrapping %q: %v", name, err)
 		}
 		cmd, _ := restored[mcpFieldCommand].(string)
-		if cmd != "echo" {
+		if cmd != testEchoCmd {
 			t.Errorf("restored command = %q, want echo", cmd)
 		}
 		if _, ok := restored[mcpFieldPipelock]; ok {
@@ -274,6 +282,235 @@ func TestMarshalMCPConfig_VSCodeKey(t *testing.T) {
 	}
 	if _, ok := result["servers"]; !ok {
 		t.Error("expected 'servers' key in output")
+	}
+}
+
+func TestRunJetbrainsInstall_DryRun(t *testing.T) {
+	dir := t.TempDir()
+	junieDir := filepath.Join(dir, ".junie", "mcp")
+	if err := os.MkdirAll(junieDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	cfgData := `{"mcpServers": {"srv": {"command": "echo", "args": ["hi"]}}}`
+	cfgPath := filepath.Join(junieDir, testMCPFilename)
+	if err := os.WriteFile(cfgPath, []byte(cfgData), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := jetbrainsCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	// Use --project so it targets a relative path we can control by chdir.
+	cmd.SetArgs([]string{"install", "--project", "--dry-run"})
+
+	// chdir into the temp dir so --project finds .junie/mcp/mcp.json
+	orig, _ := os.Getwd()
+	_ = os.Chdir(dir)
+	defer func() { _ = os.Chdir(orig) }()
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("install --dry-run failed: %v\noutput: %s", err, buf.String())
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "Would write") {
+		t.Errorf("expected dry-run output, got: %s", out)
+	}
+	if !strings.Contains(out, "1 wrapped") {
+		t.Errorf("expected 1 wrapped, got: %s", out)
+	}
+}
+
+func TestRunJetbrainsRemove_DryRun(t *testing.T) {
+	dir := t.TempDir()
+	junieDir := filepath.Join(dir, ".junie", "mcp")
+	if err := os.MkdirAll(junieDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	wrapped := `{"mcpServers": {"srv": {"type": "stdio", "command": "pipelock", "args": ["mcp", "proxy", "--", "echo"], "_pipelock": {"original_type": "stdio", "original_command": "echo"}}}}`
+	cfgPath := filepath.Join(junieDir, testMCPFilename)
+	if err := os.WriteFile(cfgPath, []byte(wrapped), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := jetbrainsCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"remove", "--project", "--dry-run"})
+
+	orig, _ := os.Getwd()
+	_ = os.Chdir(dir)
+	defer func() { _ = os.Chdir(orig) }()
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("remove --dry-run failed: %v\noutput: %s", err, buf.String())
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "1 unwrapped") {
+		t.Errorf("expected 1 unwrapped, got: %s", out)
+	}
+}
+
+func TestRunJetbrainsInstall_MutualExclusion(t *testing.T) {
+	cmd := jetbrainsCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"install", "--global", "--project", "--dry-run"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Error("expected error for --global + --project")
+	}
+}
+
+func TestWrapMCPServer_HTTPWithHeaders_Rejected(t *testing.T) {
+	server := map[string]interface{}{
+		mcpFieldType: testTypeSSE,
+		mcpFieldURL:  "https://mcp.example.com/v1",
+		mcpFieldHeaders: map[string]interface{}{
+			"Authorization": "Bearer tok",
+		},
+	}
+
+	_, _, err := wrapMCPServer(server, testPipelockExe, "")
+	if err == nil {
+		t.Error("expected error for HTTP server with headers")
+	}
+	if !strings.Contains(err.Error(), "headers") {
+		t.Errorf("error should mention headers, got: %v", err)
+	}
+}
+
+func TestWrapMCPServer_HTTPWithoutHeaders(t *testing.T) {
+	server := map[string]interface{}{
+		mcpFieldType: testTypeSSE,
+		mcpFieldURL:  "https://mcp.example.com/v1",
+	}
+
+	result, meta, err := wrapMCPServer(server, testPipelockExe, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if meta.OriginalURL != "https://mcp.example.com/v1" {
+		t.Errorf("meta.OriginalURL = %q", meta.OriginalURL)
+	}
+	if cmd, _ := result[mcpFieldCommand].(string); cmd != testPipelockExe {
+		t.Errorf("command = %q", cmd)
+	}
+}
+
+func TestUnwrapMCPServer_HTTP(t *testing.T) {
+	server := map[string]interface{}{
+		mcpFieldType:    "stdio",
+		mcpFieldCommand: testPipelockExe,
+		mcpFieldArgs:    []interface{}{"mcp", "proxy", "--upstream", "https://mcp.example.com/v1"},
+		mcpFieldPipelock: map[string]interface{}{
+			"original_type": testTypeSSE,
+			"original_url":  "https://mcp.example.com/v1",
+			"original_headers": map[string]interface{}{
+				"Authorization": "Bearer tok",
+			},
+		},
+	}
+
+	restored, err := unwrapMCPServer(server)
+	if err != nil {
+		t.Fatalf("unwrap failed: %v", err)
+	}
+	if url, _ := restored[mcpFieldURL].(string); url != "https://mcp.example.com/v1" {
+		t.Errorf("url = %q", url)
+	}
+	if tp, _ := restored[mcpFieldType].(string); tp != testTypeSSE {
+		t.Errorf("type = %q", tp)
+	}
+	if headers, ok := restored[mcpFieldHeaders].(map[string]interface{}); !ok || len(headers) == 0 {
+		t.Error("expected headers to be restored")
+	}
+}
+
+func TestWrapMCPServer_StdioMissingCommand(t *testing.T) {
+	server := map[string]interface{}{
+		mcpFieldType: "stdio",
+	}
+	_, _, err := wrapMCPServer(server, testPipelockExe, "")
+	if err == nil {
+		t.Error("expected error for stdio server missing command")
+	}
+}
+
+func TestWrapMCPServer_WithConfigFile(t *testing.T) {
+	server := map[string]interface{}{
+		mcpFieldCommand: "node",
+		mcpFieldArgs:    []interface{}{"server.js"},
+	}
+
+	result, _, err := wrapMCPServer(server, testPipelockExe, testPipelockConf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args, _ := result[mcpFieldArgs].([]string)
+	found := false
+	for i, a := range args {
+		if a == testConfigFlag && i+1 < len(args) && args[i+1] == testPipelockConf {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected --config /etc/pipelock.yaml in args: %v", args)
+	}
+}
+
+func TestWrapMCPServer_EnvPassthrough(t *testing.T) {
+	server := map[string]interface{}{
+		mcpFieldCommand: "node",
+		mcpFieldArgs:    []interface{}{"server.js"},
+		"env": map[string]interface{}{
+			"API_KEY": "secret",
+		},
+	}
+
+	result, _, err := wrapMCPServer(server, testPipelockExe, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	args, _ := result[mcpFieldArgs].([]string)
+	found := false
+	for i, a := range args {
+		if a == "--env" && i+1 < len(args) && args[i+1] == "API_KEY" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected --env API_KEY in args: %v", args)
+	}
+}
+
+func TestIsWrapped(t *testing.T) {
+	wrapped := map[string]interface{}{mcpFieldPipelock: map[string]interface{}{}}
+	if !isWrapped(wrapped) {
+		t.Error("expected wrapped")
+	}
+
+	notWrapped := map[string]interface{}{mcpFieldCommand: testEchoCmd}
+	if isWrapped(notWrapped) {
+		t.Error("expected not wrapped")
+	}
+}
+
+func TestUnwrapMCPServer_NotWrapped(t *testing.T) {
+	server := map[string]interface{}{mcpFieldCommand: testEchoCmd}
+	result, err := unwrapMCPServer(server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd, _ := result[mcpFieldCommand].(string); cmd != testEchoCmd {
+		t.Errorf("expected echo, got %q", cmd)
 	}
 }
 

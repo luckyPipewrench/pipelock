@@ -87,7 +87,7 @@ MCP proxy upstream path.
 
 - **Header passthrough:** HTTP/SSE servers with custom headers cannot be wrapped.
   Use environment variable-based authentication instead.
-- **Project-local configs** are not visible to `pipelock discover`. Use
-  `--global` (default) for configs you want discover to report.
+- **Project-local configs** are not visible to `pipelock discover`. The default
+  user-level install (omit `--project`) is visible to discover.
 - **IDE restart required** after install or remove. Junie reads MCP config at
   startup.

@@ -57,7 +57,7 @@ func readMCPConfig(path, serversKey string) (*mcpConfig, []byte, error) {
 func marshalMCPConfig(originalData []byte, cfg *mcpConfig, serversKey string) ([]byte, error) {
 	if len(originalData) > 0 {
 		var raw map[string]json.RawMessage
-		if err := json.Unmarshal(originalData, &raw); err == nil {
+		if err := json.Unmarshal(originalData, &raw); err == nil && raw != nil {
 			serversJSON, err := json.Marshal(cfg.Servers)
 			if err != nil {
 				return nil, err

@@ -128,8 +128,8 @@ func TestConfigPathsJunieUserLevel(t *testing.T) {
 				t.Errorf("junie scope = %q, want 'user'", p.Scope)
 			}
 			// All paths must be derived from the home argument, not cwd.
-			if !filepath.IsAbs(p.Path) {
-				t.Errorf("junie path %q is relative — configPaths must be deterministic from home", p.Path)
+			if !strings.HasPrefix(p.Path, "/home/testuser") {
+				t.Errorf("junie path %q not derived from home — configPaths must be deterministic from home", p.Path)
 			}
 		}
 	}

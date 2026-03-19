@@ -107,6 +107,16 @@ gh attestation verify oci://ghcr.io/luckypipewrench/pipelock:<version> --owner l
 
 </details>
 
+## Community Rules
+
+Pipelock supports signed rule bundles for distributable detection patterns. Install the official community bundle for additional DLP, injection, and tool-poison patterns beyond the built-in defaults:
+
+```bash
+pipelock rules install pipelock-community
+```
+
+Rules are loaded at startup and merged with built-in patterns. Bundles are Ed25519-signed and verified against the embedded keyring, which is present in release binaries (Homebrew, GitHub Releases, Docker). Source builds via `go install` must add the official public key to `trusted_keys` in their config. See [docs/rules.md](docs/rules.md) for details.
+
 ## How It Works
 
 Pipelock is an [agent firewall](https://pipelab.org/agent-firewall/): like a WAF for web apps, it sits inline between your AI agent and the internet. It uses **capability separation**: the agent process (which has secrets) is network-restricted, while Pipelock (which holds no agent secrets) inspects all traffic through an 11-layer scanner pipeline. Deployment (Docker network isolation, Kubernetes NetworkPolicy, etc.) enforces the separation boundary.
@@ -217,7 +227,7 @@ What each mode prevents, detects, or logs:
 
 ### 11-Layer URL Scanner
 
-Every request passes through: scheme validation, CRLF injection detection, path traversal blocking, domain blocklist, DLP pattern matching (44 built-in patterns for API keys, tokens, credentials, and cryptocurrency private keys), path entropy analysis, subdomain entropy analysis, SSRF protection with DNS rebinding prevention, per-domain rate limiting, URL length limits, and per-domain data budgets.
+Every request passes through: scheme validation, CRLF injection detection, path traversal blocking, domain blocklist, DLP pattern matching (46 built-in patterns for API keys, tokens, credentials, cryptocurrency private keys, and financial identifiers with checksum validation), path entropy analysis, subdomain entropy analysis, SSRF protection with DNS rebinding prevention, per-domain rate limiting, URL length limits, and per-domain data budgets.
 
 DLP runs before DNS resolution, designed to catch secrets before any DNS query leaves the proxy. BIP-39 seed phrase detection uses a dedicated scanner with dictionary lookup, sliding window matching, and SHA-256 checksum validation to catch cryptocurrency mnemonic exfiltration across all transport surfaces.
 
@@ -431,7 +441,7 @@ curl http://localhost:9090/api/v1/killswitch/status \
   "version": "x.y.z",
   "mode": "balanced",
   "uptime_seconds": 3600.5,
-  "dlp_patterns": 44,
+  "dlp_patterns": 46,
   "response_scan_enabled": true,
   "kill_switch_active": false
 }
@@ -479,6 +489,7 @@ Details, config examples, and gap analysis: [docs/owasp-mapping.md](docs/owasp-m
 | [Transport Modes](docs/guides/transport-modes.md) | Comparison of all proxy modes and their scanning capabilities |
 | [JetBrains Guide](docs/guides/jetbrains.md) | Junie MCP proxy wrapping for IntelliJ, PyCharm, GoLand, etc. |
 | [EU AI Act Mapping](docs/compliance/eu-ai-act-mapping.md) | Article-by-article compliance mapping |
+| [Community Rules](docs/rules.md) | Install, configure, and create signed rule bundles |
 
 ## Project Structure
 

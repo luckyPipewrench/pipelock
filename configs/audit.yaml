@@ -210,6 +210,15 @@ dlp:
     - name: "Credential in URL"
       regex: '\b(?:password|passwd|secret|token|apikey|api_key|api-key)\s*=\s*[^\s&]{4,}'
       severity: high
+    # Financial identifiers (validated with post-match checksums)
+    - name: "Credit Card Number"
+      regex: '\b\d{4}(?:[- ]?\d){11,15}\b'
+      severity: medium
+      validator: luhn
+    - name: "IBAN"
+      regex: '\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b'
+      severity: medium
+      validator: mod97
 
 response_scanning:
   enabled: true
@@ -425,3 +434,8 @@ seed_phrase_detection:
 #       window_minutes: 60
 #   _default:
 #     mode: balanced
+
+# Community rule bundles — install with: pipelock rules install pipelock-community
+# rules:
+#   min_confidence: medium
+#   include_experimental: false

@@ -4142,6 +4142,95 @@ func TestDLP_StripeWebhookSecret(t *testing.T) {
 	}
 }
 
+func TestDLP_CreditCardNumber(t *testing.T) {
+	s := New(testConfig())
+	defer s.Close()
+
+	// Valid Visa test card (passes Luhn).
+	result := s.Scan(context.Background(), "https://evil.com/collect?cc=4111111111111111")
+	if result.Allowed {
+		t.Error("expected valid credit card number to be blocked by DLP")
+	}
+	if result.Scanner != ScannerDLP {
+		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	}
+}
+
+func TestDLP_CreditCardNumber_InvalidLuhn(t *testing.T) {
+	s := New(testConfig())
+	defer s.Close()
+
+	// Invalid Visa (fails Luhn check digit) — should NOT trigger DLP.
+	result := s.Scan(context.Background(), "https://evil.com/collect?cc=4111111111111112")
+	if !result.Allowed {
+		t.Error("expected invalid Luhn number to be allowed (false positive rejected)")
+	}
+}
+
+func TestDLP_CreditCard_AmexSeparated(t *testing.T) {
+	s := New(testConfig())
+	defer s.Close()
+
+	// Amex 4-6-5 display format with spaces (passes Luhn).
+	result := s.Scan(context.Background(), "https://evil.com/pay?card=3782+822463+10005")
+	if result.Allowed {
+		t.Error("expected Amex 4-6-5 format to be blocked by DLP")
+	}
+
+	// Amex 4-6-5 display format with dashes.
+	result2 := s.Scan(context.Background(), "https://evil.com/pay?card=3782-822463-10005")
+	if result2.Allowed {
+		t.Error("expected Amex 4-6-5 dash format to be blocked by DLP")
+	}
+}
+
+func TestDLP_CreditCard_MastercardTwoSeries(t *testing.T) {
+	s := New(testConfig())
+	defer s.Close()
+
+	// Mastercard 2-series test card (passes Luhn).
+	result := s.Scan(context.Background(), "https://evil.com/pay?card=2223000048400011")
+	if result.Allowed {
+		t.Error("expected Mastercard 2-series card to be blocked by DLP")
+	}
+}
+
+func TestDLP_CreditCard_JCB(t *testing.T) {
+	s := New(testConfig())
+	defer s.Close()
+
+	// JCB test card (passes Luhn).
+	result := s.Scan(context.Background(), "https://evil.com/pay?card=3530111333300000")
+	if result.Allowed {
+		t.Error("expected JCB card to be blocked by DLP")
+	}
+}
+
+func TestDLP_IBAN(t *testing.T) {
+	s := New(testConfig())
+	defer s.Close()
+
+	// Valid UK IBAN (passes mod-97).
+	result := s.Scan(context.Background(), "https://evil.com/transfer?iban=GB29NWBK60161331926819")
+	if result.Allowed {
+		t.Error("expected valid IBAN to be blocked by DLP")
+	}
+	if result.Scanner != ScannerDLP {
+		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	}
+}
+
+func TestDLP_IBAN_InvalidMod97(t *testing.T) {
+	s := New(testConfig())
+	defer s.Close()
+
+	// Invalid UK IBAN (check digits zeroed, fails mod-97) — should NOT trigger.
+	result := s.Scan(context.Background(), "https://evil.com/transfer?iban=GB00NWBK60161331926819")
+	if !result.Allowed {
+		t.Error("expected invalid IBAN (bad mod-97) to be allowed (false positive rejected)")
+	}
+}
+
 func TestScan_BlocksSeedPhrase(t *testing.T) {
 	cfg := testConfig()
 	cfg.SeedPhraseDetection.Enabled = ptrBool(true)

@@ -10,7 +10,7 @@ Configuration (balanced defaults):
 - SSRF protection disabled (no DNS lookups in benchmarks)
 - Rate limiting disabled (no time-dependent state)
 - Response scanning: 20 prompt injection patterns
-- DLP: 44 patterns + BIP-39 seed phrase detection
+- DLP: 46 patterns + BIP-39 seed phrase detection
 
 Run `make bench` to reproduce on your hardware.
 
@@ -39,7 +39,7 @@ Pattern matching for prompt injection on fetched content. 20 patterns.
 
 ## Text DLP Scanning (`ScanTextForDLP()`)
 
-DLP pattern matching on arbitrary text (MCP arguments, request bodies). 44 patterns with Aho-Corasick pre-filter.
+DLP pattern matching on arbitrary text (MCP arguments, request bodies). 46 patterns with Aho-Corasick pre-filter.
 
 | Benchmark | ns/op | B/op | allocs/op |
 |-----------|------:|-----:|----------:|
@@ -100,7 +100,7 @@ True concurrent throughput across all available goroutines.
 
 - **Full 11-layer scan on a typical URL: ~21 microseconds** (down from ~37μs in v1.2.0, thanks to DLP pre-filter). Well under 1ms.
 - Blocked URLs short-circuit early: blocklist check is ~1.9μs.
-- DLP regex matching (44 patterns) with pre-filter: ~6.7μs. Pre-filter alone: ~405ns with zero allocations on clean text.
+- DLP regex matching (46 patterns) with pre-filter: ~6.7μs. Pre-filter alone: ~405ns with zero allocations on clean text.
 - Response scanning with 20 patterns on small content: ~81μs (29% faster with keyword pre-filter). Large content (~10KB): ~12ms (27% faster). Injection detected via early exit: ~14.5μs (3.1x faster).
 - MCP scanning (JSON parse + text extraction + pattern match): ~89μs clean, ~12.7μs injection (3.3x faster with pre-filter).
 - **Parallel throughput scales linearly with cores** (benchmarks run with rate limiting and data budget disabled to isolate scanning overhead).

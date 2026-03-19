@@ -11,7 +11,8 @@ LDFLAGS := -ldflags "-s -w \
 	-X $(MODULE)/internal/cli.GitCommit=$(GIT_COMMIT) \
 	-X $(MODULE)/internal/cli.GoVersion=$(GO_VERSION) \
 	-X $(MODULE)/internal/proxy.Version=$(VERSION) \
-	-X $(MODULE)/internal/license.PublicKeyHex=$(LICENSE_PUBLIC_KEY)"
+	-X $(MODULE)/internal/license.PublicKeyHex=$(LICENSE_PUBLIC_KEY) \
+	-X $(MODULE)/internal/rules.KeyringHex=$(LICENSE_PUBLIC_KEY)"
 
 .PHONY: build test bench lint clean docker install fmt vet tidy-check
 

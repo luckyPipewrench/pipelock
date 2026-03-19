@@ -307,9 +307,29 @@ dlp:
 | `scan_env` | `true` | Scan environment variables for leaked values |
 | `secrets_file` | `""` | Path to file with known secrets (one per line) |
 | `min_env_secret_length` | `16` | Min env var value length to consider |
-| `include_defaults` | `true` | Merge your patterns with the 44 built-in patterns |
-| `patterns` | 44 built-in | DLP credential detection patterns |
+| `include_defaults` | `true` | Merge your patterns with the 46 built-in patterns |
+| `patterns` | 46 built-in | DLP credential detection patterns |
+| `patterns[].validator` | `""` | Post-match checksum validator: `luhn`, `mod97`, or `aba` |
 | `patterns[].exempt_domains` | `[]` | Domains where this pattern is not enforced (wildcard supported) |
+
+### Validated Patterns (Financial DLP)
+
+Some patterns include a `validator` field for post-match checksum verification. When set, regex matches are passed through a checksum algorithm before being flagged. This eliminates false positives from random numbers that happen to match the pattern format.
+
+Built-in validated patterns:
+- **Credit Card Number** (`validator: luhn`) — Visa, Mastercard (including 2-series), Amex, Discover, JCB. Luhn checksum rejects ~90% of false positives.
+- **IBAN** (`validator: mod97`) — International Bank Account Numbers. Validates ISO 13616 country codes and ISO 7064 mod-97 checksum. Rejects ~99% of false positives.
+
+To add ABA routing numbers (not in defaults due to higher false positive rate):
+
+```yaml
+dlp:
+  patterns:
+    - name: "ABA Routing Number"
+      regex: '\b\d{9}\b'
+      severity: low
+      validator: aba
+```
 
 ### Pattern Merging
 
@@ -337,7 +357,7 @@ dlp:
         - "*.anthropic.com"
 ```
 
-### Built-in DLP Patterns (44)
+### Built-in DLP Patterns (46)
 
 | Pattern | Regex Prefix | Severity |
 |---------|-------------|----------|
@@ -384,6 +404,8 @@ dlp:
 | Extended Private Key | `[xyzt]prv` + base58 | critical |
 | Ethereum Private Key | `0x` + 64 hex | critical |
 | Social Security Number | `\b\d{3}-\d{2}-\d{4}\b` | critical |
+| Credit Card Number | BIN prefix + Luhn checksum | medium |
+| IBAN | `[A-Z]{2}\d{2}` + mod-97 checksum | medium |
 | Credential in URL | `password\|token\|secret=value` | high |
 | Prompt Injection | `(ignore\|disregard\|forget)...previous...instructions` | high |
 | System Override | `system:` | high |
@@ -510,6 +532,11 @@ mcp_tool_policy:
       tool_pattern: "write_file"
       arg_pattern: '/etc/.*|/usr/.*'
       action: warn
+    - name: "Block shadow file reads"
+      tool_pattern: "read_file"
+      arg_pattern: '/etc/shadow'
+      arg_key: '^(file_?path|target)$'
+      action: block
 ```
 
 | Field | Default | Description |
@@ -521,7 +548,8 @@ mcp_tool_policy:
 **Rule fields:**
 - `name:` rule identifier
 - `tool_pattern:` regex matching tool name
-- `arg_pattern:` regex matching argument values (optional)
+- `arg_pattern:` regex matching argument values (optional; omit for tool-name-only rules)
+- `arg_key:` regex scoping `arg_pattern` to specific top-level argument keys (optional; requires `arg_pattern`). Without `arg_key`, `arg_pattern` checks values from all argument keys. Values under matching keys are extracted recursively.
 - `action:` per-rule override (warn or block)
 
 Shell obfuscation detection is built-in: backslash escapes, `$IFS` substitution, brace expansion, and octal/hex escapes are decoded before matching.
@@ -1231,6 +1259,29 @@ address_protection:
 At least one chain must be enabled when `address_protection.enabled` is `true`. All-chains-disabled with the feature enabled is rejected at validation (silent no-op prevention).
 
 **Hot reload:** disabling address protection triggers a reload warning. Re-enabling takes effect immediately.
+
+## Community Rules
+
+Optional signed rule bundles that extend built-in detection patterns. See [docs/rules.md](rules.md) for the full user guide.
+
+```yaml
+rules:
+  rules_dir: ~/.pipelock/rules    # default location for installed bundles
+  min_confidence: medium          # skip low-confidence (experimental) rules
+  include_experimental: false     # only load stable rules by default
+  trusted_keys:                   # additional signing keys (beyond embedded keyring)
+    - name: "acme-security"
+      public_key: "64-char-hex-encoded-ed25519-public-key"
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `rules_dir` | `~/.pipelock/rules` | Directory for installed bundles |
+| `min_confidence` | `""` (all) | Skip rules below this confidence level |
+| `include_experimental` | `false` | Include experimental rules from bundles |
+| `trusted_keys` | `[]` | Additional Ed25519 public keys to trust for signature verification |
+
+**Hot reload:** rule directory changes are not detected via hot-reload. Restart pipelock after installing or updating bundles.
 
 ## Validation Rules
 

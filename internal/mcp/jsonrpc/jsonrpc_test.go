@@ -6,9 +6,14 @@ package jsonrpc
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 )
+
+// depthGuardLeaf is the sentinel string placed at the bottom of deeply-nested
+// test JSON to verify the extraction depth guard.
+const depthGuardLeaf = "leaf"
 
 // --- ExtractText ---
 
@@ -291,7 +296,7 @@ func TestExtractStringsFromJSON_DepthGuard(t *testing.T) {
 	// The string "leaf" is at depth = depth (66), which exceeds maxExtractDepth (64).
 	// It should not be extracted.
 	for _, s := range got {
-		if s == "leaf" {
+		if s == depthGuardLeaf {
 			t.Error("depth guard failed: extracted string beyond maxExtractDepth")
 		}
 	}
@@ -316,7 +321,7 @@ func TestExtractStringsFromJSON_ExactlyAtDepthLimit(t *testing.T) {
 	got := ExtractStringsFromJSON(raw)
 	found := false
 	for _, s := range got {
-		if s == "leaf" {
+		if s == depthGuardLeaf {
 			found = true
 		}
 	}
@@ -496,6 +501,132 @@ func TestSortedKeys_Deterministic(t *testing.T) {
 		got := fmt.Sprintf("%v", SortedKeys(m))
 		if got != want {
 			t.Fatalf("iteration %d: non-deterministic output %s vs %s", i, got, want)
+		}
+	}
+}
+
+// --- ExtractStringsForKeys ---
+
+func TestExtractStringsForKeys(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     json.RawMessage
+		pattern *regexp.Regexp
+		want    []string
+	}{
+		{
+			name:    "matching key extracts string value",
+			raw:     json.RawMessage(`{"command":"rm -rf /","other":"safe"}`),
+			pattern: regexp.MustCompile(`^command$`),
+			want:    []string{"rm -rf /"},
+		},
+		{
+			name:    "non-matching keys excluded",
+			raw:     json.RawMessage(`{"command":"dangerous","safe_key":"ignored"}`),
+			pattern: regexp.MustCompile(`^command$`),
+			want:    []string{"dangerous"},
+		},
+		{
+			name:    "regex matches multiple keys",
+			raw:     json.RawMessage(`{"file_path":"/etc/passwd","target":"/tmp","name":"test"}`),
+			pattern: regexp.MustCompile(`^(file_path|target)$`),
+			want:    []string{"/etc/passwd", "/tmp"},
+		},
+		{
+			name:    "nested values extracted recursively",
+			raw:     json.RawMessage(`{"options":{"verbose":true,"output":"result.txt"},"name":"test"}`),
+			pattern: regexp.MustCompile(`^options$`),
+			want:    []string{"result.txt"},
+		},
+		{
+			name:    "array values under matching key",
+			raw:     json.RawMessage(`{"args":["one","two","three"],"other":"skip"}`),
+			pattern: regexp.MustCompile(`^args$`),
+			want:    []string{"one", "two", "three"},
+		},
+		{
+			name:    "nil pattern returns nil",
+			raw:     json.RawMessage(`{"key":"value"}`),
+			pattern: nil,
+			want:    nil,
+		},
+		{
+			name:    "invalid JSON returns nil",
+			raw:     json.RawMessage(`{bad`),
+			pattern: regexp.MustCompile(`.*`),
+			want:    nil,
+		},
+		{
+			name:    "non-object JSON returns nil",
+			raw:     json.RawMessage(`["array"]`),
+			pattern: regexp.MustCompile(`.*`),
+			want:    nil,
+		},
+		{
+			name:    "no keys match returns empty",
+			raw:     json.RawMessage(`{"alpha":"one","beta":"two"}`),
+			pattern: regexp.MustCompile(`^command$`),
+			want:    nil,
+		},
+		{
+			name:    "deeply nested value under matching key",
+			raw:     json.RawMessage(`{"data":{"level1":{"level2":"deep"}}}`),
+			pattern: regexp.MustCompile(`^data$`),
+			want:    []string{"deep"},
+		},
+		{
+			name:    "empty object returns empty",
+			raw:     json.RawMessage(`{}`),
+			pattern: regexp.MustCompile(`.*`),
+			want:    nil,
+		},
+		{
+			name:    "case-insensitive pattern",
+			raw:     json.RawMessage(`{"Command":"value"}`),
+			pattern: regexp.MustCompile(`(?i)^command$`),
+			want:    []string{"value"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ExtractStringsForKeys(tt.raw, tt.pattern)
+			if tt.want == nil {
+				if got != nil {
+					t.Errorf("expected nil, got %v", got)
+				}
+				return
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("length mismatch: got %d (%v), want %d (%v)", len(got), got, len(tt.want), tt.want)
+			}
+			for i := range tt.want {
+				if got[i] != tt.want[i] {
+					t.Errorf("index %d: got %q, want %q", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestExtractStringsForKeys_DepthGuard(t *testing.T) {
+	// Build JSON nested deeper than maxExtractDepth under a matching key.
+	depth := maxExtractDepth + 2
+	var b strings.Builder
+	b.WriteString(`{"key":`)
+	for i := 0; i < depth; i++ {
+		b.WriteString(`{"k":`)
+	}
+	b.WriteString(`"leaf"`)
+	for i := 0; i < depth; i++ {
+		b.WriteString(`}`)
+	}
+	b.WriteString(`}`)
+	raw := json.RawMessage(b.String())
+	got := ExtractStringsForKeys(raw, regexp.MustCompile(`^key$`))
+	for _, s := range got {
+		if s == depthGuardLeaf {
+			t.Error("depth guard failed: extracted string beyond maxExtractDepth")
 		}
 	}
 }

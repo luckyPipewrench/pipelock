@@ -188,6 +188,28 @@ func TestValidate_DLPExemptDomainsBroadWildcardTrailingDot(t *testing.T) {
 	}
 }
 
+func TestValidate_DLPInvalidValidator(t *testing.T) {
+	cfg := Defaults()
+	cfg.DLP.Patterns = []DLPPattern{
+		{Name: "test", Regex: `\d{16}`, Severity: "medium", Validator: "bogus"},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for unknown validator name")
+	}
+}
+
+func TestValidate_DLPValidValidator(t *testing.T) {
+	cfg := Defaults()
+	cfg.DLP.Patterns = []DLPPattern{
+		{Name: "test-luhn", Regex: `\d{16}`, Severity: "medium", Validator: ValidatorLuhn},
+		{Name: "test-mod97", Regex: `[A-Z]{2}\d{2}[A-Z0-9]+`, Severity: "medium", Validator: ValidatorMod97},
+		{Name: "test-aba", Regex: `\d{9}`, Severity: "low", Validator: ValidatorABA},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("valid validator names should not error: %v", err)
+	}
+}
+
 func TestValidate_DLPExemptDomainsValid(t *testing.T) {
 	cfg := Defaults()
 	cfg.DLP.Patterns = []DLPPattern{

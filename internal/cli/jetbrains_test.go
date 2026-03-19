@@ -278,7 +278,29 @@ func TestMarshalMCPConfig_VSCodeKey(t *testing.T) {
 }
 
 func TestDiscoverIncludesJunie(t *testing.T) {
-	// This is a compile-time check that Junie is in configPaths.
-	// The actual discover tests live in internal/discover/.
-	// Here we just verify the import path works.
+	dir := t.TempDir()
+	junieDir := filepath.Join(dir, ".junie", "mcp")
+	if err := os.MkdirAll(junieDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := `{"mcpServers": {"test-srv": {"command": "echo", "args": ["hello"]}}}`
+	if err := os.WriteFile(filepath.Join(junieDir, testMCPFilename), []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify readMCPConfig finds the Junie config at the expected path.
+	mcpCfg, data, err := readMCPConfig(filepath.Join(junieDir, testMCPFilename), junieServersKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if data == nil {
+		t.Fatal("expected non-nil data from Junie config")
+	}
+	if len(mcpCfg.Servers) != 1 {
+		t.Errorf("expected 1 server, got %d", len(mcpCfg.Servers))
+	}
+	if _, ok := mcpCfg.Servers["test-srv"]; !ok {
+		t.Error("expected test-srv in Junie config")
+	}
 }

@@ -48,8 +48,10 @@ func jetbrainsInstallCmd() *cobra.Command {
 		Use:   "install",
 		Short: "Wrap JetBrains MCP servers through pipelock",
 		Long: `Rewrites Junie mcp.json to route all MCP servers through pipelock's
-MCP proxy. Stdio servers get their command wrapped. HTTP/SSE servers are
-converted to stdio with --upstream.
+MCP proxy. Stdio servers get their command wrapped. HTTP/SSE servers without
+custom headers are converted to stdio with --upstream. HTTP/SSE servers with
+headers (e.g. Authorization) are skipped with a warning since header
+passthrough is not yet supported.
 
 By default writes to .junie/mcp/mcp.json in the current directory (project-level).
 Use --global to write to the user-level ~/.junie/mcp/mcp.json.

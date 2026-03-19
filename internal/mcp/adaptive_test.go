@@ -748,3 +748,57 @@ func TestRecordSignalWithEscalation_NoEscalation(t *testing.T) {
 		t.Errorf("expected no log output when not escalated, got: %q", logBuf.String())
 	}
 }
+
+// TestBlockSessionDenyResponse verifies the structure of the JSON-RPC 2.0 error
+// returned by blockSessionDenyResponse for session-level blocks.
+func TestBlockSessionDenyResponse(t *testing.T) {
+	const (
+		wantCode    = -32001
+		wantMessage = "pipelock: session escalation level critical"
+		wantVersion = "2.0"
+	)
+
+	tests := []struct {
+		name string
+		id   json.RawMessage
+	}{
+		{name: "numeric_id", id: json.RawMessage("1")},
+		{name: "string_id", id: json.RawMessage(`"abc"`)},
+		{name: "null_id", id: json.RawMessage("null")},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data := blockSessionDenyResponse(tt.id)
+			if len(data) == 0 {
+				t.Fatal("expected non-empty response bytes")
+			}
+
+			var got struct {
+				JSONRPC string `json:"jsonrpc"`
+				ID      json.RawMessage
+				Error   struct {
+					Code    int    `json:"code"`
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(data, &got); err != nil {
+				t.Fatalf("failed to unmarshal response: %v (raw: %s)", err, data)
+			}
+
+			if got.JSONRPC != wantVersion {
+				t.Errorf("jsonrpc = %q, want %q", got.JSONRPC, wantVersion)
+			}
+			if got.Error.Code != wantCode {
+				t.Errorf("error.code = %d, want %d", got.Error.Code, wantCode)
+			}
+			if got.Error.Message != wantMessage {
+				t.Errorf("error.message = %q, want %q", got.Error.Message, wantMessage)
+			}
+			// Verify the ID round-trips correctly.
+			if string(got.ID) != string(tt.id) {
+				t.Errorf("id = %s, want %s", got.ID, tt.id)
+			}
+		})
+	}
+}

@@ -1400,3 +1400,155 @@ func TestRecEscalationLevel_NonNil(t *testing.T) {
 		t.Errorf("expected non-zero escalation level after threshold crossing, got %d", got)
 	}
 }
+
+// interceptMockRecorder is a test-only session.Recorder for interceptRecordSignal
+// unit tests. Set escalateOnNext=true to simulate a threshold-crossing transition.
+type interceptMockRecorder struct {
+	signals        []session.SignalType
+	escalateOnNext bool
+	from           string
+	to             string
+	level          int
+}
+
+func (r *interceptMockRecorder) RecordSignal(sig session.SignalType, _ float64) (bool, string, string) {
+	r.signals = append(r.signals, sig)
+	if r.escalateOnNext {
+		r.escalateOnNext = false
+		r.level++
+		return true, r.from, r.to
+	}
+	return false, "", ""
+}
+
+func (r *interceptMockRecorder) RecordClean(_ float64) {}
+func (r *interceptMockRecorder) EscalationLevel() int  { return r.level }
+func (r *interceptMockRecorder) ThreatScore() float64  { return 0 }
+
+// interceptRecordSignalCfg returns a config with AdaptiveEnforcement enabled
+// and a threshold high enough that unit tests never accidentally trigger real
+// escalation through the SessionManager.
+func interceptRecordSignalCfg() *config.Config {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.AdaptiveEnforcement.Enabled = true
+	cfg.AdaptiveEnforcement.EscalationThreshold = 100.0
+	return cfg
+}
+
+// TestInterceptRecordSignal_NilRecorder verifies that a nil recorder causes an
+// immediate no-op return with no panic.
+func TestInterceptRecordSignal_NilRecorder(t *testing.T) {
+	cfg := interceptRecordSignalCfg()
+	logger := audit.NewNop()
+	// Must not panic.
+	interceptRecordSignal(nil, session.SignalBlock, cfg, logger, nil, nil, testLoopbackIP, "", "req-1")
+}
+
+// TestInterceptRecordSignal_AdaptiveDisabled verifies that when AdaptiveEnforcement
+// is disabled, the function returns without recording any signal.
+func TestInterceptRecordSignal_AdaptiveDisabled(t *testing.T) {
+	cfg := interceptRecordSignalCfg()
+	cfg.AdaptiveEnforcement.Enabled = false
+	logger := audit.NewNop()
+	rec := &interceptMockRecorder{}
+
+	interceptRecordSignal(rec, session.SignalBlock, cfg, logger, nil, nil, testLoopbackIP, "", "req-2")
+
+	if len(rec.signals) != 0 {
+		t.Errorf("expected no signals when adaptive disabled, got %v", rec.signals)
+	}
+}
+
+// TestInterceptRecordSignal_NoEscalation verifies that when RecordSignal does not
+// cross the threshold (returns escalated=false), no logging or metrics update occurs.
+func TestInterceptRecordSignal_NoEscalation(t *testing.T) {
+	tests := []struct {
+		name   string
+		sig    session.SignalType
+		agent  string
+		client string
+	}{
+		{name: "block_signal_anon_agent", sig: session.SignalBlock, agent: "", client: testLoopbackIP},
+		{name: "nearmiss_signal_named_agent", sig: session.SignalNearMiss, agent: "my-agent", client: testLoopbackIP},
+		{name: "block_signal_anonymous_const", sig: session.SignalBlock, agent: agentAnonymous, client: testLoopbackIP},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := interceptRecordSignalCfg()
+			logger := audit.NewNop()
+			rec := &interceptMockRecorder{escalateOnNext: false}
+
+			// Must not panic; escalated=false means logger and metrics are not called.
+			interceptRecordSignal(rec, tt.sig, cfg, logger, nil, nil, tt.client, tt.agent, "req-3")
+
+			if len(rec.signals) != 1 || rec.signals[0] != tt.sig {
+				t.Errorf("expected signal %v recorded, got %v", tt.sig, rec.signals)
+			}
+		})
+	}
+}
+
+// TestInterceptRecordSignal_EscalationNilProxy verifies that when escalation
+// fires but p is nil (no Proxy metrics), only the audit logger is called — no
+// panic from nil pointer dereference.
+func TestInterceptRecordSignal_EscalationNilProxy(t *testing.T) {
+	cfg := interceptRecordSignalCfg()
+	logger := audit.NewNop()
+	rec := &interceptMockRecorder{
+		escalateOnNext: true,
+		from:           "normal",
+		to:             "elevated",
+	}
+
+	// p=nil: must log escalation without panicking on metrics.
+	interceptRecordSignal(rec, session.SignalBlock, cfg, logger, nil, nil, testLoopbackIP, "agent-x", "req-4")
+
+	if len(rec.signals) != 1 {
+		t.Errorf("expected 1 signal recorded, got %d", len(rec.signals))
+	}
+}
+
+// TestInterceptRecordSignal_EscalationWithProxy verifies that when escalation
+// fires and p is non-nil, RecordSessionEscalation and SetAdaptiveSessionLevel
+// are called without panic.
+func TestInterceptRecordSignal_EscalationWithProxy(t *testing.T) {
+	tests := []struct {
+		name string
+		from string
+		to   string
+	}{
+		// from == EscalationLabel(0) ("normal") — skips the SetAdaptiveSessionLevel(from,-1) branch.
+		{name: "from_normal_skips_decrement", from: "normal", to: "elevated"},
+		// from != EscalationLabel(0) — exercises the SetAdaptiveSessionLevel(from,-1) branch.
+		{name: "from_elevated_decrements_gauge", from: "elevated", to: "high"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := interceptRecordSignalCfg()
+			logger := audit.NewNop()
+			sc := scanner.New(cfg)
+			defer sc.Close()
+
+			p, err := New(cfg, logger, sc, metrics.New())
+			if err != nil {
+				t.Fatalf("proxy.New: %v", err)
+			}
+
+			rec := &interceptMockRecorder{
+				escalateOnNext: true,
+				from:           tt.from,
+				to:             tt.to,
+			}
+
+			// Must not panic; both logger and p.metrics paths are exercised.
+			interceptRecordSignal(rec, session.SignalBlock, cfg, logger, nil, p, testLoopbackIP, "agent-y", "req-5")
+
+			if len(rec.signals) != 1 {
+				t.Errorf("expected 1 signal recorded, got %d", len(rec.signals))
+			}
+		})
+	}
+}

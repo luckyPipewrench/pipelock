@@ -493,6 +493,29 @@ func scrapeMetric(t *testing.T, m *metrics.Metrics, want string) bool {
 	return strings.Contains(string(body), want)
 }
 
+// adaptiveElevatedGaugeValue reads the pipelock_adaptive_sessions_current gauge
+// value for the "elevated" level label from the metrics registry. Returns 0 if absent.
+func adaptiveElevatedGaugeValue(t *testing.T, m *metrics.Metrics) float64 {
+	t.Helper()
+	fams, err := m.Registry().Gather()
+	if err != nil {
+		t.Fatalf("gather metrics: %v", err)
+	}
+	for _, fam := range fams {
+		if fam.GetName() != "pipelock_adaptive_sessions_current" {
+			continue
+		}
+		for _, metric := range fam.GetMetric() {
+			for _, lbl := range metric.GetLabel() {
+				if lbl.GetName() == "level" && lbl.GetValue() == testLevelElevated {
+					return metric.GetGauge().GetValue()
+				}
+			}
+		}
+	}
+	return 0
+}
+
 func TestSessionManager_Metrics_EvictOnCapacity(t *testing.T) {
 	cfg := testSessionConfig()
 	cfg.MaxSessions = 2
@@ -818,18 +841,22 @@ func TestSessionManager_Cleanup_EscalatedGaugeDecrement(t *testing.T) {
 	sess.lastActivity = time.Now().Add(-2 * time.Minute)
 	sess.mu.Unlock()
 
-	// cleanup() must decrement the gauge for the escalated session.
-	// We verify by checking it runs without panic and the session is evicted.
+	// Simulate the gauge increment that proxy code would emit on escalation.
+	// cleanup() must decrement this back to zero when the session is evicted.
+	m.SetAdaptiveSessionLevel(testLevelElevated, 1)
+
+	if got := adaptiveElevatedGaugeValue(t, m); got != 1 {
+		t.Fatalf("pre-condition: gauge for %q = %.0f, want 1", testLevelElevated, got)
+	}
+
 	sm.cleanup()
 
 	if sm.Len() != 0 {
 		t.Error("escalated session should be evicted after TTL expiry")
 	}
-	// The adaptive gauge decrement is verified by the absence of a panic and
-	// by scraping the metric (SetAdaptiveSessionLevel uses a gauge that starts
-	// at 0; decrementing to -1 is observable in the metrics output).
-	if !scrapeMetric(t, m, "pipelock_adaptive_sessions_current") {
-		t.Error("expected adaptive session level gauge to be present in metrics")
+	// After cleanup the gauge must be decremented back to zero.
+	if got := adaptiveElevatedGaugeValue(t, m); got != 0 {
+		t.Errorf("adaptive gauge for %q after cleanup = %.0f, want 0", testLevelElevated, got)
 	}
 }
 
@@ -852,6 +879,14 @@ func TestSessionManager_EvictOldest_EscalatedGaugeDecrement(t *testing.T) {
 		t.Fatal("pre-condition: first session should be escalated")
 	}
 
+	// Simulate the gauge increment that proxy code would emit on escalation.
+	// evictOldest() must decrement this back to zero when the session is evicted.
+	m.SetAdaptiveSessionLevel(testLevelElevated, 1)
+
+	if got := adaptiveElevatedGaugeValue(t, m); got != 1 {
+		t.Fatalf("pre-condition: gauge for %q = %.0f, want 1", testLevelElevated, got)
+	}
+
 	// Ensure "escalated-session" has older lastActivity than "second-session".
 	// RecordSignal doesn't update lastActivity, so we just need to ensure the
 	// second session is created after with a newer timestamp.
@@ -866,12 +901,13 @@ func TestSessionManager_EvictOldest_EscalatedGaugeDecrement(t *testing.T) {
 		t.Errorf("expected 2 sessions after capacity eviction, got %d", sm.Len())
 	}
 
-	// Verify eviction metric was recorded and adaptive gauge is present.
+	// Eviction metric must be recorded.
 	if !scrapeMetric(t, m, "pipelock_sessions_evicted_total") {
 		t.Error("expected eviction metric after capacity eviction of escalated session")
 	}
-	if !scrapeMetric(t, m, "pipelock_adaptive_sessions") {
-		t.Error("expected adaptive session level gauge after eviction of escalated session")
+	// After eviction the gauge must be decremented back to zero.
+	if got := adaptiveElevatedGaugeValue(t, m); got != 0 {
+		t.Errorf("adaptive gauge for %q after eviction = %.0f, want 0", testLevelElevated, got)
 	}
 }
 

@@ -4065,9 +4065,16 @@ func TestFetchEndpoint_AdaptiveUpgrade_WarnToBlock(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/fetch", p.handleFetch)
 	mux.ServeHTTP(wClean, reqClean)
-	// A clean URL should be allowed regardless.
-	if wClean.Code == http.StatusForbidden {
-		t.Fatalf("clean URL unexpectedly blocked: %s", wClean.Body.String())
+	// A clean URL should be allowed (200 OK, not blocked).
+	if wClean.Code != http.StatusOK {
+		t.Fatalf("clean URL: expected 200 OK, got %d: %s", wClean.Code, wClean.Body.String())
+	}
+	var cleanResp FetchResponse
+	if err := json.Unmarshal(wClean.Body.Bytes(), &cleanResp); err != nil {
+		t.Fatalf("clean response JSON parse: %v", err)
+	}
+	if cleanResp.Blocked {
+		t.Errorf("clean URL: expected blocked=false, got blocked=true (reason: %s)", cleanResp.BlockReason)
 	}
 
 	// 2. Now send a request with the DLP-matching URL from the escalated IP.
@@ -4236,5 +4243,12 @@ func TestFetchEndpoint_BlockAll_CleanTrafficBlocked(t *testing.T) {
 	// Clean request from non-escalated session should return 200, not blocked.
 	if w2.Code != http.StatusOK {
 		t.Errorf("clean request from non-escalated session: expected 200 OK, got %d: %s", w2.Code, w2.Body.String())
+	}
+	var resp2 FetchResponse
+	if err := json.Unmarshal(w2.Body.Bytes(), &resp2); err != nil {
+		t.Fatalf("non-escalated response JSON parse: %v", err)
+	}
+	if resp2.Blocked {
+		t.Errorf("non-escalated session: expected blocked=false, got blocked=true (reason: %s)", resp2.BlockReason)
 	}
 }

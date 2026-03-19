@@ -287,12 +287,18 @@ func newInterceptHandler(
 		r.URL.Host = target
 		r.RequestURI = "" // required for http.Transport
 
+		// Track whether any finding occurred (URL, body DLP, or response scan).
+		// RecordClean is only applied when the request was fully clean so that
+		// warn/strip findings do not contribute to score decay.
+		hasFinding := false
+
 		// Scan the full URL through the DLP pipeline. The CONNECT handler only
 		// scans the synthetic host URL; inside the intercepted tunnel we have
 		// the real path and query, which may contain exfiltrated secrets.
 		targetURL := r.URL.String()
 		urlResult := sc.Scan(r.Context(), targetURL)
 		if !urlResult.Allowed {
+			hasFinding = true
 			if cfg.EnforceEnabled() {
 				// Record SignalBlock for adaptive enforcement scoring.
 				interceptRecordSignal(rec, session.SignalBlock, cfg, logger, m, p, clientIP, agent, requestID)
@@ -344,6 +350,7 @@ func newInterceptHandler(
 			)
 
 			if !result.Clean {
+				hasFinding = true
 				action := result.Action
 				if action == "" {
 					action = cfg.RequestBodyScanning.Action
@@ -518,6 +525,7 @@ func newInterceptHandler(
 		if sc.ResponseScanningEnabled() {
 			scanResult := sc.ScanResponse(r.Context(), string(respBody))
 			if !scanResult.Clean {
+				hasFinding = true
 				action := sc.ResponseAction()
 				// Adaptive enforcement: upgrade the response action before the switch.
 				originalAction := action
@@ -585,8 +593,10 @@ func newInterceptHandler(
 			}
 		}
 
-		// Record clean request for adaptive score decay.
-		if rec != nil && cfg.AdaptiveEnforcement.Enabled {
+		// Record clean request for adaptive score decay. Only apply decay when no
+		// finding was detected; warn/strip paths indicate suspicious traffic and
+		// must not contribute to score decay.
+		if rec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
 			rec.RecordClean(cfg.AdaptiveEnforcement.DecayPerCleanRequest)
 		}
 

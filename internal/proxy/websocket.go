@@ -462,6 +462,12 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		// block_all=true, close the WebSocket immediately. This prevents
 		// clean frames from flowing after escalation during long-lived connections.
 		if decide.UpgradeAction("", r.escalationLevel(), &r.cfg.AdaptiveEnforcement) == config.ActionBlock {
+			sessionKey := r.clientIP
+			if r.agent != "" && r.agent != agentAnonymous {
+				sessionKey = r.agent + "|" + r.clientIP
+			}
+			log.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(r.escalationLevel()), "", config.ActionBlock, "session_deny", r.clientIP, r.requestID)
+			r.proxy.metrics.RecordAdaptiveUpgrade("", config.ActionBlock, session.EscalationLabel(r.escalationLevel()))
 			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "session escalation")
 			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "session escalation")
 			blocked = true
@@ -757,6 +763,12 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 		// block_all check: if the session has escalated to a level with
 		// block_all=true, close the WebSocket immediately.
 		if decide.UpgradeAction("", r.escalationLevel(), &r.cfg.AdaptiveEnforcement) == config.ActionBlock {
+			sessionKey := r.clientIP
+			if r.agent != "" && r.agent != agentAnonymous {
+				sessionKey = r.agent + "|" + r.clientIP
+			}
+			log.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(r.escalationLevel()), "", config.ActionBlock, "session_deny", r.clientIP, r.requestID)
+			r.proxy.metrics.RecordAdaptiveUpgrade("", config.ActionBlock, session.EscalationLabel(r.escalationLevel()))
 			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "session escalation")
 			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "session escalation")
 			blocked = true

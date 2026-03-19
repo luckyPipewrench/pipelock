@@ -77,12 +77,12 @@ func validCardIssuer(digits []byte, n int) bool {
 		return n == 16 || n == 19
 	case 5: // Mastercard: 51-55, 16 digits
 		return digits[1] >= 1 && digits[1] <= 5 && n == 16
-	case 3: // Amex (34/37): 15 digits. JCB (3528-3589): 16 digits.
+	case 3: // Amex (34/37): 15 digits. JCB (3528-3589): 16-19 digits.
 		if digits[1] == 4 || digits[1] == 7 {
 			return n == 15 // Amex
 		}
 		if prefix4 >= 3528 && prefix4 <= 3589 {
-			return n == 16 // JCB
+			return n >= 16 && n <= 19 // JCB
 		}
 		return false
 	case 6: // Discover: 6011, 644-649, 65xx, 16/19 digits

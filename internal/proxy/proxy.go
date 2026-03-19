@@ -517,10 +517,14 @@ func newTLSInterceptTransport(
 // recordSessionActivity handles session profiling, adaptive signals, and anomaly
 // detection for any proxy handler. The agent parameter enables per-agent session
 // isolation (key becomes "agent|clientIP"); pass "" when agent is unavailable.
+// When deferClean is true, the RecordClean call is skipped even for a clean URL
+// scan result; the caller is responsible for calling it after all scanning is
+// complete (fetch uses this to avoid decaying score before header DLP, CEE, and
+// response scanning have run).
 // Returns a SessionResult with Blocked set when the request should be rejected
 // due to a session anomaly in block mode, and Level set to the current
 // escalation level for downstream use by UpgradeAction().
-func (p *Proxy) recordSessionActivity(clientIP, agent, hostname, requestID string, resultAllowed bool, resultScore float64, cfg *config.Config, log *audit.Logger) SessionResult {
+func (p *Proxy) recordSessionActivity(clientIP, agent, hostname, requestID string, resultAllowed bool, resultScore float64, cfg *config.Config, log *audit.Logger, deferClean bool) SessionResult {
 	sm := p.sessionMgrPtr.Load()
 	if sm == nil || !cfg.SessionProfiling.Enabled {
 		return SessionResult{}
@@ -563,7 +567,10 @@ func (p *Proxy) recordSessionActivity(clientIP, agent, hostname, requestID strin
 				}
 				p.metrics.SetAdaptiveSessionLevel(to, 1)
 			}
-		} else {
+		} else if !deferClean {
+			// Skip RecordClean when the caller defers it to the end of the
+			// request lifecycle (fetch), so that later scanning stages (header
+			// DLP, CEE, response) can still raise a finding before decay fires.
 			sess.RecordClean(adaptiveCfg.DecayPerCleanRequest)
 		}
 	}
@@ -852,8 +859,29 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	result := sc.Scan(r.Context(), targetURL)
 
 	// Session profiling: record BEFORE the enforce-mode early return so adaptive
-	// signals (SignalBlock) fire even for blocked requests.
-	sr := p.recordSessionActivity(clientIP, agent, parsed.Hostname(), requestID, result.Allowed, result.Score, cfg, log)
+	// signals (SignalBlock) fire even for blocked requests. Pass deferClean=true
+	// so RecordClean is NOT applied inside recordSessionActivity: header DLP,
+	// CEE, and response scanning may still find something after this point, and
+	// a clean decay before those stages would incorrectly counteract a later signal.
+	sr := p.recordSessionActivity(clientIP, agent, parsed.Hostname(), requestID, result.Allowed, result.Score, cfg, log, true)
+
+	// Look up the live session recorder for Fix 4+5: use EscalationLevel() at
+	// each enforcement point (not the snapshot in sr.Level) so mid-request CEE
+	// or response-scan escalations are reflected immediately. Also used to call
+	// RecordClean at the end when no finding was detected.
+	var fetchRec session.Recorder
+	if sm := p.sessionMgrPtr.Load(); sm != nil {
+		fetchSessionKey := clientIP
+		if agent != "" && agent != agentAnonymous {
+			fetchSessionKey = agent + "|" + clientIP
+		}
+		fetchRec = sm.GetOrCreate(fetchSessionKey)
+	}
+
+	// hasFinding tracks whether any scanning stage (header DLP, CEE, response)
+	// detected something for this request. RecordClean is only applied at the
+	// end when no finding was detected.
+	hasFinding := !result.Allowed
 
 	if !result.Allowed {
 		if cfg.EnforceEnabled() {
@@ -967,6 +995,10 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 		if sm := p.sessionMgrPtr.Load(); sm != nil && cfg.AdaptiveEnforcement.Enabled {
 			ceeRecordSignals(ceeRes, sm, sessionKey, cfg.AdaptiveEnforcement.EscalationThreshold, log, p.metrics, clientIP, requestID)
+		}
+
+		if ceeRes.EntropyHit || ceeRes.FragmentHit || ceeRes.Blocked {
+			hasFinding = true
 		}
 
 		if ceeRes.Blocked {
@@ -1094,9 +1126,13 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		hidden := extractHiddenContent(content)
 		if hidden != "" {
 			rawResult := sc.ScanResponse(r.Context(), hidden)
-			blocked, _, found := p.filterAndActOnResponseScan(w, rawResult, content, displayURL, agent, clientIP, requestID, sc, cfg, log, sr.Level)
+			// Use live escalation level so mid-request CEE escalations are reflected.
+			blocked, _, found := p.filterAndActOnResponseScan(w, rawResult, content, displayURL, agent, clientIP, requestID, sc, cfg, log, recEscalationLevel(fetchRec))
 			if blocked {
 				return
+			}
+			if found {
+				hasFinding = true
 			}
 			hiddenInjectionFound = found
 		}
@@ -1131,12 +1167,23 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// Response scanning: check extracted content for prompt injection.
 	if sc.ResponseScanningEnabled() {
 		scanResult := sc.ScanResponse(r.Context(), content)
-		blocked, newContent, _ := p.filterAndActOnResponseScan(w, scanResult, content, displayURL, agent, clientIP, requestID, sc, cfg, log, sr.Level)
+		// Use live escalation level so mid-request CEE escalations are reflected.
+		blocked, newContent, found := p.filterAndActOnResponseScan(w, scanResult, content, displayURL, agent, clientIP, requestID, sc, cfg, log, recEscalationLevel(fetchRec))
+		if found {
+			hasFinding = true
+		}
 		if blocked {
 			p.metrics.RecordBlocked(parsed.Hostname(), "response_scan", time.Since(start), agentLabel)
 			return
 		}
 		content = newContent
+	}
+
+	// Deferred RecordClean: apply score decay only when no finding was detected
+	// during the entire fetch lifecycle (URL, header DLP, CEE, response scan).
+	// This ensures warn/near-miss findings do not inadvertently decay score.
+	if fetchRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
+		fetchRec.RecordClean(cfg.AdaptiveEnforcement.DecayPerCleanRequest)
 	}
 
 	// Record response size for per-domain data budget tracking

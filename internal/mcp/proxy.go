@@ -185,6 +185,11 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		// purpose-built poisoning patterns instead. When tool scanning
 		// identifies a message as tools/list, skip the general scan entirely.
 		isToolsList := false
+		// toolPoisonDetected tracks whether a tool-poisoning finding was raised
+		// for this message (even in warn mode). A message that raised a
+		// tool-poison near-miss signal must not also apply RecordClean: the
+		// same message cannot both raise and decay the session threat score.
+		toolPoisonDetected := false
 		if toolCfg != nil {
 			toolResult := tools.ScanTools(line, sc, toolCfg)
 			isToolsList = toolResult.IsToolsList
@@ -201,12 +206,22 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			}
 			if toolResult.IsToolsList && !toolResult.Clean {
 				foundInjection = true
+				toolPoisonDetected = true
 				tools.LogToolFindings(logW, lineNum, toolResult)
 
-				toolAction := toolCfg.Action
+				originalToolAction := toolCfg.Action
+				toolAction := originalToolAction
 				// Escalation upgrade for tool poison detection.
 				if rec != nil {
 					toolAction = decide.UpgradeAction(toolAction, rec.EscalationLevel(), adaptiveCfg)
+					if toolAction != originalToolAction {
+						// Emit adaptive-upgrade telemetry when escalation changed the action.
+						_, _ = fmt.Fprintf(logW, "pipelock: line %d: adaptive upgrade tool-poison %s->%s (level=%s)\n",
+							lineNum, originalToolAction, toolAction, session.EscalationLabel(rec.EscalationLevel()))
+						if m != nil {
+							m.RecordAdaptiveUpgrade(originalToolAction, toolAction, session.EscalationLabel(rec.EscalationLevel()))
+						}
+					}
 				}
 
 				if toolAction == config.ActionBlock {
@@ -238,8 +253,10 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		}
 
 		if verdict.Clean {
-			// Clean message: decay threat score.
-			if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
+			// Clean message: decay threat score. Skip decay when tool-poisoning
+			// was detected for this message — a near-miss signal and a clean
+			// decay on the same message would incorrectly counteract each other.
+			if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled && !toolPoisonDetected {
 				rec.RecordClean(adaptiveCfg.DecayPerCleanRequest)
 			}
 			if err := writer.WriteMessage(line); err != nil {

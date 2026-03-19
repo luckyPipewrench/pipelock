@@ -128,7 +128,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// interception; this covers the handshake itself.
 	if p.evalHeaderDLP(r.Context(), r.Header, cfg, sc, p.logger, http.MethodConnect, syntheticURL, host, clientIP, requestID, agent, start) {
 		// Record session activity so adaptive enforcement sees header-DLP blocks.
-		p.recordSessionActivity(clientIP, agent, host, requestID, false, 0.9, cfg, p.logger)
+		p.recordSessionActivity(clientIP, agent, host, requestID, false, 0.9, cfg, p.logger, false)
 		p.metrics.RecordTunnelBlocked(agentLabel)
 		http.Error(w, "CONNECT blocked: header DLP match", http.StatusForbidden)
 		return
@@ -136,7 +136,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	// Session profiling: record BEFORE the enforce-mode early return so adaptive
 	// signals (SignalBlock) fire even for blocked requests.
-	sr := p.recordSessionActivity(clientIP, agent, host, requestID, result.Allowed, result.Score, cfg, p.logger)
+	sr := p.recordSessionActivity(clientIP, agent, host, requestID, result.Allowed, result.Score, cfg, p.logger, false)
 
 	if !result.Allowed {
 		if cfg.EnforceEnabled() {
@@ -454,7 +454,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Session profiling: record BEFORE the enforce-mode early return so adaptive
 	// signals (SignalBlock) fire even for blocked requests.
-	sr := p.recordSessionActivity(clientIP, agent, r.URL.Hostname(), requestID, result.Allowed, result.Score, cfg, p.logger)
+	sr := p.recordSessionActivity(clientIP, agent, r.URL.Hostname(), requestID, result.Allowed, result.Score, cfg, p.logger, false)
 
 	if !result.Allowed {
 		if cfg.EnforceEnabled() {

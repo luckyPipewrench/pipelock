@@ -421,6 +421,7 @@ func newInterceptHandler(
 		if cfg.RequestBodyScanning.Enabled && cfg.RequestBodyScanning.ScanHeaders {
 			headerResult := scanRequestHeaders(r.Context(), r.Header, cfg, sc)
 			if headerResult != nil && !headerResult.Clean {
+				hasFinding = true
 				action := cfg.RequestBodyScanning.Action
 				// ActionAsk: no HITL terminal in intercepted tunnels, fail closed.
 				if action == config.ActionAsk || (action == config.ActionBlock && cfg.EnforceEnabled()) {

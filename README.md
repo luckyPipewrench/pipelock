@@ -477,6 +477,7 @@ Details, config examples, and gap analysis: [docs/owasp-mapping.md](docs/owasp-m
 | [OpenClaw Guide](docs/guides/openclaw.md) | Gateway sidecar, init container, `generate mcporter` wrapping |
 | [Security Assurance](docs/security-assurance.md) | Security model, trust boundaries, supply chain |
 | [Transport Modes](docs/guides/transport-modes.md) | Comparison of all proxy modes and their scanning capabilities |
+| [JetBrains Guide](docs/guides/jetbrains.md) | Junie MCP proxy wrapping for IntelliJ, PyCharm, GoLand, etc. |
 | [EU AI Act Mapping](docs/compliance/eu-ai-act-mapping.md) | Article-by-article compliance mapping |
 
 ## Project Structure

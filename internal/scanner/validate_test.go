@@ -33,7 +33,8 @@ func TestValidateLuhn(t *testing.T) {
 		{name: "discover bad check digit", input: "6011111111111118", want: false},
 
 		// Invalid: wrong length.
-		{name: "too short", input: "411111111111", want: false},
+		{name: "too short 12 digits", input: "411111111111", want: false},
+		{name: "too short 14 digits", input: "41111111111118", want: false},
 		{name: "too long", input: "41111111111111111111", want: false},
 
 		// Invalid: not a card number.
@@ -62,7 +63,7 @@ func TestValidCardIssuer(t *testing.T) {
 		// Visa
 		{name: "visa 16", card: "4111111111111111", want: true},
 		{name: "visa 19", card: "4111111111111111000", want: true},
-		{name: "visa 13", card: "4222222222225", want: true},
+		{name: "visa 13 retired", card: "4222222222225", want: false},
 		{name: "visa wrong len 15", card: "411111111111111", want: false},
 
 		// Mastercard 51-55

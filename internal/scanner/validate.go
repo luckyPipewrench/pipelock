@@ -36,7 +36,7 @@ func validateLuhn(s string) bool {
 		}
 	}
 
-	if n < 13 || n > 19 {
+	if n < 15 || n > 19 {
 		return false
 	}
 
@@ -73,8 +73,8 @@ func validCardIssuer(digits []byte, n int) bool {
 	prefix4 := int(digits[0])*1000 + int(digits[1])*100 + int(digits[2])*10 + int(digits[3])
 
 	switch d0 {
-	case 4: // Visa: starts with 4, 13/16/19 digits
-		return n == 13 || n == 16 || n == 19
+	case 4: // Visa: starts with 4, 16/19 digits (13-digit Visa retired in the '90s)
+		return n == 16 || n == 19
 	case 5: // Mastercard: 51-55, 16 digits
 		return digits[1] >= 1 && digits[1] <= 5 && n == 16
 	case 3: // Amex (34/37): 15 digits. JCB (3528-3589): 16 digits.

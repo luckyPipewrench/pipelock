@@ -921,6 +921,7 @@ func TestProxy_SessionStore_Disabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
 	}
+	t.Cleanup(func() { p.Close() })
 	if got := p.SessionStore(); got != nil {
 		t.Errorf("expected nil SessionStore when profiling disabled, got %T", got)
 	}
@@ -961,6 +962,7 @@ func TestProxy_SessionStore_Enabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
 	}
+	t.Cleanup(func() { p.Close() })
 	if got := p.SessionStore(); got == nil {
 		t.Error("expected non-nil SessionStore when profiling enabled")
 	}

@@ -131,12 +131,10 @@ func SortedKeys(m map[string]interface{}) []string {
 // overflow from maliciously deeply-nested JSON.
 const maxExtractDepth = 64
 
-// ExtractStringsFromJSON recursively extracts all string values from arbitrary JSON.
-// Only extracts values (not keys) to avoid false positives from field names.
-// Recursion is bounded by maxExtractDepth to prevent stack overflow.
 // ExtractStringsForKeys extracts string values only from top-level keys
 // matching the keyPattern regex. Values under non-matching keys are excluded.
 // Nested values under matching keys are extracted recursively.
+// Returns nil if keyPattern is nil (callers must provide a compiled pattern).
 func ExtractStringsForKeys(raw json.RawMessage, keyPattern *regexp.Regexp) []string {
 	var parsed interface{}
 	if err := json.Unmarshal(raw, &parsed); err != nil {
@@ -169,13 +167,16 @@ func ExtractStringsForKeys(raw json.RawMessage, keyPattern *regexp.Regexp) []str
 		return nil
 	}
 	for _, k := range SortedKeys(m) {
-		if keyPattern.MatchString(k) {
+		if keyPattern != nil && keyPattern.MatchString(k) {
 			extract(m[k], 0)
 		}
 	}
 	return result
 }
 
+// ExtractStringsFromJSON recursively extracts all string values from arbitrary JSON.
+// Only extracts values (not keys) to avoid false positives from field names.
+// Recursion is bounded by maxExtractDepth to prevent stack overflow.
 func ExtractStringsFromJSON(raw json.RawMessage) []string {
 	var result []string
 	var extract func(v interface{}, depth int)

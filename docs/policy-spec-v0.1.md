@@ -207,7 +207,7 @@ mcp:
 | `name` | string | yes | Rule identifier |
 | `tool_pattern` | string | yes | Regex matching tool name |
 | `arg_pattern` | string | no | Regex matching argument values |
-| `arg_key` | string | no | Regex scoping `arg_pattern` to top-level argument keys. Requires `arg_pattern`. |
+| `arg_key` | string | no | Regex scoping `arg_pattern` to top-level argument keys. Requires `arg_pattern`; specifying `arg_key` without `arg_pattern` is a validation error. |
 | `action` | string | no | `block` or `warn` |
 
 ## Audit Event Format

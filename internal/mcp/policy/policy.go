@@ -43,11 +43,41 @@ var shellHexRe = regexp.MustCompile(`\\x([0-9a-fA-F]{2})`)
 // regex see the intended command. Runs after octal/hex decode.
 var shellEscapeRe = regexp.MustCompile(`\\(\w)`)
 
+// shellPositionalRe strips $@ and $* which expand to empty when there are no
+// positional parameters (the common case in non-interactive MCP tool calls).
+// Attackers insert these to break command keywords: "r$@m" → "rm".
+// Only covers $@ $* ${@} ${*} — these are reliably empty in MCP contexts.
+// Does NOT strip $0-$9, $?, $_, etc. which are non-empty in real bash.
+//
+// Assumption: MCP tool calls execute commands without positional parameters.
+// If a wrapper script passes args into the shell (e.g. "set -- X; r$@m"),
+// $@ is non-empty and stripping it synthesizes a false match. This is an
+// accepted trade-off: blocking a benign wrapped command is safer than
+// letting "r$@m -rf /" through in the vastly more common parameterless case.
+var shellPositionalRe = regexp.MustCompile(`\$\{[@*]\}|\$[@*]`)
+
+// shellHomeSlashRe matches parameter substring expansions that evaluate to "/"
+// at runtime. Attackers use these to build file paths dynamically:
+// "cat ${HOME:0:1}etc${HOME:0:1}passwd" → "cat /etc/passwd".
+// Covers both bash substring forms:
+//   - ${HOME:0:1} (standard offset:length)
+//   - ${HOME::1}  (omitted offset, equivalent to :0:1)
+//
+// Matches HOME, PWD, OLDPWD — variables whose first character is always "/".
+var shellHomeSlashRe = regexp.MustCompile(`\$\{(?:HOME|PWD|OLDPWD)(?::0:1|::1)\}`)
+
 // simpleCmdSubRe matches simple command substitutions used to build command names.
 // $(printf rm), $(echo rm), and $(printf %s rm) are evasion techniques that hide
 // the real command. The optional (?:['"]?%\S*['"]?\s+)* handles printf format
 // arguments: $(printf %s rm), $(printf '%b' rm), etc.
 var simpleCmdSubRe = regexp.MustCompile(`\$\(\s*(?:echo|printf)\s+(?:['"]?%\S*['"]?\s+)*['"]?(\w+)['"]?\s*\)`)
+
+// backtickCmdSubRe matches backtick command substitutions equivalent to $().
+// `printf rm`, `echo rm` are evasion techniques identical to $(printf rm).
+// Backticks are stripped by shellQuoteStripper, but the command inside needs
+// to be resolved first — otherwise `printf rm` becomes "printf rm" (literal)
+// instead of "rm" (resolved).
+var backtickCmdSubRe = regexp.MustCompile("`\\s*(?:echo|printf)\\s+(?:['\"]?%\\S*['\"]?\\s+)*['\"]?(\\w+)['\"]?\\s*`")
 
 // simpleAssignRe matches shell variable assignment followed by separator.
 // "x=rm;$x -rf" hides the command name in a variable.
@@ -88,6 +118,7 @@ type CompiledRule struct {
 	Name        string
 	ToolPattern *regexp.Regexp
 	ArgPattern  *regexp.Regexp // nil = match on tool name alone
+	ArgKey      *regexp.Regexp // nil = match all arg values; non-nil = scope to matching keys
 	Action      string         // per-rule override, empty = use Config.Action
 }
 
@@ -115,6 +146,9 @@ func New(cfg config.MCPToolPolicy) *Config {
 		if r.ArgPattern != "" {
 			compiled.ArgPattern = regexp.MustCompile(r.ArgPattern)
 		}
+		if r.ArgKey != "" {
+			compiled.ArgKey = regexp.MustCompile(r.ArgKey)
+		}
 		pc.Rules = append(pc.Rules, compiled)
 	}
 	return pc
@@ -123,13 +157,22 @@ func New(cfg config.MCPToolPolicy) *Config {
 // CheckToolCall evaluates a tool call against policy rules.
 // toolName is the MCP tool name (params.name). argStrings are all string
 // values extracted from params.arguments.
+// Equivalent to CheckToolCallWithArgs(toolName, argStrings, nil).
+func (pc *Config) CheckToolCall(toolName string, argStrings []string) Verdict {
+	return pc.CheckToolCallWithArgs(toolName, argStrings, nil)
+}
+
+// CheckToolCallWithArgs evaluates a tool call against policy rules.
+// argStrings contains all argument values (for rules without arg_key).
+// rawArgs is the raw JSON arguments (for rules with arg_key that need
+// key-scoped extraction). rawArgs may be nil if no rules use arg_key.
 //
 // Three matching strategies handle different evasion techniques:
 //  1. Joined string — catches array-split evasion (["rm","-rf","/"])
 //  2. Individual strings — catches path patterns (.ssh/id_rsa)
 //  3. Pairwise token combinations — catches map-ordering evasion where
 //     command and flags land in separate values with non-deterministic order
-func (pc *Config) CheckToolCall(toolName string, argStrings []string) Verdict {
+func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, rawArgs json.RawMessage) Verdict {
 	if pc == nil || len(pc.Rules) == 0 {
 		return Verdict{}
 	}
@@ -150,11 +193,14 @@ func (pc *Config) CheckToolCall(toolName string, argStrings []string) Verdict {
 	// Normalization pipeline (order matters):
 	//  1. Unicode normalization (zero-width, homoglyphs, combining marks)
 	//  2. Octal/hex escape decode (\155 → m, \x6d → m)
-	//  3. Backslash escape strip (\m → m)
-	//  4. Command substitution resolve ($(printf rm) → rm, $(printf %s rm) → rm)
-	//  5. Variable assignment resolve (x=rm;$x → x=rm;rm)
-	//  6. Brace expansion resolve ({rm,-rf,/tmp} → rm -rf /tmp)
-	//  7. Shell expansion normalize (${IFS} → space)
+	//  3. Backtick command substitution resolve (`printf rm` → rm)
+	//  4. Shell quote strip ($'...' framing, lone quotes, backticks)
+	//  5. Backslash escape strip (\m → m)
+	//  6. Positional parameter strip ($@ / $* → empty)
+	//  7. Command substitution + variable assignment resolve ($(printf rm) → rm)
+	//  8. HOME/PWD slash replacement (${HOME:0:1}, ${HOME::1} → /)
+	//  9. Brace expansion resolve ({rm,-rf,/tmp} → rm -rf /tmp)
+	// 10. Shell expansion normalize (${IFS} → space)
 	//
 	// Two normalization passes handle different ZW-char insertion strategies:
 	//  - Primary: drop invisible chars (catches mid-word: "r\u200bm" → "rm")
@@ -181,7 +227,22 @@ func (pc *Config) CheckToolCall(toolName string, argStrings []string) Verdict {
 			continue
 		}
 
-		if matchArgPattern(rule.ArgPattern, tokens, joined) || matchArgPattern(rule.ArgPattern, altTokens, altJoined) {
+		// Key-scoped rules: extract only values under matching top-level keys,
+		// then normalize and match those instead of all values. If raw
+		// arguments are unavailable, skip the rule rather than falling
+		// back to unscoped matching (safety net for future callers).
+		ruleTokens, ruleJoined := tokens, joined
+		ruleAltTokens, ruleAltJoined := altTokens, altJoined
+		if rule.ArgKey != nil {
+			if len(rawArgs) == 0 {
+				continue // cannot scope without raw JSON — skip rule
+			}
+			scopedStrings := jsonrpc.ExtractStringsForKeys(rawArgs, rule.ArgKey)
+			ruleTokens, ruleJoined = normalizeArgTokens(scopedStrings, normalize.ForMatching)
+			ruleAltTokens, ruleAltJoined = normalizeArgTokens(scopedStrings, normalize.ForPolicy)
+		}
+
+		if matchArgPattern(rule.ArgPattern, ruleTokens, ruleJoined) || matchArgPattern(rule.ArgPattern, ruleAltTokens, ruleAltJoined) {
 			matchedRules = append(matchedRules, rule.Name)
 			action := rule.Action
 			if action == "" {
@@ -213,9 +274,12 @@ func normalizeArgTokens(argStrings []string, normFn func(string) string) ([]stri
 		s = policyPreNormalize.Replace(s)
 		normalized := normFn(s)
 		normalized = decodeShellEscapes(normalized)
+		normalized = backtickCmdSubRe.ReplaceAllString(normalized, "$1")
 		normalized = shellQuoteStripper.Replace(normalized)
 		normalized = shellEscapeRe.ReplaceAllString(normalized, "$1")
+		normalized = shellPositionalRe.ReplaceAllString(normalized, "")
 		normalized = resolveShellConstruction(normalized)
+		normalized = shellHomeSlashRe.ReplaceAllString(normalized, "/")
 		normalized = expandBraces(normalized)
 		normalized = shellExpansionRe.ReplaceAllString(normalized, " ")
 		tokens = append(tokens, strings.Fields(normalized)...)
@@ -284,13 +348,27 @@ func (pc *Config) checkSingle(line []byte) Verdict {
 		return Verdict{}
 	}
 	var argStrings []string
-	if len(tc.Arguments) > 0 && string(tc.Arguments) != jsonrpc.Null {
+	hasArgs := len(tc.Arguments) > 0 && string(tc.Arguments) != jsonrpc.Null
+	if hasArgs {
 		// Use values-only extraction (not extractAllStringsFromJSON which
 		// includes map keys). Keys like "cmd","flags","target" would pollute
 		// the joined string and break regex adjacency for policy matching.
 		argStrings = jsonrpc.ExtractStringsFromJSON(tc.Arguments)
 	}
-	return pc.CheckToolCall(tc.Name, argStrings)
+
+	// If any rule uses ArgKey, we need per-rule key-scoped extraction.
+	// Pass raw arguments so CheckToolCallWithArgs can extract per-key.
+	var rawArgs json.RawMessage
+	if hasArgs {
+		for _, rule := range pc.Rules {
+			if rule.ArgKey != nil {
+				rawArgs = tc.Arguments
+				break
+			}
+		}
+	}
+
+	return pc.CheckToolCallWithArgs(tc.Name, argStrings, rawArgs)
 }
 
 // checkBatch evaluates a batch of JSON-RPC requests and aggregates policy results.

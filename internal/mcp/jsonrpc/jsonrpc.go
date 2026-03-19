@@ -8,6 +8,7 @@ package jsonrpc
 
 import (
 	"encoding/json"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -129,6 +130,49 @@ func SortedKeys(m map[string]interface{}) []string {
 // maxExtractDepth limits recursion in ExtractStringsFromJSON to prevent stack
 // overflow from maliciously deeply-nested JSON.
 const maxExtractDepth = 64
+
+// ExtractStringsForKeys extracts string values only from top-level keys
+// matching the keyPattern regex. Values under non-matching keys are excluded.
+// Nested values under matching keys are extracted recursively.
+// Returns nil if keyPattern is nil (callers must provide a compiled pattern).
+func ExtractStringsForKeys(raw json.RawMessage, keyPattern *regexp.Regexp) []string {
+	var parsed interface{}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return nil
+	}
+	m, ok := parsed.(map[string]interface{})
+	if !ok {
+		return nil // arguments must be an object
+	}
+	var result []string
+	var extract func(v interface{}, depth int)
+	extract = func(v interface{}, depth int) {
+		if depth > maxExtractDepth {
+			return
+		}
+		switch val := v.(type) {
+		case string:
+			result = append(result, val)
+		case []interface{}:
+			for _, item := range val {
+				extract(item, depth+1)
+			}
+		case map[string]interface{}:
+			for _, k := range SortedKeys(val) {
+				extract(val[k], depth+1)
+			}
+		}
+	}
+	if keyPattern == nil {
+		return nil
+	}
+	for _, k := range SortedKeys(m) {
+		if keyPattern != nil && keyPattern.MatchString(k) {
+			extract(m[k], 0)
+		}
+	}
+	return result
+}
 
 // ExtractStringsFromJSON recursively extracts all string values from arbitrary JSON.
 // Only extracts values (not keys) to avoid false positives from field names.

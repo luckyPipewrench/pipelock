@@ -15,6 +15,9 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
+// jsonNull is the literal JSON null, used to detect nil-equivalent RawMessage values.
+const jsonNull = "null"
+
 // executeScan dispatches to the appropriate scanner for the requested kind.
 // Returns both the response body and the HTTP status code.
 // 200 = completed (allow or deny), 503 = retryable failure, 500 = internal error.
@@ -125,7 +128,7 @@ func (h *Handler) scanToolCall(ctx context.Context, req *Request) (Response, int
 	// Uses extract.AllStringsFromJSON (keys AND values) because secrets
 	// can be encoded as JSON object keys. See spec: tool_call wiring detail.
 	var argStrings []string
-	if len(req.Input.Arguments) > 0 && string(req.Input.Arguments) != "null" {
+	if len(req.Input.Arguments) > 0 && string(req.Input.Arguments) != jsonNull {
 		argStrings = extract.AllStringsFromJSON(json.RawMessage(req.Input.Arguments))
 	}
 	scanText := strings.Join(argStrings, " ")
@@ -156,7 +159,11 @@ func (h *Handler) scanToolCall(ctx context.Context, req *Request) (Response, int
 		if err := ctx.Err(); err != nil {
 			return h.contextErrorResponse(req.Kind, err), h.contextErrorStatus(err)
 		}
-		verdict := h.policyCfg.CheckToolCall(req.Input.ToolName, argStrings)
+		var rawArgs json.RawMessage
+		if len(req.Input.Arguments) > 0 && string(req.Input.Arguments) != jsonNull {
+			rawArgs = json.RawMessage(req.Input.Arguments)
+		}
+		verdict := h.policyCfg.CheckToolCallWithArgs(req.Input.ToolName, argStrings, rawArgs)
 		if err := ctx.Err(); err != nil {
 			return h.contextErrorResponse(req.Kind, err), h.contextErrorStatus(err)
 		}

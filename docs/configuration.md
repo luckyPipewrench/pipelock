@@ -510,6 +510,11 @@ mcp_tool_policy:
       tool_pattern: "write_file"
       arg_pattern: '/etc/.*|/usr/.*'
       action: warn
+    - name: "Block shadow file reads"
+      tool_pattern: "read_file"
+      arg_pattern: '/etc/shadow'
+      arg_key: '^(file_?path|target)$'
+      action: block
 ```
 
 | Field | Default | Description |
@@ -521,7 +526,8 @@ mcp_tool_policy:
 **Rule fields:**
 - `name:` rule identifier
 - `tool_pattern:` regex matching tool name
-- `arg_pattern:` regex matching argument values (optional)
+- `arg_pattern:` regex matching argument values (optional; omit for tool-name-only rules)
+- `arg_key:` regex scoping `arg_pattern` to specific top-level argument keys (optional; requires `arg_pattern`). Without `arg_key`, `arg_pattern` checks values from all argument keys. Values under matching keys are extracted recursively.
 - `action:` per-rule override (warn or block)
 
 Shell obfuscation detection is built-in: backslash escapes, `$IFS` substitution, brace expansion, and octal/hex escapes are decoded before matching.

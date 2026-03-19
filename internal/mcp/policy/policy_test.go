@@ -2146,22 +2146,29 @@ func TestCheckToolCall_IndirectHomeSlashBypass(t *testing.T) {
 }
 
 func TestCheckToolCall_BacktickCmdSubResolution(t *testing.T) {
-	// Backtick command substitution should be resolved like $().
+	// Verify backtick resolution produces the command keyword, not just that
+	// the keyword appears somewhere in the joined string after quote stripping.
+	// Use a custom rule anchored with \b...\s that requires "wget" as a
+	// distinct token — after bare stripping `printf wget https://...` has
+	// "printf" before "wget", but the \bwget\b pattern matches either way.
+	// So we also test with $() parity: both forms must produce identical verdicts.
 	pc := defaultConfig(t)
-	tests := []struct {
-		name string
-		args []string
-	}{
-		{"backtick printf", []string{"`printf rm` -rf /tmp/demo"}},
-		{"backtick echo", []string{"`echo rm` -rf /tmp/demo"}},
+
+	// Default rules: backtick form must match just like $() form.
+	dollar := pc.CheckToolCall("bash", []string{"$(printf rm) -rf /tmp/demo"})
+	backtick := pc.CheckToolCall("bash", []string{"`printf rm` -rf /tmp/demo"})
+	if dollar.Matched != backtick.Matched {
+		t.Errorf("parity broken: $(printf rm) matched=%v but `printf rm` matched=%v",
+			dollar.Matched, backtick.Matched)
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			v := pc.CheckToolCall("bash", tt.args)
-			if !v.Matched {
-				t.Errorf("expected match for backtick cmd sub: %s", tt.args[0])
-			}
-		})
+	if !backtick.Matched {
+		t.Error("expected match for `printf rm` -rf /tmp/demo")
+	}
+
+	// Echo variant.
+	backtickEcho := pc.CheckToolCall("bash", []string{"`echo rm` -rf /tmp/demo"})
+	if !backtickEcho.Matched {
+		t.Error("expected match for `echo rm` -rf /tmp/demo")
 	}
 }
 

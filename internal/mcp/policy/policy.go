@@ -64,7 +64,7 @@ var shellPositionalRe = regexp.MustCompile(`\$\{[@*]\}|\$[@*]`)
 //   - ${HOME::1}  (omitted offset, equivalent to :0:1)
 //
 // Matches HOME, PWD, OLDPWD — variables whose first character is always "/".
-var shellHomeSlashRe = regexp.MustCompile(`\$\{(?:HOME|PWD|OLDPWD)::?0?:1\}`)
+var shellHomeSlashRe = regexp.MustCompile(`\$\{(?:HOME|PWD|OLDPWD)(?::0:1|::1)\}`)
 
 // simpleCmdSubRe matches simple command substitutions used to build command names.
 // $(printf rm), $(echo rm), and $(printf %s rm) are evasion techniques that hide

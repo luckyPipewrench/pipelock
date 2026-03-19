@@ -43,11 +43,41 @@ var shellHexRe = regexp.MustCompile(`\\x([0-9a-fA-F]{2})`)
 // regex see the intended command. Runs after octal/hex decode.
 var shellEscapeRe = regexp.MustCompile(`\\(\w)`)
 
+// shellPositionalRe strips $@ and $* which expand to empty when there are no
+// positional parameters (the common case in non-interactive MCP tool calls).
+// Attackers insert these to break command keywords: "r$@m" → "rm".
+// Only covers $@ $* ${@} ${*} — these are reliably empty in MCP contexts.
+// Does NOT strip $0-$9, $?, $_, etc. which are non-empty in real bash.
+//
+// Assumption: MCP tool calls execute commands without positional parameters.
+// If a wrapper script passes args into the shell (e.g. "set -- X; r$@m"),
+// $@ is non-empty and stripping it synthesizes a false match. This is an
+// accepted trade-off: blocking a benign wrapped command is safer than
+// letting "r$@m -rf /" through in the vastly more common parameterless case.
+var shellPositionalRe = regexp.MustCompile(`\$\{[@*]\}|\$[@*]`)
+
+// shellHomeSlashRe matches parameter substring expansions that evaluate to "/"
+// at runtime. Attackers use these to build file paths dynamically:
+// "cat ${HOME:0:1}etc${HOME:0:1}passwd" → "cat /etc/passwd".
+// Covers both bash substring forms:
+//   - ${HOME:0:1} (standard offset:length)
+//   - ${HOME::1}  (omitted offset, equivalent to :0:1)
+//
+// Matches HOME, PWD, OLDPWD — variables whose first character is always "/".
+var shellHomeSlashRe = regexp.MustCompile(`\$\{(?:HOME|PWD|OLDPWD)::?0?:1\}`)
+
 // simpleCmdSubRe matches simple command substitutions used to build command names.
 // $(printf rm), $(echo rm), and $(printf %s rm) are evasion techniques that hide
 // the real command. The optional (?:['"]?%\S*['"]?\s+)* handles printf format
 // arguments: $(printf %s rm), $(printf '%b' rm), etc.
 var simpleCmdSubRe = regexp.MustCompile(`\$\(\s*(?:echo|printf)\s+(?:['"]?%\S*['"]?\s+)*['"]?(\w+)['"]?\s*\)`)
+
+// backtickCmdSubRe matches backtick command substitutions equivalent to $().
+// `printf rm`, `echo rm` are evasion techniques identical to $(printf rm).
+// Backticks are stripped by shellQuoteStripper, but the command inside needs
+// to be resolved first — otherwise `printf rm` becomes "printf rm" (literal)
+// instead of "rm" (resolved).
+var backtickCmdSubRe = regexp.MustCompile("`\\s*(?:echo|printf)\\s+(?:['\"]?%\\S*['\"]?\\s+)*['\"]?(\\w+)['\"]?\\s*`")
 
 // simpleAssignRe matches shell variable assignment followed by separator.
 // "x=rm;$x -rf" hides the command name in a variable.
@@ -150,11 +180,14 @@ func (pc *Config) CheckToolCall(toolName string, argStrings []string) Verdict {
 	// Normalization pipeline (order matters):
 	//  1. Unicode normalization (zero-width, homoglyphs, combining marks)
 	//  2. Octal/hex escape decode (\155 → m, \x6d → m)
-	//  3. Backslash escape strip (\m → m)
-	//  4. Command substitution resolve ($(printf rm) → rm, $(printf %s rm) → rm)
-	//  5. Variable assignment resolve (x=rm;$x → x=rm;rm)
-	//  6. Brace expansion resolve ({rm,-rf,/tmp} → rm -rf /tmp)
-	//  7. Shell expansion normalize (${IFS} → space)
+	//  3. Backtick command substitution resolve (`printf rm` → rm)
+	//  4. Shell quote strip ($'...' framing, lone quotes, backticks)
+	//  5. Backslash escape strip (\m → m)
+	//  6. Positional parameter strip ($@ / $* → empty)
+	//  7. Command substitution + variable assignment resolve ($(printf rm) → rm)
+	//  8. HOME/PWD slash replacement (${HOME:0:1}, ${HOME::1} → /)
+	//  9. Brace expansion resolve ({rm,-rf,/tmp} → rm -rf /tmp)
+	// 10. Shell expansion normalize (${IFS} → space)
 	//
 	// Two normalization passes handle different ZW-char insertion strategies:
 	//  - Primary: drop invisible chars (catches mid-word: "r\u200bm" → "rm")
@@ -213,9 +246,12 @@ func normalizeArgTokens(argStrings []string, normFn func(string) string) ([]stri
 		s = policyPreNormalize.Replace(s)
 		normalized := normFn(s)
 		normalized = decodeShellEscapes(normalized)
+		normalized = backtickCmdSubRe.ReplaceAllString(normalized, "$1")
 		normalized = shellQuoteStripper.Replace(normalized)
 		normalized = shellEscapeRe.ReplaceAllString(normalized, "$1")
+		normalized = shellPositionalRe.ReplaceAllString(normalized, "")
 		normalized = resolveShellConstruction(normalized)
+		normalized = shellHomeSlashRe.ReplaceAllString(normalized, "/")
 		normalized = expandBraces(normalized)
 		normalized = shellExpansionRe.ReplaceAllString(normalized, " ")
 		tokens = append(tokens, strings.Fields(normalized)...)

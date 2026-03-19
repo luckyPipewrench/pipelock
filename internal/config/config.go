@@ -2592,11 +2592,13 @@ func Defaults() *Config {
 				{Name: "Credential in URL", Regex: `\b(?:password|passwd|secret|token|apikey|api_key|api-key)\s*=\s*[^\s&]{4,}`, Severity: "high"},
 
 				// Financial identifiers — validated with post-match checksums to minimize
-				// false positives. Luhn drops ~90% of random 16-digit matches, mod-97
-				// drops ~99% of random IBAN-format matches. ABA is not in defaults due
-				// to high FP rate (~10% of random 9-digit numbers pass checksum); users
-				// can add it via config with validator: "aba".
-				{Name: "Credit Card Number", Regex: `\b(?:4\d{3}|5[1-5]\d{2}|2(?:2(?:2[1-9]|[3-9]\d)|[3-6]\d{2}|7[01]\d|720)|3[47]\d{2}|6(?:011|[45]\d{2})|35(?:2[89]|[3-8]\d))(?:[- ]?\d){11,15}\b`, Severity: "medium", Validator: ValidatorLuhn},
+				// false positives. Credit card regex is intentionally broad (any 15-19
+				// digit number); issuer prefix + length validation is in validateLuhn
+				// where it's maintainable Go code, not regex soup across 8 files.
+				// Luhn + issuer check drops ~95% of random matches. mod-97 drops ~99%
+				// of random IBAN-format matches. ABA is not in defaults due to high FP
+				// rate; users can add it via config with validator: "aba".
+				{Name: "Credit Card Number", Regex: `\b\d{4}(?:[- ]?\d){11,15}\b`, Severity: "medium", Validator: ValidatorLuhn},
 				{Name: "IBAN", Regex: `\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b`, Severity: "medium", Validator: ValidatorMod97},
 			},
 		},

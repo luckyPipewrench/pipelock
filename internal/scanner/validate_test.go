@@ -37,7 +37,7 @@ func TestValidateLuhn(t *testing.T) {
 		{name: "too long", input: "41111111111111111111", want: false},
 
 		// Invalid: not a card number.
-		{name: "all zeros 16 digits", input: "0000000000000000", want: true}, // Luhn passes for all zeros (0 mod 10 == 0) — regex BIN prefix prevents this from matching
+		{name: "all zeros 16 digits", input: "0000000000000000", want: false}, // issuer prefix 0 is not a valid card network
 		{name: "sequential", input: "1234567890123456", want: false},
 		{name: "empty", input: "", want: false},
 		{name: "letters", input: "abcdefghijklmnop", want: false},
@@ -48,6 +48,67 @@ func TestValidateLuhn(t *testing.T) {
 			got := validateLuhn(tt.input)
 			if got != tt.want {
 				t.Errorf("validateLuhn(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidCardIssuer(t *testing.T) {
+	tests := []struct {
+		name string
+		card string // digits only, no separators
+		want bool
+	}{
+		// Visa
+		{name: "visa 16", card: "4111111111111111", want: true},
+		{name: "visa 19", card: "4111111111111111000", want: true},
+		{name: "visa 13", card: "4222222222225", want: true},
+		{name: "visa wrong len 15", card: "411111111111111", want: false},
+
+		// Mastercard 51-55
+		{name: "mc 51", card: "5100000000000008", want: true},
+		{name: "mc 55", card: "5500000000000004", want: true},
+		{name: "mc 56 invalid", card: "5600000000000003", want: false},
+
+		// Mastercard 2-series
+		{name: "mc 2221", card: "2221000000000000", want: true},
+		{name: "mc 2720", card: "2720000000000000", want: true},
+		{name: "mc 2220 invalid", card: "2220000000000000", want: false},
+		{name: "mc 2721 invalid", card: "2721000000000000", want: false},
+
+		// Amex
+		{name: "amex 34", card: "340000000000009", want: true},
+		{name: "amex 37", card: "378282246310005", want: true},
+		{name: "amex wrong len 16", card: "3400000000000090", want: false},
+
+		// Discover
+		{name: "discover 6011", card: "6011111111111117", want: true},
+		{name: "discover 65", card: "6500000000000002", want: true},
+		{name: "discover 644", card: "6440000000000007", want: true},
+		{name: "discover 649", card: "6490000000000002", want: true},
+
+		// JCB
+		{name: "jcb 3528", card: "3528000000000007", want: true},
+		{name: "jcb 3589", card: "3589000000000003", want: true},
+		{name: "jcb 3527 invalid", card: "3527000000000008", want: false},
+
+		// Invalid prefixes
+		{name: "prefix 0", card: "0000000000000000", want: false},
+		{name: "prefix 1", card: "1000000000000008", want: false},
+		{name: "prefix 7", card: "7000000000000001", want: false},
+		{name: "prefix 8", card: "8000000000000000", want: false},
+		{name: "prefix 9", card: "9000000000000009", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			digits := make([]byte, len(tt.card))
+			for i := 0; i < len(tt.card); i++ {
+				digits[i] = tt.card[i] - '0'
+			}
+			got := validCardIssuer(digits, len(digits))
+			if got != tt.want {
+				t.Errorf("validCardIssuer(%q, %d) = %v, want %v", tt.card, len(tt.card), got, tt.want)
 			}
 		})
 	}

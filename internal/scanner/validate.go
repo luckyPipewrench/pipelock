@@ -18,9 +18,10 @@ var dlpValidators = map[string]func(string) bool{
 }
 
 // validateLuhn implements the Luhn algorithm (ISO/IEC 7812) for credit card
-// number validation. Strips non-digit characters (spaces, dashes) before
-// checking. Returns false for strings with fewer than 13 or more than 19
-// digits, or that fail the checksum. Eliminates ~90% of false positives.
+// number validation. Strips non-digit characters (spaces, dashes), validates
+// the issuer prefix (BIN range), and checks the Luhn checksum. Returns false
+// for non-card digit strings. Issuer validation is done in Go code instead of
+// the regex so it's maintainable and testable without 8-file regex propagation.
 func validateLuhn(s string) bool {
 	// Extract digits only — cards can be space/dash separated.
 	var digits [19]byte // stack-allocated, max 19 digits
@@ -36,6 +37,12 @@ func validateLuhn(s string) bool {
 	}
 
 	if n < 13 || n > 19 {
+		return false
+	}
+
+	// Validate issuer prefix (BIN range). Keeps regex simple while correctly
+	// covering all major card networks. New networks: add a case here.
+	if !validCardIssuer(digits[:n], n) {
 		return false
 	}
 
@@ -55,6 +62,40 @@ func validateLuhn(s string) bool {
 	}
 
 	return sum%10 == 0
+}
+
+// validCardIssuer checks the first digits against known card network BIN
+// ranges. This replaces complex regex alternation groups with readable Go.
+func validCardIssuer(digits []byte, n int) bool {
+	d0 := digits[0]
+
+	// 4-digit prefix for range checks.
+	prefix4 := int(digits[0])*1000 + int(digits[1])*100 + int(digits[2])*10 + int(digits[3])
+
+	switch d0 {
+	case 4: // Visa: starts with 4, 13/16/19 digits
+		return n == 13 || n == 16 || n == 19
+	case 5: // Mastercard: 51-55, 16 digits
+		return digits[1] >= 1 && digits[1] <= 5 && n == 16
+	case 3: // Amex (34/37): 15 digits. JCB (3528-3589): 16 digits.
+		if digits[1] == 4 || digits[1] == 7 {
+			return n == 15 // Amex
+		}
+		if prefix4 >= 3528 && prefix4 <= 3589 {
+			return n == 16 // JCB
+		}
+		return false
+	case 6: // Discover: 6011, 644-649, 65xx, 16/19 digits
+		if prefix4 == 6011 || (prefix4 >= 6440 && prefix4 <= 6499) ||
+			(digits[1] == 5) {
+			return n == 16 || n == 19
+		}
+		return false
+	case 2: // Mastercard 2-series: 2221-2720, 16 digits
+		return prefix4 >= 2221 && prefix4 <= 2720 && n == 16
+	default:
+		return false
+	}
 }
 
 // validateMod97 implements ISO 7064 mod-97 validation for IBAN numbers.

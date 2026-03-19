@@ -956,12 +956,44 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Request header DLP scanning (fetch is GET-only, no body to scan).
-	if p.evalHeaderDLP(r.Context(), r.Header, cfg, sc, log, "GET", displayURL, parsed.Hostname(), clientIP, requestID, agent, start) {
+	// hadFinding is true even in audit/warn mode so RecordClean is not applied
+	// when a header DLP match was detected.
+	headerBlocked, headerHadFinding := p.evalHeaderDLP(r.Context(), r.Header, cfg, sc, log, "GET", displayURL, parsed.Hostname(), clientIP, requestID, agent, start)
+	if headerHadFinding {
+		hasFinding = true
+		if fetchRec != nil && cfg.AdaptiveEnforcement.Enabled {
+			// Header DLP findings are near-miss signals: the header carried a secret
+			// but the request itself was not necessarily blocked.
+			if escalated, from, to := fetchRec.RecordSignal(session.SignalNearMiss, cfg.AdaptiveEnforcement.EscalationThreshold); escalated {
+				log.LogAdaptiveEscalation(ceeSessionKey(agent, clientIP), from, to, clientIP, requestID, fetchRec.ThreatScore())
+				p.metrics.RecordSessionEscalation(from, to)
+				if from != session.EscalationLabel(0) {
+					p.metrics.SetAdaptiveSessionLevel(from, -1)
+				}
+				p.metrics.SetAdaptiveSessionLevel(to, 1)
+			}
+		}
+	}
+	if headerBlocked {
 		writeJSON(w, http.StatusForbidden, FetchResponse{
 			URL:         displayURL,
 			Agent:       agent,
 			Blocked:     true,
 			BlockReason: "request header contains secret",
+		})
+		return
+	}
+	// Re-check block_all after header DLP near-miss may have escalated the session.
+	if fetchRec != nil && cfg.AdaptiveEnforcement.Enabled &&
+		decide.UpgradeAction("", fetchRec.EscalationLevel(), &cfg.AdaptiveEnforcement) == config.ActionBlock {
+		headerSessionKey := ceeSessionKey(agent, clientIP)
+		log.LogAdaptiveUpgrade(headerSessionKey, session.EscalationLabel(fetchRec.EscalationLevel()), "", config.ActionBlock, "session_deny", clientIP, requestID)
+		p.metrics.RecordAdaptiveUpgrade("", config.ActionBlock, session.EscalationLabel(fetchRec.EscalationLevel()))
+		writeJSON(w, http.StatusForbidden, FetchResponse{
+			URL:         displayURL,
+			Agent:       agent,
+			Blocked:     true,
+			BlockReason: "session escalation level " + session.EscalationLabel(fetchRec.EscalationLevel()),
 		})
 		return
 	}
@@ -1008,6 +1040,20 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				Agent:       agent,
 				Blocked:     true,
 				BlockReason: ceeRes.Reason,
+			})
+			return
+		}
+
+		// Re-check block_all after CEE may have escalated the session. Use the
+		// live recorder so mid-request escalations are reflected immediately.
+		if fetchRec != nil && decide.UpgradeAction("", fetchRec.EscalationLevel(), &cfg.AdaptiveEnforcement) == config.ActionBlock {
+			log.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(fetchRec.EscalationLevel()), "", config.ActionBlock, "session_deny", clientIP, requestID)
+			p.metrics.RecordAdaptiveUpgrade("", config.ActionBlock, session.EscalationLabel(fetchRec.EscalationLevel()))
+			writeJSON(w, http.StatusForbidden, FetchResponse{
+				URL:         displayURL,
+				Agent:       agent,
+				Blocked:     true,
+				BlockReason: "session escalation level " + session.EscalationLabel(fetchRec.EscalationLevel()),
 			})
 			return
 		}

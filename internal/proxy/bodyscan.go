@@ -441,18 +441,20 @@ func scanRequestHeaders(ctx context.Context, headers http.Header, cfg *config.Co
 }
 
 // evalHeaderDLP scans request headers, logs matches, and records metrics.
-// Returns true if the request should be blocked (match found, action=block,
-// enforce enabled). The caller handles the response format (http.Error vs
-// writeJSON) since it differs between forward proxy and fetch handler.
+// Returns (blocked, hadFinding): blocked is true if the request must be
+// blocked (match found, action=block, enforce enabled); hadFinding is true
+// whenever a DLP match was detected, even in audit/warn mode. The caller
+// handles the response format (http.Error vs writeJSON) since it differs
+// between forward proxy and fetch handler.
 func (p *Proxy) evalHeaderDLP(ctx context.Context, headers http.Header, cfg *config.Config, sc *scanner.Scanner,
 	logger *audit.Logger, method, url, hostname, clientIP, requestID, agent string, start time.Time,
-) bool {
+) (blocked bool, hadFinding bool) {
 	if !cfg.RequestBodyScanning.Enabled || !cfg.RequestBodyScanning.ScanHeaders {
-		return false
+		return false, false
 	}
 	headerResult := scanRequestHeaders(ctx, headers, cfg, sc)
 	if headerResult == nil {
-		return false
+		return false, false
 	}
 	action := cfg.RequestBodyScanning.Action
 	patternNames := dlpMatchNames(headerResult.DLPMatches)
@@ -463,7 +465,7 @@ func (p *Proxy) evalHeaderDLP(ctx context.Context, headers http.Header, cfg *con
 
 	if action == config.ActionBlock && cfg.EnforceEnabled() {
 		p.metrics.RecordBlocked(hostname, "header_dlp", time.Since(start), agent)
-		return true
+		return true, true
 	}
-	return false
+	return false, true
 }

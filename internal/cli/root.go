@@ -113,6 +113,7 @@ Quick start:
 		claudeCmd(),
 		cursorCmd(),
 		vscodeCmd(),
+		jetbrainsCmd(),
 		demoCmd(),
 		diagnoseCmd(),
 		discoverCmd(),

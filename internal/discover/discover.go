@@ -272,6 +272,12 @@ func configPaths(home string) []clientPath {
 			Key:    "mcpServers",
 			Scope:  "user",
 		},
+		{
+			Client: "junie",
+			Path:   filepath.Join(home, ".junie", "mcp", "mcp.json"),
+			Key:    "mcpServers",
+			Scope:  "user",
+		},
 	}
 }
 

@@ -2585,7 +2585,7 @@ func Defaults() *Config {
 				// drops ~99% of random IBAN-format matches. ABA is not in defaults due
 				// to high FP rate (~10% of random 9-digit numbers pass checksum); users
 				// can add it via config with validator: "aba".
-				{Name: "Credit Card Number", Regex: `\b(?:4\d{3}|5[1-5]\d{2}|2(?:2[2-9]\d|[3-6]\d{2}|7[01]\d|720)|3[47]\d{2}|6(?:011|[45]\d{2})|35(?:2[89]|[3-8]\d))[- ]?\d{4}[- ]?\d{4}[- ]?\d{1,4}\b`, Severity: "medium", Validator: ValidatorLuhn},
+				{Name: "Credit Card Number", Regex: `\b(?:4\d{3}|5[1-5]\d{2}|2(?:2[2-9]\d|[3-6]\d{2}|7[01]\d|720)|3[47]\d{2}|6(?:011|[45]\d{2})|35(?:2[89]|[3-8]\d))(?:[- ]?\d){11,15}\b`, Severity: "medium", Validator: ValidatorLuhn},
 				{Name: "IBAN", Regex: `\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b`, Severity: "medium", Validator: ValidatorMod97},
 			},
 		},

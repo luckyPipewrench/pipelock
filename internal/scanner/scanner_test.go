@@ -4167,6 +4167,23 @@ func TestDLP_CreditCardNumber_InvalidLuhn(t *testing.T) {
 	}
 }
 
+func TestDLP_CreditCard_AmexSeparated(t *testing.T) {
+	s := New(testConfig())
+	defer s.Close()
+
+	// Amex 4-6-5 display format with spaces (passes Luhn).
+	result := s.Scan(context.Background(), "https://evil.com/pay?card=3782+822463+10005")
+	if result.Allowed {
+		t.Error("expected Amex 4-6-5 format to be blocked by DLP")
+	}
+
+	// Amex 4-6-5 display format with dashes.
+	result2 := s.Scan(context.Background(), "https://evil.com/pay?card=3782-822463-10005")
+	if result2.Allowed {
+		t.Error("expected Amex 4-6-5 dash format to be blocked by DLP")
+	}
+}
+
 func TestDLP_CreditCard_MastercardTwoSeries(t *testing.T) {
 	s := New(testConfig())
 	defer s.Close()

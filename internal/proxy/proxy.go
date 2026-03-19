@@ -962,9 +962,12 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	if headerHadFinding {
 		hasFinding = true
 		if fetchRec != nil && cfg.AdaptiveEnforcement.Enabled {
-			// Header DLP findings are near-miss signals: the header carried a secret
-			// but the request itself was not necessarily blocked.
-			if escalated, from, to := fetchRec.RecordSignal(session.SignalNearMiss, cfg.AdaptiveEnforcement.EscalationThreshold); escalated {
+			// Blocked header DLP → SignalBlock (high confidence); warn-mode → SignalNearMiss.
+			headerSignal := session.SignalNearMiss
+			if headerBlocked {
+				headerSignal = session.SignalBlock
+			}
+			if escalated, from, to := fetchRec.RecordSignal(headerSignal, cfg.AdaptiveEnforcement.EscalationThreshold); escalated {
 				log.LogAdaptiveEscalation(ceeSessionKey(agent, clientIP), from, to, clientIP, requestID, fetchRec.ThreatScore())
 				p.metrics.RecordSessionEscalation(from, to)
 				if from != session.EscalationLabel(0) {

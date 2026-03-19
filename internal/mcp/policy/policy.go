@@ -118,6 +118,7 @@ type CompiledRule struct {
 	Name        string
 	ToolPattern *regexp.Regexp
 	ArgPattern  *regexp.Regexp // nil = match on tool name alone
+	ArgKey      *regexp.Regexp // nil = match all arg values; non-nil = scope to matching keys
 	Action      string         // per-rule override, empty = use Config.Action
 }
 
@@ -145,6 +146,9 @@ func New(cfg config.MCPToolPolicy) *Config {
 		if r.ArgPattern != "" {
 			compiled.ArgPattern = regexp.MustCompile(r.ArgPattern)
 		}
+		if r.ArgKey != "" {
+			compiled.ArgKey = regexp.MustCompile(r.ArgKey)
+		}
 		pc.Rules = append(pc.Rules, compiled)
 	}
 	return pc
@@ -153,13 +157,22 @@ func New(cfg config.MCPToolPolicy) *Config {
 // CheckToolCall evaluates a tool call against policy rules.
 // toolName is the MCP tool name (params.name). argStrings are all string
 // values extracted from params.arguments.
+// Equivalent to CheckToolCallWithArgs(toolName, argStrings, nil).
+func (pc *Config) CheckToolCall(toolName string, argStrings []string) Verdict {
+	return pc.CheckToolCallWithArgs(toolName, argStrings, nil)
+}
+
+// CheckToolCallWithArgs evaluates a tool call against policy rules.
+// argStrings contains all argument values (for rules without arg_key).
+// rawArgs is the raw JSON arguments (for rules with arg_key that need
+// key-scoped extraction). rawArgs may be nil if no rules use arg_key.
 //
 // Three matching strategies handle different evasion techniques:
 //  1. Joined string — catches array-split evasion (["rm","-rf","/"])
 //  2. Individual strings — catches path patterns (.ssh/id_rsa)
 //  3. Pairwise token combinations — catches map-ordering evasion where
 //     command and flags land in separate values with non-deterministic order
-func (pc *Config) CheckToolCall(toolName string, argStrings []string) Verdict {
+func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, rawArgs json.RawMessage) Verdict {
 	if pc == nil || len(pc.Rules) == 0 {
 		return Verdict{}
 	}
@@ -214,7 +227,22 @@ func (pc *Config) CheckToolCall(toolName string, argStrings []string) Verdict {
 			continue
 		}
 
-		if matchArgPattern(rule.ArgPattern, tokens, joined) || matchArgPattern(rule.ArgPattern, altTokens, altJoined) {
+		// Key-scoped rules: extract only values under matching top-level keys,
+		// then normalize and match those instead of all values. If raw
+		// arguments are unavailable, skip the rule rather than falling
+		// back to unscoped matching (safety net for future callers).
+		ruleTokens, ruleJoined := tokens, joined
+		ruleAltTokens, ruleAltJoined := altTokens, altJoined
+		if rule.ArgKey != nil {
+			if len(rawArgs) == 0 {
+				continue // cannot scope without raw JSON — skip rule
+			}
+			scopedStrings := jsonrpc.ExtractStringsForKeys(rawArgs, rule.ArgKey)
+			ruleTokens, ruleJoined = normalizeArgTokens(scopedStrings, normalize.ForMatching)
+			ruleAltTokens, ruleAltJoined = normalizeArgTokens(scopedStrings, normalize.ForPolicy)
+		}
+
+		if matchArgPattern(rule.ArgPattern, ruleTokens, ruleJoined) || matchArgPattern(rule.ArgPattern, ruleAltTokens, ruleAltJoined) {
 			matchedRules = append(matchedRules, rule.Name)
 			action := rule.Action
 			if action == "" {
@@ -320,13 +348,27 @@ func (pc *Config) checkSingle(line []byte) Verdict {
 		return Verdict{}
 	}
 	var argStrings []string
-	if len(tc.Arguments) > 0 && string(tc.Arguments) != jsonrpc.Null {
+	hasArgs := len(tc.Arguments) > 0 && string(tc.Arguments) != jsonrpc.Null
+	if hasArgs {
 		// Use values-only extraction (not extractAllStringsFromJSON which
 		// includes map keys). Keys like "cmd","flags","target" would pollute
 		// the joined string and break regex adjacency for policy matching.
 		argStrings = jsonrpc.ExtractStringsFromJSON(tc.Arguments)
 	}
-	return pc.CheckToolCall(tc.Name, argStrings)
+
+	// If any rule uses ArgKey, we need per-rule key-scoped extraction.
+	// Pass raw arguments so CheckToolCallWithArgs can extract per-key.
+	var rawArgs json.RawMessage
+	if hasArgs {
+		for _, rule := range pc.Rules {
+			if rule.ArgKey != nil {
+				rawArgs = tc.Arguments
+				break
+			}
+		}
+	}
+
+	return pc.CheckToolCallWithArgs(tc.Name, argStrings, rawArgs)
 }
 
 // checkBatch evaluates a batch of JSON-RPC requests and aggregates policy results.

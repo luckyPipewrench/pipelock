@@ -6,6 +6,7 @@ package decide
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -142,7 +143,8 @@ func decideShell(cfg *config.Config, sc *scanner.Scanner, policyCfg *policy.Conf
 
 	// Policy: map shell execution to tool name "bash" to reuse existing rules.
 	if policyCfg != nil {
-		policyVerdict := policyCfg.CheckToolCall("bash", []string{p.Command})
+		rawArgs := json.RawMessage(`{"command":` + strconv.Quote(p.Command) + `}`)
+		policyVerdict := policyCfg.CheckToolCallWithArgs("bash", []string{p.Command}, rawArgs)
 		evidence = append(evidence, evidenceFromPolicy(policyVerdict)...)
 	}
 
@@ -186,9 +188,14 @@ func decideMCP(cfg *config.Config, sc *scanner.Scanner, policyCfg *policy.Config
 		evidence = append(evidence, evidenceFromInjection(injResult, cfg.MCPInputScanning.Action)...)
 	}
 
-	// Policy: check tool name + args.
+	// Policy: check tool name + args. Pass raw JSON so arg_key rules can
+	// scope to specific argument keys.
 	if policyCfg != nil {
-		policyVerdict := policyCfg.CheckToolCall(p.ToolName, argStrings)
+		var rawArgs json.RawMessage
+		if p.ToolInput != "" && json.Valid([]byte(p.ToolInput)) {
+			rawArgs = json.RawMessage(p.ToolInput)
+		}
+		policyVerdict := policyCfg.CheckToolCallWithArgs(p.ToolName, argStrings, rawArgs)
 		evidence = append(evidence, evidenceFromPolicy(policyVerdict)...)
 	}
 
@@ -242,7 +249,9 @@ func decideFileContent(cfg *config.Config, sc *scanner.Scanner, policyCfg *polic
 	var evidence []Evidence
 
 	if policyCfg != nil {
-		policyVerdict := policyCfg.CheckToolCall(toolName, []string{filePath})
+		// Synthesize raw JSON so arg_key rules can scope to file_path.
+		rawArgs := json.RawMessage(`{"file_path":` + strconv.Quote(filePath) + `}`)
+		policyVerdict := policyCfg.CheckToolCallWithArgs(toolName, []string{filePath}, rawArgs)
 		evidence = append(evidence, evidenceFromPolicy(policyVerdict)...)
 	}
 

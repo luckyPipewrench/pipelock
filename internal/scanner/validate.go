@@ -206,7 +206,8 @@ func isASCIIDigit(c byte) bool  { return c >= '0' && c <= '9' }
 // ibanCountryLengths maps ISO 13616 IBAN country codes to their required
 // total IBAN length. Rejects fabricated country prefixes and wrong-length
 // IBANs (e.g. a 15-char string with DE prefix when German IBANs must be 22).
-// Source: SWIFT IBAN Registry (Release 98, Dec 2024).
+// Source: SWIFT IBAN Registry (Release 101, Dec 2025).
+// https://www.swift.com/resource/iban-registry-pdf
 var ibanCountryLengths = map[string]int{
 	"AD": 24, "AE": 23, "AL": 28, "AT": 20, "AZ": 28,
 	"BA": 20, "BE": 16, "BG": 22, "BH": 22, "BI": 27,
@@ -214,7 +215,7 @@ var ibanCountryLengths = map[string]int{
 	"CZ": 24, "DE": 22, "DJ": 27, "DK": 18, "DO": 28,
 	"EE": 20, "EG": 29, "ES": 24, "FI": 18, "FK": 18,
 	"FO": 18, "FR": 27, "GB": 22, "GE": 22, "GI": 23,
-	"GL": 18, "GR": 27, "GT": 28, "HR": 21, "HU": 28,
+	"GL": 18, "GR": 27, "GT": 28, "HN": 28, "HR": 21, "HU": 28,
 	"IE": 22, "IL": 23, "IQ": 23, "IS": 26, "IT": 27,
 	"JO": 30, "KW": 30, "KZ": 20, "LB": 28, "LC": 32,
 	"LI": 21, "LT": 20, "LU": 20, "LV": 21, "LY": 25,
@@ -225,5 +226,5 @@ var ibanCountryLengths = map[string]int{
 	"SA": 24, "SC": 31, "SD": 18, "SE": 24, "SI": 19,
 	"SK": 24, "SM": 27, "SN": 28, "SO": 23, "ST": 25,
 	"SV": 28, "TL": 23, "TN": 24, "TR": 26, "UA": 29,
-	"VA": 22, "VG": 24, "XK": 20,
+	"VA": 22, "VG": 24, "XK": 20, "YE": 30,
 }

@@ -128,6 +128,8 @@ func TestValidateMod97(t *testing.T) {
 		{name: "Spain", input: "ES9121000418450200051332", want: true},
 		{name: "Mauritius with trailing letters", input: "MU17BOMM0101101030300200000MUR", want: true},
 		{name: "Norway shortest IBAN 15 chars", input: "NO9386011117947", want: true},
+		{name: "Honduras HN 28 chars", input: "HN53FICR12345678901234567890", want: true},
+		{name: "Yemen YE 30 chars", input: "YE12CAIB1234123456789012345678", want: true},
 
 		// Valid with spaces (formatted display).
 		{name: "UK with spaces", input: "GB29 NWBK 6016 1331 9268 19", want: true},

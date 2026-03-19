@@ -483,6 +483,60 @@ func TestScanToolCall_PolicyDeny(t *testing.T) {
 	}
 }
 
+func TestScanToolCall_PolicyArgKeyScoped(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.ScanAPI.Auth.BearerTokens = []string{testToken}
+	cfg.MCPInputScanning.Enabled = false // isolate policy-only path
+	sc := scanner.New(cfg)
+	m := metrics.New()
+
+	// Scoped rule: block read_file when file_path contains /etc/shadow.
+	policyCfg := policy.New(config.MCPToolPolicy{
+		Enabled: true,
+		Action:  config.ActionBlock,
+		Rules: []config.ToolPolicyRule{
+			{
+				Name:        "scoped-shadow",
+				ToolPattern: `^read_file$`,
+				ArgPattern:  `(?i)/etc/shadow`,
+				ArgKey:      `^file_path$`,
+			},
+		},
+	})
+	h := NewHandler(cfg, sc, policyCfg, m, "test-version")
+
+	// Should deny: /etc/shadow in file_path.
+	body := `{"kind":"tool_call","input":{"tool_name":"read_file","arguments":{"file_path":"/etc/shadow"}}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/scan", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	var resp Response
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Decision != DecisionDeny {
+		t.Errorf("expected deny for scoped arg_key match, got %q", resp.Decision)
+	}
+
+	// Should allow: /etc/shadow in content, not file_path.
+	body2 := `{"kind":"tool_call","input":{"tool_name":"read_file","arguments":{"file_path":"/tmp/safe.txt","content":"info about /etc/shadow"}}}`
+	req2 := httptest.NewRequest(http.MethodPost, "/api/v1/scan", strings.NewReader(body2))
+	req2.Header.Set("Content-Type", "application/json")
+	req2.Header.Set("Authorization", "Bearer "+testToken)
+	w2 := httptest.NewRecorder()
+	h.ServeHTTP(w2, req2)
+	var resp2 Response
+	if err := json.Unmarshal(w2.Body.Bytes(), &resp2); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp2.Decision != DecisionAllow {
+		t.Errorf("expected allow (shadow in content, not file_path), got %q", resp2.Decision)
+	}
+}
+
 func TestContextTimeout(t *testing.T) {
 	h := newTestHandler(t)
 	// Use a zero-timeout context so it is already past deadline.

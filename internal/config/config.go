@@ -268,10 +268,13 @@ type MCPToolPolicy struct {
 // ToolPattern matches against the tool name from params.name in tools/call requests.
 // ArgPattern optionally matches against any string value in params.arguments.
 // If ArgPattern is empty, the rule triggers on tool name alone.
+// ArgKey optionally scopes ArgPattern to values under matching top-level argument
+// keys only. Without ArgKey, ArgPattern matches against ALL argument values.
 type ToolPolicyRule struct {
 	Name        string `yaml:"name"`
 	ToolPattern string `yaml:"tool_pattern"` // regex matching tool name
-	ArgPattern  string `yaml:"arg_pattern"`  // regex matching any argument value (optional)
+	ArgPattern  string `yaml:"arg_pattern"`  // regex matching argument values (optional)
+	ArgKey      string `yaml:"arg_key"`      // regex scoping arg_pattern to specific argument keys (optional)
 	Action      string `yaml:"action"`       // per-rule override: warn, block (optional)
 }
 
@@ -1482,6 +1485,14 @@ func (c *Config) Validate() error {
 			if r.ArgPattern != "" {
 				if _, err := regexp.Compile(r.ArgPattern); err != nil {
 					return fmt.Errorf("mcp_tool_policy rule %q has invalid arg_pattern: %w", r.Name, err)
+				}
+			}
+			if r.ArgKey != "" {
+				if r.ArgPattern == "" {
+					return fmt.Errorf("mcp_tool_policy rule %q has arg_key without arg_pattern", r.Name)
+				}
+				if _, err := regexp.Compile(r.ArgKey); err != nil {
+					return fmt.Errorf("mcp_tool_policy rule %q has invalid arg_key: %w", r.Name, err)
 				}
 			}
 			if r.Action != "" {

@@ -122,6 +122,12 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// Scan through all layers (URL pipeline).
 	result := sc.Scan(r.Context(), syntheticURL)
 
+	connectSessionKey := ceeSessionKey(agent, clientIP)
+	var connectRec session.Recorder
+	if sm := p.sessionMgrPtr.Load(); sm != nil {
+		connectRec = sm.GetOrCreate(connectSessionKey)
+	}
+
 	// Scan CONNECT request headers for DLP patterns. The CONNECT handshake
 	// can carry Proxy-Authorization, Authorization, or custom headers that
 	// may contain secrets. Tunneled HTTP headers are only visible with TLS
@@ -131,9 +137,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		// Audit/warn mode: header DLP found something but did not block.
 		// Record a near-miss signal. Blocked findings go through
 		// recordSessionActivity(allowed=false) which fires SignalBlock.
-		if sm := p.sessionMgrPtr.Load(); sm != nil {
-			connectSessionKey := ceeSessionKey(agent, clientIP)
-			connectRec := sm.GetOrCreate(connectSessionKey)
+		if connectRec != nil {
 			if escalated, from, to := connectRec.RecordSignal(session.SignalNearMiss, cfg.AdaptiveEnforcement.EscalationThreshold); escalated {
 				p.logger.LogAdaptiveEscalation(connectSessionKey, from, to, clientIP, requestID, connectRec.ThreatScore())
 				p.metrics.RecordSessionEscalation(from, to)
@@ -153,8 +157,11 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Session profiling: record BEFORE the enforce-mode early return so adaptive
-	// signals (SignalBlock) fire even for blocked requests.
-	sr := p.recordSessionActivity(clientIP, agent, host, requestID, result.Allowed, result.Score, cfg, p.logger, false)
+	// signals (SignalBlock) fire even for blocked requests. Pass deferClean=true
+	// so a warn-only header or CEE finding on the same CONNECT request does not
+	// get offset by a clean decay from the URL stage.
+	sr := p.recordSessionActivity(clientIP, agent, host, requestID, result.Allowed, result.Score, cfg, p.logger, true)
+	hasFinding := !result.Allowed || connectHeaderHadFinding
 
 	if !result.Allowed {
 		if cfg.EnforceEnabled() {
@@ -221,6 +228,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		if et := p.entropyTrackerPtr.Load(); et != nil && ceeCfg.EntropyBudget.Enabled {
 			et.Record(sessionKey, []byte(host))
 			if et.BudgetExceeded(sessionKey) {
+				hasFinding = true
 				p.metrics.RecordCrossRequestEntropyExceeded()
 				detail := fmt.Sprintf("entropy budget exceeded: %.0f/%.0f bits",
 					et.CurrentUsage(sessionKey), et.Budget())
@@ -251,17 +259,19 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// budget exceeded but action=warn), pushing the session to a block_all level.
 	// Use the live recorder for an up-to-date escalation level.
 	if cfg.AdaptiveEnforcement.Enabled {
-		if sm := p.sessionMgrPtr.Load(); sm != nil {
-			connectCEESessionKey := ceeSessionKey(agent, clientIP)
-			connectCEERec := sm.GetOrCreate(connectCEESessionKey)
-			if decide.UpgradeAction("", connectCEERec.EscalationLevel(), &cfg.AdaptiveEnforcement) == config.ActionBlock {
-				p.logger.LogAdaptiveUpgrade(connectCEESessionKey, session.EscalationLabel(connectCEERec.EscalationLevel()), "", config.ActionBlock, "session_deny", clientIP, requestID)
-				p.metrics.RecordAdaptiveUpgrade("", config.ActionBlock, session.EscalationLabel(connectCEERec.EscalationLevel()))
+		if connectRec != nil {
+			if decide.UpgradeAction("", connectRec.EscalationLevel(), &cfg.AdaptiveEnforcement) == config.ActionBlock {
+				p.logger.LogAdaptiveUpgrade(connectSessionKey, session.EscalationLabel(connectRec.EscalationLevel()), "", config.ActionBlock, "session_deny", clientIP, requestID)
+				p.metrics.RecordAdaptiveUpgrade("", config.ActionBlock, session.EscalationLabel(connectRec.EscalationLevel()))
 				p.metrics.RecordTunnelBlocked(agentLabel)
-				http.Error(w, "CONNECT blocked: session escalation level "+session.EscalationLabel(connectCEERec.EscalationLevel()), http.StatusForbidden)
+				http.Error(w, "CONNECT blocked: session escalation level "+session.EscalationLabel(connectRec.EscalationLevel()), http.StatusForbidden)
 				return
 			}
 		}
+	}
+
+	if connectRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
+		connectRec.RecordClean(cfg.AdaptiveEnforcement.DecayPerCleanRequest)
 	}
 
 	// WebSocket redirect hint: if the target host matches the redirect list
@@ -489,8 +499,17 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	result := sc.Scan(r.Context(), targetURL)
 
 	// Session profiling: record BEFORE the enforce-mode early return so adaptive
-	// signals (SignalBlock) fire even for blocked requests.
-	sr := p.recordSessionActivity(clientIP, agent, r.URL.Hostname(), requestID, result.Allowed, result.Score, cfg, p.logger, false)
+	// signals (SignalBlock) fire even for blocked requests. Pass deferClean=true
+	// so later request/response findings on the same round trip do not get
+	// offset by an early clean decay from the URL stage.
+	sr := p.recordSessionActivity(clientIP, agent, r.URL.Hostname(), requestID, result.Allowed, result.Score, cfg, p.logger, true)
+
+	forwardSessionKey := ceeSessionKey(agent, clientIP)
+	var forwardRec session.Recorder
+	if sm := p.sessionMgrPtr.Load(); sm != nil {
+		forwardRec = sm.GetOrCreate(forwardSessionKey)
+	}
+	hasFinding := !result.Allowed
 
 	if !result.Allowed {
 		if cfg.EnforceEnabled() {
@@ -556,6 +575,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			r.Header.Get("Content-Encoding"), cfg.RequestBodyScanning.MaxBodyBytes, sc, agent)
 
 		if !bodyResult.Clean {
+			hasFinding = true
 			action := bodyResult.Action
 			if action == "" {
 				action = cfg.RequestBodyScanning.Action
@@ -638,6 +658,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// Request header DLP scanning.
 	// hadFinding is true even in audit/warn mode so near-miss signals are recorded.
 	forwardHeaderBlocked, forwardHeaderHadFinding := p.evalHeaderDLP(r.Context(), r.Header, cfg, sc, p.logger, r.Method, targetURL, r.URL.Hostname(), clientIP, requestID, agent, start)
+	if forwardHeaderHadFinding {
+		hasFinding = true
+	}
 	if forwardHeaderHadFinding && cfg.AdaptiveEnforcement.Enabled {
 		// Record adaptive signal for header DLP findings.
 		// Blocked → SignalBlock (high confidence); warn-mode → SignalNearMiss.
@@ -645,9 +668,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		if forwardHeaderBlocked {
 			headerSignal = session.SignalBlock
 		}
-		if sm := p.sessionMgrPtr.Load(); sm != nil {
-			forwardSessionKey := ceeSessionKey(agent, clientIP)
-			forwardRec := sm.GetOrCreate(forwardSessionKey)
+		if forwardRec != nil {
 			if escalated, from, to := forwardRec.RecordSignal(headerSignal, cfg.AdaptiveEnforcement.EscalationThreshold); escalated {
 				p.logger.LogAdaptiveEscalation(forwardSessionKey, from, to, clientIP, requestID, forwardRec.ThreatScore())
 				p.metrics.RecordSessionEscalation(from, to)
@@ -665,11 +686,10 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Re-check block_all after header DLP near-miss may have escalated the session.
 	if forwardHeaderHadFinding && cfg.AdaptiveEnforcement.Enabled {
-		if sm := p.sessionMgrPtr.Load(); sm != nil {
-			fwdRec := sm.GetOrCreate(ceeSessionKey(agent, clientIP))
-			if decide.UpgradeAction("", fwdRec.EscalationLevel(), &cfg.AdaptiveEnforcement) == config.ActionBlock {
-				p.logger.LogAdaptiveUpgrade(ceeSessionKey(agent, clientIP), session.EscalationLabel(fwdRec.EscalationLevel()), "", config.ActionBlock, "session_deny", clientIP, requestID)
-				p.metrics.RecordAdaptiveUpgrade("", config.ActionBlock, session.EscalationLabel(fwdRec.EscalationLevel()))
+		if forwardRec != nil {
+			if decide.UpgradeAction("", forwardRec.EscalationLevel(), &cfg.AdaptiveEnforcement) == config.ActionBlock {
+				p.logger.LogAdaptiveUpgrade(forwardSessionKey, session.EscalationLabel(forwardRec.EscalationLevel()), "", config.ActionBlock, "session_deny", clientIP, requestID)
+				p.metrics.RecordAdaptiveUpgrade("", config.ActionBlock, session.EscalationLabel(forwardRec.EscalationLevel()))
 				http.Error(w, "blocked: session escalation level critical", http.StatusForbidden)
 				return
 			}
@@ -687,6 +707,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 		ceeRes := ceeAdmit(r.Context(), sessionKey, outbound, keys, targetURL, agent, clientIP, requestID,
 			ceeCfg, p.entropyTrackerPtr.Load(), p.fragmentBufferPtr.Load(), sc, p.logger, p.metrics)
+		if ceeRes.EntropyHit || ceeRes.FragmentHit || ceeRes.Blocked {
+			hasFinding = true
+		}
 
 		if sm := p.sessionMgrPtr.Load(); sm != nil && cfg.AdaptiveEnforcement.Enabled {
 			ceeRecordSignals(ceeRes, sm, sessionKey, cfg.AdaptiveEnforcement.EscalationThreshold, p.logger, p.metrics, clientIP, requestID)
@@ -758,6 +781,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 		scanResult := sc.ScanResponse(r.Context(), string(respBody))
 		if !scanResult.Clean {
+			hasFinding = true
 			action := sc.ResponseAction()
 			patternNames := make([]string, len(scanResult.Matches))
 			for i, match := range scanResult.Matches {
@@ -809,6 +833,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		duration := time.Since(start)
 		p.metrics.RecordAllowed(duration, agentLabel)
 		p.logger.LogForwardHTTP(r.Method, targetURL, clientIP, requestID, agent, resp.StatusCode, int(written), duration)
+		if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
+			forwardRec.RecordClean(cfg.AdaptiveEnforcement.DecayPerCleanRequest)
+		}
 		return
 	}
 
@@ -833,6 +860,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	duration := time.Since(start)
 	p.metrics.RecordAllowed(duration, agentLabel)
 	p.logger.LogForwardHTTP(r.Method, targetURL, clientIP, requestID, agent, resp.StatusCode, int(written), duration)
+	if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
+		forwardRec.RecordClean(cfg.AdaptiveEnforcement.DecayPerCleanRequest)
+	}
 }
 
 // copyResponseHeaders copies upstream response headers to the client response,

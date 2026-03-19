@@ -82,6 +82,11 @@ func validateMod97(s string) bool {
 		return false
 	}
 
+	// Validate country code against the IBAN registry (SWIFT/ISO 13616).
+	if !ibanCountries[cleaned[:2]] {
+		return false
+	}
+
 	// Rearrange: move first 4 characters to end.
 	rearranged := cleaned[4:] + cleaned[:4]
 
@@ -149,3 +154,27 @@ func validateABA(s string) bool {
 
 func isASCIILetter(c byte) bool { return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') }
 func isASCIIDigit(c byte) bool  { return c >= '0' && c <= '9' }
+
+// ibanCountries is the set of ISO 13616 IBAN country codes from the SWIFT
+// IBAN registry. Rejects fabricated country prefixes that happen to pass
+// mod-97 by chance. Source: SWIFT IBAN Registry (Release 98, Dec 2024).
+var ibanCountries = map[string]bool{
+	"AD": true, "AE": true, "AL": true, "AT": true, "AZ": true,
+	"BA": true, "BE": true, "BG": true, "BH": true, "BI": true,
+	"BR": true, "BY": true, "CH": true, "CR": true, "CY": true,
+	"CZ": true, "DE": true, "DJ": true, "DK": true, "DO": true,
+	"EE": true, "EG": true, "ES": true, "FI": true, "FK": true,
+	"FO": true, "FR": true, "GB": true, "GE": true, "GI": true,
+	"GL": true, "GR": true, "GT": true, "HR": true, "HU": true,
+	"IE": true, "IL": true, "IQ": true, "IS": true, "IT": true,
+	"JO": true, "KW": true, "KZ": true, "LB": true, "LC": true,
+	"LI": true, "LT": true, "LU": true, "LV": true, "LY": true,
+	"MC": true, "MD": true, "ME": true, "MK": true, "MN": true,
+	"MR": true, "MT": true, "MU": true, "NI": true, "NL": true,
+	"NO": true, "OM": true, "PK": true, "PL": true, "PS": true,
+	"PT": true, "QA": true, "RO": true, "RS": true, "RU": true,
+	"SA": true, "SC": true, "SD": true, "SE": true, "SI": true,
+	"SK": true, "SM": true, "SN": true, "SO": true, "ST": true,
+	"SV": true, "TL": true, "TN": true, "TR": true, "UA": true,
+	"VA": true, "VG": true, "XK": true,
+}

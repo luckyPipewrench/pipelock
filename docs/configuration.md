@@ -318,7 +318,7 @@ Some patterns include a `validator` field for post-match checksum verification. 
 
 Built-in validated patterns:
 - **Credit Card Number** (`validator: luhn`) — Visa, Mastercard (including 2-series), Amex, Discover, JCB. Luhn checksum rejects ~90% of false positives.
-- **IBAN** (`validator: mod97`) — International Bank Account Numbers (80+ countries). ISO 7064 mod-97 rejects ~99% of false positives.
+- **IBAN** (`validator: mod97`) — International Bank Account Numbers. Validates ISO 13616 country codes and ISO 7064 mod-97 checksum. Rejects ~99% of false positives.
 
 To add ABA routing numbers (not in defaults due to higher false positive rate):
 

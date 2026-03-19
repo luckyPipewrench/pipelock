@@ -1635,6 +1635,57 @@ func TestScanTextForDLP_IBAN_FalsePositiveRejected(t *testing.T) {
 	}
 }
 
+func TestScanTextForDLP_CreditCard_DecoyBypass(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// Regression: a Luhn-failing decoy before a valid card must not suppress
+	// detection. The scanner must check all regex matches, not just the first.
+	result := s.ScanTextForDLP(context.Background(),
+		"First card 4111111111111112 and real card 4111111111111111")
+	if result.Clean {
+		t.Error("expected valid card to be detected after checksum-failing decoy")
+	}
+}
+
+func TestScanTextForDLP_IBAN_DecoyBypass(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// Regression: a mod-97-failing decoy before a valid IBAN must not suppress.
+	result := s.ScanTextForDLP(context.Background(),
+		"Bad ref DE00370400440532013000 real ref DE89370400440532013000")
+	found := false
+	for _, m := range result.Matches {
+		if m.PatternName == testIBANName {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected valid IBAN to be detected after mod-97-failing decoy")
+	}
+}
+
+func TestScanTextForDLP_IBAN_FakeCountryCode(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// ZZ is not a valid IBAN country code — should NOT match even if mod-97 passes.
+	result := s.ScanTextForDLP(context.Background(), "Wire to ZZ8212345678901234567890")
+	found := false
+	for _, m := range result.Matches {
+		if m.PatternName == testIBANName {
+			found = true
+		}
+	}
+	if found {
+		t.Error("expected fake country code ZZ to NOT trigger IBAN DLP")
+	}
+}
+
 func TestScanTextForDLP_CreditCard_WithSeparators(t *testing.T) {
 	cfg := testConfig()
 	s := New(cfg)

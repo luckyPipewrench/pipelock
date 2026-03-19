@@ -86,6 +86,7 @@ func TestValidateMod97(t *testing.T) {
 
 		// Invalid: fake country code but passes format.
 		{name: "fake country XX", input: "XX12ABCDEFGHIJK12345", want: false},
+		{name: "fake country ZZ", input: "ZZ8212345678901234567890", want: false},
 	}
 
 	for _, tt := range tests {
@@ -185,6 +186,20 @@ func TestCompiledPatternMatches(t *testing.T) {
 		// 4111111111111112 fails Luhn.
 		if p.matches("4111111111111112") {
 			t.Error("expected no match for invalid Luhn number")
+		}
+	})
+
+	t.Run("validated pattern finds valid after decoy", func(t *testing.T) {
+		// Regression: a checksum-failing decoy before a valid card must not
+		// suppress detection. matches() must check all regex hits.
+		p := &compiledPattern{
+			name:     "test-luhn",
+			re:       mustCompileForTest(`\d{16}`),
+			validate: validateLuhn,
+		}
+		// First 16 digits fail Luhn, second 16 digits pass.
+		if !p.matches("4111111111111112 4111111111111111") {
+			t.Error("expected valid card to be found after checksum-failing decoy")
 		}
 	})
 }

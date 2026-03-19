@@ -103,16 +103,22 @@ type compiledPattern struct {
 // matches returns true if text matches the regex AND passes the post-match
 // validator (if any). For patterns without a validator, this uses the faster
 // MatchString (no string extraction). For validated patterns (credit cards,
-// IBANs), FindString extracts the match text for checksum verification.
+// IBANs), FindAllString extracts ALL matches and returns true if any pass
+// checksum — prevents a checksum-failing decoy from suppressing a later
+// valid match in the same text blob.
 func (p *compiledPattern) matches(text string) bool {
 	if p.validate == nil {
 		return p.re.MatchString(text)
 	}
-	m := p.re.FindString(text)
-	if m == "" {
-		return false
+	// Check all regex hits, not just the first. An attacker could front-load
+	// a BIN-matching decoy that fails checksum before the real card/IBAN.
+	// Cap at 10 matches to bound scan time on adversarial input.
+	for _, m := range p.re.FindAllString(text, 10) {
+		if p.validate(m) {
+			return true
+		}
 	}
-	return p.validate(m)
+	return false
 }
 
 // New creates a Scanner from config. Config must be validated first via

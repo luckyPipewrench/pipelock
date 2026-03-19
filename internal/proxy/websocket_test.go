@@ -24,6 +24,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 	plwsutil "github.com/luckyPipewrench/pipelock/internal/wsutil"
 )
 
@@ -2426,5 +2427,40 @@ func TestWSProxyHeaderDLPOrigin(t *testing.T) {
 	_, _, _, err := dialer.Dial(ctx, wsURL)
 	if err == nil {
 		t.Fatal("expected dial to fail: DLP should catch secret in Origin header")
+	}
+}
+
+// TestWSRelay_EscalationLevel_NilRecorder verifies that escalationLevel()
+// returns 0 when the relay's recorder is nil (session profiling disabled).
+func TestWSRelay_EscalationLevel_NilRecorder(t *testing.T) {
+	r := &wsRelay{} // rec field is nil (zero value)
+	if got := r.escalationLevel(); got != 0 {
+		t.Errorf("expected 0 for nil recorder, got %d", got)
+	}
+}
+
+// TestWSRelay_EscalationLevel_NonNilRecorder verifies that escalationLevel()
+// delegates to the session recorder when it is non-nil.
+func TestWSRelay_EscalationLevel_NonNilRecorder(t *testing.T) {
+	cfg := testSessionConfig()
+	sm := NewSessionManager(cfg, nil)
+	defer sm.Close()
+
+	sess := sm.GetOrCreate(testClientIP)
+	r := &wsRelay{rec: sess}
+
+	// Before escalation, level is 0.
+	if got := r.escalationLevel(); got != 0 {
+		t.Errorf("expected 0 before escalation, got %d", got)
+	}
+
+	// Escalate the session by crossing threshold 5.
+	sess.RecordSignal(session.SignalBlock, 5.0)         // +3
+	sess.RecordSignal(session.SignalNearMiss, 5.0)      // +1
+	sess.RecordSignal(session.SignalDomainAnomaly, 5.0) // +2, total 6 >= 5
+
+	// After escalation, escalationLevel must reflect the non-zero level.
+	if got := r.escalationLevel(); got == 0 {
+		t.Errorf("expected non-zero escalation level after threshold crossing, got %d", got)
 	}
 }

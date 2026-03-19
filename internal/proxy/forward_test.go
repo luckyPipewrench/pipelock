@@ -43,6 +43,15 @@ func (c readerConn) Read(p []byte) (int, error) {
 func setupForwardProxy(t *testing.T, cfgMod func(*config.Config)) (string, func()) {
 	t.Helper()
 
+	proxyAddr, _, cleanup := setupForwardProxyWithInstance(t, cfgMod)
+	return proxyAddr, cleanup
+}
+
+// setupForwardProxyWithInstance is the same as setupForwardProxy but also
+// returns the Proxy instance so tests can inspect session state directly.
+func setupForwardProxyWithInstance(t *testing.T, cfgMod func(*config.Config)) (string, *Proxy, func()) {
+	t.Helper()
+
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.APIAllowlist = nil
@@ -104,7 +113,7 @@ func setupForwardProxy(t *testing.T, cfgMod func(*config.Config)) (string, func(
 	}()
 
 	proxyAddr := ln.Addr().String()
-	return proxyAddr, func() {
+	return proxyAddr, p, func() {
 		cancel()
 		p.Close() // closes scanner, registry, session manager
 	}
@@ -1992,6 +2001,62 @@ func TestConnectHeaderDLPBlocked(t *testing.T) {
 	}
 }
 
+func TestConnectHeaderDLPAuditMode_NoCleanDecay(t *testing.T) {
+	targetLn := listenEcho(t)
+	defer func() { _ = targetLn.Close() }()
+
+	secret := "CONNHEADERSECRET" + "VALUE123"
+	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+		cfg.RequestBodyScanning.Enabled = true
+		cfg.RequestBodyScanning.ScanHeaders = true
+		cfg.RequestBodyScanning.Action = config.ActionWarn
+		cfg.SessionProfiling.Enabled = true
+		cfg.SessionProfiling.MaxSessions = 1000
+		cfg.SessionProfiling.DomainBurst = 100
+		cfg.SessionProfiling.WindowMinutes = 5
+		cfg.SessionProfiling.SessionTTLMinutes = 30
+		cfg.SessionProfiling.CleanupIntervalSeconds = 300
+		cfg.AdaptiveEnforcement.Enabled = true
+		cfg.AdaptiveEnforcement.EscalationThreshold = 100
+		cfg.AdaptiveEnforcement.DecayPerCleanRequest = 0.5
+		cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{
+			Name:  "test_connect_header_secret",
+			Regex: secret,
+		})
+	})
+	defer cleanup()
+
+	conn := dialProxy(t, proxyAddr)
+	defer func() { _ = conn.Close() }()
+
+	clientIP, _, err := net.SplitHostPort(conn.LocalAddr().String())
+	if err != nil {
+		t.Fatalf("split client addr: %v", err)
+	}
+
+	target := targetLn.Addr().String()
+	_, _ = fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\nAuthorization: Bearer %s\r\n\r\n", target, target, secret)
+
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("read CONNECT response: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 in warn mode, got %d", resp.StatusCode)
+	}
+
+	sm := p.sessionMgrPtr.Load()
+	if sm == nil {
+		t.Fatal("expected session manager to be created")
+	}
+	score := sm.GetOrCreate(clientIP).ThreatScore()
+	if score != 1.0 {
+		t.Fatalf("expected threat score 1.0 after warn-only CONNECT header DLP, got %.1f", score)
+	}
+}
+
 // TestForwardHTTPResponseInjectionBlocked verifies that forward HTTP proxy
 // responses are scanned for prompt injection. This was the primary transport
 // parity gap: every other transport scanned responses except forward HTTP.
@@ -2020,6 +2085,68 @@ func TestForwardHTTPResponseInjectionBlocked(t *testing.T) {
 	if resp.StatusCode != http.StatusForbidden {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("expected 403 (injection blocked), got %d; body: %s", resp.StatusCode, body)
+	}
+}
+
+func TestForwardHTTPHeaderDLPAuditMode_NoCleanDecay(t *testing.T) {
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, "ok")
+	}))
+	defer backend.Close()
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.APIAllowlist = nil
+	cfg.FetchProxy.TimeoutSeconds = 5
+	cfg.RequestBodyScanning.Enabled = true
+	cfg.RequestBodyScanning.ScanHeaders = true
+	cfg.RequestBodyScanning.Action = config.ActionWarn
+	cfg.SessionProfiling.Enabled = true
+	cfg.SessionProfiling.MaxSessions = 1000
+	cfg.SessionProfiling.DomainBurst = 100
+	cfg.SessionProfiling.WindowMinutes = 5
+	cfg.SessionProfiling.SessionTTLMinutes = 30
+	cfg.SessionProfiling.CleanupIntervalSeconds = 300
+	cfg.AdaptiveEnforcement.Enabled = true
+	cfg.AdaptiveEnforcement.EscalationThreshold = 100
+	cfg.AdaptiveEnforcement.DecayPerCleanRequest = 0.5
+
+	secret := "FWDHEADERSECRET" + "VALUE123"
+	cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{
+		Name:  "test_forward_header_secret",
+		Regex: secret,
+	})
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	// p.Close() closes the scanner; no separate defer sc.Close() needed.
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	defer p.Close()
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, backend.URL+"/safe", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.RemoteAddr = "10.10.10.10:12345"
+	req.Header.Set("Authorization", "Bearer "+secret)
+
+	w := httptest.NewRecorder()
+	p.handleForwardHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 in warn mode, got %d: %s", w.Code, w.Body.String())
+	}
+
+	sm := p.sessionMgrPtr.Load()
+	if sm == nil {
+		t.Fatal("expected session manager to be created")
+	}
+	score := sm.GetOrCreate("10.10.10.10").ThreatScore()
+	if score != 1.0 {
+		t.Fatalf("expected threat score 1.0 after warn-only forward header DLP, got %.1f", score)
 	}
 }
 
@@ -2149,5 +2276,92 @@ func TestForwardHTTPResponseInjectionWarn(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if string(body) != injectionPayload {
 		t.Errorf("warn should forward unmodified, got: %s", body)
+	}
+}
+
+// TestForwardHTTP_AdaptiveUpgrade_WarnToBlock verifies that an escalated
+// session causes a forward proxy URL scan "warn" (audit mode) to be upgraded
+// to "block" via UpgradeAction. This is the integration test for the forward
+// HTTP transport.
+func TestForwardHTTP_AdaptiveUpgrade_WarnToBlock(t *testing.T) {
+	testSecret := "FWDSECRET" + "VALUE789"
+
+	// Local backend so the proxy can actually forward the request. Using a
+	// remote host (example.com) is fragile: compressed responses trigger the
+	// fail-closed scan path and return 403 unrelated to adaptive enforcement.
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, "ok")
+	}))
+	defer backend.Close()
+
+	proxyAddr, cleanup := setupForwardProxy(t, func(cfg *config.Config) {
+		auditMode := false
+		cfg.Enforce = &auditMode // audit mode: detect & log without blocking
+		cfg.SessionProfiling.Enabled = true
+		cfg.SessionProfiling.MaxSessions = 1000
+		cfg.SessionProfiling.DomainBurst = 100
+		cfg.SessionProfiling.WindowMinutes = 5
+		cfg.SessionProfiling.SessionTTLMinutes = 30
+		cfg.SessionProfiling.CleanupIntervalSeconds = 300
+		cfg.AdaptiveEnforcement.Enabled = true
+		cfg.AdaptiveEnforcement.EscalationThreshold = 5.0
+		cfg.AdaptiveEnforcement.DecayPerCleanRequest = 0.5
+		cfg.AdaptiveEnforcement.Levels.Elevated.UpgradeWarn = ptrStr(config.ActionBlock)
+		cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{
+			Name:  "test_fwd_secret",
+			Regex: testSecret,
+		})
+	})
+	defer cleanup()
+
+	// For the escalation to work, the session must be pre-populated. Since we
+	// can't easily pre-load sessions through the test setup, we verify that
+	// without escalation, audit mode allows the DLP finding through (warn).
+	transport := &http.Transport{
+		Proxy: func(_ *http.Request) (*url.URL, error) {
+			return url.Parse("http://" + proxyAddr)
+		},
+	}
+	client := &http.Client{Transport: transport}
+
+	// DLP pattern fires on the query string. In audit mode with no escalation,
+	// the proxy must warn and allow — not block.
+	reqURL := backend.URL + "/?" + testSecret + "=1"
+	req, reqErr := http.NewRequestWithContext(context.Background(), http.MethodGet, reqURL, nil)
+	if reqErr != nil {
+		t.Fatalf("new request: %v", reqErr)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("unexpected transport error (proxy should forward, not block): %v", err)
+	}
+	_ = resp.Body.Close()
+	// If the proxy returned 403, it blocked (unexpected without escalation).
+	if resp.StatusCode == http.StatusForbidden {
+		t.Fatalf("expected audit-mode allow (no escalation), got 403")
+	}
+
+	// Phase 2: send a second DLP request to accumulate enough signal points
+	// (2 x SignalBlock = 6.0 > threshold 5.0) to escalate the session.
+	// The first request already recorded one SignalBlock (3.0 points).
+	req2, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, reqURL, nil)
+	resp2, err := client.Do(req2)
+	if err != nil {
+		t.Fatalf("second request transport error: %v", err)
+	}
+	_ = resp2.Body.Close()
+
+	// Phase 3: the session should now be escalated. The next DLP-matching
+	// request should be blocked (403) because UpgradeAction upgrades
+	// warn -> block at the elevated level.
+	req3, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, reqURL, nil)
+	resp3, err := client.Do(req3)
+	if err != nil {
+		t.Fatalf("third request transport error: %v", err)
+	}
+	_ = resp3.Body.Close()
+
+	if resp3.StatusCode != http.StatusForbidden {
+		t.Errorf("expected 403 after escalation (warn->block upgrade), got %d", resp3.StatusCode)
 	}
 }

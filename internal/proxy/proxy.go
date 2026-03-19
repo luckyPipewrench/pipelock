@@ -29,11 +29,13 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/certgen"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 // contextKey is used for storing per-request values in context.
@@ -433,6 +435,15 @@ func (p *Proxy) Close() {
 	}
 }
 
+// SessionStore returns the proxy's session store for sharing with MCP transports.
+// Returns nil when session profiling is disabled.
+func (p *Proxy) SessionStore() session.Store {
+	if sm := p.sessionMgrPtr.Load(); sm != nil {
+		return sm.AsStore()
+	}
+	return nil
+}
+
 // resolveAgent returns the ResolvedAgent for the given profile name.
 // Delegates to the current Edition's LookupProfile.
 func (p *Proxy) resolveAgent(profile string) *edition.ResolvedAgent {
@@ -506,12 +517,17 @@ func newTLSInterceptTransport(
 // recordSessionActivity handles session profiling, adaptive signals, and anomaly
 // detection for any proxy handler. The agent parameter enables per-agent session
 // isolation (key becomes "agent|clientIP"); pass "" when agent is unavailable.
-// Returns (blocked, blockDetail) when the request should be rejected due to a
-// session anomaly in block mode.
-func (p *Proxy) recordSessionActivity(clientIP, agent, hostname, requestID string, resultAllowed bool, resultScore float64, cfg *config.Config, log *audit.Logger) (bool, string) {
+// When deferClean is true, the RecordClean call is skipped even for a clean URL
+// scan result; the caller is responsible for calling it after all scanning is
+// complete (fetch uses this to avoid decaying score before header DLP, CEE, and
+// response scanning have run).
+// Returns a SessionResult with Blocked set when the request should be rejected
+// due to a session anomaly in block mode, and Level set to the current
+// escalation level for downstream use by UpgradeAction().
+func (p *Proxy) recordSessionActivity(clientIP, agent, hostname, requestID string, resultAllowed bool, resultScore float64, cfg *config.Config, log *audit.Logger, deferClean bool) SessionResult {
 	sm := p.sessionMgrPtr.Load()
 	if sm == nil || !cfg.SessionProfiling.Enabled {
-		return false, ""
+		return SessionResult{}
 	}
 
 	// Build session key: agent|clientIP when agent is known, else just clientIP.
@@ -529,36 +545,48 @@ func (p *Proxy) recordSessionActivity(clientIP, agent, hostname, requestID strin
 	anomalies = append(anomalies, ipAnomalies...)
 
 	// Record adaptive signals (only when adaptive enforcement is enabled).
-	// NOTE: v1 is scoring-only — signals accumulate and escalation events are
-	// logged/metriced for observability, but enforcement behavior is not yet
-	// changed by escalation level. Escalation-aware blocking is planned for v2.
 	if cfg.AdaptiveEnforcement.Enabled {
 		adaptiveCfg := cfg.AdaptiveEnforcement
 		if !resultAllowed {
-			if escalated, from, to := sess.RecordSignal(SignalBlock, adaptiveCfg.EscalationThreshold); escalated {
+			if escalated, from, to := sess.RecordSignal(session.SignalBlock, adaptiveCfg.EscalationThreshold); escalated {
 				log.LogAdaptiveEscalation(key, from, to, clientIP, requestID, sess.ThreatScore())
 				p.metrics.RecordSessionEscalation(from, to)
+				// Adjust per-level gauge: decrement old level (if not normal), increment new.
+				if from != session.EscalationLabel(0) {
+					p.metrics.SetAdaptiveSessionLevel(from, -1)
+				}
+				p.metrics.SetAdaptiveSessionLevel(to, 1)
 			}
 		} else if resultScore > 0 {
-			if escalated, from, to := sess.RecordSignal(SignalDLPNearMiss, adaptiveCfg.EscalationThreshold); escalated {
+			if escalated, from, to := sess.RecordSignal(session.SignalNearMiss, adaptiveCfg.EscalationThreshold); escalated {
 				log.LogAdaptiveEscalation(key, from, to, clientIP, requestID, sess.ThreatScore())
 				p.metrics.RecordSessionEscalation(from, to)
+				// Adjust per-level gauge: decrement old level (if not normal), increment new.
+				if from != session.EscalationLabel(0) {
+					p.metrics.SetAdaptiveSessionLevel(from, -1)
+				}
+				p.metrics.SetAdaptiveSessionLevel(to, 1)
 			}
-		} else {
+		} else if !deferClean {
+			// Skip RecordClean when the caller defers it to the end of the
+			// request lifecycle (fetch), so that later scanning stages (header
+			// DLP, CEE, response) can still raise a finding before decay fires.
 			sess.RecordClean(adaptiveCfg.DecayPerCleanRequest)
 		}
 	}
+
+	level := sess.EscalationLevel()
 
 	for _, a := range anomalies {
 		log.LogSessionAnomaly(key, a.Type, a.Detail, clientIP, requestID, a.Score)
 		p.metrics.RecordSessionAnomaly(a.Type)
 
 		if cfg.SessionProfiling.AnomalyAction == config.ActionBlock && cfg.EnforceEnabled() {
-			return true, fmt.Sprintf("session anomaly: %s", a.Detail)
+			return SessionResult{Blocked: true, Detail: fmt.Sprintf("session anomaly: %s", a.Detail), Level: level}
 		}
 	}
 
-	return false, ""
+	return SessionResult{Level: level}
 }
 
 // ssrfSafeDialContext resolves DNS and validates all IPs against internal
@@ -831,8 +859,30 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	result := sc.Scan(r.Context(), targetURL)
 
 	// Session profiling: record BEFORE the enforce-mode early return so adaptive
-	// signals (SignalBlock) fire even for blocked requests.
-	sessionBlocked, sessionDetail := p.recordSessionActivity(clientIP, agent, parsed.Hostname(), requestID, result.Allowed, result.Score, cfg, log)
+	// signals (SignalBlock) fire even for blocked requests. Pass deferClean=true
+	// so RecordClean is NOT applied inside recordSessionActivity: header DLP,
+	// CEE, and response scanning may still find something after this point, and
+	// a clean decay before those stages would incorrectly counteract a later signal.
+	sr := p.recordSessionActivity(clientIP, agent, parsed.Hostname(), requestID, result.Allowed, result.Score, cfg, log, true)
+
+	// Look up the live session recorder for Fix 4+5: use EscalationLevel() at
+	// each enforcement point (not the snapshot in sr.Level) so mid-request CEE
+	// or response-scan escalations are reflected immediately. Also used to call
+	// RecordClean at the end when no finding was detected.
+	var fetchRec session.Recorder
+	if sm := p.sessionMgrPtr.Load(); sm != nil {
+		fetchSessionKey := clientIP
+		if agent != "" && agent != agentAnonymous {
+			fetchSessionKey = agent + "|" + clientIP
+		}
+		fetchRec = sm.GetOrCreate(fetchSessionKey)
+	}
+
+	// hasFinding tracks whether any scanning stage (header DLP, CEE, response)
+	// detected something for this request. RecordClean is only applied at the
+	// end when no finding was detected. A near-miss (scored but allowed) counts
+	// as a finding to prevent inadvertent score decay.
+	hasFinding := !result.Allowed || (result.Score > 0 && result.Allowed)
 
 	if !result.Allowed {
 		if cfg.EnforceEnabled() {
@@ -854,27 +904,100 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, status, resp)
 			return
 		}
-		// Audit mode: log anomaly but allow through
+		// Audit mode: base action is "warn". Adaptive escalation may upgrade to block.
+		baseAction := config.ActionWarn
+		effectiveAction := decide.UpgradeAction(baseAction, sr.Level, &cfg.AdaptiveEnforcement)
+		if effectiveAction == config.ActionBlock {
+			sessionKey := clientIP
+			if agent != "" && agent != agentAnonymous {
+				sessionKey = agent + "|" + clientIP
+			}
+			log.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(sr.Level), baseAction, effectiveAction, result.Scanner, clientIP, requestID)
+			p.metrics.RecordAdaptiveUpgrade(baseAction, effectiveAction, session.EscalationLabel(sr.Level))
+			log.LogBlocked("GET", displayURL, result.Scanner, result.Reason+" (escalated)", clientIP, requestID, agent)
+			p.metrics.RecordBlocked(parsed.Hostname(), result.Scanner, time.Since(start), agentLabel)
+			writeJSON(w, http.StatusForbidden, FetchResponse{
+				URL:         displayURL,
+				Agent:       agent,
+				Blocked:     true,
+				BlockReason: result.Reason + " (escalated)",
+			})
+			return
+		}
 		log.LogAnomaly("GET", displayURL, result.Scanner, result.Reason, clientIP, requestID, agent, result.Score)
 	}
 
-	if sessionBlocked {
+	if sr.Blocked {
 		writeJSON(w, http.StatusForbidden, FetchResponse{
 			URL:         displayURL,
 			Agent:       agent,
 			Blocked:     true,
-			BlockReason: sessionDetail,
+			BlockReason: sr.Detail,
+		})
+		return
+	}
+
+	// block_all enforcement: deny ALL traffic (including clean) when the
+	// session is at an escalation level with block_all=true. UpgradeAction
+	// with an empty base action returns "block" only when block_all is set.
+	if sr.Level > 0 && decide.UpgradeAction("", sr.Level, &cfg.AdaptiveEnforcement) == config.ActionBlock {
+		sessionKey := clientIP
+		if agent != "" && agent != agentAnonymous {
+			sessionKey = agent + "|" + clientIP
+		}
+		log.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(sr.Level), "", config.ActionBlock, "session_deny", clientIP, requestID)
+		p.metrics.RecordAdaptiveUpgrade("", config.ActionBlock, session.EscalationLabel(sr.Level))
+		writeJSON(w, http.StatusForbidden, FetchResponse{
+			URL:         displayURL,
+			Agent:       agent,
+			Blocked:     true,
+			BlockReason: "session escalation level " + session.EscalationLabel(sr.Level),
 		})
 		return
 	}
 
 	// Request header DLP scanning (fetch is GET-only, no body to scan).
-	if p.evalHeaderDLP(r.Context(), r.Header, cfg, sc, log, "GET", displayURL, parsed.Hostname(), clientIP, requestID, agent, start) {
+	// hadFinding is true even in audit/warn mode so RecordClean is not applied
+	// when a header DLP match was detected.
+	headerBlocked, headerHadFinding := p.evalHeaderDLP(r.Context(), r.Header, cfg, sc, log, "GET", displayURL, parsed.Hostname(), clientIP, requestID, agent, start)
+	if headerHadFinding {
+		hasFinding = true
+		if fetchRec != nil && cfg.AdaptiveEnforcement.Enabled {
+			// Blocked header DLP → SignalBlock (high confidence); warn-mode → SignalNearMiss.
+			headerSignal := session.SignalNearMiss
+			if headerBlocked {
+				headerSignal = session.SignalBlock
+			}
+			if escalated, from, to := fetchRec.RecordSignal(headerSignal, cfg.AdaptiveEnforcement.EscalationThreshold); escalated {
+				log.LogAdaptiveEscalation(ceeSessionKey(agent, clientIP), from, to, clientIP, requestID, fetchRec.ThreatScore())
+				p.metrics.RecordSessionEscalation(from, to)
+				if from != session.EscalationLabel(0) {
+					p.metrics.SetAdaptiveSessionLevel(from, -1)
+				}
+				p.metrics.SetAdaptiveSessionLevel(to, 1)
+			}
+		}
+	}
+	if headerBlocked {
 		writeJSON(w, http.StatusForbidden, FetchResponse{
 			URL:         displayURL,
 			Agent:       agent,
 			Blocked:     true,
 			BlockReason: "request header contains secret",
+		})
+		return
+	}
+	// Re-check block_all after header DLP near-miss may have escalated the session.
+	if fetchRec != nil && cfg.AdaptiveEnforcement.Enabled &&
+		decide.UpgradeAction("", fetchRec.EscalationLevel(), &cfg.AdaptiveEnforcement) == config.ActionBlock {
+		headerSessionKey := ceeSessionKey(agent, clientIP)
+		log.LogAdaptiveUpgrade(headerSessionKey, session.EscalationLabel(fetchRec.EscalationLevel()), "", config.ActionBlock, "session_deny", clientIP, requestID)
+		p.metrics.RecordAdaptiveUpgrade("", config.ActionBlock, session.EscalationLabel(fetchRec.EscalationLevel()))
+		writeJSON(w, http.StatusForbidden, FetchResponse{
+			URL:         displayURL,
+			Agent:       agent,
+			Blocked:     true,
+			BlockReason: "session escalation level " + session.EscalationLabel(fetchRec.EscalationLevel()),
 		})
 		return
 	}
@@ -910,6 +1033,10 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			ceeRecordSignals(ceeRes, sm, sessionKey, cfg.AdaptiveEnforcement.EscalationThreshold, log, p.metrics, clientIP, requestID)
 		}
 
+		if ceeRes.EntropyHit || ceeRes.FragmentHit || ceeRes.Blocked {
+			hasFinding = true
+		}
+
 		if ceeRes.Blocked {
 			p.metrics.RecordBlocked(parsed.Hostname(), "cross_request", time.Since(start), agentLabel)
 			writeJSON(w, http.StatusForbidden, FetchResponse{
@@ -917,6 +1044,20 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				Agent:       agent,
 				Blocked:     true,
 				BlockReason: ceeRes.Reason,
+			})
+			return
+		}
+
+		// Re-check block_all after CEE may have escalated the session. Use the
+		// live recorder so mid-request escalations are reflected immediately.
+		if fetchRec != nil && decide.UpgradeAction("", fetchRec.EscalationLevel(), &cfg.AdaptiveEnforcement) == config.ActionBlock {
+			log.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(fetchRec.EscalationLevel()), "", config.ActionBlock, "session_deny", clientIP, requestID)
+			p.metrics.RecordAdaptiveUpgrade("", config.ActionBlock, session.EscalationLabel(fetchRec.EscalationLevel()))
+			writeJSON(w, http.StatusForbidden, FetchResponse{
+				URL:         displayURL,
+				Agent:       agent,
+				Blocked:     true,
+				BlockReason: "session escalation level " + session.EscalationLabel(fetchRec.EscalationLevel()),
 			})
 			return
 		}
@@ -1035,9 +1176,13 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		hidden := extractHiddenContent(content)
 		if hidden != "" {
 			rawResult := sc.ScanResponse(r.Context(), hidden)
-			blocked, _, found := p.filterAndActOnResponseScan(w, rawResult, content, displayURL, agent, clientIP, requestID, sc, cfg, log)
+			// Use live escalation level so mid-request CEE escalations are reflected.
+			blocked, _, found := p.filterAndActOnResponseScan(w, rawResult, content, displayURL, agent, clientIP, requestID, sc, cfg, log, recEscalationLevel(fetchRec))
 			if blocked {
 				return
+			}
+			if found {
+				hasFinding = true
 			}
 			hiddenInjectionFound = found
 		}
@@ -1072,12 +1217,23 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// Response scanning: check extracted content for prompt injection.
 	if sc.ResponseScanningEnabled() {
 		scanResult := sc.ScanResponse(r.Context(), content)
-		blocked, newContent, _ := p.filterAndActOnResponseScan(w, scanResult, content, displayURL, agent, clientIP, requestID, sc, cfg, log)
+		// Use live escalation level so mid-request CEE escalations are reflected.
+		blocked, newContent, found := p.filterAndActOnResponseScan(w, scanResult, content, displayURL, agent, clientIP, requestID, sc, cfg, log, recEscalationLevel(fetchRec))
+		if found {
+			hasFinding = true
+		}
 		if blocked {
 			p.metrics.RecordBlocked(parsed.Hostname(), "response_scan", time.Since(start), agentLabel)
 			return
 		}
 		content = newContent
+	}
+
+	// Deferred RecordClean: apply score decay only when no finding was detected
+	// during the entire fetch lifecycle (URL, header DLP, CEE, response scan).
+	// This ensures warn/near-miss findings do not inadvertently decay score.
+	if fetchRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
+		fetchRec.RecordClean(cfg.AdaptiveEnforcement.DecayPerCleanRequest)
 	}
 
 	// Record response size for per-domain data budget tracking
@@ -1107,6 +1263,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 // response scanning action to a scan result. Returns blocked=true if the
 // request was blocked (HTTP response already written), the output content
 // (possibly stripped), and found=true if unsuppressed findings remain.
+// sessionLevel is the current adaptive escalation level from recordSessionActivity.
 func (p *Proxy) filterAndActOnResponseScan(
 	w http.ResponseWriter,
 	result scanner.ResponseScanResult,
@@ -1114,6 +1271,7 @@ func (p *Proxy) filterAndActOnResponseScan(
 	sc *scanner.Scanner,
 	cfg *config.Config,
 	log *audit.Logger,
+	sessionLevel int,
 ) (blocked bool, out string, found bool) {
 	out = content
 
@@ -1138,14 +1296,50 @@ func (p *Proxy) filterAndActOnResponseScan(
 	}
 	bundleRules := responseBundleRules(result.Matches)
 
-	switch sc.ResponseAction() {
+	// Adaptive enforcement: upgrade the response action before the switch.
+	action := sc.ResponseAction()
+	originalAction := action
+	action = decide.UpgradeAction(action, sessionLevel, &cfg.AdaptiveEnforcement)
+	if action != originalAction {
+		sessionKey := clientIP
+		if agent != "" && agent != agentAnonymous {
+			sessionKey = agent + "|" + clientIP
+		}
+		log.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(sessionLevel), originalAction, action, "response_scan", clientIP, requestID)
+		p.metrics.RecordAdaptiveUpgrade(originalAction, action, session.EscalationLabel(sessionLevel))
+	}
+
+	// recordResponseSignal records an adaptive enforcement signal for the
+	// response scan result. Extracted to avoid duplicating session-key
+	// construction across all action branches.
+	recordResponseSignal := func(sig session.SignalType) {
+		if sm := p.sessionMgrPtr.Load(); sm != nil && cfg.AdaptiveEnforcement.Enabled {
+			sessionKey := clientIP
+			if agent != "" && agent != agentAnonymous {
+				sessionKey = agent + "|" + clientIP
+			}
+			sess := sm.GetOrCreate(sessionKey)
+			if escalated, from, to := sess.RecordSignal(sig, cfg.AdaptiveEnforcement.EscalationThreshold); escalated {
+				log.LogAdaptiveEscalation(sessionKey, from, to, clientIP, requestID, sess.ThreatScore())
+				p.metrics.RecordSessionEscalation(from, to)
+				if from != session.EscalationLabel(0) {
+					p.metrics.SetAdaptiveSessionLevel(from, -1)
+				}
+				p.metrics.SetAdaptiveSessionLevel(to, 1)
+			}
+		}
+	}
+
+	switch action {
 	case config.ActionBlock:
+		recordResponseSignal(session.SignalBlock)
 		reason := fmt.Sprintf("response contains prompt injection: %s", strings.Join(patternNames, ", "))
 		log.LogBlocked("GET", displayURL, "response_scan", reason, clientIP, requestID, agent)
 		writeJSON(w, http.StatusForbidden, FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
 		return true, "", true
 	case config.ActionAsk:
 		if p.approver == nil {
+			recordResponseSignal(session.SignalBlock)
 			reason := fmt.Sprintf("response contains prompt injection: %s (no HITL approver)", strings.Join(patternNames, ", "))
 			log.LogBlocked("GET", displayURL, "response_scan", reason, clientIP, requestID, agent)
 			writeJSON(w, http.StatusForbidden, FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
@@ -1169,18 +1363,22 @@ func (p *Proxy) filterAndActOnResponseScan(
 			out = result.TransformedContent
 			log.LogResponseScan(displayURL, clientIP, requestID, agent, "ask:strip", len(result.Matches), patternNames, bundleRules)
 		default:
+			recordResponseSignal(session.SignalBlock)
 			reason := fmt.Sprintf("response blocked by operator: %s", strings.Join(patternNames, ", "))
 			log.LogBlocked("GET", displayURL, "response_scan", reason, clientIP, requestID, agent)
 			writeJSON(w, http.StatusForbidden, FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
 			return true, "", true
 		}
 	case config.ActionStrip:
+		recordResponseSignal(session.SignalStrip)
 		out = result.TransformedContent
 		log.LogResponseScan(displayURL, clientIP, requestID, agent, config.ActionStrip, len(result.Matches), patternNames, bundleRules)
 	case config.ActionWarn:
+		recordResponseSignal(session.SignalNearMiss)
 		log.LogResponseScan(displayURL, clientIP, requestID, agent, config.ActionWarn, len(result.Matches), patternNames, bundleRules)
 	default:
-		log.LogResponseScan(displayURL, clientIP, requestID, agent, sc.ResponseAction(), len(result.Matches), patternNames, bundleRules)
+		recordResponseSignal(session.SignalNearMiss)
+		log.LogResponseScan(displayURL, clientIP, requestID, agent, action, len(result.Matches), patternNames, bundleRules)
 	}
 	return false, out, true
 }

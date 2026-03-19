@@ -380,9 +380,21 @@ mcp_tool_policy:
 session_profiling:
   enabled: true
 
-# Adaptive enforcement (scoring-only in v1, observability only)
+# Adaptive enforcement: per-session threat scoring with level-based action upgrades.
 adaptive_enforcement:
   enabled: true
+  escalation_threshold: 5.0
+  decay_per_clean_request: 0.5
+  levels:
+    elevated:
+      upgrade_warn: block       # warn→block when session is elevated
+    high:
+      upgrade_warn: block
+      upgrade_ask: block        # ask→block when session is high risk
+    critical:
+      upgrade_warn: block
+      upgrade_ask: block
+      block_all: true           # deny all requests when session is critical
 
 # MCP session binding (opt-in)
 mcp_session_binding:

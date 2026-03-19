@@ -11,7 +11,15 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 )
+
+// SessionResult is the outcome of session profiling and adaptive signal recording.
+type SessionResult struct {
+	Blocked bool   // session-level block (anomaly in block mode)
+	Detail  string // human-readable reason
+	Level   int    // current escalation level for downstream UpgradeAction()
+}
 
 // Anomaly represents a behavioral anomaly detected in a session.
 type Anomaly struct {
@@ -102,37 +110,14 @@ func pruneDomainWindow(entries []domainEntry, domain string, windowCutoff, now t
 	return pruned, countUniqueDomains(pruned)
 }
 
-// SignalType identifies a threat signal for adaptive enforcement.
-type SignalType int
-
-const (
-	SignalDLPNearMiss   SignalType = iota // +1 point
-	SignalBlock                           // +3 points
-	SignalDomainAnomaly                   // +2 points
-	SignalEntropyBudget                   // +2 points (entropy budget exceeded, medium confidence)
-	SignalFragmentDLP                     // +3 points (fragment reassembly found secret, high confidence)
-)
-
-// signalPoints maps signal types to their score contribution.
-var signalPoints = map[SignalType]float64{
-	SignalDLPNearMiss:   1.0,
-	SignalBlock:         3.0,
-	SignalDomainAnomaly: 2.0,
-	SignalEntropyBudget: 2.0,
-	SignalFragmentDLP:   3.0,
-}
-
-// escalationLabels maps escalation levels to human-readable names.
-var escalationLabels = []string{"normal", "elevated", "high"}
-
 // RecordSignal adds a threat signal to the session's score.
 // Returns (escalated, fromLevel, toLevel) if threshold was crossed.
 // Caller must hold no locks on SessionState.
-func (s *SessionState) RecordSignal(sig SignalType, threshold float64) (bool, string, string) {
+func (s *SessionState) RecordSignal(sig session.SignalType, threshold float64) (bool, string, string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	points := signalPoints[sig]
+	points := session.SignalPoints[sig]
 	s.threatScore += points
 
 	// Initialize threshold on first use
@@ -146,8 +131,8 @@ func (s *SessionState) RecordSignal(sig SignalType, threshold float64) (bool, st
 		// Double the threshold to prevent oscillation
 		s.currentThreshold *= 2
 
-		from := escalationLabel(oldLevel)
-		to := escalationLabel(s.escalationLevel)
+		from := session.EscalationLabel(oldLevel)
+		to := session.EscalationLabel(s.escalationLevel)
 		return true, from, to
 	}
 
@@ -184,13 +169,6 @@ func (s *SessionState) EscalationLevel() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.escalationLevel
-}
-
-func escalationLabel(level int) string {
-	if level >= 0 && level < len(escalationLabels) {
-		return escalationLabels[level]
-	}
-	return fmt.Sprintf("level_%d", level)
 }
 
 // SessionManager manages per-client sessions with eviction and cleanup.
@@ -345,9 +323,15 @@ func (sm *SessionManager) cleanup() {
 	for key, sess := range sm.sessions {
 		sess.mu.Lock()
 		idle := sess.lastActivity.Before(cutoff)
+		escLevel := sess.escalationLevel
 		sess.mu.Unlock()
 
 		if idle {
+			if escLevel > 0 {
+				if sm.metrics != nil {
+					sm.metrics.SetAdaptiveSessionLevel(session.EscalationLabel(escLevel), -1)
+				}
+			}
 			delete(sm.sessions, key)
 			evicted++
 		}
@@ -377,24 +361,49 @@ func (sm *SessionManager) cleanup() {
 	}
 }
 
+// storeAdapter wraps SessionManager to implement session.Store.
+// SessionState already satisfies session.Recorder via its RecordSignal,
+// RecordClean, EscalationLevel, and ThreatScore methods.
+type storeAdapter struct {
+	sm *SessionManager
+}
+
+func (a *storeAdapter) GetOrCreate(key string) session.Recorder {
+	return a.sm.GetOrCreate(key)
+}
+
+// AsStore returns a session.Store interface for this SessionManager.
+func (sm *SessionManager) AsStore() session.Store {
+	return &storeAdapter{sm: sm}
+}
+
 // evictOldest removes the session with the oldest lastActivity.
 // Must be called with sm.mu held for writing.
 func (sm *SessionManager) evictOldest() {
 	var oldestKey string
 	var oldestTime time.Time
 
+	var oldestEscLevel int
+
 	for key, sess := range sm.sessions {
 		sess.mu.Lock()
 		la := sess.lastActivity
+		escLevel := sess.escalationLevel
 		sess.mu.Unlock()
 
 		if oldestKey == "" || la.Before(oldestTime) {
 			oldestKey = key
 			oldestTime = la
+			oldestEscLevel = escLevel
 		}
 	}
 
 	if oldestKey != "" {
+		if oldestEscLevel > 0 {
+			if sm.metrics != nil {
+				sm.metrics.SetAdaptiveSessionLevel(session.EscalationLabel(oldestEscLevel), -1)
+			}
+		}
 		delete(sm.sessions, oldestKey)
 		if sm.metrics != nil {
 			sm.metrics.RecordSessionEvicted()

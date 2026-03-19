@@ -1,48 +1,73 @@
 # Roadmap
 
-High-level direction for Pipelock development. Priorities may shift based on community feedback and the evolving AI agent security landscape.
+High-level direction for Pipelock development. Priorities shift based on customer feedback, enterprise requirements, and the evolving AI agent security landscape.
 
-## Current (v1.0)
+## Shipped (v1.x)
 
-Shipped capabilities:
+Core capabilities available today:
 
-- HTTP and MCP traffic scanning with 11-layer scanner pipeline
-- MCP stdio and Streamable HTTP proxy with bidirectional scanning
-- DLP detection (15+ credential patterns, entropy analysis, encoding-aware)
-- Prompt injection detection (20+ pattern categories, Unicode-aware)
-- Tool description poisoning detection with rug-pull tracking
-- Pre-execution tool call policy engine (9 default rules)
-- Human-in-the-loop terminal approvals
-- File integrity monitoring (SHA-256 manifests)
-- Ed25519 signing and verification
-- Git diff scanning for leaked secrets
-- Structured JSON audit logging with Prometheus metrics
+**Traffic Inspection**
+- 11-layer scanner pipeline across HTTP, HTTPS, WebSocket, and MCP
+- Forward proxy (CONNECT/HTTPS_PROXY), fetch proxy, and Scan API modes
+- Optional TLS interception with full body, header, and response scanning
+
+**Data Loss Prevention**
+- 44 credential and secret patterns with encoding-aware matching (base64, hex, URL, Unicode)
+- Environment variable leak detection
+- BIP-39 seed phrase detection with checksum validation
+- Blockchain address poisoning protection (ETH, BTC, SOL, BNB)
+
+**Prompt Injection Defense**
+- 6-pass normalization pipeline covering zero-width characters, homoglyphs, leetspeak, and encoded payloads
+- Response scanning on fetched content and MCP tool results
+
+**MCP Security**
+- Bidirectional scanning for stdio, Streamable HTTP, and HTTP reverse proxy
+- Tool description poisoning detection with rug-pull drift tracking
+- Pre-execution tool policy engine (17 built-in rules)
+- Tool call chain detection (10 built-in attack patterns)
+- Session binding and behavioral profiling
+
+**Operational Controls**
+- OR-composed kill switch (config, signal, sentinel file, remote API)
+- Structured audit logging with MITRE ATT&CK technique IDs
+- Webhook, syslog, and Prometheus emission (38 metric families)
+- Grafana dashboard for fleet monitoring
+- HTML/JSON audit reports with Ed25519 signing
+
+**Developer Experience**
+- IDE integration for Claude Code, Cursor, and VS Code
 - Preset configs for common agent frameworks
-- Known secret file scanning (`secrets_file` config)
-- Scanner validation command (`pipelock test`)
-- Framework integration guides (Claude Code, OpenAI, Google ADK, AutoGen, CrewAI, LangGraph)
-- OpenSSF Best Practices Silver badge, SLSA provenance, CycloneDX SBOM
+- `pipelock diagnose` for config validation
+- `pipelock audit` for project security assessment
+- Git diff scanning for pre-commit secret detection
+- Community rule bundles (signed YAML detection patterns)
+
+**Supply Chain**
+- Single static binary (~12 MB), 12 direct dependencies
+- Cosign-signed releases, CycloneDX SBOM, SLSA v1.0 provenance
+- OpenSSF Best Practices Silver, published OWASP coverage mappings
 
 ## Near-Term
 
+- Cross-request exfiltration detection (multi-turn data staging and low-and-slow patterns)
+- Expanded DLP coverage for financial instruments and regulated data
 - Agent process management (launch, monitor, enforce capability separation)
-- Expanded DLP pattern library
-- Configuration improvements and validation tooling
+- Enhanced reporting and compliance evidence generation
 
 ## Medium-Term
 
-- Inter-agent communication security (lateral movement prevention)
-- Multi-agent policy coordination
+- Multi-agent policy coordination and inter-agent traffic controls
 - Redirect-instead-of-block (steer agents to safe alternatives)
-- Policy generation ("profile-then-lock" learned allowlists)
-- K8s sidecar Helm chart
+- Profile-then-lock policy generation (learned allowlists from observed behavior)
+- Kubernetes sidecar Helm chart
+- Centralized policy management for multi-team deployments
 
 ## Long-Term
 
-- Enterprise deployment patterns (multi-tenant, centralized policy)
-- Community-driven scanner rule sharing
-- Web dashboard and fleet management
-- Compliance report generation (NIST AI RMF evidence from audit logs)
+- Fleet-wide dashboard and management plane
+- Compliance report generation mapped to NIST AI RMF, EU AI Act, and SOC 2
+- Advanced behavioral analytics and anomaly detection
 
 ## Out of Scope
 
@@ -52,8 +77,7 @@ Pipelock is an application-layer agent firewall. These are explicitly not goals:
 - Data governance or dataset management
 - Full-lifecycle AI management platforms
 - Replacing network firewalls or endpoint protection
-- Full sandbox/container runtime
-- Custom policy DSL
+- Full sandbox or container runtime isolation
 
 ## Feedback
 

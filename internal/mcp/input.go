@@ -15,6 +15,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	decide "github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
@@ -22,7 +23,9 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 // methodToolsCall is the JSON-RPC method for MCP tool invocations.
@@ -471,6 +474,8 @@ type SessionBindingConfig struct {
 // response-side (ForwardScanned) can validate that response IDs were solicited.
 // When cee is non-nil, outbound payloads are recorded for cross-request
 // exfiltration detection (entropy budget and fragment reassembly DLP).
+// When rec is non-nil and adaptiveCfg is enabled, threat signals are recorded
+// and the effective action may be upgraded based on session escalation level.
 // Blocked request IDs are sent via blockedCh so the main goroutine (which owns
 // clientOut writes) can send error responses without concurrent write races.
 func ForwardScannedInput(
@@ -488,8 +493,19 @@ func ForwardScannedInput(
 	tracker *RequestTracker,
 	auditLogger *audit.Logger,
 	cee *CEEDeps,
+	rec session.Recorder,
+	adaptiveCfg *config.AdaptiveEnforcement,
+	m *metrics.Metrics,
 ) {
 	defer close(blockedCh)
+
+	// Helper: record an adaptive signal and handle escalation side-effects.
+	// Eliminates repeated nil/enabled guards at every call site.
+	recordAdaptiveSignal := func(sig session.SignalType) {
+		if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
+			recordSignalWithEscalation(rec, sig, adaptiveCfg.EscalationThreshold, logW, auditLogger, m, "default", "", "")
+		}
+	}
 
 	// lineNum counts non-empty messages, not raw lines. StdioReader skips
 	// empty lines internally, so this is a message index.
@@ -594,6 +610,7 @@ func ForwardScannedInput(
 					// rather than re-parsing via extractRPCID. A tools/call always
 					// has an ID; using the parsed value avoids a silent-drop bug
 					// if re-parsing fails on unusual ID shapes.
+					recordAdaptiveSignal(session.SignalBlock)
 					blockedCh <- BlockedRequest{
 						ID:             verdict.ID,
 						IsNotification: isRPCNotification(verdict.ID),
@@ -620,8 +637,24 @@ func ForwardScannedInput(
 			continue
 		}
 
-		// All clean — forward.
+		// All clean — forward (with block_all and CEE checks).
 		if verdict.Clean && !policyVerdict.Matched && bindingAction == "" && chainAction == "" {
+			// block_all enforcement: deny ALL traffic (including clean) when the
+			// session is at an escalation level with block_all=true.
+			if rec != nil && decide.UpgradeAction("", rec.EscalationLevel(), adaptiveCfg) == config.ActionBlock {
+				_, _ = fmt.Fprintf(logW, "pipelock: adaptive upgrade (clean) -> block (level %s)\n", session.EscalationLabel(rec.EscalationLevel()))
+				if m != nil {
+					m.RecordAdaptiveUpgrade("", config.ActionBlock, session.EscalationLabel(rec.EscalationLevel()))
+				}
+				blockedCh <- BlockedRequest{
+					ID:             verdict.ID,
+					IsNotification: isRPCNotification(verdict.ID),
+					LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked (session deny)", lineNum),
+					ErrorCode:      -32001,
+					ErrorMessage:   fmt.Sprintf("pipelock: session escalation level %s", session.EscalationLabel(rec.EscalationLevel())),
+				}
+				continue
+			}
 			// Cross-request exfiltration check on clean outbound messages.
 			if reason := ceeRecordMCP(ceeStdioKey, line, cee, sc, logW, auditLogger); reason != "" {
 				blockedCh <- BlockedRequest{
@@ -640,6 +673,9 @@ func ForwardScannedInput(
 			if err := writer.WriteMessage(line); err != nil {
 				_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
 				return
+			}
+			if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
+				rec.RecordClean(adaptiveCfg.DecayPerCleanRequest)
 			}
 			continue
 		}
@@ -710,6 +746,18 @@ func ForwardScannedInput(
 			errMsg = errPolicyBlocked
 		}
 
+		// Escalation upgrade: may promote warn/ask to block for elevated sessions.
+		originalAction := effectiveAction
+		if rec != nil {
+			effectiveAction = decide.UpgradeAction(effectiveAction, rec.EscalationLevel(), adaptiveCfg)
+		}
+		if effectiveAction != originalAction {
+			_, _ = fmt.Fprintf(logW, "pipelock: adaptive upgrade %s -> %s (level %s)\n", originalAction, effectiveAction, session.EscalationLabel(rec.EscalationLevel()))
+			if m != nil {
+				m.RecordAdaptiveUpgrade(originalAction, effectiveAction, session.EscalationLabel(rec.EscalationLevel()))
+			}
+		}
+
 		switch effectiveAction {
 		case config.ActionBlock:
 			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked %s request (%s)\n",
@@ -752,6 +800,18 @@ func ForwardScannedInput(
 			if err := writer.WriteMessage(line); err != nil {
 				_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
 				return
+			}
+		}
+
+		// Signal recording: record after action is taken.
+		switch {
+		case effectiveAction == config.ActionBlock:
+			recordAdaptiveSignal(session.SignalBlock)
+		case len(reasons) > 0:
+			recordAdaptiveSignal(session.SignalNearMiss)
+		default:
+			if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
+				rec.RecordClean(adaptiveCfg.DecayPerCleanRequest)
 			}
 		}
 	}

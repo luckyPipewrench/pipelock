@@ -477,9 +477,25 @@ type SessionProfiling struct {
 // Score accumulates from DLP near-misses and blocks. When threshold is exceeded,
 // the session's enforcement level escalates (audit->warn or warn->block).
 type AdaptiveEnforcement struct {
-	Enabled              bool    `yaml:"enabled"`
-	EscalationThreshold  float64 `yaml:"escalation_threshold"`    // points before escalation
-	DecayPerCleanRequest float64 `yaml:"decay_per_clean_request"` // score reduction per clean request
+	Enabled              bool             `yaml:"enabled"`
+	EscalationThreshold  float64          `yaml:"escalation_threshold"`    // points before escalation
+	DecayPerCleanRequest float64          `yaml:"decay_per_clean_request"` // score reduction per clean request
+	Levels               EscalationLevels `yaml:"levels"`
+}
+
+// EscalationLevels configures per-level enforcement behavior.
+// Pointer fields distinguish "omitted (apply defaults)" from "explicitly softened".
+type EscalationLevels struct {
+	Elevated EscalationActions `yaml:"elevated"`
+	High     EscalationActions `yaml:"high"`
+	Critical EscalationActions `yaml:"critical"`
+}
+
+// EscalationActions defines enforcement upgrades for a single escalation level.
+type EscalationActions struct {
+	UpgradeWarn *string `yaml:"upgrade_warn"` // nil=default, "block"=upgrade, ""=no upgrade
+	UpgradeAsk  *string `yaml:"upgrade_ask"`  // nil=default, "block"=upgrade, ""=no upgrade
+	BlockAll    *bool   `yaml:"block_all"`    // nil=default, true=session deny, false=no
 }
 
 // MCPSessionBinding configures tool inventory validation per MCP connection.
@@ -1057,6 +1073,29 @@ func (c *Config) ApplyDefaults() {
 		if c.AdaptiveEnforcement.DecayPerCleanRequest <= 0 {
 			c.AdaptiveEnforcement.DecayPerCleanRequest = 0.5
 		}
+
+		// Level defaults: only fill nil fields (explicit values including "" and false are operator intent).
+		// Elevated: warn actions upgrade to block.
+		if c.AdaptiveEnforcement.Levels.Elevated.UpgradeWarn == nil {
+			c.AdaptiveEnforcement.Levels.Elevated.UpgradeWarn = ptrStr(ActionBlock)
+		}
+		// High: both warn and ask upgrade to block.
+		if c.AdaptiveEnforcement.Levels.High.UpgradeWarn == nil {
+			c.AdaptiveEnforcement.Levels.High.UpgradeWarn = ptrStr(ActionBlock)
+		}
+		if c.AdaptiveEnforcement.Levels.High.UpgradeAsk == nil {
+			c.AdaptiveEnforcement.Levels.High.UpgradeAsk = ptrStr(ActionBlock)
+		}
+		// Critical: all upgrades to block + session deny.
+		if c.AdaptiveEnforcement.Levels.Critical.UpgradeWarn == nil {
+			c.AdaptiveEnforcement.Levels.Critical.UpgradeWarn = ptrStr(ActionBlock)
+		}
+		if c.AdaptiveEnforcement.Levels.Critical.UpgradeAsk == nil {
+			c.AdaptiveEnforcement.Levels.Critical.UpgradeAsk = ptrStr(ActionBlock)
+		}
+		if c.AdaptiveEnforcement.Levels.Critical.BlockAll == nil {
+			c.AdaptiveEnforcement.Levels.Critical.BlockAll = ptrBool(true)
+		}
 	}
 
 	// Kill switch defaults
@@ -1617,6 +1656,20 @@ func (c *Config) Validate() error {
 		}
 		if c.AdaptiveEnforcement.DecayPerCleanRequest <= 0 {
 			return fmt.Errorf("adaptive_enforcement.decay_per_clean_request must be positive")
+		}
+		// Validate escalation level actions.
+		if err := validateEscalationActions("elevated", &c.AdaptiveEnforcement.Levels.Elevated); err != nil {
+			return err
+		}
+		if err := validateEscalationActions("high", &c.AdaptiveEnforcement.Levels.High); err != nil {
+			return err
+		}
+		if err := validateEscalationActions("critical", &c.AdaptiveEnforcement.Levels.Critical); err != nil {
+			return err
+		}
+		// Monotonic check: higher levels must not be weaker than lower levels.
+		if err := validateEscalationMonotonic(&c.AdaptiveEnforcement.Levels); err != nil {
+			return err
 		}
 	}
 
@@ -2215,6 +2268,10 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 			Message: "adaptive enforcement disabled",
 		})
 	}
+	// Warn if escalation levels are weakened on reload.
+	if old.AdaptiveEnforcement.Enabled && updated.AdaptiveEnforcement.Enabled {
+		checkEscalationWeakening(&old.AdaptiveEnforcement.Levels, &updated.AdaptiveEnforcement.Levels, &warnings)
+	}
 
 	// MCP session binding disabled
 	if old.MCPSessionBinding.Enabled && !updated.MCPSessionBinding.Enabled {
@@ -2441,6 +2498,109 @@ func passthroughDomainsAdded(old, updated []string) []string {
 		}
 	}
 	return added
+}
+
+// upgradeActionStrength returns a numeric strength for upgrade_warn/upgrade_ask values.
+// "block" (2) > "" (1) > nil-should-not-reach-here (0).
+// Called after ApplyDefaults, so nil fields are already filled.
+func upgradeActionStrength(v *string) int {
+	if v == nil {
+		return 0
+	}
+	if *v == ActionBlock {
+		return 2 // strongest: upgrade to block
+	}
+	return 1 // "" means no upgrade (weaker)
+}
+
+// validateEscalationActions checks that upgrade_warn and upgrade_ask contain
+// only valid values: nil (use default), "" (no upgrade), or "block".
+func validateEscalationActions(level string, a *EscalationActions) error {
+	if a.UpgradeWarn != nil && *a.UpgradeWarn != "" && *a.UpgradeWarn != ActionBlock {
+		return fmt.Errorf("adaptive_enforcement.levels.%s.upgrade_warn must be \"block\" or \"\" (got %q)", level, *a.UpgradeWarn)
+	}
+	if a.UpgradeAsk != nil && *a.UpgradeAsk != "" && *a.UpgradeAsk != ActionBlock {
+		return fmt.Errorf("adaptive_enforcement.levels.%s.upgrade_ask must be \"block\" or \"\" (got %q)", level, *a.UpgradeAsk)
+	}
+	return nil
+}
+
+// validateEscalationMonotonic verifies that higher escalation levels are not
+// weaker than lower ones. Runs after ApplyDefaults, so nil fields are filled.
+func validateEscalationMonotonic(levels *EscalationLevels) error {
+	// Compare elevated vs high: high must be >= elevated on every dimension.
+	// When the lower level has block_all=true it already denies all traffic,
+	// so per-action upgrades at the higher level are irrelevant — skip the
+	// strength comparison to avoid false monotonic violations.
+	elevatedBlockAll := levels.Elevated.BlockAll != nil && *levels.Elevated.BlockAll
+	if !elevatedBlockAll {
+		if upgradeActionStrength(levels.High.UpgradeWarn) < upgradeActionStrength(levels.Elevated.UpgradeWarn) {
+			return fmt.Errorf("adaptive_enforcement.levels: high.upgrade_warn is weaker than elevated.upgrade_warn (monotonic violation)")
+		}
+		if upgradeActionStrength(levels.High.UpgradeAsk) < upgradeActionStrength(levels.Elevated.UpgradeAsk) {
+			return fmt.Errorf("adaptive_enforcement.levels: high.upgrade_ask is weaker than elevated.upgrade_ask (monotonic violation)")
+		}
+	}
+	// block_all: if elevated has it, high must too.
+	if elevatedBlockAll &&
+		(levels.High.BlockAll == nil || !*levels.High.BlockAll) {
+		return fmt.Errorf("adaptive_enforcement.levels: high.block_all is weaker than elevated.block_all (monotonic violation)")
+	}
+
+	// Compare high vs critical: critical must be >= high on every dimension.
+	highBlockAll := levels.High.BlockAll != nil && *levels.High.BlockAll
+	if !highBlockAll {
+		if upgradeActionStrength(levels.Critical.UpgradeWarn) < upgradeActionStrength(levels.High.UpgradeWarn) {
+			return fmt.Errorf("adaptive_enforcement.levels: critical.upgrade_warn is weaker than high.upgrade_warn (monotonic violation)")
+		}
+		if upgradeActionStrength(levels.Critical.UpgradeAsk) < upgradeActionStrength(levels.High.UpgradeAsk) {
+			return fmt.Errorf("adaptive_enforcement.levels: critical.upgrade_ask is weaker than high.upgrade_ask (monotonic violation)")
+		}
+	}
+	// block_all: if high has it, critical must too.
+	if highBlockAll &&
+		(levels.Critical.BlockAll == nil || !*levels.Critical.BlockAll) {
+		return fmt.Errorf("adaptive_enforcement.levels: critical.block_all is weaker than high.block_all (monotonic violation)")
+	}
+	return nil
+}
+
+// checkEscalationWeakening compares effective (post-default) escalation levels
+// and appends warnings for any enforcement that was reduced on reload.
+func checkEscalationWeakening(old, updated *EscalationLevels, warnings *[]ReloadWarning) {
+	type levelPair struct {
+		name    string
+		oldActs *EscalationActions
+		newActs *EscalationActions
+	}
+	pairs := []levelPair{
+		{"elevated", &old.Elevated, &updated.Elevated},
+		{"high", &old.High, &updated.High},
+		{"critical", &old.Critical, &updated.Critical},
+	}
+	for _, lp := range pairs {
+		if upgradeActionStrength(lp.newActs.UpgradeWarn) < upgradeActionStrength(lp.oldActs.UpgradeWarn) {
+			*warnings = append(*warnings, ReloadWarning{
+				Field:   fmt.Sprintf("adaptive_enforcement.levels.%s.upgrade_warn", lp.name),
+				Message: fmt.Sprintf("%s.upgrade_warn weakened", lp.name),
+			})
+		}
+		if upgradeActionStrength(lp.newActs.UpgradeAsk) < upgradeActionStrength(lp.oldActs.UpgradeAsk) {
+			*warnings = append(*warnings, ReloadWarning{
+				Field:   fmt.Sprintf("adaptive_enforcement.levels.%s.upgrade_ask", lp.name),
+				Message: fmt.Sprintf("%s.upgrade_ask weakened", lp.name),
+			})
+		}
+		// block_all: true -> false is weakening.
+		oldBlock := lp.oldActs.BlockAll != nil && *lp.oldActs.BlockAll
+		newBlock := lp.newActs.BlockAll != nil && *lp.newActs.BlockAll
+		if oldBlock && !newBlock {
+			*warnings = append(*warnings, ReloadWarning{
+				Field:   fmt.Sprintf("adaptive_enforcement.levels.%s.block_all", lp.name),
+				Message: fmt.Sprintf("%s.block_all weakened", lp.name),
+			})
+		}
+	}
 }
 
 // Defaults returns a Config with sensible defaults for balanced mode.
@@ -2724,3 +2884,5 @@ func Defaults() *Config {
 }
 
 func ptrBool(v bool) *bool { return &v }
+
+func ptrStr(v string) *string { return &v }

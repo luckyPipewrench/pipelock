@@ -21,9 +21,46 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/certgen"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 )
+
+// recEscalationLevel returns the live escalation level from a session recorder.
+// Returns 0 (normal) when rec is nil (profiling disabled).
+func recEscalationLevel(rec session.Recorder) int {
+	if rec != nil {
+		return rec.EscalationLevel()
+	}
+	return 0
+}
+
+// interceptRecordSignal records an adaptive threat signal on the session recorder
+// for the intercepted request. Handles nil rec, disabled adaptive config, and
+// escalation transitions (log, audit, metrics gauge updates). Used by
+// newInterceptHandler to feed signals back to the adaptive system.
+func interceptRecordSignal(rec session.Recorder, sig session.SignalType, cfg *config.Config, logger *audit.Logger, _ *metrics.Metrics, p *Proxy, clientIP, agent, requestID string) {
+	if rec == nil || !cfg.AdaptiveEnforcement.Enabled {
+		return
+	}
+	sessionKey := clientIP
+	if agent != "" && agent != agentAnonymous {
+		sessionKey = agent + "|" + clientIP
+	}
+	escalated, from, to := rec.RecordSignal(sig, cfg.AdaptiveEnforcement.EscalationThreshold)
+	if !escalated {
+		return
+	}
+	logger.LogAdaptiveEscalation(sessionKey, from, to, clientIP, requestID, rec.ThreatScore())
+	if p != nil {
+		p.metrics.RecordSessionEscalation(from, to)
+		if from != session.EscalationLabel(0) {
+			p.metrics.SetAdaptiveSessionLevel(from, -1)
+		}
+		p.metrics.SetAdaptiveSessionLevel(to, 1)
+	}
+}
 
 // interceptReadHeaderTimeout is the maximum time to read request headers on an
 // intercepted TLS connection. 30 seconds is generous for local proxy traffic.
@@ -89,6 +126,7 @@ func interceptTunnel(
 	fb *scanner.FragmentBuffer,
 	sm *SessionManager,
 	p *Proxy, // when non-nil, CEE state resolved per-request (avoids stale pointers after reload)
+	rec session.Recorder, // live escalation level; nil when profiling disabled
 ) error {
 	// Client-side TLS config with forged cert from cache.
 	tlsCfg := &tls.Config{
@@ -170,7 +208,7 @@ func interceptTunnel(
 	// Serve via http.Server on single-connection listener.
 	// http.Server handles HTTP/2 when negotiated via ALPN.
 	ln := newSingleConnListener(tlsConn)
-	handler := newInterceptHandler(targetHost, targetPort, upstreamRT, cfg, sc, logger, m, clientIP, requestID, agent, et, fb, sm, p)
+	handler := newInterceptHandler(targetHost, targetPort, upstreamRT, cfg, sc, logger, m, clientIP, requestID, agent, et, fb, sm, p, rec)
 	srv := &http.Server{
 		Handler:           handler,
 		ReadHeaderTimeout: interceptReadHeaderTimeout,
@@ -222,6 +260,7 @@ func newInterceptHandler(
 	fb *scanner.FragmentBuffer,
 	sm *SessionManager,
 	p *Proxy, // when non-nil, CEE state resolved per-request (avoids stale pointers after reload)
+	rec session.Recorder, // live escalation level; nil when profiling disabled
 ) http.Handler {
 	target := net.JoinHostPort(targetHost, targetPort)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -248,13 +287,21 @@ func newInterceptHandler(
 		r.URL.Host = target
 		r.RequestURI = "" // required for http.Transport
 
+		// Track whether any finding occurred (URL, body DLP, or response scan).
+		// RecordClean is only applied when the request was fully clean so that
+		// warn/strip findings do not contribute to score decay.
+		hasFinding := false
+
 		// Scan the full URL through the DLP pipeline. The CONNECT handler only
 		// scans the synthetic host URL; inside the intercepted tunnel we have
 		// the real path and query, which may contain exfiltrated secrets.
 		targetURL := r.URL.String()
 		urlResult := sc.Scan(r.Context(), targetURL)
 		if !urlResult.Allowed {
+			hasFinding = true
 			if cfg.EnforceEnabled() {
+				// Record SignalBlock for adaptive enforcement scoring.
+				interceptRecordSignal(rec, session.SignalBlock, cfg, logger, m, p, clientIP, agent, requestID)
 				logger.LogBlocked(r.Method, targetURL, urlResult.Scanner, urlResult.Reason, clientIP, requestID, agent)
 				m.RecordTLSRequestBlocked("url_scan")
 				if cfg.ExplainBlocksEnabled() && urlResult.Hint != "" {
@@ -263,7 +310,26 @@ func newInterceptHandler(
 				http.Error(w, "blocked: "+urlResult.Reason, http.StatusForbidden)
 				return
 			}
-			// Audit mode: log anomaly but forward the request.
+			// Audit mode: base action is "warn". Adaptive escalation may upgrade to block.
+			baseAction := config.ActionWarn
+			effectiveAction := decide.UpgradeAction(baseAction, recEscalationLevel(rec), &cfg.AdaptiveEnforcement)
+			if effectiveAction == config.ActionBlock {
+				sessionKey := clientIP
+				if agent != "" && agent != agentAnonymous {
+					sessionKey = agent + "|" + clientIP
+				}
+				logger.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(recEscalationLevel(rec)), baseAction, effectiveAction, urlResult.Scanner, clientIP, requestID)
+				if p != nil {
+					p.metrics.RecordAdaptiveUpgrade(baseAction, effectiveAction, session.EscalationLabel(recEscalationLevel(rec)))
+				}
+				interceptRecordSignal(rec, session.SignalBlock, cfg, logger, m, p, clientIP, agent, requestID)
+				logger.LogBlocked(r.Method, targetURL, urlResult.Scanner, urlResult.Reason+" (escalated)", clientIP, requestID, agent)
+				m.RecordTLSRequestBlocked("url_scan")
+				http.Error(w, "blocked: "+urlResult.Reason+" (escalated)", http.StatusForbidden)
+				return
+			}
+			// Audit mode near-miss: URL was flagged but allowed.
+			interceptRecordSignal(rec, session.SignalNearMiss, cfg, logger, m, p, clientIP, agent, requestID)
 			logger.LogAnomaly(r.Method, targetURL, urlResult.Scanner, urlResult.Reason, clientIP, requestID, agent, urlResult.Score)
 		}
 
@@ -284,6 +350,7 @@ func newInterceptHandler(
 			)
 
 			if !result.Clean {
+				hasFinding = true
 				action := result.Action
 				if action == "" {
 					action = cfg.RequestBodyScanning.Action
@@ -301,14 +368,41 @@ func newInterceptHandler(
 					reason = fmt.Sprintf("request body contains secret: %s", strings.Join(patternNames, ", "))
 				}
 
+				// Adaptive enforcement: upgrade the body action.
+				originalBodyAction := action
+				action = decide.UpgradeAction(action, recEscalationLevel(rec), &cfg.AdaptiveEnforcement)
+				if action != originalBodyAction {
+					sessionKey := clientIP
+					if agent != "" && agent != agentAnonymous {
+						sessionKey = agent + "|" + clientIP
+					}
+					logger.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(recEscalationLevel(rec)), originalBodyAction, action, scannerLabel, clientIP, requestID)
+					if p != nil {
+						p.metrics.RecordAdaptiveUpgrade(originalBodyAction, action, session.EscalationLabel(recEscalationLevel(rec)))
+					}
+				}
+
 				// Fail-closed: nil bodyBytes means body was consumed but couldn't
 				// be buffered (oversize, compressed, read error). Always block
 				// regardless of enforce mode to prevent forwarding an empty body.
 				// ActionAsk: no HITL terminal in intercepted tunnels, fail closed.
 				if bodyBytes == nil || action == config.ActionAsk || (action == config.ActionBlock && cfg.EnforceEnabled()) {
+					interceptRecordSignal(rec, session.SignalBlock, cfg, logger, m, p, clientIP, agent, requestID)
 					logger.LogBlocked(r.Method, r.URL.String(), scannerLabel, reason, clientIP, requestID, agent)
 					m.RecordTLSRequestBlocked(scannerLabel)
 					http.Error(w, "blocked: "+reason, http.StatusForbidden)
+					return
+				}
+				// Escalation can upgrade to block even in audit mode, but only
+				// when the upgrade actually changed the action (i.e. it wasn't
+				// already block from the scanner config). Without this guard,
+				// a base action that was already "block" would fire here even
+				// without any escalation, which is not the intent.
+				if action == config.ActionBlock && action != originalBodyAction && !cfg.EnforceEnabled() {
+					interceptRecordSignal(rec, session.SignalBlock, cfg, logger, m, p, clientIP, agent, requestID)
+					logger.LogBlocked(r.Method, r.URL.String(), scannerLabel, reason+" (escalated)", clientIP, requestID, agent)
+					m.RecordTLSRequestBlocked(scannerLabel)
+					http.Error(w, "blocked: "+reason+" (escalated)", http.StatusForbidden)
 					return
 				}
 				// Audit/warn mode: log finding but forward the request.
@@ -327,6 +421,7 @@ func newInterceptHandler(
 		if cfg.RequestBodyScanning.Enabled && cfg.RequestBodyScanning.ScanHeaders {
 			headerResult := scanRequestHeaders(r.Context(), r.Header, cfg, sc)
 			if headerResult != nil && !headerResult.Clean {
+				hasFinding = true
 				action := cfg.RequestBodyScanning.Action
 				// ActionAsk: no HITL terminal in intercepted tunnels, fail closed.
 				if action == config.ActionAsk || (action == config.ActionBlock && cfg.EnforceEnabled()) {
@@ -369,6 +464,22 @@ func newInterceptHandler(
 				http.Error(w, "blocked: "+ceeRes.Reason, http.StatusForbidden)
 				return
 			}
+		}
+
+		// block_all enforcement: deny ALL traffic (including clean) when the
+		// session is at an escalation level with block_all=true.
+		if rec != nil && decide.UpgradeAction("", recEscalationLevel(rec), &cfg.AdaptiveEnforcement) == config.ActionBlock {
+			sessionKey := clientIP
+			if agent != "" && agent != agentAnonymous {
+				sessionKey = agent + "|" + clientIP
+			}
+			logger.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(recEscalationLevel(rec)), "", config.ActionBlock, "session_deny", clientIP, requestID)
+			if p != nil {
+				p.metrics.RecordAdaptiveUpgrade("", config.ActionBlock, session.EscalationLabel(recEscalationLevel(rec)))
+			}
+			m.RecordTLSRequestBlocked("session_deny")
+			http.Error(w, "blocked: session escalation level "+session.EscalationLabel(recEscalationLevel(rec)), http.StatusForbidden)
+			return
 		}
 
 		// Remove hop-by-hop headers before forwarding.
@@ -415,7 +526,21 @@ func newInterceptHandler(
 		if sc.ResponseScanningEnabled() {
 			scanResult := sc.ScanResponse(r.Context(), string(respBody))
 			if !scanResult.Clean {
+				hasFinding = true
 				action := sc.ResponseAction()
+				// Adaptive enforcement: upgrade the response action before the switch.
+				originalAction := action
+				action = decide.UpgradeAction(action, recEscalationLevel(rec), &cfg.AdaptiveEnforcement)
+				if action != originalAction {
+					sessionKey := clientIP
+					if agent != "" && agent != agentAnonymous {
+						sessionKey = agent + "|" + clientIP
+					}
+					logger.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(recEscalationLevel(rec)), originalAction, action, "response_scan", clientIP, requestID)
+					if p != nil {
+						p.metrics.RecordAdaptiveUpgrade(originalAction, action, session.EscalationLabel(recEscalationLevel(rec)))
+					}
+				}
 				patternNames := make([]string, len(scanResult.Matches))
 				for i, match := range scanResult.Matches {
 					patternNames[i] = match.PatternName
@@ -427,11 +552,36 @@ func newInterceptHandler(
 				case config.ActionBlock, config.ActionAsk:
 					// ActionAsk: no HITL terminal available inside intercepted tunnels,
 					// so fail-closed to block (consistent with HITL non-terminal default).
+					interceptRecordSignal(rec, session.SignalBlock, cfg, logger, m, p, clientIP, agent, requestID)
 					logger.LogBlocked(r.Method, r.URL.String(), "response_scan", reason, clientIP, requestID, agent)
 					m.RecordTLSResponseBlocked("injection")
 					http.Error(w, "blocked: response contains injection", http.StatusForbidden)
 					return
 				case config.ActionStrip:
+					// Record SignalStrip for adaptive enforcement scoring.
+					if sm != nil && cfg.AdaptiveEnforcement.Enabled {
+						ceeSM := sm
+						if p != nil {
+							ceeSM = p.sessionMgrPtr.Load()
+						}
+						if ceeSM != nil {
+							sessionKey := clientIP
+							if agent != "" && agent != agentAnonymous {
+								sessionKey = agent + "|" + clientIP
+							}
+							sess := ceeSM.GetOrCreate(sessionKey)
+							if escalated, from, to := sess.RecordSignal(session.SignalStrip, cfg.AdaptiveEnforcement.EscalationThreshold); escalated {
+								logger.LogAdaptiveEscalation(sessionKey, from, to, clientIP, requestID, sess.ThreatScore())
+								if p != nil {
+									p.metrics.RecordSessionEscalation(from, to)
+									if from != session.EscalationLabel(0) {
+										p.metrics.SetAdaptiveSessionLevel(from, -1)
+									}
+									p.metrics.SetAdaptiveSessionLevel(to, 1)
+								}
+							}
+						}
+					}
 					respBody = []byte(scanResult.TransformedContent)
 					// Update Content-Length to match stripped body; prevents HTTP/1.1
 					// framing errors from a stale upstream Content-Length header.
@@ -442,6 +592,13 @@ func newInterceptHandler(
 					logger.LogResponseScan(r.URL.String(), clientIP, requestID, agent, action, len(scanResult.Matches), patternNames, bundleRules)
 				}
 			}
+		}
+
+		// Record clean request for adaptive score decay. Only apply decay when no
+		// finding was detected; warn/strip paths indicate suspicious traffic and
+		// must not contribute to score decay.
+		if rec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
+			rec.RecordClean(cfg.AdaptiveEnforcement.DecayPerCleanRequest)
 		}
 
 		// Record response size for per-domain data budget tracking.

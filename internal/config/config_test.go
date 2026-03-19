@@ -2882,6 +2882,45 @@ func TestAdaptiveEnforcementDefaults(t *testing.T) {
 	}
 }
 
+func TestEscalationLevelDefaults(t *testing.T) {
+	cfg := Defaults()
+	cfg.AdaptiveEnforcement.Enabled = true
+	cfg.ApplyDefaults()
+
+	// Elevated: upgrade_warn=block (default), upgrade_ask=nil (no default), block_all=nil (no default)
+	if cfg.AdaptiveEnforcement.Levels.Elevated.UpgradeWarn == nil || *cfg.AdaptiveEnforcement.Levels.Elevated.UpgradeWarn != ActionBlock {
+		t.Error("expected elevated.upgrade_warn default to be \"block\"")
+	}
+	if cfg.AdaptiveEnforcement.Levels.Elevated.UpgradeAsk != nil {
+		t.Errorf("expected elevated.upgrade_ask to remain nil, got %q", *cfg.AdaptiveEnforcement.Levels.Elevated.UpgradeAsk)
+	}
+	if cfg.AdaptiveEnforcement.Levels.Elevated.BlockAll != nil {
+		t.Errorf("expected elevated.block_all to remain nil, got %v", *cfg.AdaptiveEnforcement.Levels.Elevated.BlockAll)
+	}
+
+	// High: upgrade_warn=block, upgrade_ask=block (defaults), block_all=nil
+	if cfg.AdaptiveEnforcement.Levels.High.UpgradeWarn == nil || *cfg.AdaptiveEnforcement.Levels.High.UpgradeWarn != ActionBlock {
+		t.Error("expected high.upgrade_warn default to be \"block\"")
+	}
+	if cfg.AdaptiveEnforcement.Levels.High.UpgradeAsk == nil || *cfg.AdaptiveEnforcement.Levels.High.UpgradeAsk != ActionBlock {
+		t.Error("expected high.upgrade_ask default to be \"block\"")
+	}
+	if cfg.AdaptiveEnforcement.Levels.High.BlockAll != nil {
+		t.Errorf("expected high.block_all to remain nil, got %v", *cfg.AdaptiveEnforcement.Levels.High.BlockAll)
+	}
+
+	// Critical: upgrade_warn=block, upgrade_ask=block, block_all=true (defaults)
+	if cfg.AdaptiveEnforcement.Levels.Critical.UpgradeWarn == nil || *cfg.AdaptiveEnforcement.Levels.Critical.UpgradeWarn != ActionBlock {
+		t.Error("expected critical.upgrade_warn default to be \"block\"")
+	}
+	if cfg.AdaptiveEnforcement.Levels.Critical.UpgradeAsk == nil || *cfg.AdaptiveEnforcement.Levels.Critical.UpgradeAsk != ActionBlock {
+		t.Error("expected critical.upgrade_ask default to be \"block\"")
+	}
+	if cfg.AdaptiveEnforcement.Levels.Critical.BlockAll == nil || !*cfg.AdaptiveEnforcement.Levels.Critical.BlockAll {
+		t.Error("expected critical.block_all default to be true")
+	}
+}
+
 func TestMCPSessionBindingDefaults(t *testing.T) {
 	cfg := Defaults()
 	cfg.MCPSessionBinding.Enabled = true
@@ -7103,5 +7142,629 @@ func TestSeedPhraseDetection_LoadPath_ExplicitNull(t *testing.T) {
 	}
 	if cfg.SeedPhraseDetection.VerifyChecksum != nil {
 		t.Errorf("expected VerifyChecksum=nil for YAML null, got %v", *cfg.SeedPhraseDetection.VerifyChecksum)
+	}
+}
+
+// --- Escalation Levels 6-state tests ---
+
+// adaptiveBase returns a config with adaptive enforcement enabled and session profiling on.
+func adaptiveBase() *Config {
+	cfg := Defaults()
+	cfg.SessionProfiling.Enabled = true
+	cfg.AdaptiveEnforcement.Enabled = true
+	return cfg
+}
+
+func strPtr(s string) *string { return &s }
+
+func boolPtr(b bool) *bool { return &b }
+
+func TestEscalationLevels_ElevatedUpgradeWarn_6State(t *testing.T) {
+	t.Run("omitted_gets_default_block", func(t *testing.T) {
+		cfg := adaptiveBase()
+		// upgrade_warn is nil (omitted)
+		cfg.ApplyDefaults()
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg.AdaptiveEnforcement.Levels.Elevated.UpgradeWarn == nil {
+			t.Fatal("expected non-nil after defaults")
+		}
+		if *cfg.AdaptiveEnforcement.Levels.Elevated.UpgradeWarn != ActionBlock {
+			t.Errorf("expected \"block\", got %q", *cfg.AdaptiveEnforcement.Levels.Elevated.UpgradeWarn)
+		}
+	})
+
+	t.Run("explicit_empty_string_means_no_upgrade", func(t *testing.T) {
+		cfg := adaptiveBase()
+		cfg.AdaptiveEnforcement.Levels.Elevated.UpgradeWarn = strPtr("")
+		cfg.ApplyDefaults()
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if *cfg.AdaptiveEnforcement.Levels.Elevated.UpgradeWarn != "" {
+			t.Errorf("expected \"\", got %q", *cfg.AdaptiveEnforcement.Levels.Elevated.UpgradeWarn)
+		}
+	})
+
+	t.Run("explicit_block", func(t *testing.T) {
+		cfg := adaptiveBase()
+		cfg.AdaptiveEnforcement.Levels.Elevated.UpgradeWarn = strPtr(ActionBlock)
+		cfg.ApplyDefaults()
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if *cfg.AdaptiveEnforcement.Levels.Elevated.UpgradeWarn != ActionBlock {
+			t.Errorf("expected \"block\", got %q", *cfg.AdaptiveEnforcement.Levels.Elevated.UpgradeWarn)
+		}
+	})
+
+	t.Run("invalid_value_rejected", func(t *testing.T) {
+		cfg := adaptiveBase()
+		cfg.AdaptiveEnforcement.Levels.Elevated.UpgradeWarn = strPtr("foo")
+		cfg.ApplyDefaults()
+		err := cfg.Validate()
+		if err == nil {
+			t.Fatal("expected error for invalid value")
+		}
+		if !strings.Contains(err.Error(), "elevated.upgrade_warn") {
+			t.Errorf("error should reference field: %v", err)
+		}
+	})
+
+	t.Run("reload_block_to_empty_warns", func(t *testing.T) {
+		old := adaptiveBase()
+		old.AdaptiveEnforcement.Levels.Elevated.UpgradeWarn = strPtr(ActionBlock)
+		old.ApplyDefaults()
+
+		updated := adaptiveBase()
+		updated.AdaptiveEnforcement.Levels.Elevated.UpgradeWarn = strPtr("")
+		updated.ApplyDefaults()
+
+		warnings := ValidateReload(old, updated)
+		found := false
+		for _, w := range warnings {
+			if strings.Contains(w.Field, "elevated.upgrade_warn") {
+				found = true
+			}
+		}
+		if !found {
+			t.Error("expected weakening warning for elevated.upgrade_warn")
+		}
+	})
+
+	t.Run("reload_no_change_no_warning", func(t *testing.T) {
+		old := adaptiveBase()
+		old.ApplyDefaults()
+
+		updated := adaptiveBase()
+		updated.ApplyDefaults()
+
+		warnings := ValidateReload(old, updated)
+		for _, w := range warnings {
+			if strings.Contains(w.Field, "elevated.upgrade_warn") {
+				t.Errorf("unexpected warning: %v", w)
+			}
+		}
+	})
+}
+
+func TestEscalationLevels_HighUpgradeAsk_6State(t *testing.T) {
+	t.Run("omitted_gets_default_block", func(t *testing.T) {
+		cfg := adaptiveBase()
+		cfg.ApplyDefaults()
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg.AdaptiveEnforcement.Levels.High.UpgradeAsk == nil {
+			t.Fatal("expected non-nil after defaults")
+		}
+		if *cfg.AdaptiveEnforcement.Levels.High.UpgradeAsk != ActionBlock {
+			t.Errorf("expected \"block\", got %q", *cfg.AdaptiveEnforcement.Levels.High.UpgradeAsk)
+		}
+	})
+
+	t.Run("explicit_empty_string_means_no_upgrade", func(t *testing.T) {
+		cfg := adaptiveBase()
+		cfg.AdaptiveEnforcement.Levels.High.UpgradeAsk = strPtr("")
+		cfg.ApplyDefaults()
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if *cfg.AdaptiveEnforcement.Levels.High.UpgradeAsk != "" {
+			t.Errorf("expected \"\", got %q", *cfg.AdaptiveEnforcement.Levels.High.UpgradeAsk)
+		}
+	})
+
+	t.Run("explicit_block", func(t *testing.T) {
+		cfg := adaptiveBase()
+		cfg.AdaptiveEnforcement.Levels.High.UpgradeAsk = strPtr(ActionBlock)
+		cfg.ApplyDefaults()
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if *cfg.AdaptiveEnforcement.Levels.High.UpgradeAsk != ActionBlock {
+			t.Errorf("expected \"block\", got %q", *cfg.AdaptiveEnforcement.Levels.High.UpgradeAsk)
+		}
+	})
+
+	t.Run("invalid_value_rejected", func(t *testing.T) {
+		cfg := adaptiveBase()
+		cfg.AdaptiveEnforcement.Levels.High.UpgradeAsk = strPtr("foo")
+		cfg.ApplyDefaults()
+		err := cfg.Validate()
+		if err == nil {
+			t.Fatal("expected error for invalid value")
+		}
+		if !strings.Contains(err.Error(), "high.upgrade_ask") {
+			t.Errorf("error should reference field: %v", err)
+		}
+	})
+
+	t.Run("reload_block_to_empty_warns", func(t *testing.T) {
+		old := adaptiveBase()
+		old.ApplyDefaults()
+
+		updated := adaptiveBase()
+		updated.AdaptiveEnforcement.Levels.High.UpgradeAsk = strPtr("")
+		updated.ApplyDefaults()
+
+		warnings := ValidateReload(old, updated)
+		found := false
+		for _, w := range warnings {
+			if strings.Contains(w.Field, "high.upgrade_ask") {
+				found = true
+			}
+		}
+		if !found {
+			t.Error("expected weakening warning for high.upgrade_ask")
+		}
+	})
+
+	t.Run("reload_no_change_no_warning", func(t *testing.T) {
+		old := adaptiveBase()
+		old.ApplyDefaults()
+
+		updated := adaptiveBase()
+		updated.ApplyDefaults()
+
+		warnings := ValidateReload(old, updated)
+		for _, w := range warnings {
+			if strings.Contains(w.Field, "high.upgrade_ask") {
+				t.Errorf("unexpected warning: %v", w)
+			}
+		}
+	})
+}
+
+func TestEscalationLevels_CriticalBlockAll_6State(t *testing.T) {
+	t.Run("omitted_gets_default_true", func(t *testing.T) {
+		cfg := adaptiveBase()
+		cfg.ApplyDefaults()
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg.AdaptiveEnforcement.Levels.Critical.BlockAll == nil {
+			t.Fatal("expected non-nil after defaults")
+		}
+		if !*cfg.AdaptiveEnforcement.Levels.Critical.BlockAll {
+			t.Error("expected critical.block_all default to be true")
+		}
+	})
+
+	t.Run("explicit_false_means_no_block", func(t *testing.T) {
+		cfg := adaptiveBase()
+		cfg.AdaptiveEnforcement.Levels.Critical.BlockAll = boolPtr(false)
+		cfg.ApplyDefaults()
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if *cfg.AdaptiveEnforcement.Levels.Critical.BlockAll {
+			t.Error("expected false to be preserved")
+		}
+	})
+
+	t.Run("explicit_true", func(t *testing.T) {
+		cfg := adaptiveBase()
+		cfg.AdaptiveEnforcement.Levels.Critical.BlockAll = boolPtr(true)
+		cfg.ApplyDefaults()
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !*cfg.AdaptiveEnforcement.Levels.Critical.BlockAll {
+			t.Error("expected true to be preserved")
+		}
+	})
+
+	t.Run("reload_true_to_false_warns", func(t *testing.T) {
+		old := adaptiveBase()
+		old.ApplyDefaults()
+
+		updated := adaptiveBase()
+		updated.AdaptiveEnforcement.Levels.Critical.BlockAll = boolPtr(false)
+		updated.ApplyDefaults()
+
+		warnings := ValidateReload(old, updated)
+		found := false
+		for _, w := range warnings {
+			if strings.Contains(w.Field, "critical.block_all") {
+				found = true
+			}
+		}
+		if !found {
+			t.Error("expected weakening warning for critical.block_all")
+		}
+	})
+
+	t.Run("reload_no_change_no_warning", func(t *testing.T) {
+		old := adaptiveBase()
+		old.ApplyDefaults()
+
+		updated := adaptiveBase()
+		updated.ApplyDefaults()
+
+		warnings := ValidateReload(old, updated)
+		for _, w := range warnings {
+			if strings.Contains(w.Field, "critical.block_all") {
+				t.Errorf("unexpected warning: %v", w)
+			}
+		}
+	})
+
+	t.Run("yaml_omitted_block_all_defaults_true", func(t *testing.T) {
+		// When the critical section is present but block_all is omitted from
+		// YAML, Load() + ApplyDefaults() must produce true (fail-closed).
+		const yamlStr = `version: 1
+mode: balanced
+session_profiling:
+  enabled: true
+adaptive_enforcement:
+  enabled: true
+  escalation_threshold: 5.0
+  levels:
+    critical:
+      upgrade_warn: "block"
+`
+		dir := t.TempDir()
+		path := filepath.Join(dir, "config.yaml")
+		if err := os.WriteFile(path, []byte(yamlStr), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.AdaptiveEnforcement.Levels.Critical.BlockAll == nil {
+			t.Fatal("expected non-nil block_all after Load with omitted field")
+		}
+		if !*cfg.AdaptiveEnforcement.Levels.Critical.BlockAll {
+			t.Error("expected critical.block_all=true when omitted from YAML (fail-closed default)")
+		}
+	})
+
+	t.Run("yaml_null_block_all_defaults_true", func(t *testing.T) {
+		// When block_all is explicitly set to null in YAML, it decodes as nil
+		// and ApplyDefaults() must fill it with true (same as omitted).
+		const yamlStr = `version: 1
+mode: balanced
+session_profiling:
+  enabled: true
+adaptive_enforcement:
+  enabled: true
+  escalation_threshold: 5.0
+  levels:
+    critical:
+      block_all: null
+`
+		dir := t.TempDir()
+		path := filepath.Join(dir, "config.yaml")
+		if err := os.WriteFile(path, []byte(yamlStr), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.AdaptiveEnforcement.Levels.Critical.BlockAll == nil {
+			t.Fatal("expected non-nil block_all after Load with null field")
+		}
+		if !*cfg.AdaptiveEnforcement.Levels.Critical.BlockAll {
+			t.Error("expected critical.block_all=true when YAML null (fail-closed default)")
+		}
+	})
+
+	t.Run("yaml_omitted_elevated_upgrade_warn_defaults_to_nil", func(t *testing.T) {
+		const yamlStr = `version: 1
+mode: balanced
+session_profiling:
+  enabled: true
+adaptive_enforcement:
+  enabled: true
+  escalation_threshold: 5.0
+  levels:
+    elevated:
+      upgrade_ask: "block"
+`
+		dir := t.TempDir()
+		path := filepath.Join(dir, "config.yaml")
+		if err := os.WriteFile(path, []byte(yamlStr), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		// When omitted, ApplyDefaults fills it based on level defaults.
+		// The important thing is it doesn't panic and produces a valid config.
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("config should validate after Load with omitted elevated.upgrade_warn: %v", err)
+		}
+	})
+
+	t.Run("yaml_null_elevated_upgrade_warn_defaults_safely", func(t *testing.T) {
+		const yamlStr = `version: 1
+mode: balanced
+session_profiling:
+  enabled: true
+adaptive_enforcement:
+  enabled: true
+  escalation_threshold: 5.0
+  levels:
+    elevated:
+      upgrade_warn: null
+`
+		dir := t.TempDir()
+		path := filepath.Join(dir, "config.yaml")
+		if err := os.WriteFile(path, []byte(yamlStr), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("config should validate after Load with null elevated.upgrade_warn: %v", err)
+		}
+	})
+
+	t.Run("yaml_omitted_high_upgrade_ask_defaults_safely", func(t *testing.T) {
+		const yamlStr = `version: 1
+mode: balanced
+session_profiling:
+  enabled: true
+adaptive_enforcement:
+  enabled: true
+  escalation_threshold: 5.0
+  levels:
+    high:
+      upgrade_warn: "block"
+`
+		dir := t.TempDir()
+		path := filepath.Join(dir, "config.yaml")
+		if err := os.WriteFile(path, []byte(yamlStr), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("config should validate after Load with omitted high.upgrade_ask: %v", err)
+		}
+	})
+
+	t.Run("yaml_null_high_upgrade_ask_defaults_safely", func(t *testing.T) {
+		const yamlStr = `version: 1
+mode: balanced
+session_profiling:
+  enabled: true
+adaptive_enforcement:
+  enabled: true
+  escalation_threshold: 5.0
+  levels:
+    high:
+      upgrade_ask: null
+`
+		dir := t.TempDir()
+		path := filepath.Join(dir, "config.yaml")
+		if err := os.WriteFile(path, []byte(yamlStr), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("config should validate after Load with null high.upgrade_ask: %v", err)
+		}
+	})
+}
+
+func TestEscalationLevels_MonotonicValidation(t *testing.T) {
+	t.Run("elevated_upgrade_ask_block_but_high_empty_is_violation", func(t *testing.T) {
+		cfg := adaptiveBase()
+		cfg.AdaptiveEnforcement.Levels.Elevated.UpgradeAsk = strPtr(ActionBlock)
+		cfg.AdaptiveEnforcement.Levels.High.UpgradeAsk = strPtr("")
+		cfg.ApplyDefaults()
+		err := cfg.Validate()
+		if err == nil {
+			t.Fatal("expected monotonic violation error")
+		}
+		if !strings.Contains(err.Error(), "monotonic violation") {
+			t.Errorf("error should mention monotonic: %v", err)
+		}
+		if !strings.Contains(err.Error(), "high.upgrade_ask") {
+			t.Errorf("error should reference high.upgrade_ask: %v", err)
+		}
+	})
+
+	t.Run("high_block_all_true_but_critical_false_is_violation", func(t *testing.T) {
+		cfg := adaptiveBase()
+		cfg.AdaptiveEnforcement.Levels.High.BlockAll = boolPtr(true)
+		cfg.AdaptiveEnforcement.Levels.Critical.BlockAll = boolPtr(false)
+		cfg.ApplyDefaults()
+		err := cfg.Validate()
+		if err == nil {
+			t.Fatal("expected monotonic violation error")
+		}
+		if !strings.Contains(err.Error(), "critical.block_all") {
+			t.Errorf("error should reference critical.block_all: %v", err)
+		}
+	})
+
+	t.Run("default_ladder_is_monotonic", func(t *testing.T) {
+		cfg := adaptiveBase()
+		cfg.ApplyDefaults()
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("default ladder should be valid: %v", err)
+		}
+	})
+
+	t.Run("elevated_upgrade_warn_block_but_high_empty_is_violation", func(t *testing.T) {
+		cfg := adaptiveBase()
+		cfg.AdaptiveEnforcement.Levels.Elevated.UpgradeWarn = strPtr(ActionBlock)
+		cfg.AdaptiveEnforcement.Levels.High.UpgradeWarn = strPtr("")
+		cfg.ApplyDefaults()
+		err := cfg.Validate()
+		if err == nil {
+			t.Fatal("expected monotonic violation error")
+		}
+		if !strings.Contains(err.Error(), "high.upgrade_warn") {
+			t.Errorf("error should reference high.upgrade_warn: %v", err)
+		}
+		if !strings.Contains(err.Error(), "monotonic violation") {
+			t.Errorf("error should mention monotonic: %v", err)
+		}
+	})
+
+	t.Run("elevated_block_all_true_but_high_false_is_violation", func(t *testing.T) {
+		cfg := adaptiveBase()
+		cfg.AdaptiveEnforcement.Levels.Elevated.BlockAll = boolPtr(true)
+		cfg.AdaptiveEnforcement.Levels.High.BlockAll = boolPtr(false)
+		cfg.ApplyDefaults()
+		err := cfg.Validate()
+		if err == nil {
+			t.Fatal("expected monotonic violation error")
+		}
+		if !strings.Contains(err.Error(), "high.block_all") {
+			t.Errorf("error should reference high.block_all: %v", err)
+		}
+		if !strings.Contains(err.Error(), "monotonic violation") {
+			t.Errorf("error should mention monotonic: %v", err)
+		}
+	})
+
+	t.Run("critical_upgrade_warn_empty_but_high_block_is_violation", func(t *testing.T) {
+		cfg := adaptiveBase()
+		// high.upgrade_warn defaults to "block"; set critical to "" (weaker)
+		cfg.AdaptiveEnforcement.Levels.Critical.UpgradeWarn = strPtr("")
+		cfg.ApplyDefaults()
+		err := cfg.Validate()
+		if err == nil {
+			t.Fatal("expected monotonic violation error")
+		}
+		if !strings.Contains(err.Error(), "critical.upgrade_warn") {
+			t.Errorf("error should reference critical.upgrade_warn: %v", err)
+		}
+		if !strings.Contains(err.Error(), "monotonic violation") {
+			t.Errorf("error should mention monotonic: %v", err)
+		}
+	})
+
+	t.Run("critical_upgrade_ask_empty_but_high_block_is_violation", func(t *testing.T) {
+		cfg := adaptiveBase()
+		// high.upgrade_ask defaults to "block"; set critical to "" (weaker)
+		cfg.AdaptiveEnforcement.Levels.Critical.UpgradeAsk = strPtr("")
+		cfg.ApplyDefaults()
+		err := cfg.Validate()
+		if err == nil {
+			t.Fatal("expected monotonic violation error")
+		}
+		if !strings.Contains(err.Error(), "critical.upgrade_ask") {
+			t.Errorf("error should reference critical.upgrade_ask: %v", err)
+		}
+		if !strings.Contains(err.Error(), "monotonic violation") {
+			t.Errorf("error should mention monotonic: %v", err)
+		}
+	})
+}
+
+func TestEscalationLevels_LegalUnusualCombination(t *testing.T) {
+	// Elevated with upgrade_ask=block is unusual (most operators wouldn't set it)
+	// but legal — higher levels will default to >= this, so monotonic holds.
+	cfg := adaptiveBase()
+	cfg.AdaptiveEnforcement.Levels.Elevated.UpgradeAsk = strPtr(ActionBlock)
+	cfg.ApplyDefaults()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unusual but legal combination should pass: %v", err)
+	}
+}
+
+func TestEscalationLevels_DisabledSkipsDefaults(t *testing.T) {
+	cfg := Defaults()
+	// adaptive enforcement NOT enabled
+	cfg.ApplyDefaults()
+
+	// When disabled, level fields should remain zero-value (nil)
+	if cfg.AdaptiveEnforcement.Levels.Elevated.UpgradeWarn != nil {
+		t.Error("expected nil when adaptive enforcement is disabled")
+	}
+	if cfg.AdaptiveEnforcement.Levels.Critical.BlockAll != nil {
+		t.Error("expected nil when adaptive enforcement is disabled")
+	}
+}
+
+func TestEscalationLevels_YAMLRoundTrip(t *testing.T) {
+	yamlStr := `version: 1
+mode: balanced
+session_profiling:
+  enabled: true
+adaptive_enforcement:
+  enabled: true
+  levels:
+    elevated:
+      upgrade_warn: ""
+    high:
+      upgrade_ask: "block"
+    critical:
+      block_all: false
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(yamlStr), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load error: %v", err)
+	}
+
+	// Explicit empty string should survive YAML round-trip as non-nil ""
+	if cfg.AdaptiveEnforcement.Levels.Elevated.UpgradeWarn == nil {
+		t.Fatal("expected non-nil upgrade_warn after YAML parse")
+	}
+	if *cfg.AdaptiveEnforcement.Levels.Elevated.UpgradeWarn != "" {
+		t.Errorf("expected \"\", got %q", *cfg.AdaptiveEnforcement.Levels.Elevated.UpgradeWarn)
+	}
+
+	// Explicit "block" should survive
+	if cfg.AdaptiveEnforcement.Levels.High.UpgradeAsk == nil {
+		t.Fatal("expected non-nil upgrade_ask after YAML parse")
+	}
+	if *cfg.AdaptiveEnforcement.Levels.High.UpgradeAsk != ActionBlock {
+		t.Errorf("expected \"block\", got %q", *cfg.AdaptiveEnforcement.Levels.High.UpgradeAsk)
+	}
+
+	// Explicit false should survive
+	if cfg.AdaptiveEnforcement.Levels.Critical.BlockAll == nil {
+		t.Fatal("expected non-nil block_all after YAML parse")
+	}
+	if *cfg.AdaptiveEnforcement.Levels.Critical.BlockAll {
+		t.Error("expected false, got true")
+	}
+
+	// Omitted fields should be nil
+	if cfg.AdaptiveEnforcement.Levels.Elevated.UpgradeAsk != nil {
+		t.Errorf("expected nil for omitted elevated.upgrade_ask, got %q", *cfg.AdaptiveEnforcement.Levels.Elevated.UpgradeAsk)
 	}
 }

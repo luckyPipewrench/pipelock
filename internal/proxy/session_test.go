@@ -13,8 +13,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 const (
@@ -267,13 +270,13 @@ func TestSessionState_ThreatScore(t *testing.T) {
 	sess := sm.GetOrCreate(testClientIP)
 
 	// DLP near-miss adds +1
-	sess.RecordSignal(SignalDLPNearMiss, 5.0)
+	sess.RecordSignal(session.SignalNearMiss, 5.0)
 	if sess.ThreatScore() != 1.0 {
 		t.Errorf("expected score 1.0, got %f", sess.ThreatScore())
 	}
 
 	// Block adds +3
-	sess.RecordSignal(SignalBlock, 5.0)
+	sess.RecordSignal(session.SignalBlock, 5.0)
 	if sess.ThreatScore() != 4.0 {
 		t.Errorf("expected score 4.0, got %f", sess.ThreatScore())
 	}
@@ -311,15 +314,15 @@ func TestSessionState_Escalation(t *testing.T) {
 	}
 
 	// Add signals to reach threshold of 5
-	sess.RecordSignal(SignalBlock, 5.0)       // +3, total 3
-	sess.RecordSignal(SignalDLPNearMiss, 5.0) // +1, total 4
+	sess.RecordSignal(session.SignalBlock, 5.0)    // +3, total 3
+	sess.RecordSignal(session.SignalNearMiss, 5.0) // +1, total 4
 
 	if sess.IsEscalated() {
 		t.Error("should not escalate below threshold")
 	}
 
 	// Cross threshold
-	escalated, from, to := sess.RecordSignal(SignalDomainAnomaly, 5.0) // +2, total 6
+	escalated, from, to := sess.RecordSignal(session.SignalDomainAnomaly, 5.0) // +2, total 6
 	if !escalated {
 		t.Error("should escalate at threshold")
 	}
@@ -347,7 +350,7 @@ func TestSessionState_EscalationThresholdDoubles(t *testing.T) {
 
 	// First escalation at threshold 5
 	for range 5 {
-		sess.RecordSignal(SignalDLPNearMiss, 5.0) // +1 each
+		sess.RecordSignal(session.SignalNearMiss, 5.0) // +1 each
 	}
 
 	if sess.EscalationLevel() != 1 {
@@ -356,7 +359,7 @@ func TestSessionState_EscalationThresholdDoubles(t *testing.T) {
 
 	// Threshold is now 10. Need to reach 10 total (currently at 5).
 	for range 5 {
-		sess.RecordSignal(SignalDLPNearMiss, 10.0) // +1 each, total reaches 10
+		sess.RecordSignal(session.SignalNearMiss, 10.0) // +1 each, total reaches 10
 	}
 
 	if sess.EscalationLevel() != 2 {
@@ -373,7 +376,7 @@ func TestSessionState_EscalationSticky(t *testing.T) {
 
 	// Escalate
 	for range 5 {
-		sess.RecordSignal(SignalDLPNearMiss, 5.0)
+		sess.RecordSignal(session.SignalNearMiss, 5.0)
 	}
 
 	// Decay score to near 0
@@ -396,7 +399,7 @@ func TestSessionState_EntropyBudgetSignal(t *testing.T) {
 	defer sm.Close()
 
 	sess := sm.GetOrCreate(testClientIP)
-	sess.RecordSignal(SignalEntropyBudget, 10.0) // +2
+	sess.RecordSignal(session.SignalEntropyBudget, 10.0) // +2
 
 	if sess.ThreatScore() != 2.0 {
 		t.Errorf("expected score 2.0, got %f", sess.ThreatScore())
@@ -409,7 +412,7 @@ func TestSessionState_FragmentDLPSignal(t *testing.T) {
 	defer sm.Close()
 
 	sess := sm.GetOrCreate(testClientIP)
-	sess.RecordSignal(SignalFragmentDLP, 10.0) // +3
+	sess.RecordSignal(session.SignalFragmentDLP, 10.0) // +3
 
 	if sess.ThreatScore() != 3.0 {
 		t.Errorf("expected score 3.0, got %f", sess.ThreatScore())
@@ -424,15 +427,15 @@ func TestSessionState_EntropySignals_Escalation(t *testing.T) {
 	sess := sm.GetOrCreate(testClientIP)
 
 	// Build up score: 2 entropy budget signals (+2 each = 4) below threshold 5
-	sess.RecordSignal(SignalEntropyBudget, 5.0) // +2, total 2
-	sess.RecordSignal(SignalEntropyBudget, 5.0) // +2, total 4
+	sess.RecordSignal(session.SignalEntropyBudget, 5.0) // +2, total 2
+	sess.RecordSignal(session.SignalEntropyBudget, 5.0) // +2, total 4
 
 	if sess.IsEscalated() {
 		t.Error("should not escalate below threshold")
 	}
 
 	// Fragment DLP signal crosses threshold: +3, total 7
-	escalated, from, to := sess.RecordSignal(SignalFragmentDLP, 5.0)
+	escalated, from, to := sess.RecordSignal(session.SignalFragmentDLP, 5.0)
 	if !escalated {
 		t.Error("should escalate when entropy signals cross threshold")
 	}
@@ -454,7 +457,7 @@ func TestSessionState_DomainAnomalySignal(t *testing.T) {
 	defer sm.Close()
 
 	sess := sm.GetOrCreate(testClientIP)
-	sess.RecordSignal(SignalDomainAnomaly, 5.0) // +2
+	sess.RecordSignal(session.SignalDomainAnomaly, 5.0) // +2
 
 	if sess.ThreatScore() != 2.0 {
 		t.Errorf("expected score 2.0, got %f", sess.ThreatScore())
@@ -488,6 +491,29 @@ func scrapeMetric(t *testing.T, m *metrics.Metrics, want string) bool {
 	m.PrometheusHandler().ServeHTTP(w, req)
 	body, _ := io.ReadAll(w.Body)
 	return strings.Contains(string(body), want)
+}
+
+// adaptiveElevatedGaugeValue reads the pipelock_adaptive_sessions_current gauge
+// value for the "elevated" level label from the metrics registry. Returns 0 if absent.
+func adaptiveElevatedGaugeValue(t *testing.T, m *metrics.Metrics) float64 {
+	t.Helper()
+	fams, err := m.Registry().Gather()
+	if err != nil {
+		t.Fatalf("gather metrics: %v", err)
+	}
+	for _, fam := range fams {
+		if fam.GetName() != "pipelock_adaptive_sessions_current" {
+			continue
+		}
+		for _, metric := range fam.GetMetric() {
+			for _, lbl := range metric.GetLabel() {
+				if lbl.GetName() == "level" && lbl.GetValue() == testLevelElevated {
+					return metric.GetGauge().GetValue()
+				}
+			}
+		}
+	}
+	return 0
 }
 
 func TestSessionManager_Metrics_EvictOnCapacity(t *testing.T) {
@@ -713,20 +739,20 @@ func TestSessionManager_IPDomainBurst_DifferentIPs(t *testing.T) {
 }
 
 func TestEscalationLabel_HighLevel(t *testing.T) {
-	// Test the fallback format for levels beyond the label array
-	label := escalationLabel(5)
-	if label != "level_5" {
-		t.Errorf("expected level_5, got %s", label)
+	// Levels beyond the defined range clamp to the last label ("critical").
+	label := session.EscalationLabel(5)
+	if label != "critical" {
+		t.Errorf("expected critical, got %s", label)
 	}
 
 	// Test known labels
-	if got := escalationLabel(0); got != testLevelNormal {
+	if got := session.EscalationLabel(0); got != testLevelNormal {
 		t.Errorf("expected normal, got %s", got)
 	}
-	if got := escalationLabel(1); got != testLevelElevated {
+	if got := session.EscalationLabel(1); got != testLevelElevated {
 		t.Errorf("expected elevated, got %s", got)
 	}
-	if got := escalationLabel(2); got != "high" {
+	if got := session.EscalationLabel(2); got != "high" {
 		t.Errorf("expected high, got %s", got)
 	}
 }
@@ -787,5 +813,157 @@ func TestSessionManager_IPDomainCleanup(t *testing.T) {
 
 	if exists {
 		t.Error("expired IP domain entries should be cleaned up")
+	}
+}
+
+// TestSessionManager_Cleanup_EscalatedGaugeDecrement verifies that when an
+// escalated session is evicted by TTL cleanup, the adaptive session level gauge
+// is decremented.
+func TestSessionManager_Cleanup_EscalatedGaugeDecrement(t *testing.T) {
+	cfg := testSessionConfig()
+	cfg.SessionTTLMinutes = 1
+	m := metrics.New()
+	sm := NewSessionManager(cfg, m)
+	defer sm.Close()
+
+	sess := sm.GetOrCreate(testClientIP)
+
+	// Escalate the session so escalationLevel > 0.
+	sess.RecordSignal(session.SignalBlock, 5.0)                            // +3
+	sess.RecordSignal(session.SignalNearMiss, 5.0)                         // +1
+	escalated, _, _ := sess.RecordSignal(session.SignalDomainAnomaly, 5.0) // +2, total 6 >= 5
+	if !escalated {
+		t.Fatal("pre-condition: session should be escalated before cleanup test")
+	}
+
+	// Backdate the session's last activity past TTL.
+	sess.mu.Lock()
+	sess.lastActivity = time.Now().Add(-2 * time.Minute)
+	sess.mu.Unlock()
+
+	// Simulate the gauge increment that proxy code would emit on escalation.
+	// cleanup() must decrement this back to zero when the session is evicted.
+	m.SetAdaptiveSessionLevel(testLevelElevated, 1)
+
+	if got := adaptiveElevatedGaugeValue(t, m); got != 1 {
+		t.Fatalf("pre-condition: gauge for %q = %.0f, want 1", testLevelElevated, got)
+	}
+
+	sm.cleanup()
+
+	if sm.Len() != 0 {
+		t.Error("escalated session should be evicted after TTL expiry")
+	}
+	// After cleanup the gauge must be decremented back to zero.
+	if got := adaptiveElevatedGaugeValue(t, m); got != 0 {
+		t.Errorf("adaptive gauge for %q after cleanup = %.0f, want 0", testLevelElevated, got)
+	}
+}
+
+// TestSessionManager_EvictOldest_EscalatedGaugeDecrement verifies that when
+// an escalated session is evicted due to capacity overflow, the adaptive session
+// level gauge is decremented.
+func TestSessionManager_EvictOldest_EscalatedGaugeDecrement(t *testing.T) {
+	cfg := testSessionConfig()
+	cfg.MaxSessions = 2
+	m := metrics.New()
+	sm := NewSessionManager(cfg, m)
+	defer sm.Close()
+
+	// Create and escalate the first session.
+	sess := sm.GetOrCreate("escalated-session")
+	sess.RecordSignal(session.SignalBlock, 5.0)                            // +3
+	sess.RecordSignal(session.SignalNearMiss, 5.0)                         // +1
+	escalated, _, _ := sess.RecordSignal(session.SignalDomainAnomaly, 5.0) // +2, total 6 >= 5
+	if !escalated {
+		t.Fatal("pre-condition: first session should be escalated")
+	}
+
+	// Simulate the gauge increment that proxy code would emit on escalation.
+	// evictOldest() must decrement this back to zero when the session is evicted.
+	m.SetAdaptiveSessionLevel(testLevelElevated, 1)
+
+	if got := adaptiveElevatedGaugeValue(t, m); got != 1 {
+		t.Fatalf("pre-condition: gauge for %q = %.0f, want 1", testLevelElevated, got)
+	}
+
+	// Ensure "escalated-session" has older lastActivity than "second-session".
+	// RecordSignal doesn't update lastActivity, so we just need to ensure the
+	// second session is created after with a newer timestamp.
+	time.Sleep(time.Millisecond)
+	sm.GetOrCreate("second-session")
+
+	// Adding a third session when at capacity evicts "escalated-session"
+	// (oldest lastActivity). This must decrement the adaptive gauge.
+	sm.GetOrCreate("third-session")
+
+	if sm.Len() != 2 {
+		t.Errorf("expected 2 sessions after capacity eviction, got %d", sm.Len())
+	}
+
+	// Eviction metric must be recorded.
+	if !scrapeMetric(t, m, "pipelock_sessions_evicted_total") {
+		t.Error("expected eviction metric after capacity eviction of escalated session")
+	}
+	// After eviction the gauge must be decremented back to zero.
+	if got := adaptiveElevatedGaugeValue(t, m); got != 0 {
+		t.Errorf("adaptive gauge for %q after eviction = %.0f, want 0", testLevelElevated, got)
+	}
+}
+
+// TestSessionManager_SessionStore_Disabled verifies that SessionStore returns
+// nil when session profiling is disabled (no SessionManager created).
+func TestProxy_SessionStore_Disabled(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	// SessionProfiling is disabled by default in config.Defaults().
+	p, err := New(cfg, audit.NewNop(), scanner.New(cfg), metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	t.Cleanup(func() { p.Close() })
+	if got := p.SessionStore(); got != nil {
+		t.Errorf("expected nil SessionStore when profiling disabled, got %T", got)
+	}
+}
+
+// TestSessionManager_AsStore verifies that AsStore returns a non-nil
+// session.Store that delegates GetOrCreate to the underlying SessionManager.
+func TestSessionManager_AsStore(t *testing.T) {
+	cfg := testSessionConfig()
+	sm := NewSessionManager(cfg, nil)
+	defer sm.Close()
+
+	store := sm.AsStore()
+	if store == nil {
+		t.Fatal("expected non-nil store from AsStore()")
+	}
+
+	// GetOrCreate via the store must return a valid Recorder.
+	rec := store.GetOrCreate("test-key")
+	if rec == nil {
+		t.Fatal("expected non-nil Recorder from store.GetOrCreate()")
+	}
+
+	// The recorder must be the same underlying session as direct access.
+	direct := sm.GetOrCreate("test-key")
+	if rec != direct {
+		t.Error("store.GetOrCreate and sm.GetOrCreate should return the same session for the same key")
+	}
+}
+
+// TestProxy_SessionStore_Enabled verifies that SessionStore returns a non-nil
+// store when session profiling is enabled.
+func TestProxy_SessionStore_Enabled(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SessionProfiling.Enabled = true
+	p, err := New(cfg, audit.NewNop(), scanner.New(cfg), metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	t.Cleanup(func() { p.Close() })
+	if got := p.SessionStore(); got == nil {
+		t.Error("expected non-nil SessionStore when profiling enabled")
 	}
 }

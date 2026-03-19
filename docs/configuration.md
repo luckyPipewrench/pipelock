@@ -618,20 +618,65 @@ session_profiling:
 
 ## Adaptive Enforcement
 
-Per-session threat score that accumulates across scanner hits and decays on clean requests. When the score exceeds the threshold, an escalation event is logged and metriced. In v1 this is scoring and observability only: enforcement behavior (warn vs block) is not changed by escalation level. Escalation-aware blocking is planned for v2.
+Per-session threat score that accumulates across scanner hits and decays on clean requests. When the score exceeds the threshold, the session escalates through levels (elevated → high → critical). At each level, the `levels` configuration upgrades warn and ask actions to block, or denies all traffic.
 
 ```yaml
 adaptive_enforcement:
   enabled: true
   escalation_threshold: 5.0
   decay_per_clean_request: 0.5
+  levels:
+    elevated:
+      upgrade_warn: block       # warn→block when session is elevated
+    high:
+      upgrade_warn: block
+      upgrade_ask: block        # ask→block when session is high risk
+    critical:
+      upgrade_warn: block
+      upgrade_ask: block
+      block_all: true           # deny all requests when session is critical
 ```
 
 | Field | Default | Description |
 |-------|---------|-------------|
 | `enabled` | `false` | Enable adaptive enforcement |
-| `escalation_threshold` | `5.0` | Score before escalation |
-| `decay_per_clean_request` | `0.5` | Score reduction per clean request |
+| `escalation_threshold` | `5.0` | Score before first escalation. Lower values escalate faster. |
+| `decay_per_clean_request` | `0.5` | Score reduction per clean request. Lower values slow trust recovery. |
+| `levels` | *(see below)* | Per-level enforcement upgrades |
+
+### Escalation Levels
+
+Sessions progress through three levels as threat score accumulates past `escalation_threshold` multiples. Each level can independently upgrade action severity.
+
+| Level | Trigger | Description |
+|-------|---------|-------------|
+| `elevated` | Score ≥ threshold × 1 | First escalation. Session shows suspicious behavior. |
+| `high` | Score ≥ threshold × 2 | Second escalation. Session is actively concerning. |
+| `critical` | Score ≥ threshold × 3 | Third escalation. Session is high-confidence threat. |
+
+### Level Actions
+
+Each level accepts the following fields. All fields use **pointer semantics**:
+
+- **Omit the field** (or omit `levels` entirely) to apply the default behavior.
+- **Set to `"block"`** to upgrade that action class at this level.
+- **Set to `""`** (empty string) to explicitly disable an upgrade (softening from a parent config).
+
+**Monotonic enforcement:** higher levels must never be weaker than lower levels. If `elevated.upgrade_warn: block`, then `high` and `critical` must also have `upgrade_warn: block` (or omit it for the default, which is `block`). Pipelock validates this at config load time and rejects violations.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `upgrade_warn` | `*string` | `nil` → `"block"` at all levels | Upgrade `warn` actions to `block` at this level |
+| `upgrade_ask` | `*string` | `nil` → `""` at elevated; `"block"` at high and critical | Upgrade `ask` (HITL) actions to `block` at this level |
+| `block_all` | `*bool` | `nil` → `false` at elevated and high; `true` at critical | Deny all traffic for this session regardless of action |
+
+**Default behavior when `levels` is omitted:**
+
+| Level | upgrade_warn | upgrade_ask | block_all |
+|-------|-------------|-------------|-----------|
+| elevated | block | — | false |
+| high | block | block | false |
+| critical | block | block | true |
 
 ## Kill Switch
 

@@ -19,6 +19,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
@@ -26,12 +27,16 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 // RunHTTPProxy bridges stdio (client) to an upstream HTTP MCP server with
 // bidirectional scanning. Reads JSON-RPC from clientIn, POSTs to upstreamURL,
 // scans responses via ForwardScanned, writes to clientOut.
+// When store is non-nil, a per-invocation session recorder is created and used
+// for adaptive enforcement signal recording across both input and response scanning.
 func RunHTTPProxy(
 	ctx context.Context,
 	clientIn io.Reader,
@@ -48,10 +53,19 @@ func RunHTTPProxy(
 	chainMatcher *chains.Matcher,
 	auditLogger *audit.Logger,
 	cee *CEEDeps,
+	store session.Store,
+	adaptiveCfg *config.AdaptiveEnforcement,
+	m *metrics.Metrics,
 ) error {
 	// Create a child context so we can stop the GET stream when stdin EOF is reached.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+
+	// Per-invocation adaptive enforcement recorder.
+	var rec session.Recorder
+	if store != nil {
+		rec = store.GetOrCreate(session.NextInvocationKey("mcp-http"))
+	}
 
 	safeClientOut := &syncWriter{w: clientOut}
 	safeLogW := &syncWriter{w: logW}
@@ -111,7 +125,7 @@ func RunHTTPProxy(
 
 		// Input scanning — call ScanRequest and CheckRequest directly.
 		// The sequential (non-concurrent) architecture means no channel needed.
-		if blocked := scanHTTPInput(msg, sc, safeLogW, inputCfg, policyCfg, chainMatcher, "default", "default", auditLogger, cee); blocked != nil {
+		if blocked := scanHTTPInput(msg, sc, safeLogW, inputCfg, policyCfg, chainMatcher, "default", "default", auditLogger, cee, rec, adaptiveCfg, m); blocked != nil {
 			if !blocked.IsNotification {
 				resp := blockRequestResponse(*blocked)
 				if wErr := safeClientOut.WriteMessage(resp); wErr != nil {
@@ -144,7 +158,7 @@ func RunHTTPProxy(
 		}
 
 		// Scan and forward response.
-		_, scanErr := ForwardScanned(respReader, safeClientOut, safeLogW, sc, approver, fwdToolCfg, tracker)
+		_, scanErr := ForwardScanned(respReader, safeClientOut, safeLogW, sc, approver, fwdToolCfg, tracker, rec, adaptiveCfg, m)
 		if scanErr != nil {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
 			lastScanErr = scanErr
@@ -156,7 +170,7 @@ func RunHTTPProxy(
 		// the Once and permanently prevent the GET stream.
 		if httpClient.SessionID() != "" {
 			getStreamOnce.Do(func() {
-				startGETStream(ctx, httpClient, safeClientOut, safeLogW, sc, approver, fwdToolCfg, &wg)
+				startGETStream(ctx, httpClient, safeClientOut, safeLogW, sc, approver, fwdToolCfg, rec, adaptiveCfg, &wg, m)
 			})
 		}
 	}
@@ -179,7 +193,15 @@ func RunHTTPProxy(
 // but returns a verdict instead of writing to a channel.
 // When cee is non-nil, outbound payloads are recorded for cross-request
 // exfiltration detection after content scanning passes.
-func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *InputScanConfig, policyCfg *policy.Config, chainMatcher *chains.Matcher, sessionKey, auditSessionKey string, auditLogger *audit.Logger, cee *CEEDeps) *BlockedRequest {
+func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *InputScanConfig, policyCfg *policy.Config, chainMatcher *chains.Matcher, sessionKey, auditSessionKey string, auditLogger *audit.Logger, cee *CEEDeps, rec session.Recorder, adaptiveCfg *config.AdaptiveEnforcement, m *metrics.Metrics) *BlockedRequest {
+	// Helper: record an adaptive signal and handle escalation side-effects.
+	// Eliminates repeated nil/enabled guards at every call site.
+	recordAdaptiveSignal := func(sig session.SignalType) {
+		if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
+			recordSignalWithEscalation(rec, sig, adaptiveCfg.EscalationThreshold, logW, auditLogger, m, auditSessionKey, "", "")
+		}
+	}
+
 	// Determine input scanning parameters.
 	action := config.ActionWarn
 	onParseError := config.ActionBlock
@@ -229,6 +251,7 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 					auditLogger.LogChainDetection(cv.PatternName, cv.Severity, cv.Action, toolName, auditSessionKey)
 				}
 				if cv.Action == config.ActionBlock {
+					recordAdaptiveSignal(session.SignalBlock)
 					return &BlockedRequest{
 						ID:             verdict.ID,
 						IsNotification: isRPCNotification(verdict.ID),
@@ -253,8 +276,23 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 		}
 	}
 
-	// All clean — proceed (with CEE check).
+	// All clean — proceed (with block_all and CEE checks).
 	if verdict.Clean && !policyVerdict.Matched && chainAction == "" {
+		// block_all enforcement: deny ALL traffic (including clean) when the
+		// session is at an escalation level with block_all=true.
+		if rec != nil && decide.UpgradeAction("", rec.EscalationLevel(), adaptiveCfg) == config.ActionBlock {
+			_, _ = fmt.Fprintf(logW, "pipelock: adaptive upgrade (clean) -> block (level %s)\n", session.EscalationLabel(rec.EscalationLevel()))
+			if m != nil {
+				m.RecordAdaptiveUpgrade("", config.ActionBlock, session.EscalationLabel(rec.EscalationLevel()))
+			}
+			return &BlockedRequest{
+				ID:             verdict.ID,
+				IsNotification: isRPCNotification(verdict.ID),
+				LogMessage:     "blocked (session deny)",
+				ErrorCode:      -32001,
+				ErrorMessage:   "pipelock: session escalation level critical",
+			}
+		}
 		// Cross-request exfiltration check on clean outbound messages.
 		ceeKey := ceeSessionKeyMCP("", sessionKey)
 		if reason := ceeRecordMCP(ceeKey, msg, cee, sc, logW, auditLogger); reason != "" {
@@ -265,6 +303,9 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 				ErrorCode:      -32005,
 				ErrorMessage:   fmt.Sprintf("pipelock: %s", reason),
 			}
+		}
+		if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
+			rec.RecordClean(adaptiveCfg.DecayPerCleanRequest)
 		}
 		return nil
 	}
@@ -314,9 +355,26 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 		errMsg = errPolicyBlocked
 	}
 
+	// Escalation upgrade: may promote warn/ask to block for elevated sessions.
+	originalAction := effectiveAction
+	if rec != nil {
+		effectiveAction = decide.UpgradeAction(effectiveAction, rec.EscalationLevel(), adaptiveCfg)
+	}
+	if effectiveAction != originalAction {
+		levelLabel := session.EscalationLabel(rec.EscalationLevel())
+		_, _ = fmt.Fprintf(logW, "pipelock: adaptive upgrade %s -> %s (level %s)\n", originalAction, effectiveAction, levelLabel)
+		if auditLogger != nil {
+			auditLogger.LogAdaptiveUpgrade(auditSessionKey, levelLabel, originalAction, effectiveAction, "mcp_input", "", "")
+		}
+		if m != nil {
+			m.RecordAdaptiveUpgrade(originalAction, effectiveAction, levelLabel)
+		}
+	}
+
 	switch effectiveAction {
 	case config.ActionBlock:
 		_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s)\n", joinStrings(reasons))
+		recordAdaptiveSignal(session.SignalBlock)
 		return &BlockedRequest{
 			ID:             verdict.ID,
 			IsNotification: isNotification,
@@ -327,6 +385,7 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 	case config.ActionAsk:
 		// HITL for input scanning is impractical — fall back to block (same as stdio proxy).
 		_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s) [ask not supported for input scanning]\n", joinStrings(reasons))
+		recordAdaptiveSignal(session.SignalBlock)
 		return &BlockedRequest{
 			ID:             verdict.ID,
 			IsNotification: isNotification,
@@ -337,6 +396,7 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 	default: // warn
 		if len(reasons) > 0 {
 			_, _ = fmt.Fprintf(logW, "pipelock: input: warning (%s)\n", joinStrings(reasons))
+			recordAdaptiveSignal(session.SignalNearMiss)
 		}
 		// Cross-request exfiltration check even in warn mode.
 		ceeKey := ceeSessionKeyMCP("", sessionKey)
@@ -421,6 +481,7 @@ func upstreamErrorResponse(id json.RawMessage, upstreamErr error) []byte {
 // Reconnects with exponential backoff (1s base, 30s cap) on stream end or
 // transient errors. Exits permanently only on transport.ErrStreamNotSupported (HTTP 405)
 // or context cancellation.
+// rec and adaptiveCfg are passed through to ForwardScanned for adaptive enforcement.
 func startGETStream(
 	ctx context.Context,
 	httpClient *transport.HTTPClient,
@@ -429,7 +490,10 @@ func startGETStream(
 	sc *scanner.Scanner,
 	approver *hitl.Approver,
 	toolCfg *tools.ToolScanConfig,
+	rec session.Recorder,
+	adaptiveCfg *config.AdaptiveEnforcement,
 	wg *sync.WaitGroup,
+	m *metrics.Metrics,
 ) {
 	wg.Add(1)
 	go func() {
@@ -470,7 +534,7 @@ func startGETStream(
 
 			// nil tracker: GET stream carries server-initiated messages,
 			// not responses to client requests.
-			_, scanErr := ForwardScanned(reader, safeClientOut, safeLogW, sc, approver, toolCfg, nil)
+			_, scanErr := ForwardScanned(reader, safeClientOut, safeLogW, sc, approver, toolCfg, nil, rec, adaptiveCfg, m)
 			if scanErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: GET stream scan error: %v\n", scanErr)
 			}
@@ -498,6 +562,10 @@ func startGETStream(
 // net.ListenConfig). This separates the bind step from serving, so callers
 // detect port conflicts synchronously instead of losing them inside a goroutine.
 //
+// When store is non-nil, per-request session recorders are created using the
+// Mcp-Session-Id header (or RemoteAddr fallback) as the session key, enabling
+// adaptive enforcement signal tracking per logical MCP session.
+//
 // Endpoints:
 //   - POST / : scan and forward JSON-RPC requests to upstream
 //   - GET /health : returns 200 OK for liveness probes
@@ -515,6 +583,9 @@ func RunHTTPListenerProxy(
 	chainMatcher *chains.Matcher,
 	auditLogger *audit.Logger,
 	cee *CEEDeps,
+	store session.Store,
+	adaptiveCfgFn AdaptiveConfigFunc,
+	m *metrics.Metrics,
 ) error {
 	safeLogW := &syncWriter{w: logW}
 
@@ -550,6 +621,13 @@ func RunHTTPListenerProxy(
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
+		}
+
+		// Resolve adaptive config per-request so hot-reloads take effect
+		// without restarting the long-lived listener.
+		var adaptiveCfg *config.AdaptiveEnforcement
+		if adaptiveCfgFn != nil {
+			adaptiveCfg = adaptiveCfgFn()
 		}
 
 		// Cap request body to prevent memory exhaustion.
@@ -619,25 +697,6 @@ func RunHTTPListenerProxy(
 			}
 		}
 
-		// Scan Authorization header for DLP patterns. The body scanner
-		// doesn't see HTTP headers, so an agent could leak credentials
-		// via the Authorization header without triggering DLP.
-		if auth := r.Header.Get("Authorization"); auth != "" {
-			dlpResult := sc.ScanTextForDLP(r.Context(), auth)
-			if !dlpResult.Clean {
-				_, _ = fmt.Fprintf(safeLogW, "pipelock: DLP match in Authorization header: %s\n", dlpResult.Matches[0].PatternName)
-				w.Header().Set("Content-Type", "application/json")
-				rpcID := extractRPCID(body)
-				resp, _ := json.Marshal(rpcError{
-					JSONRPC: jsonrpc.Version,
-					ID:      rpcID,
-					Error:   rpcErrorDetail{Code: -32001, Message: "pipelock: request blocked by MCP input scanning"},
-				})
-				_, _ = w.Write(resp)
-				return
-			}
-		}
-
 		// Use Mcp-Session-Id header as chain detection session key so
 		// concurrent clients don't share tool call history. When no
 		// session ID is present, fall back to the client IP (without
@@ -656,8 +715,43 @@ func RunHTTPListenerProxy(
 			auditSessionKey = hashSessionKey(host)
 		}
 
+		// Per-request adaptive enforcement recorder. Uses RemoteAddr (without
+		// port) as a stable session key: the first request has no Mcp-Session-Id
+		// yet, so using the chain key would split signals across two keys (IP
+		// for first request, session ID for subsequent ones).
+		var reqRec session.Recorder
+		if store != nil {
+			adaptiveHost, _, adaptiveErr := net.SplitHostPort(r.RemoteAddr)
+			if adaptiveErr != nil {
+				adaptiveHost = r.RemoteAddr
+			}
+			reqRec = store.GetOrCreate(adaptiveHost)
+		}
+
+		// Scan Authorization header for DLP patterns. The body scanner
+		// doesn't see HTTP headers, so an agent could leak credentials
+		// via the Authorization header without triggering DLP.
+		if auth := r.Header.Get("Authorization"); auth != "" {
+			dlpResult := sc.ScanTextForDLP(r.Context(), auth)
+			if !dlpResult.Clean {
+				_, _ = fmt.Fprintf(safeLogW, "pipelock: DLP match in Authorization header: %s\n", dlpResult.Matches[0].PatternName)
+				if reqRec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
+					recordSignalWithEscalation(reqRec, session.SignalBlock, adaptiveCfg.EscalationThreshold, safeLogW, auditLogger, m, auditSessionKey, "", "")
+				}
+				w.Header().Set("Content-Type", "application/json")
+				rpcID := extractRPCID(body)
+				resp, _ := json.Marshal(rpcError{
+					JSONRPC: jsonrpc.Version,
+					ID:      rpcID,
+					Error:   rpcErrorDetail{Code: -32001, Message: "pipelock: request blocked by MCP input scanning"},
+				})
+				_, _ = w.Write(resp)
+				return
+			}
+		}
+
 		// Input scanning: DLP, injection, policy, chain detection.
-		if blocked := scanHTTPInput(body, sc, safeLogW, inputCfg, policyCfg, chainMatcher, chainSessionKey, auditSessionKey, auditLogger, cee); blocked != nil {
+		if blocked := scanHTTPInput(body, sc, safeLogW, inputCfg, policyCfg, chainMatcher, chainSessionKey, auditSessionKey, auditLogger, cee, reqRec, adaptiveCfg, m); blocked != nil {
 			w.Header().Set("Content-Type", "application/json")
 			if blocked.IsNotification {
 				w.WriteHeader(http.StatusAccepted)
@@ -717,7 +811,7 @@ func RunHTTPListenerProxy(
 		reader := &transport.SingleMessageReader{Body: upResp.Body}
 		var buf bytes.Buffer
 		bufWriter := &syncWriter{w: &buf}
-		_, scanErr := ForwardScanned(reader, bufWriter, safeLogW, sc, approver, fwdToolCfg, nil)
+		_, scanErr := ForwardScanned(reader, bufWriter, safeLogW, sc, approver, fwdToolCfg, nil, reqRec, adaptiveCfg, m)
 		if scanErr != nil {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
 		}

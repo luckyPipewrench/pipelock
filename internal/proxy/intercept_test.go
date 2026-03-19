@@ -23,6 +23,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 const (
@@ -79,7 +80,7 @@ func interceptAndRequest(
 	t.Cleanup(cancel)
 
 	go func() {
-		_ = interceptTunnel(ctx, proxyConn, host, port, cfg, sc, cache, logger, m, "10.0.0.1", "test-req-1", "", upstream.Client().Transport, nil, nil, nil, nil, nil)
+		_ = interceptTunnel(ctx, proxyConn, host, port, cfg, sc, cache, logger, m, "10.0.0.1", "test-req-1", "", upstream.Client().Transport, nil, nil, nil, nil, nil, nil)
 	}()
 
 	tlsConn := tls.Client(clientConn, &tls.Config{
@@ -168,7 +169,7 @@ func TestInterceptTunnel_AuthorityMismatch(t *testing.T) {
 	port := fmt.Sprintf("%d", upstream.Listener.Addr().(*net.TCPAddr).Port)
 
 	go func() {
-		_ = interceptTunnel(context.Background(), proxyConn, host, port, cfg, sc, cache, logger, m, "10.0.0.1", "test-req-1", "", upstream.Client().Transport, nil, nil, nil, nil, nil)
+		_ = interceptTunnel(context.Background(), proxyConn, host, port, cfg, sc, cache, logger, m, "10.0.0.1", "test-req-1", "", upstream.Client().Transport, nil, nil, nil, nil, nil, nil)
 	}()
 
 	tlsConn := tls.Client(clientConn, &tls.Config{
@@ -321,7 +322,7 @@ func TestInterceptTunnel_UpstreamError(t *testing.T) {
 	port := "9999"
 
 	go func() {
-		_ = interceptTunnel(context.Background(), proxyConn, host, port, cfg, sc, cache, logger, m, "10.0.0.1", "test-req-1", "", failingRT, nil, nil, nil, nil, nil)
+		_ = interceptTunnel(context.Background(), proxyConn, host, port, cfg, sc, cache, logger, m, "10.0.0.1", "test-req-1", "", failingRT, nil, nil, nil, nil, nil, nil)
 	}()
 
 	tlsConn := tls.Client(clientConn, &tls.Config{
@@ -503,7 +504,7 @@ func TestInterceptTunnel_HandshakeFailure(t *testing.T) {
 		testLoopbackIP, "443",
 		cfg, sc, cache, logger, m,
 		"10.0.0.1", "test-req-1", "", nil, nil,
-		nil, nil, nil, nil,
+		nil, nil, nil, nil, nil,
 	)
 
 	if err == nil {
@@ -532,7 +533,7 @@ func TestInterceptTunnel_ContextDeadline(t *testing.T) {
 		testLoopbackIP, "443",
 		cfg, sc, cache, logger, m,
 		"10.0.0.1", "test-req-1", "", nil, nil,
-		nil, nil, nil, nil,
+		nil, nil, nil, nil, nil,
 	)
 
 	if err == nil {
@@ -664,7 +665,7 @@ func TestInterceptTunnel_HostPortMismatch(t *testing.T) {
 		_ = interceptTunnel(context.Background(), proxyConn, host, port,
 			cfg, sc, cache, logger, m,
 			"10.0.0.1", "test-req-1", "", upstream.Client().Transport, nil,
-			nil, nil, nil, nil,
+			nil, nil, nil, nil, nil,
 		)
 	}()
 
@@ -827,7 +828,7 @@ func TestInterceptTunnel_ResponseReadError(t *testing.T) {
 		_ = interceptTunnel(context.Background(), proxyConn, host, port,
 			cfg, sc, cache, logger, m,
 			"10.0.0.1", "test-req-1", "", failRT, nil,
-			nil, nil, nil, nil,
+			nil, nil, nil, nil, nil,
 		)
 	}()
 
@@ -941,7 +942,7 @@ func TestInterceptTunnel_CompressedResponseBlockedViaRoundTripper(t *testing.T) 
 		_ = interceptTunnel(ctx, proxyConn, host, port,
 			cfg, sc, cache, logger, m,
 			"10.0.0.1", "test-req-1", "", compressedRT, nil,
-			nil, nil, nil, nil,
+			nil, nil, nil, nil, nil,
 		)
 	}()
 
@@ -1240,7 +1241,7 @@ func TestInterceptTunnel_CEEAdaptiveSignalRecording(t *testing.T) {
 
 	go func() {
 		_ = interceptTunnel(ctx, proxyConn, host, port, cfg, sc, cache, logger, m,
-			"10.0.0.1", "test-cee-1", "", upstream.Client().Transport, nil, et, nil, sm, nil)
+			"10.0.0.1", "test-cee-1", "", upstream.Client().Transport, nil, et, nil, sm, nil, nil)
 	}()
 
 	tlsConn := tls.Client(clientConn, &tls.Config{
@@ -1323,7 +1324,7 @@ func TestInterceptTunnel_CEEBlocked(t *testing.T) {
 			defer wg.Done()
 			_ = interceptTunnel(ctx, proxyConn, host, port, cfg, sc, cache, logger, m,
 				"10.0.0.1", fmt.Sprintf("req-%d", i), "",
-				upstream.Client().Transport, nil, et, nil, nil, nil)
+				upstream.Client().Transport, nil, et, nil, nil, nil, nil)
 		}()
 
 		tlsConn := tls.Client(clientConn, &tls.Config{
@@ -1364,5 +1365,266 @@ func TestInterceptTunnel_CEEBlocked(t *testing.T) {
 
 	if lastStatus != http.StatusForbidden {
 		t.Fatalf("expected 403 after entropy budget exceeded, got %d", lastStatus)
+	}
+}
+
+// TestRecEscalationLevel_Nil verifies that recEscalationLevel returns 0 when
+// the recorder is nil (session profiling disabled).
+func TestRecEscalationLevel_Nil(t *testing.T) {
+	if got := recEscalationLevel(nil); got != 0 {
+		t.Errorf("expected 0 for nil recorder, got %d", got)
+	}
+}
+
+// TestRecEscalationLevel_NonNil verifies that recEscalationLevel delegates to
+// the recorder's EscalationLevel() method when the recorder is non-nil.
+func TestRecEscalationLevel_NonNil(t *testing.T) {
+	cfg := testSessionConfig()
+	sm := NewSessionManager(cfg, nil)
+	defer sm.Close()
+
+	sess := sm.GetOrCreate(testClientIP)
+
+	// Before any escalation, EscalationLevel is 0.
+	if got := recEscalationLevel(sess); got != 0 {
+		t.Errorf("expected 0 for unelevated recorder, got %d", got)
+	}
+
+	// Escalate the session by crossing threshold 5.
+	sess.RecordSignal(session.SignalBlock, 5.0)         // +3
+	sess.RecordSignal(session.SignalNearMiss, 5.0)      // +1
+	sess.RecordSignal(session.SignalDomainAnomaly, 5.0) // +2, total 6 >= 5
+
+	// After escalation, EscalationLevel must be > 0.
+	if got := recEscalationLevel(sess); got == 0 {
+		t.Errorf("expected non-zero escalation level after threshold crossing, got %d", got)
+	}
+}
+
+// interceptMockRecorder is a test-only session.Recorder for interceptRecordSignal
+// unit tests. Set escalateOnNext=true to simulate a threshold-crossing transition.
+type interceptMockRecorder struct {
+	signals        []session.SignalType
+	escalateOnNext bool
+	from           string
+	to             string
+	level          int
+}
+
+func (r *interceptMockRecorder) RecordSignal(sig session.SignalType, _ float64) (bool, string, string) {
+	r.signals = append(r.signals, sig)
+	if r.escalateOnNext {
+		r.escalateOnNext = false
+		r.level++
+		return true, r.from, r.to
+	}
+	return false, "", ""
+}
+
+func (r *interceptMockRecorder) RecordClean(_ float64) {}
+func (r *interceptMockRecorder) EscalationLevel() int  { return r.level }
+func (r *interceptMockRecorder) ThreatScore() float64  { return 0 }
+
+// interceptRecordSignalCfg returns a config with AdaptiveEnforcement enabled
+// and a threshold high enough that unit tests never accidentally trigger real
+// escalation through the SessionManager.
+func interceptRecordSignalCfg() *config.Config {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.AdaptiveEnforcement.Enabled = true
+	cfg.AdaptiveEnforcement.EscalationThreshold = 100.0
+	return cfg
+}
+
+// TestInterceptRecordSignal_NilRecorder verifies that a nil recorder causes an
+// immediate no-op return with no panic.
+func TestInterceptRecordSignal_NilRecorder(t *testing.T) {
+	cfg := interceptRecordSignalCfg()
+	logger := audit.NewNop()
+	// Must not panic.
+	interceptRecordSignal(nil, session.SignalBlock, cfg, logger, nil, nil, testLoopbackIP, "", "req-1")
+}
+
+// TestInterceptRecordSignal_AdaptiveDisabled verifies that when AdaptiveEnforcement
+// is disabled, the function returns without recording any signal.
+func TestInterceptRecordSignal_AdaptiveDisabled(t *testing.T) {
+	cfg := interceptRecordSignalCfg()
+	cfg.AdaptiveEnforcement.Enabled = false
+	logger := audit.NewNop()
+	rec := &interceptMockRecorder{}
+
+	interceptRecordSignal(rec, session.SignalBlock, cfg, logger, nil, nil, testLoopbackIP, "", "req-2")
+
+	if len(rec.signals) != 0 {
+		t.Errorf("expected no signals when adaptive disabled, got %v", rec.signals)
+	}
+}
+
+// TestInterceptRecordSignal_NoEscalation verifies that when RecordSignal does not
+// cross the threshold (returns escalated=false), no logging or metrics update occurs.
+func TestInterceptRecordSignal_NoEscalation(t *testing.T) {
+	tests := []struct {
+		name   string
+		sig    session.SignalType
+		agent  string
+		client string
+	}{
+		{name: "block_signal_anon_agent", sig: session.SignalBlock, agent: "", client: testLoopbackIP},
+		{name: "nearmiss_signal_named_agent", sig: session.SignalNearMiss, agent: "my-agent", client: testLoopbackIP},
+		{name: "block_signal_anonymous_const", sig: session.SignalBlock, agent: agentAnonymous, client: testLoopbackIP},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := interceptRecordSignalCfg()
+			logger := audit.NewNop()
+			rec := &interceptMockRecorder{escalateOnNext: false}
+
+			// Must not panic; escalated=false means logger and metrics are not called.
+			interceptRecordSignal(rec, tt.sig, cfg, logger, nil, nil, tt.client, tt.agent, "req-3")
+
+			if len(rec.signals) != 1 || rec.signals[0] != tt.sig {
+				t.Errorf("expected signal %v recorded, got %v", tt.sig, rec.signals)
+			}
+		})
+	}
+}
+
+// TestInterceptRecordSignal_EscalationNilProxy verifies that when escalation
+// fires but p is nil (no Proxy metrics), only the audit logger is called — no
+// panic from nil pointer dereference.
+func TestInterceptRecordSignal_EscalationNilProxy(t *testing.T) {
+	cfg := interceptRecordSignalCfg()
+	logger := audit.NewNop()
+	rec := &interceptMockRecorder{
+		escalateOnNext: true,
+		from:           "normal",
+		to:             "elevated",
+	}
+
+	// p=nil: must log escalation without panicking on metrics.
+	interceptRecordSignal(rec, session.SignalBlock, cfg, logger, nil, nil, testLoopbackIP, "agent-x", "req-4")
+
+	if len(rec.signals) != 1 {
+		t.Errorf("expected 1 signal recorded, got %d", len(rec.signals))
+	}
+}
+
+// TestInterceptRecordSignal_EscalationWithProxy verifies that when escalation
+// fires and p is non-nil, RecordSessionEscalation and SetAdaptiveSessionLevel
+// are called without panic.
+func TestInterceptRecordSignal_EscalationWithProxy(t *testing.T) {
+	tests := []struct {
+		name string
+		from string
+		to   string
+	}{
+		// from == EscalationLabel(0) ("normal") — skips the SetAdaptiveSessionLevel(from,-1) branch.
+		{name: "from_normal_skips_decrement", from: "normal", to: "elevated"},
+		// from != EscalationLabel(0) — exercises the SetAdaptiveSessionLevel(from,-1) branch.
+		{name: "from_elevated_decrements_gauge", from: "elevated", to: "high"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := interceptRecordSignalCfg()
+			logger := audit.NewNop()
+			sc := scanner.New(cfg)
+			defer sc.Close()
+
+			p, err := New(cfg, logger, sc, metrics.New())
+			if err != nil {
+				t.Fatalf("proxy.New: %v", err)
+			}
+
+			rec := &interceptMockRecorder{
+				escalateOnNext: true,
+				from:           tt.from,
+				to:             tt.to,
+			}
+
+			// Must not panic; both logger and p.metrics paths are exercised.
+			interceptRecordSignal(rec, session.SignalBlock, cfg, logger, nil, p, testLoopbackIP, "agent-y", "req-5")
+
+			if len(rec.signals) != 1 {
+				t.Errorf("expected 1 signal recorded, got %d", len(rec.signals))
+			}
+			if len(rec.signals) > 0 && rec.signals[0] != session.SignalBlock {
+				t.Errorf("expected SignalBlock recorded, got %v", rec.signals[0])
+			}
+			// escalateOnNext was true, so the level should have incremented.
+			if rec.level != 1 {
+				t.Errorf("expected escalation level to increase to 1, got %d", rec.level)
+			}
+		})
+	}
+}
+
+// TestInterceptTunnel_BlockAllDeniesCleanRequest verifies that when the session
+// recorder reports a critical escalation level with block_all=true, even a
+// fully-clean intercepted request (no DLP, no injection) is blocked with 403.
+// This exercises the block_all check inside newInterceptHandler that was added
+// as a new adaptive enforcement line in this PR.
+func TestInterceptTunnel_BlockAllDeniesCleanRequest(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// Should never be called — block_all fires before RoundTrip.
+		_, _ = fmt.Fprint(w, "should not reach here")
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, sc, logger, m := testInterceptSetup(t)
+
+	// Enable adaptive enforcement with block_all=true at the critical level.
+	blockAll := true
+	cfg.AdaptiveEnforcement.Enabled = true
+	cfg.AdaptiveEnforcement.EscalationThreshold = 100.0
+	cfg.AdaptiveEnforcement.Levels.Critical.BlockAll = &blockAll
+
+	// Recorder already at escalation level 3 (critical) so block_all fires.
+	rec := &interceptMockRecorder{level: 3}
+
+	addr := upstream.Listener.Addr().String()
+
+	clientConn, proxyConn := net.Pipe()
+	t.Cleanup(func() { _ = clientConn.Close() })
+
+	host := upstream.Listener.Addr().(*net.TCPAddr).IP.String()
+	port := fmt.Sprintf("%d", upstream.Listener.Addr().(*net.TCPAddr).Port)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	go func() {
+		_ = interceptTunnel(ctx, proxyConn, host, port,
+			cfg, sc, cache, logger, m,
+			testLoopbackIP, "test-blockall", "", upstream.Client().Transport, nil,
+			nil, nil, nil, nil, rec,
+		)
+	}()
+
+	tlsConn := tls.Client(clientConn, &tls.Config{
+		RootCAs:    pool,
+		ServerName: host,
+	})
+	t.Cleanup(func() { _ = tlsConn.Close() })
+
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/clean", nil)
+	if err := req.Write(tlsConn); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(tlsConn), req)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 (block_all should deny clean requests at critical escalation)", resp.StatusCode)
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "session escalation level") {
+		t.Errorf("body = %q, want to contain 'session escalation level'", body)
 	}
 }

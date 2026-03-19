@@ -1471,3 +1471,84 @@ func TestSetCEEStatsFunc_NilReceiver(t *testing.T) {
 		return CEEStats{EntropyTrackerActive: true}
 	})
 }
+
+func TestRecordAdaptiveUpgrade(t *testing.T) {
+	tests := []struct {
+		name       string
+		fromAction string
+		toAction   string
+		level      string
+		wantMetric string
+	}{
+		{
+			name:       "warn to block at elevated",
+			fromAction: "warn",
+			toAction:   "block",
+			level:      "elevated",
+			wantMetric: `pipelock_adaptive_upgrades_total{from_action="warn",level="elevated",to_action="block"}`,
+		},
+		{
+			name:       "forward to warn at high",
+			fromAction: "forward",
+			toAction:   "warn",
+			level:      "high",
+			wantMetric: `pipelock_adaptive_upgrades_total{from_action="forward",level="high",to_action="warn"}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := New()
+			m.RecordAdaptiveUpgrade(tt.fromAction, tt.toAction, tt.level)
+			m.RecordAdaptiveUpgrade(tt.fromAction, tt.toAction, tt.level)
+
+			req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+			w := httptest.NewRecorder()
+			m.PrometheusHandler().ServeHTTP(w, req)
+
+			body, _ := io.ReadAll(w.Body)
+			text := string(body)
+			if !strings.Contains(text, tt.wantMetric) {
+				t.Errorf("expected %q in /metrics output", tt.wantMetric)
+			}
+			// Verify counter value is 2
+			wantLine := tt.wantMetric + " 2"
+			if !strings.Contains(text, wantLine) {
+				t.Errorf("expected counter value 2, full /metrics:\n%s", text)
+			}
+		})
+	}
+}
+
+func TestRecordAdaptiveUpgrade_NilSafe(t *testing.T) {
+	// Nil receiver must not panic.
+	var m *Metrics
+	m.RecordAdaptiveUpgrade("warn", "block", "elevated")
+}
+
+func TestSetAdaptiveSessionLevel(t *testing.T) {
+	m := New()
+	// Add 3 sessions at "elevated".
+	m.SetAdaptiveSessionLevel("elevated", 1)
+	m.SetAdaptiveSessionLevel("elevated", 1)
+	m.SetAdaptiveSessionLevel("elevated", 1)
+	// Remove one.
+	m.SetAdaptiveSessionLevel("elevated", -1)
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	m.PrometheusHandler().ServeHTTP(w, req)
+
+	body, _ := io.ReadAll(w.Body)
+	text := string(body)
+	wantGauge := `pipelock_adaptive_sessions_current{level="elevated"} 2`
+	if !strings.Contains(text, wantGauge) {
+		t.Errorf("expected %q in /metrics output\nfull output:\n%s", wantGauge, text)
+	}
+}
+
+func TestSetAdaptiveSessionLevel_NilSafe(t *testing.T) {
+	// Nil receiver must not panic.
+	var m *Metrics
+	m.SetAdaptiveSessionLevel("elevated", 1)
+}

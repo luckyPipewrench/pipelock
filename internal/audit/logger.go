@@ -90,6 +90,8 @@ const (
 	EventCrossRequestEntropyExceeded EventType = "cross_request_entropy_exceeded"
 	EventCrossRequestDLPMatch        EventType = "cross_request_dlp_match"
 	EventCrossRequestEntropyAnomaly  EventType = "cross_request_entropy_anomaly"
+
+	EventAdaptiveUpgrade EventType = "adaptive_upgrade"
 )
 
 // WebSocket frame direction constants used in audit log entries.
@@ -662,6 +664,50 @@ func (l *Logger) LogAdaptiveEscalation(sessionKey, from, to, clientIP, requestID
 			fields["request_id"] = requestID
 		}
 		l.emitter.EmitWithSeverity(context.Background(), emit.EscalationSeverity(to), string(EventAdaptiveEscalation), fields)
+	}
+}
+
+// LogAdaptiveUpgrade logs an adaptive enforcement action upgrade — when the
+// session's escalation level causes a stronger action to be applied to a
+// request than would otherwise have been (e.g. warn → block).
+func (l *Logger) LogAdaptiveUpgrade(sessionKey, level, fromAction, toAction, scanner, clientIP, requestID string) {
+	// Derive severity from toAction (block=critical, else warn).
+	derivedSev := severityWarn
+	if toAction == actionBlock {
+		derivedSev = severityCritical
+	}
+
+	l.zl.Warn().
+		Str("event", string(EventAdaptiveUpgrade)).
+		Str("session", sanitizeString(sessionKey)).
+		Str("escalation_level", level).
+		Str("from_action", fromAction).
+		Str("to_action", toAction).
+		Str("scanner", scanner).
+		Str("client_ip", clientIP).
+		Str("request_id", requestID).
+		Msg("adaptive enforcement upgrade")
+
+	if l.emitter != nil {
+		sev := emit.SeverityWarn
+		if toAction == actionBlock {
+			sev = emit.SeverityCritical
+		}
+		fields := map[string]any{
+			"session":          sanitizeString(sessionKey),
+			"escalation_level": level,
+			"from_action":      fromAction,
+			"to_action":        toAction,
+			"scanner":          scanner,
+			"severity":         derivedSev,
+		}
+		if clientIP != "" {
+			fields["client_ip"] = clientIP
+		}
+		if requestID != "" {
+			fields["request_id"] = requestID
+		}
+		l.emitter.EmitWithSeverity(context.Background(), sev, string(EventAdaptiveUpgrade), fields)
 	}
 }
 

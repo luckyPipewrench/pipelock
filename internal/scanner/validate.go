@@ -82,8 +82,15 @@ func validateMod97(s string) bool {
 		return false
 	}
 
-	// Validate country code against the IBAN registry (SWIFT/ISO 13616).
-	if !ibanCountries[cleaned[:2]] {
+	// Validate country code and country-specific length against the IBAN
+	// registry (SWIFT/ISO 13616). Rejects fabricated country prefixes and
+	// IBANs with wrong length for their country (e.g. 15-char German IBAN).
+	cc := cleaned[:2]
+	expectedLen, ok := ibanCountryLengths[cc]
+	if !ok {
+		return false
+	}
+	if n != expectedLen {
 		return false
 	}
 
@@ -155,26 +162,27 @@ func validateABA(s string) bool {
 func isASCIILetter(c byte) bool { return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') }
 func isASCIIDigit(c byte) bool  { return c >= '0' && c <= '9' }
 
-// ibanCountries is the set of ISO 13616 IBAN country codes from the SWIFT
-// IBAN registry. Rejects fabricated country prefixes that happen to pass
-// mod-97 by chance. Source: SWIFT IBAN Registry (Release 98, Dec 2024).
-var ibanCountries = map[string]bool{
-	"AD": true, "AE": true, "AL": true, "AT": true, "AZ": true,
-	"BA": true, "BE": true, "BG": true, "BH": true, "BI": true,
-	"BR": true, "BY": true, "CH": true, "CR": true, "CY": true,
-	"CZ": true, "DE": true, "DJ": true, "DK": true, "DO": true,
-	"EE": true, "EG": true, "ES": true, "FI": true, "FK": true,
-	"FO": true, "FR": true, "GB": true, "GE": true, "GI": true,
-	"GL": true, "GR": true, "GT": true, "HR": true, "HU": true,
-	"IE": true, "IL": true, "IQ": true, "IS": true, "IT": true,
-	"JO": true, "KW": true, "KZ": true, "LB": true, "LC": true,
-	"LI": true, "LT": true, "LU": true, "LV": true, "LY": true,
-	"MC": true, "MD": true, "ME": true, "MK": true, "MN": true,
-	"MR": true, "MT": true, "MU": true, "NI": true, "NL": true,
-	"NO": true, "OM": true, "PK": true, "PL": true, "PS": true,
-	"PT": true, "QA": true, "RO": true, "RS": true, "RU": true,
-	"SA": true, "SC": true, "SD": true, "SE": true, "SI": true,
-	"SK": true, "SM": true, "SN": true, "SO": true, "ST": true,
-	"SV": true, "TL": true, "TN": true, "TR": true, "UA": true,
-	"VA": true, "VG": true, "XK": true,
+// ibanCountryLengths maps ISO 13616 IBAN country codes to their required
+// total IBAN length. Rejects fabricated country prefixes and wrong-length
+// IBANs (e.g. a 15-char string with DE prefix when German IBANs must be 22).
+// Source: SWIFT IBAN Registry (Release 98, Dec 2024).
+var ibanCountryLengths = map[string]int{
+	"AD": 24, "AE": 23, "AL": 28, "AT": 20, "AZ": 28,
+	"BA": 20, "BE": 16, "BG": 22, "BH": 22, "BI": 27,
+	"BR": 29, "BY": 28, "CH": 21, "CR": 22, "CY": 28,
+	"CZ": 24, "DE": 22, "DJ": 27, "DK": 18, "DO": 28,
+	"EE": 20, "EG": 29, "ES": 24, "FI": 18, "FK": 18,
+	"FO": 18, "FR": 27, "GB": 22, "GE": 22, "GI": 23,
+	"GL": 18, "GR": 27, "GT": 28, "HR": 21, "HU": 28,
+	"IE": 22, "IL": 23, "IQ": 23, "IS": 26, "IT": 27,
+	"JO": 30, "KW": 30, "KZ": 20, "LB": 28, "LC": 32,
+	"LI": 21, "LT": 20, "LU": 20, "LV": 21, "LY": 25,
+	"MC": 27, "MD": 24, "ME": 22, "MK": 19, "MN": 20,
+	"MR": 27, "MT": 31, "MU": 30, "NI": 28, "NL": 18,
+	"NO": 15, "OM": 23, "PK": 24, "PL": 28, "PS": 29,
+	"PT": 25, "QA": 29, "RO": 24, "RS": 22, "RU": 33,
+	"SA": 24, "SC": 31, "SD": 18, "SE": 24, "SI": 19,
+	"SK": 24, "SM": 27, "SN": 28, "SO": 23, "ST": 25,
+	"SV": 28, "TL": 23, "TN": 24, "TR": 26, "UA": 29,
+	"VA": 22, "VG": 24, "XK": 20,
 }

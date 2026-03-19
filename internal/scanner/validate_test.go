@@ -2,6 +2,7 @@ package scanner
 
 import (
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -87,6 +88,8 @@ func TestValidateMod97(t *testing.T) {
 		// Invalid: fake country code but passes format.
 		{name: "fake country XX", input: "XX12ABCDEFGHIJK12345", want: false},
 		{name: "fake country ZZ", input: "ZZ8212345678901234567890", want: false},
+		{name: "DE wrong length 15 chars", input: "DE5112345678901", want: false},   // DE must be 22
+		{name: "GB wrong length 18 chars", input: "GB29NWBK601613319", want: false}, // GB must be 22
 	}
 
 	for _, tt := range tests {
@@ -200,6 +203,25 @@ func TestCompiledPatternMatches(t *testing.T) {
 		// First 16 digits fail Luhn, second 16 digits pass.
 		if !p.matches("4111111111111112 4111111111111111") {
 			t.Error("expected valid card to be found after checksum-failing decoy")
+		}
+	})
+
+	t.Run("validated pattern finds valid after 10+ decoys", func(t *testing.T) {
+		// Regression: no fixed cap on match count. 10+ decoys must not
+		// exhaust the search before the real card is checked.
+		p := &compiledPattern{
+			name:     "test-luhn",
+			re:       mustCompileForTest(`\d{16}`),
+			validate: validateLuhn,
+		}
+		// 11 Luhn-failing decoys followed by a valid card.
+		var b strings.Builder
+		for i := 0; i < 11; i++ {
+			_, _ = b.WriteString("4111111111111112 ")
+		}
+		_, _ = b.WriteString("4111111111111111")
+		if !p.matches(b.String()) {
+			t.Error("expected valid card to be found after 11 checksum-failing decoys")
 		}
 	})
 }

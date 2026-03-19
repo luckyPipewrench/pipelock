@@ -111,9 +111,10 @@ func (p *compiledPattern) matches(text string) bool {
 		return p.re.MatchString(text)
 	}
 	// Check all regex hits, not just the first. An attacker could front-load
-	// a BIN-matching decoy that fails checksum before the real card/IBAN.
-	// Cap at 10 matches to bound scan time on adversarial input.
-	for _, m := range p.re.FindAllString(text, 10) {
+	// BIN-matching decoys that fail checksum before the real card/IBAN.
+	// No cap: regex specificity (BIN prefixes, IBAN format) and data budget
+	// limits already bound the match count in practice.
+	for _, m := range p.re.FindAllString(text, -1) {
 		if p.validate(m) {
 			return true
 		}

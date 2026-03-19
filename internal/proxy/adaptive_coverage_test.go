@@ -408,11 +408,9 @@ func TestWSHandshake_HeaderDLPAuditSignal(t *testing.T) {
 		}),
 	}
 	conn, _, _, dialErr := dialer.Dial(dialCtx, wsURL)
-	// DLP in audit mode does not block the handshake, so the connection should succeed.
+	// DLP in audit mode does not block the handshake, so the connection must succeed.
 	if dialErr != nil {
-		// If the audit near-miss path somehow prevented upgrade, skip gracefully.
-		t.Logf("dial error (may be expected if header DLP blocks): %v", dialErr)
-		return
+		t.Fatalf("WS dial should succeed in audit mode, got error: %v", dialErr)
 	}
 	defer conn.Close() //nolint:errcheck // test
 
@@ -916,13 +914,18 @@ func TestFetch_Adaptive_CEESignalRecorded(t *testing.T) {
 	mux.HandleFunc("/fetch", p.handleFetch)
 	mux.ServeHTTP(w, req)
 
-	// Score should increase if CEE recorded signals.
+	// Verify CEE recording had an observable effect: either the threat score
+	// increased (entropy budget exceeded → signal recorded) or the session
+	// still has a non-negative score (CEE path exercised without panic).
 	scoreAfter := rec.ThreatScore()
-	// If budget wasn't exceeded, score may not change. This is OK — the test
-	// checks the CEE code path is exercised, not that score always increases.
-	// We just ensure no panic.
-	_ = scoreAfter
-	_ = scoreBefore
+	if scoreAfter < scoreBefore {
+		t.Errorf("threat score should not decrease from CEE recording, before=%f after=%f", scoreBefore, scoreAfter)
+	}
+	// The CEE path must have been exercised: verify we can still read the
+	// escalation level (proves the recorder was accessed, not just skipped).
+	if rec.EscalationLevel() < 0 {
+		t.Error("escalation level should be non-negative after CEE recording")
+	}
 }
 
 // TestForwardHTTP_Adaptive_CleanNoResponseScan verifies the deferred RecordClean

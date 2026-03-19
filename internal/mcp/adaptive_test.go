@@ -851,8 +851,8 @@ func TestForwardScanned_Adaptive_WarnUpgradeToBlock(t *testing.T) {
 	var rpc struct {
 		Error struct{ Code int } `json:"error"`
 	}
-	if err := json.Unmarshal([]byte(strings.TrimSpace(output)), &rpc); err != nil || rpc.Error.Code != -32000 {
-		t.Errorf("expected JSON-RPC error code -32000 for blocked injection, got output: %s", output)
+	if err := json.Unmarshal([]byte(strings.TrimSpace(output)), &rpc); err != nil || rpc.Error.Code != -32001 {
+		t.Errorf("expected JSON-RPC error code -32001 for escalation-driven block, got output: %s", output)
 	}
 }
 

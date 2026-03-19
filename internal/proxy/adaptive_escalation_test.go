@@ -222,6 +222,11 @@ func TestForwardHTTP_Adaptive_HeaderDLPSignal(t *testing.T) {
 	handler := p.buildHandler(http.NewServeMux())
 	handler.ServeHTTP(w, req)
 
+	// Audit mode should allow the request through (not 403).
+	if w.Code == http.StatusForbidden {
+		t.Errorf("expected request to be allowed in audit mode, got 403: %s", w.Body.String())
+	}
+
 	scoreAfter := rec.ThreatScore()
 	if scoreAfter <= scoreBefore {
 		t.Errorf("expected threat score to increase from header DLP signal, before=%f after=%f", scoreBefore, scoreAfter)
@@ -309,16 +314,20 @@ func TestConnect_Adaptive_BlockAll(t *testing.T) {
 	proxyAddr := ln.Addr().String()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+
+	mux := http.NewServeMux()
+	handler := p.buildHandler(mux)
+	srv := &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		BaseContext:       func(_ net.Listener) context.Context { return ctx },
+	}
+	t.Cleanup(func() {
+		cancel()
+		_ = srv.Close()
+	})
 
 	go func() {
-		mux := http.NewServeMux()
-		handler := p.buildHandler(mux)
-		srv := &http.Server{
-			Handler:           handler,
-			ReadHeaderTimeout: 5 * time.Second,
-			BaseContext:       func(_ net.Listener) context.Context { return ctx },
-		}
 		_ = srv.Serve(ln)
 	}()
 
@@ -940,14 +949,26 @@ func TestRecordSessionActivity_EscalationGaugeUpdate(t *testing.T) {
 
 	// Escalate to level 1 (elevated) first.
 	escalateRec(rec, 1)
+	levelBefore := rec.EscalationLevel()
+	if levelBefore != 1 {
+		t.Fatalf("expected escalation level 1 after pre-escalation, got %d", levelBefore)
+	}
+
+	// Push score close to the next threshold (10.0 after doubling from 5.0).
+	// escalateRec left the score around 6; add near-miss signals (+1 each)
+	// to bring it to ~9, then the block signal from recordSessionActivity
+	// (+3) pushes over 10 and triggers the gauge transition.
+	rec.RecordSignal(session.SignalNearMiss, adaptiveTestThreshold)
+	rec.RecordSignal(session.SignalNearMiss, adaptiveTestThreshold)
+	rec.RecordSignal(session.SignalNearMiss, adaptiveTestThreshold)
 
 	// Now record a block signal that should push from level 1 → level 2.
 	// This exercises the gauge decrement path (from != EscalationLabel(0)).
 	p.recordSessionActivity("127.0.0.1", agentAnonymous, "evil.com", "req-gauge", false, 0, cfg, logger, false)
 
-	// Score should be higher than threshold (level >= 1 means escalated).
-	if !rec.IsEscalated() {
-		t.Error("expected session to remain escalated after block signal")
+	levelAfter := rec.EscalationLevel()
+	if levelAfter <= levelBefore {
+		t.Errorf("expected escalation level to increase from %d, got %d", levelBefore, levelAfter)
 	}
 }
 

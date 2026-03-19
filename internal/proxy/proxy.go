@@ -880,8 +880,9 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 	// hasFinding tracks whether any scanning stage (header DLP, CEE, response)
 	// detected something for this request. RecordClean is only applied at the
-	// end when no finding was detected.
-	hasFinding := !result.Allowed
+	// end when no finding was detected. A near-miss (scored but allowed) counts
+	// as a finding to prevent inadvertent score decay.
+	hasFinding := !result.Allowed || (result.Score > 0 && result.Allowed)
 
 	if !result.Allowed {
 		if cfg.EnforceEnabled() {
@@ -1308,14 +1309,37 @@ func (p *Proxy) filterAndActOnResponseScan(
 		p.metrics.RecordAdaptiveUpgrade(originalAction, action, session.EscalationLabel(sessionLevel))
 	}
 
+	// recordResponseSignal records an adaptive enforcement signal for the
+	// response scan result. Extracted to avoid duplicating session-key
+	// construction across all action branches.
+	recordResponseSignal := func(sig session.SignalType) {
+		if sm := p.sessionMgrPtr.Load(); sm != nil && cfg.AdaptiveEnforcement.Enabled {
+			sessionKey := clientIP
+			if agent != "" && agent != agentAnonymous {
+				sessionKey = agent + "|" + clientIP
+			}
+			sess := sm.GetOrCreate(sessionKey)
+			if escalated, from, to := sess.RecordSignal(sig, cfg.AdaptiveEnforcement.EscalationThreshold); escalated {
+				log.LogAdaptiveEscalation(sessionKey, from, to, clientIP, requestID, sess.ThreatScore())
+				p.metrics.RecordSessionEscalation(from, to)
+				if from != session.EscalationLabel(0) {
+					p.metrics.SetAdaptiveSessionLevel(from, -1)
+				}
+				p.metrics.SetAdaptiveSessionLevel(to, 1)
+			}
+		}
+	}
+
 	switch action {
 	case config.ActionBlock:
+		recordResponseSignal(session.SignalBlock)
 		reason := fmt.Sprintf("response contains prompt injection: %s", strings.Join(patternNames, ", "))
 		log.LogBlocked("GET", displayURL, "response_scan", reason, clientIP, requestID, agent)
 		writeJSON(w, http.StatusForbidden, FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
 		return true, "", true
 	case config.ActionAsk:
 		if p.approver == nil {
+			recordResponseSignal(session.SignalBlock)
 			reason := fmt.Sprintf("response contains prompt injection: %s (no HITL approver)", strings.Join(patternNames, ", "))
 			log.LogBlocked("GET", displayURL, "response_scan", reason, clientIP, requestID, agent)
 			writeJSON(w, http.StatusForbidden, FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
@@ -1339,33 +1363,21 @@ func (p *Proxy) filterAndActOnResponseScan(
 			out = result.TransformedContent
 			log.LogResponseScan(displayURL, clientIP, requestID, agent, "ask:strip", len(result.Matches), patternNames, bundleRules)
 		default:
+			recordResponseSignal(session.SignalBlock)
 			reason := fmt.Sprintf("response blocked by operator: %s", strings.Join(patternNames, ", "))
 			log.LogBlocked("GET", displayURL, "response_scan", reason, clientIP, requestID, agent)
 			writeJSON(w, http.StatusForbidden, FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
 			return true, "", true
 		}
 	case config.ActionStrip:
-		// Record SignalStrip for adaptive enforcement scoring.
-		if sm := p.sessionMgrPtr.Load(); sm != nil && cfg.AdaptiveEnforcement.Enabled {
-			sessionKey := clientIP
-			if agent != "" && agent != agentAnonymous {
-				sessionKey = agent + "|" + clientIP
-			}
-			sess := sm.GetOrCreate(sessionKey)
-			if escalated, from, to := sess.RecordSignal(session.SignalStrip, cfg.AdaptiveEnforcement.EscalationThreshold); escalated {
-				log.LogAdaptiveEscalation(sessionKey, from, to, clientIP, requestID, sess.ThreatScore())
-				p.metrics.RecordSessionEscalation(from, to)
-				if from != session.EscalationLabel(0) {
-					p.metrics.SetAdaptiveSessionLevel(from, -1)
-				}
-				p.metrics.SetAdaptiveSessionLevel(to, 1)
-			}
-		}
+		recordResponseSignal(session.SignalStrip)
 		out = result.TransformedContent
 		log.LogResponseScan(displayURL, clientIP, requestID, agent, config.ActionStrip, len(result.Matches), patternNames, bundleRules)
 	case config.ActionWarn:
+		recordResponseSignal(session.SignalNearMiss)
 		log.LogResponseScan(displayURL, clientIP, requestID, agent, config.ActionWarn, len(result.Matches), patternNames, bundleRules)
 	default:
+		recordResponseSignal(session.SignalNearMiss)
 		log.LogResponseScan(displayURL, clientIP, requestID, agent, action, len(result.Matches), patternNames, bundleRules)
 	}
 	return false, out, true

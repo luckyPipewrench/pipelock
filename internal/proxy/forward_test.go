@@ -2119,7 +2119,7 @@ func TestForwardHTTPHeaderDLPAuditMode_NoCleanDecay(t *testing.T) {
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
-	defer sc.Close()
+	// p.Close() closes the scanner; no separate defer sc.Close() needed.
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)

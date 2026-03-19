@@ -7472,6 +7472,112 @@ adaptive_enforcement:
 			t.Error("expected critical.block_all=true when YAML null (fail-closed default)")
 		}
 	})
+
+	t.Run("yaml_omitted_elevated_upgrade_warn_defaults_to_nil", func(t *testing.T) {
+		const yamlStr = `version: 1
+mode: balanced
+session_profiling:
+  enabled: true
+adaptive_enforcement:
+  enabled: true
+  escalation_threshold: 5.0
+  levels:
+    elevated:
+      upgrade_ask: "block"
+`
+		dir := t.TempDir()
+		path := filepath.Join(dir, "config.yaml")
+		if err := os.WriteFile(path, []byte(yamlStr), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		// When omitted, ApplyDefaults fills it based on level defaults.
+		// The important thing is it doesn't panic and produces a valid config.
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("config should validate after Load with omitted elevated.upgrade_warn: %v", err)
+		}
+	})
+
+	t.Run("yaml_null_elevated_upgrade_warn_defaults_safely", func(t *testing.T) {
+		const yamlStr = `version: 1
+mode: balanced
+session_profiling:
+  enabled: true
+adaptive_enforcement:
+  enabled: true
+  escalation_threshold: 5.0
+  levels:
+    elevated:
+      upgrade_warn: null
+`
+		dir := t.TempDir()
+		path := filepath.Join(dir, "config.yaml")
+		if err := os.WriteFile(path, []byte(yamlStr), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("config should validate after Load with null elevated.upgrade_warn: %v", err)
+		}
+	})
+
+	t.Run("yaml_omitted_high_upgrade_ask_defaults_safely", func(t *testing.T) {
+		const yamlStr = `version: 1
+mode: balanced
+session_profiling:
+  enabled: true
+adaptive_enforcement:
+  enabled: true
+  escalation_threshold: 5.0
+  levels:
+    high:
+      upgrade_warn: "block"
+`
+		dir := t.TempDir()
+		path := filepath.Join(dir, "config.yaml")
+		if err := os.WriteFile(path, []byte(yamlStr), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("config should validate after Load with omitted high.upgrade_ask: %v", err)
+		}
+	})
+
+	t.Run("yaml_null_high_upgrade_ask_defaults_safely", func(t *testing.T) {
+		const yamlStr = `version: 1
+mode: balanced
+session_profiling:
+  enabled: true
+adaptive_enforcement:
+  enabled: true
+  escalation_threshold: 5.0
+  levels:
+    high:
+      upgrade_ask: null
+`
+		dir := t.TempDir()
+		path := filepath.Join(dir, "config.yaml")
+		if err := os.WriteFile(path, []byte(yamlStr), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("config should validate after Load with null high.upgrade_ask: %v", err)
+		}
+	})
 }
 
 func TestEscalationLevels_MonotonicValidation(t *testing.T) {

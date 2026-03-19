@@ -1549,6 +1549,13 @@ func TestInterceptRecordSignal_EscalationWithProxy(t *testing.T) {
 			if len(rec.signals) != 1 {
 				t.Errorf("expected 1 signal recorded, got %d", len(rec.signals))
 			}
+			if len(rec.signals) > 0 && rec.signals[0] != session.SignalBlock {
+				t.Errorf("expected SignalBlock recorded, got %v", rec.signals[0])
+			}
+			// escalateOnNext was true, so the level should have incremented.
+			if rec.level != 1 {
+				t.Errorf("expected escalation level to increase to 1, got %d", rec.level)
+			}
 		})
 	}
 }

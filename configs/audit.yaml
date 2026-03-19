@@ -351,7 +351,7 @@ adaptive_enforcement:
     critical:
       upgrade_warn: block
       upgrade_ask: block
-      block_all: true           # deny all requests when session is critical
+      block_all: true           # deny all requests when session is critical (applies even in audit mode via adaptive escalation)
 
 # MCP session binding (opt-in)
 mcp_session_binding:

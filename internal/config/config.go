@@ -2529,27 +2529,36 @@ func validateEscalationActions(level string, a *EscalationActions) error {
 // weaker than lower ones. Runs after ApplyDefaults, so nil fields are filled.
 func validateEscalationMonotonic(levels *EscalationLevels) error {
 	// Compare elevated vs high: high must be >= elevated on every dimension.
-	if upgradeActionStrength(levels.High.UpgradeWarn) < upgradeActionStrength(levels.Elevated.UpgradeWarn) {
-		return fmt.Errorf("adaptive_enforcement.levels: high.upgrade_warn is weaker than elevated.upgrade_warn (monotonic violation)")
-	}
-	if upgradeActionStrength(levels.High.UpgradeAsk) < upgradeActionStrength(levels.Elevated.UpgradeAsk) {
-		return fmt.Errorf("adaptive_enforcement.levels: high.upgrade_ask is weaker than elevated.upgrade_ask (monotonic violation)")
+	// When the lower level has block_all=true it already denies all traffic,
+	// so per-action upgrades at the higher level are irrelevant — skip the
+	// strength comparison to avoid false monotonic violations.
+	elevatedBlockAll := levels.Elevated.BlockAll != nil && *levels.Elevated.BlockAll
+	if !elevatedBlockAll {
+		if upgradeActionStrength(levels.High.UpgradeWarn) < upgradeActionStrength(levels.Elevated.UpgradeWarn) {
+			return fmt.Errorf("adaptive_enforcement.levels: high.upgrade_warn is weaker than elevated.upgrade_warn (monotonic violation)")
+		}
+		if upgradeActionStrength(levels.High.UpgradeAsk) < upgradeActionStrength(levels.Elevated.UpgradeAsk) {
+			return fmt.Errorf("adaptive_enforcement.levels: high.upgrade_ask is weaker than elevated.upgrade_ask (monotonic violation)")
+		}
 	}
 	// block_all: if elevated has it, high must too.
-	if levels.Elevated.BlockAll != nil && *levels.Elevated.BlockAll &&
+	if elevatedBlockAll &&
 		(levels.High.BlockAll == nil || !*levels.High.BlockAll) {
 		return fmt.Errorf("adaptive_enforcement.levels: high.block_all is weaker than elevated.block_all (monotonic violation)")
 	}
 
 	// Compare high vs critical: critical must be >= high on every dimension.
-	if upgradeActionStrength(levels.Critical.UpgradeWarn) < upgradeActionStrength(levels.High.UpgradeWarn) {
-		return fmt.Errorf("adaptive_enforcement.levels: critical.upgrade_warn is weaker than high.upgrade_warn (monotonic violation)")
-	}
-	if upgradeActionStrength(levels.Critical.UpgradeAsk) < upgradeActionStrength(levels.High.UpgradeAsk) {
-		return fmt.Errorf("adaptive_enforcement.levels: critical.upgrade_ask is weaker than high.upgrade_ask (monotonic violation)")
+	highBlockAll := levels.High.BlockAll != nil && *levels.High.BlockAll
+	if !highBlockAll {
+		if upgradeActionStrength(levels.Critical.UpgradeWarn) < upgradeActionStrength(levels.High.UpgradeWarn) {
+			return fmt.Errorf("adaptive_enforcement.levels: critical.upgrade_warn is weaker than high.upgrade_warn (monotonic violation)")
+		}
+		if upgradeActionStrength(levels.Critical.UpgradeAsk) < upgradeActionStrength(levels.High.UpgradeAsk) {
+			return fmt.Errorf("adaptive_enforcement.levels: critical.upgrade_ask is weaker than high.upgrade_ask (monotonic violation)")
+		}
 	}
 	// block_all: if high has it, critical must too.
-	if levels.High.BlockAll != nil && *levels.High.BlockAll &&
+	if highBlockAll &&
 		(levels.Critical.BlockAll == nil || !*levels.Critical.BlockAll) {
 		return fmt.Errorf("adaptive_enforcement.levels: critical.block_all is weaker than high.block_all (monotonic violation)")
 	}

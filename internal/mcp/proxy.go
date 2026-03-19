@@ -143,6 +143,11 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		}
 		if blockAll {
 			rpcID := extractRPCID(line)
+			// Notifications (no ID) must not receive a response per JSON-RPC spec.
+			// Drop them silently instead of writing an error.
+			if rpcID == nil {
+				continue
+			}
 			resp := blockSessionDenyResponse(rpcID, session.EscalationLabel(rec.EscalationLevel()))
 			if wErr := writer.WriteMessage(resp); wErr != nil {
 				return foundInjection, fmt.Errorf("writing session deny: %w", wErr)
@@ -288,19 +293,28 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		// Injection detected.
 		foundInjection = true
 		action := sc.ResponseAction()
+		originalAction := action
 		names := matchNames(verdict.Matches)
 
 		// Escalation upgrade: may promote warn/ask to block for elevated sessions.
 		if rec != nil {
 			action = decide.UpgradeAction(action, rec.EscalationLevel(), adaptiveCfg)
 		}
+		escalationDriven := action != originalAction
 
 		_, _ = fmt.Fprintf(logW, "pipelock: line %d: injection detected (%s), action=%s\n",
 			lineNum, strings.Join(names, ", "), action)
 
 		switch action {
 		case config.ActionBlock:
-			resp := blockResponse(verdict.ID)
+			// Escalation-driven blocks use -32001 (session deny code) to
+			// distinguish them from direct injection blocks (-32000).
+			var resp []byte
+			if escalationDriven {
+				resp = blockSessionDenyResponse(verdict.ID, session.EscalationLabel(rec.EscalationLevel()))
+			} else {
+				resp = blockResponse(verdict.ID)
+			}
 			if err := writer.WriteMessage(resp); err != nil {
 				return foundInjection, fmt.Errorf("writing block response: %w", err)
 			}

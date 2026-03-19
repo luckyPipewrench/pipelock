@@ -361,9 +361,13 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 		effectiveAction = decide.UpgradeAction(effectiveAction, rec.EscalationLevel(), adaptiveCfg)
 	}
 	if effectiveAction != originalAction {
-		_, _ = fmt.Fprintf(logW, "pipelock: adaptive upgrade %s -> %s (level %s)\n", originalAction, effectiveAction, session.EscalationLabel(rec.EscalationLevel()))
+		levelLabel := session.EscalationLabel(rec.EscalationLevel())
+		_, _ = fmt.Fprintf(logW, "pipelock: adaptive upgrade %s -> %s (level %s)\n", originalAction, effectiveAction, levelLabel)
+		if auditLogger != nil {
+			auditLogger.LogAdaptiveUpgrade(auditSessionKey, levelLabel, originalAction, effectiveAction, "mcp_input", "", "")
+		}
 		if m != nil {
-			m.RecordAdaptiveUpgrade(originalAction, effectiveAction, session.EscalationLabel(rec.EscalationLevel()))
+			m.RecordAdaptiveUpgrade(originalAction, effectiveAction, levelLabel)
 		}
 	}
 
@@ -711,11 +715,17 @@ func RunHTTPListenerProxy(
 			auditSessionKey = hashSessionKey(host)
 		}
 
-		// Per-request adaptive enforcement recorder. Uses the same session key
-		// as chain detection so signals accumulate per logical MCP session.
+		// Per-request adaptive enforcement recorder. Uses RemoteAddr (without
+		// port) as a stable session key: the first request has no Mcp-Session-Id
+		// yet, so using the chain key would split signals across two keys (IP
+		// for first request, session ID for subsequent ones).
 		var reqRec session.Recorder
 		if store != nil {
-			reqRec = store.GetOrCreate(chainSessionKey)
+			adaptiveHost, _, adaptiveErr := net.SplitHostPort(r.RemoteAddr)
+			if adaptiveErr != nil {
+				adaptiveHost = r.RemoteAddr
+			}
+			reqRec = store.GetOrCreate(adaptiveHost)
 		}
 
 		// Scan Authorization header for DLP patterns. The body scanner

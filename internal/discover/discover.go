@@ -278,12 +278,10 @@ func configPaths(home string) []clientPath {
 			Key:    "mcpServers",
 			Scope:  "user",
 		},
-		{
-			Client: "junie",
-			Path:   filepath.Join(".", ".junie", "mcp", "mcp.json"),
-			Key:    "mcpServers",
-			Scope:  "project",
-		},
+		// Note: project-local .junie/mcp/mcp.json is not scanned here.
+		// Discover(home) must be deterministic from its inputs. Project-local
+		// scanning requires an explicit project root parameter (future work).
+		// Consistent with VS Code (.vscode/mcp.json also not scanned).
 	}
 }
 

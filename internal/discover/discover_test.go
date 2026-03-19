@@ -107,11 +107,34 @@ func TestConfigPathsContainExpectedClients(t *testing.T) {
 		clients[p.Client] = true
 	}
 
-	expected := []string{"claude-code", "claude-desktop", "cursor", "vscode", "cline", "continue"}
+	expected := []string{"claude-code", "claude-desktop", "cursor", "vscode", "cline", "continue", "junie"}
 	for _, c := range expected {
 		if !clients[c] {
 			t.Errorf("missing expected client %q", c)
 		}
+	}
+}
+
+func TestConfigPathsJunieUserLevel(t *testing.T) {
+	paths := configPaths("/home/testuser")
+	found := false
+	for _, p := range paths {
+		if p.Client == "junie" {
+			found = true
+			if p.Key != "mcpServers" {
+				t.Errorf("junie key = %q, want 'mcpServers'", p.Key)
+			}
+			if p.Scope != "user" {
+				t.Errorf("junie scope = %q, want 'user'", p.Scope)
+			}
+			// All paths must be derived from the home argument, not cwd.
+			if !filepath.IsAbs(p.Path) {
+				t.Errorf("junie path %q is relative — configPaths must be deterministic from home", p.Path)
+			}
+		}
+	}
+	if !found {
+		t.Error("junie not found in paths")
 	}
 }
 

@@ -116,7 +116,8 @@ func TestConfigPathsContainExpectedClients(t *testing.T) {
 }
 
 func TestConfigPathsJunieUserLevel(t *testing.T) {
-	paths := configPaths("/home/testuser")
+	home := t.TempDir()
+	paths := configPaths(home)
 	found := false
 	for _, p := range paths {
 		if p.Client == "junie" {
@@ -127,9 +128,10 @@ func TestConfigPathsJunieUserLevel(t *testing.T) {
 			if p.Scope != "user" {
 				t.Errorf("junie scope = %q, want 'user'", p.Scope)
 			}
-			// All paths must be derived from the home argument, not cwd.
-			if !strings.HasPrefix(p.Path, "/home/testuser") {
-				t.Errorf("junie path %q not derived from home — configPaths must be deterministic from home", p.Path)
+			// Path must be derived from the home argument, not cwd.
+			want := filepath.Join(home, ".junie", "mcp", "mcp.json")
+			if p.Path != want {
+				t.Errorf("junie path = %q, want %q", p.Path, want)
 			}
 		}
 	}

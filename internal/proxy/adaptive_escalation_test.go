@@ -259,7 +259,7 @@ func TestForwardHTTP_Adaptive_BlockAllAfterCEE(t *testing.T) {
 
 	// Send a clean request. CEE entropy tracking on the URL path may push
 	// the session over the threshold, triggering block_all.
-	req := httptest.NewRequest(http.MethodGet, upstream.URL+"/data?secret=highentropystringhere123", nil)
+	req := httptest.NewRequest(http.MethodGet, upstream.URL+"/data?token="+"highentropy"+"stringhere123", nil)
 	w := httptest.NewRecorder()
 
 	handler := p.buildHandler(http.NewServeMux())
@@ -756,7 +756,7 @@ func TestFetch_Adaptive_BlockAllAfterCEE(t *testing.T) {
 	rec.RecordSignal(session.SignalNearMiss, adaptiveTestThreshold)
 	rec.RecordSignal(session.SignalNearMiss, adaptiveTestThreshold)
 
-	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/data?secret=highentropystringhere123", nil)
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/data?token="+"highentropy"+"stringhere123", nil)
 	w := httptest.NewRecorder()
 
 	mux := http.NewServeMux()

@@ -357,7 +357,7 @@ dlp:
         - "*.anthropic.com"
 ```
 
-### Built-in DLP Patterns (44)
+### Built-in DLP Patterns (46)
 
 | Pattern | Regex Prefix | Severity |
 |---------|-------------|----------|
@@ -404,6 +404,8 @@ dlp:
 | Extended Private Key | `[xyzt]prv` + base58 | critical |
 | Ethereum Private Key | `0x` + 64 hex | critical |
 | Social Security Number | `\b\d{3}-\d{2}-\d{4}\b` | critical |
+| Credit Card Number | BIN prefix + Luhn checksum | medium |
+| IBAN | `[A-Z]{2}\d{2}` + mod-97 checksum | medium |
 | Credential in URL | `password\|token\|secret=value` | high |
 | Prompt Injection | `(ignore\|disregard\|forget)...previous...instructions` | high |
 | System Override | `system:` | high |

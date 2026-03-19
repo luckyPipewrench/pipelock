@@ -228,7 +228,7 @@ dlp:
       severity: critical
     # Financial identifiers (validated with post-match checksums)
     - name: "Credit Card Number"
-      regex: '\b(?:4\d{3}|5[1-5]\d{2}|2(?:2[2-9]\d|[3-6]\d{2}|7[01]\d|720)|3[47]\d{2}|6(?:011|[45]\d{2})|35(?:2[89]|[3-8]\d))(?:[- ]?\d){11,15}\b'
+      regex: '\b(?:4\d{3}|5[1-5]\d{2}|2(?:2(?:2[1-9]|[3-9]\d)|[3-6]\d{2}|7[01]\d|720)|3[47]\d{2}|6(?:011|[45]\d{2})|35(?:2[89]|[3-8]\d))(?:[- ]?\d){11,15}\b'
       severity: medium
       validator: luhn
     - name: "IBAN"

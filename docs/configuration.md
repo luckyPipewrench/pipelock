@@ -662,13 +662,13 @@ Each level accepts the following fields. All fields use **pointer semantics**:
 - **Set to `"block"`** to upgrade that action class at this level.
 - **Set to `""`** (empty string) to explicitly disable an upgrade (softening from a parent config).
 
-This is monotonic by convention: if `elevated.upgrade_warn: block`, then `high` and `critical` should also set `upgrade_warn: block`. Pipelock does not enforce this, but lower levels with stricter actions than higher levels would be unexpected.
+**Monotonic enforcement:** higher levels must never be weaker than lower levels. If `elevated.upgrade_warn: block`, then `high` and `critical` must also have `upgrade_warn: block` (or omit it for the default, which is `block`). Pipelock validates this at config load time and rejects violations.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `upgrade_warn` | `*string` | `nil` (no upgrade at elevated; block at high and critical) | Upgrade `warn` actions to `block` at this level |
-| `upgrade_ask` | `*string` | `nil` (no upgrade at elevated; block at high and critical) | Upgrade `ask` (HITL) actions to `block` at this level |
-| `block_all` | `*bool` | `nil` (false at elevated and high; true at critical) | Deny all traffic for this session regardless of action |
+| `upgrade_warn` | `*string` | `nil` → `"block"` at all levels | Upgrade `warn` actions to `block` at this level |
+| `upgrade_ask` | `*string` | `nil` → `""` at elevated; `"block"` at high and critical | Upgrade `ask` (HITL) actions to `block` at this level |
+| `block_all` | `*bool` | `nil` → `false` at elevated and high; `true` at critical | Deny all traffic for this session regardless of action |
 
 **Default behavior when `levels` is omitted:**
 

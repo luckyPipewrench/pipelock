@@ -790,6 +790,21 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			bundleRules := responseBundleRules(scanResult.Matches)
 			reason := fmt.Sprintf("response injection: %s", strings.Join(patternNames, ", "))
 
+			// Adaptive enforcement: upgrade the response action before the switch.
+			// Parity with fetch (filterAndActOnResponseScan) and WebSocket (upstreamToClient).
+			originalAction := action
+			if forwardRec != nil {
+				action = decide.UpgradeAction(action, forwardRec.EscalationLevel(), &cfg.AdaptiveEnforcement)
+				if action != originalAction {
+					sessionKey := clientIP
+					if agent != "" && agent != agentAnonymous {
+						sessionKey = agent + "|" + clientIP
+					}
+					p.logger.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(forwardRec.EscalationLevel()), originalAction, action, "response_scan", clientIP, requestID)
+					p.metrics.RecordAdaptiveUpgrade(originalAction, action, session.EscalationLabel(forwardRec.EscalationLevel()))
+				}
+			}
+
 			switch action {
 			case config.ActionBlock, config.ActionAsk:
 				p.logger.LogBlocked(r.Method, targetURL, "response_scan", reason, clientIP, requestID, agent)
@@ -797,6 +812,23 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "blocked: response contains injection", http.StatusForbidden)
 				return
 			case config.ActionStrip:
+				// Record SignalStrip for adaptive enforcement scoring.
+				// Parity with fetch (filterAndActOnResponseScan) and WebSocket (upstreamToClient).
+				if sm := p.sessionMgrPtr.Load(); sm != nil && cfg.AdaptiveEnforcement.Enabled {
+					sessionKey := clientIP
+					if agent != "" && agent != agentAnonymous {
+						sessionKey = agent + "|" + clientIP
+					}
+					sess := sm.GetOrCreate(sessionKey)
+					if escalated, from, to := sess.RecordSignal(session.SignalStrip, cfg.AdaptiveEnforcement.EscalationThreshold); escalated {
+						p.logger.LogAdaptiveEscalation(sessionKey, from, to, clientIP, requestID, sess.ThreatScore())
+						p.metrics.RecordSessionEscalation(from, to)
+						if from != session.EscalationLabel(0) {
+							p.metrics.SetAdaptiveSessionLevel(from, -1)
+						}
+						p.metrics.SetAdaptiveSessionLevel(to, 1)
+					}
+				}
 				if scanResult.TransformedContent != "" {
 					respBody = []byte(scanResult.TransformedContent)
 					// Remove body-derived validators that no longer match the stripped content.

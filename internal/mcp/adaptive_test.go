@@ -769,7 +769,7 @@ func TestBlockSessionDenyResponse(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			data := blockSessionDenyResponse(tt.id)
+			data := blockSessionDenyResponse(tt.id, "critical")
 			if len(data) == 0 {
 				t.Fatal("expected non-empty response bytes")
 			}

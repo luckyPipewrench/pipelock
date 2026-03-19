@@ -143,7 +143,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		}
 		if blockAll {
 			rpcID := extractRPCID(line)
-			resp := blockSessionDenyResponse(rpcID)
+			resp := blockSessionDenyResponse(rpcID, session.EscalationLabel(rec.EscalationLevel()))
 			if wErr := writer.WriteMessage(resp); wErr != nil {
 				return foundInjection, fmt.Errorf("writing session deny: %w", wErr)
 			}
@@ -410,13 +410,13 @@ func blockResponse(id json.RawMessage) []byte {
 // denial. Uses error code -32001 (implementation-defined) with a session-deny
 // message. Distinct from blockResponse to distinguish session-level blocks
 // from per-message injection blocks in logs and client error handling.
-func blockSessionDenyResponse(id json.RawMessage) []byte {
+func blockSessionDenyResponse(id json.RawMessage, levelLabel string) []byte {
 	resp := rpcError{
 		JSONRPC: jsonrpc.Version,
 		ID:      id,
 		Error: rpcErrorDetail{
 			Code:    -32001,
-			Message: "pipelock: session escalation level critical",
+			Message: "pipelock: session escalation level " + levelLabel,
 		},
 	}
 	data, _ := json.Marshal(resp) //nolint:errcheck // marshaling known-good struct

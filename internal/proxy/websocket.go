@@ -129,8 +129,10 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	result := sc.Scan(r.Context(), scanURL)
 
 	// Session profiling: record BEFORE the enforce-mode early return so adaptive
-	// signals (SignalBlock) fire even for blocked requests.
-	sr := p.recordSessionActivity(clientIP, agent, parsed.Hostname(), requestID, result.Allowed, result.Score, cfg, log, false)
+	// signals (SignalBlock) fire even for blocked requests. Pass deferClean=true
+	// so header DLP findings on the same handshake don't get offset by early decay.
+	sr := p.recordSessionActivity(clientIP, agent, parsed.Hostname(), requestID, result.Allowed, result.Score, cfg, log, true)
+	wsHasFinding := !result.Allowed
 
 	if !result.Allowed {
 		if cfg.EnforceEnabled() {
@@ -203,6 +205,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// DLP-scan forwarded header values regardless of destination or enforce mode.
 	// In audit mode, findings are logged as anomalies but traffic is allowed.
 	if blocked, reason := p.dlpScanWSHeaders(r.Context(), fwdHeaders, sc); blocked {
+		wsHasFinding = true
 		// Record session activity so adaptive enforcement sees header-DLP hits.
 		p.recordSessionActivity(clientIP, agent, parsed.Hostname(), requestID, false, 0.9, cfg, log, false)
 		if cfg.EnforceEnabled() {
@@ -250,6 +253,13 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			sessionKey = agent + "|" + clientIP
 		}
 		wsRec = sm.GetOrCreate(sessionKey)
+	}
+
+	// Deferred clean decay: only apply if the entire handshake was clean
+	// (no URL scan hit, no header DLP hit). This prevents same-handshake
+	// raise+decay when a header carries a secret but the URL is clean.
+	if wsRec != nil && cfg.AdaptiveEnforcement.Enabled && !wsHasFinding {
+		wsRec.RecordClean(cfg.AdaptiveEnforcement.DecayPerCleanRequest)
 	}
 
 	relay := &wsRelay{

@@ -29,6 +29,7 @@ jobs:
             internal/proxy/intercept_test.go
             internal/proxy/forward_test.go
             internal/proxy/adaptive_escalation_test.go
+            internal/proxy/adaptive_coverage_test.go
             internal/cli/test.go
             internal/cli/license_test.go
             enterprise/licenseservice/*_test.go

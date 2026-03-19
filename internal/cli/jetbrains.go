@@ -53,8 +53,8 @@ custom headers are converted to stdio with --upstream. HTTP/SSE servers with
 headers (e.g. Authorization) are skipped with a warning since header
 passthrough is not yet supported.
 
-By default writes to .junie/mcp/mcp.json in the current directory (project-level).
-Use --global to write to the user-level ~/.junie/mcp/mcp.json.
+By default writes to ~/.junie/mcp/mcp.json (user-level, visible to pipelock discover).
+Use --project to write to .junie/mcp/mcp.json in the current directory instead.
 
 If mcp.json already exists, servers are wrapped in place. Already-wrapped
 servers are skipped (idempotent). A .bak backup is created before modification.`,
@@ -65,8 +65,8 @@ servers are skipped (idempotent). A .bak backup is created before modification.`
 		},
 	}
 
-	cmd.Flags().BoolVar(&global, "global", false, "install to user-level ~/.junie/mcp/mcp.json")
-	cmd.Flags().BoolVar(&project, "project", false, "install to .junie/mcp/mcp.json in current directory (default)")
+	cmd.Flags().BoolVar(&global, "global", false, "install to user-level ~/.junie/mcp/mcp.json (default)")
+	cmd.Flags().BoolVar(&project, "project", false, "install to .junie/mcp/mcp.json in current directory")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would be written without modifying files")
 	cmd.Flags().StringVarP(&configFile, "config", "c", "", "path to pipelock config file for --config passthrough")
 
@@ -93,8 +93,8 @@ _pipelock metadata field. Non-wrapped servers are left unchanged.`,
 		},
 	}
 
-	cmd.Flags().BoolVar(&global, "global", false, "remove from user-level ~/.junie/mcp/mcp.json")
-	cmd.Flags().BoolVar(&project, "project", false, "remove from .junie/mcp/mcp.json in current directory (default)")
+	cmd.Flags().BoolVar(&global, "global", false, "remove from user-level ~/.junie/mcp/mcp.json (default)")
+	cmd.Flags().BoolVar(&project, "project", false, "remove from .junie/mcp/mcp.json in current directory")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would be written without modifying files")
 
 	return cmd
@@ -120,7 +120,10 @@ func runJetbrainsInstall(cmd *cobra.Command, global, project, dryRun bool, confi
 		return fmt.Errorf("--global and --project are mutually exclusive")
 	}
 
-	targetPath, err := junieConfigPath(global)
+	// Default to global (user-level) when neither flag is set.
+	// This ensures the default install target is visible to pipelock discover.
+	useGlobal := global || !project
+	targetPath, err := junieConfigPath(useGlobal)
 	if err != nil {
 		return err
 	}
@@ -204,7 +207,8 @@ func runJetbrainsRemove(cmd *cobra.Command, global, project, dryRun bool) error 
 		return fmt.Errorf("--global and --project are mutually exclusive")
 	}
 
-	targetPath, err := junieConfigPath(global)
+	useGlobal := global || !project
+	targetPath, err := junieConfigPath(useGlobal)
 	if err != nil {
 		return err
 	}

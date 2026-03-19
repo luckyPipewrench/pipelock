@@ -2054,22 +2054,121 @@ func newDefaultConfig() *Config {
 
 func TestCheckToolCall_FullwidthCommandObfuscation(t *testing.T) {
 	// Fullwidth Latin ｒｍ (U+FF52 U+FF4D) used to evade "rm -rf" detection.
-	// strings.Fields handles Unicode whitespace, but NFKC normalization of
-	// fullwidth chars to ASCII depends on the policy matching path.
+	// NFKC normalization converts fullwidth to ASCII before policy matching.
 	pc := defaultConfig(t)
 	v := pc.CheckToolCall("bash", []string{"\uff52\uff4d -rf /tmp/demo"})
 	if !v.Matched {
-		t.Skip("known gap: fullwidth Latin chars not normalized before policy matching")
+		t.Error("expected match: fullwidth rm should normalize to ASCII rm")
 	}
 }
 
 func TestCheckToolCall_HomoglyphCyrillicCommand(t *testing.T) {
 	// Cyrillic м (U+043C) substituted for Latin m in "rm": "rм -rf".
-	// Policy regex `\brm\s+` expects ASCII "rm" — Cyrillic evades the match.
+	// ConfusableToASCII maps Cyrillic м → Latin m before policy matching.
 	pc := defaultConfig(t)
 	v := pc.CheckToolCall("bash", []string{"r\u043c -rf /tmp/demo"})
 	if !v.Matched {
-		t.Skip("known gap: Cyrillic homoglyph in command not normalized before policy matching")
+		t.Error("expected match: Cyrillic м should normalize to Latin m")
+	}
+}
+
+func TestCheckToolCall_PositionalParamBypass(t *testing.T) {
+	// $@ and $* expand to empty in non-interactive shells (no positional
+	// parameters), so r$@m = rm. Agents can insert these to break keywords.
+	// Only $@ and $* are stripped — $0, $9, $_ are non-empty in real bash.
+	pc := defaultConfig(t)
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"$@ in rm", []string{"r$@m -rf /tmp/demo"}},
+		{"$* in rm", []string{"r$*m -rf /tmp/demo"}},
+		{"${@} braced", []string{"r${@}m -rf /tmp/demo"}},
+		{"${*} braced", []string{"r${*}m -rf /tmp/demo"}},
+		{"$@ stacked with $*", []string{"r$@$*m -rf /tmp/demo"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			v := pc.CheckToolCall("bash", tt.args)
+			if !v.Matched {
+				t.Errorf("expected match for positional param bypass: %s", tt.args[0])
+			}
+		})
+	}
+}
+
+func TestCheckToolCall_HomeSlashPathConstruction(t *testing.T) {
+	// ${HOME:0:1} and ${HOME::1} both evaluate to "/" in bash.
+	// Attackers use these to build paths dynamically.
+	pc := defaultConfig(t)
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"HOME :0:1", []string{"cat ${HOME:0:1}etc${HOME:0:1}shadow"}},
+		{"PWD :0:1", []string{"cat ${PWD:0:1}etc${PWD:0:1}shadow"}},
+		{"OLDPWD :0:1", []string{"cat ${OLDPWD:0:1}etc${OLDPWD:0:1}shadow"}},
+		{"HOME ::1 omitted offset", []string{"cat ${HOME::1}etc${HOME::1}shadow"}},
+		{"PWD ::1 omitted offset", []string{"cat ${PWD::1}etc${PWD::1}shadow"}},
+		{"OLDPWD ::1 omitted offset", []string{"cat ${OLDPWD::1}etc${OLDPWD::1}shadow"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			v := pc.CheckToolCall("bash", tt.args)
+			if !v.Matched {
+				t.Errorf("expected match for path construction bypass: %s", tt.args[0])
+			}
+		})
+	}
+}
+
+func TestCheckToolCall_IndirectHomeSlashBypass(t *testing.T) {
+	// v=HOME;${!v:0:1} → resolveShellConstruction turns ${!v} into ${HOME},
+	// then shellHomeSlashRe turns ${HOME:0:1} into "/". Without correct
+	// pipeline ordering, the slash replacement runs before resolution and misses.
+	pc := defaultConfig(t)
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"indirect HOME via !v :0:1", []string{"v=HOME;cat ${!v:0:1}etc${!v:0:1}shadow"}},
+		{"indirect PWD via !p :0:1", []string{"p=PWD;cat ${!p:0:1}etc${!p:0:1}shadow"}},
+		{"indirect HOME via !v ::1", []string{"v=HOME;cat ${!v::1}etc${!v::1}shadow"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			v := pc.CheckToolCall("bash", tt.args)
+			if !v.Matched {
+				t.Errorf("expected match for indirect HOME slash bypass: %s", tt.args[0])
+			}
+		})
+	}
+}
+
+func TestCheckToolCall_BacktickCmdSubResolution(t *testing.T) {
+	// Verify backtick resolution produces the command keyword, not just that
+	// the keyword appears somewhere in the joined string after quote stripping.
+	// Use a custom rule anchored with \b...\s that requires "wget" as a
+	// distinct token — after bare stripping `printf wget https://...` has
+	// "printf" before "wget", but the \bwget\b pattern matches either way.
+	// So we also test with $() parity: both forms must produce identical verdicts.
+	pc := defaultConfig(t)
+
+	// Default rules: backtick form must match just like $() form.
+	dollar := pc.CheckToolCall("bash", []string{"$(printf rm) -rf /tmp/demo"})
+	backtick := pc.CheckToolCall("bash", []string{"`printf rm` -rf /tmp/demo"})
+	if dollar.Matched != backtick.Matched {
+		t.Errorf("parity broken: $(printf rm) matched=%v but `printf rm` matched=%v",
+			dollar.Matched, backtick.Matched)
+	}
+	if !backtick.Matched {
+		t.Error("expected match for `printf rm` -rf /tmp/demo")
+	}
+
+	// Echo variant.
+	backtickEcho := pc.CheckToolCall("bash", []string{"`echo rm` -rf /tmp/demo"})
+	if !backtickEcho.Matched {
+		t.Error("expected match for `echo rm` -rf /tmp/demo")
 	}
 }
 

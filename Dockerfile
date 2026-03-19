@@ -19,7 +19,8 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
       -X github.com/luckyPipewrench/pipelock/internal/cli.GitCommit=${GIT_COMMIT} \
       -X github.com/luckyPipewrench/pipelock/internal/cli.GoVersion=$(go version | awk '{print $3}') \
       -X github.com/luckyPipewrench/pipelock/internal/proxy.Version=${VERSION} \
-      -X github.com/luckyPipewrench/pipelock/internal/license.PublicKeyHex=${LICENSE_PUBLIC_KEY}" \
+      -X github.com/luckyPipewrench/pipelock/internal/license.PublicKeyHex=${LICENSE_PUBLIC_KEY} \
+      -X github.com/luckyPipewrench/pipelock/internal/rules.KeyringHex=${LICENSE_PUBLIC_KEY}" \
     -o /pipelock ./cmd/pipelock
 
 # Scratch-based final image (~15MB)

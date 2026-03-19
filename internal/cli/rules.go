@@ -25,8 +25,9 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
-// Official bundle registry base URL.
-const officialRegistryURL = "https://rules.pipelab.org"
+// Official bundle registry base URL. Bundles are served as static files
+// from the pipelab.org Hugo site via Cloudflare Pages.
+const officialRegistryURL = "https://pipelab.org/rules"
 
 // loadRulesConfig loads the pipelock config for trusted key resolution.
 // When configFile is explicitly set (--config flag), load failures are fatal

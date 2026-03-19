@@ -30,12 +30,13 @@ import (
 )
 
 const (
-	jsonRPC20              = "2.0"
-	testGHPPrefix          = "ghp_"
-	jsonToolsCallDangerous = `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"dangerous_tool"}}`
-	jsonToolsList          = `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`
-	jsonToolsCallEcho      = `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"text":"hi"}}}`
-	jsonToolsCallBare      = `{"jsonrpc":"2.0","id":1,"method":"tools/call"}`
+	jsonRPC20                    = "2.0"
+	testGHPPrefix                = "ghp_"
+	jsonToolsCallDangerous       = `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"dangerous_tool"}}`
+	jsonToolsList                = `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`
+	jsonToolsCallEcho            = `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"text":"hi"}}}`
+	jsonToolsCallBare            = `{"jsonrpc":"2.0","id":1,"method":"tools/call"}`
+	jsonNotificationsInitialized = `{"jsonrpc":"2.0","method":"notifications/initialized"}`
 )
 
 func intPtrHTTP(v int) *int { return &v }
@@ -324,7 +325,7 @@ func TestRunHTTPProxy_202AcceptedForNotification(t *testing.T) {
 	defer srv.Close()
 
 	sc := testScannerForHTTP(t)
-	stdin := strings.NewReader(`{"jsonrpc":"2.0","method":"notifications/initialized"}` + "\n")
+	stdin := strings.NewReader(jsonNotificationsInitialized + "\n")
 	var stdout, stderr bytes.Buffer
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1861,7 +1862,7 @@ func TestHTTPListener_202AcceptedNotification(t *testing.T) {
 	sc := testScannerForHTTP(t)
 	baseURL, _, _ := startListenerProxy(t, upstream.URL, sc, nil, nil, nil)
 
-	body := `{"jsonrpc":"2.0","method":"notifications/initialized"}`
+	body := jsonNotificationsInitialized
 	resp, err := http.Post(baseURL+"/", "application/json", strings.NewReader(body)) //nolint:gosec,noctx // test
 	if err != nil {
 		t.Fatalf("POST: %v", err)
@@ -2337,7 +2338,7 @@ func TestHTTPListener_KillSwitchDropsNotification(t *testing.T) {
 	baseURL, logBuf := startListenerProxyFull(t, upstream.URL, sc, nil, ks, nil)
 
 	// Notification: no "id" field.
-	body := `{"jsonrpc":"2.0","method":"notifications/initialized"}`
+	body := jsonNotificationsInitialized
 	resp, err := http.Post(baseURL+"/", "application/json", strings.NewReader(body)) //nolint:gosec,noctx // test
 	if err != nil {
 		t.Fatalf("POST: %v", err)
@@ -2694,5 +2695,208 @@ func TestScanHTTPInput_CEEBlocksWarnMode(t *testing.T) {
 	// Then CEE must have blocked the request.
 	if !strings.Contains(logOutput, "CEE") {
 		t.Errorf("expected log to contain CEE, got: %s", logOutput)
+	}
+}
+
+// TestRunHTTPProxy_KillSwitchDeniesRequest verifies that when a kill switch
+// controller is passed to RunHTTPProxy and is active, requests are denied with
+// a JSON-RPC error (code -32004) and the upstream is never called.
+func TestRunHTTPProxy_KillSwitchDeniesRequest(t *testing.T) {
+	var serverCalled int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&serverCalled, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+	}))
+	defer srv.Close()
+
+	sc := testScannerForHTTP(t)
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.KillSwitch.Enabled = true
+	cfg.KillSwitch.Message = "kill switch test"
+	ks := killswitch.New(cfg)
+
+	stdin := strings.NewReader(jsonToolsCallBare + "\n")
+	var stdout, stderr bytes.Buffer
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, sc, nil, nil, nil, nil, nil, ks, nil, nil, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("RunHTTPProxy: %v", err)
+	}
+
+	// Upstream must NOT be called.
+	if atomic.LoadInt32(&serverCalled) != 0 {
+		t.Error("server should not be called when kill switch is active")
+	}
+
+	// Client must receive a JSON-RPC error with code -32004.
+	output := strings.TrimSpace(stdout.String())
+	if output == "" {
+		t.Fatal("expected error response on stdout, got empty")
+	}
+	var rpc struct {
+		Error struct{ Code int } `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(output), &rpc); err != nil {
+		t.Fatalf("invalid JSON on stdout: %v\noutput: %s", err, output)
+	}
+	if rpc.Error.Code != -32004 {
+		t.Errorf("error code = %d, want -32004 (kill switch)\noutput: %s", rpc.Error.Code, output)
+	}
+}
+
+// TestRunHTTPProxy_KillSwitchDropsNotification verifies that when the kill
+// switch is active and the message is a notification (no id), RunHTTPProxy
+// silently drops it (no response written to stdout) and logs the drop.
+func TestRunHTTPProxy_KillSwitchDropsNotification(t *testing.T) {
+	var serverCalled int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&serverCalled, 1)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	sc := testScannerForHTTP(t)
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.KillSwitch.Enabled = true
+	ks := killswitch.New(cfg)
+
+	// Notification: no "id" field.
+	notification := jsonNotificationsInitialized
+	stdin := strings.NewReader(notification + "\n")
+	var stdout, stderr bytes.Buffer
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, sc, nil, nil, nil, nil, nil, ks, nil, nil, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("RunHTTPProxy: %v", err)
+	}
+
+	// No output for dropped notification.
+	if strings.TrimSpace(stdout.String()) != "" {
+		t.Errorf("expected no output for kill-switched notification, got: %s", stdout.String())
+	}
+	// Upstream must NOT be called.
+	if atomic.LoadInt32(&serverCalled) != 0 {
+		t.Error("server should not be called for kill-switched notification")
+	}
+	// Log must mention the dropped notification.
+	if !strings.Contains(stderr.String(), "kill switch dropped notification") {
+		t.Errorf("expected kill switch drop log in stderr, got: %s", stderr.String())
+	}
+}
+
+// TestRunHTTPProxy_WithStoreAndAdaptiveCfg verifies that when a non-nil store
+// and adaptiveCfg are passed, RunHTTPProxy creates a per-invocation recorder
+// (store.GetOrCreate is called) and clean requests are counted for decay.
+func TestRunHTTPProxy_WithStoreAndAdaptiveCfg(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"hello"}]}}`))
+	}))
+	defer srv.Close()
+
+	sc := testScannerForHTTP(t)
+
+	rec := &mockRecorder{}
+	store := &mockStore{rec: rec}
+	adaptiveCfg := adaptiveCfgEnabled()
+
+	stdin := strings.NewReader(jsonToolsCallEcho + "\n")
+	var stdout, stderr bytes.Buffer
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, sc, nil, nil, nil, nil, nil, nil, nil, nil, nil, store, adaptiveCfg, nil)
+	if err != nil {
+		t.Fatalf("RunHTTPProxy: %v", err)
+	}
+
+	// A clean request should call RecordClean on the recorder.
+	if rec.cleans == 0 {
+		t.Error("expected RecordClean to be called for a clean request through the store")
+	}
+}
+
+// TestRunHTTPProxy_AdaptiveBlockAllCleanMessage verifies that when a session is
+// at a critical escalation level with block_all=true, even clean messages are
+// blocked (the block_all check in scanHTTPInput's clean path fires).
+func TestRunHTTPProxy_AdaptiveBlockAllCleanMessage(t *testing.T) {
+	// Server should NOT be called — blocked before upstream.
+	var serverCalled int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&serverCalled, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+	}))
+	defer srv.Close()
+
+	sc := testScannerForHTTP(t)
+
+	// Recorder already at critical escalation level (3) so block_all fires.
+	rec := &mockRecorder{level: 3}
+	store := &mockStore{rec: rec}
+
+	// Minimal adaptiveCfg with block_all=true at the critical level.
+	blockAll := true
+	adaptiveCfg := &config.AdaptiveEnforcement{
+		Enabled:              true,
+		EscalationThreshold:  100.0,
+		DecayPerCleanRequest: 0.5,
+		Levels: config.EscalationLevels{
+			Critical: config.EscalationActions{BlockAll: &blockAll},
+		},
+	}
+
+	// Enable input scanning so the message ID is parsed and a proper JSON-RPC
+	// error can be returned (without inputCfg the ID field is not extracted,
+	// causing the block to be treated as a notification with no response).
+	inputCfg := &InputScanConfig{
+		Enabled:      true,
+		Action:       config.ActionWarn, // warn-only so clean messages aren't blocked by the scanner itself
+		OnParseError: config.ActionBlock,
+	}
+
+	// Clean message — no DLP, no policy, no chain. block_all must still block it.
+	stdin := strings.NewReader(jsonToolsCallBare + "\n")
+	var stdout, stderr bytes.Buffer
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, sc, nil, nil, inputCfg, nil, nil, nil, nil, nil, nil, store, adaptiveCfg, nil)
+	if err != nil {
+		t.Fatalf("RunHTTPProxy: %v", err)
+	}
+
+	// Server must NOT be called.
+	if atomic.LoadInt32(&serverCalled) != 0 {
+		t.Error("server should not be called when block_all is active")
+	}
+
+	// Client must receive an error response (code -32001: session escalation).
+	output := strings.TrimSpace(stdout.String())
+	if output == "" {
+		t.Fatal("expected error response on stdout, got empty")
+	}
+	var rpc struct {
+		Error struct{ Code int } `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(output), &rpc); err != nil {
+		t.Fatalf("invalid JSON on stdout: %v\noutput: %s", err, output)
+	}
+	if rpc.Error.Code != -32001 {
+		t.Errorf("error code = %d, want -32001 (session escalation block)\noutput: %s", rpc.Error.Code, output)
+	}
+
+	// Log must mention adaptive upgrade.
+	if !strings.Contains(stderr.String(), "adaptive upgrade") {
+		t.Errorf("expected adaptive upgrade log in stderr, got: %s", stderr.String())
 	}
 }

@@ -1552,3 +1552,72 @@ func TestInterceptRecordSignal_EscalationWithProxy(t *testing.T) {
 		})
 	}
 }
+
+// TestInterceptTunnel_BlockAllDeniesCleanRequest verifies that when the session
+// recorder reports a critical escalation level with block_all=true, even a
+// fully-clean intercepted request (no DLP, no injection) is blocked with 403.
+// This exercises the block_all check inside newInterceptHandler that was added
+// as a new adaptive enforcement line in this PR.
+func TestInterceptTunnel_BlockAllDeniesCleanRequest(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// Should never be called — block_all fires before RoundTrip.
+		_, _ = fmt.Fprint(w, "should not reach here")
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, sc, logger, m := testInterceptSetup(t)
+
+	// Enable adaptive enforcement with block_all=true at the critical level.
+	blockAll := true
+	cfg.AdaptiveEnforcement.Enabled = true
+	cfg.AdaptiveEnforcement.EscalationThreshold = 100.0
+	cfg.AdaptiveEnforcement.Levels.Critical.BlockAll = &blockAll
+
+	// Recorder already at escalation level 3 (critical) so block_all fires.
+	rec := &interceptMockRecorder{level: 3}
+
+	addr := upstream.Listener.Addr().String()
+
+	clientConn, proxyConn := net.Pipe()
+	t.Cleanup(func() { _ = clientConn.Close() })
+
+	host := upstream.Listener.Addr().(*net.TCPAddr).IP.String()
+	port := fmt.Sprintf("%d", upstream.Listener.Addr().(*net.TCPAddr).Port)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	go func() {
+		_ = interceptTunnel(ctx, proxyConn, host, port,
+			cfg, sc, cache, logger, m,
+			testLoopbackIP, "test-blockall", "", upstream.Client().Transport, nil,
+			nil, nil, nil, nil, rec,
+		)
+	}()
+
+	tlsConn := tls.Client(clientConn, &tls.Config{
+		RootCAs:    pool,
+		ServerName: host,
+	})
+	t.Cleanup(func() { _ = tlsConn.Close() })
+
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/clean", nil)
+	if err := req.Write(tlsConn); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(tlsConn), req)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 (block_all should deny clean requests at critical escalation)", resp.StatusCode)
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "session escalation level") {
+		t.Errorf("body = %q, want to contain 'session escalation level'", body)
+	}
+}

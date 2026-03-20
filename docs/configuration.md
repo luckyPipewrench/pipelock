@@ -722,7 +722,7 @@ env:
 
 ## Event Emission
 
-Forward audit events to external systems. Two independent sinks, each with its own severity filter. Emission is fire-and-forget and never blocks the proxy.
+Forward audit events to external systems. Three independent sinks (webhook, syslog, OTLP), each with its own severity filter. Emission is fire-and-forget and never blocks the proxy.
 
 ```yaml
 emit:
@@ -738,6 +738,14 @@ emit:
     min_severity: warn
     facility: local0
     tag: pipelock
+  otlp:
+    endpoint: "http://otel-collector:4318"
+    min_severity: warn
+    headers:
+      Authorization: "Bearer <token>"
+    timeout_seconds: 10
+    queue_size: 256
+    gzip: false
 ```
 
 | Field | Default | Description |
@@ -752,6 +760,14 @@ emit:
 | `syslog.min_severity` | `"warn"` | info, warn, or critical |
 | `syslog.facility` | `"local0"` | Syslog facility |
 | `syslog.tag` | `"pipelock"` | Syslog tag |
+| `otlp.endpoint` | `""` | OTLP collector base URL (e.g., `http://collector:4318`). `/v1/logs` appended automatically. |
+| `otlp.min_severity` | `"info"` | info, warn, or critical |
+| `otlp.headers` | `{}` | Custom HTTP headers (authentication, tenant routing) |
+| `otlp.timeout_seconds` | `10` | Per-request HTTP timeout |
+| `otlp.queue_size` | `256` | Async buffer size (overflow = drop) |
+| `otlp.gzip` | `false` | Compress request bodies with gzip |
+
+OTLP events are sent as log records over HTTP/protobuf. Each pipelock audit event maps to one OTLP LogRecord with `service.name=pipelock` as a resource attribute. Retries on 429/5xx with bounded backoff (3 attempts). No gRPC, no batching timer.
 
 **Severity levels** (hardcoded per event type, not configurable):
 - **critical:** kill switch deny, adaptive escalation to block (event emitted; v1 does not auto-block, see above)

@@ -567,8 +567,8 @@ func TestOTLPSink_4xxNotRetried(t *testing.T) {
 		t.Fatal("timeout")
 	}
 
-	// 400 is not retryable — exactly 1 attempt.
-	time.Sleep(100 * time.Millisecond)
+	// Close drains the worker. After Close(), no retry is in flight.
+	_ = sink.Close()
 	if attempts.Load() != 1 {
 		t.Errorf("expected 1 attempt (400 not retryable), got %d", attempts.Load())
 	}

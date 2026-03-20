@@ -678,6 +678,149 @@ func TestFirstSegment(t *testing.T) {
 	}
 }
 
+func TestWatcher_CloseFlushesLastWrite(t *testing.T) {
+	// Write a secret, then Close immediately (before debounce fires).
+	// Close should flush the pending scan and deliver the finding.
+	dir := t.TempDir()
+	cfg := &config.FileSentry{
+		Enabled:     true,
+		WatchPaths:  []string{dir},
+		ScanContent: ptrBool(true),
+	}
+
+	defaults := config.Defaults()
+	defaults.Internal = nil
+	sc := scanner.New(defaults)
+	defer sc.Close()
+
+	w, err := NewWatcher(cfg, sc, nil, nil)
+	if err != nil {
+		t.Fatalf("NewWatcher: %v", err)
+	}
+
+	if armErr := w.Arm(); armErr != nil {
+		t.Fatalf("Arm: %v", armErr)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { _ = w.Start(ctx) }()
+
+	// Write a secret — this starts a debounce timer.
+	secret := "sk-ant-" + "api03-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+	if writeErr := os.WriteFile(filepath.Join(dir, "last-write.json"), []byte(secret), 0o600); writeErr != nil {
+		t.Fatalf("WriteFile: %v", writeErr)
+	}
+
+	// Small delay to ensure the fsnotify event is delivered and the
+	// debounce timer is started, but NOT long enough for debounce to fire.
+	time.Sleep(10 * time.Millisecond)
+
+	// Close should flush the pending scan synchronously.
+	cancel()
+	_ = w.Close()
+
+	// The finding should be in the channel from the flush.
+	select {
+	case f := <-w.Findings():
+		if f.PatternName == "" {
+			t.Error("expected DLP match from flushed scan")
+		}
+	default:
+		t.Error("expected finding from Close flush, got none")
+	}
+}
+
+func TestWatcher_CloseFlushScanDisabled(t *testing.T) {
+	// When scan_content is false, Close flush should not scan.
+	dir := t.TempDir()
+	cfg := &config.FileSentry{
+		Enabled:     true,
+		WatchPaths:  []string{dir},
+		ScanContent: ptrBool(false),
+	}
+
+	defaults := config.Defaults()
+	defaults.Internal = nil
+	sc := scanner.New(defaults)
+	defer sc.Close()
+
+	w, err := NewWatcher(cfg, sc, nil, nil)
+	if err != nil {
+		t.Fatalf("NewWatcher: %v", err)
+	}
+
+	if armErr := w.Arm(); armErr != nil {
+		t.Fatalf("Arm: %v", armErr)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { _ = w.Start(ctx) }()
+
+	secret := "sk-ant-" + "api03-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+	if writeErr := os.WriteFile(filepath.Join(dir, "no-scan.json"), []byte(secret), 0o600); writeErr != nil {
+		t.Fatalf("WriteFile: %v", writeErr)
+	}
+	time.Sleep(10 * time.Millisecond)
+
+	cancel()
+	_ = w.Close()
+
+	// Channel is closed — reading returns zero values. Check that no
+	// real finding (with a pattern name) was emitted.
+	select {
+	case f, ok := <-w.Findings():
+		if ok && f.PatternName != "" {
+			t.Errorf("expected no finding with scan_content=false, got %+v", f)
+		}
+	default:
+		// Good.
+	}
+}
+
+func TestWatcher_CloseFlushEmptyFile(t *testing.T) {
+	// Empty file should be skipped during flush.
+	dir := t.TempDir()
+	cfg := &config.FileSentry{
+		Enabled:     true,
+		WatchPaths:  []string{dir},
+		ScanContent: ptrBool(true),
+	}
+
+	defaults := config.Defaults()
+	defaults.Internal = nil
+	sc := scanner.New(defaults)
+	defer sc.Close()
+
+	w, err := NewWatcher(cfg, sc, nil, nil)
+	if err != nil {
+		t.Fatalf("NewWatcher: %v", err)
+	}
+
+	if armErr := w.Arm(); armErr != nil {
+		t.Fatalf("Arm: %v", armErr)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { _ = w.Start(ctx) }()
+
+	if writeErr := os.WriteFile(filepath.Join(dir, "empty.txt"), []byte{}, 0o600); writeErr != nil {
+		t.Fatalf("WriteFile: %v", writeErr)
+	}
+	time.Sleep(10 * time.Millisecond)
+
+	cancel()
+	_ = w.Close()
+
+	select {
+	case f, ok := <-w.Findings():
+		if ok && f.PatternName != "" {
+			t.Errorf("expected no finding for empty file, got %+v", f)
+		}
+	default:
+		// Good.
+	}
+}
+
 func TestWatcher_StartContextCancelled(t *testing.T) {
 	// Start should return nil when context is cancelled.
 	dir := t.TempDir()

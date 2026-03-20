@@ -408,6 +408,7 @@ type DLP struct {
 	MinEnvSecretLength int          `yaml:"min_env_secret_length"` // minimum env var length for leak detection (default 16)
 	IncludeDefaults    *bool        `yaml:"include_defaults"`      // nil/true: merge user patterns with defaults; false: user patterns only
 	Patterns           []DLPPattern `yaml:"patterns"`
+	Action             string       `yaml:"action,omitempty"` // reserved — not yet implemented; rejected at validation
 }
 
 // DLPPattern is a named regex pattern for detecting secrets in URLs.
@@ -417,6 +418,7 @@ type DLPPattern struct {
 	Severity      string   `yaml:"severity"`            // critical, high, medium, low
 	Validator     string   `yaml:"validator,omitempty"` // post-match checksum: "luhn", "mod97", "aba"
 	ExemptDomains []string `yaml:"exempt_domains"`      // domains where this pattern is not enforced
+	Action        string   `yaml:"action,omitempty"`    // reserved — not yet implemented; rejected at validation
 	Bundle        string   `yaml:"-"`                   // set by rules loader, not from YAML
 	BundleVersion string   `yaml:"-"`                   // set by rules loader, not from YAML
 }
@@ -1437,6 +1439,15 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("logging.file is required when output is %q", c.Logging.Output)
 	}
 
+	// Reject unsupported DLP action fields. Request-side DLP redaction (strip)
+	// is not implemented — DLP matches follow the transport-level action
+	// (request_body_scanning.action, mcp_input_scanning.action, or enforce mode).
+	// These fields exist on the struct so YAML doesn't silently drop them;
+	// validation rejects non-empty values with an explicit error.
+	if c.DLP.Action != "" {
+		return fmt.Errorf("dlp.action %q is not supported; DLP match behavior depends on the calling surface (e.g. request_body_scanning.action for bodies, mcp_input_scanning.action for MCP, enforce/audit mode for URL scanning)", c.DLP.Action)
+	}
+
 	// Validate DLP patterns compile as valid regexes
 	for _, p := range c.DLP.Patterns {
 		if p.Name == "" {
@@ -1447,6 +1458,9 @@ func (c *Config) Validate() error {
 		}
 		if _, err := regexp.Compile(p.Regex); err != nil {
 			return fmt.Errorf("DLP pattern %q has invalid regex: %w", p.Name, err)
+		}
+		if p.Action != "" {
+			return fmt.Errorf("DLP pattern %q has action %q which is not supported; per-pattern DLP actions are not yet implemented", p.Name, p.Action)
 		}
 		if p.Validator != "" {
 			valid := p.Validator == ValidatorLuhn || p.Validator == ValidatorMod97 || p.Validator == ValidatorABA

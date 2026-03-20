@@ -770,7 +770,7 @@ emit:
 OTLP events are sent as log records over HTTP/protobuf. Each pipelock audit event maps to one OTLP LogRecord with `service.name=pipelock` as a resource attribute. Retries on 429, 502, 503, 504, and network errors with bounded exponential backoff (3 attempts, 1s/2s/4s). 500 and 501 are not retried. No gRPC, no batching timer.
 
 **Severity levels** (hardcoded per event type, not configurable):
-- **critical:** kill switch deny, adaptive escalation to block (event emitted; v1 does not auto-block, see above)
+- **critical:** kill switch deny, adaptive escalation to critical level (enforcement upgraded across all transports)
 - **warn:** blocked requests, anomalies, session events, MCP unknown tools, scan hits
 - **info:** allowed requests, tunnel open/close, WebSocket open/close, config reload
 

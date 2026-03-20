@@ -8,7 +8,6 @@ This catches a class of exfiltration that the network proxy cannot see: an agent
 
 - Your MCP server subprocess writes files to a working directory
 - You want to detect leaked credentials in agent output files
-- You need audit trail for what secrets touched disk
 
 ## Scope
 

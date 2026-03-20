@@ -126,4 +126,72 @@ func TestLineage_GrandchildDescendant(t *testing.T) {
 	if !l.IsDescendant(cmd.Process.Pid) {
 		t.Error("expected bash child to be a descendant")
 	}
+
+	// Find the sleep grandchild PID and verify it's also a descendant.
+	descendants := collectDescendants(cmd.Process.Pid)
+	if len(descendants) == 0 {
+		t.Skip("no grandchild found (sleep may not have forked yet)")
+	}
+	sleepPID := descendants[0]
+	if !l.IsDescendant(sleepPID) {
+		t.Errorf("expected grandchild PID %d to be a descendant", sleepPID)
+	}
+}
+
+func TestLineage_IsDescendant_ExitedProcess(t *testing.T) {
+	if runtime.GOOS != testOSLinux {
+		t.Skip("linux only")
+	}
+	l := NewLineage()
+	l.TrackPID(os.Getpid())
+
+	// PID that almost certainly doesn't exist.
+	if l.IsDescendant(99999999) {
+		t.Error("exited/nonexistent PID should not be a descendant")
+	}
+}
+
+func TestLineage_HasFileOpen_ExitedProcess(t *testing.T) {
+	if runtime.GOOS != testOSLinux {
+		t.Skip("linux only")
+	}
+	l := NewLineage()
+	// Track a PID that doesn't exist — HasFileOpen should handle gracefully.
+	l.TrackPID(99999999)
+	if l.HasFileOpen("/tmp/nonexistent") {
+		t.Error("expected false for exited process")
+	}
+}
+
+func TestLineage_CollectDescendants_Self(t *testing.T) {
+	if runtime.GOOS != testOSLinux {
+		t.Skip("linux only")
+	}
+	// collectDescendants on the current process should not panic.
+	// It may return an empty slice if the process has no children.
+	result := collectDescendants(os.Getpid())
+	_ = result // just verify no panic
+}
+
+func TestLineage_ParentPID_Self(t *testing.T) {
+	if runtime.GOOS != testOSLinux {
+		t.Skip("linux only")
+	}
+	ppid, err := parentPID(os.Getpid())
+	if err != nil {
+		t.Fatalf("parentPID(self): %v", err)
+	}
+	if ppid <= 0 {
+		t.Errorf("expected positive PPid, got %d", ppid)
+	}
+}
+
+func TestLineage_ParentPID_Nonexistent(t *testing.T) {
+	if runtime.GOOS != testOSLinux {
+		t.Skip("linux only")
+	}
+	_, err := parentPID(99999999)
+	if err == nil {
+		t.Error("expected error for nonexistent PID")
+	}
 }

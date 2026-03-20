@@ -1341,7 +1341,7 @@ file_sentry:
 | Field | Default | Description |
 |-------|---------|-------------|
 | `enabled` | `false` | Enable filesystem monitoring. Opt-in. |
-| `watch_paths` | `[]` | Directories to monitor recursively. Resolved to absolute paths at startup. Required when enabled. |
+| `watch_paths` | `[]` | Directories to monitor recursively. Relative paths are resolved against the config file directory (not CWD). Required when enabled. |
 | `scan_content` | `true` | Run DLP scanner on modified file content. |
 | `ignore_patterns` | `[]` | Glob patterns for files and directories to skip. |
 

@@ -651,7 +651,9 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	// grandchildren. This lets the lineage tracker attribute file writes
 	// to the agent's process tree.
 	if lineage != nil {
-		_ = lineage.EnableSubreaper()
+		if err := lineage.EnableSubreaper(); err != nil {
+			_, _ = fmt.Fprintf(logW, "pipelock: warning: subreaper setup failed, PID attribution may be incomplete: %v\n", err)
+		}
 	}
 
 	if err := cmd.Start(); err != nil {

@@ -1552,3 +1552,60 @@ func TestSetAdaptiveSessionLevel_NilSafe(t *testing.T) {
 	var m *Metrics
 	m.SetAdaptiveSessionLevel("elevated", 1)
 }
+
+func TestRecordFileSentryFinding(t *testing.T) {
+	m := New()
+	m.RecordFileSentryFinding("Anthropic API Key", "critical", true)
+	m.RecordFileSentryFinding("Anthropic API Key", "critical", true)
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	m.PrometheusHandler().ServeHTTP(w, req)
+
+	body, _ := io.ReadAll(w.Body)
+	text := string(body)
+
+	wantMetric := `pipelock_file_sentry_findings_total{agent="true",pattern="Anthropic API Key",severity="critical"} 2`
+	if !strings.Contains(text, wantMetric) {
+		t.Errorf("expected %q in /metrics output", wantMetric)
+	}
+}
+
+func TestRecordFileSentryFinding_AgentFalse(t *testing.T) {
+	m := New()
+	m.RecordFileSentryFinding("GitHub Token", "critical", false)
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	m.PrometheusHandler().ServeHTTP(w, req)
+
+	body, _ := io.ReadAll(w.Body)
+	text := string(body)
+
+	wantMetric := `pipelock_file_sentry_findings_total{agent="false",pattern="GitHub Token",severity="critical"} 1`
+	if !strings.Contains(text, wantMetric) {
+		t.Errorf("expected %q in /metrics output", wantMetric)
+	}
+}
+
+func TestRecordFileSentryFinding_NilSafe(t *testing.T) {
+	var m *Metrics
+	m.RecordFileSentryFinding("test", "high", false) // must not panic
+}
+
+func TestRecordAddressFinding(t *testing.T) {
+	m := New()
+	m.RecordAddressFinding("eth", "blocked")
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	m.PrometheusHandler().ServeHTTP(w, req)
+
+	body, _ := io.ReadAll(w.Body)
+	text := string(body)
+
+	wantMetric := `pipelock_address_findings_total{chain="eth",verdict="blocked"} 1`
+	if !strings.Contains(text, wantMetric) {
+		t.Errorf("expected %q in /metrics output", wantMetric)
+	}
+}

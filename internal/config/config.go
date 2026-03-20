@@ -2122,8 +2122,15 @@ func (c *Config) Validate() error {
 	}
 
 	// Validate file sentry config
-	if c.FileSentry.Enabled && len(c.FileSentry.WatchPaths) == 0 {
-		return fmt.Errorf("file_sentry: watch_paths must be non-empty when enabled")
+	if c.FileSentry.Enabled {
+		if len(c.FileSentry.WatchPaths) == 0 {
+			return fmt.Errorf("file_sentry: watch_paths must be non-empty when enabled")
+		}
+		for i, p := range c.FileSentry.WatchPaths {
+			if p == "" {
+				return fmt.Errorf("file_sentry: watch_paths[%d] must not be empty", i)
+			}
+		}
 	}
 
 	// Validate agent profiles (enterprise hook; nil in OSS).

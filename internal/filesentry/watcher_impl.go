@@ -6,6 +6,7 @@ package filesentry
 import (
 	"context"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -127,7 +128,9 @@ func (w *fsWatcher) addRecursive(root string) error {
 	}
 	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return nil // skip inaccessible subdirs
+			// Fail closed: permission errors on watched subdirectories mean
+			// we can't monitor them. Return the error so Arm() fails.
+			return fmt.Errorf("inaccessible path %q: %w", path, err)
 		}
 		if !d.IsDir() {
 			return nil
@@ -188,7 +191,16 @@ func (w *fsWatcher) scanFile(ctx context.Context, path string) {
 		return
 	}
 
-	info, err := os.Stat(path)
+	// Open once and use the fd for both size check and read. This avoids
+	// a TOCTOU window between Stat and ReadFile where a rename/symlink
+	// swap could change what we read.
+	f, err := os.Open(filepath.Clean(path))
+	if err != nil {
+		return
+	}
+	defer func() { _ = f.Close() }()
+
+	info, err := f.Stat()
 	if err != nil || info.IsDir() || info.Size() == 0 {
 		return
 	}
@@ -196,8 +208,8 @@ func (w *fsWatcher) scanFile(ctx context.Context, path string) {
 		return
 	}
 
-	data, err := os.ReadFile(filepath.Clean(path))
-	if err != nil {
+	data, err := io.ReadAll(io.LimitReader(f, maxFileSize+1))
+	if err != nil || len(data) == 0 {
 		return
 	}
 

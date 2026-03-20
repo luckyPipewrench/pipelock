@@ -248,12 +248,41 @@ func TestValidate_FileSentryDisabledNoWatchPaths(t *testing.T) {
 	}
 }
 
+func TestValidate_FileSentryEmptyStringInWatchPaths(t *testing.T) {
+	cfg := Defaults()
+	cfg.FileSentry.Enabled = true
+	cfg.FileSentry.WatchPaths = []string{""}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for empty string in watch_paths")
+	}
+}
+
 func TestApplyDefaults_FileSentryScanContent(t *testing.T) {
 	cfg := Defaults()
 	cfg.ApplyDefaults()
 	// ScanContent should default to true via ApplyDefaults.
 	if cfg.FileSentry.ScanContent == nil || !*cfg.FileSentry.ScanContent {
 		t.Error("expected ScanContent to default to true")
+	}
+}
+
+func TestApplyDefaults_FileSentryScanContentExplicitFalse(t *testing.T) {
+	cfg := Defaults()
+	f := false
+	cfg.FileSentry.ScanContent = &f
+	cfg.ApplyDefaults()
+	if cfg.FileSentry.ScanContent == nil || *cfg.FileSentry.ScanContent {
+		t.Error("explicit false should not be overridden by defaults")
+	}
+}
+
+func TestApplyDefaults_FileSentryScanContentExplicitTrue(t *testing.T) {
+	cfg := Defaults()
+	tr := true
+	cfg.FileSentry.ScanContent = &tr
+	cfg.ApplyDefaults()
+	if cfg.FileSentry.ScanContent == nil || !*cfg.FileSentry.ScanContent {
+		t.Error("explicit true should be preserved")
 	}
 }
 

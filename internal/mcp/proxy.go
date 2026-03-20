@@ -614,7 +614,11 @@ type InputScanConfig struct {
 // for adaptive enforcement signal recording across both input and response scanning.
 // adaptiveCfg provides escalation thresholds and upgrade rules; it is only consulted
 // when store is non-nil and rec is created.
-func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW io.Writer, command []string, sc *scanner.Scanner, approver *hitl.Approver, inputCfg *InputScanConfig, toolCfg *tools.ToolScanConfig, policyCfg *policy.Config, ks *killswitch.Controller, chainMatcher *chains.Matcher, auditLogger *audit.Logger, cee *CEEDeps, store session.Store, adaptiveCfg *config.AdaptiveEnforcement, m *metrics.Metrics, lineage filesentry.Lineage, extraEnv ...string) error {
+// RunProxy starts an MCP server subprocess and proxies stdin/stdout with
+// bidirectional scanning. onChildReady is called after the child process
+// starts and its PID is registered with the lineage tracker; callers use
+// this to start the file sentry event loop after attribution is ready.
+func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW io.Writer, command []string, sc *scanner.Scanner, approver *hitl.Approver, inputCfg *InputScanConfig, toolCfg *tools.ToolScanConfig, policyCfg *policy.Config, ks *killswitch.Controller, chainMatcher *chains.Matcher, auditLogger *audit.Logger, cee *CEEDeps, store session.Store, adaptiveCfg *config.AdaptiveEnforcement, m *metrics.Metrics, lineage filesentry.Lineage, onChildReady func(), extraEnv ...string) error {
 	cmd := exec.CommandContext(ctx, command[0], command[1:]...) //nolint:gosec // command comes from user CLI args
 
 	// Per-invocation adaptive enforcement recorder. Nil when store is nil
@@ -669,6 +673,12 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	// Track child PID for file write attribution.
 	if lineage != nil {
 		lineage.TrackPID(cmd.Process.Pid)
+	}
+
+	// Signal that the child is started and PID is tracked. The file sentry
+	// event loop starts here so attribution is ready before classifying writes.
+	if onChildReady != nil {
+		onChildReady()
 	}
 
 	// Channel for blocked request IDs from input scanning goroutine.

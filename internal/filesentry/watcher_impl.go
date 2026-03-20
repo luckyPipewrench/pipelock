@@ -119,18 +119,40 @@ func (w *fsWatcher) Findings() <-chan Finding {
 	return w.findings
 }
 
-// Close stops the watcher, drains pending timers, and closes the findings
-// channel so consumer goroutines exit their range loops.
+// Close stops the watcher, flushes pending debounced scans, and closes the
+// findings channel so consumer goroutines exit their range loops.
+// Pending timers are stopped and their scans run synchronously so that
+// secrets written in the final debounce window before subprocess exit
+// are not silently dropped.
 func (w *fsWatcher) Close() error {
 	w.mu.Lock()
-	defer w.mu.Unlock()
 	if w.closed {
+		w.mu.Unlock()
 		return nil
 	}
 	w.closed = true
-	for _, t := range w.timers {
+
+	// Collect pending scan paths before stopping timers.
+	pendingPaths := make([]string, 0, len(w.timers))
+	pendingAgent := make([]bool, 0, len(w.timers))
+	for path, t := range w.timers {
 		t.Stop()
+		pendingPaths = append(pendingPaths, path)
+		pendingAgent = append(pendingAgent, w.pidSnap[path])
 	}
+	// Clear maps so scanFile's closed check doesn't block.
+	w.timers = nil
+	w.pidSnap = nil
+	w.mu.Unlock()
+
+	// Flush pending scans synchronously. scanFile checks w.closed and
+	// the send is guarded, but we set closed=true above. We need to
+	// temporarily allow sends for the flush. Use the findings channel
+	// directly before closing it.
+	for i, path := range pendingPaths {
+		w.flushScan(path, pendingAgent[i])
+	}
+
 	close(w.findings)
 	return w.watcher.Close()
 }
@@ -242,9 +264,23 @@ func (w *fsWatcher) handleEvent(ctx context.Context, ev fsnotify.Event) {
 	w.mu.Unlock()
 }
 
+// flushScan runs a DLP scan synchronously during Close, sending findings
+// directly without the closed guard (the channel is still open at this point).
+// Used to flush the last debounced writes before the channel closes.
+func (w *fsWatcher) flushScan(path string, isAgent bool) {
+	w.doScan(context.Background(), path, isAgent, false)
+}
+
 // scanFile reads a file and runs DLP scanning on its content.
 // isAgent is the PID attribution result snapshotted at event time.
 func (w *fsWatcher) scanFile(ctx context.Context, path string, isAgent bool) {
+	w.doScan(ctx, path, isAgent, true)
+}
+
+// doScan is the shared scan implementation. When checkClosed is true,
+// it guards channel sends against w.closed (normal event loop path).
+// When false, it sends directly (flush during Close).
+func (w *fsWatcher) doScan(ctx context.Context, path string, isAgent bool, checkClosed bool) {
 	if w.cfg.ScanContent != nil && !*w.cfg.ScanContent {
 		return
 	}
@@ -284,19 +320,23 @@ func (w *fsWatcher) scanFile(ctx context.Context, path string, isAgent bool) {
 			Encoded:     m.Encoded,
 			IsAgent:     isAgent,
 		}
-		// Hold the lock across the closed check AND the send. Without this,
-		// Close() can close w.findings between the check and the send.
-		w.mu.Lock()
-		if w.closed {
-			w.mu.Unlock()
-			return
+		if checkClosed {
+			// Hold the lock across the closed check AND the send. Without this,
+			// Close() can close w.findings between the check and the send.
+			w.mu.Lock()
+			if w.closed {
+				w.mu.Unlock()
+				return
+			}
 		}
 		select {
 		case w.findings <- f:
 		default:
 			// Channel full — drop finding rather than blocking the watcher.
 		}
-		w.mu.Unlock()
+		if checkClosed {
+			w.mu.Unlock()
+		}
 	}
 }
 

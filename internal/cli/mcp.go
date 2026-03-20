@@ -496,6 +496,7 @@ Environment passthrough (subprocess mode only):
 			// Watches are installed synchronously (Arm) before the child starts
 			// to prevent early writes from being missed.
 			var lin filesentry.Lineage
+			var onChildReady func()
 			if cfg.FileSentry.Enabled {
 				lin = filesentry.NewLineage()
 				// Error handler for non-fatal runtime errors (e.g. failing to watch new dirs).
@@ -513,16 +514,9 @@ Environment passthrough (subprocess mode only):
 					return fmt.Errorf("file sentry failed to arm watches (feature is enabled): %w", armErr)
 				}
 
-				go func() {
-					if startErr := watcher.Start(ctx); startErr != nil {
-						_, _ = fmt.Fprintf(logW, "pipelock: file sentry fatal: %v — cancelling proxy\n", startErr)
-						// File sentry is a security control. If the event loop
-						// fails (e.g. fsnotify backend error), the proxy must
-						// not continue running unmonitored.
-						cancel()
-					}
-				}()
 				// Consume findings: log to stderr and record metrics.
+				// Started now so the channel is drained even before the
+				// event loop begins (buffered findings from Arm window).
 				go func() {
 					for f := range watcher.Findings() {
 						agent := ""
@@ -539,9 +533,21 @@ Environment passthrough (subprocess mode only):
 				}()
 				_, _ = fmt.Fprintf(logW, "pipelock: file sentry watching %d path(s)\n",
 					len(cfg.FileSentry.WatchPaths))
+
+				// onChildReady: called by RunProxy after cmd.Start() + TrackPID.
+				// Starts the file sentry event loop AFTER the child PID is registered,
+				// so attribution is ready before classifying any writes.
+				onChildReady = func() {
+					go func() {
+						if startErr := watcher.Start(ctx); startErr != nil {
+							_, _ = fmt.Fprintf(logW, "pipelock: file sentry fatal: %v — cancelling proxy\n", startErr)
+							cancel()
+						}
+					}()
+				}
 			}
 
-			if err := mcp.RunProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), logW, serverCmd, sc, approver, inputCfg, toolCfg, policyCfg, ks, chainMatcher, nil, cee, store, adaptiveCfg, mcpMetrics, lin, extraEnv...); err != nil {
+			if err := mcp.RunProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), logW, serverCmd, sc, approver, inputCfg, toolCfg, policyCfg, ks, chainMatcher, nil, cee, store, adaptiveCfg, mcpMetrics, lin, onChildReady, extraEnv...); err != nil {
 				if sentryClient != nil {
 					sentryClient.CaptureError(err)
 				}

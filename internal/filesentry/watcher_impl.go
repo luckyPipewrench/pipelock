@@ -284,20 +284,19 @@ func (w *fsWatcher) scanFile(ctx context.Context, path string, isAgent bool) {
 			Encoded:     m.Encoded,
 			IsAgent:     isAgent,
 		}
-		// Guard against sending to a closed channel. Close() sets w.closed
-		// and closes w.findings under w.mu; debounce callbacks can still fire
-		// after Close() returns.
+		// Hold the lock across the closed check AND the send. Without this,
+		// Close() can close w.findings between the check and the send.
 		w.mu.Lock()
 		if w.closed {
 			w.mu.Unlock()
 			return
 		}
-		w.mu.Unlock()
 		select {
 		case w.findings <- f:
 		default:
 			// Channel full — drop finding rather than blocking the watcher.
 		}
+		w.mu.Unlock()
 	}
 }
 

@@ -96,7 +96,7 @@ These are Pipelock's three pillars. Weight findings in these areas highest.
 
 Structure every review as a handoff report:
 
-```
+```text
 ## Review: [branch or scope]
 
 ### Critical (must fix before merge)

@@ -2,6 +2,8 @@
 
 How Pipelock addresses the [OWASP Top 10 for Agentic Applications (2026)](https://genai.owasp.org/resource/owasp-top-10-for-agentic-applications-for-2026/).
 
+See also: [OWASP AIVSS coverage mapping](https://pipelab.org/learn/owasp-aivss-coverage/) for Pipelock's coverage against the AIVSS v0.8 scoring framework (all 10 Agentic AI Core Security Risks).
+
 > **Note:** Coverage levels reflect architectural capabilities against known attack patterns, not guarantees of threat prevention. "Strong" means the feature addresses the threat effectively for known techniques. "Partial" means it contributes but is not sufficient alone. No security tool prevents all instances of any threat class. This mapping is for informational purposes and does not constitute compliance certification.
 
 | Threat | Coverage | Status |

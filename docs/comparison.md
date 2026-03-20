@@ -8,7 +8,7 @@ An honest feature matrix and guidance on when to use what.
 |---------|----------|-----|---------|-----|
 | **Layer** | Application firewall (HTTP + MCP + WebSocket) | MCP proxy | Kernel (seccomp/eBPF/FUSE) | OS sandbox |
 | **Language** | Go | Go | Go | TypeScript |
-| **Binary** | Single, ~12MB | Single | Single + kernel modules | npm package |
+| **Binary** | Single, ~17MB | Single | Single + kernel modules | npm package |
 | **Domain allowlist** | Yes | Yes (MCP-level) | Yes (LLM proxy) | Yes |
 | **DLP (secret detection)** | Regex + entropy + env scan + BIP-39 seed phrases | Regex (per-argument) | Regex (LLM proxy) | No |
 | **Crypto secret detection** | Yes (BIP-39, WIF, xprv, ETH hex) | No | No | No |
@@ -30,7 +30,7 @@ An honest feature matrix and guidance on when to use what.
 | **Config format** | YAML + presets | YAML (agent.yaml) | CLI flags | Code |
 | **Hot-reload** | Yes (fsnotify + SIGHUP) | No | No | No |
 | **CI/CD friendly** | Yes (exit codes, JSON output) | Yes | Limited | Yes |
-| **Testing depth** | 5,800+ tests, 90%+ coverage, private adversarial suite | Public unit tests | Public unit tests | Public unit tests |
+| **Testing depth** | 7,000+ tests, 91%+ coverage, private adversarial suite | Public unit tests | Public unit tests | Public unit tests |
 
 ## When to Use What
 

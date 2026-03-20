@@ -7,8 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-03-20
+
+### Added
+- Adaptive enforcement v2: sessions that accumulate threat signals now escalate through three levels (elevated, high, critical), upgrading actions at every enforcement point across all proxy and MCP transports. Live escalation queries tighten enforcement mid-connection. New `internal/session/` package, `UpgradeAction()` in `internal/decide/`, configurable per-level behavior via `adaptive_enforcement.levels`. Prometheus metrics `pipelock_adaptive_upgrades_total` and `pipelock_adaptive_sessions_current`. 181 new tests. (#256)
+- Financial DLP with checksum validation: credit card (Luhn) and IBAN (mod-97) detection with post-match checksum validation that eliminates 90-99% of false positives. New `Validator` field on `DLPPattern` for extensible validated patterns. Covers Visa, Mastercard (including 2221-2720), Amex, Discover, JCB, and 80+ IBAN countries. ABA routing number validator available as opt-in. DLP count 44 to 46. 70 new tests. (#258)
+- Key-scoped tool policy matching: `arg_key` field scopes `arg_pattern` to specific top-level argument keys. Block `read_file` when `file_path` contains `/etc/shadow` without false positives on other arguments. Raw argument JSON threaded through all enforcement paths. (#257)
+- Community rules rollout: `rules.KeyringHex` wired into build ldflags (Makefile, GoReleaser, Dockerfile) so release binaries verify official bundle signatures. Official registry URL set to `pipelab.org/rules/`. `docs/rules.md` user guide. Community Rules section in README. Commented `rules:` section in all 7 presets. (#255)
+- Filesystem sentinel for subprocess MCP mode: real-time filesystem monitoring detects secrets written to disk by agent subprocesses that bypass the MCP pipe. Recursive directory watching with 50ms write debounce, DLP content scanning, process lineage attribution (Linux), and rename-into-place bypass prevention. Watches arm synchronously before child launch (no startup race). Fail-closed when enabled. (#261)
+
 ### Fixed
-- Windows release builds: `pipelock rules` now uses an OS-specific lock implementation so the CLI cross-compiles cleanly for Windows targets. CI now cross-builds the enterprise CLI for Windows to catch release-only breakage before tagging.
+- Transport parity: WebSocket header DLP now scans all 7 forwarded headers (was 4 auth-only). Forward HTTP proxy now scans responses for prompt injection when response_scanning is enabled. Fail-closed on compressed responses that cannot be scanned. Closes the last transport parity gap. (#254)
+- Shell normalization hardened against 3 evasion techniques: `$@`/`$*` positional parameter insertion, `${HOME:0:1}` path construction, and backtick command substitution now resolve before policy matching. Pipeline ordering fixed so indirect expansion resolves before slash replacement. (#259)
+- Windows release builds: `pipelock rules` now uses an OS-specific lock implementation so the CLI cross-compiles cleanly for Windows targets. (#252)
+
+### Tests
+- WebSocket and TLS interception transport wiring: integration tests for address poisoning detection, cross-request exfiltration entropy, response scanning strip action, full CONNECT-hijack-SNI-intercept-scan integration, and injection blocking. Coverage: `clientToUpstream` 61% to 88%, `handleConnect` TLS branch 0% to 86%. (#253)
 
 ## [1.4.0] - 2026-03-17
 

@@ -194,6 +194,16 @@ type TrustedKey struct {
 	PublicKey string `yaml:"public_key"` // 64 lowercase hex chars
 }
 
+// FileSentry configures real-time filesystem monitoring for agent processes.
+// Detects secrets written to disk by agent subprocess processes that bypass
+// the MCP tool call path. Applies to subprocess MCP mode only.
+type FileSentry struct {
+	Enabled        bool     `yaml:"enabled"`
+	WatchPaths     []string `yaml:"watch_paths"`
+	ScanContent    *bool    `yaml:"scan_content"`    // nil = default true
+	IgnorePatterns []string `yaml:"ignore_patterns"` // glob patterns to skip
+}
+
 // Config is the top-level Pipelock configuration.
 type Config struct {
 	Version               int                     `yaml:"version"`
@@ -228,6 +238,7 @@ type Config struct {
 	AddressProtection     AddressProtection       `yaml:"address_protection"`
 	SeedPhraseDetection   SeedPhraseDetection     `yaml:"seed_phrase_detection"`
 	Rules                 Rules                   `yaml:"rules"`
+	FileSentry            FileSentry              `yaml:"file_sentry"`
 	Agents                map[string]AgentProfile `yaml:"agents,omitempty"`
 	LicenseKey            string                  `yaml:"license_key,omitempty"`        // signed license token (from pipelock license issue)
 	LicenseFile           string                  `yaml:"license_file,omitempty"`       // path to file containing the license token (read at startup)
@@ -1314,6 +1325,11 @@ func (c *Config) ApplyDefaults() {
 	if c.Rules.MinConfidence == "" {
 		c.Rules.MinConfidence = ConfidenceMedium
 	}
+
+	// File sentry defaults
+	if c.FileSentry.ScanContent == nil {
+		c.FileSentry.ScanContent = ptrBool(true)
+	}
 }
 
 // mergeDLPPatterns merges default DLP patterns with user-defined patterns.
@@ -2094,6 +2110,11 @@ func (c *Config) Validate() error {
 		if len(decoded) != 32 {
 			return fmt.Errorf("rules: trusted_keys[%d] %q public_key must decode to 32 bytes", i, k.Name)
 		}
+	}
+
+	// Validate file sentry config
+	if c.FileSentry.Enabled && len(c.FileSentry.WatchPaths) == 0 {
+		return fmt.Errorf("file_sentry: watch_paths must be non-empty when enabled")
 	}
 
 	// Validate agent profiles (enterprise hook; nil in OSS).

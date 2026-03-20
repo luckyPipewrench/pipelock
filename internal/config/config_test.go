@@ -221,6 +221,42 @@ func TestValidate_DLPExemptDomainsValid(t *testing.T) {
 	}
 }
 
+func TestValidate_FileSentryEmptyWatchPaths(t *testing.T) {
+	cfg := Defaults()
+	cfg.FileSentry.Enabled = true
+	cfg.FileSentry.WatchPaths = nil
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for enabled file_sentry with empty watch_paths")
+	}
+}
+
+func TestValidate_FileSentryValid(t *testing.T) {
+	cfg := Defaults()
+	cfg.FileSentry.Enabled = true
+	cfg.FileSentry.WatchPaths = []string{"."}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("valid file_sentry should not error: %v", err)
+	}
+}
+
+func TestValidate_FileSentryDisabledNoWatchPaths(t *testing.T) {
+	cfg := Defaults()
+	cfg.FileSentry.Enabled = false
+	// No watch_paths — should be fine when disabled.
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("disabled file_sentry with no watch_paths should not error: %v", err)
+	}
+}
+
+func TestApplyDefaults_FileSentryScanContent(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	// ScanContent should default to true via ApplyDefaults.
+	if cfg.FileSentry.ScanContent == nil || !*cfg.FileSentry.ScanContent {
+		t.Error("expected ScanContent to default to true")
+	}
+}
+
 func TestValidate_InvalidLoggingFormat(t *testing.T) {
 	cfg := Defaults()
 	cfg.Logging.Format = "xml"

@@ -20,16 +20,22 @@ func ptrBool(b bool) *bool { return &b }
 
 // armAndStart arms the watcher synchronously, then starts the event loop
 // in a goroutine. Returns after watches are installed.
+// Start errors are captured via channel and checked in t.Cleanup to avoid
+// calling t.Errorf from a detached goroutine (race with test completion).
 func armAndStart(t *testing.T, w Watcher, ctx context.Context) {
 	t.Helper()
 	if err := w.Arm(); err != nil {
 		t.Fatalf("Arm: %v", err)
 	}
+	startErr := make(chan error, 1)
 	go func() {
-		if err := w.Start(ctx); err != nil {
+		startErr <- w.Start(ctx)
+	}()
+	t.Cleanup(func() {
+		if err := <-startErr; err != nil {
 			t.Errorf("Start: %v", err)
 		}
-	}()
+	})
 }
 
 func TestWatcher_DetectsSecretWrite(t *testing.T) {

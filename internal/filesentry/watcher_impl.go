@@ -119,7 +119,8 @@ func (w *fsWatcher) Findings() <-chan Finding {
 	return w.findings
 }
 
-// Close stops the watcher and drains pending timers.
+// Close stops the watcher, drains pending timers, and closes the findings
+// channel so consumer goroutines exit their range loops.
 func (w *fsWatcher) Close() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -130,6 +131,7 @@ func (w *fsWatcher) Close() error {
 	for _, t := range w.timers {
 		t.Stop()
 	}
+	close(w.findings)
 	return w.watcher.Close()
 }
 
@@ -282,6 +284,15 @@ func (w *fsWatcher) scanFile(ctx context.Context, path string, isAgent bool) {
 			Encoded:     m.Encoded,
 			IsAgent:     isAgent,
 		}
+		// Guard against sending to a closed channel. Close() sets w.closed
+		// and closes w.findings under w.mu; debounce callbacks can still fire
+		// after Close() returns.
+		w.mu.Lock()
+		if w.closed {
+			w.mu.Unlock()
+			return
+		}
+		w.mu.Unlock()
 		select {
 		case w.findings <- f:
 		default:

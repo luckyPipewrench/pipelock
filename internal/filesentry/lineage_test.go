@@ -1,6 +1,8 @@
 // Copyright 2026 Josh Waldrep
 // SPDX-License-Identifier: Apache-2.0
 
+//go:build linux
+
 package filesentry
 
 import (
@@ -113,8 +115,9 @@ func TestLineage_GrandchildDescendant(t *testing.T) {
 	}
 
 	l := NewLineage()
-	// bash -c "sleep 30" creates bash (child) -> sleep (grandchild)
-	cmd := exec.CommandContext(t.Context(), "bash", "-c", "sleep 30")
+	// "sleep 30 & wait" forces bash to stay alive as the parent of sleep.
+	// Plain "sleep 30" gets exec'd in place (no grandchild).
+	cmd := exec.CommandContext(t.Context(), "bash", "-c", "sleep 30 & wait")
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -130,10 +133,10 @@ func TestLineage_GrandchildDescendant(t *testing.T) {
 	// Poll until bash forks the sleep grandchild (up to 5s).
 	// Under -race, process tree inspection is slower.
 	var descendants []int
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for len(descendants) == 0 {
 		if time.Now().After(deadline) {
-			t.Skip("no grandchild found within 5s (may not be visible under race detector)")
+			t.Fatal("no grandchild found within 10s — collectDescendants may be broken")
 		}
 		time.Sleep(20 * time.Millisecond)
 		descendants = collectDescendants(cmd.Process.Pid)

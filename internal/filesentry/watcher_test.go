@@ -782,6 +782,10 @@ done:
 func TestWatcher_PermissionDeniedSubdir(t *testing.T) {
 	// Arm should fail closed when a subdirectory is unreadable.
 	dir := t.TempDir()
+	if os.Geteuid() == 0 {
+		t.Skip("chmod 000 does not restrict root")
+	}
+
 	denied := filepath.Join(dir, "denied")
 	if err := os.MkdirAll(denied, 0o750); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
@@ -790,7 +794,7 @@ func TestWatcher_PermissionDeniedSubdir(t *testing.T) {
 	if err := os.Chmod(denied, 0o000); err != nil {
 		t.Skipf("chmod not supported: %v", err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(denied, 0o600) })
+	t.Cleanup(func() { _ = os.Chmod(denied, 0o750) }) //nolint:gosec // restoring directory perms for t.TempDir cleanup
 
 	cfg := &config.FileSentry{
 		Enabled:     true,

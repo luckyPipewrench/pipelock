@@ -761,7 +761,7 @@ emit:
 | `syslog.facility` | `"local0"` | Syslog facility |
 | `syslog.tag` | `"pipelock"` | Syslog tag |
 | `otlp.endpoint` | `""` | OTLP collector base URL (e.g., `http://collector:4318`). `/v1/logs` appended automatically. |
-| `otlp.min_severity` | `"info"` | info, warn, or critical |
+| `otlp.min_severity` | `"warn"` | info, warn, or critical |
 | `otlp.headers` | `{}` | Custom HTTP headers (authentication, tenant routing) |
 | `otlp.timeout_seconds` | `10` | Per-request HTTP timeout |
 | `otlp.queue_size` | `256` | Async buffer size (overflow = drop) |

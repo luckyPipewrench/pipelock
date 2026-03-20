@@ -1136,6 +1136,15 @@ func (c *Config) ApplyDefaults() {
 	if c.Emit.Syslog.MinSeverity == "" {
 		c.Emit.Syslog.MinSeverity = SeverityWarn
 	}
+	if c.Emit.OTLP.MinSeverity == "" {
+		c.Emit.OTLP.MinSeverity = SeverityWarn
+	}
+	if c.Emit.OTLP.TimeoutSeconds <= 0 {
+		c.Emit.OTLP.TimeoutSeconds = 10
+	}
+	if c.Emit.OTLP.QueueSize <= 0 {
+		c.Emit.OTLP.QueueSize = 256
+	}
 	if c.Emit.Syslog.Facility == "" {
 		c.Emit.Syslog.Facility = "local0"
 	}
@@ -1980,13 +1989,17 @@ func (c *Config) Validate() error {
 		if otlpErr != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 			return fmt.Errorf("invalid emit.otlp.endpoint %q: must be http:// or https:// with a host", c.Emit.OTLP.Endpoint)
 		}
-		if c.Emit.OTLP.MinSeverity != "" {
-			switch c.Emit.OTLP.MinSeverity {
-			case SeverityInfo, SeverityWarn, SeverityCritical:
-				// valid
-			default:
-				return fmt.Errorf("invalid emit.otlp.min_severity %q: must be info, warn, or critical", c.Emit.OTLP.MinSeverity)
-			}
+		switch c.Emit.OTLP.MinSeverity {
+		case SeverityInfo, SeverityWarn, SeverityCritical:
+			// valid
+		default:
+			return fmt.Errorf("invalid emit.otlp.min_severity %q: must be info, warn, or critical", c.Emit.OTLP.MinSeverity)
+		}
+		if c.Emit.OTLP.TimeoutSeconds <= 0 {
+			return fmt.Errorf("emit.otlp.timeout_seconds must be positive")
+		}
+		if c.Emit.OTLP.QueueSize <= 0 {
+			return fmt.Errorf("emit.otlp.queue_size must be positive")
 		}
 	}
 

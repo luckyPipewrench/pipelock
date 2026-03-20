@@ -12,10 +12,9 @@ import (
 // Finding describes a DLP match detected in a file written to a watched directory.
 type Finding struct {
 	Path        string `json:"path"`
-	PID         int    `json:"pid,omitempty"` // 0 if attribution unavailable
 	PatternName string `json:"pattern_name"`
 	Severity    string `json:"severity"`
-	IsAgent     bool   `json:"is_agent"`          // true if PID is in the agent process tree
+	IsAgent     bool   `json:"is_agent"`          // true if writer is in the agent process tree
 	Encoded     string `json:"encoded,omitempty"` // encoding layer where match was found
 }
 

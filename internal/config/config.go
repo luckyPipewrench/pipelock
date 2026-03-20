@@ -195,7 +195,7 @@ type TrustedKey struct {
 }
 
 // FileSentry configures real-time filesystem monitoring for agent processes.
-// Detects secrets written to disk by agent subprocess processes that bypass
+// Detects secrets written to disk by agent subprocesses that bypass
 // the MCP tool call path. Applies to subprocess MCP mode only.
 type FileSentry struct {
 	Enabled        bool     `yaml:"enabled"`
@@ -807,10 +807,19 @@ func Load(path string) (*Config, error) {
 	// Resolve relative file_sentry.watch_paths against config file directory.
 	// "." in the config means the project directory, not whatever CWD the
 	// process happens to have (systemd sets CWD=/, containers vary).
+	//
+	// Relative paths with ".." traversal are rejected to prevent
+	// unintentional escapes. Absolute paths are allowed as-is since the
+	// user explicitly chose the target directory.
 	for i, p := range cfg.FileSentry.WatchPaths {
 		if !filepath.IsAbs(p) {
+			cleaned := filepath.Clean(p)
+			if strings.HasPrefix(cleaned, "..") {
+				return nil, fmt.Errorf("file_sentry: watch_paths[%d] %q uses path traversal (use absolute path instead)", i, p)
+			}
 			cfg.FileSentry.WatchPaths[i] = filepath.Join(configDir, p)
 		}
+		cfg.FileSentry.WatchPaths[i] = filepath.Clean(cfg.FileSentry.WatchPaths[i])
 	}
 
 	if err := cfg.Validate(); err != nil {

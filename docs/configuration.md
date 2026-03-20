@@ -1323,7 +1323,7 @@ At least one chain must be enabled when `address_protection.enabled` is `true`. 
 
 ## File Sentry
 
-Real-time filesystem monitoring for agent subprocess processes. Detects secrets written to disk that bypass the MCP tool call path. Applies to subprocess MCP mode only (`pipelock mcp proxy -- COMMAND`).
+Real-time filesystem monitoring for agent subprocesses. Detects secrets written to disk that bypass the MCP tool call path. Applies to subprocess MCP mode only (`pipelock mcp proxy -- COMMAND`).
 
 ```yaml
 file_sentry:

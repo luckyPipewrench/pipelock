@@ -37,15 +37,19 @@ type fsWatcher struct {
 	lineage  Lineage
 	watcher  *fsnotify.Watcher
 	findings chan Finding
+	onError  func(error) // optional callback for non-fatal errors (e.g. runtime watch failures)
 	mu       sync.Mutex
 	timers   map[string]*time.Timer // per-path debounce timers
+	pidSnap  map[string]bool        // per-path agent attribution snapshot at event time
 	closed   bool
 }
 
 // NewWatcher creates a file watcher that monitors configured directories for
 // writes and scans file content for DLP pattern matches. Lineage may be nil
-// (PID attribution will be unavailable).
-func NewWatcher(cfg *config.FileSentry, sc DLPScanner, lin Lineage) (Watcher, error) {
+// (PID attribution will be unavailable). onError is called for non-fatal
+// runtime errors (e.g. failing to watch a newly created directory); it may
+// be nil.
+func NewWatcher(cfg *config.FileSentry, sc DLPScanner, lin Lineage, onError func(error)) (Watcher, error) {
 	w, err := fsnotify.NewWatcher()
 	if err != nil {
 		return nil, fmt.Errorf("filesentry: create watcher: %w", err)
@@ -57,7 +61,16 @@ func NewWatcher(cfg *config.FileSentry, sc DLPScanner, lin Lineage) (Watcher, er
 		watcher:  w,
 		findings: make(chan Finding, findingsChanSize),
 		timers:   make(map[string]*time.Timer),
+		pidSnap:  make(map[string]bool),
+		onError:  onError,
 	}, nil
+}
+
+// logError invokes the error handler if one is registered.
+func (w *fsWatcher) logError(err error) {
+	if w.onError != nil {
+		w.onError(err)
+	}
 }
 
 // Arm installs watches on all configured directories synchronously.
@@ -92,8 +105,11 @@ func (w *fsWatcher) Start(ctx context.Context) error {
 			if !ok {
 				return nil
 			}
-			// Log but don't stop — partial watching is better than none.
-			_ = err
+			// Backend error from fsnotify (e.g. inotify queue overflow).
+			// Fail closed: return the error so the caller can handle it
+			// (log, cancel context, restart). Silently continuing would
+			// leave the watcher partially broken with no signal to the operator.
+			return fmt.Errorf("fsnotify backend error: %w", err)
 		}
 	}
 }
@@ -150,10 +166,15 @@ func (w *fsWatcher) addRecursive(root string) error {
 // handleEvent processes a single fsnotify event.
 func (w *fsWatcher) handleEvent(ctx context.Context, ev fsnotify.Event) {
 	// New directory created — add a recursive watch so we catch writes inside it.
+	// Errors here are non-fatal: the initial Arm() call fail-closes on watch
+	// failures, but runtime directory creation is best-effort. We log failures
+	// so the operator can see the gap.
 	if ev.Has(fsnotify.Create) {
 		if info, err := os.Stat(ev.Name); err == nil && info.IsDir() {
 			if !w.isIgnored(ev.Name) {
-				_ = w.addRecursive(ev.Name)
+				if addErr := w.addRecursive(ev.Name); addErr != nil {
+					w.logError(fmt.Errorf("failed to watch new directory %q: %w", ev.Name, addErr))
+				}
 			}
 		}
 	}
@@ -175,23 +196,53 @@ func (w *fsWatcher) handleEvent(ctx context.Context, ev fsnotify.Event) {
 		return
 	}
 
+	// Snapshot PID attribution at event time, not after the debounce delay.
+	// Short-lived writers may close their FD within the 50ms debounce window.
+	// Checking /proc at event time catches more writers than checking after
+	// the quiet period. The snapshot is consumed by scanFile after debounce.
+	if w.lineage != nil {
+		w.mu.Lock()
+		w.pidSnap[ev.Name] = w.lineage.HasFileOpen(ev.Name)
+		w.mu.Unlock()
+	}
+
 	// Debounce: reset the timer for this path. The scan fires only after
 	// debounceDelay of quiet (no more writes to this path).
+	//
+	// Timer identity check: capture the timer pointer in the closure.
+	// If a second write replaces this timer before the callback fires,
+	// the old callback sees its pointer differs from the map entry and
+	// does nothing. Without this, the old callback would delete the new
+	// timer's map entry, causing the new callback to scan without cleanup.
 	w.mu.Lock()
-	if t, ok := w.timers[ev.Name]; ok {
-		t.Stop()
+	if existing, ok := w.timers[ev.Name]; ok {
+		existing.Stop()
 	}
-	w.timers[ev.Name] = time.AfterFunc(debounceDelay, func() {
-		w.scanFile(ctx, ev.Name)
+	path := ev.Name
+	// Declare timer before AfterFunc so the closure can capture it.
+	// The closure uses timer identity to detect stale callbacks.
+	var timer *time.Timer
+	timer = time.AfterFunc(debounceDelay, func() {
 		w.mu.Lock()
-		delete(w.timers, ev.Name)
+		// Only proceed if this timer is still the active one for this path.
+		if current, ok := w.timers[path]; !ok || current != timer {
+			w.mu.Unlock()
+			return
+		}
+		delete(w.timers, path)
+		// Consume the PID snapshot (take the cached value, then clean up).
+		isAgent := w.pidSnap[path]
+		delete(w.pidSnap, path)
 		w.mu.Unlock()
+		w.scanFile(ctx, path, isAgent)
 	})
+	w.timers[path] = timer
 	w.mu.Unlock()
 }
 
 // scanFile reads a file and runs DLP scanning on its content.
-func (w *fsWatcher) scanFile(ctx context.Context, path string) {
+// isAgent is the PID attribution result snapshotted at event time.
+func (w *fsWatcher) scanFile(ctx context.Context, path string, isAgent bool) {
 	if w.cfg.ScanContent != nil && !*w.cfg.ScanContent {
 		return
 	}
@@ -229,12 +280,7 @@ func (w *fsWatcher) scanFile(ctx context.Context, path string) {
 			PatternName: m.PatternName,
 			Severity:    m.Severity,
 			Encoded:     m.Encoded,
-		}
-		// Attempt PID attribution if lineage is available.
-		if w.lineage != nil {
-			if w.lineage.HasFileOpen(path) {
-				f.IsAgent = true
-			}
+			IsAgent:     isAgent,
 		}
 		select {
 		case w.findings <- f:

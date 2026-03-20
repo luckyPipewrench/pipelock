@@ -650,9 +650,15 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	// Enable subreaper before starting the child so we adopt orphaned
 	// grandchildren. This lets the lineage tracker attribute file writes
 	// to the agent's process tree.
+	//
+	// If subreaper setup fails (e.g. missing CAP_SYS_RESOURCE in containers),
+	// PID attribution is unreliable. Warn and disable the lineage tracker
+	// rather than silently producing wrong results. File sentry DLP scanning
+	// still runs — only process-tree attribution is affected.
 	if lineage != nil {
 		if err := lineage.EnableSubreaper(); err != nil {
-			_, _ = fmt.Fprintf(logW, "pipelock: warning: subreaper setup failed, PID attribution may be incomplete: %v\n", err)
+			_, _ = fmt.Fprintf(logW, "pipelock: warning: subreaper setup failed, disabling PID attribution: %v\n", err)
+			lineage = nil
 		}
 	}
 

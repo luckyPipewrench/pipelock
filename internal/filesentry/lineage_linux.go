@@ -108,8 +108,21 @@ func parentPID(pid int) (int, error) {
 	return 0, fmt.Errorf("PPid not found for pid %d", pid)
 }
 
+// maxDescendantDepth limits recursion depth when walking the process tree.
+// Prevents stack overflow from deeply forked trees (e.g. fork bomb remnants)
+// or malicious procfs mounts in containers.
+const maxDescendantDepth = 256
+
 // collectDescendants walks /proc/[pid]/task/[tid]/children recursively.
 func collectDescendants(pid int) []int {
+	visited := make(map[int]struct{})
+	return collectDescendantsRec(pid, visited, 0)
+}
+
+func collectDescendantsRec(pid int, visited map[int]struct{}, depth int) []int {
+	if depth >= maxDescendantDepth {
+		return nil
+	}
 	var result []int
 	// Read children from all threads of this process.
 	taskDir := filepath.Clean(fmt.Sprintf("/proc/%d/task", pid))
@@ -128,8 +141,12 @@ func collectDescendants(pid int) []int {
 			if err != nil {
 				continue
 			}
+			if _, seen := visited[childPID]; seen {
+				continue // cycle protection
+			}
+			visited[childPID] = struct{}{}
 			result = append(result, childPID)
-			result = append(result, collectDescendants(childPID)...)
+			result = append(result, collectDescendantsRec(childPID, visited, depth+1)...)
 		}
 	}
 	return result

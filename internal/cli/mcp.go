@@ -498,7 +498,11 @@ Environment passthrough (subprocess mode only):
 			var lin filesentry.Lineage
 			if cfg.FileSentry.Enabled {
 				lin = filesentry.NewLineage()
-				watcher, watchErr := filesentry.NewWatcher(&cfg.FileSentry, sc, lin)
+				// Error handler for non-fatal runtime errors (e.g. failing to watch new dirs).
+				onErr := func(err error) {
+					_, _ = fmt.Fprintf(logW, "pipelock: [file_sentry] %v\n", err)
+				}
+				watcher, watchErr := filesentry.NewWatcher(&cfg.FileSentry, sc, lin, onErr)
 				if watchErr != nil {
 					return fmt.Errorf("file sentry init failed (feature is enabled): %w", watchErr)
 				}
@@ -511,7 +515,11 @@ Environment passthrough (subprocess mode only):
 
 				go func() {
 					if startErr := watcher.Start(ctx); startErr != nil {
-						_, _ = fmt.Fprintf(logW, "pipelock: file sentry error: %v\n", startErr)
+						_, _ = fmt.Fprintf(logW, "pipelock: file sentry fatal: %v — cancelling proxy\n", startErr)
+						// File sentry is a security control. If the event loop
+						// fails (e.g. fsnotify backend error), the proxy must
+						// not continue running unmonitored.
+						cancel()
 					}
 				}()
 				// Consume findings: log to stderr and record metrics.

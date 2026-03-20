@@ -1,6 +1,6 @@
 # Filesystem Sentinel
 
-The filesystem sentinel monitors directories where agent subprocess processes write files. When pipelock wraps an MCP server in subprocess mode (`pipelock mcp proxy -- COMMAND`), it can watch the agent's working directories for secrets written to disk.
+The filesystem sentinel monitors directories where agent subprocesses write files. When pipelock wraps an MCP server in subprocess mode (`pipelock mcp proxy -- COMMAND`), it can watch the agent's working directories for secrets written to disk.
 
 This catches a class of exfiltration that the network proxy cannot see: an agent writing credentials to a file, then a later process reading and exfiltrating them through a channel pipelock doesn't monitor.
 

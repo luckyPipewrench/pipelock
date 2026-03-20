@@ -74,14 +74,17 @@ func TestLineage_HasFileOpen(t *testing.T) {
 	}
 	defer func() { _ = cmd.Process.Kill(); _, _ = cmd.Process.Wait() }()
 
-	// Give tail time to open the file.
-	time.Sleep(100 * time.Millisecond)
-
 	l := NewLineage()
 	l.TrackPID(cmd.Process.Pid)
 
-	if !l.HasFileOpen(testFile) {
-		t.Error("expected tracked process to have file open")
+	// Poll until tail opens the file (up to 2s). Avoids fixed sleep that
+	// races under CI load or the race detector.
+	deadline := time.Now().Add(2 * time.Second)
+	for !l.HasFileOpen(testFile) {
+		if time.Now().After(deadline) {
+			t.Fatal("timeout: tail did not open file within 2s")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -119,18 +122,21 @@ func TestLineage_GrandchildDescendant(t *testing.T) {
 
 	l.TrackPID(cmd.Process.Pid)
 
-	// Give bash time to fork sleep.
-	time.Sleep(100 * time.Millisecond)
-
 	// The bash process itself is tracked.
 	if !l.IsDescendant(cmd.Process.Pid) {
 		t.Error("expected bash child to be a descendant")
 	}
 
-	// Find the sleep grandchild PID and verify it's also a descendant.
-	descendants := collectDescendants(cmd.Process.Pid)
-	if len(descendants) == 0 {
-		t.Skip("no grandchild found (sleep may not have forked yet)")
+	// Poll until bash forks the sleep grandchild (up to 5s).
+	// Under -race, process tree inspection is slower.
+	var descendants []int
+	deadline := time.Now().Add(5 * time.Second)
+	for len(descendants) == 0 {
+		if time.Now().After(deadline) {
+			t.Skip("no grandchild found within 5s (may not be visible under race detector)")
+		}
+		time.Sleep(20 * time.Millisecond)
+		descendants = collectDescendants(cmd.Process.Pid)
 	}
 	sleepPID := descendants[0]
 	if !l.IsDescendant(sleepPID) {

@@ -509,6 +509,7 @@ Environment passthrough (subprocess mode only):
 				}
 				// Arm synchronously before child launch.
 				if armErr := watcher.Arm(); armErr != nil {
+					_ = watcher.Close()
 					return fmt.Errorf("file sentry failed to arm watches (feature is enabled): %w", armErr)
 				}
 

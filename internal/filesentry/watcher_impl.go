@@ -269,10 +269,45 @@ func (w *fsWatcher) handleEvent(ctx context.Context, ev fsnotify.Event) {
 }
 
 // flushScan runs a DLP scan synchronously during Close, sending findings
-// directly without the closed guard (the channel is still open at this point).
-// Used to flush the last debounced writes before the channel closes.
+// with a blocking send (the consumer is still running and the channel is
+// still open at this point). This ensures the last debounced writes are
+// not dropped even if the buffer is full.
 func (w *fsWatcher) flushScan(path string, isAgent bool) {
-	w.doScan(context.Background(), path, isAgent, false)
+	if w.cfg.ScanContent != nil && !*w.cfg.ScanContent {
+		return
+	}
+
+	f, err := os.Open(filepath.Clean(path))
+	if err != nil {
+		return
+	}
+	defer func() { _ = f.Close() }()
+
+	info, err := f.Stat()
+	if err != nil || info.IsDir() || info.Size() == 0 || info.Size() > maxFileSize {
+		return
+	}
+
+	data, err := io.ReadAll(io.LimitReader(f, maxFileSize+1))
+	if err != nil || len(data) == 0 {
+		return
+	}
+
+	result := w.scanner.ScanTextForDLP(context.Background(), string(data))
+	if result.Clean {
+		return
+	}
+
+	for _, m := range result.Matches {
+		// Blocking send — consumer is still draining. No backpressure drop.
+		w.findings <- Finding{
+			Path:        path,
+			PatternName: m.PatternName,
+			Severity:    m.Severity,
+			Encoded:     m.Encoded,
+			IsAgent:     isAgent,
+		}
+	}
 }
 
 // scanFile reads a file and runs DLP scanning on its content.

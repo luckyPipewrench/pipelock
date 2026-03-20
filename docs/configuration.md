@@ -767,7 +767,7 @@ emit:
 | `otlp.queue_size` | `256` | Async buffer size (overflow = drop) |
 | `otlp.gzip` | `false` | Compress request bodies with gzip |
 
-OTLP events are sent as log records over HTTP/protobuf. Each pipelock audit event maps to one OTLP LogRecord with `service.name=pipelock` as a resource attribute. Retries on 429/5xx with bounded backoff (3 attempts). No gRPC, no batching timer.
+OTLP events are sent as log records over HTTP/protobuf. Each pipelock audit event maps to one OTLP LogRecord with `service.name=pipelock` as a resource attribute. Retries on 429, 502, 503, 504, and network errors with bounded exponential backoff (3 attempts, 1s/2s/4s). 500 and 501 are not retried. No gRPC, no batching timer.
 
 **Severity levels** (hardcoded per event type, not configurable):
 - **critical:** kill switch deny, adaptive escalation to block (event emitted; v1 does not auto-block, see above)

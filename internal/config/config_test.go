@@ -18,6 +18,7 @@ const (
 	testInvalid         = "invalid"
 	testSecretsPath     = "/path/to/secrets.txt"
 	testWebhookURL      = "https://example.com/hook"
+	testOTLPEndpoint    = "http://collector:4318"
 	testSyslogAddr      = "udp://syslog.example.com:514"
 	testAPIListen       = "0.0.0.0:9090"
 	testAPIListen2      = "0.0.0.0:9091"
@@ -4036,6 +4037,80 @@ func TestValidate_EmitWebhookInvalidQueueSize(t *testing.T) {
 	}
 }
 
+func TestValidate_EmitOTLPValidConfig(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	cfg.Emit.OTLP.Endpoint = testOTLPEndpoint
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("valid OTLP config should pass: %v", err)
+	}
+}
+
+func TestValidate_EmitOTLPInvalidEndpoint(t *testing.T) {
+	cfg := Defaults()
+	cfg.Emit.OTLP.Endpoint = "not-a-url"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for invalid OTLP endpoint")
+	}
+}
+
+func TestValidate_EmitOTLPInvalidSeverity(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	cfg.Emit.OTLP.Endpoint = testOTLPEndpoint
+	cfg.Emit.OTLP.MinSeverity = "bogus"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for invalid OTLP min_severity")
+	}
+}
+
+func TestValidate_EmitOTLPInvalidTimeout(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	cfg.Emit.OTLP.Endpoint = testOTLPEndpoint
+	cfg.Emit.OTLP.TimeoutSeconds = -1
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for negative OTLP timeout")
+	}
+	if !strings.Contains(err.Error(), "timeout_seconds") {
+		t.Errorf("error should mention timeout_seconds, got: %v", err)
+	}
+}
+
+func TestValidate_EmitOTLPInvalidQueueSize(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	cfg.Emit.OTLP.Endpoint = testOTLPEndpoint
+	cfg.Emit.OTLP.QueueSize = 0
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for zero OTLP queue_size")
+	}
+	if !strings.Contains(err.Error(), "queue_size") {
+		t.Errorf("error should mention queue_size, got: %v", err)
+	}
+}
+
+func TestApplyDefaults_OTLPMinSeverity(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	if cfg.Emit.OTLP.MinSeverity != SeverityWarn {
+		t.Errorf("expected OTLP min_severity default to warn, got %q", cfg.Emit.OTLP.MinSeverity)
+	}
+}
+
+func TestApplyDefaults_OTLPTimeoutAndQueue(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	if cfg.Emit.OTLP.TimeoutSeconds != 10 {
+		t.Errorf("expected OTLP timeout default 10, got %d", cfg.Emit.OTLP.TimeoutSeconds)
+	}
+	if cfg.Emit.OTLP.QueueSize != 256 {
+		t.Errorf("expected OTLP queue default 256, got %d", cfg.Emit.OTLP.QueueSize)
+	}
+}
+
 func TestValidate_EmitNoSinksConfigured(t *testing.T) {
 	cfg := Defaults()
 	// No URL or address set — should pass validation
@@ -4104,6 +4179,36 @@ func TestValidateReload_EmitSyslogBothEmpty_NoWarning(t *testing.T) {
 	for _, w := range warnings {
 		if w.Field == "emit.syslog.address" {
 			t.Errorf("both empty syslog addresses should not warn, got: %s", w.Message)
+		}
+	}
+}
+
+func TestValidateReload_EmitOTLPDisabled(t *testing.T) {
+	old := Defaults()
+	old.Emit.OTLP.Endpoint = testOTLPEndpoint
+	updated := Defaults()
+	// Endpoint cleared — OTLP disabled on reload.
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == "emit.otlp.endpoint" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected reload warning when OTLP endpoint is removed")
+	}
+}
+
+func TestValidateReload_EmitOTLPBothEmpty_NoWarning(t *testing.T) {
+	old := Defaults()
+	updated := Defaults()
+
+	warnings := ValidateReload(old, updated)
+	for _, w := range warnings {
+		if w.Field == "emit.otlp.endpoint" {
+			t.Errorf("both empty OTLP endpoints should not warn, got: %s", w.Message)
 		}
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -66,6 +67,10 @@ type OTLPSink struct {
 // appended automatically. The version string is set as the service.version
 // resource attribute.
 func NewOTLPSink(endpoint, instanceID, version string, minSev Severity, headers map[string]string, timeout time.Duration, queueSize int, useGzip bool) (*OTLPSink, error) {
+	// Normalize: strip trailing /v1/logs if the operator already included it,
+	// then append it. Prevents http://collector:4318/v1/logs/v1/logs.
+	endpoint = strings.TrimRight(endpoint, "/")
+	endpoint = strings.TrimSuffix(endpoint, "/v1/logs")
 	u, err := url.JoinPath(endpoint, "/v1/logs")
 	if err != nil {
 		return nil, fmt.Errorf("otlp: invalid endpoint %q: %w", endpoint, err)
@@ -111,6 +116,11 @@ func NewOTLPSink(endpoint, instanceID, version string, minSev Severity, headers 
 
 // Emit enqueues an event for async delivery.
 // Events below the minimum severity are silently dropped.
+//
+// Note: there is a benign race between the done check and the queue send.
+// An event enqueued between Close() and the worker noticing done will be
+// drained normally. This matches the webhook sink's behavior and is not
+// a security concern (extra events are processed, never lost silently).
 func (s *OTLPSink) Emit(_ context.Context, event Event) error {
 	if event.Severity < s.minSev {
 		return nil
@@ -222,12 +232,15 @@ func (s *OTLPSink) sendWithRetry(body []byte) {
 			return
 		}
 
+		// Apply custom headers first, then set transport headers.
+		// This prevents config from accidentally overriding Content-Type
+		// or Content-Encoding, which would break every export silently.
+		for k, v := range s.headers {
+			httpReq.Header.Set(k, v)
+		}
 		httpReq.Header.Set("Content-Type", "application/x-protobuf")
 		if s.useGzip {
 			httpReq.Header.Set("Content-Encoding", "gzip")
-		}
-		for k, v := range s.headers {
-			httpReq.Header.Set(k, v)
 		}
 
 		resp, doErr := s.client.Do(httpReq)

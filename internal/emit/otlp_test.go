@@ -4,6 +4,7 @@
 package emit
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
 	"io"
@@ -13,16 +14,20 @@ import (
 	"testing"
 	"time"
 
+	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
+	respb "go.opentelemetry.io/proto/otlp/resource/v1"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 )
+
+const otlpLogsPath = "/v1/logs"
 
 func TestOTLPSink_EmitEvent(t *testing.T) {
 	bodyCh := make(chan []byte, 1)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/logs" {
+		if r.URL.Path != otlpLogsPath {
 			t.Errorf("expected path /v1/logs, got %s", r.URL.Path)
 		}
 		if r.Header.Get("Content-Type") != "application/x-protobuf" {
@@ -249,9 +254,9 @@ func TestOTLPSink_NoRetryOn500(t *testing.T) {
 		t.Fatal("timeout")
 	}
 
-	// 500 is not retryable per OTLP spec — should be exactly 1 attempt.
-	// Small sleep to ensure no retry is in flight.
-	time.Sleep(100 * time.Millisecond)
+	// Close the sink and wait for drain. After Close() returns, the worker
+	// goroutine is done — any retry that would have happened has happened.
+	_ = sink.Close()
 	if attempts.Load() != 1 {
 		t.Errorf("expected 1 attempt (500 not retryable), got %d", attempts.Load())
 	}
@@ -368,6 +373,60 @@ func TestOTLPSink_CloseDrains(t *testing.T) {
 	// After close returns, all queued events should have been drained.
 	if n := received.Load(); n == 0 {
 		t.Error("expected at least some events to be drained on close")
+	}
+}
+
+func TestOTLPSink_EndpointWithV1Logs(t *testing.T) {
+	// Operator passes endpoint already ending in /v1/logs.
+	// Must not double up to /v1/logs/v1/logs.
+	requestCh := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCh <- r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	sink, err := NewOTLPSink(srv.URL+"/v1/logs", "test", "1.0.0", SeverityInfo, nil, 5*time.Second, 64, false)
+	if err != nil {
+		t.Fatalf("NewOTLPSink: %v", err)
+	}
+	defer func() { _ = sink.Close() }()
+
+	_ = sink.Emit(context.Background(), Event{Severity: SeverityCritical, Type: "test", Timestamp: time.Now()})
+
+	select {
+	case path := <-requestCh:
+		if path != otlpLogsPath {
+			t.Errorf("expected /v1/logs, got %s (double path?)", path)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout")
+	}
+}
+
+func TestOTLPSink_EndpointWithTrailingSlash(t *testing.T) {
+	requestCh := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCh <- r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	sink, err := NewOTLPSink(srv.URL+"/", "test", "1.0.0", SeverityInfo, nil, 5*time.Second, 64, false)
+	if err != nil {
+		t.Fatalf("NewOTLPSink: %v", err)
+	}
+	defer func() { _ = sink.Close() }()
+
+	_ = sink.Emit(context.Background(), Event{Severity: SeverityCritical, Type: "test", Timestamp: time.Now()})
+
+	select {
+	case path := <-requestCh:
+		if path != otlpLogsPath {
+			t.Errorf("expected /v1/logs, got %s", path)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout")
 	}
 }
 
@@ -544,6 +603,69 @@ func TestOTLPSink_BackoffOrDone_Cancelled(t *testing.T) {
 	_ = sink.Close()
 	if sink.backoffOrDone(10 * time.Second) {
 		t.Error("expected backoffOrDone to return false when sink is closed")
+	}
+}
+
+func TestGzipCompress(t *testing.T) {
+	data := []byte("hello world this is test data for compression")
+	compressed, err := gzipCompress(data)
+	if err != nil {
+		t.Fatalf("gzipCompress: %v", err)
+	}
+	if len(compressed) == 0 {
+		t.Error("expected non-empty compressed output")
+	}
+
+	// Verify round-trip.
+	reader, err := gzip.NewReader(bytes.NewReader(compressed))
+	if err != nil {
+		t.Fatalf("gzip.NewReader: %v", err)
+	}
+	defer func() { _ = reader.Close() }()
+	decompressed, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if string(decompressed) != string(data) {
+		t.Errorf("round-trip mismatch: got %q", decompressed)
+	}
+}
+
+func TestMarshalExportLogsRequest(t *testing.T) {
+	resource := &respb.Resource{
+		Attributes: []*commonpb.KeyValue{
+			stringKV("service.name", "test"),
+		},
+	}
+	record := &logspb.LogRecord{
+		TimeUnixNano:   12345,
+		SeverityNumber: otlpSeverityWarn,
+		SeverityText:   "WARN",
+		Body: &commonpb.AnyValue{
+			Value: &commonpb.AnyValue_StringValue{StringValue: "blocked"},
+		},
+	}
+
+	data, err := marshalExportLogsRequest(resource, record)
+	if err != nil {
+		t.Fatalf("marshalExportLogsRequest: %v", err)
+	}
+	if len(data) == 0 {
+		t.Error("expected non-empty output")
+	}
+
+	// Verify the outer message: field 1 (ResourceLogs) as bytes.
+	_, typ, n := protowire.ConsumeTag(data)
+	if typ != protowire.BytesType {
+		t.Fatalf("expected BytesType, got %v", typ)
+	}
+	rlBytes, _ := protowire.ConsumeBytes(data[n:])
+	var rl logspb.ResourceLogs
+	if err := proto.Unmarshal(rlBytes, &rl); err != nil {
+		t.Fatalf("unmarshal ResourceLogs: %v", err)
+	}
+	if len(rl.ScopeLogs) == 0 {
+		t.Error("expected ScopeLogs")
 	}
 }
 

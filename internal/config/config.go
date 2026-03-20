@@ -2444,6 +2444,12 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 			Message: "syslog emission disabled",
 		})
 	}
+	if old.Emit.OTLP.Endpoint != "" && updated.Emit.OTLP.Endpoint == "" {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "emit.otlp.endpoint",
+			Message: "OTLP log emission disabled",
+		})
+	}
 
 	// Kill switch API listen address changed (requires restart)
 	if old.KillSwitch.APIListen != updated.KillSwitch.APIListen {

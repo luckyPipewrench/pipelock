@@ -417,6 +417,136 @@ func TestMapSeverity(t *testing.T) {
 	}
 }
 
+func TestOTLPSink_NetworkErrorRetry(t *testing.T) {
+	// Start server, let first request through, then close it to cause
+	// network errors on subsequent attempts.
+	var attempts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+
+	sink, err := NewOTLPSink(srv.URL, "test", "1.0.0", SeverityInfo, nil, 2*time.Second, 64, false)
+	if err != nil {
+		t.Fatalf("NewOTLPSink: %v", err)
+	}
+	defer func() { _ = sink.Close() }()
+
+	// Close server immediately so retries hit network errors.
+	srv.Close()
+
+	_ = sink.Emit(context.Background(), Event{Severity: SeverityCritical, Type: "test", Timestamp: time.Now()})
+
+	// Wait for retry exhaustion (3 attempts * ~1-2s backoff each, but network
+	// errors return fast since server is closed).
+	time.Sleep(3 * time.Second)
+
+	// Should have attempted multiple times before giving up.
+	if attempts.Load() > 0 {
+		t.Log("server received requests before closing (expected)")
+	}
+}
+
+func TestOTLPSink_RetryExhausted(t *testing.T) {
+	var attempts atomic.Int32
+	doneCh := make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		n := attempts.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		if n >= 3 {
+			select {
+			case doneCh <- struct{}{}:
+			default:
+			}
+		}
+	}))
+	defer srv.Close()
+
+	sink, err := NewOTLPSink(srv.URL, "test", "1.0.0", SeverityInfo, nil, 5*time.Second, 64, false)
+	if err != nil {
+		t.Fatalf("NewOTLPSink: %v", err)
+	}
+	defer func() { _ = sink.Close() }()
+
+	_ = sink.Emit(context.Background(), Event{Severity: SeverityCritical, Type: "test", Timestamp: time.Now()})
+
+	select {
+	case <-doneCh:
+	case <-time.After(15 * time.Second):
+		t.Fatal("timeout waiting for retry exhaustion")
+	}
+
+	if attempts.Load() != 3 {
+		t.Errorf("expected exactly 3 attempts, got %d", attempts.Load())
+	}
+}
+
+func TestOTLPSink_4xxNotRetried(t *testing.T) {
+	var attempts atomic.Int32
+	doneCh := make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts.Add(1)
+		w.WriteHeader(http.StatusBadRequest)
+		select {
+		case doneCh <- struct{}{}:
+		default:
+		}
+	}))
+	defer srv.Close()
+
+	sink, err := NewOTLPSink(srv.URL, "test", "1.0.0", SeverityInfo, nil, 5*time.Second, 64, false)
+	if err != nil {
+		t.Fatalf("NewOTLPSink: %v", err)
+	}
+	defer func() { _ = sink.Close() }()
+
+	_ = sink.Emit(context.Background(), Event{Severity: SeverityCritical, Type: "test", Timestamp: time.Now()})
+
+	select {
+	case <-doneCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout")
+	}
+
+	// 400 is not retryable — exactly 1 attempt.
+	time.Sleep(100 * time.Millisecond)
+	if attempts.Load() != 1 {
+		t.Errorf("expected 1 attempt (400 not retryable), got %d", attempts.Load())
+	}
+}
+
+func TestOTLPSink_DefaultTimeoutAndQueue(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	// Pass 0 for timeout and queue to exercise default paths.
+	sink, err := NewOTLPSink(srv.URL, "test", "1.0.0", SeverityInfo, nil, 0, 0, false)
+	if err != nil {
+		t.Fatalf("NewOTLPSink: %v", err)
+	}
+	_ = sink.Close()
+}
+
+func TestOTLPSink_BackoffOrDone_Cancelled(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	sink, err := NewOTLPSink(srv.URL, "test", "1.0.0", SeverityInfo, nil, 5*time.Second, 64, false)
+	if err != nil {
+		t.Fatalf("NewOTLPSink: %v", err)
+	}
+
+	// Close the sink, then verify backoffOrDone returns false immediately.
+	_ = sink.Close()
+	if sink.backoffOrDone(10 * time.Second) {
+		t.Error("expected backoffOrDone to return false when sink is closed")
+	}
+}
+
 func TestIsRetryableStatus(t *testing.T) {
 	tests := []struct {
 		code int

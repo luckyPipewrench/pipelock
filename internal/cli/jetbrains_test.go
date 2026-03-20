@@ -19,6 +19,7 @@ const (
 	testConfigFlag   = "--config"
 	testPipelockConf = "/etc/pipelock.yaml"
 	testEchoCmd      = "echo"
+	testWrappedJSON  = `{"mcpServers": {"srv": {"type": "stdio", "command": "pipelock", "args": ["mcp", "proxy", "--", "echo"], "_pipelock": {"original_type": "stdio", "original_command": "echo"}}}}`
 )
 
 func TestJetbrainsInstall_StdioServer(t *testing.T) {
@@ -330,7 +331,7 @@ func TestRunJetbrainsRemove_DryRun(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	wrapped := `{"mcpServers": {"srv": {"type": "stdio", "command": "pipelock", "args": ["mcp", "proxy", "--", "echo"], "_pipelock": {"original_type": "stdio", "original_command": "echo"}}}}`
+	wrapped := testWrappedJSON
 	cfgPath := filepath.Join(junieDir, testMCPFilename)
 	if err := os.WriteFile(cfgPath, []byte(wrapped), 0o600); err != nil {
 		t.Fatal(err)
@@ -353,6 +354,269 @@ func TestRunJetbrainsRemove_DryRun(t *testing.T) {
 	out := buf.String()
 	if !strings.Contains(out, "1 unwrapped") {
 		t.Errorf("expected 1 unwrapped, got: %s", out)
+	}
+}
+
+func TestRunJetbrainsInstall_WritesFile(t *testing.T) {
+	dir := t.TempDir()
+	junieDir := filepath.Join(dir, ".junie", "mcp")
+	if err := os.MkdirAll(junieDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	cfgData := `{"mcpServers": {"srv": {"command": "echo", "args": ["hi"]}}}`
+	cfgPath := filepath.Join(junieDir, testMCPFilename)
+	if err := os.WriteFile(cfgPath, []byte(cfgData), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := jetbrainsCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"install", "--project"})
+
+	orig, _ := os.Getwd()
+	_ = os.Chdir(dir)
+	defer func() { _ = os.Chdir(orig) }()
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("install failed: %v\noutput: %s", err, buf.String())
+	}
+
+	// Verify file was actually written.
+	data, err := os.ReadFile(filepath.Clean(cfgPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "_pipelock") {
+		t.Error("expected _pipelock metadata in written file")
+	}
+
+	// Verify backup was created.
+	bakData, err := os.ReadFile(filepath.Clean(cfgPath + ".bak"))
+	if err != nil {
+		t.Fatal("expected .bak backup file")
+	}
+	if !strings.Contains(string(bakData), `"echo"`) {
+		t.Error("backup should contain original config")
+	}
+}
+
+func TestRunJetbrainsInstall_NewFile(t *testing.T) {
+	dir := t.TempDir()
+
+	cmd := jetbrainsCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"install", "--project"})
+
+	orig, _ := os.Getwd()
+	_ = os.Chdir(dir)
+	defer func() { _ = os.Chdir(orig) }()
+
+	// No existing .junie/mcp/mcp.json — should create it with empty servers.
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("install on empty dir failed: %v\noutput: %s", err, buf.String())
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "Wrapped 0 server(s)") {
+		t.Errorf("expected 'Wrapped 0 server(s)' for empty config, got: %s", out)
+	}
+}
+
+func TestRunJetbrainsInstall_AlreadyWrapped(t *testing.T) {
+	dir := t.TempDir()
+	junieDir := filepath.Join(dir, ".junie", "mcp")
+	if err := os.MkdirAll(junieDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	// Pre-wrapped config.
+	wrapped := testWrappedJSON
+	cfgPath := filepath.Join(junieDir, testMCPFilename)
+	if err := os.WriteFile(cfgPath, []byte(wrapped), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := jetbrainsCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"install", "--project"})
+
+	orig, _ := os.Getwd()
+	_ = os.Chdir(dir)
+	defer func() { _ = os.Chdir(orig) }()
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("install failed: %v", err)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "1 already wrapped") {
+		t.Errorf("expected already-wrapped skip, got: %s", out)
+	}
+}
+
+func TestRunJetbrainsRemove_WritesFile(t *testing.T) {
+	dir := t.TempDir()
+	junieDir := filepath.Join(dir, ".junie", "mcp")
+	if err := os.MkdirAll(junieDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	wrapped := testWrappedJSON
+	cfgPath := filepath.Join(junieDir, testMCPFilename)
+	if err := os.WriteFile(cfgPath, []byte(wrapped), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := jetbrainsCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"remove", "--project"})
+
+	orig, _ := os.Getwd()
+	_ = os.Chdir(dir)
+	defer func() { _ = os.Chdir(orig) }()
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("remove failed: %v\noutput: %s", err, buf.String())
+	}
+
+	// Verify _pipelock metadata was removed.
+	data, err := os.ReadFile(filepath.Clean(cfgPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "_pipelock") {
+		t.Error("expected _pipelock to be removed from written file")
+	}
+	if !strings.Contains(string(data), `"echo"`) {
+		t.Error("expected original command to be restored")
+	}
+}
+
+func TestRunJetbrainsRemove_NoFile(t *testing.T) {
+	dir := t.TempDir()
+
+	cmd := jetbrainsCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"remove", "--project"})
+
+	orig, _ := os.Getwd()
+	_ = os.Chdir(dir)
+	defer func() { _ = os.Chdir(orig) }()
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("remove on empty dir failed: %v", err)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "No mcp.json found") {
+		t.Errorf("expected 'No mcp.json found', got: %s", out)
+	}
+}
+
+func TestRunJetbrainsRemove_MutualExclusion(t *testing.T) {
+	cmd := jetbrainsCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"remove", "--global", "--project", "--dry-run"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Error("expected error for --global + --project on remove")
+	}
+}
+
+func TestRunJetbrainsInstall_SkipsHTTPWithHeaders(t *testing.T) {
+	dir := t.TempDir()
+	junieDir := filepath.Join(dir, ".junie", "mcp")
+	if err := os.MkdirAll(junieDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := `{"mcpServers": {"remote": {"type": "http", "url": "https://mcp.example.com", "headers": {"Authorization": "Bearer tok"}}}}`
+	cfgPath := filepath.Join(junieDir, testMCPFilename)
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := jetbrainsCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"install", "--project"})
+
+	orig, _ := os.Getwd()
+	_ = os.Chdir(dir)
+	defer func() { _ = os.Chdir(orig) }()
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("install failed: %v", err)
+	}
+
+	out := buf.String()
+	errOut := buf.String()
+	if !strings.Contains(out, "0 wrapped") && !strings.Contains(errOut, "skipping") {
+		t.Errorf("expected skip warning for HTTP server with headers, got: %s", out)
+	}
+}
+
+func TestReadMCPConfig_InvalidJSON(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, testMCPFilename)
+	if err := os.WriteFile(path, []byte("{invalid json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := readMCPConfig(path, junieServersKey)
+	if err == nil {
+		t.Error("expected error for invalid JSON")
+	}
+}
+
+func TestUnwrapMCPServer_MissingOriginalType(t *testing.T) {
+	server := map[string]interface{}{
+		mcpFieldPipelock: map[string]interface{}{
+			"original_command": testEchoCmd,
+		},
+	}
+	_, err := unwrapMCPServer(server)
+	if err == nil {
+		t.Error("expected error for missing original_type")
+	}
+}
+
+func TestUnwrapMCPServer_MissingOriginalURL(t *testing.T) {
+	server := map[string]interface{}{
+		mcpFieldPipelock: map[string]interface{}{
+			"original_type": testTypeSSE,
+		},
+	}
+	_, err := unwrapMCPServer(server)
+	if err == nil {
+		t.Error("expected error for missing original_url on HTTP server")
+	}
+}
+
+func TestUnwrapMCPServer_MissingOriginalCommand(t *testing.T) {
+	server := map[string]interface{}{
+		mcpFieldPipelock: map[string]interface{}{
+			"original_type": "stdio",
+		},
+	}
+	_, err := unwrapMCPServer(server)
+	if err == nil {
+		t.Error("expected error for missing original_command on stdio server")
 	}
 }
 

@@ -8,7 +8,7 @@ An honest feature matrix and guidance on when to use what.
 |---------|----------|-----|---------|-----|
 | **Layer** | Application firewall (HTTP + MCP + WebSocket) | MCP proxy | Kernel (seccomp/eBPF/FUSE) | OS sandbox |
 | **Language** | Go | Go | Go | TypeScript |
-| **Binary** | Single, ~17MB | Single | Single + kernel modules | npm package |
+| **Binary** | Single, ~12MB | Single | Single + kernel modules | npm package |
 | **Domain allowlist** | Yes | Yes (MCP-level) | Yes (LLM proxy) | Yes |
 | **DLP (secret detection)** | Regex + entropy + env scan + BIP-39 seed phrases | Regex (per-argument) | Regex (LLM proxy) | No |
 | **Crypto secret detection** | Yes (BIP-39, WIF, xprv, ETH hex) | No | No | No |
@@ -24,13 +24,13 @@ An honest feature matrix and guidance on when to use what.
 | **Audit logging** | Structured JSON (zerolog) | JSONL | Session logs | No |
 | **Prometheus metrics** | Yes | No | No | No |
 | **Multi-agent support** | Agent ID header + per-agent logs | Per-agent config | Per-session | No |
-| **Network isolation** | Docker Compose generation | No | Kernel-level | sandbox-exec / bubblewrap |
+| **Network isolation** | Deployment-enforced (proxy routing via container/firewall config) | No | Kernel-level | sandbox-exec / bubblewrap |
 | **Syscall filtering** | No | No | Yes (seccomp) | Yes (sandbox-exec) |
 | **Filesystem sandboxing** | No | No | Yes (FUSE) | Yes (bubblewrap) |
 | **Config format** | YAML + presets | YAML (agent.yaml) | CLI flags | Code |
 | **Hot-reload** | Yes (fsnotify + SIGHUP) | No | No | No |
 | **CI/CD friendly** | Yes (exit codes, JSON output) | Yes | Limited | Yes |
-| **Testing depth** | 7,000+ tests, 91%+ coverage, private adversarial suite | Public unit tests | Public unit tests | Public unit tests |
+| **Testing depth** | 5,800+ tests, 90%+ coverage, private adversarial suite | Public unit tests | Public unit tests | Public unit tests |
 
 ## When to Use What
 
@@ -58,10 +58,9 @@ An honest feature matrix and guidance on when to use what.
 - You want **per-argument regex validation** on MCP tool calls (AIP validates argument schemas; Pipelock scans argument content for DLP/injection patterns)
 
 ### Use agentsh when:
-- You need **kernel-level enforcement** (seccomp, eBPF), which the agent literally cannot bypass
-- You want **"steering"** to redirect denied operations to safe alternatives (e.g., SIGKILL to SIGTERM)
-- You need **filesystem sandboxing** via FUSE
+- You need **eBPF-based enforcement** and "steering" to redirect denied operations to safe alternatives
 - You're comfortable with kernel modules and more complex setup
+- You want redirect-based control (SIGKILL to SIGTERM) rather than block/scan-based control
 
 ### Use srt when:
 - You're using **Claude Code** specifically (srt is built into it)

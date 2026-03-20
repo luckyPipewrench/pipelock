@@ -221,7 +221,7 @@ What each mode prevents, detects, or logs:
 | Chunked exfiltration | **Prevented** | **Detected** (rate + data budget) | Logged |
 | Public-key encrypted blob in URL | **Prevented** | Logged (entropy flags it) | Logged |
 
-> **Honest assessment:** Strict mode blocks all outbound HTTP except allowlisted API domains, so there's no exfiltration channel through the proxy. Balanced mode raises the bar from "one curl command" to "sophisticated pre-planned attack." Audit mode gives you visibility you don't have today. Pipelock doesn't sandbox processes or restrict syscalls. It's a content inspection layer. For full defense in depth, pair it with an OS sandbox (see [docs/comparison.md](docs/comparison.md)).
+> **Honest assessment:** Strict mode blocks all outbound HTTP except allowlisted API domains, so there's no exfiltration channel through the proxy. Balanced mode raises the bar from "one curl command" to "sophisticated pre-planned attack." Audit mode gives you visibility you don't have today. Pipelock is primarily a content inspection layer. For full defense in depth, pair it with OS-level containment (see [docs/comparison.md](docs/comparison.md)).
 
 ## Features
 
@@ -540,8 +540,8 @@ Canonical metrics, updated each release.
 
 | Metric | Value |
 |--------|-------|
-| Go tests (with `-race`) | 7,000+ |
-| Statement coverage | 91%+ |
+| Go tests (with `-race`) | 5,800+ |
+| Statement coverage | 90%+ |
 | Evasion techniques tested | 230+ |
 | Scanner pipeline overhead | ~21μs per URL scan ([performance details](docs/performance.md)) |
 | CI matrix | Go 1.25 + 1.26, CodeQL, golangci-lint |
@@ -568,13 +568,13 @@ If Pipelock is useful, please [star this repository](https://github.com/luckyPip
 Pipelock core is licensed under the **Apache License 2.0**. Copyright 2026 Joshua Waldrep.
 
 Multi-agent features (per-agent identity, budgets, and configuration isolation)
-are gated by the `enterprise` build tag and licensed under the **Elastic License 2.0 (ELv2)**.
-The primary implementation is in the `enterprise/` directory, with build-tag-gated integration
-code in `cmd/` and `internal/`. These features require a valid enterprise license key.
+are in the `enterprise/` directory, gated by the `enterprise` build tag and licensed
+under the **Elastic License 2.0 (ELv2)**. These features activate with a valid license key.
 
-The open-source core works independently without enterprise features.
+The open-source core works independently without paid features. All scanning, detection,
+and single-agent protection is free.
 
-Pre-built release artifacts (Homebrew, GitHub releases, Docker images) include enterprise
+Pre-built release artifacts (Homebrew, GitHub releases, Docker images) include paid-tier
 code that activates with a valid license key. Building from source with `go install` or the
 repository `Dockerfile` produces a Community-only binary.
 

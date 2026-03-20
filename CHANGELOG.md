@@ -103,7 +103,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - DLP prefix pre-filter: fast literal-prefix screening skips regex evaluation on URLs that contain no credential-like substrings, reducing DLP overhead on clean traffic (#209)
 
 ### Changed
-- Release artifacts (Homebrew, GitHub releases, Docker images) now include enterprise features that activate with a valid license key. Building from source without the `enterprise` tag produces a Community-only binary. (#212)
+- Release artifacts (Homebrew, GitHub releases, Docker images) now include paid-tier features that activate with a valid license key. Building from source without the `enterprise` tag produces a Community-only binary. (#212)
 
 ### Fixed
 - Agent listeners now shut down on config reload when the license is revoked, preventing policy-free traffic after license expiry (#205)

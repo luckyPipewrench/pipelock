@@ -73,7 +73,7 @@ Handles plaintext HTTP requests where the client sends the full URL as the reque
 
 **Scanning:**
 - 11-layer URL scan on the full URL
-- No response injection scanning
+- Response injection scanning (buffer-then-scan-then-send, fail-closed on compressed responses)
 - Response body streamed through with size limit (MaxResponseMB)
 - Data budget tracking on response size
 

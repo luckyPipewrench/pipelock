@@ -141,7 +141,7 @@ func (w *WebhookSink) run() {
 	defer w.closeWG.Done()
 	defer func() {
 		if r := recover(); r != nil {
-			fmt.Fprintf(os.Stderr, "emit: webhook goroutine panic: %v\n", r)
+			_, _ = fmt.Fprintf(os.Stderr, "emit: webhook goroutine panic: %v\n", r)
 		}
 	}()
 
@@ -183,13 +183,13 @@ func (w *WebhookSink) send(event Event) {
 
 	body, err := json.Marshal(payload)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "emit: webhook marshal error: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "emit: webhook marshal error: %v\n", err)
 		return
 	}
 
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, w.url, bytes.NewReader(body))
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "emit: webhook request error: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "emit: webhook request error: %v\n", err)
 		return
 	}
 
@@ -200,11 +200,11 @@ func (w *WebhookSink) send(event Event) {
 
 	resp, err := w.client.Do(req)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "emit: webhook send error: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "emit: webhook send error: %v\n", err)
 		return
 	}
 	_ = resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		fmt.Fprintf(os.Stderr, "emit: webhook returned HTTP %d for event %s\n", resp.StatusCode, event.Type)
+		_, _ = fmt.Fprintf(os.Stderr, "emit: webhook returned HTTP %d for event %s\n", resp.StatusCode, event.Type)
 	}
 }

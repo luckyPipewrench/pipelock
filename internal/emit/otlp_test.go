@@ -19,8 +19,7 @@ import (
 )
 
 func TestOTLPSink_EmitEvent(t *testing.T) {
-	var received atomic.Int32
-	var lastBody []byte
+	bodyCh := make(chan []byte, 1)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/logs" {
@@ -30,8 +29,7 @@ func TestOTLPSink_EmitEvent(t *testing.T) {
 			t.Errorf("expected protobuf content type, got %s", r.Header.Get("Content-Type"))
 		}
 		body, _ := io.ReadAll(r.Body)
-		lastBody = body
-		received.Add(1)
+		bodyCh <- body
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
@@ -54,15 +52,14 @@ func TestOTLPSink_EmitEvent(t *testing.T) {
 		t.Fatalf("Emit: %v", err)
 	}
 
-	// Wait for async delivery.
-	time.Sleep(200 * time.Millisecond)
-
-	if received.Load() != 1 {
-		t.Fatalf("expected 1 request, got %d", received.Load())
+	var lastBody []byte
+	select {
+	case lastBody = <-bodyCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for request")
 	}
 
-	// Verify protobuf body is valid: parse the ExportLogsServiceRequest wrapper.
-	// Field 1 = ResourceLogs (bytes).
+	// Verify protobuf body: parse ExportLogsServiceRequest wrapper.
 	_, typ, n := protowire.ConsumeTag(lastBody)
 	if typ != protowire.BytesType {
 		t.Fatalf("expected bytes type for field 1, got %v", typ)
@@ -85,6 +82,9 @@ func TestOTLPSink_EmitEvent(t *testing.T) {
 	if record.Body.GetStringValue() != "blocked" {
 		t.Errorf("expected body 'blocked', got %q", record.Body.GetStringValue())
 	}
+	if record.ObservedTimeUnixNano == 0 {
+		t.Error("expected ObservedTimeUnixNano to be set")
+	}
 
 	// Verify resource attributes.
 	foundService := false
@@ -98,10 +98,34 @@ func TestOTLPSink_EmitEvent(t *testing.T) {
 	}
 }
 
-func TestOTLPSink_SeverityFilter(t *testing.T) {
-	var received atomic.Int32
+func TestOTLPSink_NilFields(t *testing.T) {
+	doneCh := make(chan struct{}, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		received.Add(1)
+		doneCh <- struct{}{}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	sink, err := NewOTLPSink(srv.URL, "test", "1.0.0", SeverityInfo, nil, 5*time.Second, 64, false)
+	if err != nil {
+		t.Fatalf("NewOTLPSink: %v", err)
+	}
+	defer func() { _ = sink.Close() }()
+
+	// Nil Fields map should not panic.
+	_ = sink.Emit(context.Background(), Event{Severity: SeverityCritical, Type: "test", Timestamp: time.Now(), Fields: nil})
+
+	select {
+	case <-doneCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout — nil fields caused issue")
+	}
+}
+
+func TestOTLPSink_SeverityFilter(t *testing.T) {
+	requestCh := make(chan struct{}, 10)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requestCh <- struct{}{}
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
@@ -110,22 +134,31 @@ func TestOTLPSink_SeverityFilter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewOTLPSink: %v", err)
 	}
-	defer func() { _ = sink.Close() }()
 
 	// Info event should be filtered.
 	_ = sink.Emit(context.Background(), Event{Severity: SeverityInfo, Type: "allowed", Timestamp: time.Now()})
 	// Warn event should pass.
 	_ = sink.Emit(context.Background(), Event{Severity: SeverityWarn, Type: "blocked", Timestamp: time.Now()})
 
-	time.Sleep(200 * time.Millisecond)
+	// Wait for the one expected request.
+	select {
+	case <-requestCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for warn event")
+	}
 
-	if received.Load() != 1 {
-		t.Errorf("expected 1 request (warn only), got %d", received.Load())
+	// Close to drain, then verify no extra requests arrived.
+	_ = sink.Close()
+
+	select {
+	case <-requestCh:
+		t.Error("expected only 1 request (info should be filtered)")
+	default:
+		// Good.
 	}
 }
 
 func TestOTLPSink_QueueFull(t *testing.T) {
-	// Server that blocks briefly — long enough for queue to fill.
 	blocked := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		<-blocked
@@ -142,7 +175,6 @@ func TestOTLPSink_QueueFull(t *testing.T) {
 
 	event := Event{Severity: SeverityCritical, Type: "test", Timestamp: time.Now()}
 
-	// Fill queue + one sending.
 	var queueFullCount int
 	for range 10 {
 		if err := sink.Emit(context.Background(), event); err != nil {
@@ -156,6 +188,7 @@ func TestOTLPSink_QueueFull(t *testing.T) {
 
 func TestOTLPSink_RetryOn503(t *testing.T) {
 	var attempts atomic.Int32
+	doneCh := make(chan struct{}, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		n := attempts.Add(1)
 		if n == 1 {
@@ -163,6 +196,10 @@ func TestOTLPSink_RetryOn503(t *testing.T) {
 			return
 		}
 		w.WriteHeader(http.StatusOK)
+		select {
+		case doneCh <- struct{}{}:
+		default:
+		}
 	}))
 	defer srv.Close()
 
@@ -174,11 +211,49 @@ func TestOTLPSink_RetryOn503(t *testing.T) {
 
 	_ = sink.Emit(context.Background(), Event{Severity: SeverityCritical, Type: "test", Timestamp: time.Now()})
 
-	// Wait for retry cycle (1s backoff + delivery).
-	time.Sleep(2 * time.Second)
+	select {
+	case <-doneCh:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout waiting for retry success")
+	}
 
 	if attempts.Load() < 2 {
 		t.Errorf("expected at least 2 attempts (retry), got %d", attempts.Load())
+	}
+}
+
+func TestOTLPSink_NoRetryOn500(t *testing.T) {
+	var attempts atomic.Int32
+	doneCh := make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+		select {
+		case doneCh <- struct{}{}:
+		default:
+		}
+	}))
+	defer srv.Close()
+
+	sink, err := NewOTLPSink(srv.URL, "test", "1.0.0", SeverityInfo, nil, 5*time.Second, 64, false)
+	if err != nil {
+		t.Fatalf("NewOTLPSink: %v", err)
+	}
+	defer func() { _ = sink.Close() }()
+
+	_ = sink.Emit(context.Background(), Event{Severity: SeverityCritical, Type: "test", Timestamp: time.Now()})
+
+	select {
+	case <-doneCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout")
+	}
+
+	// 500 is not retryable per OTLP spec — should be exactly 1 attempt.
+	// Small sleep to ensure no retry is in flight.
+	time.Sleep(100 * time.Millisecond)
+	if attempts.Load() != 1 {
+		t.Errorf("expected 1 attempt (500 not retryable), got %d", attempts.Load())
 	}
 }
 
@@ -271,6 +346,31 @@ func TestOTLPSink_CloseIdempotent(t *testing.T) {
 	}
 }
 
+func TestOTLPSink_CloseDrains(t *testing.T) {
+	var received atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		received.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	sink, err := NewOTLPSink(srv.URL, "test", "1.0.0", SeverityInfo, nil, 5*time.Second, 64, false)
+	if err != nil {
+		t.Fatalf("NewOTLPSink: %v", err)
+	}
+
+	// Enqueue several events, then close immediately.
+	for range 5 {
+		_ = sink.Emit(context.Background(), Event{Severity: SeverityCritical, Type: "test", Timestamp: time.Now()})
+	}
+	_ = sink.Close()
+
+	// After close returns, all queued events should have been drained.
+	if n := received.Load(); n == 0 {
+		t.Error("expected at least some events to be drained on close")
+	}
+}
+
 func TestOTLPSink_InvalidEndpoint(t *testing.T) {
 	_, err := NewOTLPSink("://bad", "test", "1.0.0", SeverityInfo, nil, 5*time.Second, 64, false)
 	if err == nil {
@@ -313,6 +413,27 @@ func TestMapSeverity(t *testing.T) {
 		}
 		if str != tt.wantStr {
 			t.Errorf("mapSeverity(%v) text = %q, want %q", tt.input, str, tt.wantStr)
+		}
+	}
+}
+
+func TestIsRetryableStatus(t *testing.T) {
+	tests := []struct {
+		code int
+		want bool
+	}{
+		{200, false},
+		{400, false},
+		{429, true},
+		{500, false}, // per OTLP spec, 500 is NOT retryable
+		{501, false},
+		{502, true},
+		{503, true},
+		{504, true},
+	}
+	for _, tt := range tests {
+		if got := isRetryableStatus(tt.code); got != tt.want {
+			t.Errorf("isRetryableStatus(%d) = %v, want %v", tt.code, got, tt.want)
 		}
 	}
 }

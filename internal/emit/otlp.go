@@ -44,6 +44,8 @@ const (
 // ErrOTLPQueueFull is returned when the OTLP event queue is at capacity.
 var ErrOTLPQueueFull = errors.New("emit: otlp queue full, event dropped")
 
+const errOTLPClosed = "emit: otlp sink closed"
+
 // OTLPSink sends audit events as OTLP log records over HTTP/protobuf.
 // Events are queued and sent asynchronously by a single background goroutine.
 type OTLPSink struct {
@@ -84,9 +86,15 @@ func NewOTLPSink(endpoint, instanceID, version string, minSev Severity, headers 
 		},
 	}
 
+	// Defensive copy: headers may come from config that gets swapped on reload.
+	hdrs := make(map[string]string, len(headers))
+	for k, v := range headers {
+		hdrs[k] = v
+	}
+
 	s := &OTLPSink{
 		endpoint: u,
-		headers:  headers,
+		headers:  hdrs,
 		minSev:   minSev,
 		useGzip:  useGzip,
 		client:   &http.Client{Timeout: timeout},
@@ -110,7 +118,7 @@ func (s *OTLPSink) Emit(_ context.Context, event Event) error {
 
 	select {
 	case <-s.done:
-		return errors.New("emit: otlp sink closed")
+		return errors.New(errOTLPClosed)
 	default:
 	}
 
@@ -118,7 +126,7 @@ func (s *OTLPSink) Emit(_ context.Context, event Event) error {
 	case s.queue <- event:
 		return nil
 	case <-s.done:
-		return errors.New("emit: otlp sink closed")
+		return errors.New(errOTLPClosed)
 	default:
 		return ErrOTLPQueueFull
 	}
@@ -191,7 +199,20 @@ func (s *OTLPSink) send(event Event) {
 	s.sendWithRetry(body)
 }
 
-// sendWithRetry POSTs the body with bounded retry on 429/5xx/network errors.
+// isRetryableStatus returns true for OTLP-spec-defined retryable status codes.
+// Per the OTLP/HTTP spec, only 429, 502, 503, and 504 are retryable.
+// 500 and 501 indicate server bugs and are not retryable.
+func isRetryableStatus(code int) bool {
+	return code == http.StatusTooManyRequests ||
+		code == http.StatusBadGateway ||
+		code == http.StatusServiceUnavailable ||
+		code == http.StatusGatewayTimeout
+}
+
+// sendWithRetry POSTs the body with bounded retry on retryable errors.
+// Retries on 429/502/503/504 and network errors per OTLP spec.
+// The done channel is checked between retries so Close() is not blocked
+// by a stalled collector during drain.
 func (s *OTLPSink) sendWithRetry(body []byte) {
 	backoff := otlpRetryBase
 	for attempt := range otlpMaxRetries {
@@ -211,9 +232,10 @@ func (s *OTLPSink) sendWithRetry(body []byte) {
 
 		resp, doErr := s.client.Do(httpReq)
 		if doErr != nil {
-			// Network error — retry.
 			if attempt < otlpMaxRetries-1 {
-				time.Sleep(backoff)
+				if !s.backoffOrDone(backoff) {
+					return // sink closing, abort retry
+				}
 				backoff *= otlpRetryFactor
 				continue
 			}
@@ -224,21 +246,32 @@ func (s *OTLPSink) sendWithRetry(body []byte) {
 		_ = resp.Body.Close()
 
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			return // success
+			return
 		}
-		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
-			// Retryable — backoff and try again.
+		if isRetryableStatus(resp.StatusCode) {
 			if attempt < otlpMaxRetries-1 {
-				time.Sleep(backoff)
+				if !s.backoffOrDone(backoff) {
+					return
+				}
 				backoff *= otlpRetryFactor
 				continue
 			}
 			_, _ = fmt.Fprintf(os.Stderr, "emit: otlp HTTP %d after %d retries\n", resp.StatusCode, otlpMaxRetries)
 			return
 		}
-		// 4xx (not 429) — don't retry, it won't help.
 		_, _ = fmt.Fprintf(os.Stderr, "emit: otlp HTTP %d (not retryable)\n", resp.StatusCode)
 		return
+	}
+}
+
+// backoffOrDone sleeps for the backoff duration or returns false if the
+// sink is closing. Returns true if the sleep completed (should retry).
+func (s *OTLPSink) backoffOrDone(d time.Duration) bool {
+	select {
+	case <-time.After(d):
+		return true
+	case <-s.done:
+		return false
 	}
 }
 
@@ -253,10 +286,12 @@ func (s *OTLPSink) eventToLogRecord(event Event) *logspb.LogRecord {
 	// Add instance ID as an attribute for per-event queryability.
 	attrs = append(attrs, stringKV("pipelock.instance", event.InstanceID))
 
+	tsNano := uint64(event.Timestamp.UnixNano())
 	return &logspb.LogRecord{
-		TimeUnixNano:   uint64(event.Timestamp.UnixNano()),
-		SeverityNumber: sevNum,
-		SeverityText:   sevText,
+		TimeUnixNano:         tsNano,
+		ObservedTimeUnixNano: tsNano, // same as emit time; prevents collector clock drift
+		SeverityNumber:       sevNum,
+		SeverityText:         sevText,
 		Body: &commonpb.AnyValue{
 			Value: &commonpb.AnyValue_StringValue{StringValue: event.Type},
 		},

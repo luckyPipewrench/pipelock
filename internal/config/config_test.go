@@ -257,6 +257,44 @@ func TestApplyDefaults_FileSentryScanContent(t *testing.T) {
 	}
 }
 
+func TestLoad_FileSentryWatchPathsResolvedRelativeToConfig(t *testing.T) {
+	// watch_paths: ["."] in a config loaded from /some/project/pipelock.yaml
+	// must resolve to /some/project, not the process CWD.
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "pipelock.yaml")
+	cfgContent := `
+version: 1
+file_sentry:
+  enabled: true
+  watch_paths:
+    - "."
+    - "subdir"
+`
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	// Create the watch target so Validate doesn't fail.
+	if err := os.MkdirAll(filepath.Join(dir, "subdir"), 0o750); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	for _, wp := range cfg.FileSentry.WatchPaths {
+		if !filepath.IsAbs(wp) {
+			t.Errorf("watch_path %q should be absolute after Load", wp)
+		}
+		// Must be rooted under the config directory, not CWD.
+		rel, relErr := filepath.Rel(dir, wp)
+		if relErr != nil || strings.HasPrefix(rel, "..") {
+			t.Errorf("watch_path %q is not under config dir %q (rel=%q)", wp, dir, rel)
+		}
+	}
+}
+
 func TestValidate_InvalidLoggingFormat(t *testing.T) {
 	cfg := Defaults()
 	cfg.Logging.Format = "xml"

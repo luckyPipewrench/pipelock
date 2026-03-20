@@ -495,7 +495,7 @@ Environment passthrough (subprocess mode only):
 						_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: file sentry error: %v\n", startErr)
 					}
 				}()
-				// Consume findings: log, emit audit events, record metrics.
+				// Consume findings: log to stderr and record metrics.
 				go func() {
 					for f := range watcher.Findings() {
 						agent := ""

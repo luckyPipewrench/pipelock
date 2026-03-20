@@ -804,6 +804,15 @@ func Load(path string) (*Config, error) {
 		cfg.TLSInterception.CAKeyPath = filepath.Join(configDir, cfg.TLSInterception.CAKeyPath)
 	}
 
+	// Resolve relative file_sentry.watch_paths against config file directory.
+	// "." in the config means the project directory, not whatever CWD the
+	// process happens to have (systemd sets CWD=/, containers vary).
+	for i, p := range cfg.FileSentry.WatchPaths {
+		if !filepath.IsAbs(p) {
+			cfg.FileSentry.WatchPaths[i] = filepath.Join(configDir, p)
+		}
+	}
+
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}

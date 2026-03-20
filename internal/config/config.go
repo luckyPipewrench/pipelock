@@ -562,11 +562,22 @@ type KillSwitch struct {
 	AllowlistIPs  []string `yaml:"allowlist_ips"`
 }
 
-// EmitConfig configures external event emission (webhook and syslog).
+// EmitConfig configures external event emission (webhook, syslog, and OTLP).
 type EmitConfig struct {
 	InstanceID string        `yaml:"instance_id"` // defaults to hostname
 	Webhook    WebhookConfig `yaml:"webhook"`
 	Syslog     SyslogConfig  `yaml:"syslog"`
+	OTLP       OTLPConfig    `yaml:"otlp"`
+}
+
+// OTLPConfig configures the OpenTelemetry log export sink (HTTP/protobuf).
+type OTLPConfig struct {
+	Endpoint       string            `yaml:"endpoint"`        // base URL, /v1/logs appended
+	Headers        map[string]string `yaml:"headers"`         // custom headers (auth, tenant)
+	TimeoutSeconds int               `yaml:"timeout_seconds"` // per-request timeout (default 10)
+	MinSeverity    string            `yaml:"min_severity"`    // info, warn, critical
+	QueueSize      int               `yaml:"queue_size"`      // async buffer size (default 256)
+	Gzip           bool              `yaml:"gzip"`            // compress requests
 }
 
 // WebhookConfig configures the webhook emission sink.
@@ -1959,6 +1970,22 @@ func (c *Config) Validate() error {
 			}
 			if !validFacilities[strings.ToLower(c.Emit.Syslog.Facility)] {
 				return fmt.Errorf("invalid emit.syslog.facility %q", c.Emit.Syslog.Facility)
+			}
+		}
+	}
+
+	// Validate OTLP config
+	if c.Emit.OTLP.Endpoint != "" {
+		u, otlpErr := url.Parse(c.Emit.OTLP.Endpoint)
+		if otlpErr != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return fmt.Errorf("invalid emit.otlp.endpoint %q: must be http:// or https:// with a host", c.Emit.OTLP.Endpoint)
+		}
+		if c.Emit.OTLP.MinSeverity != "" {
+			switch c.Emit.OTLP.MinSeverity {
+			case SeverityInfo, SeverityWarn, SeverityCritical:
+				// valid
+			default:
+				return fmt.Errorf("invalid emit.otlp.min_severity %q: must be info, warn, or critical", c.Emit.OTLP.MinSeverity)
 			}
 		}
 	}

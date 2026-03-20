@@ -949,6 +949,55 @@ func TestWatcher_RenameIntoPlace(t *testing.T) {
 	}
 }
 
+func TestWatcher_FileRemovalNoFinding(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.FileSentry{
+		Enabled:     true,
+		WatchPaths:  []string{dir},
+		ScanContent: ptrBool(true),
+	}
+
+	defaults := config.Defaults()
+	defaults.Internal = nil
+	sc := scanner.New(defaults)
+	defer sc.Close()
+
+	w, err := NewWatcher(cfg, sc, nil, nil)
+	if err != nil {
+		t.Fatalf("NewWatcher: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	armAndStart(t, w, ctx)
+
+	// Write a secret file, wait for finding, then remove it.
+	secret := "sk-ant-" + "api03-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+	path := filepath.Join(dir, "will-delete.txt")
+	if err := os.WriteFile(path, []byte(secret), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Consume the write finding.
+	select {
+	case <-w.Findings():
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for write finding")
+	}
+
+	// Now remove the file — should NOT produce a finding.
+	_ = os.Remove(path)
+
+	select {
+	case f := <-w.Findings():
+		t.Errorf("expected no finding for file removal, got %+v", f)
+	case <-time.After(300 * time.Millisecond):
+		// Good.
+	}
+}
+
 func TestIsIgnored(t *testing.T) {
 	tests := []struct {
 		name     string

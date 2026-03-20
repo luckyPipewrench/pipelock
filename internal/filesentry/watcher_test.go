@@ -431,6 +431,35 @@ func TestWatcher_ArmNonexistentPath(t *testing.T) {
 	}
 }
 
+func TestWatcher_ArmRejectsFilePath(t *testing.T) {
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "not-a-dir.txt")
+	if err := os.WriteFile(filePath, []byte("hi"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg := &config.FileSentry{
+		Enabled:     true,
+		WatchPaths:  []string{filePath},
+		ScanContent: ptrBool(true),
+	}
+
+	defaults := config.Defaults()
+	defaults.Internal = nil
+	sc := scanner.New(defaults)
+	defer sc.Close()
+
+	w, err := NewWatcher(cfg, sc, nil)
+	if err != nil {
+		t.Fatalf("NewWatcher: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	if err := w.Arm(); err == nil {
+		t.Error("expected error when watch_path is a file, not a directory")
+	}
+}
+
 func TestWatcher_RenameIntoPlace(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.FileSentry{

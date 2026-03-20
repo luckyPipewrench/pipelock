@@ -6,11 +6,13 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -34,6 +36,19 @@ import (
 
 // ErrInjectionDetected is returned when pipelock mcp scan detects prompt injection.
 var ErrInjectionDetected = errors.New("prompt injection detected")
+
+// safeWriter wraps an io.Writer with a mutex for concurrent use.
+// Used to synchronize file sentry goroutines and RunProxy stderr output.
+type safeWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (sw *safeWriter) Write(p []byte) (int, error) {
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	return sw.w.Write(p)
+}
 
 func mcpCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -473,6 +488,10 @@ Environment passthrough (subprocess mode only):
 			ctx, cancel := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 			defer cancel()
 
+			// Wrap stderr in a mutex so file sentry goroutines and RunProxy
+			// (which wraps logW in its own syncWriter) don't interleave.
+			logW := &safeWriter{w: cmd.ErrOrStderr()}
+
 			// File sentry: watch agent working directories for secret writes.
 			// Watches are installed synchronously (Arm) before the child starts
 			// to prevent early writes from being missed.
@@ -492,7 +511,7 @@ Environment passthrough (subprocess mode only):
 
 				go func() {
 					if startErr := watcher.Start(ctx); startErr != nil {
-						_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: file sentry error: %v\n", startErr)
+						_, _ = fmt.Fprintf(logW, "pipelock: file sentry error: %v\n", startErr)
 					}
 				}()
 				// Consume findings: log to stderr and record metrics.
@@ -502,7 +521,7 @@ Environment passthrough (subprocess mode only):
 						if f.IsAgent {
 							agent = " (agent process)"
 						}
-						_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
+						_, _ = fmt.Fprintf(logW,
 							"pipelock: [file_sentry] DLP match in %s: %s (severity=%s)%s\n",
 							f.Path, f.PatternName, f.Severity, agent)
 						if mcpMetrics != nil {
@@ -510,11 +529,11 @@ Environment passthrough (subprocess mode only):
 						}
 					}
 				}()
-				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: file sentry watching %d path(s)\n",
+				_, _ = fmt.Fprintf(logW, "pipelock: file sentry watching %d path(s)\n",
 					len(cfg.FileSentry.WatchPaths))
 			}
 
-			if err := mcp.RunProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), serverCmd, sc, approver, inputCfg, toolCfg, policyCfg, ks, chainMatcher, nil, cee, store, adaptiveCfg, mcpMetrics, lin, extraEnv...); err != nil {
+			if err := mcp.RunProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), logW, serverCmd, sc, approver, inputCfg, toolCfg, policyCfg, ks, chainMatcher, nil, cee, store, adaptiveCfg, mcpMetrics, lin, extraEnv...); err != nil {
 				if sentryClient != nil {
 					sentryClient.CaptureError(err)
 				}

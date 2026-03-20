@@ -121,10 +121,15 @@ func (w *fsWatcher) Close() error {
 // subdirectory. Files themselves don't need watches — directory watches
 // catch all file events within them.
 func (w *fsWatcher) addRecursive(root string) error {
-	// Verify root exists before walking. WalkDir silently returns nil
+	// Verify root exists and is a directory. WalkDir silently returns nil
 	// for nonexistent paths, which would leave us watching nothing.
-	if _, err := os.Stat(root); err != nil {
+	// Files are rejected — inotify watches directories, not individual files.
+	info, err := os.Stat(root)
+	if err != nil {
 		return fmt.Errorf("watch root: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("watch root %q is a file, not a directory", root)
 	}
 	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {

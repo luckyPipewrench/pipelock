@@ -474,37 +474,44 @@ Environment passthrough (subprocess mode only):
 			defer cancel()
 
 			// File sentry: watch agent working directories for secret writes.
+			// Watches are installed synchronously (Arm) before the child starts
+			// to prevent early writes from being missed.
 			var lin filesentry.Lineage
 			if cfg.FileSentry.Enabled {
 				lin = filesentry.NewLineage()
 				watcher, watchErr := filesentry.NewWatcher(&cfg.FileSentry, sc, lin)
 				if watchErr != nil {
-					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: file sentry init failed: %v\n", watchErr)
-				} else {
-					defer func() { _ = watcher.Close() }()
-					go func() {
-						if startErr := watcher.Start(ctx); startErr != nil {
-							_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: file sentry error: %v\n", startErr)
-						}
-					}()
-					// Consume findings: log to stderr and record metrics.
-					go func() {
-						for f := range watcher.Findings() {
-							agent := ""
-							if f.IsAgent {
-								agent = " (agent process)"
-							}
-							_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
-								"pipelock: [file_sentry] DLP match in %s: %s (severity=%s)%s\n",
-								f.Path, f.PatternName, f.Severity, agent)
-							if mcpMetrics != nil {
-								mcpMetrics.RecordFileSentryFinding(f.PatternName, f.Severity, f.IsAgent)
-							}
-						}
-					}()
-					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: file sentry watching %d path(s)\n",
-						len(cfg.FileSentry.WatchPaths))
+					return fmt.Errorf("file sentry init failed (feature is enabled): %w", watchErr)
 				}
+				defer func() { _ = watcher.Close() }()
+
+				// Arm synchronously before child launch.
+				if armErr := watcher.Arm(); armErr != nil {
+					return fmt.Errorf("file sentry failed to arm watches (feature is enabled): %w", armErr)
+				}
+
+				go func() {
+					if startErr := watcher.Start(ctx); startErr != nil {
+						_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: file sentry error: %v\n", startErr)
+					}
+				}()
+				// Consume findings: log, emit audit events, record metrics.
+				go func() {
+					for f := range watcher.Findings() {
+						agent := ""
+						if f.IsAgent {
+							agent = " (agent process)"
+						}
+						_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
+							"pipelock: [file_sentry] DLP match in %s: %s (severity=%s)%s\n",
+							f.Path, f.PatternName, f.Severity, agent)
+						if mcpMetrics != nil {
+							mcpMetrics.RecordFileSentryFinding(f.PatternName, f.Severity, f.IsAgent)
+						}
+					}
+				}()
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: file sentry watching %d path(s)\n",
+					len(cfg.FileSentry.WatchPaths))
 			}
 
 			if err := mcp.RunProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), serverCmd, sc, approver, inputCfg, toolCfg, policyCfg, ks, chainMatcher, nil, cee, store, adaptiveCfg, mcpMetrics, lin, extraEnv...); err != nil {

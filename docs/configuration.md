@@ -1345,7 +1345,7 @@ file_sentry:
 | `scan_content` | `true` | Run DLP scanner on modified file content. |
 | `ignore_patterns` | `[]` | Glob patterns for files and directories to skip. |
 
-File sentry is alert-only in the current release. Findings are emitted as audit log entries, Prometheus metrics (`pipelock_file_sentry_findings_total`), and stderr warnings. On Linux, process lineage tracking attributes file writes to the agent's process tree via `PR_SET_CHILD_SUBREAPER` and `/proc` walking.
+File sentry is alert-only in the current release. Findings are reported as stderr warnings and Prometheus metrics (`pipelock_file_sentry_findings_total`). Structured audit log emission (`file_sentry_dlp` event type) is defined but not yet wired to the webhook/syslog pipeline. On Linux, process lineage tracking attributes file writes to the agent's process tree via `PR_SET_CHILD_SUBREAPER` and `/proc` walking.
 
 Files larger than 10MB are skipped. Write events are debounced (50ms quiet window) to avoid scanning partial writes.
 

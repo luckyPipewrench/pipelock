@@ -16,6 +16,20 @@ import (
 
 func ptrBool(b bool) *bool { return &b }
 
+// armAndStart arms the watcher synchronously, then starts the event loop
+// in a goroutine. Returns after watches are installed.
+func armAndStart(t *testing.T, w Watcher, ctx context.Context) {
+	t.Helper()
+	if err := w.Arm(); err != nil {
+		t.Fatalf("Arm: %v", err)
+	}
+	go func() {
+		if err := w.Start(ctx); err != nil {
+			t.Errorf("Start: %v", err)
+		}
+	}()
+}
+
 func TestWatcher_DetectsSecretWrite(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.FileSentry{
@@ -39,14 +53,7 @@ func TestWatcher_DetectsSecretWrite(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go func() {
-		if err := w.Start(ctx); err != nil {
-			t.Errorf("Start: %v", err)
-		}
-	}()
-
-	// Small delay so watcher is ready before writing.
-	time.Sleep(50 * time.Millisecond)
+	armAndStart(t, w, ctx)
 
 	// Write a file containing a fake Anthropic API key.
 	// Build at runtime to avoid gosec G101.
@@ -90,13 +97,7 @@ func TestWatcher_CleanFileNoFinding(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go func() {
-		if err := w.Start(ctx); err != nil {
-			t.Errorf("Start: %v", err)
-		}
-	}()
-
-	time.Sleep(50 * time.Millisecond)
+	armAndStart(t, w, ctx)
 
 	// Write a file with no secrets.
 	if err := os.WriteFile(filepath.Join(dir, "readme.txt"), []byte("hello world"), 0o600); err != nil {
@@ -142,13 +143,7 @@ func TestWatcher_IgnoredPatterns(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go func() {
-		if err := w.Start(ctx); err != nil {
-			t.Errorf("Start: %v", err)
-		}
-	}()
-
-	time.Sleep(50 * time.Millisecond)
+	armAndStart(t, w, ctx)
 
 	// Write a secret inside the ignored directory.
 	secret := "sk-ant-" + "api03-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
@@ -186,13 +181,7 @@ func TestWatcher_SubdirCreation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go func() {
-		if err := w.Start(ctx); err != nil {
-			t.Errorf("Start: %v", err)
-		}
-	}()
-
-	time.Sleep(50 * time.Millisecond)
+	armAndStart(t, w, ctx)
 
 	// Create a new subdirectory, then write a secret inside it.
 	subDir := filepath.Join(dir, "newdir")
@@ -240,13 +229,7 @@ func TestWatcher_ScanContentDisabled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go func() {
-		if err := w.Start(ctx); err != nil {
-			t.Errorf("Start: %v", err)
-		}
-	}()
-
-	time.Sleep(50 * time.Millisecond)
+	armAndStart(t, w, ctx)
 
 	// Write a secret — should NOT be scanned because scan_content is false.
 	secret := "sk-ant-" + "api03-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
@@ -310,13 +293,7 @@ func TestWatcher_OversizedFileSkipped(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go func() {
-		if err := w.Start(ctx); err != nil {
-			t.Errorf("Start: %v", err)
-		}
-	}()
-
-	time.Sleep(50 * time.Millisecond)
+	armAndStart(t, w, ctx)
 
 	// Write a file larger than maxFileSize (10MB). Use a sparse approach:
 	// write a small secret then pad with zeros to exceed the limit.
@@ -364,13 +341,7 @@ func TestWatcher_EmptyFileSkipped(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go func() {
-		if err := w.Start(ctx); err != nil {
-			t.Errorf("Start: %v", err)
-		}
-	}()
-
-	time.Sleep(50 * time.Millisecond)
+	armAndStart(t, w, ctx)
 
 	// Write an empty file.
 	if err := os.WriteFile(filepath.Join(dir, "empty.txt"), []byte{}, 0o600); err != nil {
@@ -382,33 +353,6 @@ func TestWatcher_EmptyFileSkipped(t *testing.T) {
 		t.Errorf("expected no finding for empty file, got %+v", finding)
 	case <-time.After(300 * time.Millisecond):
 		// Good.
-	}
-}
-
-func TestWatcher_StartNonexistentPath(t *testing.T) {
-	cfg := &config.FileSentry{
-		Enabled:     true,
-		WatchPaths:  []string{"/nonexistent/path/that/does/not/exist"},
-		ScanContent: ptrBool(true),
-	}
-
-	defaults := config.Defaults()
-	defaults.Internal = nil
-	sc := scanner.New(defaults)
-	defer sc.Close()
-
-	w, err := NewWatcher(cfg, sc, nil)
-	if err != nil {
-		t.Fatalf("NewWatcher: %v", err)
-	}
-	defer func() { _ = w.Close() }()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	err = w.Start(ctx)
-	if err == nil {
-		t.Error("expected error for nonexistent watch path")
 	}
 }
 
@@ -437,13 +381,7 @@ func TestWatcher_WithLineageAttribution(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go func() {
-		if err := w.Start(ctx); err != nil {
-			t.Errorf("Start: %v", err)
-		}
-	}()
-
-	time.Sleep(50 * time.Millisecond)
+	armAndStart(t, w, ctx)
 
 	secret := "sk-ant-" + "api03-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
 	if err := os.WriteFile(filepath.Join(dir, "agent-leak.json"), []byte(secret), 0o600); err != nil {
@@ -469,6 +407,79 @@ func (m *mockLineage) EnableSubreaper() error    { return nil }
 func (m *mockLineage) TrackPID(_ int)            {}
 func (m *mockLineage) IsDescendant(_ int) bool   { return false }
 func (m *mockLineage) HasFileOpen(_ string) bool { return m.hasFileOpen }
+
+func TestWatcher_ArmNonexistentPath(t *testing.T) {
+	cfg := &config.FileSentry{
+		Enabled:     true,
+		WatchPaths:  []string{"/nonexistent/path/that/does/not/exist"},
+		ScanContent: ptrBool(true),
+	}
+
+	defaults := config.Defaults()
+	defaults.Internal = nil
+	sc := scanner.New(defaults)
+	defer sc.Close()
+
+	w, err := NewWatcher(cfg, sc, nil)
+	if err != nil {
+		t.Fatalf("NewWatcher: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	if err := w.Arm(); err == nil {
+		t.Error("expected error for nonexistent watch path")
+	}
+}
+
+func TestWatcher_RenameIntoPlace(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.FileSentry{
+		Enabled:     true,
+		WatchPaths:  []string{dir},
+		ScanContent: ptrBool(true),
+	}
+
+	defaults := config.Defaults()
+	defaults.Internal = nil
+	sc := scanner.New(defaults)
+	defer sc.Close()
+
+	w, err := NewWatcher(cfg, sc, nil)
+	if err != nil {
+		t.Fatalf("NewWatcher: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	armAndStart(t, w, ctx)
+
+	// Write a secret to a temp file OUTSIDE the watched directory,
+	// then rename it into the watched directory. This must still be detected.
+	tmpFile := filepath.Join(t.TempDir(), "staged.txt")
+	secret := "sk-ant-" + "api03-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+	if err := os.WriteFile(tmpFile, []byte(secret), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	dest := filepath.Join(dir, "renamed-secret.txt")
+	if err := os.Rename(tmpFile, dest); err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
+
+	select {
+	case f := <-w.Findings():
+		if f.PatternName == "" {
+			t.Error("expected DLP pattern match for renamed-in file")
+		}
+		if f.Path != dest {
+			t.Errorf("expected path %q, got %q", dest, f.Path)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout — rename-into-place write was not detected")
+	}
+}
 
 func TestIsIgnored(t *testing.T) {
 	tests := []struct {

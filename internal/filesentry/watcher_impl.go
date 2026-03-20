@@ -59,9 +59,10 @@ func NewWatcher(cfg *config.FileSentry, sc DLPScanner, lin Lineage) (Watcher, er
 	}, nil
 }
 
-// Start adds watches on all configured directories (recursively) and processes
-// events until ctx is cancelled. Blocks until done.
-func (w *fsWatcher) Start(ctx context.Context) error {
+// Arm installs watches on all configured directories synchronously.
+// Call this before launching the child process to ensure no writes
+// are missed during the startup window.
+func (w *fsWatcher) Arm() error {
 	for _, p := range w.cfg.WatchPaths {
 		abs, err := filepath.Abs(p)
 		if err != nil {
@@ -71,7 +72,12 @@ func (w *fsWatcher) Start(ctx context.Context) error {
 			return fmt.Errorf("filesentry: watch %q: %w", abs, err)
 		}
 	}
+	return nil
+}
 
+// Start processes filesystem events until ctx is cancelled. Blocks until done.
+// Call Arm() first to install watches before starting the child process.
+func (w *fsWatcher) Start(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -144,8 +150,16 @@ func (w *fsWatcher) handleEvent(ctx context.Context, ev fsnotify.Event) {
 		}
 	}
 
-	// Only scan on write events.
-	if !ev.Has(fsnotify.Write) {
+	// Scan on Write, Create, and Rename events. A secret written to a temp
+	// file outside the watch tree and rename(2)d in produces Create/Rename
+	// at the destination, not Write. Scanning only Write is a bypass vector.
+	isWriteEvent := ev.Has(fsnotify.Write) || ev.Has(fsnotify.Create) || ev.Has(fsnotify.Rename)
+	if !isWriteEvent {
+		return
+	}
+
+	// Skip directories — we only scan file content.
+	if info, err := os.Stat(ev.Name); err != nil || info.IsDir() {
 		return
 	}
 

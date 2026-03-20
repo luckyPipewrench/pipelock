@@ -27,7 +27,11 @@ type DLPScanner interface {
 
 // Watcher monitors directories for file writes and scans content for secrets.
 type Watcher interface {
-	// Start begins watching configured directories. Blocks until ctx is cancelled.
+	// Arm installs watches on all configured directories synchronously.
+	// Must be called before launching the child process.
+	Arm() error
+	// Start processes filesystem events. Blocks until ctx is cancelled.
+	// Call Arm() first to install watches.
 	Start(ctx context.Context) error
 	// Findings returns a channel that receives DLP findings as they are detected.
 	Findings() <-chan Finding

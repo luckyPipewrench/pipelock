@@ -56,10 +56,9 @@ Files larger than 10MB are skipped to avoid unbounded memory use.
 1. On startup, pipelock walks each `watch_paths` directory and adds recursive inotify (Linux) or fsnotify watches
 2. When a file write event fires, pipelock debounces for 50ms (waits for the write to complete)
 3. After the quiet window, pipelock reads the file and runs DLP pattern matching
-4. If a match is found, a finding is emitted as:
+4. If a match is found, a finding is reported as:
    - A stderr log line: `pipelock: [file_sentry] DLP match in /path: Pattern Name (severity=critical)`
    - A Prometheus counter increment: `pipelock_file_sentry_findings_total{pattern, severity, agent}`
-   - An audit log entry with event type `file_sentry_dlp`
 
 ## Process Attribution (Linux)
 

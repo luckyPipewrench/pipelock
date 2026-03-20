@@ -210,6 +210,35 @@ func TestGenerateCmd_AllPresets(t *testing.T) {
 	}
 }
 
+func TestGenerateCmd_OutputPassesValidation(t *testing.T) {
+	// Regression: generated configs must be re-loadable without validation errors.
+	// This catches reserved fields (e.g. dlp.action) being emitted when they shouldn't be.
+	for _, preset := range []string{"strict", "balanced", "audit"} {
+		t.Run(preset, func(t *testing.T) {
+			cmd := rootCmd()
+			cmd.SetArgs([]string{"generate", "config", "--preset", preset})
+
+			buf := &strings.Builder{}
+			cmd.SetOut(buf)
+			cmd.SetErr(&strings.Builder{})
+
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("generate config --preset %s failed: %v", preset, err)
+			}
+
+			// Write the output to a temp file and reload it.
+			dir := t.TempDir()
+			cfgPath := dir + "/generated.yaml"
+			if err := os.WriteFile(cfgPath, []byte(buf.String()), 0o600); err != nil {
+				t.Fatalf("write generated config: %v", err)
+			}
+			if _, err := config.Load(cfgPath); err != nil {
+				t.Errorf("generated %s config fails validation on reload: %v", preset, err)
+			}
+		})
+	}
+}
+
 func TestGenerateCmd_UnknownPreset(t *testing.T) {
 	cmd := rootCmd()
 	cmd.SetArgs([]string{"generate", "config", "--preset", "nonexistent"})

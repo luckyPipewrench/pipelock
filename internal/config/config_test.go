@@ -495,6 +495,91 @@ file_sentry:
 	}
 }
 
+func TestValidate_DLPGlobalActionRejected(t *testing.T) {
+	cfg := Defaults()
+	cfg.DLP.Action = ActionStrip
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for unsupported dlp.action")
+	}
+}
+
+func TestValidate_DLPGlobalActionBlock(t *testing.T) {
+	cfg := Defaults()
+	cfg.DLP.Action = ActionBlock
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for unsupported dlp.action (even block)")
+	}
+}
+
+func TestValidate_DLPPatternActionRejected(t *testing.T) {
+	cfg := Defaults()
+	cfg.DLP.Patterns = []DLPPattern{
+		{Name: "test", Regex: `sk-test-[a-z]+`, Severity: "high", Action: ActionStrip},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for unsupported per-pattern action")
+	}
+}
+
+func TestValidate_DLPPatternActionEmpty(t *testing.T) {
+	cfg := Defaults()
+	cfg.DLP.Patterns = []DLPPattern{
+		{Name: "test", Regex: `sk-test-[a-z]+`, Severity: "high"},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("empty action should be valid: %v", err)
+	}
+}
+
+func TestLoad_DLPActionRejectedFromYAML(t *testing.T) {
+	dir := t.TempDir()
+	cfgContent := `
+version: 1
+dlp:
+  action: strip
+  patterns:
+    - name: test
+      regex: 'sk-test-[a-z]+'
+      severity: high
+`
+	cfgPath := filepath.Join(dir, "pipelock.yaml")
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(cfgPath)
+	if err == nil {
+		t.Fatal("expected error when dlp.action is set in YAML")
+	}
+	if !strings.Contains(err.Error(), "dlp.action") {
+		t.Errorf("error should mention dlp.action, got: %v", err)
+	}
+}
+
+func TestLoad_DLPPatternActionRejectedFromYAML(t *testing.T) {
+	dir := t.TempDir()
+	cfgContent := `
+version: 1
+dlp:
+  include_defaults: false
+  patterns:
+    - name: test
+      regex: 'sk-test-[a-z]+'
+      severity: high
+      action: strip
+`
+	cfgPath := filepath.Join(dir, "pipelock.yaml")
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(cfgPath)
+	if err == nil {
+		t.Fatal("expected error when pattern action is set in YAML")
+	}
+	if !strings.Contains(err.Error(), "action") {
+		t.Errorf("error should mention action, got: %v", err)
+	}
+}
+
 func TestValidate_InvalidLoggingFormat(t *testing.T) {
 	cfg := Defaults()
 	cfg.Logging.Format = "xml"

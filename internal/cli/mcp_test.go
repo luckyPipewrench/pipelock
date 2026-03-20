@@ -1026,6 +1026,10 @@ func TestMcpProxyCmd_FileSentryDetectsSecret(t *testing.T) {
 	if !strings.Contains(stderr, "[file_sentry]") {
 		t.Errorf("expected file_sentry DLP finding in stderr, got: %s", stderr)
 	}
+	// Verify alert-only: MCP response must still be forwarded.
+	if got := strings.TrimSpace(outBuf.String()); got != testSafeReply {
+		t.Errorf("expected clean MCP response forwarded, got: %s", got)
+	}
 }
 
 func TestMcpProxyCmd_FileSentryInvalidWatchPath(t *testing.T) {
@@ -1100,6 +1104,10 @@ func TestMcpProxyCmd_FileSentryCleanFileNoFinding(t *testing.T) {
 
 	if strings.Contains(errBuf.String(), "DLP match") {
 		t.Errorf("expected no DLP finding for clean file, got: %s", errBuf.String())
+	}
+	// Verify alert-only: MCP response must still be forwarded.
+	if got := strings.TrimSpace(outBuf.String()); got != testSafeReply {
+		t.Errorf("expected clean MCP response forwarded, got: %s", got)
 	}
 }
 

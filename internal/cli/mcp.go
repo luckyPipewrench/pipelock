@@ -507,17 +507,16 @@ Environment passthrough (subprocess mode only):
 				if watchErr != nil {
 					return fmt.Errorf("file sentry init failed (feature is enabled): %w", watchErr)
 				}
-				defer func() { _ = watcher.Close() }()
-
 				// Arm synchronously before child launch.
 				if armErr := watcher.Arm(); armErr != nil {
 					return fmt.Errorf("file sentry failed to arm watches (feature is enabled): %w", armErr)
 				}
 
 				// Consume findings: log to stderr and record metrics.
-				// Started now so the channel is drained even before the
-				// event loop begins (buffered findings from Arm window).
+				// The consumer runs until Close() closes the findings channel.
+				consumerDone := make(chan struct{})
 				go func() {
+					defer close(consumerDone)
 					for f := range watcher.Findings() {
 						agent := ""
 						if f.IsAgent {
@@ -530,6 +529,12 @@ Environment passthrough (subprocess mode only):
 							mcpMetrics.RecordFileSentryFinding(f.PatternName, f.Severity, f.IsAgent)
 						}
 					}
+				}()
+				// Single defer: close watcher (flushes + closes channel),
+				// then wait for consumer to finish processing.
+				defer func() {
+					_ = watcher.Close()
+					<-consumerDone
 				}()
 				_, _ = fmt.Fprintf(logW, "pipelock: file sentry watching %d path(s)\n",
 					len(cfg.FileSentry.WatchPaths))

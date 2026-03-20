@@ -1172,7 +1172,9 @@ func TestRunProxy_ExtraEnvDoesNotLeakWithout(t *testing.T) {
 	logBuf := &strings.Builder{}
 
 	// Run env and check that PIPELOCK_TEST_SECRET is not present (no extraEnv).
-	_ = RunProxy(context.Background(), strings.NewReader(""), &out, logBuf, []string{"env"}, sc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	if err := RunProxy(context.Background(), strings.NewReader(""), &out, logBuf, []string{"env"}, sc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+		t.Fatalf("RunProxy: %v", err)
+	}
 
 	if strings.Contains(out.String(), "PIPELOCK_TEST_SECRET") {
 		t.Error("PIPELOCK_TEST_SECRET should not be in child env without --env")

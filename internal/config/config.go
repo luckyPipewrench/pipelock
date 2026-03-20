@@ -813,13 +813,17 @@ func Load(path string) (*Config, error) {
 	// user explicitly chose the target directory.
 	for i, p := range cfg.FileSentry.WatchPaths {
 		if !filepath.IsAbs(p) {
-			cleaned := filepath.Clean(p)
-			if strings.HasPrefix(cleaned, "..") {
-				return nil, fmt.Errorf("file_sentry: watch_paths[%d] %q uses path traversal (use absolute path instead)", i, p)
+			resolved := filepath.Clean(filepath.Join(configDir, p))
+			// Verify the resolved path is still under the config directory.
+			// filepath.Rel returns a ".." prefix if the target escapes.
+			rel, err := filepath.Rel(configDir, resolved)
+			if err != nil || strings.HasPrefix(rel, "..") {
+				return nil, fmt.Errorf("file_sentry: watch_paths[%d] %q escapes config directory (use absolute path instead)", i, p)
 			}
-			cfg.FileSentry.WatchPaths[i] = filepath.Join(configDir, p)
+			cfg.FileSentry.WatchPaths[i] = resolved
+		} else {
+			cfg.FileSentry.WatchPaths[i] = filepath.Clean(cfg.FileSentry.WatchPaths[i])
 		}
-		cfg.FileSentry.WatchPaths[i] = filepath.Clean(cfg.FileSentry.WatchPaths[i])
 	}
 
 	if err := cfg.Validate(); err != nil {

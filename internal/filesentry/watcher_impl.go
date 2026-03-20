@@ -131,8 +131,16 @@ func (w *fsWatcher) Close() error {
 		return nil
 	}
 	w.closed = true
+	w.mu.Unlock()
 
-	// Collect pending scan paths before stopping timers.
+	// Stop the fsnotify watcher first. This closes the Events/Errors
+	// channels, which causes Start() to return. The event loop must be
+	// stopped BEFORE we touch timers/pidSnap to avoid a race where a
+	// queued event writes to the maps after we nil them.
+	err := w.watcher.Close()
+
+	// Now safe to collect and clear pending state — event loop is done.
+	w.mu.Lock()
 	pendingPaths := make([]string, 0, len(w.timers))
 	pendingAgent := make([]bool, 0, len(w.timers))
 	for path, t := range w.timers {
@@ -140,21 +148,17 @@ func (w *fsWatcher) Close() error {
 		pendingPaths = append(pendingPaths, path)
 		pendingAgent = append(pendingAgent, w.pidSnap[path])
 	}
-	// Clear maps so scanFile's closed check doesn't block.
 	w.timers = nil
 	w.pidSnap = nil
 	w.mu.Unlock()
 
-	// Flush pending scans synchronously. scanFile checks w.closed and
-	// the send is guarded, but we set closed=true above. We need to
-	// temporarily allow sends for the flush. Use the findings channel
-	// directly before closing it.
+	// Flush pending scans synchronously.
 	for i, path := range pendingPaths {
 		w.flushScan(path, pendingAgent[i])
 	}
 
 	close(w.findings)
-	return w.watcher.Close()
+	return err
 }
 
 // addRecursive walks a directory tree and adds an fsnotify watch on every

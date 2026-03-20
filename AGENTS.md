@@ -27,11 +27,13 @@ Pipelock is a security harness for AI agents. Single Go binary, Apache 2.0, publ
 **What it does:** Sits between an AI agent and the internet. Scans all HTTP requests and MCP protocol traffic for credential exfiltration, prompt injection, SSRF, data leaks, and tool poisoning.
 
 **Architecture — capability separation:**
-```
+
+```text
 Agent (has secrets, no network) → Pipelock Proxy (no agent secrets, has network) → Internet
 ```
 
 **Core components:**
+
 | Package | Purpose |
 |---------|---------|
 | `internal/scanner/` | 11-layer URL + response scanning pipeline |

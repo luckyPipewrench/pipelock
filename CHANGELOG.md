@@ -15,11 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Key-scoped tool policy matching: `arg_key` field scopes `arg_pattern` to specific top-level argument keys. Block `read_file` when `file_path` contains `/etc/shadow` without false positives on other arguments. Raw argument JSON threaded through all enforcement paths. (#257)
 - Community rules rollout: `rules.KeyringHex` wired into build ldflags (Makefile, GoReleaser, Dockerfile) so release binaries verify official bundle signatures. Official registry URL set to `pipelab.org/rules/`. `docs/rules.md` user guide. Community Rules section in README. Commented `rules:` section in all 7 presets. (#255)
 - Filesystem sentinel for subprocess MCP mode: real-time filesystem monitoring detects secrets written to disk by agent subprocesses that bypass the MCP pipe. Recursive directory watching with 50ms write debounce, DLP content scanning, process lineage attribution (Linux), and rename-into-place bypass prevention. Watches arm synchronously before child launch (no startup race). Fail-closed when enabled. (#261)
+- OTLP log export sink: OpenTelemetry log export as a third emit sink alongside webhook and syslog. Events sent as OTLP LogRecords over HTTP/protobuf to a collector endpoint. No gRPC dependency (uses protowire). Async buffered queue with bounded retry on 429/5xx per OTLP spec. 15 new tests. (#262)
 
 ### Fixed
 - Transport parity: WebSocket header DLP now scans all 7 forwarded headers (was 4 auth-only). Forward HTTP proxy now scans responses for prompt injection when response_scanning is enabled. Fail-closed on compressed responses that cannot be scanned. Closes the last transport parity gap. (#254)
 - Shell normalization hardened against 3 evasion techniques: `$@`/`$*` positional parameter insertion, `${HOME:0:1}` path construction, and backtick command substitution now resolve before policy matching. Pipeline ordering fixed so indirect expansion resolves before slash replacement. (#259)
 - Windows release builds: `pipelock rules` now uses an OS-specific lock implementation so the CLI cross-compiles cleanly for Windows targets. (#252)
+- DLP action validation: `dlp.action` and per-pattern `action` fields were silently dropped by YAML unmarshaling. Now rejected at startup with an error message pointing to the correct transport-level settings. (#264)
 
 ### Tests
 - WebSocket and TLS interception transport wiring: integration tests for address poisoning detection, cross-request exfiltration entropy, response scanning strip action, full CONNECT-hijack-SNI-intercept-scan integration, and injection blocking. Coverage: `clientToUpstream` 61% to 88%, `handleConnect` TLS branch 0% to 86%. (#253)

@@ -1,13 +1,13 @@
 # SIEM Integration Guide
 
 Pipelock pushes structured security events to external systems via webhook
-(HTTP POST) and syslog (RFC 5424) sinks. This guide covers the event schema,
-forwarding setup for common SIEM platforms, detection rule examples, and
-automated kill switch response.
+(HTTP POST), syslog (RFC 5424), and OTLP (OpenTelemetry HTTP/protobuf) sinks.
+This guide covers the event schema, forwarding setup for common SIEM
+platforms, detection rule examples, and automated kill switch response.
 
 ## Event Schema
 
-Both sinks emit the same JSON envelope:
+All three sinks emit the same JSON envelope (OTLP wraps it as an OTLP LogRecord):
 
 ```json
 {

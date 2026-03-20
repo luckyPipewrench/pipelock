@@ -192,6 +192,57 @@ func TestLineage_ParentPID_Self(t *testing.T) {
 	}
 }
 
+func TestCollectDescendantsRec_DepthLimit(t *testing.T) {
+	if runtime.GOOS != testOSLinux {
+		t.Skip("linux only")
+	}
+	// Calling with depth >= maxDescendantDepth should return nil immediately.
+	visited := make(map[int]struct{})
+	result := collectDescendantsRec(os.Getpid(), visited, maxDescendantDepth)
+	if result != nil {
+		t.Errorf("expected nil at max depth, got %v", result)
+	}
+}
+
+func TestCollectDescendantsRec_CycleProtection(t *testing.T) {
+	if runtime.GOOS != testOSLinux {
+		t.Skip("linux only")
+	}
+	// Pre-populate visited with the current PID. collectDescendantsRec
+	// should skip it if encountered as a child (cycle protection).
+	visited := make(map[int]struct{})
+	visited[os.Getpid()] = struct{}{}
+	// This won't actually recurse into getpid since it's in visited,
+	// but verifies the visited check doesn't panic.
+	result := collectDescendantsRec(os.Getpid(), visited, 0)
+	_ = result
+}
+
+func TestCollectDescendants_NonexistentPID(t *testing.T) {
+	if runtime.GOOS != testOSLinux {
+		t.Skip("linux only")
+	}
+	// Nonexistent PID should return empty (ReadDir fails).
+	result := collectDescendants(99999999)
+	if len(result) != 0 {
+		t.Errorf("expected empty for nonexistent PID, got %v", result)
+	}
+}
+
+func TestIsDescendant_CycleProtection(t *testing.T) {
+	if runtime.GOOS != testOSLinux {
+		t.Skip("linux only")
+	}
+	l := NewLineage()
+	// Track PID 1 — walking up from a random high PID should terminate
+	// without infinite loop (cycle protection via visited map).
+	l.TrackPID(1)
+	// Use a PID that doesn't exist — parentPID will fail, loop terminates.
+	if l.IsDescendant(99999998) {
+		t.Error("nonexistent PID should not be a descendant of init")
+	}
+}
+
 func TestLineage_ParentPID_Nonexistent(t *testing.T) {
 	if runtime.GOOS != testOSLinux {
 		t.Skip("linux only")

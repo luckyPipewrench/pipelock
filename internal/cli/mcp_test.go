@@ -10,6 +10,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
@@ -966,5 +967,155 @@ func TestMcpProxyCmd_ChainDetectionWiring(t *testing.T) {
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// --- File Sentry CLI tests ---
+
+// safeBuffer is a thread-safe bytes.Buffer for capturing stderr from
+// concurrent goroutines (file sentry consumer) without data races.
+type safeBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (sb *safeBuffer) Write(p []byte) (int, error) {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return sb.buf.Write(p)
+}
+
+func (sb *safeBuffer) String() string {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return sb.buf.String()
+}
+
+func TestMcpProxyCmd_FileSentryDetectsSecret(t *testing.T) {
+	if runtime.GOOS == osWindows {
+		t.Skip("bash subprocess test requires unix")
+	}
+
+	watchDir := t.TempDir()
+	cfgContent := "file_sentry:\n  enabled: true\n  watch_paths:\n    - " + watchDir + "\n  scan_content: true\ninternal: []\ndlp:\n  scan_env: false\n"
+	cfgFile := t.TempDir() + "/fs.yaml"
+	if err := os.WriteFile(cfgFile, []byte(cfgContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Subprocess writes a secret to the watch dir, waits for debounce, then outputs clean response.
+	secret := "sk-ant-" + "api03-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+	script := "echo '" + secret + "' > " + watchDir + "/leak.txt; sleep 0.3; echo '" + testSafeReply + "'"
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"mcp", "proxy", "--config", cfgFile, "--", "bash", "-c", script})
+	outBuf := &strings.Builder{}
+	cmd.SetOut(outBuf)
+	errBuf := &safeBuffer{}
+	cmd.SetErr(errBuf)
+	cmd.SetIn(bytes.NewReader(nil))
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	stderr := errBuf.String()
+	if !strings.Contains(stderr, "file sentry watching") {
+		t.Errorf("expected file sentry startup message, got stderr: %s", stderr)
+	}
+	if !strings.Contains(stderr, "[file_sentry]") {
+		t.Errorf("expected file_sentry DLP finding in stderr, got: %s", stderr)
+	}
+}
+
+func TestMcpProxyCmd_FileSentryInvalidWatchPath(t *testing.T) {
+	cfgContent := "file_sentry:\n  enabled: true\n  watch_paths:\n    - /nonexistent/path/does/not/exist\n  scan_content: true\n"
+	cfgFile := t.TempDir() + "/bad-fs.yaml"
+	if err := os.WriteFile(cfgFile, []byte(cfgContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"mcp", "proxy", "--config", cfgFile, "--", "echo", testSafeReply})
+	cmd.SetOut(&strings.Builder{})
+	cmd.SetErr(&strings.Builder{})
+	cmd.SetIn(bytes.NewReader(nil))
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for nonexistent watch path")
+	}
+	if !strings.Contains(err.Error(), "file sentry") {
+		t.Errorf("expected file sentry error, got: %v", err)
+	}
+}
+
+func TestMcpProxyCmd_FileSentryDisabledByDefault(t *testing.T) {
+	if runtime.GOOS == osWindows {
+		t.Skip("echo subprocess test requires unix")
+	}
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"mcp", "proxy", "--", "echo", testSafeReply})
+	outBuf := &strings.Builder{}
+	cmd.SetOut(outBuf)
+	errBuf := &strings.Builder{}
+	cmd.SetErr(errBuf)
+	cmd.SetIn(bytes.NewReader(nil))
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if strings.Contains(errBuf.String(), "file_sentry") {
+		t.Error("file sentry should not be active when not configured")
+	}
+}
+
+func TestMcpProxyCmd_FileSentryCleanFileNoFinding(t *testing.T) {
+	if runtime.GOOS == osWindows {
+		t.Skip("bash subprocess test requires unix")
+	}
+
+	watchDir := t.TempDir()
+	cfgContent := "file_sentry:\n  enabled: true\n  watch_paths:\n    - " + watchDir + "\n  scan_content: true\ninternal: []\ndlp:\n  scan_env: false\n"
+	cfgFile := t.TempDir() + "/fs-clean.yaml"
+	if err := os.WriteFile(cfgFile, []byte(cfgContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	script := "echo 'hello world' > " + watchDir + "/clean.txt; sleep 0.3; echo '" + testSafeReply + "'"
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"mcp", "proxy", "--config", cfgFile, "--", "bash", "-c", script})
+	outBuf := &strings.Builder{}
+	cmd.SetOut(outBuf)
+	errBuf := &safeBuffer{}
+	cmd.SetErr(errBuf)
+	cmd.SetIn(bytes.NewReader(nil))
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if strings.Contains(errBuf.String(), "DLP match") {
+		t.Errorf("expected no DLP finding for clean file, got: %s", errBuf.String())
+	}
+}
+
+func TestSafeWriter(t *testing.T) {
+	var buf bytes.Buffer
+	sw := &safeWriter{w: &buf}
+
+	data := []byte("test-safe-writer")
+	n, err := sw.Write(data)
+	if err != nil {
+		t.Fatalf("Write error: %v", err)
+	}
+	if n != len(data) {
+		t.Errorf("expected %d bytes written, got %d", len(data), n)
+	}
+	if buf.String() != string(data) {
+		t.Errorf("expected %q, got %q", string(data), buf.String())
 	}
 }

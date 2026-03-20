@@ -546,10 +546,11 @@ type CrossRequestDetection struct {
 
 // CrossRequestEntropyBudget configures per-session entropy tracking.
 type CrossRequestEntropyBudget struct {
-	Enabled       bool    `yaml:"enabled"`
-	BitsPerWindow float64 `yaml:"bits_per_window"` // total Shannon entropy bits before signaling
-	WindowMinutes int     `yaml:"window_minutes"`  // sliding window duration
-	Action        string  `yaml:"action"`          // warn, block (entropy alone is medium-confidence)
+	Enabled       bool     `yaml:"enabled"`
+	BitsPerWindow float64  `yaml:"bits_per_window"` // total Shannon entropy bits before signaling
+	WindowMinutes int      `yaml:"window_minutes"`  // sliding window duration
+	Action        string   `yaml:"action"`          // warn, block (entropy alone is medium-confidence)
+	ExemptDomains []string `yaml:"exempt_domains"`  // domains excluded from entropy budget (e.g. API polling endpoints with tokens in URLs)
 }
 
 // CrossRequestFragments configures outbound payload fragment reassembly.

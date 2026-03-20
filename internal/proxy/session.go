@@ -42,6 +42,7 @@ type SessionState struct {
 	threatScore      float64
 	escalationLevel  int // 0=normal, 1=first escalation, etc.
 	currentThreshold float64
+	lastEscalation   time.Time // when the current level was reached
 }
 
 type domainEntry struct {
@@ -51,12 +52,19 @@ type domainEntry struct {
 
 // RecordRequest records a request and returns any anomalies detected.
 // The caller must pass the current config for threshold values.
+// When the session is at block_all level, lastActivity is NOT refreshed
+// so idle eviction can eventually clean up stuck sessions (prevents
+// death spiral where blocked retries keep the session alive forever).
 func (s *SessionState) RecordRequest(domain string, cfg *config.SessionProfiling) []Anomaly {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	now := time.Now()
-	s.lastActivity = now
+	// Don't refresh activity at critical+ levels — let idle eviction work.
+	// escalationLevel 3+ maps to "critical" which has block_all=true.
+	if s.escalationLevel < 3 {
+		s.lastActivity = now
+	}
 
 	var anomalies []Anomaly
 
@@ -110,12 +118,39 @@ func pruneDomainWindow(entries []domainEntry, domain string, windowCutoff, now t
 	return pruned, countUniqueDomains(pruned)
 }
 
+// maxLevelDuration is the maximum time a session stays at an escalation level
+// before automatically de-escalating by one level. This prevents death spirals
+// where false positives (e.g. entropy on CONNECT hostnames) permanently lock
+// a session at critical. The session must accumulate new real signals to
+// re-escalate.
+const maxLevelDuration = 5 * time.Minute
+
 // RecordSignal adds a threat signal to the session's score.
 // Returns (escalated, fromLevel, toLevel) if threshold was crossed.
 // Caller must hold no locks on SessionState.
 func (s *SessionState) RecordSignal(sig session.SignalType, threshold float64) (bool, string, string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	now := time.Now()
+
+	// Time-based de-escalation: if the session has been at its current level
+	// for longer than maxLevelDuration, drop one level and reset the score
+	// to just below the current threshold. This prevents permanent lockout
+	// from accumulated false positives, and ensures the session doesn't
+	// immediately re-escalate from stale score.
+	if s.escalationLevel > 0 && !s.lastEscalation.IsZero() && now.Sub(s.lastEscalation) > maxLevelDuration {
+		s.escalationLevel--
+		s.lastEscalation = now
+		// Halve the threshold to match the lower level (inverse of the
+		// doubling on escalation).
+		if s.currentThreshold > threshold {
+			s.currentThreshold /= 2
+		}
+		// Reset score to half the current threshold so the session doesn't
+		// immediately re-escalate from accumulated points.
+		s.threatScore = s.currentThreshold / 2
+	}
 
 	points := session.SignalPoints[sig]
 	s.threatScore += points
@@ -128,6 +163,7 @@ func (s *SessionState) RecordSignal(sig session.SignalType, threshold float64) (
 	if s.currentThreshold > 0 && s.threatScore >= s.currentThreshold {
 		oldLevel := s.escalationLevel
 		s.escalationLevel++
+		s.lastEscalation = now
 		// Double the threshold to prevent oscillation
 		s.currentThreshold *= 2
 

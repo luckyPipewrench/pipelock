@@ -982,3 +982,28 @@ func TestFetchEndpoint_CEEEntropyBlock(t *testing.T) {
 		t.Errorf("expected 403 from CEE entropy block on first request, got %d (body: %s)", w.Code, w.Body.String())
 	}
 }
+
+func TestCeeEntropyExempt(t *testing.T) {
+	tests := []struct {
+		name   string
+		url    string
+		exempt []string
+		want   bool
+	}{
+		{"exact match", "https://api.telegram.org/bot123/getUpdates", []string{"api.telegram.org"}, true},
+		{"wildcard match", "https://api.minimax.io/v1/chat", []string{"*.minimax.io"}, true},
+		{"no match", "https://evil.com/exfil", []string{"api.telegram.org"}, false},
+		{"empty list", "https://api.telegram.org/bot123/getUpdates", nil, false},
+		{"case insensitive", "https://API.Telegram.Org/bot123", []string{"api.telegram.org"}, true},
+		{"wildcard no match", "https://telegram.org/page", []string{"*.minimax.io"}, false},
+		{"invalid url", "://bad", []string{"bad"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ceeEntropyExempt(tt.url, tt.exempt)
+			if got != tt.want {
+				t.Errorf("ceeEntropyExempt(%q, %v) = %v, want %v", tt.url, tt.exempt, got, tt.want)
+			}
+		})
+	}
+}

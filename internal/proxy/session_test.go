@@ -967,3 +967,134 @@ func TestProxy_SessionStore_Enabled(t *testing.T) {
 		t.Error("expected non-nil SessionStore when profiling enabled")
 	}
 }
+
+func TestSessionState_TimeBasedDeescalation(t *testing.T) {
+	cfg := testSessionConfig()
+	sm := NewSessionManager(cfg, nil)
+	defer sm.Close()
+
+	sess := sm.GetOrCreate(testClientIP)
+
+	// Escalate to level 1 (threshold 5, +3 block = 3, +3 block = 6 → escalate)
+	sess.RecordSignal(session.SignalBlock, 5.0) // +3, total 3
+	sess.RecordSignal(session.SignalBlock, 5.0) // +3, total 6 → escalate to 1
+
+	if sess.EscalationLevel() != 1 {
+		t.Fatalf("expected level 1, got %d", sess.EscalationLevel())
+	}
+
+	// Simulate time passing beyond maxLevelDuration.
+	sess.mu.Lock()
+	sess.lastEscalation = time.Now().Add(-maxLevelDuration - time.Second)
+	sess.mu.Unlock()
+
+	// Next signal should trigger de-escalation first, then evaluate.
+	// A near-miss (+1) shouldn't re-escalate (threshold is now 5 after halving from 10).
+	sess.RecordSignal(session.SignalNearMiss, 5.0)
+
+	if sess.EscalationLevel() != 0 {
+		t.Errorf("expected de-escalation to level 0 after max dwell time, got %d", sess.EscalationLevel())
+	}
+}
+
+func TestSessionState_CriticalDeescalation(t *testing.T) {
+	cfg := testSessionConfig()
+	sm := NewSessionManager(cfg, nil)
+	defer sm.Close()
+
+	sess := sm.GetOrCreate(testClientIP)
+
+	// Escalate to critical (level 3) by sending many signals.
+	// Use threshold 5.0; each block = +3. After 2 blocks (6 pts) → level 1.
+	// Threshold doubles to 10. 2 more blocks (6 pts, total 12) → level 2.
+	// Threshold doubles to 20. 3 more blocks (9 pts, total 21) → level 3.
+	for range 7 {
+		sess.RecordSignal(session.SignalBlock, 5.0)
+	}
+
+	level := sess.EscalationLevel()
+	if level < 3 {
+		t.Fatalf("expected critical (level 3+), got %d", level)
+	}
+
+	// Simulate time passing — de-escalate one level.
+	sess.mu.Lock()
+	levelBefore := sess.escalationLevel
+	sess.lastEscalation = time.Now().Add(-maxLevelDuration - time.Second)
+	sess.mu.Unlock()
+
+	// Near-miss (+1) should not re-escalate after score reset.
+	sess.RecordSignal(session.SignalNearMiss, 5.0)
+
+	levelAfter := sess.EscalationLevel()
+	if levelAfter >= levelBefore {
+		t.Errorf("expected level to decrease from %d, got %d", levelBefore, levelAfter)
+	}
+}
+
+func TestSessionState_CriticalNoActivityRefresh(t *testing.T) {
+	cfg := testSessionConfig()
+	sm := NewSessionManager(cfg, nil)
+	defer sm.Close()
+
+	sess := sm.GetOrCreate(testClientIP)
+
+	// Escalate to critical.
+	for range 10 {
+		sess.RecordSignal(session.SignalBlock, 2.0)
+	}
+
+	if sess.EscalationLevel() < 3 {
+		t.Fatalf("expected critical, got level %d", sess.EscalationLevel())
+	}
+
+	// Record the last activity time.
+	sess.mu.Lock()
+	activityBefore := sess.lastActivity
+	sess.mu.Unlock()
+
+	// Wait a moment, then RecordRequest at critical.
+	time.Sleep(10 * time.Millisecond)
+	sess.RecordRequest("example.com", cfg)
+
+	sess.mu.Lock()
+	activityAfter := sess.lastActivity
+	sess.mu.Unlock()
+
+	// At critical (level 3+), lastActivity should NOT be refreshed.
+	if activityAfter.After(activityBefore) {
+		t.Error("lastActivity should not be refreshed at critical level (prevents death spiral from idle eviction starvation)")
+	}
+}
+
+func TestSessionState_SubCriticalActivityRefresh(t *testing.T) {
+	cfg := testSessionConfig()
+	sm := NewSessionManager(cfg, nil)
+	defer sm.Close()
+
+	sess := sm.GetOrCreate(testClientIP)
+
+	// Escalate to level 1 (below critical).
+	sess.RecordSignal(session.SignalBlock, 5.0) // +3, total 3
+	sess.RecordSignal(session.SignalBlock, 5.0) // +3, total 6 → level 1
+
+	if sess.EscalationLevel() < 1 || sess.EscalationLevel() >= 3 {
+		t.Fatalf("expected level 1-2, got %d", sess.EscalationLevel())
+	}
+
+	sess.mu.Lock()
+	activityBefore := sess.lastActivity
+	sess.mu.Unlock()
+
+	time.Sleep(10 * time.Millisecond)
+	sess.RecordRequest("example.com", cfg)
+
+	sess.mu.Lock()
+	activityAfter := sess.lastActivity
+	sess.mu.Unlock()
+
+	// Below critical, lastActivity SHOULD be refreshed.
+	if !activityAfter.After(activityBefore) {
+		t.Error("lastActivity should be refreshed at sub-critical escalation levels")
+	}
+}

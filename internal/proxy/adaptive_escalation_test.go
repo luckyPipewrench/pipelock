@@ -1133,9 +1133,10 @@ func TestConnect_Adaptive_WarnUpgradeToBlock(t *testing.T) {
 	}
 }
 
-// TestConnect_Adaptive_PostCEEBlockAllRecheck verifies that the post-CEE
-// block_all recheck in handleConnect fires when CEE signals escalate the session
-// to a block_all level after the initial session check.
+// TestConnect_Adaptive_PostCEEBlockAllRecheck verifies that a session primed
+// near the escalation threshold is NOT pushed over by CONNECT requests alone.
+// CONNECT hostnames no longer feed the CEE entropy budget, so the post-CEE
+// block_all recheck path cannot be triggered solely by CONNECT traffic.
 func TestConnect_Adaptive_PostCEEBlockAllRecheck(t *testing.T) {
 	targetLn := listenEcho(t)
 	defer func() { _ = targetLn.Close() }()
@@ -1177,7 +1178,8 @@ func TestConnect_Adaptive_PostCEEBlockAllRecheck(t *testing.T) {
 		_ = srv.Serve(ln)
 	}()
 
-	// Prime loopback session near threshold so CEE signals push it over.
+	// Prime loopback session near threshold. Previously, CONNECT entropy
+	// would push this over and trigger block_all. With the fix, it must not.
 	sm := p.sessionMgrPtr.Load()
 	rec := sm.GetOrCreate(adaptiveSessionKeyLoopback)
 	rec.RecordSignal(session.SignalNearMiss, adaptiveTestThreshold)
@@ -1185,7 +1187,8 @@ func TestConnect_Adaptive_PostCEEBlockAllRecheck(t *testing.T) {
 	rec.RecordSignal(session.SignalNearMiss, adaptiveTestThreshold)
 	rec.RecordSignal(session.SignalNearMiss, adaptiveTestThreshold)
 
-	// CONNECT to high-entropy host to trigger CEE.
+	// CONNECT should NOT trigger entropy budget exceeded and should NOT
+	// escalate the session to block_all.
 	target := targetLn.Addr().String()
 	conn := dialProxy(t, proxyAddr)
 	defer func() { _ = conn.Close() }()
@@ -1198,10 +1201,10 @@ func TestConnect_Adaptive_PostCEEBlockAllRecheck(t *testing.T) {
 	}
 	defer resp.Body.Close() //nolint:errcheck // test cleanup
 
-	// Either CEE budget or block_all recheck should produce 403.
-	if resp.StatusCode != http.StatusForbidden {
+	// The request must NOT be blocked: CONNECT hostnames do not feed entropy.
+	if resp.StatusCode == http.StatusForbidden {
 		body, _ := io.ReadAll(resp.Body)
-		t.Errorf("expected 403 after CONNECT CEE + block_all recheck, got %d: %s", resp.StatusCode, body)
+		t.Errorf("CONNECT returned 403; CONNECT hostnames must not feed CEE entropy budget: %s", body)
 	}
 }
 

@@ -220,13 +220,18 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// CEE hostname entropy for opaque CONNECT tunnels. Since we cannot inspect
-	// the encrypted tunnel contents, only the hostname is available for entropy
-	// tracking. Fragment buffering is not useful without body data.
+	// CEE for opaque CONNECT tunnels. Fragment buffering is not useful
+	// without body data. Hostname entropy tracking is DISABLED for CONNECT
+	// because the hostname is the destination, not exfiltration data.
+	// Repeated polling to the same host (e.g. Telegram bot getUpdates)
+	// was exhausting the entropy budget and triggering adaptive escalation
+	// to block_all, permanently locking out legitimate agents.
+	// DLP, SSRF, and per-request entropy checks still run on the hostname.
 	if ceeCfg := ceeEffectiveConfig(cfg.CrossRequestDetection, cfg.EnforceEnabled()); ceeCfg.Enabled {
 		sessionKey := ceeSessionKey(agent, clientIP)
 		if et := p.entropyTrackerPtr.Load(); et != nil && ceeCfg.EntropyBudget.Enabled {
-			et.Record(sessionKey, []byte(host))
+			// Skip: CONNECT hostname is NOT recorded to entropy budget.
+			// Only query values, request bodies, and MCP args contribute.
 			if et.BudgetExceeded(sessionKey) {
 				hasFinding = true
 				p.metrics.RecordCrossRequestEntropyExceeded()

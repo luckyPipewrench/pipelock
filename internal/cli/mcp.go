@@ -17,6 +17,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
+	"github.com/luckyPipewrench/pipelock/internal/filesentry"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
@@ -472,7 +473,41 @@ Environment passthrough (subprocess mode only):
 			ctx, cancel := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 			defer cancel()
 
-			if err := mcp.RunProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), serverCmd, sc, approver, inputCfg, toolCfg, policyCfg, ks, chainMatcher, nil, cee, store, adaptiveCfg, mcpMetrics, extraEnv...); err != nil {
+			// File sentry: watch agent working directories for secret writes.
+			var lin filesentry.Lineage
+			if cfg.FileSentry.Enabled {
+				lin = filesentry.NewLineage()
+				watcher, watchErr := filesentry.NewWatcher(&cfg.FileSentry, sc, lin)
+				if watchErr != nil {
+					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: file sentry init failed: %v\n", watchErr)
+				} else {
+					defer func() { _ = watcher.Close() }()
+					go func() {
+						if startErr := watcher.Start(ctx); startErr != nil {
+							_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: file sentry error: %v\n", startErr)
+						}
+					}()
+					// Consume findings: log to stderr and record metrics.
+					go func() {
+						for f := range watcher.Findings() {
+							agent := ""
+							if f.IsAgent {
+								agent = " (agent process)"
+							}
+							_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
+								"pipelock: [file_sentry] DLP match in %s: %s (severity=%s)%s\n",
+								f.Path, f.PatternName, f.Severity, agent)
+							if mcpMetrics != nil {
+								mcpMetrics.RecordFileSentryFinding(f.PatternName, f.Severity, f.IsAgent)
+							}
+						}
+					}()
+					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: file sentry watching %d path(s)\n",
+						len(cfg.FileSentry.WatchPaths))
+				}
+			}
+
+			if err := mcp.RunProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), serverCmd, sc, approver, inputCfg, toolCfg, policyCfg, ks, chainMatcher, nil, cee, store, adaptiveCfg, mcpMetrics, lin, extraEnv...); err != nil {
 				if sentryClient != nil {
 					sentryClient.CaptureError(err)
 				}

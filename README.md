@@ -280,6 +280,10 @@ See [docs/scan-api.md](docs/scan-api.md) for the full API reference.
 
 Detects blockchain address poisoning attacks where a lookalike address is substituted for a legitimate one. Validates addresses for ETH, BTC, SOL, and BNB chains, compares against a user-supplied allowlist, and flags similar addresses using prefix/suffix fingerprinting. Designed for agents that interact with DeFi protocols or execute transactions.
 
+### Filesystem Sentinel
+
+Monitors agent working directories for secrets written to disk. When an MCP subprocess writes a file containing credentials, pipelock detects it using the same DLP patterns applied to network traffic. On Linux, process lineage tracking attributes file writes to the agent's process tree. See [docs/guides/filesystem-sentinel.md](docs/guides/filesystem-sentinel.md).
+
 ### Event Emission
 
 Forward audit events to external systems (SIEM, webhook receivers, syslog). Events are fire-and-forget and never block the proxy. Each event includes a MITRE ATT&CK technique ID where applicable (T1048 for exfiltration, T1059 for injection, T1195.002 for supply chain).

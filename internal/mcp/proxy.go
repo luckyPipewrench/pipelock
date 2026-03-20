@@ -17,6 +17,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	decide "github.com/luckyPipewrench/pipelock/internal/decide"
+	"github.com/luckyPipewrench/pipelock/internal/filesentry"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
@@ -613,7 +614,7 @@ type InputScanConfig struct {
 // for adaptive enforcement signal recording across both input and response scanning.
 // adaptiveCfg provides escalation thresholds and upgrade rules; it is only consulted
 // when store is non-nil and rec is created.
-func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW io.Writer, command []string, sc *scanner.Scanner, approver *hitl.Approver, inputCfg *InputScanConfig, toolCfg *tools.ToolScanConfig, policyCfg *policy.Config, ks *killswitch.Controller, chainMatcher *chains.Matcher, auditLogger *audit.Logger, cee *CEEDeps, store session.Store, adaptiveCfg *config.AdaptiveEnforcement, m *metrics.Metrics, extraEnv ...string) error {
+func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW io.Writer, command []string, sc *scanner.Scanner, approver *hitl.Approver, inputCfg *InputScanConfig, toolCfg *tools.ToolScanConfig, policyCfg *policy.Config, ks *killswitch.Controller, chainMatcher *chains.Matcher, auditLogger *audit.Logger, cee *CEEDeps, store session.Store, adaptiveCfg *config.AdaptiveEnforcement, m *metrics.Metrics, lineage filesentry.Lineage, extraEnv ...string) error {
 	cmd := exec.CommandContext(ctx, command[0], command[1:]...) //nolint:gosec // command comes from user CLI args
 
 	// Per-invocation adaptive enforcement recorder. Nil when store is nil
@@ -646,8 +647,20 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 
 	cmd.Stderr = safeLogW
 
+	// Enable subreaper before starting the child so we adopt orphaned
+	// grandchildren. This lets the lineage tracker attribute file writes
+	// to the agent's process tree.
+	if lineage != nil {
+		_ = lineage.EnableSubreaper()
+	}
+
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("starting MCP server %q: %w", command[0], err)
+	}
+
+	// Track child PID for file write attribution.
+	if lineage != nil {
+		lineage.TrackPID(cmd.Process.Pid)
 	}
 
 	// Channel for blocked request IDs from input scanning goroutine.

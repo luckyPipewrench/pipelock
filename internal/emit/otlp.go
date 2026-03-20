@@ -58,6 +58,8 @@ type OTLPSink struct {
 	resource  *respb.Resource
 	queue     chan Event
 	done      chan struct{}
+	closed    bool // guarded by closeMu
+	closeMu   sync.Mutex
 	closeWG   sync.WaitGroup
 	closeOnce sync.Once
 }
@@ -66,7 +68,7 @@ type OTLPSink struct {
 // The endpoint is the base URL (e.g. "http://collector:4318"); /v1/logs is
 // appended automatically. The version string is set as the service.version
 // resource attribute.
-func NewOTLPSink(endpoint, instanceID, version string, minSev Severity, headers map[string]string, timeout time.Duration, queueSize int, useGzip bool) (*OTLPSink, error) {
+func NewOTLPSink(endpoint, version string, minSev Severity, headers map[string]string, timeout time.Duration, queueSize int, useGzip bool) (*OTLPSink, error) {
 	// Normalize: strip trailing /v1/logs if the operator already included it,
 	// then append it. Prevents http://collector:4318/v1/logs/v1/logs.
 	endpoint = strings.TrimRight(endpoint, "/")
@@ -83,10 +85,12 @@ func NewOTLPSink(endpoint, instanceID, version string, minSev Severity, headers 
 		queueSize = DefaultOTLPQueueSize
 	}
 
+	// Resource carries stable attributes. instance_id is NOT baked here —
+	// it comes from the event (set by the Emitter) so it stays consistent
+	// with webhook/syslog across hot-reloads.
 	resource := &respb.Resource{
 		Attributes: []*commonpb.KeyValue{
 			stringKV("service.name", "pipelock"),
-			stringKV("service.instance.id", instanceID),
 			stringKV("service.version", version),
 		},
 	}
@@ -116,35 +120,35 @@ func NewOTLPSink(endpoint, instanceID, version string, minSev Severity, headers 
 
 // Emit enqueues an event for async delivery.
 // Events below the minimum severity are silently dropped.
-//
-// Note: there is a benign race between the done check and the queue send.
-// An event enqueued between Close() and the worker noticing done will be
-// drained normally. This matches the webhook sink's behavior and is not
-// a security concern (extra events are processed, never lost silently).
+// The closed flag is checked under closeMu so no enqueue can succeed
+// after Close() sets the flag.
 func (s *OTLPSink) Emit(_ context.Context, event Event) error {
 	if event.Severity < s.minSev {
 		return nil
 	}
 
-	select {
-	case <-s.done:
+	s.closeMu.Lock()
+	if s.closed {
+		s.closeMu.Unlock()
 		return errors.New(errOTLPClosed)
-	default:
 	}
-
 	select {
 	case s.queue <- event:
+		s.closeMu.Unlock()
 		return nil
-	case <-s.done:
-		return errors.New(errOTLPClosed)
 	default:
+		s.closeMu.Unlock()
 		return ErrOTLPQueueFull
 	}
 }
 
-// Close signals the background goroutine to drain and stop.
+// Close signals the background goroutine to drain remaining events and stop.
+// No new events can be enqueued after Close() returns.
 func (s *OTLPSink) Close() error {
 	s.closeOnce.Do(func() {
+		s.closeMu.Lock()
+		s.closed = true
+		s.closeMu.Unlock()
 		close(s.done)
 	})
 	s.closeWG.Wait()

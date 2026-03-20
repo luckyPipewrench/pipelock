@@ -39,7 +39,7 @@ func TestOTLPSink_EmitEvent(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	sink, err := NewOTLPSink(srv.URL, "test-instance", "1.0.0", SeverityInfo, nil, 5*time.Second, 64, false)
+	sink, err := NewOTLPSink(srv.URL, "1.0.0", SeverityInfo, nil, 5*time.Second, 64, false)
 	if err != nil {
 		t.Fatalf("NewOTLPSink: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestOTLPSink_NilFields(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	sink, err := NewOTLPSink(srv.URL, "test", "1.0.0", SeverityInfo, nil, 5*time.Second, 64, false)
+	sink, err := NewOTLPSink(srv.URL, "1.0.0", SeverityInfo, nil, 5*time.Second, 64, false)
 	if err != nil {
 		t.Fatalf("NewOTLPSink: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestOTLPSink_SeverityFilter(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	sink, err := NewOTLPSink(srv.URL, "test", "1.0.0", SeverityWarn, nil, 5*time.Second, 64, false)
+	sink, err := NewOTLPSink(srv.URL, "1.0.0", SeverityWarn, nil, 5*time.Second, 64, false)
 	if err != nil {
 		t.Fatalf("NewOTLPSink: %v", err)
 	}
@@ -172,7 +172,7 @@ func TestOTLPSink_QueueFull(t *testing.T) {
 	defer srv.Close()
 	defer close(blocked)
 
-	sink, err := NewOTLPSink(srv.URL, "test", "1.0.0", SeverityInfo, nil, 5*time.Second, 2, false)
+	sink, err := NewOTLPSink(srv.URL, "1.0.0", SeverityInfo, nil, 5*time.Second, 2, false)
 	if err != nil {
 		t.Fatalf("NewOTLPSink: %v", err)
 	}
@@ -208,7 +208,7 @@ func TestOTLPSink_RetryOn503(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	sink, err := NewOTLPSink(srv.URL, "test", "1.0.0", SeverityInfo, nil, 5*time.Second, 64, false)
+	sink, err := NewOTLPSink(srv.URL, "1.0.0", SeverityInfo, nil, 5*time.Second, 64, false)
 	if err != nil {
 		t.Fatalf("NewOTLPSink: %v", err)
 	}
@@ -240,7 +240,7 @@ func TestOTLPSink_NoRetryOn500(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	sink, err := NewOTLPSink(srv.URL, "test", "1.0.0", SeverityInfo, nil, 5*time.Second, 64, false)
+	sink, err := NewOTLPSink(srv.URL, "1.0.0", SeverityInfo, nil, 5*time.Second, 64, false)
 	if err != nil {
 		t.Fatalf("NewOTLPSink: %v", err)
 	}
@@ -284,7 +284,7 @@ func TestOTLPSink_Gzip(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	sink, err := NewOTLPSink(srv.URL, "test", "1.0.0", SeverityInfo, nil, 5*time.Second, 64, true)
+	sink, err := NewOTLPSink(srv.URL, "1.0.0", SeverityInfo, nil, 5*time.Second, 64, true)
 	if err != nil {
 		t.Fatalf("NewOTLPSink: %v", err)
 	}
@@ -314,7 +314,7 @@ func TestOTLPSink_CustomHeaders(t *testing.T) {
 	defer srv.Close()
 
 	headers := map[string]string{"Authorization": "Bearer test-token-123"}
-	sink, err := NewOTLPSink(srv.URL, "test", "1.0.0", SeverityInfo, headers, 5*time.Second, 64, false)
+	sink, err := NewOTLPSink(srv.URL, "1.0.0", SeverityInfo, headers, 5*time.Second, 64, false)
 	if err != nil {
 		t.Fatalf("NewOTLPSink: %v", err)
 	}
@@ -338,7 +338,7 @@ func TestOTLPSink_CloseIdempotent(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	sink, err := NewOTLPSink(srv.URL, "test", "1.0.0", SeverityInfo, nil, 5*time.Second, 64, false)
+	sink, err := NewOTLPSink(srv.URL, "1.0.0", SeverityInfo, nil, 5*time.Second, 64, false)
 	if err != nil {
 		t.Fatalf("NewOTLPSink: %v", err)
 	}
@@ -359,7 +359,7 @@ func TestOTLPSink_CloseDrains(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	sink, err := NewOTLPSink(srv.URL, "test", "1.0.0", SeverityInfo, nil, 5*time.Second, 64, false)
+	sink, err := NewOTLPSink(srv.URL, "1.0.0", SeverityInfo, nil, 5*time.Second, 64, false)
 	if err != nil {
 		t.Fatalf("NewOTLPSink: %v", err)
 	}
@@ -386,7 +386,7 @@ func TestOTLPSink_EndpointWithV1Logs(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	sink, err := NewOTLPSink(srv.URL+"/v1/logs", "test", "1.0.0", SeverityInfo, nil, 5*time.Second, 64, false)
+	sink, err := NewOTLPSink(srv.URL+"/v1/logs", "1.0.0", SeverityInfo, nil, 5*time.Second, 64, false)
 	if err != nil {
 		t.Fatalf("NewOTLPSink: %v", err)
 	}
@@ -412,7 +412,7 @@ func TestOTLPSink_EndpointWithTrailingSlash(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	sink, err := NewOTLPSink(srv.URL+"/", "test", "1.0.0", SeverityInfo, nil, 5*time.Second, 64, false)
+	sink, err := NewOTLPSink(srv.URL+"/", "1.0.0", SeverityInfo, nil, 5*time.Second, 64, false)
 	if err != nil {
 		t.Fatalf("NewOTLPSink: %v", err)
 	}
@@ -431,7 +431,7 @@ func TestOTLPSink_EndpointWithTrailingSlash(t *testing.T) {
 }
 
 func TestOTLPSink_InvalidEndpoint(t *testing.T) {
-	_, err := NewOTLPSink("://bad", "test", "1.0.0", SeverityInfo, nil, 5*time.Second, 64, false)
+	_, err := NewOTLPSink("://bad", "1.0.0", SeverityInfo, nil, 5*time.Second, 64, false)
 	if err == nil {
 		t.Error("expected error for invalid endpoint")
 	}
@@ -443,7 +443,7 @@ func TestOTLPSink_EmitAfterClose(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	sink, err := NewOTLPSink(srv.URL, "test", "1.0.0", SeverityInfo, nil, 5*time.Second, 64, false)
+	sink, err := NewOTLPSink(srv.URL, "1.0.0", SeverityInfo, nil, 5*time.Second, 64, false)
 	if err != nil {
 		t.Fatalf("NewOTLPSink: %v", err)
 	}
@@ -485,7 +485,7 @@ func TestOTLPSink_NetworkErrorRetry(t *testing.T) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
 
-	sink, err := NewOTLPSink(srv.URL, "test", "1.0.0", SeverityInfo, nil, 2*time.Second, 64, false)
+	sink, err := NewOTLPSink(srv.URL, "1.0.0", SeverityInfo, nil, 2*time.Second, 64, false)
 	if err != nil {
 		t.Fatalf("NewOTLPSink: %v", err)
 	}
@@ -521,7 +521,7 @@ func TestOTLPSink_RetryExhausted(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	sink, err := NewOTLPSink(srv.URL, "test", "1.0.0", SeverityInfo, nil, 5*time.Second, 64, false)
+	sink, err := NewOTLPSink(srv.URL, "1.0.0", SeverityInfo, nil, 5*time.Second, 64, false)
 	if err != nil {
 		t.Fatalf("NewOTLPSink: %v", err)
 	}
@@ -553,7 +553,7 @@ func TestOTLPSink_4xxNotRetried(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	sink, err := NewOTLPSink(srv.URL, "test", "1.0.0", SeverityInfo, nil, 5*time.Second, 64, false)
+	sink, err := NewOTLPSink(srv.URL, "1.0.0", SeverityInfo, nil, 5*time.Second, 64, false)
 	if err != nil {
 		t.Fatalf("NewOTLPSink: %v", err)
 	}
@@ -581,7 +581,7 @@ func TestOTLPSink_DefaultTimeoutAndQueue(t *testing.T) {
 	defer srv.Close()
 
 	// Pass 0 for timeout and queue to exercise default paths.
-	sink, err := NewOTLPSink(srv.URL, "test", "1.0.0", SeverityInfo, nil, 0, 0, false)
+	sink, err := NewOTLPSink(srv.URL, "1.0.0", SeverityInfo, nil, 0, 0, false)
 	if err != nil {
 		t.Fatalf("NewOTLPSink: %v", err)
 	}
@@ -594,7 +594,7 @@ func TestOTLPSink_BackoffOrDone_Cancelled(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	sink, err := NewOTLPSink(srv.URL, "test", "1.0.0", SeverityInfo, nil, 5*time.Second, 64, false)
+	sink, err := NewOTLPSink(srv.URL, "1.0.0", SeverityInfo, nil, 5*time.Second, 64, false)
 	if err != nil {
 		t.Fatalf("NewOTLPSink: %v", err)
 	}

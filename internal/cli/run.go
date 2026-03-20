@@ -831,13 +831,8 @@ func buildEmitSinks(cfg *config.Config) ([]emit.Sink, error) {
 	}
 
 	if cfg.Emit.OTLP.Endpoint != "" {
-		instanceID := cfg.Emit.InstanceID
-		if instanceID == "" {
-			instanceID = emit.DefaultInstanceID()
-		}
 		otlpSink, otlpErr := emit.NewOTLPSink(
 			cfg.Emit.OTLP.Endpoint,
-			instanceID,
 			Version,
 			emit.ParseSeverity(cfg.Emit.OTLP.MinSeverity),
 			cfg.Emit.OTLP.Headers,

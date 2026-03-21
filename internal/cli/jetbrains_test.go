@@ -98,7 +98,7 @@ func TestJetbrainsInstall_DryRun(t *testing.T) {
 
 	exe := testPipelockExe
 	for name, server := range mcpCfg.Servers {
-		newServer, meta, err := wrapMCPServer(server, exe, "")
+		newServer, meta, err := wrapMCPServer(server, exe, "", false, "")
 		if err != nil {
 			t.Fatalf("wrapping %q: %v", name, err)
 		}
@@ -642,7 +642,7 @@ func TestWrapMCPServer_HTTPWithHeaders_Rejected(t *testing.T) {
 		},
 	}
 
-	_, _, err := wrapMCPServer(server, testPipelockExe, "")
+	_, _, err := wrapMCPServer(server, testPipelockExe, "", false, "")
 	if err == nil {
 		t.Error("expected error for HTTP server with headers")
 	}
@@ -657,7 +657,7 @@ func TestWrapMCPServer_HTTPWithoutHeaders(t *testing.T) {
 		mcpFieldURL:  "https://mcp.example.com/v1",
 	}
 
-	result, meta, err := wrapMCPServer(server, testPipelockExe, "")
+	result, meta, err := wrapMCPServer(server, testPipelockExe, "", false, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -702,7 +702,7 @@ func TestWrapMCPServer_StdioMissingCommand(t *testing.T) {
 	server := map[string]interface{}{
 		mcpFieldType: "stdio",
 	}
-	_, _, err := wrapMCPServer(server, testPipelockExe, "")
+	_, _, err := wrapMCPServer(server, testPipelockExe, "", false, "")
 	if err == nil {
 		t.Error("expected error for stdio server missing command")
 	}
@@ -714,7 +714,7 @@ func TestWrapMCPServer_WithConfigFile(t *testing.T) {
 		mcpFieldArgs:    []interface{}{"server.js"},
 	}
 
-	result, _, err := wrapMCPServer(server, testPipelockExe, testPipelockConf)
+	result, _, err := wrapMCPServer(server, testPipelockExe, testPipelockConf, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -739,7 +739,7 @@ func TestWrapMCPServer_EnvPassthrough(t *testing.T) {
 		},
 	}
 
-	result, _, err := wrapMCPServer(server, testPipelockExe, "")
+	result, _, err := wrapMCPServer(server, testPipelockExe, "", false, "")
 	if err != nil {
 		t.Fatal(err)
 	}

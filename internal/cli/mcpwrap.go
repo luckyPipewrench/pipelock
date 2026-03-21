@@ -82,7 +82,7 @@ func marshalMCPConfig(originalData []byte, cfg *mcpConfig, serversKey string) ([
 
 // wrapMCPServer wraps a single MCP server entry through pipelock mcp proxy.
 // Works for any IDE config format that uses command/args (stdio) or url (HTTP).
-func wrapMCPServer(server map[string]interface{}, exe, configFile string) (map[string]interface{}, *pipelockMeta, error) {
+func wrapMCPServer(server map[string]interface{}, exe, configFile string, sandbox bool, workspace string) (map[string]interface{}, *pipelockMeta, error) {
 	serverType, _ := server[mcpFieldType].(string)
 	typeOmitted := serverType == ""
 	if typeOmitted {
@@ -116,6 +116,12 @@ func wrapMCPServer(server map[string]interface{}, exe, configFile string) (map[s
 		if configFile != "" {
 			args = append(args, "--config", configFile)
 		}
+		if sandbox {
+			args = append(args, "--sandbox")
+			if workspace != "" {
+				args = append(args, "--workspace", workspace)
+			}
+		}
 		args = append(args, envFlags...)
 		args = append(args, "--")
 		args = append(args, originalCmd)
@@ -128,6 +134,10 @@ func wrapMCPServer(server map[string]interface{}, exe, configFile string) (map[s
 		originalURL, _ := server[mcpFieldURL].(string)
 		if originalURL == "" {
 			return nil, nil, fmt.Errorf("%s server missing url", serverType)
+		}
+
+		if sandbox {
+			_, _ = fmt.Fprintf(os.Stderr, "warning: --sandbox skipped for %s server (no subprocess to sandbox)\n", serverType)
 		}
 
 		meta.OriginalURL = originalURL

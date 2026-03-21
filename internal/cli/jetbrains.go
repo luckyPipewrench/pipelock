@@ -42,6 +42,8 @@ func jetbrainsInstallCmd() *cobra.Command {
 		project    bool
 		dryRun     bool
 		configFile string
+		sandbox    bool
+		workspace  string
 	)
 
 	cmd := &cobra.Command{
@@ -61,7 +63,7 @@ servers are skipped (idempotent). A .bak backup is created before modification.`
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runJetbrainsInstall(cmd, global, project, dryRun, configFile)
+			return runJetbrainsInstall(cmd, global, project, dryRun, configFile, sandbox, workspace)
 		},
 	}
 
@@ -69,6 +71,8 @@ servers are skipped (idempotent). A .bak backup is created before modification.`
 	cmd.Flags().BoolVar(&project, "project", false, "install to .junie/mcp/mcp.json in current directory")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would be written without modifying files")
 	cmd.Flags().StringVarP(&configFile, "config", "c", "", "path to pipelock config file for --config passthrough")
+	cmd.Flags().BoolVar(&sandbox, "sandbox", false, "enable sandbox mode for wrapped MCP servers")
+	cmd.Flags().StringVar(&workspace, "workspace", "", "workspace path for sandbox mode")
 
 	return cmd
 }
@@ -115,7 +119,7 @@ func junieConfigPath(global bool) (string, error) {
 	return filepath.Join(".", ".junie", "mcp", "mcp.json"), nil
 }
 
-func runJetbrainsInstall(cmd *cobra.Command, global, project, dryRun bool, configFile string) error {
+func runJetbrainsInstall(cmd *cobra.Command, global, project, dryRun bool, configFile string, sandbox bool, workspace string) error {
 	if global && project {
 		return fmt.Errorf("--global and --project are mutually exclusive")
 	}
@@ -150,7 +154,7 @@ func runJetbrainsInstall(cmd *cobra.Command, global, project, dryRun bool, confi
 			continue
 		}
 
-		newServer, meta, err := wrapMCPServer(server, exe, configFile)
+		newServer, meta, err := wrapMCPServer(server, exe, configFile, sandbox, workspace)
 		if err != nil {
 			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: skipping server %q: %v\n", name, err)
 			continue

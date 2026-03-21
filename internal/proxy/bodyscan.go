@@ -34,10 +34,28 @@ const (
 	// filename while blocking multi-KB exfil payloads.
 	maxFilenameBytes = 256
 
+	// scannerLabelBodyDLP is the scanner label for DLP pattern findings in
+	// request bodies (secret exfiltration detection).
+	scannerLabelBodyDLP = "body_dlp"
+
 	// scannerLabelAddressProtection is the scanner label for address poisoning
 	// findings in logs and metrics, distinguishing from body_dlp (secret exfil).
 	scannerLabelAddressProtection = "address_protection"
 )
+
+// isAdaptiveExempt checks if a hostname matches any pattern in the adaptive
+// enforcement exempt_domains list. Uses scanner.MatchDomain for consistent
+// wildcard semantics: *.discord.com matches both sub.discord.com AND
+// discord.com itself, matching the behavior of api_allowlist and CEE
+// exempt_domains throughout the product.
+func isAdaptiveExempt(hostname string, exemptDomains []string) bool {
+	for _, pattern := range exemptDomains {
+		if scanner.MatchDomain(hostname, pattern) {
+			return true
+		}
+	}
+	return false
+}
 
 // BodyScanResult describes the outcome of scanning a request body or headers.
 type BodyScanResult struct {

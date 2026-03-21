@@ -8,11 +8,12 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
-// dlpValidators maps validator names from config.DLPPattern.Validator to
+// DLPValidators maps validator names from config.DLPPattern.Validator to
 // post-match validation functions. Each function receives the regex-matched
 // text and returns true only if the match is a genuine financial identifier.
 // This eliminates ~90-99% of regex false positives depending on the checksum.
-var dlpValidators = map[string]func(string) bool{
+// Exported for use by gitprotect (scan-diff) to maintain parity with runtime DLP.
+var DLPValidators = map[string]func(string) bool{
 	config.ValidatorLuhn:  validateLuhn,
 	config.ValidatorMod97: validateMod97,
 	config.ValidatorABA:   validateABA,

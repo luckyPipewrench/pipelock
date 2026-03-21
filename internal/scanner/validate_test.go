@@ -211,8 +211,8 @@ func TestValidateABA(t *testing.T) {
 func TestDLPValidatorRegistry(t *testing.T) {
 	// Verify all documented validator names are in the registry.
 	for _, name := range []string{config.ValidatorLuhn, config.ValidatorMod97, config.ValidatorABA, config.ValidatorWIF} {
-		if _, ok := dlpValidators[name]; !ok {
-			t.Errorf("validator %q not found in dlpValidators registry", name)
+		if _, ok := DLPValidators[name]; !ok {
+			t.Errorf("validator %q not found in DLPValidators registry", name)
 		}
 	}
 }

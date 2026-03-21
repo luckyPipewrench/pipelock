@@ -13,7 +13,6 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
@@ -882,9 +881,9 @@ func RunProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, clientIn io.
 
 	waitErr := sandboxCmd.Wait()
 
-	// Clean up sandbox process group and temp dir.
+	// Clean up sandbox child and temp dir.
 	if sandboxCmd.Process != nil {
-		_ = syscall.Kill(-sandboxCmd.Process.Pid, syscall.SIGTERM)
+		_ = sandboxCmd.Process.Signal(os.Kill)
 		sandbox.CleanupChildSandboxDir(sandboxCmd.Process.Pid)
 	}
 

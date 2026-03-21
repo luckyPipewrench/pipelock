@@ -305,6 +305,26 @@ func TestValidatePolicy_RejectsSymlinkToHomeInWrite(t *testing.T) {
 	}
 }
 
+func TestValidatePolicy_RejectsFileInsideProtectedDir(t *testing.T) {
+	home := os.Getenv("HOME")
+	if home == "" {
+		t.Skip("HOME not set")
+	}
+	p := DefaultPolicy(t.TempDir())
+	p.AllowReadFiles = append(p.AllowReadFiles, filepath.Join(home, ".ssh", "known_hosts"))
+	if err := ValidatePolicy(p); err == nil {
+		t.Error("expected error for file inside protected .ssh directory")
+	}
+}
+
+func TestValidatePolicy_AcceptsFileOutsideProtectedDir(t *testing.T) {
+	p := DefaultPolicy(t.TempDir())
+	p.AllowReadFiles = append(p.AllowReadFiles, "/opt/app/config.json")
+	if err := ValidatePolicy(p); err != nil {
+		t.Errorf("file outside protected dirs should pass: %v", err)
+	}
+}
+
 func TestDefaultPolicy_NoHostTmp(t *testing.T) {
 	dir := t.TempDir()
 	p := DefaultPolicy(dir)

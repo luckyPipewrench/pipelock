@@ -12,5 +12,7 @@ ignore:
   - "internal/filesentry/lineage_other.go"  # build-tagged !linux, untestable on Linux CI
   - "internal/sandbox/child_init.go"  # re-exec child entry point, runs in forked process (TODO: GOCOVERDIR)
   - "internal/sandbox/child_standalone_init.go"  # standalone child entry point, runs in forked process (TODO: GOCOVERDIR)
+  - "internal/cli/sandbox.go"  # sandbox CLI command, requires CLONE_NEWUSER+CLONE_NEWNET (integration-tested via subprocess)
+  - "internal/sandbox/standalone_launch.go"  # standalone launcher, requires kernel namespace primitives
 comment:
   layout: "reach, diff, files"

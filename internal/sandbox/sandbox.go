@@ -227,16 +227,23 @@ func ValidatePolicy(p Policy) error {
 		return nil
 	}
 
-	checkPaths := func(paths []string, label string) error {
+	// Resolve secret paths too — symlinks in HOME could affect comparison.
+	resolvedSecrets := make([]string, 0, len(secrets))
+	for _, s := range secrets {
+		resolved, err := filepath.EvalSymlinks(s)
+		if err != nil {
+			resolved = filepath.Clean(s)
+		}
+		resolvedSecrets = append(resolvedSecrets, resolved)
+	}
+
+	checkDirs := func(paths []string, label string) error {
 		for _, allowed := range paths {
-			// Resolve symlinks to match what Landlock will actually enforce.
 			resolved, err := filepath.EvalSymlinks(allowed)
 			if err != nil {
-				// Path doesn't exist — Landlock will skip it (IgnoreIfMissing).
-				// Still check the literal path in case it matches a secret.
-				resolved = allowed
+				resolved = filepath.Clean(allowed)
 			}
-			for _, denied := range secrets {
+			for _, denied := range resolvedSecrets {
 				if pathCovers(resolved, denied) {
 					return fmt.Errorf("sandbox %s %q (resolves to %q) covers protected directory %q — remove it or use a narrower path", label, allowed, resolved, denied)
 				}
@@ -245,10 +252,32 @@ func ValidatePolicy(p Policy) error {
 		return nil
 	}
 
-	if err := checkPaths(p.AllowReadDirs, "allow_read"); err != nil {
+	// Check file allowlists: reject if a file is inside a protected dir.
+	checkFiles := func(paths []string, label string) error {
+		for _, allowed := range paths {
+			resolved, err := filepath.EvalSymlinks(allowed)
+			if err != nil {
+				resolved = filepath.Clean(allowed)
+			}
+			for _, denied := range resolvedSecrets {
+				if pathCovers(denied, resolved) {
+					return fmt.Errorf("sandbox %s %q (resolves to %q) is inside protected directory %q", label, allowed, resolved, denied)
+				}
+			}
+		}
+		return nil
+	}
+
+	if err := checkDirs(p.AllowReadDirs, "allow_read"); err != nil {
 		return err
 	}
-	return checkPaths(p.AllowRWDirs, "allow_write")
+	if err := checkDirs(p.AllowRWDirs, "allow_write"); err != nil {
+		return err
+	}
+	if err := checkFiles(p.AllowReadFiles, "allow_read_file"); err != nil {
+		return err
+	}
+	return checkFiles(p.AllowRWFiles, "allow_write_file")
 }
 
 // pathCovers returns true if the allowed path would grant access to the

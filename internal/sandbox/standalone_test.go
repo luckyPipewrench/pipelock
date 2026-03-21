@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -63,8 +64,15 @@ func TestLaunchStandalone_FilesystemBlocked(t *testing.T) {
 	}
 	workspace := t.TempDir()
 
+	// Create a test file in HOME so ENOENT isn't the failure reason.
+	testFile := filepath.Join(home, ".pipelock-sandbox-test-marker")
+	if err := os.WriteFile(testFile, []byte("test"), 0o600); err != nil {
+		t.Skipf("cannot create test file in HOME: %v", err)
+	}
+	defer func() { _ = os.Remove(testFile) }()
+
 	err := LaunchStandalone(StandaloneLaunchConfig{
-		Command:   []string{"cat", home + "/.ssh/id_rsa"},
+		Command:   []string{"cat", testFile},
 		Workspace: workspace,
 	})
 	// Should fail because Landlock blocks HOME access.
@@ -77,16 +85,15 @@ func TestLaunchStandalone_NetworkBlocked(t *testing.T) {
 	skipIfStandaloneUnavailable(t)
 	workspace := t.TempDir()
 
-	// Verify network isolation offline: check /proc/self/net/dev has only loopback.
-	// No external tools or network access needed.
+	// Verify network isolation: count network interfaces in /proc/self/net/dev.
+	// In a network namespace, only "lo" exists. Skip the 2 header lines,
+	// then count non-lo interfaces.
 	err := LaunchStandalone(StandaloneLaunchConfig{
-		Command:   []string{"sh", "-c", "cat /proc/self/net/dev | grep -qv lo: && exit 1; exit 0"},
+		Command:   []string{"sh", "-c", "awk 'NR>2 && !/^\\s*lo:/' /proc/self/net/dev | grep -q . && exit 1; exit 0"},
 		Workspace: workspace,
 	})
-	// The child should exit 0 (only loopback exists). If it fails, network
-	// isolation isn't working.
 	if err != nil {
-		t.Errorf("network isolation check failed: %v", err)
+		t.Errorf("network isolation check failed (non-lo interface found): %v", err)
 	}
 }
 
@@ -156,9 +163,9 @@ func TestLaunchStandalone_BridgeProxyListens(t *testing.T) {
 	skipIfStandaloneUnavailable(t)
 	workspace := t.TempDir()
 
-	// Run a command that checks HTTP_PROXY is set.
+	// Verify HTTP_PROXY is set and non-empty (bridge proxy address).
 	err := LaunchStandalone(StandaloneLaunchConfig{
-		Command:   []string{"sh", "-c", "echo HTTP_PROXY=$HTTP_PROXY"},
+		Command:   []string{"sh", "-c", "test -n \"$HTTP_PROXY\" || exit 1"},
 		Workspace: workspace,
 	})
 	if err != nil {

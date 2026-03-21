@@ -355,6 +355,27 @@ func MergeAgentProfile(base *config.Config, profile *config.AgentProfile) (*conf
 		merged.MCPToolPolicy = *profile.MCPToolPolicy
 	}
 
+	if profile.Sandbox != nil {
+		// Selective merge: override non-nil fields, append filesystem paths.
+		if profile.Sandbox.Enabled != nil {
+			merged.Sandbox.Enabled = *profile.Sandbox.Enabled
+		}
+		if profile.Sandbox.Strict != nil {
+			merged.Sandbox.Strict = *profile.Sandbox.Strict
+		}
+		if profile.Sandbox.Workspace != "" {
+			merged.Sandbox.Workspace = profile.Sandbox.Workspace
+		}
+		if profile.Sandbox.FS != nil {
+			// Append per-agent paths to the base policy (never replace).
+			if merged.Sandbox.FS == nil {
+				merged.Sandbox.FS = &config.SandboxFilesystem{}
+			}
+			merged.Sandbox.FS.AllowRead = append(merged.Sandbox.FS.AllowRead, profile.Sandbox.FS.AllowRead...)
+			merged.Sandbox.FS.AllowWrite = append(merged.Sandbox.FS.AllowWrite, profile.Sandbox.FS.AllowWrite...)
+		}
+	}
+
 	return merged, nil
 }
 

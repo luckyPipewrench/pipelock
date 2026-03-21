@@ -885,6 +885,120 @@ func TestValidateMergedAgent_RedirectEmptyExec(t *testing.T) {
 	}
 }
 
+func TestMergeAgentProfile_SandboxOverride(t *testing.T) {
+	cfg := testConfig()
+	cfg.Sandbox.Enabled = false
+	cfg.Sandbox.Strict = false
+	cfg.Sandbox.Workspace = "/base/workspace"
+	cfg.Sandbox.FS = &config.SandboxFilesystem{
+		AllowRead:  []string{"/base/read"},
+		AllowWrite: []string{"/base/write"},
+	}
+
+	enabled := true
+	strict := true
+	profile := &config.AgentProfile{
+		Sandbox: &config.AgentSandboxOverride{
+			Enabled:   &enabled,
+			Strict:    &strict,
+			Workspace: "/agent/workspace",
+			FS: &config.SandboxFilesystem{
+				AllowRead:  []string{"/agent/read"},
+				AllowWrite: []string{"/agent/write"},
+			},
+		},
+	}
+	merged, err := MergeAgentProfile(cfg, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !merged.Sandbox.Enabled {
+		t.Error("expected sandbox.enabled=true after override")
+	}
+	if !merged.Sandbox.Strict {
+		t.Error("expected sandbox.strict=true after override")
+	}
+	if merged.Sandbox.Workspace != "/agent/workspace" {
+		t.Errorf("workspace = %q, want /agent/workspace", merged.Sandbox.Workspace)
+	}
+	if len(merged.Sandbox.FS.AllowRead) != 2 {
+		t.Errorf("AllowRead len = %d, want 2 (base + agent)", len(merged.Sandbox.FS.AllowRead))
+	}
+	if len(merged.Sandbox.FS.AllowWrite) != 2 {
+		t.Errorf("AllowWrite len = %d, want 2 (base + agent)", len(merged.Sandbox.FS.AllowWrite))
+	}
+}
+
+func TestMergeAgentProfile_SandboxNilInherits(t *testing.T) {
+	cfg := testConfig()
+	cfg.Sandbox.Enabled = true
+	cfg.Sandbox.Strict = true
+	cfg.Sandbox.Workspace = "/base/workspace"
+
+	profile := &config.AgentProfile{}
+	merged, err := MergeAgentProfile(cfg, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !merged.Sandbox.Enabled {
+		t.Error("expected sandbox.enabled=true (inherited)")
+	}
+	if !merged.Sandbox.Strict {
+		t.Error("expected sandbox.strict=true (inherited)")
+	}
+	if merged.Sandbox.Workspace != "/base/workspace" {
+		t.Errorf("workspace = %q, want /base/workspace (inherited)", merged.Sandbox.Workspace)
+	}
+}
+
+func TestMergeAgentProfile_SandboxExplicitFalse(t *testing.T) {
+	cfg := testConfig()
+	cfg.Sandbox.Enabled = true
+	cfg.Sandbox.Strict = true
+
+	disabled := false
+	notStrict := false
+	profile := &config.AgentProfile{
+		Sandbox: &config.AgentSandboxOverride{
+			Enabled: &disabled,
+			Strict:  &notStrict,
+		},
+	}
+	merged, err := MergeAgentProfile(cfg, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if merged.Sandbox.Enabled {
+		t.Error("expected sandbox.enabled=false (explicit override)")
+	}
+	if merged.Sandbox.Strict {
+		t.Error("expected sandbox.strict=false (explicit override)")
+	}
+}
+
+func TestMergeAgentProfile_SandboxFSAppendToNilBase(t *testing.T) {
+	cfg := testConfig()
+	cfg.Sandbox.FS = nil
+
+	profile := &config.AgentProfile{
+		Sandbox: &config.AgentSandboxOverride{
+			FS: &config.SandboxFilesystem{
+				AllowRead: []string{"/agent/data"},
+			},
+		},
+	}
+	merged, err := MergeAgentProfile(cfg, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if merged.Sandbox.FS == nil {
+		t.Fatal("expected non-nil FS after merge")
+	}
+	if len(merged.Sandbox.FS.AllowRead) != 1 || merged.Sandbox.FS.AllowRead[0] != "/agent/data" {
+		t.Errorf("AllowRead = %v, want [/agent/data]", merged.Sandbox.FS.AllowRead)
+	}
+}
+
 func TestResolvePublicKey_InvalidHex(t *testing.T) {
 	cfg := testConfig()
 	cfg.LicensePublicKey = "not-valid-hex"

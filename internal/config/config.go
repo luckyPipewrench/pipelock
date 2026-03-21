@@ -211,8 +211,20 @@ type FileSentry struct {
 // values in a config reload has no effect on an already-running sandbox.
 type Sandbox struct {
 	Enabled   bool               `yaml:"enabled"`
+	Strict    bool               `yaml:"strict"`    // error if any containment layer is unavailable
 	Workspace string             `yaml:"workspace"` // agent working dir; resolved to absolute at startup
 	FS        *SandboxFilesystem `yaml:"filesystem"`
+}
+
+// AgentSandboxOverride controls per-agent sandbox settings.
+// Nil pointer fields mean "inherit from global sandbox config."
+// Scoped to mcp proxy --agent and agent listeners. pipelock sandbox
+// CLI does not support per-agent resolution.
+type AgentSandboxOverride struct {
+	Enabled   *bool              `yaml:"enabled,omitempty"`
+	Strict    *bool              `yaml:"strict,omitempty"`
+	Workspace string             `yaml:"workspace,omitempty"`
+	FS        *SandboxFilesystem `yaml:"filesystem,omitempty"`
 }
 
 // SandboxFilesystem overrides the default Landlock policy. If nil, the
@@ -704,17 +716,18 @@ type ChainPattern struct {
 // AgentProfile defines per-agent policy overrides. Fields that are set
 // override the base config; fields left at zero value inherit from base.
 type AgentProfile struct {
-	Listeners        []string          `yaml:"listeners,omitempty"`
-	SourceCIDRs      []string          `yaml:"source_cidrs,omitempty"`
-	Mode             string            `yaml:"mode,omitempty"`
-	Enforce          *bool             `yaml:"enforce,omitempty"`
-	APIAllowlist     []string          `yaml:"api_allowlist,omitempty"`
-	DLP              *AgentDLP         `yaml:"dlp,omitempty"`
-	RateLimit        *AgentRateLimit   `yaml:"rate_limit,omitempty"`
-	SessionProfiling *AgentSessionProf `yaml:"session_profiling,omitempty"`
-	MCPToolPolicy    *MCPToolPolicy    `yaml:"mcp_tool_policy,omitempty"`
-	Budget           BudgetConfig      `yaml:"budget,omitempty"`
-	AllowedAddresses []string          `yaml:"allowed_addresses,omitempty"` // per-agent crypto address allowlist (enterprise, additive with global)
+	Listeners        []string              `yaml:"listeners,omitempty"`
+	SourceCIDRs      []string              `yaml:"source_cidrs,omitempty"`
+	Mode             string                `yaml:"mode,omitempty"`
+	Enforce          *bool                 `yaml:"enforce,omitempty"`
+	APIAllowlist     []string              `yaml:"api_allowlist,omitempty"`
+	DLP              *AgentDLP             `yaml:"dlp,omitempty"`
+	RateLimit        *AgentRateLimit       `yaml:"rate_limit,omitempty"`
+	SessionProfiling *AgentSessionProf     `yaml:"session_profiling,omitempty"`
+	MCPToolPolicy    *MCPToolPolicy        `yaml:"mcp_tool_policy,omitempty"`
+	Budget           BudgetConfig          `yaml:"budget,omitempty"`
+	AllowedAddresses []string              `yaml:"allowed_addresses,omitempty"` // per-agent crypto address allowlist (enterprise, additive with global)
+	Sandbox          *AgentSandboxOverride `yaml:"sandbox,omitempty"`           // per-agent sandbox overrides (Pro, gated by FeatureAgents)
 }
 
 // AgentDLP controls DLP pattern merging for agent profiles.
@@ -2689,7 +2702,41 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		})
 	}
 
+	// Sandbox config is startup-only. Warn if any sandbox fields changed
+	// so operators know the reload had no effect on the running sandbox.
+	if sandboxChanged(old, updated) {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "sandbox",
+			Message: "sandbox config changes require restart — ignored on reload",
+		})
+	}
+
 	return warnings
+}
+
+// sandboxChanged returns true if any sandbox-related config field differs.
+func sandboxChanged(old, updated *Config) bool {
+	if old.Sandbox.Enabled != updated.Sandbox.Enabled {
+		return true
+	}
+	if old.Sandbox.Strict != updated.Sandbox.Strict {
+		return true
+	}
+	if old.Sandbox.Workspace != updated.Sandbox.Workspace {
+		return true
+	}
+	// FS pointer comparison: nil vs non-nil, or content differs.
+	oldFS := old.Sandbox.FS
+	newFS := updated.Sandbox.FS
+	if (oldFS == nil) != (newFS == nil) {
+		return true
+	}
+	if oldFS != nil && newFS != nil {
+		if len(oldFS.AllowRead) != len(newFS.AllowRead) || len(oldFS.AllowWrite) != len(newFS.AllowWrite) {
+			return true
+		}
+	}
+	return false
 }
 
 // dlpPatternsChanged returns true if the DLP pattern set differs in ways that

@@ -30,6 +30,7 @@ const (
 	fieldKSAPIListen    = "kill_switch.api_listen"
 	fieldTLSPassthrough = "tls_interception.passthrough_domains"
 	fieldSentry         = "sentry"
+	fieldSandbox        = "sandbox"
 	fieldSubEntExcl     = "fetch_proxy.monitoring.subdomain_entropy_exclusions"
 
 	// testLicenseFileCfg is a minimal config with license_file pointing to a
@@ -7379,6 +7380,57 @@ func TestValidateReload_SecretsFileChanged_SentryWarning(t *testing.T) {
 	}
 	if !found {
 		t.Error("expected sentry warning when dlp.secrets_file changes")
+	}
+}
+
+func TestValidateReload_SandboxChanged(t *testing.T) {
+	old := Defaults()
+	updated := Defaults()
+	updated.Sandbox.Enabled = true
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == fieldSandbox {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected sandbox reload warning when sandbox.enabled changes")
+	}
+}
+
+func TestValidateReload_SandboxStrictChanged(t *testing.T) {
+	old := Defaults()
+	old.Sandbox.Enabled = true
+	updated := Defaults()
+	updated.Sandbox.Enabled = true
+	updated.Sandbox.Strict = true
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == fieldSandbox {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected sandbox reload warning when sandbox.strict changes")
+	}
+}
+
+func TestValidateReload_SandboxUnchanged_NoWarning(t *testing.T) {
+	old := Defaults()
+	old.Sandbox.Enabled = true
+	old.Sandbox.Workspace = "/test"
+	updated := Defaults()
+	updated.Sandbox.Enabled = true
+	updated.Sandbox.Workspace = "/test"
+	warnings := ValidateReload(old, updated)
+	for _, w := range warnings {
+		if w.Field == fieldSandbox {
+			t.Error("unexpected sandbox warning when config unchanged")
+		}
 	}
 }
 

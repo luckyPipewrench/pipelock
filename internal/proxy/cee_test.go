@@ -374,17 +374,62 @@ func TestCeeAdmit_FragmentDLPWarn(t *testing.T) {
 		Action: config.ActionWarn, // warn, not block
 	}
 
-	// Full fake AWS key in one shot to trigger DLP match.
-	fakeKey := "AKI" + "A" + "IOSF" + "ODNN7EXAMPLE"
+	// Split fake AWS key across two requests for cross-request detection.
+	// Single-request secrets are caught by body DLP, not fragment reassembly.
+	prefix := "AKI" + "A"
+	suffix := "IOSF" + "ODNN7EXAMPLE"
+
+	// First request — prefix only.
 	result := ceeAdmit(context.Background(),
-		testCEESessionKey, []byte(fakeKey), nil, "http://example.com", testCEEAgent,
+		testCEESessionKey, []byte(prefix), nil, "http://example.com", testCEEAgent,
 		testCEEClientIP, testCEERequestID, ceeCfg, nil, fb, sc, logger, m,
+	)
+	if result.FragmentHit {
+		t.Error("prefix alone should not trigger FragmentHit")
+	}
+
+	// Second request — suffix completes the secret across fragments.
+	result = ceeAdmit(context.Background(),
+		testCEESessionKey, []byte(suffix), nil, "http://example.com", testCEEAgent,
+		testCEEClientIP, "req-2", ceeCfg, nil, fb, sc, logger, m,
 	)
 	if result.Blocked {
 		t.Error("expected no block in warn mode")
 	}
 	if !result.FragmentHit {
-		t.Error("expected FragmentHit = true even in warn mode")
+		t.Error("expected FragmentHit for cross-request secret in warn mode")
+	}
+}
+
+func TestCeeAdmit_SingleBodyNoFragmentHit(t *testing.T) {
+	// A complete secret in a single request body should NOT trigger FragmentHit.
+	// Body DLP already catches it; double-scoring causes adaptive death spiral.
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	sc := scanner.New(cfg)
+	defer sc.Close()
+
+	fb := scanner.NewFragmentBuffer(65536, 1000, 300)
+	defer fb.Close()
+	m := metrics.New()
+	logger, _ := audit.New("json", "stdout", "", false, false)
+
+	ceeCfg := config.CrossRequestDetection{
+		FragmentReassembly: config.CrossRequestFragments{
+			Enabled:        true,
+			MaxBufferBytes: 65536,
+			WindowMinutes:  5,
+		},
+		Action: config.ActionWarn,
+	}
+
+	fakeKey := "AKI" + "A" + "IOSF" + "ODNN7EXAMPLE"
+	result := ceeAdmit(context.Background(),
+		testCEESessionKey, []byte(fakeKey), nil, "http://example.com", testCEEAgent,
+		testCEEClientIP, testCEERequestID, ceeCfg, nil, fb, sc, logger, m,
+	)
+	if result.FragmentHit {
+		t.Error("single-body secret should NOT trigger FragmentHit (body DLP handles it)")
 	}
 }
 
@@ -418,17 +463,24 @@ func TestCeeAdmit_BothEntropyAndFragment(t *testing.T) {
 		Action: config.ActionBlock, // fragment blocks
 	}
 
-	fakeKey := "AKI" + "A" + "IOSF" + "ODNN7EXAMPLE"
+	// First request — prefix only. Entropy will fire on this one (tiny budget).
+	prefix := "AKI" + "A"
 	result := ceeAdmit(context.Background(),
-		testCEESessionKey, []byte(fakeKey), nil, "http://example.com", testCEEAgent,
+		testCEESessionKey, []byte(prefix), nil, "http://example.com", testCEEAgent,
 		testCEEClientIP, testCEERequestID, ceeCfg, et, fb, sc, logger, m,
 	)
-	// Entropy should have hit (warn, no block), then fragment should block.
 	if !result.EntropyHit {
-		t.Error("expected EntropyHit = true")
+		t.Error("expected EntropyHit = true on first request (tiny budget)")
 	}
+
+	// Second request — suffix completes secret across fragments AND entropy.
+	suffix := "IOSF" + "ODNN7EXAMPLE"
+	result = ceeAdmit(context.Background(),
+		testCEESessionKey, []byte(suffix), nil, "http://example.com", testCEEAgent,
+		testCEEClientIP, "req-2", ceeCfg, et, fb, sc, logger, m,
+	)
 	if !result.FragmentHit {
-		t.Error("expected FragmentHit = true")
+		t.Error("expected FragmentHit = true for cross-request secret")
 	}
 	if !result.Blocked {
 		t.Error("expected block from fragment DLP")

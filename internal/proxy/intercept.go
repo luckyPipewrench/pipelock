@@ -377,6 +377,7 @@ func newInterceptHandler(
 				// Address protection findings and fail-closed body errors are NOT
 				// exempted — only DLP pattern matches.
 				dlpExempt := scannerLabel == scannerLabelBodyDLP &&
+					len(result.DLPMatches) > 0 &&
 					isAdaptiveExempt(r.URL.Hostname(), cfg.AdaptiveEnforcement.ExemptDomains)
 
 				// Adaptive enforcement: upgrade the body action.

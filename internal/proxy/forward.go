@@ -648,6 +648,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			// fail-closed body errors are NOT exempted.
 			originalBodyAction := action
 			fwdBodyExempt := scannerLabel == scannerLabelBodyDLP &&
+				len(bodyResult.DLPMatches) > 0 &&
 				isAdaptiveExempt(r.URL.Hostname(), cfg.AdaptiveEnforcement.ExemptDomains)
 			if !fwdBodyExempt {
 				action = decide.UpgradeAction(action, sr.Level, &cfg.AdaptiveEnforcement)

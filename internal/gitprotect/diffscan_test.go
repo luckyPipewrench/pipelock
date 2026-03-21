@@ -493,8 +493,8 @@ func TestScanDiff_CreditCard_RealCardFlagged(t *testing.T) {
 func TestScanDiff_IBAN_ValidFlagged(t *testing.T) {
 	patterns := CompileDLPPatterns(config.Defaults().DLP.Patterns)
 
-	// Valid GB IBAN (passes mod-97).
-	iban := "GB82WEST12345698765432"
+	// Valid GB IBAN (passes mod-97). Split to avoid self-scan match.
+	iban := "GB82WEST" + "12345698765432"
 	diff := fmt.Sprintf("diff --git a/t.txt b/t.txt\n--- a/t.txt\n+++ b/t.txt\n@@ -0,0 +1 @@\n+iban: %s\n", iban)
 
 	findings, err := ScanDiff(diff, patterns)

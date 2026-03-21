@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Shell normalization hardened against 3 evasion techniques: `$@`/`$*` positional parameter insertion, `${HOME:0:1}` path construction, and backtick command substitution now resolve before policy matching. Pipeline ordering fixed so indirect expansion resolves before slash replacement. (#259)
 - Windows release builds: `pipelock rules` now uses an OS-specific lock implementation so the CLI cross-compiles cleanly for Windows targets. (#252)
 - DLP action validation: `dlp.action` and per-pattern `action` fields were silently dropped by YAML unmarshaling. Now rejected at startup with an error message pointing to the correct transport-level settings. (#264)
+- Adaptive enforcement death spiral: CONNECT hostname no longer counted toward CEE entropy budget (the destination hostname is not exfiltration data). Time-based de-escalation added so sessions at block level can recover after clean traffic. Prevents permanent lockout from repeated polling to the same host. (#266)
+
+### Deployment Notes
+- TLS interception with `cross_request_detection` enabled: set `bits_per_window` to 500,000+ and configure `exempt_domains` for LLM providers to avoid false entropy accumulation from repeated API calls.
 
 ### Tests
 - WebSocket and TLS interception transport wiring: integration tests for address poisoning detection, cross-request exfiltration entropy, response scanning strip action, full CONNECT-hijack-SNI-intercept-scan integration, and injection blocking. Coverage: `clientToUpstream` 61% to 88%, `handleConnect` TLS branch 0% to 86%. (#253)

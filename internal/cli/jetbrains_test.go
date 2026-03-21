@@ -18,6 +18,7 @@ const (
 	testTypeSSE      = "sse"
 	testConfigFlag   = "--config"
 	testPipelockConf = "/etc/pipelock.yaml"
+	testSandboxFlag  = "--sandbox"
 	testEchoCmd      = "echo"
 	testWrappedJSON  = `{"mcpServers": {"srv": {"type": "stdio", "command": "pipelock", "args": ["mcp", "proxy", "--", "echo"], "_pipelock": {"original_type": "stdio", "original_command": "echo"}}}}`
 )
@@ -752,6 +753,91 @@ func TestWrapMCPServer_EnvPassthrough(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected --env API_KEY in args: %v", args)
+	}
+}
+
+func TestWrapMCPServer_WithSandbox(t *testing.T) {
+	server := map[string]interface{}{
+		mcpFieldCommand: "node",
+		mcpFieldArgs:    []interface{}{"server.js"},
+	}
+
+	result, _, err := wrapMCPServer(server, testPipelockExe, "", true, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	args, _ := result[mcpFieldArgs].([]string)
+	found := false
+	for _, a := range args {
+		if a == testSandboxFlag {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected --sandbox in args: %v", args)
+	}
+}
+
+func TestWrapMCPServer_WithSandboxAndWorkspace(t *testing.T) {
+	server := map[string]interface{}{
+		mcpFieldCommand: "node",
+		mcpFieldArgs:    []interface{}{"server.js"},
+	}
+
+	result, _, err := wrapMCPServer(server, testPipelockExe, "", true, "/home/user/project")
+	if err != nil {
+		t.Fatal(err)
+	}
+	args, _ := result[mcpFieldArgs].([]string)
+	foundSandbox := false
+	foundWorkspace := false
+	for i, a := range args {
+		if a == testSandboxFlag {
+			foundSandbox = true
+		}
+		if a == "--workspace" && i+1 < len(args) && args[i+1] == "/home/user/project" {
+			foundWorkspace = true
+		}
+	}
+	if !foundSandbox {
+		t.Errorf("expected --sandbox in args: %v", args)
+	}
+	if !foundWorkspace {
+		t.Errorf("expected --workspace /home/user/project in args: %v", args)
+	}
+
+	// Verify order: --sandbox and --workspace must come before --
+	dashDashIdx := -1
+	sandboxIdx := -1
+	for i, a := range args {
+		if a == "--" {
+			dashDashIdx = i
+		}
+		if a == testSandboxFlag {
+			sandboxIdx = i
+		}
+	}
+	if sandboxIdx > dashDashIdx && dashDashIdx >= 0 {
+		t.Error("--sandbox must appear before -- separator")
+	}
+}
+
+func TestWrapMCPServer_SandboxSkippedForHTTP(t *testing.T) {
+	server := map[string]interface{}{
+		mcpFieldType: "sse",
+		mcpFieldURL:  "http://localhost:3000/mcp",
+	}
+
+	// sandbox=true but HTTP server — should still work (warning printed to stderr)
+	result, _, err := wrapMCPServer(server, testPipelockExe, "", true, "/workspace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	args, _ := result[mcpFieldArgs].([]string)
+	for _, a := range args {
+		if a == testSandboxFlag {
+			t.Error("--sandbox should NOT be in args for HTTP/SSE servers")
+		}
 	}
 }
 

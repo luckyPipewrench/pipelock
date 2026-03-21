@@ -291,10 +291,47 @@ func TestSeccomp_AllowsSocketINET(t *testing.T) {
 }
 
 func TestBuildSeccompFilter_NonEmpty(t *testing.T) {
-	filter := buildSeccompFilter()
+	filter := buildSeccompFilter(false)
 	// Minimum: arch check (3 insns) + default deny (1 insn) = 4
 	if len(filter) < 4 {
 		t.Errorf("filter too short: %d instructions", len(filter))
+	}
+}
+
+func TestBuildSeccompFilter_StrictBlocksClone3(t *testing.T) {
+	strict := buildSeccompFilter(true)
+	// In strict mode, clone3 should return EPERM.
+	// Scan filter for a JEQ matching SYS_CLONE3 followed by RET EPERM.
+	foundClone3Deny := false
+	for i := 0; i < len(strict)-1; i++ {
+		insn := strict[i]
+		next := strict[i+1]
+		isJEQ := insn.Code == (unix.BPF_JMP|0x10|unix.BPF_K) && insn.K == unix.SYS_CLONE3
+		isDeny := next.Code == (unix.BPF_RET|unix.BPF_K) && next.K == (unix.SECCOMP_RET_ERRNO|uint32(unix.EPERM))
+		if isJEQ && isDeny {
+			foundClone3Deny = true
+			break
+		}
+	}
+	if !foundClone3Deny {
+		t.Error("strict filter should deny clone3 with EPERM")
+	}
+
+	// Best-effort should allow clone3.
+	bestEffort := buildSeccompFilter(false)
+	foundClone3Allow := false
+	for i := 0; i < len(bestEffort)-1; i++ {
+		insn := bestEffort[i]
+		next := bestEffort[i+1]
+		isJEQ := insn.Code == (unix.BPF_JMP|0x10|unix.BPF_K) && insn.K == unix.SYS_CLONE3
+		isAllow := next.Code == (unix.BPF_RET|unix.BPF_K) && next.K == unix.SECCOMP_RET_ALLOW
+		if isJEQ && isAllow {
+			foundClone3Allow = true
+			break
+		}
+	}
+	if !foundClone3Allow {
+		t.Error("best-effort filter should allow clone3")
 	}
 }
 
@@ -343,8 +380,9 @@ func TestAllowedSyscalls_ContainsGoRuntime(t *testing.T) {
 	}
 
 	// Critical Go runtime syscalls that MUST be in the allowlist.
+	// Note: clone3 is now in the conditional set (allowed in best-effort,
+	// blocked in strict). It's not in the flat allowlist.
 	critical := map[string]uint32{
-		"clone3":        uint32(unix_SYS_CLONE3),
 		"futex":         unix.SYS_FUTEX,
 		"mmap":          unix.SYS_MMAP,
 		"epoll_create1": unix.SYS_EPOLL_CREATE1,

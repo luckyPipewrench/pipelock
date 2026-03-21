@@ -33,10 +33,14 @@ const afVSOCK = 40
 //
 // MUST be called after PR_SET_NO_NEW_PRIVS. The filter is permanent and
 // inherited by all children (fork + exec).
-func ApplySeccomp() (LayerStatus, error) {
+// ApplySeccomp installs the seccomp BPF filter. In strict mode, clone3 is
+// blocked entirely (EPERM) since BPF cannot inspect its pointer argument
+// for CLONE_NEW* flags.
+func ApplySeccomp(strict ...bool) (LayerStatus, error) {
 	status := LayerStatus{Name: LayerSeccomp}
+	isStrict := len(strict) > 0 && strict[0]
 
-	filter := buildSeccompFilter()
+	filter := buildSeccompFilter(isStrict)
 
 	prog := unix.SockFprog{
 		Len:    uint16(len(filter)), //nolint:gosec // G115: filter length is always < 4096 instructions
@@ -75,7 +79,7 @@ func SetNoNewPrivs() error {
 // 3. Applies argument-level filtering for clone, personality, and socket
 // 4. Allows a curated set of ~130 syscalls (Go + Python + Node.js compatible)
 // 5. Returns EPERM for other blocked syscalls.
-func buildSeccompFilter() []unix.SockFilter {
+func buildSeccompFilter(strict bool) []unix.SockFilter {
 	allow := allowedSyscalls()
 	kill := killSyscalls()
 
@@ -87,6 +91,7 @@ func buildSeccompFilter() []unix.SockFilter {
 	// Syscalls handled by argument-level conditional blocks (not the flat allowlist).
 	conditionalSet := map[uint32]bool{
 		unix.SYS_CLONE:       true,
+		unix.SYS_CLONE3:      true, // strict: blocked entirely; best-effort: allowed
 		unix.SYS_SOCKET:      true,
 		unix.SYS_PERSONALITY: true,
 	}
@@ -112,6 +117,7 @@ func buildSeccompFilter() []unix.SockFilter {
 	// and returns ALLOW or EPERM. If the syscall doesn't match, it skips
 	// the block and the accumulator (syscall number) is preserved.
 	prog = append(prog, cloneConditional()...)
+	prog = append(prog, clone3Conditional(strict)...)
 	prog = append(prog, socketConditional()...)
 	prog = append(prog, personalityConditional()...)
 
@@ -148,6 +154,27 @@ func cloneConditional() []unix.SockFilter {
 		bpfJumpSet(cloneNewMask, 0, 1),                      // if CLONE_NEW* bits set: deny; else: allow
 		bpfRet(unix.SECCOMP_RET_ERRNO | uint32(unix.EPERM)), // deny: namespace creation blocked
 		bpfRet(unix.SECCOMP_RET_ALLOW),                      // allow: clone without new namespaces
+	}
+}
+
+// clone3Conditional handles clone3 based on strict mode.
+// Best-effort: allow (BPF can't inspect the pointer argument for CLONE_NEW* flags).
+// Strict: block entirely (EPERM). Go's runtime uses clone3 for goroutines on
+// newer kernels, but the sandboxed child has already forked — no new goroutines
+// are created after exec. Python/Node.js use fork+exec which falls through to
+// the clone conditional above.
+func clone3Conditional(strict bool) []unix.SockFilter {
+	if strict {
+		// Strict: deny clone3 entirely.
+		return []unix.SockFilter{
+			bpfJumpEq(unix.SYS_CLONE3, 0, 1),
+			bpfRet(unix.SECCOMP_RET_ERRNO | uint32(unix.EPERM)),
+		}
+	}
+	// Best-effort: allow clone3 unfiltered (known limitation).
+	return []unix.SockFilter{
+		bpfJumpEq(unix.SYS_CLONE3, 0, 1),
+		bpfRet(unix.SECCOMP_RET_ALLOW),
 	}
 }
 
@@ -276,12 +303,7 @@ func allowedSyscalls() []uint32 {
 		unix.SYS_POLL, unix.SYS_PPOLL, unix.SYS_PSELECT6, unix.SYS_SELECT,
 
 		// Process management (SYS_CLONE handled by cloneConditional — CLONE_NEW* blocked).
-		// KNOWN LIMITATION: clone3 takes a pointer to struct clone_args which BPF
-		// cannot dereference. clone3 with CLONE_NEWUSER is not filtered by seccomp.
-		// Mitigations: (1) Landlock restrictions survive namespace creation and are
-		// inherited by all descendants, (2) mount is blocked by seccomp, (3)
-		// no_new_privs prevents suid escalation in the new namespace.
-		unix.SYS_CLONE3,
+		// SYS_CLONE3 handled by clone3Conditional (strict: blocked, best-effort: allowed).
 		unix.SYS_FORK, unix.SYS_VFORK,
 		unix.SYS_EXECVE, unix.SYS_EXECVEAT,
 		unix.SYS_WAIT4, unix.SYS_WAITID,

@@ -26,6 +26,7 @@ import (
 func sandboxCmd() *cobra.Command {
 	var workspace string
 	var configFile string
+	var strict bool
 
 	cmd := &cobra.Command{
 		Use:   "sandbox [flags] -- COMMAND [ARGS...]",
@@ -107,10 +108,13 @@ Examples:
 				_ = srv.Serve(&singleConnListener{conn: conn})
 			}
 
+			useStrict := strict || cfg.Sandbox.Strict
+
 			launchCfg := sandbox.StandaloneLaunchConfig{
 				Ctx:          ctx,
 				Command:      command,
 				Workspace:    workspace,
+				Strict:       useStrict,
 				ProxyHandler: proxyHandler,
 			}
 
@@ -128,6 +132,7 @@ Examples:
 
 	cmd.Flags().StringVar(&workspace, "workspace", "", "sandbox workspace directory (default: current directory)")
 	cmd.Flags().StringVarP(&configFile, "config", "c", "", "config file path")
+	cmd.Flags().BoolVar(&strict, "strict", false, "strict mode: error if any containment layer is unavailable, mount private /dev/shm, block clone3")
 	return cmd
 }
 

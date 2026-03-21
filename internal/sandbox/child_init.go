@@ -40,12 +40,24 @@ func RunInit() {
 	// syscall.Exec() closes all CLOEXEC FDs, so the exec'd command
 	// only inherits stdin/stdout/stderr. No manual FD closing needed.
 
+	strict := IsStrictMode()
+
 	// Build synthetic environment.
 	sandboxDir := fmt.Sprintf("/tmp/pipelock-sandbox-%d", os.Getpid())
 	env, err := SyntheticEnv(sandboxDir, workspace, extraEnv)
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] env setup: %v\n", err)
 		os.Exit(1)
+	}
+
+	// Strict mode: mount private /dev/shm BEFORE Landlock so the
+	// Landlock rule sees the mounted path, not the host's.
+	if strict {
+		if err := mountPrivateShm(); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "[sandbox] private /dev/shm: %v\n", err)
+			os.Exit(1) // fatal in strict mode
+		}
+		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] /dev/shm: PRIVATE (strict)\n")
 	}
 
 	// Apply Landlock (filesystem restriction).
@@ -70,7 +82,8 @@ func RunInit() {
 	}
 
 	// Apply seccomp filter (syscall restriction).
-	scStatus, scErr := ApplySeccomp()
+	// Strict mode blocks clone3 entirely (no namespace escape via BPF limitation).
+	scStatus, scErr := ApplySeccomp(strict)
 	reportLayer(os.Stderr, scStatus, scErr)
 
 	// Report network namespace status (set at fork time by parent).
@@ -81,6 +94,12 @@ func RunInit() {
 	const totalLayers = 3
 	active++ // count netns
 	_, _ = fmt.Fprintf(os.Stderr, "[sandbox] containment: %d/%d layers active\n", active, totalLayers)
+
+	// Strict mode: fail-closed if any layer is inactive.
+	if strict && active < totalLayers {
+		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] FATAL: strict mode requires all %d layers active, got %d\n", totalLayers, active)
+		os.Exit(1)
+	}
 
 	// Clear sandbox env vars.
 	for _, key := range []string{

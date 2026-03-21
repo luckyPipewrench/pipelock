@@ -33,6 +33,10 @@ type StandaloneLaunchConfig struct {
 	// Policy overrides the default sandbox policy.
 	Policy *Policy
 
+	// Strict enables strict containment: error on missing layers,
+	// private /dev/shm mount, clone3 blocked, subreaper enabled.
+	Strict bool
+
 	// ExtraEnv contains additional KEY=VALUE pairs to pass to the child.
 	ExtraEnv []string
 
@@ -137,6 +141,9 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 		"__PIPELOCK_SANDBOX_WORKSPACE=" + cfg.Workspace,
 		"__PIPELOCK_SANDBOX_COMMAND=" + strings.Join(cfg.Command, "\x1f"),
 		"__PIPELOCK_SANDBOX_SOCKET=" + socketPath,
+	}
+	if cfg.Strict {
+		cmd.Env = append(cmd.Env, strictEnvKey+"=1")
 	}
 	if len(cfg.ExtraEnv) > 0 {
 		cmd.Env = append(cmd.Env, "__PIPELOCK_SANDBOX_EXTRA_ENV="+strings.Join(cfg.ExtraEnv, "\x1f"))

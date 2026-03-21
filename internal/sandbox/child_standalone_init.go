@@ -42,12 +42,23 @@ func RunStandaloneInit() {
 		extraEnv = strings.Split(extraEnvStr, "\x1f")
 	}
 
+	strict := IsStrictMode()
+
 	// Build synthetic environment.
 	sandboxDir := fmt.Sprintf("/tmp/pipelock-sandbox-%d", os.Getpid())
 	env, err := SyntheticEnv(sandboxDir, workspace, extraEnv)
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] env setup: %v\n", err)
 		os.Exit(1)
+	}
+
+	// Strict mode: mount private /dev/shm BEFORE Landlock.
+	if strict {
+		if err := mountPrivateShm(); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "[sandbox] private /dev/shm: %v\n", err)
+			os.Exit(1)
+		}
+		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] /dev/shm: PRIVATE (strict)\n")
 	}
 
 	// Apply Landlock.
@@ -69,11 +80,11 @@ func RunStandaloneInit() {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] rlimits: ACTIVE\n")
 	}
 
-	// Set no_new_privs + seccomp.
+	// Set no_new_privs + seccomp (strict blocks clone3).
 	if err := SetNoNewPrivs(); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] no_new_privs: %v\n", err)
 	}
-	scStatus, scErr := ApplySeccomp()
+	scStatus, scErr := ApplySeccomp(strict)
 	reportLayer(os.Stderr, scStatus, scErr)
 
 	// Network namespace is active (set at fork time).
@@ -103,6 +114,12 @@ func RunStandaloneInit() {
 	active++ // network namespace
 	const totalLayers = 3
 	_, _ = fmt.Fprintf(os.Stderr, "[sandbox] containment: %d/%d layers active\n", active, totalLayers)
+
+	// Strict mode: fail-closed if any layer is inactive.
+	if strict && active < totalLayers {
+		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] FATAL: strict mode requires all %d layers active, got %d\n", totalLayers, active)
+		os.Exit(1)
+	}
 	_, _ = fmt.Fprintf(os.Stderr, "[sandbox] bridge proxy: %s → %s\n", bridge.Addr(), socketPath)
 
 	// Add HTTP_PROXY/HTTPS_PROXY to agent's environment.

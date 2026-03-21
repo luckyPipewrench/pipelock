@@ -20,6 +20,7 @@ type LaunchConfig struct {
 	Command   []string
 	Workspace string
 	Policy    *Policy
+	Strict    bool
 	ExtraEnv  []string
 	Stdin     io.Reader
 	Stdout    io.Writer
@@ -32,6 +33,7 @@ type StandaloneLaunchConfig struct {
 	Command      []string
 	Workspace    string
 	Policy       *Policy
+	Strict       bool
 	ExtraEnv     []string
 	ProxyHandler func(conn net.Conn)
 }

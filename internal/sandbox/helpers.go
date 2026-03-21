@@ -24,6 +24,15 @@ func IsInitMode() bool {
 	return os.Getenv(initEnvKey) == "1"
 }
 
+// strictEnvKey signals the child that strict mode is active.
+const strictEnvKey = "__PIPELOCK_SANDBOX_STRICT"
+
+// IsStrictMode returns true if the child process should enforce strict
+// sandbox containment (error on missing layers, private /dev/shm, etc.).
+func IsStrictMode() bool {
+	return os.Getenv(strictEnvKey) == "1"
+}
+
 // reportLayer prints a sandbox layer status line to stderr.
 func reportLayer(w io.Writer, status LayerStatus, err error) {
 	if status.Active {

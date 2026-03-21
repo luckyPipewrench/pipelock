@@ -8,7 +8,7 @@ package sandbox
 import "fmt"
 
 // ApplySeccomp is a no-op on non-Linux/amd64 platforms.
-func ApplySeccomp() (LayerStatus, error) {
+func ApplySeccomp(_ ...bool) (LayerStatus, error) {
 	return LayerStatus{
 		Name:   LayerSeccomp,
 		Active: false,

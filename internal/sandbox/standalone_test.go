@@ -14,6 +14,20 @@ import (
 	"testing"
 )
 
+// skipIfStandaloneUnavailable skips tests that require forking with
+// CLONE_NEWUSER + CLONE_NEWNET and bringing up loopback. CI runners
+// (Ubuntu with AppArmor) restrict these capabilities.
+func skipIfStandaloneUnavailable(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS != osLinux {
+		t.Skip("sandbox requires linux")
+	}
+	caps := Detect()
+	if !caps.UserNamespaces {
+		t.Skip("user namespaces unavailable (CI/AppArmor restriction)")
+	}
+}
+
 func TestIsStandaloneInitMode_FalseByDefault(t *testing.T) {
 	if IsStandaloneInitMode() {
 		t.Error("should not be in standalone init mode during normal tests")
@@ -21,9 +35,7 @@ func TestIsStandaloneInitMode_FalseByDefault(t *testing.T) {
 }
 
 func TestLaunchStandalone_EchoCommand(t *testing.T) {
-	if runtime.GOOS != osLinux {
-		t.Skip("sandbox requires linux")
-	}
+	skipIfStandaloneUnavailable(t)
 	workspace := t.TempDir()
 
 	err := LaunchStandalone(StandaloneLaunchConfig{
@@ -37,9 +49,7 @@ func TestLaunchStandalone_EchoCommand(t *testing.T) {
 }
 
 func TestLaunchStandalone_FilesystemBlocked(t *testing.T) {
-	if runtime.GOOS != osLinux {
-		t.Skip("sandbox requires linux")
-	}
+	skipIfStandaloneUnavailable(t)
 	home := os.Getenv("HOME")
 	if home == "" {
 		t.Skip("HOME not set")
@@ -57,9 +67,7 @@ func TestLaunchStandalone_FilesystemBlocked(t *testing.T) {
 }
 
 func TestLaunchStandalone_NetworkBlocked(t *testing.T) {
-	if runtime.GOOS != osLinux {
-		t.Skip("sandbox requires linux")
-	}
+	skipIfStandaloneUnavailable(t)
 	workspace := t.TempDir()
 
 	err := LaunchStandalone(StandaloneLaunchConfig{
@@ -99,9 +107,7 @@ func TestLaunchStandalone_NonLinuxReturnsError(t *testing.T) {
 }
 
 func TestLaunchStandalone_ProxyHandlerCalled(t *testing.T) {
-	if runtime.GOOS != osLinux {
-		t.Skip("sandbox requires linux")
-	}
+	skipIfStandaloneUnavailable(t)
 	workspace := t.TempDir()
 
 	// Track whether the proxy handler was called.
@@ -135,9 +141,7 @@ func TestLaunchStandalone_ProxyHandlerCalled(t *testing.T) {
 }
 
 func TestLaunchStandalone_BridgeProxyListens(t *testing.T) {
-	if runtime.GOOS != osLinux {
-		t.Skip("sandbox requires linux")
-	}
+	skipIfStandaloneUnavailable(t)
 	workspace := t.TempDir()
 
 	// Run a command that checks HTTP_PROXY is set.

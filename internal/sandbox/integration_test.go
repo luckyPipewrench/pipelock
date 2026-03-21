@@ -21,6 +21,10 @@ func buildTestBinary(t *testing.T) string {
 	if runtime.GOOS != osLinux {
 		t.Skip("sandbox requires linux")
 	}
+	caps := Detect()
+	if !caps.UserNamespaces {
+		t.Skip("user namespaces unavailable (CI/AppArmor restriction)")
+	}
 
 	binary := filepath.Join(t.TempDir(), "pipelock-test")
 	repoRoot := filepath.Join("..", "..")

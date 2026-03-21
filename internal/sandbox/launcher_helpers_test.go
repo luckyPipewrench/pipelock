@@ -6,6 +6,7 @@ package sandbox
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"testing"
 )
@@ -187,6 +188,44 @@ func TestIsInitMode_False(t *testing.T) {
 	}
 	if IsInitMode() {
 		t.Error("should not be in init mode")
+	}
+}
+
+func TestReportLayer_UnavailableWithError(t *testing.T) {
+	var buf bytes.Buffer
+	status := LayerStatus{Name: LayerLandlock} // no reason set
+	reportLayer(&buf, status, fmt.Errorf("kernel too old"))
+	got := buf.String()
+	if !contains(got, "kernel too old") {
+		t.Errorf("expected error message in output, got: %s", got)
+	}
+}
+
+func TestSummary_AllUnavailable(t *testing.T) {
+	c := Capabilities{} // all zero/false
+	s := c.Summary()
+	if !contains(s, "Landlock: unavailable") {
+		t.Errorf("expected Landlock unavailable, got: %s", s)
+	}
+	if !contains(s, "user namespaces: unavailable") {
+		t.Errorf("expected userns unavailable, got: %s", s)
+	}
+	if !contains(s, "seccomp: unavailable") {
+		t.Errorf("expected seccomp unavailable, got: %s", s)
+	}
+}
+
+func TestSummary_AllAvailable(t *testing.T) {
+	c := Capabilities{LandlockABI: 7, UserNamespaces: true, Seccomp: true}
+	s := c.Summary()
+	if !contains(s, "Landlock ABI v7") {
+		t.Errorf("expected Landlock ABI v7, got: %s", s)
+	}
+	if !contains(s, "user namespaces: available") {
+		t.Errorf("expected userns available, got: %s", s)
+	}
+	if !contains(s, "seccomp: available") {
+		t.Errorf("expected seccomp available, got: %s", s)
 	}
 }
 

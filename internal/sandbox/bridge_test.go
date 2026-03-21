@@ -74,6 +74,14 @@ func TestBridgeProxy_ForwardsToUnixSocket(t *testing.T) {
 	}
 }
 
+func TestNewBridgeProxy_ListenError(t *testing.T) {
+	// Invalid address should return an error.
+	_, err := NewBridgeProxy("/nonexistent/socket", "invalid-not-an-address")
+	if err == nil {
+		t.Error("expected error for invalid listen address")
+	}
+}
+
 func TestBridgeProxy_Addr(t *testing.T) {
 	dir := t.TempDir()
 	socketPath := ProxySocketPath(dir)

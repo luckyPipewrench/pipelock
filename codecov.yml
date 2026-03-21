@@ -22,6 +22,8 @@ ignore:
   - "internal/sandbox/seccomp_linux.go"
   - "internal/sandbox/rlimit_linux.go"
   - "internal/cli/sandbox.go"
+  - "internal/cli/mcp.go"  # sandbox path additions require kernel primitives
   - "internal/mcp/proxy_sandbox.go"
+  - "cmd/pipelock/main.go"  # sandbox init hooks in main(), untestable
 comment:
   layout: "reach, diff, files"

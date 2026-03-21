@@ -129,7 +129,9 @@ func RunProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, clientIn io.
 	}
 
 	// Drain with timeout — detached descendants can hold pipes open.
-	const drainTimeout = 5 * time.Second
+	// Use ctx for cancellation so the caller can control shutdown.
+	drainCtx, drainCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer drainCancel()
 	done := make(chan struct{})
 	go func() {
 		wg.Wait()
@@ -138,7 +140,7 @@ func RunProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, clientIn io.
 	}()
 	select {
 	case <-done:
-	case <-time.After(drainTimeout):
+	case <-drainCtx.Done():
 	}
 
 	if scanErr != nil {

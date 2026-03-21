@@ -10,9 +10,18 @@ coverage:
 ignore:
   - "tests/ws-helper/**"
   - "internal/filesentry/lineage_other.go"  # build-tagged !linux, untestable on Linux CI
-  - "internal/sandbox/child_init.go"  # re-exec child entry point, runs in forked process (TODO: GOCOVERDIR)
-  - "internal/sandbox/child_standalone_init.go"  # standalone child entry point, runs in forked process (TODO: GOCOVERDIR)
-  - "internal/cli/sandbox.go"  # sandbox CLI command, requires CLONE_NEWUSER+CLONE_NEWNET (integration-tested via subprocess)
-  - "internal/sandbox/standalone_launch.go"  # standalone launcher, requires kernel namespace primitives
+  # Sandbox files that run inside forked child processes or require kernel
+  # namespace primitives (CLONE_NEWUSER+CLONE_NEWNET). These are exercised by
+  # 130+ subprocess integration tests but Go's coverage tool cannot cross
+  # process boundaries. TODO: GOCOVERDIR/covdata subprocess coverage merging.
+  - "internal/sandbox/child_init.go"
+  - "internal/sandbox/child_standalone_init.go"
+  - "internal/sandbox/launcher.go"
+  - "internal/sandbox/standalone_launch.go"
+  - "internal/sandbox/landlock_linux.go"
+  - "internal/sandbox/seccomp_linux.go"
+  - "internal/sandbox/rlimit_linux.go"
+  - "internal/cli/sandbox.go"
+  - "internal/mcp/proxy_sandbox.go"
 comment:
   layout: "reach, diff, files"

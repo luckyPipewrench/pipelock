@@ -17,8 +17,6 @@ import (
 	"testing"
 )
 
-const osLinux = "linux"
-
 // Landlock tests use subprocess execution because Landlock restrictions are
 // permanent and inherited. We cannot apply Landlock in the test process
 // itself or all subsequent tests would be restricted.

@@ -22,6 +22,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
 	"github.com/luckyPipewrench/pipelock/internal/rules"
+	"github.com/luckyPipewrench/pipelock/internal/sandbox"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -68,6 +69,7 @@ func diagnoseCmd() *cobra.Command {
 	var configFile string
 	var jsonOutput bool
 	var noColor bool
+	var sandboxCheck bool
 
 	cmd := &cobra.Command{
 		Use:   "diagnose",
@@ -88,6 +90,11 @@ Exit codes:
   1  One or more checks failed
   2  Config load error`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			// Sandbox mode: run only sandbox capability checks (no proxy).
+			if sandboxCheck {
+				return runDiagnoseSandbox(cmd, jsonOutput, !noColor && useColor())
+			}
+
 			cfg, cfgLabel, err := loadTestConfig(configFile)
 			if err != nil {
 				return ExitCodeError(2, err)
@@ -109,6 +116,7 @@ Exit codes:
 	cmd.Flags().StringVarP(&configFile, "config", "c", "", "config file (default: built-in defaults)")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "output results as JSON")
 	cmd.Flags().BoolVar(&noColor, "no-color", false, "disable color output")
+	cmd.Flags().BoolVar(&sandboxCheck, "sandbox", false, "run sandbox capability checks instead of proxy diagnostics")
 
 	return cmd
 }
@@ -425,4 +433,108 @@ func statusIcon(status string, color bool) string {
 		}
 	}
 	return strings.ToUpper(status)
+}
+
+// runDiagnoseSandbox runs sandbox capability checks without starting a proxy.
+func runDiagnoseSandbox(cmd *cobra.Command, jsonOut bool, color bool) error {
+	caps := sandbox.Detect()
+
+	checks := []diagnoseReportCheck{
+		{Name: "sandbox_landlock", Status: statusPass, Detail: fmt.Sprintf("ABI v%d", caps.LandlockABI)},
+		{Name: "sandbox_userns", Status: statusPass, Detail: fmt.Sprintf("max %d", caps.MaxUserNS)},
+		{Name: "sandbox_seccomp", Status: statusPass, Detail: "available"},
+		{Name: "sandbox_selinux", Status: statusPass, Detail: caps.SELinux},
+	}
+	if caps.LandlockABI <= 0 {
+		checks[0].Status = statusFail
+		checks[0].Detail = stateUnavailable
+	}
+	if !caps.UserNamespaces {
+		checks[1].Status = statusFail
+		checks[1].Detail = stateUnavailable
+	}
+	if !caps.Seccomp {
+		checks[2].Status = statusFail
+		checks[2].Detail = stateUnavailable
+	}
+	if caps.SELinux == "" {
+		checks[3].Status = statusSkip
+		checks[3].Detail = "not present"
+	}
+
+	passed, failed, skipped := 0, 0, 0
+	for _, c := range checks {
+		switch c.Status {
+		case statusPass:
+			passed++
+		case statusFail:
+			failed++
+		case statusSkip:
+			skipped++
+		}
+	}
+
+	// Build recommendation.
+	active := 0
+	if caps.LandlockABI > 0 {
+		active++
+	}
+	if caps.UserNamespaces {
+		active++
+	}
+	if caps.Seccomp {
+		active++
+	}
+	const totalLayers = 3
+	recommendation := fmt.Sprintf("Full sandbox available (%d/%d layers)", active, totalLayers)
+	if active < totalLayers {
+		recommendation = fmt.Sprintf("Degraded sandbox (%d/%d layers)", active, totalLayers)
+	}
+
+	report := diagnoseReport{
+		ConfigFile: "(sandbox capability check)",
+		Mode:       "sandbox",
+		Total:      len(checks),
+		Passed:     passed,
+		Failed:     failed,
+		Skipped:    skipped,
+		Checks:     checks,
+	}
+
+	if jsonOut {
+		type sandboxReport struct {
+			diagnoseReport
+			Sandbox struct {
+				LandlockABI    int    `json:"landlock_abi"`
+				UserNamespaces bool   `json:"user_namespaces"`
+				MaxUserNS      int    `json:"max_user_ns"`
+				Seccomp        bool   `json:"seccomp"`
+				SELinux        string `json:"selinux"`
+				Recommendation string `json:"recommendation"`
+			} `json:"sandbox"`
+		}
+		sr := sandboxReport{diagnoseReport: report}
+		sr.Sandbox.LandlockABI = caps.LandlockABI
+		sr.Sandbox.UserNamespaces = caps.UserNamespaces
+		sr.Sandbox.MaxUserNS = caps.MaxUserNS
+		sr.Sandbox.Seccomp = caps.Seccomp
+		sr.Sandbox.SELinux = caps.SELinux
+		sr.Sandbox.Recommendation = recommendation
+		enc := json.NewEncoder(cmd.OutOrStdout())
+		enc.SetIndent("", "  ")
+		return enc.Encode(sr)
+	}
+
+	// Text output.
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Sandbox Capabilities:\n")
+	for _, c := range checks {
+		label := statusIcon(c.Status, color)
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %s  %s\n", c.Name, label, c.Detail)
+	}
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "\n  Recommendation: %s\n", recommendation)
+
+	if failed > 0 {
+		return ExitCodeError(1, fmt.Errorf("%d sandbox check(s) failed", failed))
+	}
+	return nil
 }

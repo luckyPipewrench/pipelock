@@ -23,6 +23,8 @@ var ErrUnavailable = errors.New("sandbox layer unavailable")
 // LayerName identifies a containment layer.
 type LayerName string
 
+const osLinux = "linux"
+
 const (
 	LayerLandlock LayerName = "filesystem"
 	LayerNetNS    LayerName = "network"

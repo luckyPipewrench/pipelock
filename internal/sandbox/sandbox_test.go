@@ -119,7 +119,8 @@ func TestDefaultPolicy_HasRequiredPaths(t *testing.T) {
 	assertContains(t, "AllowReadFiles", p.AllowReadFiles, "/etc/resolv.conf")
 	assertContains(t, "AllowReadFiles", p.AllowReadFiles, "/etc/passwd")
 	assertContains(t, "AllowRWDirs", p.AllowRWDirs, dir)
-	assertContains(t, "AllowRWDirs", p.AllowRWDirs, "/tmp/")
+	// /tmp/ is NOT in the default policy — child adds its sandbox dir dynamically.
+	assertNotContains(t, "AllowRWDirs", p.AllowRWDirs, "/tmp/")
 	assertContains(t, "AllowRWFiles", p.AllowRWFiles, "/dev/null")
 }
 
@@ -304,6 +305,12 @@ func TestValidatePolicy_RejectsSymlinkToHomeInWrite(t *testing.T) {
 	}
 }
 
+func TestDefaultPolicy_NoHostTmp(t *testing.T) {
+	dir := t.TempDir()
+	p := DefaultPolicy(dir)
+	assertNotContains(t, "AllowRWDirs", p.AllowRWDirs, "/tmp/")
+}
+
 func TestDefaultPolicy_HasDevShm(t *testing.T) {
 	dir := t.TempDir()
 	p := DefaultPolicy(dir)
@@ -325,4 +332,14 @@ func assertContains(t *testing.T, field string, slice []string, want string) {
 		}
 	}
 	t.Errorf("%s missing %q", field, want)
+}
+
+func assertNotContains(t *testing.T, field string, slice []string, unwanted string) {
+	t.Helper()
+	for _, s := range slice {
+		if s == unwanted {
+			t.Errorf("%s should not contain %q", field, unwanted)
+			return
+		}
+	}
 }

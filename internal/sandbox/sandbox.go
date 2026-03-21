@@ -175,8 +175,15 @@ func DefaultPolicy(workspace string) Policy {
 		},
 		AllowRWDirs: []string{
 			workspace,
-			"/tmp/",
-			"/dev/shm/", // Python multiprocessing, Chromium shared memory
+			// NOTE: /tmp/ is NOT included. The child dynamically adds its
+			// per-sandbox temp dir (e.g., /tmp/pipelock-sandbox-<pid>/) before
+			// applying Landlock. This prevents cross-sandbox data leakage and
+			// access to other users' temp files.
+			//
+			// /dev/shm/ is allowed for Python multiprocessing and Chromium.
+			// This is a known limitation — sandboxed processes can access
+			// same-user shared memory segments. Future: private tmpfs mount.
+			"/dev/shm/",
 		},
 		AllowRWFiles: []string{
 			"/dev/null",

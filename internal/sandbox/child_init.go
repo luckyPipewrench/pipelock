@@ -49,7 +49,11 @@ func RunInit() {
 	}
 
 	// Apply Landlock (filesystem restriction).
+	// Add the per-sandbox temp dir to the policy so the child has a
+	// scoped /tmp equivalent. Host /tmp is NOT in the default policy —
+	// this prevents cross-sandbox data leakage via temp files.
 	policy := resolvePolicy(workspace)
+	policy.AllowRWDirs = append(policy.AllowRWDirs, sandboxDir)
 	llStatus, llErr := ApplyLandlock(policy)
 	reportLayer(os.Stderr, llStatus, llErr)
 

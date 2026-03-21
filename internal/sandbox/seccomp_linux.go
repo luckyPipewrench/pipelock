@@ -275,8 +275,13 @@ func allowedSyscalls() []uint32 {
 		unix.SYS_INOTIFY_INIT1, unix.SYS_INOTIFY_ADD_WATCH, unix.SYS_INOTIFY_RM_WATCH,
 		unix.SYS_POLL, unix.SYS_PPOLL, unix.SYS_PSELECT6, unix.SYS_SELECT,
 
-		// Process management (SYS_CLONE handled by cloneConditional — CLONE_NEW* blocked)
-		unix.SYS_CLONE3, // clone3 takes ptr to struct, BPF can't inspect args
+		// Process management (SYS_CLONE handled by cloneConditional — CLONE_NEW* blocked).
+		// KNOWN LIMITATION: clone3 takes a pointer to struct clone_args which BPF
+		// cannot dereference. clone3 with CLONE_NEWUSER is not filtered by seccomp.
+		// Mitigations: (1) Landlock restrictions survive namespace creation and are
+		// inherited by all descendants, (2) mount is blocked by seccomp, (3)
+		// no_new_privs prevents suid escalation in the new namespace.
+		unix.SYS_CLONE3,
 		unix.SYS_FORK, unix.SYS_VFORK,
 		unix.SYS_EXECVE, unix.SYS_EXECVEAT,
 		unix.SYS_WAIT4, unix.SYS_WAITID,

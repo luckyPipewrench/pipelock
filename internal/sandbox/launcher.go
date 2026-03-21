@@ -232,6 +232,13 @@ func resolvePolicy(workspace string) Policy {
 	return p
 }
 
+// CleanupChildSandboxDir removes the child's per-sandbox temp directory.
+// Call after cmd.Wait() returns when the child PID is known.
+func CleanupChildSandboxDir(childPID int) {
+	dir := fmt.Sprintf("/tmp/pipelock-sandbox-%d", childPID)
+	_ = os.RemoveAll(dir)
+}
+
 // encodePolicyJSON serializes a Policy to JSON for passing via env var.
 func encodePolicyJSON(p *Policy) (string, error) {
 	data, err := json.Marshal(p)

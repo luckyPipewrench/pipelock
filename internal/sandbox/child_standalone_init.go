@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 )
@@ -50,7 +51,14 @@ func RunStandaloneInit() {
 	}
 
 	// Apply Landlock.
+	// Add per-sandbox temp dir and the parent's socket dir to the policy.
+	// Host /tmp is NOT in the default policy to prevent cross-sandbox leakage.
 	policy := resolvePolicy(workspace)
+	policy.AllowRWDirs = append(policy.AllowRWDirs, sandboxDir)
+	// The socket's parent dir must be accessible for the bridge proxy.
+	if socketPath != "" {
+		policy.AllowRWDirs = append(policy.AllowRWDirs, filepath.Dir(socketPath))
+	}
 	llStatus, llErr := ApplyLandlock(policy)
 	reportLayer(os.Stderr, llStatus, llErr)
 

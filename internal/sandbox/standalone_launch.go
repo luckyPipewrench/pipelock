@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 )
 
 // StandaloneLaunchConfig configures the standalone sandbox launcher.
@@ -167,18 +168,36 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 	// Wait for child to exit.
 	waitErr := cmd.Wait()
 
-	// Kill process group FIRST — terminate any detached grandchildren that
-	// may still hold bridge proxy connections open. Without this, proxyWg.Wait()
-	// hangs if a detached child (e.g., setsid python3) keeps a connection
-	// to the bridge proxy alive after the main agent exits.
+	// Kill process group — terminate descendants that may still hold bridge
+	// proxy connections open.
 	if cmd.Process != nil {
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
 	}
 
-	// Now close listener and drain proxy goroutines. With descendants killed,
-	// bridge connections will close and proxy handlers will return.
+	// Close listener to prevent new connections.
 	_ = unixLn.Close()
-	proxyWg.Wait()
+
+	// Wait for proxy goroutines to drain with a timeout. Detached
+	// grandchildren (setsid) escape process group kill and can hold
+	// bridge connections open indefinitely. The timeout prevents a hang.
+	const proxyDrainTimeout = 5 * time.Second
+	done := make(chan struct{})
+	go func() {
+		proxyWg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		// Clean drain.
+	case <-time.After(proxyDrainTimeout):
+		// Detached descendants holding connections. Force exit — the OS
+		// will clean up the TCP connections when the process exits.
+	}
+
+	// Clean up child's sandbox temp dir.
+	if cmd.Process != nil {
+		CleanupChildSandboxDir(cmd.Process.Pid)
+	}
 
 	return waitErr
 }

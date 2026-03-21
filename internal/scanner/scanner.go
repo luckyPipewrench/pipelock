@@ -168,7 +168,7 @@ func New(cfg *config.Config) *Scanner {
 			bundleVersion: p.BundleVersion,
 		}
 		if p.Validator != "" {
-			fn, ok := dlpValidators[p.Validator]
+			fn, ok := DLPValidators[p.Validator]
 			if !ok {
 				panic(fmt.Sprintf("BUG: unknown DLP validator %q for pattern %q", p.Validator, p.Name))
 			}

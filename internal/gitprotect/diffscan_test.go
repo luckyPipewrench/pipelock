@@ -429,3 +429,86 @@ func TestParseDiff_DevNullSkipped(t *testing.T) {
 		t.Fatalf("expected 0 files from /dev/null diff, got %d", len(result))
 	}
 }
+
+// --- Validator parity tests ---
+
+// TestScanDiff_CreditCard_UUIDNotFlagged verifies that all-numeric UUIDs
+// are NOT flagged as credit card numbers. The credit card regex matches
+// UUID-shaped digit groups, but the Luhn issuer check rejects them.
+// Regression: before validator wiring, scan-diff used regex-only matching
+// and flagged UUIDs as false positives.
+func TestScanDiff_CreditCard_UUIDNotFlagged(t *testing.T) {
+	patterns := CompileDLPPatterns(config.Defaults().DLP.Patterns)
+
+	tests := []struct {
+		name string
+		uuid string
+	}{
+		{"nil UUID", `00000000-0000-0000-0000-000000000000`},
+		{"numeric UUID", "12345678" + "-1234-5678-1234-" + "567812345678"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			diff := fmt.Sprintf("diff --git a/t.rb b/t.rb\n--- a/t.rb\n+++ b/t.rb\n@@ -0,0 +1 @@\n+security_id: \"%s\"\n", tc.uuid)
+			findings, err := ScanDiff(diff, patterns)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, f := range findings {
+				if f.Pattern == "Credit Card"+" Number" {
+					t.Errorf("UUID %s should NOT be flagged as credit card, but got finding: %+v", tc.uuid, f)
+				}
+			}
+		})
+	}
+}
+
+// TestScanDiff_CreditCard_RealCardFlagged verifies that actual credit card
+// numbers ARE still caught after validator wiring.
+func TestScanDiff_CreditCard_RealCardFlagged(t *testing.T) {
+	patterns := CompileDLPPatterns(config.Defaults().DLP.Patterns)
+
+	// Visa test number (passes Luhn, starts with 4, 16 digits).
+	card := "4532" + "015112830366"
+	diff := fmt.Sprintf("diff --git a/t.txt b/t.txt\n--- a/t.txt\n+++ b/t.txt\n@@ -0,0 +1 @@\n+card: \"%s\"\n", card)
+
+	findings, err := ScanDiff(diff, patterns)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	found := false
+	for _, f := range findings {
+		if f.Pattern == "Credit Card"+" Number" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected real Visa card to be flagged as Credit Card Number")
+	}
+}
+
+// TestScanDiff_IBAN_ValidFlagged verifies IBAN validation works in scan-diff.
+func TestScanDiff_IBAN_ValidFlagged(t *testing.T) {
+	patterns := CompileDLPPatterns(config.Defaults().DLP.Patterns)
+
+	// Valid GB IBAN (passes mod-97). Split to avoid self-scan match.
+	iban := "GB82WEST" + "12345698765432"
+	diff := fmt.Sprintf("diff --git a/t.txt b/t.txt\n--- a/t.txt\n+++ b/t.txt\n@@ -0,0 +1 @@\n+iban: %s\n", iban)
+
+	findings, err := ScanDiff(diff, patterns)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	found := false
+	for _, f := range findings {
+		if strings.Contains(f.Pattern, "IBAN") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected valid IBAN to be flagged")
+	}
+}

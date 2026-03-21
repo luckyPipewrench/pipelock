@@ -27,6 +27,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/sandbox"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
@@ -872,9 +873,10 @@ func RunProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, clientIn io.
 
 	waitErr := sandboxCmd.Wait()
 
-	// Clean up sandbox process group.
+	// Clean up sandbox process group and temp dir.
 	if sandboxCmd.Process != nil {
 		_ = syscall.Kill(-sandboxCmd.Process.Pid, syscall.SIGTERM)
+		sandbox.CleanupChildSandboxDir(sandboxCmd.Process.Pid)
 	}
 
 	wg.Wait()

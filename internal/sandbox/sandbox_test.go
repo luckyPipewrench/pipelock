@@ -248,8 +248,8 @@ func TestValidatePolicy_AcceptsNarrowPaths(t *testing.T) {
 
 func TestPathCovers(t *testing.T) {
 	tests := []struct {
-		allowed, secret string
-		want            bool
+		allowed, protected string
+		want               bool
 	}{
 		{"/home/user", "/home/user/.ssh", true},
 		{"/home/user/", "/home/user/.ssh", true},
@@ -259,9 +259,9 @@ func TestPathCovers(t *testing.T) {
 		{"/home/userfoo", "/home/user/.ssh", false},
 	}
 	for _, tt := range tests {
-		t.Run(tt.allowed+"->"+tt.secret, func(t *testing.T) {
-			if got := pathCovers(tt.allowed, tt.secret); got != tt.want {
-				t.Errorf("pathCovers(%q, %q) = %v, want %v", tt.allowed, tt.secret, got, tt.want)
+		t.Run(tt.allowed+"->"+tt.protected, func(t *testing.T) {
+			if got := pathCovers(tt.allowed, tt.protected); got != tt.want {
+				t.Errorf("pathCovers(%q, %q) = %v, want %v", tt.allowed, tt.protected, got, tt.want)
 			}
 		})
 	}

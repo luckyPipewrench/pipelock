@@ -236,9 +236,9 @@ func ValidatePolicy(p Policy) error {
 				// Still check the literal path in case it matches a secret.
 				resolved = allowed
 			}
-			for _, secret := range secrets {
-				if pathCovers(resolved, secret) {
-					return fmt.Errorf("sandbox %s %q (resolves to %q) covers secret directory %q — remove it or use a narrower path", label, allowed, resolved, secret)
+			for _, denied := range secrets {
+				if pathCovers(resolved, denied) {
+					return fmt.Errorf("sandbox %s %q (resolves to %q) covers protected directory %q — remove it or use a narrower path", label, allowed, resolved, denied)
 				}
 			}
 		}
@@ -252,20 +252,20 @@ func ValidatePolicy(p Policy) error {
 }
 
 // pathCovers returns true if the allowed path would grant access to the
-// secret path. This is true when the secret is equal to or a child of
-// the allowed directory.
-func pathCovers(allowed, secret string) bool {
+// protected path. This is true when the protected path is equal to or a
+// child of the allowed directory.
+func pathCovers(allowed, protected string) bool {
 	// Clean both paths for consistent comparison.
 	allowed = filepath.Clean(allowed)
-	secret = filepath.Clean(secret)
+	protected = filepath.Clean(protected)
 
-	if allowed == secret {
+	if allowed == protected {
 		return true
 	}
-	// Check if secret is under allowed (allowed is a parent directory).
+	// Check if protected is under allowed (allowed is a parent directory).
 	prefix := allowed
 	if !strings.HasSuffix(prefix, "/") {
 		prefix += "/"
 	}
-	return strings.HasPrefix(secret, prefix)
+	return strings.HasPrefix(protected, prefix)
 }

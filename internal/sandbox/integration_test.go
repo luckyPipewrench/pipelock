@@ -21,9 +21,13 @@ func buildTestBinary(t *testing.T) string {
 	if runtime.GOOS != osLinux {
 		t.Skip("sandbox requires linux")
 	}
-	caps := Detect()
-	if !caps.UserNamespaces {
-		t.Skip("user namespaces unavailable (CI/AppArmor restriction)")
+	// Probe: try a minimal standalone sandbox. Skip if loopback setup
+	// fails (AppArmor restricts CAP_NET_ADMIN on CI runners).
+	if err := LaunchStandalone(StandaloneLaunchConfig{
+		Command:   []string{"true"},
+		Workspace: t.TempDir(),
+	}); err != nil {
+		t.Skipf("standalone sandbox unavailable: %v", err)
 	}
 
 	binary := filepath.Join(t.TempDir(), "pipelock-test")

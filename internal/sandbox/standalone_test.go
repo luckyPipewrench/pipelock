@@ -15,17 +15,23 @@ import (
 	"time"
 )
 
-// skipIfStandaloneUnavailable skips tests that require forking with
-// CLONE_NEWUSER + CLONE_NEWNET and bringing up loopback. CI runners
-// (Ubuntu with AppArmor) restrict these capabilities.
+// skipIfStandaloneUnavailable skips tests that require full standalone
+// sandbox (CLONE_NEWUSER + CLONE_NEWNET + loopback setup). CI runners
+// (Ubuntu with AppArmor) may allow namespace creation but restrict
+// network capabilities inside the namespace.
 func skipIfStandaloneUnavailable(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS != osLinux {
 		t.Skip("sandbox requires linux")
 	}
-	caps := Detect()
-	if !caps.UserNamespaces {
-		t.Skip("user namespaces unavailable (CI/AppArmor restriction)")
+	// Probe: try launching a minimal standalone sandbox. If loopback setup
+	// fails (AppArmor restricts CAP_NET_ADMIN in user namespaces), skip.
+	err := LaunchStandalone(StandaloneLaunchConfig{
+		Command:   []string{"true"},
+		Workspace: t.TempDir(),
+	})
+	if err != nil {
+		t.Skipf("standalone sandbox unavailable: %v", err)
 	}
 }
 

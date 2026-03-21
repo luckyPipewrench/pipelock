@@ -281,30 +281,99 @@ func TestFragmentBuffer_ScanEmptySession(t *testing.T) {
 }
 
 func TestFragmentBuffer_EvictionPreservesNewestData(t *testing.T) {
-	// After eviction, the newest fragment should remain.
-	maxBytes := 50
+	// After eviction, the newest fragments should remain and a cross-fragment
+	// secret should still be detected.
+	maxBytes := 60
 	fb := NewFragmentBuffer(maxBytes, 1000, testWindowSecs)
 	defer fb.Close()
 
 	sc := testFragmentScanner()
 	defer sc.Close()
 
-	// Add a large fragment that fills the buffer.
+	// Add a large fragment that fills most of the buffer.
 	old := make([]byte, 40)
 	for i := range old {
 		old[i] = 'X'
 	}
 	fb.Append(testSessionA, old)
 
-	// Add another fragment that forces eviction of the old one.
-	// Build AWS key at runtime to avoid gosec G101.
-	newData := []byte("AKI" + "A" + testAWSKeySuffix)
-	fb.Append(testSessionA, newData)
+	// Add two fragments that together form an AWS key (split across requests).
+	// The old fragment gets evicted but these two survive and span the secret.
+	fb.Append(testSessionA, []byte("AKI"+"A"))
+	fb.Append(testSessionA, []byte(testAWSKeySuffix))
 
-	// The newest fragment (containing the credential) should survive.
+	// The secret spans two surviving fragments — should be detected.
 	matches := fb.ScanForSecrets(context.Background(), testSessionA, sc)
 	if len(matches) == 0 {
-		t.Error("newest fragment should survive eviction and trigger DLP match")
+		t.Error("cross-fragment secret should survive eviction and trigger DLP match")
+	}
+}
+
+func TestFragmentBuffer_SingleFragmentNotReported(t *testing.T) {
+	// A complete secret in a single fragment should NOT fire fragment DLP.
+	// Body DLP already catches it — double-scoring causes adaptive death spiral.
+	fb := NewFragmentBuffer(65536, 1000, testWindowSecs)
+	defer fb.Close()
+
+	sc := testFragmentScanner()
+	defer sc.Close()
+
+	// Single fragment with complete secret.
+	key := "AKI" + "A" + testAWSKeySuffix
+	fb.Append(testSessionA, []byte(key))
+
+	matches := fb.ScanForSecrets(context.Background(), testSessionA, sc)
+	if len(matches) != 0 {
+		t.Errorf("single-fragment secret should not trigger fragment DLP (body DLP handles it), got %d matches", len(matches))
+	}
+}
+
+func TestFragmentBuffer_RepeatedIdenticalBodiesNotReported(t *testing.T) {
+	// LLM context replay: same secret in every POST body. Each body is a
+	// complete fragment. The secret is in each individual fragment, so it
+	// should NOT trigger fragment DLP regardless of how many times it's sent.
+	fb := NewFragmentBuffer(65536, 1000, testWindowSecs)
+	defer fb.Close()
+
+	sc := testFragmentScanner()
+	defer sc.Close()
+
+	key := "AKI" + "A" + testAWSKeySuffix
+	body := "conversation context with " + key + " embedded"
+
+	// Simulate 5 LLM API calls with same context.
+	for range 5 {
+		fb.Append(testSessionA, []byte(body))
+	}
+
+	matches := fb.ScanForSecrets(context.Background(), testSessionA, sc)
+	if len(matches) != 0 {
+		t.Errorf("repeated identical bodies should not trigger fragment DLP, got %d matches", len(matches))
+	}
+}
+
+func TestFragmentBuffer_OldFragmentSecretNotReported(t *testing.T) {
+	// A complete secret in an OLDER fragment (not the latest) should be
+	// filtered by scanning all individual fragments, not just the latest.
+	// Without this fix, the concatenated buffer would match but the latest-
+	// only dedup wouldn't catch it, creating a false cross-request signal.
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	sc := New(cfg)
+	defer sc.Close()
+
+	fb := NewFragmentBuffer(65536, 1000, 300)
+	defer fb.Close()
+
+	// Fragment 1: contains a complete secret.
+	fb.Append(testSessionA, []byte("key="+"AKIA"+"IOSFODNN7EXAMPLE"))
+
+	// Fragment 2: clean content, no secret.
+	fb.Append(testSessionA, []byte("ok no secrets here"))
+
+	matches := fb.ScanForSecrets(context.Background(), testSessionA, sc)
+	if len(matches) != 0 {
+		t.Errorf("secret entirely in older fragment should not trigger cross-request signal, got %d matches: %v", len(matches), matches)
 	}
 }
 

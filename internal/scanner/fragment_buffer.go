@@ -102,6 +102,12 @@ func (fb *FragmentBuffer) Append(sessionKey string, payload []byte) {
 // ScanForSecrets runs DLP on the concatenated fragment buffer for the given session.
 // Always scans synchronously to guarantee pre-forward detection. Returns nil if
 // no matches are found or the session doesn't exist.
+//
+// Only reports matches that span multiple fragments (true cross-request secrets).
+// If a secret is entirely within the latest fragment (single request body), it's
+// already caught by body DLP and doesn't need a second +3 CEE signal. This prevents
+// LLM conversation context from generating repeated fragment DLP signals on every
+// API call (the context carries the same secrets in every POST body).
 func (fb *FragmentBuffer) ScanForSecrets(ctx context.Context, sessionKey string, sc *Scanner) []DLPMatch {
 	fb.mu.Lock()
 	sb, exists := fb.sessions[sessionKey]
@@ -110,21 +116,63 @@ func (fb *FragmentBuffer) ScanForSecrets(ctx context.Context, sessionKey string,
 		return nil
 	}
 
+	// Need at least 2 non-expired fragments for a cross-request match.
+	// A single fragment means the secret is in one request — body DLP handles it.
+	cutoff := time.Now().Add(-time.Duration(fb.windowSecs) * time.Second)
+	activeCount := 0
+	for _, f := range sb.fragments {
+		if !f.at.Before(cutoff) {
+			activeCount++
+		}
+	}
+	if activeCount < 2 {
+		fb.mu.Unlock()
+		return nil
+	}
+
 	// Concatenate all fragments under lock, then release lock for DLP scan.
 	buf := fb.concatenateFragments(sb)
+
+	// Collect each individual fragment's data for dedup scanning.
+	var individualFragments [][]byte
+	for _, f := range sb.fragments {
+		if !f.at.Before(cutoff) {
+			individualFragments = append(individualFragments, f.data)
+		}
+	}
 	fb.mu.Unlock()
 
-	// Run DLP scan outside the lock (may be expensive).
+	// Scan the concatenated buffer.
 	result := sc.ScanTextForDLP(ctx, string(buf))
 	if result.Clean {
 		return nil
 	}
 
-	matches := make([]DLPMatch, 0, len(result.Matches))
+	// Scan each individual fragment to identify single-request matches.
+	// A pattern that matches entirely within ANY single fragment is handled
+	// by body DLP and should not generate a cross-request signal.
+	singleFragment := make(map[string]bool)
+	for _, frag := range individualFragments {
+		if len(frag) > 0 {
+			fragResult := sc.ScanTextForDLP(ctx, string(frag))
+			for _, m := range fragResult.Matches {
+				singleFragment[m.PatternName] = true
+			}
+		}
+	}
+
+	// Only report matches NOT found in any individual fragment.
+	// These are true cross-request matches (secret spans fragment boundaries).
+	var matches []DLPMatch
 	for _, m := range result.Matches {
-		matches = append(matches, DLPMatch{
-			PatternName: m.PatternName,
-		})
+		if !singleFragment[m.PatternName] {
+			matches = append(matches, DLPMatch{
+				PatternName: m.PatternName,
+			})
+		}
+	}
+	if len(matches) == 0 {
+		return nil
 	}
 	return matches
 }

@@ -1685,24 +1685,24 @@ func TestBidirectionalCopy(t *testing.T) {
 }
 
 func TestConnectCEEEntropyBlocked(t *testing.T) {
-	// CONNECT requests should be blocked when the cumulative cross-request
-	// entropy budget is exceeded and action is "block". The CONNECT handler
-	// records the host (without port) as the payload, so "a.io" is 4 bytes
-	// with ~2.0 bits/char Shannon entropy = ~8 bits per request. Budget of
-	// 20 bits requires 3+ hostnames to exceed, proving cross-request
-	// accumulation (not just single-request blocking).
+	// After removing CONNECT hostname from the CEE entropy budget, repeated
+	// CONNECT requests must NOT trigger entropy budget exceeded. The hostname
+	// is the destination, not exfiltration data — recording it caused
+	// legitimate polling (e.g. Telegram getUpdates) to exhaust the budget
+	// and trigger adaptive escalation to block_all.
 	proxyAddr, cleanup := setupForwardProxy(t, func(cfg *config.Config) {
 		cfg.CrossRequestDetection.Enabled = true
 		cfg.CrossRequestDetection.Action = config.ActionBlock
 		cfg.CrossRequestDetection.EntropyBudget.Enabled = true
-		cfg.CrossRequestDetection.EntropyBudget.BitsPerWindow = 20 // ~8 bits/hostname, exceeds at 3rd request
+		cfg.CrossRequestDetection.EntropyBudget.BitsPerWindow = 20 // very low budget
 		cfg.CrossRequestDetection.EntropyBudget.WindowMinutes = 5
 		cfg.CrossRequestDetection.EntropyBudget.Action = config.ActionBlock
 	})
 	defer cleanup()
 
-	// Short hostnames, each contributing ~8 bits of entropy. The budget (20)
-	// is only exceeded after accumulation across 3+ requests.
+	// Send many CONNECT requests with distinct hostnames. Previously these
+	// would exhaust the entropy budget and produce a 403. Now they must all
+	// succeed because CONNECT hostnames no longer feed entropy.
 	hosts := []string{
 		"a.io:443",
 		"b.io:443",
@@ -1711,8 +1711,7 @@ func TestConnectCEEEntropyBlocked(t *testing.T) {
 		"e.io:443",
 	}
 
-	blockedAt := -1
-	for i, h := range hosts {
+	for _, h := range hosts {
 		conn := dialProxy(t, proxyAddr)
 		_, _ = fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", h, h)
 		resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
@@ -1725,16 +1724,66 @@ func TestConnectCEEEntropyBlocked(t *testing.T) {
 		_ = conn.Close()
 
 		if status == http.StatusForbidden {
-			blockedAt = i
-			break
+			t.Fatalf("CONNECT to %q returned 403; CONNECT hostnames must not feed CEE entropy budget", h)
 		}
 	}
+}
 
-	if blockedAt < 0 {
-		t.Fatal("expected 403 after entropy budget exceeded, but no request was blocked")
+// TestConnectCEEEntropyNotFed is a regression test proving that repeated
+// CONNECT requests to the same hostname do NOT exhaust the CEE entropy budget.
+// This was the root cause of the adaptive death spiral: Telegram getUpdates
+// polling the same host every 30s accumulated entropy, eventually triggering
+// block_all and permanently locking out the agent.
+func TestConnectCEEEntropyNotFed(t *testing.T) {
+	// Use setupForwardProxyWithInstance to get the Proxy reference for
+	// entropy tracker inspection.
+	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+		cfg.CrossRequestDetection.Enabled = true
+		cfg.CrossRequestDetection.Action = config.ActionBlock
+		cfg.CrossRequestDetection.EntropyBudget.Enabled = true
+		cfg.CrossRequestDetection.EntropyBudget.BitsPerWindow = 10 // tight budget
+		cfg.CrossRequestDetection.EntropyBudget.WindowMinutes = 5
+		cfg.CrossRequestDetection.EntropyBudget.Action = config.ActionBlock
+	})
+	defer cleanup()
+
+	et := p.entropyTrackerPtr.Load()
+	if et == nil {
+		t.Fatal("entropy tracker not initialized despite enabled config")
 	}
-	if blockedAt == 0 {
-		t.Fatalf("first request was blocked (budget should not be exceeded by a single hostname)")
+
+	sessionKey := ceeSessionKey(agentAnonymous, adaptiveSessionKeyLoopback)
+	usageBefore := et.CurrentUsage(sessionKey)
+
+	// Send 10 CONNECT requests to the same host. If hostname were still
+	// recorded, this would easily exceed the 10-bit budget.
+	const rounds = 10
+	host := "api.telegram.org:443"
+	for range rounds {
+		conn := dialProxy(t, proxyAddr)
+		_, _ = fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", host, host)
+		resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+		if err != nil {
+			_ = conn.Close()
+			t.Fatalf("read response: %v", err)
+		}
+		if resp.StatusCode == http.StatusForbidden {
+			_ = resp.Body.Close()
+			_ = conn.Close()
+			t.Fatal("CONNECT blocked by entropy budget; hostname must not feed CEE entropy")
+		}
+		_ = resp.Body.Close()
+		_ = conn.Close()
+	}
+
+	usageAfter := et.CurrentUsage(sessionKey)
+	if usageAfter != usageBefore {
+		t.Errorf("entropy usage changed after %d CONNECT requests: before=%.2f after=%.2f; "+
+			"CONNECT hostname must not be recorded to entropy budget", rounds, usageBefore, usageAfter)
+	}
+
+	if et.BudgetExceeded(sessionKey) {
+		t.Error("entropy budget exceeded after CONNECT-only traffic; hostname must not feed budget")
 	}
 }
 

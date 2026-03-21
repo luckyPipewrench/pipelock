@@ -37,11 +37,14 @@ type SessionState struct {
 
 	// Domain tracking (rolling window)
 	domainWindows []domainEntry
+	lastBurstAt   time.Time // cooldown: fire burst anomaly once per window
 
 	// Adaptive enforcement
 	threatScore      float64
 	escalationLevel  int // 0=normal, 1=first escalation, etc.
 	currentThreshold float64
+	lastEscalation   time.Time // when the current level was reached
+	atBlockAll       bool      // true when current level has block_all=true
 }
 
 type domainEntry struct {
@@ -51,12 +54,19 @@ type domainEntry struct {
 
 // RecordRequest records a request and returns any anomalies detected.
 // The caller must pass the current config for threshold values.
+// When the session is at block_all level, lastActivity is NOT refreshed
+// so idle eviction can eventually clean up stuck sessions (prevents
+// death spiral where blocked retries keep the session alive forever).
 func (s *SessionState) RecordRequest(domain string, cfg *config.SessionProfiling) []Anomaly {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	now := time.Now()
-	s.lastActivity = now
+	// Don't refresh activity at block_all levels — let idle eviction work.
+	// Without this, blocked retries keep the session alive forever.
+	if !s.atBlockAll {
+		s.lastActivity = now
+	}
 
 	var anomalies []Anomaly
 
@@ -66,10 +76,19 @@ func (s *SessionState) RecordRequest(domain string, cfg *config.SessionProfiling
 
 	uniqueDomains := countUniqueDomains(s.domainWindows)
 	if uniqueDomains >= cfg.DomainBurst {
+		// Score only on first detection per window. Repeat detections still
+		// return the anomaly (so AnomalyAction=block fires) but with Score 0
+		// to prevent adaptive escalation from repeated signals.
+		windowDur := time.Duration(cfg.WindowMinutes) * time.Minute
+		score := 0.0
+		if s.lastBurstAt.IsZero() || now.Sub(s.lastBurstAt) >= windowDur {
+			s.lastBurstAt = now
+			score = 2.0
+		}
 		anomalies = append(anomalies, Anomaly{
 			Type:   "domain_burst",
 			Detail: fmt.Sprintf("%d new domains in %dm window (threshold: %d)", uniqueDomains, cfg.WindowMinutes, cfg.DomainBurst),
-			Score:  2.0,
+			Score:  score,
 		})
 	}
 
@@ -110,12 +129,45 @@ func pruneDomainWindow(entries []domainEntry, domain string, windowCutoff, now t
 	return pruned, countUniqueDomains(pruned)
 }
 
+// maxLevelDuration is the maximum time a session stays at an escalation level
+// before automatically de-escalating by one level. This prevents death spirals
+// where false positives (e.g. entropy on CONNECT hostnames) permanently lock
+// a session at critical. The session must accumulate new real signals to
+// re-escalate.
+const maxLevelDuration = 5 * time.Minute
+
+// tryDeescalate checks if the session has been at its current escalation
+// level for longer than maxLevelDuration and drops one level if so.
+// Caller must hold s.mu.
+func (s *SessionState) tryDeescalate(now time.Time) {
+	if s.escalationLevel > 0 && !s.lastEscalation.IsZero() && now.Sub(s.lastEscalation) > maxLevelDuration {
+		s.escalationLevel--
+		s.lastEscalation = now
+		// Halve the threshold to match the lower level (inverse of the
+		// doubling on escalation).
+		if s.currentThreshold > 0 {
+			s.currentThreshold /= 2
+		}
+		// Reset score to half the current threshold so the session doesn't
+		// immediately re-escalate from accumulated points.
+		s.threatScore = s.currentThreshold / 2
+		// Clear block_all flag — the proxy will re-evaluate on next escalation.
+		// This allows RecordRequest to resume refreshing lastActivity.
+		s.atBlockAll = false
+	}
+}
+
 // RecordSignal adds a threat signal to the session's score.
 // Returns (escalated, fromLevel, toLevel) if threshold was crossed.
 // Caller must hold no locks on SessionState.
 func (s *SessionState) RecordSignal(sig session.SignalType, threshold float64) (bool, string, string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	now := time.Now()
+
+	// Time-based de-escalation before recording the new signal.
+	s.tryDeescalate(now)
 
 	points := session.SignalPoints[sig]
 	s.threatScore += points
@@ -128,6 +180,7 @@ func (s *SessionState) RecordSignal(sig session.SignalType, threshold float64) (
 	if s.currentThreshold > 0 && s.threatScore >= s.currentThreshold {
 		oldLevel := s.escalationLevel
 		s.escalationLevel++
+		s.lastEscalation = now
 		// Double the threshold to prevent oscillation
 		s.currentThreshold *= 2
 
@@ -140,14 +193,30 @@ func (s *SessionState) RecordSignal(sig session.SignalType, threshold float64) (
 }
 
 // RecordClean decays the threat score for a clean request (no signals).
+// Also checks the de-escalation timer so sessions at block_all can
+// recover via clean traffic — without this, a session stuck at critical
+// would never de-escalate because RecordSignal is never called for
+// clean requests.
 func (s *SessionState) RecordClean(decayRate float64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	s.tryDeescalate(time.Now())
 
 	s.threatScore -= decayRate
 	if s.threatScore < 0 {
 		s.threatScore = 0
 	}
+}
+
+// SetBlockAll sets whether the session is at a block_all escalation level.
+// Called by the proxy after escalation or de-escalation when it has access
+// to the adaptive enforcement config. Controls whether RecordRequest
+// refreshes lastActivity (block_all must NOT refresh to allow idle eviction).
+func (s *SessionState) SetBlockAll(blocked bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.atBlockAll = blocked
 }
 
 // ThreatScore returns the current threat score (thread-safe).
@@ -179,7 +248,8 @@ type SessionManager struct {
 	// ipDomains tracks domain diversity per source IP, independent of agent
 	// header. This catches domain burst attacks where the attacker rotates
 	// the X-Pipelock-Agent header per request to create fresh sessions.
-	ipDomains map[string][]domainEntry
+	ipDomains       map[string][]domainEntry
+	ipBurstCooldown map[string]time.Time // per-IP burst cooldown timestamps
 
 	cfgPtr  atomic.Pointer[config.SessionProfiling]
 	metrics *metrics.Metrics // nil-safe; used for gauge/counter updates
@@ -191,10 +261,11 @@ type SessionManager struct {
 // The metrics parameter is optional (nil disables gauge/counter updates).
 func NewSessionManager(cfg *config.SessionProfiling, m *metrics.Metrics) *SessionManager {
 	sm := &SessionManager{
-		sessions:  make(map[string]*SessionState),
-		ipDomains: make(map[string][]domainEntry),
-		metrics:   m,
-		done:      make(chan struct{}),
+		sessions:        make(map[string]*SessionState),
+		ipDomains:       make(map[string][]domainEntry),
+		ipBurstCooldown: make(map[string]time.Time),
+		metrics:         m,
+		done:            make(chan struct{}),
 	}
 	sm.cfgPtr.Store(cfg)
 
@@ -266,10 +337,19 @@ func (sm *SessionManager) RecordIPDomain(clientIP, domain string, cfg *config.Se
 
 	var anomalies []Anomaly
 	if uniqueDomains >= cfg.DomainBurst {
+		// Same cooldown pattern as per-session burst: score once per window,
+		// anomaly returned every time so AnomalyAction=block still fires.
+		windowDur := time.Duration(cfg.WindowMinutes) * time.Minute
+		lastBurst := sm.ipBurstCooldown[clientIP]
+		score := 0.0
+		if lastBurst.IsZero() || now.Sub(lastBurst) >= windowDur {
+			sm.ipBurstCooldown[clientIP] = now
+			score = 3.0
+		}
 		anomalies = append(anomalies, Anomaly{
 			Type:   "ip_domain_burst",
 			Detail: fmt.Sprintf("%d unique domains from IP in %dm window (threshold: %d)", uniqueDomains, cfg.WindowMinutes, cfg.DomainBurst),
-			Score:  3.0, // higher than per-agent burst: indicates intentional evasion
+			Score:  score,
 		})
 	}
 
@@ -337,7 +417,7 @@ func (sm *SessionManager) cleanup() {
 		}
 	}
 
-	// Prune IP domain entries older than the rolling window.
+	// Prune IP domain entries and burst cooldowns older than the rolling window.
 	windowCutoff := time.Now().Add(-time.Duration(cfg.WindowMinutes) * time.Minute)
 	for ip, entries := range sm.ipDomains {
 		pruned := entries[:0]
@@ -348,6 +428,7 @@ func (sm *SessionManager) cleanup() {
 		}
 		if len(pruned) == 0 {
 			delete(sm.ipDomains, ip)
+			delete(sm.ipBurstCooldown, ip)
 		} else {
 			sm.ipDomains[ip] = pruned
 		}

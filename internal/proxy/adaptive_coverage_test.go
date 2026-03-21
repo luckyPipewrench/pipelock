@@ -561,9 +561,10 @@ func TestForwardHTTP_Adaptive_HeaderDLPBlockAllRecheckFwd(t *testing.T) {
 	}
 }
 
-// TestForwardHTTP_Adaptive_CEEActionUpgrade verifies the CONNECT CEE entropy
-// action upgrade path in handleConnect when entropy budget is exceeded at an
-// elevated session level.
+// TestForwardHTTP_Adaptive_CEEActionUpgrade verifies that repeated CONNECT
+// requests do NOT trigger CEE entropy adaptive escalation even when the session
+// is pre-escalated. CONNECT hostnames are destinations, not exfiltration data,
+// so they must not feed the entropy budget.
 func TestForwardHTTP_Adaptive_CEEActionUpgrade(t *testing.T) {
 	targetLn := listenEcho(t)
 	defer func() { _ = targetLn.Close() }()
@@ -605,43 +606,33 @@ func TestForwardHTTP_Adaptive_CEEActionUpgrade(t *testing.T) {
 		_ = srv.Serve(ln)
 	}()
 
-	// Pre-escalate to elevated (upgrade_warn → block), so the CEE action
-	// starts as "warn" but gets upgraded to "block" by UpgradeAction.
+	// Pre-escalate to elevated (upgrade_warn -> block). If CONNECT hostname
+	// fed entropy, the first request would exceed the 1-bit budget and the
+	// upgraded action would block. With the fix, neither request is blocked.
 	sm := p.sessionMgrPtr.Load()
 	rec := sm.GetOrCreate(adaptiveSessionKeyLoopback)
 	escalateRec(rec, 1)
 
-	// First CONNECT to exceed entropy budget.
 	target := targetLn.Addr().String()
-	conn := dialProxy(t, proxyAddr)
-	defer func() { _ = conn.Close() }()
 
-	_, _ = fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target)
-	br := bufio.NewReader(conn)
-	resp, err := http.ReadResponse(br, nil)
-	if err != nil {
-		t.Fatalf("read CONNECT response: %v", err)
-	}
-	defer resp.Body.Close() //nolint:errcheck // test cleanup
+	// Two CONNECT requests — neither should be blocked because CONNECT
+	// hostnames no longer contribute to the entropy budget.
+	for i := range 2 {
+		conn := dialProxy(t, proxyAddr)
+		_, _ = fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target)
+		br := bufio.NewReader(conn)
+		resp, readErr := http.ReadResponse(br, nil)
+		if readErr != nil {
+			_ = conn.Close()
+			t.Fatalf("read CONNECT response %d: %v", i, readErr)
+		}
+		status := resp.StatusCode
+		_ = resp.Body.Close()
+		_ = conn.Close()
 
-	// A second CONNECT will exceed the entropy budget and trigger the CEE upgrade.
-	conn2 := dialProxy(t, proxyAddr)
-	defer func() { _ = conn2.Close() }()
-
-	_, _ = fmt.Fprintf(conn2, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target)
-	br2 := bufio.NewReader(conn2)
-	resp2, err2 := http.ReadResponse(br2, nil)
-	if err2 != nil {
-		t.Logf("read second CONNECT response: %v", err2)
-		return
-	}
-	defer resp2.Body.Close() //nolint:errcheck // test cleanup
-
-	// Either the first or second request should be blocked (entropy budget or block_all).
-	if resp.StatusCode != http.StatusForbidden && resp2.StatusCode != http.StatusForbidden {
-		body, _ := io.ReadAll(resp2.Body)
-		t.Errorf("expected at least one CONNECT blocked by CEE adaptive upgrade, got %d/%d: %s",
-			resp.StatusCode, resp2.StatusCode, body)
+		if status != http.StatusOK {
+			t.Fatalf("CONNECT %d returned %d, want 200; CONNECT hostnames must not feed CEE entropy budget", i, status)
+		}
 	}
 }
 

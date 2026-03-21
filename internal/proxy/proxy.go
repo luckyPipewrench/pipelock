@@ -551,21 +551,22 @@ func (p *Proxy) recordSessionActivity(clientIP, agent, hostname, requestID strin
 			if escalated, from, to := sess.RecordSignal(session.SignalBlock, adaptiveCfg.EscalationThreshold); escalated {
 				log.LogAdaptiveEscalation(key, from, to, clientIP, requestID, sess.ThreatScore())
 				p.metrics.RecordSessionEscalation(from, to)
-				// Adjust per-level gauge: decrement old level (if not normal), increment new.
 				if from != session.EscalationLabel(0) {
 					p.metrics.SetAdaptiveSessionLevel(from, -1)
 				}
 				p.metrics.SetAdaptiveSessionLevel(to, 1)
+				// Update block_all flag so RecordRequest stops refreshing lastActivity.
+				sess.SetBlockAll(decide.UpgradeAction("", sess.EscalationLevel(), &adaptiveCfg) == config.ActionBlock)
 			}
 		} else if resultScore > 0 {
 			if escalated, from, to := sess.RecordSignal(session.SignalNearMiss, adaptiveCfg.EscalationThreshold); escalated {
 				log.LogAdaptiveEscalation(key, from, to, clientIP, requestID, sess.ThreatScore())
 				p.metrics.RecordSessionEscalation(from, to)
-				// Adjust per-level gauge: decrement old level (if not normal), increment new.
 				if from != session.EscalationLabel(0) {
 					p.metrics.SetAdaptiveSessionLevel(from, -1)
 				}
 				p.metrics.SetAdaptiveSessionLevel(to, 1)
+				sess.SetBlockAll(decide.UpgradeAction("", sess.EscalationLevel(), &adaptiveCfg) == config.ActionBlock)
 			}
 		} else if !deferClean {
 			// Skip RecordClean when the caller defers it to the end of the

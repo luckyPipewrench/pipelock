@@ -4,6 +4,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
@@ -15,6 +16,7 @@ var dlpValidators = map[string]func(string) bool{
 	config.ValidatorLuhn:  validateLuhn,
 	config.ValidatorMod97: validateMod97,
 	config.ValidatorABA:   validateABA,
+	config.ValidatorWIF:   validateWIF,
 }
 
 // validateLuhn implements the Luhn algorithm (ISO/IEC 7812) for credit card
@@ -198,6 +200,29 @@ func validateABA(s string) bool {
 	}
 
 	return sum%10 == 0
+}
+
+// validateWIF validates Bitcoin WIF (Wallet Import Format) private keys
+// using Base58Check decoding with SHA-256d checksum verification.
+// WIF keys have version byte 0x80 (mainnet) with 32-byte (uncompressed)
+// or 33-byte (compressed, ends with 0x01 flag) payloads. Eliminates
+// false positives from conversation text that happens to match the
+// base58 character class — invalid checksums have a 1-in-2^32 chance
+// of passing.
+func validateWIF(s string) bool {
+	payload, version, err := addressprotect.Base58CheckDecode(s)
+	if err != nil {
+		return false
+	}
+
+	// WIF mainnet version byte.
+	if version != 0x80 {
+		return false
+	}
+
+	// Uncompressed: 32-byte private key.
+	// Compressed: 32-byte key + 0x01 compression flag = 33 bytes.
+	return len(payload) == 32 || (len(payload) == 33 && payload[32] == 0x01)
 }
 
 func isASCIILetter(c byte) bool { return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') }

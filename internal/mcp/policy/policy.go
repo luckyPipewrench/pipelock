@@ -115,18 +115,20 @@ type Config struct {
 
 // CompiledRule holds a pre-compiled policy rule ready for matching.
 type CompiledRule struct {
-	Name        string
-	ToolPattern *regexp.Regexp
-	ArgPattern  *regexp.Regexp // nil = match on tool name alone
-	ArgKey      *regexp.Regexp // nil = match all arg values; non-nil = scope to matching keys
-	Action      string         // per-rule override, empty = use Config.Action
+	Name            string
+	ToolPattern     *regexp.Regexp
+	ArgPattern      *regexp.Regexp // nil = match on tool name alone
+	ArgKey          *regexp.Regexp // nil = match all arg values; non-nil = scope to matching keys
+	Action          string         // per-rule override, empty = use Config.Action
+	RedirectProfile string         // key in redirect_profiles (when action=redirect)
 }
 
 // Verdict describes the outcome of checking a tool call against policy.
 type Verdict struct {
-	Matched bool
-	Action  string   // effective action (from rule override or default)
-	Rules   []string // names of matched rules
+	Matched         bool
+	Action          string   // effective action (from rule override or default)
+	Rules           []string // names of matched rules
+	RedirectProfile string   // redirect profile key (set when action=redirect)
 }
 
 // New compiles policy rules from config. Returns nil if disabled or no rules
@@ -139,9 +141,10 @@ func New(cfg config.MCPToolPolicy) *Config {
 	pc := &Config{Action: cfg.Action}
 	for _, r := range cfg.Rules {
 		compiled := &CompiledRule{
-			Name:        r.Name,
-			ToolPattern: regexp.MustCompile(r.ToolPattern),
-			Action:      r.Action,
+			Name:            r.Name,
+			ToolPattern:     regexp.MustCompile(r.ToolPattern),
+			Action:          r.Action,
+			RedirectProfile: r.RedirectProfile,
 		}
 		if r.ArgPattern != "" {
 			compiled.ArgPattern = regexp.MustCompile(r.ArgPattern)
@@ -210,6 +213,7 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 
 	var matchedRules []string
 	strictest := ""
+	redirectProfile := ""
 
 	for _, rule := range pc.Rules {
 		if !rule.ToolPattern.MatchString(toolName) {
@@ -223,7 +227,11 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 			if action == "" {
 				action = pc.Action
 			}
+			prev := strictest
 			strictest = StricterAction(strictest, action)
+			if strictest != prev && action == config.ActionRedirect {
+				redirectProfile = rule.RedirectProfile
+			}
 			continue
 		}
 
@@ -248,7 +256,11 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 			if action == "" {
 				action = pc.Action
 			}
+			prev := strictest
 			strictest = StricterAction(strictest, action)
+			if strictest != prev && action == config.ActionRedirect {
+				redirectProfile = rule.RedirectProfile
+			}
 		}
 	}
 
@@ -256,10 +268,16 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 		return Verdict{}
 	}
 
+	// Clear redirect profile if a stricter action (block) won.
+	if strictest != config.ActionRedirect {
+		redirectProfile = ""
+	}
+
 	return Verdict{
-		Matched: true,
-		Action:  strictest,
-		Rules:   matchedRules,
+		Matched:         true,
+		Action:          strictest,
+		Rules:           matchedRules,
+		RedirectProfile: redirectProfile,
 	}
 }
 
@@ -380,12 +398,18 @@ func (pc *Config) checkBatch(line []byte) Verdict {
 
 	var allRules []string
 	strictest := ""
+	redirectProfile := ""
 
 	for _, elem := range batch {
 		v := pc.checkSingle(elem)
 		if v.Matched {
 			allRules = append(allRules, v.Rules...)
+			prev := strictest
 			strictest = StricterAction(strictest, v.Action)
+			// Track redirect profile from the verdict that set the effective action.
+			if strictest != prev && v.Action == config.ActionRedirect {
+				redirectProfile = v.RedirectProfile
+			}
 		}
 	}
 
@@ -393,10 +417,16 @@ func (pc *Config) checkBatch(line []byte) Verdict {
 		return Verdict{}
 	}
 
+	// Clear redirect profile if a stricter action (block) won.
+	if strictest != config.ActionRedirect {
+		redirectProfile = ""
+	}
+
 	return Verdict{
-		Matched: true,
-		Action:  strictest,
-		Rules:   allRules,
+		Matched:         true,
+		Action:          strictest,
+		Rules:           allRules,
+		RedirectProfile: redirectProfile,
 	}
 }
 
@@ -442,11 +472,18 @@ func parseToolCall(line []byte) *toolCallParams {
 }
 
 // actionRank maps action strings to strictness levels for comparison.
+// block > redirect > ask > warn > "" (empty).
 // Unknown values are treated as block (fail-closed).
-var actionRank = map[string]int{"": 0, config.ActionWarn: 1, config.ActionAsk: 2, config.ActionBlock: 3}
+var actionRank = map[string]int{
+	"":                    0,
+	config.ActionWarn:     1,
+	config.ActionAsk:      2,
+	config.ActionRedirect: 3,
+	config.ActionBlock:    4,
+}
 
 // StricterAction returns the more restrictive of two actions.
-// block > ask > warn > "" (empty). Unknown values are treated as block (fail-closed).
+// block > redirect > ask > warn > "" (empty). Unknown values are treated as block (fail-closed).
 func StricterAction(a, b string) string {
 	ra, aOK := actionRank[a]
 	rb, bOK := actionRank[b]

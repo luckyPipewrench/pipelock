@@ -769,6 +769,17 @@ func ForwardScannedInput(
 				ErrorCode:      errCode,
 				ErrorMessage:   errMsg,
 			}
+		case config.ActionRedirect:
+			// Redirect handler not yet wired (PR 3B). Fail closed to block.
+			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked %s request (%s) [redirect pending implementation]\n",
+				lineNum, method, reasonStr)
+			blockedCh <- BlockedRequest{
+				ID:             verdict.ID,
+				IsNotification: isNotification,
+				LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked (redirect not wired)", lineNum),
+				ErrorCode:      -32002,
+				ErrorMessage:   errPolicyBlocked,
+			}
 		case config.ActionAsk:
 			// HITL for input scanning is impractical — fall back to block.
 			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked %s request (%s) [ask not supported for input scanning]\n",
@@ -804,8 +815,9 @@ func ForwardScannedInput(
 		}
 
 		// Signal recording: record after action is taken.
+		// Redirect falls through to block (fail-closed), so record as block too.
 		switch {
-		case effectiveAction == config.ActionBlock:
+		case effectiveAction == config.ActionBlock || effectiveAction == config.ActionRedirect:
 			recordAdaptiveSignal(session.SignalBlock)
 		case len(reasons) > 0:
 			recordAdaptiveSignal(session.SignalNearMiss)

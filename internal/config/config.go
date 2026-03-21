@@ -44,12 +44,13 @@ var (
 
 // Action constants for scanner and policy responses.
 const (
-	ActionBlock   = "block"
-	ActionWarn    = "warn"
-	ActionAsk     = "ask"
-	ActionStrip   = "strip"
-	ActionForward = "forward"
-	ActionAllow   = "allow"
+	ActionBlock    = "block"
+	ActionRedirect = "redirect"
+	ActionWarn     = "warn"
+	ActionAsk      = "ask"
+	ActionStrip    = "strip"
+	ActionForward  = "forward"
+	ActionAllow    = "allow"
 )
 
 // Severity constants for chain detection and emit thresholds.
@@ -295,13 +296,25 @@ type MCPToolScanning struct {
 	DetectDrift bool   `yaml:"detect_drift"` // rug pull detection
 }
 
+// RedirectProfile defines a local executable to invoke when a tool call
+// is redirected instead of blocked. The redirect handler receives the
+// original tool arguments and returns output that pipelock wraps as a
+// synthetic MCP success response.
+type RedirectProfile struct {
+	Exec         []string `yaml:"exec"`           // command + args (e.g. ["/proc/self/exe", "internal-redirect", "fetch-proxy"])
+	Reason       string   `yaml:"reason"`         // human-readable justification for redirect
+	PreserveArgv bool     `yaml:"preserve_argv"`  // pass original tool arguments to handler
+	MatchAbsPath bool     `yaml:"match_abs_path"` // require absolute path in exec[0]
+}
+
 // MCPToolPolicy configures pre-execution policy checking on MCP tool calls.
 // Rules match tool names and argument patterns to block or warn on dangerous
 // operations before they reach the MCP server.
 type MCPToolPolicy struct {
-	Enabled bool             `yaml:"enabled"`
-	Action  string           `yaml:"action"` // warn, block (default for rules without override)
-	Rules   []ToolPolicyRule `yaml:"rules"`
+	Enabled          bool                       `yaml:"enabled"`
+	Action           string                     `yaml:"action"` // warn, block, redirect (default for rules without override)
+	Rules            []ToolPolicyRule           `yaml:"rules"`
+	RedirectProfiles map[string]RedirectProfile `yaml:"redirect_profiles,omitempty"`
 }
 
 // ToolPolicyRule defines a single tool call policy rule.
@@ -311,11 +324,12 @@ type MCPToolPolicy struct {
 // ArgKey optionally scopes ArgPattern to values under matching top-level argument
 // keys only. Without ArgKey, ArgPattern matches against ALL argument values.
 type ToolPolicyRule struct {
-	Name        string `yaml:"name"`
-	ToolPattern string `yaml:"tool_pattern"` // regex matching tool name
-	ArgPattern  string `yaml:"arg_pattern"`  // regex matching argument values (optional)
-	ArgKey      string `yaml:"arg_key"`      // regex scoping arg_pattern to specific argument keys (optional)
-	Action      string `yaml:"action"`       // per-rule override: warn, block (optional)
+	Name            string `yaml:"name"`
+	ToolPattern     string `yaml:"tool_pattern"`     // regex matching tool name
+	ArgPattern      string `yaml:"arg_pattern"`      // regex matching argument values (optional)
+	ArgKey          string `yaml:"arg_key"`          // regex scoping arg_pattern to specific argument keys (optional)
+	Action          string `yaml:"action"`           // per-rule override: warn, block, redirect (optional)
+	RedirectProfile string `yaml:"redirect_profile"` // key in redirect_profiles (required when action=redirect)
 }
 
 // ResponseScanning configures scanning of fetched page content for prompt injection.
@@ -1617,10 +1631,20 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("mcp_tool_policy is enabled but has no rules; add rules or set enabled: false")
 		}
 		switch c.MCPToolPolicy.Action {
-		case ActionWarn, ActionBlock:
+		case ActionWarn, ActionBlock, ActionRedirect:
 			// valid
 		default:
-			return fmt.Errorf("invalid mcp_tool_policy action %q: must be warn or block", c.MCPToolPolicy.Action)
+			return fmt.Errorf("invalid mcp_tool_policy action %q: must be warn, block, or redirect", c.MCPToolPolicy.Action)
+		}
+		// Validate redirect profiles.
+		for name, profile := range c.MCPToolPolicy.RedirectProfiles {
+			if len(profile.Exec) == 0 {
+				return fmt.Errorf("mcp_tool_policy redirect_profile %q has empty exec", name)
+			}
+		}
+		// Default action=redirect requires at least one redirect profile.
+		if c.MCPToolPolicy.Action == ActionRedirect && len(c.MCPToolPolicy.RedirectProfiles) == 0 {
+			return fmt.Errorf("mcp_tool_policy action is redirect but no redirect_profiles defined")
 		}
 		for i, r := range c.MCPToolPolicy.Rules {
 			if r.Name == "" {
@@ -1647,10 +1671,23 @@ func (c *Config) Validate() error {
 			}
 			if r.Action != "" {
 				switch r.Action {
-				case ActionWarn, ActionBlock:
+				case ActionWarn, ActionBlock, ActionRedirect:
 					// valid
 				default:
-					return fmt.Errorf("mcp_tool_policy rule %q has invalid action %q: must be warn or block", r.Name, r.Action)
+					return fmt.Errorf("mcp_tool_policy rule %q has invalid action %q: must be warn, block, or redirect", r.Name, r.Action)
+				}
+			}
+			// Redirect rules must reference an existing redirect profile.
+			effectiveAction := r.Action
+			if effectiveAction == "" {
+				effectiveAction = c.MCPToolPolicy.Action
+			}
+			if effectiveAction == ActionRedirect {
+				if r.RedirectProfile == "" {
+					return fmt.Errorf("mcp_tool_policy rule %q has action=redirect but no redirect_profile", r.Name)
+				}
+				if _, ok := c.MCPToolPolicy.RedirectProfiles[r.RedirectProfile]; !ok {
+					return fmt.Errorf("mcp_tool_policy rule %q references unknown redirect_profile %q", r.Name, r.RedirectProfile)
 				}
 			}
 		}

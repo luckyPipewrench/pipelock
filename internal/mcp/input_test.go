@@ -1278,6 +1278,58 @@ func TestForwardScannedInput_PolicyNilPassthrough(t *testing.T) {
 	}
 }
 
+func TestForwardScannedInput_PolicyRedirectBlocksFailClosed(t *testing.T) {
+	sc := testInputScanner(t)
+
+	// A clean request matching a redirect policy rule.
+	req := `{"jsonrpc":"2.0","id":20,"method":"tools/call","params":{"name":"bash","arguments":{"command":"curl https://example.com"}}}` + "\n"
+
+	policyCfg := policy.New(config.MCPToolPolicy{
+		Enabled: true,
+		Action:  config.ActionWarn,
+		Rules: []config.ToolPolicyRule{
+			{
+				Name:            "redirect-fetch",
+				ToolPattern:     `(?i)^bash$`,
+				ArgPattern:      `(?i)\bcurl\b`,
+				Action:          config.ActionRedirect,
+				RedirectProfile: "safe-fetch",
+			},
+		},
+	})
+
+	var serverIn bytes.Buffer
+	var logW bytes.Buffer
+	blockedCh := make(chan BlockedRequest, 10)
+
+	clientIn := strings.NewReader(req)
+	ForwardScannedInput(transport.NewStdioReader(clientIn), transport.NewStdioWriter(&serverIn), &logW, sc, config.ActionBlock, config.ActionBlock, blockedCh, policyCfg, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+
+	// Redirect falls through to block (fail-closed). Request must NOT be forwarded.
+	if strings.Contains(serverIn.String(), "tools/call") {
+		t.Error("expected redirect-matched request NOT to be forwarded (fail-closed)")
+	}
+
+	// Should receive blocked request with policy error code.
+	var gotBlocked bool
+	for br := range blockedCh {
+		if len(br.ID) > 0 {
+			gotBlocked = true
+			if br.ErrorCode != -32002 {
+				t.Errorf("ErrorCode = %d, want -32002", br.ErrorCode)
+			}
+		}
+	}
+	if !gotBlocked {
+		t.Error("expected blocked request on channel")
+	}
+
+	// Log should mention redirect pending.
+	if !strings.Contains(logW.String(), "redirect pending implementation") {
+		t.Errorf("expected 'redirect pending implementation' in log, got: %s", logW.String())
+	}
+}
+
 func TestBlockRequestResponse_CustomErrorCode(t *testing.T) {
 	id := json.RawMessage(`99`)
 	resp := blockRequestResponse(BlockedRequest{

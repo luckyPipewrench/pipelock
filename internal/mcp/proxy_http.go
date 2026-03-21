@@ -382,6 +382,17 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 			ErrorCode:      errCode,
 			ErrorMessage:   errMsg,
 		}
+	case config.ActionRedirect:
+		// Redirect handler not yet wired (PR 3B). Fail closed to block.
+		_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s) [redirect pending implementation]\n", joinStrings(reasons))
+		recordAdaptiveSignal(session.SignalBlock)
+		return &BlockedRequest{
+			ID:             verdict.ID,
+			IsNotification: isNotification,
+			LogMessage:     "blocked (redirect not wired)",
+			ErrorCode:      -32002,
+			ErrorMessage:   errPolicyBlocked,
+		}
 	case config.ActionAsk:
 		// HITL for input scanning is impractical — fall back to block (same as stdio proxy).
 		_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s) [ask not supported for input scanning]\n", joinStrings(reasons))

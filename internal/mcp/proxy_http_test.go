@@ -560,6 +560,38 @@ func TestScanHTTPInput_PolicyOnlyBlock(t *testing.T) {
 	}
 }
 
+func TestScanHTTPInput_PolicyRedirectBlocksFailClosed(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+
+	policyCfg := &policy.Config{
+		Action: config.ActionWarn,
+		Rules: []*policy.CompiledRule{
+			{
+				Name:            "redirect-dangerous",
+				ToolPattern:     regexp.MustCompile(`dangerous_tool`),
+				Action:          config.ActionRedirect,
+				RedirectProfile: "safe-handler",
+			},
+		},
+	}
+
+	msg := jsonToolsCallDangerous
+	var logW bytes.Buffer
+	blocked := scanHTTPInput([]byte(msg), sc, &logW, nil, policyCfg, nil, "", "", nil, nil, nil, nil, nil)
+	if blocked == nil {
+		t.Fatal("expected redirect to fall through to block (fail-closed)")
+	}
+	if blocked.ErrorCode != -32002 {
+		t.Errorf("ErrorCode = %d, want -32002", blocked.ErrorCode)
+	}
+	if !strings.Contains(logW.String(), "redirect pending implementation") {
+		t.Errorf("expected 'redirect pending implementation' in log, got: %s", logW.String())
+	}
+}
+
 func TestScanHTTPInput_Disabled(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil

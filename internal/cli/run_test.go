@@ -336,6 +336,106 @@ func TestBuildEmitSinks_SyslogError_CleansUpWebhook(t *testing.T) {
 	}
 }
 
+func TestBuildEmitSinks_OTLPOnly(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	cfg := testConfig()
+	cfg.Emit.OTLP.Endpoint = srv.URL
+	cfg.Emit.OTLP.MinSeverity = config.SeverityWarn
+	cfg.Emit.OTLP.TimeoutSeconds = 5
+	cfg.Emit.OTLP.QueueSize = 32
+
+	sinks, err := buildEmitSinks(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(sinks) != 1 {
+		t.Errorf("expected 1 sink (otlp), got %d", len(sinks))
+	}
+	for _, s := range sinks {
+		_ = s.Close()
+	}
+}
+
+func TestBuildEmitSinks_OTLPWithHeaders(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	cfg := testConfig()
+	cfg.Emit.OTLP.Endpoint = srv.URL
+	cfg.Emit.OTLP.Headers = map[string]string{"X-Tenant": "test"}
+	cfg.Emit.OTLP.Gzip = true
+
+	sinks, err := buildEmitSinks(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(sinks) != 1 {
+		t.Errorf("expected 1 sink, got %d", len(sinks))
+	}
+	for _, s := range sinks {
+		_ = s.Close()
+	}
+}
+
+func TestBuildEmitSinks_OTLPWithInstanceID(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	cfg := testConfig()
+	cfg.Emit.InstanceID = "custom-instance"
+	cfg.Emit.OTLP.Endpoint = srv.URL
+
+	sinks, err := buildEmitSinks(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, s := range sinks {
+		_ = s.Close()
+	}
+}
+
+func TestBuildEmitSinks_AllThreeSinks(t *testing.T) {
+	wSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer wSrv.Close()
+
+	oSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer oSrv.Close()
+
+	conn, err := (&net.ListenConfig{}).ListenPacket(context.Background(), "udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	cfg := testConfig()
+	cfg.Emit.Webhook.URL = wSrv.URL
+	cfg.Emit.Syslog.Address = "udp://" + conn.LocalAddr().String()
+	cfg.Emit.OTLP.Endpoint = oSrv.URL
+
+	sinks, sinkErr := buildEmitSinks(cfg)
+	if sinkErr != nil {
+		t.Fatalf("unexpected error: %v", sinkErr)
+	}
+	if len(sinks) != 3 {
+		t.Errorf("expected 3 sinks (webhook+syslog+otlp), got %d", len(sinks))
+	}
+	for _, s := range sinks {
+		_ = s.Close()
+	}
+}
+
 // freePort returns a free TCP port on localhost.
 func freePort(t *testing.T) string {
 	t.Helper()

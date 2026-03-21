@@ -1,13 +1,13 @@
 # SIEM Integration Guide
 
 Pipelock pushes structured security events to external systems via webhook
-(HTTP POST) and syslog (RFC 5424) sinks. This guide covers the event schema,
-forwarding setup for common SIEM platforms, detection rule examples, and
-automated kill switch response.
+(HTTP POST), syslog (RFC 5424), and OTLP (OpenTelemetry HTTP/protobuf) sinks.
+This guide covers the event schema, forwarding setup for common SIEM
+platforms, detection rule examples, and automated kill switch response.
 
 ## Event Schema
 
-Both sinks emit the same JSON envelope:
+All three sinks emit the same JSON envelope (OTLP wraps it as an OTLP LogRecord):
 
 ```json
 {
@@ -36,7 +36,7 @@ Both sinks emit the same JSON envelope:
 
 ## Event Types
 
-Only security events (critical and warn) are pushed to webhook and syslog.
+Only security events (critical and warn) are pushed to emit sinks (webhook, syslog, OTLP).
 Info-level events go to local logs only, with one exception noted below.
 
 ### Critical (requires immediate response)
@@ -44,7 +44,7 @@ Info-level events go to local logs only, with one exception noted below.
 | Type | Description | Key Fields |
 |------|-------------|------------|
 | `kill_switch_deny` | All traffic denied by emergency kill switch | `transport`, `endpoint`, `source`, `deny_message`, `client_ip` |
-| `adaptive_escalation`* | Session threat score escalated to block level (event only; v1 does not auto-block) | `session`, `from`, `to`, `client_ip`, `request_id`, `score` |
+| `adaptive_escalation`* | Session threat score escalated. Adaptive enforcement v2 upgrades actions at all enforcement points (elevated, high, critical levels). | `session`, `from`, `to`, `client_ip`, `request_id`, `score` |
 
 \* Critical when `to` is `block`. Otherwise warn. In v1, escalation is scoring and event emission only.
 
@@ -86,7 +86,7 @@ via a log collector (Promtail, Filebeat, Fluentd).
 
 ## Pipelock Configuration
 
-Add an `emit` block to your pipelock config to enable one or both sinks:
+Add an `emit` block to your pipelock config to enable any combination of sinks:
 
 ```yaml
 emit:

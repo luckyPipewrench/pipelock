@@ -9,7 +9,7 @@ Pipelock supports multiple proxy modes, each with different scanning capabilitie
 | Fetch | `/fetch?url=...` | HTTP | Full body | Injection detection | AI agents that need extracted text |
 | CONNECT | `HTTPS_PROXY` | HTTPS tunnel | Hostname only | None | Standard HTTPS clients (no interception) |
 | CONNECT + TLS interception | `HTTPS_PROXY` | HTTPS tunnel (MITM) | Full body + headers | Injection detection | Full DLP on HTTPS traffic |
-| Absolute-URI | `HTTP_PROXY` | HTTP | Full URL | None | Plaintext HTTP clients |
+| Absolute-URI | `HTTP_PROXY` | HTTP | Full URL | Injection detection (when enabled) | Plaintext HTTP clients |
 | WebSocket | `/ws?url=...` | WS/WSS | Bidirectional frames | DLP + injection | Real-time agent communication |
 | MCP stdio | `pipelock mcp proxy -- CMD` | stdio | Full messages | Full (6 layers) | Local MCP servers |
 | MCP HTTP | `pipelock mcp proxy --upstream URL` | HTTP | Full messages | Full (6 layers) | Remote MCP servers (HTTP) |
@@ -73,8 +73,8 @@ Handles plaintext HTTP requests where the client sends the full URL as the reque
 
 **Scanning:**
 - 11-layer URL scan on the full URL
-- No response injection scanning
-- Response body streamed through with size limit (MaxResponseMB)
+- Response injection scanning (buffer-then-scan-then-send, fail-closed on compressed responses)
+- Response body buffered (up to MaxResponseMB), scanned for injection, then forwarded
 - Data budget tracking on response size
 
 **What the agent receives:** Raw HTTP response from the origin server.

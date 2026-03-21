@@ -18,6 +18,7 @@ const (
 	testInvalid         = "invalid"
 	testSecretsPath     = "/path/to/secrets.txt"
 	testWebhookURL      = "https://example.com/hook"
+	testOTLPEndpoint    = "http://collector:4318"
 	testSyslogAddr      = "udp://syslog.example.com:514"
 	testAPIListen       = "0.0.0.0:9090"
 	testAPIListen2      = "0.0.0.0:9091"
@@ -217,6 +218,365 @@ func TestValidate_DLPExemptDomainsValid(t *testing.T) {
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("valid exempt_domains should not error: %v", err)
+	}
+}
+
+func TestValidate_FileSentryEmptyWatchPaths(t *testing.T) {
+	cfg := Defaults()
+	cfg.FileSentry.Enabled = true
+	cfg.FileSentry.WatchPaths = nil
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for enabled file_sentry with empty watch_paths")
+	}
+}
+
+func TestValidate_FileSentryValid(t *testing.T) {
+	cfg := Defaults()
+	cfg.FileSentry.Enabled = true
+	cfg.FileSentry.WatchPaths = []string{"."}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("valid file_sentry should not error: %v", err)
+	}
+}
+
+func TestValidate_FileSentryDisabledNoWatchPaths(t *testing.T) {
+	cfg := Defaults()
+	cfg.FileSentry.Enabled = false
+	// No watch_paths — should be fine when disabled.
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("disabled file_sentry with no watch_paths should not error: %v", err)
+	}
+}
+
+func TestValidate_FileSentryEmptyStringInWatchPaths(t *testing.T) {
+	cfg := Defaults()
+	cfg.FileSentry.Enabled = true
+	cfg.FileSentry.WatchPaths = []string{""}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for empty string in watch_paths")
+	}
+}
+
+func TestApplyDefaults_FileSentryScanContent(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	// ScanContent should default to true via ApplyDefaults.
+	if cfg.FileSentry.ScanContent == nil || !*cfg.FileSentry.ScanContent {
+		t.Error("expected ScanContent to default to true")
+	}
+}
+
+func TestApplyDefaults_FileSentryScanContentExplicitFalse(t *testing.T) {
+	cfg := Defaults()
+	f := false
+	cfg.FileSentry.ScanContent = &f
+	cfg.ApplyDefaults()
+	if cfg.FileSentry.ScanContent == nil || *cfg.FileSentry.ScanContent {
+		t.Error("explicit false should not be overridden by defaults")
+	}
+}
+
+func TestApplyDefaults_FileSentryScanContentExplicitTrue(t *testing.T) {
+	cfg := Defaults()
+	tr := true
+	cfg.FileSentry.ScanContent = &tr
+	cfg.ApplyDefaults()
+	if cfg.FileSentry.ScanContent == nil || !*cfg.FileSentry.ScanContent {
+		t.Error("explicit true should be preserved")
+	}
+}
+
+func TestLoad_FileSentryScanContentOmitted(t *testing.T) {
+	// When scan_content is omitted entirely, ApplyDefaults should set it to true.
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "src"), 0o750); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	cfgContent := `
+version: 1
+file_sentry:
+  enabled: true
+  watch_paths:
+    - "src"
+`
+	cfgPath := filepath.Join(dir, "pipelock.yaml")
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.FileSentry.ScanContent == nil || !*cfg.FileSentry.ScanContent {
+		t.Error("omitted scan_content should default to true")
+	}
+}
+
+func TestLoad_FileSentryScanContentNull(t *testing.T) {
+	// YAML `null` should be treated as omitted → defaults to true.
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "src"), 0o750); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	cfgContent := `
+version: 1
+file_sentry:
+  enabled: true
+  watch_paths:
+    - "src"
+  scan_content: null
+`
+	cfgPath := filepath.Join(dir, "pipelock.yaml")
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.FileSentry.ScanContent == nil || !*cfg.FileSentry.ScanContent {
+		t.Error("YAML null scan_content should default to true")
+	}
+}
+
+func TestLoad_FileSentryScanContentExplicitFalse(t *testing.T) {
+	// Explicit false must survive Load + ApplyDefaults.
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "src"), 0o750); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	cfgContent := `
+version: 1
+file_sentry:
+  enabled: true
+  watch_paths:
+    - "src"
+  scan_content: false
+`
+	cfgPath := filepath.Join(dir, "pipelock.yaml")
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.FileSentry.ScanContent == nil || *cfg.FileSentry.ScanContent {
+		t.Error("explicit false scan_content must not be overridden by defaults")
+	}
+}
+
+func TestLoad_FileSentryWatchPathsResolvedRelativeToConfig(t *testing.T) {
+	// watch_paths: ["."] in a config loaded from /some/project/pipelock.yaml
+	// must resolve to /some/project, not the process CWD.
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "pipelock.yaml")
+	cfgContent := `
+version: 1
+file_sentry:
+  enabled: true
+  watch_paths:
+    - "."
+    - "subdir"
+`
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	// Create the watch target so Validate doesn't fail.
+	if err := os.MkdirAll(filepath.Join(dir, "subdir"), 0o750); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	for _, wp := range cfg.FileSentry.WatchPaths {
+		if !filepath.IsAbs(wp) {
+			t.Errorf("watch_path %q should be absolute after Load", wp)
+		}
+		// Must be rooted under the config directory, not CWD.
+		rel, relErr := filepath.Rel(dir, wp)
+		if relErr != nil || strings.HasPrefix(rel, "..") {
+			t.Errorf("watch_path %q is not under config dir %q (rel=%q)", wp, dir, rel)
+		}
+	}
+}
+
+func TestLoad_FileSentryPathTraversalRejected(t *testing.T) {
+	// "../outside" resolved relative to config dir should still contain ".."
+	// if it escapes, and Validate must reject it.
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "pipelock.yaml")
+	cfgContent := `
+version: 1
+file_sentry:
+  enabled: true
+  watch_paths:
+    - "../outside"
+`
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	// Create the escape target so it exists.
+	if err := os.MkdirAll(filepath.Join(dir, "..", "outside"), 0o750); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	_, err := Load(cfgPath)
+	if err == nil {
+		t.Error("expected error for path traversal in watch_paths")
+	}
+}
+
+func TestLoad_FileSentryAbsolutePathAllowed(t *testing.T) {
+	// Absolute paths outside the config dir are allowed (user explicitly
+	// chose the target). Only relative ".." traversal is rejected.
+	dir := t.TempDir()
+	outsideDir := t.TempDir()
+
+	cfgPath := filepath.Join(dir, "pipelock.yaml")
+	cfgContent := fmt.Sprintf(`
+version: 1
+file_sentry:
+  enabled: true
+  watch_paths:
+    - %q
+`, outsideDir)
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: absolute path should be allowed, got: %v", err)
+	}
+	if cfg.FileSentry.WatchPaths[0] != outsideDir {
+		t.Errorf("expected %q, got %q", outsideDir, cfg.FileSentry.WatchPaths[0])
+	}
+}
+
+func TestLoad_FileSentrySymlinkAllowed(t *testing.T) {
+	// A symlink inside the config dir pointing outside is allowed.
+	// The path string is clean (no ".."), symlink resolution happens
+	// at the filesystem level. This test documents the behavior.
+	dir := t.TempDir()
+	outsideDir := t.TempDir()
+
+	// Create a symlink inside dir pointing to outsideDir.
+	linkPath := filepath.Join(dir, "escape-link")
+	if err := os.Symlink(outsideDir, linkPath); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	cfgPath := filepath.Join(dir, "pipelock.yaml")
+	cfgContent := `
+version: 1
+file_sentry:
+  enabled: true
+  watch_paths:
+    - "escape-link"
+`
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// The path "escape-link" resolves to dir/escape-link which passes
+	// containment. The watcher follows the symlink at runtime.
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	for _, wp := range cfg.FileSentry.WatchPaths {
+		if !filepath.IsAbs(wp) {
+			t.Errorf("watch_path %q should be absolute", wp)
+		}
+	}
+}
+
+func TestValidate_DLPGlobalActionRejected(t *testing.T) {
+	cfg := Defaults()
+	cfg.DLP.Action = ActionStrip
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for unsupported dlp.action")
+	}
+}
+
+func TestValidate_DLPGlobalActionBlock(t *testing.T) {
+	cfg := Defaults()
+	cfg.DLP.Action = ActionBlock
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for unsupported dlp.action (even block)")
+	}
+}
+
+func TestValidate_DLPPatternActionRejected(t *testing.T) {
+	cfg := Defaults()
+	cfg.DLP.Patterns = []DLPPattern{
+		{Name: "test", Regex: `sk-test-[a-z]+`, Severity: "high", Action: ActionStrip},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for unsupported per-pattern action")
+	}
+}
+
+func TestValidate_DLPPatternActionEmpty(t *testing.T) {
+	cfg := Defaults()
+	cfg.DLP.Patterns = []DLPPattern{
+		{Name: "test", Regex: `sk-test-[a-z]+`, Severity: "high"},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("empty action should be valid: %v", err)
+	}
+}
+
+func TestLoad_DLPActionRejectedFromYAML(t *testing.T) {
+	dir := t.TempDir()
+	cfgContent := `
+version: 1
+dlp:
+  action: strip
+  patterns:
+    - name: test
+      regex: 'sk-test-[a-z]+'
+      severity: high
+`
+	cfgPath := filepath.Join(dir, "pipelock.yaml")
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(cfgPath)
+	if err == nil {
+		t.Fatal("expected error when dlp.action is set in YAML")
+	}
+	if !strings.Contains(err.Error(), "dlp.action") {
+		t.Errorf("error should mention dlp.action, got: %v", err)
+	}
+}
+
+func TestLoad_DLPPatternActionRejectedFromYAML(t *testing.T) {
+	dir := t.TempDir()
+	cfgContent := `
+version: 1
+dlp:
+  include_defaults: false
+  patterns:
+    - name: test
+      regex: 'sk-test-[a-z]+'
+      severity: high
+      action: strip
+`
+	cfgPath := filepath.Join(dir, "pipelock.yaml")
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(cfgPath)
+	if err == nil {
+		t.Fatal("expected error when pattern action is set in YAML")
+	}
+	if !strings.Contains(err.Error(), "action") {
+		t.Errorf("error should mention action, got: %v", err)
 	}
 }
 
@@ -4036,6 +4396,80 @@ func TestValidate_EmitWebhookInvalidQueueSize(t *testing.T) {
 	}
 }
 
+func TestValidate_EmitOTLPValidConfig(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	cfg.Emit.OTLP.Endpoint = testOTLPEndpoint
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("valid OTLP config should pass: %v", err)
+	}
+}
+
+func TestValidate_EmitOTLPInvalidEndpoint(t *testing.T) {
+	cfg := Defaults()
+	cfg.Emit.OTLP.Endpoint = "not-a-url"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for invalid OTLP endpoint")
+	}
+}
+
+func TestValidate_EmitOTLPInvalidSeverity(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	cfg.Emit.OTLP.Endpoint = testOTLPEndpoint
+	cfg.Emit.OTLP.MinSeverity = "bogus"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for invalid OTLP min_severity")
+	}
+}
+
+func TestValidate_EmitOTLPInvalidTimeout(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	cfg.Emit.OTLP.Endpoint = testOTLPEndpoint
+	cfg.Emit.OTLP.TimeoutSeconds = -1
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for negative OTLP timeout")
+	}
+	if !strings.Contains(err.Error(), "timeout_seconds") {
+		t.Errorf("error should mention timeout_seconds, got: %v", err)
+	}
+}
+
+func TestValidate_EmitOTLPInvalidQueueSize(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	cfg.Emit.OTLP.Endpoint = testOTLPEndpoint
+	cfg.Emit.OTLP.QueueSize = 0
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for zero OTLP queue_size")
+	}
+	if !strings.Contains(err.Error(), "queue_size") {
+		t.Errorf("error should mention queue_size, got: %v", err)
+	}
+}
+
+func TestApplyDefaults_OTLPMinSeverity(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	if cfg.Emit.OTLP.MinSeverity != SeverityWarn {
+		t.Errorf("expected OTLP min_severity default to warn, got %q", cfg.Emit.OTLP.MinSeverity)
+	}
+}
+
+func TestApplyDefaults_OTLPTimeoutAndQueue(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	if cfg.Emit.OTLP.TimeoutSeconds != 10 {
+		t.Errorf("expected OTLP timeout default 10, got %d", cfg.Emit.OTLP.TimeoutSeconds)
+	}
+	if cfg.Emit.OTLP.QueueSize != 256 {
+		t.Errorf("expected OTLP queue default 256, got %d", cfg.Emit.OTLP.QueueSize)
+	}
+}
+
 func TestValidate_EmitNoSinksConfigured(t *testing.T) {
 	cfg := Defaults()
 	// No URL or address set — should pass validation
@@ -4104,6 +4538,36 @@ func TestValidateReload_EmitSyslogBothEmpty_NoWarning(t *testing.T) {
 	for _, w := range warnings {
 		if w.Field == "emit.syslog.address" {
 			t.Errorf("both empty syslog addresses should not warn, got: %s", w.Message)
+		}
+	}
+}
+
+func TestValidateReload_EmitOTLPDisabled(t *testing.T) {
+	old := Defaults()
+	old.Emit.OTLP.Endpoint = testOTLPEndpoint
+	updated := Defaults()
+	// Endpoint cleared — OTLP disabled on reload.
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == "emit.otlp.endpoint" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected reload warning when OTLP endpoint is removed")
+	}
+}
+
+func TestValidateReload_EmitOTLPBothEmpty_NoWarning(t *testing.T) {
+	old := Defaults()
+	updated := Defaults()
+
+	warnings := ValidateReload(old, updated)
+	for _, w := range warnings {
+		if w.Field == "emit.otlp.endpoint" {
+			t.Errorf("both empty OTLP endpoints should not warn, got: %s", w.Message)
 		}
 	}
 }

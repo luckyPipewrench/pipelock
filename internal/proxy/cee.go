@@ -137,6 +137,27 @@ func urlPayload(u *url.URL) []byte {
 }
 
 // extractOutboundPayload extracts the outbound data visible to the proxy for
+// ceeEntropyExempt returns true if the target URL's hostname matches any
+// domain in the exempt list. Uses scanner.MatchDomain for consistent
+// wildcard behavior (trailing-dot normalization, *.example.com also
+// matches example.com itself, IP exact match only).
+func ceeEntropyExempt(targetURL string, exemptDomains []string) bool {
+	if len(exemptDomains) == 0 {
+		return false
+	}
+	parsed, err := url.Parse(targetURL)
+	if err != nil {
+		return false
+	}
+	host := parsed.Hostname()
+	for _, d := range exemptDomains {
+		if scanner.MatchDomain(host, d) {
+			return true
+		}
+	}
+	return false
+}
+
 // entropy measurement and fragment buffering. Includes query parameter values
 // in wire order and request body content. URL path is intentionally excluded:
 // repeated paths across requests break DLP regex contiguity in the fragment
@@ -236,7 +257,10 @@ func ceeAdmit(
 	var result ceeResult
 
 	// Entropy budget check (values + bare tokens + body + keys).
-	if et != nil && ceeCfg.EntropyBudget.Enabled && (len(outbound) > 0 || len(keyPayload) > 0) {
+	// Skip recording for exempt domains (e.g. API polling endpoints with
+	// tokens in URLs that would exhaust the budget on normal traffic).
+	entropyExempt := ceeEntropyExempt(targetURL, ceeCfg.EntropyBudget.ExemptDomains)
+	if et != nil && ceeCfg.EntropyBudget.Enabled && !entropyExempt && (len(outbound) > 0 || len(keyPayload) > 0) {
 		if len(outbound) > 0 {
 			et.Record(sessionKey, outbound)
 		}

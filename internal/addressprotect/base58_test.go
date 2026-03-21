@@ -79,7 +79,7 @@ func TestBase58CheckDecode(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			payload, version, err := base58CheckDecode(tt.address)
+			payload, version, err := Base58CheckDecode(tt.address)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -95,7 +95,7 @@ func TestBase58CheckDecode(t *testing.T) {
 
 func TestBase58CheckDecodeInvalidChecksum(t *testing.T) {
 	// Corrupt the last character of a valid P2PKH address.
-	_, _, err := base58CheckDecode("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNb")
+	_, _, err := Base58CheckDecode("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNb")
 	if !errors.Is(err, errBase58Checksum) {
 		t.Errorf("got %v, want errBase58Checksum", err)
 	}
@@ -103,14 +103,14 @@ func TestBase58CheckDecodeInvalidChecksum(t *testing.T) {
 
 func TestBase58CheckDecodeTooShort(t *testing.T) {
 	// A string that decodes to fewer than 5 bytes (1 version + 4 checksum).
-	_, _, err := base58CheckDecode("1")
+	_, _, err := Base58CheckDecode("1")
 	if !errors.Is(err, errBase58TooShort) {
 		t.Errorf("got %v, want errBase58TooShort", err)
 	}
 }
 
 func TestBase58CheckDecodeInvalidChars(t *testing.T) {
-	_, _, err := base58CheckDecode("0InvalidAddress")
+	_, _, err := Base58CheckDecode("0InvalidAddress")
 	if !errors.Is(err, errInvalidBase58Char) {
 		t.Errorf("got %v, want errInvalidBase58Char", err)
 	}

@@ -6,17 +6,20 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
+	"github.com/luckyPipewrench/pipelock/internal/filesentry"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
@@ -33,6 +36,19 @@ import (
 
 // ErrInjectionDetected is returned when pipelock mcp scan detects prompt injection.
 var ErrInjectionDetected = errors.New("prompt injection detected")
+
+// safeWriter wraps an io.Writer with a mutex for concurrent use.
+// Used to synchronize file sentry goroutines and RunProxy stderr output.
+type safeWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (sw *safeWriter) Write(p []byte) (int, error) {
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	return sw.w.Write(p)
+}
 
 func mcpCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -472,7 +488,72 @@ Environment passthrough (subprocess mode only):
 			ctx, cancel := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 			defer cancel()
 
-			if err := mcp.RunProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), serverCmd, sc, approver, inputCfg, toolCfg, policyCfg, ks, chainMatcher, nil, cee, store, adaptiveCfg, mcpMetrics, extraEnv...); err != nil {
+			// Wrap stderr in a mutex so file sentry goroutines and RunProxy
+			// (which wraps logW in its own syncWriter) don't interleave.
+			logW := &safeWriter{w: cmd.ErrOrStderr()}
+
+			// File sentry: watch agent working directories for secret writes.
+			// Watches are installed synchronously (Arm) before the child starts
+			// to prevent early writes from being missed.
+			var lin filesentry.Lineage
+			var onChildReady func()
+			if cfg.FileSentry.Enabled {
+				lin = filesentry.NewLineage()
+				// Error handler for non-fatal runtime errors (e.g. failing to watch new dirs).
+				onErr := func(err error) {
+					_, _ = fmt.Fprintf(logW, "pipelock: [file_sentry] %v\n", err)
+				}
+				watcher, watchErr := filesentry.NewWatcher(&cfg.FileSentry, sc, lin, onErr)
+				if watchErr != nil {
+					return fmt.Errorf("file sentry init failed (feature is enabled): %w", watchErr)
+				}
+				// Arm synchronously before child launch.
+				if armErr := watcher.Arm(); armErr != nil {
+					_ = watcher.Close()
+					return fmt.Errorf("file sentry failed to arm watches (feature is enabled): %w", armErr)
+				}
+
+				// Consume findings: log to stderr and record metrics.
+				// The consumer runs until Close() closes the findings channel.
+				consumerDone := make(chan struct{})
+				go func() {
+					defer close(consumerDone)
+					for f := range watcher.Findings() {
+						agent := ""
+						if f.IsAgent {
+							agent = " (agent process)"
+						}
+						_, _ = fmt.Fprintf(logW,
+							"pipelock: [file_sentry] DLP match in %s: %s (severity=%s)%s\n",
+							f.Path, f.PatternName, f.Severity, agent)
+						if mcpMetrics != nil {
+							mcpMetrics.RecordFileSentryFinding(f.PatternName, f.Severity, f.IsAgent)
+						}
+					}
+				}()
+				// Single defer: close watcher (flushes + closes channel),
+				// then wait for consumer to finish processing.
+				defer func() {
+					_ = watcher.Close()
+					<-consumerDone
+				}()
+				_, _ = fmt.Fprintf(logW, "pipelock: file sentry watching %d path(s)\n",
+					len(cfg.FileSentry.WatchPaths))
+
+				// onChildReady: called by RunProxy after cmd.Start() + TrackPID.
+				// Starts the file sentry event loop AFTER the child PID is registered,
+				// so attribution is ready before classifying any writes.
+				onChildReady = func() {
+					go func() {
+						if startErr := watcher.Start(ctx); startErr != nil {
+							_, _ = fmt.Fprintf(logW, "pipelock: file sentry fatal: %v — cancelling proxy\n", startErr)
+							cancel()
+						}
+					}()
+				}
+			}
+
+			if err := mcp.RunProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), logW, serverCmd, sc, approver, inputCfg, toolCfg, policyCfg, ks, chainMatcher, nil, cee, store, adaptiveCfg, mcpMetrics, lin, onChildReady, extraEnv...); err != nil {
 				if sentryClient != nil {
 					sentryClient.CaptureError(err)
 				}

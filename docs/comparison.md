@@ -24,7 +24,7 @@ An honest feature matrix and guidance on when to use what.
 | **Audit logging** | Structured JSON (zerolog) | JSONL | Session logs | No |
 | **Prometheus metrics** | Yes | No | No | No |
 | **Multi-agent support** | Agent ID header + per-agent logs | Per-agent config | Per-session | No |
-| **Network isolation** | Docker Compose generation | No | Kernel-level | sandbox-exec / bubblewrap |
+| **Network isolation** | Deployment-enforced (proxy routing via container/firewall config) | No | Kernel-level | sandbox-exec / bubblewrap |
 | **Syscall filtering** | No | No | Yes (seccomp) | Yes (sandbox-exec) |
 | **Filesystem sandboxing** | No | No | Yes (FUSE) | Yes (bubblewrap) |
 | **Config format** | YAML + presets | YAML (agent.yaml) | CLI flags | Code |
@@ -58,10 +58,9 @@ An honest feature matrix and guidance on when to use what.
 - You want **per-argument regex validation** on MCP tool calls (AIP validates argument schemas; Pipelock scans argument content for DLP/injection patterns)
 
 ### Use agentsh when:
-- You need **kernel-level enforcement** (seccomp, eBPF), which the agent literally cannot bypass
-- You want **"steering"** to redirect denied operations to safe alternatives (e.g., SIGKILL to SIGTERM)
-- You need **filesystem sandboxing** via FUSE
+- You need **eBPF-based enforcement** and "steering" to redirect denied operations to safe alternatives
 - You're comfortable with kernel modules and more complex setup
+- You want redirect-based control (SIGKILL to SIGTERM) rather than block/scan-based control
 
 ### Use srt when:
 - You're using **Claude Code** specifically (srt is built into it)

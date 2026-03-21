@@ -69,11 +69,11 @@ func base58Decode(s string) ([]byte, error) {
 	return result, nil
 }
 
-// base58CheckDecode decodes a Base58Check-encoded string and verifies
+// Base58CheckDecode decodes a Base58Check-encoded string and verifies
 // the trailing 4-byte SHA-256d checksum.
 // Returns the payload (without version or checksum) and the version byte.
-// Used by BTC P2PKH (version 0x00) and P2SH (version 0x05).
-func base58CheckDecode(s string) (payload []byte, version byte, err error) {
+// Used by BTC P2PKH (version 0x00), P2SH (version 0x05), and WIF (version 0x80).
+func Base58CheckDecode(s string) (payload []byte, version byte, err error) {
 	decoded, err := base58Decode(s)
 	if err != nil {
 		return nil, 0, err

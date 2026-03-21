@@ -74,6 +74,9 @@ type Metrics struct {
 	// Address protection: crypto address poisoning detection.
 	AddressFindings *prometheus.CounterVec
 
+	// File sentry: secret detection in agent-written files.
+	FileSentryFindings *prometheus.CounterVec
+
 	// Adaptive enforcement v2: action upgrades and escalated sessions.
 	adaptiveUpgrades        *prometheus.CounterVec
 	adaptiveSessionsCurrent *prometheus.GaugeVec
@@ -329,6 +332,12 @@ func New() *Metrics {
 		Help:      "Address protection findings by chain and verdict.",
 	}, []string{"chain", "verdict"})
 
+	fileSentryFindings := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "pipelock",
+		Name:      "file_sentry_findings_total",
+		Help:      "Secrets detected in agent-written files by pattern and severity.",
+	}, []string{"pattern", "severity", "agent"})
+
 	adaptiveUpgrades := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "pipelock",
 		Name:      "adaptive_upgrades_total",
@@ -351,6 +360,7 @@ func New() *Metrics {
 		crossRequestEntropyExceeded, crossRequestDLPMatch, crossRequestFragmentBytes,
 		scanAPIRequests, scanAPIDuration, scanAPIFindings, scanAPIErrors, scanAPIInflight,
 		addressFindings,
+		fileSentryFindings,
 		adaptiveUpgrades, adaptiveSessionsCurrent)
 
 	return &Metrics{
@@ -392,6 +402,7 @@ func New() *Metrics {
 		ScanAPIErrors:               scanAPIErrors,
 		ScanAPIInflight:             scanAPIInflight,
 		AddressFindings:             addressFindings,
+		FileSentryFindings:          fileSentryFindings,
 		adaptiveUpgrades:            adaptiveUpgrades,
 		adaptiveSessionsCurrent:     adaptiveSessionsCurrent,
 		startTime:                   time.Now(),
@@ -855,4 +866,17 @@ func (m *Metrics) SetAdaptiveSessionLevel(level string, delta float64) {
 		return
 	}
 	m.adaptiveSessionsCurrent.WithLabelValues(level).Add(delta)
+}
+
+// RecordFileSentryFinding increments the file sentry findings counter.
+// The agent label is "true" if the write was attributed to the agent process tree.
+func (m *Metrics) RecordFileSentryFinding(pattern, severity string, isAgent bool) {
+	if m == nil {
+		return
+	}
+	agent := "false"
+	if isAgent {
+		agent = "true"
+	}
+	m.FileSentryFindings.WithLabelValues(pattern, severity, agent).Inc()
 }

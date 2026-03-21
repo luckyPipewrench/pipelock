@@ -9,5 +9,6 @@ coverage:
         target: 80%
 ignore:
   - "tests/ws-helper/**"
+  - "internal/filesentry/lineage_other.go"  # build-tagged !linux, untestable on Linux CI
 comment:
   layout: "reach, diff, files"

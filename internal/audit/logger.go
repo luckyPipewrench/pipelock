@@ -86,6 +86,7 @@ const (
 	EventChainDetection     EventType = "chain_detection"
 	EventAddressProtection  EventType = "address_protection"
 	EventAgentListener      EventType = "agent_listener"
+	EventFileSentryDLP      EventType = "file_sentry_dlp"
 
 	EventCrossRequestEntropyExceeded EventType = "cross_request_entropy_exceeded"
 	EventCrossRequestDLPMatch        EventType = "cross_request_dlp_match"

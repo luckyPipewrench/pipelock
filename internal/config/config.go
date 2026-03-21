@@ -66,6 +66,7 @@ const (
 	ValidatorLuhn  = "luhn"
 	ValidatorMod97 = "mod97"
 	ValidatorABA   = "aba"
+	ValidatorWIF   = "wif"
 )
 
 // Confidence constants for community rule minimum confidence filtering.
@@ -194,6 +195,16 @@ type TrustedKey struct {
 	PublicKey string `yaml:"public_key"` // 64 lowercase hex chars
 }
 
+// FileSentry configures real-time filesystem monitoring for agent processes.
+// Detects secrets written to disk by agent subprocesses that bypass
+// the MCP tool call path. Applies to subprocess MCP mode only.
+type FileSentry struct {
+	Enabled        bool     `yaml:"enabled"`
+	WatchPaths     []string `yaml:"watch_paths"`
+	ScanContent    *bool    `yaml:"scan_content"`    // nil = default true
+	IgnorePatterns []string `yaml:"ignore_patterns"` // glob patterns to skip
+}
+
 // Config is the top-level Pipelock configuration.
 type Config struct {
 	Version               int                     `yaml:"version"`
@@ -228,6 +239,7 @@ type Config struct {
 	AddressProtection     AddressProtection       `yaml:"address_protection"`
 	SeedPhraseDetection   SeedPhraseDetection     `yaml:"seed_phrase_detection"`
 	Rules                 Rules                   `yaml:"rules"`
+	FileSentry            FileSentry              `yaml:"file_sentry"`
 	Agents                map[string]AgentProfile `yaml:"agents,omitempty"`
 	LicenseKey            string                  `yaml:"license_key,omitempty"`        // signed license token (from pipelock license issue)
 	LicenseFile           string                  `yaml:"license_file,omitempty"`       // path to file containing the license token (read at startup)
@@ -397,6 +409,7 @@ type DLP struct {
 	MinEnvSecretLength int          `yaml:"min_env_secret_length"` // minimum env var length for leak detection (default 16)
 	IncludeDefaults    *bool        `yaml:"include_defaults"`      // nil/true: merge user patterns with defaults; false: user patterns only
 	Patterns           []DLPPattern `yaml:"patterns"`
+	Action             string       `yaml:"action,omitempty"` // reserved — not yet implemented; rejected at validation
 }
 
 // DLPPattern is a named regex pattern for detecting secrets in URLs.
@@ -406,6 +419,7 @@ type DLPPattern struct {
 	Severity      string   `yaml:"severity"`            // critical, high, medium, low
 	Validator     string   `yaml:"validator,omitempty"` // post-match checksum: "luhn", "mod97", "aba"
 	ExemptDomains []string `yaml:"exempt_domains"`      // domains where this pattern is not enforced
+	Action        string   `yaml:"action,omitempty"`    // reserved — not yet implemented; rejected at validation
 	Bundle        string   `yaml:"-"`                   // set by rules loader, not from YAML
 	BundleVersion string   `yaml:"-"`                   // set by rules loader, not from YAML
 }
@@ -533,10 +547,11 @@ type CrossRequestDetection struct {
 
 // CrossRequestEntropyBudget configures per-session entropy tracking.
 type CrossRequestEntropyBudget struct {
-	Enabled       bool    `yaml:"enabled"`
-	BitsPerWindow float64 `yaml:"bits_per_window"` // total Shannon entropy bits before signaling
-	WindowMinutes int     `yaml:"window_minutes"`  // sliding window duration
-	Action        string  `yaml:"action"`          // warn, block (entropy alone is medium-confidence)
+	Enabled       bool     `yaml:"enabled"`
+	BitsPerWindow float64  `yaml:"bits_per_window"` // total Shannon entropy bits before signaling
+	WindowMinutes int      `yaml:"window_minutes"`  // sliding window duration
+	Action        string   `yaml:"action"`          // warn, block (entropy alone is medium-confidence)
+	ExemptDomains []string `yaml:"exempt_domains"`  // domains excluded from entropy budget (e.g. API polling endpoints with tokens in URLs)
 }
 
 // CrossRequestFragments configures outbound payload fragment reassembly.
@@ -562,11 +577,22 @@ type KillSwitch struct {
 	AllowlistIPs  []string `yaml:"allowlist_ips"`
 }
 
-// EmitConfig configures external event emission (webhook and syslog).
+// EmitConfig configures external event emission (webhook, syslog, and OTLP).
 type EmitConfig struct {
 	InstanceID string        `yaml:"instance_id"` // defaults to hostname
 	Webhook    WebhookConfig `yaml:"webhook"`
 	Syslog     SyslogConfig  `yaml:"syslog"`
+	OTLP       OTLPConfig    `yaml:"otlp"`
+}
+
+// OTLPConfig configures the OpenTelemetry log export sink (HTTP/protobuf).
+type OTLPConfig struct {
+	Endpoint       string            `yaml:"endpoint"`        // base URL, /v1/logs appended
+	Headers        map[string]string `yaml:"headers"`         // custom headers (auth, tenant)
+	TimeoutSeconds int               `yaml:"timeout_seconds"` // per-request timeout (default 10)
+	MinSeverity    string            `yaml:"min_severity"`    // info, warn, critical
+	QueueSize      int               `yaml:"queue_size"`      // async buffer size (default 256)
+	Gzip           bool              `yaml:"gzip"`            // compress requests
 }
 
 // WebhookConfig configures the webhook emission sink.
@@ -780,6 +806,28 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.TLSInterception.CAKeyPath != "" && !filepath.IsAbs(cfg.TLSInterception.CAKeyPath) {
 		cfg.TLSInterception.CAKeyPath = filepath.Join(configDir, cfg.TLSInterception.CAKeyPath)
+	}
+
+	// Resolve relative file_sentry.watch_paths against config file directory.
+	// "." in the config means the project directory, not whatever CWD the
+	// process happens to have (systemd sets CWD=/, containers vary).
+	//
+	// Relative paths with ".." traversal are rejected to prevent
+	// unintentional escapes. Absolute paths are allowed as-is since the
+	// user explicitly chose the target directory.
+	for i, p := range cfg.FileSentry.WatchPaths {
+		if !filepath.IsAbs(p) {
+			resolved := filepath.Clean(filepath.Join(configDir, p))
+			// Verify the resolved path is still under the config directory.
+			// filepath.Rel returns a ".." prefix if the target escapes.
+			rel, err := filepath.Rel(configDir, resolved)
+			if err != nil || strings.HasPrefix(rel, "..") {
+				return nil, fmt.Errorf("file_sentry: watch_paths[%d] %q escapes config directory (use absolute path instead)", i, p)
+			}
+			cfg.FileSentry.WatchPaths[i] = resolved
+		} else {
+			cfg.FileSentry.WatchPaths[i] = filepath.Clean(cfg.FileSentry.WatchPaths[i])
+		}
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -1125,6 +1173,15 @@ func (c *Config) ApplyDefaults() {
 	if c.Emit.Syslog.MinSeverity == "" {
 		c.Emit.Syslog.MinSeverity = SeverityWarn
 	}
+	if c.Emit.OTLP.MinSeverity == "" {
+		c.Emit.OTLP.MinSeverity = SeverityWarn
+	}
+	if c.Emit.OTLP.TimeoutSeconds <= 0 {
+		c.Emit.OTLP.TimeoutSeconds = 10
+	}
+	if c.Emit.OTLP.QueueSize <= 0 {
+		c.Emit.OTLP.QueueSize = 256
+	}
 	if c.Emit.Syslog.Facility == "" {
 		c.Emit.Syslog.Facility = "local0"
 	}
@@ -1294,6 +1351,11 @@ func (c *Config) ApplyDefaults() {
 	if c.Rules.MinConfidence == "" {
 		c.Rules.MinConfidence = ConfidenceMedium
 	}
+
+	// File sentry defaults
+	if c.FileSentry.ScanContent == nil {
+		c.FileSentry.ScanContent = ptrBool(true)
+	}
 }
 
 // mergeDLPPatterns merges default DLP patterns with user-defined patterns.
@@ -1379,6 +1441,15 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("logging.file is required when output is %q", c.Logging.Output)
 	}
 
+	// Reject unsupported DLP action fields. Request-side DLP redaction (strip)
+	// is not implemented — DLP matches follow the transport-level action
+	// (request_body_scanning.action, mcp_input_scanning.action, or enforce mode).
+	// These fields exist on the struct so YAML doesn't silently drop them;
+	// validation rejects non-empty values with an explicit error.
+	if c.DLP.Action != "" {
+		return fmt.Errorf("dlp.action %q is not supported; DLP match behavior depends on the calling surface (e.g. request_body_scanning.action for bodies, mcp_input_scanning.action for MCP, enforce/audit mode for URL scanning)", c.DLP.Action)
+	}
+
 	// Validate DLP patterns compile as valid regexes
 	for _, p := range c.DLP.Patterns {
 		if p.Name == "" {
@@ -1390,11 +1461,14 @@ func (c *Config) Validate() error {
 		if _, err := regexp.Compile(p.Regex); err != nil {
 			return fmt.Errorf("DLP pattern %q has invalid regex: %w", p.Name, err)
 		}
+		if p.Action != "" {
+			return fmt.Errorf("DLP pattern %q has action %q which is not supported; per-pattern DLP actions are not yet implemented", p.Name, p.Action)
+		}
 		if p.Validator != "" {
-			valid := p.Validator == ValidatorLuhn || p.Validator == ValidatorMod97 || p.Validator == ValidatorABA
+			valid := p.Validator == ValidatorLuhn || p.Validator == ValidatorMod97 || p.Validator == ValidatorABA || p.Validator == ValidatorWIF
 			if !valid {
-				return fmt.Errorf("DLP pattern %q has unknown validator %q (valid: %s, %s, %s)",
-					p.Name, p.Validator, ValidatorLuhn, ValidatorMod97, ValidatorABA)
+				return fmt.Errorf("DLP pattern %q has unknown validator %q (valid: %s, %s, %s, %s)",
+					p.Name, p.Validator, ValidatorLuhn, ValidatorMod97, ValidatorABA, ValidatorWIF)
 			}
 		}
 		for j, raw := range p.ExemptDomains {
@@ -1746,6 +1820,27 @@ func (c *Config) Validate() error {
 			if c.CrossRequestDetection.EntropyBudget.WindowMinutes <= 0 {
 				return fmt.Errorf("cross_request_detection.entropy_budget.window_minutes must be > 0")
 			}
+			// Validate and normalize exempt_domains (same rules as DLP exempt_domains).
+			for i, raw := range c.CrossRequestDetection.EntropyBudget.ExemptDomains {
+				d := strings.TrimSuffix(strings.TrimSpace(strings.ToLower(raw)), ".")
+				if d == "" {
+					return fmt.Errorf("cross_request_detection.entropy_budget.exempt_domains[%d] is empty", i)
+				}
+				if strings.Contains(d, "://") || strings.Contains(d, "/") || strings.Contains(d, ":") {
+					return fmt.Errorf("cross_request_detection.entropy_budget.exempt_domains[%d] %q: use hostname pattern, not URL or host:port", i, raw)
+				}
+				if d == "*" {
+					return fmt.Errorf("cross_request_detection.entropy_budget.exempt_domains[%d]: bare wildcard too broad", i)
+				}
+				if strings.HasPrefix(d, "*.") {
+					if strings.Count(d[2:], ".") < 1 {
+						return fmt.Errorf("cross_request_detection.entropy_budget.exempt_domains[%d] %q: wildcard must target concrete domain like *.example.com", i, raw)
+					}
+				} else if strings.ContainsAny(d, "*?[]") {
+					return fmt.Errorf("cross_request_detection.entropy_budget.exempt_domains[%d] %q: only exact hosts and *.example.com wildcards supported", i, raw)
+				}
+				c.CrossRequestDetection.EntropyBudget.ExemptDomains[i] = d
+			}
 		}
 		if c.CrossRequestDetection.FragmentReassembly.Enabled {
 			if c.CrossRequestDetection.FragmentReassembly.MaxBufferBytes <= 0 {
@@ -1963,6 +2058,26 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// Validate OTLP config
+	if c.Emit.OTLP.Endpoint != "" {
+		u, otlpErr := url.Parse(c.Emit.OTLP.Endpoint)
+		if otlpErr != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return fmt.Errorf("invalid emit.otlp.endpoint %q: must be http:// or https:// with a host", c.Emit.OTLP.Endpoint)
+		}
+		switch c.Emit.OTLP.MinSeverity {
+		case SeverityInfo, SeverityWarn, SeverityCritical:
+			// valid
+		default:
+			return fmt.Errorf("invalid emit.otlp.min_severity %q: must be info, warn, or critical", c.Emit.OTLP.MinSeverity)
+		}
+		if c.Emit.OTLP.TimeoutSeconds <= 0 {
+			return fmt.Errorf("emit.otlp.timeout_seconds must be positive")
+		}
+		if c.Emit.OTLP.QueueSize <= 0 {
+			return fmt.Errorf("emit.otlp.queue_size must be positive")
+		}
+	}
+
 	// Validate address protection config
 	if c.AddressProtection.Enabled {
 		switch c.AddressProtection.Action {
@@ -2053,6 +2168,18 @@ func (c *Config) Validate() error {
 		}
 		if len(decoded) != 32 {
 			return fmt.Errorf("rules: trusted_keys[%d] %q public_key must decode to 32 bytes", i, k.Name)
+		}
+	}
+
+	// Validate file sentry config
+	if c.FileSentry.Enabled {
+		if len(c.FileSentry.WatchPaths) == 0 {
+			return fmt.Errorf("file_sentry: watch_paths must be non-empty when enabled")
+		}
+		for i, p := range c.FileSentry.WatchPaths {
+			if p == "" {
+				return fmt.Errorf("file_sentry: watch_paths[%d] must not be empty", i)
+			}
 		}
 	}
 
@@ -2404,6 +2531,12 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 			Message: "syslog emission disabled",
 		})
 	}
+	if old.Emit.OTLP.Endpoint != "" && updated.Emit.OTLP.Endpoint == "" {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "emit.otlp.endpoint",
+			Message: "OTLP log emission disabled",
+		})
+	}
 
 	// Kill switch API listen address changed (requires restart)
 	if old.KillSwitch.APIListen != updated.KillSwitch.APIListen {
@@ -2732,7 +2865,7 @@ func Defaults() *Config {
 				// Cryptocurrency private keys
 				// Bitcoin WIF: base58check. Uncompressed (5 + 50 base58 = 51 chars) or
 				// compressed (K/L + 51 base58 = 52 chars). Mainnet only; testnet deferred.
-				{Name: "Bitcoin WIF Private Key", Regex: `(?:5[1-9A-HJ-NP-Za-km-z]{50}|[KL][1-9A-HJ-NP-Za-km-z]{51})`, Severity: "critical"},
+				{Name: "Bitcoin WIF Private Key", Regex: `(?:5[1-9A-HJ-NP-Za-km-z]{50}|[KL][1-9A-HJ-NP-Za-km-z]{51})`, Severity: "critical", Validator: ValidatorWIF},
 				// Extended private keys (BIP-32/49/84): xprv/yprv/zprv (mainnet) + tprv (testnet).
 				// 111 total chars, base58check encoded.
 				{Name: "Extended Private Key", Regex: `[xyzt]prv[1-9A-HJ-NP-Za-km-z]{107,108}`, Severity: "critical"},

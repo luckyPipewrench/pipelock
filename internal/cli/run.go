@@ -830,6 +830,25 @@ func buildEmitSinks(cfg *config.Config) ([]emit.Sink, error) {
 		sinks = append(sinks, syslogSink)
 	}
 
+	if cfg.Emit.OTLP.Endpoint != "" {
+		otlpSink, otlpErr := emit.NewOTLPSink(
+			cfg.Emit.OTLP.Endpoint,
+			Version,
+			emit.ParseSeverity(cfg.Emit.OTLP.MinSeverity),
+			cfg.Emit.OTLP.Headers,
+			time.Duration(cfg.Emit.OTLP.TimeoutSeconds)*time.Second,
+			cfg.Emit.OTLP.QueueSize,
+			cfg.Emit.OTLP.Gzip,
+		)
+		if otlpErr != nil {
+			for _, s := range sinks {
+				_ = s.Close()
+			}
+			return nil, fmt.Errorf("creating otlp sink: %w", otlpErr)
+		}
+		sinks = append(sinks, otlpSink)
+	}
+
 	return sinks, nil
 }
 

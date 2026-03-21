@@ -71,13 +71,13 @@ Core capabilities available today:
 
 ## Out of Scope
 
-Pipelock is an application-layer agent firewall. These are explicitly not goals:
+These are explicitly not goals:
 
 - Model training or fine-tuning security
 - Data governance or dataset management
 - Full-lifecycle AI management platforms
 - Replacing network firewalls or endpoint protection
-- Full sandbox or container runtime isolation
+- Container runtime management (Docker, K8s orchestration)
 
 ## Feedback
 

@@ -264,6 +264,8 @@ func newInterceptHandler(
 ) http.Handler {
 	target := net.JoinHostPort(targetHost, targetPort)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqStart := time.Now()
+
 		// Authority check: Host must match CONNECT target (host:port).
 		// Prevents domain fronting where the agent CONNECTs to allowed.com
 		// but sends Host: evil.com inside the encrypted tunnel. Also prevents
@@ -603,6 +605,11 @@ func newInterceptHandler(
 
 		// Record response size for per-domain data budget tracking.
 		sc.RecordRequest(strings.ToLower(targetHost), len(respBody))
+
+		// Count intercepted request in stats so /stats reflects CONNECT traffic.
+		// Use agentAnonymous (bounded cardinality) since intercept handler
+		// doesn't resolve agent profiles — avoids Prometheus label explosion.
+		m.RecordAllowed(time.Since(reqStart), agentAnonymous)
 
 		// Forward response to client.
 		for k, vv := range resp.Header {

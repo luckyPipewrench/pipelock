@@ -116,14 +116,9 @@ func TestResolvePolicy_FromJSON(t *testing.T) {
 	}
 }
 
-func TestResolvePolicy_InvalidJSON(t *testing.T) {
-	t.Setenv("__PIPELOCK_SANDBOX_POLICY", "not-json")
-	p := resolvePolicy("/tmp/fallback")
-	// Should fall back to default.
-	if p.Workspace != "/tmp/fallback" {
-		t.Errorf("workspace = %q, want /tmp/fallback", p.Workspace)
-	}
-}
+// TestResolvePolicy_InvalidJSON is not testable in-process because
+// resolvePolicy now calls os.Exit(1) on invalid JSON (fail-closed).
+// This is exercised by subprocess integration tests.
 
 func TestResolvePolicy_EmptyWorkspaceInJSON(t *testing.T) {
 	policy := Policy{AllowReadDirs: []string{"/opt/"}}

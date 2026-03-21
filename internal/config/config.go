@@ -2266,8 +2266,8 @@ func (c *Config) Validate() error {
 		}
 	}
 
-	// Sandbox: basic field constraints (workspace validation at startup, not here).
-	if c.Sandbox.Enabled && c.Sandbox.FS != nil {
+	// Sandbox: validate filesystem paths even when disabled (CLI can override enabled).
+	if c.Sandbox.FS != nil {
 		for _, p := range c.Sandbox.FS.AllowRead {
 			if p == "" {
 				return fmt.Errorf("sandbox filesystem allow_read contains empty path")

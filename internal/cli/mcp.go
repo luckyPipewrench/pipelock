@@ -201,6 +201,7 @@ Environment passthrough (subprocess mode only):
 			if !hasUpstream && !hasSubprocess {
 				return errors.New("specify --upstream URL or -- COMMAND [ARGS...]")
 			}
+			// Reject sandbox CLI flag with remote modes.
 			if sandboxEnabled {
 				if hasUpstream {
 					return errors.New("--sandbox cannot be used with --upstream (cannot sandbox a remote server)")
@@ -496,6 +497,11 @@ Environment passthrough (subprocess mode only):
 			serverCmd := args[dashIdx:]
 			useSandbox := sandboxEnabled || cfg.Sandbox.Enabled
 
+			// Reject config-enabled sandbox with remote modes.
+			if cfg.Sandbox.Enabled && (hasUpstream || hasListen) {
+				return errors.New("sandbox.enabled cannot be used with --upstream or --listen (cannot sandbox a remote server)")
+			}
+
 			// Sandboxed MCP proxy: child in isolated namespace.
 			if useSandbox {
 				// File sentry is not yet integrated with sandbox mode.
@@ -528,12 +534,9 @@ Environment passthrough (subprocess mode only):
 				}
 				if cfg.Sandbox.FS != nil {
 					p := sandbox.DefaultPolicy(workspace)
-					if len(cfg.Sandbox.FS.AllowRead) > 0 {
-						p.AllowReadDirs = cfg.Sandbox.FS.AllowRead
-					}
-					if len(cfg.Sandbox.FS.AllowWrite) > 0 {
-						p.AllowRWDirs = cfg.Sandbox.FS.AllowWrite
-					}
+					// Merge custom paths into defaults (don't replace).
+					p.AllowReadDirs = append(p.AllowReadDirs, cfg.Sandbox.FS.AllowRead...)
+					p.AllowRWDirs = append(p.AllowRWDirs, cfg.Sandbox.FS.AllowWrite...)
 					launchCfg.Policy = &p
 				}
 

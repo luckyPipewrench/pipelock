@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -840,6 +841,14 @@ func RunProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, clientIn io.
 
 	tracker := NewRequestTracker()
 
+	// Guard against nil inputCfg (when input scanning is disabled).
+	inputAction := config.ActionForward
+	inputOnParseError := config.ActionBlock
+	if inputCfg != nil {
+		inputAction = inputCfg.Action
+		inputOnParseError = inputCfg.OnParseError
+	}
+
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -848,7 +857,7 @@ func RunProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, clientIn io.
 		clientReader := transport.NewStdioReader(clientIn)
 		serverWriter := transport.NewStdioWriter(serverIn)
 		ForwardScannedInput(clientReader, serverWriter, safeLogW, sc,
-			inputCfg.Action, inputCfg.OnParseError, blockedCh,
+			inputAction, inputOnParseError, blockedCh,
 			policyCfg, bindingCfg, ks, chainMatcher, tracker,
 			auditLogger, cee, rec, adaptiveCfg, m)
 	}()
@@ -879,9 +888,18 @@ func RunProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, clientIn io.
 		sandbox.CleanupChildSandboxDir(sandboxCmd.Process.Pid)
 	}
 
-	wg.Wait()
-	// blockedCh is closed by ForwardScannedInput's defer — do not close again.
-	wgBlocked.Wait()
+	// Drain with timeout — detached descendants can hold pipes open.
+	const drainTimeout = 5 * time.Second
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		wgBlocked.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(drainTimeout):
+	}
 
 	if scanErr != nil {
 		return fmt.Errorf("scanning: %w", scanErr)

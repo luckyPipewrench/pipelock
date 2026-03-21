@@ -114,15 +114,11 @@ Examples:
 				ProxyHandler: proxyHandler,
 			}
 
-			// Apply custom filesystem policy from config if set.
+			// Merge custom filesystem policy from config into defaults.
 			if cfg.Sandbox.FS != nil {
 				p := sandbox.DefaultPolicy(workspace)
-				if len(cfg.Sandbox.FS.AllowRead) > 0 {
-					p.AllowReadDirs = cfg.Sandbox.FS.AllowRead
-				}
-				if len(cfg.Sandbox.FS.AllowWrite) > 0 {
-					p.AllowRWDirs = cfg.Sandbox.FS.AllowWrite
-				}
+				p.AllowReadDirs = append(p.AllowReadDirs, cfg.Sandbox.FS.AllowRead...)
+				p.AllowRWDirs = append(p.AllowRWDirs, cfg.Sandbox.FS.AllowWrite...)
 				launchCfg.Policy = &p
 			}
 

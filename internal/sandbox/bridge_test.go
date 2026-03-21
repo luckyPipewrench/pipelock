@@ -79,7 +79,10 @@ func TestBridgeProxy_Addr(t *testing.T) {
 	socketPath := ProxySocketPath(dir)
 
 	// Need a listener for the socket path (even if unused).
-	parentLn, _ := (&net.ListenConfig{}).Listen(context.Background(), "unix", socketPath)
+	parentLn, lnErr := (&net.ListenConfig{}).Listen(context.Background(), "unix", socketPath)
+	if lnErr != nil {
+		t.Fatalf("listen unix: %v", lnErr)
+	}
 	defer func() { _ = parentLn.Close() }()
 
 	bp, err := NewBridgeProxy(socketPath, "127.0.0.1:0")

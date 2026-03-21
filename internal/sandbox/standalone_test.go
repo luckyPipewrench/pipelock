@@ -4,14 +4,15 @@
 package sandbox
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"net"
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // skipIfStandaloneUnavailable skips tests that require forking with
@@ -70,13 +71,16 @@ func TestLaunchStandalone_NetworkBlocked(t *testing.T) {
 	skipIfStandaloneUnavailable(t)
 	workspace := t.TempDir()
 
+	// Verify network isolation offline: check /proc/self/net/dev has only loopback.
+	// No external tools or network access needed.
 	err := LaunchStandalone(StandaloneLaunchConfig{
-		Command:   []string{"python3", "-c", "import socket; socket.create_connection(('8.8.8.8', 53), timeout=2)"},
+		Command:   []string{"sh", "-c", "cat /proc/self/net/dev | grep -qv lo: && exit 1; exit 0"},
 		Workspace: workspace,
 	})
-	// Should fail because network namespace blocks direct access.
-	if err == nil {
-		t.Error("expected error (direct network should be blocked)")
+	// The child should exit 0 (only loopback exists). If it fails, network
+	// isolation isn't working.
+	if err != nil {
+		t.Errorf("network isolation check failed: %v", err)
 	}
 }
 
@@ -111,32 +115,34 @@ func TestLaunchStandalone_ProxyHandlerCalled(t *testing.T) {
 	workspace := t.TempDir()
 
 	// Track whether the proxy handler was called.
-	var proxyCallBuf bytes.Buffer
+	// Use mutex for thread safety since handler runs in a goroutine.
+	var mu sync.Mutex
+	var proxyData string
 	handler := func(conn net.Conn) {
 		defer func() { _ = conn.Close() }()
 		buf := make([]byte, 256)
 		n, _ := conn.Read(buf)
-		proxyCallBuf.Write(buf[:n])
-		// Send back a minimal HTTP response so curl doesn't hang.
+		mu.Lock()
+		proxyData = string(buf[:n])
+		mu.Unlock()
 		_, _ = conn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"))
 	}
 
 	// Use curl to make a request through the bridge proxy.
-	// The proxy handler receives the raw request.
 	err := LaunchStandalone(StandaloneLaunchConfig{
-		Command:      []string{"curl", "-s", "--proxy", "http://127.0.0.1:8888", "http://test.local/check"},
+		Command:      []string{"curl", "-s", "--max-time", "3", "--proxy", "http://127.0.0.1:8888", "http://test.local/check"},
 		Workspace:    workspace,
 		ProxyHandler: handler,
 	})
-	// curl may fail (test.local doesn't resolve), but we just verify
-	// the handler was called.
 	_ = err
 
-	if proxyCallBuf.Len() == 0 {
+	mu.Lock()
+	defer mu.Unlock()
+	if proxyData == "" {
 		t.Error("proxy handler was never called")
 	}
-	if !strings.Contains(proxyCallBuf.String(), "test.local") {
-		t.Errorf("proxy handler didn't receive expected request, got: %s", proxyCallBuf.String())
+	if !strings.Contains(proxyData, "test.local") {
+		t.Errorf("proxy handler didn't receive expected request, got: %s", proxyData)
 	}
 }
 
@@ -187,7 +193,8 @@ func TestHandleDirectForward_CONNECT(t *testing.T) {
 	_, _ = fmt.Fprintf(clientConn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n",
 		targetLn.Addr(), targetLn.Addr())
 
-	// Read response.
+	// Read response with deadline to prevent hang on regression.
+	_ = clientConn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	buf := make([]byte, 256)
 	n, _ := clientConn.Read(buf)
 	resp := string(buf[:n])
@@ -196,6 +203,7 @@ func TestHandleDirectForward_CONNECT(t *testing.T) {
 	}
 
 	// Read tunneled data.
+	_ = clientConn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	n, _ = clientConn.Read(buf)
 	if got := string(buf[:n]); got != "hello from target" {
 		t.Errorf("expected 'hello from target', got: %q", got)
@@ -218,6 +226,7 @@ func TestHandleDirectForward_BadRequest(t *testing.T) {
 	// Send non-CONNECT request.
 	_, _ = fmt.Fprintf(clientConn, "GET /test HTTP/1.1\r\nHost: example.com\r\n\r\n")
 
+	_ = clientConn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	buf := make([]byte, 256)
 	n, _ := clientConn.Read(buf)
 	resp := string(buf[:n])

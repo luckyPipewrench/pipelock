@@ -10,5 +10,7 @@ coverage:
 ignore:
   - "tests/ws-helper/**"
   - "internal/filesentry/lineage_other.go"  # build-tagged !linux, untestable on Linux CI
+  - "internal/sandbox/child_init.go"  # re-exec child entry point, runs in forked process (TODO: GOCOVERDIR)
+  - "internal/sandbox/child_standalone_init.go"  # standalone child entry point, runs in forked process (TODO: GOCOVERDIR)
 comment:
   layout: "reach, diff, files"

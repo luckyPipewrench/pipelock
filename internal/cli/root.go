@@ -128,6 +128,7 @@ Quick start:
 		preflightCmd(),
 		reportCmd(),
 		rulesCmd(),
+		sandboxCmd(),
 		signCmd(),
 		testCmd(),
 		tlsCmd(),

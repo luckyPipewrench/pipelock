@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -29,6 +30,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
 	"github.com/luckyPipewrench/pipelock/internal/rules"
+	"github.com/luckyPipewrench/pipelock/internal/sandbox"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	plsentry "github.com/luckyPipewrench/pipelock/internal/sentry"
 	session "github.com/luckyPipewrench/pipelock/internal/session"
@@ -124,6 +126,8 @@ func mcpProxyCmd() *cobra.Command {
 	var listenAddr string
 	var envVars []string
 	var agentName string
+	var sandboxEnabled bool
+	var sandboxWorkspace string
 
 	cmd := &cobra.Command{
 		Use:   "proxy [flags] [-- COMMAND [ARGS...]]",
@@ -196,6 +200,14 @@ Environment passthrough (subprocess mode only):
 			}
 			if !hasUpstream && !hasSubprocess {
 				return errors.New("specify --upstream URL or -- COMMAND [ARGS...]")
+			}
+			if sandboxEnabled {
+				if hasUpstream {
+					return errors.New("--sandbox cannot be used with --upstream (cannot sandbox a remote server)")
+				}
+				if hasListen {
+					return errors.New("--sandbox cannot be used with --listen (cannot sandbox a remote server)")
+				}
 			}
 
 			// Validate upstream URL scheme.
@@ -482,6 +494,65 @@ Environment passthrough (subprocess mode only):
 
 			// Subprocess mode.
 			serverCmd := args[dashIdx:]
+			useSandbox := sandboxEnabled || cfg.Sandbox.Enabled
+
+			// Sandboxed MCP proxy: child in isolated namespace.
+			if useSandbox {
+				// File sentry is not yet integrated with sandbox mode.
+				// Warn explicitly so users don't lose coverage silently.
+				if cfg.FileSentry.Enabled {
+					_, _ = fmt.Fprintln(cmd.ErrOrStderr(),
+						"pipelock: WARNING: file_sentry is not yet supported with --sandbox; file write DLP scanning is disabled for this session")
+				}
+				workspace := sandboxWorkspace
+				if workspace == "" {
+					workspace = cfg.Sandbox.Workspace
+				}
+				if workspace == "" {
+					workspace, _ = os.Getwd()
+				}
+				workspace, _ = filepath.Abs(workspace)
+
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
+					"pipelock: proxying MCP server %v [SANDBOXED] (response=%s, input=%s, tools=%s, policy=%s, workspace=%s)\n",
+					serverCmd, sc.ResponseAction(), inputCfg.Action, toolAction, policyAction, workspace)
+
+				ctx, cancel := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
+				defer cancel()
+
+				launchCfg := sandbox.LaunchConfig{
+					Ctx:       ctx,
+					Command:   serverCmd,
+					Workspace: workspace,
+					ExtraEnv:  extraEnv,
+				}
+				if cfg.Sandbox.FS != nil {
+					p := sandbox.DefaultPolicy(workspace)
+					if len(cfg.Sandbox.FS.AllowRead) > 0 {
+						p.AllowReadDirs = cfg.Sandbox.FS.AllowRead
+					}
+					if len(cfg.Sandbox.FS.AllowWrite) > 0 {
+						p.AllowRWDirs = cfg.Sandbox.FS.AllowWrite
+					}
+					launchCfg.Policy = &p
+				}
+
+				sandboxCmd, sErr := sandbox.PrepareSandboxCmd(launchCfg)
+				if sErr != nil {
+					return fmt.Errorf("sandbox prepare: %w", sErr)
+				}
+				sandboxCmd.Stderr = cmd.ErrOrStderr()
+
+				if err := mcp.RunProxyWithSandbox(ctx, sandboxCmd, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), sc, approver, inputCfg, toolCfg, policyCfg, ks, chainMatcher, nil, cee, store, adaptiveCfg, mcpMetrics); err != nil {
+					if sentryClient != nil {
+						sentryClient.CaptureError(err)
+					}
+					return err
+				}
+				return nil
+			}
+
+			// Normal (unsandboxed) subprocess mode.
 			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: proxying MCP server %v (response=%s, input=%s, tools=%s, policy=%s)\n",
 				serverCmd, sc.ResponseAction(), inputCfg.Action, toolAction, policyAction)
 
@@ -568,5 +639,7 @@ Environment passthrough (subprocess mode only):
 	cmd.Flags().StringVar(&listenAddr, "listen", "", "listen address for HTTP reverse proxy mode (e.g. 0.0.0.0:8889)")
 	cmd.Flags().StringArrayVar(&envVars, "env", nil, "pass environment variable to child process (KEY or KEY=VALUE, repeatable)")
 	cmd.Flags().StringVar(&agentName, "agent", "", "agent profile name (resolves to config profile for policy/scanner)")
+	cmd.Flags().BoolVar(&sandboxEnabled, "sandbox", false, "run child in sandbox (Landlock + seccomp + network namespace, Linux only)")
+	cmd.Flags().StringVar(&sandboxWorkspace, "workspace", "", "sandbox workspace directory (default: current directory)")
 	return cmd
 }

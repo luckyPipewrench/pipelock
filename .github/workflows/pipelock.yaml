@@ -26,6 +26,7 @@ jobs:
             internal/scanner/scanner_test.go
             internal/scanner/scan_env_test.go
             internal/scanner/text_dlp_test.go
+            internal/scanner/validate_test.go
             internal/proxy/intercept_test.go
             internal/proxy/forward_test.go
             internal/proxy/adaptive_escalation_test.go
@@ -33,6 +34,7 @@ jobs:
             internal/cli/test.go
             internal/cli/license_test.go
             enterprise/licenseservice/*_test.go
+            configs/*.yaml
             README.md
             assets/demo.cast
             docs/attacks-blocked.md

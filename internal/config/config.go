@@ -205,6 +205,26 @@ type FileSentry struct {
 	IgnorePatterns []string `yaml:"ignore_patterns"` // glob patterns to skip
 }
 
+// Sandbox configures process containment for child processes.
+// Sandbox config is startup-only and reload-immutable: changing these
+// values in a config reload has no effect on an already-running sandbox.
+type Sandbox struct {
+	Enabled   bool               `yaml:"enabled"`
+	Workspace string             `yaml:"workspace"` // agent working dir; resolved to absolute at startup
+	FS        *SandboxFilesystem `yaml:"filesystem"`
+}
+
+// SandboxFilesystem overrides the default Landlock policy. If nil, the
+// default policy is used (safe for Python/Node/Go agents without config).
+//
+// Landlock is an allowlist model. Execute access is bundled with read
+// (RODirs grants execute). RWDirs grants full access including execute.
+// There is no separate allow_exec field — writable dirs are executable.
+type SandboxFilesystem struct {
+	AllowRead  []string `yaml:"allow_read"`
+	AllowWrite []string `yaml:"allow_write"`
+}
+
 // Config is the top-level Pipelock configuration.
 type Config struct {
 	Version               int                     `yaml:"version"`
@@ -240,6 +260,7 @@ type Config struct {
 	SeedPhraseDetection   SeedPhraseDetection     `yaml:"seed_phrase_detection"`
 	Rules                 Rules                   `yaml:"rules"`
 	FileSentry            FileSentry              `yaml:"file_sentry"`
+	Sandbox               Sandbox                 `yaml:"sandbox"`
 	Agents                map[string]AgentProfile `yaml:"agents,omitempty"`
 	LicenseKey            string                  `yaml:"license_key,omitempty"`        // signed license token (from pipelock license issue)
 	LicenseFile           string                  `yaml:"license_file,omitempty"`       // path to file containing the license token (read at startup)
@@ -2242,6 +2263,20 @@ func (c *Config) Validate() error {
 		}
 		if host == "" || host == "0.0.0.0" || host == "::" {
 			fmt.Fprintf(os.Stderr, "WARNING: listen address %s binds to all interfaces - consider using 127.0.0.1 for local-only access\n", c.FetchProxy.Listen)
+		}
+	}
+
+	// Sandbox: validate filesystem paths even when disabled (CLI can override enabled).
+	if c.Sandbox.FS != nil {
+		for _, p := range c.Sandbox.FS.AllowRead {
+			if p == "" {
+				return fmt.Errorf("sandbox filesystem allow_read contains empty path")
+			}
+		}
+		for _, p := range c.Sandbox.FS.AllowWrite {
+			if p == "" {
+				return fmt.Errorf("sandbox filesystem allow_write contains empty path")
+			}
 		}
 	}
 

@@ -445,7 +445,7 @@ func TestScanDiff_CreditCard_UUIDNotFlagged(t *testing.T) {
 		uuid string
 	}{
 		{"nil UUID", `00000000-0000-0000-0000-000000000000`},
-		{"numeric UUID", `12345678-1234-5678-1234-567812345678`},
+		{"numeric UUID", "12345678" + "-1234-5678-1234-" + "567812345678"},
 	}
 
 	for _, tc := range tests {

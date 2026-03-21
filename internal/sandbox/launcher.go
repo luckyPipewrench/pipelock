@@ -53,7 +53,7 @@ type LaunchConfig struct {
 //
 // For simple cases, use LaunchSandboxed which calls Start automatically.
 func PrepareSandboxCmd(cfg LaunchConfig) (*exec.Cmd, error) {
-	if runtime.GOOS != "linux" {
+	if runtime.GOOS != osLinux {
 		return nil, fmt.Errorf("%w: sandbox requires Linux", ErrUnavailable)
 	}
 
@@ -109,10 +109,15 @@ func PrepareSandboxCmd(cfg LaunchConfig) (*exec.Cmd, error) {
 	}
 
 	// Create child in new user + network namespace.
+	// Strict mode adds CLONE_NEWNS (mount namespace) for private /dev/shm.
+	cloneFlags := uintptr(syscall.CLONE_NEWUSER | syscall.CLONE_NEWNET)
+	if cfg.Strict {
+		cloneFlags |= syscall.CLONE_NEWNS
+	}
 	uid := os.Getuid()
 	gid := os.Getgid()
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Cloneflags: syscall.CLONE_NEWUSER | syscall.CLONE_NEWNET,
+		Cloneflags: cloneFlags,
 		UidMappings: []syscall.SysProcIDMap{
 			{ContainerID: 0, HostID: uid, Size: 1},
 		},

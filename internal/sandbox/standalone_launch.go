@@ -156,10 +156,14 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 		cmd.Env = append(cmd.Env, "__PIPELOCK_SANDBOX_POLICY="+policyJSON)
 	}
 
+	cloneFlags := uintptr(syscall.CLONE_NEWUSER | syscall.CLONE_NEWNET)
+	if cfg.Strict {
+		cloneFlags |= syscall.CLONE_NEWNS // mount namespace for private /dev/shm
+	}
 	uid := os.Getuid()
 	gid := os.Getgid()
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Cloneflags: syscall.CLONE_NEWUSER | syscall.CLONE_NEWNET,
+		Cloneflags: cloneFlags,
 		UidMappings: []syscall.SysProcIDMap{
 			{ContainerID: 0, HostID: uid, Size: 1},
 		},

@@ -2725,18 +2725,73 @@ func sandboxChanged(old, updated *Config) bool {
 	if old.Sandbox.Workspace != updated.Sandbox.Workspace {
 		return true
 	}
-	// FS pointer comparison: nil vs non-nil, or content differs.
-	oldFS := old.Sandbox.FS
-	newFS := updated.Sandbox.FS
-	if (oldFS == nil) != (newFS == nil) {
+	if sandboxFSChanged(old.Sandbox.FS, updated.Sandbox.FS) {
 		return true
 	}
-	if oldFS != nil && newFS != nil {
-		if len(oldFS.AllowRead) != len(newFS.AllowRead) || len(oldFS.AllowWrite) != len(newFS.AllowWrite) {
+	// Check per-agent sandbox overrides.
+	for name, oldProfile := range old.Agents {
+		newProfile, ok := updated.Agents[name]
+		if !ok {
+			continue
+		}
+		if agentSandboxChanged(oldProfile.Sandbox, newProfile.Sandbox) {
 			return true
 		}
 	}
 	return false
+}
+
+// sandboxFSChanged compares two SandboxFilesystem structs by content.
+func sandboxFSChanged(oldFS, newFS *SandboxFilesystem) bool {
+	if (oldFS == nil) != (newFS == nil) {
+		return true
+	}
+	if oldFS == nil {
+		return false
+	}
+	if !stringSlicesEqual(oldFS.AllowRead, newFS.AllowRead) {
+		return true
+	}
+	return !stringSlicesEqual(oldFS.AllowWrite, newFS.AllowWrite)
+}
+
+// agentSandboxChanged compares two AgentSandboxOverride pointers.
+func agentSandboxChanged(old, updated *AgentSandboxOverride) bool {
+	if (old == nil) != (updated == nil) {
+		return true
+	}
+	if old == nil {
+		return false
+	}
+	if !boolPtrEqual(old.Enabled, updated.Enabled) || !boolPtrEqual(old.Strict, updated.Strict) {
+		return true
+	}
+	if old.Workspace != updated.Workspace {
+		return true
+	}
+	return sandboxFSChanged(old.FS, updated.FS)
+}
+
+func stringSlicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func boolPtrEqual(a, b *bool) bool {
+	if (a == nil) != (b == nil) {
+		return false
+	}
+	if a == nil {
+		return true
+	}
+	return *a == *b
 }
 
 // dlpPatternsChanged returns true if the DLP pattern set differs in ways that

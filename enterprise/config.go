@@ -203,6 +203,20 @@ func ValidateAgents(cfg *config.Config) error {
 				return fmt.Errorf("agent %q: rate_limit.max_data_per_minute must be >= 0", name)
 			}
 		}
+
+		// Validate sandbox filesystem paths (reject empty entries).
+		if profile.Sandbox != nil && profile.Sandbox.FS != nil {
+			for _, p := range profile.Sandbox.FS.AllowRead {
+				if p == "" {
+					return fmt.Errorf("agent %q: sandbox filesystem allow_read contains empty path", name)
+				}
+			}
+			for _, p := range profile.Sandbox.FS.AllowWrite {
+				if p == "" {
+					return fmt.Errorf("agent %q: sandbox filesystem allow_write contains empty path", name)
+				}
+			}
+		}
 	}
 
 	return nil

@@ -127,6 +127,7 @@ func mcpProxyCmd() *cobra.Command {
 	var envVars []string
 	var agentName string
 	var sandboxEnabled bool
+	var sandboxStrict bool
 	var sandboxWorkspace string
 
 	cmd := &cobra.Command{
@@ -495,6 +496,10 @@ Environment passthrough (subprocess mode only):
 
 			// Subprocess mode.
 			serverCmd := args[dashIdx:]
+			// --sandbox-strict implies --sandbox.
+			if sandboxStrict {
+				sandboxEnabled = true
+			}
 			useSandbox := sandboxEnabled || cfg.Sandbox.Enabled
 
 			// Reject config-enabled sandbox with remote modes.
@@ -526,10 +531,13 @@ Environment passthrough (subprocess mode only):
 				ctx, cancel := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 				defer cancel()
 
+				mcpStrict := sandboxStrict || cfg.Sandbox.Strict
+
 				launchCfg := sandbox.LaunchConfig{
 					Ctx:       ctx,
 					Command:   serverCmd,
 					Workspace: workspace,
+					Strict:    mcpStrict,
 					ExtraEnv:  extraEnv,
 				}
 				if cfg.Sandbox.FS != nil {
@@ -546,7 +554,7 @@ Environment passthrough (subprocess mode only):
 				}
 				sandboxCmd.Stderr = cmd.ErrOrStderr()
 
-				if err := mcp.RunProxyWithSandbox(ctx, sandboxCmd, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), sc, approver, inputCfg, toolCfg, policyCfg, ks, chainMatcher, nil, cee, store, adaptiveCfg, mcpMetrics); err != nil {
+				if err := mcp.RunProxyWithSandbox(ctx, sandboxCmd, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), sc, approver, inputCfg, toolCfg, policyCfg, ks, chainMatcher, nil, cee, store, adaptiveCfg, mcpMetrics, mcpStrict); err != nil {
 					if sentryClient != nil {
 						sentryClient.CaptureError(err)
 					}
@@ -643,6 +651,7 @@ Environment passthrough (subprocess mode only):
 	cmd.Flags().StringArrayVar(&envVars, "env", nil, "pass environment variable to child process (KEY or KEY=VALUE, repeatable)")
 	cmd.Flags().StringVar(&agentName, "agent", "", "agent profile name (resolves to config profile for policy/scanner)")
 	cmd.Flags().BoolVar(&sandboxEnabled, "sandbox", false, "run child in sandbox (Landlock + seccomp + network namespace, Linux only)")
+	cmd.Flags().BoolVar(&sandboxStrict, "sandbox-strict", false, "strict sandbox: error on missing layers, private /dev/shm, block clone3 (implies --sandbox)")
 	cmd.Flags().StringVar(&sandboxWorkspace, "workspace", "", "sandbox workspace directory (default: current directory)")
 	return cmd
 }

@@ -129,6 +129,7 @@ Quick start:
 		reportCmd(),
 		rulesCmd(),
 		sandboxCmd(),
+		internalRedirectCmd(),
 		signCmd(),
 		testCmd(),
 		tlsCmd(),

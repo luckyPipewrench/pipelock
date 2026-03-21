@@ -45,3 +45,10 @@ jobs:
             docs/guides/tls-interception.md
             examples/demo-readme.sh
             examples/sample-events.jsonl
+            configs/audit.yaml
+            configs/balanced.yaml
+            configs/claude-code.yaml
+            configs/cursor.yaml
+            configs/generic-agent.yaml
+            configs/hostile-model.yaml
+            configs/strict.yaml

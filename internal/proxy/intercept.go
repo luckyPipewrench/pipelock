@@ -359,7 +359,7 @@ func newInterceptHandler(
 				}
 
 				// Determine scanner label: address_protection vs body_dlp.
-				scannerLabel := "body_dlp"
+				scannerLabel := scannerLabelBodyDLP
 				if len(result.AddressFindings) > 0 && len(result.DLPMatches) == 0 {
 					scannerLabel = scannerLabelAddressProtection
 				}
@@ -370,9 +370,23 @@ func newInterceptHandler(
 					reason = fmt.Sprintf("request body contains secret: %s", strings.Join(patternNames, ", "))
 				}
 
+				// DLP-only exemption: DLP pattern findings on adaptive-exempt
+				// destinations should not feed escalation scoring or get action
+				// upgrades. Separate from api_allowlist (reachability) to avoid
+				// weakening scoring on general allowlisted hosts like github.com.
+				// Address protection findings and fail-closed body errors are NOT
+				// exempted — only DLP pattern matches.
+				dlpExempt := scannerLabel == scannerLabelBodyDLP &&
+					len(result.DLPMatches) > 0 &&
+					isAdaptiveExempt(r.URL.Hostname(), cfg.AdaptiveEnforcement.ExemptDomains)
+
 				// Adaptive enforcement: upgrade the body action.
+				// Skip upgrade for DLP-exempt destinations — prevents
+				// legitimate LLM traffic from cascading into session blocks.
 				originalBodyAction := action
-				action = decide.UpgradeAction(action, recEscalationLevel(rec), &cfg.AdaptiveEnforcement)
+				if !dlpExempt {
+					action = decide.UpgradeAction(action, recEscalationLevel(rec), &cfg.AdaptiveEnforcement)
+				}
 				if action != originalBodyAction {
 					sessionKey := clientIP
 					if agent != "" && agent != agentAnonymous {
@@ -389,7 +403,9 @@ func newInterceptHandler(
 				// regardless of enforce mode to prevent forwarding an empty body.
 				// ActionAsk: no HITL terminal in intercepted tunnels, fail closed.
 				if bodyBytes == nil || action == config.ActionAsk || (action == config.ActionBlock && cfg.EnforceEnabled()) {
-					interceptRecordSignal(rec, session.SignalBlock, cfg, logger, m, p, clientIP, agent, requestID)
+					if !dlpExempt {
+						interceptRecordSignal(rec, session.SignalBlock, cfg, logger, m, p, clientIP, agent, requestID)
+					}
 					logger.LogBlocked(r.Method, r.URL.String(), scannerLabel, reason, clientIP, requestID, agent)
 					m.RecordTLSRequestBlocked(scannerLabel)
 					http.Error(w, "blocked: "+reason, http.StatusForbidden)
@@ -401,7 +417,9 @@ func newInterceptHandler(
 				// a base action that was already "block" would fire here even
 				// without any escalation, which is not the intent.
 				if action == config.ActionBlock && action != originalBodyAction && !cfg.EnforceEnabled() {
-					interceptRecordSignal(rec, session.SignalBlock, cfg, logger, m, p, clientIP, agent, requestID)
+					if !dlpExempt {
+						interceptRecordSignal(rec, session.SignalBlock, cfg, logger, m, p, clientIP, agent, requestID)
+					}
 					logger.LogBlocked(r.Method, r.URL.String(), scannerLabel, reason+" (escalated)", clientIP, requestID, agent)
 					m.RecordTLSRequestBlocked(scannerLabel)
 					http.Error(w, "blocked: "+reason+" (escalated)", http.StatusForbidden)

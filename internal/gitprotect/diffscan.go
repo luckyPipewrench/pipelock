@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 // Finding represents a secret detected in a git diff.
@@ -124,12 +125,14 @@ type CompiledDLPPattern struct {
 	Name     string
 	Re       *regexp.Regexp
 	Severity string
+	validate func(string) bool // post-match checksum (Luhn, mod-97, etc.), nil = regex-only
 }
 
 // CompileDLPPatterns compiles config DLP patterns into reusable compiled patterns.
 // Forces case-insensitive matching ((?i) prefix) to match scanner.go behavior —
 // secrets in git diffs should be caught regardless of casing.
-// Invalid patterns are skipped (validation should have caught them).
+// Wires up post-match validators (Luhn, mod-97, etc.) from scanner.DLPValidators
+// to maintain parity with runtime DLP. Invalid patterns are skipped.
 func CompileDLPPatterns(patterns []config.DLPPattern) []CompiledDLPPattern {
 	var compiled []CompiledDLPPattern
 	for _, p := range patterns {
@@ -141,13 +144,34 @@ func CompileDLPPatterns(patterns []config.DLPPattern) []CompiledDLPPattern {
 		if err != nil {
 			continue
 		}
-		compiled = append(compiled, CompiledDLPPattern{
+		cp := CompiledDLPPattern{
 			Name:     p.Name,
 			Re:       re,
 			Severity: p.Severity,
-		})
+		}
+		if p.Validator != "" {
+			cp.validate = scanner.DLPValidators[p.Validator]
+		}
+		compiled = append(compiled, cp)
 	}
 	return compiled
+}
+
+// matches returns true if the text contains a regex match that also passes
+// the post-match validator (if any). For patterns without validators, this is
+// equivalent to re.MatchString. For validated patterns (credit cards, IBANs),
+// all regex hits are checked and true is returned if any pass validation.
+// This mirrors scanner.compiledPattern.matches() for runtime/scan-diff parity.
+func (cp *CompiledDLPPattern) matches(text string) bool {
+	if cp.validate == nil {
+		return cp.Re.MatchString(text)
+	}
+	for _, m := range cp.Re.FindAllString(text, -1) {
+		if cp.validate(m) {
+			return true
+		}
+	}
+	return false
 }
 
 // ErrNoDiffHeaders is returned when input contains no unified diff file headers.
@@ -177,16 +201,17 @@ func ScanDiff(diffText string, patterns []CompiledDLPPattern) ([]Finding, error)
 	for file, lines := range addedLines {
 		for _, al := range lines {
 			for _, cp := range patterns {
-				if cp.Re.MatchString(al.content) {
-					redacted := cp.Re.ReplaceAllString(al.content, "[REDACTED]")
-					findings = append(findings, Finding{
-						File:     file,
-						Line:     al.lineNum,
-						Content:  redacted,
-						Pattern:  cp.Name,
-						Severity: cp.Severity,
-					})
+				if !cp.matches(al.content) {
+					continue
 				}
+				redacted := cp.Re.ReplaceAllString(al.content, "[REDACTED]")
+				findings = append(findings, Finding{
+					File:     file,
+					Line:     al.lineNum,
+					Content:  redacted,
+					Pattern:  cp.Name,
+					Severity: cp.Severity,
+				})
 			}
 		}
 	}

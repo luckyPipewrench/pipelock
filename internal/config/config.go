@@ -516,6 +516,7 @@ type AdaptiveEnforcement struct {
 	EscalationThreshold  float64          `yaml:"escalation_threshold"`    // points before escalation
 	DecayPerCleanRequest float64          `yaml:"decay_per_clean_request"` // score reduction per clean request
 	Levels               EscalationLevels `yaml:"levels"`
+	ExemptDomains        []string         `yaml:"exempt_domains"` // DLP findings on these hosts skip escalation scoring and action upgrades
 }
 
 // EscalationLevels configures per-level enforcement behavior.
@@ -1765,6 +1766,27 @@ func (c *Config) Validate() error {
 		// Monotonic check: higher levels must not be weaker than lower levels.
 		if err := validateEscalationMonotonic(&c.AdaptiveEnforcement.Levels); err != nil {
 			return err
+		}
+		// Validate and normalize exempt_domains (same rules as CEE exempt_domains).
+		for i, raw := range c.AdaptiveEnforcement.ExemptDomains {
+			d := strings.TrimSuffix(strings.TrimSpace(strings.ToLower(raw)), ".")
+			if d == "" {
+				return fmt.Errorf("adaptive_enforcement.exempt_domains[%d] is empty", i)
+			}
+			if strings.Contains(d, "://") || strings.Contains(d, "/") || strings.Contains(d, ":") {
+				return fmt.Errorf("adaptive_enforcement.exempt_domains[%d] %q: use hostname pattern, not URL or host:port", i, raw)
+			}
+			if d == "*" {
+				return fmt.Errorf("adaptive_enforcement.exempt_domains[%d]: bare wildcard too broad", i)
+			}
+			if strings.HasPrefix(d, "*.") {
+				if strings.Count(d[2:], ".") < 1 {
+					return fmt.Errorf("adaptive_enforcement.exempt_domains[%d] %q: wildcard must target concrete domain like *.example.com", i, raw)
+				}
+			} else if strings.ContainsAny(d, "*?[]") {
+				return fmt.Errorf("adaptive_enforcement.exempt_domains[%d] %q: only exact hosts and *.example.com wildcards supported", i, raw)
+			}
+			c.AdaptiveEnforcement.ExemptDomains[i] = d
 		}
 	}
 

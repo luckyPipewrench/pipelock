@@ -137,7 +137,10 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		// Audit/warn mode: header DLP found something but did not block.
 		// Record a near-miss signal. Blocked findings go through
 		// recordSessionActivity(allowed=false) which fires SignalBlock.
-		if connectRec != nil {
+		// Skip signal recording for adaptive-exempt destinations — auth
+		// headers to trusted services are expected and should not feed
+		// escalation. Uses exempt_domains (trust), not api_allowlist (reachability).
+		if connectRec != nil && !isAdaptiveExempt(host, cfg.AdaptiveEnforcement.ExemptDomains) {
 			if escalated, from, to := connectRec.RecordSignal(session.SignalNearMiss, cfg.AdaptiveEnforcement.EscalationThreshold); escalated {
 				p.logger.LogAdaptiveEscalation(connectSessionKey, from, to, clientIP, requestID, connectRec.ThreatScore())
 				p.metrics.RecordSessionEscalation(from, to)
@@ -150,7 +153,14 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	if connectHeaderBlocked {
 		// Record session activity so adaptive enforcement sees header-DLP blocks.
-		p.recordSessionActivity(clientIP, agent, host, requestID, false, 0.9, cfg, p.logger, false)
+		// For adaptive-exempt destinations, record as allowed with deferClean=true
+		// so session profiling tracks the domain but neither escalation signals nor
+		// clean-decay fire. Blocked exempt traffic is score-neutral.
+		if isAdaptiveExempt(host, cfg.AdaptiveEnforcement.ExemptDomains) {
+			p.recordSessionActivity(clientIP, agent, host, requestID, true, 0, cfg, p.logger, true)
+		} else {
+			p.recordSessionActivity(clientIP, agent, host, requestID, false, 0.9, cfg, p.logger, false)
+		}
 		p.metrics.RecordTunnelBlocked(agentLabel)
 		http.Error(w, "CONNECT blocked: header DLP match", http.StatusForbidden)
 		return
@@ -589,7 +599,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 
 			// Determine scanner label: address_protection vs body_dlp.
-			scannerLabel := "body_dlp"
+			scannerLabel := scannerLabelBodyDLP
 			if len(bodyResult.AddressFindings) > 0 && len(bodyResult.DLPMatches) == 0 {
 				scannerLabel = scannerLabelAddressProtection
 			}
@@ -633,8 +643,16 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 
 			// Adaptive enforcement: upgrade the body action.
+			// DLP-only exemption: skip upgrade for DLP pattern findings on
+			// adaptive-exempt destinations. Address protection findings and
+			// fail-closed body errors are NOT exempted.
 			originalBodyAction := action
-			action = decide.UpgradeAction(action, sr.Level, &cfg.AdaptiveEnforcement)
+			fwdBodyExempt := scannerLabel == scannerLabelBodyDLP &&
+				len(bodyResult.DLPMatches) > 0 &&
+				isAdaptiveExempt(r.URL.Hostname(), cfg.AdaptiveEnforcement.ExemptDomains)
+			if !fwdBodyExempt {
+				action = decide.UpgradeAction(action, sr.Level, &cfg.AdaptiveEnforcement)
+			}
 			if action != originalBodyAction {
 				sessionKey := clientIP
 				if agent != "" && agent != agentAnonymous {
@@ -668,9 +686,11 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	if forwardHeaderHadFinding {
 		hasFinding = true
 	}
-	if forwardHeaderHadFinding && cfg.AdaptiveEnforcement.Enabled {
+	if forwardHeaderHadFinding && cfg.AdaptiveEnforcement.Enabled && !isAdaptiveExempt(r.URL.Hostname(), cfg.AdaptiveEnforcement.ExemptDomains) {
 		// Record adaptive signal for header DLP findings.
 		// Blocked → SignalBlock (high confidence); warn-mode → SignalNearMiss.
+		// Skip for adaptive-exempt destinations — auth headers to trusted
+		// services are expected and should not feed escalation.
 		headerSignal := session.SignalNearMiss
 		if forwardHeaderBlocked {
 			headerSignal = session.SignalBlock

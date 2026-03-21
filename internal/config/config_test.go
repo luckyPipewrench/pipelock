@@ -8232,3 +8232,91 @@ adaptive_enforcement:
 		t.Errorf("expected nil for omitted elevated.upgrade_ask, got %q", *cfg.AdaptiveEnforcement.Levels.Elevated.UpgradeAsk)
 	}
 }
+
+// --- adaptive_enforcement.exempt_domains validation ---
+
+func TestValidate_AdaptiveExemptDomainsValid(t *testing.T) {
+	cfg := adaptiveTestConfig()
+	cfg.AdaptiveEnforcement.ExemptDomains = []string{"*.anthropic.com", "api.telegram.org"}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("expected valid exempt_domains, got: %v", err)
+	}
+	// Verify normalization: trailing dot stripped, case lowered.
+	if cfg.AdaptiveEnforcement.ExemptDomains[1] != "api.telegram.org" {
+		t.Errorf("expected normalized domain, got %q", cfg.AdaptiveEnforcement.ExemptDomains[1])
+	}
+}
+
+func TestValidate_AdaptiveExemptDomainsNormalization(t *testing.T) {
+	cfg := adaptiveTestConfig()
+	cfg.AdaptiveEnforcement.ExemptDomains = []string{"API.ANTHROPIC.COM.", "  *.Discord.com  "}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("expected valid exempt_domains, got: %v", err)
+	}
+	if cfg.AdaptiveEnforcement.ExemptDomains[0] != "api.anthropic.com" {
+		t.Errorf("expected lowercase + trailing dot stripped, got %q", cfg.AdaptiveEnforcement.ExemptDomains[0])
+	}
+	if cfg.AdaptiveEnforcement.ExemptDomains[1] != "*.discord.com" {
+		t.Errorf("expected trimmed + lowercase, got %q", cfg.AdaptiveEnforcement.ExemptDomains[1])
+	}
+}
+
+func TestValidate_AdaptiveExemptDomainsEmpty(t *testing.T) {
+	cfg := adaptiveTestConfig()
+	cfg.AdaptiveEnforcement.ExemptDomains = []string{""}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for empty exempt_domains entry")
+	}
+}
+
+func TestValidate_AdaptiveExemptDomainsBareWildcard(t *testing.T) {
+	cfg := adaptiveTestConfig()
+	cfg.AdaptiveEnforcement.ExemptDomains = []string{"*"}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for bare wildcard '*' in exempt_domains")
+	}
+}
+
+func TestValidate_AdaptiveExemptDomainsURL(t *testing.T) {
+	cfg := adaptiveTestConfig()
+	cfg.AdaptiveEnforcement.ExemptDomains = []string{"https://api.anthropic.com"}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for URL in exempt_domains")
+	}
+}
+
+func TestValidate_AdaptiveExemptDomainsHostPort(t *testing.T) {
+	cfg := adaptiveTestConfig()
+	cfg.AdaptiveEnforcement.ExemptDomains = []string{"api.anthropic.com:443"}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for host:port in exempt_domains")
+	}
+}
+
+func TestValidate_AdaptiveExemptDomainsBroadWildcard(t *testing.T) {
+	cfg := adaptiveTestConfig()
+	cfg.AdaptiveEnforcement.ExemptDomains = []string{"*.com"}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for overly broad wildcard *.com in exempt_domains")
+	}
+}
+
+func TestValidate_AdaptiveExemptDomainsNonPrefixWildcard(t *testing.T) {
+	cfg := adaptiveTestConfig()
+	cfg.AdaptiveEnforcement.ExemptDomains = []string{"api.*.anthropic.com"}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for non-prefix wildcard in exempt_domains")
+	}
+}
+
+// adaptiveTestConfig returns a minimal config with adaptive enforcement
+// enabled, suitable for validation tests.
+func adaptiveTestConfig() *Config {
+	cfg := Defaults()
+	cfg.SessionProfiling.Enabled = true
+	cfg.AdaptiveEnforcement.Enabled = true
+	cfg.AdaptiveEnforcement.EscalationThreshold = 20.0
+	cfg.AdaptiveEnforcement.DecayPerCleanRequest = 0.5
+	cfg.ApplyDefaults()
+	return cfg
+}

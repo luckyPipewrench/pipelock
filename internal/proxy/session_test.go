@@ -1032,6 +1032,36 @@ func TestSessionState_CriticalDeescalation(t *testing.T) {
 	}
 }
 
+func TestSessionState_DeescalationViaRecordClean(t *testing.T) {
+	cfg := testSessionConfig()
+	sm := NewSessionManager(cfg, nil)
+	defer sm.Close()
+
+	sess := sm.GetOrCreate(testClientIP)
+
+	// Escalate to critical (level 3).
+	for range 7 {
+		sess.RecordSignal(session.SignalBlock, 5.0)
+	}
+	if sess.EscalationLevel() < 3 {
+		t.Fatalf("expected critical (level 3+), got %d", sess.EscalationLevel())
+	}
+
+	// Simulate time passing beyond maxLevelDuration.
+	sess.mu.Lock()
+	sess.lastEscalation = time.Now().Add(-maxLevelDuration - time.Second)
+	sess.mu.Unlock()
+
+	// RecordClean (not RecordSignal) should trigger de-escalation.
+	// This is the core death spiral fix: sessions at block_all with only
+	// clean traffic must be able to recover.
+	sess.RecordClean(0.5)
+
+	if sess.EscalationLevel() >= 3 {
+		t.Errorf("RecordClean should trigger de-escalation from critical, got level %d", sess.EscalationLevel())
+	}
+}
+
 func TestSessionState_CriticalNoActivityRefresh(t *testing.T) {
 	cfg := testSessionConfig()
 	sm := NewSessionManager(cfg, nil)
@@ -1048,12 +1078,15 @@ func TestSessionState_CriticalNoActivityRefresh(t *testing.T) {
 		t.Fatalf("expected critical, got level %d", sess.EscalationLevel())
 	}
 
+	// Simulate proxy setting block_all flag after escalation.
+	sess.SetBlockAll(true)
+
 	// Record the last activity time.
 	sess.mu.Lock()
 	activityBefore := sess.lastActivity
 	sess.mu.Unlock()
 
-	// Wait a moment, then RecordRequest at critical.
+	// Wait a moment, then RecordRequest at block_all.
 	time.Sleep(10 * time.Millisecond)
 	sess.RecordRequest("example.com", cfg)
 
@@ -1061,7 +1094,7 @@ func TestSessionState_CriticalNoActivityRefresh(t *testing.T) {
 	activityAfter := sess.lastActivity
 	sess.mu.Unlock()
 
-	// At critical (level 3+), lastActivity should NOT be refreshed.
+	// At block_all, lastActivity should NOT be refreshed.
 	if activityAfter.After(activityBefore) {
 		t.Error("lastActivity should not be refreshed at critical level (prevents death spiral from idle eviction starvation)")
 	}

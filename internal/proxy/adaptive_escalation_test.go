@@ -1201,10 +1201,10 @@ func TestConnect_Adaptive_PostCEEBlockAllRecheck(t *testing.T) {
 	}
 	defer resp.Body.Close() //nolint:errcheck // test cleanup
 
-	// The request must NOT be blocked: CONNECT hostnames do not feed entropy.
-	if resp.StatusCode == http.StatusForbidden {
+	// The request must succeed: CONNECT hostnames do not feed entropy.
+	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		t.Errorf("CONNECT returned 403; CONNECT hostnames must not feed CEE entropy budget: %s", body)
+		t.Errorf("CONNECT returned %d, want 200; CONNECT hostnames must not feed CEE entropy budget: %s", resp.StatusCode, body)
 	}
 }
 

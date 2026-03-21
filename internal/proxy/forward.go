@@ -410,6 +410,8 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	p.metrics.DecrActiveTunnels()
 	duration := time.Since(start)
 	p.metrics.RecordTunnel(duration, totalBytes, agentLabel)
+	// Count successful tunnels in request totals so /stats reflects CONNECT traffic.
+	p.metrics.RecordAllowed(duration, agentLabel)
 	p.logger.LogTunnelClose(target, clientIP, requestID, agent, totalBytes, duration)
 
 	// Record data budget for the target domain

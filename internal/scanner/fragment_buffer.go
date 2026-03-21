@@ -133,12 +133,11 @@ func (fb *FragmentBuffer) ScanForSecrets(ctx context.Context, sessionKey string,
 	// Concatenate all fragments under lock, then release lock for DLP scan.
 	buf := fb.concatenateFragments(sb)
 
-	// Also get the latest fragment alone for dedup.
-	var latestData []byte
-	for i := len(sb.fragments) - 1; i >= 0; i-- {
-		if !sb.fragments[i].at.Before(cutoff) {
-			latestData = sb.fragments[i].data
-			break
+	// Collect each individual fragment's data for dedup scanning.
+	var individualFragments [][]byte
+	for _, f := range sb.fragments {
+		if !f.at.Before(cutoff) {
+			individualFragments = append(individualFragments, f.data)
 		}
 	}
 	fb.mu.Unlock()
@@ -149,20 +148,24 @@ func (fb *FragmentBuffer) ScanForSecrets(ctx context.Context, sessionKey string,
 		return nil
 	}
 
-	// Scan the latest fragment alone to identify single-request matches.
-	latestOnly := make(map[string]bool)
-	if len(latestData) > 0 {
-		latestResult := sc.ScanTextForDLP(ctx, string(latestData))
-		for _, m := range latestResult.Matches {
-			latestOnly[m.PatternName] = true
+	// Scan each individual fragment to identify single-request matches.
+	// A pattern that matches entirely within ANY single fragment is handled
+	// by body DLP and should not generate a cross-request signal.
+	singleFragment := make(map[string]bool)
+	for _, frag := range individualFragments {
+		if len(frag) > 0 {
+			fragResult := sc.ScanTextForDLP(ctx, string(frag))
+			for _, m := range fragResult.Matches {
+				singleFragment[m.PatternName] = true
+			}
 		}
 	}
 
-	// Only report matches NOT found in the latest fragment alone.
-	// These are true cross-request matches (secret spans fragments).
+	// Only report matches NOT found in any individual fragment.
+	// These are true cross-request matches (secret spans fragment boundaries).
 	var matches []DLPMatch
 	for _, m := range result.Matches {
-		if !latestOnly[m.PatternName] {
+		if !singleFragment[m.PatternName] {
 			matches = append(matches, DLPMatch{
 				PatternName: m.PatternName,
 			})

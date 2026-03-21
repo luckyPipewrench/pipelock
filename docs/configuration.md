@@ -309,7 +309,7 @@ dlp:
 | `min_env_secret_length` | `16` | Min env var value length to consider |
 | `include_defaults` | `true` | Merge your patterns with the 46 built-in patterns |
 | `patterns` | 46 built-in | DLP credential detection patterns |
-| `patterns[].validator` | `""` | Post-match checksum validator: `luhn`, `mod97`, or `aba` |
+| `patterns[].validator` | `""` | Post-match checksum validator: `luhn`, `mod97`, `aba`, or `wif` |
 | `patterns[].exempt_domains` | `[]` | Domains where this pattern is not enforced (wildcard supported) |
 
 ### Validated Patterns (Financial DLP)
@@ -319,6 +319,7 @@ Some patterns include a `validator` field for post-match checksum verification. 
 Built-in validated patterns:
 - **Credit Card Number** (`validator: luhn`) — Visa, Mastercard (including 2-series), Amex, Discover, JCB. Luhn checksum rejects ~90% of false positives.
 - **IBAN** (`validator: mod97`) — International Bank Account Numbers. Validates ISO 13616 country codes and ISO 7064 mod-97 checksum. Rejects ~99% of false positives.
+- **Bitcoin WIF Private Key** (`validator: wif`) — Base58Check decoding with SHA-256d checksum verification. Validates mainnet version byte (0x80) and 32/33-byte payload. Eliminates false positives from text that happens to contain 51-52 characters of the base58 alphabet.
 
 To add ABA routing numbers (not in defaults due to higher false positive rate):
 
@@ -678,6 +679,18 @@ Each level accepts the following fields. All fields use **pointer semantics**:
 | high | block | block | false |
 | critical | block | block | true |
 
+### De-escalation
+
+Sessions automatically de-escalate one level after 5 minutes at the same escalation level with no new threat signals. This prevents permanent lockout from accumulated false positives. The timer fires on both signal and clean request paths, so sessions stuck at `block_all` with only clean traffic can still recover.
+
+De-escalation drops one level per 5-minute period. A session at critical with no activity takes 15 minutes (3 periods) to return to normal. Each de-escalation resets the threat score to half the current threshold to prevent immediate re-escalation from stale points.
+
+When a session is at a `block_all` level, blocked retries do not refresh the session's idle timer. This allows idle eviction to eventually clean up sessions that are no longer generating traffic, preventing zombie sessions from persisting indefinitely.
+
+### Domain Burst Scoring
+
+Session profiling detects domain bursts (many unique domains in a short window). When the burst threshold is crossed, the anomaly is signaled once per window with the configured score. Subsequent requests in the same window still trigger the configured `anomaly_action` (block or warn) but do not add further adaptive score, preventing burst detection from driving sessions to critical on its own.
+
 ## Kill Switch
 
 Emergency deny-all with four independent activation sources. Any one active blocks all traffic (OR-composed). See [Kill Switch](../README.md#kill-switch) for operational details.
@@ -837,8 +850,23 @@ Tracks cumulative Shannon entropy of all outbound payloads (URLs, request bodies
 | `entropy_budget.bits_per_window` | `4096` | Max entropy bits allowed per session per window before triggering |
 | `entropy_budget.window_minutes` | `5` | Sliding window duration in minutes |
 | `entropy_budget.action` | `"warn"` | Action when budget is exceeded (warn or block) |
+| `entropy_budget.exempt_domains` | `[]` | Domains excluded from entropy budget recording. DLP pattern matching still runs on exempt domains. Supports exact hostnames and `*.example.com` wildcards. |
 
-**Tuning:** 4096 bits per 5-minute window allows roughly 500 characters of random data. Lower `bits_per_window` for tighter control. Raise `window_minutes` to catch slower exfiltration at the cost of higher memory per session.
+**Tuning:** The default 4096 bits per 5-minute window allows roughly 500 characters of random data across URL query parameters and path segments. This is appropriate when scanning URL-level traffic only.
+
+**With TLS interception enabled**, request bodies are also scanned for entropy. A single LLM API call body (conversation context) can contain 100,000+ bits of entropy. Set `bits_per_window` to `500000` or higher when using `tls_interception` with cross-request detection, and add your LLM provider to `exempt_domains`:
+
+```yaml
+cross_request_detection:
+  enabled: true
+  entropy_budget:
+    enabled: true
+    bits_per_window: 500000
+    exempt_domains:
+      - "*.anthropic.com"
+      - "*.openai.com"
+      - "*.minimax.io"
+```
 
 ### Fragment Reassembly
 

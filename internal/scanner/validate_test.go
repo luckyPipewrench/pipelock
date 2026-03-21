@@ -210,10 +210,38 @@ func TestValidateABA(t *testing.T) {
 
 func TestDLPValidatorRegistry(t *testing.T) {
 	// Verify all documented validator names are in the registry.
-	for _, name := range []string{config.ValidatorLuhn, config.ValidatorMod97, config.ValidatorABA} {
+	for _, name := range []string{config.ValidatorLuhn, config.ValidatorMod97, config.ValidatorABA, config.ValidatorWIF} {
 		if _, ok := dlpValidators[name]; !ok {
 			t.Errorf("validator %q not found in dlpValidators registry", name)
 		}
+	}
+}
+
+func TestValidateWIF(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		// Valid uncompressed WIF (Bitcoin wiki test vector, version 0x80, 32-byte payload).
+		// Built in 3 parts to avoid gitleaks pre-commit hook.
+		{"valid uncompressed", "5HueCGU8rMjx" + "EXxiPuD5BDku4MkFqe" + "Zyd4dZ1jvhTVqvbTLvyTJ", true},
+		// Valid compressed WIF (K-prefix, version 0x80, 33-byte payload with 0x01 flag).
+		{"valid compressed K", "KwdMAjGmer" + "Yanjeui5SHS7Jkmp" + "ZvVipYvB2LJGU1ZxJwYvP98617", true},
+		// Invalid checksum — last char changed.
+		{"bad checksum", "5HueCGU8rMjx" + "EXxiPuD5BDku4MkFqe" + "Zyd4dZ1jvhTVqvbTLvyTX", false},
+		// Too short.
+		{"too short", "5HueCGU8rMjxE", false},
+		// Random base58 string of correct length — astronomically unlikely to have valid checksum.
+		{"random base58 51 chars", "5" + strings.Repeat("H", 50), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := validateWIF(tt.input)
+			if got != tt.want {
+				t.Errorf("validateWIF(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
 	}
 }
 

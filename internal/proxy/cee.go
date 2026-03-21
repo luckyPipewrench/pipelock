@@ -138,8 +138,9 @@ func urlPayload(u *url.URL) []byte {
 
 // extractOutboundPayload extracts the outbound data visible to the proxy for
 // ceeEntropyExempt returns true if the target URL's hostname matches any
-// domain in the exempt list. Used to skip entropy budget recording for
-// API polling endpoints where tokens in URLs are expected.
+// domain in the exempt list. Uses scanner.MatchDomain for consistent
+// wildcard behavior (trailing-dot normalization, *.example.com also
+// matches example.com itself, IP exact match only).
 func ceeEntropyExempt(targetURL string, exemptDomains []string) bool {
 	if len(exemptDomains) == 0 {
 		return false
@@ -148,13 +149,9 @@ func ceeEntropyExempt(targetURL string, exemptDomains []string) bool {
 	if err != nil {
 		return false
 	}
-	host := strings.ToLower(parsed.Hostname())
+	host := parsed.Hostname()
 	for _, d := range exemptDomains {
-		d = strings.ToLower(d)
-		if d == host {
-			return true
-		}
-		if strings.HasPrefix(d, "*.") && strings.HasSuffix(host, d[1:]) {
+		if scanner.MatchDomain(host, d) {
 			return true
 		}
 	}

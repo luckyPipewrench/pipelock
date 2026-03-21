@@ -66,6 +66,7 @@ const (
 	ValidatorLuhn  = "luhn"
 	ValidatorMod97 = "mod97"
 	ValidatorABA   = "aba"
+	ValidatorWIF   = "wif"
 )
 
 // Confidence constants for community rule minimum confidence filtering.
@@ -1464,10 +1465,10 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("DLP pattern %q has action %q which is not supported; per-pattern DLP actions are not yet implemented", p.Name, p.Action)
 		}
 		if p.Validator != "" {
-			valid := p.Validator == ValidatorLuhn || p.Validator == ValidatorMod97 || p.Validator == ValidatorABA
+			valid := p.Validator == ValidatorLuhn || p.Validator == ValidatorMod97 || p.Validator == ValidatorABA || p.Validator == ValidatorWIF
 			if !valid {
-				return fmt.Errorf("DLP pattern %q has unknown validator %q (valid: %s, %s, %s)",
-					p.Name, p.Validator, ValidatorLuhn, ValidatorMod97, ValidatorABA)
+				return fmt.Errorf("DLP pattern %q has unknown validator %q (valid: %s, %s, %s, %s)",
+					p.Name, p.Validator, ValidatorLuhn, ValidatorMod97, ValidatorABA, ValidatorWIF)
 			}
 		}
 		for j, raw := range p.ExemptDomains {
@@ -1818,6 +1819,27 @@ func (c *Config) Validate() error {
 			}
 			if c.CrossRequestDetection.EntropyBudget.WindowMinutes <= 0 {
 				return fmt.Errorf("cross_request_detection.entropy_budget.window_minutes must be > 0")
+			}
+			// Validate and normalize exempt_domains (same rules as DLP exempt_domains).
+			for i, raw := range c.CrossRequestDetection.EntropyBudget.ExemptDomains {
+				d := strings.TrimSuffix(strings.TrimSpace(strings.ToLower(raw)), ".")
+				if d == "" {
+					return fmt.Errorf("cross_request_detection.entropy_budget.exempt_domains[%d] is empty", i)
+				}
+				if strings.Contains(d, "://") || strings.Contains(d, "/") || strings.Contains(d, ":") {
+					return fmt.Errorf("cross_request_detection.entropy_budget.exempt_domains[%d] %q: use hostname pattern, not URL or host:port", i, raw)
+				}
+				if d == "*" {
+					return fmt.Errorf("cross_request_detection.entropy_budget.exempt_domains[%d]: bare wildcard too broad", i)
+				}
+				if strings.HasPrefix(d, "*.") {
+					if strings.Count(d[2:], ".") < 1 {
+						return fmt.Errorf("cross_request_detection.entropy_budget.exempt_domains[%d] %q: wildcard must target concrete domain like *.example.com", i, raw)
+					}
+				} else if strings.ContainsAny(d, "*?[]") {
+					return fmt.Errorf("cross_request_detection.entropy_budget.exempt_domains[%d] %q: only exact hosts and *.example.com wildcards supported", i, raw)
+				}
+				c.CrossRequestDetection.EntropyBudget.ExemptDomains[i] = d
 			}
 		}
 		if c.CrossRequestDetection.FragmentReassembly.Enabled {
@@ -2843,7 +2865,7 @@ func Defaults() *Config {
 				// Cryptocurrency private keys
 				// Bitcoin WIF: base58check. Uncompressed (5 + 50 base58 = 51 chars) or
 				// compressed (K/L + 51 base58 = 52 chars). Mainnet only; testnet deferred.
-				{Name: "Bitcoin WIF Private Key", Regex: `(?:5[1-9A-HJ-NP-Za-km-z]{50}|[KL][1-9A-HJ-NP-Za-km-z]{51})`, Severity: "critical"},
+				{Name: "Bitcoin WIF Private Key", Regex: `(?:5[1-9A-HJ-NP-Za-km-z]{50}|[KL][1-9A-HJ-NP-Za-km-z]{51})`, Severity: "critical", Validator: ValidatorWIF},
 				// Extended private keys (BIP-32/49/84): xprv/yprv/zprv (mainnet) + tprv (testnet).
 				// 111 total chars, base58check encoded.
 				{Name: "Extended Private Key", Regex: `[xyzt]prv[1-9A-HJ-NP-Za-km-z]{107,108}`, Severity: "critical"},

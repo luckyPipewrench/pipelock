@@ -352,6 +352,31 @@ func TestFragmentBuffer_RepeatedIdenticalBodiesNotReported(t *testing.T) {
 	}
 }
 
+func TestFragmentBuffer_OldFragmentSecretNotReported(t *testing.T) {
+	// A complete secret in an OLDER fragment (not the latest) should be
+	// filtered by scanning all individual fragments, not just the latest.
+	// Without this fix, the concatenated buffer would match but the latest-
+	// only dedup wouldn't catch it, creating a false cross-request signal.
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	sc := New(cfg)
+	defer sc.Close()
+
+	fb := NewFragmentBuffer(65536, 1000, 300)
+	defer fb.Close()
+
+	// Fragment 1: contains a complete secret.
+	fb.Append(testSessionA, []byte("key="+"AKIA"+"IOSFODNN7EXAMPLE"))
+
+	// Fragment 2: clean content, no secret.
+	fb.Append(testSessionA, []byte("ok no secrets here"))
+
+	matches := fb.ScanForSecrets(context.Background(), testSessionA, sc)
+	if len(matches) != 0 {
+		t.Errorf("secret entirely in older fragment should not trigger cross-request signal, got %d matches: %v", len(matches), matches)
+	}
+}
+
 func TestFragmentBuffer_CleanupPartialExpiry(t *testing.T) {
 	// Mix old and new fragments within a session. Cleanup should remove only old ones.
 	fb := NewFragmentBuffer(65536, 1000, 1) // 1s window

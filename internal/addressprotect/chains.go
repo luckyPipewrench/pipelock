@@ -132,7 +132,7 @@ func (btcValidator) Validate(raw string) bool {
 	}
 
 	// Legacy P2PKH (version 0x00) or P2SH (version 0x05).
-	_, version, err := base58CheckDecode(raw)
+	_, version, err := Base58CheckDecode(raw)
 	if err != nil {
 		return false
 	}

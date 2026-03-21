@@ -630,8 +630,8 @@ func TestForwardHTTP_Adaptive_CEEActionUpgrade(t *testing.T) {
 		_ = resp.Body.Close()
 		_ = conn.Close()
 
-		if status == http.StatusForbidden {
-			t.Fatalf("CONNECT %d returned 403; CONNECT hostnames must not feed CEE entropy budget", i)
+		if status != http.StatusOK {
+			t.Fatalf("CONNECT %d returned %d, want 200; CONNECT hostnames must not feed CEE entropy budget", i, status)
 		}
 	}
 }

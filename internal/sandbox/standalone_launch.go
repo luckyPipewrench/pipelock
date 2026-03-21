@@ -170,6 +170,13 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 		Setpgid:   true,
 	}
 
+	// Strict mode: become subreaper so orphaned grandchildren are
+	// adopted by us instead of PID 1. This lets us reap them after
+	// the main child exits, even if they called setsid().
+	if cfg.Strict {
+		_ = SetChildSubreaper()
+	}
+
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("starting sandbox child: %w", err)
 	}
@@ -183,12 +190,16 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
 	}
 
+	// Strict mode: reap orphaned descendants adopted by subreaper.
+	// Best-effort: use timeout-based drain (existing behavior).
+	if cfg.Strict {
+		ReapOrphans()
+	}
+
 	// Close listener to prevent new connections.
 	_ = unixLn.Close()
 
-	// Wait for proxy goroutines to drain with a timeout. Detached
-	// grandchildren (setsid) escape process group kill and can hold
-	// bridge connections open indefinitely. The timeout prevents a hang.
+	// Wait for proxy goroutines to drain.
 	const proxyDrainTimeout = 5 * time.Second
 	done := make(chan struct{})
 	go func() {
@@ -197,10 +208,7 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 	}()
 	select {
 	case <-done:
-		// Clean drain.
 	case <-time.After(proxyDrainTimeout):
-		// Detached descendants holding connections. Force exit — the OS
-		// will clean up the TCP connections when the process exits.
 	}
 
 	// Clean up child's sandbox temp dir.

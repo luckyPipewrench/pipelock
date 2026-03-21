@@ -427,10 +427,6 @@ func TestSetNoNewPrivs_InProcess(t *testing.T) {
 	}
 }
 
-// unix_SYS_CLONE3 is SYS_CLONE3 — referenced via variable to avoid
-// potential cross-compilation issues with the constant.
-const unix_SYS_CLONE3 = 435
-
 func TestApplyRlimits_InProcess(t *testing.T) {
 	if runtime.GOOS != osLinux {
 		t.Skip("rlimits require linux")

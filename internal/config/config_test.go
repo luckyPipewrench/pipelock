@@ -12,26 +12,31 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 const (
-	testInvalid         = "invalid"
-	testSecretsPath     = "/path/to/secrets.txt"
-	testWebhookURL      = "https://example.com/hook"
-	testOTLPEndpoint    = "http://collector:4318"
-	testSyslogAddr      = "udp://syslog.example.com:514"
-	testAPIListen       = "0.0.0.0:9090"
-	testAPIListen2      = "0.0.0.0:9091"
-	testPatternName     = "Test Pattern"
-	testCustomName      = "Custom"
-	testToken           = "test-token"       //nolint:gosec // test credential
-	fieldDLPSecrets     = "dlp.secrets_file" //nolint:gosec // config field path, not a credential
-	fieldFwdProxy       = "forward_proxy.enabled"
-	fieldKSAPIListen    = "kill_switch.api_listen"
-	fieldTLSPassthrough = "tls_interception.passthrough_domains"
-	fieldSentry         = "sentry"
-	fieldSandbox        = "sandbox"
-	fieldSubEntExcl     = "fetch_proxy.monitoring.subdomain_entropy_exclusions"
+	testInvalid          = "invalid"
+	testSecretsPath      = "/path/to/secrets.txt"
+	testWebhookURL       = "https://example.com/hook"
+	testOTLPEndpoint     = "http://collector:4318"
+	testSyslogAddr       = "udp://syslog.example.com:514"
+	testAPIListen        = "0.0.0.0:9090"
+	testAPIListen2       = "0.0.0.0:9091"
+	testPatternName      = "Test Pattern"
+	testCustomName       = "Custom"
+	testToken            = "test-token" //nolint:gosec // test credential
+	testRevProxyListen   = ":8888"
+	testRevProxyUpstream = "http://localhost:7899"
+	testNotAURL          = "not-a-url"
+	fieldDLPSecrets      = "dlp.secrets_file" //nolint:gosec // config field path, not a credential
+	fieldFwdProxy        = "forward_proxy.enabled"
+	fieldKSAPIListen     = "kill_switch.api_listen"
+	fieldTLSPassthrough  = "tls_interception.passthrough_domains"
+	fieldSentry          = "sentry"
+	fieldSandbox         = "sandbox"
+	fieldSubEntExcl      = "fetch_proxy.monitoring.subdomain_entropy_exclusions"
 
 	// testLicenseFileCfg is a minimal config with license_file pointing to a
 	// relative file name. Used in multiple license loading tests.
@@ -4394,7 +4399,7 @@ func TestValidate_MCPWSListenerEmptyOrigin(t *testing.T) {
 func TestValidate_MCPWSListenerInvalidOrigin(t *testing.T) {
 	cfg := Defaults()
 	cfg.ApplyDefaults()
-	cfg.MCPWSListener.AllowedOrigins = []string{"not-a-url"}
+	cfg.MCPWSListener.AllowedOrigins = []string{testNotAURL}
 	err := cfg.Validate()
 	if err == nil {
 		t.Fatal("expected error for invalid origin")
@@ -4571,7 +4576,7 @@ func TestValidate_EmitOTLPValidConfig(t *testing.T) {
 
 func TestValidate_EmitOTLPInvalidEndpoint(t *testing.T) {
 	cfg := Defaults()
-	cfg.Emit.OTLP.Endpoint = "not-a-url"
+	cfg.Emit.OTLP.Endpoint = testNotAURL
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected error for invalid OTLP endpoint")
 	}
@@ -4878,7 +4883,7 @@ func TestValidate_EmitWebhookURL_Valid(t *testing.T) {
 func TestValidate_EmitWebhookURL_Invalid(t *testing.T) {
 	cfg := Defaults()
 	cfg.ApplyDefaults()
-	cfg.Emit.Webhook.URL = "not-a-url"
+	cfg.Emit.Webhook.URL = testNotAURL
 
 	err := cfg.Validate()
 	if err == nil {
@@ -8746,4 +8751,91 @@ func adaptiveTestConfig() *Config {
 	cfg.AdaptiveEnforcement.DecayPerCleanRequest = 0.5
 	cfg.ApplyDefaults()
 	return cfg
+}
+
+func TestValidate_ReverseProxy_MissingUpstream(t *testing.T) {
+	cfg := Defaults()
+	cfg.ReverseProxy.Enabled = true
+	cfg.ReverseProxy.Listen = testRevProxyListen
+	cfg.ApplyDefaults()
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for missing upstream")
+	}
+	if !strings.Contains(err.Error(), "reverse_proxy.upstream is required") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_ReverseProxy_InvalidUpstream(t *testing.T) {
+	cfg := Defaults()
+	cfg.ReverseProxy.Enabled = true
+	cfg.ReverseProxy.Listen = testRevProxyListen
+	cfg.ReverseProxy.Upstream = testNotAURL
+	cfg.ApplyDefaults()
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for invalid upstream")
+	}
+	if !strings.Contains(err.Error(), "must be http:// or https://") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_ReverseProxy_MissingListen(t *testing.T) {
+	cfg := Defaults()
+	cfg.ReverseProxy.Enabled = true
+	cfg.ReverseProxy.Upstream = testRevProxyUpstream
+	cfg.ApplyDefaults()
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for missing listen")
+	}
+	if !strings.Contains(err.Error(), "reverse_proxy.listen is required") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_ReverseProxy_ValidConfig(t *testing.T) {
+	cfg := Defaults()
+	cfg.ReverseProxy.Enabled = true
+	cfg.ReverseProxy.Listen = testRevProxyListen
+	cfg.ReverseProxy.Upstream = testRevProxyUpstream
+	cfg.ApplyDefaults()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected validation error: %v", err)
+	}
+}
+
+func TestValidate_ReverseProxy_DisabledSkipsValidation(t *testing.T) {
+	cfg := Defaults()
+	cfg.ReverseProxy.Enabled = false
+	// No upstream or listen — should be fine when disabled.
+	cfg.ApplyDefaults()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected validation error when disabled: %v", err)
+	}
+}
+
+func TestConfig_ReverseProxy_YAML(t *testing.T) {
+	input := `
+mode: balanced
+reverse_proxy:
+  enabled: true
+  listen: ":9999"
+  upstream: "http://localhost:7899"
+`
+	var cfg Config
+	if err := yaml.Unmarshal([]byte(input), &cfg); err != nil {
+		t.Fatalf("unmarshal config: %v", err)
+	}
+	if !cfg.ReverseProxy.Enabled {
+		t.Fatal("expected reverse_proxy.enabled=true")
+	}
+	if cfg.ReverseProxy.Listen != ":9999" {
+		t.Fatalf("expected listen :9999, got %q", cfg.ReverseProxy.Listen)
+	}
+	if cfg.ReverseProxy.Upstream != testRevProxyUpstream {
+		t.Fatalf("expected upstream %s, got %q", testRevProxyUpstream, cfg.ReverseProxy.Upstream)
+	}
 }

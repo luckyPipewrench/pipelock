@@ -58,8 +58,11 @@ func loadRulesConfig(configFile string) (*config.Config, error) {
 // HTTP fetch timeout for remote bundle downloads.
 const httpFetchTimeout = 30 * time.Second
 
-// schemeHTTPS is the HTTPS URL scheme string.
-const schemeHTTPS = "https"
+// URL scheme constants.
+const (
+	schemeHTTP  = "http"
+	schemeHTTPS = "https"
+)
 
 // rulesCmd returns the top-level "rules" command with all subcommands.
 func rulesCmd() *cobra.Command {

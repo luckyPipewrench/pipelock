@@ -130,6 +130,7 @@ Quick start:
 		rulesCmd(),
 		sandboxCmd(),
 		internalRedirectCmd(),
+		simulateCmd(),
 		signCmd(),
 		testCmd(),
 		tlsCmd(),

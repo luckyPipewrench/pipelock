@@ -81,6 +81,10 @@ type Metrics struct {
 	adaptiveUpgrades        *prometheus.CounterVec
 	adaptiveSessionsCurrent *prometheus.GaugeVec
 
+	// Reverse proxy: request counting and scan block tracking.
+	reverseProxyRequests    *prometheus.CounterVec
+	reverseProxyScanBlocked *prometheus.CounterVec
+
 	wsConnectionCount int64
 
 	mu                sync.Mutex
@@ -350,6 +354,18 @@ func New() *Metrics {
 		Help:      "Currently escalated sessions by enforcement level.",
 	}, []string{"level"})
 
+	reverseProxyRequests := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "pipelock",
+		Name:      "reverse_proxy_requests_total",
+		Help:      "Total reverse proxy requests by method and status.",
+	}, []string{"method", "status"})
+
+	reverseProxyScanBlocked := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "pipelock",
+		Name:      "reverse_proxy_scan_blocked_total",
+		Help:      "Reverse proxy requests blocked by scanning.",
+	}, []string{"direction", "reason"})
+
 	reg.MustRegister(requestsTotal, scannerHits, requestLatency,
 		tunnelsTotal, tunnelDuration, tunnelBytes, activeTunnels,
 		wsConnectionsTotal, wsDuration, wsBytes, activeWS, wsFrames, wsScanHits, wsRedirectHints,
@@ -361,7 +377,8 @@ func New() *Metrics {
 		scanAPIRequests, scanAPIDuration, scanAPIFindings, scanAPIErrors, scanAPIInflight,
 		addressFindings,
 		fileSentryFindings,
-		adaptiveUpgrades, adaptiveSessionsCurrent)
+		adaptiveUpgrades, adaptiveSessionsCurrent,
+		reverseProxyRequests, reverseProxyScanBlocked)
 
 	return &Metrics{
 		registry:                    reg,
@@ -405,6 +422,8 @@ func New() *Metrics {
 		FileSentryFindings:          fileSentryFindings,
 		adaptiveUpgrades:            adaptiveUpgrades,
 		adaptiveSessionsCurrent:     adaptiveSessionsCurrent,
+		reverseProxyRequests:        reverseProxyRequests,
+		reverseProxyScanBlocked:     reverseProxyScanBlocked,
 		startTime:                   time.Now(),
 		topBlockedDomains:           make(map[string]int64),
 		topScannerHits:              make(map[string]int64),
@@ -866,6 +885,36 @@ func (m *Metrics) SetAdaptiveSessionLevel(level string, delta float64) {
 		return
 	}
 	m.adaptiveSessionsCurrent.WithLabelValues(level).Add(delta)
+}
+
+// RecordReverseProxyRequest increments the reverse proxy request counter.
+// Method is normalized to a known set to prevent unbounded cardinality
+// from arbitrary client-controlled HTTP methods.
+func (m *Metrics) RecordReverseProxyRequest(method, status string) {
+	if m == nil {
+		return
+	}
+	m.reverseProxyRequests.WithLabelValues(normalizeHTTPMethod(method), status).Inc()
+}
+
+// normalizeHTTPMethod maps HTTP methods to a bounded label set.
+// Unknown methods are grouped as "OTHER" to prevent cardinality explosion.
+func normalizeHTTPMethod(method string) string {
+	switch method {
+	case "GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS":
+		return method
+	default:
+		return "OTHER"
+	}
+}
+
+// RecordReverseProxyScanBlocked increments the reverse proxy scan blocked counter.
+// direction is "request" (DLP on inbound body) or "response" (injection on response).
+func (m *Metrics) RecordReverseProxyScanBlocked(direction, reason string) {
+	if m == nil {
+		return
+	}
+	m.reverseProxyScanBlocked.WithLabelValues(direction, reason).Inc()
 }
 
 // RecordFileSentryFinding increments the file sentry findings counter.

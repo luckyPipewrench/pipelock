@@ -258,6 +258,18 @@ func (p *Proxy) CurrentConfig() *config.Config {
 	return p.cfgPtr.Load()
 }
 
+// ConfigPtr returns the atomic config pointer. Used by the reverse proxy
+// handler to share the same config and receive hot-reload updates.
+func (p *Proxy) ConfigPtr() *atomic.Pointer[config.Config] {
+	return &p.cfgPtr
+}
+
+// ScannerPtr returns the atomic scanner pointer. Used by the reverse proxy
+// handler to share the same scanner and receive hot-reload updates.
+func (p *Proxy) ScannerPtr() *atomic.Pointer[scanner.Scanner] {
+	return &p.scannerPtr
+}
+
 // Reload atomically swaps the config and scanner for hot-reload support.
 // The old scanner is closed to release its rate limiter goroutine.
 // Session manager lifecycle is toggled when session_profiling.enabled changes.

@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **OWASP MCP Top 10 coverage mapping:** Comprehensive mapping of pipelock's controls against the OWASP MCP Security Top 10 taxonomy. (#274)
 - **NIST 800-53 control mapping:** 7 control families (AC, AU, CA, CM, IR, SC, SI) mapped with per-control coverage assessment. (#274)
 
+- **Attack simulation:** `pipelock simulate` runs 24 synthetic attack scenarios against a config and reports a security scorecard. 5 categories: DLP exfiltration, prompt injection, tool poisoning, SSRF, URL evasion. Scanner attribution verifies the correct layer detected each attack. `--json` output for CI, exit code 1 on misses. (#277)
+- **HTTP reverse proxy:** Generic reverse proxy mode for any HTTP service with bidirectional body scanning. Request bodies scanned for DLP (secret exfiltration), response bodies scanned for prompt injection. Fail-closed on compressed bodies, read errors, and ask mode. `pipelock run --reverse-proxy --reverse-upstream URL`. New `reverse_proxy` config section. (#278)
+
 ### Changed
 - Action precedence updated: block(4) > redirect(3) > ask(2) > warn(1). Unknown actions still fail closed to block.
 - Direct dependencies increased from 15 to 17 (added go-landlock for sandbox, updated protobuf).

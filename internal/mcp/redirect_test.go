@@ -6,6 +6,7 @@ package mcp
 import (
 	"encoding/json"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -132,5 +133,63 @@ func TestExecuteRedirect_NonexistentCommand(t *testing.T) {
 	}
 	if result.Error == "" {
 		t.Error("expected non-empty error message")
+	}
+}
+
+func TestArgsDigest(t *testing.T) {
+	d := argsDigest(`{"command":"curl https://example.com"}`)
+	if !strings.HasPrefix(d, "sha256:") {
+		t.Errorf("expected sha256: prefix, got %q", d)
+	}
+	if !strings.Contains(d, "len=") {
+		t.Errorf("expected len= in digest, got %q", d)
+	}
+	// Deterministic: same input = same output.
+	if d2 := argsDigest(`{"command":"curl https://example.com"}`); d != d2 {
+		t.Errorf("digest not deterministic: %q != %q", d, d2)
+	}
+	// Different input = different digest.
+	if d3 := argsDigest(`{"command":"wget"}`); d == d3 {
+		t.Error("different inputs produced same digest")
+	}
+}
+
+func TestExtractToolCallFields_Valid(t *testing.T) {
+	line := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"bash","arguments":{"command":"ls"}}}`)
+	name, args := extractToolCallFields(line)
+	if name != "bash" {
+		t.Errorf("name = %q, want bash", name)
+	}
+	if args != `{"command":"ls"}` {
+		t.Errorf("args = %q, want {\"command\":\"ls\"}", args)
+	}
+}
+
+func TestExtractToolCallFields_InvalidJSON(t *testing.T) {
+	name, args := extractToolCallFields([]byte(`not json`))
+	if name != "" || args != "" {
+		t.Errorf("expected empty on invalid JSON, got name=%q args=%q", name, args)
+	}
+}
+
+func TestExtractToolCallFields_NullArguments(t *testing.T) {
+	line := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"test","arguments":null}}`)
+	name, args := extractToolCallFields(line)
+	if name != "test" {
+		t.Errorf("name = %q, want test", name)
+	}
+	if args != "{}" {
+		t.Errorf("args = %q, want {} for null arguments", args)
+	}
+}
+
+func TestExtractToolCallFields_MissingArguments(t *testing.T) {
+	line := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"test"}}`)
+	name, args := extractToolCallFields(line)
+	if name != "test" {
+		t.Errorf("name = %q, want test", name)
+	}
+	if args != "{}" {
+		t.Errorf("args = %q, want {} for missing arguments", args)
 	}
 }

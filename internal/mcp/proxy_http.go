@@ -587,12 +587,20 @@ func startGETStream(
 			default:
 			}
 
-			// Kill switch: stop reconnecting when active. Without this,
+			// Kill switch: pause reconnecting while active. Without this,
 			// the retry loop keeps establishing outbound connections even
-			// though ForwardScanned blocks every message.
+			// though ForwardScanned blocks every message. Wait here instead
+			// of returning so the goroutine resumes when the switch clears.
 			if ks != nil && ks.IsActive() {
-				_, _ = fmt.Fprintf(safeLogW, "pipelock: GET stream stopped: kill switch active\n")
-				return
+				_, _ = fmt.Fprintf(safeLogW, "pipelock: GET stream paused: kill switch active\n")
+				for ks.IsActive() {
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(time.Second):
+					}
+				}
+				_, _ = fmt.Fprintf(safeLogW, "pipelock: GET stream resuming: kill switch cleared\n")
 			}
 
 			reader, err := httpClient.OpenGETStream(ctx)

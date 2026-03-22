@@ -1638,13 +1638,12 @@ func (c *Config) Validate() error {
 		}
 		// Validate redirect profiles.
 		for name, profile := range c.MCPToolPolicy.RedirectProfiles {
-			if len(profile.Exec) == 0 {
+			if len(profile.Exec) == 0 || profile.Exec[0] == "" {
 				return fmt.Errorf("mcp_tool_policy redirect_profile %q has empty exec", name)
 			}
-		}
-		// Default action=redirect requires at least one redirect profile.
-		if c.MCPToolPolicy.Action == ActionRedirect && len(c.MCPToolPolicy.RedirectProfiles) == 0 {
-			return fmt.Errorf("mcp_tool_policy action is redirect but no redirect_profiles defined")
+			if profile.MatchAbsPath && !filepath.IsAbs(profile.Exec[0]) {
+				return fmt.Errorf("mcp_tool_policy redirect_profile %q: match_abs_path is true but exec[0] %q is not absolute", name, profile.Exec[0])
+			}
 		}
 		for i, r := range c.MCPToolPolicy.Rules {
 			if r.Name == "" {

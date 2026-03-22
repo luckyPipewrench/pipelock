@@ -375,8 +375,13 @@ func ValidateMergedAgent(name string, cfg *config.Config) error {
 			return fmt.Errorf("agent %q: mcp_tool_policy.action must be %q, %q, or %q, got %q", name, config.ActionBlock, config.ActionWarn, config.ActionRedirect, cfg.MCPToolPolicy.Action)
 		}
 	}
-	// Validate redirect profile references in agent policy rules.
+	// Validate redirect profiles and rule references in agent policy.
 	if cfg.MCPToolPolicy.Enabled {
+		for pname, profile := range cfg.MCPToolPolicy.RedirectProfiles {
+			if len(profile.Exec) == 0 || profile.Exec[0] == "" {
+				return fmt.Errorf("agent %q: redirect_profile %q has empty exec", name, pname)
+			}
+		}
 		for _, r := range cfg.MCPToolPolicy.Rules {
 			effectiveAction := r.Action
 			if effectiveAction == "" {

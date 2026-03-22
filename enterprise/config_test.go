@@ -870,6 +870,21 @@ func TestValidateMergedAgent_RedirectUnknownProfile(t *testing.T) {
 	}
 }
 
+func TestValidateMergedAgent_RedirectEmptyExec(t *testing.T) {
+	cfg := testConfig()
+	cfg.MCPToolPolicy.Enabled = true
+	cfg.MCPToolPolicy.Action = config.ActionWarn
+	cfg.MCPToolPolicy.RedirectProfiles = map[string]config.RedirectProfile{
+		"bad": {Exec: []string{""}, Reason: "empty string exec"},
+	}
+	cfg.MCPToolPolicy.Rules = []config.ToolPolicyRule{
+		{Name: "test", ToolPattern: "bash"},
+	}
+	if err := ValidateMergedAgent("test-agent", cfg); err == nil {
+		t.Error("expected error for redirect_profile with empty exec in merged agent")
+	}
+}
+
 func TestResolvePublicKey_InvalidHex(t *testing.T) {
 	cfg := testConfig()
 	cfg.LicensePublicKey = "not-valid-hex"

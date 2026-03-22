@@ -125,7 +125,7 @@ func RunProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, clientIn io.
 	// Clean up sandbox child and temp dir.
 	if sandboxCmd.Process != nil {
 		_ = sandboxCmd.Process.Signal(os.Kill)
-		sandbox.CleanupChildSandboxDir(sandboxCmd.Process.Pid)
+		sandbox.CleanupSandboxCmd(sandboxCmd)
 	}
 
 	// Drain with timeout — detached descendants can hold pipes open.

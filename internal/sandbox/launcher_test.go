@@ -273,15 +273,15 @@ func TestLaunchSandboxed_RejectsInvalidWorkspace(t *testing.T) {
 }
 
 func TestLaunchSandboxed_NonLinuxReturnsError(t *testing.T) {
-	if runtime.GOOS == osLinux {
-		t.Skip("testing non-linux behavior")
+	if runtime.GOOS == osLinux || runtime.GOOS == "darwin" {
+		t.Skip("testing non-linux/non-darwin behavior")
 	}
 	_, err := LaunchSandboxed(LaunchConfig{
 		Command:   []string{"echo", "test"},
 		Workspace: t.TempDir(),
 	})
 	if err == nil {
-		t.Error("expected error on non-linux")
+		t.Error("expected error on unsupported platform")
 	}
 	if !errors.Is(err, ErrUnavailable) {
 		t.Errorf("expected ErrUnavailable, got: %v", err)

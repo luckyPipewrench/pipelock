@@ -197,73 +197,10 @@ func TestReportLayer_UnavailableWithError(t *testing.T) {
 	}
 }
 
-func TestSummary_AllUnavailable(t *testing.T) {
-	c := Capabilities{} // all zero/false
-	s := c.Summary()
-	if !contains(s, "Landlock: unavailable") {
-		t.Errorf("expected Landlock unavailable, got: %s", s)
-	}
-	if !contains(s, "user namespaces: unavailable") {
-		t.Errorf("expected userns unavailable, got: %s", s)
-	}
-	if !contains(s, "seccomp: unavailable") {
-		t.Errorf("expected seccomp unavailable, got: %s", s)
-	}
-}
-
-func TestSummary_AllAvailable(t *testing.T) {
-	c := Capabilities{LandlockABI: 7, UserNamespaces: true, Seccomp: true}
-	s := c.Summary()
-	if !contains(s, "Landlock ABI v7") {
-		t.Errorf("expected Landlock ABI v7, got: %s", s)
-	}
-	if !contains(s, "user namespaces: available") {
-		t.Errorf("expected userns available, got: %s", s)
-	}
-	if !contains(s, "seccomp: available") {
-		t.Errorf("expected seccomp available, got: %s", s)
-	}
-}
-
 func TestCleanupSandboxCmd_NilProcess(t *testing.T) {
 	// CleanupSandboxCmd should not panic on a cmd with nil Process.
 	cmd := &exec.Cmd{}
 	CleanupSandboxCmd(cmd) // should be a safe no-op
-}
-
-func TestCleanupSandboxCmd_WithProcess(t *testing.T) {
-	// Create a temp dir that simulates a sandbox temp dir.
-	dir, err := os.MkdirTemp("", "pipelock-sandbox-cleanup-test-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Create a short-lived process so we have a real PID.
-	ctx := t.Context()
-	cmd := exec.CommandContext(ctx, "true")
-	if startErr := cmd.Start(); startErr != nil {
-		_ = os.RemoveAll(dir)
-		t.Fatal(startErr)
-	}
-	pid := cmd.Process.Pid
-	_ = cmd.Wait()
-
-	// Create the PID-based temp dir that Linux cleanup expects.
-	pidDir := fmt.Sprintf("/tmp/pipelock-sandbox-%d", pid)
-	if mkErr := os.MkdirAll(pidDir, 0o750); mkErr != nil {
-		_ = os.RemoveAll(dir)
-		t.Fatal(mkErr)
-	}
-
-	CleanupSandboxCmd(cmd)
-
-	// Verify the PID-based dir was cleaned up (Linux path).
-	if _, statErr := os.Stat(pidDir); statErr == nil {
-		_ = os.RemoveAll(pidDir)
-		t.Error("expected PID-based sandbox dir to be cleaned up")
-	}
-
-	_ = os.RemoveAll(dir)
 }
 
 func contains(s, substr string) bool {

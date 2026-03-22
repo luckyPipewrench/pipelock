@@ -2360,8 +2360,8 @@ func TestForwardHTTPResponseInjection_SuppressedPassesThrough(t *testing.T) {
 		t.Fatalf("expected 200 (suppressed), got %d", resp.StatusCode)
 	}
 	body, _ := io.ReadAll(resp.Body)
-	if !strings.Contains(string(body), "Ignore all previous") {
-		t.Fatal("suppressed response body should pass through unchanged")
+	if string(body) != injectionPayload {
+		t.Fatalf("suppressed response body should pass through unchanged, got: %s", body)
 	}
 }
 

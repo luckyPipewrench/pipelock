@@ -222,6 +222,27 @@ func TestSyntheticEnv_AllowsSafeExtraEnv(t *testing.T) {
 	}
 }
 
+func TestSandboxPATH_ContainsSystemDirs(t *testing.T) {
+	p := sandboxPATH()
+	if !strings.Contains(p, "/usr/bin") {
+		t.Error("expected /usr/bin in sandbox PATH")
+	}
+	if !strings.Contains(p, "/usr/local/bin") {
+		t.Error("expected /usr/local/bin in sandbox PATH")
+	}
+}
+
+func TestPlatformDefaultPolicy_ReturnsValidPolicy(t *testing.T) {
+	dir := t.TempDir()
+	p := PlatformDefaultPolicy(dir)
+	if p.Workspace != dir {
+		t.Errorf("workspace = %q, want %q", p.Workspace, dir)
+	}
+	if len(p.AllowReadDirs) == 0 {
+		t.Error("expected non-empty AllowReadDirs")
+	}
+}
+
 // envValue extracts the value of a key from an env slice.
 func envValue(env []string, key string) string {
 	prefix := key + "="

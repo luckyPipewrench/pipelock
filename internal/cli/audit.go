@@ -140,6 +140,8 @@ Examples:
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "print suppressed findings to stderr")
 	cmd.MarkFlagsMutuallyExclusive("json", "format")
 
+	cmd.AddCommand(auditScoreCmd())
+
 	return cmd
 }
 

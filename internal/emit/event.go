@@ -100,6 +100,7 @@ var EventSeverity = map[string]Severity{
 	"config_reload": SeverityInfo,
 	"redirect":      SeverityInfo,
 	"forward_http":  SeverityInfo,
+	"tool_redirect": SeverityInfo,
 }
 
 // ChainDetectionSeverity returns the severity for a chain detection event

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -92,7 +93,7 @@ func SyntheticEnv(sandboxDir, workspace string, extraEnv []string) ([]string, er
 		"XDG_DATA_HOME="+filepath.Join(homeDir, "data"),
 		"TMPDIR="+filepath.Join(sandboxDir, "tmp"),
 		"SHELL=/bin/sh",
-		"PATH=/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin",
+		"PATH="+sandboxPATH(),
 		"PWD="+workspace,
 	)
 
@@ -119,4 +120,15 @@ func SyntheticEnv(sandboxDir, workspace string, extraEnv []string) ([]string, er
 	}
 
 	return env, nil
+}
+
+// sandboxPATH returns the PATH for sandboxed child processes. On macOS arm64,
+// includes Homebrew paths (/opt/homebrew/bin, /opt/homebrew/sbin) so that
+// tools installed via brew are available inside the sandbox.
+func sandboxPATH() string {
+	basePath := "/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin"
+	if runtime.GOOS == "darwin" && runtime.GOARCH == "arm64" {
+		return "/opt/homebrew/bin:/opt/homebrew/sbin:" + basePath
+	}
+	return basePath
 }

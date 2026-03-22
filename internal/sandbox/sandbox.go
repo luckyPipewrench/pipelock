@@ -88,8 +88,21 @@ type Policy struct {
 }
 
 // dangerousRoots are paths that must never be used as the workspace root.
-// These are checked after symlink resolution.
-var dangerousRoots = []string{"/", "/tmp", "/home", "/etc", "/usr", "/var"}
+// These are checked after symlink resolution. Includes both Linux and macOS paths.
+// dangerousRootsBase are paths that must never be used as workspace.
+// resolveDangerousRoots expands these through symlink resolution so that
+// macOS symlinks (/tmp → /private/tmp, /etc → /private/etc) are covered.
+var dangerousRootsBase = []string{
+	"/", "/tmp", "/home", "/etc", "/usr", "/var",
+	"/Users",        // macOS home directory root
+	"/Applications", // macOS applications
+	"/System",       // macOS system files
+	"/Library",      // macOS system library
+	"/private",      // macOS /private (contains /etc, /tmp, /var)
+	"/private/tmp",  // macOS resolved /tmp
+	"/private/etc",  // macOS resolved /etc
+	"/private/var",  // macOS resolved /var
+}
 
 // ValidateWorkspace checks that the workspace path is safe for use as a
 // sandbox root. It rejects dangerous broad paths, symlinks that escape
@@ -121,14 +134,25 @@ func ValidateWorkspace(workspace string) error {
 		return fmt.Errorf("sandbox workspace must not be your home directory (%s)", home)
 	}
 
-	for _, root := range dangerousRoots {
-		if resolved == root {
-			return fmt.Errorf("sandbox workspace must not be %s", root)
+	// Build resolved dangerous roots set (handles macOS symlinks like /tmp → /private/tmp).
+	dangerousSet := make(map[string]bool, len(dangerousRootsBase)*2)
+	for _, root := range dangerousRootsBase {
+		dangerousSet[root] = true
+		if resolvedRoot, rerr := filepath.EvalSymlinks(root); rerr == nil {
+			dangerousSet[resolvedRoot] = true
 		}
 	}
 
+	if dangerousSet[resolved] {
+		return fmt.Errorf("sandbox workspace must not be %s", resolved)
+	}
+
 	// Reject if workspace is an ancestor of sensitive directories.
-	sensitiveChildren := []string{"/home", "/etc", "/usr", "/var", "/lib", "/lib64"}
+	sensitiveChildren := []string{
+		"/home", "/etc", "/usr", "/var", "/lib", "/lib64",
+		"/Users", "/Applications", "/System", "/Library",
+		"/private/tmp", "/private/etc", "/private/var",
+	}
 	for _, child := range sensitiveChildren {
 		if strings.HasPrefix(child, resolved+"/") {
 			return fmt.Errorf("sandbox workspace %s is too broad (contains %s)", resolved, child)
@@ -222,19 +246,27 @@ func secretDirs() []string {
 // a symlink like /tmp/link → $HOME would pass string-prefix validation
 // but grant access to the real home directory.
 func ValidatePolicy(p Policy) error {
-	secrets := secretDirs()
-	if len(secrets) == 0 {
+	// Combine hardcoded secrets with policy-declared deny paths.
+	// On macOS, DefaultPolicyDarwin adds ~/Library/Keychains, ~/Library/Cookies
+	// to DenyReadDirs. ValidatePolicy must check both sources.
+	protectedPaths := secretDirs()
+	protectedPaths = append(protectedPaths, p.DenyReadDirs...)
+	if len(protectedPaths) == 0 {
 		return nil
 	}
 
-	// Resolve secret paths too — symlinks in HOME could affect comparison.
-	resolvedSecrets := make([]string, 0, len(secrets))
-	for _, s := range secrets {
+	// Resolve protected paths — symlinks in HOME could affect comparison.
+	resolvedSecrets := make([]string, 0, len(protectedPaths))
+	seen := make(map[string]bool, len(protectedPaths))
+	for _, s := range protectedPaths {
 		resolved, err := filepath.EvalSymlinks(s)
 		if err != nil {
 			resolved = filepath.Clean(s)
 		}
-		resolvedSecrets = append(resolvedSecrets, resolved)
+		if !seen[resolved] {
+			resolvedSecrets = append(resolvedSecrets, resolved)
+			seen[resolved] = true
+		}
 	}
 
 	checkDirs := func(paths []string, label string) error {

@@ -370,9 +370,31 @@ func ValidateMergedAgent(name string, cfg *config.Config) error {
 		}
 	}
 	if cfg.MCPToolPolicy.Enabled && cfg.MCPToolPolicy.Action != "" {
-		validActions := map[string]bool{config.ActionBlock: true, config.ActionWarn: true}
+		validActions := map[string]bool{config.ActionBlock: true, config.ActionWarn: true, config.ActionRedirect: true}
 		if !validActions[cfg.MCPToolPolicy.Action] {
-			return fmt.Errorf("agent %q: mcp_tool_policy.action must be %q or %q, got %q", name, config.ActionBlock, config.ActionWarn, cfg.MCPToolPolicy.Action)
+			return fmt.Errorf("agent %q: mcp_tool_policy.action must be %q, %q, or %q, got %q", name, config.ActionBlock, config.ActionWarn, config.ActionRedirect, cfg.MCPToolPolicy.Action)
+		}
+	}
+	// Validate redirect profiles and rule references in agent policy.
+	if cfg.MCPToolPolicy.Enabled {
+		for pname, profile := range cfg.MCPToolPolicy.RedirectProfiles {
+			if len(profile.Exec) == 0 || profile.Exec[0] == "" {
+				return fmt.Errorf("agent %q: redirect_profile %q has empty exec", name, pname)
+			}
+		}
+		for _, r := range cfg.MCPToolPolicy.Rules {
+			effectiveAction := r.Action
+			if effectiveAction == "" {
+				effectiveAction = cfg.MCPToolPolicy.Action
+			}
+			if effectiveAction == config.ActionRedirect {
+				if r.RedirectProfile == "" {
+					return fmt.Errorf("agent %q: mcp_tool_policy rule %q has action=redirect but no redirect_profile", name, r.Name)
+				}
+				if _, ok := cfg.MCPToolPolicy.RedirectProfiles[r.RedirectProfile]; !ok {
+					return fmt.Errorf("agent %q: mcp_tool_policy rule %q references unknown redirect_profile %q", name, r.Name, r.RedirectProfile)
+				}
+			}
 		}
 	}
 	return nil

@@ -9,6 +9,10 @@ updates:
     labels:
       - dependencies
     open-pull-requests-limit: 5
+    groups:
+      go-deps:
+        patterns:
+          - "*"
 
   - package-ecosystem: github-actions
     directory: /
@@ -18,3 +22,7 @@ updates:
       prefix: "ci"
     labels:
       - ci
+    groups:
+      ci-actions:
+        patterns:
+          - "*"

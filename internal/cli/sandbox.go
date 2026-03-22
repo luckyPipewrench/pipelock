@@ -161,7 +161,7 @@ Examples:
 	cmd.Flags().StringVar(&workspace, "workspace", "", "sandbox workspace directory (default: current directory)")
 	cmd.Flags().StringVarP(&configFile, "config", "c", "", "config file path")
 	cmd.Flags().BoolVar(&strict, "strict", false, "strict mode: error if any containment layer is unavailable, mount private /dev/shm, block clone3")
-	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "check sandbox readiness without launching (exit 0=ready, 1=degraded, 2=error)")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "check sandbox capabilities without launching (exit 0=capabilities ok, 1=degraded, 2=error)")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "output dry-run result as JSON")
 	return cmd
 }

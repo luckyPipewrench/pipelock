@@ -10,7 +10,7 @@ import (
 
 // PreflightStatus indicates the overall sandbox readiness.
 const (
-	StatusReady    = "ready"
+	StatusReady    = "capabilities_ok"
 	StatusDegraded = "degraded"
 	StatusError    = "error"
 )

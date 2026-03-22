@@ -6,6 +6,7 @@ package proxy
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -985,6 +986,82 @@ func TestReverseProxy_BlockScrubsUpstreamHeaders(t *testing.T) {
 	// Only pipelock's own headers should be present.
 	if resp.Header.Get("Content-Type") != "application/json" {
 		t.Fatalf("expected Content-Type application/json, got %q", resp.Header.Get("Content-Type"))
+	}
+}
+
+func TestReverseProxy_HeaderDLPDefaultAction(t *testing.T) {
+	// Covers the action == "" fallback in header DLP path.
+	// Set action empty AFTER ApplyDefaults (which would fill in "warn").
+	cfg := reverseTestConfig()
+	cfg.RequestBodyScanning.Enabled = true
+	cfg.RequestBodyScanning.ScanHeaders = true
+	cfg.RequestBodyScanning.HeaderMode = "all"
+	cfg.RequestBodyScanning.Action = "" // override after defaults
+
+	upstream := func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("upstream received request despite header DLP match")
+		w.WriteHeader(http.StatusOK)
+	}
+	proxy := reverseTestSetup(t, cfg, upstream)
+
+	key := "AKIA" + "IOSFODNN7EXAMPLE"
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, proxy.URL+"/api", nil)
+	req.Header.Set("Authorization", "Bearer "+key)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 (default block action)", resp.StatusCode)
+	}
+}
+
+func TestReverseProxy_DefaultMaxBodyBytes(t *testing.T) {
+	// Covers the maxBytes <= 0 fallback to default.
+	cfg := reverseTestConfig()
+	cfg.RequestBodyScanning.Enabled = true
+	cfg.RequestBodyScanning.MaxBodyBytes = 0 // zero → use default
+
+	upstream := func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}
+	proxy := reverseTestSetup(t, cfg, upstream)
+
+	resp := testPost(t, proxy.URL+"/api", "application/json", `{"clean": true}`)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200 (clean body with default max)", resp.StatusCode)
+	}
+}
+
+func TestReverseProxy_BodyDLPDefaultActionChain(t *testing.T) {
+	// Covers both action == "" fallbacks in scanRequest (lines 176-181).
+	// Build config from scratch to ensure Action stays empty.
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.APIAllowlist = nil
+	cfg.RequestBodyScanning.Enabled = true
+	cfg.RequestBodyScanning.MaxBodyBytes = 1024 * 1024
+	cfg.ResponseScanning.Enabled = true
+	cfg.ResponseScanning.Action = config.ActionBlock
+	cfg.ApplyDefaults()
+	// Override AFTER ApplyDefaults — this is the field under test.
+	cfg.RequestBodyScanning.Action = "" // both result.Action and cfg.Action empty → falls to block
+
+	upstream := func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("upstream received request despite body DLP match")
+		_, _ = w.Write([]byte("ok"))
+	}
+	proxy := reverseTestSetup(t, cfg, upstream)
+
+	// Use a realistic AWS key that triggers DLP pattern matching.
+	key := "AKIA" + "IOSFODNN7EXAMPLE"
+	body := fmt.Sprintf(`{"credentials": {"aws_access_key_id": "%s"}}`, key)
+	resp := testPost(t, proxy.URL+"/api", "text/plain", body)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 (default block on empty action)", resp.StatusCode)
 	}
 }
 

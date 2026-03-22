@@ -761,6 +761,7 @@ func ForwardScannedInput(
 			}
 		}
 
+		redirectSucceeded := false
 		switch effectiveAction {
 		case config.ActionBlock:
 			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked %s request (%s)\n",
@@ -826,6 +827,7 @@ func ForwardScannedInput(
 					}
 				} else {
 					finalResult = "redirected"
+					redirectSucceeded = true
 					_, _ = fmt.Fprintf(logW, "pipelock: input line %d: redirected %s request via profile %q (%dms)\n",
 						lineNum, method, policyVerdict.RedirectProfile, result.LatencyMs)
 					blockedCh <- BlockedRequest{
@@ -848,7 +850,7 @@ func ForwardScannedInput(
 				}
 			}
 			if auditLogger != nil {
-				auditLogger.LogToolRedirect("", toolName, toolArgs, policyVerdict.RedirectProfile, profile.Reason, policyRuleName, finalResult, result.LatencyMs)
+				auditLogger.LogToolRedirect("", toolName, argsDigest(toolArgs), policyVerdict.RedirectProfile, profile.Reason, policyRuleName, finalResult, result.LatencyMs)
 			}
 		case config.ActionAsk:
 			// HITL for input scanning is impractical — fall back to block.
@@ -885,9 +887,11 @@ func ForwardScannedInput(
 		}
 
 		// Signal recording: record after action is taken.
-		// Redirect falls through to block (fail-closed), so record as block too.
+		// Successful redirects are clean (not a block). Failed redirects escalate.
 		switch {
-		case effectiveAction == config.ActionBlock || effectiveAction == config.ActionRedirect:
+		case effectiveAction == config.ActionBlock:
+			recordAdaptiveSignal(session.SignalBlock)
+		case effectiveAction == config.ActionRedirect && !redirectSucceeded:
 			recordAdaptiveSignal(session.SignalBlock)
 		case len(reasons) > 0:
 			recordAdaptiveSignal(session.SignalNearMiss)

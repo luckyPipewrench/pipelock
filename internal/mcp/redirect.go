@@ -6,6 +6,8 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os/exec"
@@ -14,6 +16,13 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 )
+
+// argsDigest returns a SHA-256 prefix + length summary of tool arguments
+// for audit logging. Never log raw args — they may contain secrets.
+func argsDigest(args string) string {
+	h := sha256.Sum256([]byte(args))
+	return fmt.Sprintf("sha256:%s len=%d", hex.EncodeToString(h[:8]), len(args))
+}
 
 // redirectTimeout is the maximum time a redirect handler may run before
 // being killed. Fail-closed: timeout produces a block, not a forward.
@@ -80,6 +89,7 @@ func executeRedirect(profile config.RedirectProfile, requestID json.RawMessage, 
 	}
 
 	cmd := exec.CommandContext(ctx, profile.Exec[0], args...) //nolint:gosec // exec path is validated at config load
+	cmd.Env = safeEnv()
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

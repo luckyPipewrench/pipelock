@@ -456,7 +456,7 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 			}
 		}
 		if auditLogger != nil {
-			auditLogger.LogToolRedirect(auditSessionKey, toolName, toolArgs, policyVerdict.RedirectProfile, profile.Reason, policyRuleName, finalResult, result.LatencyMs)
+			auditLogger.LogToolRedirect(auditSessionKey, toolName, argsDigest(toolArgs), policyVerdict.RedirectProfile, profile.Reason, policyRuleName, finalResult, result.LatencyMs)
 		}
 		return br
 	case config.ActionAsk:

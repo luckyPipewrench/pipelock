@@ -450,17 +450,11 @@ func (l *Logger) LogRedirect(originalURL, redirectURL, clientIP, requestID, agen
 
 // LogToolRedirect logs an MCP tool call redirect event. This is distinct from
 // LogRedirect (HTTP redirect hops). result is "redirected" or "blocked" (on failure).
-func (l *Logger) LogToolRedirect(sessionID, toolName, originalArgs, redirectProfile, redirectReason, policyRule, result string, latencyMs int64) {
-	// Truncate original args to prevent log bloat from large payloads.
-	const maxArgLen = 512
-	if len(originalArgs) > maxArgLen {
-		originalArgs = originalArgs[:maxArgLen] + "..."
-	}
-
+func (l *Logger) LogToolRedirect(sessionID, toolName, argsDigest, redirectProfile, redirectReason, policyRule, result string, latencyMs int64) {
 	ev := l.zl.Info().
 		Str("event", string(EventToolRedirect)).
 		Str("tool_name", sanitizeString(toolName)).
-		Str("original_args", sanitizeString(originalArgs)).
+		Str("args_digest", argsDigest).
 		Str("redirect_profile", sanitizeString(redirectProfile)).
 		Str("redirect_reason", sanitizeString(redirectReason)).
 		Str("policy_rule", sanitizeString(policyRule)).
@@ -474,7 +468,7 @@ func (l *Logger) LogToolRedirect(sessionID, toolName, originalArgs, redirectProf
 	if l.emitter != nil {
 		l.emitter.Emit(context.Background(), string(EventToolRedirect), map[string]any{
 			"tool_name":        toolName,
-			"original_args":    originalArgs,
+			"args_digest":      argsDigest,
 			"redirect_profile": redirectProfile,
 			"redirect_reason":  redirectReason,
 			"policy_rule":      policyRule,

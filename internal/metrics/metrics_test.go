@@ -1609,3 +1609,49 @@ func TestRecordAddressFinding(t *testing.T) {
 		t.Errorf("expected %q in /metrics output", wantMetric)
 	}
 }
+
+func TestRecordReverseProxyRequest(t *testing.T) {
+	m := New()
+	m.RecordReverseProxyRequest("GET", "200")
+	m.RecordReverseProxyRequest("POST", "403")
+	m.RecordReverseProxyRequest("GET", "200")
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	m.PrometheusHandler().ServeHTTP(w, req)
+
+	body, _ := io.ReadAll(w.Body)
+	text := string(body)
+	if !strings.Contains(text, `pipelock_reverse_proxy_requests_total{method="GET",status="200"} 2`) {
+		t.Errorf("expected 2 GET/200 reverse proxy requests:\n%s", text)
+	}
+	if !strings.Contains(text, `pipelock_reverse_proxy_requests_total{method="POST",status="403"} 1`) {
+		t.Errorf("expected 1 POST/403 reverse proxy request:\n%s", text)
+	}
+}
+
+func TestRecordReverseProxyScanBlocked(t *testing.T) {
+	m := New()
+	m.RecordReverseProxyScanBlocked("request", "dlp")
+	m.RecordReverseProxyScanBlocked("response", "injection")
+	m.RecordReverseProxyScanBlocked("response", "injection")
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	m.PrometheusHandler().ServeHTTP(w, req)
+
+	body, _ := io.ReadAll(w.Body)
+	text := string(body)
+	if !strings.Contains(text, `pipelock_reverse_proxy_scan_blocked_total{direction="request",reason="dlp"} 1`) {
+		t.Errorf("expected 1 request/dlp block:\n%s", text)
+	}
+	if !strings.Contains(text, `pipelock_reverse_proxy_scan_blocked_total{direction="response",reason="injection"} 2`) {
+		t.Errorf("expected 2 response/injection blocks:\n%s", text)
+	}
+}
+
+func TestRecordReverseProxyRequest_NilReceiver(t *testing.T) {
+	var m *Metrics
+	m.RecordReverseProxyRequest("GET", "200")     // must not panic
+	m.RecordReverseProxyScanBlocked("req", "dlp") // must not panic
+}

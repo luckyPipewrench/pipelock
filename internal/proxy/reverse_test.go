@@ -1104,3 +1104,38 @@ func TestReverseProxy_StripClearsValidators(t *testing.T) {
 		t.Fatal("Digest should be removed after strip")
 	}
 }
+
+func TestProxy_ConfigPtrAndScannerPtr(t *testing.T) {
+	cfg := reverseTestConfig()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+
+	logger, _ := audit.New("json", "stdout", "", false, false)
+	defer logger.Close()
+
+	m := metrics.New()
+	p, err := New(cfg, logger, sc, m)
+	if err != nil {
+		t.Fatalf("New proxy: %v", err)
+	}
+
+	// ConfigPtr returns a pointer that loads the current config.
+	cfgPtr := p.ConfigPtr()
+	if cfgPtr == nil {
+		t.Fatal("ConfigPtr returned nil")
+	}
+	loaded := cfgPtr.Load()
+	if loaded != cfg {
+		t.Fatal("ConfigPtr.Load() returned different config")
+	}
+
+	// ScannerPtr returns a pointer that loads the current scanner.
+	scPtr := p.ScannerPtr()
+	if scPtr == nil {
+		t.Fatal("ScannerPtr returned nil")
+	}
+	loadedSc := scPtr.Load()
+	if loadedSc != sc {
+		t.Fatal("ScannerPtr.Load() returned different scanner")
+	}
+}

@@ -792,6 +792,99 @@ func TestMergeAgentProfile_MCPToolPolicyOverride(t *testing.T) {
 	}
 }
 
+func TestMergeAgentProfile_MCPToolPolicyRedirectProfiles(t *testing.T) {
+	cfg := testConfig()
+	profile := &config.AgentProfile{
+		MCPToolPolicy: &config.MCPToolPolicy{
+			Enabled: true,
+			Action:  config.ActionRedirect,
+			RedirectProfiles: map[string]config.RedirectProfile{
+				"safe-fetch": {Exec: []string{"/usr/bin/safe-fetch"}, Reason: "audited"},
+			},
+			Rules: []config.ToolPolicyRule{
+				{Name: "redirect-curl", ToolPattern: "bash", Action: config.ActionRedirect, RedirectProfile: "safe-fetch"},
+			},
+		},
+	}
+	merged, err := MergeAgentProfile(cfg, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(merged.MCPToolPolicy.RedirectProfiles) != 1 {
+		t.Fatalf("redirect_profiles count = %d, want 1", len(merged.MCPToolPolicy.RedirectProfiles))
+	}
+	p, ok := merged.MCPToolPolicy.RedirectProfiles["safe-fetch"]
+	if !ok {
+		t.Fatal("expected safe-fetch profile")
+	}
+	if len(p.Exec) != 1 || p.Exec[0] != "/usr/bin/safe-fetch" {
+		t.Errorf("exec = %v, want [/usr/bin/safe-fetch]", p.Exec)
+	}
+	if merged.MCPToolPolicy.Rules[0].RedirectProfile != "safe-fetch" {
+		t.Errorf("rule redirect_profile = %q, want safe-fetch", merged.MCPToolPolicy.Rules[0].RedirectProfile)
+	}
+}
+
+func TestValidateMergedAgent_RedirectActionValid(t *testing.T) {
+	cfg := testConfig()
+	cfg.MCPToolPolicy.Enabled = true
+	cfg.MCPToolPolicy.Action = config.ActionRedirect
+	cfg.MCPToolPolicy.RedirectProfiles = map[string]config.RedirectProfile{
+		"safe-fetch": {Exec: []string{"/usr/bin/safe-fetch"}, Reason: "audited"},
+	}
+	cfg.MCPToolPolicy.Rules = []config.ToolPolicyRule{
+		{Name: "test", ToolPattern: "bash", RedirectProfile: "safe-fetch"},
+	}
+	if err := ValidateMergedAgent("test-agent", cfg); err != nil {
+		t.Errorf("expected valid, got: %v", err)
+	}
+}
+
+func TestValidateMergedAgent_RedirectMissingProfile(t *testing.T) {
+	cfg := testConfig()
+	cfg.MCPToolPolicy.Enabled = true
+	cfg.MCPToolPolicy.Action = config.ActionRedirect
+	cfg.MCPToolPolicy.RedirectProfiles = map[string]config.RedirectProfile{
+		"safe-fetch": {Exec: []string{"/usr/bin/safe-fetch"}, Reason: "audited"},
+	}
+	cfg.MCPToolPolicy.Rules = []config.ToolPolicyRule{
+		{Name: "test", ToolPattern: "bash"}, // inherits redirect but no redirect_profile
+	}
+	if err := ValidateMergedAgent("test-agent", cfg); err == nil {
+		t.Error("expected error for redirect rule without redirect_profile")
+	}
+}
+
+func TestValidateMergedAgent_RedirectUnknownProfile(t *testing.T) {
+	cfg := testConfig()
+	cfg.MCPToolPolicy.Enabled = true
+	cfg.MCPToolPolicy.Action = config.ActionWarn
+	cfg.MCPToolPolicy.RedirectProfiles = map[string]config.RedirectProfile{
+		"safe-fetch": {Exec: []string{"/usr/bin/safe-fetch"}, Reason: "audited"},
+	}
+	cfg.MCPToolPolicy.Rules = []config.ToolPolicyRule{
+		{Name: "test", ToolPattern: "bash", Action: config.ActionRedirect, RedirectProfile: "nonexistent"},
+	}
+	if err := ValidateMergedAgent("test-agent", cfg); err == nil {
+		t.Error("expected error for redirect rule referencing unknown profile")
+	}
+}
+
+func TestValidateMergedAgent_RedirectEmptyExec(t *testing.T) {
+	cfg := testConfig()
+	cfg.MCPToolPolicy.Enabled = true
+	cfg.MCPToolPolicy.Action = config.ActionWarn
+	cfg.MCPToolPolicy.RedirectProfiles = map[string]config.RedirectProfile{
+		"bad": {Exec: []string{""}, Reason: "empty string exec"},
+	}
+	cfg.MCPToolPolicy.Rules = []config.ToolPolicyRule{
+		{Name: "test", ToolPattern: "bash"},
+	}
+	if err := ValidateMergedAgent("test-agent", cfg); err == nil {
+		t.Error("expected error for redirect_profile with empty exec in merged agent")
+	}
+}
+
 func TestResolvePublicKey_InvalidHex(t *testing.T) {
 	cfg := testConfig()
 	cfg.LicensePublicKey = "not-valid-hex"

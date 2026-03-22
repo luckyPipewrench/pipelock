@@ -178,7 +178,9 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 	// adopted by us instead of PID 1. This lets us reap them after
 	// the main child exits, even if they called setsid().
 	if cfg.Strict {
-		_ = SetChildSubreaper()
+		if err := SetChildSubreaper(); err != nil {
+			return fmt.Errorf("enable subreaper: %w", err)
+		}
 	}
 
 	if err := cmd.Start(); err != nil {

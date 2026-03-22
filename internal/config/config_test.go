@@ -7585,6 +7585,8 @@ func TestAgentSandboxChanged(t *testing.T) {
 		{"workspace changed", &AgentSandboxOverride{Workspace: "/a"}, &AgentSandboxOverride{Workspace: "/b"}, true},
 		{"fs changed", &AgentSandboxOverride{FS: &SandboxFilesystem{AllowRead: []string{"/a"}}}, &AgentSandboxOverride{FS: &SandboxFilesystem{AllowRead: []string{"/b"}}}, true},
 		{"fs same", &AgentSandboxOverride{FS: &SandboxFilesystem{AllowRead: []string{"/a"}}}, &AgentSandboxOverride{FS: &SandboxFilesystem{AllowRead: []string{"/a"}}}, false},
+		{"strict changed", &AgentSandboxOverride{Strict: &enabled}, &AgentSandboxOverride{Strict: &disabled}, true},
+		{"strict same", &AgentSandboxOverride{Strict: &enabled}, &AgentSandboxOverride{Strict: &enabled}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

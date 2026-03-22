@@ -26,6 +26,15 @@ ignore:
   - "internal/mcp/proxy_sandbox.go"
   - "internal/sandbox/subreaper_linux.go"  # kernel primitive (prctl)
   - "internal/sandbox/shm_linux.go"  # kernel primitive (mount), runs in forked child
+  # macOS sandbox files — build-tagged darwin, untestable on Linux CI.
+  - "internal/sandbox/launcher_darwin.go"
+  - "internal/sandbox/seatbelt_darwin.go"
+  - "internal/sandbox/detect_darwin.go"
+  - "internal/sandbox/default_policy_darwin.go"
+  - "internal/sandbox/landlock_darwin.go"
+  - "internal/sandbox/seccomp_darwin.go"
+  - "internal/sandbox/rlimit_darwin.go"
+  - "internal/sandbox/shm_darwin.go"
   - "internal/sandbox/preflight.go"  # probes kernel capabilities via Detect()
   - "internal/cli/diagnose.go"  # sandbox diagnose path uses Detect() + CLI orchestration
   - "cmd/pipelock/main.go"  # sandbox init hooks in main(), untestable

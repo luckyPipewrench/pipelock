@@ -7522,13 +7522,119 @@ func TestBoolPtrEqual(t *testing.T) {
 	}{
 		{"both nil", nil, nil, true},
 		{"nil vs true", nil, &trueVal, false},
-		{"true vs true", &trueVal, &trueVal, true},
+		{"true vs true (same ptr)", &trueVal, &trueVal, true},
+		{"true vs true (diff ptr)", func() *bool { v := true; return &v }(), func() *bool { v := true; return &v }(), true},
 		{"true vs false", &trueVal, &falseVal, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := boolPtrEqual(tt.a, tt.b); got != tt.want {
 				t.Errorf("boolPtrEqual = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLoad_SandboxBooleans(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "sandbox.yaml")
+	_ = os.WriteFile(cfgPath, []byte("sandbox:\n  enabled: true\n  strict: true\n  workspace: /test/workspace\n"), 0o600)
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !cfg.Sandbox.Enabled {
+		t.Error("expected sandbox.enabled=true")
+	}
+	if !cfg.Sandbox.Strict {
+		t.Error("expected sandbox.strict=true")
+	}
+	if cfg.Sandbox.Workspace != "/test/workspace" {
+		t.Errorf("workspace = %q", cfg.Sandbox.Workspace)
+	}
+}
+
+func TestLoad_SandboxDefaultsFalse(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "empty.yaml")
+	_ = os.WriteFile(cfgPath, []byte("mode: balanced\n"), 0o600)
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Sandbox.Enabled {
+		t.Error("expected sandbox.enabled=false by default")
+	}
+	if cfg.Sandbox.Strict {
+		t.Error("expected sandbox.strict=false by default")
+	}
+}
+
+func TestAgentSandboxChanged(t *testing.T) {
+	enabled := true
+	disabled := false
+	tests := []struct {
+		name    string
+		old     *AgentSandboxOverride
+		updated *AgentSandboxOverride
+		want    bool
+	}{
+		{"both nil", nil, nil, false},
+		{"nil to non-nil", nil, &AgentSandboxOverride{Enabled: &enabled}, true},
+		{"non-nil to nil", &AgentSandboxOverride{Enabled: &enabled}, nil, true},
+		{"same", &AgentSandboxOverride{Enabled: &enabled, Workspace: "/w"}, &AgentSandboxOverride{Enabled: &enabled, Workspace: "/w"}, false},
+		{"enabled changed", &AgentSandboxOverride{Enabled: &enabled}, &AgentSandboxOverride{Enabled: &disabled}, true},
+		{"workspace changed", &AgentSandboxOverride{Workspace: "/a"}, &AgentSandboxOverride{Workspace: "/b"}, true},
+		{"fs changed", &AgentSandboxOverride{FS: &SandboxFilesystem{AllowRead: []string{"/a"}}}, &AgentSandboxOverride{FS: &SandboxFilesystem{AllowRead: []string{"/b"}}}, true},
+		{"fs same", &AgentSandboxOverride{FS: &SandboxFilesystem{AllowRead: []string{"/a"}}}, &AgentSandboxOverride{FS: &SandboxFilesystem{AllowRead: []string{"/a"}}}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := agentSandboxChanged(tt.old, tt.updated); got != tt.want {
+				t.Errorf("agentSandboxChanged = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidateReload_SandboxAgentChanged(t *testing.T) {
+	enabled := true
+	disabled := false
+	old := Defaults()
+	old.Agents = map[string]AgentProfile{
+		"test-agent": {Sandbox: &AgentSandboxOverride{Enabled: &enabled}},
+	}
+	updated := Defaults()
+	updated.Agents = map[string]AgentProfile{
+		"test-agent": {Sandbox: &AgentSandboxOverride{Enabled: &disabled}},
+	}
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == fieldSandbox {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected sandbox warning when agent sandbox override changes")
+	}
+}
+
+func TestSandboxFSChanged(t *testing.T) {
+	tests := []struct {
+		name    string
+		old     *SandboxFilesystem
+		updated *SandboxFilesystem
+		want    bool
+	}{
+		{"both nil", nil, nil, false},
+		{"nil to non-nil", nil, &SandboxFilesystem{}, true},
+		{"same content", &SandboxFilesystem{AllowRead: []string{"/a"}}, &SandboxFilesystem{AllowRead: []string{"/a"}}, false},
+		{"different content", &SandboxFilesystem{AllowRead: []string{"/a"}}, &SandboxFilesystem{AllowRead: []string{"/b"}}, true},
+		{"write changed", &SandboxFilesystem{AllowWrite: []string{"/x"}}, &SandboxFilesystem{AllowWrite: []string{"/y"}}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := sandboxFSChanged(tt.old, tt.updated); got != tt.want {
+				t.Errorf("sandboxFSChanged = %v, want %v", got, tt.want)
 			}
 		})
 	}

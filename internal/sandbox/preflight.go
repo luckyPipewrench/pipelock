@@ -41,9 +41,8 @@ type LayerProbe struct {
 // and returns a structured result.
 func Preflight(workspace string, argv []string, policy *Policy, strict bool) PreflightResult {
 	result := PreflightResult{
-		Command:    argv,
-		Mode:       "best-effort",
-		PrivateShm: strict,
+		Command: argv,
+		Mode:    "best-effort",
 	}
 	if strict {
 		result.Mode = "strict"
@@ -120,6 +119,10 @@ func Preflight(workspace string, argv []string, policy *Policy, strict bool) Pre
 	if !caps.Seccomp {
 		result.Layers[2].Reason = "seccomp unavailable"
 	}
+
+	// Private /dev/shm requires strict mode AND user namespace support
+	// (for CLONE_NEWNS mount namespace).
+	result.PrivateShm = strict && caps.UserNamespaces
 
 	// Determine status.
 	activeCount := 0

@@ -38,7 +38,9 @@ import (
 func RunProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, clientIn io.Reader, clientOut io.Writer, logW io.Writer, sc *scanner.Scanner, approver *hitl.Approver, inputCfg *InputScanConfig, toolCfg *tools.ToolScanConfig, policyCfg *policy.Config, ks *killswitch.Controller, chainMatcher *chains.Matcher, auditLogger *audit.Logger, cee *CEEDeps, store session.Store, adaptiveCfg *config.AdaptiveEnforcement, m *metrics.Metrics, strict ...bool) error {
 	isStrict := len(strict) > 0 && strict[0]
 	if isStrict {
-		_ = sandbox.SetChildSubreaper()
+		if err := sandbox.SetChildSubreaper(); err != nil {
+			return fmt.Errorf("strict mode: failed to set child subreaper: %w", err)
+		}
 	}
 	var rec session.Recorder
 	if store != nil {

@@ -10,6 +10,8 @@ import (
 	"testing"
 )
 
+const redirectStatusError = "error"
+
 func TestInternalRedirect_FetchProxy(t *testing.T) {
 	manifest := RedirectManifest{
 		Profile:    redirectProfileFetchProxy,
@@ -35,7 +37,7 @@ func TestInternalRedirect_FetchProxy(t *testing.T) {
 	if jsonErr := json.Unmarshal(out.Bytes(), &result); jsonErr != nil {
 		t.Fatalf("invalid JSON output: %v\n%s", jsonErr, out.String())
 	}
-	if result.Status != "error" {
+	if result.Status != redirectStatusError {
 		t.Errorf("status = %q, want error (not yet implemented)", result.Status)
 	}
 	if result.Profile != redirectProfileFetchProxy {
@@ -63,9 +65,41 @@ func TestInternalRedirect_MissingManifest(t *testing.T) {
 	// Should still emit JSON error result.
 	var result RedirectResult
 	if jsonErr := json.Unmarshal(out.Bytes(), &result); jsonErr == nil {
-		if result.Status != "error" {
+		if result.Status != redirectStatusError {
 			t.Errorf("status = %q, want error", result.Status)
 		}
+	}
+}
+
+func TestInternalRedirect_QuarantineWrite(t *testing.T) {
+	manifest := RedirectManifest{
+		Profile: redirectProfileQuarantineWrite,
+		Command: []string{"write", "/tmp/test"},
+		Reason:  "policy block",
+	}
+	manifestJSON, _ := json.Marshal(manifest)
+	t.Setenv("__PIPELOCK_REDIRECT_MANIFEST", string(manifestJSON))
+
+	cmd := internalRedirectCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{redirectProfileQuarantineWrite})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error (not yet implemented)")
+	}
+
+	var result RedirectResult
+	if jsonErr := json.Unmarshal(out.Bytes(), &result); jsonErr != nil {
+		t.Fatalf("invalid JSON: %v\n%s", jsonErr, out.String())
+	}
+	if result.Status != redirectStatusError {
+		t.Errorf("status = %q, want error", result.Status)
+	}
+	if result.Profile != redirectProfileQuarantineWrite {
+		t.Errorf("profile = %q", result.Profile)
 	}
 }
 

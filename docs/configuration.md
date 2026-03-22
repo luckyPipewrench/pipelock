@@ -472,8 +472,10 @@ response_scanning:
 | `enabled` | `true` | Enable response scanning |
 | `action` | `"warn"` | block, strip, warn, or ask (HITL) |
 | `ask_timeout_seconds` | `30` | Timeout for human-in-the-loop approval |
-| `include_defaults` | `true` | Merge with 13 built-in injection patterns |
-| `patterns` | 13 built-in | Injection detection patterns |
+| `include_defaults` | `true` | Merge with 19 built-in patterns |
+| `patterns` | 19 built-in | Injection and state/control poisoning patterns |
+
+**Built-in patterns (19):** 13 prompt injection patterns (jailbreak phrases, system overrides, role overrides, instruction manipulation, encoded payloads, tool invocation commands, authority escalation) plus 6 state/control poisoning patterns (credential solicitation, credential path directives, auth material requirements, memory persistence directives, preference poisoning, silent credential handling). All patterns use DOTALL mode to match across newlines in multiline tool output.
 
 **Actions:**
 - **block:** reject the response entirely, agent gets an error
@@ -502,7 +504,7 @@ Auto-enabled when running `pipelock mcp proxy`.
 
 ## MCP Tool Scanning
 
-Scans `tools/list` responses for poisoned tool descriptions and detects mid-session description changes (rug pulls).
+Scans `tools/list` responses for poisoned tool definitions and detects mid-session description changes (rug pulls). Extracts text from all schema fields that an LLM might ingest: `description`, `title`, `default`, `const`, `enum`, `examples`, `pattern`, `$comment`, and vendor extensions (`x-*`). Recurses through composition keywords (`allOf`, `anyOf`, `oneOf`, `$defs`, `if`/`then`/`else`) and extracts string leaves from nested objects and arrays.
 
 ```yaml
 mcp_tool_scanning:
@@ -519,7 +521,7 @@ mcp_tool_scanning:
 
 ## MCP Tool Policy
 
-Pre-execution rules that block or warn before tool calls reach the MCP server. Ships with 17 built-in rules covering destructive operations, credential access, network exfiltration, persistence mechanisms, and encoded command execution.
+Pre-execution rules that block or warn before tool calls reach the MCP server. Ships with 23 built-in rules covering destructive operations, credential access, network exfiltration, persistence mechanisms, and encoded command execution.
 
 ```yaml
 mcp_tool_policy:
@@ -544,16 +546,17 @@ mcp_tool_policy:
 |-------|---------|-------------|
 | `enabled` | `false` | Enable tool policy |
 | `action` | `"warn"` | Default action for rules without override |
-| `rules` | 17 built-in | Policy rule list |
+| `rules` | 23 built-in | Policy rule list |
 
 **Rule fields:**
 - `name:` rule identifier
 - `tool_pattern:` regex matching tool name
 - `arg_pattern:` regex matching argument values (optional; omit for tool-name-only rules)
 - `arg_key:` regex scoping `arg_pattern` to specific top-level argument keys (optional; requires `arg_pattern`). Without `arg_key`, `arg_pattern` checks values from all argument keys. Values under matching keys are extracted recursively.
-- `action:` per-rule override (warn or block)
+- `action:` per-rule override (warn, block, or redirect)
+- `redirect_profile:` reference to a named redirect profile (required when `action: redirect`)
 
-Shell obfuscation detection is built-in: backslash escapes, `$IFS` substitution, brace expansion, and octal/hex escapes are decoded before matching.
+Shell obfuscation detection is built-in: backslash escapes, `$IFS` substitution, brace expansion, and octal/hex escapes are decoded before matching. See [Redirect Action](#redirect-action) for redirect profile configuration.
 
 ## MCP Session Binding
 
@@ -1399,6 +1402,87 @@ rules:
 | `trusted_keys` | `[]` | Additional Ed25519 public keys to trust for signature verification |
 
 **Hot reload:** rule directory changes are not detected via hot-reload. Restart pipelock after installing or updating bundles.
+
+## Sandbox
+
+Process containment for agent commands using Linux kernel primitives. The agent runs in a restricted namespace with controlled filesystem access, no direct network, and a filtered syscall set.
+
+```yaml
+sandbox:
+  enabled: true
+  workspace: /home/user/project   # agent working directory (default: CWD)
+  filesystem:                     # optional Landlock overrides (default policy works for most agents)
+    allow_read:
+      - /usr/share/data
+    allow_write:
+      - /tmp/agent-work
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `false` | Enable sandbox containment |
+| `workspace` | CWD | Agent working directory (resolved to absolute at startup) |
+| `filesystem.allow_read` | `[]` | Additional read-only filesystem paths |
+| `filesystem.allow_write` | `[]` | Additional writable paths (workspace is always writable) |
+
+If `filesystem` is omitted, the default Landlock policy is used (safe for Python/Node/Go agents without config). Read access grants execute (Landlock bundling). Write paths are also executable.
+
+**Containment layers:**
+- **Landlock LSM:** Restricts filesystem access to declared paths. Read-only and read-write grants are explicit. Allowlist model.
+- **Network namespaces:** Agent runs in an isolated network namespace. For MCP (stdio), no network is needed. For standalone agents, traffic routes through pipelock's bridge proxy.
+- **Seccomp BPF:** Syscall allowlist blocks dangerous operations (ptrace, mount, io_uring, module loading, kexec). Clone flags are filtered to prevent namespace escape.
+
+**Usage:**
+```bash
+# Sandbox an MCP server
+pipelock mcp proxy --sandbox --config pipelock.yaml -- npx server
+
+# Sandbox a standalone command
+pipelock sandbox --config pipelock.yaml -- python agent.py
+```
+
+**Requirements:** Linux 5.13+ (Landlock ABI v1). Unprivileged — no root, no Docker, no special capabilities. Not available on macOS or Windows (hard error with explanation).
+
+## Config Audit Scoring (v2.0)
+
+Score a pipelock configuration for security posture. Evaluates 12 categories and produces a 0-100 score with letter grade and actionable recommendations.
+
+```bash
+pipelock audit score --config pipelock.yaml
+pipelock audit score --config pipelock.yaml --json
+```
+
+**Categories scored:** DLP (pattern count, env scanning, entropy), response scanning (enabled, action, pattern count), MCP tool scanning, MCP tool policy (rule count, blocking rules, overpermission), MCP input scanning, MCP session binding, kill switch (source count), enforcement mode, domain blocklist, adaptive enforcement, tool chain detection, sandbox.
+
+**Tool policy overpermission audit:** flags wildcard `arg_pattern` values, high-risk tool patterns with non-blocking actions, and policies with no effective blocking rules. Respects section-level default action inheritance.
+
+## Redirect Action (v2.0)
+
+A policy action that rewrites dangerous tool execution to a safer target instead of blocking outright.
+
+```yaml
+mcp_tool_policy:
+  enabled: true
+  action: warn
+  redirect_profiles:
+    fetch_proxy:
+      exec: ["/proc/self/exe", "internal-redirect", "fetch-proxy"]
+      reason: "Route outbound fetches through audited proxy"
+  rules:
+    - name: shell-egress
+      tool_pattern: '(?i)^(bash|shell|exec)$'
+      arg_pattern: '(?i)\b(curl|wget)\b'
+      action: redirect
+      redirect_profile: fetch_proxy
+```
+
+| Field | Description |
+|-------|-------------|
+| `redirect_profiles` | Named redirect targets with exec command and reason |
+| `redirect_profile` | Per-rule reference to a named profile |
+| `action: redirect` | New action alongside block, warn, ask, strip, forward |
+
+Redirect failure falls through to block (fail-closed). Every redirect emits a structured audit event with the original command, redirect target, policy rule, and reason.
 
 ## Validation Rules
 

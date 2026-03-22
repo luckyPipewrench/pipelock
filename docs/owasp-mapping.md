@@ -37,8 +37,8 @@ See also: [OWASP AIVSS coverage mapping](https://pipelab.org/learn/owasp-aivss-c
 response_scanning:
   enabled: true
   action: block  # block, strip, warn, or ask
-  # 5 patterns ship by default (prompt injection, system override,
-  # role override, new instructions, jailbreak). Example:
+  # 19 patterns ship by default (prompt injection, system override,
+  # role override, jailbreak, credential solicitation, etc). Example:
   patterns:
     - name: "Prompt Injection"
       regex: '(?i)(ignore|disregard|forget)\s+(all\s+)?(previous|prior|above)\s+(instructions|prompts|rules|context)'
@@ -62,7 +62,7 @@ Use `pipelock generate config --preset balanced` for the complete default patter
 - **MCP tool scanning:** `tools/list` responses are scanned for poisoned descriptions containing hidden instructions. SHA256 baseline per session detects rug-pull definition changes.
 - **Input validation:** URLs are validated, parsed, and scanned before any HTTP request is made. Malformed URLs are rejected.
 
-**Gap:** Pipelock controls the HTTP fetch tool and scans MCP traffic bidirectionally (requests, responses, and tool definitions). It does not restrict shell/filesystem operations. For shell/filesystem controls, see [agentsh](https://github.com/canyonroad/agentsh) or [srt](https://github.com/anthropic-experimental/sandbox-runtime).
+**Gap:** Pipelock controls the HTTP fetch tool, scans MCP traffic bidirectionally (requests, responses, and tool definitions), and with sandbox mode restricts filesystem and network access at the OS level (Landlock + network namespaces + seccomp). Shell command content is inspected via tool policy rules with obfuscation detection. Pipelock does not monitor in-process agent memory or context window manipulation.
 
 ---
 
@@ -104,7 +104,7 @@ Use `pipelock generate config --preset balanced` for the complete default patter
 - **Content extraction:** HTML is converted to clean text via go-readability, removing scripts, styles, and other executable content from fetched pages.
 - **DLP pattern matching:** detects API key formats in URLs and request bodies, which can indicate code execution results leaking secrets.
 
-**Gap:** Pipelock does not sandbox code execution itself. For OS-level sandboxing, see [srt](https://github.com/anthropic-experimental/sandbox-runtime) or [agentsh](https://github.com/canyonroad/agentsh).
+**Gap:** With sandbox mode, pipelock restricts filesystem, network, and syscall access for the agent process (Landlock + network namespaces + seccomp). However, code running inside the allowed filesystem paths with allowed syscalls is not semantically analyzed — pipelock does not interpret what code does, only where it can reach.
 
 ---
 
@@ -187,4 +187,4 @@ Use `pipelock generate config --preset balanced` for the complete default patter
 
 Pipelock provides strong coverage for 3/10 OWASP Agentic threats (ASI01, ASI03, ASI10), moderate coverage for 3/10 (ASI05, ASI06, ASI08), and partial coverage for 4/10 (ASI02, ASI04, ASI07, ASI09). The primary gaps are in inter-agent communication policy (ASI07, [roadmap](https://github.com/luckyPipewrench/pipelock/issues/44)) and semantic content analysis (ASI06).
 
-No single tool covers all 10 threats. Pipelock focuses on the **network egress + content inspection + workspace integrity** layers. For OS-level sandboxing, see [Anthropic srt](https://github.com/anthropic-experimental/sandbox-runtime). For shell-level policy, see [agentsh](https://github.com/canyonroad/agentsh). See [comparison.md](comparison.md) for a full feature matrix.
+No single tool covers all 10 threats. Pipelock covers **network egress + content inspection + process containment + workspace integrity**. For complementary shell-level policy, see [agentsh](https://github.com/canyonroad/agentsh). See [comparison.md](comparison.md) for a full feature matrix.

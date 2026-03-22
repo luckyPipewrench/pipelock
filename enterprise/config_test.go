@@ -792,7 +792,7 @@ func TestMergeAgentProfile_MCPToolPolicyOverride(t *testing.T) {
 	}
 }
 
-const testBaseWorkspace = testBaseWorkspace
+const testBaseWorkspace = "/base/workspace"
 
 func TestMergeAgentProfile_SandboxOverride(t *testing.T) {
 	cfg := testConfig()

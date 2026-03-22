@@ -89,6 +89,12 @@ const (
 	HeaderModeAll       = "all"       // scan all headers except ignore list
 )
 
+// URL scheme constants for validation.
+const (
+	schemeHTTP  = "http"
+	schemeHTTPS = "https"
+)
+
 // Output/format constants for configuration defaults.
 const (
 	DefaultListen    = "127.0.0.1:8888"
@@ -268,6 +274,7 @@ type Config struct {
 	MCPWSListener         MCPWSListener           `yaml:"mcp_ws_listener"`
 	TLSInterception       TLSInterception         `yaml:"tls_interception"`
 	CrossRequestDetection CrossRequestDetection   `yaml:"cross_request_detection"`
+	ReverseProxy          ReverseProxy            `yaml:"reverse_proxy"`
 	ScanAPI               ScanAPI                 `yaml:"scan_api"`
 	AddressProtection     AddressProtection       `yaml:"address_protection"`
 	SeedPhraseDetection   SeedPhraseDetection     `yaml:"seed_phrase_detection"`
@@ -406,6 +413,17 @@ type WebSocketProxy struct {
 	MaxConnectionSeconds     int    `yaml:"max_connection_seconds"`
 	IdleTimeoutSeconds       int    `yaml:"idle_timeout_seconds"`
 	OriginPolicy             string `yaml:"origin_policy"` // rewrite (default), forward, strip
+}
+
+// ReverseProxy configures a generic HTTP reverse proxy with body scanning.
+// All requests are forwarded to the upstream URL. Request bodies are scanned
+// for DLP patterns (secret exfiltration) and response bodies are scanned for
+// prompt injection, using the same scanning infrastructure as the fetch and
+// forward proxies.
+type ReverseProxy struct {
+	Enabled  bool   `yaml:"enabled"`
+	Listen   string `yaml:"listen"`   // listen address (e.g. ":8888")
+	Upstream string `yaml:"upstream"` // upstream URL (e.g. "http://localhost:7899")
 }
 
 // GitProtection configures git-aware security features.
@@ -2106,7 +2124,7 @@ func (c *Config) Validate() error {
 	// Validate emit config
 	if c.Emit.Webhook.URL != "" {
 		u, urlErr := url.Parse(c.Emit.Webhook.URL)
-		if urlErr != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		if urlErr != nil || (u.Scheme != schemeHTTP && u.Scheme != schemeHTTPS) || u.Host == "" {
 			return fmt.Errorf("invalid emit.webhook.url %q: must be http:// or https:// with a host", c.Emit.Webhook.URL)
 		}
 		switch c.Emit.Webhook.MinSeverity {
@@ -2153,7 +2171,7 @@ func (c *Config) Validate() error {
 	// Validate OTLP config
 	if c.Emit.OTLP.Endpoint != "" {
 		u, otlpErr := url.Parse(c.Emit.OTLP.Endpoint)
-		if otlpErr != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		if otlpErr != nil || (u.Scheme != schemeHTTP && u.Scheme != schemeHTTPS) || u.Host == "" {
 			return fmt.Errorf("invalid emit.otlp.endpoint %q: must be http:// or https:// with a host", c.Emit.OTLP.Endpoint)
 		}
 		switch c.Emit.OTLP.MinSeverity {
@@ -2334,6 +2352,20 @@ func (c *Config) Validate() error {
 		}
 		if host == "" || host == "0.0.0.0" || host == "::" {
 			fmt.Fprintf(os.Stderr, "WARNING: listen address %s binds to all interfaces - consider using 127.0.0.1 for local-only access\n", c.FetchProxy.Listen)
+		}
+	}
+
+	// Reverse proxy: validate upstream URL when enabled.
+	if c.ReverseProxy.Enabled {
+		if c.ReverseProxy.Upstream == "" {
+			return fmt.Errorf("reverse_proxy.upstream is required when reverse_proxy is enabled")
+		}
+		u, uErr := url.Parse(c.ReverseProxy.Upstream)
+		if uErr != nil || (u.Scheme != schemeHTTP && u.Scheme != schemeHTTPS) || u.Host == "" {
+			return fmt.Errorf("reverse_proxy.upstream %q must be http:// or https:// with a host", c.ReverseProxy.Upstream)
+		}
+		if c.ReverseProxy.Listen == "" {
+			return fmt.Errorf("reverse_proxy.listen is required when reverse_proxy is enabled")
 		}
 	}
 

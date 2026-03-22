@@ -570,7 +570,7 @@ func printScoreResult(cmd *cobra.Command, r *ScoreResult) {
 			switch f.Severity {
 			case scoreSevCritical:
 				prefix = "  [CRITICAL] "
-			case "warning":
+			case scoreSevWarning:
 				prefix = "  [WARNING]  "
 			default:
 				prefix = "  [INFO]     "

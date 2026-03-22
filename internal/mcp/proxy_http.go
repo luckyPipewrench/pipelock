@@ -587,6 +587,14 @@ func startGETStream(
 			default:
 			}
 
+			// Kill switch: stop reconnecting when active. Without this,
+			// the retry loop keeps establishing outbound connections even
+			// though ForwardScanned blocks every message.
+			if ks != nil && ks.IsActive() {
+				_, _ = fmt.Fprintf(safeLogW, "pipelock: GET stream stopped: kill switch active\n")
+				return
+			}
+
 			reader, err := httpClient.OpenGETStream(ctx)
 			if err != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: GET stream: %v\n", err)

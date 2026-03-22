@@ -801,6 +801,9 @@ func TestReverseProxy_OversizedResponseBlocked(t *testing.T) {
 	if !blockResp.Blocked {
 		t.Fatal("expected blocked=true in response")
 	}
+	if !strings.Contains(blockResp.BlockReason, "scanning limit") {
+		t.Fatalf("expected BlockReason to mention scanning limit, got %q", blockResp.BlockReason)
+	}
 }
 
 func TestReverseProxy_OversizedResponseInjectionBypass(t *testing.T) {
@@ -1256,6 +1259,9 @@ func TestReverseProxy_URLQueryDLP(t *testing.T) {
 	}
 	if !blockResp.Blocked {
 		t.Fatal("expected blocked=true in response")
+	}
+	if !strings.Contains(blockResp.BlockReason, "URL DLP") {
+		t.Fatalf("expected BlockReason to mention URL DLP, got %q", blockResp.BlockReason)
 	}
 }
 

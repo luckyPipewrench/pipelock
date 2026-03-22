@@ -53,6 +53,7 @@ func auditScoreCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "score",
 		Short: "Score a pipelock config for security posture",
+		Args:  cobra.NoArgs,
 		Long: `Analyze a pipelock configuration file and produce a security posture score.
 
 Checks whether security features are enabled and properly configured.
@@ -303,8 +304,8 @@ func scoreMCPToolPolicy(cfg *config.Config) (ScoreCategory, []ScoreFinding) {
 				blockRuleCount++
 			}
 
-			// Flag wildcard arg patterns.
-			if rule.ArgPattern == ".*" || rule.ArgPattern == ".+" {
+			// Flag wildcard arg patterns (exact or anchored forms).
+			if isWildcardArgPattern(rule.ArgPattern) {
 				findings = append(findings, ScoreFinding{
 					Severity: scoreSevWarning,
 					Category: "MCP Tool Policy",
@@ -347,7 +348,7 @@ func scoreMCPToolPolicy(cfg *config.Config) (ScoreCategory, []ScoreFinding) {
 var highRiskToolPatterns = []string{
 	"bash", "shell", "exec", "terminal", "run_command", "execute",
 	"write_file", "file_write", "create_file", "modify_file",
-	"delete", "remove", "rm ", "rmdir",
+	"delete", "remove", "rm", "rmdir",
 }
 
 func isHighRiskToolPattern(pattern string) bool {
@@ -358,6 +359,13 @@ func isHighRiskToolPattern(pattern string) bool {
 		}
 	}
 	return false
+}
+
+// isWildcardArgPattern returns true if an arg_pattern effectively matches
+// all input. Catches exact wildcards (.*/.+) and anchored forms (^.*$, ^.+$).
+func isWildcardArgPattern(pattern string) bool {
+	stripped := strings.TrimPrefix(strings.TrimSuffix(pattern, "$"), "^")
+	return stripped == ".*" || stripped == ".+"
 }
 
 func effectiveAction(ruleAction, defaultAction string) string {

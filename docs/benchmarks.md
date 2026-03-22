@@ -9,7 +9,7 @@ Benchmarks measure the scanner pipeline only, not network I/O. This isolates pip
 Configuration (balanced defaults):
 - SSRF protection disabled (no DNS lookups in benchmarks)
 - Rate limiting disabled (no time-dependent state)
-- Response scanning: 20 prompt injection patterns
+- Response scanning: 19 prompt injection patterns
 - DLP: 46 patterns + BIP-39 seed phrase detection
 
 Run `make bench` to reproduce on your hardware.
@@ -29,7 +29,7 @@ Full 11-layer URL scanning: scheme, CRLF injection, path traversal, blocklist, D
 
 ## Response Scanning (`ScanResponse()`)
 
-Pattern matching for prompt injection on fetched content. 20 patterns including 7 new state/control patterns.
+Pattern matching for prompt injection on fetched content. 19 patterns including 6 new state/control patterns.
 
 | Benchmark | ns/op | B/op | allocs/op |
 |-----------|------:|-----:|----------:|
@@ -114,7 +114,7 @@ True concurrent throughput across all available goroutines.
 - **Full 11-layer scan on a typical URL: ~31 microseconds.** Slightly higher than v1.5.0 (~21μs) due to 7 new state/control response patterns and expanded DLP. Well under 1ms.
 - Blocked URLs short-circuit early: blocklist check is ~2μs.
 - DLP regex matching (46 patterns) with pre-filter: ~8μs. Pre-filter alone: ~497ns with zero allocations on clean text.
-- Response scanning with 20 patterns on small content: ~72μs. Large content (~10KB): ~9.5ms. State/control patterns add ~133μs on clean text. Injection detected via early exit: ~40μs.
+- Response scanning with 19 patterns on small content: ~72μs. Large content (~10KB): ~9.5ms. State/control patterns add ~133μs on clean text. Injection detected via early exit: ~40μs.
 - MCP scanning (JSON parse + text extraction + pattern match): ~76μs clean, ~33μs injection.
 - Cross-request entropy tracking: ~110μs per record. Fragment buffer append: ~83ns (single alloc).
 - **Parallel throughput scales linearly with cores** (benchmarks run with rate limiting and data budget disabled to isolate scanning overhead).

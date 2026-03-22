@@ -148,7 +148,7 @@ Examples:
 
 			// Merge custom filesystem policy from config into defaults.
 			if cfg.Sandbox.FS != nil {
-				p := sandbox.PlatformDefaultPolicy(workspace)
+				p := sandbox.DefaultPolicy(workspace)
 				p.AllowReadDirs = append(p.AllowReadDirs, cfg.Sandbox.FS.AllowRead...)
 				p.AllowRWDirs = append(p.AllowRWDirs, cfg.Sandbox.FS.AllowWrite...)
 				launchCfg.Policy = &p

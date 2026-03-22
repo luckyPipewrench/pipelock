@@ -8,21 +8,14 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os"
 	"strings"
 	"testing"
 	"time"
 )
 
 func TestBridgeProxy_ForwardsToUnixSocket(t *testing.T) {
-	// Use a short temp dir path for the Unix socket. macOS has a 104-byte
-	// limit on socket paths, and t.TempDir() paths under /var/folders/
-	// can exceed this.
-	dir, err := os.MkdirTemp("/tmp", "pl-bridge-*")
-	if err != nil {
-		t.Fatalf("create temp dir: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	// Set up a mock "parent proxy" on a Unix socket.
+	dir := t.TempDir()
 	socketPath := ProxySocketPath(dir)
 
 	parentLn, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", socketPath)

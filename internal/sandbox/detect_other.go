@@ -1,7 +1,7 @@
 // Copyright 2026 Josh Waldrep
 // SPDX-License-Identifier: Apache-2.0
 
-//go:build !(linux || darwin)
+//go:build !linux
 
 package sandbox
 
@@ -21,5 +21,5 @@ func Detect() Capabilities {
 
 // Summary returns a human-readable summary.
 func (c Capabilities) Summary() string {
-	return "sandbox requires Linux or macOS"
+	return "sandbox requires Linux"
 }

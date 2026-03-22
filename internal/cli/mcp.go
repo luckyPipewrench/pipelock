@@ -541,7 +541,7 @@ Environment passthrough (subprocess mode only):
 					ExtraEnv:  extraEnv,
 				}
 				if cfg.Sandbox.FS != nil {
-					p := sandbox.PlatformDefaultPolicy(workspace)
+					p := sandbox.DefaultPolicy(workspace)
 					// Merge custom paths into defaults (don't replace).
 					p.AllowReadDirs = append(p.AllowReadDirs, cfg.Sandbox.FS.AllowRead...)
 					p.AllowRWDirs = append(p.AllowRWDirs, cfg.Sandbox.FS.AllowWrite...)

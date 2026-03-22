@@ -111,7 +111,7 @@ func RunWSProxy(
 	go func() {
 		defer wg.Done()
 		defer cancel() // Signal main goroutine if upstream closes first.
-		_, scanErr := ForwardScanned(wsClient, safeClientOut, safeLogW, sc, approver, fwdToolCfg, tracker, rec, adaptiveCfg, m)
+		_, scanErr := ForwardScanned(wsClient, safeClientOut, safeLogW, sc, approver, fwdToolCfg, tracker, ks, rec, adaptiveCfg, m)
 		if scanErr != nil {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream scan error: %v\n", scanErr)
 			lastScanErr = scanErr

@@ -25,9 +25,8 @@ import (
 
 const (
 	// reverseProxyMaxBodyBytes is the default max body size for reverse proxy
-	// request/response scanning (1 MB). Bodies larger than this pass through
-	// without scanning — fail-open on size to avoid breaking large payloads
-	// that are unlikely to contain short secret strings.
+	// request/response scanning (1 MB). Both request and response bodies that
+	// exceed this limit are blocked fail-closed to prevent scanning bypass.
 	reverseProxyMaxBodyBytes = 1024 * 1024
 
 	// scanDirectionRequest labels a DLP finding on the request body.
@@ -112,6 +111,34 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		writeReverseProxyBlock(w, http.StatusServiceUnavailable,
 			"kill switch active")
 		return
+	}
+
+	// Scan request path and query for DLP patterns. Secrets embedded in
+	// the URL path or query string would bypass body/header DLP without
+	// this check. Intentionally not gated by RequestBodyScanning.Enabled:
+	// URL-based exfiltration must always be caught even when body scanning
+	// is disabled. Only the path+query are agent-controlled; the upstream
+	// host is operator-configured so we skip the full URL pipeline (SSRF,
+	// blocklist, rate limit) which only applies to agent-chosen destinations.
+	if pathQuery := r.URL.RequestURI(); pathQuery != "" {
+		pathDLP := sc.ScanTextForDLP(r.Context(), pathQuery)
+		if !pathDLP.Clean {
+			action := cfg.RequestBodyScanning.Action
+			if action == "" {
+				action = config.ActionBlock
+			}
+			patternNames := dlpMatchNames(pathDLP.Matches)
+			rp.logger.LogBodyDLP(r.Method, r.URL.String(), action, "", "", "",
+				len(patternNames), patternNames, nil)
+
+			if action == config.ActionBlock && cfg.EnforceEnabled() {
+				rp.metrics.RecordReverseProxyRequest(r.Method, "403")
+				rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, "url_dlp")
+				reason := fmt.Sprintf("URL DLP: %s", strings.Join(patternNames, ", "))
+				writeReverseProxyBlock(w, http.StatusForbidden, reason)
+				return
+			}
+		}
 	}
 
 	// Scan request headers for DLP patterns (secret exfiltration via headers).
@@ -265,14 +292,17 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		return nil
 	}
 
-	// Oversized body: pass through without scanning. The original body
-	// is still open, so rebuild the full stream from buffered prefix +
-	// remaining original body.
+	// Oversized body: fail-closed block. An attacker controlling the upstream
+	// can pad the first maxBytes and place injection text after the scanning
+	// window. This matches request-side behavior (bodyscan.go blocks oversized
+	// requests) and ensures response scanning cannot be bypassed by size.
 	if len(body) > maxBytes {
-		resp.Body = readCloserJoin(body, resp.Body)
-		resp.ContentLength = -1
-		rp.metrics.RecordReverseProxyRequest(resp.Request.Method,
-			strconv.Itoa(resp.StatusCode))
+		_ = resp.Body.Close()
+		rp.metrics.RecordReverseProxyRequest(resp.Request.Method, "403")
+		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, "oversized")
+		rp.logger.LogResponseScan(resp.Request.URL.String(), "", "", "",
+			config.ActionBlock, 0, []string{"oversized_response"}, nil)
+		replaceWithBlockResponse(resp, []string{"response exceeds scanning limit"})
 		return nil
 	}
 
@@ -420,25 +450,6 @@ func replaceWithBlockResponse(resp *http.Response, patternNames []string) {
 	}
 	resp.Header.Set("Content-Type", "application/json")
 	resp.Header.Set("Content-Length", strconv.Itoa(len(blockBody)))
-}
-
-// readCloserJoin combines a buffered prefix with an open ReadCloser into a
-// single ReadCloser. Closing the returned ReadCloser closes the original.
-// Used for oversized response passthrough where the body is partially read.
-func readCloserJoin(prefix []byte, rc io.ReadCloser) io.ReadCloser {
-	return &joinedReadCloser{
-		Reader: io.MultiReader(bytes.NewReader(prefix), rc),
-		closer: rc,
-	}
-}
-
-type joinedReadCloser struct {
-	io.Reader
-	closer io.Closer
-}
-
-func (j *joinedReadCloser) Close() error {
-	return j.closer.Close()
 }
 
 // isBinaryMIME returns true for content types that are clearly binary

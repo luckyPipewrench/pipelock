@@ -16,6 +16,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
+	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
@@ -114,7 +115,7 @@ func TestSyncWriter_WriteMessage_Success(t *testing.T) {
 // fwdScanned wraps ForwardScanned with StdioReader/StdioWriter for test convenience.
 // The transport types are unit-tested in transport_test.go.
 func fwdScanned(r io.Reader, w io.Writer, logW io.Writer, sc *scanner.Scanner, approver *hitl.Approver, toolCfg *tools.ToolScanConfig) (bool, error) {
-	return ForwardScanned(transport.NewStdioReader(r), transport.NewStdioWriter(w), logW, sc, approver, toolCfg, nil, nil, nil, nil)
+	return ForwardScanned(transport.NewStdioReader(r), transport.NewStdioWriter(w), logW, sc, approver, toolCfg, nil, nil, nil, nil, nil)
 }
 
 // --- ForwardScanned tests ---
@@ -2004,7 +2005,7 @@ func TestForwardScanned_ConfusedDeputy_UnsolicitedResponseBlocked(t *testing.T) 
 	reader := transport.NewStdioReader(strings.NewReader(unsolicited))
 	writer := transport.NewStdioWriter(&out)
 
-	_, err := ForwardScanned(reader, writer, &log, sc, nil, nil, tracker, nil, nil, nil)
+	_, err := ForwardScanned(reader, writer, &log, sc, nil, nil, tracker, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2032,7 +2033,7 @@ func TestForwardScanned_ConfusedDeputy_SolicitedResponsePassed(t *testing.T) {
 	reader := transport.NewStdioReader(strings.NewReader(solicited))
 	writer := transport.NewStdioWriter(&out)
 
-	_, err := ForwardScanned(reader, writer, &log, sc, nil, nil, tracker, nil, nil, nil)
+	_, err := ForwardScanned(reader, writer, &log, sc, nil, nil, tracker, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2056,7 +2057,7 @@ func TestForwardScanned_ConfusedDeputy_NotificationPassedThrough(t *testing.T) {
 	reader := transport.NewStdioReader(strings.NewReader(notification))
 	writer := transport.NewStdioWriter(&out)
 
-	_, err := ForwardScanned(reader, writer, &log, sc, nil, nil, tracker, nil, nil, nil)
+	_, err := ForwardScanned(reader, writer, &log, sc, nil, nil, tracker, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2081,7 +2082,7 @@ func TestForwardScanned_ConfusedDeputy_ServerInitiatedRequestPassedThrough(t *te
 	reader := transport.NewStdioReader(strings.NewReader(serverReq))
 	writer := transport.NewStdioWriter(&out)
 
-	_, err := ForwardScanned(reader, writer, &log, sc, nil, nil, tracker, nil, nil, nil)
+	_, err := ForwardScanned(reader, writer, &log, sc, nil, nil, tracker, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2103,7 +2104,7 @@ func TestForwardScanned_ConfusedDeputy_NilTrackerDisabled(t *testing.T) {
 	reader := transport.NewStdioReader(strings.NewReader(response))
 	writer := transport.NewStdioWriter(&out)
 
-	_, err := ForwardScanned(reader, writer, &log, sc, nil, nil, nil, nil, nil, nil)
+	_, err := ForwardScanned(reader, writer, &log, sc, nil, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2127,13 +2128,64 @@ func TestForwardScanned_ConfusedDeputy_NullIDResponsePassedThrough(t *testing.T)
 	reader := transport.NewStdioReader(strings.NewReader(nullIDResp))
 	writer := transport.NewStdioWriter(&out)
 
-	_, err := ForwardScanned(reader, writer, &log, sc, nil, nil, tracker, nil, nil, nil)
+	_, err := ForwardScanned(reader, writer, &log, sc, nil, nil, tracker, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	if strings.Contains(log.String(), "confused deputy") {
 		t.Error("null ID response should not trigger confused deputy")
+	}
+}
+
+func TestForwardScanned_KillSwitchPreemptsOpenSession(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.ApplyDefaults()
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+	ks := killswitch.New(cfg)
+
+	// Activate kill switch AFTER creating the controller (simulates mid-stream activation).
+	ks.SetAPI(true)
+
+	// Send two clean responses. With kill switch active, both should be blocked
+	// with JSON-RPC error responses instead of being forwarded to the client.
+	input := `{"jsonrpc":"2.0","id":1,"result":{"content":"hello"}}` + "\n" +
+		`{"jsonrpc":"2.0","id":2,"result":{"content":"world"}}` + "\n"
+
+	reader := transport.NewStdioReader(strings.NewReader(input))
+	var out, log bytes.Buffer
+	writer := transport.NewStdioWriter(&out)
+
+	_, err := ForwardScanned(reader, writer, &log, sc, nil, nil, nil, ks, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Both responses should have been replaced with kill switch error responses.
+	if !strings.Contains(log.String(), "kill switch") {
+		t.Error("expected kill switch log entries")
+	}
+
+	// Output should contain JSON-RPC error responses, not the original results.
+	if strings.Contains(out.String(), `"hello"`) || strings.Contains(out.String(), `"world"`) {
+		t.Error("kill switch should have blocked forwarding of responses")
+	}
+
+	// Deactivate and verify responses flow again.
+	ks.SetAPI(false)
+	input2 := `{"jsonrpc":"2.0","id":3,"result":{"content":"after"}}` + "\n"
+	reader2 := transport.NewStdioReader(strings.NewReader(input2))
+	var out2 bytes.Buffer
+	writer2 := transport.NewStdioWriter(&out2)
+
+	_, err = ForwardScanned(reader2, writer2, &log, sc, nil, nil, nil, ks, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out2.String(), `"after"`) {
+		t.Error("expected response to pass through after kill switch deactivation")
 	}
 }
 

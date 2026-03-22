@@ -501,6 +501,14 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		default:
 		}
 
+		// Kill switch: terminate WebSocket relay when activated mid-stream.
+		if r.proxy.ks != nil && r.proxy.ks.IsActive() {
+			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "kill switch active")
+			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "kill switch active")
+			blocked = true
+			return
+		}
+
 		// block_all check: if the session has escalated to a level with
 		// block_all=true, close the WebSocket immediately. This prevents
 		// clean frames from flowing after escalation during long-lived connections.
@@ -808,6 +816,14 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusGoingAway, "connection timeout")
 			return
 		default:
+		}
+
+		// Kill switch: terminate WebSocket relay when activated mid-stream.
+		if r.proxy.ks != nil && r.proxy.ks.IsActive() {
+			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "kill switch active")
+			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "kill switch active")
+			blocked = true
+			return
 		}
 
 		// block_all check: if the session has escalated to a level with

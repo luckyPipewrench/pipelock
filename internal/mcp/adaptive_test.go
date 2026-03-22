@@ -759,6 +759,7 @@ func runForwardScanned(
 		nil, // approver
 		nil, // toolCfg
 		nil, // tracker
+		nil, // kill switch
 		rec,
 		adaptiveCfg,
 		nil, // metrics
@@ -893,6 +894,7 @@ func TestForwardScanned_Adaptive_ToolPoisonUpgradeToBlock(t *testing.T) {
 		nil,
 		toolCfg,
 		nil,
+		nil, // kill switch
 		rec,
 		adaptiveCfg,
 		nil,

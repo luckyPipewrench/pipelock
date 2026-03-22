@@ -18,6 +18,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
+	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
@@ -415,7 +416,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	// Bidirectional relay with idle timeout
 	idleTimeout := time.Duration(cfg.ForwardProxy.IdleTimeoutSeconds) * time.Second
-	totalBytes := bidirectionalCopy(clientConn, targetConn, idleTimeout, deadline)
+	totalBytes := bidirectionalCopy(clientConn, targetConn, idleTimeout, deadline, p.ks)
 
 	p.metrics.DecrActiveTunnels()
 	duration := time.Since(start)
@@ -436,8 +437,10 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 // bidirectionalCopy relays data between two connections with idle timeout.
 // The deadline is an absolute time computed once in handleConnect so the total
 // tunnel lifetime (including dial) never exceeds max_tunnel_seconds.
+// When ks is non-nil, the kill switch is checked after each read so activation
+// mid-stream terminates already-open tunnels immediately.
 // Returns the total bytes transferred in both directions.
-func bidirectionalCopy(client, target net.Conn, idleTimeout time.Duration, deadline time.Time) int64 {
+func bidirectionalCopy(client, target net.Conn, idleTimeout time.Duration, deadline time.Time, ks *killswitch.Controller) int64 {
 	_ = client.SetDeadline(deadline)
 	_ = target.SetDeadline(deadline)
 
@@ -445,7 +448,7 @@ func bidirectionalCopy(client, target net.Conn, idleTimeout time.Duration, deadl
 	done := make(chan struct{})
 
 	go func() {
-		clientToTarget = copyWithIdleTimeout(target, client, idleTimeout, deadline)
+		clientToTarget = copyWithIdleTimeout(target, client, idleTimeout, deadline, ks)
 		// Half-close: signal target that no more data is coming
 		if tc, ok := target.(*net.TCPConn); ok {
 			_ = tc.CloseWrite()
@@ -453,7 +456,7 @@ func bidirectionalCopy(client, target net.Conn, idleTimeout time.Duration, deadl
 		close(done)
 	}()
 
-	targetToClient = copyWithIdleTimeout(client, target, idleTimeout, deadline)
+	targetToClient = copyWithIdleTimeout(client, target, idleTimeout, deadline, ks)
 	// Half-close: signal client that no more data is coming
 	if tc, ok := client.(*net.TCPConn); ok {
 		_ = tc.CloseWrite()
@@ -466,11 +469,18 @@ func bidirectionalCopy(client, target net.Conn, idleTimeout time.Duration, deadl
 // copyWithIdleTimeout copies from src to dst, resetting the read deadline
 // on src after each successful read. The per-read deadline is capped at the
 // absolute deadline so tunnels cannot exceed max_tunnel_seconds while active.
+// When ks is non-nil, the kill switch is checked after each successful read
+// so activation mid-tunnel terminates the connection immediately.
 // Returns total bytes copied.
-func copyWithIdleTimeout(dst, src net.Conn, idleTimeout time.Duration, deadline time.Time) int64 {
+func copyWithIdleTimeout(dst, src net.Conn, idleTimeout time.Duration, deadline time.Time, ks *killswitch.Controller) int64 {
 	buf := make([]byte, tunnelBufSize)
 	var total int64
 	for {
+		// Kill switch: terminate tunnel immediately when activated mid-stream.
+		if ks != nil && ks.IsActive() {
+			return total
+		}
+
 		rd := time.Now().Add(idleTimeout)
 		if rd.After(deadline) {
 			rd = deadline

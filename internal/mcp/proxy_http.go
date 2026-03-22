@@ -163,7 +163,7 @@ func RunHTTPProxy(
 		}
 
 		// Scan and forward response.
-		_, scanErr := ForwardScanned(respReader, safeClientOut, safeLogW, sc, approver, fwdToolCfg, tracker, rec, adaptiveCfg, m)
+		_, scanErr := ForwardScanned(respReader, safeClientOut, safeLogW, sc, approver, fwdToolCfg, tracker, ks, rec, adaptiveCfg, m)
 		if scanErr != nil {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
 			lastScanErr = scanErr
@@ -175,7 +175,7 @@ func RunHTTPProxy(
 		// the Once and permanently prevent the GET stream.
 		if httpClient.SessionID() != "" {
 			getStreamOnce.Do(func() {
-				startGETStream(ctx, httpClient, safeClientOut, safeLogW, sc, approver, fwdToolCfg, rec, adaptiveCfg, &wg, m)
+				startGETStream(ctx, httpClient, safeClientOut, safeLogW, sc, approver, fwdToolCfg, ks, rec, adaptiveCfg, &wg, m)
 			})
 		}
 	}
@@ -567,6 +567,7 @@ func startGETStream(
 	sc *scanner.Scanner,
 	approver *hitl.Approver,
 	toolCfg *tools.ToolScanConfig,
+	ks *killswitch.Controller,
 	rec session.Recorder,
 	adaptiveCfg *config.AdaptiveEnforcement,
 	wg *sync.WaitGroup,
@@ -611,7 +612,7 @@ func startGETStream(
 
 			// nil tracker: GET stream carries server-initiated messages,
 			// not responses to client requests.
-			_, scanErr := ForwardScanned(reader, safeClientOut, safeLogW, sc, approver, toolCfg, nil, rec, adaptiveCfg, m)
+			_, scanErr := ForwardScanned(reader, safeClientOut, safeLogW, sc, approver, toolCfg, nil, ks, rec, adaptiveCfg, m)
 			if scanErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: GET stream scan error: %v\n", scanErr)
 			}
@@ -892,7 +893,7 @@ func RunHTTPListenerProxy(
 		reader := &transport.SingleMessageReader{Body: upResp.Body}
 		var buf bytes.Buffer
 		bufWriter := &syncWriter{w: &buf}
-		_, scanErr := ForwardScanned(reader, bufWriter, safeLogW, sc, approver, fwdToolCfg, nil, reqRec, adaptiveCfg, m)
+		_, scanErr := ForwardScanned(reader, bufWriter, safeLogW, sc, approver, fwdToolCfg, nil, ks, reqRec, adaptiveCfg, m)
 		if scanErr != nil {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
 		}

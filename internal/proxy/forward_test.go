@@ -23,6 +23,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/certgen"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -1051,11 +1052,39 @@ func TestCopyWithIdleTimeoutRespectsDeadline(t *testing.T) {
 	// Server never sends data, so copyWithIdleTimeout blocks on Read.
 	// With deadline capping, it should return after ~50ms (the deadline),
 	// not after 10s (the idle timeout).
-	_ = copyWithIdleTimeout(dstConn, server, 10*time.Second, deadline)
+	_ = copyWithIdleTimeout(dstConn, server, 10*time.Second, deadline, nil)
 	elapsed := time.Since(start)
 
 	if elapsed > 2*time.Second {
 		t.Errorf("copyWithIdleTimeout took %v; expected it to respect the ~50ms deadline", elapsed)
+	}
+}
+
+func TestCopyWithIdleTimeout_KillSwitchTerminatesTunnel(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	ks := killswitch.New(cfg)
+
+	// Create a TCP pipe. Server side will block on read forever.
+	client, server := net.Pipe()
+	defer func() { _ = client.Close() }()
+	defer func() { _ = server.Close() }()
+
+	// Activate kill switch before starting copy.
+	ks.SetAPI(true)
+
+	deadline := time.Now().Add(5 * time.Second)
+	start := time.Now()
+	total := copyWithIdleTimeout(server, client, time.Second, deadline, ks)
+	elapsed := time.Since(start)
+
+	// With kill switch active, copyWithIdleTimeout should return immediately
+	// (first loop iteration checks ks.IsActive() before reading).
+	if elapsed > time.Second {
+		t.Errorf("copyWithIdleTimeout with kill switch took %v; expected immediate return", elapsed)
+	}
+	if total != 0 {
+		t.Errorf("expected 0 bytes transferred, got %d", total)
 	}
 }
 
@@ -1672,7 +1701,7 @@ func TestBidirectionalCopy(t *testing.T) {
 
 	deadline := time.Now().Add(100 * time.Millisecond)
 	start := time.Now()
-	total := bidirectionalCopy(client, server, 50*time.Millisecond, deadline)
+	total := bidirectionalCopy(client, server, 50*time.Millisecond, deadline, nil)
 	elapsed := time.Since(start)
 
 	// Should return quickly (within deadline) with zero bytes

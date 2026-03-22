@@ -105,8 +105,10 @@ func isRequest(msg []byte) bool {
 // request IDs to prevent confused deputy attacks (unsolicited responses).
 // When rec is non-nil and adaptiveCfg is enabled, threat signals are recorded
 // and the effective action may be upgraded based on session escalation level.
+// When ks is non-nil, the kill switch is checked on each message so activation
+// mid-stream terminates already-open sessions immediately.
 // Returns true if any injection was detected.
-func ForwardScanned(reader transport.MessageReader, writer transport.MessageWriter, logW io.Writer, sc *scanner.Scanner, approver *hitl.Approver, toolCfg *tools.ToolScanConfig, tracker *RequestTracker, rec session.Recorder, adaptiveCfg *config.AdaptiveEnforcement, m *metrics.Metrics) (bool, error) {
+func ForwardScanned(reader transport.MessageReader, writer transport.MessageWriter, logW io.Writer, sc *scanner.Scanner, approver *hitl.Approver, toolCfg *tools.ToolScanConfig, tracker *RequestTracker, ks *killswitch.Controller, rec session.Recorder, adaptiveCfg *config.AdaptiveEnforcement, m *metrics.Metrics) (bool, error) {
 	// blockAll tracks whether the session is at a critical escalation level
 	// with block_all=true. Checked once up front and refreshed after each
 	// message so mid-stream escalation takes effect immediately.
@@ -131,6 +133,28 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			return foundInjection, fmt.Errorf("reading input: %w", err)
 		}
 		lineNum++
+
+		// Kill switch: deny all responses when activated mid-stream.
+		// Checked per message so activation after session start takes effect
+		// immediately on already-open MCP sessions.
+		if ks != nil {
+			if d := ks.IsActiveMCP(line); d.Active {
+				rpcID := extractRPCID(line)
+				if rpcID == nil {
+					// Notification: drop silently (no response possible).
+					_, _ = fmt.Fprintf(logW, "pipelock: response line %d: kill switch dropped notification (source=%s)\n",
+						lineNum, d.Source)
+					continue
+				}
+				_, _ = fmt.Fprintf(logW, "pipelock: response line %d: kill switch denied (source=%s)\n",
+					lineNum, d.Source)
+				resp := killswitch.ErrorResponse(rpcID, d.Message)
+				if wErr := writer.WriteMessage(resp); wErr != nil {
+					return foundInjection, fmt.Errorf("writing kill switch response: %w", wErr)
+				}
+				continue
+			}
+		}
 
 		// block_all enforcement: write a JSON-RPC error for every message when
 		// the session is at an escalation level with block_all=true. Re-check
@@ -771,7 +795,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 
 	// Scan and forward server output to client.
 	serverReader := transport.NewStdioReader(serverOut)
-	_, scanErr := ForwardScanned(serverReader, safeClientOut, safeLogW, sc, approver, fwdToolCfg, tracker, rec, adaptiveCfg, m)
+	_, scanErr := ForwardScanned(serverReader, safeClientOut, safeLogW, sc, approver, fwdToolCfg, tracker, ks, rec, adaptiveCfg, m)
 
 	// Wait for subprocess to exit.
 	waitErr := cmd.Wait()

@@ -220,7 +220,7 @@ Environment passthrough (subprocess mode only):
 					return fmt.Errorf("invalid upstream URL %q: must include a scheme and host", upstreamURL)
 				}
 				switch u.Scheme {
-				case "http", schemeHTTPS:
+				case schemeHTTP, schemeHTTPS:
 					// HTTP transport.
 				case "ws", "wss":
 					isWSUpstream = true

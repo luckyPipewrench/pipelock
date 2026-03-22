@@ -43,6 +43,9 @@ func runCmd() *cobra.Command {
 	var listen string
 	var mcpListen string
 	var mcpUpstream string
+	var reverseProxy bool
+	var reverseUpstream string
+	var reverseListen string
 
 	cmd := &cobra.Command{
 		Use:   "run [flags]",
@@ -77,8 +80,27 @@ Examples:
 			}
 			if hasMCPUpstream {
 				u, uErr := url.Parse(mcpUpstream)
-				if uErr != nil || (u.Scheme != "http" && u.Scheme != schemeHTTPS) || u.Host == "" {
+				if uErr != nil || (u.Scheme != schemeHTTP && u.Scheme != schemeHTTPS) || u.Host == "" {
 					return fmt.Errorf("invalid --mcp-upstream %q: must be http:// or https:// with a host", mcpUpstream)
+				}
+			}
+
+			// Validate reverse proxy flags.
+			if reverseProxy && reverseUpstream == "" {
+				return errors.New("--reverse-proxy requires --reverse-upstream")
+			}
+			if reverseUpstream != "" && !reverseProxy {
+				return errors.New("--reverse-upstream requires --reverse-proxy")
+			}
+			var reverseUpstreamURL *url.URL
+			if reverseProxy {
+				var uErr error
+				reverseUpstreamURL, uErr = url.Parse(reverseUpstream)
+				if uErr != nil || (reverseUpstreamURL.Scheme != schemeHTTP && reverseUpstreamURL.Scheme != schemeHTTPS) || reverseUpstreamURL.Host == "" {
+					return fmt.Errorf("invalid --reverse-upstream %q: must be http:// or https:// with a host", reverseUpstream)
+				}
+				if reverseListen == "" {
+					reverseListen = ":8890"
 				}
 			}
 
@@ -101,6 +123,13 @@ Examples:
 			}
 			if cmd.Flags().Changed("listen") {
 				cfg.FetchProxy.Listen = listen
+			}
+
+			// Override reverse proxy config from CLI flags.
+			if reverseProxy {
+				cfg.ReverseProxy.Enabled = true
+				cfg.ReverseProxy.Listen = reverseListen
+				cfg.ReverseProxy.Upstream = reverseUpstream
 			}
 
 			cfg.ApplyDefaults()
@@ -284,6 +313,15 @@ Examples:
 									newCfg.ScanAPI.ConnectionLimit = oldCfg.ScanAPI.ConnectionLimit
 									newCfg.ScanAPI.Timeouts = oldCfg.ScanAPI.Timeouts
 								}
+								// Block reverse proxy listener/upstream changes via reload.
+								// The listener binds at startup and the upstream is
+								// pinned in the handler. Requires restart.
+								if oldCfg.ReverseProxy.Listen != newCfg.ReverseProxy.Listen ||
+									oldCfg.ReverseProxy.Enabled != newCfg.ReverseProxy.Enabled ||
+									oldCfg.ReverseProxy.Upstream != newCfg.ReverseProxy.Upstream {
+									cmd.PrintErrf("WARNING: config reload: reverse_proxy settings changed — requires restart, ignoring\n")
+									newCfg.ReverseProxy = oldCfg.ReverseProxy
+								}
 								// Block agent listener changes via reload. Listener
 								// sockets are bound at startup and cannot be rebound
 								// at runtime. Warn and preserve old listener config.
@@ -400,6 +438,10 @@ Examples:
 			}
 			if hasMCPListen {
 				cmd.PrintErrf("  MCP:    http://%s -> %s\n", mcpListen, mcpUpstream)
+			}
+			if cfg.ReverseProxy.Enabled {
+				cmd.PrintErrf("  RevPx:  http://%s -> %s (reverse proxy with body scanning)\n",
+					cfg.ReverseProxy.Listen, cfg.ReverseProxy.Upstream)
 			}
 			for addr, name := range p.Ports() {
 				cmd.PrintErrf("  Agent:  %s -> http://%s\n", name, addr)
@@ -661,6 +703,54 @@ Examples:
 				}()
 			}
 
+			// Start reverse proxy on a dedicated port if configured.
+			var reverseProxyErr chan error
+			if cfg.ReverseProxy.Enabled {
+				rpUpstream, rpErr := url.Parse(cfg.ReverseProxy.Upstream)
+				if rpErr != nil {
+					return fmt.Errorf("reverse proxy upstream: %w", rpErr)
+				}
+
+				rpHandler := proxy.NewReverseProxy(
+					rpUpstream, p.ConfigPtr(), p.ScannerPtr(),
+					logger, m, ks,
+				)
+
+				rpLn, lnErr := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.ReverseProxy.Listen)
+				if lnErr != nil {
+					err := fmt.Errorf("reverse proxy bind %s: %w", cfg.ReverseProxy.Listen, lnErr)
+					if sentryClient != nil {
+						sentryClient.CaptureError(err)
+					}
+					return err
+				}
+
+				rpSrv := &http.Server{
+					Handler:           rpHandler,
+					ReadTimeout:       10 * time.Second,
+					ReadHeaderTimeout: 5 * time.Second,
+					WriteTimeout:      30 * time.Second,
+					IdleTimeout:       120 * time.Second,
+				}
+				go func() {
+					<-ctx.Done()
+					shutdownCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer shutCancel()
+					_ = rpSrv.Shutdown(shutdownCtx)
+				}()
+
+				reverseProxyErr = make(chan error, 1)
+				go func() {
+					srvErr := rpSrv.Serve(rpLn)
+					if errors.Is(srvErr, http.ErrServerClosed) {
+						srvErr = nil
+					}
+					reverseProxyErr <- srvErr
+				}()
+				cmd.PrintErrf("pipelock: reverse proxy listening on %s -> %s\n",
+					cfg.ReverseProxy.Listen, cfg.ReverseProxy.Upstream)
+			}
+
 			// Bind per-agent listener servers. Each listener injects the
 			// agent profile via context so identity is port-based, not
 			// header-based (spoof-proof). Ports() returns addr->profile
@@ -778,6 +868,13 @@ Examples:
 				}
 			}
 
+			// If reverse proxy was running, check for errors.
+			if reverseProxyErr != nil {
+				if rpErr := <-reverseProxyErr; rpErr != nil {
+					cmd.PrintErrf("pipelock: reverse proxy listener error: %v\n", rpErr)
+				}
+			}
+
 			logger.LogShutdown("signal received")
 			cmd.PrintErrln("\nPipelock stopped.")
 			return nil
@@ -789,6 +886,9 @@ Examples:
 	cmd.Flags().StringVarP(&listen, "listen", "l", "", "listen address (default 127.0.0.1:8888)")
 	cmd.Flags().StringVar(&mcpListen, "mcp-listen", "", "MCP HTTP listener address (e.g. 0.0.0.0:8889)")
 	cmd.Flags().StringVar(&mcpUpstream, "mcp-upstream", "", "upstream MCP server URL for HTTP listener")
+	cmd.Flags().BoolVar(&reverseProxy, "reverse-proxy", false, "enable reverse proxy mode with body scanning")
+	cmd.Flags().StringVar(&reverseUpstream, "reverse-upstream", "", "upstream URL for reverse proxy (e.g. http://localhost:7899)")
+	cmd.Flags().StringVar(&reverseListen, "reverse-listen", ":8890", "listen address for reverse proxy")
 
 	return cmd
 }

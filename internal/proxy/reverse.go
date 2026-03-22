@@ -1,0 +1,439 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
+package proxy
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"mime"
+	"net/http"
+	"net/http/httputil"
+	"net/url"
+	"strconv"
+	"strings"
+	"sync/atomic"
+
+	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/killswitch"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
+)
+
+const (
+	// reverseProxyMaxBodyBytes is the default max body size for reverse proxy
+	// request/response scanning (1 MB). Bodies larger than this pass through
+	// without scanning — fail-open on size to avoid breaking large payloads
+	// that are unlikely to contain short secret strings.
+	reverseProxyMaxBodyBytes = 1024 * 1024
+
+	// scanDirectionRequest labels a DLP finding on the request body.
+	scanDirectionRequest = "request"
+
+	// scanDirectionResponse labels an injection finding on the response body.
+	scanDirectionResponse = "response"
+)
+
+// ReverseProxyBlockResponse is the JSON error body returned when the reverse
+// proxy blocks a request or response due to scanning findings.
+type ReverseProxyBlockResponse struct {
+	Error       string `json:"error"`
+	Blocked     bool   `json:"blocked"`
+	BlockReason string `json:"block_reason"`
+	Direction   string `json:"direction"` // "request" or "response"
+}
+
+// ReverseProxyHandler is a scanning reverse proxy that forwards all requests
+// to a configured upstream URL. Request bodies are scanned for DLP patterns
+// (secret exfiltration) and response bodies are scanned for prompt injection.
+type ReverseProxyHandler struct {
+	upstream *url.URL
+	proxy    *httputil.ReverseProxy
+	cfgPtr   *atomic.Pointer[config.Config]
+	scPtr    *atomic.Pointer[scanner.Scanner]
+	logger   *audit.Logger
+	metrics  *metrics.Metrics
+	ks       *killswitch.Controller
+}
+
+// NewReverseProxy creates a reverse proxy handler that scans request and
+// response bodies. The upstream URL is fixed at creation time (listener
+// cannot rebind on hot-reload). Config and scanner are read via atomic
+// pointers so scanning behavior updates on hot-reload.
+func NewReverseProxy(
+	upstream *url.URL,
+	cfgPtr *atomic.Pointer[config.Config],
+	scPtr *atomic.Pointer[scanner.Scanner],
+	logger *audit.Logger,
+	m *metrics.Metrics,
+	ks *killswitch.Controller,
+) *ReverseProxyHandler {
+	rp := &ReverseProxyHandler{
+		upstream: upstream,
+		cfgPtr:   cfgPtr,
+		scPtr:    scPtr,
+		logger:   logger,
+		metrics:  m,
+		ks:       ks,
+	}
+
+	proxy := httputil.NewSingleHostReverseProxy(upstream)
+
+	// Director rewrites the request to target the upstream.
+	originalDirector := proxy.Director
+	proxy.Director = func(req *http.Request) {
+		originalDirector(req)
+		req.Host = upstream.Host
+	}
+
+	// ModifyResponse scans response bodies for injection.
+	proxy.ModifyResponse = rp.modifyResponse
+
+	// ErrorHandler returns a JSON error on upstream failures.
+	proxy.ErrorHandler = rp.errorHandler
+
+	rp.proxy = proxy
+	return rp
+}
+
+// ServeHTTP handles incoming requests: scan the request body for DLP,
+// then forward to upstream via the reverse proxy.
+func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	cfg := rp.cfgPtr.Load()
+	sc := rp.scPtr.Load()
+
+	// Kill switch: deny all traffic when active.
+	if rp.ks != nil && rp.ks.IsActive() {
+		rp.metrics.RecordReverseProxyRequest(r.Method, "503")
+		rp.metrics.RecordKillSwitchDenial("reverse_proxy", r.URL.Path)
+		writeReverseProxyBlock(w, http.StatusServiceUnavailable,
+			"kill switch active")
+		return
+	}
+
+	// Scan request headers for DLP patterns (secret exfiltration via headers).
+	if cfg.RequestBodyScanning.Enabled && cfg.RequestBodyScanning.ScanHeaders {
+		headerResult := scanRequestHeaders(r.Context(), r.Header, cfg, sc)
+		if headerResult != nil {
+			action := cfg.RequestBodyScanning.Action
+			if action == "" {
+				action = config.ActionBlock
+			}
+			patternNames := dlpMatchNames(headerResult.DLPMatches)
+			rp.logger.LogHeaderDLP(r.Method, r.URL.String(), headerResult.HeaderName,
+				action, "", "", "", patternNames, nil)
+
+			if action == config.ActionBlock && cfg.EnforceEnabled() {
+				rp.metrics.RecordReverseProxyRequest(r.Method, "403")
+				rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, "header_dlp")
+				reason := fmt.Sprintf("header DLP: %s", strings.Join(patternNames, ", "))
+				writeReverseProxyBlock(w, http.StatusForbidden, reason)
+				return
+			}
+		}
+	}
+
+	// Scan request body for DLP patterns (secret exfiltration).
+	if r.Body != nil && r.ContentLength != 0 && cfg.RequestBodyScanning.Enabled {
+		if blocked := rp.scanRequest(w, r, cfg, sc); blocked {
+			return
+		}
+	}
+
+	// Forward to upstream. Response scanning happens in modifyResponse.
+	rp.proxy.ServeHTTP(w, r)
+}
+
+// scanRequest reads and scans the request body for DLP patterns.
+// Returns true if the request was blocked (response already written).
+func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Request, cfg *config.Config, sc *scanner.Scanner) bool {
+	// Skip binary content types — no secrets to scan in images/video.
+	if isBinaryMIME(r.Header.Get("Content-Type")) {
+		return false
+	}
+
+	maxBytes := cfg.RequestBodyScanning.MaxBodyBytes
+	if maxBytes <= 0 {
+		maxBytes = reverseProxyMaxBodyBytes
+	}
+
+	bodyBytes, result := scanRequestBody(
+		r.Context(), r.Body, r.Header.Get("Content-Type"),
+		r.Header.Get("Content-Encoding"), maxBytes, sc, "",
+	)
+
+	if result.Clean {
+		// Re-wrap the buffered body so the reverse proxy can forward it.
+		r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+		r.ContentLength = int64(len(bodyBytes))
+		return false
+	}
+
+	action := result.Action
+	if action == "" {
+		action = cfg.RequestBodyScanning.Action
+	}
+	if action == "" {
+		action = config.ActionBlock
+	}
+
+	// Log the DLP finding.
+	patternNames := dlpMatchNames(result.DLPMatches)
+	reason := result.Reason
+	if reason == "" && len(patternNames) > 0 {
+		reason = fmt.Sprintf("DLP: %s", strings.Join(patternNames, ", "))
+	}
+	if reason == "" {
+		reason = "request body contains secret patterns"
+	}
+	rp.logger.LogBodyDLP(r.Method, r.URL.String(), action, "", "", "",
+		len(patternNames), patternNames, nil)
+
+	// Fail-closed: when bodyBytes is nil the body was consumed but couldn't
+	// be buffered (oversize, compressed, read error, multipart parse error).
+	// Always block regardless of action/enforce — forwarding an empty body
+	// corrupts the upstream request and is a DLP bypass.
+	if bodyBytes == nil {
+		rp.metrics.RecordReverseProxyRequest(r.Method, "403")
+		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, "dlp")
+		writeReverseProxyBlock(w, http.StatusForbidden, reason)
+		return true
+	}
+
+	if action == config.ActionBlock && cfg.EnforceEnabled() {
+		rp.metrics.RecordReverseProxyRequest(r.Method, "403")
+		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, "dlp")
+		writeReverseProxyBlock(w, http.StatusForbidden, reason)
+		return true
+	}
+
+	// Warn mode: re-wrap body and continue.
+	r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+	r.ContentLength = int64(len(bodyBytes))
+	return false
+}
+
+// modifyResponse scans the upstream response body for prompt injection.
+// Called by httputil.ReverseProxy after receiving the upstream response.
+func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
+	cfg := rp.cfgPtr.Load()
+	sc := rp.scPtr.Load()
+
+	// Record the final client-visible status at each exit point, not here.
+	// The upstream status may be rewritten to 403 by scanning decisions.
+
+	// Only scan if response scanning is enabled.
+	if !cfg.ResponseScanning.Enabled {
+		rp.metrics.RecordReverseProxyRequest(resp.Request.Method,
+			strconv.Itoa(resp.StatusCode))
+		return nil
+	}
+
+	// Skip binary content types.
+	if isBinaryMIME(resp.Header.Get("Content-Type")) {
+		rp.metrics.RecordReverseProxyRequest(resp.Request.Method,
+			strconv.Itoa(resp.StatusCode))
+		return nil
+	}
+
+	// Fail-closed on compressed responses: regex can't match gzipped content.
+	// Must check before reading body so compressed injection isn't forwarded.
+	if hasNonIdentityEncoding(resp.Header.Get("Content-Encoding")) {
+		_ = resp.Body.Close()
+		rp.metrics.RecordReverseProxyRequest(resp.Request.Method, "403")
+		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, "compressed")
+		rp.logger.LogResponseScan(resp.Request.URL.String(), "", "", "",
+			config.ActionBlock, 0, []string{"compressed_response"}, nil)
+		replaceWithBlockResponse(resp, []string{"compressed response cannot be scanned"})
+		return nil
+	}
+
+	// Read response body with size limit. Use a separate limited reader
+	// so the original body remains open for oversized passthrough.
+	maxBytes := reverseProxyMaxBodyBytes
+	limited := io.LimitReader(resp.Body, int64(maxBytes)+1)
+	body, err := io.ReadAll(limited)
+	if err != nil {
+		// Fail-closed: can't read body, can't scan it.
+		_ = resp.Body.Close()
+		rp.metrics.RecordReverseProxyRequest(resp.Request.Method, "403")
+		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, "read_error")
+		replaceWithBlockResponse(resp, []string{"response read error"})
+		return nil
+	}
+
+	// Oversized body: pass through without scanning. The original body
+	// is still open, so rebuild the full stream from buffered prefix +
+	// remaining original body.
+	if len(body) > maxBytes {
+		resp.Body = readCloserJoin(body, resp.Body)
+		resp.ContentLength = -1
+		rp.metrics.RecordReverseProxyRequest(resp.Request.Method,
+			strconv.Itoa(resp.StatusCode))
+		return nil
+	}
+
+	// Body fully read — close the original.
+	_ = resp.Body.Close()
+
+	// Empty body: nothing to scan.
+	if len(body) == 0 {
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		resp.ContentLength = 0
+		rp.metrics.RecordReverseProxyRequest(resp.Request.Method,
+			strconv.Itoa(resp.StatusCode))
+		return nil
+	}
+
+	// Scan the response text for injection patterns.
+	text := string(body)
+	result := sc.ScanResponse(resp.Request.Context(), text)
+
+	if result.Clean {
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		resp.ContentLength = int64(len(body))
+		rp.metrics.RecordReverseProxyRequest(resp.Request.Method,
+			strconv.Itoa(resp.StatusCode))
+		return nil
+	}
+
+	action := cfg.ResponseScanning.Action
+
+	var patternNames []string
+	for _, m := range result.Matches {
+		patternNames = append(patternNames, m.PatternName)
+	}
+	rp.logger.LogResponseScan(resp.Request.URL.String(), "", "", "", action,
+		len(patternNames), patternNames, nil)
+
+	// block and ask: unconditional block regardless of enforce mode.
+	// ask has no approver on the reverse proxy (no terminal), so it
+	// fails closed to block. This matches forward/fetch behavior where
+	// block and ask are in the same switch case (forward.go:835-840).
+	if action == config.ActionBlock || action == config.ActionAsk {
+		rp.metrics.RecordReverseProxyRequest(resp.Request.Method, "403")
+		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, "injection")
+		replaceWithBlockResponse(resp, patternNames)
+		return nil
+	}
+
+	if action == config.ActionStrip {
+		if result.TransformedContent != "" {
+			// Replace body with redacted content. Remove body-derived
+			// validators that no longer match the stripped content
+			// (matches forward.go:860-863).
+			stripped := []byte(result.TransformedContent)
+			resp.Body = io.NopCloser(bytes.NewReader(stripped))
+			resp.ContentLength = int64(len(stripped))
+			resp.Header.Set("Content-Length", strconv.Itoa(len(stripped)))
+			resp.Header.Del("Etag")
+			resp.Header.Del("Content-Md5")
+			resp.Header.Del("Digest")
+			rp.metrics.RecordReverseProxyRequest(resp.Request.Method,
+				strconv.Itoa(resp.StatusCode))
+			return nil
+		}
+		// Strip failed: detection came from a transformed pass (vowel-fold,
+		// leetspeak, etc.) where the scanner can't produce a redacted version.
+		// Unconditional block regardless of enforce — forwarding injected
+		// content is a security bypass. Matches forward.go:865-869.
+		rp.metrics.RecordReverseProxyRequest(resp.Request.Method, "403")
+		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, "injection")
+		replaceWithBlockResponse(resp, patternNames)
+		return nil
+	}
+
+	// Warn mode: pass through unchanged.
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	resp.ContentLength = int64(len(body))
+	rp.metrics.RecordReverseProxyRequest(resp.Request.Method,
+		strconv.Itoa(resp.StatusCode))
+	return nil
+}
+
+// errorHandler writes a JSON error when the upstream is unreachable.
+func (rp *ReverseProxyHandler) errorHandler(w http.ResponseWriter, r *http.Request, err error) {
+	rp.metrics.RecordReverseProxyRequest(r.Method, "502")
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusBadGateway)
+	resp := ReverseProxyBlockResponse{
+		Error:   fmt.Sprintf("upstream error: %v", err),
+		Blocked: false,
+	}
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// writeReverseProxyBlock writes a JSON block response for request-side blocks
+// (DLP, kill switch, fail-closed). Response-side blocks use replaceWithBlockResponse.
+func writeReverseProxyBlock(w http.ResponseWriter, status int, reason string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	resp := ReverseProxyBlockResponse{
+		Error:       "blocked by pipelock",
+		Blocked:     true,
+		BlockReason: reason,
+		Direction:   scanDirectionRequest,
+	}
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// replaceWithBlockResponse replaces the upstream response with a 403 JSON
+// block body. Used for block, ask (fail-closed), and strip-failed paths.
+// Scrubs ALL upstream headers to prevent leaking Set-Cookie, Content-Encoding,
+// Etag, and other upstream headers through a synthetic block response. The
+// forward proxy avoids this by never copying headers on block; since
+// httputil.ReverseProxy copies them before ModifyResponse, we clear them.
+func replaceWithBlockResponse(resp *http.Response, patternNames []string) {
+	blockResp := ReverseProxyBlockResponse{
+		Error:       "response blocked by pipelock",
+		Blocked:     true,
+		BlockReason: fmt.Sprintf("injection: %s", strings.Join(patternNames, ", ")),
+		Direction:   scanDirectionResponse,
+	}
+	blockBody, _ := json.Marshal(blockResp)
+	resp.Body = io.NopCloser(bytes.NewReader(blockBody))
+	resp.ContentLength = int64(len(blockBody))
+	resp.StatusCode = http.StatusForbidden
+	resp.Status = http.StatusText(http.StatusForbidden)
+	// Clear all upstream headers. The blocked response is entirely
+	// synthetic — no upstream header should survive.
+	for k := range resp.Header {
+		delete(resp.Header, k)
+	}
+	resp.Header.Set("Content-Type", "application/json")
+	resp.Header.Set("Content-Length", strconv.Itoa(len(blockBody)))
+}
+
+// readCloserJoin combines a buffered prefix with an open ReadCloser into a
+// single ReadCloser. Closing the returned ReadCloser closes the original.
+// Used for oversized response passthrough where the body is partially read.
+func readCloserJoin(prefix []byte, rc io.ReadCloser) io.ReadCloser {
+	return &joinedReadCloser{
+		Reader: io.MultiReader(bytes.NewReader(prefix), rc),
+		closer: rc,
+	}
+}
+
+type joinedReadCloser struct {
+	io.Reader
+	closer io.Closer
+}
+
+func (j *joinedReadCloser) Close() error {
+	return j.closer.Close()
+}
+
+// isBinaryMIME returns true for content types that are clearly binary
+// (images, audio, video) and should not be scanned for text patterns.
+func isBinaryMIME(ct string) bool {
+	if ct == "" {
+		return false
+	}
+	mediaType, _, _ := mime.ParseMediaType(ct)
+	return strings.HasPrefix(mediaType, "image/") ||
+		strings.HasPrefix(mediaType, "audio/") ||
+		strings.HasPrefix(mediaType, "video/")
+}

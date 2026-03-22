@@ -441,7 +441,7 @@ Examples:
 			}
 			if cfg.ReverseProxy.Enabled {
 				cmd.PrintErrf("  RevPx:  http://%s -> %s (reverse proxy with body scanning)\n",
-					cfg.ReverseProxy.Listen, cfg.ReverseProxy.Upstream)
+					cfg.ReverseProxy.Listen, redactEndpoint(cfg.ReverseProxy.Upstream))
 			}
 			for addr, name := range p.Ports() {
 				cmd.PrintErrf("  Agent:  %s -> http://%s\n", name, addr)
@@ -748,7 +748,7 @@ Examples:
 					reverseProxyErr <- srvErr
 				}()
 				cmd.PrintErrf("pipelock: reverse proxy listening on %s -> %s\n",
-					cfg.ReverseProxy.Listen, cfg.ReverseProxy.Upstream)
+					cfg.ReverseProxy.Listen, redactEndpoint(cfg.ReverseProxy.Upstream))
 			}
 
 			// Bind per-agent listener servers. Each listener injects the

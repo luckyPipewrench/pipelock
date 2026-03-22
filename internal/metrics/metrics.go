@@ -888,11 +888,24 @@ func (m *Metrics) SetAdaptiveSessionLevel(level string, delta float64) {
 }
 
 // RecordReverseProxyRequest increments the reverse proxy request counter.
+// Method is normalized to a known set to prevent unbounded cardinality
+// from arbitrary client-controlled HTTP methods.
 func (m *Metrics) RecordReverseProxyRequest(method, status string) {
 	if m == nil {
 		return
 	}
-	m.reverseProxyRequests.WithLabelValues(method, status).Inc()
+	m.reverseProxyRequests.WithLabelValues(normalizeHTTPMethod(method), status).Inc()
+}
+
+// normalizeHTTPMethod maps HTTP methods to a bounded label set.
+// Unknown methods are grouped as "OTHER" to prevent cardinality explosion.
+func normalizeHTTPMethod(method string) string {
+	switch method {
+	case "GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS":
+		return method
+	default:
+		return "OTHER"
+	}
 }
 
 // RecordReverseProxyScanBlocked increments the reverse proxy scan blocked counter.

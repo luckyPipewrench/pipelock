@@ -355,12 +355,15 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 }
 
 // errorHandler writes a JSON error when the upstream is unreachable.
+// The concrete error is logged server-side but not exposed to the client
+// to avoid leaking internal topology (dial addresses, TLS state, DNS).
 func (rp *ReverseProxyHandler) errorHandler(w http.ResponseWriter, r *http.Request, err error) {
 	rp.metrics.RecordReverseProxyRequest(r.Method, "502")
+	rp.logger.LogError(r.Method, r.URL.String(), "", "", "", err)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusBadGateway)
 	resp := ReverseProxyBlockResponse{
-		Error:   fmt.Sprintf("upstream error: %v", err),
+		Error:   "upstream unavailable",
 		Blocked: false,
 	}
 	_ = json.NewEncoder(w).Encode(resp)

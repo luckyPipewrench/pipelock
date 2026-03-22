@@ -111,7 +111,7 @@ True concurrent throughput across all available goroutines.
 
 ## Key Takeaways
 
-- **Full 11-layer scan on a typical URL: ~31 microseconds.** Slightly higher than v1.5.0 (~21μs) due to 7 new state/control response patterns and expanded DLP. Well under 1ms.
+- **Full 11-layer scan on a typical URL: ~31 microseconds.** Slightly higher than v1.5.0 (~21μs) due to expanded DLP patterns and additional scanner layers. Well under 1ms.
 - Blocked URLs short-circuit early: blocklist check is ~2μs.
 - DLP regex matching (46 patterns) with pre-filter: ~8μs. Pre-filter alone: ~497ns with zero allocations on clean text.
 - Response scanning with 19 patterns on small content: ~72μs. Large content (~10KB): ~9.5ms. State/control patterns add ~133μs on clean text. Injection detected via early exit: ~40μs.

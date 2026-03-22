@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-03-22
+
+### Added
+- **Process sandbox (Linux):** Landlock filesystem restriction, seccomp syscall filtering, and network namespace isolation for MCP subprocess mode. Agents run in a sandboxed child process with restricted filesystem visibility and no direct network access. `--sandbox` flag on `pipelock mcp proxy`. Requires kernel 5.13+ with Landlock and user namespace support. (#267)
+- **Process sandbox (macOS):** sandbox-exec with dynamically generated SBPL profiles. Deny-all baseline with explicit allows. Same approach as Anthropic srt, Cursor, and OpenAI Codex. `pipelock sandbox diagnose` reports platform capabilities. (#275)
+- **Per-agent sandbox profiles:** Named sandbox configurations with per-profile filesystem grants, network policy, and syscall allowlists. `--sandbox-strict` flag denies all filesystem access outside an explicit allowlist. Subreaper for descendant cleanup. Sandbox preflight and diagnostics. (#272)
+- **Redirect policy action:** First-class `redirect` action for MCP tool policy that routes matched tool calls to audited handler programs instead of blocking. Redirect profiles define the handler executable, reason, and argument passing. Synthetic JSON-RPC success responses returned to the agent. Response scanning on handler output prevents injection. Fail-closed on handler failure or timeout. Action precedence: block > redirect > ask > warn. (#271)
+- **Full-schema tool poisoning detection:** `collectAllSchemaText` recursively extracts text from nested `inputSchema` objects (properties, descriptions, enums, defaults, examples) for injection scanning. Previously only top-level tool description was scanned. (#270)
+- **State and control response patterns:** 7 new injection detection patterns targeting state manipulation, control flow hijacking, and authority assertion with DOTALL matching for multiline payloads. Response pattern count 13 to 20. (#270)
+- **Config security scoring:** `pipelock audit score` analyzes configuration for security posture with 12 category checks, 0-100 scoring, letter grades (A-F), and tool policy overpermission audit. JSON output for CI integration. (#273)
+- **JetBrains/Junie MCP proxy integration:** `pipelock jetbrains install` wraps JetBrains IDE MCP server configs through pipelock's MCP proxy. Supports `--sandbox` and `--workspace` flags for sandboxed operation. (#260, #269)
+- **Adaptive enforcement exempt_domains:** Per-domain exemption from cross-request entropy budget with wildcard matching. Prevents false entropy accumulation from repeated API calls to LLM providers. (#268)
+- **OWASP MCP Top 10 coverage mapping:** Comprehensive mapping of pipelock's controls against the OWASP MCP Security Top 10 taxonomy. (#274)
+- **NIST 800-53 control mapping:** 7 control families (AC, AU, CA, CM, IR, SC, SI) mapped with per-control coverage assessment. (#274)
+
+### Changed
+- Action precedence updated: block(4) > redirect(3) > ask(2) > warn(1). Unknown actions still fail closed to block.
+- Direct dependencies increased from 15 to 17 (added go-landlock for sandbox, updated protobuf).
+- Binary size increased from ~17MB to ~24MB (sandbox + SQLite runtime).
+
+### Deployment Notes
+- **Linux sandbox** requires kernel 5.13+ with Landlock and user namespace support. Run `pipelock sandbox diagnose` to check prerequisites.
+- **macOS sandbox** uses sandbox-exec (seatbelt profiles). Beta — CI-tested on GitHub Actions macOS runners.
+- **Redirect profiles** reference handler executables that must exist on the host. Validate with `pipelock audit score`.
+- New config sections: `sandbox` (profiles, strict mode), `redirect_profiles` (on `mcp_tool_policy`).
+
 ## [1.5.0] - 2026-03-20
 
 ### Added

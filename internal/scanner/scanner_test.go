@@ -274,7 +274,7 @@ func TestScan_BlocksSSRF_Loopback(t *testing.T) {
 		if result.Allowed {
 			t.Errorf("expected %s to be blocked (SSRF)", url)
 		}
-		if result.Scanner != "ssrf" {
+		if result.Scanner != ScannerSSRF {
 			t.Errorf("expected scanner=ssrf for %s, got %s", url, result.Scanner)
 		}
 	}
@@ -550,6 +550,64 @@ func TestScan_SSRFDisabledWhenNilCIDRs(t *testing.T) {
 	result := s.Scan(context.Background(), "http://127.0.0.1/test")
 	if !result.Allowed {
 		t.Errorf("expected 127.0.0.1 allowed with nil CIDRs, got blocked: %s", result.Reason)
+	}
+}
+
+func TestScan_TrustedDomains_BypassesSSRF(t *testing.T) {
+	cfg := testConfig()
+	cfg.Internal = []string{"127.0.0.0/8", "10.0.0.0/8", "::1/128"}
+	cfg.TrustedDomains = []string{"localhost", "*.internal.corp"}
+	s := New(cfg)
+
+	// localhost resolves to 127.0.0.1 (internal) but is trusted — should pass SSRF.
+	result := s.Scan(context.Background(), "http://localhost/api/v1/inference")
+	if !result.Allowed {
+		t.Fatalf("expected trusted domain localhost to bypass SSRF, got blocked: %s", result.Reason)
+	}
+}
+
+func TestScan_TrustedDomains_NonTrustedStillBlocked(t *testing.T) {
+	cfg := testConfig()
+	cfg.Internal = []string{"127.0.0.0/8", "10.0.0.0/8"}
+	cfg.TrustedDomains = []string{"trusted.example.com"}
+	s := New(cfg)
+
+	// localhost is NOT in trusted_domains — should still be blocked.
+	result := s.Scan(context.Background(), "http://localhost/admin")
+	if result.Allowed {
+		t.Errorf("expected non-trusted localhost to be blocked by SSRF")
+	}
+	if result.Scanner != ScannerSSRF {
+		t.Errorf("expected scanner=ssrf, got %s", result.Scanner)
+	}
+}
+
+func TestScan_TrustedDomains_WildcardMatch(t *testing.T) {
+	// Verify wildcard matching semantics used by trusted_domains.
+	// Direct MatchDomain test avoids DNS dependency on fake hostnames.
+	if !MatchDomain("inference.local", "*.local") {
+		t.Error("expected *.local to match inference.local")
+	}
+	if MatchDomain("inference.example.com", "*.local") {
+		t.Error("expected *.local NOT to match inference.example.com")
+	}
+}
+
+func TestScan_TrustedDomains_DLPStillApplies(t *testing.T) {
+	cfg := testConfig()
+	cfg.Internal = []string{"127.0.0.0/8"}
+	cfg.TrustedDomains = []string{"localhost"}
+	s := New(cfg)
+
+	// Trusted domain bypasses SSRF but DLP still scans the URL.
+	// Build fake key at runtime to avoid gosec G101.
+	fakeKey := "AKIA" + "IOSFODNN7EXAMPLE"
+	result := s.Scan(context.Background(), "http://localhost/api?key="+fakeKey)
+	if result.Allowed {
+		t.Error("expected DLP to block secret even on trusted domain")
+	}
+	if result.Scanner == ScannerSSRF {
+		t.Error("expected DLP scanner, not SSRF — trusted domain should bypass SSRF")
 	}
 }
 

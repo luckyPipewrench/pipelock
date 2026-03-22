@@ -1098,6 +1098,86 @@ func TestRunHTTPProxy_GETStreamTransientReconnect(t *testing.T) {
 	}
 }
 
+func TestRunHTTPProxy_GETStreamKillSwitchPause(t *testing.T) {
+	// When kill switch activates, GET stream pauses (no new connections).
+	// When deactivated, it resumes connecting.
+	var getCount int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			atomic.AddInt32(&getCount, 1)
+			// Return SSE that closes immediately (triggers reconnect loop).
+			w.Header().Set("Content-Type", "text/event-stream")
+			return
+		}
+		w.Header().Set("Mcp-Session-Id", "sess-ks-test")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+	}))
+	defer srv.Close()
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.ApplyDefaults()
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+	ks := killswitch.New(cfg)
+
+	stdinR, stdinW := io.Pipe()
+	var stdout, stderr bytes.Buffer
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- RunHTTPProxy(ctx, stdinR, &stdout, &stderr, srv.URL, sc, nil, nil, nil, nil, nil, ks, nil, nil, nil, nil, nil, nil)
+	}()
+
+	// Send initialize to trigger GET stream.
+	_, _ = stdinW.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}` + "\n"))
+
+	// Wait for at least one GET attempt.
+	time.Sleep(500 * time.Millisecond)
+	countBefore := atomic.LoadInt32(&getCount)
+	if countBefore < 1 {
+		_ = stdinW.Close()
+		<-done
+		t.Fatalf("expected at least 1 GET attempt before kill switch, got %d", countBefore)
+	}
+
+	// Activate kill switch — GET stream should pause.
+	ks.SetAPI(true)
+	time.Sleep(1500 * time.Millisecond)
+	countDuring := atomic.LoadInt32(&getCount)
+
+	// Deactivate — should resume.
+	ks.SetAPI(false)
+	time.Sleep(1500 * time.Millisecond)
+	countAfter := atomic.LoadInt32(&getCount)
+
+	_ = stdinW.Close()
+	<-done
+
+	// During kill switch, no new GET requests should have been made.
+	// Allow at most 1 extra (in-flight at activation time).
+	if countDuring > countBefore+1 {
+		t.Errorf("expected GET stream to pause during kill switch: before=%d during=%d", countBefore, countDuring)
+	}
+
+	// After deactivation, new GETs should resume.
+	if countAfter <= countDuring {
+		t.Errorf("expected GET stream to resume after kill switch cleared: during=%d after=%d", countDuring, countAfter)
+	}
+
+	// Logs should show pause and resume.
+	if !strings.Contains(stderr.String(), "kill switch active") {
+		t.Error("expected kill switch pause log entry")
+	}
+	if !strings.Contains(stderr.String(), "kill switch cleared") {
+		t.Error("expected kill switch resume log entry")
+	}
+}
+
 func TestRunHTTPProxy_ScanErrorPropagated(t *testing.T) {
 	// Response with injection in block mode causes scan error to be propagated.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

@@ -827,6 +827,18 @@ func TestReverseProxy_OversizedResponseInjectionBypass(t *testing.T) {
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("expected 403 (oversized body with injection blocked), got %d", resp.StatusCode)
 	}
+
+	body, _ := io.ReadAll(resp.Body)
+	var blockResp ReverseProxyBlockResponse
+	if err := json.Unmarshal(body, &blockResp); err != nil {
+		t.Fatalf("unmarshal block response: %v", err)
+	}
+	if !blockResp.Blocked {
+		t.Fatal("expected blocked=true")
+	}
+	if !strings.Contains(blockResp.BlockReason, "scanning limit") {
+		t.Fatalf("expected BlockReason to mention scanning limit, got %q", blockResp.BlockReason)
+	}
 }
 
 func TestReverseProxy_AskModeBlocksWithEnforceDisabled(t *testing.T) {
@@ -1285,6 +1297,18 @@ func TestReverseProxy_URLPathDLP(t *testing.T) {
 
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("expected 403 (secret in path blocked by URL DLP), got %d", resp.StatusCode)
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	var blockResp ReverseProxyBlockResponse
+	if err := json.Unmarshal(body, &blockResp); err != nil {
+		t.Fatalf("unmarshal block response: %v", err)
+	}
+	if !blockResp.Blocked {
+		t.Fatal("expected blocked=true")
+	}
+	if !strings.Contains(blockResp.BlockReason, "URL DLP") {
+		t.Fatalf("expected BlockReason to mention URL DLP, got %q", blockResp.BlockReason)
 	}
 }
 

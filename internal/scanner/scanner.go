@@ -70,6 +70,7 @@ type Scanner struct {
 	entropyMinLen              int
 	maxURLLength               int
 	internalCIDRs              []*net.IPNet
+	trustedDomains             []string // SSRF-exempt domains (wildcard via MatchDomain)
 	rateLimiter                *RateLimiter
 	dataBudget                 *DataBudget
 	envSecrets                 []string // filtered high-entropy env var values
@@ -196,6 +197,8 @@ func New(cfg *config.Config) *Scanner {
 		}
 		s.internalCIDRs = append(s.internalCIDRs, ipNet)
 	}
+
+	s.trustedDomains = cfg.TrustedDomains
 
 	// Initialize data budget if configured
 	if cfg.FetchProxy.Monitoring.MaxDataPerMinute > 0 {
@@ -547,6 +550,16 @@ func (s *Scanner) checkSSRF(ctx context.Context, hostname string) Result {
 			Reason:  fmt.Sprintf("SSRF check failed: DNS resolution error for %s: %v", hostname, err),
 			Scanner: ScannerSSRF,
 			Score:   1.0,
+		}
+	}
+
+	// Trusted domains bypass the internal-IP CIDR check. All other scanners
+	// (DLP, blocklist, entropy) still apply — only the RFC1918 resolution
+	// check is skipped. This lets operators allowlist internal services
+	// (e.g., local inference servers) without disabling SSRF protection globally.
+	for _, pattern := range s.trustedDomains {
+		if MatchDomain(hostname, pattern) {
+			return Result{Allowed: true}
 		}
 	}
 

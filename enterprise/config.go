@@ -327,6 +327,9 @@ func MergeAgentProfile(base *config.Config, profile *config.AgentProfile) (*conf
 	if profile.APIAllowlist != nil {
 		merged.APIAllowlist = profile.APIAllowlist // replace
 	}
+	if profile.TrustedDomains != nil {
+		merged.TrustedDomains = profile.TrustedDomains // replace
+	}
 	if profile.RateLimit != nil {
 		// Wholesale replacement: setting rate_limit on an agent replaces
 		// both fields, so explicit zero means "unlimited" (no inherited limit).

@@ -286,6 +286,7 @@ type Config struct {
 	LicenseFile           string                  `yaml:"license_file,omitempty"`       // path to file containing the license token (read at startup)
 	LicensePublicKey      string                  `yaml:"license_public_key,omitempty"` // hex-encoded Ed25519 public key for license verification (dev builds only)
 	Internal              []string                `yaml:"internal"`
+	TrustedDomains        []string                `yaml:"trusted_domains"` // domains exempt from SSRF internal-IP check (wildcard supported)
 
 	// LicenseExpiresAt is the Unix timestamp of the license expiry, populated
 	// by EnforceLicenseGate(). Zero means perpetual. Used for runtime expiry
@@ -746,6 +747,7 @@ type AgentProfile struct {
 	Budget           BudgetConfig          `yaml:"budget,omitempty"`
 	AllowedAddresses []string              `yaml:"allowed_addresses,omitempty"` // per-agent crypto address allowlist (enterprise, additive with global)
 	Sandbox          *AgentSandboxOverride `yaml:"sandbox,omitempty"`           // per-agent sandbox overrides (Pro, gated by FeatureAgents)
+	TrustedDomains   []string              `yaml:"trusted_domains,omitempty"`   // per-agent SSRF-exempt domains (replace, not merge)
 }
 
 // AgentDLP controls DLP pattern merging for agent profiles.
@@ -2235,6 +2237,30 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// Validate trusted_domains entries.
+	for i, raw := range c.TrustedDomains {
+		d := strings.TrimSpace(strings.ToLower(raw))
+		if d == "" {
+			return fmt.Errorf("trusted_domains[%d] is empty", i)
+		}
+		if strings.Contains(d, "://") || strings.Contains(d, "/") || strings.Contains(d, ":") {
+			return fmt.Errorf("trusted_domains[%d] %q: use a hostname pattern, not a URL or host:port", i, raw)
+		}
+		if d == "*" {
+			return fmt.Errorf("trusted_domains[%d]: bare wildcard disables all SSRF protection", i)
+		}
+		if strings.HasPrefix(d, "*.") {
+			// Wildcard must target a concrete domain (*.com is too broad).
+			if strings.Count(d[2:], ".") < 1 {
+				return fmt.Errorf("trusted_domains[%d] %q: wildcard must target a concrete domain like *.example.com", i, raw)
+			}
+		} else if strings.ContainsAny(d, "*?[]") {
+			return fmt.Errorf("trusted_domains[%d] %q: only exact hosts and *.example.com wildcards are supported", i, raw)
+		}
+		// Normalize: store lowercase, trimmed.
+		c.TrustedDomains[i] = strings.TrimSuffix(d, ".")
+	}
+
 	// Validate community rules config
 	switch c.Rules.MinConfidence {
 	case ConfidenceHigh, ConfidenceMedium, ConfidenceLow:
@@ -2575,6 +2601,14 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		warnings = append(warnings, ReloadWarning{
 			Field:   "fetch_proxy.monitoring.subdomain_entropy_exclusions",
 			Message: fmt.Sprintf("subdomain entropy exclusions added: %s — entropy detection coverage reduced", strings.Join(added, ", ")),
+		})
+	}
+
+	// Trusted domains expanded (SSRF protection scope reduced)
+	if added := passthroughDomainsAdded(old.TrustedDomains, updated.TrustedDomains); len(added) > 0 {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "trusted_domains",
+			Message: fmt.Sprintf("trusted domains added: %s — SSRF internal-IP check bypassed for these hosts", strings.Join(added, ", ")),
 		})
 	}
 

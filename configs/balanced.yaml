@@ -436,6 +436,12 @@ internal:
   - "224.0.0.0/4"
   - "ff00::/8"
 
+# Domains exempt from SSRF internal-IP checks. Wildcards supported.
+# All other scanners (DLP, blocklist, entropy) still apply.
+# trusted_domains:
+#   - "localhost"
+#   - "*.internal.corp"
+
 tls_interception:
   enabled: false
   ca_cert: ""

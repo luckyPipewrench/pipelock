@@ -1,0 +1,55 @@
+name: AI PR Review
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    if: >-
+      github.event.issue.pull_request &&
+      (github.event.comment.body == '/review' ||
+       github.event.comment.body == '/review fast' ||
+       github.event.comment.body == '/review deep')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Determine review mode
+        id: mode
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          if [ "$COMMENT_BODY" = "/review deep" ]; then
+            echo "mode=deep" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=fast" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run PR review
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LITELLM_BASE_URL: ${{ secrets.LITELLM_BASE_URL }}
+          LITELLM_API_KEY: ${{ secrets.LITELLM_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          PR_REVIEW_MODEL_FAST: ${{ secrets.PR_REVIEW_MODEL_FAST }}
+          PR_REVIEW_MODEL_DEEP: ${{ secrets.PR_REVIEW_MODEL_DEEP }}
+          REVIEW_MODE: ${{ steps.mode.outputs.mode }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          REPO: ${{ github.repository }}
+        run: python scripts/pr-review.py

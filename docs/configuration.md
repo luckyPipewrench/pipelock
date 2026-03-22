@@ -556,7 +556,7 @@ mcp_tool_policy:
 - `action:` per-rule override (warn, block, or redirect)
 - `redirect_profile:` reference to a named redirect profile (required when `action: redirect`)
 
-Shell obfuscation detection is built-in: backslash escapes, `$IFS` substitution, brace expansion, and octal/hex escapes are decoded before matching. See [Redirect Action](#redirect-action) for redirect profile configuration.
+Shell obfuscation detection is built-in: backslash escapes, `$IFS` substitution, brace expansion, and octal/hex escapes are decoded before matching. See [Redirect Action (v2.0)](#redirect-action-v20) for redirect profile configuration.
 
 ## MCP Session Binding
 

@@ -24,6 +24,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Attack simulation:** `pipelock simulate` runs 24 synthetic attack scenarios against a config and reports a security scorecard. 5 categories: DLP exfiltration, prompt injection, tool poisoning, SSRF, URL evasion. Scanner attribution verifies the correct layer detected each attack. `--json` output for CI, exit code 1 on misses. (#277)
 - **HTTP reverse proxy:** Generic reverse proxy mode for any HTTP service with bidirectional body scanning. Request bodies scanned for DLP (secret exfiltration), response bodies scanned for prompt injection. Fail-closed on compressed bodies, read errors, and ask mode. `pipelock run --reverse-proxy --reverse-upstream URL`. New `reverse_proxy` config section. (#278)
+- **SSRF trusted domains:** `trusted_domains` config option allows internal services with public DNS records that resolve to private IPs. Agents connecting to localhost dev servers, local inference endpoints, or internal services with RFC1918 addresses can be explicitly allowed without disabling SSRF protection globally. (#281, closes #276, #279)
+
+### Fixed
+- **Reverse proxy fail-closed on oversized responses:** Responses exceeding `max_response_bytes` are now blocked instead of passing through unscanned. (#281)
+- **Reverse proxy URL DLP scanning:** Request URL path and query string are now scanned for DLP patterns on the reverse proxy, matching forward proxy behavior. (#281)
+- **Kill switch preemption on long-lived transports:** Kill switch state is checked per-read/frame/message on CONNECT tunnels, WebSocket, and MCP stdio/HTTP/WS transports. Previously only checked at connection setup. (#281)
+- **SSE reconnect loop kill switch:** GET-mode SSE stream reconnect loop now exits when kill switch is active instead of retrying indefinitely. (#281)
+- **Memory persistence pattern expansion:** Additional terminal phrases added to the memory persistence directive injection pattern for broader coverage. (#281)
 
 ### Changed
 - Action precedence updated: block(4) > redirect(3) > ask(2) > warn(1). Unknown actions still fail closed to block.

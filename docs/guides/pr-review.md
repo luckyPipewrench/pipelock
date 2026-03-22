@@ -6,8 +6,8 @@ Manual-trigger AI security review for pull requests. Comment `/review` on any PR
 
 | Command | Model | Use When |
 |---------|-------|----------|
-| `/review` | Fast (default: gpt-5.4-nano) | Quick check, most PRs |
-| `/review fast` | Fast (default: gpt-5.4-nano) | Same as `/review` |
+| `/review` | Fast (default: gpt-5.4-mini) | Quick check, most PRs |
+| `/review fast` | Fast (default: gpt-5.4-mini) | Same as `/review` |
 | `/review deep` | Deep (default: gpt-5.4) | Complex changes, security-sensitive code |
 
 ## What It Reviews
@@ -54,7 +54,7 @@ If both are set, LiteLLM takes priority.
 Override the model via secrets:
 
 ```
-PR_REVIEW_MODEL_FAST=gpt-5.4-nano     # cheap, fast (~$0.01/review)
+PR_REVIEW_MODEL_FAST=gpt-5.4-mini     # fast (~$0.02/review)
 PR_REVIEW_MODEL_DEEP=gpt-5.4          # thorough (~$0.07/review)
 ```
 

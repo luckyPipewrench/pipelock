@@ -13,7 +13,7 @@ This catches a class of exfiltration that the network proxy cannot see: an agent
 
 File sentry applies to **subprocess MCP mode only**. HTTP upstream, WebSocket, and listener modes have no local child process and are out of scope.
 
-This is **detection, not prevention**. File sentry alerts when secrets are written. It cannot block the write. Phase 2 (seccomp-based enforcement) will add write blocking.
+This is **detection, not prevention**. File sentry alerts when secrets are written to disk. It does not block the write itself. Use the process sandbox (`--sandbox`) for filesystem restriction enforcement.
 
 ## Configuration
 

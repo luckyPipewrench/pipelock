@@ -40,6 +40,7 @@ jobs:
             configs/*.yaml
             README.md
             assets/demo.cast
+            scripts/pr-review.py
             docs/attacks-blocked.md
             docs/bypass-resistance.md
             docs/configuration.md

@@ -88,6 +88,9 @@ func Preflight(workspace string, argv []string, policy *Policy, strict bool) Pre
 	// Probe capabilities.
 	caps := Detect()
 
+	// NOTE: These are capability probes, not launch guarantees.
+	// User namespaces may probe as available while loopback setup or
+	// /dev/shm mount fails under AppArmor/container restrictions.
 	result.Layers = []LayerProbe{
 		{
 			Name:      LayerLandlock,
@@ -99,6 +102,7 @@ func Preflight(workspace string, argv []string, policy *Policy, strict bool) Pre
 			Name:      LayerNetNS,
 			Available: caps.UserNamespaces,
 			Required:  strict,
+			Detail:    "capability probe only — launch may still fail under AppArmor",
 		},
 		{
 			Name:      LayerSeccomp,

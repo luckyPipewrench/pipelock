@@ -2728,13 +2728,23 @@ func sandboxChanged(old, updated *Config) bool {
 	if sandboxFSChanged(old.Sandbox.FS, updated.Sandbox.FS) {
 		return true
 	}
-	// Check per-agent sandbox overrides.
+	// Check per-agent sandbox overrides (bidirectional: added, removed, changed).
 	for name, oldProfile := range old.Agents {
 		newProfile, ok := updated.Agents[name]
 		if !ok {
+			// Agent removed — if it had sandbox overrides, that's a change.
+			if oldProfile.Sandbox != nil {
+				return true
+			}
 			continue
 		}
 		if agentSandboxChanged(oldProfile.Sandbox, newProfile.Sandbox) {
+			return true
+		}
+	}
+	// Check for newly added agents with sandbox overrides.
+	for name, newProfile := range updated.Agents {
+		if _, existed := old.Agents[name]; !existed && newProfile.Sandbox != nil {
 			return true
 		}
 	}

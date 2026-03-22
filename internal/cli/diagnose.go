@@ -486,9 +486,9 @@ func runDiagnoseSandbox(cmd *cobra.Command, jsonOut bool, color bool) error {
 		active++
 	}
 	const totalLayers = 3
-	recommendation := fmt.Sprintf("Full sandbox available (%d/%d layers)", active, totalLayers)
+	recommendation := fmt.Sprintf("All %d/%d capabilities detected (launch may still fail under AppArmor/container restrictions)", active, totalLayers)
 	if active < totalLayers {
-		recommendation = fmt.Sprintf("Degraded sandbox (%d/%d layers)", active, totalLayers)
+		recommendation = fmt.Sprintf("Degraded: %d/%d capabilities detected", active, totalLayers)
 	}
 
 	report := diagnoseReport{

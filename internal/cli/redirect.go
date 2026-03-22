@@ -44,10 +44,12 @@ type RedirectResult struct {
 
 func internalRedirectCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:    "internal-redirect <profile>",
-		Short:  "Execute a redirected operation (internal use only)",
-		Hidden: true, // not user-facing — invoked by pipelock policy engine
-		Args:   cobra.ExactArgs(1),
+		Use:           "internal-redirect <profile>",
+		Short:         "Execute a redirected operation (internal use only)",
+		Hidden:        true,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		Args:          cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			profile := args[0]
 
@@ -79,33 +81,24 @@ func internalRedirectCmd() *cobra.Command {
 }
 
 // executeFetchProxy routes an HTTP request through pipelock's scanner.
+// NOT YET IMPLEMENTED — fail closed until Stream 3B wires the calling path.
 func executeFetchProxy(cmd *cobra.Command, manifest *RedirectManifest) error {
-	// Delegate to existing fetch proxy logic.
-	// For now: emit a placeholder result. The full implementation will
-	// construct a fetch request from the manifest and scan it.
-	return emitRedirectResult(cmd, &RedirectResult{
-		Status:  "ok",
-		Profile: redirectProfileFetchProxy,
-		Detail:  fmt.Sprintf("would route %v through fetch proxy (reason: %s)", manifest.Command, manifest.Reason),
-	})
+	return emitRedirectError(cmd, redirectProfileFetchProxy,
+		fmt.Sprintf("fetch-proxy redirect not yet implemented (command: %v, reason: %s)", manifest.Command, manifest.Reason))
 }
 
 // executeQuarantineWrite diverts a write to a quarantine directory.
+// NOT YET IMPLEMENTED — fail closed until Stream 3B wires the calling path.
 func executeQuarantineWrite(cmd *cobra.Command, manifest *RedirectManifest) error {
-	return emitRedirectResult(cmd, &RedirectResult{
-		Status:  "ok",
-		Profile: redirectProfileQuarantineWrite,
-		Detail:  fmt.Sprintf("would quarantine write from %v (reason: %s)", manifest.Command, manifest.Reason),
-	})
+	return emitRedirectError(cmd, redirectProfileQuarantineWrite,
+		fmt.Sprintf("quarantine-write redirect not yet implemented (command: %v, reason: %s)", manifest.Command, manifest.Reason))
 }
 
 // executeAppendOnlyLog forces log output to a local append-only file.
+// NOT YET IMPLEMENTED — fail closed until Stream 3B wires the calling path.
 func executeAppendOnlyLog(cmd *cobra.Command, manifest *RedirectManifest) error {
-	return emitRedirectResult(cmd, &RedirectResult{
-		Status:  "ok",
-		Profile: redirectProfileAppendOnlyLog,
-		Detail:  fmt.Sprintf("would append-only log from %v (reason: %s)", manifest.Command, manifest.Reason),
-	})
+	return emitRedirectError(cmd, redirectProfileAppendOnlyLog,
+		fmt.Sprintf("append-only-log redirect not yet implemented (command: %v, reason: %s)", manifest.Command, manifest.Reason))
 }
 
 // emitRedirectResult writes a JSON result to stdout with attestation fields.

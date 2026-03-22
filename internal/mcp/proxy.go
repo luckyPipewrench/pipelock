@@ -757,7 +757,12 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 				// Notifications have no ID — silently drop (no error response).
 				continue
 			}
-			resp := blockRequestResponse(blocked)
+			var resp []byte
+			if blocked.SyntheticResponse != nil {
+				resp = blocked.SyntheticResponse
+			} else {
+				resp = blockRequestResponse(blocked)
+			}
 			if wErr := safeClientOut.WriteMessage(resp); wErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send block response: %v\n", wErr)
 			}

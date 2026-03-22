@@ -12,7 +12,10 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
-const testRmCmd = "rm -rf /tmp"
+const (
+	testRmCmd           = "rm -rf /tmp"
+	testRedirectProfile = "safe-fetch"
+)
 
 // --- New ---
 
@@ -55,6 +58,28 @@ func TestNew_CompilesRules(t *testing.T) {
 	}
 	if pc.Rules[1].ArgPattern != nil {
 		t.Error("second rule should have nil ArgPattern (no arg_pattern)")
+	}
+}
+
+func TestNew_CompilesRedirectProfile(t *testing.T) {
+	cfg := config.MCPToolPolicy{
+		Enabled: true,
+		Action:  config.ActionWarn,
+		Rules: []config.ToolPolicyRule{
+			{
+				Name:            "redirect-rule",
+				ToolPattern:     `(?i)^bash$`,
+				Action:          config.ActionRedirect,
+				RedirectProfile: testRedirectProfile,
+			},
+		},
+	}
+	pc := New(cfg)
+	if pc == nil {
+		t.Fatal("expected non-nil Config")
+	}
+	if pc.Rules[0].RedirectProfile != testRedirectProfile {
+		t.Errorf("redirect_profile = %q, want safe-fetch", pc.Rules[0].RedirectProfile)
 	}
 }
 
@@ -434,6 +459,72 @@ func TestCheckRequest_Batch_InvalidJSON(t *testing.T) {
 	}
 }
 
+// --- Batch redirect propagation ---
+
+func TestCheckRequest_BatchRedirectCarriesProfile(t *testing.T) {
+	pc := &Config{
+		Action: config.ActionWarn,
+		Rules: []*CompiledRule{
+			{
+				Name:            "redirect-curl",
+				ToolPattern:     regexp.MustCompile(`(?i)^bash$`),
+				ArgPattern:      regexp.MustCompile(`(?i)\bcurl\b`),
+				Action:          config.ActionRedirect,
+				RedirectProfile: testRedirectProfile,
+			},
+		},
+	}
+	batch := `[
+		{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"bash","arguments":{"command":"curl https://example.com"}}}
+	]`
+	v := pc.CheckRequest([]byte(batch))
+	if !v.Matched {
+		t.Fatal("expected match")
+	}
+	if v.Action != config.ActionRedirect {
+		t.Errorf("action = %q, want redirect", v.Action)
+	}
+	if v.RedirectProfile != testRedirectProfile {
+		t.Errorf("redirect_profile = %q, want %s", v.RedirectProfile, testRedirectProfile)
+	}
+}
+
+func TestCheckRequest_BatchRedirectBlockedByBlock(t *testing.T) {
+	pc := &Config{
+		Action: config.ActionWarn,
+		Rules: []*CompiledRule{
+			{
+				Name:            "redirect-curl",
+				ToolPattern:     regexp.MustCompile(`(?i)^bash$`),
+				ArgPattern:      regexp.MustCompile(`(?i)\bcurl\b`),
+				Action:          config.ActionRedirect,
+				RedirectProfile: testRedirectProfile,
+			},
+			{
+				Name:        "block-rm",
+				ToolPattern: regexp.MustCompile(`(?i)^bash$`),
+				ArgPattern:  regexp.MustCompile(`rm\s+-rf`),
+				Action:      config.ActionBlock,
+			},
+		},
+	}
+	cmd := "rm" + " -rf /"
+	batch := fmt.Sprintf(`[
+		{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"bash","arguments":{"command":"curl https://example.com"}}},
+		{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"bash","arguments":{"command":"%s"}}}
+	]`, cmd)
+	v := pc.CheckRequest([]byte(batch))
+	if !v.Matched {
+		t.Fatal("expected match")
+	}
+	if v.Action != config.ActionBlock {
+		t.Errorf("action = %q, want block (block > redirect)", v.Action)
+	}
+	if v.RedirectProfile != "" {
+		t.Errorf("redirect_profile should be empty when block wins, got %q", v.RedirectProfile)
+	}
+}
+
 // --- Field-splitting evasion (full request integration) ---
 
 func TestCheckRequest_SplitArgvRmRf(t *testing.T) {
@@ -798,6 +889,16 @@ func TestStricterAction(t *testing.T) {
 		{config.ActionWarn, config.ActionAsk, config.ActionAsk},
 		{"", config.ActionAsk, config.ActionAsk},
 		{config.ActionAsk, config.ActionAsk, config.ActionAsk},
+		// Redirect ordering: block > redirect > ask > warn.
+		{config.ActionRedirect, config.ActionWarn, config.ActionRedirect},
+		{config.ActionWarn, config.ActionRedirect, config.ActionRedirect},
+		{config.ActionRedirect, config.ActionBlock, config.ActionBlock},
+		{config.ActionBlock, config.ActionRedirect, config.ActionBlock},
+		{config.ActionRedirect, config.ActionAsk, config.ActionRedirect},
+		{config.ActionAsk, config.ActionRedirect, config.ActionRedirect},
+		{config.ActionRedirect, config.ActionRedirect, config.ActionRedirect},
+		{"", config.ActionRedirect, config.ActionRedirect},
+		{config.ActionRedirect, "", config.ActionRedirect},
 		// Unknown values normalized to config.ActionBlock (fail-closed).
 		{"typo", config.ActionWarn, config.ActionBlock},  // unknown a → block, beats warn
 		{config.ActionWarn, "typo", config.ActionBlock},  // unknown b → block, beats warn
@@ -810,6 +911,141 @@ func TestStricterAction(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("StricterAction(%q, %q) = %q, want %q", tt.a, tt.b, got, tt.want)
 		}
+	}
+}
+
+// --- Redirect Profile Propagation ---
+
+func TestCheckToolCall_RedirectVerdictCarriesProfile(t *testing.T) {
+	pc := &Config{
+		Action: config.ActionWarn,
+		Rules: []*CompiledRule{
+			{
+				Name:            "redirect-fetch",
+				ToolPattern:     regexp.MustCompile(`(?i)^bash$`),
+				ArgPattern:      regexp.MustCompile(`(?i)\bcurl\b`),
+				Action:          config.ActionRedirect,
+				RedirectProfile: testRedirectProfile,
+			},
+		},
+	}
+	v := pc.CheckToolCall("bash", []string{"curl https://example.com"})
+	if !v.Matched {
+		t.Fatal("expected match")
+	}
+	if v.Action != config.ActionRedirect {
+		t.Errorf("action = %q, want redirect", v.Action)
+	}
+	if v.RedirectProfile != testRedirectProfile {
+		t.Errorf("redirect_profile = %q, want safe-fetch", v.RedirectProfile)
+	}
+}
+
+func TestCheckToolCall_RedirectBlockedByBlock(t *testing.T) {
+	// block > redirect: if both match, block wins and redirect profile is cleared.
+	pc := &Config{
+		Action: config.ActionWarn,
+		Rules: []*CompiledRule{
+			{
+				Name:            "redirect-fetch",
+				ToolPattern:     regexp.MustCompile(`(?i)^bash$`),
+				ArgPattern:      regexp.MustCompile(`(?i)\bcurl\b`),
+				Action:          config.ActionRedirect,
+				RedirectProfile: testRedirectProfile,
+			},
+			{
+				Name:        "block-all-bash",
+				ToolPattern: regexp.MustCompile(`(?i)^bash$`),
+				Action:      config.ActionBlock,
+			},
+		},
+	}
+	v := pc.CheckToolCall("bash", []string{"curl https://example.com"})
+	if !v.Matched {
+		t.Fatal("expected match")
+	}
+	if v.Action != config.ActionBlock {
+		t.Errorf("action = %q, want block (block > redirect)", v.Action)
+	}
+	if v.RedirectProfile != "" {
+		t.Errorf("redirect_profile should be empty when block wins, got %q", v.RedirectProfile)
+	}
+}
+
+func TestCheckToolCall_RedirectBeatsWarn(t *testing.T) {
+	// redirect > warn: redirect wins.
+	pc := &Config{
+		Action: config.ActionWarn,
+		Rules: []*CompiledRule{
+			{
+				Name:        "warn-tool",
+				ToolPattern: regexp.MustCompile(`(?i)^bash$`),
+				Action:      config.ActionWarn,
+			},
+			{
+				Name:            "redirect-fetch",
+				ToolPattern:     regexp.MustCompile(`(?i)^bash$`),
+				ArgPattern:      regexp.MustCompile(`(?i)\bcurl\b`),
+				Action:          config.ActionRedirect,
+				RedirectProfile: testRedirectProfile,
+			},
+		},
+	}
+	v := pc.CheckToolCall("bash", []string{"curl https://example.com"})
+	if !v.Matched {
+		t.Fatal("expected match")
+	}
+	if v.Action != config.ActionRedirect {
+		t.Errorf("action = %q, want redirect", v.Action)
+	}
+	if v.RedirectProfile != testRedirectProfile {
+		t.Errorf("redirect_profile = %q, want safe-fetch", v.RedirectProfile)
+	}
+}
+
+func TestCheckToolCall_DefaultActionRedirect(t *testing.T) {
+	// Default action is redirect — rule without explicit action inherits it.
+	pc := &Config{
+		Action: config.ActionRedirect,
+		Rules: []*CompiledRule{
+			{
+				Name:            "default-redirect",
+				ToolPattern:     regexp.MustCompile(`(?i)^bash$`),
+				RedirectProfile: testRedirectProfile,
+			},
+		},
+	}
+	v := pc.CheckToolCall("bash", []string{"anything"})
+	if !v.Matched {
+		t.Fatal("expected match")
+	}
+	if v.Action != config.ActionRedirect {
+		t.Errorf("action = %q, want redirect", v.Action)
+	}
+	if v.RedirectProfile != testRedirectProfile {
+		t.Errorf("redirect_profile = %q, want safe-fetch", v.RedirectProfile)
+	}
+}
+
+func TestCheckToolCall_NoRedirectProfileWhenNoMatch(t *testing.T) {
+	pc := &Config{
+		Action: config.ActionRedirect,
+		Rules: []*CompiledRule{
+			{
+				Name:            "redirect-curl",
+				ToolPattern:     regexp.MustCompile(`(?i)^bash$`),
+				ArgPattern:      regexp.MustCompile(`(?i)\bcurl\b`),
+				Action:          config.ActionRedirect,
+				RedirectProfile: testRedirectProfile,
+			},
+		},
+	}
+	v := pc.CheckToolCall("bash", []string{"ls -la"})
+	if v.Matched {
+		t.Error("expected no match for non-curl args")
+	}
+	if v.RedirectProfile != "" {
+		t.Errorf("redirect_profile should be empty on no-match, got %q", v.RedirectProfile)
 	}
 }
 

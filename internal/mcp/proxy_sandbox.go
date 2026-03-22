@@ -110,7 +110,12 @@ func RunProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, clientIn io.
 			if blocked.IsNotification {
 				continue
 			}
-			resp := blockRequestResponse(blocked)
+			var resp []byte
+			if blocked.SyntheticResponse != nil {
+				resp = blocked.SyntheticResponse
+			} else {
+				resp = blockRequestResponse(blocked)
+			}
 			if wErr := safeClientOut.WriteMessage(resp); wErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send block response: %v\n", wErr)
 			}

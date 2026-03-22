@@ -1261,8 +1261,8 @@ func TestDefaults_ResponseScanningEnabled(t *testing.T) {
 	if cfg.ResponseScanning.Action != ActionWarn {
 		t.Errorf("expected default action warn, got %s", cfg.ResponseScanning.Action)
 	}
-	if len(cfg.ResponseScanning.Patterns) != 13 {
-		t.Errorf("expected 13 default response patterns, got %d", len(cfg.ResponseScanning.Patterns))
+	if len(cfg.ResponseScanning.Patterns) != 19 {
+		t.Errorf("expected 19 default response patterns, got %d", len(cfg.ResponseScanning.Patterns))
 	}
 }
 
@@ -2191,6 +2191,169 @@ func TestValidate_MCPToolPolicyValidActions(t *testing.T) {
 		if err := cfg.Validate(); err != nil {
 			t.Errorf("action %q should be valid, got: %v", action, err)
 		}
+	}
+}
+
+func TestValidate_MCPToolPolicyRedirectActionValid(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPToolPolicy.Enabled = true
+	cfg.MCPToolPolicy.Action = ActionRedirect
+	cfg.MCPToolPolicy.RedirectProfiles = map[string]RedirectProfile{
+		"safe-fetch": {Exec: []string{"/usr/bin/safe-fetch"}, Reason: "use audited fetcher"},
+	}
+	cfg.MCPToolPolicy.Rules = []ToolPolicyRule{
+		{Name: "redirect-curl", ToolPattern: "bash", RedirectProfile: "safe-fetch"},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("redirect action with valid profile should pass, got: %v", err)
+	}
+}
+
+func TestValidate_MCPToolPolicyRedirectUnknownProfileRef(t *testing.T) {
+	// Per-rule validation catches unknown profile references even when no profiles exist.
+	cfg := Defaults()
+	cfg.MCPToolPolicy.Enabled = true
+	cfg.MCPToolPolicy.Action = ActionRedirect
+	cfg.MCPToolPolicy.Rules = []ToolPolicyRule{
+		{Name: "test", ToolPattern: "bash", RedirectProfile: "missing"},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for redirect rule referencing unknown profile")
+	}
+}
+
+func TestValidate_MCPToolPolicyRedirectEmptyExec(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPToolPolicy.Enabled = true
+	cfg.MCPToolPolicy.Action = ActionWarn
+	cfg.MCPToolPolicy.RedirectProfiles = map[string]RedirectProfile{
+		"bad": {Exec: nil, Reason: "empty"},
+	}
+	cfg.MCPToolPolicy.Rules = []ToolPolicyRule{
+		{Name: "test", ToolPattern: "bash"},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for redirect_profile with empty exec")
+	}
+}
+
+func TestValidate_MCPToolPolicyRedirectExecEmptyString(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPToolPolicy.Enabled = true
+	cfg.MCPToolPolicy.Action = ActionWarn
+	cfg.MCPToolPolicy.RedirectProfiles = map[string]RedirectProfile{
+		"bad": {Exec: []string{""}, Reason: "empty string"},
+	}
+	cfg.MCPToolPolicy.Rules = []ToolPolicyRule{
+		{Name: "test", ToolPattern: "bash"},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for redirect_profile with exec containing empty string")
+	}
+}
+
+func TestValidate_MCPToolPolicyRedirectMatchAbsPathRejectsRelative(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPToolPolicy.Enabled = true
+	cfg.MCPToolPolicy.Action = ActionWarn
+	cfg.MCPToolPolicy.RedirectProfiles = map[string]RedirectProfile{
+		"bad": {Exec: []string{"relative/path"}, Reason: "not absolute", MatchAbsPath: true},
+	}
+	cfg.MCPToolPolicy.Rules = []ToolPolicyRule{
+		{Name: "test", ToolPattern: "bash"},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for match_abs_path with relative exec[0]")
+	}
+}
+
+func TestValidate_MCPToolPolicyRedirectMatchAbsPathAcceptsAbsolute(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPToolPolicy.Enabled = true
+	cfg.MCPToolPolicy.Action = ActionWarn
+	cfg.MCPToolPolicy.RedirectProfiles = map[string]RedirectProfile{
+		"good": {Exec: []string{"/usr/bin/safe-fetch"}, Reason: "absolute", MatchAbsPath: true},
+	}
+	cfg.MCPToolPolicy.Rules = []ToolPolicyRule{
+		{Name: "test", ToolPattern: "bash"},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("expected valid config with absolute exec[0], got: %v", err)
+	}
+}
+
+func TestValidate_MCPToolPolicyRedirectDefaultUnusedIsValid(t *testing.T) {
+	// Default action=redirect but all rules override to warn — no profiles needed.
+	cfg := Defaults()
+	cfg.MCPToolPolicy.Enabled = true
+	cfg.MCPToolPolicy.Action = ActionRedirect
+	cfg.MCPToolPolicy.Rules = []ToolPolicyRule{
+		{Name: "test", ToolPattern: "bash", Action: ActionWarn},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("expected valid: default redirect unused when all rules override, got: %v", err)
+	}
+}
+
+func TestValidate_MCPToolPolicyRedirectRuleMissingProfile(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPToolPolicy.Enabled = true
+	cfg.MCPToolPolicy.Action = ActionWarn
+	cfg.MCPToolPolicy.RedirectProfiles = map[string]RedirectProfile{
+		"safe-fetch": {Exec: []string{"/usr/bin/safe-fetch"}, Reason: "audited"},
+	}
+	cfg.MCPToolPolicy.Rules = []ToolPolicyRule{
+		{Name: "test", ToolPattern: "bash", Action: ActionRedirect},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for redirect rule without redirect_profile")
+	}
+}
+
+func TestValidate_MCPToolPolicyRedirectRuleUnknownProfile(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPToolPolicy.Enabled = true
+	cfg.MCPToolPolicy.Action = ActionWarn
+	cfg.MCPToolPolicy.RedirectProfiles = map[string]RedirectProfile{
+		"safe-fetch": {Exec: []string{"/usr/bin/safe-fetch"}, Reason: "audited"},
+	}
+	cfg.MCPToolPolicy.Rules = []ToolPolicyRule{
+		{Name: "test", ToolPattern: "bash", Action: ActionRedirect, RedirectProfile: "nonexistent"},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for redirect rule referencing unknown profile")
+	}
+}
+
+func TestValidate_MCPToolPolicyRedirectPerRuleValid(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPToolPolicy.Enabled = true
+	cfg.MCPToolPolicy.Action = ActionWarn
+	cfg.MCPToolPolicy.RedirectProfiles = map[string]RedirectProfile{
+		"safe-fetch": {Exec: []string{"/usr/bin/safe-fetch"}, Reason: "audited"},
+	}
+	cfg.MCPToolPolicy.Rules = []ToolPolicyRule{
+		{Name: "redirect-curl", ToolPattern: "bash", Action: ActionRedirect, RedirectProfile: "safe-fetch"},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("per-rule redirect with valid profile should pass, got: %v", err)
+	}
+}
+
+func TestValidate_MCPToolPolicyRedirectInheritedFromDefault(t *testing.T) {
+	// Rule without explicit action inherits default action=redirect.
+	// Must have redirect_profile set since effective action is redirect.
+	cfg := Defaults()
+	cfg.MCPToolPolicy.Enabled = true
+	cfg.MCPToolPolicy.Action = ActionRedirect
+	cfg.MCPToolPolicy.RedirectProfiles = map[string]RedirectProfile{
+		"safe-fetch": {Exec: []string{"/usr/bin/safe-fetch"}, Reason: "audited"},
+	}
+	cfg.MCPToolPolicy.Rules = []ToolPolicyRule{
+		{Name: "test", ToolPattern: "bash"}, // no explicit action or redirect_profile
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error: rule inherits redirect from default but has no redirect_profile")
 	}
 }
 

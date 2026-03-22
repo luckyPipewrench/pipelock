@@ -507,7 +507,9 @@ func collectParamNames(obj map[string]interface{}, seen map[string]bool, depth i
 }
 
 // extractSchemaDescriptions recursively extracts text field values from a
-// JSON Schema. Collects "description" and "title" from all nested objects.
+// JSON Schema. Collects all text-bearing fields from all nested objects:
+// description, title, default, const, pattern, $comment, x-* extensions,
+// plus string members of enum and examples arrays.
 // Falls back to extracting string schemas (non-object JSON values).
 func extractSchemaDescriptions(schema json.RawMessage) []string {
 	var result []string
@@ -520,7 +522,7 @@ func extractSchemaDescriptions(schema json.RawMessage) []string {
 		}
 		return nil
 	}
-	collectDescriptions(parsed, &result, 0)
+	collectAllSchemaText(parsed, &result, 0)
 	return result
 }
 
@@ -528,29 +530,97 @@ func extractSchemaDescriptions(schema json.RawMessage) []string {
 // overflow on maliciously deep schemas.
 const maxSchemaDepth = 20
 
-// collectDescriptions walks a JSON Schema tree collecting text values.
-// Extracts "description" and "title" fields, then recurses into all nested
-// objects and arrays to catch text hidden in composition keywords.
-func collectDescriptions(obj map[string]interface{}, result *[]string, depth int) {
+// schemaTextFields are JSON Schema fields whose string values should be
+// extracted for poisoning detection. CyberArk research showed attackers
+// embed malicious instructions in default, const, pattern, and $comment —
+// not just description/title.
+var schemaTextFields = [...]string{
+	"description", "title", "default", "const", "pattern", "$comment",
+}
+
+// collectAllSchemaText walks a JSON Schema tree collecting all text values
+// that an LLM might ingest. Extracts string values from metadata fields
+// (description, title, default, const, pattern, $comment, x-* extensions),
+// string members from enum/examples arrays, then recurses into all nested
+// objects and arrays to catch text hidden in composition keywords
+// (allOf, anyOf, oneOf, if/then/else, $defs, items, etc.).
+func collectAllSchemaText(obj map[string]interface{}, result *[]string, depth int) {
 	if depth > maxSchemaDepth {
 		return
 	}
-	if desc, ok := obj["description"].(string); ok && desc != "" {
-		*result = append(*result, desc)
-	}
-	if title, ok := obj["title"].(string); ok && title != "" {
-		*result = append(*result, title)
-	}
-	for _, v := range obj {
+
+	for key, v := range obj {
+		handledSubtree := false
+
+		// Extract values from known metadata fields.
+		// default and const can hold objects/arrays with nested strings,
+		// so use collectStringLeaves for full subtree extraction.
+		for _, field := range schemaTextFields {
+			if key == field {
+				if key == "default" || key == "const" {
+					collectStringLeaves(v, result, depth+1)
+					handledSubtree = true
+				} else if s, ok := v.(string); ok && s != "" {
+					*result = append(*result, s)
+				}
+				break
+			}
+		}
+
+		// Extract all string leaves from vendor extension fields (x-*).
+		// Extensions can hold objects, arrays, or strings.
+		if strings.HasPrefix(key, "x-") || strings.HasPrefix(key, "X-") {
+			collectStringLeaves(v, result, depth+1)
+			handledSubtree = true
+		}
+
+		// Extract all string leaves from enum and examples.
+		// These can hold objects (e.g., examples: [{"prompt":"..."}]),
+		// not just flat strings.
+		if key == "enum" || key == "examples" {
+			collectStringLeaves(v, result, depth+1)
+			handledSubtree = true
+		}
+
+		if handledSubtree {
+			continue
+		}
+
+		// Recurse into nested objects and arrays for schema composition
+		// keywords (allOf, anyOf, oneOf, if/then/else, items, $defs, etc.).
 		switch val := v.(type) {
 		case map[string]interface{}:
-			collectDescriptions(val, result, depth+1)
+			collectAllSchemaText(val, result, depth+1)
 		case []interface{}:
 			for _, item := range val {
 				if m, ok := item.(map[string]interface{}); ok {
-					collectDescriptions(m, result, depth+1)
+					collectAllSchemaText(m, result, depth+1)
 				}
 			}
+		}
+	}
+}
+
+// collectStringLeaves recursively extracts all string values from an
+// arbitrary JSON value (string, object, or array). Used for schema fields
+// like default, const, enum, examples, and x-* extensions that can hold
+// nested structures containing poisoned text.
+func collectStringLeaves(v interface{}, result *[]string, depth int) {
+	if depth > maxSchemaDepth {
+		return
+	}
+	switch val := v.(type) {
+	case string:
+		if val != "" {
+			*result = append(*result, val)
+		}
+	case map[string]interface{}:
+		for _, child := range val {
+			collectStringLeaves(child, result, depth+1)
+		}
+	case []interface{}:
+		for _, child := range val {
+			collectStringLeaves(child, result, depth+1)
 		}
 	}
 }

@@ -13,7 +13,7 @@ An honest feature matrix and guidance on when to use what.
 | **DLP (secret detection)** | Regex + entropy + env scan + BIP-39 seed phrases | Regex (per-argument) | Regex (LLM proxy) | No |
 | **Crypto secret detection** | Yes (BIP-39, WIF, xprv, ETH hex) | No | No | No |
 | **SSRF protection** | Yes (DNS pinning) | No | N/A (kernel-level) | N/A |
-| **Prompt injection detection** | Bidirectional (response + request scanning) | No | No | No |
+| **Prompt injection detection** | Yes (response scanning on fetched content + MCP results) | No | No | No |
 | **File integrity monitoring** | SHA256 manifests | No | Workspace checkpoints | Filesystem restrictions |
 | **Ed25519 signing** | Yes | No | No | No |
 | **WebSocket proxy** | Yes (frame scanning + fragment reassembly) | No | No | No |
@@ -30,7 +30,7 @@ An honest feature matrix and guidance on when to use what.
 | **Config format** | YAML + presets | YAML (agent.yaml) | CLI flags | Code |
 | **Hot-reload** | Yes (fsnotify + SIGHUP) | No | No | No |
 | **CI/CD friendly** | Yes (exit codes, JSON output) | Yes | Limited | Yes |
-| **Testing depth** | 7,000+ tests, 90%+ coverage, private adversarial suite | Public unit tests | Public unit tests | Public unit tests |
+| **Testing depth** | 7,500+ tests, 88%+ coverage, private adversarial suite | Public unit tests | Public unit tests | Public unit tests |
 
 ## When to Use What
 
@@ -72,7 +72,7 @@ An honest feature matrix and guidance on when to use what.
 mcp-scan has two modes: static scanning detects tool poisoning via hash comparison ("has this tool changed?"), while proxy mode monitors MCP traffic with PII/secrets guardrails. Pipelock scans bidirectionally with pattern matching, Unicode normalization, entropy analysis, and covers HTTP fetch traffic in addition to MCP. They're complementary: mcp-scan for MCP-specific auditing and guardrails, Pipelock for deep content inspection across both HTTP and MCP.
 
 ### Pipelock vs Docker MCP Gateway
-Docker MCP Gateway aggregates MCP servers and provides basic secret scanning. Pipelock provides deep content inspection (46 DLP patterns, BIP-39 seed phrase detection, 13 injection detection patterns, entropy analysis, tool poisoning). They're complementary: Pipelock could run as a Gateway interceptor for content inspection while Gateway handles routing and Docker-native lifecycle management.
+Docker MCP Gateway aggregates MCP servers and provides basic secret scanning. Pipelock provides deep content inspection (46 DLP patterns, BIP-39 seed phrase detection, 19 injection detection patterns, entropy analysis, tool poisoning). They're complementary: Pipelock could run as a Gateway interceptor for content inspection while Gateway handles routing and Docker-native lifecycle management.
 
 ## Using Tools Together
 

@@ -93,8 +93,10 @@ type Policy struct {
 // These are checked after symlink resolution.
 var dangerousRoots = []string{
 	"/", "/tmp", "/home", "/etc", "/usr", "/var",
-	// macOS: /tmp → /private/tmp, /var → /private/var, /etc → /private/etc
+	// macOS: /tmp → /private/tmp, /var → /private/var, /etc → /private/etc.
+	// /home → /System/Volumes/Data/home via synthetic firmlink.
 	"/private/tmp", "/private/var", "/private/etc",
+	"/System/Volumes/Data/home",
 }
 
 // ValidateWorkspace checks that the workspace path is safe for use as a

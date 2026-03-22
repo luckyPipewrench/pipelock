@@ -116,7 +116,9 @@ def call_llm(diff: str, mode: str) -> str:
     }
 
     resp = requests.post(api_url, headers=headers, json=payload, timeout=120)
-    resp.raise_for_status()
+    if resp.status_code != 200:
+        body = resp.text[:500]
+        return f"**Error:** LLM API returned {resp.status_code}.\n\n**Model:** `{model}`\n\n**Response:**\n```\n{body}\n```"
     data = resp.json()
     choices = data.get("choices", [])
     if not choices:

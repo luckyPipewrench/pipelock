@@ -2771,3 +2771,89 @@ func TestEmit_LogAdaptiveUpgrade_OmitsEmptyOptional(t *testing.T) {
 		t.Error("expected request_id to be omitted when empty")
 	}
 }
+
+func TestLogToolRedirect_JSONFields(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogToolRedirect("sess-1", "bash", "sha256:abc123 len=42", "safe-fetch", "audited handler", "redirect-curl", "redirected", 15)
+	logger.Close()
+
+	data, _ := os.ReadFile(filepath.Clean(path))
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) == 0 {
+		t.Fatal("expected at least one log line")
+	}
+
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &entry); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if entry["event"] != "tool_redirect" {
+		t.Errorf("event = %v, want tool_redirect", entry["event"])
+	}
+	if entry["tool_name"] != "bash" {
+		t.Errorf("tool_name = %v, want bash", entry["tool_name"])
+	}
+	if entry["args_digest"] != "sha256:abc123 len=42" {
+		t.Errorf("args_digest = %v, want sha256:abc123 len=42", entry["args_digest"])
+	}
+	if entry["redirect_profile"] != "safe-fetch" {
+		t.Errorf("redirect_profile = %v, want safe-fetch", entry["redirect_profile"])
+	}
+	if entry["result"] != "redirected" {
+		t.Errorf("result = %v, want redirected", entry["result"])
+	}
+	if entry["session_id"] != "sess-1" {
+		t.Errorf("session_id = %v, want sess-1", entry["session_id"])
+	}
+}
+
+func TestLogToolRedirect_Emitter(t *testing.T) {
+	logger, sink := newLoggerWithEmitter(t)
+	defer logger.Close()
+
+	logger.LogToolRedirect("sess-2", "curl-tool", "sha256:def456 len=100", "safe-fetch", "audited", "rule-1", "redirected", 25)
+
+	ev, ok := sink.lastEvent()
+	if !ok {
+		t.Fatal("expected emitted event")
+	}
+	if ev.Type != "tool_redirect" {
+		t.Errorf("type = %q, want tool_redirect", ev.Type)
+	}
+	if ev.Fields["tool_name"] != "curl-tool" {
+		t.Errorf("tool_name = %v, want curl-tool", ev.Fields["tool_name"])
+	}
+	if ev.Fields["redirect_profile"] != "safe-fetch" {
+		t.Errorf("redirect_profile = %v, want safe-fetch", ev.Fields["redirect_profile"])
+	}
+	if ev.Fields["result"] != "redirected" {
+		t.Errorf("result = %v, want redirected", ev.Fields["result"])
+	}
+}
+
+func TestLogToolRedirect_NoSessionID(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogToolRedirect("", "bash", "sha256:abc len=10", "p", "r", "rule", "blocked", 5)
+	logger.Close()
+
+	data, _ := os.ReadFile(filepath.Clean(path))
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if _, exists := entry["session_id"]; exists {
+		t.Error("expected session_id to be omitted when empty")
+	}
+}

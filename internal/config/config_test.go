@@ -7537,7 +7537,9 @@ func TestBoolPtrEqual(t *testing.T) {
 
 func TestLoad_SandboxBooleans(t *testing.T) {
 	cfgPath := filepath.Join(t.TempDir(), "sandbox.yaml")
-	_ = os.WriteFile(cfgPath, []byte("sandbox:\n  enabled: true\n  strict: true\n  workspace: /test/workspace\n"), 0o600)
+	if err := os.WriteFile(cfgPath, []byte("sandbox:\n  enabled: true\n  strict: true\n  workspace: /test/workspace\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
 	cfg, err := Load(cfgPath)
 	if err != nil {
 		t.Fatalf("load: %v", err)
@@ -7555,7 +7557,9 @@ func TestLoad_SandboxBooleans(t *testing.T) {
 
 func TestLoad_SandboxDefaultsFalse(t *testing.T) {
 	cfgPath := filepath.Join(t.TempDir(), "empty.yaml")
-	_ = os.WriteFile(cfgPath, []byte("mode: balanced\n"), 0o600)
+	if err := os.WriteFile(cfgPath, []byte("mode: balanced\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
 	cfg, err := Load(cfgPath)
 	if err != nil {
 		t.Fatalf("load: %v", err)

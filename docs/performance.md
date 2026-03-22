@@ -31,13 +31,14 @@ JSON-RPC parsing + text extraction + prompt injection pattern matching.
 
 ### Response Scanning (fetched content injection detection)
 
-Pattern matching against 20 prompt injection patterns on fetched page content.
+Pattern matching against 19 prompt injection patterns (including 6 state/control patterns) on fetched page content.
 
 | Operation | Latency | Throughput (1 core) |
 |-----------|---------|--------------------:|
-| Short clean text (~90B) | ~81 μs | ~12,300/sec |
-| 10KB clean text | ~12 ms | ~83/sec |
-| Injection detected (early exit) | ~14.5 μs | ~69,000/sec |
+| Short clean text (~90B) | ~72 μs | ~13,900/sec |
+| 10KB clean text | ~9.5 ms | ~105/sec |
+| Injection detected (early exit) | ~40 μs | ~25,000/sec |
+| State/control clean | ~133 μs | ~7,500/sec |
 
 The keyword pre-filter (added in v1.3.0) short-circuits regex evaluation when no injection keywords are present in the normalized text. This cut clean-text latency by 29%, large-content latency by 27%, and injection-detected latency by 3.1x (early keyword match skips later normalization passes). The 10KB response scan remains the current ceiling due to 6 sequential normalization passes. Content size tiering (skipping passes 3-6 for large content) is planned.
 
@@ -192,7 +193,7 @@ Response scanning is the most CPU-intensive path. At high throughput with large 
 | Shared proxy (small org) | 100-1,000 req/sec | 0.5 CPU, 128MB RAM |
 | Platform deployment | 10,000+ req/sec | 2+ CPU, 256MB RAM |
 
-The binary is ~17MB static. Memory usage is dominated by the DLP regex compilation (~40MB RSS at idle with default patterns) and scales linearly with concurrent connections, not pattern count.
+The binary is ~18MB static (release build with symbol stripping). Memory usage is dominated by the DLP regex compilation (~40MB RSS at idle with default patterns) and scales linearly with concurrent connections, not pattern count.
 
 ## Design Decisions That Affect Performance
 

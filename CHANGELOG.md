@@ -28,7 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Action precedence updated: block(4) > redirect(3) > ask(2) > warn(1). Unknown actions still fail closed to block.
 - Direct dependencies increased from 15 to 17 (added go-landlock for sandbox, updated protobuf).
-- Binary size increased from ~17MB to ~24MB (sandbox + SQLite runtime).
+- Binary size increased from ~17MB to ~18MB (sandbox + SQLite runtime). Dev builds are ~24MB due to debug symbols.
 
 ### Deployment Notes
 - **Linux sandbox** requires kernel 5.13+ with Landlock and user namespace support. Run `pipelock sandbox diagnose` to check prerequisites.

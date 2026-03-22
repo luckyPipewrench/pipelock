@@ -53,7 +53,7 @@ Core capabilities available today:
 - Community rule bundles (signed YAML detection patterns)
 
 **Supply Chain**
-- Single static binary (~24 MB), 17 direct dependencies
+- Single static binary (~18 MB), 17 direct dependencies
 - Cosign-signed releases, CycloneDX SBOM, SLSA v1.0 provenance
 - OpenSSF Best Practices Silver, published OWASP and NIST 800-53 coverage mappings
 

@@ -522,7 +522,13 @@ func runDiagnoseSandbox(cmd *cobra.Command, jsonOut bool, color bool) error {
 		sr.Sandbox.Recommendation = recommendation
 		enc := json.NewEncoder(cmd.OutOrStdout())
 		enc.SetIndent("", "  ")
-		return enc.Encode(sr)
+		if err := enc.Encode(sr); err != nil {
+			return err
+		}
+		if failed > 0 {
+			return ExitCodeError(1, fmt.Errorf("%d sandbox check(s) failed", failed))
+		}
+		return nil
 	}
 
 	// Text output.

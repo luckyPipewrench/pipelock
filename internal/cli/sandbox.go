@@ -86,9 +86,12 @@ Examples:
 					result = sandbox.Preflight(workspace, command, &p, useStrict)
 				}
 				if jsonOutput {
-					return printJSON(cmd.OutOrStdout(), result)
+					if err := printJSON(cmd.OutOrStdout(), result); err != nil {
+						return err
+					}
+				} else {
+					printPreflightText(cmd.OutOrStdout(), result)
 				}
-				printPreflightText(cmd.OutOrStdout(), result)
 				switch result.Status {
 				case sandbox.StatusReady:
 					return nil

@@ -64,10 +64,11 @@ func TestInternalRedirect_MissingManifest(t *testing.T) {
 
 	// Should still emit JSON error result.
 	var result RedirectResult
-	if jsonErr := json.Unmarshal(out.Bytes(), &result); jsonErr == nil {
-		if result.Status != redirectStatusError {
-			t.Errorf("status = %q, want error", result.Status)
-		}
+	if jsonErr := json.Unmarshal(out.Bytes(), &result); jsonErr != nil {
+		t.Fatalf("expected valid JSON error result, got unmarshal error: %v (output: %s)", jsonErr, out.String())
+	}
+	if result.Status != redirectStatusError {
+		t.Errorf("status = %q, want error", result.Status)
 	}
 }
 
@@ -138,7 +139,9 @@ func TestInternalRedirect_Attestation(t *testing.T) {
 	cmd.SetArgs([]string{redirectProfileAppendOnlyLog})
 
 	// Handler fails closed (not yet implemented), but should still emit JSON with attestation.
-	_ = cmd.Execute() // expected error
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("expected error (handler not yet implemented)")
+	}
 
 	var result RedirectResult
 	if err := json.Unmarshal(out.Bytes(), &result); err != nil {

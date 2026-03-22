@@ -24,6 +24,10 @@ ignore:
   - "internal/cli/sandbox.go"
   - "internal/cli/mcp.go"  # sandbox path additions require kernel primitives
   - "internal/mcp/proxy_sandbox.go"
+  - "internal/sandbox/subreaper_linux.go"  # kernel primitive (prctl)
+  - "internal/sandbox/shm_linux.go"  # kernel primitive (mount), runs in forked child
+  - "internal/sandbox/preflight.go"  # probes kernel capabilities via Detect()
+  - "internal/cli/diagnose.go"  # sandbox diagnose path uses Detect() + CLI orchestration
   - "cmd/pipelock/main.go"  # sandbox init hooks in main(), untestable
 comment:
   layout: "reach, diff, files"

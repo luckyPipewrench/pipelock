@@ -7434,6 +7434,106 @@ func TestValidateReload_SandboxUnchanged_NoWarning(t *testing.T) {
 	}
 }
 
+func TestValidateReload_SandboxFSContentChanged(t *testing.T) {
+	old := Defaults()
+	old.Sandbox.Enabled = true
+	old.Sandbox.FS = &SandboxFilesystem{AllowRead: []string{"/old/path"}}
+	updated := Defaults()
+	updated.Sandbox.Enabled = true
+	updated.Sandbox.FS = &SandboxFilesystem{AllowRead: []string{"/new/path"}}
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == fieldSandbox {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected sandbox warning when FS content changes (same length, different paths)")
+	}
+}
+
+func TestValidateReload_SandboxAgentAdded(t *testing.T) {
+	enabled := true
+	old := Defaults()
+	updated := Defaults()
+	updated.Agents = map[string]AgentProfile{
+		"new-agent": {Sandbox: &AgentSandboxOverride{Enabled: &enabled}},
+	}
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == fieldSandbox {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected sandbox warning when agent with sandbox override is added")
+	}
+}
+
+func TestValidateReload_SandboxAgentRemoved(t *testing.T) {
+	enabled := true
+	old := Defaults()
+	old.Agents = map[string]AgentProfile{
+		"old-agent": {Sandbox: &AgentSandboxOverride{Enabled: &enabled}},
+	}
+	updated := Defaults()
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == fieldSandbox {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected sandbox warning when agent with sandbox override is removed")
+	}
+}
+
+func TestStringSlicesEqual(t *testing.T) {
+	tests := []struct {
+		name string
+		a, b []string
+		want bool
+	}{
+		{"both nil", nil, nil, true},
+		{"equal", []string{"a", "b"}, []string{"a", "b"}, true},
+		{"different length", []string{"a"}, []string{"a", "b"}, false},
+		{"different content", []string{"a", "b"}, []string{"a", "c"}, false},
+		{"empty vs nil", []string{}, nil, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := stringSlicesEqual(tt.a, tt.b); got != tt.want {
+				t.Errorf("stringSlicesEqual(%v, %v) = %v, want %v", tt.a, tt.b, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBoolPtrEqual(t *testing.T) {
+	trueVal := true
+	falseVal := false
+	tests := []struct {
+		name string
+		a, b *bool
+		want bool
+	}{
+		{"both nil", nil, nil, true},
+		{"nil vs true", nil, &trueVal, false},
+		{"true vs true", &trueVal, &trueVal, true},
+		{"true vs false", &trueVal, &falseVal, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := boolPtrEqual(tt.a, tt.b); got != tt.want {
+				t.Errorf("boolPtrEqual = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestDefaults_Rules(t *testing.T) {
 	cfg := Defaults()
 	cfg.Internal = nil

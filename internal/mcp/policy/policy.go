@@ -109,8 +109,9 @@ var policyPreNormalize = strings.NewReplacer(
 // Config holds compiled tool call policy rules for pre-execution checking.
 // A nil Config disables policy checking.
 type Config struct {
-	Action string // default action: warn, block
-	Rules  []*CompiledRule
+	Action           string // default action: warn, block, redirect
+	Rules            []*CompiledRule
+	RedirectProfiles map[string]config.RedirectProfile // keyed by profile name
 }
 
 // CompiledRule holds a pre-compiled policy rule ready for matching.
@@ -138,7 +139,7 @@ func New(cfg config.MCPToolPolicy) *Config {
 	if !cfg.Enabled || len(cfg.Rules) == 0 {
 		return nil
 	}
-	pc := &Config{Action: cfg.Action}
+	pc := &Config{Action: cfg.Action, RedirectProfiles: cfg.RedirectProfiles}
 	for _, r := range cfg.Rules {
 		compiled := &CompiledRule{
 			Name:            r.Name,

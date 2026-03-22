@@ -424,12 +424,15 @@ func scanRequestBatch(line []byte, sc *scanner.Scanner, action, onParseError str
 
 // BlockedRequest holds the ID and notification status of a blocked MCP request,
 // sent from the input scanning goroutine to the main goroutine via channel.
+// When SyntheticResponse is non-nil, the consumer sends it as-is instead of
+// generating an error response (used for redirect success results).
 type BlockedRequest struct {
-	ID             json.RawMessage
-	IsNotification bool // Notifications have no ID — don't send error response.
-	LogMessage     string
-	ErrorCode      int    // 0 = use default -32001; -32002 = policy block
-	ErrorMessage   string // empty = use default message
+	ID                json.RawMessage
+	IsNotification    bool // Notifications have no ID — don't send error response.
+	LogMessage        string
+	ErrorCode         int    // 0 = use default -32001; -32002 = policy block
+	ErrorMessage      string // empty = use default message
+	SyntheticResponse []byte // if set, send this instead of an error response
 }
 
 // blockRequestResponse generates a JSON-RPC 2.0 error response for a blocked request.
@@ -770,15 +773,82 @@ func ForwardScannedInput(
 				ErrorMessage:   errMsg,
 			}
 		case config.ActionRedirect:
-			// Redirect handler not yet wired (PR 3B). Fail closed to block.
-			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked %s request (%s) [redirect pending implementation]\n",
-				lineNum, method, reasonStr)
-			blockedCh <- BlockedRequest{
-				ID:             verdict.ID,
-				IsNotification: isNotification,
-				LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked (redirect not wired)", lineNum),
-				ErrorCode:      -32002,
-				ErrorMessage:   errPolicyBlocked,
+			// Batch requests cannot be redirected element-by-element.
+			// Fail closed: block the entire batch.
+			trimmed := bytes.TrimSpace(line)
+			if len(trimmed) > 0 && trimmed[0] == '[' {
+				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked batch request (%s) [redirect not supported for batches]\n",
+					lineNum, reasonStr)
+				blockedCh <- BlockedRequest{
+					ID:             verdict.ID,
+					IsNotification: isNotification,
+					LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked (batch redirect)", lineNum),
+					ErrorCode:      -32002,
+					ErrorMessage:   errPolicyBlocked,
+				}
+				break
+			}
+			profile, ok := policyCfg.RedirectProfiles[policyVerdict.RedirectProfile]
+			if !ok {
+				// Profile not found — fail closed to block.
+				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked %s request (%s) [redirect profile %q not found]\n",
+					lineNum, method, reasonStr, policyVerdict.RedirectProfile)
+				blockedCh <- BlockedRequest{
+					ID:             verdict.ID,
+					IsNotification: isNotification,
+					LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked (redirect profile missing)", lineNum),
+					ErrorCode:      -32002,
+					ErrorMessage:   errPolicyBlocked,
+				}
+				break
+			}
+			toolName, toolArgs := extractToolCallFields(line)
+			result := executeRedirect(profile, verdict.ID, toolArgs)
+			policyRuleName := ""
+			if len(policyVerdict.Rules) > 0 {
+				policyRuleName = policyVerdict.Rules[0]
+			}
+			// Determine final outcome before audit logging so the event
+			// reflects the actual result delivered to the client.
+			finalResult := "blocked"
+			if result.Success {
+				// Scan redirect handler output for prompt injection before
+				// sending to client. Untrusted handler output is attack surface.
+				scanVerdict := ScanResponse(result.Response, sc)
+				if !scanVerdict.Clean {
+					_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked redirect response (injection detected in handler output)\n", lineNum)
+					blockedCh <- BlockedRequest{
+						ID:             verdict.ID,
+						IsNotification: isNotification,
+						LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked (redirect output injection)", lineNum),
+						ErrorCode:      -32001,
+						ErrorMessage:   "pipelock: redirect handler output blocked by response scanning",
+					}
+				} else {
+					finalResult = "redirected"
+					_, _ = fmt.Fprintf(logW, "pipelock: input line %d: redirected %s request via profile %q (%dms)\n",
+						lineNum, method, policyVerdict.RedirectProfile, result.LatencyMs)
+					blockedCh <- BlockedRequest{
+						ID:                verdict.ID,
+						IsNotification:    isNotification,
+						LogMessage:        fmt.Sprintf("pipelock: input line %d: redirected", lineNum),
+						SyntheticResponse: result.Response,
+					}
+				}
+			} else {
+				// Redirect handler failed — fall through to block (fail-closed).
+				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked %s request (%s) [redirect failed: %s]\n",
+					lineNum, method, reasonStr, result.Error)
+				blockedCh <- BlockedRequest{
+					ID:             verdict.ID,
+					IsNotification: isNotification,
+					LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked (redirect failed)", lineNum),
+					ErrorCode:      -32002,
+					ErrorMessage:   errPolicyBlocked,
+				}
+			}
+			if auditLogger != nil {
+				auditLogger.LogToolRedirect("", toolName, toolArgs, policyVerdict.RedirectProfile, profile.Reason, policyRuleName, finalResult, result.LatencyMs)
 			}
 		case config.ActionAsk:
 			// HITL for input scanning is impractical — fall back to block.

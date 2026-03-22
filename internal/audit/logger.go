@@ -93,6 +93,7 @@ const (
 	EventCrossRequestEntropyAnomaly  EventType = "cross_request_entropy_anomaly"
 
 	EventAdaptiveUpgrade EventType = "adaptive_upgrade"
+	EventToolRedirect    EventType = "tool_redirect"
 )
 
 // WebSocket frame direction constants used in audit log entries.
@@ -445,6 +446,42 @@ func (l *Logger) LogRedirect(originalURL, redirectURL, clientIP, requestID, agen
 	}
 	ev.Int("hop", hop).
 		Msg("redirect followed")
+}
+
+// LogToolRedirect logs an MCP tool call redirect event. This is distinct from
+// LogRedirect (HTTP redirect hops). result is "redirected" or "blocked" (on failure).
+func (l *Logger) LogToolRedirect(sessionID, toolName, originalArgs, redirectProfile, redirectReason, policyRule, result string, latencyMs int64) {
+	// Truncate original args to prevent log bloat from large payloads.
+	const maxArgLen = 512
+	if len(originalArgs) > maxArgLen {
+		originalArgs = originalArgs[:maxArgLen] + "..."
+	}
+
+	ev := l.zl.Info().
+		Str("event", string(EventToolRedirect)).
+		Str("tool_name", sanitizeString(toolName)).
+		Str("original_args", sanitizeString(originalArgs)).
+		Str("redirect_profile", sanitizeString(redirectProfile)).
+		Str("redirect_reason", sanitizeString(redirectReason)).
+		Str("policy_rule", sanitizeString(policyRule)).
+		Str("result", result).
+		Int64("latency_ms", latencyMs)
+	if sessionID != "" {
+		ev = ev.Str("session_id", sessionID)
+	}
+	ev.Msg("tool call redirected")
+
+	if l.emitter != nil {
+		l.emitter.Emit(context.Background(), string(EventToolRedirect), map[string]any{
+			"tool_name":        toolName,
+			"original_args":    originalArgs,
+			"redirect_profile": redirectProfile,
+			"redirect_reason":  redirectReason,
+			"policy_rule":      policyRule,
+			"result":           result,
+			"latency_ms":       latencyMs,
+		})
+	}
 }
 
 // LogConfigReload logs a configuration reload event.

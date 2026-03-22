@@ -127,7 +127,12 @@ func RunHTTPProxy(
 		// The sequential (non-concurrent) architecture means no channel needed.
 		if blocked := scanHTTPInput(msg, sc, safeLogW, inputCfg, policyCfg, chainMatcher, "default", "default", auditLogger, cee, rec, adaptiveCfg, m); blocked != nil {
 			if !blocked.IsNotification {
-				resp := blockRequestResponse(*blocked)
+				var resp []byte
+				if blocked.SyntheticResponse != nil {
+					resp = blocked.SyntheticResponse
+				} else {
+					resp = blockRequestResponse(*blocked)
+				}
 				if wErr := safeClientOut.WriteMessage(resp); wErr != nil {
 					_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send block response: %v\n", wErr)
 				}
@@ -383,16 +388,77 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 			ErrorMessage:   errMsg,
 		}
 	case config.ActionRedirect:
-		// Redirect handler not yet wired (PR 3B). Fail closed to block.
-		_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s) [redirect pending implementation]\n", joinStrings(reasons))
-		recordAdaptiveSignal(session.SignalBlock)
-		return &BlockedRequest{
-			ID:             verdict.ID,
-			IsNotification: isNotification,
-			LogMessage:     "blocked (redirect not wired)",
-			ErrorCode:      -32002,
-			ErrorMessage:   errPolicyBlocked,
+		// Batch requests cannot be redirected element-by-element. Fail closed.
+		trimmedMsg := bytes.TrimSpace(msg)
+		if len(trimmedMsg) > 0 && trimmedMsg[0] == '[' {
+			_, _ = fmt.Fprintf(logW, "pipelock: input: blocked batch (%s) [redirect not supported for batches]\n", joinStrings(reasons))
+			recordAdaptiveSignal(session.SignalBlock)
+			return &BlockedRequest{
+				ID: verdict.ID, IsNotification: isNotification,
+				LogMessage: "blocked (batch redirect)", ErrorCode: -32002, ErrorMessage: errPolicyBlocked,
+			}
 		}
+		if policyCfg == nil {
+			// No policy config — fail closed.
+			_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s) [redirect without policy config]\n", joinStrings(reasons))
+			recordAdaptiveSignal(session.SignalBlock)
+			return &BlockedRequest{
+				ID: verdict.ID, IsNotification: isNotification,
+				LogMessage: "blocked (no policy config)", ErrorCode: -32002, ErrorMessage: errPolicyBlocked,
+			}
+		}
+		profile, ok := policyCfg.RedirectProfiles[policyVerdict.RedirectProfile]
+		if !ok {
+			_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s) [redirect profile %q not found]\n", joinStrings(reasons), policyVerdict.RedirectProfile)
+			recordAdaptiveSignal(session.SignalBlock)
+			return &BlockedRequest{
+				ID: verdict.ID, IsNotification: isNotification,
+				LogMessage: "blocked (redirect profile missing)", ErrorCode: -32002, ErrorMessage: errPolicyBlocked,
+			}
+		}
+		toolName, toolArgs := extractToolCallFields(msg)
+		result := executeRedirect(profile, verdict.ID, toolArgs)
+		policyRuleName := ""
+		if len(policyVerdict.Rules) > 0 {
+			policyRuleName = policyVerdict.Rules[0]
+		}
+		// Determine final outcome before audit logging so the event
+		// reflects the actual result delivered to the client.
+		var br *BlockedRequest
+		finalResult := "blocked"
+		if result.Success {
+			// Scan redirect handler output for prompt injection before
+			// sending to client. Untrusted handler output is attack surface.
+			scanVerdict := ScanResponse(result.Response, sc)
+			if !scanVerdict.Clean {
+				_, _ = fmt.Fprintf(logW, "pipelock: input: blocked redirect response (injection detected in handler output)\n")
+				recordAdaptiveSignal(session.SignalBlock)
+				br = &BlockedRequest{
+					ID: verdict.ID, IsNotification: isNotification,
+					LogMessage: "blocked (redirect output injection)", ErrorCode: -32001,
+					ErrorMessage: "pipelock: redirect handler output blocked by response scanning",
+				}
+			} else {
+				finalResult = "redirected"
+				_, _ = fmt.Fprintf(logW, "pipelock: input: redirected via profile %q (%dms)\n", policyVerdict.RedirectProfile, result.LatencyMs)
+				br = &BlockedRequest{
+					ID: verdict.ID, IsNotification: isNotification,
+					LogMessage: "redirected", SyntheticResponse: result.Response,
+				}
+			}
+		} else {
+			// Redirect handler failed — fall through to block (fail-closed).
+			_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s) [redirect failed: %s]\n", joinStrings(reasons), result.Error)
+			recordAdaptiveSignal(session.SignalBlock)
+			br = &BlockedRequest{
+				ID: verdict.ID, IsNotification: isNotification,
+				LogMessage: "blocked (redirect failed)", ErrorCode: -32002, ErrorMessage: errPolicyBlocked,
+			}
+		}
+		if auditLogger != nil {
+			auditLogger.LogToolRedirect(auditSessionKey, toolName, toolArgs, policyVerdict.RedirectProfile, profile.Reason, policyRuleName, finalResult, result.LatencyMs)
+		}
+		return br
 	case config.ActionAsk:
 		// HITL for input scanning is impractical — fall back to block (same as stdio proxy).
 		_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s) [ask not supported for input scanning]\n", joinStrings(reasons))
@@ -768,7 +834,11 @@ func RunHTTPListenerProxy(
 				w.WriteHeader(http.StatusAccepted)
 				return
 			}
-			_, _ = w.Write(blockRequestResponse(*blocked))
+			if blocked.SyntheticResponse != nil {
+				_, _ = w.Write(blocked.SyntheticResponse)
+			} else {
+				_, _ = w.Write(blockRequestResponse(*blocked))
+			}
 			return
 		}
 

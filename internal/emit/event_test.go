@@ -90,6 +90,7 @@ func TestEventSeverity_CoverExpectedTypes(t *testing.T) {
 		{"config_reload", SeverityInfo},
 		{"redirect", SeverityInfo},
 		{"forward_http", SeverityInfo},
+		{"tool_redirect", SeverityInfo},
 	}
 
 	for _, tt := range expectedTypes {
@@ -126,6 +127,7 @@ func TestEventSeverity_NoUnexpectedEntries(t *testing.T) {
 		"config_reload":       true,
 		"redirect":            true,
 		"forward_http":        true,
+		"tool_redirect":       true,
 	}
 
 	for k := range EventSeverity {

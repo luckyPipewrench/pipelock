@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -560,7 +561,43 @@ func TestScanHTTPInput_PolicyOnlyBlock(t *testing.T) {
 	}
 }
 
-func TestScanHTTPInput_PolicyRedirectBlocksFailClosed(t *testing.T) {
+func TestScanHTTPInput_PolicyRedirectMissingProfileBlocks(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+
+	// Profile key referenced but not in map — fail closed.
+	policyCfg := &policy.Config{
+		Action: config.ActionWarn,
+		Rules: []*policy.CompiledRule{
+			{
+				Name:            "redirect-dangerous",
+				ToolPattern:     regexp.MustCompile(`dangerous_tool`),
+				Action:          config.ActionRedirect,
+				RedirectProfile: "nonexistent",
+			},
+		},
+	}
+
+	msg := jsonToolsCallDangerous
+	var logW bytes.Buffer
+	blocked := scanHTTPInput([]byte(msg), sc, &logW, nil, policyCfg, nil, "", "", nil, nil, nil, nil, nil)
+	if blocked == nil {
+		t.Fatal("expected missing profile to block")
+	}
+	if blocked.ErrorCode != -32002 {
+		t.Errorf("ErrorCode = %d, want -32002", blocked.ErrorCode)
+	}
+	if !strings.Contains(logW.String(), "redirect profile") {
+		t.Errorf("expected 'redirect profile' in log, got: %s", logW.String())
+	}
+}
+
+func TestScanHTTPInput_PolicyRedirectSuccess(t *testing.T) {
+	if runtime.GOOS == osWindows {
+		t.Skip("exec test requires unix shell")
+	}
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	sc := scanner.New(cfg)
@@ -568,6 +605,9 @@ func TestScanHTTPInput_PolicyRedirectBlocksFailClosed(t *testing.T) {
 
 	policyCfg := &policy.Config{
 		Action: config.ActionWarn,
+		RedirectProfiles: map[string]config.RedirectProfile{
+			"safe-handler": {Exec: []string{"/bin/echo", "safe output"}, Reason: "audited"},
+		},
 		Rules: []*policy.CompiledRule{
 			{
 				Name:            "redirect-dangerous",
@@ -582,13 +622,68 @@ func TestScanHTTPInput_PolicyRedirectBlocksFailClosed(t *testing.T) {
 	var logW bytes.Buffer
 	blocked := scanHTTPInput([]byte(msg), sc, &logW, nil, policyCfg, nil, "", "", nil, nil, nil, nil, nil)
 	if blocked == nil {
-		t.Fatal("expected redirect to fall through to block (fail-closed)")
+		t.Fatal("expected redirect result (not nil)")
+	}
+	if blocked.SyntheticResponse == nil {
+		t.Fatal("expected synthetic response for successful redirect")
+	}
+
+	var resp struct {
+		Result struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(blocked.SyntheticResponse, &resp); err != nil {
+		t.Fatalf("invalid synthetic response: %v", err)
+	}
+	if len(resp.Result.Content) == 0 {
+		t.Fatal("expected content in response")
+	}
+	if !strings.Contains(resp.Result.Content[0].Text, "safe output") {
+		t.Errorf("content = %q, want to contain 'safe output'", resp.Result.Content[0].Text)
+	}
+}
+
+func TestScanHTTPInput_PolicyRedirectHandlerFailure(t *testing.T) {
+	if runtime.GOOS == osWindows {
+		t.Skip("exec test requires unix shell")
+	}
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+
+	policyCfg := &policy.Config{
+		Action: config.ActionWarn,
+		RedirectProfiles: map[string]config.RedirectProfile{
+			"broken": {Exec: []string{"/bin/false"}, Reason: "broken handler"},
+		},
+		Rules: []*policy.CompiledRule{
+			{
+				Name:            "redirect-dangerous",
+				ToolPattern:     regexp.MustCompile(`dangerous_tool`),
+				Action:          config.ActionRedirect,
+				RedirectProfile: "broken",
+			},
+		},
+	}
+
+	msg := jsonToolsCallDangerous
+	var logW bytes.Buffer
+	blocked := scanHTTPInput([]byte(msg), sc, &logW, nil, policyCfg, nil, "", "", nil, nil, nil, nil, nil)
+	if blocked == nil {
+		t.Fatal("expected block on handler failure")
+	}
+	if blocked.SyntheticResponse != nil {
+		t.Error("expected error response, not synthetic")
 	}
 	if blocked.ErrorCode != -32002 {
 		t.Errorf("ErrorCode = %d, want -32002", blocked.ErrorCode)
 	}
-	if !strings.Contains(logW.String(), "redirect pending implementation") {
-		t.Errorf("expected 'redirect pending implementation' in log, got: %s", logW.String())
+	if !strings.Contains(logW.String(), "redirect failed") {
+		t.Errorf("expected 'redirect failed' in log, got: %s", logW.String())
 	}
 }
 

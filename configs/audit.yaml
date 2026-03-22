@@ -452,3 +452,14 @@ seed_phrase_detection:
 # rules:
 #   min_confidence: medium
 #   include_experimental: false
+
+# Process sandbox — OS-level containment for MCP subprocess mode (v2.0)
+# sandbox:
+#   enabled: false       # enable via --sandbox CLI flag
+#   strict: false        # deny all filesystem access outside explicit allowlist
+
+# HTTP reverse proxy — bidirectional body scanning for any HTTP service (v2.0)
+# reverse_proxy:
+#   enabled: false
+#   listen: ":8890"
+#   upstream: "http://localhost:7899"

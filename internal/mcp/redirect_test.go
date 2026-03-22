@@ -23,7 +23,7 @@ func TestExecuteRedirect_Success(t *testing.T) {
 		Reason: "test redirect",
 	}
 	requestID := json.RawMessage(`42`)
-	result := executeRedirect(profile, requestID, `{"tool":"test"}`)
+	result := executeRedirect(profile, "test-profile", requestID, `{"tool":"test"}`, "test-rule")
 
 	if !result.Success {
 		t.Fatalf("expected success, got error: %s", result.Error)
@@ -73,7 +73,7 @@ func TestExecuteRedirect_PreserveArgv(t *testing.T) {
 	}
 	requestID := json.RawMessage(`1`)
 	origArgs := `{"command":"curl https://example.com"}`
-	result := executeRedirect(profile, requestID, origArgs)
+	result := executeRedirect(profile, "test-profile", requestID, origArgs, "test-rule")
 
 	if !result.Success {
 		t.Fatalf("expected success, got error: %s", result.Error)
@@ -107,7 +107,7 @@ func TestExecuteRedirect_Failure(t *testing.T) {
 		Reason: "test failure",
 	}
 	requestID := json.RawMessage(`99`)
-	result := executeRedirect(profile, requestID, `{}`)
+	result := executeRedirect(profile, "test-profile", requestID, `{}`, "")
 
 	if result.Success {
 		t.Error("expected failure for /bin/false")
@@ -126,13 +126,60 @@ func TestExecuteRedirect_NonexistentCommand(t *testing.T) {
 		Reason: "test missing binary",
 	}
 	requestID := json.RawMessage(`1`)
-	result := executeRedirect(profile, requestID, `{}`)
+	result := executeRedirect(profile, "test-profile", requestID, `{}`, "")
 
 	if result.Success {
 		t.Error("expected failure for nonexistent command")
 	}
 	if result.Error == "" {
 		t.Error("expected non-empty error message")
+	}
+}
+
+func TestExecuteRedirect_ManifestInjected(t *testing.T) {
+	if runtime.GOOS == osWindows {
+		t.Skip("exec test requires unix shell")
+	}
+
+	// Use printenv to capture the manifest env var from the child process.
+	profile := config.RedirectProfile{
+		Exec:   []string{"/bin/sh", "-c", "printenv __PIPELOCK_REDIRECT_MANIFEST"},
+		Reason: "test manifest injection",
+	}
+	requestID := json.RawMessage(`1`)
+	result := executeRedirect(profile, "fetch-proxy", requestID, `{}`, "block-curl")
+
+	if !result.Success {
+		t.Fatalf("expected success, got error: %s", result.Error)
+	}
+
+	// Parse the response to extract the handler's stdout (= the manifest JSON).
+	var resp struct {
+		Result struct {
+			Content []jsonrpc.ContentBlock `json:"content"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(result.Response, &resp); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+	if len(resp.Result.Content) == 0 {
+		t.Fatal("expected content from printenv")
+	}
+	manifestStr := strings.TrimSpace(resp.Result.Content[0].Text)
+
+	// Verify the manifest has the expected fields.
+	var manifest redirectManifest
+	if err := json.Unmarshal([]byte(manifestStr), &manifest); err != nil {
+		t.Fatalf("invalid manifest JSON from child: %v\nraw: %s", err, manifestStr)
+	}
+	if manifest.Profile != "fetch-proxy" {
+		t.Errorf("manifest.Profile = %q, want fetch-proxy", manifest.Profile)
+	}
+	if manifest.Reason != "test manifest injection" {
+		t.Errorf("manifest.Reason = %q, want 'test manifest injection'", manifest.Reason)
+	}
+	if manifest.PolicyRule != "block-curl" {
+		t.Errorf("manifest.PolicyRule = %q, want block-curl", manifest.PolicyRule)
 	}
 }
 

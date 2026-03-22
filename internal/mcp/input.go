@@ -804,11 +804,11 @@ func ForwardScannedInput(
 				break
 			}
 			toolName, toolArgs := extractToolCallFields(line)
-			result := executeRedirect(profile, verdict.ID, toolArgs)
 			policyRuleName := ""
 			if len(policyVerdict.Rules) > 0 {
 				policyRuleName = policyVerdict.Rules[0]
 			}
+			result := executeRedirect(profile, policyVerdict.RedirectProfile, verdict.ID, toolArgs, policyRuleName)
 			// Determine final outcome before audit logging so the event
 			// reflects the actual result delivered to the client.
 			finalResult := "blocked"

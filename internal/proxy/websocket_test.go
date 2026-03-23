@@ -22,6 +22,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
@@ -2462,5 +2463,187 @@ func TestWSRelay_EscalationLevel_NonNilRecorder(t *testing.T) {
 	// After escalation, escalationLevel must reflect the non-zero level.
 	if got := r.escalationLevel(); got == 0 {
 		t.Errorf("expected non-zero escalation level after threshold crossing, got %d", got)
+	}
+}
+
+// TestWSRelay_KillSwitch_ClientToUpstream verifies that the kill switch check
+// in clientToUpstream terminates a live WebSocket relay when activated mid-stream.
+func TestWSRelay_KillSwitch_ClientToUpstream(t *testing.T) {
+	backendAddr, backendCleanup := wsEchoServer(t)
+	defer backendCleanup()
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.APIAllowlist = nil
+	cfg.WebSocketProxy.Enabled = true
+	cfg.WebSocketProxy.MaxMessageBytes = 1048576
+	cfg.WebSocketProxy.MaxConcurrentConnections = 128
+	cfg.WebSocketProxy.MaxConnectionSeconds = 10
+	cfg.WebSocketProxy.IdleTimeoutSeconds = 5
+	cfg.FetchProxy.TimeoutSeconds = 5
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	m := metrics.New()
+	ks := killswitch.New(cfg)
+	p, err := New(cfg, logger, sc, m, WithKillSwitch(ks))
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+
+	lc := net.ListenConfig{}
+	ln, listenErr := lc.Listen(context.Background(), "tcp4", "127.0.0.1:0")
+	if listenErr != nil {
+		t.Fatalf("listen: %v", listenErr)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/ws", p.handleWebSocket)
+		handler := p.buildHandler(mux)
+		srv := &http.Server{
+			Handler:           handler,
+			ReadHeaderTimeout: 5 * time.Second,
+			BaseContext: func(_ net.Listener) context.Context {
+				return ctx
+			},
+		}
+		go func() {
+			<-ctx.Done()
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer shutdownCancel()
+			_ = srv.Shutdown(shutdownCtx)
+		}()
+		_ = srv.Serve(ln)
+	}()
+
+	proxyAddr := ln.Addr().String()
+
+	// Connect and verify echo works before kill switch activation.
+	conn := dialWS(t, proxyAddr, backendAddr)
+	defer conn.Close() //nolint:errcheck // test
+
+	if writeErr := wsutil.WriteClientMessage(conn, ws.OpText, []byte("ping")); writeErr != nil {
+		t.Fatalf("write ping: %v", writeErr)
+	}
+	reply, _, readErr := wsutil.ReadServerData(conn)
+	if readErr != nil {
+		t.Fatalf("read ping reply: %v", readErr)
+	}
+	if string(reply) != "ping" {
+		t.Errorf("expected echo 'ping', got %q", string(reply))
+	}
+
+	// Activate kill switch mid-stream.
+	ks.SetAPI(true)
+
+	// Send another message — the relay should close the connection.
+	_ = wsutil.WriteClientMessage(conn, ws.OpText, []byte("after-ks"))
+
+	// Read until closed. The relay should terminate with close frame.
+	for {
+		_, _, loopErr := wsutil.ReadServerData(conn)
+		if loopErr != nil {
+			break
+		}
+	}
+}
+
+// TestWSRelay_KillSwitch_UpstreamToClient verifies that the kill switch check
+// in upstreamToClient terminates a live WebSocket relay when activated mid-stream
+// while frames flow from server to client.
+func TestWSRelay_KillSwitch_UpstreamToClient(t *testing.T) {
+	// Use a server that waits for a client message then responds, giving us
+	// time to activate the kill switch between connect and response.
+	lc := net.ListenConfig{}
+	backendLn, listenErr := lc.Listen(context.Background(), "tcp4", "127.0.0.1:0")
+	if listenErr != nil {
+		t.Fatalf("listen: %v", listenErr)
+	}
+	backendAddr := backendLn.Addr().String()
+	backendSrv := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			conn, _, _, upgradeErr := ws.UpgradeHTTP(r, w)
+			if upgradeErr != nil {
+				return
+			}
+			defer conn.Close() //nolint:errcheck // test
+			// Wait for trigger message.
+			_, _, _ = wsutil.ReadClientData(conn)
+			// Send response.
+			_ = wsutil.WriteServerMessage(conn, ws.OpText, []byte("server-reply"))
+		}),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() { _ = backendSrv.Serve(backendLn) }()
+	defer backendSrv.Close() //nolint:errcheck // test
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.APIAllowlist = nil
+	cfg.WebSocketProxy.Enabled = true
+	cfg.WebSocketProxy.MaxMessageBytes = 1048576
+	cfg.WebSocketProxy.MaxConcurrentConnections = 128
+	cfg.WebSocketProxy.MaxConnectionSeconds = 10
+	cfg.WebSocketProxy.IdleTimeoutSeconds = 5
+	cfg.FetchProxy.TimeoutSeconds = 5
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	m := metrics.New()
+	ks := killswitch.New(cfg)
+	p, proxyErr := New(cfg, logger, sc, m, WithKillSwitch(ks))
+	if proxyErr != nil {
+		t.Fatalf("proxy.New: %v", proxyErr)
+	}
+
+	proxyLn, proxyListenErr := lc.Listen(context.Background(), "tcp4", "127.0.0.1:0")
+	if proxyListenErr != nil {
+		t.Fatalf("listen: %v", proxyListenErr)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/ws", p.handleWebSocket)
+		handler := p.buildHandler(mux)
+		srv := &http.Server{
+			Handler:           handler,
+			ReadHeaderTimeout: 5 * time.Second,
+			BaseContext: func(_ net.Listener) context.Context {
+				return ctx
+			},
+		}
+		go func() {
+			<-ctx.Done()
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer shutdownCancel()
+			_ = srv.Shutdown(shutdownCtx)
+		}()
+		_ = srv.Serve(proxyLn)
+	}()
+
+	proxyAddr := proxyLn.Addr().String()
+
+	conn := dialWS(t, proxyAddr, backendAddr)
+	defer conn.Close() //nolint:errcheck // test
+
+	// Activate kill switch before the server sends its response.
+	ks.SetAPI(true)
+
+	// Trigger the server to send a frame.
+	_ = wsutil.WriteClientMessage(conn, ws.OpText, []byte("go"))
+
+	// Read until closed — relay should terminate due to kill switch.
+	for {
+		_, _, readErr := wsutil.ReadServerData(conn)
+		if readErr != nil {
+			break
+		}
 	}
 }

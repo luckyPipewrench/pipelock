@@ -8930,3 +8930,50 @@ reverse_proxy:
 		t.Fatalf("expected upstream %s, got %q", testRevProxyUpstream, cfg.ReverseProxy.Upstream)
 	}
 }
+
+func TestValidate_TrustedDomains_Empty(t *testing.T) {
+	cfg := Defaults()
+	cfg.TrustedDomains = []string{""}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for empty trusted_domains entry")
+	}
+	if !strings.Contains(err.Error(), "is empty") {
+		t.Errorf("error should mention empty, got: %v", err)
+	}
+}
+
+func TestValidate_TrustedDomains_HostPort(t *testing.T) {
+	cfg := Defaults()
+	cfg.TrustedDomains = []string{"localhost:8080"}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for host:port in trusted_domains")
+	}
+	if !strings.Contains(err.Error(), "not a URL") {
+		t.Errorf("error should mention URL/host:port, got: %v", err)
+	}
+}
+
+func TestValidate_TrustedDomains_NonPrefixWildcard(t *testing.T) {
+	cfg := Defaults()
+	cfg.TrustedDomains = []string{"api.*.example.com"}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for non-prefix wildcard in trusted_domains")
+	}
+	if !strings.Contains(err.Error(), "only exact hosts") {
+		t.Errorf("error should mention supported patterns, got: %v", err)
+	}
+}
+
+func TestValidate_TrustedDomains_TrailingDot(t *testing.T) {
+	cfg := Defaults()
+	cfg.TrustedDomains = []string{"example.com."}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected validation to pass, got: %v", err)
+	}
+	if cfg.TrustedDomains[0] != "example.com" {
+		t.Errorf("expected trailing dot stripped, got %q", cfg.TrustedDomains[0])
+	}
+}

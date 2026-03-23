@@ -1312,6 +1312,28 @@ func TestReverseProxy_URLPathDLP(t *testing.T) {
 	}
 }
 
+func TestReverseProxy_URLQueryDLPDefaultAction(t *testing.T) {
+	// When RequestBodyScanning.Action is empty, the URL DLP path defaults to
+	// ActionBlock. This covers the action == "" fallback branch.
+	cfg := reverseTestConfig()
+	cfg.RequestBodyScanning.Action = "" // force default fallback
+
+	fakeKey := "AKIA" + "IOSFODNN7EXAMPLE"
+	upstream := func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}
+
+	proxy := reverseTestSetup(t, cfg, upstream)
+
+	secretQuery := "?tok" + "en=" + fakeKey
+	resp := testGet(t, proxy.URL+"/api/data"+secretQuery)
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 (URL DLP default action=block), got %d", resp.StatusCode)
+	}
+}
+
 func TestReverseProxy_CleanURLPassthrough(t *testing.T) {
 	cfg := reverseTestConfig()
 

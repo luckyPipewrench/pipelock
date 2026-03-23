@@ -951,6 +951,48 @@ func TestEnforceLicenseGate_NoPublicKey(t *testing.T) {
 	}
 }
 
+func TestMergeAgentProfile_TrustedDomainsOverride(t *testing.T) {
+	cfg := testConfig()
+	cfg.TrustedDomains = []string{"base.example.com"}
+
+	profile := &config.AgentProfile{
+		TrustedDomains: []string{"agent.internal.corp", "*.dev.local"},
+	}
+	merged, err := MergeAgentProfile(cfg, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// TrustedDomains should be wholesale-replaced, not merged with base.
+	if len(merged.TrustedDomains) != 2 {
+		t.Fatalf("expected 2 trusted_domains (replaced), got %d", len(merged.TrustedDomains))
+	}
+	if merged.TrustedDomains[0] != "agent.internal.corp" {
+		t.Errorf("expected first domain 'agent.internal.corp', got %q", merged.TrustedDomains[0])
+	}
+	if merged.TrustedDomains[1] != "*.dev.local" {
+		t.Errorf("expected second domain '*.dev.local', got %q", merged.TrustedDomains[1])
+	}
+	// Verify base config is not mutated.
+	if len(cfg.TrustedDomains) != 1 || cfg.TrustedDomains[0] != "base.example.com" {
+		t.Error("base config TrustedDomains was mutated by merge")
+	}
+}
+
+func TestMergeAgentProfile_TrustedDomainsNilInherits(t *testing.T) {
+	cfg := testConfig()
+	cfg.TrustedDomains = []string{"inherited.example.com"}
+
+	// Profile with nil TrustedDomains — should inherit from base.
+	profile := &config.AgentProfile{}
+	merged, err := MergeAgentProfile(cfg, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(merged.TrustedDomains) != 1 || merged.TrustedDomains[0] != "inherited.example.com" {
+		t.Errorf("expected inherited trusted_domains, got %v", merged.TrustedDomains)
+	}
+}
+
 func TestDeepCopyConfig(t *testing.T) {
 	cfg := testConfig()
 	cfg.Mode = config.ModeStrict

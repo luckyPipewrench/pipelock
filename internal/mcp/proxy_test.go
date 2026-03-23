@@ -2258,3 +2258,59 @@ func TestIsRequest(t *testing.T) {
 		})
 	}
 }
+
+// TestForwardScanned_KillSwitchDropsNotification verifies that when the kill
+// switch is active, notification messages (no "id" field) are silently dropped
+// rather than forwarded. Notifications have no response channel in JSON-RPC 2.0,
+// so the correct behavior is to discard them and log the drop.
+func TestForwardScanned_KillSwitchDropsNotification(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.ApplyDefaults()
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+	ks := killswitch.New(cfg)
+
+	// Activate kill switch.
+	ks.SetAPI(true)
+
+	// Send a notification (no "id" field) followed by a request with ID.
+	// The notification should be silently dropped. The request should get
+	// a JSON-RPC error response.
+	input := `{"jsonrpc":"2.0","method":"notifications/progress","params":{"token":"abc"}}` + "\n" +
+		`{"jsonrpc":"2.0","id":1,"result":{"content":"hello"}}` + "\n"
+
+	reader := transport.NewStdioReader(strings.NewReader(input))
+	var out, logBuf bytes.Buffer
+	writer := transport.NewStdioWriter(&out)
+
+	_, err := ForwardScanned(reader, writer, &logBuf, sc, nil, nil, nil, ks, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Log should show the notification was dropped.
+	if !strings.Contains(logBuf.String(), "dropped notification") {
+		t.Error("expected log entry for dropped notification")
+	}
+
+	// Log should also show the request was denied.
+	if !strings.Contains(logBuf.String(), "kill switch denied") {
+		t.Error("expected log entry for kill switch denial")
+	}
+
+	// Output should NOT contain the notification (it was dropped).
+	if strings.Contains(out.String(), "notifications/progress") {
+		t.Error("notification should have been dropped, not forwarded")
+	}
+
+	// Output should contain an error response for the request with ID.
+	if !strings.Contains(out.String(), `"error"`) {
+		t.Error("expected JSON-RPC error response for request with ID")
+	}
+
+	// The original content should not have been forwarded.
+	if strings.Contains(out.String(), `"hello"`) {
+		t.Error("kill switch should have blocked forwarding of response content")
+	}
+}

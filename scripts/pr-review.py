@@ -82,11 +82,11 @@ def call_llm(diff: str, mode: str) -> str:
     litellm_key = os.environ.get("LITELLM_API_KEY", "")
     openai_key = os.environ.get("OPENAI_API_KEY", "")
 
-    # Pick model based on mode.
+    # Pick model based on mode. Use `or` so empty strings fall back to defaults.
     if mode == "deep":
-        model = os.environ.get("PR_REVIEW_MODEL_DEEP", DEFAULT_MODEL_DEEP)
+        model = os.environ.get("PR_REVIEW_MODEL_DEEP") or DEFAULT_MODEL_DEEP
     else:
-        model = os.environ.get("PR_REVIEW_MODEL_FAST", DEFAULT_MODEL_FAST)
+        model = os.environ.get("PR_REVIEW_MODEL_FAST") or DEFAULT_MODEL_FAST
 
     # Prefer LiteLLM if configured, fall back to OpenAI.
     if litellm_url and litellm_key:
@@ -175,9 +175,9 @@ def main() -> None:
         sys.exit(1)
 
     # Post review.
-    model_name = os.environ.get(
-        "PR_REVIEW_MODEL_DEEP" if mode == "deep" else "PR_REVIEW_MODEL_FAST",
-        DEFAULT_MODEL_DEEP if mode == "deep" else DEFAULT_MODEL_FAST,
+    model_name = (
+        os.environ.get("PR_REVIEW_MODEL_DEEP" if mode == "deep" else "PR_REVIEW_MODEL_FAST")
+        or (DEFAULT_MODEL_DEEP if mode == "deep" else DEFAULT_MODEL_FAST)
     )
     header = f"## AI Security Review (`/review {mode}`)\n\n**Model:** `{model_name}`\n\n---\n\n"
     post_comment(repo, pr_number, token, header + review)

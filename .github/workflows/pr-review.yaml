@@ -28,7 +28,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install dependencies
-        run: pip install requests==2.32.5
+        run: pip install requests==2.32.5 --require-hashes --no-deps -c /dev/stdin <<< "requests==2.32.5 --hash=sha256:2462f94637a34fd532264295e186976db0f5d453d1cdd31473c85a6a161affb6"
 
       - name: Determine review mode
         id: mode

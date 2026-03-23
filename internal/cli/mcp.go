@@ -128,6 +128,7 @@ func mcpProxyCmd() *cobra.Command {
 	var agentName string
 	var sandboxEnabled bool
 	var sandboxStrict bool
+	var sandboxBestEffort bool
 	var sandboxWorkspace string
 
 	cmd := &cobra.Command{
@@ -496,15 +497,15 @@ Environment passthrough (subprocess mode only):
 
 			// Subprocess mode.
 			serverCmd := args[dashIdx:]
-			// --sandbox-strict implies --sandbox.
-			if sandboxStrict {
+			// --sandbox-strict and --sandbox-best-effort imply --sandbox.
+			if sandboxStrict || sandboxBestEffort {
 				sandboxEnabled = true
 			}
 			useSandbox := sandboxEnabled || cfg.Sandbox.Enabled
 
-			// Reject config-enabled sandbox with remote modes.
-			if cfg.Sandbox.Enabled && (hasUpstream || hasListen) {
-				return errors.New("sandbox.enabled cannot be used with --upstream or --listen (cannot sandbox a remote server)")
+			// Reject sandbox with remote modes.
+			if useSandbox && (hasUpstream || hasListen) {
+				return errors.New("sandbox cannot be used with --upstream or --listen (cannot sandbox a remote server)")
 			}
 
 			// Sandboxed MCP proxy: child in isolated namespace.
@@ -532,13 +533,19 @@ Environment passthrough (subprocess mode only):
 				defer cancel()
 
 				mcpStrict := sandboxStrict || cfg.Sandbox.Strict
+				mcpBestEffort := sandboxBestEffort || cfg.Sandbox.BestEffort
+
+				if mcpStrict && mcpBestEffort {
+					return errors.New("--sandbox-strict and --sandbox-best-effort are mutually exclusive")
+				}
 
 				launchCfg := sandbox.LaunchConfig{
-					Ctx:       ctx,
-					Command:   serverCmd,
-					Workspace: workspace,
-					Strict:    mcpStrict,
-					ExtraEnv:  extraEnv,
+					Ctx:        ctx,
+					Command:    serverCmd,
+					Workspace:  workspace,
+					Strict:     mcpStrict,
+					BestEffort: mcpBestEffort,
+					ExtraEnv:   extraEnv,
 				}
 				if cfg.Sandbox.FS != nil {
 					p := sandbox.DefaultPolicy(workspace)
@@ -652,6 +659,7 @@ Environment passthrough (subprocess mode only):
 	cmd.Flags().StringVar(&agentName, "agent", "", "agent profile name (resolves to config profile for policy/scanner)")
 	cmd.Flags().BoolVar(&sandboxEnabled, "sandbox", false, "run child in sandbox (Landlock + seccomp + network namespace, Linux only)")
 	cmd.Flags().BoolVar(&sandboxStrict, "sandbox-strict", false, "strict sandbox: error on missing layers, private /dev/shm, block clone3 (implies --sandbox)")
+	cmd.Flags().BoolVar(&sandboxBestEffort, "sandbox-best-effort", false, "degrade gracefully when namespace isolation is unavailable (implies --sandbox)")
 	cmd.Flags().StringVar(&sandboxWorkspace, "workspace", "", "sandbox workspace directory (default: current directory)")
 	return cmd
 }

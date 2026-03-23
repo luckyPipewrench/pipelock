@@ -37,6 +37,11 @@ type LaunchConfig struct {
 	// private /dev/shm mount, clone3 blocked.
 	Strict bool
 
+	// BestEffort skips namespace isolation when unavailable (e.g. inside
+	// containers where CLONE_NEWUSER is blocked by seccomp). Landlock and
+	// seccomp are still applied. Mutually exclusive with Strict.
+	BestEffort bool
+
 	// ExtraEnv contains additional KEY=VALUE pairs to pass to the child.
 	ExtraEnv []string
 
@@ -50,6 +55,10 @@ type LaunchConfig struct {
 // sandbox-init mode with user + network namespace isolation. The returned
 // cmd is NOT started — the caller can set up pipes (StdinPipe, StdoutPipe)
 // before calling cmd.Start().
+//
+// When BestEffort is true and user namespaces are unavailable (e.g. inside
+// containers), the child is launched without namespace isolation. Landlock
+// and seccomp containment are still applied.
 //
 // For simple cases, use LaunchSandboxed which calls Start automatically.
 func PrepareSandboxCmd(cfg LaunchConfig) (*exec.Cmd, error) {
@@ -68,6 +77,20 @@ func PrepareSandboxCmd(cfg LaunchConfig) (*exec.Cmd, error) {
 	}
 	if err := ValidatePolicy(policy); err != nil {
 		return nil, err
+	}
+
+	// Strict and BestEffort are mutually exclusive — catch misuse by callers.
+	if cfg.Strict && cfg.BestEffort {
+		return nil, fmt.Errorf("sandbox: strict and best_effort are mutually exclusive")
+	}
+
+	// Probe namespace support before setting clone flags.
+	// Only CLONE_NEWUSER is probed because CLONE_NEWNET requires CLONE_NEWUSER
+	// on unprivileged processes — if user namespaces work, network namespaces
+	// will too (created inside the user namespace with CAP_SYS_ADMIN).
+	hasNamespaces := probeUserNamespace()
+	if !hasNamespaces && !cfg.BestEffort {
+		return nil, fmt.Errorf("%w: user namespaces unavailable (blocked by seccomp or sysctl? enable best_effort for degraded mode)", ErrUnavailable)
 	}
 
 	// Re-exec ourselves as sandbox-init. Using /proc/self/exe ensures we
@@ -108,24 +131,33 @@ func PrepareSandboxCmd(cfg LaunchConfig) (*exec.Cmd, error) {
 		cmd.Env = append(cmd.Env, "__PIPELOCK_SANDBOX_POLICY="+policyJSON)
 	}
 
-	// Create child in new user + network namespace.
-	// Strict mode adds CLONE_NEWNS (mount namespace) for private /dev/shm.
-	cloneFlags := uintptr(syscall.CLONE_NEWUSER | syscall.CLONE_NEWNET)
-	if cfg.Strict {
-		cloneFlags |= syscall.CLONE_NEWNS
-	}
-	uid := os.Getuid()
-	gid := os.Getgid()
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Cloneflags: cloneFlags,
-		UidMappings: []syscall.SysProcIDMap{
-			{ContainerID: 0, HostID: uid, Size: 1},
-		},
-		GidMappings: []syscall.SysProcIDMap{
-			{ContainerID: 0, HostID: gid, Size: 1},
-		},
-		Pdeathsig: syscall.SIGTERM, // kill child if parent dies
-		Setpgid:   true,            // own process group for cleanup
+	if hasNamespaces {
+		// Full isolation: user + network namespace.
+		// Strict mode adds CLONE_NEWNS (mount namespace) for private /dev/shm.
+		cloneFlags := uintptr(syscall.CLONE_NEWUSER | syscall.CLONE_NEWNET)
+		if cfg.Strict {
+			cloneFlags |= syscall.CLONE_NEWNS
+		}
+		uid := os.Getuid()
+		gid := os.Getgid()
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			Cloneflags: cloneFlags,
+			UidMappings: []syscall.SysProcIDMap{
+				{ContainerID: 0, HostID: uid, Size: 1},
+			},
+			GidMappings: []syscall.SysProcIDMap{
+				{ContainerID: 0, HostID: gid, Size: 1},
+			},
+			Pdeathsig: syscall.SIGTERM, // kill child if parent dies
+			Setpgid:   true,            // own process group for cleanup
+		}
+	} else {
+		// Best-effort: no namespace isolation. Child still gets Landlock + seccomp.
+		cmd.Env = append(cmd.Env, noNetNSEnvKey+"=1")
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			Pdeathsig: syscall.SIGTERM,
+			Setpgid:   true,
+		}
 	}
 
 	return cmd, nil

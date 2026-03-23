@@ -87,17 +87,33 @@ func RunStandaloneInit() {
 	scStatus, scErr := ApplySeccomp(strict)
 	reportLayer(os.Stderr, scStatus, scErr)
 
-	// Network namespace is active (set at fork time).
-	_, _ = fmt.Fprintf(os.Stderr, "[sandbox] network: ACTIVE (isolated namespace)\n")
-
-	// Bring up loopback for the bridge proxy.
-	if err := bringUpLoopback(); err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] loopback: %v\n", err)
-		os.Exit(1)
+	// Network namespace status depends on whether parent created one.
+	noNetNS := IsNoNetNS()
+	if noNetNS {
+		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] network: DEGRADED (no namespace, proxy-based routing only)\n")
+	} else {
+		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] network: ACTIVE (isolated namespace)\n")
+		// Bring up loopback only in a new network namespace.
+		// In best-effort mode without netns, loopback is already up.
+		if err := bringUpLoopback(); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "[sandbox] loopback: %v\n", err)
+			os.Exit(1)
+		}
 	}
 
-	// Start bridge proxy.
-	bridge, err := NewBridgeProxy(socketPath)
+	// Start bridge proxy. In best-effort mode without netns, the bridge
+	// still works — HTTP_PROXY routes cooperative agents through pipelock.
+	// Network isolation is not kernel-enforced in this mode.
+	//
+	// Without a network namespace, the default port (8888) may conflict
+	// with a pipelock sidecar already running in the same pod. Use port 0
+	// (OS-assigned) to avoid the conflict — the agent gets the actual
+	// address via HTTP_PROXY env var.
+	var bridgeAddr string
+	if noNetNS {
+		bridgeAddr = "127.0.0.1:0" // dynamic port to avoid sidecar conflict
+	}
+	bridge, err := NewBridgeProxy(socketPath, bridgeAddr)
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] bridge proxy: %v\n", err)
 		os.Exit(1)
@@ -111,8 +127,10 @@ func RunStandaloneInit() {
 
 	// Report summary.
 	active := countActive(llStatus, scStatus)
-	active++ // network namespace
 	const totalLayers = 3
+	if !noNetNS {
+		active++ // count netns only when namespace isolation is active
+	}
 	_, _ = fmt.Fprintf(os.Stderr, "[sandbox] containment: %d/%d layers active\n", active, totalLayers)
 
 	// Strict mode: fail-closed if any layer is inactive.
@@ -136,7 +154,7 @@ func RunStandaloneInit() {
 		standaloneInitEnv, initEnvKey,
 		"__PIPELOCK_SANDBOX_WORKSPACE", "__PIPELOCK_SANDBOX_COMMAND",
 		"__PIPELOCK_SANDBOX_SOCKET", "__PIPELOCK_SANDBOX_EXTRA_ENV",
-		"__PIPELOCK_SANDBOX_POLICY",
+		"__PIPELOCK_SANDBOX_POLICY", noNetNSEnvKey,
 	} {
 		env = removeEnvKey(env, key)
 	}

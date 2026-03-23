@@ -27,10 +27,20 @@ func IsInitMode() bool {
 // strictEnvKey signals the child that strict mode is active.
 const strictEnvKey = "__PIPELOCK_SANDBOX_STRICT"
 
+// noNetNSEnvKey signals the child that network namespace was NOT created
+// (best-effort mode where CLONE_NEWUSER is blocked, e.g. inside containers).
+const noNetNSEnvKey = "__PIPELOCK_SANDBOX_NO_NETNS"
+
 // IsStrictMode returns true if the child process should enforce strict
 // sandbox containment (error on missing layers, private /dev/shm, etc.).
 func IsStrictMode() bool {
 	return os.Getenv(strictEnvKey) == "1"
+}
+
+// IsNoNetNS returns true if the child was launched without network namespace
+// isolation (best-effort fallback when CLONE_NEWUSER is unavailable).
+func IsNoNetNS() bool {
+	return os.Getenv(noNetNSEnvKey) == "1"
 }
 
 // reportLayer prints a sandbox layer status line to stderr.

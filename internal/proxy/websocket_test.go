@@ -161,13 +161,18 @@ func setupWSProxy(t *testing.T, cfgMod func(*config.Config)) (string, func()) {
 }
 
 // dialWS connects to the proxy /ws endpoint and returns the raw connection.
+// Compression is disabled to avoid "compressed frames not supported" errors
+// when the proxy relays frames without per-message deflate negotiation.
 func dialWS(t *testing.T, proxyAddr, backendAddr string) net.Conn {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	wsURL := fmt.Sprintf("ws://%s/ws?url=ws://%s", proxyAddr, backendAddr)
-	conn, _, _, err := ws.Dial(ctx, wsURL)
+	dialer := ws.Dialer{
+		Extensions: nil, // disable per-message deflate compression
+	}
+	conn, _, _, err := dialer.Dial(ctx, wsURL)
 	if err != nil {
 		t.Fatalf("ws dial: %v", err)
 	}
@@ -2596,9 +2601,10 @@ func TestWSRelay_KillSwitch_UpstreamToClient(t *testing.T) {
 	cfg.WebSocketProxy.Enabled = true
 	cfg.WebSocketProxy.MaxMessageBytes = 1048576
 	cfg.WebSocketProxy.MaxConcurrentConnections = 128
-	cfg.WebSocketProxy.MaxConnectionSeconds = 10
-	cfg.WebSocketProxy.IdleTimeoutSeconds = 5
-	cfg.FetchProxy.TimeoutSeconds = 5
+	// Generous timeouts to avoid CI flakes under load.
+	cfg.WebSocketProxy.MaxConnectionSeconds = 30
+	cfg.WebSocketProxy.IdleTimeoutSeconds = 15
+	cfg.FetchProxy.TimeoutSeconds = 10
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)

@@ -405,14 +405,33 @@ func TestKillSyscalls_ContainsCritical(t *testing.T) {
 
 	// These MUST be in the kill list.
 	critical := map[string]uint32{
-		"io_uring_setup": unix.SYS_IO_URING_SETUP,
-		"kexec_load":     unix.SYS_KEXEC_LOAD,
-		"init_module":    unix.SYS_INIT_MODULE,
-		"reboot":         unix.SYS_REBOOT,
+		"kexec_load":  unix.SYS_KEXEC_LOAD,
+		"init_module": unix.SYS_INIT_MODULE,
+		"reboot":      unix.SYS_REBOOT,
 	}
 	for name, nr := range critical {
 		if !set[nr] {
 			t.Errorf("missing critical kill syscall: %s (%d)", name, nr)
+		}
+	}
+}
+
+func TestDenySyscalls_ContainsIOUring(t *testing.T) {
+	deny := denySyscalls()
+	set := make(map[uint32]bool, len(deny))
+	for _, nr := range deny {
+		set[nr] = true
+	}
+
+	// io_uring returns EPERM (not KILL) so runtimes like Node.js can fall back to epoll.
+	iouring := map[string]uint32{
+		"io_uring_setup":    unix.SYS_IO_URING_SETUP,
+		"io_uring_enter":    unix.SYS_IO_URING_ENTER,
+		"io_uring_register": unix.SYS_IO_URING_REGISTER,
+	}
+	for name, nr := range iouring {
+		if !set[nr] {
+			t.Errorf("missing deny syscall: %s (%d)", name, nr)
 		}
 	}
 }

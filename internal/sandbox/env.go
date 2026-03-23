@@ -25,6 +25,11 @@ var safePassthroughKeys = []string{
 // dangerousEnvKeys are environment variable keys that must NOT be passed
 // into the sandbox via --env flags. These can subvert containment by
 // injecting code before the agent process starts.
+// IsDangerousEnvKey returns true if the key could subvert sandbox containment.
+func IsDangerousEnvKey(key string) bool {
+	return dangerousEnvKeys[key]
+}
+
 var dangerousEnvKeys = map[string]bool{
 	"LD_PRELOAD":      true, // shared library injection
 	"LD_LIBRARY_PATH": true, // library search path hijack

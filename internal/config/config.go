@@ -216,10 +216,11 @@ type FileSentry struct {
 // Sandbox config is startup-only and reload-immutable: changing these
 // values in a config reload has no effect on an already-running sandbox.
 type Sandbox struct {
-	Enabled   bool               `yaml:"enabled"`
-	Strict    bool               `yaml:"strict"`    // error if any containment layer is unavailable
-	Workspace string             `yaml:"workspace"` // agent working dir; resolved to absolute at startup
-	FS        *SandboxFilesystem `yaml:"filesystem"`
+	Enabled    bool               `yaml:"enabled"`
+	Strict     bool               `yaml:"strict"`      // error if any containment layer is unavailable
+	BestEffort bool               `yaml:"best_effort"` // degrade gracefully when namespace isolation unavailable (e.g. containers)
+	Workspace  string             `yaml:"workspace"`   // agent working dir; resolved to absolute at startup
+	FS         *SandboxFilesystem `yaml:"filesystem"`
 }
 
 // AgentSandboxOverride controls per-agent sandbox settings.
@@ -227,10 +228,11 @@ type Sandbox struct {
 // Scoped to mcp proxy --agent and agent listeners. pipelock sandbox
 // CLI does not support per-agent resolution.
 type AgentSandboxOverride struct {
-	Enabled   *bool              `yaml:"enabled,omitempty"`
-	Strict    *bool              `yaml:"strict,omitempty"`
-	Workspace string             `yaml:"workspace,omitempty"`
-	FS        *SandboxFilesystem `yaml:"filesystem,omitempty"`
+	Enabled    *bool              `yaml:"enabled,omitempty"`
+	Strict     *bool              `yaml:"strict,omitempty"`
+	BestEffort *bool              `yaml:"best_effort,omitempty"`
+	Workspace  string             `yaml:"workspace,omitempty"`
+	FS         *SandboxFilesystem `yaml:"filesystem,omitempty"`
 }
 
 // SandboxFilesystem overrides the default Landlock policy. If nil, the
@@ -2408,6 +2410,11 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// Sandbox: best_effort and strict are mutually exclusive.
+	if c.Sandbox.BestEffort && c.Sandbox.Strict {
+		return fmt.Errorf("sandbox: best_effort and strict are mutually exclusive")
+	}
+
 	// Sandbox: validate filesystem paths even when disabled (CLI can override enabled).
 	if c.Sandbox.FS != nil {
 		for _, p := range c.Sandbox.FS.AllowRead {
@@ -2804,6 +2811,9 @@ func sandboxChanged(old, updated *Config) bool {
 	if old.Sandbox.Strict != updated.Sandbox.Strict {
 		return true
 	}
+	if old.Sandbox.BestEffort != updated.Sandbox.BestEffort {
+		return true
+	}
 	if old.Sandbox.Workspace != updated.Sandbox.Workspace {
 		return true
 	}
@@ -2855,7 +2865,7 @@ func agentSandboxChanged(old, updated *AgentSandboxOverride) bool {
 	if old == nil {
 		return false
 	}
-	if !boolPtrEqual(old.Enabled, updated.Enabled) || !boolPtrEqual(old.Strict, updated.Strict) {
+	if !boolPtrEqual(old.Enabled, updated.Enabled) || !boolPtrEqual(old.Strict, updated.Strict) || !boolPtrEqual(old.BestEffort, updated.BestEffort) {
 		return true
 	}
 	if old.Workspace != updated.Workspace {

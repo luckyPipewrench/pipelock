@@ -6,7 +6,6 @@
 
 [![CI](https://github.com/luckyPipewrench/pipelock/actions/workflows/ci.yaml/badge.svg)](https://github.com/luckyPipewrench/pipelock/actions/workflows/ci.yaml)
 [![Security](https://github.com/luckyPipewrench/pipelock/actions/workflows/security.yaml/badge.svg)](https://github.com/luckyPipewrench/pipelock/actions/workflows/security.yaml)
-[![Pipelock Security Scan](https://github.com/luckyPipewrench/pipelock/actions/workflows/pipelock.yaml/badge.svg)](https://github.com/luckyPipewrench/pipelock/actions/workflows/pipelock.yaml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/luckyPipewrench/pipelock)](https://goreportcard.com/report/github.com/luckyPipewrench/pipelock)
 [![GitHub Release](https://img.shields.io/github/v/release/luckyPipewrench/pipelock)](https://github.com/luckyPipewrench/pipelock/releases)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/luckyPipewrench/pipelock/badge)](https://scorecard.dev/viewer/?uri=github.com/luckyPipewrench/pipelock)
@@ -233,12 +232,13 @@ DLP runs before DNS resolution, designed to catch secrets before any DNS query l
 
 See [docs/bypass-resistance.md](docs/bypass-resistance.md) for the full evasion test matrix.
 
-### Process Sandbox (Linux)
+### Process Sandbox
 
-Unprivileged process containment using Landlock LSM, network namespaces, and seccomp. No root, no Docker, no containers. The agent runs in an isolated environment with controlled filesystem access, no direct network egress, and a filtered syscall set. Works with any command — MCP servers, standalone agents, or arbitrary processes.
+Unprivileged process containment using OS-native kernel primitives. On Linux: Landlock LSM restricts filesystem access, seccomp filters dangerous syscalls, and network namespaces force all traffic through pipelock's scanner (no direct egress). On macOS: sandbox-exec profiles restrict filesystem and network. In containers, use `--best-effort` for Landlock + seccomp containment when namespace creation is restricted (network scanning uses proxy-based routing instead of kernel enforcement).
 
 ```bash
 pipelock sandbox --config pipelock.yaml -- python agent.py
+pipelock sandbox --best-effort -- python agent.py  # containers
 pipelock mcp proxy --sandbox --config pipelock.yaml -- npx server
 ```
 

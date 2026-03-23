@@ -82,10 +82,15 @@ func SetNoNewPrivs() error {
 func buildSeccompFilter(strict bool) []unix.SockFilter {
 	allow := allowedSyscalls()
 	kill := killSyscalls()
+	deny := denySyscalls()
 
 	killSet := make(map[uint32]bool, len(kill))
 	for _, nr := range kill {
 		killSet[nr] = true
+	}
+	denySet := make(map[uint32]bool, len(deny))
+	for _, nr := range deny {
+		denySet[nr] = true
 	}
 
 	// Syscalls handled by argument-level conditional blocks (not the flat allowlist).
@@ -112,6 +117,14 @@ func buildSeccompFilter(strict bool) []unix.SockFilter {
 		prog = append(prog, bpfRet(unix.SECCOMP_RET_KILL_PROCESS))
 	}
 
+	// Step 3b: Deny-on-match (EPERM, not KILL). For syscalls that are
+	// dangerous but where KILL would crash runtimes that probe and
+	// gracefully fall back (e.g. Node.js probes io_uring at startup).
+	for _, nr := range deny {
+		prog = append(prog, bpfJumpEq(nr, 0, 1))
+		prog = append(prog, bpfRet(unix.SECCOMP_RET_ERRNO|uint32(unix.EPERM)))
+	}
+
 	// Step 4: Conditional argument filtering.
 	// Each block is self-contained: if the syscall matches, it inspects args
 	// and returns ALLOW or EPERM. If the syscall doesn't match, it skips
@@ -127,7 +140,7 @@ func buildSeccompFilter(strict bool) []unix.SockFilter {
 
 	// Step 5: Allow-on-match for safe syscalls (flat allowlist).
 	for _, nr := range allow {
-		if killSet[nr] || conditionalSet[nr] {
+		if killSet[nr] || denySet[nr] || conditionalSet[nr] {
 			continue // already handled above
 		}
 		prog = append(prog, bpfJumpEq(nr, 0, 1))
@@ -268,7 +281,7 @@ func allowedSyscalls() []uint32 {
 		unix.SYS_PREADV2, unix.SYS_PWRITEV2,
 		unix.SYS_FSTAT, unix.SYS_NEWFSTATAT, unix.SYS_STATX,
 		unix.SYS_FSTATFS, unix.SYS_STATFS,
-		unix.SYS_READLINKAT, unix.SYS_FACCESSAT, unix.SYS_FACCESSAT2,
+		unix.SYS_READLINK, unix.SYS_READLINKAT, unix.SYS_FACCESSAT, unix.SYS_FACCESSAT2,
 		unix.SYS_FTRUNCATE, unix.SYS_TRUNCATE, unix.SYS_FALLOCATE,
 		unix.SYS_FADVISE64, unix.SYS_FCNTL, unix.SYS_FLOCK,
 		unix.SYS_IOCTL, unix.SYS_DUP, unix.SYS_DUP2, unix.SYS_DUP3,
@@ -368,10 +381,19 @@ func killSyscalls() []uint32 {
 		unix.SYS_KEXEC_LOAD, unix.SYS_KEXEC_FILE_LOAD,
 		unix.SYS_INIT_MODULE, unix.SYS_FINIT_MODULE, unix.SYS_DELETE_MODULE,
 
-		// io_uring (bypasses seccomp entirely — 60% of Google's 2022 kernel bugs)
-		unix.SYS_IO_URING_SETUP, unix.SYS_IO_URING_ENTER, unix.SYS_IO_URING_REGISTER,
-
 		// Reboot
 		unix.SYS_REBOOT,
+	}
+}
+
+// denySyscalls returns syscall numbers that return EPERM (not KILL).
+// These are dangerous but the process should be able to recover from
+// EPERM and fall back to alternatives. KILL would crash runtimes like
+// Node.js 22 that probe io_uring at startup and expect ENOSYS/EPERM.
+func denySyscalls() []uint32 {
+	return []uint32{
+		// io_uring (bypasses seccomp — 60% of Google's 2022 kernel bugs)
+		// Returns EPERM instead of KILL so runtimes can fall back to epoll.
+		unix.SYS_IO_URING_SETUP, unix.SYS_IO_URING_ENTER, unix.SYS_IO_URING_REGISTER,
 	}
 }

@@ -4,10 +4,7 @@
 package sandbox
 
 import (
-	"context"
-	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 )
 
@@ -21,19 +18,11 @@ func IsStandaloneInitMode() bool {
 	return os.Getenv(standaloneInitEnv) == "1"
 }
 
-// bringUpLoopback runs `ip link set lo up` inside the current namespace.
+// bringUpLoopback brings up the loopback interface inside a new network
+// namespace using raw netlink syscalls. No external tools required — works
+// in minimal containers without iproute2.
 func bringUpLoopback() error {
-	// Use absolute path because synthetic env PATH may not include /usr/sbin
-	// (where ip lives on Fedora/RHEL). Fall back to PATH lookup.
-	ipBin := "/usr/sbin/ip"
-	if _, err := os.Stat(ipBin); err != nil {
-		ipBin = "ip" // fall back to PATH lookup
-	}
-	cmd := exec.CommandContext(context.Background(), ipBin, "link", "set", "lo", "up") //nolint:gosec // G204: fixed command
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("ip link set lo up: %w (%s)", err, string(out))
-	}
-	return nil
+	return loopbackUp()
 }
 
 // ProxySocketPath returns the Unix socket path for the parent's proxy,

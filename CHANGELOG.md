@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Sandbox `--best-effort` flag: gracefully degrades when user namespace creation is blocked (e.g. k8s containers with default seccomp). Landlock and seccomp containment layers still apply. Network scanning uses proxy-based routing instead of kernel-enforced namespace isolation.
+- Sandbox `--env` flag: pass environment variables to sandboxed processes (KEY or KEY=VALUE, repeatable). Validates against dangerous keys (LD_PRELOAD, NODE_OPTIONS, etc.) that could subvert containment.
+- MCP proxy `--sandbox-best-effort` flag: parity with `pipelock sandbox --best-effort` for MCP stdio wrapping mode.
+- Pure Go netlink loopback: sandbox uses raw netlink syscalls to bring up loopback inside network namespaces. No `ip` binary required. Works in minimal container images without iproute2.
+
+### Fixed
+- Seccomp io_uring handling: changed from KILL_PROCESS to EPERM so runtimes like Node.js 22 that probe io_uring at startup can gracefully fall back to epoll instead of crashing.
+- Seccomp `readlink` syscall: added `SYS_READLINK` (nr 89) to the allowlist. Node.js/libuv uses the legacy readlink syscall directly, not readlinkat.
+- Sandbox secret dir validation: `secretDirs()` now only protects directories that actually exist. Prevents false validation errors in containers.
+- Sandbox bridge proxy dynamic port: in best-effort mode, uses dynamic port instead of hardcoded 8888.
+- Config reload detection: `sandbox.best_effort` changes detected during hot reload. Per-agent `best_effort` propagated through enterprise merge.
+- Config validation: `sandbox.best_effort` and `sandbox.strict` mutually exclusive.
+
 ## [2.0.0] - 2026-03-22
 
 ### Added

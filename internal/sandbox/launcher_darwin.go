@@ -28,6 +28,10 @@ type LaunchConfig struct {
 	// seccomp or mount namespace isolation.
 	Strict bool
 
+	// BestEffort is accepted for API compatibility with Linux but has
+	// no effect on macOS (sandbox-exec doesn't use namespaces).
+	BestEffort bool
+
 	ExtraEnv []string
 	Stdin    io.Reader
 	Stdout   io.Writer
@@ -41,6 +45,7 @@ type StandaloneLaunchConfig struct {
 	Workspace    string
 	Policy       *Policy
 	Strict       bool
+	BestEffort   bool
 	ExtraEnv     []string
 	ProxyHandler func(conn net.Conn)
 }

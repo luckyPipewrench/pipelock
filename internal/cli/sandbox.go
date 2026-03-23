@@ -30,8 +30,10 @@ func sandboxCmd() *cobra.Command {
 	var workspace string
 	var configFile string
 	var strict bool
+	var bestEffort bool
 	var dryRun bool
 	var jsonOutput bool
+	var envVars []string
 
 	cmd := &cobra.Command{
 		Use:   "sandbox [flags] -- COMMAND [ARGS...]",
@@ -45,9 +47,14 @@ func sandboxCmd() *cobra.Command {
 Agent HTTP/HTTPS traffic is routed through pipelock's full scanner pipeline
 (DLP, SSRF, blocklist, rate limiting, entropy analysis) via a bridge proxy.
 
+Use --best-effort inside containers where user namespace creation is blocked
+(e.g. Kubernetes with default seccomp). Landlock and seccomp are still applied;
+network scanning uses proxy-based routing instead of kernel-enforced isolation.
+
 Examples:
   pipelock sandbox -- python agent.py
   pipelock sandbox --workspace /home/user/project -- node server.js
+  pipelock sandbox --best-effort -- python agent.py  # inside containers
   pipelock sandbox --config pipelock.yaml -- bash -c "curl https://example.com"`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dashIdx := cmd.ArgsLenAtDash()
@@ -75,6 +82,11 @@ Examples:
 			workspace, _ = filepath.Abs(workspace)
 
 			useStrict := strict || cfg.Sandbox.Strict
+			useBestEffort := bestEffort || cfg.Sandbox.BestEffort
+
+			if useStrict && useBestEffort {
+				return errors.New("--strict and --best-effort are mutually exclusive")
+			}
 
 			// Dry-run: preflight check without launching.
 			if dryRun {
@@ -141,11 +153,30 @@ Examples:
 				_ = srv.Serve(&singleConnListener{conn: conn})
 			}
 
+			// Resolve --env flags: KEY=VALUE passes as-is, bare KEY inherits from parent.
+			var extraEnv []string
+			for _, e := range envVars {
+				key, _, hasValue := strings.Cut(e, "=")
+				if key == "" {
+					return errors.New("--env requires a non-empty variable name")
+				}
+				if sandbox.IsDangerousEnvKey(key) {
+					return fmt.Errorf("--env %s is blocked: this variable can subvert sandbox containment", key)
+				}
+				if hasValue {
+					extraEnv = append(extraEnv, e)
+				} else if val, found := os.LookupEnv(e); found {
+					extraEnv = append(extraEnv, e+"="+val)
+				}
+			}
+
 			launchCfg := sandbox.StandaloneLaunchConfig{
 				Ctx:          ctx,
 				Command:      command,
 				Workspace:    workspace,
 				Strict:       useStrict,
+				BestEffort:   useBestEffort,
+				ExtraEnv:     extraEnv,
 				ProxyHandler: proxyHandler,
 			}
 
@@ -164,6 +195,8 @@ Examples:
 	cmd.Flags().StringVar(&workspace, "workspace", "", "sandbox workspace directory (default: current directory)")
 	cmd.Flags().StringVarP(&configFile, "config", "c", "", "config file path")
 	cmd.Flags().BoolVar(&strict, "strict", false, "strict mode: error if any containment layer is unavailable, mount private /dev/shm, block clone3")
+	cmd.Flags().BoolVar(&bestEffort, "best-effort", false, "degrade gracefully when namespace isolation is unavailable (e.g. inside containers)")
+	cmd.Flags().StringArrayVar(&envVars, "env", nil, "pass environment variable to sandboxed process (KEY or KEY=VALUE, repeatable)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "check sandbox capabilities without launching (exit 0=capabilities ok, 1=degraded, 2=error)")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "output dry-run result as JSON")
 	return cmd

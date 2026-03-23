@@ -187,6 +187,29 @@ func TestIsInitMode_False(t *testing.T) {
 	}
 }
 
+func TestIsNoNetNS_False(t *testing.T) {
+	// Default: no env var means network namespace IS active.
+	t.Setenv(noNetNSEnvKey, "")
+	if IsNoNetNS() {
+		t.Error("should not report no-netns when env var is not set")
+	}
+}
+
+func TestIsNoNetNS_True(t *testing.T) {
+	t.Setenv(noNetNSEnvKey, "1")
+	if !IsNoNetNS() {
+		t.Error("should report no-netns when env var is set")
+	}
+}
+
+func TestNoNetNSEnvKey_CleanedByRemoveEnvKey(t *testing.T) {
+	env := []string{noNetNSEnvKey + "=1", "OTHER=value"}
+	result := removeEnvKey(env, noNetNSEnvKey)
+	if len(result) != 1 || result[0] != "OTHER=value" {
+		t.Errorf("expected only OTHER=value, got %v", result)
+	}
+}
+
 func TestReportLayer_UnavailableWithError(t *testing.T) {
 	var buf bytes.Buffer
 	status := LayerStatus{Name: LayerLandlock} // no reason set

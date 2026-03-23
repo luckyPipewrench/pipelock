@@ -87,12 +87,19 @@ func RunInit() {
 	reportLayer(os.Stderr, scStatus, scErr)
 
 	// Report network namespace status (set at fork time by parent).
-	_, _ = fmt.Fprintf(os.Stderr, "[sandbox] network: ACTIVE (isolated namespace)\n")
+	noNetNS := IsNoNetNS()
+	if noNetNS {
+		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] network: DEGRADED (no namespace, best-effort mode)\n")
+	} else {
+		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] network: ACTIVE (isolated namespace)\n")
+	}
 
 	// Report summary.
 	active := countActive(llStatus, scStatus)
 	const totalLayers = 3
-	active++ // count netns
+	if !noNetNS {
+		active++ // count netns only when namespace isolation is active
+	}
 	_, _ = fmt.Fprintf(os.Stderr, "[sandbox] containment: %d/%d layers active\n", active, totalLayers)
 
 	// Strict mode: fail-closed if any layer is inactive.
@@ -105,6 +112,7 @@ func RunInit() {
 	for _, key := range []string{
 		initEnvKey, "__PIPELOCK_SANDBOX_WORKSPACE", "__PIPELOCK_SANDBOX_COMMAND",
 		"__PIPELOCK_SANDBOX_EXTRA_ENV", "__PIPELOCK_SANDBOX_POLICY",
+		noNetNSEnvKey,
 	} {
 		env = removeEnvKey(env, key)
 	}

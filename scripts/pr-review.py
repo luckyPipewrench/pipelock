@@ -15,8 +15,8 @@ LLM configuration (one of):
   OPENAI_API_KEY                       - Direct OpenAI API
 
 Model selection:
-  PR_REVIEW_MODEL_FAST  - Model for /review and /review fast (default: gpt-4.1-mini)
-  PR_REVIEW_MODEL_DEEP  - Model for /review deep (default: gpt-4.1)
+  PR_REVIEW_MODEL_FAST  - Model for /review and /review fast (default: gpt-5.4-mini)
+  PR_REVIEW_MODEL_DEEP  - Model for /review deep (default: gpt-5.4)
 """
 
 import json
@@ -112,7 +112,8 @@ def call_llm(diff: str, mode: str) -> str:
             },
         ],
         "temperature": 0.2,
-        "max_tokens": 4096,
+        # gpt-5.x and o-series require max_completion_tokens, not max_tokens.
+        "max_completion_tokens": 4096,
     }
 
     resp = requests.post(api_url, headers=headers, json=payload, timeout=120)

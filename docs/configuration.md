@@ -1405,15 +1405,18 @@ rules:
 
 ## Sandbox
 
-Process containment for agent commands using Linux kernel primitives. The agent runs in a restricted namespace with controlled filesystem access, no direct network, and a filtered syscall set.
+Process containment for agent commands using Linux kernel primitives. The agent runs in a restricted environment with controlled filesystem access, no direct network, and a filtered syscall set.
 
 ```yaml
 sandbox:
   enabled: true
+  best_effort: false              # degrade gracefully when namespace isolation unavailable
+  strict: false                   # error if any layer unavailable (mutually exclusive with best_effort)
   workspace: /home/user/project   # agent working directory (default: CWD)
   filesystem:                     # optional Landlock overrides (default policy works for most agents)
     allow_read:
       - /usr/share/data
+      - /app/                     # application code in containers
     allow_write:
       - /tmp/agent-work
 ```
@@ -1421,6 +1424,8 @@ sandbox:
 | Field | Default | Description |
 |-------|---------|-------------|
 | `enabled` | `false` | Enable sandbox containment |
+| `best_effort` | `false` | Skip namespace isolation when unavailable (e.g. containers). Landlock + seccomp still apply. |
+| `strict` | `false` | Error if any containment layer is unavailable. Mutually exclusive with `best_effort`. |
 | `workspace` | CWD | Agent working directory (resolved to absolute at startup) |
 | `filesystem.allow_read` | `[]` | Additional read-only filesystem paths |
 | `filesystem.allow_write` | `[]` | Additional writable paths (workspace is always writable) |
@@ -1428,9 +1433,9 @@ sandbox:
 If `filesystem` is omitted, the default Landlock policy is used (safe for Python/Node/Go agents without config). Read access grants execute (Landlock bundling). Write paths are also executable.
 
 **Containment layers:**
-- **Landlock LSM:** Restricts filesystem access to declared paths. Read-only and read-write grants are explicit. Allowlist model.
-- **Network namespaces:** Agent runs in an isolated network namespace. For MCP (stdio), no network is needed. For standalone agents, traffic routes through pipelock's bridge proxy.
-- **Seccomp BPF:** Syscall allowlist blocks dangerous operations (ptrace, mount, io_uring, module loading, kexec). Clone flags are filtered to prevent namespace escape.
+- **Landlock LSM:** Restricts filesystem access to declared paths. Allowlist model. Protected directories (`~/.ssh`, `~/.aws`, `~/.kube`, etc.) are denied. Only dirs that exist on the system are checked.
+- **Network namespaces:** Agent runs in an isolated network namespace. All traffic is kernel-forced through pipelock's bridge proxy. Raw socket bypass is impossible. For MCP (stdio), no network is needed.
+- **Seccomp BPF:** Syscall allowlist (~130 safe syscalls for Go/Python/Node.js). Blocks ptrace, mount, module loading, kexec (KILL). io_uring returns EPERM (allows runtimes like Node.js 22 to fall back to epoll). Clone flags filtered to prevent namespace escape.
 
 **Usage:**
 ```bash
@@ -1439,9 +1444,26 @@ pipelock mcp proxy --sandbox --config pipelock.yaml -- npx server
 
 # Sandbox a standalone command
 pipelock sandbox --config pipelock.yaml -- python agent.py
+
+# Pass environment variables to sandboxed process
+pipelock sandbox --env API_KEY --env HOME=/app -- node server.js
+
+# Best-effort mode for containers (Landlock + seccomp, no namespace)
+pipelock sandbox --best-effort -- python agent.py
+
+# Check sandbox capabilities without launching
+pipelock sandbox --dry-run --json -- python agent.py
 ```
 
-**Requirements:** Linux 5.13+ (Landlock ABI v1). Unprivileged — no root, no Docker, no special capabilities. Not available on macOS or Windows (hard error with explanation).
+**Environments:**
+
+| Environment | Layers | Notes |
+|-------------|--------|-------|
+| Bare metal / VM (Linux) | 3/3 | Full containment: Landlock + seccomp + network namespace |
+| Containers (`--best-effort`) | 2/3 | Landlock + seccomp. Network via HTTP_PROXY + NetworkPolicy. |
+| macOS | sandbox-exec | Apple SBPL profiles for filesystem + network restriction |
+
+**Requirements:** Linux 5.13+ (Landlock ABI v1). Unprivileged on bare metal. macOS 13+ for sandbox-exec. Containers may need `--best-effort` if default seccomp blocks `CLONE_NEWUSER`.
 
 ## Config Audit Scoring (v2.0)
 

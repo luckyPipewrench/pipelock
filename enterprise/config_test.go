@@ -911,6 +911,42 @@ func TestMergeAgentProfile_SandboxFSAppendToNilBase(t *testing.T) {
 	}
 }
 
+func TestMergeAgentProfile_SandboxBestEffortOverride(t *testing.T) {
+	cfg := testConfig()
+	cfg.Sandbox.BestEffort = false
+
+	bestEffort := true
+	profile := &config.AgentProfile{
+		Sandbox: &config.AgentSandboxOverride{
+			BestEffort: &bestEffort,
+		},
+	}
+	merged, err := MergeAgentProfile(cfg, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !merged.Sandbox.BestEffort {
+		t.Error("expected sandbox.best_effort=true (explicit override)")
+	}
+}
+
+func TestMergeAgentProfile_SandboxBestEffortInherits(t *testing.T) {
+	cfg := testConfig()
+	cfg.Sandbox.BestEffort = true
+
+	// Profile with nil BestEffort — should inherit from base.
+	profile := &config.AgentProfile{
+		Sandbox: &config.AgentSandboxOverride{},
+	}
+	merged, err := MergeAgentProfile(cfg, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !merged.Sandbox.BestEffort {
+		t.Error("expected sandbox.best_effort=true (inherited from base)")
+	}
+}
+
 func TestResolvePublicKey_InvalidHex(t *testing.T) {
 	cfg := testConfig()
 	cfg.LicensePublicKey = "not-valid-hex"

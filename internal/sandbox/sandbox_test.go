@@ -129,14 +129,16 @@ func TestDefaultPolicy_DeniesSecretDirs(t *testing.T) {
 	if home == "" {
 		t.Skip("HOME not set")
 	}
+	requireSecretDirs(t)
 	dir := t.TempDir()
 	p := DefaultPolicy(dir)
 
 	if len(p.DenyReadDirs) == 0 {
 		t.Fatal("expected deny_read dirs, got empty")
 	}
-	assertContains(t, "DenyReadDirs", p.DenyReadDirs, filepath.Join(home, ".ssh"))
-	assertContains(t, "DenyReadDirs", p.DenyReadDirs, filepath.Join(home, ".aws"))
+	// Verify at least one secret dir is in the deny list.
+	protected := secretDirs()
+	assertContains(t, "DenyReadDirs", p.DenyReadDirs, protected[0])
 }
 
 func TestResult_ActiveCount(t *testing.T) {
@@ -196,11 +198,19 @@ func TestValidateWorkspace_RejectsSymlinkResolveError(t *testing.T) {
 	}
 }
 
+func requireSecretDirs(t *testing.T) {
+	t.Helper()
+	if len(secretDirs()) == 0 {
+		t.Skip("no secret dirs exist (CI env without ~/.ssh, ~/.aws, etc.)")
+	}
+}
+
 func TestValidatePolicy_RejectsHomeOverlap(t *testing.T) {
 	home := os.Getenv("HOME")
 	if home == "" {
 		t.Skip("HOME not set")
 	}
+	requireSecretDirs(t)
 	p := DefaultPolicy(t.TempDir())
 	p.AllowReadDirs = append(p.AllowReadDirs, home)
 	if err := ValidatePolicy(p); err == nil {
@@ -213,6 +223,7 @@ func TestValidatePolicy_RejectsParentOfSecret(t *testing.T) {
 	if home == "" {
 		t.Skip("HOME not set")
 	}
+	requireSecretDirs(t)
 	p := DefaultPolicy(t.TempDir())
 	p.AllowReadDirs = append(p.AllowReadDirs, home+"/")
 	if err := ValidatePolicy(p); err == nil {
@@ -225,6 +236,7 @@ func TestValidatePolicy_RejectsWriteOverlap(t *testing.T) {
 	if home == "" {
 		t.Skip("HOME not set")
 	}
+	requireSecretDirs(t)
 	p := DefaultPolicy(t.TempDir())
 	p.AllowRWDirs = append(p.AllowRWDirs, home)
 	if err := ValidatePolicy(p); err == nil {
@@ -272,6 +284,7 @@ func TestValidatePolicy_RejectsSymlinkToHome(t *testing.T) {
 	if home == "" {
 		t.Skip("HOME not set")
 	}
+	requireSecretDirs(t)
 	// Create a symlink that points to HOME. Landlock would resolve this
 	// and grant access to the real home directory.
 	dir := t.TempDir()
@@ -292,6 +305,7 @@ func TestValidatePolicy_RejectsSymlinkToHomeInWrite(t *testing.T) {
 	if home == "" {
 		t.Skip("HOME not set")
 	}
+	requireSecretDirs(t)
 	dir := t.TempDir()
 	link := filepath.Join(dir, "home-link-rw")
 	if err := os.Symlink(home, link); err != nil {
@@ -310,10 +324,13 @@ func TestValidatePolicy_RejectsFileInsideProtectedDir(t *testing.T) {
 	if home == "" {
 		t.Skip("HOME not set")
 	}
+	requireSecretDirs(t)
+	// Use the first existing protected dir for the test.
+	protected := secretDirs()
 	p := DefaultPolicy(t.TempDir())
-	p.AllowReadFiles = append(p.AllowReadFiles, filepath.Join(home, ".ssh", "known_hosts"))
+	p.AllowReadFiles = append(p.AllowReadFiles, filepath.Join(protected[0], "test_file"))
 	if err := ValidatePolicy(p); err == nil {
-		t.Error("expected error for file inside protected .ssh directory")
+		t.Errorf("expected error for file inside protected directory %s", protected[0])
 	}
 }
 

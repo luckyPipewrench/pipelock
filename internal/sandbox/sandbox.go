@@ -206,12 +206,14 @@ func DefaultPolicy(workspace string) Policy {
 }
 
 // secretDirs returns paths that should never be readable inside the sandbox.
+// Only includes directories that actually exist — in containers, most of
+// these won't be present and shouldn't block policy validation.
 func secretDirs() []string {
 	home := os.Getenv("HOME")
 	if home == "" {
 		return nil
 	}
-	return []string{
+	candidates := []string{
 		filepath.Join(home, ".ssh"),
 		filepath.Join(home, ".aws"),
 		filepath.Join(home, ".config", "pipelock"),
@@ -219,6 +221,13 @@ func secretDirs() []string {
 		filepath.Join(home, ".kube"),
 		filepath.Join(home, ".docker"),
 	}
+	var dirs []string
+	for _, d := range candidates {
+		if _, err := os.Stat(d); err == nil {
+			dirs = append(dirs, d)
+		}
+	}
+	return dirs
 }
 
 // ValidatePolicy checks that a sandbox policy does not accidentally

@@ -16,15 +16,16 @@ import (
 // LaunchConfig configures how the sandbox launcher forks the child process.
 // On non-Linux platforms, all launcher functions return ErrUnavailable.
 type LaunchConfig struct {
-	Ctx       context.Context
-	Command   []string
-	Workspace string
-	Policy    *Policy
-	Strict    bool
-	ExtraEnv  []string
-	Stdin     io.Reader
-	Stdout    io.Writer
-	Stderr    io.Writer
+	Ctx        context.Context
+	Command    []string
+	Workspace  string
+	Policy     *Policy
+	Strict     bool
+	BestEffort bool
+	ExtraEnv   []string
+	Stdin      io.Reader
+	Stdout     io.Writer
+	Stderr     io.Writer
 }
 
 // StandaloneLaunchConfig configures the standalone sandbox launcher.
@@ -34,6 +35,7 @@ type StandaloneLaunchConfig struct {
 	Workspace    string
 	Policy       *Policy
 	Strict       bool
+	BestEffort   bool
 	ExtraEnv     []string
 	ProxyHandler func(conn net.Conn)
 }

@@ -385,6 +385,9 @@ func MergeAgentProfile(base *config.Config, profile *config.AgentProfile) (*conf
 		if profile.Sandbox.Strict != nil {
 			merged.Sandbox.Strict = *profile.Sandbox.Strict
 		}
+		if profile.Sandbox.BestEffort != nil {
+			merged.Sandbox.BestEffort = *profile.Sandbox.BestEffort
+		}
 		if profile.Sandbox.Workspace != "" {
 			merged.Sandbox.Workspace = profile.Sandbox.Workspace
 		}

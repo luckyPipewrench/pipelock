@@ -7515,6 +7515,25 @@ func TestValidateReload_SandboxStrictChanged(t *testing.T) {
 	}
 }
 
+func TestValidateReload_SandboxBestEffortChanged(t *testing.T) {
+	old := Defaults()
+	old.Sandbox.Enabled = true
+	updated := Defaults()
+	updated.Sandbox.Enabled = true
+	updated.Sandbox.BestEffort = true
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == fieldSandbox {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected sandbox reload warning when sandbox.best_effort changes")
+	}
+}
+
 func TestValidateReload_SandboxUnchanged_NoWarning(t *testing.T) {
 	old := Defaults()
 	old.Sandbox.Enabled = true
@@ -7720,6 +7739,29 @@ func TestValidateReload_SandboxAgentChanged(t *testing.T) {
 	}
 }
 
+func TestValidateReload_SandboxAgentBestEffortChanged(t *testing.T) {
+	bestEffortTrue := true
+	bestEffortFalse := false
+	old := Defaults()
+	old.Agents = map[string]AgentProfile{
+		"test-agent": {Sandbox: &AgentSandboxOverride{BestEffort: &bestEffortFalse}},
+	}
+	updated := Defaults()
+	updated.Agents = map[string]AgentProfile{
+		"test-agent": {Sandbox: &AgentSandboxOverride{BestEffort: &bestEffortTrue}},
+	}
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == fieldSandbox {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected sandbox warning when agent sandbox.best_effort changes")
+	}
+}
+
 func TestSandboxFSChanged(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -7739,6 +7781,36 @@ func TestSandboxFSChanged(t *testing.T) {
 				t.Errorf("sandboxFSChanged = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestValidate_SandboxBestEffortAndStrictMutuallyExclusive(t *testing.T) {
+	cfg := Defaults()
+	cfg.Internal = nil
+	cfg.Sandbox.BestEffort = true
+	cfg.Sandbox.Strict = true
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error when both best_effort and strict are set")
+	}
+}
+
+func TestValidate_SandboxBestEffortAlone(t *testing.T) {
+	cfg := Defaults()
+	cfg.Internal = nil
+	cfg.Sandbox.BestEffort = true
+	cfg.Sandbox.Strict = false
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("best_effort alone should be valid: %v", err)
+	}
+}
+
+func TestValidate_SandboxStrictAlone(t *testing.T) {
+	cfg := Defaults()
+	cfg.Internal = nil
+	cfg.Sandbox.Strict = true
+	cfg.Sandbox.BestEffort = false
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("strict alone should be valid: %v", err)
 	}
 }
 

@@ -71,7 +71,7 @@ Article 13 requires sufficient operational transparency for deployers to underst
 | Limitations documented | Each OWASP mapping doc includes explicit coverage gaps and "out of scope" sections | Full |
 | Logging mechanism description | Audit log format, event types, and fields documented in CLAUDE.md and guides | Full |
 | Human oversight measures described (Art. 14 ref) | HITL documentation in guides and config presets | Partial |
-| Computational/hardware requirements | Single static binary (~17MB), documented in README | Full |
+| Computational/hardware requirements | Single static binary (~18MB), documented in README | Full |
 
 **Gap:** Full Art. 13 compliance requires system-level documentation that depends on the deployer's AI system, not just the security layer.
 

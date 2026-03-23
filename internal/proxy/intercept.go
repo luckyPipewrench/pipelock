@@ -545,6 +545,17 @@ func newInterceptHandler(
 		// Response injection scanning.
 		if sc.ResponseScanningEnabled() {
 			scanResult := sc.ScanResponse(r.Context(), string(respBody))
+			// Filter out suppressed findings (parity with fetch proxy).
+			if !scanResult.Clean && len(cfg.Suppress) > 0 {
+				var kept []scanner.ResponseMatch
+				for _, m := range scanResult.Matches {
+					if !config.IsSuppressed(m.PatternName, r.URL.String(), cfg.Suppress) {
+						kept = append(kept, m)
+					}
+				}
+				scanResult.Matches = kept
+				scanResult.Clean = len(kept) == 0
+			}
 			if !scanResult.Clean {
 				hasFinding = true
 				action := sc.ResponseAction()

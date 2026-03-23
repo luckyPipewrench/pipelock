@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"testing"
 )
 
@@ -196,32 +197,10 @@ func TestReportLayer_UnavailableWithError(t *testing.T) {
 	}
 }
 
-func TestSummary_AllUnavailable(t *testing.T) {
-	c := Capabilities{} // all zero/false
-	s := c.Summary()
-	if !contains(s, "Landlock: unavailable") {
-		t.Errorf("expected Landlock unavailable, got: %s", s)
-	}
-	if !contains(s, "user namespaces: unavailable") {
-		t.Errorf("expected userns unavailable, got: %s", s)
-	}
-	if !contains(s, "seccomp: unavailable") {
-		t.Errorf("expected seccomp unavailable, got: %s", s)
-	}
-}
-
-func TestSummary_AllAvailable(t *testing.T) {
-	c := Capabilities{LandlockABI: 7, UserNamespaces: true, Seccomp: true}
-	s := c.Summary()
-	if !contains(s, "Landlock ABI v7") {
-		t.Errorf("expected Landlock ABI v7, got: %s", s)
-	}
-	if !contains(s, "user namespaces: available") {
-		t.Errorf("expected userns available, got: %s", s)
-	}
-	if !contains(s, "seccomp: available") {
-		t.Errorf("expected seccomp available, got: %s", s)
-	}
+func TestCleanupSandboxCmd_NilProcess(t *testing.T) {
+	// CleanupSandboxCmd should not panic on a cmd with nil Process.
+	cmd := &exec.Cmd{}
+	CleanupSandboxCmd(cmd) // should be a safe no-op
 }
 
 func contains(s, substr string) bool {

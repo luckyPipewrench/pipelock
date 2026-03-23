@@ -14,7 +14,53 @@ permissions:
   contents: read
 
 jobs:
+  # Pipelock scans the PR diff before anything else runs. If the scan
+  # finds credential leaks, injection patterns, or security misconfigs,
+  # all downstream jobs are skipped — no compromised code executes.
+  security-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0
+
+      - name: Pipelock Scan
+        uses: luckyPipewrench/pipelock@30f8741f3b57e112239b60478e4b0009dbec9815 # v1
+        with:
+          scan-diff: 'true'
+          fail-on-findings: 'true'
+          test-vectors: 'false'
+          exclude-paths: |
+            internal/scanner/scanner_test.go
+            internal/scanner/scan_env_test.go
+            internal/scanner/text_dlp_test.go
+            internal/scanner/validate_test.go
+            internal/proxy/intercept_test.go
+            internal/proxy/forward_test.go
+            internal/proxy/adaptive_escalation_test.go
+            internal/proxy/adaptive_coverage_test.go
+            internal/proxy/allowlist_scoring_test.go
+            internal/gitprotect/diffscan_test.go
+            internal/config/config_test.go
+            internal/cli/test.go
+            internal/cli/license_test.go
+            enterprise/licenseservice/*_test.go
+            configs/*.yaml
+            README.md
+            assets/demo.cast
+            scripts/pr-review.py
+            docs/attacks-blocked.md
+            docs/bypass-resistance.md
+            docs/configuration.md
+            docs/scan-api.md
+            docs/guides/deployment-recipes.md
+            docs/guides/tls-interception.md
+            examples/demo-readme.sh
+            examples/sample-events.jsonl
+
   test:
+    needs: [security-scan]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
@@ -47,7 +93,26 @@ jobs:
           files: ./coverage.out
           fail_ci_if_error: false
 
+  test-macos:
+    needs: [security-scan]
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
+        with:
+          go-version: '1.26'
+
+      - name: Run sandbox tests (macOS seatbelt)
+        run: go test -race -count=1 ./internal/sandbox/...
+
+      - name: Verify cross-platform build
+        run: go build ./...
+
   lint:
+    needs: [security-scan]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -70,6 +135,7 @@ jobs:
         run: golangci-lint run --build-tags enterprise ./...
 
   govulncheck:
+    needs: [security-scan]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -89,7 +155,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [test, lint]
+    needs: [security-scan, test, lint]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:

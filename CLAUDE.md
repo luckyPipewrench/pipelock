@@ -30,8 +30,8 @@ These must be proven by tests, not assumed from docs or deployment.
 | Module | `github.com/luckyPipewrench/pipelock` |
 | Go | 1.25+ (CI tests 1.25 and 1.26) |
 | License | Apache 2.0 (core), ELv2 (`enterprise/`) |
-| Binary | Single static binary, ~17MB |
-| Deps | cobra, zerolog, go-readability, yaml.v3, prometheus, fsnotify, x/text, x/net, x/time, x/sys, gobwas/ws, sentry-go, modernc.org/sqlite, otlp/proto, google/protobuf |
+| Binary | Single static binary, ~18MB |
+| Deps | cobra, zerolog, go-readability, yaml.v3, prometheus, fsnotify, x/text, x/net, x/time, x/sys, gobwas/ws, sentry-go, modernc.org/sqlite, otlp/proto, google/protobuf, go-landlock |
 
 ## Build, Test, Lint
 
@@ -39,7 +39,7 @@ These must be proven by tests, not assumed from docs or deployment.
 make build          # Compile with version ldflags
 make test           # go test -race -count=1 ./...
 make test-cover     # Coverage report → coverage.html
-make lint           # golangci-lint (v2, 19 linters, gofumpt)
+make lint           # golangci-lint (v2, 20 linters, gofumpt)
 make bench          # Benchmarks for scanner + mcp
 make fmt            # gofumpt -w . (stricter than gofmt: handles alignment + import grouping)
 make vet            # Static analysis
@@ -84,7 +84,7 @@ Scanning layers:
 - **Response scanning:** prompt injection detection in tool results
 - **Input scanning:** DLP + injection in tool arguments (`mcp_input_scanning`)
 - **Tool scanning:** poisoned descriptions + rug-pull drift detection (`mcp_tool_scanning`)
-- **Tool policy:** pre-execution allow/deny rules with shell obfuscation detection (`mcp_tool_policy`)
+- **Tool policy:** pre-execution allow/deny/redirect rules with shell obfuscation detection (`mcp_tool_policy`). Redirect routes matched calls to audited handler programs with synthetic MCP response.
 - **Chain detection:** subsequence matching on tool call sequences (`tool_chain_detection`)
 - **Session binding:** tool inventory pinning per session (`mcp_session_binding`)
 
@@ -92,9 +92,9 @@ Scanning layers:
 
 YAML config loaded at startup. Hot-reload via fsnotify file watch + SIGHUP signal (100ms debounce). Reload atomically swaps config, scanner, and session manager via `atomic.Pointer[T]`. Kill switch state (all 4 sources) is preserved across reloads.
 
-Top-level sections: `mode`, `enforce`, `api_allowlist`, `suppress`, `fetch_proxy`, `forward_proxy`, `websocket_proxy`, `tls_interception`, `dlp`, `response_scanning`, `mcp_input_scanning`, `mcp_tool_scanning`, `mcp_tool_policy`, `mcp_session_binding`, `mcp_ws_listener`, `session_profiling`, `adaptive_enforcement`, `kill_switch`, `emit`, `tool_chain_detection`, `git_protection`, `logging`, `internal`.
+Top-level sections: `mode`, `enforce`, `api_allowlist`, `suppress`, `fetch_proxy`, `forward_proxy`, `websocket_proxy`, `tls_interception`, `dlp`, `response_scanning`, `mcp_input_scanning`, `mcp_tool_scanning`, `mcp_tool_policy`, `mcp_session_binding`, `mcp_ws_listener`, `session_profiling`, `adaptive_enforcement`, `kill_switch`, `emit`, `tool_chain_detection`, `git_protection`, `logging`, `internal`, `request_body_scanning`, `cross_request_detection`, `scan_api`, `address_protection`, `seed_phrase_detection`, `rules`, `file_sentry`, `sandbox`, `agents`, `sentry`, `metrics_listen`.
 
-Action constants: `config.ActionBlock`, `ActionWarn`, `ActionAsk`, `ActionStrip`, `ActionForward`.
+Action constants: `config.ActionBlock`, `ActionRedirect`, `ActionWarn`, `ActionAsk`, `ActionStrip`, `ActionForward`, `ActionAllow`.
 
 ### Architectural Principles
 
@@ -183,6 +183,7 @@ Six required checks on `main`:
 - **Lint before commit:** run `golangci-lint run ./...` on first draft, not after tests. Fix lint first, then test.
 - **Prefer proper fixes over `//nolint`:** extract constants (goconst), use `filepath.Clean` (G304), split fake creds (G101). Only use `//nolint` when no clean fix exists.
 - **Use existing constants:** check `config.Action*`, `config.Mode*`, `config.Severity*` before creating test-local constants for the same values.
+- **Options structs over long parameter lists.** Functions with more than 6 parameters should take an options struct instead. Do NOT add parameters to existing long-signature functions (e.g. `ForwardScannedInput`, `scanHTTPInput`, `RunProxy`). These are tech debt — new features should add fields to the relevant config/options struct, not append more params. When refactoring, group related params into a struct and migrate callers.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full contributor guide. PRs are squash-merged.
 

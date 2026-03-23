@@ -807,6 +807,17 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		scanResult := sc.ScanResponse(r.Context(), string(respBody))
+		// Filter out suppressed findings (parity with fetch proxy).
+		if !scanResult.Clean && len(cfg.Suppress) > 0 {
+			var kept []scanner.ResponseMatch
+			for _, m := range scanResult.Matches {
+				if !config.IsSuppressed(m.PatternName, targetURL, cfg.Suppress) {
+					kept = append(kept, m)
+				}
+			}
+			scanResult.Matches = kept
+			scanResult.Clean = len(kept) == 0
+		}
 		if !scanResult.Clean {
 			hasFinding = true
 			action := sc.ResponseAction()

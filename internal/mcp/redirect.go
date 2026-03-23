@@ -17,6 +17,16 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 )
 
+// redirectManifest describes the operation context passed to built-in
+// redirect handlers via __PIPELOCK_REDIRECT_MANIFEST env var. Mirrors
+// cli.RedirectManifest without an import cycle.
+type redirectManifest struct {
+	Profile    string   `json:"profile"`
+	Command    []string `json:"command"`
+	Reason     string   `json:"reason"`
+	PolicyRule string   `json:"policy_rule,omitempty"`
+}
+
 // argsDigest returns a SHA-256 prefix + length summary of tool arguments
 // for audit logging. Never log raw args — they may contain secrets.
 func argsDigest(args string) string {
@@ -78,7 +88,7 @@ func extractToolCallFields(line []byte) (toolName string, argsJSON string) {
 //
 // When preserve_argv is true, toolArgs (the extracted params.arguments
 // JSON) is passed as the last argument to the handler command.
-func executeRedirect(profile config.RedirectProfile, requestID json.RawMessage, toolArgs string) RedirectResult {
+func executeRedirect(profile config.RedirectProfile, profileName string, requestID json.RawMessage, toolArgs, policyRule string) RedirectResult {
 	ctx, cancel := context.WithTimeout(context.Background(), redirectTimeout)
 	defer cancel()
 
@@ -90,6 +100,19 @@ func executeRedirect(profile config.RedirectProfile, requestID json.RawMessage, 
 
 	cmd := exec.CommandContext(ctx, profile.Exec[0], args...) //nolint:gosec // exec path is validated at config load
 	cmd.Env = safeEnv()
+
+	// Inject redirect manifest for built-in handlers (internal-redirect).
+	// The manifest provides the handler with operation context without
+	// passing secrets via argv (which appear in /proc/*/cmdline).
+	manifest := redirectManifest{
+		Profile:    profileName,
+		Command:    profile.Exec,
+		Reason:     profile.Reason,
+		PolicyRule: policyRule,
+	}
+	if manifestJSON, err := json.Marshal(manifest); err == nil {
+		cmd.Env = append(cmd.Env, "__PIPELOCK_REDIRECT_MANIFEST="+string(manifestJSON))
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

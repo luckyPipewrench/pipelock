@@ -28,7 +28,7 @@ import requests
 # --- Constants ---
 
 MAX_DIFF_CHARS = 100_000  # ~25k tokens, keeps costs reasonable
-DEFAULT_MODEL_FAST = "gpt-5.4-nano"
+DEFAULT_MODEL_FAST = "gpt-5.4-mini"
 DEFAULT_MODEL_DEEP = "gpt-5.4"
 
 SYSTEM_PROMPT = """You are reviewing a pull request for Pipelock, an AI agent firewall and security boundary product. Pipelock is a network proxy that sits between AI agents and the internet, scanning HTTP/WebSocket/MCP traffic for secret exfiltration, prompt injection, SSRF, and tool poisoning.
@@ -116,7 +116,9 @@ def call_llm(diff: str, mode: str) -> str:
     }
 
     resp = requests.post(api_url, headers=headers, json=payload, timeout=120)
-    resp.raise_for_status()
+    if resp.status_code != 200:
+        body = resp.text[:500]
+        return f"**Error:** LLM API returned {resp.status_code}.\n\n**Model:** `{model}`\n\n**Response:**\n```\n{body}\n```"
     data = resp.json()
     choices = data.get("choices", [])
     if not choices:

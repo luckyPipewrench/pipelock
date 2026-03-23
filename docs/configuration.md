@@ -1494,3 +1494,40 @@ The following are enforced at startup:
 - MCP tool policy requires at least one rule if enabled
 - Kill switch `api_listen` must differ from the main proxy listen address
 - WebSocket `strip_compression` must be true when scanning is enabled
+- Reverse proxy `upstream` must be a valid http:// or https:// URL when enabled
+
+## Reverse Proxy
+
+Generic HTTP reverse proxy mode that sits in front of any service and scans traffic bidirectionally.
+
+```yaml
+reverse_proxy:
+  enabled: false
+  listen: ":8890"
+  upstream: "http://localhost:7899"
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `false` | Enable reverse proxy mode |
+| `listen` | (required) | Listen address for the reverse proxy |
+| `upstream` | (required) | Upstream service URL to forward to |
+
+### CLI flags
+
+```bash
+pipelock run --reverse-proxy --reverse-upstream http://localhost:7899 --reverse-listen :8890
+```
+
+### Scanning behavior
+
+- **Request bodies:** Scanned for DLP patterns (secret exfiltration) using the `request_body_scanning` config
+- **Request headers:** Scanned when `request_body_scanning.scan_headers` is enabled
+- **Response bodies:** Scanned for prompt injection using the `response_scanning` config
+- **Binary content:** Image, audio, and video content types skip scanning
+- **Compressed bodies:** Fail-closed (blocked) on both request and response
+- **Oversized bodies:** Bodies larger than 1MB pass through without scanning
+
+### Hot-reload
+
+The `listen`, `enabled`, and `upstream` fields cannot be changed via hot-reload (requires restart). All other scanning config (DLP patterns, response patterns, action, header mode) updates on reload.

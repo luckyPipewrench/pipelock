@@ -241,6 +241,59 @@ func TestInterceptTunnel_AskActionBlocksWithoutHITL(t *testing.T) {
 	}
 }
 
+func TestInterceptTunnel_SuppressedInjectionPassesThrough(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, testInjectionPayload)
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
+	cfg.ResponseScanning.Enabled = true
+	cfg.ResponseScanning.Action = config.ActionBlock
+	cfg.Suppress = []config.SuppressEntry{
+		{Rule: "Prompt Injection", Path: "*", Reason: "test suppression"},
+	}
+	sc := scanner.New(cfg)
+	t.Cleanup(func() { sc.Close() })
+
+	addr := upstream.Listener.Addr().String()
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/page", nil)
+
+	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req) //nolint:bodyclose // closed in t.Cleanup inside helper
+
+	if resp.StatusCode == http.StatusForbidden {
+		t.Error("suppressed injection should not be blocked")
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200 (suppressed)", resp.StatusCode)
+	}
+}
+
+func TestInterceptTunnel_NonMatchingSuppressStillBlocks(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, testInjectionPayload)
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
+	cfg.ResponseScanning.Enabled = true
+	cfg.ResponseScanning.Action = config.ActionBlock
+	cfg.Suppress = []config.SuppressEntry{
+		{Rule: "System Override", Path: "*", Reason: "non-matching suppress"},
+	}
+	sc := scanner.New(cfg)
+	t.Cleanup(func() { sc.Close() })
+
+	addr := upstream.Listener.Addr().String()
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/page", nil)
+
+	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req) //nolint:bodyclose // closed in t.Cleanup inside helper
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 (non-matching suppress should still block)", resp.StatusCode)
+	}
+}
+
 func TestInterceptTunnel_BlocksCompressedResponse(t *testing.T) {
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Encoding", "gzip")

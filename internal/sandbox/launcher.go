@@ -150,3 +150,11 @@ func CleanupChildSandboxDir(childPID int) {
 	dir := fmt.Sprintf("/tmp/pipelock-sandbox-%d", childPID)
 	_ = os.RemoveAll(dir)
 }
+
+// CleanupSandboxCmd removes the sandbox temp directory associated with a cmd.
+// Cross-platform: on Linux delegates to CleanupChildSandboxDir via PID.
+func CleanupSandboxCmd(cmd *exec.Cmd) {
+	if cmd.Process != nil {
+		CleanupChildSandboxDir(cmd.Process.Pid)
+	}
+}

@@ -417,11 +417,11 @@ func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *In
 			}
 		}
 		toolName, toolArgs := extractToolCallFields(msg)
-		result := executeRedirect(profile, verdict.ID, toolArgs)
 		policyRuleName := ""
 		if len(policyVerdict.Rules) > 0 {
 			policyRuleName = policyVerdict.Rules[0]
 		}
+		result := executeRedirect(profile, policyVerdict.RedirectProfile, verdict.ID, toolArgs, policyRuleName)
 		// Determine final outcome before audit logging so the event
 		// reflects the actual result delivered to the client.
 		var br *BlockedRequest

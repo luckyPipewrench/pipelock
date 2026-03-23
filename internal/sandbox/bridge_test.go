@@ -8,14 +8,28 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"testing"
 	"time"
 )
 
+// shortTempDir creates a temp dir with a short path to avoid exceeding
+// the Unix socket path limit (104 bytes on macOS).
+func shortTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "plsb-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
+}
+
 func TestBridgeProxy_ForwardsToUnixSocket(t *testing.T) {
 	// Set up a mock "parent proxy" on a Unix socket.
-	dir := t.TempDir()
+	// Use short temp path to stay within Unix socket path limits on macOS.
+	dir := shortTempDir(t)
 	socketPath := ProxySocketPath(dir)
 
 	parentLn, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", socketPath)
@@ -47,9 +61,16 @@ func TestBridgeProxy_ForwardsToUnixSocket(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go bp.Serve(ctx)
-	defer bp.Close()
+	serveDone := make(chan struct{})
+	go func() {
+		bp.Serve(ctx)
+		close(serveDone)
+	}()
+	defer func() {
+		cancel()
+		<-serveDone
+		bp.Close()
+	}()
 
 	// Connect to the bridge proxy on loopback.
 	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", bp.Addr())
@@ -83,7 +104,7 @@ func TestNewBridgeProxy_ListenError(t *testing.T) {
 }
 
 func TestBridgeProxy_Addr(t *testing.T) {
-	dir := t.TempDir()
+	dir := shortTempDir(t)
 	socketPath := ProxySocketPath(dir)
 
 	// Need a listener for the socket path (even if unused).

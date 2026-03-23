@@ -292,6 +292,18 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	text := string(body)
 	result := sc.ScanResponse(resp.Request.Context(), text)
 
+	// Filter out suppressed findings (parity with fetch proxy).
+	if !result.Clean && len(cfg.Suppress) > 0 {
+		var kept []scanner.ResponseMatch
+		for _, m := range result.Matches {
+			if !config.IsSuppressed(m.PatternName, resp.Request.URL.String(), cfg.Suppress) {
+				kept = append(kept, m)
+			}
+		}
+		result.Matches = kept
+		result.Clean = len(kept) == 0
+	}
+
 	if result.Clean {
 		resp.Body = io.NopCloser(bytes.NewReader(body))
 		resp.ContentLength = int64(len(body))

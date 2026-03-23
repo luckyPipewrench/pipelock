@@ -91,7 +91,13 @@ type Policy struct {
 
 // dangerousRoots are paths that must never be used as the workspace root.
 // These are checked after symlink resolution.
-var dangerousRoots = []string{"/", "/tmp", "/home", "/etc", "/usr", "/var"}
+var dangerousRoots = []string{
+	"/", "/tmp", "/home", "/etc", "/usr", "/var",
+	// macOS: /tmp → /private/tmp, /var → /private/var, /etc → /private/etc.
+	// /home → /System/Volumes/Data/home via synthetic firmlink.
+	"/private/tmp", "/private/var", "/private/etc",
+	"/System/Volumes/Data/home",
+}
 
 // ValidateWorkspace checks that the workspace path is safe for use as a
 // sandbox root. It rejects dangerous broad paths, symlinks that escape

@@ -837,11 +837,11 @@ func TestStartConnectViaProduction(t *testing.T) {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 
-	_, _ = conn.Write([]byte("hello"))
+	_, _ = conn.Write([]byte(testWSHello))
 	buf := make([]byte, 32)
 	n, _ := br.Read(buf)
-	if string(buf[:n]) != "hello" {
-		t.Errorf("expected echo 'hello', got %q", string(buf[:n]))
+	if string(buf[:n]) != testWSHello {
+		t.Errorf("expected echo %q, got %q", testWSHello, string(buf[:n]))
 	}
 }
 

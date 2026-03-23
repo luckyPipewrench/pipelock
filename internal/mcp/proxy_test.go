@@ -2274,8 +2274,8 @@ func TestForwardScanned_KillSwitchDropsNotification(t *testing.T) {
 	// Activate kill switch.
 	ks.SetAPI(true)
 
-	// Send a notification (no "id" field) followed by a request with ID.
-	// The notification should be silently dropped. The request should get
+	// Send a notification (no "id" field) followed by a response with ID.
+	// The notification should be silently dropped. The response should get
 	// a JSON-RPC error response.
 	input := `{"jsonrpc":"2.0","method":"notifications/progress","params":{"token":"abc"}}` + "\n" +
 		`{"jsonrpc":"2.0","id":1,"result":{"content":"hello"}}` + "\n"

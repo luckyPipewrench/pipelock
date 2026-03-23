@@ -2543,6 +2543,10 @@ func TestWSRelay_KillSwitch_ClientToUpstream(t *testing.T) {
 	// Send another message — the relay should close the connection.
 	_ = wsutil.WriteClientMessage(conn, ws.OpText, []byte("after-ks"))
 
+	// Set a read deadline to prevent CI from hanging if a regression keeps the
+	// socket open. 5 seconds is generous; the relay should close immediately.
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+
 	// Read until closed. The relay should terminate with close frame.
 	for {
 		_, _, loopErr := wsutil.ReadServerData(conn)
@@ -2556,8 +2560,11 @@ func TestWSRelay_KillSwitch_ClientToUpstream(t *testing.T) {
 // in upstreamToClient terminates a live WebSocket relay when activated mid-stream
 // while frames flow from server to client.
 func TestWSRelay_KillSwitch_UpstreamToClient(t *testing.T) {
-	// Use a server that waits for a client message then responds, giving us
-	// time to activate the kill switch between connect and response.
+	// The server sends an initial frame immediately upon connection, proving the
+	// upstream-to-client data path is live. After the client receives that frame,
+	// the kill switch is activated. Then we trigger the server to send another
+	// frame; the relay's upstreamToClient loop should detect the kill switch and
+	// close the connection instead of forwarding it.
 	lc := net.ListenConfig{}
 	backendLn, listenErr := lc.Listen(context.Background(), "tcp4", "127.0.0.1:0")
 	if listenErr != nil {
@@ -2566,20 +2573,22 @@ func TestWSRelay_KillSwitch_UpstreamToClient(t *testing.T) {
 	backendAddr := backendLn.Addr().String()
 	backendSrv := &http.Server{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			conn, _, _, upgradeErr := ws.UpgradeHTTP(r, w)
+			srvConn, _, _, upgradeErr := ws.UpgradeHTTP(r, w)
 			if upgradeErr != nil {
 				return
 			}
-			defer conn.Close() //nolint:errcheck // test
-			// Wait for trigger message.
-			_, _, _ = wsutil.ReadClientData(conn)
-			// Send response.
-			_ = wsutil.WriteServerMessage(conn, ws.OpText, []byte("server-reply"))
+			defer func() { _ = srvConn.Close() }()
+			// Send an initial frame so the client can confirm the data path works.
+			_ = wsutil.WriteServerMessage(srvConn, ws.OpText, []byte(testWSHello))
+			// Wait for the client to signal that the kill switch is active.
+			_, _, _ = wsutil.ReadClientData(srvConn)
+			// Send another frame — the relay should block this due to kill switch.
+			_ = wsutil.WriteServerMessage(srvConn, ws.OpText, []byte("after-ks"))
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go func() { _ = backendSrv.Serve(backendLn) }()
-	defer backendSrv.Close() //nolint:errcheck // test
+	defer func() { _ = backendSrv.Close() }()
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
@@ -2631,18 +2640,31 @@ func TestWSRelay_KillSwitch_UpstreamToClient(t *testing.T) {
 	proxyAddr := proxyLn.Addr().String()
 
 	conn := dialWS(t, proxyAddr, backendAddr)
-	defer conn.Close() //nolint:errcheck // test
+	defer func() { _ = conn.Close() }()
 
-	// Activate kill switch before the server sends its response.
+	// Read the initial frame — proves upstream-to-client path is live.
+	reply, _, readErr := wsutil.ReadServerData(conn)
+	if readErr != nil {
+		t.Fatalf("read initial frame: %v", readErr)
+	}
+	if string(reply) != testWSHello {
+		t.Fatalf("expected initial frame %q, got %q", testWSHello, string(reply))
+	}
+
+	// NOW activate the kill switch, after confirming data flows.
 	ks.SetAPI(true)
 
-	// Trigger the server to send a frame.
+	// Trigger the server to send another frame (the relay should intercept it).
 	_ = wsutil.WriteClientMessage(conn, ws.OpText, []byte("go"))
+
+	// Set a read deadline to prevent CI from hanging if a regression keeps the
+	// socket open. 5 seconds is generous; the relay should close immediately.
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
 
 	// Read until closed — relay should terminate due to kill switch.
 	for {
-		_, _, readErr := wsutil.ReadServerData(conn)
-		if readErr != nil {
+		_, _, loopErr := wsutil.ReadServerData(conn)
+		if loopErr != nil {
 			break
 		}
 	}

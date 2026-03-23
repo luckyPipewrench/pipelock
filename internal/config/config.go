@@ -1479,6 +1479,38 @@ func mergeResponsePatterns(includeDefaults *bool, user, defaults []ResponseScanP
 	return merged
 }
 
+// ValidateTrustedDomains validates and normalizes a slice of trusted domain
+// entries. Each entry is lowercased, trimmed, and checked for: empty values,
+// URL/host:port formats, bare wildcards, over-broad wildcards (e.g. *.com),
+// non-prefix wildcards, and trailing dots. The slice is modified in-place
+// with normalized values. The label parameter identifies the config section
+// for error messages (e.g. "trusted_domains" or "agent \"foo\" trusted_domains").
+func ValidateTrustedDomains(domains []string, label string) error {
+	for i, raw := range domains {
+		d := strings.TrimSpace(strings.ToLower(raw))
+		if d == "" {
+			return fmt.Errorf("%s[%d] is empty", label, i)
+		}
+		if strings.Contains(d, "://") || strings.Contains(d, "/") || strings.Contains(d, ":") {
+			return fmt.Errorf("%s[%d] %q: use a hostname pattern, not a URL or host:port", label, i, raw)
+		}
+		if d == "*" {
+			return fmt.Errorf("%s[%d]: bare wildcard disables all SSRF protection", label, i)
+		}
+		if strings.HasPrefix(d, "*.") {
+			// Wildcard must target a concrete domain (*.com is too broad).
+			if strings.Count(d[2:], ".") < 1 {
+				return fmt.Errorf("%s[%d] %q: wildcard must target a concrete domain like *.example.com", label, i, raw)
+			}
+		} else if strings.ContainsAny(d, "*?[]") {
+			return fmt.Errorf("%s[%d] %q: only exact hosts and *.example.com wildcards are supported", label, i, raw)
+		}
+		// Normalize: store lowercase, trimmed.
+		domains[i] = strings.TrimSuffix(d, ".")
+	}
+	return nil
+}
+
 // Validate checks the config for errors. Must be called after ApplyDefaults.
 func (c *Config) Validate() error {
 	switch c.Mode {
@@ -2238,27 +2270,8 @@ func (c *Config) Validate() error {
 	}
 
 	// Validate trusted_domains entries.
-	for i, raw := range c.TrustedDomains {
-		d := strings.TrimSpace(strings.ToLower(raw))
-		if d == "" {
-			return fmt.Errorf("trusted_domains[%d] is empty", i)
-		}
-		if strings.Contains(d, "://") || strings.Contains(d, "/") || strings.Contains(d, ":") {
-			return fmt.Errorf("trusted_domains[%d] %q: use a hostname pattern, not a URL or host:port", i, raw)
-		}
-		if d == "*" {
-			return fmt.Errorf("trusted_domains[%d]: bare wildcard disables all SSRF protection", i)
-		}
-		if strings.HasPrefix(d, "*.") {
-			// Wildcard must target a concrete domain (*.com is too broad).
-			if strings.Count(d[2:], ".") < 1 {
-				return fmt.Errorf("trusted_domains[%d] %q: wildcard must target a concrete domain like *.example.com", i, raw)
-			}
-		} else if strings.ContainsAny(d, "*?[]") {
-			return fmt.Errorf("trusted_domains[%d] %q: only exact hosts and *.example.com wildcards are supported", i, raw)
-		}
-		// Normalize: store lowercase, trimmed.
-		c.TrustedDomains[i] = strings.TrimSuffix(d, ".")
+	if err := ValidateTrustedDomains(c.TrustedDomains, "trusted_domains"); err != nil {
+		return err
 	}
 
 	// Validate community rules config
@@ -2611,6 +2624,9 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 			Message: fmt.Sprintf("trusted domains added: %s — SSRF internal-IP check bypassed for these hosts", strings.Join(added, ", ")),
 		})
 	}
+	// TODO: emit reload warnings for agent-scoped trusted_domains (enterprise profiles).
+	// Agent profiles live in the enterprise package, so diffing them here would require
+	// either a hook or moving the diff logic into the enterprise reload path.
 
 	// Request body scanning disabled
 	if old.RequestBodyScanning.Enabled && !updated.RequestBodyScanning.Enabled {

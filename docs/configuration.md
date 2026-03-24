@@ -546,7 +546,7 @@ mcp_tool_policy:
 |-------|---------|-------------|
 | `enabled` | `false` | Enable tool policy |
 | `action` | `"warn"` | Default action for rules without override |
-| `rules` | 23 built-in | Policy rule list |
+| `rules` | 17 built-in | Policy rule list |
 
 **Rule fields:**
 - `name:` rule identifier

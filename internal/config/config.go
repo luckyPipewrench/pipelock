@@ -16,6 +16,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -207,6 +208,7 @@ type TrustedKey struct {
 // the MCP tool call path. Applies to subprocess MCP mode only.
 type FileSentry struct {
 	Enabled        bool     `yaml:"enabled"`
+	BestEffort     bool     `yaml:"best_effort"` // degrade gracefully when watch setup fails (e.g. inotify exhaustion)
 	WatchPaths     []string `yaml:"watch_paths"`
 	ScanContent    *bool    `yaml:"scan_content"`    // nil = default true
 	IgnorePatterns []string `yaml:"ignore_patterns"` // glob patterns to skip
@@ -2791,6 +2793,15 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		})
 	}
 
+	// File sentry config is startup-only (watches are armed once at init).
+	// ALL fields are reload-immutable, not just enabled/best_effort.
+	if fileSentryChanged(old, updated) {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "file_sentry",
+			Message: "file_sentry config changes require restart — ignored on reload",
+		})
+	}
+
 	// Sandbox config is startup-only. Warn if any sandbox fields changed
 	// so operators know the reload had no effect on the running sandbox.
 	if sandboxChanged(old, updated) {
@@ -2804,6 +2815,28 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 }
 
 // sandboxChanged returns true if any sandbox-related config field differs.
+// fileSentryChanged returns true if any file_sentry config field differs.
+// File sentry is startup-only: watches are armed once at init and cannot
+// be reconfigured on reload.
+func fileSentryChanged(old, updated *Config) bool {
+	if old.FileSentry.Enabled != updated.FileSentry.Enabled {
+		return true
+	}
+	if old.FileSentry.BestEffort != updated.FileSentry.BestEffort {
+		return true
+	}
+	if !slices.Equal(old.FileSentry.WatchPaths, updated.FileSentry.WatchPaths) {
+		return true
+	}
+	if !boolPtrEqual(old.FileSentry.ScanContent, updated.FileSentry.ScanContent) {
+		return true
+	}
+	if !slices.Equal(old.FileSentry.IgnorePatterns, updated.FileSentry.IgnorePatterns) {
+		return true
+	}
+	return false
+}
+
 func sandboxChanged(old, updated *Config) bool {
 	if old.Sandbox.Enabled != updated.Sandbox.Enabled {
 		return true

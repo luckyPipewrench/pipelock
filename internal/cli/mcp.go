@@ -594,52 +594,65 @@ Environment passthrough (subprocess mode only):
 				}
 				watcher, watchErr := filesentry.NewWatcher(&cfg.FileSentry, sc, lin, onErr)
 				if watchErr != nil {
-					return fmt.Errorf("file sentry init failed (feature is enabled): %w", watchErr)
+					if cfg.FileSentry.BestEffort {
+						_, _ = fmt.Fprintf(logW, "pipelock: file sentry init failed (best_effort: continuing without file monitoring): %v\n", watchErr)
+					} else {
+						return fmt.Errorf("file sentry init failed (feature is enabled): %w", watchErr)
+					}
 				}
 				// Arm synchronously before child launch.
-				if armErr := watcher.Arm(); armErr != nil {
-					_ = watcher.Close()
-					return fmt.Errorf("file sentry failed to arm watches (feature is enabled): %w", armErr)
-				}
-
-				// Consume findings: log to stderr and record metrics.
-				// The consumer runs until Close() closes the findings channel.
-				consumerDone := make(chan struct{})
-				go func() {
-					defer close(consumerDone)
-					for f := range watcher.Findings() {
-						agent := ""
-						if f.IsAgent {
-							agent = " (agent process)"
-						}
-						_, _ = fmt.Fprintf(logW,
-							"pipelock: [file_sentry] DLP match in %s: %s (severity=%s)%s\n",
-							f.Path, f.PatternName, f.Severity, agent)
-						if mcpMetrics != nil {
-							mcpMetrics.RecordFileSentryFinding(f.PatternName, f.Severity, f.IsAgent)
+				if watcher != nil {
+					if armErr := watcher.Arm(); armErr != nil {
+						_ = watcher.Close()
+						if cfg.FileSentry.BestEffort {
+							_, _ = fmt.Fprintf(logW, "pipelock: file sentry failed to arm watches (best_effort: continuing without file monitoring): %v\n", armErr)
+							watcher = nil
+						} else {
+							return fmt.Errorf("file sentry failed to arm watches (feature is enabled): %w", armErr)
 						}
 					}
-				}()
-				// Single defer: close watcher (flushes + closes channel),
-				// then wait for consumer to finish processing.
-				defer func() {
-					_ = watcher.Close()
-					<-consumerDone
-				}()
-				_, _ = fmt.Fprintf(logW, "pipelock: file sentry watching %d path(s)\n",
-					len(cfg.FileSentry.WatchPaths))
+				}
 
-				// onChildReady: called by RunProxy after cmd.Start() + TrackPID.
-				// Starts the file sentry event loop AFTER the child PID is registered,
-				// so attribution is ready before classifying any writes.
-				onChildReady = func() {
+				if watcher != nil {
+					// Consume findings: log to stderr and record metrics.
+					// The consumer runs until Close() closes the findings channel.
+					consumerDone := make(chan struct{})
 					go func() {
-						if startErr := watcher.Start(ctx); startErr != nil {
-							_, _ = fmt.Fprintf(logW, "pipelock: file sentry fatal: %v — cancelling proxy\n", startErr)
-							cancel()
+						defer close(consumerDone)
+						for f := range watcher.Findings() {
+							agent := ""
+							if f.IsAgent {
+								agent = " (agent process)"
+							}
+							_, _ = fmt.Fprintf(logW,
+								"pipelock: [file_sentry] DLP match in %s: %s (severity=%s)%s\n",
+								f.Path, f.PatternName, f.Severity, agent)
+							if mcpMetrics != nil {
+								mcpMetrics.RecordFileSentryFinding(f.PatternName, f.Severity, f.IsAgent)
+							}
 						}
 					}()
-				}
+					// Single defer: close watcher (flushes + closes channel),
+					// then wait for consumer to finish processing.
+					defer func() {
+						_ = watcher.Close()
+						<-consumerDone
+					}()
+					_, _ = fmt.Fprintf(logW, "pipelock: file sentry watching %d path(s)\n",
+						len(cfg.FileSentry.WatchPaths))
+
+					// onChildReady: called by RunProxy after cmd.Start() + TrackPID.
+					// Starts the file sentry event loop AFTER the child PID is registered,
+					// so attribution is ready before classifying any writes.
+					onChildReady = func() {
+						go func() {
+							if startErr := watcher.Start(ctx); startErr != nil {
+								_, _ = fmt.Fprintf(logW, "pipelock: file sentry fatal: %v — cancelling proxy\n", startErr)
+								cancel()
+							}
+						}()
+					}
+				} // watcher != nil
 			}
 
 			if err := mcp.RunProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), logW, serverCmd, sc, approver, inputCfg, toolCfg, policyCfg, ks, chainMatcher, nil, cee, store, adaptiveCfg, mcpMetrics, lin, onChildReady, extraEnv...); err != nil {

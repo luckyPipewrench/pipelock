@@ -1054,6 +1054,39 @@ func TestMcpProxyCmd_FileSentryInvalidWatchPath(t *testing.T) {
 	}
 }
 
+func TestMcpProxyCmd_FileSentryBestEffort(t *testing.T) {
+	if runtime.GOOS == osWindows {
+		t.Skip("echo subprocess test requires unix")
+	}
+	// best_effort: true with a nonexistent watch path should NOT fail —
+	// the proxy should start normally and log a warning instead.
+	cfgContent := "file_sentry:\n  enabled: true\n  best_effort: true\n  watch_paths:\n    - /nonexistent/path/does/not/exist\n  scan_content: true\n"
+	cfgFile := t.TempDir() + "/best-effort-fs.yaml"
+	if err := os.WriteFile(cfgFile, []byte(cfgContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout strings.Builder
+	var stderr strings.Builder
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"mcp", "proxy", "--config", cfgFile, "--", "echo", testSafeReply})
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetIn(bytes.NewReader(nil))
+
+	err := cmd.Execute()
+	if err != nil {
+		t.Fatalf("best_effort should not return error, got: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "best_effort") {
+		t.Errorf("expected best_effort warning in stderr, got: %s", stderr.String())
+	}
+	// Verify the child response was forwarded — proxy continued despite file sentry failure.
+	if !strings.Contains(stdout.String(), "jsonrpc") {
+		t.Errorf("expected proxied response on stdout, got: %s", stdout.String())
+	}
+}
+
 func TestMcpProxyCmd_FileSentryDisabledByDefault(t *testing.T) {
 	if runtime.GOOS == osWindows {
 		t.Skip("echo subprocess test requires unix")

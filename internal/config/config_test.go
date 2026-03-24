@@ -36,6 +36,7 @@ const (
 	fieldTLSPassthrough  = "tls_interception.passthrough_domains"
 	fieldSentry          = "sentry"
 	fieldSandbox         = "sandbox"
+	fieldFileSentry      = "file_sentry"
 	fieldSubEntExcl      = "fetch_proxy.monitoring.subdomain_entropy_exclusions"
 
 	// testLicenseFileCfg is a minimal config with license_file pointing to a
@@ -7476,6 +7477,80 @@ func TestValidateReload_SecretsFileChanged_SentryWarning(t *testing.T) {
 	}
 	if !found {
 		t.Error("expected sentry warning when dlp.secrets_file changes")
+	}
+}
+
+func TestValidateReload_FileSentryChanged(t *testing.T) {
+	old := Defaults()
+	updated := Defaults()
+	updated.FileSentry.Enabled = true
+	updated.FileSentry.WatchPaths = []string{"/tmp"}
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == fieldFileSentry {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected file_sentry reload warning when enabled changes")
+	}
+}
+
+func TestValidateReload_FileSentryBestEffortChanged(t *testing.T) {
+	old := Defaults()
+	old.FileSentry.Enabled = true
+	old.FileSentry.WatchPaths = []string{"/tmp"}
+	updated := Defaults()
+	updated.FileSentry.Enabled = true
+	updated.FileSentry.BestEffort = true
+	updated.FileSentry.WatchPaths = []string{"/tmp"}
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == fieldFileSentry {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected file_sentry reload warning when best_effort changes")
+	}
+}
+
+func TestValidateReload_FileSentryWatchPathsChanged(t *testing.T) {
+	old := Defaults()
+	old.FileSentry.Enabled = true
+	old.FileSentry.WatchPaths = []string{"/tmp"}
+	updated := Defaults()
+	updated.FileSentry.Enabled = true
+	updated.FileSentry.WatchPaths = []string{"/tmp", "/var"}
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == fieldFileSentry {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected file_sentry reload warning when watch_paths changes")
+	}
+}
+
+func TestValidateReload_FileSentryUnchanged_NoWarning(t *testing.T) {
+	old := Defaults()
+	old.FileSentry.Enabled = true
+	old.FileSentry.WatchPaths = []string{"/tmp"}
+	updated := Defaults()
+	updated.FileSentry.Enabled = true
+	updated.FileSentry.WatchPaths = []string{"/tmp"}
+	warnings := ValidateReload(old, updated)
+	for _, w := range warnings {
+		if w.Field == fieldFileSentry {
+			t.Errorf("unexpected file_sentry reload warning when config unchanged: %s", w.Message)
+		}
 	}
 }
 

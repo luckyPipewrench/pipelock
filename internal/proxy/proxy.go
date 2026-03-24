@@ -559,25 +559,21 @@ func (p *Proxy) recordSessionActivity(clientIP, agent, hostname, requestID strin
 	// Record adaptive signals (only when adaptive enforcement is enabled).
 	if cfg.AdaptiveEnforcement.Enabled {
 		adaptiveCfg := cfg.AdaptiveEnforcement
+		ep := decide.EscalationParams{
+			Threshold: adaptiveCfg.EscalationThreshold,
+			Logger:    log,
+			Metrics:   p.metrics,
+			Session:   key,
+			ClientIP:  clientIP,
+			RequestID: requestID,
+		}
 		if !resultAllowed {
-			if escalated, from, to := sess.RecordSignal(session.SignalBlock, adaptiveCfg.EscalationThreshold); escalated {
-				log.LogAdaptiveEscalation(key, from, to, clientIP, requestID, sess.ThreatScore())
-				p.metrics.RecordSessionEscalation(from, to)
-				if from != session.EscalationLabel(0) {
-					p.metrics.SetAdaptiveSessionLevel(from, -1)
-				}
-				p.metrics.SetAdaptiveSessionLevel(to, 1)
+			if decide.RecordEscalation(sess, session.SignalBlock, ep) {
 				// Update block_all flag so RecordRequest stops refreshing lastActivity.
 				sess.SetBlockAll(decide.UpgradeAction("", sess.EscalationLevel(), &adaptiveCfg) == config.ActionBlock)
 			}
 		} else if resultScore > 0 {
-			if escalated, from, to := sess.RecordSignal(session.SignalNearMiss, adaptiveCfg.EscalationThreshold); escalated {
-				log.LogAdaptiveEscalation(key, from, to, clientIP, requestID, sess.ThreatScore())
-				p.metrics.RecordSessionEscalation(from, to)
-				if from != session.EscalationLabel(0) {
-					p.metrics.SetAdaptiveSessionLevel(from, -1)
-				}
-				p.metrics.SetAdaptiveSessionLevel(to, 1)
+			if decide.RecordEscalation(sess, session.SignalNearMiss, ep) {
 				sess.SetBlockAll(decide.UpgradeAction("", sess.EscalationLevel(), &adaptiveCfg) == config.ActionBlock)
 			}
 		} else if !deferClean {
@@ -981,14 +977,14 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			if headerBlocked {
 				headerSignal = session.SignalBlock
 			}
-			if escalated, from, to := fetchRec.RecordSignal(headerSignal, cfg.AdaptiveEnforcement.EscalationThreshold); escalated {
-				log.LogAdaptiveEscalation(ceeSessionKey(agent, clientIP), from, to, clientIP, requestID, fetchRec.ThreatScore())
-				p.metrics.RecordSessionEscalation(from, to)
-				if from != session.EscalationLabel(0) {
-					p.metrics.SetAdaptiveSessionLevel(from, -1)
-				}
-				p.metrics.SetAdaptiveSessionLevel(to, 1)
-			}
+			decide.RecordEscalation(fetchRec, headerSignal, decide.EscalationParams{
+				Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,
+				Logger:    log,
+				Metrics:   p.metrics,
+				Session:   ceeSessionKey(agent, clientIP),
+				ClientIP:  clientIP,
+				RequestID: requestID,
+			})
 		}
 	}
 	if headerBlocked {
@@ -1332,14 +1328,14 @@ func (p *Proxy) filterAndActOnResponseScan(
 				sessionKey = agent + "|" + clientIP
 			}
 			sess := sm.GetOrCreate(sessionKey)
-			if escalated, from, to := sess.RecordSignal(sig, cfg.AdaptiveEnforcement.EscalationThreshold); escalated {
-				log.LogAdaptiveEscalation(sessionKey, from, to, clientIP, requestID, sess.ThreatScore())
-				p.metrics.RecordSessionEscalation(from, to)
-				if from != session.EscalationLabel(0) {
-					p.metrics.SetAdaptiveSessionLevel(from, -1)
-				}
-				p.metrics.SetAdaptiveSessionLevel(to, 1)
-			}
+			decide.RecordEscalation(sess, sig, decide.EscalationParams{
+				Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,
+				Logger:    log,
+				Metrics:   p.metrics,
+				Session:   sessionKey,
+				ClientIP:  clientIP,
+				RequestID: requestID,
+			})
 		}
 	}
 

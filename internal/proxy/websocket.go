@@ -75,18 +75,18 @@ func (r *wsRelay) recordSignal(sig session.SignalType, log *audit.Logger) {
 	if r.rec == nil || !r.cfg.AdaptiveEnforcement.Enabled {
 		return
 	}
-	if escalated, from, to := r.rec.RecordSignal(sig, r.cfg.AdaptiveEnforcement.EscalationThreshold); escalated {
-		sessionKey := r.clientIP
-		if r.agent != "" && r.agent != agentAnonymous {
-			sessionKey = r.agent + "|" + r.clientIP
-		}
-		log.LogAdaptiveEscalation(sessionKey, from, to, r.clientIP, r.requestID, r.rec.ThreatScore())
-		r.proxy.metrics.RecordSessionEscalation(from, to)
-		if from != session.EscalationLabel(0) {
-			r.proxy.metrics.SetAdaptiveSessionLevel(from, -1)
-		}
-		r.proxy.metrics.SetAdaptiveSessionLevel(to, 1)
+	sessionKey := r.clientIP
+	if r.agent != "" && r.agent != agentAnonymous {
+		sessionKey = r.agent + "|" + r.clientIP
 	}
+	decide.RecordEscalation(r.rec, sig, decide.EscalationParams{
+		Threshold: r.cfg.AdaptiveEnforcement.EscalationThreshold,
+		Logger:    log,
+		Metrics:   r.proxy.metrics,
+		Session:   sessionKey,
+		ClientIP:  r.clientIP,
+		RequestID: r.requestID,
+	})
 }
 
 // wsRelayStats collects per-connection counters for audit logging.
@@ -985,14 +985,14 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 								sessionKey = r.agent + "|" + r.clientIP
 							}
 							sess := sm.GetOrCreate(sessionKey)
-							if escalated, from, to := sess.RecordSignal(session.SignalStrip, r.cfg.AdaptiveEnforcement.EscalationThreshold); escalated {
-								log.LogAdaptiveEscalation(sessionKey, from, to, r.clientIP, r.requestID, sess.ThreatScore())
-								r.proxy.metrics.RecordSessionEscalation(from, to)
-								if from != session.EscalationLabel(0) {
-									r.proxy.metrics.SetAdaptiveSessionLevel(from, -1)
-								}
-								r.proxy.metrics.SetAdaptiveSessionLevel(to, 1)
-							}
+							decide.RecordEscalation(sess, session.SignalStrip, decide.EscalationParams{
+								Threshold: r.cfg.AdaptiveEnforcement.EscalationThreshold,
+								Logger:    log,
+								Metrics:   r.proxy.metrics,
+								Session:   sessionKey,
+								ClientIP:  r.clientIP,
+								RequestID: r.requestID,
+							})
 						}
 						if scanResult.TransformedContent != "" {
 							msg = []byte(scanResult.TransformedContent)

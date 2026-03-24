@@ -142,14 +142,14 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		// headers to trusted services are expected and should not feed
 		// escalation. Uses exempt_domains (trust), not api_allowlist (reachability).
 		if connectRec != nil && !isAdaptiveExempt(host, cfg.AdaptiveEnforcement.ExemptDomains) {
-			if escalated, from, to := connectRec.RecordSignal(session.SignalNearMiss, cfg.AdaptiveEnforcement.EscalationThreshold); escalated {
-				p.logger.LogAdaptiveEscalation(connectSessionKey, from, to, clientIP, requestID, connectRec.ThreatScore())
-				p.metrics.RecordSessionEscalation(from, to)
-				if from != session.EscalationLabel(0) {
-					p.metrics.SetAdaptiveSessionLevel(from, -1)
-				}
-				p.metrics.SetAdaptiveSessionLevel(to, 1)
-			}
+			decide.RecordEscalation(connectRec, session.SignalNearMiss, decide.EscalationParams{
+				Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,
+				Logger:    p.logger,
+				Metrics:   p.metrics,
+				Session:   connectSessionKey,
+				ClientIP:  clientIP,
+				RequestID: requestID,
+			})
 		}
 	}
 	if connectHeaderBlocked {
@@ -706,14 +706,14 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			headerSignal = session.SignalBlock
 		}
 		if forwardRec != nil {
-			if escalated, from, to := forwardRec.RecordSignal(headerSignal, cfg.AdaptiveEnforcement.EscalationThreshold); escalated {
-				p.logger.LogAdaptiveEscalation(forwardSessionKey, from, to, clientIP, requestID, forwardRec.ThreatScore())
-				p.metrics.RecordSessionEscalation(from, to)
-				if from != session.EscalationLabel(0) {
-					p.metrics.SetAdaptiveSessionLevel(from, -1)
-				}
-				p.metrics.SetAdaptiveSessionLevel(to, 1)
-			}
+			decide.RecordEscalation(forwardRec, headerSignal, decide.EscalationParams{
+				Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,
+				Logger:    p.logger,
+				Metrics:   p.metrics,
+				Session:   forwardSessionKey,
+				ClientIP:  clientIP,
+				RequestID: requestID,
+			})
 		}
 	}
 	if forwardHeaderBlocked {
@@ -868,14 +868,14 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 						sessionKey = agent + "|" + clientIP
 					}
 					sess := sm.GetOrCreate(sessionKey)
-					if escalated, from, to := sess.RecordSignal(session.SignalStrip, cfg.AdaptiveEnforcement.EscalationThreshold); escalated {
-						p.logger.LogAdaptiveEscalation(sessionKey, from, to, clientIP, requestID, sess.ThreatScore())
-						p.metrics.RecordSessionEscalation(from, to)
-						if from != session.EscalationLabel(0) {
-							p.metrics.SetAdaptiveSessionLevel(from, -1)
-						}
-						p.metrics.SetAdaptiveSessionLevel(to, 1)
-					}
+					decide.RecordEscalation(sess, session.SignalStrip, decide.EscalationParams{
+						Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,
+						Logger:    p.logger,
+						Metrics:   p.metrics,
+						Session:   sessionKey,
+						ClientIP:  clientIP,
+						RequestID: requestID,
+					})
 				}
 				if scanResult.TransformedContent != "" {
 					respBody = []byte(scanResult.TransformedContent)

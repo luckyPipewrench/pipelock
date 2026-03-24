@@ -263,7 +263,7 @@ pipelock run --config pipelock.yaml --mcp-listen 0.0.0.0:8889 --mcp-upstream htt
 
 ### MCP Tool Policy
 
-Pre-execution rules that block dangerous tool calls before they reach MCP servers. Ships with 23 built-in rules covering destructive operations, credential access, reverse shells, persistence mechanisms, and encoded command execution. Shell obfuscation detection is built-in. v2.0 adds a `redirect` action that routes dangerous operations through audited wrappers instead of blocking outright.
+Pre-execution rules that block dangerous tool calls before they reach MCP servers. Ships with 17 built-in rules covering destructive operations, credential access, reverse shells, persistence mechanisms, and encoded command execution. Shell obfuscation detection is built-in. v2.0 adds a `redirect` action that routes dangerous operations through audited wrappers instead of blocking outright.
 
 ### Tool Call Chain Detection
 
@@ -304,7 +304,7 @@ See [docs/guides/siem-integration.md](docs/guides/siem-integration.md) for log s
 | Feature | What It Does |
 |---------|-------------|
 | **Audit Reports** | `pipelock report --input events.jsonl` generates HTML/JSON reports with risk rating, timeline, and evidence appendix. Ed25519 signing with `--sign`. ([Sample report](examples/sample-report.html)) |
-| **Diagnose** | `pipelock diagnose` runs 6 local checks to verify your config works end-to-end (no network required) |
+| **Diagnose** | `pipelock diagnose` runs 7 local checks to verify your config works end-to-end (no network required) |
 | **TLS Interception** | Optional CONNECT tunnel MITM: decrypt, scan bodies/headers/responses, re-encrypt. `pipelock tls init` generates a CA, then `pipelock tls install-ca` trusts it system-wide. |
 | **Block Hints** | Opt-in `explain_blocks: true` adds fix suggestions to blocked responses |
 | **Project Audit** | `pipelock audit ./project` scans for security risks and generates a tailored config |
@@ -364,7 +364,7 @@ Scan your project for agent security risks on every PR. No Go toolchain needed.
 
 ```yaml
 # .github/workflows/pipelock.yaml
-- uses: luckyPipewrench/pipelock@v1
+- uses: luckyPipewrench/pipelock@v2
   with:
     scan-diff: 'true'
     fail-on-findings: 'true'
@@ -382,7 +382,7 @@ For even simpler adoption, call the reusable workflow directly:
 # .github/workflows/security.yaml
 jobs:
   pipelock:
-    uses: luckyPipewrench/pipelock/.github/workflows/reusable-scan.yml@v1
+    uses: luckyPipewrench/pipelock/.github/workflows/reusable-scan.yml@v2
     with:
       fail-on-critical: true
 ```

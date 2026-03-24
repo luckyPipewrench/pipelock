@@ -25,7 +25,7 @@ jobs:
 
       - name: Pipelock Scan
         id: scan
-        uses: luckyPipewrench/pipelock@v1
+        uses: luckyPipewrench/pipelock@v2
         with:
           # version: '0.x.y'  # optional: pin to specific version
           config: pipelock.yaml

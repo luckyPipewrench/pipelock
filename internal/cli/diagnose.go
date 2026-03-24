@@ -84,6 +84,7 @@ Checks:
   fetch_hint       Blocked response includes actionable hint (requires explain_blocks)
   forward_allowed  CONNECT tunnel to allowed host succeeds
   forward_blocked  CONNECT tunnel to blocklisted host is rejected
+  rules            Installed rule bundles load and verify correctly
 
 Exit codes:
   0  All checks passed (skipped checks are OK)

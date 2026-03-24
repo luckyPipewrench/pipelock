@@ -148,7 +148,7 @@ func TestWSRelay_ClientToUpstream_BlockAllMidStream(t *testing.T) {
 	wsURL := fmt.Sprintf("ws://%s/ws?url=ws://%s", proxyAddr, backendAddr)
 	dialCtx, dialCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer dialCancel()
-	conn, _, _, dialErr := ws.Dial(dialCtx, wsURL)
+	conn, _, _, dialErr := ws.Dialer{Extensions: nil}.Dial(dialCtx, wsURL)
 	if dialErr != nil {
 		t.Fatalf("ws dial: %v", dialErr)
 	}
@@ -224,7 +224,7 @@ func TestWSRelay_UpstreamToClient_BlockAllMidStream(t *testing.T) {
 	wsURL := fmt.Sprintf("ws://%s/ws?url=ws://%s", proxyAddr, backendAddr)
 	dialCtx, dialCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer dialCancel()
-	conn, _, _, dialErr := ws.Dial(dialCtx, wsURL)
+	conn, _, _, dialErr := ws.Dialer{Extensions: nil}.Dial(dialCtx, wsURL)
 	if dialErr != nil {
 		t.Fatalf("ws dial: %v", dialErr)
 	}
@@ -271,7 +271,7 @@ func TestWSRelay_DLPAdaptiveUpgrade(t *testing.T) {
 	wsURL := fmt.Sprintf("ws://%s/ws?url=ws://%s", proxyAddr, backendAddr)
 	dialCtx, dialCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer dialCancel()
-	conn, _, _, dialErr := ws.Dial(dialCtx, wsURL)
+	conn, _, _, dialErr := ws.Dialer{Extensions: nil}.Dial(dialCtx, wsURL)
 	if dialErr != nil {
 		t.Fatalf("ws dial: %v", dialErr)
 	}
@@ -313,7 +313,7 @@ func TestWSRelay_ResponseScanAdaptiveUpgrade(t *testing.T) {
 	wsURL := fmt.Sprintf("ws://%s/ws?url=ws://%s", proxyAddr, backendAddr)
 	dialCtx, dialCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer dialCancel()
-	conn, _, _, dialErr := ws.Dial(dialCtx, wsURL)
+	conn, _, _, dialErr := ws.Dialer{Extensions: nil}.Dial(dialCtx, wsURL)
 	if dialErr != nil {
 		t.Fatalf("ws dial: %v", dialErr)
 	}
@@ -354,7 +354,7 @@ func TestWSRelay_ResponseScanSignalStrip(t *testing.T) {
 	wsURL := fmt.Sprintf("ws://%s/ws?url=ws://%s", proxyAddr, backendAddr)
 	dialCtx, dialCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer dialCancel()
-	conn, _, _, dialErr := ws.Dial(dialCtx, wsURL)
+	conn, _, _, dialErr := ws.Dialer{Extensions: nil}.Dial(dialCtx, wsURL)
 	if dialErr != nil {
 		t.Fatalf("ws dial: %v", dialErr)
 	}
@@ -1649,7 +1649,7 @@ func TestWSRelay_ResponseScanStripEscalatesFromLevel1(t *testing.T) {
 	wsURL := fmt.Sprintf("ws://%s/ws?url=ws://%s", proxyAddr, backendAddr)
 	dialCtx, dialCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer dialCancel()
-	conn, _, _, dialErr := ws.Dial(dialCtx, wsURL)
+	conn, _, _, dialErr := ws.Dialer{Extensions: nil}.Dial(dialCtx, wsURL)
 	if dialErr != nil {
 		t.Fatalf("ws dial: %v", dialErr)
 	}
@@ -1689,7 +1689,7 @@ func TestWSRelay_ResponseScanDefaultAction(t *testing.T) {
 	wsURL := fmt.Sprintf("ws://%s/ws?url=ws://%s", proxyAddr, backendAddr)
 	dialCtx, dialCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer dialCancel()
-	conn, _, _, dialErr := ws.Dial(dialCtx, wsURL)
+	conn, _, _, dialErr := ws.Dialer{Extensions: nil}.Dial(dialCtx, wsURL)
 	if dialErr != nil {
 		t.Fatalf("ws dial: %v", dialErr)
 	}
@@ -1752,7 +1752,7 @@ func TestWSRelay_AdaptiveAddressProtectionUpgrade(t *testing.T) {
 	wsURL := fmt.Sprintf("ws://%s/ws?url=ws://%s", proxyAddr, backendAddr)
 	dialCtx, dialCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer dialCancel()
-	conn, _, _, dialErr := ws.Dial(dialCtx, wsURL)
+	conn, _, _, dialErr := ws.Dialer{Extensions: nil}.Dial(dialCtx, wsURL)
 	if dialErr != nil {
 		t.Fatalf("ws dial: %v", dialErr)
 	}

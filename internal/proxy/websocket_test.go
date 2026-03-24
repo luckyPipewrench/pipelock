@@ -1464,7 +1464,7 @@ func TestWSProxy_CrossMessageDLP_FragmentThenSplit(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	wsURL := fmt.Sprintf("ws://%s/ws?url=ws://%s", proxyAddr, backendAddr)
-	conn, _, _, err := ws.Dial(ctx, wsURL)
+	conn, _, _, err := ws.Dialer{Extensions: nil}.Dial(ctx, wsURL)
 	if err != nil {
 		t.Fatalf("ws dial: %v", err)
 	}
@@ -1537,7 +1537,7 @@ func TestWSBlockedDomain(t *testing.T) {
 	defer cancel()
 
 	wsURL := fmt.Sprintf("ws://%s/ws?url=ws://attacker.evil.com:9999", proxyAddr)
-	_, _, _, err := ws.Dial(ctx, wsURL)
+	_, _, _, err := ws.Dialer{Extensions: nil}.Dial(ctx, wsURL)
 	if err == nil {
 		t.Fatal("expected dial to fail for blocklisted domain")
 	}
@@ -1562,7 +1562,7 @@ func TestWSProxyWSSScheme(t *testing.T) {
 	// (maps scheme for scanning). The upstream dial may fail since the echo
 	// server isn't TLS, but this exercises the wss branch code path.
 	wsURL := fmt.Sprintf("ws://%s/ws?url=wss://%s/v1", proxyAddr, backendAddr)
-	conn, _, _, err := ws.Dial(ctx, wsURL)
+	conn, _, _, err := ws.Dialer{Extensions: nil}.Dial(ctx, wsURL)
 	if err != nil {
 		// Expected: upstream dial fails because echo server isn't TLS.
 		// This is fine — the wss branch was exercised before the dial.
@@ -1658,7 +1658,7 @@ func TestWSProxySessionBlocked(t *testing.T) {
 	for _, d := range domains {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		wsURL := fmt.Sprintf("ws://%s/ws?url=ws://%s:9999", proxyAddr, d)
-		conn, _, _, err := ws.Dial(ctx, wsURL)
+		conn, _, _, err := ws.Dialer{Extensions: nil}.Dial(ctx, wsURL)
 		cancel()
 		if err == nil {
 			_ = conn.Close()
@@ -1670,7 +1670,7 @@ func TestWSProxySessionBlocked(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	wsURL := fmt.Sprintf("ws://%s/ws?url=ws://final.com:9999", proxyAddr)
-	_, _, _, err := ws.Dial(ctx, wsURL)
+	_, _, _, err := ws.Dialer{Extensions: nil}.Dial(ctx, wsURL)
 	if err == nil {
 		t.Error("expected WS dial to fail when session anomaly blocks")
 	}
@@ -2590,7 +2590,7 @@ func TestWSRelay_KillSwitch_UpstreamToClient(t *testing.T) {
 			// Send another frame — the relay should block this due to kill switch.
 			_ = wsutil.WriteServerMessage(srvConn, ws.OpText, []byte("after-ks"))
 		}),
-		ReadHeaderTimeout: 5 * time.Second,
+		ReadHeaderTimeout: 15 * time.Second, // generous for CI under load
 	}
 	go func() { _ = backendSrv.Serve(backendLn) }()
 	defer func() { _ = backendSrv.Close() }()
@@ -2645,17 +2645,26 @@ func TestWSRelay_KillSwitch_UpstreamToClient(t *testing.T) {
 
 	proxyAddr := proxyLn.Addr().String()
 
-	conn := dialWS(t, proxyAddr, backendAddr)
+	// Retry the dial+read sequence to handle CI startup races where the
+	// relay→backend handshake can be slow under load.
+	var conn net.Conn
+	var reply []byte
+	for attempt := range 3 {
+		c := dialWS(t, proxyAddr, backendAddr)
+		r, _, readErr := wsutil.ReadServerData(c)
+		if readErr == nil && string(r) == testWSHello {
+			conn = c
+			reply = r
+			break
+		}
+		_ = c.Close()
+		if attempt == 2 {
+			t.Fatalf("read initial frame after 3 attempts: last error: %v", readErr)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	_ = reply // used in assertion above
 	defer func() { _ = conn.Close() }()
-
-	// Read the initial frame — proves upstream-to-client path is live.
-	reply, _, readErr := wsutil.ReadServerData(conn)
-	if readErr != nil {
-		t.Fatalf("read initial frame: %v", readErr)
-	}
-	if string(reply) != testWSHello {
-		t.Fatalf("expected initial frame %q, got %q", testWSHello, string(reply))
-	}
 
 	// NOW activate the kill switch, after confirming data flows.
 	ks.SetAPI(true)

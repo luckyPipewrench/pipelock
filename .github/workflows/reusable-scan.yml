@@ -4,7 +4,7 @@
 #
 #   jobs:
 #     security:
-#       uses: luckyPipewrench/pipelock/.github/workflows/reusable-scan.yml@v1
+#       uses: luckyPipewrench/pipelock/.github/workflows/reusable-scan.yml@v2
 #
 # All inputs have sensible defaults. Override what you need.
 
@@ -72,7 +72,7 @@ jobs:
 
       - name: Run Pipelock
         id: pipelock
-        uses: luckyPipewrench/pipelock@34667f2146ff5404f31a25d4632b96c94377be12 # v1
+        uses: luckyPipewrench/pipelock@cfec5f86720e24f1ee8d37eb6ad652a7efe5d868 # v2
         env:
           PIPELOCK_VERSION: ${{ inputs.pipelock-version }}
           PIPELOCK_CONFIG: ${{ inputs.config-path }}

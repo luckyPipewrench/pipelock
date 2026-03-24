@@ -442,9 +442,10 @@ func (p *Proxy) wsDialUpstream(ctx context.Context, targetURL string, fwdHeaders
 	defer cancel()
 
 	dialer := ws.Dialer{
-		NetDial: p.ssrfSafeDialContext,
-		Header:  ws.HandshakeHeaderHTTP(fwdHeaders),
-		Timeout: 30 * time.Second,
+		NetDial:    p.ssrfSafeDialContext,
+		Header:     ws.HandshakeHeaderHTTP(fwdHeaders),
+		Timeout:    30 * time.Second,
+		Extensions: nil, // disable permessage-deflate; relay does not handle compressed frames
 	}
 
 	conn, _, _, err := dialer.Dial(dialCtx, targetURL)

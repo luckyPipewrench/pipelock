@@ -1464,7 +1464,7 @@ func TestWSProxy_CrossMessageDLP_FragmentThenSplit(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	wsURL := fmt.Sprintf("ws://%s/ws?url=ws://%s", proxyAddr, backendAddr)
-	conn, _, _, err := ws.Dial(ctx, wsURL)
+	conn, _, _, err := ws.Dialer{Extensions: nil}.Dial(ctx, wsURL)
 	if err != nil {
 		t.Fatalf("ws dial: %v", err)
 	}
@@ -1537,7 +1537,7 @@ func TestWSBlockedDomain(t *testing.T) {
 	defer cancel()
 
 	wsURL := fmt.Sprintf("ws://%s/ws?url=ws://attacker.evil.com:9999", proxyAddr)
-	_, _, _, err := ws.Dial(ctx, wsURL)
+	_, _, _, err := ws.Dialer{Extensions: nil}.Dial(ctx, wsURL)
 	if err == nil {
 		t.Fatal("expected dial to fail for blocklisted domain")
 	}
@@ -1562,7 +1562,7 @@ func TestWSProxyWSSScheme(t *testing.T) {
 	// (maps scheme for scanning). The upstream dial may fail since the echo
 	// server isn't TLS, but this exercises the wss branch code path.
 	wsURL := fmt.Sprintf("ws://%s/ws?url=wss://%s/v1", proxyAddr, backendAddr)
-	conn, _, _, err := ws.Dial(ctx, wsURL)
+	conn, _, _, err := ws.Dialer{Extensions: nil}.Dial(ctx, wsURL)
 	if err != nil {
 		// Expected: upstream dial fails because echo server isn't TLS.
 		// This is fine — the wss branch was exercised before the dial.
@@ -1658,7 +1658,7 @@ func TestWSProxySessionBlocked(t *testing.T) {
 	for _, d := range domains {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		wsURL := fmt.Sprintf("ws://%s/ws?url=ws://%s:9999", proxyAddr, d)
-		conn, _, _, err := ws.Dial(ctx, wsURL)
+		conn, _, _, err := ws.Dialer{Extensions: nil}.Dial(ctx, wsURL)
 		cancel()
 		if err == nil {
 			_ = conn.Close()
@@ -1670,7 +1670,7 @@ func TestWSProxySessionBlocked(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	wsURL := fmt.Sprintf("ws://%s/ws?url=ws://final.com:9999", proxyAddr)
-	_, _, _, err := ws.Dial(ctx, wsURL)
+	_, _, _, err := ws.Dialer{Extensions: nil}.Dial(ctx, wsURL)
 	if err == nil {
 		t.Error("expected WS dial to fail when session anomaly blocks")
 	}

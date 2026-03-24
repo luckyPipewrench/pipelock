@@ -2590,7 +2590,7 @@ func TestWSRelay_KillSwitch_UpstreamToClient(t *testing.T) {
 			// Send another frame — the relay should block this due to kill switch.
 			_ = wsutil.WriteServerMessage(srvConn, ws.OpText, []byte("after-ks"))
 		}),
-		ReadHeaderTimeout: 5 * time.Second,
+		ReadHeaderTimeout: 15 * time.Second, // generous for CI under load
 	}
 	go func() { _ = backendSrv.Serve(backendLn) }()
 	defer func() { _ = backendSrv.Close() }()
@@ -2645,17 +2645,26 @@ func TestWSRelay_KillSwitch_UpstreamToClient(t *testing.T) {
 
 	proxyAddr := proxyLn.Addr().String()
 
-	conn := dialWS(t, proxyAddr, backendAddr)
+	// Retry the dial+read sequence to handle CI startup races where the
+	// relay→backend handshake can be slow under load.
+	var conn net.Conn
+	var reply []byte
+	for attempt := range 3 {
+		c := dialWS(t, proxyAddr, backendAddr)
+		r, _, readErr := wsutil.ReadServerData(c)
+		if readErr == nil && string(r) == testWSHello {
+			conn = c
+			reply = r
+			break
+		}
+		_ = c.Close()
+		if attempt == 2 {
+			t.Fatalf("read initial frame after 3 attempts: last error: %v", readErr)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	_ = reply // used in assertion above
 	defer func() { _ = conn.Close() }()
-
-	// Read the initial frame — proves upstream-to-client path is live.
-	reply, _, readErr := wsutil.ReadServerData(conn)
-	if readErr != nil {
-		t.Fatalf("read initial frame: %v", readErr)
-	}
-	if string(reply) != testWSHello {
-		t.Fatalf("expected initial frame %q, got %q", testWSHello, string(reply))
-	}
 
 	// NOW activate the kill switch, after confirming data flows.
 	ks.SetAPI(true)

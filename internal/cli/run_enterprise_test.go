@@ -414,16 +414,22 @@ logging:
 		t.Fatal(err)
 	}
 
-	// Wait for reload to process (fsnotify debounce is 100ms)
-	// plus agent listener shutdown (5s graceful timeout max).
-	time.Sleep(800 * time.Millisecond)
-
-	// Agent port must be closed after license revocation on reload.
-	dialer := &net.Dialer{Timeout: 500 * time.Millisecond}
-	conn, dialErr := dialer.DialContext(context.Background(), "tcp4", agentAddr)
-	if dialErr == nil {
+	// Poll until the agent port closes (reload debounce + graceful shutdown).
+	// Under CI load the shutdown can take longer than a fixed sleep allows.
+	dialer := &net.Dialer{Timeout: 200 * time.Millisecond}
+	deadline := time.Now().Add(10 * time.Second)
+	portClosed := false
+	for time.Now().Before(deadline) {
+		conn, dialErr := dialer.DialContext(context.Background(), "tcp4", agentAddr)
+		if dialErr != nil {
+			portClosed = true
+			break
+		}
 		_ = conn.Close()
-		t.Error("expected agent port to be closed after license revocation on reload, but dial succeeded")
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !portClosed {
+		t.Error("expected agent port to be closed after license revocation on reload, but dial succeeded after 10s")
 	}
 
 	// Main port must still be running.

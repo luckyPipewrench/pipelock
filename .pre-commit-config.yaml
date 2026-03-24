@@ -56,7 +56,7 @@ repos:
         types: [go]
 
   # Write marker for pre-push-gate.sh so it skips re-running lint+test.
-  # Uses STAGED_SHA (tree hash of index) since HEAD hasn't updated yet.
+  # Runs as post-commit, so HEAD is the newly created commit SHA.
   # pre-push-gate.sh checks this marker to avoid double-running checks.
   - repo: local
     hooks:

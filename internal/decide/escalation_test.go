@@ -4,9 +4,16 @@
 package decide
 
 import (
+	"bytes"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 // ptrStr returns a pointer to s. Used to build EscalationActions in tests.
@@ -331,5 +338,235 @@ func TestUpgradeAction_NegativeLevel(t *testing.T) {
 	// Verify that level 0 is also unchanged (regression guard).
 	if got := UpgradeAction(config.ActionWarn, 0, cfg); got != config.ActionWarn {
 		t.Errorf("UpgradeAction(warn, 0) = %q, want warn", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RecordEscalation tests
+// ---------------------------------------------------------------------------
+
+// escalationRecorder is a mock session.Recorder for testing RecordEscalation.
+// It lets tests control whether RecordSignal returns an escalation transition.
+type escalationRecorder struct {
+	signals   []session.SignalType
+	score     float64
+	escalate  bool   // when true, RecordSignal returns an escalation
+	fromLabel string // "from" label returned on escalation
+	toLabel   string // "to" label returned on escalation
+}
+
+func (r *escalationRecorder) RecordSignal(sig session.SignalType, _ float64) (bool, string, string) {
+	r.signals = append(r.signals, sig)
+	if r.escalate {
+		return true, r.fromLabel, r.toLabel
+	}
+	return false, "", ""
+}
+
+func (r *escalationRecorder) RecordClean(_ float64) {}
+func (r *escalationRecorder) EscalationLevel() int  { return 0 }
+func (r *escalationRecorder) ThreatScore() float64  { return r.score }
+
+// testLogger creates an audit logger writing to a temp file. Returns the
+// logger and the log file path for post-test verification.
+func testLogger(t *testing.T) (*audit.Logger, string) {
+	t.Helper()
+	logPath := filepath.Join(t.TempDir(), "audit.log")
+	logger, err := audit.New("json", "file", logPath, true, true)
+	if err != nil {
+		t.Fatalf("audit.New: %v", err)
+	}
+	return logger, logPath
+}
+
+func TestRecordEscalation_NoEscalation(t *testing.T) {
+	rec := &escalationRecorder{escalate: false}
+	logger, logPath := testLogger(t)
+	m := metrics.New()
+	params := EscalationParams{
+		Threshold: 5.0,
+		Logger:    logger,
+		Metrics:   m,
+		Session:   "agent|127.0.0.1",
+		ClientIP:  "127.0.0.1",
+		RequestID: "req-1",
+	}
+
+	got := RecordEscalation(rec, session.SignalBlock, params)
+	if got {
+		t.Error("RecordEscalation returned true, want false (no escalation)")
+	}
+	if len(rec.signals) != 1 || rec.signals[0] != session.SignalBlock {
+		t.Errorf("signal not recorded: got %v", rec.signals)
+	}
+	// Logger should not have been called — log file should be empty.
+	data, err := os.ReadFile(filepath.Clean(logPath))
+	if err != nil {
+		t.Fatalf("reading log: %v", err)
+	}
+	if len(data) > 0 {
+		t.Errorf("expected empty log file, got %d bytes", len(data))
+	}
+}
+
+func TestRecordEscalation_Escalation(t *testing.T) {
+	rec := &escalationRecorder{
+		escalate:  true,
+		fromLabel: session.EscalationLabel(0),
+		toLabel:   session.EscalationLabel(1),
+		score:     6.0,
+	}
+	logger, logPath := testLogger(t)
+	m := metrics.New()
+	params := EscalationParams{
+		Threshold: 5.0,
+		Logger:    logger,
+		Metrics:   m,
+		Session:   "agent|10.0.0.1",
+		ClientIP:  "10.0.0.1",
+		RequestID: "req-2",
+	}
+
+	got := RecordEscalation(rec, session.SignalBlock, params)
+	if !got {
+		t.Error("RecordEscalation returned false, want true (escalation occurred)")
+	}
+	// Audit log should have an entry.
+	logger.Close()
+	data, err := os.ReadFile(filepath.Clean(logPath))
+	if err != nil {
+		t.Fatalf("reading log: %v", err)
+	}
+	if len(data) == 0 {
+		t.Error("expected audit log entry for escalation, got empty file")
+	}
+}
+
+func TestRecordEscalation_NilLogger(t *testing.T) {
+	rec := &escalationRecorder{
+		escalate:  true,
+		fromLabel: session.EscalationLabel(0),
+		toLabel:   session.EscalationLabel(1),
+		score:     6.0,
+	}
+	m := metrics.New()
+	params := EscalationParams{
+		Threshold: 5.0,
+		Logger:    nil,
+		Metrics:   m,
+		Session:   "key",
+		ClientIP:  "127.0.0.1",
+		RequestID: "req-3",
+	}
+
+	// Must not panic.
+	got := RecordEscalation(rec, session.SignalNearMiss, params)
+	if !got {
+		t.Error("RecordEscalation returned false, want true")
+	}
+}
+
+func TestRecordEscalation_NilMetrics(t *testing.T) {
+	rec := &escalationRecorder{
+		escalate:  true,
+		fromLabel: session.EscalationLabel(0),
+		toLabel:   session.EscalationLabel(1),
+		score:     6.0,
+	}
+	params := EscalationParams{
+		Threshold: 5.0,
+		Logger:    nil,
+		Metrics:   nil,
+		Session:   "key",
+		ClientIP:  "127.0.0.1",
+		RequestID: "req-4",
+	}
+
+	// Must not panic with both logger and metrics nil.
+	got := RecordEscalation(rec, session.SignalStrip, params)
+	if !got {
+		t.Error("RecordEscalation returned false, want true")
+	}
+}
+
+func TestRecordEscalation_FromLevel0_NoGaugeDecrement(t *testing.T) {
+	// When escalating FROM level 0 ("normal"), the old level gauge should
+	// NOT be decremented — there's nothing to decrement.
+	rec := &escalationRecorder{
+		escalate:  true,
+		fromLabel: session.EscalationLabel(0), // "normal"
+		toLabel:   session.EscalationLabel(1), // "elevated"
+		score:     6.0,
+	}
+	m := metrics.New()
+	params := EscalationParams{
+		Threshold: 5.0,
+		Logger:    nil,
+		Metrics:   m,
+		Session:   "key",
+		ClientIP:  "127.0.0.1",
+		RequestID: "req-5",
+	}
+
+	// Exercises the from != EscalationLabel(0) branch — should skip decrement.
+	// No panic and correct return is sufficient (gauge internals verified by
+	// metrics package tests).
+	got := RecordEscalation(rec, session.SignalBlock, params)
+	if !got {
+		t.Error("RecordEscalation returned false, want true")
+	}
+}
+
+func TestRecordEscalation_FromNonZero_GaugeDecrement(t *testing.T) {
+	// When escalating FROM a non-zero level (e.g. elevated → high), the old
+	// level gauge IS decremented.
+	rec := &escalationRecorder{
+		escalate:  true,
+		fromLabel: session.EscalationLabel(1), // "elevated"
+		toLabel:   session.EscalationLabel(2), // "high"
+		score:     12.0,
+	}
+	m := metrics.New()
+	params := EscalationParams{
+		Threshold: 5.0,
+		Logger:    nil,
+		Metrics:   m,
+		Session:   "key",
+		ClientIP:  "127.0.0.1",
+		RequestID: "req-6",
+	}
+
+	got := RecordEscalation(rec, session.SignalBlock, params)
+	if !got {
+		t.Error("RecordEscalation returned false, want true")
+	}
+}
+
+func TestRecordEscalation_ConsoleWriter(t *testing.T) {
+	rec := &escalationRecorder{
+		escalate:  true,
+		fromLabel: session.EscalationLabel(0),
+		toLabel:   session.EscalationLabel(1),
+		score:     7.5,
+	}
+	var buf bytes.Buffer
+	params := EscalationParams{
+		Threshold:     5.0,
+		ConsoleWriter: &buf,
+		Session:       "key",
+		ClientIP:      "127.0.0.1",
+		RequestID:     "req-7",
+	}
+
+	got := RecordEscalation(rec, session.SignalBlock, params)
+	if !got {
+		t.Error("RecordEscalation returned false, want true")
+	}
+	output := buf.String()
+	if !strings.Contains(output, "session escalated") {
+		t.Errorf("console output missing escalation message, got %q", output)
+	}
+	if !strings.Contains(output, "7.5") {
+		t.Errorf("console output missing score, got %q", output)
 	}
 }

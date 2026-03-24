@@ -48,18 +48,18 @@ func interceptRecordSignal(rec session.Recorder, sig session.SignalType, cfg *co
 	if agent != "" && agent != agentAnonymous {
 		sessionKey = agent + "|" + clientIP
 	}
-	escalated, from, to := rec.RecordSignal(sig, cfg.AdaptiveEnforcement.EscalationThreshold)
-	if !escalated {
-		return
-	}
-	logger.LogAdaptiveEscalation(sessionKey, from, to, clientIP, requestID, rec.ThreatScore())
+	var m *metrics.Metrics
 	if p != nil {
-		p.metrics.RecordSessionEscalation(from, to)
-		if from != session.EscalationLabel(0) {
-			p.metrics.SetAdaptiveSessionLevel(from, -1)
-		}
-		p.metrics.SetAdaptiveSessionLevel(to, 1)
+		m = p.metrics
 	}
+	decide.RecordEscalation(rec, sig, decide.EscalationParams{
+		Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,
+		Logger:    logger,
+		Metrics:   m,
+		Session:   sessionKey,
+		ClientIP:  clientIP,
+		RequestID: requestID,
+	})
 }
 
 // interceptReadHeaderTimeout is the maximum time to read request headers on an
@@ -601,16 +601,18 @@ func newInterceptHandler(
 								sessionKey = agent + "|" + clientIP
 							}
 							sess := ceeSM.GetOrCreate(sessionKey)
-							if escalated, from, to := sess.RecordSignal(session.SignalStrip, cfg.AdaptiveEnforcement.EscalationThreshold); escalated {
-								logger.LogAdaptiveEscalation(sessionKey, from, to, clientIP, requestID, sess.ThreatScore())
-								if p != nil {
-									p.metrics.RecordSessionEscalation(from, to)
-									if from != session.EscalationLabel(0) {
-										p.metrics.SetAdaptiveSessionLevel(from, -1)
-									}
-									p.metrics.SetAdaptiveSessionLevel(to, 1)
-								}
+							var stripMetrics *metrics.Metrics
+							if p != nil {
+								stripMetrics = p.metrics
 							}
+							decide.RecordEscalation(sess, session.SignalStrip, decide.EscalationParams{
+								Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,
+								Logger:    logger,
+								Metrics:   stripMetrics,
+								Session:   sessionKey,
+								ClientIP:  clientIP,
+								RequestID: requestID,
+							})
 						}
 					}
 					respBody = []byte(scanResult.TransformedContent)

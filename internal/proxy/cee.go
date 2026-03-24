@@ -14,6 +14,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
@@ -355,25 +356,25 @@ func ceeRecordSignals(result ceeResult, sm *SessionManager, sessionKey string, t
 	}
 	sess := sm.GetOrCreate(sessionKey)
 	if result.EntropyHit {
-		if escalated, from, to := sess.RecordSignal(session.SignalEntropyBudget, threshold); escalated {
-			logger.LogAdaptiveEscalation(sessionKey, from, to, clientIP, requestID, sess.ThreatScore())
-			m.RecordSessionEscalation(from, to)
-			if from != session.EscalationLabel(0) {
-				m.SetAdaptiveSessionLevel(from, -1)
-			}
-			m.SetAdaptiveSessionLevel(to, 1)
-		}
+		decide.RecordEscalation(sess, session.SignalEntropyBudget, decide.EscalationParams{
+			Threshold: threshold,
+			Logger:    logger,
+			Metrics:   m,
+			Session:   sessionKey,
+			ClientIP:  clientIP,
+			RequestID: requestID,
+		})
 	}
 	if result.FragmentHit {
 		// Fragment DLP match is high-confidence (reconstructed secret from fragments).
 		// Use SignalFragmentDLP (3 points, same as SignalBlock) for strong escalation.
-		if escalated, from, to := sess.RecordSignal(session.SignalFragmentDLP, threshold); escalated {
-			logger.LogAdaptiveEscalation(sessionKey, from, to, clientIP, requestID, sess.ThreatScore())
-			m.RecordSessionEscalation(from, to)
-			if from != session.EscalationLabel(0) {
-				m.SetAdaptiveSessionLevel(from, -1)
-			}
-			m.SetAdaptiveSessionLevel(to, 1)
-		}
+		decide.RecordEscalation(sess, session.SignalFragmentDLP, decide.EscalationParams{
+			Threshold: threshold,
+			Logger:    logger,
+			Metrics:   m,
+			Session:   sessionKey,
+			ClientIP:  clientIP,
+			RequestID: requestID,
+		})
 	}
 }

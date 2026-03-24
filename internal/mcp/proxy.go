@@ -593,22 +593,16 @@ func matchNames(matches []scanner.ResponseMatch) []string {
 // the MCP proxy. auditLogger and m may be nil (stdio mode has no audit logger
 // or metrics). sessionKey and clientIP are used for audit log context; pass ""
 // when not available (e.g., stdio transports).
-func recordSignalWithEscalation(rec session.Recorder, sig session.SignalType, threshold float64, logW io.Writer, auditLogger *audit.Logger, m *metrics.Metrics, sessionKey, _clientIP, _requestID string) {
-	escalated, from, to := rec.RecordSignal(sig, threshold)
-	if !escalated {
-		return
-	}
-	_, _ = fmt.Fprintf(logW, "pipelock: session escalated %s -> %s (score=%.1f)\n", from, to, rec.ThreatScore())
-	if auditLogger != nil {
-		auditLogger.LogAdaptiveEscalation(sessionKey, from, to, _clientIP, _requestID, rec.ThreatScore())
-	}
-	if m != nil {
-		m.RecordSessionEscalation(from, to)
-		if from != "normal" {
-			m.SetAdaptiveSessionLevel(from, -1)
-		}
-		m.SetAdaptiveSessionLevel(to, 1)
-	}
+func recordSignalWithEscalation(rec session.Recorder, sig session.SignalType, threshold float64, logW io.Writer, auditLogger *audit.Logger, m *metrics.Metrics, sessionKey, clientIP, requestID string) {
+	decide.RecordEscalation(rec, sig, decide.EscalationParams{
+		Threshold:     threshold,
+		Logger:        auditLogger,
+		Metrics:       m,
+		ConsoleWriter: logW,
+		Session:       sessionKey,
+		ClientIP:      clientIP,
+		RequestID:     requestID,
+	})
 }
 
 // AdaptiveConfigFunc returns the current adaptive enforcement config.

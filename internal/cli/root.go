@@ -109,6 +109,7 @@ Quick start:
 		"pipelock home directory (default ~/.pipelock, or set PIPELOCK_HOME)")
 
 	cmd.AddCommand(
+		assessCmd(),
 		auditCmd(),
 		claudeCmd(),
 		cursorCmd(),

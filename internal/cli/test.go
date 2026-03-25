@@ -153,7 +153,7 @@ Examples:
 
 func loadTestConfig(path string) (*config.Config, string, error) {
 	if path == "" {
-		return config.Defaults(), "defaults", nil
+		return config.Defaults(), configLabelDefaults, nil
 	}
 	cfg, err := config.Load(path)
 	if err != nil {

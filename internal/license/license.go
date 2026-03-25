@@ -26,8 +26,10 @@ const maxTokenBytes = 64 * 1024
 const tokenPrefix = "pipelock_lic_" + "v1_" //nolint:gosec // G101: not a credential, license format prefix
 
 // Feature names for gating.
-const FeatureAgents = "agents"
-const FeatureAssess = "assess"
+const (
+	FeatureAgents = "agents"
+	FeatureAssess = "assess"
+)
 
 // License represents the claims in a signed license token.
 type License struct {

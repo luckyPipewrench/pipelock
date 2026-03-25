@@ -1820,3 +1820,146 @@ func TestAdaptive_RateLimitBlock_NoDecaySuppression(t *testing.T) {
 			sess.ThreatScore(), scoreAfterDLP)
 	}
 }
+
+// TestDeathSpiral_RateLimitBurst verifies that 30 rate-limit blocks in rapid
+// succession (e.g. npm install burst) do not inflate the session threat score,
+// escalation level, or block-all state.
+func TestDeathSpiral_RateLimitBurst(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SessionProfiling.Enabled = true
+	cfg.AdaptiveEnforcement.Enabled = true
+	cfg.AdaptiveEnforcement.EscalationThreshold = 20.0 // production default
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+	m := metrics.New()
+	p, err := New(cfg, logger, sc, m)
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	defer p.Close()
+
+	// Simulate npm install burst: 30 rate limit blocks in rapid succession.
+	for i := 0; i < 30; i++ {
+		p.recordSessionActivity("127.0.0.1", agentAnonymous, "registry.npmjs.org",
+			fmt.Sprintf("npm-req-%d", i),
+			scanner.Result{
+				Allowed: false,
+				Reason:  "rate limit exceeded for registry.npmjs.org",
+				Scanner: scanner.ScannerRateLimit,
+				Score:   0.7,
+				Class:   scanner.ClassProtective,
+			},
+			cfg, logger, false)
+	}
+
+	sm := p.sessionMgrPtr.Load()
+	sess := sm.GetOrCreate("127.0.0.1")
+
+	if sess.ThreatScore() != 0 {
+		t.Errorf("death spiral: ThreatScore = %v after 30 rate limit blocks, want 0", sess.ThreatScore())
+	}
+	if sess.EscalationLevel() != 0 {
+		t.Errorf("death spiral: EscalationLevel = %v, want 0", sess.EscalationLevel())
+	}
+	if sess.BlockAll() {
+		t.Error("death spiral: BlockAll is true, want false")
+	}
+}
+
+// TestAdaptive_RateLimitBlock_AuditMode_ScoreNeutral verifies that a
+// protective block in audit mode (enforce=false) does not affect the threat
+// score, and that a subsequent clean request does not crash or change the
+// score from zero.
+func TestAdaptive_RateLimitBlock_AuditMode_ScoreNeutral(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.Enforce = ptrBool(false) // audit mode
+	cfg.SessionProfiling.Enabled = true
+	cfg.AdaptiveEnforcement.Enabled = true
+	cfg.AdaptiveEnforcement.EscalationThreshold = 20.0
+	cfg.AdaptiveEnforcement.DecayPerCleanRequest = 1.0
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+	m := metrics.New()
+	p, err := New(cfg, logger, sc, m)
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	defer p.Close()
+
+	// Rate limit block in audit mode — score should stay at 0.
+	p.recordSessionActivity("127.0.0.1", agentAnonymous, "registry.npmjs.org", "req-rl",
+		scanner.Result{Allowed: false, Scanner: scanner.ScannerRateLimit, Score: 0.7, Class: scanner.ClassProtective},
+		cfg, logger, false)
+
+	sm := p.sessionMgrPtr.Load()
+	sess := sm.GetOrCreate("127.0.0.1")
+	if sess.ThreatScore() != 0 {
+		t.Errorf("ThreatScore = %v, want 0 in audit mode after protective block", sess.ThreatScore())
+	}
+
+	// Clean request — verify no crash and score stays 0.
+	p.recordSessionActivity("127.0.0.1", agentAnonymous, "safe.com", "req-clean",
+		scanner.Result{Allowed: true},
+		cfg, logger, false)
+	if sess.ThreatScore() != 0 {
+		t.Errorf("ThreatScore = %v, want 0 after clean request", sess.ThreatScore())
+	}
+}
+
+// TestAdaptive_RateLimitBlock_AuditMode_AlreadyEscalated verifies that a
+// protective block on an already-escalated session does not add more score or
+// change the escalation level. The session is pre-escalated with real DLP
+// blocks, then a rate-limit block confirms score/level stability.
+func TestAdaptive_RateLimitBlock_AuditMode_AlreadyEscalated(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SessionProfiling.Enabled = true
+	cfg.AdaptiveEnforcement.Enabled = true
+	cfg.AdaptiveEnforcement.EscalationThreshold = 5.0
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+	m := metrics.New()
+	p, err := New(cfg, logger, sc, m)
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	defer p.Close()
+
+	// Pre-escalate with DLP blocks.
+	for i := 0; i < 3; i++ {
+		p.recordSessionActivity("127.0.0.1", agentAnonymous, "evil.com",
+			fmt.Sprintf("dlp-%d", i),
+			scanner.Result{Allowed: false, Scanner: scanner.ScannerDLP},
+			cfg, logger, false)
+	}
+
+	sm := p.sessionMgrPtr.Load()
+	sess := sm.GetOrCreate("127.0.0.1")
+	scoreAfterDLP := sess.ThreatScore()
+	levelAfterDLP := sess.EscalationLevel()
+	if levelAfterDLP == 0 {
+		t.Fatal("expected escalation after DLP blocks")
+	}
+
+	// Protective block on already-escalated session — score stays the same.
+	p.recordSessionActivity("127.0.0.1", agentAnonymous, "registry.npmjs.org", "req-rl",
+		scanner.Result{Allowed: false, Scanner: scanner.ScannerRateLimit, Score: 0.7, Class: scanner.ClassProtective},
+		cfg, logger, false)
+
+	if sess.ThreatScore() != scoreAfterDLP {
+		t.Errorf("ThreatScore changed from %v to %v (protective block should not change score)",
+			scoreAfterDLP, sess.ThreatScore())
+	}
+	if sess.EscalationLevel() != levelAfterDLP {
+		t.Errorf("EscalationLevel changed from %v to %v (should not change)",
+			levelAfterDLP, sess.EscalationLevel())
+	}
+}

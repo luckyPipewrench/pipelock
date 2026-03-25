@@ -219,6 +219,13 @@ func (s *SessionState) SetBlockAll(blocked bool) {
 	s.atBlockAll = blocked
 }
 
+// BlockAll returns whether the session is at a block_all escalation level (thread-safe).
+func (s *SessionState) BlockAll() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.atBlockAll
+}
+
 // ThreatScore returns the current threat score (thread-safe).
 func (s *SessionState) ThreatScore() float64 {
 	s.mu.Lock()

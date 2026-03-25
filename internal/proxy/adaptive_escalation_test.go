@@ -1949,17 +1949,95 @@ func TestAdaptive_RateLimitBlock_AuditMode_AlreadyEscalated(t *testing.T) {
 		t.Fatal("expected escalation after DLP blocks")
 	}
 
-	// Protective block on already-escalated session — score stays the same.
+	// Protective block on already-escalated session — score may decay (clean
+	// decay fires on protective results) but must never escalate further.
 	p.recordSessionActivity("127.0.0.1", agentAnonymous, "registry.npmjs.org", "req-rl",
 		scanner.Result{Allowed: false, Scanner: scanner.ScannerRateLimit, Score: 0.7, Class: scanner.ClassProtective},
 		cfg, logger, false)
 
-	if sess.ThreatScore() != scoreAfterDLP {
-		t.Errorf("ThreatScore changed from %v to %v (protective block should not change score)",
+	if sess.ThreatScore() > scoreAfterDLP {
+		t.Errorf("ThreatScore increased from %v to %v (protective block should never increase score)",
 			scoreAfterDLP, sess.ThreatScore())
 	}
-	if sess.EscalationLevel() != levelAfterDLP {
-		t.Errorf("EscalationLevel changed from %v to %v (should not change)",
+	if sess.EscalationLevel() > levelAfterDLP {
+		t.Errorf("EscalationLevel increased from %v to %v (should not escalate on protective block)",
 			levelAfterDLP, sess.EscalationLevel())
+	}
+}
+
+// TestAdaptive_ProtectiveRateLimit_Transport verifies that a rate-limited
+// fetch request returns HTTP 429 over the wire while leaving session
+// scoring and escalation unchanged. This is the end-to-end transport
+// regression that complements the unit-level recordSessionActivity tests.
+func TestAdaptive_ProtectiveRateLimit_Transport(t *testing.T) {
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, "ok")
+	}))
+	defer backend.Close()
+
+	cfg := adaptiveConfig()
+	enforceTrue := true
+	cfg.Enforce = &enforceTrue
+	cfg.Internal = nil
+	cfg.APIAllowlist = nil
+	cfg.FetchProxy.TimeoutSeconds = 5
+	// Set rate limit to 1 request/min so the second request triggers it.
+	cfg.FetchProxy.Monitoring.MaxReqPerMinute = 1
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	m := metrics.New()
+	p, err := New(cfg, logger, sc, m)
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	defer p.Close()
+
+	proxySrv := newIPv4Server(t, p.buildHandler(p.buildMux()))
+	defer proxySrv.Close()
+
+	// Pre-escalate so the session has a nonzero score.
+	sm := p.sessionMgrPtr.Load()
+	sess := sm.GetOrCreate("127.0.0.1")
+	escalateRec(sess, 1)
+	scoreBeforeRL := sess.ThreatScore()
+	levelBeforeRL := sess.EscalationLevel()
+	if levelBeforeRL == 0 {
+		t.Fatal("expected escalation after pre-loading threat score")
+	}
+
+	fetchURL := fmt.Sprintf("%s/fetch?url=%s/text", proxySrv.URL, backend.URL)
+	ctx := context.Background()
+
+	// First request: consumes the 1 req/min budget.
+	req1, _ := http.NewRequestWithContext(ctx, http.MethodGet, fetchURL, nil)
+	resp1, err := http.DefaultClient.Do(req1)
+	if err != nil {
+		t.Fatalf("first fetch: %v", err)
+	}
+	_ = resp1.Body.Close()
+
+	// Second request: should be rate-limited (429).
+	req2, _ := http.NewRequestWithContext(ctx, http.MethodGet, fetchURL, nil)
+	resp2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatalf("second fetch: %v", err)
+	}
+	_ = resp2.Body.Close()
+
+	if resp2.StatusCode != http.StatusTooManyRequests {
+		t.Errorf("expected 429, got %d", resp2.StatusCode)
+	}
+
+	// Protective blocks allow clean decay (score may decrease) but must never
+	// escalate (level must not increase). The score should be <= what it was
+	// before, never higher.
+	if sess.ThreatScore() > scoreBeforeRL {
+		t.Errorf("ThreatScore increased from %v to %v after protective rate-limit block (should never increase)",
+			scoreBeforeRL, sess.ThreatScore())
+	}
+	if sess.EscalationLevel() > levelBeforeRL {
+		t.Errorf("EscalationLevel increased from %v to %v after protective rate-limit block",
+			levelBeforeRL, sess.EscalationLevel())
 	}
 }

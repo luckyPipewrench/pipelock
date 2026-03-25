@@ -45,6 +45,7 @@ Examples:
 	}
 	cmd.AddCommand(assessInitCmd())
 	cmd.AddCommand(assessRunCmd())
+	cmd.AddCommand(assessFinalizeCmd())
 	return cmd
 }
 

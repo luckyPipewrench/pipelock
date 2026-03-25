@@ -37,7 +37,7 @@ Branch naming:
 These match exactly what CI checks. Both must pass with zero issues.
 
 ```bash
-golangci-lint run ./...          # Full lint (19 linters, see .golangci.yml)
+golangci-lint run ./...          # Full lint (20 linters, see .golangci.yml)
 go test -race -count=1 ./...     # All tests with race detector
 ```
 

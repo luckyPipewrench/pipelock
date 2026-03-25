@@ -34,14 +34,13 @@ bench:
 	go test -bench=. -benchmem -count=3 -run=^$$ ./internal/scanner/ ./internal/mcp/
 
 fmt:
-	gofmt -s -w .
+	gofumpt -w .
 
 vet:
 	go vet ./...
 
 lint: vet
-	@which golangci-lint > /dev/null 2>&1 || echo "golangci-lint not installed, skipping"
-	@which golangci-lint > /dev/null 2>&1 && golangci-lint run || true
+	golangci-lint run ./...
 
 tidy-check:
 	go mod tidy

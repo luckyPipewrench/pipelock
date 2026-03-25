@@ -4431,6 +4431,27 @@ func TestCheckRateLimit_ClassProtective(t *testing.T) {
 	}
 }
 
+func TestCheckDataBudget_ClassThreat(t *testing.T) {
+	cfg := testConfig()
+	cfg.FetchProxy.Monitoring.MaxDataPerMinute = 100 // 100 bytes/min/domain
+	s := New(cfg)
+	defer s.Close()
+
+	// Record enough data to exceed the budget.
+	s.RecordRequest("example.com", 150)
+
+	r := s.Scan(context.Background(), "https://example.com/page")
+	if r.Allowed {
+		t.Fatal("request should be blocked by data budget")
+	}
+	if r.Scanner != ScannerDataBudget {
+		t.Errorf("scanner = %q, want %q", r.Scanner, ScannerDataBudget)
+	}
+	if r.IsProtective() {
+		t.Error("data budget exhaustion is threat evidence, not protective enforcement")
+	}
+}
+
 func TestScan_SeedPhraseBase64InPathSegment(t *testing.T) {
 	cfg := testConfig()
 	cfg.SeedPhraseDetection.Enabled = ptrBool(true)

@@ -51,9 +51,9 @@ const (
 	ScannerAll              = "all"
 )
 
-// ResultClass distinguishes protective enforcement (rate limiting, budget caps)
-// from threat evidence (DLP matches, injection, SSRF). The proxy's adaptive
-// enforcement uses this to avoid penalising agents for protective blocks.
+// ResultClass distinguishes protective enforcement (rate limiting) from threat
+// evidence (DLP matches, injection, SSRF, data budget exhaustion). The proxy's
+// adaptive enforcement uses this to avoid penalising agents for protective blocks.
 type ResultClass int
 
 const (

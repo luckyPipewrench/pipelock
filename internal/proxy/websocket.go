@@ -155,13 +155,17 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	wsHasFinding := !result.Allowed && !result.IsProtective()
 
 	if !result.Allowed {
+		status := http.StatusForbidden
+		if result.Scanner == scanner.ScannerRateLimit {
+			status = http.StatusTooManyRequests
+		}
 		if cfg.EnforceEnabled() {
 			log.LogBlocked("WS", targetURL, result.Scanner, result.Reason, clientIP, requestID, agent)
 			p.metrics.RecordWSBlocked()
 			if cfg.ExplainBlocksEnabled() && result.Hint != "" {
 				w.Header().Set("X-Pipelock-Hint", result.Hint)
 			}
-			http.Error(w, "WebSocket blocked: "+result.Reason, http.StatusForbidden)
+			http.Error(w, "WebSocket blocked: "+result.Reason, status)
 			return
 		}
 		// Audit mode: base action is "warn". Adaptive escalation may upgrade to block.
@@ -176,7 +180,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			p.metrics.RecordAdaptiveUpgrade(baseAction, effectiveAction, session.EscalationLabel(sr.Level))
 			log.LogBlocked("WS", targetURL, result.Scanner, result.Reason+" (escalated)", clientIP, requestID, agent)
 			p.metrics.RecordWSBlocked()
-			http.Error(w, "WebSocket blocked: "+result.Reason+" (escalated)", http.StatusForbidden)
+			http.Error(w, "WebSocket blocked: "+result.Reason+" (escalated)", status)
 			return
 		}
 		log.LogAnomaly("WS", targetURL, result.Scanner,

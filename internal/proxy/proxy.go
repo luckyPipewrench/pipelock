@@ -928,7 +928,11 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			p.metrics.RecordAdaptiveUpgrade(baseAction, effectiveAction, session.EscalationLabel(sr.Level))
 			log.LogBlocked("GET", displayURL, result.Scanner, result.Reason+" (escalated)", clientIP, requestID, agent)
 			p.metrics.RecordBlocked(parsed.Hostname(), result.Scanner, time.Since(start), agentLabel)
-			writeJSON(w, http.StatusForbidden, FetchResponse{
+			escalatedStatus := http.StatusForbidden
+			if result.Scanner == scanner.ScannerRateLimit {
+				escalatedStatus = http.StatusTooManyRequests
+			}
+			writeJSON(w, escalatedStatus, FetchResponse{
 				URL:         displayURL,
 				Agent:       agent,
 				Blocked:     true,

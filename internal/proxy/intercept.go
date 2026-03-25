@@ -301,6 +301,10 @@ func newInterceptHandler(
 		urlResult := sc.Scan(r.Context(), targetURL)
 		if !urlResult.Allowed && !urlResult.IsProtective() {
 			hasFinding = true
+			status := http.StatusForbidden
+			if urlResult.Scanner == scanner.ScannerRateLimit {
+				status = http.StatusTooManyRequests
+			}
 			if cfg.EnforceEnabled() {
 				// Record SignalBlock for adaptive enforcement scoring.
 				interceptRecordSignal(rec, session.SignalBlock, cfg, logger, m, p, clientIP, agent, requestID)
@@ -309,7 +313,7 @@ func newInterceptHandler(
 				if cfg.ExplainBlocksEnabled() && urlResult.Hint != "" {
 					w.Header().Set("X-Pipelock-Hint", urlResult.Hint)
 				}
-				http.Error(w, "blocked: "+urlResult.Reason, http.StatusForbidden)
+				http.Error(w, "blocked: "+urlResult.Reason, status)
 				return
 			}
 			// Audit mode: base action is "warn". Adaptive escalation may upgrade to block.
@@ -327,7 +331,7 @@ func newInterceptHandler(
 				interceptRecordSignal(rec, session.SignalBlock, cfg, logger, m, p, clientIP, agent, requestID)
 				logger.LogBlocked(r.Method, targetURL, urlResult.Scanner, urlResult.Reason+" (escalated)", clientIP, requestID, agent)
 				m.RecordTLSRequestBlocked("url_scan")
-				http.Error(w, "blocked: "+urlResult.Reason+" (escalated)", http.StatusForbidden)
+				http.Error(w, "blocked: "+urlResult.Reason+" (escalated)", status)
 				return
 			}
 			// Audit mode near-miss: URL was flagged but allowed.

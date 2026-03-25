@@ -83,6 +83,52 @@ func TestAssessInit_CreatesManifest(t *testing.T) {
 	}
 }
 
+// TestAssessInit_ConfigPathCanonicalized verifies that a relative config path
+// is stored as an absolute path in the manifest, so run and finalize work
+// from any working directory.
+func TestAssessInit_ConfigPathCanonicalized(t *testing.T) {
+	tmp := t.TempDir()
+
+	// Write config at an absolute path.
+	cfgFile := filepath.Join(tmp, "pipelock.yaml")
+	if err := os.WriteFile(cfgFile, []byte("mode: audit\n"), 0o600); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+
+	// Create a relative path that resolves to the same file.
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+	outDir := filepath.Join(tmp, "run-rel")
+	_, err = runAssessInit("pipelock.yaml", outDir)
+	if err != nil {
+		t.Fatalf("runAssessInit: %v", err)
+	}
+
+	manifestPath := filepath.Clean(filepath.Join(outDir, "manifest.json"))
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("reading manifest: %v", err)
+	}
+	var manifest AssessManifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatalf("parsing manifest: %v", err)
+	}
+
+	if !filepath.IsAbs(manifest.ConfigFile) {
+		t.Errorf("ConfigFile = %q, want absolute path", manifest.ConfigFile)
+	}
+	if manifest.ConfigFile != cfgFile {
+		t.Errorf("ConfigFile = %q, want %q", manifest.ConfigFile, cfgFile)
+	}
+}
+
 // TestAssessInit_RefusesClobber verifies that init returns an error when the
 // output directory already exists, protecting against accidental overwrites.
 func TestAssessInit_RefusesClobber(t *testing.T) {

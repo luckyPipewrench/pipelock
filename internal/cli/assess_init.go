@@ -105,10 +105,17 @@ func runAssessInit(configFile, outputDir string) (string, error) {
 		}
 	}
 
-	// Step 2: compute SHA-256 of config file bytes.
+	// Step 2: canonicalize config path and compute SHA-256 of config file bytes.
+	// Absolute paths ensure run and finalize work from any cwd.
 	configHash := ""
 	configLabel := configLabelDefaults
 	if configFile != "" {
+		absPath, err := filepath.Abs(configFile)
+		if err != nil {
+			return "", ExitCodeError(1, fmt.Errorf("resolving config path: %w", err))
+		}
+		configFile = absPath
+
 		data, err := os.ReadFile(filepath.Clean(configFile))
 		if err != nil {
 			return "", ExitCodeError(1, fmt.Errorf("reading config file: %w", err))

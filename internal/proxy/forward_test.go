@@ -2690,5 +2690,94 @@ func TestResponseBundleRules(t *testing.T) {
 				}
 			}
 		})
+}
+
+// TestSSRFSafeDialContext_TrustedDomainBypassesSSRF verifies that trusted domains
+// bypass the SSRF internal-IP check in ssrfSafeDialContext.
+func TestSSRFSafeDialContext_TrustedDomainBypassesSSRF(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = []string{"127.0.0.0/8"} // localhost resolves to 127.0.0.1
+	cfg.TrustedDomains = []string{"localhost"}
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	defer p.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// localhost is in internal range but is trusted — should NOT be blocked by SSRF
+	// The dial will fail (nothing listening) but that's expected; we just verify
+	// SSRF was not the reason for failure.
+	conn, err := p.ssrfSafeDialContext(ctx, "tcp", "localhost:443")
+	if err != nil {
+		// If the error is NOT a connection refused (which is expected since nothing listens on 443),
+		// then SSRF blocked us incorrectly.
+		if strings.Contains(err.Error(), "SSRF blocked") {
+			t.Fatalf("expected trusted localhost to bypass SSRF, got SSRF block: %v", err)
+		}
+		// Connection refused is expected - SSRF check passed
+		return
+	}
+	_ = conn.Close()
+}
+
+// TestSSRFSafeDialContext_TrustedDomainStillBlockedWhenNotTrusted verifies that
+// a hostname not in trusted_domains is still blocked when it resolves to internal IP.
+func TestSSRFSafeDialContext_TrustedDomainStillBlockedWhenNotTrusted(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = []string{"127.0.0.0/8"}
+	cfg.TrustedDomains = []string{"example.com"}
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	defer p.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// localhost is NOT trusted — should be blocked
+	_, err = p.ssrfSafeDialContext(ctx, "tcp", "localhost:443")
+	if err == nil {
+		t.Fatal("expected SSRF block for non-trusted localhost")
+	}
+	if !strings.Contains(err.Error(), "SSRF blocked") {
+		t.Errorf("expected SSRF blocked error, got: %v", err)
+	}
+}
+
+// TestSSRFSafeDialContext_DirectIPWithTrustedDomain verifies that trusted domains
+// bypass SSRF check even when connecting directly to an internal IP.
+func TestSSRFSafeDialContext_DirectIPWithTrustedDomain(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = []string{"10.0.0.0/8"}
+	cfg.TrustedDomains = []string{"example.com"}
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	defer p.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// Direct IP in internal range should be blocked (no trusted domain match)
+	_, err = p.ssrfSafeDialContext(ctx, "tcp", "10.0.0.1:443")
+	if err == nil {
+		t.Fatal("expected SSRF block for internal IP without trusted domain")
+	}
+	if !strings.Contains(err.Error(), "SSRF blocked") {
+		t.Errorf("expected SSRF blocked error, got: %v", err)
 	}
 }

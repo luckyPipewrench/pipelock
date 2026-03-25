@@ -621,6 +621,7 @@ func (p *Proxy) recordSessionActivity(clientIP, agent, hostname, requestID strin
 // CIDRs before connecting. Prevents DNS rebinding SSRF where an attacker
 // returns a safe IP during scanning but a private IP at connection time.
 // Used by both the HTTP client transport and CONNECT tunnel dialing.
+// Trusted domains (from config.trusted_domains) bypass the internal-IP check.
 func (p *Proxy) ssrfSafeDialContext(ctx context.Context, network, addr string) (net.Conn, error) {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -635,7 +636,9 @@ func (p *Proxy) ssrfSafeDialContext(ctx context.Context, network, addr string) (
 			ip = v4
 		}
 		if currentSc := p.scannerPtr.Load(); currentSc.IsInternalIP(ip) {
-			return nil, fmt.Errorf("SSRF blocked: connection to internal IP %s", host)
+			if !currentSc.IsTrustedDomain(host) {
+				return nil, fmt.Errorf("SSRF blocked: connection to internal IP %s", host)
+			}
 		}
 		return p.dialer.DialContext(ctx, network, addr)
 	}
@@ -661,7 +664,9 @@ func (p *Proxy) ssrfSafeDialContext(ctx context.Context, network, addr string) (
 			ip = v4
 		}
 		if currentSc.IsInternalIP(ip) {
-			return nil, fmt.Errorf("SSRF blocked: %s resolves to internal IP %s", host, ipStr)
+			if !currentSc.IsTrustedDomain(host) {
+				return nil, fmt.Errorf("SSRF blocked: %s resolves to internal IP %s", host, ipStr)
+			}
 		}
 	}
 

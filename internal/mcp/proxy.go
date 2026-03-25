@@ -17,12 +17,9 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	decide "github.com/luckyPipewrench/pipelock/internal/decide"
-	"github.com/luckyPipewrench/pipelock/internal/filesentry"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
-	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
-	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
@@ -108,7 +105,15 @@ func isRequest(msg []byte) bool {
 // When ks is non-nil, the kill switch is checked on each message so activation
 // mid-stream terminates already-open sessions immediately.
 // Returns true if any injection was detected.
-func ForwardScanned(reader transport.MessageReader, writer transport.MessageWriter, logW io.Writer, sc *scanner.Scanner, approver *hitl.Approver, toolCfg *tools.ToolScanConfig, tracker *RequestTracker, ks *killswitch.Controller, rec session.Recorder, adaptiveCfg *config.AdaptiveEnforcement, m *metrics.Metrics) (bool, error) {
+func ForwardScanned(reader transport.MessageReader, writer transport.MessageWriter, logW io.Writer, tracker *RequestTracker, opts MCPProxyOpts) (bool, error) {
+	sc := opts.Scanner
+	approver := opts.Approver
+	toolCfg := opts.ToolCfg
+	ks := opts.KillSwitch
+	rec := opts.Rec
+	adaptiveCfg := opts.AdaptiveCfg
+	m := opts.Metrics
+
 	// blockAll tracks whether the session is at a critical escalation level
 	// with block_all=true. Checked once up front and refreshed after each
 	// message so mid-stream escalation takes effect immediately.
@@ -636,14 +641,14 @@ type InputScanConfig struct {
 // bidirectional scanning. onChildReady is called after the child process
 // starts and its PID is registered with the lineage tracker; callers use
 // this to start the file sentry event loop after attribution is ready.
-func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW io.Writer, command []string, sc *scanner.Scanner, approver *hitl.Approver, inputCfg *InputScanConfig, toolCfg *tools.ToolScanConfig, policyCfg *policy.Config, ks *killswitch.Controller, chainMatcher *chains.Matcher, auditLogger *audit.Logger, cee *CEEDeps, store session.Store, adaptiveCfg *config.AdaptiveEnforcement, m *metrics.Metrics, lineage filesentry.Lineage, onChildReady func(), extraEnv ...string) error {
+func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW io.Writer, command []string, opts MCPProxyOpts, extraEnv ...string) error {
 	cmd := exec.CommandContext(ctx, command[0], command[1:]...) //nolint:gosec // command comes from user CLI args
 
-	// Per-invocation adaptive enforcement recorder. Nil when store is nil
+	// Per-invocation adaptive enforcement recorder. Nil when Store is nil
 	// (adaptive enforcement disabled), so all downstream callers are nil-safe.
 	var rec session.Recorder
-	if store != nil {
-		rec = store.GetOrCreate(session.NextInvocationKey("mcp-stdio"))
+	if opts.Store != nil {
+		rec = opts.Store.GetOrCreate(session.NextInvocationKey("mcp-stdio"))
 	}
 
 	// Wrap shared writers in mutex adapters. Multiple goroutines write to
@@ -677,6 +682,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	// PID attribution is unreliable. Warn and disable the lineage tracker
 	// rather than silently producing wrong results. File sentry DLP scanning
 	// still runs — only process-tree attribution is affected.
+	lineage := opts.Lineage
 	if lineage != nil {
 		if err := lineage.EnableSubreaper(); err != nil {
 			_, _ = fmt.Fprintf(logW, "pipelock: warning: subreaper setup failed, disabling PID attribution: %v\n", err)
@@ -695,8 +701,8 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 
 	// Signal that the child is started and PID is tracked. The file sentry
 	// event loop starts here so attribution is ready before classifying writes.
-	if onChildReady != nil {
-		onChildReady()
+	if opts.OnChildReady != nil {
+		opts.OnChildReady()
 	}
 
 	// Channel for blocked request IDs from input scanning goroutine.
@@ -709,14 +715,14 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	// tools/list) and ForwardScannedInput (request-side, validates tools/call).
 	// Must be created before goroutines that reference it.
 	var fwdToolCfg *tools.ToolScanConfig
-	if toolCfg != nil && toolCfg.Action != "" {
+	if opts.ToolCfg != nil && opts.ToolCfg.Action != "" {
 		fwdToolCfg = &tools.ToolScanConfig{
 			Baseline:                tools.NewToolBaseline(),
-			Action:                  toolCfg.Action,
-			DetectDrift:             toolCfg.DetectDrift,
-			BindingUnknownAction:    toolCfg.BindingUnknownAction,
-			BindingNoBaselineAction: toolCfg.BindingNoBaselineAction,
-			ExtraPoison:             toolCfg.ExtraPoison,
+			Action:                  opts.ToolCfg.Action,
+			DetectDrift:             opts.ToolCfg.DetectDrift,
+			BindingUnknownAction:    opts.ToolCfg.BindingUnknownAction,
+			BindingNoBaselineAction: opts.ToolCfg.BindingNoBaselineAction,
+			ExtraPoison:             opts.ToolCfg.ExtraPoison,
 		}
 	}
 
@@ -737,30 +743,38 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	// features are enabled.
 	tracker := NewRequestTracker()
 
+	// Build per-invocation opts with session-specific recorder and tool baseline.
+	inputOpts := opts
+	inputOpts.Rec = rec
+
 	// Forward client input to server stdin (with optional input scanning).
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		defer serverIn.Close() //nolint:errcheck // best-effort close on stdin forward
+		inputCfg := opts.InputCfg
 		if inputCfg != nil && inputCfg.Enabled {
 			clientReader := transport.NewStdioReader(clientIn)
 			serverWriter := transport.NewStdioWriter(serverIn)
-			ForwardScannedInput(clientReader, serverWriter, safeLogW, sc, inputCfg.Action, inputCfg.OnParseError, blockedCh, policyCfg, bindingCfg, ks, chainMatcher, tracker, auditLogger, cee, rec, adaptiveCfg, m)
-		} else if policyCfg != nil || bindingCfg != nil || chainMatcher != nil {
+			ForwardScannedInput(clientReader, serverWriter, safeLogW, inputCfg.Action, inputCfg.OnParseError, blockedCh, bindingCfg, tracker, inputOpts)
+		} else if opts.PolicyCfg != nil || bindingCfg != nil || opts.ChainMatcher != nil {
 			// Policy checking, session binding, or chain detection enabled but content scanning disabled.
 			// Route through ForwardScannedInput with pass-through content scanning.
 			// Use onParseError="block" (fail-closed) so malformed JSON can't bypass policy.
 			clientReader := transport.NewStdioReader(clientIn)
 			serverWriter := transport.NewStdioWriter(serverIn)
-			ForwardScannedInput(clientReader, serverWriter, safeLogW, sc, config.ActionWarn, config.ActionBlock, blockedCh, policyCfg, bindingCfg, ks, chainMatcher, tracker, auditLogger, cee, rec, adaptiveCfg, m)
+			ForwardScannedInput(clientReader, serverWriter, safeLogW, config.ActionWarn, config.ActionBlock, blockedCh, bindingCfg, tracker, inputOpts)
 		} else {
 			// No content scanning, but still route through ForwardScannedInput
 			// so request IDs are tracked for confused deputy protection.
 			// ActionWarn = pass-through, ActionBlock on parse error = fail-closed.
 			clientReader := transport.NewStdioReader(clientIn)
 			serverWriter := transport.NewStdioWriter(serverIn)
-			ForwardScannedInput(clientReader, serverWriter, safeLogW, sc, config.ActionWarn, config.ActionBlock, blockedCh, nil, nil, ks, nil, tracker, auditLogger, cee, rec, adaptiveCfg, m)
+			noScanOpts := inputOpts
+			noScanOpts.PolicyCfg = nil
+			noScanOpts.ChainMatcher = nil
+			ForwardScannedInput(clientReader, serverWriter, safeLogW, config.ActionWarn, config.ActionBlock, blockedCh, nil, tracker, noScanOpts)
 		}
 	}()
 
@@ -789,7 +803,9 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 
 	// Scan and forward server output to client.
 	serverReader := transport.NewStdioReader(serverOut)
-	_, scanErr := ForwardScanned(serverReader, safeClientOut, safeLogW, sc, approver, fwdToolCfg, tracker, ks, rec, adaptiveCfg, m)
+	fwdOpts := inputOpts
+	fwdOpts.ToolCfg = fwdToolCfg // session-specific baseline
+	_, scanErr := ForwardScanned(serverReader, safeClientOut, safeLogW, tracker, fwdOpts)
 
 	// Wait for subprocess to exit.
 	waitErr := cmd.Wait()

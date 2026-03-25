@@ -409,7 +409,7 @@ func TestExtractAllStringsFromJSON(t *testing.T) {
 // fwdScannedInput wraps ForwardScannedInput with StdioReader/StdioWriter so
 // tests keep the familiar io.Reader/io.Writer call pattern.
 func fwdScannedInput(r io.Reader, w io.Writer, logW io.Writer, sc *scanner.Scanner, action, onParseError string, blockedCh chan<- BlockedRequest) {
-	ForwardScannedInput(transport.NewStdioReader(r), transport.NewStdioWriter(w), logW, sc, action, onParseError, blockedCh, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	ForwardScannedInput(transport.NewStdioReader(r), transport.NewStdioWriter(w), logW, action, onParseError, blockedCh, nil, nil, testOpts(sc))
 }
 
 func TestForwardScannedInput_CleanRequestsForwarded(t *testing.T) {
@@ -1138,7 +1138,7 @@ func TestForwardScannedInput_PolicyBlocksDangerousToolCall(t *testing.T) {
 	blockedCh := make(chan BlockedRequest, 10)
 
 	clientIn := strings.NewReader(req)
-	ForwardScannedInput(transport.NewStdioReader(clientIn), transport.NewStdioWriter(&serverIn), &logW, sc, "block", "block", blockedCh, policyCfg, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	ForwardScannedInput(transport.NewStdioReader(clientIn), transport.NewStdioWriter(&serverIn), &logW, "block", "block", blockedCh, nil, nil, MCPProxyOpts{Scanner: sc, PolicyCfg: policyCfg})
 
 	// Should NOT be forwarded (policy blocks it).
 	if strings.Contains(serverIn.String(), "tools/call") {
@@ -1186,7 +1186,7 @@ func TestForwardScannedInput_PolicyWarnForwardsRequest(t *testing.T) {
 	blockedCh := make(chan BlockedRequest, 10)
 
 	clientIn := strings.NewReader(req)
-	ForwardScannedInput(transport.NewStdioReader(clientIn), transport.NewStdioWriter(&serverIn), &logW, sc, "block", "block", blockedCh, policyCfg, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	ForwardScannedInput(transport.NewStdioReader(clientIn), transport.NewStdioWriter(&serverIn), &logW, "block", "block", blockedCh, nil, nil, MCPProxyOpts{Scanner: sc, PolicyCfg: policyCfg})
 
 	// Warn mode — request should be forwarded.
 	if !strings.Contains(serverIn.String(), "tools/call") {
@@ -1231,7 +1231,7 @@ func TestForwardScannedInput_PolicyAndDLPBothMatch(t *testing.T) {
 
 	clientIn := strings.NewReader(req)
 	// Content action is "block" for DLP; policy rule also says "block". Strictest wins.
-	ForwardScannedInput(transport.NewStdioReader(clientIn), transport.NewStdioWriter(&serverIn), &logW, sc, "block", "block", blockedCh, policyCfg, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	ForwardScannedInput(transport.NewStdioReader(clientIn), transport.NewStdioWriter(&serverIn), &logW, "block", "block", blockedCh, nil, nil, MCPProxyOpts{Scanner: sc, PolicyCfg: policyCfg})
 
 	// Should NOT be forwarded (both DLP and policy match = block).
 	if strings.Contains(serverIn.String(), "tools/call") {
@@ -1271,7 +1271,7 @@ func TestForwardScannedInput_PolicyNilPassthrough(t *testing.T) {
 	blockedCh := make(chan BlockedRequest, 10)
 
 	clientIn := strings.NewReader(req)
-	ForwardScannedInput(transport.NewStdioReader(clientIn), transport.NewStdioWriter(&serverIn), &logW, sc, "warn", "block", blockedCh, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	ForwardScannedInput(transport.NewStdioReader(clientIn), transport.NewStdioWriter(&serverIn), &logW, "warn", "block", blockedCh, nil, nil, testOpts(sc))
 
 	// No policy engine — should be forwarded (content is clean, no DLP match).
 	if !strings.Contains(serverIn.String(), "tools/call") {
@@ -1304,7 +1304,7 @@ func TestForwardScannedInput_PolicyRedirectMissingProfileBlocks(t *testing.T) {
 	blockedCh := make(chan BlockedRequest, 10)
 
 	clientIn := strings.NewReader(req)
-	ForwardScannedInput(transport.NewStdioReader(clientIn), transport.NewStdioWriter(&serverIn), &logW, sc, config.ActionBlock, config.ActionBlock, blockedCh, policyCfg, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	ForwardScannedInput(transport.NewStdioReader(clientIn), transport.NewStdioWriter(&serverIn), &logW, config.ActionBlock, config.ActionBlock, blockedCh, nil, nil, MCPProxyOpts{Scanner: sc, PolicyCfg: policyCfg})
 
 	// Missing profile — fail closed to block.
 	if strings.Contains(serverIn.String(), "tools/call") {
@@ -1358,7 +1358,7 @@ func TestForwardScannedInput_PolicyRedirectSuccess(t *testing.T) {
 	blockedCh := make(chan BlockedRequest, 10)
 
 	clientIn := strings.NewReader(req)
-	ForwardScannedInput(transport.NewStdioReader(clientIn), transport.NewStdioWriter(&serverIn), &logW, sc, config.ActionBlock, config.ActionBlock, blockedCh, policyCfg, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	ForwardScannedInput(transport.NewStdioReader(clientIn), transport.NewStdioWriter(&serverIn), &logW, config.ActionBlock, config.ActionBlock, blockedCh, nil, nil, MCPProxyOpts{Scanner: sc, PolicyCfg: policyCfg})
 
 	// Request must NOT be forwarded to server.
 	if strings.Contains(serverIn.String(), "tools/call") {
@@ -1432,7 +1432,7 @@ func TestForwardScannedInput_PolicyRedirectHandlerFailure(t *testing.T) {
 	blockedCh := make(chan BlockedRequest, 10)
 
 	clientIn := strings.NewReader(req)
-	ForwardScannedInput(transport.NewStdioReader(clientIn), transport.NewStdioWriter(&serverIn), &logW, sc, config.ActionBlock, config.ActionBlock, blockedCh, policyCfg, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	ForwardScannedInput(transport.NewStdioReader(clientIn), transport.NewStdioWriter(&serverIn), &logW, config.ActionBlock, config.ActionBlock, blockedCh, nil, nil, MCPProxyOpts{Scanner: sc, PolicyCfg: policyCfg})
 
 	// Handler failed — fall through to block.
 	if strings.Contains(serverIn.String(), "tools/call") {
@@ -1655,7 +1655,7 @@ func TestForwardScannedInput_InjectionInToolArgs(t *testing.T) {
 	var logBuf bytes.Buffer
 	blockedCh := make(chan BlockedRequest, 10)
 
-	ForwardScannedInput(transport.NewStdioReader(strings.NewReader(msg)), transport.NewStdioWriter(&serverBuf), &logBuf, sc, "block", "block", blockedCh, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	ForwardScannedInput(transport.NewStdioReader(strings.NewReader(msg)), transport.NewStdioWriter(&serverBuf), &logBuf, "block", "block", blockedCh, nil, nil, testOpts(sc))
 
 	blocked := make([]BlockedRequest, 0)
 	for b := range blockedCh {
@@ -1682,7 +1682,7 @@ func TestForwardScannedInput_EmptyMethodFallback(t *testing.T) {
 	var logBuf bytes.Buffer
 	blockedCh := make(chan BlockedRequest, 10)
 
-	ForwardScannedInput(transport.NewStdioReader(strings.NewReader(msg)), transport.NewStdioWriter(&serverBuf), &logBuf, sc, "block", "block", blockedCh, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	ForwardScannedInput(transport.NewStdioReader(strings.NewReader(msg)), transport.NewStdioWriter(&serverBuf), &logBuf, "block", "block", blockedCh, nil, nil, testOpts(sc))
 
 	blocked := make([]BlockedRequest, 0)
 	for b := range blockedCh {
@@ -1929,7 +1929,7 @@ func TestForwardScannedInput_SessionBinding_BlockUnknown(t *testing.T) {
 	ForwardScannedInput(
 		transport.NewStdioReader(strings.NewReader(req)),
 		transport.NewStdioWriter(&serverBuf),
-		&logBuf, sc, "warn", "block", blockedCh, nil, bindingCfg, nil, nil, nil, nil, nil, nil, nil, nil,
+		&logBuf, "warn", "block", blockedCh, bindingCfg, nil, testOpts(sc),
 	)
 
 	blocked := make([]BlockedRequest, 0)
@@ -1973,7 +1973,7 @@ func TestForwardScannedInput_SessionBinding_WarnUnknown(t *testing.T) {
 	ForwardScannedInput(
 		transport.NewStdioReader(strings.NewReader(req)),
 		transport.NewStdioWriter(&serverBuf),
-		&logBuf, sc, "warn", "block", blockedCh, nil, bindingCfg, nil, nil, nil, nil, nil, nil, nil, nil,
+		&logBuf, "warn", "block", blockedCh, bindingCfg, nil, testOpts(sc),
 	)
 
 	// Drain blocked channel.
@@ -2013,7 +2013,7 @@ func TestForwardScannedInput_SessionBinding_NoBaseline(t *testing.T) {
 	ForwardScannedInput(
 		transport.NewStdioReader(strings.NewReader(req)),
 		transport.NewStdioWriter(&serverBuf),
-		&logBuf, sc, "warn", "block", blockedCh, nil, bindingCfg, nil, nil, nil, nil, nil, nil, nil, nil,
+		&logBuf, "warn", "block", blockedCh, bindingCfg, nil, testOpts(sc),
 	)
 
 	blocked := make([]BlockedRequest, 0)
@@ -2054,7 +2054,7 @@ func TestForwardScannedInput_SessionBinding_KnownToolAllowed(t *testing.T) {
 	ForwardScannedInput(
 		transport.NewStdioReader(strings.NewReader(req)),
 		transport.NewStdioWriter(&serverBuf),
-		&logBuf, sc, "warn", "block", blockedCh, nil, bindingCfg, nil, nil, nil, nil, nil, nil, nil, nil,
+		&logBuf, "warn", "block", blockedCh, bindingCfg, nil, testOpts(sc),
 	)
 
 	// Drain blocked channel.
@@ -2089,7 +2089,7 @@ func TestForwardScannedInput_SessionBinding_NonToolCallIgnored(t *testing.T) {
 	ForwardScannedInput(
 		transport.NewStdioReader(strings.NewReader(req)),
 		transport.NewStdioWriter(&serverBuf),
-		&logBuf, sc, "warn", "block", blockedCh, nil, bindingCfg, nil, nil, nil, nil, nil, nil, nil, nil,
+		&logBuf, "warn", "block", blockedCh, bindingCfg, nil, testOpts(sc),
 	)
 
 	for range blockedCh {
@@ -2124,7 +2124,7 @@ func TestForwardScannedInput_SessionBinding_BatchBlocked(t *testing.T) {
 	ForwardScannedInput(
 		transport.NewStdioReader(strings.NewReader(batch)),
 		transport.NewStdioWriter(&serverBuf),
-		&logBuf, sc, "warn", "block", blockedCh, nil, bindingCfg, nil, nil, nil, nil, nil, nil, nil, nil,
+		&logBuf, "warn", "block", blockedCh, bindingCfg, nil, testOpts(sc),
 	)
 
 	blocked := make([]BlockedRequest, 0)
@@ -2159,7 +2159,7 @@ func TestForwardScannedInput_KillSwitchBlocksRequest(t *testing.T) {
 	var logBuf bytes.Buffer
 	blockedCh := make(chan BlockedRequest, 16)
 
-	go ForwardScannedInput(clientReader, serverWriter, &logBuf, sc, "block", "block", blockedCh, nil, nil, ks, nil, nil, nil, nil, nil, nil, nil)
+	go ForwardScannedInput(clientReader, serverWriter, &logBuf, "block", "block", blockedCh, nil, nil, buildTestOpts(sc, withKillSwitch(ks)))
 
 	var blocked []BlockedRequest
 	for b := range blockedCh {
@@ -2198,7 +2198,7 @@ func TestForwardScannedInput_KillSwitchDropsNotification(t *testing.T) {
 	var logBuf bytes.Buffer
 	blockedCh := make(chan BlockedRequest, 16)
 
-	go ForwardScannedInput(clientReader, serverWriter, &logBuf, sc, "block", "block", blockedCh, nil, nil, ks, nil, nil, nil, nil, nil, nil, nil)
+	go ForwardScannedInput(clientReader, serverWriter, &logBuf, "block", "block", blockedCh, nil, nil, buildTestOpts(sc, withKillSwitch(ks)))
 
 	var blocked []BlockedRequest
 	for b := range blockedCh {
@@ -2244,7 +2244,7 @@ func TestForwardScannedInput_ChainDetectionBlock(t *testing.T) {
 	var logBuf bytes.Buffer
 	blockedCh := make(chan BlockedRequest, 16)
 
-	go ForwardScannedInput(clientReader, serverWriter, &logBuf, sc, "warn", "block", blockedCh, nil, nil, nil, cm, nil, nil, nil, nil, nil, nil)
+	go ForwardScannedInput(clientReader, serverWriter, &logBuf, "warn", "block", blockedCh, nil, nil, MCPProxyOpts{Scanner: sc, ChainMatcher: cm})
 
 	var blocked []BlockedRequest
 	for b := range blockedCh {
@@ -2292,7 +2292,7 @@ func TestForwardScannedInput_ChainDetectionBlock_WithAuditLogger(t *testing.T) {
 	var logBuf bytes.Buffer
 	blockedCh := make(chan BlockedRequest, 16)
 
-	go ForwardScannedInput(clientReader, serverWriter, &logBuf, sc, "warn", "block", blockedCh, nil, nil, nil, cm, nil, al, nil, nil, nil, nil)
+	go ForwardScannedInput(clientReader, serverWriter, &logBuf, "warn", "block", blockedCh, nil, nil, MCPProxyOpts{Scanner: sc, ChainMatcher: cm, AuditLogger: al})
 
 	var blocked []BlockedRequest
 	for b := range blockedCh {
@@ -2336,7 +2336,7 @@ func TestForwardScannedInput_ChainBlock_NullID(t *testing.T) {
 	var logBuf bytes.Buffer
 	blockedCh := make(chan BlockedRequest, 16)
 
-	go ForwardScannedInput(clientReader, serverWriter, &logBuf, sc, "warn", "block", blockedCh, nil, nil, nil, cm, nil, nil, nil, nil, nil, nil)
+	go ForwardScannedInput(clientReader, serverWriter, &logBuf, "warn", "block", blockedCh, nil, nil, MCPProxyOpts{Scanner: sc, ChainMatcher: cm})
 
 	var blocked []BlockedRequest
 	for b := range blockedCh {
@@ -2375,7 +2375,7 @@ func TestForwardScannedInput_ChainDetectionWarn(t *testing.T) {
 	var logBuf bytes.Buffer
 	blockedCh := make(chan BlockedRequest, 16)
 
-	go ForwardScannedInput(clientReader, serverWriter, &logBuf, sc, "warn", "block", blockedCh, nil, nil, nil, cm, nil, nil, nil, nil, nil, nil)
+	go ForwardScannedInput(clientReader, serverWriter, &logBuf, "warn", "block", blockedCh, nil, nil, MCPProxyOpts{Scanner: sc, ChainMatcher: cm})
 
 	var blocked []BlockedRequest
 	for b := range blockedCh {
@@ -2459,7 +2459,7 @@ func TestForwardScannedInput_BindingMissingToolName(t *testing.T) {
 	ForwardScannedInput(
 		transport.NewStdioReader(strings.NewReader(input)),
 		transport.NewStdioWriter(&serverBuf),
-		&logBuf, sc, "warn", "block", blockedCh, nil, bindingCfg, nil, nil, nil, nil, nil, nil, nil, nil,
+		&logBuf, "warn", "block", blockedCh, bindingCfg, nil, testOpts(sc),
 	)
 
 	blocked := make([]BlockedRequest, 0)
@@ -2519,8 +2519,8 @@ func TestForwardScannedInput_CEEBlocksCleanMessage(t *testing.T) {
 	ForwardScannedInput(
 		transport.NewStdioReader(clientIn),
 		transport.NewStdioWriter(&serverIn),
-		&logBuf, sc, "block", "block", blockedCh,
-		nil, nil, nil, nil, nil, logger, cee, nil, nil, nil,
+		&logBuf, "block", "block", blockedCh,
+		nil, nil, MCPProxyOpts{Scanner: sc, AuditLogger: logger, CEE: cee},
 	)
 
 	// Collect blocked requests.
@@ -2562,8 +2562,8 @@ func TestForwardScannedInput_CEEBlocksInWarnMode(t *testing.T) {
 	ForwardScannedInput(
 		transport.NewStdioReader(clientIn),
 		transport.NewStdioWriter(&serverIn),
-		&logBuf, sc, "warn", "block", blockedCh,
-		nil, nil, nil, nil, nil, logger, cee, nil, nil, nil,
+		&logBuf, "warn", "block", blockedCh,
+		nil, nil, MCPProxyOpts{Scanner: sc, AuditLogger: logger, CEE: cee},
 	)
 
 	// Collect blocked requests.

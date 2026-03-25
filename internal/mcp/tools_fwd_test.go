@@ -263,7 +263,7 @@ func TestForwardScanned_SessionBinding_CapturesBaseline(t *testing.T) {
 	writer := transport.NewStdioWriter(&out)
 	var logBuf bytes.Buffer
 
-	_, err := ForwardScanned(reader, writer, &logBuf, sc, nil, toolCfg, nil, nil, nil, nil, nil)
+	_, err := ForwardScanned(reader, writer, &logBuf, nil, buildTestOpts(sc, withToolCfg(toolCfg)))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

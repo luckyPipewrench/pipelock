@@ -13,17 +13,13 @@ import (
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
-	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	decide "github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/extract"
-	"github.com/luckyPipewrench/pipelock/internal/killswitch"
-	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
-	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
@@ -485,21 +481,23 @@ func ForwardScannedInput(
 	reader transport.MessageReader,
 	writer transport.MessageWriter,
 	logW io.Writer,
-	sc *scanner.Scanner,
 	action string,
 	onParseError string,
 	blockedCh chan<- BlockedRequest,
-	policyCfg *policy.Config,
 	bindingCfg *SessionBindingConfig,
-	ks *killswitch.Controller,
-	chainMatcher *chains.Matcher,
 	tracker *RequestTracker,
-	auditLogger *audit.Logger,
-	cee *CEEDeps,
-	rec session.Recorder,
-	adaptiveCfg *config.AdaptiveEnforcement,
-	m *metrics.Metrics,
+	opts MCPProxyOpts,
 ) {
+	sc := opts.Scanner
+	policyCfg := opts.PolicyCfg
+	ks := opts.KillSwitch
+	chainMatcher := opts.ChainMatcher
+	auditLogger := opts.AuditLogger
+	cee := opts.CEE
+	rec := opts.Rec
+	adaptiveCfg := opts.AdaptiveCfg
+	m := opts.Metrics
+
 	defer close(blockedCh)
 
 	// Helper: record an adaptive signal and handle escalation side-effects.

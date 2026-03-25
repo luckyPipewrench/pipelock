@@ -100,6 +100,15 @@ func RunWSProxy(
 
 	const sessionKey = "ws-stdio"
 
+	// Shared opts for ForwardScanned and scanHTTPInput calls.
+	wsOpts := MCPProxyOpts{
+		Scanner: sc, Approver: approver, ToolCfg: fwdToolCfg,
+		InputCfg: inputCfg, PolicyCfg: policyCfg,
+		KillSwitch: ks, ChainMatcher: chainMatcher,
+		AuditLogger: auditLogger, CEE: cee,
+		Rec: rec, AdaptiveCfg: adaptiveCfg, Metrics: m,
+	}
+
 	clientReader := transport.NewStdioReader(clientIn)
 
 	var wg sync.WaitGroup
@@ -111,7 +120,7 @@ func RunWSProxy(
 	go func() {
 		defer wg.Done()
 		defer cancel() // Signal main goroutine if upstream closes first.
-		_, scanErr := ForwardScanned(wsClient, safeClientOut, safeLogW, sc, approver, fwdToolCfg, tracker, ks, rec, adaptiveCfg, m)
+		_, scanErr := ForwardScanned(wsClient, safeClientOut, safeLogW, tracker, wsOpts)
 		if scanErr != nil {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream scan error: %v\n", scanErr)
 			lastScanErr = scanErr
@@ -164,7 +173,7 @@ func RunWSProxy(
 		}
 
 		// Input scanning: DLP, injection, policy, chain detection.
-		if blocked := scanHTTPInput(msg, sc, safeLogW, inputCfg, policyCfg, chainMatcher, sessionKey, sessionKey, auditLogger, cee, rec, adaptiveCfg, m); blocked != nil {
+		if blocked := scanHTTPInput(msg, safeLogW, sessionKey, sessionKey, wsOpts); blocked != nil {
 			if !blocked.IsNotification {
 				resp := blockRequestResponse(*blocked)
 				if wErr := safeClientOut.WriteMessage(resp); wErr != nil {

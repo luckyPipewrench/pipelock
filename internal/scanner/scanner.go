@@ -51,13 +51,34 @@ const (
 	ScannerAll              = "all"
 )
 
+// ResultClass distinguishes protective enforcement (rate limiting, budget caps)
+// from threat evidence (DLP matches, injection, SSRF). The proxy's adaptive
+// enforcement uses this to avoid penalising agents for protective blocks.
+type ResultClass int
+
+const (
+	// ClassThreat is the zero value: the block indicates a genuine threat
+	// signal (DLP match, injection, blocklist hit, etc.).
+	ClassThreat ResultClass = iota
+	// ClassProtective means the block is protective enforcement (rate
+	// limiting, data budget) — not evidence of malicious intent.
+	ClassProtective
+)
+
 // Result describes the outcome of scanning a URL.
 type Result struct {
-	Allowed bool    `json:"allowed"`
-	Reason  string  `json:"reason,omitempty"`
-	Scanner string  `json:"scanner,omitempty"` // which scanner triggered
-	Hint    string  `json:"hint,omitempty"`    // actionable guidance when blocked
-	Score   float64 `json:"score"`             // anomaly score 0.0-1.0
+	Allowed bool        `json:"allowed"`
+	Reason  string      `json:"reason,omitempty"`
+	Scanner string      `json:"scanner,omitempty"` // which scanner triggered
+	Hint    string      `json:"hint,omitempty"`    // actionable guidance when blocked
+	Score   float64     `json:"score"`             // anomaly score 0.0-1.0
+	Class   ResultClass `json:"-"`                 // internal: threat vs protective classification
+}
+
+// IsProtective reports whether this result represents protective enforcement
+// (e.g., rate limiting) rather than a threat detection.
+func (r Result) IsProtective() bool {
+	return r.Class == ClassProtective
 }
 
 // Scanner checks URLs for suspicious content before fetching.
@@ -763,6 +784,7 @@ func (s *Scanner) checkRateLimit(hostname string) Result {
 			Reason:  fmt.Sprintf("rate limit exceeded for %s", hostname),
 			Scanner: ScannerRateLimit,
 			Score:   0.7,
+			Class:   ClassProtective,
 		}
 	}
 

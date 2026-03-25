@@ -4386,6 +4386,51 @@ func TestScan_SeedPhraseSplitAcrossQueryParams(t *testing.T) {
 	}
 }
 
+func TestResultClass(t *testing.T) {
+	tests := []struct {
+		name       string
+		result     Result
+		protective bool
+	}{
+		{"zero value is not protective", Result{}, false},
+		{"ClassProtective is protective", Result{Class: ClassProtective}, true},
+		{"ClassThreat is not protective", Result{Class: ClassThreat}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.result.IsProtective(); got != tt.protective {
+				t.Errorf("IsProtective() = %v, want %v", got, tt.protective)
+			}
+		})
+	}
+}
+
+func TestCheckRateLimit_ClassProtective(t *testing.T) {
+	cfg := testConfig()
+	cfg.FetchProxy.Monitoring.MaxReqPerMinute = 1
+	s := New(cfg)
+	defer s.Close()
+
+	// First request succeeds.
+	r1 := s.Scan(context.Background(), "https://example.com/page1")
+	if !r1.Allowed {
+		t.Fatal("first request should be allowed")
+	}
+
+	// Second request hits the rate limit.
+	r2 := s.Scan(context.Background(), "https://example.com/page2")
+	if r2.Allowed {
+		t.Fatal("second request should be rate-limited")
+	}
+	if r2.Scanner != ScannerRateLimit {
+		t.Errorf("scanner = %q, want %q", r2.Scanner, ScannerRateLimit)
+	}
+	if !r2.IsProtective() {
+		t.Error("rate-limited result should be protective")
+	}
+}
+
 func TestScan_SeedPhraseBase64InPathSegment(t *testing.T) {
 	cfg := testConfig()
 	cfg.SeedPhraseDetection.Enabled = ptrBool(true)

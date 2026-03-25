@@ -27,6 +27,7 @@ const tokenPrefix = "pipelock_lic_" + "v1_" //nolint:gosec // G101: not a creden
 
 // Feature names for gating.
 const FeatureAgents = "agents"
+const FeatureAssess = "assess"
 
 // License represents the claims in a signed license token.
 type License struct {

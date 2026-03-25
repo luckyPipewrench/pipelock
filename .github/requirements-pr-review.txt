@@ -1,0 +1,15 @@
+# Pinned dependencies for pr-review.yaml workflow.
+# All hashes from PyPI; includes py3-none-any and cp312 manylinux_x86_64
+# variants so the install works on GitHub Ubuntu runners.
+# Regenerate: pip download <pkg> --no-deps, then pip hash <file>.
+certifi==2026.2.25 \
+    --hash=sha256:027692e4402ad994f1c42e52a4997a9763c646b73e4096e4d5d6db8af1d6f0fa
+charset-normalizer==3.4.6 \
+    --hash=sha256:0e28d62a8fc7a1fa411c43bd65e346f3bce9716dc51b897fbe930c5987b402d5 \
+    --hash=sha256:947cf925bc916d90adba35a64c82aace04fa39b46b52d4630ece166655905a69
+idna==3.11 \
+    --hash=sha256:771a87f49d9defaf64091e6e6fe9c18d4833f140bd19464795bc32d966ca37ea
+requests==2.32.5 \
+    --hash=sha256:2462f94637a34fd532264295e186976db0f5d453d1cdd31473c85a6a161affb6
+urllib3==2.6.3 \
+    --hash=sha256:bf272323e553dfb2e87d9bfd225ca7b0f467b919d7bbd355436d3fd37cb0acd4

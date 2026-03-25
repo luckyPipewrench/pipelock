@@ -105,8 +105,12 @@ func runAssessRun(runDir string, force bool, skip []string) error {
 		return ExitCodeError(2, fmt.Errorf("run directory status is %q, expected %q", manifest.Status, assessStatusInitialized))
 	}
 
-	// Step 3: config integrity check.
-	if manifest.ConfigFile != configLabelDefaults && manifest.ConfigHash != "" {
+	// Step 3: config integrity check. Fail closed: missing hash on a non-default
+	// config is treated as a tampered manifest, not a skip condition.
+	if manifest.ConfigFile != configLabelDefaults {
+		if manifest.ConfigHash == "" {
+			return ExitCodeError(2, fmt.Errorf("manifest has no config_hash for %q; cannot verify integrity", manifest.ConfigFile))
+		}
 		data, err := os.ReadFile(filepath.Clean(manifest.ConfigFile))
 		if err != nil {
 			return failManifest(manifestPath, &manifest, fmt.Errorf("reading config for integrity check: %w", err))
@@ -139,9 +143,17 @@ func runAssessRun(runDir string, force bool, skip []string) error {
 		return failManifest(manifestPath, &manifest, fmt.Errorf("loading config: %w", err))
 	}
 
-	// Build skip set for O(1) lookup.
+	// Build skip set for O(1) lookup. Validate values upfront.
+	validPrimitives := map[string]bool{
+		"simulate": true, "audit-score": true,
+		"verify-install": true, "discover": true,
+	}
 	skipSet := make(map[string]bool, len(skip))
 	for _, s := range skip {
+		if !validPrimitives[s] {
+			return failManifest(manifestPath, &manifest,
+				fmt.Errorf("unknown --skip value %q (valid: simulate, audit-score, verify-install, discover)", s))
+		}
 		skipSet[s] = true
 	}
 
@@ -411,14 +423,23 @@ func writeEvidenceJSONL(path string, lines []any) error {
 	return nil
 }
 
-// writeManifest marshals the manifest and writes it atomically.
+// writeManifest marshals the manifest and writes it atomically via temp+rename.
+// This prevents a crash during write from corrupting manifest.json.
 func writeManifest(path string, manifest *AssessManifest) error {
 	data, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		return ExitCodeError(2, fmt.Errorf("marshaling manifest: %w", err))
 	}
-	if err := os.WriteFile(filepath.Clean(path), data, 0o600); err != nil {
-		return ExitCodeError(2, fmt.Errorf("writing manifest: %w", err))
+	data = append(data, '\n')
+
+	cleanPath := filepath.Clean(path)
+	tmpPath := cleanPath + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0o600); err != nil {
+		return ExitCodeError(2, fmt.Errorf("writing manifest temp: %w", err))
+	}
+	if err := os.Rename(tmpPath, cleanPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return ExitCodeError(2, fmt.Errorf("renaming manifest: %w", err))
 	}
 	return nil
 }

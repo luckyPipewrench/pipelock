@@ -44,6 +44,7 @@ const (
 	tierPro         = "pro"
 	tierEnterprise  = "enterprise"
 	tierTrial       = "trial"
+	tierAssess      = "assess"
 )
 
 // validTiers is the allowlist of accepted pipelock_tier metadata values.
@@ -54,6 +55,7 @@ var validTiers = map[string]bool{
 	tierPro:         true,
 	tierEnterprise:  true,
 	tierTrial:       true,
+	tierAssess:      true,
 }
 
 // WebhookHandler processes Polar webhook events and coordinates license
@@ -513,6 +515,8 @@ func (h *WebhookHandler) tierToFeatures(tier string) []string {
 	case tierEnterprise:
 		// TODO: Define enterprise-specific features as they're built.
 		return []string{license.FeatureAgents}
+	case tierAssess:
+		return []string{license.FeatureAssess}
 	default:
 		return nil
 	}

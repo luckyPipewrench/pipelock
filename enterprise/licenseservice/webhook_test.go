@@ -214,6 +214,7 @@ func TestTierToFeatures(t *testing.T) {
 		{"founding pro", tierFoundingPro, []string{license.FeatureAgents}},
 		{"enterprise", tierEnterprise, []string{license.FeatureAgents}},
 		{"trial", tierTrial, []string{license.FeatureAgents}},
+		{"assess", tierAssess, []string{license.FeatureAssess}},
 		{"unknown returns nil (fail-closed)", "unknown", nil},
 	}
 

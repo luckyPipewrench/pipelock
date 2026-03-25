@@ -152,7 +152,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// signals (SignalBlock) fire even for blocked requests. Pass deferClean=true
 	// so header DLP findings on the same handshake don't get offset by early decay.
 	sr := p.recordSessionActivity(clientIP, agent, parsed.Hostname(), requestID, result, cfg, log, true)
-	wsHasFinding := !result.Allowed
+	wsHasFinding := !result.Allowed && !result.IsProtective()
 
 	if !result.Allowed {
 		if cfg.EnforceEnabled() {

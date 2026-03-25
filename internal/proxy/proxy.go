@@ -894,7 +894,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// detected something for this request. RecordClean is only applied at the
 	// end when no finding was detected. A near-miss (scored but allowed) counts
 	// as a finding to prevent inadvertent score decay.
-	hasFinding := !result.Allowed || (result.Score > 0 && result.Allowed)
+	hasFinding := (!result.Allowed && !result.IsProtective()) || (result.Score > 0 && result.Allowed)
 
 	if !result.Allowed {
 		if cfg.EnforceEnabled() {

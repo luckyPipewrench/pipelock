@@ -172,7 +172,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// so a warn-only header or CEE finding on the same CONNECT request does not
 	// get offset by a clean decay from the URL stage.
 	sr := p.recordSessionActivity(clientIP, agent, host, requestID, result, cfg, p.logger, true)
-	hasFinding := !result.Allowed || connectHeaderHadFinding
+	hasFinding := (!result.Allowed && !result.IsProtective()) || connectHeaderHadFinding
 
 	if !result.Allowed {
 		if cfg.EnforceEnabled() {
@@ -536,7 +536,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	if sm := p.sessionMgrPtr.Load(); sm != nil {
 		forwardRec = sm.GetOrCreate(forwardSessionKey)
 	}
-	hasFinding := !result.Allowed
+	hasFinding := !result.Allowed && !result.IsProtective()
 
 	if !result.Allowed {
 		if cfg.EnforceEnabled() {

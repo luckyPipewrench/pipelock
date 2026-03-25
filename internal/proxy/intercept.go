@@ -299,7 +299,7 @@ func newInterceptHandler(
 		// the real path and query, which may contain exfiltrated secrets.
 		targetURL := r.URL.String()
 		urlResult := sc.Scan(r.Context(), targetURL)
-		if !urlResult.Allowed {
+		if !urlResult.Allowed && !urlResult.IsProtective() {
 			hasFinding = true
 			if cfg.EnforceEnabled() {
 				// Record SignalBlock for adaptive enforcement scoring.

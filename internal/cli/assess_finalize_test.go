@@ -711,10 +711,10 @@ func TestAssessFinalize_HTMLFilesCreated(t *testing.T) {
 		if err != nil {
 			t.Fatalf("reading assessment.html: %v", err)
 		}
-		if !strings.Contains(string(data), "<html>") {
+		if !strings.Contains(string(data), "<html") {
 			t.Error("assessment.html should be valid HTML")
 		}
-		if !strings.Contains(string(data), "Pipelock Assessment") {
+		if !strings.Contains(string(data), "Pipelock Security Assessment") {
 			t.Error("assessment.html should contain title")
 		}
 	})

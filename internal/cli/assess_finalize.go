@@ -501,20 +501,6 @@ func writeSummaryHTML(path string, s *Summary) error {
 	return nil
 }
 
-// renderAssessmentHTML writes a minimal HTML stub for the full assessment.
-// Task 9 will replace this with real templates.
-func renderAssessmentHTML(w io.Writer, a *Assessment) error {
-	_, err := fmt.Fprintf(w, "<html><body><h1>Pipelock Assessment — Grade: %s</h1></body></html>\n", a.OverallGrade)
-	return err
-}
-
-// renderSummaryHTML writes a minimal HTML stub for the summary projection.
-// Task 9 will replace this with real templates.
-func renderSummaryHTML(w io.Writer, s *Summary) error {
-	_, err := fmt.Fprintf(w, "<html><body><h1>Pipelock Summary — Grade: %s</h1><p>Informational only. Unsigned. Not audit-grade.</p></body></html>\n", s.OverallGrade)
-	return err
-}
-
 // hashFile computes the SHA-256 hex digest of a file.
 func hashFile(path string) (string, error) {
 	data, err := os.ReadFile(filepath.Clean(path))

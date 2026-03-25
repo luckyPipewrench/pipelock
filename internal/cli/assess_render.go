@@ -23,6 +23,7 @@ func renderAssessmentHTML(w io.Writer, a *Assessment) error {
 		"gradeColor": gradeColor,
 		"sevColor":   severityColor,
 		"sevBadge":   severityBadge,
+		"percent":    scorePercent,
 	}
 	tmpl, err := template.New("assessment").Funcs(funcMap).Parse(assessTemplateHTML)
 	if err != nil {
@@ -37,6 +38,7 @@ func renderSummaryHTML(w io.Writer, s *Summary) error {
 		"gradeColor": gradeColor,
 		"sevColor":   severityColor,
 		"sevBadge":   severityBadge,
+		"percent":    scorePercent,
 	}
 	tmpl, err := template.New("summary").Funcs(funcMap).Parse(assessSummaryTemplateHTML)
 	if err != nil {
@@ -81,4 +83,13 @@ func severityColor(sev string) string {
 // severityBadge returns the display label for a severity value.
 func severityBadge(sev string) string {
 	return strings.ToUpper(sev)
+}
+
+// scorePercent computes a 0-100 integer percentage for use in score bar widths.
+// Returns 0 when maxScore is zero (skipped primitive) to prevent division by zero.
+func scorePercent(score, maxScore int) int {
+	if maxScore == 0 {
+		return 0
+	}
+	return (score * 100) / maxScore
 }

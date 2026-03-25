@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -117,9 +118,27 @@ func runAssessVerify(runDir, agent, keystoreDir string) (int, error) {
 	}
 
 	// Step 3: verify artifact hashes.
+	// Validate that each artifact path stays within the run directory to prevent
+	// a malicious bundle from directing hashing at arbitrary files via "../" segments
+	// or absolute paths.
 	for name, expectedHash := range manifest.Artifacts {
 		artifactPath := filepath.Join(cleanDir, name)
-		actualHash, err := hashFile(artifactPath)
+
+		// Resolve symlinks before containment check to prevent symlink escape.
+		resolvedPath, resolveErr := filepath.EvalSymlinks(artifactPath)
+		if resolveErr != nil {
+			return verifyExitTamperedArtifact, fmt.Errorf("integrity check failed: %s: %w", name, resolveErr)
+		}
+		resolvedDir, resolveErr := filepath.EvalSymlinks(cleanDir)
+		if resolveErr != nil {
+			return verifyExitTamperedArtifact, fmt.Errorf("resolving run dir: %w", resolveErr)
+		}
+		rel, relErr := filepath.Rel(resolvedDir, resolvedPath)
+		if relErr != nil || strings.HasPrefix(rel, "..") {
+			return verifyExitTamperedArtifact, fmt.Errorf("integrity check failed: %s: path escapes run directory", name)
+		}
+
+		actualHash, err := hashFile(resolvedPath)
 		if err != nil {
 			return verifyExitTamperedArtifact, fmt.Errorf("integrity check failed: %s: %w", name, err)
 		}
@@ -130,9 +149,12 @@ func runAssessVerify(runDir, agent, keystoreDir string) (int, error) {
 
 	// Step 4: check for signature file.
 	sigPath := manifestPath + signing.SigExtension
-	if _, err := os.Stat(sigPath); os.IsNotExist(err) {
-		// No signature — integrity only.
-		return verifyExitUnsigned, nil
+	if _, err := os.Stat(sigPath); err != nil {
+		if os.IsNotExist(err) {
+			// No signature — integrity only.
+			return verifyExitUnsigned, nil
+		}
+		return verifyExitTamperedArtifact, fmt.Errorf("stat signature: %w", err)
 	}
 
 	// Step 5: load public key and verify signature.
@@ -257,8 +279,14 @@ func loadAssessStatusManifest(runDir string) (manifest AssessManifest, signed bo
 	}
 
 	sigPath := manifestPath + signing.SigExtension
-	_, statErr := os.Stat(sigPath)
-	signed = statErr == nil
+	if _, statErr := os.Stat(sigPath); statErr != nil {
+		if !os.IsNotExist(statErr) {
+			return manifest, false, fmt.Errorf("stat signature: %w", statErr)
+		}
+		// IsNotExist: no signature file — unsigned.
+	} else {
+		signed = true
+	}
 
 	return manifest, signed, nil
 }

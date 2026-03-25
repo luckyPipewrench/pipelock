@@ -306,7 +306,7 @@
                         <td>
                             <div class="score-bar-wrap">
                                 <div class="score-bar-bg">
-                                    <div class="score-bar-fill" style="width: {{.Score}}%; background: {{gradeColor .Grade}};"></div>
+                                    <div class="score-bar-fill" style="width: {{percent .Score .MaxScore}}%; background: {{gradeColor .Grade}};"></div>
                                 </div>
                                 <span class="score-label">{{.Score}}/{{.MaxScore}}</span>
                             </div>

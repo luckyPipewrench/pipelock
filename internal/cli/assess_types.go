@@ -239,16 +239,26 @@ func sortAssessmentSections(sections []AssessmentSection) {
 }
 
 // sortFindings sorts by severity descending (critical first), then ID alphabetical.
+// Unknown severities sort last (after info) so they don't displace real findings.
 func sortFindings(findings []Finding) {
-	sevOrder := map[string]int{
-		assessSevCritical: 0,
-		assessSevHigh:     1,
-		assessSevMedium:   2,
-		assessSevLow:      3,
-		assessSevInfo:     4,
+	sevRank := func(sev string) int {
+		switch sev {
+		case assessSevCritical:
+			return 0
+		case assessSevHigh:
+			return 1
+		case assessSevMedium:
+			return 2
+		case assessSevLow:
+			return 3
+		case assessSevInfo:
+			return 4
+		default:
+			return 5
+		}
 	}
 	sort.Slice(findings, func(i, j int) bool {
-		si, sj := sevOrder[findings[i].Severity], sevOrder[findings[j].Severity]
+		si, sj := sevRank(findings[i].Severity), sevRank(findings[j].Severity)
 		if si != sj {
 			return si < sj
 		}

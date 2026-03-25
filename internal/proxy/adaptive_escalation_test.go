@@ -813,7 +813,7 @@ func TestRecordSessionActivity_DeferClean(t *testing.T) {
 	}
 
 	// Call recordSessionActivity with deferClean=true and a clean result.
-	p.recordSessionActivity("127.0.0.1", agentAnonymous, "example.com", "req-1", true, 0, cfg, logger, true)
+	p.recordSessionActivity("127.0.0.1", agentAnonymous, "example.com", "req-1", scanner.Result{Allowed: true}, cfg, logger, true)
 
 	scoreAfter := rec.ThreatScore()
 	if scoreAfter != scoreBefore {
@@ -821,7 +821,7 @@ func TestRecordSessionActivity_DeferClean(t *testing.T) {
 	}
 
 	// Now with deferClean=false: score should decay.
-	p.recordSessionActivity("127.0.0.1", agentAnonymous, "example.com", "req-2", true, 0, cfg, logger, false)
+	p.recordSessionActivity("127.0.0.1", agentAnonymous, "example.com", "req-2", scanner.Result{Allowed: true}, cfg, logger, false)
 
 	scoreDecayed := rec.ThreatScore()
 	if scoreDecayed >= scoreBefore {
@@ -964,7 +964,7 @@ func TestRecordSessionActivity_EscalationGaugeUpdate(t *testing.T) {
 
 	// Now record a block signal that should push from level 1 → level 2.
 	// This exercises the gauge decrement path (from != EscalationLabel(0)).
-	p.recordSessionActivity("127.0.0.1", agentAnonymous, "evil.com", "req-gauge", false, 0, cfg, logger, false)
+	p.recordSessionActivity("127.0.0.1", agentAnonymous, "evil.com", "req-gauge", scanner.Result{Allowed: false}, cfg, logger, false)
 
 	levelAfter := rec.EscalationLevel()
 	if levelAfter <= levelBefore {

@@ -856,9 +856,9 @@ func TestRecordSessionActivity_EscalationGaugeFromNonZeroLevel(t *testing.T) {
 
 	// Drive enough block signals to cross level 2 threshold.
 	// Pass a blocked result so SignalBlock is recorded and escalation fires.
-	p.recordSessionActivity("127.0.0.1", agentAnonymous, "evil.com", "req-1", false, 0, cfg, logger, false)
-	p.recordSessionActivity("127.0.0.1", agentAnonymous, "evil.com", "req-2", false, 0, cfg, logger, false)
-	p.recordSessionActivity("127.0.0.1", agentAnonymous, "evil.com", "req-3", false, 0, cfg, logger, false)
+	p.recordSessionActivity("127.0.0.1", agentAnonymous, "evil.com", "req-1", scanner.Result{Allowed: false}, cfg, logger, false)
+	p.recordSessionActivity("127.0.0.1", agentAnonymous, "evil.com", "req-2", scanner.Result{Allowed: false}, cfg, logger, false)
+	p.recordSessionActivity("127.0.0.1", agentAnonymous, "evil.com", "req-3", scanner.Result{Allowed: false}, cfg, logger, false)
 
 	// Session should now be at level >= 1.
 	if !rec.IsEscalated() {

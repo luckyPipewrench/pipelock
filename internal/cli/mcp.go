@@ -561,7 +561,14 @@ Environment passthrough (subprocess mode only):
 				}
 				sandboxCmd.Stderr = cmd.ErrOrStderr()
 
-				if err := mcp.RunProxyWithSandbox(ctx, sandboxCmd, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), sc, approver, inputCfg, toolCfg, policyCfg, ks, chainMatcher, nil, cee, store, adaptiveCfg, mcpMetrics, mcpStrict); err != nil {
+				proxyOpts := mcp.MCPProxyOpts{
+					Scanner: sc, Approver: approver,
+					InputCfg: inputCfg, ToolCfg: toolCfg, PolicyCfg: policyCfg,
+					KillSwitch: ks, ChainMatcher: chainMatcher,
+					CEE: cee, Store: store,
+					AdaptiveCfg: adaptiveCfg, Metrics: mcpMetrics,
+				}
+				if err := mcp.RunProxyWithSandbox(ctx, sandboxCmd, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), proxyOpts, mcpStrict); err != nil {
 					if sentryClient != nil {
 						sentryClient.CaptureError(err)
 					}
@@ -655,7 +662,15 @@ Environment passthrough (subprocess mode only):
 				} // watcher != nil
 			}
 
-			if err := mcp.RunProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), logW, serverCmd, sc, approver, inputCfg, toolCfg, policyCfg, ks, chainMatcher, nil, cee, store, adaptiveCfg, mcpMetrics, lin, onChildReady, extraEnv...); err != nil {
+			proxyOpts := mcp.MCPProxyOpts{
+				Scanner: sc, Approver: approver,
+				InputCfg: inputCfg, ToolCfg: toolCfg, PolicyCfg: policyCfg,
+				KillSwitch: ks, ChainMatcher: chainMatcher,
+				CEE: cee, Store: store,
+				AdaptiveCfg: adaptiveCfg, Metrics: mcpMetrics,
+				Lineage: lin, OnChildReady: onChildReady,
+			}
+			if err := mcp.RunProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), logW, serverCmd, proxyOpts, extraEnv...); err != nil {
 				if sentryClient != nil {
 					sentryClient.CaptureError(err)
 				}

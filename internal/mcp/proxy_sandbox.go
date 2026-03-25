@@ -12,17 +12,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
-	"github.com/luckyPipewrench/pipelock/internal/hitl"
-	"github.com/luckyPipewrench/pipelock/internal/killswitch"
-	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
-	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
-	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/sandbox"
-	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
 
@@ -35,7 +28,7 @@ import (
 // a real sandbox environment.
 // RunProxyWithSandbox runs an MCP proxy with a sandboxed child process.
 // The optional strict parameter enables subreaper for orphan cleanup.
-func RunProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, clientIn io.Reader, clientOut io.Writer, logW io.Writer, sc *scanner.Scanner, approver *hitl.Approver, inputCfg *InputScanConfig, toolCfg *tools.ToolScanConfig, policyCfg *policy.Config, ks *killswitch.Controller, chainMatcher *chains.Matcher, auditLogger *audit.Logger, cee *CEEDeps, store session.Store, adaptiveCfg *config.AdaptiveEnforcement, m *metrics.Metrics, strict ...bool) error {
+func RunProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, clientIn io.Reader, clientOut io.Writer, logW io.Writer, opts MCPProxyOpts, strict ...bool) error {
 	isStrict := len(strict) > 0 && strict[0]
 	if isStrict {
 		if err := sandbox.SetChildSubreaper(); err != nil {
@@ -43,8 +36,8 @@ func RunProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, clientIn io.
 		}
 	}
 	var rec session.Recorder
-	if store != nil {
-		rec = store.GetOrCreate(session.NextInvocationKey("mcp-stdio"))
+	if opts.Store != nil {
+		rec = opts.Store.GetOrCreate(session.NextInvocationKey("mcp-stdio"))
 	}
 
 	safeClientOut := &syncWriter{w: clientOut}
@@ -67,14 +60,14 @@ func RunProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, clientIn io.
 	blockedCh := make(chan BlockedRequest, 16)
 
 	var fwdToolCfg *tools.ToolScanConfig
-	if toolCfg != nil && toolCfg.Action != "" {
+	if opts.ToolCfg != nil && opts.ToolCfg.Action != "" {
 		fwdToolCfg = &tools.ToolScanConfig{
 			Baseline:                tools.NewToolBaseline(),
-			Action:                  toolCfg.Action,
-			DetectDrift:             toolCfg.DetectDrift,
-			BindingUnknownAction:    toolCfg.BindingUnknownAction,
-			BindingNoBaselineAction: toolCfg.BindingNoBaselineAction,
-			ExtraPoison:             toolCfg.ExtraPoison,
+			Action:                  opts.ToolCfg.Action,
+			DetectDrift:             opts.ToolCfg.DetectDrift,
+			BindingUnknownAction:    opts.ToolCfg.BindingUnknownAction,
+			BindingNoBaselineAction: opts.ToolCfg.BindingNoBaselineAction,
+			ExtraPoison:             opts.ToolCfg.ExtraPoison,
 		}
 	}
 
@@ -92,10 +85,14 @@ func RunProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, clientIn io.
 	// Guard against nil inputCfg (when input scanning is disabled).
 	inputAction := config.ActionForward
 	inputOnParseError := config.ActionBlock
-	if inputCfg != nil {
-		inputAction = inputCfg.Action
-		inputOnParseError = inputCfg.OnParseError
+	if opts.InputCfg != nil {
+		inputAction = opts.InputCfg.Action
+		inputOnParseError = opts.InputCfg.OnParseError
 	}
+
+	// Build per-invocation opts with session-specific recorder.
+	inputOpts := opts
+	inputOpts.Rec = rec
 
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -104,10 +101,9 @@ func RunProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, clientIn io.
 		defer func() { _ = serverIn.Close() }()
 		clientReader := transport.NewStdioReader(clientIn)
 		serverWriter := transport.NewStdioWriter(serverIn)
-		ForwardScannedInput(clientReader, serverWriter, safeLogW, sc,
+		ForwardScannedInput(clientReader, serverWriter, safeLogW,
 			inputAction, inputOnParseError, blockedCh,
-			policyCfg, bindingCfg, ks, chainMatcher, tracker,
-			auditLogger, cee, rec, adaptiveCfg, m)
+			bindingCfg, tracker, inputOpts)
 	}()
 
 	var wgBlocked sync.WaitGroup
@@ -131,7 +127,9 @@ func RunProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, clientIn io.
 	}()
 
 	serverReader := transport.NewStdioReader(serverOut)
-	_, scanErr := ForwardScanned(serverReader, safeClientOut, safeLogW, sc, approver, fwdToolCfg, tracker, ks, rec, adaptiveCfg, m)
+	fwdOpts := inputOpts
+	fwdOpts.ToolCfg = fwdToolCfg // session-specific baseline
+	_, scanErr := ForwardScanned(serverReader, safeClientOut, safeLogW, tracker, fwdOpts)
 
 	waitErr := sandboxCmd.Wait()
 

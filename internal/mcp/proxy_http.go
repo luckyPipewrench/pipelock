@@ -86,6 +86,15 @@ func RunHTTPProxy(
 	// Request tracker for confused deputy protection.
 	tracker := NewRequestTracker()
 
+	// Shared opts for ForwardScanned and scanHTTPInput calls in this session.
+	fwdOpts := MCPProxyOpts{
+		Scanner: sc, Approver: approver, ToolCfg: fwdToolCfg,
+		InputCfg: inputCfg, PolicyCfg: policyCfg,
+		KillSwitch: ks, ChainMatcher: chainMatcher,
+		AuditLogger: auditLogger, CEE: cee,
+		Rec: rec, AdaptiveCfg: adaptiveCfg, Metrics: m,
+	}
+
 	clientReader := transport.NewStdioReader(clientIn)
 
 	var wg sync.WaitGroup
@@ -125,7 +134,7 @@ func RunHTTPProxy(
 
 		// Input scanning — call ScanRequest and CheckRequest directly.
 		// The sequential (non-concurrent) architecture means no channel needed.
-		if blocked := scanHTTPInput(msg, sc, safeLogW, inputCfg, policyCfg, chainMatcher, "default", "default", auditLogger, cee, rec, adaptiveCfg, m); blocked != nil {
+		if blocked := scanHTTPInput(msg, safeLogW, "default", "default", fwdOpts); blocked != nil {
 			if !blocked.IsNotification {
 				var resp []byte
 				if blocked.SyntheticResponse != nil {
@@ -163,7 +172,7 @@ func RunHTTPProxy(
 		}
 
 		// Scan and forward response.
-		_, scanErr := ForwardScanned(respReader, safeClientOut, safeLogW, sc, approver, fwdToolCfg, tracker, ks, rec, adaptiveCfg, m)
+		_, scanErr := ForwardScanned(respReader, safeClientOut, safeLogW, tracker, fwdOpts)
 		if scanErr != nil {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
 			lastScanErr = scanErr
@@ -198,7 +207,17 @@ func RunHTTPProxy(
 // but returns a verdict instead of writing to a channel.
 // When cee is non-nil, outbound payloads are recorded for cross-request
 // exfiltration detection after content scanning passes.
-func scanHTTPInput(msg []byte, sc *scanner.Scanner, logW io.Writer, inputCfg *InputScanConfig, policyCfg *policy.Config, chainMatcher *chains.Matcher, sessionKey, auditSessionKey string, auditLogger *audit.Logger, cee *CEEDeps, rec session.Recorder, adaptiveCfg *config.AdaptiveEnforcement, m *metrics.Metrics) *BlockedRequest {
+func scanHTTPInput(msg []byte, logW io.Writer, sessionKey, auditSessionKey string, opts MCPProxyOpts) *BlockedRequest {
+	sc := opts.Scanner
+	inputCfg := opts.InputCfg
+	policyCfg := opts.PolicyCfg
+	chainMatcher := opts.ChainMatcher
+	auditLogger := opts.AuditLogger
+	cee := opts.CEE
+	rec := opts.Rec
+	adaptiveCfg := opts.AdaptiveCfg
+	m := opts.Metrics
+
 	// Helper: record an adaptive signal and handle escalation side-effects.
 	// Eliminates repeated nil/enabled guards at every call site.
 	recordAdaptiveSignal := func(sig session.SignalType) {
@@ -628,7 +647,11 @@ func startGETStream(
 
 			// nil tracker: GET stream carries server-initiated messages,
 			// not responses to client requests.
-			_, scanErr := ForwardScanned(reader, safeClientOut, safeLogW, sc, approver, toolCfg, nil, ks, rec, adaptiveCfg, m)
+			getOpts := MCPProxyOpts{
+				Scanner: sc, Approver: approver, ToolCfg: toolCfg,
+				KillSwitch: ks, Rec: rec, AdaptiveCfg: adaptiveCfg, Metrics: m,
+			}
+			_, scanErr := ForwardScanned(reader, safeClientOut, safeLogW, nil, getOpts)
 			if scanErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: GET stream scan error: %v\n", scanErr)
 			}
@@ -692,6 +715,15 @@ func RunHTTPListenerProxy(
 			DetectDrift: toolCfg.DetectDrift,
 			ExtraPoison: toolCfg.ExtraPoison,
 		}
+	}
+
+	// Base opts shared across requests. Per-request fields (Rec) are
+	// overridden on a copy inside each request handler.
+	baseOpts := MCPProxyOpts{
+		Scanner: sc, Approver: approver, ToolCfg: fwdToolCfg,
+		InputCfg: inputCfg, PolicyCfg: policyCfg,
+		KillSwitch: ks, ChainMatcher: chainMatcher,
+		AuditLogger: auditLogger, CEE: cee, Metrics: m,
 	}
 
 	// Shared HTTP client for upstream requests. Redirect-following is disabled
@@ -845,7 +877,10 @@ func RunHTTPListenerProxy(
 		}
 
 		// Input scanning: DLP, injection, policy, chain detection.
-		if blocked := scanHTTPInput(body, sc, safeLogW, inputCfg, policyCfg, chainMatcher, chainSessionKey, auditSessionKey, auditLogger, cee, reqRec, adaptiveCfg, m); blocked != nil {
+		scanOpts := baseOpts
+		scanOpts.Rec = reqRec
+		scanOpts.AdaptiveCfg = adaptiveCfg
+		if blocked := scanHTTPInput(body, safeLogW, chainSessionKey, auditSessionKey, scanOpts); blocked != nil {
 			w.Header().Set("Content-Type", "application/json")
 			if blocked.IsNotification {
 				w.WriteHeader(http.StatusAccepted)
@@ -909,7 +944,10 @@ func RunHTTPListenerProxy(
 		reader := &transport.SingleMessageReader{Body: upResp.Body}
 		var buf bytes.Buffer
 		bufWriter := &syncWriter{w: &buf}
-		_, scanErr := ForwardScanned(reader, bufWriter, safeLogW, sc, approver, fwdToolCfg, nil, ks, reqRec, adaptiveCfg, m)
+		reqOpts := baseOpts
+		reqOpts.Rec = reqRec
+		reqOpts.AdaptiveCfg = adaptiveCfg
+		_, scanErr := ForwardScanned(reader, bufWriter, safeLogW, nil, reqOpts)
 		if scanErr != nil {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
 		}

@@ -125,20 +125,12 @@ func runAdaptiveInput(
 		transport.NewStdioReader(strings.NewReader(input)),
 		transport.NewStdioWriter(&serverBuf),
 		&logBuf,
-		sc,
 		action,
 		config.ActionBlock, // onParseError
 		blockedCh,
-		nil, // policyCfg
 		nil, // bindingCfg
-		nil, // ks
-		chainMatcher,
-		nil, // tracker (nil-safe via RequestTracker.Track guard)
-		nil, // auditLogger
-		nil, // cee
-		rec,
-		adaptiveCfg,
-		nil, // metrics
+		nil, // tracker
+		MCPProxyOpts{Scanner: sc, ChainMatcher: chainMatcher, Rec: rec, AdaptiveCfg: adaptiveCfg},
 	)
 
 	return serverBuf.String()
@@ -398,10 +390,10 @@ func TestMCP_HTTP_Adaptive_ChainBlockRecordsSignalBlock(t *testing.T) {
 	inputCfg := newHTTPInputCfg(config.ActionBlock)
 
 	// First call: read — no chain match yet.
-	_ = scanHTTPInput(readMsg, sc, &logBuf, inputCfg, nil, chainMatcher, "test-session", "test-session", nil, nil, rec, adaptiveCfg, nil)
+	_ = scanHTTPInput(readMsg, &logBuf, "test-session", "test-session", MCPProxyOpts{Scanner: sc, InputCfg: inputCfg, ChainMatcher: chainMatcher, Rec: rec, AdaptiveCfg: adaptiveCfg})
 
 	// Second call: exec — chain completes, block fires.
-	blocked := scanHTTPInput(execMsg, sc, &logBuf, inputCfg, nil, chainMatcher, "test-session", "test-session", nil, nil, rec, adaptiveCfg, nil)
+	blocked := scanHTTPInput(execMsg, &logBuf, "test-session", "test-session", MCPProxyOpts{Scanner: sc, InputCfg: inputCfg, ChainMatcher: chainMatcher, Rec: rec, AdaptiveCfg: adaptiveCfg})
 	if blocked == nil {
 		t.Fatal("expected scanHTTPInput to block on chain detection, got nil")
 	}
@@ -443,7 +435,7 @@ func TestMCP_HTTP_Adaptive_CleanInputCallsRecordClean(t *testing.T) {
 	inputCfg := newHTTPInputCfg(config.ActionBlock)
 
 	var logBuf bytes.Buffer
-	blocked := scanHTTPInput(cleanMsg, sc, &logBuf, inputCfg, nil, nil, "test-session", "test-session", nil, nil, rec, adaptiveCfg, nil)
+	blocked := scanHTTPInput(cleanMsg, &logBuf, "test-session", "test-session", MCPProxyOpts{Scanner: sc, InputCfg: inputCfg, Rec: rec, AdaptiveCfg: adaptiveCfg})
 	if blocked != nil {
 		t.Fatalf("expected clean request to pass through, got blocked: %+v", blocked)
 	}
@@ -685,7 +677,7 @@ func TestMCP_Adaptive_BlockAllDeniesCleanInput(t *testing.T) {
 	inputCfg := newHTTPInputCfg(config.ActionBlock)
 
 	var logBuf bytes.Buffer
-	blocked := scanHTTPInput(cleanMsg, sc, &logBuf, inputCfg, nil, nil, "test-session", "test-session", nil, nil, rec, adaptiveCfg, nil)
+	blocked := scanHTTPInput(cleanMsg, &logBuf, "test-session", "test-session", MCPProxyOpts{Scanner: sc, InputCfg: inputCfg, Rec: rec, AdaptiveCfg: adaptiveCfg})
 	if blocked == nil {
 		t.Fatal("expected clean request to be blocked by block_all at critical level")
 	}
@@ -723,7 +715,7 @@ func TestMCP_Adaptive_EscalationEmitsUpgradeTelemetry(t *testing.T) {
 
 	var logBuf bytes.Buffer
 	m := metrics.New()
-	blocked := scanHTTPInput(dirtyMsg, sc, &logBuf, inputCfg, nil, nil, "test-session", "test-session", nil, nil, rec, adaptiveCfg, m)
+	blocked := scanHTTPInput(dirtyMsg, &logBuf, "test-session", "test-session", MCPProxyOpts{Scanner: sc, InputCfg: inputCfg, Rec: rec, AdaptiveCfg: adaptiveCfg, Metrics: m})
 	if blocked == nil {
 		t.Fatal("expected warn to be upgraded to block at elevated level")
 	}
@@ -755,14 +747,8 @@ func runForwardScanned(
 		transport.NewStdioReader(strings.NewReader(input)),
 		transport.NewStdioWriter(&outBuf),
 		&logBuf,
-		sc,
-		nil, // approver
-		nil, // toolCfg
 		nil, // tracker
-		nil, // kill switch
-		rec,
-		adaptiveCfg,
-		nil, // metrics
+		buildTestOpts(sc, withRec(rec), withAdaptive(adaptiveCfg)),
 	)
 	if err != nil {
 		t.Fatalf("ForwardScanned: %v", err)
@@ -890,14 +876,8 @@ func TestForwardScanned_Adaptive_ToolPoisonUpgradeToBlock(t *testing.T) {
 		transport.NewStdioReader(strings.NewReader(poisonedToolsList)),
 		transport.NewStdioWriter(&outBuf),
 		&logBuf,
-		sc,
-		nil,
-		toolCfg,
-		nil,
-		nil, // kill switch
-		rec,
-		adaptiveCfg,
-		nil,
+		nil, // tracker
+		buildTestOpts(sc, withToolCfg(toolCfg), withRec(rec), withAdaptive(adaptiveCfg)),
 	)
 	if err != nil {
 		t.Fatalf("ForwardScanned: %v", err)
@@ -947,14 +927,12 @@ func TestForwardScannedInput_Adaptive_BlockAllDeniesCleanInput(t *testing.T) {
 		transport.NewStdioReader(strings.NewReader(cleanMsg)),
 		transport.NewStdioWriter(&serverBuf),
 		&logBuf,
-		sc,
 		config.ActionBlock,
 		config.ActionBlock,
 		blockedCh,
-		nil, nil, nil, nil, nil, nil, nil,
-		rec,
-		adaptiveCfg,
-		nil,
+		nil, // bindingCfg
+		nil, // tracker
+		buildTestOpts(sc, withRec(rec), withAdaptive(adaptiveCfg)),
 	)
 	// ForwardScannedInput closes blockedCh on return — drain it here.
 	var blocked []BlockedRequest

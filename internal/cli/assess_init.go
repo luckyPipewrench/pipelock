@@ -44,6 +44,7 @@ Examples:
   pipelock assess verify assessment-a1b2c3d4/`,
 	}
 	cmd.AddCommand(assessInitCmd())
+	cmd.AddCommand(assessRunCmd())
 	return cmd
 }
 

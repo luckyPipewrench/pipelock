@@ -6,6 +6,7 @@ package cli
 import (
 	"archive/tar"
 	"compress/gzip"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -19,8 +20,54 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
+
+// checkAssessLicense reads the manifest to find the config, loads it,
+// resolves the license public key, verifies the token, and returns true
+// if the license includes the "assess" feature. Returns false silently
+// on any failure — the free path is the safe default.
+func checkAssessLicense(runDir string) bool {
+	manifestPath := filepath.Join(runDir, "manifest.json")
+	data, err := os.ReadFile(filepath.Clean(manifestPath))
+	if err != nil {
+		return false
+	}
+	var manifest AssessManifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return false
+	}
+
+	// Load the config to get the license key.
+	cfg, err := loadConfigForAssess(manifest.ConfigFile)
+	if err != nil {
+		return false
+	}
+
+	if cfg.LicenseKey == "" {
+		return false
+	}
+
+	// Resolve public key: embedded (official builds) > config field.
+	pubKey := license.EmbeddedPublicKey()
+	if pubKey == nil && cfg.LicensePublicKey != "" {
+		keyBytes, hexErr := hex.DecodeString(cfg.LicensePublicKey)
+		if hexErr == nil && len(keyBytes) == ed25519.PublicKeySize {
+			pubKey = keyBytes
+		}
+	}
+	if pubKey == nil {
+		return false
+	}
+
+	lic, err := license.Verify(cfg.LicenseKey, pubKey)
+	if err != nil {
+		return false
+	}
+
+	return lic.HasFeature(license.FeatureAssess)
+}
 
 // assessFinalizeCmd creates the cobra command for "assess finalize".
 func assessFinalizeCmd() *cobra.Command {
@@ -57,7 +104,7 @@ Examples:
 				Archive:      archive,
 				Agent:        agent,
 				KeystoreDir:  keystoreDir,
-				HasAssess:    false, // TODO: wire license check in Task 12
+				HasAssess:    checkAssessLicense(args[0]),
 			}
 
 			if err := runAssessFinalize(args[0], opts); err != nil {

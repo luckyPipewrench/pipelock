@@ -101,6 +101,11 @@ func TestAssessRun_ConfigDrift(t *testing.T) {
 		t.Fatal("expected error for config drift, got nil")
 	}
 
+	// Config drift should return exit code 2, distinct from primitive failure (1).
+	if got := ExitCodeOf(err); got != 2 {
+		t.Errorf("exit code = %d, want 2 for config drift", got)
+	}
+
 	// Verify the manifest was set to failed.
 	manifest := readTestManifest(t, runDir)
 	if manifest.Status != assessStatusFailed {

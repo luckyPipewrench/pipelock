@@ -246,6 +246,26 @@ func TestScoreMCPProtection(t *testing.T) {
 			t.Errorf("Score = %d, want 62", s.Score)
 		}
 	})
+
+	t.Run("parse errors with servers present degrade score", func(t *testing.T) {
+		disc := &AssessDiscoverReport{
+			Servers: []AssessDiscoverServer{
+				{MCPServer: discover.MCPServer{Client: "cc", ServerName: "a", Protection: discover.ProtectedPipelock, Risk: discover.RiskLow}},
+				{MCPServer: discover.MCPServer{Client: "cc", ServerName: "b", Protection: discover.ProtectedPipelock, Risk: discover.RiskLow}},
+			},
+			Clients: []AssessDiscoverClient{
+				{ClientConfig: discover.ClientConfig{Client: "cursor", ParseError: "bad json"}},
+			},
+		}
+		s := scoreMCPProtection(disc)
+		// 2 servers protected (100+100) / (2 servers + 1 parse error) = 200/3 = 66
+		if s.Score != 66 {
+			t.Errorf("Score = %d, want 66 (parse error penalizes)", s.Score)
+		}
+		if s.Total != 3 {
+			t.Errorf("Total = %d, want 3 (2 servers + 1 parse error)", s.Total)
+		}
+	})
 }
 
 func TestScoreMCPProtection_ZeroServers(t *testing.T) {

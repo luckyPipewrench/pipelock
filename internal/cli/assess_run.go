@@ -115,7 +115,13 @@ func runAssessRun(runDir string, force bool, skip []string) error {
 		currentHash := hex.EncodeToString(sum[:])
 		if currentHash != manifest.ConfigHash {
 			if !force {
-				return failManifest(manifestPath, &manifest, fmt.Errorf("config file has changed since init (expected hash %s, got %s); use --force to override", manifest.ConfigHash[:12], currentHash[:12]))
+				// Config drift gets exit code 2, distinct from primitive failure (exit 1).
+				now := time.Now().UTC()
+				manifest.Status = assessStatusFailed
+				manifest.FailedAt = &now
+				manifest.FailureReason = "config drift detected"
+				_ = writeManifest(manifestPath, &manifest)
+				return ExitCodeError(2, fmt.Errorf("config file has changed since init (expected hash %s, got %s); use --force to override", manifest.ConfigHash[:12], currentHash[:12]))
 			}
 			manifest.ConfigDrifted = true
 		}

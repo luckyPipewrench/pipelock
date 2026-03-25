@@ -274,7 +274,8 @@ func scoreMCPProtection(disc *AssessDiscoverReport) AssessmentSection {
 		}
 	}
 
-	// Score servers: protected_pipelock + protected_other = 100%, unknown = 50%, unprotected = 0%.
+	// Score servers: protected = 100%, unknown = 50%, unprotected = 0%.
+	// Client parse errors add to the denominator with 0% credit (failed evidence).
 	var numerator int
 	for _, s := range disc.Servers {
 		switch s.Protection {
@@ -287,7 +288,12 @@ func scoreMCPProtection(disc *AssessDiscoverReport) AssessmentSection {
 		// unprotected = 0
 	}
 
-	pct := numerator / totalServers
+	// Each client with a parse error contributes an estimated server that
+	// scores 0%. This prevents a partially unreadable discovery run from
+	// reporting full protection.
+	denominator := totalServers + parseErrors
+
+	pct := numerator / denominator
 	return AssessmentSection{
 		SchemaVersion: assessSchemaVersion,
 		ID:            sectionMCPProtection,
@@ -295,9 +301,9 @@ func scoreMCPProtection(disc *AssessDiscoverReport) AssessmentSection {
 		Score:         pct,
 		MaxScore:      100,
 		Grade:         gradeFromPercentage(pct),
-		Detail:        fmt.Sprintf("%d servers scored", totalServers),
+		Detail:        fmt.Sprintf("%d servers scored, %d client parse errors", totalServers, parseErrors),
 		Applicable:    totalServers,
-		Total:         totalServers,
+		Total:         totalServers + parseErrors,
 	}
 }
 

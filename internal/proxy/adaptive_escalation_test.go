@@ -1728,3 +1728,95 @@ func TestForwardHTTP_Adaptive_ResponseScan_StripRecordsSignal(t *testing.T) {
 			scoreBefore, scoreAfter)
 	}
 }
+
+func TestAdaptive_RateLimitBlock_NoEscalation(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SessionProfiling.Enabled = true
+	cfg.AdaptiveEnforcement.Enabled = true
+	cfg.AdaptiveEnforcement.EscalationThreshold = 5.0
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+	m := metrics.New()
+	p, err := New(cfg, logger, sc, m)
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	defer p.Close()
+
+	// 10 protective blocks — should NOT escalate.
+	for i := 0; i < 10; i++ {
+		p.recordSessionActivity("127.0.0.1", agentAnonymous, "registry.npmjs.org",
+			fmt.Sprintf("req-%d", i),
+			scanner.Result{Allowed: false, Scanner: scanner.ScannerRateLimit, Score: 0.7, Class: scanner.ClassProtective},
+			cfg, logger, false)
+	}
+
+	sm := p.sessionMgrPtr.Load()
+	sess := sm.GetOrCreate("127.0.0.1")
+	if sess.ThreatScore() != 0 {
+		t.Errorf("ThreatScore = %v, want 0 (protective blocks should not score)", sess.ThreatScore())
+	}
+	if sess.EscalationLevel() != 0 {
+		t.Errorf("EscalationLevel = %v, want 0", sess.EscalationLevel())
+	}
+
+	// Control: a DLP block DOES escalate.
+	p.recordSessionActivity("127.0.0.1", agentAnonymous, "evil.com", "req-dlp",
+		scanner.Result{Allowed: false, Scanner: scanner.ScannerDLP},
+		cfg, logger, false)
+	if sess.ThreatScore() == 0 {
+		t.Error("ThreatScore should be > 0 after DLP block")
+	}
+}
+
+func TestAdaptive_RateLimitBlock_NoDecaySuppression(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SessionProfiling.Enabled = true
+	cfg.AdaptiveEnforcement.Enabled = true
+	cfg.AdaptiveEnforcement.EscalationThreshold = 100.0
+	cfg.AdaptiveEnforcement.DecayPerCleanRequest = 1.0
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+	m := metrics.New()
+	p, err := New(cfg, logger, sc, m)
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	defer p.Close()
+
+	// Seed score with a real DLP block.
+	p.recordSessionActivity("127.0.0.1", agentAnonymous, "evil.com", "req-dlp",
+		scanner.Result{Allowed: false, Scanner: scanner.ScannerDLP},
+		cfg, logger, false)
+
+	sm := p.sessionMgrPtr.Load()
+	sess := sm.GetOrCreate("127.0.0.1")
+	scoreAfterDLP := sess.ThreatScore()
+	if scoreAfterDLP == 0 {
+		t.Fatal("expected non-zero score after DLP block")
+	}
+
+	// Protective block with deferClean=false — should NOT change score.
+	p.recordSessionActivity("127.0.0.1", agentAnonymous, "registry.npmjs.org", "req-rl",
+		scanner.Result{Allowed: false, Scanner: scanner.ScannerRateLimit, Score: 0.7, Class: scanner.ClassProtective},
+		cfg, logger, false)
+	if sess.ThreatScore() != scoreAfterDLP {
+		t.Errorf("ThreatScore changed from %v to %v after protective block (should be unchanged)",
+			scoreAfterDLP, sess.ThreatScore())
+	}
+
+	// Clean request with deferClean=false — SHOULD decay.
+	p.recordSessionActivity("127.0.0.1", agentAnonymous, "safe.com", "req-clean",
+		scanner.Result{Allowed: true},
+		cfg, logger, false)
+	if sess.ThreatScore() >= scoreAfterDLP {
+		t.Errorf("ThreatScore = %v, want < %v after clean request (decay should fire)",
+			sess.ThreatScore(), scoreAfterDLP)
+	}
+}

@@ -567,7 +567,10 @@ func (p *Proxy) recordSessionActivity(clientIP, agent, hostname, requestID strin
 			ClientIP:  clientIP,
 			RequestID: requestID,
 		}
-		if !result.Allowed {
+		if result.IsProtective() {
+			// Score-neutral: no escalation signal, no clean decay.
+			// A rate-limited request proves nothing about threat posture.
+		} else if !result.Allowed {
 			if decide.RecordEscalation(sess, session.SignalBlock, ep) {
 				// Update block_all flag so RecordRequest stops refreshing lastActivity.
 				sess.SetBlockAll(decide.UpgradeAction("", sess.EscalationLevel(), &adaptiveCfg) == config.ActionBlock)

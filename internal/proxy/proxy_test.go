@@ -1380,6 +1380,90 @@ func TestFetchEndpoint_RateLimitReturns429(t *testing.T) {
 	}
 }
 
+func TestConnectEndpoint_RateLimitReturns429(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.ForwardProxy.Enabled = true
+	cfg.Internal = nil
+	cfg.APIAllowlist = nil
+	cfg.FetchProxy.Monitoring.MaxReqPerMinute = 2 // Low limit for testing
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	defer p.Close()
+
+	handler := p.Handler()
+
+	// Exhaust the rate limit against the same domain.
+	for range 3 {
+		req := httptest.NewRequest(http.MethodConnect, "http://example.com:443", nil)
+		req.Host = "example.com:443"
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+	}
+
+	// Next CONNECT should be rate limited with 429.
+	req := httptest.NewRequest(http.MethodConnect, "http://example.com:443", nil)
+	req.Host = "example.com:443"
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Errorf("expected 429 for rate-limited CONNECT, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "rate limit") {
+		t.Errorf("expected 'rate limit' in response body, got %q", w.Body.String())
+	}
+}
+
+func TestForwardHTTP_RateLimitReturns429(t *testing.T) {
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = fmt.Fprint(w, "ok")
+	}))
+	defer backend.Close()
+
+	cfg := config.Defaults()
+	cfg.ForwardProxy.Enabled = true
+	cfg.Internal = nil
+	cfg.APIAllowlist = nil
+	cfg.FetchProxy.Monitoring.MaxReqPerMinute = 2 // Low limit for testing
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	defer p.Close()
+
+	handler := p.Handler()
+
+	// Exhaust the rate limit against the same backend.
+	for range 3 {
+		req := httptest.NewRequest(http.MethodGet, backend.URL+"/test", nil)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+	}
+
+	// Next forward HTTP request should be rate limited with 429.
+	req := httptest.NewRequest(http.MethodGet, backend.URL+"/test", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Errorf("expected 429 for rate-limited forward HTTP, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "rate limit") {
+		t.Errorf("expected 'rate limit' in response body, got %q", w.Body.String())
+	}
+}
+
 // --- Audit Mode (enforce=false) Tests ---
 
 func TestFetchEndpoint_AuditMode_AllowsBlockedURL(t *testing.T) {

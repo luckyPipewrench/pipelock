@@ -31,15 +31,15 @@ import (
 
 const verifyTimeout = 5 * time.Second
 
-// verifyCheck is a single verification check.
-type verifyCheck struct {
+// VerifyCheck is a single verification check.
+type VerifyCheck struct {
 	Name     string
 	Category string // "scanning" or "containment"
-	Run      func(env *verifyEnv) verifyResult
+	Run      func(env *VerifyEnv) VerifyResult
 }
 
-// verifyEnv holds shared state for check functions.
-type verifyEnv struct {
+// VerifyEnv holds shared state for check functions.
+type VerifyEnv struct {
 	ProxyURL  string
 	MockURL   string
 	Cfg       *config.Config
@@ -53,25 +53,26 @@ type verifyEnv struct {
 	DialUDP func(addr string) (net.Conn, error)
 }
 
-// verifyResult is the outcome of a single check.
-type verifyResult struct {
+// VerifyResult is the outcome of a single check.
+type VerifyResult struct {
 	Status   string            `json:"status"` // pass, fail, not_applicable
 	Detail   string            `json:"detail,omitempty"`
 	Evidence map[string]string `json:"evidence,omitempty"`
 }
 
-// verifyReport is the full verification report.
-type verifyReport struct {
+// VerifyReport is the full verification report.
+type VerifyReport struct {
 	Version    string              `json:"version"`
 	Timestamp  string              `json:"timestamp"`
 	ConfigFile string              `json:"config_file"`
 	RunContext string              `json:"run_context"`
-	Checks     []verifyReportCheck `json:"checks"`
-	Summary    verifyReportSummary `json:"summary"`
+	Checks     []VerifyReportCheck `json:"checks"`
+	Summary    VerifyReportSummary `json:"summary"`
 	Signature  string              `json:"signature,omitempty"`
 }
 
-type verifyReportCheck struct {
+// VerifyReportCheck is a single check entry in the verification report.
+type VerifyReportCheck struct {
 	Name     string            `json:"name"`
 	Category string            `json:"category"`
 	Status   string            `json:"status"`
@@ -79,7 +80,8 @@ type verifyReportCheck struct {
 	Evidence map[string]string `json:"evidence,omitempty"`
 }
 
-type verifyReportSummary struct {
+// VerifyReportSummary aggregates pass/fail counts and status labels.
+type VerifyReportSummary struct {
 	Total         int    `json:"total"`
 	Passed        int    `json:"passed"`
 	Failed        int    `json:"failed"`
@@ -235,7 +237,7 @@ func runVerifyInstall(cmd *cobra.Command, configFile string, jsonOut, noColor bo
 
 	pc := policy.New(cfg.MCPToolPolicy)
 
-	env := &verifyEnv{
+	env := &VerifyEnv{
 		ProxyURL:  ts.URL,
 		MockURL:   mock.URL,
 		Cfg:       cfg,
@@ -248,7 +250,7 @@ func runVerifyInstall(cmd *cobra.Command, configFile string, jsonOut, noColor bo
 
 	// Run all checks and build report.
 	checks := buildVerifyChecks()
-	report := buildVerifyReport(env, checks, cfgLabel)
+	report := BuildVerifyReport(env, checks, cfgLabel)
 
 	// Sign if requested.
 	if signKey != "" {
@@ -304,8 +306,8 @@ func detectRunContext() string {
 // Check registry
 // ---------------------------------------------------------------------------
 
-func buildVerifyChecks() []verifyCheck {
-	return []verifyCheck{
+func buildVerifyChecks() []VerifyCheck {
+	return []VerifyCheck{
 		// Scanning pipeline (7).
 		{Name: "config_valid", Category: verifyCatScanning, Run: checkConfigValid},
 		{Name: "proxy_health", Category: verifyCatScanning, Run: checkProxyHealth},
@@ -325,66 +327,66 @@ func buildVerifyChecks() []verifyCheck {
 // Scanning checks (1-7)
 // ---------------------------------------------------------------------------
 
-func checkConfigValid(env *verifyEnv) verifyResult {
+func checkConfigValid(env *VerifyEnv) VerifyResult {
 	if err := env.Cfg.Validate(); err != nil {
-		return verifyResult{Status: verifyStatusFail, Detail: fmt.Sprintf("validation error: %v", err)}
+		return VerifyResult{Status: verifyStatusFail, Detail: fmt.Sprintf("validation error: %v", err)}
 	}
-	return verifyResult{Status: verifyStatusPass, Detail: "Config loaded and validated"}
+	return VerifyResult{Status: verifyStatusPass, Detail: "Config loaded and validated"}
 }
 
-func checkProxyHealth(env *verifyEnv) verifyResult {
+func checkProxyHealth(env *VerifyEnv) VerifyResult {
 	resp, err := verifyGet(env.ProxyURL + "/health")
 	if err != nil {
-		return verifyResult{Status: verifyStatusFail, Detail: fmt.Sprintf("health request failed: %v", err)}
+		return VerifyResult{Status: verifyStatusFail, Detail: fmt.Sprintf("health request failed: %v", err)}
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return verifyResult{Status: verifyStatusFail, Detail: fmt.Sprintf("expected 200, got %d", resp.StatusCode)}
+		return VerifyResult{Status: verifyStatusFail, Detail: fmt.Sprintf("expected 200, got %d", resp.StatusCode)}
 	}
-	return verifyResult{Status: verifyStatusPass, Detail: "/health responded 200"}
+	return VerifyResult{Status: verifyStatusPass, Detail: "/health responded 200"}
 }
 
-func checkFetchDLP(env *verifyEnv) verifyResult {
+func checkFetchDLP(env *VerifyEnv) VerifyResult {
 	fakeKey := "AKIA" + "IOSFODNN7EXAMPLE"
 	url := env.ProxyURL + "/fetch?url=" + env.MockURL + "%3Ftoken%3D" + fakeKey
 
 	resp, err := verifyGet(url)
 	if err != nil {
-		return verifyResult{Status: verifyStatusFail, Detail: fmt.Sprintf("fetch request failed: %v", err)}
+		return VerifyResult{Status: verifyStatusFail, Detail: fmt.Sprintf("fetch request failed: %v", err)}
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	var fr proxy.FetchResponse
 	if err := json.NewDecoder(resp.Body).Decode(&fr); err != nil {
-		return verifyResult{Status: verifyStatusFail, Detail: fmt.Sprintf("decode error: %v", err)}
+		return VerifyResult{Status: verifyStatusFail, Detail: fmt.Sprintf("decode error: %v", err)}
 	}
 	if !fr.Blocked {
-		return verifyResult{Status: verifyStatusFail, Detail: "expected blocked by DLP, but request was allowed"}
+		return VerifyResult{Status: verifyStatusFail, Detail: "expected blocked by DLP, but request was allowed"}
 	}
-	return verifyResult{
+	return VerifyResult{
 		Status:   verifyStatusPass,
 		Detail:   "DLP blocked secret exfiltration",
 		Evidence: map[string]string{"scanner": "dlp", "reason": fr.BlockReason},
 	}
 }
 
-func checkVerifyForwardBlocked(env *verifyEnv) verifyResult {
+func checkVerifyForwardBlocked(env *VerifyEnv) VerifyResult {
 	if !env.Cfg.ForwardProxy.Enabled {
-		return verifyResult{Status: verifyStatusFail, Detail: "forward_proxy is disabled in config"}
+		return VerifyResult{Status: verifyStatusFail, Detail: "forward_proxy is disabled in config"}
 	}
 	_, err := connectThroughProxy(env.ProxyURL, "malware.example.com:443")
 	if err == nil {
-		return verifyResult{Status: verifyStatusFail, Detail: "expected CONNECT blocked, but it succeeded"}
+		return VerifyResult{Status: verifyStatusFail, Detail: "expected CONNECT blocked, but it succeeded"}
 	}
 	if strings.Contains(err.Error(), "403") {
-		return verifyResult{Status: verifyStatusPass, Detail: "Blocklisted CONNECT rejected"}
+		return VerifyResult{Status: verifyStatusPass, Detail: "Blocklisted CONNECT rejected"}
 	}
-	return verifyResult{Status: verifyStatusFail, Detail: fmt.Sprintf("unexpected error: %v", err)}
+	return VerifyResult{Status: verifyStatusFail, Detail: fmt.Sprintf("unexpected error: %v", err)}
 }
 
-func checkScanningDLP(env *verifyEnv) verifyResult {
+func checkScanningDLP(env *VerifyEnv) VerifyResult {
 	if !env.Cfg.MCPInputScanning.Enabled {
-		return verifyResult{Status: verifyStatusFail, Detail: "mcp_input_scanning is disabled in config"}
+		return VerifyResult{Status: verifyStatusFail, Detail: "mcp_input_scanning is disabled in config"}
 	}
 	action := decide.Action{
 		Source: "verify",
@@ -397,18 +399,18 @@ func checkScanningDLP(env *verifyEnv) verifyResult {
 	}
 	decision := decide.Decide(context.Background(), env.Cfg, env.Sc, env.PolicyCfg, action)
 	if decision.Outcome != decide.Deny {
-		return verifyResult{Status: verifyStatusFail, Detail: "DLP did not catch secret in MCP input"}
+		return VerifyResult{Status: verifyStatusFail, Detail: "DLP did not catch secret in MCP input"}
 	}
-	return verifyResult{
+	return VerifyResult{
 		Status:   verifyStatusPass,
 		Detail:   "DLP caught secret in MCP input",
 		Evidence: map[string]string{"outcome": string(decision.Outcome)},
 	}
 }
 
-func checkScanningInjection(env *verifyEnv) verifyResult {
+func checkScanningInjection(env *VerifyEnv) VerifyResult {
 	if !env.Cfg.ResponseScanning.Enabled {
-		return verifyResult{Status: verifyStatusFail, Detail: "response_scanning is disabled in config"}
+		return VerifyResult{Status: verifyStatusFail, Detail: "response_scanning is disabled in config"}
 	}
 	action := decide.Action{
 		Source: "verify",
@@ -420,18 +422,18 @@ func checkScanningInjection(env *verifyEnv) verifyResult {
 	}
 	decision := decide.Decide(context.Background(), env.Cfg, env.Sc, env.PolicyCfg, action)
 	if decision.Outcome != decide.Deny {
-		return verifyResult{Status: verifyStatusFail, Detail: "injection detection did not trigger"}
+		return VerifyResult{Status: verifyStatusFail, Detail: "injection detection did not trigger"}
 	}
-	return verifyResult{
+	return VerifyResult{
 		Status:   verifyStatusPass,
 		Detail:   "Injection relay detected",
 		Evidence: map[string]string{"outcome": string(decision.Outcome)},
 	}
 }
 
-func checkScanningPolicy(env *verifyEnv) verifyResult {
+func checkScanningPolicy(env *VerifyEnv) VerifyResult {
 	if !env.Cfg.MCPToolPolicy.Enabled {
-		return verifyResult{Status: verifyStatusFail, Detail: "mcp_tool_policy is disabled in config"}
+		return VerifyResult{Status: verifyStatusFail, Detail: "mcp_tool_policy is disabled in config"}
 	}
 	action := decide.Action{
 		Source: "verify",
@@ -440,9 +442,9 @@ func checkScanningPolicy(env *verifyEnv) verifyResult {
 	}
 	decision := decide.Decide(context.Background(), env.Cfg, env.Sc, env.PolicyCfg, action)
 	if decision.Outcome != decide.Deny {
-		return verifyResult{Status: verifyStatusFail, Detail: "tool policy did not block rm -rf"}
+		return VerifyResult{Status: verifyStatusFail, Detail: "tool policy did not block rm -rf"}
 	}
-	return verifyResult{
+	return VerifyResult{
 		Status:   verifyStatusPass,
 		Detail:   "Tool policy denied rm -rf",
 		Evidence: map[string]string{"outcome": string(decision.Outcome)},
@@ -453,32 +455,32 @@ func checkScanningPolicy(env *verifyEnv) verifyResult {
 // Containment checks (8-10)
 // ---------------------------------------------------------------------------
 
-func checkNoDirectHTTP(env *verifyEnv) verifyResult {
+func checkNoDirectHTTP(env *VerifyEnv) VerifyResult {
 	if env.RunCtx == verifyContextHost {
-		return verifyResult{
+		return VerifyResult{
 			Status: verifyStatusNA,
 			Detail: "running on host; egress probes require container/pod boundary",
 		}
 	}
 	conn, err := env.DialTCP("1.1.1.1:80")
 	if err != nil {
-		return verifyResult{
+		return VerifyResult{
 			Status:   verifyStatusPass,
 			Detail:   "Direct HTTP egress blocked",
 			Evidence: map[string]string{"target": "1.1.1.1:80", "error": err.Error()},
 		}
 	}
 	_ = conn.Close()
-	return verifyResult{
+	return VerifyResult{
 		Status:   verifyStatusFail,
 		Detail:   "Direct HTTP egress succeeded (containment broken)",
 		Evidence: map[string]string{"target": "1.1.1.1:80"},
 	}
 }
 
-func checkNoDirectDNS(env *verifyEnv) verifyResult {
+func checkNoDirectDNS(env *VerifyEnv) VerifyResult {
 	if env.RunCtx == verifyContextHost {
-		return verifyResult{
+		return VerifyResult{
 			Status: verifyStatusNA,
 			Detail: "running on host; egress probes require container/pod boundary",
 		}
@@ -488,7 +490,7 @@ func checkNoDirectDNS(env *verifyEnv) verifyResult {
 
 	conn, err := env.DialUDP("8.8.8.8:53")
 	if err != nil {
-		return verifyResult{
+		return VerifyResult{
 			Status:   verifyStatusPass,
 			Detail:   "Direct DNS egress blocked (dial failed)",
 			Evidence: map[string]string{"target": "8.8.8.8:53", "protocol": "udp"},
@@ -498,7 +500,7 @@ func checkNoDirectDNS(env *verifyEnv) verifyResult {
 
 	_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
 	if _, err := conn.Write(query); err != nil {
-		return verifyResult{
+		return VerifyResult{
 			Status:   verifyStatusPass,
 			Detail:   "Direct DNS egress blocked (write failed)",
 			Evidence: map[string]string{"target": "8.8.8.8:53", "protocol": "udp"},
@@ -508,37 +510,37 @@ func checkNoDirectDNS(env *verifyEnv) verifyResult {
 	buf := make([]byte, 512)
 	_, err = conn.Read(buf)
 	if err != nil {
-		return verifyResult{
+		return VerifyResult{
 			Status:   verifyStatusPass,
 			Detail:   "Direct DNS egress blocked (no response)",
 			Evidence: map[string]string{"target": "8.8.8.8:53", "protocol": "udp"},
 		}
 	}
 
-	return verifyResult{
+	return VerifyResult{
 		Status:   verifyStatusFail,
 		Detail:   "Direct DNS egress succeeded (containment broken)",
 		Evidence: map[string]string{"target": "8.8.8.8:53", "protocol": "udp"},
 	}
 }
 
-func checkNoDirectHTTPS(env *verifyEnv) verifyResult {
+func checkNoDirectHTTPS(env *VerifyEnv) VerifyResult {
 	if env.RunCtx == verifyContextHost {
-		return verifyResult{
+		return VerifyResult{
 			Status: verifyStatusNA,
 			Detail: "running on host; egress probes require container/pod boundary",
 		}
 	}
 	conn, err := env.DialTCP("1.1.1.1:443")
 	if err != nil {
-		return verifyResult{
+		return VerifyResult{
 			Status:   verifyStatusPass,
 			Detail:   "Direct HTTPS egress blocked",
 			Evidence: map[string]string{"target": "1.1.1.1:443", "error": err.Error()},
 		}
 	}
 	_ = conn.Close()
-	return verifyResult{
+	return VerifyResult{
 		Status:   verifyStatusFail,
 		Detail:   "Direct HTTPS egress succeeded (containment broken)",
 		Evidence: map[string]string{"target": "1.1.1.1:443"},
@@ -588,8 +590,9 @@ func buildDNSQuery() []byte {
 // Report builder
 // ---------------------------------------------------------------------------
 
-func buildVerifyReport(env *verifyEnv, checks []verifyCheck, cfgLabel string) verifyReport {
-	report := verifyReport{
+// BuildVerifyReport runs all checks and assembles the final report.
+func BuildVerifyReport(env *VerifyEnv, checks []VerifyCheck, cfgLabel string) VerifyReport {
+	report := VerifyReport{
 		Version:    Version,
 		Timestamp:  time.Now().UTC().Format(time.RFC3339),
 		ConfigFile: cfgLabel,
@@ -601,7 +604,7 @@ func buildVerifyReport(env *verifyEnv, checks []verifyCheck, cfgLabel string) ve
 
 	for _, c := range checks {
 		result := c.Run(env)
-		rc := verifyReportCheck{
+		rc := VerifyReportCheck{
 			Name:     c.Name,
 			Category: c.Category,
 			Status:   result.Status,
@@ -629,7 +632,7 @@ func buildVerifyReport(env *verifyEnv, checks []verifyCheck, cfgLabel string) ve
 		}
 	}
 
-	report.Summary = verifyReportSummary{
+	report.Summary = VerifyReportSummary{
 		Total:         len(checks),
 		Passed:        scanPass + containPass,
 		Failed:        scanFail + containFail,
@@ -658,7 +661,7 @@ func buildVerifyReport(env *verifyEnv, checks []verifyCheck, cfgLabel string) ve
 // Signing
 // ---------------------------------------------------------------------------
 
-func signVerifyReport(report *verifyReport, keyPath string) error {
+func signVerifyReport(report *VerifyReport, keyPath string) error {
 	privKey, err := signing.LoadPrivateKeyFile(keyPath)
 	if err != nil {
 		return fmt.Errorf("loading signing key: %w", err)
@@ -680,7 +683,7 @@ func signVerifyReport(report *verifyReport, keyPath string) error {
 // Output
 // ---------------------------------------------------------------------------
 
-func writeVerifyReportFile(report verifyReport, path string) error {
+func writeVerifyReportFile(report VerifyReport, path string) error {
 	data, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal report: %w", err)
@@ -688,7 +691,7 @@ func writeVerifyReportFile(report verifyReport, path string) error {
 	return os.WriteFile(path, append(data, '\n'), 0o600)
 }
 
-func printVerifyTable(w io.Writer, report verifyReport, color bool) {
+func printVerifyTable(w io.Writer, report VerifyReport, color bool) {
 	_, _ = fmt.Fprintf(w, "pipelock verify-install %s\n\n", report.Version)
 
 	lastCat := ""

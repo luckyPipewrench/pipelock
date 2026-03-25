@@ -27,8 +27,8 @@ const (
 	catEvasion   = "URL Evasion"
 )
 
-// scenarioResult captures the outcome of a single attack scenario.
-type scenarioResult struct {
+// ScenarioResult captures the outcome of a single attack scenario.
+type ScenarioResult struct {
 	Name       string `json:"name"`
 	Category   string `json:"category"`
 	Detected   bool   `json:"detected"`
@@ -36,8 +36,8 @@ type scenarioResult struct {
 	Limitation bool   `json:"limitation,omitempty"` // known limitation, not a failure
 }
 
-// simulateResult is the full simulation output.
-type simulateResult struct {
+// SimulateResult is the full simulation output.
+type SimulateResult struct {
 	Total       int              `json:"total"`
 	Passed      int              `json:"passed"`
 	Failed      int              `json:"failed"`
@@ -46,7 +46,7 @@ type simulateResult struct {
 	Grade       string           `json:"grade"`
 	ConfigFile  string           `json:"config_file,omitempty"`
 	Mode        string           `json:"mode"`
-	Scenarios   []scenarioResult `json:"scenarios"`
+	Scenarios   []ScenarioResult `json:"scenarios"`
 }
 
 func simulateCmd() *cobra.Command {
@@ -358,13 +358,13 @@ func buildSimScenarios(cfg *config.Config, sc *scanner.Scanner) []simScenario {
 }
 
 // runSimulation executes all scenarios and collects results.
-func runSimulation(scenarios []simScenario, cfgFile, mode string) simulateResult {
-	var results []scenarioResult
+func runSimulation(scenarios []simScenario, cfgFile, mode string) SimulateResult {
+	var results []ScenarioResult
 	passed, failed, limits := 0, 0, 0
 
 	for _, s := range scenarios {
 		detected, detail := s.run()
-		sr := scenarioResult{
+		sr := ScenarioResult{
 			Name:       s.name,
 			Category:   s.category,
 			Detected:   detected,
@@ -389,7 +389,7 @@ func runSimulation(scenarios []simScenario, cfgFile, mode string) simulateResult
 		pct = (passed * 100) / scorable
 	}
 
-	return simulateResult{
+	return SimulateResult{
 		Total:       total,
 		Passed:      passed,
 		Failed:      failed,
@@ -402,7 +402,7 @@ func runSimulation(scenarios []simScenario, cfgFile, mode string) simulateResult
 	}
 }
 
-func printSimulation(cmd *cobra.Command, r simulateResult) {
+func printSimulation(cmd *cobra.Command, r SimulateResult) {
 	cmd.PrintErrln("Pipelock Attack Simulation")
 	cmd.PrintErrln("==========================")
 	if r.ConfigFile != "" {

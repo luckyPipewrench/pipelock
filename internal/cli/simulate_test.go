@@ -46,7 +46,7 @@ func TestSimulateCmd_JSON(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	var result simulateResult
+	var result SimulateResult
 	if err := json.Unmarshal([]byte(buf.String()), &result); err != nil {
 		t.Fatalf("invalid JSON: %v\noutput: %s", err, buf.String())
 	}

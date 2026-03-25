@@ -73,7 +73,7 @@ func TestVerifyInstallCmd_JSON(t *testing.T) {
 		t.Fatalf("verify-install --json failed: %v", err)
 	}
 
-	var report verifyReport
+	var report VerifyReport
 	if err := json.Unmarshal(buf.Bytes(), &report); err != nil {
 		t.Fatalf("invalid JSON: %v\n%s", err, buf.String())
 	}
@@ -162,7 +162,7 @@ mcp_input_scanning:
 		t.Fatal("expected error for weak config, got nil")
 	}
 
-	var report verifyReport
+	var report VerifyReport
 	if jsonErr := json.Unmarshal(buf.Bytes(), &report); jsonErr != nil {
 		t.Fatalf("invalid JSON: %v\n%s", jsonErr, buf.String())
 	}
@@ -221,7 +221,7 @@ func TestVerifyInstallCmd_OutputFile(t *testing.T) {
 		t.Fatalf("reading output file: %v", err)
 	}
 
-	var report verifyReport
+	var report VerifyReport
 	if err := json.Unmarshal(data, &report); err != nil {
 		t.Fatalf("invalid JSON in output file: %v", err)
 	}
@@ -251,7 +251,7 @@ func TestVerifyInstallCmd_Sign(t *testing.T) {
 		t.Fatalf("verify-install --sign failed: %v", err)
 	}
 
-	var report verifyReport
+	var report VerifyReport
 	if err := json.Unmarshal(buf.Bytes(), &report); err != nil {
 		t.Fatalf("invalid JSON: %v", err)
 	}
@@ -267,7 +267,7 @@ func TestVerifyInstallCmd_Sign(t *testing.T) {
 	}
 
 	// Re-read original to get the signature back.
-	var withSig verifyReport
+	var withSig VerifyReport
 	if err := json.Unmarshal(buf.Bytes(), &withSig); err != nil {
 		t.Fatalf("re-parse: %v", err)
 	}
@@ -341,7 +341,7 @@ func (c *mockConn) SetReadDeadline(_ time.Time) error  { return nil }
 func (c *mockConn) SetWriteDeadline(_ time.Time) error { return nil }
 
 func TestCheckNoDirectHTTP_Blocked(t *testing.T) {
-	env := &verifyEnv{
+	env := &VerifyEnv{
 		RunCtx: verifyContextContainer,
 		DialTCP: func(_ string) (net.Conn, error) {
 			return nil, fmt.Errorf("connection refused")
@@ -358,7 +358,7 @@ func TestCheckNoDirectHTTP_Blocked(t *testing.T) {
 
 func TestCheckNoDirectHTTP_Exposed(t *testing.T) {
 	mc := &mockConn{}
-	env := &verifyEnv{
+	env := &VerifyEnv{
 		RunCtx: verifyContextContainer,
 		DialTCP: func(_ string) (net.Conn, error) {
 			return mc, nil
@@ -374,7 +374,7 @@ func TestCheckNoDirectHTTP_Exposed(t *testing.T) {
 }
 
 func TestCheckNoDirectHTTPS_Blocked(t *testing.T) {
-	env := &verifyEnv{
+	env := &VerifyEnv{
 		RunCtx: verifyContextPod,
 		DialTCP: func(_ string) (net.Conn, error) {
 			return nil, fmt.Errorf("connection refused")
@@ -388,7 +388,7 @@ func TestCheckNoDirectHTTPS_Blocked(t *testing.T) {
 
 func TestCheckNoDirectHTTPS_Exposed(t *testing.T) {
 	mc := &mockConn{}
-	env := &verifyEnv{
+	env := &VerifyEnv{
 		RunCtx: verifyContextPod,
 		DialTCP: func(_ string) (net.Conn, error) {
 			return mc, nil
@@ -401,7 +401,7 @@ func TestCheckNoDirectHTTPS_Exposed(t *testing.T) {
 }
 
 func TestCheckNoDirectDNS_DialBlocked(t *testing.T) {
-	env := &verifyEnv{
+	env := &VerifyEnv{
 		RunCtx: verifyContextContainer,
 		DialUDP: func(_ string) (net.Conn, error) {
 			return nil, fmt.Errorf("network unreachable")
@@ -414,7 +414,7 @@ func TestCheckNoDirectDNS_DialBlocked(t *testing.T) {
 }
 
 func TestCheckNoDirectDNS_WriteBlocked(t *testing.T) {
-	env := &verifyEnv{
+	env := &VerifyEnv{
 		RunCtx: verifyContextContainer,
 		DialUDP: func(_ string) (net.Conn, error) {
 			return &writeFailConn{}, nil
@@ -430,7 +430,7 @@ func TestCheckNoDirectDNS_WriteBlocked(t *testing.T) {
 }
 
 func TestCheckNoDirectDNS_NoResponse(t *testing.T) {
-	env := &verifyEnv{
+	env := &VerifyEnv{
 		RunCtx: verifyContextPod,
 		DialUDP: func(_ string) (net.Conn, error) {
 			return &mockConn{readErr: fmt.Errorf("read timeout")}, nil
@@ -447,7 +447,7 @@ func TestCheckNoDirectDNS_NoResponse(t *testing.T) {
 
 func TestCheckNoDirectDNS_Exposed(t *testing.T) {
 	// Return a fake DNS response (just needs to not error on Read).
-	env := &verifyEnv{
+	env := &VerifyEnv{
 		RunCtx: verifyContextContainer,
 		DialUDP: func(_ string) (net.Conn, error) {
 			return &mockConn{readData: make([]byte, 64)}, nil
@@ -487,9 +487,9 @@ func TestVerifyStatusIcon(t *testing.T) {
 	}
 }
 
-// testScanEnv creates a verifyEnv with a real scanner and policy for unit-testing
+// testScanEnv creates a VerifyEnv with a real scanner and policy for unit-testing
 // individual check functions. The proxy URL points to a mock that returns 200.
-func testScanEnv(t *testing.T) *verifyEnv {
+func testScanEnv(t *testing.T) *VerifyEnv {
 	t.Helper()
 	cfg := testConfig()
 	cfg.ForwardProxy.Enabled = true
@@ -505,7 +505,7 @@ func testScanEnv(t *testing.T) *verifyEnv {
 	sc := scanner.New(cfg)
 	t.Cleanup(func() { sc.Close() })
 	pc := policy.New(cfg.MCPToolPolicy)
-	return &verifyEnv{
+	return &VerifyEnv{
 		Cfg:       cfg,
 		Sc:        sc,
 		PolicyCfg: pc,
@@ -588,16 +588,16 @@ func TestCheckScanningPolicy_Disabled(t *testing.T) {
 }
 
 func TestBuildVerifyReport_ContainmentExposed(t *testing.T) {
-	env := &verifyEnv{RunCtx: verifyContextContainer}
-	checks := []verifyCheck{
-		{Name: "scan1", Category: verifyCatScanning, Run: func(_ *verifyEnv) verifyResult {
-			return verifyResult{Status: verifyStatusPass}
+	env := &VerifyEnv{RunCtx: verifyContextContainer}
+	checks := []VerifyCheck{
+		{Name: "scan1", Category: verifyCatScanning, Run: func(_ *VerifyEnv) VerifyResult {
+			return VerifyResult{Status: verifyStatusPass}
 		}},
-		{Name: "contain1", Category: verifyCatContainment, Run: func(_ *verifyEnv) verifyResult {
-			return verifyResult{Status: verifyStatusFail, Detail: "exposed"}
+		{Name: "contain1", Category: verifyCatContainment, Run: func(_ *VerifyEnv) VerifyResult {
+			return VerifyResult{Status: verifyStatusFail, Detail: "exposed"}
 		}},
 	}
-	report := buildVerifyReport(env, checks, "test")
+	report := BuildVerifyReport(env, checks, "test")
 	if report.Summary.Containment != verifyContainmentExposed {
 		t.Errorf("expected containment=exposed, got %s", report.Summary.Containment)
 	}
@@ -607,29 +607,29 @@ func TestBuildVerifyReport_ContainmentExposed(t *testing.T) {
 }
 
 func TestBuildVerifyReport_ContainmentContained(t *testing.T) {
-	env := &verifyEnv{RunCtx: verifyContextPod}
-	checks := []verifyCheck{
-		{Name: "scan1", Category: verifyCatScanning, Run: func(_ *verifyEnv) verifyResult {
-			return verifyResult{Status: verifyStatusPass}
+	env := &VerifyEnv{RunCtx: verifyContextPod}
+	checks := []VerifyCheck{
+		{Name: "scan1", Category: verifyCatScanning, Run: func(_ *VerifyEnv) VerifyResult {
+			return VerifyResult{Status: verifyStatusPass}
 		}},
-		{Name: "contain1", Category: verifyCatContainment, Run: func(_ *verifyEnv) verifyResult {
-			return verifyResult{Status: verifyStatusPass}
+		{Name: "contain1", Category: verifyCatContainment, Run: func(_ *VerifyEnv) VerifyResult {
+			return VerifyResult{Status: verifyStatusPass}
 		}},
 	}
-	report := buildVerifyReport(env, checks, "test")
+	report := BuildVerifyReport(env, checks, "test")
 	if report.Summary.Containment != verifyContainmentContained {
 		t.Errorf("expected containment=contained, got %s", report.Summary.Containment)
 	}
 }
 
 func TestBuildVerifyReport_ScanningDegraded(t *testing.T) {
-	env := &verifyEnv{RunCtx: verifyContextHost}
-	checks := []verifyCheck{
-		{Name: "scan1", Category: verifyCatScanning, Run: func(_ *verifyEnv) verifyResult {
-			return verifyResult{Status: verifyStatusFail, Detail: "bad"}
+	env := &VerifyEnv{RunCtx: verifyContextHost}
+	checks := []VerifyCheck{
+		{Name: "scan1", Category: verifyCatScanning, Run: func(_ *VerifyEnv) VerifyResult {
+			return VerifyResult{Status: verifyStatusFail, Detail: "bad"}
 		}},
 	}
-	report := buildVerifyReport(env, checks, "test")
+	report := BuildVerifyReport(env, checks, "test")
 	if report.Summary.Scanning != verifyScanningDegraded {
 		t.Errorf("expected scanning=degraded, got %s", report.Summary.Scanning)
 	}
@@ -660,7 +660,7 @@ func TestVerifyInstallCmd_BadSignKey(t *testing.T) {
 }
 
 func TestWriteVerifyReportFile_BadPath(t *testing.T) {
-	report := verifyReport{Version: "test"}
+	report := VerifyReport{Version: "test"}
 	err := writeVerifyReportFile(report, "/nonexistent/dir/report.json")
 	if err == nil {
 		t.Fatal("expected error for bad path")
@@ -725,14 +725,14 @@ func TestCheckFetchDLP_BadJSON(t *testing.T) {
 }
 
 func TestPrintVerifyTable_WithFailures(t *testing.T) {
-	report := verifyReport{
+	report := VerifyReport{
 		Version: "test",
-		Checks: []verifyReportCheck{
+		Checks: []VerifyReportCheck{
 			{Name: "scan1", Category: verifyCatScanning, Status: verifyStatusPass, Detail: "ok"},
 			{Name: "scan2", Category: verifyCatScanning, Status: verifyStatusFail, Detail: "bad"},
 			{Name: "contain1", Category: verifyCatContainment, Status: verifyStatusFail, Detail: "exposed"},
 		},
-		Summary: verifyReportSummary{
+		Summary: VerifyReportSummary{
 			Total: 3, Passed: 1, Failed: 2, Scanning: verifyScanningDegraded,
 			Containment: verifyContainmentExposed,
 		},

@@ -21,10 +21,19 @@ import (
 // redirect handlers via __PIPELOCK_REDIRECT_MANIFEST env var. Mirrors
 // cli.RedirectManifest without an import cycle.
 type redirectManifest struct {
-	Profile    string   `json:"profile"`
-	Command    []string `json:"command"`
-	Reason     string   `json:"reason"`
-	PolicyRule string   `json:"policy_rule,omitempty"`
+	Profile       string   `json:"profile"`
+	Command       []string `json:"command"`
+	Reason        string   `json:"reason"`
+	PolicyRule    string   `json:"policy_rule,omitempty"`
+	FetchEndpoint string   `json:"fetch_endpoint,omitempty"`
+	QuarantineDir string   `json:"quarantine_dir,omitempty"`
+}
+
+// RedirectRuntime carries runtime-resolved values for built-in redirect
+// handlers. Populated once at proxy startup, threaded through MCPProxyOpts.
+type RedirectRuntime struct {
+	FetchEndpoint string // e.g. "http://127.0.0.1:8888/fetch"
+	QuarantineDir string // resolved path, default: os.TempDir()+"/pipelock-quarantine"
 }
 
 // argsDigest returns a SHA-256 prefix + length summary of tool arguments
@@ -88,7 +97,7 @@ func extractToolCallFields(line []byte) (toolName string, argsJSON string) {
 //
 // When preserve_argv is true, toolArgs (the extracted params.arguments
 // JSON) is passed as the last argument to the handler command.
-func executeRedirect(profile config.RedirectProfile, profileName string, requestID json.RawMessage, toolArgs, policyRule string) RedirectResult {
+func executeRedirect(profile config.RedirectProfile, profileName string, requestID json.RawMessage, toolArgs, policyRule string, rt *RedirectRuntime) RedirectResult {
 	ctx, cancel := context.WithTimeout(context.Background(), redirectTimeout)
 	defer cancel()
 
@@ -109,6 +118,10 @@ func executeRedirect(profile config.RedirectProfile, profileName string, request
 		Command:    profile.Exec,
 		Reason:     profile.Reason,
 		PolicyRule: policyRule,
+	}
+	if rt != nil {
+		manifest.FetchEndpoint = rt.FetchEndpoint
+		manifest.QuarantineDir = rt.QuarantineDir
 	}
 	if manifestJSON, err := json.Marshal(manifest); err == nil {
 		cmd.Env = append(cmd.Env, "__PIPELOCK_REDIRECT_MANIFEST="+string(manifestJSON))

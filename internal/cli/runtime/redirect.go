@@ -28,10 +28,12 @@ const redirectProfileAppendOnlyLog = "append-only-log"
 // RedirectManifest describes the operation to redirect. Passed from parent
 // via __PIPELOCK_REDIRECT_MANIFEST env var as JSON.
 type RedirectManifest struct {
-	Profile    string   `json:"profile"`     // redirect profile name
-	Command    []string `json:"command"`     // original requested command + argv
-	Reason     string   `json:"reason"`      // why the redirect was triggered
-	PolicyRule string   `json:"policy_rule"` // policy rule that triggered it
+	Profile       string   `json:"profile"`                  // redirect profile name
+	Command       []string `json:"command"`                  // original requested command + argv
+	Reason        string   `json:"reason"`                   // why the redirect was triggered
+	PolicyRule    string   `json:"policy_rule"`              // policy rule that triggered it
+	FetchEndpoint string   `json:"fetch_endpoint,omitempty"` // e.g. "http://127.0.0.1:8888/fetch"
+	QuarantineDir string   `json:"quarantine_dir,omitempty"` // resolved quarantine directory path
 }
 
 // RedirectResult is the machine-readable JSON output from the handler.

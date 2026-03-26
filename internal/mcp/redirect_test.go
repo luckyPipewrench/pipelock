@@ -23,7 +23,7 @@ func TestExecuteRedirect_Success(t *testing.T) {
 		Reason: "test redirect",
 	}
 	requestID := json.RawMessage(`42`)
-	result := executeRedirect(profile, "test-profile", requestID, `{"tool":"test"}`, "test-rule")
+	result := executeRedirect(profile, "test-profile", requestID, `{"tool":"test"}`, "test-rule", nil)
 
 	if !result.Success {
 		t.Fatalf("expected success, got error: %s", result.Error)
@@ -73,7 +73,7 @@ func TestExecuteRedirect_PreserveArgv(t *testing.T) {
 	}
 	requestID := json.RawMessage(`1`)
 	origArgs := `{"command":"curl https://example.com"}`
-	result := executeRedirect(profile, "test-profile", requestID, origArgs, "test-rule")
+	result := executeRedirect(profile, "test-profile", requestID, origArgs, "test-rule", nil)
 
 	if !result.Success {
 		t.Fatalf("expected success, got error: %s", result.Error)
@@ -107,7 +107,7 @@ func TestExecuteRedirect_Failure(t *testing.T) {
 		Reason: "test failure",
 	}
 	requestID := json.RawMessage(`99`)
-	result := executeRedirect(profile, "test-profile", requestID, `{}`, "")
+	result := executeRedirect(profile, "test-profile", requestID, `{}`, "", nil)
 
 	if result.Success {
 		t.Error("expected failure for /bin/false")
@@ -126,7 +126,7 @@ func TestExecuteRedirect_NonexistentCommand(t *testing.T) {
 		Reason: "test missing binary",
 	}
 	requestID := json.RawMessage(`1`)
-	result := executeRedirect(profile, "test-profile", requestID, `{}`, "")
+	result := executeRedirect(profile, "test-profile", requestID, `{}`, "", nil)
 
 	if result.Success {
 		t.Error("expected failure for nonexistent command")
@@ -147,7 +147,7 @@ func TestExecuteRedirect_ManifestInjected(t *testing.T) {
 		Reason: "test manifest injection",
 	}
 	requestID := json.RawMessage(`1`)
-	result := executeRedirect(profile, "fetch-proxy", requestID, `{}`, "block-curl")
+	result := executeRedirect(profile, "fetch-proxy", requestID, `{}`, "block-curl", nil)
 
 	if !result.Success {
 		t.Fatalf("expected success, got error: %s", result.Error)
@@ -227,6 +227,57 @@ func TestExtractToolCallFields_NullArguments(t *testing.T) {
 	}
 	if args != "{}" {
 		t.Errorf("args = %q, want {} for null arguments", args)
+	}
+}
+
+func TestExecuteRedirect_ManifestIncludesRuntime(t *testing.T) {
+	if runtime.GOOS == osWindows {
+		t.Skip("exec test requires unix shell")
+	}
+
+	profile := config.RedirectProfile{
+		Exec:   []string{"/bin/sh", "-c", "printenv __PIPELOCK_REDIRECT_MANIFEST"},
+		Reason: "test manifest",
+	}
+	rt := &RedirectRuntime{
+		FetchEndpoint: "http://127.0.0.1:8888/fetch",
+		QuarantineDir: "/tmp/pipelock-quarantine",
+	}
+	requestID := json.RawMessage(`1`)
+	result := executeRedirect(profile, "test-profile", requestID, `{}`, "test-rule", rt)
+
+	if !result.Success {
+		t.Fatalf("expected success, got error: %s", result.Error)
+	}
+
+	// Parse the manifest from the handler output.
+	// The handler is "printenv __PIPELOCK_REDIRECT_MANIFEST" so stdout is the JSON.
+	var rpc struct {
+		Result struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(result.Response, &rpc); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+	if len(rpc.Result.Content) == 0 {
+		t.Fatal("no content in response")
+	}
+
+	var manifest struct {
+		FetchEndpoint string `json:"fetch_endpoint"`
+		QuarantineDir string `json:"quarantine_dir"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(rpc.Result.Content[0].Text)), &manifest); err != nil {
+		t.Fatalf("failed to parse manifest from handler output: %v", err)
+	}
+	if manifest.FetchEndpoint != "http://127.0.0.1:8888/fetch" {
+		t.Errorf("expected FetchEndpoint in manifest, got %q", manifest.FetchEndpoint)
+	}
+	if manifest.QuarantineDir != "/tmp/pipelock-quarantine" {
+		t.Errorf("expected QuarantineDir in manifest, got %q", manifest.QuarantineDir)
 	}
 }
 

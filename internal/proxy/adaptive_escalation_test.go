@@ -542,7 +542,7 @@ func TestInterceptTunnel_Adaptive_BlockAllOnClean(t *testing.T) {
 		SessionTTLMinutes:      30,
 		CleanupIntervalSeconds: 600,
 	}
-	sm := NewSessionManager(smCfg, m)
+	sm := NewSessionManager(smCfg, nil, m)
 	defer sm.Close()
 
 	rec := sm.GetOrCreate(adaptiveSessionKeyLoopback)
@@ -609,7 +609,7 @@ func TestInterceptTunnel_Adaptive_ResponseUpgrade(t *testing.T) {
 		SessionTTLMinutes:      30,
 		CleanupIntervalSeconds: 600,
 	}
-	smgr := NewSessionManager(smCfg, m)
+	smgr := NewSessionManager(smCfg, nil, m)
 	defer smgr.Close()
 
 	rec := smgr.GetOrCreate(adaptiveSessionKeyLoopback)
@@ -1340,7 +1340,7 @@ func TestInterceptTunnel_Adaptive_URLWarnUpgradeToBlock(t *testing.T) {
 		SessionTTLMinutes:      30,
 		CleanupIntervalSeconds: 600,
 	}
-	sm := NewSessionManager(smCfg, m)
+	sm := NewSessionManager(smCfg, nil, m)
 	defer sm.Close()
 
 	rec := sm.GetOrCreate(adaptiveSessionKeyLoopback)
@@ -1401,7 +1401,7 @@ func TestInterceptTunnel_Adaptive_BodyDLPWarnUpgradeToBlock(t *testing.T) {
 		SessionTTLMinutes:      30,
 		CleanupIntervalSeconds: 600,
 	}
-	sm := NewSessionManager(smCfg, m)
+	sm := NewSessionManager(smCfg, nil, m)
 	defer sm.Close()
 
 	rec := sm.GetOrCreate(adaptiveSessionKeyLoopback)

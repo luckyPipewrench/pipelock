@@ -387,14 +387,14 @@ Environment passthrough (subprocess mode only):
 			var store session.Store
 			var adaptiveCfg *config.AdaptiveEnforcement
 			var mcpMetrics *metrics.Metrics
-			if cfg.SessionProfiling.Enabled {
-				mcpMetrics = metrics.New()
-				sm := proxy.NewSessionManager(&cfg.SessionProfiling, mcpMetrics)
-				defer sm.Close()
-				store = sm.AsStore()
-			}
 			if cfg.AdaptiveEnforcement.Enabled {
 				adaptiveCfg = &cfg.AdaptiveEnforcement
+			}
+			if cfg.SessionProfiling.Enabled {
+				mcpMetrics = metrics.New()
+				sm := proxy.NewSessionManager(&cfg.SessionProfiling, adaptiveCfg, mcpMetrics)
+				defer sm.Close()
+				store = sm.AsStore()
 			}
 
 			toolAction := "disabled"

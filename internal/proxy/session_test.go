@@ -43,7 +43,7 @@ func testSessionConfig() *config.SessionProfiling {
 
 func TestSessionManager_GetOrCreate(t *testing.T) {
 	cfg := testSessionConfig()
-	sm := NewSessionManager(cfg, nil)
+	sm := NewSessionManager(cfg, nil, nil)
 	defer sm.Close()
 
 	s1 := sm.GetOrCreate("192.168.1.1")
@@ -65,7 +65,7 @@ func TestSessionManager_GetOrCreate(t *testing.T) {
 func TestSessionManager_DomainBurst(t *testing.T) {
 	cfg := testSessionConfig()
 	cfg.DomainBurst = 3
-	sm := NewSessionManager(cfg, nil)
+	sm := NewSessionManager(cfg, nil, nil)
 	defer sm.Close()
 
 	sess := sm.GetOrCreate(testClientIP)
@@ -94,7 +94,7 @@ func TestSessionManager_DomainBurst(t *testing.T) {
 func TestSessionManager_DomainBurst_RepeatedDomainNoTrigger(t *testing.T) {
 	cfg := testSessionConfig()
 	cfg.DomainBurst = 3
-	sm := NewSessionManager(cfg, nil)
+	sm := NewSessionManager(cfg, nil, nil)
 	defer sm.Close()
 
 	sess := sm.GetOrCreate(testClientIP)
@@ -117,7 +117,7 @@ func TestSessionManager_DomainBurst_WindowExpiry(t *testing.T) {
 	cfg := testSessionConfig()
 	cfg.DomainBurst = 3
 	cfg.WindowMinutes = 1
-	sm := NewSessionManager(cfg, nil)
+	sm := NewSessionManager(cfg, nil, nil)
 	defer sm.Close()
 
 	sess := sm.GetOrCreate(testClientIP)
@@ -147,7 +147,7 @@ func TestSessionManager_DomainBurst_WindowExpiry(t *testing.T) {
 func TestSessionManager_MaxSessions(t *testing.T) {
 	cfg := testSessionConfig()
 	cfg.MaxSessions = 3
-	sm := NewSessionManager(cfg, nil)
+	sm := NewSessionManager(cfg, nil, nil)
 	defer sm.Close()
 
 	sm.GetOrCreate("1.1.1.1")
@@ -167,7 +167,7 @@ func TestSessionManager_MaxSessions(t *testing.T) {
 func TestSessionManager_MaxSessions_EvictsOldestIdle(t *testing.T) {
 	cfg := testSessionConfig()
 	cfg.MaxSessions = 2
-	sm := NewSessionManager(cfg, nil)
+	sm := NewSessionManager(cfg, nil, nil)
 	defer sm.Close()
 
 	// Create two sessions
@@ -199,7 +199,7 @@ func TestSessionManager_TTLEviction(t *testing.T) {
 	cfg := testSessionConfig()
 	cfg.SessionTTLMinutes = 1
 	cfg.CleanupIntervalSeconds = 1
-	sm := NewSessionManager(cfg, nil)
+	sm := NewSessionManager(cfg, nil, nil)
 	defer sm.Close()
 
 	sess := sm.GetOrCreate(testClientIP)
@@ -220,7 +220,7 @@ func TestSessionManager_TTLEviction(t *testing.T) {
 func TestSessionManager_TTLEviction_ActiveNotEvicted(t *testing.T) {
 	cfg := testSessionConfig()
 	cfg.SessionTTLMinutes = 1
-	sm := NewSessionManager(cfg, nil)
+	sm := NewSessionManager(cfg, nil, nil)
 	defer sm.Close()
 
 	sm.GetOrCreate(testClientIP) // fresh, within TTL
@@ -234,7 +234,7 @@ func TestSessionManager_TTLEviction_ActiveNotEvicted(t *testing.T) {
 
 func TestSessionManager_Concurrent(t *testing.T) {
 	cfg := testSessionConfig()
-	sm := NewSessionManager(cfg, nil)
+	sm := NewSessionManager(cfg, nil, nil)
 	defer sm.Close()
 
 	var wg sync.WaitGroup
@@ -256,7 +256,7 @@ func TestSessionManager_Concurrent(t *testing.T) {
 
 func TestSessionManager_Close(t *testing.T) {
 	cfg := testSessionConfig()
-	sm := NewSessionManager(cfg, nil)
+	sm := NewSessionManager(cfg, nil, nil)
 	sm.Close()
 	// Double close should not panic
 	sm.Close()
@@ -264,7 +264,7 @@ func TestSessionManager_Close(t *testing.T) {
 
 func TestSessionState_ThreatScore(t *testing.T) {
 	cfg := testSessionConfig()
-	sm := NewSessionManager(cfg, nil)
+	sm := NewSessionManager(cfg, nil, nil)
 	defer sm.Close()
 
 	sess := sm.GetOrCreate(testClientIP)
@@ -290,7 +290,7 @@ func TestSessionState_ThreatScore(t *testing.T) {
 
 func TestSessionState_ScoreNeverNegative(t *testing.T) {
 	cfg := testSessionConfig()
-	sm := NewSessionManager(cfg, nil)
+	sm := NewSessionManager(cfg, nil, nil)
 	defer sm.Close()
 
 	sess := sm.GetOrCreate(testClientIP)
@@ -304,7 +304,7 @@ func TestSessionState_ScoreNeverNegative(t *testing.T) {
 
 func TestSessionState_Escalation(t *testing.T) {
 	cfg := testSessionConfig()
-	sm := NewSessionManager(cfg, nil)
+	sm := NewSessionManager(cfg, nil, nil)
 	defer sm.Close()
 
 	sess := sm.GetOrCreate(testClientIP)
@@ -343,7 +343,7 @@ func TestSessionState_Escalation(t *testing.T) {
 
 func TestSessionState_EscalationThresholdDoubles(t *testing.T) {
 	cfg := testSessionConfig()
-	sm := NewSessionManager(cfg, nil)
+	sm := NewSessionManager(cfg, nil, nil)
 	defer sm.Close()
 
 	sess := sm.GetOrCreate(testClientIP)
@@ -369,7 +369,7 @@ func TestSessionState_EscalationThresholdDoubles(t *testing.T) {
 
 func TestSessionState_EscalationSticky(t *testing.T) {
 	cfg := testSessionConfig()
-	sm := NewSessionManager(cfg, nil)
+	sm := NewSessionManager(cfg, nil, nil)
 	defer sm.Close()
 
 	sess := sm.GetOrCreate(testClientIP)
@@ -395,7 +395,7 @@ func TestSessionState_EscalationSticky(t *testing.T) {
 
 func TestSessionState_EntropyBudgetSignal(t *testing.T) {
 	cfg := testSessionConfig()
-	sm := NewSessionManager(cfg, nil)
+	sm := NewSessionManager(cfg, nil, nil)
 	defer sm.Close()
 
 	sess := sm.GetOrCreate(testClientIP)
@@ -408,7 +408,7 @@ func TestSessionState_EntropyBudgetSignal(t *testing.T) {
 
 func TestSessionState_FragmentDLPSignal(t *testing.T) {
 	cfg := testSessionConfig()
-	sm := NewSessionManager(cfg, nil)
+	sm := NewSessionManager(cfg, nil, nil)
 	defer sm.Close()
 
 	sess := sm.GetOrCreate(testClientIP)
@@ -421,7 +421,7 @@ func TestSessionState_FragmentDLPSignal(t *testing.T) {
 
 func TestSessionState_EntropySignals_Escalation(t *testing.T) {
 	cfg := testSessionConfig()
-	sm := NewSessionManager(cfg, nil)
+	sm := NewSessionManager(cfg, nil, nil)
 	defer sm.Close()
 
 	sess := sm.GetOrCreate(testClientIP)
@@ -453,7 +453,7 @@ func TestSessionState_EntropySignals_Escalation(t *testing.T) {
 
 func TestSessionState_DomainAnomalySignal(t *testing.T) {
 	cfg := testSessionConfig()
-	sm := NewSessionManager(cfg, nil)
+	sm := NewSessionManager(cfg, nil, nil)
 	defer sm.Close()
 
 	sess := sm.GetOrCreate(testClientIP)
@@ -466,7 +466,7 @@ func TestSessionState_DomainAnomalySignal(t *testing.T) {
 
 func TestSessionState_LastActivity(t *testing.T) {
 	cfg := testSessionConfig()
-	sm := NewSessionManager(cfg, nil)
+	sm := NewSessionManager(cfg, nil, nil)
 	defer sm.Close()
 
 	sess := sm.GetOrCreate(testClientIP)
@@ -520,7 +520,7 @@ func TestSessionManager_Metrics_EvictOnCapacity(t *testing.T) {
 	cfg := testSessionConfig()
 	cfg.MaxSessions = 2
 	m := metrics.New()
-	sm := NewSessionManager(cfg, m)
+	sm := NewSessionManager(cfg, nil, m)
 	defer sm.Close()
 
 	sm.GetOrCreate("a")
@@ -539,7 +539,7 @@ func TestSessionManager_Metrics_CleanupSetsGauge(t *testing.T) {
 	cfg := testSessionConfig()
 	cfg.SessionTTLMinutes = 1
 	m := metrics.New()
-	sm := NewSessionManager(cfg, m)
+	sm := NewSessionManager(cfg, nil, m)
 	defer sm.Close()
 
 	// Create 3 sessions, backdate 2 past TTL
@@ -567,7 +567,7 @@ func TestSessionManager_Metrics_CleanupSetsGauge(t *testing.T) {
 func TestSessionManager_NilMetrics(t *testing.T) {
 	cfg := testSessionConfig()
 	cfg.MaxSessions = 1
-	sm := NewSessionManager(cfg, nil)
+	sm := NewSessionManager(cfg, nil, nil)
 	defer sm.Close()
 
 	sm.GetOrCreate("a")
@@ -579,7 +579,7 @@ func TestSessionManager_NilMetrics(t *testing.T) {
 func TestSessionManager_IPDomainBurst(t *testing.T) {
 	cfg := testSessionConfig()
 	cfg.DomainBurst = 3
-	sm := NewSessionManager(cfg, nil)
+	sm := NewSessionManager(cfg, nil, nil)
 	defer sm.Close()
 
 	ip := testClientIP
@@ -611,7 +611,7 @@ func TestSessionManager_IPDomainBurst(t *testing.T) {
 func TestSessionManager_IPDomainBurst_HeaderRotation(t *testing.T) {
 	cfg := testSessionConfig()
 	cfg.DomainBurst = 3
-	sm := NewSessionManager(cfg, nil)
+	sm := NewSessionManager(cfg, nil, nil)
 	defer sm.Close()
 
 	ip := testClientIP
@@ -653,7 +653,7 @@ func TestSessionManager_IPDomainBurst_HeaderRotation(t *testing.T) {
 func TestSessionManager_IPDomainBurst_RepeatedDomainNoTrigger(t *testing.T) {
 	cfg := testSessionConfig()
 	cfg.DomainBurst = 3
-	sm := NewSessionManager(cfg, nil)
+	sm := NewSessionManager(cfg, nil, nil)
 	defer sm.Close()
 
 	ip := testClientIP
@@ -676,7 +676,7 @@ func TestSessionManager_IPDomainBurst_WindowExpiry(t *testing.T) {
 	cfg := testSessionConfig()
 	cfg.DomainBurst = 3
 	cfg.WindowMinutes = 1
-	sm := NewSessionManager(cfg, nil)
+	sm := NewSessionManager(cfg, nil, nil)
 	defer sm.Close()
 
 	ip := testClientIP
@@ -708,7 +708,7 @@ func TestSessionManager_IPDomainBurst_WindowExpiry(t *testing.T) {
 func TestSessionManager_IPDomainBurst_DifferentIPs(t *testing.T) {
 	cfg := testSessionConfig()
 	cfg.DomainBurst = 3
-	sm := NewSessionManager(cfg, nil)
+	sm := NewSessionManager(cfg, nil, nil)
 	defer sm.Close()
 
 	// Two different IPs each access 2 domains: neither should trigger (below 3)
@@ -760,7 +760,7 @@ func TestEscalationLabel_HighLevel(t *testing.T) {
 func TestSessionManager_IPDomainCleanup_PartialExpiry(t *testing.T) {
 	cfg := testSessionConfig()
 	cfg.WindowMinutes = 1
-	sm := NewSessionManager(cfg, nil)
+	sm := NewSessionManager(cfg, nil, nil)
 	defer sm.Close()
 
 	// Add 2 domains, backdate only 1
@@ -788,7 +788,7 @@ func TestSessionManager_IPDomainCleanup_PartialExpiry(t *testing.T) {
 func TestSessionManager_IPDomainCleanup(t *testing.T) {
 	cfg := testSessionConfig()
 	cfg.WindowMinutes = 1
-	sm := NewSessionManager(cfg, nil)
+	sm := NewSessionManager(cfg, nil, nil)
 	defer sm.Close()
 
 	sm.RecordIPDomain(testClientIP, "a.com", cfg)
@@ -823,7 +823,7 @@ func TestSessionManager_Cleanup_EscalatedGaugeDecrement(t *testing.T) {
 	cfg := testSessionConfig()
 	cfg.SessionTTLMinutes = 1
 	m := metrics.New()
-	sm := NewSessionManager(cfg, m)
+	sm := NewSessionManager(cfg, nil, m)
 	defer sm.Close()
 
 	sess := sm.GetOrCreate(testClientIP)
@@ -867,7 +867,7 @@ func TestSessionManager_EvictOldest_EscalatedGaugeDecrement(t *testing.T) {
 	cfg := testSessionConfig()
 	cfg.MaxSessions = 2
 	m := metrics.New()
-	sm := NewSessionManager(cfg, m)
+	sm := NewSessionManager(cfg, nil, m)
 	defer sm.Close()
 
 	// Create and escalate the first session.
@@ -931,7 +931,7 @@ func TestProxy_SessionStore_Disabled(t *testing.T) {
 // session.Store that delegates GetOrCreate to the underlying SessionManager.
 func TestSessionManager_AsStore(t *testing.T) {
 	cfg := testSessionConfig()
-	sm := NewSessionManager(cfg, nil)
+	sm := NewSessionManager(cfg, nil, nil)
 	defer sm.Close()
 
 	store := sm.AsStore()
@@ -970,7 +970,7 @@ func TestProxy_SessionStore_Enabled(t *testing.T) {
 
 func TestSessionState_TimeBasedDeescalation(t *testing.T) {
 	cfg := testSessionConfig()
-	sm := NewSessionManager(cfg, nil)
+	sm := NewSessionManager(cfg, nil, nil)
 	defer sm.Close()
 
 	sess := sm.GetOrCreate(testClientIP)
@@ -999,7 +999,7 @@ func TestSessionState_TimeBasedDeescalation(t *testing.T) {
 
 func TestSessionState_CriticalDeescalation(t *testing.T) {
 	cfg := testSessionConfig()
-	sm := NewSessionManager(cfg, nil)
+	sm := NewSessionManager(cfg, nil, nil)
 	defer sm.Close()
 
 	sess := sm.GetOrCreate(testClientIP)
@@ -1034,7 +1034,7 @@ func TestSessionState_CriticalDeescalation(t *testing.T) {
 
 func TestSessionState_DeescalationViaRecordClean(t *testing.T) {
 	cfg := testSessionConfig()
-	sm := NewSessionManager(cfg, nil)
+	sm := NewSessionManager(cfg, nil, nil)
 	defer sm.Close()
 
 	sess := sm.GetOrCreate(testClientIP)
@@ -1064,7 +1064,7 @@ func TestSessionState_DeescalationViaRecordClean(t *testing.T) {
 
 func TestSessionState_CriticalNoActivityRefresh(t *testing.T) {
 	cfg := testSessionConfig()
-	sm := NewSessionManager(cfg, nil)
+	sm := NewSessionManager(cfg, nil, nil)
 	defer sm.Close()
 
 	sess := sm.GetOrCreate(testClientIP)
@@ -1102,7 +1102,7 @@ func TestSessionState_CriticalNoActivityRefresh(t *testing.T) {
 
 func TestSessionState_SubCriticalActivityRefresh(t *testing.T) {
 	cfg := testSessionConfig()
-	sm := NewSessionManager(cfg, nil)
+	sm := NewSessionManager(cfg, nil, nil)
 	defer sm.Close()
 
 	sess := sm.GetOrCreate(testClientIP)
@@ -1135,7 +1135,7 @@ func TestSessionState_SubCriticalActivityRefresh(t *testing.T) {
 func TestSessionManager_CleanupLoop_DoneStops(t *testing.T) {
 	cfg := testSessionConfig()
 	cfg.CleanupIntervalSeconds = 1 // short interval for test speed
-	sm := NewSessionManager(cfg, nil)
+	sm := NewSessionManager(cfg, nil, nil)
 
 	// Create a session with expired activity.
 	sess := sm.GetOrCreate(testClientIP)
@@ -1156,7 +1156,7 @@ func TestSessionManager_CleanupLoop_RunsCleanup(t *testing.T) {
 	cfg.CleanupIntervalSeconds = 1
 	cfg.SessionTTLMinutes = 0 // immediate expiry
 	m := metrics.New()
-	sm := NewSessionManager(cfg, m)
+	sm := NewSessionManager(cfg, nil, m)
 	defer sm.Close()
 
 	// Create a session that is immediately stale.
@@ -1174,7 +1174,7 @@ func TestSessionManager_CleanupLoop_RunsCleanup(t *testing.T) {
 
 func TestSessionState_SetBlockAll(t *testing.T) {
 	cfg := testSessionConfig()
-	sm := NewSessionManager(cfg, nil)
+	sm := NewSessionManager(cfg, nil, nil)
 	defer sm.Close()
 
 	sess := sm.GetOrCreate(testClientIP)
@@ -1213,7 +1213,7 @@ func TestSessionManager_IPDomainBurstCooldown(t *testing.T) {
 	cfg := testSessionConfig()
 	cfg.DomainBurst = 2
 	cfg.WindowMinutes = 5
-	sm := NewSessionManager(cfg, nil)
+	sm := NewSessionManager(cfg, nil, nil)
 	defer sm.Close()
 
 	// First burst: should have score > 0.
@@ -1233,5 +1233,122 @@ func TestSessionManager_IPDomainBurstCooldown(t *testing.T) {
 	}
 	if anomalies2[0].Score != 0 {
 		t.Error("repeat burst in same window should have score 0 (cooldown)")
+	}
+}
+
+// escalateToLevel is a test helper that forces a session to a given
+// escalation level by directly manipulating internal state under lock.
+func escalateToLevel(s *SessionState, level int, lastEsc time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.escalationLevel = level
+	s.lastEscalation = lastEsc
+	s.currentThreshold = 10.0 // arbitrary non-zero threshold
+	s.threatScore = 5.0       // arbitrary mid-range score
+}
+
+func TestSessionState_TryAutoRecover_Expired(t *testing.T) {
+	cfg := testSessionConfig()
+	sm := NewSessionManager(cfg, nil, nil)
+	defer sm.Close()
+
+	sess := sm.GetOrCreate("recover-expired")
+
+	// Place session at level 3, last escalation 6 min ago (beyond 5 min maxLevelDuration).
+	escalateToLevel(sess, 3, time.Now().Add(-6*time.Minute))
+
+	// blockAllCheck returns true for level >= 3, false otherwise.
+	blockAllCheck := func(level int) bool { return level >= 3 }
+
+	changed, from, to := sess.TryAutoRecover(blockAllCheck)
+
+	if !changed {
+		t.Fatal("expected changed=true for expired escalation")
+	}
+	if from != 3 {
+		t.Errorf("expected from=3, got %d", from)
+	}
+	if to != 2 {
+		t.Errorf("expected to=2, got %d", to)
+	}
+	if sess.EscalationLevel() != 2 {
+		t.Errorf("expected escalation level 2, got %d", sess.EscalationLevel())
+	}
+	// Level 2 < 3, so blockAllCheck(2) returns false.
+	if sess.BlockAll() {
+		t.Error("expected atBlockAll=false at level 2")
+	}
+}
+
+func TestSessionState_TryAutoRecover_NotExpired(t *testing.T) {
+	cfg := testSessionConfig()
+	sm := NewSessionManager(cfg, nil, nil)
+	defer sm.Close()
+
+	sess := sm.GetOrCreate("recover-not-expired")
+
+	// Place session at level 3, last escalation only 3 min ago (within 5 min maxLevelDuration).
+	escalateToLevel(sess, 3, time.Now().Add(-3*time.Minute))
+
+	blockAllCheck := func(level int) bool { return level >= 3 }
+
+	changed, _, _ := sess.TryAutoRecover(blockAllCheck)
+
+	if changed {
+		t.Fatal("expected changed=false for non-expired escalation")
+	}
+	if sess.EscalationLevel() != 3 {
+		t.Errorf("expected escalation level still 3, got %d", sess.EscalationLevel())
+	}
+}
+
+func TestSessionState_TryAutoRecover_CustomBlockAllAtLowerLevel(t *testing.T) {
+	cfg := testSessionConfig()
+	sm := NewSessionManager(cfg, nil, nil)
+	defer sm.Close()
+
+	sess := sm.GetOrCreate("recover-custom-blockall")
+
+	// Place session at level 2, last escalation 6 min ago.
+	escalateToLevel(sess, 2, time.Now().Add(-6*time.Minute))
+
+	// Custom config: blockAllCheck returns true for level >= 1.
+	// Even after dropping from 2 to 1, the session is still blocked.
+	blockAllCheck := func(level int) bool { return level >= 1 }
+
+	changed, from, to := sess.TryAutoRecover(blockAllCheck)
+
+	if !changed {
+		t.Fatal("expected changed=true for expired escalation")
+	}
+	if from != 2 {
+		t.Errorf("expected from=2, got %d", from)
+	}
+	if to != 1 {
+		t.Errorf("expected to=1, got %d", to)
+	}
+	// blockAllCheck(1) returns true — session stays blocked at the lower level.
+	if !sess.BlockAll() {
+		t.Error("expected atBlockAll=true at level 1 with custom config")
+	}
+}
+
+func TestSessionState_TryAutoRecover_AtLevelZero(t *testing.T) {
+	cfg := testSessionConfig()
+	sm := NewSessionManager(cfg, nil, nil)
+	defer sm.Close()
+
+	sess := sm.GetOrCreate("recover-level-zero")
+
+	// Level 0 session cannot de-escalate further.
+	blockAllCheck := func(level int) bool { return level >= 3 }
+
+	changed, _, _ := sess.TryAutoRecover(blockAllCheck)
+
+	if changed {
+		t.Fatal("expected changed=false at level 0")
+	}
+	if sess.EscalationLevel() != 0 {
+		t.Errorf("expected escalation level 0, got %d", sess.EscalationLevel())
 	}
 }

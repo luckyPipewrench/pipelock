@@ -163,7 +163,7 @@ func TestCeeRecordSignals_BothHits(t *testing.T) {
 		CleanupIntervalSeconds: 60,
 	}
 	m := metrics.New()
-	sm := NewSessionManager(cfg, m)
+	sm := NewSessionManager(cfg, nil, m)
 	defer sm.Close()
 
 	logger, _ := audit.New("json", "stdout", "", false, false)
@@ -199,7 +199,7 @@ func TestCeeRecordSignals_NoHits(t *testing.T) {
 		CleanupIntervalSeconds: 60,
 	}
 	m := metrics.New()
-	sm := NewSessionManager(cfg, m)
+	sm := NewSessionManager(cfg, nil, m)
 	defer sm.Close()
 
 	logger, _ := audit.New("json", "stdout", "", false, false)

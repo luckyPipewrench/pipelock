@@ -1279,7 +1279,7 @@ func TestInterceptTunnel_CEEAdaptiveSignalRecording(t *testing.T) {
 		MaxSessions:            100,
 		SessionTTLMinutes:      30,
 		CleanupIntervalSeconds: 60,
-	}, m)
+	}, nil, m)
 	t.Cleanup(sm.Close)
 
 	// Send a request through the intercepted tunnel with CEE deps wired.
@@ -1433,7 +1433,7 @@ func TestRecEscalationLevel_Nil(t *testing.T) {
 // the recorder's EscalationLevel() method when the recorder is non-nil.
 func TestRecEscalationLevel_NonNil(t *testing.T) {
 	cfg := testSessionConfig()
-	sm := NewSessionManager(cfg, nil)
+	sm := NewSessionManager(cfg, nil, nil)
 	defer sm.Close()
 
 	sess := sm.GetOrCreate(testClientIP)

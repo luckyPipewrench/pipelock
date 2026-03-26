@@ -705,7 +705,7 @@ func TestInterceptRecordSignal_WithProxy(t *testing.T) {
 		SessionTTLMinutes:      30,
 		CleanupIntervalSeconds: 600,
 	}
-	sm := NewSessionManager(smCfg, m)
+	sm := NewSessionManager(smCfg, nil, m)
 	defer sm.Close()
 
 	// Pre-escalate to level 1 so the NEXT signal crosses to level 2,
@@ -748,7 +748,7 @@ func TestInterceptHandler_Adaptive_BodyDLPWarnUpgrade(t *testing.T) {
 		SessionTTLMinutes:      30,
 		CleanupIntervalSeconds: 600,
 	}
-	smgr := NewSessionManager(smCfg, m)
+	smgr := NewSessionManager(smCfg, nil, m)
 	defer smgr.Close()
 
 	rec := smgr.GetOrCreate(adaptiveSessionKeyLoopback)
@@ -799,7 +799,7 @@ func TestInterceptHandler_Adaptive_BlockAllCleanRequest(t *testing.T) {
 		SessionTTLMinutes:      30,
 		CleanupIntervalSeconds: 600,
 	}
-	sm := NewSessionManager(smCfg, m)
+	sm := NewSessionManager(smCfg, nil, m)
 	defer sm.Close()
 
 	rec := sm.GetOrCreate(adaptiveSessionKeyLoopback)

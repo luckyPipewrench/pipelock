@@ -226,6 +226,38 @@ func (s *SessionState) BlockAll() bool {
 	return s.atBlockAll
 }
 
+// TryAutoRecover checks whether the session has been at its current
+// escalation level for longer than maxLevelDuration and drops one level
+// if so. Unlike tryDeescalate, it takes a blockAllCheck callback that
+// recomputes atBlockAll from live config so custom configs with block_all
+// at lower escalation levels work correctly.
+//
+// Returns (changed, fromLevel, toLevel). The caller is responsible for
+// emitting metrics/logs when changed is true.
+func (s *SessionState) TryAutoRecover(blockAllCheck func(int) bool) (bool, int, int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.escalationLevel <= 0 || s.lastEscalation.IsZero() {
+		return false, 0, 0
+	}
+	if time.Since(s.lastEscalation) <= maxLevelDuration {
+		return false, 0, 0
+	}
+
+	from := s.escalationLevel
+	s.escalationLevel--
+	s.lastEscalation = time.Now()
+
+	if s.currentThreshold > 0 {
+		s.currentThreshold /= 2
+	}
+	s.threatScore = s.currentThreshold / 2
+	s.atBlockAll = blockAllCheck(s.escalationLevel)
+
+	return true, from, s.escalationLevel
+}
+
 // ThreatScore returns the current threat score (thread-safe).
 func (s *SessionState) ThreatScore() float64 {
 	s.mu.Lock()
@@ -258,15 +290,17 @@ type SessionManager struct {
 	ipDomains       map[string][]domainEntry
 	ipBurstCooldown map[string]time.Time // per-IP burst cooldown timestamps
 
-	cfgPtr  atomic.Pointer[config.SessionProfiling]
-	metrics *metrics.Metrics // nil-safe; used for gauge/counter updates
-	done    chan struct{}
-	closed  sync.Once
+	cfgPtr         atomic.Pointer[config.SessionProfiling]
+	adaptiveCfgPtr atomic.Pointer[config.AdaptiveEnforcement]
+	metrics        *metrics.Metrics // nil-safe; used for gauge/counter updates
+	done           chan struct{}
+	closed         sync.Once
 }
 
 // NewSessionManager creates a session manager with background cleanup.
 // The metrics parameter is optional (nil disables gauge/counter updates).
-func NewSessionManager(cfg *config.SessionProfiling, m *metrics.Metrics) *SessionManager {
+// The adaptiveCfg parameter is optional (nil when adaptive enforcement is disabled).
+func NewSessionManager(cfg *config.SessionProfiling, adaptiveCfg *config.AdaptiveEnforcement, m *metrics.Metrics) *SessionManager {
 	sm := &SessionManager{
 		sessions:        make(map[string]*SessionState),
 		ipDomains:       make(map[string][]domainEntry),
@@ -275,6 +309,7 @@ func NewSessionManager(cfg *config.SessionProfiling, m *metrics.Metrics) *Sessio
 		done:            make(chan struct{}),
 	}
 	sm.cfgPtr.Store(cfg)
+	sm.adaptiveCfgPtr.Store(adaptiveCfg)
 
 	go sm.cleanupLoop()
 	return sm
@@ -365,9 +400,11 @@ func (sm *SessionManager) RecordIPDomain(clientIP, domain string, cfg *config.Se
 
 // UpdateConfig swaps the session manager's config pointer so that TTL,
 // capacity, threshold, and cleanup interval changes take effect on the
-// next operation.
-func (sm *SessionManager) UpdateConfig(cfg *config.SessionProfiling) {
+// next operation. Pass nil for adaptiveCfg to clear adaptive enforcement
+// (e.g., when it is disabled via hot reload).
+func (sm *SessionManager) UpdateConfig(cfg *config.SessionProfiling, adaptiveCfg *config.AdaptiveEnforcement) {
 	sm.cfgPtr.Store(cfg)
+	sm.adaptiveCfgPtr.Store(adaptiveCfg)
 }
 
 // Close stops the cleanup goroutine.

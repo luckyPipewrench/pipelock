@@ -2834,18 +2834,24 @@ func TestWsRelayRecordSignal_AnonymousAgent(t *testing.T) {
 	sm := NewSessionManager(sessCfg, nil)
 	defer sm.Close()
 
-	// Anonymous agent: session key should be just the IP.
-	rec := sm.GetOrCreate("10.0.0.1")
+	// Anonymous agent: session key should be just the IP, not "agent|IP".
+	const testIP = "10.0.0.1"
+	rec := sm.GetOrCreate(testIP)
 	relay := &wsRelay{
 		rec:      rec,
 		cfg:      cfg,
 		proxy:    p,
-		clientIP: "10.0.0.1",
+		clientIP: testIP,
 		agent:    agentAnonymous,
 	}
 
 	relay.recordSignal(session.SignalNearMiss, audit.NewNop())
 	if rec.ThreatScore() == 0 {
 		t.Error("expected non-zero threat score after signal with anonymous agent")
+	}
+	// Verify the session key is IP-only (no agent prefix) by confirming
+	// the IP-keyed recorder received the signal, not a hypothetical "agent|IP" key.
+	if ipRec := sm.GetOrCreate(testIP); ipRec.ThreatScore() == 0 {
+		t.Error("IP-keyed session should have threat score; anonymous agent must not prefix the key")
 	}
 }

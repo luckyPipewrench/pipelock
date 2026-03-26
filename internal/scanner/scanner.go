@@ -376,7 +376,7 @@ func (s *Scanner) IsInternalIP(ip net.IP) bool {
 // IsTrustedDomain checks if a hostname matches any trusted domain pattern.
 // Trusted domains bypass the SSRF internal-IP check.
 func (s *Scanner) IsTrustedDomain(hostname string) bool {
-	hostname = strings.ToLower(strings.TrimSuffix(hostname, "."))
+	hostname = strings.TrimSuffix(hostname, ".")
 	for _, pattern := range s.trustedDomains {
 		if MatchDomain(hostname, pattern) {
 			return true

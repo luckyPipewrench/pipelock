@@ -2690,6 +2690,7 @@ func TestResponseBundleRules(t *testing.T) {
 				}
 			}
 		})
+	}
 }
 
 // TestSSRFSafeDialContext_TrustedDomainBypassesSSRF verifies that trusted domains

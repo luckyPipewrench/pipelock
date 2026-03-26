@@ -136,38 +136,13 @@ func pruneDomainWindow(entries []domainEntry, domain string, windowCutoff, now t
 // re-escalate.
 const maxLevelDuration = 5 * time.Minute
 
-// tryDeescalate checks if the session has been at its current escalation
-// level for longer than maxLevelDuration and drops one level if so.
-// Caller must hold s.mu.
-func (s *SessionState) tryDeescalate(now time.Time) {
-	if s.escalationLevel > 0 && !s.lastEscalation.IsZero() && now.Sub(s.lastEscalation) > maxLevelDuration {
-		s.escalationLevel--
-		s.lastEscalation = now
-		// Halve the threshold to match the lower level (inverse of the
-		// doubling on escalation).
-		if s.currentThreshold > 0 {
-			s.currentThreshold /= 2
-		}
-		// Reset score to half the current threshold so the session doesn't
-		// immediately re-escalate from accumulated points.
-		s.threatScore = s.currentThreshold / 2
-		// Clear block_all flag — the proxy will re-evaluate on next escalation.
-		// This allows RecordRequest to resume refreshing lastActivity.
-		s.atBlockAll = false
-	}
-}
-
 // RecordSignal adds a threat signal to the session's score.
 // Returns (escalated, fromLevel, toLevel) if threshold was crossed.
+// Time-based recovery is handled exclusively by TryAutoRecover, not here.
 // Caller must hold no locks on SessionState.
 func (s *SessionState) RecordSignal(sig session.SignalType, threshold float64) (bool, string, string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	now := time.Now()
-
-	// Time-based de-escalation before recording the new signal.
-	s.tryDeescalate(now)
 
 	points := session.SignalPoints[sig]
 	s.threatScore += points
@@ -180,7 +155,7 @@ func (s *SessionState) RecordSignal(sig session.SignalType, threshold float64) (
 	if s.currentThreshold > 0 && s.threatScore >= s.currentThreshold {
 		oldLevel := s.escalationLevel
 		s.escalationLevel++
-		s.lastEscalation = now
+		s.lastEscalation = time.Now()
 		// Double the threshold to prevent oscillation
 		s.currentThreshold *= 2
 
@@ -193,15 +168,9 @@ func (s *SessionState) RecordSignal(sig session.SignalType, threshold float64) (
 }
 
 // RecordClean decays the threat score for a clean request (no signals).
-// Also checks the de-escalation timer so sessions at block_all can
-// recover via clean traffic — without this, a session stuck at critical
-// would never de-escalate because RecordSignal is never called for
-// clean requests.
 func (s *SessionState) RecordClean(decayRate float64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	s.tryDeescalate(time.Now())
 
 	s.threatScore -= decayRate
 	if s.threatScore < 0 {
@@ -228,9 +197,9 @@ func (s *SessionState) BlockAll() bool {
 
 // TryAutoRecover checks whether the session has been at its current
 // escalation level for longer than maxLevelDuration and drops one level
-// if so. Unlike tryDeescalate, it takes a blockAllCheck callback that
-// recomputes atBlockAll from live config so custom configs with block_all
-// at lower escalation levels work correctly.
+// if so. It takes a blockAllCheck callback that recomputes atBlockAll
+// from live config so custom configs with block_all at lower escalation
+// levels work correctly. This is the sole time-based recovery path.
 //
 // Returns (changed, fromLevel, toLevel). The caller is responsible for
 // emitting metrics/logs when changed is true.

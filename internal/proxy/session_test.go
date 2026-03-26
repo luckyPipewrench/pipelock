@@ -975,9 +975,9 @@ func TestSessionState_TimeBasedDeescalation(t *testing.T) {
 
 	sess := sm.GetOrCreate(testClientIP)
 
-	// Escalate to level 1 (threshold 5, +3 block = 3, +3 block = 6 → escalate)
+	// Escalate to level 1 (threshold 5, +3 block = 3, +3 block = 6 -> escalate)
 	sess.RecordSignal(session.SignalBlock, 5.0) // +3, total 3
-	sess.RecordSignal(session.SignalBlock, 5.0) // +3, total 6 → escalate to 1
+	sess.RecordSignal(session.SignalBlock, 5.0) // +3, total 6 -> escalate to 1
 
 	if sess.EscalationLevel() != 1 {
 		t.Fatalf("expected level 1, got %d", sess.EscalationLevel())
@@ -988,10 +988,13 @@ func TestSessionState_TimeBasedDeescalation(t *testing.T) {
 	sess.lastEscalation = time.Now().Add(-maxLevelDuration - time.Second)
 	sess.mu.Unlock()
 
-	// Next signal should trigger de-escalation first, then evaluate.
-	// A near-miss (+1) shouldn't re-escalate (threshold is now 5 after halving from 10).
-	sess.RecordSignal(session.SignalNearMiss, 5.0)
+	// TryAutoRecover is now the sole time-based recovery path.
+	blockAllCheck := func(level int) bool { return level >= 3 }
+	changed, _, _ := sess.TryAutoRecover(blockAllCheck)
 
+	if !changed {
+		t.Fatal("expected TryAutoRecover to de-escalate after max dwell time")
+	}
 	if sess.EscalationLevel() != 0 {
 		t.Errorf("expected de-escalation to level 0 after max dwell time, got %d", sess.EscalationLevel())
 	}
@@ -1005,9 +1008,9 @@ func TestSessionState_CriticalDeescalation(t *testing.T) {
 	sess := sm.GetOrCreate(testClientIP)
 
 	// Escalate to critical (level 3) by sending many signals.
-	// Use threshold 5.0; each block = +3. After 2 blocks (6 pts) → level 1.
-	// Threshold doubles to 10. 2 more blocks (6 pts, total 12) → level 2.
-	// Threshold doubles to 20. 3 more blocks (9 pts, total 21) → level 3.
+	// Use threshold 5.0; each block = +3. After 2 blocks (6 pts) -> level 1.
+	// Threshold doubles to 10. 2 more blocks (6 pts, total 12) -> level 2.
+	// Threshold doubles to 20. 3 more blocks (9 pts, total 21) -> level 3.
 	for range 7 {
 		sess.RecordSignal(session.SignalBlock, 5.0)
 	}
@@ -1017,14 +1020,18 @@ func TestSessionState_CriticalDeescalation(t *testing.T) {
 		t.Fatalf("expected critical (level 3+), got %d", level)
 	}
 
-	// Simulate time passing — de-escalate one level.
+	// Simulate time passing -- de-escalate one level via TryAutoRecover.
 	sess.mu.Lock()
 	levelBefore := sess.escalationLevel
 	sess.lastEscalation = time.Now().Add(-maxLevelDuration - time.Second)
 	sess.mu.Unlock()
 
-	// Near-miss (+1) should not re-escalate after score reset.
-	sess.RecordSignal(session.SignalNearMiss, 5.0)
+	blockAllCheck := func(lvl int) bool { return lvl >= 3 }
+	changed, _, _ := sess.TryAutoRecover(blockAllCheck)
+
+	if !changed {
+		t.Fatal("expected TryAutoRecover to de-escalate after max dwell time")
+	}
 
 	levelAfter := sess.EscalationLevel()
 	if levelAfter >= levelBefore {
@@ -1032,7 +1039,7 @@ func TestSessionState_CriticalDeescalation(t *testing.T) {
 	}
 }
 
-func TestSessionState_DeescalationViaRecordClean(t *testing.T) {
+func TestSessionState_RecordClean_NoImplicitDeescalation(t *testing.T) {
 	cfg := testSessionConfig()
 	sm := NewSessionManager(cfg, nil, nil)
 	defer sm.Close()
@@ -1052,13 +1059,37 @@ func TestSessionState_DeescalationViaRecordClean(t *testing.T) {
 	sess.lastEscalation = time.Now().Add(-maxLevelDuration - time.Second)
 	sess.mu.Unlock()
 
-	// RecordClean (not RecordSignal) should trigger de-escalation.
-	// This is the core death spiral fix: sessions at block_all with only
-	// clean traffic must be able to recover.
+	// RecordClean must NOT de-escalate. Time-based recovery is handled
+	// exclusively by TryAutoRecover (called from on-entry fast paths
+	// and background sweep).
 	sess.RecordClean(0.5)
 
-	if sess.EscalationLevel() >= 3 {
-		t.Errorf("RecordClean should trigger de-escalation from critical, got level %d", sess.EscalationLevel())
+	if sess.EscalationLevel() < 3 {
+		t.Errorf("RecordClean should not implicitly de-escalate; got level %d", sess.EscalationLevel())
+	}
+}
+
+func TestRecordSignal_NoImplicitDeescalation(t *testing.T) {
+	cfg := testSessionConfig()
+	sm := NewSessionManager(cfg, nil, nil)
+	defer sm.Close()
+
+	sess := sm.GetOrCreate("test-client")
+
+	// Push to level 2, set lastEscalation far in the past.
+	sess.mu.Lock()
+	sess.escalationLevel = 2
+	sess.lastEscalation = time.Now().Add(-10 * time.Minute)
+	sess.currentThreshold = 20.0
+	sess.threatScore = 5.0
+	sess.mu.Unlock()
+
+	// RecordSignal should NOT de-escalate anymore. Time-based recovery is
+	// handled exclusively by TryAutoRecover.
+	sess.RecordSignal(session.SignalNearMiss, 5.0)
+
+	if sess.EscalationLevel() < 2 {
+		t.Errorf("RecordSignal should not implicitly de-escalate; got level %d", sess.EscalationLevel())
 	}
 }
 

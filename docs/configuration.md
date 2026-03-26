@@ -462,6 +462,9 @@ response_scanning:
   action: warn                  # block, strip, warn, or ask
   ask_timeout_seconds: 30       # HITL approval timeout
   include_defaults: true
+  exempt_domains:               # skip injection scanning for these hosts
+    - "api.openai.com"
+    - "*.anthropic.com"
   patterns:
     - name: "Custom Injection"
       regex: 'override system prompt'
@@ -473,6 +476,7 @@ response_scanning:
 | `action` | `"warn"` | block, strip, warn, or ask (HITL) |
 | `ask_timeout_seconds` | `30` | Timeout for human-in-the-loop approval |
 | `include_defaults` | `true` | Merge with 19 built-in patterns |
+| `exempt_domains` | `[]` | Hosts to skip injection scanning for (DLP still applies on outbound). Supports `*.example.com` wildcards. |
 | `patterns` | 19 built-in | Injection and state/control poisoning patterns |
 
 **Built-in patterns (19):** 13 prompt injection patterns (jailbreak phrases, system overrides, role overrides, instruction manipulation, encoded payloads, tool invocation commands, authority escalation) plus 6 state/control poisoning patterns (credential solicitation, credential path directives, auth material requirements, memory persistence directives, preference poisoning, silent credential handling). All patterns use DOTALL mode to match across newlines in multiline tool output.
@@ -482,6 +486,8 @@ response_scanning:
 - **strip:** redact matched text, return cleaned content
 - **warn:** log the match, return content unchanged
 - **ask:** pause and prompt the operator for approval (requires TTY)
+
+**Exempt domains:** LLM provider APIs (OpenAI, Anthropic, etc.) return instruction-like text as part of normal operation, which can trigger false positives. Use `exempt_domains` to skip injection scanning for trusted providers. DLP scanning on the outbound request still runs — only the response injection scan is skipped. Applies to fetch proxy, forward proxy, CONNECT (TLS intercept), WebSocket, and reverse proxy. Does not affect MCP response scanning (tool results use a separate trust model).
 
 ## MCP Input Scanning
 

@@ -547,7 +547,8 @@ func newInterceptHandler(
 		}
 
 		// Response injection scanning.
-		if sc.ResponseScanningEnabled() {
+		// Skip for response-exempt domains (e.g. trusted LLM providers).
+		if sc.ResponseScanningEnabled() && !isResponseScanExempt(r.URL.Hostname(), cfg.ResponseScanning.ExemptDomains) {
 			scanResult := sc.ScanResponse(r.Context(), string(respBody))
 			// Filter out suppressed findings (parity with fetch proxy).
 			if !scanResult.Clean && len(cfg.Suppress) > 0 {

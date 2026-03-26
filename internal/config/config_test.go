@@ -196,6 +196,86 @@ func TestValidate_DLPExemptDomainsBroadWildcardTrailingDot(t *testing.T) {
 	}
 }
 
+// --- Response scanning exempt_domains validation ---
+
+func TestValidate_ResponseScanningExemptDomainsValid(t *testing.T) {
+	cfg := Defaults()
+	cfg.ResponseScanning.ExemptDomains = []string{"api.openai.com", "*.anthropic.com"}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_ResponseScanningExemptDomainsEmpty(t *testing.T) {
+	cfg := Defaults()
+	cfg.ResponseScanning.ExemptDomains = []string{""}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for empty exempt_domains entry")
+	}
+}
+
+func TestValidate_ResponseScanningExemptDomainsBareWildcard(t *testing.T) {
+	cfg := Defaults()
+	cfg.ResponseScanning.ExemptDomains = []string{"*"}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for bare wildcard '*' in exempt_domains")
+	}
+}
+
+func TestValidate_ResponseScanningExemptDomainsURL(t *testing.T) {
+	cfg := Defaults()
+	cfg.ResponseScanning.ExemptDomains = []string{"https://api.openai.com"}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for URL in exempt_domains")
+	}
+}
+
+func TestValidate_ResponseScanningExemptDomainsHostPort(t *testing.T) {
+	cfg := Defaults()
+	cfg.ResponseScanning.ExemptDomains = []string{"api.openai.com:443"}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for host:port in exempt_domains")
+	}
+}
+
+func TestValidate_ResponseScanningExemptDomainsNonPrefixWildcard(t *testing.T) {
+	cfg := Defaults()
+	cfg.ResponseScanning.ExemptDomains = []string{"api.*.openai.com"}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for non-prefix wildcard in exempt_domains")
+	}
+}
+
+func TestValidate_ResponseScanningExemptDomainsBroadWildcard(t *testing.T) {
+	cfg := Defaults()
+	cfg.ResponseScanning.ExemptDomains = []string{"*.com"}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for overly broad wildcard *.com in exempt_domains")
+	}
+}
+
+func TestValidate_ResponseScanningExemptDomainsNormalization(t *testing.T) {
+	cfg := Defaults()
+	cfg.ResponseScanning.ExemptDomains = []string{" API.OpenAI.COM. "}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.ResponseScanning.ExemptDomains[0] != "api.openai.com" {
+		t.Errorf("expected normalized domain, got %q", cfg.ResponseScanning.ExemptDomains[0])
+	}
+}
+
+func TestValidate_ResponseScanningExemptDomainsDisabledOK(t *testing.T) {
+	// When response scanning is disabled, exempt_domains should not be validated
+	// (matches DLP pattern behavior where patterns aren't validated if DLP is off).
+	cfg := Defaults()
+	cfg.ResponseScanning.Enabled = false
+	cfg.ResponseScanning.ExemptDomains = []string{"*.com"} // would fail if validated
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("unexpected error when response scanning disabled: %v", err)
+	}
+}
+
 func TestValidate_DLPInvalidValidator(t *testing.T) {
 	cfg := Defaults()
 	cfg.DLP.Patterns = []DLPPattern{
@@ -1996,6 +2076,97 @@ func TestValidateReload_ResponseScanningDisabled(t *testing.T) {
 	}
 	if !found {
 		t.Error("expected response scanning disabled warning")
+	}
+}
+
+const reloadFieldResponseExempt = "response_scanning.exempt_domains"
+
+func TestValidateReload_ResponseScanningExemptDomainsExpanded(t *testing.T) {
+	old := Defaults()
+	updated := Defaults()
+	updated.ResponseScanning.ExemptDomains = []string{"api.openai.com"}
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == reloadFieldResponseExempt {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected response scanning exempt_domains change warning")
+	}
+}
+
+func TestValidateReload_ResponseScanningExemptDomainsNarrowed_StillWarns(t *testing.T) {
+	// Narrowing from wildcard to exact is still a change to the exemption
+	// surface — any change to security-sensitive config should be visible.
+	old := Defaults()
+	old.ResponseScanning.ExemptDomains = []string{"*.openai.com"}
+	updated := Defaults()
+	updated.ResponseScanning.ExemptDomains = []string{"api.openai.com"}
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == reloadFieldResponseExempt {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected warning on narrowing change — any exemption change should be visible")
+	}
+}
+
+func TestValidateReload_ResponseScanningExemptDomainsSubsetReduced_NoWarning(t *testing.T) {
+	// Removing an entry (all remaining were in old set) should NOT warn.
+	old := Defaults()
+	old.ResponseScanning.ExemptDomains = []string{"api.openai.com", "*.anthropic.com"}
+	updated := Defaults()
+	updated.ResponseScanning.ExemptDomains = []string{"api.openai.com"}
+
+	warnings := ValidateReload(old, updated)
+	for _, w := range warnings {
+		if w.Field == reloadFieldResponseExempt {
+			t.Errorf("pure removal should not warn, got: %s", w.Message)
+		}
+	}
+}
+
+func TestValidateReload_ResponseScanningExemptDomainsBroadened_SameLength(t *testing.T) {
+	// Replacing api.openai.com with *.openai.com keeps the same count
+	// but widens trust — must warn.
+	old := Defaults()
+	old.ResponseScanning.ExemptDomains = []string{"api.openai.com"}
+	updated := Defaults()
+	updated.ResponseScanning.ExemptDomains = []string{"*.openai.com"}
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == reloadFieldResponseExempt {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected warning when exempt domain broadened from exact to wildcard")
+	}
+}
+
+func TestValidateReload_ResponseScanningExemptDomainsUnchanged_NoWarning(t *testing.T) {
+	old := Defaults()
+	old.ResponseScanning.ExemptDomains = []string{"api.openai.com"}
+	updated := Defaults()
+	updated.ResponseScanning.ExemptDomains = []string{"api.openai.com"}
+
+	warnings := ValidateReload(old, updated)
+	for _, w := range warnings {
+		if w.Field == reloadFieldResponseExempt {
+			t.Errorf("unchanged exempt_domains should not warn, got: %s", w.Message)
+		}
 	}
 }
 

@@ -363,6 +363,7 @@ type ResponseScanning struct {
 	AskTimeoutSeconds int                   `yaml:"ask_timeout_seconds"` // timeout for HITL prompt (default 30)
 	IncludeDefaults   *bool                 `yaml:"include_defaults"`    // nil/true: merge user patterns with defaults; false: user patterns only
 	Patterns          []ResponseScanPattern `yaml:"patterns"`
+	ExemptDomains     []string              `yaml:"exempt_domains"` // responses from these hosts skip injection scanning (DLP still applies)
 }
 
 // ResponseScanPattern is a named regex pattern for detecting prompt injection in responses.
@@ -1666,6 +1667,23 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("response scanning pattern %q has invalid regex: %w", p.Name, err)
 			}
 		}
+		for i, raw := range c.ResponseScanning.ExemptDomains {
+			d := strings.TrimSuffix(strings.TrimSpace(strings.ToLower(raw)), ".")
+			if d == "" {
+				return fmt.Errorf("response_scanning.exempt_domains[%d] is empty", i)
+			}
+			if strings.Contains(d, "://") || strings.Contains(d, "/") || strings.Contains(d, ":") {
+				return fmt.Errorf("response_scanning.exempt_domains[%d] %q: use a hostname pattern, not a URL or host:port", i, raw)
+			}
+			if strings.HasPrefix(d, "*.") {
+				if strings.Count(d[2:], ".") < 1 {
+					return fmt.Errorf("response_scanning.exempt_domains[%d] %q: wildcard must target a concrete domain like *.example.com", i, raw)
+				}
+			} else if strings.ContainsAny(d, "*?[]") {
+				return fmt.Errorf("response_scanning.exempt_domains[%d] %q: only exact hosts and *.example.com wildcards are supported", i, raw)
+			}
+			c.ResponseScanning.ExemptDomains[i] = d
+		}
 	}
 
 	// Validate MCP input scanning config
@@ -2516,6 +2534,26 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 			Field:   "response_scanning.enabled",
 			Message: "response scanning disabled",
 		})
+	}
+
+	// Response scanning exempt_domains changed: warn on any entry not in the
+	// previous set. This fires on both broadening (api.openai.com → *.openai.com)
+	// AND narrowing (*.openai.com → api.openai.com) because any change to a
+	// security-sensitive exemption list should be visible to the operator.
+	if len(updated.ResponseScanning.ExemptDomains) > 0 {
+		oldExempt := make(map[string]bool, len(old.ResponseScanning.ExemptDomains))
+		for _, d := range old.ResponseScanning.ExemptDomains {
+			oldExempt[d] = true
+		}
+		for _, d := range updated.ResponseScanning.ExemptDomains {
+			if !oldExempt[d] {
+				warnings = append(warnings, ReloadWarning{
+					Field:   "response_scanning.exempt_domains",
+					Message: fmt.Sprintf("response scanning exempt_domains changed: %q not in previous set", d),
+				})
+				break
+			}
+		}
 	}
 
 	// MCP input scanning disabled

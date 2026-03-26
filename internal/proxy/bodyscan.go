@@ -57,6 +57,18 @@ func isAdaptiveExempt(hostname string, exemptDomains []string) bool {
 	return false
 }
 
+// isResponseScanExempt checks if a hostname matches any pattern in the
+// response_scanning.exempt_domains list. Responses from exempt domains skip
+// injection scanning (DLP on the outbound request still applies).
+func isResponseScanExempt(hostname string, exemptDomains []string) bool {
+	for _, pattern := range exemptDomains {
+		if scanner.MatchDomain(hostname, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
 // BodyScanResult describes the outcome of scanning a request body or headers.
 type BodyScanResult struct {
 	Clean           bool

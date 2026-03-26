@@ -252,8 +252,8 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	// Record the final client-visible status at each exit point, not here.
 	// The upstream status may be rewritten to 403 by scanning decisions.
 
-	// Only scan if response scanning is enabled.
-	if !cfg.ResponseScanning.Enabled {
+	// Only scan if response scanning is enabled and host is not exempt.
+	if !cfg.ResponseScanning.Enabled || isResponseScanExempt(resp.Request.URL.Hostname(), cfg.ResponseScanning.ExemptDomains) {
 		rp.metrics.RecordReverseProxyRequest(resp.Request.Method,
 			strconv.Itoa(resp.StatusCode))
 		return nil

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/discover"
@@ -329,6 +330,80 @@ func TestWrapDiscoverReport(t *testing.T) {
 	}
 	if wrapped.Summary.TotalClients != 2 {
 		t.Errorf("Summary.TotalClients = %d, want 2", wrapped.Summary.TotalClients)
+	}
+}
+
+func TestWrapDiscoverReport_RedactsSecrets(t *testing.T) {
+	r := &discover.Report{
+		Servers: []discover.MCPServer{
+			{
+				Client:      "claude-code",
+				ServerName:  "db",
+				Command:     "npx",
+				Args:        []string{"server-postgres", "postgresql://user:pass@localhost/db"},
+				Env:         map[string]string{"API_KEY": "sk-secret-123", "TOKEN": "tok_abc"},
+				URL:         "http://internal:8080",
+				ConfigPath:  "/home/user/.claude.json",
+				ProjectPath: "/home/user/dev/myproject",
+				Protection:  discover.Unprotected,
+				Risk:        discover.RiskHigh,
+				Evidence:    "matches high-risk keyword: postgres",
+			},
+		},
+		Summary: discover.Summary{TotalServers: 1},
+	}
+
+	wrapped := wrapDiscoverReport(r, "/home/test")
+
+	if len(wrapped.Servers) != 1 {
+		t.Fatalf("expected 1 server, got %d", len(wrapped.Servers))
+	}
+	s := wrapped.Servers[0]
+
+	// Fields that identify the server and its security posture should survive.
+	if s.Client != "claude-code" {
+		t.Errorf("Client redacted, should be kept")
+	}
+	if s.ServerName != "db" {
+		t.Errorf("ServerName redacted, should be kept")
+	}
+	if s.Protection != discover.Unprotected {
+		t.Errorf("Protection redacted, should be kept")
+	}
+	if s.Risk != discover.RiskHigh {
+		t.Errorf("Risk redacted, should be kept")
+	}
+	if s.Command != "npx" {
+		t.Errorf("Command redacted, should be kept")
+	}
+
+	// Fields that may contain secrets must be stripped.
+	if s.Env != nil {
+		t.Errorf("Env not redacted: %v", s.Env)
+	}
+	if s.Args != nil {
+		t.Errorf("Args not redacted: %v (may contain connection strings)", s.Args)
+	}
+	if s.URL != "" {
+		t.Errorf("URL not redacted: %q", s.URL)
+	}
+	if s.ConfigPath != "" {
+		t.Errorf("ConfigPath not redacted: %q", s.ConfigPath)
+	}
+	if s.ProjectPath != "" {
+		t.Errorf("ProjectPath not redacted: %q", s.ProjectPath)
+	}
+
+	// Verify via JSON serialization too — no secrets in the wire format.
+	data, err := json.Marshal(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := string(data)
+	for _, secret := range []string{"sk-secret-123", "tok_abc", "user:pass", "internal:8080", ".claude.json", "myproject"} {
+		if strings.Contains(output, secret) {
+			t.Errorf("JSON output contains secret %q", secret)
+		}
 	}
 }
 

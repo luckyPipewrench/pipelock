@@ -392,8 +392,17 @@ func wrapDiscoverReport(r *discover.Report, home string) AssessDiscoverReport {
 		})
 	}
 	for _, s := range r.Servers {
+		// Redact fields that may contain secrets (env vars, connection strings
+		// in args, config paths that reveal infrastructure). The assessment
+		// only needs protection status, risk, and server identity.
+		redacted := s
+		redacted.Env = nil
+		redacted.Args = nil
+		redacted.URL = ""
+		redacted.ConfigPath = ""
+		redacted.ProjectPath = ""
 		result.Servers = append(result.Servers, AssessDiscoverServer{
-			MCPServer:     s,
+			MCPServer:     redacted,
 			SchemaVersion: assessSchemaVersion,
 		})
 	}

@@ -458,13 +458,22 @@ func projectToSummary(a Assessment) Summary {
 	topFindings := make([]SummaryFinding, topCount)
 	for i := 0; i < topCount; i++ {
 		f := a.Findings[i]
+		title := f.Title
+		id := f.ID
+		// Redact server names from discover findings in free tier.
+		// The free summary should show "you have unprotected servers"
+		// without naming them — names are actionable detail for paid tier.
+		if f.Source == sourceDiscover {
+			title = redactDiscoverTitle(f.Severity)
+			id = fmt.Sprintf("find-discover-redacted-%d", i)
+		}
 		topFindings[i] = SummaryFinding{
 			SchemaVersion: f.SchemaVersion,
-			ID:            f.ID,
+			ID:            id,
 			Severity:      f.Severity,
 			Category:      f.Category,
 			Source:        f.Source,
-			Title:         f.Title,
+			Title:         title,
 		}
 	}
 
@@ -492,6 +501,15 @@ func projectToSummary(a Assessment) Summary {
 		DetectionPct:  detectionPct,
 		Signed:        false,
 	}
+}
+
+// redactDiscoverTitle produces a generic finding title for the free tier,
+// hiding server names that would let someone fix the issue without paying.
+func redactDiscoverTitle(severity string) string {
+	if severity == assessSevHigh {
+		return "A high-risk MCP server is unprotected"
+	}
+	return "An MCP server is unprotected"
 }
 
 // writeAssessmentJSON writes the full assessment to a JSON file.

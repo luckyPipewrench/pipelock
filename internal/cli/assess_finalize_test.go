@@ -237,6 +237,26 @@ func TestAssessFinalize_SummaryNoLeakedFields(t *testing.T) {
 		}
 	}
 
+	// Check discover finding IDs don't leak server/client names.
+	if tfRaw2, ok := raw["top_findings"]; ok {
+		var findings []map[string]json.RawMessage
+		if err := json.Unmarshal(tfRaw2, &findings); err == nil {
+			for i, tf := range findings {
+				var id string
+				if idRaw, ok := tf["id"]; ok {
+					_ = json.Unmarshal(idRaw, &id)
+				}
+				var source string
+				if srcRaw, ok := tf["source"]; ok {
+					_ = json.Unmarshal(srcRaw, &source)
+				}
+				if source == sourceDiscover && !strings.HasPrefix(id, "find-discover-redacted-") {
+					t.Errorf("top_findings[%d] discover ID %q leaks server name (expected find-discover-redacted-*)", i, id)
+				}
+			}
+		}
+	}
+
 	// Check sections have no detail field.
 	if secRaw, ok := raw["sections"]; ok {
 		var sections []map[string]json.RawMessage

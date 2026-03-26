@@ -25,6 +25,7 @@ const (
 	testBundlePath    = "/test-bundle/bundle.yaml"
 	testBundleSigPath = "/test-bundle/bundle.yaml.sig"
 	testBundleName    = "test-bundle"
+	testBundleVersion = "2026.03.1"
 )
 
 // validBundleYAML is minimal valid bundle YAML for testing.
@@ -1714,6 +1715,52 @@ func TestStageBundle_ChmodPath(t *testing.T) {
 	}
 	if lockLF.InstalledVersion != "2026.03.1" {
 		t.Errorf("lock version = %q, want %q", lockLF.InstalledVersion, "2026.03.1")
+	}
+}
+
+func TestStageBundle_NilSignature(t *testing.T) {
+	t.Parallel()
+
+	rulesDir := t.TempDir()
+	bundleData := []byte("bundle-without-sig")
+
+	lf := &rules.LockFile{
+		InstalledVersion: testBundleVersion,
+		Source:           "test",
+		BundleSHA256:     "def456",
+		Unsigned:         true,
+	}
+
+	// nil sigData means no signature file should be written.
+	err := stageBundle(rulesDir, "no-sig-test", bundleData, nil, lf)
+	if err != nil {
+		t.Fatalf("stageBundle() error: %v", err)
+	}
+
+	destDir := filepath.Join(rulesDir, "no-sig-test")
+
+	// Verify bundle.yaml was written.
+	data, err := os.ReadFile(filepath.Clean(filepath.Join(destDir, "bundle.yaml")))
+	if err != nil {
+		t.Fatalf("reading bundle.yaml: %v", err)
+	}
+	if string(data) != "bundle-without-sig" {
+		t.Errorf("bundle content = %q, want %q", string(data), "bundle-without-sig")
+	}
+
+	// Verify no signature file.
+	sigPath := filepath.Join(destDir, "bundle.yaml.sig")
+	if _, err := os.Stat(sigPath); !os.IsNotExist(err) {
+		t.Error("expected no signature file when sigData is nil")
+	}
+
+	// Verify lock file was written.
+	lockLF, err := rules.ReadLockFile(filepath.Join(destDir, "bundle.lock"))
+	if err != nil {
+		t.Fatalf("reading lock file: %v", err)
+	}
+	if lockLF.InstalledVersion != testBundleVersion {
+		t.Errorf("lock version = %q, want %q", lockLF.InstalledVersion, testBundleVersion)
 	}
 }
 

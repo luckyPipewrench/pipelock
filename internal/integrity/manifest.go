@@ -16,6 +16,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
 )
 
 // ManifestVersion is the current manifest schema version.
@@ -72,33 +74,7 @@ func (m *Manifest) Save(path string) error {
 
 	data = append(data, '\n')
 
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".manifest-*.tmp")
-	if err != nil {
-		return fmt.Errorf("creating temp file: %w", err)
-	}
-	tmpName := tmp.Name()
-
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()        //nolint:errcheck,gosec // cleanup
-		os.Remove(tmpName) //nolint:errcheck,gosec // cleanup
-		return fmt.Errorf("writing manifest: %w", err)
-	}
-	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()        //nolint:errcheck,gosec // cleanup
-		os.Remove(tmpName) //nolint:errcheck,gosec // cleanup
-		return fmt.Errorf("setting manifest permissions: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName) //nolint:errcheck,gosec // cleanup
-		return fmt.Errorf("closing temp file: %w", err)
-	}
-	if err := os.Rename(tmpName, path); err != nil { //nolint:gosec // G703: path from caller, not user input
-		os.Remove(tmpName) //nolint:errcheck,gosec // cleanup
-		return fmt.Errorf("writing manifest: %w", err)
-	}
-
-	return nil
+	return atomicfile.Write(path, data, 0o600)
 }
 
 // HashFile computes the SHA256 hash and stats a single file.

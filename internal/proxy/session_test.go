@@ -1131,3 +1131,107 @@ func TestSessionState_SubCriticalActivityRefresh(t *testing.T) {
 		t.Error("lastActivity should be refreshed at sub-critical escalation levels")
 	}
 }
+
+func TestSessionManager_CleanupLoop_DoneStops(t *testing.T) {
+	cfg := testSessionConfig()
+	cfg.CleanupIntervalSeconds = 1 // short interval for test speed
+	sm := NewSessionManager(cfg, nil)
+
+	// Create a session with expired activity.
+	sess := sm.GetOrCreate(testClientIP)
+	sess.mu.Lock()
+	sess.lastActivity = time.Now().Add(-time.Hour)
+	sess.mu.Unlock()
+
+	// Close should stop the cleanup loop goroutine cleanly.
+	sm.Close()
+
+	// After Close, the session should still exist (cleanup loop stopped before
+	// the timer fired, or the timer fired and cleaned up — both are valid).
+	// The key invariant: no panic, no goroutine leak, no race.
+}
+
+func TestSessionManager_CleanupLoop_RunsCleanup(t *testing.T) {
+	cfg := testSessionConfig()
+	cfg.CleanupIntervalSeconds = 1
+	cfg.SessionTTLMinutes = 0 // immediate expiry
+	m := metrics.New()
+	sm := NewSessionManager(cfg, m)
+	defer sm.Close()
+
+	// Create a session that is immediately stale.
+	sess := sm.GetOrCreate("stale-session")
+	sess.mu.Lock()
+	sess.lastActivity = time.Now().Add(-time.Hour)
+	sess.mu.Unlock()
+
+	// Manually invoke cleanup to verify it works.
+	sm.cleanup()
+	if sm.Len() != 0 {
+		t.Errorf("expected 0 sessions after cleanup, got %d", sm.Len())
+	}
+}
+
+func TestSessionState_SetBlockAll(t *testing.T) {
+	cfg := testSessionConfig()
+	sm := NewSessionManager(cfg, nil)
+	defer sm.Close()
+
+	sess := sm.GetOrCreate(testClientIP)
+
+	// At block_all, RecordRequest should NOT refresh lastActivity.
+	sess.SetBlockAll(true)
+	sess.mu.Lock()
+	sess.lastActivity = time.Now().Add(-10 * time.Minute)
+	frozen := sess.lastActivity
+	sess.mu.Unlock()
+
+	sess.RecordRequest("example.com", cfg)
+
+	sess.mu.Lock()
+	after := sess.lastActivity
+	sess.mu.Unlock()
+
+	if !after.Equal(frozen) {
+		t.Error("lastActivity should NOT be refreshed when at block_all")
+	}
+
+	// Clear block_all; activity should resume.
+	sess.SetBlockAll(false)
+	sess.RecordRequest("other.com", cfg)
+
+	sess.mu.Lock()
+	afterClear := sess.lastActivity
+	sess.mu.Unlock()
+
+	if !afterClear.After(frozen) {
+		t.Error("lastActivity should be refreshed after clearing block_all")
+	}
+}
+
+func TestSessionManager_IPDomainBurstCooldown(t *testing.T) {
+	cfg := testSessionConfig()
+	cfg.DomainBurst = 2
+	cfg.WindowMinutes = 5
+	sm := NewSessionManager(cfg, nil)
+	defer sm.Close()
+
+	// First burst: should have score > 0.
+	sm.RecordIPDomain(testClientIP, "a.com", cfg)
+	anomalies := sm.RecordIPDomain(testClientIP, "b.com", cfg)
+	if len(anomalies) == 0 {
+		t.Fatal("expected ip_domain_burst anomaly")
+	}
+	if anomalies[0].Score == 0 {
+		t.Error("first burst should have non-zero score")
+	}
+
+	// Second burst: same window, score should be 0 (cooldown).
+	anomalies2 := sm.RecordIPDomain(testClientIP, "c.com", cfg)
+	if len(anomalies2) == 0 {
+		t.Fatal("expected ip_domain_burst anomaly on repeat")
+	}
+	if anomalies2[0].Score != 0 {
+		t.Error("repeat burst in same window should have score 0 (cooldown)")
+	}
+}

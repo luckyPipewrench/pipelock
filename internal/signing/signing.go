@@ -13,6 +13,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
 )
 
 // SigExtension is the file extension for detached signature files.
@@ -136,35 +138,7 @@ func DecodePrivateKey(encoded string) (ed25519.PrivateKey, error) {
 
 // atomicWrite writes data to path via a temporary file and rename.
 func atomicWrite(path string, data []byte, perm os.FileMode) error {
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".pipelock-*.tmp")
-	if err != nil {
-		return fmt.Errorf("creating temp file: %w", err)
-	}
-	tmpName := tmp.Name()
-
-	cleanup := func() {
-		tmp.Close()        //nolint:errcheck,gosec // best-effort cleanup
-		os.Remove(tmpName) //nolint:errcheck,gosec // best-effort cleanup
-	}
-
-	if _, err := tmp.Write(data); err != nil {
-		cleanup()
-		return fmt.Errorf("writing file: %w", err)
-	}
-	if err := tmp.Chmod(perm); err != nil {
-		cleanup()
-		return fmt.Errorf("setting permissions: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName) //nolint:errcheck,gosec // best-effort cleanup
-		return fmt.Errorf("closing temp file: %w", err)
-	}
-	if err := os.Rename(tmpName, path); err != nil { //nolint:gosec // G703: path from caller, not user input
-		os.Remove(tmpName) //nolint:errcheck,gosec // best-effort cleanup
-		return fmt.Errorf("renaming file: %w", err)
-	}
-	return nil
+	return atomicfile.Write(path, data, perm)
 }
 
 // SavePublicKey writes an encoded public key to path with 0o644 permissions.

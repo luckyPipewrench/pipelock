@@ -2684,3 +2684,171 @@ func TestWSRelay_KillSwitch_UpstreamToClient(t *testing.T) {
 		}
 	}
 }
+
+// --- wsRelay.recordSignal / escalationLevel unit tests ---
+
+func TestWsRelayRecordSignal_NilRecorder(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.AdaptiveEnforcement.Enabled = true
+	m := metrics.New()
+	p, err := New(cfg, audit.NewNop(), scanner.New(cfg), m)
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	defer p.Close()
+
+	relay := &wsRelay{
+		rec:   nil, // nil recorder
+		cfg:   cfg,
+		proxy: p,
+	}
+
+	// Should not panic when recorder is nil.
+	relay.recordSignal(session.SignalBlock, audit.NewNop())
+}
+
+func TestWsRelayRecordSignal_AdaptiveDisabled(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.AdaptiveEnforcement.Enabled = false
+	m := metrics.New()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+	p, err := New(cfg, audit.NewNop(), sc, m)
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	defer p.Close()
+
+	sessCfg := &config.SessionProfiling{
+		Enabled:                true,
+		MaxSessions:            100,
+		SessionTTLMinutes:      30,
+		CleanupIntervalSeconds: 60,
+	}
+	sm := NewSessionManager(sessCfg, nil)
+	defer sm.Close()
+	rec := sm.GetOrCreate("test-key")
+
+	relay := &wsRelay{
+		rec:      rec,
+		cfg:      cfg,
+		proxy:    p,
+		clientIP: "10.0.0.1",
+		agent:    "test-agent",
+	}
+
+	// Should be a no-op when adaptive enforcement is disabled.
+	relay.recordSignal(session.SignalBlock, audit.NewNop())
+	if rec.ThreatScore() != 0 {
+		t.Errorf("expected threat score 0 when adaptive disabled, got %f", rec.ThreatScore())
+	}
+}
+
+func TestWsRelayRecordSignal_RecordsSignal(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.AdaptiveEnforcement.Enabled = true
+	cfg.AdaptiveEnforcement.EscalationThreshold = 10.0
+	m := metrics.New()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+	p, err := New(cfg, audit.NewNop(), sc, m)
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	defer p.Close()
+
+	sessCfg := &config.SessionProfiling{
+		Enabled:                true,
+		MaxSessions:            100,
+		SessionTTLMinutes:      30,
+		CleanupIntervalSeconds: 60,
+	}
+	sm := NewSessionManager(sessCfg, nil)
+	defer sm.Close()
+	rec := sm.GetOrCreate("agent|10.0.0.1")
+
+	relay := &wsRelay{
+		rec:      rec,
+		cfg:      cfg,
+		proxy:    p,
+		clientIP: "10.0.0.1",
+		agent:    "agent",
+	}
+
+	relay.recordSignal(session.SignalBlock, audit.NewNop())
+	if rec.ThreatScore() == 0 {
+		t.Error("expected non-zero threat score after recording signal")
+	}
+}
+
+func TestWsRelayEscalationLevel_NilRecorder(t *testing.T) {
+	relay := &wsRelay{rec: nil}
+	if level := relay.escalationLevel(); level != 0 {
+		t.Errorf("expected level 0 for nil recorder, got %d", level)
+	}
+}
+
+func TestWsRelayEscalationLevel_WithRecorder(t *testing.T) {
+	sessCfg := &config.SessionProfiling{
+		Enabled:                true,
+		MaxSessions:            100,
+		SessionTTLMinutes:      30,
+		CleanupIntervalSeconds: 60,
+	}
+	sm := NewSessionManager(sessCfg, nil)
+	defer sm.Close()
+	rec := sm.GetOrCreate("test")
+
+	relay := &wsRelay{rec: rec}
+	if level := relay.escalationLevel(); level != 0 {
+		t.Errorf("expected level 0 for new session, got %d", level)
+	}
+
+	// Escalate
+	rec.RecordSignal(session.SignalBlock, 3.0) // +3, threshold 3 -> escalate
+	if level := relay.escalationLevel(); level < 1 {
+		t.Errorf("expected escalated level >= 1, got %d", level)
+	}
+}
+
+func TestWsRelayRecordSignal_AnonymousAgent(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.AdaptiveEnforcement.Enabled = true
+	cfg.AdaptiveEnforcement.EscalationThreshold = 10.0
+	m := metrics.New()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+	p, err := New(cfg, audit.NewNop(), sc, m)
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	defer p.Close()
+
+	sessCfg := &config.SessionProfiling{
+		Enabled:                true,
+		MaxSessions:            100,
+		SessionTTLMinutes:      30,
+		CleanupIntervalSeconds: 60,
+	}
+	sm := NewSessionManager(sessCfg, nil)
+	defer sm.Close()
+
+	// Anonymous agent: session key should be just the IP.
+	rec := sm.GetOrCreate("10.0.0.1")
+	relay := &wsRelay{
+		rec:      rec,
+		cfg:      cfg,
+		proxy:    p,
+		clientIP: "10.0.0.1",
+		agent:    agentAnonymous,
+	}
+
+	relay.recordSignal(session.SignalNearMiss, audit.NewNop())
+	if rec.ThreatScore() == 0 {
+		t.Error("expected non-zero threat score after signal with anonymous agent")
+	}
+}

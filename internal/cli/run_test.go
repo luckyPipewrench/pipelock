@@ -1019,3 +1019,52 @@ dlp:
 		t.Fatal("run did not shut down")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Flag validation tests for runCmd (reverse proxy flags)
+// ---------------------------------------------------------------------------
+
+func TestRunCmd_ReverseProxyWithoutUpstream(t *testing.T) {
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"run", "--reverse-proxy"})
+	cmd.SetOut(&strings.Builder{})
+	cmd.SetErr(&strings.Builder{})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for --reverse-proxy without --reverse-upstream")
+	}
+	if !strings.Contains(err.Error(), "--reverse-proxy requires --reverse-upstream") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestRunCmd_ReverseUpstreamWithoutProxy(t *testing.T) {
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"run", "--reverse-upstream", "http://localhost:8080"})
+	cmd.SetOut(&strings.Builder{})
+	cmd.SetErr(&strings.Builder{})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for --reverse-upstream without --reverse-proxy")
+	}
+	if !strings.Contains(err.Error(), "--reverse-upstream requires --reverse-proxy") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestRunCmd_ReverseUpstreamInvalidURL(t *testing.T) {
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"run", "--reverse-proxy", "--reverse-upstream", "not-a-url"})
+	cmd.SetOut(&strings.Builder{})
+	cmd.SetErr(&strings.Builder{})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for invalid --reverse-upstream URL")
+	}
+	if !strings.Contains(err.Error(), "invalid --reverse-upstream") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}

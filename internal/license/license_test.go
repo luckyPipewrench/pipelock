@@ -7,6 +7,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -420,5 +421,37 @@ func TestIssueRejectsInvalidKeySize(t *testing.T) {
 	_, err := Issue(lic, []byte("too-short"))
 	if err == nil {
 		t.Fatal("expected error for invalid key size")
+	}
+}
+
+func TestIssueRejectsOversizedPayload(t *testing.T) {
+	_, priv := testKeyPair(t)
+
+	// Build a license with enough features to exceed the 64KB payload cap.
+	features := make([]string, 0, 5000)
+	for i := range 5000 {
+		features = append(features, strings.Repeat("x", 20)+strings.Repeat("0", 5-len(fmt.Sprintf("%d", i)))+fmt.Sprintf("%d", i))
+	}
+	lic := License{
+		ID:       "lic_huge",
+		Email:    "big@example.com",
+		Features: features,
+	}
+	_, err := Issue(lic, priv)
+	if err == nil {
+		t.Fatal("expected error for oversized license payload")
+	}
+	if !strings.Contains(err.Error(), "too large") {
+		t.Errorf("error = %q, want 'too large'", err.Error())
+	}
+}
+
+func TestVerifyRejectsInvalidPublicKeySize(t *testing.T) {
+	_, err := Verify("anything", []byte("wrong-size"))
+	if err == nil {
+		t.Fatal("expected error for invalid public key size")
+	}
+	if !strings.Contains(err.Error(), "invalid public key") {
+		t.Errorf("error = %q, want 'invalid public key'", err.Error())
 	}
 }

@@ -275,3 +275,184 @@ func TestScoreBar(t *testing.T) {
 		})
 	}
 }
+
+func TestScoreMCPToolScanning_Disabled(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.MCPToolScanning.Enabled = false
+
+	var findings []ScoreFinding
+	cat := scoreMCPToolScanning(cfg, &findings)
+
+	if cat.Score != 0 {
+		t.Errorf("disabled tool scanning should score 0, got %d", cat.Score)
+	}
+	hasCritical := false
+	for _, f := range findings {
+		if f.Severity == scoreSevCritical && strings.Contains(f.Message, "tool scanning is disabled") {
+			hasCritical = true
+		}
+	}
+	if !hasCritical {
+		t.Error("disabled tool scanning should produce critical finding")
+	}
+}
+
+func TestScoreMCPToolScanning_Actions(t *testing.T) {
+	tests := []struct {
+		name     string
+		action   string
+		minScore int
+		maxScore int
+		finding  bool // expect warning finding
+	}{
+		{
+			name:     "block action gives full score",
+			action:   config.ActionBlock,
+			minScore: maxMCPToolScanningScore,
+			maxScore: maxMCPToolScanningScore,
+			finding:  false,
+		},
+		{
+			name:     "ask action gives near full score",
+			action:   config.ActionAsk,
+			minScore: 9,
+			maxScore: 9,
+			finding:  false,
+		},
+		{
+			name:     "warn action gives partial score with finding",
+			action:   config.ActionWarn,
+			minScore: 7,
+			maxScore: 7,
+			finding:  true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.MCPToolScanning.Enabled = true
+			cfg.MCPToolScanning.Action = tc.action
+
+			var findings []ScoreFinding
+			cat := scoreMCPToolScanning(cfg, &findings)
+
+			if cat.Score < tc.minScore || cat.Score > tc.maxScore {
+				t.Errorf("score = %d, want [%d, %d]", cat.Score, tc.minScore, tc.maxScore)
+			}
+			hasWarning := false
+			for _, f := range findings {
+				if f.Severity == scoreSevWarning && strings.Contains(f.Message, "poisoned tool descriptions") {
+					hasWarning = true
+				}
+			}
+			if tc.finding && !hasWarning {
+				t.Error("expected warning finding for non-block action")
+			}
+			if !tc.finding && hasWarning {
+				t.Error("unexpected warning finding for blocking action")
+			}
+		})
+	}
+}
+
+func TestScoreEnforcement_EnforceFalse(t *testing.T) {
+	cfg := config.Defaults()
+	enforceFalse := false
+	cfg.Enforce = &enforceFalse
+	cfg.Mode = config.ModeStrict
+
+	var findings []ScoreFinding
+	cat := scoreEnforcement(cfg, &findings)
+
+	// enforce=false loses 5 points; strict mode adds 5.
+	if cat.Score != 5 {
+		t.Errorf("enforce=false + strict should score 5, got %d", cat.Score)
+	}
+	hasCritical := false
+	for _, f := range findings {
+		if f.Severity == scoreSevCritical && strings.Contains(f.Message, "Enforcement is disabled") {
+			hasCritical = true
+		}
+	}
+	if !hasCritical {
+		t.Error("enforce=false should produce critical finding")
+	}
+}
+
+func TestScoreEnforcement_AuditMode(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Mode = config.ModeAudit
+
+	var findings []ScoreFinding
+	cat := scoreEnforcement(cfg, &findings)
+
+	// enforce defaults true (+5), audit mode (+1) = 6.
+	if cat.Score != 6 {
+		t.Errorf("enforce=true + audit should score 6, got %d", cat.Score)
+	}
+	hasAuditInfo := false
+	for _, f := range findings {
+		if f.Severity == scoreSevInfo && strings.Contains(f.Message, "audit") {
+			hasAuditInfo = true
+		}
+	}
+	if !hasAuditInfo {
+		t.Error("audit mode should produce info finding")
+	}
+}
+
+func TestScoreEnforcement_BalancedMode(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Mode = config.ModeBalanced
+
+	var findings []ScoreFinding
+	cat := scoreEnforcement(cfg, &findings)
+
+	// enforce defaults true (+5), balanced mode (+3) = 8.
+	if cat.Score != 8 {
+		t.Errorf("enforce=true + balanced should score 8, got %d", cat.Score)
+	}
+}
+
+func TestIsWildcardArgPattern(t *testing.T) {
+	tests := []struct {
+		pattern string
+		want    bool
+	}{
+		{".*", true},
+		{".+", true},
+		{"^.*$", true},
+		{"^.+$", true},
+		{"curl.*", false},
+		{"", false},
+		{"^specific-pattern$", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.pattern, func(t *testing.T) {
+			if got := isWildcardArgPattern(tc.pattern); got != tc.want {
+				t.Errorf("isWildcardArgPattern(%q) = %v, want %v", tc.pattern, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestEffectiveAction(t *testing.T) {
+	tests := []struct {
+		name       string
+		ruleAction string
+		defAction  string
+		want       string
+	}{
+		{"rule overrides default", config.ActionBlock, config.ActionWarn, config.ActionBlock},
+		{"empty rule inherits default", "", config.ActionWarn, config.ActionWarn},
+		{"both empty", "", "", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := effectiveAction(tc.ruleAction, tc.defAction); got != tc.want {
+				t.Errorf("effectiveAction(%q, %q) = %q, want %q", tc.ruleAction, tc.defAction, got, tc.want)
+			}
+		})
+	}
+}

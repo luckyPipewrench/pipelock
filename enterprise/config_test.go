@@ -1042,3 +1042,163 @@ func TestDeepCopyConfig(t *testing.T) {
 		t.Error("deep copy mutated original")
 	}
 }
+
+// --- ValidateMergedAgent edge cases ---
+
+func TestValidateMergedAgent_RedirectProfileEmptyExec(t *testing.T) {
+	cfg := testConfig()
+	cfg.MCPToolPolicy.Enabled = true
+	cfg.MCPToolPolicy.Action = config.ActionRedirect
+	cfg.MCPToolPolicy.RedirectProfiles = map[string]config.RedirectProfile{
+		"my-handler": {Exec: []string{}},
+	}
+	err := ValidateMergedAgent("test", cfg)
+	if err == nil {
+		t.Fatal("expected error for redirect_profile with empty exec")
+	}
+}
+
+func TestValidateMergedAgent_RedirectProfileEmptyFirstArg(t *testing.T) {
+	cfg := testConfig()
+	cfg.MCPToolPolicy.Enabled = true
+	cfg.MCPToolPolicy.Action = config.ActionRedirect
+	cfg.MCPToolPolicy.RedirectProfiles = map[string]config.RedirectProfile{
+		"my-handler": {Exec: []string{""}},
+	}
+	err := ValidateMergedAgent("test", cfg)
+	if err == nil {
+		t.Fatal("expected error for redirect_profile with empty first exec arg")
+	}
+}
+
+func TestValidateMergedAgent_RuleRedirectMissingProfile(t *testing.T) {
+	cfg := testConfig()
+	cfg.MCPToolPolicy.Enabled = true
+	cfg.MCPToolPolicy.Action = config.ActionBlock
+	cfg.MCPToolPolicy.Rules = []config.ToolPolicyRule{
+		{Name: "test-rule", Action: config.ActionRedirect, RedirectProfile: ""},
+	}
+	err := ValidateMergedAgent("test", cfg)
+	if err == nil {
+		t.Fatal("expected error for redirect rule with empty redirect_profile")
+	}
+}
+
+func TestValidateMergedAgent_RuleRedirectUnknownProfile(t *testing.T) {
+	cfg := testConfig()
+	cfg.MCPToolPolicy.Enabled = true
+	cfg.MCPToolPolicy.Action = config.ActionBlock
+	cfg.MCPToolPolicy.RedirectProfiles = map[string]config.RedirectProfile{
+		"known": {Exec: []string{"/bin/true"}},
+	}
+	cfg.MCPToolPolicy.Rules = []config.ToolPolicyRule{
+		{Name: "test-rule", Action: config.ActionRedirect, RedirectProfile: "unknown"},
+	}
+	err := ValidateMergedAgent("test", cfg)
+	if err == nil {
+		t.Fatal("expected error for redirect rule referencing unknown profile")
+	}
+}
+
+func TestValidateMergedAgent_RuleInheritsDefaultAction(t *testing.T) {
+	// When a rule has no action, it inherits from the policy default.
+	// If policy default is redirect and rule has no redirect_profile, error.
+	cfg := testConfig()
+	cfg.MCPToolPolicy.Enabled = true
+	cfg.MCPToolPolicy.Action = config.ActionRedirect
+	cfg.MCPToolPolicy.Rules = []config.ToolPolicyRule{
+		{Name: "test-rule", Action: "", RedirectProfile: ""},
+	}
+	err := ValidateMergedAgent("test", cfg)
+	if err == nil {
+		t.Fatal("expected error when inherited action=redirect but no redirect_profile")
+	}
+}
+
+func TestValidateMergedAgent_ValidRedirectConfig(t *testing.T) {
+	cfg := testConfig()
+	cfg.MCPToolPolicy.Enabled = true
+	cfg.MCPToolPolicy.Action = config.ActionBlock
+	cfg.MCPToolPolicy.RedirectProfiles = map[string]config.RedirectProfile{
+		"my-handler": {Exec: []string{"/usr/bin/handler", "--flag"}},
+	}
+	cfg.MCPToolPolicy.Rules = []config.ToolPolicyRule{
+		{Name: "test-rule", Action: config.ActionRedirect, RedirectProfile: "my-handler"},
+	}
+	err := ValidateMergedAgent("test", cfg)
+	if err != nil {
+		t.Fatalf("expected valid config: %v", err)
+	}
+}
+
+func TestValidateMergedAgent_SessionProfilingDisabledSkipsValidation(t *testing.T) {
+	cfg := testConfig()
+	cfg.SessionProfiling.Enabled = false
+	cfg.SessionProfiling.AnomalyAction = "garbage" // invalid but should be ignored
+	err := ValidateMergedAgent("test", cfg)
+	if err != nil {
+		t.Fatalf("expected no error when session profiling is disabled: %v", err)
+	}
+}
+
+func TestValidateMergedAgent_MCPToolPolicyDisabledSkipsValidation(t *testing.T) {
+	cfg := testConfig()
+	cfg.MCPToolPolicy.Enabled = false
+	cfg.MCPToolPolicy.Action = "garbage" // invalid but should be ignored
+	err := ValidateMergedAgent("test", cfg)
+	if err != nil {
+		t.Fatalf("expected no error when mcp_tool_policy is disabled: %v", err)
+	}
+}
+
+func TestValidateMergedAgent_MCPToolPolicyActionRedirect(t *testing.T) {
+	cfg := testConfig()
+	cfg.MCPToolPolicy.Enabled = true
+	cfg.MCPToolPolicy.Action = config.ActionRedirect
+	err := ValidateMergedAgent("test", cfg)
+	if err != nil {
+		t.Fatalf("redirect is a valid mcp_tool_policy action: %v", err)
+	}
+}
+
+func TestValidateMergedAgent_MCPToolPolicyActionWarn(t *testing.T) {
+	cfg := testConfig()
+	cfg.MCPToolPolicy.Enabled = true
+	cfg.MCPToolPolicy.Action = config.ActionWarn
+	err := ValidateMergedAgent("test", cfg)
+	if err != nil {
+		t.Fatalf("warn is a valid mcp_tool_policy action: %v", err)
+	}
+}
+
+func TestValidateAgents_EmptySandboxPaths(t *testing.T) {
+	cfg := testConfig()
+	cfg.Agents = map[string]config.AgentProfile{
+		"agent": {
+			Sandbox: &config.AgentSandboxOverride{
+				FS: &config.SandboxFilesystem{
+					AllowRead: []string{""},
+				},
+			},
+		},
+	}
+	if err := ValidateAgents(cfg); err == nil {
+		t.Fatal("expected error for empty sandbox allow_read path")
+	}
+}
+
+func TestValidateAgents_EmptySandboxWritePaths(t *testing.T) {
+	cfg := testConfig()
+	cfg.Agents = map[string]config.AgentProfile{
+		"agent": {
+			Sandbox: &config.AgentSandboxOverride{
+				FS: &config.SandboxFilesystem{
+					AllowWrite: []string{""},
+				},
+			},
+		},
+	}
+	if err := ValidateAgents(cfg); err == nil {
+		t.Fatal("expected error for empty sandbox allow_write path")
+	}
+}

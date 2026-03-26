@@ -1059,3 +1059,72 @@ func TestCeeEntropyExempt(t *testing.T) {
 		})
 	}
 }
+
+// --- queryParamPayload edge cases ---
+
+func TestQueryParamPayload_URLEncodedValue(t *testing.T) {
+	// Percent-encoded value should be decoded before extraction.
+	u := &url.URL{RawQuery: "key=hello%20world"}
+	got := string(queryParamPayload(u))
+	want := "hello world"
+	if got != want {
+		t.Errorf("queryParamPayload = %q, want %q (URL-decoded)", got, want)
+	}
+}
+
+func TestQueryParamPayload_EmptyValueBetweenAmpersands(t *testing.T) {
+	// Empty pairs between ampersands should be skipped.
+	u := &url.URL{RawQuery: "a=1&&b=2"}
+	got := string(queryParamPayload(u))
+	want := "12"
+	if got != want {
+		t.Errorf("queryParamPayload = %q, want %q", got, want)
+	}
+}
+
+func TestQueryParamPayload_AllEmptyValues(t *testing.T) {
+	// key= with no value produces empty string which is skipped.
+	u := &url.URL{RawQuery: "a=&b=&c="}
+	got := queryParamPayload(u)
+	if got != nil {
+		t.Errorf("expected nil for all-empty values, got %q", string(got))
+	}
+}
+
+func TestQueryParamPayload_InvalidPercentEncoding(t *testing.T) {
+	// Invalid percent encoding falls back to raw value.
+	u := &url.URL{RawQuery: "key=%ZZ"}
+	got := string(queryParamPayload(u))
+	want := "%ZZ"
+	if got != want {
+		t.Errorf("queryParamPayload = %q, want %q (raw fallback)", got, want)
+	}
+}
+
+func TestQueryParamPayload_TrailingAmpersand(t *testing.T) {
+	u := &url.URL{RawQuery: "a=1&"}
+	got := string(queryParamPayload(u))
+	want := "1"
+	if got != want {
+		t.Errorf("queryParamPayload = %q, want %q", got, want)
+	}
+}
+
+func TestQueryParamPayload_LeadingAmpersand(t *testing.T) {
+	u := &url.URL{RawQuery: "&a=1"}
+	got := string(queryParamPayload(u))
+	want := "1"
+	if got != want {
+		t.Errorf("queryParamPayload = %q, want %q", got, want)
+	}
+}
+
+func TestQueryParamKeys_InvalidPercentEncoding(t *testing.T) {
+	// Invalid percent encoding in key name falls back to raw value.
+	u := &url.URL{RawQuery: "%ZZ=val"}
+	got := string(queryParamKeys(u))
+	want := "%ZZ"
+	if got != want {
+		t.Errorf("queryParamKeys = %q, want %q (raw fallback)", got, want)
+	}
+}

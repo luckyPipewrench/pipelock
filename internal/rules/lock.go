@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
 	"gopkg.in/yaml.v3"
 )
 
@@ -50,7 +51,7 @@ func WriteLockFile(path string, lf *LockFile) error {
 		return fmt.Errorf("marshal lock file: %w", err)
 	}
 
-	if err := atomicWriteFile(path, data, 0o600); err != nil {
+	if err := atomicWriteFile(path, data); err != nil {
 		return fmt.Errorf("write lock file: %w", err)
 	}
 
@@ -58,42 +59,8 @@ func WriteLockFile(path string, lf *LockFile) error {
 }
 
 // atomicWriteFile writes data to a temporary file in the same directory as
-// path, then renames it to the target. This ensures the target is never
-// partially written.
-func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
-	path = filepath.Clean(path)
-	dir := filepath.Dir(path)
-
-	tmp, err := os.CreateTemp(dir, ".lock-*")
-	if err != nil {
-		return fmt.Errorf("create temp: %w", err)
-	}
-	tmpName := tmp.Name()
-
-	defer func() {
-		// Clean up on failure.
-		if tmpName != "" {
-			_ = os.Remove(tmpName)
-		}
-	}()
-
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("write temp: %w", err)
-	}
-
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close temp: %w", err)
-	}
-
-	if err := os.Chmod(tmpName, perm); err != nil {
-		return fmt.Errorf("chmod: %w", err)
-	}
-
-	if err := os.Rename(tmpName, path); err != nil {
-		return fmt.Errorf("rename: %w", err)
-	}
-
-	tmpName = "" // Prevent cleanup on success.
-	return nil
+// path, then renames it to the target with 0o600 permissions. This ensures
+// the target is never partially written.
+func atomicWriteFile(path string, data []byte) error {
+	return atomicfile.Write(filepath.Clean(path), data, 0o600)
 }

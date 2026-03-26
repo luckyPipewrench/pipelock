@@ -1272,3 +1272,32 @@ func TestWrapVscodeServer_PreservesExtraFields(t *testing.T) {
 		t.Error("envFile not preserved")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// vscodeAtomicWrite — overwrite existing file test
+// ---------------------------------------------------------------------------
+
+func TestVscodeAtomicWrite_OverwriteExisting(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	targetPath := filepath.Join(dir, "mcp.json")
+
+	// Write initial content to be overwritten.
+	if err := os.WriteFile(targetPath, []byte(`{"old":"data"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	newData := []byte(`{"servers":{"new":"data"}}` + "\n")
+	if err := vscodeAtomicWrite(targetPath, newData, dir); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Clean(targetPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(newData) {
+		t.Errorf("overwrite failed: got %q, want %q", string(got), string(newData))
+	}
+}

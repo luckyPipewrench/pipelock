@@ -545,6 +545,65 @@ dependencies = ["numpy", "torch"]
 	}
 }
 
+func TestHasHostileFinding(t *testing.T) {
+	tests := []struct {
+		name     string
+		findings []Finding
+		pattern  string
+		want     bool
+	}{
+		{
+			name:     "empty findings",
+			findings: nil,
+			pattern:  testHostilePkg,
+			want:     false,
+		},
+		{
+			name: "matching pattern and category",
+			findings: []Finding{
+				{Category: "tooling", Pattern: testHostilePkg},
+			},
+			pattern: testHostilePkg,
+			want:    true,
+		},
+		{
+			name: "wrong category",
+			findings: []Finding{
+				{Category: "secret", Pattern: testHostilePkg},
+			},
+			pattern: testHostilePkg,
+			want:    false,
+		},
+		{
+			name: "wrong pattern",
+			findings: []Finding{
+				{Category: "tooling", Pattern: "other-pkg"},
+			},
+			pattern: testHostilePkg,
+			want:    false,
+		},
+		{
+			name: "multiple findings only one matches",
+			findings: []Finding{
+				{Category: "secret", Pattern: testHostilePkg},
+				{Category: "tooling", Pattern: "different"},
+				{Category: "tooling", Pattern: testHostilePkg},
+			},
+			pattern: testHostilePkg,
+			want:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := hasHostileFinding(tt.findings, tt.pattern)
+			if got != tt.want {
+				t.Errorf("hasHostileFinding() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestDetectHostileTooling_NoMatch(t *testing.T) {
 	dir := t.TempDir()
 	// Normal Python file should not trigger

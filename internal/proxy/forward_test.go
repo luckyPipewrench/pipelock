@@ -2509,3 +2509,151 @@ func TestForwardHTTP_AdaptiveUpgrade_WarnToBlock(t *testing.T) {
 		t.Errorf("expected 403 after escalation (warn->block upgrade), got %d", resp3.StatusCode)
 	}
 }
+
+// --- dlpBundleRules / responseBundleRules unit tests ---
+
+func TestDlpBundleRules(t *testing.T) {
+	const (
+		testBundleName    = "community-dlp"
+		testBundleVersion = "1.0.0"
+		testPatternAlpha  = "pattern-alpha"
+		testPatternBeta   = "pattern-beta"
+	)
+
+	tests := []struct {
+		name    string
+		matches []scanner.TextDLPMatch
+		wantLen int
+	}{
+		{
+			name:    "nil matches",
+			matches: nil,
+			wantLen: 0,
+		},
+		{
+			name:    "empty matches",
+			matches: []scanner.TextDLPMatch{},
+			wantLen: 0,
+		},
+		{
+			name: "no bundle provenance",
+			matches: []scanner.TextDLPMatch{
+				{PatternName: testPatternAlpha, Bundle: "", BundleVersion: ""},
+			},
+			wantLen: 0,
+		},
+		{
+			name: "one match with bundle",
+			matches: []scanner.TextDLPMatch{
+				{PatternName: testPatternAlpha, Bundle: testBundleName, BundleVersion: testBundleVersion},
+			},
+			wantLen: 1,
+		},
+		{
+			name: "mixed bundle and non-bundle",
+			matches: []scanner.TextDLPMatch{
+				{PatternName: testPatternAlpha, Bundle: testBundleName, BundleVersion: testBundleVersion},
+				{PatternName: testPatternBeta, Bundle: "", BundleVersion: ""},
+			},
+			wantLen: 1,
+		},
+		{
+			name: "multiple bundles",
+			matches: []scanner.TextDLPMatch{
+				{PatternName: testPatternAlpha, Bundle: testBundleName, BundleVersion: testBundleVersion},
+				{PatternName: testPatternBeta, Bundle: "other-bundle", BundleVersion: "2.0.0"},
+			},
+			wantLen: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := dlpBundleRules(tt.matches)
+			if len(got) != tt.wantLen {
+				t.Fatalf("dlpBundleRules() returned %d hits, want %d", len(got), tt.wantLen)
+			}
+			for _, hit := range got {
+				if hit.RuleID == "" {
+					t.Error("expected non-empty RuleID")
+				}
+				if hit.Bundle == "" {
+					t.Error("expected non-empty Bundle")
+				}
+			}
+		})
+	}
+}
+
+func TestResponseBundleRules(t *testing.T) {
+	const (
+		testRespBundleName    = "injection-rules"
+		testRespBundleVersion = "3.2.1"
+		testRespPatternA      = "resp-pattern-a"
+		testRespPatternB      = "resp-pattern-b"
+	)
+
+	tests := []struct {
+		name    string
+		matches []scanner.ResponseMatch
+		wantLen int
+	}{
+		{
+			name:    "nil matches",
+			matches: nil,
+			wantLen: 0,
+		},
+		{
+			name:    "empty matches",
+			matches: []scanner.ResponseMatch{},
+			wantLen: 0,
+		},
+		{
+			name: "no bundle provenance",
+			matches: []scanner.ResponseMatch{
+				{PatternName: testRespPatternA, Bundle: "", BundleVersion: ""},
+			},
+			wantLen: 0,
+		},
+		{
+			name: "one match with bundle",
+			matches: []scanner.ResponseMatch{
+				{PatternName: testRespPatternA, Bundle: testRespBundleName, BundleVersion: testRespBundleVersion},
+			},
+			wantLen: 1,
+		},
+		{
+			name: "mixed bundle and non-bundle",
+			matches: []scanner.ResponseMatch{
+				{PatternName: testRespPatternA, Bundle: testRespBundleName, BundleVersion: testRespBundleVersion},
+				{PatternName: testRespPatternB, Bundle: "", BundleVersion: ""},
+			},
+			wantLen: 1,
+		},
+		{
+			name: "multiple bundles",
+			matches: []scanner.ResponseMatch{
+				{PatternName: testRespPatternA, Bundle: testRespBundleName, BundleVersion: testRespBundleVersion},
+				{PatternName: testRespPatternB, Bundle: "other", BundleVersion: "1.0.0"},
+			},
+			wantLen: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := responseBundleRules(tt.matches)
+			if len(got) != tt.wantLen {
+				t.Fatalf("responseBundleRules() returned %d hits, want %d", len(got), tt.wantLen)
+			}
+			for _, hit := range got {
+				if hit.RuleID == "" {
+					t.Error("expected non-empty RuleID")
+				}
+				if hit.Bundle == "" {
+					t.Error("expected non-empty Bundle")
+				}
+			}
+		})
+	}
+}

@@ -12,6 +12,28 @@ import (
 
 const redirectStatusError = "error"
 
+func TestBuildID_ReturnsNonEmpty(t *testing.T) {
+	t.Parallel()
+
+	id := buildID()
+	if id == "" {
+		t.Error("buildID() returned empty string")
+	}
+	// In test binaries, there's no vcs.revision, so it should fall back
+	// to info.Main.Version (e.g., "(devel)" for test builds).
+}
+
+func TestBinaryHash_ReturnsNonEmpty(t *testing.T) {
+	t.Parallel()
+
+	hash := binaryHash()
+	if hash == "" {
+		t.Error("binaryHash() returned empty string")
+	}
+	// On Linux with /proc/self/exe, should return a hex string.
+	// On other platforms, returns "unavailable".
+}
+
 func TestInternalRedirect_FetchProxy(t *testing.T) {
 	manifest := RedirectManifest{
 		Profile:    redirectProfileFetchProxy,

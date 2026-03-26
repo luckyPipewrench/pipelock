@@ -1279,3 +1279,121 @@ func TestClaudeRemoveCmd_ReadError(t *testing.T) {
 		t.Error("expected error when settings.json is a directory")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// writeClaudeResponse coverage — deny path with reason
+// ---------------------------------------------------------------------------
+
+func TestWriteClaudeResponse_DenyWithReason(t *testing.T) {
+	t.Parallel()
+
+	var buf strings.Builder
+	writeClaudeResponse(&buf, claudeCodeFullResponse{
+		HookSpecificOutput: claudeCodeHookOutput{
+			HookEventName:            claudeHookEventPreToolUse,
+			PermissionDecision:       decisionDeny,
+			PermissionDecisionReason: "secret detected",
+		},
+	})
+
+	output := buf.String()
+	var resp claudeCodeResponse
+	if err := json.Unmarshal([]byte(strings.TrimSpace(output)), &resp); err != nil {
+		t.Fatalf("expected valid JSON output: %v", err)
+	}
+	if resp.HookSpecificOutput.PermissionDecision != decisionDeny {
+		t.Errorf("expected deny, got %s", resp.HookSpecificOutput.PermissionDecision)
+	}
+	if resp.HookSpecificOutput.PermissionDecisionReason != "secret detected" {
+		t.Errorf("expected reason 'secret detected', got %q", resp.HookSpecificOutput.PermissionDecisionReason)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// writeClaudeSettingsFile coverage (backup creation + dir creation)
+// ---------------------------------------------------------------------------
+
+func TestWriteClaudeSettingsFile_CreatesDirectory(t *testing.T) {
+	dir := t.TempDir()
+	targetDir := filepath.Join(dir, "new-dir")
+	targetPath := filepath.Join(targetDir, "settings.json")
+	output := []byte(`{"hooks":{}}` + "\n")
+
+	cmd := rootCmd()
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	// readErr is os.ErrNotExist since no existing file (no backup needed).
+	err := writeClaudeSettingsFile(cmd, targetPath, targetDir, nil, os.ErrNotExist, output)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify file was written.
+	data, readErr := os.ReadFile(filepath.Clean(targetPath))
+	if readErr != nil {
+		t.Fatalf("file not created: %v", readErr)
+	}
+	if string(data) != string(output) {
+		t.Errorf("content mismatch: got %q, want %q", string(data), string(output))
+	}
+}
+
+func TestWriteClaudeSettingsFile_CreatesBackup(t *testing.T) {
+	dir := t.TempDir()
+	targetDir := dir
+	targetPath := filepath.Join(targetDir, "settings.json")
+	original := []byte(`{"old":"data"}`)
+	output := []byte(`{"hooks":{}}` + "\n")
+
+	// Write existing file to back up.
+	if err := os.WriteFile(targetPath, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := rootCmd()
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	// readErr is nil since file exists (triggers backup).
+	err := writeClaudeSettingsFile(cmd, targetPath, targetDir, original, nil, output)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify backup was created.
+	backupData, readErr := os.ReadFile(filepath.Clean(targetPath + ".bak"))
+	if readErr != nil {
+		t.Fatalf("backup not created: %v", readErr)
+	}
+	if string(backupData) != string(original) {
+		t.Errorf("backup mismatch: got %q, want %q", string(backupData), string(original))
+	}
+
+	// Verify new content.
+	data, readErr := os.ReadFile(filepath.Clean(targetPath))
+	if readErr != nil {
+		t.Fatalf("file not written: %v", readErr)
+	}
+	if string(data) != string(output) {
+		t.Errorf("content mismatch: got %q, want %q", string(data), string(output))
+	}
+}
+
+func TestWriteClaudeSettingsFile_MkdirError(t *testing.T) {
+	// Use a path under /dev/null which is not a directory.
+	targetDir := "/dev/null/impossible"
+	targetPath := filepath.Join(targetDir, "settings.json")
+	output := []byte(`{}`)
+
+	cmd := rootCmd()
+	cmd.SetOut(&strings.Builder{})
+
+	err := writeClaudeSettingsFile(cmd, targetPath, targetDir, nil, os.ErrNotExist, output)
+	if err == nil {
+		t.Fatal("expected error for impossible directory")
+	}
+	if !strings.Contains(err.Error(), "creating directory") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}

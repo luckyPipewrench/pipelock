@@ -206,3 +206,30 @@ func TestCheckRules_TamperedBundle(t *testing.T) {
 		t.Errorf("expected FAILED in detail, got: %s", result.Detail)
 	}
 }
+
+func TestStatusIcon(t *testing.T) {
+	tests := []struct {
+		name   string
+		status string
+		color  bool
+		want   string
+	}{
+		{"pass no color", statusPass, false, "PASS"},
+		{"fail no color", statusFail, false, "FAIL"},
+		{"skip no color", statusSkip, false, "SKIP"},
+		{"pass with color", statusPass, true, "\033[32mPASS\033[0m"},
+		{"fail with color", statusFail, true, "\033[31mFAIL\033[0m"},
+		{"skip with color", statusSkip, true, "\033[33mSKIP\033[0m"},
+		{"unknown no color", "unknown", false, "UNKNOWN"},
+		{"unknown with color", "unknown", true, "UNKNOWN"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := statusIcon(tc.status, tc.color)
+			if got != tc.want {
+				t.Errorf("statusIcon(%q, %v) = %q, want %q", tc.status, tc.color, got, tc.want)
+			}
+		})
+	}
+}

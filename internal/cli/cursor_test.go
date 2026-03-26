@@ -1249,3 +1249,48 @@ func chdirTemp(t *testing.T, dir string) {
 		}
 	})
 }
+
+// ---------------------------------------------------------------------------
+// writeResponse coverage — normal path produces valid JSON
+// ---------------------------------------------------------------------------
+
+func TestWriteResponse_NormalPath(t *testing.T) {
+	t.Parallel()
+
+	var buf strings.Builder
+	writeResponse(&buf, cursorResponse{
+		Permission:  decisionAllow,
+		UserMessage: "test message",
+	})
+
+	output := strings.TrimSpace(buf.String())
+	var resp cursorResponse
+	if err := json.Unmarshal([]byte(output), &resp); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+	if resp.Permission != decisionAllow {
+		t.Errorf("permission = %q, want %q", resp.Permission, decisionAllow)
+	}
+	if resp.UserMessage != "test message" {
+		t.Errorf("user_message = %q, want %q", resp.UserMessage, "test message")
+	}
+}
+
+func TestWriteResponse_DenyPath(t *testing.T) {
+	t.Parallel()
+
+	var buf strings.Builder
+	writeResponse(&buf, cursorResponse{
+		Permission:  decisionDeny,
+		UserMessage: "blocked for testing",
+	})
+
+	output := strings.TrimSpace(buf.String())
+	var resp cursorResponse
+	if err := json.Unmarshal([]byte(output), &resp); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+	if resp.Permission != decisionDeny {
+		t.Errorf("permission = %q, want %q", resp.Permission, decisionDeny)
+	}
+}

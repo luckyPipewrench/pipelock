@@ -346,6 +346,85 @@ func TestScanFileForEntropy_UnreadableFile(t *testing.T) {
 	}
 }
 
+// --- AdjustScoreForFindings tests ---
+
+func TestAdjustScoreForFindings_NoCriticals(t *testing.T) {
+	cfg := &SuggestCfg{Preset: AgentGeneric}
+	r := &Report{
+		Config: cfg,
+		Findings: []Finding{
+			{Severity: "info", Category: "agent", Message: "detected"},
+			{Severity: "warning", Category: "secret", Message: "high entropy"},
+		},
+	}
+	r.AdjustScoreForFindings()
+	expected := computeScore(cfg)
+	if r.ScoreWith != expected {
+		t.Errorf("ScoreWith = %d, want %d (no criticals, no penalty)", r.ScoreWith, expected)
+	}
+}
+
+func TestAdjustScoreForFindings_WithCriticals(t *testing.T) {
+	cfg := &SuggestCfg{Preset: AgentGeneric}
+	r := &Report{
+		Config: cfg,
+		Findings: []Finding{
+			{Severity: severityCritical, Category: "secret", Message: "API key found"},
+			{Severity: severityCritical, Category: "secret", Message: "another key"},
+			{Severity: "info", Category: "agent", Message: "detected"},
+		},
+	}
+	r.AdjustScoreForFindings()
+	expected := computeScore(cfg) - 10 // 2 criticals * 5
+	if expected < 0 {
+		expected = 0
+	}
+	if r.ScoreWith != expected {
+		t.Errorf("ScoreWith = %d, want %d (2 criticals * 5 penalty)", r.ScoreWith, expected)
+	}
+}
+
+func TestAdjustScoreForFindings_ClampsToZero(t *testing.T) {
+	// Enough criticals to push score below zero.
+	cfg := &SuggestCfg{Preset: AgentGeneric}
+	baseScore := computeScore(cfg)
+	numCriticals := (baseScore / 5) + 5 // guaranteed to overshoot
+
+	findings := make([]Finding, numCriticals)
+	for i := range findings {
+		findings[i] = Finding{Severity: severityCritical, Category: "secret", Message: "leaked"}
+	}
+	r := &Report{Config: cfg, Findings: findings}
+	r.AdjustScoreForFindings()
+	if r.ScoreWith != 0 {
+		t.Errorf("ScoreWith = %d, want 0 (clamped)", r.ScoreWith)
+	}
+}
+
+func TestAdjustScoreForFindings_EmptyFindings(t *testing.T) {
+	cfg := &SuggestCfg{Preset: AgentGeneric}
+	r := &Report{Config: cfg, Findings: nil}
+	r.AdjustScoreForFindings()
+	expected := computeScore(cfg)
+	if r.ScoreWith != expected {
+		t.Errorf("ScoreWith = %d, want %d (no findings)", r.ScoreWith, expected)
+	}
+}
+
+func TestAdjustScoreForFindings_NilConfig(t *testing.T) {
+	r := &Report{
+		Config: nil,
+		Findings: []Finding{
+			{Severity: severityCritical, Category: "secret", Message: "found"},
+		},
+	}
+	r.AdjustScoreForFindings()
+	// computeScore(nil) = 0, minus 5 for 1 critical, clamped to 0.
+	if r.ScoreWith != 0 {
+		t.Errorf("ScoreWith = %d, want 0 (nil config)", r.ScoreWith)
+	}
+}
+
 func TestScanFileForEntropy_QuotedValues(t *testing.T) {
 	dir := t.TempDir()
 	// Build high-entropy value at runtime to avoid gitleaks

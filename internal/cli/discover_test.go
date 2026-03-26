@@ -334,3 +334,47 @@ func TestDiscoverCmd_MalformedConfigJSON(t *testing.T) {
 		t.Error("expected non-empty parse_error on client")
 	}
 }
+
+func TestServerDescription(t *testing.T) {
+	tests := []struct {
+		name   string
+		server discover.MCPServer
+		want   string
+	}{
+		{
+			name: "command with args",
+			server: discover.MCPServer{
+				Command: "npx",
+				Args:    []string{"-y", "@example/server"},
+			},
+			want: "npx -y @example/server",
+		},
+		{
+			name: "command without args",
+			server: discover.MCPServer{
+				Command: "my-server",
+			},
+			want: "my-server",
+		},
+		{
+			name: "url only",
+			server: discover.MCPServer{
+				URL: "https://api.example.com/mcp",
+			},
+			want: "https://api.example.com/mcp",
+		},
+		{
+			name:   "unknown (empty)",
+			server: discover.MCPServer{},
+			want:   "(unknown)",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := serverDescription(tc.server); got != tc.want {
+				t.Errorf("serverDescription() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

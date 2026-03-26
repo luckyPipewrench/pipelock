@@ -805,7 +805,7 @@ func TestAtomicWrite_RenameError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when target is a directory")
 	}
-	if !strings.Contains(err.Error(), "renaming file") {
-		t.Errorf("expected 'renaming file' error, got: %v", err)
+	if !strings.Contains(err.Error(), "renaming to target") {
+		t.Errorf("expected 'renaming to target' error, got: %v", err)
 	}
 }

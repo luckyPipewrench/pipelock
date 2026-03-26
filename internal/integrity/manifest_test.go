@@ -261,6 +261,56 @@ func TestSave_BadDirectory(t *testing.T) {
 	}
 }
 
+func TestSave_ReadOnlyDirectory(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("cannot test permission errors as root")
+	}
+	dir := t.TempDir()
+	roDir := filepath.Join(dir, "readonly")
+	if err := os.Mkdir(roDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(roDir, 0o700) }) //nolint:gosec // restore for cleanup
+
+	m := &Manifest{Version: ManifestVersion, Files: map[string]FileEntry{}}
+	err := m.Save(filepath.Join(roDir, "manifest.json"))
+	if err == nil {
+		t.Fatal("expected error when directory is read-only")
+	}
+}
+
+func TestSave_Overwrite(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "manifest.json")
+
+	m1 := &Manifest{
+		Version: ManifestVersion,
+		Files:   map[string]FileEntry{"a.txt": {SHA256: "abc", Size: 10, Mode: "0600"}},
+	}
+	if err := m1.Save(path); err != nil {
+		t.Fatal(err)
+	}
+
+	m2 := &Manifest{
+		Version: ManifestVersion,
+		Files:   map[string]FileEntry{"b.txt": {SHA256: "def", Size: 20, Mode: "0600"}},
+	}
+	if err := m2.Save(path); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := loaded.Files["b.txt"]; !ok {
+		t.Error("expected b.txt in manifest after overwrite")
+	}
+	if _, ok := loaded.Files["a.txt"]; ok {
+		t.Error("unexpected a.txt in manifest after overwrite")
+	}
+}
+
 func TestLoad_NilFiles(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "manifest.json")

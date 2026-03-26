@@ -2673,3 +2673,245 @@ func TestScanTools_ExtraPoisonNilConfig(t *testing.T) {
 		t.Error("nil config should not detect tools/list")
 	}
 }
+
+// --- LogToolFindings edge cases ---
+
+func TestLogToolFindings_InjectionMatches(t *testing.T) {
+	// Cover the injection match reasons loop (lines 901-903).
+	var buf strings.Builder
+	result := ToolScanResult{
+		Matches: []ToolScanMatch{
+			{
+				ToolName: "phishing",
+				Injection: []scanner.ResponseMatch{
+					{PatternName: "jailbreak_attempt"},
+					{PatternName: "system_override"},
+				},
+			},
+		},
+	}
+	LogToolFindings(&buf, 10, result)
+	out := buf.String()
+	if !strings.Contains(out, "jailbreak_attempt") {
+		t.Error("should include first injection pattern name")
+	}
+	if !strings.Contains(out, "system_override") {
+		t.Error("should include second injection pattern name")
+	}
+	if !strings.Contains(out, "line 10") {
+		t.Error("should include line number")
+	}
+	if !strings.Contains(out, `"phishing"`) {
+		t.Error("should include tool name")
+	}
+}
+
+func TestLogToolFindings_DriftDetail(t *testing.T) {
+	// Cover the DriftDetail output branch (lines 910-912).
+	var buf strings.Builder
+	result := ToolScanResult{
+		Matches: []ToolScanMatch{
+			{
+				ToolName:      "mutating",
+				DriftDetected: true,
+				DriftDetail:   "description grew from 20 to 150 chars (+130)",
+			},
+		},
+	}
+	LogToolFindings(&buf, 3, result)
+	out := buf.String()
+	if !strings.Contains(out, "definition-drift") {
+		t.Error("should include drift reason")
+	}
+	if !strings.Contains(out, "description grew from 20 to 150 chars") {
+		t.Error("should include drift detail text")
+	}
+}
+
+func TestLogToolFindings_EmptyMatches(t *testing.T) {
+	// No matches = no output.
+	var buf strings.Builder
+	result := ToolScanResult{Clean: true}
+	LogToolFindings(&buf, 1, result)
+	if buf.Len() != 0 {
+		t.Errorf("expected no output for clean result, got: %q", buf.String())
+	}
+}
+
+func TestLogToolFindings_InjectionAndPoison(t *testing.T) {
+	// All three reason types: injection, poison, drift with detail.
+	var buf strings.Builder
+	result := ToolScanResult{
+		Matches: []ToolScanMatch{
+			{
+				ToolName:      "combo",
+				Injection:     []scanner.ResponseMatch{{PatternName: "prompt_inject"}},
+				ToolPoison:    []string{testInstructionTag},
+				DriftDetected: true,
+				DriftDetail:   "parameters added: [steal_creds]",
+			},
+		},
+	}
+	LogToolFindings(&buf, 7, result)
+	out := buf.String()
+	if !strings.Contains(out, "prompt_inject") {
+		t.Error("should include injection pattern")
+	}
+	if !strings.Contains(out, testInstructionTag) {
+		t.Error("should include poison pattern")
+	}
+	if !strings.Contains(out, "definition-drift") {
+		t.Error("should include drift")
+	}
+	if !strings.Contains(out, "parameters added: [steal_creds]") {
+		t.Error("should include drift detail")
+	}
+}
+
+// --- collectStringLeaves ---
+
+func TestCollectStringLeaves_DepthLimit(t *testing.T) {
+	// Build a value nested beyond maxSchemaDepth to trigger the depth guard.
+	// collectStringLeaves is called for default/const/enum/x-* fields.
+	var inner interface{} = "deeply hidden"
+	for range maxSchemaDepth + 5 {
+		inner = map[string]interface{}{"nested": inner}
+	}
+
+	var result []string
+	collectStringLeaves(inner, &result, 0)
+	for _, s := range result {
+		if s == "deeply hidden" {
+			t.Error("string at depth > maxSchemaDepth should not be extracted")
+		}
+	}
+}
+
+func TestCollectStringLeaves_NumericAndBoolSkipped(t *testing.T) {
+	// Non-string/non-map/non-array types (numbers, booleans, nil) are skipped.
+	var result []string
+	collectStringLeaves(42.0, &result, 0)
+	collectStringLeaves(true, &result, 0)
+	collectStringLeaves(nil, &result, 0)
+	if len(result) != 0 {
+		t.Errorf("expected no results for numeric/bool/nil, got %v", result)
+	}
+}
+
+func TestCollectStringLeaves_EmptyStringSkipped(t *testing.T) {
+	var result []string
+	collectStringLeaves("", &result, 0)
+	if len(result) != 0 {
+		t.Errorf("expected empty string to be skipped, got %v", result)
+	}
+}
+
+func TestCollectStringLeaves_NestedArrayOfMaps(t *testing.T) {
+	val := []interface{}{
+		map[string]interface{}{
+			"note": "hidden instruction",
+		},
+		"flat string",
+	}
+	var result []string
+	collectStringLeaves(val, &result, 0)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 results, got %d: %v", len(result), result)
+	}
+}
+
+// --- scanToolDefs extra-poison edge cases ---
+
+func TestScanTools_ExtraPoisonNilEntry(t *testing.T) {
+	// Extra poison with a nil entry should be safely skipped (line 848).
+	sc := testScanner(t)
+	cfg := &ToolScanConfig{
+		Action: "warn",
+		ExtraPoison: []*ExtraPoisonPattern{
+			nil, // nil entry
+			{
+				Name:      "valid-rule",
+				RuleID:    "test/valid",
+				Re:        regexp.MustCompile(`(?i)mine\s+bitcoin`),
+				ScanField: "description",
+			},
+		},
+	}
+	line := makeToolsResponse(`[{"name":"helper","description":"mine bitcoin for profit"}]`)
+	result := ScanTools(line, sc, cfg)
+	if result.Clean {
+		t.Error("expected match from valid rule despite nil entry in slice")
+	}
+}
+
+func TestScanTools_ExtraPoisonUnknownScanField(t *testing.T) {
+	// Extra poison with an unknown ScanField should be skipped (line 857-858).
+	sc := testScanner(t)
+	cfg := &ToolScanConfig{
+		Action: "warn",
+		ExtraPoison: []*ExtraPoisonPattern{
+			{
+				Name:      "unreachable",
+				RuleID:    "test/unreachable",
+				Re:        regexp.MustCompile(`.*`),
+				ScanField: "nonexistent_field", // unknown field
+			},
+		},
+	}
+	line := makeToolsResponse(`[{"name":"helper","description":"A safe tool"}]`)
+	result := ScanTools(line, sc, cfg)
+	if !result.Clean {
+		t.Error("unknown ScanField should be skipped, result should be clean")
+	}
+}
+
+func TestScanTools_ExtraPoisonEmptyName(t *testing.T) {
+	// Extra poison with empty Name should be skipped (line 848 guard).
+	sc := testScanner(t)
+	cfg := &ToolScanConfig{
+		Action: "warn",
+		ExtraPoison: []*ExtraPoisonPattern{
+			{
+				Name:      "",
+				RuleID:    "test/empty-name",
+				Re:        regexp.MustCompile(`.*`),
+				ScanField: "description",
+			},
+		},
+	}
+	line := makeToolsResponse(`[{"name":"helper","description":"A safe tool"}]`)
+	result := ScanTools(line, sc, cfg)
+	if !result.Clean {
+		t.Error("empty Name should be skipped, result should be clean")
+	}
+}
+
+func TestIsToolsListResult_MalformedArrayElements(t *testing.T) {
+	// A tools field that starts with [ but contains invalid JSON triggers
+	// the Unmarshal error path in isToolsListResult.
+	raw := json.RawMessage(`{"tools":[invalid json here]}`)
+	if isToolsListResult(raw) {
+		t.Error("malformed array inside tools should return false")
+	}
+}
+
+func TestScanTools_ExtraPoisonNilRegex(t *testing.T) {
+	// Extra poison with nil Re should be skipped (line 848 guard).
+	sc := testScanner(t)
+	cfg := &ToolScanConfig{
+		Action: "warn",
+		ExtraPoison: []*ExtraPoisonPattern{
+			{
+				Name:      "has-name",
+				RuleID:    "test/nil-regex",
+				Re:        nil,
+				ScanField: "description",
+			},
+		},
+	}
+	line := makeToolsResponse(`[{"name":"helper","description":"A safe tool"}]`)
+	result := ScanTools(line, sc, cfg)
+	if !result.Clean {
+		t.Error("nil Re should be skipped, result should be clean")
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
@@ -135,6 +136,11 @@ func pruneDomainWindow(entries []domainEntry, domain string, windowCutoff, now t
 // a session at critical. The session must accumulate new real signals to
 // re-escalate.
 const maxLevelDuration = 5 * time.Minute
+
+// deescalationCheckInterval is how often the background sweep checks all
+// sessions for time-based de-escalation. Runs independently of traffic so
+// idle sessions recover even when no requests arrive.
+const deescalationCheckInterval = 30 * time.Second
 
 // RecordSignal adds a threat signal to the session's score.
 // Returns (escalated, fromLevel, toLevel) if threshold was crossed.
@@ -281,6 +287,7 @@ func NewSessionManager(cfg *config.SessionProfiling, adaptiveCfg *config.Adaptiv
 	sm.adaptiveCfgPtr.Store(adaptiveCfg)
 
 	go sm.cleanupLoop()
+	go sm.deescalationLoop()
 	return sm
 }
 
@@ -452,6 +459,57 @@ func (sm *SessionManager) cleanup() {
 			sm.metrics.RecordSessionEvicted()
 		}
 		sm.metrics.SetSessionsActive(float64(len(sm.sessions)))
+	}
+}
+
+// deescalationLoop runs periodic de-escalation checks on all sessions.
+// Unlike cleanupLoop, this uses a fixed interval (not config-driven)
+// because recovery timing is a security property, not a tuning knob.
+func (sm *SessionManager) deescalationLoop() {
+	ticker := time.NewTicker(deescalationCheckInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-sm.done:
+			return
+		case <-ticker.C:
+			sm.sweepDeescalation()
+		}
+	}
+}
+
+// sweepDeescalation checks all sessions for time-based de-escalation.
+// This is the primary recovery mechanism for the deny-spiral bug: it runs
+// independently of traffic so idle sessions recover even with no requests.
+func (sm *SessionManager) sweepDeescalation() {
+	adaptiveCfg := sm.adaptiveCfgPtr.Load()
+	if adaptiveCfg == nil || !adaptiveCfg.Enabled {
+		return
+	}
+
+	blockAllCheck := func(level int) bool {
+		return decide.UpgradeAction("", level, adaptiveCfg) == config.ActionBlock
+	}
+
+	sm.mu.RLock()
+	sessions := make([]*SessionState, 0, len(sm.sessions))
+	for _, sess := range sm.sessions {
+		sessions = append(sessions, sess)
+	}
+	sm.mu.RUnlock()
+
+	for _, sess := range sessions {
+		changed, from, to := sess.TryAutoRecover(blockAllCheck)
+		if changed {
+			fromLabel := session.EscalationLabel(from)
+			toLabel := session.EscalationLabel(to)
+			if sm.metrics != nil {
+				sm.metrics.RecordSessionAutoDeescalation(fromLabel, toLabel)
+				sm.metrics.SetAdaptiveSessionLevel(fromLabel, -1)
+				sm.metrics.SetAdaptiveSessionLevel(toLabel, 1)
+			}
+		}
 	}
 }
 

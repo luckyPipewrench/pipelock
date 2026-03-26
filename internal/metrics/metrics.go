@@ -81,6 +81,9 @@ type Metrics struct {
 	adaptiveUpgrades        *prometheus.CounterVec
 	adaptiveSessionsCurrent *prometheus.GaugeVec
 
+	// Auto-deescalation: autonomous time-based session recovery.
+	sessionAutoDeescalations *prometheus.CounterVec
+
 	// Reverse proxy: request counting and scan block tracking.
 	reverseProxyRequests    *prometheus.CounterVec
 	reverseProxyScanBlocked *prometheus.CounterVec
@@ -354,6 +357,11 @@ func New() *Metrics {
 		Help:      "Currently escalated sessions by enforcement level.",
 	}, []string{"level"})
 
+	sessionAutoDeescalations := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "pipelock_session_auto_deescalation_total",
+		Help: "Number of autonomous time-based session de-escalations.",
+	}, []string{"from", "to"})
+
 	reverseProxyRequests := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "pipelock",
 		Name:      "reverse_proxy_requests_total",
@@ -378,6 +386,7 @@ func New() *Metrics {
 		addressFindings,
 		fileSentryFindings,
 		adaptiveUpgrades, adaptiveSessionsCurrent,
+		sessionAutoDeescalations,
 		reverseProxyRequests, reverseProxyScanBlocked)
 
 	return &Metrics{
@@ -422,6 +431,7 @@ func New() *Metrics {
 		FileSentryFindings:          fileSentryFindings,
 		adaptiveUpgrades:            adaptiveUpgrades,
 		adaptiveSessionsCurrent:     adaptiveSessionsCurrent,
+		sessionAutoDeescalations:    sessionAutoDeescalations,
 		reverseProxyRequests:        reverseProxyRequests,
 		reverseProxyScanBlocked:     reverseProxyScanBlocked,
 		startTime:                   time.Now(),
@@ -885,6 +895,15 @@ func (m *Metrics) SetAdaptiveSessionLevel(level string, delta float64) {
 		return
 	}
 	m.adaptiveSessionsCurrent.WithLabelValues(level).Add(delta)
+}
+
+// RecordSessionAutoDeescalation increments the auto-deescalation counter for
+// a session that autonomously dropped from one escalation level to another.
+func (m *Metrics) RecordSessionAutoDeescalation(from, to string) {
+	if m == nil {
+		return
+	}
+	m.sessionAutoDeescalations.WithLabelValues(from, to).Inc()
 }
 
 // RecordReverseProxyRequest increments the reverse proxy request counter.

@@ -1655,3 +1655,63 @@ func TestRecordReverseProxyRequest_NilReceiver(t *testing.T) {
 	m.RecordReverseProxyRequest("GET", "200")     // must not panic
 	m.RecordReverseProxyScanBlocked("req", "dlp") // must not panic
 }
+
+func TestRecordSessionAutoDeescalation(t *testing.T) {
+	tests := []struct {
+		name       string
+		from       string
+		to         string
+		calls      int
+		wantMetric string
+	}{
+		{
+			name:       "critical_to_high",
+			from:       "critical",
+			to:         "high",
+			calls:      2,
+			wantMetric: `pipelock_session_auto_deescalation_total{from="critical",to="high"}`,
+		},
+		{
+			name:       "high_to_elevated",
+			from:       "high",
+			to:         "elevated",
+			calls:      1,
+			wantMetric: `pipelock_session_auto_deescalation_total{from="high",to="elevated"}`,
+		},
+		{
+			name:       "elevated_to_normal",
+			from:       "elevated",
+			to:         "normal",
+			calls:      3,
+			wantMetric: `pipelock_session_auto_deescalation_total{from="elevated",to="normal"}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := New()
+			for range tt.calls {
+				m.RecordSessionAutoDeescalation(tt.from, tt.to)
+			}
+
+			req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+			w := httptest.NewRecorder()
+			m.PrometheusHandler().ServeHTTP(w, req)
+
+			body, _ := io.ReadAll(w.Body)
+			text := string(body)
+			if !strings.Contains(text, tt.wantMetric) {
+				t.Errorf("expected %q in /metrics output", tt.wantMetric)
+			}
+			wantLine := fmt.Sprintf("%s %d", tt.wantMetric, tt.calls)
+			if !strings.Contains(text, wantLine) {
+				t.Errorf("expected counter line %q, full /metrics:\n%s", wantLine, text)
+			}
+		})
+	}
+}
+
+func TestRecordSessionAutoDeescalation_NilSafe(t *testing.T) {
+	var m *Metrics
+	m.RecordSessionAutoDeescalation("critical", "high") // must not panic
+}

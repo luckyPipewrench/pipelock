@@ -1383,3 +1383,60 @@ func TestSessionState_TryAutoRecover_AtLevelZero(t *testing.T) {
 		t.Errorf("expected escalation level 0, got %d", sess.EscalationLevel())
 	}
 }
+
+func TestSessionManager_DeescalationSweep(t *testing.T) {
+	cfg := testSessionConfig()
+	m := metrics.New()
+
+	blockAllTrue := true
+	adaptiveCfg := &config.AdaptiveEnforcement{
+		Enabled:             true,
+		EscalationThreshold: 5.0,
+		Levels: config.EscalationLevels{
+			Critical: config.EscalationActions{BlockAll: &blockAllTrue},
+		},
+	}
+
+	sm := NewSessionManager(cfg, adaptiveCfg, m)
+	defer sm.Close()
+
+	sess := sm.GetOrCreate("test-client")
+
+	// Push to critical with expired timer.
+	sess.mu.Lock()
+	sess.escalationLevel = 3
+	sess.lastEscalation = time.Now().Add(-6 * time.Minute)
+	sess.currentThreshold = 40.0
+	sess.threatScore = 20.0
+	sess.atBlockAll = true
+	sess.mu.Unlock()
+
+	// Call sweep directly (don't wait for ticker).
+	sm.sweepDeescalation()
+
+	if sess.EscalationLevel() != 2 {
+		t.Errorf("expected level 2 after sweep, got %d", sess.EscalationLevel())
+	}
+	if sess.BlockAll() {
+		t.Error("expected atBlockAll=false after de-escalation to high")
+	}
+}
+
+func TestSessionManager_SweepNoAdaptiveConfig(t *testing.T) {
+	cfg := testSessionConfig()
+	sm := NewSessionManager(cfg, nil, nil)
+	defer sm.Close()
+
+	sess := sm.GetOrCreate("test-client")
+	sess.mu.Lock()
+	sess.escalationLevel = 3
+	sess.lastEscalation = time.Now().Add(-6 * time.Minute)
+	sess.mu.Unlock()
+
+	// With nil adaptive config, sweep should be a no-op.
+	sm.sweepDeescalation()
+
+	if sess.EscalationLevel() != 3 {
+		t.Errorf("sweep without adaptive config should not de-escalate; got level %d", sess.EscalationLevel())
+	}
+}

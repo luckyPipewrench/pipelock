@@ -2156,6 +2156,27 @@ func TestValidateReload_ResponseScanningExemptDomainsBroadened_SameLength(t *tes
 	}
 }
 
+func TestValidateReload_ResponseScanningExemptDomainsCleared(t *testing.T) {
+	// Clearing all exempt domains should warn — any change to exemption
+	// surface must be visible to the operator.
+	old := Defaults()
+	old.ResponseScanning.ExemptDomains = []string{"api.openai.com"}
+	updated := Defaults()
+	updated.ResponseScanning.ExemptDomains = nil
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == reloadFieldResponseExempt {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected warning when exempt_domains cleared entirely")
+	}
+}
+
 func TestValidateReload_ResponseScanningExemptDomainsUnchanged_NoWarning(t *testing.T) {
 	old := Defaults()
 	old.ResponseScanning.ExemptDomains = []string{"api.openai.com"}

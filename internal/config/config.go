@@ -2536,11 +2536,15 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		})
 	}
 
-	// Response scanning exempt_domains changed: warn on any entry not in the
-	// previous set. This fires on both broadening (api.openai.com → *.openai.com)
-	// AND narrowing (*.openai.com → api.openai.com) because any change to a
-	// security-sensitive exemption list should be visible to the operator.
-	if len(updated.ResponseScanning.ExemptDomains) > 0 {
+	// Response scanning exempt_domains changed: any change to a security-sensitive
+	// exemption list should be visible to the operator. This covers additions,
+	// broadening, narrowing, and complete removal.
+	if len(old.ResponseScanning.ExemptDomains) > 0 && len(updated.ResponseScanning.ExemptDomains) == 0 {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "response_scanning.exempt_domains",
+			Message: "response scanning exempt_domains cleared (was non-empty)",
+		})
+	} else if len(updated.ResponseScanning.ExemptDomains) > 0 {
 		oldExempt := make(map[string]bool, len(old.ResponseScanning.ExemptDomains))
 		for _, d := range old.ResponseScanning.ExemptDomains {
 			oldExempt[d] = true

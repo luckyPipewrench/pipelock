@@ -1384,6 +1384,43 @@ func TestSessionState_TryAutoRecover_AtLevelZero(t *testing.T) {
 	}
 }
 
+func TestSessionState_OnEntryRecovery(t *testing.T) {
+	cfg := testSessionConfig()
+	sm := NewSessionManager(cfg, nil, nil)
+	defer sm.Close()
+
+	sess := sm.GetOrCreate("agent|127.0.0.1")
+
+	// Push to critical with expired timer.
+	sess.mu.Lock()
+	sess.escalationLevel = 3
+	sess.lastEscalation = time.Now().Add(-6 * time.Minute)
+	sess.currentThreshold = 40.0
+	sess.threatScore = 20.0
+	sess.atBlockAll = true
+	frozenActivity := sess.lastActivity
+	sess.mu.Unlock()
+
+	blockAllCheck := func(level int) bool { return level >= 3 }
+
+	// Simulate what recordSessionActivity does: TryAutoRecover then RecordRequest.
+	changed, _, _ := sess.TryAutoRecover(blockAllCheck)
+	if !changed {
+		t.Fatal("expected on-entry recovery to fire")
+	}
+
+	// RecordRequest should refresh lastActivity (no longer at block_all).
+	sess.RecordRequest("example.com", cfg)
+
+	sess.mu.Lock()
+	activityRefreshed := sess.lastActivity.After(frozenActivity)
+	sess.mu.Unlock()
+
+	if !activityRefreshed {
+		t.Error("lastActivity should refresh after on-entry recovery clears block_all")
+	}
+}
+
 func TestSessionManager_DeescalationSweep(t *testing.T) {
 	cfg := testSessionConfig()
 	m := metrics.New()

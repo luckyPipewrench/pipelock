@@ -684,7 +684,11 @@ Each level accepts the following fields. All fields use **pointer semantics**:
 
 ### De-escalation
 
-Sessions automatically de-escalate one level after 5 minutes at the same escalation level with no new threat signals. This prevents permanent lockout from accumulated false positives. The timer fires on both signal and clean request paths, so sessions stuck at `block_all` with only clean traffic can still recover.
+Sessions at `block_all` recover autonomously via a background sweep that runs
+every 30 seconds. If a session has been at its current escalation level for
+longer than 5 minutes, it is automatically stepped down one level. Recovery
+also triggers on the next incoming request after the timer expires (on-entry
+fast path). The session must accumulate new real signals to re-escalate.
 
 De-escalation drops one level per 5-minute period. A session at critical with no activity takes 15 minutes (3 periods) to return to normal. Each de-escalation resets the threat score to half the current threshold to prevent immediate re-escalation from stale points.
 

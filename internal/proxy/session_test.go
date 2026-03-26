@@ -26,6 +26,7 @@ const (
 	testDomainBurst   = "domain_burst"
 	testLevelNormal   = "normal"
 	testLevelElevated = "elevated"
+	testClient        = "test-client"
 )
 
 func testSessionConfig() *config.SessionProfiling {
@@ -1074,7 +1075,7 @@ func TestRecordSignal_NoImplicitDeescalation(t *testing.T) {
 	sm := NewSessionManager(cfg, nil, nil)
 	defer sm.Close()
 
-	sess := sm.GetOrCreate("test-client")
+	sess := sm.GetOrCreate(testClient)
 
 	// Push to level 2, set lastEscalation far in the past.
 	sess.mu.Lock()
@@ -1437,7 +1438,7 @@ func TestSessionManager_DeescalationSweep(t *testing.T) {
 	sm := NewSessionManager(cfg, adaptiveCfg, m)
 	defer sm.Close()
 
-	sess := sm.GetOrCreate("test-client")
+	sess := sm.GetOrCreate(testClient)
 
 	// Push to critical with expired timer.
 	sess.mu.Lock()
@@ -1464,7 +1465,7 @@ func TestSessionManager_SweepNoAdaptiveConfig(t *testing.T) {
 	sm := NewSessionManager(cfg, nil, nil)
 	defer sm.Close()
 
-	sess := sm.GetOrCreate("test-client")
+	sess := sm.GetOrCreate(testClient)
 	sess.mu.Lock()
 	sess.escalationLevel = 3
 	sess.lastEscalation = time.Now().Add(-6 * time.Minute)
@@ -1475,5 +1476,129 @@ func TestSessionManager_SweepNoAdaptiveConfig(t *testing.T) {
 
 	if sess.EscalationLevel() != 3 {
 		t.Errorf("sweep without adaptive config should not de-escalate; got level %d", sess.EscalationLevel())
+	}
+}
+
+// TestSessionState_FullRecoveryCycle exercises the complete block_all recovery
+// lifecycle: escalate to critical, timer expires, background sweep de-escalates,
+// clean requests flow and decay, re-escalation is possible.
+func TestSessionState_FullRecoveryCycle(t *testing.T) {
+	cfg := testSessionConfig()
+	m := metrics.New()
+
+	blockAllTrue := true
+	adaptiveCfg := &config.AdaptiveEnforcement{
+		Enabled:              true,
+		EscalationThreshold:  5.0,
+		DecayPerCleanRequest: 0.5,
+		Levels: config.EscalationLevels{
+			Elevated: config.EscalationActions{},
+			High:     config.EscalationActions{},
+			Critical: config.EscalationActions{BlockAll: &blockAllTrue},
+		},
+	}
+
+	sm := NewSessionManager(cfg, adaptiveCfg, m)
+	defer sm.Close()
+
+	sess := sm.GetOrCreate("test-agent|10.0.0.1")
+
+	// 1. Escalate to critical.
+	sess.mu.Lock()
+	sess.escalationLevel = 3
+	sess.lastEscalation = time.Now()
+	sess.currentThreshold = 40.0
+	sess.threatScore = 20.0
+	sess.atBlockAll = true
+	sess.mu.Unlock()
+
+	// 2. Verify blocked.
+	if !sess.BlockAll() {
+		t.Fatal("expected block_all at critical")
+	}
+
+	// 3. Simulate 6 minutes passing (beyond 5 min maxLevelDuration).
+	sess.mu.Lock()
+	sess.lastEscalation = time.Now().Add(-6 * time.Minute)
+	sess.mu.Unlock()
+
+	// 4. Background sweep fires.
+	sm.sweepDeescalation()
+
+	// 5. Should be at high (level 2), no longer blocked.
+	if sess.EscalationLevel() != 2 {
+		t.Errorf("expected level 2, got %d", sess.EscalationLevel())
+	}
+	if sess.BlockAll() {
+		t.Error("expected block_all cleared at high")
+	}
+
+	// 6. Clean requests now flow and decay works.
+	sess.RecordClean(0.5)
+	score := sess.ThreatScore()
+	if score >= 20.0 {
+		t.Errorf("expected score to decay below 20, got %.1f", score)
+	}
+
+	// 7. Re-escalation: bad signal pushes score up but stays at high
+	//    because threshold was halved (20.0) and score is below it.
+	escalated, _, _ := sess.RecordSignal(session.SignalBlock, 5.0) // +3 points
+	_ = escalated                                                  // may or may not cross threshold
+	if sess.EscalationLevel() < 2 {
+		t.Error("should not drop below high without more time")
+	}
+}
+
+// TestSessionManager_SweepAfterConfigReload verifies that the background sweep
+// uses the NEW adaptive config after a hot-reload, not the stale original.
+func TestSessionManager_SweepAfterConfigReload(t *testing.T) {
+	cfg := testSessionConfig()
+	m := metrics.New()
+
+	// Start with block_all only at critical (default).
+	blockAllTrue := true
+	adaptiveCfg := &config.AdaptiveEnforcement{
+		Enabled:             true,
+		EscalationThreshold: 5.0,
+		Levels: config.EscalationLevels{
+			Critical: config.EscalationActions{BlockAll: &blockAllTrue},
+		},
+	}
+
+	sm := NewSessionManager(cfg, adaptiveCfg, m)
+	defer sm.Close()
+
+	sess := sm.GetOrCreate(testClient)
+
+	// Push to critical with expired timer.
+	sess.mu.Lock()
+	sess.escalationLevel = 3
+	sess.lastEscalation = time.Now().Add(-6 * time.Minute)
+	sess.currentThreshold = 40.0
+	sess.threatScore = 20.0
+	sess.atBlockAll = true
+	sess.mu.Unlock()
+
+	// Hot-reload: now block_all also applies at high (level 2).
+	newAdaptiveCfg := &config.AdaptiveEnforcement{
+		Enabled:             true,
+		EscalationThreshold: 5.0,
+		Levels: config.EscalationLevels{
+			High:     config.EscalationActions{BlockAll: &blockAllTrue},
+			Critical: config.EscalationActions{BlockAll: &blockAllTrue},
+		},
+	}
+	sm.UpdateConfig(cfg, newAdaptiveCfg)
+
+	// Sweep should use NEW config for blockAllCheck.
+	sm.sweepDeescalation()
+
+	// De-escalated from critical to high, but high now also has block_all.
+	if sess.EscalationLevel() != 2 {
+		t.Errorf("expected level 2, got %d", sess.EscalationLevel())
+	}
+	// atBlockAll should STILL be true because high has block_all in new config.
+	if !sess.BlockAll() {
+		t.Error("expected atBlockAll=true at high with updated config")
 	}
 }

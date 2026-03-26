@@ -490,6 +490,28 @@ func newInterceptHandler(
 			}
 		}
 
+		// On-entry fast path: if the session has been at its current level past
+		// maxLevelDuration, de-escalate before the block_all check so recovery
+		// can clear block_all for intercepted requests.
+		if rec != nil && cfg.AdaptiveEnforcement.Enabled {
+			if ss, ok := rec.(*SessionState); ok {
+				adaptiveCfg := cfg.AdaptiveEnforcement
+				blockAllCheck := func(level int) bool {
+					return decide.UpgradeAction("", level, &adaptiveCfg) == config.ActionBlock
+				}
+				if changed, from, to := ss.TryAutoRecover(blockAllCheck); changed {
+					fromLabel := session.EscalationLabel(from)
+					toLabel := session.EscalationLabel(to)
+					if p != nil && p.metrics != nil {
+						p.metrics.RecordSessionAutoDeescalation(fromLabel, toLabel)
+						p.metrics.SetAdaptiveSessionLevel(fromLabel, -1)
+						p.metrics.SetAdaptiveSessionLevel(toLabel, 1)
+					}
+					logger.LogAdaptiveEscalation(clientIP, fromLabel, toLabel, clientIP, requestID, rec.ThreatScore())
+				}
+			}
+		}
+
 		// block_all enforcement: deny ALL traffic (including clean) when the
 		// session is at an escalation level with block_all=true.
 		if rec != nil && decide.UpgradeAction("", recEscalationLevel(rec), &cfg.AdaptiveEnforcement) == config.ActionBlock {

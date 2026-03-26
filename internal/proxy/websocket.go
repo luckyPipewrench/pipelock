@@ -514,6 +514,28 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 			return
 		}
 
+		// On-entry fast path: if the session has been at its current level past
+		// maxLevelDuration, de-escalate before the block_all check so recovery
+		// can clear block_all for long-lived WebSocket connections.
+		if r.cfg.AdaptiveEnforcement.Enabled {
+			if ss, ok := r.rec.(*SessionState); ok {
+				adaptiveCfg := r.cfg.AdaptiveEnforcement
+				blockAllCheck := func(level int) bool {
+					return decide.UpgradeAction("", level, &adaptiveCfg) == config.ActionBlock
+				}
+				if changed, from, to := ss.TryAutoRecover(blockAllCheck); changed {
+					fromLabel := session.EscalationLabel(from)
+					toLabel := session.EscalationLabel(to)
+					if r.proxy.metrics != nil {
+						r.proxy.metrics.RecordSessionAutoDeescalation(fromLabel, toLabel)
+						r.proxy.metrics.SetAdaptiveSessionLevel(fromLabel, -1)
+						r.proxy.metrics.SetAdaptiveSessionLevel(toLabel, 1)
+					}
+					log.LogAdaptiveEscalation(r.clientIP, fromLabel, toLabel, r.clientIP, r.requestID, r.rec.ThreatScore())
+				}
+			}
+		}
+
 		// block_all check: if the session has escalated to a level with
 		// block_all=true, close the WebSocket immediately. This prevents
 		// clean frames from flowing after escalation during long-lived connections.
@@ -829,6 +851,28 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "kill switch active")
 			blocked = true
 			return
+		}
+
+		// On-entry fast path: if the session has been at its current level past
+		// maxLevelDuration, de-escalate before the block_all check so recovery
+		// can clear block_all for long-lived WebSocket connections.
+		if r.cfg.AdaptiveEnforcement.Enabled {
+			if ss, ok := r.rec.(*SessionState); ok {
+				adaptiveCfg := r.cfg.AdaptiveEnforcement
+				blockAllCheck := func(level int) bool {
+					return decide.UpgradeAction("", level, &adaptiveCfg) == config.ActionBlock
+				}
+				if changed, from, to := ss.TryAutoRecover(blockAllCheck); changed {
+					fromLabel := session.EscalationLabel(from)
+					toLabel := session.EscalationLabel(to)
+					if r.proxy.metrics != nil {
+						r.proxy.metrics.RecordSessionAutoDeescalation(fromLabel, toLabel)
+						r.proxy.metrics.SetAdaptiveSessionLevel(fromLabel, -1)
+						r.proxy.metrics.SetAdaptiveSessionLevel(toLabel, 1)
+					}
+					log.LogAdaptiveEscalation(r.clientIP, fromLabel, toLabel, r.clientIP, r.requestID, r.rec.ThreatScore())
+				}
+			}
 		}
 
 		// block_all check: if the session has escalated to a level with

@@ -99,7 +99,7 @@ func TestSave_AtomicNoLeftoverOnSuccess(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, e := range entries {
-		if strings.HasSuffix(e.Name(), ".tmp") {
+		if strings.HasPrefix(e.Name(), ".tmp-") {
 			t.Errorf("leftover temp file: %s", e.Name())
 		}
 	}

@@ -73,7 +73,7 @@ func TestFindSigner_NoKeysAtAll(t *testing.T) {
 	t.Cleanup(func() { KeyringHex = orig })
 
 	data := []byte("test-data")
-	sig := []byte("not-a-real-signature")
+	sig := make([]byte, ed25519.SignatureSize)
 
 	_, err := findSigner(data, sig, nil)
 	if err == nil {

@@ -2714,7 +2714,6 @@ func TestWsRelayRecordSignal_AdaptiveDisabled(t *testing.T) {
 	cfg.AdaptiveEnforcement.Enabled = false
 	m := metrics.New()
 	sc := scanner.New(cfg)
-	defer sc.Close()
 	p, err := New(cfg, audit.NewNop(), sc, m)
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -2753,7 +2752,6 @@ func TestWsRelayRecordSignal_RecordsSignal(t *testing.T) {
 	cfg.AdaptiveEnforcement.EscalationThreshold = 10.0
 	m := metrics.New()
 	sc := scanner.New(cfg)
-	defer sc.Close()
 	p, err := New(cfg, audit.NewNop(), sc, m)
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -2821,7 +2819,6 @@ func TestWsRelayRecordSignal_AnonymousAgent(t *testing.T) {
 	cfg.AdaptiveEnforcement.EscalationThreshold = 10.0
 	m := metrics.New()
 	sc := scanner.New(cfg)
-	defer sc.Close()
 	p, err := New(cfg, audit.NewNop(), sc, m)
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)

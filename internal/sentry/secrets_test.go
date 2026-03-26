@@ -41,9 +41,10 @@ func TestLoadFileSecrets(t *testing.T) {
 			wantLen: 1,
 		},
 		{
-			name:    "trims whitespace",
-			content: "  mysecret12345678  \n",
-			wantLen: 1,
+			name:     "trims whitespace",
+			content:  "  mysecret12345678  \n",
+			wantLen:  1,
+			wantVals: []string{"mysecret12345678"},
 		},
 		{
 			name:    "empty file",
@@ -56,9 +57,10 @@ func TestLoadFileSecrets(t *testing.T) {
 			wantLen: 0,
 		},
 		{
-			name:    "exactly 8 chars included",
-			content: "12345678\n",
-			wantLen: 1,
+			name:     "exactly 8 chars included",
+			content:  "12345678\n",
+			wantLen:  1,
+			wantVals: []string{"12345678"},
 		},
 		{
 			name:    "7 chars excluded",

@@ -34,10 +34,10 @@ func TestGenerateCA_PEMOutput(t *testing.T) {
 		t.Fatalf("GenerateCA error: %v", err)
 	}
 	// PEM output should start with the certificate header.
-	if len(pemBytes) == 0 {
-		t.Fatal("PEM bytes are empty")
-	}
 	const pemHeader = "-----BEGIN CERTIFICATE-----"
+	if len(pemBytes) < len(pemHeader) {
+		t.Fatalf("PEM bytes too short: got %d, need at least %d", len(pemBytes), len(pemHeader))
+	}
 	if string(pemBytes[:len(pemHeader)]) != pemHeader {
 		t.Errorf("PEM output should start with %q", pemHeader)
 	}

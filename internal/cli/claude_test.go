@@ -1381,8 +1381,12 @@ func TestWriteClaudeSettingsFile_CreatesBackup(t *testing.T) {
 }
 
 func TestWriteClaudeSettingsFile_MkdirError(t *testing.T) {
-	// Use a path under /dev/null which is not a directory.
-	targetDir := "/dev/null/impossible"
+	// Use a regular file as the parent directory to trigger MkdirAll failure.
+	fileAsDir := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(fileAsDir, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	targetDir := filepath.Join(fileAsDir, "subdir")
 	targetPath := filepath.Join(targetDir, "settings.json")
 	output := []byte(`{}`)
 

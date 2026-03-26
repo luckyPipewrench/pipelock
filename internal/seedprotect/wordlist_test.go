@@ -5,6 +5,11 @@ package seedprotect
 
 import "testing"
 
+const (
+	testWordAbandon = "abandon"
+	testWordZoo     = "zoo"
+)
+
 func TestIndexOf(t *testing.T) {
 	t.Parallel()
 
@@ -13,9 +18,9 @@ func TestIndexOf(t *testing.T) {
 		word string
 		want int
 	}{
-		{"first word abandon", "abandon", 0},
+		{"first word abandon", testWordAbandon, 0},
 		{"second word ability", "ability", 1},
-		{"last word zoo", "zoo", 2047},
+		{"last word zoo", testWordZoo, 2047},
 		{"not found", "zzzznotaword", -1},
 		{"empty string", "", -1},
 		{"uppercase not found", "ABANDON", -1},
@@ -41,8 +46,8 @@ func TestIsWordConsistency(t *testing.T) {
 		word       string
 		wantIsWord bool
 	}{
-		{"abandon", true},
-		{"zoo", true},
+		{testWordAbandon, true},
+		{testWordZoo, true},
 		{"notaword", false},
 		{"", false},
 	}

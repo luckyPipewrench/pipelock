@@ -275,6 +275,27 @@ func TestAssessFinalize_SummaryNoLeakedFields(t *testing.T) {
 	}
 }
 
+func TestRedactDiscoverTitle(t *testing.T) {
+	tests := []struct {
+		severity string
+		want     string
+	}{
+		{assessSevHigh, "A high-risk MCP server is unprotected"},
+		{assessSevMedium, "An MCP server is unprotected"},
+		{assessSevLow, "An MCP server is unprotected"},
+		{assessSevCritical, "An MCP server is unprotected"},
+		{assessSevInfo, "An MCP server is unprotected"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.severity, func(t *testing.T) {
+			got := redactDiscoverTitle(tt.severity)
+			if got != tt.want {
+				t.Errorf("redactDiscoverTitle(%q) = %q, want %q", tt.severity, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestAssessFinalize_ManifestArtifactHashes(t *testing.T) {
 	runDir := setupCompletedRun(t)
 

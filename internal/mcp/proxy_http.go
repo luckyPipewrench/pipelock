@@ -35,27 +35,17 @@ import (
 // RunHTTPProxy bridges stdio (client) to an upstream HTTP MCP server with
 // bidirectional scanning. Reads JSON-RPC from clientIn, POSTs to upstreamURL,
 // scans responses via ForwardScanned, writes to clientOut.
-// When store is non-nil, a per-invocation session recorder is created and used
-// for adaptive enforcement signal recording across both input and response scanning.
+// When opts.Store is non-nil, a per-invocation session recorder is created and
+// used for adaptive enforcement signal recording across both input and response
+// scanning.
 func RunHTTPProxy(
 	ctx context.Context,
 	clientIn io.Reader,
 	clientOut io.Writer,
 	logW io.Writer,
 	upstreamURL string,
-	sc *scanner.Scanner,
-	approver *hitl.Approver,
 	extraHeaders http.Header,
-	inputCfg *InputScanConfig,
-	toolCfg *tools.ToolScanConfig,
-	policyCfg *policy.Config,
-	ks *killswitch.Controller,
-	chainMatcher *chains.Matcher,
-	auditLogger *audit.Logger,
-	cee *CEEDeps,
-	store session.Store,
-	adaptiveCfg *config.AdaptiveEnforcement,
-	m *metrics.Metrics,
+	opts MCPProxyOpts,
 ) error {
 	// Create a child context so we can stop the GET stream when stdin EOF is reached.
 	ctx, cancel := context.WithCancel(ctx)
@@ -63,8 +53,8 @@ func RunHTTPProxy(
 
 	// Per-invocation adaptive enforcement recorder.
 	var rec session.Recorder
-	if store != nil {
-		rec = store.GetOrCreate(session.NextInvocationKey("mcp-http"))
+	if opts.Store != nil {
+		rec = opts.Store.GetOrCreate(session.NextInvocationKey("mcp-http"))
 	}
 
 	safeClientOut := &syncWriter{w: clientOut}
@@ -72,28 +62,26 @@ func RunHTTPProxy(
 
 	httpClient := transport.NewHTTPClient(upstreamURL, extraHeaders)
 
-	// Tool scanning baseline for this session.
+	// Tool scanning baseline for this session. Clone the caller's ToolCfg
+	// with a fresh per-session baseline so drift detection is scoped to
+	// this invocation.
 	var fwdToolCfg *tools.ToolScanConfig
-	if toolCfg != nil && toolCfg.Action != "" {
+	if opts.ToolCfg != nil && opts.ToolCfg.Action != "" {
 		fwdToolCfg = &tools.ToolScanConfig{
 			Baseline:    tools.NewToolBaseline(),
-			Action:      toolCfg.Action,
-			DetectDrift: toolCfg.DetectDrift,
-			ExtraPoison: toolCfg.ExtraPoison,
+			Action:      opts.ToolCfg.Action,
+			DetectDrift: opts.ToolCfg.DetectDrift,
+			ExtraPoison: opts.ToolCfg.ExtraPoison,
 		}
 	}
 
 	// Request tracker for confused deputy protection.
 	tracker := NewRequestTracker()
 
-	// Shared opts for ForwardScanned and scanHTTPInput calls in this session.
-	fwdOpts := MCPProxyOpts{
-		Scanner: sc, Approver: approver, ToolCfg: fwdToolCfg,
-		InputCfg: inputCfg, PolicyCfg: policyCfg,
-		KillSwitch: ks, ChainMatcher: chainMatcher,
-		AuditLogger: auditLogger, CEE: cee,
-		Rec: rec, AdaptiveCfg: adaptiveCfg, Metrics: m,
-	}
+	// Session-scoped opts: override Rec and ToolCfg from the caller's opts.
+	fwdOpts := opts
+	fwdOpts.Rec = rec
+	fwdOpts.ToolCfg = fwdToolCfg
 
 	clientReader := transport.NewStdioReader(clientIn)
 
@@ -117,8 +105,8 @@ func RunHTTPProxy(
 		}
 
 		// Kill switch: deny all messages when active.
-		if ks != nil {
-			if d := ks.IsActiveMCP(msg); d.Active {
+		if opts.KillSwitch != nil {
+			if d := opts.KillSwitch.IsActiveMCP(msg); d.Active {
 				if d.IsNotification {
 					_, _ = fmt.Fprintf(safeLogW, "pipelock: kill switch dropped notification (source=%s)\n", d.Source)
 					continue
@@ -184,7 +172,7 @@ func RunHTTPProxy(
 		// the Once and permanently prevent the GET stream.
 		if httpClient.SessionID() != "" {
 			getStreamOnce.Do(func() {
-				startGETStream(ctx, httpClient, safeClientOut, safeLogW, sc, approver, fwdToolCfg, ks, rec, adaptiveCfg, &wg, m)
+				startGETStream(ctx, httpClient, safeClientOut, safeLogW, fwdOpts, &wg)
 			})
 		}
 	}
@@ -584,20 +572,15 @@ func upstreamErrorResponse(id json.RawMessage, upstreamErr error) []byte {
 // Reconnects with exponential backoff (1s base, 30s cap) on stream end or
 // transient errors. Exits permanently only on transport.ErrStreamNotSupported (HTTP 405)
 // or context cancellation.
-// rec and adaptiveCfg are passed through to ForwardScanned for adaptive enforcement.
+// opts carries Scanner, Approver, ToolCfg, KillSwitch, Rec, AdaptiveCfg, and
+// Metrics through to ForwardScanned for adaptive enforcement.
 func startGETStream(
 	ctx context.Context,
 	httpClient *transport.HTTPClient,
 	safeClientOut *syncWriter,
 	safeLogW *syncWriter,
-	sc *scanner.Scanner,
-	approver *hitl.Approver,
-	toolCfg *tools.ToolScanConfig,
-	ks *killswitch.Controller,
-	rec session.Recorder,
-	adaptiveCfg *config.AdaptiveEnforcement,
+	opts MCPProxyOpts,
 	wg *sync.WaitGroup,
-	m *metrics.Metrics,
 ) {
 	wg.Add(1)
 	go func() {
@@ -617,9 +600,9 @@ func startGETStream(
 			// the retry loop keeps establishing outbound connections even
 			// though ForwardScanned blocks every message. Wait here instead
 			// of returning so the goroutine resumes when the switch clears.
-			if ks != nil && ks.IsActive() {
+			if opts.KillSwitch != nil && opts.KillSwitch.IsActive() {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: GET stream paused: kill switch active\n")
-				for ks.IsActive() {
+				for opts.KillSwitch.IsActive() {
 					select {
 					case <-ctx.Done():
 						return
@@ -654,11 +637,7 @@ func startGETStream(
 
 			// nil tracker: GET stream carries server-initiated messages,
 			// not responses to client requests.
-			getOpts := MCPProxyOpts{
-				Scanner: sc, Approver: approver, ToolCfg: toolCfg,
-				KillSwitch: ks, Rec: rec, AdaptiveCfg: adaptiveCfg, Metrics: m,
-			}
-			_, scanErr := ForwardScanned(reader, safeClientOut, safeLogW, nil, getOpts)
+			_, scanErr := ForwardScanned(reader, safeClientOut, safeLogW, nil, opts)
 			if scanErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: GET stream scan error: %v\n", scanErr)
 			}

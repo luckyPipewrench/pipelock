@@ -462,7 +462,14 @@ Environment passthrough (subprocess mode only):
 				// Stdio-to-HTTP mode: --upstream only.
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: proxying upstream %s (response=%s, input=%s, tools=%s, policy=%s)\n",
 					upstreamURL, sc.ResponseAction(), inputCfg.Action, toolAction, policyAction)
-				if err := mcp.RunHTTPProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, sc, approver, nil, inputCfg, toolCfg, policyCfg, ks, chainMatcher, nil, cee, store, adaptiveCfg, mcpMetrics); err != nil {
+				httpOpts := mcp.MCPProxyOpts{
+					Scanner: sc, Approver: approver,
+					InputCfg: inputCfg, ToolCfg: toolCfg, PolicyCfg: policyCfg,
+					KillSwitch: ks, ChainMatcher: chainMatcher,
+					CEE: cee, Store: store,
+					AdaptiveCfg: adaptiveCfg, Metrics: mcpMetrics,
+				}
+				if err := mcp.RunHTTPProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, nil, httpOpts); err != nil {
 					if sentryClient != nil {
 						sentryClient.CaptureError(err)
 					}

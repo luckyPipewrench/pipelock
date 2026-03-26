@@ -66,7 +66,7 @@ func TestRunHTTPProxy_ForwardsCleanRequest(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, sc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, nil, MCPProxyOpts{Scanner: sc})
 	if err != nil {
 		t.Fatalf("RunHTTPProxy: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestRunHTTPProxy_BlocksInjectedResponse(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, sc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, nil, MCPProxyOpts{Scanner: sc})
 	if err != nil {
 		t.Fatalf("RunHTTPProxy: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestRunHTTPProxy_SSEStreamingResponse(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, sc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, nil, MCPProxyOpts{Scanner: sc})
 	if err != nil {
 		t.Fatalf("RunHTTPProxy: %v", err)
 	}
@@ -178,7 +178,7 @@ func TestRunHTTPProxy_UpstreamError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, sc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, nil, MCPProxyOpts{Scanner: sc})
 	if err != nil {
 		t.Fatalf("RunHTTPProxy: %v (should not crash on upstream error)", err)
 	}
@@ -236,7 +236,7 @@ func TestRunHTTPProxy_GETStreamReceivesServerNotifications(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- RunHTTPProxy(ctx, stdinR, &stdout, &stderr, srv.URL, sc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+		done <- RunHTTPProxy(ctx, stdinR, &stdout, &stderr, srv.URL, nil, MCPProxyOpts{Scanner: sc})
 	}()
 
 	// Send initialize request.
@@ -302,7 +302,7 @@ func TestRunHTTPProxy_InputDLPBlocking(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, sc, nil, nil, inputCfg, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, nil, MCPProxyOpts{Scanner: sc, InputCfg: inputCfg})
 	if err != nil {
 		t.Fatalf("RunHTTPProxy: %v", err)
 	}
@@ -332,7 +332,7 @@ func TestRunHTTPProxy_202AcceptedForNotification(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, sc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, nil, MCPProxyOpts{Scanner: sc})
 	if err != nil {
 		t.Fatalf("RunHTTPProxy: %v", err)
 	}
@@ -362,7 +362,7 @@ func TestRunHTTPProxy_MultipleSequentialRequests(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, sc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, nil, MCPProxyOpts{Scanner: sc})
 	if err != nil {
 		t.Fatalf("RunHTTPProxy: %v", err)
 	}
@@ -398,7 +398,7 @@ func TestRunHTTPProxy_ToolPoisoningDetection(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, sc, nil, nil, nil, toolCfg, nil, nil, nil, nil, nil, nil, nil, nil)
+	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, nil, MCPProxyOpts{Scanner: sc, ToolCfg: toolCfg})
 	if err != nil {
 		t.Fatalf("RunHTTPProxy: %v", err)
 	}
@@ -442,7 +442,7 @@ func TestRunHTTPProxy_InputScanWarnMode(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, sc, nil, nil, inputCfg, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, nil, MCPProxyOpts{Scanner: sc, InputCfg: inputCfg})
 	if err != nil {
 		t.Fatalf("RunHTTPProxy: %v", err)
 	}
@@ -716,7 +716,7 @@ func TestRunHTTPProxy_ContextCancellation(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- RunHTTPProxy(ctx, stdinR, &stdout, &stderr, srv.URL, sc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+		done <- RunHTTPProxy(ctx, stdinR, &stdout, &stderr, srv.URL, nil, MCPProxyOpts{Scanner: sc})
 	}()
 
 	// Send one request so the proxy is active.
@@ -753,7 +753,7 @@ func TestRunHTTPProxy_UpstreamErrorSanitized(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, sc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, nil, MCPProxyOpts{Scanner: sc})
 	if err != nil {
 		t.Fatalf("RunHTTPProxy: %v", err)
 	}
@@ -804,7 +804,7 @@ func TestRunHTTPProxy_BlockedNotificationSilent(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, sc, nil, nil, inputCfg, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, nil, MCPProxyOpts{Scanner: sc, InputCfg: inputCfg})
 	if err != nil {
 		t.Fatalf("RunHTTPProxy: %v", err)
 	}
@@ -839,7 +839,7 @@ func TestRunHTTPProxy_SessionDeleteOnEOF(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, sc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, nil, MCPProxyOpts{Scanner: sc})
 	if err != nil {
 		t.Fatalf("RunHTTPProxy: %v", err)
 	}
@@ -937,7 +937,7 @@ func TestRunHTTPProxy_InputScanAskMode(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, sc, nil, nil, inputCfg, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, nil, MCPProxyOpts{Scanner: sc, InputCfg: inputCfg})
 	if err != nil {
 		t.Fatalf("RunHTTPProxy: %v", err)
 	}
@@ -974,7 +974,7 @@ func TestRunHTTPProxy_Upstream3xxError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, sc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, nil, MCPProxyOpts{Scanner: sc})
 	if err != nil {
 		t.Fatalf("RunHTTPProxy: %v", err)
 	}
@@ -1014,7 +1014,7 @@ func TestRunHTTPProxy_GETStream405PermanentStop(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- RunHTTPProxy(ctx, stdinR, &stdout, &stderr, srv.URL, sc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+		done <- RunHTTPProxy(ctx, stdinR, &stdout, &stderr, srv.URL, nil, MCPProxyOpts{Scanner: sc})
 	}()
 
 	// Send initialize to establish session.
@@ -1075,7 +1075,7 @@ func TestRunHTTPProxy_GETStreamTransientReconnect(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- RunHTTPProxy(ctx, stdinR, &stdout, &stderr, srv.URL, sc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+		done <- RunHTTPProxy(ctx, stdinR, &stdout, &stderr, srv.URL, nil, MCPProxyOpts{Scanner: sc})
 	}()
 
 	// Send initialize.
@@ -1131,7 +1131,7 @@ func TestRunHTTPProxy_GETStreamKillSwitchPause(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- RunHTTPProxy(ctx, stdinR, &stdout, &stderr, srv.URL, sc, nil, nil, nil, nil, nil, ks, nil, nil, nil, nil, nil, nil)
+		done <- RunHTTPProxy(ctx, stdinR, &stdout, &stderr, srv.URL, nil, MCPProxyOpts{Scanner: sc, KillSwitch: ks})
 	}()
 
 	// Send initialize to trigger GET stream.
@@ -1198,7 +1198,7 @@ func TestRunHTTPProxy_ScanErrorPropagated(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, sc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, nil, MCPProxyOpts{Scanner: sc})
 	// lastScanErr should be returned when injection was blocked.
 	if err == nil {
 		t.Log("scan error was nil (block action may not propagate as error)")
@@ -1228,7 +1228,7 @@ func TestRunHTTPProxy_ReadError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	err := RunHTTPProxy(ctx, r, &stdout, &stderr, srv.URL, sc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	err := RunHTTPProxy(ctx, r, &stdout, &stderr, srv.URL, nil, MCPProxyOpts{Scanner: sc})
 	if err == nil {
 		t.Fatal("expected error for broken reader")
 	}
@@ -1278,7 +1278,7 @@ func TestRunHTTPProxy_SSEResponseWithInjectionBlock(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, sc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, nil, MCPProxyOpts{Scanner: sc})
 	if err != nil {
 		t.Fatalf("RunHTTPProxy: %v", err)
 	}
@@ -1347,7 +1347,7 @@ func TestRunHTTPProxy_ContextCancelDuringRead(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- RunHTTPProxy(ctx, pr, &stdout, &stderr, srv.URL, sc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+		done <- RunHTTPProxy(ctx, pr, &stdout, &stderr, srv.URL, nil, MCPProxyOpts{Scanner: sc})
 	}()
 
 	// Write first message, wait for it to be consumed, then cancel.
@@ -1377,7 +1377,7 @@ func TestRunHTTPProxy_UpstreamHTTP500(t *testing.T) {
 	stdin := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"test"}}` + "\n")
 	var stdout, stderr bytes.Buffer
 
-	err := RunHTTPProxy(context.Background(), stdin, &stdout, &stderr, srv.URL, sc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	err := RunHTTPProxy(context.Background(), stdin, &stdout, &stderr, srv.URL, nil, MCPProxyOpts{Scanner: sc})
 	if err != nil {
 		t.Fatalf("RunHTTPProxy: %v", err)
 	}
@@ -1436,7 +1436,7 @@ func TestRunHTTPProxy_NotificationBlocked(t *testing.T) {
 		OnParseError: config.ActionBlock,
 	}
 
-	err := RunHTTPProxy(context.Background(), stdin, &stdout, &stderr, srv.URL, sc, nil, nil, inputCfg, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	err := RunHTTPProxy(context.Background(), stdin, &stdout, &stderr, srv.URL, nil, MCPProxyOpts{Scanner: sc, InputCfg: inputCfg})
 	if err != nil {
 		t.Fatalf("RunHTTPProxy: %v", err)
 	}
@@ -2931,7 +2931,7 @@ func TestRunHTTPProxy_KillSwitchDeniesRequest(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, sc, nil, nil, nil, nil, nil, ks, nil, nil, nil, nil, nil, nil)
+	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, nil, MCPProxyOpts{Scanner: sc, KillSwitch: ks})
 	if err != nil {
 		t.Fatalf("RunHTTPProxy: %v", err)
 	}
@@ -2982,7 +2982,7 @@ func TestRunHTTPProxy_KillSwitchDropsNotification(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, sc, nil, nil, nil, nil, nil, ks, nil, nil, nil, nil, nil, nil)
+	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, nil, MCPProxyOpts{Scanner: sc, KillSwitch: ks})
 	if err != nil {
 		t.Fatalf("RunHTTPProxy: %v", err)
 	}
@@ -3022,7 +3022,7 @@ func TestRunHTTPProxy_WithStoreAndAdaptiveCfg(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, sc, nil, nil, nil, nil, nil, nil, nil, nil, nil, store, adaptiveCfg, nil)
+	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, nil, MCPProxyOpts{Scanner: sc, Store: store, AdaptiveCfg: adaptiveCfg})
 	if err != nil {
 		t.Fatalf("RunHTTPProxy: %v", err)
 	}
@@ -3364,7 +3364,7 @@ func TestRunHTTPProxy_AdaptiveBlockAllCleanMessage(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, sc, nil, nil, inputCfg, nil, nil, nil, nil, nil, nil, store, adaptiveCfg, nil)
+	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, nil, MCPProxyOpts{Scanner: sc, InputCfg: inputCfg, Store: store, AdaptiveCfg: adaptiveCfg})
 	if err != nil {
 		t.Fatalf("RunHTTPProxy: %v", err)
 	}

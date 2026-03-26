@@ -9,6 +9,7 @@ import (
 	"os"
 
 	"github.com/luckyPipewrench/pipelock/internal/cli"
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/sandbox"
 )
 
@@ -27,6 +28,6 @@ func main() {
 
 	if err := cli.Execute(); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
-		os.Exit(cli.ExitCodeOf(err))
+		os.Exit(cliutil.ExitCodeOf(err))
 	}
 }

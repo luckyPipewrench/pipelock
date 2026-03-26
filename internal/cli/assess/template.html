@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pipelock Security Assessment</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --bg-primary: #0a0a0f;
+            --bg-card: rgba(255, 255, 255, 0.04);
+            --bg-hover: rgba(255, 255, 255, 0.07);
+            --bg-header: rgba(255, 255, 255, 0.06);
+            --border: rgba(255, 255, 255, 0.08);
+            --text-primary: #e2e8f0;
+            --text-secondary: #e2e8f0;
+            --text-muted: #94a3b8;
+            --text-dim: #64748b;
+            --color-green: #22c55e;
+            --color-blue: #3b82f6;
+            --color-yellow: #eab308;
+            --color-orange: #f97316;
+            --color-red: #ef4444;
+            --color-accent: #00ffc8;
+            --mono: "JetBrains Mono", "Fira Code", "Consolas", monospace;
+            --radius: 12px;
+        }
+
+        body {
+            background: var(--bg-primary);
+            color: var(--text-secondary);
+            font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+            line-height: 1.7;
+            padding: 2rem;
+            margin: 0;
+        }
+
+        .container {
+            max-width: 1100px;
+            margin: 0 auto;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 2rem;
+            padding-bottom: 1.5rem;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.75rem;
+            margin-bottom: 1rem;
+        }
+
+        .brand svg {
+            width: 40px;
+            height: 40px;
+            flex-shrink: 0;
+        }
+
+        h1 {
+            font-size: 1.75rem;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        h2 {
+            font-size: 1.125rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 1rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 1px solid var(--border);
+        }
+
+        section {
+            margin-bottom: 2rem;
+        }
+
+        .grade-badge {
+            display: inline-block;
+            padding: 0.5rem 1.5rem;
+            border-radius: 9999px;
+            font-size: 1.25rem;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            color: #fff;
+            margin-bottom: 0.75rem;
+        }
+
+        .meta {
+            font-size: 0.8125rem;
+            color: var(--text-muted);
+        }
+
+        .meta span {
+            margin: 0 0.5rem;
+        }
+
+        .cap-warning {
+            background: rgba(234, 179, 8, 0.1);
+            border: 1px solid var(--color-yellow);
+            border-radius: 0.5rem;
+            padding: 0.75rem 1rem;
+            margin-bottom: 1.5rem;
+            font-size: 0.875rem;
+            color: var(--color-yellow);
+        }
+
+        .cap-warning strong {
+            display: block;
+            margin-bottom: 0.25rem;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            overflow: hidden;
+        }
+
+        th {
+            background: var(--bg-header);
+            color: var(--text-muted);
+            font-size: 0.6875rem;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            padding: 0.625rem 0.75rem;
+            text-align: left;
+            font-weight: 600;
+        }
+
+        td {
+            padding: 0.5rem 0.75rem;
+            border-top: 1px solid var(--border);
+            font-size: 0.8125rem;
+            overflow-wrap: break-word;
+        }
+
+        tr:hover {
+            background: var(--bg-hover);
+        }
+
+        .severity-badge {
+            display: inline-block;
+            padding: 0.125rem 0.5rem;
+            border-radius: 0.25rem;
+            font-size: 0.6875rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            color: #fff;
+        }
+
+        .score-bar-wrap {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .score-bar-bg {
+            flex: 1;
+            height: 6px;
+            background: var(--border);
+            border-radius: 3px;
+            overflow: hidden;
+        }
+
+        .score-bar-fill {
+            height: 100%;
+            border-radius: 3px;
+        }
+
+        .score-label {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            white-space: nowrap;
+        }
+
+        .evidence-block {
+            background: var(--bg-primary);
+            border: 1px solid var(--border);
+            border-radius: 0.375rem;
+            padding: 0.5rem 0.75rem;
+            font-family: var(--mono);
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            white-space: pre-wrap;
+            word-break: break-all;
+            margin-top: 0.25rem;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        .no-findings {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 1.5rem;
+            text-align: center;
+            color: var(--text-dim);
+            font-size: 0.875rem;
+        }
+
+        footer {
+            text-align: center;
+            padding-top: 1.5rem;
+            border-top: 1px solid var(--border);
+            font-size: 0.75rem;
+            color: var(--text-dim);
+        }
+
+        footer a {
+            color: var(--color-accent);
+            text-decoration: none;
+        }
+
+        footer a:hover {
+            text-decoration: underline;
+        }
+
+        .footer-brand {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+        }
+
+        .footer-brand svg {
+            width: 14px;
+            height: 14px;
+            vertical-align: middle;
+        }
+
+        .verify-block {
+            font-family: var(--mono);
+            font-size: 0.8125rem;
+            color: var(--text-muted);
+            margin-top: 0.5rem;
+        }
+
+        @media print {
+            body { background: #fff; color: #1e293b; padding: 0.5rem; }
+            .container { max-width: 100%; }
+            table { background: #f8fafc; border-color: #e2e8f0; }
+            h1, h2 { color: #0f172a; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="brand">
+                <svg viewBox="0 0 400 360" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                    <path d="M130 180 L130 110 C130 65 160 40 200 40 C240 40 270 65 270 110 L270 180" stroke="#00ffc8" stroke-width="28" stroke-linecap="round" fill="none"/>
+                    <rect x="114" y="165" width="32" height="16" rx="3" fill="#00ffc8" opacity="0.7"/>
+                    <rect x="254" y="165" width="32" height="16" rx="3" fill="#00ffc8" opacity="0.7"/>
+                    <rect x="90" y="180" width="220" height="160" rx="16" fill="#0a0a0f" stroke="#00ffc8" stroke-width="2.5"/>
+                    <circle cx="200" cy="248" r="18" fill="#00ffc8" opacity="0.9"/>
+                    <circle cx="200" cy="248" r="10" fill="#0a0a0f"/>
+                    <rect x="196" y="256" width="8" height="24" rx="3" fill="#00ffc8" opacity="0.9"/>
+                </svg>
+                <h1>Pipelock Security Assessment</h1>
+            </div>
+            <div class="grade-badge" style="background: {{gradeColor .OverallGrade}};">Grade: {{.OverallGrade}} ({{.OverallScore}}/100)</div>
+            <div class="meta">
+                Run ID: {{.Manifest.RunID}}
+                {{if .Manifest.FinalizedAt}}<span>|</span> {{.Manifest.FinalizedAt.UTC.Format "2006-01-02 15:04:05 UTC"}}{{end}}
+                <span>|</span> v{{.Manifest.Version}}
+            </div>
+        </header>
+
+        {{if .GradeCap}}
+        <div class="cap-warning">
+            <strong>&#9888; Grade Capped at {{.GradeCap}}</strong>
+            {{range .CapReasons}}
+            <div>&#8226; {{.Reason}} (source: {{.Source}})</div>
+            {{end}}
+        </div>
+        {{end}}
+
+        <!-- Sections Table -->
+        <section>
+            <h2>Assessment Sections</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Section</th>
+                        <th>Score</th>
+                        <th>Grade</th>
+                        <th>Detail</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{range .Sections}}
+                    <tr>
+                        <td>{{.Name}}</td>
+                        <td>
+                            <div class="score-bar-wrap">
+                                <div class="score-bar-bg">
+                                    <div class="score-bar-fill" style="width: {{percent .Score .MaxScore}}%; background: {{gradeColor .Grade}};"></div>
+                                </div>
+                                <span class="score-label">{{.Score}}/{{.MaxScore}}</span>
+                            </div>
+                        </td>
+                        <td>
+                            <span class="grade-badge" style="background: {{gradeColor .Grade}}; padding: 0.125rem 0.5rem; font-size: 0.75rem;">{{.Grade}}</span>
+                        </td>
+                        <td>{{.Detail}}</td>
+                    </tr>
+                    {{end}}
+                </tbody>
+            </table>
+        </section>
+
+        <!-- Findings Table -->
+        <section>
+            <h2>Findings ({{len .Findings}})</h2>
+            {{if .Findings}}
+            <table>
+                <thead>
+                    <tr>
+                        <th>Severity</th>
+                        <th>Category</th>
+                        <th>Source</th>
+                        <th>Title / Detail</th>
+                        <th>Remediation</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{range .Findings}}
+                    <tr>
+                        <td>
+                            <span class="severity-badge" style="background: {{sevColor .Severity}};">{{sevBadge .Severity}}</span>
+                        </td>
+                        <td>{{.Category}}</td>
+                        <td style="font-size: 0.75rem; color: var(--text-muted);">{{.Source}}</td>
+                        <td>
+                            <div>{{.Title}}</div>
+                            {{if .Detail}}<div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem;">{{.Detail}}</div>{{end}}
+                            {{if .Evidence}}<div class="evidence-block">{{.Evidence}}</div>{{end}}
+                        </td>
+                        <td style="font-size: 0.75rem;">{{.Remediation}}</td>
+                    </tr>
+                    {{end}}
+                </tbody>
+            </table>
+            {{else}}
+            <div class="no-findings">No findings recorded.</div>
+            {{end}}
+        </section>
+
+        <footer>
+            <span class="footer-brand">
+                <svg viewBox="0 0 400 360" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                    <path d="M130 180 L130 110 C130 65 160 40 200 40 C240 40 270 65 270 110 L270 180" stroke="#00ffc8" stroke-width="28" stroke-linecap="round" fill="none"/>
+                    <rect x="90" y="180" width="220" height="160" rx="16" fill="#0a0a0f" stroke="#00ffc8" stroke-width="2.5"/>
+                    <circle cx="200" cy="248" r="18" fill="#00ffc8" opacity="0.9"/>
+                    <circle cx="200" cy="248" r="10" fill="#0a0a0f"/>
+                    <rect x="196" y="256" width="8" height="24" rx="3" fill="#00ffc8" opacity="0.9"/>
+                </svg>
+                Generated by <a href="https://pipelab.org/pipelock">pipelock</a> v{{.Manifest.Version}}
+            </span>
+            <br>
+            <div class="verify-block" style="margin-top: 0.5rem;">
+                To verify: <code>pipelock assess verify {{.Manifest.RunID}}</code>
+            </div>
+        </footer>
+    </div>
+</body>
+</html>

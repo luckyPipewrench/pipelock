@@ -19,6 +19,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/cli/diag"
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
@@ -34,8 +36,8 @@ func TestRootCmd_Version(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !strings.Contains(buf.String(), Version) {
-		t.Errorf("expected version output to contain %q, got %q", Version, buf.String())
+	if !strings.Contains(buf.String(), cliutil.Version) {
+		t.Errorf("expected version output to contain %q, got %q", cliutil.Version, buf.String())
 	}
 }
 
@@ -184,7 +186,7 @@ func TestCheckCmd_URLBlocked(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for blocked URL")
 	}
-	if !errors.Is(err, ErrURLBlocked) {
+	if !errors.Is(err, diag.ErrURLBlocked) {
 		t.Errorf("expected ErrURLBlocked, got: %v", err)
 	}
 
@@ -386,28 +388,6 @@ func TestLogsCmd_WithLast(t *testing.T) {
 	}
 	if strings.Contains(output, "first.com") {
 		t.Error("expected earlier entries to be excluded with --last 1")
-	}
-}
-
-func TestMatchFilter_JSONEvent(t *testing.T) {
-	line := `{"event":"blocked","url":"https://evil.com"}`
-
-	if !matchFilter(line, "blocked") {
-		t.Error("expected blocked filter to match")
-	}
-	if matchFilter(line, "allowed") {
-		t.Error("expected allowed filter not to match")
-	}
-}
-
-func TestMatchFilter_NonJSON(t *testing.T) {
-	line := "some plain text with blocked in it"
-
-	if !matchFilter(line, "blocked") {
-		t.Error("expected string contains match for non-JSON")
-	}
-	if matchFilter(line, "missing") {
-		t.Error("expected no match when substring not present")
 	}
 }
 
@@ -825,24 +805,6 @@ func TestLogsCmd_FilterAndLast(t *testing.T) {
 	}
 }
 
-func TestMatchFilter_JSONNoEventField(t *testing.T) {
-	// JSON that parses successfully but has no "event" field.
-	line := `{"url":"https://example.com","status":200}`
-
-	if matchFilter(line, "allowed") {
-		t.Error("expected no match when JSON has no event field")
-	}
-}
-
-func TestMatchFilter_JSONEventWrongType(t *testing.T) {
-	// JSON with "event" field that is not a string.
-	line := `{"event":42,"url":"https://example.com"}`
-
-	if matchFilter(line, "42") {
-		t.Error("expected no match when event field is not a string")
-	}
-}
-
 func TestGenerateCmd_OutputToStdout(t *testing.T) {
 	cmd := rootCmd()
 	cmd.SetArgs([]string{"generate", "config", "--preset", "strict"})
@@ -876,67 +838,6 @@ func TestGenerateDockerCompose_OpenhandsToStdout(t *testing.T) {
 	output := buf.String()
 	if !strings.Contains(output, "openhands") {
 		t.Errorf("expected output to contain openhands, got: %q", output)
-	}
-}
-
-func TestResolveAgentName_InvalidName(t *testing.T) {
-	// Ensure PIPELOCK_AGENT env var is clear.
-	t.Setenv("PIPELOCK_AGENT", "")
-
-	// Test with explicitly empty name (no flag, no env).
-	_, err := resolveAgentName("")
-	if err == nil {
-		t.Fatal("expected error for empty agent name")
-	}
-	if !strings.Contains(err.Error(), "agent name required") {
-		t.Errorf("expected 'agent name required' error, got: %v", err)
-	}
-}
-
-func TestResolveKeystoreDir_ExplicitPath(t *testing.T) {
-	dir := t.TempDir()
-
-	result, err := resolveKeystoreDir(dir)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result != dir {
-		t.Errorf("expected %q, got %q", dir, result)
-	}
-}
-
-func TestResolveKeystoreDir_Default(t *testing.T) {
-	// When no explicit dir is given, it should use the default path.
-	result, err := resolveKeystoreDir("")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result == "" {
-		t.Error("expected non-empty default keystore path")
-	}
-}
-
-func TestResolveAgentName_ValidEnvVar(t *testing.T) {
-	t.Setenv("PIPELOCK_AGENT", "my-agent")
-
-	name, err := resolveAgentName("")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if name != "my-agent" {
-		t.Errorf("expected 'my-agent', got %q", name)
-	}
-}
-
-func TestResolveAgentName_FlagOverridesEnv(t *testing.T) {
-	t.Setenv("PIPELOCK_AGENT", "env-agent")
-
-	name, err := resolveAgentName("flag-agent")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if name != "flag-agent" {
-		t.Errorf("expected 'flag-agent', got %q", name)
 	}
 }
 
@@ -1973,235 +1874,6 @@ fetch_proxy:
 	if !bytes.Contains(stderr.Bytes(), []byte("metrics_listen changed")) {
 		t.Errorf("expected metrics_listen reload warning, got:\n%s", stderr.String())
 	}
-}
-
-func TestAgentListenersChanged(t *testing.T) {
-	tests := []struct {
-		name string
-		old  map[string]config.AgentProfile
-		new  map[string]config.AgentProfile
-		want bool
-	}{
-		{
-			"no agents",
-			nil, nil, false,
-		},
-		{
-			"same listeners",
-			map[string]config.AgentProfile{"a": {Listeners: []string{":9001"}}},
-			map[string]config.AgentProfile{"a": {Listeners: []string{":9001"}}},
-			false,
-		},
-		{
-			"listener changed",
-			map[string]config.AgentProfile{"a": {Listeners: []string{":9001"}}},
-			map[string]config.AgentProfile{"a": {Listeners: []string{":9002"}}},
-			true,
-		},
-		{
-			"listener added to existing agent",
-			map[string]config.AgentProfile{"a": {}},
-			map[string]config.AgentProfile{"a": {Listeners: []string{":9001"}}},
-			true,
-		},
-		{
-			"listener removed from agent",
-			map[string]config.AgentProfile{"a": {Listeners: []string{":9001"}}},
-			map[string]config.AgentProfile{"a": {}},
-			true,
-		},
-		{
-			"new agent with listener",
-			map[string]config.AgentProfile{"a": {}},
-			map[string]config.AgentProfile{"a": {}, "b": {Listeners: []string{":9002"}}},
-			true,
-		},
-		{
-			"agent removed with listener",
-			map[string]config.AgentProfile{"a": {Listeners: []string{":9001"}}},
-			map[string]config.AgentProfile{},
-			true,
-		},
-		{
-			"agent added without listener",
-			map[string]config.AgentProfile{},
-			map[string]config.AgentProfile{"a": {Mode: config.ModeStrict}},
-			false,
-		},
-		{
-			"non-listener config change",
-			map[string]config.AgentProfile{"a": {Mode: config.ModeBalanced, Listeners: []string{":9001"}}},
-			map[string]config.AgentProfile{"a": {Mode: config.ModeStrict, Listeners: []string{":9001"}}},
-			false,
-		},
-		{
-			"renamed agent with listener same count",
-			map[string]config.AgentProfile{"a": {Listeners: []string{":9001"}}},
-			map[string]config.AgentProfile{"b": {Listeners: []string{":9001"}}},
-			true,
-		},
-		{
-			"renamed agent without listener same count",
-			map[string]config.AgentProfile{"a": {Mode: config.ModeBalanced}},
-			map[string]config.AgentProfile{"b": {Mode: config.ModeStrict}},
-			false,
-		},
-		{
-			"renamed agent old has listener new does not",
-			map[string]config.AgentProfile{"a": {Listeners: []string{":9001"}}},
-			map[string]config.AgentProfile{"b": {}},
-			true,
-		},
-		{
-			"renamed agent old no listener new has listener",
-			map[string]config.AgentProfile{"a": {}},
-			map[string]config.AgentProfile{"b": {Listeners: []string{":9001"}}},
-			true,
-		},
-		{
-			"different count neither has listeners",
-			map[string]config.AgentProfile{"a": {Mode: config.ModeBalanced}},
-			map[string]config.AgentProfile{"a": {}, "b": {}},
-			false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			old := config.Defaults()
-			old.Internal = nil
-			old.Agents = tt.old
-
-			newCfg := config.Defaults()
-			newCfg.Internal = nil
-			newCfg.Agents = tt.new
-
-			got := agentListenersChanged(old, newCfg)
-			if got != tt.want {
-				t.Errorf("agentListenersChanged = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestPreserveAgentListeners(t *testing.T) {
-	t.Run("both configs have same agents", func(t *testing.T) {
-		old := config.Defaults()
-		old.Internal = nil
-		old.Agents = map[string]config.AgentProfile{
-			"a": {Listeners: []string{":9001"}, Mode: config.ModeBalanced},
-			"b": {Listeners: []string{":9002"}},
-		}
-
-		newCfg := config.Defaults()
-		newCfg.Internal = nil
-		newCfg.Agents = map[string]config.AgentProfile{
-			"a": {Listeners: []string{":9999"}, Mode: config.ModeStrict},
-			"b": {Listeners: []string{":8888"}},
-		}
-
-		preserveAgentListeners(old, newCfg)
-
-		if newCfg.Agents["a"].Listeners[0] != ":9001" {
-			t.Errorf("agent a listener = %q, want :9001", newCfg.Agents["a"].Listeners[0])
-		}
-		if newCfg.Agents["b"].Listeners[0] != ":9002" {
-			t.Errorf("agent b listener = %q, want :9002", newCfg.Agents["b"].Listeners[0])
-		}
-		if newCfg.Agents["a"].Mode != config.ModeStrict {
-			t.Errorf("agent a mode = %q, want %s", newCfg.Agents["a"].Mode, config.ModeStrict)
-		}
-	})
-
-	t.Run("listener-bearing agent removed re-added", func(t *testing.T) {
-		old := config.Defaults()
-		old.Internal = nil
-		old.Agents = map[string]config.AgentProfile{
-			"a": {Listeners: []string{":9001"}, Mode: config.ModeBalanced},
-		}
-
-		newCfg := config.Defaults()
-		newCfg.Internal = nil
-		newCfg.Agents = map[string]config.AgentProfile{}
-
-		preserveAgentListeners(old, newCfg)
-
-		// Removed listener-bearing agent must be re-added to prevent
-		// policy downgrade on the still-bound socket.
-		restored, ok := newCfg.Agents["a"]
-		if !ok {
-			t.Fatal("agent a should be re-added when removed with active listeners")
-		}
-		if restored.Listeners[0] != ":9001" {
-			t.Errorf("restored listener = %q, want :9001", restored.Listeners[0])
-		}
-		if restored.Mode != config.ModeBalanced {
-			t.Errorf("restored mode = %q, want %s", restored.Mode, config.ModeBalanced)
-		}
-	})
-
-	t.Run("non-listener agent removed stays removed", func(t *testing.T) {
-		old := config.Defaults()
-		old.Internal = nil
-		old.Agents = map[string]config.AgentProfile{
-			"a": {Mode: config.ModeBalanced}, // no listeners
-		}
-
-		newCfg := config.Defaults()
-		newCfg.Internal = nil
-		newCfg.Agents = map[string]config.AgentProfile{}
-
-		preserveAgentListeners(old, newCfg)
-
-		if _, ok := newCfg.Agents["a"]; ok {
-			t.Error("agent a without listeners should not be re-added")
-		}
-	})
-
-	t.Run("new agent listeners stripped", func(t *testing.T) {
-		old := config.Defaults()
-		old.Internal = nil
-		old.Agents = map[string]config.AgentProfile{}
-
-		newCfg := config.Defaults()
-		newCfg.Internal = nil
-		newCfg.Agents = map[string]config.AgentProfile{
-			"b": {Listeners: []string{":9002"}, Mode: config.ModeStrict},
-		}
-
-		preserveAgentListeners(old, newCfg)
-
-		// New agent's listeners should be stripped (can't bind without
-		// restart), but non-listener config should remain.
-		p := newCfg.Agents["b"]
-		if len(p.Listeners) > 0 {
-			t.Errorf("new agent listeners should be stripped, got %v", p.Listeners)
-		}
-		if p.Mode != config.ModeStrict {
-			t.Errorf("new agent mode = %q, want %s", p.Mode, config.ModeStrict)
-		}
-	})
-
-	t.Run("nil new agents map initialized", func(t *testing.T) {
-		old := config.Defaults()
-		old.Internal = nil
-		old.Agents = map[string]config.AgentProfile{
-			"a": {Listeners: []string{":9001"}},
-		}
-
-		newCfg := config.Defaults()
-		newCfg.Internal = nil
-		newCfg.Agents = nil
-
-		preserveAgentListeners(old, newCfg)
-
-		if newCfg.Agents == nil {
-			t.Fatal("newCfg.Agents should be initialized")
-		}
-		if _, ok := newCfg.Agents["a"]; !ok {
-			t.Error("agent a should be re-added")
-		}
-	})
 }
 
 func TestRunCmd_ReloadLicenseKeyChange(t *testing.T) {

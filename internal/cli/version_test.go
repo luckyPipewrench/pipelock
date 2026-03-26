@@ -6,6 +6,8 @@ package cli
 import (
 	"strings"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 )
 
 func TestVersionCmd(t *testing.T) {
@@ -38,7 +40,7 @@ func TestVersionCmd_ContainsVersion(t *testing.T) {
 	cmd.Run(cmd, nil)
 
 	output := buf.String()
-	if !strings.Contains(output, Version) {
-		t.Errorf("expected output to contain version %q, got: %s", Version, output)
+	if !strings.Contains(output, cliutil.Version) {
+		t.Errorf("expected output to contain version %q, got: %s", cliutil.Version, output)
 	}
 }

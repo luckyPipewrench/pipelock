@@ -23,10 +23,10 @@ builds:
       - arm64
     ldflags:
       - -s -w
-      - -X github.com/luckyPipewrench/pipelock/internal/cli.Version={{.Version}}
-      - -X github.com/luckyPipewrench/pipelock/internal/cli.BuildDate={{.Date}}
-      - -X github.com/luckyPipewrench/pipelock/internal/cli.GitCommit={{.ShortCommit}}
-      - -X github.com/luckyPipewrench/pipelock/internal/cli.GoVersion={{.Env.GOVERSION}}
+      - -X github.com/luckyPipewrench/pipelock/internal/cliutil.Version={{.Version}}
+      - -X github.com/luckyPipewrench/pipelock/internal/cliutil.BuildDate={{.Date}}
+      - -X github.com/luckyPipewrench/pipelock/internal/cliutil.GitCommit={{.ShortCommit}}
+      - -X github.com/luckyPipewrench/pipelock/internal/cliutil.GoVersion={{.Env.GOVERSION}}
       - -X github.com/luckyPipewrench/pipelock/internal/proxy.Version={{.Version}}
       - -X github.com/luckyPipewrench/pipelock/internal/license.PublicKeyHex={{.Env.LICENSE_PUBLIC_KEY}}
       - -X github.com/luckyPipewrench/pipelock/internal/rules.KeyringHex={{.Env.LICENSE_PUBLIC_KEY}}

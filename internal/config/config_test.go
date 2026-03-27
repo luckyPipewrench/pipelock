@@ -70,6 +70,14 @@ func TestDefaults(t *testing.T) {
 	}
 }
 
+func TestDefaults_QuarantineDir(t *testing.T) {
+	cfg := Defaults()
+	want := filepath.Join(os.TempDir(), "pipelock-quarantine")
+	if cfg.MCPToolPolicy.QuarantineDir != want {
+		t.Errorf("expected QuarantineDir=%q, got %q", want, cfg.MCPToolPolicy.QuarantineDir)
+	}
+}
+
 func TestDefaults_Validates(t *testing.T) {
 	cfg := Defaults()
 	if err := cfg.Validate(); err != nil {

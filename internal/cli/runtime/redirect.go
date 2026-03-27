@@ -54,9 +54,10 @@ func InternalRedirectCmd() *cobra.Command {
 		Hidden:        true,
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		Args:          cobra.ExactArgs(1),
+		Args:          cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			profile := args[0]
+			payload := args[1:]
 
 			// Read manifest from parent.
 			manifestJSON := os.Getenv("__PIPELOCK_REDIRECT_MANIFEST")
@@ -72,9 +73,9 @@ func InternalRedirectCmd() *cobra.Command {
 			// Execute based on profile.
 			switch profile {
 			case redirectProfileFetchProxy:
-				return executeFetchProxy(cmd, &manifest)
+				return executeFetchProxy(cmd, &manifest, payload)
 			case redirectProfileQuarantineWrite:
-				return executeQuarantineWrite(cmd, &manifest)
+				return executeQuarantineWrite(cmd, &manifest, payload)
 			case redirectProfileAppendOnlyLog:
 				return executeAppendOnlyLog(cmd, &manifest)
 			default:
@@ -87,14 +88,14 @@ func InternalRedirectCmd() *cobra.Command {
 
 // executeFetchProxy routes an HTTP request through pipelock's scanner.
 // NOT YET IMPLEMENTED -- fail closed until Stream 3B wires the calling path.
-func executeFetchProxy(cmd *cobra.Command, manifest *RedirectManifest) error {
+func executeFetchProxy(cmd *cobra.Command, manifest *RedirectManifest, _ []string) error {
 	return emitRedirectError(cmd, redirectProfileFetchProxy,
 		fmt.Sprintf("fetch-proxy redirect not yet implemented (command: %v, reason: %s)", manifest.Command, manifest.Reason))
 }
 
 // executeQuarantineWrite diverts a write to a quarantine directory.
 // NOT YET IMPLEMENTED -- fail closed until Stream 3B wires the calling path.
-func executeQuarantineWrite(cmd *cobra.Command, manifest *RedirectManifest) error {
+func executeQuarantineWrite(cmd *cobra.Command, manifest *RedirectManifest, _ []string) error {
 	return emitRedirectError(cmd, redirectProfileQuarantineWrite,
 		fmt.Sprintf("quarantine-write redirect not yet implemented (command: %v, reason: %s)", manifest.Command, manifest.Reason))
 }

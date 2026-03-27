@@ -146,6 +146,36 @@ func TestInternalRedirect_UnknownProfile(t *testing.T) {
 	}
 }
 
+func TestInternalRedirect_AcceptsPayloadArgs(t *testing.T) {
+	cmd := InternalRedirectCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	manifest := RedirectManifest{
+		Profile: redirectProfileFetchProxy,
+		Command: []string{"/proc/self/exe", "internal-redirect", redirectProfileFetchProxy},
+		Reason:  "test",
+	}
+	manifestJSON, _ := json.Marshal(manifest)
+	t.Setenv("__PIPELOCK_REDIRECT_MANIFEST", string(manifestJSON))
+
+	cmd.SetArgs([]string{redirectProfileFetchProxy, `{"command":"curl https://example.com"}`})
+	err := cmd.Execute()
+	// Should fail with "not yet implemented", NOT "accepts 1 arg(s), received 2"
+	if err != nil {
+		var result RedirectResult
+		if jsonErr := json.Unmarshal(buf.Bytes(), &result); jsonErr == nil {
+			if result.Status != redirectStatusError {
+				t.Errorf("unexpected result: %+v", result)
+			}
+			if strings.Contains(result.Error, "accepts") {
+				t.Error("Cobra arg validation rejected payload -- MinimumNArgs not applied")
+			}
+		}
+	}
+}
+
 func TestInternalRedirect_Attestation(t *testing.T) {
 	manifest := RedirectManifest{
 		Profile: redirectProfileAppendOnlyLog,

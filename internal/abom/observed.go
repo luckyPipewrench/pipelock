@@ -4,6 +4,7 @@
 package abom
 
 import (
+	"strings"
 	"sync"
 	"time"
 )
@@ -83,7 +84,14 @@ func (o *ObservedInventory) RecordToolCall(serverName string) {
 }
 
 // RecordDomain registers or updates a domain observation.
+// Domains are normalized at ingestion: lowercased and trailing dots removed.
+// Empty domains are silently ignored.
 func (o *ObservedInventory) RecordDomain(domain string, bytesIn, bytesOut int64) {
+	domain = strings.ToLower(strings.TrimSuffix(domain, "."))
+	if domain == "" {
+		return
+	}
+
 	o.mu.Lock()
 	defer o.mu.Unlock()
 

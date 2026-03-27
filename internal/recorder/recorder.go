@@ -11,6 +11,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -76,11 +77,17 @@ type Recorder struct {
 	sinceCheckpoint     uint64
 	firstSeqInSpan      uint64
 	closed              bool
+	nop                 bool
 }
 
 // New creates a Recorder. The redactFn is used for DLP redaction (can be nil to skip).
 // privKey is used for checkpoint signing (nil = unsigned checkpoints).
+// When cfg.Enabled is false, returns a no-op recorder that discards all calls.
 func New(cfg Config, redactFn RedactFunc, privKey ed25519.PrivateKey) (*Recorder, error) {
+	if !cfg.Enabled {
+		return &Recorder{nop: true}, nil
+	}
+
 	if cfg.CheckpointInterval <= 0 {
 		cfg.CheckpointInterval = defaultCheckpointInterval
 	}
@@ -120,6 +127,10 @@ func New(cfg Config, redactFn RedactFunc, privKey ed25519.PrivateKey) (*Recorder
 // SessionID, Type, Transport, Summary, and Detail. Sequence, Timestamp,
 // PrevHash, Hash, and Version are set by the recorder.
 func (r *Recorder) Record(e Entry) error {
+	if r.nop {
+		return nil
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -127,25 +138,34 @@ func (r *Recorder) Record(e Entry) error {
 		return fmt.Errorf("recorder is closed")
 	}
 
+	// Session ID validation: require non-empty and reject mismatches.
+	if e.SessionID == "" {
+		return errors.New("recorder: session_id required")
+	}
+	if r.sessionID == "" {
+		r.sessionID = e.SessionID
+	}
+	if e.SessionID != r.sessionID {
+		return fmt.Errorf("recorder: session_id mismatch (expected %q, got %q)", r.sessionID, e.SessionID)
+	}
+
 	e.Version = EntryVersion
 	e.Sequence = r.seq
 	e.Timestamp = time.Now().UTC()
 	e.PrevHash = r.prevHash
 
-	// Track session from first entry
-	if r.sessionID == "" && e.SessionID != "" {
-		r.sessionID = e.SessionID
-	}
-
-	// Raw escrow: encrypt detail before redaction
+	// Raw escrow: encrypt detail before redaction. Escrow must succeed
+	// when enabled -- silent drops would lose raw evidence.
 	if r.cfg.RawEscrow && r.escrowPub != nil {
 		rawJSON, err := json.Marshal(e.Detail)
-		if err == nil {
-			escrowPath, writeErr := r.writeEscrow(rawJSON)
-			if writeErr == nil {
-				e.RawRef = filepath.Base(escrowPath)
-			}
+		if err != nil {
+			return fmt.Errorf("marshal raw escrow: %w", err)
 		}
+		escrowPath, err := r.writeEscrow(rawJSON)
+		if err != nil {
+			return fmt.Errorf("write raw escrow: %w", err)
+		}
+		e.RawRef = filepath.Base(escrowPath)
 	}
 
 	// DLP redaction
@@ -186,6 +206,10 @@ func (r *Recorder) Record(e Entry) error {
 
 // Close flushes and closes the recorder, writing a final checkpoint.
 func (r *Recorder) Close() error {
+	if r.nop {
+		return nil
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -375,6 +399,9 @@ func (r *Recorder) rotateFile() error {
 // ExpireOldFiles removes evidence files older than RetentionDays.
 // Safe to call periodically. Returns the number of files removed.
 func (r *Recorder) ExpireOldFiles() (int, error) {
+	if r.nop {
+		return 0, nil
+	}
 	if r.cfg.RetentionDays <= 0 {
 		return 0, nil
 	}

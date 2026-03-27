@@ -6,6 +6,7 @@
 package abom
 
 import (
+	"crypto/rand"
 	"fmt"
 	"net/url"
 	"path/filepath"
@@ -55,7 +56,7 @@ func Generate(declared DeclaredInventory, observed *ObservedInventory) (*cdx.BOM
 	bom := cdx.NewBOM()
 	bom.SpecVersion = cdx.SpecVersion1_6
 	bom.Version = 1
-	bom.SerialNumber = fmt.Sprintf("urn:uuid:pipelock-abom-%d", time.Now().UnixNano())
+	bom.SerialNumber = newSerialNumber()
 
 	bom.Metadata = &cdx.Metadata{
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
@@ -75,19 +76,21 @@ func Generate(declared DeclaredInventory, observed *ObservedInventory) (*cdx.BOM
 	var components []cdx.Component
 	comp := computeCompleteness(declared, observed)
 
+	// Take one immutable snapshot of observed inventory to avoid data races
+	// and inconsistent state across multiple lock windows.
+	var snap *observedSnapshot
+	if observed != nil {
+		snap = observed.deepSnapshot()
+	}
+
 	// Add MCP server components
 	declaredNames := make(map[string]bool, len(declared.MCPServers))
 	for _, srv := range declared.MCPServers {
 		declaredNames[srv.Name] = true
 		c := mcpServerComponent(srv)
 
-		// Check observed status
-		if observed != nil {
-			observed.mu.Lock()
-			obs, found := observed.MCPServers[srv.Name]
-			observed.mu.Unlock()
-
-			if found {
+		if snap != nil {
+			if obs, found := snap.MCPServers[srv.Name]; found {
 				addObservedProperties(&c, obs)
 			} else {
 				appendProperty(&c, propertyPrefix+"status", StatusDormant)
@@ -100,9 +103,8 @@ func Generate(declared DeclaredInventory, observed *ObservedInventory) (*cdx.BOM
 	}
 
 	// Add observed-but-undeclared servers
-	if observed != nil {
-		observed.mu.Lock()
-		for name, obs := range observed.MCPServers {
+	if snap != nil {
+		for name, obs := range snap.MCPServers {
 			if !declaredNames[name] {
 				c := cdx.Component{
 					Type:   cdx.ComponentTypeApplication,
@@ -114,13 +116,11 @@ func Generate(declared DeclaredInventory, observed *ObservedInventory) (*cdx.BOM
 				components = append(components, c)
 			}
 		}
-		observed.mu.Unlock()
 	}
 
 	// Add observed domains as data components
-	if observed != nil {
-		observed.mu.Lock()
-		for _, dom := range observed.Domains {
+	if snap != nil {
+		for _, dom := range snap.Domains {
 			c := cdx.Component{
 				Type:   cdx.ComponentTypeData,
 				Name:   dom.Domain,
@@ -135,7 +135,6 @@ func Generate(declared DeclaredInventory, observed *ObservedInventory) (*cdx.BOM
 			}
 			components = append(components, c)
 		}
-		observed.mu.Unlock()
 	}
 
 	// Add pipelock config as a data component
@@ -248,4 +247,44 @@ func computeCompleteness(declared DeclaredInventory, observed *ObservedInventory
 	}
 
 	return comp
+}
+
+// newSerialNumber generates a CycloneDX-compliant serial number using a
+// random RFC 4122 v4 UUID in URN format.
+func newSerialNumber() string {
+	var uuid [16]byte
+	_, _ = rand.Read(uuid[:])
+	uuid[6] = (uuid[6] & 0x0f) | 0x40 // version 4
+	uuid[8] = (uuid[8] & 0x3f) | 0x80 // variant 1
+	return fmt.Sprintf("urn:uuid:%08x-%04x-%04x-%04x-%012x",
+		uuid[0:4], uuid[4:6], uuid[6:8], uuid[8:10], uuid[10:16])
+}
+
+// observedSnapshot is an immutable deep copy of ObservedInventory.
+type observedSnapshot struct {
+	MCPServers map[string]*ObservedMCPServer
+	Domains    map[string]*ObservedDomain
+}
+
+// deepSnapshot takes one lock, deep-copies all observed data, and releases.
+// The returned snapshot is safe to read without synchronization.
+func (o *ObservedInventory) deepSnapshot() *observedSnapshot {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	snap := &observedSnapshot{
+		MCPServers: make(map[string]*ObservedMCPServer, len(o.MCPServers)),
+		Domains:    make(map[string]*ObservedDomain, len(o.Domains)),
+	}
+	for k, v := range o.MCPServers {
+		cp := *v
+		cp.Tools = make([]string, len(v.Tools))
+		copy(cp.Tools, v.Tools)
+		snap.MCPServers[k] = &cp
+	}
+	for k, v := range o.Domains {
+		cp := *v
+		snap.Domains[k] = &cp
+	}
+	return snap
 }

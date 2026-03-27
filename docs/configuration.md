@@ -1499,6 +1499,7 @@ mcp_tool_policy:
   redirect_profiles:
     fetch_proxy:
       exec: ["/proc/self/exe", "internal-redirect", "fetch-proxy"]
+      preserve_argv: true
       reason: "Route outbound fetches through audited proxy"
   rules:
     - name: shell-egress

@@ -689,6 +689,7 @@ func RunHTTPListenerProxy(
 	store session.Store,
 	adaptiveCfgFn AdaptiveConfigFunc,
 	m *metrics.Metrics,
+	redirectRT *RedirectRuntime,
 ) error {
 	safeLogW := &syncWriter{w: logW}
 
@@ -710,6 +711,7 @@ func RunHTTPListenerProxy(
 		InputCfg: inputCfg, PolicyCfg: policyCfg,
 		KillSwitch: ks, ChainMatcher: chainMatcher,
 		AuditLogger: auditLogger, CEE: cee, Metrics: m,
+		RedirectRT: redirectRT,
 	}
 
 	// Shared HTTP client for upstream requests. Redirect-following is disabled

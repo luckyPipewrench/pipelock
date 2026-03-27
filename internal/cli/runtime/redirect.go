@@ -158,19 +158,29 @@ func executeFetchProxy(cmd *cobra.Command, manifest *RedirectManifest, payload [
 }
 
 // extractURL finds the first http:// or https:// URL in text.
+// When both schemes are present, whichever appears first wins.
 func extractURL(text string) string {
+	bestIdx := -1
+	bestEnd := 0
 	for _, prefix := range []string{"https://", "http://"} {
 		idx := strings.Index(text, prefix)
 		if idx < 0 {
 			continue
 		}
+		if bestIdx >= 0 && idx >= bestIdx {
+			continue // already found an earlier URL
+		}
 		end := idx + len(prefix)
 		for end < len(text) && text[end] != ' ' && text[end] != '"' && text[end] != '\'' && text[end] != '}' {
 			end++
 		}
-		return text[idx:end]
+		bestIdx = idx
+		bestEnd = end
 	}
-	return ""
+	if bestIdx < 0 {
+		return ""
+	}
+	return text[bestIdx:bestEnd]
 }
 
 // maxQuarantineFiles is the safety limit for the quarantine directory.

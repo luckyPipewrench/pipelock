@@ -47,6 +47,7 @@ func RunWSProxy(
 	store session.Store,
 	adaptiveCfg *config.AdaptiveEnforcement,
 	m *metrics.Metrics,
+	redirectRT *RedirectRuntime,
 ) error {
 	// Separate parent and inner context. The parent context comes from
 	// signal handling (SIGINT/SIGTERM). The inner context is cancelled
@@ -107,6 +108,7 @@ func RunWSProxy(
 		KillSwitch: ks, ChainMatcher: chainMatcher,
 		AuditLogger: auditLogger, CEE: cee,
 		Rec: rec, AdaptiveCfg: adaptiveCfg, Metrics: m,
+		RedirectRT: redirectRT,
 	}
 
 	clientReader := transport.NewStdioReader(clientIn)

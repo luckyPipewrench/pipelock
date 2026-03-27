@@ -27,6 +27,8 @@ const (
 	testDomainBurst   = "domain_burst"
 	testLevelNormal   = "normal"
 	testLevelElevated = "elevated"
+	testLevelHigh     = "high"
+	testLevelCritical = "critical"
 	testClient        = "test-client"
 )
 
@@ -743,7 +745,7 @@ func TestSessionManager_IPDomainBurst_DifferentIPs(t *testing.T) {
 func TestEscalationLabel_HighLevel(t *testing.T) {
 	// Levels beyond the defined range clamp to the last label ("critical").
 	label := session.EscalationLabel(5)
-	if label != "critical" {
+	if label != testLevelCritical {
 		t.Errorf("expected critical, got %s", label)
 	}
 
@@ -754,7 +756,7 @@ func TestEscalationLabel_HighLevel(t *testing.T) {
 	if got := session.EscalationLabel(1); got != testLevelElevated {
 		t.Errorf("expected elevated, got %s", got)
 	}
-	if got := session.EscalationLabel(2); got != "high" {
+	if got := session.EscalationLabel(2); got != testLevelHigh {
 		t.Errorf("expected high, got %s", got)
 	}
 }
@@ -1729,7 +1731,7 @@ func TestSessionState_OnEntryRecovery_EmitsMetrics(t *testing.T) {
 	body, _ := io.ReadAll(w.Body)
 	text := string(body)
 
-	want := `pipelock_session_auto_deescalation_total{from="critical",to="high"} 1`
+	want := `pipelock_session_auto_deescalation_total{from="` + testLevelCritical + `",to="` + testLevelHigh + `"} 1`
 	if !strings.Contains(text, want) {
 		t.Errorf("expected %q in metrics output", want)
 	}
@@ -1819,5 +1821,211 @@ func TestSessionManager_RecomputeBlockAllMultipleSessions(t *testing.T) {
 	}
 	if !sess3.BlockAll() {
 		t.Error("level 3 should still be block_all")
+	}
+}
+
+// TestSessionManager_SweepMetrics_MultiLevel exercises sweepDeescalation with
+// sessions at multiple escalation levels to cover the from > 0 and to > 0
+// gauge-update guards plus the deescalation counter emission path.
+func TestSessionManager_SweepMetrics_MultiLevel(t *testing.T) {
+	cfg := testSessionConfig()
+	m := metrics.New()
+	blockAllTrue := true
+	adaptiveCfg := &config.AdaptiveEnforcement{
+		Enabled:             true,
+		EscalationThreshold: 5.0,
+		Levels: config.EscalationLevels{
+			Critical: config.EscalationActions{BlockAll: &blockAllTrue},
+		},
+	}
+	sm := NewSessionManager(cfg, adaptiveCfg, m)
+	defer sm.Close()
+
+	// Session 1: level 3 (critical) -- will recover to 2 (high).
+	s1 := sm.GetOrCreate("client-1")
+	s1.mu.Lock()
+	s1.escalationLevel = 3
+	s1.lastEscalation = time.Now().Add(-6 * time.Minute)
+	s1.currentThreshold = 40.0
+	s1.threatScore = 20.0
+	s1.atBlockAll = true
+	s1.mu.Unlock()
+
+	// Session 2: level 1 (elevated) -- will recover to 0 (normal).
+	s2 := sm.GetOrCreate("client-2")
+	s2.mu.Lock()
+	s2.escalationLevel = 1
+	s2.lastEscalation = time.Now().Add(-6 * time.Minute)
+	s2.currentThreshold = 10.0
+	s2.threatScore = 5.0
+	s2.mu.Unlock()
+
+	sm.sweepDeescalation()
+
+	// Session 1: level 2 (high), gauge updated.
+	if s1.EscalationLevel() != 2 {
+		t.Errorf("s1: expected level 2, got %d", s1.EscalationLevel())
+	}
+
+	// Session 2: level 0 (normal), gauge should NOT increment "normal" (level > 0 guard).
+	if s2.EscalationLevel() != 0 {
+		t.Errorf("s2: expected level 0, got %d", s2.EscalationLevel())
+	}
+
+	// Verify metrics.
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	m.PrometheusHandler().ServeHTTP(w, req)
+	body, _ := io.ReadAll(w.Body)
+	text := string(body)
+
+	// Should have critical->high deescalation counter.
+	wantCritToHigh := `pipelock_session_auto_deescalation_total{from="` + testLevelCritical + `",to="` + testLevelHigh + `"} 1`
+	if !strings.Contains(text, wantCritToHigh) {
+		t.Errorf("missing critical->high deescalation counter; want %q in output", wantCritToHigh)
+	}
+	// Should have elevated->normal deescalation counter.
+	wantElevToNorm := `pipelock_session_auto_deescalation_total{from="` + testLevelElevated + `",to="` + testLevelNormal + `"} 1`
+	if !strings.Contains(text, wantElevToNorm) {
+		t.Errorf("missing elevated->normal deescalation counter; want %q in output", wantElevToNorm)
+	}
+}
+
+// TestSessionState_TryAutoRecover_ConfigDerivedCheck verifies the recovery
+// pattern used by proxy.go and websocket.go: build blockAllCheck from the
+// live adaptive config via decide.UpgradeAction, then call TryAutoRecover.
+func TestSessionState_TryAutoRecover_ConfigDerivedCheck(t *testing.T) {
+	cfg := testSessionConfig()
+	sm := NewSessionManager(cfg, nil, nil)
+	defer sm.Close()
+
+	sess := sm.GetOrCreate(testClient)
+
+	sess.mu.Lock()
+	sess.escalationLevel = 3
+	sess.lastEscalation = time.Now().Add(-6 * time.Minute)
+	sess.currentThreshold = 40.0
+	sess.threatScore = 20.0
+	sess.atBlockAll = true
+	sess.mu.Unlock()
+
+	// Build blockAllCheck the same way proxy.go and websocket.go do.
+	blockAllTrue := true
+	adaptiveCfg := &config.AdaptiveEnforcement{
+		Enabled: true,
+		Levels: config.EscalationLevels{
+			Critical: config.EscalationActions{BlockAll: &blockAllTrue},
+		},
+	}
+	blockAllCheck := func(level int) bool {
+		return decide.UpgradeAction("", level, adaptiveCfg) == config.ActionBlock
+	}
+
+	changed, from, to := sess.TryAutoRecover(blockAllCheck)
+	if !changed {
+		t.Fatal("expected recovery")
+	}
+	if from != 3 || to != 2 {
+		t.Errorf("expected 3->2, got %d->%d", from, to)
+	}
+	if sess.BlockAll() {
+		t.Error("level 2 should not have block_all in this config")
+	}
+}
+
+// TestSessionManager_SweepNilMetrics verifies that sweepDeescalation with
+// nil metrics does not panic and still de-escalates sessions correctly.
+// This covers the `changed && sm.metrics != nil` guard in sweepDeescalation.
+func TestSessionManager_SweepNilMetrics(t *testing.T) {
+	cfg := testSessionConfig()
+	blockAllTrue := true
+	adaptiveCfg := &config.AdaptiveEnforcement{
+		Enabled:             true,
+		EscalationThreshold: 5.0,
+		Levels: config.EscalationLevels{
+			Critical: config.EscalationActions{BlockAll: &blockAllTrue},
+		},
+	}
+	// Pass nil for metrics -- the sweep should still de-escalate without panicking.
+	sm := NewSessionManager(cfg, adaptiveCfg, nil)
+	defer sm.Close()
+
+	sess := sm.GetOrCreate("nil-metrics-client")
+	sess.mu.Lock()
+	sess.escalationLevel = 3
+	sess.lastEscalation = time.Now().Add(-6 * time.Minute)
+	sess.currentThreshold = 40.0
+	sess.threatScore = 20.0
+	sess.atBlockAll = true
+	sess.mu.Unlock()
+
+	// Sweep with nil metrics must not panic and must still de-escalate.
+	sm.sweepDeescalation()
+
+	if sess.EscalationLevel() != 2 {
+		t.Errorf("expected level 2 after sweep with nil metrics, got %d", sess.EscalationLevel())
+	}
+	if sess.BlockAll() {
+		t.Error("expected atBlockAll=false after de-escalation from critical to high")
+	}
+}
+
+// TestSessionManager_SweepMetrics_ToZeroSkipsGaugeIncrement verifies that
+// when a session de-escalates to level 0, the sweep emits the deescalation
+// counter but does NOT call SetAdaptiveSessionLevel for the "normal" label
+// (the to > 0 guard prevents incrementing a gauge for un-escalated sessions).
+func TestSessionManager_SweepMetrics_ToZeroSkipsGaugeIncrement(t *testing.T) {
+	cfg := testSessionConfig()
+	m := metrics.New()
+	blockAllTrue := true
+	adaptiveCfg := &config.AdaptiveEnforcement{
+		Enabled:             true,
+		EscalationThreshold: 5.0,
+		Levels: config.EscalationLevels{
+			Critical: config.EscalationActions{BlockAll: &blockAllTrue},
+		},
+	}
+	sm := NewSessionManager(cfg, adaptiveCfg, m)
+	defer sm.Close()
+
+	// Single session at level 1 (elevated), will recover to level 0 (normal).
+	sess := sm.GetOrCreate("to-zero-client")
+	sess.mu.Lock()
+	sess.escalationLevel = 1
+	sess.lastEscalation = time.Now().Add(-6 * time.Minute)
+	sess.currentThreshold = 10.0
+	sess.threatScore = 5.0
+	sess.mu.Unlock()
+
+	sm.sweepDeescalation()
+
+	if sess.EscalationLevel() != 0 {
+		t.Errorf("expected level 0, got %d", sess.EscalationLevel())
+	}
+
+	// Deescalation counter should exist for elevated->normal.
+	wantCounter := `pipelock_session_auto_deescalation_total{from="` + testLevelElevated + `",to="` + testLevelNormal + `"} 1`
+	if !scrapeMetric(t, m, wantCounter) {
+		t.Errorf("expected deescalation counter %q", wantCounter)
+	}
+
+	// The "normal" level gauge should NOT have been incremented (to > 0 guard).
+	// Gather raw metrics and check that "normal" label does not appear in
+	// pipelock_adaptive_sessions_current.
+	fams, err := m.Registry().Gather()
+	if err != nil {
+		t.Fatalf("gather metrics: %v", err)
+	}
+	for _, fam := range fams {
+		if fam.GetName() != "pipelock_adaptive_sessions_current" {
+			continue
+		}
+		for _, metric := range fam.GetMetric() {
+			for _, lbl := range metric.GetLabel() {
+				if lbl.GetName() == "level" && lbl.GetValue() == testLevelNormal && metric.GetGauge().GetValue() > 0 {
+					t.Error("should not increment gauge for normal level (to > 0 guard)")
+				}
+			}
+		}
 	}
 }

@@ -37,6 +37,28 @@ var interpreters = map[string]bool{
 	"npx": true, "bunx": true, "uvx": true, "pipx": true,
 }
 
+// interpreterPrefixes lists prefixes for matching versioned interpreters
+// like "python3.11", "node20", etc. Checked as fallback when exact match
+// against the interpreters map fails.
+var interpreterPrefixes = []string{
+	"python", "python3", "node", "ruby", "perl", "bash", "sh", "bun", "deno",
+}
+
+// isInterpreterName checks whether baseName is a known interpreter. It first
+// tries an exact match in the interpreters map (fast path), then falls back to
+// prefix matching for versioned names like "python3.11" or "node20".
+func isInterpreterName(baseName string) bool {
+	if interpreters[baseName] {
+		return true
+	}
+	for _, prefix := range interpreterPrefixes {
+		if strings.HasPrefix(baseName, prefix) && len(baseName) > len(prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // Config controls MCP binary integrity verification.
 type Config struct {
 	Enabled      bool              `yaml:"enabled"`
@@ -130,12 +152,37 @@ func Verify(command []string, cfg *Config, agentWorkDir string) (*VerifyResult, 
 	}
 	result.ActualHash = actualHash
 
-	// Check if the binary is a known interpreter.
+	// Check if the binary is a known interpreter (exact or versioned prefix).
 	baseName := filepath.Base(resolved)
-	result.IsInterpreter = interpreters[baseName]
+	result.IsInterpreter = isInterpreterName(baseName)
 
-	// If interpreter, hash the script argument too.
-	if result.IsInterpreter && len(command) > 1 {
+	// Handle /usr/bin/env wrapper: if command[0] resolves to "env", the real
+	// interpreter is command[1] and the script is command[2].
+	if !result.IsInterpreter && baseName == "env" && len(command) > 1 {
+		envInterp := command[1]
+		envInterpResolved, envErr := resolveBinary(envInterp)
+		if envErr != nil {
+			return nil, fmt.Errorf("resolving env interpreter %q: %w", envInterp, envErr)
+		}
+		envInterpHash, envHashErr := hashFileByFD(envInterpResolved)
+		if envHashErr != nil {
+			return nil, fmt.Errorf("hashing env interpreter %q: %w", envInterpResolved, envHashErr)
+		}
+		result.IsInterpreter = true
+		result.ResolvedPath = envInterpResolved
+		result.ActualHash = envInterpHash
+
+		// Hash the script argument (command[2]) if present.
+		if len(command) > 2 {
+			scriptPath, scriptHash, shebangErr := hashScript(command[2])
+			if shebangErr != nil {
+				return nil, fmt.Errorf("hashing script %q: %w", command[2], shebangErr)
+			}
+			result.ScriptPath = scriptPath
+			result.ScriptHash = scriptHash
+		}
+	} else if result.IsInterpreter && len(command) > 1 {
+		// Standard interpreter invocation: hash the script argument.
 		scriptPath, scriptHash, shebangErr := hashScript(command[1])
 		if shebangErr != nil {
 			return nil, fmt.Errorf("hashing script %q: %w", command[1], shebangErr)

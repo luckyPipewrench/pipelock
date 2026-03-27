@@ -1156,6 +1156,238 @@ func TestResolveAndHash_Symlink(t *testing.T) {
 	}
 }
 
+// --- Versioned interpreter and /usr/bin/env wrapper tests ---
+
+func TestIsInterpreterName_ExactMatch(t *testing.T) {
+	exact := []string{"python", "python3", "node", "bun", "deno", "ruby", "perl", "bash", "sh"}
+	for _, name := range exact {
+		if !isInterpreterName(name) {
+			t.Errorf("isInterpreterName(%q) = false, want true", name)
+		}
+	}
+}
+
+func TestIsInterpreterName_VersionedPrefixMatch(t *testing.T) {
+	versioned := []string{"python3.11", "python3.12", "node20", "ruby3.2", "perl5.38"}
+	for _, name := range versioned {
+		if !isInterpreterName(name) {
+			t.Errorf("isInterpreterName(%q) = false, want true (versioned)", name)
+		}
+	}
+}
+
+func TestIsInterpreterName_NonInterpreter(t *testing.T) {
+	nonInterp := []string{"gcc", "ls", "cat", "env", "grep", "make"}
+	for _, name := range nonInterp {
+		if isInterpreterName(name) {
+			t.Errorf("isInterpreterName(%q) = true, want false", name)
+		}
+	}
+}
+
+func TestVerify_VersionedInterpreter(t *testing.T) {
+	if runtime.GOOS == osWindows {
+		t.Skip("requires Unix")
+	}
+
+	dir := t.TempDir()
+
+	// Create a fake "python3.11" binary in the temp dir.
+	fakePython := filepath.Join(dir, "python3.11")
+	pythonContent := "fake-python3.11-binary"
+	if err := os.WriteFile(fakePython, []byte(pythonContent), 0o600); err != nil {
+		t.Fatalf("writing fake python: %v", err)
+	}
+
+	script := filepath.Join(dir, "script.py")
+	scriptContent := "print('hello')\n"
+	if err := os.WriteFile(script, []byte(scriptContent), 0o600); err != nil {
+		t.Fatalf("writing script: %v", err)
+	}
+
+	pythonHash := hashOfString(t, pythonContent)
+	scriptHash := hashOfString(t, scriptContent)
+
+	cfg := &Config{
+		Enabled: true,
+		Action:  testAction,
+		Manifests: map[string]string{
+			fakePython: pythonHash,
+			script:     scriptHash,
+		},
+	}
+
+	result, err := Verify([]string{fakePython, script}, cfg, "")
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+
+	if !result.IsInterpreter {
+		t.Error("expected IsInterpreter=true for python3.11")
+	}
+	if result.ScriptPath != script {
+		t.Errorf("ScriptPath = %q, want %q", result.ScriptPath, script)
+	}
+	if !result.Verified {
+		t.Errorf("expected Verified=true, got reason: %s", result.Reason)
+	}
+}
+
+func TestVerify_EnvWrapper_Python(t *testing.T) {
+	if runtime.GOOS == osWindows {
+		t.Skip("requires Unix")
+	}
+
+	// Find /usr/bin/env on the system.
+	envPath, err := exec.LookPath("env")
+	if err != nil {
+		t.Skip("env not in PATH")
+	}
+
+	// Find a real interpreter (sh is most reliable).
+	shPath, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("sh not in PATH")
+	}
+	resolvedSh, err := filepath.EvalSymlinks(shPath)
+	if err != nil {
+		t.Fatalf("resolving sh: %v", err)
+	}
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "test.sh")
+	scriptContent := "#!/bin/sh\necho hello\n"
+	if err := os.WriteFile(script, []byte(scriptContent), 0o600); err != nil {
+		t.Fatalf("writing script: %v", err)
+	}
+
+	shHash, err := hashFileByFD(resolvedSh)
+	if err != nil {
+		t.Fatalf("hashing sh: %v", err)
+	}
+	scriptHash := hashOfString(t, scriptContent)
+
+	cfg := &Config{
+		Enabled: true,
+		Action:  testAction,
+		Manifests: map[string]string{
+			resolvedSh: shHash,
+			script:     scriptHash,
+		},
+	}
+
+	// Invoke as: /usr/bin/env sh test.sh
+	result, err := Verify([]string{envPath, "sh", script}, cfg, "")
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+
+	if !result.IsInterpreter {
+		t.Error("expected IsInterpreter=true for env-wrapped sh")
+	}
+	if result.ResolvedPath != resolvedSh {
+		t.Errorf("ResolvedPath = %q, want %q (should resolve to actual interpreter)", result.ResolvedPath, resolvedSh)
+	}
+	if result.ScriptPath != script {
+		t.Errorf("ScriptPath = %q, want %q", result.ScriptPath, script)
+	}
+	if !result.Verified {
+		t.Errorf("expected Verified=true, got reason: %s", result.Reason)
+	}
+}
+
+func TestVerify_EnvWrapper_NoScript(t *testing.T) {
+	if runtime.GOOS == osWindows {
+		t.Skip("requires Unix")
+	}
+
+	envPath, err := exec.LookPath("env")
+	if err != nil {
+		t.Skip("env not in PATH")
+	}
+
+	shPath, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("sh not in PATH")
+	}
+	resolvedSh, err := filepath.EvalSymlinks(shPath)
+	if err != nil {
+		t.Fatalf("resolving sh: %v", err)
+	}
+
+	shHash, err := hashFileByFD(resolvedSh)
+	if err != nil {
+		t.Fatalf("hashing sh: %v", err)
+	}
+
+	cfg := &Config{
+		Enabled:   true,
+		Action:    testAction,
+		Manifests: map[string]string{resolvedSh: shHash},
+	}
+
+	// Invoke as: /usr/bin/env sh (no script argument)
+	result, err := Verify([]string{envPath, "sh"}, cfg, "")
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+
+	if !result.IsInterpreter {
+		t.Error("expected IsInterpreter=true for env-wrapped sh")
+	}
+	if result.ScriptPath != "" {
+		t.Errorf("ScriptPath should be empty, got %q", result.ScriptPath)
+	}
+	if !result.Verified {
+		t.Errorf("expected Verified=true, got reason: %s", result.Reason)
+	}
+}
+
+func TestVerify_Python312_VersionedInterpreter(t *testing.T) {
+	if runtime.GOOS == osWindows {
+		t.Skip("requires Unix")
+	}
+
+	dir := t.TempDir()
+
+	// Create a fake "python3.12" binary.
+	fakePython := filepath.Join(dir, "python3.12")
+	pythonContent := "fake-python3.12-binary"
+	if err := os.WriteFile(fakePython, []byte(pythonContent), 0o600); err != nil {
+		t.Fatalf("writing fake python: %v", err)
+	}
+
+	script := filepath.Join(dir, "app.py")
+	scriptContent := "import sys\n"
+	if err := os.WriteFile(script, []byte(scriptContent), 0o600); err != nil {
+		t.Fatalf("writing script: %v", err)
+	}
+
+	pythonHash := hashOfString(t, pythonContent)
+	scriptHash := hashOfString(t, scriptContent)
+
+	cfg := &Config{
+		Enabled: true,
+		Action:  testAction,
+		Manifests: map[string]string{
+			fakePython: pythonHash,
+			script:     scriptHash,
+		},
+	}
+
+	result, err := Verify([]string{fakePython, script}, cfg, "")
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+
+	if !result.IsInterpreter {
+		t.Error("expected IsInterpreter=true for python3.12")
+	}
+	if result.ScriptHash != scriptHash {
+		t.Errorf("ScriptHash = %q, want %q", result.ScriptHash, scriptHash)
+	}
+}
+
 // --- helpers ---
 
 func contains(s, substr string) bool {

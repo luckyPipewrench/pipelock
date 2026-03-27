@@ -5,6 +5,7 @@ package proxy
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -487,6 +488,54 @@ func TestDoW_ClosedTracker(t *testing.T) {
 	result = tracker.RecordEndpoint(domainExample, pathAPI, 200)
 	if result.Allowed {
 		t.Error("closed tracker should block endpoint recording")
+	}
+}
+
+func TestDoW_ClosedTracker_AcquireConcurrent(t *testing.T) {
+	tracker := NewDoWTracker(defaultDoWConfig())
+
+	// Acquire a slot before closing.
+	result := tracker.AcquireConcurrent()
+	if !result.Allowed {
+		t.Fatalf("pre-close acquire should succeed: %s", result.Reason)
+	}
+
+	tracker.Close()
+
+	// After close, AcquireConcurrent must return not-allowed.
+	result = tracker.AcquireConcurrent()
+	if result.Allowed {
+		t.Error("closed tracker should block AcquireConcurrent")
+	}
+	if result.BudgetType != BudgetConcurrent {
+		t.Errorf("BudgetType = %q, want %q", result.BudgetType, BudgetConcurrent)
+	}
+	if !strings.Contains(result.Reason, "tracker closed") {
+		t.Errorf("Reason = %q, want substring %q", result.Reason, "tracker closed")
+	}
+}
+
+func TestDoW_ClosedTracker_ReleaseConcurrent(t *testing.T) {
+	tracker := NewDoWTracker(defaultDoWConfig())
+
+	// Acquire a slot, then close, then release. Should be a no-op.
+	result := tracker.AcquireConcurrent()
+	if !result.Allowed {
+		t.Fatalf("pre-close acquire should succeed: %s", result.Reason)
+	}
+
+	if tracker.Inflight() != 1 {
+		t.Fatalf("inflight = %d, want 1", tracker.Inflight())
+	}
+
+	tracker.Close()
+
+	// Release after close should be a no-op (not decrement below zero).
+	tracker.ReleaseConcurrent()
+
+	// Inflight stays at 1 because release was a no-op.
+	if tracker.Inflight() != 1 {
+		t.Errorf("inflight = %d, want 1 (release should be no-op after close)", tracker.Inflight())
 	}
 }
 

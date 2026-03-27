@@ -202,6 +202,15 @@ func (t *DoWTracker) RecordEndpoint(domain, path string, status int) DoWResult {
 // a DoWResult indicating success. Call ReleaseConcurrent when the call
 // completes.
 func (t *DoWTracker) AcquireConcurrent() DoWResult {
+	// Check closed flag under mutex (fail-closed after shutdown).
+	t.mu.Lock()
+	closed := t.closed
+	t.mu.Unlock()
+
+	if closed {
+		return DoWResult{Allowed: false, Reason: "tracker closed", BudgetType: BudgetConcurrent}
+	}
+
 	cfgLimit := t.cfg.MaxConcurrentToolCalls
 	if cfgLimit <= 0 {
 		cfgLimit = 10 // default limit
@@ -220,8 +229,16 @@ func (t *DoWTracker) AcquireConcurrent() DoWResult {
 	return DoWResult{Allowed: true}
 }
 
-// ReleaseConcurrent decrements the in-flight counter.
+// ReleaseConcurrent decrements the in-flight counter. No-op if closed
+// (prevents decrementing below zero after shutdown).
 func (t *DoWTracker) ReleaseConcurrent() {
+	t.mu.Lock()
+	closed := t.closed
+	t.mu.Unlock()
+
+	if closed {
+		return
+	}
 	t.inflight.Add(-1)
 }
 

@@ -159,7 +159,11 @@ func (h *SessionAPIHandler) HandleReset(w http.ResponseWriter, r *http.Request) 
 	if !h.authenticate(w, r) {
 		return
 	}
+
+	clientIP, _ := requestMeta(r)
+
 	if !h.checkResetRateLimit() {
+		h.logSessionAdmin("reset_rate_limited", clientIP, "", "rate limit exceeded", http.StatusTooManyRequests)
 		w.Header().Set("Retry-After", "60")
 		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 		return
@@ -169,10 +173,9 @@ func (h *SessionAPIHandler) HandleReset(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	clientIP, _ := requestMeta(r)
-
 	key, ok := extractSessionKey(r)
 	if !ok {
+		h.logSessionAdmin("reset_bad_key", clientIP, "", "invalid path", http.StatusBadRequest)
 		http.Error(w, "missing or invalid session key in URL path", http.StatusBadRequest)
 		return
 	}
@@ -180,6 +183,7 @@ func (h *SessionAPIHandler) HandleReset(w http.ResponseWriter, r *http.Request) 
 	// Reject invocation keys — use stored kind from session, not re-parsed.
 	sess := sm.lookupSession(key)
 	if sess != nil && !sess.IsResettable() {
+		h.logSessionAdmin("reset_rejected", clientIP, key, "invocation key", http.StatusBadRequest)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(struct {

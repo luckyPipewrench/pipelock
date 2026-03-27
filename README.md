@@ -299,6 +299,22 @@ Forward audit events to external systems (SIEM, webhook receivers, syslog). Even
 
 See [docs/guides/siem-integration.md](docs/guides/siem-integration.md) for log schema, forwarding patterns, and example SIEM queries.
 
+### Security Assessment
+
+`pipelock assess` runs a four-stage security assessment against your deployment: attack simulation (20 scenarios across DLP, injection, tool poisoning, and URL evasion), config audit (12 categories scored 0-100), deployment verification (live probe of scanning and containment), and MCP server discovery (protection status across Claude Code, Cursor, VS Code, and other clients).
+
+Critical exposures like unprotected MCP servers cap the grade regardless of numeric score.
+
+```bash
+pipelock assess init --config pipelock.yaml
+pipelock assess run assessment-a1b2c3d4/
+pipelock assess finalize assessment-a1b2c3d4/
+```
+
+The free summary shows your grade, section scores, and top findings. Licensed users get the full report with server-specific findings, remediation commands, and Ed25519-signed evidence.
+
+![Pipelock Security Assessment showing grade C (89/100), capped due to unprotected MCP servers](docs/assets/assess-example.png)
+
 ### More Features
 
 | Feature | What It Does |

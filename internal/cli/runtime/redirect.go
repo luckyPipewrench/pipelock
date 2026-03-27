@@ -4,12 +4,17 @@
 package runtime
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/url"
 	"os"
 	"runtime/debug"
+	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -86,11 +91,85 @@ func InternalRedirectCmd() *cobra.Command {
 	return cmd
 }
 
-// executeFetchProxy routes an HTTP request through pipelock's scanner.
-// NOT YET IMPLEMENTED -- fail closed until Stream 3B wires the calling path.
-func executeFetchProxy(cmd *cobra.Command, manifest *RedirectManifest, _ []string) error {
-	return emitRedirectError(cmd, redirectProfileFetchProxy,
-		fmt.Sprintf("fetch-proxy redirect not yet implemented (command: %v, reason: %s)", manifest.Command, manifest.Reason))
+// fetchProxyTimeout is the HTTP request timeout for the fetch-proxy handler.
+const fetchProxyTimeout = 25 * time.Second
+
+// executeFetchProxy routes an HTTP request through pipelock's own fetch endpoint
+// for safe, scanned content retrieval. It extracts the first URL from the tool
+// call payload, fetches it via pipelock's /fetch endpoint, and returns the
+// scanned content as the redirect result.
+func executeFetchProxy(cmd *cobra.Command, manifest *RedirectManifest, payload []string) error {
+	if manifest.FetchEndpoint == "" {
+		return emitRedirectError(cmd, redirectProfileFetchProxy, "no fetch_endpoint in manifest")
+	}
+
+	// Extract first http:// or https:// URL from payload args.
+	targetURL := extractURL(strings.Join(payload, " "))
+	if targetURL == "" {
+		return emitRedirectError(cmd, redirectProfileFetchProxy,
+			"no http/https URL found in tool arguments")
+	}
+
+	// Call pipelock's own fetch endpoint.
+	fetchURL := manifest.FetchEndpoint + "?url=" + url.QueryEscape(targetURL)
+
+	ctx, cancel := context.WithTimeout(context.Background(), fetchProxyTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fetchURL, nil)
+	if err != nil {
+		return emitRedirectError(cmd, redirectProfileFetchProxy,
+			fmt.Sprintf("creating fetch request: %v", err))
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return emitRedirectError(cmd, redirectProfileFetchProxy,
+			fmt.Sprintf("fetch request failed: %v", err))
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	var fetchResp struct {
+		Content     string `json:"content"`
+		Error       string `json:"error"`
+		Blocked     bool   `json:"blocked"`
+		BlockReason string `json:"block_reason"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&fetchResp); err != nil {
+		return emitRedirectError(cmd, redirectProfileFetchProxy,
+			fmt.Sprintf("decoding fetch response: %v", err))
+	}
+
+	if fetchResp.Blocked {
+		return emitRedirectError(cmd, redirectProfileFetchProxy,
+			fmt.Sprintf("URL blocked by pipelock: %s", fetchResp.BlockReason))
+	}
+	if fetchResp.Error != "" {
+		return emitRedirectError(cmd, redirectProfileFetchProxy,
+			fmt.Sprintf("fetch error: %s", fetchResp.Error))
+	}
+
+	return emitRedirectResult(cmd, &RedirectResult{
+		Status:  "ok",
+		Profile: redirectProfileFetchProxy,
+		Detail:  fetchResp.Content,
+	})
+}
+
+// extractURL finds the first http:// or https:// URL in text.
+func extractURL(text string) string {
+	for _, prefix := range []string{"https://", "http://"} {
+		idx := strings.Index(text, prefix)
+		if idx < 0 {
+			continue
+		}
+		end := idx + len(prefix)
+		for end < len(text) && text[end] != ' ' && text[end] != '"' && text[end] != '\'' && text[end] != '}' {
+			end++
+		}
+		return text[idx:end]
+	}
+	return ""
 }
 
 // executeQuarantineWrite diverts a write to a quarantine directory.

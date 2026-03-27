@@ -1246,3 +1246,28 @@ func TestIsBinaryContentType(t *testing.T) {
 		})
 	}
 }
+
+func TestIsResponseScanExempt(t *testing.T) {
+	tests := []struct {
+		name   string
+		host   string
+		exempt []string
+		want   bool
+	}{
+		{"exact match", "api.openai.com", []string{"api.openai.com"}, true},
+		{"no match", "evil.com", []string{"api.openai.com"}, false},
+		{"wildcard match", "api.anthropic.com", []string{"*.anthropic.com"}, true},
+		{"wildcard apex match", "anthropic.com", []string{"*.anthropic.com"}, true},
+		{"empty list", "api.openai.com", nil, false},
+		{"case insensitive", "API.OpenAI.COM", []string{"api.openai.com"}, true},
+		{"multiple patterns", "api.anthropic.com", []string{"api.openai.com", "*.anthropic.com"}, true},
+		{"no partial match", "notapi.openai.com", []string{"api.openai.com"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isResponseScanExempt(tt.host, tt.exempt); got != tt.want {
+				t.Errorf("isResponseScanExempt(%q, %v) = %v, want %v", tt.host, tt.exempt, got, tt.want)
+			}
+		})
+	}
+}

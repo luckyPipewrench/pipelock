@@ -808,7 +808,14 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// Response injection scanning: buffer-then-scan-then-send when enabled.
 	// Headers are copied AFTER the scan decision so blocked responses don't
 	// leak upstream headers (Set-Cookie, Content-Encoding, etc.) to the client.
-	if sc.ResponseScanningEnabled() {
+	// Skip for response-exempt domains. Use the final response origin after
+	// redirects — an exempt host that 302s to a non-exempt host must be scanned.
+	fwdRespHost := resp.Request.URL.Hostname()
+	fwdRespExempt := isResponseScanExempt(fwdRespHost, cfg.ResponseScanning.ExemptDomains)
+	if sc.ResponseScanningEnabled() && fwdRespExempt {
+		p.logger.LogAnomaly(r.Method, targetURL, "response_scan", fmt.Sprintf("response scan skipped: host %q matched exempt_domains", fwdRespHost), clientIP, requestID, agent, 0)
+	}
+	if sc.ResponseScanningEnabled() && !fwdRespExempt {
 		// Fail-closed on compressed responses: regex can't match compressed content.
 		if hasNonIdentityEncoding(resp.Header.Get("Content-Encoding")) {
 			p.logger.LogBlocked(r.Method, targetURL, "response_scan", "compressed response cannot be scanned", clientIP, requestID, agent)

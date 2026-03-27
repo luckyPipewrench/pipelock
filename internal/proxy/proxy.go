@@ -1203,8 +1203,15 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// Extract text from HTML hiding spots (comments, script/style bodies)
 	// that readability strips. Scan only those fragments for injection,
 	// not the full HTML markup, to avoid false positives on legitimate tags.
+	// Use the final response origin after redirects, not the original request
+	// URL. An exempt origin that 302s to a non-exempt host must still be scanned.
+	finalHost := resp.Request.URL.Hostname()
+	responseScanExempt := isResponseScanExempt(finalHost, cfg.ResponseScanning.ExemptDomains)
+	if sc.ResponseScanningEnabled() && responseScanExempt {
+		log.LogAnomaly("GET", displayURL, "response_scan", fmt.Sprintf("response scan skipped: host %q matched exempt_domains", finalHost), clientIP, requestID, agent, 0)
+	}
 	var hiddenInjectionFound bool
-	if sc.ResponseScanningEnabled() && isHTML {
+	if sc.ResponseScanningEnabled() && isHTML && !responseScanExempt {
 		hidden := extractHiddenContent(content)
 		if hidden != "" {
 			rawResult := sc.ScanResponse(r.Context(), hidden)
@@ -1247,7 +1254,9 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Response scanning: check extracted content for prompt injection.
-	if sc.ResponseScanningEnabled() {
+	// Skip for exempt domains (e.g. trusted LLM providers whose responses
+	// naturally contain instruction-like text).
+	if sc.ResponseScanningEnabled() && !responseScanExempt {
 		scanResult := sc.ScanResponse(r.Context(), content)
 		// Use live escalation level so mid-request CEE escalations are reflected.
 		blocked, newContent, found := p.filterAndActOnResponseScan(w, scanResult, content, displayURL, agent, clientIP, requestID, sc, cfg, log, recEscalationLevel(fetchRec))

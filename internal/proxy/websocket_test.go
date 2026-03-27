@@ -381,6 +381,35 @@ func TestWSProxyInjectionWarn(t *testing.T) {
 	}
 }
 
+func TestWSProxyInjection_ExemptDomain(t *testing.T) {
+	backendAddr, backendCleanup := wsInjectionServer(t)
+	defer backendCleanup()
+
+	// The backend addr is "127.0.0.1:PORT" — exempt 127.0.0.1.
+	proxyAddr, proxyCleanup := setupWSProxy(t, func(cfg *config.Config) {
+		cfg.ResponseScanning.Enabled = true
+		cfg.ResponseScanning.Action = config.ActionBlock
+		cfg.ResponseScanning.ExemptDomains = []string{"127.0.0.1"}
+	})
+	defer proxyCleanup()
+
+	conn := dialWS(t, proxyAddr, backendAddr)
+	defer func() { _ = conn.Close() }()
+
+	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(testWSHello)); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	// With exempt domain, the injection response should pass through.
+	reply, _, err := wsutil.ReadServerData(conn)
+	if err != nil {
+		t.Fatalf("expected message forwarded for exempt domain, got error: %v", err)
+	}
+	if !strings.Contains(string(reply), "ignore") {
+		t.Errorf("expected injection payload forwarded for exempt domain, got %q", reply)
+	}
+}
+
 func TestWSProxyMaxMessageSize(t *testing.T) {
 	backendAddr, backendCleanup := wsEchoServer(t)
 	defer backendCleanup()

@@ -43,18 +43,31 @@ const (
 	scannerLabelAddressProtection = "address_protection"
 )
 
-// isAdaptiveExempt checks if a hostname matches any pattern in the adaptive
-// enforcement exempt_domains list. Uses scanner.MatchDomain for consistent
-// wildcard semantics: *.discord.com matches both sub.discord.com AND
-// discord.com itself, matching the behavior of api_allowlist and CEE
-// exempt_domains throughout the product.
-func isAdaptiveExempt(hostname string, exemptDomains []string) bool {
+// isDomainExempt checks if a hostname matches any pattern in a domain
+// exemption list. Uses scanner.MatchDomain for consistent wildcard
+// semantics: *.discord.com matches both sub.discord.com AND discord.com
+// itself, matching the behavior of api_allowlist and CEE exempt_domains
+// throughout the product.
+func isDomainExempt(hostname string, exemptDomains []string) bool {
 	for _, pattern := range exemptDomains {
 		if scanner.MatchDomain(hostname, pattern) {
 			return true
 		}
 	}
 	return false
+}
+
+// isAdaptiveExempt checks if a hostname matches the adaptive enforcement
+// exempt_domains list.
+func isAdaptiveExempt(hostname string, exemptDomains []string) bool {
+	return isDomainExempt(hostname, exemptDomains)
+}
+
+// isResponseScanExempt checks if a hostname matches the response scanning
+// exempt_domains list. Responses from exempt domains skip injection scanning
+// (DLP on the outbound request still applies).
+func isResponseScanExempt(hostname string, exemptDomains []string) bool {
+	return isDomainExempt(hostname, exemptDomains)
 }
 
 // BodyScanResult describes the outcome of scanning a request body or headers.

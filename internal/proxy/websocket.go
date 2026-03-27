@@ -316,6 +316,10 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		rec:          wsRec,
 	}
 
+	if scanTextFrames && sc.ResponseScanningEnabled() && isResponseScanExempt(relay.hostname, cfg.ResponseScanning.ExemptDomains) {
+		log.LogAnomaly("WS", targetURL, "response_scan", fmt.Sprintf("response scan skipped: host %q matched exempt_domains", relay.hostname), clientIP, requestID, agent, 0)
+	}
+
 	stats := relay.run(r.Context())
 
 	p.metrics.DecrActiveWS()
@@ -968,7 +972,8 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 			}
 
 			// Response injection scanning.
-			if r.scanText && r.scanner.ResponseScanningEnabled() {
+			// Skip for response-exempt domains (e.g. trusted LLM providers).
+			if r.scanText && r.scanner.ResponseScanningEnabled() && !isResponseScanExempt(r.hostname, r.cfg.ResponseScanning.ExemptDomains) {
 				scanResult := r.scanner.ScanResponse(ctx, string(msg))
 				if !scanResult.Clean {
 					patternNames := make([]string, len(scanResult.Matches))

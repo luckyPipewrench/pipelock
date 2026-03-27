@@ -482,6 +482,7 @@ Examples:
 						p.EntropyTrackerPtr(),
 						p.FragmentBufferPtr(),
 						m,
+						logger,
 						apiToken,
 					)
 					apiMux.HandleFunc("/api/v1/sessions", sessionAPI.HandleList)

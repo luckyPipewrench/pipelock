@@ -44,7 +44,7 @@ func newTestSessionAPIHandler(t *testing.T, sm *SessionManager) *SessionAPIHandl
 	}
 	var etPtr atomic.Pointer[scanner.EntropyTracker]
 	var fbPtr atomic.Pointer[scanner.FragmentBuffer]
-	return NewSessionAPIHandler(&smPtr, &etPtr, &fbPtr, nil, testSessionAPIToken)
+	return NewSessionAPIHandler(&smPtr, &etPtr, &fbPtr, nil, audit.NewNop(), testSessionAPIToken)
 }
 
 func TestSessionAPI_HandleList(t *testing.T) {
@@ -179,7 +179,7 @@ func TestSessionAPI_HandleList(t *testing.T) {
 		smPtr.Store(sm)
 		var etPtr atomic.Pointer[scanner.EntropyTracker]
 		var fbPtr atomic.Pointer[scanner.FragmentBuffer]
-		handler := NewSessionAPIHandler(&smPtr, &etPtr, &fbPtr, nil, "") // empty token
+		handler := NewSessionAPIHandler(&smPtr, &etPtr, &fbPtr, nil, audit.NewNop(), "") // empty token
 
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions", nil)
 		req.Header.Set("Authorization", "Bearer some-token")
@@ -352,7 +352,7 @@ func TestSessionAPI_HandleReset_DecrementEscalatedMetrics(t *testing.T) {
 	smPtr.Store(sm)
 	var etPtr atomic.Pointer[scanner.EntropyTracker]
 	var fbPtr atomic.Pointer[scanner.FragmentBuffer]
-	handler := NewSessionAPIHandler(&smPtr, &etPtr, &fbPtr, m, testSessionAPIToken)
+	handler := NewSessionAPIHandler(&smPtr, &etPtr, &fbPtr, m, audit.NewNop(), testSessionAPIToken)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/agent-b%7C10.0.0.2/reset", nil)
 	req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
@@ -377,26 +377,65 @@ func TestSessionAPI_HandleReset_DecrementEscalatedMetrics(t *testing.T) {
 }
 
 func TestExtractSessionKey(t *testing.T) {
-	// extractSessionKey receives r.URL.Path which net/http already decodes,
-	// so test paths use decoded form (e.g. "agent|10.0.0.1" not "agent%7C10.0.0.1").
+	// extractSessionKey uses EscapedPath + segment parsing.
+	// URL-encoded keys (e.g. %7C for |) are unescaped by the function.
 	tests := []struct {
-		path string
+		url  string
 		want string
+		ok   bool
 	}{
-		{"/api/v1/sessions/agent|10.0.0.1/reset", "agent|10.0.0.1"},
-		{"/api/v1/sessions/10.0.0.1/reset", "10.0.0.1"},
-		{"/api/v1/sessions/mcp-stdio-42/reset", "mcp-stdio-42"},
-		{"/api/v1/sessions//reset", ""},
-		{"/api/v1/sessions", ""},
-		{"/other/path", ""},
+		{"/api/v1/sessions/agent%7C10.0.0.1/reset", "agent|10.0.0.1", true},
+		{"/api/v1/sessions/10.0.0.1/reset", "10.0.0.1", true},
+		{"/api/v1/sessions/mcp-stdio-42/reset", "mcp-stdio-42", true},
+		{"/api/v1/sessions//reset", "", false},            // empty key segment
+		{"/api/v1/sessions", "", false},                   // wrong segment count
+		{"/other/path", "", false},                        // wrong prefix
+		{"/api/v1/sessions/key%00evil/reset", "", false},  // null byte rejected
+		{"/api/v1/sessions/key%2Fslash/reset", "", false}, // embedded slash rejected
+		{"/api/v1/sessions/a/b/extra/reset", "", false},   // extra segments
 	}
 	for _, tt := range tests {
-		t.Run(tt.path, func(t *testing.T) {
-			got := extractSessionKey(tt.path)
+		t.Run(tt.url, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodPost, tt.url, nil)
+			got, ok := extractSessionKey(r)
+			if ok != tt.ok {
+				t.Errorf("extractSessionKey(%q) ok = %v, want %v", tt.url, ok, tt.ok)
+			}
 			if got != tt.want {
-				t.Errorf("extractSessionKey(%q) = %q, want %q", tt.path, got, tt.want)
+				t.Errorf("extractSessionKey(%q) = %q, want %q", tt.url, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestSessionState_IsResettable(t *testing.T) {
+	sm, cleanup := setupSessionAPITestManager(t)
+	defer cleanup()
+
+	identity := sm.GetOrCreate("agent|10.0.0.1")
+	if !identity.IsResettable() {
+		t.Error("identity session should be resettable")
+	}
+
+	invocation := sm.GetOrCreate("mcp-stdio-42")
+	if invocation.IsResettable() {
+		t.Error("invocation session should not be resettable")
+	}
+
+	invocationHTTP := sm.GetOrCreate("mcp-http-99")
+	if invocationHTTP.IsResettable() {
+		t.Error("mcp-http invocation session should not be resettable")
+	}
+
+	invocationWS := sm.GetOrCreate("mcp-ws-77")
+	if invocationWS.IsResettable() {
+		t.Error("mcp-ws invocation session should not be resettable")
+	}
+
+	// IP-only key (no agent header) should be identity.
+	ipOnly := sm.GetOrCreate("10.0.0.5")
+	if !ipOnly.IsResettable() {
+		t.Error("IP-only session should be resettable (identity kind)")
 	}
 }
 
@@ -486,7 +525,7 @@ func TestSessionAPI_HandleReset_ClearsCEEState(t *testing.T) {
 	etPtr.Store(et)
 	var fbPtr atomic.Pointer[scanner.FragmentBuffer]
 	fbPtr.Store(fb)
-	handler := NewSessionAPIHandler(&smPtr, &etPtr, &fbPtr, nil, testSessionAPIToken)
+	handler := NewSessionAPIHandler(&smPtr, &etPtr, &fbPtr, nil, audit.NewNop(), testSessionAPIToken)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/agent%7C10.0.0.1/reset", nil)
 	req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)

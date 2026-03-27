@@ -215,6 +215,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			&p.entropyTrackerPtr,
 			&p.fragmentBufferPtr,
 			m,
+			logger,
 			apiToken,
 		)
 	}

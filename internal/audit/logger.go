@@ -94,6 +94,7 @@ const (
 
 	EventAdaptiveUpgrade EventType = "adaptive_upgrade"
 	EventToolRedirect    EventType = "tool_redirect"
+	EventSessionAdmin    EventType = "session_admin"
 )
 
 // WebSocket frame direction constants used in audit log entries.
@@ -983,6 +984,22 @@ func (l *Logger) LogChainDetection(pattern, patternSeverity, action, toolName, s
 			"mitre_technique":  technique,
 		})
 	}
+}
+
+// LogSessionAdmin logs a session admin API operation (list, reset, auth failure).
+func (l *Logger) LogSessionAdmin(action, clientIP, sessionKey, result string, statusCode int) {
+	ev := l.zl.Info().
+		Str("event", string(EventSessionAdmin)).
+		Str("action", action).
+		Str("client_ip", clientIP).
+		Int("status_code", statusCode)
+	if sessionKey != "" {
+		ev = ev.Str("session_key", sanitizeString(sessionKey))
+	}
+	if result != "" {
+		ev = ev.Str("result", sanitizeString(result))
+	}
+	ev.Msg("session admin API")
 }
 
 // With returns a sub-logger that includes the given key-value pair in every

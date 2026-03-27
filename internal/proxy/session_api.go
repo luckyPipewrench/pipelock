@@ -7,11 +7,13 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -28,6 +30,7 @@ type SessionAPIHandler struct {
 	etPtr    *atomic.Pointer[scanner.EntropyTracker]
 	fbPtr    *atomic.Pointer[scanner.FragmentBuffer]
 	metrics  *metrics.Metrics
+	logger   *audit.Logger
 	apiToken string
 
 	mu          sync.Mutex
@@ -41,6 +44,7 @@ func NewSessionAPIHandler(
 	etPtr *atomic.Pointer[scanner.EntropyTracker],
 	fbPtr *atomic.Pointer[scanner.FragmentBuffer],
 	m *metrics.Metrics,
+	logger *audit.Logger,
 	apiToken string,
 ) *SessionAPIHandler {
 	return &SessionAPIHandler{
@@ -48,6 +52,7 @@ func NewSessionAPIHandler(
 		etPtr:       etPtr,
 		fbPtr:       fbPtr,
 		metrics:     m,
+		logger:      logger,
 		apiToken:    apiToken,
 		windowStart: time.Now(),
 	}
@@ -65,6 +70,8 @@ func (h *SessionAPIHandler) authenticate(w http.ResponseWriter, r *http.Request)
 		token = auth[len(prefix):]
 	}
 	if token == "" || subtle.ConstantTimeCompare([]byte(token), []byte(h.apiToken)) != 1 {
+		clientIP, _ := requestMeta(r)
+		h.logSessionAdmin("auth_failure", clientIP, "", "", http.StatusUnauthorized)
 		w.Header().Set("WWW-Authenticate", `Bearer realm="pipelock"`)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return false
@@ -98,6 +105,9 @@ func (h *SessionAPIHandler) HandleList(w http.ResponseWriter, r *http.Request) {
 
 	snaps := sm.Snapshot()
 
+	clientIP, _ := requestMeta(r)
+	h.logSessionAdmin("list", clientIP, "", "ok", http.StatusOK)
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(struct {
 		Sessions []SessionSnapshot `json:"sessions"`
@@ -124,20 +134,19 @@ func (h *SessionAPIHandler) checkResetRateLimit() bool {
 }
 
 // extractSessionKey extracts the session key from /api/v1/sessions/{key}/reset.
-// The path comes from r.URL.Path, which net/http already decodes, so no
-// additional unescaping is needed. Double-decoding would corrupt keys that
-// contain literal '%' characters.
-func extractSessionKey(path string) string {
-	const prefix = "/api/v1/sessions/"
-	const suffix = "/reset"
-	if !strings.HasPrefix(path, prefix) || !strings.HasSuffix(path, suffix) {
-		return ""
+// Uses EscapedPath + segment parsing to prevent path-traversal tricks
+// (e.g. double-encoded slashes) that prefix/suffix slicing would miss.
+func extractSessionKey(r *http.Request) (string, bool) {
+	segs := strings.Split(strings.Trim(r.URL.EscapedPath(), "/"), "/")
+	// Expect exactly: api/v1/sessions/{encoded-key}/reset
+	if len(segs) != 5 || segs[0] != "api" || segs[1] != "v1" || segs[2] != "sessions" || segs[4] != "reset" {
+		return "", false
 	}
-	key := path[len(prefix) : len(path)-len(suffix)]
-	if key == "" {
-		return ""
+	key, err := url.PathUnescape(segs[3])
+	if err != nil || key == "" || strings.ContainsAny(key, "/\x00") {
+		return "", false
 	}
-	return key
+	return key, true
 }
 
 // HandleReset handles POST /api/v1/sessions/{key}/reset.
@@ -160,15 +169,17 @@ func (h *SessionAPIHandler) HandleReset(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	key := extractSessionKey(r.URL.Path)
-	if key == "" {
+	clientIP, _ := requestMeta(r)
+
+	key, ok := extractSessionKey(r)
+	if !ok {
 		http.Error(w, "missing or invalid session key in URL path", http.StatusBadRequest)
 		return
 	}
 
-	// Reject invocation keys (MCP transport sessions are not resettable).
-	kind, agent, ip := classifySessionKey(key)
-	if kind == sessionKindInvocation {
+	// Reject invocation keys — use stored kind from session, not re-parsed.
+	sess := sm.lookupSession(key)
+	if sess != nil && !sess.IsResettable() {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(struct {
@@ -179,10 +190,13 @@ func (h *SessionAPIHandler) HandleReset(w http.ResponseWriter, r *http.Request) 
 
 	// Check session exists before clearing CEE state. Without this, a reset
 	// for a nonexistent key would clear CEE state as a side effect.
-	if !sm.SessionExists(key) {
+	if sess == nil {
+		h.logSessionAdmin("reset_not_found", clientIP, key, "session not found", http.StatusNotFound)
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
+
+	_, agent, ip := classifySessionKey(key)
 
 	// Lock order: CEE first, then SessionManager, then SessionState.
 	ceeCleared := false
@@ -198,9 +212,12 @@ func (h *SessionAPIHandler) HandleReset(w http.ResponseWriter, r *http.Request) 
 	prev, found := sm.ResetSession(key)
 	if !found {
 		// Race: session was evicted between existence check and reset.
+		h.logSessionAdmin("reset_not_found", clientIP, key, "session evicted during reset", http.StatusNotFound)
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
+
+	h.logSessionAdmin("reset_ok", clientIP, key, prev.EscalationLevel, http.StatusOK)
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(struct {
@@ -218,4 +235,11 @@ func (h *SessionAPIHandler) HandleReset(w http.ResponseWriter, r *http.Request) 
 		IPStateCleared:  ip != "",
 		CEEStateCleared: ceeCleared,
 	})
+}
+
+// logSessionAdmin logs a session admin API operation if a logger is available.
+func (h *SessionAPIHandler) logSessionAdmin(action, clientIP, sessionKey, result string, statusCode int) {
+	if h.logger != nil {
+		h.logger.LogSessionAdmin(action, clientIP, sessionKey, result, statusCode)
+	}
 }

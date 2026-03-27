@@ -35,6 +35,7 @@ type Anomaly struct {
 type SessionState struct {
 	mu           sync.Mutex
 	key          string
+	kind         string // "identity" or "invocation" — set at creation, not inferred from key
 	created      time.Time
 	lastActivity time.Time
 
@@ -48,6 +49,15 @@ type SessionState struct {
 	currentThreshold float64
 	lastEscalation   time.Time // when the current level was reached
 	atBlockAll       bool      // true when current level has block_all=true
+}
+
+// IsResettable returns whether this session can be reset via the admin API.
+// Only identity sessions are resettable; invocation sessions (MCP transport)
+// are ephemeral and not meaningful to reset.
+func (s *SessionState) IsResettable() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.kind == sessionKindIdentity
 }
 
 type domainEntry struct {
@@ -376,9 +386,19 @@ func (sm *SessionManager) GetOrCreate(key string) *SessionState {
 		sm.evictOldest()
 	}
 
+	// Determine session kind from key format at creation time.
+	kind := sessionKindIdentity
+	for _, prefix := range invocationPrefixes {
+		if strings.HasPrefix(key, prefix) {
+			kind = sessionKindInvocation
+			break
+		}
+	}
+
 	now := time.Now()
 	sess := &SessionState{
 		key:              key,
+		kind:             kind,
 		created:          now,
 		lastActivity:     now,
 		currentThreshold: 0, // set by adaptive enforcement when enabled
@@ -513,6 +533,15 @@ func (sm *SessionManager) SessionExists(key string) bool {
 	_, ok := sm.sessions[key]
 	sm.mu.RUnlock()
 	return ok
+}
+
+// lookupSession returns the SessionState for a key, or nil if not found.
+// Uses a read lock for minimal contention.
+func (sm *SessionManager) lookupSession(key string) *SessionState {
+	sm.mu.RLock()
+	sess := sm.sessions[key]
+	sm.mu.RUnlock()
+	return sess
 }
 
 // ResetSession resets enforcement state for the given identity key.

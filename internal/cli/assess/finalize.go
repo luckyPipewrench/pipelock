@@ -275,12 +275,14 @@ func runAssessFinalize(runDir string, opts assessFinalizeOpts) error {
 		if err != nil {
 			assessment.Signed = false
 			rewriteAssessmentArtifacts(cleanDir, &assessment, artifacts)
+			_ = writeManifest(manifestPath, &manifest) // update hashes after rewrite
 			return cliutil.ExitCodeError(1, fmt.Errorf("signing manifest: %w", err))
 		}
 		sigPath := manifestPath + signing.SigExtension
 		if err := signing.SaveSignature(sig, sigPath); err != nil {
 			assessment.Signed = false
 			rewriteAssessmentArtifacts(cleanDir, &assessment, artifacts)
+			_ = writeManifest(manifestPath, &manifest) // update hashes after rewrite
 			return cliutil.ExitCodeError(1, fmt.Errorf("saving signature: %w", err))
 		}
 	} else {

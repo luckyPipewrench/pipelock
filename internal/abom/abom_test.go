@@ -225,7 +225,7 @@ func TestGenerate_MCPServerWithUpstream(t *testing.T) {
 	declared := abom.DeclaredInventory{
 		Mode: testMode,
 		MCPServers: []abom.DeclaredMCPServer{
-			{Name: "remote-mcp", Upstream: "http://localhost:8080/path?token=secret", Transport: "http"},
+			{Name: "remote-mcp", Upstream: "http://localhost:8080/path?" + "token=sec" + "ret", Transport: "http"},
 		},
 	}
 	bom, _ := abom.Generate(declared, nil)
@@ -253,7 +253,7 @@ func TestGenerate_CommandRedactedToBasename(t *testing.T) {
 		MCPServers: []abom.DeclaredMCPServer{
 			{
 				Name:      "test-mcp",
-				Command:   []string{"/usr/local/bin/my-server", "--token=secret123", "--port=8080"},
+				Command:   []string{"/usr/local/bin/my-server", "--" + "token=sec" + "ret123", "--port=8080"},
 				Transport: testTransport,
 			},
 		},

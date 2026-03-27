@@ -68,6 +68,7 @@ func assessFuncMap() template.FuncMap {
 		"auditBarColor":   auditBarColor,
 		"findingCounts":   findingCounts,
 		"toplineStory":    toplineStory,
+		"summaryTopline":  summaryTopline,
 		"serverStatColor": serverStatColor,
 	}
 }
@@ -370,6 +371,17 @@ func toplineStory(a *Assessment) string {
 	}
 	return fmt.Sprintf("Scored %d/100. Overall security posture: %s.",
 		a.OverallScore, a.OverallGrade)
+}
+
+// summaryTopline builds a short sentence for the free-tier summary header.
+// Unlike toplineStory it works with the Summary type (no CapReasons slice).
+func summaryTopline(s *Summary) string {
+	if s.GradeCap != "" {
+		return fmt.Sprintf("Scored %d/100 but capped at %s due to critical exposure.",
+			s.OverallScore, s.GradeCap)
+	}
+	return fmt.Sprintf("Scored %d/100. Overall security posture: %s.",
+		s.OverallScore, s.OverallGrade)
 }
 
 // serverStatColor returns green when all servers are protected and red when

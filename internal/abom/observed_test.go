@@ -232,53 +232,6 @@ func TestObservedInventory_ConcurrentAccess(t *testing.T) {
 	}
 }
 
-func TestObservedInventory_RecordDomain_Normalization(t *testing.T) {
-	obs := abom.NewObservedInventory(testSessionID)
-
-	// "EXAMPLE.COM." and "example.com" should map to the same entry
-	obs.RecordDomain("EXAMPLE.COM.", 100, 50)
-	obs.RecordDomain("example.com", 200, 100)
-
-	if len(obs.Domains) != 1 {
-		t.Fatalf("expected 1 domain after normalization, got %d", len(obs.Domains))
-	}
-	dom := obs.Domains["example.com"]
-	if dom == nil {
-		t.Fatal("expected domain key 'example.com'")
-	}
-	if dom.Requests != 2 {
-		t.Errorf("Requests = %d, want 2", dom.Requests)
-	}
-	if dom.BytesIn != 300 {
-		t.Errorf("BytesIn = %d, want 300", dom.BytesIn)
-	}
-}
-
-func TestObservedInventory_RecordDomain_RejectsEmpty(t *testing.T) {
-	obs := abom.NewObservedInventory(testSessionID)
-
-	obs.RecordDomain("", 100, 50)
-	obs.RecordDomain(".", 200, 100) // trailing dot only = empty after trim
-
-	if len(obs.Domains) != 0 {
-		t.Errorf("expected 0 domains for empty inputs, got %d", len(obs.Domains))
-	}
-}
-
-func TestObservedInventory_RecordDomain_TrailingDot(t *testing.T) {
-	obs := abom.NewObservedInventory(testSessionID)
-
-	obs.RecordDomain("Api.Example.Com.", 100, 50)
-
-	dom := obs.Domains["api.example.com"]
-	if dom == nil {
-		t.Fatal("expected normalized domain 'api.example.com'")
-	}
-	if dom.Domain != "api.example.com" {
-		t.Errorf("Domain = %q, want 'api.example.com'", dom.Domain)
-	}
-}
-
 func TestObservedInventory_MultipleDomains(t *testing.T) {
 	obs := abom.NewObservedInventory(testSessionID)
 

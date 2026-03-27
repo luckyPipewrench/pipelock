@@ -742,6 +742,65 @@ func TestToplineStory_EffectiveCapReason(t *testing.T) {
 	}
 }
 
+func TestServerCausedCap(t *testing.T) {
+	fn := assessFuncMap()["serverCausedCap"].(func(*Assessment, string, string) bool)
+
+	a := minimalAssessment(assessGradeC, 85)
+	a.GradeCap = assessGradeC
+	a.CapReasons = []CapReason{
+		{Cap: assessGradeC, Reason: "unprotected", Source: sourceDiscover, EvidenceID: "claude-code-dev-db-tools"},
+	}
+
+	t.Run("matching server", func(t *testing.T) {
+		if !fn(a, "dev-db-tools", "claude-code") {
+			t.Error("should match cap-causing server")
+		}
+	})
+
+	t.Run("non-matching server", func(t *testing.T) {
+		if fn(a, "staging-deploy", "vscode") {
+			t.Error("should not match non-cap server")
+		}
+	})
+
+	t.Run("no cap", func(t *testing.T) {
+		uncapped := minimalAssessment(assessGradeA, 95)
+		if fn(uncapped, "dev-db-tools", "claude-code") {
+			t.Error("should return false when no cap")
+		}
+	})
+}
+
+func TestFindingCounts_AllSeverities(t *testing.T) {
+	findings := []Finding{
+		{Severity: assessSevCritical},
+		{Severity: assessSevCritical},
+		{Severity: assessSevHigh},
+		{Severity: assessSevMedium},
+		{Severity: assessSevMedium},
+		{Severity: assessSevMedium},
+		{Severity: assessSevLow},
+		{Severity: assessSevInfo},
+		{Severity: assessSevInfo},
+	}
+	c := findingCounts(findings)
+	if c.Critical != 2 {
+		t.Errorf("Critical = %d, want 2", c.Critical)
+	}
+	if c.High != 1 {
+		t.Errorf("High = %d, want 1", c.High)
+	}
+	if c.Medium != 3 {
+		t.Errorf("Medium = %d, want 3", c.Medium)
+	}
+	if c.Low != 1 {
+		t.Errorf("Low = %d, want 1", c.Low)
+	}
+	if c.Info != 2 {
+		t.Errorf("Info = %d, want 2", c.Info)
+	}
+}
+
 func TestDiscoverCausedCap(t *testing.T) {
 	fn := assessFuncMap()["discoverCausedCap"].(func(*Assessment) bool)
 

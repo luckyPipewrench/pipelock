@@ -138,9 +138,13 @@ func (r *Recorder) Record(e Entry) error {
 		return fmt.Errorf("recorder is closed")
 	}
 
-	// Session ID validation: require non-empty and reject mismatches.
+	// Session ID validation: require non-empty, reject path separators
+	// (defense against path traversal in filenames), and reject mismatches.
 	if e.SessionID == "" {
 		return errors.New("recorder: session_id required")
+	}
+	if strings.ContainsAny(e.SessionID, `/\`) {
+		return fmt.Errorf("recorder: session_id contains path separator")
 	}
 	if r.sessionID == "" {
 		r.sessionID = e.SessionID
@@ -174,7 +178,6 @@ func (r *Recorder) Record(e Entry) error {
 	}
 
 	e.Hash = ComputeHash(e)
-	r.prevHash = e.Hash
 
 	if err := r.ensureFile(e.SessionID, e.Sequence); err != nil {
 		return fmt.Errorf("opening evidence file: %w", err)
@@ -184,6 +187,10 @@ func (r *Recorder) Record(e Entry) error {
 		return fmt.Errorf("writing entry: %w", err)
 	}
 
+	// Advance chain state AFTER successful write. If ensureFile or
+	// writeEntry fails, the next entry must re-link to the same prevHash
+	// so the chain stays consistent with what reached disk.
+	r.prevHash = e.Hash
 	r.seq++
 
 	r.sinceCheckpoint++
@@ -219,7 +226,12 @@ func (r *Recorder) Close() error {
 	r.closed = true
 
 	if r.sinceCheckpoint > 0 {
-		_ = r.checkpointLocked()
+		if err := r.checkpointLocked(); err != nil {
+			// Close the file even if checkpoint failed, but return
+			// the checkpoint error since it means chain state is incomplete.
+			_ = r.closeFile()
+			return fmt.Errorf("final checkpoint: %w", err)
+		}
 	}
 
 	return r.closeFile()
@@ -254,8 +266,6 @@ func (r *Recorder) checkpointLocked() error {
 	e.Summary = fmt.Sprintf("checkpoint: %d entries [seq %d-%d]",
 		cpDetail.EntryCount, cpDetail.FirstSeq, cpDetail.LastSeq)
 	e.Hash = ComputeHash(e)
-	r.prevHash = e.Hash
-	r.seq++
 
 	if r.file != nil {
 		if err := r.writeEntry(e); err != nil {
@@ -264,6 +274,10 @@ func (r *Recorder) checkpointLocked() error {
 		r.fileEntryCount++
 	}
 
+	// Advance chain state AFTER successful write. If writeEntry fails,
+	// prevHash/seq must remain unchanged so the next attempt links correctly.
+	r.prevHash = e.Hash
+	r.seq++
 	r.sinceCheckpoint = 0
 	r.firstSeqInSpan = r.seq
 	return nil
@@ -325,7 +339,9 @@ func (r *Recorder) writeEscrow(rawJSON []byte) (string, error) {
 	payload = append(payload, ephPub[:]...)
 	payload = append(payload, sealed...)
 
-	escrowName := fmt.Sprintf("evidence-%s-%d.raw.enc", r.sessionID, r.seq)
+	// filepath.Base as defense-in-depth: session ID is already validated
+	// for path separators in Record(), but belt-and-suspenders for filenames.
+	escrowName := fmt.Sprintf("evidence-%s-%d.raw.enc", filepath.Base(r.sessionID), r.seq)
 	escrowPath := filepath.Join(filepath.Clean(r.cfg.Dir), escrowName)
 
 	if err := os.WriteFile(escrowPath, payload, filePermissions); err != nil {
@@ -341,7 +357,9 @@ func (r *Recorder) ensureFile(sessionID string, seqStart uint64) error {
 		return nil
 	}
 
-	name := fmt.Sprintf("evidence-%s-%d.jsonl", sessionID, seqStart)
+	// filepath.Base as defense-in-depth: session ID is already validated
+	// for path separators in Record(), but belt-and-suspenders for filenames.
+	name := fmt.Sprintf("evidence-%s-%d.jsonl", filepath.Base(sessionID), seqStart)
 	path := filepath.Join(filepath.Clean(r.cfg.Dir), name)
 
 	f, err := os.OpenFile(filepath.Clean(path), os.O_CREATE|os.O_WRONLY|os.O_APPEND, filePermissions)

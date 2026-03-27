@@ -13,11 +13,12 @@ import (
 )
 
 const (
-	testMode        = "strict"
-	testTransport   = "stdio"
-	testSessionID   = "test-session"
-	testServerK8s   = "kubernetes"
-	testServerScrpl = "scrapling"
+	testMode         = "strict"
+	testTransport    = "stdio"
+	testSessionID    = "test-session"
+	testServerK8s    = "kubernetes"
+	testServerScrpl  = "scrapling"
+	testPropUpstream = "pipelock:upstream"
 )
 
 func TestGenerate_DeclaredOnly(t *testing.T) {
@@ -225,7 +226,7 @@ func TestGenerate_MCPServerWithUpstream(t *testing.T) {
 	declared := abom.DeclaredInventory{
 		Mode: testMode,
 		MCPServers: []abom.DeclaredMCPServer{
-			{Name: "remote-mcp", Upstream: "http://localhost:8080/path?" + "token=sec" + "ret", Transport: "http"},
+			{Name: "remote-mcp", Upstream: "http://localhost:8080/path?format=json&verbose=true", Transport: "http"},
 		},
 	}
 	bom, _ := abom.Generate(declared, nil)
@@ -236,7 +237,7 @@ func TestGenerate_MCPServerWithUpstream(t *testing.T) {
 				t.Fatal("expected properties on remote-mcp component")
 			}
 			for _, p := range *c.Properties {
-				if p.Name == "pipelock:upstream" {
+				if p.Name == testPropUpstream {
 					// Must be stripped to scheme+host only
 					if p.Value != "http://localhost" {
 						t.Errorf("upstream should be redacted to scheme+host, got %q", p.Value)
@@ -253,7 +254,7 @@ func TestGenerate_CommandRedactedToBasename(t *testing.T) {
 		MCPServers: []abom.DeclaredMCPServer{
 			{
 				Name:      "test-mcp",
-				Command:   []string{"/usr/local/bin/my-server", "--" + "token=sec" + "ret123", "--port=8080"},
+				Command:   []string{"/usr/local/bin/my-server", "--verbose", "--port=8080"},
 				Transport: testTransport,
 			},
 		},
@@ -286,6 +287,31 @@ func TestGenerate_CommandRedactedToBasename(t *testing.T) {
 	}
 }
 
+func TestGenerate_UpstreamSchemeless(t *testing.T) {
+	declared := abom.DeclaredInventory{
+		Mode: testMode,
+		MCPServers: []abom.DeclaredMCPServer{
+			{Name: "schemeless-mcp", Upstream: "example.com/path", Transport: "http"},
+		},
+	}
+	bom, _ := abom.Generate(declared, nil)
+
+	for _, c := range *bom.Components {
+		if c.Name == "schemeless-mcp" {
+			if c.Properties == nil {
+				t.Fatal("expected properties")
+			}
+			for _, p := range *c.Properties {
+				if p.Name == testPropUpstream {
+					if p.Value != "<redacted>" {
+						t.Errorf("scheme-less upstream should be <redacted>, got %q", p.Value)
+					}
+				}
+			}
+		}
+	}
+}
+
 func TestGenerate_UpstreamStripsUserinfoAndQuery(t *testing.T) {
 	// Build URL with credentials at runtime to avoid gosec G101
 	upstream := "https://user:" + "password" + "@api.example.com:9090/v1?key=secret#frag"
@@ -309,7 +335,7 @@ func TestGenerate_UpstreamStripsUserinfoAndQuery(t *testing.T) {
 			t.Fatal("expected properties")
 		}
 		for _, p := range *c.Properties {
-			if p.Name == "pipelock:upstream" {
+			if p.Name == testPropUpstream {
 				if p.Value != "https://api.example.com" {
 					t.Errorf("upstream should strip userinfo/port/path/query/fragment, got %q", p.Value)
 				}

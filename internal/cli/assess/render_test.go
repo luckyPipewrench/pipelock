@@ -5,9 +5,13 @@ package assess
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/cli/audit"
+	"github.com/luckyPipewrench/pipelock/internal/discover"
 )
 
 const (
@@ -328,6 +332,345 @@ func TestSeverityBadge(t *testing.T) {
 			got := severityBadge(tc.sev)
 			if got != tc.want {
 				t.Errorf("severityBadge(%q) = %q, want %q", tc.sev, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestExecSummary(t *testing.T) {
+	const (
+		testPlatform   = "linux/amd64"
+		testCapGrade   = assessGradeC
+		testNoCapGrade = assessGradeA
+		testNoCapScore = 95
+		testCapScore   = 72
+		testSimPassed  = 18
+		testSimTotal   = 20
+		testSimLimits  = 0
+		testSimPct     = 90
+		testDiscTotal  = 3
+		testDiscProt   = 2
+		testDiscUnprot = 1
+	)
+
+	baseAssessment := func() *Assessment {
+		a := minimalAssessment(testNoCapGrade, testNoCapScore)
+		a.Manifest.Platform = testPlatform
+		return a
+	}
+
+	t.Run("nil sources", func(t *testing.T) {
+		a := baseAssessment()
+		a.Sources = AssessSources{}
+		got := execSummary(a)
+		if !strings.Contains(got, "Overall security posture") {
+			t.Errorf("execSummary with nil sources: missing posture line, got %q", got)
+		}
+		if strings.Contains(got, "scenarios") {
+			t.Errorf("execSummary with nil sources: should not mention scenarios, got %q", got)
+		}
+		if strings.Contains(got, "MCP servers") {
+			t.Errorf("execSummary with nil sources: should not mention MCP servers, got %q", got)
+		}
+	})
+
+	t.Run("simulate only", func(t *testing.T) {
+		a := baseAssessment()
+		a.Sources = AssessSources{
+			Simulate: &audit.SimulateResult{
+				Total:       testSimTotal,
+				Passed:      testSimPassed,
+				KnownLimits: testSimLimits,
+				Percentage:  testSimPct,
+			},
+		}
+		got := execSummary(a)
+		if !strings.Contains(got, "scenarios") {
+			t.Errorf("execSummary simulate only: missing scenarios, got %q", got)
+		}
+		if strings.Contains(got, "MCP servers") {
+			t.Errorf("execSummary simulate only: should not mention MCP servers, got %q", got)
+		}
+	})
+
+	t.Run("discover only", func(t *testing.T) {
+		a := baseAssessment()
+		a.Sources = AssessSources{
+			Discover: &AssessDiscoverReport{
+				Summary: AssessDiscoverSummary{
+					Summary: discoverSummary(testDiscTotal, testDiscProt, 0, testDiscUnprot),
+				},
+			},
+		}
+		got := execSummary(a)
+		if !strings.Contains(got, "MCP servers are protected") {
+			t.Errorf("execSummary discover only: missing MCP protection line, got %q", got)
+		}
+		if strings.Contains(got, "scenarios") {
+			t.Errorf("execSummary discover only: should not mention scenarios, got %q", got)
+		}
+	})
+
+	t.Run("with grade cap", func(t *testing.T) {
+		a := baseAssessment()
+		a.OverallGrade = testCapGrade
+		a.OverallScore = testCapScore
+		a.GradeCap = testCapGrade
+		got := execSummary(a)
+		if !strings.Contains(got, "capped at grade") {
+			t.Errorf("execSummary with cap: missing cap phrase, got %q", got)
+		}
+		if strings.Contains(got, "Overall security posture") {
+			t.Errorf("execSummary with cap: should not show posture line, got %q", got)
+		}
+	})
+
+	t.Run("without grade cap", func(t *testing.T) {
+		a := baseAssessment()
+		got := execSummary(a)
+		if !strings.Contains(got, "Overall security posture") {
+			t.Errorf("execSummary without cap: missing posture line, got %q", got)
+		}
+		if strings.Contains(got, "capped") {
+			t.Errorf("execSummary without cap: should not mention cap, got %q", got)
+		}
+	})
+}
+
+// discoverSummary is a helper to build discover.Summary values inline.
+func discoverSummary(total, pipelock, other, unprotected int) discover.Summary {
+	return discover.Summary{
+		TotalServers:      total,
+		ProtectedPipelock: pipelock,
+		ProtectedOther:    other,
+		Unprotected:       unprotected,
+	}
+}
+
+func TestSummaryTopline(t *testing.T) {
+	t.Run("capped grade", func(t *testing.T) {
+		s := minimalSummary(assessGradeC, 72)
+		s.GradeCap = assessGradeC
+		got := summaryTopline(s)
+		if !strings.Contains(got, "capped at") {
+			t.Errorf("summaryTopline capped: missing 'capped at', got %q", got)
+		}
+		if !strings.Contains(got, "critical exposure") {
+			t.Errorf("summaryTopline capped: missing 'critical exposure', got %q", got)
+		}
+	})
+
+	t.Run("uncapped grade", func(t *testing.T) {
+		s := minimalSummary(assessGradeA, 95)
+		got := summaryTopline(s)
+		if !strings.Contains(got, "Overall security posture") {
+			t.Errorf("summaryTopline uncapped: missing posture line, got %q", got)
+		}
+		if strings.Contains(got, "capped") {
+			t.Errorf("summaryTopline uncapped: should not mention cap, got %q", got)
+		}
+	})
+}
+
+func TestServerStatColor(t *testing.T) {
+	cases := []struct {
+		name      string
+		protected int
+		total     int
+		want      string
+	}{
+		{"all protected", 5, 5, colorGreen},
+		{"zero of zero", 0, 0, colorGreen}, // protected == total (both 0)
+		{"some unprotected", 3, 5, colorRed},
+		{"none protected", 0, 5, colorRed},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := serverStatColor(tc.protected, tc.total)
+			if got != tc.want {
+				t.Errorf("serverStatColor(%d, %d) = %q, want %q", tc.protected, tc.total, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestFormatEvidence(t *testing.T) {
+	t.Run("nil returns empty", func(t *testing.T) {
+		got := formatEvidence(nil)
+		if got != "" {
+			t.Errorf("formatEvidence(nil) = %q, want empty", got)
+		}
+	})
+
+	t.Run("valid JSON is indented", func(t *testing.T) {
+		raw := json.RawMessage(`{"key":"value","n":1}`)
+		got := formatEvidence(raw)
+		if !strings.Contains(got, "\n") {
+			t.Errorf("formatEvidence(valid JSON): expected indented output with newlines, got %q", got)
+		}
+		if !strings.Contains(got, `"key"`) {
+			t.Errorf("formatEvidence(valid JSON): expected key in output, got %q", got)
+		}
+	})
+
+	t.Run("invalid JSON falls back to raw", func(t *testing.T) {
+		raw := json.RawMessage(`not-json{`)
+		got := formatEvidence(raw)
+		if got != string(raw) {
+			t.Errorf("formatEvidence(invalid JSON) = %q, want raw %q", got, string(raw))
+		}
+	})
+}
+
+func TestProtectionColor(t *testing.T) {
+	cases := []struct {
+		status string
+		want   string
+	}{
+		{"protected_pipelock", colorGreen},
+		{"protected_other", colorBlue},
+		{"unprotected", colorRed},
+		{"unknown", colorGray},
+		{"", colorGray},
+	}
+	for _, tc := range cases {
+		t.Run(tc.status, func(t *testing.T) {
+			got := protectionColor(tc.status)
+			if got != tc.want {
+				t.Errorf("protectionColor(%q) = %q, want %q", tc.status, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestProtectionLabel(t *testing.T) {
+	cases := []struct {
+		status string
+		want   string
+	}{
+		{"protected_pipelock", "PIPELOCK"},
+		{"protected_other", "OTHER"},
+		{"unprotected", "UNPROTECTED"},
+		{"unknown_status", "UNKNOWN"},
+		{"", "UNKNOWN"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.status, func(t *testing.T) {
+			got := protectionLabel(tc.status)
+			if got != tc.want {
+				t.Errorf("protectionLabel(%q) = %q, want %q", tc.status, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestScenarioResult(t *testing.T) {
+	cases := []struct {
+		name       string
+		detected   bool
+		limitation bool
+		want       string
+	}{
+		{"limitation overrides detected=true", true, true, "KNOWN LIMITATION"},
+		{"limitation overrides detected=false", false, true, "KNOWN LIMITATION"},
+		{"detected=true no limitation", true, false, "DETECTED"},
+		{"detected=false no limitation", false, false, "MISSED"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := scenarioResult(tc.detected, tc.limitation)
+			if got != tc.want {
+				t.Errorf("scenarioResult(%v, %v) = %q, want %q", tc.detected, tc.limitation, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestScenarioColor(t *testing.T) {
+	cases := []struct {
+		name       string
+		detected   bool
+		limitation bool
+		want       string
+	}{
+		{"limitation", false, true, colorGray},
+		{"detected", true, false, colorGreen},
+		{"missed", false, false, colorRed},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := scenarioColor(tc.detected, tc.limitation)
+			if got != tc.want {
+				t.Errorf("scenarioColor(%v, %v) = %q, want %q", tc.detected, tc.limitation, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestScorePercent(t *testing.T) {
+	cases := []struct {
+		name     string
+		score    int
+		maxScore int
+		want     int
+	}{
+		{"normal 90/100", 90, 100, 90},
+		{"partial 3/4", 3, 4, 75},
+		{"zero maxScore returns 0", 50, 0, 0},
+		{"zero score", 0, 100, 0},
+		{"perfect", 100, 100, 100},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := scorePercent(tc.score, tc.maxScore)
+			if got != tc.want {
+				t.Errorf("scorePercent(%d, %d) = %d, want %d", tc.score, tc.maxScore, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAuditBarColor(t *testing.T) {
+	cases := []struct {
+		name     string
+		score    int
+		maxScore int
+		want     string
+	}{
+		{"100% green", 100, 100, colorGreen},
+		{"90% green", 90, 100, colorGreen},
+		{"80% yellow", 80, 100, colorYellow},
+		{"70% yellow", 70, 100, colorYellow},
+		{"50% orange", 50, 100, colorOrange},
+		{"49% red", 49, 100, colorRed},
+		{"0% red", 0, 100, colorRed},
+		{"zero maxScore gray", 0, 0, colorGray},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := auditBarColor(tc.score, tc.maxScore)
+			if got != tc.want {
+				t.Errorf("auditBarColor(%d, %d) = %q, want %q", tc.score, tc.maxScore, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCheckStatusColor(t *testing.T) {
+	cases := []struct {
+		status string
+		want   string
+	}{
+		{"pass", colorGreen},
+		{"fail", colorRed},
+		{"warn", colorGray},
+		{"", colorGray},
+	}
+	for _, tc := range cases {
+		t.Run(tc.status, func(t *testing.T) {
+			got := checkStatusColor(tc.status)
+			if got != tc.want {
+				t.Errorf("checkStatusColor(%q) = %q, want %q", tc.status, got, tc.want)
 			}
 		})
 	}

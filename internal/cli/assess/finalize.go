@@ -196,6 +196,10 @@ func runAssessFinalize(runDir string, opts assessFinalizeOpts) error {
 	// Step 4: determine tier and produce output.
 	artifacts := make(map[string]string)
 
+	// Set signed flag before rendering so the template can display the correct badge.
+	// This reflects intent (will sign), not state (has been signed) — signing happens after render.
+	assessment.Signed = opts.HasAssess && !opts.Unsigned
+
 	if opts.HasAssess {
 		// Paid path: full assessment.
 		if err := writeAssessmentJSON(filepath.Join(cleanDir, "assessment.json"), &assessment); err != nil {
@@ -294,6 +298,9 @@ To verify this assessment:
 Manual verification:
   1. Check artifact hashes match manifest.json
   2. Verify manifest signature: pipelock verify manifest.json --agent %s
+
+To export as PDF:
+  Open assessment.html in a browser and print to PDF (Ctrl+P / Cmd+P).
 `, manifest.RunID, now.Format(time.RFC3339), runDir, agentHint, agentHint)
 
 	if err := os.WriteFile(filepath.Join(cleanDir, "verify.txt"), []byte(verifyText), 0o600); err != nil {

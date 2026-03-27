@@ -105,9 +105,12 @@ func TestRenderAssessmentHTML(t *testing.T) {
 		t.Error("output should contain report title")
 	}
 
-	// Must contain grade badge.
-	if !strings.Contains(html, "Grade: A") {
-		t.Error("output should contain grade badge")
+	// Must contain grade badge (letter only) and score line.
+	if !strings.Contains(html, ">A</div>") {
+		t.Error("output should contain grade badge letter")
+	}
+	if !strings.Contains(html, "Scored 95/100") {
+		t.Error("output should contain topline story with score")
 	}
 
 	// Must contain run ID.
@@ -269,11 +272,12 @@ func TestRenderAssessmentHTML_WithCapWarning(t *testing.T) {
 	}
 
 	html := buf.String()
-	if !strings.Contains(html, "Grade Capped") {
-		t.Error("output should contain grade cap warning")
+	// Cap info is now in the topline story, not a separate warning box.
+	if !strings.Contains(html, "capped at") {
+		t.Error("output should contain cap info in topline story")
 	}
 	if !strings.Contains(html, "Unprotected servers found") {
-		t.Error("output should contain cap reason")
+		t.Error("output should contain cap reason in topline story")
 	}
 }
 

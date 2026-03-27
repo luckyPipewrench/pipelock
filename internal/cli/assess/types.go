@@ -109,6 +109,7 @@ type Assessment struct {
 	Findings      []Finding           `json:"findings"`
 	Sources       AssessSources       `json:"sources"`
 	Annexes       []Annex             `json:"annexes,omitempty"`
+	Signed        bool                `json:"signed"` // set by finalize before rendering
 }
 
 // Summary is the compact, human-readable assessment projection.

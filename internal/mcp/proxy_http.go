@@ -226,6 +226,13 @@ func scanHTTPInput(msg []byte, logW io.Writer, sessionKey, auditSessionKey strin
 		}
 	}
 
+	// On-entry de-escalation: recover sessions stuck at block_all.
+	// Runs before any per-message action so both clean and non-clean
+	// messages benefit from recovery.
+	if rec != nil {
+		tryRecoverSession(rec, adaptiveCfg, m)
+	}
+
 	// Determine input scanning parameters.
 	action := config.ActionWarn
 	onParseError := config.ActionBlock
@@ -302,10 +309,6 @@ func scanHTTPInput(msg []byte, logW io.Writer, sessionKey, auditSessionKey strin
 
 	// All clean — proceed (with block_all and CEE checks).
 	if verdict.Clean && !policyVerdict.Matched && chainAction == "" {
-		// On-entry de-escalation: recover sessions stuck at block_all.
-		if rec != nil {
-			tryRecoverSession(rec, adaptiveCfg, m)
-		}
 		// block_all enforcement: deny ALL traffic (including clean) when the
 		// session is at an escalation level with block_all=true.
 		if rec != nil && decide.UpgradeAction("", rec.EscalationLevel(), adaptiveCfg) == config.ActionBlock {

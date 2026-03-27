@@ -518,10 +518,15 @@ func (sm *SessionManager) sweepDeescalation() {
 
 	for _, sess := range sessions {
 		changed, from, to := sess.TryAutoRecover(blockAllCheck)
-		if changed {
+		if changed && sm.metrics != nil {
 			fromLabel := session.EscalationLabel(from)
 			toLabel := session.EscalationLabel(to)
-			if sm.metrics != nil {
+			// Only emit gauge updates if the session is still live in the map.
+			// Cleanup may have evicted and already decremented its gauge.
+			sm.mu.RLock()
+			_, stillLive := sm.sessions[sess.key]
+			sm.mu.RUnlock()
+			if stillLive {
 				sm.metrics.RecordSessionAutoDeescalation(fromLabel, toLabel)
 				if from > 0 {
 					sm.metrics.SetAdaptiveSessionLevel(fromLabel, -1)

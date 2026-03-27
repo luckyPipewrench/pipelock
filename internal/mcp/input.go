@@ -580,6 +580,13 @@ func ForwardScannedInput(
 			}
 		}
 
+		// On-entry de-escalation: recover sessions stuck at block_all.
+		// Runs before any per-message action so both clean and non-clean
+		// messages benefit from recovery.
+		if rec != nil {
+			tryRecoverSession(rec, adaptiveCfg, m)
+		}
+
 		verdict := ScanRequest(line, sc, action, onParseError)
 
 		// Tool call policy check — independent of content scanning.
@@ -676,10 +683,6 @@ func ForwardScannedInput(
 
 		// All clean — forward (with block_all and CEE checks).
 		if verdict.Clean && !policyVerdict.Matched && bindingAction == "" && chainAction == "" {
-			// On-entry de-escalation: recover sessions stuck at block_all.
-			if rec != nil {
-				tryRecoverSession(rec, adaptiveCfg, m)
-			}
 			// block_all enforcement: deny ALL traffic (including clean) when the
 			// session is at an escalation level with block_all=true.
 			if rec != nil && decide.UpgradeAction("", rec.EscalationLevel(), adaptiveCfg) == config.ActionBlock {

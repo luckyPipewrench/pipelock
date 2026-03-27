@@ -123,7 +123,15 @@ func executeFetchProxy(cmd *cobra.Command, manifest *RedirectManifest, payload [
 			fmt.Sprintf("creating fetch request: %v", err))
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	// Dedicated client: no redirect following (prevents open-redirect abuse)
+	// and an explicit timeout as belt-and-suspenders with the context timeout.
+	client := &http.Client{
+		Timeout: fetchProxyTimeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return emitRedirectError(cmd, redirectProfileFetchProxy,
 			fmt.Sprintf("fetch request failed: %v", err))
@@ -157,8 +165,12 @@ func executeFetchProxy(cmd *cobra.Command, manifest *RedirectManifest, payload [
 	})
 }
 
-// extractURL finds the first http:// or https:// URL in text.
-// When both schemes are present, whichever appears first wins.
+// extractURL finds the earliest http:// or https:// URL in text.
+// This is a best-effort heuristic for extracting URLs from unstructured
+// tool arguments. It does not parse JSON or understand tool-specific
+// schemas. Known limitation: an attacker could place a decoy URL before
+// the real target. This is mitigated by the redirect pipeline scanning
+// the handler's output for injection before delivery to the agent.
 func extractURL(text string) string {
 	bestIdx := -1
 	bestEnd := 0
@@ -190,19 +202,35 @@ const maxQuarantineFiles = 1000
 // executeQuarantineWrite diverts a write to a quarantine directory for operator
 // review. Returns a success-shaped response so the agent does not retry.
 func executeQuarantineWrite(cmd *cobra.Command, manifest *RedirectManifest, payload []string) error {
-	if manifest.QuarantineDir == "" {
+	qDir := filepath.Clean(manifest.QuarantineDir)
+	if qDir == "" || qDir == "." {
 		return emitRedirectError(cmd, redirectProfileQuarantineWrite, "no quarantine_dir in manifest")
 	}
-	qDir := filepath.Clean(manifest.QuarantineDir)
 
-	// Create dir if it doesn't exist.
+	// Create dir if it doesn't exist (before EvalSymlinks, which requires existence).
 	if err := os.MkdirAll(qDir, 0o750); err != nil {
 		return emitRedirectError(cmd, redirectProfileQuarantineWrite,
 			fmt.Sprintf("creating quarantine dir: %v", err))
 	}
 
+	// Resolve symlinks and verify the path is a real directory.
+	realDir, err := filepath.EvalSymlinks(qDir)
+	if err != nil {
+		return emitRedirectError(cmd, redirectProfileQuarantineWrite,
+			fmt.Sprintf("resolving quarantine dir: %v", err))
+	}
+	info, err := os.Lstat(realDir)
+	if err != nil {
+		return emitRedirectError(cmd, redirectProfileQuarantineWrite,
+			fmt.Sprintf("checking quarantine dir: %v", err))
+	}
+	if !info.IsDir() {
+		return emitRedirectError(cmd, redirectProfileQuarantineWrite,
+			"quarantine path is not a directory")
+	}
+
 	// Check file count limit.
-	entries, err := os.ReadDir(qDir)
+	entries, err := os.ReadDir(realDir)
 	if err != nil {
 		return emitRedirectError(cmd, redirectProfileQuarantineWrite,
 			fmt.Sprintf("reading quarantine dir: %v", err))
@@ -231,10 +259,18 @@ func executeQuarantineWrite(cmd *cobra.Command, manifest *RedirectManifest, payl
 	// Write with timestamp + hash filename.
 	h := sha256.Sum256(data)
 	filename := fmt.Sprintf("%s-%s.json", now.Format("20060102T150405Z"), hex.EncodeToString(h[:4]))
-	path := filepath.Join(qDir, filename)
+	path := filepath.Join(realDir, filename)
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return emitRedirectError(cmd, redirectProfileQuarantineWrite,
 			fmt.Sprintf("writing quarantine file: %v", err))
+	}
+
+	// Verify the written file is a regular file (not a symlink swapped in during write).
+	written, err := os.Lstat(path)
+	if err != nil || written.Mode()&os.ModeSymlink != 0 {
+		_ = os.Remove(path)
+		return emitRedirectError(cmd, redirectProfileQuarantineWrite,
+			"quarantine file replaced by symlink during write")
 	}
 
 	return emitRedirectResult(cmd, &RedirectResult{

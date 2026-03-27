@@ -71,8 +71,11 @@ func buildRedirectRT(cfg *config.Config) *mcp.RedirectRuntime {
 	if cfg.FetchProxy.Listen != "" {
 		host, port, err := net.SplitHostPort(cfg.FetchProxy.Listen)
 		if err == nil {
-			if host == "" || host == "0.0.0.0" || host == "::" {
+			switch host {
+			case "", "0.0.0.0":
 				host = "127.0.0.1"
+			case "::":
+				host = "::1"
 			}
 			rt.FetchEndpoint = "http://" + net.JoinHostPort(host, port) + "/fetch"
 		}

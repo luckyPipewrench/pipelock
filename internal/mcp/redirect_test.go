@@ -5,12 +5,21 @@ package mcp
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
+)
+
+const (
+	profileTestProfile = "test-profile"
+	profileFetchProxy  = "fetch-proxy"
+	ruleBlockCurl      = "block-curl"
+	ruleTestRule       = "test-rule"
 )
 
 func TestExecuteRedirect_Success(t *testing.T) {
@@ -23,7 +32,7 @@ func TestExecuteRedirect_Success(t *testing.T) {
 		Reason: "test redirect",
 	}
 	requestID := json.RawMessage(`42`)
-	result := executeRedirect(profile, "test-profile", requestID, `{"tool":"test"}`, "test-rule", nil)
+	result := executeRedirect(profile, profileTestProfile, requestID, `{"tool":"test"}`, ruleTestRule, nil)
 
 	if !result.Success {
 		t.Fatalf("expected success, got error: %s", result.Error)
@@ -73,7 +82,7 @@ func TestExecuteRedirect_PreserveArgv(t *testing.T) {
 	}
 	requestID := json.RawMessage(`1`)
 	origArgs := `{"command":"curl https://example.com"}`
-	result := executeRedirect(profile, "test-profile", requestID, origArgs, "test-rule", nil)
+	result := executeRedirect(profile, profileTestProfile, requestID, origArgs, ruleTestRule, nil)
 
 	if !result.Success {
 		t.Fatalf("expected success, got error: %s", result.Error)
@@ -107,7 +116,7 @@ func TestExecuteRedirect_Failure(t *testing.T) {
 		Reason: "test failure",
 	}
 	requestID := json.RawMessage(`99`)
-	result := executeRedirect(profile, "test-profile", requestID, `{}`, "", nil)
+	result := executeRedirect(profile, profileTestProfile, requestID, `{}`, "", nil)
 
 	if result.Success {
 		t.Error("expected failure for /bin/false")
@@ -126,7 +135,7 @@ func TestExecuteRedirect_NonexistentCommand(t *testing.T) {
 		Reason: "test missing binary",
 	}
 	requestID := json.RawMessage(`1`)
-	result := executeRedirect(profile, "test-profile", requestID, `{}`, "", nil)
+	result := executeRedirect(profile, profileTestProfile, requestID, `{}`, "", nil)
 
 	if result.Success {
 		t.Error("expected failure for nonexistent command")
@@ -147,7 +156,7 @@ func TestExecuteRedirect_ManifestInjected(t *testing.T) {
 		Reason: "test manifest injection",
 	}
 	requestID := json.RawMessage(`1`)
-	result := executeRedirect(profile, "fetch-proxy", requestID, `{}`, "block-curl", nil)
+	result := executeRedirect(profile, profileFetchProxy, requestID, `{}`, ruleBlockCurl, nil)
 
 	if !result.Success {
 		t.Fatalf("expected success, got error: %s", result.Error)
@@ -172,13 +181,13 @@ func TestExecuteRedirect_ManifestInjected(t *testing.T) {
 	if err := json.Unmarshal([]byte(manifestStr), &manifest); err != nil {
 		t.Fatalf("invalid manifest JSON from child: %v\nraw: %s", err, manifestStr)
 	}
-	if manifest.Profile != "fetch-proxy" {
+	if manifest.Profile != profileFetchProxy {
 		t.Errorf("manifest.Profile = %q, want fetch-proxy", manifest.Profile)
 	}
 	if manifest.Reason != "test manifest injection" {
 		t.Errorf("manifest.Reason = %q, want 'test manifest injection'", manifest.Reason)
 	}
-	if manifest.PolicyRule != "block-curl" {
+	if manifest.PolicyRule != ruleBlockCurl {
 		t.Errorf("manifest.PolicyRule = %q, want block-curl", manifest.PolicyRule)
 	}
 }
@@ -244,7 +253,7 @@ func TestExecuteRedirect_ManifestIncludesRuntime(t *testing.T) {
 		QuarantineDir: "/tmp/pipelock-quarantine",
 	}
 	requestID := json.RawMessage(`1`)
-	result := executeRedirect(profile, "test-profile", requestID, `{}`, "test-rule", rt)
+	result := executeRedirect(profile, profileTestProfile, requestID, `{}`, ruleTestRule, rt)
 
 	if !result.Success {
 		t.Fatalf("expected success, got error: %s", result.Error)
@@ -289,5 +298,146 @@ func TestExtractToolCallFields_MissingArguments(t *testing.T) {
 	}
 	if args != "{}" {
 		t.Errorf("args = %q, want {} for missing arguments", args)
+	}
+}
+
+func TestExecuteRedirect_FetchProxyEndToEnd(t *testing.T) {
+	if runtime.GOOS == osWindows {
+		t.Skip("exec test requires unix shell")
+	}
+
+	// Start a mock fetch endpoint that returns known content.
+	fetchServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetURL := r.URL.Query().Get("url")
+		resp := map[string]any{
+			"url":     targetURL,
+			"content": "Safe content from " + targetURL,
+			"blocked": false,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer fetchServer.Close()
+
+	// Use printenv to capture the manifest; verifies runtime fields are plumbed.
+	profile := config.RedirectProfile{
+		Exec:         []string{"/bin/sh", "-c", "printenv __PIPELOCK_REDIRECT_MANIFEST"},
+		Reason:       "test fetch-proxy e2e",
+		PreserveArgv: true,
+	}
+	rt := &RedirectRuntime{
+		FetchEndpoint: fetchServer.URL,
+		QuarantineDir: t.TempDir(),
+	}
+	requestID := json.RawMessage(`42`)
+	toolArgs := `{"command":"curl https://example.com/api"}`
+
+	result := executeRedirect(profile, profileFetchProxy, requestID, toolArgs, ruleBlockCurl, rt)
+	if !result.Success {
+		t.Fatalf("expected success, got error: %s", result.Error)
+	}
+
+	// Parse the synthetic JSON-RPC response to get the handler's stdout.
+	var rpc struct {
+		Result struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(result.Response, &rpc); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+	if len(rpc.Result.Content) == 0 {
+		t.Fatal("no content in response")
+	}
+
+	// Parse the manifest from the handler's stdout.
+	var manifest struct {
+		Profile       string `json:"profile"`
+		FetchEndpoint string `json:"fetch_endpoint"`
+		QuarantineDir string `json:"quarantine_dir"`
+		PolicyRule    string `json:"policy_rule"`
+		Reason        string `json:"reason"`
+	}
+	manifestStr := strings.TrimSpace(rpc.Result.Content[0].Text)
+	if err := json.Unmarshal([]byte(manifestStr), &manifest); err != nil {
+		t.Fatalf("failed to parse manifest: %v\nraw: %s", err, manifestStr)
+	}
+
+	if manifest.FetchEndpoint != fetchServer.URL {
+		t.Errorf("expected FetchEndpoint=%q, got %q", fetchServer.URL, manifest.FetchEndpoint)
+	}
+	if manifest.QuarantineDir == "" {
+		t.Error("expected non-empty QuarantineDir in manifest")
+	}
+	if manifest.PolicyRule != ruleBlockCurl {
+		t.Errorf("expected PolicyRule=%s, got %q", ruleBlockCurl, manifest.PolicyRule)
+	}
+	if manifest.Profile != profileFetchProxy {
+		t.Errorf("expected Profile=%s, got %q", profileFetchProxy, manifest.Profile)
+	}
+}
+
+func TestExecuteRedirect_QuarantineWriteEndToEnd(t *testing.T) {
+	if runtime.GOOS == osWindows {
+		t.Skip("exec test requires unix shell")
+	}
+
+	qDir := t.TempDir()
+
+	// Use printenv to verify the manifest contains QuarantineDir.
+	profile := config.RedirectProfile{
+		Exec:         []string{"/bin/sh", "-c", "printenv __PIPELOCK_REDIRECT_MANIFEST"},
+		Reason:       "test quarantine e2e",
+		PreserveArgv: true,
+	}
+	rt := &RedirectRuntime{
+		FetchEndpoint: "http://127.0.0.1:8888/fetch",
+		QuarantineDir: qDir,
+	}
+	requestID := json.RawMessage(`99`)
+	toolArgs := `{"path":"/etc/shadow","content":"secret"}`
+
+	const ruleWriteFile = "write-file"
+	const profileQuarantineWrite = "quarantine-write"
+	result := executeRedirect(profile, profileQuarantineWrite, requestID, toolArgs, ruleWriteFile, rt)
+	if !result.Success {
+		t.Fatalf("expected success, got error: %s", result.Error)
+	}
+
+	// Verify manifest contains quarantine dir.
+	var rpc struct {
+		Result struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(result.Response, &rpc); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+	if len(rpc.Result.Content) == 0 {
+		t.Fatal("no content in response")
+	}
+
+	var manifest struct {
+		Profile       string `json:"profile"`
+		QuarantineDir string `json:"quarantine_dir"`
+		PolicyRule    string `json:"policy_rule"`
+	}
+	manifestStr := strings.TrimSpace(rpc.Result.Content[0].Text)
+	if err := json.Unmarshal([]byte(manifestStr), &manifest); err != nil {
+		t.Fatalf("failed to parse manifest: %v\nraw: %s", err, manifestStr)
+	}
+
+	if manifest.QuarantineDir != qDir {
+		t.Errorf("expected QuarantineDir=%q, got %q", qDir, manifest.QuarantineDir)
+	}
+	if manifest.PolicyRule != ruleWriteFile {
+		t.Errorf("expected PolicyRule=%s, got %q", ruleWriteFile, manifest.PolicyRule)
+	}
+	if manifest.Profile != profileQuarantineWrite {
+		t.Errorf("expected Profile=%s, got %q", profileQuarantineWrite, manifest.Profile)
 	}
 }

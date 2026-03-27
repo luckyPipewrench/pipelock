@@ -442,6 +442,44 @@ func TestExtractURL(t *testing.T) {
 	}
 }
 
+func TestExecuteFetchProxy_RedirectNotFollowed(t *testing.T) {
+	// Server sends a 302 redirect. The client must NOT follow it (open-redirect defense).
+	// CheckRedirect returns ErrUseLastResponse, so the redirect response is treated as final.
+	fetchProxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://evil.com/exfil", http.StatusFound)
+	}))
+	defer fetchProxy.Close()
+
+	cmd := InternalRedirectCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+
+	manifest := RedirectManifest{
+		Profile:       redirectProfileFetchProxy,
+		Reason:        "test redirect defense",
+		FetchEndpoint: fetchProxy.URL,
+	}
+	manifestJSON, _ := json.Marshal(manifest)
+	t.Setenv("__PIPELOCK_REDIRECT_MANIFEST", string(manifestJSON))
+
+	cmd.SetArgs([]string{redirectProfileFetchProxy, `{"command":"curl https://example.com"}`})
+	err := cmd.Execute()
+
+	// The redirect response body is HTML, not JSON, so JSON decode fails.
+	if err == nil {
+		t.Fatal("expected error from non-JSON redirect response")
+	}
+
+	var result RedirectResult
+	_ = json.Unmarshal(buf.Bytes(), &result)
+	if result.Status != redirectStatusError {
+		t.Errorf("expected error status, got %q", result.Status)
+	}
+	if !strings.Contains(result.Error, "decoding fetch response") {
+		t.Errorf("expected decode error, got %q", result.Error)
+	}
+}
+
 func TestExecuteQuarantineWrite_Success(t *testing.T) {
 	dir := t.TempDir()
 
@@ -613,5 +651,204 @@ func TestExecuteQuarantineWrite_NoDir(t *testing.T) {
 	_ = json.Unmarshal(buf.Bytes(), &result)
 	if result.Status != redirectStatusError {
 		t.Errorf("expected error for missing dir, got %q", result.Status)
+	}
+}
+
+func TestExecuteQuarantineWrite_SymlinkDir(t *testing.T) {
+	// Symlink to a real directory. EvalSymlinks resolves it successfully.
+	realDir := t.TempDir()
+	symlinkDir := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(realDir, symlinkDir); err != nil {
+		t.Skip("symlinks not supported:", err)
+	}
+
+	cmd := InternalRedirectCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+
+	manifest := RedirectManifest{
+		Profile:       redirectProfileQuarantineWrite,
+		Reason:        "test",
+		QuarantineDir: symlinkDir,
+	}
+	manifestJSON, _ := json.Marshal(manifest)
+	t.Setenv("__PIPELOCK_REDIRECT_MANIFEST", string(manifestJSON))
+
+	cmd.SetArgs([]string{redirectProfileQuarantineWrite, `{"data":"test"}`})
+	err := cmd.Execute()
+	if err != nil {
+		t.Fatalf("expected success with symlink to real dir, got: %v", err)
+	}
+
+	// Success path writes raw text to stdout.
+	if !strings.Contains(buf.String(), "quarantined") {
+		t.Errorf("expected success with symlink to real dir, got: %s", buf.String())
+	}
+
+	// Verify the quarantine file landed in the real directory (after symlink resolution).
+	entries, err := os.ReadDir(realDir)
+	if err != nil {
+		t.Fatalf("failed to read real dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Errorf("expected 1 quarantine file in resolved dir, got %d", len(entries))
+	}
+}
+
+func TestExecuteQuarantineWrite_NotADirectory(t *testing.T) {
+	// Create a regular file where the quarantine "dir" is expected.
+	// MkdirAll fails because the path already exists as a file, not a dir.
+	tmp := t.TempDir()
+	fakePath := filepath.Join(tmp, "not-a-dir")
+	if err := os.WriteFile(fakePath, []byte("I am a file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := InternalRedirectCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+
+	manifest := RedirectManifest{
+		Profile:       redirectProfileQuarantineWrite,
+		Reason:        "test",
+		QuarantineDir: fakePath,
+	}
+	manifestJSON, _ := json.Marshal(manifest)
+	t.Setenv("__PIPELOCK_REDIRECT_MANIFEST", string(manifestJSON))
+
+	cmd.SetArgs([]string{redirectProfileQuarantineWrite, `{"data":"test"}`})
+	err := cmd.Execute()
+	if err == nil {
+		t.Error("expected error for non-directory quarantine path")
+	}
+
+	var result RedirectResult
+	_ = json.Unmarshal(buf.Bytes(), &result)
+	if result.Status != redirectStatusError {
+		t.Errorf("expected error status, got %q", result.Status)
+	}
+	// MkdirAll fails when the path is a regular file, hitting the
+	// "creating quarantine dir" error branch.
+	if !strings.Contains(result.Error, "creating quarantine dir") {
+		t.Errorf("expected 'creating quarantine dir' error, got %q", result.Error)
+	}
+}
+
+func TestExecuteQuarantineWrite_EmptyPayload(t *testing.T) {
+	dir := t.TempDir()
+
+	cmd := InternalRedirectCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+
+	manifest := RedirectManifest{
+		Profile:       redirectProfileQuarantineWrite,
+		Reason:        "test empty",
+		PolicyRule:    "test-rule",
+		QuarantineDir: dir,
+	}
+	manifestJSON, _ := json.Marshal(manifest)
+	t.Setenv("__PIPELOCK_REDIRECT_MANIFEST", string(manifestJSON))
+
+	// No payload args -- should still succeed (empty string logged).
+	cmd.SetArgs([]string{redirectProfileQuarantineWrite})
+	err := cmd.Execute()
+	if err != nil {
+		t.Fatalf("unexpected error with empty payload: %v", err)
+	}
+
+	if !strings.Contains(buf.String(), "quarantined") {
+		t.Errorf("expected success with empty payload, got: %s", buf.String())
+	}
+
+	// Verify the quarantine file was written even with empty payload.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("failed to read dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Errorf("expected 1 quarantine file, got %d", len(entries))
+	}
+
+	// Verify the entry has empty tool_args.
+	data, err := os.ReadFile(filepath.Clean(filepath.Join(dir, entries[0].Name())))
+	if err != nil {
+		t.Fatalf("failed to read quarantine file: %v", err)
+	}
+	var entry map[string]string
+	if err := json.Unmarshal(data, &entry); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if entry["tool_args"] != "" {
+		t.Errorf("expected empty tool_args, got %q", entry["tool_args"])
+	}
+	if entry["policy_rule"] != "test-rule" {
+		t.Errorf("expected policy_rule=test-rule, got %q", entry["policy_rule"])
+	}
+}
+
+func TestExecuteQuarantineWrite_UnreadableDir(t *testing.T) {
+	// Remove read permission so ReadDir fails. Skip if running as root.
+	if os.Getuid() == 0 {
+		t.Skip("root bypasses permission checks")
+	}
+
+	dir := t.TempDir()
+	// Remove read+execute permission so ReadDir fails.
+	if err := os.Chmod(dir, 0o200); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(dir, 0o600) // restore for t.TempDir cleanup
+	})
+
+	cmd := InternalRedirectCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+
+	manifest := RedirectManifest{
+		Profile:       redirectProfileQuarantineWrite,
+		Reason:        "test unreadable",
+		QuarantineDir: dir,
+	}
+	manifestJSON, _ := json.Marshal(manifest)
+	t.Setenv("__PIPELOCK_REDIRECT_MANIFEST", string(manifestJSON))
+
+	cmd.SetArgs([]string{redirectProfileQuarantineWrite, `{"data":"test"}`})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for unreadable quarantine dir")
+	}
+
+	var result RedirectResult
+	_ = json.Unmarshal(buf.Bytes(), &result)
+	if result.Status != redirectStatusError {
+		t.Errorf("expected error status, got %q", result.Status)
+	}
+	if !strings.Contains(result.Error, "reading quarantine dir") {
+		t.Errorf("expected 'reading quarantine dir' error, got %q", result.Error)
+	}
+}
+
+func TestExecuteQuarantineWrite_InvalidManifestJSON(t *testing.T) {
+	t.Setenv("__PIPELOCK_REDIRECT_MANIFEST", "{invalid json")
+
+	cmd := InternalRedirectCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{redirectProfileQuarantineWrite, `{"data":"test"}`})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for invalid manifest JSON")
+	}
+
+	var result RedirectResult
+	_ = json.Unmarshal(buf.Bytes(), &result)
+	if result.Status != redirectStatusError {
+		t.Errorf("expected error status, got %q", result.Status)
+	}
+	if !strings.Contains(result.Error, "invalid manifest JSON") {
+		t.Errorf("expected 'invalid manifest JSON' error, got %q", result.Error)
 	}
 }

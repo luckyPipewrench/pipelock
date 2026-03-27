@@ -519,6 +519,7 @@ func TestExecuteQuarantineWrite_Success(t *testing.T) {
 func TestExecuteQuarantineWrite_DirFull(t *testing.T) {
 	dir := t.TempDir()
 
+	// 1001 files: above the limit, always blocked regardless of > vs >=.
 	for i := range 1001 {
 		_ = os.WriteFile(filepath.Join(dir, fmt.Sprintf("file-%d.json", i)), []byte("{}"), 0o600)
 	}
@@ -542,6 +543,36 @@ func TestExecuteQuarantineWrite_DirFull(t *testing.T) {
 	_ = json.Unmarshal(buf.Bytes(), &result)
 	if result.Status != redirectStatusError {
 		t.Errorf("expected error status, got %q", result.Status)
+	}
+}
+
+func TestExecuteQuarantineWrite_DirExactlyAtLimit(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create exactly maxQuarantineFiles files.
+	for i := range 1000 {
+		_ = os.WriteFile(filepath.Join(dir, fmt.Sprintf("file-%d.json", i)), []byte("{}"), 0o600)
+	}
+
+	cmd := InternalRedirectCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+
+	manifest := RedirectManifest{
+		Profile:       redirectProfileQuarantineWrite,
+		Reason:        "test",
+		QuarantineDir: dir,
+	}
+	manifestJSON, _ := json.Marshal(manifest)
+	t.Setenv("__PIPELOCK_REDIRECT_MANIFEST", string(manifestJSON))
+
+	cmd.SetArgs([]string{redirectProfileQuarantineWrite, `{"data":"test"}`})
+	_ = cmd.Execute()
+
+	var result RedirectResult
+	_ = json.Unmarshal(buf.Bytes(), &result)
+	if result.Status != redirectStatusError {
+		t.Errorf("expected error at exactly %d files, got %q", maxQuarantineFiles, result.Status)
 	}
 }
 

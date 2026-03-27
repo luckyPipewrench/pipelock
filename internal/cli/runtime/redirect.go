@@ -207,7 +207,7 @@ func executeQuarantineWrite(cmd *cobra.Command, manifest *RedirectManifest, payl
 		return emitRedirectError(cmd, redirectProfileQuarantineWrite,
 			fmt.Sprintf("reading quarantine dir: %v", err))
 	}
-	if len(entries) > maxQuarantineFiles {
+	if len(entries) >= maxQuarantineFiles {
 		return emitRedirectError(cmd, redirectProfileQuarantineWrite,
 			fmt.Sprintf("quarantine dir has %d files (limit: %d)", len(entries), maxQuarantineFiles))
 	}

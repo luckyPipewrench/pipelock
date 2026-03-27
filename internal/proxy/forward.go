@@ -812,7 +812,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// redirects — an exempt host that 302s to a non-exempt host must be scanned.
 	fwdRespHost := resp.Request.URL.Hostname()
 	fwdRespExempt := isResponseScanExempt(fwdRespHost, cfg.ResponseScanning.ExemptDomains)
-	if fwdRespExempt {
+	if sc.ResponseScanningEnabled() && fwdRespExempt {
 		p.logger.LogAnomaly(r.Method, targetURL, "response_scan", fmt.Sprintf("response scan skipped: host %q matched exempt_domains", fwdRespHost), clientIP, requestID, agent, 0)
 	}
 	if sc.ResponseScanningEnabled() && !fwdRespExempt {

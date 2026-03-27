@@ -1191,7 +1191,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// URL. An exempt origin that 302s to a non-exempt host must still be scanned.
 	finalHost := resp.Request.URL.Hostname()
 	responseScanExempt := isResponseScanExempt(finalHost, cfg.ResponseScanning.ExemptDomains)
-	if responseScanExempt {
+	if sc.ResponseScanningEnabled() && responseScanExempt {
 		log.LogAnomaly("GET", displayURL, "response_scan", fmt.Sprintf("response scan skipped: host %q matched exempt_domains", finalHost), clientIP, requestID, agent, 0)
 	}
 	var hiddenInjectionFound bool

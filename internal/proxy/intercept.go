@@ -490,33 +490,18 @@ func newInterceptHandler(
 			}
 		}
 
-		// On-entry fast path: if the session has been at its current level past
-		// maxLevelDuration, de-escalate before the block_all check so recovery
-		// can clear block_all for intercepted requests.
-		if rec != nil && cfg.AdaptiveEnforcement.Enabled {
-			if ss, ok := rec.(*SessionState); ok {
-				adaptiveCfg := cfg.AdaptiveEnforcement
-				blockAllCheck := func(level int) bool {
-					return decide.UpgradeAction("", level, &adaptiveCfg) == config.ActionBlock
-				}
-				if changed, from, to := ss.TryAutoRecover(blockAllCheck); changed {
-					fromLabel := session.EscalationLabel(from)
-					toLabel := session.EscalationLabel(to)
-					if p != nil && p.metrics != nil {
-						p.metrics.RecordSessionAutoDeescalation(fromLabel, toLabel)
-						if from > 0 {
-							p.metrics.SetAdaptiveSessionLevel(fromLabel, -1)
-						}
-						if to > 0 {
-							p.metrics.SetAdaptiveSessionLevel(toLabel, 1)
-						}
-					}
-					sessionKey := clientIP
-					if agent != "" && agent != agentAnonymous {
-						sessionKey = agent + "|" + clientIP
-					}
-					logger.LogAdaptiveEscalation(sessionKey, fromLabel, toLabel, clientIP, requestID, rec.ThreatScore())
-				}
+		// On-entry de-escalation for intercepted CONNECT requests.
+		var interceptMetrics *metrics.Metrics
+		if p != nil {
+			interceptMetrics = p.metrics
+		}
+		if changed, fromLabel, toLabel := trySessionRecovery(rec, &cfg.AdaptiveEnforcement, interceptMetrics); changed {
+			sessionKey := clientIP
+			if agent != "" && agent != agentAnonymous {
+				sessionKey = agent + "|" + clientIP
+			}
+			if logger != nil {
+				logger.LogAdaptiveEscalation(sessionKey, fromLabel, toLabel, clientIP, requestID, rec.ThreatScore())
 			}
 		}
 

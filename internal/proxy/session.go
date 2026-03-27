@@ -539,6 +539,39 @@ func (sm *SessionManager) sweepDeescalation() {
 	}
 }
 
+// trySessionRecovery attempts time-based de-escalation on a session and emits
+// metrics if recovery fires. Returns (changed, fromLabel, toLabel) for callers
+// that need to log the transition. No-op when adaptive enforcement is disabled,
+// the session is nil, or the session is not a *SessionState.
+func trySessionRecovery(rec session.Recorder, adaptiveCfg *config.AdaptiveEnforcement, m *metrics.Metrics) (bool, string, string) {
+	if adaptiveCfg == nil || !adaptiveCfg.Enabled {
+		return false, "", ""
+	}
+	ss, ok := rec.(*SessionState)
+	if !ok || ss == nil {
+		return false, "", ""
+	}
+	blockAllCheck := func(level int) bool {
+		return decide.UpgradeAction("", level, adaptiveCfg) == config.ActionBlock
+	}
+	changed, from, to := ss.TryAutoRecover(blockAllCheck)
+	if !changed {
+		return false, "", ""
+	}
+	fromLabel := session.EscalationLabel(from)
+	toLabel := session.EscalationLabel(to)
+	if m != nil {
+		m.RecordSessionAutoDeescalation(fromLabel, toLabel)
+		if from > 0 {
+			m.SetAdaptiveSessionLevel(fromLabel, -1)
+		}
+		if to > 0 {
+			m.SetAdaptiveSessionLevel(toLabel, 1)
+		}
+	}
+	return true, fromLabel, toLabel
+}
+
 // storeAdapter wraps SessionManager to implement session.Store.
 // SessionState already satisfies session.Recorder via its RecordSignal,
 // RecordClean, EscalationLevel, and ThreatScore methods.

@@ -30,6 +30,10 @@ const (
 	testLevelHigh     = "high"
 	testLevelCritical = "critical"
 	testClient        = "test-client"
+
+	// Prometheus metric/label names used across gauge assertions.
+	metricAdaptiveSessions = "pipelock_adaptive_sessions_current"
+	metricLabelLevel       = "level"
 )
 
 func testSessionConfig() *config.SessionProfiling {
@@ -506,12 +510,12 @@ func adaptiveElevatedGaugeValue(t *testing.T, m *metrics.Metrics) float64 {
 		t.Fatalf("gather metrics: %v", err)
 	}
 	for _, fam := range fams {
-		if fam.GetName() != "pipelock_adaptive_sessions_current" {
+		if fam.GetName() != metricAdaptiveSessions {
 			continue
 		}
 		for _, metric := range fam.GetMetric() {
 			for _, lbl := range metric.GetLabel() {
-				if lbl.GetName() == "level" && lbl.GetValue() == testLevelElevated {
+				if lbl.GetName() == metricLabelLevel && lbl.GetValue() == testLevelElevated {
 					return metric.GetGauge().GetValue()
 				}
 			}
@@ -2017,15 +2021,197 @@ func TestSessionManager_SweepMetrics_ToZeroSkipsGaugeIncrement(t *testing.T) {
 		t.Fatalf("gather metrics: %v", err)
 	}
 	for _, fam := range fams {
-		if fam.GetName() != "pipelock_adaptive_sessions_current" {
+		if fam.GetName() != metricAdaptiveSessions {
 			continue
 		}
 		for _, metric := range fam.GetMetric() {
 			for _, lbl := range metric.GetLabel() {
-				if lbl.GetName() == "level" && lbl.GetValue() == testLevelNormal && metric.GetGauge().GetValue() > 0 {
+				if lbl.GetName() == metricLabelLevel && lbl.GetValue() == testLevelNormal && metric.GetGauge().GetValue() > 0 {
 					t.Error("should not increment gauge for normal level (to > 0 guard)")
 				}
 			}
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// trySessionRecovery helper tests
+// ---------------------------------------------------------------------------
+
+func TestTrySessionRecovery_Success(t *testing.T) {
+	cfg := testSessionConfig()
+	m := metrics.New()
+	sm := NewSessionManager(cfg, nil, m)
+	defer sm.Close()
+
+	sess := sm.GetOrCreate(testClient)
+	sess.mu.Lock()
+	sess.escalationLevel = 3
+	sess.lastEscalation = time.Now().Add(-6 * time.Minute)
+	sess.currentThreshold = 40.0
+	sess.threatScore = 20.0
+	sess.atBlockAll = true
+	sess.mu.Unlock()
+
+	blockAllTrue := true
+	adaptiveCfg := &config.AdaptiveEnforcement{
+		Enabled: true,
+		Levels: config.EscalationLevels{
+			Critical: config.EscalationActions{BlockAll: &blockAllTrue},
+		},
+	}
+
+	changed, fromLabel, toLabel := trySessionRecovery(sess, adaptiveCfg, m)
+	if !changed {
+		t.Fatal("expected recovery")
+	}
+	if fromLabel != testLevelCritical || toLabel != testLevelHigh {
+		t.Errorf("expected critical->high, got %s->%s", fromLabel, toLabel)
+	}
+
+	// Verify metrics.
+	wantCounter := `pipelock_session_auto_deescalation_total{from="` + testLevelCritical + `",to="` + testLevelHigh + `"} 1`
+	if !scrapeMetric(t, m, wantCounter) {
+		t.Error("missing deescalation counter")
+	}
+}
+
+func TestTrySessionRecovery_NilAdaptive(t *testing.T) {
+	cfg := testSessionConfig()
+	sm := NewSessionManager(cfg, nil, nil)
+	defer sm.Close()
+	sess := sm.GetOrCreate(testClient)
+
+	changed, _, _ := trySessionRecovery(sess, nil, nil)
+	if changed {
+		t.Error("should be no-op with nil adaptive config")
+	}
+}
+
+func TestTrySessionRecovery_DisabledAdaptive(t *testing.T) {
+	cfg := testSessionConfig()
+	sm := NewSessionManager(cfg, nil, nil)
+	defer sm.Close()
+	sess := sm.GetOrCreate(testClient)
+
+	adaptiveCfg := &config.AdaptiveEnforcement{Enabled: false}
+	changed, _, _ := trySessionRecovery(sess, adaptiveCfg, nil)
+	if changed {
+		t.Error("should be no-op with disabled adaptive")
+	}
+}
+
+func TestTrySessionRecovery_NonSessionState(t *testing.T) {
+	// Pass a session.Recorder that is NOT *SessionState.
+	adaptiveCfg := &config.AdaptiveEnforcement{Enabled: true}
+	var rec session.Recorder // nil interface
+	changed, _, _ := trySessionRecovery(rec, adaptiveCfg, nil)
+	if changed {
+		t.Error("should be no-op with nil recorder")
+	}
+}
+
+func TestTrySessionRecovery_NotExpired(t *testing.T) {
+	cfg := testSessionConfig()
+	sm := NewSessionManager(cfg, nil, nil)
+	defer sm.Close()
+	sess := sm.GetOrCreate(testClient)
+
+	sess.mu.Lock()
+	sess.escalationLevel = 3
+	sess.lastEscalation = time.Now().Add(-2 * time.Minute) // NOT expired
+	sess.currentThreshold = 40.0
+	sess.atBlockAll = true
+	sess.mu.Unlock()
+
+	blockAllTrue := true
+	adaptiveCfg := &config.AdaptiveEnforcement{
+		Enabled: true,
+		Levels: config.EscalationLevels{
+			Critical: config.EscalationActions{BlockAll: &blockAllTrue},
+		},
+	}
+
+	changed, _, _ := trySessionRecovery(sess, adaptiveCfg, nil)
+	if changed {
+		t.Error("should not recover before maxLevelDuration")
+	}
+}
+
+func TestTrySessionRecovery_ToZeroSkipsGauge(t *testing.T) {
+	cfg := testSessionConfig()
+	m := metrics.New()
+	sm := NewSessionManager(cfg, nil, m)
+	defer sm.Close()
+	sess := sm.GetOrCreate(testClient)
+
+	sess.mu.Lock()
+	sess.escalationLevel = 1
+	sess.lastEscalation = time.Now().Add(-6 * time.Minute)
+	sess.currentThreshold = 10.0
+	sess.threatScore = 5.0
+	sess.mu.Unlock()
+
+	adaptiveCfg := &config.AdaptiveEnforcement{
+		Enabled: true,
+		Levels:  config.EscalationLevels{},
+	}
+
+	changed, fromLabel, toLabel := trySessionRecovery(sess, adaptiveCfg, m)
+	if !changed {
+		t.Fatal("expected recovery")
+	}
+	if fromLabel != testLevelElevated || toLabel != testLevelNormal {
+		t.Errorf("expected elevated->normal, got %s->%s", fromLabel, toLabel)
+	}
+
+	// Verify "normal" gauge was NOT incremented (to > 0 guard).
+	fams, err := m.Registry().Gather()
+	if err != nil {
+		t.Fatalf("gather metrics: %v", err)
+	}
+	for _, fam := range fams {
+		if fam.GetName() != metricAdaptiveSessions {
+			continue
+		}
+		for _, metric := range fam.GetMetric() {
+			for _, lbl := range metric.GetLabel() {
+				if lbl.GetName() == metricLabelLevel && lbl.GetValue() == testLevelNormal && metric.GetGauge().GetValue() > 0 {
+					t.Error("should not increment normal gauge for to-zero recovery")
+				}
+			}
+		}
+	}
+}
+
+func TestTrySessionRecovery_NilMetrics(t *testing.T) {
+	cfg := testSessionConfig()
+	sm := NewSessionManager(cfg, nil, nil)
+	defer sm.Close()
+	sess := sm.GetOrCreate(testClient)
+
+	sess.mu.Lock()
+	sess.escalationLevel = 3
+	sess.lastEscalation = time.Now().Add(-6 * time.Minute)
+	sess.currentThreshold = 40.0
+	sess.threatScore = 20.0
+	sess.atBlockAll = true
+	sess.mu.Unlock()
+
+	blockAllTrue := true
+	adaptiveCfg := &config.AdaptiveEnforcement{
+		Enabled: true,
+		Levels: config.EscalationLevels{
+			Critical: config.EscalationActions{BlockAll: &blockAllTrue},
+		},
+	}
+
+	// Must not panic with nil metrics.
+	changed, fromLabel, toLabel := trySessionRecovery(sess, adaptiveCfg, nil)
+	if !changed {
+		t.Fatal("expected recovery even with nil metrics")
+	}
+	if fromLabel != testLevelCritical || toLabel != testLevelHigh {
+		t.Errorf("expected critical->high, got %s->%s", fromLabel, toLabel)
 	}
 }

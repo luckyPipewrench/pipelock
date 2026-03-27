@@ -558,29 +558,10 @@ func (p *Proxy) recordSessionActivity(clientIP, agent, hostname, requestID strin
 
 	sess := sm.GetOrCreate(key)
 
-	// On-entry fast path: if the session has been at its current level past
-	// maxLevelDuration, de-escalate before RecordRequest so lastActivity
-	// refreshes and block_all clears.
-	if cfg.AdaptiveEnforcement.Enabled {
-		adaptiveCfg := cfg.AdaptiveEnforcement
-		blockAllCheck := func(level int) bool {
-			return decide.UpgradeAction("", level, &adaptiveCfg) == config.ActionBlock
-		}
-		if changed, from, to := sess.TryAutoRecover(blockAllCheck); changed {
-			fromLabel := session.EscalationLabel(from)
-			toLabel := session.EscalationLabel(to)
-			if p.metrics != nil {
-				p.metrics.RecordSessionAutoDeescalation(fromLabel, toLabel)
-				if from > 0 {
-					p.metrics.SetAdaptiveSessionLevel(fromLabel, -1)
-				}
-				if to > 0 {
-					p.metrics.SetAdaptiveSessionLevel(toLabel, 1)
-				}
-			}
-			if log != nil {
-				log.LogAdaptiveEscalation(key, fromLabel, toLabel, clientIP, requestID, sess.ThreatScore())
-			}
+	// On-entry de-escalation: recover sessions stuck at block_all.
+	if changed, fromLabel, toLabel := trySessionRecovery(sess, &cfg.AdaptiveEnforcement, p.metrics); changed {
+		if log != nil {
+			log.LogAdaptiveEscalation(key, fromLabel, toLabel, clientIP, requestID, sess.ThreatScore())
 		}
 	}
 

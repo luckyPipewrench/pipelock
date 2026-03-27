@@ -888,6 +888,55 @@ func TestFetchEndpoint_ResponseScan_WildcardExemptDomain(t *testing.T) {
 	}
 }
 
+func TestFetchEndpoint_ResponseScan_ExemptDomainStillBlocksDLP(t *testing.T) {
+	// Security invariant: response scan exemption must NOT bypass outbound DLP.
+	// The URL contains a DLP-matching secret; even though the domain is exempt
+	// from response injection scanning, the request must still be blocked.
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = fmt.Fprint(w, "clean response")
+	}))
+	defer backend.Close()
+
+	backendHost := mustParseHost(t, backend.URL)
+	secret := "AKIA" + "IOSFODNN7EXAMPLE"
+
+	cfg := config.Defaults()
+	cfg.FetchProxy.TimeoutSeconds = 5
+	cfg.Internal = nil
+	cfg.APIAllowlist = nil
+	cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{
+		Name:     "test_aws_key",
+		Regex:    secret,
+		Severity: "critical",
+	})
+	cfg.ResponseScanning = config.ResponseScanning{
+		Enabled:       true,
+		Action:        config.ActionBlock,
+		Patterns:      []config.ResponseScanPattern{{Name: "test", Regex: `(?i)ignore all previous`}},
+		ExemptDomains: []string{backendHost}, // exempt from response scan
+	}
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+
+	// DLP secret in the URL query parameter — must be caught regardless of exempt status.
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/data?key="+secret, nil)
+	w := httptest.NewRecorder()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("DLP must still block exempt domains, got %d", w.Code)
+	}
+}
+
 // mustParseHost extracts the hostname (without port) from a URL string.
 func mustParseHost(t *testing.T, rawURL string) string {
 	t.Helper()

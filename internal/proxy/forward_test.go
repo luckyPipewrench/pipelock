@@ -2195,8 +2195,9 @@ func TestForwardHTTPResponseInjection_ExemptDomain(t *testing.T) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode == http.StatusForbidden {
-		t.Error("exempt domain should not be blocked by response injection scanning")
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200 for exempt domain, got %d; body: %s", resp.StatusCode, body)
 	}
 }
 

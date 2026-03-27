@@ -2536,9 +2536,9 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		})
 	}
 
-	// Response scanning exempt_domains changed: any change to a security-sensitive
-	// exemption list should be visible to the operator. This covers additions,
-	// broadening, narrowing, and complete removal.
+	// Response scanning exempt_domains: warn when the exemption surface may have
+	// widened (new/changed entries) or was cleared entirely. Subset removal
+	// (tightening) does not warn — it makes scanning stricter.
 	if len(old.ResponseScanning.ExemptDomains) > 0 && len(updated.ResponseScanning.ExemptDomains) == 0 {
 		warnings = append(warnings, ReloadWarning{
 			Field:   "response_scanning.exempt_domains",

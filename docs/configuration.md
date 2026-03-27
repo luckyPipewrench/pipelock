@@ -733,7 +733,7 @@ kill_switch:
 | `api_listen` | `""` | **Yes** | Separate listen address for API |
 | `allowlist_ips` | `[]` | No | IPs always allowed through |
 
-**Port isolation:** When `api_listen` is set, the kill switch API runs on a dedicated port. The main proxy port has no API routes, preventing agents from deactivating their own kill switch.
+**Port isolation:** When `api_listen` is set, the kill switch and session admin APIs run on a dedicated port. The main proxy port has no API routes, preventing agents from deactivating their own kill switch or resetting their own sessions.
 
 **Environment variable override:** Set `PIPELOCK_KILLSWITCH_API_TOKEN` to override `api_token` from the config file. This is useful for Kubernetes deployments where the config file lives in a ConfigMap (plaintext in etcd) but the token should come from a Secret:
 
@@ -745,6 +745,23 @@ env:
         name: pipelock-secrets
         key: killswitch-api-token
 ```
+
+### Session Admin API
+
+When `kill_switch.api_token` is configured, the session admin API is available alongside the kill switch endpoints. Uses the same bearer token authentication and port isolation.
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/v1/sessions` | GET | List all tracked sessions with escalation state |
+| `/api/v1/sessions/{key}/reset` | POST | Reset enforcement state for a client identity |
+
+The `{key}` parameter is URL-encoded. For example, `my-agent|10.0.0.1` becomes `my-agent%7C10.0.0.1`.
+
+**Reset scope:** identity-family scoped. Resetting a session clears the session's threat score, escalation level, and block_all flag. It also clears shared IP-level burst tracking for the client IP and cross-request exfiltration (CEE) state. Other sessions on the same IP will have their burst state cleared as a side effect.
+
+**Rate limiting:** only the POST /reset endpoint is rate-limited (10 requests/minute). GET /sessions is not rate-limited.
+
+Sessions are classified as `identity` (operator-targetable, e.g. `my-agent|10.0.0.1`) or `invocation` (internal MCP sessions, e.g. `mcp-stdio-42`). Only identity sessions can be reset.
 
 ## Event Emission
 

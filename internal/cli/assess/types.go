@@ -119,6 +119,7 @@ type Summary struct {
 	OverallGrade  string                `json:"overall_grade"`
 	OverallScore  int                   `json:"overall_score"`
 	GradeCap      string                `json:"grade_cap,omitempty"`
+	CapReason     string                `json:"cap_reason,omitempty"`
 	Sections      []AssessmentSection   `json:"sections"`
 	TopFindings   []SummaryFinding      `json:"top_findings"`
 	ServerCounts  AssessDiscoverSummary `json:"server_counts"`

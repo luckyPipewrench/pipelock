@@ -538,12 +538,19 @@ func projectToSummary(a Assessment) Summary {
 		detectionPct = a.Sources.Simulate.Percentage
 	}
 
+	// CapReason from the effective cap reason (for the summary topline).
+	var capReason string
+	if a.GradeCap != "" && len(a.CapReasons) > 0 {
+		capReason = effectiveCapReason(a.GradeCap, a.CapReasons)
+	}
+
 	return Summary{
 		SchemaVersion: a.SchemaVersion,
 		Manifest:      a.Manifest,
 		OverallGrade:  a.OverallGrade,
 		OverallScore:  a.OverallScore,
 		GradeCap:      a.GradeCap,
+		CapReason:     capReason,
 		Sections:      sections,
 		TopFindings:   topFindings,
 		ServerCounts:  serverCounts,

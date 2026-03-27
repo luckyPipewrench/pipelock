@@ -81,6 +81,15 @@ func assessFuncMap() template.FuncMap {
 			}
 			return false
 		},
+		"serverCausedCap": func(a *Assessment, serverName, client string) bool {
+			for _, cr := range a.CapReasons {
+				if cr.Cap == a.GradeCap && cr.Source == sourceDiscover &&
+					cr.EvidenceID == slugify(client+"-"+serverName) {
+					return true
+				}
+			}
+			return false
+		},
 	}
 }
 
@@ -399,10 +408,14 @@ func effectiveCapReason(gradeCap string, reasons []CapReason) string {
 }
 
 // summaryTopline builds a short sentence for the free-tier summary header.
-// Unlike toplineStory it works with the Summary type (no CapReasons slice).
+// Uses the CapReason field populated from the effective cap reason during projection.
 func summaryTopline(s *Summary) string {
+	if s.GradeCap != "" && s.CapReason != "" {
+		return fmt.Sprintf("Scored %d/100 but capped at %s: %s.",
+			s.OverallScore, s.GradeCap, s.CapReason)
+	}
 	if s.GradeCap != "" {
-		return fmt.Sprintf("Scored %d/100 but capped at %s due to critical exposure.",
+		return fmt.Sprintf("Scored %d/100 but capped at %s.",
 			s.OverallScore, s.GradeCap)
 	}
 	return fmt.Sprintf("Scored %d/100. Overall security posture: %s.",

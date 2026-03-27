@@ -448,15 +448,51 @@ func discoverSummary(total, pipelock, other, unprotected int) discover.Summary {
 }
 
 func TestSummaryTopline(t *testing.T) {
-	t.Run("capped grade", func(t *testing.T) {
-		s := minimalSummary(assessGradeC, 72)
+	t.Run("C cap with reason", func(t *testing.T) {
+		s := minimalSummary(assessGradeC, 85)
+		s.GradeCap = assessGradeC
+		s.CapReason = `high-risk MCP server "dev-db" is unprotected`
+		got := summaryTopline(s)
+		if !strings.Contains(got, "capped at C") {
+			t.Errorf("summaryTopline C cap: missing 'capped at C', got %q", got)
+		}
+		if !strings.Contains(got, "dev-db") {
+			t.Errorf("summaryTopline C cap: should contain effective reason, got %q", got)
+		}
+	})
+
+	t.Run("D cap with reason", func(t *testing.T) {
+		s := minimalSummary(assessGradeD, 85)
+		s.GradeCap = assessGradeD
+		s.CapReason = `simulate category "DLP Exfiltration" has 0% detection`
+		got := summaryTopline(s)
+		if !strings.Contains(got, "capped at D") {
+			t.Errorf("summaryTopline D cap: missing 'capped at D', got %q", got)
+		}
+		if strings.Contains(got, "critical exposure") {
+			t.Error("summaryTopline D cap: should not say 'critical exposure'")
+		}
+	})
+
+	t.Run("B cap with reason", func(t *testing.T) {
+		s := minimalSummary(assessGradeB, 92)
+		s.GradeCap = assessGradeB
+		s.CapReason = "partial assessment (some primitives skipped)"
+		got := summaryTopline(s)
+		if !strings.Contains(got, "capped at B") {
+			t.Errorf("summaryTopline B cap: missing 'capped at B', got %q", got)
+		}
+		if strings.Contains(got, "critical exposure") {
+			t.Error("summaryTopline B cap: should not say 'critical exposure'")
+		}
+	})
+
+	t.Run("cap without reason falls back", func(t *testing.T) {
+		s := minimalSummary(assessGradeC, 85)
 		s.GradeCap = assessGradeC
 		got := summaryTopline(s)
-		if !strings.Contains(got, "capped at") {
-			t.Errorf("summaryTopline capped: missing 'capped at', got %q", got)
-		}
-		if !strings.Contains(got, "critical exposure") {
-			t.Errorf("summaryTopline capped: missing 'critical exposure', got %q", got)
+		if !strings.Contains(got, "capped at C") {
+			t.Errorf("summaryTopline no reason: missing 'capped at C', got %q", got)
 		}
 	})
 

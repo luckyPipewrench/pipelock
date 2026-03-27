@@ -191,7 +191,7 @@ func mcpServerComponent(srv DeclaredMCPServer) cdx.Component {
 // path, query, and fragment that may contain credentials.
 func redactUpstream(raw string) string {
 	u, err := url.Parse(raw)
-	if err != nil {
+	if err != nil || u.Scheme == "" {
 		return "<redacted>"
 	}
 	return u.Scheme + "://" + u.Hostname()

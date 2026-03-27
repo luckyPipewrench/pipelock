@@ -1151,6 +1151,38 @@ func TestRecorder_SessionID_Validation(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("rejects session ID with path traversal", func(t *testing.T) {
+		dir := t.TempDir()
+		cfg := recorder.Config{
+			Enabled:            true,
+			Dir:                dir,
+			CheckpointInterval: 100,
+		}
+		rec, err := recorder.New(cfg, nil, nil)
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		defer func() { _ = rec.Close() }()
+
+		for _, malicious := range []string{
+			"../../../../tmp/pwn",
+			"..\\windows\\system32",
+			"legit/but-slashed",
+		} {
+			err := rec.Record(recorder.Entry{
+				SessionID: malicious,
+				Type:      testType,
+				Summary:   "traversal attempt",
+			})
+			if err == nil {
+				t.Errorf("expected error for session ID %q", malicious)
+			}
+			if !strings.Contains(err.Error(), "path separator") {
+				t.Errorf("expected path separator error for %q, got: %v", malicious, err)
+			}
+		}
+	})
 }
 
 func TestRecorder_EscrowFailure_FailsClosed(t *testing.T) {

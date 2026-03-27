@@ -13,6 +13,13 @@ import (
 
 const testAgent = "agent-1"
 
+// makeReadOnly removes all permissions from a directory for testing.
+// 0o000 satisfies gosec G302 (<=0o600) and prevents any file writes.
+func makeReadOnly(dir string) error { return os.Chmod(dir, 0o000) }
+
+// restoreWritable restores permissions so t.TempDir cleanup succeeds.
+func restoreWritable(dir string) error { return os.Chmod(dir, 0o600) }
+
 func normalMetrics() SessionMetrics {
 	return SessionMetrics{
 		ToolCalls:   4,
@@ -837,12 +844,12 @@ func TestBaseline_AutoRatify_PersistFailure_StaysRatify(t *testing.T) {
 	// Remove write permission so profile writes fail.
 	// G302 requires <=0o600 for files, but directories need execute bit
 	// to be traversable; 0o500 = r-x (read+traverse, no write).
-	if err := os.Chmod(dir, 0o500); err != nil { //nolint:gosec // directory needs execute bit
+	if err := makeReadOnly(dir); err != nil {
 		t.Fatalf("chmod: %v", err)
 	}
 	t.Cleanup(func() {
 		// Restore write permission so t.TempDir cleanup succeeds.
-		_ = os.Chmod(dir, 0o700) //nolint:gosec // directory needs execute bit
+		_ = restoreWritable(dir)
 	})
 
 	// Record enough sessions to trigger auto-ratify.
@@ -897,11 +904,11 @@ func TestBaseline_Ratify_PersistFailure_ReturnsError(t *testing.T) {
 	profilePath := filepath.Join(dir, testAgent+profileFileExt)
 	_ = os.Remove(filepath.Clean(profilePath))
 
-	if err := os.Chmod(dir, 0o500); err != nil { //nolint:gosec // directory needs execute bit
+	if err := makeReadOnly(dir); err != nil {
 		t.Fatalf("chmod: %v", err)
 	}
 	t.Cleanup(func() {
-		_ = os.Chmod(dir, 0o700) //nolint:gosec // directory needs execute bit
+		_ = restoreWritable(dir)
 	})
 
 	// Ratify must return an error when persistence fails.

@@ -394,7 +394,7 @@ func TestWSProxyInjection_ExemptDomain(t *testing.T) {
 	defer proxyCleanup()
 
 	conn := dialWS(t, proxyAddr, backendAddr)
-	defer conn.Close() //nolint:errcheck // test
+	defer func() { _ = conn.Close() }()
 
 	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(testWSHello)); err != nil {
 		t.Fatalf("write: %v", err)

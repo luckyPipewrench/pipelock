@@ -158,11 +158,12 @@ func executeFetchProxy(cmd *cobra.Command, manifest *RedirectManifest, payload [
 			fmt.Sprintf("fetch error: %s", fetchResp.Error))
 	}
 
-	return emitRedirectResult(cmd, &RedirectResult{
-		Status:  "ok",
-		Profile: redirectProfileFetchProxy,
-		Detail:  fetchResp.Content,
-	})
+	// Write raw content to stdout. The caller (executeRedirect in mcp/redirect.go)
+	// wraps stdout as the text content of an MCP tool result. Writing the full
+	// RedirectResult envelope here would give the agent JSON-as-text instead of
+	// the actual fetched content.
+	_, _ = fmt.Fprint(cmd.OutOrStdout(), fetchResp.Content)
+	return nil
 }
 
 // extractURL finds the earliest http:// or https:// URL in text.
@@ -256,28 +257,33 @@ func executeQuarantineWrite(cmd *cobra.Command, manifest *RedirectManifest, payl
 			fmt.Sprintf("marshaling quarantine entry: %v", err))
 	}
 
-	// Write with timestamp + hash filename.
+	// Write with nanosecond-precision timestamp + hash filename.
 	h := sha256.Sum256(data)
-	filename := fmt.Sprintf("%s-%s.json", now.Format("20060102T150405Z"), hex.EncodeToString(h[:4]))
+	filename := fmt.Sprintf("%d-%s.json", now.UnixNano(), hex.EncodeToString(h[:4]))
 	path := filepath.Join(realDir, filename)
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+
+	// O_CREATE|O_EXCL prevents following symlinks (fails if the file already exists)
+	// and eliminates the TOCTOU window that os.WriteFile + post-write Lstat had.
+	f, err := os.OpenFile(filepath.Clean(path), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
 		return emitRedirectError(cmd, redirectProfileQuarantineWrite,
-			fmt.Sprintf("writing quarantine file: %v", err))
+			fmt.Sprintf("creating quarantine file: %v", err))
+	}
+	_, writeErr := f.Write(data)
+	closeErr := f.Close()
+	if writeErr != nil {
+		return emitRedirectError(cmd, redirectProfileQuarantineWrite,
+			fmt.Sprintf("writing quarantine file: %v", writeErr))
+	}
+	if closeErr != nil {
+		return emitRedirectError(cmd, redirectProfileQuarantineWrite,
+			fmt.Sprintf("closing quarantine file: %v", closeErr))
 	}
 
-	// Verify the written file is a regular file (not a symlink swapped in during write).
-	written, err := os.Lstat(path)
-	if err != nil || written.Mode()&os.ModeSymlink != 0 {
-		_ = os.Remove(path)
-		return emitRedirectError(cmd, redirectProfileQuarantineWrite,
-			"quarantine file replaced by symlink during write")
-	}
-
-	return emitRedirectResult(cmd, &RedirectResult{
-		Status:  "ok",
-		Profile: redirectProfileQuarantineWrite,
-		Detail:  "Operation completed (quarantined by pipelock). Payload logged for operator review.",
-	})
+	// Write raw message to stdout. The caller (executeRedirect in mcp/redirect.go)
+	// wraps stdout as the text content of an MCP tool result.
+	_, _ = fmt.Fprint(cmd.OutOrStdout(), "Operation completed (quarantined by pipelock). Payload logged for operator review.")
+	return nil
 }
 
 // executeAppendOnlyLog forces log output to a local append-only file.

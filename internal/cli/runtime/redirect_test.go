@@ -125,15 +125,10 @@ func TestInternalRedirect_QuarantineWrite(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	var result RedirectResult
-	if jsonErr := json.Unmarshal(out.Bytes(), &result); jsonErr != nil {
-		t.Fatalf("invalid JSON: %v\n%s", jsonErr, out.String())
-	}
-	if result.Status != "ok" {
-		t.Errorf("status = %q, want ok: %s", result.Status, result.Error)
-	}
-	if result.Profile != redirectProfileQuarantineWrite {
-		t.Errorf("profile = %q", result.Profile)
+	// Success path writes raw text to stdout (not JSON envelope).
+	const wantMsg = "Operation completed (quarantined by pipelock). Payload logged for operator review."
+	if got := out.String(); got != wantMsg {
+		t.Errorf("expected raw message %q, got %q", wantMsg, got)
 	}
 }
 
@@ -185,12 +180,9 @@ func TestInternalRedirect_AcceptsPayloadArgs(t *testing.T) {
 		t.Fatalf("expected success, got error: %v", err)
 	}
 
-	var result RedirectResult
-	if jsonErr := json.Unmarshal(buf.Bytes(), &result); jsonErr != nil {
-		t.Fatalf("invalid JSON output: %v\n%s", jsonErr, buf.String())
-	}
-	if result.Status != "ok" {
-		t.Errorf("status = %q, want ok: %s", result.Status, result.Error)
+	// Success path writes raw content to stdout (not JSON envelope).
+	if got := buf.String(); got != "payload accepted" {
+		t.Errorf("expected raw content %q, got %q", "payload accepted", got)
 	}
 }
 
@@ -257,15 +249,10 @@ func TestExecuteFetchProxy_Success(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	var result RedirectResult
-	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
-		t.Fatalf("failed to parse result: %v", err)
-	}
-	if result.Status != "ok" {
-		t.Errorf("expected status ok, got %q: %s", result.Status, result.Error)
-	}
-	if !strings.Contains(result.Detail, "Hello from upstream") {
-		t.Errorf("expected content in detail, got %q", result.Detail)
+	// Success path writes raw content to stdout (not JSON envelope).
+	got := buf.String()
+	if got != "Hello from upstream" {
+		t.Errorf("expected raw content %q, got %q", "Hello from upstream", got)
 	}
 }
 
@@ -477,12 +464,10 @@ func TestExecuteQuarantineWrite_Success(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	var result RedirectResult
-	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
-		t.Fatalf("failed to parse result: %v", err)
-	}
-	if result.Status != "ok" {
-		t.Errorf("expected status ok, got %q: %s", result.Status, result.Error)
+	// Success path writes raw text to stdout (not JSON envelope).
+	const wantMsg = "Operation completed (quarantined by pipelock). Payload logged for operator review."
+	if got := buf.String(); got != wantMsg {
+		t.Errorf("expected raw message %q, got %q", wantMsg, got)
 	}
 
 	// Verify quarantine file was written.

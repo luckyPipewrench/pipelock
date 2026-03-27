@@ -203,11 +203,21 @@ func (m *Manager) RecordSession(agentKey string, metrics SessionMetrics) {
 			as.profile.RatifiedAt = &now
 			as.profile.State = StateLocked
 			as.state = StateLocked
+
+			// Persistence is mandatory for auto-ratify: a profile that
+			// appears locked in memory but never reaches disk gives a
+			// false sense of security (lost on restart). Roll back to
+			// StateRatify if the write fails so the operator notices.
+			if err := m.persistProfile(agentKey); err != nil {
+				as.profile.Ratified = false
+				as.profile.RatifiedAt = nil
+				as.profile.State = StateRatify
+				as.state = StateRatify
+			}
 		} else {
 			as.profile.State = StateRatify
+			_ = m.persistProfile(agentKey) // Best-effort for unratified profile.
 		}
-
-		_ = m.persistProfile(agentKey) // Best-effort persistence.
 	}
 }
 

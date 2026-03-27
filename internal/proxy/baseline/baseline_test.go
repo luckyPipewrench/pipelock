@@ -817,3 +817,96 @@ func TestBaseline_ResetDeletesFile(t *testing.T) {
 		t.Error("profile file should be deleted after reset")
 	}
 }
+
+func TestBaseline_AutoRatify_PersistFailure_StaysRatify(t *testing.T) {
+	// Create a profile directory that exists but is not writable.
+	// persistProfile will fail, so auto-ratify must roll back to StateRatify.
+	dir := t.TempDir()
+	cfg := Config{
+		Enabled:        true,
+		LearningWindow: 3,
+		ProfileDir:     dir,
+		AutoRatify:     true,
+	}
+	mgr, err := NewManager(cfg)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	// Make the directory read-only so writes fail.
+	// Remove write permission so profile writes fail.
+	// G302 requires <=0o600 for files, but directories need execute bit
+	// to be traversable; 0o500 = r-x (read+traverse, no write).
+	if err := os.Chmod(dir, 0o500); err != nil { //nolint:gosec // directory needs execute bit
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() {
+		// Restore write permission so t.TempDir cleanup succeeds.
+		_ = os.Chmod(dir, 0o700) //nolint:gosec // directory needs execute bit
+	})
+
+	// Record enough sessions to trigger auto-ratify.
+	for range 3 {
+		mgr.RecordSession(testAgent, normalMetrics())
+	}
+
+	// Profile must stay in StateRatify because persistence failed.
+	if state := mgr.GetState(testAgent); state != StateRatify {
+		t.Errorf("expected %q when persistence fails, got %q", StateRatify, state)
+	}
+
+	profile := mgr.GetProfile(testAgent)
+	if profile == nil {
+		t.Fatal("expected profile to exist")
+	}
+	if profile.Ratified {
+		t.Error("profile must not be ratified when persistence failed")
+	}
+	if profile.RatifiedAt != nil {
+		t.Error("ratified_at must be nil when persistence failed")
+	}
+	if profile.State != StateRatify {
+		t.Errorf("profile.State should be %q, got %q", StateRatify, profile.State)
+	}
+}
+
+func TestBaseline_Ratify_PersistFailure_ReturnsError(t *testing.T) {
+	dir := t.TempDir()
+	cfg := Config{
+		Enabled:        true,
+		LearningWindow: 3,
+		ProfileDir:     dir,
+	}
+	mgr, err := NewManager(cfg)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	// Learn a profile (writable dir during learning).
+	for range 3 {
+		mgr.RecordSession(testAgent, normalMetrics())
+	}
+
+	if state := mgr.GetState(testAgent); state != StateRatify {
+		t.Fatalf("expected %q, got %q", StateRatify, state)
+	}
+
+	// Remove the profile file written during RecordSession (best-effort
+	// persistence of the unratified profile), then make the directory
+	// read-only so Ratify's persistProfile call cannot create it.
+	profilePath := filepath.Join(dir, testAgent+profileFileExt)
+	_ = os.Remove(filepath.Clean(profilePath))
+
+	if err := os.Chmod(dir, 0o500); err != nil { //nolint:gosec // directory needs execute bit
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(dir, 0o700) //nolint:gosec // directory needs execute bit
+	})
+
+	// Ratify must return an error when persistence fails.
+	err = mgr.Ratify(testAgent)
+	if err == nil {
+		t.Fatal("expected error from Ratify when persistence fails")
+	}
+}

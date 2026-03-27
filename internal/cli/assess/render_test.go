@@ -656,6 +656,90 @@ func TestAuditBarColor(t *testing.T) {
 	}
 }
 
+func TestFormatEvidence_JSONNull(t *testing.T) {
+	// json.RawMessage("null") is non-nil in Go but should be treated as empty.
+	raw := json.RawMessage("null")
+	got := formatEvidence(raw)
+	if got != "" {
+		t.Errorf("formatEvidence(json null) = %q, want empty", got)
+	}
+}
+
+func TestEffectiveCapReason(t *testing.T) {
+	t.Run("matches effective cap", func(t *testing.T) {
+		reasons := []CapReason{
+			{Cap: assessGradeC, Reason: "containment failed", Source: sourceVerifyInstall},
+			{Cap: assessGradeD, Reason: "0% detection in DLP", Source: sourceSimulate},
+		}
+		// GradeCap is D (the worst), so effectiveCapReason should return the D reason.
+		got := effectiveCapReason(assessGradeD, reasons)
+		if got != "0% detection in DLP" {
+			t.Errorf("effectiveCapReason(D) = %q, want '0%% detection in DLP'", got)
+		}
+	})
+
+	t.Run("falls back to first when no match", func(t *testing.T) {
+		reasons := []CapReason{
+			{Cap: assessGradeC, Reason: "containment failed", Source: sourceVerifyInstall},
+		}
+		got := effectiveCapReason(assessGradeB, reasons)
+		if got != "containment failed" {
+			t.Errorf("effectiveCapReason(B, no match) = %q, want fallback 'containment failed'", got)
+		}
+	})
+}
+
+func TestToplineStory_EffectiveCapReason(t *testing.T) {
+	a := minimalAssessment(assessGradeD, 85)
+	a.GradeCap = assessGradeD
+	a.CapReasons = []CapReason{
+		{Cap: assessGradeC, Reason: "containment failed", Source: sourceVerifyInstall},
+		{Cap: assessGradeD, Reason: "DLP Exfiltration has 0% detection", Source: sourceSimulate},
+	}
+
+	got := toplineStory(a)
+	if !strings.Contains(got, "DLP Exfiltration has 0% detection") {
+		t.Errorf("toplineStory should use effective cap D reason, got %q", got)
+	}
+	if strings.Contains(got, "containment failed") {
+		t.Error("toplineStory should not use non-effective cap C reason")
+	}
+}
+
+func TestDiscoverCausedCap(t *testing.T) {
+	fn := assessFuncMap()["discoverCausedCap"].(func(*Assessment) bool)
+
+	t.Run("discover is effective cap", func(t *testing.T) {
+		a := minimalAssessment(assessGradeC, 85)
+		a.GradeCap = assessGradeC
+		a.CapReasons = []CapReason{
+			{Cap: assessGradeC, Reason: "unprotected server", Source: sourceDiscover},
+		}
+		if !fn(a) {
+			t.Error("discoverCausedCap should return true when discover matches effective cap")
+		}
+	})
+
+	t.Run("discover not effective cap", func(t *testing.T) {
+		a := minimalAssessment(assessGradeD, 85)
+		a.GradeCap = assessGradeD
+		a.CapReasons = []CapReason{
+			{Cap: assessGradeC, Reason: "unprotected server", Source: sourceDiscover},
+			{Cap: assessGradeD, Reason: "0% detection", Source: sourceSimulate},
+		}
+		if fn(a) {
+			t.Error("discoverCausedCap should return false when simulate caused the effective cap")
+		}
+	})
+
+	t.Run("no cap", func(t *testing.T) {
+		a := minimalAssessment(assessGradeA, 95)
+		if fn(a) {
+			t.Error("discoverCausedCap should return false when no cap")
+		}
+	})
+}
+
 func TestCheckStatusColor(t *testing.T) {
 	cases := []struct {
 		status string

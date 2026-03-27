@@ -738,6 +738,45 @@ func TestAssessFinalize_VerifyTxtContent(t *testing.T) {
 	}
 }
 
+func TestAssessFinalize_VerifyTxtFilename(t *testing.T) {
+	t.Run("free tier references summary.html", func(t *testing.T) {
+		runDir := setupCompletedRun(t)
+		if err := runAssessFinalize(runDir, assessFinalizeOpts{HasAssess: false}); err != nil {
+			t.Fatalf("runAssessFinalize free: %v", err)
+		}
+		data, err := os.ReadFile(filepath.Clean(filepath.Join(runDir, "verify.txt")))
+		if err != nil {
+			t.Fatalf("reading verify.txt: %v", err)
+		}
+		if !strings.Contains(string(data), "summary.html") {
+			t.Error("free-tier verify.txt should reference summary.html")
+		}
+		if strings.Contains(string(data), "assessment.html") {
+			t.Error("free-tier verify.txt should not reference assessment.html")
+		}
+	})
+
+	t.Run("paid tier references assessment.html", func(t *testing.T) {
+		runDir := setupCompletedRun(t)
+		keystoreDir, agentName := generateTestKeys(t)
+		opts := assessFinalizeOpts{
+			HasAssess:   true,
+			Agent:       agentName,
+			KeystoreDir: keystoreDir,
+		}
+		if err := runAssessFinalize(runDir, opts); err != nil {
+			t.Fatalf("runAssessFinalize paid: %v", err)
+		}
+		data, err := os.ReadFile(filepath.Clean(filepath.Join(runDir, "verify.txt")))
+		if err != nil {
+			t.Fatalf("reading verify.txt: %v", err)
+		}
+		if !strings.Contains(string(data), "assessment.html") {
+			t.Error("paid-tier verify.txt should reference assessment.html")
+		}
+	})
+}
+
 func TestAssessFinalize_HTMLFilesCreated(t *testing.T) {
 	t.Run("licensed produces assessment.html", func(t *testing.T) {
 		runDir := setupCompletedRun(t)

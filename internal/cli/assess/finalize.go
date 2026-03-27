@@ -259,6 +259,10 @@ func runAssessFinalize(runDir string, opts assessFinalizeOpts) error {
 
 		privKey, err := ks.LoadPrivateKey(agentName)
 		if err != nil {
+			// Signing failed: re-render artifacts with Signed=false so they
+			// don't claim to be signed when no signature file exists.
+			assessment.Signed = false
+			_ = rewriteAssessmentArtifacts(cleanDir, &assessment, artifacts)
 			return cliutil.ExitCodeError(1, fmt.Errorf("loading key for agent %q: %w", agentName, err))
 		}
 
@@ -269,10 +273,14 @@ func runAssessFinalize(runDir string, opts assessFinalizeOpts) error {
 
 		sig, err := signing.SignFile(manifestPath, privKey)
 		if err != nil {
+			assessment.Signed = false
+			_ = rewriteAssessmentArtifacts(cleanDir, &assessment, artifacts)
 			return cliutil.ExitCodeError(1, fmt.Errorf("signing manifest: %w", err))
 		}
 		sigPath := manifestPath + signing.SigExtension
 		if err := signing.SaveSignature(sig, sigPath); err != nil {
+			assessment.Signed = false
+			_ = rewriteAssessmentArtifacts(cleanDir, &assessment, artifacts)
 			return cliutil.ExitCodeError(1, fmt.Errorf("saving signature: %w", err))
 		}
 	} else {
@@ -287,6 +295,10 @@ func runAssessFinalize(runDir string, opts assessFinalizeOpts) error {
 	if agentHint == "" {
 		agentHint = "<agent-name>"
 	}
+	htmlFilename := "summary.html"
+	if opts.HasAssess {
+		htmlFilename = "assessment.html"
+	}
 	verifyText := fmt.Sprintf(`Pipelock Assessment Verification
 ================================
 Run ID: %s
@@ -300,8 +312,8 @@ Manual verification:
   2. Verify manifest signature: pipelock verify manifest.json --agent %s
 
 To export as PDF:
-  Open assessment.html in a browser and print to PDF (Ctrl+P / Cmd+P).
-`, manifest.RunID, now.Format(time.RFC3339), runDir, agentHint, agentHint)
+  Open %s in a browser and print to PDF (Ctrl+P / Cmd+P).
+`, manifest.RunID, now.Format(time.RFC3339), runDir, agentHint, agentHint, htmlFilename)
 
 	if err := os.WriteFile(filepath.Join(cleanDir, "verify.txt"), []byte(verifyText), 0o600); err != nil {
 		return cliutil.ExitCodeError(2, fmt.Errorf("writing verify.txt: %w", err))
@@ -325,6 +337,25 @@ To export as PDF:
 		}
 	}
 
+	return nil
+}
+
+// rewriteAssessmentArtifacts re-renders assessment JSON and HTML after a signing
+// failure so that on-disk artifacts don't claim to be signed. Best-effort: errors
+// are returned but signing failure is the primary error reported to the user.
+func rewriteAssessmentArtifacts(cleanDir string, a *Assessment, artifacts map[string]string) error {
+	if err := writeAssessmentJSON(filepath.Join(cleanDir, "assessment.json"), a); err != nil {
+		return err
+	}
+	if err := writeAssessmentHTML(filepath.Join(cleanDir, "assessment.html"), a); err != nil {
+		return err
+	}
+	if h, err := hashFile(filepath.Join(cleanDir, "assessment.json")); err == nil {
+		artifacts["assessment.json"] = h
+	}
+	if h, err := hashFile(filepath.Join(cleanDir, "assessment.html")); err == nil {
+		artifacts["assessment.html"] = h
+	}
 	return nil
 }
 

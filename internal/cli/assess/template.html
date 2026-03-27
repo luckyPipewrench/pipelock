@@ -421,7 +421,7 @@
             <div style="background: rgba(239,68,68,0.1); border: 2px solid var(--color-red); border-radius: 0.75rem; padding: 1.5rem;">
                 <div style="color: var(--color-red); font-weight: 800; font-size: 1.125rem; margin-bottom: 0.5rem;">&#9888; {{.Sources.Discover.Summary.Unprotected}} Unprotected MCP Server(s)</div>
                 <div style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 0.5rem;">These servers have no pipelock proxy wrapper. Agent traffic flows directly to the server without DLP scanning, injection detection, or tool policy enforcement.</div>
-                <div style="font-size: 0.8125rem; color: var(--color-red); margin-bottom: 1rem; font-weight: 600;">These are the servers that capped your grade.</div>
+                {{if discoverCausedCap $}}<div style="font-size: 0.8125rem; color: var(--color-red); margin-bottom: 1rem; font-weight: 600;">These are the servers that capped your grade.</div>{{end}}
                 {{range .Sources.Discover.Servers}}{{if eq (printf "%s" .Protection) "unprotected"}}
                 <div style="display: flex; align-items: center; gap: 0.75rem; padding: 0.5rem 0; border-top: 1px solid rgba(239,68,68,0.2);">
                     <span class="severity-badge" style="background: {{riskColor (printf "%s" .Risk)}};">{{.Risk}}</span>

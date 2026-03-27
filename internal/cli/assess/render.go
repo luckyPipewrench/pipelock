@@ -70,6 +70,17 @@ func assessFuncMap() template.FuncMap {
 		"toplineStory":    toplineStory,
 		"summaryTopline":  summaryTopline,
 		"serverStatColor": serverStatColor,
+		"discoverCausedCap": func(a *Assessment) bool {
+			if a.GradeCap == "" {
+				return false
+			}
+			for _, cr := range a.CapReasons {
+				if cr.Cap == a.GradeCap && cr.Source == sourceDiscover {
+					return true
+				}
+			}
+			return false
+		},
 	}
 }
 
@@ -139,9 +150,9 @@ func scorePercent(score, maxScore int) int {
 }
 
 // formatEvidence pretty-prints a json.RawMessage for HTML display.
-// Returns empty string for nil evidence, and falls back to raw bytes on indent error.
+// Returns empty string for nil or JSON null evidence, and falls back to raw bytes on indent error.
 func formatEvidence(raw json.RawMessage) string {
-	if raw == nil {
+	if raw == nil || string(raw) == "null" {
 		return ""
 	}
 	var buf bytes.Buffer
@@ -363,14 +374,27 @@ func auditBarColor(score, maxScore int) string {
 }
 
 // toplineStory builds a single bold sentence summarising the assessment outcome.
-// When the grade is capped the sentence explains the cap; otherwise it states the posture.
+// When the grade is capped the sentence explains the cap using the reason that
+// produced the effective GradeCap (not necessarily CapReasons[0]).
 func toplineStory(a *Assessment) string {
 	if a.GradeCap != "" && len(a.CapReasons) > 0 {
+		reason := effectiveCapReason(a.GradeCap, a.CapReasons)
 		return fmt.Sprintf("Scored %d/100 but capped at %s — %s.",
-			a.OverallScore, a.GradeCap, a.CapReasons[0].Reason)
+			a.OverallScore, a.GradeCap, reason)
 	}
 	return fmt.Sprintf("Scored %d/100. Overall security posture: %s.",
 		a.OverallScore, a.OverallGrade)
+}
+
+// effectiveCapReason returns the reason string from the cap reason that matches
+// the effective grade cap. Falls back to the first reason if no exact match.
+func effectiveCapReason(gradeCap string, reasons []CapReason) string {
+	for _, cr := range reasons {
+		if cr.Cap == gradeCap {
+			return cr.Reason
+		}
+	}
+	return reasons[0].Reason
 }
 
 // summaryTopline builds a short sentence for the free-tier summary header.

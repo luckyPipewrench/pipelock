@@ -1602,3 +1602,39 @@ func TestSessionManager_SweepAfterConfigReload(t *testing.T) {
 		t.Error("expected atBlockAll=true at high with updated config")
 	}
 }
+
+func TestSessionManager_ClearBlockAllOnAdaptiveDisable(t *testing.T) {
+	cfg := testSessionConfig()
+	blockAllTrue := true
+	adaptiveCfg := &config.AdaptiveEnforcement{
+		Enabled: true,
+		Levels: config.EscalationLevels{
+			Critical: config.EscalationActions{BlockAll: &blockAllTrue},
+		},
+	}
+	sm := NewSessionManager(cfg, adaptiveCfg, nil)
+	defer sm.Close()
+
+	sess := sm.GetOrCreate(testClient)
+	sess.SetBlockAll(true)
+
+	if !sess.BlockAll() {
+		t.Fatal("expected block_all before disable")
+	}
+
+	// Hot-reload with adaptive disabled (nil).
+	sm.UpdateConfig(cfg, nil)
+
+	if sess.BlockAll() {
+		t.Error("expected atBlockAll cleared after adaptive enforcement disabled via nil")
+	}
+
+	// Reset for second variant: Enabled=false.
+	sess.SetBlockAll(true)
+	disabledCfg := &config.AdaptiveEnforcement{Enabled: false}
+	sm.UpdateConfig(cfg, disabledCfg)
+
+	if sess.BlockAll() {
+		t.Error("expected atBlockAll cleared after adaptive enforcement Enabled=false")
+	}
+}

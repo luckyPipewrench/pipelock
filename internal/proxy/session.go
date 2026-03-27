@@ -381,6 +381,18 @@ func (sm *SessionManager) RecordIPDomain(clientIP, domain string, cfg *config.Se
 func (sm *SessionManager) UpdateConfig(cfg *config.SessionProfiling, adaptiveCfg *config.AdaptiveEnforcement) {
 	sm.cfgPtr.Store(cfg)
 	sm.adaptiveCfgPtr.Store(adaptiveCfg)
+
+	// Clear stale atBlockAll flags when adaptive enforcement is disabled.
+	// Without this, sessions that were at block_all when adaptive was enabled
+	// would have lastActivity frozen forever, leading to idle eviction while
+	// traffic is still flowing.
+	if adaptiveCfg == nil || !adaptiveCfg.Enabled {
+		sm.mu.RLock()
+		for _, sess := range sm.sessions {
+			sess.SetBlockAll(false)
+		}
+		sm.mu.RUnlock()
+	}
 }
 
 // Close stops the cleanup goroutine.

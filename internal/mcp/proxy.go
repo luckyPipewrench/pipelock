@@ -161,12 +161,17 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			}
 		}
 
+		// On-entry de-escalation for long-lived response streams.
+		tryRecoverSession(rec, adaptiveCfg, m)
+
 		// block_all enforcement: write a JSON-RPC error for every message when
-		// the session is at an escalation level with block_all=true. Re-check
-		// on each message so mid-stream escalation takes effect immediately.
-		if !blockAll && rec != nil {
+		// the session is at an escalation level with block_all=true. Refresh
+		// on each message so mid-stream escalation AND recovery both take
+		// effect immediately on already-open MCP sessions.
+		if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
+			wasBlocked := blockAll
 			blockAll = decide.UpgradeAction("", rec.EscalationLevel(), adaptiveCfg) == config.ActionBlock
-			if blockAll {
+			if blockAll && !wasBlocked {
 				_, _ = fmt.Fprintf(logW, "pipelock: session deny — escalation level %s, blocking all responses\n",
 					session.EscalationLabel(rec.EscalationLevel()))
 			}

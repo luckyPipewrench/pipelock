@@ -1413,7 +1413,7 @@ Optional signed rule bundles that extend built-in detection patterns. See [docs/
 
 ```yaml
 rules:
-  rules_dir: ~/.pipelock/rules    # default location for installed bundles
+  rules_dir: ~/.local/share/pipelock/rules  # default ($XDG_DATA_HOME/pipelock/rules)
   min_confidence: medium          # skip low-confidence (experimental) rules
   include_experimental: false     # only load stable rules by default
   trusted_keys:                   # additional signing keys (beyond embedded keyring)
@@ -1423,7 +1423,7 @@ rules:
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `rules_dir` | `~/.pipelock/rules` | Directory for installed bundles |
+| `rules_dir` | `~/.local/share/pipelock/rules` | Directory for installed bundles (`$XDG_DATA_HOME/pipelock/rules`) |
 | `min_confidence` | `""` (all) | Skip rules below this confidence level |
 | `include_experimental` | `false` | Include experimental rules from bundles |
 | `trusted_keys` | `[]` | Additional Ed25519 public keys to trust for signature verification |

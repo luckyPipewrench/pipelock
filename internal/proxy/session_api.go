@@ -7,7 +7,6 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"net/http"
-	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -124,22 +123,21 @@ func (h *SessionAPIHandler) checkResetRateLimit() bool {
 	return h.reqCount <= sessionAPIRateLimitMax
 }
 
-// extractSessionKey extracts the URL-decoded session key from /api/v1/sessions/{key}/reset.
+// extractSessionKey extracts the session key from /api/v1/sessions/{key}/reset.
+// The path comes from r.URL.Path, which net/http already decodes, so no
+// additional unescaping is needed. Double-decoding would corrupt keys that
+// contain literal '%' characters.
 func extractSessionKey(path string) string {
 	const prefix = "/api/v1/sessions/"
 	const suffix = "/reset"
 	if !strings.HasPrefix(path, prefix) || !strings.HasSuffix(path, suffix) {
 		return ""
 	}
-	encoded := path[len(prefix) : len(path)-len(suffix)]
-	if encoded == "" {
+	key := path[len(prefix) : len(path)-len(suffix)]
+	if key == "" {
 		return ""
 	}
-	decoded, err := url.PathUnescape(encoded)
-	if err != nil {
-		return ""
-	}
-	return decoded
+	return key
 }
 
 // HandleReset handles POST /api/v1/sessions/{key}/reset.
@@ -179,6 +177,13 @@ func (h *SessionAPIHandler) HandleReset(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Check session exists before clearing CEE state. Without this, a reset
+	// for a nonexistent key would clear CEE state as a side effect.
+	if !sm.SessionExists(key) {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+
 	// Lock order: CEE first, then SessionManager, then SessionState.
 	ceeCleared := false
 	if h.etPtr != nil && h.fbPtr != nil {
@@ -192,13 +197,9 @@ func (h *SessionAPIHandler) HandleReset(w http.ResponseWriter, r *http.Request) 
 
 	prev, found := sm.ResetSession(key)
 	if !found {
+		// Race: session was evicted between existence check and reset.
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
-	}
-
-	// Update metrics gauge if session was escalated.
-	if prev.EscalationLevel != "normal" && h.metrics != nil {
-		h.metrics.SetAdaptiveSessionLevel(prev.EscalationLevel, -1)
 	}
 
 	w.Header().Set("Content-Type", "application/json")

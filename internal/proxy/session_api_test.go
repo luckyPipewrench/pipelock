@@ -377,15 +377,16 @@ func TestSessionAPI_HandleReset_DecrementEscalatedMetrics(t *testing.T) {
 }
 
 func TestExtractSessionKey(t *testing.T) {
+	// extractSessionKey receives r.URL.Path which net/http already decodes,
+	// so test paths use decoded form (e.g. "agent|10.0.0.1" not "agent%7C10.0.0.1").
 	tests := []struct {
 		path string
 		want string
 	}{
-		{"/api/v1/sessions/agent%7C10.0.0.1/reset", "agent|10.0.0.1"},
+		{"/api/v1/sessions/agent|10.0.0.1/reset", "agent|10.0.0.1"},
 		{"/api/v1/sessions/10.0.0.1/reset", "10.0.0.1"},
 		{"/api/v1/sessions/mcp-stdio-42/reset", "mcp-stdio-42"},
 		{"/api/v1/sessions//reset", ""},
-		{"/api/v1/sessions/%ZZ/reset", ""}, // invalid percent-encoding
 		{"/api/v1/sessions", ""},
 		{"/other/path", ""},
 	}

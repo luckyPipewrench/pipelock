@@ -468,14 +468,24 @@ func (sm *SessionManager) Close() {
 
 // Snapshot returns a sorted read-only snapshot of all sessions.
 // Identity sessions sort first (by key), then invocation sessions (by key).
+// Copies session pointers under RLock then releases it before reading each
+// session's state, so the manager-level lock is held only briefly.
 func (sm *SessionManager) Snapshot() []SessionSnapshot {
 	sm.mu.RLock()
-	snaps := make([]SessionSnapshot, 0, len(sm.sessions))
-	for _, s := range sm.sessions {
+	keys := make([]string, 0, len(sm.sessions))
+	sessions := make([]*SessionState, 0, len(sm.sessions))
+	for k, s := range sm.sessions {
+		keys = append(keys, k)
+		sessions = append(sessions, s)
+	}
+	sm.mu.RUnlock()
+
+	snaps := make([]SessionSnapshot, len(sessions))
+	for i, s := range sessions {
 		s.mu.Lock()
-		kind, agent, ip := classifySessionKey(s.key)
-		snaps = append(snaps, SessionSnapshot{
-			Key:             s.key,
+		kind, agent, ip := classifySessionKey(keys[i])
+		snaps[i] = SessionSnapshot{
+			Key:             keys[i],
 			Agent:           agent,
 			ClientIP:        ip,
 			Kind:            kind,
@@ -483,10 +493,9 @@ func (sm *SessionManager) Snapshot() []SessionSnapshot {
 			EscalationLevel: session.EscalationLabel(s.escalationLevel),
 			BlockAll:        s.atBlockAll,
 			LastActivity:    s.lastActivity,
-		})
+		}
 		s.mu.Unlock()
 	}
-	sm.mu.RUnlock()
 
 	sort.Slice(snaps, func(i, j int) bool {
 		if snaps[i].Kind != snaps[j].Kind {
@@ -497,8 +506,18 @@ func (sm *SessionManager) Snapshot() []SessionSnapshot {
 	return snaps
 }
 
+// SessionExists returns whether the given key has an active session.
+// Uses a read lock for minimal contention on the hot path.
+func (sm *SessionManager) SessionExists(key string) bool {
+	sm.mu.RLock()
+	_, ok := sm.sessions[key]
+	sm.mu.RUnlock()
+	return ok
+}
+
 // ResetSession resets enforcement state for the given identity key.
-// Also clears IP-level burst state for the client IP.
+// Also clears IP-level burst state for the client IP and decrements
+// the adaptive gauge if the session was escalated.
 // Caller must clear CEE state BEFORE calling this (lock order).
 // Returns a snapshot of the previous state and whether the key was found.
 func (sm *SessionManager) ResetSession(key string) (prev SessionSnapshot, found bool) {
@@ -516,10 +535,16 @@ func (sm *SessionManager) ResetSession(key string) (prev SessionSnapshot, found 
 		delete(sm.ipDomains, ip)
 		delete(sm.ipBurstCooldown, ip)
 	}
+
+	// Reset session in place while still holding sm.mu to prevent an
+	// eviction race between lock release and Reset.
+	prevScore, prevLevel := sess.Reset()
 	sm.mu.Unlock()
 
-	// Reset the session in place (SessionState.mu).
-	prevScore, prevLevel := sess.Reset()
+	// Decrement adaptive gauge if session was escalated (lock-free prometheus op).
+	if prevLevel > 0 && sm.metrics != nil {
+		sm.metrics.SetAdaptiveSessionLevel(session.EscalationLabel(prevLevel), -1)
+	}
 
 	prev = SessionSnapshot{
 		Key:             key,

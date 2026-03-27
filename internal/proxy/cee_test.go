@@ -1154,6 +1154,16 @@ func TestResetCEEState(t *testing.T) {
 	if et.CurrentUsage(key) != 0 {
 		t.Error("entropy should be cleared after reset")
 	}
+
+	// Verify fragment buffer is cleared: append a partial secret suffix after
+	// reset. If old fragments were still present, concatenation with the old
+	// prefix could produce a match. An empty buffer + this suffix alone cannot.
+	fb.Append(key, []byte("OSFODNN7EXAMPLE"))
+	totalAfter := fb.TotalBufferBytes()
+	// Only the new 15-byte append should be present, not the old data.
+	if totalAfter > len("OSFODNN7EXAMPLE") {
+		t.Errorf("fragment buffer should be cleared; total bytes %d suggests old data remains", totalAfter)
+	}
 }
 
 func TestResetCEEState_NilTrackers(t *testing.T) {

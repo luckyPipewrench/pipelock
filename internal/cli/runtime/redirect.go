@@ -200,6 +200,32 @@ func extractURL(text string) string {
 // Prevents disk exhaustion from sustained redirect traffic.
 const maxQuarantineFiles = 1000
 
+// quarantineFS holds injectable filesystem operations for testing
+// defense-in-depth error paths that are otherwise only reachable via
+// TOCTOU race conditions (e.g. EvalSymlinks failing after MkdirAll succeeds).
+var quarantineFS = quarantineFSOps{
+	EvalSymlinks: filepath.EvalSymlinks,
+	Lstat:        os.Lstat,
+	MarshalJSON:  func(v any) ([]byte, error) { return json.MarshalIndent(v, "", "  ") },
+	OpenFile: func(name string, flag int, perm os.FileMode) (quarantineFileWriter, error) {
+		return os.OpenFile(filepath.Clean(name), flag, perm)
+	},
+}
+
+// quarantineFileWriter abstracts file write+close for dependency injection.
+type quarantineFileWriter interface {
+	Write([]byte) (int, error)
+	Close() error
+}
+
+// quarantineFSOps groups filesystem operations used by executeQuarantineWrite.
+type quarantineFSOps struct {
+	EvalSymlinks func(string) (string, error)
+	Lstat        func(string) (os.FileInfo, error)
+	MarshalJSON  func(any) ([]byte, error)
+	OpenFile     func(string, int, os.FileMode) (quarantineFileWriter, error)
+}
+
 // executeQuarantineWrite diverts a write to a quarantine directory for operator
 // review. Returns a success-shaped response so the agent does not retry.
 func executeQuarantineWrite(cmd *cobra.Command, manifest *RedirectManifest, payload []string) error {
@@ -215,12 +241,12 @@ func executeQuarantineWrite(cmd *cobra.Command, manifest *RedirectManifest, payl
 	}
 
 	// Resolve symlinks and verify the path is a real directory.
-	realDir, err := filepath.EvalSymlinks(qDir)
+	realDir, err := quarantineFS.EvalSymlinks(qDir)
 	if err != nil {
 		return emitRedirectError(cmd, redirectProfileQuarantineWrite,
 			fmt.Sprintf("resolving quarantine dir: %v", err))
 	}
-	info, err := os.Lstat(realDir)
+	info, err := quarantineFS.Lstat(realDir)
 	if err != nil {
 		return emitRedirectError(cmd, redirectProfileQuarantineWrite,
 			fmt.Sprintf("checking quarantine dir: %v", err))
@@ -251,7 +277,7 @@ func executeQuarantineWrite(cmd *cobra.Command, manifest *RedirectManifest, payl
 		"reason":      manifest.Reason,
 		"tool_args":   toolArgs,
 	}
-	data, err := json.MarshalIndent(entry, "", "  ")
+	data, err := quarantineFS.MarshalJSON(entry)
 	if err != nil {
 		return emitRedirectError(cmd, redirectProfileQuarantineWrite,
 			fmt.Sprintf("marshaling quarantine entry: %v", err))
@@ -264,7 +290,7 @@ func executeQuarantineWrite(cmd *cobra.Command, manifest *RedirectManifest, payl
 
 	// O_CREATE|O_EXCL prevents following symlinks (fails if the file already exists)
 	// and eliminates the TOCTOU window that os.WriteFile + post-write Lstat had.
-	f, err := os.OpenFile(filepath.Clean(path), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	f, err := quarantineFS.OpenFile(filepath.Clean(path), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return emitRedirectError(cmd, redirectProfileQuarantineWrite,
 			fmt.Sprintf("creating quarantine file: %v", err))

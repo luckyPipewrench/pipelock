@@ -382,17 +382,22 @@ func (sm *SessionManager) UpdateConfig(cfg *config.SessionProfiling, adaptiveCfg
 	sm.cfgPtr.Store(cfg)
 	sm.adaptiveCfgPtr.Store(adaptiveCfg)
 
-	// Clear stale atBlockAll flags when adaptive enforcement is disabled.
-	// Without this, sessions that were at block_all when adaptive was enabled
-	// would have lastActivity frozen forever, leading to idle eviction while
-	// traffic is still flowing.
-	if adaptiveCfg == nil || !adaptiveCfg.Enabled {
-		sm.mu.RLock()
-		for _, sess := range sm.sessions {
+	// Recompute atBlockAll for all sessions from the new adaptive config.
+	// This handles three cases:
+	// 1. Adaptive disabled → clear all flags
+	// 2. block_all matrix changed → recompute per session level
+	// 3. No change → flags stay the same (recompute is idempotent)
+	sm.mu.RLock()
+	for _, sess := range sm.sessions {
+		if adaptiveCfg == nil || !adaptiveCfg.Enabled {
 			sess.SetBlockAll(false)
+		} else {
+			level := sess.EscalationLevel()
+			isBlockAll := decide.UpgradeAction("", level, adaptiveCfg) == config.ActionBlock
+			sess.SetBlockAll(isBlockAll)
 		}
-		sm.mu.RUnlock()
 	}
+	sm.mu.RUnlock()
 }
 
 // Close stops the cleanup goroutine.

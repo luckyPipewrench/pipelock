@@ -1638,3 +1638,44 @@ func TestSessionManager_ClearBlockAllOnAdaptiveDisable(t *testing.T) {
 		t.Error("expected atBlockAll cleared after adaptive enforcement Enabled=false")
 	}
 }
+
+func TestSessionManager_RecomputeBlockAllOnConfigChange(t *testing.T) {
+	cfg := testSessionConfig()
+	blockAllTrue := true
+	// Start with block_all only at critical (level 3+).
+	adaptiveCfg := &config.AdaptiveEnforcement{
+		Enabled: true,
+		Levels: config.EscalationLevels{
+			Critical: config.EscalationActions{BlockAll: &blockAllTrue},
+		},
+	}
+	sm := NewSessionManager(cfg, adaptiveCfg, nil)
+	defer sm.Close()
+
+	sess := sm.GetOrCreate(testClient)
+
+	// Session at level 2 (high) — not block_all in current config.
+	sess.mu.Lock()
+	sess.escalationLevel = 2
+	sess.mu.Unlock()
+	sess.SetBlockAll(false)
+
+	if sess.BlockAll() {
+		t.Fatal("level 2 should not be block_all with initial config")
+	}
+
+	// Hot-reload: now block_all applies at high (level 2) too.
+	newAdaptiveCfg := &config.AdaptiveEnforcement{
+		Enabled: true,
+		Levels: config.EscalationLevels{
+			High:     config.EscalationActions{BlockAll: &blockAllTrue},
+			Critical: config.EscalationActions{BlockAll: &blockAllTrue},
+		},
+	}
+	sm.UpdateConfig(cfg, newAdaptiveCfg)
+
+	// atBlockAll should now be true for the level 2 session.
+	if !sess.BlockAll() {
+		t.Error("expected atBlockAll=true at level 2 after config reload added block_all at high")
+	}
+}

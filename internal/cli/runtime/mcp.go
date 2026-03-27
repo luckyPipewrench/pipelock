@@ -60,23 +60,24 @@ const (
 )
 
 // buildRedirectRT derives a RedirectRuntime from config for built-in redirect
-// handlers. Returns nil when the fetch proxy listen address is empty or
-// unparseable, causing handlers to fail closed ("no fetch_endpoint").
+// handlers. Always returns a non-nil runtime so quarantine-write works even
+// when fetch_proxy is not configured. FetchEndpoint is only populated when the
+// fetch proxy listen address is valid; fetch-proxy redirect handlers fail
+// closed ("no fetch_endpoint") when it is empty.
 func buildRedirectRT(cfg *config.Config) *mcp.RedirectRuntime {
-	if cfg.FetchProxy.Listen == "" {
-		return nil
-	}
-	host, port, err := net.SplitHostPort(cfg.FetchProxy.Listen)
-	if err != nil {
-		return nil
-	}
-	if host == "" || host == "0.0.0.0" || host == "::" {
-		host = "127.0.0.1"
-	}
-	return &mcp.RedirectRuntime{
-		FetchEndpoint: "http://" + net.JoinHostPort(host, port) + "/fetch",
+	rt := &mcp.RedirectRuntime{
 		QuarantineDir: cfg.MCPToolPolicy.QuarantineDir,
 	}
+	if cfg.FetchProxy.Listen != "" {
+		host, port, err := net.SplitHostPort(cfg.FetchProxy.Listen)
+		if err == nil {
+			if host == "" || host == "0.0.0.0" || host == "::" {
+				host = "127.0.0.1"
+			}
+			rt.FetchEndpoint = "http://" + net.JoinHostPort(host, port) + "/fetch"
+		}
+	}
+	return rt
 }
 
 // McpCmd returns the mcp cobra command.

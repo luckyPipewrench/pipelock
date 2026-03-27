@@ -168,7 +168,7 @@ func TestInternalRedirect_AcceptsPayloadArgs(t *testing.T) {
 	cmd := InternalRedirectCmd()
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
+	cmd.SetErr(&bytes.Buffer{})
 
 	manifest := RedirectManifest{
 		Profile:       redirectProfileFetchProxy,
@@ -181,14 +181,16 @@ func TestInternalRedirect_AcceptsPayloadArgs(t *testing.T) {
 
 	cmd.SetArgs([]string{redirectProfileFetchProxy, `{"command":"curl https://example.com"}`})
 	err := cmd.Execute()
-	// Should succeed, NOT fail with "accepts 1 arg(s), received 2".
 	if err != nil {
-		var result RedirectResult
-		if jsonErr := json.Unmarshal(buf.Bytes(), &result); jsonErr == nil {
-			if strings.Contains(result.Error, "accepts") {
-				t.Error("Cobra arg validation rejected payload -- MinimumNArgs not applied")
-			}
-		}
+		t.Fatalf("expected success, got error: %v", err)
+	}
+
+	var result RedirectResult
+	if jsonErr := json.Unmarshal(buf.Bytes(), &result); jsonErr != nil {
+		t.Fatalf("invalid JSON output: %v\n%s", jsonErr, buf.String())
+	}
+	if result.Status != "ok" {
+		t.Errorf("status = %q, want ok: %s", result.Status, result.Error)
 	}
 }
 

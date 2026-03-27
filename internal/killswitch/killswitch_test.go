@@ -1176,4 +1176,52 @@ func TestAPIHandler_EnvTokenAuthenticates(t *testing.T) {
 	}
 }
 
+func TestIsActiveHTTP_ExemptsSessionAPI(t *testing.T) {
+	cfg := &config.Config{
+		KillSwitch: config.KillSwitch{
+			APIToken: testToken,
+		},
+	}
+	ks := New(cfg)
+	ks.SetAPI(true)
+
+	tests := []struct {
+		path       string
+		wantActive bool
+	}{
+		{"/api/v1/sessions", false},
+		{"/api/v1/sessions/agent%7C10.0.0.1/reset", false},
+		{"/fetch", true},
+		{"/api/v1/killswitch", false},
+		{"/api/v1/killswitch/status", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			d := ks.IsActiveHTTP(r)
+			if d.Active != tt.wantActive {
+				t.Errorf("path %q: active=%v, want %v", tt.path, d.Active, tt.wantActive)
+			}
+		})
+	}
+}
+
+func TestIsActiveHTTP_SessionAPI_SeparatePort_NoExemption(t *testing.T) {
+	cfg := &config.Config{
+		KillSwitch: config.KillSwitch{
+			APIToken:  testToken,
+			APIListen: "127.0.0.1:9999",
+		},
+	}
+	ks := New(cfg)
+	ks.SetSeparateAPIPort(true)
+	ks.SetAPI(true)
+
+	r := httptest.NewRequest(http.MethodGet, "/api/v1/sessions", nil)
+	d := ks.IsActiveHTTP(r)
+	if !d.Active {
+		t.Error("session API should NOT be exempt on main port when separate API port is configured")
+	}
+}
+
 func ptrBool(v bool) *bool { return &v }

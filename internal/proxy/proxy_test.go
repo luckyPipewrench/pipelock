@@ -35,6 +35,7 @@ const (
 	testFinalPath   = "/final"
 	testRemoteAddr  = "192.168.1.1:12345"
 	testRemoteAddr2 = "10.0.0.1:9999"
+	testRemoteAddr3 = "10.0.0.1:12345"
 	testProfileNorm = "normal"
 	testProfileElev = "elevated"
 	testContentJSON = "application/json"
@@ -2911,7 +2912,7 @@ func TestProxy_AdaptiveEscalation(t *testing.T) {
 	// tracks clean requests (decay).
 	for range 5 {
 		req := httptest.NewRequest(http.MethodGet, "/fetch?url=http://safe.example.com/page", nil)
-		req.RemoteAddr = "10.0.0.1:12345"
+		req.RemoteAddr = testRemoteAddr3
 		w := httptest.NewRecorder()
 		mux.ServeHTTP(w, req)
 		// These will fail at fetch (DNS) but session records them as clean.

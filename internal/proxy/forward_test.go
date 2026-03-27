@@ -1781,7 +1781,7 @@ func TestConnectCEEEntropyNotFed(t *testing.T) {
 		t.Fatal("entropy tracker not initialized despite enabled config")
 	}
 
-	sessionKey := ceeSessionKey(agentAnonymous, adaptiveSessionKeyLoopback)
+	sessionKey := CeeSessionKey(agentAnonymous, adaptiveSessionKeyLoopback)
 	usageBefore := et.CurrentUsage(sessionKey)
 
 	// Send 10 CONNECT requests to the same host. If hostname were still

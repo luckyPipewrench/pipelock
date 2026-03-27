@@ -5,6 +5,8 @@ package proxy
 
 import (
 	"fmt"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -254,6 +256,63 @@ func (s *SessionState) EscalationLevel() int {
 	return s.escalationLevel
 }
 
+// Reset zeros all enforcement fields in place and refreshes lastActivity.
+// The session remains in the map so live Recorder pointers stay valid.
+// Returns previous score and level for the API response.
+func (s *SessionState) Reset() (prevScore float64, prevLevel int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	prevScore = s.threatScore
+	prevLevel = s.escalationLevel
+
+	s.threatScore = 0
+	s.escalationLevel = 0
+	s.currentThreshold = 0
+	s.lastEscalation = time.Time{}
+	s.atBlockAll = false
+	s.domainWindows = nil
+	s.lastBurstAt = time.Time{}
+	s.lastActivity = time.Now()
+
+	return prevScore, prevLevel
+}
+
+// Session key classification constants.
+const (
+	sessionKindIdentity   = "identity"
+	sessionKindInvocation = "invocation"
+)
+
+// invocationPrefixes lists MCP transport prefixes that identify invocation keys.
+var invocationPrefixes = []string{"mcp-stdio-", "mcp-http-", "mcp-ws-"}
+
+// SessionSnapshot is a read-only DTO for the admin API.
+type SessionSnapshot struct {
+	Key             string    `json:"key"`
+	Agent           string    `json:"agent"`
+	ClientIP        string    `json:"client_ip"`
+	Kind            string    `json:"kind"`
+	ThreatScore     float64   `json:"threat_score"`
+	EscalationLevel string    `json:"escalation_level"`
+	BlockAll        bool      `json:"block_all"`
+	LastActivity    time.Time `json:"last_activity"`
+}
+
+// classifySessionKey determines whether a key is an identity key or an
+// MCP invocation key, and extracts agent/IP for identity keys.
+func classifySessionKey(key string) (kind, agent, clientIP string) {
+	for _, prefix := range invocationPrefixes {
+		if strings.HasPrefix(key, prefix) {
+			return sessionKindInvocation, "", ""
+		}
+	}
+	if idx := strings.LastIndex(key, "|"); idx > 0 {
+		return sessionKindIdentity, key[:idx], key[idx+1:]
+	}
+	return sessionKindIdentity, "", key
+}
+
 // SessionManager manages per-client sessions with eviction and cleanup.
 type SessionManager struct {
 	mu       sync.RWMutex
@@ -405,6 +464,74 @@ func (sm *SessionManager) Close() {
 	sm.closed.Do(func() {
 		close(sm.done)
 	})
+}
+
+// Snapshot returns a sorted read-only snapshot of all sessions.
+// Identity sessions sort first (by key), then invocation sessions (by key).
+func (sm *SessionManager) Snapshot() []SessionSnapshot {
+	sm.mu.RLock()
+	snaps := make([]SessionSnapshot, 0, len(sm.sessions))
+	for _, s := range sm.sessions {
+		s.mu.Lock()
+		kind, agent, ip := classifySessionKey(s.key)
+		snaps = append(snaps, SessionSnapshot{
+			Key:             s.key,
+			Agent:           agent,
+			ClientIP:        ip,
+			Kind:            kind,
+			ThreatScore:     s.threatScore,
+			EscalationLevel: session.EscalationLabel(s.escalationLevel),
+			BlockAll:        s.atBlockAll,
+			LastActivity:    s.lastActivity,
+		})
+		s.mu.Unlock()
+	}
+	sm.mu.RUnlock()
+
+	sort.Slice(snaps, func(i, j int) bool {
+		if snaps[i].Kind != snaps[j].Kind {
+			return snaps[i].Kind < snaps[j].Kind // "identity" < "invocation"
+		}
+		return snaps[i].Key < snaps[j].Key
+	})
+	return snaps
+}
+
+// ResetSession resets enforcement state for the given identity key.
+// Also clears IP-level burst state for the client IP.
+// Caller must clear CEE state BEFORE calling this (lock order).
+// Returns a snapshot of the previous state and whether the key was found.
+func (sm *SessionManager) ResetSession(key string) (prev SessionSnapshot, found bool) {
+	_, agent, ip := classifySessionKey(key)
+
+	sm.mu.Lock()
+	sess, ok := sm.sessions[key]
+	if !ok {
+		sm.mu.Unlock()
+		return SessionSnapshot{}, false
+	}
+
+	// Clear IP-level state (shared across all identities on this IP).
+	if ip != "" {
+		delete(sm.ipDomains, ip)
+		delete(sm.ipBurstCooldown, ip)
+	}
+	sm.mu.Unlock()
+
+	// Reset the session in place (SessionState.mu).
+	prevScore, prevLevel := sess.Reset()
+
+	prev = SessionSnapshot{
+		Key:             key,
+		Agent:           agent,
+		ClientIP:        ip,
+		Kind:            sessionKindIdentity,
+		ThreatScore:     prevScore,
+		EscalationLevel: session.EscalationLabel(prevLevel),
+		BlockAll:        false,
+		LastActivity:    time.Now(),
+	}
+	return prev, true
 }
 
 // cleanupLoop runs periodic cleanup of expired sessions.

@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"sync/atomic"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -141,7 +142,9 @@ func (c *Controller) IsActiveHTTP(r *http.Request) Decision {
 	// (separatePort=true), the main port gets no exemption — the agent
 	// cannot reach the API to self-deactivate the kill switch.
 	if rt.apiExempt && !c.separatePort.Load() &&
-		(path == "/api/v1/killswitch" || path == "/api/v1/killswitch/status") {
+		(path == "/api/v1/killswitch" || path == "/api/v1/killswitch/status" ||
+			path == "/api/v1/sessions" ||
+			(strings.HasPrefix(path, "/api/v1/sessions/") && strings.HasSuffix(path, "/reset"))) {
 		return Decision{}
 	}
 

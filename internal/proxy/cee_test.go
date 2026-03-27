@@ -28,24 +28,24 @@ const (
 )
 
 func TestCeeSessionKey_WithAgent(t *testing.T) {
-	got := ceeSessionKey(testCEEAgent, testCEEClientIP)
+	got := CeeSessionKey(testCEEAgent, testCEEClientIP)
 	want := testCEEAgent + "|" + testCEEClientIP
 	if got != want {
-		t.Errorf("ceeSessionKey(%q, %q) = %q, want %q", testCEEAgent, testCEEClientIP, got, want)
+		t.Errorf("CeeSessionKey(%q, %q) = %q, want %q", testCEEAgent, testCEEClientIP, got, want)
 	}
 }
 
 func TestCeeSessionKey_EmptyAgent(t *testing.T) {
-	got := ceeSessionKey("", testCEEClientIP)
+	got := CeeSessionKey("", testCEEClientIP)
 	if got != testCEEClientIP {
-		t.Errorf("ceeSessionKey(%q, %q) = %q, want %q", "", testCEEClientIP, got, testCEEClientIP)
+		t.Errorf("CeeSessionKey(%q, %q) = %q, want %q", "", testCEEClientIP, got, testCEEClientIP)
 	}
 }
 
 func TestCeeSessionKey_AnonymousAgent(t *testing.T) {
-	got := ceeSessionKey(agentAnonymous, testCEEClientIP)
+	got := CeeSessionKey(agentAnonymous, testCEEClientIP)
 	if got != testCEEClientIP {
-		t.Errorf("ceeSessionKey(%q, %q) = %q, want %q", agentAnonymous, testCEEClientIP, got, testCEEClientIP)
+		t.Errorf("CeeSessionKey(%q, %q) = %q, want %q", agentAnonymous, testCEEClientIP, got, testCEEClientIP)
 	}
 }
 
@@ -1126,5 +1126,47 @@ func TestQueryParamKeys_InvalidPercentEncoding(t *testing.T) {
 	want := "%ZZ"
 	if got != want {
 		t.Errorf("queryParamKeys = %q, want %q (raw fallback)", got, want)
+	}
+}
+
+func TestResetCEEState(t *testing.T) {
+	et := scanner.NewEntropyTracker(1000, 60)
+	defer et.Close()
+	fb := scanner.NewFragmentBuffer(4096, 100, 60)
+	defer fb.Close()
+
+	agent := "my-agent"
+	ip := "10.0.0.1"
+	key := CeeSessionKey(agent, ip)
+	keysKey := key + "|keys"
+
+	// Build up state.
+	et.Record(key, []byte("high-entropy-payload-abcdefghijklmnop"))
+	fb.Append(key, []byte("fragment-a"))
+	fb.Append(keysKey, []byte("fragment-b"))
+
+	if et.CurrentUsage(key) == 0 {
+		t.Fatal("expected non-zero entropy before reset")
+	}
+
+	ResetCEEState(agent, ip, et, fb)
+
+	if et.CurrentUsage(key) != 0 {
+		t.Error("entropy should be cleared after reset")
+	}
+}
+
+func TestResetCEEState_NilTrackers(t *testing.T) {
+	// Should not panic when trackers are nil (CEE disabled).
+	ResetCEEState("agent", "10.0.0.1", nil, nil)
+}
+
+func TestCeeSessionKey_Exported(t *testing.T) {
+	// Verify the exported function works correctly.
+	if got := CeeSessionKey("agent", "10.0.0.1"); got != "agent|10.0.0.1" {
+		t.Errorf("got %q, want agent|10.0.0.1", got)
+	}
+	if got := CeeSessionKey("", "10.0.0.1"); got != "10.0.0.1" {
+		t.Errorf("anonymous: got %q, want 10.0.0.1", got)
 	}
 }

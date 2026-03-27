@@ -410,6 +410,40 @@ func TestFragmentBuffer_CleanupPartialExpiry(t *testing.T) {
 	}
 }
 
+func TestFragmentBuffer_Delete(t *testing.T) {
+	fb := NewFragmentBuffer(4096, 100, 60)
+	defer fb.Close()
+
+	fb.Append("sess-a", []byte("fragment-part-1"))
+	fb.Append("sess-b", []byte("other-data"))
+
+	fb.Delete("sess-a")
+
+	// sess-a should be gone — verify via TotalBufferBytes reflecting only sess-b.
+	fb.mu.Lock()
+	_, sessAExists := fb.sessions["sess-a"]
+	_, sessBExists := fb.sessions["sess-b"]
+	fb.mu.Unlock()
+
+	if sessAExists {
+		t.Error("sess-a should not exist after delete")
+	}
+	if !sessBExists {
+		t.Error("sess-b should be unaffected by deleting sess-a")
+	}
+
+	// Appending to sess-a again should work (creates fresh session).
+	fb.Append("sess-a", []byte("new-data"))
+}
+
+func TestFragmentBuffer_Delete_NonExistent(t *testing.T) {
+	fb := NewFragmentBuffer(4096, 100, 60)
+	defer fb.Close()
+
+	// Should not panic on missing key.
+	fb.Delete("no-such-session")
+}
+
 func TestFragmentBuffer_AppendAfterClose(t *testing.T) {
 	fb := NewFragmentBuffer(65536, 1000, testWindowSecs)
 	fb.Close()

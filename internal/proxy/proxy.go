@@ -129,6 +129,7 @@ type Proxy struct {
 	metrics           *metrics.Metrics
 	ks                *killswitch.Controller
 	ksAPI             *killswitch.APIHandler
+	sessionAPI        *SessionAPIHandler
 	dialer            *net.Dialer
 	client            *http.Client
 	tlsTransport      *http.Transport // shared Transport for TLS interception upstream connections
@@ -201,6 +202,23 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 
 	p.setupCEE(&cfg.CrossRequestDetection)
 
+	// Create session admin API handler when an API token is configured.
+	// Mirrors the kill switch env-var override: PIPELOCK_KILLSWITCH_API_TOKEN
+	// takes precedence over the YAML value.
+	apiToken := cfg.KillSwitch.APIToken
+	if envToken := os.Getenv(killswitch.EnvAPIToken); envToken != "" {
+		apiToken = envToken
+	}
+	if apiToken != "" {
+		p.sessionAPI = NewSessionAPIHandler(
+			&p.sessionMgrPtr,
+			&p.entropyTrackerPtr,
+			&p.fragmentBufferPtr,
+			m,
+			apiToken,
+		)
+	}
+
 	p.dialer = &net.Dialer{
 		Timeout:   10 * time.Second,
 		KeepAlive: 30 * time.Second,
@@ -272,6 +290,24 @@ func (p *Proxy) ConfigPtr() *atomic.Pointer[config.Config] {
 // handler to share the same scanner and receive hot-reload updates.
 func (p *Proxy) ScannerPtr() *atomic.Pointer[scanner.Scanner] {
 	return &p.scannerPtr
+}
+
+// SessionMgrPtr returns the atomic pointer to the session manager.
+// Used by run.go to construct the session API handler for the dedicated port.
+func (p *Proxy) SessionMgrPtr() *atomic.Pointer[SessionManager] {
+	return &p.sessionMgrPtr
+}
+
+// EntropyTrackerPtr returns the atomic pointer to the entropy tracker.
+// Used by run.go to construct the session API handler for the dedicated port.
+func (p *Proxy) EntropyTrackerPtr() *atomic.Pointer[scanner.EntropyTracker] {
+	return &p.entropyTrackerPtr
+}
+
+// FragmentBufferPtr returns the atomic pointer to the fragment buffer.
+// Used by run.go to construct the session API handler for the dedicated port.
+func (p *Proxy) FragmentBufferPtr() *atomic.Pointer[scanner.FragmentBuffer] {
+	return &p.fragmentBufferPtr
 }
 
 // Reload atomically swaps the config and scanner for hot-reload support.
@@ -739,6 +775,11 @@ func (p *Proxy) buildMux() *http.ServeMux {
 		mux.HandleFunc("/api/v1/killswitch", p.ksAPI.HandleToggle)
 		mux.HandleFunc("/api/v1/killswitch/status", p.ksAPI.HandleStatus)
 	}
+	// Register session admin API routes only when NOT on a separate port.
+	if p.sessionAPI != nil && cfg.KillSwitch.APIListen == "" {
+		mux.HandleFunc("/api/v1/sessions", p.sessionAPI.HandleList)
+		mux.HandleFunc("/api/v1/sessions/", p.sessionAPI.HandleReset)
+	}
 	return mux
 }
 
@@ -1014,7 +1055,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,
 				Logger:    log,
 				Metrics:   p.metrics,
-				Session:   ceeSessionKey(agent, clientIP),
+				Session:   CeeSessionKey(agent, clientIP),
 				ClientIP:  clientIP,
 				RequestID: requestID,
 			})
@@ -1032,7 +1073,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// Re-check block_all after header DLP near-miss may have escalated the session.
 	if fetchRec != nil && cfg.AdaptiveEnforcement.Enabled &&
 		decide.UpgradeAction("", fetchRec.EscalationLevel(), &cfg.AdaptiveEnforcement) == config.ActionBlock {
-		headerSessionKey := ceeSessionKey(agent, clientIP)
+		headerSessionKey := CeeSessionKey(agent, clientIP)
 		log.LogAdaptiveUpgrade(headerSessionKey, session.EscalationLabel(fetchRec.EscalationLevel()), "", config.ActionBlock, "session_deny", clientIP, requestID)
 		p.metrics.RecordAdaptiveUpgrade("", config.ActionBlock, session.EscalationLabel(fetchRec.EscalationLevel()))
 		writeJSON(w, http.StatusForbidden, FetchResponse{
@@ -1064,7 +1105,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// GET-only so the outbound data is the target URL path and query values.
 	ceeCfg := ceeEffectiveConfig(cfg.CrossRequestDetection, cfg.EnforceEnabled())
 	if ceeCfg.Enabled {
-		sessionKey := ceeSessionKey(agent, clientIP)
+		sessionKey := CeeSessionKey(agent, clientIP)
 		outbound := urlPayload(parsed)
 		keys := queryParamKeys(parsed)
 

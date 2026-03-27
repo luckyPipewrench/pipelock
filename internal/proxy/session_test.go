@@ -2215,3 +2215,201 @@ func TestTrySessionRecovery_NilMetrics(t *testing.T) {
 		t.Errorf("expected critical->high, got %s->%s", fromLabel, toLabel)
 	}
 }
+
+func TestClassifySessionKey(t *testing.T) {
+	tests := []struct {
+		key       string
+		wantKind  string
+		wantAgent string
+		wantIP    string
+	}{
+		{"my-agent|10.0.0.1", sessionKindIdentity, "my-agent", "10.0.0.1"},
+		{"10.0.0.1", sessionKindIdentity, "", "10.0.0.1"},
+		{"mcp-stdio-42", sessionKindInvocation, "", ""},
+		{"mcp-http-7", sessionKindInvocation, "", ""},
+		{"mcp-ws-3", sessionKindInvocation, "", ""},
+		{"agent-with-pipe|192.168.1.1", sessionKindIdentity, "agent-with-pipe", "192.168.1.1"},
+		{"complex|agent|10.0.0.1", sessionKindIdentity, "complex|agent", "10.0.0.1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.key, func(t *testing.T) {
+			kind, agent, ip := classifySessionKey(tt.key)
+			if kind != tt.wantKind {
+				t.Errorf("kind: got %q, want %q", kind, tt.wantKind)
+			}
+			if agent != tt.wantAgent {
+				t.Errorf("agent: got %q, want %q", agent, tt.wantAgent)
+			}
+			if ip != tt.wantIP {
+				t.Errorf("ip: got %q, want %q", ip, tt.wantIP)
+			}
+		})
+	}
+}
+
+func TestSessionState_Reset(t *testing.T) {
+	s := &SessionState{
+		key:              "test|10.0.0.1",
+		created:          time.Now().Add(-10 * time.Minute),
+		lastActivity:     time.Now().Add(-5 * time.Minute),
+		threatScore:      12.5,
+		escalationLevel:  3,
+		currentThreshold: 8.0,
+		lastEscalation:   time.Now().Add(-2 * time.Minute),
+		atBlockAll:       true,
+		domainWindows:    []domainEntry{{domain: "evil.com", at: time.Now()}},
+		lastBurstAt:      time.Now(),
+	}
+
+	prevScore, prevLevel := s.Reset()
+
+	if prevScore != 12.5 {
+		t.Errorf("prevScore: got %f, want 12.5", prevScore)
+	}
+	if prevLevel != 3 {
+		t.Errorf("prevLevel: got %d, want 3", prevLevel)
+	}
+	if s.ThreatScore() != 0 {
+		t.Error("threatScore should be 0 after reset")
+	}
+	if s.EscalationLevel() != 0 {
+		t.Error("escalationLevel should be 0 after reset")
+	}
+	if s.BlockAll() {
+		t.Error("blockAll should be false after reset")
+	}
+	s.mu.Lock()
+	if time.Since(s.lastActivity) > time.Second {
+		t.Error("lastActivity should be refreshed to now")
+	}
+	if s.currentThreshold != 0 {
+		t.Error("currentThreshold should be 0")
+	}
+	if len(s.domainWindows) != 0 {
+		t.Error("domainWindows should be cleared")
+	}
+	if !s.lastBurstAt.IsZero() {
+		t.Error("lastBurstAt should be zero")
+	}
+	if !s.lastEscalation.IsZero() {
+		t.Error("lastEscalation should be zero")
+	}
+	s.mu.Unlock()
+}
+
+func TestSessionManager_Snapshot(t *testing.T) {
+	cfg := &config.SessionProfiling{
+		MaxSessions:            100,
+		SessionTTLMinutes:      30,
+		CleanupIntervalSeconds: 300,
+		DomainBurst:            10,
+		WindowMinutes:          5,
+	}
+	sm := NewSessionManager(cfg, nil, metrics.New())
+	defer sm.Close()
+
+	sm.GetOrCreate("zebra|10.0.0.1")
+	sm.GetOrCreate("alpha|10.0.0.2")
+	sm.GetOrCreate("mcp-stdio-1")
+
+	snaps := sm.Snapshot()
+	if len(snaps) != 3 {
+		t.Fatalf("expected 3 snapshots, got %d", len(snaps))
+	}
+
+	// Identity first (lex), then invocation.
+	if snaps[0].Key != "alpha|10.0.0.2" {
+		t.Errorf("first: got %q, want alpha|10.0.0.2", snaps[0].Key)
+	}
+	if snaps[1].Key != "zebra|10.0.0.1" {
+		t.Errorf("second: got %q, want zebra|10.0.0.1", snaps[1].Key)
+	}
+	if snaps[2].Key != "mcp-stdio-1" {
+		t.Errorf("third: got %q, want mcp-stdio-1", snaps[2].Key)
+	}
+	if snaps[0].Kind != sessionKindIdentity {
+		t.Error("first should be identity")
+	}
+	if snaps[2].Kind != sessionKindInvocation {
+		t.Error("third should be invocation")
+	}
+	if snaps[0].EscalationLevel != testLevelNormal {
+		t.Errorf("default escalation should be normal, got %q", snaps[0].EscalationLevel)
+	}
+}
+
+func TestSessionManager_ResetSession_ClearsIPState(t *testing.T) {
+	cfg := &config.SessionProfiling{
+		MaxSessions:            100,
+		SessionTTLMinutes:      30,
+		CleanupIntervalSeconds: 300,
+		DomainBurst:            3,
+		WindowMinutes:          5,
+	}
+	sm := NewSessionManager(cfg, nil, metrics.New())
+	defer sm.Close()
+
+	sm.GetOrCreate("agent-a|10.0.0.1")
+
+	// Build up IP-level domain tracking.
+	sm.RecordIPDomain("10.0.0.1", "a.com", cfg)
+	sm.RecordIPDomain("10.0.0.1", "b.com", cfg)
+
+	prev, found := sm.ResetSession("agent-a|10.0.0.1")
+	if !found {
+		t.Fatal("expected session to be found")
+	}
+	if prev.Kind != sessionKindIdentity {
+		t.Errorf("kind: got %q, want %q", prev.Kind, sessionKindIdentity)
+	}
+
+	sm.mu.RLock()
+	ipDomains := sm.ipDomains["10.0.0.1"]
+	sm.mu.RUnlock()
+	if len(ipDomains) != 0 {
+		t.Errorf("expected IP domain state cleared, got %d entries", len(ipDomains))
+	}
+}
+
+func TestSessionManager_ResetSession_NotFound(t *testing.T) {
+	cfg := &config.SessionProfiling{
+		MaxSessions:            100,
+		SessionTTLMinutes:      30,
+		CleanupIntervalSeconds: 300,
+		DomainBurst:            10,
+		WindowMinutes:          5,
+	}
+	sm := NewSessionManager(cfg, nil, metrics.New())
+	defer sm.Close()
+
+	_, found := sm.ResetSession("nonexistent|10.0.0.1")
+	if found {
+		t.Error("expected not found for nonexistent key")
+	}
+}
+
+func TestSessionManager_ResetSession_LivePointerStillWorks(t *testing.T) {
+	cfg := &config.SessionProfiling{
+		MaxSessions:            100,
+		SessionTTLMinutes:      30,
+		CleanupIntervalSeconds: 300,
+		DomainBurst:            10,
+		WindowMinutes:          5,
+	}
+	sm := NewSessionManager(cfg, nil, metrics.New())
+	defer sm.Close()
+
+	sess := sm.GetOrCreate("agent|10.0.0.1")
+	sess.RecordSignal(session.SignalBlock, 1.0)
+
+	_, _ = sm.ResetSession("agent|10.0.0.1")
+
+	// The same pointer should still be in the map and usable.
+	sess2 := sm.GetOrCreate("agent|10.0.0.1")
+	if sess != sess2 {
+		t.Error("expected same pointer after reset (in-place mutation, not delete)")
+	}
+	if sess.ThreatScore() != 0 {
+		t.Error("threat score should be 0 after reset")
+	}
+}

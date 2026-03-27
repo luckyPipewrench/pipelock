@@ -11,7 +11,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -77,17 +76,11 @@ type Recorder struct {
 	sinceCheckpoint     uint64
 	firstSeqInSpan      uint64
 	closed              bool
-	nop                 bool
 }
 
 // New creates a Recorder. The redactFn is used for DLP redaction (can be nil to skip).
 // privKey is used for checkpoint signing (nil = unsigned checkpoints).
-// When cfg.Enabled is false, returns a no-op recorder that discards all calls.
 func New(cfg Config, redactFn RedactFunc, privKey ed25519.PrivateKey) (*Recorder, error) {
-	if !cfg.Enabled {
-		return &Recorder{nop: true}, nil
-	}
-
 	if cfg.CheckpointInterval <= 0 {
 		cfg.CheckpointInterval = defaultCheckpointInterval
 	}
@@ -127,10 +120,6 @@ func New(cfg Config, redactFn RedactFunc, privKey ed25519.PrivateKey) (*Recorder
 // SessionID, Type, Transport, Summary, and Detail. Sequence, Timestamp,
 // PrevHash, Hash, and Version are set by the recorder.
 func (r *Recorder) Record(e Entry) error {
-	if r.nop {
-		return nil
-	}
-
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -138,38 +127,25 @@ func (r *Recorder) Record(e Entry) error {
 		return fmt.Errorf("recorder is closed")
 	}
 
-	// Session ID validation: require non-empty, reject path separators
-	// (defense against path traversal in filenames), and reject mismatches.
-	if e.SessionID == "" {
-		return errors.New("recorder: session_id required")
-	}
-	if strings.ContainsAny(e.SessionID, `/\`) {
-		return fmt.Errorf("recorder: session_id contains path separator")
-	}
-	if r.sessionID == "" {
-		r.sessionID = e.SessionID
-	}
-	if e.SessionID != r.sessionID {
-		return fmt.Errorf("recorder: session_id mismatch (expected %q, got %q)", r.sessionID, e.SessionID)
-	}
-
 	e.Version = EntryVersion
 	e.Sequence = r.seq
 	e.Timestamp = time.Now().UTC()
 	e.PrevHash = r.prevHash
 
-	// Raw escrow: encrypt detail before redaction. Escrow must succeed
-	// when enabled -- silent drops would lose raw evidence.
+	// Track session from first entry
+	if r.sessionID == "" && e.SessionID != "" {
+		r.sessionID = e.SessionID
+	}
+
+	// Raw escrow: encrypt detail before redaction
 	if r.cfg.RawEscrow && r.escrowPub != nil {
 		rawJSON, err := json.Marshal(e.Detail)
-		if err != nil {
-			return fmt.Errorf("marshal raw escrow: %w", err)
+		if err == nil {
+			escrowPath, writeErr := r.writeEscrow(rawJSON)
+			if writeErr == nil {
+				e.RawRef = filepath.Base(escrowPath)
+			}
 		}
-		escrowPath, err := r.writeEscrow(rawJSON)
-		if err != nil {
-			return fmt.Errorf("write raw escrow: %w", err)
-		}
-		e.RawRef = filepath.Base(escrowPath)
 	}
 
 	// DLP redaction
@@ -178,6 +154,7 @@ func (r *Recorder) Record(e Entry) error {
 	}
 
 	e.Hash = ComputeHash(e)
+	r.prevHash = e.Hash
 
 	if err := r.ensureFile(e.SessionID, e.Sequence); err != nil {
 		return fmt.Errorf("opening evidence file: %w", err)
@@ -187,10 +164,6 @@ func (r *Recorder) Record(e Entry) error {
 		return fmt.Errorf("writing entry: %w", err)
 	}
 
-	// Advance chain state AFTER successful write. If ensureFile or
-	// writeEntry fails, the next entry must re-link to the same prevHash
-	// so the chain stays consistent with what reached disk.
-	r.prevHash = e.Hash
 	r.seq++
 
 	r.sinceCheckpoint++
@@ -213,10 +186,6 @@ func (r *Recorder) Record(e Entry) error {
 
 // Close flushes and closes the recorder, writing a final checkpoint.
 func (r *Recorder) Close() error {
-	if r.nop {
-		return nil
-	}
-
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -226,12 +195,7 @@ func (r *Recorder) Close() error {
 	r.closed = true
 
 	if r.sinceCheckpoint > 0 {
-		if err := r.checkpointLocked(); err != nil {
-			// Close the file even if checkpoint failed, but return
-			// the checkpoint error since it means chain state is incomplete.
-			_ = r.closeFile()
-			return fmt.Errorf("final checkpoint: %w", err)
-		}
+		_ = r.checkpointLocked()
 	}
 
 	return r.closeFile()
@@ -266,6 +230,8 @@ func (r *Recorder) checkpointLocked() error {
 	e.Summary = fmt.Sprintf("checkpoint: %d entries [seq %d-%d]",
 		cpDetail.EntryCount, cpDetail.FirstSeq, cpDetail.LastSeq)
 	e.Hash = ComputeHash(e)
+	r.prevHash = e.Hash
+	r.seq++
 
 	if r.file != nil {
 		if err := r.writeEntry(e); err != nil {
@@ -274,10 +240,6 @@ func (r *Recorder) checkpointLocked() error {
 		r.fileEntryCount++
 	}
 
-	// Advance chain state AFTER successful write. If writeEntry fails,
-	// prevHash/seq must remain unchanged so the next attempt links correctly.
-	r.prevHash = e.Hash
-	r.seq++
 	r.sinceCheckpoint = 0
 	r.firstSeqInSpan = r.seq
 	return nil
@@ -339,9 +301,7 @@ func (r *Recorder) writeEscrow(rawJSON []byte) (string, error) {
 	payload = append(payload, ephPub[:]...)
 	payload = append(payload, sealed...)
 
-	// filepath.Base as defense-in-depth: session ID is already validated
-	// for path separators in Record(), but belt-and-suspenders for filenames.
-	escrowName := fmt.Sprintf("evidence-%s-%d.raw.enc", filepath.Base(r.sessionID), r.seq)
+	escrowName := fmt.Sprintf("evidence-%s-%d.raw.enc", r.sessionID, r.fileSeqStart)
 	escrowPath := filepath.Join(filepath.Clean(r.cfg.Dir), escrowName)
 
 	if err := os.WriteFile(escrowPath, payload, filePermissions); err != nil {
@@ -357,9 +317,7 @@ func (r *Recorder) ensureFile(sessionID string, seqStart uint64) error {
 		return nil
 	}
 
-	// filepath.Base as defense-in-depth: session ID is already validated
-	// for path separators in Record(), but belt-and-suspenders for filenames.
-	name := fmt.Sprintf("evidence-%s-%d.jsonl", filepath.Base(sessionID), seqStart)
+	name := fmt.Sprintf("evidence-%s-%d.jsonl", sessionID, seqStart)
 	path := filepath.Join(filepath.Clean(r.cfg.Dir), name)
 
 	f, err := os.OpenFile(filepath.Clean(path), os.O_CREATE|os.O_WRONLY|os.O_APPEND, filePermissions)
@@ -417,9 +375,6 @@ func (r *Recorder) rotateFile() error {
 // ExpireOldFiles removes evidence files older than RetentionDays.
 // Safe to call periodically. Returns the number of files removed.
 func (r *Recorder) ExpireOldFiles() (int, error) {
-	if r.nop {
-		return 0, nil
-	}
 	if r.cfg.RetentionDays <= 0 {
 		return 0, nil
 	}

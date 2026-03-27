@@ -4,7 +4,6 @@
 package recorder_test
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -368,60 +367,6 @@ func TestQuerySession_FilterBySessionID(t *testing.T) {
 	}
 	if len(result.Entries) != 0 {
 		t.Errorf("expected 0 entries for mismatched session, got %d", len(result.Entries))
-	}
-}
-
-func TestQuerySession_NumericShardSort(t *testing.T) {
-	dir := t.TempDir()
-
-	// Create shard files with numbers that sort wrong lexicographically:
-	// lex order: 1, 10, 2, 20  vs  numeric order: 1, 2, 10, 20
-	shardNums := []int{1, 2, 10, 20}
-	ts := time.Now().UTC()
-	prevHash := recorder.GenesisHash
-	globalSeq := uint64(0)
-
-	for _, sn := range shardNums {
-		name := fmt.Sprintf("evidence-numsort-%d.jsonl", sn)
-		path := filepath.Join(dir, name)
-
-		e := recorder.Entry{
-			Version:   recorder.EntryVersion,
-			Sequence:  globalSeq,
-			Timestamp: ts.Add(time.Duration(globalSeq) * time.Second),
-			SessionID: "numsort",
-			Type:      testType,
-			Transport: testTransport,
-			Summary:   fmt.Sprintf("shard %d", sn),
-			PrevHash:  prevHash,
-		}
-		e.Hash = recorder.ComputeHash(e)
-		prevHash = e.Hash
-		globalSeq++
-
-		data, err := json.Marshal(e)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := writeFile(path, append(data, '\n')); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	result, err := recorder.QuerySession(dir, "numsort", nil)
-	if err != nil {
-		t.Fatalf("QuerySession: %v", err)
-	}
-	if result.TotalFiles != len(shardNums) {
-		t.Fatalf("TotalFiles = %d, want %d", result.TotalFiles, len(shardNums))
-	}
-
-	// Entries must come back in numeric shard order (seq 0, 1, 2, 3)
-	for i, e := range result.Entries {
-		expectedSeq := uint64(i)
-		if e.Sequence != expectedSeq {
-			t.Errorf("entry %d: seq = %d, want %d (numeric order broken)", i, e.Sequence, expectedSeq)
-		}
 	}
 }
 

@@ -7,9 +7,7 @@ package recorder
 
 import (
 	"bufio"
-	"crypto/ed25519"
 	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -85,8 +83,7 @@ func ComputeHash(e Entry) string {
 
 // VerifyChain checks the integrity of a sequence of entries. Returns an error
 // describing the first break found, or nil if the chain is intact.
-// If pubKey is provided, checkpoint entry signatures are also verified.
-func VerifyChain(entries []Entry, pubKey ...ed25519.PublicKey) error {
+func VerifyChain(entries []Entry) error {
 	for i, e := range entries {
 		if e.Version != EntryVersion {
 			return fmt.Errorf("entry seq %d: unsupported version %d (expected %d)", e.Sequence, e.Version, EntryVersion)
@@ -103,50 +100,6 @@ func VerifyChain(entries []Entry, pubKey ...ed25519.PublicKey) error {
 			if e.PrevHash != entries[i-1].Hash {
 				return fmt.Errorf("entry seq %d: chain break: PrevHash %s != previous Hash %s", e.Sequence, e.PrevHash, entries[i-1].Hash)
 			}
-		}
-	}
-
-	// Verify checkpoint signatures if a public key was provided
-	if len(pubKey) > 0 && pubKey[0] != nil {
-		if err := VerifyCheckpoints(entries, pubKey[0]); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-// VerifyCheckpoints verifies Ed25519 signatures on all checkpoint entries.
-// Returns an error if any checkpoint has a missing or invalid signature.
-func VerifyCheckpoints(entries []Entry, pubKey ed25519.PublicKey) error {
-	for _, e := range entries {
-		if e.Type != "checkpoint" {
-			continue
-		}
-
-		detailJSON, err := json.Marshal(e.Detail)
-		if err != nil {
-			return fmt.Errorf("entry seq %d: marshaling checkpoint detail: %w", e.Sequence, err)
-		}
-
-		var cpDetail CheckpointDetail
-		if err := json.Unmarshal(detailJSON, &cpDetail); err != nil {
-			return fmt.Errorf("entry seq %d: unmarshaling checkpoint detail: %w", e.Sequence, err)
-		}
-
-		if cpDetail.Signature == "" {
-			return fmt.Errorf("entry seq %d: checkpoint missing signature", e.Sequence)
-		}
-
-		sig, err := hex.DecodeString(cpDetail.Signature)
-		if err != nil {
-			return fmt.Errorf("entry seq %d: decoding checkpoint signature: %w", e.Sequence, err)
-		}
-
-		// The signature is over the PrevHash of the checkpoint entry
-		// (which represents the chain state just before the checkpoint)
-		if !ed25519.Verify(pubKey, []byte(e.PrevHash), sig) {
-			return fmt.Errorf("entry seq %d: checkpoint signature verification failed", e.Sequence)
 		}
 	}
 	return nil

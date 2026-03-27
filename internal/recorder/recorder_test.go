@@ -1063,5 +1063,227 @@ func TestRecorder_RawEscrowPerEntry(t *testing.T) {
 	}
 }
 
+func TestRecorder_SessionID_Validation(t *testing.T) {
+	t.Run("rejects empty session ID", func(t *testing.T) {
+		dir := t.TempDir()
+		cfg := recorder.Config{
+			Enabled:            true,
+			Dir:                dir,
+			CheckpointInterval: 100,
+		}
+		rec, err := recorder.New(cfg, nil, nil)
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		defer func() { _ = rec.Close() }()
+
+		err = rec.Record(recorder.Entry{
+			SessionID: "",
+			Type:      testType,
+			Summary:   "empty session",
+		})
+		if err == nil {
+			t.Fatal("expected error for empty session ID")
+		}
+		if !strings.Contains(err.Error(), "session_id required") {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("rejects mismatched session ID", func(t *testing.T) {
+		dir := t.TempDir()
+		cfg := recorder.Config{
+			Enabled:            true,
+			Dir:                dir,
+			CheckpointInterval: 100,
+		}
+		rec, err := recorder.New(cfg, nil, nil)
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		defer func() { _ = rec.Close() }()
+
+		// First entry establishes session identity
+		err = rec.Record(recorder.Entry{
+			SessionID: "session-alpha",
+			Type:      testType,
+			Summary:   "first",
+		})
+		if err != nil {
+			t.Fatalf("first Record: %v", err)
+		}
+
+		// Second entry with different session ID must be rejected
+		err = rec.Record(recorder.Entry{
+			SessionID: "session-beta",
+			Type:      testType,
+			Summary:   "wrong session",
+		})
+		if err == nil {
+			t.Fatal("expected error for mismatched session ID")
+		}
+		if !strings.Contains(err.Error(), "session_id mismatch") {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("accepts consistent session IDs", func(t *testing.T) {
+		dir := t.TempDir()
+		cfg := recorder.Config{
+			Enabled:            true,
+			Dir:                dir,
+			CheckpointInterval: 100,
+		}
+		rec, err := recorder.New(cfg, nil, nil)
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		defer func() { _ = rec.Close() }()
+
+		for i := range 3 {
+			err := rec.Record(recorder.Entry{
+				SessionID: "consistent-session",
+				Type:      testType,
+				Summary:   fmt.Sprintf("entry %d", i),
+			})
+			if err != nil {
+				t.Fatalf("Record(%d): %v", i, err)
+			}
+		}
+	})
+}
+
+func TestRecorder_EscrowFailure_FailsClosed(t *testing.T) {
+	t.Run("escrow write failure prevents entry", func(t *testing.T) {
+		dir := t.TempDir()
+
+		recipientPub, _, err := box.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatalf("GenerateKey: %v", err)
+		}
+
+		cfg := recorder.Config{
+			Enabled:            true,
+			Dir:                dir,
+			Redact:             false,
+			CheckpointInterval: 100,
+			RawEscrow:          true,
+			EscrowPublicKey:    hex.EncodeToString(recipientPub[:]),
+		}
+		rec, err := recorder.New(cfg, nil, nil)
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		defer func() { _ = rec.Close() }()
+
+		// Remove the evidence directory after construction so
+		// escrow file writes fail (directory no longer exists).
+		if err := os.RemoveAll(dir); err != nil {
+			t.Fatalf("RemoveAll: %v", err)
+		}
+
+		err = rec.Record(recorder.Entry{
+			SessionID: testSessionID,
+			Type:      testType,
+			Transport: testTransport,
+			Summary:   "should fail",
+			Detail:    map[string]string{"key": "value"},
+		})
+		if err == nil {
+			t.Fatal("expected error when escrow write fails")
+		}
+		if !strings.Contains(err.Error(), "escrow") {
+			t.Errorf("error should mention escrow, got: %v", err)
+		}
+	})
+
+	t.Run("no JSONL entry written on escrow failure", func(t *testing.T) {
+		dir := t.TempDir()
+
+		recipientPub, _, err := box.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatalf("GenerateKey: %v", err)
+		}
+
+		cfg := recorder.Config{
+			Enabled:            true,
+			Dir:                dir,
+			Redact:             false,
+			CheckpointInterval: 100,
+			RawEscrow:          true,
+			EscrowPublicKey:    hex.EncodeToString(recipientPub[:]),
+		}
+		rec, err := recorder.New(cfg, nil, nil)
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+
+		// Remove the evidence directory so escrow writes fail
+		if err := os.RemoveAll(dir); err != nil {
+			t.Fatalf("RemoveAll: %v", err)
+		}
+
+		_ = rec.Record(recorder.Entry{
+			SessionID: testSessionID,
+			Type:      testType,
+			Transport: testTransport,
+			Summary:   "fail",
+			Detail:    map[string]string{"key": "value"},
+		})
+		_ = rec.Close()
+
+		// Re-create dir to check for leaked files
+		_ = os.MkdirAll(dir, 0o750)
+		dirEntries, _ := os.ReadDir(dir)
+		for _, de := range dirEntries {
+			if strings.HasSuffix(de.Name(), ".jsonl") {
+				t.Error("JSONL file should not exist when escrow failed")
+			}
+		}
+	})
+}
+
+func TestRecorder_Nop_WhenDisabled(t *testing.T) {
+	dir := t.TempDir()
+	cfg := recorder.Config{
+		Enabled: false,
+		Dir:     dir,
+	}
+	rec, err := recorder.New(cfg, nil, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Record should succeed silently
+	err = rec.Record(recorder.Entry{
+		SessionID: testSessionID,
+		Type:      testType,
+		Summary:   "nop",
+	})
+	if err != nil {
+		t.Fatalf("Record on nop recorder: %v", err)
+	}
+
+	// Close should succeed
+	if err := rec.Close(); err != nil {
+		t.Fatalf("Close on nop recorder: %v", err)
+	}
+
+	// ExpireOldFiles should succeed
+	removed, err := rec.ExpireOldFiles()
+	if err != nil {
+		t.Fatalf("ExpireOldFiles on nop recorder: %v", err)
+	}
+	if removed != 0 {
+		t.Errorf("expected 0 removed, got %d", removed)
+	}
+
+	// No files should be created
+	dirEntries, _ := os.ReadDir(dir)
+	for _, de := range dirEntries {
+		t.Errorf("no-op recorder created file: %s", de.Name())
+	}
+}
+
 // filePermissions for test file creation.
 const filePermissions = 0o600

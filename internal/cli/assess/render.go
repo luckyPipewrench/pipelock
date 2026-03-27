@@ -150,14 +150,15 @@ func scorePercent(score, maxScore int) int {
 }
 
 // formatEvidence pretty-prints a json.RawMessage for HTML display.
-// Returns empty string for nil or JSON null evidence, and falls back to raw bytes on indent error.
+// Returns empty string for nil or JSON null evidence, and a safe placeholder
+// on indent error to avoid rendering raw untrusted bytes into the report.
 func formatEvidence(raw json.RawMessage) string {
 	if raw == nil || string(raw) == "null" {
 		return ""
 	}
 	var buf bytes.Buffer
 	if err := json.Indent(&buf, raw, "", "  "); err != nil {
-		return string(raw)
+		return "[invalid evidence payload]"
 	}
 	return buf.String()
 }

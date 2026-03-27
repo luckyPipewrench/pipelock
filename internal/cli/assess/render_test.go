@@ -513,11 +513,11 @@ func TestFormatEvidence(t *testing.T) {
 		}
 	})
 
-	t.Run("invalid JSON falls back to raw", func(t *testing.T) {
+	t.Run("invalid JSON shows placeholder", func(t *testing.T) {
 		raw := json.RawMessage(`not-json{`)
 		got := formatEvidence(raw)
-		if got != string(raw) {
-			t.Errorf("formatEvidence(invalid JSON) = %q, want raw %q", got, string(raw))
+		if got != "[invalid evidence payload]" {
+			t.Errorf("formatEvidence(invalid JSON) = %q, want placeholder", got)
 		}
 	})
 }

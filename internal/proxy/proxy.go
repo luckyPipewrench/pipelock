@@ -629,6 +629,8 @@ func (p *Proxy) ssrfSafeDialContext(ctx context.Context, network, addr string) (
 	}
 
 	// If the host is already an IP, check it and dial directly.
+	// IsTrustedDomain rejects IP literals, so raw IPs are always
+	// subject to SSRF blocking regardless of trusted_domains config.
 	if ip := net.ParseIP(host); ip != nil {
 		// Normalize IPv4-mapped IPv6 (::ffff:x.x.x.x) to 4-byte form,
 		// consistent with the DNS resolution path below.
@@ -636,9 +638,7 @@ func (p *Proxy) ssrfSafeDialContext(ctx context.Context, network, addr string) (
 			ip = v4
 		}
 		if currentSc := p.scannerPtr.Load(); currentSc.IsInternalIP(ip) {
-			if !currentSc.IsTrustedDomain(host) {
-				return nil, fmt.Errorf("SSRF blocked: connection to internal IP %s", host)
-			}
+			return nil, fmt.Errorf("SSRF blocked: connection to internal IP %s", host)
 		}
 		return p.dialer.DialContext(ctx, network, addr)
 	}
@@ -654,19 +654,24 @@ func (p *Proxy) ssrfSafeDialContext(ctx context.Context, network, addr string) (
 	}
 
 	currentSc := p.scannerPtr.Load()
-	if !currentSc.IsTrustedDomain(host) {
-		for _, ipStr := range ips {
-			ip := net.ParseIP(ipStr)
-			if ip == nil {
-				return nil, fmt.Errorf("SSRF blocked: unparseable IP %q from DNS for %s", ipStr, host)
+	isTrusted := currentSc.IsTrustedDomain(host)
+	for _, ipStr := range ips {
+		ip := net.ParseIP(ipStr)
+		if ip == nil {
+			return nil, fmt.Errorf("SSRF blocked: unparseable IP %q from DNS for %s", ipStr, host)
+		}
+		// Normalize IPv4-mapped IPv6 (::ffff:x.x.x.x) to 4-byte form.
+		if v4 := ip.To4(); v4 != nil {
+			ip = v4
+		}
+		if currentSc.IsInternalIP(ip) {
+			if isTrusted {
+				// Trusted domain resolves to internal IP — allow with
+				// advisory note. The scanner-level checkSSRF handles
+				// the authoritative allow/deny decision and logging.
+				continue
 			}
-			// Normalize IPv4-mapped IPv6 (::ffff:x.x.x.x) to 4-byte form.
-			if v4 := ip.To4(); v4 != nil {
-				ip = v4
-			}
-			if currentSc.IsInternalIP(ip) {
-				return nil, fmt.Errorf("SSRF blocked: %s resolves to internal IP %s", host, ipStr)
-			}
+			return nil, fmt.Errorf("SSRF blocked: %s resolves to internal IP %s", host, ipStr)
 		}
 	}
 

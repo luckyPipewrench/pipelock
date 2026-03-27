@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -51,7 +52,9 @@ func QuerySession(dir, sessionID string, filter *QueryFilter) (*QueryResult, err
 		}
 	}
 
-	sort.Strings(files)
+	sort.Slice(files, func(i, j int) bool {
+		return extractSeqStart(files[i]) < extractSeqStart(files[j])
+	})
 
 	result := &QueryResult{
 		TotalFiles: len(files),
@@ -111,6 +114,22 @@ func ListSessions(dir string) ([]string, error) {
 	}
 	sort.Strings(sessions)
 	return sessions, nil
+}
+
+// extractSeqStart parses the numeric seqStart from an evidence filename.
+// Returns 0 if the filename cannot be parsed.
+func extractSeqStart(path string) int {
+	name := filepath.Base(path)
+	name = strings.TrimSuffix(name, ".jsonl")
+	lastDash := strings.LastIndex(name, "-")
+	if lastDash < 0 {
+		return 0
+	}
+	n, err := strconv.Atoi(name[lastDash+1:])
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 // matchesFilter checks if an entry matches the given filter criteria.

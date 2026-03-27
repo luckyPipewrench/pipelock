@@ -25,9 +25,10 @@ import (
 )
 
 const (
-	testSessionID = "test-session"
-	testTransport = "fetch"
-	testType      = "request"
+	testSessionID  = "test-session"
+	testTransport  = "fetch"
+	testType       = "request"
+	testCheckpoint = "checkpoint"
 )
 
 func TestRecorder_HashChain(t *testing.T) {
@@ -236,7 +237,7 @@ func TestRecorder_SignedCheckpoint(t *testing.T) {
 	// Find checkpoint entries
 	var foundCheckpoint bool
 	for _, e := range entries {
-		if e.Type != "checkpoint" {
+		if e.Type != testCheckpoint {
 			continue
 		}
 		foundCheckpoint = true
@@ -304,7 +305,7 @@ func TestRecorder_UnsignedCheckpoint(t *testing.T) {
 	}
 
 	for _, e := range entries {
-		if e.Type != "checkpoint" {
+		if e.Type != testCheckpoint {
 			continue
 		}
 		detailJSON, _ := json.Marshal(e.Detail)
@@ -936,6 +937,129 @@ func TestRecorder_NewInvalidDir(t *testing.T) {
 	_, err := recorder.New(cfg, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for invalid directory")
+	}
+}
+
+func TestRecorder_RawEscrowPerEntry(t *testing.T) {
+	dir := t.TempDir()
+
+	recipientPub, recipientPriv, err := box.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+
+	// Always-redact function so every entry gets escrow written
+	redactFn := func(_ context.Context, _ string) scanner.TextDLPResult {
+		return scanner.TextDLPResult{
+			Clean: false,
+			Matches: []scanner.TextDLPMatch{
+				{PatternName: "test-pattern"},
+			},
+		}
+	}
+
+	cfg := recorder.Config{
+		Enabled:            true,
+		Dir:                dir,
+		Redact:             true,
+		CheckpointInterval: 1000, // High to avoid auto-checkpoints
+		RawEscrow:          true,
+		EscrowPublicKey:    hex.EncodeToString(recipientPub[:]),
+	}
+
+	rec, err := recorder.New(cfg, redactFn, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	const entryCount = 3
+	secrets := make([]string, entryCount)
+	for i := range entryCount {
+		secrets[i] = fmt.Sprintf("secret-payload-%d", i)
+		err := rec.Record(recorder.Entry{
+			SessionID: testSessionID,
+			Type:      testType,
+			Transport: testTransport,
+			Summary:   fmt.Sprintf("entry %d", i),
+			Detail:    map[string]string{"data": secrets[i]},
+		})
+		if err != nil {
+			t.Fatalf("Record(%d): %v", i, err)
+		}
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Read entries to get RawRefs
+	var jsonlFile string
+	dirEntries, _ := os.ReadDir(dir)
+	for _, de := range dirEntries {
+		if strings.HasSuffix(de.Name(), ".jsonl") {
+			jsonlFile = filepath.Join(dir, de.Name())
+			break
+		}
+	}
+	if jsonlFile == "" {
+		t.Fatal("no JSONL file found")
+	}
+
+	entries, err := recorder.ReadEntries(jsonlFile)
+	if err != nil {
+		t.Fatalf("ReadEntries: %v", err)
+	}
+
+	// Verify each data entry has a unique escrow file with correct content
+	const keySize = 32
+	const nonceSize = 24
+	seenFiles := make(map[string]bool)
+	dataIdx := 0
+	for _, e := range entries {
+		if e.Type == testCheckpoint {
+			continue
+		}
+		if e.RawRef == "" {
+			t.Errorf("entry seq %d: missing RawRef", e.Sequence)
+			continue
+		}
+		if seenFiles[e.RawRef] {
+			t.Errorf("entry seq %d: RawRef %q duplicates a previous entry", e.Sequence, e.RawRef)
+		}
+		seenFiles[e.RawRef] = true
+
+		escrowPath := filepath.Join(dir, e.RawRef)
+		payload, err := os.ReadFile(filepath.Clean(escrowPath))
+		if err != nil {
+			t.Errorf("entry seq %d: reading escrow %s: %v", e.Sequence, e.RawRef, err)
+			continue
+		}
+
+		if len(payload) < keySize+nonceSize+box.Overhead {
+			t.Errorf("entry seq %d: escrow payload too short", e.Sequence)
+			continue
+		}
+
+		var ephPub [keySize]byte
+		copy(ephPub[:], payload[:keySize])
+		rest := payload[keySize:]
+		var nonce [nonceSize]byte
+		copy(nonce[:], rest[:nonceSize])
+
+		decrypted, ok := box.Open(nil, rest[nonceSize:], &nonce, &ephPub, recipientPriv)
+		if !ok {
+			t.Errorf("entry seq %d: failed to decrypt escrow", e.Sequence)
+			continue
+		}
+
+		if !strings.Contains(string(decrypted), secrets[dataIdx]) {
+			t.Errorf("entry seq %d: decrypted escrow does not contain %q, got %q",
+				e.Sequence, secrets[dataIdx], string(decrypted))
+		}
+		dataIdx++
+	}
+
+	if len(seenFiles) != entryCount {
+		t.Errorf("expected %d unique escrow files, got %d", entryCount, len(seenFiles))
 	}
 }
 

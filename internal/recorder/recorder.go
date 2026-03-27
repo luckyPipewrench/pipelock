@@ -301,7 +301,7 @@ func (r *Recorder) writeEscrow(rawJSON []byte) (string, error) {
 	payload = append(payload, ephPub[:]...)
 	payload = append(payload, sealed...)
 
-	escrowName := fmt.Sprintf("evidence-%s-%d.raw.enc", r.sessionID, r.fileSeqStart)
+	escrowName := fmt.Sprintf("evidence-%s-%d.raw.enc", r.sessionID, r.seq)
 	escrowPath := filepath.Join(filepath.Clean(r.cfg.Dir), escrowName)
 
 	if err := os.WriteFile(escrowPath, payload, filePermissions); err != nil {

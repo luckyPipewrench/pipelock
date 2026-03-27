@@ -253,7 +253,11 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	// The upstream status may be rewritten to 403 by scanning decisions.
 
 	// Only scan if response scanning is enabled and host is not exempt.
-	if !cfg.ResponseScanning.Enabled || isResponseScanExempt(resp.Request.URL.Hostname(), cfg.ResponseScanning.ExemptDomains) {
+	revHost := resp.Request.URL.Hostname()
+	if !cfg.ResponseScanning.Enabled || isResponseScanExempt(revHost, cfg.ResponseScanning.ExemptDomains) {
+		if cfg.ResponseScanning.Enabled && len(cfg.ResponseScanning.ExemptDomains) > 0 {
+			rp.logger.LogAnomaly(resp.Request.Method, resp.Request.URL.String(), "response_scan", fmt.Sprintf("response scan skipped: host %q matched exempt_domains", revHost), "", "", "", 0)
+		}
 		rp.metrics.RecordReverseProxyRequest(resp.Request.Method,
 			strconv.Itoa(resp.StatusCode))
 		return nil

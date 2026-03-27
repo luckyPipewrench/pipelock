@@ -6,8 +6,11 @@ package runtime
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -100,10 +103,13 @@ func TestInternalRedirect_MissingManifest(t *testing.T) {
 }
 
 func TestInternalRedirect_QuarantineWrite(t *testing.T) {
+	dir := t.TempDir()
+
 	manifest := RedirectManifest{
-		Profile: redirectProfileQuarantineWrite,
-		Command: []string{"write", "/tmp/test"},
-		Reason:  "policy block",
+		Profile:       redirectProfileQuarantineWrite,
+		Command:       []string{"write", "/tmp/test"},
+		Reason:        "policy block",
+		QuarantineDir: dir,
 	}
 	manifestJSON, _ := json.Marshal(manifest)
 	t.Setenv("__PIPELOCK_REDIRECT_MANIFEST", string(manifestJSON))
@@ -112,19 +118,19 @@ func TestInternalRedirect_QuarantineWrite(t *testing.T) {
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{redirectProfileQuarantineWrite})
+	cmd.SetArgs([]string{redirectProfileQuarantineWrite, `{"data":"test"}`})
 
 	err := cmd.Execute()
-	if err == nil {
-		t.Fatal("expected error (not yet implemented)")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 
 	var result RedirectResult
 	if jsonErr := json.Unmarshal(out.Bytes(), &result); jsonErr != nil {
 		t.Fatalf("invalid JSON: %v\n%s", jsonErr, out.String())
 	}
-	if result.Status != redirectStatusError {
-		t.Errorf("status = %q, want error", result.Status)
+	if result.Status != "ok" {
+		t.Errorf("status = %q, want ok: %s", result.Status, result.Error)
 	}
 	if result.Profile != redirectProfileQuarantineWrite {
 		t.Errorf("profile = %q", result.Profile)
@@ -443,5 +449,150 @@ func TestExtractURL(t *testing.T) {
 				t.Errorf("extractURL(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestExecuteQuarantineWrite_Success(t *testing.T) {
+	dir := t.TempDir()
+
+	cmd := InternalRedirectCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+
+	manifest := RedirectManifest{
+		Profile:       redirectProfileQuarantineWrite,
+		Reason:        "test quarantine",
+		PolicyRule:    "write_file",
+		QuarantineDir: dir,
+	}
+	manifestJSON, _ := json.Marshal(manifest)
+	t.Setenv("__PIPELOCK_REDIRECT_MANIFEST", string(manifestJSON))
+
+	cmd.SetArgs([]string{redirectProfileQuarantineWrite, `{"path":"/etc/passwd","content":"malicious"}`})
+	err := cmd.Execute()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var result RedirectResult
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("failed to parse result: %v", err)
+	}
+	if result.Status != "ok" {
+		t.Errorf("expected status ok, got %q: %s", result.Status, result.Error)
+	}
+
+	// Verify quarantine file was written.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("failed to read quarantine dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 quarantine file, got %d", len(entries))
+	}
+
+	// Verify file content.
+	qFilePath := filepath.Clean(filepath.Join(dir, entries[0].Name()))
+	data, err := os.ReadFile(qFilePath)
+	if err != nil {
+		t.Fatalf("failed to read quarantine file: %v", err)
+	}
+	var entry map[string]string
+	if err := json.Unmarshal(data, &entry); err != nil {
+		t.Fatalf("quarantine file is not valid JSON: %v", err)
+	}
+	if entry["policy_rule"] != "write_file" {
+		t.Errorf("expected policy_rule=write_file, got %q", entry["policy_rule"])
+	}
+
+	// Verify file permissions.
+	info, err := os.Stat(qFilePath)
+	if err != nil {
+		t.Fatalf("failed to stat quarantine file: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("expected 0o600 perms, got %o", info.Mode().Perm())
+	}
+}
+
+func TestExecuteQuarantineWrite_DirFull(t *testing.T) {
+	dir := t.TempDir()
+
+	for i := range 1001 {
+		_ = os.WriteFile(filepath.Join(dir, fmt.Sprintf("file-%d.json", i)), []byte("{}"), 0o600)
+	}
+
+	cmd := InternalRedirectCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+
+	manifest := RedirectManifest{
+		Profile:       redirectProfileQuarantineWrite,
+		Reason:        "test",
+		QuarantineDir: dir,
+	}
+	manifestJSON, _ := json.Marshal(manifest)
+	t.Setenv("__PIPELOCK_REDIRECT_MANIFEST", string(manifestJSON))
+
+	cmd.SetArgs([]string{redirectProfileQuarantineWrite, `{"data":"test"}`})
+	_ = cmd.Execute()
+
+	var result RedirectResult
+	_ = json.Unmarshal(buf.Bytes(), &result)
+	if result.Status != redirectStatusError {
+		t.Errorf("expected error status, got %q", result.Status)
+	}
+}
+
+func TestExecuteQuarantineWrite_CreatesDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "nonexistent")
+
+	cmd := InternalRedirectCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+
+	manifest := RedirectManifest{
+		Profile:       redirectProfileQuarantineWrite,
+		Reason:        "test",
+		QuarantineDir: dir,
+	}
+	manifestJSON, _ := json.Marshal(manifest)
+	t.Setenv("__PIPELOCK_REDIRECT_MANIFEST", string(manifestJSON))
+
+	cmd.SetArgs([]string{redirectProfileQuarantineWrite, `{"data":"test"}`})
+	_ = cmd.Execute()
+
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("quarantine dir not created: %v", err)
+	}
+	if !info.IsDir() {
+		t.Error("expected directory")
+	}
+	if info.Mode().Perm() != 0o750 {
+		t.Errorf("expected 0o750 perms, got %o", info.Mode().Perm())
+	}
+}
+
+func TestExecuteQuarantineWrite_NoDir(t *testing.T) {
+	cmd := InternalRedirectCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+
+	manifest := RedirectManifest{
+		Profile: redirectProfileQuarantineWrite,
+		Reason:  "test",
+		// No QuarantineDir
+	}
+	manifestJSON, _ := json.Marshal(manifest)
+	t.Setenv("__PIPELOCK_REDIRECT_MANIFEST", string(manifestJSON))
+
+	cmd.SetArgs([]string{redirectProfileQuarantineWrite, `{"data":"test"}`})
+	_ = cmd.Execute()
+
+	var result RedirectResult
+	_ = json.Unmarshal(buf.Bytes(), &result)
+	if result.Status != redirectStatusError {
+		t.Errorf("expected error for missing dir, got %q", result.Status)
 	}
 }

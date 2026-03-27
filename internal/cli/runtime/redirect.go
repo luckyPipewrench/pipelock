@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"runtime/debug"
 	"strings"
 	"time"
@@ -172,11 +173,65 @@ func extractURL(text string) string {
 	return ""
 }
 
-// executeQuarantineWrite diverts a write to a quarantine directory.
-// NOT YET IMPLEMENTED -- fail closed until Stream 3B wires the calling path.
-func executeQuarantineWrite(cmd *cobra.Command, manifest *RedirectManifest, _ []string) error {
-	return emitRedirectError(cmd, redirectProfileQuarantineWrite,
-		fmt.Sprintf("quarantine-write redirect not yet implemented (command: %v, reason: %s)", manifest.Command, manifest.Reason))
+// maxQuarantineFiles is the safety limit for the quarantine directory.
+// Prevents disk exhaustion from sustained redirect traffic.
+const maxQuarantineFiles = 1000
+
+// executeQuarantineWrite diverts a write to a quarantine directory for operator
+// review. Returns a success-shaped response so the agent does not retry.
+func executeQuarantineWrite(cmd *cobra.Command, manifest *RedirectManifest, payload []string) error {
+	if manifest.QuarantineDir == "" {
+		return emitRedirectError(cmd, redirectProfileQuarantineWrite, "no quarantine_dir in manifest")
+	}
+	qDir := filepath.Clean(manifest.QuarantineDir)
+
+	// Create dir if it doesn't exist.
+	if err := os.MkdirAll(qDir, 0o750); err != nil {
+		return emitRedirectError(cmd, redirectProfileQuarantineWrite,
+			fmt.Sprintf("creating quarantine dir: %v", err))
+	}
+
+	// Check file count limit.
+	entries, err := os.ReadDir(qDir)
+	if err != nil {
+		return emitRedirectError(cmd, redirectProfileQuarantineWrite,
+			fmt.Sprintf("reading quarantine dir: %v", err))
+	}
+	if len(entries) > maxQuarantineFiles {
+		return emitRedirectError(cmd, redirectProfileQuarantineWrite,
+			fmt.Sprintf("quarantine dir has %d files (limit: %d)", len(entries), maxQuarantineFiles))
+	}
+
+	// Build quarantine entry.
+	now := time.Now().UTC()
+	toolArgs := strings.Join(payload, " ")
+	entry := map[string]string{
+		"timestamp":   now.Format(time.RFC3339),
+		"profile":     redirectProfileQuarantineWrite,
+		"policy_rule": manifest.PolicyRule,
+		"reason":      manifest.Reason,
+		"tool_args":   toolArgs,
+	}
+	data, err := json.MarshalIndent(entry, "", "  ")
+	if err != nil {
+		return emitRedirectError(cmd, redirectProfileQuarantineWrite,
+			fmt.Sprintf("marshaling quarantine entry: %v", err))
+	}
+
+	// Write with timestamp + hash filename.
+	h := sha256.Sum256(data)
+	filename := fmt.Sprintf("%s-%s.json", now.Format("20060102T150405Z"), hex.EncodeToString(h[:4]))
+	path := filepath.Join(qDir, filename)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return emitRedirectError(cmd, redirectProfileQuarantineWrite,
+			fmt.Sprintf("writing quarantine file: %v", err))
+	}
+
+	return emitRedirectResult(cmd, &RedirectResult{
+		Status:  "ok",
+		Profile: redirectProfileQuarantineWrite,
+		Detail:  "Operation completed (quarantined by pipelock). Payload logged for operator review.",
+	})
 }
 
 // executeAppendOnlyLog forces log output to a local append-only file.

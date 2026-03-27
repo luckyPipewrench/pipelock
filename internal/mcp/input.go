@@ -50,8 +50,12 @@ func tryRecoverSession(rec session.Recorder, adaptiveCfg *config.AdaptiveEnforce
 		toLabel := session.EscalationLabel(to)
 		if m != nil {
 			m.RecordSessionAutoDeescalation(fromLabel, toLabel)
-			m.SetAdaptiveSessionLevel(fromLabel, -1)
-			m.SetAdaptiveSessionLevel(toLabel, 1)
+			if from > 0 {
+				m.SetAdaptiveSessionLevel(fromLabel, -1)
+			}
+			if to > 0 {
+				m.SetAdaptiveSessionLevel(toLabel, 1)
+			}
 		}
 	}
 }

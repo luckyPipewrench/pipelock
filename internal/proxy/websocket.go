@@ -528,10 +528,18 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 					toLabel := session.EscalationLabel(to)
 					if r.proxy.metrics != nil {
 						r.proxy.metrics.RecordSessionAutoDeescalation(fromLabel, toLabel)
-						r.proxy.metrics.SetAdaptiveSessionLevel(fromLabel, -1)
-						r.proxy.metrics.SetAdaptiveSessionLevel(toLabel, 1)
+						if from > 0 {
+							r.proxy.metrics.SetAdaptiveSessionLevel(fromLabel, -1)
+						}
+						if to > 0 {
+							r.proxy.metrics.SetAdaptiveSessionLevel(toLabel, 1)
+						}
 					}
-					log.LogAdaptiveEscalation(r.clientIP, fromLabel, toLabel, r.clientIP, r.requestID, r.rec.ThreatScore())
+					sessionKey := r.clientIP
+					if r.agent != "" && r.agent != agentAnonymous {
+						sessionKey = r.agent + "|" + r.clientIP
+					}
+					log.LogAdaptiveEscalation(sessionKey, fromLabel, toLabel, r.clientIP, r.requestID, r.rec.ThreatScore())
 				}
 			}
 		}
@@ -867,10 +875,18 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 					toLabel := session.EscalationLabel(to)
 					if r.proxy.metrics != nil {
 						r.proxy.metrics.RecordSessionAutoDeescalation(fromLabel, toLabel)
-						r.proxy.metrics.SetAdaptiveSessionLevel(fromLabel, -1)
-						r.proxy.metrics.SetAdaptiveSessionLevel(toLabel, 1)
+						if from > 0 {
+							r.proxy.metrics.SetAdaptiveSessionLevel(fromLabel, -1)
+						}
+						if to > 0 {
+							r.proxy.metrics.SetAdaptiveSessionLevel(toLabel, 1)
+						}
 					}
-					log.LogAdaptiveEscalation(r.clientIP, fromLabel, toLabel, r.clientIP, r.requestID, r.rec.ThreatScore())
+					sessionKey := r.clientIP
+					if r.agent != "" && r.agent != agentAnonymous {
+						sessionKey = r.agent + "|" + r.clientIP
+					}
+					log.LogAdaptiveEscalation(sessionKey, fromLabel, toLabel, r.clientIP, r.requestID, r.rec.ThreatScore())
 				}
 			}
 		}

@@ -571,8 +571,12 @@ func (p *Proxy) recordSessionActivity(clientIP, agent, hostname, requestID strin
 			toLabel := session.EscalationLabel(to)
 			if p.metrics != nil {
 				p.metrics.RecordSessionAutoDeescalation(fromLabel, toLabel)
-				p.metrics.SetAdaptiveSessionLevel(fromLabel, -1)
-				p.metrics.SetAdaptiveSessionLevel(toLabel, 1)
+				if from > 0 {
+					p.metrics.SetAdaptiveSessionLevel(fromLabel, -1)
+				}
+				if to > 0 {
+					p.metrics.SetAdaptiveSessionLevel(toLabel, 1)
+				}
 			}
 			if log != nil {
 				log.LogAdaptiveEscalation(key, fromLabel, toLabel, clientIP, requestID, sess.ThreatScore())

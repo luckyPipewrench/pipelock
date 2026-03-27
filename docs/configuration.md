@@ -687,8 +687,8 @@ Each level accepts the following fields. All fields use **pointer semantics**:
 Sessions at `block_all` recover autonomously via a background sweep that runs
 every 30 seconds. If a session has been at its current escalation level for
 longer than 5 minutes, it is automatically stepped down one level. Recovery
-also triggers on the next incoming request after the timer expires (on-entry
-fast path). The session must accumulate new real signals to re-escalate.
+also triggers on the next incoming request, WebSocket frame, or MCP message
+after the timer expires (on-entry fast path). The session must accumulate new real signals to re-escalate.
 
 De-escalation drops one level per 5-minute period. A session at critical with no activity takes 15 minutes (3 periods) to return to normal. Each de-escalation resets the threat score to half the current threshold to prevent immediate re-escalation from stale points.
 

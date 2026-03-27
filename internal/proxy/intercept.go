@@ -504,10 +504,18 @@ func newInterceptHandler(
 					toLabel := session.EscalationLabel(to)
 					if p != nil && p.metrics != nil {
 						p.metrics.RecordSessionAutoDeescalation(fromLabel, toLabel)
-						p.metrics.SetAdaptiveSessionLevel(fromLabel, -1)
-						p.metrics.SetAdaptiveSessionLevel(toLabel, 1)
+						if from > 0 {
+							p.metrics.SetAdaptiveSessionLevel(fromLabel, -1)
+						}
+						if to > 0 {
+							p.metrics.SetAdaptiveSessionLevel(toLabel, 1)
+						}
 					}
-					logger.LogAdaptiveEscalation(clientIP, fromLabel, toLabel, clientIP, requestID, rec.ThreatScore())
+					sessionKey := clientIP
+					if agent != "" && agent != agentAnonymous {
+						sessionKey = agent + "|" + clientIP
+					}
+					logger.LogAdaptiveEscalation(sessionKey, fromLabel, toLabel, clientIP, requestID, rec.ThreatScore())
 				}
 			}
 		}

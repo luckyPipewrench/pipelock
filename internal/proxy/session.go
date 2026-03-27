@@ -523,8 +523,12 @@ func (sm *SessionManager) sweepDeescalation() {
 			toLabel := session.EscalationLabel(to)
 			if sm.metrics != nil {
 				sm.metrics.RecordSessionAutoDeescalation(fromLabel, toLabel)
-				sm.metrics.SetAdaptiveSessionLevel(fromLabel, -1)
-				sm.metrics.SetAdaptiveSessionLevel(toLabel, 1)
+				if from > 0 {
+					sm.metrics.SetAdaptiveSessionLevel(fromLabel, -1)
+				}
+				if to > 0 {
+					sm.metrics.SetAdaptiveSessionLevel(toLabel, 1)
+				}
 			}
 		}
 	}

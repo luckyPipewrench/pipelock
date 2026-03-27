@@ -15,6 +15,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
@@ -1677,5 +1678,146 @@ func TestSessionManager_RecomputeBlockAllOnConfigChange(t *testing.T) {
 	// atBlockAll should now be true for the level 2 session.
 	if !sess.BlockAll() {
 		t.Error("expected atBlockAll=true at level 2 after config reload added block_all at high")
+	}
+}
+
+func TestSessionState_OnEntryRecovery_EmitsMetrics(t *testing.T) {
+	cfg := testSessionConfig()
+	m := metrics.New()
+	blockAllTrue := true
+	adaptiveCfg := &config.AdaptiveEnforcement{
+		Enabled:             true,
+		EscalationThreshold: 5.0,
+		Levels: config.EscalationLevels{
+			Critical: config.EscalationActions{BlockAll: &blockAllTrue},
+		},
+	}
+	sm := NewSessionManager(cfg, adaptiveCfg, m)
+	defer sm.Close()
+
+	sess := sm.GetOrCreate("agent|127.0.0.1")
+
+	// Push to critical with expired timer.
+	sess.mu.Lock()
+	sess.escalationLevel = 3
+	sess.lastEscalation = time.Now().Add(-6 * time.Minute)
+	sess.currentThreshold = 40.0
+	sess.threatScore = 20.0
+	sess.atBlockAll = true
+	sess.mu.Unlock()
+
+	// Simulate what recordSessionActivity does: build blockAllCheck, call TryAutoRecover.
+	blockAllCheck := func(level int) bool {
+		return decide.UpgradeAction("", level, adaptiveCfg) == config.ActionBlock
+	}
+	changed, from, to := sess.TryAutoRecover(blockAllCheck)
+	if !changed {
+		t.Fatal("expected recovery")
+	}
+
+	// Emit metrics like recordSessionActivity does.
+	fromLabel := session.EscalationLabel(from)
+	toLabel := session.EscalationLabel(to)
+	m.RecordSessionAutoDeescalation(fromLabel, toLabel)
+	m.SetAdaptiveSessionLevel(fromLabel, -1)
+	m.SetAdaptiveSessionLevel(toLabel, 1)
+
+	// Verify metrics were recorded.
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	m.PrometheusHandler().ServeHTTP(w, req)
+	body, _ := io.ReadAll(w.Body)
+	text := string(body)
+
+	want := `pipelock_session_auto_deescalation_total{from="critical",to="high"} 1`
+	if !strings.Contains(text, want) {
+		t.Errorf("expected %q in metrics output", want)
+	}
+}
+
+func TestSessionState_TypeAssertRecovery(t *testing.T) {
+	// This tests the pattern used in websocket.go and intercept.go:
+	// type-assert session.Recorder to *SessionState, then call TryAutoRecover.
+	cfg := testSessionConfig()
+	sm := NewSessionManager(cfg, nil, nil)
+	defer sm.Close()
+
+	sess := sm.GetOrCreate("test-ws-client")
+
+	// Push to critical with expired timer.
+	sess.mu.Lock()
+	sess.escalationLevel = 3
+	sess.lastEscalation = time.Now().Add(-6 * time.Minute)
+	sess.currentThreshold = 40.0
+	sess.threatScore = 20.0
+	sess.atBlockAll = true
+	sess.mu.Unlock()
+
+	// Simulate the pattern: session.Recorder -> type assert -> TryAutoRecover.
+	var rec session.Recorder = sess
+	ss, ok := rec.(*SessionState)
+	if !ok {
+		t.Fatal("SessionState should implement session.Recorder")
+	}
+
+	blockAllCheck := func(level int) bool { return level >= 3 }
+	changed, from, to := ss.TryAutoRecover(blockAllCheck)
+	if !changed {
+		t.Fatal("expected recovery via type assertion")
+	}
+	if from != 3 || to != 2 {
+		t.Errorf("expected 3->2, got %d->%d", from, to)
+	}
+}
+
+func TestSessionManager_RecomputeBlockAllMultipleSessions(t *testing.T) {
+	cfg := testSessionConfig()
+	blockAllTrue := true
+	adaptiveCfg := &config.AdaptiveEnforcement{
+		Enabled: true,
+		Levels: config.EscalationLevels{
+			Critical: config.EscalationActions{BlockAll: &blockAllTrue},
+		},
+	}
+	sm := NewSessionManager(cfg, adaptiveCfg, nil)
+	defer sm.Close()
+
+	// Session at level 1 (elevated).
+	sess1 := sm.GetOrCreate("client-1")
+	sess1.mu.Lock()
+	sess1.escalationLevel = 1
+	sess1.mu.Unlock()
+
+	// Session at level 2 (high).
+	sess2 := sm.GetOrCreate("client-2")
+	sess2.mu.Lock()
+	sess2.escalationLevel = 2
+	sess2.mu.Unlock()
+
+	// Session at level 3 (critical).
+	sess3 := sm.GetOrCreate("client-3")
+	sess3.mu.Lock()
+	sess3.escalationLevel = 3
+	sess3.mu.Unlock()
+	sess3.SetBlockAll(true)
+
+	// Reload: block_all now applies at high (level 2) and above.
+	newAdaptiveCfg := &config.AdaptiveEnforcement{
+		Enabled: true,
+		Levels: config.EscalationLevels{
+			High:     config.EscalationActions{BlockAll: &blockAllTrue},
+			Critical: config.EscalationActions{BlockAll: &blockAllTrue},
+		},
+	}
+	sm.UpdateConfig(cfg, newAdaptiveCfg)
+
+	if sess1.BlockAll() {
+		t.Error("level 1 should not be block_all")
+	}
+	if !sess2.BlockAll() {
+		t.Error("level 2 should now be block_all")
+	}
+	if !sess3.BlockAll() {
+		t.Error("level 3 should still be block_all")
 	}
 }

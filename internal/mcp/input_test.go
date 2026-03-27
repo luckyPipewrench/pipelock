@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"runtime"
 	"strings"
 	"testing"
@@ -25,6 +27,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 const testSecretPrefix = "sk-ant-" //nolint:gosec // test credential prefix
@@ -2593,4 +2596,175 @@ func TestForwardScannedInput_CEEBlocksInWarnMode(t *testing.T) {
 	if !strings.Contains(logOutput, "CEE") {
 		t.Errorf("expected log to contain CEE, got: %s", logOutput)
 	}
+}
+
+// --- tryRecoverSession tests ---
+
+// mockRecoverer implements session.Recorder and the recoverer interface for
+// testing the recovery path in tryRecoverSession. The existing mockRecorder
+// (adaptive_test.go) only implements session.Recorder, so it exercises the
+// type-assertion-fails early return. This type exercises the success path.
+type mockRecoverer struct {
+	level       int
+	score       float64
+	recoverFunc func(blockAllCheck func(int) bool) (bool, int, int)
+}
+
+func (m *mockRecoverer) RecordSignal(_ session.SignalType, _ float64) (bool, string, string) {
+	return false, "", ""
+}
+
+func (m *mockRecoverer) RecordClean(_ float64) {}
+
+func (m *mockRecoverer) EscalationLevel() int { return m.level }
+
+func (m *mockRecoverer) ThreatScore() float64 { return m.score }
+
+func (m *mockRecoverer) TryAutoRecover(blockAllCheck func(int) bool) (bool, int, int) {
+	if m.recoverFunc != nil {
+		return m.recoverFunc(blockAllCheck)
+	}
+	return false, 0, 0
+}
+
+func TestTryRecoverSession(t *testing.T) {
+	t.Run("recovery_emits_metrics", func(t *testing.T) {
+		m := metrics.New()
+		adaptiveCfg := &config.AdaptiveEnforcement{
+			Enabled:             true,
+			EscalationThreshold: 5.0,
+		}
+
+		rec := &mockRecoverer{
+			level: 3,
+			recoverFunc: func(_ func(int) bool) (bool, int, int) {
+				return true, 3, 2 // recovered from critical (3) to high (2)
+			},
+		}
+
+		tryRecoverSession(rec, adaptiveCfg, m)
+
+		// Verify de-escalation counter was incremented.
+		req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+		w := httptest.NewRecorder()
+		m.PrometheusHandler().ServeHTTP(w, req)
+		body, _ := io.ReadAll(w.Body)
+		text := string(body)
+
+		const wantDeescalation = `pipelock_session_auto_deescalation_total{from="critical",to="high"} 1`
+		if !strings.Contains(text, wantDeescalation) {
+			t.Errorf("expected %q in metrics output\ngot:\n%s", wantDeescalation, text)
+		}
+
+		// Verify gauge adjustments: old level decremented, new level incremented.
+		const wantOldGauge = `pipelock_adaptive_sessions_current{level="critical"} -1`
+		if !strings.Contains(text, wantOldGauge) {
+			t.Errorf("expected %q in metrics output\ngot:\n%s", wantOldGauge, text)
+		}
+		const wantNewGauge = `pipelock_adaptive_sessions_current{level="high"} 1`
+		if !strings.Contains(text, wantNewGauge) {
+			t.Errorf("expected %q in metrics output\ngot:\n%s", wantNewGauge, text)
+		}
+	})
+
+	t.Run("no_recovery_no_metrics", func(t *testing.T) {
+		m := metrics.New()
+		adaptiveCfg := &config.AdaptiveEnforcement{
+			Enabled: true,
+		}
+
+		rec := &mockRecoverer{
+			recoverFunc: func(_ func(int) bool) (bool, int, int) {
+				return false, 0, 0 // no recovery needed
+			},
+		}
+
+		tryRecoverSession(rec, adaptiveCfg, m)
+
+		// Metrics endpoint should not contain de-escalation counters.
+		req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+		w := httptest.NewRecorder()
+		m.PrometheusHandler().ServeHTTP(w, req)
+		body, _ := io.ReadAll(w.Body)
+		text := string(body)
+
+		const unwanted = "pipelock_session_auto_deescalation_total"
+		if strings.Contains(text, unwanted) {
+			t.Errorf("did not expect %q in metrics output when no recovery occurred", unwanted)
+		}
+	})
+
+	t.Run("nil_adaptive_config", func(t *testing.T) {
+		rec := &mockRecoverer{}
+		// Must not panic with nil config and nil metrics.
+		tryRecoverSession(rec, nil, nil)
+	})
+
+	t.Run("disabled_adaptive", func(t *testing.T) {
+		adaptiveCfg := &config.AdaptiveEnforcement{
+			Enabled: false,
+		}
+		rec := &mockRecoverer{}
+		// Must not panic with disabled config and nil metrics.
+		tryRecoverSession(rec, adaptiveCfg, nil)
+	})
+
+	t.Run("non_recoverer_recorder", func(t *testing.T) {
+		// The existing mockRecorder (adaptive_test.go) implements
+		// session.Recorder but NOT recoverer. The type assertion
+		// inside tryRecoverSession must fail gracefully.
+		adaptiveCfg := &config.AdaptiveEnforcement{
+			Enabled: true,
+		}
+		rec := &mockRecorder{}
+		tryRecoverSession(rec, adaptiveCfg, nil)
+	})
+
+	t.Run("recovery_with_nil_metrics", func(t *testing.T) {
+		adaptiveCfg := &config.AdaptiveEnforcement{
+			Enabled:             true,
+			EscalationThreshold: 5.0,
+		}
+
+		rec := &mockRecoverer{
+			level: 2,
+			recoverFunc: func(_ func(int) bool) (bool, int, int) {
+				return true, 2, 1 // recovered from high (2) to elevated (1)
+			},
+		}
+
+		// Must not panic when metrics is nil.
+		tryRecoverSession(rec, adaptiveCfg, nil)
+	})
+
+	t.Run("blockAllCheck_callback_receives_config", func(t *testing.T) {
+		m := metrics.New()
+		blockAllTrue := true
+		adaptiveCfg := &config.AdaptiveEnforcement{
+			Enabled:             true,
+			EscalationThreshold: 5.0,
+			Levels: config.EscalationLevels{
+				Critical: config.EscalationActions{
+					BlockAll: &blockAllTrue,
+				},
+			},
+		}
+
+		var callbackResult bool
+		rec := &mockRecoverer{
+			level: 3,
+			recoverFunc: func(blockAllCheck func(int) bool) (bool, int, int) {
+				// Level 3 = critical, BlockAll=true, so callback should
+				// return true (UpgradeAction returns "block").
+				callbackResult = blockAllCheck(3)
+				return true, 3, 2
+			},
+		}
+
+		tryRecoverSession(rec, adaptiveCfg, m)
+
+		if !callbackResult {
+			t.Error("blockAllCheck(3) should return true when critical.block_all is true")
+		}
+	})
 }

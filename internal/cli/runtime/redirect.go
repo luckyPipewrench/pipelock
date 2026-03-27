@@ -269,7 +269,16 @@ func executeQuarantineWrite(cmd *cobra.Command, manifest *RedirectManifest, payl
 
 	// Build quarantine entry.
 	now := time.Now().UTC()
+
+	// Cap payload size to prevent unbounded disk growth.
+	// Large payloads are truncated with a SHA-256 hash for forensic correlation.
+	const maxPayloadBytes = 1 << 20 // 1 MB
 	toolArgs := strings.Join(payload, " ")
+	if len(toolArgs) > maxPayloadBytes {
+		h := sha256.Sum256([]byte(toolArgs))
+		toolArgs = toolArgs[:maxPayloadBytes] + fmt.Sprintf("\n[truncated at 1MB, full payload sha256: %s]", hex.EncodeToString(h[:]))
+	}
+
 	entry := map[string]string{
 		"timestamp":   now.Format(time.RFC3339),
 		"profile":     redirectProfileQuarantineWrite,
@@ -298,10 +307,12 @@ func executeQuarantineWrite(cmd *cobra.Command, manifest *RedirectManifest, payl
 	_, writeErr := f.Write(data)
 	closeErr := f.Close()
 	if writeErr != nil {
+		_ = os.Remove(path) // clean up partial file
 		return emitRedirectError(cmd, redirectProfileQuarantineWrite,
 			fmt.Sprintf("writing quarantine file: %v", writeErr))
 	}
 	if closeErr != nil {
+		_ = os.Remove(path) // clean up partial file
 		return emitRedirectError(cmd, redirectProfileQuarantineWrite,
 			fmt.Sprintf("closing quarantine file: %v", closeErr))
 	}

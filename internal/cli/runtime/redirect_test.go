@@ -5,8 +5,10 @@ package runtime
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -222,6 +224,9 @@ func TestExecuteFetchProxy_Success(t *testing.T) {
 	// Mock pipelock fetch endpoint.
 	fetchProxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		targetURL := r.URL.Query().Get("url")
+		if targetURL == "" {
+			t.Error("fetch proxy did not receive url query parameter")
+		}
 		resp := map[string]any{
 			"url":     targetURL,
 			"content": "Hello from upstream",
@@ -388,6 +393,19 @@ func TestExecuteFetchProxy_InvalidJSON(t *testing.T) {
 }
 
 func TestExecuteFetchProxy_ConnectionRefused(t *testing.T) {
+	// Reserve an ephemeral port and close it so the subsequent request
+	// is guaranteed to be refused (avoids assuming port 1 is unused).
+	ctx := context.Background()
+	lc := &net.ListenConfig{}
+	ln, err := lc.Listen(ctx, "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve closed port: %v", err)
+	}
+	endpoint := "http://" + ln.Addr().String()
+	if err := ln.Close(); err != nil {
+		t.Fatalf("close reserved port: %v", err)
+	}
+
 	cmd := InternalRedirectCmd()
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
@@ -395,7 +413,7 @@ func TestExecuteFetchProxy_ConnectionRefused(t *testing.T) {
 	manifest := RedirectManifest{
 		Profile:       redirectProfileFetchProxy,
 		Reason:        "test",
-		FetchEndpoint: "http://127.0.0.1:1", // port 1 -- nothing listens here
+		FetchEndpoint: endpoint,
 	}
 	manifestJSON, _ := json.Marshal(manifest)
 	t.Setenv("__PIPELOCK_REDIRECT_MANIFEST", string(manifestJSON))
@@ -618,11 +636,14 @@ func TestExecuteQuarantineWrite_CreatesDir(t *testing.T) {
 	t.Setenv("__PIPELOCK_REDIRECT_MANIFEST", string(manifestJSON))
 
 	cmd.SetArgs([]string{redirectProfileQuarantineWrite, `{"data":"test"}`})
-	_ = cmd.Execute()
-
-	info, err := os.Stat(dir)
+	err := cmd.Execute()
 	if err != nil {
-		t.Fatalf("quarantine dir not created: %v", err)
+		t.Fatalf("expected success, got error: %v", err)
+	}
+
+	info, statErr := os.Stat(dir)
+	if statErr != nil {
+		t.Fatalf("quarantine dir not created: %v", statErr)
 	}
 	if !info.IsDir() {
 		t.Error("expected directory")
@@ -799,9 +820,7 @@ func TestExecuteQuarantineWrite_UnreadableDir(t *testing.T) {
 	if err := os.Chmod(dir, 0o200); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		_ = os.Chmod(dir, 0o600) // restore for t.TempDir cleanup
-	})
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) //nolint:gosec // restore for cleanup
 
 	cmd := InternalRedirectCmd()
 	var buf bytes.Buffer

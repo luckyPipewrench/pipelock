@@ -5,6 +5,8 @@ package runtime
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -140,7 +142,8 @@ func TestBuildRedirectRT_DefaultQuarantineDir(t *testing.T) {
 	// Don't override QuarantineDir -- should use the config default.
 
 	rt := buildRedirectRT(cfg)
-	if rt.QuarantineDir == "" {
-		t.Error("expected non-empty QuarantineDir from config defaults")
+	want := filepath.Join(os.TempDir(), "pipelock-quarantine")
+	if rt.QuarantineDir != want {
+		t.Errorf("expected QuarantineDir=%q, got %q", want, rt.QuarantineDir)
 	}
 }

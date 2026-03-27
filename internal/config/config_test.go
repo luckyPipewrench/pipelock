@@ -265,14 +265,56 @@ func TestValidate_ResponseScanningExemptDomainsNormalization(t *testing.T) {
 	}
 }
 
-func TestValidate_ResponseScanningExemptDomainsDisabledOK(t *testing.T) {
-	// When response scanning is disabled, exempt_domains should not be validated
-	// (matches DLP pattern behavior where patterns aren't validated if DLP is off).
+func TestValidate_ExemptDomainsValidatedWhenDisabled(t *testing.T) {
+	// exempt_domains must be validated even when the parent section is disabled.
+	// Prevents dormant bad config from activating silently on reload.
+	tests := []struct {
+		name  string
+		setup func(cfg *Config)
+	}{
+		{
+			name: "response_scanning",
+			setup: func(cfg *Config) {
+				cfg.ResponseScanning.Enabled = false
+				cfg.ResponseScanning.ExemptDomains = []string{"*.com"}
+			},
+		},
+		{
+			name: "adaptive_enforcement",
+			setup: func(cfg *Config) {
+				cfg.AdaptiveEnforcement.Enabled = false
+				cfg.AdaptiveEnforcement.ExemptDomains = []string{"*.com"}
+			},
+		},
+		{
+			name: "cross_request_detection.entropy_budget",
+			setup: func(cfg *Config) {
+				cfg.CrossRequestDetection.Enabled = false
+				cfg.CrossRequestDetection.EntropyBudget.Enabled = false
+				cfg.CrossRequestDetection.EntropyBudget.ExemptDomains = []string{"*.com"}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Defaults()
+			tt.setup(cfg)
+			if err := cfg.Validate(); err == nil {
+				t.Errorf("expected validation error for broad wildcard in %s even when disabled", tt.name)
+			}
+		})
+	}
+}
+
+func TestValidate_ExemptDomainsNormalizedWhenDisabled(t *testing.T) {
 	cfg := Defaults()
 	cfg.ResponseScanning.Enabled = false
-	cfg.ResponseScanning.ExemptDomains = []string{"*.com"} // would fail if validated
+	cfg.ResponseScanning.ExemptDomains = []string{" API.OpenAI.COM. "}
 	if err := cfg.Validate(); err != nil {
-		t.Errorf("unexpected error when response scanning disabled: %v", err)
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.ResponseScanning.ExemptDomains[0] != "api.openai.com" {
+		t.Errorf("expected normalized domain even when disabled, got %q", cfg.ResponseScanning.ExemptDomains[0])
 	}
 }
 

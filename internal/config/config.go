@@ -1492,7 +1492,10 @@ func mergeResponsePatterns(includeDefaults *bool, user, defaults []ResponseScanP
 // for error messages (e.g. "trusted_domains" or "agent \"foo\" trusted_domains").
 func ValidateTrustedDomains(domains []string, label string) error {
 	for i, raw := range domains {
-		d := strings.TrimSpace(strings.ToLower(raw))
+		// Normalize early: lowercase, trim whitespace and trailing DNS dot.
+		// Trailing dot must be stripped before breadth check so *.com. doesn't
+		// pass as having a subdomain level.
+		d := strings.TrimSuffix(strings.TrimSpace(strings.ToLower(raw)), ".")
 		if d == "" {
 			return fmt.Errorf("%s[%d] is empty", label, i)
 		}
@@ -1510,8 +1513,7 @@ func ValidateTrustedDomains(domains []string, label string) error {
 		} else if strings.ContainsAny(d, "*?[]") {
 			return fmt.Errorf("%s[%d] %q: only exact hosts and *.example.com wildcards are supported", label, i, raw)
 		}
-		// Normalize: store lowercase, trimmed.
-		domains[i] = strings.TrimSuffix(d, ".")
+		domains[i] = d
 	}
 	return nil
 }
@@ -1577,23 +1579,8 @@ func (c *Config) Validate() error {
 					p.Name, p.Validator, ValidatorLuhn, ValidatorMod97, ValidatorABA, ValidatorWIF)
 			}
 		}
-		for j, raw := range p.ExemptDomains {
-			d := strings.TrimSuffix(strings.TrimSpace(strings.ToLower(raw)), ".")
-			if d == "" {
-				return fmt.Errorf("DLP pattern %q exempt_domains[%d] is empty", p.Name, j)
-			}
-			if strings.Contains(d, "://") || strings.Contains(d, "/") || strings.Contains(d, ":") {
-				return fmt.Errorf("DLP pattern %q exempt_domains[%d] %q: use a hostname pattern, not a URL or host:port", p.Name, j, raw)
-			}
-			if strings.HasPrefix(d, "*.") {
-				// Wildcard must target a concrete domain (*.com is too broad).
-				if strings.Count(d[2:], ".") < 1 {
-					return fmt.Errorf("DLP pattern %q exempt_domains[%d] %q: wildcard must target a concrete domain like *.example.com", p.Name, j, raw)
-				}
-			} else if strings.ContainsAny(d, "*?[]") {
-				return fmt.Errorf("DLP pattern %q exempt_domains[%d] %q: only exact hosts and *.example.com wildcards are supported", p.Name, j, raw)
-			}
-			p.ExemptDomains[j] = d
+		if err := ValidateTrustedDomains(p.ExemptDomains, fmt.Sprintf("DLP pattern %q exempt_domains", p.Name)); err != nil {
+			return err
 		}
 	}
 
@@ -1667,23 +1654,12 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("response scanning pattern %q has invalid regex: %w", p.Name, err)
 			}
 		}
-		for i, raw := range c.ResponseScanning.ExemptDomains {
-			d := strings.TrimSuffix(strings.TrimSpace(strings.ToLower(raw)), ".")
-			if d == "" {
-				return fmt.Errorf("response_scanning.exempt_domains[%d] is empty", i)
-			}
-			if strings.Contains(d, "://") || strings.Contains(d, "/") || strings.Contains(d, ":") {
-				return fmt.Errorf("response_scanning.exempt_domains[%d] %q: use a hostname pattern, not a URL or host:port", i, raw)
-			}
-			if strings.HasPrefix(d, "*.") {
-				if strings.Count(d[2:], ".") < 1 {
-					return fmt.Errorf("response_scanning.exempt_domains[%d] %q: wildcard must target a concrete domain like *.example.com", i, raw)
-				}
-			} else if strings.ContainsAny(d, "*?[]") {
-				return fmt.Errorf("response_scanning.exempt_domains[%d] %q: only exact hosts and *.example.com wildcards are supported", i, raw)
-			}
-			c.ResponseScanning.ExemptDomains[i] = d
-		}
+	}
+
+	// Validate exempt_domains regardless of whether response scanning is enabled.
+	// Prevents dormant bad config from activating silently on reload.
+	if err := ValidateTrustedDomains(c.ResponseScanning.ExemptDomains, "response_scanning.exempt_domains"); err != nil {
+		return err
 	}
 
 	// Validate MCP input scanning config
@@ -1890,27 +1866,11 @@ func (c *Config) Validate() error {
 		if err := validateEscalationMonotonic(&c.AdaptiveEnforcement.Levels); err != nil {
 			return err
 		}
-		// Validate and normalize exempt_domains (same rules as CEE exempt_domains).
-		for i, raw := range c.AdaptiveEnforcement.ExemptDomains {
-			d := strings.TrimSuffix(strings.TrimSpace(strings.ToLower(raw)), ".")
-			if d == "" {
-				return fmt.Errorf("adaptive_enforcement.exempt_domains[%d] is empty", i)
-			}
-			if strings.Contains(d, "://") || strings.Contains(d, "/") || strings.Contains(d, ":") {
-				return fmt.Errorf("adaptive_enforcement.exempt_domains[%d] %q: use hostname pattern, not URL or host:port", i, raw)
-			}
-			if d == "*" {
-				return fmt.Errorf("adaptive_enforcement.exempt_domains[%d]: bare wildcard too broad", i)
-			}
-			if strings.HasPrefix(d, "*.") {
-				if strings.Count(d[2:], ".") < 1 {
-					return fmt.Errorf("adaptive_enforcement.exempt_domains[%d] %q: wildcard must target concrete domain like *.example.com", i, raw)
-				}
-			} else if strings.ContainsAny(d, "*?[]") {
-				return fmt.Errorf("adaptive_enforcement.exempt_domains[%d] %q: only exact hosts and *.example.com wildcards supported", i, raw)
-			}
-			c.AdaptiveEnforcement.ExemptDomains[i] = d
-		}
+	}
+
+	// Validate adaptive enforcement exempt_domains regardless of enabled state.
+	if err := ValidateTrustedDomains(c.AdaptiveEnforcement.ExemptDomains, "adaptive_enforcement.exempt_domains"); err != nil {
+		return err
 	}
 
 	// Validate MCP session binding config
@@ -1986,27 +1946,6 @@ func (c *Config) Validate() error {
 			if c.CrossRequestDetection.EntropyBudget.WindowMinutes <= 0 {
 				return fmt.Errorf("cross_request_detection.entropy_budget.window_minutes must be > 0")
 			}
-			// Validate and normalize exempt_domains (same rules as DLP exempt_domains).
-			for i, raw := range c.CrossRequestDetection.EntropyBudget.ExemptDomains {
-				d := strings.TrimSuffix(strings.TrimSpace(strings.ToLower(raw)), ".")
-				if d == "" {
-					return fmt.Errorf("cross_request_detection.entropy_budget.exempt_domains[%d] is empty", i)
-				}
-				if strings.Contains(d, "://") || strings.Contains(d, "/") || strings.Contains(d, ":") {
-					return fmt.Errorf("cross_request_detection.entropy_budget.exempt_domains[%d] %q: use hostname pattern, not URL or host:port", i, raw)
-				}
-				if d == "*" {
-					return fmt.Errorf("cross_request_detection.entropy_budget.exempt_domains[%d]: bare wildcard too broad", i)
-				}
-				if strings.HasPrefix(d, "*.") {
-					if strings.Count(d[2:], ".") < 1 {
-						return fmt.Errorf("cross_request_detection.entropy_budget.exempt_domains[%d] %q: wildcard must target concrete domain like *.example.com", i, raw)
-					}
-				} else if strings.ContainsAny(d, "*?[]") {
-					return fmt.Errorf("cross_request_detection.entropy_budget.exempt_domains[%d] %q: only exact hosts and *.example.com wildcards supported", i, raw)
-				}
-				c.CrossRequestDetection.EntropyBudget.ExemptDomains[i] = d
-			}
 		}
 		if c.CrossRequestDetection.FragmentReassembly.Enabled {
 			if c.CrossRequestDetection.FragmentReassembly.MaxBufferBytes <= 0 {
@@ -2016,6 +1955,11 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("cross_request_detection.fragment_reassembly.window_minutes must be > 0")
 			}
 		}
+	}
+
+	// Validate CEE entropy budget exempt_domains regardless of enabled state.
+	if err := ValidateTrustedDomains(c.CrossRequestDetection.EntropyBudget.ExemptDomains, "cross_request_detection.entropy_budget.exempt_domains"); err != nil {
+		return err
 	}
 
 	// Validate TLS interception config

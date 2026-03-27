@@ -59,6 +59,26 @@ const (
 	schemeHTTPS = "https"
 )
 
+// buildRedirectRT derives a RedirectRuntime from config for built-in redirect
+// handlers. Returns nil when the fetch proxy listen address is empty or
+// unparseable, causing handlers to fail closed ("no fetch_endpoint").
+func buildRedirectRT(cfg *config.Config) *mcp.RedirectRuntime {
+	if cfg.FetchProxy.Listen == "" {
+		return nil
+	}
+	host, port, err := net.SplitHostPort(cfg.FetchProxy.Listen)
+	if err != nil {
+		return nil
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	return &mcp.RedirectRuntime{
+		FetchEndpoint: "http://" + net.JoinHostPort(host, port) + "/fetch",
+		QuarantineDir: cfg.MCPToolPolicy.QuarantineDir,
+	}
+}
+
 // McpCmd returns the mcp cobra command.
 func McpCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -468,6 +488,7 @@ Environment passthrough (subprocess mode only):
 					KillSwitch: ks, ChainMatcher: chainMatcher,
 					CEE: cee, Store: store,
 					AdaptiveCfg: adaptiveCfg, Metrics: mcpMetrics,
+					RedirectRT: buildRedirectRT(cfg),
 				}
 				if err := mcp.RunHTTPProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, nil, httpOpts); err != nil {
 					if sentryClient != nil {
@@ -582,6 +603,7 @@ Environment passthrough (subprocess mode only):
 					KillSwitch: ks, ChainMatcher: chainMatcher,
 					CEE: cee, Store: store,
 					AdaptiveCfg: adaptiveCfg, Metrics: mcpMetrics,
+					RedirectRT: buildRedirectRT(cfg),
 				}
 				if err := mcp.RunProxyWithSandbox(ctx, sandboxCmd, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), proxyOpts, mcpStrict); err != nil {
 					if sentryClient != nil {
@@ -683,7 +705,8 @@ Environment passthrough (subprocess mode only):
 				KillSwitch: ks, ChainMatcher: chainMatcher,
 				CEE: cee, Store: store,
 				AdaptiveCfg: adaptiveCfg, Metrics: mcpMetrics,
-				Lineage: lin, OnChildReady: onChildReady,
+				RedirectRT: buildRedirectRT(cfg),
+				Lineage:    lin, OnChildReady: onChildReady,
 			}
 			if err := mcp.RunProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), logW, serverCmd, proxyOpts, extraEnv...); err != nil {
 				if sentryClient != nil {

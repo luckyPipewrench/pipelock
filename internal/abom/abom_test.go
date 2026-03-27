@@ -225,23 +225,94 @@ func TestGenerate_MCPServerWithUpstream(t *testing.T) {
 	declared := abom.DeclaredInventory{
 		Mode: testMode,
 		MCPServers: []abom.DeclaredMCPServer{
-			{Name: "remote-mcp", Upstream: "http://localhost:8080", Transport: "http"},
+			{Name: "remote-mcp", Upstream: "http://localhost:8080/path?token=secret", Transport: "http"},
 		},
 	}
 	bom, _ := abom.Generate(declared, nil)
 
 	for _, c := range *bom.Components {
 		if c.Name == "remote-mcp" {
-			found := false
-			if c.Properties != nil {
-				for _, p := range *c.Properties {
-					if p.Name == "pipelock:upstream" && p.Value == "http://localhost:8080" {
-						found = true
+			if c.Properties == nil {
+				t.Fatal("expected properties on remote-mcp component")
+			}
+			for _, p := range *c.Properties {
+				if p.Name == "pipelock:upstream" {
+					// Must be stripped to scheme+host only
+					if p.Value != "http://localhost" {
+						t.Errorf("upstream should be redacted to scheme+host, got %q", p.Value)
 					}
 				}
 			}
-			if !found {
-				t.Error("upstream server should have pipelock:upstream property")
+		}
+	}
+}
+
+func TestGenerate_CommandRedactedToBasename(t *testing.T) {
+	declared := abom.DeclaredInventory{
+		Mode: testMode,
+		MCPServers: []abom.DeclaredMCPServer{
+			{
+				Name:      "test-mcp",
+				Command:   []string{"/usr/local/bin/my-server", "--token=secret123", "--port=8080"},
+				Transport: testTransport,
+			},
+		},
+	}
+	bom, _ := abom.Generate(declared, nil)
+
+	for _, c := range *bom.Components {
+		if c.Name != "test-mcp" {
+			continue
+		}
+		if c.Properties == nil {
+			t.Fatal("expected properties")
+		}
+		var commandVal string
+		var redactedFlag bool
+		for _, p := range *c.Properties {
+			if p.Name == "pipelock:command" {
+				commandVal = p.Value
+			}
+			if p.Name == "pipelock:command_redacted" && p.Value == "true" {
+				redactedFlag = true
+			}
+		}
+		if commandVal != "my-server" {
+			t.Errorf("command should be basename only, got %q", commandVal)
+		}
+		if !redactedFlag {
+			t.Error("command_redacted property should be set to true")
+		}
+	}
+}
+
+func TestGenerate_UpstreamStripsUserinfoAndQuery(t *testing.T) {
+	// Build URL with credentials at runtime to avoid gosec G101
+	upstream := "https://user:" + "password" + "@api.example.com:9090/v1?key=secret#frag"
+	declared := abom.DeclaredInventory{
+		Mode: testMode,
+		MCPServers: []abom.DeclaredMCPServer{
+			{
+				Name:      "auth-mcp",
+				Upstream:  upstream,
+				Transport: "http",
+			},
+		},
+	}
+	bom, _ := abom.Generate(declared, nil)
+
+	for _, c := range *bom.Components {
+		if c.Name != "auth-mcp" {
+			continue
+		}
+		if c.Properties == nil {
+			t.Fatal("expected properties")
+		}
+		for _, p := range *c.Properties {
+			if p.Name == "pipelock:upstream" {
+				if p.Value != "https://api.example.com" {
+					t.Errorf("upstream should strip userinfo/port/path/query/fragment, got %q", p.Value)
+				}
 			}
 		}
 	}

@@ -7,6 +7,8 @@ package abom
 
 import (
 	"fmt"
+	"net/url"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -153,6 +155,8 @@ func Generate(declared DeclaredInventory, observed *ObservedInventory) (*cdx.BOM
 }
 
 // mcpServerComponent builds a CycloneDX component for a declared MCP server.
+// Command lines are redacted to basename only (strips paths and arguments that
+// may contain credentials). Upstream URLs are stripped to scheme+host.
 func mcpServerComponent(srv DeclaredMCPServer) cdx.Component {
 	c := cdx.Component{
 		Type:   cdx.ComponentTypeApplication,
@@ -166,17 +170,31 @@ func mcpServerComponent(srv DeclaredMCPServer) cdx.Component {
 	if len(srv.Command) > 0 {
 		props = append(props, cdx.Property{
 			Name:  propertyPrefix + "command",
-			Value: strings.Join(srv.Command, " "),
+			Value: filepath.Base(srv.Command[0]),
+		})
+		props = append(props, cdx.Property{
+			Name:  propertyPrefix + "command_redacted",
+			Value: "true",
 		})
 	}
 	if srv.Upstream != "" {
 		props = append(props, cdx.Property{
 			Name:  propertyPrefix + "upstream",
-			Value: srv.Upstream,
+			Value: redactUpstream(srv.Upstream),
 		})
 	}
 	c.Properties = &props
 	return c
+}
+
+// redactUpstream strips a URL to scheme + hostname only, removing userinfo,
+// path, query, and fragment that may contain credentials.
+func redactUpstream(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "<redacted>"
+	}
+	return u.Scheme + "://" + u.Hostname()
 }
 
 // addObservedProperties appends runtime observation data to a component.

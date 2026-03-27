@@ -59,12 +59,12 @@ func (h *SessionAPIHandler) authenticate(w http.ResponseWriter, r *http.Request)
 		return false
 	}
 	auth := r.Header.Get("Authorization")
-	const prefix = "Bearer "
-	var token string
-	if len(auth) > len(prefix) && auth[:len(prefix)] == prefix {
-		token = auth[len(prefix):]
+	const bearerPrefix = "Bearer "
+	var provided string
+	if len(auth) > len(bearerPrefix) && auth[:len(bearerPrefix)] == bearerPrefix {
+		provided = auth[len(bearerPrefix):]
 	}
-	if token == "" || subtle.ConstantTimeCompare([]byte(token), []byte(h.apiToken)) != 1 {
+	if provided == "" || subtle.ConstantTimeCompare([]byte(provided), []byte(h.apiToken)) != 1 {
 		w.Header().Set("WWW-Authenticate", `Bearer realm="pipelock"`)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return false

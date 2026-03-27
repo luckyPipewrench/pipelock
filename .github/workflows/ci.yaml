@@ -41,9 +41,6 @@ jobs:
             internal/proxy/adaptive_escalation_test.go
             internal/proxy/adaptive_coverage_test.go
             internal/proxy/allowlist_scoring_test.go
-            internal/proxy/session_api_test.go
-            internal/proxy/session_test.go
-            internal/proxy/cee_test.go
             internal/gitprotect/diffscan_test.go
             internal/config/config_test.go
             internal/cli/test.go

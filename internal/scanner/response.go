@@ -9,6 +9,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
@@ -277,13 +279,13 @@ func (s *Scanner) matchDecodedSegments(content string) []ResponseMatch {
 			base64.StdEncoding, base64.URLEncoding,
 			base64.RawStdEncoding, base64.RawURLEncoding,
 		} {
-			if decoded, err := enc.DecodeString(seg); err == nil && len(decoded) > 0 && isPrintableASCII(decoded) {
+			if decoded, err := enc.DecodeString(seg); err == nil && len(decoded) > 0 && isPrintableText(decoded) {
 				if matches := s.matchDecodedNormalized(string(decoded)); len(matches) > 0 {
 					return matches
 				}
 			}
 		}
-		if decoded, err := hex.DecodeString(seg); err == nil && len(decoded) > 0 && isPrintableASCII(decoded) {
+		if decoded, err := hex.DecodeString(seg); err == nil && len(decoded) > 0 && isPrintableText(decoded) {
 			if matches := s.matchDecodedNormalized(string(decoded)); len(matches) > 0 {
 				return matches
 			}
@@ -294,6 +296,11 @@ func (s *Scanner) matchDecodedSegments(content string) []ResponseMatch {
 
 // extractEncodedRuns finds contiguous runs of base64/hex alphabet characters
 // at least minLen long. Returns the segments without surrounding text.
+//
+// '=' is treated as a segment boundary (like key=value separators) rather than
+// part of the alphabet. After each run is collected, up to 2 trailing '='
+// characters are re-attached as base64 padding. This prevents "key=payload"
+// from collapsing into one segment that decoders reject.
 func extractEncodedRuns(content string, minLen int) []string {
 	var runs []string
 	start := -1
@@ -301,39 +308,66 @@ func extractEncodedRuns(content string, minLen int) []string {
 		c := content[i]
 		inAlphabet := (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
 			(c >= '0' && c <= '9') || c == '+' || c == '/' ||
-			c == '-' || c == '_' || c == '='
+			c == '-' || c == '_'
 		if inAlphabet {
 			if start < 0 {
 				start = i
 			}
 		} else {
-			if start >= 0 && i-start >= minLen {
-				runs = append(runs, content[start:i])
+			if start >= 0 {
+				end := i
+				// Re-attach up to 2 trailing '=' for base64 padding.
+				end = attachBase64Padding(content, end)
+				if end-start >= minLen {
+					runs = append(runs, content[start:end])
+				}
 			}
 			start = -1
 		}
 	}
 	// Flush trailing run at end of content.
-	if start >= 0 && len(content)-start >= minLen {
-		runs = append(runs, content[start:])
+	if start >= 0 {
+		end := len(content)
+		if end-start >= minLen {
+			runs = append(runs, content[start:end])
+		}
 	}
 	return runs
 }
 
-// isPrintableASCII checks whether decoded bytes are mostly printable ASCII text.
-// Prevents false positives from random byte sequences that happen to base64-decode.
-func isPrintableASCII(data []byte) bool {
+// attachBase64Padding extends end past up to 2 consecutive '=' characters
+// immediately following a base64 alphabet run.
+func attachBase64Padding(content string, end int) int {
+	for pad := 0; pad < 2 && end < len(content) && content[end] == '='; pad++ {
+		end++
+	}
+	return end
+}
+
+// isPrintableText checks whether decoded bytes are mostly printable text.
+// Accepts valid UTF-8 including non-ASCII letters and symbols (which the
+// normalizer's confusable map handles), but rejects control characters and
+// invalid byte sequences. Prevents false positives from random byte
+// sequences that happen to base64-decode.
+func isPrintableText(data []byte) bool {
 	if len(data) == 0 {
 		return false
 	}
+	if !utf8.Valid(data) {
+		return false
+	}
+	total := 0
 	printable := 0
-	for _, b := range data {
-		if b >= 0x20 && b <= 0x7e {
+	for i := 0; i < len(data); {
+		r, size := utf8.DecodeRune(data[i:])
+		total++
+		if unicode.IsPrint(r) || r == '\t' || r == '\n' || r == '\r' {
 			printable++
 		}
+		i += size
 	}
-	// At least 80% printable ASCII to be considered text.
-	return printable*5 >= len(data)*4
+	// At least 80% printable runes to be considered text.
+	return printable*5 >= total*4
 }
 
 // matchDecodedNormalized runs all response scanning passes (primary, opt-space,

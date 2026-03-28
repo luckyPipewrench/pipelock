@@ -2230,6 +2230,10 @@ func TestExtractEncodedRuns(t *testing.T) {
 		{"run too short", "abc DEF ghi", 8, 0},
 		{"no runs", "hello world", 8, 0},
 		{"embedded in JSON", `{"key":"` + "aWdub3JlIGFsbC" + "BwcmV2aW91cw==" + `","ok":true}`, 16, 1},
+		// '=' splits key from value so decoders don't reject the whole thing.
+		{"key=value split", "data=aWdub3JlIGFsbA==&other=true", 8, 1},
+		// Padding re-attached after alphabet run.
+		{"padding reattach", "prefix cHJldmlvdXM= suffix", 8, 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -2241,7 +2245,7 @@ func TestExtractEncodedRuns(t *testing.T) {
 	}
 }
 
-func TestIsPrintableASCII(t *testing.T) {
+func TestIsPrintableText(t *testing.T) {
 	tests := []struct {
 		name string
 		data []byte
@@ -2252,12 +2256,18 @@ func TestIsPrintableASCII(t *testing.T) {
 		{"mixed mostly printable", []byte("hello\x01world"), true},    // 10/11 = 91%
 		{"mixed mostly binary", []byte{0x00, 0x01, 'a', 0xFF}, false}, // 1/4 = 25%
 		{"empty", []byte{}, false},
+		// Unicode-aware: valid non-ASCII text passes through to normalizer.
+		{"cyrillic text", []byte("привет мир"), true},
+		{"CJK text", []byte("你好世界"), true},
+		{"confusable chars", []byte("h\xd0\xb5llo"), true}, // Cyrillic е (U+0435) in "hello"
+		// Invalid UTF-8 is rejected outright.
+		{"invalid utf8", []byte{0x80, 0x81, 0x82, 0x83}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := isPrintableASCII(tt.data)
+			got := isPrintableText(tt.data)
 			if got != tt.want {
-				t.Errorf("isPrintableASCII(%v) = %v, want %v", tt.data, got, tt.want)
+				t.Errorf("isPrintableText(%v) = %v, want %v", tt.data, got, tt.want)
 			}
 		})
 	}

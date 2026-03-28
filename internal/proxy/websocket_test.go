@@ -1462,7 +1462,7 @@ func TestWSProxy_CrossMessageDLP_LongMessageSplit(t *testing.T) {
 	defer proxyCleanup()
 
 	conn := dialWS(t, proxyAddr, backendAddr)
-	defer conn.Close() //nolint:errcheck // test
+	defer func() { _ = conn.Close() }()
 
 	// Build Anthropic key halves at runtime for gosec G101.
 	keyPrefix := "sk-ant-"

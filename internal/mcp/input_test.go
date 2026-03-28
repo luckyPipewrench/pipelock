@@ -1648,33 +1648,33 @@ func TestScanSplitSecret_ConcatEqualsJoined(t *testing.T) {
 }
 
 func TestScanSplitSecret_EdgeFieldFallback(t *testing.T) {
-	// Exercise the edge-field fallback path: >32 fields, secret in last 2 fields.
+	// Exercise the edge-field fallback path: >64 fields, secret in first+last.
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 
-	// Build JSON with 34 fields. Secret prefix in field "aaa_first" (sorts to
-	// position 0) and suffix in "zzz_last" (sorts to position 33). Strategy 1
-	// concat puts them at opposite ends with 32 noise values between, so the
-	// sorted concat does NOT produce a match. Only edge pairwise (first 16 +
-	// last 16) catches this because both halves land in the edge window.
+	// Build JSON with 66 fields. Secret prefix in field "aaa_first" (sorts to
+	// position 0) and suffix in "zzz_last" (sorts to position 65). Strategy 1
+	// concat puts them at opposite ends with 64 noise values between, so the
+	// sorted concat does NOT produce a match. Only edge pairwise (first 32 +
+	// last 32) catches this because both halves land in the edge window.
 	prefix := testSecretPrefix
 	suffix := "api03-" + strings.Repeat("H", 25)
 	var fields []string
 	fields = append(fields, fmt.Sprintf(`"aaa_first":%q`, prefix))
-	for i := 0; i < 32; i++ {
+	for i := 0; i < 64; i++ {
 		fields = append(fields, fmt.Sprintf(`"m_pad%02d":"noise"`, i))
 	}
 	fields = append(fields, fmt.Sprintf(`"zzz_last":%q`, suffix))
 	raw := json.RawMessage("{" + strings.Join(fields, ",") + "}")
 
 	// joined has the values in sorted key order with \n separators.
-	joined := prefix + "\n" + strings.Repeat("noise\n", 32) + suffix
+	joined := prefix + "\n" + strings.Repeat("noise\n", 64) + suffix
 	clean := scanner.TextDLPResult{Clean: true}
 	result := scanSplitSecret(raw, joined, sc, clean)
 	if result.Clean {
-		t.Error("edge-field pairwise should catch split secret at opposite ends of 34 fields")
+		t.Error("edge-field pairwise should catch split secret at opposite ends of 66 fields")
 	}
 }
 

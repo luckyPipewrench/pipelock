@@ -1003,7 +1003,9 @@ func joinStrings(ss []string) string {
 
 // maxPairwiseSplitFields caps the number of field values considered for
 // pairwise split-secret scanning. O(n^2) pairs, but each DLP scan is fast.
-const maxPairwiseSplitFields = 32
+// When field count exceeds this cap, edge sampling takes the first and last
+// half (32 each) so the effective pairwise coverage is 64 fields.
+const maxPairwiseSplitFields = 64
 
 // scanSplitSecret checks for secrets split across multiple JSON fields.
 // Two strategies:

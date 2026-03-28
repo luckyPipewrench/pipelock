@@ -297,14 +297,11 @@ func (s *Scanner) matchDecodedSegments(content string) []ResponseMatch {
 func extractEncodedRuns(content string, minLen int) []string {
 	var runs []string
 	start := -1
-	for i := 0; i <= len(content); i++ {
-		inAlphabet := false
-		if i < len(content) {
-			c := content[i]
-			inAlphabet = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-				(c >= '0' && c <= '9') || c == '+' || c == '/' ||
-				c == '-' || c == '_' || c == '='
-		}
+	for i := 0; i < len(content); i++ {
+		c := content[i]
+		inAlphabet := (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+			(c >= '0' && c <= '9') || c == '+' || c == '/' ||
+			c == '-' || c == '_' || c == '='
 		if inAlphabet {
 			if start < 0 {
 				start = i
@@ -315,6 +312,10 @@ func extractEncodedRuns(content string, minLen int) []string {
 			}
 			start = -1
 		}
+	}
+	// Flush trailing run at end of content.
+	if start >= 0 && len(content)-start >= minLen {
+		runs = append(runs, content[start:])
 	}
 	return runs
 }

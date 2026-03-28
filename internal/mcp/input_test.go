@@ -1647,6 +1647,62 @@ func TestScanSplitSecret_ConcatEqualsJoined(t *testing.T) {
 	}
 }
 
+func TestScanSplitSecret_EdgeFieldFallback(t *testing.T) {
+	// Exercise the edge-field fallback path: >32 fields, secret in last 2 fields.
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+
+	// Build JSON with 34 fields. Secret prefix in field "z33", suffix in "z34"
+	// (last 2 in sorted order). The edge scanner should include these.
+	prefix := testSecretPrefix
+	suffix := "api03-" + strings.Repeat("H", 25)
+	var fields []string
+	for i := 0; i < 32; i++ {
+		fields = append(fields, fmt.Sprintf(`"pad%02d":"noise"`, i))
+	}
+	fields = append(fields, fmt.Sprintf(`"z33":%q`, prefix))
+	fields = append(fields, fmt.Sprintf(`"z34":%q`, suffix))
+	raw := json.RawMessage("{" + strings.Join(fields, ",") + "}")
+
+	clean := scanner.TextDLPResult{Clean: true}
+	result := scanSplitSecret(raw, "noise\nnoise\n"+prefix+"\n"+suffix, sc, clean)
+	if result.Clean {
+		t.Error("edge-field fallback should catch split secret in last 2 of 34 fields")
+	}
+}
+
+func TestScanSplitSecret_SingleField(t *testing.T) {
+	// Exercise the len(vals) <= 1 early return.
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+
+	raw := json.RawMessage(`{"only":"value"}`)
+	clean := scanner.TextDLPResult{Clean: true}
+	result := scanSplitSecret(raw, "value", sc, clean)
+	if !result.Clean {
+		t.Error("single field should return clean (nothing to split)")
+	}
+}
+
+func TestScanSplitSecret_AlreadyDirty(t *testing.T) {
+	// Exercise the !result.Clean early return.
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+
+	raw := json.RawMessage(`{"a":"x","b":"y"}`)
+	dirty := scanner.TextDLPResult{Clean: false}
+	result := scanSplitSecret(raw, "x\ny", sc, dirty)
+	if result.Clean {
+		t.Error("already-dirty result should be returned unchanged")
+	}
+}
+
 func TestForwardScannedInput_InjectionInToolArgs(t *testing.T) {
 	// Exercise injection-reasons loop (line 417-419) and method field.
 	sc := testInputScanner(t)

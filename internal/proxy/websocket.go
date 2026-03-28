@@ -1069,8 +1069,9 @@ const (
 	// crossMsgOverlap is how many bytes of the previous text message to retain
 	// for cross-message DLP scanning. Secrets split across separate WebSocket
 	// messages (each FIN=1) would evade per-message scanning without this overlap.
-	// 512 bytes covers any single-line DLP pattern with headroom.
-	crossMsgOverlap = 512
+	// 4096 bytes prevents attackers from padding >512 bytes after the first half
+	// of a secret to push it out of the overlap window.
+	crossMsgOverlap = 4096
 )
 
 // opCodeLabel returns a human-readable label for metrics.

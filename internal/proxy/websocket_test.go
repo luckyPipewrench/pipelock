@@ -1425,10 +1425,10 @@ func TestWSProxy_CrossMessageDLP_TailEviction(t *testing.T) {
 		t.Fatalf("read prefix: %v", err)
 	}
 
-	// Message 2: 600 bytes of clean data (exceeds 512-byte overlap window).
+	// Message 2: 4200 bytes of clean data (exceeds 4096-byte overlap window).
 	// This should evict the key prefix from the rolling tail.
 	// Use spaces (non-alphanumeric) so tail+padding can't form a valid key pattern.
-	padding := strings.Repeat(" ", 600)
+	padding := strings.Repeat(" ", 4200)
 	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(padding)); err != nil {
 		t.Fatalf("write padding: %v", err)
 	}
@@ -1447,6 +1447,51 @@ func TestWSProxy_CrossMessageDLP_TailEviction(t *testing.T) {
 	}
 	if string(reply) != suffix {
 		t.Errorf("expected %q, got %q", suffix, reply)
+	}
+}
+
+// TestWSProxy_CrossMessageDLP_LongMessageSplit verifies that a split secret is
+// still caught when msg1 is longer than 512 bytes (old overlap size). With the
+// 4096-byte overlap, a message between 512 and 4096 bytes takes the APPEND path
+// instead of REPLACEMENT, retaining the full message in the tail. The key prefix
+// sits at the end of msg1, so the suffix in msg2 forms a contiguous match.
+func TestWSProxy_CrossMessageDLP_LongMessageSplit(t *testing.T) {
+	backendAddr, backendCleanup := wsEchoServer(t)
+	defer backendCleanup()
+
+	proxyAddr, proxyCleanup := setupWSProxy(t, nil)
+	defer proxyCleanup()
+
+	conn := dialWS(t, proxyAddr, backendAddr)
+	defer conn.Close() //nolint:errcheck // test
+
+	// Build Anthropic key halves at runtime for gosec G101.
+	keyPrefix := "sk-ant-"
+	keySuffix := "IOSFODNN7" + testWSExample + "1234567890abcdef"
+
+	// msg1: 600 bytes of leading data ending with the key prefix.
+	// Total = 607 bytes. With the old 512 overlap this triggers the REPLACEMENT
+	// path (len >= 512), but the prefix is within the last 512 bytes so it
+	// would still be retained. With 4096 it takes the APPEND path. Either way
+	// the prefix survives -- this test confirms the 4096 window preserves
+	// cross-message detection for longer messages.
+	const leadingSize = 600
+	msg1 := strings.Repeat(".", leadingSize) + keyPrefix
+	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(msg1)); err != nil {
+		t.Fatalf("write msg1: %v", err)
+	}
+	if _, _, err := wsutil.ReadServerData(conn); err != nil {
+		t.Fatalf("read msg1: %v (prefix alone should pass)", err)
+	}
+
+	// msg2: key suffix. scanInput = tail(ends with prefix) + suffix.
+	// Contiguous match: ...sk-ant-IOSFODNN7EXAMPLE1234567890abcdef.
+	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(keySuffix)); err != nil {
+		t.Fatalf("write msg2: %v", err)
+	}
+	_, _, err := wsutil.ReadServerData(conn)
+	if err == nil {
+		t.Fatal("expected connection closed on msg2 (cross-message DLP should catch split key after long msg1)")
 	}
 }
 

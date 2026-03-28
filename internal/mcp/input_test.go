@@ -2822,6 +2822,22 @@ func TestScanRequest_JSONUnicodeEscapeDLP(t *testing.T) {
 	}
 }
 
+func TestScanRequest_JSONUnicodeEscapeForwardMode(t *testing.T) {
+	t.Parallel()
+	sc := testInputScanner(t)
+
+	// Malformed JSON-RPC (wrong version) triggers the on_parse_error=forward path.
+	// The secret is encoded as JSON \uXXXX escapes. This is the REAL bypass surface:
+	// scanRawBeforeForward sees the literal \u text, not the decoded characters.
+	escapedKey := `\u0073\u006b\u002d\u0061\u006e\u0074\u002d` + "api03-" + strings.Repeat("F", 25)
+	msg := fmt.Sprintf(`{"jsonrpc":"1.0","id":1,"exfil":"%s"}`, escapedKey)
+
+	verdict := ScanRequest([]byte(msg), sc, config.ActionBlock, "forward")
+	if verdict.Clean {
+		t.Error("JSON unicode-escaped secret must be detected in forward-mode raw path")
+	}
+}
+
 func TestUnescapeJSONUnicode(t *testing.T) {
 	tests := []struct {
 		name  string

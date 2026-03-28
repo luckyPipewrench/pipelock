@@ -361,6 +361,13 @@ func scanRawBeforeForward(raw []byte, sc *scanner.Scanner, action string) InputV
 	if dlpResult.Clean {
 		dlpResult = sc.ScanTextForDLP(context.Background(), text)
 	}
+	// JSON unicode unescape: resolve \uXXXX sequences in raw text so DLP
+	// patterns match secrets encoded with JSON unicode escapes.
+	if dlpResult.Clean {
+		if unescaped := unescapeJSONUnicode(text); unescaped != text {
+			dlpResult = sc.ScanTextForDLP(context.Background(), unescaped)
+		}
+	}
 
 	injResult := sc.ScanResponse(context.Background(), text)
 
@@ -1005,10 +1012,16 @@ func scanSplitSecret(raw json.RawMessage, joined string, sc *scanner.Scanner, re
 	}
 
 	// Strategy 2: pairwise concatenation (catches 2-field splits regardless of key order).
-	// Cap field count to prevent quadratic blowup on pathological inputs.
+	// When field count exceeds the cap, scan edges (first + last N/2 fields)
+	// rather than truncating. Attackers padding with filler fields likely place
+	// the secret halves near the edges of the sorted key space.
 	pairVals := vals
 	if len(pairVals) > maxPairwiseSplitFields {
-		pairVals = pairVals[:maxPairwiseSplitFields]
+		half := maxPairwiseSplitFields / 2
+		edge := make([]string, 0, maxPairwiseSplitFields)
+		edge = append(edge, vals[:half]...)
+		edge = append(edge, vals[len(vals)-half:]...)
+		pairVals = edge
 	}
 	for i := 0; i < len(pairVals); i++ {
 		if len(pairVals[i]) == 0 {

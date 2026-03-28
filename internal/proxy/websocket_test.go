@@ -1450,11 +1450,10 @@ func TestWSProxy_CrossMessageDLP_TailEviction(t *testing.T) {
 	}
 }
 
-// TestWSProxy_CrossMessageDLP_LongMessageSplit verifies that a split secret is
-// still caught when msg1 is longer than 512 bytes (old overlap size). With the
-// 4096-byte overlap, a message between 512 and 4096 bytes takes the APPEND path
-// instead of REPLACEMENT, retaining the full message in the tail. The key prefix
-// sits at the end of msg1, so the suffix in msg2 forms a contiguous match.
+// TestWSProxy_CrossMessageDLP_LongMessageSplit verifies that the 4096-byte
+// overlap catches a split secret that the old 512-byte window would miss.
+// The key prefix is placed 1024 bytes from the end of msg1, which is inside
+// the 4096-byte window but outside the old 512-byte window.
 func TestWSProxy_CrossMessageDLP_LongMessageSplit(t *testing.T) {
 	backendAddr, backendCleanup := wsEchoServer(t)
 	defer backendCleanup()
@@ -1469,14 +1468,14 @@ func TestWSProxy_CrossMessageDLP_LongMessageSplit(t *testing.T) {
 	keyPrefix := "sk-ant-"
 	keySuffix := "IOSFODNN7" + testWSExample + "1234567890abcdef"
 
-	// msg1: 600 bytes of leading data ending with the key prefix.
-	// Total = 607 bytes. With the old 512 overlap this triggers the REPLACEMENT
-	// path (len >= 512), but the prefix is within the last 512 bytes so it
-	// would still be retained. With 4096 it takes the APPEND path. Either way
-	// the prefix survives -- this test confirms the 4096 window preserves
-	// cross-message detection for longer messages.
-	const leadingSize = 600
-	msg1 := strings.Repeat(".", leadingSize) + keyPrefix
+	// msg1: key prefix placed 1024 bytes from the end. Total ~2048 bytes.
+	// With old 512-byte overlap: only last 512 bytes retained, prefix at
+	// position ~1024 from end is OUTSIDE the window. Secret missed.
+	// With new 4096-byte overlap: last 2048 bytes retained (whole message
+	// fits), prefix is INSIDE the window. Secret caught.
+	const trailingPad = 1024
+	const leadingPad = 1024
+	msg1 := strings.Repeat(".", leadingPad) + keyPrefix + strings.Repeat(".", trailingPad)
 	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(msg1)); err != nil {
 		t.Fatalf("write msg1: %v", err)
 	}
@@ -1484,14 +1483,14 @@ func TestWSProxy_CrossMessageDLP_LongMessageSplit(t *testing.T) {
 		t.Fatalf("read msg1: %v (prefix alone should pass)", err)
 	}
 
-	// msg2: key suffix. scanInput = tail(ends with prefix) + suffix.
-	// Contiguous match: ...sk-ant-IOSFODNN7EXAMPLE1234567890abcdef.
+	// msg2: key suffix. With 4096 overlap, scanInput includes the prefix
+	// from msg1's tail + this suffix, forming a contiguous match.
 	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(keySuffix)); err != nil {
 		t.Fatalf("write msg2: %v", err)
 	}
 	_, _, err := wsutil.ReadServerData(conn)
 	if err == nil {
-		t.Fatal("expected connection closed on msg2 (cross-message DLP should catch split key after long msg1)")
+		t.Fatal("expected connection closed on msg2 (cross-message DLP should catch split key with 4096 overlap)")
 	}
 }
 

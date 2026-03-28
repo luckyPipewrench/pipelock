@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
@@ -47,6 +48,11 @@ func RunHTTPProxy(
 	extraHeaders http.Header,
 	opts MCPProxyOpts,
 ) error {
+	// Set transport for capture records if not already set by caller.
+	if opts.Transport == "" {
+		opts.Transport = "mcp_http"
+	}
+
 	// Create a child context so we can stop the GET stream when stdin EOF is reached.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -205,6 +211,7 @@ func scanHTTPInput(msg []byte, logW io.Writer, sessionKey, auditSessionKey strin
 	rec := opts.Rec
 	adaptiveCfg := opts.AdaptiveCfg
 	m := opts.Metrics
+	obs := opts.captureObserver()
 
 	// Helper: record an adaptive signal and handle escalation side-effects.
 	// Eliminates repeated nil/enabled guards at every call site.
@@ -361,6 +368,17 @@ func scanHTTPInput(msg []byte, logW io.Writer, sessionKey, auditSessionKey strin
 		// Cross-request exfiltration check on clean outbound messages.
 		ceeKey := ceeSessionKeyMCP("", sessionKey)
 		if reason := ceeRecordMCP(ceeKey, msg, cee, sc, logW, auditLogger); reason != "" {
+			// Capture: record CEE verdict.
+			obs.ObserveCEEVerdict(context.Background(), &capture.CEERecord{
+				Subsurface: "cee_mcp_http",
+				Transport:  opts.Transport,
+				RawFindings: []capture.Finding{{
+					Kind:   capture.KindCEE,
+					Action: config.ActionBlock,
+				}},
+				EffectiveAction: config.ActionBlock,
+				Outcome:         capture.OutcomeBlocked,
+			})
 			return &BlockedRequest{
 				ID:             verdict.ID,
 				IsNotification: isRPCNotification(verdict.ID),
@@ -538,6 +556,17 @@ func scanHTTPInput(msg []byte, logW io.Writer, sessionKey, auditSessionKey strin
 		// Cross-request exfiltration check even in warn mode.
 		ceeKey := ceeSessionKeyMCP("", sessionKey)
 		if reason := ceeRecordMCP(ceeKey, msg, cee, sc, logW, auditLogger); reason != "" {
+			// Capture: record CEE verdict (warn-path).
+			obs.ObserveCEEVerdict(context.Background(), &capture.CEERecord{
+				Subsurface: "cee_mcp_http",
+				Transport:  opts.Transport,
+				RawFindings: []capture.Finding{{
+					Kind:   capture.KindCEE,
+					Action: config.ActionBlock,
+				}},
+				EffectiveAction: config.ActionBlock,
+				Outcome:         capture.OutcomeBlocked,
+			})
 			return &BlockedRequest{
 				ID:             verdict.ID,
 				IsNotification: isRPCNotification(verdict.ID),
@@ -545,6 +574,20 @@ func scanHTTPInput(msg []byte, logW io.Writer, sessionKey, auditSessionKey strin
 				ErrorCode:      -32005,
 				ErrorMessage:   fmt.Sprintf("pipelock: %s", reason),
 			}
+		}
+		// Capture: record DLP/injection input verdict when not clean.
+		if !verdict.Clean {
+			var rawFindings []capture.Finding
+			rawFindings = append(rawFindings, dlpMatchesToFindings(verdict.Matches)...)
+			rawFindings = append(rawFindings, responseMatchesToFindings(verdict.Inject, effectiveAction)...)
+			obs.ObserveDLPVerdict(context.Background(), &capture.DLPVerdictRecord{
+				Subsurface:      "dlp_mcp_input",
+				Transport:       opts.Transport,
+				TransformKind:   capture.TransformJoinedFields,
+				RawFindings:     rawFindings,
+				EffectiveAction: effectiveAction,
+				Outcome:         captureOutcome(effectiveAction, false),
+			})
 		}
 		return nil // forward
 	}
@@ -757,7 +800,7 @@ func RunHTTPListenerProxy(
 		InputCfg: inputCfg, PolicyCfg: policyCfg,
 		KillSwitch: ks, ChainMatcher: chainMatcher,
 		AuditLogger: auditLogger, CEE: cee, Metrics: m,
-		RedirectRT: redirectRT,
+		RedirectRT: redirectRT, Transport: "mcp_http",
 	}
 
 	// Shared HTTP client for upstream requests. Redirect-following is disabled

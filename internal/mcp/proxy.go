@@ -15,6 +15,7 @@ import (
 	"sync"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	decide "github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
@@ -113,6 +114,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 	rec := opts.Rec
 	adaptiveCfg := opts.AdaptiveCfg
 	m := opts.Metrics
+	obs := opts.captureObserver()
 
 	// blockAll tracks whether the session is at a critical escalation level
 	// with block_all=true. Checked once up front and refreshed after each
@@ -243,6 +245,16 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 						_, _ = fmt.Fprintf(logW, "pipelock: tool %q added post-baseline\n", name)
 					}
 				}
+			}
+			// Capture: record tools/list scan verdict.
+			if toolResult.IsToolsList {
+				obs.ObserveToolScanVerdict(context.Background(), &capture.ToolScanRecord{
+					Subsurface:      "mcp_tools_list",
+					Transport:       opts.Transport,
+					RawFindings:     toolScanMatchesToFindings(toolResult.Matches),
+					EffectiveAction: toolCfg.Action,
+					Outcome:         captureOutcome(toolCfg.Action, toolResult.Clean),
+				})
 			}
 			if toolResult.IsToolsList && !toolResult.Clean {
 				foundInjection = true
@@ -412,6 +424,15 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				recordSignalWithEscalation(rec, session.SignalNearMiss, adaptiveCfg.EscalationThreshold, logW, nil, m, "", "", "")
 			}
 		}
+
+		// Capture: record response injection verdict.
+		obs.ObserveResponseVerdict(context.Background(), &capture.ResponseVerdictRecord{
+			Subsurface:      "response_mcp",
+			Transport:       opts.Transport,
+			RawFindings:     responseMatchesToFindings(verdict.Matches, action),
+			EffectiveAction: action,
+			Outcome:         captureOutcome(action, false),
+		})
 	}
 
 	return foundInjection, nil
@@ -648,6 +669,11 @@ type InputScanConfig struct {
 // this to start the file sentry event loop after attribution is ready.
 func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW io.Writer, command []string, opts MCPProxyOpts, extraEnv ...string) error {
 	cmd := exec.CommandContext(ctx, command[0], command[1:]...) //nolint:gosec // command comes from user CLI args
+
+	// Set transport for capture records if not already set by caller.
+	if opts.Transport == "" {
+		opts.Transport = "mcp_stdio"
+	}
 
 	// Per-invocation adaptive enforcement recorder. Nil when Store is nil
 	// (adaptive enforcement disabled), so all downstream callers are nil-safe.

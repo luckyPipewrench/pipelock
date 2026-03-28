@@ -12,6 +12,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/cli/audit"
 	"github.com/luckyPipewrench/pipelock/internal/discover"
+	"github.com/luckyPipewrench/pipelock/internal/report/compliance"
 )
 
 const (
@@ -54,6 +55,7 @@ func minimalAssessment(grade string, score int) *Assessment {
 				Remediation: "Enable DLP pattern matching",
 			},
 		},
+		Compliance: []compliance.Framework{compliance.OWASPMCPTop10()},
 	}
 }
 
@@ -83,6 +85,7 @@ func minimalSummary(grade string, score int) *Summary {
 		},
 		DetectionPct: 85,
 		Signed:       false,
+		Compliance:   []compliance.CoverageSummary{compliance.OWASPMCPTop10().CoverageSummary()},
 	}
 }
 
@@ -176,6 +179,10 @@ func TestRenderSummaryHTML(t *testing.T) {
 		t.Error("summary should contain 'Not audit-grade'")
 	}
 
+	if !strings.Contains(html, "Compliance Coverage") {
+		t.Error("summary should contain compliance coverage section")
+	}
+
 	// Must NOT contain remediation or evidence columns.
 	if strings.Contains(html, "remediation") {
 		t.Error("summary should not contain remediation field")
@@ -187,6 +194,26 @@ func TestRenderSummaryHTML(t *testing.T) {
 	// Must contain finding title.
 	if !strings.Contains(html, "Missed exfiltration") {
 		t.Error("summary should contain top finding title")
+	}
+}
+
+func TestRenderAssessmentHTML_ComplianceSection(t *testing.T) {
+	a := minimalAssessment(assessGradeA, 95)
+
+	var buf bytes.Buffer
+	if err := renderAssessmentHTML(&buf, a); err != nil {
+		t.Fatalf("renderAssessmentHTML: %v", err)
+	}
+
+	html := buf.String()
+	if !strings.Contains(html, "Compliance Annexes") {
+		t.Error("assessment should contain compliance annexes section")
+	}
+	if !strings.Contains(html, "OWASP MCP Top 10") {
+		t.Error("assessment should contain compliance framework name")
+	}
+	if !strings.Contains(html, "COVERED") {
+		t.Error("assessment should contain status badge labels")
 	}
 }
 

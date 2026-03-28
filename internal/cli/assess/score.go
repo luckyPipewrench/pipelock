@@ -12,6 +12,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cli/audit"
 	"github.com/luckyPipewrench/pipelock/internal/cli/diag"
 	"github.com/luckyPipewrench/pipelock/internal/discover"
+	"github.com/luckyPipewrench/pipelock/internal/report/compliance"
 )
 
 // Finding and cap source constants identify which primitive produced an entry.
@@ -98,6 +99,9 @@ func synthesizeAssessment(manifest AssessManifest, sources AssessSources) Assess
 	// 4. Generate findings.
 	findings := generateFindings(sources)
 
+	// 5. Attach compliance coverage mappings.
+	complianceFrameworks := compliance.Catalog()
+
 	return Assessment{
 		SchemaVersion: assessSchemaVersion,
 		Manifest:      manifest,
@@ -109,6 +113,7 @@ func synthesizeAssessment(manifest AssessManifest, sources AssessSources) Assess
 		Sections:      sections,
 		Findings:      findings,
 		Sources:       sources,
+		Compliance:    complianceFrameworks,
 	}
 }
 

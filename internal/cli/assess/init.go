@@ -42,12 +42,14 @@ Examples:
   pipelock assess init --config pipelock.yaml
   pipelock assess run assessment-a1b2c3d4/
   pipelock assess finalize assessment-a1b2c3d4/
-  pipelock assess verify assessment-a1b2c3d4/`,
+  pipelock assess verify assessment-a1b2c3d4/
+  pipelock assess verify-attestation assessment-a1b2c3d4/`,
 	}
 	cmd.AddCommand(assessInitCmd())
 	cmd.AddCommand(assessRunCmd())
 	cmd.AddCommand(assessFinalizeCmd())
 	cmd.AddCommand(assessVerifyCmd())
+	cmd.AddCommand(assessVerifyAttestationCmd())
 	cmd.AddCommand(assessStatusCmd())
 	return cmd
 }

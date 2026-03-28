@@ -70,6 +70,9 @@ func assessFuncMap() template.FuncMap {
 		"toplineStory":    toplineStory,
 		"summaryTopline":  summaryTopline,
 		"serverStatColor": serverStatColor,
+		"join":            strings.Join,
+		"coverageColor":   coverageColor,
+		"coverageLabel":   coverageLabel,
 		"discoverCausedCap": func(a *Assessment) bool {
 			if a.GradeCap == "" {
 				return false
@@ -429,4 +432,28 @@ func serverStatColor(protected, total int) string {
 		return colorRed
 	}
 	return colorGreen
+}
+
+// coverageColor returns a color for compliance status badges.
+func coverageColor(status string) string {
+	switch status {
+	case "covered":
+		return colorGreen
+	case "partial":
+		return colorYellow
+	default:
+		return colorRed
+	}
+}
+
+// coverageLabel returns a display label for a compliance status.
+func coverageLabel(status string) string {
+	switch status {
+	case "covered":
+		return "COVERED"
+	case "partial":
+		return "PARTIAL"
+	default:
+		return "NOT COVERED"
+	}
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cli/audit"
 	"github.com/luckyPipewrench/pipelock/internal/cli/diag"
 	"github.com/luckyPipewrench/pipelock/internal/discover"
+	"github.com/luckyPipewrench/pipelock/internal/report/compliance"
 )
 
 // Schema and scoring version constants.
@@ -98,33 +99,35 @@ type AssessManifest struct {
 
 // Assessment is the full, attestable assessment output.
 type Assessment struct {
-	SchemaVersion string              `json:"schema_version"`
-	Manifest      AssessManifest      `json:"manifest"`
-	OverallGrade  string              `json:"overall_grade"`
-	OverallScore  int                 `json:"overall_score"`
-	GradeCap      string              `json:"grade_cap,omitempty"`
-	CapReasons    []CapReason         `json:"cap_reasons,omitempty"`
-	Weights       ScoringWeights      `json:"weights"`
-	Sections      []AssessmentSection `json:"sections"`
-	Findings      []Finding           `json:"findings"`
-	Sources       AssessSources       `json:"sources"`
-	Annexes       []Annex             `json:"annexes,omitempty"`
-	Signed        bool                `json:"signed"` // set by finalize before rendering
+	SchemaVersion string                 `json:"schema_version"`
+	Manifest      AssessManifest         `json:"manifest"`
+	OverallGrade  string                 `json:"overall_grade"`
+	OverallScore  int                    `json:"overall_score"`
+	GradeCap      string                 `json:"grade_cap,omitempty"`
+	CapReasons    []CapReason            `json:"cap_reasons,omitempty"`
+	Weights       ScoringWeights         `json:"weights"`
+	Sections      []AssessmentSection    `json:"sections"`
+	Findings      []Finding              `json:"findings"`
+	Sources       AssessSources          `json:"sources"`
+	Annexes       []Annex                `json:"annexes,omitempty"`
+	Compliance    []compliance.Framework `json:"compliance,omitempty"`
+	Signed        bool                   `json:"signed"` // set by finalize before rendering
 }
 
 // Summary is the compact, human-readable assessment projection.
 type Summary struct {
-	SchemaVersion string                `json:"schema_version"`
-	Manifest      AssessManifest        `json:"manifest"`
-	OverallGrade  string                `json:"overall_grade"`
-	OverallScore  int                   `json:"overall_score"`
-	GradeCap      string                `json:"grade_cap,omitempty"`
-	CapReason     string                `json:"cap_reason,omitempty"`
-	Sections      []AssessmentSection   `json:"sections"`
-	TopFindings   []SummaryFinding      `json:"top_findings"`
-	ServerCounts  AssessDiscoverSummary `json:"server_counts"`
-	DetectionPct  int                   `json:"detection_pct"`
-	Signed        bool                  `json:"signed"`
+	SchemaVersion string                       `json:"schema_version"`
+	Manifest      AssessManifest               `json:"manifest"`
+	OverallGrade  string                       `json:"overall_grade"`
+	OverallScore  int                          `json:"overall_score"`
+	GradeCap      string                       `json:"grade_cap,omitempty"`
+	CapReason     string                       `json:"cap_reason,omitempty"`
+	Sections      []AssessmentSection          `json:"sections"`
+	TopFindings   []SummaryFinding             `json:"top_findings"`
+	ServerCounts  AssessDiscoverSummary        `json:"server_counts"`
+	DetectionPct  int                          `json:"detection_pct"`
+	Signed        bool                         `json:"signed"`
+	Compliance    []compliance.CoverageSummary `json:"compliance,omitempty"`
 }
 
 // ScoringWeights holds the weight for each assessment section.

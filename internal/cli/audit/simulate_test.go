@@ -223,6 +223,59 @@ func TestRunSimulation_URLScenariosAttributeCorrectScanner(t *testing.T) {
 	}
 }
 
+func TestBuildScenarios_WithCanaryTokens(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.CanaryTokens.Enabled = true
+	cfg.CanaryTokens.Tokens = []config.CanaryToken{
+		{
+			Name:   "aws_canary",
+			Value:  "AKIA" + "IOSFODNN7" + "CANARY1",
+			EnvVar: "AWS_CANARY_KEY",
+		},
+	}
+	sc := scanner.New(cfg)
+	defer sc.Close()
+
+	scenarios := BuildSimScenarios(cfg, sc)
+	expected := []string{
+		"Canary token in text body (aws_canary)",
+		"URL-encoded canary token (aws_canary)",
+		"Base64-encoded canary token (aws_canary)",
+		"Hex-encoded canary token (aws_canary)",
+		"Split canary token (aws_canary)",
+		"Canary token in URL (aws_canary)",
+	}
+
+	have := make(map[string]bool, len(scenarios))
+	for _, s := range scenarios {
+		have[s.name] = true
+	}
+	for _, name := range expected {
+		if !have[name] {
+			t.Fatalf("missing canary scenario %q", name)
+		}
+	}
+}
+
+func TestRunSimulation_CanaryScenariosDetected(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.CanaryTokens.Enabled = true
+	cfg.CanaryTokens.Tokens = []config.CanaryToken{
+		{Name: "aws_canary", Value: "AKIA" + "IOSFODNN7" + "CANARY1"},
+	}
+	sc := scanner.New(cfg)
+	defer sc.Close()
+
+	scenarios := BuildSimScenarios(cfg, sc)
+	result := RunSimulation(scenarios, "", cfg.Mode)
+
+	for _, s := range result.Scenarios {
+		if strings.Contains(s.Name, "canary") && !s.Detected {
+			t.Fatalf("expected canary scenario to be detected: %q (%s)", s.Name, s.Detail)
+		}
+	}
+}
+
 func TestMatchNames(t *testing.T) {
 	matches := []scanner.ResponseMatch{
 		{PatternName: "Prompt Injection"},

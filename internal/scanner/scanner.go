@@ -86,6 +86,7 @@ type Scanner struct {
 	allowlist                  []string
 	blocklist                  []string
 	dlpPatterns                []*compiledPattern
+	canaryTokens               []compiledCanaryToken
 	dlpPreFilter               *dlpPreFilter
 	entropyThreshold           float64
 	entropyMinLen              int
@@ -201,6 +202,7 @@ func New(cfg *config.Config) *Scanner {
 
 	// Build prefix pre-filter for fast DLP short-circuiting on clean input.
 	s.dlpPreFilter = newDLPPreFilter(s.dlpPatterns)
+	s.canaryTokens = compileCanaryTokens(cfg.CanaryTokens)
 
 	// Seed phrase detection config — stateless, reads from config.
 	s.seedEnabled = cfg.SeedPhraseDetection.Enabled == nil || *cfg.SeedPhraseDetection.Enabled
@@ -984,6 +986,22 @@ func decodeEncodings(s string) []decodedResult {
 // and secrets split across query parameters. Iterative URL decoding
 // prevents multi-layer encoding bypass.
 func (s *Scanner) checkDLP(parsed *url.URL) Result {
+	// Canary token detection runs through the shared text DLP path so URL,
+	// MCP, body, and tool-argument scanning use one normalization model.
+	if matches := s.scanCanaryText(parsed.String()); len(matches) > 0 {
+		m := matches[0]
+		reason := fmt.Sprintf("DLP match: %s (%s)", m.PatternName, m.Severity)
+		if m.Encoded != "" {
+			reason += " [" + m.Encoded + "]"
+		}
+		return Result{
+			Allowed: false,
+			Reason:  reason,
+			Scanner: ScannerDLP,
+			Score:   1.0,
+		}
+	}
+
 	// parsed.Path is already URL-decoded by Go's url.Parse.
 	// For query strings, iteratively decode to catch multi-layer encoding.
 	decodedQuery := IterativeDecode(parsed.RawQuery)

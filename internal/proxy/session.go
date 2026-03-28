@@ -4,6 +4,7 @@
 package proxy
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -535,19 +536,12 @@ func (sm *SessionManager) SessionExists(key string) bool {
 	return ok
 }
 
-// lookupSession returns the SessionState for a key, or nil if not found.
-// Uses a read lock for minimal contention.
-func (sm *SessionManager) lookupSession(key string) *SessionState {
-	sm.mu.RLock()
-	sess := sm.sessions[key]
-	sm.mu.RUnlock()
-	return sess
-}
-
 // ResetSession resets enforcement state for the given identity key.
 // Also clears IP-level burst state for the client IP and decrements
 // the adaptive gauge if the session was escalated.
-// Caller must clear CEE state BEFORE calling this (lock order).
+// Does NOT check session kind — caller is responsible for ensuring the key
+// belongs to a resettable session. Prefer ResetSessionIfResettable for the
+// admin API, which atomically checks kind + resets under a single lock.
 // Returns a snapshot of the previous state and whether the key was found.
 func (sm *SessionManager) ResetSession(key string) (prev SessionSnapshot, found bool) {
 	_, agent, ip := classifySessionKey(key)
@@ -586,6 +580,69 @@ func (sm *SessionManager) ResetSession(key string) (prev SessionSnapshot, found 
 		LastActivity:    time.Now(),
 	}
 	return prev, true
+}
+
+// ErrInvocationReset is returned when a caller attempts to reset an
+// invocation (MCP transport) session, which is ephemeral and not meaningful
+// to reset.
+var ErrInvocationReset = errors.New("cannot reset invocation session")
+
+// ResetSessionIfResettable atomically looks up a session, verifies it is an
+// identity session (not invocation), and resets it under a single sm.mu.Lock.
+// This eliminates the TOCTOU race where a session could be evicted or replaced
+// between a separate lookup and reset.
+//
+// Returns:
+//   - found=false, err=nil: session does not exist
+//   - found=true, err=ErrInvocationReset: session exists but is not resettable
+//   - found=true, err=nil: reset succeeded, prev contains the previous state
+func (sm *SessionManager) ResetSessionIfResettable(key string) (prev SessionSnapshot, found bool, err error) {
+	_, agent, ip := classifySessionKey(key)
+
+	sm.mu.Lock()
+	sess, ok := sm.sessions[key]
+	if !ok {
+		sm.mu.Unlock()
+		return SessionSnapshot{}, false, nil
+	}
+
+	// Check kind under sm.mu to prevent TOCTOU with eviction/replacement.
+	sess.mu.Lock()
+	kind := sess.kind
+	sess.mu.Unlock()
+
+	if kind != sessionKindIdentity {
+		sm.mu.Unlock()
+		return SessionSnapshot{Key: key, Kind: kind}, true, ErrInvocationReset
+	}
+
+	// Clear IP-level state (shared across all identities on this IP).
+	if ip != "" {
+		delete(sm.ipDomains, ip)
+		delete(sm.ipBurstCooldown, ip)
+	}
+
+	// Reset session in place while still holding sm.mu to prevent an
+	// eviction race between lock release and Reset.
+	prevScore, prevLevel := sess.Reset()
+	sm.mu.Unlock()
+
+	// Decrement adaptive gauge if session was escalated (lock-free prometheus op).
+	if prevLevel > 0 && sm.metrics != nil {
+		sm.metrics.SetAdaptiveSessionLevel(session.EscalationLabel(prevLevel), -1)
+	}
+
+	prev = SessionSnapshot{
+		Key:             key,
+		Agent:           agent,
+		ClientIP:        ip,
+		Kind:            sessionKindIdentity,
+		ThreatScore:     prevScore,
+		EscalationLevel: session.EscalationLabel(prevLevel),
+		BlockAll:        false,
+		LastActivity:    time.Now(),
+	}
+	return prev, true, nil
 }
 
 // cleanupLoop runs periodic cleanup of expired sessions.

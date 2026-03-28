@@ -180,9 +180,16 @@ func (h *SessionAPIHandler) HandleReset(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Reject invocation keys — use stored kind from session, not re-parsed.
-	sess := sm.lookupSession(key)
-	if sess != nil && !sess.IsResettable() {
+	// Atomic lookup + kind check + reset under a single lock.
+	// Eliminates the TOCTOU race where a session could be evicted or
+	// replaced between a separate lookupSession and ResetSession call.
+	prev, found, resetErr := sm.ResetSessionIfResettable(key)
+	if !found {
+		h.logSessionAdmin("reset_not_found", clientIP, key, "session not found", http.StatusNotFound)
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	if resetErr != nil {
 		h.logSessionAdmin("reset_rejected", clientIP, key, "invocation key", http.StatusBadRequest)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
@@ -192,17 +199,11 @@ func (h *SessionAPIHandler) HandleReset(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Check session exists before clearing CEE state. Without this, a reset
-	// for a nonexistent key would clear CEE state as a side effect.
-	if sess == nil {
-		h.logSessionAdmin("reset_not_found", clientIP, key, "session not found", http.StatusNotFound)
-		http.Error(w, "session not found", http.StatusNotFound)
-		return
-	}
-
 	_, agent, ip := classifySessionKey(key)
 
-	// Lock order: CEE first, then SessionManager, then SessionState.
+	// Clear CEE state AFTER the reset succeeds. This prevents clearing
+	// CEE state as a side effect when the session is not found or not
+	// resettable.
 	ceeCleared := false
 	if h.etPtr != nil && h.fbPtr != nil {
 		et := h.etPtr.Load()
@@ -211,14 +212,6 @@ func (h *SessionAPIHandler) HandleReset(w http.ResponseWriter, r *http.Request) 
 			ResetCEEState(agent, ip, et, fb)
 			ceeCleared = true
 		}
-	}
-
-	prev, found := sm.ResetSession(key)
-	if !found {
-		// Race: session was evicted between existence check and reset.
-		h.logSessionAdmin("reset_not_found", clientIP, key, "session evicted during reset", http.StatusNotFound)
-		http.Error(w, "session not found", http.StatusNotFound)
-		return
 	}
 
 	h.logSessionAdmin("reset_ok", clientIP, key, prev.EscalationLevel, http.StatusOK)

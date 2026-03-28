@@ -2768,3 +2768,77 @@ func TestTryRecoverSession(t *testing.T) {
 		}
 	})
 }
+
+// --- Pairwise split-secret and JSON unescape regression tests ---
+
+func TestScanRequest_SplitSecretPairwiseKeyOrder(t *testing.T) {
+	t.Parallel()
+	sc := testInputScanner(t)
+
+	// Secret split across 2 fields with key names that defeat alphabetical sort.
+	// "z_first" sorts AFTER "a_second", so sorted-key concat produces
+	// "api03-AAAAAAAAAA...sk-ant-" which is NOT the secret.
+	// Pairwise scanning should try both orderings and catch it.
+	prefix := testSecretPrefix
+	suffix := "api03-" + strings.Repeat("A", 25)
+	msg := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"fetch","arguments":{"z_first":%q,"a_second":%q}}}`, prefix, suffix)
+
+	verdict := ScanRequest([]byte(msg), sc, config.ActionBlock, config.ActionBlock)
+	if verdict.Clean {
+		t.Error("pairwise split secret should be detected even when key names defeat alphabetical sort")
+	}
+}
+
+func TestScanRequest_SplitSecret3FieldPairwise(t *testing.T) {
+	t.Parallel()
+	sc := testInputScanner(t)
+
+	// Secret split across 3 fields. The prefix+suffix pair should still be
+	// caught by pairwise scanning (the middle field is noise).
+	prefix := testSecretPrefix
+	suffix := "api03-" + strings.Repeat("D", 25)
+	msg := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"fetch","arguments":{"z_prefix":%q,"m_noise":"harmless data","a_suffix":%q}}}`, prefix, suffix)
+
+	verdict := ScanRequest([]byte(msg), sc, config.ActionBlock, config.ActionBlock)
+	if verdict.Clean {
+		t.Error("3-field split with prefix+suffix pair should be caught by pairwise scanning")
+	}
+}
+
+func TestScanRequest_JSONUnicodeEscapeDLP(t *testing.T) {
+	t.Parallel()
+	sc := testInputScanner(t)
+
+	// JSON \u escapes encoding "sk-ant-" as "\u0073\u006b\u002d\u0061\u006e\u0074\u002d"
+	// followed by enough chars to match the Anthropic key pattern.
+	// The parser differential: json.Unmarshal would decode \u escapes,
+	// but the raw text path sees literal backslash-u sequences.
+	escapedKey := `\u0073\u006b\u002d\u0061\u006e\u0074\u002d` + "api03-" + strings.Repeat("E", 25)
+	msg := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":{"key":"%s"}}`, escapedKey)
+
+	verdict := ScanRequest([]byte(msg), sc, config.ActionBlock, config.ActionBlock)
+	if verdict.Clean {
+		t.Error("JSON unicode-escaped secret should be detected in no-params raw path")
+	}
+}
+
+func TestUnescapeJSONUnicode(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"no escapes", "hello world", "hello world"},
+		{"simple escape", `\u0041\u0042\u0043`, "ABC"},
+		{"mixed", `prefix\u002dsuffix`, "prefix-suffix"},
+		{"invalid escape", `\u00zz`, `\u00zz`}, // invalid, returns original
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := unescapeJSONUnicode(tt.input)
+			if got != tt.want {
+				t.Errorf("unescapeJSONUnicode(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}

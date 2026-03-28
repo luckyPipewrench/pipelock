@@ -163,8 +163,15 @@ func ScanRequest(line []byte, sc *scanner.Scanner, action, onParseError string) 
 
 		// Fall back to scanning full raw JSON for DLP patterns that span
 		// across JSON structure (catches patterns split by JSON syntax).
+		// Also unescape JSON \uXXXX sequences so DLP patterns match
+		// secrets encoded with JSON unicode escapes (parser differential fix).
 		if dlpResult.Clean {
 			dlpResult = sc.ScanTextForDLP(context.Background(), raw)
+		}
+		if dlpResult.Clean {
+			if unescaped := unescapeJSONUnicode(raw); unescaped != raw {
+				dlpResult = sc.ScanTextForDLP(context.Background(), unescaped)
+			}
 		}
 
 		// Run injection patterns on the full raw text (injection patterns
@@ -257,7 +264,6 @@ func ScanRequest(line []byte, sc *scanner.Scanner, action, onParseError string) 
 		for _, s := range strs {
 			if r := sc.ScanTextForDLP(context.Background(), s); !r.Clean {
 				dlpResult = r
-				break
 			}
 		}
 	}
@@ -347,7 +353,6 @@ func scanRawBeforeForward(raw []byte, sc *scanner.Scanner, action string) InputV
 		for _, s := range strs {
 			if r := sc.ScanTextForDLP(context.Background(), s); !r.Clean {
 				dlpResult = r
-				break
 			}
 		}
 	}
@@ -944,6 +949,21 @@ func ForwardScannedInput(
 	}
 }
 
+// unescapeJSONUnicode resolves JSON \uXXXX escape sequences to their UTF-8
+// representation. This closes a parser differential where the JSON parser sees
+// the decoded character but the DLP regex sees the literal \uXXXX text.
+// Uses Go's JSON parser to handle all escape forms including surrogate pairs.
+func unescapeJSONUnicode(s string) string {
+	if !strings.Contains(s, `\u`) {
+		return s
+	}
+	var decoded string
+	if err := json.Unmarshal([]byte(`"`+s+`"`), &decoded); err != nil {
+		return s
+	}
+	return decoded
+}
+
 // isRPCNotification returns true if the JSON-RPC ID represents a notification.
 // A notification has no "id" field (nil/empty) or "id": null. The json.RawMessage
 // for null is non-nil with len=4, so len(id)==0 alone is insufficient.
@@ -956,11 +976,17 @@ func joinStrings(ss []string) string {
 	return strings.Join(ss, "\n")
 }
 
-// scanSplitSecret checks for secrets split across multiple JSON fields by
-// concatenating values without separators. Keys are excluded (via
-// jsonrpc.ExtractStringsFromJSON, not extract.AllStringsFromJSON) because interleaved
-// keys break DLP regex adjacency. Returns the original result if clean or if
-// concat adds no new information.
+// maxPairwiseSplitFields caps the number of field values considered for
+// pairwise split-secret scanning. O(n^2) pairs, but each DLP scan is fast.
+const maxPairwiseSplitFields = 32
+
+// scanSplitSecret checks for secrets split across multiple JSON fields.
+// Two strategies:
+//  1. Sorted-key concatenation (original): joins all values without separators.
+//  2. Pairwise concatenation: tries both orderings (a+b, b+a) for every pair
+//     of field values, catching splits where key names defeat alphabetical sort.
+//
+// Returns the original result if already dirty or if no new patterns found.
 func scanSplitSecret(raw json.RawMessage, joined string, sc *scanner.Scanner, result scanner.TextDLPResult) scanner.TextDLPResult {
 	if !result.Clean {
 		return result
@@ -969,9 +995,38 @@ func scanSplitSecret(raw json.RawMessage, joined string, sc *scanner.Scanner, re
 	if len(vals) <= 1 {
 		return result
 	}
+
+	// Strategy 1: sorted-key concatenation (catches N-field splits in sorted order).
 	concat := strings.Join(vals, "")
-	if concat == joined {
-		return result
+	if concat != joined {
+		if r := sc.ScanTextForDLP(context.Background(), concat); !r.Clean {
+			return r
+		}
 	}
-	return sc.ScanTextForDLP(context.Background(), concat)
+
+	// Strategy 2: pairwise concatenation (catches 2-field splits regardless of key order).
+	// Cap field count to prevent quadratic blowup on pathological inputs.
+	pairVals := vals
+	if len(pairVals) > maxPairwiseSplitFields {
+		pairVals = pairVals[:maxPairwiseSplitFields]
+	}
+	for i := 0; i < len(pairVals); i++ {
+		if len(pairVals[i]) == 0 {
+			continue
+		}
+		for j := i + 1; j < len(pairVals); j++ {
+			if len(pairVals[j]) == 0 {
+				continue
+			}
+			// Try both orderings: vals[i]+vals[j] and vals[j]+vals[i].
+			if r := sc.ScanTextForDLP(context.Background(), pairVals[i]+pairVals[j]); !r.Clean {
+				return r
+			}
+			if r := sc.ScanTextForDLP(context.Background(), pairVals[j]+pairVals[i]); !r.Clean {
+				return r
+			}
+		}
+	}
+
+	return result
 }

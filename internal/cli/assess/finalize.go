@@ -196,6 +196,10 @@ func runAssessFinalize(runDir string, opts assessFinalizeOpts) error {
 	// Step 4: determine tier and produce output.
 	artifacts := make(map[string]string)
 
+	// Set signed flag before rendering so the template can display the correct badge.
+	// This reflects intent (will sign), not state (has been signed) — signing happens after render.
+	assessment.Signed = opts.HasAssess && !opts.Unsigned
+
 	if opts.HasAssess {
 		// Paid path: full assessment.
 		if err := writeAssessmentJSON(filepath.Join(cleanDir, "assessment.json"), &assessment); err != nil {
@@ -255,6 +259,10 @@ func runAssessFinalize(runDir string, opts assessFinalizeOpts) error {
 
 		privKey, err := ks.LoadPrivateKey(agentName)
 		if err != nil {
+			// Signing failed: re-render artifacts with Signed=false so they
+			// don't claim to be signed when no signature file exists.
+			assessment.Signed = false
+			rewriteAssessmentArtifacts(cleanDir, &assessment, artifacts)
 			return cliutil.ExitCodeError(1, fmt.Errorf("loading key for agent %q: %w", agentName, err))
 		}
 
@@ -265,10 +273,16 @@ func runAssessFinalize(runDir string, opts assessFinalizeOpts) error {
 
 		sig, err := signing.SignFile(manifestPath, privKey)
 		if err != nil {
+			assessment.Signed = false
+			rewriteAssessmentArtifacts(cleanDir, &assessment, artifacts)
+			_ = writeManifest(manifestPath, &manifest) // update hashes after rewrite
 			return cliutil.ExitCodeError(1, fmt.Errorf("signing manifest: %w", err))
 		}
 		sigPath := manifestPath + signing.SigExtension
 		if err := signing.SaveSignature(sig, sigPath); err != nil {
+			assessment.Signed = false
+			rewriteAssessmentArtifacts(cleanDir, &assessment, artifacts)
+			_ = writeManifest(manifestPath, &manifest) // update hashes after rewrite
 			return cliutil.ExitCodeError(1, fmt.Errorf("saving signature: %w", err))
 		}
 	} else {
@@ -283,6 +297,10 @@ func runAssessFinalize(runDir string, opts assessFinalizeOpts) error {
 	if agentHint == "" {
 		agentHint = "<agent-name>"
 	}
+	htmlFilename := "summary.html"
+	if opts.HasAssess {
+		htmlFilename = "assessment.html"
+	}
 	verifyText := fmt.Sprintf(`Pipelock Assessment Verification
 ================================
 Run ID: %s
@@ -294,7 +312,10 @@ To verify this assessment:
 Manual verification:
   1. Check artifact hashes match manifest.json
   2. Verify manifest signature: pipelock verify manifest.json --agent %s
-`, manifest.RunID, now.Format(time.RFC3339), runDir, agentHint, agentHint)
+
+To export as PDF:
+  Open %s in a browser and print to PDF (Ctrl+P / Cmd+P).
+`, manifest.RunID, now.Format(time.RFC3339), runDir, agentHint, agentHint, htmlFilename)
 
 	if err := os.WriteFile(filepath.Join(cleanDir, "verify.txt"), []byte(verifyText), 0o600); err != nil {
 		return cliutil.ExitCodeError(2, fmt.Errorf("writing verify.txt: %w", err))
@@ -319,6 +340,33 @@ Manual verification:
 	}
 
 	return nil
+}
+
+// rewriteAssessmentArtifacts re-renders assessment JSON and HTML after a signing
+// failure so that on-disk artifacts don't claim to be signed. If re-render fails,
+// the stale artifacts are deleted to prevent Signed=true from persisting on disk
+// when no signature file exists (fail-closed).
+func rewriteAssessmentArtifacts(cleanDir string, a *Assessment, artifacts map[string]string) {
+	jsonPath := filepath.Join(cleanDir, "assessment.json")
+	htmlPath := filepath.Join(cleanDir, "assessment.html")
+
+	if err := writeAssessmentJSON(jsonPath, a); err != nil {
+		// Rewrite failed — delete stale artifact that claims Signed=true.
+		_ = os.Remove(filepath.Clean(jsonPath))
+		_ = os.Remove(filepath.Clean(htmlPath))
+		return
+	}
+	if err := writeAssessmentHTML(htmlPath, a); err != nil {
+		_ = os.Remove(filepath.Clean(jsonPath))
+		_ = os.Remove(filepath.Clean(htmlPath))
+		return
+	}
+	if h, err := hashFile(jsonPath); err == nil {
+		artifacts["assessment.json"] = h
+	}
+	if h, err := hashFile(htmlPath); err == nil {
+		artifacts["assessment.html"] = h
+	}
 }
 
 // readEvidenceSources reads JSONL evidence files from the run directory
@@ -492,12 +540,19 @@ func projectToSummary(a Assessment) Summary {
 		detectionPct = a.Sources.Simulate.Percentage
 	}
 
+	// CapReason from the effective cap reason (for the summary topline).
+	var capReason string
+	if a.GradeCap != "" && len(a.CapReasons) > 0 {
+		capReason = effectiveCapReason(a.GradeCap, a.CapReasons)
+	}
+
 	return Summary{
 		SchemaVersion: a.SchemaVersion,
 		Manifest:      a.Manifest,
 		OverallGrade:  a.OverallGrade,
 		OverallScore:  a.OverallScore,
 		GradeCap:      a.GradeCap,
+		CapReason:     capReason,
 		Sections:      sections,
 		TopFindings:   topFindings,
 		ServerCounts:  serverCounts,

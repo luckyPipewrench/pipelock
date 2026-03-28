@@ -5,6 +5,7 @@ package assess
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -870,5 +871,37 @@ func TestGenerateFindings_DiscoverHighRiskSeverity(t *testing.T) {
 	}
 	if findings[1].Severity != assessSevMedium {
 		t.Errorf("low-risk server severity = %q, want %q", findings[1].Severity, assessSevMedium)
+	}
+}
+
+func TestAuditRemediation(t *testing.T) {
+	const defaultRemediationSubstr = "Review the configuration section"
+
+	cases := []struct {
+		category string
+		wantSub  string
+	}{
+		{"Sandbox", "sandbox"},
+		{"DLP", "dlp"},
+		{"Response Scanning", "response_scanning"},
+		{"MCP Tool Scanning", "mcp_tool_scanning"},
+		{"MCP Tool Policy", "tool policy"},
+		{"MCP Input Scanning", "mcp_input_scanning"},
+		{"MCP Session Binding", "mcp_session_binding"},
+		{"Kill Switch", "kill switch"},
+		{"Enforcement", "strict mode"},
+		{"Domain Blocklist", "blocklist"},
+		{"Adaptive Enforcement", "adaptive_enforcement"},
+		{"Tool Chain Detection", "tool_chain_detection"},
+		{"Unknown Category", defaultRemediationSubstr},
+		{"", defaultRemediationSubstr},
+	}
+	for _, tc := range cases {
+		t.Run(tc.category, func(t *testing.T) {
+			got := auditRemediation(tc.category)
+			if !strings.Contains(strings.ToLower(got), strings.ToLower(tc.wantSub)) {
+				t.Errorf("auditRemediation(%q) = %q, want substring %q", tc.category, got, tc.wantSub)
+			}
+		})
 	}
 }

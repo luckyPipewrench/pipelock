@@ -109,6 +109,7 @@ type Assessment struct {
 	Findings      []Finding           `json:"findings"`
 	Sources       AssessSources       `json:"sources"`
 	Annexes       []Annex             `json:"annexes,omitempty"`
+	Signed        bool                `json:"signed"` // set by finalize before rendering
 }
 
 // Summary is the compact, human-readable assessment projection.
@@ -118,6 +119,7 @@ type Summary struct {
 	OverallGrade  string                `json:"overall_grade"`
 	OverallScore  int                   `json:"overall_score"`
 	GradeCap      string                `json:"grade_cap,omitempty"`
+	CapReason     string                `json:"cap_reason,omitempty"`
 	Sections      []AssessmentSection   `json:"sections"`
 	TopFindings   []SummaryFinding      `json:"top_findings"`
 	ServerCounts  AssessDiscoverSummary `json:"server_counts"`

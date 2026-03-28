@@ -104,6 +104,10 @@ var shellQuoteStripper = strings.NewReplacer("$'", "", `$"`, "", "'", "", `"`, "
 var policyPreNormalize = strings.NewReplacer(
 	"\u0443", "u", // Cyrillic у — used as 'u' in curl/sudo/su/run
 	"\u0423", "U", // Cyrillic У (uppercase)
+	"\u0432", "b", // Cyrillic в — used as 'b' in bash/base64
+	"\u0412", "B", // Cyrillic В (uppercase)
+	"\u043D", "n", // Cyrillic н — used as 'n' in node/npm/nc
+	"\u041D", "N", // Cyrillic Н (uppercase)
 )
 
 // Config holds compiled tool call policy rules for pre-execution checking.
@@ -308,7 +312,9 @@ func normalizeArgTokens(argStrings []string, normFn func(string) string) ([]stri
 
 // maxPairwiseTokens caps token count for O(n²) pairwise matching.
 // Prevents DoS from extremely long whitespace-heavy argument strings.
-const maxPairwiseTokens = 64
+// Set to 256 to cover realistic argument lists where command and flags
+// may be separated by many padding tokens in map-ordering evasion.
+const maxPairwiseTokens = 256
 
 // matchArgPattern checks if a regex pattern matches against any view of the
 // argument tokens. It uses three strategies:
@@ -533,7 +539,7 @@ func decodeShellEscapes(s string) string {
 // Iterates until no further changes occur, bounded to prevent infinite loops
 // on pathological input.
 func resolveShellConstruction(s string) string {
-	const maxIterations = 5
+	const maxIterations = 10
 	for range maxIterations {
 		prev := s
 		s = simpleCmdSubRe.ReplaceAllString(s, "$1")

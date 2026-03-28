@@ -250,6 +250,45 @@ func scanHTTPInput(msg []byte, logW io.Writer, sessionKey, auditSessionKey strin
 		}
 	}
 
+	// A2A request body scanning: field-aware analysis for A2A protocol methods.
+	// Runs after content scanning so both pipelines contribute findings.
+	// When the method is unknown (input scanning disabled, no policy/chain),
+	// extract it for A2A detection.
+	if opts.A2ACfg != nil && opts.A2ACfg.Enabled {
+		method := verdict.Method
+		if method == "" {
+			var env struct {
+				Method string `json:"method"`
+			}
+			if json.Unmarshal(msg, &env) == nil {
+				method = env.Method
+			}
+		}
+		if IsA2AMethod(method) {
+			a2aResult := ScanA2ARequestBody(context.Background(), msg, sc, opts.A2ACfg)
+			if !a2aResult.Clean {
+				a2aAction := a2aResult.Action
+				if a2aAction == "" {
+					a2aAction = opts.A2ACfg.Action
+				}
+				if a2aAction == config.ActionBlock {
+					_, _ = fmt.Fprintf(logW, "pipelock: a2a input: blocked (%s)\n", a2aResult.Reason)
+					recordAdaptiveSignal(session.SignalBlock)
+					return &BlockedRequest{
+						ID:             verdict.ID,
+						IsNotification: isRPCNotification(verdict.ID),
+						LogMessage:     "blocked (a2a input scanning)",
+						ErrorCode:      -32001,
+						ErrorMessage:   "pipelock: request blocked by A2A input scanning",
+					}
+				}
+				// warn mode: log and continue.
+				_, _ = fmt.Fprintf(logW, "pipelock: a2a input: warning (%s)\n", a2aResult.Reason)
+				recordAdaptiveSignal(session.SignalNearMiss)
+			}
+		}
+	}
+
 	// Policy check.
 	policyVerdict := policy.Verdict{}
 	if policyCfg != nil {
@@ -864,6 +903,28 @@ func RunHTTPListenerProxy(
 			}
 		}
 
+		// A2A-Extensions header scanning: each comma-separated URI is
+		// SSRF-scanned. A2A-Version is informational and passes through
+		// without scanning.
+		if baseOpts.A2ACfg != nil && baseOpts.A2ACfg.Enabled {
+			headerResult := ScanA2AHeaders(r.Context(), r.Header, sc, baseOpts.A2ACfg)
+			if !headerResult.Clean {
+				_, _ = fmt.Fprintf(safeLogW, "pipelock: a2a header blocked: %s\n", headerResult.Reason)
+				if reqRec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
+					recordSignalWithEscalation(reqRec, session.SignalBlock, adaptiveCfg.EscalationThreshold, safeLogW, auditLogger, m, auditSessionKey, "", "")
+				}
+				w.Header().Set("Content-Type", "application/json")
+				rpcID := extractRPCID(body)
+				resp, _ := json.Marshal(rpcError{
+					JSONRPC: jsonrpc.Version,
+					ID:      rpcID,
+					Error:   rpcErrorDetail{Code: -32001, Message: "pipelock: request blocked by A2A header scanning"},
+				})
+				_, _ = w.Write(resp)
+				return
+			}
+		}
+
 		// Input scanning: DLP, injection, policy, chain detection.
 		scanOpts := baseOpts
 		scanOpts.Rec = reqRec
@@ -898,6 +959,16 @@ func RunHTTPListenerProxy(
 		}
 		if sid := r.Header.Get("Mcp-Session-Id"); sid != "" {
 			upReq.Header.Set("Mcp-Session-Id", sid)
+		}
+
+		// Forward A2A service parameter headers to upstream.
+		// A2A-Extensions carries negotiated extension URIs (already scanned above).
+		// A2A-Version carries protocol version (informational, no scanning needed).
+		if ext := r.Header.Get("A2A-Extensions"); ext != "" {
+			upReq.Header.Set("A2A-Extensions", ext)
+		}
+		if ver := r.Header.Get("A2A-Version"); ver != "" {
+			upReq.Header.Set("A2A-Version", ver)
 		}
 
 		upResp, err := upstreamClient.Do(upReq)

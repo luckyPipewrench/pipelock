@@ -99,8 +99,16 @@ var shellQuoteStripper = strings.NewReplacer("$'", "", `$"`, "", "'", "", `"`, "
 // equivalent. The shared confusableMap maps Cyrillic у → 'y' (correct for injection
 // detection: "you are now"), but this creates a bypass for command matching:
 // c\u0443rl normalizes to "cyrl" instead of "curl", evading the Network Exfiltration
-// rule. This replacer runs BEFORE normalize.ForMatching in policy checking only,
-// so injection detection keeps the shared у→'y' mapping unaffected.
+// rule. This replacer runs BEFORE normalize.ForMatching in the policy-specific
+// normalization view only.
+//
+// IMPORTANT: Some mappings here conflict with the shared confusable map:
+//   - в → 'b' here vs в → 'v' in confusableMap (affects mv, vi, shred)
+//   - н → 'n' here vs н → 'h' in confusableMap (affects sh, shred)
+//
+// The policy matcher uses dual-view matching to handle this: it checks BOTH
+// the policy-normalized form (pre-normalizer + ForMatching) and the baseline
+// form (ForMatching only). A match on either view triggers the rule.
 var policyPreNormalize = strings.NewReplacer(
 	"\u0443", "u", // Cyrillic у — used as 'u' in curl/sudo/su/run
 	"\u0423", "U", // Cyrillic У (uppercase)
@@ -185,15 +193,15 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 		return Verdict{}
 	}
 
-	// Pre-normalize ambiguous confusables for policy matching before the
-	// shared Unicode normalization. This resolves Cyrillic у → 'u' for
-	// command tokens (curl, sudo) without affecting injection detection.
-	toolName = policyPreNormalize.Replace(toolName)
-
-	// Normalize tool name and arg strings to defeat zero-width/invisible
-	// character insertion (e.g. "r\u200bm" → "rm"), homoglyph attacks
-	// (Cyrillic/Greek lookalikes), and combining mark evasion.
-	toolName = normalize.ForMatching(toolName)
+	// Two tool-name normalization views catch both policy-specific and
+	// baseline confusable mappings. The policy pre-normalizer maps Cyrillic
+	// в→b and н→n (for bash/base64/node/npm/nc), but the shared confusable
+	// map maps в→v and н→h (for mv/shred/vi/sh). Running the pre-normalizer
+	// first permanently destroys the baseline mappings, so we check BOTH:
+	//  - policyToolName: policyPreNormalize then ForMatching (catches curl, sudo, bash, etc.)
+	//  - baselineToolName: ForMatching only (catches mv, vi, sh, etc.)
+	policyToolName := normalize.ForMatching(policyPreNormalize.Replace(toolName))
+	baselineToolName := normalize.ForMatching(toolName)
 
 	// Flatten multi-token values (e.g. "-r -f" → ["-r", "-f"]) so that
 	// flags split within a single field are treated as separate tokens.
@@ -210,18 +218,22 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 	//  9. Brace expansion resolve ({rm,-rf,/tmp} → rm -rf /tmp)
 	// 10. Shell expansion normalize (${IFS} → space)
 	//
-	// Two normalization passes handle different ZW-char insertion strategies:
-	//  - Primary: drop invisible chars (catches mid-word: "r\u200bm" → "rm")
-	//  - Secondary: replace invisible with space (catches separator: "rm\u200b-rf" → "rm -rf")
-	tokens, joined := normalizeArgTokens(argStrings, normalize.ForMatching)
-	altTokens, altJoined := normalizeArgTokens(argStrings, normalize.ForPolicy)
+	// Three normalization views catch different evasion strategies:
+	//  - Primary (policy): policyPreNormalize + drop invisible (catches curl, bash, node)
+	//  - Alt (policy): policyPreNormalize + invisible→space (catches ZW separators)
+	//  - Baseline: no pre-normalizer + drop invisible (catches mv, shred, vi, sh via в→v, н→h)
+	// A match on ANY view triggers the rule.
+	tokens, joined := normalizeArgTokens(argStrings, normalize.ForMatching, policyPreNormalize)
+	altTokens, altJoined := normalizeArgTokens(argStrings, normalize.ForPolicy, policyPreNormalize)
+	baseTokens, baseJoined := normalizeArgTokens(argStrings, normalize.ForMatching, nil)
 
 	var matchedRules []string
 	strictest := ""
 	redirectProfile := ""
 
 	for _, rule := range pc.Rules {
-		if !rule.ToolPattern.MatchString(toolName) {
+		// Check tool name against both normalization views.
+		if !rule.ToolPattern.MatchString(policyToolName) && !rule.ToolPattern.MatchString(baselineToolName) {
 			continue
 		}
 
@@ -246,16 +258,20 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 		// back to unscoped matching (safety net for future callers).
 		ruleTokens, ruleJoined := tokens, joined
 		ruleAltTokens, ruleAltJoined := altTokens, altJoined
+		ruleBaseTokens, ruleBaseJoined := baseTokens, baseJoined
 		if rule.ArgKey != nil {
 			if len(rawArgs) == 0 {
 				continue // cannot scope without raw JSON — skip rule
 			}
 			scopedStrings := jsonrpc.ExtractStringsForKeys(rawArgs, rule.ArgKey)
-			ruleTokens, ruleJoined = normalizeArgTokens(scopedStrings, normalize.ForMatching)
-			ruleAltTokens, ruleAltJoined = normalizeArgTokens(scopedStrings, normalize.ForPolicy)
+			ruleTokens, ruleJoined = normalizeArgTokens(scopedStrings, normalize.ForMatching, policyPreNormalize)
+			ruleAltTokens, ruleAltJoined = normalizeArgTokens(scopedStrings, normalize.ForPolicy, policyPreNormalize)
+			ruleBaseTokens, ruleBaseJoined = normalizeArgTokens(scopedStrings, normalize.ForMatching, nil)
 		}
 
-		if matchArgPattern(rule.ArgPattern, ruleTokens, ruleJoined) || matchArgPattern(rule.ArgPattern, ruleAltTokens, ruleAltJoined) {
+		if matchArgPattern(rule.ArgPattern, ruleTokens, ruleJoined) ||
+			matchArgPattern(rule.ArgPattern, ruleAltTokens, ruleAltJoined) ||
+			matchArgPattern(rule.ArgPattern, ruleBaseTokens, ruleBaseJoined) {
 			matchedRules = append(matchedRules, rule.Name)
 			action := rule.Action
 			if action == "" {
@@ -286,15 +302,19 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 	}
 }
 
-// normalizeArgTokens applies policyPreNormalize, a Unicode normalization
+// normalizeArgTokens applies an optional pre-normalizer, a Unicode normalization
 // function, shell escape decoding, and shell construction resolution to
 // each argument string, then splits into tokens. normFn selects the Unicode
 // normalization strategy (normalize.ForMatching drops invisible chars,
-// normalize.ForPolicy replaces them with spaces).
-func normalizeArgTokens(argStrings []string, normFn func(string) string) ([]string, string) {
+// normalize.ForPolicy replaces them with spaces). preNorm applies policy-specific
+// confusable remapping before Unicode normalization; pass nil to use only the
+// baseline confusable map from normalize.ForMatching.
+func normalizeArgTokens(argStrings []string, normFn func(string) string, preNorm *strings.Replacer) ([]string, string) {
 	var tokens []string
 	for _, s := range argStrings {
-		s = policyPreNormalize.Replace(s)
+		if preNorm != nil {
+			s = preNorm.Replace(s)
+		}
 		normalized := normFn(s)
 		normalized = decodeShellEscapes(normalized)
 		normalized = backtickCmdSubRe.ReplaceAllString(normalized, "$1")

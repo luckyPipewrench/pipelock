@@ -782,7 +782,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		// buffering only applies to text frames (DLP patterns match text).
 		if ceeCfg := ceeEffectiveConfig(r.cfg.CrossRequestDetection, r.cfg.EnforceEnabled()); ceeCfg.Enabled {
 			isText := frag.Opcode == ws.OpText || hdr.OpCode == ws.OpText
-			sessionKey := ceeSessionKey(r.agent, r.clientIP)
+			sessionKey := CeeSessionKey(r.agent, r.clientIP)
 
 			// Pass fragment buffer only for text frames; binary content
 			// doesn't match DLP text patterns.

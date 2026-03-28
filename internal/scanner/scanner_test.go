@@ -625,6 +625,40 @@ func TestNew_PanicsOnInvalidDLPRegex(t *testing.T) {
 	New(cfg)
 }
 
+func TestScanner_IsTrustedDomain(t *testing.T) {
+	cfg := testConfig()
+	cfg.Internal = []string{"127.0.0.0/8", "10.0.0.0/8"}
+	cfg.TrustedDomains = []string{"localhost", "*.internal.corp", "api.example.com"}
+	s := New(cfg)
+	defer s.Close()
+
+	tests := []struct {
+		name     string
+		hostname string
+		expected bool
+	}{
+		{"exact match localhost", "localhost", true},
+		{"exact match api.example.com", "api.example.com", true},
+		{"wildcard match sub.internal.corp", "sub.internal.corp", true},
+		{"wildcard match deeply.sub.internal.corp", "deeply.sub.internal.corp", true},
+		{"wildcard match internal.corp itself", "internal.corp", true},
+		{"no match example.com", "example.com", false},
+		{"no match notinternal.corp", "notinternal.corp", false},
+		{"IP not trusted", "192.168.1.1", false},
+		{"uppercase normalized", "LOCALHOST", true},
+		{"trailing dot stripped", "localhost.", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := s.IsTrustedDomain(tt.hostname)
+			if result != tt.expected {
+				t.Errorf("IsTrustedDomain(%q) = %v, want %v", tt.hostname, result, tt.expected)
+			}
+		})
+	}
+}
+
 func TestNew_PanicsOnInvalidCIDR(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = []string{"not-a-cidr"}

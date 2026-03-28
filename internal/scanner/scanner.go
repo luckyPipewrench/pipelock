@@ -373,6 +373,26 @@ func (s *Scanner) IsInternalIP(ip net.IP) bool {
 	return false
 }
 
+// IsTrustedDomain checks if a hostname matches any trusted domain pattern.
+// Trusted domains allow connections to internal IPs with advisory logging
+// instead of blocking. IP literals are always rejected — trusted domains
+// only match hostnames to prevent SSRF bypass via raw IP addresses.
+func (s *Scanner) IsTrustedDomain(hostname string) bool {
+	// Reject IP literals: trusted domains match hostnames only.
+	// Without this, an attacker could add a raw IP to trusted_domains
+	// and bypass SSRF protection entirely.
+	if net.ParseIP(hostname) != nil {
+		return false
+	}
+	hostname = strings.ToLower(strings.TrimSuffix(hostname, "."))
+	for _, pattern := range s.trustedDomains {
+		if MatchDomain(hostname, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
 // Close releases scanner resources, including stopping the rate limiter
 // cleanup goroutine. Safe to call multiple times.
 func (s *Scanner) Close() {
@@ -578,10 +598,8 @@ func (s *Scanner) checkSSRF(ctx context.Context, hostname string) Result {
 	// (DLP, blocklist, entropy) still apply — only the RFC1918 resolution
 	// check is skipped. This lets operators allowlist internal services
 	// (e.g., local inference servers) without disabling SSRF protection globally.
-	for _, pattern := range s.trustedDomains {
-		if MatchDomain(hostname, pattern) {
-			return Result{Allowed: true}
-		}
+	if s.IsTrustedDomain(hostname) {
+		return Result{Allowed: true}
 	}
 
 	for _, ipStr := range ips {

@@ -189,6 +189,13 @@ func (fb *FragmentBuffer) TotalBufferBytes() int {
 	return total
 }
 
+// Delete removes all fragment state for the given session key.
+func (fb *FragmentBuffer) Delete(key string) {
+	fb.mu.Lock()
+	defer fb.mu.Unlock()
+	delete(fb.sessions, key)
+}
+
 // Close stops the cleanup goroutine. Safe to call multiple times.
 func (fb *FragmentBuffer) Close() {
 	fb.closeOnce.Do(func() {

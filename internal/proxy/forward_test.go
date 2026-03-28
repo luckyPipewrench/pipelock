@@ -1781,7 +1781,7 @@ func TestConnectCEEEntropyNotFed(t *testing.T) {
 		t.Fatal("entropy tracker not initialized despite enabled config")
 	}
 
-	sessionKey := ceeSessionKey(agentAnonymous, adaptiveSessionKeyLoopback)
+	sessionKey := CeeSessionKey(agentAnonymous, adaptiveSessionKeyLoopback)
 	usageBefore := et.CurrentUsage(sessionKey)
 
 	// Send 10 CONNECT requests to the same host. If hostname were still
@@ -2690,5 +2690,98 @@ func TestResponseBundleRules(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestSSRFSafeDialContext_TrustedDomainBypassesSSRF verifies that trusted domains
+// allow connections to internal IPs instead of blocking with SSRF error.
+func TestSSRFSafeDialContext_TrustedDomainBypassesSSRF(t *testing.T) {
+	// Start a local listener on dual-stack loopback so the connection
+	// succeeds regardless of whether DNS returns ::1 or 127.0.0.1 first.
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(context.Background(), "tcp", ":0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	_, port, _ := net.SplitHostPort(ln.Addr().String())
+
+	cfg := config.Defaults()
+	cfg.Internal = []string{"127.0.0.0/8", "::1/128"}
+	cfg.TrustedDomains = []string{"localhost"}
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	defer p.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// localhost is in internal range but is trusted — dial should succeed.
+	conn, err := p.ssrfSafeDialContext(ctx, "tcp", "localhost:"+port)
+	if err != nil {
+		t.Fatalf("expected trusted localhost to bypass SSRF and connect, got: %v", err)
+	}
+	_ = conn.Close()
+}
+
+// TestSSRFSafeDialContext_TrustedDomainStillBlockedWhenNotTrusted verifies that
+// a hostname not in trusted_domains is still blocked when it resolves to internal IP.
+func TestSSRFSafeDialContext_TrustedDomainStillBlockedWhenNotTrusted(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = []string{"127.0.0.0/8"}
+	cfg.TrustedDomains = []string{"example.com"}
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	defer p.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// localhost is NOT trusted — should be blocked
+	_, err = p.ssrfSafeDialContext(ctx, "tcp", "localhost:443")
+	if err == nil {
+		t.Fatal("expected SSRF block for non-trusted localhost")
+	}
+	if !strings.Contains(err.Error(), "SSRF blocked") {
+		t.Errorf("expected SSRF blocked error, got: %v", err)
+	}
+}
+
+// TestSSRFSafeDialContext_DirectIPWithTrustedDomain verifies that raw IP addresses
+// are always SSRF-blocked even when trusted domains are configured. IsTrustedDomain
+// rejects IP literals, so a raw IP like 127.0.0.1 must still be blocked.
+func TestSSRFSafeDialContext_DirectIPWithTrustedDomain(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = []string{"127.0.0.0/8"}
+	cfg.TrustedDomains = []string{"localhost"}
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	defer p.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// Raw IP 127.0.0.1 should STILL be blocked — trusted domains only match hostnames.
+	_, err = p.ssrfSafeDialContext(ctx, "tcp", "127.0.0.1:443")
+	if err == nil {
+		t.Fatal("expected SSRF block for raw IP even with trusted domains configured")
+	}
+	if !strings.Contains(err.Error(), "SSRF blocked") {
+		t.Errorf("expected SSRF blocked error, got: %v", err)
 	}
 }

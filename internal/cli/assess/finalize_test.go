@@ -738,6 +738,45 @@ func TestAssessFinalize_VerifyTxtContent(t *testing.T) {
 	}
 }
 
+func TestAssessFinalize_VerifyTxtFilename(t *testing.T) {
+	t.Run("free tier references summary.html", func(t *testing.T) {
+		runDir := setupCompletedRun(t)
+		if err := runAssessFinalize(runDir, assessFinalizeOpts{HasAssess: false}); err != nil {
+			t.Fatalf("runAssessFinalize free: %v", err)
+		}
+		data, err := os.ReadFile(filepath.Clean(filepath.Join(runDir, "verify.txt")))
+		if err != nil {
+			t.Fatalf("reading verify.txt: %v", err)
+		}
+		if !strings.Contains(string(data), "summary.html") {
+			t.Error("free-tier verify.txt should reference summary.html")
+		}
+		if strings.Contains(string(data), "assessment.html") {
+			t.Error("free-tier verify.txt should not reference assessment.html")
+		}
+	})
+
+	t.Run("paid tier references assessment.html", func(t *testing.T) {
+		runDir := setupCompletedRun(t)
+		keystoreDir, agentName := generateTestKeys(t)
+		opts := assessFinalizeOpts{
+			HasAssess:   true,
+			Agent:       agentName,
+			KeystoreDir: keystoreDir,
+		}
+		if err := runAssessFinalize(runDir, opts); err != nil {
+			t.Fatalf("runAssessFinalize paid: %v", err)
+		}
+		data, err := os.ReadFile(filepath.Clean(filepath.Join(runDir, "verify.txt")))
+		if err != nil {
+			t.Fatalf("reading verify.txt: %v", err)
+		}
+		if !strings.Contains(string(data), "assessment.html") {
+			t.Error("paid-tier verify.txt should reference assessment.html")
+		}
+	})
+}
+
 func TestAssessFinalize_HTMLFilesCreated(t *testing.T) {
 	t.Run("licensed produces assessment.html", func(t *testing.T) {
 		runDir := setupCompletedRun(t)
@@ -971,5 +1010,133 @@ func TestAssessFinalize_CreateTarGz(t *testing.T) {
 	// Should contain source dir, sub dir, and two files.
 	if len(names) < 3 {
 		t.Errorf("archive has %d entries, want at least 3: %v", len(names), names)
+	}
+}
+
+func TestRewriteAssessmentArtifacts_Success(t *testing.T) {
+	dir := t.TempDir()
+
+	// Write initial artifacts with Signed=true.
+	a := minimalAssessment(assessGradeB, 85)
+	a.Signed = true
+	if err := writeAssessmentJSON(filepath.Join(dir, "assessment.json"), a); err != nil {
+		t.Fatalf("initial write JSON: %v", err)
+	}
+	if err := writeAssessmentHTML(filepath.Join(dir, "assessment.html"), a); err != nil {
+		t.Fatalf("initial write HTML: %v", err)
+	}
+
+	// Rewrite with Signed=false.
+	a.Signed = false
+	artifacts := make(map[string]string)
+	rewriteAssessmentArtifacts(dir, a, artifacts)
+
+	// Verify JSON has Signed=false.
+	data, err := os.ReadFile(filepath.Clean(filepath.Join(dir, "assessment.json")))
+	if err != nil {
+		t.Fatalf("reading rewritten JSON: %v", err)
+	}
+	if strings.Contains(string(data), `"signed": true`) {
+		t.Error("rewritten assessment.json should have signed=false")
+	}
+
+	// Verify hashes were updated.
+	if _, ok := artifacts["assessment.json"]; !ok {
+		t.Error("artifacts should contain assessment.json hash")
+	}
+	if _, ok := artifacts["assessment.html"]; !ok {
+		t.Error("artifacts should contain assessment.html hash")
+	}
+}
+
+func TestRewriteAssessmentArtifacts_DeletesOnFailure(t *testing.T) {
+	// Use a subdirectory that we can make read-only without affecting
+	// t.TempDir() cleanup. The key insight: we need the parent writable
+	// (for Remove) but the subdir read-only (to fail the write).
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "run")
+	if err := os.Mkdir(dir, 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	// Write initial artifacts.
+	a := minimalAssessment(assessGradeB, 85)
+	a.Signed = true
+	jsonPath := filepath.Join(dir, "assessment.json")
+	htmlPath := filepath.Join(dir, "assessment.html")
+	if err := writeAssessmentJSON(jsonPath, a); err != nil {
+		t.Fatalf("initial write JSON: %v", err)
+	}
+	if err := writeAssessmentHTML(htmlPath, a); err != nil {
+		t.Fatalf("initial write HTML: %v", err)
+	}
+
+	// Remove write permission on the JSON file so OpenFile truncate fails,
+	// but leave dir writable so Remove succeeds.
+	if err := os.Chmod(jsonPath, 0o400); err != nil {
+		t.Fatalf("chmod json: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(jsonPath, 0o600) })
+
+	a.Signed = false
+	artifacts := make(map[string]string)
+	rewriteAssessmentArtifacts(dir, a, artifacts)
+
+	// Stale artifacts should be deleted since rewrite failed.
+	if _, err := os.Stat(jsonPath); !os.IsNotExist(err) {
+		t.Error("assessment.json should be deleted after failed rewrite")
+	}
+	if _, err := os.Stat(htmlPath); !os.IsNotExist(err) {
+		t.Error("assessment.html should be deleted after failed rewrite")
+	}
+}
+
+func TestAssessFinalize_SigningFailure_ClearsSignedFlag(t *testing.T) {
+	runDir := setupCompletedRun(t)
+
+	// Use a nonexistent keystore so signing fails at key load.
+	opts := assessFinalizeOpts{
+		HasAssess:   true,
+		Agent:       "nonexistent-agent",
+		KeystoreDir: filepath.Join(t.TempDir(), "no-such-keystore"),
+	}
+
+	err := runAssessFinalize(runDir, opts)
+	if err == nil {
+		t.Fatal("expected signing failure")
+	}
+	if !strings.Contains(err.Error(), "loading key") {
+		t.Errorf("expected key loading error, got: %v", err)
+	}
+
+	// If assessment.json exists, it should have signed=false.
+	jsonPath := filepath.Join(runDir, "assessment.json")
+	if data, readErr := os.ReadFile(filepath.Clean(jsonPath)); readErr == nil {
+		if strings.Contains(string(data), `"signed": true`) {
+			t.Error("assessment.json should have signed=false after signing failure")
+		}
+	}
+	// (If the file was deleted by fail-closed, that's also acceptable.)
+}
+
+func TestProjectToSummary_CapReason(t *testing.T) {
+	a := minimalAssessment(assessGradeD, 85)
+	a.GradeCap = assessGradeD
+	a.CapReasons = []CapReason{
+		{Cap: assessGradeC, Reason: "unprotected server", Source: sourceDiscover},
+		{Cap: assessGradeD, Reason: "0% detection in DLP", Source: sourceSimulate},
+	}
+
+	summary := projectToSummary(*a)
+	if summary.CapReason != "0% detection in DLP" {
+		t.Errorf("summary.CapReason = %q, want effective D reason", summary.CapReason)
+	}
+}
+
+func TestProjectToSummary_NoCapReason(t *testing.T) {
+	a := minimalAssessment(assessGradeA, 95)
+	summary := projectToSummary(*a)
+	if summary.CapReason != "" {
+		t.Errorf("summary.CapReason should be empty when no cap, got %q", summary.CapReason)
 	}
 }

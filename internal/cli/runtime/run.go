@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"os/signal"
 	"slices"
 	"syscall"
@@ -469,6 +470,25 @@ Examples:
 				apiMux.HandleFunc("/api/v1/killswitch", ksAPI.HandleToggle)
 				apiMux.HandleFunc("/api/v1/killswitch/status", ksAPI.HandleStatus)
 
+				// Session admin API on the dedicated port. Resolves the API
+				// token using the same env-var override as the kill switch.
+				apiToken := cfg.KillSwitch.APIToken
+				if envToken := os.Getenv(killswitch.EnvAPIToken); envToken != "" {
+					apiToken = envToken
+				}
+				if apiToken != "" {
+					sessionAPI := proxy.NewSessionAPIHandler(
+						p.SessionMgrPtr(),
+						p.EntropyTrackerPtr(),
+						p.FragmentBufferPtr(),
+						m,
+						logger,
+						apiToken,
+					)
+					apiMux.HandleFunc("/api/v1/sessions", sessionAPI.HandleList)
+					apiMux.HandleFunc("/api/v1/sessions/", sessionAPI.HandleReset)
+				}
+
 				apiLn, lnErr := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.KillSwitch.APIListen)
 				if lnErr != nil {
 					err := fmt.Errorf("kill switch API bind %s: %w", cfg.KillSwitch.APIListen, lnErr)
@@ -701,7 +721,7 @@ Examples:
 
 				mcpErr = make(chan error, 1)
 				go func() {
-					mcpErr <- mcp.RunHTTPListenerProxy(ctx, mcpLn, mcpUpstream, cmd.ErrOrStderr(), sc, mcpApprover, inputCfg, toolCfg, policyCfg, ks, mcpChainMatcher, logger, mcpCEE, mcpStore, mcpAdaptiveFn, m)
+					mcpErr <- mcp.RunHTTPListenerProxy(ctx, mcpLn, mcpUpstream, cmd.ErrOrStderr(), sc, mcpApprover, inputCfg, toolCfg, policyCfg, ks, mcpChainMatcher, logger, mcpCEE, mcpStore, mcpAdaptiveFn, m, buildRedirectRT(cfg))
 				}()
 			}
 

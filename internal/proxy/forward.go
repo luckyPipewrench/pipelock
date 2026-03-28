@@ -123,7 +123,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// Scan through all layers (URL pipeline).
 	result := sc.Scan(r.Context(), syntheticURL)
 
-	connectSessionKey := ceeSessionKey(agent, clientIP)
+	connectSessionKey := CeeSessionKey(agent, clientIP)
 	var connectRec session.Recorder
 	if sm := p.sessionMgrPtr.Load(); sm != nil {
 		connectRec = sm.GetOrCreate(connectSessionKey)
@@ -243,7 +243,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// to block_all, permanently locking out legitimate agents.
 	// DLP, SSRF, and per-request entropy checks still run on the hostname.
 	if ceeCfg := ceeEffectiveConfig(cfg.CrossRequestDetection, cfg.EnforceEnabled()); ceeCfg.Enabled {
-		sessionKey := ceeSessionKey(agent, clientIP)
+		sessionKey := CeeSessionKey(agent, clientIP)
 		if et := p.entropyTrackerPtr.Load(); et != nil && ceeCfg.EntropyBudget.Enabled {
 			// Skip: CONNECT hostname is NOT recorded to entropy budget.
 			// Only query values, request bodies, and MCP args contribute.
@@ -535,7 +535,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// offset by an early clean decay from the URL stage.
 	sr := p.recordSessionActivity(clientIP, agent, r.URL.Hostname(), requestID, result, cfg, p.logger, true)
 
-	forwardSessionKey := ceeSessionKey(agent, clientIP)
+	forwardSessionKey := CeeSessionKey(agent, clientIP)
 	var forwardRec session.Recorder
 	if sm := p.sessionMgrPtr.Load(); sm != nil {
 		forwardRec = sm.GetOrCreate(forwardSessionKey)
@@ -746,7 +746,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// URL path, query params, and request body as outbound data.
 	ceeCfg := ceeEffectiveConfig(cfg.CrossRequestDetection, cfg.EnforceEnabled())
 	if ceeCfg.Enabled {
-		sessionKey := ceeSessionKey(agent, clientIP)
+		sessionKey := CeeSessionKey(agent, clientIP)
 		outbound := extractOutboundPayload(r)
 		keys := queryParamKeys(r.URL)
 

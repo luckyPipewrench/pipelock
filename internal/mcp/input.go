@@ -849,7 +849,7 @@ func ForwardScannedInput(
 			if len(policyVerdict.Rules) > 0 {
 				policyRuleName = policyVerdict.Rules[0]
 			}
-			result := executeRedirect(profile, policyVerdict.RedirectProfile, verdict.ID, toolArgs, policyRuleName)
+			result := executeRedirect(profile, policyVerdict.RedirectProfile, verdict.ID, toolArgs, policyRuleName, opts.RedirectRT)
 			// Determine final outcome before audit logging so the event
 			// reflects the actual result delivered to the client.
 			finalResult := "blocked"

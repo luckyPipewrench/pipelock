@@ -353,6 +353,40 @@ func TestEntropyTrackerSessionCapLRU(t *testing.T) {
 	}
 }
 
+func TestEntropyTracker_Delete(t *testing.T) {
+	et := NewEntropyTracker(1000, 60)
+	defer et.Close()
+
+	// Record some entropy for two sessions.
+	et.Record("session-a", []byte("high-entropy-payload-abcdefghijklmnop"))
+	et.Record("session-b", []byte("other-payload-xyz"))
+
+	usageBefore := et.CurrentUsage("session-a")
+	if usageBefore == 0 {
+		t.Fatal("expected non-zero usage for session-a before delete")
+	}
+
+	et.Delete("session-a")
+
+	// session-a should be gone — usage should be 0.
+	if et.CurrentUsage("session-a") != 0 {
+		t.Error("deleted session should have zero usage")
+	}
+
+	// session-b should be unaffected.
+	if et.CurrentUsage("session-b") == 0 {
+		t.Error("session-b should still have usage after deleting session-a")
+	}
+}
+
+func TestEntropyTracker_Delete_NonExistent(t *testing.T) {
+	et := NewEntropyTracker(1000, 60)
+	defer et.Close()
+
+	// Should not panic on missing key.
+	et.Delete("no-such-session")
+}
+
 func TestEntropyTrackerInlinePruning(t *testing.T) {
 	// Use a 1-second window so entries expire between Record calls.
 	et := NewEntropyTracker(testDefaultBudget, 1)

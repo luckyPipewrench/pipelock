@@ -141,6 +141,13 @@ func (et *EntropyTracker) Budget() float64 {
 	return et.budget
 }
 
+// Delete removes all entropy tracking state for the given session key.
+func (et *EntropyTracker) Delete(key string) {
+	et.mu.Lock()
+	defer et.mu.Unlock()
+	delete(et.sessions, key)
+}
+
 // Close stops the cleanup goroutine. Safe to call multiple times.
 func (et *EntropyTracker) Close() {
 	et.closeOnce.Do(func() { close(et.stopCleanup) })

@@ -472,7 +472,7 @@ func newInterceptHandler(
 				ceeSM = p.sessionMgrPtr.Load()
 			}
 
-			sessionKey := ceeSessionKey(agent, clientIP)
+			sessionKey := CeeSessionKey(agent, clientIP)
 			outbound := extractOutboundPayload(r)
 			keys := queryParamKeys(r.URL)
 

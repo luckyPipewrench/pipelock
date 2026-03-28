@@ -17,9 +17,9 @@
             --bg-hover: rgba(255, 255, 255, 0.07);
             --bg-header: rgba(255, 255, 255, 0.06);
             --border: rgba(255, 255, 255, 0.08);
-            --text-primary: #e2e8f0;
-            --text-secondary: #e2e8f0;
-            --text-muted: #94a3b8;
+            --text-primary: #eaeaf0;
+            --text-secondary: #c8c8d8;
+            --text-muted: #a0a0b4;
             --text-dim: #64748b;
             --color-green: #22c55e;
             --color-blue: #3b82f6;
@@ -35,6 +35,7 @@
             background: var(--bg-primary);
             color: var(--text-secondary);
             font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+            font-size: 17px;
             line-height: 1.7;
             padding: 2rem;
             margin: 0;
@@ -61,35 +62,36 @@
         }
 
         .brand svg {
-            width: 36px;
-            height: 36px;
+            width: 40px;
+            height: 40px;
             flex-shrink: 0;
         }
 
         h1 {
-            font-size: 1.5rem;
+            font-size: 1.75rem;
             font-weight: 600;
             color: var(--text-primary);
         }
 
         h2 {
-            font-size: 1rem;
-            font-weight: 600;
+            font-size: 1.375rem;
+            font-weight: 700;
+            letter-spacing: 0.01em;
             color: var(--text-primary);
-            margin-bottom: 0.75rem;
+            margin: 2.5rem 0 1rem;
             padding-bottom: 0.5rem;
-            border-bottom: 1px solid var(--border);
+            border-bottom: 2px solid var(--border);
         }
 
         section {
-            margin-bottom: 1.75rem;
+            margin-bottom: 2rem;
         }
 
         .grade-badge {
             display: inline-block;
-            padding: 0.4rem 1.25rem;
+            padding: 0.5rem 1.5rem;
             border-radius: 9999px;
-            font-size: 1.125rem;
+            font-size: 1.25rem;
             font-weight: 700;
             letter-spacing: 0.08em;
             color: #fff;
@@ -106,14 +108,20 @@
         }
 
         .informational-banner {
-            background: rgba(107, 114, 128, 0.12);
-            border: 1px solid rgba(107, 114, 128, 0.3);
+            background: rgba(234, 179, 8, 0.12);
+            border: 2px solid var(--color-yellow);
             border-radius: 0.5rem;
-            padding: 0.625rem 1rem;
+            padding: 1rem 1.25rem;
             margin-bottom: 1.5rem;
-            font-size: 0.8125rem;
-            color: var(--text-dim);
+            font-size: 0.9375rem;
+            color: var(--color-yellow);
             text-align: center;
+        }
+
+        .informational-banner strong {
+            display: block;
+            margin-bottom: 0.25rem;
+            font-size: 1.0625rem;
         }
 
         table {
@@ -221,12 +229,34 @@
             font-size: 0.875rem;
         }
 
+        .upgrade-cta {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-left: 4px solid var(--color-accent);
+            border-radius: var(--radius);
+            padding: 1.25rem 1.5rem;
+            font-size: 0.875rem;
+            color: var(--text-muted);
+            line-height: 1.6;
+        }
+
+        .upgrade-cta a {
+            color: var(--color-accent);
+            text-decoration: none;
+            font-weight: 600;
+        }
+
+        .upgrade-cta a:hover {
+            text-decoration: underline;
+        }
+
         footer {
+            margin-top: 3rem;
+            padding: 1.5rem 0;
+            border-top: 2px solid var(--border);
             text-align: center;
-            padding-top: 1.5rem;
-            border-top: 1px solid var(--border);
-            font-size: 0.75rem;
-            color: var(--text-dim);
+            font-size: 0.875rem;
+            color: var(--text-muted);
         }
 
         footer a {
@@ -255,9 +285,66 @@
         }
 
         @media print {
-            body { background: #fff; color: #1e293b; padding: 0.5rem; }
-            table { background: #f8fafc; border-color: #e2e8f0; }
-            h1, h2 { color: #0f172a; }
+            * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+            body {
+                background: #fff !important;
+                color: #1e293b !important;
+                padding: 0.5in !important;
+                font-size: 11pt !important;
+            }
+            .container { max-width: 100%; }
+
+            /* Override dark theme colors for print */
+            h1, h2 { color: #0f172a !important; }
+            .grade-badge { color: #fff !important; }
+            .severity-badge { color: #fff !important; }
+
+            /* Tables */
+            table { background: #f8fafc !important; border-color: #e2e8f0 !important; }
+            th { background: #f1f5f9 !important; color: #475569 !important; }
+            td { border-color: #e2e8f0 !important; color: #334155 !important; }
+            tr:hover { background: transparent !important; }
+
+            /* Banner */
+            .informational-banner {
+                background: #fef9c3 !important;
+                border-color: #ca8a04 !important;
+                color: #854d0e !important;
+            }
+            .informational-banner strong { color: #854d0e !important; }
+
+            /* Score bars */
+            .score-bar-bg { background: #e2e8f0 !important; }
+
+            /* Stat cards */
+            .stat-card {
+                background: #f8fafc !important;
+                border-color: #e2e8f0 !important;
+            }
+            .stat-value { color: #0f172a !important; }
+            .stat-label { color: #475569 !important; }
+
+            /* Upgrade CTA */
+            .upgrade-cta {
+                background: #f8fafc !important;
+                border-color: #e2e8f0 !important;
+            }
+            .upgrade-cta a { color: #0284c7 !important; }
+
+            /* Footer */
+            footer { color: #64748b !important; border-color: #e2e8f0 !important; }
+            footer a { color: #0284c7 !important; }
+
+            /* Meta text */
+            .meta, [style*="color: var(--text-dim)"], [style*="color: var(--text-muted)"] {
+                color: #64748b !important;
+            }
+
+            /* Page breaks */
+            section { page-break-inside: avoid; }
+            table { page-break-inside: auto; }
+            tr { page-break-inside: avoid; }
+            h2 { page-break-after: avoid; }
         }
     </style>
 </head>
@@ -276,20 +363,25 @@
                 </svg>
                 <h1>Pipelock Security Summary</h1>
             </div>
-            <div class="grade-badge" style="background: {{gradeColor .OverallGrade}};">Grade: {{.OverallGrade}} ({{.OverallScore}}/100)</div>
+            <div class="grade-badge" style="background: {{gradeColor .OverallGrade}}; font-size: 2rem; padding: 0.75rem 2.5rem;">{{.OverallGrade}}</div>
+            <div style="font-size: 1.1875rem; color: var(--text-primary); margin: 1rem auto; padding: 0.25rem 1rem; font-weight: 500; max-width: 48rem; line-height: 1.6;">
+                {{summaryTopline .}}
+            </div>
             <div class="meta">
                 Run ID: {{.Manifest.RunID}}
                 {{if .Manifest.FinalizedAt}}<span>|</span> {{.Manifest.FinalizedAt.UTC.Format "2006-01-02 15:04:05 UTC"}}{{end}}
+                <span>|</span> v{{.Manifest.Version}}
             </div>
         </header>
 
         <div class="informational-banner">
-            &#9432; Informational only. Unsigned. Not audit-grade. Upgrade to assess tier for the full signed report.
+            <strong>&#9432; Informational Only</strong>
+            Unsigned. Not audit-grade. Upgrade to the assess tier for the full signed report with server-specific findings and fix guidance.
         </div>
 
-        <!-- Sections Table (scores only, no detail) -->
+        <!-- Assessment Sections (scores only, no detail) -->
         <section>
-            <h2>Section Scores</h2>
+            <h2>Assessment Sections</h2>
             <table>
                 <thead>
                     <tr>
@@ -327,7 +419,7 @@
             </table>
         </section>
 
-        <!-- Server Counts -->
+        <!-- MCP Server Coverage (counts only, no names) -->
         <section>
             <h2>MCP Server Coverage</h2>
             <div class="stats-grid">
@@ -350,12 +442,12 @@
             </div>
         </section>
 
-        <!-- Detection Coverage -->
+        <!-- Detection Coverage (single percentage) -->
         <section>
             <h2>Detection Coverage</h2>
             <div class="stats-grid" style="grid-template-columns: 1fr;">
                 <div class="stat-card">
-                    <div class="stat-value">{{.DetectionPct}}%</div>
+                    <div class="stat-value" style="color: {{gradeColor (gradeFromScore .DetectionPct)}};">{{.DetectionPct}}%</div>
                     <div class="stat-label">Attack scenarios detected</div>
                 </div>
             </div>
@@ -390,6 +482,14 @@
             {{end}}
         </section>
 
+        <!-- Upgrade CTA -->
+        <section>
+            <div class="upgrade-cta">
+                Get the full assessment with server-specific findings, actionable fix guidance, and signed verification.
+                <a href="https://pipelab.org/pipelock">Learn more at pipelab.org/pipelock</a>
+            </div>
+        </section>
+
         <footer>
             <span class="footer-brand">
                 <svg viewBox="0 0 400 360" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -402,7 +502,10 @@
                 Generated by <a href="https://pipelab.org/pipelock">pipelock</a> v{{.Manifest.Version}}
             </span>
             <br>
-            <span style="margin-top: 0.25rem; display: inline-block;">Informational only. Unsigned. Not audit-grade.</span>
+            <span style="margin-top: 0.375rem; display: inline-block; font-size: 0.75rem; color: var(--text-dim);">Unsigned. Informational only. Not audit-grade.</span>
+            <div style="margin-top: 0.375rem; font-size: 0.75rem; color: var(--text-dim);">
+                Print this page to PDF for a portable copy (Ctrl+P / Cmd+P).
+            </div>
         </footer>
     </div>
 </body>

@@ -20,14 +20,28 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
-// ceeSessionKey builds a consistent session identity for cross-request
-// exfiltration detection. When an agent name is available, the key is
-// "agent|clientIP". Otherwise, just the client IP.
-func ceeSessionKey(agent, clientIP string) string {
+// CeeSessionKey builds a consistent session identity for cross-request
+// exfiltration detection. Exported for use by the session reset admin API.
+func CeeSessionKey(agent, clientIP string) string {
 	if agent != "" && agent != agentAnonymous {
 		return agent + "|" + clientIP
 	}
 	return clientIP
+}
+
+// ResetCEEState clears entropy and fragment state for a session identity.
+// Entropy tracker: clears CeeSessionKey(agent, ip) (base key only).
+// Fragment buffer: clears both CeeSessionKey(agent, ip) and CeeSessionKey(agent, ip)+"|keys".
+// Safe to call with nil trackers (CEE disabled).
+func ResetCEEState(agent, clientIP string, et *scanner.EntropyTracker, fb *scanner.FragmentBuffer) {
+	key := CeeSessionKey(agent, clientIP)
+	if et != nil {
+		et.Delete(key)
+	}
+	if fb != nil {
+		fb.Delete(key)
+		fb.Delete(key + "|keys")
+	}
 }
 
 // maxCEEBodyRead limits the body bytes read for CEE payload extraction.
@@ -229,7 +243,7 @@ type ceeResult struct {
 //     parameter names (e.g. ?AKIA=1 then ?IOSFODNN7EXAMPLE=2)
 //
 // Parameters:
-//   - sessionKey: the session identity from ceeSessionKey()
+//   - sessionKey: the session identity from CeeSessionKey()
 //   - outbound: payload bytes (query values + bare tokens + body)
 //   - keyPayload: query parameter keys only (nil for WebSocket/MCP)
 //   - targetURL: the destination URL (for audit logging)

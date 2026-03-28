@@ -322,7 +322,7 @@ func TestCEEIntegration_SessionIsolation(t *testing.T) {
 	// Send first half from client A (10.0.0.1) as bare query token.
 	targetURL1 := target.URL + "?" + firstHalf
 	req1 := httptest.NewRequest(http.MethodGet, "/fetch?url="+url.QueryEscape(targetURL1), nil)
-	req1.RemoteAddr = "10.0.0.1:12345"
+	req1.RemoteAddr = testRemoteAddr3
 	w1 := httptest.NewRecorder()
 	handler.ServeHTTP(w1, req1)
 

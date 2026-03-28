@@ -1170,7 +1170,7 @@ func TestForwardHTTP_HeaderDLP_GaugeDecrementFromNonZeroLevel(t *testing.T) {
 	defer p.Close()
 
 	sm := p.sessionMgrPtr.Load()
-	// forwardRec uses ceeSessionKey(agent, clientIP) = "192.0.2.1" for anonymous.
+	// forwardRec uses CeeSessionKey(agent, clientIP) = "192.0.2.1" for anonymous.
 	rec := sm.GetOrCreate(adaptiveSessionKeyHTTPTest)
 	// Escalate to level 1 so the next signal crosses to level 2,
 	// triggering the gauge decrement path (from != EscalationLabel(0)).
@@ -1221,7 +1221,7 @@ func TestForwardHTTP_Adaptive_CEEBlockAllRecheckFwd(t *testing.T) {
 	// from CEE will escalate to elevated (block_all), triggering the post-CEE
 	// block_all recheck at lines 720-726.
 	sm := p.sessionMgrPtr.Load()
-	// ceeSessionKey(anonymous, "192.0.2.1") = "192.0.2.1"
+	// CeeSessionKey(anonymous, "192.0.2.1") = "192.0.2.1"
 	rec := sm.GetOrCreate(adaptiveSessionKeyHTTPTest)
 	// Push score just below threshold (needs 5.0 to escalate). SignalNearMiss = +1.
 	for range 4 {
@@ -1273,7 +1273,7 @@ func TestForwardHTTP_Adaptive_ResponseScanWarnUpgradeLogPath(t *testing.T) {
 	}
 	defer p.Close()
 
-	// forwardRec key = ceeSessionKey(agentAnonymous, "192.0.2.1") = "192.0.2.1"
+	// forwardRec key = CeeSessionKey(agentAnonymous, "192.0.2.1") = "192.0.2.1"
 	// in the OSS noop edition; agent is always resolved as "" → agentAnonymous.
 	sm := p.sessionMgrPtr.Load()
 	rec := sm.GetOrCreate(adaptiveSessionKeyHTTPTest)
@@ -1322,7 +1322,7 @@ func TestForwardHTTP_Adaptive_ResponseScanStripGaugeDecrement(t *testing.T) {
 
 	// Pre-escalate to level 1 so the next SignalStrip escalates to level 2,
 	// triggering the gauge decrement (from != EscalationLabel(0)).
-	// forwardRec key = ceeSessionKey(agentAnonymous, "192.0.2.1") = "192.0.2.1".
+	// forwardRec key = CeeSessionKey(agentAnonymous, "192.0.2.1") = "192.0.2.1".
 	sm := p.sessionMgrPtr.Load()
 	rec := sm.GetOrCreate(adaptiveSessionKeyHTTPTest)
 	escalateRec(rec, 1)

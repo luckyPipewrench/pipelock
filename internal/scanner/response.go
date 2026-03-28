@@ -225,11 +225,16 @@ func matchPatternsPreFiltered(pf *responsePreFilter, patterns []*compiledPattern
 	return matches
 }
 
+// minSegmentDecodeLen is the minimum length for an extracted base64/hex segment
+// to attempt decoding. Short segments produce too many false decode attempts.
+const minSegmentDecodeLen = 16
+
 // matchDecodedResponse tries base64/hex decoding content and checks the decoded
-// result for injection patterns. Catches encoded injection phrases in MCP tool
-// arguments (e.g., base64-encoded "ignore all previous instructions").
+// result for injection patterns. Two strategies: whole-content decode (catches
+// fully-encoded responses) and segment-level decode (catches encoded payloads
+// embedded in mixed text like "Here is your data: aWdub3Jl... and more text").
 func (s *Scanner) matchDecodedResponse(content string) []ResponseMatch {
-	// Strip whitespace for decode attempts (base64 with embedded newlines).
+	// Strategy 1: whole-content decode (original behavior).
 	stripped := strings.Map(func(r rune) rune {
 		if r == ' ' || r == '\n' || r == '\r' || r == '\t' {
 			return -1
@@ -252,7 +257,82 @@ func (s *Scanner) matchDecodedResponse(content string) []ResponseMatch {
 			return matches
 		}
 	}
+
+	// Strategy 2: segment-level decode. Extract contiguous base64/hex runs
+	// from mixed text and decode each independently. Catches encoded injection
+	// embedded in normal prose that fails whole-content decode.
+	if matches := s.matchDecodedSegments(content); len(matches) > 0 {
+		return matches
+	}
+
 	return nil
+}
+
+// matchDecodedSegments extracts contiguous base64-alphabet runs from content,
+// decodes each individually, and checks for injection patterns.
+func (s *Scanner) matchDecodedSegments(content string) []ResponseMatch {
+	segments := extractEncodedRuns(content, minSegmentDecodeLen)
+	for _, seg := range segments {
+		for _, enc := range []*base64.Encoding{
+			base64.StdEncoding, base64.URLEncoding,
+			base64.RawStdEncoding, base64.RawURLEncoding,
+		} {
+			if decoded, err := enc.DecodeString(seg); err == nil && len(decoded) > 0 && isPrintableASCII(decoded) {
+				if matches := s.matchDecodedNormalized(string(decoded)); len(matches) > 0 {
+					return matches
+				}
+			}
+		}
+		if decoded, err := hex.DecodeString(seg); err == nil && len(decoded) > 0 && isPrintableASCII(decoded) {
+			if matches := s.matchDecodedNormalized(string(decoded)); len(matches) > 0 {
+				return matches
+			}
+		}
+	}
+	return nil
+}
+
+// extractEncodedRuns finds contiguous runs of base64/hex alphabet characters
+// at least minLen long. Returns the segments without surrounding text.
+func extractEncodedRuns(content string, minLen int) []string {
+	var runs []string
+	start := -1
+	for i := 0; i <= len(content); i++ {
+		inAlphabet := false
+		if i < len(content) {
+			c := content[i]
+			inAlphabet = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+				(c >= '0' && c <= '9') || c == '+' || c == '/' ||
+				c == '-' || c == '_' || c == '='
+		}
+		if inAlphabet {
+			if start < 0 {
+				start = i
+			}
+		} else {
+			if start >= 0 && i-start >= minLen {
+				runs = append(runs, content[start:i])
+			}
+			start = -1
+		}
+	}
+	return runs
+}
+
+// isPrintableASCII checks whether decoded bytes are mostly printable ASCII text.
+// Prevents false positives from random byte sequences that happen to base64-decode.
+func isPrintableASCII(data []byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+	printable := 0
+	for _, b := range data {
+		if b >= 0x20 && b <= 0x7e {
+			printable++
+		}
+	}
+	// At least 80% printable ASCII to be considered text.
+	return printable*5 >= len(data)*4
 }
 
 // matchDecodedNormalized runs all response scanning passes (primary, opt-space,

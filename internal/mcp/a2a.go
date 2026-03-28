@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"mime"
 	"regexp"
 	"sort"
 	"strings"
@@ -38,38 +39,9 @@ const (
 	maxWalkNodes = 10000
 )
 
-// urlFieldNames maps camelCase JSON field names that carry URLs.
-// Values at any nesting depth under these keys go through the SSRF scanner.
-var urlFieldNames = map[string]bool{
-	// A2A core
-	"url": true, "uri": true,
-	"documentationUrl": true, "iconUrl": true,
-	// OAuth2 / security schemes
-	"authorizationUrl":       true,
-	"tokenUrl":               true,
-	"refreshUrl":             true,
-	"deviceAuthorizationUrl": true,
-	"openIdConnectUrl":       true,
-	"oauth2MetadataUrl":      true,
-}
-
-// textFieldNames maps fields that carry human-readable text content.
-// Values go through injection + DLP scanning.
-var textFieldNames = map[string]bool{
-	"text":        true,
-	"description": true,
-	"name":        true,
-}
-
-// secretFieldNames maps fields that carry authentication material.
-// Values go through DLP scanning with high severity.
-var secretFieldNames = map[string]bool{
-	"credentials": true,
-	"token":       true,
-	"secret":      true,
-	"apiKey":      true,
-	"password":    true,
-}
+// Canonical URL, text, and secret field name lists are in init() below,
+// where they are normalized into lookup maps for case/style-insensitive
+// matching. See normalizedURLFields, normalizedTextFields, normalizedSecretFields.
 
 // uriHierarchicalRe matches hierarchical URI schemes (scheme://).
 var uriHierarchicalRe = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9+.\-]*://`)
@@ -100,35 +72,70 @@ func isURILike(s string) bool {
 	return false
 }
 
-// snakeURLFieldNames maps snake_case variants of URL field names so
-// proto-style payloads using snake_case are also recognized.
-var snakeURLFieldNames = map[string]bool{
-	"documentation_url":        true,
-	"icon_url":                 true,
-	"authorization_url":        true,
-	"token_url":                true,
-	"refresh_url":              true,
-	"device_authorization_url": true,
-	"open_id_connect_url":      true,
-	"oauth2_metadata_url":      true,
+// normalizedURLFields is a lookup map for URL field names, keyed by their
+// normalized form (lowercase, underscores stripped). This allows matching
+// camelCase, snake_case, and mixed-case variants of the same field name.
+var normalizedURLFields map[string]bool
+
+// normalizedTextFields is a lookup map for text field names, keyed by normalized form.
+var normalizedTextFields map[string]bool
+
+// normalizedSecretFields is a lookup map for secret field names, keyed by normalized form.
+var normalizedSecretFields map[string]bool
+
+func init() {
+	// Build normalized lookup maps from canonical field names.
+	// Each canonical name is normalized (lowercase + strip underscores)
+	// so that classifyFieldName works with any casing or underscore variant.
+	urlNames := []string{
+		"url", "uri",
+		"documentationUrl", "iconUrl",
+		"authorizationUrl", "tokenUrl", "refreshUrl",
+		"deviceAuthorizationUrl", "openIdConnectUrl", "oauth2MetadataUrl",
+		// snake_case variants (normalizes to same key as camelCase, but
+		// listed explicitly for clarity)
+		"documentation_url", "icon_url",
+		"authorization_url", "token_url", "refresh_url",
+		"device_authorization_url", "open_id_connect_url", "oauth2_metadata_url",
+	}
+	normalizedURLFields = make(map[string]bool, len(urlNames))
+	for _, n := range urlNames {
+		normalizedURLFields[normalizeFieldName(n)] = true
+	}
+
+	textNames := []string{"text", "description", "name"}
+	normalizedTextFields = make(map[string]bool, len(textNames))
+	for _, n := range textNames {
+		normalizedTextFields[normalizeFieldName(n)] = true
+	}
+
+	secretNames := []string{"credentials", "token", "secret", "apiKey", "password", "api_key"}
+	normalizedSecretFields = make(map[string]bool, len(secretNames))
+	for _, n := range secretNames {
+		normalizedSecretFields[normalizeFieldName(n)] = true
+	}
 }
 
-// snakeSecretFieldNames maps snake_case variants of secret field names.
-var snakeSecretFieldNames = map[string]bool{
-	"api_key": true,
+// normalizeFieldName strips underscores and lowercases a field name.
+// This maps camelCase, snake_case, and mixed variants to the same key:
+// "apiKey", "api_key", "API_KEY", "Api_Key" all become "apikey".
+func normalizeFieldName(name string) string {
+	return strings.ToLower(strings.ReplaceAll(name, "_", ""))
 }
 
 // classifyFieldName returns the FieldClass for a known field name.
-// Checks both camelCase (standard proto3 JSON) and snake_case (proto-style) variants.
-// Returns -1 if the name is not in any known set.
+// Normalizes the input (lowercase + strip underscores) so camelCase,
+// snake_case, and mixed-case variants all match. Returns -1 if the
+// name is not in any known set.
 func classifyFieldName(name string) FieldClass {
-	if urlFieldNames[name] || snakeURLFieldNames[name] {
+	norm := normalizeFieldName(name)
+	if normalizedURLFields[norm] {
 		return FieldURL
 	}
-	if textFieldNames[name] {
+	if normalizedTextFields[norm] {
 		return FieldText
 	}
-	if secretFieldNames[name] || snakeSecretFieldNames[name] {
+	if normalizedSecretFields[norm] {
 		return FieldSecret
 	}
 	return -1
@@ -233,8 +240,8 @@ func walkValue(v interface{}, path, parentKey string, nodeCount *int, depth int,
 // classifyLeafValue classifies a string value based on its parent field name
 // and the value's content (URI heuristic).
 func classifyLeafValue(parentKey, value string) FieldClass {
-	// Known field name takes priority. classifyFieldName checks both
-	// camelCase and snake_case variants, so no separate normalization needed.
+	// Known field name takes priority. classifyFieldName normalizes
+	// the name (lowercase + strip underscores) for case/style parity.
 	if parentKey != "" {
 		if class := classifyFieldName(parentKey); class >= 0 {
 			return class
@@ -258,7 +265,7 @@ func classifyKeyAsLeaf(key string) FieldClass {
 	}
 	// Don't emit boring keys — only emit keys that look like URIs or secrets.
 	// Regular field names are structural, not attacker content.
-	if secretFieldNames[key] {
+	if normalizedSecretFields[normalizeFieldName(key)] {
 		return FieldSecret
 	}
 	return -1
@@ -308,8 +315,14 @@ const a2aContentType = "application/a2a+json"
 // prefixes before comparison.
 func IsA2ARequest(path, contentType string) bool {
 	// Content-Type signal: application/a2a+json is definitive.
-	if strings.Contains(contentType, a2aContentType) {
-		return true
+	// Use mime.ParseMediaType for exact media type comparison, ignoring
+	// parameters (charset, boundary, etc.) and preventing substring matches
+	// like "application/x-a2a+json" from being misdetected.
+	if contentType != "" {
+		mt, _, err := mime.ParseMediaType(contentType)
+		if err == nil && strings.EqualFold(mt, a2aContentType) {
+			return true
+		}
 	}
 
 	if len(path) < 2 {

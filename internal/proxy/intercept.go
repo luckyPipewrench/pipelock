@@ -606,7 +606,17 @@ func newInterceptHandler(
 		// A2A SSE streaming: scan events inline with per-event field-aware
 		// scanning and rolling-tail cross-event injection detection. Clean
 		// events are flushed immediately; detection terminates the stream.
+		// Defense-in-depth: explicitly reject compressed SSE streams even
+		// though the general compression guard above catches them. This
+		// ensures A2A SSE scanning never processes compressed data if the
+		// code is restructured.
 		if isA2A && strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
+			if hasNonIdentityEncoding(resp.Header.Get("Content-Encoding")) {
+				logger.LogBlocked(r.Method, r.URL.String(), scannerLabelA2A, "compressed A2A stream cannot be scanned", clientIP, requestID, agent)
+				m.RecordTLSResponseBlocked(scannerLabelA2A)
+				http.Error(w, "blocked: compressed A2A stream cannot be scanned", http.StatusForbidden)
+				return
+			}
 			// Copy response headers to client before streaming.
 			for k, vv := range resp.Header {
 				for _, v := range vv {

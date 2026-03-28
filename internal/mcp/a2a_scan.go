@@ -245,10 +245,32 @@ func (cb *CardBaseline) Check(key cardCacheKey, hash string, skillNames []string
 		return false, false
 	}
 
-	// Drift detected — update baseline to new card.
-	existing.hash = hash
-	existing.skillNames = skillNames
+	// Drift detected — do NOT auto-promote the baseline. The existing
+	// baseline is preserved so repeated fetches of a drifted card
+	// continue to report drift until explicitly reset. Operators must
+	// call ResetBaseline to accept the new card.
 	return true, false
+}
+
+// ResetBaseline explicitly updates the stored baseline for a key.
+// Use after reviewing and accepting a drifted Agent Card. This is the
+// only path that promotes a new hash; Check never auto-promotes.
+func (cb *CardBaseline) ResetBaseline(key cardCacheKey, hash string, skillNames []string) {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+
+	existing, ok := cb.entries[key]
+	if ok {
+		existing.hash = hash
+		existing.skillNames = skillNames
+		cb.touchLocked(key)
+		return
+	}
+
+	// Key not present (evicted or never seen): insert as new baseline.
+	cb.evictIfFull()
+	cb.entries[key] = &cardEntry{hash: hash, skillNames: skillNames}
+	cb.touchLocked(key)
 }
 
 // touchLocked moves a key to the end of the LRU order. Must hold mu.
@@ -553,9 +575,10 @@ func ScanA2AStream(ctx context.Context, body io.Reader, w io.Writer, flusher htt
 			}
 		}
 
-		// Forward clean event. Preserve id and event fields from the SSE reader
-		// so downstream consumers can correlate events and handle retries.
-		writeSSEEvent(w, event, reader.LastEventID())
+		// Forward clean event. Preserve id, event, and retry fields from the
+		// SSE reader so downstream consumers can correlate events, handle
+		// typed dispatching, and respect reconnection timing.
+		writeSSEEvent(w, event, reader.LastEventID(), reader.LastEventType(), reader.LastRetry())
 		if flusher != nil {
 			flusher.Flush()
 		}
@@ -576,10 +599,17 @@ func extractTextFromEvent(event []byte) string {
 }
 
 // writeSSEEvent writes a single SSE event to the writer, preserving the
-// event ID field for downstream correlation and retry support.
-func writeSSEEvent(w io.Writer, data []byte, eventID string) {
+// id, event type, and retry fields for downstream correlation, typed
+// dispatching, and reconnection support.
+func writeSSEEvent(w io.Writer, data []byte, eventID, eventType, retry string) {
+	if eventType != "" {
+		_, _ = fmt.Fprintf(w, "event: %s\n", eventType)
+	}
 	if eventID != "" {
 		_, _ = fmt.Fprintf(w, "id: %s\n", eventID)
+	}
+	if retry != "" {
+		_, _ = fmt.Fprintf(w, "retry: %s\n", retry)
 	}
 	_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 }

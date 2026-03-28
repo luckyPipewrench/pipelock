@@ -33,7 +33,7 @@ var interpreters = map[string]bool{
 	"python": true, "python3": true,
 	"node": true, "bun": true, "deno": true,
 	"ruby": true, "perl": true,
-	"bash": true, "sh": true,
+	"bash": true, "sh": true, "dash": true,
 	"npx": true, "bunx": true, "uvx": true, "pipx": true,
 }
 
@@ -153,8 +153,10 @@ func Verify(command []string, cfg *Config, agentWorkDir string) (*VerifyResult, 
 	result.ActualHash = actualHash
 
 	// Check if the binary is a known interpreter (exact or versioned prefix).
+	// Check both the resolved name and the original command name because
+	// symlinks can change the basename (e.g. "sh" -> "/usr/bin/dash").
 	baseName := filepath.Base(resolved)
-	result.IsInterpreter = isInterpreterName(baseName)
+	result.IsInterpreter = isInterpreterName(baseName) || isInterpreterName(filepath.Base(command[0]))
 
 	// Handle /usr/bin/env wrapper: if command[0] resolves to "env", the real
 	// interpreter is command[1] and the script is command[2].

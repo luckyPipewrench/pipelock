@@ -171,6 +171,23 @@ func NewManager(cfg Config) (*Manager, error) {
 		cfg.SeasonalityMode = "none"
 	}
 
+	// Validate SeasonalityMode. Only "none" is implemented.
+	// Reject unknown values rather than silently accepting them.
+	if cfg.SeasonalityMode != "none" {
+		return nil, fmt.Errorf("unsupported seasonality_mode %q: only \"none\" is supported", cfg.SeasonalityMode)
+	}
+
+	// Validate LockDimensions against known metric names.
+	validDims := make(map[string]bool, len(allDimensions))
+	for _, d := range allDimensions {
+		validDims[d] = true
+	}
+	for _, d := range cfg.LockDimensions {
+		if !validDims[d] {
+			return nil, fmt.Errorf("unsupported lock_dimension %q: valid values are %v", d, allDimensions)
+		}
+	}
+
 	m := &Manager{
 		cfg:    cfg,
 		agents: make(map[string]*agentState),

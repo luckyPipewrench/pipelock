@@ -230,11 +230,14 @@ func (r *Recorder) RecordDecision(dr DecisionRecord) error {
 			return fmt.Errorf("invalid decision record: %w", err)
 		}
 		// Verify pre-signed records cryptographically, not just structurally.
-		if len(r.privKey) == ed25519.PrivateKeySize {
-			pubKey := r.privKey.Public().(ed25519.PublicKey)
-			if err := dr.Verify(pubKey); err != nil {
-				return fmt.Errorf("pre-signed decision record failed verification: %w", err)
-			}
+		// Reject if no verification key is available — accepting unverified
+		// signatures into the evidence chain would undermine audit integrity.
+		if len(r.privKey) != ed25519.PrivateKeySize {
+			return errors.New("pre-signed decision record rejected: no verification key available")
+		}
+		pubKey := r.privKey.Public().(ed25519.PublicKey)
+		if err := dr.Verify(pubKey); err != nil {
+			return fmt.Errorf("pre-signed decision record failed verification: %w", err)
 		}
 	}
 

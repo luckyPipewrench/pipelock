@@ -520,7 +520,7 @@ func TestRecorder_RecordDecision_PreSigned(t *testing.T) {
 		Enabled:            true,
 		Dir:                dir,
 		CheckpointInterval: 100,
-	}, nil, nil) // no recorder key
+	}, nil, priv) // recorder needs key to verify pre-signed records
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -537,9 +537,40 @@ func TestRecorder_RecordDecision_PreSigned(t *testing.T) {
 		t.Fatalf("Sign: %v", err)
 	}
 
-	// RecordDecision with a pre-signed record should work even without recorder key
+	// RecordDecision with a pre-signed record should verify against recorder key
 	if err := rec.RecordDecision(signed); err != nil {
 		t.Fatalf("RecordDecision with pre-signed: %v", err)
+	}
+}
+
+func TestRecorder_RecordDecision_PreSignedNoKey(t *testing.T) {
+	dir := t.TempDir()
+	rec, err := New(Config{
+		Enabled:            true,
+		Dir:                dir,
+		CheckpointInterval: 100,
+	}, nil, nil) // no key
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rec.Close() }()
+
+	pub, priv, _ := ed25519.GenerateKey(nil)
+	_ = pub
+
+	dr := DecisionRecord{
+		SessionID:      "pre-signed-session",
+		Verdict:        "block",
+		RequestContext: RequestEvidence{Transport: "fetch"},
+	}
+	signed, err := dr.Sign(priv)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+
+	// Pre-signed record must be rejected when recorder has no verification key
+	if err := rec.RecordDecision(signed); err == nil {
+		t.Fatal("expected error for pre-signed record without verification key")
 	}
 }
 

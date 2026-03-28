@@ -59,6 +59,7 @@ type VerdictSummary struct {
 	Warned     int `json:"warned"`
 	Redirected int `json:"redirected"`
 	Stripped   int `json:"stripped"`
+	Unknown    int `json:"unknown,omitempty"`
 }
 
 // Builder incrementally constructs a Manifest. All methods are safe for
@@ -159,6 +160,8 @@ func (b *Builder) RecordVerdict(action string) {
 		b.manifest.VerdictSummary.Redirected++
 	case "strip":
 		b.manifest.VerdictSummary.Stripped++
+	default:
+		b.manifest.VerdictSummary.Unknown++
 	}
 }
 

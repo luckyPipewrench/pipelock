@@ -120,9 +120,18 @@ func (dr DecisionRecord) Sign(privKey ed25519.PrivateKey) (DecisionRecord, error
 }
 
 // Verify validates and verifies the detached signature field.
+// Unlike Sign, Verify does NOT synthesize missing fields. A signed record
+// must have all required fields present as they were at signing time.
 func (dr DecisionRecord) Verify(pubKey ed25519.PublicKey) error {
 	if len(pubKey) != ed25519.PublicKeySize {
 		return errors.New("invalid public key")
+	}
+
+	// Reject missing required signed fields instead of synthesizing them.
+	// Normalize() would fill in defaults (e.g., Timestamp from wall clock),
+	// making verification dependent on local time rather than signed content.
+	if dr.Timestamp.IsZero() {
+		return errors.New("signed record missing required timestamp")
 	}
 
 	normalized := dr.Normalize()

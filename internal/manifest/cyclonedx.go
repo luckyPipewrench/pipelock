@@ -5,7 +5,11 @@ package manifest
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	cdx "github.com/CycloneDX/cyclonedx-go"
@@ -52,7 +56,7 @@ func ToCycloneDX(m Manifest) *cdx.BOM {
 		component := cdx.Component{
 			Type:        cdx.ComponentTypeApplication,
 			Name:        tool.Name,
-			BOMRef:      "tool-" + tool.Name,
+			BOMRef:      "tool-" + sanitizeBOMRef(tool.Name),
 			Description: tool.Description,
 			Properties: &[]cdx.Property{
 				{Name: propertyPrefix + "kind", Value: "declared-tool"},
@@ -65,17 +69,29 @@ func ToCycloneDX(m Manifest) *cdx.BOM {
 	return bom
 }
 
+// serialCounter ensures uniqueness when crypto/rand fails.
+var serialCounter atomic.Uint64
+
 // newSerialNumber generates a CycloneDX-compliant UUID URN.
 func newSerialNumber() string {
 	var uuid [16]byte
 	if _, err := rand.Read(uuid[:]); err != nil {
 		// crypto/rand failure is critical — a zero UUID would be predictable.
-		// Fall back to timestamp-based uniqueness rather than colliding.
-		ts := fmt.Sprintf("%d", time.Now().UnixNano())
-		copy(uuid[:], ts)
+		// Combine timestamp + atomic counter to prevent same-microsecond collisions.
+		ts := time.Now().UnixNano()
+		seq := serialCounter.Add(1)
+		binary.BigEndian.PutUint64(uuid[:8], uint64(ts))
+		binary.BigEndian.PutUint64(uuid[8:], seq)
 	}
 	uuid[6] = (uuid[6] & 0x0f) | 0x40 // version 4
 	uuid[8] = (uuid[8] & 0x3f) | 0x80 // variant 1
 	return fmt.Sprintf("urn:uuid:%08x-%04x-%04x-%04x-%012x",
 		uuid[0:4], uuid[4:6], uuid[6:8], uuid[8:10], uuid[10:16])
+}
+
+// sanitizeBOMRef produces a stable, safe identifier from an untrusted tool name.
+// Uses SHA-256 prefix to avoid collisions, injection, and path separator issues.
+func sanitizeBOMRef(name string) string {
+	h := sha256.Sum256([]byte(name))
+	return hex.EncodeToString(h[:8])
 }

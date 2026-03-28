@@ -441,7 +441,7 @@ func TestDoW_RetryStorm(t *testing.T) {
 	})
 
 	// 20 failures to the same endpoint should be OK (at limit).
-	for i := range 20 {
+	for range 20 {
 		result := tracker.RecordEndpoint(domainExample, pathAPI, 500)
 		if !result.Allowed && result.BudgetType == BudgetRetry {
 			t.Fatalf("retry storm triggered early at count <= 20: %s", result.Reason)

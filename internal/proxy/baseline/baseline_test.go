@@ -47,7 +47,7 @@ func TestNewManager_Defaults(t *testing.T) {
 	if mgr.cfg.DeviationAction != "warn" {
 		t.Errorf("expected default DeviationAction=warn, got %s", mgr.cfg.DeviationAction)
 	}
-	if mgr.cfg.SeasonalityMode != "none" {
+	if mgr.cfg.SeasonalityMode != seasonalityNone {
 		t.Errorf("expected default SeasonalityMode=none, got %s", mgr.cfg.SeasonalityMode)
 	}
 }

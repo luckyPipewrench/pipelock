@@ -136,6 +136,9 @@ type Config struct {
 	SeasonalityMode  string   `yaml:"seasonality_mode"`
 }
 
+// seasonalityNone is the only supported seasonality mode.
+const seasonalityNone = "none"
+
 // allDimensions is the complete list of enforceable metrics.
 var allDimensions = []string{
 	"tool_calls", "unique_tools", "domains", "bytes", "duration", "requests",
@@ -168,12 +171,12 @@ func NewManager(cfg Config) (*Manager, error) {
 		cfg.DeviationAction = "warn"
 	}
 	if cfg.SeasonalityMode == "" {
-		cfg.SeasonalityMode = "none"
+		cfg.SeasonalityMode = seasonalityNone
 	}
 
 	// Validate SeasonalityMode. Only "none" is implemented.
 	// Reject unknown values rather than silently accepting them.
-	if cfg.SeasonalityMode != "none" {
+	if cfg.SeasonalityMode != seasonalityNone {
 		return nil, fmt.Errorf("unsupported seasonality_mode %q: only \"none\" is supported", cfg.SeasonalityMode)
 	}
 

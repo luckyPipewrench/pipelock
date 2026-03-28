@@ -272,9 +272,9 @@ func EmbedInToolsList(response []byte, attestations []Attestation) ([]byte, erro
 		return nil, fmt.Errorf("marshaling modified result: %w", err)
 	}
 
-	// Reconstruct the full response.
+	// Reconstruct the full response, preserving the original jsonrpc value.
 	output := map[string]json.RawMessage{
-		"jsonrpc": mustMarshal("2.0"),
+		"jsonrpc": mustMarshal(rpc.JSONRPC),
 		"id":      rpc.ID,
 		"result":  result,
 	}

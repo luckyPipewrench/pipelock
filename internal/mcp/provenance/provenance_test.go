@@ -19,12 +19,12 @@ func TestExtractFromToolsList(t *testing.T) {
 		 "digest":{"sha256":"abc123"},"mode":"pipelock","bundle":"base64sig","signer_id":"keyid"}}}
 	]}}`)
 
-	attestations := ExtractFromToolsList(response)
-	if len(attestations) != 1 {
-		t.Fatalf("expected 1 attestation, got %d", len(attestations))
+	extraction := ExtractFromToolsList(response)
+	if len(extraction.Attestations) != 1 {
+		t.Fatalf("expected 1 attestation, got %d", len(extraction.Attestations))
 	}
 
-	ta := attestations[0]
+	ta := extraction.Attestations[0]
 	if ta.ToolName != testToolName {
 		t.Errorf("expected tool name %q, got %q", testToolName, ta.ToolName)
 	}
@@ -41,9 +41,9 @@ func TestExtractFromToolsList_NoMeta(t *testing.T) {
 		{"name":"get_weather","description":"Get weather","inputSchema":{"type":"object"}}
 	]}}`)
 
-	attestations := ExtractFromToolsList(response)
-	if len(attestations) != 0 {
-		t.Errorf("expected 0 attestations, got %d", len(attestations))
+	extraction := ExtractFromToolsList(response)
+	if len(extraction.Attestations) != 0 {
+		t.Errorf("expected 0 attestations, got %d", len(extraction.Attestations))
 	}
 }
 
@@ -53,16 +53,16 @@ func TestExtractFromToolsList_MetaWithoutProvenance(t *testing.T) {
 		 "_meta":{"other_key":"value"}}
 	]}}`)
 
-	attestations := ExtractFromToolsList(response)
-	if len(attestations) != 0 {
-		t.Errorf("expected 0 attestations for _meta without provenance key, got %d", len(attestations))
+	extraction := ExtractFromToolsList(response)
+	if len(extraction.Attestations) != 0 {
+		t.Errorf("expected 0 attestations for _meta without provenance key, got %d", len(extraction.Attestations))
 	}
 }
 
 func TestExtractFromToolsList_InvalidJSON(t *testing.T) {
-	attestations := ExtractFromToolsList([]byte("not-json"))
-	if attestations != nil {
-		t.Error("expected nil for invalid JSON")
+	extraction := ExtractFromToolsList([]byte("not-json"))
+	if len(extraction.Attestations) != 0 || len(extraction.Malformed) != 0 {
+		t.Error("expected empty result for invalid JSON")
 	}
 }
 
@@ -72,9 +72,12 @@ func TestExtractFromToolsList_InvalidProvenance(t *testing.T) {
 		 "_meta":{"com.pipelock/provenance":"not-an-object"}}
 	]}}`)
 
-	attestations := ExtractFromToolsList(response)
-	if len(attestations) != 0 {
-		t.Errorf("expected 0 attestations for invalid provenance, got %d", len(attestations))
+	extraction := ExtractFromToolsList(response)
+	if len(extraction.Attestations) != 0 {
+		t.Errorf("expected 0 attestations for invalid provenance, got %d", len(extraction.Attestations))
+	}
+	if len(extraction.Malformed) != 1 {
+		t.Errorf("expected 1 malformed entry for invalid provenance, got %d", len(extraction.Malformed))
 	}
 }
 
@@ -87,16 +90,16 @@ func TestExtractFromToolsList_MultipleTools(t *testing.T) {
 		 "_meta":{"com.pipelock/provenance":{"predicateType":"p","digest":{"sha256":"d2"},"mode":"pipelock","bundle":"b2","signer_id":"k2"}}}
 	]}}`)
 
-	attestations := ExtractFromToolsList(response)
-	if len(attestations) != 2 {
-		t.Fatalf("expected 2 attestations, got %d", len(attestations))
+	extraction := ExtractFromToolsList(response)
+	if len(extraction.Attestations) != 2 {
+		t.Fatalf("expected 2 attestations, got %d", len(extraction.Attestations))
 	}
 
-	if attestations[0].ToolName != "tool_a" {
-		t.Errorf("first tool should be tool_a, got %s", attestations[0].ToolName)
+	if extraction.Attestations[0].ToolName != "tool_a" {
+		t.Errorf("first tool should be tool_a, got %s", extraction.Attestations[0].ToolName)
 	}
-	if attestations[1].ToolName != "tool_c" {
-		t.Errorf("second tool should be tool_c, got %s", attestations[1].ToolName)
+	if extraction.Attestations[1].ToolName != "tool_c" {
+		t.Errorf("second tool should be tool_c, got %s", extraction.Attestations[1].ToolName)
 	}
 }
 
@@ -643,9 +646,9 @@ func TestExtractFromToolsList_InvalidToolInArray(t *testing.T) {
 	// Valid JSON-RPC but tool entries that aren't objects.
 	response := []byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":["not-a-tool-object", 42]}}`)
 
-	attestations := ExtractFromToolsList(response)
-	if len(attestations) != 0 {
-		t.Errorf("expected 0 attestations for invalid tool entries, got %d", len(attestations))
+	extraction := ExtractFromToolsList(response)
+	if len(extraction.Attestations) != 0 {
+		t.Errorf("expected 0 attestations for invalid tool entries, got %d", len(extraction.Attestations))
 	}
 }
 

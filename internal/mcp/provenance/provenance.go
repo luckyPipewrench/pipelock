@@ -47,19 +47,31 @@ type toolsListResult struct {
 	Tools []json.RawMessage `json:"tools"`
 }
 
+// ExtractionResult holds attestations and any malformed provenance entries
+// encountered during extraction.
+type ExtractionResult struct {
+	// Attestations are successfully parsed provenance entries.
+	Attestations []ToolAttestation
+	// Malformed tracks tool names where _meta contained the provenance key
+	// but the value could not be parsed. These should be treated as errors,
+	// not as unsigned.
+	Malformed []string
+}
+
 // ExtractFromToolsList parses a tools/list JSON-RPC response and extracts
 // provenance attestations from each tool's _meta field.
 // Returns attestations found (may be empty). Tools without _meta or without
-// the provenance key are not included.
-func ExtractFromToolsList(response []byte) []ToolAttestation {
+// the provenance key are not included. Tools where the provenance key exists
+// but cannot be parsed are tracked separately as malformed.
+func ExtractFromToolsList(response []byte) ExtractionResult {
 	var rpc struct {
 		Result toolsListResult `json:"result"`
 	}
 	if err := json.Unmarshal(response, &rpc); err != nil {
-		return nil
+		return ExtractionResult{}
 	}
 
-	var results []ToolAttestation
+	var result ExtractionResult
 	for _, raw := range rpc.Result.Tools {
 		var tool toolWithMeta
 		if err := json.Unmarshal(raw, &tool); err != nil {
@@ -77,16 +89,19 @@ func ExtractFromToolsList(response []byte) []ToolAttestation {
 
 		var att Attestation
 		if err := json.Unmarshal(provRaw, &att); err != nil {
+			// Provenance key present but malformed. Track separately
+			// so callers can fail closed rather than treating as unsigned.
+			result.Malformed = append(result.Malformed, tool.Name)
 			continue
 		}
 
-		results = append(results, ToolAttestation{
+		result.Attestations = append(result.Attestations, ToolAttestation{
 			ToolName:    tool.Name,
 			Attestation: att,
 		})
 	}
 
-	return results
+	return result
 }
 
 // VerifyConfig holds verification parameters.
@@ -209,9 +224,21 @@ func VerifyToolsList(response []byte, cfg VerifyConfig) ([]VerificationResult, e
 	}
 
 	// Extract attestations indexed by tool name.
-	attestations := ExtractFromToolsList(response)
-	attByName := make(map[string]Attestation, len(attestations))
-	for _, ta := range attestations {
+	extraction := ExtractFromToolsList(response)
+
+	// Build malformed set for fast lookup.
+	malformedSet := make(map[string]bool, len(extraction.Malformed))
+	for _, name := range extraction.Malformed {
+		malformedSet[name] = true
+	}
+
+	// Build attestation index, rejecting duplicate tool names.
+	attByName := make(map[string]Attestation, len(extraction.Attestations))
+	duplicates := make(map[string]bool)
+	for _, ta := range extraction.Attestations {
+		if _, exists := attByName[ta.ToolName]; exists {
+			duplicates[ta.ToolName] = true
+		}
 		attByName[ta.ToolName] = ta.Attestation
 	}
 
@@ -223,6 +250,27 @@ func VerifyToolsList(response []byte, cfg VerifyConfig) ([]VerificationResult, e
 				ToolName: "<unparseable>",
 				Status:   StatusError,
 				Detail:   fmt.Sprintf("failed to parse tool: %v", err),
+			})
+			continue
+		}
+
+		// Duplicate tool names are ambiguous and unsafe.
+		if duplicates[tool.Name] {
+			results = append(results, VerificationResult{
+				ToolName: tool.Name,
+				Status:   StatusError,
+				Detail:   "duplicate tool name in tools/list response",
+			})
+			continue
+		}
+
+		// Malformed provenance is an error, not unsigned. An attacker
+		// who tampers with _meta should not get the softer "unsigned" path.
+		if malformedSet[tool.Name] {
+			results = append(results, VerificationResult{
+				ToolName: tool.Name,
+				Status:   StatusError,
+				Detail:   "provenance key present but malformed",
 			})
 			continue
 		}

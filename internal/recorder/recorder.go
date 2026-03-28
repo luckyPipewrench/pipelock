@@ -225,8 +225,17 @@ func (r *Recorder) RecordDecision(dr DecisionRecord) error {
 			return fmt.Errorf("sign decision record: %w", err)
 		}
 		dr = signed
-	} else if err := dr.Validate(); err != nil {
-		return fmt.Errorf("invalid decision record: %w", err)
+	} else {
+		if err := dr.Validate(); err != nil {
+			return fmt.Errorf("invalid decision record: %w", err)
+		}
+		// Verify pre-signed records cryptographically, not just structurally.
+		if len(r.privKey) == ed25519.PrivateKeySize {
+			pubKey := r.privKey.Public().(ed25519.PublicKey)
+			if err := dr.Verify(pubKey); err != nil {
+				return fmt.Errorf("pre-signed decision record failed verification: %w", err)
+			}
+		}
 	}
 
 	layer := dr.ScannerResult.Layer

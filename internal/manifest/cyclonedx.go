@@ -68,7 +68,12 @@ func ToCycloneDX(m Manifest) *cdx.BOM {
 // newSerialNumber generates a CycloneDX-compliant UUID URN.
 func newSerialNumber() string {
 	var uuid [16]byte
-	_, _ = rand.Read(uuid[:])
+	if _, err := rand.Read(uuid[:]); err != nil {
+		// crypto/rand failure is critical — a zero UUID would be predictable.
+		// Fall back to timestamp-based uniqueness rather than colliding.
+		ts := fmt.Sprintf("%d", time.Now().UnixNano())
+		copy(uuid[:], ts)
+	}
 	uuid[6] = (uuid[6] & 0x0f) | 0x40 // version 4
 	uuid[8] = (uuid[8] & 0x3f) | 0x80 // variant 1
 	return fmt.Sprintf("urn:uuid:%08x-%04x-%04x-%04x-%012x",

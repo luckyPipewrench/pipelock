@@ -357,7 +357,10 @@ func TestDecisionRecord_Normalize(t *testing.T) {
 	})
 
 	t.Run("converts timestamp to UTC", func(t *testing.T) {
-		loc, _ := time.LoadLocation("America/New_York")
+		loc, err := time.LoadLocation("America/New_York")
+		if err != nil {
+			t.Skip("timezone data not available")
+		}
 		ts := time.Date(2026, 3, 28, 12, 0, 0, 0, loc)
 		dr := DecisionRecord{Timestamp: ts}
 		n := dr.Normalize()

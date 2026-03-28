@@ -37,8 +37,11 @@ func compileCanaryTokens(cfg config.CanaryTokens) []compiledCanaryToken {
 	return out
 }
 
-// scanCanaryText scans text for configured canary tokens using the same
-// normalization + decode strategy as text DLP matching.
+// scanCanaryText scans RAW text for configured canary tokens.
+// It owns normalization: applies ForDLP internally, then iterative URL
+// decoding, base64/hex decoding, and separator canonicalization.
+// Callers pass raw (un-normalized) text. matchCanaryTokens receives
+// already-normalized text and only lowercases — no re-normalization.
 func (s *Scanner) scanCanaryText(text string) []TextDLPMatch {
 	if len(s.canaryTokens) == 0 || text == "" {
 		return nil

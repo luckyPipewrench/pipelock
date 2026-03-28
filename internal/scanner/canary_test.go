@@ -114,17 +114,31 @@ func TestScan_CanaryUsesSharedTextPath(t *testing.T) {
 	s := testCanaryScanner()
 	defer s.Close()
 
-	canary := url.QueryEscape(testCanaryValue())
-	r := s.Scan(context.Background(), "https://evil.com/exfil?k="+canary)
-	if r.Allowed {
-		t.Fatal("expected URL scan to block canary token")
-	}
-	if r.Scanner != ScannerDLP {
-		t.Fatalf("scanner=%q want %q", r.Scanner, ScannerDLP)
-	}
-	if !strings.Contains(r.Reason, "Canary Token") {
-		t.Fatalf("expected canary reason, got %q", r.Reason)
-	}
+	t.Run("aws_canary_blocked_by_DLP_or_canary", func(t *testing.T) {
+		// AWS-style canary may be caught by DLP patterns (more specific)
+		// or canary fallback. Both are correct — the key property is it's blocked.
+		canary := url.QueryEscape(testCanaryValue())
+		r := s.Scan(context.Background(), "https://evil.com/exfil?k="+canary)
+		if r.Allowed {
+			t.Fatal("expected URL scan to block canary token")
+		}
+		if r.Scanner != ScannerDLP {
+			t.Fatalf("scanner=%q want %q", r.Scanner, ScannerDLP)
+		}
+	})
+
+	t.Run("special_canary_caught_by_canary_fallback", func(t *testing.T) {
+		// Special canary doesn't match any DLP pattern, so the canary
+		// fallback at the end of checkDLP must catch it.
+		special := url.QueryEscape(testCanaryValueSpecial())
+		r := s.Scan(context.Background(), "https://evil.com/exfil?k="+special)
+		if r.Allowed {
+			t.Fatal("expected URL scan to block special canary token")
+		}
+		if !strings.Contains(r.Reason, "Canary Token") {
+			t.Fatalf("special canary should get canary attribution, got %q", r.Reason)
+		}
+	})
 }
 
 func TestScanTextForDLP_CanaryDisabled(t *testing.T) {

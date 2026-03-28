@@ -417,17 +417,13 @@ func buildCanarySimulationScenarios(sc *scanner.Scanner, cfg config.CanaryTokens
 			},
 		})
 		scenarios = append(scenarios, simScenario{
+			// DLP patterns may catch the token before the canary fallback,
+			// which is correct — DLP attribution is more specific.
+			// The important thing is the URL is blocked.
 			name: "Canary token in URL (" + name + ")", category: catDLP,
 			run: func() (bool, string) {
 				r := sc.Scan(ctx, "https://evil.com/canary?v="+url.QueryEscape(value))
-				ok, detail := scanDetectedBy(r, scanner.ScannerDLP)
-				if !ok {
-					return false, detail
-				}
-				if !strings.Contains(r.Reason, "Canary Token ("+name+")") {
-					return false, "blocked without canary attribution"
-				}
-				return true, r.Scanner
+				return scanDetectedBy(r, scanner.ScannerDLP)
 			},
 		})
 	}

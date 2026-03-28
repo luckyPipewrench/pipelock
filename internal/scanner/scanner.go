@@ -986,21 +986,10 @@ func decodeEncodings(s string) []decodedResult {
 // and secrets split across query parameters. Iterative URL decoding
 // prevents multi-layer encoding bypass.
 func (s *Scanner) checkDLP(parsed *url.URL) Result {
-	// Canary token detection runs through the shared text DLP path so URL,
-	// MCP, body, and tool-argument scanning use one normalization model.
-	if matches := s.scanCanaryText(parsed.String()); len(matches) > 0 {
-		m := matches[0]
-		reason := fmt.Sprintf("DLP match: %s (%s)", m.PatternName, m.Severity)
-		if m.Encoded != "" {
-			reason += " [" + m.Encoded + "]"
-		}
-		return Result{
-			Allowed: false,
-			Reason:  reason,
-			Scanner: ScannerDLP,
-			Score:   1.0,
-		}
-	}
+	// Canary check is deferred to after DLP pattern evaluation (below).
+	// DLP patterns provide more specific attribution ("aws_access_key" vs
+	// "Canary Token"). Canary is the safety net for synthetic tokens that
+	// DLP patterns don't cover. Both are evaluated — DLP wins if it matches.
 
 	// parsed.Path is already URL-decoded by Go's url.Parse.
 	// For query strings, iteratively decode to catch multi-layer encoding.
@@ -1310,6 +1299,17 @@ func (s *Scanner) checkSecretsInURL(secrets []string, parsed *url.URL, reasonPre
 			return Result{Allowed: false, Reason: reason, Scanner: ScannerDLP, Score: 1.0}
 		}
 	}
+	// Canary fallback: if no DLP pattern matched, check canary tokens.
+	// This runs last so DLP patterns get attribution priority.
+	if matches := s.scanCanaryText(parsed.String()); len(matches) > 0 {
+		m := matches[0]
+		reason := fmt.Sprintf("DLP match: %s (%s)", m.PatternName, m.Severity)
+		if m.Encoded != "" {
+			reason += " [" + m.Encoded + "]"
+		}
+		return Result{Allowed: false, Reason: reason, Scanner: ScannerDLP, Score: 1.0}
+	}
+
 	return Result{Allowed: true}
 }
 

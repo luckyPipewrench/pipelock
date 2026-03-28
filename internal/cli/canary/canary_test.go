@@ -17,7 +17,7 @@ func testRoot() *cobra.Command {
 	return root
 }
 
-func TestCanaryCmd_YAML(t *testing.T) {
+func TestCanaryCmd_YAML_Default(t *testing.T) {
 	cmd := testRoot()
 	buf := &strings.Builder{}
 	cmd.SetOut(buf)
@@ -32,11 +32,28 @@ func TestCanaryCmd_YAML(t *testing.T) {
 	if !strings.Contains(out, "canary_tokens:") {
 		t.Fatalf("expected yaml output, got %q", out)
 	}
-	if !strings.Contains(out, "enabled: true") {
-		t.Fatalf("expected enabled true in output, got %q", out)
+	if !strings.Contains(out, "${AWS_CANARY_KEY}") {
+		t.Fatalf("default should emit env var placeholder, got %q", out)
 	}
-	if !strings.Contains(out, "env_var:") {
-		t.Fatalf("expected env_var in output, got %q", out)
+	if strings.Contains(out, "AKIA"+"IOSFODNN7"+"CANARY1") {
+		t.Fatal("default must not print literal canary value")
+	}
+}
+
+func TestCanaryCmd_YAML_Literal(t *testing.T) {
+	cmd := testRoot()
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"canary", "--literal"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "AKIA") {
+		t.Fatalf("--literal should emit actual value, got %q", out)
 	}
 }
 

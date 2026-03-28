@@ -6,6 +6,7 @@ package canary
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 
@@ -23,20 +24,33 @@ func Cmd() *cobra.Command {
 	var name string
 	var value string
 	var envVar string
+	var literal bool
 
 	cmd := &cobra.Command{
 		Use:   "canary",
 		Short: "Print a canary_tokens config snippet",
 		Long: `Print a canary_tokens configuration snippet that can be pasted into pipelock.yaml.
 
+By default, emits a placeholder that references the env var. Use --literal
+to emit the actual token value (warning: appears in stdout/logs).
+
 Examples:
   pipelock canary
+  pipelock canary --literal
   pipelock canary --format json
-  pipelock canary --name db_canary --value "canary-db-credential-value"`,
+  pipelock canary --name db_canary --value "canary-db-credential-value" --env-var DB_CANARY`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if format != formatYAML && format != formatJSON {
 				return fmt.Errorf("invalid format %q: must be yaml or json", format)
+			}
+
+			// Default: emit env var reference as placeholder.
+			// --literal emits the actual value (with stderr warning).
+			displayValue := "${" + envVar + "}"
+			if literal {
+				displayValue = value
+				_, _ = fmt.Fprintln(os.Stderr, "warning: --literal prints the canary token value to stdout; avoid capturing in shared logs")
 			}
 
 			payload := config.CanaryTokens{
@@ -44,7 +58,7 @@ Examples:
 				Tokens: []config.CanaryToken{
 					{
 						Name:   name,
-						Value:  value,
+						Value:  displayValue,
 						EnvVar: envVar,
 					},
 				},
@@ -60,7 +74,7 @@ Examples:
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  enabled: true\n")
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  tokens:\n")
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "    - name: %q\n", name)
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "      value: %q\n", value)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "      value: %q\n", displayValue)
 			if envVar != "" {
 				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "      env_var: %q\n", envVar)
 			}
@@ -70,8 +84,9 @@ Examples:
 
 	cmd.Flags().StringVar(&format, "format", formatYAML, "output format: yaml or json")
 	cmd.Flags().StringVar(&name, "name", "aws_canary", "canary token name")
-	cmd.Flags().StringVar(&value, "value", defaultCanaryValue(), "canary token value")
-	cmd.Flags().StringVar(&envVar, "env-var", "AWS_CANARY_KEY", "optional env var name for the canary token")
+	cmd.Flags().StringVar(&value, "value", defaultCanaryValue(), "canary token value (used with --literal)")
+	cmd.Flags().StringVar(&envVar, "env-var", "AWS_CANARY_KEY", "env var name for the canary token")
+	cmd.Flags().BoolVar(&literal, "literal", false, "emit actual token value instead of env var placeholder")
 	return cmd
 }
 

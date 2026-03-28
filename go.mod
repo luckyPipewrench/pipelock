@@ -3,6 +3,7 @@ module github.com/luckyPipewrench/pipelock
 go 1.25.0
 
 require (
+	github.com/CycloneDX/cyclonedx-go v0.10.0
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/getsentry/sentry-go v0.43.0
 	github.com/go-shiori/go-readability v0.0.0-20251205110129-5db1dc9836f0
@@ -12,6 +13,7 @@ require (
 	github.com/rs/zerolog v1.34.0
 	github.com/spf13/cobra v1.10.2
 	go.opentelemetry.io/proto/otlp v1.10.0
+	golang.org/x/crypto v0.49.0
 	golang.org/x/net v0.52.0
 	golang.org/x/sys v0.42.0
 	golang.org/x/text v0.35.0

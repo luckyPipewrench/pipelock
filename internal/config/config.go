@@ -260,6 +260,7 @@ type Config struct {
 	ForwardProxy          ForwardProxy            `yaml:"forward_proxy"`
 	WebSocketProxy        WebSocketProxy          `yaml:"websocket_proxy"`
 	DLP                   DLP                     `yaml:"dlp"`
+	CanaryTokens          CanaryTokens            `yaml:"canary_tokens"`
 	ResponseScanning      ResponseScanning        `yaml:"response_scanning"`
 	MCPInputScanning      MCPInputScanning        `yaml:"mcp_input_scanning"`
 	MCPToolScanning       MCPToolScanning         `yaml:"mcp_tool_scanning"`
@@ -285,6 +286,10 @@ type Config struct {
 	Rules                 Rules                   `yaml:"rules"`
 	FileSentry            FileSentry              `yaml:"file_sentry"`
 	Sandbox               Sandbox                 `yaml:"sandbox"`
+	FlightRecorder        FlightRecorder          `yaml:"flight_recorder"`
+	MCPBinaryIntegrity    MCPBinaryIntegrity      `yaml:"mcp_binary_integrity"`
+	MCPToolProvenance     MCPToolProvenance       `yaml:"mcp_tool_provenance"`
+	BehavioralBaseline    BehavioralBaseline      `yaml:"behavioral_baseline"`
 	Agents                map[string]AgentProfile `yaml:"agents,omitempty"`
 	LicenseKey            string                  `yaml:"license_key,omitempty"`        // signed license token (from pipelock license issue)
 	LicenseFile           string                  `yaml:"license_file,omitempty"`       // path to file containing the license token (read at startup)
@@ -779,10 +784,64 @@ type AgentSessionProf struct {
 
 // BudgetConfig defines per-agent request budgets. Zero values mean unlimited.
 type BudgetConfig struct {
-	MaxRequestsPerSession      int `yaml:"max_requests_per_session,omitempty"`
-	MaxBytesPerSession         int `yaml:"max_bytes_per_session,omitempty"`
-	MaxUniqueDomainsPerSession int `yaml:"max_unique_domains_per_session,omitempty"`
-	WindowMinutes              int `yaml:"window_minutes,omitempty"`
+	MaxRequestsPerSession      int                `yaml:"max_requests_per_session,omitempty"`
+	MaxBytesPerSession         int                `yaml:"max_bytes_per_session,omitempty"`
+	MaxUniqueDomainsPerSession int                `yaml:"max_unique_domains_per_session,omitempty"`
+	WindowMinutes              int                `yaml:"window_minutes,omitempty"`
+	MaxToolCallsPerSession     int                `yaml:"max_tool_calls_per_session,omitempty"`
+	MaxConcurrentToolCalls     int                `yaml:"max_concurrent_tool_calls,omitempty"` // parallel in-flight limit (default 10)
+	MaxWallClockMinutes        int                `yaml:"max_wall_clock_minutes,omitempty"`
+	MaxRetriesPerTool          int                `yaml:"max_retries_per_tool,omitempty"`     // same tool+args (default 5)
+	MaxRetriesPerEndpoint      int                `yaml:"max_retries_per_endpoint,omitempty"` // same domain+path (default 20)
+	LoopDetectionWindow        int                `yaml:"loop_detection_window,omitempty"`    // tool calls to track (default 20)
+	FanOutLimit                int                `yaml:"fan_out_limit,omitempty"`            // max unique endpoints in window (default 50)
+	FanOutWindowSeconds        int                `yaml:"fan_out_window_seconds,omitempty"`   // window for fan-out detection (default 60)
+	CostMultipliers            map[string]float64 `yaml:"cost_multipliers,omitempty"`         // optional domain -> cost weight
+	DoWAction                  string             `yaml:"dow_action,omitempty"`               // "block" or "warn" (default "block")
+}
+
+// FlightRecorder configures the tamper-evident evidence recording system.
+type FlightRecorder struct {
+	Enabled            bool   `yaml:"enabled"`
+	Dir                string `yaml:"dir"`
+	CheckpointInterval int    `yaml:"checkpoint_interval"`  // entries between signed checkpoints (default 1000)
+	RetentionDays      int    `yaml:"retention_days"`       // auto-expire after N days (0=forever)
+	Redact             bool   `yaml:"redact"`               // DLP on evidence before commit (default true)
+	SignCheckpoints    bool   `yaml:"sign_checkpoints"`     // Ed25519 sign checkpoints (default true)
+	MaxEntriesPerFile  int    `yaml:"max_entries_per_file"` // rotate files (default 10000)
+	RawEscrow          bool   `yaml:"raw_escrow"`           // encrypted raw detail sidecar (default false)
+	EscrowPublicKey    string `yaml:"escrow_public_key"`    // X25519 public key for raw escrow encryption
+}
+
+// MCPBinaryIntegrity configures pre-spawn hash verification for MCP subprocesses.
+type MCPBinaryIntegrity struct {
+	Enabled      bool   `yaml:"enabled"`
+	ManifestPath string `yaml:"manifest_path"` // path to hash manifest JSON
+	Action       string `yaml:"action"`        // "block" or "warn" (default "warn")
+}
+
+// MCPToolProvenance configures cryptographic provenance verification for MCP tools.
+type MCPToolProvenance struct {
+	Enabled         bool     `yaml:"enabled"`
+	Action          string   `yaml:"action"`           // "block" or "warn" for missing provenance (default "warn")
+	Mode            string   `yaml:"mode"`             // "pipelock", "sigstore", "any" (default "pipelock")
+	TrustedKeys     []string `yaml:"trusted_keys"`     // Ed25519 public keys (pipelock mode)
+	TrustedIssuers  []string `yaml:"trusted_issuers"`  // OIDC issuers (sigstore mode)
+	TrustedSubjects []string `yaml:"trusted_subjects"` // OIDC subjects (sigstore mode)
+	OfflineOnly     bool     `yaml:"offline_only"`     // never call Sigstore APIs (default true)
+}
+
+// BehavioralBaseline configures the profile-then-lock behavioral analysis system.
+type BehavioralBaseline struct {
+	Enabled          bool     `yaml:"enabled"`
+	LearningWindow   int      `yaml:"learning_window"`   // sessions to observe (default 10)
+	DeviationAction  string   `yaml:"deviation_action"`  // "warn", "ask", "block" (default "warn")
+	ProfileDir       string   `yaml:"profile_dir"`       // where to save/load profiles
+	AutoRatify       bool     `yaml:"auto_ratify"`       // skip operator approval (default false, DANGEROUS)
+	SensitivitySigma float64  `yaml:"sensitivity_sigma"` // stddev multiplier (default 2.0)
+	LockDimensions   []string `yaml:"lock_dimensions"`   // metrics to enforce (default: all)
+	PoisonResistance bool     `yaml:"poison_resistance"` // trim outlier sessions (default true)
+	SeasonalityMode  string   `yaml:"seasonality_mode"`  // "none", "labeled", "time" (default "none")
 }
 
 // ScanAPI configures the evaluation-plane HTTP listener.
@@ -1583,6 +1642,10 @@ func (c *Config) Validate() error {
 		if err := ValidateTrustedDomains(p.ExemptDomains, fmt.Sprintf("DLP pattern %q exempt_domains", p.Name)); err != nil {
 			return err
 		}
+	}
+
+	if err := validateCanaryTokens(c); err != nil {
+		return fmt.Errorf("canary_tokens: %w", err)
 	}
 
 	// Validate secrets_file if configured
@@ -3211,6 +3274,9 @@ func Defaults() *Config {
 				{Name: "Credit Card Number", Regex: `\b\d{4}(?:[- ]?\d){11,15}\b`, Severity: "medium", Validator: ValidatorLuhn},
 				{Name: "IBAN", Regex: `\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b`, Severity: "medium", Validator: ValidatorMod97},
 			},
+		},
+		CanaryTokens: CanaryTokens{
+			Enabled: false,
 		},
 		MCPInputScanning: MCPInputScanning{
 			Enabled:      false,

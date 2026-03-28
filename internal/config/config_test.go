@@ -85,6 +85,16 @@ func TestDefaults_Validates(t *testing.T) {
 	}
 }
 
+func TestDefaults_CanaryTokensDisabled(t *testing.T) {
+	cfg := Defaults()
+	if cfg.CanaryTokens.Enabled {
+		t.Fatal("expected canary_tokens.enabled to default false")
+	}
+	if len(cfg.CanaryTokens.Tokens) != 0 {
+		t.Fatalf("expected no default canary tokens, got %d", len(cfg.CanaryTokens.Tokens))
+	}
+}
+
 func TestValidate_InvalidMode(t *testing.T) {
 	cfg := Defaults()
 	cfg.Mode = testInvalid
@@ -129,6 +139,69 @@ func TestValidate_DLPPatternMissingRegex(t *testing.T) {
 	}
 	if err := cfg.Validate(); err == nil {
 		t.Error("expected error for DLP pattern without regex")
+	}
+}
+
+func TestValidate_CanaryTokensEnabledWithoutTokens(t *testing.T) {
+	cfg := Defaults()
+	cfg.CanaryTokens.Enabled = true
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error when canary_tokens.enabled is true with no tokens")
+	}
+}
+
+func TestValidate_CanaryTokens(t *testing.T) {
+	tests := []struct {
+		name    string
+		token   CanaryToken
+		wantErr bool
+	}{
+		{
+			name: "valid token",
+			token: CanaryToken{
+				Name:   "aws_canary",
+				Value:  "AKIA" + "IOSFODNN7" + "CANARY1", // split to avoid gosec G101
+				EnvVar: "AWS_CANARY_KEY",
+			},
+		},
+		{
+			name: "missing name",
+			token: CanaryToken{
+				Value: "AKIA" + "IOSFODNN7" + "CANARY1", // split to avoid gosec G101
+			},
+			wantErr: true,
+		},
+		{
+			name: "missing value",
+			token: CanaryToken{
+				Name: "aws_canary",
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid env var",
+			token: CanaryToken{
+				Name:   "aws_canary",
+				Value:  "AKIA" + "IOSFODNN7" + "CANARY1", // split to avoid gosec G101
+				EnvVar: "AWS-CANARY-KEY",
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.CanaryTokens.Enabled = true
+			cfg.CanaryTokens.Tokens = []CanaryToken{tt.token}
+			err := cfg.Validate()
+			if tt.wantErr && err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("expected no error, got %v", err)
+			}
+		})
 	}
 }
 

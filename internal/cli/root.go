@@ -11,6 +11,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/cli/assess"
 	"github.com/luckyPipewrench/pipelock/internal/cli/audit"
+	"github.com/luckyPipewrench/pipelock/internal/cli/canary"
 	"github.com/luckyPipewrench/pipelock/internal/cli/diag"
 	"github.com/luckyPipewrench/pipelock/internal/cli/generate"
 	"github.com/luckyPipewrench/pipelock/internal/cli/git"
@@ -67,6 +68,8 @@ Quick start:
 		assess.Cmd(),
 		// Audit & reporting
 		audit.Cmd(),
+		// Canary tokens
+		canary.Cmd(),
 		audit.ReportCmd(),
 		audit.SimulateCmd(),
 		// Diagnostics

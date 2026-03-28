@@ -1587,7 +1587,7 @@ func (c *Config) Validate() error {
 	}
 
 	if err := validateCanaryTokens(c); err != nil {
-		return err
+		return fmt.Errorf("canary_tokens: %w", err)
 	}
 
 	// Validate secrets_file if configured

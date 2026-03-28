@@ -270,7 +270,7 @@ func TestRunSimulation_CanaryScenariosDetected(t *testing.T) {
 	result := RunSimulation(scenarios, "", cfg.Mode)
 
 	for _, s := range result.Scenarios {
-		if strings.Contains(s.Name, "canary") && !s.Detected {
+		if strings.Contains(strings.ToLower(s.Name), "canary") && !s.Detected {
 			t.Fatalf("expected canary scenario to be detected: %q (%s)", s.Name, s.Detail)
 		}
 	}

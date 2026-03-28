@@ -260,6 +260,7 @@ type Config struct {
 	ForwardProxy          ForwardProxy            `yaml:"forward_proxy"`
 	WebSocketProxy        WebSocketProxy          `yaml:"websocket_proxy"`
 	DLP                   DLP                     `yaml:"dlp"`
+	CanaryTokens          CanaryTokens            `yaml:"canary_tokens"`
 	ResponseScanning      ResponseScanning        `yaml:"response_scanning"`
 	MCPInputScanning      MCPInputScanning        `yaml:"mcp_input_scanning"`
 	MCPToolScanning       MCPToolScanning         `yaml:"mcp_tool_scanning"`
@@ -1641,6 +1642,10 @@ func (c *Config) Validate() error {
 		if err := ValidateTrustedDomains(p.ExemptDomains, fmt.Sprintf("DLP pattern %q exempt_domains", p.Name)); err != nil {
 			return err
 		}
+	}
+
+	if err := validateCanaryTokens(c); err != nil {
+		return fmt.Errorf("canary_tokens: %w", err)
 	}
 
 	// Validate secrets_file if configured
@@ -3269,6 +3274,9 @@ func Defaults() *Config {
 				{Name: "Credit Card Number", Regex: `\b\d{4}(?:[- ]?\d){11,15}\b`, Severity: "medium", Validator: ValidatorLuhn},
 				{Name: "IBAN", Regex: `\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b`, Severity: "medium", Validator: ValidatorMod97},
 			},
+		},
+		CanaryTokens: CanaryTokens{
+			Enabled: false,
 		},
 		MCPInputScanning: MCPInputScanning{
 			Enabled:      false,

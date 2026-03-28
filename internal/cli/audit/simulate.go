@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -184,6 +185,7 @@ func BuildSimScenarios(cfg *config.Config, sc *scanner.Scanner) []simScenario {
 			return scanDetectedBy(r, scanner.ScannerDLP)
 		},
 	})
+	scenarios = append(scenarios, buildCanarySimulationScenarios(sc, cfg.CanaryTokens)...)
 
 	// --- Prompt Injection ---
 
@@ -358,6 +360,93 @@ func BuildSimScenarios(cfg *config.Config, sc *scanner.Scanner) []simScenario {
 	})
 
 	return scenarios
+}
+
+func buildCanarySimulationScenarios(sc *scanner.Scanner, cfg config.CanaryTokens) []simScenario {
+	if !cfg.Enabled || len(cfg.Tokens) == 0 {
+		return nil
+	}
+
+	ctx := context.Background()
+	scenarios := make([]simScenario, 0, 6*len(cfg.Tokens))
+	for _, token := range cfg.Tokens {
+		name := token.Name
+		value := token.Value
+		if name == "" || value == "" {
+			continue
+		}
+
+		scenarios = append(scenarios, simScenario{
+			name: "Canary token in text body (" + name + ")", category: catDLP,
+			run: func() (bool, string) {
+				return hasCanaryMatch(sc.ScanTextForDLP(ctx, "canary="+value), name)
+			},
+		})
+		scenarios = append(scenarios, simScenario{
+			// Note: url.QueryEscape is a no-op on pure alphanumeric tokens.
+			// This scenario is most valuable when the canary contains
+			// URL-encodable chars (e.g., +, /, =). Unit tests in
+			// canary_test.go cover the decode path with a special-char canary.
+			name: "URL-encoded canary token (" + name + ")", category: catDLP,
+			run: func() (bool, string) {
+				return hasCanaryMatch(sc.ScanTextForDLP(ctx, url.QueryEscape(value)), name)
+			},
+		})
+		scenarios = append(scenarios, simScenario{
+			name: "Base64-encoded canary token (" + name + ")", category: catDLP,
+			run: func() (bool, string) {
+				encoded := base64.StdEncoding.EncodeToString([]byte(value))
+				return hasCanaryMatch(sc.ScanTextForDLP(ctx, encoded), name)
+			},
+		})
+		scenarios = append(scenarios, simScenario{
+			name: "Hex-encoded canary token (" + name + ")", category: catDLP,
+			run: func() (bool, string) {
+				encoded := hex.EncodeToString([]byte(value))
+				return hasCanaryMatch(sc.ScanTextForDLP(ctx, encoded), name)
+			},
+		})
+		scenarios = append(scenarios, simScenario{
+			name: "Split canary token (" + name + ")", category: catDLP,
+			run: func() (bool, string) {
+				split := len(value) / 2
+				if split <= 0 || split >= len(value) {
+					return false, "invalid token length"
+				}
+				return hasCanaryMatch(sc.ScanTextForDLP(ctx, value[:split]+"/"+value[split:]), name)
+			},
+		})
+		scenarios = append(scenarios, simScenario{
+			// DLP patterns may catch the token before the canary fallback,
+			// which is correct — DLP attribution is more specific.
+			// The important thing is the URL is blocked.
+			name: "Canary token in URL (" + name + ")", category: catDLP,
+			run: func() (bool, string) {
+				r := sc.Scan(ctx, "https://evil.com/canary?v="+url.QueryEscape(value))
+				return scanDetectedBy(r, scanner.ScannerDLP)
+			},
+		})
+	}
+
+	return scenarios
+}
+
+func hasCanaryMatch(result scanner.TextDLPResult, tokenName string) (bool, string) {
+	if result.Clean {
+		return false, "clean"
+	}
+
+	for _, m := range result.Matches {
+		if strings.Contains(m.PatternName, "Canary Token ("+tokenName+")") {
+			detail := m.PatternName
+			if m.Encoded != "" {
+				detail += " [" + m.Encoded + "]"
+			}
+			return true, detail
+		}
+	}
+
+	return false, "no canary match"
 }
 
 // runSimulation executes all scenarios and collects results.

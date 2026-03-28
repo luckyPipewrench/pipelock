@@ -34,7 +34,11 @@ type TextDLPResult struct {
 // from MCP tool arguments. It applies zero-width stripping, NFKC normalization,
 // and checks encoded variants (base64, hex, base32) of the text for patterns.
 func (s *Scanner) ScanTextForDLP(_ context.Context, text string) TextDLPResult {
-	if len(s.dlpPatterns) == 0 && len(s.envSecrets) == 0 && len(s.fileSecrets) == 0 && !s.seedEnabled {
+	if len(s.dlpPatterns) == 0 &&
+		len(s.canaryTokens) == 0 &&
+		len(s.envSecrets) == 0 &&
+		len(s.fileSecrets) == 0 &&
+		!s.seedEnabled {
 		return TextDLPResult{Clean: true}
 	}
 
@@ -105,6 +109,7 @@ func (s *Scanner) ScanTextForDLP(_ context.Context, text string) TextDLPResult {
 	// Must match response scanning depth — otherwise attackers use homoglyphs
 	// in key prefixes (e.g., sk-օnt-... with Armenian օ U+0585 for 'a').
 	cleaned := normalize.ForDLP(text)
+	matches = append(matches, s.scanCanaryText(cleaned)...)
 
 	// Check raw text against DLP patterns (before URL decoding).
 	// This catches secrets that aren't URL-encoded.

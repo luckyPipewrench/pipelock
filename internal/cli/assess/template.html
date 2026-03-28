@@ -265,6 +265,50 @@
         .findings-table td:nth-child(4) { max-width: 300px; }
         .findings-table td:nth-child(5) { min-width: 280px; }
 
+        .compliance-summary {
+            display: grid;
+            gap: 1rem;
+        }
+
+        .compliance-framework {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 1rem;
+            margin-bottom: 1rem;
+        }
+
+        .compliance-framework-header {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 1rem;
+            margin-bottom: 0.75rem;
+        }
+
+        .compliance-framework h3 {
+            font-size: 1rem;
+            color: var(--text-primary);
+            margin-bottom: 0.25rem;
+        }
+
+        .compliance-meta {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            font-family: var(--mono);
+        }
+
+        .compliance-pill {
+            display: inline-block;
+            padding: 0.3rem 0.75rem;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            color: #fff;
+            white-space: nowrap;
+        }
+
         @media print {
             * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
             body {
@@ -532,6 +576,50 @@
                     <div class="score-bar-bg"><div class="score-bar-fill" style="width: {{percent .Score .MaxScore}}%; background: {{auditBarColor .Score .MaxScore}};"></div></div>
                     {{if .Detail}}<div style="font-size: 0.6875rem; color: var(--text-dim); margin-top: 0.25rem;">{{.Detail}}</div>{{else if eq .Score 0}}<div style="font-size: 0.6875rem; color: var(--color-red); margin-top: 0.25rem;">not configured</div>{{else if eq .Score .MaxScore}}<div style="font-size: 0.6875rem; color: var(--text-dim); margin-top: 0.25rem;">enabled</div>{{else}}<div style="font-size: 0.6875rem; color: var(--text-dim); margin-top: 0.25rem;">partially configured</div>{{end}}
                 </div>
+                {{end}}
+            </div>
+        </section>
+        {{end}}
+
+        <!-- Compliance Annexes -->
+        {{if .Compliance}}
+        <section>
+            <h2>Compliance Annexes</h2>
+            <div class="compliance-summary">
+                {{range .Compliance}}
+                <article class="compliance-framework">
+                    <div class="compliance-framework-header">
+                        <div>
+                            <h3>{{.Name}}</h3>
+                            <div class="compliance-meta">{{.ID}} · Framework v{{.Version}} · Mapping v{{.MappingVersion}}</div>
+                        </div>
+                        <span class="compliance-pill" style="background: {{coverageColor .CoverageStatus}};">{{.CoverageText}}</span>
+                    </div>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th style="width: 16%;">Control</th>
+                                <th style="width: 12%;">Status</th>
+                                <th style="width: 18%;">Features</th>
+                                <th>Evidence</th>
+                                <th style="width: 22%;">Limitation</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {{range .Controls}}
+                            <tr>
+                                <td style="font-family: var(--mono);">{{.ID}}<br>{{.Name}}</td>
+                                <td>
+                                    <span class="compliance-pill" style="background: {{coverageColor .Status}};">{{coverageLabel .Status}}</span>
+                                </td>
+                                <td style="font-size: 0.75rem;">{{join .Features ", "}}</td>
+                                <td style="font-size: 0.75rem;">{{.Evidence}}</td>
+                                <td style="font-size: 0.75rem;">{{.Limitation}}</td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                </article>
                 {{end}}
             </div>
         </section>

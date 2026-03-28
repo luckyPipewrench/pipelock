@@ -205,6 +205,13 @@
             text-align: center;
         }
 
+        .stat-card .compliance-meta {
+            margin-top: 0.35rem;
+            font-size: 0.6875rem;
+            color: var(--text-dim);
+            line-height: 1.4;
+        }
+
         .stat-value {
             font-size: 1.5rem;
             font-weight: 700;
@@ -250,6 +257,12 @@
             text-decoration: underline;
         }
 
+        .compliance-summary-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 0.75rem;
+        }
+
         footer {
             margin-top: 3rem;
             padding: 1.5rem 0;
@@ -282,6 +295,7 @@
 
         @media (max-width: 600px) {
             .stats-grid { grid-template-columns: repeat(2, 1fr); }
+            .compliance-summary-grid { grid-template-columns: 1fr; }
         }
 
         @media print {
@@ -376,7 +390,7 @@
 
         <div class="informational-banner">
             <strong>&#9432; Informational Only</strong>
-            Unsigned. Not audit-grade. Upgrade to the assess tier for the full signed report with server-specific findings and fix guidance.
+            Unsigned. Not audit-grade. Coverage metadata only. Upgrade to the assess tier for the full signed report with server-specific findings, compliance annexes, and fix guidance.
         </div>
 
         <!-- Assessment Sections (scores only, no detail) -->
@@ -418,6 +432,22 @@
                 </tbody>
             </table>
         </section>
+
+        <!-- Compliance Coverage -->
+        {{if .Compliance}}
+        <section>
+            <h2>Compliance Coverage</h2>
+            <div class="compliance-summary-grid">
+                {{range .Compliance}}
+                <div class="stat-card">
+                    <div class="stat-value">{{.CoverageText}}</div>
+                    <div class="stat-label">{{.FrameworkName}}</div>
+                    <div class="compliance-meta">Mapping v{{.MappingVersion}} · {{.Covered}} covered / {{.Total}} total</div>
+                </div>
+                {{end}}
+            </div>
+        </section>
+        {{end}}
 
         <!-- MCP Server Coverage (counts only, no names) -->
         <section>

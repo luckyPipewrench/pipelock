@@ -24,6 +24,8 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cli/diag"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/license"
+	"github.com/luckyPipewrench/pipelock/internal/report/attestation"
+	"github.com/luckyPipewrench/pipelock/internal/report/compliance"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
@@ -75,12 +77,14 @@ func checkAssessLicense(runDir string) bool {
 // assessFinalizeCmd creates the cobra command for "assess finalize".
 func assessFinalizeCmd() *cobra.Command {
 	var (
-		unsigned     bool
-		allowPartial bool
-		archive      bool
-		agent        string
-		keystoreDir  string
-		jsonOutput   bool
+		unsigned        bool
+		allowPartial    bool
+		archive         bool
+		badge           bool
+		attestationFlag bool
+		agent           string
+		keystoreDir     string
+		jsonOutput      bool
 	)
 
 	cmd := &cobra.Command{
@@ -96,15 +100,22 @@ Examples:
   pipelock assess finalize assessment-a1b2c3d4/
   pipelock assess finalize assessment-a1b2c3d4/ --unsigned
   pipelock assess finalize assessment-a1b2c3d4/ --allow-partial
-  pipelock assess finalize assessment-a1b2c3d4/ --archive`,
+  pipelock assess finalize assessment-a1b2c3d4/ --archive
+  pipelock assess finalize assessment-a1b2c3d4/ --attestation --badge`,
 		Args:          cobra.ExactArgs(1),
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if badge && !attestationFlag {
+				return fmt.Errorf("--badge requires --attestation (badge is derived from the signed attestation)")
+			}
+
 			opts := assessFinalizeOpts{
 				Unsigned:     unsigned,
 				AllowPartial: allowPartial,
 				Archive:      archive,
+				Badge:        badge,
+				Attestation:  attestationFlag,
 				Agent:        agent,
 				KeystoreDir:  keystoreDir,
 				HasAssess:    checkAssessLicense(args[0]),
@@ -127,6 +138,8 @@ Examples:
 	cmd.Flags().BoolVar(&unsigned, "unsigned", false, "skip signing even with license")
 	cmd.Flags().BoolVar(&allowPartial, "allow-partial", false, "allow finalization with skipped primitives")
 	cmd.Flags().BoolVar(&archive, "archive", false, "produce .tar.gz bundle")
+	cmd.Flags().BoolVar(&attestationFlag, "attestation", false, "write attestation.json and detached signature")
+	cmd.Flags().BoolVar(&badge, "badge", false, "write SVG badge derived from the attestation")
 	cmd.Flags().StringVar(&agent, "agent", "", "agent name for signing (or set PIPELOCK_AGENT)")
 	cmd.Flags().StringVar(&keystoreDir, "keystore", "", "keystore directory (default ~/.pipelock)")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "machine-readable output")
@@ -139,6 +152,8 @@ type assessFinalizeOpts struct {
 	Unsigned     bool
 	AllowPartial bool
 	Archive      bool
+	Badge        bool
+	Attestation  bool
 	Agent        string
 	KeystoreDir  string
 	HasAssess    bool // true if license has "assess" feature
@@ -195,6 +210,7 @@ func runAssessFinalize(runDir string, opts assessFinalizeOpts) error {
 
 	// Step 4: determine tier and produce output.
 	artifacts := make(map[string]string)
+	shouldEmitAttestation := opts.HasAssess && !opts.Unsigned && (opts.Attestation || opts.Badge)
 
 	// Set signed flag before rendering so the template can display the correct badge.
 	// This reflects intent (will sign), not state (has been signed) — signing happens after render.
@@ -213,6 +229,92 @@ func runAssessFinalize(runDir string, opts assessFinalizeOpts) error {
 		}
 		if h, err := hashFile(filepath.Join(cleanDir, "assessment.html")); err == nil {
 			artifacts["assessment.html"] = h
+		}
+
+		if shouldEmitAttestation {
+			primaryHash, ok := artifacts["assessment.json"]
+			if !ok {
+				return cliutil.ExitCodeError(2, fmt.Errorf("missing assessment hash for attestation"))
+			}
+
+			// Resolve signing identity FIRST — needed in attestation payload.
+			agentName, err := cliutil.ResolveAgentName(opts.Agent)
+			if err != nil {
+				return cliutil.ExitCodeError(1, fmt.Errorf("resolving agent for attestation signing: %w", err))
+			}
+			dir, err := cliutil.ResolveKeystoreDir(opts.KeystoreDir)
+			if err != nil {
+				return cliutil.ExitCodeError(1, fmt.Errorf("resolving keystore for attestation signing: %w", err))
+			}
+			ks := signing.NewKeystore(dir)
+			privKey, err := ks.LoadPrivateKey(agentName)
+			if err != nil {
+				return cliutil.ExitCodeError(1, fmt.Errorf("loading key for attestation signing (agent %q): %w", agentName, err))
+			}
+			pubKey, err := ks.LoadPublicKey(agentName)
+			if err != nil {
+				return cliutil.ExitCodeError(1, fmt.Errorf("loading public key for attestation (agent %q): %w", agentName, err))
+			}
+
+			// Generate badge BEFORE attestation so its hash is included
+			// in the signed payload. Badge alone cannot be trusted without
+			// verifying the attestation that binds it.
+			var badgeSHA string
+			if opts.Badge {
+				attPreview := attestation.New(attestation.Input{
+					GeneratedAt:  now,
+					OverallGrade: assessment.OverallGrade,
+					OverallScore: assessment.OverallScore,
+				})
+				badgePath := filepath.Join(cleanDir, "badge.svg")
+				if err := os.WriteFile(badgePath, []byte(attestation.SVG(attPreview)), 0o600); err != nil {
+					return cliutil.ExitCodeError(2, fmt.Errorf("writing badge.svg: %w", err))
+				}
+				h, err := hashFile(badgePath)
+				if err != nil {
+					return cliutil.ExitCodeError(2, fmt.Errorf("hashing badge.svg: %w", err))
+				}
+				badgeSHA = h
+				artifacts["badge.svg"] = h
+			}
+
+			// Build attestation with signer identity and badge hash.
+			att := attestation.New(attestation.Input{
+				Tool:                  "pipelock assess",
+				Version:               manifest.Version,
+				BuildSHA:              manifest.BuildSHA,
+				RunID:                 manifest.RunID,
+				GeneratedAt:           now,
+				LicenseTier:           manifest.LicenseTier,
+				OverallGrade:          assessment.OverallGrade,
+				OverallScore:          assessment.OverallScore,
+				PrimaryArtifact:       "assessment.json",
+				PrimaryArtifactSHA256: primaryHash,
+				Compliance:            compliance.CoverageSummaries(assessment.Compliance),
+				SignerAgent:           agentName,
+				SignerKeyFingerprint:  attestation.KeyFingerprint(pubKey),
+				BadgeSHA256:           badgeSHA,
+			})
+
+			if err := writeAttestationJSON(filepath.Join(cleanDir, "attestation.json"), &att); err != nil {
+				return cliutil.ExitCodeError(2, err)
+			}
+			if h, err := hashFile(filepath.Join(cleanDir, "attestation.json")); err == nil {
+				artifacts["attestation.json"] = h
+			}
+
+			// Sign AFTER attestation includes all metadata (signer, badge hash).
+			sig, err := signing.SignFile(filepath.Join(cleanDir, "attestation.json"), privKey)
+			if err != nil {
+				return cliutil.ExitCodeError(1, fmt.Errorf("signing attestation: %w", err))
+			}
+			sigPath := filepath.Join(cleanDir, "attestation.json"+signing.SigExtension)
+			if err := signing.SaveSignature(sig, sigPath); err != nil {
+				return cliutil.ExitCodeError(1, fmt.Errorf("saving attestation signature: %w", err))
+			}
+			if h, err := hashFile(sigPath); err == nil {
+				artifacts["attestation.json"+signing.SigExtension] = h
+			}
 		}
 	} else {
 		// Free path: summary projection.
@@ -301,6 +403,13 @@ func runAssessFinalize(runDir string, opts assessFinalizeOpts) error {
 	if opts.HasAssess {
 		htmlFilename = "assessment.html"
 	}
+	attestationText := ""
+	if shouldEmitAttestation {
+		attestationText = fmt.Sprintf(`
+To verify attestation:
+  pipelock assess verify-attestation %s --agent %s
+`, runDir, agentHint)
+	}
 	verifyText := fmt.Sprintf(`Pipelock Assessment Verification
 ================================
 Run ID: %s
@@ -312,10 +421,10 @@ To verify this assessment:
 Manual verification:
   1. Check artifact hashes match manifest.json
   2. Verify manifest signature: pipelock verify manifest.json --agent %s
-
+%s
 To export as PDF:
   Open %s in a browser and print to PDF (Ctrl+P / Cmd+P).
-`, manifest.RunID, now.Format(time.RFC3339), runDir, agentHint, agentHint, htmlFilename)
+`, manifest.RunID, now.Format(time.RFC3339), runDir, agentHint, agentHint, attestationText, htmlFilename)
 
 	if err := os.WriteFile(filepath.Join(cleanDir, "verify.txt"), []byte(verifyText), 0o600); err != nil {
 		return cliutil.ExitCodeError(2, fmt.Errorf("writing verify.txt: %w", err))
@@ -558,6 +667,7 @@ func projectToSummary(a Assessment) Summary {
 		ServerCounts:  serverCounts,
 		DetectionPct:  detectionPct,
 		Signed:        false,
+		Compliance:    compliance.CoverageSummaries(a.Compliance),
 	}
 }
 
@@ -620,6 +730,19 @@ func writeSummaryHTML(path string, s *Summary) error {
 
 	if err := renderSummaryHTML(f, s); err != nil {
 		return fmt.Errorf("rendering summary.html: %w", err)
+	}
+	return nil
+}
+
+// writeAttestationJSON writes the attestation payload to a JSON file.
+func writeAttestationJSON(path string, a *attestation.Attestation) error {
+	data, err := json.MarshalIndent(a, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshaling attestation: %w", err)
+	}
+	data = append(data, '\n')
+	if err := os.WriteFile(filepath.Clean(path), data, 0o600); err != nil {
+		return fmt.Errorf("writing attestation.json: %w", err)
 	}
 	return nil
 }

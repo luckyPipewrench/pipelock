@@ -259,12 +259,15 @@ func TestAssessVerify_CmdRegistered(t *testing.T) {
 
 	foundVerify := false
 	foundStatus := false
+	foundVerifyAttestation := false
 	for _, sub := range subCmds {
 		switch sub.Use {
 		case "verify <run-dir>":
 			foundVerify = true
 		case "status <run-dir>":
 			foundStatus = true
+		case "verify-attestation <run-dir>":
+			foundVerifyAttestation = true
 		}
 	}
 
@@ -273,5 +276,8 @@ func TestAssessVerify_CmdRegistered(t *testing.T) {
 	}
 	if !foundStatus {
 		t.Error("assess status command not registered")
+	}
+	if !foundVerifyAttestation {
+		t.Error("assess verify-attestation command not registered")
 	}
 }

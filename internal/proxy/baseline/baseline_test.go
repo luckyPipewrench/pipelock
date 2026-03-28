@@ -18,7 +18,7 @@ const testAgent = "agent-1"
 func makeReadOnly(dir string) error { return os.Chmod(dir, 0o000) }
 
 // restoreWritable restores permissions so t.TempDir cleanup succeeds.
-func restoreWritable(dir string) error { return os.Chmod(dir, 0o600) }
+func restoreWritable(dir string) error { return os.Chmod(dir, 0o750) } //nolint:gosec // G302: directory needs execute bit for traversal
 
 func normalMetrics() SessionMetrics {
 	return SessionMetrics{

@@ -322,6 +322,15 @@ var ErrUnsigned = errors.New("tool has no provenance attestation")
 //   - StatusUnsigned + actionOnUnsigned=="warn" -> don't block (caller should log)
 //   - StatusUnsigned + actionOnUnsigned=="allow" -> don't block
 func ShouldBlock(results []VerificationResult, actionOnUnsigned string) (bool, error) {
+	// Fail closed on unknown action values. Only "block", "warn", and
+	// "allow" are valid. A typo or bad config should not silently disable blocking.
+	switch actionOnUnsigned {
+	case "block", "warn", "allow":
+		// Valid.
+	default:
+		return true, fmt.Errorf("unknown actionOnUnsigned %q: failing closed", actionOnUnsigned)
+	}
+
 	for _, r := range results {
 		switch r.Status {
 		case StatusFailed:

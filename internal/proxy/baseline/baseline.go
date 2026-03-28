@@ -13,10 +13,30 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
+
+// safeAgentKeyRe restricts agent keys to alphanumeric, hyphens, underscores,
+// and dots. Prevents path traversal via crafted agent keys.
+var safeAgentKeyRe = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
+
+// validateAgentKey ensures an agent key cannot escape the profile directory.
+func validateAgentKey(key string) error {
+	if key == "" {
+		return errors.New("empty agent key")
+	}
+	if !safeAgentKeyRe.MatchString(key) {
+		return fmt.Errorf("invalid agent key %q: must match [a-zA-Z0-9._-]+", key)
+	}
+	if strings.Contains(key, "..") {
+		return fmt.Errorf("invalid agent key %q: contains path traversal", key)
+	}
+	return nil
+}
 
 // ProfileState is the explicit state machine for baseline lifecycle.
 // Transitions: Observe->Learn (auto), Learn->Ratify (auto),
@@ -310,14 +330,28 @@ func (m *Manager) Ratify(agentKey string) error {
 	as.profile.Ratified = true
 	as.profile.RatifiedAt = &now
 	as.profile.State = StateLocked
-	as.state = StateLocked
 
-	return m.persistProfile(agentKey)
+	// Persist BEFORE committing state in memory. If the write fails,
+	// we revert the profile fields so Check() doesn't enforce an
+	// unperisted ratification.
+	if err := m.persistProfile(agentKey); err != nil {
+		as.profile.Ratified = false
+		as.profile.RatifiedAt = nil
+		as.profile.State = StateRatify
+		return fmt.Errorf("ratification failed: %w", err)
+	}
+
+	as.state = StateLocked
+	return nil
 }
 
 // Reset moves an agent back to Observe state for relearning.
 // Clears the existing profile and learning data.
 func (m *Manager) Reset(agentKey string) error {
+	if err := validateAgentKey(agentKey); err != nil {
+		return err
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -478,6 +512,10 @@ func (m *Manager) activeDimensions() []string {
 func (m *Manager) persistProfile(agentKey string) error {
 	if m.cfg.ProfileDir == "" {
 		return nil
+	}
+
+	if err := validateAgentKey(agentKey); err != nil {
+		return fmt.Errorf("refusing to persist: %w", err)
 	}
 
 	as, exists := m.agents[agentKey]

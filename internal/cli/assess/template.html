@@ -593,7 +593,7 @@
                             <h3>{{.Name}}</h3>
                             <div class="compliance-meta">{{.ID}} · Framework v{{.Version}} · Mapping v{{.MappingVersion}}</div>
                         </div>
-                        <span class="compliance-pill" style="background: {{gradeColor "A"}};">{{.CoverageText}}</span>
+                        <span class="compliance-pill" style="background: {{coverageColor .CoverageStatus}};">{{.CoverageText}}</span>
                     </div>
                     <table>
                         <thead>

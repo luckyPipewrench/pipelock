@@ -80,3 +80,16 @@ func (f Framework) CoverageText() string {
 func (s CoverageSummary) CoverageText() string {
 	return fmt.Sprintf("%d/%d covered", s.Covered, s.Total)
 }
+
+// CoverageStatus returns the dominant coverage status for badge coloring.
+// All covered = "covered", any not-covered = "not_covered", else "partial".
+func (f Framework) CoverageStatus() string {
+	s := f.CoverageSummary()
+	if s.NotCovered > 0 {
+		return StatusNotCovered
+	}
+	if s.Partial > 0 {
+		return StatusPartial
+	}
+	return StatusCovered
+}

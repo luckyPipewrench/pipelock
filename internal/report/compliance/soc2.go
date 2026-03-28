@@ -23,7 +23,7 @@ func SOC2TSC() Framework {
 				ID:         "AVA",
 				Name:       "Availability",
 				Status:     StatusPartial,
-				Features:   []string{"metrics", "simulate", "metrics"},
+				Features:   []string{"metrics", "simulate"},
 				Evidence:   "Metrics and health endpoints aid availability monitoring.",
 				Limitation: "Capacity planning and SLAs remain deployment-specific.",
 			},

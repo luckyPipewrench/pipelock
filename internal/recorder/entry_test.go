@@ -444,6 +444,64 @@ func TestVerifyCheckpoints_Standalone(t *testing.T) {
 	}
 }
 
+func TestVerifyCheckpoints_MissingSignature(t *testing.T) {
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	entries := []recorder.Entry{
+		{
+			Version:  1,
+			Sequence: 1,
+			Type:     "checkpoint",
+			Detail:   json.RawMessage(`{"signature":""}`),
+		},
+	}
+	if err := recorder.VerifyCheckpoints(entries, pub); err == nil {
+		t.Error("expected error for missing signature")
+	}
+}
+
+func TestVerifyCheckpoints_BadHexSignature(t *testing.T) {
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	entries := []recorder.Entry{
+		{
+			Version:  1,
+			Sequence: 1,
+			Type:     "checkpoint",
+			Detail:   json.RawMessage(`{"signature":"not-valid-hex!"}`),
+		},
+	}
+	if err := recorder.VerifyCheckpoints(entries, pub); err == nil {
+		t.Error("expected error for bad hex signature")
+	}
+}
+
+func TestVerifyCheckpoints_InvalidSignature(t *testing.T) {
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	// Valid hex but wrong signature (64 zero bytes).
+	badSig := "0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000"
+	entries := []recorder.Entry{
+		{
+			Version:  1,
+			Sequence: 1,
+			Type:     "checkpoint",
+			PrevHash: "abc123",
+			Detail:   json.RawMessage(`{"signature":"` + badSig + `"}`),
+		},
+	}
+	if err := recorder.VerifyCheckpoints(entries, pub); err == nil {
+		t.Error("expected error for invalid signature")
+	}
+}
+
 func TestVerifyCheckpoints_NoCheckpoints(t *testing.T) {
 	pub, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {

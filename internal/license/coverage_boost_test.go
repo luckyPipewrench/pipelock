@@ -199,3 +199,49 @@ func TestHasFeature_EmptyString(t *testing.T) {
 		t.Error("should not match empty feature name")
 	}
 }
+
+// --- Issue error paths ---
+
+func TestIssue_InvalidPrivateKeySize(t *testing.T) {
+	lic := License{ID: "test", Email: "test@example.com"}
+	_, err := Issue(lic, []byte("too-short"))
+	if err == nil {
+		t.Error("expected error for invalid private key size")
+	}
+}
+
+func TestVerify_InvalidPublicKeySize(t *testing.T) {
+	_, err := Verify("plk_dummytoken", []byte("too-short"))
+	if err == nil {
+		t.Error("expected error for invalid public key size")
+	}
+}
+
+func TestDecode_EmptyToken(t *testing.T) {
+	_, err := Decode("")
+	if err == nil {
+		t.Error("expected error for empty token")
+	}
+}
+
+func TestDecode_BadPrefix(t *testing.T) {
+	_, err := Decode("bad_prefix_token")
+	if err == nil {
+		t.Error("expected error for bad prefix")
+	}
+}
+
+func TestDecode_InvalidBase64(t *testing.T) {
+	_, err := Decode(tokenPrefix + "!!!not-base64!!!")
+	if err == nil {
+		t.Error("expected error for invalid base64")
+	}
+}
+
+func TestDecode_TooShort(t *testing.T) {
+	// Valid base64 but too short (less than signature size)
+	_, err := Decode(tokenPrefix + "AAAA")
+	if err == nil {
+		t.Error("expected error for token shorter than signature")
+	}
+}

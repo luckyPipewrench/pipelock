@@ -4,11 +4,19 @@
 package capture
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
+
+// loadReplaySessionID is the session ID used in LoadAndReplay tests.
+const loadReplaySessionID = "test-session"
+
+// loadReplayOriginalHash is the config hash embedded in fixture summaries.
+const loadReplayOriginalHash = "sha256:original"
 
 // fakeAWSKey is split to avoid gosec G101.
 const fakeAWSKey = "AKIA" + "IOSFODNN7EXAMPLE"
@@ -345,5 +353,205 @@ func TestReplayDLPVerdict_Clean(t *testing.T) {
 	}
 	if result.CandidateAction != config.ActionAllow {
 		t.Fatalf("expected CandidateAction=%q, got %q", config.ActionAllow, result.CandidateAction)
+	}
+}
+
+// writeFixtureSession writes a capture entry to a session subdirectory so that
+// LoadAndReplay can read it. The recorder.Config must have Dir set to the
+// session subdirectory (not the parent sessionsDir).
+func writeFixtureSession(t *testing.T, sessionsDir string, summary CaptureSummary) {
+	t.Helper()
+
+	sessionDir := filepath.Join(sessionsDir, loadReplaySessionID)
+	rec, err := recorder.New(recorder.Config{
+		Enabled:           true,
+		Dir:               sessionDir,
+		MaxEntriesPerFile: 100,
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("recorder.New: %v", err)
+	}
+
+	if err := rec.Record(recorder.Entry{
+		SessionID: loadReplaySessionID,
+		Type:      EntryTypeCapture,
+		Summary:   "fixture",
+		Detail:    summary,
+	}); err != nil {
+		t.Fatalf("rec.Record: %v", err)
+	}
+
+	if err := rec.Close(); err != nil {
+		t.Fatalf("rec.Close: %v", err)
+	}
+}
+
+// writeDropSentinels writes a capture_drop entry to the capture-meta
+// subdirectory with the given drop count.
+func writeDropSentinels(t *testing.T, sessionsDir string, count int) {
+	t.Helper()
+
+	metaDir := filepath.Join(sessionsDir, metaSessionID)
+	rec, err := recorder.New(recorder.Config{
+		Enabled:           true,
+		Dir:               metaDir,
+		MaxEntriesPerFile: 100,
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("recorder.New (meta): %v", err)
+	}
+
+	if err := rec.Record(recorder.Entry{
+		SessionID: metaSessionID,
+		Type:      EntryTypeCaptureDrop,
+		Summary:   "capture queue overflow",
+		Detail:    CaptureDropDetail{Count: count, Reason: "backpressure"},
+	}); err != nil {
+		t.Fatalf("rec.Record (meta): %v", err)
+	}
+
+	if err := rec.Close(); err != nil {
+		t.Fatalf("rec.Close (meta): %v", err)
+	}
+}
+
+func TestLoadAndReplay(t *testing.T) {
+	dir := t.TempDir()
+
+	// Write a URL capture that the candidate config will block.
+	summary := CaptureSummary{
+		CaptureSchemaVersion: CaptureSchemaV1,
+		Surface:              SurfaceURL,
+		ConfigHash:           loadReplayOriginalHash,
+		EffectiveAction:      config.ActionAllow,
+		Request: CaptureRequest{
+			URL: "https://safe.example.com/page",
+		},
+	}
+	writeFixtureSession(t, dir, summary)
+
+	// Candidate config blocks safe.example.com — should produce Changed=true.
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+	cfg.FetchProxy.Monitoring.Blocklist = []string{"safe.example.com"}
+
+	records, dropped, originalHash, err := LoadAndReplay(cfg, dir)
+	if err != nil {
+		t.Fatalf("LoadAndReplay: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(records))
+	}
+	if dropped != 0 {
+		t.Fatalf("expected dropped=0, got %d", dropped)
+	}
+	if originalHash != loadReplayOriginalHash {
+		t.Fatalf("expected originalHash=%q, got %q", loadReplayOriginalHash, originalHash)
+	}
+	r := records[0]
+	if !r.Result.Changed {
+		t.Fatal("expected Result.Changed=true: candidate blocks safe.example.com")
+	}
+	if r.Result.CandidateAction != config.ActionBlock {
+		t.Fatalf("expected CandidateAction=%q, got %q", config.ActionBlock, r.Result.CandidateAction)
+	}
+}
+
+func TestLoadAndReplay_Empty(t *testing.T) {
+	dir := t.TempDir()
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+
+	records, dropped, originalHash, err := LoadAndReplay(cfg, dir)
+	if err != nil {
+		t.Fatalf("LoadAndReplay on empty dir: %v", err)
+	}
+	if len(records) != 0 {
+		t.Fatalf("expected 0 records, got %d", len(records))
+	}
+	if dropped != 0 {
+		t.Fatalf("expected dropped=0, got %d", dropped)
+	}
+	if originalHash != "" {
+		t.Fatalf("expected empty originalHash, got %q", originalHash)
+	}
+}
+
+func TestLoadAndReplay_DropCount(t *testing.T) {
+	dir := t.TempDir()
+
+	// Write two drop sentinels: counts 50 and 150. LoadAndReplay takes the max.
+	metaDir := filepath.Join(dir, metaSessionID)
+	rec, err := recorder.New(recorder.Config{
+		Enabled:           true,
+		Dir:               metaDir,
+		MaxEntriesPerFile: 100,
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("recorder.New (meta): %v", err)
+	}
+	for _, count := range []int{50, 150} {
+		if recErr := rec.Record(recorder.Entry{
+			SessionID: metaSessionID,
+			Type:      EntryTypeCaptureDrop,
+			Summary:   "capture queue overflow",
+			Detail:    CaptureDropDetail{Count: count, Reason: "backpressure"},
+		}); recErr != nil {
+			t.Fatalf("rec.Record: %v", recErr)
+		}
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("rec.Close: %v", err)
+	}
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+
+	_, dropped, _, err := LoadAndReplay(cfg, dir)
+	if err != nil {
+		t.Fatalf("LoadAndReplay: %v", err)
+	}
+	// Max of 50 and 150 is 150.
+	if dropped != 150 {
+		t.Fatalf("expected dropped=150, got %d", dropped)
+	}
+}
+
+func TestLoadAndReplay_SkipsFiles(t *testing.T) {
+	dir := t.TempDir()
+
+	// Write a URL capture entry.
+	summary := CaptureSummary{
+		CaptureSchemaVersion: CaptureSchemaV1,
+		Surface:              SurfaceURL,
+		ConfigHash:           loadReplayOriginalHash,
+		EffectiveAction:      config.ActionAllow,
+		Request: CaptureRequest{
+			URL: "https://normal.example.com/page",
+		},
+	}
+	writeFixtureSession(t, dir, summary)
+
+	// Also write a drop sentinel so the meta dir exists.
+	writeDropSentinels(t, dir, 10)
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+
+	// Only one session session dir; capture-meta should be skipped.
+	records, dropped, _, err := LoadAndReplay(cfg, dir)
+	if err != nil {
+		t.Fatalf("LoadAndReplay: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("expected 1 record (capture-meta skipped), got %d", len(records))
+	}
+	if dropped != 10 {
+		t.Fatalf("expected dropped=10, got %d", dropped)
 	}
 }

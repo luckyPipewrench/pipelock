@@ -877,7 +877,7 @@ func TestA2aScanToVerdict_WithFindings(t *testing.T) {
 	if v.Clean {
 		t.Error("expected dirty verdict")
 	}
-	if v.Action != "block" {
+	if v.Action != config.ActionBlock {
 		t.Errorf("action = %q, want block", v.Action)
 	}
 	if len(v.Matches) != 3 {
@@ -918,9 +918,9 @@ func TestAgentCardToVerdict_Drift(t *testing.T) {
 func TestAgentCardToVerdict_DefaultAction(t *testing.T) {
 	result := AgentCardScanResult{Clean: false}
 	cfg := enabledA2ACfg()
-	cfg.Action = "block"
+	cfg.Action = config.ActionBlock
 	v := agentCardToVerdict(json.RawMessage(`1`), result, cfg)
-	if v.Action != "block" {
+	if v.Action != config.ActionBlock {
 		t.Errorf("expected default action from config, got %q", v.Action)
 	}
 }

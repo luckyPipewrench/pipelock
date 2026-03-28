@@ -47,6 +47,7 @@ func RunWSProxy(
 	store session.Store,
 	adaptiveCfg *config.AdaptiveEnforcement,
 	m *metrics.Metrics,
+	redirectRT *RedirectRuntime,
 ) error {
 	// Separate parent and inner context. The parent context comes from
 	// signal handling (SIGINT/SIGTERM). The inner context is cancelled
@@ -107,6 +108,7 @@ func RunWSProxy(
 		KillSwitch: ks, ChainMatcher: chainMatcher,
 		AuditLogger: auditLogger, CEE: cee,
 		Rec: rec, AdaptiveCfg: adaptiveCfg, Metrics: m,
+		RedirectRT: redirectRT,
 	}
 
 	clientReader := transport.NewStdioReader(clientIn)
@@ -175,7 +177,13 @@ func RunWSProxy(
 		// Input scanning: DLP, injection, policy, chain detection.
 		if blocked := scanHTTPInput(msg, safeLogW, sessionKey, sessionKey, wsOpts); blocked != nil {
 			if !blocked.IsNotification {
-				resp := blockRequestResponse(*blocked)
+				var resp []byte
+				if blocked.SyntheticResponse != nil {
+					// Redirect handler produced a synthetic response -- send it as-is.
+					resp = blocked.SyntheticResponse
+				} else {
+					resp = blockRequestResponse(*blocked)
+				}
 				if wErr := safeClientOut.WriteMessage(resp); wErr != nil {
 					_, _ = fmt.Fprintf(safeLogW, "pipelock: stdout write error: %v\n", wErr)
 				}

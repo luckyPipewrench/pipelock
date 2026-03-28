@@ -17,9 +17,9 @@
             --bg-hover: rgba(255, 255, 255, 0.07);
             --bg-header: rgba(255, 255, 255, 0.06);
             --border: rgba(255, 255, 255, 0.08);
-            --text-primary: #e2e8f0;
-            --text-secondary: #e2e8f0;
-            --text-muted: #94a3b8;
+            --text-primary: #eaeaf0;
+            --text-secondary: #c8c8d8;
+            --text-muted: #a0a0b4;
             --text-dim: #64748b;
             --color-green: #22c55e;
             --color-blue: #3b82f6;
@@ -35,6 +35,7 @@
             background: var(--bg-primary);
             color: var(--text-secondary);
             font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+            font-size: 17px;
             line-height: 1.7;
             padding: 2rem;
             margin: 0;
@@ -73,12 +74,13 @@
         }
 
         h2 {
-            font-size: 1.125rem;
-            font-weight: 600;
+            font-size: 1.375rem;
+            font-weight: 700;
+            letter-spacing: 0.01em;
             color: var(--text-primary);
-            margin-bottom: 1rem;
+            margin: 2.5rem 0 1rem;
             padding-bottom: 0.5rem;
-            border-bottom: 1px solid var(--border);
+            border-bottom: 2px solid var(--border);
         }
 
         section {
@@ -106,18 +108,19 @@
         }
 
         .cap-warning {
-            background: rgba(234, 179, 8, 0.1);
-            border: 1px solid var(--color-yellow);
+            background: rgba(234, 179, 8, 0.12);
+            border: 2px solid var(--color-yellow);
             border-radius: 0.5rem;
-            padding: 0.75rem 1rem;
+            padding: 1rem 1.25rem;
             margin-bottom: 1.5rem;
-            font-size: 0.875rem;
+            font-size: 0.9375rem;
             color: var(--color-yellow);
         }
 
         .cap-warning strong {
             display: block;
-            margin-bottom: 0.25rem;
+            margin-bottom: 0.375rem;
+            font-size: 1.0625rem;
         }
 
         table {
@@ -211,12 +214,24 @@
             font-size: 0.875rem;
         }
 
+        .evidence-section {
+            opacity: 0.92;
+        }
+
+        .evidence-section h2 {
+            font-size: 1.1875rem;
+            color: var(--text-muted);
+            font-weight: 400;
+            letter-spacing: 0.02em;
+        }
+
         footer {
+            margin-top: 3rem;
+            padding: 1.5rem 0;
+            border-top: 2px solid var(--border);
             text-align: center;
-            padding-top: 1.5rem;
-            border-top: 1px solid var(--border);
-            font-size: 0.75rem;
-            color: var(--text-dim);
+            font-size: 0.875rem;
+            color: var(--text-muted);
         }
 
         footer a {
@@ -247,11 +262,102 @@
             margin-top: 0.5rem;
         }
 
+        .findings-table td:nth-child(4) { max-width: 300px; }
+        .findings-table td:nth-child(5) { min-width: 280px; }
+
         @media print {
-            body { background: #fff; color: #1e293b; padding: 0.5rem; }
+            * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+            body {
+                background: #fff !important;
+                color: #1e293b !important;
+                padding: 0.5in !important;
+                font-size: 11pt !important;
+            }
             .container { max-width: 100%; }
-            table { background: #f8fafc; border-color: #e2e8f0; }
-            h1, h2 { color: #0f172a; }
+
+            /* Override dark theme colors for print */
+            h1, h2 { color: #0f172a !important; }
+            .grade-badge { color: #fff !important; }
+            .severity-badge { color: #fff !important; }
+
+            /* Tables */
+            table { background: #f8fafc !important; border-color: #e2e8f0 !important; }
+            th { background: #f1f5f9 !important; color: #475569 !important; }
+            td { border-color: #e2e8f0 !important; color: #334155 !important; }
+            tr:hover { background: transparent !important; }
+
+            /* Cards and panels */
+            .cap-warning {
+                background: #fef9c3 !important;
+                border-color: #ca8a04 !important;
+                color: #854d0e !important;
+            }
+            .cap-warning strong { color: #854d0e !important; }
+
+            /* Score bars */
+            .score-bar-bg { background: #e2e8f0 !important; }
+
+            /* Evidence sections */
+            .evidence-section { opacity: 1 !important; }
+            .evidence-section h2 { color: #475569 !important; }
+
+            /* All cards/panels */
+            section > div[style*="background"] {
+                background: #f8fafc !important;
+                border-color: #e2e8f0 !important;
+            }
+
+            /* MCP exposure block */
+            div[style*="rgba(239,68,68"] {
+                background: #fef2f2 !important;
+                border-color: #dc2626 !important;
+            }
+            div[style*="rgba(239,68,68"] div[style*="color: var(--color-red)"] {
+                color: #dc2626 !important;
+            }
+
+            /* Verification block */
+            div[style*="rgba(34,197,94"] {
+                background: #f0fdf4 !important;
+                border-color: #16a34a !important;
+            }
+
+            /* Footer */
+            footer { color: #64748b !important; border-color: #e2e8f0 !important; }
+            footer a { color: #0284c7 !important; }
+
+            /* Meta text */
+            .meta, [style*="color: var(--text-dim)"], [style*="color: var(--text-muted)"] {
+                color: #64748b !important;
+            }
+
+            /* Code blocks */
+            code, .evidence-block {
+                background: #f1f5f9 !important;
+                color: #334155 !important;
+                border-color: #e2e8f0 !important;
+            }
+
+            /* Config audit cards */
+            div[style*="grid-template-columns: 1fr 1fr"] > div {
+                background: #f8fafc !important;
+                border-color: #e2e8f0 !important;
+            }
+
+            /* Deployment verification checklist */
+            div[style*="display: flex"][style*="gap: 0.5rem"] > div {
+                background: #f8fafc !important;
+                border-color: #e2e8f0 !important;
+            }
+
+            /* Page breaks */
+            section { page-break-inside: avoid; }
+            table { page-break-inside: auto; }
+            tr { page-break-inside: avoid; }
+            h2 { page-break-after: avoid; }
+
+            /* Hide elements not useful in print */
+            .verify-block code { background: transparent !important; border: 1px solid #e2e8f0 !important; }
         }
     </style>
 </head>
@@ -270,7 +376,10 @@
                 </svg>
                 <h1>Pipelock Security Assessment</h1>
             </div>
-            <div class="grade-badge" style="background: {{gradeColor .OverallGrade}};">Grade: {{.OverallGrade}} ({{.OverallScore}}/100)</div>
+            <div class="grade-badge" style="background: {{gradeColor .OverallGrade}}; font-size: 2rem; padding: 0.75rem 2.5rem;">{{.OverallGrade}}</div>
+            <div style="font-size: 1.1875rem; color: var(--text-primary); margin: 1rem auto; padding: 0.25rem 1rem; font-weight: 500; max-width: 48rem; line-height: 1.6;">
+                {{toplineStory .}}
+            </div>
             <div class="meta">
                 Run ID: {{.Manifest.RunID}}
                 {{if .Manifest.FinalizedAt}}<span>|</span> {{.Manifest.FinalizedAt.UTC.Format "2006-01-02 15:04:05 UTC"}}{{end}}
@@ -278,16 +387,61 @@
             </div>
         </header>
 
-        {{if .GradeCap}}
-        <div class="cap-warning">
-            <strong>&#9888; Grade Capped at {{.GradeCap}}</strong>
-            {{range .CapReasons}}
-            <div>&#8226; {{.Reason}} (source: {{.Source}})</div>
-            {{end}}
-        </div>
+        <section>
+            <h2>Assessment Details</h2>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem 2rem; padding: 0.75rem 0; border-bottom: 1px solid var(--border);">
+                <div><span style="color: var(--text-dim); font-size: 0.8125rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted);">PLATFORM</span><br><span style="font-weight: 600; color: var(--text-secondary);">{{.Manifest.Platform}}</span></div>
+                <div><span style="color: var(--text-muted); font-size: 0.8125rem; text-transform: uppercase; letter-spacing: 0.05em;">PIPELOCK VERSION</span><br><span style="font-weight: 600; color: var(--text-secondary);">v{{.Manifest.Version}}</span></div>
+                <div><span style="color: var(--text-muted); font-size: 0.8125rem; text-transform: uppercase; letter-spacing: 0.05em;">CONFIG FILE</span><br><span style="font-family: var(--mono); font-size: 0.8125rem; font-weight: 600; color: var(--text-secondary);">{{.Manifest.ConfigFile}}</span></div>
+                <div><span style="color: var(--text-muted); font-size: 0.8125rem; text-transform: uppercase; letter-spacing: 0.05em;">CONFIG HASH</span><br><span style="font-family: var(--mono); font-size: 0.8125rem; font-weight: 600; color: var(--text-secondary);">{{truncHash .Manifest.ConfigHash}}</span></div>
+                <div><span style="color: var(--text-muted); font-size: 0.8125rem; text-transform: uppercase; letter-spacing: 0.05em;">SCORING VERSION</span><br><span style="font-weight: 600; color: var(--text-secondary);">{{.Manifest.ScoringVersion}}</span></div>
+                <div><span style="color: var(--text-muted); font-size: 0.8125rem; text-transform: uppercase; letter-spacing: 0.05em;">LICENSE</span><br><span style="font-weight: 600; color: var(--text-secondary);">{{.Manifest.LicenseTier}}</span></div>
+                {{if .Manifest.GitCommit}}<div><span style="color: var(--text-muted); font-size: 0.8125rem; text-transform: uppercase; letter-spacing: 0.05em;">GIT COMMIT</span><br><span style="font-family: var(--mono); font-size: 0.8125rem; font-weight: 600; color: var(--text-secondary);">{{truncHash .Manifest.GitCommit}}</span></div>{{end}}
+                <div><span style="color: var(--text-muted); font-size: 0.8125rem; text-transform: uppercase; letter-spacing: 0.05em;">ASSESSED</span><br><span style="font-weight: 600; color: var(--text-secondary);">{{if .Manifest.FinalizedAt}}{{.Manifest.FinalizedAt.UTC.Format "2006-01-02 15:04:05 UTC"}}{{end}}</span></div>
+            </div>
+        </section>
+
+        <section>
+            <h2>Methodology</h2>
+            <div style="border-top: 1px solid var(--border); padding-top: 0.75rem; font-size: 0.8125rem; line-height: 1.6; color: var(--text-muted);">
+                <div style="display: grid; grid-template-columns: auto 1fr; gap: 0.125rem 1.5rem;">
+                    <span><strong>Detection Coverage</strong> (25%)</span><span>Simulated attacks against the scanner pipeline</span>
+                    <span><strong>Config Posture</strong> (25%)</span><span>Security feature enablement and configuration strength</span>
+                    <span><strong>Deployment Verification</strong> (30%)</span><span>Live probe of scanning pipeline and network containment</span>
+                    <span><strong>MCP Protection</strong> (20%)</span><span>MCP server discovery and protection coverage</span>
+                </div>
+                <p style="margin-top: 0.625rem; font-size: 0.75rem; color: var(--text-dim);">Grades: A (90-100), B (80-89), C (70-79), D (60-69), F (0-59). Critical exposures cap the grade regardless of numeric score.</p>
+            </div>
+        </section>
+
+        {{if and .Sources.Discover (gt .Sources.Discover.Summary.Unprotected 0)}}
+        <!-- MCP Exposure Alert — the defining risk, shown before scores -->
+        <section>
+            <h2 style="color: var(--color-red);">Critical Exposure</h2>
+            <div style="background: rgba(239,68,68,0.1); border: 2px solid var(--color-red); border-radius: 0.75rem; padding: 1.5rem;">
+                <div style="color: var(--color-red); font-weight: 800; font-size: 1.125rem; margin-bottom: 0.5rem;">&#9888; {{.Sources.Discover.Summary.Unprotected}} Unprotected MCP Server(s)</div>
+                <div style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 0.5rem;">These servers have no pipelock proxy wrapper. Agent traffic flows directly to the server without DLP scanning, injection detection, or tool policy enforcement.</div>
+                {{if discoverCausedCap $}}<div style="font-size: 0.8125rem; color: var(--color-red); margin-bottom: 0.5rem; font-weight: 600;">High-risk servers that capped your grade:</div>{{end}}
+                {{range .Sources.Discover.Servers}}{{if and (eq (printf "%s" .Protection) "unprotected") (serverCausedCap $ .ServerName .Client)}}
+                <div style="display: flex; align-items: center; gap: 0.75rem; padding: 0.5rem 0; border-top: 1px solid rgba(239,68,68,0.2);">
+                    <span class="severity-badge" style="background: {{riskColor (printf "%s" .Risk)}};">{{.Risk}}</span>
+                    <span style="font-weight: 700; font-size: 1.0625rem;">{{.ServerName}}</span>
+                    <span style="color: var(--text-dim); font-size: 0.8125rem;">{{.Client}} &middot; {{.Transport}}</span>
+                </div>
+                {{end}}{{end}}
+                {{range .Sources.Discover.Servers}}{{if and (eq (printf "%s" .Protection) "unprotected") (not (serverCausedCap $ .ServerName .Client))}}
+                {{if eq (printf "%s" .Risk) "medium"}}<div style="font-size: 0.8125rem; color: var(--text-dim); margin-top: 0.75rem; margin-bottom: 0.25rem;">Also unprotected:</div>{{end}}
+                <div style="display: flex; align-items: center; gap: 0.75rem; padding: 0.5rem 0; border-top: 1px solid rgba(239,68,68,0.15);">
+                    <span class="severity-badge" style="background: {{riskColor (printf "%s" .Risk)}};">{{.Risk}}</span>
+                    <span style="font-weight: 600; font-size: 1rem;">{{.ServerName}}</span>
+                    <span style="color: var(--text-dim); font-size: 0.8125rem;">{{.Client}} &middot; {{.Transport}}</span>
+                </div>
+                {{end}}{{end}}
+            </div>
+        </section>
         {{end}}
 
-        <!-- Sections Table -->
+        <!-- Assessment Sections Summary -->
         <section>
             <h2>Assessment Sections</h2>
             <table>
@@ -321,11 +475,141 @@
             </table>
         </section>
 
+        {{if .Sources.Simulate}}
+        <!-- Attack Simulation Results -->
+        <section class="evidence-section">
+            <h2>Attack Simulation ({{.Sources.Simulate.Passed}}/{{.Sources.Simulate.Total}} detected, {{.Sources.Simulate.KnownLimits}} known limitations)</h2>
+            <div style="display: flex; gap: 1.5rem; margin-bottom: 1rem;">
+                <div style="background: rgba(34,197,94,0.1); border: 1px solid var(--color-green); border-radius: 0.5rem; padding: 0.5rem 1rem; text-align: center;">
+                    <div style="font-size: 1.25rem; font-weight: 700; color: var(--color-green);">{{.Sources.Simulate.Passed}}</div>
+                    <div style="font-size: 0.6875rem; color: var(--text-dim);">DETECTED</div>
+                </div>
+                <div style="background: rgba(239,68,68,0.1); border: 1px solid var(--color-red); border-radius: 0.5rem; padding: 0.5rem 1rem; text-align: center;">
+                    <div style="font-size: 1.25rem; font-weight: 700; color: var(--color-red);">{{.Sources.Simulate.Failed}}</div>
+                    <div style="font-size: 0.6875rem; color: var(--text-dim);">MISSED</div>
+                </div>
+                {{if .Sources.Simulate.KnownLimits}}<div style="background: rgba(107,114,128,0.1); border: 1px solid var(--color-gray-border, #4b5563); border-radius: 0.5rem; padding: 0.5rem 1rem; text-align: center;">
+                    <div style="font-size: 1.25rem; font-weight: 700; color: var(--text-muted);">{{.Sources.Simulate.KnownLimits}}</div>
+                    <div style="font-size: 0.6875rem; color: var(--text-dim);">KNOWN LIMITS</div>
+                </div>{{end}}
+            </div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Scenario</th>
+                        <th>Category</th>
+                        <th>Result</th>
+                        <th>Detail</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{range .Sources.Simulate.Scenarios}}
+                    <tr>
+                        <td>{{.Name}}</td>
+                        <td>{{.Category}}</td>
+                        <td>
+                            <span class="severity-badge" style="background: {{scenarioColor .Detected .Limitation}};">{{scenarioResult .Detected .Limitation}}</span>
+                        </td>
+                        <td style="font-size: 0.75rem; color: var(--text-muted);">{{.Detail}}</td>
+                    </tr>
+                    {{end}}
+                </tbody>
+            </table>
+        </section>
+        {{end}}
+
+        {{if .Sources.AuditScore}}
+        <!-- Configuration Audit Detail -->
+        <section>
+            <h2>Configuration Audit ({{.Sources.AuditScore.TotalScore}}/{{.Sources.AuditScore.MaxScore}} points)</h2>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem;">
+                {{range .Sources.AuditScore.Categories}}
+                <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: 0.5rem; padding: 0.75rem;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.25rem;">
+                        <span style="font-size: 0.8125rem; font-weight: 600;">{{.Name}}</span>
+                        <span style="font-size: 0.75rem; color: var(--text-muted);">{{.Score}}/{{.MaxScore}}</span>
+                    </div>
+                    <div class="score-bar-bg"><div class="score-bar-fill" style="width: {{percent .Score .MaxScore}}%; background: {{auditBarColor .Score .MaxScore}};"></div></div>
+                    {{if .Detail}}<div style="font-size: 0.6875rem; color: var(--text-dim); margin-top: 0.25rem;">{{.Detail}}</div>{{else if eq .Score 0}}<div style="font-size: 0.6875rem; color: var(--color-red); margin-top: 0.25rem;">not configured</div>{{else if eq .Score .MaxScore}}<div style="font-size: 0.6875rem; color: var(--text-dim); margin-top: 0.25rem;">enabled</div>{{else}}<div style="font-size: 0.6875rem; color: var(--text-dim); margin-top: 0.25rem;">partially configured</div>{{end}}
+                </div>
+                {{end}}
+            </div>
+        </section>
+        {{end}}
+
+        {{if .Sources.VerifyInstall}}
+        <!-- Deployment Verification -->
+        <section class="evidence-section">
+            <h2>Deployment Verification ({{.Sources.VerifyInstall.Summary.Passed}} passed, {{.Sources.VerifyInstall.Summary.Failed}} failed, {{.Sources.VerifyInstall.Summary.NotApplicable}} N/A)</h2>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;">
+                {{range .Sources.VerifyInstall.Checks}}
+                <div style="display: flex; align-items: center; gap: 0.5rem; background: var(--bg-card); border: 1px solid var(--border); border-radius: 0.5rem; padding: 0.5rem 0.75rem;">
+                    <span class="severity-badge" style="background: {{checkColor .Status}}; min-width: 4rem; text-align: center;">{{if eq .Status "pass"}}PASS{{else if eq .Status "fail"}}FAIL{{else}}N/A{{end}}</span>
+                    <div>
+                        <div style="font-size: 0.8125rem; font-weight: 500;">{{.Name}}</div>
+                        <div style="font-size: 0.6875rem; color: var(--text-dim);">{{.Detail}}</div>
+                    </div>
+                </div>
+                {{end}}
+            </div>
+        </section>
+        {{end}}
+
+        {{if .Sources.Discover}}
+        <!-- MCP Server Inventory -->
+        <section>
+            <h2>MCP Server Inventory ({{addInts .Sources.Discover.Summary.ProtectedPipelock .Sources.Discover.Summary.ProtectedOther}} protected, {{.Sources.Discover.Summary.Unprotected}} unprotected, {{.Sources.Discover.Summary.TotalServers}} total)</h2>
+            {{if .Sources.Discover.Servers}}
+            <table>
+                <thead>
+                    <tr>
+                        <th>Server Name</th>
+                        <th>Client</th>
+                        <th>Transport</th>
+                        <th>Protection</th>
+                        <th>Risk</th>
+                        <th>Command</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{range .Sources.Discover.Servers}}
+                    <tr style="{{if eq (printf "%s" .Protection) "protected_pipelock"}}opacity: 0.55;{{else if eq (printf "%s" .Protection) "protected_other"}}opacity: 0.55;{{end}}">
+                        <td>{{.ServerName}}</td>
+                        <td style="font-size: 0.75rem; color: var(--text-muted);">{{.Client}}</td>
+                        <td>{{.Transport}}</td>
+                        <td>
+                            <span class="severity-badge" style="background: {{protColor (printf "%s" .Protection)}};">{{protLabel (printf "%s" .Protection)}}</span>
+                        </td>
+                        <td>
+                            <span style="color: {{riskColor (printf "%s" .Risk)}}; font-weight: 600; font-size: 0.75rem; text-transform: uppercase;">{{.Risk}}</span>
+                        </td>
+                        <td style="font-family: var(--mono); font-size: 0.75rem; color: var(--text-muted);">{{.Command}}</td>
+                    </tr>
+                    {{end}}
+                </tbody>
+            </table>
+            {{else}}
+            <div class="no-findings">No MCP servers discovered.</div>
+            {{end}}
+        </section>
+        {{end}}
+
+        <!-- === CONCLUSION === -->
+        <div style="border-top: 3px solid var(--color-accent); margin: 3rem 0 0;"></div>
+
         <!-- Findings Table -->
         <section>
-            <h2>Findings ({{len .Findings}})</h2>
+            <h2 style="font-size: 1.5rem; margin-top: 2rem;">Findings ({{len .Findings}})</h2>
             {{if .Findings}}
-            <table>
+            <div style="display: flex; gap: 1rem; margin-bottom: 1rem;">
+                {{$counts := findingCounts .Findings}}
+                {{if $counts.Critical}}<div style="font-size: 0.8125rem;"><span class="severity-badge" style="background: {{sevColor "critical"}};">CRITICAL</span> {{$counts.Critical}}</div>{{end}}
+                {{if $counts.High}}<div style="font-size: 0.8125rem;"><span class="severity-badge" style="background: {{sevColor "high"}};">HIGH</span> {{$counts.High}}</div>{{end}}
+                {{if $counts.Medium}}<div style="font-size: 0.8125rem;"><span class="severity-badge" style="background: {{sevColor "medium"}};">MEDIUM</span> {{$counts.Medium}}</div>{{end}}
+                {{if $counts.Low}}<div style="font-size: 0.8125rem;"><span class="severity-badge" style="background: {{sevColor "low"}};">LOW</span> {{$counts.Low}}</div>{{end}}
+                {{if $counts.Info}}<div style="font-size: 0.8125rem;"><span class="severity-badge" style="background: {{sevColor "info"}};">INFO</span> {{$counts.Info}}</div>{{end}}
+            </div>
+            <table class="findings-table">
                 <thead>
                     <tr>
                         <th>Severity</th>
@@ -346,7 +630,7 @@
                         <td>
                             <div>{{.Title}}</div>
                             {{if .Detail}}<div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem;">{{.Detail}}</div>{{end}}
-                            {{if .Evidence}}<div class="evidence-block">{{.Evidence}}</div>{{end}}
+                            {{if and .Evidence (ne .Source "discover") (ne .Source "audit_score")}}<div class="evidence-block">{{formatEvidence .Evidence}}</div>{{end}}
                         </td>
                         <td style="font-size: 0.75rem;">{{.Remediation}}</td>
                     </tr>
@@ -356,6 +640,38 @@
             {{else}}
             <div class="no-findings">No findings recorded.</div>
             {{end}}
+        </section>
+
+        {{$actions := priorityActions .Findings}}
+        {{if $actions}}
+        <section>
+            <h2 style="font-size: 1.5rem;">Priority Actions</h2>
+            <div style="background: var(--bg-card); border-left: 4px solid var(--color-accent); border-radius: var(--radius); padding: 0;">
+                {{range $i, $action := $actions}}
+                <div style="display: flex; align-items: baseline; gap: 1rem; padding: 1rem 1.25rem; {{if $i}}border-top: 1px solid var(--border);{{end}}">
+                    <span style="color: var(--color-accent); font-weight: 800; font-size: 1.25rem; min-width: 1.5rem;">{{add1 $i}}</span>
+                    <span style="font-size: 0.9375rem; font-weight: 500; line-height: 1.6; color: var(--text-primary);">{{$action}}</span>
+                </div>
+                {{end}}
+            </div>
+        </section>
+        {{end}}
+
+        <section>
+            <h2 style="font-size: 1.5rem;">Verification</h2>
+            <div style="background: {{if .Signed}}rgba(34,197,94,0.08){{else}}var(--bg-card){{end}}; border: 2px solid {{if .Signed}}var(--color-green){{else}}var(--border){{end}}; border-radius: var(--radius); padding: 1.5rem;">
+                <div style="display: flex; align-items: center; gap: 1rem; margin-bottom: 1.25rem;">
+                    <span class="severity-badge" style="background: {{if .Signed}}{{gradeColor "A"}}{{else}}{{gradeColor "F"}}{{end}}; font-size: 1.0625rem; padding: 0.375rem 1.125rem;">{{if .Signed}}SIGNED{{else}}UNSIGNED{{end}}</span>
+                    <span style="font-size: 1.25rem; font-weight: 700; color: var(--text-primary);">Ed25519 Digital Signature</span>
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; font-family: var(--mono);">
+                    <div><span style="color: var(--text-dim); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em;">Run ID</span><br><span style="font-size: 0.9375rem; color: var(--text-secondary);">{{.Manifest.RunID}}</span></div>
+                    <div><span style="color: var(--text-dim); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em;">Config Hash</span><br><span style="font-size: 0.9375rem; color: var(--text-secondary);">{{truncHash .Manifest.ConfigHash}}</span></div>
+                </div>
+                <div style="margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid {{if .Signed}}rgba(34,197,94,0.2){{else}}var(--border){{end}};">
+                    <code style="display: block; background: var(--bg-primary); padding: 0.625rem 1rem; border-radius: 0.5rem; font-size: 1rem; color: var(--text-primary);">pipelock assess verify &lt;run-dir&gt; --agent &lt;agent-name&gt;</code>
+                </div>
+            </div>
         </section>
 
         <footer>
@@ -372,6 +688,9 @@
             <br>
             <div class="verify-block" style="margin-top: 0.5rem;">
                 To verify: <code>pipelock assess verify {{.Manifest.RunID}}</code>
+            </div>
+            <div style="margin-top: 0.375rem; font-size: 0.75rem; color: var(--text-dim);">
+                Print this page to PDF for a portable copy (Ctrl+P / Cmd+P).
             </div>
         </footer>
     </div>

@@ -42,6 +42,9 @@ type MCPProxyOpts struct {
 	AuditLogger *audit.Logger
 	Metrics     *metrics.Metrics
 
+	// Redirect handler runtime config (nil-safe).
+	RedirectRT *RedirectRuntime
+
 	// File sentry (stdio proxy only)
 	Lineage      filesentry.Lineage
 	OnChildReady func() // called after child process starts

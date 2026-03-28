@@ -701,7 +701,7 @@ Examples:
 
 				mcpErr = make(chan error, 1)
 				go func() {
-					mcpErr <- mcp.RunHTTPListenerProxy(ctx, mcpLn, mcpUpstream, cmd.ErrOrStderr(), sc, mcpApprover, inputCfg, toolCfg, policyCfg, ks, mcpChainMatcher, logger, mcpCEE, mcpStore, mcpAdaptiveFn, m)
+					mcpErr <- mcp.RunHTTPListenerProxy(ctx, mcpLn, mcpUpstream, cmd.ErrOrStderr(), sc, mcpApprover, inputCfg, toolCfg, policyCfg, ks, mcpChainMatcher, logger, mcpCEE, mcpStore, mcpAdaptiveFn, m, buildRedirectRT(cfg))
 				}()
 			}
 

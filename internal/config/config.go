@@ -339,6 +339,7 @@ type MCPToolPolicy struct {
 	Action           string                     `yaml:"action"` // warn, block, redirect (default for rules without override)
 	Rules            []ToolPolicyRule           `yaml:"rules"`
 	RedirectProfiles map[string]RedirectProfile `yaml:"redirect_profiles,omitempty"`
+	QuarantineDir    string                     `yaml:"quarantine_dir,omitempty"`
 }
 
 // ToolPolicyRule defines a single tool call policy rule.
@@ -3219,7 +3220,8 @@ func Defaults() *Config {
 			Enabled: false,
 		},
 		MCPToolPolicy: MCPToolPolicy{
-			Enabled: false,
+			Enabled:       false,
+			QuarantineDir: filepath.Join(os.TempDir(), "pipelock-quarantine"),
 		},
 		GitProtection: GitProtection{
 			Enabled:         false,

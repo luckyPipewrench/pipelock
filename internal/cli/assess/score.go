@@ -434,6 +434,38 @@ func mapScoreFindingSeverity(sev string) string {
 	}
 }
 
+// auditRemediation returns category-specific remediation text for audit-score findings.
+func auditRemediation(category string) string {
+	switch category {
+	case "Sandbox":
+		return "Enable sandbox mode with `sandbox: {enabled: true}` in your pipelock config."
+	case "DLP":
+		return "Add DLP patterns or enable env leak scanning with `dlp: {scan_env: true}`."
+	case "Response Scanning":
+		return "Enable response scanning with `response_scanning: {enabled: true, action: block}`."
+	case "MCP Tool Scanning":
+		return "Enable MCP tool scanning with `mcp_tool_scanning: {enabled: true, action: block}`."
+	case "MCP Tool Policy":
+		return "Add tool policy rules to restrict dangerous tool calls. See docs/configuration.md."
+	case "MCP Input Scanning":
+		return "Enable MCP input scanning with `mcp_input_scanning: {enabled: true}`."
+	case "MCP Session Binding":
+		return "Enable session binding with `mcp_session_binding: {enabled: true}`."
+	case "Kill Switch":
+		return "Configure kill switch with multiple sources (config, API, sentinel file)."
+	case "Enforcement":
+		return "Switch to strict mode with `mode: strict` for maximum protection."
+	case "Domain Blocklist":
+		return "Add known exfiltration domains to `fetch_proxy.monitoring.blocklist`."
+	case "Adaptive Enforcement":
+		return "Enable adaptive enforcement with `adaptive_enforcement: {enabled: true}`."
+	case "Tool Chain Detection":
+		return "Enable chain detection with `tool_chain_detection: {enabled: true}`."
+	default:
+		return "Review the configuration section and enable recommended protections."
+	}
+}
+
 // generateFindings extracts findings from all source outputs.
 func generateFindings(sources AssessSources) []Finding {
 	var findings []Finding
@@ -454,6 +486,7 @@ func generateFindings(sources AssessSources) []Finding {
 					Category:      s.Category,
 					Source:        sourceSimulate,
 					Title:         fmt.Sprintf("Attack scenario %q not detected", s.Name),
+					Remediation:   fmt.Sprintf("Enable or strengthen the %s scanner configuration. See pipelock documentation for recommended settings.", s.Category),
 					Evidence:      evidence,
 				})
 			}
@@ -474,6 +507,7 @@ func generateFindings(sources AssessSources) []Finding {
 				Category:      f.Category,
 				Source:        sourceAuditScore,
 				Title:         f.Message,
+				Remediation:   auditRemediation(f.Category),
 				Evidence:      evidence,
 			})
 		}
@@ -501,6 +535,7 @@ func generateFindings(sources AssessSources) []Finding {
 				Category:      c.Category,
 				Source:        sourceVerifyInstall,
 				Title:         fmt.Sprintf("Verification check %q failed: %s", c.Name, c.Detail),
+				Remediation:   fmt.Sprintf("Investigate why the %s check failed. Run `pipelock diagnose` for detailed diagnostics.", c.Name),
 				Evidence:      evidence,
 			})
 		}
@@ -513,8 +548,10 @@ func generateFindings(sources AssessSources) []Finding {
 				continue
 			}
 			sev := assessSevMedium
+			remediation := "Wrap this MCP server with pipelock: `pipelock mcp proxy --config pipelock.yaml -- <original-command>`."
 			if s.Risk == discover.RiskHigh {
 				sev = assessSevHigh
+				remediation = "Wrap this MCP server with pipelock: `pipelock mcp proxy --config pipelock.yaml -- <original-command>`. High-risk servers with database or shell access should be prioritized."
 			}
 			evidence, _ := json.Marshal(map[string]string{
 				"client": s.Client,
@@ -528,6 +565,7 @@ func generateFindings(sources AssessSources) []Finding {
 				Category:      sectionMCPProtection,
 				Source:        sourceDiscover,
 				Title:         fmt.Sprintf("MCP server %q (%s) is unprotected", s.ServerName, s.Client),
+				Remediation:   remediation,
 				Evidence:      evidence,
 			})
 		}

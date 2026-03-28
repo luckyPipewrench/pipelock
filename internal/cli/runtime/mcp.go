@@ -59,6 +59,30 @@ const (
 	schemeHTTPS = "https"
 )
 
+// buildRedirectRT derives a RedirectRuntime from config for built-in redirect
+// handlers. Always returns a non-nil runtime so quarantine-write works even
+// when fetch_proxy is not configured. FetchEndpoint is only populated when the
+// fetch proxy listen address is valid; fetch-proxy redirect handlers fail
+// closed ("no fetch_endpoint") when it is empty.
+func buildRedirectRT(cfg *config.Config) *mcp.RedirectRuntime {
+	rt := &mcp.RedirectRuntime{
+		QuarantineDir: cfg.MCPToolPolicy.QuarantineDir,
+	}
+	if cfg.FetchProxy.Listen != "" {
+		host, port, err := net.SplitHostPort(cfg.FetchProxy.Listen)
+		if err == nil {
+			switch host {
+			case "", "0.0.0.0":
+				host = "127.0.0.1"
+			case "::":
+				host = "::1"
+			}
+			rt.FetchEndpoint = "http://" + net.JoinHostPort(host, port) + "/fetch"
+		}
+	}
+	return rt
+}
+
 // McpCmd returns the mcp cobra command.
 func McpCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -437,7 +461,7 @@ Environment passthrough (subprocess mode only):
 					adaptiveFn := mcp.AdaptiveConfigFunc(func() *config.AdaptiveEnforcement {
 						return adaptiveCfg
 					})
-					if err := mcp.RunHTTPListenerProxy(ctx, mcpLn, upstreamURL, cmd.ErrOrStderr(), sc, approver, inputCfg, toolCfg, policyCfg, ks, chainMatcher, nil, cee, store, adaptiveFn, mcpMetrics); err != nil {
+					if err := mcp.RunHTTPListenerProxy(ctx, mcpLn, upstreamURL, cmd.ErrOrStderr(), sc, approver, inputCfg, toolCfg, policyCfg, ks, chainMatcher, nil, cee, store, adaptiveFn, mcpMetrics, buildRedirectRT(cfg)); err != nil {
 						if sentryClient != nil {
 							sentryClient.CaptureError(err)
 						}
@@ -450,7 +474,7 @@ Environment passthrough (subprocess mode only):
 				if isWSUpstream {
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: proxying WS upstream %s (response=%s, input=%s, tools=%s, policy=%s)\n",
 						upstreamURL, sc.ResponseAction(), inputCfg.Action, toolAction, policyAction)
-					if err := mcp.RunWSProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, sc, approver, inputCfg, toolCfg, policyCfg, ks, chainMatcher, nil, cee, store, adaptiveCfg, mcpMetrics); err != nil {
+					if err := mcp.RunWSProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, sc, approver, inputCfg, toolCfg, policyCfg, ks, chainMatcher, nil, cee, store, adaptiveCfg, mcpMetrics, buildRedirectRT(cfg)); err != nil {
 						if sentryClient != nil {
 							sentryClient.CaptureError(err)
 						}
@@ -462,7 +486,15 @@ Environment passthrough (subprocess mode only):
 				// Stdio-to-HTTP mode: --upstream only.
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: proxying upstream %s (response=%s, input=%s, tools=%s, policy=%s)\n",
 					upstreamURL, sc.ResponseAction(), inputCfg.Action, toolAction, policyAction)
-				if err := mcp.RunHTTPProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, sc, approver, nil, inputCfg, toolCfg, policyCfg, ks, chainMatcher, nil, cee, store, adaptiveCfg, mcpMetrics); err != nil {
+				httpOpts := mcp.MCPProxyOpts{
+					Scanner: sc, Approver: approver,
+					InputCfg: inputCfg, ToolCfg: toolCfg, PolicyCfg: policyCfg,
+					KillSwitch: ks, ChainMatcher: chainMatcher,
+					CEE: cee, Store: store,
+					AdaptiveCfg: adaptiveCfg, Metrics: mcpMetrics,
+					RedirectRT: buildRedirectRT(cfg),
+				}
+				if err := mcp.RunHTTPProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, nil, httpOpts); err != nil {
 					if sentryClient != nil {
 						sentryClient.CaptureError(err)
 					}
@@ -575,6 +607,7 @@ Environment passthrough (subprocess mode only):
 					KillSwitch: ks, ChainMatcher: chainMatcher,
 					CEE: cee, Store: store,
 					AdaptiveCfg: adaptiveCfg, Metrics: mcpMetrics,
+					RedirectRT: buildRedirectRT(cfg),
 				}
 				if err := mcp.RunProxyWithSandbox(ctx, sandboxCmd, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), proxyOpts, mcpStrict); err != nil {
 					if sentryClient != nil {
@@ -676,7 +709,8 @@ Environment passthrough (subprocess mode only):
 				KillSwitch: ks, ChainMatcher: chainMatcher,
 				CEE: cee, Store: store,
 				AdaptiveCfg: adaptiveCfg, Metrics: mcpMetrics,
-				Lineage: lin, OnChildReady: onChildReady,
+				RedirectRT: buildRedirectRT(cfg),
+				Lineage:    lin, OnChildReady: onChildReady,
 			}
 			if err := mcp.RunProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), logW, serverCmd, proxyOpts, extraEnv...); err != nil {
 				if sentryClient != nil {

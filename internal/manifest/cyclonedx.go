@@ -90,8 +90,8 @@ func newSerialNumber() string {
 }
 
 // sanitizeBOMRef produces a stable, safe identifier from an untrusted tool name.
-// Uses SHA-256 prefix to avoid collisions, injection, and path separator issues.
+// Uses full SHA-256 to prevent attacker-controllable collisions.
 func sanitizeBOMRef(name string) string {
 	h := sha256.Sum256([]byte(name))
-	return hex.EncodeToString(h[:8])
+	return hex.EncodeToString(h[:])
 }

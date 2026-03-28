@@ -59,6 +59,7 @@ type VerdictSummary struct {
 	Warned     int `json:"warned"`
 	Redirected int `json:"redirected"`
 	Stripped   int `json:"stripped"`
+	Forwarded  int `json:"forwarded"`
 	Unknown    int `json:"unknown,omitempty"`
 }
 
@@ -160,6 +161,8 @@ func (b *Builder) RecordVerdict(action string) {
 		b.manifest.VerdictSummary.Redirected++
 	case "strip":
 		b.manifest.VerdictSummary.Stripped++
+	case "forward":
+		b.manifest.VerdictSummary.Forwarded++
 	default:
 		b.manifest.VerdictSummary.Unknown++
 	}
@@ -200,6 +203,14 @@ func Parse(data []byte) (Manifest, error) {
 	}
 	if err := m.Validate(); err != nil {
 		return Manifest{}, err
+	}
+	// Verify fingerprint integrity if present. A stale or forged fingerprint
+	// means the manifest content was modified after finalization.
+	if m.Fingerprint != "" {
+		expected := computeFingerprint(m)
+		if m.Fingerprint != expected {
+			return Manifest{}, fmt.Errorf("fingerprint mismatch: manifest content was modified after finalization")
+		}
 	}
 	return m, nil
 }

@@ -30,6 +30,7 @@ type DoWConfig struct {
 	MaxConcurrentToolCalls int    `yaml:"max_concurrent_tool_calls"`
 	MaxWallClockMinutes    int    `yaml:"max_wall_clock_minutes"`
 	MaxRetriesPerTool      int    `yaml:"max_retries_per_tool"`
+	MaxRetriesPerEndpoint  int    `yaml:"max_retries_per_endpoint"` // same domain+path (default 20, 0=unlimited)
 	LoopDetectionWindow    int    `yaml:"loop_detection_window"`
 	FanOutLimit            int    `yaml:"fan_out_limit"`
 	FanOutWindowSeconds    int    `yaml:"fan_out_window_seconds"`
@@ -201,23 +202,27 @@ func (t *DoWTracker) RecordEndpoint(domain, path string, status int) DoWResult {
 // AcquireConcurrent attempts to increment the in-flight counter. Returns
 // a DoWResult indicating success. Call ReleaseConcurrent when the call
 // completes.
+//
+// The closed check and inflight increment are performed under the same
+// mutex hold to prevent a race where Close() runs between checking the
+// flag and incrementing inflight, which would admit a new acquisition
+// after shutdown.
 func (t *DoWTracker) AcquireConcurrent() DoWResult {
-	// Check closed flag under mutex (fail-closed after shutdown).
-	t.mu.Lock()
-	closed := t.closed
-	t.mu.Unlock()
-
-	if closed {
-		return DoWResult{Allowed: false, Reason: "tracker closed", BudgetType: BudgetConcurrent}
-	}
-
 	cfgLimit := t.cfg.MaxConcurrentToolCalls
 	if cfgLimit <= 0 {
 		cfgLimit = 10 // default limit
 	}
 	limit := int32(min(cfgLimit, 1<<30)) // cap to prevent int32 overflow
 
+	t.mu.Lock()
+	if t.closed {
+		t.mu.Unlock()
+		return DoWResult{Allowed: false, Reason: "tracker closed", BudgetType: BudgetConcurrent}
+	}
+
 	current := t.inflight.Add(1)
+	t.mu.Unlock()
+
 	if current > limit {
 		t.inflight.Add(-1) // roll back
 		return DoWResult{
@@ -229,17 +234,19 @@ func (t *DoWTracker) AcquireConcurrent() DoWResult {
 	return DoWResult{Allowed: true}
 }
 
-// ReleaseConcurrent decrements the in-flight counter. No-op if closed
-// (prevents decrementing below zero after shutdown).
+// ReleaseConcurrent decrements the in-flight counter with underflow
+// protection. Works correctly even after Close() so that in-flight
+// calls acquired before shutdown can release their slots.
 func (t *DoWTracker) ReleaseConcurrent() {
-	t.mu.Lock()
-	closed := t.closed
-	t.mu.Unlock()
-
-	if closed {
-		return
+	for {
+		cur := t.inflight.Load()
+		if cur <= 0 {
+			return
+		}
+		if t.inflight.CompareAndSwap(cur, cur-1) {
+			return
+		}
 	}
-	t.inflight.Add(-1)
 }
 
 // Inflight returns the current number of in-flight tool calls.
@@ -375,11 +382,18 @@ func (t *DoWTracker) checkFanOut() DoWResult {
 	return DoWResult{Allowed: true}
 }
 
+// defaultMaxEndpointRetries is the fallback limit when MaxRetriesPerEndpoint
+// is zero (not explicitly configured). This matches the config default
+// documented on BudgetConfig.MaxRetriesPerEndpoint.
+const defaultMaxEndpointRetries = 20
+
 // checkRetryStorm checks for repeated requests to the same endpoint with
 // non-2xx status codes, indicating the agent is retrying a failing endpoint.
 func (t *DoWTracker) checkRetryStorm(domain, path string) DoWResult {
-	// Count non-2xx responses for this endpoint in the window.
-	const maxEndpointRetries = 20 // default: max 20 retries per endpoint
+	limit := t.cfg.MaxRetriesPerEndpoint
+	if limit <= 0 {
+		limit = defaultMaxEndpointRetries
+	}
 
 	failCount := 0
 	for _, ep := range t.endpoints {
@@ -388,10 +402,10 @@ func (t *DoWTracker) checkRetryStorm(domain, path string) DoWResult {
 		}
 	}
 
-	if failCount > maxEndpointRetries {
+	if failCount > limit {
 		return DoWResult{
 			Allowed:    false,
-			Reason:     fmt.Sprintf("retry storm: %s%s failed %d times (limit %d)", domain, path, failCount, maxEndpointRetries),
+			Reason:     fmt.Sprintf("retry storm: %s%s failed %d times (limit %d)", domain, path, failCount, limit),
 			BudgetType: BudgetRetry,
 		}
 	}

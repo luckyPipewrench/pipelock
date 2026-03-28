@@ -5,7 +5,13 @@
 // subprocess servers. It resolves symlinks and interpreter shebangs,
 // hashes the actual binary (and script when an interpreter is detected),
 // and compares against a trusted manifest. A second symlink resolution at
-// exec time detects TOCTOU races.
+// exec time detects symlink swaps between hash-time and exec-time.
+//
+// NOTE: CheckSymlinkRace detects symlink target changes (path identity)
+// but does NOT detect in-place content replacement after hashing. Full
+// TOCTOU prevention would require fexecve-style fd binding, which Go's
+// os/exec does not support. The gap is documented here and in
+// CheckSymlinkRace so operators understand the threat model.
 package integrity
 
 import (
@@ -34,6 +40,13 @@ var interpreters = map[string]bool{
 	"node": true, "bun": true, "deno": true,
 	"ruby": true, "perl": true,
 	"bash": true, "sh": true, "dash": true,
+}
+
+// packageRunners are tools that dynamically resolve executables at runtime.
+// argv[1] is a package name, not a script path, so integrity verification
+// of command[1] as a file is not meaningful. These are intentionally
+// excluded from the interpreters map.
+var packageRunners = map[string]bool{
 	"npx": true, "bunx": true, "uvx": true, "pipx": true,
 }
 
@@ -47,13 +60,18 @@ var interpreterPrefixes = []string{
 // isInterpreterName checks whether baseName is a known interpreter. It first
 // tries an exact match in the interpreters map (fast path), then falls back to
 // prefix matching for versioned names like "python3.11" or "node20".
+// The suffix after the prefix must start with a digit or dot to avoid
+// false positives on unrelated binaries (e.g. "shred", "node_exporter").
 func isInterpreterName(baseName string) bool {
 	if interpreters[baseName] {
 		return true
 	}
 	for _, prefix := range interpreterPrefixes {
 		if strings.HasPrefix(baseName, prefix) && len(baseName) > len(prefix) {
-			return true
+			suffix := baseName[len(prefix)]
+			if suffix == '.' || (suffix >= '0' && suffix <= '9') {
+				return true
+			}
 		}
 	}
 	return false
@@ -75,15 +93,19 @@ type Manifest struct {
 
 // VerifyResult is the outcome of a pre-spawn integrity check.
 type VerifyResult struct {
-	Verified      bool   // true when all hashes match the manifest
-	ResolvedPath  string // binary path after EvalSymlinks + LookPath
-	ExpectedHash  string // from manifest (empty if binary is unknown)
-	ActualHash    string // computed from file contents
-	IsInterpreter bool   // true if command[0] is a known interpreter
-	ScriptPath    string // script path when IsInterpreter is true
-	ScriptHash    string // hash of the script when IsInterpreter is true
-	Suspicious    bool   // true if binary is inside agent working directory
-	Reason        string // human-readable explanation when Verified is false
+	Verified           bool     // true when all hashes match the manifest
+	ResolvedPath       string   // binary path after EvalSymlinks + LookPath
+	InterpreterPath    string   // interpreter binary path when env/shebang rewrites ResolvedPath
+	ExpectedHash       string   // from manifest (empty if binary is unknown)
+	ActualHash         string   // computed from file contents
+	IsInterpreter      bool     // true if command[0] is a known interpreter
+	IsPackageRunner    bool     // true if command[0] is a package runner (npx, bunx, etc.)
+	ScriptPath         string   // script path when IsInterpreter is true
+	ScriptHash         string   // hash of the script when IsInterpreter is true
+	ExpectedScriptHash string   // from manifest (empty if script is unknown)
+	Suspicious         bool     // true if binary is inside agent working directory
+	Reason             string   // last/primary reason when Verified is false (backward compat)
+	Reasons            []string // all accumulated failure reasons for audit evidence
 }
 
 // LoadManifest reads a binary integrity manifest from disk.
@@ -109,6 +131,8 @@ func LoadManifest(path string) (*Manifest, error) {
 }
 
 // SaveManifest writes a manifest to disk with restrictive permissions.
+// Uses atomic write (temp file + rename) to ensure the file always has
+// correct permissions, even if it already exists with looser perms.
 func SaveManifest(path string, m *Manifest) error {
 	data, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
@@ -117,7 +141,42 @@ func SaveManifest(path string, m *Manifest) error {
 
 	data = append(data, '\n')
 
-	return os.WriteFile(filepath.Clean(path), data, 0o600)
+	cleanPath := filepath.Clean(path)
+	dir := filepath.Dir(cleanPath)
+
+	tmp, err := os.CreateTemp(dir, ".manifest-*.tmp")
+	if err != nil {
+		return fmt.Errorf("creating temp file: %w", err)
+	}
+	tmpName := tmp.Name()
+
+	// Clean up temp file on any error path.
+	success := false
+	defer func() {
+		if !success {
+			_ = tmp.Close()
+			_ = os.Remove(tmpName)
+		}
+	}()
+
+	if err := tmp.Chmod(0o600); err != nil {
+		return fmt.Errorf("setting temp file permissions: %w", err)
+	}
+
+	if _, err := tmp.Write(data); err != nil {
+		return fmt.Errorf("writing temp file: %w", err)
+	}
+
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("closing temp file: %w", err)
+	}
+
+	if err := os.Rename(tmpName, cleanPath); err != nil {
+		return fmt.Errorf("renaming temp file: %w", err)
+	}
+
+	success = true
+	return nil
 }
 
 // Verify resolves the command binary path, hashes the file, and checks
@@ -145,7 +204,8 @@ func Verify(command []string, cfg *Config, agentWorkDir string) (*VerifyResult, 
 		result.Suspicious = isInsideDir(resolved, agentWorkDir)
 	}
 
-	// Hash the binary via fd (TOCTOU mitigation: open first, hash contents).
+	// Hash the binary via fd (mitigates read-after-open races but not
+	// in-place replacement after close; see package doc for limitations).
 	actualHash, err := hashFileByFD(resolved)
 	if err != nil {
 		return nil, fmt.Errorf("hashing binary %q: %w", resolved, err)
@@ -156,36 +216,48 @@ func Verify(command []string, cfg *Config, agentWorkDir string) (*VerifyResult, 
 	// Check both the resolved name and the original command name because
 	// symlinks can change the basename (e.g. "sh" -> "/usr/bin/dash").
 	baseName := filepath.Base(resolved)
-	result.IsInterpreter = isInterpreterName(baseName) || isInterpreterName(filepath.Base(command[0]))
+	cmdBase := filepath.Base(command[0])
+	result.IsInterpreter = isInterpreterName(baseName) || isInterpreterName(cmdBase)
 
-	// Handle /usr/bin/env wrapper: if command[0] resolves to "env", the real
-	// interpreter is command[1] and the script is command[2].
+	// Check for package runners (npx, bunx, etc.) -- these resolve executables
+	// dynamically so argv[1] is not a hashable script path.
+	if packageRunners[baseName] || packageRunners[cmdBase] {
+		result.IsPackageRunner = true
+		result.IsInterpreter = false
+	}
+
+	// Handle /usr/bin/env wrapper: if command[0] resolves to "env", skip env
+	// flags (e.g. -S, -i, -u VAR, --) to find the real interpreter and script.
 	if !result.IsInterpreter && baseName == "env" && len(command) > 1 {
-		envInterp := command[1]
-		envInterpResolved, envErr := resolveBinary(envInterp)
-		if envErr != nil {
-			return nil, fmt.Errorf("resolving env interpreter %q: %w", envInterp, envErr)
-		}
-		envInterpHash, envHashErr := hashFileByFD(envInterpResolved)
-		if envHashErr != nil {
-			return nil, fmt.Errorf("hashing env interpreter %q: %w", envInterpResolved, envHashErr)
-		}
-		result.IsInterpreter = true
-		result.ResolvedPath = envInterpResolved
-		result.ActualHash = envInterpHash
-
-		// Hash the script argument (command[2]) if present.
-		if len(command) > 2 {
-			scriptPath, scriptHash, shebangErr := hashScript(command[2])
-			if shebangErr != nil {
-				return nil, fmt.Errorf("hashing script %q: %w", command[2], shebangErr)
+		remaining := skipEnvFlags(command[1:])
+		if len(remaining) > 0 {
+			envInterp := remaining[0]
+			envInterpResolved, envErr := resolveBinary(envInterp)
+			if envErr != nil {
+				return nil, fmt.Errorf("resolving env interpreter %q: %w", envInterp, envErr)
 			}
-			result.ScriptPath = scriptPath
-			result.ScriptHash = scriptHash
+			envInterpHash, envHashErr := hashFileByFD(envInterpResolved)
+			if envHashErr != nil {
+				return nil, fmt.Errorf("hashing env interpreter %q: %w", envInterpResolved, envHashErr)
+			}
+			result.IsInterpreter = true
+			result.InterpreterPath = envInterpResolved
+			result.ResolvedPath = envInterpResolved
+			result.ActualHash = envInterpHash
+
+			// Hash the script argument (first arg after interpreter) if present.
+			if len(remaining) > 1 {
+				scriptPath, scriptHash, shebangErr := hashScript(remaining[1], agentWorkDir)
+				if shebangErr != nil {
+					return nil, fmt.Errorf("hashing script %q: %w", remaining[1], shebangErr)
+				}
+				result.ScriptPath = scriptPath
+				result.ScriptHash = scriptHash
+			}
 		}
 	} else if result.IsInterpreter && len(command) > 1 {
 		// Standard interpreter invocation: hash the script argument.
-		scriptPath, scriptHash, shebangErr := hashScript(command[1])
+		scriptPath, scriptHash, shebangErr := hashScript(command[1], agentWorkDir)
 		if shebangErr != nil {
 			return nil, fmt.Errorf("hashing script %q: %w", command[1], shebangErr)
 		}
@@ -210,42 +282,57 @@ func Verify(command []string, cfg *Config, agentWorkDir string) (*VerifyResult, 
 			if interpHashErr != nil {
 				return nil, fmt.Errorf("hashing shebang interpreter %q: %w", interpResolved, interpHashErr)
 			}
+			result.InterpreterPath = interpResolved
 			result.ResolvedPath = interpResolved
 			result.ActualHash = interpHash
 		}
 	}
 
-	// Verify against manifest.
+	// Verify against manifest. Fail-closed: no manifest = not verified.
+	if cfg.Manifests == nil {
+		result.Verified = false
+		result.Reason = "no manifest loaded"
+		result.Reasons = append(result.Reasons, "no manifest loaded")
+		return result, nil
+	}
+
 	result.Verified = true
-	if cfg.Manifests != nil {
+	{
 		expected, inManifest := cfg.Manifests[result.ResolvedPath]
 		if inManifest {
 			result.ExpectedHash = expected
 			if result.ActualHash != expected {
 				result.Verified = false
-				result.Reason = fmt.Sprintf("binary hash mismatch for %s: expected %s, got %s",
+				reason := fmt.Sprintf("binary hash mismatch for %s: expected %s, got %s",
 					result.ResolvedPath, expected, result.ActualHash)
+				result.Reason = reason
+				result.Reasons = append(result.Reasons, reason)
 			}
 		} else {
 			// Binary not in manifest -- fail-closed: unknown binary is not verified.
 			result.Verified = false
-			result.Reason = fmt.Sprintf("binary %s not found in manifest", result.ResolvedPath)
+			reason := fmt.Sprintf("binary %s not found in manifest", result.ResolvedPath)
+			result.Reason = reason
+			result.Reasons = append(result.Reasons, reason)
 		}
 
 		// Also verify script hash if present.
 		if result.IsInterpreter && result.ScriptPath != "" {
 			expectedScript, scriptInManifest := cfg.Manifests[result.ScriptPath]
 			if scriptInManifest {
+				result.ExpectedScriptHash = expectedScript
 				if result.ScriptHash != expectedScript {
 					result.Verified = false
-					result.Reason = fmt.Sprintf("script hash mismatch for %s: expected %s, got %s",
+					reason := fmt.Sprintf("script hash mismatch for %s: expected %s, got %s",
 						result.ScriptPath, expectedScript, result.ScriptHash)
+					result.Reason = reason
+					result.Reasons = append(result.Reasons, reason)
 				}
 			} else {
 				result.Verified = false
-				if result.Reason == "" {
-					result.Reason = fmt.Sprintf("script %s not found in manifest", result.ScriptPath)
-				}
+				reason := fmt.Sprintf("script %s not found in manifest", result.ScriptPath)
+				result.Reason = reason
+				result.Reasons = append(result.Reasons, reason)
 			}
 		}
 	}
@@ -271,7 +358,13 @@ func ResolveAndHash(binary string) (resolvedPath, hash string, err error) {
 
 // CheckSymlinkRace compares the current symlink resolution against the
 // path resolved at hash time. Returns an error if they differ, indicating
-// a potential TOCTOU race (symlink was swapped between hash and exec).
+// a symlink swap between hash-time and exec-time.
+//
+// NOTE: This checks path identity (symlink target stability), not content
+// identity. A file whose contents are replaced in-place after hashing
+// will not be detected by this check. Full TOCTOU prevention would
+// require opening the file by fd and using fexecve, which Go's os/exec
+// does not expose. This is a known limitation of the threat model.
 func CheckSymlinkRace(originalCommand string, expectedResolved string) error {
 	current, err := resolveBinary(originalCommand)
 	if err != nil {
@@ -312,8 +405,10 @@ func resolveBinary(name string) (string, error) {
 	return resolved, nil
 }
 
-// hashFileByFD opens the file, hashes the fd contents (TOCTOU mitigation),
-// and returns the hex-encoded SHA-256 digest.
+// hashFileByFD opens the file and hashes the fd contents, returning the
+// hex-encoded SHA-256 digest. Hashing via the open fd avoids re-reading
+// after resolution, but does not prevent in-place replacement after the
+// fd is closed (see package doc for TOCTOU limitations).
 func hashFileByFD(path string) (string, error) {
 	f, err := os.Open(filepath.Clean(path))
 	if err != nil {
@@ -330,14 +425,22 @@ func hashFileByFD(path string) (string, error) {
 }
 
 // hashScript resolves and hashes a script file. Returns the resolved path
-// and SHA-256 hash.
-func hashScript(scriptArg string) (string, string, error) {
-	resolved, err := filepath.Abs(scriptArg)
-	if err != nil {
-		return "", "", fmt.Errorf("absolute path: %w", err)
+// and SHA-256 hash. When workDir is non-empty and scriptArg is relative,
+// the script is resolved relative to workDir (the subprocess cwd) rather
+// than the proxy process cwd, avoiding path resolution mismatch.
+func hashScript(scriptArg, workDir string) (string, string, error) {
+	var resolved string
+	if !filepath.IsAbs(scriptArg) && workDir != "" {
+		resolved = filepath.Join(workDir, scriptArg)
+	} else {
+		abs, err := filepath.Abs(scriptArg)
+		if err != nil {
+			return "", "", fmt.Errorf("absolute path: %w", err)
+		}
+		resolved = abs
 	}
 
-	resolved, err = filepath.EvalSymlinks(resolved)
+	resolved, err := filepath.EvalSymlinks(resolved)
 	if err != nil {
 		return "", "", fmt.Errorf("EvalSymlinks: %w", err)
 	}
@@ -352,6 +455,8 @@ func hashScript(scriptArg string) (string, string, error) {
 
 // detectShebang reads the first line of a file and returns the interpreter
 // path if it starts with "#!". Returns empty string if no shebang is found.
+// Reads at most maxShebangLen bytes; a shebang line exceeding that limit
+// is treated as "no shebang" (safe default).
 func detectShebang(path string) string {
 	f, err := os.Open(filepath.Clean(path))
 	if err != nil {
@@ -359,9 +464,18 @@ func detectShebang(path string) string {
 	}
 	defer func() { _ = f.Close() }()
 
-	reader := bufio.NewReaderSize(f, maxShebangLen)
+	// Limit reads to maxShebangLen to prevent unbounded reads when no
+	// newline exists in the file (e.g. a binary).
+	limited := io.LimitReader(f, maxShebangLen)
+	reader := bufio.NewReaderSize(limited, maxShebangLen)
 	line, err := reader.ReadString('\n')
 	if err != nil && len(line) == 0 {
+		return ""
+	}
+
+	// If we read maxShebangLen bytes without finding a newline, the line
+	// is too long to be a valid shebang. Treat as "no shebang".
+	if err != nil && len(line) >= maxShebangLen {
 		return ""
 	}
 
@@ -373,17 +487,67 @@ func detectShebang(path string) string {
 	shebang := strings.TrimPrefix(line, "#!")
 	shebang = strings.TrimSpace(shebang)
 
-	// Handle "#!/usr/bin/env python3" -> return "python3"
+	// Handle "#!/usr/bin/env python3" and "#!/usr/bin/env -S python3".
 	parts := strings.Fields(shebang)
 	if len(parts) == 0 {
 		return ""
 	}
 
 	if filepath.Base(parts[0]) == "env" && len(parts) > 1 {
-		return parts[1]
+		remaining := skipEnvFlags(parts[1:])
+		if len(remaining) > 0 {
+			return remaining[0]
+		}
+		return "" // no interpreter found after env flags (fail-closed)
 	}
 
 	return parts[0]
+}
+
+// skipEnvFlags skips known /usr/bin/env flags and options, returning the
+// remaining args starting from the actual interpreter name. Returns nil if
+// no interpreter is found after exhausting all arguments. Fail-closed: if
+// the args are ambiguous or unrecognized, returns nil (caller treats as
+// "no interpreter found").
+//
+// Known flag patterns:
+//   - -i, -0: standalone flags (no value)
+//   - -u NAME: flag that consumes the next token as its value
+//   - -S CMD: flag where the next token is the interpreter
+//   - --: end of options, next token is interpreter
+func skipEnvFlags(args []string) []string {
+	for len(args) > 0 {
+		switch args[0] {
+		case "--":
+			// End of options; interpreter follows (or empty = fail-closed).
+			args = args[1:]
+			if len(args) == 0 {
+				return nil
+			}
+			return args
+		case "-S":
+			// -S means the next token is the command (interpreter).
+			args = args[1:]
+			if len(args) == 0 {
+				return nil
+			}
+			return args
+		case "-u":
+			// -u takes a value (VAR name to unset); skip flag and value.
+			args = args[1:]
+			if len(args) == 0 {
+				return nil
+			}
+			args = args[1:]
+		case "-i", "-0":
+			// Standalone flags; continue to next.
+			args = args[1:]
+		default:
+			// Not a recognized flag -- this is the interpreter.
+			return args
+		}
+	}
+	return nil
 }
 
 // isInsideDir checks if path is inside or equal to dir, after resolving

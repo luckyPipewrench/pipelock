@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -20,6 +21,7 @@ const (
 	testAction       = "block"
 	testActionWarn   = "warn"
 	osWindows        = "windows"
+	interpPython3    = "python3"
 )
 
 // hashOfString is a test helper that writes content to a temp file and returns
@@ -272,8 +274,8 @@ func TestDetectShebang_EnvPython(t *testing.T) {
 	}
 
 	interp := detectShebang(script)
-	if interp != "python3" {
-		t.Errorf("interpreter = %q, want %q", interp, "python3")
+	if interp != interpPython3 {
+		t.Errorf("interpreter = %q, want %q", interp, interpPython3)
 	}
 }
 
@@ -307,6 +309,24 @@ func TestDetectShebang_NonexistentFile(t *testing.T) {
 	interp := detectShebang("/nonexistent/file")
 	if interp != "" {
 		t.Errorf("interpreter = %q, want empty for missing file", interp)
+	}
+}
+
+func TestDetectShebang_OverlongLine(t *testing.T) {
+	// A shebang line exceeding maxShebangLen with no newline should be
+	// treated as "no shebang" (safe default per Finding 2).
+	dir := t.TempDir()
+	script := filepath.Join(dir, "overlong")
+
+	// Build a shebang line longer than maxShebangLen with no newline.
+	content := "#!" + strings.Repeat("x", maxShebangLen+100)
+	if err := os.WriteFile(script, []byte(content), 0o600); err != nil {
+		t.Fatalf("writing: %v", err)
+	}
+
+	interp := detectShebang(script)
+	if interp != "" {
+		t.Errorf("interpreter = %q, want empty for overlong shebang", interp)
 	}
 }
 
@@ -458,7 +478,7 @@ func TestVerify_NilManifest(t *testing.T) {
 		t.Fatalf("writing: %v", err)
 	}
 
-	// No manifest configured: verification is vacuously true.
+	// No manifest configured: fail-closed, not verified.
 	cfg := &Config{
 		Enabled:   true,
 		Action:    testAction,
@@ -470,8 +490,11 @@ func TestVerify_NilManifest(t *testing.T) {
 		t.Fatalf("Verify: %v", err)
 	}
 
-	if !result.Verified {
-		t.Errorf("expected Verified=true when no manifest, got reason: %s", result.Reason)
+	if result.Verified {
+		t.Error("expected Verified=false when no manifest (fail-closed)")
+	}
+	if !contains(result.Reason, "no manifest loaded") {
+		t.Errorf("Reason = %q, want 'no manifest loaded'", result.Reason)
 	}
 }
 
@@ -630,10 +653,11 @@ func TestVerify_SuspiciousCWD(t *testing.T) {
 		t.Fatalf("writing: %v", err)
 	}
 
+	hash := hashOfString(t, testPlainBinary)
 	cfg := &Config{
 		Enabled:   true,
 		Action:    testAction,
-		Manifests: nil, // no manifest, so verification is vacuously true
+		Manifests: map[string]string{bin: hash},
 	}
 
 	// Agent working dir = same dir as binary.
@@ -655,7 +679,8 @@ func TestVerify_SuspiciousCWD_Outside(t *testing.T) {
 		t.Fatalf("writing: %v", err)
 	}
 
-	cfg := &Config{Enabled: true, Action: testAction, Manifests: nil}
+	hash := hashOfString(t, testPlainBinary)
+	cfg := &Config{Enabled: true, Action: testAction, Manifests: map[string]string{bin: hash}}
 
 	result, err := Verify([]string{bin}, cfg, agentDir)
 	if err != nil {
@@ -850,7 +875,7 @@ func TestResolveBinary_Nonexistent(t *testing.T) {
 	if !errors.Is(err, exec.ErrNotFound) {
 		// On some systems, LookPath returns a different error. That's fine.
 		if !contains(err.Error(), "LookPath") && !contains(err.Error(), "not found") {
-			t.Logf("unexpected error type (still a failure): %v", err)
+			t.Errorf("unexpected error type: %v", err)
 		}
 	}
 }
@@ -887,12 +912,22 @@ func TestResolveBinary_SymlinkChain(t *testing.T) {
 func TestInterpreterMap(t *testing.T) {
 	expected := []string{
 		"python", "python3", "node", "bun", "deno",
-		"ruby", "perl", "bash", "sh",
-		"npx", "bunx", "uvx", "pipx",
+		"ruby", "perl", "bash", "sh", "dash",
 	}
 	for _, name := range expected {
 		if !interpreters[name] {
 			t.Errorf("interpreter %q should be in map", name)
+		}
+	}
+
+	// Package runners should NOT be in the interpreters map.
+	runners := []string{"npx", "bunx", "uvx", "pipx"}
+	for _, name := range runners {
+		if interpreters[name] {
+			t.Errorf("package runner %q should not be in interpreters map", name)
+		}
+		if !packageRunners[name] {
+			t.Errorf("package runner %q should be in packageRunners map", name)
 		}
 	}
 
@@ -917,8 +952,8 @@ func TestVerify_ShebangEnvInterpreter(t *testing.T) {
 
 	// Verify detectShebang finds "python3" (not "/usr/bin/env").
 	interp := detectShebang(script)
-	if interp != "python3" {
-		t.Errorf("shebang interpreter = %q, want %q", interp, "python3")
+	if interp != interpPython3 {
+		t.Errorf("shebang interpreter = %q, want %q", interp, interpPython3)
 	}
 }
 
@@ -1028,9 +1063,43 @@ func TestVerify_ScriptNotInManifest(t *testing.T) {
 }
 
 func TestHashScript_NonexistentScript(t *testing.T) {
-	_, _, err := hashScript("/nonexistent/script.sh")
+	_, _, err := hashScript("/nonexistent/script.sh", "")
 	if err == nil {
 		t.Fatal("expected error for nonexistent script")
+	}
+}
+
+func TestHashScript_WorkDir(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "myscript.sh")
+	content := "#!/bin/sh\necho workdir\n"
+	if err := os.WriteFile(script, []byte(content), 0o600); err != nil {
+		t.Fatalf("writing script: %v", err)
+	}
+
+	// Relative path with workDir should resolve correctly.
+	resolved, hash, err := hashScript("myscript.sh", dir)
+	if err != nil {
+		t.Fatalf("hashScript with workDir: %v", err)
+	}
+	if resolved != script {
+		t.Errorf("resolved = %q, want %q", resolved, script)
+	}
+	expectedHash := hashOfString(t, content)
+	if hash != expectedHash {
+		t.Errorf("hash = %q, want %q", hash, expectedHash)
+	}
+
+	// Absolute path should ignore workDir.
+	resolved2, hash2, err := hashScript(script, "/some/other/dir")
+	if err != nil {
+		t.Fatalf("hashScript with abs path: %v", err)
+	}
+	if resolved2 != script {
+		t.Errorf("resolved = %q, want %q", resolved2, script)
+	}
+	if hash2 != expectedHash {
+		t.Errorf("hash = %q, want %q", hash2, expectedHash)
 	}
 }
 
@@ -1181,6 +1250,27 @@ func TestIsInterpreterName_NonInterpreter(t *testing.T) {
 	for _, name := range nonInterp {
 		if isInterpreterName(name) {
 			t.Errorf("isInterpreterName(%q) = true, want false", name)
+		}
+	}
+}
+
+func TestIsInterpreterName_PrefixFalsePositives(t *testing.T) {
+	// Binaries that start with interpreter prefixes but are not interpreters.
+	// The suffix must start with a digit or dot to be a versioned interpreter.
+	falsePositives := []string{"shred", "sha256sum", "node_exporter", "python-config", "perldoc", "bunzip2"}
+	for _, name := range falsePositives {
+		if isInterpreterName(name) {
+			t.Errorf("isInterpreterName(%q) = true, want false (not a versioned interpreter)", name)
+		}
+	}
+}
+
+func TestIsInterpreterName_PackageRunners(t *testing.T) {
+	// Package runners should NOT match as interpreters.
+	runners := []string{"npx", "bunx", "uvx", "pipx"}
+	for _, name := range runners {
+		if isInterpreterName(name) {
+			t.Errorf("isInterpreterName(%q) = true, want false (package runner, not interpreter)", name)
 		}
 	}
 }
@@ -1385,6 +1475,173 @@ func TestVerify_Python312_VersionedInterpreter(t *testing.T) {
 	}
 	if result.ScriptHash != scriptHash {
 		t.Errorf("ScriptHash = %q, want %q", result.ScriptHash, scriptHash)
+	}
+}
+
+// --- skipEnvFlags Tests ---
+
+func TestSkipEnvFlags_NoFlags(t *testing.T) {
+	remaining := skipEnvFlags([]string{interpPython3, "script.py"})
+	if len(remaining) != 2 || remaining[0] != interpPython3 {
+		t.Errorf("expected [python3 script.py], got %v", remaining)
+	}
+}
+
+func TestSkipEnvFlags_DashS(t *testing.T) {
+	remaining := skipEnvFlags([]string{"-S", interpPython3, "script.py"})
+	if len(remaining) != 2 || remaining[0] != interpPython3 {
+		t.Errorf("expected [python3 script.py], got %v", remaining)
+	}
+}
+
+func TestSkipEnvFlags_DashI(t *testing.T) {
+	remaining := skipEnvFlags([]string{"-i", interpPython3, "script.py"})
+	if len(remaining) != 2 || remaining[0] != interpPython3 {
+		t.Errorf("expected [python3 script.py], got %v", remaining)
+	}
+}
+
+func TestSkipEnvFlags_DashU(t *testing.T) {
+	remaining := skipEnvFlags([]string{"-u", "HOME", interpPython3})
+	if len(remaining) != 1 || remaining[0] != interpPython3 {
+		t.Errorf("expected [python3], got %v", remaining)
+	}
+}
+
+func TestSkipEnvFlags_DoubleDash(t *testing.T) {
+	remaining := skipEnvFlags([]string{"--", interpPython3, "script.py"})
+	if len(remaining) != 2 || remaining[0] != interpPython3 {
+		t.Errorf("expected [python3 script.py], got %v", remaining)
+	}
+}
+
+func TestSkipEnvFlags_CombinedFlags(t *testing.T) {
+	remaining := skipEnvFlags([]string{"-i", "-u", "HOME", "-S", interpPython3})
+	// -i skipped, -u HOME skipped, -S means next is interpreter
+	if len(remaining) != 1 || remaining[0] != interpPython3 {
+		t.Errorf("expected [python3], got %v", remaining)
+	}
+}
+
+func TestSkipEnvFlags_Empty(t *testing.T) {
+	remaining := skipEnvFlags([]string{})
+	if remaining != nil {
+		t.Errorf("expected nil for empty args, got %v", remaining)
+	}
+}
+
+func TestSkipEnvFlags_OnlyFlags(t *testing.T) {
+	remaining := skipEnvFlags([]string{"-i", "-0"})
+	if remaining != nil {
+		t.Errorf("expected nil when only flags present, got %v", remaining)
+	}
+}
+
+func TestSkipEnvFlags_DashS_NoInterpreter(t *testing.T) {
+	remaining := skipEnvFlags([]string{"-S"})
+	if remaining != nil {
+		t.Errorf("expected nil for -S without interpreter, got %v", remaining)
+	}
+}
+
+func TestSkipEnvFlags_DoubleDash_NoInterpreter(t *testing.T) {
+	remaining := skipEnvFlags([]string{"--"})
+	if remaining != nil {
+		t.Errorf("expected nil for -- without interpreter, got %v", remaining)
+	}
+}
+
+// --- VerifyResult audit evidence tests ---
+
+func TestVerifyResult_ReasonsAccumulate(t *testing.T) {
+	if runtime.GOOS == osWindows {
+		t.Skip("requires Unix")
+	}
+
+	shPath, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("sh not in PATH")
+	}
+	resolvedSh, err := filepath.EvalSymlinks(shPath)
+	if err != nil {
+		t.Fatalf("resolving: %v", err)
+	}
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "dual-fail.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho dual"), 0o600); err != nil {
+		t.Fatalf("writing: %v", err)
+	}
+
+	// Both binary and script have wrong hashes in manifest.
+	cfg := &Config{
+		Enabled: true,
+		Action:  testAction,
+		Manifests: map[string]string{
+			resolvedSh: "wrong_binary_hash",
+			script:     "wrong_script_hash",
+		},
+	}
+
+	result, err := Verify([]string{"sh", script}, cfg, "")
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+
+	if result.Verified {
+		t.Error("expected Verified=false")
+	}
+	if len(result.Reasons) < 2 {
+		t.Errorf("expected at least 2 Reasons, got %d: %v", len(result.Reasons), result.Reasons)
+	}
+	// Reason should be set to the last reason (backward compat).
+	if result.Reason == "" {
+		t.Error("Reason should be non-empty")
+	}
+}
+
+func TestVerifyResult_ExpectedScriptHash(t *testing.T) {
+	if runtime.GOOS == osWindows {
+		t.Skip("requires Unix")
+	}
+
+	shPath, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("sh not in PATH")
+	}
+	resolvedSh, err := filepath.EvalSymlinks(shPath)
+	if err != nil {
+		t.Fatalf("resolving: %v", err)
+	}
+	shHash, err := hashFileByFD(resolvedSh)
+	if err != nil {
+		t.Fatalf("hashing sh: %v", err)
+	}
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "esh.sh")
+	scriptContent := "#!/bin/sh\necho expected\n"
+	if err := os.WriteFile(script, []byte(scriptContent), 0o600); err != nil {
+		t.Fatalf("writing: %v", err)
+	}
+	scriptHash := hashOfString(t, scriptContent)
+
+	cfg := &Config{
+		Enabled: true,
+		Action:  testAction,
+		Manifests: map[string]string{
+			resolvedSh: shHash,
+			script:     scriptHash,
+		},
+	}
+
+	result, err := Verify([]string{"sh", script}, cfg, "")
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+
+	if result.ExpectedScriptHash != scriptHash {
+		t.Errorf("ExpectedScriptHash = %q, want %q", result.ExpectedScriptHash, scriptHash)
 	}
 }
 

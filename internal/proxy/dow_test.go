@@ -444,7 +444,7 @@ func TestDoW_RetryStorm(t *testing.T) {
 	for range 20 {
 		result := tracker.RecordEndpoint(domainExample, pathAPI, 500)
 		if !result.Allowed && result.BudgetType == BudgetRetry {
-			t.Logf("retry storm triggered at count <= 20: %s", result.Reason)
+			t.Fatalf("retry storm triggered early at count <= 20: %s", result.Reason)
 		}
 	}
 
@@ -455,6 +455,35 @@ func TestDoW_RetryStorm(t *testing.T) {
 	}
 	if result.BudgetType != BudgetRetry {
 		t.Errorf("BudgetType = %q, want %q", result.BudgetType, BudgetRetry)
+	}
+}
+
+func TestDoW_RetryStorm_ConfigurableLimit(t *testing.T) {
+	tracker := NewDoWTracker(DoWConfig{
+		FanOutLimit:           1000,
+		FanOutWindowSeconds:   60,
+		MaxRetriesPerEndpoint: 5, // custom limit of 5
+		Action:                actionBlock,
+	})
+
+	// 5 failures should be OK (at limit).
+	for range 5 {
+		result := tracker.RecordEndpoint(domainExample, pathAPI, 500)
+		if !result.Allowed && result.BudgetType == BudgetRetry {
+			t.Fatalf("retry storm triggered at count <= 5: %s", result.Reason)
+		}
+	}
+
+	// 6th failure = retry storm with custom limit.
+	result := tracker.RecordEndpoint(domainExample, pathAPI, 500)
+	if result.Allowed {
+		t.Error("6th failure should trigger retry storm with limit of 5")
+	}
+	if result.BudgetType != BudgetRetry {
+		t.Errorf("BudgetType = %q, want %q", result.BudgetType, BudgetRetry)
+	}
+	if !strings.Contains(result.Reason, "limit 5") {
+		t.Errorf("Reason should mention limit 5, got: %s", result.Reason)
 	}
 }
 
@@ -518,7 +547,7 @@ func TestDoW_ClosedTracker_AcquireConcurrent(t *testing.T) {
 func TestDoW_ClosedTracker_ReleaseConcurrent(t *testing.T) {
 	tracker := NewDoWTracker(defaultDoWConfig())
 
-	// Acquire a slot, then close, then release. Should be a no-op.
+	// Acquire a slot, then close, then release.
 	result := tracker.AcquireConcurrent()
 	if !result.Allowed {
 		t.Fatalf("pre-close acquire should succeed: %s", result.Reason)
@@ -530,12 +559,19 @@ func TestDoW_ClosedTracker_ReleaseConcurrent(t *testing.T) {
 
 	tracker.Close()
 
-	// Release after close should be a no-op (not decrement below zero).
+	// Release after close should still decrement (slots acquired before
+	// shutdown must be released to avoid permanently elevated counters).
 	tracker.ReleaseConcurrent()
 
-	// Inflight stays at 1 because release was a no-op.
-	if tracker.Inflight() != 1 {
-		t.Errorf("inflight = %d, want 1 (release should be no-op after close)", tracker.Inflight())
+	if tracker.Inflight() != 0 {
+		t.Errorf("inflight = %d, want 0 (release should decrement after close)", tracker.Inflight())
+	}
+
+	// Additional release should not underflow below zero.
+	tracker.ReleaseConcurrent()
+
+	if tracker.Inflight() != 0 {
+		t.Errorf("inflight = %d, want 0 (should not underflow below zero)", tracker.Inflight())
 	}
 }
 

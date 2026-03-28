@@ -172,6 +172,15 @@ func runAssessVerifyAttestation(runDir, agent, keystoreDir string) (int, error) 
 		return verifyExitBadSignature, fmt.Errorf("loading public key for agent %q: %w", agentName, err)
 	}
 
+	// Verify signer identity matches attestation payload (non-repudiation).
+	if att.SignerKeyFingerprint != "" {
+		resolvedFP := attestation.KeyFingerprint(pubKey)
+		if att.SignerKeyFingerprint != resolvedFP {
+			return verifyExitBadSignature, fmt.Errorf("key fingerprint mismatch: attestation says %s, resolved key is %s",
+				att.SignerKeyFingerprint, resolvedFP)
+		}
+	}
+
 	sig, err := signing.LoadSignature(sigPath)
 	if err != nil {
 		return verifyExitBadSignature, fmt.Errorf("loading attestation signature: %w", err)
@@ -179,6 +188,18 @@ func runAssessVerifyAttestation(runDir, agent, keystoreDir string) (int, error) 
 
 	if !ed25519.Verify(pubKey, data, sig) {
 		return verifyExitBadSignature, fmt.Errorf("attestation signature verification failed")
+	}
+
+	// Verify badge integrity if attestation claims one.
+	if att.BadgeSHA256 != "" {
+		badgePath := filepath.Join(cleanDir, "badge.svg")
+		badgeHash, err := hashFile(badgePath)
+		if err != nil {
+			return verifyExitTamperedArtifact, fmt.Errorf("badge.svg referenced in attestation but: %w", err)
+		}
+		if badgeHash != att.BadgeSHA256 {
+			return verifyExitTamperedArtifact, fmt.Errorf("badge.svg hash mismatch (possible tampering)")
+		}
 	}
 
 	return 0, nil

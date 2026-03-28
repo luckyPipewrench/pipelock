@@ -106,6 +106,10 @@ Examples:
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if badge && !attestationFlag {
+				return fmt.Errorf("--badge requires --attestation (badge is derived from the signed attestation)")
+			}
+
 			opts := assessFinalizeOpts{
 				Unsigned:     unsigned,
 				AllowPartial: allowPartial,
@@ -233,27 +237,7 @@ func runAssessFinalize(runDir string, opts assessFinalizeOpts) error {
 				return cliutil.ExitCodeError(2, fmt.Errorf("missing assessment hash for attestation"))
 			}
 
-			att := attestation.New(attestation.Input{
-				Tool:                  "pipelock assess",
-				Version:               manifest.Version,
-				BuildSHA:              manifest.BuildSHA,
-				RunID:                 manifest.RunID,
-				GeneratedAt:           now,
-				LicenseTier:           manifest.LicenseTier,
-				OverallGrade:          assessment.OverallGrade,
-				OverallScore:          assessment.OverallScore,
-				PrimaryArtifact:       "assessment.json",
-				PrimaryArtifactSHA256: primaryHash,
-				Compliance:            compliance.CoverageSummaries(assessment.Compliance),
-			})
-
-			if err := writeAttestationJSON(filepath.Join(cleanDir, "attestation.json"), &att); err != nil {
-				return cliutil.ExitCodeError(2, err)
-			}
-			if h, err := hashFile(filepath.Join(cleanDir, "attestation.json")); err == nil {
-				artifacts["attestation.json"] = h
-			}
-
+			// Resolve signing identity FIRST — needed in attestation payload.
 			agentName, err := cliutil.ResolveAgentName(opts.Agent)
 			if err != nil {
 				return cliutil.ExitCodeError(1, fmt.Errorf("resolving agent for attestation signing: %w", err))
@@ -267,6 +251,59 @@ func runAssessFinalize(runDir string, opts assessFinalizeOpts) error {
 			if err != nil {
 				return cliutil.ExitCodeError(1, fmt.Errorf("loading key for attestation signing (agent %q): %w", agentName, err))
 			}
+			pubKey, err := ks.LoadPublicKey(agentName)
+			if err != nil {
+				return cliutil.ExitCodeError(1, fmt.Errorf("loading public key for attestation (agent %q): %w", agentName, err))
+			}
+
+			// Generate badge BEFORE attestation so its hash is included
+			// in the signed payload. Badge alone cannot be trusted without
+			// verifying the attestation that binds it.
+			var badgeSHA string
+			if opts.Badge {
+				attPreview := attestation.New(attestation.Input{
+					GeneratedAt:  now,
+					OverallGrade: assessment.OverallGrade,
+					OverallScore: assessment.OverallScore,
+				})
+				badgePath := filepath.Join(cleanDir, "badge.svg")
+				if err := os.WriteFile(badgePath, []byte(attestation.SVG(attPreview)), 0o600); err != nil {
+					return cliutil.ExitCodeError(2, fmt.Errorf("writing badge.svg: %w", err))
+				}
+				h, err := hashFile(badgePath)
+				if err != nil {
+					return cliutil.ExitCodeError(2, fmt.Errorf("hashing badge.svg: %w", err))
+				}
+				badgeSHA = h
+				artifacts["badge.svg"] = h
+			}
+
+			// Build attestation with signer identity and badge hash.
+			att := attestation.New(attestation.Input{
+				Tool:                  "pipelock assess",
+				Version:               manifest.Version,
+				BuildSHA:              manifest.BuildSHA,
+				RunID:                 manifest.RunID,
+				GeneratedAt:           now,
+				LicenseTier:           manifest.LicenseTier,
+				OverallGrade:          assessment.OverallGrade,
+				OverallScore:          assessment.OverallScore,
+				PrimaryArtifact:       "assessment.json",
+				PrimaryArtifactSHA256: primaryHash,
+				Compliance:            compliance.CoverageSummaries(assessment.Compliance),
+				SignerAgent:           agentName,
+				SignerKeyFingerprint:  attestation.KeyFingerprint(pubKey),
+				BadgeSHA256:           badgeSHA,
+			})
+
+			if err := writeAttestationJSON(filepath.Join(cleanDir, "attestation.json"), &att); err != nil {
+				return cliutil.ExitCodeError(2, err)
+			}
+			if h, err := hashFile(filepath.Join(cleanDir, "attestation.json")); err == nil {
+				artifacts["attestation.json"] = h
+			}
+
+			// Sign AFTER attestation includes all metadata (signer, badge hash).
 			sig, err := signing.SignFile(filepath.Join(cleanDir, "attestation.json"), privKey)
 			if err != nil {
 				return cliutil.ExitCodeError(1, fmt.Errorf("signing attestation: %w", err))
@@ -277,16 +314,6 @@ func runAssessFinalize(runDir string, opts assessFinalizeOpts) error {
 			}
 			if h, err := hashFile(sigPath); err == nil {
 				artifacts["attestation.json"+signing.SigExtension] = h
-			}
-
-			if opts.Badge {
-				badgePath := filepath.Join(cleanDir, "badge.svg")
-				if err := os.WriteFile(badgePath, []byte(attestation.SVG(att)), 0o600); err != nil {
-					return cliutil.ExitCodeError(2, fmt.Errorf("writing badge.svg: %w", err))
-				}
-				if h, err := hashFile(badgePath); err == nil {
-					artifacts["badge.svg"] = h
-				}
 			}
 		}
 	} else {

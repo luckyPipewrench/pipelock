@@ -5,6 +5,9 @@
 package attestation
 
 import (
+	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/hex"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/report/compliance"
@@ -30,6 +33,9 @@ type Input struct {
 	PrimaryArtifact       string
 	PrimaryArtifactSHA256 string
 	Compliance            []compliance.CoverageSummary
+	SignerAgent           string // agent name that signed this attestation
+	SignerKeyFingerprint  string // SHA-256 fingerprint of the signing public key
+	BadgeSHA256           string // SHA-256 of badge.svg (empty if no badge)
 }
 
 // Attestation is the signed evidence payload emitted by assess finalize.
@@ -41,13 +47,22 @@ type Attestation struct {
 	RunID                 string                       `json:"run_id"`
 	GeneratedAt           time.Time                    `json:"generated_at"`
 	ExpiresAt             time.Time                    `json:"expires_at"`
+	SignerAgent           string                       `json:"signer_agent,omitempty"`
+	SignerKeyFingerprint  string                       `json:"signer_key_fingerprint,omitempty"`
 	LicenseTier           string                       `json:"license_tier"`
 	OverallGrade          string                       `json:"overall_grade"`
 	OverallScore          int                          `json:"overall_score"`
 	PrimaryArtifact       string                       `json:"primary_artifact"`
 	PrimaryArtifactSHA256 string                       `json:"primary_artifact_sha256"`
+	BadgeSHA256           string                       `json:"badge_sha256,omitempty"`
 	Compliance            []compliance.CoverageSummary `json:"compliance,omitempty"`
 	BadgeText             string                       `json:"badge_text"`
+}
+
+// KeyFingerprint computes the SHA-256 fingerprint of an Ed25519 public key.
+func KeyFingerprint(pub ed25519.PublicKey) string {
+	h := sha256.Sum256(pub)
+	return hex.EncodeToString(h[:])
 }
 
 // Expired reports whether the attestation TTL has elapsed.
@@ -70,11 +85,14 @@ func New(in Input) Attestation {
 		RunID:                 in.RunID,
 		GeneratedAt:           generated,
 		ExpiresAt:             generated.Add(ttl),
+		SignerAgent:           in.SignerAgent,
+		SignerKeyFingerprint:  in.SignerKeyFingerprint,
 		LicenseTier:           in.LicenseTier,
 		OverallGrade:          in.OverallGrade,
 		OverallScore:          in.OverallScore,
 		PrimaryArtifact:       in.PrimaryArtifact,
 		PrimaryArtifactSHA256: in.PrimaryArtifactSHA256,
+		BadgeSHA256:           in.BadgeSHA256,
 		Compliance:            in.Compliance,
 		BadgeText:             "Pipelock Verified",
 	}

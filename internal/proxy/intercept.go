@@ -629,11 +629,15 @@ func newInterceptHandler(
 			flusher, _ := w.(http.Flusher)
 			streamErr := mcp.ScanA2AStream(r.Context(), resp.Body, w, flusher, sc, &cfg.A2AScanning)
 			if streamErr != nil {
-				// Stream terminated by detection or read error. Connection is
-				// already partially written so we can't send an HTTP error.
-				// Log the finding; the truncated stream itself signals the client.
-				logger.LogBlocked(r.Method, r.URL.String(), scannerLabelA2A, streamErr.Error(), clientIP, requestID, agent)
-				m.RecordTLSResponseBlocked(scannerLabelA2A)
+				// Distinguish scanning findings from internal/IO errors. In
+				// warn mode, findings are logged as anomalies but don't
+				// terminate the stream (events have already been forwarded).
+				if errors.Is(streamErr, mcp.ErrA2AStreamFinding) && cfg.A2AScanning.Action == config.ActionWarn {
+					logger.LogAnomaly(r.Method, r.URL.String(), scannerLabelA2A, streamErr.Error(), clientIP, requestID, agent, 0)
+				} else {
+					logger.LogBlocked(r.Method, r.URL.String(), scannerLabelA2A, streamErr.Error(), clientIP, requestID, agent)
+					m.RecordTLSResponseBlocked(scannerLabelA2A)
+				}
 			}
 			return
 		}
@@ -664,11 +668,15 @@ func newInterceptHandler(
 			var a2aRespResult mcp.A2AScanResult
 			if mcp.IsAgentCardPath(r.URL.Path) {
 				cardKey := mcp.CardCacheKeyFromRequest(r.URL.String(), r.Header.Get("Authorization"))
-				cardResult := mcp.ScanAgentCard(r.Context(), respBody, sc, p.a2aCardBaseline, cardKey, &cfg.A2AScanning)
+				var baseline *mcp.CardBaseline
+				if p != nil {
+					baseline = p.a2aCardBaseline
+				}
+				cardResult := mcp.ScanAgentCard(r.Context(), respBody, sc, baseline, cardKey, &cfg.A2AScanning)
 				a2aRespResult = cardResult.Findings
+				a2aRespResult.Clean = cardResult.Clean
 				// Promote card-level findings to the result.
 				if !cardResult.Clean {
-					a2aRespResult.Clean = false
 					if a2aRespResult.Action == "" {
 						a2aRespResult.Action = cardResult.Action
 					}

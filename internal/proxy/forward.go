@@ -6,6 +6,7 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -845,10 +846,17 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(resp.StatusCode)
 		flusher, _ := w.(http.Flusher)
 		if err := mcp.ScanA2AStream(r.Context(), resp.Body, w, flusher, sc, &cfg.A2AScanning); err != nil {
-			// Stream terminated by scanner — connection is already partially
-			// written, so we cannot send an HTTP error. Log and return.
-			p.logger.LogBlocked(r.Method, targetURL, "a2a_stream", err.Error(), clientIP, requestID, agent)
-			p.metrics.RecordBlocked(r.URL.Hostname(), "a2a_stream", time.Since(start), agentLabel)
+			// Distinguish scanning findings from internal/IO errors. In warn
+			// mode, findings are logged but the stream has already been
+			// forwarded (events are written before scanning the next one),
+			// so we only record the anomaly. Block mode and internal errors
+			// terminate the stream.
+			if errors.Is(err, mcp.ErrA2AStreamFinding) && cfg.A2AScanning.Action == config.ActionWarn {
+				p.logger.LogAnomaly(r.Method, targetURL, "a2a_stream", err.Error(), clientIP, requestID, agent, 0)
+			} else {
+				p.logger.LogBlocked(r.Method, targetURL, "a2a_stream", err.Error(), clientIP, requestID, agent)
+				p.metrics.RecordBlocked(r.URL.Hostname(), "a2a_stream", time.Since(start), agentLabel)
+			}
 		} else {
 			duration := time.Since(start)
 			p.metrics.RecordAllowed(duration, agentLabel)
@@ -895,9 +903,10 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			if mcp.IsAgentCardPath(r.URL.Path) {
 				cardKey := mcp.CardCacheKeyFromRequest(targetURL, r.Header.Get("Authorization"))
 				cardResult := mcp.ScanAgentCard(r.Context(), respBody, sc, p.a2aCardBaseline, cardKey, &cfg.A2AScanning)
+				a2aResult = cardResult.Findings
+				a2aResult.Clean = cardResult.Clean
+				// Promote card-level findings to the result.
 				if !cardResult.Clean {
-					a2aResult = cardResult.Findings
-					a2aResult.Clean = false
 					if a2aResult.Action == "" {
 						a2aResult.Action = cardResult.Action
 					}

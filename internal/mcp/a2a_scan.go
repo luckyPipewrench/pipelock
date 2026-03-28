@@ -21,6 +21,12 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
+// ErrA2AStreamFinding is returned by ScanA2AStream when a scanning finding
+// (injection, DLP) is detected in an SSE event. Callers can distinguish this
+// from internal/IO errors via errors.Is to decide whether warn mode should
+// allow the stream to continue.
+var ErrA2AStreamFinding = errors.New("a2a stream finding")
+
 // A2AScanResult describes the outcome of scanning A2A protocol traffic.
 type A2AScanResult struct {
 	Clean          bool
@@ -549,7 +555,7 @@ func ScanA2AStream(ctx context.Context, body io.Reader, w io.Writer, flusher htt
 		// Field-walk the event data payload.
 		eventResult := scanA2ABody(ctx, event, sc, cfg)
 		if !eventResult.Clean {
-			return fmt.Errorf("a2a stream terminated: %s", eventResult.Reason)
+			return fmt.Errorf("%w: %s", ErrA2AStreamFinding, eventResult.Reason)
 		}
 
 		// Rolling tail: concatenate tail + current text, scan for
@@ -559,7 +565,7 @@ func ScanA2AStream(ctx context.Context, body io.Reader, w io.Writer, flusher htt
 			combined := tail + " " + currentText
 			tailResult := sc.ScanResponse(ctx, combined)
 			if !tailResult.Clean {
-				return fmt.Errorf("a2a stream terminated: cross-event injection detected")
+				return fmt.Errorf("%w: cross-event injection detected", ErrA2AStreamFinding)
 			}
 		}
 

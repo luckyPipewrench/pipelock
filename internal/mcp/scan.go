@@ -340,6 +340,13 @@ func scanA2AResponseDispatch(line []byte, sc *scanner.Scanner, a2aOpts *A2ARespo
 		if err := json.Unmarshal(line, &rpc); err != nil {
 			return jsonrpc.ScanVerdict{Clean: false, Error: fmt.Sprintf("invalid JSON: %v", err)}
 		}
+		// Scan error payloads: a malicious server can inject content via
+		// error.message and error.data. Don't skip scanning just because
+		// the response is an error instead of a result.
+		if len(rpc.Error) > 0 && string(rpc.Error) != jsonrpc.Null {
+			errResult := ScanA2AResponseBody(context.Background(), line, sc, a2aOpts.Cfg)
+			return a2aScanToVerdict(rpcID, errResult)
+		}
 		if len(rpc.Result) == 0 || string(rpc.Result) == jsonrpc.Null {
 			return jsonrpc.ScanVerdict{ID: rpcID, Clean: true}
 		}

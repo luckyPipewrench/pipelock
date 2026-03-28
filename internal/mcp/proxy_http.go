@@ -258,10 +258,17 @@ func scanHTTPInput(msg []byte, logW io.Writer, sessionKey, auditSessionKey strin
 		method := verdict.Method
 		if method == "" {
 			var env struct {
-				Method string `json:"method"`
+				Method string          `json:"method"`
+				ID     json.RawMessage `json:"id"`
 			}
 			if json.Unmarshal(msg, &env) == nil {
 				method = env.Method
+				// Backfill verdict.ID so IsNotification works correctly
+				// when input scanning is disabled and no policy/chain config
+				// triggered the earlier extraction.
+				if verdict.ID == nil && len(env.ID) > 0 && string(env.ID) != jsonrpc.Null {
+					verdict.ID = env.ID
+				}
 			}
 		}
 		if IsA2AMethod(method) {

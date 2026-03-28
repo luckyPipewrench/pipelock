@@ -11,6 +11,8 @@ import (
 	"html/template"
 	"io"
 	"strings"
+
+	"github.com/luckyPipewrench/pipelock/internal/report/compliance"
 )
 
 // Hex color constants for HTML rendering. Shared across grade, severity,
@@ -437,9 +439,9 @@ func serverStatColor(protected, total int) string {
 // coverageColor returns a color for compliance status badges.
 func coverageColor(status string) string {
 	switch status {
-	case "covered":
+	case compliance.StatusCovered:
 		return colorGreen
-	case "partial":
+	case compliance.StatusPartial:
 		return colorYellow
 	default:
 		return colorRed
@@ -449,9 +451,9 @@ func coverageColor(status string) string {
 // coverageLabel returns a display label for a compliance status.
 func coverageLabel(status string) string {
 	switch status {
-	case "covered":
+	case compliance.StatusCovered:
 		return "COVERED"
-	case "partial":
+	case compliance.StatusPartial:
 		return "PARTIAL"
 	default:
 		return "NOT COVERED"

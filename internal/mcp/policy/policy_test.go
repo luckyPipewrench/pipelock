@@ -760,9 +760,9 @@ func TestCheckToolCall_PairwiseCapSkipsLoop(t *testing.T) {
 		t.Fatal("expected pairwise match with small token count")
 	}
 
-	// With 257+ tokens — pairwise skipped, "rm" and "-rf" non-adjacent in joined.
+	// With 65+ tokens — pairwise skipped, "rm" and "-rf" non-adjacent in joined.
 	bigArgs := []string{"rm"}
-	for range 256 {
+	for range 64 {
 		bigArgs = append(bigArgs, "x")
 	}
 	bigArgs = append(bigArgs, "-rf")
@@ -774,12 +774,8 @@ func TestCheckToolCall_PairwiseCapSkipsLoop(t *testing.T) {
 	}
 }
 
-func TestCheckToolCall_PairwiseMatchAt65Tokens(t *testing.T) {
-	// Exploit: with the old cap of 64, an attacker could hide "rm" and "-rf"
-	// across 65+ tokens with non-adjacent placement. Pairwise matching was
-	// skipped, and the joined string "rm x x ... x -rf" didn't match the
-	// strict pattern `^rm -rf$`. With the cap raised to 256, pairwise
-	// matching now catches this evasion.
+func TestCheckToolCall_PairwiseWithinCap(t *testing.T) {
+	// Verify pairwise matching works when token count is within cap (64).
 	rule := &CompiledRule{
 		Name:        "pairwise-only",
 		ToolPattern: regexp.MustCompile(`^bash$`),
@@ -788,15 +784,15 @@ func TestCheckToolCall_PairwiseMatchAt65Tokens(t *testing.T) {
 	}
 	pc := &Config{Action: config.ActionWarn, Rules: []*CompiledRule{rule}}
 
-	// 65 padding tokens between "rm" and "-rf" — old cap of 64 would skip pairwise.
+	// 60 padding tokens between "rm" and "-rf" (62 total, within cap of 64).
 	args := []string{"rm"}
-	for range 65 {
+	for range 60 {
 		args = append(args, "padding")
 	}
 	args = append(args, "-rf")
 	v := pc.CheckToolCall("bash", args)
 	if !v.Matched {
-		t.Fatal("expected pairwise to catch rm + -rf at 67 tokens (within new cap of 256)")
+		t.Fatal("expected pairwise to catch rm + -rf at 62 tokens (within cap)")
 	}
 }
 

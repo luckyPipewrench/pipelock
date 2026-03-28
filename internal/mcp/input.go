@@ -373,6 +373,14 @@ func scanRawBeforeForward(raw []byte, sc *scanner.Scanner, action string) InputV
 
 	injResult := sc.ScanResponse(context.Background(), text)
 
+	// JSON unicode unescape for injection scanning: same parser differential
+	// fix as DLP above. \u0069gnore → "ignore" must be caught.
+	if injResult.Clean {
+		if unescaped := unescapeJSONUnicode(text); unescaped != text {
+			injResult = sc.ScanResponse(context.Background(), unescaped)
+		}
+	}
+
 	// Also scan each extracted string individually for encoded injection
 	// (e.g. base64-encoded phrases) that don't decode in the full blob.
 	if injResult.Clean {

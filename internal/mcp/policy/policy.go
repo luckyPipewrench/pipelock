@@ -311,10 +311,9 @@ func normalizeArgTokens(argStrings []string, normFn func(string) string) ([]stri
 }
 
 // maxPairwiseTokens caps token count for O(n²) pairwise matching.
-// Prevents DoS from extremely long whitespace-heavy argument strings.
-// Set to 256 to cover realistic argument lists where command and flags
-// may be separated by many padding tokens in map-ordering evasion.
-const maxPairwiseTokens = 256
+// Kept at 64 to bound worst-case regex work (~4K pairs × rules).
+// Higher values create DoS risk (256 tokens = ~2M regex matches).
+const maxPairwiseTokens = 64
 
 // matchArgPattern checks if a regex pattern matches against any view of the
 // argument tokens. It uses three strategies:

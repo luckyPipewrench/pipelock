@@ -2826,15 +2826,30 @@ func TestScanRequest_JSONUnicodeEscapeForwardMode(t *testing.T) {
 	t.Parallel()
 	sc := testInputScanner(t)
 
-	// Malformed JSON-RPC (wrong version) triggers the on_parse_error=forward path.
-	// The secret is encoded as JSON \uXXXX escapes. This is the REAL bypass surface:
-	// scanRawBeforeForward sees the literal \u text, not the decoded characters.
+	// Valid JSON but wrong jsonrpc version triggers forward path.
 	escapedKey := `\u0073\u006b\u002d\u0061\u006e\u0074\u002d` + "api03-" + strings.Repeat("F", 25)
 	msg := fmt.Sprintf(`{"jsonrpc":"1.0","id":1,"exfil":"%s"}`, escapedKey)
 
 	verdict := ScanRequest([]byte(msg), sc, config.ActionBlock, "forward")
 	if verdict.Clean {
 		t.Error("JSON unicode-escaped secret must be detected in forward-mode raw path")
+	}
+}
+
+func TestScanRequest_JSONUnicodeEscapeMalformedForward(t *testing.T) {
+	t.Parallel()
+	sc := testInputScanner(t)
+
+	// Truly malformed JSON (missing closing brace) with \uXXXX-escaped secret.
+	// This is the real bypass surface: extract.AllStringsFromJSON fails on
+	// malformed JSON, so only the raw text path runs. The \uXXXX sequences
+	// must be decoded by unescapeJSONUnicode even on broken input.
+	escapedKey := `\u0073\u006b\u002d\u0061\u006e\u0074\u002d` + "api03-" + strings.Repeat("G", 25)
+	msg := fmt.Sprintf(`{"exfil":"%s"`, escapedKey) // note: no closing brace
+
+	verdict := ScanRequest([]byte(msg), sc, config.ActionBlock, "forward")
+	if verdict.Clean {
+		t.Error("JSON unicode-escaped secret in malformed JSON must be detected in forward path")
 	}
 }
 
@@ -2847,7 +2862,9 @@ func TestUnescapeJSONUnicode(t *testing.T) {
 		{"no escapes", "hello world", "hello world"},
 		{"simple escape", `\u0041\u0042\u0043`, "ABC"},
 		{"mixed", `prefix\u002dsuffix`, "prefix-suffix"},
-		{"invalid escape", `\u00zz`, `\u00zz`}, // invalid, returns original
+		{"invalid escape", `\u00zz`, `\u00zz`},                // invalid hex, left as-is
+		{"embedded in braces", `{"k":"\u0041"}`, `{"k":"A"}`}, // works inside JSON structure
+		{"malformed JSON", `{"k":"\u0041"`, `{"k":"A"`},       // works even with missing brace
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

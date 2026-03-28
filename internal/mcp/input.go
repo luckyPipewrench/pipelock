@@ -10,6 +10,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
@@ -956,19 +958,27 @@ func ForwardScannedInput(
 	}
 }
 
+// jsonUnicodeEscapeRe matches JSON \uXXXX escape sequences (4 hex digits).
+var jsonUnicodeEscapeRe = regexp.MustCompile(`\\u([0-9a-fA-F]{4})`)
+
 // unescapeJSONUnicode resolves JSON \uXXXX escape sequences to their UTF-8
-// representation. This closes a parser differential where the JSON parser sees
-// the decoded character but the DLP regex sees the literal \uXXXX text.
-// Uses Go's JSON parser to handle all escape forms including surrogate pairs.
+// representation. Works on arbitrary text (including malformed JSON) by using
+// regex replacement rather than JSON parsing. Handles surrogate pairs by
+// replacing each \uXXXX independently (the high surrogate alone produces a
+// replacement character, but the concatenated result still matches DLP patterns).
 func unescapeJSONUnicode(s string) string {
 	if !strings.Contains(s, `\u`) {
 		return s
 	}
-	var decoded string
-	if err := json.Unmarshal([]byte(`"`+s+`"`), &decoded); err != nil {
-		return s
-	}
-	return decoded
+	return jsonUnicodeEscapeRe.ReplaceAllStringFunc(s, func(match string) string {
+		// match is `\uXXXX` (6 chars). Parse the 4 hex digits into uint32.
+		// 4 hex digits max = 0xFFFF which fits in int32/rune without overflow.
+		code, err := strconv.ParseInt(match[2:], 16, 32)
+		if err != nil {
+			return match
+		}
+		return string(rune(code))
+	})
 }
 
 // isRPCNotification returns true if the JSON-RPC ID represents a notification.

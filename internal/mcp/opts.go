@@ -45,6 +45,10 @@ type MCPProxyOpts struct {
 	// Redirect handler runtime config (nil-safe).
 	RedirectRT *RedirectRuntime
 
+	// A2A protocol scanning (nil-safe).
+	A2ACfg       *config.A2AScanning
+	CardBaseline *CardBaseline
+
 	// File sentry (stdio proxy only)
 	Lineage      filesentry.Lineage
 	OnChildReady func() // called after child process starts

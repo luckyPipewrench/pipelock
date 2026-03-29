@@ -10,6 +10,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
@@ -163,8 +165,15 @@ func ScanRequest(line []byte, sc *scanner.Scanner, action, onParseError string) 
 
 		// Fall back to scanning full raw JSON for DLP patterns that span
 		// across JSON structure (catches patterns split by JSON syntax).
+		// Also unescape JSON \uXXXX sequences so DLP patterns match
+		// secrets encoded with JSON unicode escapes (parser differential fix).
 		if dlpResult.Clean {
 			dlpResult = sc.ScanTextForDLP(context.Background(), raw)
+		}
+		if dlpResult.Clean {
+			if unescaped := unescapeJSONUnicode(raw); unescaped != raw {
+				dlpResult = sc.ScanTextForDLP(context.Background(), unescaped)
+			}
 		}
 
 		// Run injection patterns on the full raw text (injection patterns
@@ -257,7 +266,6 @@ func ScanRequest(line []byte, sc *scanner.Scanner, action, onParseError string) 
 		for _, s := range strs {
 			if r := sc.ScanTextForDLP(context.Background(), s); !r.Clean {
 				dlpResult = r
-				break
 			}
 		}
 	}
@@ -347,7 +355,6 @@ func scanRawBeforeForward(raw []byte, sc *scanner.Scanner, action string) InputV
 		for _, s := range strs {
 			if r := sc.ScanTextForDLP(context.Background(), s); !r.Clean {
 				dlpResult = r
-				break
 			}
 		}
 	}
@@ -356,8 +363,23 @@ func scanRawBeforeForward(raw []byte, sc *scanner.Scanner, action string) InputV
 	if dlpResult.Clean {
 		dlpResult = sc.ScanTextForDLP(context.Background(), text)
 	}
+	// JSON unicode unescape: resolve \uXXXX sequences in raw text so DLP
+	// patterns match secrets encoded with JSON unicode escapes.
+	if dlpResult.Clean {
+		if unescaped := unescapeJSONUnicode(text); unescaped != text {
+			dlpResult = sc.ScanTextForDLP(context.Background(), unescaped)
+		}
+	}
 
 	injResult := sc.ScanResponse(context.Background(), text)
+
+	// JSON unicode unescape for injection scanning: same parser differential
+	// fix as DLP above. \u0069gnore → "ignore" must be caught.
+	if injResult.Clean {
+		if unescaped := unescapeJSONUnicode(text); unescaped != text {
+			injResult = sc.ScanResponse(context.Background(), unescaped)
+		}
+	}
 
 	// Also scan each extracted string individually for encoded injection
 	// (e.g. base64-encoded phrases) that don't decode in the full blob.
@@ -944,6 +966,29 @@ func ForwardScannedInput(
 	}
 }
 
+// jsonUnicodeEscapeRe matches JSON \uXXXX escape sequences (4 hex digits).
+var jsonUnicodeEscapeRe = regexp.MustCompile(`\\u([0-9a-fA-F]{4})`)
+
+// unescapeJSONUnicode resolves JSON \uXXXX escape sequences to their UTF-8
+// representation. Works on arbitrary text (including malformed JSON) by using
+// regex replacement rather than JSON parsing. Handles surrogate pairs by
+// replacing each \uXXXX independently (the high surrogate alone produces a
+// replacement character, but the concatenated result still matches DLP patterns).
+func unescapeJSONUnicode(s string) string {
+	if !strings.Contains(s, `\u`) {
+		return s
+	}
+	return jsonUnicodeEscapeRe.ReplaceAllStringFunc(s, func(match string) string {
+		// match is `\uXXXX` (6 chars). Parse the 4 hex digits into uint32.
+		// 4 hex digits max = 0xFFFF which fits in int32/rune without overflow.
+		code, err := strconv.ParseInt(match[2:], 16, 32)
+		if err != nil {
+			return match
+		}
+		return string(rune(code))
+	})
+}
+
 // isRPCNotification returns true if the JSON-RPC ID represents a notification.
 // A notification has no "id" field (nil/empty) or "id": null. The json.RawMessage
 // for null is non-nil with len=4, so len(id)==0 alone is insufficient.
@@ -956,11 +1001,19 @@ func joinStrings(ss []string) string {
 	return strings.Join(ss, "\n")
 }
 
-// scanSplitSecret checks for secrets split across multiple JSON fields by
-// concatenating values without separators. Keys are excluded (via
-// jsonrpc.ExtractStringsFromJSON, not extract.AllStringsFromJSON) because interleaved
-// keys break DLP regex adjacency. Returns the original result if clean or if
-// concat adds no new information.
+// maxPairwiseSplitFields caps the number of field values considered for
+// pairwise split-secret scanning. O(n^2) pairs, but each DLP scan is fast.
+// When field count exceeds this cap, edge sampling takes the first and last
+// half (32 each) so the effective pairwise coverage is 64 fields.
+const maxPairwiseSplitFields = 64
+
+// scanSplitSecret checks for secrets split across multiple JSON fields.
+// Two strategies:
+//  1. Sorted-key concatenation (original): joins all values without separators.
+//  2. Pairwise concatenation: tries both orderings (a+b, b+a) for every pair
+//     of field values, catching splits where key names defeat alphabetical sort.
+//
+// Returns the original result if already dirty or if no new patterns found.
 func scanSplitSecret(raw json.RawMessage, joined string, sc *scanner.Scanner, result scanner.TextDLPResult) scanner.TextDLPResult {
 	if !result.Clean {
 		return result
@@ -969,9 +1022,44 @@ func scanSplitSecret(raw json.RawMessage, joined string, sc *scanner.Scanner, re
 	if len(vals) <= 1 {
 		return result
 	}
+
+	// Strategy 1: sorted-key concatenation (catches N-field splits in sorted order).
 	concat := strings.Join(vals, "")
-	if concat == joined {
-		return result
+	if concat != joined {
+		if r := sc.ScanTextForDLP(context.Background(), concat); !r.Clean {
+			return r
+		}
 	}
-	return sc.ScanTextForDLP(context.Background(), concat)
+
+	// Strategy 2: pairwise concatenation (catches 2-field splits regardless of key order).
+	// When field count exceeds the cap, scan edges (first + last N/2 fields)
+	// rather than truncating. Attackers padding with filler fields likely place
+	// the secret halves near the edges of the sorted key space.
+	pairVals := vals
+	if len(pairVals) > maxPairwiseSplitFields {
+		half := maxPairwiseSplitFields / 2
+		edge := make([]string, 0, maxPairwiseSplitFields)
+		edge = append(edge, vals[:half]...)
+		edge = append(edge, vals[len(vals)-half:]...)
+		pairVals = edge
+	}
+	for i := 0; i < len(pairVals); i++ {
+		if len(pairVals[i]) == 0 {
+			continue
+		}
+		for j := i + 1; j < len(pairVals); j++ {
+			if len(pairVals[j]) == 0 {
+				continue
+			}
+			// Try both orderings: vals[i]+vals[j] and vals[j]+vals[i].
+			if r := sc.ScanTextForDLP(context.Background(), pairVals[i]+pairVals[j]); !r.Clean {
+				return r
+			}
+			if r := sc.ScanTextForDLP(context.Background(), pairVals[j]+pairVals[i]); !r.Clean {
+				return r
+			}
+		}
+	}
+
+	return result
 }

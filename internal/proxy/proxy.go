@@ -33,6 +33,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/edition"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
+	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
@@ -138,6 +139,7 @@ type Proxy struct {
 	startTime         time.Time
 	reloadMu          sync.Mutex // serializes Reload calls
 	approver          *hitl.Approver
+	a2aCardBaseline   *mcp.CardBaseline // Agent Card drift detection across requests
 }
 
 // Option configures optional Proxy behavior.
@@ -175,9 +177,10 @@ type FetchResponse struct {
 // New creates a new fetch proxy from config.
 func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metrics.Metrics, opts ...Option) (*Proxy, error) {
 	p := &Proxy{
-		logger:    logger,
-		metrics:   m,
-		startTime: time.Now(),
+		logger:          logger,
+		metrics:         m,
+		startTime:       time.Now(),
+		a2aCardBaseline: mcp.NewCardBaseline(1000), // 1000-entry LRU for Agent Card drift detection
 	}
 	for _, opt := range opts {
 		opt(p)

@@ -14,8 +14,10 @@ import (
 // next SSE event. Multi-line data: fields are concatenated with newlines
 // per the SSE specification.
 type SSEReader struct {
-	scanner     *bufio.Scanner
-	lastEventID string
+	scanner       *bufio.Scanner
+	lastEventID   string
+	lastEventType string
+	lastRetry     string
 }
 
 // NewSSEReader creates an SSEReader that parses SSE events from r.
@@ -32,6 +34,18 @@ func (sr *SSEReader) LastEventID() string {
 	return sr.lastEventID
 }
 
+// LastEventType returns the event: field from the most recently read SSE event.
+// Empty string means the default "message" event type per the SSE spec.
+func (sr *SSEReader) LastEventType() string {
+	return sr.lastEventType
+}
+
+// LastRetry returns the retry: field from the most recently read SSE event.
+// Empty string means no retry directive was present in the event.
+func (sr *SSEReader) LastRetry() string {
+	return sr.lastRetry
+}
+
 // ReadMessage returns the data payload of the next SSE event.
 // Multiple data: lines within a single event are concatenated with newlines
 // per the SSE specification. Non-data fields (event:, id:, retry:) are
@@ -40,6 +54,10 @@ func (sr *SSEReader) LastEventID() string {
 func (sr *SSEReader) ReadMessage() ([]byte, error) {
 	var data []string
 	hasData := false
+
+	// Reset per-event fields so they only reflect the current event.
+	sr.lastEventType = ""
+	sr.lastRetry = ""
 
 	for sr.scanner.Scan() {
 		line := sr.scanner.Text()
@@ -72,8 +90,10 @@ func (sr *SSEReader) ReadMessage() ([]byte, error) {
 			if !strings.Contains(value, "\x00") {
 				sr.lastEventID = value
 			}
-		case "event", "retry":
-			// Tracked but not used for message extraction.
+		case "event":
+			sr.lastEventType = value
+		case "retry":
+			sr.lastRetry = value
 		}
 	}
 

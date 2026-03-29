@@ -1647,6 +1647,67 @@ func TestScanSplitSecret_ConcatEqualsJoined(t *testing.T) {
 	}
 }
 
+func TestScanSplitSecret_EdgeFieldFallback(t *testing.T) {
+	// Exercise the edge-field fallback path: >64 fields, secret in first+last.
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+
+	// Build JSON with 66 fields. Secret prefix in field "aaa_first" (sorts to
+	// position 0) and suffix in "zzz_last" (sorts to position 65). Strategy 1
+	// concat puts them at opposite ends with 64 noise values between, so the
+	// sorted concat does NOT produce a match. Only edge pairwise (first 32 +
+	// last 32) catches this because both halves land in the edge window.
+	prefix := testSecretPrefix
+	suffix := "api03-" + strings.Repeat("H", 25)
+	var fields []string
+	fields = append(fields, fmt.Sprintf(`"aaa_first":%q`, prefix))
+	for i := 0; i < 64; i++ {
+		fields = append(fields, fmt.Sprintf(`"m_pad%02d":"noise"`, i))
+	}
+	fields = append(fields, fmt.Sprintf(`"zzz_last":%q`, suffix))
+	raw := json.RawMessage("{" + strings.Join(fields, ",") + "}")
+
+	// joined has the values in sorted key order with \n separators.
+	joined := prefix + "\n" + strings.Repeat("noise\n", 64) + suffix
+	clean := scanner.TextDLPResult{Clean: true}
+	result := scanSplitSecret(raw, joined, sc, clean)
+	if result.Clean {
+		t.Error("edge-field pairwise should catch split secret at opposite ends of 66 fields")
+	}
+}
+
+func TestScanSplitSecret_SingleField(t *testing.T) {
+	// Exercise the len(vals) <= 1 early return.
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+
+	raw := json.RawMessage(`{"only":"value"}`)
+	clean := scanner.TextDLPResult{Clean: true}
+	result := scanSplitSecret(raw, "value", sc, clean)
+	if !result.Clean {
+		t.Error("single field should return clean (nothing to split)")
+	}
+}
+
+func TestScanSplitSecret_AlreadyDirty(t *testing.T) {
+	// Exercise the !result.Clean early return.
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+
+	raw := json.RawMessage(`{"a":"x","b":"y"}`)
+	dirty := scanner.TextDLPResult{Clean: false}
+	result := scanSplitSecret(raw, "x\ny", sc, dirty)
+	if result.Clean {
+		t.Error("already-dirty result should be returned unchanged")
+	}
+}
+
 func TestForwardScannedInput_InjectionInToolArgs(t *testing.T) {
 	// Exercise injection-reasons loop (line 417-419) and method field.
 	sc := testInputScanner(t)
@@ -2767,4 +2828,111 @@ func TestTryRecoverSession(t *testing.T) {
 			t.Error("blockAllCheck(3) should return true when critical.block_all is true")
 		}
 	})
+}
+
+// --- Pairwise split-secret and JSON unescape regression tests ---
+
+func TestScanRequest_SplitSecretPairwiseKeyOrder(t *testing.T) {
+	t.Parallel()
+	sc := testInputScanner(t)
+
+	// Secret split across 2 fields with key names that defeat alphabetical sort.
+	// "z_first" sorts AFTER "a_second", so sorted-key concat produces
+	// "api03-AAAAAAAAAA...sk-ant-" which is NOT the secret.
+	// Pairwise scanning should try both orderings and catch it.
+	prefix := testSecretPrefix
+	suffix := "api03-" + strings.Repeat("A", 25)
+	msg := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"fetch","arguments":{"z_first":%q,"a_second":%q}}}`, prefix, suffix)
+
+	verdict := ScanRequest([]byte(msg), sc, config.ActionBlock, config.ActionBlock)
+	if verdict.Clean {
+		t.Error("pairwise split secret should be detected even when key names defeat alphabetical sort")
+	}
+}
+
+func TestScanRequest_SplitSecret3FieldPairwise(t *testing.T) {
+	t.Parallel()
+	sc := testInputScanner(t)
+
+	// Secret split across 3 fields. The prefix+suffix pair should still be
+	// caught by pairwise scanning (the middle field is noise).
+	prefix := testSecretPrefix
+	suffix := "api03-" + strings.Repeat("D", 25)
+	msg := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"fetch","arguments":{"z_prefix":%q,"m_noise":"harmless data","a_suffix":%q}}}`, prefix, suffix)
+
+	verdict := ScanRequest([]byte(msg), sc, config.ActionBlock, config.ActionBlock)
+	if verdict.Clean {
+		t.Error("3-field split with prefix+suffix pair should be caught by pairwise scanning")
+	}
+}
+
+func TestScanRequest_JSONUnicodeEscapeDLP(t *testing.T) {
+	t.Parallel()
+	sc := testInputScanner(t)
+
+	// JSON \u escapes encoding "sk-ant-" as "\u0073\u006b\u002d\u0061\u006e\u0074\u002d"
+	// followed by enough chars to match the Anthropic key pattern.
+	// The parser differential: json.Unmarshal would decode \u escapes,
+	// but the raw text path sees literal backslash-u sequences.
+	escapedKey := `\u0073\u006b\u002d\u0061\u006e\u0074\u002d` + "api03-" + strings.Repeat("E", 25)
+	msg := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":{"key":"%s"}}`, escapedKey)
+
+	verdict := ScanRequest([]byte(msg), sc, config.ActionBlock, config.ActionBlock)
+	if verdict.Clean {
+		t.Error("JSON unicode-escaped secret should be detected in no-params raw path")
+	}
+}
+
+func TestScanRequest_JSONUnicodeEscapeForwardMode(t *testing.T) {
+	t.Parallel()
+	sc := testInputScanner(t)
+
+	// Valid JSON but wrong jsonrpc version triggers forward path.
+	escapedKey := `\u0073\u006b\u002d\u0061\u006e\u0074\u002d` + "api03-" + strings.Repeat("F", 25)
+	msg := fmt.Sprintf(`{"jsonrpc":"1.0","id":1,"exfil":"%s"}`, escapedKey)
+
+	verdict := ScanRequest([]byte(msg), sc, config.ActionBlock, "forward")
+	if verdict.Clean {
+		t.Error("JSON unicode-escaped secret must be detected in forward-mode raw path")
+	}
+}
+
+func TestScanRequest_JSONUnicodeEscapeMalformedForward(t *testing.T) {
+	t.Parallel()
+	sc := testInputScanner(t)
+
+	// Truly malformed JSON (missing closing brace) with \uXXXX-escaped secret.
+	// This is the real bypass surface: extract.AllStringsFromJSON fails on
+	// malformed JSON, so only the raw text path runs. The \uXXXX sequences
+	// must be decoded by unescapeJSONUnicode even on broken input.
+	escapedKey := `\u0073\u006b\u002d\u0061\u006e\u0074\u002d` + "api03-" + strings.Repeat("G", 25)
+	msg := fmt.Sprintf(`{"exfil":"%s"`, escapedKey) // note: no closing brace
+
+	verdict := ScanRequest([]byte(msg), sc, config.ActionBlock, "forward")
+	if verdict.Clean {
+		t.Error("JSON unicode-escaped secret in malformed JSON must be detected in forward path")
+	}
+}
+
+func TestUnescapeJSONUnicode(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"no escapes", "hello world", "hello world"},
+		{"simple escape", `\u0041\u0042\u0043`, "ABC"},
+		{"mixed", `prefix\u002dsuffix`, "prefix-suffix"},
+		{"invalid escape", `\u00zz`, `\u00zz`},                // invalid hex, left as-is
+		{"embedded in braces", `{"k":"\u0041"}`, `{"k":"A"}`}, // works inside JSON structure
+		{"malformed JSON", `{"k":"\u0041"`, `{"k":"A"`},       // works even with missing brace
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := unescapeJSONUnicode(tt.input)
+			if got != tt.want {
+				t.Errorf("unescapeJSONUnicode(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
 }

@@ -389,7 +389,7 @@ func hashTool(t ToolDef) string {
 func extractToolText(t ToolDef) string {
 	var paramNames []string
 	if len(t.InputSchema) > 0 {
-		paramNames = extractParamNames(t.InputSchema)
+		paramNames = ExtractParamNames(t.InputSchema)
 	}
 	return extractToolTextWithParams(t, paramNames)
 }
@@ -406,7 +406,7 @@ func extractToolTextWithParams(t ToolDef, paramNames []string) string {
 		parts = append(parts, t.Description)
 	}
 	if len(t.InputSchema) > 0 {
-		parts = append(parts, extractSchemaDescriptions(t.InputSchema)...)
+		parts = append(parts, ExtractSchemaDescriptions(t.InputSchema)...)
 		// Add parameter names with underscores and camelCase expanded to spaces.
 		// This feeds names like "content_from_reading_ssh_id_rsa" and
 		// "contentFromReadingSshIdRsa" through injection/DLP scanning as
@@ -461,10 +461,10 @@ func expandParamName(name string) string {
 	return strings.ToLower(b.String())
 }
 
-// extractParamNames extracts all property key names from a JSON Schema.
+// ExtractParamNames extracts all property key names from a JSON Schema.
 // Walks "properties" at all nesting levels (including allOf/oneOf/anyOf branches,
 // definitions, items, and additionalProperties). Returns sorted, deduplicated names.
-func extractParamNames(schema json.RawMessage) []string {
+func ExtractParamNames(schema json.RawMessage) []string {
 	var parsed map[string]interface{}
 	if err := json.Unmarshal(schema, &parsed); err != nil {
 		return nil
@@ -506,12 +506,12 @@ func collectParamNames(obj map[string]interface{}, seen map[string]bool, depth i
 	}
 }
 
-// extractSchemaDescriptions recursively extracts text field values from a
+// ExtractSchemaDescriptions recursively extracts text field values from a
 // JSON Schema. Collects all text-bearing fields from all nested objects:
 // description, title, default, const, pattern, $comment, x-* extensions,
 // plus string members of enum and examples arrays.
 // Falls back to extracting string schemas (non-object JSON values).
-func extractSchemaDescriptions(schema json.RawMessage) []string {
+func ExtractSchemaDescriptions(schema json.RawMessage) []string {
 	var result []string
 	var parsed map[string]interface{}
 	if err := json.Unmarshal(schema, &parsed); err != nil {
@@ -806,7 +806,7 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) []T
 		// Extract param names once for both text scanning and drift tracking.
 		var paramNames []string
 		if len(tool.InputSchema) > 0 {
-			paramNames = extractParamNames(tool.InputSchema)
+			paramNames = ExtractParamNames(tool.InputSchema)
 		}
 
 		text := extractToolTextWithParams(tool, paramNames)

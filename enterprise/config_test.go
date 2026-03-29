@@ -569,8 +569,31 @@ func TestEnforceLicenseGate_NoLicenseKey(t *testing.T) {
 	}
 	cfg.LicenseKey = ""
 	EnforceLicenseGate(cfg)
-	if cfg.Agents != nil {
-		t.Error("expected agents disabled when no license key")
+	if len(cfg.Agents) != 0 {
+		t.Error("expected named agents disabled when no license key")
+	}
+}
+
+func TestEnforceLicenseGate_NoLicenseKey_PreservesDefault(t *testing.T) {
+	cfg := testConfig()
+	cfg.Agents = map[string]config.AgentProfile{
+		"_default":    {Budget: config.BudgetConfig{MaxRetriesPerTool: 5}},
+		"claude-code": {Mode: config.ModeStrict},
+	}
+	cfg.LicenseKey = ""
+	EnforceLicenseGate(cfg)
+	if len(cfg.Agents) != 1 {
+		t.Fatalf("expected 1 agent (_default preserved), got %d", len(cfg.Agents))
+	}
+	def, ok := cfg.Agents["_default"]
+	if !ok {
+		t.Fatal("expected _default profile to survive license gate rejection")
+	}
+	if def.Budget.MaxRetriesPerTool != 5 {
+		t.Errorf("_default budget lost: MaxRetriesPerTool = %d, want 5", def.Budget.MaxRetriesPerTool)
+	}
+	if _, hasNamed := cfg.Agents["claude-code"]; hasNamed {
+		t.Error("named agent should have been stripped")
 	}
 }
 

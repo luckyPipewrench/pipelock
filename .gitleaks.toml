@@ -1,0 +1,10 @@
+# Gitleaks config for pipelock
+#
+# test/secureiqlab/ contains deliberate test payloads (synthetic canary tokens,
+# fake credentials for DLP testing). These are NOT real secrets.
+
+[allowlist]
+description = "SecureIQLab test harness — deliberate synthetic payloads"
+paths = [
+  '''test/secureiqlab/.*''',
+]

@@ -11,6 +11,22 @@ import (
 	"strconv"
 )
 
+// Pipelock exit codes are part of the stable CLI contract. Scripts, CI
+// pipelines, and IDE integrations may depend on these values. Do not change
+// existing codes without a major version bump.
+const (
+	// ExitOK is a clean shutdown (default, not typically set explicitly).
+	ExitOK = 0
+	// ExitGeneral is the default for unclassified errors (cobra default).
+	ExitGeneral = 1
+	// ExitConfig indicates a configuration error (bad YAML, missing file, validation failure).
+	ExitConfig = 2
+	// ExitSecurity indicates a security event caused termination (kill switch, block_all).
+	ExitSecurity = 3
+	// ExitSubprocess indicates the wrapped subprocess (MCP server) exited with a non-zero status.
+	ExitSubprocess = 10
+)
+
 // ExitError wraps an error with a specific exit code for main() to use.
 type ExitError struct {
 	Err  error

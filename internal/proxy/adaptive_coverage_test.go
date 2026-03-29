@@ -162,18 +162,20 @@ func TestWSRelay_ClientToUpstream_BlockAllMidStream(t *testing.T) {
 	rec := sm.GetOrCreate(adaptiveSessionKeyLoopback)
 	escalateRec(rec, 1) // block_all at elevated (level 1)
 
-	// Send a frame to trigger the relay loop. The block_all check fires
-	// before reading: the relay should close the connection.
-	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte("hello")); err != nil {
-		// Write may fail if the relay already closed — that's fine.
-		return
+	// The relay checks block_all before each ReadHeader. If the goroutine
+	// was already blocking on ReadHeader when we escalated, the first frame
+	// unblocks the read and gets forwarded. The block_all fires on the next
+	// loop iteration, so we retry to account for this timing window.
+	for range 3 {
+		if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte("hello")); err != nil {
+			return // Write failed = connection closed by block_all
+		}
+		_, _, readErr := wsutil.ReadServerData(conn)
+		if readErr != nil {
+			return // Connection closed = block_all fired
+		}
 	}
-
-	// Expect the connection to be closed.
-	_, _, readErr := wsutil.ReadServerData(conn)
-	if readErr == nil {
-		t.Error("expected connection closed by block_all, but read succeeded")
-	}
+	t.Error("expected connection closed by block_all within 3 round-trips")
 }
 
 // TestWSRelay_UpstreamToClient_BlockAllMidStream verifies that the block_all
@@ -238,17 +240,20 @@ func TestWSRelay_UpstreamToClient_BlockAllMidStream(t *testing.T) {
 	rec := sm.GetOrCreate(adaptiveSessionKeyLoopback)
 	escalateRec(rec, 1) // block_all at elevated (level 1)
 
-	// The upstreamToClient goroutine checks block_all before each read.
-	// Send one message to trigger upstream echo which forces upstreamToClient to loop.
-	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte("trigger")); err != nil {
-		return // relay may have already closed
+	// The relay checks block_all before each ReadHeader. If the goroutine
+	// was already blocking on ReadHeader when we escalated, the first frame
+	// unblocks the read and gets forwarded. The block_all fires on the next
+	// loop iteration, so we retry to account for this timing window.
+	for range 3 {
+		if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte("trigger")); err != nil {
+			return // Write failed = connection closed by block_all
+		}
+		_, _, readErr := wsutil.ReadServerData(conn)
+		if readErr != nil {
+			return // Connection closed = block_all fired
+		}
 	}
-
-	// Expect the connection to be closed due to block_all in upstreamToClient.
-	_, _, readErr := wsutil.ReadServerData(conn)
-	if readErr == nil {
-		t.Error("expected connection closed by upstreamToClient block_all")
-	}
+	t.Error("expected connection closed by block_all within 3 round-trips")
 }
 
 // TestWSRelay_DLPAdaptiveUpgrade verifies that a DLP finding in audit mode on

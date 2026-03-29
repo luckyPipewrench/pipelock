@@ -37,6 +37,20 @@ import (
 	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
 
+// handleProxyError classifies MCP proxy errors: subprocess exits get a
+// user-facing message and a specific exit code; other errors are reported
+// to Sentry (if available) and returned as-is.
+func handleProxyError(err error, logW io.Writer, sentryClient *plsentry.Client) error {
+	if errors.Is(err, mcp.ErrSubprocessExit) {
+		_, _ = fmt.Fprintf(logW, "pipelock: %v\n", err)
+		return cliutil.ExitCodeError(cliutil.ExitSubprocess, err)
+	}
+	if sentryClient != nil {
+		sentryClient.CaptureError(err)
+	}
+	return err
+}
+
 // ErrInjectionDetected is returned when pipelock mcp scan detects prompt injection.
 var ErrInjectionDetected = errors.New("prompt injection detected")
 
@@ -610,10 +624,7 @@ Environment passthrough (subprocess mode only):
 					RedirectRT: buildRedirectRT(cfg),
 				}
 				if err := mcp.RunProxyWithSandbox(ctx, sandboxCmd, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), proxyOpts, mcpStrict); err != nil {
-					if sentryClient != nil {
-						sentryClient.CaptureError(err)
-					}
-					return err
+					return handleProxyError(err, cmd.ErrOrStderr(), sentryClient)
 				}
 				return nil
 			}
@@ -713,10 +724,7 @@ Environment passthrough (subprocess mode only):
 				Lineage:    lin, OnChildReady: onChildReady,
 			}
 			if err := mcp.RunProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), logW, serverCmd, proxyOpts, extraEnv...); err != nil {
-				if sentryClient != nil {
-					sentryClient.CaptureError(err)
-				}
-				return err
+				return handleProxyError(err, logW, sentryClient)
 			}
 			return nil
 		},

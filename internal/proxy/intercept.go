@@ -22,6 +22,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/certgen"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
+	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
@@ -65,6 +66,11 @@ func interceptRecordSignal(rec session.Recorder, sig session.SignalType, cfg *co
 // interceptReadHeaderTimeout is the maximum time to read request headers on an
 // intercepted TLS connection. 30 seconds is generous for local proxy traffic.
 const interceptReadHeaderTimeout = 30 * time.Second
+
+// scannerLabelA2A is the scanner label for A2A protocol findings in logs and
+// metrics. Distinguishes A2A-specific scanning from generic body_dlp or
+// response_scan findings.
+const scannerLabelA2A = "a2a_scan"
 
 // interceptHandshakeTimeout is the maximum time for the client-side TLS
 // handshake during interception. Prevents goroutine/semaphore exhaustion
@@ -339,6 +345,34 @@ func newInterceptHandler(
 			logger.LogAnomaly(r.Method, targetURL, urlResult.Scanner, urlResult.Reason, clientIP, requestID, agent, urlResult.Score)
 		}
 
+		// A2A protocol detection: check path and Content-Type for A2A traffic.
+		// When detected, field-aware scanning replaces generic body DLP with
+		// protocol-specific classification (URL/text/secret/opaque per leaf).
+		isA2A := cfg.A2AScanning.Enabled && mcp.IsA2ARequest(r.URL.Path, r.Header.Get("Content-Type"))
+
+		// A2A header scanning: scan A2A-Extensions URIs through SSRF pipeline.
+		// Runs before body scan so header exfiltration is caught early.
+		if isA2A {
+			a2aHdrResult := mcp.ScanA2AHeaders(r.Context(), r.Header, sc, &cfg.A2AScanning)
+			if !a2aHdrResult.Clean {
+				hasFinding = true
+				action := a2aHdrResult.Action
+				if action == "" {
+					action = cfg.A2AScanning.Action
+				}
+				// ActionAsk: no HITL terminal in intercepted tunnels, fail closed.
+				if action == config.ActionAsk || (action == config.ActionBlock && cfg.EnforceEnabled()) {
+					interceptRecordSignal(rec, session.SignalBlock, cfg, logger, m, p, clientIP, agent, requestID)
+					logger.LogBlocked(r.Method, r.URL.String(), scannerLabelA2A, a2aHdrResult.Reason, clientIP, requestID, agent)
+					m.RecordTLSRequestBlocked(scannerLabelA2A)
+					http.Error(w, "blocked: "+a2aHdrResult.Reason, http.StatusForbidden)
+					return
+				}
+				// Audit/warn mode: log finding but continue.
+				logger.LogAnomaly(r.Method, r.URL.String(), scannerLabelA2A, a2aHdrResult.Reason, clientIP, requestID, agent, 0.8)
+			}
+		}
+
 		// Strip Accept-Encoding to force identity encoding upstream.
 		// This ensures responses arrive uncompressed so we can scan them.
 		r.Header.Del("Accept-Encoding")
@@ -431,6 +465,33 @@ func newInterceptHandler(
 				}
 				// Audit/warn mode: log finding but forward the request.
 				logger.LogAnomaly(r.Method, r.URL.String(), scannerLabel, reason, clientIP, requestID, agent, 0.8)
+			}
+
+			// A2A request body scanning: field-aware classification of JSON
+			// leaves. Runs after generic DLP so both scanners see the body.
+			if isA2A && bodyBytes != nil {
+				a2aBodyResult := mcp.ScanA2ARequestBody(r.Context(), bodyBytes, sc, &cfg.A2AScanning)
+				if !a2aBodyResult.Clean {
+					hasFinding = true
+					action := a2aBodyResult.Action
+					if action == "" {
+						action = cfg.A2AScanning.Action
+					}
+					reason := a2aBodyResult.Reason
+					if reason == "" {
+						reason = "a2a: request body finding"
+					}
+					// ActionAsk: no HITL terminal in intercepted tunnels, fail closed.
+					if action == config.ActionAsk || (action == config.ActionBlock && cfg.EnforceEnabled()) {
+						interceptRecordSignal(rec, session.SignalBlock, cfg, logger, m, p, clientIP, agent, requestID)
+						logger.LogBlocked(r.Method, r.URL.String(), scannerLabelA2A, reason, clientIP, requestID, agent)
+						m.RecordTLSRequestBlocked(scannerLabelA2A)
+						http.Error(w, "blocked: "+reason, http.StatusForbidden)
+						return
+					}
+					// Audit/warn mode: log finding but forward the request.
+					logger.LogAnomaly(r.Method, r.URL.String(), scannerLabelA2A, reason, clientIP, requestID, agent, 0.8)
+				}
 			}
 
 			// Re-wrap body so the forwarded request gets the buffered bytes.
@@ -542,6 +603,45 @@ func newInterceptHandler(
 			return
 		}
 
+		// A2A SSE streaming: scan events inline with per-event field-aware
+		// scanning and rolling-tail cross-event injection detection. Clean
+		// events are flushed immediately; detection terminates the stream.
+		// Defense-in-depth: explicitly reject compressed SSE streams even
+		// though the general compression guard above catches them. This
+		// ensures A2A SSE scanning never processes compressed data if the
+		// code is restructured.
+		if isA2A && strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
+			if hasNonIdentityEncoding(resp.Header.Get("Content-Encoding")) {
+				logger.LogBlocked(r.Method, r.URL.String(), scannerLabelA2A, "compressed A2A stream cannot be scanned", clientIP, requestID, agent)
+				m.RecordTLSResponseBlocked(scannerLabelA2A)
+				http.Error(w, "blocked: compressed A2A stream cannot be scanned", http.StatusForbidden)
+				return
+			}
+			// Copy response headers to client before streaming.
+			for k, vv := range resp.Header {
+				for _, v := range vv {
+					w.Header().Add(k, v)
+				}
+			}
+			removeHopByHopHeaders(w.Header())
+			w.WriteHeader(resp.StatusCode)
+
+			flusher, _ := w.(http.Flusher)
+			streamErr := mcp.ScanA2AStream(r.Context(), resp.Body, w, flusher, sc, &cfg.A2AScanning)
+			if streamErr != nil {
+				// Distinguish scanning findings from internal/IO errors. In
+				// warn mode, findings are logged as anomalies but don't
+				// terminate the stream (events have already been forwarded).
+				if errors.Is(streamErr, mcp.ErrA2AStreamFinding) && cfg.A2AScanning.Action == config.ActionWarn {
+					logger.LogAnomaly(r.Method, r.URL.String(), scannerLabelA2A, streamErr.Error(), clientIP, requestID, agent, 0)
+				} else {
+					logger.LogBlocked(r.Method, r.URL.String(), scannerLabelA2A, streamErr.Error(), clientIP, requestID, agent)
+					m.RecordTLSResponseBlocked(scannerLabelA2A)
+				}
+			}
+			return
+		}
+
 		// Buffer response for scanning (scan-then-send, fail-closed).
 		maxResp := cfg.TLSInterception.MaxResponseBytes
 		if maxResp <= 0 {
@@ -559,6 +659,55 @@ func newInterceptHandler(
 			m.RecordTLSResponseBlocked("oversized")
 			http.Error(w, "blocked: response too large for scanning", http.StatusForbidden)
 			return
+		}
+
+		// A2A response body scanning: field-aware classification replaces
+		// generic response scanning for A2A traffic. Agent Card paths route
+		// through drift detection; all other A2A responses use the walker.
+		if isA2A {
+			var a2aRespResult mcp.A2AScanResult
+			if mcp.IsAgentCardPath(r.URL.Path) {
+				cardKey := mcp.CardCacheKeyFromRequest(r.URL.String(), r.Header.Get("Authorization"))
+				var baseline *mcp.CardBaseline
+				if p != nil {
+					baseline = p.a2aCardBaseline
+				}
+				cardResult := mcp.ScanAgentCard(r.Context(), respBody, sc, baseline, cardKey, &cfg.A2AScanning)
+				a2aRespResult = cardResult.Findings
+				a2aRespResult.Clean = cardResult.Clean
+				// Promote card-level findings to the result.
+				if !cardResult.Clean {
+					if a2aRespResult.Action == "" {
+						a2aRespResult.Action = cardResult.Action
+					}
+					if a2aRespResult.Reason == "" {
+						a2aRespResult.Reason = cardResult.Reason
+					}
+				}
+			} else {
+				a2aRespResult = mcp.ScanA2AResponseBody(r.Context(), respBody, sc, &cfg.A2AScanning)
+			}
+			if !a2aRespResult.Clean {
+				hasFinding = true
+				action := a2aRespResult.Action
+				if action == "" {
+					action = cfg.A2AScanning.Action
+				}
+				reason := a2aRespResult.Reason
+				if reason == "" {
+					reason = "a2a: response body finding"
+				}
+				// ActionAsk: no HITL terminal in intercepted tunnels, fail closed.
+				if action == config.ActionAsk || (action == config.ActionBlock && cfg.EnforceEnabled()) {
+					interceptRecordSignal(rec, session.SignalBlock, cfg, logger, m, p, clientIP, agent, requestID)
+					logger.LogBlocked(r.Method, r.URL.String(), scannerLabelA2A, reason, clientIP, requestID, agent)
+					m.RecordTLSResponseBlocked(scannerLabelA2A)
+					http.Error(w, "blocked: "+reason, http.StatusForbidden)
+					return
+				}
+				// Audit/warn mode: log finding but forward response.
+				logger.LogAnomaly(r.Method, r.URL.String(), scannerLabelA2A, reason, clientIP, requestID, agent, 0.8)
+			}
 		}
 
 		// Response injection scanning.

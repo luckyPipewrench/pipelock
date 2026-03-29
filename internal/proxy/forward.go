@@ -6,6 +6,7 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -19,6 +20,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
+	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
@@ -529,6 +531,30 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// Scan through all layers (URL pipeline)
 	result := sc.Scan(r.Context(), targetURL)
 
+	// A2A protocol detection: check path and Content-Type before deeper scanning.
+	isA2A := cfg.A2AScanning.Enabled && mcp.IsA2ARequest(r.URL.Path, r.Header.Get("Content-Type"))
+
+	// A2A header scanning: scan A2A-Extensions header for blocked URIs.
+	if isA2A {
+		hdrResult := mcp.ScanA2AHeaders(r.Context(), r.Header, sc, &cfg.A2AScanning)
+		if !hdrResult.Clean {
+			action := hdrResult.Action
+			if action == "" {
+				action = cfg.A2AScanning.Action
+			}
+			reason := hdrResult.Reason
+			if reason == "" {
+				reason = "a2a: header finding"
+			}
+			p.logger.LogAnomaly(r.Method, targetURL, "a2a_header", reason, clientIP, requestID, agent, 0)
+			if action == config.ActionBlock {
+				p.metrics.RecordBlocked(r.URL.Hostname(), "a2a_header", time.Since(start), agentLabel)
+				http.Error(w, "blocked: "+reason, http.StatusForbidden)
+				return
+			}
+		}
+	}
+
 	// Session profiling: record BEFORE the enforce-mode early return so adaptive
 	// signals (SignalBlock) fire even for blocked requests. Pass deferClean=true
 	// so later request/response findings on the same round trip do not get
@@ -805,6 +831,43 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		maxBytes = budgetRemaining
 	}
 
+	// A2A SSE streaming: if the response is an A2A event stream, scan each
+	// event via field-aware walker with rolling-tail cross-event injection
+	// detection. Must run before the buffered response scan path.
+	if isA2A && strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
+		// Fail-closed: compressed SSE streams cannot be scanned.
+		if hasNonIdentityEncoding(resp.Header.Get("Content-Encoding")) {
+			p.logger.LogBlocked(r.Method, targetURL, "a2a_stream", "compressed A2A stream cannot be scanned", clientIP, requestID, agent)
+			p.metrics.RecordBlocked(r.URL.Hostname(), "a2a_stream", time.Since(start), agentLabel)
+			http.Error(w, "blocked: compressed A2A stream cannot be scanned", http.StatusForbidden)
+			return
+		}
+		copyResponseHeaders(w.Header(), resp.Header)
+		w.WriteHeader(resp.StatusCode)
+		flusher, _ := w.(http.Flusher)
+		if err := mcp.ScanA2AStream(r.Context(), resp.Body, w, flusher, sc, &cfg.A2AScanning); err != nil {
+			// Distinguish scanning findings from internal/IO errors. In warn
+			// mode, findings are logged but the stream has already been
+			// forwarded (events are written before scanning the next one),
+			// so we only record the anomaly. Block mode and internal errors
+			// terminate the stream.
+			if errors.Is(err, mcp.ErrA2AStreamFinding) && cfg.A2AScanning.Action == config.ActionWarn {
+				p.logger.LogAnomaly(r.Method, targetURL, "a2a_stream", err.Error(), clientIP, requestID, agent, 0)
+			} else {
+				p.logger.LogBlocked(r.Method, targetURL, "a2a_stream", err.Error(), clientIP, requestID, agent)
+				p.metrics.RecordBlocked(r.URL.Hostname(), "a2a_stream", time.Since(start), agentLabel)
+			}
+		} else {
+			duration := time.Since(start)
+			p.metrics.RecordAllowed(duration, agentLabel)
+			p.logger.LogForwardHTTP(r.Method, targetURL, clientIP, requestID, agent, resp.StatusCode, 0, duration)
+			if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
+				forwardRec.RecordClean(cfg.AdaptiveEnforcement.DecayPerCleanRequest)
+			}
+		}
+		return
+	}
+
 	// Response injection scanning: buffer-then-scan-then-send when enabled.
 	// Headers are copied AFTER the scan decision so blocked responses don't
 	// leak upstream headers (Set-Cookie, Content-Encoding, etc.) to the client.
@@ -829,6 +892,48 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			p.logger.LogError(r.Method, targetURL, clientIP, requestID, agent, readErr)
 			http.Error(w, "blocked: response read error", http.StatusForbidden)
 			return
+		}
+
+		// A2A response body scanning: field-aware walk for Agent Card drift
+		// detection and structured A2A message scanning. Runs before the
+		// generic response injection scanner so A2A-specific findings
+		// (card drift, field-level DLP) are reported with precise context.
+		if isA2A && len(respBody) > 0 {
+			var a2aResult mcp.A2AScanResult
+			if mcp.IsAgentCardPath(r.URL.Path) {
+				cardKey := mcp.CardCacheKeyFromRequest(targetURL, r.Header.Get("Authorization"))
+				cardResult := mcp.ScanAgentCard(r.Context(), respBody, sc, p.a2aCardBaseline, cardKey, &cfg.A2AScanning)
+				a2aResult = cardResult.Findings
+				a2aResult.Clean = cardResult.Clean
+				// Promote card-level findings to the result.
+				if !cardResult.Clean {
+					if a2aResult.Action == "" {
+						a2aResult.Action = cardResult.Action
+					}
+					if a2aResult.Reason == "" {
+						a2aResult.Reason = cardResult.Reason
+					}
+				}
+			} else {
+				a2aResult = mcp.ScanA2AResponseBody(r.Context(), respBody, sc, &cfg.A2AScanning)
+			}
+			if !a2aResult.Clean {
+				hasFinding = true
+				a2aAction := a2aResult.Action
+				if a2aAction == "" {
+					a2aAction = cfg.A2AScanning.Action
+				}
+				a2aReason := a2aResult.Reason
+				if a2aReason == "" {
+					a2aReason = "a2a: response finding"
+				}
+				p.logger.LogAnomaly(r.Method, targetURL, "a2a_response", a2aReason, clientIP, requestID, agent, 0)
+				if a2aAction == config.ActionBlock {
+					p.metrics.RecordBlocked(r.URL.Hostname(), "a2a_response", time.Since(start), agentLabel)
+					http.Error(w, "blocked: "+a2aReason, http.StatusForbidden)
+					return
+				}
+			}
 		}
 
 		scanResult := sc.ScanResponse(r.Context(), string(respBody))

@@ -57,6 +57,101 @@ func sanitizeString(s string) string {
 	return b.String()
 }
 
+// logEntry builds zerolog event and emit fields in parallel, eliminating
+// the double-build pattern across all Log* methods.
+type logEntry struct {
+	event  *zerolog.Event
+	fields map[string]any
+}
+
+func newLogEntry(event *zerolog.Event, eventType EventType) *logEntry {
+	return &logEntry{
+		event:  event.Str("event", string(eventType)),
+		fields: map[string]any{},
+	}
+}
+
+// newLogEntryRaw creates a logEntry with a raw event name string (for startup/shutdown
+// which use plain strings instead of EventType constants).
+func newLogEntryRaw(event *zerolog.Event, eventName string) *logEntry {
+	return &logEntry{
+		event:  event.Str("event", eventName),
+		fields: map[string]any{},
+	}
+}
+
+func (e *logEntry) str(key, value string) *logEntry {
+	sanitized := sanitizeString(value)
+	e.event = e.event.Str(key, sanitized)
+	e.fields[key] = sanitized
+	return e
+}
+
+func (e *logEntry) optStr(key, value string) *logEntry {
+	if value == "" {
+		return e
+	}
+	return e.str(key, value)
+}
+
+func (e *logEntry) intField(key string, value int) *logEntry {
+	e.event = e.event.Int(key, value)
+	e.fields[key] = value
+	return e
+}
+
+func (e *logEntry) int64Field(key string, value int64) *logEntry {
+	e.event = e.event.Int64(key, value)
+	e.fields[key] = value
+	return e
+}
+
+func (e *logEntry) float64Field(key string, value float64) *logEntry {
+	e.event = e.event.Float64(key, value)
+	e.fields[key] = value
+	return e
+}
+
+// durMS adds a "duration_ms" duration field to both zerolog and emit.
+// All duration fields in audit use the same key, so it is hardcoded to
+// satisfy the unparam linter.
+func (e *logEntry) durMS(value time.Duration) *logEntry {
+	e.event = e.event.Dur("duration_ms", value)
+	e.fields["duration_ms"] = value.Milliseconds()
+	return e
+}
+
+func (e *logEntry) strs(key string, values []string) *logEntry {
+	e.event = e.event.Strs(key, values)
+	e.fields[key] = values
+	return e
+}
+
+func (e *logEntry) errField(err error) *logEntry {
+	e.event = e.event.Err(err)
+	errStr := ""
+	if err != nil {
+		errStr = err.Error()
+	}
+	e.fields["error"] = errStr
+	return e
+}
+
+// bundleRulesField adds "bundle_rules" to both zerolog and emit. All
+// Interface-typed audit fields use this key, so it is hardcoded to satisfy
+// the unparam linter. Called as a statement (never chained) because it is
+// always conditional on len(bundleRules) > 0.
+func (e *logEntry) bundleRulesField(value any) {
+	e.event = e.event.Interface("bundle_rules", value)
+	e.fields["bundle_rules"] = value
+}
+
+// msg sends the zerolog message. Call this instead of e.event.Msg() to keep
+// the logEntry API consistent.
+func (e *logEntry) msg(text string) {
+	e.event.Msg(text)
+}
+
 // EventType describes the kind of audit event.
 type EventType string
 
@@ -198,94 +293,55 @@ func (l *Logger) LogAllowed(method, url, clientIP, requestID string, statusCode,
 	if !l.includeAllowed {
 		return
 	}
-	ev := l.zl.Info().
-		Str("event", string(EventAllowed)).
-		Str("method", method).
-		Str("url", sanitizeString(url)).
-		Str("client_ip", clientIP).
-		Str("request_id", requestID).
-		Int("status_code", statusCode).
-		Int("size_bytes", sizeBytes).
-		Dur("duration_ms", duration)
-	if agent != "" {
-		ev = ev.Str("agent", sanitizeString(agent))
-	}
-	ev.Msg("request allowed")
+	e := newLogEntry(l.zl.Info(), EventAllowed).
+		str("method", method).
+		str("url", url).
+		str("client_ip", clientIP).
+		str("request_id", requestID).
+		intField("status_code", statusCode).
+		intField("size_bytes", sizeBytes).
+		durMS(duration).
+		optStr("agent", agent)
+	e.msg("request allowed")
 }
 
 // LogBlocked logs a blocked request with the reason.
 func (l *Logger) LogBlocked(method, url, scanner, reason, clientIP, requestID, agent string) {
 	technique := TechniqueForScanner(scanner)
 
+	e := newLogEntry(l.zl.Warn(), EventBlocked).
+		str("method", method).
+		str("url", url).
+		str("client_ip", clientIP).
+		str("request_id", requestID).
+		str("scanner", scanner).
+		str("reason", reason).
+		optStr("agent", agent).
+		optStr("mitre_technique", technique)
+
 	// includeBlocked gates local audit log only — external emission always fires
 	// so SIEM/webhook consumers see blocked events regardless of local verbosity.
 	if l.includeBlocked {
-		event := l.zl.Warn().
-			Str("event", string(EventBlocked)).
-			Str("method", method).
-			Str("url", sanitizeString(url)).
-			Str("client_ip", clientIP).
-			Str("request_id", requestID).
-			Str("scanner", scanner).
-			Str("reason", sanitizeString(reason))
-		if agent != "" {
-			event = event.Str("agent", sanitizeString(agent))
-		}
-		if technique != "" {
-			event = event.Str("mitre_technique", technique)
-		}
-		event.Msg("request blocked")
+		e.msg("request blocked")
 	}
-
 	if l.emitter != nil {
-		fields := map[string]any{
-			"method":     method,
-			"url":        sanitizeString(url),
-			"scanner":    scanner,
-			"reason":     sanitizeString(reason),
-			"client_ip":  clientIP,
-			"request_id": requestID,
-		}
-		if agent != "" {
-			fields["agent"] = sanitizeString(agent)
-		}
-		if technique != "" {
-			fields["mitre_technique"] = technique
-		}
-		l.emitter.Emit(context.Background(), string(EventBlocked), fields)
+		l.emitter.Emit(context.Background(), string(EventBlocked), e.fields)
 	}
 }
 
 // LogError logs a fetch error.
 func (l *Logger) LogError(method, url, clientIP, requestID, agent string, err error) {
-	ev := l.zl.Error().
-		Str("event", string(EventError)).
-		Str("method", method).
-		Str("url", sanitizeString(url)).
-		Str("client_ip", clientIP).
-		Str("request_id", requestID)
-	if agent != "" {
-		ev = ev.Str("agent", sanitizeString(agent))
-	}
-	ev.Err(err).
-		Msg("request error")
+	e := newLogEntry(l.zl.Error(), EventError).
+		str("method", method).
+		str("url", url).
+		str("client_ip", clientIP).
+		str("request_id", requestID).
+		optStr("agent", agent).
+		errField(err)
+	e.msg("request error")
 
 	if l.emitter != nil {
-		errStr := ""
-		if err != nil {
-			errStr = err.Error()
-		}
-		fields := map[string]any{
-			"method":     method,
-			"url":        sanitizeString(url),
-			"client_ip":  clientIP,
-			"request_id": requestID,
-			"error":      errStr,
-		}
-		if agent != "" {
-			fields["agent"] = sanitizeString(agent)
-		}
-		l.emitter.Emit(context.Background(), string(EventError), fields)
+		l.emitter.Emit(context.Background(), string(EventError), e.fields)
 	}
 }
 
@@ -296,44 +352,20 @@ func (l *Logger) LogError(method, url, clientIP, requestID, agent string, err er
 func (l *Logger) LogAnomaly(method, url, scanner, reason, clientIP, requestID, agent string, score float64) {
 	technique := TechniqueForScanner(scanner)
 
-	event := l.zl.Warn().
-		Str("event", string(EventAnomaly)).
-		Str("method", method).
-		Str("url", sanitizeString(url)).
-		Str("client_ip", clientIP).
-		Str("request_id", requestID)
-	if agent != "" {
-		event = event.Str("agent", sanitizeString(agent))
-	}
-	if scanner != "" {
-		event = event.Str("scanner", scanner)
-	}
-	if technique != "" {
-		event = event.Str("mitre_technique", technique)
-	}
-	event.Str("reason", sanitizeString(reason)).
-		Float64("score", score).
-		Msg("anomaly detected")
+	e := newLogEntry(l.zl.Warn(), EventAnomaly).
+		str("method", method).
+		str("url", url).
+		str("client_ip", clientIP).
+		str("request_id", requestID).
+		optStr("agent", agent).
+		optStr("scanner", scanner).
+		optStr("mitre_technique", technique).
+		str("reason", reason).
+		float64Field("score", score)
+	e.msg("anomaly detected")
 
 	if l.emitter != nil {
-		fields := map[string]any{
-			"method":     method,
-			"url":        sanitizeString(url),
-			"reason":     sanitizeString(reason),
-			"client_ip":  clientIP,
-			"request_id": requestID,
-			"score":      score,
-		}
-		if agent != "" {
-			fields["agent"] = sanitizeString(agent)
-		}
-		if scanner != "" {
-			fields["scanner"] = scanner
-		}
-		if technique != "" {
-			fields["mitre_technique"] = technique
-		}
-		l.emitter.Emit(context.Background(), string(EventAnomaly), fields)
+		l.emitter.Emit(context.Background(), string(EventAnomaly), e.fields)
 	}
 }
 
@@ -343,40 +375,22 @@ func (l *Logger) LogAnomaly(method, url, scanner, reason, clientIP, requestID, a
 func (l *Logger) LogResponseScan(url, clientIP, requestID, agent, action string, matchCount int, patternNames []string, bundleRules []BundleRuleHit) {
 	technique := TechniqueForScanner("response_scan")
 
-	event := l.zl.Warn().
-		Str("event", string(EventResponseScan)).
-		Str("url", sanitizeString(url)).
-		Str("client_ip", clientIP).
-		Str("request_id", requestID).
-		Str("action", action).
-		Int("match_count", matchCount).
-		Strs("patterns", patternNames).
-		Str("mitre_technique", technique)
-	if agent != "" {
-		event = event.Str("agent", sanitizeString(agent))
-	}
+	e := newLogEntry(l.zl.Warn(), EventResponseScan).
+		str("url", url).
+		str("client_ip", clientIP).
+		str("request_id", requestID).
+		str("action", action).
+		intField("match_count", matchCount).
+		strs("patterns", patternNames).
+		str("mitre_technique", technique).
+		optStr("agent", agent)
 	if len(bundleRules) > 0 {
-		event = event.Interface("bundle_rules", bundleRules)
+		e.bundleRulesField(bundleRules)
 	}
-	event.Msg("response scan detected prompt injection")
+	e.msg("response scan detected prompt injection")
 
 	if l.emitter != nil {
-		data := map[string]any{
-			"url":             sanitizeString(url),
-			"client_ip":       clientIP,
-			"request_id":      requestID,
-			"action":          action,
-			"match_count":     matchCount,
-			"patterns":        patternNames,
-			"mitre_technique": technique,
-		}
-		if agent != "" {
-			data["agent"] = sanitizeString(agent)
-		}
-		if len(bundleRules) > 0 {
-			data["bundle_rules"] = bundleRules
-		}
-		l.emitter.Emit(context.Background(), string(EventResponseScan), data)
+		l.emitter.Emit(context.Background(), string(EventResponseScan), e.fields)
 	}
 }
 
@@ -385,15 +399,12 @@ func (l *Logger) LogTunnelOpen(target, clientIP, requestID, agent string) {
 	if !l.includeAllowed {
 		return
 	}
-	ev := l.zl.Info().
-		Str("event", string(EventTunnelOpen)).
-		Str("target", sanitizeString(target)).
-		Str("client_ip", clientIP).
-		Str("request_id", requestID)
-	if agent != "" {
-		ev = ev.Str("agent", sanitizeString(agent))
-	}
-	ev.Msg("tunnel opened")
+	e := newLogEntry(l.zl.Info(), EventTunnelOpen).
+		str("target", target).
+		str("client_ip", clientIP).
+		str("request_id", requestID).
+		optStr("agent", agent)
+	e.msg("tunnel opened")
 }
 
 // LogTunnelClose logs a CONNECT tunnel teardown with traffic stats.
@@ -401,17 +412,14 @@ func (l *Logger) LogTunnelClose(target, clientIP, requestID, agent string, total
 	if !l.includeAllowed {
 		return
 	}
-	ev := l.zl.Info().
-		Str("event", string(EventTunnelClose)).
-		Str("target", sanitizeString(target)).
-		Str("client_ip", clientIP).
-		Str("request_id", requestID)
-	if agent != "" {
-		ev = ev.Str("agent", sanitizeString(agent))
-	}
-	ev.Int64("total_bytes", totalBytes).
-		Dur("duration_ms", duration).
-		Msg("tunnel closed")
+	e := newLogEntry(l.zl.Info(), EventTunnelClose).
+		str("target", target).
+		str("client_ip", clientIP).
+		str("request_id", requestID).
+		optStr("agent", agent).
+		int64Field("total_bytes", totalBytes).
+		durMS(duration)
+	e.msg("tunnel closed")
 }
 
 // LogForwardHTTP logs a forward proxy HTTP request (absolute-URI).
@@ -419,110 +427,88 @@ func (l *Logger) LogForwardHTTP(method, url, clientIP, requestID, agent string, 
 	if !l.includeAllowed {
 		return
 	}
-	ev := l.zl.Info().
-		Str("event", string(EventForwardHTTP)).
-		Str("method", method).
-		Str("url", sanitizeString(url)).
-		Str("client_ip", clientIP).
-		Str("request_id", requestID)
-	if agent != "" {
-		ev = ev.Str("agent", sanitizeString(agent))
-	}
-	ev.Int("status_code", statusCode).
-		Int("size_bytes", sizeBytes).
-		Dur("duration_ms", duration).
-		Msg("forward proxy request")
+	e := newLogEntry(l.zl.Info(), EventForwardHTTP).
+		str("method", method).
+		str("url", url).
+		str("client_ip", clientIP).
+		str("request_id", requestID).
+		optStr("agent", agent).
+		intField("status_code", statusCode).
+		intField("size_bytes", sizeBytes).
+		durMS(duration)
+	e.msg("forward proxy request")
 }
 
 // LogRedirect logs a redirect hop in the chain.
 func (l *Logger) LogRedirect(originalURL, redirectURL, clientIP, requestID, agent string, hop int) {
-	ev := l.zl.Info().
-		Str("event", string(EventRedirect)).
-		Str("original_url", sanitizeString(originalURL)).
-		Str("redirect_url", sanitizeString(redirectURL)).
-		Str("client_ip", clientIP).
-		Str("request_id", requestID)
-	if agent != "" {
-		ev = ev.Str("agent", sanitizeString(agent))
-	}
-	ev.Int("hop", hop).
-		Msg("redirect followed")
+	e := newLogEntry(l.zl.Info(), EventRedirect).
+		str("original_url", originalURL).
+		str("redirect_url", redirectURL).
+		str("client_ip", clientIP).
+		str("request_id", requestID).
+		optStr("agent", agent).
+		intField("hop", hop)
+	e.msg("redirect followed")
 }
 
 // LogToolRedirect logs an MCP tool call redirect event. This is distinct from
 // LogRedirect (HTTP redirect hops). result is "redirected" or "blocked" (on failure).
 func (l *Logger) LogToolRedirect(sessionID, toolName, argsDigest, redirectProfile, redirectReason, policyRule, result string, latencyMs int64) {
-	ev := l.zl.Info().
-		Str("event", string(EventToolRedirect)).
-		Str("tool_name", sanitizeString(toolName)).
-		Str("args_digest", argsDigest).
-		Str("redirect_profile", sanitizeString(redirectProfile)).
-		Str("redirect_reason", sanitizeString(redirectReason)).
-		Str("policy_rule", sanitizeString(policyRule)).
-		Str("result", result).
-		Int64("latency_ms", latencyMs)
+	e := newLogEntry(l.zl.Info(), EventToolRedirect).
+		str("tool_name", toolName).
+		str("args_digest", argsDigest).
+		str("redirect_profile", redirectProfile).
+		str("redirect_reason", redirectReason).
+		str("policy_rule", policyRule).
+		str("result", result).
+		int64Field("latency_ms", latencyMs)
+	// session_id is local-log only — not emitted to external sinks.
 	if sessionID != "" {
-		ev = ev.Str("session_id", sessionID)
+		e.event = e.event.Str("session_id", sanitizeString(sessionID))
 	}
-	ev.Msg("tool call redirected")
+	e.msg("tool call redirected")
 
 	if l.emitter != nil {
-		l.emitter.Emit(context.Background(), string(EventToolRedirect), map[string]any{
-			"tool_name":        toolName,
-			"args_digest":      argsDigest,
-			"redirect_profile": redirectProfile,
-			"redirect_reason":  redirectReason,
-			"policy_rule":      policyRule,
-			"result":           result,
-			"latency_ms":       latencyMs,
-		})
+		l.emitter.Emit(context.Background(), string(EventToolRedirect), e.fields)
 	}
 }
 
 // LogConfigReload logs a configuration reload event.
 func (l *Logger) LogConfigReload(status, detail, configHash string) {
-	l.zl.Info().
-		Str("event", string(EventConfigReload)).
-		Str("status", status).
-		Str("detail", detail).
-		Str("config_hash", configHash).
-		Msg("configuration reloaded")
+	e := newLogEntry(l.zl.Info(), EventConfigReload).
+		str("status", status).
+		str("detail", detail).
+		str("config_hash", configHash)
+	e.msg("configuration reloaded")
 
 	if l.emitter != nil {
-		l.emitter.Emit(context.Background(), string(EventConfigReload), map[string]any{
-			"status":      status,
-			"detail":      detail,
-			"config_hash": configHash,
-		})
+		l.emitter.Emit(context.Background(), string(EventConfigReload), e.fields)
 	}
 }
 
 // LogStartup logs that the proxy has started.
 func (l *Logger) LogStartup(listenAddr, mode, version, configHash string) {
-	l.zl.Info().
-		Str("event", "startup").
-		Str("listen", listenAddr).
-		Str("mode", mode).
-		Str("version", version).
-		Str("config_hash", configHash).
-		Msg("pipelock started")
+	e := newLogEntryRaw(l.zl.Info(), "startup").
+		str("listen", listenAddr).
+		str("mode", mode).
+		str("version", version).
+		str("config_hash", configHash)
+	e.msg("pipelock started")
 }
 
 // LogShutdown logs that the proxy is shutting down.
 func (l *Logger) LogShutdown(reason string) {
-	l.zl.Info().
-		Str("event", "shutdown").
-		Str("reason", reason).
-		Msg("pipelock stopping")
+	e := newLogEntryRaw(l.zl.Info(), "shutdown").
+		str("reason", reason)
+	e.msg("pipelock stopping")
 }
 
 // LogAgentListener logs that a per-agent listener has started.
 func (l *Logger) LogAgentListener(addr, agent string) {
-	l.zl.Info().
-		Str("event", string(EventAgentListener)).
-		Str("listen", addr).
-		Str("agent", sanitizeString(agent)).
-		Msg("agent listener started")
+	e := newLogEntry(l.zl.Info(), EventAgentListener).
+		str("listen", addr).
+		str("agent", agent)
+	e.msg("agent listener started")
 }
 
 // LogWSOpen logs a WebSocket proxy connection establishment.
@@ -530,13 +516,12 @@ func (l *Logger) LogWSOpen(target, clientIP, requestID, agent string) {
 	if !l.includeAllowed {
 		return
 	}
-	l.zl.Info().
-		Str("event", string(EventWSOpen)).
-		Str("target", sanitizeString(target)).
-		Str("client_ip", clientIP).
-		Str("request_id", requestID).
-		Str("agent", sanitizeString(agent)).
-		Msg("websocket opened")
+	e := newLogEntry(l.zl.Info(), EventWSOpen).
+		str("target", target).
+		str("client_ip", clientIP).
+		str("request_id", requestID).
+		str("agent", agent)
+	e.msg("websocket opened")
 }
 
 // LogWSClose logs a WebSocket proxy connection teardown with traffic stats.
@@ -544,53 +529,38 @@ func (l *Logger) LogWSClose(target, clientIP, requestID, agent string, clientToS
 	if !l.includeAllowed {
 		return
 	}
-	l.zl.Info().
-		Str("event", string(EventWSClose)).
-		Str("target", sanitizeString(target)).
-		Str("client_ip", clientIP).
-		Str("request_id", requestID).
-		Str("agent", sanitizeString(agent)).
-		Int64("client_to_server_bytes", clientToServer).
-		Int64("server_to_client_bytes", serverToClient).
-		Int64("text_frames", textFrames).
-		Int64("binary_frames", binaryFrames).
-		Dur("duration_ms", duration).
-		Msg("websocket closed")
+	e := newLogEntry(l.zl.Info(), EventWSClose).
+		str("target", target).
+		str("client_ip", clientIP).
+		str("request_id", requestID).
+		str("agent", agent).
+		int64Field("client_to_server_bytes", clientToServer).
+		int64Field("server_to_client_bytes", serverToClient).
+		int64Field("text_frames", textFrames).
+		int64Field("binary_frames", binaryFrames).
+		durMS(duration)
+	e.msg("websocket closed")
 }
 
 // LogWSBlocked logs a blocked WebSocket frame or connection.
 func (l *Logger) LogWSBlocked(target, direction, scannerName, reason, clientIP, requestID string) {
 	technique := TechniqueForScanner(scannerName)
 
+	e := newLogEntry(l.zl.Warn(), EventWSBlocked).
+		str("target", target).
+		str("direction", direction).
+		str("scanner", scannerName).
+		str("reason", reason).
+		str("client_ip", clientIP).
+		str("request_id", requestID).
+		optStr("mitre_technique", technique)
+
 	// includeBlocked gates local audit log only — external emission always fires.
 	if l.includeBlocked {
-		event := l.zl.Warn().
-			Str("event", string(EventWSBlocked)).
-			Str("target", sanitizeString(target)).
-			Str("direction", direction).
-			Str("scanner", scannerName).
-			Str("reason", sanitizeString(reason)).
-			Str("client_ip", clientIP).
-			Str("request_id", requestID)
-		if technique != "" {
-			event = event.Str("mitre_technique", technique)
-		}
-		event.Msg("websocket blocked")
+		e.msg("websocket blocked")
 	}
-
 	if l.emitter != nil {
-		fields := map[string]any{
-			"target":     sanitizeString(target),
-			"direction":  direction,
-			"scanner":    scannerName,
-			"reason":     sanitizeString(reason),
-			"client_ip":  clientIP,
-			"request_id": requestID,
-		}
-		if technique != "" {
-			fields["mitre_technique"] = technique
-		}
-		l.emitter.Emit(context.Background(), string(EventWSBlocked), fields)
+		l.emitter.Emit(context.Background(), string(EventWSBlocked), e.fields)
 	}
 }
 
@@ -605,36 +575,22 @@ func (l *Logger) LogWSScan(target, direction, clientIP, requestID, action string
 	}
 	technique := TechniqueForScanner(scanner)
 
-	event := l.zl.Warn().
-		Str("event", string(EventWSScan)).
-		Str("target", sanitizeString(target)).
-		Str("direction", direction).
-		Str("client_ip", clientIP).
-		Str("request_id", requestID).
-		Str("action", action).
-		Int("match_count", matchCount).
-		Strs("patterns", patternNames).
-		Str("mitre_technique", technique)
+	e := newLogEntry(l.zl.Warn(), EventWSScan).
+		str("target", target).
+		str("direction", direction).
+		str("client_ip", clientIP).
+		str("request_id", requestID).
+		str("action", action).
+		intField("match_count", matchCount).
+		strs("patterns", patternNames).
+		str("mitre_technique", technique)
 	if len(bundleRules) > 0 {
-		event = event.Interface("bundle_rules", bundleRules)
+		e.bundleRulesField(bundleRules)
 	}
-	event.Msg("websocket scan hit")
+	e.msg("websocket scan hit")
 
 	if l.emitter != nil {
-		data := map[string]any{
-			"target":          sanitizeString(target),
-			"direction":       direction,
-			"client_ip":       clientIP,
-			"request_id":      requestID,
-			"action":          action,
-			"match_count":     matchCount,
-			"patterns":        patternNames,
-			"mitre_technique": technique,
-		}
-		if len(bundleRules) > 0 {
-			data["bundle_rules"] = bundleRules
-		}
-		l.emitter.Emit(context.Background(), string(EventWSScan), data)
+		l.emitter.Emit(context.Background(), string(EventWSScan), e.fields)
 	}
 }
 
@@ -642,22 +598,22 @@ func (l *Logger) LogWSScan(target, direction, clientIP, requestID, action string
 func (l *Logger) LogSessionAnomaly(sessionKey, anomalyType, detail, clientIP, requestID string, score float64) {
 	technique := TechniqueForScanner("session_anomaly")
 
-	l.zl.Warn().
-		Str("event", string(EventSessionAnomaly)).
-		Str("session", sanitizeString(sessionKey)).
-		Str("anomaly_type", anomalyType).
-		Str("detail", sanitizeString(detail)).
-		Str("client_ip", clientIP).
-		Str("request_id", requestID).
-		Float64("score", score).
-		Str("mitre_technique", technique).
-		Msg("session anomaly detected")
+	e := newLogEntry(l.zl.Warn(), EventSessionAnomaly).
+		str("session", sessionKey).
+		str("anomaly_type", anomalyType).
+		str("detail", detail).
+		str("client_ip", clientIP).
+		str("request_id", requestID).
+		float64Field("score", score).
+		str("mitre_technique", technique)
+	e.msg("session anomaly detected")
 
 	if l.emitter != nil {
+		// Emit fields: omit client_ip and request_id when empty.
 		fields := map[string]any{
-			"session":         sanitizeString(sessionKey),
-			"anomaly_type":    anomalyType,
-			"detail":          sanitizeString(detail),
+			"session":         e.fields["session"],
+			"anomaly_type":    e.fields["anomaly_type"],
+			"detail":          e.fields["detail"],
 			"score":           score,
 			"mitre_technique": technique,
 		}
@@ -673,19 +629,19 @@ func (l *Logger) LogSessionAnomaly(sessionKey, anomalyType, detail, clientIP, re
 
 // LogAdaptiveEscalation logs an enforcement level escalation.
 func (l *Logger) LogAdaptiveEscalation(sessionKey, from, to, clientIP, requestID string, score float64) {
-	l.zl.Warn().
-		Str("event", string(EventAdaptiveEscalation)).
-		Str("session", sanitizeString(sessionKey)).
-		Str("from", from).
-		Str("to", to).
-		Str("client_ip", clientIP).
-		Str("request_id", requestID).
-		Float64("score", score).
-		Msg("enforcement escalated")
+	e := newLogEntry(l.zl.Warn(), EventAdaptiveEscalation).
+		str("session", sessionKey).
+		str("from", from).
+		str("to", to).
+		str("client_ip", clientIP).
+		str("request_id", requestID).
+		float64Field("score", score)
+	e.msg("enforcement escalated")
 
 	if l.emitter != nil {
+		// Emit fields: omit client_ip and request_id when empty.
 		fields := map[string]any{
-			"session": sanitizeString(sessionKey),
+			"session": e.fields["session"],
 			"from":    from,
 			"to":      to,
 			"score":   score,
@@ -710,16 +666,15 @@ func (l *Logger) LogAdaptiveUpgrade(sessionKey, level, fromAction, toAction, sca
 		derivedSev = severityCritical
 	}
 
-	l.zl.Warn().
-		Str("event", string(EventAdaptiveUpgrade)).
-		Str("session", sanitizeString(sessionKey)).
-		Str("escalation_level", level).
-		Str("from_action", fromAction).
-		Str("to_action", toAction).
-		Str("scanner", scanner).
-		Str("client_ip", clientIP).
-		Str("request_id", requestID).
-		Msg("adaptive enforcement upgrade")
+	e := newLogEntry(l.zl.Warn(), EventAdaptiveUpgrade).
+		str("session", sessionKey).
+		str("escalation_level", level).
+		str("from_action", fromAction).
+		str("to_action", toAction).
+		str("scanner", scanner).
+		str("client_ip", clientIP).
+		str("request_id", requestID)
+	e.msg("adaptive enforcement upgrade")
 
 	if l.emitter != nil {
 		sev := emit.SeverityWarn
@@ -727,7 +682,7 @@ func (l *Logger) LogAdaptiveUpgrade(sessionKey, level, fromAction, toAction, sca
 			sev = emit.SeverityCritical
 		}
 		fields := map[string]any{
-			"session":          sanitizeString(sessionKey),
+			"session":          e.fields["session"],
 			"escalation_level": level,
 			"from_action":      fromAction,
 			"to_action":        toAction,
@@ -748,19 +703,14 @@ func (l *Logger) LogAdaptiveUpgrade(sessionKey, level, fromAction, toAction, sca
 func (l *Logger) LogMCPUnknownTool(toolName, action string) {
 	technique := TechniqueForScanner("mcp_unknown_tool")
 
-	l.zl.Warn().
-		Str("event", string(EventMCPUnknownTool)).
-		Str("tool", sanitizeString(toolName)).
-		Str("action", action).
-		Str("mitre_technique", technique).
-		Msg("tool not in session baseline")
+	e := newLogEntry(l.zl.Warn(), EventMCPUnknownTool).
+		str("tool", toolName).
+		str("action", action).
+		str("mitre_technique", technique)
+	e.msg("tool not in session baseline")
 
 	if l.emitter != nil {
-		l.emitter.Emit(context.Background(), string(EventMCPUnknownTool), map[string]any{
-			"tool":            sanitizeString(toolName),
-			"action":          action,
-			"mitre_technique": technique,
-		})
+		l.emitter.Emit(context.Background(), string(EventMCPUnknownTool), e.fields)
 	}
 }
 
@@ -770,54 +720,33 @@ func (l *Logger) LogMCPUnknownTool(toolName, action string) {
 func (l *Logger) LogSNIMismatch(connectHost, sniHost, clientIP, requestID, agent, category string) {
 	technique := TechniqueForScanner("sni_mismatch")
 
-	ev := l.zl.Warn().
-		Str("event", string(EventSNIMismatch)).
-		Str("connect_host", sanitizeString(connectHost)).
-		Str("sni_host", sanitizeString(sniHost)).
-		Str("client_ip", clientIP).
-		Str("request_id", requestID)
-	if agent != "" {
-		ev = ev.Str("agent", sanitizeString(agent))
-	}
-	ev.Str("category", category).
-		Str("mitre_technique", technique).
-		Msg("SNI verification failed")
+	e := newLogEntry(l.zl.Warn(), EventSNIMismatch).
+		str("connect_host", connectHost).
+		str("sni_host", sniHost).
+		str("client_ip", clientIP).
+		str("request_id", requestID).
+		optStr("agent", agent).
+		str("category", category).
+		str("mitre_technique", technique)
+	e.msg("SNI verification failed")
 
 	if l.emitter != nil {
-		fields := map[string]any{
-			"connect_host":    sanitizeString(connectHost),
-			"sni_host":        sanitizeString(sniHost),
-			"client_ip":       clientIP,
-			"request_id":      requestID,
-			"category":        category,
-			"mitre_technique": technique,
-		}
-		if agent != "" {
-			fields["agent"] = sanitizeString(agent)
-		}
-		l.emitter.Emit(context.Background(), string(EventSNIMismatch), fields)
+		l.emitter.Emit(context.Background(), string(EventSNIMismatch), e.fields)
 	}
 }
 
 // LogKillSwitchDeny logs a request denied by the kill switch.
 func (l *Logger) LogKillSwitchDeny(transport, endpoint, source, message, clientIP string) {
-	l.zl.Info().
-		Str("event", string(EventKillSwitchDeny)).
-		Str("transport", sanitizeString(transport)).
-		Str("endpoint", sanitizeString(endpoint)).
-		Str("source", sanitizeString(source)).
-		Str("deny_message", sanitizeString(message)).
-		Str("client_ip", sanitizeString(clientIP)).
-		Msg("kill switch denied request")
+	e := newLogEntry(l.zl.Info(), EventKillSwitchDeny).
+		str("transport", transport).
+		str("endpoint", endpoint).
+		str("source", source).
+		str("deny_message", message).
+		str("client_ip", clientIP)
+	e.msg("kill switch denied request")
 
 	if l.emitter != nil {
-		l.emitter.Emit(context.Background(), string(EventKillSwitchDeny), map[string]any{
-			"transport":    sanitizeString(transport),
-			"endpoint":     sanitizeString(endpoint),
-			"source":       sanitizeString(source),
-			"deny_message": sanitizeString(message),
-			"client_ip":    sanitizeString(clientIP),
-		})
+		l.emitter.Emit(context.Background(), string(EventKillSwitchDeny), e.fields)
 	}
 }
 
@@ -826,77 +755,42 @@ func (l *Logger) LogKillSwitchDeny(transport, endpoint, source, message, clientI
 func (l *Logger) LogBodyDLP(method, url, action, clientIP, requestID, agent string, matchCount int, patternNames []string, bundleRules []BundleRuleHit) {
 	technique := TechniqueForScanner(ScannerDLP)
 
-	ev := l.zl.Warn().
-		Str("event", string(EventBodyDLP)).
-		Str("method", method).
-		Str("url", sanitizeString(url)).
-		Str("action", action).
-		Str("client_ip", clientIP).
-		Str("request_id", requestID)
-	if agent != "" {
-		ev = ev.Str("agent", sanitizeString(agent))
-	}
-	ev = ev.Int("match_count", matchCount).
-		Strs("patterns", patternNames).
-		Str("mitre_technique", technique)
+	e := newLogEntry(l.zl.Warn(), EventBodyDLP).
+		str("method", method).
+		str("url", url).
+		str("action", action).
+		str("client_ip", clientIP).
+		str("request_id", requestID).
+		optStr("agent", agent).
+		intField("match_count", matchCount).
+		strs("patterns", patternNames).
+		str("mitre_technique", technique)
 	if len(bundleRules) > 0 {
-		ev = ev.Interface("bundle_rules", bundleRules)
+		e.bundleRulesField(bundleRules)
 	}
-	ev.Msg("request body DLP scan hit")
+	e.msg("request body DLP scan hit")
 
 	if l.emitter != nil {
-		fields := map[string]any{
-			"method":          method,
-			"url":             sanitizeString(url),
-			"action":          action,
-			"client_ip":       clientIP,
-			"request_id":      requestID,
-			"match_count":     matchCount,
-			"patterns":        patternNames,
-			"mitre_technique": technique,
-		}
-		if agent != "" {
-			fields["agent"] = sanitizeString(agent)
-		}
-		if len(bundleRules) > 0 {
-			fields["bundle_rules"] = bundleRules
-		}
-		l.emitter.Emit(context.Background(), string(EventBodyDLP), fields)
+		l.emitter.Emit(context.Background(), string(EventBodyDLP), e.fields)
 	}
 }
 
 // LogBodyScan logs a request body scan hit with a configurable event type.
 // Used to distinguish address_protection from body_dlp in audit output.
 func (l *Logger) LogBodyScan(method, url string, eventType EventType, action, clientIP, requestID, agent string, matchCount int, findingNames []string) {
-	label := string(eventType)
-	ev := l.zl.Warn().
-		Str("event", label).
-		Str("method", method).
-		Str("url", sanitizeString(url)).
-		Str("action", action).
-		Str("client_ip", clientIP).
-		Str("request_id", requestID)
-	if agent != "" {
-		ev = ev.Str("agent", sanitizeString(agent))
-	}
-	ev.Int("match_count", matchCount).
-		Strs("findings", findingNames).
-		Msg("request body " + label + " scan hit")
+	e := newLogEntry(l.zl.Warn(), eventType).
+		str("method", method).
+		str("url", url).
+		str("action", action).
+		str("client_ip", clientIP).
+		str("request_id", requestID).
+		optStr("agent", agent).
+		intField("match_count", matchCount).
+		strs("findings", findingNames)
+	e.msg("request body " + string(eventType) + " scan hit")
 
 	if l.emitter != nil {
-		fields := map[string]any{
-			"method":      method,
-			"url":         sanitizeString(url),
-			"action":      action,
-			"client_ip":   clientIP,
-			"request_id":  requestID,
-			"match_count": matchCount,
-			"findings":    findingNames,
-		}
-		if agent != "" {
-			fields["agent"] = sanitizeString(agent)
-		}
-		l.emitter.Emit(context.Background(), label, fields)
+		l.emitter.Emit(context.Background(), string(eventType), e.fields)
 	}
 }
 
@@ -905,42 +799,23 @@ func (l *Logger) LogBodyScan(method, url string, eventType EventType, action, cl
 func (l *Logger) LogHeaderDLP(method, url, headerName, action, clientIP, requestID, agent string, patternNames []string, bundleRules []BundleRuleHit) {
 	technique := TechniqueForScanner(ScannerDLP)
 
-	ev := l.zl.Warn().
-		Str("event", string(EventHeaderDLP)).
-		Str("method", method).
-		Str("url", sanitizeString(url)).
-		Str("header", sanitizeString(headerName)).
-		Str("action", action).
-		Str("client_ip", clientIP).
-		Str("request_id", requestID)
-	if agent != "" {
-		ev = ev.Str("agent", sanitizeString(agent))
-	}
-	ev = ev.Strs("patterns", patternNames).
-		Str("mitre_technique", technique)
+	e := newLogEntry(l.zl.Warn(), EventHeaderDLP).
+		str("method", method).
+		str("url", url).
+		str("header", headerName).
+		str("action", action).
+		str("client_ip", clientIP).
+		str("request_id", requestID).
+		optStr("agent", agent).
+		strs("patterns", patternNames).
+		str("mitre_technique", technique)
 	if len(bundleRules) > 0 {
-		ev = ev.Interface("bundle_rules", bundleRules)
+		e.bundleRulesField(bundleRules)
 	}
-	ev.Msg("request header DLP scan hit")
+	e.msg("request header DLP scan hit")
 
 	if l.emitter != nil {
-		fields := map[string]any{
-			"method":          method,
-			"url":             sanitizeString(url),
-			"header":          sanitizeString(headerName),
-			"action":          action,
-			"client_ip":       clientIP,
-			"request_id":      requestID,
-			"patterns":        patternNames,
-			"mitre_technique": technique,
-		}
-		if agent != "" {
-			fields["agent"] = sanitizeString(agent)
-		}
-		if len(bundleRules) > 0 {
-			fields["bundle_rules"] = bundleRules
-		}
-		l.emitter.Emit(context.Background(), string(EventHeaderDLP), fields)
+		l.emitter.Emit(context.Background(), string(EventHeaderDLP), e.fields)
 	}
 }
 
@@ -958,48 +833,34 @@ func (l *Logger) LogChainDetection(pattern, patternSeverity, action, toolName, s
 		derivedSev = severityCritical
 	}
 
-	l.zl.Warn().
-		Str("event", string(EventChainDetection)).
-		Str("pattern", sanitizeString(pattern)).
-		Str("pattern_severity", patternSeverity).
-		Str("severity", derivedSev).
-		Str("action", action).
-		Str("tool", sanitizeString(toolName)).
-		Str("session", sanitizeString(sessionKey)).
-		Str("mitre_technique", technique).
-		Msg("chain pattern detected")
+	e := newLogEntry(l.zl.Warn(), EventChainDetection).
+		str("pattern", pattern).
+		str("pattern_severity", patternSeverity).
+		str("severity", derivedSev).
+		str("action", action).
+		str("tool", toolName).
+		str("session", sessionKey).
+		str("mitre_technique", technique)
+	e.msg("chain pattern detected")
 
 	if l.emitter != nil {
 		sev := emit.SeverityWarn
 		if action == actionBlock {
 			sev = emit.SeverityCritical
 		}
-		l.emitter.EmitWithSeverity(context.Background(), sev, string(EventChainDetection), map[string]any{
-			"pattern":          sanitizeString(pattern),
-			"pattern_severity": patternSeverity,
-			"severity":         derivedSev,
-			"action":           action,
-			"tool":             sanitizeString(toolName),
-			"session":          sanitizeString(sessionKey),
-			"mitre_technique":  technique,
-		})
+		l.emitter.EmitWithSeverity(context.Background(), sev, string(EventChainDetection), e.fields)
 	}
 }
 
 // LogSessionAdmin logs a session admin API operation (list, reset, auth failure).
 func (l *Logger) LogSessionAdmin(action, clientIP, sessionKey, result string, statusCode int) {
-	ev := l.zl.Info().
-		Str("event", string(EventSessionAdmin)).
-		Str("action", action).
-		Str("client_ip", clientIP).
-		Int("status_code", statusCode)
-	if sessionKey != "" {
-		ev = ev.Str("session_key", sanitizeString(sessionKey))
-	}
-	if result != "" {
-		ev = ev.Str("result", sanitizeString(result))
-	}
-	ev.Msg("session admin API")
+	e := newLogEntry(l.zl.Info(), EventSessionAdmin).
+		str("action", action).
+		str("client_ip", clientIP).
+		intField("status_code", statusCode).
+		optStr("session_key", sessionKey).
+		optStr("result", result)
+	e.msg("session admin API")
 }
 
 // With returns a sub-logger that includes the given key-value pair in every

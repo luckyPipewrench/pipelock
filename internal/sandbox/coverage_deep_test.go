@@ -142,7 +142,9 @@ func TestLaunchStandalone_CustomProxyHandler(t *testing.T) {
 		Workspace:    workspace,
 		ProxyHandler: handler,
 	})
-	_ = err
+	if err != nil {
+		t.Logf("LaunchStandalone with custom proxy: %v (non-fatal: exercises proxy path)", err)
+	}
 }
 
 // ---------------------------------------------------------------------------

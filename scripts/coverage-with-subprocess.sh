@@ -40,7 +40,7 @@ if [ "$(ls -A "$COVERDIR" 2>/dev/null)" ]; then
 
     echo ""
     echo "=== Uncovered functions ==="
-    go tool cover -func="$MERGED_DIR/merged.out" | grep -v "100.0%" | sort -t'%' -k3 -n | head -20
+    go tool cover -func="$MERGED_DIR/merged.out" | grep -v "100.0%" | sort -t'%' -k3 -n | head -20 || echo "(all functions at 100%)"
 else
     echo "No subprocess coverage data collected."
     echo "This may mean the test binary was not built with -cover,"

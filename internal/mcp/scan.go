@@ -9,6 +9,8 @@ package mcp
 import (
 	"bufio"
 	"context"
+	"crypto/ed25519"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -17,6 +19,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/provenance"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -474,4 +477,127 @@ func writeTextVerdict(w io.Writer, v jsonrpc.ScanVerdict) error {
 	}
 	_, err := fmt.Fprintf(w, "line %d: [INJECTION] %s (action: %s)\n", v.Line, strings.Join(names, ", "), v.Action) //nolint:gosec // G705: CLI output, not web
 	return err
+}
+
+// ProvenanceVerdict holds the outcome of provenance verification on a
+// tools/list response, including per-tool results for logging in warn mode.
+type ProvenanceVerdict struct {
+	// Block is true when the response should be blocked.
+	Block bool
+	// Action is the configured provenance action ("block" or "warn").
+	Action string
+	// Results contains per-tool verification outcomes.
+	Results []provenance.VerificationResult
+	// Error describes why blocking was triggered (empty when clean or warn-only).
+	Error string
+}
+
+// VerifyToolsListProvenance runs cryptographic provenance verification on a
+// tools/list response. It maps config.MCPToolProvenance to provenance.VerifyConfig,
+// calls provenance.VerifyToolsList, and returns a ProvenanceVerdict.
+//
+// Returns a clean verdict (Block=false, nil Results) when cfg is nil or disabled.
+// Parse errors and verification failures follow fail-closed semantics.
+func VerifyToolsListProvenance(response []byte, cfg *config.MCPToolProvenance) ProvenanceVerdict {
+	if cfg == nil || !cfg.Enabled {
+		return ProvenanceVerdict{}
+	}
+
+	vcfg, err := mapProvenanceConfig(cfg)
+	if err != nil {
+		return ProvenanceVerdict{
+			Block:  true,
+			Action: cfg.Action,
+			Error:  fmt.Sprintf("provenance config error: %v", err),
+		}
+	}
+
+	results, err := provenance.VerifyToolsList(response, vcfg)
+	if err != nil {
+		// Fail closed: unparseable tools/list response blocks.
+		return ProvenanceVerdict{
+			Block:  true,
+			Action: cfg.Action,
+			Error:  fmt.Sprintf("provenance verification error: %v", err),
+		}
+	}
+
+	if len(results) == 0 {
+		// No tools in response — nothing to verify.
+		return ProvenanceVerdict{
+			Action:  cfg.Action,
+			Results: results,
+		}
+	}
+
+	shouldBlock, blockErr := provenance.ShouldBlock(results, cfg.Action)
+	verdict := ProvenanceVerdict{
+		Block:   shouldBlock,
+		Action:  cfg.Action,
+		Results: results,
+	}
+	if blockErr != nil {
+		verdict.Error = blockErr.Error()
+	}
+	return verdict
+}
+
+// provenancePatternName is the pattern name used in ScanVerdict matches
+// for provenance verification failures.
+const provenancePatternName = "mcp_tool_provenance"
+
+// ProvenanceVerdictToScanVerdict converts a ProvenanceVerdict into a
+// jsonrpc.ScanVerdict for use in the standard response forwarding pipeline.
+// The rpcID is extracted from the original response for correlation.
+func ProvenanceVerdictToScanVerdict(pv ProvenanceVerdict, rpcID json.RawMessage) jsonrpc.ScanVerdict {
+	if !pv.Block {
+		return jsonrpc.ScanVerdict{ID: rpcID, Clean: true}
+	}
+
+	var matches []scanner.ResponseMatch
+	for _, r := range pv.Results {
+		if r.Status == provenance.StatusFailed || r.Status == provenance.StatusError ||
+			(r.Status == provenance.StatusUnsigned && pv.Action == config.ActionBlock) {
+			matches = append(matches, scanner.ResponseMatch{
+				PatternName: provenancePatternName,
+				MatchText:   fmt.Sprintf("%s: %s (%s)", r.ToolName, r.Status, r.Detail),
+			})
+		}
+	}
+
+	return jsonrpc.ScanVerdict{
+		ID:      rpcID,
+		Clean:   false,
+		Action:  pv.Action,
+		Matches: matches,
+	}
+}
+
+// mapProvenanceConfig converts config.MCPToolProvenance to provenance.VerifyConfig.
+// TrustedKeys are hex-encoded Ed25519 public keys; each is used as both the
+// key ID and the decoded key value.
+func mapProvenanceConfig(cfg *config.MCPToolProvenance) (provenance.VerifyConfig, error) {
+	vcfg := provenance.VerifyConfig{
+		Mode:        cfg.Mode,
+		OfflineOnly: cfg.OfflineOnly,
+	}
+
+	if len(cfg.TrustedKeys) > 0 {
+		vcfg.TrustedKeys = make(map[string]ed25519.PublicKey, len(cfg.TrustedKeys))
+		for _, hexKey := range cfg.TrustedKeys {
+			raw, err := hex.DecodeString(hexKey)
+			if err != nil {
+				return provenance.VerifyConfig{}, fmt.Errorf("decoding trusted key %q: %w", hexKey, err)
+			}
+			if len(raw) != ed25519.PublicKeySize {
+				return provenance.VerifyConfig{}, fmt.Errorf(
+					"trusted key %q: invalid length %d, want %d",
+					hexKey, len(raw), ed25519.PublicKeySize,
+				)
+			}
+			vcfg.TrustedKeys[hexKey] = ed25519.PublicKey(raw)
+		}
+	}
+
+	return vcfg, nil
 }

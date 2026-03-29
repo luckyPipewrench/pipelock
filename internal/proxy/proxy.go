@@ -36,6 +36,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
@@ -142,6 +143,7 @@ type Proxy struct {
 	approver          *hitl.Approver
 	a2aCardBaseline   *mcp.CardBaseline // Agent Card drift detection across requests
 	captureObs        capture.CaptureObserver
+	recorder          *recorder.Recorder // flight recorder for tamper-evident evidence (nil = disabled)
 }
 
 // Option configures optional Proxy behavior.
@@ -167,6 +169,13 @@ func WithKillSwitchAPI(api *killswitch.APIHandler) Option {
 // used by default).
 func WithCaptureObserver(obs capture.CaptureObserver) Option {
 	return func(p *Proxy) { p.captureObs = obs }
+}
+
+// WithRecorder sets the flight recorder for tamper-evident evidence logging.
+// When non-nil, the proxy records enforcement decisions to the hash-chained
+// evidence log. Pass nil to disable (default).
+func WithRecorder(rec *recorder.Recorder) Option {
+	return func(p *Proxy) { p.recorder = rec }
 }
 
 // FetchResponse is the JSON response returned by the /fetch endpoint.
@@ -212,7 +221,11 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 		if cfg.AdaptiveEnforcement.Enabled {
 			adaptiveCfg = &cfg.AdaptiveEnforcement
 		}
-		p.sessionMgrPtr.Store(NewSessionManager(&cfg.SessionProfiling, adaptiveCfg, m))
+		sm := NewSessionManager(&cfg.SessionProfiling, adaptiveCfg, m)
+		if cfg.BehavioralBaseline.Enabled {
+			_ = sm.EnableBaseline(&cfg.BehavioralBaseline) // validated at Load time
+		}
+		p.sessionMgrPtr.Store(sm)
 	}
 
 	p.setupCEE(&cfg.CrossRequestDetection)
@@ -289,6 +302,34 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 	p.tlsTransport = newTLSInterceptTransport(p.ssrfSafeDialContext, m.RecordTLSHandshake, nil)
 
 	return p, nil
+}
+
+// recordDecision writes an enforcement verdict to the flight recorder if enabled.
+// Uses Record (not RecordDecision) so entries are hash-chained without requiring
+// an Ed25519 signing key. Checkpoints are still signed when sign_checkpoints is
+// enabled. Errors are logged but never block the proxy hot path.
+func (p *Proxy) recordDecision(verdict, layer, pattern, transport, requestID string) {
+	if p.recorder == nil {
+		return
+	}
+
+	summary := verdict + ": " + layer
+	if pattern != "" {
+		summary += " (" + pattern + ")"
+	}
+
+	_ = p.recorder.Record(recorder.Entry{
+		SessionID: "proxy",
+		Type:      "decision",
+		Transport: transport,
+		Summary:   summary,
+		Detail: map[string]string{
+			"verdict":    verdict,
+			"layer":      layer,
+			"pattern":    pattern,
+			"request_id": requestID,
+		},
+	})
 }
 
 // CurrentConfig returns the currently active config. Used for reload comparison.
@@ -368,7 +409,11 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
 	wasEnabled := oldCfg.SessionProfiling.Enabled
 	isEnabled := cfg.SessionProfiling.Enabled
 	if !wasEnabled && isEnabled {
-		p.sessionMgrPtr.Store(NewSessionManager(&cfg.SessionProfiling, adaptiveCfg, p.metrics))
+		sm := NewSessionManager(&cfg.SessionProfiling, adaptiveCfg, p.metrics)
+		if cfg.BehavioralBaseline.Enabled {
+			_ = sm.EnableBaseline(&cfg.BehavioralBaseline)
+		}
+		p.sessionMgrPtr.Store(sm)
 	} else if wasEnabled && !isEnabled {
 		if old := p.sessionMgrPtr.Swap(nil); old != nil {
 			old.Close()
@@ -1001,6 +1046,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	if !result.Allowed {
 		if cfg.EnforceEnabled() {
 			log.LogBlocked("GET", displayURL, result.Scanner, result.Reason, clientIP, requestID, agent)
+			p.recordDecision(config.ActionBlock, result.Scanner, result.Reason, "fetch", requestID)
 			p.metrics.RecordBlocked(parsed.Hostname(), result.Scanner, time.Since(start), agentLabel)
 			status := http.StatusForbidden
 			if result.Scanner == scanner.ScannerRateLimit {

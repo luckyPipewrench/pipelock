@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -19,6 +20,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/integrity"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
@@ -829,6 +831,159 @@ func TestRunProxy_InvalidCommand(t *testing.T) {
 	err := RunProxy(context.Background(), strings.NewReader(""), &out, logBuf, []string{"/nonexistent/binary"}, testOpts(sc))
 	if err == nil {
 		t.Fatal("expected error for invalid command")
+	}
+}
+
+func TestRunProxy_BinaryIntegrity(t *testing.T) {
+	if runtime.GOOS == osWindows {
+		t.Skip("subprocess test requires unix")
+	}
+
+	// Resolve "true" binary path and compute its hash for the manifest.
+	truePath, trueHash, err := integrity.ResolveAndHash("true")
+	if err != nil {
+		t.Fatalf("resolving true binary: %v", err)
+	}
+
+	// Helper: write a manifest file and return its path.
+	writeManifest := func(t *testing.T, entries map[string]string) string {
+		t.Helper()
+		m := &integrity.Manifest{
+			Version: integrity.ManifestVersion,
+			Entries: entries,
+		}
+		path := filepath.Join(t.TempDir(), "manifest.json")
+		if err := integrity.SaveManifest(path, m); err != nil {
+			t.Fatalf("writing manifest: %v", err)
+		}
+		return path
+	}
+
+	tests := []struct {
+		name    string
+		cfg     *config.MCPBinaryIntegrity
+		entries map[string]string // nil = use missing manifest path
+		wantErr bool
+		wantLog string // substring expected in log output
+		noSpawn bool   // true if subprocess should NOT be spawned
+	}{
+		{
+			name: "disabled_skips_check",
+			cfg: &config.MCPBinaryIntegrity{
+				Enabled: false,
+				Action:  config.ActionWarn,
+			},
+			wantErr: false,
+		},
+		{
+			name: "nil_config_skips_check",
+			cfg:  nil,
+		},
+		{
+			name: "matching_hash_allows_spawn",
+			cfg: &config.MCPBinaryIntegrity{
+				Enabled: true,
+				Action:  config.ActionBlock,
+			},
+			entries: map[string]string{truePath: trueHash},
+			wantErr: false,
+		},
+		{
+			name: "wrong_hash_blocks_spawn",
+			cfg: &config.MCPBinaryIntegrity{
+				Enabled: true,
+				Action:  config.ActionBlock,
+			},
+			entries: map[string]string{truePath: "deadbeef"},
+			wantErr: true,
+			noSpawn: true,
+		},
+		{
+			name: "wrong_hash_warns_and_spawns",
+			cfg: &config.MCPBinaryIntegrity{
+				Enabled: true,
+				Action:  config.ActionWarn,
+			},
+			entries: map[string]string{truePath: "deadbeef"},
+			wantErr: false,
+			wantLog: "binary integrity warning",
+		},
+		{
+			name: "unknown_binary_blocks",
+			cfg: &config.MCPBinaryIntegrity{
+				Enabled: true,
+				Action:  config.ActionBlock,
+			},
+			entries: map[string]string{"/some/other/binary": "abc123"},
+			wantErr: true,
+			noSpawn: true,
+		},
+		{
+			name: "unknown_binary_warns",
+			cfg: &config.MCPBinaryIntegrity{
+				Enabled: true,
+				Action:  config.ActionWarn,
+			},
+			entries: map[string]string{"/some/other/binary": "abc123"},
+			wantErr: false,
+			wantLog: "binary integrity warning",
+		},
+		{
+			name: "missing_manifest_blocks",
+			cfg: &config.MCPBinaryIntegrity{
+				Enabled:      true,
+				ManifestPath: "/nonexistent/manifest.json",
+				Action:       config.ActionBlock,
+			},
+			wantErr: true,
+			noSpawn: true,
+		},
+		{
+			name: "missing_manifest_warns",
+			cfg: &config.MCPBinaryIntegrity{
+				Enabled:      true,
+				ManifestPath: "/nonexistent/manifest.json",
+				Action:       config.ActionWarn,
+			},
+			wantErr: false,
+			wantLog: "binary integrity warning",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sc := testScannerWithAction(t, "warn")
+			var out bytes.Buffer
+			logBuf := &syncBuffer{}
+
+			// Set up manifest path if entries are provided.
+			icfg := tt.cfg
+			if icfg != nil && tt.entries != nil {
+				mpath := writeManifest(t, tt.entries)
+				icfg = &config.MCPBinaryIntegrity{
+					Enabled:      icfg.Enabled,
+					ManifestPath: mpath,
+					Action:       icfg.Action,
+				}
+			}
+
+			opts := testOpts(sc)
+			opts.IntegrityCfg = icfg
+
+			err := RunProxy(context.Background(), strings.NewReader(""), &out, logBuf, []string{"true"}, opts)
+
+			if tt.wantErr && err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			logStr := logBuf.String()
+			if tt.wantLog != "" && !strings.Contains(logStr, tt.wantLog) {
+				t.Errorf("expected log to contain %q, got: %s", tt.wantLog, logStr)
+			}
+		})
 	}
 }
 

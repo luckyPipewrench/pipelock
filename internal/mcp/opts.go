@@ -51,6 +51,9 @@ type MCPProxyOpts struct {
 	// Redirect handler runtime config (nil-safe).
 	RedirectRT *RedirectRuntime
 
+	// Provenance verification for MCP tools (nil-safe).
+	ProvenanceCfg *config.MCPToolProvenance
+
 	// A2A protocol scanning (nil-safe).
 	A2ACfg       *config.A2AScanning
 	CardBaseline *CardBaseline
@@ -65,6 +68,9 @@ type MCPProxyOpts struct {
 	// Transport identifies the MCP transport for capture records.
 	// Set to "mcp_stdio" for stdio proxy or "mcp_http" for HTTP proxy.
 	Transport string
+
+	// Pre-spawn binary integrity verification (nil-safe).
+	IntegrityCfg *config.MCPBinaryIntegrity
 
 	// File sentry (stdio proxy only)
 	Lineage      filesentry.Lineage

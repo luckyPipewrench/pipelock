@@ -431,6 +431,11 @@ Environment passthrough (subprocess mode only):
 			if cfg.SessionProfiling.Enabled {
 				mcpMetrics = metrics.New()
 				sm := proxy.NewSessionManager(&cfg.SessionProfiling, adaptiveCfg, mcpMetrics)
+				if cfg.BehavioralBaseline.Enabled {
+					if err := sm.EnableBaseline(&cfg.BehavioralBaseline); err != nil {
+						return fmt.Errorf("behavioral baseline: %w", err)
+					}
+				}
 				defer sm.Close()
 				store = sm.AsStore()
 			}
@@ -546,8 +551,10 @@ Environment passthrough (subprocess mode only):
 					KillSwitch: ks, ChainMatcher: chainMatcher,
 					CEE: cee, Store: store,
 					AdaptiveCfg: adaptiveCfg, Metrics: mcpMetrics,
-					RedirectRT: buildRedirectRT(cfg),
-					DoWCheck:   dowCheck,
+					RedirectRT:    buildRedirectRT(cfg),
+					DoWCheck:      dowCheck,
+					IntegrityCfg:  &cfg.MCPBinaryIntegrity,
+					ProvenanceCfg: &cfg.MCPToolProvenance,
 				}
 				if err := mcp.RunHTTPProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, nil, httpOpts); err != nil {
 					if sentryClient != nil {
@@ -663,6 +670,8 @@ Environment passthrough (subprocess mode only):
 					CEE: cee, Store: store,
 					AdaptiveCfg: adaptiveCfg, Metrics: mcpMetrics,
 					RedirectRT: buildRedirectRT(cfg), DoWCheck: dowCheck,
+					IntegrityCfg:  &cfg.MCPBinaryIntegrity,
+					ProvenanceCfg: &cfg.MCPToolProvenance,
 				}
 				if err := mcp.RunProxyWithSandbox(ctx, sandboxCmd, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), proxyOpts, mcpStrict); err != nil {
 					return handleProxyError(err, cmd.ErrOrStderr(), sentryClient)
@@ -762,7 +771,9 @@ Environment passthrough (subprocess mode only):
 				CEE: cee, Store: store,
 				AdaptiveCfg: adaptiveCfg, Metrics: mcpMetrics,
 				RedirectRT: buildRedirectRT(cfg), DoWCheck: dowCheck,
-				Lineage: lin, OnChildReady: onChildReady,
+				IntegrityCfg:  &cfg.MCPBinaryIntegrity,
+				ProvenanceCfg: &cfg.MCPToolProvenance,
+				Lineage:       lin, OnChildReady: onChildReady,
 			}
 			if err := mcp.RunProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), logW, serverCmd, proxyOpts, extraEnv...); err != nil {
 				return handleProxyError(err, logW, sentryClient)

@@ -27,6 +27,7 @@ import (
 
 	readability "github.com/go-shiori/go-readability"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/certgen"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
@@ -140,6 +141,7 @@ type Proxy struct {
 	reloadMu          sync.Mutex // serializes Reload calls
 	approver          *hitl.Approver
 	a2aCardBaseline   *mcp.CardBaseline // Agent Card drift detection across requests
+	captureObs        capture.CaptureObserver
 }
 
 // Option configures optional Proxy behavior.
@@ -158,6 +160,13 @@ func WithKillSwitch(ks *killswitch.Controller) Option {
 // WithKillSwitchAPI sets the kill switch API handler for registering routes.
 func WithKillSwitchAPI(api *killswitch.APIHandler) Option {
 	return func(p *Proxy) { p.ksAPI = api }
+}
+
+// WithCaptureObserver sets the policy capture observer for recording verdicts
+// at each proxy scanning stage. Pass nil to disable capture (NopObserver is
+// used by default).
+func WithCaptureObserver(obs capture.CaptureObserver) Option {
+	return func(p *Proxy) { p.captureObs = obs }
 }
 
 // FetchResponse is the JSON response returned by the /fetch endpoint.
@@ -184,6 +193,9 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 	}
 	for _, opt := range opts {
 		opt(p)
+	}
+	if p.captureObs == nil {
+		p.captureObs = capture.NopObserver{}
 	}
 	p.cfgPtr.Store(cfg)
 	p.scannerPtr.Store(sc)
@@ -941,6 +953,25 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// Scan URL through all scanners
 	result := sc.Scan(r.Context(), targetURL)
 
+	// Capture observer: record URL verdict for policy replay.
+	urlFindings := urlResultToFindings(result)
+	urlOutcome := captureOutcome(config.ActionBlock, result.Allowed)
+	urlAction := ""
+	if !result.Allowed {
+		urlAction = config.ActionBlock
+	}
+	p.captureObs.ObserveURLVerdict(r.Context(), &capture.URLVerdictRecord{
+		Subsurface:        "fetch_url",
+		Transport:         "fetch",
+		RequestID:         requestID,
+		Agent:             agent,
+		Request:           capture.CaptureRequest{Method: r.Method, URL: displayURL},
+		RawFindings:       urlFindings,
+		EffectiveFindings: urlFindings,
+		EffectiveAction:   urlAction,
+		Outcome:           urlOutcome,
+	})
+
 	// Session profiling: record BEFORE the enforce-mode early return so adaptive
 	// signals (SignalBlock) fire even for blocked requests. Pass deferClean=true
 	// so RecordClean is NOT applied inside recordSessionActivity: header DLP,
@@ -1047,6 +1078,27 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// hadFinding is true even in audit/warn mode so RecordClean is not applied
 	// when a header DLP match was detected.
 	headerBlocked, headerHadFinding := p.evalHeaderDLP(r.Context(), r.Header, cfg, sc, log, "GET", displayURL, parsed.Hostname(), clientIP, requestID, agent, start)
+
+	// Capture observer: record header DLP verdict for policy replay.
+	{
+		hdrAction := ""
+		if headerBlocked {
+			hdrAction = config.ActionBlock
+		} else if headerHadFinding {
+			hdrAction = config.ActionWarn
+		}
+		p.captureObs.ObserveDLPVerdict(r.Context(), &capture.DLPVerdictRecord{
+			Subsurface:      "dlp_fetch_header",
+			Transport:       "fetch",
+			RequestID:       requestID,
+			Agent:           agent,
+			Request:         capture.CaptureRequest{Method: r.Method, URL: displayURL},
+			TransformKind:   capture.TransformHeaderValue,
+			EffectiveAction: hdrAction,
+			Outcome:         captureOutcome(hdrAction, !headerHadFinding),
+		})
+	}
+
 	if headerHadFinding {
 		hasFinding = true
 		if fetchRec != nil && cfg.AdaptiveEnforcement.Enabled {
@@ -1115,6 +1167,27 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 		ceeRes := ceeAdmit(r.Context(), sessionKey, outbound, keys, displayURL, agent, clientIP, requestID,
 			ceeCfg, p.entropyTrackerPtr.Load(), p.fragmentBufferPtr.Load(), sc, log, p.metrics)
+
+		// Capture observer: record CEE verdict for policy replay.
+		ceeFindings := ceeResultToFindings(ceeRes)
+		ceeAction := ""
+		if ceeRes.Blocked {
+			ceeAction = config.ActionBlock
+		} else if ceeRes.EntropyHit || ceeRes.FragmentHit {
+			ceeAction = config.ActionWarn
+		}
+		p.captureObs.ObserveCEEVerdict(r.Context(), &capture.CEERecord{
+			Subsurface:        "cee_fetch",
+			Transport:         "fetch",
+			RequestID:         requestID,
+			Agent:             agent,
+			Request:           capture.CaptureRequest{Method: r.Method, URL: displayURL},
+			TransformKind:     capture.TransformCEEWindow,
+			RawFindings:       ceeFindings,
+			EffectiveFindings: ceeFindings,
+			EffectiveAction:   ceeAction,
+			Outcome:           captureOutcome(ceeAction, !ceeRes.Blocked && !ceeRes.EntropyHit && !ceeRes.FragmentHit),
+		})
 
 		if sm := p.sessionMgrPtr.Load(); sm != nil && cfg.AdaptiveEnforcement.Enabled {
 			ceeRecordSignals(ceeRes, sm, sessionKey, cfg.AdaptiveEnforcement.EscalationThreshold, log, p.metrics, clientIP, requestID)
@@ -1313,6 +1386,25 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// naturally contain instruction-like text).
 	if sc.ResponseScanningEnabled() && !responseScanExempt {
 		scanResult := sc.ScanResponse(r.Context(), content)
+
+		// Capture observer: record response scan verdict for policy replay.
+		respAction := sc.ResponseAction()
+		if scanResult.Clean {
+			respAction = ""
+		}
+		p.captureObs.ObserveResponseVerdict(r.Context(), &capture.ResponseVerdictRecord{
+			Subsurface:        "response_fetch",
+			Transport:         "fetch",
+			RequestID:         requestID,
+			Agent:             agent,
+			Request:           capture.CaptureRequest{Method: r.Method, URL: displayURL},
+			TransformKind:     capture.TransformReadability,
+			RawFindings:       responseMatchesToFindings(scanResult.Matches, respAction),
+			EffectiveFindings: responseMatchesToFindings(scanResult.Matches, respAction),
+			EffectiveAction:   respAction,
+			Outcome:           captureOutcome(respAction, scanResult.Clean),
+		})
+
 		// Use live escalation level so mid-request CEE escalations are reflected.
 		blocked, newContent, found := p.filterAndActOnResponseScan(w, scanResult, content, displayURL, agent, clientIP, requestID, sc, cfg, log, recEscalationLevel(fetchRec))
 		if found {

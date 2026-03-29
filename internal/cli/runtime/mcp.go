@@ -461,7 +461,7 @@ Environment passthrough (subprocess mode only):
 					adaptiveFn := mcp.AdaptiveConfigFunc(func() *config.AdaptiveEnforcement {
 						return adaptiveCfg
 					})
-					if err := mcp.RunHTTPListenerProxy(ctx, mcpLn, upstreamURL, cmd.ErrOrStderr(), sc, approver, inputCfg, toolCfg, policyCfg, ks, chainMatcher, nil, cee, store, adaptiveFn, mcpMetrics, buildRedirectRT(cfg)); err != nil {
+					if err := mcp.RunHTTPListenerProxy(ctx, mcpLn, upstreamURL, cmd.ErrOrStderr(), sc, approver, inputCfg, toolCfg, policyCfg, ks, chainMatcher, nil, cee, store, adaptiveFn, mcpMetrics, buildRedirectRT(cfg), nil); err != nil {
 						if sentryClient != nil {
 							sentryClient.CaptureError(err)
 						}

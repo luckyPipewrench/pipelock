@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
@@ -49,13 +50,14 @@ type ReverseProxyBlockResponse struct {
 // to a configured upstream URL. Request bodies are scanned for DLP patterns
 // (secret exfiltration) and response bodies are scanned for prompt injection.
 type ReverseProxyHandler struct {
-	upstream *url.URL
-	proxy    *httputil.ReverseProxy
-	cfgPtr   *atomic.Pointer[config.Config]
-	scPtr    *atomic.Pointer[scanner.Scanner]
-	logger   *audit.Logger
-	metrics  *metrics.Metrics
-	ks       *killswitch.Controller
+	upstream   *url.URL
+	proxy      *httputil.ReverseProxy
+	cfgPtr     *atomic.Pointer[config.Config]
+	scPtr      *atomic.Pointer[scanner.Scanner]
+	logger     *audit.Logger
+	metrics    *metrics.Metrics
+	ks         *killswitch.Controller
+	captureObs capture.CaptureObserver
 }
 
 // NewReverseProxy creates a reverse proxy handler that scans request and
@@ -69,14 +71,19 @@ func NewReverseProxy(
 	logger *audit.Logger,
 	m *metrics.Metrics,
 	ks *killswitch.Controller,
+	captureObs capture.CaptureObserver,
 ) *ReverseProxyHandler {
+	if captureObs == nil {
+		captureObs = capture.NopObserver{}
+	}
 	rp := &ReverseProxyHandler{
-		upstream: upstream,
-		cfgPtr:   cfgPtr,
-		scPtr:    scPtr,
-		logger:   logger,
-		metrics:  m,
-		ks:       ks,
+		upstream:   upstream,
+		cfgPtr:     cfgPtr,
+		scPtr:      scPtr,
+		logger:     logger,
+		metrics:    m,
+		ks:         ks,
+		captureObs: captureObs,
 	}
 
 	proxy := httputil.NewSingleHostReverseProxy(upstream)
@@ -122,6 +129,27 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	// blocklist, rate limit) which only applies to agent-chosen destinations.
 	if pathQuery := r.URL.RequestURI(); pathQuery != "" {
 		pathDLP := sc.ScanTextForDLP(r.Context(), pathQuery)
+
+		// Capture observer: record reverse proxy URL DLP verdict for policy replay.
+		{
+			urlDLPAction := ""
+			if !pathDLP.Clean {
+				urlDLPAction = cfg.RequestBodyScanning.Action
+				if urlDLPAction == "" {
+					urlDLPAction = config.ActionBlock
+				}
+			}
+			rp.captureObs.ObserveDLPVerdict(r.Context(), &capture.DLPVerdictRecord{
+				Subsurface:      "dlp_reverse_url",
+				Transport:       "reverse",
+				Request:         capture.CaptureRequest{Method: r.Method, URL: r.URL.String()},
+				TransformKind:   capture.TransformRaw,
+				RawFindings:     dlpMatchesToFindings(pathDLP.Matches),
+				EffectiveAction: urlDLPAction,
+				Outcome:         captureOutcome(urlDLPAction, pathDLP.Clean),
+			})
+		}
+
 		if !pathDLP.Clean {
 			action := cfg.RequestBodyScanning.Action
 			if action == "" {
@@ -191,6 +219,29 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 		r.Context(), r.Body, r.Header.Get("Content-Type"),
 		r.Header.Get("Content-Encoding"), maxBytes, sc, "",
 	)
+
+	// Capture observer: record reverse proxy request DLP verdict for policy replay.
+	{
+		bodyAction := ""
+		if !result.Clean {
+			bodyAction = result.Action
+			if bodyAction == "" {
+				bodyAction = cfg.RequestBodyScanning.Action
+			}
+			if bodyAction == "" {
+				bodyAction = config.ActionBlock
+			}
+		}
+		rp.captureObs.ObserveDLPVerdict(r.Context(), &capture.DLPVerdictRecord{
+			Subsurface:      "dlp_reverse_request",
+			Transport:       "reverse",
+			Request:         capture.CaptureRequest{Method: r.Method, URL: r.URL.String()},
+			TransformKind:   capture.TransformJoinedFields,
+			RawFindings:     bodyScanToFindings(result),
+			EffectiveAction: bodyAction,
+			Outcome:         captureOutcome(bodyAction, result.Clean),
+		})
+	}
 
 	if result.Clean {
 		// Re-wrap the buffered body so the reverse proxy can forward it.
@@ -325,6 +376,24 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	// Scan the response text for injection patterns.
 	text := string(body)
 	result := sc.ScanResponse(resp.Request.Context(), text)
+
+	// Capture observer: record reverse proxy response scan verdict for policy replay.
+	{
+		revAction := cfg.ResponseScanning.Action
+		if result.Clean {
+			revAction = ""
+		}
+		rp.captureObs.ObserveResponseVerdict(resp.Request.Context(), &capture.ResponseVerdictRecord{
+			Subsurface:        "response_reverse",
+			Transport:         "reverse",
+			Request:           capture.CaptureRequest{Method: resp.Request.Method, URL: resp.Request.URL.String()},
+			TransformKind:     capture.TransformRaw,
+			RawFindings:       responseMatchesToFindings(result.Matches, revAction),
+			EffectiveFindings: responseMatchesToFindings(result.Matches, revAction),
+			EffectiveAction:   revAction,
+			Outcome:           captureOutcome(revAction, result.Clean),
+		})
+	}
 
 	// Filter out suppressed findings (parity with fetch proxy).
 	if !result.Clean && len(cfg.Suppress) > 0 {

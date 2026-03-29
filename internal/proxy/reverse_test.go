@@ -78,7 +78,7 @@ func reverseTestSetup(t *testing.T, cfg *config.Config, upstreamHandler http.Han
 	m := metrics.New()
 	ks := killswitch.New(cfg)
 
-	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, logger, m, ks)
+	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, logger, m, ks, nil)
 	proxy := httptest.NewServer(handler)
 	t.Cleanup(proxy.Close)
 
@@ -288,7 +288,7 @@ func TestReverseProxy_UpstreamError(t *testing.T) {
 	m := metrics.New()
 	ks := killswitch.New(cfg)
 
-	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, logger, m, ks)
+	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, logger, m, ks, nil)
 	proxy := httptest.NewServer(handler)
 	defer proxy.Close()
 
@@ -555,7 +555,7 @@ func TestReverseProxy_HotReload(t *testing.T) {
 	m := metrics.New()
 	ks := killswitch.New(cfg)
 
-	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, logger, m, ks)
+	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, logger, m, ks, nil)
 	proxy := httptest.NewServer(handler)
 	defer proxy.Close()
 
@@ -1001,7 +1001,7 @@ func TestReverseProxy_ResponseReadErrorBlocked(t *testing.T) {
 	m := metrics.New()
 	ks := killswitch.New(cfg)
 
-	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, logger, m, ks)
+	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, logger, m, ks, nil)
 	proxy := httptest.NewServer(handler)
 	defer proxy.Close()
 

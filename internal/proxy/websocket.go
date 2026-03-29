@@ -20,6 +20,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -148,6 +149,26 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Run through all 9 scanner layers.
 	result := sc.Scan(r.Context(), scanURL)
 
+	// Capture observer: record WebSocket URL verdict for policy replay.
+	{
+		findings := urlResultToFindings(result)
+		action := ""
+		if !result.Allowed {
+			action = config.ActionBlock
+		}
+		p.captureObs.ObserveURLVerdict(r.Context(), &capture.URLVerdictRecord{
+			Subsurface:        "ws_url",
+			Transport:         "websocket",
+			RequestID:         requestID,
+			Agent:             agent,
+			Request:           capture.CaptureRequest{Method: r.Method, URL: targetURL},
+			RawFindings:       findings,
+			EffectiveFindings: findings,
+			EffectiveAction:   action,
+			Outcome:           captureOutcome(action, result.Allowed),
+		})
+	}
+
 	// Session profiling: record BEFORE the enforce-mode early return so adaptive
 	// signals (SignalBlock) fire even for blocked requests. Pass deferClean=true
 	// so header DLP findings on the same handshake don't get offset by early decay.
@@ -229,6 +250,18 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// DLP-scan forwarded header values regardless of destination or enforce mode.
 	// In audit mode, findings are logged as anomalies but traffic is allowed.
 	if blocked, reason := p.dlpScanWSHeaders(r.Context(), fwdHeaders, sc); blocked {
+		// Capture observer: record WS header DLP verdict for policy replay.
+		p.captureObs.ObserveDLPVerdict(r.Context(), &capture.DLPVerdictRecord{
+			Subsurface:      "dlp_ws_header",
+			Transport:       "websocket",
+			RequestID:       requestID,
+			Agent:           agent,
+			Request:         capture.CaptureRequest{Method: r.Method, URL: targetURL},
+			TransformKind:   capture.TransformHeaderValue,
+			EffectiveAction: config.ActionBlock,
+			Outcome:         capture.OutcomeBlocked,
+			SkipReason:      reason,
+		})
 		wsHasFinding = true
 		// Record session activity so adaptive enforcement sees header-DLP hits.
 		headerSR := p.recordSessionActivity(clientIP, agent, parsed.Hostname(), requestID, scanner.Result{Allowed: false, Score: 0.9}, cfg, log, false)

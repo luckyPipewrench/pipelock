@@ -5,11 +5,17 @@ package runtime
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/mcp"
+	plsentry "github.com/luckyPipewrench/pipelock/internal/sentry"
 )
 
 // NOTE: Most mcp tests in the original cli package use rootCmd() which stays
@@ -145,5 +151,58 @@ func TestBuildRedirectRT_DefaultQuarantineDir(t *testing.T) {
 	want := filepath.Join(os.TempDir(), "pipelock-quarantine")
 	if rt.QuarantineDir != want {
 		t.Errorf("expected QuarantineDir=%q, got %q", want, rt.QuarantineDir)
+	}
+}
+
+func TestHandleProxyError_SubprocessExit(t *testing.T) {
+	inner := fmt.Errorf("%w: exit status 2", mcp.ErrSubprocessExit)
+	var logBuf bytes.Buffer
+
+	err := handleProxyError(inner, &logBuf, nil)
+	if err == nil {
+		t.Fatal("expected non-nil error")
+	}
+
+	// Should wrap as ExitError with ExitSubprocess code.
+	got := cliutil.ExitCodeOf(err)
+	if got != cliutil.ExitSubprocess {
+		t.Errorf("exit code = %d, want %d", got, cliutil.ExitSubprocess)
+	}
+
+	// Should log the error to logW.
+	if !strings.Contains(logBuf.String(), "subprocess exited") {
+		t.Errorf("expected log message containing 'subprocess exited', got %q", logBuf.String())
+	}
+}
+
+func TestHandleProxyError_OtherError(t *testing.T) {
+	other := errors.New("connection refused")
+	var logBuf bytes.Buffer
+
+	err := handleProxyError(other, &logBuf, nil)
+	if err == nil {
+		t.Fatal("expected non-nil error")
+	}
+	if !errors.Is(err, other) {
+		t.Errorf("expected original error, got %v", err)
+	}
+
+	// Should NOT log subprocess message for non-subprocess errors.
+	if logBuf.Len() != 0 {
+		t.Errorf("expected no log output for non-subprocess error, got %q", logBuf.String())
+	}
+}
+
+func TestHandleProxyError_OtherErrorWithSentry(t *testing.T) {
+	other := errors.New("connection refused")
+	var logBuf bytes.Buffer
+
+	// Non-nil client (enabled=false zero value) — exercises the
+	// sentryClient != nil branch without needing a real DSN.
+	client := &plsentry.Client{}
+
+	err := handleProxyError(other, &logBuf, client)
+	if !errors.Is(err, other) {
+		t.Errorf("expected original error, got %v", err)
 	}
 }

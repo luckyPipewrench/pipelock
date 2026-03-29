@@ -1057,6 +1057,10 @@ func TestLaunchStandalone_BestEffortMode(t *testing.T) {
 	if runtime.GOOS != osLinux {
 		t.Skip(sandboxLinuxMsg)
 	}
+	// Skip in containers where CLONE_NEWUSER is blocked by seccomp.
+	if os.Getenv("CI") != "" {
+		t.Skip("skipping in CI: LaunchStandalone requires user namespace support")
+	}
 	workspace := t.TempDir()
 
 	err := LaunchStandalone(StandaloneLaunchConfig{

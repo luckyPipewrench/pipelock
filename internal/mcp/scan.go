@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -284,6 +285,175 @@ func ScanStream(r io.Reader, w io.Writer, sc *scanner.Scanner, jsonOutput bool) 
 	}
 
 	return foundInjection, nil
+}
+
+// A2AResponseOpts groups A2A-specific dependencies for response scanning.
+// All fields are nil-safe: when nil, A2A response scanning is skipped.
+type A2AResponseOpts struct {
+	Cfg      *config.A2AScanning
+	Baseline *CardBaseline
+	// CardKey identifies the Agent Card origin for drift detection.
+	// Only used for GetExtendedAgentCard responses.
+	CardKey cardCacheKey
+	// Method is the JSON-RPC method from the corresponding request.
+	// When non-empty, allows precise A2A response routing without
+	// relying on response shape heuristics.
+	Method string
+}
+
+// methodGetExtendedAgentCard is the A2A method that returns an Agent Card.
+const methodGetExtendedAgentCard = "GetExtendedAgentCard"
+
+// ScanResponseA2A scans a JSON-RPC 2.0 response with optional A2A-aware
+// routing. When a2aOpts is non-nil and the response matches an A2A method
+// (by tracked method name or response shape), field-aware A2A scanning runs
+// instead of generic text extraction. Falls back to ScanResponse for
+// non-A2A traffic or when A2A scanning is disabled.
+func ScanResponseA2A(line []byte, sc *scanner.Scanner, a2aOpts *A2AResponseOpts) jsonrpc.ScanVerdict {
+	// Nil-safe: no A2A config means standard MCP scanning.
+	if a2aOpts == nil || a2aOpts.Cfg == nil || !a2aOpts.Cfg.Enabled {
+		return ScanResponse(line, sc)
+	}
+
+	// Route by tracked method name when available (most precise).
+	if a2aOpts.Method != "" && IsA2AMethod(a2aOpts.Method) {
+		return scanA2AResponseDispatch(line, sc, a2aOpts)
+	}
+
+	// Fallback: detect A2A response shape from result structure.
+	if isA2AResponseShape(line) {
+		return scanA2AResponseDispatch(line, sc, a2aOpts)
+	}
+
+	return ScanResponse(line, sc)
+}
+
+// scanA2AResponseDispatch routes an A2A response through the appropriate
+// scanner based on method type.
+func scanA2AResponseDispatch(line []byte, sc *scanner.Scanner, a2aOpts *A2AResponseOpts) jsonrpc.ScanVerdict {
+	rpcID := extractRPCID(line)
+
+	// GetExtendedAgentCard: route through Agent Card scanner.
+	if a2aOpts.Method == methodGetExtendedAgentCard {
+		// Extract result body for card scanning.
+		var rpc jsonrpc.RPCResponse
+		if err := json.Unmarshal(line, &rpc); err != nil {
+			return jsonrpc.ScanVerdict{Clean: false, Error: fmt.Sprintf("invalid JSON: %v", err)}
+		}
+		// Scan error payloads: a malicious server can inject content via
+		// error.message and error.data. Don't skip scanning just because
+		// the response is an error instead of a result.
+		if len(rpc.Error) > 0 && string(rpc.Error) != jsonrpc.Null {
+			errResult := ScanA2AResponseBody(context.Background(), line, sc, a2aOpts.Cfg)
+			return a2aScanToVerdict(rpcID, errResult)
+		}
+		if len(rpc.Result) == 0 || string(rpc.Result) == jsonrpc.Null {
+			return jsonrpc.ScanVerdict{ID: rpcID, Clean: true}
+		}
+		cardResult := ScanAgentCard(
+			context.Background(), rpc.Result, sc,
+			a2aOpts.Baseline, a2aOpts.CardKey, a2aOpts.Cfg,
+		)
+		return agentCardToVerdict(rpcID, cardResult, a2aOpts.Cfg)
+	}
+
+	// All other A2A methods: field-aware body scanning.
+	result := ScanA2AResponseBody(context.Background(), line, sc, a2aOpts.Cfg)
+	return a2aScanToVerdict(rpcID, result)
+}
+
+// isA2AResponseShape returns true if the JSON-RPC result object has fields
+// characteristic of A2A protocol responses (task with status/artifacts/history,
+// or an Agent Card shape with skills/supportedInterfaces).
+func isA2AResponseShape(line []byte) bool {
+	var probe struct {
+		Result json.RawMessage `json:"result"`
+	}
+	if json.Unmarshal(line, &probe) != nil || len(probe.Result) == 0 {
+		return false
+	}
+
+	// Check for A2A task shape: presence of status + (artifacts OR history).
+	var resultFields map[string]json.RawMessage
+	if json.Unmarshal(probe.Result, &resultFields) != nil {
+		return false
+	}
+
+	_, hasStatus := resultFields["status"]
+	_, hasArtifacts := resultFields["artifacts"]
+	_, hasHistory := resultFields["history"]
+	if hasStatus && (hasArtifacts || hasHistory) {
+		return true
+	}
+
+	// Check for Agent Card shape: skills + supportedInterfaces.
+	_, hasSkills := resultFields["skills"]
+	_, hasInterfaces := resultFields["supportedInterfaces"]
+	if hasSkills && hasInterfaces {
+		return true
+	}
+
+	return false
+}
+
+// a2aScanToVerdict converts an A2AScanResult into a jsonrpc.ScanVerdict
+// for use in the standard response forwarding pipeline.
+func a2aScanToVerdict(rpcID json.RawMessage, result A2AScanResult) jsonrpc.ScanVerdict {
+	if result.Clean {
+		return jsonrpc.ScanVerdict{ID: rpcID, Clean: true}
+	}
+
+	var matches []scanner.ResponseMatch
+	// Promote injection findings directly.
+	matches = append(matches, result.InjectFindings...)
+	// Wrap URL findings as ResponseMatch for the verdict.
+	for _, u := range result.URLFindings {
+		matches = append(matches, scanner.ResponseMatch{
+			PatternName: u.Reason,
+		})
+	}
+	// Wrap DLP findings as ResponseMatch for the verdict.
+	for _, d := range result.DLPFindings {
+		matches = append(matches, scanner.ResponseMatch{
+			PatternName: d.PatternName,
+		})
+	}
+
+	return jsonrpc.ScanVerdict{
+		ID:      rpcID,
+		Clean:   false,
+		Action:  result.Action,
+		Matches: matches,
+	}
+}
+
+// agentCardToVerdict converts an AgentCardScanResult into a jsonrpc.ScanVerdict.
+func agentCardToVerdict(rpcID json.RawMessage, result AgentCardScanResult, cfg *config.A2AScanning) jsonrpc.ScanVerdict {
+	if result.Clean {
+		return jsonrpc.ScanVerdict{ID: rpcID, Clean: true}
+	}
+
+	action := result.Action
+	if action == "" && cfg != nil {
+		action = cfg.Action
+	}
+
+	var matches []scanner.ResponseMatch
+	if result.DriftDetected {
+		matches = append(matches, scanner.ResponseMatch{
+			PatternName: "a2a_card_drift",
+		})
+	}
+	// Include field-level findings from the card scan.
+	verdict := a2aScanToVerdict(rpcID, result.Findings)
+	matches = append(matches, verdict.Matches...)
+
+	return jsonrpc.ScanVerdict{
+		ID:      rpcID,
+		Clean:   false,
+		Action:  action,
+		Matches: matches,
+	}
 }
 
 // writeTextVerdict writes a human-readable verdict to w.

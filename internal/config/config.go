@@ -290,6 +290,7 @@ type Config struct {
 	MCPBinaryIntegrity    MCPBinaryIntegrity      `yaml:"mcp_binary_integrity"`
 	MCPToolProvenance     MCPToolProvenance       `yaml:"mcp_tool_provenance"`
 	BehavioralBaseline    BehavioralBaseline      `yaml:"behavioral_baseline"`
+	A2AScanning           A2AScanning             `yaml:"a2a_scanning"`
 	Agents                map[string]AgentProfile `yaml:"agents,omitempty"`
 	LicenseKey            string                  `yaml:"license_key,omitempty"`        // signed license token (from pipelock license issue)
 	LicenseFile           string                  `yaml:"license_file,omitempty"`       // path to file containing the license token (read at startup)
@@ -597,6 +598,21 @@ type MCPSessionBinding struct {
 	Enabled           bool   `yaml:"enabled"`
 	UnknownToolAction string `yaml:"unknown_tool_action"` // warn, block
 	NoBaselineAction  string `yaml:"no_baseline_action"`  // warn, block
+}
+
+// A2AScanning configures scanning of Google A2A (Agent-to-Agent) protocol
+// traffic. Detects A2A messages in forward proxy and MCP HTTP proxy paths,
+// applies field-aware scanning with URL/text/secret classification.
+type A2AScanning struct {
+	Enabled                   bool   `yaml:"enabled"`
+	Action                    string `yaml:"action"`                      // block, warn
+	ScanAgentCards            bool   `yaml:"scan_agent_cards"`            // Agent Card skill poisoning
+	DetectCardDrift           bool   `yaml:"detect_card_drift"`           // rug-pull detection on Agent Cards
+	SessionSmugglingDetection bool   `yaml:"session_smuggling_detection"` // contextId tracking
+	MaxContextMessages        int    `yaml:"max_context_messages"`        // per-context message cap (default 100)
+	MaxContexts               int    `yaml:"max_contexts"`                // total tracked contexts (default 1000)
+	ScanRawParts              bool   `yaml:"scan_raw_parts"`              // decode text-like Part.raw
+	MaxRawSize                int    `yaml:"max_raw_size"`                // encoded size cap for Part.raw decode (default 1MB)
 }
 
 // RequestBodyScanning configures DLP scanning of request bodies and headers
@@ -1956,6 +1972,25 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// Validate A2A scanning config
+	if c.A2AScanning.Enabled {
+		switch c.A2AScanning.Action {
+		case ActionWarn, ActionBlock:
+			// valid
+		default:
+			return fmt.Errorf("invalid a2a_scanning action %q: must be warn or block", c.A2AScanning.Action)
+		}
+		if c.A2AScanning.MaxContextMessages <= 0 {
+			c.A2AScanning.MaxContextMessages = 100
+		}
+		if c.A2AScanning.MaxContexts <= 0 {
+			c.A2AScanning.MaxContexts = 1000
+		}
+		if c.A2AScanning.MaxRawSize <= 0 {
+			c.A2AScanning.MaxRawSize = 1 << 20
+		}
+	}
+
 	// Validate request body scanning config
 	if c.RequestBodyScanning.Enabled {
 		switch c.RequestBodyScanning.Action {
@@ -2641,6 +2676,44 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		warnings = append(warnings, ReloadWarning{
 			Field:   "mcp_session_binding.enabled",
 			Message: "MCP session binding disabled",
+		})
+	}
+
+	// A2A scanning disabled or downgraded
+	if old.A2AScanning.Enabled && !updated.A2AScanning.Enabled {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "a2a_scanning.enabled",
+			Message: "A2A scanning disabled",
+		})
+	}
+	if old.A2AScanning.Action == ActionBlock && updated.A2AScanning.Action == ActionWarn {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "a2a_scanning.action",
+			Message: "A2A scanning action downgraded from block to warn",
+		})
+	}
+	if old.A2AScanning.ScanAgentCards && !updated.A2AScanning.ScanAgentCards {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "a2a_scanning.scan_agent_cards",
+			Message: "A2A Agent Card scanning disabled",
+		})
+	}
+	if old.A2AScanning.DetectCardDrift && !updated.A2AScanning.DetectCardDrift {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "a2a_scanning.detect_card_drift",
+			Message: "A2A Agent Card drift detection disabled",
+		})
+	}
+	if old.A2AScanning.SessionSmugglingDetection && !updated.A2AScanning.SessionSmugglingDetection {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "a2a_scanning.session_smuggling_detection",
+			Message: "A2A session smuggling detection disabled",
+		})
+	}
+	if old.A2AScanning.ScanRawParts && !updated.A2AScanning.ScanRawParts {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "a2a_scanning.scan_raw_parts",
+			Message: "A2A raw part scanning disabled — text-like attachments will not be scanned",
 		})
 	}
 
@@ -3403,6 +3476,17 @@ func Defaults() *Config {
 		},
 		Rules: Rules{
 			MinConfidence: ConfidenceMedium,
+		},
+		A2AScanning: A2AScanning{
+			Enabled:                   false,
+			Action:                    ActionWarn,
+			ScanAgentCards:            true,
+			DetectCardDrift:           true,
+			SessionSmugglingDetection: true,
+			MaxContextMessages:        100,
+			MaxContexts:               1000,
+			ScanRawParts:              true,
+			MaxRawSize:                1 << 20, // 1MB encoded
 		},
 	}
 	return cfg

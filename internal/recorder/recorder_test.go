@@ -1317,5 +1317,426 @@ func TestRecorder_Nop_WhenDisabled(t *testing.T) {
 	}
 }
 
+func TestRecorder_SafeUint64_Boundary(t *testing.T) {
+	// Test via New with boundary config values that exercise safeUint64.
+	tests := []struct {
+		name               string
+		checkpointInterval int
+		maxEntries         int
+	}{
+		{
+			name:               "zero checkpoint uses default",
+			checkpointInterval: 0,
+			maxEntries:         0,
+		},
+		{
+			name:               "negative checkpoint uses default",
+			checkpointInterval: -1,
+			maxEntries:         -5,
+		},
+		{
+			name:               "very large checkpoint is capped",
+			checkpointInterval: 1<<53 + 1,
+			maxEntries:         1,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cfg := recorder.Config{
+				Enabled:            true,
+				Dir:                dir,
+				CheckpointInterval: tc.checkpointInterval,
+				MaxEntriesPerFile:  tc.maxEntries,
+			}
+			rec, err := recorder.New(cfg, nil, nil)
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			defer func() { _ = rec.Close() }()
+
+			// Should be able to record without panic
+			err = rec.Record(recorder.Entry{
+				SessionID: testSessionID,
+				Type:      testType,
+				Transport: testTransport,
+				Summary:   "boundary test",
+			})
+			if err != nil {
+				t.Fatalf("Record: %v", err)
+			}
+		})
+	}
+}
+
+func TestRecorder_WriteEntryToRemovedDir(t *testing.T) {
+	dir := t.TempDir()
+	cfg := recorder.Config{
+		Enabled:            true,
+		Dir:                dir,
+		CheckpointInterval: 1000,
+	}
+	rec, err := recorder.New(cfg, nil, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// First record opens the file
+	err = rec.Record(recorder.Entry{
+		SessionID: testSessionID,
+		Type:      testType,
+		Transport: testTransport,
+		Summary:   "first",
+	})
+	if err != nil {
+		t.Fatalf("first Record: %v", err)
+	}
+
+	// Remove the evidence directory to cause subsequent write errors
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatalf("RemoveAll: %v", err)
+	}
+
+	// Closing should encounter a flush error since the underlying file is gone
+	err = rec.Close()
+	// We accept either an error or success (OS-dependent behavior for deleted-but-open files)
+	// On Linux, the file handle remains valid even after directory removal,
+	// so this tests the closeFile code path rather than guaranteeing error.
+	_ = err
+}
+
+func TestRecorder_CloseFile_NilFile(t *testing.T) {
+	// Close on a recorder that never opened a file (no records written)
+	dir := t.TempDir()
+	cfg := recorder.Config{
+		Enabled:            true,
+		Dir:                dir,
+		CheckpointInterval: 1000,
+	}
+	rec, err := recorder.New(cfg, nil, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Close without writing anything -- exercises closeFile with nil file
+	if err := rec.Close(); err != nil {
+		t.Fatalf("Close on empty recorder: %v", err)
+	}
+}
+
+func TestRecorder_VerifyChain_Errors(t *testing.T) {
+	t.Run("empty chain is valid", func(t *testing.T) {
+		if err := recorder.VerifyChain(nil); err != nil {
+			t.Errorf("empty chain should be valid: %v", err)
+		}
+	})
+
+	t.Run("wrong version", func(t *testing.T) {
+		entries := []recorder.Entry{
+			{
+				Version:  99,
+				Sequence: 0,
+				PrevHash: recorder.GenesisHash,
+				Hash:     "anything",
+			},
+		}
+		err := recorder.VerifyChain(entries)
+		if err == nil {
+			t.Fatal("expected error for wrong version")
+		}
+		if !strings.Contains(err.Error(), "unsupported version") {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("hash mismatch", func(t *testing.T) {
+		e := recorder.Entry{
+			Version:   recorder.EntryVersion,
+			Sequence:  0,
+			SessionID: "s1",
+			Type:      testType,
+			PrevHash:  recorder.GenesisHash,
+			Hash:      "wrong-hash",
+		}
+		err := recorder.VerifyChain([]recorder.Entry{e})
+		if err == nil {
+			t.Fatal("expected error for hash mismatch")
+		}
+		if !strings.Contains(err.Error(), "hash mismatch") {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("first entry bad prevhash", func(t *testing.T) {
+		e := recorder.Entry{
+			Version:   recorder.EntryVersion,
+			Sequence:  0,
+			SessionID: "s1",
+			Type:      testType,
+			PrevHash:  "not-genesis",
+		}
+		e.Hash = recorder.ComputeHash(e)
+		err := recorder.VerifyChain([]recorder.Entry{e})
+		if err == nil {
+			t.Fatal("expected error for bad first entry PrevHash")
+		}
+		if !strings.Contains(err.Error(), "first entry PrevHash") {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("chain break between entries", func(t *testing.T) {
+		e0 := recorder.Entry{
+			Version:   recorder.EntryVersion,
+			Sequence:  0,
+			SessionID: "s1",
+			Type:      testType,
+			PrevHash:  recorder.GenesisHash,
+		}
+		e0.Hash = recorder.ComputeHash(e0)
+
+		e1 := recorder.Entry{
+			Version:   recorder.EntryVersion,
+			Sequence:  1,
+			SessionID: "s1",
+			Type:      testType,
+			PrevHash:  "wrong-link",
+		}
+		e1.Hash = recorder.ComputeHash(e1)
+
+		err := recorder.VerifyChain([]recorder.Entry{e0, e1})
+		if err == nil {
+			t.Fatal("expected error for chain break")
+		}
+		if !strings.Contains(err.Error(), "chain break") {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+}
+
+func TestRecorder_ReadEntries_Errors(t *testing.T) {
+	t.Run("nonexistent file", func(t *testing.T) {
+		_, err := recorder.ReadEntries("/nonexistent/file.jsonl")
+		if err == nil {
+			t.Fatal("expected error for nonexistent file")
+		}
+	})
+
+	t.Run("invalid JSON line", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "bad.jsonl")
+		if err := os.WriteFile(path, []byte("not json\n"), filePermissions); err != nil {
+			t.Fatal(err)
+		}
+		_, err := recorder.ReadEntries(path)
+		if err == nil {
+			t.Fatal("expected error for invalid JSON")
+		}
+		if !strings.Contains(err.Error(), "parsing entry") {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("wrong entry version", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "bad-version.jsonl")
+		line := `{"v":99,"seq":0,"ts":"2026-03-28T12:00:00Z","session_id":"s1","type":"request","transport":"fetch","summary":"test","detail":null,"prev_hash":"genesis","hash":"abc"}` + "\n"
+		if err := os.WriteFile(path, []byte(line), filePermissions); err != nil {
+			t.Fatal(err)
+		}
+		_, err := recorder.ReadEntries(path)
+		if err == nil {
+			t.Fatal("expected error for wrong version")
+		}
+		if !strings.Contains(err.Error(), "unsupported entry version") {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("empty lines are skipped", func(t *testing.T) {
+		dir := t.TempDir()
+
+		e := recorder.Entry{
+			Version:   recorder.EntryVersion,
+			SessionID: "s1",
+			Type:      testType,
+			Transport: testTransport,
+			PrevHash:  recorder.GenesisHash,
+		}
+		e.Hash = recorder.ComputeHash(e)
+		data, _ := json.Marshal(e)
+
+		path := filepath.Join(dir, "with-blanks.jsonl")
+		content := "\n" + string(data) + "\n\n"
+		if err := os.WriteFile(path, []byte(content), filePermissions); err != nil {
+			t.Fatal(err)
+		}
+
+		entries, err := recorder.ReadEntries(path)
+		if err != nil {
+			t.Fatalf("ReadEntries: %v", err)
+		}
+		if len(entries) != 1 {
+			t.Errorf("expected 1 entry, got %d", len(entries))
+		}
+	})
+}
+
+func TestRecorder_VerifyCheckpoints_Errors(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("missing signature", func(t *testing.T) {
+		cpDetail := recorder.CheckpointDetail{
+			EntryCount: 1,
+			Signature:  "", // missing
+		}
+		detailJSON, _ := json.Marshal(cpDetail)
+		var detail any
+		_ = json.Unmarshal(detailJSON, &detail)
+
+		e := recorder.Entry{
+			Version:   recorder.EntryVersion,
+			Sequence:  0,
+			SessionID: "s1",
+			Type:      "checkpoint",
+			PrevHash:  recorder.GenesisHash,
+			Detail:    detail,
+		}
+		e.Hash = recorder.ComputeHash(e)
+
+		err := recorder.VerifyCheckpoints([]recorder.Entry{e}, pub)
+		if err == nil {
+			t.Fatal("expected error for missing signature")
+		}
+		if !strings.Contains(err.Error(), "missing signature") {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("invalid hex signature", func(t *testing.T) {
+		cpDetail := recorder.CheckpointDetail{
+			EntryCount: 1,
+			Signature:  "not-valid-hex!!!",
+		}
+		detailJSON, _ := json.Marshal(cpDetail)
+		var detail any
+		_ = json.Unmarshal(detailJSON, &detail)
+
+		e := recorder.Entry{
+			Version:   recorder.EntryVersion,
+			Sequence:  0,
+			SessionID: "s1",
+			Type:      "checkpoint",
+			PrevHash:  recorder.GenesisHash,
+			Detail:    detail,
+		}
+		e.Hash = recorder.ComputeHash(e)
+
+		err := recorder.VerifyCheckpoints([]recorder.Entry{e}, pub)
+		if err == nil {
+			t.Fatal("expected error for invalid hex")
+		}
+	})
+
+	t.Run("wrong signature", func(t *testing.T) {
+		// Sign with the real key but different data
+		badSig := ed25519.Sign(priv, []byte("wrong-data"))
+		cpDetail := recorder.CheckpointDetail{
+			EntryCount: 1,
+			Signature:  hex.EncodeToString(badSig),
+		}
+		detailJSON, _ := json.Marshal(cpDetail)
+		var detail any
+		_ = json.Unmarshal(detailJSON, &detail)
+
+		e := recorder.Entry{
+			Version:   recorder.EntryVersion,
+			Sequence:  0,
+			SessionID: "s1",
+			Type:      "checkpoint",
+			PrevHash:  recorder.GenesisHash,
+			Detail:    detail,
+		}
+		e.Hash = recorder.ComputeHash(e)
+
+		err := recorder.VerifyCheckpoints([]recorder.Entry{e}, pub)
+		if err == nil {
+			t.Fatal("expected error for wrong signature")
+		}
+		if !strings.Contains(err.Error(), "verification failed") {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("skips non-checkpoint entries", func(t *testing.T) {
+		e := recorder.Entry{
+			Version:   recorder.EntryVersion,
+			Sequence:  0,
+			SessionID: "s1",
+			Type:      testType, // not a checkpoint
+			PrevHash:  recorder.GenesisHash,
+		}
+		e.Hash = recorder.ComputeHash(e)
+
+		// Should succeed: no checkpoints to verify
+		err := recorder.VerifyCheckpoints([]recorder.Entry{e}, pub)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+}
+
+func TestRecorder_VerifyChain_WithPubKey(t *testing.T) {
+	dir := t.TempDir()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := recorder.Config{
+		Enabled:            true,
+		Dir:                dir,
+		CheckpointInterval: 2,
+		SignCheckpoints:    true,
+	}
+	rec, err := recorder.New(cfg, nil, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for i := range 3 {
+		if err := rec.Record(recorder.Entry{
+			SessionID: "s1",
+			Type:      testType,
+			Transport: testTransport,
+			Summary:   fmt.Sprintf("r%d", i),
+		}); err != nil {
+			t.Fatalf("Record: %v", err)
+		}
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	entries, err := recorder.ReadEntries(filepath.Join(dir, "evidence-s1-0.jsonl"))
+	if err != nil {
+		t.Fatalf("ReadEntries: %v", err)
+	}
+
+	// VerifyChain with pubKey should also check checkpoint signatures
+	if err := recorder.VerifyChain(entries, pub); err != nil {
+		t.Fatalf("VerifyChain with pubKey: %v", err)
+	}
+
+	// VerifyChain with nil pubKey should skip checkpoint verification
+	if err := recorder.VerifyChain(entries, nil); err != nil {
+		t.Fatalf("VerifyChain with nil pubKey: %v", err)
+	}
+}
+
 // filePermissions for test file creation.
 const filePermissions = 0o600

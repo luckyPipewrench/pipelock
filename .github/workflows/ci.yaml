@@ -48,6 +48,7 @@ jobs:
             internal/cli/license_test.go
             enterprise/licenseservice/*_test.go
             configs/*.yaml
+            test/secureiqlab/
             README.md
             assets/demo.cast
             scripts/pr-review.py

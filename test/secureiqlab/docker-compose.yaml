@@ -1,0 +1,131 @@
+# SecureIQLab AI Security CyberRisk Validation — Test Harness
+#
+# Usage:
+#   docker compose run --rm tls-init   # generate TLS CA (first time only)
+#   docker compose up -d               # start all containers
+#   docker compose logs -f pipelock    # follow pipelock logs
+#   curl localhost:9090/events         # check logged detections
+#
+# Architecture:
+#   SOCx → pipelock:8888 (forward proxy) → mock-llm:8080
+#          pipelock:9999 (MCP proxy)     → mock-mcp:8081/mcp
+#          pipelock:9100 (metrics)
+#          pipelock → log-collector:9090 (webhook events)
+
+services:
+  # ── Product Under Test ──────────────────────────────────────
+  pipelock:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    ports:
+      - "8888:8888"   # forward/fetch proxy
+      - "9999:9999"   # MCP proxy (streamable HTTP)
+      - "9100:9100"   # Prometheus metrics
+    volumes:
+      - ./configs/validation.yaml:/etc/pipelock/pipelock.yaml:ro
+      - ./configs/tls:/etc/pipelock/tls:ro
+    entrypoint: ["/pipelock"]
+    command:
+      - "run"
+      - "--listen"
+      - "0.0.0.0:8888"
+      - "--config"
+      - "/etc/pipelock/pipelock.yaml"
+      - "--mcp-listen"
+      - "0.0.0.0:9999"
+      - "--mcp-upstream"
+      - "http://mock-mcp:8081/mcp"
+    environment:
+      PIPELOCK_LOG_LEVEL: info
+    depends_on:
+      log-collector:
+        condition: service_healthy
+      mock-llm:
+        condition: service_healthy
+      mock-mcp:
+        condition: service_healthy
+    healthcheck:
+      test: ["/pipelock", "healthcheck"]
+      interval: 5s
+      timeout: 3s
+      start_period: 10s
+      retries: 5
+    networks:
+      - harness
+
+  # ── Mock LLM Backend ────────────────────────────────────────
+  mock-llm:
+    build:
+      context: ./mock-llm
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      MOCK_LLM_MODE: echo  # "echo", "malicious", or "mixed"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 3s
+      start_period: 3s
+      retries: 3
+    networks:
+      - harness
+
+  # ── Mock MCP Server (streamable HTTP) ───────────────────────
+  mock-mcp:
+    build:
+      context: ./mock-mcp
+      dockerfile: Dockerfile
+    ports:
+      - "8081:8081"
+    environment:
+      MOCK_MCP_MODE: benign  # "benign" or "poisoned"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8081/health"]
+      interval: 5s
+      timeout: 3s
+      start_period: 3s
+      retries: 3
+    networks:
+      - harness
+
+  # ── Log Collector (webhook evidence store) ──────────────────
+  log-collector:
+    build:
+      context: ./log-collector
+      dockerfile: Dockerfile
+    ports:
+      - "9090:9090"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/health"]
+      interval: 5s
+      timeout: 3s
+      start_period: 3s
+      retries: 3
+    networks:
+      - harness
+
+  # ── TLS CA Generator (run once) ─────────────────────────────
+  tls-init:
+    image: alpine:3.21
+    profiles: ["init"]
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        if [ ! -f /tls/ca.key ]; then
+          apk add --no-cache openssl > /dev/null 2>&1
+          openssl ecparam -genkey -name prime256v1 -out /tls/ca.key 2>/dev/null
+          openssl req -new -x509 -key /tls/ca.key -out /tls/ca.crt \
+            -days 365 -subj "/CN=Pipelock Validation CA" 2>/dev/null
+          chmod 600 /tls/ca.key
+          echo "TLS CA generated."
+        else
+          echo "TLS CA already exists, skipping."
+        fi
+    volumes:
+      - ./configs/tls:/tls
+
+networks:
+  harness:
+    driver: bridge

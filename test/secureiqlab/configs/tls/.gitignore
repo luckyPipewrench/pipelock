@@ -1,0 +1,3 @@
+# Generated TLS CA — never commit private keys
+ca.key
+ca.crt

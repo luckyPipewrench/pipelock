@@ -536,16 +536,18 @@ func ComputeFileHash(path string) (string, error) {
 }
 
 // maxCheckpointBound caps the checkpoint interval to a value that fits safely
-// in uint64 on all platforms. The explicit bound satisfies gosec G115.
-const maxCheckpointBound = 1 << 53
+// in uint64 on all platforms including 32-bit. Typed as uint64 to prevent
+// overflow when compared against int on 32-bit architectures.
+const maxCheckpointBound uint64 = 1 << 53
 
 // safeUint64 converts a positive int to uint64, using fallback if non-positive.
 func safeUint64(v, fallback int) uint64 {
 	if v < 1 {
 		v = fallback
 	}
-	if v > maxCheckpointBound {
-		v = maxCheckpointBound
+	uv := uint64(v) //nolint:gosec // G115: v is bounds-checked positive above
+	if uv > maxCheckpointBound {
+		return maxCheckpointBound
 	}
-	return uint64(v)
+	return uv
 }

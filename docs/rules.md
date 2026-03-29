@@ -15,7 +15,7 @@ pipelock rules install --source https://example.com/my-bundle/bundle.yaml my-bun
 pipelock rules install --path /path/to/bundle/ --allow-unsigned
 ```
 
-Bundles are stored in `~/.pipelock/rules/` by default. Override with the `--rules-dir` flag or the `rules_dir` config field.
+Bundles are stored in `$XDG_DATA_HOME/pipelock/rules/` by default (typically `~/.local/share/pipelock/rules/`). Override with the `--rules-dir` flag or the `rules_dir` config field.
 
 > **Note:** Official bundle verification requires the embedded keyring, which is present in release binaries (Homebrew, GitHub Releases, Docker). Source builds via `go install` do not include the keyring unless built with the release ldflags. Source-build users must add the official public key to `trusted_keys` in their config for remote installs, or download the bundle manually and use `--path` with `--allow-unsigned`.
 
@@ -50,10 +50,10 @@ Bundle rules cannot override or disable built-in patterns. They are additive onl
 ```yaml
 # pipelock.yaml
 rules:
-  rules_dir: ~/.pipelock/rules    # default
-  min_confidence: medium          # skip experimental rules (low confidence)
-  include_experimental: false     # default: only stable rules are active
-  # trusted_keys:                 # additional trusted public keys (beyond embedded keyring)
+  rules_dir: ~/.local/share/pipelock/rules  # default ($XDG_DATA_HOME/pipelock/rules)
+  min_confidence: medium                    # skip experimental rules (low confidence)
+  include_experimental: false               # default: only stable rules are active
+  # trusted_keys:                           # additional trusted public keys (beyond embedded keyring)
   #   - name: "acme-security"
   #     public_key: "64-char-hex-encoded-ed25519-public-key"
 ```
@@ -86,17 +86,23 @@ pipelock rules verify
 A bundle is a single YAML file with a header and a list of rules:
 
 ```yaml
+format_version: 1
 name: my-company-rules
 version: "2026.03.1"
+author: acme-security
+description: "Internal detection patterns for Acme Corp"
 min_pipelock: "1.4.0"
-description: Internal detection patterns for Acme Corp
+
 rules:
   - id: dlp-internal-api-key
     type: dlp
+    status: stable
     name: "Acme Internal API Key"
-    regex: 'acme_[a-zA-Z0-9]{32}'
+    description: "Detects Acme Corp internal API keys"
     severity: critical
     confidence: high
+    pattern:
+      regex: 'acme_[a-zA-Z0-9]{32}'
 ```
 
 ### Rule types
@@ -105,7 +111,7 @@ rules:
 |------|-------------|-------------|
 | DLP pattern | `dlp` | `dlp.patterns` |
 | Injection pattern | `injection` | `response_scanning.patterns` |
-| Tool poison pattern | `tool_poison` | `mcp_tool_scanning` descriptions |
+| Tool poison pattern | `tool-poison` | `mcp_tool_scanning` descriptions |
 
 ### Signing your bundle
 

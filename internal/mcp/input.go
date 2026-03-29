@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
+	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	decide "github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/extract"
@@ -555,6 +556,7 @@ func ForwardScannedInput(
 	rec := opts.Rec
 	adaptiveCfg := opts.AdaptiveCfg
 	m := opts.Metrics
+	obs := opts.captureObserver()
 
 	defer close(blockedCh)
 
@@ -656,6 +658,25 @@ func ForwardScannedInput(
 				bindingReason = "session_binding:unknown_tool"
 			}
 		}
+		// Capture: record session binding verdict when a violation occurred.
+		if bindingReason != "" {
+			obs.ObserveToolPolicyVerdict(context.Background(), &capture.ToolPolicyRecord{
+				Subsurface: "session_binding",
+				Transport:  opts.Transport,
+				Request: capture.CaptureRequest{
+					ToolName:  toolCallName,
+					MCPMethod: methodToolsCall,
+				},
+				RawFindings: []capture.Finding{{
+					Kind:       capture.KindSessionBinding,
+					ToolName:   toolCallName,
+					PolicyRule: bindingReason,
+					Action:     bindingAction,
+				}},
+				EffectiveAction: bindingAction,
+				Outcome:         captureOutcome(bindingAction, false),
+			})
+		}
 
 		// Chain detection: check if this tool call matches an attack pattern.
 		// Runs on every tools/call regardless of content scan results.
@@ -671,6 +692,23 @@ func ForwardScannedInput(
 				if auditLogger != nil {
 					auditLogger.LogChainDetection(cv.PatternName, cv.Severity, cv.Action, toolCallName, "default")
 				}
+				// Capture: record chain detection verdict.
+				obs.ObserveToolPolicyVerdict(context.Background(), &capture.ToolPolicyRecord{
+					Subsurface: "chain_detection",
+					Transport:  opts.Transport,
+					Request: capture.CaptureRequest{
+						ToolName:  toolCallName,
+						MCPMethod: methodToolsCall,
+					},
+					RawFindings: []capture.Finding{{
+						Kind:     capture.KindChainDetection,
+						Chain:    cv.PatternName,
+						Severity: cv.Severity,
+						Action:   cv.Action,
+					}},
+					EffectiveAction: cv.Action,
+					Outcome:         captureOutcome(cv.Action, false),
+				})
 				if cv.Action == config.ActionBlock {
 					// Use verdict.ID from the already-parsed ScanRequest result
 					// rather than re-parsing via extractRPCID. A tools/call always
@@ -723,6 +761,17 @@ func ForwardScannedInput(
 			}
 			// Cross-request exfiltration check on clean outbound messages.
 			if reason := ceeRecordMCP(ceeStdioKey, line, cee, sc, logW, auditLogger); reason != "" {
+				// Capture: record CEE verdict.
+				obs.ObserveCEEVerdict(context.Background(), &capture.CEERecord{
+					Subsurface: "cee_mcp_stdio",
+					Transport:  opts.Transport,
+					RawFindings: []capture.Finding{{
+						Kind:   capture.KindCEE,
+						Action: config.ActionBlock,
+					}},
+					EffectiveAction: config.ActionBlock,
+					Outcome:         capture.OutcomeBlocked,
+				})
 				blockedCh <- BlockedRequest{
 					ID:             verdict.ID,
 					IsNotification: isRPCNotification(verdict.ID),
@@ -879,6 +928,16 @@ func ForwardScannedInput(
 				// Scan redirect handler output for prompt injection before
 				// sending to client. Untrusted handler output is attack surface.
 				scanVerdict := ScanResponse(result.Response, sc)
+				// Capture: record redirect output scan verdict.
+				obs.ObserveResponseVerdict(context.Background(), &capture.ResponseVerdictRecord{
+					Subsurface:      "response_redirect_output",
+					Transport:       opts.Transport,
+					TransformKind:   capture.TransformRedirectOutput,
+					WirePayload:     result.Response,
+					RawFindings:     responseMatchesToFindings(scanVerdict.Matches, config.ActionBlock),
+					EffectiveAction: config.ActionBlock,
+					Outcome:         captureOutcome(config.ActionBlock, scanVerdict.Clean),
+				})
 				if !scanVerdict.Clean {
 					_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked redirect response (injection detected in handler output)\n", lineNum)
 					blockedCh <- BlockedRequest{
@@ -931,6 +990,17 @@ func ForwardScannedInput(
 				lineNum, method, reasonStr)
 			// Cross-request exfiltration check even in warn mode.
 			if reason := ceeRecordMCP(ceeStdioKey, line, cee, sc, logW, auditLogger); reason != "" {
+				// Capture: record CEE verdict (warn-path).
+				obs.ObserveCEEVerdict(context.Background(), &capture.CEERecord{
+					Subsurface: "cee_mcp_stdio",
+					Transport:  opts.Transport,
+					RawFindings: []capture.Finding{{
+						Kind:   capture.KindCEE,
+						Action: config.ActionBlock,
+					}},
+					EffectiveAction: config.ActionBlock,
+					Outcome:         capture.OutcomeBlocked,
+				})
 				blockedCh <- BlockedRequest{
 					ID:             verdict.ID,
 					IsNotification: isRPCNotification(verdict.ID),
@@ -962,6 +1032,44 @@ func ForwardScannedInput(
 			if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
 				rec.RecordClean(adaptiveCfg.DecayPerCleanRequest)
 			}
+		}
+
+		// Capture: record DLP/injection input verdict.
+		if !verdict.Clean {
+			var rawFindings []capture.Finding
+			rawFindings = append(rawFindings, dlpMatchesToFindings(verdict.Matches)...)
+			rawFindings = append(rawFindings, responseMatchesToFindings(verdict.Inject, effectiveAction)...)
+			rawFindings = append(rawFindings, addressFindingsToCapture(verdict.AddressFindings)...)
+			obs.ObserveDLPVerdict(context.Background(), &capture.DLPVerdictRecord{
+				Subsurface:      "dlp_mcp_input",
+				Transport:       opts.Transport,
+				TransformKind:   capture.TransformJoinedFields,
+				RawFindings:     rawFindings,
+				EffectiveAction: effectiveAction,
+				Outcome:         captureOutcome(effectiveAction, false),
+			})
+		}
+		// Capture: record tool policy verdict when policy matched.
+		if policyVerdict.Matched {
+			var policyFindings []capture.Finding
+			for _, r := range policyVerdict.Rules {
+				policyFindings = append(policyFindings, capture.Finding{
+					Kind:       capture.KindToolPolicy,
+					PolicyRule: r,
+					Action:     policyVerdict.Action,
+				})
+			}
+			obs.ObserveToolPolicyVerdict(context.Background(), &capture.ToolPolicyRecord{
+				Subsurface: "mcp_tool_policy",
+				Transport:  opts.Transport,
+				Request: capture.CaptureRequest{
+					ToolName:  toolCallName,
+					MCPMethod: verdict.Method,
+				},
+				RawFindings:     policyFindings,
+				EffectiveAction: effectiveAction,
+				Outcome:         captureOutcome(effectiveAction, false),
+			})
 		}
 	}
 }

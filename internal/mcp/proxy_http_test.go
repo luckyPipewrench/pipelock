@@ -1473,7 +1473,7 @@ func startListenerProxy(
 
 	done := make(chan error, 1)
 	go func() {
-		done <- RunHTTPListenerProxy(ctx, ln, upstreamURL, &logBuf, sc, nil, inputCfg, toolCfg, policyCfg, nil, nil, nil, nil, nil, nil, nil, nil)
+		done <- RunHTTPListenerProxy(ctx, ln, upstreamURL, &logBuf, sc, nil, inputCfg, toolCfg, policyCfg, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	}()
 
 	// Wait for server to accept connections.
@@ -2456,7 +2456,7 @@ func startListenerProxyFull(
 
 	done := make(chan error, 1)
 	go func() {
-		done <- RunHTTPListenerProxy(ctx, ln, upstreamURL, &logBuf, sc, nil, inputCfg, nil, nil, ks, cm, nil, nil, nil, nil, nil, nil)
+		done <- RunHTTPListenerProxy(ctx, ln, upstreamURL, &logBuf, sc, nil, inputCfg, nil, nil, ks, cm, nil, nil, nil, nil, nil, nil, nil)
 	}()
 
 	baseURL := "http://" + addr
@@ -3468,7 +3468,7 @@ func TestHTTPListener_StoreAdaptive(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- RunHTTPListenerProxy(ctx, ln, upstream.URL, &logBuf, sc, nil, nil, nil, nil, nil, nil, nil, nil, store, func() *config.AdaptiveEnforcement { return adaptiveCfg }, nil, nil)
+		done <- RunHTTPListenerProxy(ctx, ln, upstream.URL, &logBuf, sc, nil, nil, nil, nil, nil, nil, nil, nil, store, func() *config.AdaptiveEnforcement { return adaptiveCfg }, nil, nil, nil)
 	}()
 
 	baseURL := "http://" + addr

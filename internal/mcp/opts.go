@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/filesentry"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
@@ -49,7 +50,23 @@ type MCPProxyOpts struct {
 	A2ACfg       *config.A2AScanning
 	CardBaseline *CardBaseline
 
+	// Policy capture observer for recording scan verdicts.
+	// Defaults to capture.NopObserver{} when nil.
+	CaptureObs capture.CaptureObserver
+
+	// Transport identifies the MCP transport for capture records.
+	// Set to "mcp_stdio" for stdio proxy or "mcp_http" for HTTP proxy.
+	Transport string
+
 	// File sentry (stdio proxy only)
 	Lineage      filesentry.Lineage
 	OnChildReady func() // called after child process starts
+}
+
+// captureObserver returns the observer, defaulting to NopObserver when nil.
+func (o MCPProxyOpts) captureObserver() capture.CaptureObserver {
+	if o.CaptureObs != nil {
+		return o.CaptureObs
+	}
+	return capture.NopObserver{}
 }

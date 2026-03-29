@@ -917,3 +917,21 @@ func TestBaseline_Ratify_PersistFailure_ReturnsError(t *testing.T) {
 		t.Fatal("expected error from Ratify when persistence fails")
 	}
 }
+
+func TestNewManager_CreatesProfileDir(t *testing.T) {
+	// Profile dir does not exist yet. NewManager must create it.
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "subdir", "profiles")
+	cfg := Config{Enabled: true, ProfileDir: dir}
+	_, err := NewManager(cfg)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	info, statErr := os.Stat(dir)
+	if statErr != nil {
+		t.Fatalf("profile dir not created: %v", statErr)
+	}
+	if !info.IsDir() {
+		t.Fatal("profile path is not a directory")
+	}
+}

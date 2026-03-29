@@ -4473,6 +4473,55 @@ func TestMatchesPath(t *testing.T) {
 			pattern: `vendor\`,
 			want:    true,
 		},
+		// Bug 1: TLS-intercepted URLs include :443, breaking glob matches.
+		{
+			name:    "TLS URL with port 443 matches glob without port",
+			target:  "https://api.anthropic.com:443/v1/messages",
+			pattern: "*.anthropic.com*",
+			want:    true,
+		},
+		{
+			name:    "TLS URL without port matches glob",
+			target:  "https://api.anthropic.com/v1/messages",
+			pattern: "*.anthropic.com*",
+			want:    true,
+		},
+		{
+			name:    "HTTP URL with port 80 matches glob without port",
+			target:  "http://api.example.com:80/api/data",
+			pattern: "*.example.com*",
+			want:    true,
+		},
+		{
+			name:    "non-standard port preserved in matching",
+			target:  "https://api.example.com:8443/v1/messages",
+			pattern: "*.example.com:8443*",
+			want:    true,
+		},
+		{
+			name:    "URL exact match with scheme",
+			target:  "https://api.anthropic.com:443/v1/messages",
+			pattern: "https://api.anthropic.com/v1/messages",
+			want:    true,
+		},
+		{
+			name:    "URL host-only pattern no trailing star",
+			target:  "https://api.anthropic.com:443/v1/messages",
+			pattern: "https://api.anthropic.com/v1/messages",
+			want:    true,
+		},
+		{
+			name:    "URL glob does not match different domain",
+			target:  "https://api.openai.com:443/v1/messages",
+			pattern: "*.anthropic.com*",
+			want:    false,
+		},
+		{
+			name:    "port 443 at end of host no path",
+			target:  "https://cdn.example.com:443",
+			pattern: "*.example.com*",
+			want:    true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -4480,6 +4529,34 @@ func TestMatchesPath(t *testing.T) {
 			got := matchesPath(tt.target, tt.pattern)
 			if got != tt.want {
 				t.Errorf("matchesPath(%q, %q) = %v, want %v", tt.target, tt.pattern, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMatchGlobSubstring(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		s       string
+		pattern string
+		want    bool
+	}{
+		{"wildcard prefix and suffix", "https://api.anthropic.com/v1/messages", "*.anthropic.com*", true},
+		{"wildcard prefix only", "https://api.anthropic.com/v1/messages", "*.anthropic.com/v1/messages", true},
+		{"wildcard suffix only", "https://api.anthropic.com/v1/messages", "https://api.anthropic.com*", true},
+		{"no wildcards exact", "https://api.anthropic.com/v1", "https://api.anthropic.com/v1", true},
+		{"no match", "https://api.openai.com/v1", "*.anthropic.com*", false},
+		{"empty pattern", "anything", "", true}, // splits to [""] which is all empty parts
+		{"pattern must be prefix", "https://api.anthropic.com/v1", "api.anthropic.com/v1", false},
+		{"pattern must be suffix", "https://api.anthropic.com/v1", "https://api.anthropic.com/v", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := matchGlobSubstring(tt.s, tt.pattern)
+			if got != tt.want {
+				t.Errorf("matchGlobSubstring(%q, %q) = %v, want %v", tt.s, tt.pattern, got, tt.want)
 			}
 		})
 	}
@@ -7390,12 +7467,155 @@ func TestLoad_PreservesSecurityBooleanDefaults(t *testing.T) {
 		{"ScanAPI.Kinds.DLP", cfg.ScanAPI.Kinds.DLP},
 		{"ScanAPI.Kinds.PromptInjection", cfg.ScanAPI.Kinds.PromptInjection},
 		{"ScanAPI.Kinds.ToolCall", cfg.ScanAPI.Kinds.ToolCall},
+		{"FlightRecorder.Redact", cfg.FlightRecorder.Redact},
+		{"FlightRecorder.SignCheckpoints", cfg.FlightRecorder.SignCheckpoints},
+		{"MCPToolProvenance.OfflineOnly", cfg.MCPToolProvenance.OfflineOnly},
+		{"BehavioralBaseline.PoisonResistance", cfg.BehavioralBaseline.PoisonResistance},
+		{"A2AScanning.ScanAgentCards", cfg.A2AScanning.ScanAgentCards},
+		{"A2AScanning.DetectCardDrift", cfg.A2AScanning.DetectCardDrift},
+		{"A2AScanning.SessionSmugglingDetection", cfg.A2AScanning.SessionSmugglingDetection},
+		{"A2AScanning.ScanRawParts", cfg.A2AScanning.ScanRawParts},
 	}
 
 	for _, c := range checks {
 		if !c.got {
 			t.Errorf("%s = false, want true (security default lost during Load)", c.name)
 		}
+	}
+}
+
+func TestLoad_FlightRecorderDefaults(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "fr.yaml")
+	content := "mode: balanced\nflight_recorder:\n  enabled: true\n  dir: /tmp/fr\n"
+	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if cfg.FlightRecorder.CheckpointInterval != 1000 {
+		t.Errorf("CheckpointInterval = %d, want 1000", cfg.FlightRecorder.CheckpointInterval)
+	}
+	if cfg.FlightRecorder.MaxEntriesPerFile != 10000 {
+		t.Errorf("MaxEntriesPerFile = %d, want 10000", cfg.FlightRecorder.MaxEntriesPerFile)
+	}
+	if !cfg.FlightRecorder.Redact {
+		t.Error("Redact = false, want true (secrets would leak into forensic evidence)")
+	}
+	if !cfg.FlightRecorder.SignCheckpoints {
+		t.Error("SignCheckpoints = false, want true (unsigned checkpoints are tamper-blind)")
+	}
+}
+
+func TestLoad_MCPToolProvenanceDefaults(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "prov.yaml")
+	content := "mode: balanced\nmcp_tool_provenance:\n  enabled: true\n"
+	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if cfg.MCPToolProvenance.Action != ActionWarn {
+		t.Errorf("Action = %q, want %q", cfg.MCPToolProvenance.Action, ActionWarn)
+	}
+	if cfg.MCPToolProvenance.Mode != ProvenanceModePipelock {
+		t.Errorf("Mode = %q, want %q", cfg.MCPToolProvenance.Mode, ProvenanceModePipelock)
+	}
+	if !cfg.MCPToolProvenance.OfflineOnly {
+		t.Error("OfflineOnly = false, want true (would make network calls for verification)")
+	}
+}
+
+func TestLoad_BehavioralBaselineDefaults(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "bb.yaml")
+	content := "mode: balanced\nbehavioral_baseline:\n  enabled: true\n  profile_dir: /tmp/bb\n"
+	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if cfg.BehavioralBaseline.DeviationAction != ActionWarn {
+		t.Errorf("DeviationAction = %q, want %q", cfg.BehavioralBaseline.DeviationAction, ActionWarn)
+	}
+	if cfg.BehavioralBaseline.LearningWindow != 10 {
+		t.Errorf("LearningWindow = %d, want 10", cfg.BehavioralBaseline.LearningWindow)
+	}
+	if cfg.BehavioralBaseline.SensitivitySigma != 2.0 {
+		t.Errorf("SensitivitySigma = %f, want 2.0", cfg.BehavioralBaseline.SensitivitySigma)
+	}
+	if cfg.BehavioralBaseline.SeasonalityMode != SeasonalityModeNone {
+		t.Errorf("SeasonalityMode = %q, want %q", cfg.BehavioralBaseline.SeasonalityMode, SeasonalityModeNone)
+	}
+	if !cfg.BehavioralBaseline.PoisonResistance {
+		t.Error("PoisonResistance = false, want true (adversarial training data would corrupt profiles)")
+	}
+}
+
+func TestLoad_A2AScanningDefaults(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "a2a.yaml")
+	content := "mode: balanced\na2a_scanning:\n  enabled: true\n"
+	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if cfg.A2AScanning.Action != ActionWarn {
+		t.Errorf("Action = %q, want %q", cfg.A2AScanning.Action, ActionWarn)
+	}
+	if !cfg.A2AScanning.ScanAgentCards {
+		t.Error("ScanAgentCards = false, want true (agent cards would go unscanned)")
+	}
+	if !cfg.A2AScanning.DetectCardDrift {
+		t.Error("DetectCardDrift = false, want true (rug-pull attacks undetected)")
+	}
+	if !cfg.A2AScanning.SessionSmugglingDetection {
+		t.Error("SessionSmugglingDetection = false, want true (smuggling undetected)")
+	}
+	if !cfg.A2AScanning.ScanRawParts {
+		t.Error("ScanRawParts = false, want true (raw parts would bypass scanning)")
+	}
+	if cfg.A2AScanning.MaxContextMessages != 100 {
+		t.Errorf("MaxContextMessages = %d, want 100", cfg.A2AScanning.MaxContextMessages)
+	}
+	if cfg.A2AScanning.MaxContexts != 1000 {
+		t.Errorf("MaxContexts = %d, want 1000", cfg.A2AScanning.MaxContexts)
+	}
+}
+
+func TestLoad_MCPBinaryIntegrityDefaults(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "integrity.yaml")
+	content := "mode: balanced\nmcp_binary_integrity:\n  enabled: true\n  manifest_path: /tmp/manifest.json\n"
+	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if cfg.MCPBinaryIntegrity.Action != ActionWarn {
+		t.Errorf("Action = %q, want %q", cfg.MCPBinaryIntegrity.Action, ActionWarn)
 	}
 }
 
@@ -7414,7 +7634,15 @@ func TestLoad_PartialSubsectionPreservesBoolDefaults(t *testing.T) {
 		"response_scanning:\n" +
 		"  action: warn\n" +
 		"git_protection:\n" +
-		"  secrets_in_diff: true\n"
+		"  secrets_in_diff: true\n" +
+		"flight_recorder:\n" +
+		"  dir: /tmp/fr\n" +
+		"mcp_tool_provenance:\n" +
+		"  trusted_keys: []\n" +
+		"behavioral_baseline:\n" +
+		"  profile_dir: /tmp/bb\n" +
+		"a2a_scanning:\n" +
+		"  max_context_messages: 50\n"
 	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -7439,6 +7667,14 @@ func TestLoad_PartialSubsectionPreservesBoolDefaults(t *testing.T) {
 		{"ScanAPI.Kinds.DLP", cfg.ScanAPI.Kinds.DLP},
 		{"ScanAPI.Kinds.PromptInjection", cfg.ScanAPI.Kinds.PromptInjection},
 		{"ScanAPI.Kinds.ToolCall", cfg.ScanAPI.Kinds.ToolCall},
+		{"FlightRecorder.Redact", cfg.FlightRecorder.Redact},
+		{"FlightRecorder.SignCheckpoints", cfg.FlightRecorder.SignCheckpoints},
+		{"MCPToolProvenance.OfflineOnly", cfg.MCPToolProvenance.OfflineOnly},
+		{"BehavioralBaseline.PoisonResistance", cfg.BehavioralBaseline.PoisonResistance},
+		{"A2AScanning.ScanAgentCards", cfg.A2AScanning.ScanAgentCards},
+		{"A2AScanning.DetectCardDrift", cfg.A2AScanning.DetectCardDrift},
+		{"A2AScanning.SessionSmugglingDetection", cfg.A2AScanning.SessionSmugglingDetection},
+		{"A2AScanning.ScanRawParts", cfg.A2AScanning.ScanRawParts},
 	}
 
 	for _, c := range checks {
@@ -7463,7 +7699,14 @@ func TestLoad_ExplicitFalseOverridesDefaults(t *testing.T) {
 		"  pre_push_scan: false\n" +
 		"logging:\n" +
 		"  include_allowed: false\n" +
-		"  include_blocked: false\n"
+		"  include_blocked: false\n" +
+		"flight_recorder:\n" +
+		"  redact: false\n" +
+		"  sign_checkpoints: false\n" +
+		"mcp_tool_provenance:\n" +
+		"  offline_only: false\n" +
+		"behavioral_baseline:\n" +
+		"  poison_resistance: false\n"
 	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -7484,11 +7727,37 @@ func TestLoad_ExplicitFalseOverridesDefaults(t *testing.T) {
 		{"GitProtection.PrePushScan", cfg.GitProtection.PrePushScan},
 		{"Logging.IncludeAllowed", cfg.Logging.IncludeAllowed},
 		{"Logging.IncludeBlocked", cfg.Logging.IncludeBlocked},
+		{"FlightRecorder.Redact", cfg.FlightRecorder.Redact},
+		{"FlightRecorder.SignCheckpoints", cfg.FlightRecorder.SignCheckpoints},
+		{"MCPToolProvenance.OfflineOnly", cfg.MCPToolProvenance.OfflineOnly},
+		{"BehavioralBaseline.PoisonResistance", cfg.BehavioralBaseline.PoisonResistance},
 	}
 
 	for _, c := range checks {
 		if c.got {
 			t.Errorf("%s = true, want false (explicit false in YAML must override default)", c.name)
+		}
+	}
+}
+
+func TestValidate_InvalidDoWAction(t *testing.T) {
+	cfg := Defaults()
+	cfg.Agents = map[string]AgentProfile{
+		"test": {Budget: BudgetConfig{DoWAction: "allow"}},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for invalid dow_action, got nil")
+	}
+}
+
+func TestValidate_ValidDoWActions(t *testing.T) {
+	for _, action := range []string{"", ActionBlock, ActionWarn} {
+		cfg := Defaults()
+		cfg.Agents = map[string]AgentProfile{
+			"test": {Budget: BudgetConfig{DoWAction: action}},
+		}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("dow_action %q should be valid, got: %v", action, err)
 		}
 	}
 }

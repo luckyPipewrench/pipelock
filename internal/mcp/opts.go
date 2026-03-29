@@ -15,6 +15,11 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
+// DoWCheckFunc checks a tool call against denial-of-wallet budgets.
+// Returns (allowed, action, reason, budgetType). Action is "block" or "warn".
+// When action is "warn", the caller logs but does not block the request.
+type DoWCheckFunc func(toolName, argsJSON string) (allowed bool, action, reason, budgetType string)
+
 // MCPProxyOpts groups the shared dependencies for MCP proxy functions.
 // Construct once per proxy invocation; pass by value so callers can
 // override fields (e.g. Rec, ToolCfg) without affecting the original.
@@ -49,6 +54,9 @@ type MCPProxyOpts struct {
 	// A2A protocol scanning (nil-safe).
 	A2ACfg       *config.A2AScanning
 	CardBaseline *CardBaseline
+
+	// Denial-of-wallet tracking (nil-safe).
+	DoWCheck DoWCheckFunc
 
 	// Policy capture observer for recording scan verdicts.
 	// Defaults to capture.NopObserver{} when nil.

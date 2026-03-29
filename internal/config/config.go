@@ -97,6 +97,13 @@ const (
 	ProvenanceModeAny      = "any"      // accept either
 )
 
+// Behavioral baseline seasonality mode constants.
+const (
+	SeasonalityModeNone    = "none"
+	SeasonalityModeLabeled = "labeled"
+	SeasonalityModeTime    = "time"
+)
+
 // URL scheme constants for validation.
 const (
 	schemeHTTP  = "http"
@@ -169,28 +176,93 @@ func matchesPath(target, pattern string) bool {
 	if p == "" {
 		return false
 	}
+	// Strip standard ports from URLs so patterns like "*.anthropic.com*"
+	// match TLS-intercepted URLs ("https://api.anthropic.com:443/v1/messages").
+	normalized := stripStandardPorts(target)
 	// Directory prefix: "vendor/" matches "vendor/foo/bar.go"
 	if strings.HasSuffix(p, "/") {
-		return strings.HasPrefix(target, p)
+		return strings.HasPrefix(normalized, p)
 	}
-	// Exact match.
-	if target == p {
+	// Exact match (try both original and port-stripped).
+	if normalized == p || target == p {
 		return true
 	}
 	// Glob on full path.
-	if matched, _ := path.Match(p, target); matched {
+	if matched, _ := path.Match(p, normalized); matched {
 		return true
 	}
 	// Glob on basename (e.g., "*.txt" matches "dir/foo.txt").
-	if matched, _ := path.Match(p, path.Base(target)); matched {
+	if matched, _ := path.Match(p, path.Base(normalized)); matched {
 		return true
+	}
+	// Substring match for URL-style patterns containing "://".
+	// Enables "*.anthropic.com*" to match "https://api.anthropic.com/v1/messages"
+	// where path.Match fails because "*" doesn't cross "/" boundaries.
+	if strings.Contains(p, "://") || (strings.Contains(p, ".") && strings.Contains(normalized, "://")) {
+		if matchGlobSubstring(normalized, p) {
+			return true
+		}
 	}
 	// URL suffix match: pattern without leading slash matches URL path suffix.
 	// e.g., "robots.txt" matches "https://example.com/robots.txt"
-	if !strings.HasPrefix(p, "/") && strings.HasSuffix(target, "/"+p) {
+	if !strings.HasPrefix(p, "/") && strings.HasSuffix(normalized, "/"+p) {
 		return true
 	}
 	return false
+}
+
+// stripStandardPorts removes :443 and :80 from URLs so suppress patterns
+// don't need to account for explicit default ports. Uses net/url parsing
+// to correctly identify the host:port boundary.
+func stripStandardPorts(u string) string {
+	if !strings.Contains(u, "://") {
+		return u
+	}
+	parsed, err := url.Parse(u)
+	if err != nil {
+		return u
+	}
+	port := parsed.Port()
+	if port == "443" || port == "80" {
+		parsed.Host = parsed.Hostname()
+		return parsed.String()
+	}
+	return u
+}
+
+// matchGlobSubstring does a simple glob match where "*" matches any character
+// including "/". This is needed for URL patterns where path.Match's "*"
+// (which stops at "/") is too restrictive.
+func matchGlobSubstring(s, pattern string) bool {
+	// Convert glob to a simple check: split on "*" and verify all parts
+	// appear in order in the string.
+	parts := strings.Split(pattern, "*")
+	if len(parts) == 0 {
+		return false
+	}
+	idx := 0
+	for i, part := range parts {
+		if part == "" {
+			continue
+		}
+		pos := strings.Index(s[idx:], part)
+		if pos < 0 {
+			return false
+		}
+		// First part must be a prefix if pattern doesn't start with "*".
+		if i == 0 && !strings.HasPrefix(pattern, "*") && pos != 0 {
+			return false
+		}
+		idx += pos + len(part)
+	}
+	// Last part must be a suffix if pattern doesn't end with "*".
+	if !strings.HasSuffix(pattern, "*") {
+		lastPart := parts[len(parts)-1]
+		if lastPart != "" && !strings.HasSuffix(s, lastPart) {
+			return false
+		}
+	}
+	return true
 }
 
 // toSlash normalizes path separators to forward slashes.
@@ -826,6 +898,27 @@ type BudgetConfig struct {
 	DoWAction                  string             `yaml:"dow_action,omitempty"`               // "block" or "warn" (default "block")
 }
 
+// HasDoWFields returns true if any denial-of-wallet tracking field is set.
+func (b *BudgetConfig) HasDoWFields() bool {
+	return b.MaxToolCallsPerSession > 0 ||
+		b.MaxConcurrentToolCalls > 0 ||
+		b.MaxWallClockMinutes > 0 ||
+		b.MaxRetriesPerTool > 0 ||
+		b.MaxRetriesPerEndpoint > 0 ||
+		b.LoopDetectionWindow > 0 ||
+		b.FanOutLimit > 0
+}
+
+// ValidateDoW checks that dow_action is a recognized value.
+func (b *BudgetConfig) ValidateDoW() error {
+	switch b.DoWAction {
+	case "", ActionBlock, ActionWarn:
+		return nil
+	default:
+		return fmt.Errorf("invalid dow_action %q: must be block or warn", b.DoWAction)
+	}
+}
+
 // FlightRecorder configures the tamper-evident evidence recording system.
 type FlightRecorder struct {
 	Enabled            bool   `yaml:"enabled"`
@@ -1124,6 +1217,26 @@ func applySecurityDefaults(rawYAML []byte, cfg *Config) {
 	setBoolDefault(kinds, "dlp", &cfg.ScanAPI.Kinds.DLP)
 	setBoolDefault(kinds, "prompt_injection", &cfg.ScanAPI.Kinds.PromptInjection)
 	setBoolDefault(kinds, "tool_call", &cfg.ScanAPI.Kinds.ToolCall)
+
+	// A2A scanning: detection booleans default to true (full scanning when enabled).
+	a2a, _ := raw["a2a_scanning"].(map[string]interface{})
+	setBoolDefault(a2a, "scan_agent_cards", &cfg.A2AScanning.ScanAgentCards)
+	setBoolDefault(a2a, "detect_card_drift", &cfg.A2AScanning.DetectCardDrift)
+	setBoolDefault(a2a, "session_smuggling_detection", &cfg.A2AScanning.SessionSmugglingDetection)
+	setBoolDefault(a2a, "scan_raw_parts", &cfg.A2AScanning.ScanRawParts)
+
+	// Flight recorder: redact and sign default to true (fail-closed for forensics).
+	fr, _ := raw["flight_recorder"].(map[string]interface{})
+	setBoolDefault(fr, "redact", &cfg.FlightRecorder.Redact)
+	setBoolDefault(fr, "sign_checkpoints", &cfg.FlightRecorder.SignCheckpoints)
+
+	// MCP tool provenance: offline_only defaults to true (no network calls).
+	prov, _ := raw["mcp_tool_provenance"].(map[string]interface{})
+	setBoolDefault(prov, "offline_only", &cfg.MCPToolProvenance.OfflineOnly)
+
+	// Behavioral baseline: poison_resistance defaults to true (trimmed-mean scoring).
+	bb, _ := raw["behavioral_baseline"].(map[string]interface{})
+	setBoolDefault(bb, "poison_resistance", &cfg.BehavioralBaseline.PoisonResistance)
 }
 
 // ApplyDefaults fills in zero-value fields with sensible defaults.
@@ -1516,6 +1629,66 @@ func (c *Config) ApplyDefaults() {
 	if c.FileSentry.ScanContent == nil {
 		c.FileSentry.ScanContent = ptrBool(true)
 	}
+
+	// A2A scanning defaults
+	if c.A2AScanning.Enabled {
+		if c.A2AScanning.Action == "" {
+			c.A2AScanning.Action = ActionWarn
+		}
+		if c.A2AScanning.MaxContextMessages <= 0 {
+			c.A2AScanning.MaxContextMessages = 100
+		}
+		if c.A2AScanning.MaxContexts <= 0 {
+			c.A2AScanning.MaxContexts = 1000
+		}
+		if c.A2AScanning.MaxRawSize <= 0 {
+			c.A2AScanning.MaxRawSize = 1 << 20 // 1MB encoded
+		}
+	}
+
+	// MCP binary integrity defaults
+	if c.MCPBinaryIntegrity.Enabled {
+		if c.MCPBinaryIntegrity.Action == "" {
+			c.MCPBinaryIntegrity.Action = ActionWarn
+		}
+	}
+
+	// Flight recorder defaults — applied when section is present.
+	// Redact and SignCheckpoints default to true via applySecurityDefaults.
+	if c.FlightRecorder.CheckpointInterval <= 0 {
+		c.FlightRecorder.CheckpointInterval = 1000 // entries between signed checkpoints
+	}
+	if c.FlightRecorder.MaxEntriesPerFile <= 0 {
+		c.FlightRecorder.MaxEntriesPerFile = 10000 // rotate files at this count
+	}
+
+	// MCP tool provenance defaults
+	if c.MCPToolProvenance.Enabled {
+		if c.MCPToolProvenance.Action == "" {
+			c.MCPToolProvenance.Action = ActionWarn
+		}
+		if c.MCPToolProvenance.Mode == "" {
+			c.MCPToolProvenance.Mode = ProvenanceModePipelock
+		}
+	}
+	// OfflineOnly defaults to true via applySecurityDefaults.
+
+	// Behavioral baseline defaults
+	if c.BehavioralBaseline.Enabled {
+		if c.BehavioralBaseline.DeviationAction == "" {
+			c.BehavioralBaseline.DeviationAction = ActionWarn
+		}
+		if c.BehavioralBaseline.LearningWindow <= 0 {
+			c.BehavioralBaseline.LearningWindow = 10 // sessions to observe before enforcement
+		}
+		if c.BehavioralBaseline.SensitivitySigma <= 0 {
+			c.BehavioralBaseline.SensitivitySigma = 2.0 // stddev multiplier for deviation threshold
+		}
+		if c.BehavioralBaseline.SeasonalityMode == "" {
+			c.BehavioralBaseline.SeasonalityMode = SeasonalityModeNone
+		}
+	}
+	// PoisonResistance defaults to true via applySecurityDefaults.
 }
 
 // mergeDLPPatterns merges default DLP patterns with user-defined patterns.
@@ -2569,6 +2742,12 @@ func (c *Config) validateFileSentry() error {
 }
 
 func (c *Config) validateAgents() error {
+	// Validate budget dow_action for all agent profiles (OSS + enterprise).
+	for name, ap := range c.Agents {
+		if err := ap.Budget.ValidateDoW(); err != nil {
+			return fmt.Errorf("agents.%s.budget: %w", name, err)
+		}
+	}
 	// Validate agent profiles (enterprise hook; nil in OSS).
 	if ValidateAgentsFunc != nil {
 		if err := ValidateAgentsFunc(c); err != nil {
@@ -2757,8 +2936,8 @@ func (c *Config) validateBehavioralBaseline() error {
 		return fmt.Errorf("behavioral_baseline.sensitivity_sigma must be non-negative")
 	}
 	switch c.BehavioralBaseline.SeasonalityMode {
-	case "", "none", "labeled", "time":
-		// valid (empty defaults to "none")
+	case "", SeasonalityModeNone, SeasonalityModeLabeled, SeasonalityModeTime:
+		// valid (empty defaults to SeasonalityModeNone)
 	default:
 		return fmt.Errorf("invalid behavioral_baseline.seasonality_mode %q: must be none, labeled, or time", c.BehavioralBaseline.SeasonalityMode)
 	}
@@ -3765,6 +3944,27 @@ func Defaults() *Config {
 			MaxContexts:               1000,
 			ScanRawParts:              true,
 			MaxRawSize:                1 << 20, // 1MB encoded
+		},
+		MCPBinaryIntegrity: MCPBinaryIntegrity{
+			Action: ActionWarn, // default action when hash verification fails
+		},
+		FlightRecorder: FlightRecorder{
+			CheckpointInterval: 1000,  // entries between signed checkpoints
+			Redact:             true,  // DLP-scrub evidence before commit
+			SignCheckpoints:    true,  // Ed25519 sign checkpoints
+			MaxEntriesPerFile:  10000, // rotate files at this count
+		},
+		MCPToolProvenance: MCPToolProvenance{
+			Action:      ActionWarn,
+			Mode:        ProvenanceModePipelock,
+			OfflineOnly: true, // no network calls for verification
+		},
+		BehavioralBaseline: BehavioralBaseline{
+			LearningWindow:   10,
+			DeviationAction:  ActionWarn,
+			SensitivitySigma: 2.0,
+			PoisonResistance: true, // trimmed-mean scoring resists adversarial training data
+			SeasonalityMode:  SeasonalityModeNone,
 		},
 	}
 	return cfg

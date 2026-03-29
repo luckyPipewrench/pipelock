@@ -303,6 +303,34 @@ func scanHTTPInput(msg []byte, logW io.Writer, sessionKey, auditSessionKey strin
 		}
 	}
 
+	// Denial-of-wallet: check tool call budget before forwarding.
+	if opts.DoWCheck != nil && verdict.Method == methodToolsCall {
+		toolName := extractToolCallName(msg)
+		if toolName != "" {
+			argsJSON := extractToolCallArgs(msg)
+			allowed, dowAction, dowReason, dowBudgetType := opts.DoWCheck(toolName, argsJSON)
+			if !allowed {
+				_, _ = fmt.Fprintf(logW, "pipelock: tools/call %q DoW %s: %s (%s)\n",
+					toolName, dowAction, dowReason, dowBudgetType)
+				if dowAction == config.ActionBlock {
+					if auditLogger != nil {
+						auditLogger.LogBlocked("MCP", toolName, "denial_of_wallet", dowReason, "", "", "")
+					}
+					if m != nil {
+						m.RecordBlocked("mcp", "denial_of_wallet", 0, "")
+					}
+					recordAdaptiveSignal(session.SignalBlock)
+					return &BlockedRequest{ID: verdict.ID, ErrorCode: -32600, ErrorMessage: "pipelock: " + dowReason}
+				}
+				// dow_action: warn — log and record near-miss, but allow the request.
+				if auditLogger != nil {
+					auditLogger.LogAnomaly("MCP", toolName, "denial_of_wallet", dowReason, "", "", "", 0)
+				}
+				recordAdaptiveSignal(session.SignalNearMiss)
+			}
+		}
+	}
+
 	// Policy check.
 	policyVerdict := policy.Verdict{}
 	if policyCfg != nil {

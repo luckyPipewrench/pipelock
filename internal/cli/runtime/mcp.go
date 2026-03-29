@@ -435,6 +435,43 @@ Environment passthrough (subprocess mode only):
 				store = sm.AsStore()
 			}
 
+			// Denial-of-wallet tracker: create from the resolved agent's
+			// BudgetConfig. Falls back to _default profile, then skips if
+			// no DoW-related fields are set. Checks ALL budget fields.
+			var dowCheck mcp.DoWCheckFunc
+			var dowBudget *config.BudgetConfig
+			if agentName != "" {
+				if ap, ok := cfg.Agents[agentName]; ok {
+					dowBudget = &ap.Budget
+				}
+			}
+			if dowBudget == nil {
+				if ap, ok := cfg.Agents["_default"]; ok {
+					dowBudget = &ap.Budget
+				}
+			}
+			if dowBudget != nil && dowBudget.HasDoWFields() {
+				tracker := proxy.NewDoWTracker(proxy.DoWConfig{
+					MaxToolCallsPerSession: dowBudget.MaxToolCallsPerSession,
+					MaxConcurrentToolCalls: dowBudget.MaxConcurrentToolCalls,
+					MaxWallClockMinutes:    dowBudget.MaxWallClockMinutes,
+					MaxRetriesPerTool:      dowBudget.MaxRetriesPerTool,
+					MaxRetriesPerEndpoint:  dowBudget.MaxRetriesPerEndpoint,
+					LoopDetectionWindow:    dowBudget.LoopDetectionWindow,
+					FanOutLimit:            dowBudget.FanOutLimit,
+					FanOutWindowSeconds:    dowBudget.FanOutWindowSeconds,
+					Action:                 dowBudget.DoWAction,
+				})
+				dowAction := dowBudget.DoWAction
+				if dowAction == "" {
+					dowAction = config.ActionBlock
+				}
+				dowCheck = func(toolName, argsJSON string) (bool, string, string, string) {
+					r := tracker.RecordToolCall(toolName, argsJSON)
+					return r.Allowed, dowAction, r.Reason, r.BudgetType
+				}
+			}
+
 			toolAction := "disabled"
 			if toolCfg != nil {
 				toolAction = toolCfg.Action
@@ -488,7 +525,7 @@ Environment passthrough (subprocess mode only):
 				if isWSUpstream {
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: proxying WS upstream %s (response=%s, input=%s, tools=%s, policy=%s)\n",
 						upstreamURL, sc.ResponseAction(), inputCfg.Action, toolAction, policyAction)
-					if err := mcp.RunWSProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, sc, approver, inputCfg, toolCfg, policyCfg, ks, chainMatcher, nil, cee, store, adaptiveCfg, mcpMetrics, buildRedirectRT(cfg)); err != nil {
+					if err := mcp.RunWSProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, sc, approver, inputCfg, toolCfg, policyCfg, ks, chainMatcher, nil, cee, store, adaptiveCfg, mcpMetrics, buildRedirectRT(cfg), dowCheck); err != nil {
 						if sentryClient != nil {
 							sentryClient.CaptureError(err)
 						}
@@ -507,6 +544,7 @@ Environment passthrough (subprocess mode only):
 					CEE: cee, Store: store,
 					AdaptiveCfg: adaptiveCfg, Metrics: mcpMetrics,
 					RedirectRT: buildRedirectRT(cfg),
+					DoWCheck:   dowCheck,
 				}
 				if err := mcp.RunHTTPProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, nil, httpOpts); err != nil {
 					if sentryClient != nil {
@@ -621,7 +659,7 @@ Environment passthrough (subprocess mode only):
 					KillSwitch: ks, ChainMatcher: chainMatcher,
 					CEE: cee, Store: store,
 					AdaptiveCfg: adaptiveCfg, Metrics: mcpMetrics,
-					RedirectRT: buildRedirectRT(cfg),
+					RedirectRT: buildRedirectRT(cfg), DoWCheck: dowCheck,
 				}
 				if err := mcp.RunProxyWithSandbox(ctx, sandboxCmd, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), proxyOpts, mcpStrict); err != nil {
 					return handleProxyError(err, cmd.ErrOrStderr(), sentryClient)
@@ -720,8 +758,8 @@ Environment passthrough (subprocess mode only):
 				KillSwitch: ks, ChainMatcher: chainMatcher,
 				CEE: cee, Store: store,
 				AdaptiveCfg: adaptiveCfg, Metrics: mcpMetrics,
-				RedirectRT: buildRedirectRT(cfg),
-				Lineage:    lin, OnChildReady: onChildReady,
+				RedirectRT: buildRedirectRT(cfg), DoWCheck: dowCheck,
+				Lineage: lin, OnChildReady: onChildReady,
 			}
 			if err := mcp.RunProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), logW, serverCmd, proxyOpts, extraEnv...); err != nil {
 				return handleProxyError(err, logW, sentryClient)

@@ -2598,6 +2598,27 @@ func TestExtractToolCallName_EdgeCases(t *testing.T) {
 	}
 }
 
+func TestExtractToolCallArgs(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+		want string
+	}{
+		{"invalid json", "not json", ""},
+		{"not tools/call", `{"jsonrpc":"2.0","method":"initialize","id":1}`, ""},
+		{"valid with args", `{"jsonrpc":"2.0","method":"tools/call","id":1,"params":{"name":"read","arguments":{"path":"/tmp"}}}`, `{"path":"/tmp"}`},
+		{"valid no args", `{"jsonrpc":"2.0","method":"tools/call","id":1,"params":{"name":"list"}}`, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractToolCallArgs([]byte(tt.line))
+			if got != tt.want {
+				t.Errorf("extractToolCallArgs() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestExtractAllStringsFromJSON_DepthLimit(t *testing.T) {
 	// Build a JSON object nested >64 levels deep.
 	var b strings.Builder

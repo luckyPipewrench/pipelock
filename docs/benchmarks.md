@@ -115,7 +115,7 @@ True concurrent throughput across all available goroutines.
 - Blocked URLs short-circuit early: blocklist check is ~2μs.
 - DLP regex matching (46 patterns) with pre-filter: ~8μs. Pre-filter alone: ~497ns with zero allocations on clean text.
 - Response scanning with 23 patterns on small content: ~76μs. Large content (~10KB): ~8.4ms. State/control patterns add ~133μs on clean text. Injection detected via early exit: ~42μs.
-- MCP scanning (JSON parse + text extraction + pattern match): ~78μs clean, ~36μs injection.
+- MCP scanning (JSON parse + text extraction + pattern match): ~76μs clean, ~33μs injection.
 - Cross-request entropy tracking: ~110μs per record. Fragment buffer append: ~83ns (single alloc).
 - **Parallel throughput scales linearly with cores** (benchmarks run with rate limiting and data budget disabled to isolate scanning overhead).
 - The scanner pipeline adds **~0.032ms overhead for typical URL requests**. Network latency dominates.

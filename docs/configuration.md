@@ -1572,7 +1572,7 @@ canary_tokens:
   enabled: true
   tokens:
     - name: "aws_canary"
-      value: "AKIAIOSFODNN7CANARY1"
+      value: "canary-aws-trap-value-0x42a7"
       env_var: "AWS_ACCESS_KEY_ID"  # optional: inject as env var
     - name: "db_canary"
       value: "postgres://canary:trap@honeypot.internal/fake"
@@ -1587,7 +1587,7 @@ canary_tokens:
 | `tokens[].value` | (required) | The exact string to detect in outbound traffic |
 | `tokens[].env_var` | (optional) | Environment variable to inject the canary into |
 
-Canary checks run before DLP (exact string match, O(1) per token). Detection emits a high-severity event with full request context. Use `pipelock canary generate` to create sample configurations.
+Canary checks run after DLP as a safety net (exact string match, O(1) per token). If a DLP pattern already matched, the canary check is skipped. Detection emits a high-severity event with full request context. Use `pipelock canary generate` to create sample configurations.
 
 ## Flight Recorder (v2.1)
 

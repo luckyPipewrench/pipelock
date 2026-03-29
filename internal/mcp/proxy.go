@@ -28,6 +28,12 @@ import (
 	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
 
+// ErrSubprocessExit indicates the wrapped MCP server process exited with a
+// non-zero status. This is an expected operational event (the MCP server
+// crashed or was misconfigured), not a pipelock internal error. Callers
+// should log it but not report it to error tracking services.
+var ErrSubprocessExit = errors.New("subprocess exited")
+
 // syncWriter wraps an io.Writer with a mutex to make concurrent writes safe.
 // Used in RunProxy where multiple goroutines write to clientOut and logW.
 type syncWriter struct {
@@ -849,6 +855,14 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 
 	if scanErr != nil {
 		return fmt.Errorf("scanning: %w", scanErr)
+	}
+
+	// Subprocess exit codes are expected operational events (MCP server crash,
+	// bad config, missing binary), not pipelock bugs. Wrap in a sentinel so
+	// callers can distinguish and avoid reporting to error tracking.
+	var exitErr *exec.ExitError
+	if errors.As(waitErr, &exitErr) {
+		return fmt.Errorf("%w: %w", ErrSubprocessExit, waitErr)
 	}
 
 	return waitErr

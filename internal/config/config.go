@@ -90,6 +90,13 @@ const (
 	HeaderModeAll       = "all"       // scan all headers except ignore list
 )
 
+// MCP tool provenance verification mode constants.
+const (
+	ProvenanceModePipelock = "pipelock" // pipelock-native Ed25519 verification
+	ProvenanceModeSigstore = "sigstore" // Sigstore OIDC verification
+	ProvenanceModeAny      = "any"      // accept either
+)
+
 // URL scheme constants for validation.
 const (
 	schemeHTTP  = "http"
@@ -110,6 +117,9 @@ const (
 
 	// HashDefaults is returned by Config.Hash() when no config file was loaded.
 	HashDefaults = "defaults"
+
+	// DefaultSyslogTag is the default syslog tag for emitted events.
+	DefaultSyslogTag = "pipelock"
 
 	// DefaultCertTTL is the default TLS interception leaf certificate TTL.
 	DefaultCertTTL = "24h"
@@ -1336,7 +1346,7 @@ func (c *Config) ApplyDefaults() {
 		c.Emit.Syslog.Facility = "local0"
 	}
 	if c.Emit.Syslog.Tag == "" {
-		c.Emit.Syslog.Tag = "pipelock"
+		c.Emit.Syslog.Tag = DefaultSyslogTag
 	}
 
 	// Sentry defaults (nil sample_rate = 1.0, handled by EffectiveSampleRate())
@@ -1633,6 +1643,10 @@ func (c *Config) Validate() error {
 		c.validateListenWarnings,
 		c.validateReverseProxy,
 		c.validateSandbox,
+		c.validateFlightRecorder,
+		c.validateMCPBinaryIntegrity,
+		c.validateMCPToolProvenance,
+		c.validateBehavioralBaseline,
 	}
 	for _, v := range validators {
 		if err := v(); err != nil {
@@ -2653,6 +2667,91 @@ func (c *Config) validateSandbox() error {
 				return fmt.Errorf("sandbox filesystem allow_write contains empty path")
 			}
 		}
+	}
+	return nil
+}
+
+func (c *Config) validateFlightRecorder() error {
+	if !c.FlightRecorder.Enabled {
+		return nil
+	}
+	if c.FlightRecorder.Dir == "" {
+		return fmt.Errorf("flight_recorder.dir is required when enabled")
+	}
+	if c.FlightRecorder.CheckpointInterval < 0 {
+		return fmt.Errorf("flight_recorder.checkpoint_interval must be non-negative")
+	}
+	if c.FlightRecorder.RetentionDays < 0 {
+		return fmt.Errorf("flight_recorder.retention_days must be non-negative")
+	}
+	if c.FlightRecorder.MaxEntriesPerFile < 0 {
+		return fmt.Errorf("flight_recorder.max_entries_per_file must be non-negative")
+	}
+	if c.FlightRecorder.RawEscrow && c.FlightRecorder.EscrowPublicKey == "" {
+		return fmt.Errorf("flight_recorder.escrow_public_key is required when raw_escrow is enabled")
+	}
+	return nil
+}
+
+func (c *Config) validateMCPBinaryIntegrity() error {
+	if !c.MCPBinaryIntegrity.Enabled {
+		return nil
+	}
+	if c.MCPBinaryIntegrity.ManifestPath == "" {
+		return fmt.Errorf("mcp_binary_integrity.manifest_path is required when enabled")
+	}
+	switch c.MCPBinaryIntegrity.Action {
+	case ActionWarn, ActionBlock:
+		// valid
+	default:
+		return fmt.Errorf("invalid mcp_binary_integrity.action %q: must be warn or block", c.MCPBinaryIntegrity.Action)
+	}
+	return nil
+}
+
+func (c *Config) validateMCPToolProvenance() error {
+	if !c.MCPToolProvenance.Enabled {
+		return nil
+	}
+	switch c.MCPToolProvenance.Action {
+	case ActionWarn, ActionBlock:
+		// valid
+	default:
+		return fmt.Errorf("invalid mcp_tool_provenance.action %q: must be warn or block", c.MCPToolProvenance.Action)
+	}
+	switch c.MCPToolProvenance.Mode {
+	case ProvenanceModePipelock, ProvenanceModeSigstore, ProvenanceModeAny:
+		// valid
+	default:
+		return fmt.Errorf("invalid mcp_tool_provenance.mode %q: must be pipelock, sigstore, or any", c.MCPToolProvenance.Mode)
+	}
+	return nil
+}
+
+func (c *Config) validateBehavioralBaseline() error {
+	if !c.BehavioralBaseline.Enabled {
+		return nil
+	}
+	if c.BehavioralBaseline.ProfileDir == "" {
+		return fmt.Errorf("behavioral_baseline.profile_dir is required when enabled")
+	}
+	switch c.BehavioralBaseline.DeviationAction {
+	case ActionWarn, ActionAsk, ActionBlock:
+		// valid
+	default:
+		return fmt.Errorf("invalid behavioral_baseline.deviation_action %q: must be warn, ask, or block", c.BehavioralBaseline.DeviationAction)
+	}
+	if c.BehavioralBaseline.LearningWindow < 0 {
+		return fmt.Errorf("behavioral_baseline.learning_window must be non-negative")
+	}
+	if c.BehavioralBaseline.SensitivitySigma < 0 {
+		return fmt.Errorf("behavioral_baseline.sensitivity_sigma must be non-negative")
+	}
+	switch c.BehavioralBaseline.SeasonalityMode {
+	case "", "none", "labeled", "time":
+		// valid (empty defaults to "none")
+	default:
+		return fmt.Errorf("invalid behavioral_baseline.seasonality_mode %q: must be none, labeled, or time", c.BehavioralBaseline.SeasonalityMode)
 	}
 	return nil
 }

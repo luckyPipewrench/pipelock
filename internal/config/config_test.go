@@ -4880,8 +4880,8 @@ func TestDefaults_EmitFields(t *testing.T) {
 	if cfg.Emit.Syslog.Facility != "local0" {
 		t.Errorf("expected default syslog facility local0, got %s", cfg.Emit.Syslog.Facility)
 	}
-	if cfg.Emit.Syslog.Tag != "pipelock" {
-		t.Errorf("expected default syslog tag pipelock, got %s", cfg.Emit.Syslog.Tag)
+	if cfg.Emit.Syslog.Tag != DefaultSyslogTag {
+		t.Errorf("expected default syslog tag %s, got %s", DefaultSyslogTag, cfg.Emit.Syslog.Tag)
 	}
 }
 

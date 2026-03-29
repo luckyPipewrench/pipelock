@@ -122,8 +122,12 @@ func (e *logEntry) durMS(value time.Duration) *logEntry {
 }
 
 func (e *logEntry) strs(key string, values []string) *logEntry {
-	e.event = e.event.Strs(key, values)
-	e.fields[key] = values
+	sanitized := make([]string, len(values))
+	for i, v := range values {
+		sanitized[i] = sanitizeString(v)
+	}
+	e.event = e.event.Strs(key, sanitized)
+	e.fields[key] = sanitized
 	return e
 }
 
@@ -131,7 +135,7 @@ func (e *logEntry) errField(err error) *logEntry {
 	e.event = e.event.Err(err)
 	errStr := ""
 	if err != nil {
-		errStr = err.Error()
+		errStr = sanitizeString(err.Error())
 	}
 	e.fields["error"] = errStr
 	return e
@@ -861,6 +865,10 @@ func (l *Logger) LogSessionAdmin(action, clientIP, sessionKey, result string, st
 		optStr("session_key", sessionKey).
 		optStr("result", result)
 	e.msg("session admin API")
+
+	if l.emitter != nil {
+		l.emitter.Emit(context.Background(), string(EventSessionAdmin), e.fields)
+	}
 }
 
 // With returns a sub-logger that includes the given key-value pair in every

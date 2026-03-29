@@ -69,6 +69,9 @@ const methodToolsCall = "tools/call"
 // errPolicyBlocked is the error message returned when a tool call is denied by policy.
 const errPolicyBlocked = "pipelock: request blocked by tool call policy"
 
+// patternUnknown is the fallback DLP pattern name when Matches is empty but Clean is false.
+const patternUnknown = "unknown"
+
 // ceeStdioKey is the fixed CEE session key for stdio MCP proxies. A single
 // subprocess means one session per process, so a static key is correct.
 const ceeStdioKey = "_default|stdio"
@@ -819,7 +822,7 @@ func ForwardScannedInput(
 
 		method := verdict.Method
 		if method == "" {
-			method = "unknown"
+			method = patternUnknown
 		}
 
 		// Determine effective action: strictest of content scan, policy, and binding.
@@ -925,9 +928,11 @@ func ForwardScannedInput(
 			// reflects the actual result delivered to the client.
 			finalResult := "blocked"
 			if result.Success {
-				// Scan redirect handler output for prompt injection before
-				// sending to client. Untrusted handler output is attack surface.
+				// Scan redirect handler output for prompt injection AND DLP before
+				// sending to client. Handler output is untrusted.
 				scanVerdict := ScanResponse(result.Response, sc)
+				// context.Background: no request context in stdio loop; param unused in ScanTextForDLP.
+				dlpResult := sc.ScanTextForDLP(context.Background(), string(result.Response))
 				// Capture: record redirect output scan verdict.
 				obs.ObserveResponseVerdict(context.Background(), &capture.ResponseVerdictRecord{
 					Subsurface:      "response_redirect_output",
@@ -946,6 +951,19 @@ func ForwardScannedInput(
 						LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked (redirect output injection)", lineNum),
 						ErrorCode:      -32001,
 						ErrorMessage:   "pipelock: redirect handler output blocked by response scanning",
+					}
+				} else if !dlpResult.Clean {
+					pattern := patternUnknown
+					if len(dlpResult.Matches) > 0 {
+						pattern = dlpResult.Matches[0].PatternName
+					}
+					_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked redirect response (DLP match in handler output: %s)\n", lineNum, pattern)
+					blockedCh <- BlockedRequest{
+						ID:             verdict.ID,
+						IsNotification: isNotification,
+						LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked (redirect output DLP)", lineNum),
+						ErrorCode:      -32001,
+						ErrorMessage:   "pipelock: redirect handler output blocked by DLP scanning",
 					}
 				} else {
 					finalResult = "redirected"

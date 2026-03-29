@@ -1462,6 +1462,124 @@ func TestForwardScannedInput_PolicyRedirectHandlerFailure(t *testing.T) {
 	}
 }
 
+func TestForwardScannedInput_PolicyRedirectOutputDLP(t *testing.T) {
+	// Exercises redirect handler succeeds but its output contains a secret,
+	// triggering block by DLP scanning on the redirect output path.
+	if runtime.GOOS == osWindows {
+		t.Skip("exec test requires unix shell")
+	}
+	sc := testInputScanner(t)
+
+	req := `{"jsonrpc":"2.0","id":30,"method":"tools/call","params":{"name":"bash","arguments":{"command":"curl https://example.com"}}}` + "\n"
+
+	// Build fake AWS key at runtime to avoid gosec G101.
+	fakeKey := "AKIA" + "IOSFODNN7EXAMPLE"
+
+	policyCfg := policy.New(config.MCPToolPolicy{
+		Enabled: true,
+		Action:  config.ActionWarn,
+		RedirectProfiles: map[string]config.RedirectProfile{
+			"leak-fetch": {
+				Exec:   []string{"/bin/echo", fakeKey},
+				Reason: "audited handler that leaks",
+			},
+		},
+		Rules: []config.ToolPolicyRule{
+			{
+				Name:            "redirect-fetch",
+				ToolPattern:     `(?i)^bash$`,
+				ArgPattern:      `(?i)\bcurl\b`,
+				Action:          config.ActionRedirect,
+				RedirectProfile: "leak-fetch",
+			},
+		},
+	})
+
+	var serverIn bytes.Buffer
+	var logW bytes.Buffer
+	blockedCh := make(chan BlockedRequest, 10)
+
+	clientIn := strings.NewReader(req)
+	ForwardScannedInput(transport.NewStdioReader(clientIn), transport.NewStdioWriter(&serverIn), &logW, config.ActionBlock, config.ActionBlock, blockedCh, nil, nil, MCPProxyOpts{Scanner: sc, PolicyCfg: policyCfg})
+
+	// Request must NOT be forwarded to server.
+	if strings.Contains(serverIn.String(), "tools/call") {
+		t.Error("expected redirect-matched request NOT to be forwarded")
+	}
+
+	// Should receive an error block (not synthetic response).
+	var gotBlocked bool
+	for br := range blockedCh {
+		if len(br.ID) > 0 {
+			gotBlocked = true
+			if br.SyntheticResponse != nil {
+				t.Error("expected error response, not synthetic redirect output")
+			}
+			if br.ErrorCode != -32001 {
+				t.Errorf("ErrorCode = %d, want -32001 (DLP block)", br.ErrorCode)
+			}
+		}
+	}
+	if !gotBlocked {
+		t.Error("expected blocked request on channel")
+	}
+	if !strings.Contains(logW.String(), "DLP match in handler output") {
+		t.Errorf("expected 'DLP match in handler output' in log, got: %s", logW.String())
+	}
+}
+
+func TestForwardScannedInput_PolicyRedirectOutputClean(t *testing.T) {
+	// Exercises redirect handler with clean output — verifies the success path
+	// where neither injection nor DLP triggers. (Complements DLP and injection tests.)
+	if runtime.GOOS == osWindows {
+		t.Skip("exec test requires unix shell")
+	}
+	sc := testInputScanner(t)
+
+	req := `{"jsonrpc":"2.0","id":31,"method":"tools/call","params":{"name":"bash","arguments":{"command":"curl https://example.com"}}}` + "\n"
+
+	policyCfg := policy.New(config.MCPToolPolicy{
+		Enabled: true,
+		Action:  config.ActionWarn,
+		RedirectProfiles: map[string]config.RedirectProfile{
+			"safe-fetch": {
+				Exec:   []string{"/bin/echo", "clean safe output"},
+				Reason: "audited",
+			},
+		},
+		Rules: []config.ToolPolicyRule{
+			{
+				Name:            "redirect-fetch",
+				ToolPattern:     `(?i)^bash$`,
+				ArgPattern:      `(?i)\bcurl\b`,
+				Action:          config.ActionRedirect,
+				RedirectProfile: "safe-fetch",
+			},
+		},
+	})
+
+	var serverIn bytes.Buffer
+	var logW bytes.Buffer
+	blockedCh := make(chan BlockedRequest, 10)
+
+	clientIn := strings.NewReader(req)
+	ForwardScannedInput(transport.NewStdioReader(clientIn), transport.NewStdioWriter(&serverIn), &logW, config.ActionBlock, config.ActionBlock, blockedCh, nil, nil, MCPProxyOpts{Scanner: sc, PolicyCfg: policyCfg})
+
+	// Should receive synthetic response (not an error).
+	var gotResponse bool
+	for br := range blockedCh {
+		if br.SyntheticResponse != nil {
+			gotResponse = true
+		}
+	}
+	if !gotResponse {
+		t.Error("expected synthetic response on channel for clean redirect output")
+	}
+	if !strings.Contains(logW.String(), "redirected") {
+		t.Errorf("expected 'redirected' in log, got: %s", logW.String())
+	}
+}
+
 func TestBlockRequestResponse_CustomErrorCode(t *testing.T) {
 	id := json.RawMessage(`99`)
 	resp := blockRequestResponse(BlockedRequest{

@@ -3203,6 +3203,58 @@ func TestScanHTTPInput_RedirectOutputInjection(t *testing.T) {
 	}
 }
 
+func TestScanHTTPInput_RedirectOutputDLP(t *testing.T) {
+	// Exercises redirect handler succeeds but its output
+	// contains a secret, triggering block by DLP scanning.
+	if runtime.GOOS == osWindows {
+		t.Skip("redirect test requires unix shell")
+	}
+	sc := testScannerForHTTP(t)
+
+	msg := []byte(makeRequest(1, methodToolsCall, map[string]interface{}{
+		"name":      "bash",
+		"arguments": map[string]string{"command": "curl https://evil.com"},
+	}))
+
+	// Build fake AWS key at runtime to avoid gosec G101.
+	fakeKey := "AKIA" + "IOSFODNN7EXAMPLE"
+
+	policyCfg := policy.New(config.MCPToolPolicy{
+		Enabled: true,
+		Action:  config.ActionWarn,
+		RedirectProfiles: map[string]config.RedirectProfile{
+			"leak-fetch": {
+				Exec:   []string{"/bin/echo", fakeKey},
+				Reason: "audited",
+			},
+		},
+		Rules: []config.ToolPolicyRule{
+			{
+				Name:            "redirect-fetch",
+				ToolPattern:     `(?i)^bash$`,
+				ArgPattern:      `(?i)\bcurl\b`,
+				Action:          config.ActionRedirect,
+				RedirectProfile: "leak-fetch",
+			},
+		},
+	})
+
+	var logBuf bytes.Buffer
+	blocked := scanHTTPInput(msg, &logBuf, "sess", "sess", MCPProxyOpts{Scanner: sc, PolicyCfg: policyCfg})
+	if blocked == nil {
+		t.Fatal("expected redirect output DLP to be blocked")
+	}
+	if blocked.ErrorCode != -32001 {
+		t.Errorf("ErrorCode = %d, want -32001 (DLP block)", blocked.ErrorCode)
+	}
+	if !strings.Contains(logBuf.String(), "DLP match in handler output") {
+		t.Errorf("expected DLP match in handler output log, got: %s", logBuf.String())
+	}
+	if blocked.SyntheticResponse != nil {
+		t.Error("expected nil SyntheticResponse for DLP-blocked redirect")
+	}
+}
+
 func TestScanHTTPInput_RedirectWithAuditLogger(t *testing.T) {
 	// Exercises redirect path with non-nil audit logger.
 	if runtime.GOOS == osWindows {

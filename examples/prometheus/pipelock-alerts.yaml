@@ -141,3 +141,127 @@ groups:
           description: >-
             Session tracking is evicting entries at a sustained rate. Consider
             increasing session capacity or TTL if this is expected traffic.
+
+      # --- DLP (Request Body / Header) ---
+
+      - alert: PipelockBodyDLPHit
+        expr: increase(pipelock_body_dlp_hits_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Request body DLP hit on {{ $labels.instance }}"
+          description: >-
+            Secret detected in an outbound request body (action={{ $labels.action }}).
+            This is a credential exfiltration attempt via POST/PUT payload.
+
+      - alert: PipelockHeaderDLPHit
+        expr: increase(pipelock_header_dlp_hits_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Request header DLP hit on {{ $labels.instance }}"
+          description: >-
+            Secret detected in an outbound HTTP header (action={{ $labels.action }}).
+            Credentials may be leaking via non-Authorization headers.
+
+      # --- TLS Interception ---
+
+      - alert: PipelockTLSHandshakeErrors
+        expr: rate(pipelock_tls_intercept_total{outcome="handshake_error"}[5m]) > 1
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "TLS handshake errors on {{ $labels.instance }}"
+          description: >-
+            TLS interception handshake failures are occurring at a sustained rate.
+            Check CA certificate trust and upstream TLS configuration.
+
+      - alert: PipelockTLSRequestBlocked
+        expr: increase(pipelock_tls_request_blocked_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Request blocked inside TLS tunnel on {{ $labels.instance }}"
+          description: >-
+            DLP or authority check blocked a request inside an intercepted HTTPS
+            tunnel (reason={{ $labels.reason }}). The agent is attempting to
+            exfiltrate data through encrypted channels.
+
+      - alert: PipelockTLSResponseBlocked
+        expr: increase(pipelock_tls_response_blocked_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Response blocked inside TLS tunnel on {{ $labels.instance }}"
+          description: >-
+            Injection or policy violation detected in a response inside an
+            intercepted HTTPS tunnel (reason={{ $labels.reason }}).
+
+      # --- Cross-Request Detection ---
+
+      - alert: PipelockEntropyBudgetExceeded
+        expr: increase(pipelock_cross_request_entropy_exceeded_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Entropy budget exceeded on {{ $labels.instance }}"
+          description: >-
+            An agent is transmitting high-entropy data across multiple requests,
+            exceeding the configured bits-per-window budget. This is a strong
+            indicator of chunked secret exfiltration.
+
+      - alert: PipelockFragmentDLPMatch
+        expr: increase(pipelock_cross_request_dlp_match_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Fragment reassembly DLP match on {{ $labels.instance }}"
+          description: >-
+            A secret was detected after reassembling fragments from multiple
+            requests. The agent is splitting credentials across requests to
+            evade single-request DLP scanning.
+
+      # --- Adaptive Enforcement ---
+
+      - alert: PipelockHighEscalatedSessions
+        expr: sum(pipelock_adaptive_sessions_current{level=~"block|critical"}) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Sessions at block/critical level on {{ $labels.instance }}"
+          description: >-
+            {{ $value }} session(s) have been escalated to block or critical
+            enforcement level due to sustained anomalous behavior.
+
+      # --- Scan API ---
+
+      - alert: PipelockScanAPIErrors
+        expr: rate(pipelock_scan_api_errors_total[5m]) > 1
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Scan API errors on {{ $labels.instance }}"
+          description: >-
+            The Scan API is returning errors at a sustained rate
+            (kind={{ $labels.kind }}, code={{ $labels.error_code }}).
+            External integrations may be sending malformed requests.
+
+      - alert: PipelockScanAPIHighLatency
+        expr: histogram_quantile(0.95, rate(pipelock_scan_api_duration_seconds_bucket[5m])) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Scan API p95 latency above 1s on {{ $labels.instance }}"
+          description: >-
+            Scan API response times are elevated. Check for large payloads
+            or resource contention.

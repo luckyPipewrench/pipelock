@@ -2298,7 +2298,1180 @@
           }
         }
       ]
+    },
+    {
+      "type": "row",
+      "title": "Request Body / Header DLP",
+      "collapsed": true,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 52
+      },
+      "panels": [
+        {
+          "type": "timeseries",
+          "title": "Body DLP Hits",
+          "description": "Request body DLP matches by action taken",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "targets": [
+            {
+              "expr": "sum by (action) (rate(pipelock_body_dlp_hits_total{instance=~\"$instance\"}[$interval]))",
+              "refId": "A",
+              "legendFormat": "{{action}}",
+              "format": "time_series"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "smooth",
+                "lineWidth": 2,
+                "fillOpacity": 15,
+                "gradientMode": "opacity",
+                "spanNulls": true,
+                "showPoints": "never",
+                "axisBorderShow": false,
+                "stacking": {
+                  "mode": "none"
+                }
+              },
+              "unit": "cps",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            },
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "calcs": [
+                "mean",
+                "max"
+              ]
+            }
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 12,
+            "x": 0,
+            "y": 53
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Header DLP Hits",
+          "description": "Request header DLP matches by action taken",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "targets": [
+            {
+              "expr": "sum by (action) (rate(pipelock_header_dlp_hits_total{instance=~\"$instance\"}[$interval]))",
+              "refId": "A",
+              "legendFormat": "{{action}}",
+              "format": "time_series"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "smooth",
+                "lineWidth": 2,
+                "fillOpacity": 15,
+                "gradientMode": "opacity",
+                "spanNulls": true,
+                "showPoints": "never",
+                "axisBorderShow": false,
+                "stacking": {
+                  "mode": "none"
+                }
+              },
+              "unit": "cps",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            },
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "calcs": [
+                "mean",
+                "max"
+              ]
+            }
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 12,
+            "x": 12,
+            "y": 53
+          }
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Cross-Request Detection",
+      "collapsed": true,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 53
+      },
+      "panels": [
+        {
+          "type": "stat",
+          "title": "Entropy Budget Exceeded",
+          "description": "Total cross-request entropy budget violations",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "targets": [
+            {
+              "expr": "sum(pipelock_cross_request_entropy_exceeded_total{instance=~\"$instance\"}) or vector(0)",
+              "refId": "A",
+              "instant": true,
+              "legendFormat": "__auto"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 1
+                  }
+                ]
+              },
+              "color": {
+                "mode": "thresholds"
+              },
+              "unit": "",
+              "mappings": [],
+              "decimals": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "background_solid",
+            "graphMode": "none",
+            "justifyMode": "auto",
+            "textMode": "auto",
+            "showPercentChange": false,
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            }
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 0,
+            "y": 54
+          }
+        },
+        {
+          "type": "stat",
+          "title": "Fragment DLP Matches",
+          "description": "Total cross-request fragment DLP matches",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "targets": [
+            {
+              "expr": "sum(pipelock_cross_request_dlp_match_total{instance=~\"$instance\"}) or vector(0)",
+              "refId": "A",
+              "instant": true,
+              "legendFormat": "__auto"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 1
+                  }
+                ]
+              },
+              "color": {
+                "mode": "thresholds"
+              },
+              "unit": "",
+              "mappings": [],
+              "decimals": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "background_solid",
+            "graphMode": "none",
+            "justifyMode": "auto",
+            "textMode": "auto",
+            "showPercentChange": false,
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            }
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 6,
+            "y": 54
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Fragment Buffer Memory",
+          "description": "Cross-request fragment buffer size in bytes over time",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "targets": [
+            {
+              "expr": "pipelock_cross_request_fragment_buffer_bytes{instance=~\"$instance\"}",
+              "refId": "A",
+              "legendFormat": "{{instance}}",
+              "format": "time_series"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "smooth",
+                "lineWidth": 2,
+                "fillOpacity": 15,
+                "gradientMode": "opacity",
+                "spanNulls": true,
+                "showPoints": "never",
+                "axisBorderShow": false,
+                "stacking": {
+                  "mode": "none"
+                }
+              },
+              "unit": "bytes",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            },
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "calcs": [
+                "mean",
+                "max"
+              ]
+            }
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 12,
+            "x": 12,
+            "y": 54
+          }
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Adaptive Enforcement",
+      "collapsed": true,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 54
+      },
+      "panels": [
+        {
+          "type": "bargauge",
+          "title": "Escalated Sessions by Level",
+          "description": "Current adaptive enforcement session counts grouped by escalation level",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "targets": [
+            {
+              "expr": "sum by (level) (pipelock_adaptive_sessions_current{instance=~\"$instance\"}) > 0",
+              "refId": "A",
+              "legendFormat": "{{level}}",
+              "instant": true
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "yellow",
+                    "value": 5
+                  },
+                  {
+                    "color": "red",
+                    "value": 20
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "values": false,
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": ""
+            },
+            "orientation": "horizontal",
+            "displayMode": "gradient",
+            "showUnfilled": true
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 12,
+            "x": 0,
+            "y": 55
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Auto De-escalations",
+          "description": "Automatic session de-escalation rate over time by level transition",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "targets": [
+            {
+              "expr": "sum by (from, to) (rate(pipelock_session_auto_deescalation_total{instance=~\"$instance\"}[$interval])) > 0",
+              "refId": "A",
+              "legendFormat": "{{from}} \u2192 {{to}}",
+              "format": "time_series"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "smooth",
+                "lineWidth": 2,
+                "fillOpacity": 15,
+                "gradientMode": "opacity",
+                "spanNulls": true,
+                "showPoints": "never",
+                "axisBorderShow": false,
+                "stacking": {
+                  "mode": "none"
+                }
+              },
+              "unit": "short",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            },
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "calcs": [
+                "mean",
+                "max"
+              ]
+            }
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 12,
+            "x": 12,
+            "y": 55
+          }
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Scan API",
+      "collapsed": true,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 55
+      },
+      "panels": [
+        {
+          "type": "timeseries",
+          "title": "Scan API Request Rate",
+          "description": "Scan API requests per second by kind",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "targets": [
+            {
+              "expr": "sum by (kind) (rate(pipelock_scan_api_requests_total{instance=~\"$instance\"}[$interval]))",
+              "refId": "A",
+              "legendFormat": "{{kind}}",
+              "format": "time_series"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "smooth",
+                "lineWidth": 2,
+                "fillOpacity": 15,
+                "gradientMode": "opacity",
+                "spanNulls": true,
+                "showPoints": "never",
+                "axisBorderShow": false,
+                "stacking": {
+                  "mode": "none"
+                }
+              },
+              "unit": "reqps",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            },
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "calcs": [
+                "mean",
+                "max"
+              ]
+            }
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 8,
+            "x": 0,
+            "y": 56
+          }
+        },
+        {
+          "type": "heatmap",
+          "title": "Scan API Latency",
+          "description": "Scan API request duration distribution by kind",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "targets": [
+            {
+              "expr": "sum by (le, kind) (rate(pipelock_scan_api_duration_seconds_bucket{instance=~\"$instance\"}[$interval]))",
+              "refId": "A",
+              "legendFormat": "{{kind}} {{le}}",
+              "format": "heatmap"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                }
+              },
+              "color": {
+                "mode": "scheme",
+                "exponent": 0.5
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "calculate": false,
+            "yAxis": {
+              "unit": "s",
+              "axisLabel": "Duration"
+            },
+            "color": {
+              "mode": "scheme",
+              "scheme": "Oranges",
+              "steps": 64,
+              "exponent": 0.5
+            },
+            "cellGap": 1,
+            "tooltip": {
+              "mode": "single",
+              "showColorScale": true
+            },
+            "legend": {
+              "show": false
+            }
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 8,
+            "x": 8,
+            "y": 56
+          }
+        },
+        {
+          "type": "stat",
+          "title": "Scan API In-Flight",
+          "description": "Current number of in-flight scan API requests",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "targets": [
+            {
+              "expr": "sum(pipelock_scan_api_inflight_requests{instance=~\"$instance\"}) or vector(0)",
+              "refId": "A",
+              "instant": true,
+              "legendFormat": "__auto"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "yellow",
+                    "value": 10
+                  },
+                  {
+                    "color": "red",
+                    "value": 50
+                  }
+                ]
+              },
+              "color": {
+                "mode": "thresholds"
+              },
+              "unit": "",
+              "mappings": [],
+              "decimals": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "background_solid",
+            "graphMode": "none",
+            "justifyMode": "auto",
+            "textMode": "auto",
+            "showPercentChange": false,
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            }
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 8,
+            "x": 16,
+            "y": 56
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Scan API Errors",
+          "description": "Scan API error rate by error code",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "targets": [
+            {
+              "expr": "sum by (error_code) (rate(pipelock_scan_api_errors_total{instance=~\"$instance\"}[$interval]))",
+              "refId": "A",
+              "legendFormat": "{{error_code}}",
+              "format": "time_series"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "smooth",
+                "lineWidth": 2,
+                "fillOpacity": 15,
+                "gradientMode": "opacity",
+                "spanNulls": true,
+                "showPoints": "never",
+                "axisBorderShow": false,
+                "stacking": {
+                  "mode": "none"
+                }
+              },
+              "unit": "cps",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            },
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "calcs": [
+                "mean",
+                "max"
+              ]
+            }
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 12,
+            "x": 0,
+            "y": 63
+          }
+        },
+        {
+          "type": "bargauge",
+          "title": "Scan API Findings",
+          "description": "Scan API finding totals grouped by scanner",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "targets": [
+            {
+              "expr": "sum by (scanner) (pipelock_scan_api_findings_total{instance=~\"$instance\"}) > 0",
+              "refId": "A",
+              "legendFormat": "{{scanner}}",
+              "instant": true
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "yellow",
+                    "value": 5
+                  },
+                  {
+                    "color": "red",
+                    "value": 20
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "values": false,
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": ""
+            },
+            "orientation": "horizontal",
+            "displayMode": "gradient",
+            "showUnfilled": true
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 12,
+            "x": 12,
+            "y": 63
+          }
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "TLS Interception",
+      "collapsed": true,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 56
+      },
+      "panels": [
+        {
+          "type": "timeseries",
+          "title": "TLS Intercept Rate",
+          "description": "TLS interception rate by outcome",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "targets": [
+            {
+              "expr": "rate(pipelock_tls_intercept_total{instance=~\"$instance\"}[$interval])",
+              "refId": "A",
+              "legendFormat": "{{outcome}}",
+              "format": "time_series"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "smooth",
+                "lineWidth": 2,
+                "fillOpacity": 15,
+                "gradientMode": "opacity",
+                "spanNulls": true,
+                "showPoints": "never",
+                "axisBorderShow": false,
+                "stacking": {
+                  "mode": "none"
+                }
+              },
+              "unit": "ops",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            },
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "calcs": [
+                "mean",
+                "max"
+              ]
+            }
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 8,
+            "x": 0,
+            "y": 57
+          }
+        },
+        {
+          "type": "heatmap",
+          "title": "TLS Handshake Duration",
+          "description": "TLS handshake duration distribution by side",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "targets": [
+            {
+              "expr": "sum by (le, side) (rate(pipelock_tls_handshake_duration_seconds_bucket{instance=~\"$instance\"}[$interval]))",
+              "refId": "A",
+              "legendFormat": "{{side}}",
+              "format": "heatmap"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                }
+              },
+              "color": {
+                "mode": "scheme",
+                "exponent": 0.5
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "calculate": false,
+            "yAxis": {
+              "unit": "s",
+              "axisLabel": "Duration"
+            },
+            "color": {
+              "mode": "scheme",
+              "scheme": "Oranges",
+              "steps": 64,
+              "exponent": 0.5
+            },
+            "cellGap": 1,
+            "tooltip": {
+              "mode": "single",
+              "showColorScale": true
+            },
+            "legend": {
+              "show": false
+            }
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 8,
+            "x": 8,
+            "y": 57
+          }
+        },
+        {
+          "type": "stat",
+          "title": "TLS Cert Cache",
+          "description": "Current size of the TLS certificate cache",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "targets": [
+            {
+              "expr": "pipelock_tls_cert_cache_size{instance=~\"$instance\"}",
+              "refId": "A",
+              "instant": true,
+              "legendFormat": "__auto"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "yellow",
+                    "value": 100
+                  },
+                  {
+                    "color": "red",
+                    "value": 500
+                  }
+                ]
+              },
+              "color": {
+                "mode": "thresholds"
+              },
+              "unit": "short",
+              "mappings": [],
+              "decimals": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "background_solid",
+            "graphMode": "none",
+            "justifyMode": "auto",
+            "textMode": "auto",
+            "showPercentChange": false,
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            }
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 8,
+            "x": 16,
+            "y": 57
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "TLS Requests Blocked",
+          "description": "TLS intercepted requests blocked by reason",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "targets": [
+            {
+              "expr": "rate(pipelock_tls_request_blocked_total{instance=~\"$instance\"}[$interval])",
+              "refId": "A",
+              "legendFormat": "{{reason}}",
+              "format": "time_series"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "smooth",
+                "lineWidth": 2,
+                "fillOpacity": 15,
+                "gradientMode": "opacity",
+                "spanNulls": true,
+                "showPoints": "never",
+                "axisBorderShow": false,
+                "stacking": {
+                  "mode": "none"
+                }
+              },
+              "unit": "ops",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            },
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "calcs": [
+                "mean",
+                "max"
+              ]
+            }
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 12,
+            "x": 0,
+            "y": 64
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "TLS Responses Blocked",
+          "description": "TLS intercepted responses blocked by reason",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "targets": [
+            {
+              "expr": "rate(pipelock_tls_response_blocked_total{instance=~\"$instance\"}[$interval])",
+              "refId": "A",
+              "legendFormat": "{{reason}}",
+              "format": "time_series"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "smooth",
+                "lineWidth": 2,
+                "fillOpacity": 15,
+                "gradientMode": "opacity",
+                "spanNulls": true,
+                "showPoints": "never",
+                "axisBorderShow": false,
+                "stacking": {
+                  "mode": "none"
+                }
+              },
+              "unit": "ops",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            },
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "calcs": [
+                "mean",
+                "max"
+              ]
+            }
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 12,
+            "x": 12,
+            "y": 64
+          }
+        }
+      ]
     }
   ],
-  "description": "Security monitoring for the Pipelock agent firewall. Tracks all 22 metric families: CONNECT tunnels, HTTP requests, scanner activity, session profiling, kill switch events, chain detection, and WebSocket proxy."
+  "description": "Security monitoring for the Pipelock agent firewall. Tracks all 32 metric families: CONNECT tunnels, HTTP requests, scanner activity, session profiling, kill switch events, chain detection, WebSocket proxy, cross-request detection, adaptive enforcement, scan API, TLS interception, and request body/header DLP."
 }

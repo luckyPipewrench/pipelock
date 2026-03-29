@@ -19,7 +19,7 @@ func TestScanRequestAddressPoisoning(t *testing.T) {
 	eth := true
 	f := false
 	cfg.AddressProtection.Enabled = true
-	cfg.AddressProtection.Action = "block"
+	cfg.AddressProtection.Action = config.ActionBlock
 	cfg.AddressProtection.UnknownAction = testUnknownActionAllow
 	cfg.AddressProtection.AllowedAddresses = []string{
 		"0x742d35cc6634c0532925a3b844bc9e7595f2bd3e",
@@ -59,7 +59,7 @@ func TestScanRequestAddressExactMatch(t *testing.T) {
 	eth := true
 	f := false
 	cfg.AddressProtection.Enabled = true
-	cfg.AddressProtection.Action = "block"
+	cfg.AddressProtection.Action = config.ActionBlock
 	cfg.AddressProtection.UnknownAction = testUnknownActionAllow
 	cfg.AddressProtection.AllowedAddresses = []string{
 		"0x742d35cc6634c0532925a3b844bc9e7595f2bd3e",

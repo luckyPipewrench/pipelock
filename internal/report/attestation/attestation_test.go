@@ -4,6 +4,7 @@
 package attestation
 
 import (
+	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -136,6 +137,19 @@ func TestSVG_AllGrades(t *testing.T) {
 				t.Errorf("score %d: expected color %s in SVG", g.score, g.color)
 			}
 		})
+	}
+}
+
+func TestKeyFingerprint(t *testing.T) {
+	pub, _, _ := ed25519.GenerateKey(nil)
+	fp := KeyFingerprint(pub)
+	if len(fp) != 64 { // SHA256 hex = 64 chars
+		t.Errorf("expected 64-char hex fingerprint, got %d chars", len(fp))
+	}
+	// Deterministic: same key produces same fingerprint.
+	fp2 := KeyFingerprint(pub)
+	if fp != fp2 {
+		t.Error("KeyFingerprint not deterministic")
 	}
 }
 

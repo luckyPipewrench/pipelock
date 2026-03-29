@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os/exec"
 	"runtime"
 	"strings"
 	"sync"
@@ -2327,5 +2328,79 @@ func TestErrSubprocessExit(t *testing.T) {
 	other := errors.New("some other error")
 	if errors.Is(other, ErrSubprocessExit) {
 		t.Error("unrelated error should not match ErrSubprocessExit")
+	}
+}
+
+func TestRunProxy_SubprocessExitWrapsErrSubprocessExit(t *testing.T) {
+	if runtime.GOOS == osWindows {
+		t.Skip("shell subprocess test requires unix")
+	}
+
+	sc := testScannerWithAction(t, "warn")
+	var out bytes.Buffer
+	logBuf := &syncBuffer{}
+
+	// "false" exits with status 1 immediately.
+	err := RunProxy(context.Background(), strings.NewReader(""), &out, logBuf, []string{"false"}, testOpts(sc))
+	if err == nil {
+		t.Fatal("expected error from exiting subprocess")
+	}
+	if !errors.Is(err, ErrSubprocessExit) {
+		t.Errorf("error should wrap ErrSubprocessExit, got: %v", err)
+	}
+}
+
+func TestRunProxy_CleanExitNoErrSubprocessExit(t *testing.T) {
+	if runtime.GOOS == osWindows {
+		t.Skip("shell subprocess test requires unix")
+	}
+
+	sc := testScannerWithAction(t, "warn")
+	var out bytes.Buffer
+	logBuf := &syncBuffer{}
+
+	// "true" exits with status 0 — no error expected.
+	err := RunProxy(context.Background(), strings.NewReader(""), &out, logBuf, []string{"true"}, testOpts(sc))
+	if err != nil {
+		t.Errorf("clean subprocess exit should not return error, got: %v", err)
+	}
+}
+
+func TestRunProxyWithSandbox_SubprocessExitWrapsErrSubprocessExit(t *testing.T) {
+	if runtime.GOOS == osWindows {
+		t.Skip("shell subprocess test requires unix")
+	}
+
+	sc := testScannerWithAction(t, "warn")
+	var out bytes.Buffer
+	logBuf := &syncBuffer{}
+
+	// Use a plain exec.Cmd (not sandboxed) — RunProxyWithSandbox only needs
+	// an unstarted *exec.Cmd with working stdio pipes.
+	cmd := exec.CommandContext(context.Background(), "false") //nolint:gosec // test binary
+
+	err := RunProxyWithSandbox(context.Background(), cmd, strings.NewReader(""), &out, logBuf, testOpts(sc))
+	if err == nil {
+		t.Fatal("expected error from exiting subprocess")
+	}
+	if !errors.Is(err, ErrSubprocessExit) {
+		t.Errorf("error should wrap ErrSubprocessExit, got: %v", err)
+	}
+}
+
+func TestRunProxyWithSandbox_CleanExit(t *testing.T) {
+	if runtime.GOOS == osWindows {
+		t.Skip("shell subprocess test requires unix")
+	}
+
+	sc := testScannerWithAction(t, "warn")
+	var out bytes.Buffer
+	logBuf := &syncBuffer{}
+
+	cmd := exec.CommandContext(context.Background(), "true") //nolint:gosec // test binary
+
+	err := RunProxyWithSandbox(context.Background(), cmd, strings.NewReader(""), &out, logBuf, testOpts(sc))
+	if err != nil {
+		t.Errorf("clean subprocess exit should not return error, got: %v", err)
 	}
 }

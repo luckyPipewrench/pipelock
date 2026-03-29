@@ -1563,6 +1563,113 @@ mcp_tool_policy:
 
 Redirect failure falls through to block (fail-closed). Every redirect emits a structured audit event with the original command, redirect target, policy rule, and reason.
 
+## Canary Tokens (v2.1)
+
+Synthetic secrets injected into the agent's environment. If pipelock detects a canary in any outbound request, it's irrefutable proof of compromise -- not a heuristic, but a known-fake value that should never appear in traffic.
+
+```yaml
+canary_tokens:
+  enabled: true
+  tokens:
+    - name: "aws_canary"
+      value: "AKIAIOSFODNN7CANARY1"
+      env_var: "AWS_ACCESS_KEY_ID"  # optional: inject as env var
+    - name: "db_canary"
+      value: "postgres://canary:trap@honeypot.internal/fake"
+    - name: "api_canary"
+      value: "sk_test_CANARY_4eC39HqLyjWDarjtT1zdp7dc"
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `false` | Enable canary token detection |
+| `tokens[].name` | (required) | Human-readable name for the canary |
+| `tokens[].value` | (required) | The exact string to detect in outbound traffic |
+| `tokens[].env_var` | (optional) | Environment variable to inject the canary into |
+
+Canary checks run before DLP (exact string match, O(1) per token). Detection emits a high-severity event with full request context. Use `pipelock canary generate` to create sample configurations.
+
+## Flight Recorder (v2.1)
+
+Hash-chained, tamper-evident evidence log. Every scanner verdict, tool call, and session event is recorded to JSONL with SHA-256 hash chains and optional Ed25519 signed checkpoints.
+
+```yaml
+flight_recorder:
+  enabled: true
+  dir: /var/lib/pipelock/evidence
+  checkpoint_interval: 1000
+  retention_days: 90
+  redact: true
+  sign_checkpoints: true
+  max_entries_per_file: 10000
+  raw_escrow: false
+  escrow_public_key: ""
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `false` | Enable evidence recording |
+| `dir` | (required if enabled) | Directory for evidence files |
+| `checkpoint_interval` | `1000` | Entries between signed checkpoints |
+| `retention_days` | `0` | Auto-expire files after N days (0 = keep forever) |
+| `redact` | `true` | DLP-redact evidence content before writing |
+| `sign_checkpoints` | `true` | Ed25519 sign checkpoint entries |
+| `max_entries_per_file` | `10000` | Rotate to a new file after this many entries |
+| `raw_escrow` | `false` | Encrypt raw (pre-redaction) detail to sidecar files |
+| `escrow_public_key` | (required if raw_escrow) | X25519 public key (hex) for escrow encryption |
+
+Evidence files are named `evidence-<session>-<seq>.jsonl`. Each entry contains a SHA-256 hash of its predecessor, forming a tamper-evident chain. Breaking the chain is detectable by `pipelock integrity verify`.
+
+## A2A Scanning (v2.1)
+
+Scanning for Google A2A (Agent-to-Agent) protocol traffic. Detects A2A messages in forward proxy and MCP HTTP proxy paths. Applies field-aware content inspection with URL/text/secret classification.
+
+```yaml
+a2a_scanning:
+  enabled: true
+  action: block
+  scan_agent_cards: true
+  detect_card_drift: true
+  session_smuggling_detection: true
+  max_context_messages: 100
+  max_contexts: 1000
+  scan_raw_parts: true
+  max_raw_size: 1048576
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `false` | Enable A2A protocol detection and scanning |
+| `action` | `block` | Action on findings: `block` or `warn` |
+| `scan_agent_cards` | `true` | Scan Agent Card skill descriptions for injection |
+| `detect_card_drift` | `true` | Detect Agent Card modification mid-session (rug-pull) |
+| `session_smuggling_detection` | `true` | Track contextId to detect session smuggling |
+| `max_context_messages` | `100` | Per-context message cap |
+| `max_contexts` | `1000` | Total tracked contexts |
+| `scan_raw_parts` | `true` | Decode and scan text-like `Part.raw` fields |
+| `max_raw_size` | `1048576` | Max encoded size for `Part.raw` decoding (bytes) |
+
+A2A detection works on the forward proxy (CONNECT and plain HTTP) and MCP HTTP proxy paths. Agent Cards are scanned for skill description poisoning. Card drift detection tracks cards by URL + auth fingerprint and alerts on mid-session changes.
+
+## MCP Binary Integrity (v2.1)
+
+Pre-spawn SHA-256 hash verification for MCP server subprocesses. Prevents tampered or substituted binaries from being executed.
+
+```yaml
+mcp_binary_integrity:
+  enabled: true
+  manifest_path: /etc/pipelock/binary-manifest.json
+  action: warn
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `false` | Enable binary hash verification before spawn |
+| `manifest_path` | (required if enabled) | Path to JSON hash manifest |
+| `action` | `warn` | Action on hash mismatch: `block` or `warn` |
+
+The manifest is a JSON file mapping binary paths to expected SHA-256 hashes. Pipelock resolves shebangs and versioned interpreters (e.g., `python3.11`) before hashing.
+
 ## Validation Rules
 
 The following are enforced at startup:

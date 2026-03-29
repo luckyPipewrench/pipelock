@@ -33,11 +33,11 @@ Pattern matching for prompt injection on fetched content. 23 patterns including 
 
 | Benchmark | ns/op | B/op | allocs/op |
 |-----------|------:|-----:|----------:|
-| Clean (~90B) | 72,374 | 2,021 | 29 |
-| WithInjection (~100B) | 39,601 | 1,100 | 12 |
-| LargeClean (~10KB) | 9,467,861 | 43,445 | 23 |
-| StateControlClean | 133,246 | 2,434 | 29 |
-| StateControlMatch | 42,968 | 2,138 | 17 |
+| Clean (~90B) | 75,718 | 2,021 | 29 |
+| WithInjection (~100B) | 41,699 | 1,100 | 12 |
+| LargeClean (~10KB) | 8,394,531 | 43,445 | 23 |
+| StateControlClean | 133,650 | 2,434 | 29 |
+| StateControlMatch | 42,841 | 2,138 | 17 |
 
 ## Text DLP Scanning (`ScanTextForDLP()`)
 

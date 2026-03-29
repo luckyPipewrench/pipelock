@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -162,5 +163,11 @@ func RunProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, clientIn io.
 	if scanErr != nil {
 		return fmt.Errorf("scanning: %w", scanErr)
 	}
+
+	var exitErr *exec.ExitError
+	if errors.As(waitErr, &exitErr) {
+		return fmt.Errorf("%w: %w", ErrSubprocessExit, waitErr)
+	}
+
 	return waitErr
 }

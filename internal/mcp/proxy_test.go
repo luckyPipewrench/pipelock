@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"runtime"
 	"strings"
@@ -2312,5 +2313,19 @@ func TestForwardScanned_KillSwitchDropsNotification(t *testing.T) {
 	// The original content should not have been forwarded.
 	if strings.Contains(out.String(), `"hello"`) {
 		t.Error("kill switch should have blocked forwarding of response content")
+	}
+}
+
+func TestErrSubprocessExit(t *testing.T) {
+	// Verify the sentinel wraps correctly and is detectable via errors.Is.
+	inner := fmt.Errorf("%w: MCP server exited with status 2", ErrSubprocessExit)
+	if !errors.Is(inner, ErrSubprocessExit) {
+		t.Error("errors.Is should find ErrSubprocessExit in wrapped error")
+	}
+
+	// Verify a non-subprocess error does NOT match.
+	other := errors.New("some other error")
+	if errors.Is(other, ErrSubprocessExit) {
+		t.Error("unrelated error should not match ErrSubprocessExit")
 	}
 }

@@ -610,6 +610,10 @@ Environment passthrough (subprocess mode only):
 					RedirectRT: buildRedirectRT(cfg),
 				}
 				if err := mcp.RunProxyWithSandbox(ctx, sandboxCmd, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), proxyOpts, mcpStrict); err != nil {
+					if errors.Is(err, mcp.ErrSubprocessExit) {
+						_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: %v\n", err)
+						return cliutil.ExitCodeError(cliutil.ExitSubprocess, err)
+					}
 					if sentryClient != nil {
 						sentryClient.CaptureError(err)
 					}
@@ -713,6 +717,10 @@ Environment passthrough (subprocess mode only):
 				Lineage:    lin, OnChildReady: onChildReady,
 			}
 			if err := mcp.RunProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), logW, serverCmd, proxyOpts, extraEnv...); err != nil {
+				if errors.Is(err, mcp.ErrSubprocessExit) {
+					_, _ = fmt.Fprintf(logW, "pipelock: %v\n", err)
+					return cliutil.ExitCodeError(cliutil.ExitSubprocess, err)
+				}
 				if sentryClient != nil {
 					sentryClient.CaptureError(err)
 				}

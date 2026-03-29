@@ -89,6 +89,21 @@ func TestExitCodeOf(t *testing.T) {
 			err:  fmt.Errorf("outer: %w", ExitCodeError(2, errors.New("inner"))),
 			want: 2,
 		},
+		{
+			name: "subprocess exit code",
+			err:  ExitCodeError(ExitSubprocess, errors.New("MCP server exited with status 2")),
+			want: ExitSubprocess,
+		},
+		{
+			name: "security exit code",
+			err:  ExitCodeError(ExitSecurity, errors.New("kill switch active")),
+			want: ExitSecurity,
+		},
+		{
+			name: "config exit code",
+			err:  ExitCodeError(ExitConfig, errors.New("invalid YAML")),
+			want: ExitConfig,
+		},
 	}
 
 	for _, tt := range tests {

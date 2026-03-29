@@ -1425,10 +1425,10 @@ func TestWSProxy_CrossMessageDLP_TailEviction(t *testing.T) {
 		t.Fatalf("read prefix: %v", err)
 	}
 
-	// Message 2: 600 bytes of clean data (exceeds 512-byte overlap window).
+	// Message 2: 4200 bytes of clean data (exceeds 4096-byte overlap window).
 	// This should evict the key prefix from the rolling tail.
 	// Use spaces (non-alphanumeric) so tail+padding can't form a valid key pattern.
-	padding := strings.Repeat(" ", 600)
+	padding := strings.Repeat(" ", 4200)
 	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(padding)); err != nil {
 		t.Fatalf("write padding: %v", err)
 	}
@@ -1447,6 +1447,50 @@ func TestWSProxy_CrossMessageDLP_TailEviction(t *testing.T) {
 	}
 	if string(reply) != suffix {
 		t.Errorf("expected %q, got %q", suffix, reply)
+	}
+}
+
+// TestWSProxy_CrossMessageDLP_LongMessageSplit verifies that the 4096-byte
+// overlap catches a split secret that the old 512-byte window would miss.
+// The key prefix is placed 1024 bytes from the end of msg1, which is inside
+// the 4096-byte window but outside the old 512-byte window.
+func TestWSProxy_CrossMessageDLP_LongMessageSplit(t *testing.T) {
+	backendAddr, backendCleanup := wsEchoServer(t)
+	defer backendCleanup()
+
+	proxyAddr, proxyCleanup := setupWSProxy(t, nil)
+	defer proxyCleanup()
+
+	conn := dialWS(t, proxyAddr, backendAddr)
+	defer func() { _ = conn.Close() }()
+
+	// Build Anthropic key halves at runtime for gosec G101.
+	keyPrefix := "sk-ant-"
+	keySuffix := "IOSFODNN7" + testWSExample + "1234567890abcdef"
+
+	// msg1: key prefix placed 1024 bytes from the end. Total ~2048 bytes.
+	// With old 512-byte overlap: only last 512 bytes retained, prefix at
+	// position ~1024 from end is OUTSIDE the window. Secret missed.
+	// With new 4096-byte overlap: last 2048 bytes retained (whole message
+	// fits), prefix is INSIDE the window. Secret caught.
+	const trailingPad = 1024
+	const leadingPad = 1024
+	msg1 := strings.Repeat(".", leadingPad) + keyPrefix + strings.Repeat(".", trailingPad)
+	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(msg1)); err != nil {
+		t.Fatalf("write msg1: %v", err)
+	}
+	if _, _, err := wsutil.ReadServerData(conn); err != nil {
+		t.Fatalf("read msg1: %v (prefix alone should pass)", err)
+	}
+
+	// msg2: key suffix. With 4096 overlap, scanInput includes the prefix
+	// from msg1's tail + this suffix, forming a contiguous match.
+	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(keySuffix)); err != nil {
+		t.Fatalf("write msg2: %v", err)
+	}
+	_, _, err := wsutil.ReadServerData(conn)
+	if err == nil {
+		t.Fatal("expected connection closed on msg2 (cross-message DLP should catch split key with 4096 overlap)")
 	}
 }
 

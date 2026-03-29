@@ -5,6 +5,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -53,6 +54,7 @@ func RunCmd() *cobra.Command {
 	var reverseListen string
 	var captureOutput string
 	var captureDuration time.Duration
+	var captureEscrowKey string
 
 	cmd := &cobra.Command{
 		Use:   "run [flags]",
@@ -225,15 +227,27 @@ Examples:
 			// Policy capture mode: create observer if --capture-output is set.
 			var captureWriter *capture.Writer
 			if captureOutput != "" {
+				// Parse optional escrow public key for payload sidecar encryption.
+				var escrowPub *[32]byte
+				if captureEscrowKey != "" {
+					keyBytes, hexErr := hex.DecodeString(captureEscrowKey)
+					if hexErr != nil || len(keyBytes) != 32 {
+						return fmt.Errorf("invalid --capture-escrow-public-key: must be 64 hex chars (32 bytes)")
+					}
+					escrowPub = (*[32]byte)(keyBytes)
+				}
+
 				cw, cwErr := capture.NewWriter(capture.WriterConfig{
 					RecorderConfig: recorder.Config{
 						Enabled:           true,
 						Dir:               captureOutput,
 						MaxEntriesPerFile: 10000, // 10k entries per file before rotation
 					},
-					DropSink:     m,
-					QueueSize:    4096, // bounded channel capacity
-					BuildVersion: cliutil.Version,
+					EscrowPublicKey: escrowPub,
+					DropSink:        m,
+					QueueSize:       4096, // bounded channel capacity
+					BuildVersion:    cliutil.Version,
+					BuildSHA:        cliutil.GitCommit,
 				})
 				if cwErr != nil {
 					return fmt.Errorf("creating capture writer: %w", cwErr)
@@ -783,9 +797,13 @@ Examples:
 					return fmt.Errorf("reverse proxy upstream: %w", rpErr)
 				}
 
+				var rpCaptureObs capture.CaptureObserver
+				if captureWriter != nil {
+					rpCaptureObs = captureWriter
+				}
 				rpHandler := proxy.NewReverseProxy(
 					rpUpstream, p.ConfigPtr(), p.ScannerPtr(),
-					logger, m, ks,
+					logger, m, ks, rpCaptureObs,
 				)
 
 				rpLn, lnErr := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.ReverseProxy.Listen)
@@ -963,6 +981,7 @@ Examples:
 	cmd.Flags().StringVar(&reverseListen, "reverse-listen", ":8890", "listen address for reverse proxy")
 	cmd.Flags().StringVar(&captureOutput, "capture-output", "", "directory to write policy capture files (enables capture mode)")
 	cmd.Flags().DurationVar(&captureDuration, "capture-duration", 0, "capture duration (0 = until interrupted)")
+	cmd.Flags().StringVar(&captureEscrowKey, "capture-escrow-public-key", "", "X25519 public key (hex) for payload sidecar encryption")
 
 	return cmd
 }

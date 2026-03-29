@@ -71,7 +71,11 @@ func NewReverseProxy(
 	logger *audit.Logger,
 	m *metrics.Metrics,
 	ks *killswitch.Controller,
+	captureObs capture.CaptureObserver,
 ) *ReverseProxyHandler {
+	if captureObs == nil {
+		captureObs = capture.NopObserver{}
+	}
 	rp := &ReverseProxyHandler{
 		upstream:   upstream,
 		cfgPtr:     cfgPtr,
@@ -79,7 +83,7 @@ func NewReverseProxy(
 		logger:     logger,
 		metrics:    m,
 		ks:         ks,
-		captureObs: capture.NopObserver{},
+		captureObs: captureObs,
 	}
 
 	proxy := httputil.NewSingleHostReverseProxy(upstream)

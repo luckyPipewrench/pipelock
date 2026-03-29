@@ -182,12 +182,21 @@ func (w *Writer) worker() {
 			continue
 		}
 
-		// Write payload sidecar if escrow is configured.
+		// Write payload sidecar if escrow is configured. Prefer scannerInput
+		// (exact scanner input for deterministic replay). Fall back to
+		// wirePayload (raw content before transformation) when scannerInput
+		// is empty — ObserveResponseVerdict stores raw response bytes only
+		// in wirePayload.
+		sidecarPayload := ce.scannerInput
+		if sidecarPayload == "" {
+			sidecarPayload = ce.wirePayload
+		}
+
 		sessionDir := filepath.Join(w.baseCfg.Dir, ce.entry.SessionID)
 		payloadSeq := w.payloadSeq[ce.entry.SessionID]
 		w.payloadSeq[ce.entry.SessionID] = payloadSeq + 1
 
-		payloadRef, sidecarErr := w.writePayloadSidecar(sessionDir, payloadSeq, ce.scannerInput)
+		payloadRef, sidecarErr := w.writePayloadSidecar(sessionDir, payloadSeq, sidecarPayload)
 		if sidecarErr != nil {
 			// Sidecar failed -- keep the summary with PayloadComplete: false.
 			ce.summary.PayloadComplete = false
@@ -195,7 +204,8 @@ func (w *Writer) worker() {
 		} else if payloadRef != "" {
 			ce.summary.PayloadRef = payloadRef
 			ce.summary.PayloadComplete = true
-			h := sha256.Sum256([]byte(ce.scannerInput))
+			ce.summary.PayloadBytes = len(sidecarPayload)
+			h := sha256.Sum256([]byte(sidecarPayload))
 			ce.summary.PayloadSHA256 = "sha256:" + hex.EncodeToString(h[:])
 		}
 

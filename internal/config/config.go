@@ -1596,6 +1596,53 @@ func ValidateTrustedDomains(domains []string, label string) error {
 
 // Validate checks the config for errors. Must be called after ApplyDefaults.
 func (c *Config) Validate() error {
+	validators := []func() error{
+		c.validateMode,
+		c.validateLogging,
+		c.validateDLP,
+		c.validateFetchProxy,
+		c.validateResponseScanning,
+		c.validateMCPInputScanning,
+		c.validateMCPToolScanning,
+		c.validateMCPToolPolicy,
+		c.validateGitProtection,
+		c.validateForwardProxy,
+		c.validateWebSocketProxy,
+		c.validateSessionProfiling,
+		c.validateAdaptiveEnforcement,
+		c.validateMCPSessionBinding,
+		c.validateA2AScanning,
+		c.validateRequestBodyScanning,
+		c.validateSeedPhraseDetection,
+		c.validateCrossRequestDetection,
+		c.validateTLSInterception,
+		c.validateToolChainDetection,
+		c.validateMCPWSListener,
+		c.validateSuppress,
+		c.validateKillSwitch,
+		c.validateMetricsListen,
+		c.validateEmit,
+		c.validateAddressProtection,
+		c.validateSentry,
+		c.validateInternalCIDRs,
+		c.validateTrustedDomains,
+		c.validateRules,
+		c.validateFileSentry,
+		c.validateAgents,
+		c.validateScanAPI,
+		c.validateListenWarnings,
+		c.validateReverseProxy,
+		c.validateSandbox,
+	}
+	for _, v := range validators {
+		if err := v(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *Config) validateMode() error {
 	switch c.Mode {
 	case ModeStrict, ModeBalanced, ModeAudit:
 		// valid
@@ -1606,7 +1653,10 @@ func (c *Config) Validate() error {
 	if c.Mode == ModeStrict && len(c.APIAllowlist) == 0 {
 		return fmt.Errorf("strict mode requires at least one domain in api_allowlist")
 	}
+	return nil
+}
 
+func (c *Config) validateLogging() error {
 	switch c.Logging.Format {
 	case DefaultLogFormat, "text":
 		// valid
@@ -1624,7 +1674,10 @@ func (c *Config) Validate() error {
 	if (c.Logging.Output == OutputFile || c.Logging.Output == OutputBoth) && c.Logging.File == "" {
 		return fmt.Errorf("logging.file is required when output is %q", c.Logging.Output)
 	}
+	return nil
+}
 
+func (c *Config) validateDLP() error {
 	// Reject unsupported DLP action fields. Request-side DLP redaction (strip)
 	// is not implemented — DLP matches follow the transport-level action
 	// (request_body_scanning.action, mcp_input_scanning.action, or enforce mode).
@@ -1676,7 +1729,10 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("secrets_file %q has unsafe permissions (mode %04o): restrict to 0600 or 0640", c.DLP.SecretsFile, info.Mode().Perm())
 		}
 	}
+	return nil
+}
 
+func (c *Config) validateFetchProxy() error {
 	// Validate blocklist patterns are well-formed
 	for _, b := range c.FetchProxy.Monitoring.Blocklist {
 		if b == "" {
@@ -1714,7 +1770,10 @@ func (c *Config) Validate() error {
 	if c.FetchProxy.Monitoring.MaxDataPerMinute < 0 {
 		return fmt.Errorf("fetch_proxy.monitoring.max_data_per_minute must be >= 0")
 	}
+	return nil
+}
 
+func (c *Config) validateResponseScanning() error {
 	// Validate response scanning config
 	if c.ResponseScanning.Enabled {
 		switch c.ResponseScanning.Action {
@@ -1741,7 +1800,10 @@ func (c *Config) Validate() error {
 	if err := ValidateTrustedDomains(c.ResponseScanning.ExemptDomains, "response_scanning.exempt_domains"); err != nil {
 		return err
 	}
+	return nil
+}
 
+func (c *Config) validateMCPInputScanning() error {
 	// Validate MCP input scanning config
 	if c.MCPInputScanning.Enabled {
 		switch c.MCPInputScanning.Action {
@@ -1757,7 +1819,10 @@ func (c *Config) Validate() error {
 	default:
 		return fmt.Errorf("invalid mcp_input_scanning on_parse_error %q: must be block or forward", c.MCPInputScanning.OnParseError)
 	}
+	return nil
+}
 
+func (c *Config) validateMCPToolScanning() error {
 	// Validate MCP tool scanning config
 	if c.MCPToolScanning.Enabled {
 		switch c.MCPToolScanning.Action {
@@ -1767,132 +1832,151 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("invalid mcp_tool_scanning action %q: must be warn or block", c.MCPToolScanning.Action)
 		}
 	}
+	return nil
+}
 
+func (c *Config) validateMCPToolPolicy() error {
 	// Validate MCP tool policy config
-	if c.MCPToolPolicy.Enabled {
-		if len(c.MCPToolPolicy.Rules) == 0 {
-			return fmt.Errorf("mcp_tool_policy is enabled but has no rules; add rules or set enabled: false")
+	if !c.MCPToolPolicy.Enabled {
+		return nil
+	}
+	if len(c.MCPToolPolicy.Rules) == 0 {
+		return fmt.Errorf("mcp_tool_policy is enabled but has no rules; add rules or set enabled: false")
+	}
+	switch c.MCPToolPolicy.Action {
+	case ActionWarn, ActionBlock, ActionRedirect:
+		// valid
+	default:
+		return fmt.Errorf("invalid mcp_tool_policy action %q: must be warn, block, or redirect", c.MCPToolPolicy.Action)
+	}
+	// Validate redirect profiles.
+	for name, profile := range c.MCPToolPolicy.RedirectProfiles {
+		if len(profile.Exec) == 0 || profile.Exec[0] == "" {
+			return fmt.Errorf("mcp_tool_policy redirect_profile %q has empty exec", name)
 		}
-		switch c.MCPToolPolicy.Action {
-		case ActionWarn, ActionBlock, ActionRedirect:
-			// valid
-		default:
-			return fmt.Errorf("invalid mcp_tool_policy action %q: must be warn, block, or redirect", c.MCPToolPolicy.Action)
+		if profile.MatchAbsPath && !filepath.IsAbs(profile.Exec[0]) {
+			return fmt.Errorf("mcp_tool_policy redirect_profile %q: match_abs_path is true but exec[0] %q is not absolute", name, profile.Exec[0])
 		}
-		// Validate redirect profiles.
-		for name, profile := range c.MCPToolPolicy.RedirectProfiles {
-			if len(profile.Exec) == 0 || profile.Exec[0] == "" {
-				return fmt.Errorf("mcp_tool_policy redirect_profile %q has empty exec", name)
-			}
-			if profile.MatchAbsPath && !filepath.IsAbs(profile.Exec[0]) {
-				return fmt.Errorf("mcp_tool_policy redirect_profile %q: match_abs_path is true but exec[0] %q is not absolute", name, profile.Exec[0])
+	}
+	for i, r := range c.MCPToolPolicy.Rules {
+		if r.Name == "" {
+			return fmt.Errorf("mcp_tool_policy rule %d missing name", i)
+		}
+		if r.ToolPattern == "" {
+			return fmt.Errorf("mcp_tool_policy rule %q missing tool_pattern", r.Name)
+		}
+		if _, err := regexp.Compile(r.ToolPattern); err != nil {
+			return fmt.Errorf("mcp_tool_policy rule %q has invalid tool_pattern: %w", r.Name, err)
+		}
+		if r.ArgPattern != "" {
+			if _, err := regexp.Compile(r.ArgPattern); err != nil {
+				return fmt.Errorf("mcp_tool_policy rule %q has invalid arg_pattern: %w", r.Name, err)
 			}
 		}
-		for i, r := range c.MCPToolPolicy.Rules {
-			if r.Name == "" {
-				return fmt.Errorf("mcp_tool_policy rule %d missing name", i)
+		if r.ArgKey != "" {
+			if r.ArgPattern == "" {
+				return fmt.Errorf("mcp_tool_policy rule %q has arg_key without arg_pattern", r.Name)
 			}
-			if r.ToolPattern == "" {
-				return fmt.Errorf("mcp_tool_policy rule %q missing tool_pattern", r.Name)
+			if _, err := regexp.Compile(r.ArgKey); err != nil {
+				return fmt.Errorf("mcp_tool_policy rule %q has invalid arg_key: %w", r.Name, err)
 			}
-			if _, err := regexp.Compile(r.ToolPattern); err != nil {
-				return fmt.Errorf("mcp_tool_policy rule %q has invalid tool_pattern: %w", r.Name, err)
+		}
+		if r.Action != "" {
+			switch r.Action {
+			case ActionWarn, ActionBlock, ActionRedirect:
+				// valid
+			default:
+				return fmt.Errorf("mcp_tool_policy rule %q has invalid action %q: must be warn, block, or redirect", r.Name, r.Action)
 			}
-			if r.ArgPattern != "" {
-				if _, err := regexp.Compile(r.ArgPattern); err != nil {
-					return fmt.Errorf("mcp_tool_policy rule %q has invalid arg_pattern: %w", r.Name, err)
-				}
+		}
+		// Redirect rules must reference an existing redirect profile.
+		effectiveAction := r.Action
+		if effectiveAction == "" {
+			effectiveAction = c.MCPToolPolicy.Action
+		}
+		if effectiveAction == ActionRedirect {
+			if r.RedirectProfile == "" {
+				return fmt.Errorf("mcp_tool_policy rule %q has action=redirect but no redirect_profile", r.Name)
 			}
-			if r.ArgKey != "" {
-				if r.ArgPattern == "" {
-					return fmt.Errorf("mcp_tool_policy rule %q has arg_key without arg_pattern", r.Name)
-				}
-				if _, err := regexp.Compile(r.ArgKey); err != nil {
-					return fmt.Errorf("mcp_tool_policy rule %q has invalid arg_key: %w", r.Name, err)
-				}
-			}
-			if r.Action != "" {
-				switch r.Action {
-				case ActionWarn, ActionBlock, ActionRedirect:
-					// valid
-				default:
-					return fmt.Errorf("mcp_tool_policy rule %q has invalid action %q: must be warn, block, or redirect", r.Name, r.Action)
-				}
-			}
-			// Redirect rules must reference an existing redirect profile.
-			effectiveAction := r.Action
-			if effectiveAction == "" {
-				effectiveAction = c.MCPToolPolicy.Action
-			}
-			if effectiveAction == ActionRedirect {
-				if r.RedirectProfile == "" {
-					return fmt.Errorf("mcp_tool_policy rule %q has action=redirect but no redirect_profile", r.Name)
-				}
-				if _, ok := c.MCPToolPolicy.RedirectProfiles[r.RedirectProfile]; !ok {
-					return fmt.Errorf("mcp_tool_policy rule %q references unknown redirect_profile %q", r.Name, r.RedirectProfile)
-				}
+			if _, ok := c.MCPToolPolicy.RedirectProfiles[r.RedirectProfile]; !ok {
+				return fmt.Errorf("mcp_tool_policy rule %q references unknown redirect_profile %q", r.Name, r.RedirectProfile)
 			}
 		}
 	}
+	return nil
+}
 
+func (c *Config) validateGitProtection() error {
 	// Validate git protection config
-	if c.GitProtection.Enabled {
-		for _, pattern := range c.GitProtection.AllowedBranches {
-			if pattern == "" {
-				return fmt.Errorf("empty allowed_branches pattern")
-			}
-			if _, err := filepath.Match(pattern, "test"); err != nil {
-				return fmt.Errorf("invalid allowed_branches glob pattern %q: %w", pattern, err)
-			}
+	if !c.GitProtection.Enabled {
+		return nil
+	}
+	for _, pattern := range c.GitProtection.AllowedBranches {
+		if pattern == "" {
+			return fmt.Errorf("empty allowed_branches pattern")
 		}
-		for _, cmd := range c.GitProtection.BlockedCommands {
-			if cmd == "" {
-				return fmt.Errorf("empty blocked_commands entry")
-			}
+		if _, err := filepath.Match(pattern, "test"); err != nil {
+			return fmt.Errorf("invalid allowed_branches glob pattern %q: %w", pattern, err)
 		}
 	}
+	for _, cmd := range c.GitProtection.BlockedCommands {
+		if cmd == "" {
+			return fmt.Errorf("empty blocked_commands entry")
+		}
+	}
+	return nil
+}
 
+func (c *Config) validateForwardProxy() error {
 	// Validate forward proxy config
-	if c.ForwardProxy.Enabled {
-		if c.ForwardProxy.MaxTunnelSeconds <= 0 {
-			return fmt.Errorf("forward_proxy.max_tunnel_seconds must be positive")
-		}
-		if c.ForwardProxy.IdleTimeoutSeconds <= 0 {
-			return fmt.Errorf("forward_proxy.idle_timeout_seconds must be positive")
-		}
+	if !c.ForwardProxy.Enabled {
+		return nil
 	}
+	if c.ForwardProxy.MaxTunnelSeconds <= 0 {
+		return fmt.Errorf("forward_proxy.max_tunnel_seconds must be positive")
+	}
+	if c.ForwardProxy.IdleTimeoutSeconds <= 0 {
+		return fmt.Errorf("forward_proxy.idle_timeout_seconds must be positive")
+	}
+	return nil
+}
 
+func (c *Config) validateWebSocketProxy() error {
 	// Validate WebSocket proxy config
-	if c.WebSocketProxy.Enabled {
-		if c.WebSocketProxy.MaxMessageBytes <= 0 {
-			return fmt.Errorf("websocket_proxy.max_message_bytes must be positive")
-		}
-		if c.WebSocketProxy.MaxConcurrentConnections <= 0 {
-			return fmt.Errorf("websocket_proxy.max_concurrent_connections must be positive")
-		}
-		if c.WebSocketProxy.MaxConnectionSeconds <= 0 {
-			return fmt.Errorf("websocket_proxy.max_connection_seconds must be positive")
-		}
-		if c.WebSocketProxy.IdleTimeoutSeconds <= 0 {
-			return fmt.Errorf("websocket_proxy.idle_timeout_seconds must be positive")
-		}
-		switch c.WebSocketProxy.OriginPolicy {
-		case OriginPolicyRewrite, OriginPolicyForward, ActionStrip:
-			// valid
-		default:
-			return fmt.Errorf("invalid websocket_proxy.origin_policy %q: must be rewrite, forward, or strip", c.WebSocketProxy.OriginPolicy)
-		}
-		// Compression must stay stripped; scanning requires uncompressed frame payloads.
-		if c.WebSocketProxy.StripCompression != nil && !*c.WebSocketProxy.StripCompression {
-			return fmt.Errorf("websocket_proxy.strip_compression must be true: scanning requires uncompressed frames")
-		}
-		// Warn about memory budget
-		memBudget := int64(c.WebSocketProxy.MaxConcurrentConnections) * int64(c.WebSocketProxy.MaxMessageBytes) * 2
-		if memBudget > 1<<30 { // 1GB
-			fmt.Fprintf(os.Stderr, "WARNING: websocket_proxy memory budget is %dMB (max_concurrent_connections * max_message_bytes * 2) - consider reducing\n", memBudget/(1<<20))
-		}
+	if !c.WebSocketProxy.Enabled {
+		return nil
 	}
+	if c.WebSocketProxy.MaxMessageBytes <= 0 {
+		return fmt.Errorf("websocket_proxy.max_message_bytes must be positive")
+	}
+	if c.WebSocketProxy.MaxConcurrentConnections <= 0 {
+		return fmt.Errorf("websocket_proxy.max_concurrent_connections must be positive")
+	}
+	if c.WebSocketProxy.MaxConnectionSeconds <= 0 {
+		return fmt.Errorf("websocket_proxy.max_connection_seconds must be positive")
+	}
+	if c.WebSocketProxy.IdleTimeoutSeconds <= 0 {
+		return fmt.Errorf("websocket_proxy.idle_timeout_seconds must be positive")
+	}
+	switch c.WebSocketProxy.OriginPolicy {
+	case OriginPolicyRewrite, OriginPolicyForward, ActionStrip:
+		// valid
+	default:
+		return fmt.Errorf("invalid websocket_proxy.origin_policy %q: must be rewrite, forward, or strip", c.WebSocketProxy.OriginPolicy)
+	}
+	// Compression must stay stripped; scanning requires uncompressed frame payloads.
+	if c.WebSocketProxy.StripCompression != nil && !*c.WebSocketProxy.StripCompression {
+		return fmt.Errorf("websocket_proxy.strip_compression must be true: scanning requires uncompressed frames")
+	}
+	// Warn about memory budget
+	memBudget := int64(c.WebSocketProxy.MaxConcurrentConnections) * int64(c.WebSocketProxy.MaxMessageBytes) * 2
+	if memBudget > 1<<30 { // 1GB
+		fmt.Fprintf(os.Stderr, "WARNING: websocket_proxy memory budget is %dMB (max_concurrent_connections * max_message_bytes * 2) - consider reducing\n", memBudget/(1<<20))
+	}
+	return nil
+}
 
+func (c *Config) validateSessionProfiling() error {
 	// Validate session profiling config
 	if c.SessionProfiling.Enabled {
 		switch c.SessionProfiling.AnomalyAction {
@@ -1920,7 +2004,10 @@ func (c *Config) Validate() error {
 	if c.SessionProfiling.CleanupIntervalSeconds <= 0 {
 		return fmt.Errorf("session_profiling.cleanup_interval_seconds must be positive")
 	}
+	return nil
+}
 
+func (c *Config) validateAdaptiveEnforcement() error {
 	// Validate adaptive enforcement config
 	if c.AdaptiveEnforcement.Enabled {
 		if !c.SessionProfiling.Enabled {
@@ -1952,64 +2039,79 @@ func (c *Config) Validate() error {
 	if err := ValidateTrustedDomains(c.AdaptiveEnforcement.ExemptDomains, "adaptive_enforcement.exempt_domains"); err != nil {
 		return err
 	}
+	return nil
+}
 
+func (c *Config) validateMCPSessionBinding() error {
 	// Validate MCP session binding config
-	if c.MCPSessionBinding.Enabled {
-		if !c.MCPToolScanning.Enabled {
-			return fmt.Errorf("mcp_session_binding.enabled requires mcp_tool_scanning.enabled (binding needs tool scanning for baseline capture)")
-		}
-		switch c.MCPSessionBinding.UnknownToolAction {
-		case ActionWarn, ActionBlock:
-			// valid
-		default:
-			return fmt.Errorf("invalid mcp_session_binding.unknown_tool_action %q: must be warn or block", c.MCPSessionBinding.UnknownToolAction)
-		}
-		switch c.MCPSessionBinding.NoBaselineAction {
-		case ActionWarn, ActionBlock:
-			// valid
-		default:
-			return fmt.Errorf("invalid mcp_session_binding.no_baseline_action %q: must be warn or block", c.MCPSessionBinding.NoBaselineAction)
-		}
+	if !c.MCPSessionBinding.Enabled {
+		return nil
 	}
+	if !c.MCPToolScanning.Enabled {
+		return fmt.Errorf("mcp_session_binding.enabled requires mcp_tool_scanning.enabled (binding needs tool scanning for baseline capture)")
+	}
+	switch c.MCPSessionBinding.UnknownToolAction {
+	case ActionWarn, ActionBlock:
+		// valid
+	default:
+		return fmt.Errorf("invalid mcp_session_binding.unknown_tool_action %q: must be warn or block", c.MCPSessionBinding.UnknownToolAction)
+	}
+	switch c.MCPSessionBinding.NoBaselineAction {
+	case ActionWarn, ActionBlock:
+		// valid
+	default:
+		return fmt.Errorf("invalid mcp_session_binding.no_baseline_action %q: must be warn or block", c.MCPSessionBinding.NoBaselineAction)
+	}
+	return nil
+}
 
+func (c *Config) validateA2AScanning() error {
 	// Validate A2A scanning config
-	if c.A2AScanning.Enabled {
-		switch c.A2AScanning.Action {
-		case ActionWarn, ActionBlock:
-			// valid
-		default:
-			return fmt.Errorf("invalid a2a_scanning action %q: must be warn or block", c.A2AScanning.Action)
-		}
-		if c.A2AScanning.MaxContextMessages <= 0 {
-			c.A2AScanning.MaxContextMessages = 100
-		}
-		if c.A2AScanning.MaxContexts <= 0 {
-			c.A2AScanning.MaxContexts = 1000
-		}
-		if c.A2AScanning.MaxRawSize <= 0 {
-			c.A2AScanning.MaxRawSize = 1 << 20
-		}
+	if !c.A2AScanning.Enabled {
+		return nil
 	}
+	switch c.A2AScanning.Action {
+	case ActionWarn, ActionBlock:
+		// valid
+	default:
+		return fmt.Errorf("invalid a2a_scanning action %q: must be warn or block", c.A2AScanning.Action)
+	}
+	if c.A2AScanning.MaxContextMessages <= 0 {
+		c.A2AScanning.MaxContextMessages = 100
+	}
+	if c.A2AScanning.MaxContexts <= 0 {
+		c.A2AScanning.MaxContexts = 1000
+	}
+	if c.A2AScanning.MaxRawSize <= 0 {
+		c.A2AScanning.MaxRawSize = 1 << 20
+	}
+	return nil
+}
 
+func (c *Config) validateRequestBodyScanning() error {
 	// Validate request body scanning config
-	if c.RequestBodyScanning.Enabled {
-		switch c.RequestBodyScanning.Action {
-		case ActionWarn, ActionBlock:
-			// valid
-		default:
-			return fmt.Errorf("invalid request_body_scanning.action %q: must be warn or block", c.RequestBodyScanning.Action)
-		}
-		if c.RequestBodyScanning.MaxBodyBytes <= 0 {
-			return fmt.Errorf("request_body_scanning.max_body_bytes must be positive")
-		}
-		switch c.RequestBodyScanning.HeaderMode {
-		case HeaderModeSensitive, HeaderModeAll:
-			// valid
-		default:
-			return fmt.Errorf("invalid request_body_scanning.header_mode %q: must be sensitive or all", c.RequestBodyScanning.HeaderMode)
-		}
+	if !c.RequestBodyScanning.Enabled {
+		return nil
 	}
+	switch c.RequestBodyScanning.Action {
+	case ActionWarn, ActionBlock:
+		// valid
+	default:
+		return fmt.Errorf("invalid request_body_scanning.action %q: must be warn or block", c.RequestBodyScanning.Action)
+	}
+	if c.RequestBodyScanning.MaxBodyBytes <= 0 {
+		return fmt.Errorf("request_body_scanning.max_body_bytes must be positive")
+	}
+	switch c.RequestBodyScanning.HeaderMode {
+	case HeaderModeSensitive, HeaderModeAll:
+		// valid
+	default:
+		return fmt.Errorf("invalid request_body_scanning.header_mode %q: must be sensitive or all", c.RequestBodyScanning.HeaderMode)
+	}
+	return nil
+}
 
+func (c *Config) validateSeedPhraseDetection() error {
 	// Validate seed phrase detection config
 	if c.SeedPhraseDetection.Enabled == nil || *c.SeedPhraseDetection.Enabled {
 		if c.SeedPhraseDetection.MinWords == 0 {
@@ -2020,7 +2122,10 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("invalid seed_phrase_detection.min_words %d: must be 12, 15, 18, 21, or 24", c.SeedPhraseDetection.MinWords)
 		}
 	}
+	return nil
+}
 
+func (c *Config) validateCrossRequestDetection() error {
 	// Validate cross-request detection config
 	if c.CrossRequestDetection.Enabled {
 		if !c.CrossRequestDetection.EntropyBudget.Enabled && !c.CrossRequestDetection.FragmentReassembly.Enabled {
@@ -2060,89 +2165,100 @@ func (c *Config) Validate() error {
 	if err := ValidateTrustedDomains(c.CrossRequestDetection.EntropyBudget.ExemptDomains, "cross_request_detection.entropy_budget.exempt_domains"); err != nil {
 		return err
 	}
+	return nil
+}
 
+func (c *Config) validateTLSInterception() error {
 	// Validate TLS interception config
-	if c.TLSInterception.Enabled {
-		ttl, err := time.ParseDuration(c.TLSInterception.CertTTL)
-		if err != nil {
-			return fmt.Errorf("tls_interception.cert_ttl: %w", err)
-		}
-		if ttl <= 0 {
-			return errors.New("tls_interception.cert_ttl must be positive")
-		}
-		if c.TLSInterception.CertCacheSize <= 0 {
-			return errors.New("tls_interception.cert_cache_size must be > 0")
-		}
-		if c.TLSInterception.MaxResponseBytes <= 0 {
-			return errors.New("tls_interception.max_response_bytes must be > 0")
-		}
-		certPath, keyPath, resolveErr := c.ResolveCAPath()
-		if resolveErr != nil {
-			return fmt.Errorf("tls_interception: %w", resolveErr)
-		}
-		if _, err := os.Stat(certPath); err != nil {
-			return fmt.Errorf("CA cert not found at %s (run 'pipelock tls init'): %w", certPath, err)
-		}
-		keyInfo, err := os.Stat(keyPath)
-		if err != nil {
-			return fmt.Errorf("CA key not found at %s (run 'pipelock tls init'): %w", keyPath, err)
-		}
-		// Reject world-readable, any writable, or any executable bits. Allow
-		// group-read (0o040) because Kubernetes fsGroup sets it on secret volumes.
-		if keyInfo.Mode().Perm()&0o137 != 0 {
-			return fmt.Errorf("CA key %s is too permissive (mode %04o): restrict to 0600 or 0640", keyPath, keyInfo.Mode().Perm())
-		}
+	if !c.TLSInterception.Enabled {
+		return nil
 	}
+	ttl, err := time.ParseDuration(c.TLSInterception.CertTTL)
+	if err != nil {
+		return fmt.Errorf("tls_interception.cert_ttl: %w", err)
+	}
+	if ttl <= 0 {
+		return errors.New("tls_interception.cert_ttl must be positive")
+	}
+	if c.TLSInterception.CertCacheSize <= 0 {
+		return errors.New("tls_interception.cert_cache_size must be > 0")
+	}
+	if c.TLSInterception.MaxResponseBytes <= 0 {
+		return errors.New("tls_interception.max_response_bytes must be > 0")
+	}
+	certPath, keyPath, resolveErr := c.ResolveCAPath()
+	if resolveErr != nil {
+		return fmt.Errorf("tls_interception: %w", resolveErr)
+	}
+	if _, err := os.Stat(certPath); err != nil {
+		return fmt.Errorf("CA cert not found at %s (run 'pipelock tls init'): %w", certPath, err)
+	}
+	keyInfo, err := os.Stat(keyPath)
+	if err != nil {
+		return fmt.Errorf("CA key not found at %s (run 'pipelock tls init'): %w", keyPath, err)
+	}
+	// Reject world-readable, any writable, or any executable bits. Allow
+	// group-read (0o040) because Kubernetes fsGroup sets it on secret volumes.
+	if keyInfo.Mode().Perm()&0o137 != 0 {
+		return fmt.Errorf("CA key %s is too permissive (mode %04o): restrict to 0600 or 0640", keyPath, keyInfo.Mode().Perm())
+	}
+	return nil
+}
 
+func (c *Config) validateToolChainDetection() error {
 	// Validate tool chain detection config
-	if c.ToolChainDetection.Enabled {
-		switch c.ToolChainDetection.Action {
-		case ActionWarn, ActionBlock:
+	if !c.ToolChainDetection.Enabled {
+		return nil
+	}
+	switch c.ToolChainDetection.Action {
+	case ActionWarn, ActionBlock:
+		// valid
+	default:
+		return fmt.Errorf("invalid tool_chain_detection.action %q: must be warn or block", c.ToolChainDetection.Action)
+	}
+	if c.ToolChainDetection.WindowSize <= 0 {
+		return fmt.Errorf("tool_chain_detection.window_size must be positive")
+	}
+	if c.ToolChainDetection.WindowSeconds <= 0 {
+		return fmt.Errorf("tool_chain_detection.window_seconds must be positive")
+	}
+	if c.ToolChainDetection.MaxGap != nil && *c.ToolChainDetection.MaxGap < 0 {
+		return fmt.Errorf("tool_chain_detection.max_gap must be non-negative")
+	}
+	for i, p := range c.ToolChainDetection.CustomPatterns {
+		if p.Name == "" {
+			return fmt.Errorf("tool_chain_detection.custom_patterns[%d] missing name", i)
+		}
+		if len(p.Sequence) < 2 {
+			return fmt.Errorf("tool_chain_detection.custom_patterns[%d] %q: sequence must have at least 2 steps", i, p.Name)
+		}
+		switch p.Severity {
+		case SeverityMedium, SeverityHigh, SeverityCritical:
 			// valid
 		default:
-			return fmt.Errorf("invalid tool_chain_detection.action %q: must be warn or block", c.ToolChainDetection.Action)
+			return fmt.Errorf("tool_chain_detection.custom_patterns[%d] %q: invalid severity %q: must be medium, high, or critical", i, p.Name, p.Severity)
 		}
-		if c.ToolChainDetection.WindowSize <= 0 {
-			return fmt.Errorf("tool_chain_detection.window_size must be positive")
-		}
-		if c.ToolChainDetection.WindowSeconds <= 0 {
-			return fmt.Errorf("tool_chain_detection.window_seconds must be positive")
-		}
-		if c.ToolChainDetection.MaxGap != nil && *c.ToolChainDetection.MaxGap < 0 {
-			return fmt.Errorf("tool_chain_detection.max_gap must be non-negative")
-		}
-		for i, p := range c.ToolChainDetection.CustomPatterns {
-			if p.Name == "" {
-				return fmt.Errorf("tool_chain_detection.custom_patterns[%d] missing name", i)
-			}
-			if len(p.Sequence) < 2 {
-				return fmt.Errorf("tool_chain_detection.custom_patterns[%d] %q: sequence must have at least 2 steps", i, p.Name)
-			}
-			switch p.Severity {
-			case SeverityMedium, SeverityHigh, SeverityCritical:
-				// valid
-			default:
-				return fmt.Errorf("tool_chain_detection.custom_patterns[%d] %q: invalid severity %q: must be medium, high, or critical", i, p.Name, p.Severity)
-			}
-			if p.Action != "" {
-				switch p.Action {
-				case ActionWarn, ActionBlock:
-					// valid
-				default:
-					return fmt.Errorf("tool_chain_detection.custom_patterns[%d] %q: invalid action %q: must be warn or block", i, p.Name, p.Action)
-				}
-			}
-		}
-		for name, action := range c.ToolChainDetection.PatternOverrides {
-			switch action {
+		if p.Action != "" {
+			switch p.Action {
 			case ActionWarn, ActionBlock:
 				// valid
 			default:
-				return fmt.Errorf("tool_chain_detection.pattern_overrides[%q]: invalid action %q: must be warn or block", name, action)
+				return fmt.Errorf("tool_chain_detection.custom_patterns[%d] %q: invalid action %q: must be warn or block", i, p.Name, p.Action)
 			}
 		}
 	}
+	for name, action := range c.ToolChainDetection.PatternOverrides {
+		switch action {
+		case ActionWarn, ActionBlock:
+			// valid
+		default:
+			return fmt.Errorf("tool_chain_detection.pattern_overrides[%q]: invalid action %q: must be warn or block", name, action)
+		}
+	}
+	return nil
+}
 
+func (c *Config) validateMCPWSListener() error {
 	// Validate MCP WS listener config
 	if c.MCPWSListener.MaxConnections <= 0 {
 		return fmt.Errorf("mcp_ws_listener.max_connections must be positive")
@@ -2156,7 +2272,10 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("mcp_ws_listener.allowed_origins[%d] %q: must be a valid origin (e.g. https://example.com)", i, origin)
 		}
 	}
+	return nil
+}
 
+func (c *Config) validateSuppress() error {
 	// Validate suppress entries have required fields
 	for i, s := range c.Suppress {
 		if s.Rule == "" {
@@ -2173,7 +2292,10 @@ func (c *Config) Validate() error {
 			}
 		}
 	}
+	return nil
+}
 
+func (c *Config) validateKillSwitch() error {
 	// Validate kill switch allowlist CIDRs are parseable
 	for _, cidr := range c.KillSwitch.AllowlistIPs {
 		if _, _, err := net.ParseCIDR(cidr); err != nil {
@@ -2198,28 +2320,35 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("kill_switch.api_listen requires kill_switch.api_token to be set")
 		}
 	}
+	return nil
+}
 
+func (c *Config) validateMetricsListen() error {
 	// Validate metrics listen address (if set)
-	if c.MetricsListen != "" {
-		_, metricsPort, err := net.SplitHostPort(c.MetricsListen)
-		if err != nil {
-			return fmt.Errorf("invalid metrics_listen %q: %w", c.MetricsListen, err)
-		}
-		_, proxyPort, proxyErr := net.SplitHostPort(c.FetchProxy.Listen)
-		if proxyErr != nil {
-			return fmt.Errorf("invalid fetch_proxy.listen %q: %w", c.FetchProxy.Listen, proxyErr)
-		}
-		if metricsPort == proxyPort {
-			return fmt.Errorf("metrics_listen port %s collides with fetch_proxy.listen port %s", metricsPort, proxyPort)
-		}
-		if c.KillSwitch.APIListen != "" {
-			_, apiPort, _ := net.SplitHostPort(c.KillSwitch.APIListen)
-			if metricsPort == apiPort {
-				return fmt.Errorf("metrics_listen port %s collides with kill_switch.api_listen port %s", metricsPort, apiPort)
-			}
+	if c.MetricsListen == "" {
+		return nil
+	}
+	_, metricsPort, err := net.SplitHostPort(c.MetricsListen)
+	if err != nil {
+		return fmt.Errorf("invalid metrics_listen %q: %w", c.MetricsListen, err)
+	}
+	_, proxyPort, proxyErr := net.SplitHostPort(c.FetchProxy.Listen)
+	if proxyErr != nil {
+		return fmt.Errorf("invalid fetch_proxy.listen %q: %w", c.FetchProxy.Listen, proxyErr)
+	}
+	if metricsPort == proxyPort {
+		return fmt.Errorf("metrics_listen port %s collides with fetch_proxy.listen port %s", metricsPort, proxyPort)
+	}
+	if c.KillSwitch.APIListen != "" {
+		_, apiPort, _ := net.SplitHostPort(c.KillSwitch.APIListen)
+		if metricsPort == apiPort {
+			return fmt.Errorf("metrics_listen port %s collides with kill_switch.api_listen port %s", metricsPort, apiPort)
 		}
 	}
+	return nil
+}
 
+func (c *Config) validateEmit() error {
 	// Validate emit config
 	if c.Emit.Webhook.URL != "" {
 		u, urlErr := url.Parse(c.Emit.Webhook.URL)
@@ -2286,38 +2415,45 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("emit.otlp.queue_size must be positive")
 		}
 	}
+	return nil
+}
 
+func (c *Config) validateAddressProtection() error {
 	// Validate address protection config
-	if c.AddressProtection.Enabled {
-		switch c.AddressProtection.Action {
-		case ActionBlock, ActionWarn:
-			// valid
-		default:
-			return fmt.Errorf("invalid address_protection.action %q: must be block or warn", c.AddressProtection.Action)
-		}
-		switch c.AddressProtection.UnknownAction {
-		case ActionAllow, ActionWarn, ActionBlock:
-			// valid
-		default:
-			return fmt.Errorf("invalid address_protection.unknown_action %q: must be allow, warn, or block", c.AddressProtection.UnknownAction)
-		}
-		if c.AddressProtection.Similarity.PrefixLength <= 0 {
-			return fmt.Errorf("address_protection.similarity.prefix_length must be positive")
-		}
-		if c.AddressProtection.Similarity.SuffixLength <= 0 {
-			return fmt.Errorf("address_protection.similarity.suffix_length must be positive")
-		}
-		// Require at least one chain enabled. All chains disabled means the
-		// feature is a silent no-op, which is a config error when enabled: true.
-		eth := c.AddressProtection.Chains.ETH == nil || *c.AddressProtection.Chains.ETH
-		btc := c.AddressProtection.Chains.BTC == nil || *c.AddressProtection.Chains.BTC
-		sol := c.AddressProtection.Chains.SOL != nil && *c.AddressProtection.Chains.SOL
-		bnb := c.AddressProtection.Chains.BNB == nil || *c.AddressProtection.Chains.BNB
-		if !eth && !btc && !sol && !bnb {
-			return fmt.Errorf("address_protection.enabled is true but all chains are disabled (silent no-op)")
-		}
+	if !c.AddressProtection.Enabled {
+		return nil
 	}
+	switch c.AddressProtection.Action {
+	case ActionBlock, ActionWarn:
+		// valid
+	default:
+		return fmt.Errorf("invalid address_protection.action %q: must be block or warn", c.AddressProtection.Action)
+	}
+	switch c.AddressProtection.UnknownAction {
+	case ActionAllow, ActionWarn, ActionBlock:
+		// valid
+	default:
+		return fmt.Errorf("invalid address_protection.unknown_action %q: must be allow, warn, or block", c.AddressProtection.UnknownAction)
+	}
+	if c.AddressProtection.Similarity.PrefixLength <= 0 {
+		return fmt.Errorf("address_protection.similarity.prefix_length must be positive")
+	}
+	if c.AddressProtection.Similarity.SuffixLength <= 0 {
+		return fmt.Errorf("address_protection.similarity.suffix_length must be positive")
+	}
+	// Require at least one chain enabled. All chains disabled means the
+	// feature is a silent no-op, which is a config error when enabled: true.
+	eth := c.AddressProtection.Chains.ETH == nil || *c.AddressProtection.Chains.ETH
+	btc := c.AddressProtection.Chains.BTC == nil || *c.AddressProtection.Chains.BTC
+	sol := c.AddressProtection.Chains.SOL != nil && *c.AddressProtection.Chains.SOL
+	bnb := c.AddressProtection.Chains.BNB == nil || *c.AddressProtection.Chains.BNB
+	if !eth && !btc && !sol && !bnb {
+		return fmt.Errorf("address_protection.enabled is true but all chains are disabled (silent no-op)")
+	}
+	return nil
+}
 
+func (c *Config) validateSentry() error {
 	// Validate Sentry config
 	sr := c.Sentry.EffectiveSampleRate()
 	if math.IsNaN(sr) {
@@ -2326,19 +2462,25 @@ func (c *Config) Validate() error {
 	if sr < 0 || sr > 1 {
 		return fmt.Errorf("invalid sentry.sample_rate %f: must be between 0.0 and 1.0", sr)
 	}
+	return nil
+}
 
+func (c *Config) validateInternalCIDRs() error {
 	// Validate internal CIDRs are parseable
 	for _, cidr := range c.Internal {
 		if _, _, err := net.ParseCIDR(cidr); err != nil {
 			return fmt.Errorf("invalid internal CIDR %q: %w", cidr, err)
 		}
 	}
+	return nil
+}
 
+func (c *Config) validateTrustedDomains() error {
 	// Validate trusted_domains entries.
-	if err := ValidateTrustedDomains(c.TrustedDomains, "trusted_domains"); err != nil {
-		return err
-	}
+	return ValidateTrustedDomains(c.TrustedDomains, "trusted_domains")
+}
 
+func (c *Config) validateRules() error {
 	// Validate community rules config
 	switch c.Rules.MinConfidence {
 	case ConfidenceHigh, ConfidenceMedium, ConfidenceLow:
@@ -2384,68 +2526,82 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("rules: trusted_keys[%d] %q public_key must decode to 32 bytes", i, k.Name)
 		}
 	}
+	return nil
+}
 
+func (c *Config) validateFileSentry() error {
 	// Validate file sentry config
-	if c.FileSentry.Enabled {
-		if len(c.FileSentry.WatchPaths) == 0 {
-			return fmt.Errorf("file_sentry: watch_paths must be non-empty when enabled")
-		}
-		for i, p := range c.FileSentry.WatchPaths {
-			if p == "" {
-				return fmt.Errorf("file_sentry: watch_paths[%d] must not be empty", i)
-			}
+	if !c.FileSentry.Enabled {
+		return nil
+	}
+	if len(c.FileSentry.WatchPaths) == 0 {
+		return fmt.Errorf("file_sentry: watch_paths must be non-empty when enabled")
+	}
+	for i, p := range c.FileSentry.WatchPaths {
+		if p == "" {
+			return fmt.Errorf("file_sentry: watch_paths[%d] must not be empty", i)
 		}
 	}
+	return nil
+}
 
+func (c *Config) validateAgents() error {
 	// Validate agent profiles (enterprise hook; nil in OSS).
 	if ValidateAgentsFunc != nil {
 		if err := ValidateAgentsFunc(c); err != nil {
 			return err
 		}
 	}
+	return nil
+}
 
+func (c *Config) validateScanAPI() error {
 	// Validate scan API config
-	if c.ScanAPI.Listen != "" {
-		if len(c.ScanAPI.Auth.BearerTokens) == 0 {
-			return fmt.Errorf("scan_api.auth.bearer_tokens required when scan_api.listen is set")
-		}
-		for i, tok := range c.ScanAPI.Auth.BearerTokens {
-			if strings.TrimSpace(tok) == "" {
-				return fmt.Errorf("scan_api.auth.bearer_tokens[%d] must be non-empty", i)
-			}
-		}
-		// Validate timeouts: must parse as valid durations and be positive.
-		// Zero or negative timeouts would disable deadlines or expire instantly.
-		validatePositiveDuration := func(name, value string) error {
-			if value == "" {
-				return nil
-			}
-			d, err := time.ParseDuration(value)
-			if err != nil {
-				return fmt.Errorf("%s: %w", name, err)
-			}
-			if d <= 0 {
-				return fmt.Errorf("%s must be positive", name)
-			}
-			return nil
-		}
-		if err := validatePositiveDuration("scan_api.timeouts.scan", c.ScanAPI.Timeouts.Scan); err != nil {
-			return err
-		}
-		if err := validatePositiveDuration("scan_api.timeouts.read", c.ScanAPI.Timeouts.Read); err != nil {
-			return err
-		}
-		if err := validatePositiveDuration("scan_api.timeouts.write", c.ScanAPI.Timeouts.Write); err != nil {
-			return err
-		}
-		if c.ScanAPI.ConnectionLimit < 0 {
-			return fmt.Errorf("scan_api.connection_limit must be >= 0")
-		}
-		if c.ScanAPI.MaxBodyBytes < 0 {
-			return fmt.Errorf("scan_api.max_body_bytes must be >= 0")
+	if c.ScanAPI.Listen == "" {
+		return nil
+	}
+	if len(c.ScanAPI.Auth.BearerTokens) == 0 {
+		return fmt.Errorf("scan_api.auth.bearer_tokens required when scan_api.listen is set")
+	}
+	for i, tok := range c.ScanAPI.Auth.BearerTokens {
+		if strings.TrimSpace(tok) == "" {
+			return fmt.Errorf("scan_api.auth.bearer_tokens[%d] must be non-empty", i)
 		}
 	}
+	// Validate timeouts: must parse as valid durations and be positive.
+	// Zero or negative timeouts would disable deadlines or expire instantly.
+	validatePositiveDuration := func(name, value string) error {
+		if value == "" {
+			return nil
+		}
+		d, err := time.ParseDuration(value)
+		if err != nil {
+			return fmt.Errorf("%s: %w", name, err)
+		}
+		if d <= 0 {
+			return fmt.Errorf("%s must be positive", name)
+		}
+		return nil
+	}
+	if err := validatePositiveDuration("scan_api.timeouts.scan", c.ScanAPI.Timeouts.Scan); err != nil {
+		return err
+	}
+	if err := validatePositiveDuration("scan_api.timeouts.read", c.ScanAPI.Timeouts.Read); err != nil {
+		return err
+	}
+	if err := validatePositiveDuration("scan_api.timeouts.write", c.ScanAPI.Timeouts.Write); err != nil {
+		return err
+	}
+	if c.ScanAPI.ConnectionLimit < 0 {
+		return fmt.Errorf("scan_api.connection_limit must be >= 0")
+	}
+	if c.ScanAPI.MaxBodyBytes < 0 {
+		return fmt.Errorf("scan_api.max_body_bytes must be >= 0")
+	}
+	return nil
+}
 
+func (c *Config) validateListenWarnings() error {
 	// Warn if listen address is not loopback (exposed to network).
 	// NOTE: these warnings print to stderr as a side effect. The proxy startup
 	// also logs non-loopback warnings via the audit logger (proxy.go Start).
@@ -2458,21 +2614,28 @@ func (c *Config) Validate() error {
 			fmt.Fprintf(os.Stderr, "WARNING: listen address %s binds to all interfaces - consider using 127.0.0.1 for local-only access\n", c.FetchProxy.Listen)
 		}
 	}
+	return nil
+}
 
+func (c *Config) validateReverseProxy() error {
 	// Reverse proxy: validate upstream URL when enabled.
-	if c.ReverseProxy.Enabled {
-		if c.ReverseProxy.Upstream == "" {
-			return fmt.Errorf("reverse_proxy.upstream is required when reverse_proxy is enabled")
-		}
-		u, uErr := url.Parse(c.ReverseProxy.Upstream)
-		if uErr != nil || (u.Scheme != schemeHTTP && u.Scheme != schemeHTTPS) || u.Host == "" {
-			return fmt.Errorf("reverse_proxy.upstream %q must be http:// or https:// with a host", c.ReverseProxy.Upstream)
-		}
-		if c.ReverseProxy.Listen == "" {
-			return fmt.Errorf("reverse_proxy.listen is required when reverse_proxy is enabled")
-		}
+	if !c.ReverseProxy.Enabled {
+		return nil
 	}
+	if c.ReverseProxy.Upstream == "" {
+		return fmt.Errorf("reverse_proxy.upstream is required when reverse_proxy is enabled")
+	}
+	u, uErr := url.Parse(c.ReverseProxy.Upstream)
+	if uErr != nil || (u.Scheme != schemeHTTP && u.Scheme != schemeHTTPS) || u.Host == "" {
+		return fmt.Errorf("reverse_proxy.upstream %q must be http:// or https:// with a host", c.ReverseProxy.Upstream)
+	}
+	if c.ReverseProxy.Listen == "" {
+		return fmt.Errorf("reverse_proxy.listen is required when reverse_proxy is enabled")
+	}
+	return nil
+}
 
+func (c *Config) validateSandbox() error {
 	// Sandbox: best_effort and strict are mutually exclusive.
 	if c.Sandbox.BestEffort && c.Sandbox.Strict {
 		return fmt.Errorf("sandbox: best_effort and strict are mutually exclusive")
@@ -2491,7 +2654,6 @@ func (c *Config) Validate() error {
 			}
 		}
 	}
-
 	return nil
 }
 

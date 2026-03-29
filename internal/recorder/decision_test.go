@@ -816,8 +816,8 @@ func TestSafeUint64(t *testing.T) {
 		{"positive value", 500, 1, 500},
 		{"zero uses fallback", 0, 42, 42},
 		{"negative uses fallback", -10, 100, 100},
-		{"at max bound", maxCheckpointBound, 1, uint64(maxCheckpointBound)},
-		{"exceeds max bound", maxCheckpointBound + 1, 1, uint64(maxCheckpointBound)},
+		{"at max bound", int(maxCheckpointBound), 1, maxCheckpointBound},
+		{"exceeds max bound", int(maxCheckpointBound) + 1, 1, maxCheckpointBound},
 		{"both zero uses fallback", 0, 0, 0}, // fallback 0 stays 0 since 0 < 1
 	}
 

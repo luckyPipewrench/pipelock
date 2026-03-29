@@ -425,6 +425,120 @@ func TestQuerySession_NumericShardSort(t *testing.T) {
 	}
 }
 
+func TestExtractSeqStart_EdgeCases(t *testing.T) {
+	// extractSeqStart is unexported, so we test it indirectly via file sort order.
+	// Create files with edge-case names and verify QuerySession handles them.
+	dir := t.TempDir()
+
+	// Create a file with no dash (should sort as 0)
+	noDash := filepath.Join(dir, "evidence-nodash.jsonl")
+	e := recorder.Entry{
+		Version:   recorder.EntryVersion,
+		Sequence:  0,
+		SessionID: "nodash",
+		Type:      testType,
+		Transport: testTransport,
+		PrevHash:  recorder.GenesisHash,
+	}
+	e.Hash = recorder.ComputeHash(e)
+	data, _ := json.Marshal(e)
+	if err := writeFile(noDash, append(data, '\n')); err != nil {
+		t.Fatal(err)
+	}
+
+	// This file won't match the prefix "evidence-nodash-" so it won't be included
+	// unless the session ID IS "nodash" (it is).
+	// Actually the prefix check is "evidence-" + sessionID + "-", so "evidence-nodash.jsonl"
+	// does NOT match "evidence-nodash-" prefix. Let's test what we can.
+
+	// Test with a properly named file that has non-numeric suffix
+	badNum := filepath.Join(dir, "evidence-edgetest-abc.jsonl")
+	e2 := recorder.Entry{
+		Version:   recorder.EntryVersion,
+		Sequence:  0,
+		SessionID: "edgetest",
+		Type:      testType,
+		Transport: testTransport,
+		PrevHash:  recorder.GenesisHash,
+	}
+	e2.Hash = recorder.ComputeHash(e2)
+	data2, _ := json.Marshal(e2)
+	if err := writeFile(badNum, append(data2, '\n')); err != nil {
+		t.Fatal(err)
+	}
+
+	// QuerySession should still work (extractSeqStart returns 0 for non-numeric)
+	result, err := recorder.QuerySession(dir, "edgetest", nil)
+	if err != nil {
+		t.Fatalf("QuerySession: %v", err)
+	}
+	if len(result.Entries) != 1 {
+		t.Errorf("expected 1 entry, got %d", len(result.Entries))
+	}
+}
+
+func TestQuerySession_CorruptedFile(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create a file with invalid JSON
+	badFile := filepath.Join(dir, "evidence-corrupt-0.jsonl")
+	if err := writeFile(badFile, []byte("not-json\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := recorder.QuerySession(dir, "corrupt", nil)
+	if err == nil {
+		t.Fatal("expected error for corrupted evidence file")
+	}
+}
+
+func TestListSessions_SkipsMalformedFilenames(t *testing.T) {
+	dir := t.TempDir()
+
+	// File with no trailing dash before seq: "evidence-.jsonl"
+	noSession := filepath.Join(dir, "evidence-.jsonl")
+	if err := writeFile(noSession, []byte("{}\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	// File with just "evidence-X.jsonl" where X has no dash separator
+	singlePart := filepath.Join(dir, "evidence-justname.jsonl")
+	if err := writeFile(singlePart, []byte("{}\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	sessions, err := recorder.ListSessions(dir)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+
+	// "evidence-.jsonl" -> rest="" after trimming, lastDash=-1 -> skip
+	// "evidence-justname.jsonl" -> rest="justname", lastDash=-1 -> skip
+	// Both should be skipped (no sessions found)
+	if len(sessions) != 0 {
+		t.Errorf("expected 0 sessions from malformed files, got %d: %v", len(sessions), sessions)
+	}
+}
+
+func TestQuerySession_DirectoryEntries(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create a subdirectory that looks like an evidence file -- should be skipped
+	subdir := filepath.Join(dir, "evidence-sess-0.jsonl")
+	if err := os.MkdirAll(subdir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := recorder.QuerySession(dir, "sess", nil)
+	if err != nil {
+		t.Fatalf("QuerySession: %v", err)
+	}
+	// No actual files, so nothing should be returned
+	if result.TotalFiles != 0 {
+		t.Errorf("TotalFiles = %d, want 0 (directories should be skipped by ReadDir)", result.TotalFiles)
+	}
+}
+
 func writeFile(path string, data []byte) error {
 	return os.WriteFile(path, data, 0o600)
 }

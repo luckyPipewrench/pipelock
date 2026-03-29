@@ -104,7 +104,7 @@ func New(cfg Config, redactFn RedactFunc, privKey ed25519.PrivateKey) (*Recorder
 		redactFn:            redactFn,
 		privKey:             privKey,
 		prevHash:            GenesisHash,
-		checkpointThreshold: uint64(max(cfg.CheckpointInterval, 1)), //nolint:gosec // validated positive above
+		checkpointThreshold: safeUint64(cfg.CheckpointInterval, 1),
 	}
 
 	if cfg.RawEscrow && cfg.EscrowPublicKey != "" {
@@ -209,6 +209,65 @@ func (r *Recorder) Record(e Entry) error {
 	}
 
 	return nil
+}
+
+// RecordDecision writes a signed decision record through the standard entry
+// path so hash-chaining, redaction, and optional raw escrow semantics stay
+// consistent with all other recorder evidence.
+func (r *Recorder) RecordDecision(dr DecisionRecord) error {
+	dr = dr.Normalize()
+	if dr.Signature == "" {
+		if len(r.privKey) != ed25519.PrivateKeySize {
+			return errors.New("decision record requires signature or recorder private key")
+		}
+		signed, err := dr.Sign(r.privKey)
+		if err != nil {
+			return fmt.Errorf("sign decision record: %w", err)
+		}
+		dr = signed
+	} else {
+		if err := dr.Validate(); err != nil {
+			return fmt.Errorf("invalid decision record: %w", err)
+		}
+		// Verify pre-signed records cryptographically, not just structurally.
+		// Reject if no verification key is available — accepting unverified
+		// signatures into the evidence chain would undermine audit integrity.
+		if len(r.privKey) != ed25519.PrivateKeySize {
+			return errors.New("pre-signed decision record rejected: no verification key available")
+		}
+		pubKey := r.privKey.Public().(ed25519.PublicKey)
+		if err := dr.Verify(pubKey); err != nil {
+			return fmt.Errorf("pre-signed decision record failed verification: %w", err)
+		}
+	}
+
+	layer := dr.ScannerResult.Layer
+	if layer == "" {
+		layer = "unknown"
+	}
+	summary := fmt.Sprintf("%s: %s", dr.Verdict, layer)
+	if dr.ScannerResult.Pattern != "" {
+		summary = fmt.Sprintf("%s (%s)", summary, dr.ScannerResult.Pattern)
+	}
+
+	// Store decision detail as generic JSON map so hash computation remains
+	// stable after ReadEntries unmarshals Detail into interface{}.
+	data, err := json.Marshal(dr)
+	if err != nil {
+		return fmt.Errorf("marshal decision record: %w", err)
+	}
+	var detail map[string]any
+	if err := json.Unmarshal(data, &detail); err != nil {
+		return fmt.Errorf("unmarshal decision record detail: %w", err)
+	}
+
+	return r.Record(Entry{
+		SessionID: dr.SessionID,
+		Type:      decisionEntryType,
+		Transport: dr.RequestContext.Transport,
+		Summary:   summary,
+		Detail:    detail,
+	})
 }
 
 // Close flushes and closes the recorder, writing a final checkpoint.
@@ -474,4 +533,19 @@ func ComputeFileHash(path string) (string, error) {
 		return "", fmt.Errorf("hashing file: %w", err)
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// maxCheckpointBound caps the checkpoint interval to a value that fits safely
+// in uint64 on all platforms. The explicit bound satisfies gosec G115.
+const maxCheckpointBound = 1 << 53
+
+// safeUint64 converts a positive int to uint64, using fallback if non-positive.
+func safeUint64(v, fallback int) uint64 {
+	if v < 1 {
+		v = fallback
+	}
+	if v > maxCheckpointBound {
+		v = maxCheckpointBound
+	}
+	return uint64(v)
 }

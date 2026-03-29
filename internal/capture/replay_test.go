@@ -436,7 +436,7 @@ func TestLoadAndReplay(t *testing.T) {
 	cfg.DLP.ScanEnv = false
 	cfg.FetchProxy.Monitoring.Blocklist = []string{"safe.example.com"}
 
-	records, dropped, originalHash, err := LoadAndReplay(cfg, dir)
+	records, dropped, skipped, originalHash, err := LoadAndReplay(cfg, dir)
 	if err != nil {
 		t.Fatalf("LoadAndReplay: %v", err)
 	}
@@ -445,6 +445,9 @@ func TestLoadAndReplay(t *testing.T) {
 	}
 	if dropped != 0 {
 		t.Fatalf("expected dropped=0, got %d", dropped)
+	}
+	if skipped != 0 {
+		t.Fatalf("expected skipped=0, got %d", skipped)
 	}
 	if originalHash != loadReplayOriginalHash {
 		t.Fatalf("expected originalHash=%q, got %q", loadReplayOriginalHash, originalHash)
@@ -465,7 +468,7 @@ func TestLoadAndReplay_Empty(t *testing.T) {
 	cfg.Internal = nil
 	cfg.DLP.ScanEnv = false
 
-	records, dropped, originalHash, err := LoadAndReplay(cfg, dir)
+	records, dropped, skipped, originalHash, err := LoadAndReplay(cfg, dir)
 	if err != nil {
 		t.Fatalf("LoadAndReplay on empty dir: %v", err)
 	}
@@ -474,6 +477,9 @@ func TestLoadAndReplay_Empty(t *testing.T) {
 	}
 	if dropped != 0 {
 		t.Fatalf("expected dropped=0, got %d", dropped)
+	}
+	if skipped != 0 {
+		t.Fatalf("expected skipped=0, got %d", skipped)
 	}
 	if originalHash != "" {
 		t.Fatalf("expected empty originalHash, got %q", originalHash)
@@ -511,7 +517,7 @@ func TestLoadAndReplay_DropCount(t *testing.T) {
 	cfg.Internal = nil
 	cfg.DLP.ScanEnv = false
 
-	_, dropped, _, err := LoadAndReplay(cfg, dir)
+	_, dropped, _, _, err := LoadAndReplay(cfg, dir)
 	if err != nil {
 		t.Fatalf("LoadAndReplay: %v", err)
 	}
@@ -544,7 +550,7 @@ func TestLoadAndReplay_SkipsFiles(t *testing.T) {
 	cfg.DLP.ScanEnv = false
 
 	// Only one session session dir; capture-meta should be skipped.
-	records, dropped, _, err := LoadAndReplay(cfg, dir)
+	records, dropped, _, _, err := LoadAndReplay(cfg, dir)
 	if err != nil {
 		t.Fatalf("LoadAndReplay: %v", err)
 	}

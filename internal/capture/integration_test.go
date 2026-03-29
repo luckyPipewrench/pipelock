@@ -99,7 +99,7 @@ func TestCaptureReplayRoundTrip(t *testing.T) {
 		"evil.example.com",
 	}
 
-	records, dropped, originalHash, err := capture.LoadAndReplay(candidateCfg, captureDir)
+	records, dropped, skipped, originalHash, err := capture.LoadAndReplay(candidateCfg, captureDir)
 	if err != nil {
 		t.Fatalf("LoadAndReplay: %v", err)
 	}
@@ -110,9 +110,12 @@ func TestCaptureReplayRoundTrip(t *testing.T) {
 	if dropped != 0 {
 		t.Fatalf("expected dropped=0, got %d", dropped)
 	}
+	if skipped != 0 {
+		t.Fatalf("expected skipped=0, got %d", skipped)
+	}
 
 	// --- Phase 3: ComputeDiff ---
-	diff := capture.ComputeDiff(records, dropped, originalHash, "sha256:v2")
+	diff := capture.ComputeDiff(records, dropped, skipped, originalHash, "sha256:v2")
 
 	if diff.TotalRecords != 2 {
 		t.Errorf("TotalRecords: got %d, want 2", diff.TotalRecords)

@@ -17,7 +17,7 @@ import (
 
 // LoadAndReplay reads all capture sessions from sessionsDir, replays each
 // entry against the candidate config, and returns the replayed records, total
-// drop count, original config hash, and any error.
+// drop count, skipped entry count, original config hash, and any error.
 //
 // A fresh scanner is created per session so rate-limiter and data-budget state
 // does not bleed across sessions.
@@ -27,17 +27,17 @@ import (
 // entries). Within each session directory, all evidence-*.jsonl files are read
 // in sequence order. Only entries of type EntryTypeCapture with a valid
 // CaptureSummary are replayed; checkpoint, drop, and other entry types are
-// skipped.
+// skipped. Entries that fail to unmarshal are counted as skipped.
 //
 // The original config hash is taken from the first CaptureSummary with a
 // non-empty ConfigHash. The drop count is the maximum Count seen across all
 // EntryTypeCaptureDrop entries in the capture-meta subdirectory.
-func LoadAndReplay(cfg *config.Config, sessionsDir string) ([]ReplayedRecord, int, string, error) {
+func LoadAndReplay(cfg *config.Config, sessionsDir string) ([]ReplayedRecord, int, int, string, error) {
 	sessionsDir = filepath.Clean(sessionsDir)
 
 	dirEntries, err := os.ReadDir(sessionsDir)
 	if err != nil {
-		return nil, 0, "", fmt.Errorf("reading sessions directory: %w", err)
+		return nil, 0, 0, "", fmt.Errorf("reading sessions directory: %w", err)
 	}
 
 	// Read drop count from capture-meta subdirectory. The meta recorder writes
@@ -60,7 +60,8 @@ func LoadAndReplay(cfg *config.Config, sessionsDir string) ([]ReplayedRecord, in
 		}
 	}
 
-	// Sort session directories for deterministic replay order.
+	// os.ReadDir returns entries sorted by name. For deterministic replay,
+	// sessions are processed in alphabetical order by session ID.
 	var sessionNames []string
 	for _, de := range dirEntries {
 		if de.IsDir() && de.Name() != metaSessionID {
@@ -69,15 +70,18 @@ func LoadAndReplay(cfg *config.Config, sessionsDir string) ([]ReplayedRecord, in
 	}
 	sort.Strings(sessionNames)
 
-	var allRecords []ReplayedRecord
-	originalHash := ""
+	var (
+		allRecords   []ReplayedRecord
+		totalSkipped int
+		originalHash string
+	)
 
 	for _, sessionName := range sessionNames {
 		sessionDir := filepath.Join(sessionsDir, sessionName)
 
 		sessions, listErr := recorder.ListSessions(sessionDir)
 		if listErr != nil {
-			return nil, 0, "", fmt.Errorf("listing sessions in %s: %w", sessionName, listErr)
+			return nil, 0, 0, "", fmt.Errorf("listing sessions in %s: %w", sessionName, listErr)
 		}
 
 		// Fresh scanner per session to avoid rate-limiter / data-budget bleed.
@@ -90,13 +94,13 @@ func LoadAndReplay(cfg *config.Config, sessionsDir string) ([]ReplayedRecord, in
 			})
 			if queryErr != nil {
 				sc.Close()
-				return nil, 0, "", fmt.Errorf("querying session %s/%s: %w", sessionName, sessionID, queryErr)
+				return nil, 0, 0, "", fmt.Errorf("querying session %s/%s: %w", sessionName, sessionID, queryErr)
 			}
 
 			for _, entry := range result.Entries {
 				summary, scannerInput, err := extractCaptureSummary(entry)
 				if err != nil {
-					// Skip unparseable entries.
+					totalSkipped++
 					continue
 				}
 
@@ -116,7 +120,7 @@ func LoadAndReplay(cfg *config.Config, sessionsDir string) ([]ReplayedRecord, in
 		sc.Close()
 	}
 
-	return allRecords, totalDropped, originalHash, nil
+	return allRecords, totalDropped, totalSkipped, originalHash, nil
 }
 
 // extractCaptureSummary extracts a CaptureSummary and scanner input from a

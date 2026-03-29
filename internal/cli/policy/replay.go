@@ -78,12 +78,12 @@ func runReplay(cmd *cobra.Command, configFile, sessionsDir, reportPath, reportJS
 	}
 
 	// Replay all captured sessions.
-	records, dropped, originalHash, err := capture.LoadAndReplay(cfg, sessionsDir)
+	records, dropped, skipped, originalHash, err := capture.LoadAndReplay(cfg, sessionsDir)
 	if err != nil {
 		return fmt.Errorf("replaying sessions: %w", err)
 	}
 
-	diff := capture.ComputeDiff(records, dropped, originalHash, candidateHash)
+	diff := capture.ComputeDiff(records, dropped, skipped, originalHash, candidateHash)
 
 	// Print summary to stdout.
 	w := cmd.OutOrStdout()
@@ -95,6 +95,7 @@ func runReplay(cmd *cobra.Command, configFile, sessionsDir, reportPath, reportJS
 	_, _ = fmt.Fprintf(w, "Evidence-only: %d\n", diff.EvidenceOnly)
 	_, _ = fmt.Fprintf(w, "Summary-only:  %d\n", diff.SummaryOnly)
 	_, _ = fmt.Fprintf(w, "Dropped:       %d\n", diff.Dropped)
+	_, _ = fmt.Fprintf(w, "Skipped:       %d\n", diff.Skipped)
 	_, _ = fmt.Fprintf(w, "Original hash: %s\n", diff.OriginalConfigHash)
 	_, _ = fmt.Fprintf(w, "Candidate hash:%s\n", diff.CandidateConfigHash)
 

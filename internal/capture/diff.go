@@ -36,6 +36,7 @@ type DiffReport struct {
 	EvidenceOnly        int         `json:"evidence_only"`
 	SummaryOnly         int         `json:"summary_only"`
 	Dropped             int         `json:"dropped"`
+	Skipped             int         `json:"skipped"`
 	Changes             []DiffEntry `json:"changes"`
 	AllRecords          []DiffEntry `json:"all_records,omitempty"`
 }
@@ -54,15 +55,17 @@ type DiffEntry struct {
 
 // ComputeDiff classifies each replayed record and returns a DiffReport.
 // dropped is the number of records that could not be replayed (e.g. buffer
-// overflows during capture). originalHash and candidateHash are the
+// overflows during capture). skipped is the number of entries that failed to
+// unmarshal during loading. originalHash and candidateHash are the
 // hex-encoded SHA-256 digests of the respective configs.
-func ComputeDiff(records []ReplayedRecord, dropped int, originalHash, candidateHash string) *DiffReport {
+func ComputeDiff(records []ReplayedRecord, dropped, skipped int, originalHash, candidateHash string) *DiffReport {
 	report := &DiffReport{
 		ReportVersion:       reportVersion,
 		OriginalConfigHash:  originalHash,
 		CandidateConfigHash: candidateHash,
 		TotalRecords:        len(records),
 		Dropped:             dropped,
+		Skipped:             skipped,
 	}
 
 	for _, r := range records {

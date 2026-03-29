@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -29,6 +30,10 @@ const dropSentinelInterval = 100
 // WirePayloadSample fields. Keeps CaptureSummary compact while preserving
 // enough context for human inspection and replay debugging.
 const maxScannerSample = 256
+
+// redactedPlaceholder replaces sensitive inline content when redaction is on.
+// Exact payloads still reach the encrypted sidecar files.
+const redactedPlaceholder = "[REDACTED]"
 
 // metaSessionID is the fixed session identifier used for the capture-meta
 // recorder that stores drop sentinel entries.
@@ -76,6 +81,7 @@ type Writer struct {
 	buildVersion string
 	buildSHA     string
 	dropped      atomic.Int64
+	closed       atomic.Bool
 	closeOnce    sync.Once
 	done         chan struct{}
 }
@@ -127,6 +133,19 @@ func NewWriter(cfg WriterConfig) (*Writer, error) {
 	return w, nil
 }
 
+// sanitizeSessionID validates that a session ID is safe to use as a directory
+// name. It rejects empty strings, path separators, and traversal sequences.
+func sanitizeSessionID(id string) (string, error) {
+	if id == "" {
+		return "", fmt.Errorf("empty session ID")
+	}
+	if strings.ContainsAny(id, "/\\") || strings.Contains(id, "..") {
+		return "", fmt.Errorf("invalid session ID %q: contains path separator or traversal", id)
+	}
+	// Use filepath.Base as defense in depth.
+	return filepath.Base(id), nil
+}
+
 // getRecorder returns the recorder for a session, creating one if needed.
 // Called only from the worker goroutine (no mutex needed).
 func (w *Writer) getRecorder(sessionID string) (*recorder.Recorder, error) {
@@ -134,12 +153,17 @@ func (w *Writer) getRecorder(sessionID string) (*recorder.Recorder, error) {
 		return rec, nil
 	}
 
+	safe, err := sanitizeSessionID(sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("session ID sanitization: %w", err)
+	}
+
 	cfg := w.baseCfg
-	cfg.Dir = filepath.Join(w.baseCfg.Dir, sessionID)
+	cfg.Dir = filepath.Join(w.baseCfg.Dir, safe)
 
 	rec, err := recorder.New(cfg, w.redactFn, w.privKey)
 	if err != nil {
-		return nil, fmt.Errorf("creating session recorder %q: %w", sessionID, err)
+		return nil, fmt.Errorf("creating session recorder %q: %w", safe, err)
 	}
 
 	w.recorders[sessionID] = rec
@@ -210,7 +234,9 @@ func (w *Writer) worker() {
 		}
 
 		ce.entry.Detail = ce.summary
-		_ = rec.Record(ce.entry)
+		if err := rec.Record(ce.entry); err != nil {
+			w.recordDrop()
+		}
 	}
 
 	// Flush any remaining drop sentinel on close.
@@ -219,9 +245,13 @@ func (w *Writer) worker() {
 	}
 }
 
-// send performs a non-blocking send to the channel. If the channel is full,
-// the entry is dropped and recorded.
+// send performs a non-blocking send to the channel. If the writer has been
+// closed or the channel is full, the entry is dropped and recorded.
 func (w *Writer) send(ce captureEntry) {
+	if w.closed.Load() {
+		w.recordDrop()
+		return
+	}
 	select {
 	case w.ch <- ce:
 	default:
@@ -230,13 +260,14 @@ func (w *Writer) send(ce captureEntry) {
 }
 
 // recordDrop increments the atomic drop counter, notifies the DropSink, and
-// periodically writes a sentinel entry to the meta recorder.
+// periodically writes a sentinel entry to the meta recorder. A sentinel is
+// emitted on the first drop and every dropSentinelInterval drops thereafter.
 func (w *Writer) recordDrop() {
 	n := w.dropped.Add(1)
 	if w.dropSink != nil {
 		w.dropSink.RecordCaptureDrop()
 	}
-	if n%dropSentinelInterval == 0 {
+	if n == 1 || n%dropSentinelInterval == 0 {
 		w.writeDropSentinel(n)
 	}
 }
@@ -300,6 +331,27 @@ func (w *Writer) buildSummary(
 			s.WirePayloadSample = wirePayload[:maxScannerSample]
 		} else {
 			s.WirePayloadSample = wirePayload
+		}
+	}
+
+	// When redaction is configured, strip sensitive inline content from the
+	// summary. Metadata (sizes, hashes, surface, action) is preserved; exact
+	// content reaches only the encrypted payload sidecars.
+	if w.redactFn != nil {
+		s.ScannerSample = redactedPlaceholder
+		s.WirePayloadSample = redactedPlaceholder
+		s.Request.Headers = nil
+		if s.Request.BodySample != "" {
+			s.Request.BodySample = redactedPlaceholder
+		}
+		if s.Request.ToolArgsJSON != "" {
+			s.Request.ToolArgsJSON = redactedPlaceholder
+		}
+		for i := range s.RawFindings {
+			s.RawFindings[i].MatchText = ""
+		}
+		for i := range s.EffectiveFindings {
+			s.EffectiveFindings[i].MatchText = ""
 		}
 	}
 
@@ -433,6 +485,7 @@ func (w *Writer) ObserveToolScanVerdict(_ context.Context, rec *ToolScanRecord) 
 func (w *Writer) Close() error {
 	var firstErr error
 	w.closeOnce.Do(func() {
+		w.closed.Store(true)
 		close(w.ch)
 		<-w.done
 

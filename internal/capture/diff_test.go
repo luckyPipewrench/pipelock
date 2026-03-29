@@ -42,7 +42,7 @@ func TestComputeDiff(t *testing.T) {
 		},
 	}
 
-	diff := ComputeDiff(records, 7, testOriginalHash, testCandidateHash)
+	diff := ComputeDiff(records, 7, 0, testOriginalHash, testCandidateHash)
 
 	if diff.TotalRecords != 5 {
 		t.Errorf("TotalRecords: got %d, want 5", diff.TotalRecords)
@@ -98,7 +98,7 @@ func TestComputeDiff(t *testing.T) {
 }
 
 func TestComputeDiff_Empty(t *testing.T) {
-	diff := ComputeDiff(nil, 0, testOriginalHash, testCandidateHash)
+	diff := ComputeDiff(nil, 0, 0, testOriginalHash, testCandidateHash)
 
 	if diff.TotalRecords != 0 {
 		t.Errorf("TotalRecords: got %d, want 0", diff.TotalRecords)
@@ -126,7 +126,7 @@ func TestComputeDiff_AllUnchanged(t *testing.T) {
 		},
 	}
 
-	diff := ComputeDiff(records, 0, testOriginalHash, testCandidateHash)
+	diff := ComputeDiff(records, 0, 0, testOriginalHash, testCandidateHash)
 
 	if diff.TotalRecords != 2 {
 		t.Errorf("TotalRecords: got %d, want 2", diff.TotalRecords)
@@ -160,7 +160,7 @@ func TestComputeDiff_AllEvidenceOnly(t *testing.T) {
 		},
 	}
 
-	diff := ComputeDiff(records, 3, testOriginalHash, testCandidateHash)
+	diff := ComputeDiff(records, 3, 0, testOriginalHash, testCandidateHash)
 
 	if diff.TotalRecords != 2 {
 		t.Errorf("TotalRecords: got %d, want 2", diff.TotalRecords)
@@ -189,7 +189,7 @@ func TestComputeDiff_FailClosedTreatedAsBlock(t *testing.T) {
 		},
 	}
 
-	diff := ComputeDiff(records, 0, testOriginalHash, testCandidateHash)
+	diff := ComputeDiff(records, 0, 0, testOriginalHash, testCandidateHash)
 
 	if diff.NewBlocks != 1 {
 		t.Errorf("NewBlocks: got %d, want 1 (fail_closed should count as block)", diff.NewBlocks)

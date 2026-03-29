@@ -350,7 +350,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if scanTextFrames && sc.ResponseScanningEnabled() && isResponseScanExempt(relay.hostname, cfg.ResponseScanning.ExemptDomains) {
-		log.LogAnomaly("WS", targetURL, "response_scan", fmt.Sprintf("response scan skipped: host %q matched exempt_domains", relay.hostname), clientIP, requestID, agent, 0)
+		log.LogResponseScanExempt("WS", targetURL, relay.hostname, clientIP, requestID, agent)
 	}
 
 	stats := relay.run(r.Context())

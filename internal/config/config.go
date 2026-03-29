@@ -1814,6 +1814,9 @@ func (c *Config) validateResponseScanning() error {
 	if err := ValidateTrustedDomains(c.ResponseScanning.ExemptDomains, "response_scanning.exempt_domains"); err != nil {
 		return err
 	}
+	if !c.ResponseScanning.Enabled && len(c.ResponseScanning.ExemptDomains) > 0 {
+		_, _ = fmt.Fprintf(os.Stderr, "WARNING: response_scanning.exempt_domains configured but response_scanning is disabled — these will take effect when enabled\n")
+	}
 	return nil
 }
 
@@ -2053,6 +2056,9 @@ func (c *Config) validateAdaptiveEnforcement() error {
 	if err := ValidateTrustedDomains(c.AdaptiveEnforcement.ExemptDomains, "adaptive_enforcement.exempt_domains"); err != nil {
 		return err
 	}
+	if !c.AdaptiveEnforcement.Enabled && len(c.AdaptiveEnforcement.ExemptDomains) > 0 {
+		_, _ = fmt.Fprintf(os.Stderr, "WARNING: adaptive_enforcement.exempt_domains configured but adaptive_enforcement is disabled — these will take effect when enabled\n")
+	}
 	return nil
 }
 
@@ -2178,6 +2184,9 @@ func (c *Config) validateCrossRequestDetection() error {
 	// Validate CEE entropy budget exempt_domains regardless of enabled state.
 	if err := ValidateTrustedDomains(c.CrossRequestDetection.EntropyBudget.ExemptDomains, "cross_request_detection.entropy_budget.exempt_domains"); err != nil {
 		return err
+	}
+	if !c.CrossRequestDetection.Enabled && len(c.CrossRequestDetection.EntropyBudget.ExemptDomains) > 0 {
+		_, _ = fmt.Fprintf(os.Stderr, "WARNING: cross_request_detection.entropy_budget.exempt_domains configured but cross_request_detection is disabled — these will take effect when enabled\n")
 	}
 	return nil
 }

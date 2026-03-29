@@ -37,9 +37,10 @@ type MCPProxyOpts struct {
 	ChainMatcher *chains.Matcher
 
 	// Session and adaptive enforcement
-	Store       session.Store
-	Rec         session.Recorder // set by RunProxy after Store.GetOrCreate
-	AdaptiveCfg *config.AdaptiveEnforcement
+	Store         session.Store
+	Rec           session.Recorder // set by RunProxy after Store.GetOrCreate
+	AdaptiveCfg   *config.AdaptiveEnforcement
+	AdaptiveCfgFn AdaptiveConfigFunc // hot-reload aware; used by listener proxy. Nil = use static AdaptiveCfg.
 
 	// Cross-request exfiltration detection
 	CEE *CEEDeps

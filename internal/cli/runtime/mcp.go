@@ -520,7 +520,15 @@ Environment passthrough (subprocess mode only):
 					adaptiveFn := mcp.AdaptiveConfigFunc(func() *config.AdaptiveEnforcement {
 						return adaptiveCfg
 					})
-					if err := mcp.RunHTTPListenerProxy(ctx, mcpLn, upstreamURL, cmd.ErrOrStderr(), sc, approver, inputCfg, toolCfg, policyCfg, ks, chainMatcher, nil, cee, store, adaptiveFn, mcpMetrics, buildRedirectRT(cfg), nil); err != nil {
+					if err := mcp.RunHTTPListenerProxy(ctx, mcpLn, upstreamURL, cmd.ErrOrStderr(), mcp.MCPProxyOpts{
+						Scanner: sc, Approver: approver,
+						InputCfg: inputCfg, ToolCfg: toolCfg, PolicyCfg: policyCfg,
+						KillSwitch: ks, ChainMatcher: chainMatcher,
+						CEE: cee, Store: store, AdaptiveCfgFn: adaptiveFn, Metrics: mcpMetrics,
+						RedirectRT:    buildRedirectRT(cfg),
+						ProvenanceCfg: &cfg.MCPToolProvenance,
+						DoWCheck:      dowCheck,
+					}); err != nil {
 						if sentryClient != nil {
 							sentryClient.CaptureError(err)
 						}
@@ -655,6 +663,16 @@ Environment passthrough (subprocess mode only):
 					p.AllowReadDirs = append(p.AllowReadDirs, cfg.Sandbox.FS.AllowRead...)
 					p.AllowRWDirs = append(p.AllowRWDirs, cfg.Sandbox.FS.AllowWrite...)
 					launchCfg.Policy = &p
+				}
+
+				// Binary integrity: verify before sandbox wraps the command.
+				// The sandbox re-execs pipelock as the parent, so checking
+				// after PrepareSandboxCmd would verify pipelock itself, not
+				// the MCP server binary.
+				if cfg.MCPBinaryIntegrity.Enabled {
+					if err := mcp.VerifyBinaryIntegrity(serverCmd, &cfg.MCPBinaryIntegrity, cmd.ErrOrStderr()); err != nil {
+						return err
+					}
 				}
 
 				sandboxCmd, sErr := sandbox.PrepareSandboxCmd(launchCfg)

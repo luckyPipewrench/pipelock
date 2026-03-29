@@ -17,19 +17,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
-	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
-	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
-	"github.com/luckyPipewrench/pipelock/internal/metrics"
-	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
 
@@ -809,43 +804,32 @@ func RunHTTPListenerProxy(
 	ln net.Listener,
 	upstreamURL string,
 	logW io.Writer,
-	sc *scanner.Scanner,
-	approver *hitl.Approver,
-	inputCfg *InputScanConfig,
-	toolCfg *tools.ToolScanConfig,
-	policyCfg *policy.Config,
-	ks *killswitch.Controller,
-	chainMatcher *chains.Matcher,
-	auditLogger *audit.Logger,
-	cee *CEEDeps,
-	store session.Store,
-	adaptiveCfgFn AdaptiveConfigFunc,
-	m *metrics.Metrics,
-	redirectRT *RedirectRuntime,
-	captureObs capture.CaptureObserver,
+	opts MCPProxyOpts,
 ) error {
 	safeLogW := &syncWriter{w: logW}
 
 	// Shared tool baseline across all requests for drift detection.
 	var fwdToolCfg *tools.ToolScanConfig
-	if toolCfg != nil && toolCfg.Action != "" {
+	if opts.ToolCfg != nil && opts.ToolCfg.Action != "" {
 		fwdToolCfg = &tools.ToolScanConfig{
 			Baseline:    tools.NewToolBaseline(),
-			Action:      toolCfg.Action,
-			DetectDrift: toolCfg.DetectDrift,
-			ExtraPoison: toolCfg.ExtraPoison,
+			Action:      opts.ToolCfg.Action,
+			DetectDrift: opts.ToolCfg.DetectDrift,
+			ExtraPoison: opts.ToolCfg.ExtraPoison,
 		}
 	}
 
 	// Base opts shared across requests. Per-request fields (Rec) are
 	// overridden on a copy inside each request handler.
 	baseOpts := MCPProxyOpts{
-		Scanner: sc, Approver: approver, ToolCfg: fwdToolCfg,
-		InputCfg: inputCfg, PolicyCfg: policyCfg,
-		KillSwitch: ks, ChainMatcher: chainMatcher,
-		AuditLogger: auditLogger, CEE: cee, Metrics: m,
-		RedirectRT: redirectRT, Transport: "mcp_http",
-		CaptureObs: captureObs,
+		Scanner: opts.Scanner, Approver: opts.Approver, ToolCfg: fwdToolCfg,
+		InputCfg: opts.InputCfg, PolicyCfg: opts.PolicyCfg,
+		KillSwitch: opts.KillSwitch, ChainMatcher: opts.ChainMatcher,
+		AuditLogger: opts.AuditLogger, CEE: opts.CEE, Metrics: opts.Metrics,
+		RedirectRT: opts.RedirectRT, Transport: "mcp_http",
+		CaptureObs:    opts.captureObserver(),
+		ProvenanceCfg: opts.ProvenanceCfg,
+		DoWCheck:      opts.DoWCheck,
 	}
 
 	// Shared HTTP client for upstream requests. Redirect-following is disabled
@@ -874,8 +858,10 @@ func RunHTTPListenerProxy(
 		// Resolve adaptive config per-request so hot-reloads take effect
 		// without restarting the long-lived listener.
 		var adaptiveCfg *config.AdaptiveEnforcement
-		if adaptiveCfgFn != nil {
-			adaptiveCfg = adaptiveCfgFn()
+		if opts.AdaptiveCfgFn != nil {
+			adaptiveCfg = opts.AdaptiveCfgFn()
+		} else {
+			adaptiveCfg = opts.AdaptiveCfg
 		}
 
 		// Cap request body to prevent memory exhaustion.
@@ -931,8 +917,8 @@ func RunHTTPListenerProxy(
 		}
 
 		// Kill switch: deny all requests when active.
-		if ks != nil {
-			if d := ks.IsActiveMCP(body); d.Active {
+		if opts.KillSwitch != nil {
+			if d := opts.KillSwitch.IsActiveMCP(body); d.Active {
 				w.Header().Set("Content-Type", "application/json")
 				if d.IsNotification {
 					w.WriteHeader(http.StatusAccepted)
@@ -968,19 +954,19 @@ func RunHTTPListenerProxy(
 		// yet, so using the chain key would split signals across two keys (IP
 		// for first request, session ID for subsequent ones).
 		var reqRec session.Recorder
-		if store != nil {
+		if opts.Store != nil {
 			adaptiveHost, _, adaptiveErr := net.SplitHostPort(r.RemoteAddr)
 			if adaptiveErr != nil {
 				adaptiveHost = r.RemoteAddr
 			}
-			reqRec = store.GetOrCreate(adaptiveHost)
+			reqRec = opts.Store.GetOrCreate(adaptiveHost)
 		}
 
 		// Scan Authorization header for DLP patterns. The body scanner
 		// doesn't see HTTP headers, so an agent could leak credentials
 		// via the Authorization header without triggering DLP.
 		if auth := r.Header.Get("Authorization"); auth != "" {
-			dlpResult := sc.ScanTextForDLP(r.Context(), auth)
+			dlpResult := opts.Scanner.ScanTextForDLP(r.Context(), auth)
 			if !dlpResult.Clean {
 				pattern := patternUnknown
 				if len(dlpResult.Matches) > 0 {
@@ -988,7 +974,7 @@ func RunHTTPListenerProxy(
 				}
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: DLP match in Authorization header: %s\n", pattern)
 				if reqRec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
-					recordSignalWithEscalation(reqRec, session.SignalBlock, adaptiveCfg.EscalationThreshold, safeLogW, auditLogger, m, auditSessionKey, "", "")
+					recordSignalWithEscalation(reqRec, session.SignalBlock, adaptiveCfg.EscalationThreshold, safeLogW, opts.AuditLogger, opts.Metrics, auditSessionKey, "", "")
 				}
 				w.Header().Set("Content-Type", "application/json")
 				rpcID := extractRPCID(body)
@@ -1006,11 +992,11 @@ func RunHTTPListenerProxy(
 		// SSRF-scanned. A2A-Version is informational and passes through
 		// without scanning.
 		if baseOpts.A2ACfg != nil && baseOpts.A2ACfg.Enabled {
-			headerResult := ScanA2AHeaders(r.Context(), r.Header, sc, baseOpts.A2ACfg)
+			headerResult := ScanA2AHeaders(r.Context(), r.Header, opts.Scanner, baseOpts.A2ACfg)
 			if !headerResult.Clean {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: a2a header blocked: %s\n", headerResult.Reason)
 				if reqRec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
-					recordSignalWithEscalation(reqRec, session.SignalBlock, adaptiveCfg.EscalationThreshold, safeLogW, auditLogger, m, auditSessionKey, "", "")
+					recordSignalWithEscalation(reqRec, session.SignalBlock, adaptiveCfg.EscalationThreshold, safeLogW, opts.AuditLogger, opts.Metrics, auditSessionKey, "", "")
 				}
 				w.Header().Set("Content-Type", "application/json")
 				rpcID := extractRPCID(body)

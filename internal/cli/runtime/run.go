@@ -818,7 +818,16 @@ Examples:
 					if captureWriter != nil {
 						mcpCaptureObs = captureWriter
 					}
-					mcpErr <- mcp.RunHTTPListenerProxy(ctx, mcpLn, mcpUpstream, cmd.ErrOrStderr(), sc, mcpApprover, inputCfg, toolCfg, policyCfg, ks, mcpChainMatcher, logger, mcpCEE, mcpStore, mcpAdaptiveFn, m, buildRedirectRT(cfg), mcpCaptureObs)
+					mcpErr <- mcp.RunHTTPListenerProxy(ctx, mcpLn, mcpUpstream, cmd.ErrOrStderr(), mcp.MCPProxyOpts{
+						Scanner: sc, Approver: mcpApprover,
+						InputCfg: inputCfg, ToolCfg: toolCfg, PolicyCfg: policyCfg,
+						KillSwitch: ks, ChainMatcher: mcpChainMatcher,
+						AuditLogger: logger, CEE: mcpCEE,
+						Store: mcpStore, AdaptiveCfgFn: mcpAdaptiveFn, Metrics: m,
+						RedirectRT:    buildRedirectRT(cfg),
+						CaptureObs:    mcpCaptureObs,
+						ProvenanceCfg: &cfg.MCPToolProvenance,
+					})
 				}()
 			}
 

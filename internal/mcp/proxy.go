@@ -242,7 +242,27 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		if toolCfg != nil {
 			toolResult := tools.ScanTools(line, sc, toolCfg)
 			isToolsList = toolResult.IsToolsList
+			// Provenance: verify tool signatures BEFORE updating session binding
+			// baseline. A blocked tools/list must not seed known tools.
+			if toolResult.IsToolsList && opts.ProvenanceCfg != nil && opts.ProvenanceCfg.Enabled {
+				pv := VerifyToolsListProvenance(line, opts.ProvenanceCfg)
+				if pv.Block {
+					_, _ = fmt.Fprintf(logW, "pipelock: line %d: tools/list provenance verification failed: %s\n", lineNum, pv.Error)
+					if m != nil {
+						m.RecordBlocked("mcp", "provenance", 0, "")
+					}
+					resp := blockResponse(toolResult.RPCID)
+					if err := writer.WriteMessage(resp); err != nil {
+						return foundInjection, fmt.Errorf("writing provenance block: %w", err)
+					}
+					continue
+				}
+				if pv.Error != "" {
+					_, _ = fmt.Fprintf(logW, "pipelock: line %d: tools/list provenance warning: %s\n", lineNum, pv.Error)
+				}
+			}
 			// Session binding: capture tool names from tools/list responses.
+			// Runs after provenance so blocked responses don't poison the baseline.
 			if toolResult.IsToolsList && toolCfg.Baseline != nil && len(toolResult.ToolNames) > 0 {
 				if !toolCfg.Baseline.HasBaseline() {
 					toolCfg.Baseline.SetKnownTools(toolResult.ToolNames)
@@ -262,24 +282,6 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					EffectiveAction: toolCfg.Action,
 					Outcome:         captureOutcome(toolCfg.Action, toolResult.Clean),
 				})
-			}
-			// Provenance: verify tool signatures on tools/list responses.
-			if toolResult.IsToolsList && opts.ProvenanceCfg != nil && opts.ProvenanceCfg.Enabled {
-				pv := VerifyToolsListProvenance(line, opts.ProvenanceCfg)
-				if pv.Block {
-					_, _ = fmt.Fprintf(logW, "pipelock: line %d: tools/list provenance verification failed: %s\n", lineNum, pv.Error)
-					if m != nil {
-						m.RecordBlocked("mcp", "provenance", 0, "")
-					}
-					resp := blockResponse(toolResult.RPCID)
-					if err := writer.WriteMessage(resp); err != nil {
-						return foundInjection, fmt.Errorf("writing provenance block: %w", err)
-					}
-					continue
-				}
-				if pv.Error != "" {
-					_, _ = fmt.Fprintf(logW, "pipelock: line %d: tools/list provenance warning: %s\n", lineNum, pv.Error)
-				}
 			}
 			if toolResult.IsToolsList && !toolResult.Clean {
 				foundInjection = true
@@ -751,7 +753,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	// Runs after command resolution but before Start() so a tampered binary
 	// is never spawned when action is "block".
 	if icfg := opts.IntegrityCfg; icfg != nil && icfg.Enabled {
-		if err := verifyBinaryIntegrity(command, icfg, logW); err != nil {
+		if err := VerifyBinaryIntegrity(command, icfg, logW); err != nil {
 			return err
 		}
 	}
@@ -977,10 +979,12 @@ func safeEnv() []string {
 	return env
 }
 
-// verifyBinaryIntegrity loads the manifest and verifies the command binary
 // hash before subprocess spawn. Returns an error only when action is "block"
 // and verification fails; "warn" failures are logged to logW and return nil.
-func verifyBinaryIntegrity(command []string, icfg *config.MCPBinaryIntegrity, logW io.Writer) error {
+// VerifyBinaryIntegrity checks the command binary against a hash manifest.
+// Returns nil when verification passes or action is warn (logged only).
+// Returns an error when action is block and verification fails.
+func VerifyBinaryIntegrity(command []string, icfg *config.MCPBinaryIntegrity, logW io.Writer) error {
 	intCfg := &integrity.Config{
 		Enabled:      true,
 		ManifestPath: icfg.ManifestPath,

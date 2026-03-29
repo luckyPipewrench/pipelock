@@ -313,7 +313,7 @@ pipelock assess finalize assessment-a1b2c3d4/
 
 The free summary shows your grade, section scores, and top findings. Licensed users get the full report with server-specific findings, remediation commands, and Ed25519-signed evidence.
 
-![Pipelock Security Assessment showing grade C (89/100), capped due to unprotected MCP servers](docs/assets/assess-example.png)
+![Pipelock Security Summary showing grade C (79/100) with compliance coverage, MCP protection, and detection scoring](docs/assets/assess-summary.png)
 
 ### More Features
 

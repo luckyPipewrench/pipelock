@@ -7,29 +7,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0]
+
 ### Added
-- Sandbox `--best-effort` flag: gracefully degrades when user namespace creation is blocked (e.g. k8s containers with default seccomp). Landlock and seccomp containment layers still apply. Network scanning uses proxy-based routing instead of kernel-enforced namespace isolation.
-- Sandbox `--env` flag: pass environment variables to sandboxed processes (KEY or KEY=VALUE, repeatable). Validates against dangerous keys (LD_PRELOAD, NODE_OPTIONS, etc.) that could subvert containment.
-- MCP proxy `--sandbox-best-effort` flag: parity with `pipelock sandbox --best-effort` for MCP stdio wrapping mode.
-- Pure Go netlink loopback: sandbox uses raw netlink syscalls to bring up loopback inside network namespaces. No `ip` binary required. Works in minimal container images without iproute2.
+
+- **Sandbox `--best-effort` flag:** gracefully degrades when user namespace creation is blocked (e.g. k8s containers with default seccomp). Landlock and seccomp containment layers still apply. Network scanning uses proxy-based routing instead of kernel-enforced namespace isolation. (#289)
+- **Sandbox `--env` flag:** pass environment variables to sandboxed processes (KEY or KEY=VALUE, repeatable). Validates against dangerous keys (LD_PRELOAD, NODE_OPTIONS, etc.) that could subvert containment. (#289)
+- **MCP proxy `--sandbox-best-effort` flag:** parity with `pipelock sandbox --best-effort` for MCP stdio wrapping mode. (#292)
+- **Pure Go netlink loopback:** sandbox uses raw netlink syscalls to bring up loopback inside network namespaces. No `ip` binary required. Works in minimal container images without iproute2. (#289)
+- **`pipelock assess` command:** signed security assessments with evidence capture, secret redaction, and HTML report. `assess init` starts a session, `assess run` executes attack simulations and captures evidence, `assess finalize` produces a PDF-ready HTML report with visual hierarchy, remediation guidance, and an optional signed attestation bundle. Secrets and server names are redacted from evidence before output. (#296, #301, #306)
+- **`pipelock assess finalize --attestation`:** produces `attestation.json` and a detached Ed25519 signature for the finalized report. `--badge` derives an SVG badge from the attestation. (#314)
+- **Compliance evidence mappings:** `internal/report/compliance` maps pipelock controls against OWASP MCP Top 10, OWASP Agentic Top 15, NIST 800-53, EU AI Act, and SOC 2. Compliance atlas threads through `assess finalize` output. (#314)
+- **`trusted_domains` for forward proxy:** allowlist domains whose DNS resolves to private IPs without disabling SSRF protection globally. Useful for local inference endpoints and internal services. Community contribution. (#297)
+- **`exempt_domains` for response scanning:** per-domain opt-out from injection scanning with DLP still applied. Prevents false positives from high-volume API response traffic. (#305)
+- **MCP redirect handlers (built-in):** two built-in redirect profiles — `fetch-proxy` routes matched tool calls through pipelock's fetch proxy with full injection scanning, `quarantine-write` captures file write arguments to a quarantine path for review. Handler output is scanned for injection before returning to the agent. (#307)
+- **Session admin API:** `GET /api/v1/sessions` lists adaptive enforcement sessions; `POST /api/v1/sessions/{key}/reset` clears escalation state and allows autonomous block_all recovery after clean traffic. Operations are audit-logged. (#308)
+- **Flight recorder:** hash-chained JSONL evidence log with configurable retention, signed checkpoints, DLP redaction, and optional X25519 key escrow for encrypted raw capture. New `flight_recorder` config section. (#309)
+- **Agent Bill of Materials (aBOM):** CycloneDX 1.6 BOM generation with declared-vs-observed tool inventory, confidence scoring, and dormant/unexpected tool classification. New `internal/abom` package. (#309)
+- **MCP binary integrity:** `internal/integrity` package generates and verifies file manifests (SHA-256, permissions) for MCP server directories. Detects modified, added, removed, and permission-changed files. (#310)
+- **Denial-of-wallet detection:** `internal/proxy/dow.go` tracks tool call budgets per session — loop detection, runaway expansion, retry storms, fan-out limits, concurrent call limits, and wall-clock caps. New `denial_of_wallet` config section. (#310)
+- **Session manifest and signed decision records:** `internal/manifest` captures versioned session snapshots (policy hash, tool inventory, verdict summary, behavioral fingerprint). `internal/recorder` writes signed decision records per enforcement event. (#312)
+- **Canary token detection:** `canary_tokens` config section defines synthetic secrets injected via env vars. Detections trigger a block and audit event. `pipelock canary` CLI helper prints config snippets. (#313)
+- **`pipelock simulate` expansion:** simulate command extended with new attack scenarios. Covers DLP exfiltration, prompt injection, tool poisoning, SSRF, and URL evasion. Known-limitation tagging distinguishes scanner gaps from failures. (#313)
+- **A2A protocol scanning foundation:** `a2a_scanning` config section enables scanning of Google A2A (Agent-to-Agent) protocol traffic in forward proxy and MCP HTTP proxy paths. Field-aware scanning with agent card poisoning detection, card drift (rug-pull) detection, session smuggling detection, and configurable context caps. (#316)
+- **SecureIQLab Docker Compose test harness:** `test/secureiqlab/` provides a ready-to-run environment for validating pipelock against adversarial AI agent attack scenarios. Includes mock LLM, mock MCP server, log collector, and pre-baked pipelock configs. (#318)
 
 ### Fixed
-- Seccomp io_uring handling: changed from KILL_PROCESS to EPERM so runtimes like Node.js 22 that probe io_uring at startup can gracefully fall back to epoll instead of crashing.
-- Seccomp `readlink` syscall: added `SYS_READLINK` (nr 89) to the allowlist. Node.js/libuv uses the legacy readlink syscall directly, not readlinkat.
-- Sandbox secret dir validation: `secretDirs()` now only protects directories that actually exist. Prevents false validation errors in containers.
-- Sandbox bridge proxy dynamic port: in best-effort mode, uses dynamic port instead of hardcoded 8888.
-- Config reload detection: `sandbox.best_effort` changes detected during hot reload. Per-agent `best_effort` propagated through enterprise merge.
-- Config validation: `sandbox.best_effort` and `sandbox.strict` mutually exclusive.
-- Suppress glob matching: strip standard ports (:443, :80) and cross-slash glob for URL patterns. Fixes suppress rules silently failing on TLS-intercepted URLs. (#328)
-- Config defaults via Load(): `applySecurityDefaults` for 8 security-critical booleans and `ApplyDefaults` for all v2.1.0 config structs. Prevents unsafe Go zero values when users partially configure new features. (#328)
-- Adaptive enforcement exempt domains: exempt domains are now scanned for visibility (findings logged as warn) but adaptive scoring is skipped and actions are not upgraded. Prevents death spiral from LLM response false positives. All 5 transports. (#328)
-- DoW tracker wired into MCP stdio, HTTP, and WS proxy paths. `dow_action: warn` mode supported. Falls back to `_default` agent profile for free tier. (#328)
-- Behavioral baseline directory auto-creation in `NewManager`. (#328)
-- License gate preserves `_default` agent profile when rejecting unlicensed named agents. (#328)
-- FlightRecorder, BehavioralBaseline, MCPToolProvenance, and MCPBinaryIntegrity wired into proxy runtime. Previously config-only stubs. (#328)
-- `RunHTTPListenerProxy` refactored from 20-parameter function to `MCPProxyOpts` struct. (#328)
-- Provenance audit logging for block and warn-mode unsigned tools. (#328)
-- DoW metadata backfill for scan-disabled configurations. (#328)
+
+- **Sandbox best-effort seccomp:** `io_uring` handling changed from KILL_PROCESS to EPERM so runtimes like Node.js 22 that probe io_uring at startup can gracefully fall back to epoll instead of crashing. (#289)
+- **Sandbox seccomp `readlink` syscall:** added `SYS_READLINK` (nr 89) to the allowlist. Node.js/libuv uses the legacy readlink syscall directly, not readlinkat. (#289)
+- **Sandbox secret dir validation:** `secretDirs()` now only protects directories that actually exist. Prevents false validation errors in containers. (#289)
+- **Sandbox bridge proxy dynamic port:** in best-effort mode, uses a dynamically allocated port instead of the hardcoded 8888. (#289)
+- **Config reload — sandbox best-effort:** `sandbox.best_effort` changes are detected during hot reload. Per-agent `best_effort` propagated through enterprise merge. Config validation enforces mutual exclusivity of `sandbox.best_effort` and `sandbox.strict`. (#289)
+- **File sentry best-effort mode:** file sentry in MCP proxy mode now respects `best_effort` flag and degrades gracefully when filesystem watching is unavailable rather than failing hard. (#292)
+- **Scanner result classification:** scanner results carry a structured classification (category, transport, layer) that drives adaptive enforcement signal recording. Prevents the death spiral where every enforcement event generates a new escalation signal. (#295)
+- **Autonomous block_all recovery:** adaptive enforcement sessions at `block_all` level now auto-deescalate after a configurable window of clean traffic. Previously, sessions could be permanently locked out with no recovery path outside of a config reload. (#304)
+- **Suppress glob port matching:** strip standard ports (:443, :80) and cross-slash glob for URL patterns. Fixes suppress rules silently failing on TLS-intercepted URLs. (#328)
+- **Config defaults via Load():** `applySecurityDefaults` for 8 security-critical booleans and `ApplyDefaults` for all v2.1.0 config structs. Prevents unsafe Go zero values when users partially configure new features. (#328)
+- **Adaptive enforcement exempt domains:** exempt domains are now scanned for visibility (findings logged as warn) but adaptive scoring is skipped and actions are not upgraded. Prevents death spiral from LLM response false positives. All 5 transports. (#328)
+- **DoW tracker wiring:** denial-of-wallet tracking wired into MCP stdio, HTTP, and WS proxy paths. `dow_action: warn` mode supported. Falls back to `_default` agent profile for free tier. (#328)
+- **Behavioral baseline directory auto-creation** in `NewManager`. (#328)
+- **License gate preserves `_default` profile** when rejecting unlicensed named agents. (#328)
+- **Feature wiring:** FlightRecorder, BehavioralBaseline, MCPToolProvenance, and MCPBinaryIntegrity connected to proxy runtime. Previously config-only stubs. (#328)
+- **Provenance audit logging** for block and warn-mode unsigned tools. (#328)
+- **DoW metadata backfill** for scan-disabled configurations. (#328)
+
+### Refactored
+
+- **Shared escalation recording helper:** `decide.RecordEscalation` extracted as a shared helper used by all proxy and MCP enforcement paths. Eliminates duplicated escalation logic across fetch, forward, WebSocket, and MCP transports. (#290)
+- **`MCPProxyOpts` struct:** long MCP proxy parameter lists replaced with a single `MCPProxyOpts` options struct. Reduces argument count from 13+ parameters to a single struct, making future additions non-breaking. (#294)
+- **`RunHTTPListenerProxy` refactored** from 20-parameter function to `MCPProxyOpts` struct. (#328)
+- **CLI god package split:** 91-file, 10,000+ line CLI package split into 10 focused subpackages: `assess`, `audit`, `canary`, `diag`, `generate`, `git`, `rules`, `runtime`, `setup`, `signing`. Each subpackage is independently testable. (#303)
+- **`atomicfile` shared package:** `internal/atomicfile` extracted as a shared atomic write primitive used by signing, integrity, and recorder packages. Eliminates duplicate implementations. (#302)
+
+### Testing & CI
+
+- **Coverage boost — `atomicfile` package:** `internal/atomicfile` covered by dedicated tests including OS-level write error injection via a `WriteFile` dependency injection interface. (#302)
+- **Scanner coverage — encoded payloads and cross-transport DLP:** new tests covering base64/hex-encoded payload detection, segment-level decode paths, and DLP scanning across fetch, forward proxy, and MCP stdio transports. (#315)
+- **Comprehensive coverage boost:** (#317, #328)
+- **GitHub Action references migrated from v1 to v2:** all `actions/checkout`, `actions/setup-go`, `actions/upload-artifact`, and third-party action refs updated to v2+ across CI workflows. (#291)
+- **pip deps pinned with hashes:** Python test dependencies pinned with `--require-hashes` in requirements files. Makefile `fmt` and `lint` targets fixed. (#298)
+- **`requests` dependency bumped.** (#300)
+- **MCP tool provenance and profile-then-lock baseline:** (#311)
+- **Policy capture and replay engine:** (#319)
+- **Structured exit codes and subprocess error handling:** (#320)
+- **v2.1.0 polish fixes:** (#321)
+- **Config.Validate split, DRY audit logger, coverage boost:** (#322)
 
 ## [2.0.0] - 2026-03-22
 

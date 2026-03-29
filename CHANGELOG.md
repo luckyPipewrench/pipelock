@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [2.1.0] - Unreleased
+## [2.1.0] - 2026-03-29
 
 ### Added
 
@@ -73,6 +73,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Structured exit codes and subprocess error handling:** (#320)
 - **v2.1.0 polish fixes:** (#321)
 - **Config.Validate split, DRY audit logger, coverage boost:** (#322)
+- **Scan redirect handler output through DLP pipeline:** (#323)
+- **Grafana dashboard expanded to 45 metrics** across 14 rows with panels for cross-request detection, adaptive enforcement, scan API, TLS interception, address protection, file sentry, reverse proxy, and capture system.
+- **Prometheus alert rules expanded to 28** covering all actionable metrics including DLP, TLS, cross-request, adaptive enforcement, address poisoning, file sentry, and kill switch state.
+- **Unversioned release archives** for stable `/releases/latest/download/` curl installs. (#324)
 
 ## [2.0.0] - 2026-03-22
 

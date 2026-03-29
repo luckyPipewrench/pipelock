@@ -925,9 +925,10 @@ func ForwardScannedInput(
 			// reflects the actual result delivered to the client.
 			finalResult := "blocked"
 			if result.Success {
-				// Scan redirect handler output for prompt injection before
-				// sending to client. Untrusted handler output is attack surface.
+				// Scan redirect handler output for prompt injection AND DLP before
+				// sending to client. Handler output is untrusted.
 				scanVerdict := ScanResponse(result.Response, sc)
+				dlpResult := sc.ScanTextForDLP(context.Background(), string(result.Response))
 				// Capture: record redirect output scan verdict.
 				obs.ObserveResponseVerdict(context.Background(), &capture.ResponseVerdictRecord{
 					Subsurface:      "response_redirect_output",
@@ -946,6 +947,15 @@ func ForwardScannedInput(
 						LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked (redirect output injection)", lineNum),
 						ErrorCode:      -32001,
 						ErrorMessage:   "pipelock: redirect handler output blocked by response scanning",
+					}
+				} else if !dlpResult.Clean {
+					_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked redirect response (DLP match in handler output: %s)\n", lineNum, dlpResult.Matches[0].PatternName)
+					blockedCh <- BlockedRequest{
+						ID:             verdict.ID,
+						IsNotification: isNotification,
+						LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked (redirect output DLP)", lineNum),
+						ErrorCode:      -32001,
+						ErrorMessage:   "pipelock: redirect handler output blocked by DLP scanning",
 					}
 				} else {
 					finalResult = "redirected"

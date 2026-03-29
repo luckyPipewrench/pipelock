@@ -505,9 +505,11 @@ func scanHTTPInput(msg []byte, logW io.Writer, sessionKey, auditSessionKey strin
 		var br *BlockedRequest
 		finalResult := "blocked"
 		if result.Success {
-			// Scan redirect handler output for prompt injection before
-			// sending to client. Untrusted handler output is attack surface.
+			// Scan redirect handler output for prompt injection AND DLP before
+			// sending to client. Handler output is untrusted — it could contain
+			// secrets or injection payloads.
 			scanVerdict := ScanResponse(result.Response, sc)
+			dlpResult := sc.ScanTextForDLP(context.Background(), string(result.Response))
 			if !scanVerdict.Clean {
 				_, _ = fmt.Fprintf(logW, "pipelock: input: blocked redirect response (injection detected in handler output)\n")
 				recordAdaptiveSignal(session.SignalBlock)
@@ -515,6 +517,14 @@ func scanHTTPInput(msg []byte, logW io.Writer, sessionKey, auditSessionKey strin
 					ID: verdict.ID, IsNotification: isNotification,
 					LogMessage: "blocked (redirect output injection)", ErrorCode: -32001,
 					ErrorMessage: "pipelock: redirect handler output blocked by response scanning",
+				}
+			} else if !dlpResult.Clean {
+				_, _ = fmt.Fprintf(logW, "pipelock: input: blocked redirect response (DLP match in handler output: %s)\n", dlpResult.Matches[0].PatternName)
+				recordAdaptiveSignal(session.SignalBlock)
+				br = &BlockedRequest{
+					ID: verdict.ID, IsNotification: isNotification,
+					LogMessage: "blocked (redirect output DLP)", ErrorCode: -32001,
+					ErrorMessage: "pipelock: redirect handler output blocked by DLP scanning",
 				}
 			} else {
 				finalResult = "redirected"

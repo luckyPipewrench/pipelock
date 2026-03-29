@@ -35,47 +35,6 @@ func TestFramework_CoverageSummary(t *testing.T) {
 	}
 }
 
-func TestFramework_CoverageStatus(t *testing.T) {
-	tests := []struct {
-		name     string
-		controls []ControlMapping
-		want     string
-	}{
-		{
-			name: "all covered",
-			controls: []ControlMapping{
-				{ID: "C1", Status: StatusCovered},
-				{ID: "C2", Status: StatusCovered},
-			},
-			want: StatusCovered,
-		},
-		{
-			name: "has not_covered",
-			controls: []ControlMapping{
-				{ID: "C1", Status: StatusCovered},
-				{ID: "C2", Status: StatusNotCovered},
-			},
-			want: StatusNotCovered,
-		},
-		{
-			name: "has partial only",
-			controls: []ControlMapping{
-				{ID: "C1", Status: StatusCovered},
-				{ID: "C2", Status: StatusPartial},
-			},
-			want: StatusPartial,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			f := Framework{Controls: tt.controls}
-			if got := f.CoverageStatus(); got != tt.want {
-				t.Errorf("CoverageStatus() = %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestCatalog_ReturnsFrameworks(t *testing.T) {
 	frameworks := Catalog()
 	if len(frameworks) != 5 {

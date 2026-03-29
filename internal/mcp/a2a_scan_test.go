@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -334,8 +335,8 @@ func TestScanA2AStream_InjectionTerminates(t *testing.T) {
 	if err == nil {
 		t.Error("expected error on injection detection")
 	}
-	if !strings.Contains(err.Error(), "terminated") {
-		t.Errorf("expected termination error, got %v", err)
+	if !errors.Is(err, ErrA2AStreamFinding) {
+		t.Errorf("expected ErrA2AStreamFinding, got %v", err)
 	}
 }
 

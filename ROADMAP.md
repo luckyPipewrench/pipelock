@@ -55,7 +55,7 @@ Core capabilities available today:
 
 **Prompt Injection Defense**
 - 6-pass normalization pipeline covering zero-width characters, homoglyphs, leetspeak, and encoded payloads
-- 19 response scanning patterns including state manipulation and control flow hijacking
+- 23 response scanning patterns including state manipulation, control flow hijacking, and CJK-language overrides
 - Full-schema tool poisoning detection (recursive inputSchema scanning)
 
 **MCP Security**

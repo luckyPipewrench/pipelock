@@ -94,7 +94,7 @@ canary_tokens:
       value: "sk-canary-4eC39HqLyjWDarjtT1zdp7dc"
 
 # ── Response / Injection Scanning ─────────────────────────────
-# All default patterns (19 patterns, 6-pass normalization).
+# All default patterns (23 patterns, 6-pass normalization).
 response_scanning:
   enabled: true
   action: block

@@ -475,11 +475,11 @@ response_scanning:
 | `enabled` | `true` | Enable response scanning |
 | `action` | `"warn"` | block, strip, warn, or ask (HITL) |
 | `ask_timeout_seconds` | `30` | Timeout for human-in-the-loop approval |
-| `include_defaults` | `true` | Merge with 19 built-in patterns |
+| `include_defaults` | `true` | Merge with 23 built-in patterns |
 | `exempt_domains` | `[]` | Hosts to skip injection scanning for (DLP still applies on outbound). Supports `*.example.com` wildcards (also matches the apex `example.com`). |
-| `patterns` | 19 built-in | Injection and state/control poisoning patterns |
+| `patterns` | 23 built-in | Injection and state/control poisoning patterns |
 
-**Built-in patterns (19):** 13 prompt injection patterns (jailbreak phrases, system overrides, role overrides, instruction manipulation, encoded payloads, tool invocation commands, authority escalation) plus 6 state/control poisoning patterns (credential solicitation, credential path directives, auth material requirements, memory persistence directives, preference poisoning, silent credential handling). All patterns use DOTALL mode to match across newlines in multiline tool output.
+**Built-in patterns (23):** 13 prompt injection patterns (jailbreak phrases, system overrides, role overrides, instruction manipulation, encoded payloads, tool invocation commands, authority escalation), 6 state/control poisoning patterns (credential solicitation, credential path directives, auth material requirements, memory persistence directives, preference poisoning, silent credential handling), and 4 CJK-language override patterns (Chinese, Japanese, Korean instruction overrides and jailbreak mode). All patterns use DOTALL mode to match across newlines in multiline tool output.
 
 **Actions:**
 - **block:** reject the response entirely, agent gets an error

@@ -244,7 +244,7 @@ pipelock mcp proxy --sandbox --config pipelock.yaml -- npx server
 
 ### Response Scanning
 
-Fetched content is scanned for prompt injection and state/control poisoning before reaching the agent. A 6-pass normalization pipeline catches zero-width character evasion, homoglyph substitution, leetspeak encoding, and base64-wrapped payloads. 19 built-in patterns cover jailbreak phrases, instruction manipulation, credential solicitation, memory persistence, and preference poisoning. Actions: `block`, `strip`, `warn`, or `ask` (human-in-the-loop terminal approval).
+Fetched content is scanned for prompt injection and state/control poisoning before reaching the agent. A 6-pass normalization pipeline catches zero-width character evasion, homoglyph substitution, leetspeak encoding, and base64-wrapped payloads. 23 built-in patterns cover jailbreak phrases, instruction manipulation, credential solicitation, memory persistence, preference poisoning, and CJK-language instruction overrides. Actions: `block`, `strip`, `warn`, or `ask` (human-in-the-loop terminal approval).
 
 ### MCP Proxy
 
@@ -521,7 +521,7 @@ Details, config examples, and gap analysis: [docs/owasp-mapping.md](docs/owasp-m
 | [Security Assurance](docs/security-assurance.md) | Security model, trust boundaries, supply chain |
 | [Transport Modes](docs/guides/transport-modes.md) | Comparison of all proxy modes and their scanning capabilities |
 | [JetBrains Guide](docs/guides/jetbrains.md) | Junie MCP proxy wrapping for IntelliJ, PyCharm, GoLand, etc. |
-| [EU AI Act Mapping](docs/compliance/eu-ai-act-mapping.md) | Article-by-article compliance mapping |
+| [OWASP Agentic AI Threats (Top 15)](docs/owasp-agentic-top15-mapping.md) | Coverage against OWASP Agentic AI Threats & Mitigations (T1-T15) |
 | [Community Rules](docs/rules.md) | Install, configure, and create signed rule bundles |
 
 ## Project Structure
@@ -570,10 +570,10 @@ Canonical metrics, updated each release.
 
 | Metric | Value |
 |--------|-------|
-| Go tests (with `-race`) | 7,500+ |
+| Go tests (with `-race`) | 9,500+ |
 | Statement coverage | 88%+ |
 | Evasion techniques tested | 230+ |
-| Scanner pipeline overhead | ~31μs per URL scan ([performance details](docs/performance.md)) |
+| Scanner pipeline overhead | ~32μs per URL scan ([performance details](docs/performance.md)) |
 | CI matrix | Go 1.25 + 1.26, CodeQL, golangci-lint |
 | Supply chain | SLSA provenance, CycloneDX SBOM, cosign signatures |
 | OpenSSF Scorecard | [Live score](https://scorecard.dev/viewer/?uri=github.com/luckyPipewrench/pipelock) |

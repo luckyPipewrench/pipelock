@@ -509,6 +509,7 @@ func scanHTTPInput(msg []byte, logW io.Writer, sessionKey, auditSessionKey strin
 			// sending to client. Handler output is untrusted — it could contain
 			// secrets or injection payloads.
 			scanVerdict := ScanResponse(result.Response, sc)
+			// context.Background: scanHTTPInput has no ctx param; param unused in ScanTextForDLP.
 			dlpResult := sc.ScanTextForDLP(context.Background(), string(result.Response))
 			if !scanVerdict.Clean {
 				_, _ = fmt.Fprintf(logW, "pipelock: input: blocked redirect response (injection detected in handler output)\n")
@@ -519,7 +520,11 @@ func scanHTTPInput(msg []byte, logW io.Writer, sessionKey, auditSessionKey strin
 					ErrorMessage: "pipelock: redirect handler output blocked by response scanning",
 				}
 			} else if !dlpResult.Clean {
-				_, _ = fmt.Fprintf(logW, "pipelock: input: blocked redirect response (DLP match in handler output: %s)\n", dlpResult.Matches[0].PatternName)
+				pattern := patternUnknown
+				if len(dlpResult.Matches) > 0 {
+					pattern = dlpResult.Matches[0].PatternName
+				}
+				_, _ = fmt.Fprintf(logW, "pipelock: input: blocked redirect response (DLP match in handler output: %s)\n", pattern)
 				recordAdaptiveSignal(session.SignalBlock)
 				br = &BlockedRequest{
 					ID: verdict.ID, IsNotification: isNotification,
@@ -949,7 +954,11 @@ func RunHTTPListenerProxy(
 		if auth := r.Header.Get("Authorization"); auth != "" {
 			dlpResult := sc.ScanTextForDLP(r.Context(), auth)
 			if !dlpResult.Clean {
-				_, _ = fmt.Fprintf(safeLogW, "pipelock: DLP match in Authorization header: %s\n", dlpResult.Matches[0].PatternName)
+				pattern := patternUnknown
+				if len(dlpResult.Matches) > 0 {
+					pattern = dlpResult.Matches[0].PatternName
+				}
+				_, _ = fmt.Fprintf(safeLogW, "pipelock: DLP match in Authorization header: %s\n", pattern)
 				if reqRec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
 					recordSignalWithEscalation(reqRec, session.SignalBlock, adaptiveCfg.EscalationThreshold, safeLogW, auditLogger, m, auditSessionKey, "", "")
 				}

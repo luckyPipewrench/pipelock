@@ -26,8 +26,10 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
 
 type event struct {
@@ -61,7 +63,7 @@ func (s *store) list(eventType string) []event {
 
 	var filtered []event
 	for _, e := range s.events {
-		if et, ok := e.Payload["event_type"].(string); ok && et == eventType {
+		if et, ok := e.Payload["type"].(string); ok && et == eventType {
 			filtered = append(filtered, e)
 		}
 	}
@@ -79,7 +81,7 @@ func (s *store) summary() map[string]int {
 	defer s.mu.RUnlock()
 	counts := make(map[string]int)
 	for _, e := range s.events {
-		et, _ := e.Payload["event_type"].(string)
+		et, _ := e.Payload["type"].(string)
 		if et == "" {
 			et = "unknown"
 		}
@@ -99,6 +101,13 @@ func main() {
 	if listen == "" {
 		listen = ":9090"
 	}
+	// Sanitize listen address: strip control characters to prevent log injection.
+	listen = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, listen)
 
 	s := &store{}
 	mux := http.NewServeMux()
@@ -111,8 +120,8 @@ func main() {
 			return
 		}
 		s.add(payload)
-		log.Printf("event received: type=%v severity=%v",
-			payload["event_type"], payload["severity"])
+		log.Printf("event received: type=%q severity=%q",
+			payload["type"], payload["severity"])
 		w.WriteHeader(http.StatusAccepted)
 		_, _ = fmt.Fprint(w, `{"status":"accepted"}`)
 	})
@@ -152,7 +161,7 @@ func main() {
 		_, _ = fmt.Fprintf(w, `{"status":"ok","events":%d}`, s.count())
 	})
 
-	log.Printf("log-collector starting on %s", listen)
+	log.Printf("log-collector starting on %q", listen) //nolint:gosec // listen is sanitized by strings.Map above
 	srv := &http.Server{
 		Addr:              listen,
 		Handler:           mux,

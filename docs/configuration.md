@@ -68,7 +68,7 @@ api_allowlist:
   - "api.slack.com"
 ```
 
-Supports wildcards (`*.example.com` matches `api.example.com`). Case-insensitive.
+Supports wildcards (`*.example.com` matches `api.example.com` **and** the apex `example.com` itself). Case-insensitive.
 
 ## Fetch Proxy
 
@@ -167,7 +167,7 @@ tls_interception:
 | `enabled` | `false` | Enable TLS interception on CONNECT tunnels |
 | `ca_cert` | `""` | Path to CA certificate PEM. Empty resolves to `~/.pipelock/ca.pem` |
 | `ca_key` | `""` | Path to CA private key PEM. Empty resolves to `~/.pipelock/ca-key.pem` |
-| `passthrough_domains` | `[]` | Domains to splice (pass through without interception). Supports `*.example.com` wildcards. |
+| `passthrough_domains` | `[]` | Domains to splice (pass through without interception). Supports `*.example.com` wildcards (also matches apex `example.com`). |
 | `cert_ttl` | `"24h"` | TTL for forged leaf certificates (Go duration string) |
 | `cert_cache_size` | `10000` | Max cached leaf certificates. Evicts oldest when full. |
 | `max_response_bytes` | `5242880` | Max response body to buffer for scanning. Responses exceeding this are blocked (fail-closed). |
@@ -476,7 +476,7 @@ response_scanning:
 | `action` | `"warn"` | block, strip, warn, or ask (HITL) |
 | `ask_timeout_seconds` | `30` | Timeout for human-in-the-loop approval |
 | `include_defaults` | `true` | Merge with 19 built-in patterns |
-| `exempt_domains` | `[]` | Hosts to skip injection scanning for (DLP still applies on outbound). Supports `*.example.com` wildcards. |
+| `exempt_domains` | `[]` | Hosts to skip injection scanning for (DLP still applies on outbound). Supports `*.example.com` wildcards (also matches the apex `example.com`). |
 | `patterns` | 19 built-in | Injection and state/control poisoning patterns |
 
 **Built-in patterns (19):** 13 prompt injection patterns (jailbreak phrases, system overrides, role overrides, instruction manipulation, encoded payloads, tool invocation commands, authority escalation) plus 6 state/control poisoning patterns (credential solicitation, credential path directives, auth material requirements, memory persistence directives, preference poisoning, silent credential handling). All patterns use DOTALL mode to match across newlines in multiline tool output.
@@ -880,7 +880,7 @@ Tracks cumulative Shannon entropy of all outbound payloads (URLs, request bodies
 | `entropy_budget.bits_per_window` | `4096` | Max entropy bits allowed per session per window before triggering |
 | `entropy_budget.window_minutes` | `5` | Sliding window duration in minutes |
 | `entropy_budget.action` | `"warn"` | Action when budget is exceeded (warn or block) |
-| `entropy_budget.exempt_domains` | `[]` | Domains excluded from entropy budget recording. DLP pattern matching still runs on exempt domains. Supports exact hostnames and `*.example.com` wildcards. |
+| `entropy_budget.exempt_domains` | `[]` | Domains excluded from entropy budget recording. DLP pattern matching still runs on exempt domains. Supports exact hostnames and `*.example.com` wildcards (also matches apex `example.com`). |
 
 **Tuning:** The default 4096 bits per 5-minute window allows roughly 500 characters of random data across URL query parameters and path segments. This is appropriate when scanning URL-level traffic only.
 

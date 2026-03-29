@@ -1562,8 +1562,8 @@ func TestDefaults_ResponseScanningEnabled(t *testing.T) {
 	if cfg.ResponseScanning.Action != ActionWarn {
 		t.Errorf("expected default action warn, got %s", cfg.ResponseScanning.Action)
 	}
-	if len(cfg.ResponseScanning.Patterns) != 19 {
-		t.Errorf("expected 19 default response patterns, got %d", len(cfg.ResponseScanning.Patterns))
+	if len(cfg.ResponseScanning.Patterns) != 23 {
+		t.Errorf("expected 23 default response patterns, got %d", len(cfg.ResponseScanning.Patterns))
 	}
 }
 

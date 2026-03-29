@@ -294,6 +294,61 @@ func TestInterceptTunnel_NonMatchingSuppressStillBlocks(t *testing.T) {
 	}
 }
 
+// TestInterceptTunnel_ExemptDomain verifies that response injection scanning
+// is skipped for CONNECT/TLS-intercepted traffic to exempt domains.
+func TestInterceptTunnel_ExemptDomain(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, testInjectionPayload)
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
+	cfg.ResponseScanning.Enabled = true
+	cfg.ResponseScanning.Action = config.ActionBlock
+
+	// Exempt the upstream host (an IP address in test).
+	host := upstream.Listener.Addr().(*net.TCPAddr).IP.String()
+	cfg.ResponseScanning.ExemptDomains = []string{host}
+	sc := scanner.New(cfg)
+	t.Cleanup(func() { sc.Close() })
+
+	addr := upstream.Listener.Addr().String()
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/inject", nil)
+
+	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req) //nolint:bodyclose // closed in t.Cleanup inside helper
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200 for exempt domain, got %d; body: %s", resp.StatusCode, body)
+	}
+}
+
+// TestInterceptTunnel_NonExemptDomainStillBlocked verifies that a host NOT
+// in exempt_domains is still scanned and blocked when injection is detected.
+func TestInterceptTunnel_NonExemptDomainStillBlocked(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, testInjectionPayload)
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
+	cfg.ResponseScanning.Enabled = true
+	cfg.ResponseScanning.Action = config.ActionBlock
+	// Exempt a different host — the upstream should NOT be exempt.
+	cfg.ResponseScanning.ExemptDomains = []string{"api.openai.com"}
+	sc := scanner.New(cfg)
+	t.Cleanup(func() { sc.Close() })
+
+	addr := upstream.Listener.Addr().String()
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/inject", nil)
+
+	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req) //nolint:bodyclose // closed in t.Cleanup inside helper
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("expected 403 for non-exempt domain, got %d", resp.StatusCode)
+	}
+}
+
 func TestInterceptTunnel_BlocksCompressedResponse(t *testing.T) {
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Encoding", "gzip")

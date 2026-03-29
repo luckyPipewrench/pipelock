@@ -2835,6 +2835,10 @@ func TestLogToolRedirect_Emitter(t *testing.T) {
 	if ev.Fields["result"] != "redirected" {
 		t.Errorf("result = %v, want redirected", ev.Fields["result"])
 	}
+	// session_id must NOT be in emitted fields — it's local-log only.
+	if _, exists := ev.Fields["session_id"]; exists {
+		t.Error("session_id must not be emitted to external sinks")
+	}
 }
 
 func TestLogToolRedirect_NoSessionID(t *testing.T) {

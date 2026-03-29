@@ -91,6 +91,9 @@ var EventSeverity = map[string]Severity{
 	EventAdaptiveUpgrade: SeverityWarn,
 	"error":              SeverityWarn, // errors are suspicious
 
+	// Warn: security-relevant operational events
+	"response_scan_exempt": SeverityWarn, // scanning was skipped; operators need visibility
+
 	// Info: normal operations
 	"allowed":       SeverityInfo,
 	"tunnel_open":   SeverityInfo,

@@ -81,6 +81,9 @@ func TestEventSeverity_CoverExpectedTypes(t *testing.T) {
 		{EventAdaptiveUpgrade, SeverityWarn},
 		{"error", SeverityWarn},
 
+		// Warn: security-relevant operational
+		{"response_scan_exempt", SeverityWarn},
+
 		// Info
 		{"allowed", SeverityInfo},
 		{"tunnel_open", SeverityInfo},
@@ -108,26 +111,27 @@ func TestEventSeverity_CoverExpectedTypes(t *testing.T) {
 
 func TestEventSeverity_NoUnexpectedEntries(t *testing.T) {
 	known := map[string]bool{
-		"kill_switch_deny":    true,
-		"blocked":             true,
-		"anomaly":             true,
-		"session_anomaly":     true,
-		"mcp_unknown_tool":    true,
-		"ws_blocked":          true,
-		"response_scan":       true,
-		"ws_scan":             true,
-		"adaptive_escalation": true,
-		EventAdaptiveUpgrade:  true,
-		"error":               true,
-		"allowed":             true,
-		"tunnel_open":         true,
-		"tunnel_close":        true,
-		"ws_open":             true,
-		"ws_close":            true,
-		"config_reload":       true,
-		"redirect":            true,
-		"forward_http":        true,
-		"tool_redirect":       true,
+		"kill_switch_deny":     true,
+		"blocked":              true,
+		"anomaly":              true,
+		"session_anomaly":      true,
+		"mcp_unknown_tool":     true,
+		"ws_blocked":           true,
+		"response_scan":        true,
+		"ws_scan":              true,
+		"adaptive_escalation":  true,
+		EventAdaptiveUpgrade:   true,
+		"error":                true,
+		"response_scan_exempt": true,
+		"allowed":              true,
+		"tunnel_open":          true,
+		"tunnel_close":         true,
+		"ws_open":              true,
+		"ws_close":             true,
+		"config_reload":        true,
+		"redirect":             true,
+		"forward_http":         true,
+		"tool_redirect":        true,
 	}
 
 	for k := range EventSeverity {

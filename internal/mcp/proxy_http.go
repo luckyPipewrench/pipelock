@@ -779,6 +779,7 @@ func RunHTTPListenerProxy(
 	adaptiveCfgFn AdaptiveConfigFunc,
 	m *metrics.Metrics,
 	redirectRT *RedirectRuntime,
+	captureObs capture.CaptureObserver,
 ) error {
 	safeLogW := &syncWriter{w: logW}
 
@@ -801,6 +802,7 @@ func RunHTTPListenerProxy(
 		KillSwitch: ks, ChainMatcher: chainMatcher,
 		AuditLogger: auditLogger, CEE: cee, Metrics: m,
 		RedirectRT: redirectRT, Transport: "mcp_http",
+		CaptureObs: captureObs,
 	}
 
 	// Shared HTTP client for upstream requests. Redirect-following is disabled

@@ -124,9 +124,12 @@ func LoadAndReplay(cfg *config.Config, sessionsDir string) ([]ReplayedRecord, in
 // unsupported schema version.
 //
 // For URL surfaces the scanner input is the request URL (always available in
-// the summary). For all other surfaces the scanner input is the ScannerSample
-// stored in the summary. v1 does not attempt sidecar decryption; escrow support
-// is evidence-only until an --escrow-private-key flag is wired into the loader.
+// the summary). Tool policy surfaces need no scanner input (they replay via
+// ToolName + ToolArgsJSON). All other surfaces (response, DLP, tool_scan,
+// CEE) return empty scanner input, producing summary-only replay results.
+// This avoids false diffs from truncated ScannerSample (256 bytes). Full
+// payload replay requires sidecar decryption (--escrow-private-key, not yet
+// wired).
 func extractCaptureSummary(entry recorder.Entry) (CaptureSummary, string, error) {
 	if entry.Type != EntryTypeCapture {
 		return CaptureSummary{}, "", fmt.Errorf("skipping entry type %q", entry.Type)
@@ -148,14 +151,25 @@ func extractCaptureSummary(entry recorder.Entry) (CaptureSummary, string, error)
 				summary.CaptureSchemaVersion, CaptureSchemaV1)
 	}
 
-	// For URL surfaces, always use the full request URL rather than the
-	// ScannerSample (which may be truncated). Other surfaces rely on
-	// ScannerSample as a best-effort input.
+	// Determine scanner input based on surface type. Only URL has a
+	// full-fidelity input always available (the request URL). Tool policy
+	// uses ToolName + ToolArgsJSON from the request, not scanner input.
+	// All other surfaces (response, DLP, address, tool_scan, CEE) require
+	// exact payload from sidecar decryption. Without escrow, these are
+	// summary-only -- using the truncated ScannerSample (256 bytes) would
+	// produce false diffs for longer payloads.
 	var scannerInput string
-	if summary.Surface == SurfaceURL {
+	switch summary.Surface {
+	case SurfaceURL:
 		scannerInput = summary.Request.URL
-	} else {
-		scannerInput = summary.ScannerSample
+	case SurfaceToolPolicy:
+		// Tool policy replays via ToolName + ToolArgsJSON, no scanner input.
+		scannerInput = ""
+	default:
+		// Response, DLP, address, tool_scan, CEE: require exact scanner
+		// input from sidecar. Without escrow decryption, mark as
+		// summary-only by leaving scannerInput empty.
+		scannerInput = ""
 	}
 
 	return summary, scannerInput, nil

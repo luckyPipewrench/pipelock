@@ -21,6 +21,7 @@ import (
 	"golang.org/x/net/netutil"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
@@ -33,6 +34,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/rules"
 	"github.com/luckyPipewrench/pipelock/internal/scanapi"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -49,6 +51,8 @@ func RunCmd() *cobra.Command {
 	var reverseProxy bool
 	var reverseUpstream string
 	var reverseListen string
+	var captureOutput string
+	var captureDuration time.Duration
 
 	cmd := &cobra.Command{
 		Use:   "run [flags]",
@@ -217,6 +221,28 @@ Examples:
 			} else {
 				ks.SetSeparateAPIPort(true)
 			}
+
+			// Policy capture mode: create observer if --capture-output is set.
+			var captureWriter *capture.Writer
+			if captureOutput != "" {
+				cw, cwErr := capture.NewWriter(capture.WriterConfig{
+					RecorderConfig: recorder.Config{
+						Enabled:           true,
+						Dir:               captureOutput,
+						MaxEntriesPerFile: 10000, // 10k entries per file before rotation
+					},
+					DropSink:     m,
+					QueueSize:    4096, // bounded channel capacity
+					BuildVersion: cliutil.Version,
+				})
+				if cwErr != nil {
+					return fmt.Errorf("creating capture writer: %w", cwErr)
+				}
+				defer func() { _ = cw.Close() }()
+				captureWriter = cw
+				proxyOpts = append(proxyOpts, proxy.WithCaptureObserver(cw))
+			}
+
 			p, pErr := proxy.New(cfg, logger, sc, m, proxyOpts...)
 			if pErr != nil {
 				return fmt.Errorf("creating proxy: %w", pErr)
@@ -238,6 +264,19 @@ Examples:
 				syscall.SIGTERM,
 			)
 			defer cancel()
+
+			// Capture duration timer: cancel context after the specified
+			// capture duration so the proxy shuts down automatically.
+			if captureOutput != "" && captureDuration > 0 {
+				go func() {
+					select {
+					case <-time.After(captureDuration):
+						_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: capture duration reached (%s), shutting down\n", captureDuration)
+						cancel()
+					case <-ctx.Done():
+					}
+				}()
+			}
 
 			// Toggle kill switch via SIGUSR1 on Unix (no-op on Windows).
 			cleanupSignal := RegisterKillSwitchSignal(ks, cmd)
@@ -445,6 +484,13 @@ Examples:
 			if cfg.ReverseProxy.Enabled {
 				cmd.PrintErrf("  RevPx:  http://%s -> %s (reverse proxy with body scanning)\n",
 					cfg.ReverseProxy.Listen, RedactEndpoint(cfg.ReverseProxy.Upstream))
+			}
+			if captureOutput != "" {
+				if captureDuration > 0 {
+					cmd.PrintErrf("  Capture: %s (duration: %s)\n", captureOutput, captureDuration)
+				} else {
+					cmd.PrintErrf("  Capture: %s (until interrupted)\n", captureOutput)
+				}
 			}
 			for addr, name := range p.Ports() {
 				cmd.PrintErrf("  Agent:  %s -> http://%s\n", name, addr)
@@ -721,7 +767,11 @@ Examples:
 
 				mcpErr = make(chan error, 1)
 				go func() {
-					mcpErr <- mcp.RunHTTPListenerProxy(ctx, mcpLn, mcpUpstream, cmd.ErrOrStderr(), sc, mcpApprover, inputCfg, toolCfg, policyCfg, ks, mcpChainMatcher, logger, mcpCEE, mcpStore, mcpAdaptiveFn, m, buildRedirectRT(cfg))
+					var mcpCaptureObs capture.CaptureObserver
+					if captureWriter != nil {
+						mcpCaptureObs = captureWriter
+					}
+					mcpErr <- mcp.RunHTTPListenerProxy(ctx, mcpLn, mcpUpstream, cmd.ErrOrStderr(), sc, mcpApprover, inputCfg, toolCfg, policyCfg, ks, mcpChainMatcher, logger, mcpCEE, mcpStore, mcpAdaptiveFn, m, buildRedirectRT(cfg), mcpCaptureObs)
 				}()
 			}
 
@@ -911,6 +961,8 @@ Examples:
 	cmd.Flags().BoolVar(&reverseProxy, "reverse-proxy", false, "enable reverse proxy mode with body scanning")
 	cmd.Flags().StringVar(&reverseUpstream, "reverse-upstream", "", "upstream URL for reverse proxy (e.g. http://localhost:7899)")
 	cmd.Flags().StringVar(&reverseListen, "reverse-listen", ":8890", "listen address for reverse proxy")
+	cmd.Flags().StringVar(&captureOutput, "capture-output", "", "directory to write policy capture files (enables capture mode)")
+	cmd.Flags().DurationVar(&captureDuration, "capture-duration", 0, "capture duration (0 = until interrupted)")
 
 	return cmd
 }

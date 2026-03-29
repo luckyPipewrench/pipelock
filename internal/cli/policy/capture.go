@@ -39,12 +39,13 @@ Examples:
   pipelock policy capture --output ./sessions/ --sign --redact
   pipelock policy capture --output ./sessions/ --raw-escrow --escrow-public-key <hex>`,
 		Args: cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			if outputDir == "" {
 				return fmt.Errorf("--output is required")
 			}
-			// v1 stub: capture runtime plumbing is wired via "pipelock run" flags.
-			return fmt.Errorf("capture command is not yet fully implemented — see pipelock run with capture options")
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Use 'pipelock run --capture-output %s' to capture live traffic.\n", outputDir)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Add --capture-duration <duration> to set a capture time limit.\n")
+			return nil
 		},
 	}
 

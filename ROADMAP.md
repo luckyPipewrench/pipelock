@@ -73,7 +73,7 @@ Core capabilities available today:
 **Operational Controls**
 - OR-composed kill switch (config, signal, sentinel file, remote API)
 - Structured audit logging with MITRE ATT&CK technique IDs
-- Webhook, syslog, OTLP, and Prometheus emission (40 metric families)
+- Webhook, syslog, OTLP, and Prometheus emission (45 metric families)
 - Grafana dashboard for fleet monitoring
 - HTML/JSON audit reports with Ed25519 signing
 - Config security scoring (`pipelock audit score`)

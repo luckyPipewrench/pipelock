@@ -231,7 +231,7 @@ groups:
       # --- Adaptive Enforcement ---
 
       - alert: PipelockHighEscalatedSessions
-        expr: sum(pipelock_adaptive_sessions_current{level=~"block|critical"}) > 0
+        expr: sum by (instance) (pipelock_adaptive_sessions_current{level=~"block|critical"}) > 0
         for: 0m
         labels:
           severity: critical
@@ -265,3 +265,95 @@ groups:
           description: >-
             Scan API response times are elevated. Check for large payloads
             or resource contention.
+
+      # --- Address Protection ---
+
+      - alert: PipelockAddressPoisoning
+        expr: increase(pipelock_address_findings_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Crypto address poisoning detected on {{ $labels.instance }}"
+          description: >-
+            Chain: {{ $labels.chain }}, verdict: {{ $labels.verdict }}.
+            An agent response may contain a swapped cryptocurrency address.
+
+      # --- File Sentry ---
+
+      - alert: PipelockFileSentryFinding
+        expr: increase(pipelock_file_sentry_findings_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Secret written to disk on {{ $labels.instance }}"
+          description: >-
+            File sentry detected a secret in an agent-written file.
+            Pattern: {{ $labels.pattern }}, severity: {{ $labels.severity }},
+            agent: {{ $labels.agent }}.
+
+      # --- Reverse Proxy ---
+
+      - alert: PipelockReverseProxyScanBlock
+        expr: increase(pipelock_reverse_proxy_scan_blocked_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Reverse proxy scan block on {{ $labels.instance }}"
+          description: >-
+            Content scanning blocked a reverse proxy request.
+            Direction: {{ $labels.direction }}, reason: {{ $labels.reason }}.
+
+      # --- Capture System ---
+
+      - alert: PipelockCaptureDropped
+        expr: increase(pipelock_capture_dropped_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Capture entries dropped on {{ $labels.instance }}"
+          description: >-
+            Audit capture queue overflow. Evidence entries are being lost.
+            Consider increasing capture buffer size or reducing traffic.
+
+      # --- Kill Switch State ---
+
+      - alert: PipelockKillSwitchSourceActive
+        expr: pipelock_kill_switch_active == 1
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Kill switch source {{ $labels.source }} active on {{ $labels.instance }}"
+          description: >-
+            The kill switch source {{ $labels.source }} is currently engaged.
+            All agent traffic is being denied.
+
+      # --- Adaptive Enforcement ---
+
+      - alert: PipelockAdaptiveUpgrade
+        expr: increase(pipelock_adaptive_upgrades_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Adaptive enforcement upgrade on {{ $labels.instance }}"
+          description: >-
+            Action upgraded from {{ $labels.from_action }} to {{ $labels.to_action }}
+            at level {{ $labels.level }}. Agent behavior triggered stricter enforcement.
+
+      # --- SNI Verification ---
+
+      - alert: PipelockSNIMismatch
+        expr: increase(pipelock_sni_total{category="mismatch"}[5m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "SNI verification mismatch on {{ $labels.instance }}"
+          description: >-
+            A CONNECT tunnel's SNI did not match the requested host.
+            This may indicate domain fronting.

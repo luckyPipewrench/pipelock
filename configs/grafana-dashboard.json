@@ -2791,6 +2791,74 @@
             "x": 12,
             "y": 55
           }
+        },
+        {
+          "type": "timeseries",
+          "title": "Adaptive Action Upgrades",
+          "description": "Rate of adaptive enforcement action upgrades by transition and level",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "targets": [
+            {
+              "expr": "rate(pipelock_adaptive_upgrades_total{instance=~\"$instance\"}[$interval])",
+              "refId": "A",
+              "legendFormat": "{{from_action}}\u2192{{to_action}} ({{level}})",
+              "format": "time_series"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "smooth",
+                "lineWidth": 2,
+                "fillOpacity": 15,
+                "gradientMode": "opacity",
+                "spanNulls": true,
+                "showPoints": "never",
+                "axisBorderShow": false,
+                "stacking": {
+                  "mode": "none"
+                }
+              },
+              "unit": "ops",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            },
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "calcs": [
+                "mean",
+                "max"
+              ]
+            }
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 24,
+            "x": 0,
+            "y": 62
+          }
         }
       ]
     },
@@ -3471,7 +3539,367 @@
           }
         }
       ]
+    },
+    {
+      "type": "row",
+      "title": "Protection & Sentry",
+      "collapsed": true,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 57
+      },
+      "panels": [
+        {
+          "type": "timeseries",
+          "title": "Address Poisoning Findings",
+          "description": "Rate of address poisoning findings by blockchain chain and verdict",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "targets": [
+            {
+              "expr": "rate(pipelock_address_findings_total{instance=~\"$instance\"}[$interval])",
+              "refId": "A",
+              "legendFormat": "{{chain}} ({{verdict}})",
+              "format": "time_series"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "smooth",
+                "lineWidth": 2,
+                "fillOpacity": 15,
+                "gradientMode": "opacity",
+                "spanNulls": true,
+                "showPoints": "never",
+                "axisBorderShow": false,
+                "stacking": {
+                  "mode": "none"
+                }
+              },
+              "unit": "ops",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            },
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "calcs": [
+                "mean",
+                "max"
+              ]
+            }
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 8,
+            "x": 0,
+            "y": 58
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "File Sentry Findings",
+          "description": "Rate of file sentry findings by pattern, severity, and agent",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "targets": [
+            {
+              "expr": "rate(pipelock_file_sentry_findings_total{instance=~\"$instance\"}[$interval])",
+              "refId": "A",
+              "legendFormat": "{{pattern}} ({{severity}})",
+              "format": "time_series"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "smooth",
+                "lineWidth": 2,
+                "fillOpacity": 15,
+                "gradientMode": "opacity",
+                "spanNulls": true,
+                "showPoints": "never",
+                "axisBorderShow": false,
+                "stacking": {
+                  "mode": "none"
+                }
+              },
+              "unit": "ops",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            },
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "calcs": [
+                "mean",
+                "max"
+              ]
+            }
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 8,
+            "x": 8,
+            "y": 58
+          }
+        },
+        {
+          "type": "stat",
+          "title": "Capture Queue Drops",
+          "description": "Running total of events dropped from the capture queue",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "targets": [
+            {
+              "expr": "pipelock_capture_dropped_total{instance=~\"$instance\"}",
+              "refId": "A",
+              "instant": true,
+              "legendFormat": "__auto"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 1
+                  }
+                ]
+              },
+              "color": {
+                "mode": "thresholds"
+              },
+              "unit": "",
+              "mappings": [],
+              "decimals": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "background_solid",
+            "graphMode": "none",
+            "justifyMode": "auto",
+            "textMode": "auto",
+            "showPercentChange": false,
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            }
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 8,
+            "x": 16,
+            "y": 58
+          }
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Reverse Proxy",
+      "collapsed": true,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 58
+      },
+      "panels": [
+        {
+          "type": "timeseries",
+          "title": "Reverse Proxy Request Rate",
+          "description": "Rate of reverse proxy requests by HTTP method and status code",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "targets": [
+            {
+              "expr": "rate(pipelock_reverse_proxy_requests_total{instance=~\"$instance\"}[$interval])",
+              "refId": "A",
+              "legendFormat": "{{method}} {{status}}",
+              "format": "time_series"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "smooth",
+                "lineWidth": 2,
+                "fillOpacity": 15,
+                "gradientMode": "opacity",
+                "spanNulls": true,
+                "showPoints": "never",
+                "axisBorderShow": false,
+                "stacking": {
+                  "mode": "none"
+                }
+              },
+              "unit": "ops",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            },
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "calcs": [
+                "mean",
+                "max"
+              ]
+            }
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 12,
+            "x": 0,
+            "y": 59
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Reverse Proxy Scan Blocks",
+          "description": "Rate of reverse proxy scan blocks by direction and reason",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "targets": [
+            {
+              "expr": "rate(pipelock_reverse_proxy_scan_blocked_total{instance=~\"$instance\"}[$interval])",
+              "refId": "A",
+              "legendFormat": "{{direction}} ({{reason}})",
+              "format": "time_series"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "smooth",
+                "lineWidth": 2,
+                "fillOpacity": 15,
+                "gradientMode": "opacity",
+                "spanNulls": true,
+                "showPoints": "never",
+                "axisBorderShow": false,
+                "stacking": {
+                  "mode": "none"
+                }
+              },
+              "unit": "ops",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            },
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "calcs": [
+                "mean",
+                "max"
+              ]
+            }
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 12,
+            "x": 12,
+            "y": 59
+          }
+        }
+      ]
     }
   ],
-  "description": "Security monitoring for the Pipelock agent firewall. Tracks all 32 metric families: CONNECT tunnels, HTTP requests, scanner activity, session profiling, kill switch events, chain detection, WebSocket proxy, cross-request detection, adaptive enforcement, scan API, TLS interception, and request body/header DLP."
+  "description": "Security monitoring for the Pipelock agent firewall. Tracks all 32 metric families: CONNECT tunnels, HTTP requests, scanner activity, session profiling, kill switch events, chain detection, WebSocket proxy, cross-request detection, adaptive enforcement, scan API, TLS interception, request body/header DLP, address protection, file sentry, capture queue, reverse proxy, and adaptive upgrades."
 }

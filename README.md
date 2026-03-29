@@ -510,7 +510,7 @@ Details, config examples, and gap analysis: [docs/owasp-mapping.md](docs/owasp-m
 | [Known Attacks Blocked](docs/attacks-blocked.md) | Real attacks with repro snippets and pipelock config that stops them |
 | [Policy Spec v0.1](docs/policy-spec-v0.1.md) | Portable agent firewall policy format |
 | [SIEM Integration](docs/guides/siem-integration.md) | Log schema, forwarding patterns, KQL/SPL/EQL queries |
-| [Metrics Reference](docs/metrics.md) | All 40 Prometheus metrics, alert rule templates |
+| [Metrics Reference](docs/metrics.md) | All 45 Prometheus metrics, alert rule templates |
 | [OWASP Agentic Top 10](docs/owasp-mapping.md) | Coverage against OWASP Agentic AI Top 10 |
 | [OWASP MCP Top 10](docs/compliance/owasp-mcp-top10.md) | Coverage against OWASP MCP Top 10 |
 | [EU AI Act Mapping](docs/compliance/eu-ai-act-mapping.md) | EU AI Act Article 9-26 compliance mapping |

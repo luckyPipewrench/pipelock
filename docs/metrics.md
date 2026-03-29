@@ -155,6 +155,37 @@ integrations. Disabled by default; set `scan_api.listen` to enable.
 | `pipelock_scan_api_errors_total` | counter | `kind`, `error_code` | Scan API errors by kind and error code. |
 | `pipelock_scan_api_inflight_requests` | gauge | (none) | Current number of in-flight scan API requests. |
 
+## Address Protection Metrics
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `pipelock_address_findings_total` | counter | `chain`, `verdict` | Address poisoning findings by blockchain and verdict. |
+
+## File Sentry Metrics
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `pipelock_file_sentry_findings_total` | counter | `pattern`, `severity`, `agent` | Secrets detected in agent-written files. |
+
+## Adaptive Enforcement Metrics
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `pipelock_adaptive_upgrades_total` | counter | `from_action`, `to_action`, `level` | Requests where adaptive enforcement upgraded the action (e.g. warn to block). |
+
+## Reverse Proxy Metrics
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `pipelock_reverse_proxy_requests_total` | counter | `method`, `status` | Total reverse proxy requests by method and status. |
+| `pipelock_reverse_proxy_scan_blocked_total` | counter | `direction`, `reason` | Reverse proxy requests blocked by scanning. |
+
+## Capture System Metrics
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `pipelock_capture_dropped_total` | counter | (none) | Capture entries dropped due to queue overflow. |
+
 ## Counter Initialization
 
 Prometheus `CounterVec` metrics only appear in `/metrics` output after
@@ -210,7 +241,7 @@ An importable Grafana dashboard is included at
 [`configs/grafana-dashboard.json`](../configs/grafana-dashboard.json).
 Import it via **Dashboards → Import → Upload JSON file** in Grafana.
 
-The dashboard covers all 40 metric families across ten sections: fleet
+The dashboard covers all 45 metric families across ten sections: fleet
 overview, agent status table, traffic, connection details, TLS interception,
 security events, WebSocket proxy, cross-request detection, adaptive
 enforcement, and Scan API.

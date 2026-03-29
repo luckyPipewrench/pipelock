@@ -801,7 +801,7 @@ func newInterceptHandler(
 		// Skip for response-exempt domains (e.g. trusted LLM providers).
 		interceptRespExempt := isResponseScanExempt(r.URL.Hostname(), cfg.ResponseScanning.ExemptDomains)
 		if sc.ResponseScanningEnabled() && interceptRespExempt {
-			logger.LogAnomaly(r.Method, r.URL.String(), "response_scan", fmt.Sprintf("response scan skipped: host %q matched exempt_domains", r.URL.Hostname()), clientIP, requestID, agent, 0)
+			logger.LogResponseScanExempt(r.Method, r.URL.String(), r.URL.Hostname(), clientIP, requestID, agent)
 		}
 		if sc.ResponseScanningEnabled() && !interceptRespExempt {
 			scanResult := sc.ScanResponse(r.Context(), string(respBody))

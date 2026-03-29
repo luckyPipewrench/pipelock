@@ -356,6 +356,43 @@ func TestLogAnomaly_JSONFormat(t *testing.T) {
 	}
 }
 
+func TestLogResponseScanExempt_JSONFormat(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogResponseScanExempt("GET", "https://api.openai.com/v1/chat", "api.openai.com", testClientIP, "req-exempt-3", testAgentName)
+	logger.Close()
+
+	data, _ := os.ReadFile(filepath.Clean(path))
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+
+	if entry["event"] != string(EventResponseScanExempt) {
+		t.Errorf("expected event=%s, got %v", EventResponseScanExempt, entry["event"])
+	}
+	if entry["hostname"] != "api.openai.com" {
+		t.Errorf("expected hostname=api.openai.com, got %v", entry["hostname"])
+	}
+	if entry["enforcement_type"] != "response_scanning" {
+		t.Errorf("expected enforcement_type=response_scanning, got %v", entry["enforcement_type"])
+	}
+	if entry["reason"] != "exempt_domains match" {
+		t.Errorf("expected reason=exempt_domains match, got %v", entry["reason"])
+	}
+	if entry["agent"] != testAgentName {
+		t.Errorf("expected agent=%s, got %v", testAgentName, entry["agent"])
+	}
+	if entry["level"] != "info" {
+		t.Errorf("expected level=info, got %v", entry["level"])
+	}
+}
+
 func TestNew_BothOutput(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.log")
@@ -1664,6 +1701,48 @@ func TestEmit_LogAnomaly(t *testing.T) {
 	}
 	if ev.Fields["mitre_technique"] != mitreT1048 {
 		t.Errorf("fields[mitre_technique] = %v, want T1048", ev.Fields["mitre_technique"])
+	}
+}
+
+func TestEmit_LogResponseScanExempt(t *testing.T) {
+	logger, sink := newLoggerWithEmitter(t)
+	defer logger.Close()
+
+	logger.LogResponseScanExempt("GET", "https://api.openai.com/v1/chat", "api.openai.com", testClientIP, "req-exempt-1", testAgentName)
+
+	ev, ok := sink.lastEvent()
+	if !ok {
+		t.Fatal("expected emitted event")
+	}
+	if ev.Type != string(EventResponseScanExempt) {
+		t.Errorf("type = %q, want %s", ev.Type, EventResponseScanExempt)
+	}
+	if ev.Fields["hostname"] != "api.openai.com" {
+		t.Errorf("fields[hostname] = %v, want api.openai.com", ev.Fields["hostname"])
+	}
+	if ev.Fields["enforcement_type"] != "response_scanning" {
+		t.Errorf("fields[enforcement_type] = %v, want response_scanning", ev.Fields["enforcement_type"])
+	}
+	if ev.Fields["reason"] != "exempt_domains match" {
+		t.Errorf("fields[reason] = %v, want exempt_domains match", ev.Fields["reason"])
+	}
+	if ev.Fields["agent"] != testAgentName {
+		t.Errorf("fields[agent] = %v, want %s", ev.Fields["agent"], testAgentName)
+	}
+}
+
+func TestEmit_LogResponseScanExempt_NoAgent(t *testing.T) {
+	logger, sink := newLoggerWithEmitter(t)
+	defer logger.Close()
+
+	logger.LogResponseScanExempt("GET", "https://api.openai.com/v1/chat", "api.openai.com", testClientIP, "req-exempt-2", "")
+
+	ev, ok := sink.lastEvent()
+	if !ok {
+		t.Fatal("expected emitted event")
+	}
+	if _, hasAgent := ev.Fields["agent"]; hasAgent {
+		t.Error("agent field should be absent when empty")
 	}
 }
 

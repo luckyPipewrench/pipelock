@@ -57,26 +57,28 @@ Core capabilities available today:
 - Cosign-signed releases, CycloneDX SBOM, SLSA v1.0 provenance
 - OpenSSF Best Practices Silver, published OWASP and NIST 800-53 coverage mappings
 
+## Shipped (v2.1)
+
+- Cross-request exfiltration detection: entropy budgets, fragment reassembly, multi-turn data staging
+- Financial DLP: blockchain address poisoning protection (ETH, BTC, SOL, BNB) and BIP-39 seed phrase detection
+- Agent process management: `pipelock run` with sandbox enforcement (Landlock, seccomp, macOS sandbox-exec)
+- Security assessment reports: `pipelock assess` with HTML/JSON output, Ed25519 signing, and config scoring
+- Tool policy redirect: steer matched tool calls to audited handler programs instead of blocking
+- Profile-then-lock: learned tool baselines from observed behavior, session binding enforcement
+- Behavioral analytics: session profiling, adaptive enforcement escalation, cross-request entropy anomaly detection
+- A2A protocol scanning: Agent Card validation, agent-to-agent header and body scanning
+
 ## Near-Term
 
-- Cross-request exfiltration detection (multi-turn data staging and low-and-slow patterns)
-- Expanded DLP coverage for financial instruments and regulated data
-- Agent process management (launch, monitor, enforce capability separation)
-- Enhanced reporting and compliance evidence generation
+- Kubernetes sidecar Helm chart for simplified deployment
+- Multi-agent policy coordination and inter-agent traffic controls
+- Expanded compliance evidence generation (NIST AI RMF, EU AI Act mapping)
 
 ## Medium-Term
 
-- Multi-agent policy coordination and inter-agent traffic controls
-- Redirect-instead-of-block (steer agents to safe alternatives)
-- Profile-then-lock policy generation (learned allowlists from observed behavior)
-- Kubernetes sidecar Helm chart
 - Centralized policy management for multi-team deployments
-
-## Long-Term
-
 - Fleet-wide dashboard and management plane
-- Compliance report generation mapped to NIST AI RMF, EU AI Act, and SOC 2
-- Advanced behavioral analytics and anomaly detection
+- SOC 2 and regulatory compliance report generation
 
 ## Out of Scope
 

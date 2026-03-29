@@ -982,7 +982,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	fwdRespHost := resp.Request.URL.Hostname()
 	fwdRespExempt := isResponseScanExempt(fwdRespHost, cfg.ResponseScanning.ExemptDomains)
 	if sc.ResponseScanningEnabled() && fwdRespExempt {
-		p.logger.LogAnomaly(r.Method, targetURL, "response_scan", fmt.Sprintf("response scan skipped: host %q matched exempt_domains", fwdRespHost), clientIP, requestID, agent, 0)
+		p.logger.LogResponseScanExempt(r.Method, targetURL, fwdRespHost, clientIP, requestID, agent)
 	}
 	if sc.ResponseScanningEnabled() && !fwdRespExempt {
 		// Fail-closed on compressed responses: regex can't match compressed content.

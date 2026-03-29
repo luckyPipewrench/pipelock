@@ -191,9 +191,10 @@ const (
 	EventCrossRequestDLPMatch        EventType = "cross_request_dlp_match"
 	EventCrossRequestEntropyAnomaly  EventType = "cross_request_entropy_anomaly"
 
-	EventAdaptiveUpgrade EventType = "adaptive_upgrade"
-	EventToolRedirect    EventType = "tool_redirect"
-	EventSessionAdmin    EventType = "session_admin"
+	EventAdaptiveUpgrade    EventType = "adaptive_upgrade"
+	EventToolRedirect       EventType = "tool_redirect"
+	EventSessionAdmin       EventType = "session_admin"
+	EventResponseScanExempt EventType = "response_scan_exempt"
 )
 
 // WebSocket frame direction constants used in audit log entries.
@@ -370,6 +371,42 @@ func (l *Logger) LogAnomaly(method, url, scanner, reason, clientIP, requestID, a
 
 	if l.emitter != nil {
 		l.emitter.Emit(context.Background(), string(EventAnomaly), e.fields)
+	}
+}
+
+// LogResponseScanExempt logs when response injection scanning is skipped because
+// the destination host matched response_scanning.exempt_domains. This is a dedicated
+// event type (not "anomaly") so SIEM consumers can filter exemption events separately
+// from actual security anomalies.
+func (l *Logger) LogResponseScanExempt(method, url, hostname, clientIP, requestID, agent string) {
+	event := l.zl.Info().
+		Str("event", string(EventResponseScanExempt)).
+		Str("method", method).
+		Str("url", sanitizeString(url)).
+		Str("hostname", hostname).
+		Str("client_ip", clientIP).
+		Str("request_id", requestID).
+		Str("enforcement_type", "response_scanning").
+		Str("reason", "exempt_domains match")
+	if agent != "" {
+		event = event.Str("agent", sanitizeString(agent))
+	}
+	event.Msg("response scan skipped: exempt domain")
+
+	if l.emitter != nil {
+		fields := map[string]any{
+			"method":           method,
+			"url":              sanitizeString(url),
+			"hostname":         hostname,
+			"client_ip":        clientIP,
+			"request_id":       requestID,
+			"enforcement_type": "response_scanning",
+			"reason":           "exempt_domains match",
+		}
+		if agent != "" {
+			fields["agent"] = sanitizeString(agent)
+		}
+		l.emitter.Emit(context.Background(), string(EventResponseScanExempt), fields)
 	}
 }
 

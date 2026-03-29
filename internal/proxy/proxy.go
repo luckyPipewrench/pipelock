@@ -1336,7 +1336,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	finalHost := resp.Request.URL.Hostname()
 	responseScanExempt := isResponseScanExempt(finalHost, cfg.ResponseScanning.ExemptDomains)
 	if sc.ResponseScanningEnabled() && responseScanExempt {
-		log.LogAnomaly("GET", displayURL, "response_scan", fmt.Sprintf("response scan skipped: host %q matched exempt_domains", finalHost), clientIP, requestID, agent, 0)
+		log.LogResponseScanExempt("GET", displayURL, finalHost, clientIP, requestID, agent)
 	}
 	var hiddenInjectionFound bool
 	if sc.ResponseScanningEnabled() && isHTML && !responseScanExempt {

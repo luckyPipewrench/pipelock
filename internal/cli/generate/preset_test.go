@@ -5,6 +5,8 @@ package generate
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -79,5 +81,10 @@ func TestCmd_OutputToFile(t *testing.T) {
 	cmd.SetArgs([]string{"config", "--preset", "balanced", "--output", dir + "/test.yaml"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute: %v", err)
+	}
+
+	outPath := filepath.Join(dir, "test.yaml")
+	if _, err := os.Stat(outPath); err != nil {
+		t.Fatalf("output file not created: %v", err)
 	}
 }

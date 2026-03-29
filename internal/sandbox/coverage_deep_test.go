@@ -17,6 +17,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -223,6 +224,10 @@ func TestPreflight_CommandNotFound_StatusNotError(t *testing.T) {
 	if !found {
 		t.Error("expected error about nonexistent command in Errors")
 	}
+	// Missing command is added to result.Errors, which triggers StatusError.
+	if result.Status != StatusError {
+		t.Errorf("expected StatusError for missing command, got %q", result.Status)
+	}
 }
 
 func TestPreflight_EmptyWorkspace(t *testing.T) {
@@ -236,7 +241,10 @@ func TestPreflight_CommandAbsolutePath(t *testing.T) {
 	workspace := t.TempDir()
 	result := Preflight(workspace, []string{"/bin/sh", "-c", echoCmd}, nil, false)
 
-	if len(result.Command) > 0 && result.Command[0] != "/bin/sh" {
+	if len(result.Command) == 0 {
+		t.Fatal("expected Preflight to preserve the absolute command path")
+	}
+	if result.Command[0] != "/bin/sh" {
 		t.Errorf("expected /bin/sh, got: %s", result.Command[0])
 	}
 }
@@ -608,15 +616,15 @@ func TestBridgeProxy_HandleConnMultiple(t *testing.T) {
 			if acceptErr != nil {
 				return
 			}
-			go func() {
-				defer func() { _ = conn.Close() }()
+			go func(c net.Conn) {
+				defer func() { _ = c.Close() }()
 				buf := make([]byte, 256)
-				n, readErr := conn.Read(buf)
+				n, readErr := c.Read(buf)
 				if readErr != nil {
 					return
 				}
-				_, _ = conn.Write(buf[:n])
-			}()
+				_, _ = c.Write(buf[:n])
+			}(conn)
 		}
 	}()
 
@@ -800,15 +808,20 @@ func TestSyscallLists_NoOverlap(t *testing.T) {
 	for _, nr := range allowedSyscalls() {
 		allow[nr] = true
 	}
+	kill := make(map[uint32]bool)
 
 	for _, nr := range killSyscalls() {
 		if allow[nr] {
 			t.Errorf("syscall %d is in both allowed and kill lists", nr)
 		}
+		kill[nr] = true
 	}
 	for _, nr := range denySyscalls() {
 		if allow[nr] {
 			t.Errorf("syscall %d is in both allowed and deny lists", nr)
+		}
+		if kill[nr] {
+			t.Errorf("syscall %d is in both kill and deny lists", nr)
 		}
 	}
 }
@@ -1059,10 +1072,7 @@ func TestLaunchStandalone_BestEffortMode(t *testing.T) {
 	if runtime.GOOS != osLinux {
 		t.Skip(sandboxLinuxMsg)
 	}
-	// Skip in containers where CLONE_NEWUSER is blocked by seccomp.
-	if os.Getenv("CI") != "" {
-		t.Skip("skipping in CI: LaunchStandalone requires user namespace support")
-	}
+	skipIfStandaloneUnavailable(t)
 	workspace := t.TempDir()
 
 	err := LaunchStandalone(StandaloneLaunchConfig{
@@ -1156,7 +1166,8 @@ func TestSetChildSubreaper_Deep(t *testing.T) {
 	if runtime.GOOS != osLinux {
 		t.Skip("linux only")
 	}
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	cmd := exec.CommandContext(ctx, "/proc/self/exe", "-test.run=^$")
 	cmd.Env = append(os.Environ(), deepSubreapTestEnv+"=set-subreaper")
 	out, err := cmd.CombinedOutput()
@@ -1169,7 +1180,8 @@ func TestReapOrphans_Deep(t *testing.T) {
 	if runtime.GOOS != osLinux {
 		t.Skip("linux only")
 	}
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	cmd := exec.CommandContext(ctx, "/proc/self/exe", "-test.run=^$")
 	cmd.Env = append(os.Environ(), deepSubreapTestEnv+"=reap-orphans")
 	out, err := cmd.CombinedOutput()
@@ -1508,7 +1520,9 @@ func TestLoopbackConstants(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCleanupChildSandboxDir_Deep(t *testing.T) {
-	pid := 99998
+	// Use the current process PID to avoid collisions with real processes
+	// on busy hosts (hardcoded PID 99998 could be a real process).
+	pid := os.Getpid()
 	dir := fmt.Sprintf("/tmp/pipelock-sandbox-%d", pid)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		t.Fatal(err)
@@ -1531,6 +1545,11 @@ func TestCleanupSandboxCmd_NilProcess_Deep(t *testing.T) {
 	CleanupSandboxCmd(cmd) // should not panic
 }
 
+// isBindConflict reports whether err indicates a port/address already in use.
+func isBindConflict(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "address already in use")
+}
+
 // ---------------------------------------------------------------------------
 // BridgeProxy: default listen address.
 // ---------------------------------------------------------------------------
@@ -1547,10 +1566,11 @@ func TestNewBridgeProxy_DefaultAddr(t *testing.T) {
 
 	bp, err := NewBridgeProxy(socketPath, "")
 	if err != nil {
-		if !errors.Is(err, net.ErrClosed) {
-			t.Logf("NewBridgeProxy with default addr failed (expected if port in use): %v", err)
+		// Bind conflict (address already in use) is expected in CI — skip.
+		if isBindConflict(err) {
+			t.Skipf("NewBridgeProxy bind conflict (expected in CI): %v", err)
 		}
-		return
+		t.Fatalf("NewBridgeProxy failed: %v", err)
 	}
 	defer bp.Close()
 

@@ -160,9 +160,10 @@ func TestWalkA2AJSON_DepthLimit(t *testing.T) {
 	WalkA2AJSON(json.RawMessage(nested), func(_, _ string, _ FieldClass) {
 		count++
 	})
-	// Should stop at depth 20, leaf at depth 25 should not be visited.
-	if count > 25 {
-		t.Errorf("walker visited too many nodes at deep nesting: %d", count)
+	// The leaf string sits at depth 25 which exceeds maxWalkDepth=20, so the
+	// emit callback should never fire (keys named "a" are not classified).
+	if count != 0 {
+		t.Errorf("walker emitted %d nodes, want 0 (leaf should be unreachable at depth 25)", count)
 	}
 }
 
@@ -577,11 +578,15 @@ func TestHashAgentCard_NilCapabilities(t *testing.T) {
 func TestHashAgentCard_EmptySecuritySchemes(t *testing.T) {
 	card1 := A2AAgentCard{Name: "Agent", SecuritySchemes: nil}
 	card2 := A2AAgentCard{Name: "Agent", SecuritySchemes: json.RawMessage(`null`)}
-	// Both should be consistent (nil vs null).
 	h1 := HashAgentCard(card1)
 	h2 := HashAgentCard(card2)
 	if len(h1) != 64 || len(h2) != 64 {
 		t.Error("expected valid hashes")
+	}
+	// nil and json.RawMessage("null") produce different canonicalized bytes
+	// (nil → empty write, "null" → "null" bytes), so hashes must differ.
+	if h1 == h2 {
+		t.Errorf("nil and null SecuritySchemes should produce different hashes, both got %s", h1)
 	}
 }
 

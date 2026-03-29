@@ -112,7 +112,8 @@ func TestInterceptTunnel_BasicRequest(t *testing.T) {
 	addr := upstream.Listener.Addr().String() // host:port
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/test", nil)
 
-	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req) //nolint:bodyclose // closed in t.Cleanup inside helper
+	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
@@ -142,7 +143,8 @@ func TestInterceptTunnel_BlocksSecretInBody(t *testing.T) {
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://"+addr+"/api", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 
-	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req) //nolint:bodyclose // closed in t.Cleanup inside helper
+	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusForbidden {
 		t.Errorf("status = %d, want 403 (body DLP should block)", resp.StatusCode)
@@ -210,7 +212,8 @@ func TestInterceptTunnel_BlocksInjection(t *testing.T) {
 	addr := upstream.Listener.Addr().String()
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/page", nil)
 
-	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req) //nolint:bodyclose // closed in t.Cleanup inside helper
+	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusForbidden {
 		t.Errorf("status = %d, want 403 (injection should block)", resp.StatusCode)
@@ -234,7 +237,8 @@ func TestInterceptTunnel_AskActionBlocksWithoutHITL(t *testing.T) {
 	addr := upstream.Listener.Addr().String()
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/page", nil)
 
-	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req) //nolint:bodyclose // closed in t.Cleanup inside helper
+	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusForbidden {
 		t.Errorf("status = %d, want 403 (ask action should block without HITL)", resp.StatusCode)
@@ -259,7 +263,8 @@ func TestInterceptTunnel_SuppressedInjectionPassesThrough(t *testing.T) {
 	addr := upstream.Listener.Addr().String()
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/page", nil)
 
-	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req) //nolint:bodyclose // closed in t.Cleanup inside helper
+	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusForbidden {
 		t.Error("suppressed injection should not be blocked")
@@ -287,7 +292,8 @@ func TestInterceptTunnel_NonMatchingSuppressStillBlocks(t *testing.T) {
 	addr := upstream.Listener.Addr().String()
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/page", nil)
 
-	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req) //nolint:bodyclose // closed in t.Cleanup inside helper
+	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusForbidden {
 		t.Errorf("status = %d, want 403 (non-matching suppress should still block)", resp.StatusCode)
@@ -315,7 +321,8 @@ func TestInterceptTunnel_ExemptDomain(t *testing.T) {
 	addr := upstream.Listener.Addr().String()
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/inject", nil)
 
-	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req) //nolint:bodyclose // closed in t.Cleanup inside helper
+	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -342,7 +349,8 @@ func TestInterceptTunnel_NonExemptDomainStillBlocked(t *testing.T) {
 	addr := upstream.Listener.Addr().String()
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/inject", nil)
 
-	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req) //nolint:bodyclose // closed in t.Cleanup inside helper
+	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusForbidden {
 		t.Errorf("expected 403 for non-exempt domain, got %d", resp.StatusCode)
@@ -361,7 +369,8 @@ func TestInterceptTunnel_BlocksCompressedResponse(t *testing.T) {
 	addr := upstream.Listener.Addr().String()
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/data", nil)
 
-	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req) //nolint:bodyclose // closed in t.Cleanup inside helper
+	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusForbidden {
 		t.Errorf("status = %d, want 403 (compressed response should be blocked)", resp.StatusCode)
@@ -381,7 +390,8 @@ func TestInterceptTunnel_OversizedResponseBlocked(t *testing.T) {
 	addr := upstream.Listener.Addr().String()
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/large", nil)
 
-	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req) //nolint:bodyclose // closed in t.Cleanup inside helper
+	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusForbidden {
 		t.Errorf("status = %d, want 403 (oversized response)", resp.StatusCode)
@@ -408,7 +418,8 @@ func TestInterceptTunnel_HeaderDLPBlocked(t *testing.T) {
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/api", nil)
 	req.Header.Set("Authorization", "Bearer "+secret)
 
-	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req) //nolint:bodyclose // closed in t.Cleanup inside helper
+	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusForbidden {
 		t.Errorf("status = %d, want 403 (header DLP should block)", resp.StatusCode)
@@ -666,7 +677,8 @@ func TestInterceptTunnel_ResponseBodyReadError(t *testing.T) {
 	addr := upstream.Listener.Addr().String()
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/broken", nil)
 
-	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req) //nolint:bodyclose // closed in t.Cleanup inside helper
+	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
+	defer func() { _ = resp.Body.Close() }()
 
 	// The response body is short: "partial" (7 bytes) is less than
 	// Content-Length 999999, but io.ReadAll(LimitReader) returns what's
@@ -691,7 +703,8 @@ func TestInterceptTunnel_DefaultMaxResponse(t *testing.T) {
 	addr := upstream.Listener.Addr().String()
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/default", nil)
 
-	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req) //nolint:bodyclose // closed in t.Cleanup inside helper
+	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200 (default max should allow small response)", resp.StatusCode)
@@ -714,7 +727,8 @@ func TestInterceptTunnel_StripAction(t *testing.T) {
 	addr := upstream.Listener.Addr().String()
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/page", nil)
 
-	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req) //nolint:bodyclose // closed in t.Cleanup inside helper
+	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
+	defer func() { _ = resp.Body.Close() }()
 
 	// Strip action should forward the response (200) with injection removed.
 	if resp.StatusCode != http.StatusOK {
@@ -742,7 +756,8 @@ func TestInterceptTunnel_WarnAction(t *testing.T) {
 	addr := upstream.Listener.Addr().String()
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/page", nil)
 
-	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req) //nolint:bodyclose // closed in t.Cleanup inside helper
+	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
+	defer func() { _ = resp.Body.Close() }()
 
 	// Warn action should forward the response unmodified with 200 status.
 	if resp.StatusCode != http.StatusOK {
@@ -824,7 +839,8 @@ func TestInterceptTunnel_CompressedBodyBlocked(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Content-Encoding", "gzip")
 
-	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req) //nolint:bodyclose // closed in t.Cleanup inside helper
+	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusForbidden {
 		t.Errorf("status = %d, want 403 (compressed body should be blocked fail-closed)", resp.StatusCode)
@@ -852,7 +868,8 @@ func TestInterceptTunnel_HeaderDLPAuditMode(t *testing.T) {
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/api", nil)
 	req.Header.Set("Authorization", "Bearer "+secret)
 
-	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req) //nolint:bodyclose // closed in t.Cleanup inside helper
+	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
+	defer func() { _ = resp.Body.Close() }()
 
 	// Warn mode: should forward, not block.
 	if resp.StatusCode != http.StatusOK {
@@ -882,7 +899,8 @@ func TestInterceptTunnel_BodyDLPAuditMode(t *testing.T) {
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://"+addr+"/api", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 
-	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req) //nolint:bodyclose // closed in t.Cleanup inside helper
+	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
+	defer func() { _ = resp.Body.Close() }()
 
 	// Warn mode with enforce off: should forward, not block.
 	if resp.StatusCode != http.StatusOK {
@@ -984,7 +1002,8 @@ func TestInterceptTunnel_BodyDLPAskFailsClosed(t *testing.T) {
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://"+addr+"/api", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 
-	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req) //nolint:bodyclose // closed in t.Cleanup inside helper
+	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusForbidden {
 		t.Errorf("status = %d, want 403 (ask action should block body DLP without HITL)", resp.StatusCode)
@@ -1013,7 +1032,8 @@ func TestInterceptTunnel_HeaderDLPAskFailsClosed(t *testing.T) {
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/api", nil)
 	req.Header.Set("Authorization", "Bearer "+secret)
 
-	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req) //nolint:bodyclose // closed in t.Cleanup inside helper
+	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusForbidden {
 		t.Errorf("status = %d, want 403 (ask action should block header DLP without HITL)", resp.StatusCode)
@@ -1244,7 +1264,8 @@ func TestInterceptTunnel_BlocksSecretInQueryParam(t *testing.T) {
 	secret := "AKIA" + "IOSFODNN7EXAMPLE"
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/api?token="+secret, nil)
 
-	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req) //nolint:bodyclose // closed in t.Cleanup inside helper
+	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusForbidden {
 		t.Errorf("status = %d, want 403 (URL DLP should block secret in query param)", resp.StatusCode)
@@ -1267,7 +1288,8 @@ func TestInterceptTunnel_URLScanExplainBlocksHint(t *testing.T) {
 	secret := "AKIA" + "IOSFODNN7EXAMPLE"
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/api?token="+secret, nil)
 
-	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req) //nolint:bodyclose // closed in t.Cleanup inside helper
+	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403", resp.StatusCode)
@@ -1295,7 +1317,8 @@ func TestInterceptTunnel_URLScanAuditMode(t *testing.T) {
 	secret := "AKIA" + "IOSFODNN7EXAMPLE"
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/api?token="+secret, nil)
 
-	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req) //nolint:bodyclose // closed in t.Cleanup inside helper
+	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200 (audit mode should forward despite URL DLP match)", resp.StatusCode)

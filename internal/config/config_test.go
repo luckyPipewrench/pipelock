@@ -4,7 +4,9 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -396,6 +398,89 @@ func TestValidate_ExemptDomainsNormalizedWhenDisabled(t *testing.T) {
 	}
 	if cfg.ResponseScanning.ExemptDomains[0] != "api.openai.com" {
 		t.Errorf("expected normalized domain even when disabled, got %q", cfg.ResponseScanning.ExemptDomains[0])
+	}
+}
+
+func TestValidate_ExemptDomainsWarnsWhenDisabled(t *testing.T) {
+	tests := []struct {
+		name    string
+		setup   func(cfg *Config)
+		wantMsg string
+	}{
+		{
+			name: "response_scanning",
+			setup: func(cfg *Config) {
+				cfg.ResponseScanning.Enabled = false
+				cfg.ResponseScanning.ExemptDomains = []string{"api.openai.com"}
+			},
+			wantMsg: "response_scanning.exempt_domains configured but response_scanning is disabled",
+		},
+		{
+			name: "adaptive_enforcement",
+			setup: func(cfg *Config) {
+				cfg.AdaptiveEnforcement.Enabled = false
+				cfg.AdaptiveEnforcement.ExemptDomains = []string{"api.openai.com"}
+			},
+			wantMsg: "adaptive_enforcement.exempt_domains configured but adaptive_enforcement is disabled",
+		},
+		{
+			name: "cross_request_detection",
+			setup: func(cfg *Config) {
+				cfg.CrossRequestDetection.Enabled = false
+				cfg.CrossRequestDetection.EntropyBudget.ExemptDomains = []string{"api.openai.com"}
+			},
+			wantMsg: "cross_request_detection.entropy_budget.exempt_domains configured but cross_request_detection is disabled",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Capture stderr output.
+			old := os.Stderr
+			r, w, _ := os.Pipe()
+			os.Stderr = w
+
+			cfg := Defaults()
+			tt.setup(cfg)
+			if err := cfg.Validate(); err != nil {
+				os.Stderr = old
+				_ = w.Close()
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			_ = w.Close()
+			os.Stderr = old
+			var buf bytes.Buffer
+			_, _ = io.Copy(&buf, r)
+
+			if !strings.Contains(buf.String(), tt.wantMsg) {
+				t.Errorf("expected stderr warning containing %q, got %q", tt.wantMsg, buf.String())
+			}
+		})
+	}
+}
+
+func TestValidate_ExemptDomainsNoWarningWhenEnabled(t *testing.T) {
+	// No warning when section is enabled and exempt_domains is set.
+	old := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	cfg := Defaults()
+	cfg.ResponseScanning.Enabled = true
+	cfg.ResponseScanning.ExemptDomains = []string{"api.openai.com"}
+	if err := cfg.Validate(); err != nil {
+		os.Stderr = old
+		_ = w.Close()
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	_ = w.Close()
+	os.Stderr = old
+	var buf bytes.Buffer
+	_, _ = io.Copy(&buf, r)
+
+	if strings.Contains(buf.String(), "response_scanning.exempt_domains configured but") {
+		t.Errorf("should not warn when section is enabled, got %q", buf.String())
 	}
 }
 

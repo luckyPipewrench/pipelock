@@ -15,6 +15,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cli/diag"
 	"github.com/luckyPipewrench/pipelock/internal/cli/generate"
 	"github.com/luckyPipewrench/pipelock/internal/cli/git"
+	"github.com/luckyPipewrench/pipelock/internal/cli/policy"
 	"github.com/luckyPipewrench/pipelock/internal/cli/rules"
 	"github.com/luckyPipewrench/pipelock/internal/cli/runtime"
 	"github.com/luckyPipewrench/pipelock/internal/cli/setup"
@@ -66,6 +67,8 @@ Quick start:
 	cmd.AddCommand(
 		// Assess
 		assess.Cmd(),
+		// Policy capture/replay
+		policy.Cmd(),
 		// Audit & reporting
 		audit.Cmd(),
 		// Canary tokens

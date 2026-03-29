@@ -88,6 +88,9 @@ type Metrics struct {
 	reverseProxyRequests    *prometheus.CounterVec
 	reverseProxyScanBlocked *prometheus.CounterVec
 
+	// Capture system metrics.
+	CaptureDropped prometheus.Counter
+
 	wsConnectionCount int64
 
 	mu                sync.Mutex
@@ -374,6 +377,12 @@ func New() *Metrics {
 		Help:      "Reverse proxy requests blocked by scanning.",
 	}, []string{"direction", "reason"})
 
+	captureDropped := prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: "pipelock",
+		Name:      "capture_dropped_total",
+		Help:      "Total capture entries dropped due to queue overflow.",
+	})
+
 	reg.MustRegister(requestsTotal, scannerHits, requestLatency,
 		tunnelsTotal, tunnelDuration, tunnelBytes, activeTunnels,
 		wsConnectionsTotal, wsDuration, wsBytes, activeWS, wsFrames, wsScanHits, wsRedirectHints,
@@ -387,7 +396,8 @@ func New() *Metrics {
 		fileSentryFindings,
 		adaptiveUpgrades, adaptiveSessionsCurrent,
 		sessionAutoDeescalations,
-		reverseProxyRequests, reverseProxyScanBlocked)
+		reverseProxyRequests, reverseProxyScanBlocked,
+		captureDropped)
 
 	return &Metrics{
 		registry:                    reg,
@@ -434,6 +444,7 @@ func New() *Metrics {
 		sessionAutoDeescalations:    sessionAutoDeescalations,
 		reverseProxyRequests:        reverseProxyRequests,
 		reverseProxyScanBlocked:     reverseProxyScanBlocked,
+		CaptureDropped:              captureDropped,
 		startTime:                   time.Now(),
 		topBlockedDomains:           make(map[string]int64),
 		topScannerHits:              make(map[string]int64),
@@ -723,6 +734,11 @@ func (m *Metrics) IncrScanAPIInflight() {
 // DecrScanAPIInflight decrements the Scan API in-flight request gauge.
 func (m *Metrics) DecrScanAPIInflight() {
 	m.ScanAPIInflight.Dec()
+}
+
+// RecordCaptureDrop increments the capture dropped counter.
+func (m *Metrics) RecordCaptureDrop() {
+	m.CaptureDropped.Inc()
 }
 
 // RegisterInfo registers a pipelock_info gauge with the given version label.

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/certgen"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
@@ -305,6 +306,27 @@ func newInterceptHandler(
 		// the real path and query, which may contain exfiltrated secrets.
 		targetURL := r.URL.String()
 		urlResult := sc.Scan(r.Context(), targetURL)
+
+		// Capture observer: record intercept URL verdict for policy replay.
+		if p != nil {
+			findings := urlResultToFindings(urlResult)
+			action := ""
+			if !urlResult.Allowed {
+				action = config.ActionBlock
+			}
+			p.captureObs.ObserveURLVerdict(r.Context(), &capture.URLVerdictRecord{
+				Subsurface:        "intercept_url",
+				Transport:         "connect",
+				RequestID:         requestID,
+				Agent:             agent,
+				Request:           capture.CaptureRequest{Method: r.Method, URL: targetURL},
+				RawFindings:       findings,
+				EffectiveFindings: findings,
+				EffectiveAction:   action,
+				Outcome:           captureOutcome(action, urlResult.Allowed),
+			})
+		}
+
 		if !urlResult.Allowed && !urlResult.IsProtective() {
 			hasFinding = true
 			status := http.StatusForbidden
@@ -388,6 +410,28 @@ func newInterceptHandler(
 				sc,
 				agent,
 			)
+
+			// Capture observer: record intercept body DLP verdict for policy replay.
+			if p != nil {
+				bodyAction := ""
+				if !result.Clean {
+					bodyAction = result.Action
+					if bodyAction == "" {
+						bodyAction = cfg.RequestBodyScanning.Action
+					}
+				}
+				p.captureObs.ObserveDLPVerdict(r.Context(), &capture.DLPVerdictRecord{
+					Subsurface:      "dlp_body_intercept",
+					Transport:       "connect",
+					RequestID:       requestID,
+					Agent:           agent,
+					Request:         capture.CaptureRequest{Method: r.Method, URL: targetURL},
+					TransformKind:   capture.TransformJoinedFields,
+					RawFindings:     bodyScanToFindings(result),
+					EffectiveAction: bodyAction,
+					Outcome:         captureOutcome(bodyAction, result.Clean),
+				})
+			}
 
 			if !result.Clean {
 				hasFinding = true
@@ -505,6 +549,26 @@ func newInterceptHandler(
 		// Request header DLP scanning.
 		if cfg.RequestBodyScanning.Enabled && cfg.RequestBodyScanning.ScanHeaders {
 			headerResult := scanRequestHeaders(r.Context(), r.Header, cfg, sc)
+
+			// Capture observer: record intercept header DLP verdict for policy replay.
+			if p != nil {
+				hdrHasFinding := headerResult != nil && !headerResult.Clean
+				hdrAction := ""
+				if hdrHasFinding {
+					hdrAction = cfg.RequestBodyScanning.Action
+				}
+				p.captureObs.ObserveDLPVerdict(r.Context(), &capture.DLPVerdictRecord{
+					Subsurface:      "dlp_header_intercept",
+					Transport:       "connect",
+					RequestID:       requestID,
+					Agent:           agent,
+					Request:         capture.CaptureRequest{Method: r.Method, URL: targetURL},
+					TransformKind:   capture.TransformHeaderValue,
+					EffectiveAction: hdrAction,
+					Outcome:         captureOutcome(hdrAction, !hdrHasFinding),
+				})
+			}
+
 			if headerResult != nil && !headerResult.Clean {
 				hasFinding = true
 				action := cfg.RequestBodyScanning.Action
@@ -539,6 +603,29 @@ func newInterceptHandler(
 
 			ceeRes := ceeAdmit(r.Context(), sessionKey, outbound, keys, r.URL.String(), agent, clientIP, requestID,
 				ceeCfg, ceeET, ceeFB, sc, logger, m)
+
+			// Capture observer: record intercept CEE verdict for policy replay.
+			if p != nil {
+				ceeFindings := ceeResultToFindings(ceeRes)
+				ceeAction := ""
+				if ceeRes.Blocked {
+					ceeAction = config.ActionBlock
+				} else if ceeRes.EntropyHit || ceeRes.FragmentHit {
+					ceeAction = config.ActionWarn
+				}
+				p.captureObs.ObserveCEEVerdict(r.Context(), &capture.CEERecord{
+					Subsurface:        "cee_intercept",
+					Transport:         "connect",
+					RequestID:         requestID,
+					Agent:             agent,
+					Request:           capture.CaptureRequest{Method: r.Method, URL: r.URL.String()},
+					TransformKind:     capture.TransformCEEWindow,
+					RawFindings:       ceeFindings,
+					EffectiveFindings: ceeFindings,
+					EffectiveAction:   ceeAction,
+					Outcome:           captureOutcome(ceeAction, !ceeRes.Blocked && !ceeRes.EntropyHit && !ceeRes.FragmentHit),
+				})
+			}
 
 			if ceeSM != nil && cfg.AdaptiveEnforcement.Enabled {
 				ceeRecordSignals(ceeRes, ceeSM, sessionKey, cfg.AdaptiveEnforcement.EscalationThreshold, logger, m, clientIP, requestID)
@@ -718,6 +805,27 @@ func newInterceptHandler(
 		}
 		if sc.ResponseScanningEnabled() && !interceptRespExempt {
 			scanResult := sc.ScanResponse(r.Context(), string(respBody))
+
+			// Capture observer: record intercept response scan verdict for policy replay.
+			if p != nil {
+				iRespAction := sc.ResponseAction()
+				if scanResult.Clean {
+					iRespAction = ""
+				}
+				p.captureObs.ObserveResponseVerdict(r.Context(), &capture.ResponseVerdictRecord{
+					Subsurface:        "response_intercept",
+					Transport:         "connect",
+					RequestID:         requestID,
+					Agent:             agent,
+					Request:           capture.CaptureRequest{Method: r.Method, URL: targetURL},
+					TransformKind:     capture.TransformRaw,
+					RawFindings:       responseMatchesToFindings(scanResult.Matches, iRespAction),
+					EffectiveFindings: responseMatchesToFindings(scanResult.Matches, iRespAction),
+					EffectiveAction:   iRespAction,
+					Outcome:           captureOutcome(iRespAction, scanResult.Clean),
+				})
+			}
+
 			// Filter out suppressed findings (parity with fetch proxy).
 			if !scanResult.Clean && len(cfg.Suppress) > 0 {
 				var kept []scanner.ResponseMatch

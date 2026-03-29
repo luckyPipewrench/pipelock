@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Policy Replay Diff Report</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --bg-primary: #0a0a0f;
+            --bg-card: rgba(255, 255, 255, 0.04);
+            --bg-hover: rgba(255, 255, 255, 0.07);
+            --bg-header: rgba(255, 255, 255, 0.06);
+            --border: rgba(255, 255, 255, 0.08);
+            --text-primary: #eaeaf0;
+            --text-secondary: #c8c8d8;
+            --text-muted: #a0a0b4;
+            --text-dim: #64748b;
+            --color-green: #22c55e;
+            --color-yellow: #eab308;
+            --color-red: #ef4444;
+            --color-gray: #6b7280;
+            --mono: "JetBrains Mono", "Fira Code", "Consolas", monospace;
+            --radius: 12px;
+        }
+
+        body {
+            background: var(--bg-primary);
+            color: var(--text-secondary);
+            font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+            font-size: 15px;
+            line-height: 1.6;
+            padding: 2rem;
+            margin: 0;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 2rem;
+            padding-bottom: 1.5rem;
+            border-bottom: 1px solid var(--border);
+        }
+
+        header h1 {
+            font-size: 1.6rem;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin-bottom: 0.5rem;
+        }
+
+        .config-hashes {
+            font-family: var(--mono);
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            display: flex;
+            justify-content: center;
+            gap: 2rem;
+            flex-wrap: wrap;
+            margin-top: 0.5rem;
+        }
+
+        .config-hashes span {
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+        }
+
+        .config-hashes .label {
+            color: var(--text-dim);
+            text-transform: uppercase;
+            font-size: 0.6875rem;
+            letter-spacing: 0.06em;
+        }
+
+        .summary-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+            gap: 0.75rem;
+            margin-bottom: 2rem;
+        }
+
+        .stat-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 1rem;
+            text-align: center;
+        }
+
+        .stat-card .value {
+            font-size: 1.75rem;
+            font-weight: 700;
+            font-family: var(--mono);
+            color: var(--text-primary);
+        }
+
+        .stat-card .stat-label {
+            font-size: 0.6875rem;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: var(--text-muted);
+            margin-top: 0.25rem;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 0.15rem 0.5rem;
+            border-radius: 9999px;
+            font-size: 0.6875rem;
+            font-weight: 700;
+            letter-spacing: 0.05em;
+            color: #fff;
+        }
+
+        .badge-red    { background: var(--color-red); }
+        .badge-yellow { background: var(--color-yellow); color: #000; }
+        .badge-green  { background: var(--color-green); color: #000; }
+        .badge-gray   { background: var(--color-gray); }
+
+        h2 {
+            font-size: 1.1rem;
+            font-weight: 700;
+            letter-spacing: 0.01em;
+            color: var(--text-primary);
+            margin: 2rem 0 1rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 2px solid var(--border);
+        }
+
+        .no-changes {
+            text-align: center;
+            padding: 2rem;
+            color: var(--text-muted);
+            font-style: italic;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            overflow: hidden;
+        }
+
+        th {
+            background: var(--bg-header);
+            color: var(--text-muted);
+            font-size: 0.6875rem;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            padding: 0.625rem 0.75rem;
+            text-align: left;
+            font-weight: 600;
+        }
+
+        td {
+            padding: 0.5rem 0.75rem;
+            border-top: 1px solid var(--border);
+            font-size: 0.8125rem;
+            vertical-align: middle;
+        }
+
+        tr.row-new-block {
+            background: rgba(239, 68, 68, 0.08);
+        }
+
+        tr.row-new-allow {
+            background: rgba(234, 179, 8, 0.08);
+        }
+
+        .action-pill {
+            font-family: var(--mono);
+            font-size: 0.6875rem;
+            padding: 0.125rem 0.4rem;
+            border-radius: 4px;
+            background: rgba(255,255,255,0.06);
+            color: var(--text-secondary);
+        }
+
+        .ts {
+            font-family: var(--mono);
+            font-size: 0.6875rem;
+            color: var(--text-muted);
+            white-space: nowrap;
+        }
+
+        .url-cell {
+            font-family: var(--mono);
+            font-size: 0.6875rem;
+            word-break: break-all;
+            max-width: 300px;
+        }
+
+        footer {
+            margin-top: 3rem;
+            padding-top: 1rem;
+            border-top: 1px solid var(--border);
+            text-align: center;
+            font-size: 0.75rem;
+            color: var(--text-dim);
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+
+    <header>
+        <h1>Policy Replay Diff Report</h1>
+        <div class="config-hashes">
+            <span><span class="label">Original</span> {{.OriginalConfigHash}}</span>
+            <span><span class="label">Candidate</span> {{.CandidateConfigHash}}</span>
+        </div>
+    </header>
+
+    <div class="summary-grid">
+        <div class="stat-card">
+            <div class="value">{{.TotalRecords}}</div>
+            <div class="stat-label">Total Records</div>
+        </div>
+        <div class="stat-card">
+            <div class="value">{{.Replayed}}</div>
+            <div class="stat-label">Replayed</div>
+        </div>
+        <div class="stat-card">
+            <div class="value" style="color: var(--color-red)">{{.NewBlocks}}</div>
+            <div class="stat-label"><span class="badge badge-red">New Blocks</span></div>
+        </div>
+        <div class="stat-card">
+            <div class="value" style="color: var(--color-yellow)">{{.NewAllows}}</div>
+            <div class="stat-label"><span class="badge badge-yellow">New Allows</span></div>
+        </div>
+        <div class="stat-card">
+            <div class="value" style="color: var(--color-green)">{{.Unchanged}}</div>
+            <div class="stat-label"><span class="badge badge-green">Unchanged</span></div>
+        </div>
+        <div class="stat-card">
+            <div class="value">{{.EvidenceOnly}}</div>
+            <div class="stat-label"><span class="badge badge-gray">Evidence Only</span></div>
+        </div>
+        <div class="stat-card">
+            <div class="value">{{.SummaryOnly}}</div>
+            <div class="stat-label"><span class="badge badge-gray">Summary Only</span></div>
+        </div>
+        {{if gt .Dropped 0}}
+        <div class="stat-card">
+            <div class="value" style="color: var(--color-red)">{{.Dropped}}</div>
+            <div class="stat-label"><span class="badge badge-red">Dropped</span></div>
+        </div>
+        {{end}}
+    </div>
+
+    <h2>Changed Verdicts</h2>
+
+    {{if .Changes}}
+    <table>
+        <thead>
+            <tr>
+                <th>Timestamp</th>
+                <th>Surface</th>
+                <th>Subsurface</th>
+                <th>Transport</th>
+                <th>Request / Tool</th>
+                <th>Original Action</th>
+                <th>Candidate Action</th>
+                <th>Change Type</th>
+            </tr>
+        </thead>
+        <tbody>
+        {{range .Changes}}
+            <tr class="row-{{.ChangeType}}">
+                <td class="ts">{{.Summary.Request.URL}}</td>
+                <td>{{.Summary.Surface}}</td>
+                <td>{{.Summary.Subsurface}}</td>
+                <td>{{.Summary.Request.Method}}</td>
+                <td class="url-cell">
+                    {{if .Summary.Request.ToolName}}
+                        {{.Summary.Request.ToolName}}
+                    {{else}}
+                        {{.Summary.Request.URL}}
+                    {{end}}
+                </td>
+                <td><span class="action-pill">{{.OriginalAction}}</span></td>
+                <td><span class="action-pill">{{.CandidateAction}}</span></td>
+                <td>
+                    <span class="badge badge-{{changeColor .ChangeType}}">{{.ChangeType}}</span>
+                </td>
+            </tr>
+        {{end}}
+        </tbody>
+    </table>
+    {{else}}
+    <div class="no-changes">No changed verdicts — candidate config matches original behavior.</div>
+    {{end}}
+
+    <footer>
+        Generated by pipelock &bull; report_version {{.ReportVersion}} &bull; {{pct .Replayed .TotalRecords}}% of records replayed
+    </footer>
+
+</div>
+</body>
+</html>

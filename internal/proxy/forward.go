@@ -17,6 +17,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
@@ -124,6 +125,26 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	// Scan through all layers (URL pipeline).
 	result := sc.Scan(r.Context(), syntheticURL)
+
+	// Capture observer: record CONNECT URL verdict for policy replay.
+	{
+		findings := urlResultToFindings(result)
+		action := ""
+		if !result.Allowed {
+			action = config.ActionBlock
+		}
+		p.captureObs.ObserveURLVerdict(r.Context(), &capture.URLVerdictRecord{
+			Subsurface:        "connect_url",
+			Transport:         "connect",
+			RequestID:         requestID,
+			Agent:             agent,
+			Request:           capture.CaptureRequest{Method: http.MethodConnect, URL: syntheticURL},
+			RawFindings:       findings,
+			EffectiveFindings: findings,
+			EffectiveAction:   action,
+			Outcome:           captureOutcome(action, result.Allowed),
+		})
+	}
 
 	connectSessionKey := CeeSessionKey(agent, clientIP)
 	var connectRec session.Recorder
@@ -555,6 +576,26 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Capture observer: record forward URL verdict for policy replay.
+	{
+		findings := urlResultToFindings(result)
+		action := ""
+		if !result.Allowed {
+			action = config.ActionBlock
+		}
+		p.captureObs.ObserveURLVerdict(r.Context(), &capture.URLVerdictRecord{
+			Subsurface:        "forward_url",
+			Transport:         "forward",
+			RequestID:         requestID,
+			Agent:             agent,
+			Request:           capture.CaptureRequest{Method: r.Method, URL: targetURL},
+			RawFindings:       findings,
+			EffectiveFindings: findings,
+			EffectiveAction:   action,
+			Outcome:           captureOutcome(action, result.Allowed),
+		})
+	}
+
 	// Session profiling: record BEFORE the enforce-mode early return so adaptive
 	// signals (SignalBlock) fire even for blocked requests. Pass deferClean=true
 	// so later request/response findings on the same round trip do not get
@@ -634,6 +675,28 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	if cfg.RequestBodyScanning.Enabled && r.Body != nil && r.Body != http.NoBody {
 		buf, bodyResult := scanRequestBody(r.Context(), r.Body, r.Header.Get("Content-Type"),
 			r.Header.Get("Content-Encoding"), cfg.RequestBodyScanning.MaxBodyBytes, sc, agent)
+
+		// Capture observer: record forward body DLP verdict for policy replay.
+		{
+			bodyAction := ""
+			if !bodyResult.Clean {
+				bodyAction = bodyResult.Action
+				if bodyAction == "" {
+					bodyAction = cfg.RequestBodyScanning.Action
+				}
+			}
+			p.captureObs.ObserveDLPVerdict(r.Context(), &capture.DLPVerdictRecord{
+				Subsurface:      "dlp_body_forward",
+				Transport:       "forward",
+				RequestID:       requestID,
+				Agent:           agent,
+				Request:         capture.CaptureRequest{Method: r.Method, URL: targetURL},
+				TransformKind:   capture.TransformJoinedFields,
+				RawFindings:     bodyScanToFindings(bodyResult),
+				EffectiveAction: bodyAction,
+				Outcome:         captureOutcome(bodyAction, bodyResult.Clean),
+			})
+		}
 
 		if !bodyResult.Clean {
 			hasFinding = true
@@ -727,6 +790,27 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// Request header DLP scanning.
 	// hadFinding is true even in audit/warn mode so near-miss signals are recorded.
 	forwardHeaderBlocked, forwardHeaderHadFinding := p.evalHeaderDLP(r.Context(), r.Header, cfg, sc, p.logger, r.Method, targetURL, r.URL.Hostname(), clientIP, requestID, agent, start)
+
+	// Capture observer: record forward header DLP verdict for policy replay.
+	{
+		hdrAction := ""
+		if forwardHeaderBlocked {
+			hdrAction = config.ActionBlock
+		} else if forwardHeaderHadFinding {
+			hdrAction = config.ActionWarn
+		}
+		p.captureObs.ObserveDLPVerdict(r.Context(), &capture.DLPVerdictRecord{
+			Subsurface:      "dlp_header_forward",
+			Transport:       "forward",
+			RequestID:       requestID,
+			Agent:           agent,
+			Request:         capture.CaptureRequest{Method: r.Method, URL: targetURL},
+			TransformKind:   capture.TransformHeaderValue,
+			EffectiveAction: hdrAction,
+			Outcome:         captureOutcome(hdrAction, !forwardHeaderHadFinding),
+		})
+	}
+
 	if forwardHeaderHadFinding {
 		hasFinding = true
 	}
@@ -778,6 +862,28 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 		ceeRes := ceeAdmit(r.Context(), sessionKey, outbound, keys, targetURL, agent, clientIP, requestID,
 			ceeCfg, p.entropyTrackerPtr.Load(), p.fragmentBufferPtr.Load(), sc, p.logger, p.metrics)
+
+		// Capture observer: record forward CEE verdict for policy replay.
+		ceeFindings := ceeResultToFindings(ceeRes)
+		ceeAction := ""
+		if ceeRes.Blocked {
+			ceeAction = config.ActionBlock
+		} else if ceeRes.EntropyHit || ceeRes.FragmentHit {
+			ceeAction = config.ActionWarn
+		}
+		p.captureObs.ObserveCEEVerdict(r.Context(), &capture.CEERecord{
+			Subsurface:        "cee_forward",
+			Transport:         "forward",
+			RequestID:         requestID,
+			Agent:             agent,
+			Request:           capture.CaptureRequest{Method: r.Method, URL: targetURL},
+			TransformKind:     capture.TransformCEEWindow,
+			RawFindings:       ceeFindings,
+			EffectiveFindings: ceeFindings,
+			EffectiveAction:   ceeAction,
+			Outcome:           captureOutcome(ceeAction, !ceeRes.Blocked && !ceeRes.EntropyHit && !ceeRes.FragmentHit),
+		})
+
 		if ceeRes.EntropyHit || ceeRes.FragmentHit || ceeRes.Blocked {
 			hasFinding = true
 		}
@@ -937,6 +1043,27 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		scanResult := sc.ScanResponse(r.Context(), string(respBody))
+
+		// Capture observer: record forward response scan verdict for policy replay.
+		{
+			fwdRespAction := sc.ResponseAction()
+			if scanResult.Clean {
+				fwdRespAction = ""
+			}
+			p.captureObs.ObserveResponseVerdict(r.Context(), &capture.ResponseVerdictRecord{
+				Subsurface:        "response_forward",
+				Transport:         "forward",
+				RequestID:         requestID,
+				Agent:             agent,
+				Request:           capture.CaptureRequest{Method: r.Method, URL: targetURL},
+				TransformKind:     capture.TransformRaw,
+				RawFindings:       responseMatchesToFindings(scanResult.Matches, fwdRespAction),
+				EffectiveFindings: responseMatchesToFindings(scanResult.Matches, fwdRespAction),
+				EffectiveAction:   fwdRespAction,
+				Outcome:           captureOutcome(fwdRespAction, scanResult.Clean),
+			})
+		}
+
 		// Filter out suppressed findings (parity with fetch proxy).
 		if !scanResult.Clean && len(cfg.Suppress) > 0 {
 			var kept []scanner.ResponseMatch

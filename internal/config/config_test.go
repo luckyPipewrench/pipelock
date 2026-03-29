@@ -40,6 +40,11 @@ const (
 	fieldSandbox         = "sandbox"
 	fieldFileSentry      = "file_sentry"
 	fieldSubEntExcl      = "fetch_proxy.monitoring.subdomain_entropy_exclusions"
+	testExemptDomain     = "api.openai.com"
+
+	warnResponseExemptDisabled = "response_scanning.exempt_domains configured but response_scanning is disabled"
+	warnAdaptiveExemptDisabled = "adaptive_enforcement.exempt_domains configured but adaptive_enforcement is disabled"
+	warnCrossReqExemptDisabled = "cross_request_detection.entropy_budget.exempt_domains configured but cross_request_detection is disabled"
 
 	// testLicenseFileCfg is a minimal config with license_file pointing to a
 	// relative file name. Used in multiple license loading tests.
@@ -411,32 +416,35 @@ func TestValidate_ExemptDomainsWarnsWhenDisabled(t *testing.T) {
 			name: "response_scanning",
 			setup: func(cfg *Config) {
 				cfg.ResponseScanning.Enabled = false
-				cfg.ResponseScanning.ExemptDomains = []string{"api.openai.com"}
+				cfg.ResponseScanning.ExemptDomains = []string{testExemptDomain}
 			},
-			wantMsg: "response_scanning.exempt_domains configured but response_scanning is disabled",
+			wantMsg: warnResponseExemptDisabled,
 		},
 		{
 			name: "adaptive_enforcement",
 			setup: func(cfg *Config) {
 				cfg.AdaptiveEnforcement.Enabled = false
-				cfg.AdaptiveEnforcement.ExemptDomains = []string{"api.openai.com"}
+				cfg.AdaptiveEnforcement.ExemptDomains = []string{testExemptDomain}
 			},
-			wantMsg: "adaptive_enforcement.exempt_domains configured but adaptive_enforcement is disabled",
+			wantMsg: warnAdaptiveExemptDisabled,
 		},
 		{
 			name: "cross_request_detection",
 			setup: func(cfg *Config) {
 				cfg.CrossRequestDetection.Enabled = false
-				cfg.CrossRequestDetection.EntropyBudget.ExemptDomains = []string{"api.openai.com"}
+				cfg.CrossRequestDetection.EntropyBudget.ExemptDomains = []string{testExemptDomain}
 			},
-			wantMsg: "cross_request_detection.entropy_budget.exempt_domains configured but cross_request_detection is disabled",
+			wantMsg: warnCrossReqExemptDisabled,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Capture stderr output.
 			old := os.Stderr
-			r, w, _ := os.Pipe()
+			r, w, err := os.Pipe()
+			if err != nil {
+				t.Fatalf("os.Pipe: %v", err)
+			}
 			os.Stderr = w
 
 			cfg := Defaults()
@@ -444,6 +452,7 @@ func TestValidate_ExemptDomainsWarnsWhenDisabled(t *testing.T) {
 			if err := cfg.Validate(); err != nil {
 				os.Stderr = old
 				_ = w.Close()
+				_ = r.Close()
 				t.Fatalf("unexpected error: %v", err)
 			}
 
@@ -451,6 +460,7 @@ func TestValidate_ExemptDomainsWarnsWhenDisabled(t *testing.T) {
 			os.Stderr = old
 			var buf bytes.Buffer
 			_, _ = io.Copy(&buf, r)
+			_ = r.Close()
 
 			if !strings.Contains(buf.String(), tt.wantMsg) {
 				t.Errorf("expected stderr warning containing %q, got %q", tt.wantMsg, buf.String())
@@ -462,15 +472,19 @@ func TestValidate_ExemptDomainsWarnsWhenDisabled(t *testing.T) {
 func TestValidate_ExemptDomainsNoWarningWhenEnabled(t *testing.T) {
 	// No warning when section is enabled and exempt_domains is set.
 	old := os.Stderr
-	r, w, _ := os.Pipe()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
 	os.Stderr = w
 
 	cfg := Defaults()
 	cfg.ResponseScanning.Enabled = true
-	cfg.ResponseScanning.ExemptDomains = []string{"api.openai.com"}
+	cfg.ResponseScanning.ExemptDomains = []string{testExemptDomain}
 	if err := cfg.Validate(); err != nil {
 		os.Stderr = old
 		_ = w.Close()
+		_ = r.Close()
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -478,8 +492,9 @@ func TestValidate_ExemptDomainsNoWarningWhenEnabled(t *testing.T) {
 	os.Stderr = old
 	var buf bytes.Buffer
 	_, _ = io.Copy(&buf, r)
+	_ = r.Close()
 
-	if strings.Contains(buf.String(), "response_scanning.exempt_domains configured but") {
+	if strings.Contains(buf.String(), warnResponseExemptDisabled) {
 		t.Errorf("should not warn when section is enabled, got %q", buf.String())
 	}
 }

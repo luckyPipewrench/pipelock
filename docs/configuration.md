@@ -199,7 +199,7 @@ pipelock tls show-ca
 - Response read errors are blocked
 - Authority mismatch (Host header differs from CONNECT target) is blocked
 
-**Passthrough domains:** Domains in `passthrough_domains` are spliced (bidirectional byte copy) without interception, preserving end-to-end TLS. Use this for domains where certificate pinning prevents interception or where you trust the destination. Supports exact match and wildcard prefix (`*.example.com` matches `sub.example.com`).
+**Passthrough domains:** Domains in `passthrough_domains` are spliced (bidirectional byte copy) without interception, preserving end-to-end TLS. Use this for domains where certificate pinning prevents interception or where you trust the destination. Supports exact match and wildcard prefix (`*.example.com` matches `sub.example.com` and the apex `example.com`).
 
 ## Request Body Scanning
 

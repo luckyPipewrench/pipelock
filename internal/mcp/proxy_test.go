@@ -2608,3 +2608,425 @@ func TestForwardScanned_ProvenanceWarnLogsUnsignedTools(t *testing.T) {
 		t.Errorf("expected unsigned log for write_file, got: %s", logOutput)
 	}
 }
+
+func TestForwardScanned_ProvenanceBlockUnsignedToolsList(t *testing.T) {
+	sc := testScannerWithAction(t, config.ActionWarn)
+
+	// Build an unsigned tools/list response (no provenance attestation).
+	unsignedResp := buildUnsignedToolsListResponse(t, []provenance.ToolDef{
+		{Name: "read_file", Description: "Reads a file", InputSchema: json.RawMessage(`{"type":"object"}`)},
+	})
+
+	hexPub, _ := provenanceTestKeys(t)
+
+	toolCfg := &tools.ToolScanConfig{
+		Action:      config.ActionWarn,
+		DetectDrift: true,
+	}
+	provCfg := &config.MCPToolProvenance{
+		Enabled:     true,
+		Action:      config.ActionBlock,
+		Mode:        config.ProvenanceModePipelock,
+		TrustedKeys: []string{hexPub},
+		OfflineOnly: true,
+	}
+
+	opts := buildTestOpts(sc, withToolCfg(toolCfg))
+	opts.ProvenanceCfg = provCfg
+
+	var out, logBuf bytes.Buffer
+	found, err := ForwardScanned(
+		transport.NewStdioReader(strings.NewReader(string(unsignedResp)+"\n")),
+		transport.NewStdioWriter(&out),
+		&logBuf, nil, opts,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	_ = found
+
+	// In block mode, the unsigned tools/list should be replaced with a block response.
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "provenance verification failed") {
+		t.Errorf("expected provenance block log, got: %s", logOutput)
+	}
+	// Output should contain a JSON-RPC error (blocked response), not the original.
+	outStr := out.String()
+	if !strings.Contains(outStr, `"error"`) {
+		t.Errorf("expected JSON-RPC error in output for provenance block, got: %s", outStr)
+	}
+}
+
+func TestForwardScanned_ProvenanceBlockWithAuditAndMetrics(t *testing.T) {
+	sc := testScannerWithAction(t, config.ActionWarn)
+
+	unsignedResp := buildUnsignedToolsListResponse(t, []provenance.ToolDef{
+		{Name: "tool_a", Description: "A tool", InputSchema: json.RawMessage(`{"type":"object"}`)},
+	})
+
+	hexPub, _ := provenanceTestKeys(t)
+
+	toolCfg := &tools.ToolScanConfig{
+		Action:      config.ActionWarn,
+		DetectDrift: true,
+	}
+	provCfg := &config.MCPToolProvenance{
+		Enabled:     true,
+		Action:      config.ActionBlock,
+		Mode:        config.ProvenanceModePipelock,
+		TrustedKeys: []string{hexPub},
+		OfflineOnly: true,
+	}
+
+	opts := buildTestOpts(sc, withToolCfg(toolCfg))
+	opts.ProvenanceCfg = provCfg
+
+	var out, logBuf bytes.Buffer
+	_, err := ForwardScanned(
+		transport.NewStdioReader(strings.NewReader(string(unsignedResp)+"\n")),
+		transport.NewStdioWriter(&out),
+		&logBuf, nil, opts,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify provenance block is logged.
+	if !strings.Contains(logBuf.String(), "provenance verification failed") {
+		t.Errorf("expected provenance block in log, got: %s", logBuf.String())
+	}
+}
+
+func TestForwardScanned_ProvenanceWarnWithAuditLogger(t *testing.T) {
+	sc := testScannerWithAction(t, config.ActionWarn)
+
+	unsignedResp := buildUnsignedToolsListResponse(t, []provenance.ToolDef{
+		{Name: "unsafe_tool", Description: "An unsafe tool", InputSchema: json.RawMessage(`{"type":"object"}`)},
+	})
+
+	hexPub, _ := provenanceTestKeys(t)
+
+	toolCfg := &tools.ToolScanConfig{
+		Action:      config.ActionWarn,
+		DetectDrift: true,
+	}
+	provCfg := &config.MCPToolProvenance{
+		Enabled:     true,
+		Action:      config.ActionWarn,
+		Mode:        config.ProvenanceModePipelock,
+		TrustedKeys: []string{hexPub},
+		OfflineOnly: true,
+	}
+
+	opts := buildTestOpts(sc, withToolCfg(toolCfg))
+	opts.ProvenanceCfg = provCfg
+
+	var out, logBuf bytes.Buffer
+	_, err := ForwardScanned(
+		transport.NewStdioReader(strings.NewReader(string(unsignedResp)+"\n")),
+		transport.NewStdioWriter(&out),
+		&logBuf, nil, opts,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Warn mode should pass through the original response.
+	if !strings.Contains(out.String(), "unsafe_tool") {
+		t.Errorf("expected original tools/list to be forwarded in warn mode, got: %s", out.String())
+	}
+	// Log should have the provenance warn message.
+	if !strings.Contains(logBuf.String(), "provenance warn") {
+		t.Errorf("expected provenance warn in log, got: %s", logBuf.String())
+	}
+}
+
+func TestVerifyBinaryIntegrity_WarnOnLoadError(t *testing.T) {
+	var logBuf bytes.Buffer
+	icfg := &config.MCPBinaryIntegrity{
+		Enabled:      true,
+		ManifestPath: "/nonexistent/path/manifest.json",
+		Action:       config.ActionWarn,
+	}
+
+	err := VerifyBinaryIntegrity([]string{"/bin/true"}, icfg, &logBuf)
+	if err != nil {
+		t.Fatalf("warn mode should not return error, got: %v", err)
+	}
+	if !strings.Contains(logBuf.String(), "binary integrity warning") {
+		t.Errorf("expected warning log, got: %s", logBuf.String())
+	}
+}
+
+func TestVerifyBinaryIntegrity_BlockOnLoadError(t *testing.T) {
+	icfg := &config.MCPBinaryIntegrity{
+		Enabled:      true,
+		ManifestPath: "/nonexistent/path/manifest.json",
+		Action:       config.ActionBlock,
+	}
+
+	var logBuf bytes.Buffer
+	err := VerifyBinaryIntegrity([]string{"/bin/true"}, icfg, &logBuf)
+	if err == nil {
+		t.Fatal("block mode should return error on manifest load failure")
+	}
+	if !strings.Contains(err.Error(), "loading manifest") {
+		t.Errorf("error should mention manifest loading, got: %v", err)
+	}
+}
+
+func TestVerifyBinaryIntegrity_WarnOnVerifyError(t *testing.T) {
+	// Create a valid manifest that does not contain the binary we're checking.
+	m := &integrity.Manifest{
+		Version: integrity.ManifestVersion,
+		Entries: map[string]string{"/some/other/binary": "deadbeef"},
+	}
+	mpath := filepath.Join(t.TempDir(), "manifest.json")
+	if err := integrity.SaveManifest(mpath, m); err != nil {
+		t.Fatalf("writing manifest: %v", err)
+	}
+
+	icfg := &config.MCPBinaryIntegrity{
+		Enabled:      true,
+		ManifestPath: mpath,
+		Action:       config.ActionWarn,
+	}
+
+	var logBuf bytes.Buffer
+	err := VerifyBinaryIntegrity([]string{"/bin/true"}, icfg, &logBuf)
+	if err != nil {
+		t.Fatalf("warn mode should not return error, got: %v", err)
+	}
+	if !strings.Contains(logBuf.String(), "binary integrity warning") {
+		t.Errorf("expected warning log for unmatched binary, got: %s", logBuf.String())
+	}
+}
+
+func TestVerifyBinaryIntegrity_BlockOnHashMismatch(t *testing.T) {
+	if runtime.GOOS == osWindows {
+		t.Skip("hash test requires unix")
+	}
+
+	truePath, _, err := integrity.ResolveAndHash("true")
+	if err != nil {
+		t.Fatalf("resolving true binary: %v", err)
+	}
+
+	m := &integrity.Manifest{
+		Version: integrity.ManifestVersion,
+		Entries: map[string]string{truePath: "0000000000000000000000000000000000000000000000000000000000000000"},
+	}
+	mpath := filepath.Join(t.TempDir(), "manifest.json")
+	if err := integrity.SaveManifest(mpath, m); err != nil {
+		t.Fatalf("writing manifest: %v", err)
+	}
+
+	icfg := &config.MCPBinaryIntegrity{
+		Enabled:      true,
+		ManifestPath: mpath,
+		Action:       config.ActionBlock,
+	}
+
+	var logBuf bytes.Buffer
+	err = VerifyBinaryIntegrity([]string{"true"}, icfg, &logBuf)
+	if err == nil {
+		t.Fatal("block mode should return error on hash mismatch")
+	}
+	if !strings.Contains(err.Error(), "integrity check failed") {
+		t.Errorf("error should mention integrity check, got: %v", err)
+	}
+}
+
+func TestVerifyBinaryIntegrity_WarnOnHashMismatch(t *testing.T) {
+	if runtime.GOOS == osWindows {
+		t.Skip("hash test requires unix")
+	}
+
+	truePath, _, err := integrity.ResolveAndHash("true")
+	if err != nil {
+		t.Fatalf("resolving true binary: %v", err)
+	}
+
+	m := &integrity.Manifest{
+		Version: integrity.ManifestVersion,
+		Entries: map[string]string{truePath: "0000000000000000000000000000000000000000000000000000000000000000"},
+	}
+	mpath := filepath.Join(t.TempDir(), "manifest.json")
+	if err := integrity.SaveManifest(mpath, m); err != nil {
+		t.Fatalf("writing manifest: %v", err)
+	}
+
+	icfg := &config.MCPBinaryIntegrity{
+		Enabled:      true,
+		ManifestPath: mpath,
+		Action:       config.ActionWarn,
+	}
+
+	var logBuf bytes.Buffer
+	err = VerifyBinaryIntegrity([]string{"true"}, icfg, &logBuf)
+	if err != nil {
+		t.Fatalf("warn mode should not return error, got: %v", err)
+	}
+	if !strings.Contains(logBuf.String(), "binary integrity warning") {
+		t.Errorf("expected warning log for hash mismatch, got: %s", logBuf.String())
+	}
+}
+
+func TestVerifyBinaryIntegrity_BlockOnVerifyError(t *testing.T) {
+	// Create a valid manifest so LoadManifest succeeds, then pass a
+	// nonexistent binary so integrity.Verify returns an error.
+	m := &integrity.Manifest{
+		Version: integrity.ManifestVersion,
+		Entries: map[string]string{"/some/binary": "deadbeef"},
+	}
+	mpath := filepath.Join(t.TempDir(), "manifest.json")
+	if err := integrity.SaveManifest(mpath, m); err != nil {
+		t.Fatalf("writing manifest: %v", err)
+	}
+
+	icfg := &config.MCPBinaryIntegrity{
+		Enabled:      true,
+		ManifestPath: mpath,
+		Action:       config.ActionBlock,
+	}
+
+	var logBuf bytes.Buffer
+	err := VerifyBinaryIntegrity([]string{"/nonexistent/binary/that/does/not/exist"}, icfg, &logBuf)
+	if err == nil {
+		t.Fatal("block mode should return error on verify failure")
+	}
+	if !strings.Contains(err.Error(), "binary integrity") {
+		t.Errorf("error should mention binary integrity, got: %v", err)
+	}
+}
+
+// TestForwardScanned_BlockAllNotificationDrop verifies that when the session
+// is at a block_all escalation level, notifications (no ID) are silently
+// dropped rather than receiving a JSON-RPC error response.
+func TestForwardScanned_BlockAllNotificationDrop(t *testing.T) {
+	sc := testScannerWithAction(t, config.ActionWarn)
+	defer sc.Close()
+
+	rec := &mockRecorder{level: 3}
+	adaptiveCfg := &config.AdaptiveEnforcement{
+		Enabled: true,
+		Levels: config.EscalationLevels{
+			Critical: config.EscalationActions{
+				BlockAll: ptrBool(true),
+			},
+		},
+	}
+
+	// Notification: no "id" field, just a method.
+	notification := `{"jsonrpc":"2.0","method":"notifications/progress","params":{"progress":1}}` + "\n"
+	reader := transport.NewStdioReader(strings.NewReader(notification))
+	var outBuf bytes.Buffer
+	writer := transport.NewStdioWriter(&outBuf)
+
+	logBuf := &syncBuffer{}
+	opts := MCPProxyOpts{
+		Scanner:     sc,
+		Rec:         rec,
+		AdaptiveCfg: adaptiveCfg,
+	}
+
+	_, err := ForwardScanned(reader, writer, logBuf, nil, opts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Notification should be dropped silently (no output written).
+	if outBuf.Len() > 0 {
+		t.Errorf("expected no output for dropped notification, got: %s", outBuf.String())
+	}
+}
+
+// TestForwardScanned_BatchJSONRPCBlocked verifies that JSON-RPC batch messages
+// (top-level arrays) are blocked per the MCP specification.
+func TestForwardScanned_BatchJSONRPCBlocked(t *testing.T) {
+	sc := testScannerWithAction(t, config.ActionWarn)
+	defer sc.Close()
+
+	batch := `[{"jsonrpc":"2.0","id":1,"method":"tools/list"},{"jsonrpc":"2.0","id":2,"method":"tools/list"}]` + "\n"
+	reader := transport.NewStdioReader(strings.NewReader(batch))
+	var outBuf bytes.Buffer
+	writer := transport.NewStdioWriter(&outBuf)
+
+	logBuf := &syncBuffer{}
+	opts := MCPProxyOpts{Scanner: sc}
+
+	_, err := ForwardScanned(reader, writer, logBuf, nil, opts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(logBuf.String(), "blocked batch JSON-RPC") {
+		t.Errorf("expected batch block log, got: %s", logBuf.String())
+	}
+	// Batch should be dropped, no output.
+	if outBuf.Len() > 0 {
+		t.Errorf("expected no output for blocked batch, got: %s", outBuf.String())
+	}
+}
+
+// TestForwardScanned_MidStreamBlockAllEscalation verifies that when
+// the session escalation transitions from non-blocking to block_all
+// mid-stream, subsequent messages are blocked and the transition is logged.
+func TestForwardScanned_MidStreamBlockAllEscalation(t *testing.T) {
+	sc := testScannerWithAction(t, config.ActionWarn)
+	defer sc.Close()
+
+	adaptiveCfg := &config.AdaptiveEnforcement{
+		Enabled: true,
+		Levels: config.EscalationLevels{
+			Elevated: config.EscalationActions{
+				BlockAll: ptrBool(true),
+			},
+		},
+	}
+
+	// Two clean responses: after the first, we escalate the recorder.
+	msg1 := `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"clean"}]}}` + "\n"
+	msg2 := `{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"also clean"}]}}` + "\n"
+	reader := transport.NewStdioReader(strings.NewReader(msg1 + msg2))
+	var outBuf bytes.Buffer
+	writer := transport.NewStdioWriter(&outBuf)
+
+	// After first message is processed, escalate. We need to trigger this
+	// from the mockRecorder by setting its level after the first RecordClean.
+	// Since RecordClean is synchronous, set level=1 on the first call.
+	escalateAfterFirst := &mockRecorderEscalateOnClean{
+		mockRecorder: mockRecorder{},
+		escalateAt:   1,
+	}
+
+	logBuf := &syncBuffer{}
+	opts := MCPProxyOpts{
+		Scanner:     sc,
+		Rec:         escalateAfterFirst,
+		AdaptiveCfg: adaptiveCfg,
+	}
+
+	_, err := ForwardScanned(reader, writer, logBuf, nil, opts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	logStr := logBuf.String()
+	if !strings.Contains(logStr, "session deny") {
+		t.Errorf("expected session deny log for mid-stream escalation, got: %s", logStr)
+	}
+}
+
+// mockRecorderEscalateOnClean escalates after N clean calls.
+type mockRecorderEscalateOnClean struct {
+	mockRecorder
+	escalateAt int
+}
+
+func (m *mockRecorderEscalateOnClean) RecordClean(decay float64) {
+	m.cleans++
+	if m.cleans >= m.escalateAt {
+		m.level = 1
+	}
+}

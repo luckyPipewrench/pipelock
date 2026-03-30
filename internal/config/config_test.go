@@ -42,6 +42,9 @@ const (
 	fieldSubEntExcl      = "fetch_proxy.monitoring.subdomain_entropy_exclusions"
 	testExemptDomain     = "api.openai.com"
 
+	testProfileDir  = "/tmp/profiles"
+	testRecorderDir = "/tmp/recorder"
+
 	warnResponseExemptDisabled = "response_scanning.exempt_domains configured but response_scanning is disabled"
 	warnAdaptiveExemptDisabled = "adaptive_enforcement.exempt_domains configured but adaptive_enforcement is disabled"
 	warnCrossReqExemptDisabled = "cross_request_detection.entropy_budget.exempt_domains configured but cross_request_detection is disabled"
@@ -7772,7 +7775,7 @@ func TestLoad_ExplicitFalseOverridesDefaults(t *testing.T) {
 func TestValidate_InvalidDoWAction(t *testing.T) {
 	cfg := Defaults()
 	cfg.Agents = map[string]AgentProfile{
-		"test": {Budget: BudgetConfig{DoWAction: "allow"}},
+		"test": {Budget: BudgetConfig{DoWAction: ActionAllow}},
 	}
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected error for invalid dow_action, got nil")
@@ -9835,5 +9838,577 @@ func TestValidate_TrustedDomains_TrailingDot(t *testing.T) {
 	}
 	if cfg.TrustedDomains[0] != "example.com" {
 		t.Errorf("expected trailing dot stripped, got %q", cfg.TrustedDomains[0])
+	}
+}
+
+func TestMatchGlobSubstring_EdgeCases(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		s       string
+		pattern string
+		want    bool
+	}{
+		{"all wildcards", "anything goes here", "***", true},
+		{"single star matches all", "https://example.com/path", "*", true},
+		{"middle wildcard", "https://api.example.com/v1/messages", "https://*.example.com/v1*", true},
+		{"middle wildcard no match", "https://api.other.com/v1/messages", "https://*.example.com/v1*", false},
+		{"non-prefix first segment", "prefix-https://api.example.com", "https://api.example.com", false},
+		{"non-suffix last segment", "https://api.example.com/v1", "https://api.example.com/v1/extra", false},
+		{"multiple wildcards in middle", "abcXYZdefGHIjkl", "abc*def*jkl", true},
+		{"multiple wildcards no match", "abcXYZdefGHIjkl", "abc*zzz*jkl", false},
+		{"empty string", "", "*.com*", false},
+		{"pattern is just star", "hello", "*", true},
+		{"empty string with star pattern", "", "*", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := matchGlobSubstring(tt.s, tt.pattern)
+			if got != tt.want {
+				t.Errorf("matchGlobSubstring(%q, %q) = %v, want %v", tt.s, tt.pattern, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStripStandardPorts(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{"no scheme passthrough", "example.com:443", "example.com:443"},
+		{"https 443 stripped", "https://example.com:443/path", "https://example.com/path"},
+		{"http 80 stripped", "http://example.com:80/path", "http://example.com/path"},
+		{"non-standard port kept", "https://example.com:8443/path", "https://example.com:8443/path"},
+		{"no port untouched", "https://example.com/path", "https://example.com/path"},
+		{"invalid URL passthrough", "https://[invalid:url", "https://[invalid:url"},
+		{"http 443 also stripped", "http://example.com:443/path", "http://example.com/path"},
+		{"https 80 also stripped", "https://example.com:80/path", "https://example.com/path"},
+		{"empty string", "", ""},
+		{"ftp scheme 80 stripped", "ftp://files.example.com:80/pub", "ftp://files.example.com/pub"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := stripStandardPorts(tt.url)
+			if got != tt.want {
+				t.Errorf("stripStandardPorts(%q) = %q, want %q", tt.url, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMatchesPath_StripStandardPortsCrossover(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		target  string
+		pattern string
+		want    bool
+	}{
+		{
+			name:    "target has :443, pattern does not",
+			target:  "https://api.anthropic.com:443/v1/messages",
+			pattern: "https://api.anthropic.com/v1/messages",
+			want:    true,
+		},
+		{
+			name:    "target has :80, pattern does not",
+			target:  "http://example.com:80/robots.txt",
+			pattern: "http://example.com/robots.txt",
+			want:    true,
+		},
+		{
+			name:    "both have :443",
+			target:  "https://api.anthropic.com:443/v1",
+			pattern: "https://api.anthropic.com:443/v1",
+			want:    true,
+		},
+		{
+			name:    "non-standard port not stripped",
+			target:  "https://api.example.com:8443/v1",
+			pattern: "https://api.example.com/v1",
+			want:    false,
+		},
+		{
+			name:    "glob with port stripping",
+			target:  "https://api.anthropic.com:443/v1/messages",
+			pattern: "*.anthropic.com*",
+			want:    true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := matchesPath(tt.target, tt.pattern)
+			if got != tt.want {
+				t.Errorf("matchesPath(%q, %q) = %v, want %v", tt.target, tt.pattern, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidate_A2AScanning(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		cfg     func() *Config
+		wantErr string
+	}{
+		{
+			name: "disabled_is_valid",
+			cfg: func() *Config {
+				c := Defaults()
+				c.A2AScanning.Enabled = false
+				return c
+			},
+		},
+		{
+			name: "enabled_block_valid",
+			cfg: func() *Config {
+				c := Defaults()
+				c.A2AScanning.Enabled = true
+				c.A2AScanning.Action = ActionBlock
+				return c
+			},
+		},
+		{
+			name: "enabled_warn_valid",
+			cfg: func() *Config {
+				c := Defaults()
+				c.A2AScanning.Enabled = true
+				c.A2AScanning.Action = ActionWarn
+				return c
+			},
+		},
+		{
+			name: "invalid_action",
+			cfg: func() *Config {
+				c := Defaults()
+				c.A2AScanning.Enabled = true
+				c.A2AScanning.Action = "deny"
+				return c
+			},
+			wantErr: "invalid a2a_scanning action",
+		},
+		{
+			name: "defaults_applied_for_zero_values",
+			cfg: func() *Config {
+				c := Defaults()
+				c.A2AScanning.Enabled = true
+				c.A2AScanning.Action = ActionWarn
+				c.A2AScanning.MaxContextMessages = 0
+				c.A2AScanning.MaxContexts = 0
+				c.A2AScanning.MaxRawSize = 0
+				return c
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			c := tt.cfg()
+			err := c.Validate()
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("expected error containing %q, got: %v", tt.wantErr, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+			// Verify defaults were applied for zero values.
+			if c.A2AScanning.Enabled {
+				if c.A2AScanning.MaxContextMessages <= 0 {
+					t.Error("expected MaxContextMessages to be defaulted")
+				}
+				if c.A2AScanning.MaxContexts <= 0 {
+					t.Error("expected MaxContexts to be defaulted")
+				}
+				if c.A2AScanning.MaxRawSize <= 0 {
+					t.Error("expected MaxRawSize to be defaulted")
+				}
+			}
+		})
+	}
+}
+
+func TestValidate_MCPBinaryIntegrity(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		cfg     func() *Config
+		wantErr string
+	}{
+		{
+			name: "disabled_is_valid",
+			cfg: func() *Config {
+				c := Defaults()
+				c.MCPBinaryIntegrity.Enabled = false
+				return c
+			},
+		},
+		{
+			name: "enabled_without_manifest_path",
+			cfg: func() *Config {
+				c := Defaults()
+				c.MCPBinaryIntegrity.Enabled = true
+				c.MCPBinaryIntegrity.ManifestPath = ""
+				c.MCPBinaryIntegrity.Action = ActionWarn
+				return c
+			},
+			wantErr: "manifest_path is required",
+		},
+		{
+			name: "enabled_with_valid_block_action",
+			cfg: func() *Config {
+				c := Defaults()
+				c.MCPBinaryIntegrity.Enabled = true
+				c.MCPBinaryIntegrity.ManifestPath = "/tmp/manifest.json"
+				c.MCPBinaryIntegrity.Action = ActionBlock
+				return c
+			},
+		},
+		{
+			name: "invalid_action",
+			cfg: func() *Config {
+				c := Defaults()
+				c.MCPBinaryIntegrity.Enabled = true
+				c.MCPBinaryIntegrity.ManifestPath = "/tmp/manifest.json"
+				c.MCPBinaryIntegrity.Action = ActionAllow
+				return c
+			},
+			wantErr: "invalid mcp_binary_integrity.action",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			c := tt.cfg()
+			err := c.Validate()
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("expected error containing %q, got: %v", tt.wantErr, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidate_MCPToolProvenance(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		cfg     func() *Config
+		wantErr string
+	}{
+		{
+			name: "disabled_is_valid",
+			cfg: func() *Config {
+				c := Defaults()
+				c.MCPToolProvenance.Enabled = false
+				return c
+			},
+		},
+		{
+			name: "enabled_pipelock_mode",
+			cfg: func() *Config {
+				c := Defaults()
+				c.MCPToolProvenance.Enabled = true
+				c.MCPToolProvenance.Action = ActionWarn
+				c.MCPToolProvenance.Mode = ProvenanceModePipelock
+				return c
+			},
+		},
+		{
+			name: "invalid_action",
+			cfg: func() *Config {
+				c := Defaults()
+				c.MCPToolProvenance.Enabled = true
+				c.MCPToolProvenance.Action = ActionAllow
+				c.MCPToolProvenance.Mode = ProvenanceModePipelock
+				return c
+			},
+			wantErr: "invalid mcp_tool_provenance.action",
+		},
+		{
+			name: "invalid_mode",
+			cfg: func() *Config {
+				c := Defaults()
+				c.MCPToolProvenance.Enabled = true
+				c.MCPToolProvenance.Action = ActionBlock
+				c.MCPToolProvenance.Mode = "unknown"
+				return c
+			},
+			wantErr: "invalid mcp_tool_provenance.mode",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			c := tt.cfg()
+			err := c.Validate()
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("expected error containing %q, got: %v", tt.wantErr, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidate_BehavioralBaseline(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		cfg     func() *Config
+		wantErr string
+	}{
+		{
+			name: "disabled_is_valid",
+			cfg: func() *Config {
+				c := Defaults()
+				c.BehavioralBaseline.Enabled = false
+				return c
+			},
+		},
+		{
+			name: "enabled_without_profile_dir",
+			cfg: func() *Config {
+				c := Defaults()
+				c.BehavioralBaseline.Enabled = true
+				c.BehavioralBaseline.ProfileDir = ""
+				c.BehavioralBaseline.DeviationAction = ActionWarn
+				return c
+			},
+			wantErr: "profile_dir is required",
+		},
+		{
+			name: "invalid_deviation_action",
+			cfg: func() *Config {
+				c := Defaults()
+				c.BehavioralBaseline.Enabled = true
+				c.BehavioralBaseline.ProfileDir = testProfileDir
+				c.BehavioralBaseline.DeviationAction = ActionAllow
+				return c
+			},
+			wantErr: "invalid behavioral_baseline.deviation_action",
+		},
+		{
+			name: "negative_learning_window",
+			cfg: func() *Config {
+				c := Defaults()
+				c.BehavioralBaseline.Enabled = true
+				c.BehavioralBaseline.ProfileDir = testProfileDir
+				c.BehavioralBaseline.DeviationAction = ActionWarn
+				c.BehavioralBaseline.LearningWindow = -1
+				return c
+			},
+			wantErr: "learning_window must be non-negative",
+		},
+		{
+			name: "negative_sensitivity_sigma",
+			cfg: func() *Config {
+				c := Defaults()
+				c.BehavioralBaseline.Enabled = true
+				c.BehavioralBaseline.ProfileDir = testProfileDir
+				c.BehavioralBaseline.DeviationAction = ActionBlock
+				c.BehavioralBaseline.SensitivitySigma = -2.0
+				return c
+			},
+			wantErr: "sensitivity_sigma must be non-negative",
+		},
+		{
+			name: "invalid_seasonality_mode",
+			cfg: func() *Config {
+				c := Defaults()
+				c.BehavioralBaseline.Enabled = true
+				c.BehavioralBaseline.ProfileDir = testProfileDir
+				c.BehavioralBaseline.DeviationAction = ActionWarn
+				c.BehavioralBaseline.SeasonalityMode = "weekly"
+				return c
+			},
+			wantErr: "invalid behavioral_baseline.seasonality_mode",
+		},
+		{
+			name: "valid_full_config",
+			cfg: func() *Config {
+				c := Defaults()
+				c.BehavioralBaseline.Enabled = true
+				c.BehavioralBaseline.ProfileDir = testProfileDir
+				c.BehavioralBaseline.DeviationAction = ActionAsk
+				c.BehavioralBaseline.LearningWindow = 100
+				c.BehavioralBaseline.SensitivitySigma = 2.5
+				c.BehavioralBaseline.SeasonalityMode = SeasonalityModeLabeled
+				return c
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			c := tt.cfg()
+			err := c.Validate()
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("expected error containing %q, got: %v", tt.wantErr, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidate_FlightRecorder(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		cfg     func() *Config
+		wantErr string
+	}{
+		{
+			name: "disabled_is_valid",
+			cfg: func() *Config {
+				c := Defaults()
+				c.FlightRecorder.Enabled = false
+				return c
+			},
+		},
+		{
+			name: "enabled_without_dir",
+			cfg: func() *Config {
+				c := Defaults()
+				c.FlightRecorder.Enabled = true
+				c.FlightRecorder.Dir = ""
+				return c
+			},
+			wantErr: "flight_recorder.dir is required",
+		},
+		{
+			name: "negative_checkpoint_interval",
+			cfg: func() *Config {
+				c := Defaults()
+				c.FlightRecorder.Enabled = true
+				c.FlightRecorder.Dir = testRecorderDir
+				c.FlightRecorder.CheckpointInterval = -1
+				return c
+			},
+			wantErr: "checkpoint_interval must be non-negative",
+		},
+		{
+			name: "negative_retention_days",
+			cfg: func() *Config {
+				c := Defaults()
+				c.FlightRecorder.Enabled = true
+				c.FlightRecorder.Dir = testRecorderDir
+				c.FlightRecorder.RetentionDays = -1
+				return c
+			},
+			wantErr: "retention_days must be non-negative",
+		},
+		{
+			name: "negative_max_entries",
+			cfg: func() *Config {
+				c := Defaults()
+				c.FlightRecorder.Enabled = true
+				c.FlightRecorder.Dir = testRecorderDir
+				c.FlightRecorder.MaxEntriesPerFile = -5
+				return c
+			},
+			wantErr: "max_entries_per_file must be non-negative",
+		},
+		{
+			name: "raw_escrow_without_key",
+			cfg: func() *Config {
+				c := Defaults()
+				c.FlightRecorder.Enabled = true
+				c.FlightRecorder.Dir = testRecorderDir
+				c.FlightRecorder.RawEscrow = true
+				c.FlightRecorder.EscrowPublicKey = ""
+				return c
+			},
+			wantErr: "escrow_public_key is required",
+		},
+		{
+			name: "valid_full_config",
+			cfg: func() *Config {
+				c := Defaults()
+				c.FlightRecorder.Enabled = true
+				c.FlightRecorder.Dir = testRecorderDir
+				c.FlightRecorder.CheckpointInterval = 60
+				c.FlightRecorder.RetentionDays = 7
+				c.FlightRecorder.MaxEntriesPerFile = 1000
+				return c
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			c := tt.cfg()
+			err := c.Validate()
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("expected error containing %q, got: %v", tt.wantErr, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestBudgetConfig_HasDoWFields(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		budget BudgetConfig
+		want   bool
+	}{
+		{name: "empty", budget: BudgetConfig{}, want: false},
+		{name: "max_tool_calls", budget: BudgetConfig{MaxToolCallsPerSession: 10}, want: true},
+		{name: "max_concurrent", budget: BudgetConfig{MaxConcurrentToolCalls: 5}, want: true},
+		{name: "max_wall_clock", budget: BudgetConfig{MaxWallClockMinutes: 60}, want: true},
+		{name: "max_retries_tool", budget: BudgetConfig{MaxRetriesPerTool: 3}, want: true},
+		{name: "max_retries_endpoint", budget: BudgetConfig{MaxRetriesPerEndpoint: 3}, want: true},
+		{name: "loop_detection", budget: BudgetConfig{LoopDetectionWindow: 10}, want: true},
+		{name: "fan_out", budget: BudgetConfig{FanOutLimit: 50}, want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tt.budget.HasDoWFields(); got != tt.want {
+				t.Errorf("HasDoWFields() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

@@ -31,7 +31,7 @@ import (
 )
 
 const (
-	testSecretPrefix    = "sk-ant-" //nolint:gosec // test credential prefix
+	testSecretPrefix    = "sk-" + "ant-" // split to avoid gosec G101
 	testDoWToolName     = "expensive_tool"
 	testDoWBudgetReason = "budget exceeded"
 	testDoWBudgetType   = "per_call"

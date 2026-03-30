@@ -27,6 +27,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
@@ -4642,4 +4643,142 @@ func TestFetchEndpoint_BlockAll_CleanTrafficBlocked(t *testing.T) {
 	if resp2.Blocked {
 		t.Errorf("non-escalated session: expected blocked=false, got blocked=true (reason: %s)", resp2.BlockReason)
 	}
+}
+
+// TestProxy_Reload_EnablesBaselineOnSessionCreate verifies that when session
+// profiling and behavioral baseline are both enabled via reload, the newly
+// created SessionManager has a non-nil baseline manager.
+func TestProxy_Reload_EnablesBaselineOnSessionCreate(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SessionProfiling.Enabled = false
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+	m := metrics.New()
+	p, err := New(cfg, logger, sc, m)
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	defer p.Close()
+
+	// Reload with both session profiling and baseline enabled.
+	cfg2 := config.Defaults()
+	cfg2.Internal = nil
+	cfg2.SessionProfiling.Enabled = true
+	cfg2.SessionProfiling.AnomalyAction = config.ActionWarn
+	cfg2.SessionProfiling.DomainBurst = 5
+	cfg2.SessionProfiling.WindowMinutes = 5
+	cfg2.SessionProfiling.MaxSessions = 100
+	cfg2.SessionProfiling.SessionTTLMinutes = 30
+	cfg2.SessionProfiling.CleanupIntervalSeconds = 60
+	cfg2.BehavioralBaseline.Enabled = true
+	cfg2.BehavioralBaseline.LearningWindow = 3
+	cfg2.BehavioralBaseline.DeviationAction = config.ActionWarn
+	cfg2.BehavioralBaseline.ProfileDir = t.TempDir()
+	cfg2.BehavioralBaseline.SensitivitySigma = 2.0
+	cfg2.BehavioralBaseline.SeasonalityMode = config.SeasonalityModeNone
+
+	sc2 := scanner.New(cfg2)
+	p.Reload(cfg2, sc2)
+
+	sm := p.sessionMgrPtr.Load()
+	if sm == nil {
+		t.Fatal("sessionMgr should be created on reload")
+	}
+	if sm.BaselineManager() == nil {
+		t.Error("BaselineManager should be non-nil when BehavioralBaseline is enabled on reload")
+	}
+}
+
+// TestProxy_recordDecision_WithPattern verifies that recordDecision includes
+// the pattern in the summary when provided.
+func TestProxy_recordDecision_WithPattern(t *testing.T) {
+	t.Parallel()
+
+	evidenceDir := t.TempDir()
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.APIAllowlist = nil
+
+	rec, err := recorder.New(recorder.Config{
+		Enabled:            true,
+		Dir:                evidenceDir,
+		CheckpointInterval: 100,
+		MaxEntriesPerFile:  1000,
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("recorder.New: %v", err)
+	}
+	defer func() { _ = rec.Close() }()
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	p, pErr := New(cfg, logger, sc, metrics.New(), WithRecorder(rec))
+	if pErr != nil {
+		t.Fatalf("proxy.New: %v", pErr)
+	}
+
+	// Call recordDecision directly with a pattern.
+	p.recordDecision(config.ActionBlock, "blocklist", "pastebin.com", "fetch", "req-123")
+
+	// Call recordDecision without a pattern.
+	p.recordDecision(config.ActionWarn, "rate_limit", "", "forward", "req-456")
+
+	// Close recorder to flush.
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+
+	// Read evidence and verify entries.
+	entries, err := os.ReadDir(evidenceDir)
+	if err != nil {
+		t.Fatalf("reading evidence dir: %v", err)
+	}
+
+	var jsonlFiles []string
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".jsonl") {
+			jsonlFiles = append(jsonlFiles, e.Name())
+		}
+	}
+	if len(jsonlFiles) == 0 {
+		t.Fatal("expected at least one evidence file")
+	}
+
+	data, err := os.ReadFile(filepath.Clean(filepath.Join(evidenceDir, jsonlFiles[0])))
+	if err != nil {
+		t.Fatalf("reading evidence file: %v", err)
+	}
+
+	content := string(data)
+	if !strings.Contains(content, "pastebin.com") {
+		t.Error("expected evidence to contain pattern 'pastebin.com'")
+	}
+	if !strings.Contains(content, "rate_limit") {
+		t.Error("expected evidence to contain layer 'rate_limit'")
+	}
+}
+
+// TestProxy_recordDecision_NilRecorderNoOp verifies that calling
+// recordDecision with a nil recorder does not panic.
+func TestProxy_recordDecision_NilRecorderNoOp(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+
+	// Should not panic.
+	p.recordDecision(config.ActionBlock, "test", "pattern", "fetch", "req-1")
 }

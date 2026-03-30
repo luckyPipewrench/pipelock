@@ -20,6 +20,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Sandbox bridge proxy dynamic port: in best-effort mode, uses dynamic port instead of hardcoded 8888.
 - Config reload detection: `sandbox.best_effort` changes detected during hot reload. Per-agent `best_effort` propagated through enterprise merge.
 - Config validation: `sandbox.best_effort` and `sandbox.strict` mutually exclusive.
+- Suppress glob matching: strip standard ports (:443, :80) and cross-slash glob for URL patterns. Fixes suppress rules silently failing on TLS-intercepted URLs. (#328)
+- Config defaults via Load(): `applySecurityDefaults` for 8 security-critical booleans and `ApplyDefaults` for all v2.1.0 config structs. Prevents unsafe Go zero values when users partially configure new features. (#328)
+- Adaptive enforcement exempt domains: exempt domains are now scanned for visibility (findings logged as warn) but adaptive scoring is skipped and actions are not upgraded. Prevents death spiral from LLM response false positives. All 5 transports. (#328)
+- DoW tracker wired into MCP stdio, HTTP, and WS proxy paths. `dow_action: warn` mode supported. Falls back to `_default` agent profile for free tier. (#328)
+- Behavioral baseline directory auto-creation in `NewManager`. (#328)
+- License gate preserves `_default` agent profile when rejecting unlicensed named agents. (#328)
+- FlightRecorder, BehavioralBaseline, MCPToolProvenance, and MCPBinaryIntegrity wired into proxy runtime. Previously config-only stubs. (#328)
+- `RunHTTPListenerProxy` refactored from 20-parameter function to `MCPProxyOpts` struct. (#328)
+- Provenance audit logging for block and warn-mode unsigned tools. (#328)
+- DoW metadata backfill for scan-disabled configurations. (#328)
 
 ## [2.0.0] - 2026-03-22
 

@@ -303,15 +303,17 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	// Record the final client-visible status at each exit point, not here.
 	// The upstream status may be rewritten to 403 by scanning decisions.
 
-	// Only scan if response scanning is enabled and host is not exempt.
+	// Scan all responses when enabled. Exempt domains are still scanned for
+	// visibility but findings are pinned to warn with no adaptive scoring.
 	revHost := resp.Request.URL.Hostname()
-	if !cfg.ResponseScanning.Enabled || isResponseScanExempt(revHost, cfg.ResponseScanning.ExemptDomains) {
-		if cfg.ResponseScanning.Enabled && len(cfg.ResponseScanning.ExemptDomains) > 0 {
-			rp.logger.LogResponseScanExempt(resp.Request.Method, resp.Request.URL.String(), revHost, "", "", "")
-		}
+	revRespExempt := isResponseScanExempt(revHost, cfg.ResponseScanning.ExemptDomains)
+	if !cfg.ResponseScanning.Enabled {
 		rp.metrics.RecordReverseProxyRequest(resp.Request.Method,
 			strconv.Itoa(resp.StatusCode))
 		return nil
+	}
+	if revRespExempt {
+		rp.logger.LogResponseScanExempt(resp.Request.Method, resp.Request.URL.String(), revHost, "", "", "")
 	}
 
 	// Skip binary content types.
@@ -378,8 +380,12 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	result := sc.ScanResponse(resp.Request.Context(), text)
 
 	// Capture observer: record reverse proxy response scan verdict for policy replay.
+	// Apply exempt override before capture so the recorded action matches runtime.
 	{
 		revAction := cfg.ResponseScanning.Action
+		if revRespExempt {
+			revAction = config.ActionWarn
+		}
 		if result.Clean {
 			revAction = ""
 		}
@@ -416,6 +422,10 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	}
 
 	action := cfg.ResponseScanning.Action
+	// Exempt domains: pin to warn for visibility without blocking.
+	if revRespExempt {
+		action = config.ActionWarn
+	}
 
 	var patternNames []string
 	for _, m := range result.Matches {

@@ -2,6 +2,41 @@
 
 High-level direction for Pipelock development. Priorities shift based on customer feedback, enterprise requirements, and the evolving AI agent security landscape.
 
+## Shipped (v2.1)
+
+New capabilities added since v2.0:
+
+**Evidence and Compliance**
+- Flight recorder: hash-chained, tamper-evident JSONL evidence log with Ed25519 signed checkpoints and X25519 encrypted raw escrow
+- Agent Bill of Materials (AgBOM): CycloneDX 1.6 runtime inventory with declared vs observed views
+- Session manifest and signed decision records: per-verdict Ed25519 signing with unified session substrate
+- Compliance evidence: OWASP MCP Top 10, OWASP Agentic Top 10, MITRE ATLAS, EU AI Act, SOC 2 coverage mappings
+- Trust attestation: Ed25519-signed assessment results with SVG badge generation
+
+**Detection and Prevention**
+- Canary tokens: synthetic secrets for irrefutable compromise detection with zero false positives
+- A2A protocol scanning: Agent Card drift detection, session smuggling, field-level content inspection
+- MCP binary integrity: pre-spawn SHA-256 hash verification with shebang and versioned interpreter parsing
+- Denial-of-wallet detection: loop detection, retry storm detection, fan-out tracking
+- Scanner hardening: improved encoded payload coverage and cross-transport DLP
+- Response scanning exempt_domains: per-domain exemption from injection scanning
+
+**Assessment and Simulation**
+- `pipelock assess`: four-stage self-serve security assessment with HTML report, secret redaction, and remediation guidance
+- `pipelock simulate`: expanded to 54+ attack scenarios (up from 24) across 6 categories
+
+**Operational**
+- Session admin API: GET/POST endpoints for adaptive enforcement recovery, identity-family scoping
+- MCP redirect handlers: built-in fetch-proxy and quarantine-write profiles
+- Autonomous block_all recovery for adaptive enforcement
+- Trusted domains for forward proxy SSRF exemption
+- SecureIQLab Docker Compose test harness
+
+**Developer Experience**
+- CLI split into 10 focused subpackages (from monolithic 91-file package)
+- MCPProxyOpts pattern for cleaner internal APIs
+- Shared escalation recording and signal classification helpers
+
 ## Shipped (v2.0)
 
 Core capabilities available today:
@@ -20,7 +55,7 @@ Core capabilities available today:
 
 **Prompt Injection Defense**
 - 6-pass normalization pipeline covering zero-width characters, homoglyphs, leetspeak, and encoded payloads
-- 19 response scanning patterns including state manipulation and control flow hijacking
+- 23 response scanning patterns including state manipulation, control flow hijacking, and CJK-language overrides
 - Full-schema tool poisoning detection (recursive inputSchema scanning)
 
 **MCP Security**
@@ -38,11 +73,10 @@ Core capabilities available today:
 **Operational Controls**
 - OR-composed kill switch (config, signal, sentinel file, remote API)
 - Structured audit logging with MITRE ATT&CK technique IDs
-- Webhook, syslog, OTLP, and Prometheus emission (40 metric families)
+- Webhook, syslog, OTLP, and Prometheus emission (45 metric families)
 - Grafana dashboard for fleet monitoring
 - HTML/JSON audit reports with Ed25519 signing
 - Config security scoring (`pipelock audit score`)
-- Attack simulation (`pipelock simulate`)
 
 **Developer Experience**
 - IDE integration for Claude Code, Cursor, VS Code, and JetBrains/Junie

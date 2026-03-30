@@ -201,6 +201,19 @@ pipelock tls show-ca
 
 **Passthrough domains:** Domains in `passthrough_domains` are spliced (bidirectional byte copy) without interception, preserving end-to-end TLS. Use this for domains where certificate pinning prevents interception or where you trust the destination. Supports exact match and wildcard prefix (`*.example.com` matches `sub.example.com` and the apex `example.com`).
 
+**Best practice -- package registries and LLM providers:** Always add package registries (npm, pypi, Go proxy) and LLM API endpoints to `passthrough_domains`, not just `exempt_domains`. Using `exempt_domains` alone still MITM-s the connection, which breaks large downloads (response size limit), causes TLS handshake errors with clients that reject the generated certificate, and wastes CPU on cert generation for traffic you don't intend to scan. Passthrough skips interception entirely.
+
+```yaml
+passthrough_domains:
+  - "registry.npmjs.org"       # npm packages
+  - "pypi.org"                 # Python packages
+  - "*.pypi.org"
+  - "files.pythonhosted.org"   # pip downloads
+  - "proxy.golang.org"         # Go modules
+  - "*.anthropic.com"          # LLM provider
+  - "*.openai.com"             # LLM provider
+```
+
 ## Request Body Scanning
 
 Scans request bodies and headers on the forward proxy path for secret exfiltration. Catches secrets in POST/PUT bodies and Authorization/Cookie headers that bypass URL-level scanning.
@@ -475,11 +488,11 @@ response_scanning:
 | `enabled` | `true` | Enable response scanning |
 | `action` | `"warn"` | block, strip, warn, or ask (HITL) |
 | `ask_timeout_seconds` | `30` | Timeout for human-in-the-loop approval |
-| `include_defaults` | `true` | Merge with 19 built-in patterns |
+| `include_defaults` | `true` | Merge with 23 built-in patterns |
 | `exempt_domains` | `[]` | Hosts to skip injection scanning for (DLP still applies on outbound). Supports `*.example.com` wildcards (also matches the apex `example.com`). |
-| `patterns` | 19 built-in | Injection and state/control poisoning patterns |
+| `patterns` | 23 built-in | Injection and state/control poisoning patterns |
 
-**Built-in patterns (19):** 13 prompt injection patterns (jailbreak phrases, system overrides, role overrides, instruction manipulation, encoded payloads, tool invocation commands, authority escalation) plus 6 state/control poisoning patterns (credential solicitation, credential path directives, auth material requirements, memory persistence directives, preference poisoning, silent credential handling). All patterns use DOTALL mode to match across newlines in multiline tool output.
+**Built-in patterns (23):** 13 prompt injection patterns (jailbreak phrases, system overrides, role overrides, instruction manipulation, encoded payloads, tool invocation commands, authority escalation), 6 state/control poisoning patterns (credential solicitation, credential path directives, auth material requirements, memory persistence directives, preference poisoning, silent credential handling), and 4 CJK-language override patterns (Chinese, Japanese, Korean instruction overrides and jailbreak mode). All patterns use DOTALL mode to match across newlines in multiline tool output.
 
 **Actions:**
 - **block:** reject the response entirely, agent gets an error
@@ -993,6 +1006,24 @@ internal:
 
 All RFC 1918, RFC 4193, link-local, loopback, CGN (Tailscale/Carrier-Grade NAT), multicast, and cloud metadata ranges are blocked by default. IPv6 zone IDs (e.g. `::1%eth0`) are stripped before IP parsing to prevent bypass.
 
+### Trusted Domains
+
+Domains exempt from SSRF internal-IP checks. Use this when a domain legitimately resolves to a private IP (e.g., an internal API behind a VPN) and you want pipelock to allow the connection.
+
+```yaml
+trusted_domains:
+  - "internal-api.example.com"
+  - "*.corp.example.com"
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `trusted_domains` | `[]` | Top-level list. Supports `*.example.com` wildcards (also matches apex `example.com`). |
+
+**Important:** This is a **top-level** config field, not nested under `forward_proxy`. Placing it under `forward_proxy` will silently do nothing. DLP and other content scanning still runs on trusted domains -- only the SSRF IP check is bypassed.
+
+Per-agent `trusted_domains` overrides are available in agent profiles (Pro license).
+
 ## Presets
 
 Seven starter configs in `configs/`:
@@ -1110,6 +1141,7 @@ Each agent profile can override these fields:
 | `rate_limit` | object | Per-agent rate limits |
 | `session_profiling` | object | Per-agent profiling thresholds |
 | `mcp_tool_policy` | object | Per-agent MCP tool policy |
+| `trusted_domains` | `[]string` | Per-agent SSRF-exempt domains (overrides global list) |
 | `budget` | object | Request budgets (see below) |
 
 ### DLP Merge Behavior
@@ -1129,12 +1161,22 @@ Budgets cap what an agent can do within a rolling time window. All fields defaul
 | `max_bytes_per_session` | `int` | `0` | Max response bytes per window |
 | `max_unique_domains_per_session` | `int` | `0` | Max distinct domains per window |
 | `window_minutes` | `int` | `0` | Rolling window duration in minutes. `0` means the budget never resets. |
+| `max_tool_calls_per_session` | `int` | `0` | Max MCP tool calls per session (0 = unlimited). **Enforced.** |
+| `max_retries_per_tool` | `int` | `0` | Max times the same tool+args can be called (0 = unlimited, default 5 when set). Detects retry storms. **Enforced.** |
+| `loop_detection_window` | `int` | `0` | Number of recent tool calls to track for loop/cycle detection (0 = disabled, default 20 when set). **Enforced.** |
+| `max_wall_clock_minutes` | `int` | `0` | Max session duration in minutes (0 = unlimited). **Enforced.** |
+| `dow_action` | `string` | `"block"` | Action when a denial-of-wallet limit is exceeded: `"block"` (reject the tool call) or `"warn"` (log and allow) |
+| `max_concurrent_tool_calls` | `int` | `0` | Max parallel in-flight tool calls (0 = unlimited). *Planned — parsed but not yet enforced at runtime.* |
+| `max_retries_per_endpoint` | `int` | `0` | Max calls to the same domain+path (0 = unlimited). *Planned — parsed but not yet enforced at runtime.* |
+| `fan_out_limit` | `int` | `0` | Max unique endpoints within the fan-out window (0 = unlimited). *Planned — parsed but not yet enforced at runtime.* |
+| `fan_out_window_seconds` | `int` | `0` | Sliding window for fan-out detection (0 = disabled). *Planned — parsed but not yet enforced at runtime.* |
 
 When a budget limit is reached:
 
 - **Request count and domain limits** are checked before the outbound request. Exceeding either returns `429 Too Many Requests`.
 - **Byte limit (fetch proxy):** the response body read is capped at the remaining byte budget. If the response exceeds the limit, it is discarded and a `429` is returned.
 - **Byte limit (CONNECT/WebSocket):** streaming connections track bytes after close. The byte budget is enforced on the next admission check, not mid-stream, because tunnel data cannot be recalled after transmission.
+- **DoW limits (MCP proxy):** tool call budgets are checked before each `tools/call` dispatch. When `dow_action` is `"block"`, the call is rejected with a JSON-RPC error. When `"warn"`, the call is logged and allowed through. Currently enforced: total tool call count, per-tool retry storms, loop/cycle detection, and wall-clock duration.
 
 ### Listener Binding
 
@@ -1533,6 +1575,113 @@ mcp_tool_policy:
 | `action: redirect` | New action alongside block, warn, ask, strip, forward |
 
 Redirect failure falls through to block (fail-closed). Every redirect emits a structured audit event with the original command, redirect target, policy rule, and reason.
+
+## Canary Tokens (v2.1)
+
+Synthetic secrets injected into the agent's environment. If pipelock detects a canary in any outbound request, it's irrefutable proof of compromise -- not a heuristic, but a known-fake value that should never appear in traffic.
+
+```yaml
+canary_tokens:
+  enabled: true
+  tokens:
+    - name: "aws_canary"
+      value: "canary-aws-trap-value-0x42a7"
+      env_var: "AWS_ACCESS_KEY_ID"  # optional: inject as env var
+    - name: "db_canary"
+      value: "postgres://canary:trap@honeypot.internal/fake"
+    - name: "api_canary"
+      value: "sk_test_CANARY_4eC39HqLyjWDarjtT1zdp7dc"
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `false` | Enable canary token detection |
+| `tokens[].name` | (required) | Human-readable name for the canary |
+| `tokens[].value` | (required) | The exact string to detect in outbound traffic |
+| `tokens[].env_var` | (optional) | Environment variable to inject the canary into |
+
+Canary checks run after DLP as a safety net (exact string match, O(1) per token). If a DLP pattern already matched, the canary check is skipped. Detection emits a high-severity event with full request context. Use `pipelock canary generate` to create sample configurations.
+
+## Flight Recorder (v2.1)
+
+Hash-chained, tamper-evident evidence log. Every scanner verdict, tool call, and session event is recorded to JSONL with SHA-256 hash chains and optional Ed25519 signed checkpoints.
+
+```yaml
+flight_recorder:
+  enabled: true
+  dir: /var/lib/pipelock/evidence
+  checkpoint_interval: 1000
+  retention_days: 90
+  redact: true
+  sign_checkpoints: true
+  max_entries_per_file: 10000
+  raw_escrow: false
+  escrow_public_key: ""
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `false` | Enable evidence recording |
+| `dir` | (required if enabled) | Directory for evidence files |
+| `checkpoint_interval` | `1000` | Entries between signed checkpoints |
+| `retention_days` | `0` | Auto-expire files after N days (0 = keep forever) |
+| `redact` | `true` | DLP-redact evidence content before writing |
+| `sign_checkpoints` | `true` | Ed25519 sign checkpoint entries |
+| `max_entries_per_file` | `10000` | Rotate to a new file after this many entries |
+| `raw_escrow` | `false` | Encrypt raw (pre-redaction) detail to sidecar files |
+| `escrow_public_key` | (required if raw_escrow) | X25519 public key (hex) for escrow encryption |
+
+Evidence files are named `evidence-<session>-<seq>.jsonl`. Each entry contains a SHA-256 hash of its predecessor, forming a tamper-evident chain. Breaking the chain is detectable by `pipelock integrity verify`.
+
+## A2A Scanning (v2.1)
+
+Scanning for Google A2A (Agent-to-Agent) protocol traffic. Detects A2A messages in forward proxy and MCP HTTP proxy paths. Applies field-aware content inspection with URL/text/secret classification.
+
+```yaml
+a2a_scanning:
+  enabled: true
+  action: block
+  scan_agent_cards: true
+  detect_card_drift: true
+  session_smuggling_detection: true
+  max_context_messages: 100
+  max_contexts: 1000
+  scan_raw_parts: true
+  max_raw_size: 1048576
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `false` | Enable A2A protocol detection and scanning |
+| `action` | `block` | Action on findings: `block` or `warn` |
+| `scan_agent_cards` | `true` | Scan Agent Card skill descriptions for injection |
+| `detect_card_drift` | `true` | Detect Agent Card modification mid-session (rug-pull) |
+| `session_smuggling_detection` | `true` | Track contextId to detect session smuggling |
+| `max_context_messages` | `100` | Per-context message cap |
+| `max_contexts` | `1000` | Total tracked contexts |
+| `scan_raw_parts` | `true` | Decode and scan text-like `Part.raw` fields |
+| `max_raw_size` | `1048576` | Max encoded size for `Part.raw` decoding (bytes) |
+
+A2A detection works on the forward proxy (CONNECT and plain HTTP) and MCP HTTP proxy paths. Agent Cards are scanned for skill description poisoning. Card drift detection tracks cards by URL + auth fingerprint and alerts on mid-session changes.
+
+## MCP Binary Integrity (v2.1)
+
+Pre-spawn SHA-256 hash verification for MCP server subprocesses. Prevents tampered or substituted binaries from being executed.
+
+```yaml
+mcp_binary_integrity:
+  enabled: true
+  manifest_path: /etc/pipelock/binary-manifest.json
+  action: warn
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `false` | Enable binary hash verification before spawn |
+| `manifest_path` | (required if enabled) | Path to JSON hash manifest |
+| `action` | `warn` | Action on hash mismatch: `block` or `warn` |
+
+The manifest is a JSON file mapping binary paths to expected SHA-256 hashes. Pipelock resolves shebangs and versioned interpreters (e.g., `python3.11`) before hashing.
 
 ## Validation Rules
 

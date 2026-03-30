@@ -5,6 +5,8 @@ package mcp
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -12,7 +14,9 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/provenance"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 func testScanner(t *testing.T) *scanner.Scanner {
@@ -849,5 +853,538 @@ func TestScanToolsListNonToolFields_InstructionLikeDescriptionsNoFP(t *testing.T
 	v := scanToolsListNonToolFields(line, sc)
 	if !v.Clean {
 		t.Errorf("tools/list with instruction-like descriptions should not trigger FP, got matches=%v error=%q", v.Matches, v.Error)
+	}
+}
+
+// --- VerifyToolsListProvenance tests ---
+
+// provenanceTestKeys generates an Ed25519 key pair and returns the hex-encoded
+// public key and the private key for signing.
+func provenanceTestKeys(t *testing.T) (hexPub string, priv ed25519.PrivateKey) {
+	t.Helper()
+	pub, priv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("generating key pair: %v", err)
+	}
+	return hex.EncodeToString(pub), priv
+}
+
+// buildSignedToolsListResponse builds a tools/list JSON-RPC response with
+// provenance attestations embedded in _meta for each tool.
+func buildSignedToolsListResponse(t *testing.T, tools []provenance.ToolDef, priv ed25519.PrivateKey, keyID string) []byte {
+	t.Helper()
+
+	// Build unsigned response first.
+	type toolEntry struct {
+		Name        string          `json:"name"`
+		Description string          `json:"description"`
+		InputSchema json.RawMessage `json:"inputSchema"`
+	}
+	toolsJSON := make([]json.RawMessage, 0, len(tools))
+	for _, td := range tools {
+		entry := toolEntry{Name: td.Name, Description: td.Description, InputSchema: td.InputSchema}
+		data, err := json.Marshal(entry)
+		if err != nil {
+			t.Fatalf("marshaling tool: %v", err)
+		}
+		toolsJSON = append(toolsJSON, data)
+	}
+	result, err := json.Marshal(map[string]interface{}{"tools": toolsJSON})
+	if err != nil {
+		t.Fatalf("marshaling result: %v", err)
+	}
+	unsigned, err := json.Marshal(map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"result":  json.RawMessage(result),
+	})
+	if err != nil {
+		t.Fatalf("marshaling response: %v", err)
+	}
+
+	// Sign and embed.
+	atts, err := provenance.SignPipelock(tools, priv, keyID)
+	if err != nil {
+		t.Fatalf("signing tools: %v", err)
+	}
+	signed, err := provenance.EmbedInToolsList(unsigned, atts)
+	if err != nil {
+		t.Fatalf("embedding attestations: %v", err)
+	}
+	return signed
+}
+
+// buildUnsignedToolsListResponse builds a tools/list response without provenance.
+func buildUnsignedToolsListResponse(t *testing.T, tools []provenance.ToolDef) []byte {
+	t.Helper()
+	type toolEntry struct {
+		Name        string          `json:"name"`
+		Description string          `json:"description"`
+		InputSchema json.RawMessage `json:"inputSchema"`
+	}
+	toolsJSON := make([]json.RawMessage, 0, len(tools))
+	for _, td := range tools {
+		entry := toolEntry{Name: td.Name, Description: td.Description, InputSchema: td.InputSchema}
+		data, err := json.Marshal(entry)
+		if err != nil {
+			t.Fatalf("marshaling tool: %v", err)
+		}
+		toolsJSON = append(toolsJSON, data)
+	}
+	result, err := json.Marshal(map[string]interface{}{"tools": toolsJSON})
+	if err != nil {
+		t.Fatalf("marshaling result: %v", err)
+	}
+	resp, err := json.Marshal(map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"result":  json.RawMessage(result),
+	})
+	if err != nil {
+		t.Fatalf("marshaling response: %v", err)
+	}
+	return resp
+}
+
+func TestVerifyToolsListProvenance(t *testing.T) {
+	hexPub, priv := provenanceTestKeys(t)
+
+	sampleTools := []provenance.ToolDef{
+		{Name: "get_weather", Description: "Get weather", InputSchema: json.RawMessage(`{"type":"object"}`)},
+	}
+	signedResp := buildSignedToolsListResponse(t, sampleTools, priv, hexPub)
+	unsignedResp := buildUnsignedToolsListResponse(t, sampleTools)
+
+	tests := []struct {
+		name      string
+		response  []byte
+		cfg       *config.MCPToolProvenance
+		wantBlock bool
+		wantErr   string // substring expected in Error field (empty = no error)
+	}{
+		{
+			name:     "nil config returns clean",
+			response: unsignedResp,
+			cfg:      nil,
+		},
+		{
+			name:     "disabled config returns clean",
+			response: unsignedResp,
+			cfg:      &config.MCPToolProvenance{Enabled: false},
+		},
+		{
+			name:     "signed tools with matching key — verified",
+			response: signedResp,
+			cfg: &config.MCPToolProvenance{
+				Enabled:     true,
+				Action:      config.ActionBlock,
+				Mode:        config.ProvenanceModePipelock,
+				TrustedKeys: []string{hexPub},
+				OfflineOnly: true,
+			},
+		},
+		{
+			name:     "unsigned tools with warn action — no block",
+			response: unsignedResp,
+			cfg: &config.MCPToolProvenance{
+				Enabled:     true,
+				Action:      config.ActionWarn,
+				Mode:        config.ProvenanceModePipelock,
+				TrustedKeys: []string{hexPub},
+				OfflineOnly: true,
+			},
+		},
+		{
+			name:     "unsigned tools with block action — block",
+			response: unsignedResp,
+			cfg: &config.MCPToolProvenance{
+				Enabled:     true,
+				Action:      config.ActionBlock,
+				Mode:        config.ProvenanceModePipelock,
+				TrustedKeys: []string{hexPub},
+				OfflineOnly: true,
+			},
+			wantBlock: true,
+			wantErr:   "no provenance attestation",
+		},
+		{
+			name:     "invalid hex key — fail closed",
+			response: signedResp,
+			cfg: &config.MCPToolProvenance{
+				Enabled:     true,
+				Action:      config.ActionWarn,
+				Mode:        config.ProvenanceModePipelock,
+				TrustedKeys: []string{"not-valid-hex"},
+				OfflineOnly: true,
+			},
+			wantBlock: true,
+			wantErr:   "provenance config error",
+		},
+		{
+			name:     "wrong key length — fail closed",
+			response: signedResp,
+			cfg: &config.MCPToolProvenance{
+				Enabled:     true,
+				Action:      config.ActionWarn,
+				Mode:        config.ProvenanceModePipelock,
+				TrustedKeys: []string{"aabbccdd"},
+				OfflineOnly: true,
+			},
+			wantBlock: true,
+			wantErr:   "invalid length",
+		},
+		{
+			name:     "invalid JSON response — fail closed",
+			response: []byte("not-json"),
+			cfg: &config.MCPToolProvenance{
+				Enabled:     true,
+				Action:      config.ActionWarn,
+				Mode:        config.ProvenanceModePipelock,
+				TrustedKeys: []string{hexPub},
+				OfflineOnly: true,
+			},
+			wantBlock: true,
+			wantErr:   "provenance verification error",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pv := VerifyToolsListProvenance(tt.response, tt.cfg)
+			if pv.Block != tt.wantBlock {
+				t.Errorf("Block = %v, want %v (error: %s)", pv.Block, tt.wantBlock, pv.Error)
+			}
+			if tt.wantErr != "" && !strings.Contains(pv.Error, tt.wantErr) {
+				t.Errorf("Error = %q, want substring %q", pv.Error, tt.wantErr)
+			}
+			if tt.wantErr == "" && pv.Error != "" {
+				t.Errorf("unexpected Error = %q", pv.Error)
+			}
+		})
+	}
+}
+
+func TestVerifyToolsListProvenance_TamperedTool(t *testing.T) {
+	hexPub, priv := provenanceTestKeys(t)
+
+	originalTools := []provenance.ToolDef{
+		{Name: "get_weather", Description: "Get weather", InputSchema: json.RawMessage(`{"type":"object"}`)},
+	}
+	// Sign the original tools.
+	signedResp := buildSignedToolsListResponse(t, originalTools, priv, hexPub)
+
+	// Tamper with the description in the signed response.
+	tampered := strings.ReplaceAll(string(signedResp), "Get weather", "EXECUTE EVIL STUFF")
+
+	cfg := &config.MCPToolProvenance{
+		Enabled:     true,
+		Action:      config.ActionWarn, // Even in warn mode, tampered tools ALWAYS block.
+		Mode:        config.ProvenanceModePipelock,
+		TrustedKeys: []string{hexPub},
+		OfflineOnly: true,
+	}
+
+	pv := VerifyToolsListProvenance([]byte(tampered), cfg)
+	if !pv.Block {
+		t.Errorf("tampered tool should always block, got Block=false")
+	}
+	if !strings.Contains(pv.Error, "verification failed") {
+		t.Errorf("Error = %q, want substring 'verification failed'", pv.Error)
+	}
+}
+
+func TestVerifyToolsListProvenance_WrongKey(t *testing.T) {
+	hexPub1, priv1 := provenanceTestKeys(t)
+	hexPub2, _ := provenanceTestKeys(t)
+
+	sampleTools := []provenance.ToolDef{
+		{Name: "get_weather", Description: "Get weather", InputSchema: json.RawMessage(`{"type":"object"}`)},
+	}
+	// Sign with key 1, trust only key 2.
+	signedResp := buildSignedToolsListResponse(t, sampleTools, priv1, hexPub1)
+
+	cfg := &config.MCPToolProvenance{
+		Enabled:     true,
+		Action:      config.ActionBlock,
+		Mode:        config.ProvenanceModePipelock,
+		TrustedKeys: []string{hexPub2},
+		OfflineOnly: true,
+	}
+
+	pv := VerifyToolsListProvenance(signedResp, cfg)
+	if !pv.Block {
+		t.Error("wrong key should block")
+	}
+	if !strings.Contains(pv.Error, "does not match any trusted key") {
+		t.Errorf("Error = %q, want 'does not match any trusted key'", pv.Error)
+	}
+}
+
+func TestVerifyToolsListProvenance_EmptyToolsList(t *testing.T) {
+	hexPub, _ := provenanceTestKeys(t)
+
+	resp := []byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}`)
+	cfg := &config.MCPToolProvenance{
+		Enabled:     true,
+		Action:      config.ActionBlock,
+		Mode:        config.ProvenanceModePipelock,
+		TrustedKeys: []string{hexPub},
+		OfflineOnly: true,
+	}
+
+	pv := VerifyToolsListProvenance(resp, cfg)
+	if pv.Block {
+		t.Errorf("empty tools list should not block, got Block=true (error: %s)", pv.Error)
+	}
+}
+
+func TestProvenanceVerdictToScanVerdict(t *testing.T) {
+	rpcID := json.RawMessage(`1`)
+
+	tests := []struct {
+		name      string
+		pv        ProvenanceVerdict
+		wantClean bool
+		wantLen   int // expected number of matches
+	}{
+		{
+			name:      "clean verdict",
+			pv:        ProvenanceVerdict{Block: false},
+			wantClean: true,
+		},
+		{
+			name: "block with failed tool",
+			pv: ProvenanceVerdict{
+				Block:  true,
+				Action: config.ActionBlock,
+				Results: []provenance.VerificationResult{
+					{ToolName: "evil_tool", Status: provenance.StatusFailed, Detail: "digest mismatch"},
+				},
+			},
+			wantClean: false,
+			wantLen:   1,
+		},
+		{
+			name: "block with unsigned tool",
+			pv: ProvenanceVerdict{
+				Block:  true,
+				Action: config.ActionBlock,
+				Results: []provenance.VerificationResult{
+					{ToolName: "unsigned_tool", Status: provenance.StatusUnsigned, Detail: "no _meta field present"},
+				},
+			},
+			wantClean: false,
+			wantLen:   1,
+		},
+		{
+			name: "block with error status",
+			pv: ProvenanceVerdict{
+				Block:  true,
+				Action: config.ActionBlock,
+				Results: []provenance.VerificationResult{
+					{ToolName: "bad_tool", Status: provenance.StatusError, Detail: "malformed"},
+				},
+			},
+			wantClean: false,
+			wantLen:   1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sv := ProvenanceVerdictToScanVerdict(tt.pv, rpcID)
+			if sv.Clean != tt.wantClean {
+				t.Errorf("Clean = %v, want %v", sv.Clean, tt.wantClean)
+			}
+			if len(sv.Matches) != tt.wantLen {
+				t.Errorf("len(Matches) = %d, want %d", len(sv.Matches), tt.wantLen)
+			}
+			for _, m := range sv.Matches {
+				if m.PatternName != provenancePatternName {
+					t.Errorf("PatternName = %q, want %q", m.PatternName, provenancePatternName)
+				}
+			}
+		})
+	}
+}
+
+func TestMapProvenanceConfig(t *testing.T) {
+	hexPub, _ := provenanceTestKeys(t)
+
+	tests := []struct {
+		name    string
+		cfg     *config.MCPToolProvenance
+		wantErr string
+	}{
+		{
+			name: "valid hex key",
+			cfg: &config.MCPToolProvenance{
+				Enabled:     true,
+				Mode:        config.ProvenanceModePipelock,
+				TrustedKeys: []string{hexPub},
+			},
+		},
+		{
+			name: "no trusted keys",
+			cfg: &config.MCPToolProvenance{
+				Enabled: true,
+				Mode:    config.ProvenanceModePipelock,
+			},
+		},
+		{
+			name: "invalid hex",
+			cfg: &config.MCPToolProvenance{
+				Enabled:     true,
+				TrustedKeys: []string{"zzzz"},
+			},
+			wantErr: "decoding trusted key",
+		},
+		{
+			name: "wrong length",
+			cfg: &config.MCPToolProvenance{
+				Enabled:     true,
+				TrustedKeys: []string{"aabb"},
+			},
+			wantErr: "invalid length",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			vcfg, err := mapProvenanceConfig(tt.cfg)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("error = %q, want substring %q", err.Error(), tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tt.cfg.Mode != "" && vcfg.Mode != tt.cfg.Mode {
+				t.Errorf("Mode = %q, want %q", vcfg.Mode, tt.cfg.Mode)
+			}
+			if len(tt.cfg.TrustedKeys) > 0 && len(vcfg.TrustedKeys) != len(tt.cfg.TrustedKeys) {
+				t.Errorf("TrustedKeys count = %d, want %d", len(vcfg.TrustedKeys), len(tt.cfg.TrustedKeys))
+			}
+		})
+	}
+}
+
+func TestVerifyToolsListProvenance_ShouldBlockUsesErrFailedVerification(t *testing.T) {
+	// Verify that tampered tools trigger ErrFailedVerification, which is the
+	// sentinel used by provenance.ShouldBlock to always-block regardless of action.
+	hexPub, priv := provenanceTestKeys(t)
+
+	originalTools := []provenance.ToolDef{
+		{Name: "get_weather", Description: "Get weather", InputSchema: json.RawMessage(`{"type":"object"}`)},
+	}
+	signedResp := buildSignedToolsListResponse(t, originalTools, priv, hexPub)
+	tampered := strings.ReplaceAll(string(signedResp), "Get weather", "TAMPERED DESCRIPTION")
+
+	cfg := &config.MCPToolProvenance{
+		Enabled:     true,
+		Action:      config.ActionWarn, // warn mode — but tampered should still block
+		Mode:        config.ProvenanceModePipelock,
+		TrustedKeys: []string{hexPub},
+		OfflineOnly: true,
+	}
+
+	pv := VerifyToolsListProvenance([]byte(tampered), cfg)
+	if !pv.Block {
+		t.Fatal("tampered tool must block even in warn mode")
+	}
+
+	// The error should wrap ErrFailedVerification.
+	if !strings.Contains(pv.Error, provenance.ErrFailedVerification.Error()) {
+		t.Errorf("Error = %q, should contain %q", pv.Error, provenance.ErrFailedVerification.Error())
+	}
+}
+
+func TestVerifyToolsListProvenance_MultipleToolsMixed(t *testing.T) {
+	hexPub, priv := provenanceTestKeys(t)
+
+	signedTools := []provenance.ToolDef{
+		{Name: "signed_tool", Description: "A signed tool", InputSchema: json.RawMessage(`{"type":"object"}`)},
+	}
+	// Build a response with one signed and one unsigned tool.
+	signedResp := buildSignedToolsListResponse(t, signedTools, priv, hexPub)
+
+	// Inject an unsigned tool into the response.
+	var parsed map[string]json.RawMessage
+	if err := json.Unmarshal(signedResp, &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	var resultObj map[string]json.RawMessage
+	if err := json.Unmarshal(parsed["result"], &resultObj); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	var toolsArr []json.RawMessage
+	if err := json.Unmarshal(resultObj["tools"], &toolsArr); err != nil {
+		t.Fatalf("unmarshal tools: %v", err)
+	}
+	unsignedTool, _ := json.Marshal(map[string]interface{}{
+		"name":        "unsigned_tool",
+		"description": "An unsigned tool",
+		"inputSchema": map[string]string{"type": "object"},
+	})
+	toolsArr = append(toolsArr, unsignedTool)
+	resultObj["tools"], _ = json.Marshal(toolsArr)
+	parsed["result"], _ = json.Marshal(resultObj)
+	mixedResp, _ := json.Marshal(parsed)
+
+	// In warn mode, unsigned tool should not block (signed tool is verified).
+	cfg := &config.MCPToolProvenance{
+		Enabled:     true,
+		Action:      config.ActionWarn,
+		Mode:        config.ProvenanceModePipelock,
+		TrustedKeys: []string{hexPub},
+		OfflineOnly: true,
+	}
+	pv := VerifyToolsListProvenance(mixedResp, cfg)
+	if pv.Block {
+		t.Errorf("warn mode should not block for unsigned tools, got Block=true (error: %s)", pv.Error)
+	}
+	// Verify we got results for both tools.
+	if len(pv.Results) != 2 {
+		t.Errorf("expected 2 results, got %d", len(pv.Results))
+	}
+
+	// In block mode, unsigned tool should block.
+	cfg.Action = config.ActionBlock
+	pv = VerifyToolsListProvenance(mixedResp, cfg)
+	if !pv.Block {
+		t.Error("block mode should block for unsigned tools")
+	}
+	if !strings.Contains(pv.Error, "no provenance attestation") {
+		t.Errorf("Error = %q, want substring 'no provenance attestation'", pv.Error)
+	}
+}
+
+func TestVerifyToolsListProvenance_HasAnyUnsignedUsedForWarnLogging(t *testing.T) {
+	// Verify that HasAnyUnsigned can be used to detect unsigned tools in warn mode.
+	hexPub, _ := provenanceTestKeys(t)
+
+	unsignedResp := buildUnsignedToolsListResponse(t, []provenance.ToolDef{
+		{Name: "my_tool", Description: "A tool", InputSchema: json.RawMessage(`{"type":"object"}`)},
+	})
+
+	cfg := &config.MCPToolProvenance{
+		Enabled:     true,
+		Action:      config.ActionWarn,
+		Mode:        config.ProvenanceModePipelock,
+		TrustedKeys: []string{hexPub},
+		OfflineOnly: true,
+	}
+
+	pv := VerifyToolsListProvenance(unsignedResp, cfg)
+	if pv.Block {
+		t.Fatalf("warn mode should not block")
+	}
+	if !provenance.HasAnyUnsigned(pv.Results) {
+		t.Error("HasAnyUnsigned should return true for unsigned tools")
 	}
 }

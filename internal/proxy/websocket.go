@@ -1005,8 +1005,10 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 			}
 
 			// Response injection scanning.
-			// Skip for response-exempt domains (e.g. trusted LLM providers).
-			if r.scanText && r.scanner.ResponseScanningEnabled() && !isResponseScanExempt(r.hostname, r.cfg.ResponseScanning.ExemptDomains) {
+			// Exempt domains are still scanned for visibility but findings are
+			// pinned to warn with no adaptive scoring or action upgrade.
+			wsRespExempt := isResponseScanExempt(r.hostname, r.cfg.ResponseScanning.ExemptDomains)
+			if r.scanText && r.scanner.ResponseScanningEnabled() {
 				scanResult := r.scanner.ScanResponse(ctx, string(msg))
 				if !scanResult.Clean {
 					patternNames := make([]string, len(scanResult.Matches))
@@ -1017,9 +1019,15 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 					r.proxy.metrics.RecordWSScanHit("injection")
 
 					// Adaptive enforcement: upgrade the response action before the switch.
+					// Exempt domains: pin to warn, skip upgrade.
 					wsAction := r.scanner.ResponseAction()
+					if wsRespExempt {
+						wsAction = config.ActionWarn
+					}
 					originalWSAction := wsAction
-					wsAction = decide.UpgradeAction(wsAction, r.escalationLevel(), &r.cfg.AdaptiveEnforcement)
+					if !wsRespExempt {
+						wsAction = decide.UpgradeAction(wsAction, r.escalationLevel(), &r.cfg.AdaptiveEnforcement)
+					}
 					if wsAction != originalWSAction {
 						sessionKey := r.clientIP
 						if r.agent != "" && r.agent != agentAnonymous {
@@ -1039,20 +1047,23 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 						return
 					case config.ActionStrip:
 						// Record SignalStrip for adaptive enforcement scoring.
-						if sm := r.proxy.sessionMgrPtr.Load(); sm != nil && r.cfg.AdaptiveEnforcement.Enabled {
-							sessionKey := r.clientIP
-							if r.agent != "" && r.agent != agentAnonymous {
-								sessionKey = r.agent + "|" + r.clientIP
+						// Exempt domains skip scoring — findings are logged but don't escalate.
+						if !wsRespExempt {
+							if sm := r.proxy.sessionMgrPtr.Load(); sm != nil && r.cfg.AdaptiveEnforcement.Enabled {
+								sessionKey := r.clientIP
+								if r.agent != "" && r.agent != agentAnonymous {
+									sessionKey = r.agent + "|" + r.clientIP
+								}
+								sess := sm.GetOrCreate(sessionKey)
+								decide.RecordEscalation(sess, session.SignalStrip, decide.EscalationParams{
+									Threshold: r.cfg.AdaptiveEnforcement.EscalationThreshold,
+									Logger:    log,
+									Metrics:   r.proxy.metrics,
+									Session:   sessionKey,
+									ClientIP:  r.clientIP,
+									RequestID: r.requestID,
+								})
 							}
-							sess := sm.GetOrCreate(sessionKey)
-							decide.RecordEscalation(sess, session.SignalStrip, decide.EscalationParams{
-								Threshold: r.cfg.AdaptiveEnforcement.EscalationThreshold,
-								Logger:    log,
-								Metrics:   r.proxy.metrics,
-								Session:   sessionKey,
-								ClientIP:  r.clientIP,
-								RequestID: r.requestID,
-							})
 						}
 						if scanResult.TransformedContent != "" {
 							msg = []byte(scanResult.TransformedContent)

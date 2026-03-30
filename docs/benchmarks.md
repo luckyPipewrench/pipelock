@@ -9,7 +9,7 @@ Benchmarks measure the scanner pipeline only, not network I/O. This isolates pip
 Configuration (balanced defaults):
 - SSRF protection disabled (no DNS lookups in benchmarks)
 - Rate limiting disabled (no time-dependent state)
-- Response scanning: 19 prompt injection patterns
+- Response scanning: 23 prompt injection patterns
 - DLP: 46 patterns + BIP-39 seed phrase detection
 
 Run `make bench` to reproduce on your hardware.
@@ -29,15 +29,15 @@ Full 11-layer URL scanning: scheme, CRLF injection, path traversal, blocklist, D
 
 ## Response Scanning (`ScanResponse()`)
 
-Pattern matching for prompt injection on fetched content. 19 patterns including 6 new state/control patterns.
+Pattern matching for prompt injection on fetched content. 23 patterns including 6 state/control patterns and 4 CJK-language override patterns.
 
 | Benchmark | ns/op | B/op | allocs/op |
 |-----------|------:|-----:|----------:|
-| Clean (~90B) | 72,374 | 2,021 | 29 |
-| WithInjection (~100B) | 39,601 | 1,100 | 12 |
-| LargeClean (~10KB) | 9,467,861 | 43,445 | 23 |
-| StateControlClean | 133,246 | 2,434 | 29 |
-| StateControlMatch | 42,968 | 2,138 | 17 |
+| Clean (~90B) | 75,718 | 2,021 | 29 |
+| WithInjection (~100B) | 41,699 | 1,100 | 12 |
+| LargeClean (~10KB) | 8,394,531 | 43,445 | 23 |
+| StateControlClean | 133,650 | 2,434 | 29 |
+| StateControlMatch | 42,841 | 2,138 | 17 |
 
 ## Text DLP Scanning (`ScanTextForDLP()`)
 
@@ -111,14 +111,14 @@ True concurrent throughput across all available goroutines.
 
 ## Key Takeaways
 
-- **Full 11-layer scan on a typical URL: ~31 microseconds.** Slightly higher than v1.5.0 (~21μs) due to expanded DLP patterns and additional scanner layers. Well under 1ms.
+- **Full 11-layer scan on a typical URL: ~32 microseconds.** Slightly higher than v1.5.0 (~21μs) due to expanded DLP patterns and additional scanner layers. Well under 1ms.
 - Blocked URLs short-circuit early: blocklist check is ~2μs.
 - DLP regex matching (46 patterns) with pre-filter: ~8μs. Pre-filter alone: ~497ns with zero allocations on clean text.
-- Response scanning with 19 patterns on small content: ~72μs. Large content (~10KB): ~9.5ms. State/control patterns add ~133μs on clean text. Injection detected via early exit: ~40μs.
+- Response scanning with 23 patterns on small content: ~76μs. Large content (~10KB): ~8.4ms. State/control patterns add ~133μs on clean text. Injection detected via early exit: ~42μs.
 - MCP scanning (JSON parse + text extraction + pattern match): ~76μs clean, ~33μs injection.
 - Cross-request entropy tracking: ~110μs per record. Fragment buffer append: ~83ns (single alloc).
 - **Parallel throughput scales linearly with cores** (benchmarks run with rate limiting and data budget disabled to isolate scanning overhead).
-- The scanner pipeline adds **~0.031ms overhead for typical URL requests**. Network latency dominates.
+- The scanner pipeline adds **~0.032ms overhead for typical URL requests**. Network latency dominates.
 
 ## Hardware
 

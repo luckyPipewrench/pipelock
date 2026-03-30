@@ -20,7 +20,9 @@ import (
 	decide "github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/integrity"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/provenance"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
@@ -241,7 +243,39 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		if toolCfg != nil {
 			toolResult := tools.ScanTools(line, sc, toolCfg)
 			isToolsList = toolResult.IsToolsList
+			// Provenance: verify tool signatures BEFORE updating session binding
+			// baseline. A blocked tools/list must not seed known tools.
+			if toolResult.IsToolsList && opts.ProvenanceCfg != nil && opts.ProvenanceCfg.Enabled {
+				pv := VerifyToolsListProvenance(line, opts.ProvenanceCfg)
+				if pv.Block {
+					_, _ = fmt.Fprintf(logW, "pipelock: line %d: tools/list provenance verification failed: %s\n", lineNum, pv.Error)
+					if opts.AuditLogger != nil {
+						opts.AuditLogger.LogBlocked("MCP", "tools/list", "provenance", pv.Error, "", "", "")
+					}
+					if m != nil {
+						m.RecordBlocked("mcp", "provenance", 0, "")
+					}
+					resp := blockResponse(toolResult.RPCID)
+					if err := writer.WriteMessage(resp); err != nil {
+						return foundInjection, fmt.Errorf("writing provenance block: %w", err)
+					}
+					continue
+				}
+				if pv.Error != "" {
+					_, _ = fmt.Fprintf(logW, "pipelock: line %d: tools/list provenance warning: %s\n", lineNum, pv.Error)
+				}
+				// Log unsigned tools in warn mode for operator visibility.
+				for _, r := range pv.Results {
+					if r.Status != provenance.StatusVerified {
+						_, _ = fmt.Fprintf(logW, "pipelock: line %d: tool %q unsigned (provenance warn)\n", lineNum, r.ToolName)
+						if opts.AuditLogger != nil {
+							opts.AuditLogger.LogAnomaly("MCP", r.ToolName, "provenance", "unsigned tool", "", "", "", 0)
+						}
+					}
+				}
+			}
 			// Session binding: capture tool names from tools/list responses.
+			// Runs after provenance so blocked responses don't poison the baseline.
 			if toolResult.IsToolsList && toolCfg.Baseline != nil && len(toolResult.ToolNames) > 0 {
 				if !toolCfg.Baseline.HasBaseline() {
 					toolCfg.Baseline.SetKnownTools(toolResult.ToolNames)
@@ -727,6 +761,16 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		}
 	}
 
+	// Pre-spawn binary integrity verification: hash the binary (and script
+	// for interpreters) against the trusted manifest before executing it.
+	// Runs after command resolution but before Start() so a tampered binary
+	// is never spawned when action is "block".
+	if icfg := opts.IntegrityCfg; icfg != nil && icfg.Enabled {
+		if err := VerifyBinaryIntegrity(command, icfg, logW); err != nil {
+			return err
+		}
+	}
+
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("starting MCP server %q: %w", command[0], err)
 	}
@@ -823,7 +867,9 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		defer wgBlocked.Done()
 		for blocked := range blockedCh {
 			if blocked.IsNotification {
-				// Notifications have no ID — silently drop (no error response).
+				// Notifications have no ID — silently drop (no error response per JSON-RPC spec).
+				// Log the block for audit trail — silent drops with zero logging aid attacker reconnaissance.
+				_, _ = fmt.Fprintf(safeLogW, "pipelock: blocked notification (no response sent): %s\n", blocked.LogMessage)
 				continue
 			}
 			var resp []byte
@@ -946,4 +992,50 @@ func safeEnv() []string {
 		}
 	}
 	return env
+}
+
+// hash before subprocess spawn. Returns an error only when action is "block"
+// and verification fails; "warn" failures are logged to logW and return nil.
+// VerifyBinaryIntegrity checks the command binary against a hash manifest.
+// Returns nil when verification passes or action is warn (logged only).
+// Returns an error when action is block and verification fails.
+func VerifyBinaryIntegrity(command []string, icfg *config.MCPBinaryIntegrity, logW io.Writer) error {
+	intCfg := &integrity.Config{
+		Enabled:      true,
+		ManifestPath: icfg.ManifestPath,
+		Action:       icfg.Action,
+	}
+
+	// Load the manifest from disk. Fail-closed: load errors are fatal
+	// when action is "block", logged as warnings otherwise. When the
+	// manifest fails to load, skip Verify (it would only repeat "no
+	// manifest loaded" with less context).
+	manifest, loadErr := integrity.LoadManifest(icfg.ManifestPath)
+	if loadErr != nil {
+		if icfg.Action == config.ActionBlock {
+			return fmt.Errorf("binary integrity: loading manifest: %w", loadErr)
+		}
+		_, _ = fmt.Fprintf(logW, "pipelock: binary integrity warning: %v\n", loadErr)
+		return nil
+	}
+	intCfg.Manifests = manifest.Entries
+
+	result, verifyErr := integrity.Verify(command, intCfg, "")
+	if verifyErr != nil {
+		if icfg.Action == config.ActionBlock {
+			return fmt.Errorf("binary integrity: %w", verifyErr)
+		}
+		_, _ = fmt.Fprintf(logW, "pipelock: binary integrity warning: %v\n", verifyErr)
+		return nil
+	}
+
+	if !result.Verified {
+		reasons := strings.Join(result.Reasons, "; ")
+		if icfg.Action == config.ActionBlock {
+			return fmt.Errorf("binary integrity check failed: %s", reasons)
+		}
+		_, _ = fmt.Fprintf(logW, "pipelock: binary integrity warning: %s\n", reasons)
+	}
+
+	return nil
 }

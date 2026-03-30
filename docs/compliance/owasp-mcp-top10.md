@@ -117,7 +117,7 @@ See also: [OWASP Agentic Top 10 mapping](../owasp-mapping.md) | [OWASP AIVSS cov
 
 **Pipelock coverage:**
 
-- **Response scanning:** 6-pass normalization pipeline (NFKC + zero-width stripping, invisible char replacement, leetspeak, optional-whitespace, vowel folding, base64/hex decode) with 19 default patterns covering prompt injection, jailbreak templates, role/behavior overrides, credential solicitation, and memory persistence directives.
+- **Response scanning:** 6-pass normalization pipeline (NFKC + zero-width stripping, invisible char replacement, leetspeak, optional-whitespace, vowel folding, base64/hex decode) with 23 default patterns covering prompt injection, jailbreak templates, role/behavior overrides, credential solicitation, memory persistence directives, and CJK-language instruction overrides.
 - **MCP response scanning:** tool results are scanned through the same pipeline before reaching the agent.
 - **State/control poisoning patterns:** detect credential solicitation ("provide your API key"), memory persistence ("save this for future sessions"), preference poisoning ("from now on, always use this tool"), and silent credential handling.
 - **Pre-filter optimization:** keyword-based gating skips expensive regex on clean content. Typical scan latency under 50us for clean responses.

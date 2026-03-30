@@ -12,12 +12,12 @@ All numbers from Go benchmarks on AMD Ryzen 7 7800X3D (8 cores / 16 threads) / G
 
 | Operation | Latency | Throughput (1 core) |
 |-----------|---------|--------------------:|
-| Full pipeline (allowed URL) | ~21 μs | ~48,000/sec |
-| Blocklist block (early exit) | ~1.9 μs | ~528,000/sec |
-| DLP pattern match (46 patterns, pre-filtered) | ~6.7 μs | ~149,000/sec |
-| DLP pre-filter only (clean text, zero alloc) | ~405 ns | ~2,470,000/sec |
-| Entropy detection | ~41 μs | ~24,300/sec |
-| Complex URL (ports, query params) | ~41 μs | ~24,700/sec |
+| Full pipeline (allowed URL) | ~32 μs | ~31,000/sec |
+| Blocklist block (early exit) | ~2 μs | ~500,000/sec |
+| DLP pattern match (46 patterns, pre-filtered) | ~8 μs | ~130,000/sec |
+| DLP pre-filter only (clean text, zero alloc) | ~400 ns | ~2,500,000/sec |
+| Entropy detection | ~58 μs | ~17,000/sec |
+| Complex URL (ports, query params) | ~60 μs | ~17,000/sec |
 
 ### MCP Scanning (tool call/response inspection)
 
@@ -25,20 +25,20 @@ JSON-RPC parsing + text extraction + prompt injection pattern matching.
 
 | Operation | Latency | Throughput (1 core) |
 |-----------|---------|--------------------:|
-| Clean tool response | ~89 μs | ~11,200/sec |
-| Injection detected (early exit) | ~13 μs | ~78,700/sec |
+| Clean tool response | ~78 μs | ~13,000/sec |
+| Injection detected (early exit) | ~36 μs | ~28,000/sec |
 | Text extraction | ~2.5 μs | ~400,000/sec |
 
 ### Response Scanning (fetched content injection detection)
 
-Pattern matching against 19 prompt injection patterns (including 6 state/control patterns) on fetched page content.
+Pattern matching against 23 prompt injection patterns (including 6 state/control patterns and 4 CJK-language patterns) on fetched page content.
 
 | Operation | Latency | Throughput (1 core) |
 |-----------|---------|--------------------:|
-| Short clean text (~90B) | ~72 μs | ~13,900/sec |
-| 10KB clean text | ~9.5 ms | ~105/sec |
-| Injection detected (early exit) | ~40 μs | ~25,000/sec |
-| State/control clean | ~133 μs | ~7,500/sec |
+| Short clean text (~90B) | ~76 μs | ~13,000/sec |
+| 10KB clean text | ~8.4 ms | ~120/sec |
+| Injection detected (early exit) | ~42 μs | ~24,000/sec |
+| State/control clean | ~134 μs | ~7,500/sec |
 
 The keyword pre-filter (added in v1.3.0) short-circuits regex evaluation when no injection keywords are present in the normalized text. This cut clean-text latency by 29%, large-content latency by 27%, and injection-detected latency by 3.1x (early keyword match skips later normalization passes). The 10KB response scan remains the current ceiling due to 6 sequential normalization passes. Content size tiering (skipping passes 3-6 for large content) is planned.
 
@@ -197,7 +197,7 @@ The binary is ~18MB static (release build with symbol stripping). Memory usage i
 
 ## Design Decisions That Affect Performance
 
-**Early exit on block.** Blocked URLs short-circuit at the first failing layer. Blocklist hits resolve in ~1.9μs. DLP matches exit before DNS resolution.
+**Early exit on block.** Blocked URLs short-circuit at the first failing layer. Blocklist hits resolve in ~2μs. DLP matches exit before DNS resolution.
 
 **Pre-DNS checks.** CRLF injection, path traversal, allowlist, blocklist, and DLP checks all execute before any network call. This prevents secret exfiltration via DNS queries and keeps the fast path fast.
 

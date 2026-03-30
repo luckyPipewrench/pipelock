@@ -476,7 +476,9 @@ func startListenerProxyWithStore(
 
 	done := make(chan error, 1)
 	go func() {
-		done <- RunHTTPListenerProxy(ctx, ln, upstreamURL, &logBuf, sc, nil, inputCfg, nil, nil, nil, nil, nil, nil, store, adaptiveFn, nil, nil, nil)
+		done <- RunHTTPListenerProxy(ctx, ln, upstreamURL, &logBuf, MCPProxyOpts{
+			Scanner: sc, InputCfg: inputCfg, Store: store, AdaptiveCfgFn: adaptiveFn,
+		})
 	}()
 
 	baseURL := "http://" + addr

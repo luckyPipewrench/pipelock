@@ -256,7 +256,7 @@ func EnforceLicenseGate(c *config.Config) {
 		_, _ = fmt.Fprintf(os.Stderr, "WARNING: agents: section requires a license key. "+
 			"Multi-agent profiles disabled. Single-agent protection is active.\n"+
 			"Get a license key at https://pipelab.org/pricing\n")
-		c.Agents = nil
+		stripNamedAgents(c)
 		return
 	}
 
@@ -266,7 +266,7 @@ func EnforceLicenseGate(c *config.Config) {
 		_, _ = fmt.Fprintf(os.Stderr, "WARNING: no license public key available. "+
 			"Set license_public_key in config or build with embedded key.\n"+
 			"Multi-agent profiles disabled.\n")
-		c.Agents = nil
+		stripNamedAgents(c)
 		return
 	}
 
@@ -275,7 +275,7 @@ func EnforceLicenseGate(c *config.Config) {
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "WARNING: license verification failed: %v\n"+
 			"Multi-agent profiles disabled. Single-agent protection is active.\n", err)
-		c.Agents = nil
+		stripNamedAgents(c)
 		return
 	}
 
@@ -283,12 +283,24 @@ func EnforceLicenseGate(c *config.Config) {
 	if !lic.HasFeature(license.FeatureAgents) {
 		_, _ = fmt.Fprintf(os.Stderr, "WARNING: license %s does not include the 'agents' feature.\n"+
 			"Multi-agent profiles disabled.\n", lic.ID)
-		c.Agents = nil
+		stripNamedAgents(c)
 		return
 	}
 
 	// Store expiry for runtime enforcement. Zero means perpetual.
 	c.LicenseExpiresAt = lic.ExpiresAt
+}
+
+// stripNamedAgents removes all agent profiles except _default.
+// The _default profile provides single-agent protection (free tier)
+// and must survive license gate rejection.
+func stripNamedAgents(c *config.Config) {
+	def, hasDefault := c.Agents["_default"]
+	if hasDefault {
+		c.Agents = map[string]config.AgentProfile{"_default": def}
+	} else {
+		c.Agents = nil
+	}
 }
 
 // resolvePublicKey returns the Ed25519 public key for license verification.

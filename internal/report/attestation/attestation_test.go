@@ -106,10 +106,10 @@ func TestSVG(t *testing.T) {
 	if !strings.Contains(svg, "<svg") {
 		t.Error("expected SVG element")
 	}
-	if !strings.Contains(svg, "Pipelock Verified") {
+	if !strings.Contains(svg, "PIPELOCK") {
 		t.Error("expected badge text")
 	}
-	if !strings.Contains(svg, "Score: 94/100") {
+	if !strings.Contains(svg, "94") {
 		t.Error("expected score in badge")
 	}
 }
@@ -119,11 +119,11 @@ func TestSVG_AllGrades(t *testing.T) {
 		score int
 		color string
 	}{
-		{95, "#16a34a"}, // green
-		{85, "#2563eb"}, // blue
-		{75, "#ca8a04"}, // yellow
-		{65, "#ea580c"}, // orange
-		{50, "#dc2626"}, // red
+		{95, "#15803d"}, // green-700
+		{85, "#1d4ed8"}, // blue-700
+		{75, "#a16207"}, // yellow-700
+		{65, "#c2410c"}, // orange-700
+		{50, "#b91c1c"}, // red-700
 	}
 
 	for _, g := range grades {

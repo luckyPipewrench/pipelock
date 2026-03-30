@@ -44,7 +44,7 @@ go test -race -count=1 ./...     # All tests with race detector
 ## Pull Requests
 
 1. Fill in a clear description of what changed and why
-2. CI runs 3 required checks: **test** (Go 1.25 + 1.26 matrix), **lint**, **build**
+2. CI runs 6 required checks: **test** (Go 1.25 + 1.26 matrix), **lint**, **build**, **govulncheck**, **CodeQL**, **pipelock** (self-scan)
 3. Address reviewer feedback and bot comments (CodeRabbit reviews automatically)
 4. PRs are squash-merged
 

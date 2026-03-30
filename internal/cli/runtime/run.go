@@ -257,6 +257,39 @@ Examples:
 				proxyOpts = append(proxyOpts, proxy.WithCaptureObserver(cw))
 			}
 
+			// Flight recorder: create a tamper-evident evidence recorder
+			// when enabled in YAML config. The --capture-output CLI flag
+			// uses a separate code path (capture.Writer above). This path
+			// wires the YAML-config-driven recorder into the proxy so
+			// enforcement decisions are hash-chained to disk.
+			if cfg.FlightRecorder.Enabled && cfg.FlightRecorder.Dir != "" {
+				recCfg := recorder.Config{
+					Enabled:            cfg.FlightRecorder.Enabled,
+					Dir:                cfg.FlightRecorder.Dir,
+					CheckpointInterval: cfg.FlightRecorder.CheckpointInterval,
+					RetentionDays:      cfg.FlightRecorder.RetentionDays,
+					Redact:             cfg.FlightRecorder.Redact,
+					SignCheckpoints:    cfg.FlightRecorder.SignCheckpoints,
+					MaxEntriesPerFile:  cfg.FlightRecorder.MaxEntriesPerFile,
+					RawEscrow:          cfg.FlightRecorder.RawEscrow,
+					EscrowPublicKey:    cfg.FlightRecorder.EscrowPublicKey,
+				}
+
+				// Use the scanner's DLP function for redaction when enabled.
+				var redactFn recorder.RedactFunc
+				if cfg.FlightRecorder.Redact {
+					redactFn = sc.ScanTextForDLP
+				}
+
+				rec, recErr := recorder.New(recCfg, redactFn, nil)
+				if recErr != nil {
+					return fmt.Errorf("creating flight recorder: %w", recErr)
+				}
+				defer func() { _ = rec.Close() }()
+				proxyOpts = append(proxyOpts, proxy.WithRecorder(rec))
+				cmd.PrintErrf("  Recorder: %s (flight recorder enabled)\n", cfg.FlightRecorder.Dir)
+			}
+
 			p, pErr := proxy.New(cfg, logger, sc, m, proxyOpts...)
 			if pErr != nil {
 				return fmt.Errorf("creating proxy: %w", pErr)
@@ -785,7 +818,16 @@ Examples:
 					if captureWriter != nil {
 						mcpCaptureObs = captureWriter
 					}
-					mcpErr <- mcp.RunHTTPListenerProxy(ctx, mcpLn, mcpUpstream, cmd.ErrOrStderr(), sc, mcpApprover, inputCfg, toolCfg, policyCfg, ks, mcpChainMatcher, logger, mcpCEE, mcpStore, mcpAdaptiveFn, m, buildRedirectRT(cfg), mcpCaptureObs)
+					mcpErr <- mcp.RunHTTPListenerProxy(ctx, mcpLn, mcpUpstream, cmd.ErrOrStderr(), mcp.MCPProxyOpts{
+						Scanner: sc, Approver: mcpApprover,
+						InputCfg: inputCfg, ToolCfg: toolCfg, PolicyCfg: policyCfg,
+						KillSwitch: ks, ChainMatcher: mcpChainMatcher,
+						AuditLogger: logger, CEE: mcpCEE,
+						Store: mcpStore, AdaptiveCfgFn: mcpAdaptiveFn, Metrics: m,
+						RedirectRT:    buildRedirectRT(cfg),
+						CaptureObs:    mcpCaptureObs,
+						ProvenanceCfg: &cfg.MCPToolProvenance,
+					})
 				}()
 			}
 

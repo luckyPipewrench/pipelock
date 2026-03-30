@@ -201,6 +201,19 @@ pipelock tls show-ca
 
 **Passthrough domains:** Domains in `passthrough_domains` are spliced (bidirectional byte copy) without interception, preserving end-to-end TLS. Use this for domains where certificate pinning prevents interception or where you trust the destination. Supports exact match and wildcard prefix (`*.example.com` matches `sub.example.com` and the apex `example.com`).
 
+**Best practice -- package registries and LLM providers:** Always add package registries (npm, pypi, Go proxy) and LLM API endpoints to `passthrough_domains`, not just `exempt_domains`. Using `exempt_domains` alone still MITM-s the connection, which breaks large downloads (response size limit), causes TLS handshake errors with clients that reject the generated certificate, and wastes CPU on cert generation for traffic you don't intend to scan. Passthrough skips interception entirely.
+
+```yaml
+passthrough_domains:
+  - "registry.npmjs.org"       # npm packages
+  - "pypi.org"                 # Python packages
+  - "*.pypi.org"
+  - "files.pythonhosted.org"   # pip downloads
+  - "proxy.golang.org"         # Go modules
+  - "*.anthropic.com"          # LLM provider
+  - "*.openai.com"             # LLM provider
+```
+
 ## Request Body Scanning
 
 Scans request bodies and headers on the forward proxy path for secret exfiltration. Catches secrets in POST/PUT bodies and Authorization/Cookie headers that bypass URL-level scanning.

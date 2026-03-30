@@ -100,7 +100,7 @@ inspect WebSocket frames for DLP and prompt injection.
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `pipelock_info` | gauge | `version` | Build information. Always 1. The `version` label identifies the running release (e.g. `0.x.y`). |
+| `pipelock_info` | gauge | `version` | Build information. Always 1. The `version` label identifies the running release (e.g. `2.1.0`). |
 | `pipelock_kill_switch_active` | gauge | `source` | Whether each kill switch source is active (1) or inactive (0). `source` is `config`, `api`, `signal`, or `sentinel`. Reported fresh on every scrape. |
 
 ## Security Event Metrics
@@ -127,6 +127,64 @@ automatically change enforcement behavior (warn vs block).
 | `pipelock_session_escalations_total` | counter | `from`, `to` | Escalation events by level transition (e.g. `warn` → `block`). In v1, these are observability events, not enforcement changes. |
 | `pipelock_sessions_active` | gauge | (none) | Currently tracked sessions. |
 | `pipelock_sessions_evicted_total` | counter | (none) | Sessions evicted by TTL or capacity limit. |
+| `pipelock_adaptive_sessions_current` | gauge | `level` | Currently escalated sessions by enforcement level. |
+| `pipelock_session_auto_deescalation_total` | counter | `from`, `to` | Autonomous time-based session de-escalations. |
+
+## Cross-Request Detection Metrics
+
+Cross-request detection tracks secrets split across multiple requests
+using entropy budgets and fragment reassembly. These metrics indicate
+active exfiltration attempts.
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `pipelock_cross_request_entropy_exceeded_total` | counter | (none) | Entropy budget exceeded events. |
+| `pipelock_cross_request_dlp_match_total` | counter | (none) | Fragment reassembly DLP match events. |
+| `pipelock_cross_request_fragment_buffer_bytes` | gauge | (none) | Total fragment buffer memory across all sessions. |
+
+## Scan API Metrics
+
+The Scan API (`/v1/scan`) is an evaluation-plane endpoint for external
+integrations. Disabled by default; set `scan_api.listen` to enable.
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `pipelock_scan_api_requests_total` | counter | `kind`, `decision`, `status_code` | Total scan API requests. |
+| `pipelock_scan_api_duration_seconds` | histogram | `kind` | Scan API latency. Default Prometheus buckets. |
+| `pipelock_scan_api_findings_total` | counter | `kind`, `scanner`, `severity` | Scan API findings by scanner and severity. |
+| `pipelock_scan_api_errors_total` | counter | `kind`, `error_code` | Scan API errors by kind and error code. |
+| `pipelock_scan_api_inflight_requests` | gauge | (none) | Current number of in-flight scan API requests. |
+
+## Address Protection Metrics
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `pipelock_address_findings_total` | counter | `chain`, `verdict` | Address poisoning findings by blockchain and verdict. |
+
+## File Sentry Metrics
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `pipelock_file_sentry_findings_total` | counter | `pattern`, `severity`, `agent` | Secrets detected in agent-written files. |
+
+## Adaptive Enforcement Metrics
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `pipelock_adaptive_upgrades_total` | counter | `from_action`, `to_action`, `level` | Requests where adaptive enforcement upgraded the action (e.g. warn to block). |
+
+## Reverse Proxy Metrics
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `pipelock_reverse_proxy_requests_total` | counter | `method`, `status` | Total reverse proxy requests by method and status. |
+| `pipelock_reverse_proxy_scan_blocked_total` | counter | `direction`, `reason` | Reverse proxy requests blocked by scanning. |
+
+## Capture System Metrics
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `pipelock_capture_dropped_total` | counter | (none) | Capture entries dropped due to queue overflow. |
 
 ## Counter Initialization
 
@@ -183,9 +241,10 @@ An importable Grafana dashboard is included at
 [`configs/grafana-dashboard.json`](../configs/grafana-dashboard.json).
 Import it via **Dashboards → Import → Upload JSON file** in Grafana.
 
-The dashboard covers all 30 metric families across seven sections: fleet
+The dashboard covers all 45 metric families across ten sections: fleet
 overview, agent status table, traffic, connection details, TLS interception,
-security events, and WebSocket proxy.
+security events, WebSocket proxy, cross-request detection, adaptive
+enforcement, and Scan API.
 
 ## Alert Rules
 

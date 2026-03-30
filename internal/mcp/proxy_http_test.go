@@ -3907,7 +3907,6 @@ func TestHTTPListener_AdaptiveCfgFn_HotReload(t *testing.T) {
 // in scanHTTPInput when an A2A method body contains injection.
 func TestScanHTTPInput_A2ABlockAction(t *testing.T) {
 	sc := testScannerForHTTP(t)
-	defer sc.Close()
 
 	a2aCfg := &config.A2AScanning{
 		Enabled: true,
@@ -3931,7 +3930,6 @@ func TestScanHTTPInput_A2ABlockAction(t *testing.T) {
 // TestScanHTTPInput_A2AWarnAction exercises the A2A input scanning warn path.
 func TestScanHTTPInput_A2AWarnAction(t *testing.T) {
 	sc := testScannerForHTTP(t)
-	defer sc.Close()
 
 	a2aCfg := &config.A2AScanning{
 		Enabled: true,
@@ -3956,7 +3954,6 @@ func TestScanHTTPInput_A2AWarnAction(t *testing.T) {
 // disabled, the A2A scan path still extracts method and ID from the message.
 func TestScanHTTPInput_A2AMetadataBackfill(t *testing.T) {
 	sc := testScannerForHTTP(t)
-	defer sc.Close()
 
 	a2aCfg := &config.A2AScanning{
 		Enabled: true,
@@ -3977,7 +3974,6 @@ func TestScanHTTPInput_A2AMetadataBackfill(t *testing.T) {
 // TestScanHTTPInput_A2ACleanMethod verifies that clean A2A messages pass through.
 func TestScanHTTPInput_A2ACleanMethod(t *testing.T) {
 	sc := testScannerForHTTP(t)
-	defer sc.Close()
 
 	a2aCfg := &config.A2AScanning{
 		Enabled: true,
@@ -3998,7 +3994,6 @@ func TestScanHTTPInput_A2ACleanMethod(t *testing.T) {
 // skip the A2A scanning path entirely.
 func TestScanHTTPInput_A2ANonA2AMethodIgnored(t *testing.T) {
 	sc := testScannerForHTTP(t)
-	defer sc.Close()
 
 	a2aCfg := &config.A2AScanning{
 		Enabled: true,

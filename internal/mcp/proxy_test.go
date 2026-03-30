@@ -2905,7 +2905,6 @@ func TestVerifyBinaryIntegrity_BlockOnVerifyError(t *testing.T) {
 // dropped rather than receiving a JSON-RPC error response.
 func TestForwardScanned_BlockAllNotificationDrop(t *testing.T) {
 	sc := testScannerWithAction(t, config.ActionWarn)
-	defer sc.Close()
 
 	rec := &mockRecorder{level: 3}
 	adaptiveCfg := &config.AdaptiveEnforcement{
@@ -2945,7 +2944,6 @@ func TestForwardScanned_BlockAllNotificationDrop(t *testing.T) {
 // (top-level arrays) are blocked per the MCP specification.
 func TestForwardScanned_BatchJSONRPCBlocked(t *testing.T) {
 	sc := testScannerWithAction(t, config.ActionWarn)
-	defer sc.Close()
 
 	batch := `[{"jsonrpc":"2.0","id":1,"method":"tools/list"},{"jsonrpc":"2.0","id":2,"method":"tools/list"}]` + "\n"
 	reader := transport.NewStdioReader(strings.NewReader(batch))
@@ -2974,7 +2972,6 @@ func TestForwardScanned_BatchJSONRPCBlocked(t *testing.T) {
 // mid-stream, subsequent messages are blocked and the transition is logged.
 func TestForwardScanned_MidStreamBlockAllEscalation(t *testing.T) {
 	sc := testScannerWithAction(t, config.ActionWarn)
-	defer sc.Close()
 
 	adaptiveCfg := &config.AdaptiveEnforcement{
 		Enabled: true,

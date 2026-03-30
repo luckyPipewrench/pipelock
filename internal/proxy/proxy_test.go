@@ -4657,7 +4657,6 @@ func TestProxy_Reload_EnablesBaselineOnSessionCreate(t *testing.T) {
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
-	defer sc.Close()
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
 	if err != nil {

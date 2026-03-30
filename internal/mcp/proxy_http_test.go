@@ -3563,3 +3563,165 @@ func TestHTTPListener_StoreAdaptive(t *testing.T) {
 		t.Error("expected RecordClean to be called via store")
 	}
 }
+
+// --- Denial-of-Wallet (DoW) scanHTTPInput tests ---
+
+func TestScanHTTPInput_DoWBlock(t *testing.T) {
+	sc := testScannerForHTTP(t)
+
+	opts := MCPProxyOpts{
+		Scanner:  sc,
+		InputCfg: &InputScanConfig{Enabled: true, Action: config.ActionBlock, OnParseError: config.ActionBlock},
+		DoWCheck: func(toolName, _ string) (bool, string, string, string) {
+			if toolName == testDoWToolName {
+				return false, config.ActionBlock, testDoWBudgetReason, testDoWBudgetType
+			}
+			return true, "", "", ""
+		},
+	}
+
+	msg := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"` + testDoWToolName + `","arguments":{"q":"hello"}}}`
+	blocked := scanHTTPInput([]byte(msg), io.Discard, "", "", opts)
+	if blocked == nil {
+		t.Fatal("expected DoW block")
+	}
+	if blocked.IsNotification {
+		t.Error("expected IsNotification=false for request with id:1")
+	}
+	if !strings.Contains(blocked.ErrorMessage, testDoWBudgetReason) {
+		t.Errorf("expected budget exceeded message, got: %s", blocked.ErrorMessage)
+	}
+	if string(blocked.ID) != "1" {
+		t.Errorf("expected ID 1, got: %s", string(blocked.ID))
+	}
+}
+
+func TestScanHTTPInput_DoWWarn(t *testing.T) {
+	sc := testScannerForHTTP(t)
+
+	var logBuf bytes.Buffer
+	opts := MCPProxyOpts{
+		Scanner:  sc,
+		InputCfg: &InputScanConfig{Enabled: true, Action: config.ActionWarn, OnParseError: config.ActionBlock},
+		DoWCheck: func(toolName, _ string) (bool, string, string, string) {
+			if toolName == "moderate_tool" {
+				return false, config.ActionWarn, "near budget", testDoWBudgetType
+			}
+			return true, "", "", ""
+		},
+	}
+
+	msg := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"moderate_tool","arguments":{"q":"hello"}}}`
+	blocked := scanHTTPInput([]byte(msg), &logBuf, "", "", opts)
+	if blocked != nil {
+		t.Errorf("expected no block in warn mode, got: %+v", blocked)
+	}
+	if !strings.Contains(logBuf.String(), "DoW") {
+		t.Errorf("expected DoW log in warn mode, got: %s", logBuf.String())
+	}
+}
+
+func TestScanHTTPInput_DoWBlockNotification(t *testing.T) {
+	sc := testScannerForHTTP(t)
+
+	opts := MCPProxyOpts{
+		Scanner:  sc,
+		InputCfg: &InputScanConfig{Enabled: true, Action: config.ActionBlock, OnParseError: config.ActionBlock},
+		DoWCheck: func(toolName, _ string) (bool, string, string, string) {
+			if toolName == testDoWToolName {
+				return false, config.ActionBlock, testDoWBudgetReason, testDoWBudgetType
+			}
+			return true, "", "", ""
+		},
+	}
+
+	// Notification: no id field.
+	msg := `{"jsonrpc":"2.0","method":"tools/call","params":{"name":"` + testDoWToolName + `","arguments":{"q":"hello"}}}`
+	blocked := scanHTTPInput([]byte(msg), io.Discard, "", "", opts)
+	if blocked == nil {
+		t.Fatal("expected DoW block for notification")
+	}
+	if !blocked.IsNotification {
+		t.Error("expected IsNotification=true for DoW-blocked notification")
+	}
+}
+
+func TestHTTPListener_DoWBlock(t *testing.T) {
+	if runtime.GOOS == osWindows {
+		t.Skip("skipping on Windows")
+	}
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"ok"}]}}`)
+	}))
+	defer upstream.Close()
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+
+	inputCfg := &InputScanConfig{
+		Enabled:      true,
+		Action:       config.ActionBlock,
+		OnParseError: config.ActionBlock,
+	}
+
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := ln.Addr().String()
+
+	var logBuf bytes.Buffer
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- RunHTTPListenerProxy(ctx, ln, upstream.URL, &logBuf, MCPProxyOpts{
+			Scanner:  sc,
+			InputCfg: inputCfg,
+			DoWCheck: func(toolName, _ string) (bool, string, string, string) {
+				if toolName == testDoWToolName {
+					return false, config.ActionBlock, testDoWBudgetReason, testDoWBudgetType
+				}
+				return true, "", "", ""
+			},
+		})
+	}()
+
+	baseURL := "http://" + addr
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, connErr := http.Get(baseURL + "/health") //nolint:gosec,noctx // test helper
+		if connErr == nil {
+			_ = resp.Body.Close()
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"` + testDoWToolName + `","arguments":{"q":"hello"}}}`
+	resp, err := http.Post(baseURL+"/", "application/json", strings.NewReader(body)) //nolint:gosec,noctx // test
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(respBody), testDoWBudgetReason) {
+		t.Errorf("expected DoW block response, got: %s", string(respBody))
+	}
+
+	cancel()
+	select {
+	case runErr := <-done:
+		if runErr != nil {
+			t.Errorf("RunHTTPListenerProxy: %v", runErr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("timeout waiting for listener proxy to stop")
+	}
+}

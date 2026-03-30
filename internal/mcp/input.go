@@ -676,10 +676,11 @@ func ForwardScannedInput(
 					}
 					recordAdaptiveSignal(session.SignalBlock)
 					blockedCh <- BlockedRequest{
-						ID:           verdict.ID,
-						LogMessage:   logMsg,
-						ErrorCode:    -32600,
-						ErrorMessage: "pipelock: " + dowReason,
+						ID:             verdict.ID,
+						IsNotification: isRPCNotification(verdict.ID),
+						LogMessage:     logMsg,
+						ErrorCode:      -32600,
+						ErrorMessage:   "pipelock: " + dowReason,
 					}
 					continue
 				}

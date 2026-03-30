@@ -4522,6 +4522,18 @@ func TestMatchesPath(t *testing.T) {
 			pattern: "*.example.com*",
 			want:    true,
 		},
+		{
+			name:    "pattern has :443 target does not",
+			target:  "https://api.anthropic.com/v1/messages",
+			pattern: "https://api.anthropic.com:443/v1/messages",
+			want:    true,
+		},
+		{
+			name:    "pattern has :80 target does not",
+			target:  "http://example.com/robots.txt",
+			pattern: "http://example.com:80/robots.txt",
+			want:    true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -4547,7 +4559,7 @@ func TestMatchGlobSubstring(t *testing.T) {
 		{"wildcard suffix only", "https://api.anthropic.com/v1/messages", "https://api.anthropic.com*", true},
 		{"no wildcards exact", "https://api.anthropic.com/v1", "https://api.anthropic.com/v1", true},
 		{"no match", "https://api.openai.com/v1", "*.anthropic.com*", false},
-		{"empty pattern", "anything", "", true}, // splits to [""] which is all empty parts
+		{"empty pattern", "anything", "", false},
 		{"pattern must be prefix", "https://api.anthropic.com/v1", "api.anthropic.com/v1", false},
 		{"pattern must be suffix", "https://api.anthropic.com/v1", "https://api.anthropic.com/v", false},
 	}
@@ -7537,8 +7549,9 @@ func TestLoad_MCPToolProvenanceDefaults(t *testing.T) {
 
 func TestLoad_BehavioralBaselineDefaults(t *testing.T) {
 	dir := t.TempDir()
+	profileDir := filepath.Join(dir, "bb")
 	cfgPath := filepath.Join(dir, "bb.yaml")
-	content := "mode: balanced\nbehavioral_baseline:\n  enabled: true\n  profile_dir: /tmp/bb\n"
+	content := "mode: balanced\nbehavioral_baseline:\n  enabled: true\n  profile_dir: " + profileDir + "\n"
 	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -7623,6 +7636,7 @@ func TestLoad_PartialSubsectionPreservesBoolDefaults(t *testing.T) {
 	// Sections are present but only contain non-boolean fields.
 	// Omitted booleans inside present sections must still default to true.
 	dir := t.TempDir()
+	profileDir := filepath.Join(dir, "bb")
 	cfgPath := filepath.Join(dir, "partial.yaml")
 	content := "mode: balanced\n" +
 		"request_body_scanning:\n" +
@@ -7636,11 +7650,11 @@ func TestLoad_PartialSubsectionPreservesBoolDefaults(t *testing.T) {
 		"git_protection:\n" +
 		"  secrets_in_diff: true\n" +
 		"flight_recorder:\n" +
-		"  dir: /tmp/fr\n" +
+		"  dir: " + filepath.Join(dir, "fr") + "\n" +
 		"mcp_tool_provenance:\n" +
 		"  trusted_keys: []\n" +
 		"behavioral_baseline:\n" +
-		"  profile_dir: /tmp/bb\n" +
+		"  profile_dir: " + profileDir + "\n" +
 		"a2a_scanning:\n" +
 		"  max_context_messages: 50\n"
 	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {

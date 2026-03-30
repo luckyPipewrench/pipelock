@@ -23,6 +23,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/integrity"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/provenance"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -2557,5 +2558,53 @@ func TestRunProxyWithSandbox_CleanExit(t *testing.T) {
 	err := RunProxyWithSandbox(context.Background(), cmd, strings.NewReader(""), &out, logBuf, testOpts(sc))
 	if err != nil {
 		t.Errorf("clean subprocess exit should not return error, got: %v", err)
+	}
+}
+
+func TestForwardScanned_ProvenanceWarnLogsUnsignedTools(t *testing.T) {
+	sc := testScannerWithAction(t, config.ActionWarn)
+
+	// Build an unsigned tools/list response (no provenance attestation).
+	unsignedResp := buildUnsignedToolsListResponse(t, []provenance.ToolDef{
+		{Name: "read_file", Description: "Reads a file", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "write_file", Description: "Writes a file", InputSchema: json.RawMessage(`{"type":"object"}`)},
+	})
+
+	hexPub, _ := provenanceTestKeys(t)
+
+	toolCfg := &tools.ToolScanConfig{
+		Action:      config.ActionWarn,
+		DetectDrift: true,
+	}
+	provCfg := &config.MCPToolProvenance{
+		Enabled:     true,
+		Action:      config.ActionWarn,
+		Mode:        config.ProvenanceModePipelock,
+		TrustedKeys: []string{hexPub},
+		OfflineOnly: true,
+	}
+
+	opts := buildTestOpts(sc, withToolCfg(toolCfg))
+	opts.ProvenanceCfg = provCfg
+
+	var out, logBuf bytes.Buffer
+	// Feed the unsigned tools/list response through ForwardScanned.
+	found, err := ForwardScanned(
+		transport.NewStdioReader(strings.NewReader(string(unsignedResp)+"\n")),
+		transport.NewStdioWriter(&out),
+		&logBuf, nil, opts,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	_ = found
+
+	// Verify that unsigned tools are logged individually.
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, `"read_file" unsigned (provenance warn)`) {
+		t.Errorf("expected unsigned log for read_file, got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, `"write_file" unsigned (provenance warn)`) {
+		t.Errorf("expected unsigned log for write_file, got: %s", logOutput)
 	}
 }

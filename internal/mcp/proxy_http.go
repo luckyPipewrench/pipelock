@@ -315,7 +315,7 @@ func scanHTTPInput(msg []byte, logW io.Writer, sessionKey, auditSessionKey strin
 						m.RecordBlocked("mcp", "denial_of_wallet", 0, "")
 					}
 					recordAdaptiveSignal(session.SignalBlock)
-					return &BlockedRequest{ID: verdict.ID, ErrorCode: -32600, ErrorMessage: "pipelock: " + dowReason}
+					return &BlockedRequest{ID: verdict.ID, IsNotification: isRPCNotification(verdict.ID), ErrorCode: -32600, ErrorMessage: "pipelock: " + dowReason}
 				}
 				// dow_action: warn — log and record near-miss, but allow the request.
 				if auditLogger != nil {
@@ -830,6 +830,7 @@ func RunHTTPListenerProxy(
 		CaptureObs:    opts.captureObserver(),
 		ProvenanceCfg: opts.ProvenanceCfg,
 		DoWCheck:      opts.DoWCheck,
+		A2ACfg:        opts.A2ACfg,
 	}
 
 	// Shared HTTP client for upstream requests. Redirect-following is disabled

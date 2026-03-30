@@ -22,6 +22,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/integrity"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/provenance"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
@@ -259,6 +260,12 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				}
 				if pv.Error != "" {
 					_, _ = fmt.Fprintf(logW, "pipelock: line %d: tools/list provenance warning: %s\n", lineNum, pv.Error)
+				}
+				// Log unsigned tools in warn mode for operator visibility.
+				for _, r := range pv.Results {
+					if r.Status != provenance.StatusVerified {
+						_, _ = fmt.Fprintf(logW, "pipelock: line %d: tool %q unsigned (provenance warn)\n", lineNum, r.ToolName)
+					}
 				}
 			}
 			// Session binding: capture tool names from tools/list responses.

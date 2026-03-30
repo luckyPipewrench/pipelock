@@ -176,9 +176,11 @@ func matchesPath(target, pattern string) bool {
 	if p == "" {
 		return false
 	}
-	// Strip standard ports from URLs so patterns like "*.anthropic.com*"
-	// match TLS-intercepted URLs ("https://api.anthropic.com:443/v1/messages").
+	// Strip standard ports from both target and pattern so suppress
+	// entries like "https://api.anthropic.com:443/*" match targets
+	// without explicit ports, and vice versa.
 	normalized := stripStandardPorts(target)
+	p = stripStandardPorts(p)
 	// Directory prefix: "vendor/" matches "vendor/foo/bar.go"
 	if strings.HasSuffix(p, "/") {
 		return strings.HasPrefix(normalized, p)
@@ -234,6 +236,9 @@ func stripStandardPorts(u string) string {
 // including "/". This is needed for URL patterns where path.Match's "*"
 // (which stops at "/") is too restrictive.
 func matchGlobSubstring(s, pattern string) bool {
+	if pattern == "" {
+		return false
+	}
 	// Convert glob to a simple check: split on "*" and verify all parts
 	// appear in order in the string.
 	parts := strings.Split(pattern, "*")

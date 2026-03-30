@@ -719,7 +719,11 @@ func (l *Logger) LogAdaptiveUpgrade(sessionKey, level, fromAction, toAction, sca
 
 	if l.emitter != nil {
 		sev := emit.SeverityWarn
-		if toAction == actionBlock {
+		if toAction == actionBlock && scanner != "session_deny" {
+			// Actual escalation transitions emit at critical.
+			// session_deny (enforcement of existing block_all) stays at warn
+			// to prevent webhook flood — one critical on escalation, not
+			// one per denied request.
 			sev = emit.SeverityCritical
 		}
 		fields := map[string]any{

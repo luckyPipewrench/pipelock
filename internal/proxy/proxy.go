@@ -36,6 +36,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
@@ -142,6 +143,7 @@ type Proxy struct {
 	approver          *hitl.Approver
 	a2aCardBaseline   *mcp.CardBaseline // Agent Card drift detection across requests
 	captureObs        capture.CaptureObserver
+	recorder          *recorder.Recorder // flight recorder for tamper-evident evidence (nil = disabled)
 }
 
 // Option configures optional Proxy behavior.
@@ -167,6 +169,13 @@ func WithKillSwitchAPI(api *killswitch.APIHandler) Option {
 // used by default).
 func WithCaptureObserver(obs capture.CaptureObserver) Option {
 	return func(p *Proxy) { p.captureObs = obs }
+}
+
+// WithRecorder sets the flight recorder for tamper-evident evidence logging.
+// When non-nil, the proxy records enforcement decisions to the hash-chained
+// evidence log. Pass nil to disable (default).
+func WithRecorder(rec *recorder.Recorder) Option {
+	return func(p *Proxy) { p.recorder = rec }
 }
 
 // FetchResponse is the JSON response returned by the /fetch endpoint.
@@ -212,7 +221,11 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 		if cfg.AdaptiveEnforcement.Enabled {
 			adaptiveCfg = &cfg.AdaptiveEnforcement
 		}
-		p.sessionMgrPtr.Store(NewSessionManager(&cfg.SessionProfiling, adaptiveCfg, m))
+		sm := NewSessionManager(&cfg.SessionProfiling, adaptiveCfg, m)
+		if cfg.BehavioralBaseline.Enabled {
+			_ = sm.EnableBaseline(&cfg.BehavioralBaseline) // validated at Load time
+		}
+		p.sessionMgrPtr.Store(sm)
 	}
 
 	p.setupCEE(&cfg.CrossRequestDetection)
@@ -289,6 +302,34 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 	p.tlsTransport = newTLSInterceptTransport(p.ssrfSafeDialContext, m.RecordTLSHandshake, nil)
 
 	return p, nil
+}
+
+// recordDecision writes an enforcement verdict to the flight recorder if enabled.
+// Uses Record (not RecordDecision) so entries are hash-chained without requiring
+// an Ed25519 signing key. Checkpoints are still signed when sign_checkpoints is
+// enabled. Errors are logged but never block the proxy hot path.
+func (p *Proxy) recordDecision(verdict, layer, pattern, transport, requestID string) {
+	if p.recorder == nil {
+		return
+	}
+
+	summary := verdict + ": " + layer
+	if pattern != "" {
+		summary += " (" + pattern + ")"
+	}
+
+	_ = p.recorder.Record(recorder.Entry{
+		SessionID: "proxy",
+		Type:      "decision",
+		Transport: transport,
+		Summary:   summary,
+		Detail: map[string]string{
+			"verdict":    verdict,
+			"layer":      layer,
+			"pattern":    pattern,
+			"request_id": requestID,
+		},
+	})
 }
 
 // CurrentConfig returns the currently active config. Used for reload comparison.
@@ -368,7 +409,11 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
 	wasEnabled := oldCfg.SessionProfiling.Enabled
 	isEnabled := cfg.SessionProfiling.Enabled
 	if !wasEnabled && isEnabled {
-		p.sessionMgrPtr.Store(NewSessionManager(&cfg.SessionProfiling, adaptiveCfg, p.metrics))
+		sm := NewSessionManager(&cfg.SessionProfiling, adaptiveCfg, p.metrics)
+		if cfg.BehavioralBaseline.Enabled {
+			_ = sm.EnableBaseline(&cfg.BehavioralBaseline)
+		}
+		p.sessionMgrPtr.Store(sm)
 	} else if wasEnabled && !isEnabled {
 		if old := p.sessionMgrPtr.Swap(nil); old != nil {
 			old.Close()
@@ -1001,6 +1046,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	if !result.Allowed {
 		if cfg.EnforceEnabled() {
 			log.LogBlocked("GET", displayURL, result.Scanner, result.Reason, clientIP, requestID, agent)
+			p.recordDecision(config.ActionBlock, result.Scanner, result.Reason, "fetch", requestID)
 			p.metrics.RecordBlocked(parsed.Hostname(), result.Scanner, time.Since(start), agentLabel)
 			status := http.StatusForbidden
 			if result.Scanner == scanner.ScannerRateLimit {
@@ -1339,12 +1385,13 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		log.LogResponseScanExempt(http.MethodGet, displayURL, finalHost, clientIP, requestID, agent)
 	}
 	var hiddenInjectionFound bool
-	if sc.ResponseScanningEnabled() && isHTML && !responseScanExempt {
+	if sc.ResponseScanningEnabled() && isHTML {
 		hidden := extractHiddenContent(content)
 		if hidden != "" {
 			rawResult := sc.ScanResponse(r.Context(), hidden)
 			// Use live escalation level so mid-request CEE escalations are reflected.
-			blocked, _, found := p.filterAndActOnResponseScan(w, rawResult, content, displayURL, agent, clientIP, requestID, sc, cfg, log, recEscalationLevel(fetchRec))
+			// Exempt domains: scan for visibility but pin to warn, no adaptive scoring.
+			blocked, _, found := p.filterAndActOnResponseScan(w, rawResult, content, displayURL, agent, clientIP, requestID, sc, cfg, log, recEscalationLevel(fetchRec), responseScanExempt)
 			if blocked {
 				return
 			}
@@ -1382,13 +1429,16 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Response scanning: check extracted content for prompt injection.
-	// Skip for exempt domains (e.g. trusted LLM providers whose responses
-	// naturally contain instruction-like text).
-	if sc.ResponseScanningEnabled() && !responseScanExempt {
+	// Exempt domains are still scanned for visibility (findings logged as warn)
+	// but adaptive scoring is skipped and actions are not upgraded.
+	if sc.ResponseScanningEnabled() {
 		scanResult := sc.ScanResponse(r.Context(), content)
 
 		// Capture observer: record response scan verdict for policy replay.
 		respAction := sc.ResponseAction()
+		if responseScanExempt {
+			respAction = config.ActionWarn
+		}
 		if scanResult.Clean {
 			respAction = ""
 		}
@@ -1406,7 +1456,8 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		})
 
 		// Use live escalation level so mid-request CEE escalations are reflected.
-		blocked, newContent, found := p.filterAndActOnResponseScan(w, scanResult, content, displayURL, agent, clientIP, requestID, sc, cfg, log, recEscalationLevel(fetchRec))
+		// Exempt domains: scan for visibility but pin to warn, no adaptive scoring.
+		blocked, newContent, found := p.filterAndActOnResponseScan(w, scanResult, content, displayURL, agent, clientIP, requestID, sc, cfg, log, recEscalationLevel(fetchRec), responseScanExempt)
 		if found {
 			hasFinding = true
 		}
@@ -1452,6 +1503,9 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 // request was blocked (HTTP response already written), the output content
 // (possibly stripped), and found=true if unsuppressed findings remain.
 // sessionLevel is the current adaptive escalation level from recordSessionActivity.
+// exempt indicates the domain was in exempt_domains: findings are logged as
+// warn but adaptive scoring is skipped and UpgradeAction is not applied.
+// This preserves operator visibility without triggering escalation death spirals.
 func (p *Proxy) filterAndActOnResponseScan(
 	w http.ResponseWriter,
 	result scanner.ResponseScanResult,
@@ -1460,6 +1514,7 @@ func (p *Proxy) filterAndActOnResponseScan(
 	cfg *config.Config,
 	log *audit.Logger,
 	sessionLevel int,
+	exempt bool,
 ) (blocked bool, out string, found bool) {
 	out = content
 
@@ -1485,9 +1540,17 @@ func (p *Proxy) filterAndActOnResponseScan(
 	bundleRules := responseBundleRules(result.Matches)
 
 	// Adaptive enforcement: upgrade the response action before the switch.
+	// Exempt domains are pinned to warn — the operator's trust decision
+	// overrides adaptive escalation. This prevents death spirals where LLM
+	// responses naturally contain instruction-like text.
 	action := sc.ResponseAction()
+	if exempt {
+		action = config.ActionWarn
+	}
 	originalAction := action
-	action = decide.UpgradeAction(action, sessionLevel, &cfg.AdaptiveEnforcement)
+	if !exempt {
+		action = decide.UpgradeAction(action, sessionLevel, &cfg.AdaptiveEnforcement)
+	}
 	if action != originalAction {
 		sessionKey := clientIP
 		if agent != "" && agent != agentAnonymous {
@@ -1498,9 +1561,12 @@ func (p *Proxy) filterAndActOnResponseScan(
 	}
 
 	// recordResponseSignal records an adaptive enforcement signal for the
-	// response scan result. Extracted to avoid duplicating session-key
-	// construction across all action branches.
+	// response scan result. Exempt domains skip scoring — their findings
+	// are logged but don't contribute to session escalation.
 	recordResponseSignal := func(sig session.SignalType) {
+		if exempt {
+			return
+		}
 		if sm := p.sessionMgrPtr.Load(); sm != nil && cfg.AdaptiveEnforcement.Enabled {
 			sessionKey := clientIP
 			if agent != "" && agent != agentAnonymous {

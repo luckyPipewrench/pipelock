@@ -993,6 +993,24 @@ internal:
 
 All RFC 1918, RFC 4193, link-local, loopback, CGN (Tailscale/Carrier-Grade NAT), multicast, and cloud metadata ranges are blocked by default. IPv6 zone IDs (e.g. `::1%eth0`) are stripped before IP parsing to prevent bypass.
 
+### Trusted Domains
+
+Domains exempt from SSRF internal-IP checks. Use this when a domain legitimately resolves to a private IP (e.g., an internal API behind a VPN) and you want pipelock to allow the connection.
+
+```yaml
+trusted_domains:
+  - "internal-api.example.com"
+  - "*.corp.example.com"
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `trusted_domains` | `[]` | Top-level list. Supports `*.example.com` wildcards (also matches apex `example.com`). |
+
+**Important:** This is a **top-level** config field, not nested under `forward_proxy`. Placing it under `forward_proxy` will silently do nothing. DLP and other content scanning still runs on trusted domains -- only the SSRF IP check is bypassed.
+
+Per-agent `trusted_domains` overrides are available in agent profiles (Pro license).
+
 ## Presets
 
 Seven starter configs in `configs/`:
@@ -1110,6 +1128,7 @@ Each agent profile can override these fields:
 | `rate_limit` | object | Per-agent rate limits |
 | `session_profiling` | object | Per-agent profiling thresholds |
 | `mcp_tool_policy` | object | Per-agent MCP tool policy |
+| `trusted_domains` | `[]string` | Per-agent SSRF-exempt domains (overrides global list) |
 | `budget` | object | Request budgets (see below) |
 
 ### DLP Merge Behavior
@@ -1129,12 +1148,22 @@ Budgets cap what an agent can do within a rolling time window. All fields defaul
 | `max_bytes_per_session` | `int` | `0` | Max response bytes per window |
 | `max_unique_domains_per_session` | `int` | `0` | Max distinct domains per window |
 | `window_minutes` | `int` | `0` | Rolling window duration in minutes. `0` means the budget never resets. |
+| `max_tool_calls_per_session` | `int` | `0` | Max MCP tool calls per session (0 = unlimited). **Enforced.** |
+| `max_retries_per_tool` | `int` | `0` | Max times the same tool+args can be called (0 = unlimited, default 5 when set). Detects retry storms. **Enforced.** |
+| `loop_detection_window` | `int` | `0` | Number of recent tool calls to track for loop/cycle detection (0 = disabled, default 20 when set). **Enforced.** |
+| `max_wall_clock_minutes` | `int` | `0` | Max session duration in minutes (0 = unlimited). **Enforced.** |
+| `dow_action` | `string` | `"block"` | Action when a denial-of-wallet limit is exceeded: `"block"` (reject the tool call) or `"warn"` (log and allow) |
+| `max_concurrent_tool_calls` | `int` | `0` | Max parallel in-flight tool calls (0 = unlimited). *Planned — parsed but not yet enforced at runtime.* |
+| `max_retries_per_endpoint` | `int` | `0` | Max calls to the same domain+path (0 = unlimited). *Planned — parsed but not yet enforced at runtime.* |
+| `fan_out_limit` | `int` | `0` | Max unique endpoints within the fan-out window (0 = unlimited). *Planned — parsed but not yet enforced at runtime.* |
+| `fan_out_window_seconds` | `int` | `0` | Sliding window for fan-out detection (0 = disabled). *Planned — parsed but not yet enforced at runtime.* |
 
 When a budget limit is reached:
 
 - **Request count and domain limits** are checked before the outbound request. Exceeding either returns `429 Too Many Requests`.
 - **Byte limit (fetch proxy):** the response body read is capped at the remaining byte budget. If the response exceeds the limit, it is discarded and a `429` is returned.
 - **Byte limit (CONNECT/WebSocket):** streaming connections track bytes after close. The byte budget is enforced on the next admission check, not mid-stream, because tunnel data cannot be recalled after transmission.
+- **DoW limits (MCP proxy):** tool call budgets are checked before each `tools/call` dispatch. When `dow_action` is `"block"`, the call is rejected with a JSON-RPC error. When `"warn"`, the call is logged and allowed through. Currently enforced: total tool call count, per-tool retry storms, loop/cycle detection, and wall-clock duration.
 
 ### Listener Binding
 

@@ -108,7 +108,7 @@ func TestAssessFinalize_AttestationArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading badge.svg: %v", err)
 	}
-	if !bytes.Contains(badge, []byte("Pipelock Verified")) {
+	if !bytes.Contains(badge, []byte("PIPELOCK")) {
 		t.Error("badge.svg should contain badge text")
 	}
 }

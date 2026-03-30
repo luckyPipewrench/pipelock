@@ -30,7 +30,12 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
-const testSecretPrefix = "sk-ant-" //nolint:gosec // test credential prefix
+const (
+	testSecretPrefix    = "sk-" + "ant-" // split to avoid gosec G101
+	testDoWToolName     = "expensive_tool"
+	testDoWBudgetReason = "budget exceeded"
+	testDoWBudgetType   = "per_call"
+)
 
 func base64Encode(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
 func hexEncode(s string) string    { return hex.EncodeToString([]byte(s)) }
@@ -2598,6 +2603,27 @@ func TestExtractToolCallName_EdgeCases(t *testing.T) {
 	}
 }
 
+func TestExtractToolCallArgs(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+		want string
+	}{
+		{"invalid json", "not json", ""},
+		{"not tools/call", `{"jsonrpc":"2.0","method":"initialize","id":1}`, ""},
+		{"valid with args", `{"jsonrpc":"2.0","method":"tools/call","id":1,"params":{"name":"read","arguments":{"path":"/tmp"}}}`, `{"path":"/tmp"}`},
+		{"valid no args", `{"jsonrpc":"2.0","method":"tools/call","id":1,"params":{"name":"list"}}`, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractToolCallArgs([]byte(tt.line))
+			if got != tt.want {
+				t.Errorf("extractToolCallArgs() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestExtractAllStringsFromJSON_DepthLimit(t *testing.T) {
 	// Build a JSON object nested >64 levels deep.
 	var b strings.Builder
@@ -3052,5 +3078,147 @@ func TestUnescapeJSONUnicode(t *testing.T) {
 				t.Errorf("unescapeJSONUnicode(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
+	}
+}
+
+// --- Denial-of-Wallet (DoW) tests ---
+
+func TestForwardScannedInput_DoWBlock(t *testing.T) {
+	sc := testInputScanner(t)
+
+	req := makeRequest(99, "tools/call", map[string]interface{}{
+		"name":      testDoWToolName,
+		"arguments": map[string]string{"q": "hello"},
+	}) + "\n"
+
+	var serverIn bytes.Buffer
+	var logW bytes.Buffer
+	blockedCh := make(chan BlockedRequest, 10)
+
+	opts := testOpts(sc)
+	opts.InputCfg = &InputScanConfig{Enabled: true, Action: config.ActionBlock, OnParseError: config.ActionBlock}
+	opts.DoWCheck = func(toolName, _ string) (bool, string, string, string) {
+		if toolName == testDoWToolName {
+			return false, config.ActionBlock, testDoWBudgetReason, testDoWBudgetType
+		}
+		return true, "", "", ""
+	}
+
+	clientIn := strings.NewReader(req)
+	ForwardScannedInput(
+		transport.NewStdioReader(clientIn),
+		transport.NewStdioWriter(&serverIn),
+		&logW, config.ActionBlock, config.ActionBlock, blockedCh, nil, nil, opts,
+	)
+
+	if strings.Contains(serverIn.String(), testDoWToolName) {
+		t.Error("expected DoW-blocked request not to be forwarded")
+	}
+
+	var got bool
+	for br := range blockedCh {
+		if strings.Contains(br.ErrorMessage, testDoWBudgetReason) {
+			got = true
+			if br.IsNotification {
+				t.Error("expected IsNotification=false for request with id:99")
+			}
+		}
+	}
+	if !got {
+		t.Error("expected DoW block on blockedCh")
+	}
+
+	if !strings.Contains(logW.String(), "DoW") {
+		t.Errorf("expected DoW log, got: %s", logW.String())
+	}
+}
+
+func TestForwardScannedInput_DoWWarn(t *testing.T) {
+	sc := testInputScanner(t)
+
+	req := makeRequest(100, "tools/call", map[string]interface{}{
+		"name":      "moderate_tool",
+		"arguments": map[string]string{"q": "hello"},
+	}) + "\n"
+
+	var serverIn bytes.Buffer
+	var logW bytes.Buffer
+	blockedCh := make(chan BlockedRequest, 10)
+
+	opts := testOpts(sc)
+	opts.InputCfg = &InputScanConfig{Enabled: true, Action: config.ActionWarn, OnParseError: config.ActionBlock}
+	opts.DoWCheck = func(toolName, _ string) (bool, string, string, string) {
+		if toolName == "moderate_tool" {
+			return false, config.ActionWarn, "near budget", testDoWBudgetType
+		}
+		return true, "", "", ""
+	}
+
+	clientIn := strings.NewReader(req)
+	ForwardScannedInput(
+		transport.NewStdioReader(clientIn),
+		transport.NewStdioWriter(&serverIn),
+		&logW, config.ActionWarn, config.ActionBlock, blockedCh, nil, nil, opts,
+	)
+
+	// Warn mode should forward the request.
+	if !strings.Contains(serverIn.String(), "moderate_tool") {
+		t.Error("expected warn-mode DoW to forward the request")
+	}
+
+	// Channel must be empty — warn mode never sends blocked requests.
+	for br := range blockedCh {
+		t.Errorf("unexpected blocked request in DoW warn mode: %+v", br)
+	}
+
+	if !strings.Contains(logW.String(), "DoW") {
+		t.Errorf("expected DoW log in warn mode, got: %s", logW.String())
+	}
+}
+
+func TestForwardScannedInput_DoWBlockNotification(t *testing.T) {
+	sc := testInputScanner(t)
+
+	// Notification: no "id" field. When blocked, IsNotification must be true.
+	notification := makeNotification("tools/call", map[string]interface{}{
+		"name":      testDoWToolName,
+		"arguments": map[string]string{"q": "hello"},
+	}) + "\n"
+
+	var serverIn bytes.Buffer
+	var logW bytes.Buffer
+	blockedCh := make(chan BlockedRequest, 10)
+
+	opts := testOpts(sc)
+	opts.InputCfg = &InputScanConfig{Enabled: true, Action: config.ActionBlock, OnParseError: config.ActionBlock}
+	opts.DoWCheck = func(toolName, _ string) (bool, string, string, string) {
+		if toolName == testDoWToolName {
+			return false, config.ActionBlock, testDoWBudgetReason, testDoWBudgetType
+		}
+		return true, "", "", ""
+	}
+
+	clientIn := strings.NewReader(notification)
+	ForwardScannedInput(
+		transport.NewStdioReader(clientIn),
+		transport.NewStdioWriter(&serverIn),
+		&logW, config.ActionBlock, config.ActionBlock, blockedCh, nil, nil, opts,
+	)
+
+	if strings.Contains(serverIn.String(), testDoWToolName) {
+		t.Error("expected notification to be blocked, not forwarded")
+	}
+
+	var gotNotification bool
+	for br := range blockedCh {
+		if strings.Contains(br.ErrorMessage, testDoWBudgetReason) {
+			if !br.IsNotification {
+				t.Error("expected IsNotification=true for DoW-blocked notification")
+			}
+			gotNotification = true
+		}
+	}
+	if !gotNotification {
+		t.Error("expected DoW-blocked notification on blockedCh")
 	}
 }

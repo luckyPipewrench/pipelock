@@ -984,7 +984,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	if sc.ResponseScanningEnabled() && fwdRespExempt {
 		p.logger.LogResponseScanExempt(r.Method, targetURL, fwdRespHost, clientIP, requestID, agent)
 	}
-	if sc.ResponseScanningEnabled() && !fwdRespExempt {
+	if sc.ResponseScanningEnabled() {
 		// Fail-closed on compressed responses: regex can't match compressed content.
 		if hasNonIdentityEncoding(resp.Header.Get("Content-Encoding")) {
 			p.logger.LogBlocked(r.Method, targetURL, "response_scan", "compressed response cannot be scanned", clientIP, requestID, agent)
@@ -1045,8 +1045,12 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		scanResult := sc.ScanResponse(r.Context(), string(respBody))
 
 		// Capture observer: record forward response scan verdict for policy replay.
+		// Apply exempt override before capture so the recorded action matches runtime.
 		{
 			fwdRespAction := sc.ResponseAction()
+			if fwdRespExempt {
+				fwdRespAction = config.ActionWarn
+			}
 			if scanResult.Clean {
 				fwdRespAction = ""
 			}
@@ -1078,6 +1082,10 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		if !scanResult.Clean {
 			hasFinding = true
 			action := sc.ResponseAction()
+			// Exempt domains: pin to warn, skip adaptive scoring/upgrade.
+			if fwdRespExempt {
+				action = config.ActionWarn
+			}
 			patternNames := make([]string, len(scanResult.Matches))
 			for i, match := range scanResult.Matches {
 				patternNames[i] = match.PatternName
@@ -1086,9 +1094,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			reason := fmt.Sprintf("response injection: %s", strings.Join(patternNames, ", "))
 
 			// Adaptive enforcement: upgrade the response action before the switch.
-			// Parity with fetch (filterAndActOnResponseScan) and WebSocket (upstreamToClient).
+			// Exempt domains skip upgrade — operator's trust decision overrides escalation.
 			originalAction := action
-			if forwardRec != nil {
+			if forwardRec != nil && !fwdRespExempt {
 				action = decide.UpgradeAction(action, forwardRec.EscalationLevel(), &cfg.AdaptiveEnforcement)
 				if action != originalAction {
 					sessionKey := clientIP
@@ -1108,21 +1116,23 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			case config.ActionStrip:
 				// Record SignalStrip for adaptive enforcement scoring.
-				// Parity with fetch (filterAndActOnResponseScan) and WebSocket (upstreamToClient).
-				if sm := p.sessionMgrPtr.Load(); sm != nil && cfg.AdaptiveEnforcement.Enabled {
-					sessionKey := clientIP
-					if agent != "" && agent != agentAnonymous {
-						sessionKey = agent + "|" + clientIP
+				// Exempt domains skip scoring — findings are logged but don't escalate.
+				if !fwdRespExempt {
+					if sm := p.sessionMgrPtr.Load(); sm != nil && cfg.AdaptiveEnforcement.Enabled {
+						sessionKey := clientIP
+						if agent != "" && agent != agentAnonymous {
+							sessionKey = agent + "|" + clientIP
+						}
+						sess := sm.GetOrCreate(sessionKey)
+						decide.RecordEscalation(sess, session.SignalStrip, decide.EscalationParams{
+							Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,
+							Logger:    p.logger,
+							Metrics:   p.metrics,
+							Session:   sessionKey,
+							ClientIP:  clientIP,
+							RequestID: requestID,
+						})
 					}
-					sess := sm.GetOrCreate(sessionKey)
-					decide.RecordEscalation(sess, session.SignalStrip, decide.EscalationParams{
-						Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,
-						Logger:    p.logger,
-						Metrics:   p.metrics,
-						Session:   sessionKey,
-						ClientIP:  clientIP,
-						RequestID: requestID,
-					})
 				}
 				if scanResult.TransformedContent != "" {
 					respBody = []byte(scanResult.TransformedContent)

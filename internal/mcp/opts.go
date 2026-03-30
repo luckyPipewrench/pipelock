@@ -15,6 +15,11 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
+// DoWCheckFunc checks a tool call against denial-of-wallet budgets.
+// Returns (allowed, action, reason, budgetType). Action is "block" or "warn".
+// When action is "warn", the caller logs but does not block the request.
+type DoWCheckFunc func(toolName, argsJSON string) (allowed bool, action, reason, budgetType string)
+
 // MCPProxyOpts groups the shared dependencies for MCP proxy functions.
 // Construct once per proxy invocation; pass by value so callers can
 // override fields (e.g. Rec, ToolCfg) without affecting the original.
@@ -32,9 +37,10 @@ type MCPProxyOpts struct {
 	ChainMatcher *chains.Matcher
 
 	// Session and adaptive enforcement
-	Store       session.Store
-	Rec         session.Recorder // set by RunProxy after Store.GetOrCreate
-	AdaptiveCfg *config.AdaptiveEnforcement
+	Store         session.Store
+	Rec           session.Recorder // set by RunProxy after Store.GetOrCreate
+	AdaptiveCfg   *config.AdaptiveEnforcement
+	AdaptiveCfgFn AdaptiveConfigFunc // hot-reload aware; used by listener proxy. Nil = use static AdaptiveCfg.
 
 	// Cross-request exfiltration detection
 	CEE *CEEDeps
@@ -46,9 +52,15 @@ type MCPProxyOpts struct {
 	// Redirect handler runtime config (nil-safe).
 	RedirectRT *RedirectRuntime
 
+	// Provenance verification for MCP tools (nil-safe).
+	ProvenanceCfg *config.MCPToolProvenance
+
 	// A2A protocol scanning (nil-safe).
 	A2ACfg       *config.A2AScanning
 	CardBaseline *CardBaseline
+
+	// Denial-of-wallet tracking (nil-safe).
+	DoWCheck DoWCheckFunc
 
 	// Policy capture observer for recording scan verdicts.
 	// Defaults to capture.NopObserver{} when nil.
@@ -57,6 +69,9 @@ type MCPProxyOpts struct {
 	// Transport identifies the MCP transport for capture records.
 	// Set to "mcp_stdio" for stdio proxy or "mcp_http" for HTTP proxy.
 	Transport string
+
+	// Pre-spawn binary integrity verification (nil-safe).
+	IntegrityCfg *config.MCPBinaryIntegrity
 
 	// File sentry (stdio proxy only)
 	Lineage      filesentry.Lineage

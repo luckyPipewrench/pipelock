@@ -106,6 +106,22 @@ func extractToolCallName(line []byte) string {
 	return req.Params.Name
 }
 
+// extractToolCallArgs extracts the raw arguments JSON from a tools/call
+// request for denial-of-wallet tracking. Returns empty string if not a
+// tools/call or if arguments are absent.
+func extractToolCallArgs(line []byte) string {
+	var req struct {
+		Method string `json:"method"`
+		Params struct {
+			Arguments json.RawMessage `json:"arguments"`
+		} `json:"params"`
+	}
+	if json.Unmarshal(line, &req) != nil || req.Method != methodToolsCall {
+		return ""
+	}
+	return string(req.Params.Arguments)
+}
+
 // ScanRequest parses a JSON-RPC 2.0 request and scans its params for
 // DLP patterns, injection patterns, and env secret leaks. Fail-closed
 // on parse errors (configurable via onParseError).
@@ -637,10 +653,43 @@ func ForwardScannedInput(
 			bindingReason = "session_binding:batch_request"
 		}
 
-		// Extract tool name once for both binding and chain detection.
+		// Extract tool name once for binding, chain detection, and DoW tracking.
 		var toolCallName string
 		if verdict.Method == methodToolsCall {
 			toolCallName = extractToolCallName(line)
+		}
+
+		// Denial-of-wallet: check tool call budget before forwarding.
+		if opts.DoWCheck != nil && verdict.Method == methodToolsCall && toolCallName != "" {
+			argsJSON := extractToolCallArgs(line)
+			allowed, dowAction, dowReason, dowBudgetType := opts.DoWCheck(toolCallName, argsJSON)
+			if !allowed {
+				logMsg := fmt.Sprintf("pipelock: input line %d: tools/call %q DoW %s: %s (%s)",
+					lineNum, toolCallName, dowAction, dowReason, dowBudgetType)
+				_, _ = fmt.Fprintln(logW, logMsg)
+				if dowAction == config.ActionBlock {
+					if auditLogger != nil {
+						auditLogger.LogBlocked("MCP", toolCallName, "denial_of_wallet", dowReason, "", "", "")
+					}
+					if m != nil {
+						m.RecordBlocked("mcp", "denial_of_wallet", 0, "")
+					}
+					recordAdaptiveSignal(session.SignalBlock)
+					blockedCh <- BlockedRequest{
+						ID:             verdict.ID,
+						IsNotification: isRPCNotification(verdict.ID),
+						LogMessage:     logMsg,
+						ErrorCode:      -32600,
+						ErrorMessage:   "pipelock: " + dowReason,
+					}
+					continue
+				}
+				// dow_action: warn — log and record near-miss, but forward the request.
+				if auditLogger != nil {
+					auditLogger.LogAnomaly("MCP", toolCallName, "denial_of_wallet", dowReason, "", "", "", 0)
+				}
+				recordAdaptiveSignal(session.SignalNearMiss)
+			}
 		}
 
 		if bindingCfg != nil && bindingCfg.Baseline != nil && verdict.Method == methodToolsCall {

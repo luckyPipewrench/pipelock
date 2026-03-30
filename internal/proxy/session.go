@@ -15,6 +15,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/proxy/baseline"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
@@ -50,6 +51,13 @@ type SessionState struct {
 	currentThreshold float64
 	lastEscalation   time.Time // when the current level was reached
 	atBlockAll       bool      // true when current level has block_all=true
+
+	// Behavioral baseline accumulation — collected per-session for
+	// baseline learning and deviation checking.
+	requestCount int
+	bytesTotal   int64
+	toolCalls    int
+	uniqueTools  map[string]struct{}
 }
 
 // IsResettable returns whether this session can be reset via the admin API.
@@ -81,6 +89,9 @@ func (s *SessionState) RecordRequest(domain string, cfg *config.SessionProfiling
 	if !s.atBlockAll {
 		s.lastActivity = now
 	}
+
+	// Accumulate baseline metrics.
+	s.requestCount++
 
 	var anomalies []Anomaly
 
@@ -285,8 +296,47 @@ func (s *SessionState) Reset() (prevScore float64, prevLevel int) {
 	s.domainWindows = nil
 	s.lastBurstAt = time.Time{}
 	s.lastActivity = time.Now()
+	s.requestCount = 0
+	s.bytesTotal = 0
+	s.toolCalls = 0
+	s.uniqueTools = nil
 
 	return prevScore, prevLevel
+}
+
+// RecordBytes adds to the session's cumulative byte count.
+// Called by transport handlers after completing a request.
+func (s *SessionState) RecordBytes(n int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.bytesTotal += n
+}
+
+// RecordToolCall increments the session's tool call counter and tracks
+// unique tool names. Called by MCP proxy when a tool invocation completes.
+func (s *SessionState) RecordToolCall(toolName string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.toolCalls++
+	if s.uniqueTools == nil {
+		s.uniqueTools = make(map[string]struct{})
+	}
+	s.uniqueTools[toolName] = struct{}{}
+}
+
+// BaselineMetrics returns a snapshot of the session's accumulated metrics
+// suitable for passing to baseline.Manager.RecordSession or Check.
+func (s *SessionState) BaselineMetrics() baseline.SessionMetrics {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return baseline.SessionMetrics{
+		ToolCalls:   s.toolCalls,
+		UniqueTools: len(s.uniqueTools),
+		Domains:     countUniqueDomains(s.domainWindows),
+		BytesTotal:  s.bytesTotal,
+		DurationSec: s.lastActivity.Sub(s.created).Seconds(),
+		Requests:    s.requestCount,
+	}
 }
 
 // Session key classification constants.
@@ -324,6 +374,13 @@ func classifySessionKey(key string) (kind, agent, clientIP string) {
 	return sessionKindIdentity, "", key
 }
 
+// BaselineResult holds the outcome of a behavioral baseline deviation check.
+type BaselineResult struct {
+	Blocked    bool                 // true when DeviationAction is "block" and deviations found
+	Deviations []baseline.Deviation // specific metrics that deviated
+	Action     string               // the configured action: "warn", "ask", or "block"
+}
+
 // SessionManager manages per-client sessions with eviction and cleanup.
 type SessionManager struct {
 	mu       sync.RWMutex
@@ -340,6 +397,11 @@ type SessionManager struct {
 	metrics        *metrics.Metrics // nil-safe; used for gauge/counter updates
 	done           chan struct{}
 	closed         sync.Once
+
+	// Behavioral baseline: profile-then-lock analysis.
+	// nil when behavioral_baseline.enabled is false.
+	baselineMgr    *baseline.Manager
+	baselineAction string // "warn", "ask", or "block" — cached from config
 }
 
 // NewSessionManager creates a session manager with background cleanup.
@@ -361,6 +423,83 @@ func NewSessionManager(cfg *config.SessionProfiling, adaptiveCfg *config.Adaptiv
 	return sm
 }
 
+// EnableBaseline initializes the behavioral baseline manager from config.
+// Must be called after NewSessionManager. No-op if cfg is nil or not enabled.
+// Returns an error if the baseline manager fails to initialize (e.g., bad
+// profile directory).
+func (sm *SessionManager) EnableBaseline(cfg *config.BehavioralBaseline) error {
+	if cfg == nil || !cfg.Enabled {
+		return nil
+	}
+	mgr, err := baseline.NewManager(baseline.Config{
+		Enabled:          cfg.Enabled,
+		LearningWindow:   cfg.LearningWindow,
+		DeviationAction:  cfg.DeviationAction,
+		ProfileDir:       cfg.ProfileDir,
+		AutoRatify:       cfg.AutoRatify,
+		SensitivitySigma: cfg.SensitivitySigma,
+		LockDimensions:   cfg.LockDimensions,
+		PoisonResistance: cfg.PoisonResistance,
+		SeasonalityMode:  cfg.SeasonalityMode,
+	})
+	if err != nil {
+		return fmt.Errorf("baseline init: %w", err)
+	}
+	sm.baselineMgr = mgr
+	sm.baselineAction = cfg.DeviationAction
+	return nil
+}
+
+// BaselineManager returns the baseline manager, or nil if not enabled.
+func (sm *SessionManager) BaselineManager() *baseline.Manager {
+	return sm.baselineMgr
+}
+
+// CheckBaseline evaluates the current session metrics against the agent's
+// locked behavioral profile. Returns nil result when baseline is disabled
+// or the agent has no locked profile yet (still learning).
+func (sm *SessionManager) CheckBaseline(agentKey string, sess *SessionState) *BaselineResult {
+	if sm.baselineMgr == nil {
+		return nil
+	}
+	metrics := sess.BaselineMetrics()
+	deviations := sm.baselineMgr.Check(agentKey, metrics)
+	if len(deviations) == 0 {
+		return nil
+	}
+	return &BaselineResult{
+		Blocked:    sm.baselineAction == config.ActionBlock,
+		Deviations: deviations,
+		Action:     sm.baselineAction,
+	}
+}
+
+// recordSessionBaseline records the session's accumulated metrics into the
+// baseline manager for learning. Called during session eviction/cleanup.
+func (sm *SessionManager) recordSessionBaseline(sess *SessionState) {
+	if sm.baselineMgr == nil {
+		return
+	}
+	// Extract agent key from session key. Only identity sessions produce
+	// meaningful baselines; invocation sessions are ephemeral.
+	sess.mu.Lock()
+	kind := sess.kind
+	key := sess.key
+	sess.mu.Unlock()
+
+	if kind != sessionKindIdentity {
+		return
+	}
+
+	_, agent, _ := classifySessionKey(key)
+	if agent == "" {
+		// Fall back to full key when no "|" separator exists.
+		agent = key
+	}
+	bm := sess.BaselineMetrics()
+	sm.baselineMgr.RecordSession(agent, bm)
+}
+
 // GetOrCreate returns the session for a key, creating if needed.
 // Evicts oldest idle session if at capacity.
 func (sm *SessionManager) GetOrCreate(key string) *SessionState {
@@ -374,17 +513,19 @@ func (sm *SessionManager) GetOrCreate(key string) *SessionState {
 
 	// Slow path: write lock
 	sm.mu.Lock()
-	defer sm.mu.Unlock()
 
 	// Double-check after acquiring write lock
 	if sess, ok := sm.sessions[key]; ok {
+		sm.mu.Unlock()
 		return sess
 	}
 
-	// Evict if at capacity
+	// Evict if at capacity. Capture the evicted session for baseline
+	// recording after the lock is released.
+	var evicted *SessionState
 	cfg := sm.cfgPtr.Load()
 	if len(sm.sessions) >= cfg.MaxSessions {
-		sm.evictOldest()
+		evicted = sm.evictOldest()
 	}
 
 	// Determine session kind from key format at creation time.
@@ -408,6 +549,13 @@ func (sm *SessionManager) GetOrCreate(key string) *SessionState {
 	if sm.metrics != nil {
 		sm.metrics.SetSessionsActive(float64(len(sm.sessions)))
 	}
+	sm.mu.Unlock()
+
+	// Record evicted session's baseline after releasing the map lock.
+	if evicted != nil {
+		sm.recordSessionBaseline(evicted)
+	}
+
 	return sess
 }
 
@@ -666,15 +814,17 @@ func (sm *SessionManager) cleanupLoop() {
 }
 
 // cleanup removes sessions idle beyond TTL and prunes stale IP domain entries.
+// Evicted sessions are recorded in the behavioral baseline (if enabled) after
+// the map lock is released to avoid holding sm.mu during baseline I/O.
 func (sm *SessionManager) cleanup() {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-
 	cfg := sm.cfgPtr.Load()
 	ttl := time.Duration(cfg.SessionTTLMinutes) * time.Minute
 	cutoff := time.Now().Add(-ttl)
 
-	evicted := 0
+	// Phase 1: identify and remove expired sessions under lock.
+	var evictedSessions []*SessionState
+
+	sm.mu.Lock()
 	for key, sess := range sm.sessions {
 		sess.mu.Lock()
 		idle := sess.lastActivity.Before(cutoff)
@@ -687,8 +837,8 @@ func (sm *SessionManager) cleanup() {
 					sm.metrics.SetAdaptiveSessionLevel(session.EscalationLabel(escLevel), -1)
 				}
 			}
+			evictedSessions = append(evictedSessions, sess)
 			delete(sm.sessions, key)
-			evicted++
 		}
 	}
 
@@ -709,11 +859,18 @@ func (sm *SessionManager) cleanup() {
 		}
 	}
 
+	evicted := len(evictedSessions)
 	if sm.metrics != nil {
 		for range evicted {
 			sm.metrics.RecordSessionEvicted()
 		}
 		sm.metrics.SetSessionsActive(float64(len(sm.sessions)))
+	}
+	sm.mu.Unlock()
+
+	// Phase 2: record evicted sessions in baseline (lock-free path).
+	for _, sess := range evictedSessions {
+		sm.recordSessionBaseline(sess)
 	}
 }
 
@@ -827,10 +984,13 @@ func (sm *SessionManager) AsStore() session.Store {
 }
 
 // evictOldest removes the session with the oldest lastActivity.
-// Must be called with sm.mu held for writing.
-func (sm *SessionManager) evictOldest() {
+// Must be called with sm.mu held for writing. Returns the evicted
+// session (if any) so the caller can record baseline metrics after
+// releasing the lock.
+func (sm *SessionManager) evictOldest() *SessionState {
 	var oldestKey string
 	var oldestTime time.Time
+	var oldestSess *SessionState
 
 	var oldestEscLevel int
 
@@ -844,6 +1004,7 @@ func (sm *SessionManager) evictOldest() {
 			oldestKey = key
 			oldestTime = la
 			oldestEscLevel = escLevel
+			oldestSess = sess
 		}
 	}
 
@@ -858,4 +1019,5 @@ func (sm *SessionManager) evictOldest() {
 			sm.metrics.RecordSessionEvicted()
 		}
 	}
+	return oldestSess
 }

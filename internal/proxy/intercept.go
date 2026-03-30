@@ -803,12 +803,16 @@ func newInterceptHandler(
 		if sc.ResponseScanningEnabled() && interceptRespExempt {
 			logger.LogResponseScanExempt(r.Method, r.URL.String(), r.URL.Hostname(), clientIP, requestID, agent)
 		}
-		if sc.ResponseScanningEnabled() && !interceptRespExempt {
+		if sc.ResponseScanningEnabled() {
 			scanResult := sc.ScanResponse(r.Context(), string(respBody))
 
 			// Capture observer: record intercept response scan verdict for policy replay.
+			// Apply exempt override before capture so the recorded action matches runtime.
 			if p != nil {
 				iRespAction := sc.ResponseAction()
+				if interceptRespExempt {
+					iRespAction = config.ActionWarn
+				}
 				if scanResult.Clean {
 					iRespAction = ""
 				}
@@ -840,9 +844,16 @@ func newInterceptHandler(
 			if !scanResult.Clean {
 				hasFinding = true
 				action := sc.ResponseAction()
+				// Exempt domains: pin to warn, skip adaptive scoring/upgrade.
+				if interceptRespExempt {
+					action = config.ActionWarn
+				}
 				// Adaptive enforcement: upgrade the response action before the switch.
+				// Exempt domains skip upgrade — operator's trust decision overrides escalation.
 				originalAction := action
-				action = decide.UpgradeAction(action, recEscalationLevel(rec), &cfg.AdaptiveEnforcement)
+				if !interceptRespExempt {
+					action = decide.UpgradeAction(action, recEscalationLevel(rec), &cfg.AdaptiveEnforcement)
+				}
 				if action != originalAction {
 					sessionKey := clientIP
 					if agent != "" && agent != agentAnonymous {
@@ -864,14 +875,17 @@ func newInterceptHandler(
 				case config.ActionBlock, config.ActionAsk:
 					// ActionAsk: no HITL terminal available inside intercepted tunnels,
 					// so fail-closed to block (consistent with HITL non-terminal default).
-					interceptRecordSignal(rec, session.SignalBlock, cfg, logger, m, p, clientIP, agent, requestID)
+					if !interceptRespExempt {
+						interceptRecordSignal(rec, session.SignalBlock, cfg, logger, m, p, clientIP, agent, requestID)
+					}
 					logger.LogBlocked(r.Method, r.URL.String(), "response_scan", reason, clientIP, requestID, agent)
 					m.RecordTLSResponseBlocked("injection")
 					http.Error(w, "blocked: response contains injection", http.StatusForbidden)
 					return
 				case config.ActionStrip:
 					// Record SignalStrip for adaptive enforcement scoring.
-					if sm != nil && cfg.AdaptiveEnforcement.Enabled {
+					// Exempt domains skip scoring — findings are logged but don't escalate.
+					if !interceptRespExempt && sm != nil && cfg.AdaptiveEnforcement.Enabled {
 						ceeSM := sm
 						if p != nil {
 							ceeSM = p.sessionMgrPtr.Load()

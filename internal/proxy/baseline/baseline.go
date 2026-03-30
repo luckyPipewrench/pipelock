@@ -196,8 +196,11 @@ func NewManager(cfg Config) (*Manager, error) {
 		agents: make(map[string]*agentState),
 	}
 
-	// Load persisted profiles if directory exists.
+	// Ensure profile directory exists, then load persisted profiles.
 	if cfg.ProfileDir != "" {
+		if err := os.MkdirAll(cfg.ProfileDir, 0o750); err != nil {
+			return nil, fmt.Errorf("creating profile dir: %w", err)
+		}
 		if err := m.loadProfiles(); err != nil {
 			return nil, fmt.Errorf("loading profiles: %w", err)
 		}

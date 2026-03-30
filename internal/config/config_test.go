@@ -4499,6 +4499,12 @@ func TestMatchesPath(t *testing.T) {
 			want:    true,
 		},
 		{
+			name:    "non-standard port not stripped from target",
+			target:  "https://api.example.com:8443/v1/messages",
+			pattern: "*.example.com/v1*",
+			want:    false,
+		},
+		{
 			name:    "URL exact match with scheme",
 			target:  "https://api.anthropic.com:443/v1/messages",
 			pattern: "https://api.anthropic.com/v1/messages",

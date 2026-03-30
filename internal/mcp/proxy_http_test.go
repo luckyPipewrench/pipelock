@@ -3647,10 +3647,6 @@ func TestScanHTTPInput_DoWBlockNotification(t *testing.T) {
 }
 
 func TestHTTPListener_DoWBlock(t *testing.T) {
-	if runtime.GOOS == osWindows {
-		t.Skip("skipping on Windows")
-	}
-
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"ok"}]}}`)

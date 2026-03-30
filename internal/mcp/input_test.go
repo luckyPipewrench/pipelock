@@ -3166,11 +3166,9 @@ func TestForwardScannedInput_DoWWarn(t *testing.T) {
 		t.Error("expected warn-mode DoW to forward the request")
 	}
 
-	// No blocked requests on the channel.
+	// Channel must be empty — warn mode never sends blocked requests.
 	for br := range blockedCh {
-		if len(br.ID) > 0 {
-			t.Errorf("unexpected blocked request in DoW warn mode: %+v", br)
-		}
+		t.Errorf("unexpected blocked request in DoW warn mode: %+v", br)
 	}
 
 	if !strings.Contains(logW.String(), "DoW") {

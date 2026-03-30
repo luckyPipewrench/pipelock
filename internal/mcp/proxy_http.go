@@ -239,8 +239,8 @@ func scanHTTPInput(msg []byte, logW io.Writer, sessionKey, auditSessionKey strin
 	} else {
 		verdict = InputVerdict{Clean: true}
 		// When input scanning is disabled, extract enough metadata from the
-		// raw message so policy and chain detection still work.
-		if policyCfg != nil || chainMatcher != nil {
+		// raw message so policy, chain detection, and DoW still work.
+		if policyCfg != nil || chainMatcher != nil || opts.DoWCheck != nil {
 			verdict.ID = extractRPCID(msg)
 			// Extract method for chain detection even when content scanning is off.
 			var env struct {

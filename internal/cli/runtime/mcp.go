@@ -440,19 +440,18 @@ Environment passthrough (subprocess mode only):
 				store = sm.AsStore()
 			}
 
-			// Denial-of-wallet tracker: reads from the resolved config's
-			// agent profile. Named agents go through edition resolution
-			// (gated by license). _default is always available (free tier).
-			// Never read named agents directly from cfg.Agents — that
-			// bypasses the license gate in OSS builds.
+			// Denial-of-wallet tracker: _default budget is free tier (always
+			// available). Named agent budgets are safe to read from cfg.Agents
+			// because EnforceLicenseGate (called during Load) already stripped
+			// named agents when the license is missing/invalid. In enterprise
+			// builds the gate preserves _default and removes the rest; in OSS
+			// builds the gate func is nil so only _default survives if no
+			// named agents are configured.
 			var dowCheck mcp.DoWCheckFunc
 			var dowBudget *config.BudgetConfig
 			if ap, ok := cfg.Agents["_default"]; ok {
 				dowBudget = &ap.Budget
 			}
-			// Named agent budget overrides _default when present.
-			// cfg.Agents only contains named agents if the license gate
-			// passed (enterprise) or was never installed (OSS with _default only).
 			if agentName != "" && agentName != "_default" {
 				if ap, ok := cfg.Agents[agentName]; ok {
 					dowBudget = &ap.Budget

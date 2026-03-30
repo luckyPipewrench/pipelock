@@ -249,6 +249,9 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				pv := VerifyToolsListProvenance(line, opts.ProvenanceCfg)
 				if pv.Block {
 					_, _ = fmt.Fprintf(logW, "pipelock: line %d: tools/list provenance verification failed: %s\n", lineNum, pv.Error)
+					if opts.AuditLogger != nil {
+						opts.AuditLogger.LogBlocked("MCP", "tools/list", "provenance", pv.Error, "", "", "")
+					}
 					if m != nil {
 						m.RecordBlocked("mcp", "provenance", 0, "")
 					}
@@ -265,6 +268,9 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				for _, r := range pv.Results {
 					if r.Status != provenance.StatusVerified {
 						_, _ = fmt.Fprintf(logW, "pipelock: line %d: tool %q unsigned (provenance warn)\n", lineNum, r.ToolName)
+						if opts.AuditLogger != nil {
+							opts.AuditLogger.LogAnomaly("MCP", r.ToolName, "provenance", "unsigned tool", "", "", "", 0)
+						}
 					}
 				}
 			}

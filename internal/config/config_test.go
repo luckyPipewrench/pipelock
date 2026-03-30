@@ -7726,7 +7726,12 @@ func TestLoad_ExplicitFalseOverridesDefaults(t *testing.T) {
 		"mcp_tool_provenance:\n" +
 		"  offline_only: false\n" +
 		"behavioral_baseline:\n" +
-		"  poison_resistance: false\n"
+		"  poison_resistance: false\n" +
+		"a2a_scanning:\n" +
+		"  scan_agent_cards: false\n" +
+		"  detect_card_drift: false\n" +
+		"  session_smuggling_detection: false\n" +
+		"  scan_raw_parts: false\n"
 	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -7751,6 +7756,10 @@ func TestLoad_ExplicitFalseOverridesDefaults(t *testing.T) {
 		{"FlightRecorder.SignCheckpoints", cfg.FlightRecorder.SignCheckpoints},
 		{"MCPToolProvenance.OfflineOnly", cfg.MCPToolProvenance.OfflineOnly},
 		{"BehavioralBaseline.PoisonResistance", cfg.BehavioralBaseline.PoisonResistance},
+		{"A2AScanning.ScanAgentCards", cfg.A2AScanning.ScanAgentCards},
+		{"A2AScanning.DetectCardDrift", cfg.A2AScanning.DetectCardDrift},
+		{"A2AScanning.SessionSmugglingDetection", cfg.A2AScanning.SessionSmugglingDetection},
+		{"A2AScanning.ScanRawParts", cfg.A2AScanning.ScanRawParts},
 	}
 
 	for _, c := range checks {

@@ -144,7 +144,7 @@ active exfiltration attempts.
 
 ## Scan API Metrics
 
-The Scan API (`/scan`) is an evaluation-plane endpoint for external
+The Scan API (`/v1/scan`) is an evaluation-plane endpoint for external
 integrations. Disabled by default; set `scan_api.listen` to enable.
 
 | Metric | Type | Labels | Description |

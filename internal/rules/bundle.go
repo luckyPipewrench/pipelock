@@ -324,6 +324,8 @@ func CheckMinPipelock(minVersion, currentVersion string) error {
 // parseSemver parses a semver string into major, minor, patch integers.
 // Pre-release suffixes (anything after the first "-") are stripped.
 func parseSemver(s string) (major, minor, patch int, err error) {
+	// Strip "v" prefix (e.g. "v2.1.0" → "2.1.0").
+	s = strings.TrimPrefix(s, "v")
 	// Strip pre-release suffix.
 	if idx := strings.IndexByte(s, '-'); idx >= 0 {
 		s = s[:idx]

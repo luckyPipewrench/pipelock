@@ -854,7 +854,9 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		defer wgBlocked.Done()
 		for blocked := range blockedCh {
 			if blocked.IsNotification {
-				// Notifications have no ID — silently drop (no error response).
+				// Notifications have no ID — silently drop (no error response per JSON-RPC spec).
+				// Log the block for audit trail — silent drops with zero logging aid attacker reconnaissance.
+				_, _ = fmt.Fprintf(safeLogW, "pipelock: blocked notification (no response sent): %s\n", blocked.LogMessage)
 				continue
 			}
 			var resp []byte

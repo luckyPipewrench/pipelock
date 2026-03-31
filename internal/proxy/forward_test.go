@@ -2785,3 +2785,138 @@ func TestSSRFSafeDialContext_DirectIPWithTrustedDomain(t *testing.T) {
 		t.Errorf("expected SSRF blocked error, got: %v", err)
 	}
 }
+
+// TestSSRFSafeDialContext_IPAllowlistBypassesSSRF verifies that IPs in
+// ssrf.ip_allowlist bypass the dial-level SSRF check.
+func TestSSRFSafeDialContext_IPAllowlistBypassesSSRF(t *testing.T) {
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(context.Background(), "tcp", ":0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	_, port, _ := net.SplitHostPort(ln.Addr().String())
+
+	cfg := config.Defaults()
+	cfg.Internal = []string{"127.0.0.0/8", "::1/128"}
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	defer p.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// localhost is internal but IP-allowlisted — dial should succeed.
+	conn, err := p.ssrfSafeDialContext(ctx, "tcp", "localhost:"+port)
+	if err != nil {
+		t.Fatalf("expected IP-allowlisted localhost to bypass SSRF, got: %v", err)
+	}
+	_ = conn.Close()
+}
+
+// TestSSRFSafeDialContext_IPAllowlistDirectIPBypass verifies that raw IP
+// addresses in ssrf.ip_allowlist are allowed through the dial-level check.
+func TestSSRFSafeDialContext_IPAllowlistDirectIPBypass(t *testing.T) {
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	_, port, _ := net.SplitHostPort(ln.Addr().String())
+
+	cfg := config.Defaults()
+	cfg.Internal = []string{"127.0.0.0/8"}
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.1/32"}
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	defer p.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// Direct IP that's in the IP allowlist — should succeed.
+	conn, err := p.ssrfSafeDialContext(ctx, "tcp", "127.0.0.1:"+port)
+	if err != nil {
+		t.Fatalf("expected IP-allowlisted direct IP to bypass SSRF, got: %v", err)
+	}
+	_ = conn.Close()
+}
+
+// TestSSRFSafeDialContext_IPAllowlistPartialRange verifies that only the
+// specific allowlisted range is exempt, not all internal IPs.
+func TestSSRFSafeDialContext_IPAllowlistPartialRange(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = []string{"127.0.0.0/8", "10.0.0.0/8"}
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.1/32"} // only loopback, not 10.x
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	defer p.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// 10.0.0.1 is internal and NOT in the IP allowlist — should be blocked.
+	_, err = p.ssrfSafeDialContext(ctx, "tcp", "10.0.0.1:443")
+	if err == nil {
+		t.Fatal("expected SSRF block for IP not in IP allowlist")
+	}
+	if !strings.Contains(err.Error(), "SSRF blocked") {
+		t.Errorf("expected SSRF blocked error, got: %v", err)
+	}
+}
+
+// TestSSRFSafeDialContext_MalysScenario_AllowlistAndTrusted is a regression test
+// for the scenario reported by malys (issue #299): domain in both api_allowlist
+// AND trusted_domains, resolving to internal IP, via CONNECT-style dial.
+// This should work correctly since v2.1.0 (PR #297 added trusted_domains to dial).
+func TestSSRFSafeDialContext_MalysScenario_AllowlistAndTrusted(t *testing.T) {
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(context.Background(), "tcp", ":0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	_, port, _ := net.SplitHostPort(ln.Addr().String())
+
+	cfg := config.Defaults()
+	cfg.Mode = config.ModeStrict
+	cfg.Internal = []string{"127.0.0.0/8", "::1/128"}
+	cfg.APIAllowlist = []string{"localhost"}
+	cfg.TrustedDomains = []string{"localhost"}
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	defer p.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// malys's scenario: domain in both allowlist and trusted_domains.
+	// Should connect successfully.
+	conn, err := p.ssrfSafeDialContext(ctx, "tcp", "localhost:"+port)
+	if err != nil {
+		t.Fatalf("malys regression: expected allowlisted+trusted domain to connect, got: %v", err)
+	}
+	_ = conn.Close()
+}

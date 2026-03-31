@@ -282,7 +282,11 @@ func scanHTTPInput(msg []byte, logW io.Writer, sessionKey, auditSessionKey strin
 				}
 				if a2aAction == config.ActionBlock {
 					_, _ = fmt.Fprintf(logW, "pipelock: a2a input: blocked (%s)\n", a2aResult.Reason)
-					recordAdaptiveSignal(session.SignalBlock)
+					if a2aResult.IsConfigMismatch() {
+						recordAdaptiveSignal(session.SignalNearMiss)
+					} else {
+						recordAdaptiveSignal(session.SignalBlock)
+					}
 					return &BlockedRequest{
 						ID:             verdict.ID,
 						IsNotification: isRPCNotification(verdict.ID),
@@ -997,7 +1001,11 @@ func RunHTTPListenerProxy(
 			if !headerResult.Clean {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: a2a header blocked: %s\n", headerResult.Reason)
 				if reqRec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
-					recordSignalWithEscalation(reqRec, session.SignalBlock, adaptiveCfg.EscalationThreshold, safeLogW, opts.AuditLogger, opts.Metrics, auditSessionKey, "", "")
+					if headerResult.IsConfigMismatch() {
+						recordSignalWithEscalation(reqRec, session.SignalNearMiss, adaptiveCfg.EscalationThreshold, safeLogW, opts.AuditLogger, opts.Metrics, auditSessionKey, "", "")
+					} else {
+						recordSignalWithEscalation(reqRec, session.SignalBlock, adaptiveCfg.EscalationThreshold, safeLogW, opts.AuditLogger, opts.Metrics, auditSessionKey, "", "")
+					}
 				}
 				w.Header().Set("Content-Type", "application/json")
 				rpcID := extractRPCID(body)

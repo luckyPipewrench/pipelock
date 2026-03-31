@@ -2947,6 +2947,124 @@ func TestProxy_AdaptiveEscalation(t *testing.T) {
 	}
 }
 
+// TestProxy_RecordSession_ConfigMismatchBoundedSignal verifies that SSRF blocks
+// classified as ClassConfigMismatch (domain in api_allowlist but not trusted_domains)
+// emit SignalNearMiss (bounded) instead of SignalBlock (full). This prevents the
+// death spiral from issue #299 while keeping visibility for SSRF reconnaissance.
+func TestProxy_RecordSession_ConfigMismatchBoundedSignal(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SessionProfiling.Enabled = true
+	cfg.SessionProfiling.AnomalyAction = config.ActionWarn
+	cfg.SessionProfiling.DomainBurst = 100
+	cfg.SessionProfiling.WindowMinutes = 5
+	cfg.SessionProfiling.VolumeSpikeRatio = 10.0
+	cfg.SessionProfiling.MaxSessions = 100
+	cfg.SessionProfiling.SessionTTLMinutes = 30
+	cfg.SessionProfiling.CleanupIntervalSeconds = 60
+	cfg.AdaptiveEnforcement.Enabled = true
+	cfg.AdaptiveEnforcement.EscalationThreshold = 10.0 // high threshold
+	cfg.AdaptiveEnforcement.DecayPerCleanRequest = 0.5
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+	m := metrics.New()
+	p, err := New(cfg, logger, sc, m)
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	defer p.Close()
+
+	const clientIP = "10.0.0.99"
+
+	// Simulate 2 config-mismatch SSRF blocks.
+	// SignalNearMiss = +1 each, so 2 blocks = score 2.0 (below threshold 10.0).
+	for range 2 {
+		result := scanner.Result{
+			Allowed: false,
+			Reason:  "SSRF blocked: litellm resolves to internal IP 192.168.1.3",
+			Scanner: scanner.ScannerSSRF,
+			Score:   1.0,
+			Class:   scanner.ClassConfigMismatch,
+		}
+		p.recordSessionActivity(clientIP, "", "litellm", "req-1", result, cfg, logger, false)
+	}
+
+	sess := p.sessionMgrPtr.Load().GetOrCreate(clientIP)
+	// Score should be non-zero (bounded signal), but below threshold.
+	if sess.ThreatScore() == 0 {
+		t.Error("expected non-zero score after config-mismatch blocks (bounded signal)")
+	}
+	if sess.IsEscalated() {
+		t.Error("session should NOT be escalated from 2 config-mismatch blocks with high threshold")
+	}
+
+	// Compare: a single real SSRF block (SignalBlock = +3) produces more score
+	// than two config-mismatch blocks (SignalNearMiss = +1 each = 2).
+	realResult := scanner.Result{
+		Allowed: false,
+		Reason:  "SSRF blocked: evil.internal resolves to internal IP 10.0.0.1",
+		Scanner: scanner.ScannerSSRF,
+		Score:   1.0,
+		Class:   scanner.ClassThreat,
+	}
+	scoreBefore := sess.ThreatScore()
+	p.recordSessionActivity(clientIP, "", "evil.internal", "req-2", realResult, cfg, logger, false)
+	scoreAfter := sess.ThreatScore()
+	increment := scoreAfter - scoreBefore
+	// SignalBlock adds +3, SignalNearMiss adds +1. The real block should
+	// produce a larger increment than each config-mismatch block did.
+	if increment <= 1.0 {
+		t.Errorf("expected real SSRF block to add more than NearMiss (+1), got increment %f", increment)
+	}
+}
+
+// TestProxy_RecordSession_RealSSRFStillEscalates verifies that genuine SSRF blocks
+// (ClassThreat, non-allowlisted domain) still feed adaptive escalation normally.
+func TestProxy_RecordSession_RealSSRFStillEscalates(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SessionProfiling.Enabled = true
+	cfg.SessionProfiling.AnomalyAction = config.ActionWarn
+	cfg.SessionProfiling.DomainBurst = 100
+	cfg.SessionProfiling.WindowMinutes = 5
+	cfg.SessionProfiling.VolumeSpikeRatio = 10.0
+	cfg.SessionProfiling.MaxSessions = 100
+	cfg.SessionProfiling.SessionTTLMinutes = 30
+	cfg.SessionProfiling.CleanupIntervalSeconds = 60
+	cfg.AdaptiveEnforcement.Enabled = true
+	cfg.AdaptiveEnforcement.EscalationThreshold = 3.0
+	cfg.AdaptiveEnforcement.DecayPerCleanRequest = 0.5
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+	m := metrics.New()
+	p, err := New(cfg, logger, sc, m)
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	defer p.Close()
+
+	const clientIP = "10.0.0.100"
+
+	// Genuine SSRF block (ClassThreat) — should escalate.
+	result := scanner.Result{
+		Allowed: false,
+		Reason:  "SSRF blocked: evil.internal resolves to internal IP 10.0.0.1",
+		Scanner: scanner.ScannerSSRF,
+		Score:   1.0,
+		Class:   scanner.ClassThreat,
+	}
+	p.recordSessionActivity(clientIP, "", "evil.internal", "req-1", result, cfg, logger, false)
+
+	sess := p.sessionMgrPtr.Load().GetOrCreate(clientIP)
+	if sess.ThreatScore() == 0 {
+		t.Error("expected non-zero score after genuine SSRF block")
+	}
+}
+
 func TestProxy_Close_SessionManager(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil

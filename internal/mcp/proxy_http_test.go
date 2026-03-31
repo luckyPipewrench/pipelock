@@ -1758,7 +1758,7 @@ func TestHTTPListener_MissingMethod(t *testing.T) {
 	}
 }
 
-func TestHTTPListener_BatchRequestPassthrough(t *testing.T) {
+func TestHTTPListener_BatchRequestRejected(t *testing.T) {
 	var serverCalled int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		atomic.AddInt32(&serverCalled, 1)
@@ -1770,8 +1770,9 @@ func TestHTTPListener_BatchRequestPassthrough(t *testing.T) {
 	sc := testScannerForHTTP(t)
 	baseURL, _, _ := startListenerProxy(t, upstream.URL, sc, nil, nil, nil)
 
-	// Valid JSON-RPC 2.0 batch request. Must not be rejected by structural
-	// validation (which only applies to single objects).
+	// JSON-RPC batch requests are rejected unconditionally. MCP does not
+	// use batches and the response path drops batch arrays, so forwarding
+	// a batch produces a response blackhole.
 	body := `[{"jsonrpc":"2.0","id":1,"method":"tools/list"},{"jsonrpc":"2.0","id":2,"method":"tools/list"}]`
 	resp, err := http.Post(baseURL+"/", "application/json", strings.NewReader(body)) //nolint:gosec,noctx // test
 	if err != nil {
@@ -1779,12 +1780,80 @@ func TestHTTPListener_BatchRequestPassthrough(t *testing.T) {
 	}
 	defer resp.Body.Close() //nolint:errcheck // test
 
-	if resp.StatusCode == http.StatusBadRequest {
-		respBody, _ := io.ReadAll(resp.Body)
-		t.Fatalf("batch request should not be rejected as invalid structure, got 400: %s", respBody)
+	respBody, _ := io.ReadAll(resp.Body)
+	var rpc struct {
+		Error struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
 	}
-	if atomic.LoadInt32(&serverCalled) != 1 {
-		t.Errorf("upstream should be called once for batch, got %d", atomic.LoadInt32(&serverCalled))
+	if err := json.Unmarshal(respBody, &rpc); err != nil {
+		t.Fatalf("unmarshal: %v (body: %s)", err, respBody)
+	}
+	if rpc.Error.Code != -32600 {
+		t.Errorf("expected error code -32600, got %d (body: %s)", rpc.Error.Code, respBody)
+	}
+	if atomic.LoadInt32(&serverCalled) != 0 {
+		t.Error("upstream must NOT be called for batch requests")
+	}
+}
+
+func TestHTTPListener_BatchToolsCallBypassRegression(t *testing.T) {
+	// Regression: a batch containing tools/call previously bypassed DoW,
+	// chain detection, and A2A checks because the aggregated verdict had
+	// no Method field. Verify the batch is rejected before reaching any
+	// per-call check.
+	var serverCalled int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&serverCalled, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+	}))
+	defer upstream.Close()
+
+	sc := testScannerForHTTP(t)
+
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			"batch with tools/call",
+			`[{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"exec","arguments":{"cmd":"id"}}}]`,
+		},
+		{
+			"batch with A2A method",
+			`[{"jsonrpc":"2.0","id":1,"method":"message/send","params":{"message":"hello"}}]`,
+		},
+		{
+			"mixed batch",
+			`[{"jsonrpc":"2.0","id":1,"method":"tools/list"},{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"exec"}}]`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			baseURL, _, _ := startListenerProxy(t, upstream.URL, sc, nil, nil, nil)
+			resp, err := http.Post(baseURL+"/", "application/json", strings.NewReader(tt.body)) //nolint:gosec,noctx // test
+			if err != nil {
+				t.Fatalf("POST: %v", err)
+			}
+			defer resp.Body.Close() //nolint:errcheck // test
+
+			respBody, _ := io.ReadAll(resp.Body)
+			var rpc struct {
+				Error struct{ Code int } `json:"error"`
+			}
+			if err := json.Unmarshal(respBody, &rpc); err != nil {
+				t.Fatalf("unmarshal: %v (body: %s)", err, respBody)
+			}
+			if rpc.Error.Code != -32600 {
+				t.Errorf("expected error code -32600, got %d (body: %s)", rpc.Error.Code, respBody)
+			}
+		})
+	}
+	if atomic.LoadInt32(&serverCalled) != 0 {
+		t.Error("upstream must NOT be called for any batch request")
 	}
 }
 
@@ -3109,11 +3178,8 @@ func TestScanHTTPInput_ChainBlockWithAuditLogger(t *testing.T) {
 }
 
 func TestScanHTTPInput_RedirectBatchBlocked(t *testing.T) {
-	// Exercises batch request with redirect action blocked
-	// because redirect doesn't support batch processing.
-	if runtime.GOOS == osWindows {
-		t.Skip("redirect test requires unix shell")
-	}
+	// Batches are now rejected unconditionally before reaching the
+	// redirect path. Verify the batch reject fires with -32600.
 	sc := testScannerForHTTP(t)
 
 	elem1 := makeRequest(1, methodToolsCall, map[string]interface{}{
@@ -3146,13 +3212,13 @@ func TestScanHTTPInput_RedirectBatchBlocked(t *testing.T) {
 	var logBuf bytes.Buffer
 	blocked := scanHTTPInput(batch, &logBuf, "sess", "sess", MCPProxyOpts{Scanner: sc, PolicyCfg: policyCfg})
 	if blocked == nil {
-		t.Fatal("expected batch redirect to be blocked")
+		t.Fatal("expected batch to be blocked")
 	}
-	if blocked.ErrorCode != -32002 {
-		t.Errorf("ErrorCode = %d, want -32002", blocked.ErrorCode)
+	if blocked.ErrorCode != -32600 {
+		t.Errorf("ErrorCode = %d, want -32600", blocked.ErrorCode)
 	}
-	if !strings.Contains(logBuf.String(), "redirect not supported for batches") {
-		t.Errorf("expected batch redirect log, got: %s", logBuf.String())
+	if !strings.Contains(logBuf.String(), "blocked batch request") {
+		t.Errorf("expected batch reject log, got: %s", logBuf.String())
 	}
 }
 

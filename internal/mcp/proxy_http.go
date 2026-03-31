@@ -231,6 +231,7 @@ func scanHTTPInput(msg []byte, logW io.Writer, sessionKey, auditSessionKey strin
 	// silently skipped because the aggregated verdict had no Method.
 	if trimmed := bytes.TrimSpace(msg); len(trimmed) > 0 && trimmed[0] == '[' {
 		_, _ = fmt.Fprintf(logW, "pipelock: input: blocked batch request (not supported by MCP)\n")
+		recordAdaptiveSignal(session.SignalBlock)
 		return &BlockedRequest{
 			ID:           extractRPCID(msg),
 			ErrorCode:    -32600,

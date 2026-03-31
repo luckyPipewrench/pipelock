@@ -638,6 +638,7 @@ func ForwardScannedInput(
 		trimmedLine := bytes.TrimSpace(line)
 		if len(trimmedLine) > 0 && trimmedLine[0] == '[' {
 			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked batch request (not supported by MCP)\n", lineNum)
+			recordAdaptiveSignal(session.SignalBlock)
 			blockedCh <- BlockedRequest{
 				ID:           extractRPCID(line),
 				ErrorCode:    -32600,

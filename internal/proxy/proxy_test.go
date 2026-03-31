@@ -3020,6 +3020,54 @@ func TestProxy_RecordSession_ConfigMismatchBoundedSignal(t *testing.T) {
 	}
 }
 
+// TestProxy_RecordSession_ConfigMismatchEscalatesEventually verifies that enough
+// config-mismatch blocks (NearMiss) do eventually escalate the session, proving
+// the bounded signal path is wired end-to-end including SetBlockAll.
+func TestProxy_RecordSession_ConfigMismatchEscalatesEventually(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SessionProfiling.Enabled = true
+	cfg.SessionProfiling.AnomalyAction = config.ActionWarn
+	cfg.SessionProfiling.DomainBurst = 100
+	cfg.SessionProfiling.WindowMinutes = 5
+	cfg.SessionProfiling.VolumeSpikeRatio = 10.0
+	cfg.SessionProfiling.MaxSessions = 100
+	cfg.SessionProfiling.SessionTTLMinutes = 30
+	cfg.SessionProfiling.CleanupIntervalSeconds = 60
+	cfg.AdaptiveEnforcement.Enabled = true
+	cfg.AdaptiveEnforcement.EscalationThreshold = 3.0  // low threshold
+	cfg.AdaptiveEnforcement.DecayPerCleanRequest = 0.0 // no decay
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+	m := metrics.New()
+	p, err := New(cfg, logger, sc, m)
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	defer p.Close()
+
+	const clientIP = "10.0.0.101"
+
+	// NearMiss = +1 each. Need 3+ to exceed threshold of 3.0.
+	for range 4 {
+		result := scanner.Result{
+			Allowed: false,
+			Reason:  "SSRF blocked: litellm resolves to internal IP 192.168.1.3",
+			Scanner: scanner.ScannerSSRF,
+			Score:   1.0,
+			Class:   scanner.ClassConfigMismatch,
+		}
+		p.recordSessionActivity(clientIP, "", "litellm", "req-1", result, cfg, logger, false)
+	}
+
+	sess := p.sessionMgrPtr.Load().GetOrCreate(clientIP)
+	if !sess.IsEscalated() {
+		t.Errorf("expected session to escalate after 4 NearMiss signals (score=%f, threshold=3.0)", sess.ThreatScore())
+	}
+}
+
 // TestProxy_RecordSession_RealSSRFStillEscalates verifies that genuine SSRF blocks
 // (ClassThreat, non-allowlisted domain) still feed adaptive escalation normally.
 func TestProxy_RecordSession_RealSSRFStillEscalates(t *testing.T) {

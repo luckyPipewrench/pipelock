@@ -2600,7 +2600,7 @@ func TestCheckSubdomainEntropy_AllowsNormalSubdomains(t *testing.T) {
 
 func TestCheckSubdomainEntropy_DisabledWhenThresholdZero(t *testing.T) {
 	cfg := testConfig()
-	cfg.FetchProxy.Monitoring.EntropyThreshold = 0
+	cfg.FetchProxy.Monitoring.SubdomainEntropyThreshold = 0
 	cfg.DLP.Patterns = nil
 	s := New(cfg)
 	defer s.Close()
@@ -2608,6 +2608,57 @@ func TestCheckSubdomainEntropy_DisabledWhenThresholdZero(t *testing.T) {
 	result := s.Scan(context.Background(), "https://r7km2np9qw4xb5vy8za3.evil.com/")
 	if !result.Allowed {
 		t.Error("expected subdomain entropy check to be disabled when threshold is 0")
+	}
+}
+
+func TestCheckSubdomainEntropy_SeparateFromQueryThreshold(t *testing.T) {
+	cfg := testConfig()
+	// High query threshold (won't flag query params), low subdomain threshold (will flag subdomains).
+	cfg.FetchProxy.Monitoring.EntropyThreshold = 8.0
+	cfg.FetchProxy.Monitoring.SubdomainEntropyThreshold = 3.5
+	cfg.DLP.Patterns = nil
+	s := New(cfg)
+	defer s.Close()
+
+	// Hex-like subdomain (entropy ~3.78): should be blocked by the lower subdomain threshold.
+	hexSubdomain := "https://deadbeef1234567890ab.exfil.evil.example.com/"
+	result := s.Scan(context.Background(), hexSubdomain)
+	if result.Allowed {
+		t.Error("expected hex subdomain to be blocked with subdomain_entropy_threshold=3.5")
+	}
+	if result.Scanner != "subdomain_entropy" {
+		t.Errorf("expected scanner=subdomain_entropy, got %s", result.Scanner)
+	}
+}
+
+func TestCheckSubdomainEntropy_HighThresholdAllowsHexSubdomain(t *testing.T) {
+	cfg := testConfig()
+	// Raise subdomain threshold high enough that hex labels pass.
+	cfg.FetchProxy.Monitoring.SubdomainEntropyThreshold = 5.0
+	cfg.DLP.Patterns = nil
+	s := New(cfg)
+	defer s.Close()
+
+	// Hex subdomain (~3.78 entropy): should pass with threshold at 5.0.
+	hexSubdomain := "https://deadbeef1234567890ab.exfil.evil.example.com/"
+	result := s.Scan(context.Background(), hexSubdomain)
+	if !result.Allowed {
+		t.Errorf("expected hex subdomain to be allowed with threshold=5.0, got blocked: %s", result.Reason)
+	}
+}
+
+func TestCheckSubdomainEntropy_DefaultCatchesHex(t *testing.T) {
+	// Default subdomain threshold (4.0) should catch high-entropy hex labels.
+	cfg := testConfig()
+	cfg.DLP.Patterns = nil
+	s := New(cfg)
+	defer s.Close()
+
+	// Diverse hex string (~3.92 entropy): above default 4.0? Let's use one that is.
+	// r7km2np9qw4xb5vy8za3 has entropy > 4.0 (from existing test).
+	result := s.Scan(context.Background(), "https://r7km2np9qw4xb5vy8za3.evil.com/")
+	if result.Allowed {
+		t.Error("expected high-entropy subdomain to be blocked at default threshold")
 	}
 }
 

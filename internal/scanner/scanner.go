@@ -90,6 +90,7 @@ type Scanner struct {
 	canaryTokens               []compiledCanaryToken
 	dlpPreFilter               *dlpPreFilter
 	entropyThreshold           float64
+	subdomainEntropyThreshold  float64
 	entropyMinLen              int
 	maxURLLength               int
 	internalCIDRs              []*net.IPNet
@@ -158,12 +159,13 @@ func New(cfg *config.Config) *Scanner {
 	}
 
 	s := &Scanner{
-		allowlist:           allowlist,
-		blocklist:           cfg.FetchProxy.Monitoring.Blocklist,
-		entropyThreshold:    cfg.FetchProxy.Monitoring.EntropyThreshold,
-		entropyMinLen:       20,
-		maxURLLength:        cfg.FetchProxy.Monitoring.MaxURLLength,
-		subdomainExclusions: cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions,
+		allowlist:                 allowlist,
+		blocklist:                 cfg.FetchProxy.Monitoring.Blocklist,
+		entropyThreshold:          cfg.FetchProxy.Monitoring.EntropyThreshold,
+		subdomainEntropyThreshold: cfg.FetchProxy.Monitoring.SubdomainEntropyThreshold,
+		entropyMinLen:             20,
+		maxURLLength:              cfg.FetchProxy.Monitoring.MaxURLLength,
+		subdomainExclusions:       cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions,
 	}
 
 	// Initialize rate limiter if enabled
@@ -1761,10 +1763,6 @@ func (s *Scanner) checkDataBudget(hostname string) Result {
 	return Result{Allowed: true}
 }
 
-// subdomainEntropyThreshold is the Shannon entropy threshold for flagging
-// suspicious subdomain labels. Base64-encoded data typically has entropy > 4.0.
-const subdomainEntropyThreshold = 4.0
-
 // subdomainMinLabelLen is the minimum subdomain label length to check.
 // Short labels (www, api, cdn) are normal and should not be flagged.
 const subdomainMinLabelLen = 8
@@ -1774,8 +1772,11 @@ const subdomainMinLabelLen = 8
 // Only checks hostnames with 3+ labels (at least one subdomain beyond base domain).
 // Excludes domains listed in subdomainExclusions (e.g., RunPod, cloud services
 // that use high-entropy subdomains for legitimate purposes).
+// Uses a separate threshold from query parameter entropy because subdomains
+// have different baseline entropy — hex labels at 3.5-4.0 are suspicious
+// in subdomains but common in query parameters.
 func (s *Scanner) checkSubdomainEntropy(hostname string) Result {
-	if s.entropyThreshold <= 0 {
+	if s.subdomainEntropyThreshold <= 0 {
 		return Result{Allowed: true}
 	}
 
@@ -1800,10 +1801,10 @@ func (s *Scanner) checkSubdomainEntropy(hostname string) Result {
 			continue
 		}
 		entropy := ShannonEntropy(label)
-		if entropy > subdomainEntropyThreshold {
+		if entropy > s.subdomainEntropyThreshold {
 			return Result{
 				Allowed: false,
-				Reason:  fmt.Sprintf("high entropy subdomain label %q (%.2f bits)", label, entropy),
+				Reason:  fmt.Sprintf("high entropy subdomain label %q (%.2f > %.2f threshold)", label, entropy, s.subdomainEntropyThreshold),
 				Scanner: ScannerSubdomainEntropy,
 				Score:   math.Min(entropy/8.0, 1.0),
 			}

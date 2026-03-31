@@ -637,6 +637,12 @@ func TestScan_SSRFIPAllowlist_PartialCIDR(t *testing.T) {
 	if !result.Allowed {
 		t.Errorf("expected 127.0.0.1 to pass with IP allowlist 127.0.0.1/32, got: %s", result.Reason)
 	}
+
+	// 10.x is internal but NOT in IP allowlist — still blocked.
+	// Can't test via Scan() (requires DNS), so verify via IsIPAllowlisted directly.
+	if s.IsIPAllowlisted(net.ParseIP("10.0.0.1")) {
+		t.Error("expected 10.0.0.1 to NOT be IP-allowlisted (only 127.0.0.1/32 is)")
+	}
 }
 
 func TestScan_SSRFIPAllowlist_DLPStillApplies(t *testing.T) {

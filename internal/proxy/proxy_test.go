@@ -3063,6 +3063,10 @@ func TestProxy_RecordSession_RealSSRFStillEscalates(t *testing.T) {
 	if sess.ThreatScore() == 0 {
 		t.Error("expected non-zero score after genuine SSRF block")
 	}
+	// SignalBlock (+3) meets threshold (3.0) — session should be escalated.
+	if !sess.IsEscalated() {
+		t.Error("expected session to be escalated after genuine SSRF block (SignalBlock >= threshold)")
+	}
 }
 
 func TestProxy_Close_SessionManager(t *testing.T) {

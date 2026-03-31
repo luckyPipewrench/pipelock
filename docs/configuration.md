@@ -1043,6 +1043,8 @@ ssrf:
 
 **Complementary to `trusted_domains`:** `trusted_domains` is hostname-based trust (the domain resolves to a private IP, but you trust the domain). `ssrf.ip_allowlist` is IP-based trust (you trust the IP range regardless of which domain resolves to it). Either one exempts from SSRF blocking.
 
+**Validation:** Entries must be canonical CIDRs (network address, not host address). `10.0.0.5/24` is rejected because the host bits are set (use `10.0.0.0/24` instead). Catch-all prefixes (`0.0.0.0/0`, `::/0`) are rejected because they would disable SSRF protection entirely.
+
 ## Presets
 
 Seven starter configs in `configs/`:

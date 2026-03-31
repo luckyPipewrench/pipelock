@@ -1385,6 +1385,26 @@ func TestValidateReload_SSRFIPAllowlist_NewRangeWarns(t *testing.T) {
 	}
 }
 
+func TestSSRFIPAllowlistExpanded_MalformedCIDR(t *testing.T) {
+	// Malformed entries in the updated list should still produce warnings
+	// (fail-open for warnings — config validation catches them separately).
+	expanded := ssrfIPAllowlistExpanded(nil, []string{"not-a-cidr"})
+	if len(expanded) != 1 || expanded[0] != "not-a-cidr" {
+		t.Errorf("malformed CIDR should appear in expanded list, got: %v", expanded)
+	}
+}
+
+func TestSSRFIPAllowlistExpanded_CrossFamily(t *testing.T) {
+	// IPv4 old range should not cover an IPv6 new range (different address family).
+	expanded := ssrfIPAllowlistExpanded(
+		[]string{"10.0.0.0/8"},
+		[]string{"fc00::/7"},
+	)
+	if len(expanded) != 1 {
+		t.Errorf("IPv6 CIDR should not be covered by IPv4 range, got expanded=%v", expanded)
+	}
+}
+
 func TestLoad_PresetYAMLFiles(t *testing.T) {
 	// Find the project root configs/ directory
 	// Tests run from the package dir, so go up two levels

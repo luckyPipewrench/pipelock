@@ -333,6 +333,109 @@ func TestScan_BlocksSSRF_Multicast(t *testing.T) {
 	}
 }
 
+func TestParseAlternativeIP(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		expect string // empty = nil
+	}{
+		// Hex full address
+		{"hex loopback", "0x7f000001", "127.0.0.1"},
+		{"hex loopback upper", "0X7F000001", "127.0.0.1"},
+		{"hex private 10.0.0.1", "0x0a000001", "10.0.0.1"},
+		{"hex 192.168.0.1", "0xc0a80001", "192.168.0.1"},
+		{"hex 169.254.169.254", "0xa9fea9fe", "169.254.169.254"},
+
+		// Octal dotted
+		{"octal loopback", "0177.0.0.1", "127.0.0.1"},
+		{"octal 10.0.0.1", "012.0.0.1", "10.0.0.1"},
+		{"octal 192.168.1.1", "0300.0250.01.01", "192.168.1.1"},
+
+		// Hex dotted
+		{"hex dotted loopback", "0x7f.0.0.1", "127.0.0.1"},
+		{"hex dotted 10.10.0.1", "0x0a.0x0a.0.1", "10.10.0.1"},
+
+		// Decimal integer
+		{"decimal loopback", "2130706433", "127.0.0.1"},
+		{"decimal 10.0.0.1", "167772161", "10.0.0.1"},
+
+		// Octal full integer
+		{"octal full loopback", "017700000001", "127.0.0.1"},
+
+		// Non-IP inputs → nil
+		{"standard decimal dotted", "127.0.0.1", ""},
+		{"hostname", "example.com", ""},
+		{"empty", "", ""},
+		{"too many octets", "0x7f.0.0.0.1", ""},
+		{"too few octets", "0x7f.0.1", ""},
+		{"octet overflow", "0x7f.0.0.256", ""},
+		{"negative", "-1", ""},
+		{"overflow 32bit", "4294967296", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ip := parseAlternativeIP(tt.input)
+			if tt.expect == "" {
+				if ip != nil {
+					t.Errorf("expected nil for %q, got %s", tt.input, ip)
+				}
+				return
+			}
+			if ip == nil {
+				t.Fatalf("expected %s for %q, got nil", tt.expect, tt.input)
+			}
+			if ip.String() != tt.expect {
+				t.Errorf("expected %s for %q, got %s", tt.expect, tt.input, ip)
+			}
+		})
+	}
+}
+
+func TestScan_BlocksSSRF_HexOctalIP(t *testing.T) {
+	cfg := testConfig()
+	cfg.Internal = []string{"127.0.0.0/8", "10.0.0.0/8", "169.254.0.0/16", "192.168.0.0/16"}
+	s := New(cfg)
+
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{"hex full loopback", "http://0x7f000001/admin"},
+		{"hex upper loopback", "http://0X7F000001/admin"},
+		{"octal loopback", "http://0177.0.0.1/admin"},
+		{"decimal integer loopback", "http://2130706433/admin"},
+		{"hex dotted loopback", "http://0x7f.0.0.1/admin"},
+		{"hex metadata endpoint", "http://0xa9fea9fe/latest/meta-data/"},
+		{"octal 10.x private", "http://012.0.0.1/"},
+		{"hex 192.168", "http://0xc0a80001/"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := s.Scan(context.Background(), tt.url)
+			if result.Allowed {
+				t.Errorf("expected %s to be blocked (SSRF hex/octal bypass)", tt.url)
+			}
+			if result.Scanner != ScannerSSRF {
+				t.Errorf("expected scanner=ssrf for %s, got %s", tt.url, result.Scanner)
+			}
+		})
+	}
+}
+
+func TestScan_AllowsHexOctalIP_WhenExternal(t *testing.T) {
+	cfg := testConfig()
+	cfg.Internal = []string{"127.0.0.0/8", "10.0.0.0/8"}
+	s := New(cfg)
+
+	// 8.8.8.8 in hex = 0x08080808 — should be allowed (not internal).
+	result := s.Scan(context.Background(), "http://0x08080808/")
+	if !result.Allowed {
+		t.Errorf("expected external hex IP to be allowed, got blocked: %s", result.Reason)
+	}
+}
+
 func TestScan_EntropySkipsShortSegments(t *testing.T) {
 	s := New(testConfig())
 

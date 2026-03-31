@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -564,6 +565,57 @@ func (s *Scanner) scan(ctx context.Context, rawURL string) Result {
 	return Result{Allowed: true, Scanner: ScannerAll, Score: 0.0}
 }
 
+// parseAlternativeIP decodes non-standard IP address notations that
+// net.ParseIP does not handle: hex (0x7f000001), octal (0177.0.0.1),
+// decimal integer (2130706433), and mixed-radix dotted notation.
+// Attackers use these to bypass SSRF checks that only recognize
+// standard dotted-decimal. Returns nil if the hostname is not an
+// alternative IP notation.
+func parseAlternativeIP(hostname string) net.IP {
+	hostname = strings.TrimSpace(hostname)
+	if hostname == "" {
+		return nil
+	}
+
+	// Dotted notation with possible hex/octal octets (e.g., 0177.0.0.1, 0x7f.0.0.1).
+	if strings.Contains(hostname, ".") {
+		parts := strings.Split(hostname, ".")
+		if len(parts) != 4 {
+			return nil
+		}
+		octets := make([]byte, 4)
+		for i, part := range parts {
+			val, err := strconv.ParseUint(part, 0, 16) // base 0: auto-detect hex/octal/decimal; 16 bits max per octet
+			if err != nil || val > 255 {
+				return nil
+			}
+			octets[i] = byte(val)
+		}
+		// Only return if at least one octet used non-standard notation.
+		// Standard dotted-decimal is already handled by net.ParseIP.
+		hasNonStandard := false
+		for _, part := range parts {
+			if strings.HasPrefix(part, "0x") || strings.HasPrefix(part, "0X") ||
+				(len(part) > 1 && part[0] == '0' && part != "0") {
+				hasNonStandard = true
+				break
+			}
+		}
+		if !hasNonStandard {
+			return nil
+		}
+		return net.IPv4(octets[0], octets[1], octets[2], octets[3])
+	}
+
+	// Single integer notation: hex (0x7f000001), octal (017700000001),
+	// or decimal (2130706433). Represents the full 32-bit IPv4 address.
+	val, err := strconv.ParseUint(hostname, 0, 32) // base 0: auto-detect; 32 bits for full IPv4
+	if err != nil {
+		return nil
+	}
+	return net.IPv4(byte(val>>24), byte(val>>16&0xFF), byte(val>>8&0xFF), byte(val&0xFF))
+}
+
 // checkSSRF blocks requests to internal/private IP ranges.
 // When no internal CIDRs are configured (nil slice), SSRF protection is disabled.
 // To block loopback, link-local, etc., include those CIDRs in config.Internal.
@@ -579,6 +631,28 @@ func (s *Scanner) checkSSRF(ctx context.Context, hostname string) Result {
 		}
 	}
 	if len(s.internalCIDRs) == 0 {
+		return Result{Allowed: true}
+	}
+
+	// Decode non-standard IP notations (hex, octal, decimal integer) BEFORE
+	// DNS resolution. Attackers use 0x7f000001, 0177.0.0.1, or 2130706433
+	// to reach 127.0.0.1 without net.ParseIP recognizing it. If the hostname
+	// decodes to a valid IP, check CIDRs directly and skip DNS.
+	if altIP := parseAlternativeIP(hostname); altIP != nil {
+		if v4 := altIP.To4(); v4 != nil {
+			altIP = v4
+		}
+		for _, cidr := range s.internalCIDRs {
+			if cidr.Contains(altIP) {
+				return Result{
+					Allowed: false,
+					Reason:  fmt.Sprintf("SSRF blocked: %s decodes to internal IP %s", hostname, altIP),
+					Scanner: ScannerSSRF,
+					Score:   1.0,
+				}
+			}
+		}
+		// Non-standard IP that doesn't match internal CIDRs — allow.
 		return Result{Allowed: true}
 	}
 

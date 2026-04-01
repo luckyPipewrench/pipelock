@@ -1022,7 +1022,28 @@ trusted_domains:
 
 **Important:** This is a **top-level** config field, not nested under `forward_proxy`. Placing it under `forward_proxy` will silently do nothing. DLP and other content scanning still runs on trusted domains -- only the SSRF IP check is bypassed.
 
+**Strict mode:** `trusted_domains` does not override `api_allowlist`. In strict mode, a domain must be in **both** `api_allowlist` (to be reachable) and `trusted_domains` (to resolve to internal IPs). If a domain is only in `api_allowlist` and resolves internally, pipelock blocks it with a hint to add it to `trusted_domains`.
+
 Per-agent `trusted_domains` overrides are available in agent profiles (Pro license).
+
+### SSRF IP Allowlist
+
+Exempt specific IP ranges from SSRF blocking. Use this when your internal services resolve to known IP ranges and you want to allow connections by IP rather than by hostname.
+
+```yaml
+ssrf:
+  ip_allowlist:
+    - "192.168.1.0/24"
+    - "10.0.0.5/32"
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `ssrf.ip_allowlist` | `[]` | CIDR ranges exempt from SSRF blocking. IPs in these ranges are still "internal" but explicitly trusted. |
+
+**Complementary to `trusted_domains`:** `trusted_domains` is hostname-based trust (the domain resolves to a private IP, but you trust the domain). `ssrf.ip_allowlist` is IP-based trust (you trust the IP range regardless of which domain resolves to it). Either one exempts from SSRF blocking.
+
+**Validation:** Entries must be canonical CIDRs (network address, not host address). `10.0.0.5/24` is rejected because the host bits are set (use `10.0.0.0/24` instead). Catch-all prefixes (`0.0.0.0/0`, `::/0`) are rejected because they would disable SSRF protection entirely.
 
 ## Presets
 

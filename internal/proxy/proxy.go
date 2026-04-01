@@ -683,6 +683,14 @@ func (p *Proxy) recordSessionActivity(clientIP, agent, hostname, requestID strin
 		if result.IsProtective() {
 			// Score-neutral: no escalation signal, no clean decay.
 			// A rate-limited request proves nothing about threat posture.
+		} else if result.IsConfigMismatch() {
+			// Bounded signal: config-mismatch blocks (SSRF on an
+			// allowlisted domain) are not real attacks, but repeated
+			// probing should still accumulate a weak signal so the
+			// session isn't completely invisible to adaptive scoring.
+			if decide.RecordEscalation(sess, session.SignalNearMiss, ep) {
+				sess.SetBlockAll(decide.UpgradeAction("", sess.EscalationLevel(), &adaptiveCfg) == config.ActionBlock)
+			}
 		} else if !result.Allowed {
 			if decide.RecordEscalation(sess, session.SignalBlock, ep) {
 				// Update block_all flag so RecordRequest stops refreshing lastActivity.
@@ -734,7 +742,7 @@ func (p *Proxy) ssrfSafeDialContext(ctx context.Context, network, addr string) (
 		if v4 := ip.To4(); v4 != nil {
 			ip = v4
 		}
-		if currentSc := p.scannerPtr.Load(); currentSc.IsInternalIP(ip) {
+		if currentSc := p.scannerPtr.Load(); currentSc.IsInternalIP(ip) && !currentSc.IsIPAllowlisted(ip) {
 			return nil, fmt.Errorf("SSRF blocked: connection to internal IP %s", host)
 		}
 		return p.dialer.DialContext(ctx, network, addr)
@@ -762,10 +770,10 @@ func (p *Proxy) ssrfSafeDialContext(ctx context.Context, network, addr string) (
 			ip = v4
 		}
 		if currentSc.IsInternalIP(ip) {
-			if isTrusted {
-				// Trusted domain resolves to internal IP — allow with
-				// advisory note. The scanner-level checkSSRF handles
-				// the authoritative allow/deny decision and logging.
+			if isTrusted || currentSc.IsIPAllowlisted(ip) {
+				// Trusted domain or IP-allowlisted address — allow.
+				// The scanner-level checkSSRF handles the authoritative
+				// allow/deny decision and logging.
 				continue
 			}
 			return nil, fmt.Errorf("SSRF blocked: %s resolves to internal IP %s", host, ipStr)

@@ -468,7 +468,7 @@ func TestScan_BlocklistBlocksAltIPNotation(t *testing.T) {
 func TestScan_AllowlistWithAltIPNotation(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = nil
-	cfg.Mode = "strict"
+	cfg.Mode = config.ModeStrict
 	cfg.APIAllowlist = []string{"10.0.0.1"}
 	s := New(cfg)
 
@@ -2615,7 +2615,7 @@ func TestCheckSubdomainEntropy_BlocksHighEntropyLabels(t *testing.T) {
 			if result.Allowed {
 				t.Errorf("expected high-entropy subdomain to be blocked: %s", tt.url)
 			}
-			if result.Scanner != "subdomain_entropy" {
+			if result.Scanner != ScannerSubdomainEntropy {
 				t.Errorf("expected scanner=subdomain_entropy, got %s (reason: %s)", result.Scanner, result.Reason)
 			}
 		})
@@ -2682,7 +2682,7 @@ func TestCheckSubdomainEntropy_SeparateFromQueryThreshold(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected hex subdomain to be blocked with subdomain_entropy_threshold=3.5")
 	}
-	if result.Scanner != "subdomain_entropy" {
+	if result.Scanner != ScannerSubdomainEntropy {
 		t.Errorf("expected scanner=subdomain_entropy, got %s", result.Scanner)
 	}
 }

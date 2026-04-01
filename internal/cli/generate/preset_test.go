@@ -20,6 +20,9 @@ func TestStrictPreset(t *testing.T) {
 	if cfg.FetchProxy.Monitoring.EntropyThreshold == 0 {
 		t.Error("expected non-zero entropy threshold in strict preset")
 	}
+	if cfg.FetchProxy.Monitoring.SubdomainEntropyThreshold != 3.5 {
+		t.Errorf("SubdomainEntropyThreshold = %v, want 3.5", cfg.FetchProxy.Monitoring.SubdomainEntropyThreshold)
+	}
 }
 
 func TestAuditPreset(t *testing.T) {

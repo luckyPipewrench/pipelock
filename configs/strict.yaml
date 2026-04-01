@@ -31,6 +31,7 @@ fetch_proxy:
     #   base64: ~4.0-4.5 | random/encrypted: ~5.5-8.0
     # 3.5 catches base64-encoded secrets and hex strings (more false positives).
     entropy_threshold: 3.5
+    subdomain_entropy_threshold: 3.5  # match main threshold in strict mode
     max_requests_per_minute: 30
     blocklist:
       - "*.pastebin.com"

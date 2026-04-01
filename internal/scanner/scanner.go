@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -99,6 +100,7 @@ type Scanner struct {
 	canaryTokens               []compiledCanaryToken
 	dlpPreFilter               *dlpPreFilter
 	entropyThreshold           float64
+	subdomainEntropyThreshold  float64
 	entropyMinLen              int
 	maxURLLength               int
 	internalCIDRs              []*net.IPNet
@@ -169,12 +171,13 @@ func New(cfg *config.Config) *Scanner {
 	}
 
 	s := &Scanner{
-		allowlist:           allowlist,
-		blocklist:           cfg.FetchProxy.Monitoring.Blocklist,
-		entropyThreshold:    cfg.FetchProxy.Monitoring.EntropyThreshold,
-		entropyMinLen:       20,
-		maxURLLength:        cfg.FetchProxy.Monitoring.MaxURLLength,
-		subdomainExclusions: cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions,
+		allowlist:                 allowlist,
+		blocklist:                 cfg.FetchProxy.Monitoring.Blocklist,
+		entropyThreshold:          cfg.FetchProxy.Monitoring.EntropyThreshold,
+		subdomainEntropyThreshold: cfg.FetchProxy.Monitoring.SubdomainEntropyThreshold,
+		entropyMinLen:             20,
+		maxURLLength:              cfg.FetchProxy.Monitoring.MaxURLLength,
+		subdomainExclusions:       cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions,
 	}
 
 	// Initialize rate limiter if enabled
@@ -524,6 +527,21 @@ func (s *Scanner) scan(ctx context.Context, rawURL string) Result {
 	// Normalize hostname for consistent matching
 	hostname := strings.ToLower(parsed.Hostname())
 
+	// Canonicalize non-standard IP notations (hex, octal, decimal integer)
+	// so that allowlist/blocklist/DLP checks all see the same dotted-decimal
+	// form. Without this, 0x7f000001 bypasses a blocklist entry for 127.0.0.1.
+	// Also update parsed.Host so downstream consumers (checkDLP, checkEntropy,
+	// exempt_domains matching) all see the canonical form.
+	if altIP := parseAlternativeIP(hostname); altIP != nil {
+		hostname = altIP.String()
+		port := parsed.Port()
+		if port != "" {
+			parsed.Host = hostname + ":" + port
+		} else {
+			parsed.Host = hostname
+		}
+	}
+
 	// 1. Scheme check
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return Result{
@@ -611,6 +629,57 @@ func (s *Scanner) scan(ctx context.Context, rawURL string) Result {
 	return Result{Allowed: true, Scanner: ScannerAll, Score: 0.0}
 }
 
+// parseAlternativeIP decodes non-standard IP address notations that
+// net.ParseIP does not handle: hex (0x7f000001), octal (0177.0.0.1),
+// decimal integer (2130706433), and mixed-radix dotted notation.
+// Attackers use these to bypass SSRF checks that only recognize
+// standard dotted-decimal. Returns nil if the hostname is not an
+// alternative IP notation.
+func parseAlternativeIP(hostname string) net.IP {
+	hostname = strings.TrimSpace(hostname)
+	if hostname == "" {
+		return nil
+	}
+
+	// Dotted notation with possible hex/octal octets (e.g., 0177.0.0.1, 0x7f.0.0.1).
+	if strings.Contains(hostname, ".") {
+		parts := strings.Split(hostname, ".")
+		if len(parts) != 4 {
+			return nil
+		}
+		octets := make([]byte, 4)
+		for i, part := range parts {
+			val, err := strconv.ParseUint(part, 0, 16) // base 0: auto-detect hex/octal/decimal; 16 bits max per octet
+			if err != nil || val > 255 {
+				return nil
+			}
+			octets[i] = byte(val)
+		}
+		// Only return if at least one octet used non-standard notation.
+		// Standard dotted-decimal is already handled by net.ParseIP.
+		hasNonStandard := false
+		for _, part := range parts {
+			if strings.HasPrefix(part, "0x") || strings.HasPrefix(part, "0X") ||
+				(len(part) > 1 && part[0] == '0' && part != "0") {
+				hasNonStandard = true
+				break
+			}
+		}
+		if !hasNonStandard {
+			return nil
+		}
+		return net.IPv4(octets[0], octets[1], octets[2], octets[3])
+	}
+
+	// Single integer notation: hex (0x7f000001), octal (017700000001),
+	// or decimal (2130706433). Represents the full 32-bit IPv4 address.
+	val, err := strconv.ParseUint(hostname, 0, 32) // base 0: auto-detect; 32 bits for full IPv4
+	if err != nil {
+		return nil
+	}
+	return net.IPv4(byte(val>>24), byte(val>>16&0xFF), byte(val>>8&0xFF), byte(val&0xFF))
+}
+
 // checkSSRF blocks requests to internal/private IP ranges.
 // When no internal CIDRs are configured (nil slice), SSRF protection is disabled.
 // To block loopback, link-local, etc., include those CIDRs in config.Internal.
@@ -626,6 +695,28 @@ func (s *Scanner) checkSSRF(ctx context.Context, hostname string) Result {
 		}
 	}
 	if len(s.internalCIDRs) == 0 {
+		return Result{Allowed: true}
+	}
+
+	// Decode non-standard IP notations (hex, octal, decimal integer) BEFORE
+	// DNS resolution. Attackers use 0x7f000001, 0177.0.0.1, or 2130706433
+	// to reach 127.0.0.1 without net.ParseIP recognizing it. If the hostname
+	// decodes to a valid IP, check CIDRs directly and skip DNS.
+	if altIP := parseAlternativeIP(hostname); altIP != nil {
+		if v4 := altIP.To4(); v4 != nil {
+			altIP = v4
+		}
+		for _, cidr := range s.internalCIDRs {
+			if cidr.Contains(altIP) {
+				return Result{
+					Allowed: false,
+					Reason:  fmt.Sprintf("SSRF blocked: %s decodes to internal IP %s", hostname, altIP),
+					Scanner: ScannerSSRF,
+					Score:   1.0,
+				}
+			}
+		}
+		// Non-standard IP that doesn't match internal CIDRs — allow.
 		return Result{Allowed: true}
 	}
 
@@ -1752,10 +1843,6 @@ func (s *Scanner) checkDataBudget(hostname string) Result {
 	return Result{Allowed: true}
 }
 
-// subdomainEntropyThreshold is the Shannon entropy threshold for flagging
-// suspicious subdomain labels. Base64-encoded data typically has entropy > 4.0.
-const subdomainEntropyThreshold = 4.0
-
 // subdomainMinLabelLen is the minimum subdomain label length to check.
 // Short labels (www, api, cdn) are normal and should not be flagged.
 const subdomainMinLabelLen = 8
@@ -1765,8 +1852,11 @@ const subdomainMinLabelLen = 8
 // Only checks hostnames with 3+ labels (at least one subdomain beyond base domain).
 // Excludes domains listed in subdomainExclusions (e.g., RunPod, cloud services
 // that use high-entropy subdomains for legitimate purposes).
+// Uses a separate threshold from query parameter entropy because subdomains
+// have different baseline entropy — hex labels at 3.5-4.0 are suspicious
+// in subdomains but common in query parameters.
 func (s *Scanner) checkSubdomainEntropy(hostname string) Result {
-	if s.entropyThreshold <= 0 {
+	if s.subdomainEntropyThreshold <= 0 {
 		return Result{Allowed: true}
 	}
 
@@ -1791,10 +1881,10 @@ func (s *Scanner) checkSubdomainEntropy(hostname string) Result {
 			continue
 		}
 		entropy := ShannonEntropy(label)
-		if entropy > subdomainEntropyThreshold {
+		if entropy > s.subdomainEntropyThreshold {
 			return Result{
 				Allowed: false,
-				Reason:  fmt.Sprintf("high entropy subdomain label %q (%.2f bits)", label, entropy),
+				Reason:  fmt.Sprintf("high entropy subdomain label %q (%.2f > %.2f threshold)", label, entropy, s.subdomainEntropyThreshold),
 				Scanner: ScannerSubdomainEntropy,
 				Score:   math.Min(entropy/8.0, 1.0),
 			}

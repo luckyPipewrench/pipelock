@@ -562,6 +562,7 @@ type FetchProxy struct {
 type Monitoring struct {
 	MaxURLLength               int      `yaml:"max_url_length"`
 	EntropyThreshold           float64  `yaml:"entropy_threshold"`
+	SubdomainEntropyThreshold  float64  `yaml:"subdomain_entropy_threshold"` // separate threshold for subdomain labels (default 4.0, lower than query params)
 	MaxReqPerMinute            int      `yaml:"max_requests_per_minute"`
 	MaxDataPerMinute           int      `yaml:"max_data_per_minute"` // bytes per domain per minute (0 = disabled)
 	Blocklist                  []string `yaml:"blocklist"`
@@ -1279,6 +1280,9 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.FetchProxy.Monitoring.EntropyThreshold <= 0 {
 		c.FetchProxy.Monitoring.EntropyThreshold = 4.5
+	}
+	if c.FetchProxy.Monitoring.SubdomainEntropyThreshold <= 0 {
+		c.FetchProxy.Monitoring.SubdomainEntropyThreshold = 4.0
 	}
 	if c.FetchProxy.Monitoring.MaxReqPerMinute <= 0 {
 		c.FetchProxy.Monitoring.MaxReqPerMinute = 60
@@ -3746,9 +3750,10 @@ func Defaults() *Config {
 			MaxResponseMB:  10,
 			UserAgent:      "Pipelock Fetch/1.0",
 			Monitoring: Monitoring{
-				MaxURLLength:     2048,
-				EntropyThreshold: 4.5,
-				MaxReqPerMinute:  60,
+				MaxURLLength:              2048,
+				EntropyThreshold:          4.5,
+				SubdomainEntropyThreshold: 4.0,
+				MaxReqPerMinute:           60,
 				Blocklist: []string{
 					"*.pastebin.com",
 					"*.hastebin.com",

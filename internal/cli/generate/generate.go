@@ -94,6 +94,7 @@ func strictPreset() *config.Config {
 	cfg.Mode = config.ModeStrict
 	// In strict mode, the fetch proxy enforces the API allowlist
 	cfg.FetchProxy.Monitoring.EntropyThreshold = 3.5
+	cfg.FetchProxy.Monitoring.SubdomainEntropyThreshold = 3.5
 	cfg.FetchProxy.Monitoring.MaxURLLength = 500
 	cfg.FetchProxy.Monitoring.MaxReqPerMinute = 30
 	return cfg

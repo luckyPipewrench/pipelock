@@ -136,6 +136,9 @@ func TestStrictPreset_Values(t *testing.T) {
 	if cfg.FetchProxy.Monitoring.MaxReqPerMinute != 30 {
 		t.Errorf("MaxReqPerMinute = %d, want 30", cfg.FetchProxy.Monitoring.MaxReqPerMinute)
 	}
+	if cfg.FetchProxy.Monitoring.SubdomainEntropyThreshold != 3.5 {
+		t.Errorf("SubdomainEntropyThreshold = %v, want 3.5", cfg.FetchProxy.Monitoring.SubdomainEntropyThreshold)
+	}
 }
 
 func TestAuditPreset_Values(t *testing.T) {

@@ -333,6 +333,165 @@ func TestScan_BlocksSSRF_Multicast(t *testing.T) {
 	}
 }
 
+func TestParseAlternativeIP(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		expect string // empty = nil
+	}{
+		// Hex full address
+		{"hex loopback", "0x7f000001", "127.0.0.1"},
+		{"hex loopback upper", "0X7F000001", "127.0.0.1"},
+		{"hex private 10.0.0.1", "0x0a000001", "10.0.0.1"},
+		{"hex 192.168.0.1", "0xc0a80001", "192.168.0.1"},
+		{"hex 169.254.169.254", "0xa9fea9fe", "169.254.169.254"},
+
+		// Octal dotted
+		{"octal loopback", "0177.0.0.1", "127.0.0.1"},
+		{"octal 10.0.0.1", "012.0.0.1", "10.0.0.1"},
+		{"octal 192.168.1.1", "0300.0250.01.01", "192.168.1.1"},
+
+		// Hex dotted
+		{"hex dotted loopback", "0x7f.0.0.1", "127.0.0.1"},
+		{"hex dotted 10.10.0.1", "0x0a.0x0a.0.1", "10.10.0.1"},
+
+		// Decimal integer
+		{"decimal loopback", "2130706433", "127.0.0.1"},
+		{"decimal 10.0.0.1", "167772161", "10.0.0.1"},
+
+		// Octal full integer
+		{"octal full loopback", "017700000001", "127.0.0.1"},
+
+		// Non-IP inputs → nil
+		{"standard decimal dotted", "127.0.0.1", ""},
+		{"hostname", "example.com", ""},
+		{"empty", "", ""},
+		{"too many octets", "0x7f.0.0.0.1", ""},
+		{"too few octets", "0x7f.0.1", ""},
+		{"octet overflow", "0x7f.0.0.256", ""},
+		{"negative", "-1", ""},
+		{"overflow 32bit", "4294967296", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ip := parseAlternativeIP(tt.input)
+			if tt.expect == "" {
+				if ip != nil {
+					t.Errorf("expected nil for %q, got %s", tt.input, ip)
+				}
+				return
+			}
+			if ip == nil {
+				t.Fatalf("expected %s for %q, got nil", tt.expect, tt.input)
+			}
+			if ip.String() != tt.expect {
+				t.Errorf("expected %s for %q, got %s", tt.expect, tt.input, ip)
+			}
+		})
+	}
+}
+
+func TestScan_BlocksSSRF_HexOctalIP(t *testing.T) {
+	cfg := testConfig()
+	cfg.Internal = []string{"127.0.0.0/8", "10.0.0.0/8", "169.254.0.0/16", "192.168.0.0/16"}
+	s := New(cfg)
+
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{"hex full loopback", "http://0x7f000001/admin"},
+		{"hex upper loopback", "http://0X7F000001/admin"},
+		{"octal loopback", "http://0177.0.0.1/admin"},
+		{"decimal integer loopback", "http://2130706433/admin"},
+		{"hex dotted loopback", "http://0x7f.0.0.1/admin"},
+		{"hex metadata endpoint", "http://0xa9fea9fe/latest/meta-data/"},
+		{"octal 10.x private", "http://012.0.0.1/"},
+		{"hex 192.168", "http://0xc0a80001/"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := s.Scan(context.Background(), tt.url)
+			if result.Allowed {
+				t.Errorf("expected %s to be blocked (SSRF hex/octal bypass)", tt.url)
+			}
+			if result.Scanner != ScannerSSRF {
+				t.Errorf("expected scanner=ssrf for %s, got %s", tt.url, result.Scanner)
+			}
+		})
+	}
+}
+
+func TestScan_AllowsHexOctalIP_WhenExternal(t *testing.T) {
+	cfg := testConfig()
+	cfg.Internal = []string{"127.0.0.0/8", "10.0.0.0/8"}
+	s := New(cfg)
+
+	// 8.8.8.8 in hex = 0x08080808 — should be allowed (not internal).
+	result := s.Scan(context.Background(), "http://0x08080808/")
+	if !result.Allowed {
+		t.Errorf("expected external hex IP to be allowed, got blocked: %s", result.Reason)
+	}
+}
+
+func TestScan_BlocklistBlocksAltIPNotation(t *testing.T) {
+	cfg := testConfig()
+	cfg.Internal = nil // disable SSRF — we're testing blocklist, not SSRF
+	cfg.FetchProxy.Monitoring.Blocklist = []string{"127.0.0.1"}
+	s := New(cfg)
+
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{"hex packed", "http://0x7f000001/admin"},
+		{"octal dotted", "http://0177.0.0.1/admin"},
+		{"decimal integer", "http://2130706433/admin"},
+		{"hex dotted", "http://0x7f.0.0.1/admin"},
+		{"standard dotted", "http://127.0.0.1/admin"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := s.Scan(context.Background(), tt.url)
+			if r.Allowed {
+				t.Errorf("expected blocklist to block %s", tt.url)
+			}
+			if r.Scanner != ScannerBlocklist {
+				t.Errorf("expected scanner=blocklist for %s, got %s", tt.url, r.Scanner)
+			}
+		})
+	}
+}
+
+func TestScan_AllowlistWithAltIPNotation(t *testing.T) {
+	cfg := testConfig()
+	cfg.Internal = nil
+	cfg.Mode = config.ModeStrict
+	cfg.APIAllowlist = []string{"10.0.0.1"}
+	s := New(cfg)
+
+	tests := []struct {
+		name    string
+		url     string
+		allowed bool
+	}{
+		{"hex packed allowed", "http://0x0a000001/api", true},
+		{"octal dotted allowed", "http://012.0.0.1/api", true},
+		{"standard allowed", "http://10.0.0.1/api", true},
+		{"hex packed denied", "http://0x0a000002/api", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := s.Scan(context.Background(), tt.url)
+			if r.Allowed != tt.allowed {
+				t.Errorf("%s: expected allowed=%v, got allowed=%v (reason=%s)", tt.url, tt.allowed, r.Allowed, r.Reason)
+			}
+		})
+	}
+}
+
 func TestScan_EntropySkipsShortSegments(t *testing.T) {
 	s := New(testConfig())
 
@@ -2691,7 +2850,7 @@ func TestCheckSubdomainEntropy_BlocksHighEntropyLabels(t *testing.T) {
 			if result.Allowed {
 				t.Errorf("expected high-entropy subdomain to be blocked: %s", tt.url)
 			}
-			if result.Scanner != "subdomain_entropy" {
+			if result.Scanner != ScannerSubdomainEntropy {
 				t.Errorf("expected scanner=subdomain_entropy, got %s (reason: %s)", result.Scanner, result.Reason)
 			}
 		})
@@ -2732,7 +2891,7 @@ func TestCheckSubdomainEntropy_AllowsNormalSubdomains(t *testing.T) {
 
 func TestCheckSubdomainEntropy_DisabledWhenThresholdZero(t *testing.T) {
 	cfg := testConfig()
-	cfg.FetchProxy.Monitoring.EntropyThreshold = 0
+	cfg.FetchProxy.Monitoring.SubdomainEntropyThreshold = 0
 	cfg.DLP.Patterns = nil
 	s := New(cfg)
 	defer s.Close()
@@ -2740,6 +2899,57 @@ func TestCheckSubdomainEntropy_DisabledWhenThresholdZero(t *testing.T) {
 	result := s.Scan(context.Background(), "https://r7km2np9qw4xb5vy8za3.evil.com/")
 	if !result.Allowed {
 		t.Error("expected subdomain entropy check to be disabled when threshold is 0")
+	}
+}
+
+func TestCheckSubdomainEntropy_SeparateFromQueryThreshold(t *testing.T) {
+	cfg := testConfig()
+	// High query threshold (won't flag query params), low subdomain threshold (will flag subdomains).
+	cfg.FetchProxy.Monitoring.EntropyThreshold = 8.0
+	cfg.FetchProxy.Monitoring.SubdomainEntropyThreshold = 3.5
+	cfg.DLP.Patterns = nil
+	s := New(cfg)
+	defer s.Close()
+
+	// Hex-like subdomain (entropy ~3.78): should be blocked by the lower subdomain threshold.
+	hexSubdomain := "https://deadbeef1234567890ab.exfil.evil.example.com/"
+	result := s.Scan(context.Background(), hexSubdomain)
+	if result.Allowed {
+		t.Error("expected hex subdomain to be blocked with subdomain_entropy_threshold=3.5")
+	}
+	if result.Scanner != ScannerSubdomainEntropy {
+		t.Errorf("expected scanner=subdomain_entropy, got %s", result.Scanner)
+	}
+}
+
+func TestCheckSubdomainEntropy_HighThresholdAllowsHexSubdomain(t *testing.T) {
+	cfg := testConfig()
+	// Raise subdomain threshold high enough that hex labels pass.
+	cfg.FetchProxy.Monitoring.SubdomainEntropyThreshold = 5.0
+	cfg.DLP.Patterns = nil
+	s := New(cfg)
+	defer s.Close()
+
+	// Hex subdomain (~3.78 entropy): should pass with threshold at 5.0.
+	hexSubdomain := "https://deadbeef1234567890ab.exfil.evil.example.com/"
+	result := s.Scan(context.Background(), hexSubdomain)
+	if !result.Allowed {
+		t.Errorf("expected hex subdomain to be allowed with threshold=5.0, got blocked: %s", result.Reason)
+	}
+}
+
+func TestCheckSubdomainEntropy_DefaultCatchesHex(t *testing.T) {
+	// Default subdomain threshold (4.0) should catch high-entropy hex labels.
+	cfg := testConfig()
+	cfg.DLP.Patterns = nil
+	s := New(cfg)
+	defer s.Close()
+
+	// Diverse hex string (~3.92 entropy): above default 4.0? Let's use one that is.
+	// r7km2np9qw4xb5vy8za3 has entropy > 4.0 (from existing test).
+	result := s.Scan(context.Background(), "https://r7km2np9qw4xb5vy8za3.evil.com/")
+	if result.Allowed {
+		t.Error("expected high-entropy subdomain to be blocked at default threshold")
 	}
 }
 

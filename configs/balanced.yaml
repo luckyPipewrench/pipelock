@@ -215,6 +215,9 @@ dlp:
     - name: "Ethereum Private Key"
       regex: '0x[0-9a-f]{64}\b'
       severity: critical
+    - name: "Ethereum Address"
+      regex: '0x[0-9a-fA-F]{40}\b'
+      severity: high
     # Identity / PII
     - name: "Social Security Number"
       regex: '\b\d{3}-\d{2}-\d{4}\b'
@@ -225,6 +228,9 @@ dlp:
     # Generic credential patterns
     - name: "Credential in URL"
       regex: '\b(?:password|passwd|secret|token|apikey|api_key|api-key)\s*=\s*[^\s&]{4,}'
+      severity: high
+    - name: "Environment Variable Secret"
+      regex: '(?-i:[A-Z][A-Z0-9]*[_-](?:SECRET(?:[_-]ACCESS)?[_-]?KEY|SECRET|PASSWORD|PASSWD|TOKEN|API[_-]?KEY))\b\s*=\s*\S{8,}'
       severity: high
     # Financial identifiers (validated with post-match checksums)
     - name: "Credit Card Number"

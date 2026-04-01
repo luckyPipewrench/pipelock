@@ -1244,6 +1244,108 @@ func TestScanTextForDLP_CredentialInURL_ShortValueClean(t *testing.T) {
 	}
 }
 
+func TestScanTextForDLP_EthereumAddressOptIn(t *testing.T) {
+	cfg := testConfig()
+	cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{
+		Name: "Ethereum Address", Regex: `0x[0-9a-fA-F]{40}\b`, Severity: "high",
+	})
+	s := New(cfg)
+	defer s.Close()
+
+	addr := "0x" + "d8dA6BF26964aF9D" + "7eEd9e03E53415D37aA96045"
+
+	t.Run("plaintext", func(t *testing.T) {
+		result := s.ScanTextForDLP(context.Background(), "Send to "+addr)
+		if result.Clean {
+			t.Error("expected ETH address to be caught")
+		}
+	})
+
+	t.Run("base64_encoded", func(t *testing.T) {
+		encoded := base64.StdEncoding.EncodeToString([]byte(addr))
+		result := s.ScanTextForDLP(context.Background(), encoded)
+		if result.Clean {
+			t.Error("expected base64-encoded ETH address to be caught")
+		}
+	})
+}
+
+func TestScanTextForDLP_EnvVarSecret(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	tests := []struct {
+		name string
+		text string
+	}{
+		{
+			name: "AWS_SECRET_ACCESS_KEY",
+			text: "AWS_SECRET_ACCESS_KEY=" + "wJalrXUtnFEMI" + "/K7MDENG/bPxRfiCYEXAMPLEKEY",
+		},
+		{
+			name: "STRIPE_SECRET_KEY",
+			text: "STRIPE_SECRET_KEY=" + "sk_test_" + "EXAMPLEKEY12345678901234",
+		},
+		{
+			name: "CLIENT_SECRET",
+			text: "CLIENT_SECRET=" + "supersecretvalue1234",
+		},
+		{
+			name: "DB_PASSWORD",
+			text: "DB_PASSWORD=s3cretP4ssw0rd_EXAMPLE",
+		},
+		{
+			name: "MY_API_KEY",
+			text: "MY_API_KEY=" + "abcdefghij1234567890",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := s.ScanTextForDLP(context.Background(), tt.text)
+			if result.Clean {
+				t.Errorf("expected env var credential to be caught: %s", tt.text)
+			}
+		})
+	}
+}
+
+func TestScanTextForDLP_EnvVarSecret_ShortValueClean(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// Short values (under 8 chars) should not trigger.
+	result := s.ScanTextForDLP(context.Background(), "MY_SECRET=true")
+	if !result.Clean {
+		t.Errorf("false positive on short env var value: %v", result.Matches)
+	}
+}
+
+func TestScanTextForDLP_EnvVarSecret_BenignUppercaseClean(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	// Uppercase names containing keywords as substrings must not FP.
+	benign := []string{
+		"DB_PASSWORD_POLICY=must_be_strong",
+		"ACCESS_TOKEN_EXPIRY=3600secs",
+		"APP_TOKEN_BUCKET=abcdefghij",
+		"API_KEY_LENGTH=1234567890",
+		"SECRET_ROTATION_DAYS=365days_minimum",
+	}
+	for _, text := range benign {
+		t.Run(text, func(t *testing.T) {
+			result := s.ScanTextForDLP(context.Background(), text)
+			if !result.Clean {
+				t.Errorf("false positive on benign env var: %v", result.Matches)
+			}
+		})
+	}
+}
+
 // --- File Secret Text DLP Tests ---
 
 func TestScanTextForDLP_FileSecretRawMatch(t *testing.T) {

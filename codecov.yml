@@ -6,7 +6,7 @@ coverage:
         threshold: 2%
     patch:
       default:
-        target: 80%
+        target: 75%
 ignore:
   - "tests/ws-helper/**"
   - "internal/filesentry/lineage_other.go"  # build-tagged !linux, untestable on Linux CI

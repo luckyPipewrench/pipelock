@@ -334,8 +334,13 @@ func newInterceptHandler(
 				status = http.StatusTooManyRequests
 			}
 			if cfg.EnforceEnabled() {
-				// Record SignalBlock for adaptive enforcement scoring.
-				interceptRecordSignal(rec, session.SignalBlock, cfg, logger, m, p, clientIP, agent, requestID)
+				// Config-mismatch: bounded signal (NearMiss) instead of full
+				// block signal. Prevents death spiral while keeping visibility.
+				if urlResult.IsConfigMismatch() {
+					interceptRecordSignal(rec, session.SignalNearMiss, cfg, logger, m, p, clientIP, agent, requestID)
+				} else {
+					interceptRecordSignal(rec, session.SignalBlock, cfg, logger, m, p, clientIP, agent, requestID)
+				}
 				logger.LogBlocked(r.Method, targetURL, urlResult.Scanner, urlResult.Reason, clientIP, requestID, agent)
 				m.RecordTLSRequestBlocked("url_scan")
 				if cfg.ExplainBlocksEnabled() && urlResult.Hint != "" {
@@ -356,7 +361,11 @@ func newInterceptHandler(
 				if p != nil {
 					p.metrics.RecordAdaptiveUpgrade(baseAction, effectiveAction, session.EscalationLabel(recEscalationLevel(rec)))
 				}
-				interceptRecordSignal(rec, session.SignalBlock, cfg, logger, m, p, clientIP, agent, requestID)
+				if urlResult.IsConfigMismatch() {
+					interceptRecordSignal(rec, session.SignalNearMiss, cfg, logger, m, p, clientIP, agent, requestID)
+				} else {
+					interceptRecordSignal(rec, session.SignalBlock, cfg, logger, m, p, clientIP, agent, requestID)
+				}
 				logger.LogBlocked(r.Method, targetURL, urlResult.Scanner, urlResult.Reason+" (escalated)", clientIP, requestID, agent)
 				m.RecordTLSRequestBlocked("url_scan")
 				http.Error(w, "blocked: "+urlResult.Reason+" (escalated)", status)
@@ -384,7 +393,11 @@ func newInterceptHandler(
 				}
 				// ActionAsk: no HITL terminal in intercepted tunnels, fail closed.
 				if action == config.ActionAsk || (action == config.ActionBlock && cfg.EnforceEnabled()) {
-					interceptRecordSignal(rec, session.SignalBlock, cfg, logger, m, p, clientIP, agent, requestID)
+					if a2aHdrResult.IsConfigMismatch() {
+						interceptRecordSignal(rec, session.SignalNearMiss, cfg, logger, m, p, clientIP, agent, requestID)
+					} else {
+						interceptRecordSignal(rec, session.SignalBlock, cfg, logger, m, p, clientIP, agent, requestID)
+					}
 					logger.LogBlocked(r.Method, r.URL.String(), scannerLabelA2A, a2aHdrResult.Reason, clientIP, requestID, agent)
 					m.RecordTLSRequestBlocked(scannerLabelA2A)
 					http.Error(w, "blocked: "+a2aHdrResult.Reason, http.StatusForbidden)
@@ -527,7 +540,11 @@ func newInterceptHandler(
 					}
 					// ActionAsk: no HITL terminal in intercepted tunnels, fail closed.
 					if action == config.ActionAsk || (action == config.ActionBlock && cfg.EnforceEnabled()) {
-						interceptRecordSignal(rec, session.SignalBlock, cfg, logger, m, p, clientIP, agent, requestID)
+						if a2aBodyResult.IsConfigMismatch() {
+							interceptRecordSignal(rec, session.SignalNearMiss, cfg, logger, m, p, clientIP, agent, requestID)
+						} else {
+							interceptRecordSignal(rec, session.SignalBlock, cfg, logger, m, p, clientIP, agent, requestID)
+						}
 						logger.LogBlocked(r.Method, r.URL.String(), scannerLabelA2A, reason, clientIP, requestID, agent)
 						m.RecordTLSRequestBlocked(scannerLabelA2A)
 						http.Error(w, "blocked: "+reason, http.StatusForbidden)
@@ -786,7 +803,11 @@ func newInterceptHandler(
 				}
 				// ActionAsk: no HITL terminal in intercepted tunnels, fail closed.
 				if action == config.ActionAsk || (action == config.ActionBlock && cfg.EnforceEnabled()) {
-					interceptRecordSignal(rec, session.SignalBlock, cfg, logger, m, p, clientIP, agent, requestID)
+					if a2aRespResult.IsConfigMismatch() {
+						interceptRecordSignal(rec, session.SignalNearMiss, cfg, logger, m, p, clientIP, agent, requestID)
+					} else {
+						interceptRecordSignal(rec, session.SignalBlock, cfg, logger, m, p, clientIP, agent, requestID)
+					}
 					logger.LogBlocked(r.Method, r.URL.String(), scannerLabelA2A, reason, clientIP, requestID, agent)
 					m.RecordTLSResponseBlocked(scannerLabelA2A)
 					http.Error(w, "blocked: "+reason, http.StatusForbidden)

@@ -37,6 +37,7 @@ const (
 	fieldKSAPIListen     = "kill_switch.api_listen"
 	fieldTLSPassthrough  = "tls_interception.passthrough_domains"
 	fieldSentry          = "sentry"
+	fieldSSRFIPAllowlist = "ssrf.ip_allowlist"
 	fieldSandbox         = "sandbox"
 	fieldFileSentry      = "file_sentry"
 	fieldSubEntExcl      = "fetch_proxy.monitoring.subdomain_entropy_exclusions"
@@ -1291,6 +1292,119 @@ func TestValidateReload_TrustedDomainsUnchanged_NoWarning(t *testing.T) {
 	}
 }
 
+func TestValidateReload_SSRFIPAllowlistExpanded(t *testing.T) {
+	old := Defaults()
+	updated := Defaults()
+	updated.SSRF.IPAllowlist = []string{"192.168.1.0/24"}
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == fieldSSRFIPAllowlist {
+			found = true
+			if !strings.Contains(w.Message, "192.168.1.0/24") {
+				t.Errorf("warning should name the added CIDR, got: %s", w.Message)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("expected warning when ssrf.ip_allowlist is expanded")
+	}
+}
+
+func TestValidateReload_SSRFIPAllowlistUnchanged_NoWarning(t *testing.T) {
+	old := Defaults()
+	old.SSRF.IPAllowlist = []string{"192.168.1.0/24"}
+	updated := Defaults()
+	updated.SSRF.IPAllowlist = []string{"192.168.1.0/24"}
+
+	warnings := ValidateReload(old, updated)
+	for _, w := range warnings {
+		if w.Field == fieldSSRFIPAllowlist {
+			t.Errorf("unexpected warning for unchanged ssrf.ip_allowlist: %s", w.Message)
+		}
+	}
+}
+
+func TestValidateReload_SSRFIPAllowlist_NarrowedNoWarning(t *testing.T) {
+	// Replacing 10.0.0.0/8 with 10.0.0.0/16 narrows the range — no warning.
+	old := Defaults()
+	old.SSRF.IPAllowlist = []string{"10.0.0.0/8"}
+	updated := Defaults()
+	updated.SSRF.IPAllowlist = []string{"10.0.0.0/16"}
+
+	warnings := ValidateReload(old, updated)
+	for _, w := range warnings {
+		if w.Field == fieldSSRFIPAllowlist {
+			t.Errorf("narrowing CIDR should not warn, got: %s", w.Message)
+		}
+	}
+}
+
+func TestValidateReload_SSRFIPAllowlist_WidenedWarns(t *testing.T) {
+	// Replacing 10.0.0.0/16 with 10.0.0.0/8 widens the range — should warn.
+	old := Defaults()
+	old.SSRF.IPAllowlist = []string{"10.0.0.0/16"}
+	updated := Defaults()
+	updated.SSRF.IPAllowlist = []string{"10.0.0.0/8"}
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == fieldSSRFIPAllowlist {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("widening CIDR should produce a warning")
+	}
+}
+
+func TestValidateReload_SSRFIPAllowlist_NewRangeWarns(t *testing.T) {
+	// Adding a completely new range warns even when old ranges exist.
+	old := Defaults()
+	old.SSRF.IPAllowlist = []string{"10.0.0.0/8"}
+	updated := Defaults()
+	updated.SSRF.IPAllowlist = []string{"10.0.0.0/8", "172.16.0.0/12"}
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == fieldSSRFIPAllowlist {
+			found = true
+			if !strings.Contains(w.Message, "172.16.0.0/12") {
+				t.Errorf("warning should name the new CIDR, got: %s", w.Message)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("adding a new IP range should produce a warning")
+	}
+}
+
+func TestSSRFIPAllowlistExpanded_MalformedCIDR(t *testing.T) {
+	// Malformed entries in the updated list should still produce warnings
+	// (fail-open for warnings — config validation catches them separately).
+	expanded := ssrfIPAllowlistExpanded(nil, []string{"not-a-cidr"})
+	if len(expanded) != 1 || expanded[0] != "not-a-cidr" {
+		t.Errorf("malformed CIDR should appear in expanded list, got: %v", expanded)
+	}
+}
+
+func TestSSRFIPAllowlistExpanded_CrossFamily(t *testing.T) {
+	// IPv4 old range should not cover an IPv6 new range (different address family).
+	expanded := ssrfIPAllowlistExpanded(
+		[]string{"10.0.0.0/8"},
+		[]string{"fc00::/7"},
+	)
+	if len(expanded) != 1 {
+		t.Errorf("IPv6 CIDR should not be covered by IPv4 range, got expanded=%v", expanded)
+	}
+}
+
 func TestLoad_PresetYAMLFiles(t *testing.T) {
 	// Find the project root configs/ directory
 	// Tests run from the package dir, so go up two levels
@@ -1368,6 +1482,75 @@ func TestValidate_EmptyInternalCIDRs(t *testing.T) {
 	}
 }
 
+func TestValidate_SSRFIPAllowlist_CatchAll_Rejected(t *testing.T) {
+	tests := []struct {
+		name string
+		cidr string
+	}{
+		{"IPv4 catch-all", "0.0.0.0/0"},
+		{"IPv6 catch-all", "::/0"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.SSRF.IPAllowlist = []string{tt.cidr}
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatalf("expected validation error for catch-all CIDR %q", tt.cidr)
+			}
+			if !strings.Contains(err.Error(), "catch-all") {
+				t.Errorf("expected catch-all error, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidate_SSRFIPAllowlist_HostBits_Rejected(t *testing.T) {
+	tests := []struct {
+		name string
+		cidr string
+	}{
+		{"host bits in /24", "10.0.0.5/24"},
+		{"host bits in /16", "192.168.1.100/16"},
+		{"IPv6 host bits", "fc00::1/64"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.SSRF.IPAllowlist = []string{tt.cidr}
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatalf("expected validation error for non-canonical CIDR %q", tt.cidr)
+			}
+			if !strings.Contains(err.Error(), "host bits set") {
+				t.Errorf("expected host bits error, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidate_SSRFIPAllowlist_Canonical_Accepted(t *testing.T) {
+	tests := []struct {
+		name string
+		cidr string
+	}{
+		{"single host /32", "10.0.0.5/32"},
+		{"network /24", "192.168.1.0/24"},
+		{"network /8", "10.0.0.0/8"},
+		{"IPv6 /128", "::1/128"},
+		{"IPv6 /64", "fc00::/64"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.SSRF.IPAllowlist = []string{tt.cidr}
+			if err := cfg.Validate(); err != nil {
+				t.Errorf("expected canonical CIDR %q to validate, got: %v", tt.cidr, err)
+			}
+		})
+	}
+}
+
 func TestApplyDefaults_ExplicitEmptyInternalPreserved(t *testing.T) {
 	// YAML "internal: []" produces a non-nil empty slice.
 	// ApplyDefaults must NOT fill in default CIDRs when the user explicitly
@@ -1390,6 +1573,34 @@ func TestApplyDefaults_AbsentInternalGetsDefaults(t *testing.T) {
 	cfg.ApplyDefaults()
 	if len(cfg.Internal) == 0 {
 		t.Error("absent internal should get default CIDRs")
+	}
+}
+
+func TestValidate_SSRFIPAllowlist_Valid(t *testing.T) {
+	cfg := Defaults()
+	cfg.SSRF.IPAllowlist = []string{"192.168.1.0/24", "10.0.0.5/32"}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("valid SSRF IP allowlist should validate, got: %v", err)
+	}
+}
+
+func TestValidate_SSRFIPAllowlist_InvalidCIDR(t *testing.T) {
+	cfg := Defaults()
+	cfg.SSRF.IPAllowlist = []string{"not-a-cidr"}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for invalid SSRF IP allowlist CIDR")
+	}
+	if !strings.Contains(err.Error(), "ssrf.ip_allowlist") {
+		t.Errorf("expected error to mention ssrf.ip_allowlist, got: %v", err)
+	}
+}
+
+func TestValidate_SSRFIPAllowlist_Empty(t *testing.T) {
+	cfg := Defaults()
+	cfg.SSRF.IPAllowlist = nil
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("nil SSRF IP allowlist should validate, got: %v", err)
 	}
 }
 

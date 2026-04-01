@@ -384,6 +384,7 @@ type Config struct {
 	LicensePublicKey      string                  `yaml:"license_public_key,omitempty"` // hex-encoded Ed25519 public key for license verification (dev builds only)
 	Internal              []string                `yaml:"internal"`
 	TrustedDomains        []string                `yaml:"trusted_domains"` // domains exempt from SSRF internal-IP check (wildcard supported)
+	SSRF                  SSRF                    `yaml:"ssrf"`
 
 	// LicenseExpiresAt is the Unix timestamp of the license expiry, populated
 	// by EnforceLicenseGate(). Zero means perpetual. Used for runtime expiry
@@ -626,6 +627,15 @@ type SeedPhraseDetection struct {
 	Enabled        *bool `yaml:"enabled"`         // nil = true (security default)
 	MinWords       int   `yaml:"min_words"`       // minimum consecutive BIP-39 words (default 12)
 	VerifyChecksum *bool `yaml:"verify_checksum"` // nil = true (validate BIP-39 checksum)
+}
+
+// SSRF configures SSRF protection options beyond the default internal CIDRs.
+type SSRF struct {
+	// IPAllowlist exempts specific IP ranges from SSRF blocking. CIDRs listed
+	// here are still considered "internal" but are explicitly trusted by the
+	// operator. Complementary to trusted_domains: this is IP-based trust,
+	// trusted_domains is hostname-based trust.
+	IPAllowlist []string `yaml:"ip_allowlist"`
 }
 
 // LoggingConfig configures audit logging.
@@ -1817,6 +1827,7 @@ func (c *Config) Validate() error {
 		c.validateAddressProtection,
 		c.validateSentry,
 		c.validateInternalCIDRs,
+		c.validateSSRF,
 		c.validateTrustedDomains,
 		c.validateRules,
 		c.validateFileSentry,
@@ -2685,6 +2696,27 @@ func (c *Config) validateTrustedDomains() error {
 	return ValidateTrustedDomains(c.TrustedDomains, "trusted_domains")
 }
 
+func (c *Config) validateSSRF() error {
+	for _, cidr := range c.SSRF.IPAllowlist {
+		ip, ipNet, err := net.ParseCIDR(cidr)
+		if err != nil {
+			return fmt.Errorf("invalid ssrf.ip_allowlist CIDR %q: %w", cidr, err)
+		}
+		// Reject catch-all prefixes (/0) — they disable SSRF protection entirely.
+		ones, _ := ipNet.Mask.Size()
+		if ones == 0 {
+			return fmt.Errorf("ssrf.ip_allowlist CIDR %q is a catch-all (/0) and would disable SSRF protection", cidr)
+		}
+		// Reject non-canonical CIDRs where host bits are set (e.g., 10.0.0.5/24
+		// silently becomes 10.0.0.0/24). Operators must specify the network address
+		// to avoid accidentally allowlisting a wider range than intended.
+		if !ip.Equal(ipNet.IP) {
+			return fmt.Errorf("ssrf.ip_allowlist CIDR %q has host bits set (did you mean %q?)", cidr, ipNet.String())
+		}
+	}
+	return nil
+}
+
 func (c *Config) validateRules() error {
 	// Validate community rules config
 	switch c.Rules.MinConfidence {
@@ -3214,6 +3246,16 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 			Message: fmt.Sprintf("trusted domains added: %s — SSRF internal-IP check bypassed for these hosts", strings.Join(added, ", ")),
 		})
 	}
+	// SSRF IP allowlist expanded (SSRF protection scope reduced).
+	// CIDR-semantic comparison: a new entry expands coverage only if it is
+	// not already contained within a previously-configured CIDR.
+	if expanded := ssrfIPAllowlistExpanded(old.SSRF.IPAllowlist, updated.SSRF.IPAllowlist); len(expanded) > 0 {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "ssrf.ip_allowlist",
+			Message: fmt.Sprintf("SSRF IP allowlist expanded: %s — SSRF check bypassed for these IP ranges", strings.Join(expanded, ", ")),
+		})
+	}
+
 	// TODO: emit reload warnings for agent-scoped trusted_domains (enterprise profiles).
 	// Agent profiles live in the enterprise package, so diffing them here would require
 	// either a hook or moving the diff logic into the enterprise reload path.
@@ -3542,6 +3584,44 @@ func passthroughDomainsAdded(old, updated []string) []string {
 		}
 	}
 	return added
+}
+
+// ssrfIPAllowlistExpanded returns CIDR strings from updated that expand coverage
+// beyond what old already covered. A CIDR is considered expanding if its network
+// address is not contained by any CIDR in the old list. Malformed entries that
+// passed validation are included verbatim (fail-open for warnings, not security).
+func ssrfIPAllowlistExpanded(old, updated []string) []string {
+	oldNets := make([]*net.IPNet, 0, len(old))
+	for _, cidr := range old {
+		if _, ipNet, err := net.ParseCIDR(cidr); err == nil {
+			oldNets = append(oldNets, ipNet)
+		}
+	}
+
+	var expanded []string
+	for _, cidr := range updated {
+		_, ipNet, err := net.ParseCIDR(cidr)
+		if err != nil {
+			expanded = append(expanded, cidr) // malformed — warn anyway
+			continue
+		}
+		covered := false
+		for _, oldNet := range oldNets {
+			if oldNet.Contains(ipNet.IP) {
+				oOnes, oSize := oldNet.Mask.Size()
+				nOnes, nSize := ipNet.Mask.Size()
+				// Same address family and old mask is equal or broader.
+				if oSize == nSize && oOnes <= nOnes {
+					covered = true
+					break
+				}
+			}
+		}
+		if !covered {
+			expanded = append(expanded, cidr)
+		}
+	}
+	return expanded
 }
 
 // upgradeActionStrength returns a numeric strength for upgrade_warn/upgrade_ask values.

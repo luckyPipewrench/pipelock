@@ -101,6 +101,106 @@ func interceptAndRequest(
 	return resp
 }
 
+// interceptAndRequestWithRecorder is like interceptAndRequest but accepts a
+// session.Recorder for adaptive enforcement signal testing.
+func interceptAndRequestWithRecorder(
+	t *testing.T,
+	upstream *httptest.Server,
+	cache *certgen.CertCache,
+	pool *x509.CertPool,
+	cfg *config.Config,
+	sc *scanner.Scanner,
+	logger *audit.Logger,
+	m *metrics.Metrics,
+	req *http.Request,
+	rec session.Recorder,
+) *http.Response {
+	t.Helper()
+
+	clientConn, proxyConn := net.Pipe()
+	t.Cleanup(func() { _ = clientConn.Close() })
+
+	host := upstream.Listener.Addr().(*net.TCPAddr).IP.String()
+	port := fmt.Sprintf("%d", upstream.Listener.Addr().(*net.TCPAddr).Port)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	go func() {
+		_ = interceptTunnel(ctx, proxyConn, host, port, cfg, sc, cache, logger, m, "10.0.0.1", "test-req-1", "", upstream.Client().Transport, nil, nil, nil, nil, nil, rec)
+	}()
+
+	tlsConn := tls.Client(clientConn, &tls.Config{
+		RootCAs:    pool,
+		ServerName: host,
+	})
+	t.Cleanup(func() { _ = tlsConn.Close() })
+
+	if err := req.Write(tlsConn); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(tlsConn), req)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	return resp
+}
+
+// TestInterceptTunnel_ConfigMismatch_NearMissSignal verifies that SSRF blocking
+// an allowlisted domain (config mismatch) sends NearMiss instead of Block signal.
+func TestInterceptTunnel_ConfigMismatch_NearMissSignal(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, "ok")
+	}))
+	defer upstream.Close()
+
+	cache, pool, _, _, logger, m := testInterceptSetup(t)
+
+	cfg := config.Defaults()
+	cfg.TLSInterception.Enabled = true
+	cfg.TLSInterception.MaxResponseBytes = 1024 * 1024
+	// Enable SSRF with localhost as internal, but allowlist the host.
+	cfg.Internal = []string{testLoopbackIP + "/32"}
+	host := upstream.Listener.Addr().(*net.TCPAddr).IP.String()
+	cfg.APIAllowlist = []string{host}
+	enforceTrue := true
+	cfg.Enforce = &enforceTrue
+	cfg.AdaptiveEnforcement.Enabled = true
+	cfg.AdaptiveEnforcement.EscalationThreshold = 100 // high so we don't escalate
+
+	sc := scanner.New(cfg)
+	t.Cleanup(func() { sc.Close() })
+
+	rec := &interceptMockRecorder{}
+
+	addr := upstream.Listener.Addr().String()
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/api", nil)
+
+	resp := interceptAndRequestWithRecorder(t, upstream, cache, pool, cfg, sc, logger, m, req, rec)
+	defer func() { _ = resp.Body.Close() }()
+
+	// Request should be blocked (SSRF on internal IP).
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 (SSRF should block internal IP)", resp.StatusCode)
+	}
+
+	// Signal should be NearMiss (config mismatch), not Block.
+	found := false
+	for _, sig := range rec.signals {
+		if sig == session.SignalNearMiss {
+			found = true
+		}
+		if sig == session.SignalBlock {
+			t.Error("config mismatch should record NearMiss, not Block")
+		}
+	}
+	if !found {
+		t.Error("expected NearMiss signal for config mismatch SSRF block")
+	}
+}
+
 func TestInterceptTunnel_BasicRequest(t *testing.T) {
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Fprintf(w, "hello from %s", r.Host)

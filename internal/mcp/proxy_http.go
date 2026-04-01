@@ -223,6 +223,22 @@ func scanHTTPInput(msg []byte, logW io.Writer, sessionKey, auditSessionKey strin
 		tryRecoverSession(rec, adaptiveCfg, m)
 	}
 
+	// Reject JSON-RPC batch requests unconditionally. MCP does not use
+	// batch messages, and the response path already drops batch arrays
+	// (proxy.go, proxy_http.go upstream handler). Forwarding a batch
+	// would produce a response blackhole. Rejecting here also closes the
+	// verdict.Method gap where per-call checks (DoW, chain, A2A) were
+	// silently skipped because the aggregated verdict had no Method.
+	if trimmed := bytes.TrimSpace(msg); len(trimmed) > 0 && trimmed[0] == '[' {
+		_, _ = fmt.Fprintf(logW, "pipelock: input: blocked batch request (not supported by MCP)\n")
+		recordAdaptiveSignal(session.SignalBlock)
+		return &BlockedRequest{
+			ID:           extractRPCID(msg),
+			ErrorCode:    -32600,
+			ErrorMessage: "pipelock: batch requests are not supported by MCP",
+		}
+	}
+
 	// Determine input scanning parameters.
 	action := config.ActionWarn
 	onParseError := config.ActionBlock
@@ -282,7 +298,11 @@ func scanHTTPInput(msg []byte, logW io.Writer, sessionKey, auditSessionKey strin
 				}
 				if a2aAction == config.ActionBlock {
 					_, _ = fmt.Fprintf(logW, "pipelock: a2a input: blocked (%s)\n", a2aResult.Reason)
-					recordAdaptiveSignal(session.SignalBlock)
+					if a2aResult.IsConfigMismatch() {
+						recordAdaptiveSignal(session.SignalNearMiss)
+					} else {
+						recordAdaptiveSignal(session.SignalBlock)
+					}
 					return &BlockedRequest{
 						ID:             verdict.ID,
 						IsNotification: isRPCNotification(verdict.ID),
@@ -997,7 +1017,11 @@ func RunHTTPListenerProxy(
 			if !headerResult.Clean {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: a2a header blocked: %s\n", headerResult.Reason)
 				if reqRec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
-					recordSignalWithEscalation(reqRec, session.SignalBlock, adaptiveCfg.EscalationThreshold, safeLogW, opts.AuditLogger, opts.Metrics, auditSessionKey, "", "")
+					if headerResult.IsConfigMismatch() {
+						recordSignalWithEscalation(reqRec, session.SignalNearMiss, adaptiveCfg.EscalationThreshold, safeLogW, opts.AuditLogger, opts.Metrics, auditSessionKey, "", "")
+					} else {
+						recordSignalWithEscalation(reqRec, session.SignalBlock, adaptiveCfg.EscalationThreshold, safeLogW, opts.AuditLogger, opts.Metrics, auditSessionKey, "", "")
+					}
 				}
 				w.Header().Set("Content-Type", "application/json")
 				rpcID := extractRPCID(body)

@@ -620,6 +620,28 @@ func writeSSEEvent(w io.Writer, data []byte, eventID, eventType, retry string) {
 	_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 }
 
+// IsConfigMismatch reports whether every finding in this A2A scan result is a
+// config-mismatch SSRF block (domain in api_allowlist but not trusted_domains).
+// Returns false when clean, when non-URL findings exist, or when any URL
+// finding is a real threat.
+func (r A2AScanResult) IsConfigMismatch() bool {
+	if r.Clean {
+		return false
+	}
+	if len(r.DLPFindings) > 0 || len(r.InjectFindings) > 0 {
+		return false
+	}
+	if len(r.URLFindings) == 0 {
+		return false
+	}
+	for _, f := range r.URLFindings {
+		if !f.IsConfigMismatch() {
+			return false
+		}
+	}
+	return true
+}
+
 // --- Helpers ---
 
 // buildA2AReason constructs a human-readable reason string from scan findings.

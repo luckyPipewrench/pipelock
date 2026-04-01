@@ -992,3 +992,66 @@ func TestScanA2AResponseDispatch_OtherMethod(t *testing.T) {
 		t.Error("clean SendMessage result should be clean")
 	}
 }
+
+func TestA2AScanResult_IsConfigMismatch(t *testing.T) {
+	tests := []struct {
+		name     string
+		result   A2AScanResult
+		expected bool
+	}{
+		{
+			name:     "clean result",
+			result:   A2AScanResult{Clean: true},
+			expected: false,
+		},
+		{
+			name: "DLP findings present",
+			result: A2AScanResult{
+				DLPFindings: []scanner.TextDLPMatch{{PatternName: "test"}},
+				URLFindings: []scanner.Result{{Class: scanner.ClassConfigMismatch}},
+			},
+			expected: false,
+		},
+		{
+			name: "inject findings present",
+			result: A2AScanResult{
+				InjectFindings: []scanner.ResponseMatch{{PatternName: "test"}},
+				URLFindings:    []scanner.Result{{Class: scanner.ClassConfigMismatch}},
+			},
+			expected: false,
+		},
+		{
+			name:     "no URL findings",
+			result:   A2AScanResult{},
+			expected: false,
+		},
+		{
+			name: "all URL findings are config mismatch",
+			result: A2AScanResult{
+				URLFindings: []scanner.Result{
+					{Allowed: false, Class: scanner.ClassConfigMismatch},
+					{Allowed: false, Class: scanner.ClassConfigMismatch},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "mixed URL findings",
+			result: A2AScanResult{
+				URLFindings: []scanner.Result{
+					{Allowed: false, Class: scanner.ClassConfigMismatch},
+					{Allowed: false, Class: scanner.ClassThreat},
+				},
+			},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.result.IsConfigMismatch(); got != tt.expected {
+				t.Errorf("IsConfigMismatch() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}

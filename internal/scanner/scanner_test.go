@@ -611,6 +611,241 @@ func TestScan_TrustedDomains_DLPStillApplies(t *testing.T) {
 	}
 }
 
+func TestScan_SSRFIPAllowlist_BypassesBlock(t *testing.T) {
+	cfg := testConfig()
+	cfg.Internal = []string{"127.0.0.0/8"}
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8"}
+	s := New(cfg)
+	defer s.Close()
+
+	// localhost resolves to 127.0.0.1 (internal) but is IP-allowlisted — should pass.
+	result := s.Scan(context.Background(), "http://localhost/api")
+	if !result.Allowed {
+		t.Fatalf("expected IP-allowlisted address to bypass SSRF, got blocked: %s", result.Reason)
+	}
+}
+
+func TestScan_SSRFIPAllowlist_PartialCIDR(t *testing.T) {
+	cfg := testConfig()
+	cfg.Internal = []string{"10.0.0.0/8", "127.0.0.0/8"}
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.1/32"} // only loopback, not 10.x
+	s := New(cfg)
+	defer s.Close()
+
+	// localhost (127.0.0.1) is allowlisted — passes
+	result := s.Scan(context.Background(), "http://localhost/api")
+	if !result.Allowed {
+		t.Errorf("expected 127.0.0.1 to pass with IP allowlist 127.0.0.1/32, got: %s", result.Reason)
+	}
+
+	// 10.x is internal but NOT in IP allowlist — still blocked.
+	// Can't test via Scan() (requires DNS), so verify via IsIPAllowlisted directly.
+	if s.IsIPAllowlisted(net.ParseIP("10.0.0.1")) {
+		t.Error("expected 10.0.0.1 to NOT be IP-allowlisted (only 127.0.0.1/32 is)")
+	}
+}
+
+func TestScan_SSRFIPAllowlist_DLPStillApplies(t *testing.T) {
+	cfg := testConfig()
+	cfg.Internal = []string{"127.0.0.0/8"}
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8"}
+	s := New(cfg)
+	defer s.Close()
+
+	// IP-allowlisted bypasses SSRF but DLP still scans.
+	fakeKey := "AKIA" + "IOSFODNN7EXAMPLE"
+	result := s.Scan(context.Background(), "http://localhost/api?key="+fakeKey)
+	if result.Allowed {
+		t.Error("expected DLP to block secret even with IP allowlist")
+	}
+	if result.Scanner == ScannerSSRF {
+		t.Error("expected DLP scanner, not SSRF — IP allowlist should bypass SSRF")
+	}
+}
+
+func TestScan_SSRFHint_AllowlistedDomain(t *testing.T) {
+	cfg := testConfig()
+	cfg.Internal = []string{"127.0.0.0/8"}
+	cfg.APIAllowlist = []string{"localhost"}
+	// No trusted_domains, no IP allowlist — SSRF should block with hint.
+	s := New(cfg)
+	defer s.Close()
+
+	result := s.Scan(context.Background(), "http://localhost/api")
+	if result.Allowed {
+		t.Fatal("expected SSRF block for non-trusted domain resolving to internal IP")
+	}
+	if result.Scanner != ScannerSSRF {
+		t.Fatalf("expected scanner=ssrf, got %s", result.Scanner)
+	}
+	if result.Hint == "" {
+		t.Fatal("expected non-empty hint for SSRF block on allowlisted domain")
+	}
+	if !strings.Contains(result.Hint, "trusted_domains") {
+		t.Errorf("expected hint to mention trusted_domains, got %q", result.Hint)
+	}
+	if !strings.Contains(result.Hint, "localhost") {
+		t.Errorf("expected hint to mention the hostname, got %q", result.Hint)
+	}
+}
+
+func TestScan_SSRFHint_NonAllowlisted_UsesStaticHint(t *testing.T) {
+	cfg := testConfig()
+	cfg.Internal = []string{"127.0.0.0/8"}
+	// No APIAllowlist — domain is not allowlisted, so use static SSRF hint.
+	s := New(cfg)
+	defer s.Close()
+
+	result := s.Scan(context.Background(), "http://localhost/admin")
+	if result.Allowed {
+		t.Fatal("expected SSRF block")
+	}
+	if result.Hint == "" {
+		t.Fatal("expected static hint for SSRF block")
+	}
+	// Static hint should mention "private IP" or similar, NOT "trusted_domains".
+	if strings.Contains(result.Hint, "trusted_domains") {
+		t.Errorf("expected static SSRF hint (not allowlist-specific hint) for non-allowlisted domain, got %q", result.Hint)
+	}
+}
+
+func TestScan_SSRFHint_RawIPLiteral_PointsToIPAllowlist(t *testing.T) {
+	cfg := testConfig()
+	cfg.Internal = []string{"127.0.0.0/8"}
+	cfg.APIAllowlist = []string{"127.0.0.1"}
+	s := New(cfg)
+	defer s.Close()
+
+	result := s.Scan(context.Background(), "http://127.0.0.1/api")
+	if result.Allowed {
+		t.Fatal("expected SSRF block for raw IP literal")
+	}
+	if result.Hint == "" {
+		t.Fatal("expected non-empty hint for SSRF block on allowlisted IP literal")
+	}
+	// Should point to ssrf.ip_allowlist, NOT trusted_domains
+	// (because IsTrustedDomain rejects IP literals).
+	if !strings.Contains(result.Hint, "ssrf.ip_allowlist") {
+		t.Errorf("expected hint to mention ssrf.ip_allowlist for IP literal, got %q", result.Hint)
+	}
+	if strings.Contains(result.Hint, "trusted_domains") {
+		t.Errorf("hint should NOT mention trusted_domains for IP literal, got %q", result.Hint)
+	}
+}
+
+func TestScan_SSRFConfigMismatch_ClassSet(t *testing.T) {
+	cfg := testConfig()
+	cfg.Internal = []string{"127.0.0.0/8"}
+	cfg.APIAllowlist = []string{"localhost"}
+	s := New(cfg)
+	defer s.Close()
+
+	result := s.Scan(context.Background(), "http://localhost/api")
+	if result.Allowed {
+		t.Fatal("expected SSRF block")
+	}
+	if !result.IsConfigMismatch() {
+		t.Error("expected ClassConfigMismatch for SSRF block on allowlisted domain")
+	}
+	if result.IsProtective() {
+		t.Error("config mismatch should not be classified as protective")
+	}
+}
+
+func TestScan_SSRFNonAllowlisted_ClassThreat(t *testing.T) {
+	cfg := testConfig()
+	cfg.Internal = []string{"127.0.0.0/8"}
+	// No APIAllowlist — should be ClassThreat (zero value).
+	s := New(cfg)
+	defer s.Close()
+
+	result := s.Scan(context.Background(), "http://localhost/admin")
+	if result.Allowed {
+		t.Fatal("expected SSRF block")
+	}
+	if result.IsConfigMismatch() {
+		t.Error("non-allowlisted domain should not be ClassConfigMismatch")
+	}
+	if result.IsProtective() {
+		t.Error("SSRF block should not be ClassProtective")
+	}
+}
+
+func TestIsIPAllowlisted(t *testing.T) {
+	cfg := testConfig()
+	cfg.SSRF.IPAllowlist = []string{"192.168.1.0/24", "10.0.0.5/32"}
+	s := New(cfg)
+	defer s.Close()
+
+	tests := []struct {
+		name     string
+		ip       string
+		expected bool
+	}{
+		{"in first CIDR", "192.168.1.100", true},
+		{"in second CIDR", "10.0.0.5", true},
+		{"outside all CIDRs", "10.0.0.6", false},
+		{"not in range", "172.16.0.1", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ip := net.ParseIP(tt.ip)
+			if got := s.IsIPAllowlisted(ip); got != tt.expected {
+				t.Errorf("IsIPAllowlisted(%s) = %v, want %v", tt.ip, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestIsInAPIAllowlist(t *testing.T) {
+	cfg := testConfig()
+	cfg.APIAllowlist = []string{"api.example.com", "*.internal.corp"}
+	s := New(cfg)
+	defer s.Close()
+
+	tests := []struct {
+		name     string
+		hostname string
+		expected bool
+	}{
+		{"exact match", "api.example.com", true},
+		{"wildcard match", "inference.internal.corp", true},
+		{"not in list", "evil.com", false},
+		{"trailing dot normalized", "api.example.com.", true},
+		{"case insensitive", "API.EXAMPLE.COM", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := s.IsInAPIAllowlist(tt.hostname); got != tt.expected {
+				t.Errorf("IsInAPIAllowlist(%q) = %v, want %v", tt.hostname, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestIsConfigMismatch(t *testing.T) {
+	tests := []struct {
+		name     string
+		result   Result
+		mismatch bool
+	}{
+		{"zero value is not config mismatch", Result{}, false},
+		{"ClassConfigMismatch is config mismatch", Result{Class: ClassConfigMismatch}, true},
+		{"ClassProtective is not config mismatch", Result{Class: ClassProtective}, false},
+		{"ClassThreat is not config mismatch", Result{Class: ClassThreat}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.result.IsConfigMismatch(); got != tt.mismatch {
+				t.Errorf("IsConfigMismatch() = %v, want %v", got, tt.mismatch)
+			}
+		})
+	}
+}
+
 func TestNew_PanicsOnInvalidDLPRegex(t *testing.T) {
 	cfg := testConfig()
 	cfg.DLP.Patterns = []config.DLPPattern{

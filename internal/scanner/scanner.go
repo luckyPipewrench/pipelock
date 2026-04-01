@@ -63,6 +63,10 @@ const (
 	// ClassProtective means the block is protective enforcement (rate
 	// limiting, data budget) — not evidence of malicious intent.
 	ClassProtective
+	// ClassConfigMismatch means the block is due to a configuration gap
+	// (e.g., domain in api_allowlist but not trusted_domains). Not a
+	// real attack — should not feed adaptive escalation.
+	ClassConfigMismatch
 )
 
 // Result describes the outcome of scanning a URL.
@@ -81,6 +85,12 @@ func (r Result) IsProtective() bool {
 	return r.Class == ClassProtective
 }
 
+// IsConfigMismatch reports whether this result represents a configuration
+// gap rather than a real threat (e.g., SSRF blocking an allowlisted domain).
+func (r Result) IsConfigMismatch() bool {
+	return r.Class == ClassConfigMismatch
+}
+
 // Scanner checks URLs for suspicious content before fetching.
 type Scanner struct {
 	allowlist                  []string
@@ -92,7 +102,9 @@ type Scanner struct {
 	entropyMinLen              int
 	maxURLLength               int
 	internalCIDRs              []*net.IPNet
-	trustedDomains             []string // SSRF-exempt domains (wildcard via MatchDomain)
+	ipAllowlistCIDRs           []*net.IPNet // SSRF-exempt IP ranges (ssrf.ip_allowlist)
+	trustedDomains             []string     // SSRF-exempt domains (wildcard via MatchDomain)
+	rawAPIAllowlist            []string     // full api_allowlist for SSRF hint generation (all modes)
 	rateLimiter                *RateLimiter
 	dataBudget                 *DataBudget
 	envSecrets                 []string // filtered high-entropy env var values
@@ -221,7 +233,17 @@ func New(cfg *config.Config) *Scanner {
 		s.internalCIDRs = append(s.internalCIDRs, ipNet)
 	}
 
+	// Parse SSRF IP allowlist CIDRs — must succeed since config.Validate checks these
+	for _, cidr := range cfg.SSRF.IPAllowlist {
+		_, ipNet, err := net.ParseCIDR(cidr)
+		if err != nil {
+			panic(fmt.Sprintf("BUG: SSRF IP allowlist CIDR %q failed to parse after validation: %v", cidr, err))
+		}
+		s.ipAllowlistCIDRs = append(s.ipAllowlistCIDRs, ipNet)
+	}
+
 	s.trustedDomains = cfg.TrustedDomains
+	s.rawAPIAllowlist = cfg.APIAllowlist
 
 	// Initialize data budget if configured
 	if cfg.FetchProxy.Monitoring.MaxDataPerMinute > 0 {
@@ -395,6 +417,31 @@ func (s *Scanner) IsTrustedDomain(hostname string) bool {
 	return false
 }
 
+// IsIPAllowlisted checks if an IP is in the SSRF IP allowlist (ssrf.ip_allowlist).
+// Used by checkSSRF and the dial-level SSRF check to exempt specific IP ranges.
+func (s *Scanner) IsIPAllowlisted(ip net.IP) bool {
+	for _, cidr := range s.ipAllowlistCIDRs {
+		if cidr.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsInAPIAllowlist checks if a hostname matches any entry in api_allowlist.
+// Unlike the scanner's allowlist field (which is mode-gated to strict), this
+// checks the raw config allowlist regardless of mode — used for SSRF hint
+// generation and config-mismatch classification.
+func (s *Scanner) IsInAPIAllowlist(hostname string) bool {
+	hostname = strings.ToLower(strings.TrimSuffix(hostname, "."))
+	for _, pattern := range s.rawAPIAllowlist {
+		if MatchDomain(hostname, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
 // Close releases scanner resources, including stopping the rate limiter
 // cleanup goroutine. Safe to call multiple times.
 func (s *Scanner) Close() {
@@ -459,7 +506,7 @@ func (s *Scanner) Scan(ctx context.Context, rawURL string) Result {
 		}
 	}
 	r := s.scan(ctx, rawURL)
-	if !r.Allowed {
+	if !r.Allowed && r.Hint == "" {
 		r.Hint = HintForBlock(&r)
 	}
 	return r
@@ -622,12 +669,30 @@ func (s *Scanner) checkSSRF(ctx context.Context, hostname string) Result {
 		// Check against internal CIDRs
 		for _, cidr := range s.internalCIDRs {
 			if cidr.Contains(ip) {
-				return Result{
+				// IP allowlist exemption: operator explicitly trusts this range.
+				if s.IsIPAllowlisted(ip) {
+					continue
+				}
+				r := Result{
 					Allowed: false,
 					Reason:  fmt.Sprintf("SSRF blocked: %s resolves to internal IP %s", hostname, ipStr),
 					Scanner: ScannerSSRF,
 					Score:   1.0,
 				}
+				// If the domain is in api_allowlist, this is a config
+				// mismatch (not a real attack). Provide a specific hint
+				// and classify so adaptive enforcement doesn't escalate.
+				if s.IsInAPIAllowlist(hostname) {
+					if net.ParseIP(hostname) != nil {
+						// Raw IP literal: trusted_domains rejects IPs, so
+						// point operators at ssrf.ip_allowlist instead.
+						r.Hint = fmt.Sprintf("add %q to ssrf.ip_allowlist to allow this internal IP", ipStr)
+					} else {
+						r.Hint = fmt.Sprintf("add %q to trusted_domains to allow internal IP resolution", hostname)
+					}
+					r.Class = ClassConfigMismatch
+				}
+				return r
 			}
 		}
 

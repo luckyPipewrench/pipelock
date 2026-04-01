@@ -2288,8 +2288,8 @@ func TestForwardScannedInput_SessionBinding_NonToolCallIgnored(t *testing.T) {
 }
 
 func TestForwardScannedInput_SessionBinding_BatchBlocked(t *testing.T) {
-	// Batch requests should be caught by session binding since the aggregate
-	// verdict has no Method, bypassing per-method checks.
+	// Batch requests are rejected unconditionally before reaching
+	// session binding. Verify the early reject fires with -32600.
 	sc := testInputScanner(t)
 
 	tb := tools.NewToolBaseline()
@@ -2301,7 +2301,7 @@ func TestForwardScannedInput_SessionBinding_BatchBlocked(t *testing.T) {
 		NoBaselineAction:  config.ActionBlock,
 	}
 
-	// Batch containing a tools/call — should be blocked.
+	// Batch containing a tools/call — should be rejected before binding.
 	batch := `[{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"exec_command","arguments":{"cmd":"ls"}}}]` + "\n"
 
 	var serverBuf bytes.Buffer
@@ -2322,8 +2322,42 @@ func TestForwardScannedInput_SessionBinding_BatchBlocked(t *testing.T) {
 	if len(blocked) != 1 {
 		t.Fatalf("expected 1 blocked batch request, got %d", len(blocked))
 	}
-	if !strings.Contains(logBuf.String(), "batch request with session binding active") {
-		t.Errorf("expected batch binding log, got: %s", logBuf.String())
+	if blocked[0].ErrorCode != -32600 {
+		t.Errorf("ErrorCode = %d, want -32600", blocked[0].ErrorCode)
+	}
+	if !strings.Contains(logBuf.String(), "blocked batch request") {
+		t.Errorf("expected batch reject log, got: %s", logBuf.String())
+	}
+}
+
+func TestForwardScannedInput_BatchRejectWithDoW(t *testing.T) {
+	// Regression: a batch containing tools/call previously bypassed DoW
+	// and chain detection on the stdio path because the aggregated verdict
+	// had no Method field. Verify the unconditional batch reject fires.
+	sc := testInputScanner(t)
+
+	batch := `[{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"expensive_model","arguments":{}}}]` + "\n"
+
+	var serverBuf bytes.Buffer
+	var logBuf bytes.Buffer
+	blockedCh := make(chan BlockedRequest, 10)
+
+	ForwardScannedInput(
+		transport.NewStdioReader(strings.NewReader(batch)),
+		transport.NewStdioWriter(&serverBuf),
+		&logBuf, "warn", "block", blockedCh, nil, nil, testOpts(sc),
+	)
+
+	blocked := make([]BlockedRequest, 0)
+	for b := range blockedCh {
+		blocked = append(blocked, b)
+	}
+
+	if len(blocked) != 1 {
+		t.Fatalf("expected 1 blocked batch request, got %d", len(blocked))
+	}
+	if blocked[0].ErrorCode != -32600 {
+		t.Errorf("ErrorCode = %d, want -32600", blocked[0].ErrorCode)
 	}
 }
 

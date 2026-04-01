@@ -223,6 +223,22 @@ func scanHTTPInput(msg []byte, logW io.Writer, sessionKey, auditSessionKey strin
 		tryRecoverSession(rec, adaptiveCfg, m)
 	}
 
+	// Reject JSON-RPC batch requests unconditionally. MCP does not use
+	// batch messages, and the response path already drops batch arrays
+	// (proxy.go, proxy_http.go upstream handler). Forwarding a batch
+	// would produce a response blackhole. Rejecting here also closes the
+	// verdict.Method gap where per-call checks (DoW, chain, A2A) were
+	// silently skipped because the aggregated verdict had no Method.
+	if trimmed := bytes.TrimSpace(msg); len(trimmed) > 0 && trimmed[0] == '[' {
+		_, _ = fmt.Fprintf(logW, "pipelock: input: blocked batch request (not supported by MCP)\n")
+		recordAdaptiveSignal(session.SignalBlock)
+		return &BlockedRequest{
+			ID:           extractRPCID(msg),
+			ErrorCode:    -32600,
+			ErrorMessage: "pipelock: batch requests are not supported by MCP",
+		}
+	}
+
 	// Determine input scanning parameters.
 	action := config.ActionWarn
 	onParseError := config.ActionBlock

@@ -630,6 +630,23 @@ func ForwardScannedInput(
 			tryRecoverSession(rec, adaptiveCfg, m)
 		}
 
+		// Reject JSON-RPC batch requests unconditionally. MCP does not
+		// use batch messages, and the response path already drops batch
+		// arrays. Forwarding would produce a response blackhole and
+		// bypass per-call checks (DoW, chain) due to the aggregated
+		// verdict having no Method field.
+		trimmedLine := bytes.TrimSpace(line)
+		if len(trimmedLine) > 0 && trimmedLine[0] == '[' {
+			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked batch request (not supported by MCP)\n", lineNum)
+			recordAdaptiveSignal(session.SignalBlock)
+			blockedCh <- BlockedRequest{
+				ID:           extractRPCID(line),
+				ErrorCode:    -32600,
+				ErrorMessage: "pipelock: batch requests are not supported by MCP",
+			}
+			continue
+		}
+
 		verdict := ScanRequest(line, sc, action, onParseError)
 
 		// Tool call policy check — independent of content scanning.
@@ -642,11 +659,9 @@ func ForwardScannedInput(
 		bindingAction := ""
 		bindingReason := ""
 
-		// Batch requests bypass per-method binding checks because the
-		// aggregate verdict has no single Method. Fail closed: treat
-		// batch requests as binding violations when session binding is
-		// active, since they could contain unvalidated tools/call messages.
-		trimmedLine := bytes.TrimSpace(line)
+		// Defense-in-depth: session binding also rejects batches. The
+		// unconditional batch reject above makes this unreachable, but
+		// it stays as a safety net if the early check is ever removed.
 		if bindingCfg != nil && bindingCfg.Baseline != nil && len(trimmedLine) > 0 && trimmedLine[0] == '[' {
 			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: batch request with session binding active\n", lineNum)
 			bindingAction = bindingCfg.UnknownToolAction

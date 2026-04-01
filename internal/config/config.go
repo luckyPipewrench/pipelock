@@ -3864,6 +3864,11 @@ func Defaults() *Config {
 				// Ethereum/EVM private keys: 0x-prefixed 64-char hex (256-bit).
 				// Requires 0x to avoid SHA-256 hash false positives. (?i) auto-prefix covers 0X.
 				{Name: "Ethereum Private Key", Regex: `0x[0-9a-f]{64}\b`, Severity: "critical"},
+				// Ethereum Address (0x + 40 hex) is available in preset configs
+				// but NOT in defaults because DLP fires before address_protection
+				// allowlists, causing unavoidable false positives for blockchain
+				// agents. Operators who need ETH address DLP without address_protection
+				// should add the pattern to their config or use a preset.
 
 				// Identity / PII
 				{Name: "Social Security Number", Regex: `\b\d{3}-\d{2}-\d{4}\b`, Severity: "low"},
@@ -3875,6 +3880,18 @@ func Defaults() *Config {
 				// so \b still fires. Accepted tradeoff: such params are rare in agent traffic.
 				// Case-insensitive matching is added automatically by scanner.New() via (?i) prefix.
 				{Name: "Credential in URL", Regex: `\b(?:password|passwd|secret|token|apikey|api_key|api-key)\s*=\s*[^\s&]{4,}`, Severity: "high"},
+				// Environment variable credential patterns: catches env var dumps
+				// where the secret-bearing keyword is the terminal segment of an
+				// UPPER_CASE name (e.g., AWS_SECRET_ACCESS_KEY=..., STRIPE_SECRET_KEY=...,
+				// DB_PASSWORD=..., CLIENT_SECRET=..., MY_API_KEY=...).
+				// The keyword must end the variable name so benign suffixes like
+				// *_TOKEN_BUCKET, *_PASSWORD_POLICY, and *_ROTATION_DAYS do not match.
+				// (?-i:) overrides the scanner's auto (?i) prefix for the variable
+				// name prefix — env vars are UPPER_CASE by convention, URL params
+				// are lower_case (next_token, csrf_token_id). This avoids FP on
+				// URL params while catching env var dumps.
+				// Min value length of 8 prevents FP on short config values.
+				{Name: "Environment Variable Secret", Regex: `(?-i:[A-Z][A-Z0-9]*[_-](?:SECRET(?:[_-]ACCESS)?[_-]?KEY|SECRET|PASSWORD|PASSWD|TOKEN|API[_-]?KEY))\b\s*=\s*\S{8,}`, Severity: "high"},
 
 				// Financial identifiers — validated with post-match checksums to minimize
 				// false positives. Credit card regex is intentionally broad (any 15-19
@@ -3926,7 +3943,7 @@ func Defaults() *Config {
 				// State/control poisoning — detect credential solicitation,
 				// memory persistence, and preference manipulation in tool results.
 				{Name: "Credential Solicitation", Regex: `(?is)\b(send|provide|paste|return|include|supply|submit|share)\b.{0,80}\b(password|passwd|token|api[_ -]?key|secret|credential|private[_ -]?key|ssh[_ -]?key|session[_ -]?cookie)\b`},
-				{Name: "Credential Path Directive", Regex: `(?is)\b(read|get|fetch|retrieve|cat|copy|extract|open)\b.{0,80}(\.ssh[/\\]|\.aws[/\\]credentials|\.env\b|\.npmrc\b|\.pypirc\b|\.netrc\b|\bid_rsa\b|\bid_ed25519\b|\bkubeconfig\b)`},
+				{Name: "Credential Path Directive", Regex: `(?is)\b(read|get|fetch|retrieve|cat|copy|extract|open)\b.{0,80}(\.ssh[/\\]|\.aws[/\\]credentials|\.env\b|\.npmrc\b|\.pypirc\b|\.netrc\b|\bid_rsa\b|\bid_ed25519\b|\bkubeconfig\b|/etc/passwd\b|/etc/shadow\b)`},
 				{Name: "Auth Material Requirement", Regex: `(?is)\bto\s+(complete|continue|finish|proceed|verify)\b.{0,80}\b(authentication|credential|token|api[_ -]?key|private[_ -]?key|ssh[_ -]?key)\b.{0,40}\b(required|needed|necessary|must be)\b`},
 				{Name: "Memory Persistence Directive", Regex: `(?is)\b(save|store|remember|retain|persist|record|cache)\b.{0,40}\b(this|these|that|it|the)\b.{0,60}\b(for future|for later|across sessions?|next session|next time|future tasks?|subsequent|permanently|from now on|going forward|in all future)\b`},
 				{Name: "Preference Poisoning", Regex: `(?is)\b(from now on|always|going forward|in future)\b.{0,80}\b(prefer|prioritize|trust|choose|use|default to)\b.{0,60}\b(this tool|that tool|my tool|the external|the remote)\b`},

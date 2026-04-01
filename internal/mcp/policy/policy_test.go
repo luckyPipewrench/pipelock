@@ -3109,3 +3109,41 @@ func TestValidate_InvalidArgKey(t *testing.T) {
 		t.Error("expected validation error for invalid arg_key regex")
 	}
 }
+
+// --- Gauntlet regression tests ---
+
+func TestCheckToolCall_GauntletBraceExpansionTrailingEmpty(t *testing.T) {
+	t.Parallel()
+	pc := defaultConfig(t)
+
+	// Gauntlet case shell-brace-expansion-004:
+	// /bin/{rm,} expands to /bin/rm + /bin/ (trailing empty item)
+	v := pc.CheckToolCall("exec", []string{"/bin/{rm,} -rf /tmp/sensitive"})
+	if !v.Matched {
+		t.Error("brace expansion with trailing empty item not detected: /bin/{rm,}")
+	}
+}
+
+func TestCheckToolCall_BraceExpansionLeadingEmpty(t *testing.T) {
+	t.Parallel()
+	pc := defaultConfig(t)
+
+	// {,rm} — leading empty item, bash expands to "" + "rm"
+	v := pc.CheckToolCall("exec", []string{"/bin/{,rm} -rf /tmp/sensitive"})
+	if !v.Matched {
+		t.Error("brace expansion with leading empty item not detected: /bin/{,rm}")
+	}
+}
+
+func TestCheckToolCall_GauntletIFSManipulation(t *testing.T) {
+	t.Parallel()
+	pc := defaultConfig(t)
+
+	// Gauntlet case shell-ifs-manipulation-006:
+	// IFS=,;CMD=r,m;$CMD -rf /data
+	// After IFS-aware expansion: CMD expands to "r m", producing "rm -rf /data"
+	v := pc.CheckToolCall("exec", []string{"IFS=,;CMD=r,m;$CMD -rf /data"})
+	if !v.Matched {
+		t.Error("IFS manipulation command construction not detected")
+	}
+}

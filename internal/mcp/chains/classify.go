@@ -17,22 +17,25 @@ import (
 // categoryKeywords maps tool categories to keywords that appear in tool names.
 // Used as fallback classification when no config override matches.
 var categoryKeywords = map[string][]string{
-	"read":    {"read", "get", "view", "cat", "head", "tail", "open", "load", "retrieve", "access"},
-	"write":   {"write", "create", "save", "update", "edit", "modify", "put", "append", "insert"},
-	"exec":    {"shell", "bash", "run", "execute", "cmd", "spawn", "eval", "sh", "zsh", "powershell"},
-	"network": {"fetch", "curl", "wget", "http", "request", "send", "post", "upload", "download", "api"},
-	"list":    {"list", "ls", "dir", "find", "glob", "search", "scan", "enumerate", "walk"},
-	"env":     {"env", "environ", "getenv", "secret", "credential", "config", "token", "key", "password"},
-	"persist": {"crontab", "cron", "systemctl", "systemd", "launchd", "launchctl", "autostart"},
+	"read":          {"read", "get", "view", "cat", "head", "tail", "open", "load", "retrieve", "access"},
+	"write":         {"write", "create", "save", "update", "edit", "modify", "put", "append", "insert"},
+	"exec":          {"shell", "bash", "run", "execute", "cmd", "spawn", "eval", "sh", "zsh", "powershell"},
+	"network":       {"fetch", "curl", "wget", "http", "request", "send", "post", "upload", "download", "api"},
+	"list":          {"list", "ls", "dir", "find", "glob", "search", "scan", "enumerate", "walk"},
+	"env":           {"env", "environ", "getenv", "secret", "credential", "config", "token", "key", "password"},
+	categoryPersist: {"crontab", "cron", "systemctl", "systemd", "launchd", "launchctl", "autostart"},
 }
 
 // categoryUnknown is returned when a tool name does not match any category.
 const categoryUnknown = "unknown"
 
+// categoryPersist is the classification for persistence operations.
+const categoryPersist = "persist"
+
 // categoryPriority defines the priority order for keyword matching.
 // Higher priority categories win when a tool name matches multiple categories.
 // exec > persist > env > network > write > read > list.
-var categoryPriority = []string{"exec", "persist", "env", "network", "write", "read", "list"}
+var categoryPriority = []string{"exec", categoryPersist, "env", "network", "write", "read", "list"}
 
 // toolNameDelimiters defines characters used to split tool names into segments.
 var toolNameDelimiters = "_-."
@@ -139,7 +142,7 @@ func matchByPriority(segments []string) string {
 			lower := strings.ToLower(seg)
 			for _, kw := range keywords {
 				if lower == kw {
-					if category == "persist" && hasReadIndicator(segments) {
+					if category == categoryPersist && hasReadIndicator(segments) {
 						break // skip persist, try lower-priority categories
 					}
 					return category
@@ -163,15 +166,33 @@ var persistArgPattern = regexp.MustCompile(
 	`(?i)(\bcrontab\s+(-\w+\s+\S+\s+)*-e\b|\bcrontab\s+(-\w+\s+\S+\s+)*[^-\s]|\|\s*crontab\b|\bsystemctl\s+(-{1,2}\w+\s+)*(enable|daemon-reload)\b|\blaunchctl\s+(load|enable)\b)`,
 )
 
-// reclassifyByArgs upgrades an "exec" classification to "persist" when
-// the tool's arguments indicate a persistence command. This lets chain
-// detection catch write → bash("systemctl enable") as write-persist.
+// persistWritePathPattern matches persistence-related file paths in tool
+// arguments. Used to reclassify "write" tools as "persist" when arguments
+// target crontab, systemd unit, or launchd plist paths. Safe for "write"
+// category because write + persist-path = persistence by definition.
+// NOT used for "exec" category (those use persistArgPattern instead)
+// because "exec" + path could be read-only (e.g., "cat /etc/cron.d/backup").
+var persistWritePathPattern = regexp.MustCompile(
+	`(?i)(/var/spool/cron|/etc/cron\b|/etc/cron\.d/|/etc/crontab\b|/etc/systemd/|/lib/systemd/|\.config/systemd/user/|/etc/init\.d/|/Library/LaunchDaemons/|/Library/LaunchAgents/|~/Library/LaunchAgents/)`,
+)
+
+// reclassifyByArgs upgrades tool classification to "persist" when
+// the tool's arguments indicate persistence activity:
+//   - "exec" tools: matches explicit commands (crontab -e, systemctl enable)
+//   - "write" tools: matches persistence file paths (crontab, systemd, launchd)
 func reclassifyByArgs(category, argHint string) string {
-	if category != "exec" || argHint == "" {
+	if argHint == "" {
 		return category
 	}
-	if persistArgPattern.MatchString(argHint) {
-		return "persist"
+	switch category {
+	case "exec":
+		if persistArgPattern.MatchString(argHint) {
+			return categoryPersist
+		}
+	case "write":
+		if persistWritePathPattern.MatchString(argHint) {
+			return categoryPersist
+		}
 	}
 	return category
 }

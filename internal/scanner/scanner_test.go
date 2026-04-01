@@ -436,6 +436,62 @@ func TestScan_AllowsHexOctalIP_WhenExternal(t *testing.T) {
 	}
 }
 
+func TestScan_BlocklistBlocksAltIPNotation(t *testing.T) {
+	cfg := testConfig()
+	cfg.Internal = nil // disable SSRF — we're testing blocklist, not SSRF
+	cfg.FetchProxy.Monitoring.Blocklist = []string{"127.0.0.1"}
+	s := New(cfg)
+
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{"hex packed", "http://0x7f000001/admin"},
+		{"octal dotted", "http://0177.0.0.1/admin"},
+		{"decimal integer", "http://2130706433/admin"},
+		{"hex dotted", "http://0x7f.0.0.1/admin"},
+		{"standard dotted", "http://127.0.0.1/admin"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := s.Scan(context.Background(), tt.url)
+			if r.Allowed {
+				t.Errorf("expected blocklist to block %s", tt.url)
+			}
+			if r.Scanner != ScannerBlocklist {
+				t.Errorf("expected scanner=blocklist for %s, got %s", tt.url, r.Scanner)
+			}
+		})
+	}
+}
+
+func TestScan_AllowlistWithAltIPNotation(t *testing.T) {
+	cfg := testConfig()
+	cfg.Internal = nil
+	cfg.Mode = "strict"
+	cfg.APIAllowlist = []string{"10.0.0.1"}
+	s := New(cfg)
+
+	tests := []struct {
+		name    string
+		url     string
+		allowed bool
+	}{
+		{"hex packed allowed", "http://0x0a000001/api", true},
+		{"octal dotted allowed", "http://012.0.0.1/api", true},
+		{"standard allowed", "http://10.0.0.1/api", true},
+		{"hex packed denied", "http://0x0a000002/api", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := s.Scan(context.Background(), tt.url)
+			if r.Allowed != tt.allowed {
+				t.Errorf("%s: expected allowed=%v, got allowed=%v (reason=%s)", tt.url, tt.allowed, r.Allowed, r.Reason)
+			}
+		})
+	}
+}
+
 func TestScan_EntropySkipsShortSegments(t *testing.T) {
 	s := New(testConfig())
 

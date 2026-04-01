@@ -480,6 +480,13 @@ func (s *Scanner) scan(ctx context.Context, rawURL string) Result {
 	// Normalize hostname for consistent matching
 	hostname := strings.ToLower(parsed.Hostname())
 
+	// Canonicalize non-standard IP notations (hex, octal, decimal integer)
+	// so that allowlist/blocklist/DLP checks all see the same dotted-decimal
+	// form. Without this, 0x7f000001 bypasses a blocklist entry for 127.0.0.1.
+	if altIP := parseAlternativeIP(hostname); altIP != nil {
+		hostname = altIP.String()
+	}
+
 	// 1. Scheme check
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return Result{

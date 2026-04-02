@@ -27,10 +27,12 @@ import (
 var InvisibleRanges = &unicode.RangeTable{
 	R16: []unicode.Range16{
 		{Lo: 0x00AD, Hi: 0x00AD, Stride: 1}, // soft hyphen
+		{Lo: 0x115F, Hi: 0x1160, Stride: 1}, // Hangul Choseong/Jungseong Fillers
 		{Lo: 0x200B, Hi: 0x200F, Stride: 1}, // zero-width space through RTL mark
 		{Lo: 0x202A, Hi: 0x202E, Stride: 1}, // bidi embedding controls (LRE/RLE/PDF/LRO/RLO)
 		{Lo: 0x2060, Hi: 0x2064, Stride: 1}, // word joiner through invisible plus
 		{Lo: 0x2066, Hi: 0x2069, Stride: 1}, // bidi isolate controls (LRI/RLI/FSI/PDI)
+		{Lo: 0x3164, Hi: 0x3164, Stride: 1}, // Hangul Filler
 		{Lo: 0xFE00, Hi: 0xFE0F, Stride: 1}, // variation selectors 1-16
 		{Lo: 0xFEFF, Hi: 0xFEFF, Stride: 1}, // BOM / ZWNBSP
 		{Lo: 0xFFF9, Hi: 0xFFFB, Stride: 1}, // interlinear annotation anchors

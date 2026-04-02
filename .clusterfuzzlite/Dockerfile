@@ -1,0 +1,14 @@
+FROM gcr.io/oss-fuzz-base/base-builder-go
+
+COPY . $SRC/pipelock
+WORKDIR $SRC/pipelock
+
+RUN compile_native_go_fuzzer github.com/luckyPipewrench/pipelock/internal/scanner FuzzScanURL fuzz_scan_url
+RUN compile_native_go_fuzzer github.com/luckyPipewrench/pipelock/internal/scanner FuzzMatchDomain fuzz_match_domain
+RUN compile_native_go_fuzzer github.com/luckyPipewrench/pipelock/internal/scanner FuzzShannonEntropy fuzz_shannon_entropy
+RUN compile_native_go_fuzzer github.com/luckyPipewrench/pipelock/internal/scanner FuzzScanResponseContent fuzz_scan_response_content
+RUN compile_native_go_fuzzer github.com/luckyPipewrench/pipelock/internal/audit FuzzSanitizeString fuzz_sanitize_string
+RUN compile_native_go_fuzzer github.com/luckyPipewrench/pipelock/internal/gitprotect FuzzParseDiff fuzz_parse_diff
+RUN compile_native_go_fuzzer github.com/luckyPipewrench/pipelock/internal/gitprotect FuzzScanDiff fuzz_scan_diff
+RUN compile_native_go_fuzzer github.com/luckyPipewrench/pipelock/internal/mcp FuzzScanResponse fuzz_scan_response
+RUN compile_native_go_fuzzer github.com/luckyPipewrench/pipelock/internal/seedprotect FuzzDetect fuzz_detect

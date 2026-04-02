@@ -12,15 +12,19 @@ jobs:
   review:
     if: >-
       github.event.issue.pull_request &&
-      (github.event.comment.body == '/review' ||
-       github.event.comment.body == '/review fast' ||
-       github.event.comment.body == '/review deep')
+      startsWith(github.event.comment.body, '/review')
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 0
+
+      - name: Set up Go
+        if: contains(github.event.comment.body, 'stats')
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version: '1.25'
 
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
@@ -35,11 +39,13 @@ jobs:
         env:
           COMMENT_BODY: ${{ github.event.comment.body }}
         run: |
-          if [ "$COMMENT_BODY" = "/review deep" ]; then
-            echo "mode=deep" >> "$GITHUB_OUTPUT"
-          else
-            echo "mode=fast" >> "$GITHUB_OUTPUT"
-          fi
+          case "$COMMENT_BODY" in
+            "/review deep")  echo "mode=deep" >> "$GITHUB_OUTPUT" ;;
+            "/review tests") echo "mode=tests" >> "$GITHUB_OUTPUT" ;;
+            "/review docs")  echo "mode=docs" >> "$GITHUB_OUTPUT" ;;
+            "/review stats") echo "mode=stats" >> "$GITHUB_OUTPUT" ;;
+            *)               echo "mode=fast" >> "$GITHUB_OUTPUT" ;;
+          esac
 
       - name: Run PR review
         env:

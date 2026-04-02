@@ -159,11 +159,19 @@ func interceptTunnel(
 		return fmt.Errorf("set handshake deadline: %w", err)
 	}
 
+	ictx := audit.LogContext{
+		Method:    "CONNECT",
+		URL:       targetHost,
+		ClientIP:  clientIP,
+		RequestID: requestID,
+		Agent:     agent,
+	}
+
 	tlsConn := tls.Server(clientConn, tlsCfg)
 	handshakeStart := time.Now()
 	if err := tlsConn.HandshakeContext(ctx); err != nil {
 		m.RecordTLSIntercept("handshake_error")
-		logger.LogBlocked("CONNECT", targetHost, "tls_handshake_error", err.Error(), clientIP, requestID, agent)
+		logger.LogBlocked(ictx, "tls_handshake_error", err.Error())
 		return fmt.Errorf("client TLS handshake: %w", err)
 	}
 	m.RecordTLSHandshake("client", time.Since(handshakeStart))
@@ -272,6 +280,13 @@ func newInterceptHandler(
 	target := net.JoinHostPort(targetHost, targetPort)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reqStart := time.Now()
+		actx := audit.LogContext{
+			Method:    r.Method,
+			URL:       r.URL.String(),
+			ClientIP:  clientIP,
+			RequestID: requestID,
+			Agent:     agent,
+		}
 
 		// Authority check: Host must match CONNECT target (host:port).
 		// Prevents domain fronting where the agent CONNECTs to allowed.com
@@ -285,7 +300,7 @@ func newInterceptHandler(
 		}
 		if !strings.EqualFold(reqHost, targetHost) || reqPort != targetPort {
 			mismatch := r.Host + " vs " + target
-			logger.LogBlocked(r.Method, r.URL.Path, "tls_authority_mismatch", "authority mismatch: "+mismatch, clientIP, requestID, agent)
+			logger.LogBlocked(audit.LogContext{Method: r.Method, URL: r.URL.Path, ClientIP: clientIP, RequestID: requestID, Agent: agent}, "tls_authority_mismatch", "authority mismatch: "+mismatch)
 			m.RecordTLSRequestBlocked("authority_mismatch")
 			http.Error(w, "authority mismatch: blocked", http.StatusForbidden)
 			return
@@ -341,7 +356,7 @@ func newInterceptHandler(
 				} else {
 					interceptRecordSignal(rec, session.SignalBlock, cfg, logger, m, p, clientIP, agent, requestID)
 				}
-				logger.LogBlocked(r.Method, targetURL, urlResult.Scanner, urlResult.Reason, clientIP, requestID, agent)
+				logger.LogBlocked(actx, urlResult.Scanner, urlResult.Reason)
 				m.RecordTLSRequestBlocked("url_scan")
 				if cfg.ExplainBlocksEnabled() && urlResult.Hint != "" {
 					w.Header().Set("X-Pipelock-Hint", urlResult.Hint)
@@ -366,14 +381,14 @@ func newInterceptHandler(
 				} else {
 					interceptRecordSignal(rec, session.SignalBlock, cfg, logger, m, p, clientIP, agent, requestID)
 				}
-				logger.LogBlocked(r.Method, targetURL, urlResult.Scanner, urlResult.Reason+" (escalated)", clientIP, requestID, agent)
+				logger.LogBlocked(actx, urlResult.Scanner, urlResult.Reason+" (escalated)")
 				m.RecordTLSRequestBlocked("url_scan")
 				http.Error(w, "blocked: "+urlResult.Reason+" (escalated)", status)
 				return
 			}
 			// Audit mode near-miss: URL was flagged but allowed.
 			interceptRecordSignal(rec, session.SignalNearMiss, cfg, logger, m, p, clientIP, agent, requestID)
-			logger.LogAnomaly(r.Method, targetURL, urlResult.Scanner, urlResult.Reason, clientIP, requestID, agent, urlResult.Score)
+			logger.LogAnomaly(actx, urlResult.Scanner, urlResult.Reason, urlResult.Score)
 		}
 
 		// A2A protocol detection: check path and Content-Type for A2A traffic.
@@ -398,13 +413,13 @@ func newInterceptHandler(
 					} else {
 						interceptRecordSignal(rec, session.SignalBlock, cfg, logger, m, p, clientIP, agent, requestID)
 					}
-					logger.LogBlocked(r.Method, r.URL.String(), scannerLabelA2A, a2aHdrResult.Reason, clientIP, requestID, agent)
+					logger.LogBlocked(actx, scannerLabelA2A, a2aHdrResult.Reason)
 					m.RecordTLSRequestBlocked(scannerLabelA2A)
 					http.Error(w, "blocked: "+a2aHdrResult.Reason, http.StatusForbidden)
 					return
 				}
 				// Audit/warn mode: log finding but continue.
-				logger.LogAnomaly(r.Method, r.URL.String(), scannerLabelA2A, a2aHdrResult.Reason, clientIP, requestID, agent, 0.8)
+				logger.LogAnomaly(actx, scannerLabelA2A, a2aHdrResult.Reason, 0.8)
 			}
 		}
 
@@ -501,7 +516,7 @@ func newInterceptHandler(
 					if !dlpExempt {
 						interceptRecordSignal(rec, session.SignalBlock, cfg, logger, m, p, clientIP, agent, requestID)
 					}
-					logger.LogBlocked(r.Method, r.URL.String(), scannerLabel, reason, clientIP, requestID, agent)
+					logger.LogBlocked(actx, scannerLabel, reason)
 					m.RecordTLSRequestBlocked(scannerLabel)
 					http.Error(w, "blocked: "+reason, http.StatusForbidden)
 					return
@@ -515,13 +530,13 @@ func newInterceptHandler(
 					if !dlpExempt {
 						interceptRecordSignal(rec, session.SignalBlock, cfg, logger, m, p, clientIP, agent, requestID)
 					}
-					logger.LogBlocked(r.Method, r.URL.String(), scannerLabel, reason+" (escalated)", clientIP, requestID, agent)
+					logger.LogBlocked(actx, scannerLabel, reason+" (escalated)")
 					m.RecordTLSRequestBlocked(scannerLabel)
 					http.Error(w, "blocked: "+reason+" (escalated)", http.StatusForbidden)
 					return
 				}
 				// Audit/warn mode: log finding but forward the request.
-				logger.LogAnomaly(r.Method, r.URL.String(), scannerLabel, reason, clientIP, requestID, agent, 0.8)
+				logger.LogAnomaly(actx, scannerLabel, reason, 0.8)
 			}
 
 			// A2A request body scanning: field-aware classification of JSON
@@ -545,13 +560,13 @@ func newInterceptHandler(
 						} else {
 							interceptRecordSignal(rec, session.SignalBlock, cfg, logger, m, p, clientIP, agent, requestID)
 						}
-						logger.LogBlocked(r.Method, r.URL.String(), scannerLabelA2A, reason, clientIP, requestID, agent)
+						logger.LogBlocked(actx, scannerLabelA2A, reason)
 						m.RecordTLSRequestBlocked(scannerLabelA2A)
 						http.Error(w, "blocked: "+reason, http.StatusForbidden)
 						return
 					}
 					// Audit/warn mode: log finding but forward the request.
-					logger.LogAnomaly(r.Method, r.URL.String(), scannerLabelA2A, reason, clientIP, requestID, agent, 0.8)
+					logger.LogAnomaly(actx, scannerLabelA2A, reason, 0.8)
 				}
 			}
 
@@ -591,13 +606,13 @@ func newInterceptHandler(
 				action := cfg.RequestBodyScanning.Action
 				// ActionAsk: no HITL terminal in intercepted tunnels, fail closed.
 				if action == config.ActionAsk || (action == config.ActionBlock && cfg.EnforceEnabled()) {
-					logger.LogBlocked(r.Method, r.URL.String(), "header_dlp", "request header contains secret", clientIP, requestID, agent)
+					logger.LogBlocked(actx, "header_dlp", "request header contains secret")
 					m.RecordTLSRequestBlocked("header_dlp")
 					http.Error(w, "blocked: request header contains secret", http.StatusForbidden)
 					return
 				}
 				// Audit mode: log but forward.
-				logger.LogAnomaly(r.Method, r.URL.String(), "header_dlp", "request header contains secret", clientIP, requestID, agent, 0.8) // 0.8: high confidence DLP match
+				logger.LogAnomaly(actx, "header_dlp", "request header contains secret", 0.8) // 0.8: high confidence DLP match
 			}
 		}
 
@@ -692,7 +707,7 @@ func newInterceptHandler(
 		// Forward to upstream.
 		resp, err := upstream.RoundTrip(r)
 		if err != nil {
-			logger.LogError(r.Method, r.URL.String(), clientIP, requestID, agent, err)
+			logger.LogError(actx, err)
 			http.Error(w, "upstream error", http.StatusBadGateway)
 			return
 		}
@@ -701,7 +716,7 @@ func newInterceptHandler(
 		// Fail-closed on compressed responses: DLP regex can't match
 		// compressed content. Block rather than forward unscanned data.
 		if hasNonIdentityEncoding(resp.Header.Get("Content-Encoding")) {
-			logger.LogBlocked(r.Method, r.URL.String(), "tls_response_blocked", "compressed response cannot be scanned", clientIP, requestID, agent)
+			logger.LogBlocked(actx, "tls_response_blocked", "compressed response cannot be scanned")
 			m.RecordTLSResponseBlocked("compressed")
 			http.Error(w, "blocked: compressed response cannot be scanned", http.StatusForbidden)
 			return
@@ -716,7 +731,7 @@ func newInterceptHandler(
 		// code is restructured.
 		if isA2A && strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
 			if hasNonIdentityEncoding(resp.Header.Get("Content-Encoding")) {
-				logger.LogBlocked(r.Method, r.URL.String(), scannerLabelA2A, "compressed A2A stream cannot be scanned", clientIP, requestID, agent)
+				logger.LogBlocked(actx, scannerLabelA2A, "compressed A2A stream cannot be scanned")
 				m.RecordTLSResponseBlocked(scannerLabelA2A)
 				http.Error(w, "blocked: compressed A2A stream cannot be scanned", http.StatusForbidden)
 				return
@@ -737,9 +752,9 @@ func newInterceptHandler(
 				// warn mode, findings are logged as anomalies but don't
 				// terminate the stream (events have already been forwarded).
 				if errors.Is(streamErr, mcp.ErrA2AStreamFinding) && cfg.A2AScanning.Action == config.ActionWarn {
-					logger.LogAnomaly(r.Method, r.URL.String(), scannerLabelA2A, streamErr.Error(), clientIP, requestID, agent, 0)
+					logger.LogAnomaly(actx, scannerLabelA2A, streamErr.Error(), 0)
 				} else {
-					logger.LogBlocked(r.Method, r.URL.String(), scannerLabelA2A, streamErr.Error(), clientIP, requestID, agent)
+					logger.LogBlocked(actx, scannerLabelA2A, streamErr.Error())
 					m.RecordTLSResponseBlocked(scannerLabelA2A)
 				}
 			}
@@ -753,13 +768,13 @@ func newInterceptHandler(
 		}
 		respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResp+1))
 		if readErr != nil {
-			logger.LogError(r.Method, r.URL.String(), clientIP, requestID, agent, readErr)
+			logger.LogError(actx, readErr)
 			m.RecordTLSResponseBlocked("read_error")
 			http.Error(w, "blocked: response read error", http.StatusForbidden)
 			return
 		}
 		if int64(len(respBody)) > maxResp {
-			logger.LogBlocked(r.Method, r.URL.String(), "tls_response_blocked", "response too large for scanning", clientIP, requestID, agent)
+			logger.LogBlocked(actx, "tls_response_blocked", "response too large for scanning")
 			m.RecordTLSResponseBlocked("oversized")
 			http.Error(w, "blocked: response too large for scanning", http.StatusForbidden)
 			return
@@ -808,13 +823,13 @@ func newInterceptHandler(
 					} else {
 						interceptRecordSignal(rec, session.SignalBlock, cfg, logger, m, p, clientIP, agent, requestID)
 					}
-					logger.LogBlocked(r.Method, r.URL.String(), scannerLabelA2A, reason, clientIP, requestID, agent)
+					logger.LogBlocked(actx, scannerLabelA2A, reason)
 					m.RecordTLSResponseBlocked(scannerLabelA2A)
 					http.Error(w, "blocked: "+reason, http.StatusForbidden)
 					return
 				}
 				// Audit/warn mode: log finding but forward response.
-				logger.LogAnomaly(r.Method, r.URL.String(), scannerLabelA2A, reason, clientIP, requestID, agent, 0.8)
+				logger.LogAnomaly(actx, scannerLabelA2A, reason, 0.8)
 			}
 		}
 
@@ -822,7 +837,7 @@ func newInterceptHandler(
 		// Skip for response-exempt domains (e.g. trusted LLM providers).
 		interceptRespExempt := isResponseScanExempt(r.URL.Hostname(), cfg.ResponseScanning.ExemptDomains)
 		if sc.ResponseScanningEnabled() && interceptRespExempt {
-			logger.LogResponseScanExempt(r.Method, r.URL.String(), r.URL.Hostname(), clientIP, requestID, agent)
+			logger.LogResponseScanExempt(actx, r.URL.Hostname())
 		}
 		if sc.ResponseScanningEnabled() {
 			scanResult := sc.ScanResponse(r.Context(), string(respBody))
@@ -899,7 +914,7 @@ func newInterceptHandler(
 					if !interceptRespExempt {
 						interceptRecordSignal(rec, session.SignalBlock, cfg, logger, m, p, clientIP, agent, requestID)
 					}
-					logger.LogBlocked(r.Method, r.URL.String(), "response_scan", reason, clientIP, requestID, agent)
+					logger.LogBlocked(actx, "response_scan", reason)
 					m.RecordTLSResponseBlocked("injection")
 					http.Error(w, "blocked: response contains injection", http.StatusForbidden)
 					return
@@ -935,10 +950,10 @@ func newInterceptHandler(
 					// Update Content-Length to match stripped body; prevents HTTP/1.1
 					// framing errors from a stale upstream Content-Length header.
 					resp.Header.Set("Content-Length", strconv.Itoa(len(respBody)))
-					logger.LogResponseScan(r.URL.String(), clientIP, requestID, agent, config.ActionStrip, len(scanResult.Matches), patternNames, bundleRules)
+					logger.LogResponseScan(audit.LogContext{URL: r.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: agent}, config.ActionStrip, len(scanResult.Matches), patternNames, bundleRules)
 				default:
 					// warn/forward: log and forward unmodified.
-					logger.LogResponseScan(r.URL.String(), clientIP, requestID, agent, action, len(scanResult.Matches), patternNames, bundleRules)
+					logger.LogResponseScan(audit.LogContext{URL: r.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: agent}, action, len(scanResult.Matches), patternNames, bundleRules)
 				}
 			}
 		}

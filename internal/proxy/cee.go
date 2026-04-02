@@ -287,13 +287,14 @@ func ceeAdmit(
 			m.RecordCrossRequestEntropyExceeded()
 			detail := fmt.Sprintf("entropy budget exceeded: %.0f/%.0f bits",
 				et.CurrentUsage(sessionKey), et.Budget())
+			actx := audit.LogContext{Method: "CEE", URL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}
 			if ceeCfg.EntropyBudget.Action == config.ActionBlock {
-				logger.LogBlocked("CEE", targetURL, "cross_request_entropy", detail, clientIP, requestID, agent)
+				logger.LogBlocked(actx, "cross_request_entropy", detail)
 				result.Blocked = true
 				result.Reason = "cross-request entropy budget exceeded"
 				return result
 			}
-			logger.LogAnomaly("CEE", targetURL, "cross_request_entropy", detail, clientIP, requestID, agent, 0)
+			logger.LogAnomaly(actx, "cross_request_entropy", detail, 0)
 		}
 	}
 
@@ -350,15 +351,16 @@ func ceeFragmentScan(
 	}
 	m.RecordCrossRequestDLPMatch()
 	detail := fmt.Sprintf("fragment reassembly DLP match: %s", matches[0].PatternName)
+	actx := audit.LogContext{Method: "CEE", URL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}
 	if ceeCfg.Action == config.ActionBlock {
-		logger.LogBlocked("CEE", targetURL, "cross_request_fragment", detail, clientIP, requestID, agent)
+		logger.LogBlocked(actx, "cross_request_fragment", detail)
 		return &ceeResult{
 			Blocked:     true,
 			FragmentHit: true,
 			Reason:      fmt.Sprintf("cross-request secret detected: %s", matches[0].PatternName),
 		}
 	}
-	logger.LogAnomaly("CEE", targetURL, "cross_request_fragment", detail, clientIP, requestID, agent, 0)
+	logger.LogAnomaly(actx, "cross_request_fragment", detail, 0)
 	return &ceeResult{FragmentHit: true}
 }
 

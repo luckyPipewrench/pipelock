@@ -224,6 +224,15 @@ type BundleRuleHit struct {
 	BundleVersion string `json:"bundle_version"`
 }
 
+// LogContext carries common fields shared across all audit log events.
+type LogContext struct {
+	Method    string
+	URL       string
+	ClientIP  string
+	RequestID string
+	Agent     string
+}
+
 // Logger handles structured audit logging using zerolog.
 type Logger struct {
 	zl             zerolog.Logger
@@ -294,34 +303,34 @@ func (l *Logger) SetEmitter(e *emit.Emitter) {
 }
 
 // LogAllowed logs a successful, allowed request.
-func (l *Logger) LogAllowed(method, url, clientIP, requestID string, statusCode, sizeBytes int, duration time.Duration, agent string) {
+func (l *Logger) LogAllowed(ctx LogContext, statusCode, sizeBytes int, duration time.Duration) {
 	if !l.includeAllowed {
 		return
 	}
 	e := newLogEntry(l.zl.Info(), EventAllowed).
-		str("method", method).
-		str("url", url).
-		str("client_ip", clientIP).
-		str("request_id", requestID).
+		str("method", ctx.Method).
+		str("url", ctx.URL).
+		str("client_ip", ctx.ClientIP).
+		str("request_id", ctx.RequestID).
 		intField("status_code", statusCode).
 		intField("size_bytes", sizeBytes).
 		durMS(duration).
-		optStr("agent", agent)
+		optStr("agent", ctx.Agent)
 	e.msg("request allowed")
 }
 
 // LogBlocked logs a blocked request with the reason.
-func (l *Logger) LogBlocked(method, url, scanner, reason, clientIP, requestID, agent string) {
+func (l *Logger) LogBlocked(ctx LogContext, scanner, reason string) {
 	technique := TechniqueForScanner(scanner)
 
 	e := newLogEntry(l.zl.Warn(), EventBlocked).
-		str("method", method).
-		str("url", url).
-		str("client_ip", clientIP).
-		str("request_id", requestID).
+		str("method", ctx.Method).
+		str("url", ctx.URL).
+		str("client_ip", ctx.ClientIP).
+		str("request_id", ctx.RequestID).
 		str("scanner", scanner).
 		str("reason", reason).
-		optStr("agent", agent).
+		optStr("agent", ctx.Agent).
 		optStr("mitre_technique", technique)
 
 	// includeBlocked gates local audit log only — external emission always fires
@@ -335,13 +344,13 @@ func (l *Logger) LogBlocked(method, url, scanner, reason, clientIP, requestID, a
 }
 
 // LogError logs a fetch error.
-func (l *Logger) LogError(method, url, clientIP, requestID, agent string, err error) {
+func (l *Logger) LogError(ctx LogContext, err error) {
 	e := newLogEntry(l.zl.Error(), EventError).
-		str("method", method).
-		str("url", url).
-		str("client_ip", clientIP).
-		str("request_id", requestID).
-		optStr("agent", agent).
+		str("method", ctx.Method).
+		str("url", ctx.URL).
+		str("client_ip", ctx.ClientIP).
+		str("request_id", ctx.RequestID).
+		optStr("agent", ctx.Agent).
 		errField(err)
 	e.msg("request error")
 
@@ -354,15 +363,15 @@ func (l *Logger) LogError(method, url, clientIP, requestID, agent string, err er
 // identifies which scanner/check produced the anomaly (e.g. "dlp", "ssrf").
 // Pass an empty string for operational anomalies that aren't scanner-driven
 // (startup warnings, readability failures, redirect hints).
-func (l *Logger) LogAnomaly(method, url, scanner, reason, clientIP, requestID, agent string, score float64) {
+func (l *Logger) LogAnomaly(ctx LogContext, scanner, reason string, score float64) {
 	technique := TechniqueForScanner(scanner)
 
 	e := newLogEntry(l.zl.Warn(), EventAnomaly).
-		str("method", method).
-		str("url", url).
-		str("client_ip", clientIP).
-		str("request_id", requestID).
-		optStr("agent", agent).
+		str("method", ctx.Method).
+		str("url", ctx.URL).
+		str("client_ip", ctx.ClientIP).
+		str("request_id", ctx.RequestID).
+		optStr("agent", ctx.Agent).
 		optStr("scanner", scanner).
 		optStr("mitre_technique", technique).
 		str("reason", reason).
@@ -378,33 +387,33 @@ func (l *Logger) LogAnomaly(method, url, scanner, reason, clientIP, requestID, a
 // the destination host matched response_scanning.exempt_domains. This is a dedicated
 // event type (not "anomaly") so SIEM consumers can filter exemption events separately
 // from actual security anomalies.
-func (l *Logger) LogResponseScanExempt(method, url, hostname, clientIP, requestID, agent string) {
+func (l *Logger) LogResponseScanExempt(ctx LogContext, hostname string) {
 	event := l.zl.Info().
 		Str("event", string(EventResponseScanExempt)).
-		Str("method", method).
-		Str("url", sanitizeString(url)).
+		Str("method", ctx.Method).
+		Str("url", sanitizeString(ctx.URL)).
 		Str("hostname", hostname).
-		Str("client_ip", clientIP).
-		Str("request_id", requestID).
+		Str("client_ip", ctx.ClientIP).
+		Str("request_id", ctx.RequestID).
 		Str("enforcement_type", "response_scanning").
 		Str("reason", "exempt_domains match")
-	if agent != "" {
-		event = event.Str("agent", sanitizeString(agent))
+	if ctx.Agent != "" {
+		event = event.Str("agent", sanitizeString(ctx.Agent))
 	}
 	event.Msg("response scan skipped: exempt domain")
 
 	if l.emitter != nil {
 		fields := map[string]any{
-			"method":           method,
-			"url":              sanitizeString(url),
+			"method":           ctx.Method,
+			"url":              sanitizeString(ctx.URL),
 			"hostname":         hostname,
-			"client_ip":        clientIP,
-			"request_id":       requestID,
+			"client_ip":        ctx.ClientIP,
+			"request_id":       ctx.RequestID,
 			"enforcement_type": "response_scanning",
 			"reason":           "exempt_domains match",
 		}
-		if agent != "" {
-			fields["agent"] = sanitizeString(agent)
+		if ctx.Agent != "" {
+			fields["agent"] = sanitizeString(ctx.Agent)
 		}
 		l.emitter.Emit(context.Background(), string(EventResponseScanExempt), fields)
 	}
@@ -413,18 +422,18 @@ func (l *Logger) LogResponseScanExempt(method, url, hostname, clientIP, requestI
 // LogResponseScan logs a response content scan that found prompt injection patterns.
 // When bundleRules is non-empty, bundle provenance is included in the audit event
 // and webhook payload so SIEM consumers can identify which community rules matched.
-func (l *Logger) LogResponseScan(url, clientIP, requestID, agent, action string, matchCount int, patternNames []string, bundleRules []BundleRuleHit) {
+func (l *Logger) LogResponseScan(ctx LogContext, action string, matchCount int, patternNames []string, bundleRules []BundleRuleHit) {
 	technique := TechniqueForScanner("response_scan")
 
 	e := newLogEntry(l.zl.Warn(), EventResponseScan).
-		str("url", url).
-		str("client_ip", clientIP).
-		str("request_id", requestID).
+		str("url", ctx.URL).
+		str("client_ip", ctx.ClientIP).
+		str("request_id", ctx.RequestID).
 		str("action", action).
 		intField("match_count", matchCount).
 		strs("patterns", patternNames).
 		str("mitre_technique", technique).
-		optStr("agent", agent)
+		optStr("agent", ctx.Agent)
 	if len(bundleRules) > 0 {
 		e.bundleRulesField(bundleRules)
 	}
@@ -436,44 +445,44 @@ func (l *Logger) LogResponseScan(url, clientIP, requestID, agent, action string,
 }
 
 // LogTunnelOpen logs a CONNECT tunnel establishment.
-func (l *Logger) LogTunnelOpen(target, clientIP, requestID, agent string) {
+func (l *Logger) LogTunnelOpen(ctx LogContext, target string) {
 	if !l.includeAllowed {
 		return
 	}
 	e := newLogEntry(l.zl.Info(), EventTunnelOpen).
 		str("target", target).
-		str("client_ip", clientIP).
-		str("request_id", requestID).
-		optStr("agent", agent)
+		str("client_ip", ctx.ClientIP).
+		str("request_id", ctx.RequestID).
+		optStr("agent", ctx.Agent)
 	e.msg("tunnel opened")
 }
 
 // LogTunnelClose logs a CONNECT tunnel teardown with traffic stats.
-func (l *Logger) LogTunnelClose(target, clientIP, requestID, agent string, totalBytes int64, duration time.Duration) {
+func (l *Logger) LogTunnelClose(ctx LogContext, target string, totalBytes int64, duration time.Duration) {
 	if !l.includeAllowed {
 		return
 	}
 	e := newLogEntry(l.zl.Info(), EventTunnelClose).
 		str("target", target).
-		str("client_ip", clientIP).
-		str("request_id", requestID).
-		optStr("agent", agent).
+		str("client_ip", ctx.ClientIP).
+		str("request_id", ctx.RequestID).
+		optStr("agent", ctx.Agent).
 		int64Field("total_bytes", totalBytes).
 		durMS(duration)
 	e.msg("tunnel closed")
 }
 
 // LogForwardHTTP logs a forward proxy HTTP request (absolute-URI).
-func (l *Logger) LogForwardHTTP(method, url, clientIP, requestID, agent string, statusCode, sizeBytes int, duration time.Duration) {
+func (l *Logger) LogForwardHTTP(ctx LogContext, statusCode, sizeBytes int, duration time.Duration) {
 	if !l.includeAllowed {
 		return
 	}
 	e := newLogEntry(l.zl.Info(), EventForwardHTTP).
-		str("method", method).
-		str("url", url).
-		str("client_ip", clientIP).
-		str("request_id", requestID).
-		optStr("agent", agent).
+		str("method", ctx.Method).
+		str("url", ctx.URL).
+		str("client_ip", ctx.ClientIP).
+		str("request_id", ctx.RequestID).
+		optStr("agent", ctx.Agent).
 		intField("status_code", statusCode).
 		intField("size_bytes", sizeBytes).
 		durMS(duration)
@@ -797,16 +806,16 @@ func (l *Logger) LogKillSwitchDeny(transport, endpoint, source, message, clientI
 
 // LogBodyDLP logs a request body DLP scan detection.
 // When bundleRules is non-empty, bundle provenance is included in the audit event.
-func (l *Logger) LogBodyDLP(method, url, action, clientIP, requestID, agent string, matchCount int, patternNames []string, bundleRules []BundleRuleHit) {
+func (l *Logger) LogBodyDLP(ctx LogContext, action string, matchCount int, patternNames []string, bundleRules []BundleRuleHit) {
 	technique := TechniqueForScanner(ScannerDLP)
 
 	e := newLogEntry(l.zl.Warn(), EventBodyDLP).
-		str("method", method).
-		str("url", url).
+		str("method", ctx.Method).
+		str("url", ctx.URL).
 		str("action", action).
-		str("client_ip", clientIP).
-		str("request_id", requestID).
-		optStr("agent", agent).
+		str("client_ip", ctx.ClientIP).
+		str("request_id", ctx.RequestID).
+		optStr("agent", ctx.Agent).
 		intField("match_count", matchCount).
 		strs("patterns", patternNames).
 		str("mitre_technique", technique)
@@ -822,14 +831,14 @@ func (l *Logger) LogBodyDLP(method, url, action, clientIP, requestID, agent stri
 
 // LogBodyScan logs a request body scan hit with a configurable event type.
 // Used to distinguish address_protection from body_dlp in audit output.
-func (l *Logger) LogBodyScan(method, url string, eventType EventType, action, clientIP, requestID, agent string, matchCount int, findingNames []string) {
+func (l *Logger) LogBodyScan(ctx LogContext, eventType EventType, action string, matchCount int, findingNames []string) {
 	e := newLogEntry(l.zl.Warn(), eventType).
-		str("method", method).
-		str("url", url).
+		str("method", ctx.Method).
+		str("url", ctx.URL).
 		str("action", action).
-		str("client_ip", clientIP).
-		str("request_id", requestID).
-		optStr("agent", agent).
+		str("client_ip", ctx.ClientIP).
+		str("request_id", ctx.RequestID).
+		optStr("agent", ctx.Agent).
 		intField("match_count", matchCount).
 		strs("findings", findingNames)
 	e.msg("request body " + string(eventType) + " scan hit")
@@ -841,17 +850,17 @@ func (l *Logger) LogBodyScan(method, url string, eventType EventType, action, cl
 
 // LogHeaderDLP logs a request header DLP scan detection.
 // When bundleRules is non-empty, bundle provenance is included in the audit event.
-func (l *Logger) LogHeaderDLP(method, url, headerName, action, clientIP, requestID, agent string, patternNames []string, bundleRules []BundleRuleHit) {
+func (l *Logger) LogHeaderDLP(ctx LogContext, headerName, action string, patternNames []string, bundleRules []BundleRuleHit) {
 	technique := TechniqueForScanner(ScannerDLP)
 
 	e := newLogEntry(l.zl.Warn(), EventHeaderDLP).
-		str("method", method).
-		str("url", url).
+		str("method", ctx.Method).
+		str("url", ctx.URL).
 		str("header", headerName).
 		str("action", action).
-		str("client_ip", clientIP).
-		str("request_id", requestID).
-		optStr("agent", agent).
+		str("client_ip", ctx.ClientIP).
+		str("request_id", ctx.RequestID).
+		optStr("agent", ctx.Agent).
 		strs("patterns", patternNames).
 		str("mitre_technique", technique)
 	if len(bundleRules) > 0 {

@@ -289,11 +289,18 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			}
 			result := currentScanner.Scan(req.Context(), redirectURL)
 			if !result.Allowed {
+				actx := audit.LogContext{
+					Method:    "GET",
+					URL:       redirectURL,
+					ClientIP:  clientIP,
+					RequestID: requestID,
+					Agent:     agentName,
+				}
 				if currentCfg.EnforceEnabled() {
-					logger.LogBlocked("GET", redirectURL, "redirect", fmt.Sprintf("redirect from %s blocked: %s", originalURL, result.Reason), clientIP, requestID, agentName)
+					logger.LogBlocked(actx, "redirect", fmt.Sprintf("redirect from %s blocked: %s", originalURL, result.Reason))
 					return fmt.Errorf("redirect blocked: %s", result.Reason)
 				}
-				logger.LogAnomaly("GET", redirectURL, result.Scanner, fmt.Sprintf("redirect from %s: %s", originalURL, result.Reason), clientIP, requestID, agentName, result.Score)
+				logger.LogAnomaly(actx, result.Scanner, fmt.Sprintf("redirect from %s: %s", originalURL, result.Reason), result.Score)
 			}
 			return nil
 		},
@@ -384,7 +391,7 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
 	oldSnap := p.editionPtr.Load()
 	newEd, edErr := oldSnap.Reload(cfg, sc)
 	if edErr != nil {
-		p.logger.LogError("RELOAD", "", "", "", "", fmt.Errorf("edition rebuild failed, keeping old config: %w", edErr))
+		p.logger.LogError(audit.LogContext{Method: "RELOAD"}, fmt.Errorf("edition rebuild failed, keeping old config: %w", edErr))
 		sc.Close() // caller-allocated scanner must be closed since we're not using it
 		return
 	}
@@ -908,11 +915,11 @@ func (p *Proxy) Start(ctx context.Context) error {
 			defer cancel()
 			for _, srv := range p.agentServers {
 				if shutErr := srv.Shutdown(shutdownCtx); shutErr != nil {
-					p.logger.LogError("SHUTDOWN", srv.Addr, "", "", "", shutErr)
+					p.logger.LogError(audit.LogContext{Method: "SHUTDOWN", URL: srv.Addr}, shutErr)
 				}
 			}
 			if err := p.server.Shutdown(shutdownCtx); err != nil {
-				p.logger.LogError("SHUTDOWN", cfg.FetchProxy.Listen, "", "", "", err)
+				p.logger.LogError(audit.LogContext{Method: "SHUTDOWN", URL: cfg.FetchProxy.Listen}, err)
 			}
 			p.Close()
 		case <-done:
@@ -925,9 +932,9 @@ func (p *Proxy) Start(ctx context.Context) error {
 		if host, _, splitErr := net.SplitHostPort(cfg.FetchProxy.Listen); splitErr == nil {
 			ip := net.ParseIP(host)
 			if host == "" || host == "0.0.0.0" || host == "::" || (ip != nil && !ip.IsLoopback()) {
-				p.logger.LogAnomaly("STARTUP", cfg.FetchProxy.Listen, "",
+				p.logger.LogAnomaly(audit.LogContext{Method: "STARTUP", URL: cfg.FetchProxy.Listen}, "",
 					"listen address is not loopback — /metrics and /stats endpoints are exposed to the network",
-					"", "", "", 0.5)
+					0.5)
 			}
 		}
 	}
@@ -1002,6 +1009,13 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// internally decodes for matching, but targetURL retains partial decoding
 	// from Go's query parsing. Operators should see the final resolved URL.
 	displayURL := scanner.IterativeDecode(targetURL)
+	actx := audit.LogContext{
+		Method:    "GET",
+		URL:       displayURL,
+		ClientIP:  clientIP,
+		RequestID: requestID,
+		Agent:     agent,
+	}
 
 	// Scan URL through all scanners
 	result := sc.Scan(r.Context(), targetURL)
@@ -1053,7 +1067,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 	if !result.Allowed {
 		if cfg.EnforceEnabled() {
-			log.LogBlocked("GET", displayURL, result.Scanner, result.Reason, clientIP, requestID, agent)
+			log.LogBlocked(actx, result.Scanner, result.Reason)
 			p.recordDecision(config.ActionBlock, result.Scanner, result.Reason, "fetch", requestID)
 			p.metrics.RecordBlocked(parsed.Hostname(), result.Scanner, time.Since(start), agentLabel)
 			status := http.StatusForbidden
@@ -1082,7 +1096,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			}
 			log.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(sr.Level), baseAction, effectiveAction, result.Scanner, clientIP, requestID)
 			p.metrics.RecordAdaptiveUpgrade(baseAction, effectiveAction, session.EscalationLabel(sr.Level))
-			log.LogBlocked("GET", displayURL, result.Scanner, result.Reason+" (escalated)", clientIP, requestID, agent)
+			log.LogBlocked(actx, result.Scanner, result.Reason+" (escalated)")
 			p.metrics.RecordBlocked(parsed.Hostname(), result.Scanner, time.Since(start), agentLabel)
 			escalatedStatus := http.StatusForbidden
 			if result.Scanner == scanner.ScannerRateLimit {
@@ -1096,7 +1110,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		log.LogAnomaly("GET", displayURL, result.Scanner, result.Reason, clientIP, requestID, agent, result.Score)
+		log.LogAnomaly(actx, result.Scanner, result.Reason, result.Score)
 	}
 
 	if sr.Blocked {
@@ -1131,7 +1145,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// Request header DLP scanning (fetch is GET-only, no body to scan).
 	// hadFinding is true even in audit/warn mode so RecordClean is not applied
 	// when a header DLP match was detected.
-	headerBlocked, headerHadFinding := p.evalHeaderDLP(r.Context(), r.Header, cfg, sc, log, "GET", displayURL, parsed.Hostname(), clientIP, requestID, agent, start)
+	headerBlocked, headerHadFinding := p.evalHeaderDLP(r.Context(), r.Header, cfg, sc, log, actx, parsed.Hostname(), start)
 
 	// Capture observer: record header DLP verdict for policy replay.
 	{
@@ -1199,7 +1213,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// making the outbound request. Byte budget is checked after the response.
 	if err := resolved.Budget.CheckAdmission(strings.ToLower(parsed.Hostname())); err != nil {
 		reason := err.Error()
-		log.LogBlocked("GET", displayURL, "budget", reason, clientIP, requestID, agent)
+		log.LogBlocked(actx, "budget", reason)
 		p.metrics.RecordBlocked(parsed.Hostname(), "budget", time.Since(start), agentLabel)
 		writeJSON(w, http.StatusTooManyRequests, FetchResponse{
 			URL:         displayURL,
@@ -1286,7 +1300,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	ctx = context.WithValue(ctx, ctxKeyAgentScanner, sc)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
 	if err != nil {
-		log.LogError("GET", displayURL, clientIP, requestID, agent, err)
+		log.LogError(actx, err)
 		writeJSON(w, http.StatusInternalServerError, FetchResponse{
 			URL:   displayURL,
 			Agent: agent,
@@ -1303,7 +1317,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		// Detect redirect blocks (from CheckRedirect) and report as blocked, not error.
 		if strings.Contains(err.Error(), "redirect blocked:") {
 			reason := err.Error()
-			log.LogBlocked("GET", displayURL, "redirect", reason, clientIP, requestID, agent)
+			log.LogBlocked(actx, "redirect", reason)
 			p.metrics.RecordBlocked(parsed.Hostname(), "redirect", time.Since(start), agentLabel)
 			resp := FetchResponse{
 				URL:         displayURL,
@@ -1317,7 +1331,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusForbidden, resp)
 			return
 		}
-		log.LogError("GET", displayURL, clientIP, requestID, agent, err)
+		log.LogError(actx, err)
 		writeJSON(w, http.StatusBadGateway, FetchResponse{
 			URL:   displayURL,
 			Agent: agent,
@@ -1338,7 +1352,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1)) // +1 to detect truncation
 	if err != nil {
-		log.LogError("GET", displayURL, clientIP, requestID, agent, err)
+		log.LogError(actx, err)
 		writeJSON(w, http.StatusBadGateway, FetchResponse{
 			URL:   displayURL,
 			Agent: agent,
@@ -1352,7 +1366,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			// Config max_response_mb was the limiter, not budget.
 			// Return 502 (response too large) without recording against budget.
 			reason := fmt.Sprintf("response size %d exceeds max_response_mb %d", len(body), configMaxBytes)
-			log.LogBlocked("GET", displayURL, "response_size", reason, clientIP, requestID, agent)
+			log.LogBlocked(actx, "response_size", reason)
 			p.metrics.RecordBlocked(parsed.Hostname(), "response_size", time.Since(start), agentLabel)
 			writeJSON(w, http.StatusBadGateway, FetchResponse{
 				URL:         displayURL,
@@ -1364,7 +1378,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		}
 		// Budget was the limiter: return 429.
 		reason := fmt.Sprintf("response size %d exceeds byte budget %d", len(body), maxBytes)
-		log.LogBlocked("GET", displayURL, "budget", reason, clientIP, requestID, agent)
+		log.LogBlocked(actx, "budget", reason)
 		p.metrics.RecordBlocked(parsed.Hostname(), "budget", time.Since(start), agentLabel)
 		_ = resolved.Budget.RecordBytes(int64(len(body)))
 		writeJSON(w, http.StatusTooManyRequests, FetchResponse{
@@ -1390,7 +1404,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	finalHost := resp.Request.URL.Hostname()
 	responseScanExempt := isResponseScanExempt(finalHost, cfg.ResponseScanning.ExemptDomains)
 	if sc.ResponseScanningEnabled() && responseScanExempt {
-		log.LogResponseScanExempt(http.MethodGet, displayURL, finalHost, clientIP, requestID, agent)
+		log.LogResponseScanExempt(actx, finalHost)
 	}
 	var hiddenInjectionFound bool
 	if sc.ResponseScanningEnabled() && isHTML {
@@ -1415,7 +1429,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	if isHTML {
 		article, err := readability.FromReader(strings.NewReader(content), parsed)
 		if err != nil {
-			log.LogAnomaly("GET", displayURL, "", fmt.Sprintf("readability extraction failed: %v", err), clientIP, requestID, agent, 0.3)
+			log.LogAnomaly(actx, "", fmt.Sprintf("readability extraction failed: %v", err), 0.3)
 		} else if article.TextContent != "" {
 			title = article.Title
 			content = article.TextContent
@@ -1430,7 +1444,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// concatenated fragments), so strip cannot function here.
 	if hiddenInjectionFound && !readabilityOK {
 		reason := "hidden injection detected and readability extraction failed (fail-closed)"
-		log.LogBlocked("GET", displayURL, "response_scan", reason, clientIP, requestID, agent)
+		log.LogBlocked(actx, "response_scan", reason)
 		p.metrics.RecordBlocked(parsed.Hostname(), "response_scan", time.Since(start), agentLabel)
 		writeJSON(w, http.StatusForbidden, FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
 		return
@@ -1493,7 +1507,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 	duration := time.Since(start)
 	p.metrics.RecordAllowed(duration, agentLabel)
-	log.LogAllowed("GET", displayURL, clientIP, requestID, resp.StatusCode, len(body), duration, agent)
+	log.LogAllowed(actx, resp.StatusCode, len(body), duration)
 
 	writeJSON(w, http.StatusOK, FetchResponse{
 		URL:         displayURL,
@@ -1596,14 +1610,14 @@ func (p *Proxy) filterAndActOnResponseScan(
 	case config.ActionBlock:
 		recordResponseSignal(session.SignalBlock)
 		reason := fmt.Sprintf("response contains prompt injection: %s", strings.Join(patternNames, ", "))
-		log.LogBlocked("GET", displayURL, "response_scan", reason, clientIP, requestID, agent)
+		log.LogBlocked(audit.LogContext{Method: "GET", URL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}, "response_scan", reason)
 		writeJSON(w, http.StatusForbidden, FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
 		return true, "", true
 	case config.ActionAsk:
 		if p.approver == nil {
 			recordResponseSignal(session.SignalBlock)
 			reason := fmt.Sprintf("response contains prompt injection: %s (no HITL approver)", strings.Join(patternNames, ", "))
-			log.LogBlocked("GET", displayURL, "response_scan", reason, clientIP, requestID, agent)
+			log.LogBlocked(audit.LogContext{Method: "GET", URL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}, "response_scan", reason)
 			writeJSON(w, http.StatusForbidden, FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
 			return true, "", true
 		}
@@ -1620,27 +1634,27 @@ func (p *Proxy) filterAndActOnResponseScan(
 		})
 		switch d {
 		case hitl.DecisionAllow:
-			log.LogResponseScan(displayURL, clientIP, requestID, agent, "ask:allow", len(result.Matches), patternNames, bundleRules)
+			log.LogResponseScan(audit.LogContext{URL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}, "ask:allow", len(result.Matches), patternNames, bundleRules)
 		case hitl.DecisionStrip:
 			out = result.TransformedContent
-			log.LogResponseScan(displayURL, clientIP, requestID, agent, "ask:strip", len(result.Matches), patternNames, bundleRules)
+			log.LogResponseScan(audit.LogContext{URL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}, "ask:strip", len(result.Matches), patternNames, bundleRules)
 		default:
 			recordResponseSignal(session.SignalBlock)
 			reason := fmt.Sprintf("response blocked by operator: %s", strings.Join(patternNames, ", "))
-			log.LogBlocked("GET", displayURL, "response_scan", reason, clientIP, requestID, agent)
+			log.LogBlocked(audit.LogContext{Method: "GET", URL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}, "response_scan", reason)
 			writeJSON(w, http.StatusForbidden, FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
 			return true, "", true
 		}
 	case config.ActionStrip:
 		recordResponseSignal(session.SignalStrip)
 		out = result.TransformedContent
-		log.LogResponseScan(displayURL, clientIP, requestID, agent, config.ActionStrip, len(result.Matches), patternNames, bundleRules)
+		log.LogResponseScan(audit.LogContext{URL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}, config.ActionStrip, len(result.Matches), patternNames, bundleRules)
 	case config.ActionWarn:
 		recordResponseSignal(session.SignalNearMiss)
-		log.LogResponseScan(displayURL, clientIP, requestID, agent, config.ActionWarn, len(result.Matches), patternNames, bundleRules)
+		log.LogResponseScan(audit.LogContext{URL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}, config.ActionWarn, len(result.Matches), patternNames, bundleRules)
 	default:
 		recordResponseSignal(session.SignalNearMiss)
-		log.LogResponseScan(displayURL, clientIP, requestID, agent, action, len(result.Matches), patternNames, bundleRules)
+		log.LogResponseScan(audit.LogContext{URL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}, action, len(result.Matches), patternNames, bundleRules)
 	}
 	return false, out, true
 }

@@ -478,7 +478,7 @@ func scanRequestHeaders(ctx context.Context, headers http.Header, cfg *config.Co
 // handles the response format (http.Error vs writeJSON) since it differs
 // between forward proxy and fetch handler.
 func (p *Proxy) evalHeaderDLP(ctx context.Context, headers http.Header, cfg *config.Config, sc *scanner.Scanner,
-	logger *audit.Logger, method, url, hostname, clientIP, requestID, agent string, start time.Time,
+	logger *audit.Logger, actx audit.LogContext, hostname string, start time.Time,
 ) (blocked bool, hadFinding bool) {
 	if !cfg.RequestBodyScanning.Enabled || !cfg.RequestBodyScanning.ScanHeaders {
 		return false, false
@@ -491,11 +491,11 @@ func (p *Proxy) evalHeaderDLP(ctx context.Context, headers http.Header, cfg *con
 	patternNames := dlpMatchNames(headerResult.DLPMatches)
 	bundleRules := dlpBundleRules(headerResult.DLPMatches)
 
-	logger.LogHeaderDLP(method, url, headerResult.HeaderName, action, clientIP, requestID, "", patternNames, bundleRules)
-	p.metrics.RecordHeaderDLP(action, agent)
+	logger.LogHeaderDLP(actx, headerResult.HeaderName, action, patternNames, bundleRules)
+	p.metrics.RecordHeaderDLP(action, actx.Agent)
 
 	if action == config.ActionBlock && cfg.EnforceEnabled() {
-		p.metrics.RecordBlocked(hostname, "header_dlp", time.Since(start), agent)
+		p.metrics.RecordBlocked(hostname, "header_dlp", time.Since(start), actx.Agent)
 		return true, true
 	}
 	return false, true

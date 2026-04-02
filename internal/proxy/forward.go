@@ -87,6 +87,11 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 
 	clientIP, requestID := requestMeta(r)
+	baseCtx := audit.LogContext{
+		Method:    http.MethodConnect,
+		ClientIP:  clientIP,
+		RequestID: requestID,
+	}
 
 	// Resolve per-agent config and scanner from a single registry snapshot.
 	// This prevents TOCTOU races during hot-reload where knownProfiles()
@@ -98,6 +103,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if agent == "" {
 		agent = agentAnonymous
 	}
+	baseCtx.Agent = agent
 	agentLabel := id.Profile // bounded cardinality for Prometheus labels
 
 	target := r.Host
@@ -122,6 +128,12 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		syntheticHost = "[" + host + "]"
 	}
 	syntheticURL := "https://" + syntheticHost + "/"
+	targetCtx := baseCtx
+	targetCtx.URL = target
+	headerCtx := baseCtx
+	headerCtx.URL = syntheticURL
+	hostCtx := baseCtx
+	hostCtx.URL = host
 
 	// Scan through all layers (URL pipeline).
 	result := sc.Scan(r.Context(), syntheticURL)
@@ -156,7 +168,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// can carry Proxy-Authorization, Authorization, or custom headers that
 	// may contain secrets. Tunneled HTTP headers are only visible with TLS
 	// interception; this covers the handshake itself.
-	connectHeaderBlocked, connectHeaderHadFinding := p.evalHeaderDLP(r.Context(), r.Header, cfg, sc, p.logger, http.MethodConnect, syntheticURL, host, clientIP, requestID, agent, start)
+	connectHeaderBlocked, connectHeaderHadFinding := p.evalHeaderDLP(r.Context(), r.Header, cfg, sc, p.logger, headerCtx, host, start)
 	if connectHeaderHadFinding && !connectHeaderBlocked && cfg.AdaptiveEnforcement.Enabled {
 		// Audit/warn mode: header DLP found something but did not block.
 		// Record a near-miss signal. Blocked findings go through
@@ -203,7 +215,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusTooManyRequests
 		}
 		if cfg.EnforceEnabled() {
-			p.logger.LogBlocked(http.MethodConnect, target, result.Scanner, result.Reason, clientIP, requestID, agent)
+			p.logger.LogBlocked(targetCtx, result.Scanner, result.Reason)
 			p.metrics.RecordTunnelBlocked(agentLabel)
 			if cfg.ExplainBlocksEnabled() && result.Hint != "" {
 				w.Header().Set("X-Pipelock-Hint", result.Hint)
@@ -221,13 +233,13 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			}
 			p.logger.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(sr.Level), baseAction, effectiveAction, result.Scanner, clientIP, requestID)
 			p.metrics.RecordAdaptiveUpgrade(baseAction, effectiveAction, session.EscalationLabel(sr.Level))
-			p.logger.LogBlocked(http.MethodConnect, target, result.Scanner, result.Reason+" (escalated)", clientIP, requestID, agent)
+			p.logger.LogBlocked(targetCtx, result.Scanner, result.Reason+" (escalated)")
 			p.metrics.RecordTunnelBlocked(agentLabel)
 			http.Error(w, "CONNECT blocked: "+result.Reason+" (escalated)", status)
 			return
 		}
-		p.logger.LogAnomaly(http.MethodConnect, target, result.Scanner,
-			result.Reason, clientIP, requestID, agent, result.Score)
+		p.logger.LogAnomaly(targetCtx, result.Scanner,
+			result.Reason, result.Score)
 	}
 
 	if sr.Blocked {
@@ -252,7 +264,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// Budget admission check: enforce request count and domain limits.
 	if err := resolved.Budget.CheckAdmission(strings.ToLower(host)); err != nil {
 		reason := err.Error()
-		p.logger.LogBlocked(http.MethodConnect, target, "budget", reason, clientIP, requestID, agent)
+		p.logger.LogBlocked(targetCtx, "budget", reason)
 		p.metrics.RecordTunnelBlocked(agentLabel)
 		http.Error(w, "CONNECT blocked: "+reason, http.StatusTooManyRequests)
 		return
@@ -287,12 +299,12 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 					p.metrics.RecordAdaptiveUpgrade(originalCEEAction, ceeAction, session.EscalationLabel(sr.Level))
 				}
 				if ceeAction == config.ActionBlock {
-					p.logger.LogBlocked(http.MethodConnect, target, "cross_request_entropy", detail, clientIP, requestID, agent)
+					p.logger.LogBlocked(targetCtx, "cross_request_entropy", detail)
 					p.metrics.RecordTunnelBlocked(agentLabel)
 					http.Error(w, "CONNECT blocked: cross-request entropy budget exceeded", http.StatusForbidden)
 					return
 				}
-				p.logger.LogAnomaly(http.MethodConnect, target, "cross_request_entropy", detail, clientIP, requestID, agent, 0)
+				p.logger.LogAnomaly(targetCtx, "cross_request_entropy", detail, 0)
 			}
 		}
 	}
@@ -323,9 +335,9 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if cfg.WebSocketProxy.Enabled && len(cfg.ForwardProxy.RedirectWebSocketHosts) > 0 {
 		if isHostAllowlisted(host, cfg.ForwardProxy.RedirectWebSocketHosts) {
 			p.metrics.RecordWSRedirectHint()
-			p.logger.LogAnomaly(http.MethodConnect, target, "",
+			p.logger.LogAnomaly(targetCtx, "",
 				fmt.Sprintf("hint: %s supports WebSocket; consider using /ws endpoint for frame-level scanning", host),
-				clientIP, requestID, agent, 0.2)
+				0.2)
 		}
 	}
 
@@ -346,7 +358,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	targetConn, err := p.ssrfSafeDialContext(dialCtx, "tcp", target)
 	if err != nil {
-		p.logger.LogError(http.MethodConnect, target, clientIP, requestID, agent, err)
+		p.logger.LogError(targetCtx, err)
 		http.Error(w, "tunnel dial failed", http.StatusBadGateway)
 		return
 	}
@@ -359,7 +371,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// Hijack the client connection
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
-		p.logger.LogError(http.MethodConnect, target, clientIP, requestID, agent,
+		p.logger.LogError(targetCtx,
 			fmt.Errorf("response writer does not support hijacking"))
 		http.Error(w, "hijack not supported", http.StatusInternalServerError)
 		return
@@ -367,7 +379,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	clientConn, buf, err := hijacker.Hijack()
 	if err != nil {
-		p.logger.LogError(http.MethodConnect, target, clientIP, requestID, agent, err)
+		p.logger.LogError(targetCtx, err)
 		return
 	}
 	defer clientConn.Close() //nolint:errcheck // best effort
@@ -400,7 +412,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		if certCache == nil {
 			// Fail-closed: TLS interception is enabled but cert cache is missing.
 			// Connection is already hijacked, so close both sides (deferred).
-			p.logger.LogError(http.MethodConnect, host, clientIP, requestID, agent, fmt.Errorf("TLS interception enabled but cert cache unavailable"))
+			p.logger.LogError(hostCtx, fmt.Errorf("TLS interception enabled but cert cache unavailable"))
 			p.metrics.RecordTLSIntercept("failed")
 			return
 		}
@@ -409,7 +421,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		_ = targetConn.Close()
 		targetConn = nil
 		p.metrics.RecordTLSIntercept("intercepted")
-		p.logger.LogAnomaly(http.MethodConnect, host, "tls_intercept", "TLS MITM interception active", clientIP, requestID, agent, 0) // 0: informational, not anomalous
+		p.logger.LogAnomaly(hostCtx, "tls_intercept", "TLS MITM interception active", 0) // 0: informational, not anomalous
 		// Wrap clientConn with buffered reader so any bytes peeked during
 		// SNI verification (ClientHello) are available to the TLS server.
 		interceptConn := wrapBuffered(clientConn, clientReader)
@@ -426,7 +438,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			interceptRec = sm.GetOrCreate(interceptSessionKey)
 		}
 		if err := interceptTunnel(interceptCtx, interceptConn, host, port, cfg, sc, certCache, p.logger, p.metrics, clientIP, requestID, agent, p.tlsTransport, p.ssrfSafeDialContext, p.entropyTrackerPtr.Load(), p.fragmentBufferPtr.Load(), p.sessionMgrPtr.Load(), p, interceptRec); err != nil {
-			p.logger.LogError(http.MethodConnect, host, clientIP, requestID, agent, err)
+			p.logger.LogError(hostCtx, err)
 		}
 		return
 	}
@@ -439,7 +451,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	p.metrics.IncrActiveTunnels()
-	p.logger.LogTunnelOpen(target, clientIP, requestID, agent)
+	p.logger.LogTunnelOpen(targetCtx, target)
 
 	// Bidirectional relay with idle timeout
 	idleTimeout := time.Duration(cfg.ForwardProxy.IdleTimeoutSeconds) * time.Second
@@ -450,7 +462,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	p.metrics.RecordTunnel(duration, totalBytes, agentLabel)
 	// Count successful tunnels in request totals so /stats reflects CONNECT traffic.
 	p.metrics.RecordAllowed(duration, agentLabel)
-	p.logger.LogTunnelClose(target, clientIP, requestID, agent, totalBytes, duration)
+	p.logger.LogTunnelClose(targetCtx, target, totalBytes, duration)
 
 	// Record data budget for the target domain
 	sc.RecordRequest(strings.ToLower(host), int(totalBytes))
@@ -548,6 +560,13 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	agentLabel := id.Profile // bounded cardinality for Prometheus labels
 
 	targetURL := r.URL.String()
+	actx := audit.LogContext{
+		Method:    r.Method,
+		URL:       targetURL,
+		ClientIP:  clientIP,
+		RequestID: requestID,
+		Agent:     agent,
+	}
 
 	// Scan through all layers (URL pipeline)
 	result := sc.Scan(r.Context(), targetURL)
@@ -567,7 +586,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			if reason == "" {
 				reason = "a2a: header finding"
 			}
-			p.logger.LogAnomaly(r.Method, targetURL, "a2a_header", reason, clientIP, requestID, agent, 0)
+			p.logger.LogAnomaly(actx, "a2a_header", reason, 0)
 			if action == config.ActionBlock {
 				p.metrics.RecordBlocked(r.URL.Hostname(), "a2a_header", time.Since(start), agentLabel)
 				http.Error(w, "blocked: "+reason, http.StatusForbidden)
@@ -615,7 +634,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusTooManyRequests
 		}
 		if cfg.EnforceEnabled() {
-			p.logger.LogBlocked(r.Method, targetURL, result.Scanner, result.Reason, clientIP, requestID, agent)
+			p.logger.LogBlocked(actx, result.Scanner, result.Reason)
 			p.metrics.RecordBlocked(r.URL.Hostname(), result.Scanner, time.Since(start), agentLabel)
 			if cfg.ExplainBlocksEnabled() && result.Hint != "" {
 				w.Header().Set("X-Pipelock-Hint", result.Hint)
@@ -633,13 +652,13 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			p.logger.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(sr.Level), baseAction, effectiveAction, result.Scanner, clientIP, requestID)
 			p.metrics.RecordAdaptiveUpgrade(baseAction, effectiveAction, session.EscalationLabel(sr.Level))
-			p.logger.LogBlocked(r.Method, targetURL, result.Scanner, result.Reason+" (escalated)", clientIP, requestID, agent)
+			p.logger.LogBlocked(actx, result.Scanner, result.Reason+" (escalated)")
 			p.metrics.RecordBlocked(r.URL.Hostname(), result.Scanner, time.Since(start), agentLabel)
 			http.Error(w, "blocked: "+result.Reason+" (escalated)", status)
 			return
 		}
-		p.logger.LogAnomaly(r.Method, targetURL, result.Scanner,
-			result.Reason, clientIP, requestID, agent, result.Score)
+		p.logger.LogAnomaly(actx, result.Scanner,
+			result.Reason, result.Score)
 	}
 
 	if sr.Blocked {
@@ -664,7 +683,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// Budget admission check: enforce request count and domain limits.
 	if err := resolved.Budget.CheckAdmission(strings.ToLower(r.URL.Hostname())); err != nil {
 		reason := err.Error()
-		p.logger.LogBlocked(r.Method, targetURL, "budget", reason, clientIP, requestID, agent)
+		p.logger.LogBlocked(actx, "budget", reason)
 		p.metrics.RecordBlocked(r.URL.Hostname(), "budget", time.Since(start), agentLabel)
 		http.Error(w, "blocked: "+reason, http.StatusTooManyRequests)
 		return
@@ -722,7 +741,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			// A request can trigger both DLP and address findings simultaneously.
 			if len(bodyResult.DLPMatches) > 0 {
 				p.metrics.RecordBodyDLP(action, agentLabel)
-				p.logger.LogBodyDLP(r.Method, targetURL, action, clientIP, requestID, agent, len(bodyResult.DLPMatches), patternNames, bundleRules)
+				p.logger.LogBodyDLP(actx, action, len(bodyResult.DLPMatches), patternNames, bundleRules)
 			}
 			if len(bodyResult.AddressFindings) > 0 {
 				for _, f := range bodyResult.AddressFindings {
@@ -736,7 +755,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				for i, f := range bodyResult.AddressFindings {
 					addrNames[i] = f.Explanation
 				}
-				p.logger.LogBodyScan(r.Method, targetURL, audit.EventAddressProtection, action, clientIP, requestID, agent, len(bodyResult.AddressFindings), addrNames)
+				p.logger.LogBodyScan(actx, audit.EventAddressProtection, action, len(bodyResult.AddressFindings), addrNames)
 			}
 
 			// Fail-closed: when buf is nil the body was consumed but couldn't
@@ -789,7 +808,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Request header DLP scanning.
 	// hadFinding is true even in audit/warn mode so near-miss signals are recorded.
-	forwardHeaderBlocked, forwardHeaderHadFinding := p.evalHeaderDLP(r.Context(), r.Header, cfg, sc, p.logger, r.Method, targetURL, r.URL.Hostname(), clientIP, requestID, agent, start)
+	forwardHeaderBlocked, forwardHeaderHadFinding := p.evalHeaderDLP(r.Context(), r.Header, cfg, sc, p.logger, actx, r.URL.Hostname(), start)
 
 	// Capture observer: record forward header DLP verdict for policy replay.
 	{
@@ -924,7 +943,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := p.client.Do(outReq)
 	if err != nil {
-		p.logger.LogError(r.Method, targetURL, clientIP, requestID, agent, err)
+		p.logger.LogError(actx, err)
 		http.Error(w, "forward proxy fetch failed", http.StatusBadGateway)
 		return
 	}
@@ -943,7 +962,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	if isA2A && strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
 		// Fail-closed: compressed SSE streams cannot be scanned.
 		if hasNonIdentityEncoding(resp.Header.Get("Content-Encoding")) {
-			p.logger.LogBlocked(r.Method, targetURL, "a2a_stream", "compressed A2A stream cannot be scanned", clientIP, requestID, agent)
+			p.logger.LogBlocked(actx, "a2a_stream", "compressed A2A stream cannot be scanned")
 			p.metrics.RecordBlocked(r.URL.Hostname(), "a2a_stream", time.Since(start), agentLabel)
 			http.Error(w, "blocked: compressed A2A stream cannot be scanned", http.StatusForbidden)
 			return
@@ -958,15 +977,15 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			// so we only record the anomaly. Block mode and internal errors
 			// terminate the stream.
 			if errors.Is(err, mcp.ErrA2AStreamFinding) && cfg.A2AScanning.Action == config.ActionWarn {
-				p.logger.LogAnomaly(r.Method, targetURL, "a2a_stream", err.Error(), clientIP, requestID, agent, 0)
+				p.logger.LogAnomaly(actx, "a2a_stream", err.Error(), 0)
 			} else {
-				p.logger.LogBlocked(r.Method, targetURL, "a2a_stream", err.Error(), clientIP, requestID, agent)
+				p.logger.LogBlocked(actx, "a2a_stream", err.Error())
 				p.metrics.RecordBlocked(r.URL.Hostname(), "a2a_stream", time.Since(start), agentLabel)
 			}
 		} else {
 			duration := time.Since(start)
 			p.metrics.RecordAllowed(duration, agentLabel)
-			p.logger.LogForwardHTTP(r.Method, targetURL, clientIP, requestID, agent, resp.StatusCode, 0, duration)
+			p.logger.LogForwardHTTP(actx, resp.StatusCode, 0, duration)
 			if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
 				forwardRec.RecordClean(cfg.AdaptiveEnforcement.DecayPerCleanRequest)
 			}
@@ -982,12 +1001,12 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	fwdRespHost := resp.Request.URL.Hostname()
 	fwdRespExempt := isResponseScanExempt(fwdRespHost, cfg.ResponseScanning.ExemptDomains)
 	if sc.ResponseScanningEnabled() && fwdRespExempt {
-		p.logger.LogResponseScanExempt(r.Method, targetURL, fwdRespHost, clientIP, requestID, agent)
+		p.logger.LogResponseScanExempt(actx, fwdRespHost)
 	}
 	if sc.ResponseScanningEnabled() {
 		// Fail-closed on compressed responses: regex can't match compressed content.
 		if hasNonIdentityEncoding(resp.Header.Get("Content-Encoding")) {
-			p.logger.LogBlocked(r.Method, targetURL, "response_scan", "compressed response cannot be scanned", clientIP, requestID, agent)
+			p.logger.LogBlocked(actx, "response_scan", "compressed response cannot be scanned")
 			p.metrics.RecordBlocked(r.URL.Hostname(), "response_scan", time.Since(start), agentLabel)
 			http.Error(w, "blocked: compressed response cannot be scanned", http.StatusForbidden)
 			return
@@ -995,7 +1014,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 		respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, maxBytes))
 		if readErr != nil {
-			p.logger.LogError(r.Method, targetURL, clientIP, requestID, agent, readErr)
+			p.logger.LogError(actx, readErr)
 			http.Error(w, "blocked: response read error", http.StatusForbidden)
 			return
 		}
@@ -1033,7 +1052,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				if a2aReason == "" {
 					a2aReason = "a2a: response finding"
 				}
-				p.logger.LogAnomaly(r.Method, targetURL, "a2a_response", a2aReason, clientIP, requestID, agent, 0)
+				p.logger.LogAnomaly(actx, "a2a_response", a2aReason, 0)
 				if a2aAction == config.ActionBlock {
 					p.metrics.RecordBlocked(r.URL.Hostname(), "a2a_response", time.Since(start), agentLabel)
 					http.Error(w, "blocked: "+a2aReason, http.StatusForbidden)
@@ -1110,7 +1129,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 			switch action {
 			case config.ActionBlock, config.ActionAsk:
-				p.logger.LogBlocked(r.Method, targetURL, "response_scan", reason, clientIP, requestID, agent)
+				p.logger.LogBlocked(actx, "response_scan", reason)
 				p.metrics.RecordBlocked(r.URL.Hostname(), "response_scan", time.Since(start), agentLabel)
 				http.Error(w, "blocked: response contains injection", http.StatusForbidden)
 				return
@@ -1141,14 +1160,14 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					resp.Header.Del("Content-Md5")
 					resp.Header.Del("Digest")
 				} else {
-					p.logger.LogBlocked(r.Method, targetURL, "response_scan", reason+" (strip failed)", clientIP, requestID, agent)
+					p.logger.LogBlocked(actx, "response_scan", reason+" (strip failed)")
 					p.metrics.RecordBlocked(r.URL.Hostname(), "response_scan", time.Since(start), agentLabel)
 					http.Error(w, "blocked: response contains injection", http.StatusForbidden)
 					return
 				}
-				p.logger.LogResponseScan(targetURL, clientIP, requestID, agent, config.ActionStrip, len(scanResult.Matches), patternNames, bundleRules)
+				p.logger.LogResponseScan(audit.LogContext{URL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}, config.ActionStrip, len(scanResult.Matches), patternNames, bundleRules)
 			default:
-				p.logger.LogResponseScan(targetURL, clientIP, requestID, agent, action, len(scanResult.Matches), patternNames, bundleRules)
+				p.logger.LogResponseScan(audit.LogContext{URL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}, action, len(scanResult.Matches), patternNames, bundleRules)
 			}
 		}
 
@@ -1163,13 +1182,13 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 		if budgetRemaining >= 0 && written >= budgetRemaining {
 			reason := fmt.Sprintf("response truncated at byte budget: %d bytes written", written)
-			p.logger.LogAnomaly(r.Method, targetURL, "budget_truncated", reason, clientIP, requestID, agent, 0)
+			p.logger.LogAnomaly(actx, "budget_truncated", reason, 0)
 			return
 		}
 
 		duration := time.Since(start)
 		p.metrics.RecordAllowed(duration, agentLabel)
-		p.logger.LogForwardHTTP(r.Method, targetURL, clientIP, requestID, agent, resp.StatusCode, int(written), duration)
+		p.logger.LogForwardHTTP(actx, resp.StatusCode, int(written), duration)
 		if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
 			forwardRec.RecordClean(cfg.AdaptiveEnforcement.DecayPerCleanRequest)
 		}
@@ -1190,13 +1209,13 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// Detect truncated response due to budget exhaustion.
 	if budgetRemaining >= 0 && written >= budgetRemaining {
 		reason := fmt.Sprintf("response truncated at byte budget: %d bytes written", written)
-		p.logger.LogAnomaly(r.Method, targetURL, "budget_truncated", reason, clientIP, requestID, agent, 0)
+		p.logger.LogAnomaly(actx, "budget_truncated", reason, 0)
 		return
 	}
 
 	duration := time.Since(start)
 	p.metrics.RecordAllowed(duration, agentLabel)
-	p.logger.LogForwardHTTP(r.Method, targetURL, clientIP, requestID, agent, resp.StatusCode, int(written), duration)
+	p.logger.LogForwardHTTP(actx, resp.StatusCode, int(written), duration)
 	if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
 		forwardRec.RecordClean(cfg.AdaptiveEnforcement.DecayPerCleanRequest)
 	}

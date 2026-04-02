@@ -61,13 +61,13 @@ func ceeRecordMCP(
 			_, _ = fmt.Fprintf(logW, "pipelock: CEE: %s (session=%s)\n", reason, sessionKey)
 			if cee.Config.EntropyBudget.Action == config.ActionBlock {
 				if logger != nil {
-					logger.LogBlocked("CEE", "mcp-input", "cross_request_entropy", reason, "", "", "")
+					logger.LogBlocked(audit.LogContext{Method: "CEE", URL: "mcp-input"}, "cross_request_entropy", reason)
 				}
 				return reason
 			}
 			// Warn mode: emit structured anomaly event for audit trail.
 			if logger != nil {
-				logger.LogAnomaly("CEE", "mcp-input", "cross_request_entropy", reason, "", "", "", 0)
+				logger.LogAnomaly(audit.LogContext{Method: "CEE", URL: "mcp-input"}, "cross_request_entropy", reason, 0)
 			}
 		}
 	}
@@ -83,13 +83,13 @@ func ceeRecordMCP(
 			_, _ = fmt.Fprintf(logW, "pipelock: CEE: %s (session=%s)\n", reason, sessionKey)
 			if cee.Config.Action == config.ActionBlock {
 				if logger != nil {
-					logger.LogBlocked("CEE", "mcp-input", "cross_request_fragment", reason, "", "", "")
+					logger.LogBlocked(audit.LogContext{Method: "CEE", URL: "mcp-input"}, "cross_request_fragment", reason)
 				}
 				return reason
 			}
 			// Warn mode: emit structured anomaly event for audit trail.
 			if logger != nil {
-				logger.LogAnomaly("CEE", "mcp-input", "cross_request_fragment", reason, "", "", "", 0)
+				logger.LogAnomaly(audit.LogContext{Method: "CEE", URL: "mcp-input"}, "cross_request_fragment", reason, 0)
 			}
 		}
 	}

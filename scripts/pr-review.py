@@ -211,16 +211,10 @@ def run_stats_check() -> str:
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pass
 
-    # If make stats didn't work, count manually.
-    if "dlp_patterns" not in canonical:
-        try:
-            result = subprocess.run(
-                ["grep", "-c", "Regex:", "internal/config/config.go"],
-                capture_output=True, text=True, timeout=10,
-            )
-            canonical["dlp_patterns"] = int(result.stdout.strip())
-        except (ValueError, subprocess.TimeoutExpired, FileNotFoundError):
-            pass
+    # No grep fallback. grep -c 'Regex:' counts DLP + response patterns
+    # combined (70) which is not the same as dlp_patterns (47). If
+    # TestGenerateStats doesn't exist, we report canonical as unavailable
+    # and fall through to the inconsistency-only check.
 
     # Scan docs for stat claims.
     stat_patterns = [

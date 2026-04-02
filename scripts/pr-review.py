@@ -217,7 +217,7 @@ def run_stats_check() -> str:
                 ["grep", "-c", "Regex:", "internal/config/config.go"],
                 capture_output=True, text=True, timeout=10,
             )
-            canonical["total_regex"] = int(result.stdout.strip())
+            canonical["dlp_patterns"] = int(result.stdout.strip())
         except (ValueError, subprocess.TimeoutExpired, FileNotFoundError):
             pass
 

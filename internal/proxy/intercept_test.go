@@ -80,7 +80,18 @@ func interceptAndRequest(
 	t.Cleanup(cancel)
 
 	go func() {
-		_ = interceptTunnel(ctx, proxyConn, host, port, cfg, sc, cache, logger, m, "10.0.0.1", "test-req-1", "", upstream.Client().Transport, nil, nil, nil, nil, nil, nil)
+		_ = interceptTunnel(ctx, proxyConn, &InterceptContext{
+			TargetHost: host,
+			TargetPort: port,
+			Config:     cfg,
+			Scanner:    sc,
+			CertCache:  cache,
+			Logger:     logger,
+			Metrics:    m,
+			ClientIP:   "10.0.0.1",
+			RequestID:  "test-req-1",
+			UpstreamRT: upstream.Client().Transport,
+		})
 	}()
 
 	tlsConn := tls.Client(clientConn, &tls.Config{
@@ -127,7 +138,19 @@ func interceptAndRequestWithRecorder(
 	t.Cleanup(cancel)
 
 	go func() {
-		_ = interceptTunnel(ctx, proxyConn, host, port, cfg, sc, cache, logger, m, "10.0.0.1", "test-req-1", "", upstream.Client().Transport, nil, nil, nil, nil, nil, rec)
+		_ = interceptTunnel(ctx, proxyConn, &InterceptContext{
+			TargetHost: host,
+			TargetPort: port,
+			Config:     cfg,
+			Scanner:    sc,
+			CertCache:  cache,
+			Logger:     logger,
+			Metrics:    m,
+			ClientIP:   "10.0.0.1",
+			RequestID:  "test-req-1",
+			UpstreamRT: upstream.Client().Transport,
+			Recorder:   rec,
+		})
 	}()
 
 	tlsConn := tls.Client(clientConn, &tls.Config{
@@ -271,7 +294,18 @@ func TestInterceptTunnel_AuthorityMismatch(t *testing.T) {
 	port := fmt.Sprintf("%d", upstream.Listener.Addr().(*net.TCPAddr).Port)
 
 	go func() {
-		_ = interceptTunnel(context.Background(), proxyConn, host, port, cfg, sc, cache, logger, m, "10.0.0.1", "test-req-1", "", upstream.Client().Transport, nil, nil, nil, nil, nil, nil)
+		_ = interceptTunnel(context.Background(), proxyConn, &InterceptContext{
+			TargetHost: host,
+			TargetPort: port,
+			Config:     cfg,
+			Scanner:    sc,
+			CertCache:  cache,
+			Logger:     logger,
+			Metrics:    m,
+			ClientIP:   "10.0.0.1",
+			RequestID:  "test-req-1",
+			UpstreamRT: upstream.Client().Transport,
+		})
 	}()
 
 	tlsConn := tls.Client(clientConn, &tls.Config{
@@ -541,7 +575,18 @@ func TestInterceptTunnel_UpstreamError(t *testing.T) {
 	port := "9999"
 
 	go func() {
-		_ = interceptTunnel(context.Background(), proxyConn, host, port, cfg, sc, cache, logger, m, "10.0.0.1", "test-req-1", "", failingRT, nil, nil, nil, nil, nil, nil)
+		_ = interceptTunnel(context.Background(), proxyConn, &InterceptContext{
+			TargetHost: host,
+			TargetPort: port,
+			Config:     cfg,
+			Scanner:    sc,
+			CertCache:  cache,
+			Logger:     logger,
+			Metrics:    m,
+			ClientIP:   "10.0.0.1",
+			RequestID:  "test-req-1",
+			UpstreamRT: failingRT,
+		})
 	}()
 
 	tlsConn := tls.Client(clientConn, &tls.Config{
@@ -719,11 +764,17 @@ func TestInterceptTunnel_HandshakeFailure(t *testing.T) {
 	_ = clientConn.Close()
 
 	err := interceptTunnel(
-		context.Background(), proxyConn,
-		testLoopbackIP, "443",
-		cfg, sc, cache, logger, m,
-		"10.0.0.1", "test-req-1", "", nil, nil,
-		nil, nil, nil, nil, nil,
+		context.Background(), proxyConn, &InterceptContext{
+			TargetHost: testLoopbackIP,
+			TargetPort: "443",
+			Config:     cfg,
+			Scanner:    sc,
+			CertCache:  cache,
+			Logger:     logger,
+			Metrics:    m,
+			ClientIP:   "10.0.0.1",
+			RequestID:  "test-req-1",
+		},
 	)
 
 	if err == nil {
@@ -748,12 +799,17 @@ func TestInterceptTunnel_ContextDeadline(t *testing.T) {
 
 	// Start interceptTunnel with the expired context. The TLS handshake
 	// should fail because the context deadline constrains the handshake.
-	err := interceptTunnel(ctx, proxyConn,
-		testLoopbackIP, "443",
-		cfg, sc, cache, logger, m,
-		"10.0.0.1", "test-req-1", "", nil, nil,
-		nil, nil, nil, nil, nil,
-	)
+	err := interceptTunnel(ctx, proxyConn, &InterceptContext{
+		TargetHost: testLoopbackIP,
+		TargetPort: "443",
+		Config:     cfg,
+		Scanner:    sc,
+		CertCache:  cache,
+		Logger:     logger,
+		Metrics:    m,
+		ClientIP:   "10.0.0.1",
+		RequestID:  "test-req-1",
+	})
 
 	if err == nil {
 		t.Fatal("expected error from expired context")
@@ -885,11 +941,18 @@ func TestInterceptTunnel_HostPortMismatch(t *testing.T) {
 	t.Cleanup(func() { _ = clientConn.Close() })
 
 	go func() {
-		_ = interceptTunnel(context.Background(), proxyConn, host, port,
-			cfg, sc, cache, logger, m,
-			"10.0.0.1", "test-req-1", "", upstream.Client().Transport, nil,
-			nil, nil, nil, nil, nil,
-		)
+		_ = interceptTunnel(context.Background(), proxyConn, &InterceptContext{
+			TargetHost: host,
+			TargetPort: port,
+			Config:     cfg,
+			Scanner:    sc,
+			CertCache:  cache,
+			Logger:     logger,
+			Metrics:    m,
+			ClientIP:   "10.0.0.1",
+			RequestID:  "test-req-1",
+			UpstreamRT: upstream.Client().Transport,
+		})
 	}()
 
 	tlsConn := tls.Client(clientConn, &tls.Config{
@@ -1051,11 +1114,18 @@ func TestInterceptTunnel_ResponseReadError(t *testing.T) {
 	port := "9999"
 
 	go func() {
-		_ = interceptTunnel(context.Background(), proxyConn, host, port,
-			cfg, sc, cache, logger, m,
-			"10.0.0.1", "test-req-1", "", failRT, nil,
-			nil, nil, nil, nil, nil,
-		)
+		_ = interceptTunnel(context.Background(), proxyConn, &InterceptContext{
+			TargetHost: host,
+			TargetPort: port,
+			Config:     cfg,
+			Scanner:    sc,
+			CertCache:  cache,
+			Logger:     logger,
+			Metrics:    m,
+			ClientIP:   "10.0.0.1",
+			RequestID:  "test-req-1",
+			UpstreamRT: failRT,
+		})
 	}()
 
 	tlsConn := tls.Client(clientConn, &tls.Config{
@@ -1167,11 +1237,18 @@ func TestInterceptTunnel_CompressedResponseBlockedViaRoundTripper(t *testing.T) 
 	t.Cleanup(cancel)
 
 	go func() {
-		_ = interceptTunnel(ctx, proxyConn, host, port,
-			cfg, sc, cache, logger, m,
-			"10.0.0.1", "test-req-1", "", compressedRT, nil,
-			nil, nil, nil, nil, nil,
-		)
+		_ = interceptTunnel(ctx, proxyConn, &InterceptContext{
+			TargetHost: host,
+			TargetPort: port,
+			Config:     cfg,
+			Scanner:    sc,
+			CertCache:  cache,
+			Logger:     logger,
+			Metrics:    m,
+			ClientIP:   "10.0.0.1",
+			RequestID:  "test-req-1",
+			UpstreamRT: compressedRT,
+		})
 	}()
 
 	tlsConn := tls.Client(clientConn, &tls.Config{
@@ -1471,8 +1548,20 @@ func TestInterceptTunnel_CEEAdaptiveSignalRecording(t *testing.T) {
 	t.Cleanup(cancel)
 
 	go func() {
-		_ = interceptTunnel(ctx, proxyConn, host, port, cfg, sc, cache, logger, m,
-			"10.0.0.1", "test-cee-1", "", upstream.Client().Transport, nil, et, nil, sm, nil, nil)
+		_ = interceptTunnel(ctx, proxyConn, &InterceptContext{
+			TargetHost:     host,
+			TargetPort:     port,
+			Config:         cfg,
+			Scanner:        sc,
+			CertCache:      cache,
+			Logger:         logger,
+			Metrics:        m,
+			ClientIP:       "10.0.0.1",
+			RequestID:      "test-cee-1",
+			UpstreamRT:     upstream.Client().Transport,
+			EntropyTracker: et,
+			SessionMgr:     sm,
+		})
 	}()
 
 	tlsConn := tls.Client(clientConn, &tls.Config{
@@ -1553,9 +1642,19 @@ func TestInterceptTunnel_CEEBlocked(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_ = interceptTunnel(ctx, proxyConn, host, port, cfg, sc, cache, logger, m,
-				"10.0.0.1", fmt.Sprintf("req-%d", i), "",
-				upstream.Client().Transport, nil, et, nil, nil, nil, nil)
+			_ = interceptTunnel(ctx, proxyConn, &InterceptContext{
+				TargetHost:     host,
+				TargetPort:     port,
+				Config:         cfg,
+				Scanner:        sc,
+				CertCache:      cache,
+				Logger:         logger,
+				Metrics:        m,
+				ClientIP:       "10.0.0.1",
+				RequestID:      fmt.Sprintf("req-%d", i),
+				UpstreamRT:     upstream.Client().Transport,
+				EntropyTracker: et,
+			})
 		}()
 
 		tlsConn := tls.Client(clientConn, &tls.Config{
@@ -1673,7 +1772,7 @@ func TestInterceptRecordSignal_NilRecorder(t *testing.T) {
 	cfg := interceptRecordSignalCfg()
 	logger := audit.NewNop()
 	// Must not panic.
-	interceptRecordSignal(nil, session.SignalBlock, cfg, logger, nil, nil, testLoopbackIP, "", "req-1")
+	interceptRecordSignal(&InterceptContext{Config: cfg, Logger: logger, ClientIP: testLoopbackIP, RequestID: "req-1"}, session.SignalBlock)
 }
 
 // TestInterceptRecordSignal_AdaptiveDisabled verifies that when AdaptiveEnforcement
@@ -1684,7 +1783,7 @@ func TestInterceptRecordSignal_AdaptiveDisabled(t *testing.T) {
 	logger := audit.NewNop()
 	rec := &interceptMockRecorder{}
 
-	interceptRecordSignal(rec, session.SignalBlock, cfg, logger, nil, nil, testLoopbackIP, "", "req-2")
+	interceptRecordSignal(&InterceptContext{Config: cfg, Logger: logger, Recorder: rec, ClientIP: testLoopbackIP, RequestID: "req-2"}, session.SignalBlock)
 
 	if len(rec.signals) != 0 {
 		t.Errorf("expected no signals when adaptive disabled, got %v", rec.signals)
@@ -1712,7 +1811,7 @@ func TestInterceptRecordSignal_NoEscalation(t *testing.T) {
 			rec := &interceptMockRecorder{escalateOnNext: false}
 
 			// Must not panic; escalated=false means logger and metrics are not called.
-			interceptRecordSignal(rec, tt.sig, cfg, logger, nil, nil, tt.client, tt.agent, "req-3")
+			interceptRecordSignal(&InterceptContext{Config: cfg, Logger: logger, Recorder: rec, ClientIP: tt.client, Agent: tt.agent, RequestID: "req-3"}, tt.sig)
 
 			if len(rec.signals) != 1 || rec.signals[0] != tt.sig {
 				t.Errorf("expected signal %v recorded, got %v", tt.sig, rec.signals)
@@ -1734,7 +1833,7 @@ func TestInterceptRecordSignal_EscalationNilProxy(t *testing.T) {
 	}
 
 	// p=nil: must log escalation without panicking on metrics.
-	interceptRecordSignal(rec, session.SignalBlock, cfg, logger, nil, nil, testLoopbackIP, "agent-x", "req-4")
+	interceptRecordSignal(&InterceptContext{Config: cfg, Logger: logger, Recorder: rec, ClientIP: testLoopbackIP, Agent: "agent-x", RequestID: "req-4"}, session.SignalBlock)
 
 	if len(rec.signals) != 1 {
 		t.Errorf("expected 1 signal recorded, got %d", len(rec.signals))
@@ -1775,7 +1874,7 @@ func TestInterceptRecordSignal_EscalationWithProxy(t *testing.T) {
 			}
 
 			// Must not panic; both logger and p.metrics paths are exercised.
-			interceptRecordSignal(rec, session.SignalBlock, cfg, logger, nil, p, testLoopbackIP, "agent-y", "req-5")
+			interceptRecordSignal(&InterceptContext{Config: cfg, Logger: logger, Recorder: rec, Proxy: p, ClientIP: testLoopbackIP, Agent: "agent-y", RequestID: "req-5"}, session.SignalBlock)
 
 			if len(rec.signals) != 1 {
 				t.Errorf("expected 1 signal recorded, got %d", len(rec.signals))
@@ -1826,11 +1925,19 @@ func TestInterceptTunnel_BlockAllDeniesCleanRequest(t *testing.T) {
 	t.Cleanup(cancel)
 
 	go func() {
-		_ = interceptTunnel(ctx, proxyConn, host, port,
-			cfg, sc, cache, logger, m,
-			testLoopbackIP, "test-blockall", "", upstream.Client().Transport, nil,
-			nil, nil, nil, nil, rec,
-		)
+		_ = interceptTunnel(ctx, proxyConn, &InterceptContext{
+			TargetHost: host,
+			TargetPort: port,
+			Config:     cfg,
+			Scanner:    sc,
+			CertCache:  cache,
+			Logger:     logger,
+			Metrics:    m,
+			ClientIP:   testLoopbackIP,
+			RequestID:  "test-blockall",
+			UpstreamRT: upstream.Client().Transport,
+			Recorder:   rec,
+		})
 	}()
 
 	tlsConn := tls.Client(clientConn, &tls.Config{

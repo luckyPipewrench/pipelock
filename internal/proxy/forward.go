@@ -437,7 +437,25 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			}
 			interceptRec = sm.GetOrCreate(interceptSessionKey)
 		}
-		if err := interceptTunnel(interceptCtx, interceptConn, host, port, cfg, sc, certCache, p.logger, p.metrics, clientIP, requestID, agent, p.tlsTransport, p.ssrfSafeDialContext, p.entropyTrackerPtr.Load(), p.fragmentBufferPtr.Load(), p.sessionMgrPtr.Load(), p, interceptRec); err != nil {
+		if err := interceptTunnel(interceptCtx, interceptConn, &InterceptContext{
+			TargetHost:     host,
+			TargetPort:     port,
+			Config:         cfg,
+			Scanner:        sc,
+			CertCache:      certCache,
+			Logger:         p.logger,
+			Metrics:        p.metrics,
+			ClientIP:       clientIP,
+			RequestID:      requestID,
+			Agent:          agent,
+			UpstreamRT:     p.tlsTransport,
+			SafeDial:       p.ssrfSafeDialContext,
+			EntropyTracker: p.entropyTrackerPtr.Load(),
+			FragmentBuffer: p.fragmentBufferPtr.Load(),
+			SessionMgr:     p.sessionMgrPtr.Load(),
+			Proxy:          p,
+			Recorder:       interceptRec,
+		}); err != nil {
 			p.logger.LogError(hostCtx, err)
 		}
 		return

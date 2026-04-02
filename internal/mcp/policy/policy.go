@@ -81,13 +81,17 @@ var backtickCmdSubRe = regexp.MustCompile("`\\s*(?:echo|printf)\\s+(?:['\"]?%\\S
 
 // simpleAssignRe matches shell variable assignment followed by separator.
 // "x=rm;$x -rf" hides the command name in a variable.
-var simpleAssignRe = regexp.MustCompile(`(\w+)=(\w+)\s*[;&|]`)
+// Value group captures non-whitespace/non-separator chars to handle IFS
+// manipulation: "IFS=,;CMD=r,m;$CMD" assigns `,` and `r,m` respectively.
+var simpleAssignRe = regexp.MustCompile(`(\w+)=([^\s;&|]+)\s*[;&|]`)
 
 // braceExpansionRe matches bash brace expansion used to construct commands.
 // {rm,-rf,/tmp} expands to "rm -rf /tmp" at runtime. Requires at least two
-// comma-separated items containing shell-safe characters to avoid false
-// positives on JSON or other brace-delimited syntax.
-var braceExpansionRe = regexp.MustCompile(`\{([\w./:~@=*?+-]+(?:,[\w./:~@=*?+-]+)+)\}`)
+// comma-separated items. Items may be empty to catch evasion patterns like
+// {rm,} (trailing empty) and {,rm} (leading empty), both of which bash
+// expands to include "rm". At least one item must contain a shell-safe
+// character to avoid false positives on JSON or other brace-delimited syntax.
+var braceExpansionRe = regexp.MustCompile(`\{([\w./:~@=*?+-]*(?:,[\w./:~@=*?+-]*)+)\}`)
 
 // shellQuoteStripper removes shell quoting artifacts left over from ANSI-C
 // quoting (e.g. $'\x6d' framing). After decodeShellEscapes, r$'\x6d' becomes
@@ -563,10 +567,32 @@ func resolveShellConstruction(s string) string {
 		prev := s
 		s = simpleCmdSubRe.ReplaceAllString(s, "$1")
 		matches := simpleAssignRe.FindAllStringSubmatch(s, 10)
+
+		// Detect IFS reassignment: IFS=<char> sets the field separator.
+		// When IFS is non-default, variable expansions should split on
+		// the IFS char. We apply this by replacing the IFS char with
+		// space in expanded values (over-approximation, safe for detection).
+		ifsChar := ""
 		for _, m := range matches {
+			if m[1] == "IFS" && len(m[2]) == 1 {
+				ifsChar = m[2]
+			}
+		}
+
+		for _, m := range matches {
+			value := m[2]
+			// Apply IFS-aware concatenation: remove the IFS char from
+			// expanded values so "CMD=r,m" with IFS="," expands $CMD
+			// to "rm". In bash, unquoted $CMD would word-split into
+			// separate tokens, but the attacker's intent is command
+			// construction. Concatenation is the safe over-approximation
+			// for detection (reveals the assembled command name).
+			if ifsChar != "" && m[1] != "IFS" {
+				value = strings.ReplaceAll(value, ifsChar, "")
+			}
 			// Direct expansion: ${var} and $var → value.
-			s = strings.ReplaceAll(s, "${"+m[1]+"}", m[2])
-			s = strings.ReplaceAll(s, "$"+m[1], m[2])
+			s = strings.ReplaceAll(s, "${"+m[1]+"}", value)
+			s = strings.ReplaceAll(s, "$"+m[1], value)
 			// Indirect expansion: ${!var...} → ${value...}.
 			// In bash, ${!v} expands the variable whose name is v's value.
 			// Replacing the prefix ${!varname with ${value converts e.g.

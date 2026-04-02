@@ -20,4 +20,3 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           fuzz-seconds: 600
           mode: 'code-change'
-          storage-repo: 'local'

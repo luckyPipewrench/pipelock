@@ -38,6 +38,7 @@ func TestForDLP_Parity(t *testing.T) {
 		{"bidi override", "sk-\u202Aproj-abc", skProjABC},
 		{"hangul filler", "sk-\u3164proj-abc", skProjABC},
 		{"hangul choseong filler", "igno\u115Fre all", "ignore all"},
+		{"hangul jungseong filler", "sk-\u1160proj-abc", skProjABC},
 		{"mixed Cyrillic+combining", "s\u043A-pr\u043Ej\u0307-abc", skProjABC},
 		{"NFKC fullwidth", skProj + "\uff41\uff42\uff43", skProjABC},
 		{"empty string", "", ""},

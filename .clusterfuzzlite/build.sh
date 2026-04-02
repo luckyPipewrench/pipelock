@@ -1,20 +1,29 @@
 #!/bin/bash -eu
 
 # Register the go-118-fuzz-build/testing dependency required by
-# compile_native_go_fuzzer. This is a build-time-only dependency
-# that does not belong in go.mod permanently.
+# compile_native_go_fuzzer. Build-time-only, not in go.mod.
 printf "package scanner\nimport _ \"github.com/AdamKorcz/go-118-fuzz-build/testing\"\n" > "$SRC/pipelock/internal/scanner/fuzz_dep.go"
+
+# The scanner fuzz functions call testConfig() which lives in
+# scanner_test.go. compile_native_go_fuzzer excludes _test.go files
+# from the build, so generate a non-test copy of testConfig.
+cat > "$SRC/pipelock/internal/scanner/fuzz_helpers.go" << 'GOEOF'
+package scanner
+
+import "github.com/luckyPipewrench/pipelock/internal/config"
+
+func testConfig() *config.Config {
+	cfg := config.Defaults()
+	cfg.FetchProxy.Monitoring.EntropyThreshold = 4.5
+	cfg.FetchProxy.Monitoring.MaxURLLength = 200
+	cfg.Internal = nil
+	cfg.APIAllowlist = nil
+	return cfg
+}
+GOEOF
+
 export GOFLAGS="-mod=mod"
 go mod tidy
-
-# Fuzz functions live in _test.go files which go build excludes.
-# Copy them with non-test names so compile_native_go_fuzzer can find them.
-cp "$SRC/pipelock/internal/scanner/scanner_fuzz_test.go" "$SRC/pipelock/internal/scanner/scanner_fuzz_fuzz.go"
-cp "$SRC/pipelock/internal/scanner/response_fuzz_test.go" "$SRC/pipelock/internal/scanner/response_fuzz_fuzz.go"
-cp "$SRC/pipelock/internal/audit/sanitize_fuzz_test.go" "$SRC/pipelock/internal/audit/sanitize_fuzz_fuzz.go"
-cp "$SRC/pipelock/internal/gitprotect/diffscan_fuzz_test.go" "$SRC/pipelock/internal/gitprotect/diffscan_fuzz_fuzz.go"
-cp "$SRC/pipelock/internal/mcp/scan_fuzz_test.go" "$SRC/pipelock/internal/mcp/scan_fuzz_fuzz.go"
-cp "$SRC/pipelock/internal/seedprotect/detector_fuzz_test.go" "$SRC/pipelock/internal/seedprotect/detector_fuzz_fuzz.go"
 
 # Compile each native Go fuzz target into a libFuzzer binary.
 compile_native_go_fuzzer github.com/luckyPipewrench/pipelock/internal/scanner FuzzScanURL fuzz_scan_url

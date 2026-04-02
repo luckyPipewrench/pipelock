@@ -12,7 +12,12 @@ jobs:
   review:
     if: >-
       github.event.issue.pull_request &&
-      startsWith(github.event.comment.body, '/review')
+      (github.event.comment.body == '/review' ||
+       github.event.comment.body == '/review fast' ||
+       github.event.comment.body == '/review deep' ||
+       github.event.comment.body == '/review tests' ||
+       github.event.comment.body == '/review docs' ||
+       github.event.comment.body == '/review stats')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

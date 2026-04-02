@@ -200,13 +200,14 @@ def run_stats_check() -> str:
             ["go", "test", "-v", "-run", "TestGenerateStats", "./internal/config/"],
             capture_output=True, text=True, timeout=120,
         )
-        for line in result.stdout.splitlines():
-            line = line.strip()
-            if ":" in line and not line.startswith("#"):
-                key, _, val = line.partition(":")
-                val = val.strip()
-                if val.isdigit():
-                    canonical[key.strip()] = int(val)
+        if result.returncode == 0:
+            for line in result.stdout.splitlines():
+                line = line.strip()
+                if ":" in line and not line.startswith("#"):
+                    key, _, val = line.partition(":")
+                    val = val.strip()
+                    if val.isdigit():
+                        canonical[key.strip()] = int(val)
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pass
 
@@ -258,16 +259,23 @@ def run_stats_check() -> str:
         except OSError:
             continue
 
-    # Compare and report.
-    if canonical:
-        for (filepath, stat_name, lineno), claimed in sorted(stat_refs.items()):
-            if stat_name in canonical:
-                actual = canonical[stat_name]
-                if claimed != actual:
-                    findings.append(
-                        f"- **{stat_name}**: `{filepath}:{lineno}` claims "
-                        f"**{claimed}** but code has **{actual}**"
-                    )
+    # Fail closed: if we couldn't get any canonical stats, say so.
+    if not canonical:
+        findings.append(
+            "- **Could not extract canonical stats from codebase.** "
+            "`go test -run TestGenerateStats` and `grep` fallback both failed. "
+            "Cross-reference check skipped."
+        )
+
+    # Compare canonical vs doc claims.
+    for (filepath, stat_name, lineno), claimed in sorted(stat_refs.items()):
+        if stat_name in canonical:
+            actual = canonical[stat_name]
+            if claimed != actual:
+                findings.append(
+                    f"- **{stat_name}**: `{filepath}:{lineno}` claims "
+                    f"**{claimed}** but code has **{actual}**"
+                )
 
     # Check for inconsistency across docs (same stat, different values).
     by_stat = {}

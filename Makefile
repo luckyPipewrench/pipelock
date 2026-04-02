@@ -14,7 +14,7 @@ LDFLAGS := -ldflags "-s -w \
 	-X $(MODULE)/internal/license.PublicKeyHex=$(LICENSE_PUBLIC_KEY) \
 	-X $(MODULE)/internal/rules.KeyringHex=$(LICENSE_PUBLIC_KEY)"
 
-.PHONY: build test bench lint clean docker install fmt vet tidy-check
+.PHONY: build test bench lint clean docker install fmt vet tidy-check fuzz
 
 build:
 	go build -trimpath $(LDFLAGS) -o $(BINARY) ./cmd/pipelock
@@ -56,3 +56,16 @@ docker:
 		--build-arg GIT_COMMIT=$(GIT_COMMIT) \
 		--build-arg LICENSE_PUBLIC_KEY=$(LICENSE_PUBLIC_KEY) \
 		-t $(BINARY):$(VERSION) -t $(BINARY):latest .
+
+fuzz:
+	@echo "Running all fuzz targets (30s each)..."
+	@go test -run=^$$ -fuzz=FuzzScanURL -fuzztime=30s ./internal/scanner/
+	@go test -run=^$$ -fuzz=FuzzMatchDomain -fuzztime=30s ./internal/scanner/
+	@go test -run=^$$ -fuzz=FuzzShannonEntropy -fuzztime=30s ./internal/scanner/
+	@go test -run=^$$ -fuzz=FuzzScanResponseContent -fuzztime=30s ./internal/scanner/
+	@go test -run=^$$ -fuzz=FuzzSanitizeString -fuzztime=30s ./internal/audit/
+	@go test -run=^$$ -fuzz=FuzzParseDiff -fuzztime=30s ./internal/gitprotect/
+	@go test -run=^$$ -fuzz=FuzzScanDiff -fuzztime=30s ./internal/gitprotect/
+	@go test -run=^$$ -fuzz=FuzzScanResponse -fuzztime=30s ./internal/mcp/
+	@go test -run=^$$ -fuzz=FuzzDetect -fuzztime=30s ./internal/seedprotect/
+	@echo "All fuzz targets complete."

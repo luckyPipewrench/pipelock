@@ -36,6 +36,9 @@ func TestForDLP_Parity(t *testing.T) {
 		{"Tags block stego", "sk-\U000E0041proj-abc", skProjABC},
 		{"variation selector", "sk-\uFE01proj-abc", skProjABC},
 		{"bidi override", "sk-\u202Aproj-abc", skProjABC},
+		{"hangul filler", "sk-\u3164proj-abc", skProjABC},
+		{"hangul choseong filler", "igno\u115Fre all", "ignore all"},
+		{"hangul jungseong filler", "sk-\u1160proj-abc", skProjABC},
 		{"mixed Cyrillic+combining", "s\u043A-pr\u043Ej\u0307-abc", skProjABC},
 		{"NFKC fullwidth", skProj + "\uff41\uff42\uff43", skProjABC},
 		{"empty string", "", ""},
@@ -185,6 +188,7 @@ func TestStripZeroWidth(t *testing.T) {
 		{"C0 non-whitespace stripped", "a\x01b", "ab"},
 		{"DEL stripped", "a\x7Fb", "ab"},
 		{"zero-width stripped", "a\u200Bb", "ab"},
+		{"hangul filler stripped", "a\u3164b", "ab"},
 	}
 
 	for _, tt := range tests {
@@ -216,6 +220,7 @@ func TestReplaceInvisibleWithSpace(t *testing.T) {
 		{"BOM replaced", "a\uFEFFb", "a b"},
 		{"tags block replaced", "a\U000E0041b", "a b"},
 		{"variation selector replaced", "a\uFE01b", "a b"},
+		{"hangul filler replaced", "a\u3164b", "a b"},
 		{"clean ASCII", "hello", "hello"},
 	}
 

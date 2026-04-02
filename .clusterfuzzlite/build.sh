@@ -8,13 +8,13 @@ export GOFLAGS="-mod=mod"
 go mod tidy
 
 # Fuzz functions live in _test.go files which go build excludes.
-# Symlink them to _fuzz.go so compile_native_go_fuzzer can find them.
-ln -sf "$SRC/pipelock/internal/scanner/scanner_fuzz_test.go" "$SRC/pipelock/internal/scanner/scanner_fuzz_fuzz.go"
-ln -sf "$SRC/pipelock/internal/scanner/response_fuzz_test.go" "$SRC/pipelock/internal/scanner/response_fuzz_fuzz.go"
-ln -sf "$SRC/pipelock/internal/audit/sanitize_fuzz_test.go" "$SRC/pipelock/internal/audit/sanitize_fuzz_fuzz.go"
-ln -sf "$SRC/pipelock/internal/gitprotect/diffscan_fuzz_test.go" "$SRC/pipelock/internal/gitprotect/diffscan_fuzz_fuzz.go"
-ln -sf "$SRC/pipelock/internal/mcp/scan_fuzz_test.go" "$SRC/pipelock/internal/mcp/scan_fuzz_fuzz.go"
-ln -sf "$SRC/pipelock/internal/seedprotect/detector_fuzz_test.go" "$SRC/pipelock/internal/seedprotect/detector_fuzz_fuzz.go"
+# Copy them with non-test names so compile_native_go_fuzzer can find them.
+cp "$SRC/pipelock/internal/scanner/scanner_fuzz_test.go" "$SRC/pipelock/internal/scanner/scanner_fuzz_fuzz.go"
+cp "$SRC/pipelock/internal/scanner/response_fuzz_test.go" "$SRC/pipelock/internal/scanner/response_fuzz_fuzz.go"
+cp "$SRC/pipelock/internal/audit/sanitize_fuzz_test.go" "$SRC/pipelock/internal/audit/sanitize_fuzz_fuzz.go"
+cp "$SRC/pipelock/internal/gitprotect/diffscan_fuzz_test.go" "$SRC/pipelock/internal/gitprotect/diffscan_fuzz_fuzz.go"
+cp "$SRC/pipelock/internal/mcp/scan_fuzz_test.go" "$SRC/pipelock/internal/mcp/scan_fuzz_fuzz.go"
+cp "$SRC/pipelock/internal/seedprotect/detector_fuzz_test.go" "$SRC/pipelock/internal/seedprotect/detector_fuzz_fuzz.go"
 
 # Compile each native Go fuzz target into a libFuzzer binary.
 compile_native_go_fuzzer github.com/luckyPipewrench/pipelock/internal/scanner FuzzScanURL fuzz_scan_url

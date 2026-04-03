@@ -80,7 +80,7 @@ func (r *wsRelay) recordSignal(sig session.SignalType, log *audit.Logger) {
 	if r.agent != "" && r.agent != agentAnonymous {
 		sessionKey = r.agent + "|" + r.clientIP
 	}
-	decide.RecordEscalation(r.rec, sig, decide.EscalationParams{
+	decide.RecordSignal(r.rec, sig, decide.EscalationParams{
 		Threshold: r.cfg.AdaptiveEnforcement.EscalationThreshold,
 		Logger:    log,
 		Metrics:   r.proxy.metrics,
@@ -1063,7 +1063,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 									sessionKey = r.agent + "|" + r.clientIP
 								}
 								sess := sm.GetOrCreate(sessionKey)
-								decide.RecordEscalation(sess, session.SignalStrip, decide.EscalationParams{
+								decide.RecordSignal(sess, session.SignalStrip, decide.EscalationParams{
 									Threshold: r.cfg.AdaptiveEnforcement.EscalationThreshold,
 									Logger:    log,
 									Metrics:   r.proxy.metrics,

@@ -176,8 +176,8 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		// Skip signal recording for adaptive-exempt destinations — auth
 		// headers to trusted services are expected and should not feed
 		// escalation. Uses exempt_domains (trust), not api_allowlist (reachability).
-		if connectRec != nil && !isAdaptiveExempt(host, cfg.AdaptiveEnforcement.ExemptDomains) {
-			decide.RecordEscalation(connectRec, session.SignalNearMiss, decide.EscalationParams{
+		if !isAdaptiveExempt(host, cfg.AdaptiveEnforcement.ExemptDomains) {
+			decide.RecordSignal(connectRec, session.SignalNearMiss, decide.EscalationParams{
 				Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,
 				Logger:    p.logger,
 				Metrics:   p.metrics,
@@ -860,16 +860,14 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		if forwardHeaderBlocked {
 			headerSignal = session.SignalBlock
 		}
-		if forwardRec != nil {
-			decide.RecordEscalation(forwardRec, headerSignal, decide.EscalationParams{
-				Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,
-				Logger:    p.logger,
-				Metrics:   p.metrics,
-				Session:   forwardSessionKey,
-				ClientIP:  clientIP,
-				RequestID: requestID,
-			})
-		}
+		decide.RecordSignal(forwardRec, headerSignal, decide.EscalationParams{
+			Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,
+			Logger:    p.logger,
+			Metrics:   p.metrics,
+			Session:   forwardSessionKey,
+			ClientIP:  clientIP,
+			RequestID: requestID,
+		})
 	}
 	if forwardHeaderBlocked {
 		http.Error(w, "blocked: request header contains secret", http.StatusForbidden)
@@ -1161,7 +1159,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 							sessionKey = agent + "|" + clientIP
 						}
 						sess := sm.GetOrCreate(sessionKey)
-						decide.RecordEscalation(sess, session.SignalStrip, decide.EscalationParams{
+						decide.RecordSignal(sess, session.SignalStrip, decide.EscalationParams{
 							Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,
 							Logger:    p.logger,
 							Metrics:   p.metrics,

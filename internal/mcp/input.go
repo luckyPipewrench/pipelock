@@ -583,8 +583,14 @@ func ForwardScannedInput(
 	// Helper: record an adaptive signal and handle escalation side-effects.
 	// Eliminates repeated nil/enabled guards at every call site.
 	recordAdaptiveSignal := func(sig session.SignalType) {
-		if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
-			recordSignalWithEscalation(rec, sig, adaptiveCfg.EscalationThreshold, logW, auditLogger, m, "default", "", "")
+		if adaptiveCfg != nil && adaptiveCfg.Enabled {
+			decide.RecordSignal(rec, sig, decide.EscalationParams{
+				Threshold:     adaptiveCfg.EscalationThreshold,
+				Logger:        auditLogger,
+				Metrics:       m,
+				ConsoleWriter: logW,
+				Session:       "default",
+			})
 		}
 	}
 

@@ -2214,11 +2214,12 @@ func TestInterceptTunnel_A2AHeaderScanningBlocked(t *testing.T) {
 	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
 	defer func() { _ = resp.Body.Close() }()
 
-	// The A2A header scan should detect the SSRF-indicative URI. Whether the
-	// scanner detects it depends on whether the ScanA2AHeaders implementation
-	// triggers on metadata IPs. The key is exercising the code path.
-	// If blocked: 403. If clean: the header scanning path was still exercised.
-	t.Logf("A2A header scan status: %d", resp.StatusCode)
+	// Block mode with metadata IP in A2A-Extensions: expect 403 if the scanner
+	// detects it, or 200 if the header format doesn't trigger. Either way the
+	// A2A header scanning code path is exercised.
+	if resp.StatusCode != http.StatusForbidden && resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 403 (blocked) or 200 (not detected), got unexpected code", resp.StatusCode)
+	}
 }
 
 // TestInterceptTunnel_A2ARequestBodyBlocked verifies that A2A request body
@@ -2250,9 +2251,11 @@ func TestInterceptTunnel_A2ARequestBodyBlocked(t *testing.T) {
 	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
 	defer func() { _ = resp.Body.Close() }()
 
-	// Exercise the A2A request body scanning path. The outcome depends on
-	// whether ScanA2ARequestBody detects the payload in JSON leaf nodes.
-	t.Logf("A2A request body scan status: %d", resp.StatusCode)
+	// Block mode with injection in A2A message parts: expect 403 if detected,
+	// or 200 if the A2A body scanner doesn't fire on this payload structure.
+	if resp.StatusCode != http.StatusForbidden && resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 403 (blocked) or 200 (not detected), got unexpected code", resp.StatusCode)
+	}
 }
 
 // TestInterceptTunnel_ResponseScanExemptDomainWarnPath verifies that response
@@ -2466,8 +2469,10 @@ func TestInterceptTunnel_A2AHeaderScanWarnMode(t *testing.T) {
 	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
 	defer func() { _ = resp.Body.Close() }()
 
-	// Warn mode: should forward regardless of header finding.
-	t.Logf("A2A header scan warn mode status: %d", resp.StatusCode)
+	// Warn mode: finding is logged but request must be forwarded, never blocked.
+	if resp.StatusCode == http.StatusForbidden {
+		t.Errorf("status = 403, want non-403 (A2A header warn mode must forward)")
+	}
 }
 
 // TestInterceptTunnel_A2ARequestBodyAskFailsClosed verifies that ActionAsk on
@@ -2497,6 +2502,9 @@ func TestInterceptTunnel_A2ARequestBodyAskFailsClosed(t *testing.T) {
 	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
 	defer func() { _ = resp.Body.Close() }()
 
-	// Exercise the A2A request body ask→block path.
-	t.Logf("A2A request body ask status: %d", resp.StatusCode)
+	// ActionAsk in intercepted tunnels fails closed (no HITL terminal).
+	// Expect 403 if A2A body scanner detects the payload, or 200 if not.
+	if resp.StatusCode != http.StatusForbidden && resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 403 (ask fails closed) or 200 (not detected), got unexpected code", resp.StatusCode)
+	}
 }

@@ -1339,7 +1339,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	defer resp.Body.Close() //nolint:errcheck // response body
+	defer safeClose(resp.Body, "resp.Body", p.logger)
 
 	// Limit response body size: use the tighter of max_response_mb and the
 	// remaining per-agent byte budget, so oversized responses are blocked

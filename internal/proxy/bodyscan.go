@@ -80,22 +80,33 @@ type BodyScanResult struct {
 	Reason          string                   // human-readable block reason
 }
 
+// BodyScanRequest groups the parameters for scanRequestBody, keeping the
+// function signature under the 6-parameter guideline (ctx is passed separately).
+type BodyScanRequest struct {
+	Body            io.Reader
+	ContentType     string
+	ContentEncoding string
+	MaxBytes        int
+	Scanner         *scanner.Scanner
+	AgentID         string
+}
+
 // scanRequestBody reads, buffers, and DLP-scans an HTTP request body.
 // Returns the buffered body bytes (for re-wrapping) and the scan result.
 // Fail-closed: oversized bodies and compressed bodies are always blocked.
-func scanRequestBody(ctx context.Context, body io.Reader, contentType, contentEncoding string, maxBytes int, sc *scanner.Scanner, agentID string) ([]byte, BodyScanResult) {
+func scanRequestBody(ctx context.Context, req BodyScanRequest) ([]byte, BodyScanResult) {
 	// Content-Encoding check: compressed bodies evade DLP regex matching.
 	// Parse as comma-separated tokens (RFC 7231 section 3.1.2.2).
-	if hasNonIdentityEncoding(contentEncoding) {
+	if hasNonIdentityEncoding(req.ContentEncoding) {
 		return nil, BodyScanResult{
 			Clean:  false,
 			Action: config.ActionBlock,
-			Reason: fmt.Sprintf("request body uses Content-Encoding %q; compressed bodies cannot be scanned for secrets", contentEncoding),
+			Reason: fmt.Sprintf("request body uses Content-Encoding %q; compressed bodies cannot be scanned for secrets", req.ContentEncoding),
 		}
 	}
 
 	// Read body with +1 byte to detect overflow.
-	buf, err := io.ReadAll(io.LimitReader(body, int64(maxBytes)+1))
+	buf, err := io.ReadAll(io.LimitReader(req.Body, int64(req.MaxBytes)+1))
 	if err != nil {
 		return nil, BodyScanResult{
 			Clean:  false,
@@ -105,11 +116,11 @@ func scanRequestBody(ctx context.Context, body io.Reader, contentType, contentEn
 	}
 
 	// Overflow: fail-closed block regardless of configured action.
-	if len(buf) > maxBytes {
+	if len(buf) > req.MaxBytes {
 		return nil, BodyScanResult{
 			Clean:  false,
 			Action: config.ActionBlock,
-			Reason: fmt.Sprintf("request body exceeds max_body_bytes (%d)", maxBytes),
+			Reason: fmt.Sprintf("request body exceeds max_body_bytes (%d)", req.MaxBytes),
 		}
 	}
 
@@ -119,7 +130,7 @@ func scanRequestBody(ctx context.Context, body io.Reader, contentType, contentEn
 	}
 
 	// Extract text strings from body based on content type.
-	texts, parseErr := extractBodyText(buf, contentType, maxBytes)
+	texts, parseErr := extractBodyText(buf, req.ContentType, req.MaxBytes)
 	if parseErr != "" {
 		// Multipart limit exceeded: fail-closed block.
 		return nil, BodyScanResult{
@@ -135,7 +146,7 @@ func scanRequestBody(ctx context.Context, body io.Reader, contentType, contentEn
 
 	// Scan each extracted string individually (catches per-field encoded secrets).
 	for _, text := range texts {
-		result := sc.ScanTextForDLP(ctx, text)
+		result := req.Scanner.ScanTextForDLP(ctx, text)
 		if !result.Clean {
 			return buf, BodyScanResult{
 				Clean:      false,
@@ -150,7 +161,7 @@ func scanRequestBody(ctx context.Context, body io.Reader, contentType, contentEn
 	copy(sorted, texts)
 	sort.Strings(sorted)
 	joined := strings.Join(sorted, "\n")
-	result := sc.ScanTextForDLP(ctx, joined)
+	result := req.Scanner.ScanTextForDLP(ctx, joined)
 	if !result.Clean {
 		return buf, BodyScanResult{
 			Clean:      false,
@@ -162,8 +173,8 @@ func scanRequestBody(ctx context.Context, body io.Reader, contentType, contentEn
 	// Note: body address findings are currently emitted/counted as body_dlp
 	// by callers (forward.go, intercept.go). Dedicated address_protection
 	// log/metric path deferred to v2.
-	if checker := sc.AddressChecker(); checker != nil {
-		addrResult := checker.CheckText(joined, agentID)
+	if checker := req.Scanner.AddressChecker(); checker != nil {
+		addrResult := checker.CheckText(joined, req.AgentID)
 		if len(addrResult.Findings) > 0 {
 			return buf, BodyScanResult{
 				Clean:           false,

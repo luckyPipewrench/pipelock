@@ -364,7 +364,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() {
 		if targetConn != nil {
-			_ = targetConn.Close()
+			safeClose(targetConn, "targetConn", p.logger)
 		}
 	}()
 
@@ -382,7 +382,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		p.logger.LogError(targetCtx, err)
 		return
 	}
-	defer clientConn.Close() //nolint:errcheck // best effort
+	defer safeClose(clientConn, "clientConn", p.logger)
 
 	// Send 200 Connection Established
 	_, _ = clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
@@ -418,7 +418,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		}
 		// Close the pre-established upstream TCP connection since interceptTunnel
 		// creates its own via the SSRF-safe dialer. This prevents a dangling connection.
-		_ = targetConn.Close()
+		safeClose(targetConn, "targetConn", p.logger)
 		targetConn = nil
 		p.metrics.RecordTLSIntercept("intercepted")
 		p.logger.LogAnomaly(hostCtx, "tls_intercept", "TLS MITM interception active", 0) // 0: informational, not anomalous
@@ -710,8 +710,14 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// Request body DLP scanning: read and scan body before Clone so the
 	// cloned request gets the re-wrapped buffered bytes.
 	if cfg.RequestBodyScanning.Enabled && r.Body != nil && r.Body != http.NoBody {
-		buf, bodyResult := scanRequestBody(r.Context(), r.Body, r.Header.Get("Content-Type"),
-			r.Header.Get("Content-Encoding"), cfg.RequestBodyScanning.MaxBodyBytes, sc, agent)
+		buf, bodyResult := scanRequestBody(r.Context(), BodyScanRequest{
+			Body:            r.Body,
+			ContentType:     r.Header.Get("Content-Type"),
+			ContentEncoding: r.Header.Get("Content-Encoding"),
+			MaxBytes:        cfg.RequestBodyScanning.MaxBodyBytes,
+			Scanner:         sc,
+			AgentID:         agent,
+		})
 
 		// Capture observer: record forward body DLP verdict for policy replay.
 		{
@@ -963,7 +969,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "forward proxy fetch failed", http.StatusBadGateway)
 		return
 	}
-	defer resp.Body.Close() //nolint:errcheck // response body
+	defer safeClose(resp.Body, "resp.Body", p.logger)
 
 	// Size limit: tighter of max_response_mb and remaining byte budget.
 	maxBytes := int64(cfg.FetchProxy.MaxResponseMB) * 1024 * 1024

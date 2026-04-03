@@ -215,10 +215,13 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 		maxBytes = reverseProxyMaxBodyBytes
 	}
 
-	bodyBytes, result := scanRequestBody(
-		r.Context(), r.Body, r.Header.Get("Content-Type"),
-		r.Header.Get("Content-Encoding"), maxBytes, sc, "",
-	)
+	bodyBytes, result := scanRequestBody(r.Context(), BodyScanRequest{
+		Body:            r.Body,
+		ContentType:     r.Header.Get("Content-Type"),
+		ContentEncoding: r.Header.Get("Content-Encoding"),
+		MaxBytes:        maxBytes,
+		Scanner:         sc,
+	})
 
 	// Capture observer: record reverse proxy request DLP verdict for policy replay.
 	{

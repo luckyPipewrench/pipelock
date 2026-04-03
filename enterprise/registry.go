@@ -144,13 +144,13 @@ func (r *AgentRegistry) LookupByName(name string) (*edition.ResolvedAgent, bool)
 // ResolveFromRequest implements the 4-step agent resolution for Edition.ResolveAgent.
 // Priority: context override > CIDR > header/query > fallback.
 func (r *AgentRegistry) ResolveFromRequest(ctx context.Context, req *http.Request, defaultCfg *config.Config, defaultSc *scanner.Scanner) (*edition.ResolvedAgent, edition.AgentIdentity) {
-	// 1. Context override (set by per-agent listener binding).
+	// Context override (set by per-agent listener binding).
 	if profile, ok := edition.AgentOverrideFromContext(ctx); ok {
 		id := edition.AgentIdentity{Name: profile, Profile: profile}
 		return r.Lookup(id.Profile), id
 	}
 
-	// 2. Source CIDR match: map client IP to profile.
+	// Source CIDR match: map client IP to profile.
 	if clientIP := extractIP(req); clientIP != nil {
 		if profile, ok := r.MatchCIDR(clientIP); ok {
 			id := edition.AgentIdentity{Name: profile, Profile: profile}
@@ -158,7 +158,7 @@ func (r *AgentRegistry) ResolveFromRequest(ctx context.Context, req *http.Reques
 		}
 	}
 
-	// 3+4. Header/query/fallback via ResolveAgentIdentity.
+	// Header/query/fallback via ResolveAgentIdentity.
 	profiles := r.Profiles()
 	known := make(map[string]bool, len(profiles))
 	for _, name := range profiles {

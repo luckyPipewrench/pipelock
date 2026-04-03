@@ -1049,9 +1049,9 @@ func Load(path string) (*Config, error) {
 	cfg.ApplyDefaults()
 
 	// Resolve license key from multiple sources. Priority:
-	// 1. PIPELOCK_LICENSE_KEY env var (containers, CI)
-	// 2. license_file config field (file path, read at startup)
-	// 3. license_key config field (inline YAML, lowest priority)
+	// - PIPELOCK_LICENSE_KEY env var (containers, CI)
+	// - license_file config field (file path, read at startup)
+	// - license_key config field (inline YAML, lowest priority)
 	if err := cfg.resolveLicenseKey(filepath.Dir(path)); err != nil {
 		return nil, fmt.Errorf("license key: %w", err)
 	}
@@ -1110,7 +1110,7 @@ func Load(path string) (*Config, error) {
 // env var > license_file > inline license_key. The configDir is used to
 // resolve relative license_file paths.
 func (c *Config) resolveLicenseKey(configDir string) error {
-	// 1. Env var takes highest priority. Trim before checking so that a
+	// Env var takes highest priority. Trim before checking so that a
 	// whitespace-only value (e.g. trailing newline) falls through to
 	// lower-priority sources instead of winning with an empty token.
 	if envKey := strings.TrimSpace(os.Getenv(EnvLicenseKey)); envKey != "" {
@@ -1118,7 +1118,7 @@ func (c *Config) resolveLicenseKey(configDir string) error {
 		return nil
 	}
 
-	// 2. File path: read token from the file.
+	// File path: read token from the file.
 	if c.LicenseFile != "" {
 		p := c.LicenseFile
 		if !filepath.IsAbs(p) {
@@ -1157,7 +1157,7 @@ func (c *Config) resolveLicenseKey(configDir string) error {
 		return nil
 	}
 
-	// 3. Inline license_key from YAML stays as-is (already parsed).
+	// Inline license_key from YAML stays as-is (already parsed).
 	return nil
 }
 

@@ -542,7 +542,7 @@ func (s *Scanner) scan(ctx context.Context, rawURL string) Result {
 		}
 	}
 
-	// 1. Scheme check
+	// Scheme check —
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return Result{
 			Allowed: false,
@@ -552,29 +552,29 @@ func (s *Scanner) scan(ctx context.Context, rawURL string) Result {
 		}
 	}
 
-	// 2. CRLF injection check — %0D%0A in URLs enables header injection.
+	// CRLF injection check — %0D%0A in URLs enables header injection.
 	// Runs early because CRLF is never legitimate in a URL.
 	if result := checkCRLF(rawURL); !result.Allowed {
 		return result
 	}
 
-	// 3. Path traversal check — /../ sequences are defense-in-depth.
+	// Path traversal check — /../ sequences are defense-in-depth.
 	if result := checkPathTraversal(parsed); !result.Allowed {
 		return result
 	}
 
-	// 4. Allowlist check — if configured, only allowlisted domains are permitted.
+	// Allowlist check — if configured, only allowlisted domains are permitted.
 	// Runs before DNS to reject disallowed domains without any network I/O.
 	if result := s.checkAllowlist(hostname); !result.Allowed {
 		return result
 	}
 
-	// 5. Blocklist check — before DNS to avoid resolving known-bad domains.
+	// Blocklist check — before DNS to avoid resolving known-bad domains.
 	if result := s.checkBlocklist(hostname); !result.Allowed {
 		return result
 	}
 
-	// 6. DLP + entropy on hostname BEFORE DNS resolution.
+	// DLP + entropy on hostname BEFORE DNS resolution.
 	// Prevents secret exfiltration via DNS queries for domains like
 	// "sk-ant-xxxx.evil.com" where the subdomain encodes a secret.
 	if result := s.checkDLP(parsed); !result.Allowed {
@@ -584,23 +584,23 @@ func (s *Scanner) scan(ctx context.Context, rawURL string) Result {
 		return result
 	}
 
-	// 6b. Subdomain entropy check — catches base64/hex encoded data in subdomains
+	// Subdomain entropy check — catches base64/hex encoded data in subdomains
 	// (e.g., "aGVsbG8.evil.com" exfiltrating data via DNS queries).
 	if result := s.checkSubdomainEntropy(hostname); !result.Allowed {
 		return result
 	}
 
-	// 7. SSRF protection — DNS resolution happens here, safe after DLP.
+	// SSRF protection — DNS resolution happens here, safe after DLP.
 	if result := s.checkSSRF(ctx, hostname); !result.Allowed {
 		return result
 	}
 
-	// 8. Rate limit check (per-domain)
+	// Rate limit check (per-domain)
 	if result := s.checkRateLimit(hostname); !result.Allowed {
 		return result
 	}
 
-	// 9. URL length check
+	// URL length check
 	if s.maxURLLength > 0 && len(rawURL) > s.maxURLLength {
 		return Result{
 			Allowed: false,
@@ -610,7 +610,7 @@ func (s *Scanner) scan(ctx context.Context, rawURL string) Result {
 		}
 	}
 
-	// 10. Data budget check (per-domain sliding window)
+	// Data budget check (per-domain sliding window)
 	if result := s.checkDataBudget(hostname); !result.Allowed {
 		return result
 	}

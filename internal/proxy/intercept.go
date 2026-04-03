@@ -280,13 +280,6 @@ func newInterceptHandler(
 	target := net.JoinHostPort(targetHost, targetPort)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reqStart := time.Now()
-		actx := audit.LogContext{
-			Method:    r.Method,
-			URL:       r.URL.String(),
-			ClientIP:  clientIP,
-			RequestID: requestID,
-			Agent:     agent,
-		}
 
 		// Authority check: Host must match CONNECT target (host:port).
 		// Prevents domain fronting where the agent CONNECTs to allowed.com
@@ -310,6 +303,16 @@ func newInterceptHandler(
 		r.URL.Scheme = schemeHTTPS
 		r.URL.Host = target
 		r.RequestURI = "" // required for http.Transport
+
+		// Build shared audit context AFTER URL reconstruction so actx.URL
+		// contains the full intercepted URL, not just the origin-form path.
+		actx := audit.LogContext{
+			Method:    r.Method,
+			URL:       r.URL.String(),
+			ClientIP:  clientIP,
+			RequestID: requestID,
+			Agent:     agent,
+		}
 
 		// Track whether any finding occurred (URL, body DLP, or response scan).
 		// RecordClean is only applied when the request was fully clean so that
@@ -950,10 +953,10 @@ func newInterceptHandler(
 					// Update Content-Length to match stripped body; prevents HTTP/1.1
 					// framing errors from a stale upstream Content-Length header.
 					resp.Header.Set("Content-Length", strconv.Itoa(len(respBody)))
-					logger.LogResponseScan(audit.LogContext{URL: r.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: agent}, config.ActionStrip, len(scanResult.Matches), patternNames, bundleRules)
+					logger.LogResponseScan(actx, config.ActionStrip, len(scanResult.Matches), patternNames, bundleRules)
 				default:
 					// warn/forward: log and forward unmodified.
-					logger.LogResponseScan(audit.LogContext{URL: r.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: agent}, action, len(scanResult.Matches), patternNames, bundleRules)
+					logger.LogResponseScan(actx, action, len(scanResult.Matches), patternNames, bundleRules)
 				}
 			}
 		}

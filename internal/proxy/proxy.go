@@ -290,7 +290,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			result := currentScanner.Scan(req.Context(), redirectURL)
 			if !result.Allowed {
 				actx := audit.LogContext{
-					Method:    "GET",
+					Method:    req.Method,
 					URL:       redirectURL,
 					ClientIP:  clientIP,
 					RequestID: requestID,
@@ -1010,7 +1010,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// from Go's query parsing. Operators should see the final resolved URL.
 	displayURL := scanner.IterativeDecode(targetURL)
 	actx := audit.LogContext{
-		Method:    "GET",
+		Method:    http.MethodGet,
 		URL:       displayURL,
 		ClientIP:  clientIP,
 		RequestID: requestID,

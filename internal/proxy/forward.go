@@ -1165,9 +1165,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					http.Error(w, "blocked: response contains injection", http.StatusForbidden)
 					return
 				}
-				p.logger.LogResponseScan(audit.LogContext{URL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}, config.ActionStrip, len(scanResult.Matches), patternNames, bundleRules)
+				p.logger.LogResponseScan(actx, config.ActionStrip, len(scanResult.Matches), patternNames, bundleRules)
 			default:
-				p.logger.LogResponseScan(audit.LogContext{URL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}, action, len(scanResult.Matches), patternNames, bundleRules)
+				p.logger.LogResponseScan(actx, action, len(scanResult.Matches), patternNames, bundleRules)
 			}
 		}
 

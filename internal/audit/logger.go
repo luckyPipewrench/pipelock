@@ -310,8 +310,8 @@ func (l *Logger) LogAllowed(ctx LogContext, statusCode, sizeBytes int, duration 
 	e := newLogEntry(l.zl.Info(), EventAllowed).
 		str("method", ctx.Method).
 		str("url", ctx.URL).
-		str("client_ip", ctx.ClientIP).
-		str("request_id", ctx.RequestID).
+		optStr("client_ip", ctx.ClientIP).
+		optStr("request_id", ctx.RequestID).
 		intField("status_code", statusCode).
 		intField("size_bytes", sizeBytes).
 		durMS(duration).
@@ -326,8 +326,8 @@ func (l *Logger) LogBlocked(ctx LogContext, scanner, reason string) {
 	e := newLogEntry(l.zl.Warn(), EventBlocked).
 		str("method", ctx.Method).
 		str("url", ctx.URL).
-		str("client_ip", ctx.ClientIP).
-		str("request_id", ctx.RequestID).
+		optStr("client_ip", ctx.ClientIP).
+		optStr("request_id", ctx.RequestID).
 		str("scanner", scanner).
 		str("reason", reason).
 		optStr("agent", ctx.Agent).
@@ -348,8 +348,8 @@ func (l *Logger) LogError(ctx LogContext, err error) {
 	e := newLogEntry(l.zl.Error(), EventError).
 		str("method", ctx.Method).
 		str("url", ctx.URL).
-		str("client_ip", ctx.ClientIP).
-		str("request_id", ctx.RequestID).
+		optStr("client_ip", ctx.ClientIP).
+		optStr("request_id", ctx.RequestID).
 		optStr("agent", ctx.Agent).
 		errField(err)
 	e.msg("request error")
@@ -369,8 +369,8 @@ func (l *Logger) LogAnomaly(ctx LogContext, scanner, reason string, score float6
 	e := newLogEntry(l.zl.Warn(), EventAnomaly).
 		str("method", ctx.Method).
 		str("url", ctx.URL).
-		str("client_ip", ctx.ClientIP).
-		str("request_id", ctx.RequestID).
+		optStr("client_ip", ctx.ClientIP).
+		optStr("request_id", ctx.RequestID).
 		optStr("agent", ctx.Agent).
 		optStr("scanner", scanner).
 		optStr("mitre_technique", technique).
@@ -393,10 +393,14 @@ func (l *Logger) LogResponseScanExempt(ctx LogContext, hostname string) {
 		Str("method", ctx.Method).
 		Str("url", sanitizeString(ctx.URL)).
 		Str("hostname", hostname).
-		Str("client_ip", ctx.ClientIP).
-		Str("request_id", ctx.RequestID).
 		Str("enforcement_type", "response_scanning").
 		Str("reason", "exempt_domains match")
+	if ctx.ClientIP != "" {
+		event = event.Str("client_ip", ctx.ClientIP)
+	}
+	if ctx.RequestID != "" {
+		event = event.Str("request_id", ctx.RequestID)
+	}
 	if ctx.Agent != "" {
 		event = event.Str("agent", sanitizeString(ctx.Agent))
 	}
@@ -407,10 +411,14 @@ func (l *Logger) LogResponseScanExempt(ctx LogContext, hostname string) {
 			"method":           ctx.Method,
 			"url":              sanitizeString(ctx.URL),
 			"hostname":         hostname,
-			"client_ip":        ctx.ClientIP,
-			"request_id":       ctx.RequestID,
 			"enforcement_type": "response_scanning",
 			"reason":           "exempt_domains match",
+		}
+		if ctx.ClientIP != "" {
+			fields["client_ip"] = ctx.ClientIP
+		}
+		if ctx.RequestID != "" {
+			fields["request_id"] = ctx.RequestID
 		}
 		if ctx.Agent != "" {
 			fields["agent"] = sanitizeString(ctx.Agent)
@@ -427,8 +435,8 @@ func (l *Logger) LogResponseScan(ctx LogContext, action string, matchCount int, 
 
 	e := newLogEntry(l.zl.Warn(), EventResponseScan).
 		str("url", ctx.URL).
-		str("client_ip", ctx.ClientIP).
-		str("request_id", ctx.RequestID).
+		optStr("client_ip", ctx.ClientIP).
+		optStr("request_id", ctx.RequestID).
 		str("action", action).
 		intField("match_count", matchCount).
 		strs("patterns", patternNames).
@@ -451,8 +459,8 @@ func (l *Logger) LogTunnelOpen(ctx LogContext, target string) {
 	}
 	e := newLogEntry(l.zl.Info(), EventTunnelOpen).
 		str("target", target).
-		str("client_ip", ctx.ClientIP).
-		str("request_id", ctx.RequestID).
+		optStr("client_ip", ctx.ClientIP).
+		optStr("request_id", ctx.RequestID).
 		optStr("agent", ctx.Agent)
 	e.msg("tunnel opened")
 }
@@ -464,8 +472,8 @@ func (l *Logger) LogTunnelClose(ctx LogContext, target string, totalBytes int64,
 	}
 	e := newLogEntry(l.zl.Info(), EventTunnelClose).
 		str("target", target).
-		str("client_ip", ctx.ClientIP).
-		str("request_id", ctx.RequestID).
+		optStr("client_ip", ctx.ClientIP).
+		optStr("request_id", ctx.RequestID).
 		optStr("agent", ctx.Agent).
 		int64Field("total_bytes", totalBytes).
 		durMS(duration)
@@ -480,8 +488,8 @@ func (l *Logger) LogForwardHTTP(ctx LogContext, statusCode, sizeBytes int, durat
 	e := newLogEntry(l.zl.Info(), EventForwardHTTP).
 		str("method", ctx.Method).
 		str("url", ctx.URL).
-		str("client_ip", ctx.ClientIP).
-		str("request_id", ctx.RequestID).
+		optStr("client_ip", ctx.ClientIP).
+		optStr("request_id", ctx.RequestID).
 		optStr("agent", ctx.Agent).
 		intField("status_code", statusCode).
 		intField("size_bytes", sizeBytes).
@@ -813,8 +821,8 @@ func (l *Logger) LogBodyDLP(ctx LogContext, action string, matchCount int, patte
 		str("method", ctx.Method).
 		str("url", ctx.URL).
 		str("action", action).
-		str("client_ip", ctx.ClientIP).
-		str("request_id", ctx.RequestID).
+		optStr("client_ip", ctx.ClientIP).
+		optStr("request_id", ctx.RequestID).
 		optStr("agent", ctx.Agent).
 		intField("match_count", matchCount).
 		strs("patterns", patternNames).
@@ -836,8 +844,8 @@ func (l *Logger) LogBodyScan(ctx LogContext, eventType EventType, action string,
 		str("method", ctx.Method).
 		str("url", ctx.URL).
 		str("action", action).
-		str("client_ip", ctx.ClientIP).
-		str("request_id", ctx.RequestID).
+		optStr("client_ip", ctx.ClientIP).
+		optStr("request_id", ctx.RequestID).
 		optStr("agent", ctx.Agent).
 		intField("match_count", matchCount).
 		strs("findings", findingNames)
@@ -858,8 +866,8 @@ func (l *Logger) LogHeaderDLP(ctx LogContext, headerName, action string, pattern
 		str("url", ctx.URL).
 		str("header", headerName).
 		str("action", action).
-		str("client_ip", ctx.ClientIP).
-		str("request_id", ctx.RequestID).
+		optStr("client_ip", ctx.ClientIP).
+		optStr("request_id", ctx.RequestID).
 		optStr("agent", ctx.Agent).
 		strs("patterns", patternNames).
 		str("mitre_technique", technique)

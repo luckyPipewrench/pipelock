@@ -1782,6 +1782,7 @@ type interceptMockRecorder struct {
 	from           string
 	to             string
 	level          int
+	cleanCalled    bool
 }
 
 func (r *interceptMockRecorder) RecordSignal(sig session.SignalType, _ float64) (bool, string, string) {
@@ -1794,7 +1795,7 @@ func (r *interceptMockRecorder) RecordSignal(sig session.SignalType, _ float64) 
 	return false, "", ""
 }
 
-func (r *interceptMockRecorder) RecordClean(_ float64) {}
+func (r *interceptMockRecorder) RecordClean(_ float64) { r.cleanCalled = true }
 func (r *interceptMockRecorder) EscalationLevel() int  { return r.level }
 func (r *interceptMockRecorder) ThreatScore() float64  { return 0 }
 
@@ -2356,6 +2357,18 @@ func TestInterceptTunnel_RecordCleanAfterCleanRequest(t *testing.T) {
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200 (clean request should be forwarded)", resp.StatusCode)
+	}
+	if !rec.cleanCalled {
+		t.Error("RecordClean was not called after clean request")
+	}
+}
+
+// TestInterceptContext_ValidateNil verifies that Validate on a nil receiver
+// returns an error instead of panicking.
+func TestInterceptContext_ValidateNil(t *testing.T) {
+	var ic *InterceptContext
+	if err := ic.Validate(); err == nil {
+		t.Error("expected error for nil InterceptContext, got nil")
 	}
 }
 

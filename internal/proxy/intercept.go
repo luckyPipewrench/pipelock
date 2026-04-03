@@ -68,6 +68,9 @@ type InterceptContext struct {
 // enforcement-critical field is nil/empty, preventing panic-on-dereference
 // in the intercept pipeline. Called at entry to interceptTunnel.
 func (ic *InterceptContext) Validate() error {
+	if ic == nil {
+		return errors.New("InterceptContext: nil receiver")
+	}
 	switch {
 	case ic.TargetHost == "":
 		return errors.New("InterceptContext: TargetHost is required")

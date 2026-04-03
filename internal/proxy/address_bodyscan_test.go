@@ -42,10 +42,12 @@ func TestScanRequestBody_AddressPoisoningBlocked(t *testing.T) {
 
 	// JSON body with a poisoned ETH address (lookalike of allowlisted).
 	body := `{"to": "0x742daaaaaaaaaaaaaaaaaaaaaaaaaaaaaaf2bd3e", "amount": "1.0"}`
-	_, result := scanRequestBody(
-		context.Background(), strings.NewReader(body),
-		"application/json", "", 1024*1024, sc, "",
-	)
+	_, result := scanRequestBody(context.Background(), BodyScanRequest{
+		Body:        strings.NewReader(body),
+		ContentType: "application/json",
+		MaxBytes:    1024 * 1024,
+		Scanner:     sc,
+	})
 	if result.Clean {
 		t.Fatal("poisoned address in body should not be clean")
 	}
@@ -65,10 +67,12 @@ func TestScanRequestBody_AddressExactMatchClean(t *testing.T) {
 
 	// Exact allowlisted address — should pass clean.
 	body := `{"to": "0x742d35cc6634c0532925a3b844bc9e7595f2bd3e", "amount": "1.0"}`
-	_, result := scanRequestBody(
-		context.Background(), strings.NewReader(body),
-		"application/json", "", 1024*1024, sc, "",
-	)
+	_, result := scanRequestBody(context.Background(), BodyScanRequest{
+		Body:        strings.NewReader(body),
+		ContentType: "application/json",
+		MaxBytes:    1024 * 1024,
+		Scanner:     sc,
+	})
 	if !result.Clean {
 		t.Error("exact allowlisted address should be clean")
 	}
@@ -79,10 +83,12 @@ func TestScanRequestBody_AddressUnknownAllowed(t *testing.T) {
 
 	// Unknown address with unknown_action=allow — should pass clean.
 	body := `{"to": "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"}`
-	_, result := scanRequestBody(
-		context.Background(), strings.NewReader(body),
-		"application/json", "", 1024*1024, sc, "",
-	)
+	_, result := scanRequestBody(context.Background(), BodyScanRequest{
+		Body:        strings.NewReader(body),
+		ContentType: "application/json",
+		MaxBytes:    1024 * 1024,
+		Scanner:     sc,
+	})
 	if !result.Clean {
 		t.Error("unknown address with allow action should be clean")
 	}
@@ -98,10 +104,12 @@ func TestScanRequestBody_NoAddressProtection(t *testing.T) {
 
 	// No address protection enabled — should not crash.
 	body := `{"to": "0x742daaaaaaaaaaaaaaaaaaaaaaaaaaaaaaf2bd3e"}`
-	_, result := scanRequestBody(
-		context.Background(), strings.NewReader(body),
-		"application/json", "", 1024*1024, sc, "",
-	)
+	_, result := scanRequestBody(context.Background(), BodyScanRequest{
+		Body:        strings.NewReader(body),
+		ContentType: "application/json",
+		MaxBytes:    1024 * 1024,
+		Scanner:     sc,
+	})
 	if !result.Clean {
 		t.Error("no address protection: should be clean")
 	}
@@ -136,10 +144,13 @@ func TestScanRequestBody_AddressWithAgentID(t *testing.T) {
 
 	// Poisoned address with agent ID "trader" — agent's allowlist should be consulted.
 	body := `{"to": "0x742daaaaaaaaaaaaaaaaaaaaaaaaaaaaaaf2bd3e"}`
-	_, result := scanRequestBody(
-		context.Background(), strings.NewReader(body),
-		"application/json", "", 1024*1024, sc, "trader",
-	)
+	_, result := scanRequestBody(context.Background(), BodyScanRequest{
+		Body:        strings.NewReader(body),
+		ContentType: "application/json",
+		MaxBytes:    1024 * 1024,
+		Scanner:     sc,
+		AgentID:     "trader",
+	})
 	if result.Clean {
 		t.Fatal("poisoned address should be caught with agent allowlist")
 	}

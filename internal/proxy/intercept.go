@@ -466,15 +466,14 @@ func newInterceptHandler(
 
 		// Request body DLP scanning.
 		if ic.Config.RequestBodyScanning.Enabled && r.Body != nil && r.Body != http.NoBody {
-			bodyBytes, result := scanRequestBody(
-				r.Context(),
-				r.Body,
-				r.Header.Get("Content-Type"),
-				r.Header.Get("Content-Encoding"),
-				ic.Config.RequestBodyScanning.MaxBodyBytes,
-				ic.Scanner,
-				ic.Agent,
-			)
+			bodyBytes, result := scanRequestBody(r.Context(), BodyScanRequest{
+				Body:            r.Body,
+				ContentType:     r.Header.Get("Content-Type"),
+				ContentEncoding: r.Header.Get("Content-Encoding"),
+				MaxBytes:        ic.Config.RequestBodyScanning.MaxBodyBytes,
+				Scanner:         ic.Scanner,
+				AgentID:         ic.Agent,
+			})
 
 			// Capture observer: record intercept body DLP verdict for policy replay.
 			if ic.Proxy != nil {

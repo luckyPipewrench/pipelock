@@ -42,6 +42,30 @@ import (
 	plsentry "github.com/luckyPipewrench/pipelock/internal/sentry"
 )
 
+// Standard HTTP server timeouts. Used by all internal servers (kill switch API,
+// metrics, reverse proxy, agent listeners) except the Scan API which uses
+// operator-configured values.
+const (
+	serverReadTimeout       = 10 * time.Second
+	serverReadHeaderTimeout = 5 * time.Second
+	serverWriteTimeout      = 10 * time.Second
+	serverIdleTimeout       = 120 * time.Second
+	serverShutdownTimeout   = 5 * time.Second
+)
+
+// newHTTPServer creates an http.Server with the standard pipelock timeouts.
+// Callers that need non-default values (e.g. reverse proxy WriteTimeout) can
+// override individual fields after creation.
+func newHTTPServer(handler http.Handler) *http.Server {
+	return &http.Server{
+		Handler:           handler,
+		ReadTimeout:       serverReadTimeout,
+		ReadHeaderTimeout: serverReadHeaderTimeout,
+		WriteTimeout:      serverWriteTimeout,
+		IdleTimeout:       serverIdleTimeout,
+	}
+}
+
 // RunCmd returns the run cobra command.
 func RunCmd() *cobra.Command {
 	var configFile string
@@ -591,16 +615,10 @@ Examples:
 					return err
 				}
 
-				apiSrv := &http.Server{
-					Handler:           apiMux,
-					ReadTimeout:       10 * time.Second,
-					ReadHeaderTimeout: 5 * time.Second,
-					WriteTimeout:      10 * time.Second,
-					IdleTimeout:       120 * time.Second,
-				}
+				apiSrv := newHTTPServer(apiMux)
 				go func() {
 					<-ctx.Done()
-					shutdownCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
+					shutdownCtx, shutCancel := context.WithTimeout(context.Background(), serverShutdownTimeout)
 					defer shutCancel()
 					_ = apiSrv.Shutdown(shutdownCtx) //nolint:errcheck // best-effort shutdown
 				}()
@@ -630,16 +648,10 @@ Examples:
 					}
 					return err
 				}
-				metricsSrv := &http.Server{
-					Handler:           metricsMux,
-					ReadTimeout:       10 * time.Second,
-					ReadHeaderTimeout: 5 * time.Second,
-					WriteTimeout:      10 * time.Second,
-					IdleTimeout:       120 * time.Second,
-				}
+				metricsSrv := newHTTPServer(metricsMux)
 				go func() {
 					<-ctx.Done()
-					shutdownCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
+					shutdownCtx, shutCancel := context.WithTimeout(context.Background(), serverShutdownTimeout)
 					defer shutCancel()
 					_ = metricsSrv.Shutdown(shutdownCtx)
 				}()
@@ -685,16 +697,13 @@ Examples:
 					writeTimeout = d
 				}
 
-				scanAPISrv := &http.Server{
-					Handler:           scanAPIMux,
-					ReadTimeout:       readTimeout,
-					ReadHeaderTimeout: readTimeout,
-					WriteTimeout:      writeTimeout,
-					IdleTimeout:       120 * time.Second, // matches main server idle timeout
-				}
+				scanAPISrv := newHTTPServer(scanAPIMux)
+				scanAPISrv.ReadTimeout = readTimeout
+				scanAPISrv.ReadHeaderTimeout = readTimeout
+				scanAPISrv.WriteTimeout = writeTimeout
 				go func() {
 					<-ctx.Done()
-					shutdownCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
+					shutdownCtx, shutCancel := context.WithTimeout(context.Background(), serverShutdownTimeout)
 					defer shutCancel()
 					_ = scanAPISrv.Shutdown(shutdownCtx)
 				}()
@@ -857,16 +866,11 @@ Examples:
 					return err
 				}
 
-				rpSrv := &http.Server{
-					Handler:           rpHandler,
-					ReadTimeout:       10 * time.Second,
-					ReadHeaderTimeout: 5 * time.Second,
-					WriteTimeout:      30 * time.Second,
-					IdleTimeout:       120 * time.Second,
-				}
+				rpSrv := newHTTPServer(rpHandler)
+				rpSrv.WriteTimeout = 30 * time.Second // reverse proxy upstream requests need more time
 				go func() {
 					<-ctx.Done()
-					shutdownCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
+					shutdownCtx, shutCancel := context.WithTimeout(context.Background(), serverShutdownTimeout)
 					defer shutCancel()
 					_ = rpSrv.Shutdown(shutdownCtx)
 				}()
@@ -911,13 +915,8 @@ Examples:
 						}
 						return err
 					}
-					srv := &http.Server{
-						Handler:           AgentHandler(name, handler),
-						ReadTimeout:       10 * time.Second,
-						ReadHeaderTimeout: 5 * time.Second,
-						WriteTimeout:      agentWriteTimeout,
-						IdleTimeout:       120 * time.Second, // matches main server idle timeout
-					}
+					srv := newHTTPServer(AgentHandler(name, handler))
+					srv.WriteTimeout = agentWriteTimeout
 					// Register with proxy so its shutdown goroutine
 					// gracefully stops agent servers alongside the main server.
 					p.RegisterAgentServer(srv)

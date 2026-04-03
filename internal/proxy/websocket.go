@@ -305,7 +305,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		// If Upgrade fails, it already wrote the HTTP error response.
 		return
 	}
-	defer clientConn.Close() //nolint:errcheck // best effort
+	defer safeClose(clientConn, "ws.clientConn", log)
 
 	// Dial upstream via SSRF-safe dialer.
 	upstreamConn, dialErr := p.wsDialUpstream(r.Context(), targetURL, fwdHeaders, cfg)
@@ -314,7 +314,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		plwsutil.WriteCloseFrame(clientConn, ws.StatusInternalServerError, "upstream dial failed")
 		return
 	}
-	defer upstreamConn.Close() //nolint:errcheck // best effort
+	defer safeClose(upstreamConn, "ws.upstreamConn", log)
 
 	p.metrics.IncrActiveWS()
 	log.LogWSOpen(targetURL, clientIP, requestID, agent)

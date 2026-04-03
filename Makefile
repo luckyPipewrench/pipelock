@@ -71,4 +71,4 @@ fuzz:
 	@echo "All fuzz targets complete."
 
 stats: ## Print canonical stats
-	@go test -run TestCanonicalStats -v ./internal/config/ 2>&1 | grep -E 'PASS|FAIL|---'
+	@go test -race -count=1 -run TestCanonicalStats -v ./internal/config/ 2>&1 | grep -E 'PASS|FAIL|---'

@@ -50,6 +50,9 @@ func TestCanonicalStats(t *testing.T) {
 			directDeps++
 		}
 	}
+	if err := sc.Err(); err != nil {
+		t.Fatalf("scanning go.mod: %v", err)
+	}
 
 	t.Logf("DLP patterns:      %d", dlpCount)
 	t.Logf("Response patterns: %d", responseCount)

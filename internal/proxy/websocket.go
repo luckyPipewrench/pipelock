@@ -146,6 +146,14 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	scanURL := scanScheme + "://" + parsed.Host + parsed.RequestURI()
 
+	actx := audit.LogContext{
+		Method:    "WS",
+		URL:       targetURL,
+		ClientIP:  clientIP,
+		RequestID: requestID,
+		Agent:     agent,
+	}
+
 	// Run through all 9 scanner layers.
 	result := sc.Scan(r.Context(), scanURL)
 
@@ -181,7 +189,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusTooManyRequests
 		}
 		if cfg.EnforceEnabled() {
-			log.LogBlocked("WS", targetURL, result.Scanner, result.Reason, clientIP, requestID, agent)
+			log.LogBlocked(actx, result.Scanner, result.Reason)
 			p.metrics.RecordWSBlocked()
 			if cfg.ExplainBlocksEnabled() && result.Hint != "" {
 				w.Header().Set("X-Pipelock-Hint", result.Hint)
@@ -199,13 +207,13 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			}
 			log.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(sr.Level), baseAction, effectiveAction, result.Scanner, clientIP, requestID)
 			p.metrics.RecordAdaptiveUpgrade(baseAction, effectiveAction, session.EscalationLabel(sr.Level))
-			log.LogBlocked("WS", targetURL, result.Scanner, result.Reason+" (escalated)", clientIP, requestID, agent)
+			log.LogBlocked(actx, result.Scanner, result.Reason+" (escalated)")
 			p.metrics.RecordWSBlocked()
 			http.Error(w, "WebSocket blocked: "+result.Reason+" (escalated)", status)
 			return
 		}
-		log.LogAnomaly("WS", targetURL, result.Scanner,
-			result.Reason, clientIP, requestID, agent, result.Score)
+		log.LogAnomaly(actx, result.Scanner,
+			result.Reason, result.Score)
 	}
 
 	if sr.Blocked {
@@ -230,7 +238,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Budget admission check: enforce request count and domain limits.
 	if err := resolved.Budget.CheckAdmission(strings.ToLower(parsed.Hostname())); err != nil {
 		reason := err.Error()
-		log.LogBlocked("WS", targetURL, "budget", reason, clientIP, requestID, agent)
+		log.LogBlocked(actx, "budget", reason)
 		p.metrics.RecordWSBlocked()
 		http.Error(w, "WebSocket blocked: "+reason, http.StatusTooManyRequests)
 		return
@@ -271,7 +279,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "WebSocket blocked: "+reason, http.StatusForbidden)
 			return
 		}
-		log.LogAnomaly("WS", targetURL, audit.ScannerDLP, reason, clientIP, requestID, agent, 0)
+		log.LogAnomaly(actx, audit.ScannerDLP, reason, 0)
 		// Re-check block_all after header DLP may have escalated the session.
 		if cfg.AdaptiveEnforcement.Enabled && headerSR.Level > 0 &&
 			decide.UpgradeAction("", headerSR.Level, &cfg.AdaptiveEnforcement) == config.ActionBlock {
@@ -293,7 +301,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	clientConn, _, _, upgradeErr := upgrader.Upgrade(r, w)
 	if upgradeErr != nil {
-		log.LogError("WS", targetURL, clientIP, requestID, agent, fmt.Errorf("client upgrade: %w", upgradeErr))
+		log.LogError(actx, fmt.Errorf("client upgrade: %w", upgradeErr))
 		// If Upgrade fails, it already wrote the HTTP error response.
 		return
 	}
@@ -302,7 +310,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Dial upstream via SSRF-safe dialer.
 	upstreamConn, dialErr := p.wsDialUpstream(r.Context(), targetURL, fwdHeaders, cfg)
 	if dialErr != nil {
-		log.LogError("WS", targetURL, clientIP, requestID, agent, fmt.Errorf("upstream dial: %w", dialErr))
+		log.LogError(actx, fmt.Errorf("upstream dial: %w", dialErr))
 		plwsutil.WriteCloseFrame(clientConn, ws.StatusInternalServerError, "upstream dial failed")
 		return
 	}
@@ -350,7 +358,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if scanTextFrames && sc.ResponseScanningEnabled() && isResponseScanExempt(relay.hostname, cfg.ResponseScanning.ExemptDomains) {
-		log.LogResponseScanExempt("WS", targetURL, relay.hostname, clientIP, requestID, agent)
+		log.LogResponseScanExempt(actx, relay.hostname)
 	}
 
 	stats := relay.run(r.Context())

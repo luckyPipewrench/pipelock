@@ -156,7 +156,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 				action = config.ActionBlock
 			}
 			patternNames := dlpMatchNames(pathDLP.Matches)
-			rp.logger.LogBodyDLP(r.Method, r.URL.String(), action, "", "", "",
+			rp.logger.LogBodyDLP(audit.LogContext{Method: r.Method, URL: r.URL.String()}, action,
 				len(patternNames), patternNames, nil)
 
 			if action == config.ActionBlock && cfg.EnforceEnabled() {
@@ -178,8 +178,8 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 				action = config.ActionBlock
 			}
 			patternNames := dlpMatchNames(headerResult.DLPMatches)
-			rp.logger.LogHeaderDLP(r.Method, r.URL.String(), headerResult.HeaderName,
-				action, "", "", "", patternNames, nil)
+			rp.logger.LogHeaderDLP(audit.LogContext{Method: r.Method, URL: r.URL.String()}, headerResult.HeaderName,
+				action, patternNames, nil)
 
 			if action == config.ActionBlock && cfg.EnforceEnabled() {
 				rp.metrics.RecordReverseProxyRequest(r.Method, "403")
@@ -267,8 +267,11 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 	if reason == "" {
 		reason = "request body contains secret patterns"
 	}
-	rp.logger.LogBodyDLP(r.Method, r.URL.String(), action, "", "", "",
-		len(patternNames), patternNames, nil)
+	actx := audit.LogContext{
+		Method: r.Method,
+		URL:    r.URL.String(),
+	}
+	rp.logger.LogBodyDLP(actx, action, len(patternNames), patternNames, nil)
 
 	// Fail-closed: when bodyBytes is nil the body was consumed but couldn't
 	// be buffered (oversize, compressed, read error, multipart parse error).
@@ -313,7 +316,11 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		return nil
 	}
 	if revRespExempt {
-		rp.logger.LogResponseScanExempt(resp.Request.Method, resp.Request.URL.String(), revHost, "", "", "")
+		actx := audit.LogContext{
+			Method: resp.Request.Method,
+			URL:    resp.Request.URL.String(),
+		}
+		rp.logger.LogResponseScanExempt(actx, revHost)
 	}
 
 	// Skip binary content types.
@@ -329,8 +336,11 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		_ = resp.Body.Close()
 		rp.metrics.RecordReverseProxyRequest(resp.Request.Method, "403")
 		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, "compressed")
-		rp.logger.LogResponseScan(resp.Request.URL.String(), "", "", "",
-			config.ActionBlock, 0, []string{"compressed_response"}, nil)
+		actx := audit.LogContext{
+			Method: resp.Request.Method,
+			URL:    resp.Request.URL.String(),
+		}
+		rp.logger.LogResponseScan(actx, config.ActionBlock, 0, []string{"compressed_response"}, nil)
 		replaceWithBlockResponse(resp, []string{"compressed response cannot be scanned"})
 		return nil
 	}
@@ -357,8 +367,11 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		_ = resp.Body.Close()
 		rp.metrics.RecordReverseProxyRequest(resp.Request.Method, "403")
 		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, "oversized")
-		rp.logger.LogResponseScan(resp.Request.URL.String(), "", "", "",
-			config.ActionBlock, 0, []string{"oversized_response"}, nil)
+		actx := audit.LogContext{
+			Method: resp.Request.Method,
+			URL:    resp.Request.URL.String(),
+		}
+		rp.logger.LogResponseScan(actx, config.ActionBlock, 0, []string{"oversized_response"}, nil)
 		replaceWithBlockResponse(resp, []string{"response exceeds scanning limit"})
 		return nil
 	}
@@ -431,8 +444,11 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	for _, m := range result.Matches {
 		patternNames = append(patternNames, m.PatternName)
 	}
-	rp.logger.LogResponseScan(resp.Request.URL.String(), "", "", "", action,
-		len(patternNames), patternNames, nil)
+	actx := audit.LogContext{
+		Method: resp.Request.Method,
+		URL:    resp.Request.URL.String(),
+	}
+	rp.logger.LogResponseScan(actx, action, len(patternNames), patternNames, nil)
 
 	// block and ask: unconditional block regardless of enforce mode.
 	// ask has no approver on the reverse proxy (no terminal), so it
@@ -484,7 +500,11 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 // to avoid leaking internal topology (dial addresses, TLS state, DNS).
 func (rp *ReverseProxyHandler) errorHandler(w http.ResponseWriter, r *http.Request, err error) {
 	rp.metrics.RecordReverseProxyRequest(r.Method, "502")
-	rp.logger.LogError(r.Method, r.URL.String(), "", "", "", err)
+	actx := audit.LogContext{
+		Method: r.Method,
+		URL:    r.URL.String(),
+	}
+	rp.logger.LogError(actx, err)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusBadGateway)
 	resp := ReverseProxyBlockResponse{

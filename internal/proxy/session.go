@@ -612,9 +612,9 @@ func (sm *SessionManager) UpdateConfig(cfg *config.SessionProfiling, adaptiveCfg
 
 	// Recompute atBlockAll for all sessions from the new adaptive config.
 	// This handles three cases:
-	// 1. Adaptive disabled → clear all flags
-	// 2. block_all matrix changed → recompute per session level
-	// 3. No change → flags stay the same (recompute is idempotent)
+	// - Adaptive disabled → clear all flags
+	// - block_all matrix changed → recompute per session level
+	// - No change → flags stay the same (recompute is idempotent)
 	sm.mu.RLock()
 	for _, sess := range sm.sessions {
 		if adaptiveCfg == nil || !adaptiveCfg.Enabled {

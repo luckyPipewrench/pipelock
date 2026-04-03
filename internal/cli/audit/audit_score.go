@@ -95,42 +95,42 @@ func ScoreConfig(cfg *config.Config, cfgFile string) *ScoreResult {
 	var categories []ScoreCategory
 	var findings []ScoreFinding
 
-	// 1. DLP (15 points)
+	// DLP (15 points)
 	categories = append(categories, scoreDLP(cfg, &findings))
 
-	// 2. Response scanning (10 points)
+	// Response scanning (10 points)
 	categories = append(categories, scoreResponseScanning(cfg, &findings))
 
-	// 3. MCP tool scanning (10 points)
+	// MCP tool scanning (10 points)
 	categories = append(categories, scoreMCPToolScanning(cfg, &findings))
 
-	// 4. MCP tool policy (15 points)
+	// MCP tool policy (15 points)
 	cat, policyFindings := scoreMCPToolPolicy(cfg)
 	categories = append(categories, cat)
 	findings = append(findings, policyFindings...)
 
-	// 5. MCP input scanning (5 points)
+	// MCP input scanning (5 points)
 	categories = append(categories, scoreMCPInputScanning(cfg, &findings))
 
-	// 6. MCP session binding (5 points)
+	// MCP session binding (5 points)
 	categories = append(categories, scoreMCPSessionBinding(cfg, &findings))
 
-	// 7. Kill switch (10 points)
+	// Kill switch (10 points)
 	categories = append(categories, scoreKillSwitch(cfg, &findings))
 
-	// 8. Enforcement mode (10 points)
+	// Enforcement mode (10 points)
 	categories = append(categories, scoreEnforcement(cfg, &findings))
 
-	// 9. Domain blocklist (5 points)
+	// Domain blocklist (5 points)
 	categories = append(categories, scoreDomainBlocklist(cfg, &findings))
 
-	// 10. Adaptive enforcement (5 points)
+	// Adaptive enforcement (5 points)
 	categories = append(categories, scoreAdaptiveEnforcement(cfg, &findings))
 
-	// 11. Tool chain detection (5 points)
+	// Tool chain detection (5 points)
 	categories = append(categories, scoreToolChainDetection(cfg, &findings))
 
-	// 12. Sandbox (5 points)
+	// Sandbox (5 points)
 	categories = append(categories, scoreSandbox(cfg, &findings))
 
 	total := 0

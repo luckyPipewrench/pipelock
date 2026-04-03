@@ -231,12 +231,25 @@ func matchPatternsPreFiltered(pf *responsePreFilter, patterns []*compiledPattern
 // to attempt decoding. Short segments produce too many false decode attempts.
 const minSegmentDecodeLen = 16
 
+// responseDecodeMaxDepth bounds recursive decode to prevent CPU exhaustion.
+// Matches maxDecodeDepth in text_dlp.go.
+const responseDecodeMaxDepth = 3
+
 // matchDecodedResponse tries base64/hex decoding content and checks the decoded
-// result for injection patterns. Two strategies: whole-content decode (catches
-// fully-encoded responses) and segment-level decode (catches encoded payloads
-// embedded in mixed text like "Here is your data: aWdub3Jl... and more text").
+// result for injection patterns. Recurses up to responseDecodeMaxDepth to catch
+// multi-layer chains (e.g., base64(hex(injection))). Two strategies per layer:
+// whole-content decode and segment-level decode.
 func (s *Scanner) matchDecodedResponse(content string) []ResponseMatch {
-	// Strategy 1: whole-content decode (original behavior).
+	return s.matchDecodedResponseRecursive(content, 0)
+}
+
+// matchDecodedResponseRecursive is the recursive implementation of matchDecodedResponse.
+func (s *Scanner) matchDecodedResponseRecursive(content string, depth int) []ResponseMatch {
+	if depth >= responseDecodeMaxDepth {
+		return nil
+	}
+
+	// Strategy 1: whole-content decode.
 	stripped := strings.Map(func(r rune) rune {
 		if r == ' ' || r == '\n' || r == '\r' || r == '\t' {
 			return -1
@@ -249,30 +262,45 @@ func (s *Scanner) matchDecodedResponse(content string) []ResponseMatch {
 		base64.RawStdEncoding, base64.RawURLEncoding,
 	} {
 		if decoded, err := enc.DecodeString(stripped); err == nil && len(decoded) > 0 {
-			if matches := s.matchDecodedNormalized(string(decoded)); len(matches) > 0 {
+			d := string(decoded)
+			if matches := s.matchDecodedNormalized(d); len(matches) > 0 {
 				return matches
+			}
+			// Recurse: decoded content may itself be encoded.
+			if hasEncodedRun(d) {
+				if matches := s.matchDecodedResponseRecursive(d, depth+1); len(matches) > 0 {
+					return matches
+				}
 			}
 		}
 	}
 	if decoded, err := hex.DecodeString(stripped); err == nil && len(decoded) > 0 {
-		if matches := s.matchDecodedNormalized(string(decoded)); len(matches) > 0 {
+		d := string(decoded)
+		if matches := s.matchDecodedNormalized(d); len(matches) > 0 {
 			return matches
+		}
+		if hasEncodedRun(d) {
+			if matches := s.matchDecodedResponseRecursive(d, depth+1); len(matches) > 0 {
+				return matches
+			}
 		}
 	}
 
-	// Strategy 2: segment-level decode. Extract contiguous base64/hex runs
-	// from mixed text and decode each independently. Catches encoded injection
-	// embedded in normal prose that fails whole-content decode.
-	if matches := s.matchDecodedSegments(content); len(matches) > 0 {
+	// Strategy 2: segment-level decode with recursion.
+	if matches := s.matchDecodedSegmentsRecursive(content, depth); len(matches) > 0 {
 		return matches
 	}
 
 	return nil
 }
 
-// matchDecodedSegments extracts contiguous base64-alphabet runs from content,
-// decodes each individually, and checks for injection patterns.
-func (s *Scanner) matchDecodedSegments(content string) []ResponseMatch {
+// matchDecodedSegmentsRecursive extracts contiguous base64-alphabet runs from
+// content, decodes each individually, and checks for injection patterns.
+// Recurses on decoded segments to catch multi-layer encoding.
+func (s *Scanner) matchDecodedSegmentsRecursive(content string, depth int) []ResponseMatch {
+	if depth >= responseDecodeMaxDepth {
+		return nil
+	}
 	segments := extractEncodedRuns(content, minSegmentDecodeLen)
 	for _, seg := range segments {
 		for _, enc := range []*base64.Encoding{
@@ -280,14 +308,26 @@ func (s *Scanner) matchDecodedSegments(content string) []ResponseMatch {
 			base64.RawStdEncoding, base64.RawURLEncoding,
 		} {
 			if decoded, err := enc.DecodeString(seg); err == nil && len(decoded) > 0 && isPrintableText(decoded) {
-				if matches := s.matchDecodedNormalized(string(decoded)); len(matches) > 0 {
+				d := string(decoded)
+				if matches := s.matchDecodedNormalized(d); len(matches) > 0 {
 					return matches
+				}
+				if hasEncodedRun(d) {
+					if matches := s.matchDecodedResponseRecursive(d, depth+1); len(matches) > 0 {
+						return matches
+					}
 				}
 			}
 		}
 		if decoded, err := hex.DecodeString(seg); err == nil && len(decoded) > 0 && isPrintableText(decoded) {
-			if matches := s.matchDecodedNormalized(string(decoded)); len(matches) > 0 {
+			d := string(decoded)
+			if matches := s.matchDecodedNormalized(d); len(matches) > 0 {
 				return matches
+			}
+			if hasEncodedRun(d) {
+				if matches := s.matchDecodedResponseRecursive(d, depth+1); len(matches) > 0 {
+					return matches
+				}
 			}
 		}
 	}

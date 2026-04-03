@@ -74,11 +74,11 @@ func SetNoNewPrivs() error {
 }
 
 // buildSeccompFilter constructs a BPF filter program that:
-// 1. Validates architecture is x86_64 (KILL on mismatch — prevents 32-bit ABI bypass)
-// 2. Kills the process on critical violations (kexec, kernel modules, io_uring)
-// 3. Applies argument-level filtering for clone, personality, and socket
-// 4. Allows a curated set of ~130 syscalls (Go + Python + Node.js compatible)
-// 5. Returns EPERM for other blocked syscalls.
+// - Validates architecture is x86_64 (KILL on mismatch — prevents 32-bit ABI bypass)
+// - Kills the process on critical violations (kexec, kernel modules, io_uring)
+// - Applies argument-level filtering for clone, personality, and socket
+// - Allows a curated set of ~130 syscalls (Go + Python + Node.js compatible)
+// - Returns EPERM for other blocked syscalls.
 func buildSeccompFilter(strict bool) []unix.SockFilter {
 	allow := allowedSyscalls()
 	kill := killSyscalls()

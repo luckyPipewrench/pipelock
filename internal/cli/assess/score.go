@@ -47,7 +47,7 @@ const (
 
 // synthesizeAssessment combines all source outputs into a scored Assessment.
 func synthesizeAssessment(manifest AssessManifest, sources AssessSources) Assessment {
-	// 1. Compute sections.
+	// Compute sections.
 	sections := []AssessmentSection{
 		scoreDetectionCoverage(sources.Simulate),
 		scoreConfigPosture(sources.AuditScore),
@@ -56,7 +56,7 @@ func synthesizeAssessment(manifest AssessManifest, sources AssessSources) Assess
 	}
 	sortAssessmentSections(sections)
 
-	// 2. Weighted average (only sections with MaxScore > 0).
+	// Weighted average (only sections with MaxScore > 0).
 	weights := defaultScoringWeights()
 	weightMap := map[string]int{
 		sectionDetectionCoverage:      weights.DetectionCoverage,
@@ -78,7 +78,7 @@ func synthesizeAssessment(manifest AssessManifest, sources AssessSources) Assess
 	}
 	overallGrade := gradeFromPercentage(overallScore)
 
-	// 3. Grade caps.
+	// Grade caps.
 	capReasons := computeGradeCaps(sources, manifest.AllowPartial)
 	gradeCap := ""
 	if len(capReasons) > 0 {
@@ -96,10 +96,10 @@ func synthesizeAssessment(manifest AssessManifest, sources AssessSources) Assess
 		}
 	}
 
-	// 4. Generate findings.
+	// Generate findings.
 	findings := generateFindings(sources)
 
-	// 5. Attach compliance coverage mappings.
+	// Attach compliance coverage mappings.
 	complianceFrameworks := compliance.Catalog()
 
 	return Assessment{

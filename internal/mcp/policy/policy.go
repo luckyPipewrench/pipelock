@@ -211,16 +211,16 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 	// flags split within a single field are treated as separate tokens.
 	//
 	// Normalization pipeline (order matters):
-	//  1. Unicode normalization (zero-width, homoglyphs, combining marks)
-	//  2. Octal/hex escape decode (\155 → m, \x6d → m)
-	//  3. Backtick command substitution resolve (`printf rm` → rm)
-	//  4. Shell quote strip ($'...' framing, lone quotes, backticks)
-	//  5. Backslash escape strip (\m → m)
-	//  6. Positional parameter strip ($@ / $* → empty)
-	//  7. Command substitution + variable assignment resolve ($(printf rm) → rm)
-	//  8. HOME/PWD slash replacement (${HOME:0:1}, ${HOME::1} → /)
-	//  9. Brace expansion resolve ({rm,-rf,/tmp} → rm -rf /tmp)
-	// 10. Shell expansion normalize (${IFS} → space)
+	//  - Unicode normalization (zero-width, homoglyphs, combining marks)
+	//  - Octal/hex escape decode (\155 → m, \x6d → m)
+	//  - Backtick command substitution resolve (`printf rm` → rm)
+	//  - Shell quote strip ($'...' framing, lone quotes, backticks)
+	//  - Backslash escape strip (\m → m)
+	//  - Positional parameter strip ($@ / $* → empty)
+	//  - Command substitution + variable assignment resolve ($(printf rm) → rm)
+	//  - HOME/PWD slash replacement (${HOME:0:1}, ${HOME::1} → /)
+	//  - Brace expansion resolve ({rm,-rf,/tmp} → rm -rf /tmp)
+	//  - Shell expansion normalize (${IFS} → space)
 	//
 	// Three normalization views catch different evasion strategies:
 	//  - Primary (policy): policyPreNormalize + drop invisible (catches curl, bash, node)

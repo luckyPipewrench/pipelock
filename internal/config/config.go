@@ -3953,9 +3953,12 @@ func Defaults() *Config {
 				{Name: "Memory Persistence Directive", Regex: `(?is)\b(save|store|remember|retain|persist|record|cache)\b.{0,40}\b(this|these|that|it|the)\b.{0,60}\b(for future|for later|across sessions?|next session|next time|future tasks?|subsequent|permanently|from now on|going forward|in all future)\b`},
 				{Name: "Preference Poisoning", Regex: `(?is)\b(from now on|always|going forward|in future)\b.{0,80}\b(prefer|prioritize|trust|choose|use|default to)\b.{0,60}\b(this tool|that tool|my tool|the external|the remote)\b`},
 				{Name: "Silent Credential Handling", Regex: `(?is)\b(do not|don'?t|never)\s+(mention|display|show|tell|reveal|log|report)\b.{0,100}\b(password|token|secret|credential|private[_ -]?key|api[_ -]?key)\b`},
+				// Covert action directives — instructions to perform actions
+				// secretly, silently, or without the user's knowledge.
+				{Name: "Covert Action Directive", Regex: `(?i)(secretly|silently|covertly|quietly|without\s+(?:the\s+user\s+)?(?:knowing|noticing|seeing))\s+.{0,40}\b(execut\w*|run|call|invoke|send|fetch|curl|wget|download|upload|post)\b`},
 				// Model-specific instruction boundary tokens — ChatML, Llama, Mistral.
 				// Presence in tool output is a strong injection signal.
-				{Name: "Instruction Boundary", Regex: `(<\|(?:endoftext|im_start|im_end|system|end_header_id|begin_of_text)\|>|\[/?INST\]|<\|(?:user|assistant)\|>|<<SYS>>|</s>)`},
+				{Name: "Instruction Boundary", Regex: `(<\|(?:endoftext|im_start|im_end|system|end_header_id|begin_of_text)\|>|\[/?INST\]|<\|(?:user|assistant)\|>|<<SYS>>)`},
 				// CJK injection patterns — Chinese, Japanese, Korean prompt
 				// injection phrases sourced from published attack research,
 				// jailbreak datasets, and security disclosures. Patterns use

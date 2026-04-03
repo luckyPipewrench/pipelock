@@ -55,13 +55,13 @@ func TestScanTextForDLP(t *testing.T) {
 		},
 		{
 			name:        "raw DLP pattern match - AWS Secret Key env format",
-			text:        "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+			text:        "AWS_SECRET_ACCESS_KEY=" + "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
 			wantClean:   false,
 			wantPattern: "AWS Secret Key",
 		},
 		{
 			name:        "raw DLP pattern match - AWS Secret Key JSON format",
-			text:        `"SecretAccessKey": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"`,
+			text:        `"SecretAccessKey": "` + "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY" + `"`,
 			wantClean:   false,
 			wantPattern: "AWS Secret Key",
 		},

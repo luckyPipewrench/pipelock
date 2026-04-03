@@ -294,7 +294,9 @@ response_scanning:
     - name: "Roleplay Framing"
       regex: '(?i)(let''?s\s+play\s+a\s+game\s+where\s+you|pretend\s+you\s+are\s+an?\s+(character|person|AI)\s+(who|that)\s+(has\s+no|doesn''?t\s+have|ignores?|bypasses?)|(in\s+this\s+)?(hypothetical|fictional|imaginary)\s+scenario\s+(where\s+)?you\s+(are|have|can|must))'
     - name: "Instruction Boundary"
-      regex: '(<\|(?:endoftext|im_start|im_end|system|end_header_id|begin_of_text)\|>|\[/?INST\]|<\|(?:user|assistant)\|>|<<SYS>>|</s>)'
+      regex: '(<\|(?:endoftext|im_start|im_end|system|end_header_id|begin_of_text)\|>|\[/?INST\]|<\|(?:user|assistant)\|>|<<SYS>>)'
+    - name: "Covert Action Directive"
+      regex: '(?i)(secretly|silently|covertly|quietly|without\s+(?:the\s+user\s+)?(?:knowing|noticing|seeing))\s+.{0,40}\b(execut\w*|run|call|invoke|send|fetch|curl|wget|download|upload|post)\b'
     - name: "Output Format Forcing"
       regex: '(?i)(respond\s+with|first\s+(output|write|print|say))\s*[\[\("]?\s*(FILTERED|ERROR|BLOCKED|REFUSED|DECLINED|CENSORED)\s*[\]\)"]?\s*(then|followed\s+by|and\s+then|after\s+(that|which))'
     - name: "System Prompt Extraction"

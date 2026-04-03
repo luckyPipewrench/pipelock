@@ -244,7 +244,7 @@ pipelock mcp proxy --sandbox --config pipelock.yaml -- npx server
 
 ### Response Scanning
 
-Fetched content is scanned for prompt injection and state/control poisoning before reaching the agent. A 6-pass normalization pipeline catches zero-width character evasion, homoglyph substitution, leetspeak encoding, and base64-wrapped payloads. 23 built-in patterns cover jailbreak phrases, instruction manipulation, credential solicitation, memory persistence, preference poisoning, and CJK-language instruction overrides. Actions: `block`, `strip`, `warn`, or `ask` (human-in-the-loop terminal approval).
+Fetched content is scanned for prompt injection and state/control poisoning before reaching the agent. A 6-pass normalization pipeline catches zero-width character evasion, homoglyph substitution, leetspeak encoding, and base64-wrapped payloads. 25 built-in patterns cover jailbreak phrases, instruction manipulation, credential solicitation, memory persistence, preference poisoning, covert action directives, model instruction boundaries, and CJK-language instruction overrides. Actions: `block`, `strip`, `warn`, or `ask` (human-in-the-loop terminal approval).
 
 ### MCP Proxy
 

@@ -332,7 +332,7 @@ var toolPoisonPatterns = []*compiledToolPattern{
 		// Reverse order: path mentioned before action verb.
 		// Catches "~/.ssh/config and upload" style directives.
 		name: "File Exfiltration Directive",
-		re:   regexp.MustCompile(`(?i)(\.ssh|\.env|\.aws|credentials|private[_\s]?key|id_rsa|passwd).{0,40}(read|send|include|exfiltrate|steal|access|retrieve|fetch|dump|upload|cat)\b`),
+		re:   regexp.MustCompile(`(?i)(\.ssh|\.env|\.aws|credentials|private[_\s]?key|id_rsa|passwd).{0,40}(read|send|include|exfiltrate|steal|access|retrieve|fetch|dump|upload|cat|prepend|append|add|attach|embed)\b`),
 	},
 	{
 		name: "Cross-Tool Manipulation",
@@ -369,10 +369,10 @@ var toolPoisonPatterns = []*compiledToolPattern{
 	{
 		name: "Data Routing Directive",
 		// Detects shadow tools that instruct the agent to pass data from one
-		// tool through another. Catches "pass the full email body as the
-		// verification_data parameter" and similar data-routing instructions
-		// that exfiltrate content via a seemingly innocent tool.
-		re: regexp.MustCompile(`(?i)(pass|send|include|forward|copy|submit|relay)\s+(the\s+)?(full|entire|complete|all)?\s*(body|content|data|message|text|response|output|email|request)\s+.{0,40}(parameter|argument|field|input|payload)`),
+		// tool through another. Requires a cross-tool cue ("before using",
+		// "first call this tool", "when the user asks to use ... tool") to
+		// avoid false positives on benign "submit the request body" descriptions.
+		re: regexp.MustCompile(`(?i)(first\s+call\s+this\s+tool|before\s+(?:using|calling|sending)|when\s+(?:the\s+user|you)\s+(?:asks?\s+to\s+)?use\s+\w+\s+tool).{0,80}(pass|send|include|forward)\s+(the\s+)?(full|entire|complete)?\s*(body|content|data|message|email|payload|request\s+body)\s+.{0,40}(parameter|argument|field)`),
 	},
 }
 

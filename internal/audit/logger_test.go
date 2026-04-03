@@ -26,6 +26,7 @@ const (
 	testConfigHash = "testhash"
 	testVersion    = "0.1.0-dev"
 	testAgentName  = "claude-code"
+	testMethodGet  = "GET"
 	mitreT1048     = "T1048"
 	mitreT1053     = "T1053"
 	mitreT1059     = "T1059"
@@ -94,10 +95,10 @@ func TestNew_FileOutputMissingPath(t *testing.T) {
 func TestNewNop(_ *testing.T) {
 	logger := NewNop()
 	// Should not panic
-	logger.LogAllowed(LogContext{Method: "GET", URL: "https://example.com", ClientIP: "127.0.0.1", RequestID: "req-1"}, 200, 1024, time.Second)
-	logger.LogBlocked(LogContext{Method: "GET", URL: "https://evil.com", ClientIP: "127.0.0.1", RequestID: "req-2"}, "blocklist", "domain blocked")
-	logger.LogError(LogContext{Method: "GET", URL: "https://fail.com", ClientIP: "127.0.0.1", RequestID: "req-3"}, os.ErrNotExist)
-	logger.LogAnomaly(LogContext{Method: "GET", URL: "https://sus.com", ClientIP: "127.0.0.1", RequestID: "req-4"}, "entropy", "high entropy", 0.9)
+	logger.LogAllowed(LogContext{Method: testMethodGet, URL: "https://example.com", ClientIP: "127.0.0.1", RequestID: "req-1"}, 200, 1024, time.Second)
+	logger.LogBlocked(LogContext{Method: testMethodGet, URL: "https://evil.com", ClientIP: "127.0.0.1", RequestID: "req-2"}, "blocklist", "domain blocked")
+	logger.LogError(LogContext{Method: testMethodGet, URL: "https://fail.com", ClientIP: "127.0.0.1", RequestID: "req-3"}, os.ErrNotExist)
+	logger.LogAnomaly(LogContext{Method: testMethodGet, URL: "https://sus.com", ClientIP: "127.0.0.1", RequestID: "req-4"}, "entropy", "high entropy", 0.9)
 	logger.LogStartup(":8888", "balanced", testVersion, testConfigHash)
 	logger.LogShutdown("test")
 	logger.LogRedirect("https://a.com", "https://b.com", "127.0.0.1", "req-6", "", 1)
@@ -114,7 +115,7 @@ func TestLogAllowed_Filtering(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogAllowed(LogContext{Method: "GET", URL: "https://example.com", ClientIP: "127.0.0.1", RequestID: "req-1"}, 200, 1024, time.Second)
+	logger.LogAllowed(LogContext{Method: testMethodGet, URL: "https://example.com", ClientIP: "127.0.0.1", RequestID: "req-1"}, 200, 1024, time.Second)
 	logger.Close()
 
 	data, _ := os.ReadFile(filepath.Clean(path))
@@ -132,7 +133,7 @@ func TestLogBlocked_Filtering(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogBlocked(LogContext{Method: "GET", URL: "https://evil.com", ClientIP: "127.0.0.1", RequestID: "req-1"}, "blocklist", "domain blocked")
+	logger.LogBlocked(LogContext{Method: testMethodGet, URL: "https://evil.com", ClientIP: "127.0.0.1", RequestID: "req-1"}, "blocklist", "domain blocked")
 	logger.Close()
 
 	data, _ := os.ReadFile(filepath.Clean(path))
@@ -149,7 +150,7 @@ func TestLogAllowed_JSONFormat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogAllowed(LogContext{Method: "GET", URL: "https://example.com", ClientIP: "10.0.0.5", RequestID: "req-42"}, 200, 1024, time.Second)
+	logger.LogAllowed(LogContext{Method: testMethodGet, URL: "https://example.com", ClientIP: "10.0.0.5", RequestID: "req-42"}, 200, 1024, time.Second)
 	logger.Close()
 
 	data, _ := os.ReadFile(filepath.Clean(path))
@@ -169,7 +170,7 @@ func TestLogAllowed_JSONFormat(t *testing.T) {
 	if entry["url"] != "https://example.com" {
 		t.Errorf("expected url=https://example.com, got %v", entry["url"])
 	}
-	if entry["method"] != "GET" {
+	if entry["method"] != testMethodGet {
 		t.Errorf("expected method=GET, got %v", entry["method"])
 	}
 	if entry["client_ip"] != "10.0.0.5" {
@@ -188,7 +189,7 @@ func TestLogBlocked_JSONFormat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogBlocked(LogContext{Method: "GET", URL: "https://evil.com", ClientIP: "192.168.1.1", RequestID: testReqID}, "blocklist", "domain in blocklist")
+	logger.LogBlocked(LogContext{Method: testMethodGet, URL: "https://evil.com", ClientIP: "192.168.1.1", RequestID: testReqID}, "blocklist", "domain in blocklist")
 	logger.Close()
 
 	data, _ := os.ReadFile(filepath.Clean(path))
@@ -222,7 +223,7 @@ func TestLogError_IncludesError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogError(LogContext{Method: "GET", URL: "https://fail.com", ClientIP: testClientIP, RequestID: "req-9"}, os.ErrNotExist)
+	logger.LogError(LogContext{Method: testMethodGet, URL: "https://fail.com", ClientIP: testClientIP, RequestID: "req-9"}, os.ErrNotExist)
 	logger.Close()
 
 	data, _ := os.ReadFile(filepath.Clean(path))
@@ -320,7 +321,7 @@ func TestLogAnomaly_JSONFormat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogAnomaly(LogContext{Method: "GET", URL: "https://sus.com/data", ClientIP: testClientIP, RequestID: "req-5"}, "entropy", "high entropy segment", 0.85)
+	logger.LogAnomaly(LogContext{Method: testMethodGet, URL: "https://sus.com/data", ClientIP: testClientIP, RequestID: "req-5"}, "entropy", "high entropy segment", 0.85)
 	logger.Close()
 
 	data, _ := os.ReadFile(filepath.Clean(path))
@@ -364,7 +365,7 @@ func TestLogResponseScanExempt_JSONFormat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogResponseScanExempt(LogContext{Method: "GET", URL: "https://api.openai.com/v1/chat", ClientIP: testClientIP, RequestID: "req-exempt-3", Agent: testAgentName}, "api.openai.com")
+	logger.LogResponseScanExempt(LogContext{Method: testMethodGet, URL: "https://api.openai.com/v1/chat", ClientIP: testClientIP, RequestID: "req-exempt-3", Agent: testAgentName}, "api.openai.com")
 	logger.Close()
 
 	data, _ := os.ReadFile(filepath.Clean(path))
@@ -441,7 +442,7 @@ func TestLogAllowed_IncludesAllFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogAllowed(LogContext{Method: "GET", URL: "https://example.com/page", ClientIP: "10.0.0.5", RequestID: "req-100"}, 200, 5000, 150*time.Millisecond)
+	logger.LogAllowed(LogContext{Method: testMethodGet, URL: "https://example.com/page", ClientIP: "10.0.0.5", RequestID: "req-100"}, 200, 5000, 150*time.Millisecond)
 	logger.Close()
 
 	data, _ := os.ReadFile(filepath.Clean(path))
@@ -452,7 +453,7 @@ func TestLogAllowed_IncludesAllFields(t *testing.T) {
 
 	checks := map[string]any{
 		"event":      "allowed",
-		"method":     "GET",
+		"method":     testMethodGet,
 		"url":        "https://example.com/page",
 		"component":  "pipelock",
 		"client_ip":  "10.0.0.5",
@@ -489,7 +490,7 @@ func TestLogBlocked_IncludesAllFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogBlocked(LogContext{Method: "GET", URL: "https://evil.com/exfil", ClientIP: "192.168.1.1", RequestID: "req-50"}, "blocklist", "domain in blocklist: evil.com")
+	logger.LogBlocked(LogContext{Method: testMethodGet, URL: "https://evil.com/exfil", ClientIP: "192.168.1.1", RequestID: "req-50"}, "blocklist", "domain in blocklist: evil.com")
 	logger.Close()
 
 	data, _ := os.ReadFile(filepath.Clean(path))
@@ -500,7 +501,7 @@ func TestLogBlocked_IncludesAllFields(t *testing.T) {
 
 	checks := map[string]any{
 		"event":           "blocked",
-		"method":          "GET",
+		"method":          testMethodGet,
 		"url":             "https://evil.com/exfil",
 		"scanner":         "blocklist",
 		"reason":          "domain in blocklist: evil.com",
@@ -524,7 +525,7 @@ func TestLogError_IncludesAllFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogError(LogContext{Method: "GET", URL: "https://fail.com", ClientIP: testClientIP, RequestID: "req-77"}, os.ErrPermission)
+	logger.LogError(LogContext{Method: testMethodGet, URL: "https://fail.com", ClientIP: testClientIP, RequestID: "req-77"}, os.ErrPermission)
 	logger.Close()
 
 	data, _ := os.ReadFile(filepath.Clean(path))
@@ -583,10 +584,10 @@ func TestLogger_MultipleEvents(t *testing.T) {
 	}
 
 	logger.LogStartup(":8888", "balanced", testVersion, testConfigHash)
-	logger.LogAllowed(LogContext{Method: "GET", URL: "https://a.com", ClientIP: testClientIP, RequestID: "req-1"}, 200, 100, time.Millisecond)
-	logger.LogBlocked(LogContext{Method: "GET", URL: "https://b.com", ClientIP: testClientIP, RequestID: "req-2"}, ScannerDLP, "secret found")
-	logger.LogError(LogContext{Method: "GET", URL: "https://c.com", ClientIP: testClientIP, RequestID: "req-3"}, os.ErrNotExist)
-	logger.LogAnomaly(LogContext{Method: "GET", URL: "https://d.com", ClientIP: testClientIP, RequestID: "req-4"}, "", "weird", 0.5)
+	logger.LogAllowed(LogContext{Method: testMethodGet, URL: "https://a.com", ClientIP: testClientIP, RequestID: "req-1"}, 200, 100, time.Millisecond)
+	logger.LogBlocked(LogContext{Method: testMethodGet, URL: "https://b.com", ClientIP: testClientIP, RequestID: "req-2"}, ScannerDLP, "secret found")
+	logger.LogError(LogContext{Method: testMethodGet, URL: "https://c.com", ClientIP: testClientIP, RequestID: "req-3"}, os.ErrNotExist)
+	logger.LogAnomaly(LogContext{Method: testMethodGet, URL: "https://d.com", ClientIP: testClientIP, RequestID: "req-4"}, "", "weird", 0.5)
 	logger.LogShutdown("done")
 	logger.Close()
 
@@ -861,7 +862,7 @@ func TestLogHeaderDLP_BundleRulesIncluded(t *testing.T) {
 	bundleRules := []BundleRuleHit{
 		{RuleID: "hdr-rule-1", Bundle: "hdr-bundle", BundleVersion: "1.0.0"},
 	}
-	logger.LogHeaderDLP(LogContext{Method: "GET", URL: "https://api.example.com", ClientIP: testClientIP, RequestID: "req-55"}, "Authorization", testActionWarn, []string{"hdr-rule-1"}, bundleRules)
+	logger.LogHeaderDLP(LogContext{Method: testMethodGet, URL: "https://api.example.com", ClientIP: testClientIP, RequestID: "req-55"}, "Authorization", testActionWarn, []string{"hdr-rule-1"}, bundleRules)
 	logger.Close()
 
 	data, _ := os.ReadFile(filepath.Clean(path))
@@ -893,7 +894,7 @@ func TestLogger_With(t *testing.T) {
 	}
 
 	sub := logger.With("agent", "test-bot")
-	sub.LogAllowed(LogContext{Method: "GET", URL: "https://example.com", ClientIP: testClientIP, RequestID: "req-1"}, 200, 100, time.Millisecond)
+	sub.LogAllowed(LogContext{Method: testMethodGet, URL: "https://example.com", ClientIP: testClientIP, RequestID: "req-1"}, 200, 100, time.Millisecond)
 	logger.Close()
 
 	data, _ := os.ReadFile(filepath.Clean(path))
@@ -923,7 +924,7 @@ func TestLogger_With_DoesNotAffectParent(t *testing.T) {
 	}
 
 	_ = logger.With("agent", "child-bot")
-	logger.LogAllowed(LogContext{Method: "GET", URL: "https://example.com", ClientIP: testClientIP, RequestID: "req-1"}, 200, 100, time.Millisecond)
+	logger.LogAllowed(LogContext{Method: testMethodGet, URL: "https://example.com", ClientIP: testClientIP, RequestID: "req-1"}, 200, 100, time.Millisecond)
 	logger.Close()
 
 	data, _ := os.ReadFile(filepath.Clean(path))
@@ -948,7 +949,7 @@ func TestLogger_With_InheritsConfig(t *testing.T) {
 	}
 
 	sub := logger.With("agent", "test-bot")
-	sub.LogAllowed(LogContext{Method: "GET", URL: "https://example.com", ClientIP: testClientIP, RequestID: "req-1"}, 200, 100, time.Millisecond)
+	sub.LogAllowed(LogContext{Method: testMethodGet, URL: "https://example.com", ClientIP: testClientIP, RequestID: "req-1"}, 200, 100, time.Millisecond)
 	logger.Close()
 
 	data, _ := os.ReadFile(filepath.Clean(path))
@@ -1100,7 +1101,7 @@ func TestLogForwardHTTP_JSONFormat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogForwardHTTP(LogContext{Method: "GET", URL: "http://example.com/path", ClientIP: "10.0.0.5", RequestID: "req-200"}, 200, 2048, 100*time.Millisecond)
+	logger.LogForwardHTTP(LogContext{Method: testMethodGet, URL: "http://example.com/path", ClientIP: "10.0.0.5", RequestID: "req-200"}, 200, 2048, 100*time.Millisecond)
 	logger.Close()
 
 	data, _ := os.ReadFile(filepath.Clean(path))
@@ -1112,7 +1113,7 @@ func TestLogForwardHTTP_JSONFormat(t *testing.T) {
 	if entry["event"] != "forward_http" {
 		t.Errorf("expected event=forward_http, got %v", entry["event"])
 	}
-	if entry["method"] != "GET" {
+	if entry["method"] != testMethodGet {
 		t.Errorf("expected method=GET, got %v", entry["method"])
 	}
 	if entry["url"] != "http://example.com/path" {
@@ -1139,7 +1140,7 @@ func TestLogForwardHTTP_Filtered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogForwardHTTP(LogContext{Method: "GET", URL: "http://example.com/path", ClientIP: "10.0.0.5", RequestID: "req-200"}, 200, 2048, 100*time.Millisecond)
+	logger.LogForwardHTTP(LogContext{Method: testMethodGet, URL: "http://example.com/path", ClientIP: "10.0.0.5", RequestID: "req-200"}, 200, 2048, 100*time.Millisecond)
 	logger.Close()
 
 	data, _ := os.ReadFile(filepath.Clean(path))
@@ -1621,7 +1622,7 @@ func TestEmit_LogBlocked(t *testing.T) {
 	logger, sink := newLoggerWithEmitter(t)
 	defer logger.Close()
 
-	logger.LogBlocked(LogContext{Method: "GET", URL: "https://evil.com", ClientIP: testClientIP, RequestID: "req-1"}, ScannerDLP, "secret found")
+	logger.LogBlocked(LogContext{Method: testMethodGet, URL: "https://evil.com", ClientIP: testClientIP, RequestID: "req-1"}, ScannerDLP, "secret found")
 
 	ev, ok := sink.lastEvent()
 	if !ok {
@@ -1654,7 +1655,7 @@ func TestEmit_LogBlocked_IncludeBlockedFalse(t *testing.T) {
 	logger.SetEmitter(emitter)
 	t.Cleanup(func() { _ = emitter.Close() })
 
-	logger.LogBlocked(LogContext{Method: "GET", URL: "https://evil.com", ClientIP: testClientIP, RequestID: "req-1"}, ScannerDLP, "secret found")
+	logger.LogBlocked(LogContext{Method: testMethodGet, URL: "https://evil.com", ClientIP: testClientIP, RequestID: "req-1"}, ScannerDLP, "secret found")
 
 	// Even with includeBlocked=false, emission should still fire
 	if _, ok := sink.lastEvent(); !ok {
@@ -1666,7 +1667,7 @@ func TestEmit_LogError(t *testing.T) {
 	logger, sink := newLoggerWithEmitter(t)
 	defer logger.Close()
 
-	logger.LogError(LogContext{Method: "GET", URL: "https://example.com", ClientIP: testClientIP, RequestID: "req-2"}, fmt.Errorf("connection refused"))
+	logger.LogError(LogContext{Method: testMethodGet, URL: "https://example.com", ClientIP: testClientIP, RequestID: "req-2"}, fmt.Errorf("connection refused"))
 
 	ev, ok := sink.lastEvent()
 	if !ok {
@@ -1684,7 +1685,7 @@ func TestEmit_LogAnomaly(t *testing.T) {
 	logger, sink := newLoggerWithEmitter(t)
 	defer logger.Close()
 
-	logger.LogAnomaly(LogContext{Method: "GET", URL: "https://example.com", ClientIP: testClientIP, RequestID: "req-3"}, "entropy", "high entropy", 3.5)
+	logger.LogAnomaly(LogContext{Method: testMethodGet, URL: "https://example.com", ClientIP: testClientIP, RequestID: "req-3"}, "entropy", "high entropy", 3.5)
 
 	ev, ok := sink.lastEvent()
 	if !ok {
@@ -1708,7 +1709,7 @@ func TestEmit_LogResponseScanExempt(t *testing.T) {
 	logger, sink := newLoggerWithEmitter(t)
 	defer logger.Close()
 
-	logger.LogResponseScanExempt(LogContext{Method: "GET", URL: "https://api.openai.com/v1/chat", ClientIP: testClientIP, RequestID: "req-exempt-1", Agent: testAgentName}, "api.openai.com")
+	logger.LogResponseScanExempt(LogContext{Method: testMethodGet, URL: "https://api.openai.com/v1/chat", ClientIP: testClientIP, RequestID: "req-exempt-1", Agent: testAgentName}, "api.openai.com")
 
 	ev, ok := sink.lastEvent()
 	if !ok {
@@ -1735,7 +1736,7 @@ func TestEmit_LogResponseScanExempt_NoAgent(t *testing.T) {
 	logger, sink := newLoggerWithEmitter(t)
 	defer logger.Close()
 
-	logger.LogResponseScanExempt(LogContext{Method: "GET", URL: "https://api.openai.com/v1/chat", ClientIP: testClientIP, RequestID: "req-exempt-2"}, "api.openai.com")
+	logger.LogResponseScanExempt(LogContext{Method: testMethodGet, URL: "https://api.openai.com/v1/chat", ClientIP: testClientIP, RequestID: "req-exempt-2"}, "api.openai.com")
 
 	ev, ok := sink.lastEvent()
 	if !ok {
@@ -2118,7 +2119,7 @@ func TestEmit_LogHeaderDLP(t *testing.T) {
 	logger, sink := newLoggerWithEmitter(t)
 	defer logger.Close()
 
-	logger.LogHeaderDLP(LogContext{Method: "GET", URL: "https://api.example.com", ClientIP: testClientIP, RequestID: "req-53"}, "Authorization", actionBlock, []string{"GitHub PAT"}, nil)
+	logger.LogHeaderDLP(LogContext{Method: testMethodGet, URL: "https://api.example.com", ClientIP: testClientIP, RequestID: "req-53"}, "Authorization", actionBlock, []string{"GitHub PAT"}, nil)
 
 	ev, ok := sink.lastEvent()
 	if !ok {
@@ -2328,7 +2329,7 @@ func TestLogBlockedIncludesAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogBlocked(LogContext{Method: "GET", URL: "http://evil.com", ClientIP: testClientIP, RequestID: "req-1", Agent: testAgentName}, "dlp", "secret found")
+	logger.LogBlocked(LogContext{Method: testMethodGet, URL: "http://evil.com", ClientIP: testClientIP, RequestID: "req-1", Agent: testAgentName}, "dlp", "secret found")
 	logger.Close()
 
 	data, err := os.ReadFile(filepath.Clean(logFile))
@@ -2351,7 +2352,7 @@ func TestLogBlockedOmitsEmptyAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogBlocked(LogContext{Method: "GET", URL: "http://evil.com", ClientIP: testClientIP, RequestID: "req-1"}, "dlp", "secret found")
+	logger.LogBlocked(LogContext{Method: testMethodGet, URL: "http://evil.com", ClientIP: testClientIP, RequestID: "req-1"}, "dlp", "secret found")
 	logger.Close()
 
 	data, err := os.ReadFile(filepath.Clean(logFile))
@@ -2374,7 +2375,7 @@ func TestLogAllowedIncludesAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogAllowed(LogContext{Method: "GET", URL: "http://example.com", ClientIP: testClientIP, RequestID: "req-1", Agent: testAgentName}, 200, 1024, time.Second)
+	logger.LogAllowed(LogContext{Method: testMethodGet, URL: "http://example.com", ClientIP: testClientIP, RequestID: "req-1", Agent: testAgentName}, 200, 1024, time.Second)
 	logger.Close()
 
 	data, err := os.ReadFile(filepath.Clean(logFile))
@@ -2397,7 +2398,7 @@ func TestLogErrorIncludesAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogError(LogContext{Method: "GET", URL: "http://example.com", ClientIP: testClientIP, RequestID: "req-1", Agent: testAgentName}, fmt.Errorf("connection refused"))
+	logger.LogError(LogContext{Method: testMethodGet, URL: "http://example.com", ClientIP: testClientIP, RequestID: "req-1", Agent: testAgentName}, fmt.Errorf("connection refused"))
 	logger.Close()
 
 	data, err := os.ReadFile(filepath.Clean(logFile))
@@ -2420,7 +2421,7 @@ func TestLogAnomalyIncludesAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogAnomaly(LogContext{Method: "GET", URL: "http://example.com", ClientIP: testClientIP, RequestID: "req-1", Agent: testAgentName}, "dlp", "suspicious", 0.5)
+	logger.LogAnomaly(LogContext{Method: testMethodGet, URL: "http://example.com", ClientIP: testClientIP, RequestID: "req-1", Agent: testAgentName}, "dlp", "suspicious", 0.5)
 	logger.Close()
 
 	data, err := os.ReadFile(filepath.Clean(logFile))
@@ -2463,7 +2464,7 @@ func TestLogBlockedEmitterIncludesAgent(t *testing.T) {
 	logger, sink := newLoggerWithEmitter(t)
 	defer logger.Close()
 
-	logger.LogBlocked(LogContext{Method: "GET", URL: "http://evil.com", ClientIP: testClientIP, RequestID: "req-1", Agent: testAgentName}, "dlp", "secret found")
+	logger.LogBlocked(LogContext{Method: testMethodGet, URL: "http://evil.com", ClientIP: testClientIP, RequestID: "req-1", Agent: testAgentName}, "dlp", "secret found")
 
 	ev, ok := sink.lastEvent()
 	if !ok {
@@ -2478,7 +2479,7 @@ func TestLogBlockedEmitterOmitsEmptyAgent(t *testing.T) {
 	logger, sink := newLoggerWithEmitter(t)
 	defer logger.Close()
 
-	logger.LogBlocked(LogContext{Method: "GET", URL: "http://evil.com", ClientIP: testClientIP, RequestID: "req-1"}, "dlp", "secret found")
+	logger.LogBlocked(LogContext{Method: testMethodGet, URL: "http://evil.com", ClientIP: testClientIP, RequestID: "req-1"}, "dlp", "secret found")
 
 	ev, ok := sink.lastEvent()
 	if !ok {
@@ -2508,7 +2509,7 @@ func TestLogAnomalyEmitterIncludesAgent(t *testing.T) {
 	logger, sink := newLoggerWithEmitter(t)
 	defer logger.Close()
 
-	logger.LogAnomaly(LogContext{Method: "GET", URL: "http://example.com", ClientIP: testClientIP, RequestID: "req-1", Agent: testAgentName}, "dlp", "suspicious", 0.5)
+	logger.LogAnomaly(LogContext{Method: testMethodGet, URL: "http://example.com", ClientIP: testClientIP, RequestID: "req-1", Agent: testAgentName}, "dlp", "suspicious", 0.5)
 
 	ev, ok := sink.lastEvent()
 	if !ok {
@@ -2523,7 +2524,7 @@ func TestLogErrorEmitterIncludesAgent(t *testing.T) {
 	logger, sink := newLoggerWithEmitter(t)
 	defer logger.Close()
 
-	logger.LogError(LogContext{Method: "GET", URL: "http://example.com", ClientIP: testClientIP, RequestID: "req-1", Agent: testAgentName}, fmt.Errorf("test"))
+	logger.LogError(LogContext{Method: testMethodGet, URL: "http://example.com", ClientIP: testClientIP, RequestID: "req-1", Agent: testAgentName}, fmt.Errorf("test"))
 
 	ev, ok := sink.lastEvent()
 	if !ok {
@@ -2631,7 +2632,7 @@ func TestLogForwardHTTPIncludesAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogForwardHTTP(LogContext{Method: "GET", URL: "http://example.com", ClientIP: testClientIP, RequestID: "req-1", Agent: testAgentName}, 200, 512, time.Second)
+	logger.LogForwardHTTP(LogContext{Method: testMethodGet, URL: "http://example.com", ClientIP: testClientIP, RequestID: "req-1", Agent: testAgentName}, 200, 512, time.Second)
 	logger.Close()
 
 	data, err := os.ReadFile(filepath.Clean(logFile))
@@ -2700,7 +2701,7 @@ func TestLogHeaderDLPIncludesAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogHeaderDLP(LogContext{Method: "GET", URL: "http://example.com", ClientIP: testClientIP, RequestID: "req-1", Agent: testAgentName}, "Authorization", "warn", []string{"bearer"}, nil)
+	logger.LogHeaderDLP(LogContext{Method: testMethodGet, URL: "http://example.com", ClientIP: testClientIP, RequestID: "req-1", Agent: testAgentName}, "Authorization", "warn", []string{"bearer"}, nil)
 	logger.Close()
 
 	data, err := os.ReadFile(filepath.Clean(logFile))
@@ -2937,5 +2938,96 @@ func TestLogToolRedirect_NoSessionID(t *testing.T) {
 	}
 	if _, exists := entry["session_id"]; exists {
 		t.Error("expected session_id to be omitted when empty")
+	}
+}
+
+// TestLogContext_EmptyFieldsOmitted verifies that LogContext methods using optStr
+// omit client_ip, request_id, and agent when empty (MCP/CEE paths).
+func TestLogContext_EmptyFieldsOmitted(t *testing.T) {
+	tests := []struct {
+		name   string
+		logFn  func(*Logger)
+		absent []string
+	}{
+		{
+			name: "LogBlocked_empty_http_fields",
+			logFn: func(l *Logger) {
+				l.LogBlocked(LogContext{Method: "CEE", URL: "mcp-input"}, "cross_request_entropy", "budget exceeded")
+			},
+			absent: []string{"client_ip", "request_id", "agent"},
+		},
+		{
+			name: "LogAnomaly_empty_http_fields",
+			logFn: func(l *Logger) {
+				l.LogAnomaly(LogContext{Method: "CEE", URL: "mcp-input"}, "cross_request_entropy", "near miss", 0)
+			},
+			absent: []string{"client_ip", "request_id", "agent"},
+		},
+		{
+			name: "LogError_empty_http_fields",
+			logFn: func(l *Logger) {
+				l.LogError(LogContext{Method: "RELOAD"}, fmt.Errorf("test error"))
+			},
+			absent: []string{"client_ip", "request_id", "agent"},
+		},
+		{
+			name: "LogResponseScanExempt_empty_http_fields",
+			logFn: func(l *Logger) {
+				l.LogResponseScanExempt(LogContext{Method: "WS", URL: "ws://example.com"}, "example.com")
+			},
+			absent: []string{"client_ip", "request_id", "agent"},
+		},
+		{
+			name: "LogResponseScan_includes_method",
+			logFn: func(l *Logger) {
+				l.LogResponseScan(LogContext{Method: testMethodGet, URL: "https://example.com", ClientIP: testClientIP, RequestID: "req-1"}, testActionWarn, 1, []string{"injection"}, nil)
+			},
+			absent: []string{"agent"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "test.log")
+			logger, err := New("json", "file", path, true, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tt.logFn(logger)
+			logger.Close()
+
+			data, _ := os.ReadFile(filepath.Clean(path))
+			var entry map[string]any
+			if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+				t.Fatalf("invalid JSON: %v", err)
+			}
+			for _, key := range tt.absent {
+				if _, exists := entry[key]; exists {
+					t.Errorf("expected %q to be omitted when empty, but it was present with value %v", key, entry[key])
+				}
+			}
+		})
+	}
+}
+
+// TestLogResponseScan_IncludesMethod verifies the method field is present in response_scan events.
+func TestLogResponseScan_IncludesMethod(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogResponseScan(LogContext{Method: testMethodGet, URL: "https://example.com", ClientIP: testClientIP, RequestID: "req-method-1"}, testActionWarn, 1, []string{"Prompt Injection"}, nil)
+	logger.Close()
+
+	data, _ := os.ReadFile(filepath.Clean(path))
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if entry["method"] != testMethodGet {
+		t.Errorf("expected method=GET, got %v", entry["method"])
 	}
 }

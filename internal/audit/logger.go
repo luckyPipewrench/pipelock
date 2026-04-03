@@ -434,6 +434,7 @@ func (l *Logger) LogResponseScan(ctx LogContext, action string, matchCount int, 
 	technique := TechniqueForScanner("response_scan")
 
 	e := newLogEntry(l.zl.Warn(), EventResponseScan).
+		optStr("method", ctx.Method).
 		str("url", ctx.URL).
 		optStr("client_ip", ctx.ClientIP).
 		optStr("request_id", ctx.RequestID).

@@ -171,6 +171,49 @@ func interceptAndRequestWithRecorder(
 	return resp
 }
 
+// TestInterceptContext_Validate verifies that the validation gate catches
+// missing required fields and returns a controlled error instead of panicking.
+func TestInterceptContext_Validate(t *testing.T) {
+	t.Parallel()
+
+	full := &InterceptContext{
+		TargetHost: "example.com",
+		TargetPort: "443",
+		Config:     config.Defaults(),
+		Scanner:    scanner.New(config.Defaults()),
+		CertCache:  &certgen.CertCache{},
+		Logger:     audit.NewNop(),
+		Metrics:    metrics.New(),
+	}
+	t.Cleanup(func() { full.Scanner.Close() })
+
+	if err := full.Validate(); err != nil {
+		t.Fatalf("full context should validate: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*InterceptContext)
+	}{
+		{"missing_host", func(ic *InterceptContext) { ic.TargetHost = "" }},
+		{"missing_port", func(ic *InterceptContext) { ic.TargetPort = "" }},
+		{"nil_config", func(ic *InterceptContext) { ic.Config = nil }},
+		{"nil_scanner", func(ic *InterceptContext) { ic.Scanner = nil }},
+		{"nil_certcache", func(ic *InterceptContext) { ic.CertCache = nil }},
+		{"nil_logger", func(ic *InterceptContext) { ic.Logger = nil }},
+		{"nil_metrics", func(ic *InterceptContext) { ic.Metrics = nil }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ic := *full // shallow copy
+			tt.mutate(&ic)
+			if err := ic.Validate(); err == nil {
+				t.Error("expected validation error for " + tt.name)
+			}
+		})
+	}
+}
+
 // TestInterceptTunnel_ConfigMismatch_NearMissSignal verifies that SSRF blocking
 // an allowlisted domain (config mismatch) sends NearMiss instead of Block signal.
 func TestInterceptTunnel_ConfigMismatch_NearMissSignal(t *testing.T) {

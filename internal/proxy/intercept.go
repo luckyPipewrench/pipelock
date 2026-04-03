@@ -64,6 +64,29 @@ type InterceptContext struct {
 	Recorder       session.Recorder
 }
 
+// Validate checks that required fields are set. Returns an error if any
+// enforcement-critical field is nil/empty, preventing panic-on-dereference
+// in the intercept pipeline. Called at entry to interceptTunnel.
+func (ic *InterceptContext) Validate() error {
+	switch {
+	case ic.TargetHost == "":
+		return errors.New("InterceptContext: TargetHost is required")
+	case ic.TargetPort == "":
+		return errors.New("InterceptContext: TargetPort is required")
+	case ic.Config == nil:
+		return errors.New("InterceptContext: Config is required")
+	case ic.Scanner == nil:
+		return errors.New("InterceptContext: Scanner is required")
+	case ic.CertCache == nil:
+		return errors.New("InterceptContext: CertCache is required")
+	case ic.Logger == nil:
+		return errors.New("InterceptContext: Logger is required")
+	case ic.Metrics == nil:
+		return errors.New("InterceptContext: Metrics is required")
+	}
+	return nil
+}
+
 // interceptRecordSignal records an adaptive threat signal on the session recorder
 // for the intercepted request. Handles nil rec, disabled adaptive config, and
 // escalation transitions (log, audit, metrics gauge updates). Used by
@@ -148,6 +171,10 @@ func interceptTunnel(
 	clientConn net.Conn,
 	ic *InterceptContext,
 ) error {
+	if err := ic.Validate(); err != nil {
+		return fmt.Errorf("intercept setup: %w", err)
+	}
+
 	// Client-side TLS config with forged cert from cache.
 	tlsCfg := &tls.Config{
 		GetCertificate: func(_ *tls.ClientHelloInfo) (*tls.Certificate, error) {

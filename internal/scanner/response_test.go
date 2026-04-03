@@ -2555,10 +2555,11 @@ func TestScanResponse_FourLayerChainDetected(t *testing.T) {
 	}
 }
 
-// TestScanResponse_SplitRunInnerLayer verifies that injection hidden behind
-// an encoding layer with spaces/punctuation in the decoded output is still
-// caught. The hasEncodedRun gate previously skipped recursion when the
-// decoded content didn't look like a contiguous encoded run.
+// TestScanResponse_SplitRunInnerLayer documents a known limitation: injection
+// hidden behind an encoding layer where the decoded output contains
+// spaces/punctuation that break contiguous runs is NOT detected by segment
+// extraction. The recursive decode helps for contiguous multi-layer chains
+// but cannot reassemble split segments.
 func TestScanResponse_SplitRunInnerLayer(t *testing.T) {
 	s := New(testResponseConfig())
 
@@ -2571,11 +2572,12 @@ func TestScanResponse_SplitRunInnerLayer(t *testing.T) {
 	outer := hex.EncodeToString([]byte(spaced))
 
 	result := s.ScanResponse(context.Background(), outer)
-	// After hex decode, the spaced inner content goes through segment extraction
-	// which finds the base64 runs. The recursion (without hasEncodedRun gate)
-	// ensures detection even when the decoded layer is not a single contiguous run.
-	if result.Clean {
-		t.Logf("split-run inner layer not detected (segment extraction may not reassemble)")
+	// Known limitation: segment extraction finds individual base64 runs but
+	// cannot reassemble them across whitespace/punctuation boundaries.
+	// This test documents the gap. If a future improvement enables detection,
+	// flip this assertion.
+	if !result.Clean {
+		t.Log("split-run inner layer detected — limitation may have been resolved")
 	}
 }
 

@@ -2752,11 +2752,17 @@ func TestWSRelay_KillSwitch_UpstreamToClient(t *testing.T) {
 	_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
 
 	// Read until closed — relay should terminate due to kill switch.
+	ksStart := time.Now()
 	for {
 		_, _, loopErr := wsutil.ReadServerData(conn)
 		if loopErr != nil {
 			break
 		}
+	}
+	// With 1s idle timeout, the relay should close well under 3s.
+	// If it takes longer, it's the idle timeout firing instead of kill switch.
+	if elapsed := time.Since(ksStart); elapsed > 2*time.Second {
+		t.Errorf("relay took %v to close after kill switch; expected <2s (idle timeout may have fired instead)", elapsed)
 	}
 }
 

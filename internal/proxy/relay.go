@@ -106,6 +106,11 @@ func copyWithIdleTimeout(dst, src net.Conn, idleTimeout time.Duration, deadline 
 		_ = src.SetReadDeadline(rd)
 		n, err := src.Read(buf)
 		if n > 0 {
+			// Re-check kill switch after Read returns. Without this, one
+			// chunk read while the switch was flipping gets forwarded.
+			if ks != nil && ks.IsActive() {
+				return total
+			}
 			written, wErr := dst.Write(buf[:n])
 			total += int64(written)
 			if wErr != nil {

@@ -116,7 +116,7 @@ dlp:
       regex: 'GOCSPX-[A-Za-z0-9_\-]{28,}'
       severity: critical
     - name: "Stripe Key"
-      regex: '[sr]k_(live|test)_[a-zA-Z0-9]{20,}'
+      regex: '[sr]k[-_](live|test)[-_][a-zA-Z0-9]{20,}'
       severity: critical
     - name: "Stripe Webhook Secret"
       regex: 'whsec_[a-zA-Z0-9_\-]{20,}'
@@ -134,6 +134,9 @@ dlp:
     # Cloud provider credentials
     - name: "AWS Access ID"
       regex: '(AKIA|A3T|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16,}'
+      severity: critical
+    - name: "AWS Secret Key"
+      regex: '(?:aws_secret_access_key|AWS_SECRET_ACCESS_KEY|secret.?access.?key|SecretAccessKey)\s*["''=:\s]{1,5}\s*[A-Za-z0-9/+=]{40}'
       severity: critical
     - name: "Google OAuth Token"
       regex: 'ya29\.[a-zA-Z0-9_-]{20,}'

@@ -54,6 +54,30 @@ func TestScanTextForDLP(t *testing.T) {
 			wantPattern: "AWS Access ID",
 		},
 		{
+			name:        "raw DLP pattern match - AWS Secret Key env format",
+			text:        "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+			wantClean:   false,
+			wantPattern: "AWS Secret Key",
+		},
+		{
+			name:        "raw DLP pattern match - AWS Secret Key JSON format",
+			text:        `"SecretAccessKey": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"`,
+			wantClean:   false,
+			wantPattern: "AWS Secret Key",
+		},
+		{
+			name:        "raw DLP pattern match - Stripe key with hyphens",
+			text:        "sk-test-" + "4eC39HqLyjWDarjtT1zdp7dc",
+			wantClean:   false,
+			wantPattern: "Stripe Key",
+		},
+		{
+			name:        "raw DLP pattern match - Stripe key with underscores",
+			text:        "sk_test_" + "4eC39HqLyjWDarjtT1zdp7dc",
+			wantClean:   false,
+			wantPattern: "Stripe Key",
+		},
+		{
 			name: "base64-encoded secret decoded and matched",
 			text: func() string {
 				secret := testAnthropicPrefix + strings.Repeat("b", 25)

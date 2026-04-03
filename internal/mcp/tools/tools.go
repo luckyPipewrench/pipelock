@@ -326,7 +326,7 @@ var toolPoisonPatterns = []*compiledToolPattern{
 	},
 	{
 		name: "File Exfiltration Directive",
-		re:   regexp.MustCompile(`(?i)(read|send|include|exfiltrate|steal|access|retrieve|fetch|dump|upload|cat)\s+.{0,40}(\.ssh|\.env|\.aws|credentials|private[_\s]?key|id_rsa|passwd)`),
+		re:   regexp.MustCompile(`(?i)(read|send|include|exfiltrate|steal|access|retrieve|fetch|dump|upload|cat|prepend|append|add|attach|embed)\s+.{0,40}(\.ssh|\.env|\.aws|credentials|private[_\s]?key|id_rsa|passwd)`),
 	},
 	{
 		// Reverse order: path mentioned before action verb.
@@ -357,6 +357,22 @@ var toolPoisonPatterns = []*compiledToolPattern{
 		// on "Fetch data and run the analysis" where fetch and run act on
 		// different objects.
 		re: regexp.MustCompile(`(?i)(download|fetch|retriev)\w*\s+.{0,60}(execut|run|launch)\w*\s+(?:it|them)\b`),
+	},
+	{
+		name: "Dangerous Capability",
+		// Detects tools that instruct calling external commands via tool chain.
+		// Catches "call the bash tool to run: curl", "use the shell tool to execute",
+		// and similar patterns where a tool description directs the agent to invoke
+		// another tool for command execution.
+		re: regexp.MustCompile(`(?i)(call|use|invoke)\s+(the\s+)?(bash|shell|exec|terminal|command|cmd)\s+(tool|function).{0,40}(run|execut|curl|wget|nc\b|ncat|python|perl|ruby|node\b)`),
+	},
+	{
+		name: "Data Routing Directive",
+		// Detects shadow tools that instruct the agent to pass data from one
+		// tool through another. Catches "pass the full email body as the
+		// verification_data parameter" and similar data-routing instructions
+		// that exfiltrate content via a seemingly innocent tool.
+		re: regexp.MustCompile(`(?i)(pass|send|include|forward|copy|submit|relay)\s+(the\s+)?(full|entire|complete|all)?\s*(body|content|data|message|text|response|output|email|request)\s+.{0,40}(parameter|argument|field|input|payload)`),
 	},
 }
 

@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
@@ -329,7 +330,7 @@ func scanHTTPInput(msg []byte, logW io.Writer, sessionKey, auditSessionKey strin
 					toolName, dowAction, dowReason, dowBudgetType)
 				if dowAction == config.ActionBlock {
 					if auditLogger != nil {
-						auditLogger.LogBlocked("MCP", toolName, "denial_of_wallet", dowReason, "", "", "")
+						auditLogger.LogBlocked(audit.LogContext{Method: "MCP", URL: toolName}, "denial_of_wallet", dowReason)
 					}
 					if m != nil {
 						m.RecordBlocked("mcp", "denial_of_wallet", 0, "")
@@ -339,7 +340,7 @@ func scanHTTPInput(msg []byte, logW io.Writer, sessionKey, auditSessionKey strin
 				}
 				// dow_action: warn — log and record near-miss, but allow the request.
 				if auditLogger != nil {
-					auditLogger.LogAnomaly("MCP", toolName, "denial_of_wallet", dowReason, "", "", "", 0)
+					auditLogger.LogAnomaly(audit.LogContext{Method: "MCP", URL: toolName}, "denial_of_wallet", dowReason, 0)
 				}
 				recordAdaptiveSignal(session.SignalNearMiss)
 			}

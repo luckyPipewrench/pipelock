@@ -549,13 +549,19 @@ func TestInterceptTunnel_Adaptive_BlockAllOnClean(t *testing.T) {
 	escalateRec(rec, 1)
 
 	// Build the intercept handler directly (no TLS, just the HTTP handler).
-	handler := newInterceptHandler(
-		"127.0.0.1", "80",
-		http.DefaultTransport,
-		cfg, sc, logger, m,
-		"127.0.0.1", "test-req-id", agentAnonymous,
-		nil, nil, sm, nil, rec,
-	)
+	handler := newInterceptHandler(&InterceptContext{
+		TargetHost: "127.0.0.1",
+		TargetPort: "80",
+		Config:     cfg,
+		Scanner:    sc,
+		Logger:     logger,
+		Metrics:    m,
+		ClientIP:   "127.0.0.1",
+		RequestID:  "test-req-id",
+		Agent:      agentAnonymous,
+		SessionMgr: sm,
+		Recorder:   rec,
+	}, http.DefaultTransport)
 
 	// A clean request to the upstream.
 	req := httptest.NewRequest(http.MethodGet, "https://127.0.0.1:80/clean", nil)
@@ -622,13 +628,19 @@ func TestInterceptTunnel_Adaptive_ResponseUpgrade(t *testing.T) {
 		contentType: "text/plain",
 	}
 
-	handler := newInterceptHandler(
-		"127.0.0.1", "80",
-		mockRT,
-		cfg, sc, logger, m,
-		"127.0.0.1", "test-req-id", agentAnonymous,
-		nil, nil, smgr, nil, rec,
-	)
+	handler := newInterceptHandler(&InterceptContext{
+		TargetHost: "127.0.0.1",
+		TargetPort: "80",
+		Config:     cfg,
+		Scanner:    sc,
+		Logger:     logger,
+		Metrics:    m,
+		ClientIP:   "127.0.0.1",
+		RequestID:  "test-req-id",
+		Agent:      agentAnonymous,
+		SessionMgr: smgr,
+		Recorder:   rec,
+	}, mockRT)
 
 	// Authority must match the handler's targetHost:targetPort.
 	req := httptest.NewRequest(http.MethodGet, "https://127.0.0.1:80/inject", nil)
@@ -1349,13 +1361,19 @@ func TestInterceptTunnel_Adaptive_URLWarnUpgradeToBlock(t *testing.T) {
 
 	// Build a URL with a DLP secret in the path. Build at runtime to avoid gosec G101.
 	dlpPath := "/search?key=" + "AKIA" + "IOSFODNN7EXAMPLE"
-	handler := newInterceptHandler(
-		"127.0.0.1", "80",
-		http.DefaultTransport,
-		cfg, sc, logger, m,
-		"127.0.0.1", "test-req-id", agentAnonymous,
-		nil, nil, sm, nil, rec,
-	)
+	handler := newInterceptHandler(&InterceptContext{
+		TargetHost: "127.0.0.1",
+		TargetPort: "80",
+		Config:     cfg,
+		Scanner:    sc,
+		Logger:     logger,
+		Metrics:    m,
+		ClientIP:   "127.0.0.1",
+		RequestID:  "test-req-id",
+		Agent:      agentAnonymous,
+		SessionMgr: sm,
+		Recorder:   rec,
+	}, http.DefaultTransport)
 
 	req := httptest.NewRequest(http.MethodGet, "https://127.0.0.1:80"+dlpPath, nil)
 	req.Host = adaptiveInterceptTarget
@@ -1412,13 +1430,19 @@ func TestInterceptTunnel_Adaptive_BodyDLPWarnUpgradeToBlock(t *testing.T) {
 	secret := "AKIA" + "IOSFODNN7EXAMPLE"
 	body := strings.NewReader("key=" + secret)
 
-	handler := newInterceptHandler(
-		"127.0.0.1", "80",
-		http.DefaultTransport,
-		cfg, sc, logger, m,
-		"127.0.0.1", "test-req-id", agentAnonymous,
-		nil, nil, sm, nil, rec,
-	)
+	handler := newInterceptHandler(&InterceptContext{
+		TargetHost: "127.0.0.1",
+		TargetPort: "80",
+		Config:     cfg,
+		Scanner:    sc,
+		Logger:     logger,
+		Metrics:    m,
+		ClientIP:   "127.0.0.1",
+		RequestID:  "test-req-id",
+		Agent:      agentAnonymous,
+		SessionMgr: sm,
+		Recorder:   rec,
+	}, http.DefaultTransport)
 
 	req := httptest.NewRequest(http.MethodPost, "https://127.0.0.1:80/upload", body)
 	req.Host = adaptiveInterceptTarget

@@ -2674,10 +2674,12 @@ func TestWSRelay_KillSwitch_UpstreamToClient(t *testing.T) {
 	cfg.WebSocketProxy.Enabled = true
 	cfg.WebSocketProxy.MaxMessageBytes = 1048576
 	cfg.WebSocketProxy.MaxConcurrentConnections = 128
-	// Generous timeouts to avoid CI flakes under load.
-	cfg.WebSocketProxy.MaxConnectionSeconds = 30
-	cfg.WebSocketProxy.IdleTimeoutSeconds = 15
-	cfg.FetchProxy.TimeoutSeconds = 10
+	// Short idle timeout so the relay re-checks kill switch quickly.
+	// The old 15s value caused the relay to block in Read for up to 15s
+	// before looping back to the kill switch check, hitting CI timeouts.
+	cfg.WebSocketProxy.MaxConnectionSeconds = 10
+	cfg.WebSocketProxy.IdleTimeoutSeconds = 1
+	cfg.FetchProxy.TimeoutSeconds = 5
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
@@ -2746,8 +2748,8 @@ func TestWSRelay_KillSwitch_UpstreamToClient(t *testing.T) {
 	_ = wsutil.WriteClientMessage(conn, ws.OpText, []byte("go"))
 
 	// Set a read deadline to prevent CI from hanging if a regression keeps the
-	// socket open. 5 seconds is generous; the relay should close immediately.
-	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	// socket open. With 1s idle timeout the relay re-checks kill switch quickly.
+	_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
 
 	// Read until closed — relay should terminate due to kill switch.
 	for {

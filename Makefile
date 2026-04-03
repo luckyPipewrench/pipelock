@@ -69,3 +69,6 @@ fuzz:
 	@go test -run=^$$ -fuzz=FuzzScanResponse -fuzztime=30s ./internal/mcp/
 	@go test -run=^$$ -fuzz=FuzzDetect -fuzztime=30s ./internal/seedprotect/
 	@echo "All fuzz targets complete."
+
+stats: ## Print canonical stats
+	@go test -race -count=1 -run TestCanonicalStats -v ./internal/config/ 2>&1 | grep -E 'PASS|FAIL|---'

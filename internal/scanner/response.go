@@ -232,8 +232,9 @@ func matchPatternsPreFiltered(pf *responsePreFilter, patterns []*compiledPattern
 const minSegmentDecodeLen = 16
 
 // responseDecodeMaxDepth bounds recursive decode to prevent CPU exhaustion.
-// Matches maxDecodeDepth in text_dlp.go.
-const responseDecodeMaxDepth = 3
+// Set to 5 (vs text_dlp's 3) because the response path has no separate
+// IterativeDecode pass for URL layers, so deeper nesting is plausible.
+const responseDecodeMaxDepth = 5
 
 // matchDecodedResponse tries base64/hex decoding content and checks the decoded
 // result for injection patterns. Recurses up to responseDecodeMaxDepth to catch
@@ -266,11 +267,11 @@ func (s *Scanner) matchDecodedResponseRecursive(content string, depth int) []Res
 			if matches := s.matchDecodedNormalized(d); len(matches) > 0 {
 				return matches
 			}
-			// Recurse: decoded content may itself be encoded.
-			if hasEncodedRun(d) {
-				if matches := s.matchDecodedResponseRecursive(d, depth+1); len(matches) > 0 {
-					return matches
-				}
+			// Always recurse on successful decode. The depth limit is the
+			// safety bound; gating on hasEncodedRun lets attackers bypass
+			// by splitting or punctuating the inner encoded layer.
+			if matches := s.matchDecodedResponseRecursive(d, depth+1); len(matches) > 0 {
+				return matches
 			}
 		}
 	}
@@ -279,10 +280,8 @@ func (s *Scanner) matchDecodedResponseRecursive(content string, depth int) []Res
 		if matches := s.matchDecodedNormalized(d); len(matches) > 0 {
 			return matches
 		}
-		if hasEncodedRun(d) {
-			if matches := s.matchDecodedResponseRecursive(d, depth+1); len(matches) > 0 {
-				return matches
-			}
+		if matches := s.matchDecodedResponseRecursive(d, depth+1); len(matches) > 0 {
+			return matches
 		}
 	}
 
@@ -312,10 +311,8 @@ func (s *Scanner) matchDecodedSegmentsRecursive(content string, depth int) []Res
 				if matches := s.matchDecodedNormalized(d); len(matches) > 0 {
 					return matches
 				}
-				if hasEncodedRun(d) {
-					if matches := s.matchDecodedResponseRecursive(d, depth+1); len(matches) > 0 {
-						return matches
-					}
+				if matches := s.matchDecodedResponseRecursive(d, depth+1); len(matches) > 0 {
+					return matches
 				}
 			}
 		}
@@ -324,10 +321,8 @@ func (s *Scanner) matchDecodedSegmentsRecursive(content string, depth int) []Res
 			if matches := s.matchDecodedNormalized(d); len(matches) > 0 {
 				return matches
 			}
-			if hasEncodedRun(d) {
-				if matches := s.matchDecodedResponseRecursive(d, depth+1); len(matches) > 0 {
-					return matches
-				}
+			if matches := s.matchDecodedResponseRecursive(d, depth+1); len(matches) > 0 {
+				return matches
 			}
 		}
 	}

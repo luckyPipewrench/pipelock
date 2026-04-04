@@ -33,7 +33,7 @@ See also: [OWASP Agentic Top 10 mapping](../owasp-mapping.md) | [OWASP AIVSS cov
 
 **Pipelock coverage:**
 
-- **DLP scanning:** 46 regex patterns with 4 checksum validators (Luhn, mod97, ABA, WIF) detect secrets in tool arguments, URLs, headers, and request bodies. Patterns cover AWS, GitHub, Slack, Stripe, Anthropic, OpenAI, and 30+ other provider key formats.
+- **DLP scanning:** 47 regex patterns with 4 checksum validators (Luhn, mod97, ABA, WIF) detect secrets in tool arguments, URLs, headers, and request bodies. Patterns cover AWS, GitHub, Slack, Stripe, Anthropic, OpenAI, and 30+ other provider key formats.
 - **Environment leak detection:** `dlp.scan_env` reads the local environment and flags any outbound request containing env var values above a minimum length threshold.
 - **MCP input scanning:** scans tool call arguments (client-to-server) for secrets before they reach the MCP server. Catches agents forwarding credentials to untrusted tools.
 - **Encoding resistance:** 6-pass normalization decodes base64, hex, and URL encoding before pattern matching. Secrets encoded to evade detection are decoded and caught.
@@ -117,7 +117,7 @@ See also: [OWASP Agentic Top 10 mapping](../owasp-mapping.md) | [OWASP AIVSS cov
 
 **Pipelock coverage:**
 
-- **Response scanning:** 6-pass normalization pipeline (NFKC + zero-width stripping, invisible char replacement, leetspeak, optional-whitespace, vowel folding, base64/hex decode) with 23 default patterns covering prompt injection, jailbreak templates, role/behavior overrides, credential solicitation, memory persistence directives, and CJK-language instruction overrides.
+- **Response scanning:** 6-pass normalization pipeline (NFKC + zero-width stripping, invisible char replacement, leetspeak, optional-whitespace, vowel folding, base64/hex decode) with 25 default patterns covering prompt injection, jailbreak templates, role/behavior overrides, credential solicitation, memory persistence directives, and CJK-language instruction overrides.
 - **MCP response scanning:** tool results are scanned through the same pipeline before reaching the agent.
 - **State/control poisoning patterns:** detect credential solicitation ("provide your API key"), memory persistence ("save this for future sessions"), preference poisoning ("from now on, always use this tool"), and silent credential handling.
 - **Pre-filter optimization:** keyword-based gating skips expensive regex on clean content. Typical scan latency under 50us for clean responses.

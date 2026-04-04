@@ -5,7 +5,44 @@ All notable changes to Pipelock will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.1.0] - Unreleased
+## [2.1.1] - 2026-04-03
+
+### Highlights
+
+Scanner hardening and internal quality release. Nine security fixes close gaps found during Gauntlet benchmark development. Recursive response decoding catches multi-layer encoding evasion. Continuous fuzzing via ClusterFuzzLite. Major refactors reduce parameter sprawl across the proxy and MCP packages. New Codex integration guide.
+
+### Security Hardening
+
+- **SSRF trust gap closed:** allowlisted domains resolving to internal IPs now correctly bypass SSRF checks only for DNS results, not for encoded IP literals in the URL. Prevents trust domain bypass via hex/octal IP encoding. (#334)
+- **MCP batch request rejection:** JSON-RPC batch requests (JSON arrays) rejected at ingress. Batch requests could bypass per-request scanning by bundling multiple operations. (#335)
+- **SSRF hex/octal IP decoding:** SSRF scanner decodes hex (`0x7f000001`), octal (`0177.0.0.1`), and decimal (`2130706433`) IP representations before private-range checks. Separate subdomain entropy threshold prevents false positives on short hostnames. (#336)
+- **MCP input DLP hardening:** new DLP patterns for MCP tool arguments including path-based exfiltration and additional coverage for encoded payloads. (#337)
+- **Chain detection and shell obfuscation:** expanded chain pattern matching and shell obfuscation normalization for additional evasion techniques. (#338)
+- **Hangul Filler normalization:** Unicode codepoints U+115F, U+1160, U+3164 (Hangul Fillers) added to invisible character stripping. Prevents pattern matching evasion via these characters. (#339)
+- **Recursive response decoding:** senary scanner pass now decodes up to 5 layers of nested base64/hex encoding. Previously a single layer was decoded, allowing multi-layer chains (base64→hex→URL) to evade detection. (#344)
+- **DLP and tool scanner pattern widening:** broader DLP patterns and tool poisoning detection for improved Gauntlet benchmark coverage. (#348)
+- **Injection pattern hardening:** Tool Invocation pattern widened to match varied phrasing ("urgently call a hidden function"). Instruction Boundary pattern now detects Llama 2 `<<SYS>>` closing tag. (#350)
+
+### New Features
+
+- **ClusterFuzzLite integration:** continuous fuzzing on every PR with 9 fuzz targets covering URL scanning, DLP, response scanning, normalization, tool extraction, chain classification, and config parsing. (#339)
+- **Codex integration guide:** `docs/guides/codex.md` covers securing OpenAI Codex with pipelock's MCP proxy, forward proxy, and recommended config.
+- **Stats drift guard:** `make stats` target and `TestCanonicalStats` verify pattern counts, dependency counts, and preset counts on every PR. (#342)
+
+### Refactored
+
+- **`LogContext` struct:** replaces 8+ repeated audit log parameters across all proxy and MCP packages with a single struct. Reduces parameter passing noise and makes future field additions non-breaking. (#340)
+- **`InterceptContext` struct:** replaces repeated TLS intercept pipeline parameters with a structured context. (#340)
+- **`BodyScanRequest` struct:** consolidates body scanning parameters, server timeout constants extracted, `OnClose` utility added. (#345)
+- **Signal recording consolidation:** shared signal recording logic extracted, `mcp/input.go` split for maintainability. (#346)
+- **Relay extraction:** tunnel relay and hop-by-hop header helpers extracted into `relay.go`. (#347)
+
+### Other
+
+- **PR review commands:** `/review tests`, `/review docs`, `/review stats` trigger focused review passes via GitHub Actions. (#339)
+- **Numbered comment lists removed:** prevents cascading diff noise when inserting items. (#344)
+
+## [2.1.0] - 2026-03-30
 
 ### Added
 

@@ -61,11 +61,11 @@ func TestCanonicalStats(t *testing.T) {
 	t.Logf("Direct deps:       %d", directDeps)
 
 	// Guards: fail if counts drop unexpectedly (ratchet, not exact match).
-	if dlpCount < 47 {
-		t.Errorf("DLP patterns dropped below 47: got %d", dlpCount)
+	if dlpCount < 48 {
+		t.Errorf("DLP patterns dropped below 48: got %d", dlpCount)
 	}
-	if responseCount < 23 {
-		t.Errorf("response patterns dropped below 23: got %d", responseCount)
+	if responseCount < 25 {
+		t.Errorf("response patterns dropped below 25: got %d", responseCount)
 	}
 	if chainCount < 10 {
 		t.Errorf("chain patterns dropped below 10: got %d", chainCount)

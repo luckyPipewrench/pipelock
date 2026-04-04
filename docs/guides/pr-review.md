@@ -36,8 +36,8 @@ Set these in **Settings > Secrets and variables > Actions**:
 | `LITELLM_BASE_URL` | If using LiteLLM | Your LiteLLM proxy URL (e.g., `https://litellm.example.com/v1`) |
 | `LITELLM_API_KEY` | If using LiteLLM | API key for LiteLLM proxy |
 | `OPENAI_API_KEY` | If not using LiteLLM | Direct OpenAI API key (fallback) |
-| `PR_REVIEW_MODEL_FAST` | No | Model for `/review` and `/review fast` (default: `gpt-4.1-mini`) |
-| `PR_REVIEW_MODEL_DEEP` | No | Model for `/review deep` (default: `gpt-4.1`) |
+| `PR_REVIEW_MODEL_FAST` | No | Model for `/review`, `/review fast`, `/review tests`, `/review docs`, `/review stats` (default: `gpt-5.4-mini`) |
+| `PR_REVIEW_MODEL_DEEP` | No | Model for `/review deep` (default: `gpt-5.4`) |
 
 `GITHUB_TOKEN` is provided automatically by GitHub Actions.
 

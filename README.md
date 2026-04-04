@@ -364,6 +364,7 @@ Full reference with all fields, defaults, and hot-reload behavior: **[docs/confi
 ## Integration Guides
 
 - **[Claude Code](docs/guides/claude-code.md):** MCP proxy setup, `.claude.json` configuration
+- **[OpenAI Codex](docs/guides/codex.md):** MCP proxy wrapping, forward proxy, sandbox integration
 - **[OpenAI Agents SDK](docs/guides/openai-agents.md):** `MCPServerStdio`, multi-agent handoffs
 - **[Google ADK](docs/guides/google-adk.md):** `McpToolset`, `StdioConnectionParams`
 - **[AutoGen](docs/guides/autogen.md):** `StdioServerParams`, `mcp_server_tools()`
@@ -471,7 +472,7 @@ curl http://localhost:9090/api/v1/killswitch/status \
   "version": "x.y.z",
   "mode": "balanced",
   "uptime_seconds": 3600.5,
-  "dlp_patterns": 47,
+  "dlp_patterns": 48,
   "response_scan_enabled": true,
   "kill_switch_active": false
 }
@@ -570,7 +571,7 @@ Canonical metrics, updated each release.
 
 | Metric | Value |
 |--------|-------|
-| Go tests (with `-race`) | 9,500+ |
+| Go tests (with `-race`) | 10,000+ |
 | Statement coverage | 88%+ |
 | Evasion techniques tested | 230+ |
 | Scanner pipeline overhead | ~32μs per URL scan ([performance details](docs/performance.md)) |

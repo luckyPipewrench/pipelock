@@ -14,7 +14,7 @@ All numbers from Go benchmarks on AMD Ryzen 7 7800X3D (8 cores / 16 threads) / G
 |-----------|---------|--------------------:|
 | Full pipeline (allowed URL) | ~32 μs | ~31,000/sec |
 | Blocklist block (early exit) | ~2 μs | ~500,000/sec |
-| DLP pattern match (46 patterns, pre-filtered) | ~8 μs | ~130,000/sec |
+| DLP pattern match (47 patterns, pre-filtered) | ~8 μs | ~130,000/sec |
 | DLP pre-filter only (clean text, zero alloc) | ~400 ns | ~2,500,000/sec |
 | Entropy detection | ~58 μs | ~17,000/sec |
 | Complex URL (ports, query params) | ~60 μs | ~17,000/sec |
@@ -31,7 +31,7 @@ JSON-RPC parsing + text extraction + prompt injection pattern matching.
 
 ### Response Scanning (fetched content injection detection)
 
-Pattern matching against 23 prompt injection patterns (including 6 state/control patterns and 4 CJK-language patterns) on fetched page content.
+Pattern matching against 25 prompt injection patterns (including 6 state/control patterns and 4 CJK-language patterns) on fetched page content.
 
 | Operation | Latency | Throughput (1 core) |
 |-----------|---------|--------------------:|

@@ -53,7 +53,7 @@ Agent (has secrets, no network) → Pipelock Proxy (no agent secrets, has networ
 2. CRLF injection detection (encoded CR/LF in URLs)
 3. Path traversal detection (encoded dot-dot sequences)
 4. Domain blocklist (deny/allow per mode)
-5. DLP (46 regex patterns for API keys/tokens + checksum validators + env var leak detection)
+5. DLP (48 regex patterns for API keys/tokens + checksum validators + env var leak detection)
 6. SSRF (private IPs, link-local, metadata endpoints, DNS rebinding)
 7. Rate limiting (per-domain sliding window)
 8. URL length (configurable max)
@@ -83,7 +83,7 @@ These are Pipelock's three pillars. Weight findings in these areas highest.
 ## Code Conventions
 
 - **Go 1.25+**, module: `github.com/luckyPipewrench/pipelock`
-- **15 direct dependencies.** Don't suggest adding deps without strong justification.
+- **18 direct dependencies.** Don't suggest adding deps without strong justification.
 - **golangci-lint v2** with 19 linters + gofumpt formatter (see `.golangci.yml`)
 - **`cmd.OutOrStdout()`** for output, never raw `fmt.Print`
 - **`0o600`** not `0600` for file permissions (gosec)

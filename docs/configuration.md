@@ -488,11 +488,11 @@ response_scanning:
 | `enabled` | `true` | Enable response scanning |
 | `action` | `"warn"` | block, strip, warn, or ask (HITL) |
 | `ask_timeout_seconds` | `30` | Timeout for human-in-the-loop approval |
-| `include_defaults` | `true` | Merge with 23 built-in patterns |
+| `include_defaults` | `true` | Merge with 25 built-in patterns |
 | `exempt_domains` | `[]` | Hosts to skip injection scanning for (DLP still applies on outbound). Supports `*.example.com` wildcards (also matches the apex `example.com`). |
-| `patterns` | 23 built-in | Injection and state/control poisoning patterns |
+| `patterns` | 25 built-in | Injection and state/control poisoning patterns |
 
-**Built-in patterns (23):** 13 prompt injection patterns (jailbreak phrases, system overrides, role overrides, instruction manipulation, encoded payloads, tool invocation commands, authority escalation), 6 state/control poisoning patterns (credential solicitation, credential path directives, auth material requirements, memory persistence directives, preference poisoning, silent credential handling), and 4 CJK-language override patterns (Chinese, Japanese, Korean instruction overrides and jailbreak mode). All patterns use DOTALL mode to match across newlines in multiline tool output.
+**Built-in patterns (25):** 13 prompt injection patterns (jailbreak phrases, system overrides, role overrides, instruction manipulation, encoded payloads, tool invocation commands, authority escalation), 6 state/control poisoning patterns (credential solicitation, credential path directives, auth material requirements, memory persistence directives, preference poisoning, silent credential handling), and 4 CJK-language override patterns (Chinese, Japanese, Korean instruction overrides and jailbreak mode). All patterns use DOTALL mode to match across newlines in multiline tool output.
 
 **Actions:**
 - **block:** reject the response entirely, agent gets an error
@@ -1187,10 +1187,10 @@ Budgets cap what an agent can do within a rolling time window. All fields defaul
 | `loop_detection_window` | `int` | `0` | Number of recent tool calls to track for loop/cycle detection (0 = disabled, default 20 when set). **Enforced.** |
 | `max_wall_clock_minutes` | `int` | `0` | Max session duration in minutes (0 = unlimited). **Enforced.** |
 | `dow_action` | `string` | `"block"` | Action when a denial-of-wallet limit is exceeded: `"block"` (reject the tool call) or `"warn"` (log and allow) |
-| `max_concurrent_tool_calls` | `int` | `0` | Max parallel in-flight tool calls (0 = unlimited). *Planned — parsed but not yet enforced at runtime.* |
-| `max_retries_per_endpoint` | `int` | `0` | Max calls to the same domain+path (0 = unlimited). *Planned — parsed but not yet enforced at runtime.* |
-| `fan_out_limit` | `int` | `0` | Max unique endpoints within the fan-out window (0 = unlimited). *Planned — parsed but not yet enforced at runtime.* |
-| `fan_out_window_seconds` | `int` | `0` | Sliding window for fan-out detection (0 = disabled). *Planned — parsed but not yet enforced at runtime.* |
+| `max_concurrent_tool_calls` | `int` | `0` | Max parallel in-flight tool calls (0 = unlimited). **Enforced.** |
+| `max_retries_per_endpoint` | `int` | `0` | Max calls to the same domain+path (0 = unlimited, default 20 when set). **Enforced.** |
+| `fan_out_limit` | `int` | `0` | Max unique endpoints within the fan-out window (0 = unlimited). **Enforced.** |
+| `fan_out_window_seconds` | `int` | `0` | Sliding window for fan-out detection (0 = disabled). **Enforced.** |
 
 When a budget limit is reached:
 

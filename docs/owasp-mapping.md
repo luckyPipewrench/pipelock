@@ -37,7 +37,7 @@ See also: [OWASP AIVSS coverage mapping](https://pipelab.org/learn/owasp-aivss-c
 response_scanning:
   enabled: true
   action: block  # block, strip, warn, or ask
-  # 23 patterns ship by default (prompt injection, system override,
+  # 25 patterns ship by default (prompt injection, system override,
   # role override, jailbreak, credential solicitation, etc). Example:
   patterns:
     - name: "Prompt Injection"

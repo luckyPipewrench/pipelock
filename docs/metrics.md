@@ -100,7 +100,7 @@ inspect WebSocket frames for DLP and prompt injection.
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `pipelock_info` | gauge | `version` | Build information. Always 1. The `version` label identifies the running release (e.g. `2.1.0`). |
+| `pipelock_info` | gauge | `version` | Build information. Always 1. The `version` label identifies the running release (e.g. `2.1.1`). |
 | `pipelock_kill_switch_active` | gauge | `source` | Whether each kill switch source is active (1) or inactive (0). `source` is `config`, `api`, `signal`, or `sentinel`. Reported fresh on every scrape. |
 
 ## Security Event Metrics

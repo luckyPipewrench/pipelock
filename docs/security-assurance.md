@@ -44,7 +44,7 @@ No single control is assumed to be sufficient. The scanner pipeline applies 11 l
 | CRLF injection detection | HTTP header injection via encoded CR/LF |
 | Path traversal detection | Directory escape attempts via encoded dot-dot sequences |
 | Domain blocklist/allowlist | Known-bad destinations, scope control |
-| DLP pattern matching | Credential leakage (46 patterns, encoding-aware) |
+| DLP pattern matching | Credential leakage (47 patterns, encoding-aware) |
 | Path entropy analysis | Exfiltration via high-entropy URL segments |
 | Subdomain entropy analysis | DNS-based exfiltration |
 | SSRF protection | Private network access, DNS rebinding |

@@ -91,11 +91,12 @@ func (ic *InterceptContext) Validate() error {
 }
 
 // interceptRecordSignal records an adaptive threat signal on the session recorder
-// for the intercepted request. Handles nil rec, disabled adaptive config, and
-// escalation transitions (log, audit, metrics gauge updates). Used by
-// newInterceptHandler to feed signals back to the adaptive system.
+// for the intercepted request. Handles nil rec (via decide.RecordSignal),
+// disabled adaptive config, and escalation transitions (log, audit, metrics
+// gauge updates). Used by newInterceptHandler to feed signals back to the
+// adaptive system.
 func interceptRecordSignal(ic *InterceptContext, sig session.SignalType) {
-	if ic.Recorder == nil || !ic.Config.AdaptiveEnforcement.Enabled {
+	if !ic.Config.AdaptiveEnforcement.Enabled {
 		return
 	}
 	sessionKey := ic.ClientIP
@@ -106,7 +107,7 @@ func interceptRecordSignal(ic *InterceptContext, sig session.SignalType) {
 	if ic.Proxy != nil {
 		m = ic.Proxy.metrics
 	}
-	decide.RecordEscalation(ic.Recorder, sig, decide.EscalationParams{
+	decide.RecordSignal(ic.Recorder, sig, decide.EscalationParams{
 		Threshold: ic.Config.AdaptiveEnforcement.EscalationThreshold,
 		Logger:    ic.Logger,
 		Metrics:   m,
@@ -972,7 +973,7 @@ func newInterceptHandler(
 							if ic.Proxy != nil {
 								stripMetrics = ic.Proxy.metrics
 							}
-							decide.RecordEscalation(sess, session.SignalStrip, decide.EscalationParams{
+							decide.RecordSignal(sess, session.SignalStrip, decide.EscalationParams{
 								Threshold: ic.Config.AdaptiveEnforcement.EscalationThreshold,
 								Logger:    ic.Logger,
 								Metrics:   stripMetrics,

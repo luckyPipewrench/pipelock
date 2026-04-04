@@ -371,26 +371,20 @@ func ceeRecordSignals(result ceeResult, sm *SessionManager, sessionKey string, t
 		return
 	}
 	sess := sm.GetOrCreate(sessionKey)
+	ep := decide.EscalationParams{
+		Threshold: threshold,
+		Logger:    logger,
+		Metrics:   m,
+		Session:   sessionKey,
+		ClientIP:  clientIP,
+		RequestID: requestID,
+	}
 	if result.EntropyHit {
-		decide.RecordEscalation(sess, session.SignalEntropyBudget, decide.EscalationParams{
-			Threshold: threshold,
-			Logger:    logger,
-			Metrics:   m,
-			Session:   sessionKey,
-			ClientIP:  clientIP,
-			RequestID: requestID,
-		})
+		decide.RecordSignal(sess, session.SignalEntropyBudget, ep)
 	}
 	if result.FragmentHit {
 		// Fragment DLP match is high-confidence (reconstructed secret from fragments).
 		// Use SignalFragmentDLP (3 points, same as SignalBlock) for strong escalation.
-		decide.RecordEscalation(sess, session.SignalFragmentDLP, decide.EscalationParams{
-			Threshold: threshold,
-			Logger:    logger,
-			Metrics:   m,
-			Session:   sessionKey,
-			ClientIP:  clientIP,
-			RequestID: requestID,
-		})
+		decide.RecordSignal(sess, session.SignalFragmentDLP, ep)
 	}
 }

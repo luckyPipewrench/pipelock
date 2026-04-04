@@ -17,6 +17,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
@@ -601,10 +602,10 @@ func (m *escalatingMockRecorder) RecordClean(_ float64) {}
 func (m *escalatingMockRecorder) EscalationLevel() int  { return m.level }
 func (m *escalatingMockRecorder) ThreatScore() float64  { return m.score }
 
-// TestRecordSignalWithEscalation_EscalatedPath verifies that when RecordSignal
-// returns escalated=true, recordSignalWithEscalation logs the transition to
-// logW, calls auditLogger, and updates the metrics gauges.
-func TestRecordSignalWithEscalation_EscalatedPath(t *testing.T) {
+// TestRecordSignal_EscalatedPath verifies that when RecordSignal
+// returns escalated=true, decide.RecordSignal logs the transition to
+// ConsoleWriter, calls auditLogger, and updates the metrics gauges.
+func TestRecordSignal_EscalatedPath(t *testing.T) {
 	tests := []struct {
 		name        string
 		from        string
@@ -636,10 +637,18 @@ func TestRecordSignalWithEscalation_EscalatedPath(t *testing.T) {
 				m = metrics.New()
 			}
 
-			// recordSignalWithEscalation must not panic on any combination of
+			// decide.RecordSignal must not panic on any combination of
 			// nil/non-nil audit and metrics, and must write the escalation log
-			// message when logW is available.
-			recordSignalWithEscalation(rec, session.SignalBlock, 5.0, &logBuf, auditLogger, m, "sess-1", "10.0.0.1", "req-1")
+			// message when ConsoleWriter is available.
+			decide.RecordSignal(rec, session.SignalBlock, decide.EscalationParams{
+				Threshold:     5.0,
+				Logger:        auditLogger,
+				Metrics:       m,
+				ConsoleWriter: &logBuf,
+				Session:       "sess-1",
+				ClientIP:      "10.0.0.1",
+				RequestID:     "req-1",
+			})
 
 			// The escalated path must log the transition.
 			if !strings.Contains(logBuf.String(), "session escalated") {
@@ -988,13 +997,16 @@ func TestForwardScannedInput_Adaptive_WarnUpgradeToBlock(t *testing.T) {
 	}
 }
 
-// TestRecordSignalWithEscalation_NoEscalation verifies that when RecordSignal
-// returns escalated=false, recordSignalWithEscalation writes nothing to logW.
-func TestRecordSignalWithEscalation_NoEscalation(t *testing.T) {
+// TestRecordSignal_NoEscalation verifies that when RecordSignal
+// returns escalated=false, decide.RecordSignal writes nothing to ConsoleWriter.
+func TestRecordSignal_NoEscalation(t *testing.T) {
 	rec := &mockRecorder{} // escalateOnNext is false
 
 	var logBuf bytes.Buffer
-	recordSignalWithEscalation(rec, session.SignalNearMiss, 100.0, &logBuf, nil, nil, "", "", "")
+	decide.RecordSignal(rec, session.SignalNearMiss, decide.EscalationParams{
+		Threshold:     100.0,
+		ConsoleWriter: &logBuf,
+	})
 
 	if logBuf.Len() != 0 {
 		t.Errorf("expected no log output when not escalated, got: %q", logBuf.String())

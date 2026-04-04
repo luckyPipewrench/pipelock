@@ -212,8 +212,14 @@ func scanHTTPInput(msg []byte, logW io.Writer, sessionKey, auditSessionKey strin
 	// Helper: record an adaptive signal and handle escalation side-effects.
 	// Eliminates repeated nil/enabled guards at every call site.
 	recordAdaptiveSignal := func(sig session.SignalType) {
-		if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
-			recordSignalWithEscalation(rec, sig, adaptiveCfg.EscalationThreshold, logW, auditLogger, m, auditSessionKey, "", "")
+		if adaptiveCfg != nil && adaptiveCfg.Enabled {
+			decide.RecordSignal(rec, sig, decide.EscalationParams{
+				Threshold:     adaptiveCfg.EscalationThreshold,
+				Logger:        auditLogger,
+				Metrics:       m,
+				ConsoleWriter: logW,
+				Session:       auditSessionKey,
+			})
 		}
 	}
 
@@ -995,8 +1001,14 @@ func RunHTTPListenerProxy(
 					pattern = dlpResult.Matches[0].PatternName
 				}
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: DLP match in Authorization header: %s\n", pattern)
-				if reqRec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
-					recordSignalWithEscalation(reqRec, session.SignalBlock, adaptiveCfg.EscalationThreshold, safeLogW, opts.AuditLogger, opts.Metrics, auditSessionKey, "", "")
+				if adaptiveCfg != nil && adaptiveCfg.Enabled {
+					decide.RecordSignal(reqRec, session.SignalBlock, decide.EscalationParams{
+						Threshold:     adaptiveCfg.EscalationThreshold,
+						Logger:        opts.AuditLogger,
+						Metrics:       opts.Metrics,
+						ConsoleWriter: safeLogW,
+						Session:       auditSessionKey,
+					})
 				}
 				w.Header().Set("Content-Type", "application/json")
 				rpcID := extractRPCID(body)
@@ -1017,11 +1029,18 @@ func RunHTTPListenerProxy(
 			headerResult := ScanA2AHeaders(r.Context(), r.Header, opts.Scanner, baseOpts.A2ACfg)
 			if !headerResult.Clean {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: a2a header blocked: %s\n", headerResult.Reason)
-				if reqRec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
+				if adaptiveCfg != nil && adaptiveCfg.Enabled {
+					ep := decide.EscalationParams{
+						Threshold:     adaptiveCfg.EscalationThreshold,
+						Logger:        opts.AuditLogger,
+						Metrics:       opts.Metrics,
+						ConsoleWriter: safeLogW,
+						Session:       auditSessionKey,
+					}
 					if headerResult.IsConfigMismatch() {
-						recordSignalWithEscalation(reqRec, session.SignalNearMiss, adaptiveCfg.EscalationThreshold, safeLogW, opts.AuditLogger, opts.Metrics, auditSessionKey, "", "")
+						decide.RecordSignal(reqRec, session.SignalNearMiss, ep)
 					} else {
-						recordSignalWithEscalation(reqRec, session.SignalBlock, adaptiveCfg.EscalationThreshold, safeLogW, opts.AuditLogger, opts.Metrics, auditSessionKey, "", "")
+						decide.RecordSignal(reqRec, session.SignalBlock, ep)
 					}
 				}
 				w.Header().Set("Content-Type", "application/json")

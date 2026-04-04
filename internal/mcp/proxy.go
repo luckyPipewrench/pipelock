@@ -25,7 +25,6 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/provenance"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
-	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
@@ -318,8 +317,12 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 
 				if toolAction == config.ActionBlock {
 					// Signal: tool poisoning blocked.
-					if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
-						recordSignalWithEscalation(rec, session.SignalBlock, adaptiveCfg.EscalationThreshold, logW, nil, m, "", "", "")
+					if adaptiveCfg != nil && adaptiveCfg.Enabled {
+						decide.RecordSignal(rec, session.SignalBlock, decide.EscalationParams{
+							Threshold:     adaptiveCfg.EscalationThreshold,
+							Metrics:       m,
+							ConsoleWriter: logW,
+						})
 					}
 					resp := blockResponse(toolResult.RPCID)
 					if err := writer.WriteMessage(resp); err != nil {
@@ -328,8 +331,12 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					continue
 				}
 				// warn: logged above, record near-miss and fall through to general handling.
-				if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
-					recordSignalWithEscalation(rec, session.SignalNearMiss, adaptiveCfg.EscalationThreshold, logW, nil, m, "", "", "")
+				if adaptiveCfg != nil && adaptiveCfg.Enabled {
+					decide.RecordSignal(rec, session.SignalNearMiss, decide.EscalationParams{
+						Threshold:     adaptiveCfg.EscalationThreshold,
+						Metrics:       m,
+						ConsoleWriter: logW,
+					})
 				}
 			}
 		}
@@ -453,15 +460,20 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		}
 
 		// Signal recording: record after action is taken.
-		if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
+		if adaptiveCfg != nil && adaptiveCfg.Enabled {
+			ep := decide.EscalationParams{
+				Threshold:     adaptiveCfg.EscalationThreshold,
+				Metrics:       m,
+				ConsoleWriter: logW,
+			}
 			switch action {
 			case config.ActionBlock:
-				recordSignalWithEscalation(rec, session.SignalBlock, adaptiveCfg.EscalationThreshold, logW, nil, m, "", "", "")
+				decide.RecordSignal(rec, session.SignalBlock, ep)
 			case config.ActionStrip:
-				recordSignalWithEscalation(rec, session.SignalStrip, adaptiveCfg.EscalationThreshold, logW, nil, m, "", "", "")
+				decide.RecordSignal(rec, session.SignalStrip, ep)
 			default:
 				// Warn/ask: near-miss signal (injection detected but not blocked).
-				recordSignalWithEscalation(rec, session.SignalNearMiss, adaptiveCfg.EscalationThreshold, logW, nil, m, "", "", "")
+				decide.RecordSignal(rec, session.SignalNearMiss, ep)
 			}
 		}
 
@@ -657,23 +669,6 @@ func matchNames(matches []scanner.ResponseMatch) []string {
 		names = append(names, m.PatternName)
 	}
 	return names
-}
-
-// recordSignalWithEscalation wraps RecordSignal and handles escalation returns:
-// logs the transition and updates metrics gauges. logW is the stderr writer for
-// the MCP proxy. auditLogger and m may be nil (stdio mode has no audit logger
-// or metrics). sessionKey and clientIP are used for audit log context; pass ""
-// when not available (e.g., stdio transports).
-func recordSignalWithEscalation(rec session.Recorder, sig session.SignalType, threshold float64, logW io.Writer, auditLogger *audit.Logger, m *metrics.Metrics, sessionKey, clientIP, requestID string) {
-	decide.RecordEscalation(rec, sig, decide.EscalationParams{
-		Threshold:     threshold,
-		Logger:        auditLogger,
-		Metrics:       m,
-		ConsoleWriter: logW,
-		Session:       sessionKey,
-		ClientIP:      clientIP,
-		RequestID:     requestID,
-	})
 }
 
 // AdaptiveConfigFunc returns the current adaptive enforcement config.

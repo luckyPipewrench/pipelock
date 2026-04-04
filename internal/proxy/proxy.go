@@ -695,16 +695,16 @@ func (p *Proxy) recordSessionActivity(clientIP, agent, hostname, requestID strin
 			// allowlisted domain) are not real attacks, but repeated
 			// probing should still accumulate a weak signal so the
 			// session isn't completely invisible to adaptive scoring.
-			if decide.RecordEscalation(sess, session.SignalNearMiss, ep) {
+			if decide.RecordSignal(sess, session.SignalNearMiss, ep) {
 				sess.SetBlockAll(decide.UpgradeAction("", sess.EscalationLevel(), &adaptiveCfg) == config.ActionBlock)
 			}
 		} else if !result.Allowed {
-			if decide.RecordEscalation(sess, session.SignalBlock, ep) {
+			if decide.RecordSignal(sess, session.SignalBlock, ep) {
 				// Update block_all flag so RecordRequest stops refreshing lastActivity.
 				sess.SetBlockAll(decide.UpgradeAction("", sess.EscalationLevel(), &adaptiveCfg) == config.ActionBlock)
 			}
 		} else if result.Score > 0 {
-			if decide.RecordEscalation(sess, session.SignalNearMiss, ep) {
+			if decide.RecordSignal(sess, session.SignalNearMiss, ep) {
 				sess.SetBlockAll(decide.UpgradeAction("", sess.EscalationLevel(), &adaptiveCfg) == config.ActionBlock)
 			}
 		} else if !deferClean {
@@ -1175,7 +1175,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			if headerBlocked {
 				headerSignal = session.SignalBlock
 			}
-			decide.RecordEscalation(fetchRec, headerSignal, decide.EscalationParams{
+			decide.RecordSignal(fetchRec, headerSignal, decide.EscalationParams{
 				Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,
 				Logger:    log,
 				Metrics:   p.metrics,
@@ -1595,7 +1595,7 @@ func (p *Proxy) filterAndActOnResponseScan(
 				sessionKey = agent + "|" + clientIP
 			}
 			sess := sm.GetOrCreate(sessionKey)
-			decide.RecordEscalation(sess, sig, decide.EscalationParams{
+			decide.RecordSignal(sess, sig, decide.EscalationParams{
 				Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,
 				Logger:    log,
 				Metrics:   p.metrics,

@@ -226,7 +226,7 @@ What each mode prevents, detects, or logs:
 
 ### 11-Layer URL Scanner
 
-Every request passes through: scheme validation, CRLF injection detection, path traversal blocking, domain blocklist, DLP pattern matching (47 built-in patterns for API keys, tokens, credentials, cryptocurrency keys, environment variable secrets, and financial identifiers with checksum validation), path entropy analysis, subdomain entropy analysis, SSRF protection with DNS rebinding prevention, per-domain rate limiting, URL length limits, and per-domain data budgets.
+Every request passes through: scheme validation, CRLF injection detection, path traversal blocking, domain blocklist, DLP pattern matching (48 built-in patterns for API keys, tokens, credentials, cryptocurrency keys, environment variable secrets, and financial identifiers with checksum validation), path entropy analysis, subdomain entropy analysis, SSRF protection with DNS rebinding prevention, per-domain rate limiting, URL length limits, and per-domain data budgets.
 
 DLP runs before DNS resolution, designed to catch secrets before any DNS query leaves the proxy. BIP-39 seed phrase detection uses a dedicated scanner with dictionary lookup, sliding window matching, and SHA-256 checksum validation to catch cryptocurrency mnemonic exfiltration across all transport surfaces.
 
@@ -244,7 +244,7 @@ pipelock mcp proxy --sandbox --config pipelock.yaml -- npx server
 
 ### Response Scanning
 
-Fetched content is scanned for prompt injection and state/control poisoning before reaching the agent. A 6-pass normalization pipeline catches zero-width character evasion, homoglyph substitution, leetspeak encoding, and base64-wrapped payloads. 23 built-in patterns cover jailbreak phrases, instruction manipulation, credential solicitation, memory persistence, preference poisoning, and CJK-language instruction overrides. Actions: `block`, `strip`, `warn`, or `ask` (human-in-the-loop terminal approval).
+Fetched content is scanned for prompt injection and state/control poisoning before reaching the agent. A 6-pass normalization pipeline catches zero-width character evasion, homoglyph substitution, leetspeak encoding, and base64-wrapped payloads. 25 built-in patterns cover jailbreak phrases, instruction manipulation, credential solicitation, memory persistence, preference poisoning, covert action directives, model instruction boundaries, and CJK-language instruction overrides. Actions: `block`, `strip`, `warn`, or `ask` (human-in-the-loop terminal approval).
 
 ### MCP Proxy
 

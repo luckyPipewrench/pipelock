@@ -22,8 +22,17 @@ spec:
         - port: {{ .Values.service.mcpPort }}
           protocol: TCP
         {{- end }}
-        - port: {{ .Values.service.metricsPort }}
-          protocol: TCP
   egress:
-    - {}
+    # DNS resolution required for all proxy modes
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # HTTPS egress — pipelock proxies agent traffic to the internet
+    - ports:
+        - port: 443
+          protocol: TCP
+        - port: 80
+          protocol: TCP
 {{- end }}

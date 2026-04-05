@@ -148,6 +148,20 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		connectRec = sm.GetOrCreate(connectSessionKey)
 	}
 
+	// Airlock check for opaque CONNECT tunnels. Hard/drain tiers block
+	// unintercepted tunnels (fail-closed: can't classify inner requests).
+	if connectSess, ok := connectRec.(*SessionState); ok && connectSess != nil {
+		tier := connectSess.Airlock().Tier()
+		if tier == config.AirlockTierHard || tier == config.AirlockTierDrain {
+			connectSess.Airlock().ExtendTimer()
+			p.logger.LogAirlockDeny(connectSess.key, tier, TransportConnect, http.MethodConnect, clientIP, requestID)
+			p.metrics.RecordAirlockDenial(tier, TransportConnect, http.MethodConnect)
+			p.metrics.RecordTunnelBlocked(agentLabel)
+			http.Error(w, "airlock: CONNECT blocked during quarantine", http.StatusForbidden)
+			return
+		}
+	}
+
 	// Scan CONNECT request headers for DLP patterns. The CONNECT handshake
 	// can carry Proxy-Authorization, Authorization, or custom headers that
 	// may contain secrets. Tunneled HTTP headers are only visible with TLS
@@ -422,6 +436,11 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		interceptConn := wrapBuffered(clientConn, clientReader)
 		interceptCtx, interceptCancel := context.WithDeadline(r.Context(), deadline)
 		defer interceptCancel()
+		// Register airlock cancel for intercepted tunnels so escalation to
+		// hard/drain terminates the inner-request http.Server via context.
+		if connectSess, ok := connectRec.(*SessionState); ok && connectSess != nil {
+			connectSess.Airlock().RegisterCancel(interceptCancel)
+		}
 		// Obtain a live session recorder for the tunnel. This provides live
 		// escalation level lookups instead of a stale snapshot from sr.Level.
 		var interceptRec session.Recorder
@@ -450,6 +469,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			SessionMgr:     p.sessionMgrPtr.Load(),
 			Proxy:          p,
 			Recorder:       interceptRec,
+			KillSwitch:     p.ks,
 		}); err != nil {
 			p.logger.LogError(hostCtx, err)
 		}
@@ -461,6 +481,15 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		buffered := make([]byte, clientReader.Buffered())
 		_, _ = clientReader.Read(buffered)
 		_, _ = targetConn.Write(buffered)
+	}
+
+	// Register airlock cancel for raw CONNECT tunnels. When the session
+	// escalates to hard/drain, closing both ends terminates the relay.
+	if connectSess, ok := connectRec.(*SessionState); ok && connectSess != nil {
+		connectSess.Airlock().RegisterCancel(func() {
+			safeClose(clientConn, "airlock.clientConn", p.logger)
+			safeClose(targetConn, "airlock.targetConn", p.logger)
+		})
 	}
 
 	p.metrics.IncrActiveTunnels()
@@ -582,6 +611,22 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	if sm := p.sessionMgrPtr.Load(); sm != nil {
 		forwardRec = sm.GetOrCreate(forwardSessionKey)
 	}
+
+	// Airlock action classification for forward proxy.
+	if forwardSess, ok := forwardRec.(*SessionState); ok && forwardSess != nil {
+		tier := forwardSess.Airlock().Tier()
+		if tier != config.AirlockTierNone {
+			allowed, reason := ClassifyAction(tier, r.Method, TransportForward, false)
+			if !allowed {
+				forwardSess.Airlock().ExtendTimer()
+				p.logger.LogAirlockDeny(forwardSess.key, tier, TransportForward, r.Method, clientIP, requestID)
+				p.metrics.RecordAirlockDenial(tier, TransportForward, r.Method)
+				http.Error(w, "airlock: "+reason, http.StatusForbidden)
+				return
+			}
+		}
+	}
+
 	hasFinding := !result.Allowed && !result.IsProtective()
 
 	if !result.Allowed {
@@ -996,6 +1041,15 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		if readErr != nil {
 			p.logger.LogError(actx, readErr)
 			http.Error(w, "blocked: response read error", http.StatusForbidden)
+			return
+		}
+
+		// Browser Shield on forward proxy responses.
+		var shieldBlocked bool
+		respBody, shieldBlocked = p.applyShield(respBody, resp.Header.Get("Content-Type"), r.URL.Hostname(), resp.Header, cfg, actx, clientIP, requestID, TransportForward)
+		if shieldBlocked {
+			p.metrics.RecordBlocked(r.URL.Hostname(), "shield_oversize", time.Since(start), agentLabel)
+			http.Error(w, "blocked: response body exceeds browser shield size limit", http.StatusForbidden)
 			return
 		}
 

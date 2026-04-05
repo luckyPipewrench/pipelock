@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"slices"
+	"strings"
 	"syscall"
 	"time"
 
@@ -640,7 +641,13 @@ Examples:
 						apiToken,
 					)
 					apiMux.HandleFunc("/api/v1/sessions", sessionAPI.HandleList)
-					apiMux.HandleFunc("/api/v1/sessions/", sessionAPI.HandleReset)
+					apiMux.HandleFunc("/api/v1/sessions/", func(w http.ResponseWriter, r *http.Request) {
+						if strings.HasSuffix(r.URL.EscapedPath(), "/airlock") {
+							sessionAPI.HandleAirlock(w, r)
+						} else {
+							sessionAPI.HandleReset(w, r)
+						}
+					})
 				}
 
 				apiLn, lnErr := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.KillSwitch.APIListen)
@@ -874,6 +881,7 @@ Examples:
 						CaptureObs:     mcpCaptureObs,
 						ProvenanceCfg:  &cfg.MCPToolProvenance,
 						ReceiptEmitter: receiptEmitter,
+						ToolFreezer:    p.FrozenTools(),
 					})
 				}()
 			}
@@ -892,7 +900,7 @@ Examples:
 				}
 				rpHandler := proxy.NewReverseProxy(
 					rpUpstream, p.ConfigPtr(), p.ScannerPtr(),
-					logger, m, ks, rpCaptureObs,
+					logger, m, ks, rpCaptureObs, p.ShieldEngine(),
 				)
 
 				rpLn, lnErr := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.ReverseProxy.Listen)

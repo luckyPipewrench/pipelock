@@ -144,7 +144,8 @@ func (c *Controller) IsActiveHTTP(r *http.Request) Decision {
 	if rt.apiExempt && !c.separatePort.Load() &&
 		(path == "/api/v1/killswitch" || path == "/api/v1/killswitch/status" ||
 			path == "/api/v1/sessions" ||
-			(strings.HasPrefix(path, "/api/v1/sessions/") && strings.HasSuffix(path, "/reset"))) {
+			(strings.HasPrefix(path, "/api/v1/sessions/") && strings.HasSuffix(path, "/reset")) ||
+			(strings.HasPrefix(path, "/api/v1/sessions/") && strings.HasSuffix(path, "/airlock"))) {
 		return Decision{}
 	}
 

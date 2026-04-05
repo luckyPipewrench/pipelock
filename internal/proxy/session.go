@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
@@ -58,6 +59,9 @@ type SessionState struct {
 	bytesTotal   int64
 	toolCalls    int
 	uniqueTools  map[string]struct{}
+
+	// Graduated quarantine state.
+	airlock AirlockState
 }
 
 // IsResettable returns whether this session can be reset via the admin API.
@@ -67,6 +71,12 @@ func (s *SessionState) IsResettable() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.kind == sessionKindIdentity
+}
+
+// Airlock returns a pointer to the session's airlock state for tier checks
+// and transitions. The returned pointer is stable for the session's lifetime.
+func (s *SessionState) Airlock() *AirlockState {
+	return &s.airlock
 }
 
 type domainEntry struct {
@@ -301,6 +311,14 @@ func (s *SessionState) Reset() (prevScore float64, prevLevel int) {
 	s.toolCalls = 0
 	s.uniqueTools = nil
 
+	// Reset airlock to none tier. Direct field access is safe because
+	// we hold s.mu and SetTier only allows upward transitions.
+	s.airlock.mu.Lock()
+	s.airlock.tier = config.AirlockTierNone
+	s.airlock.enteredAt = time.Time{}
+	s.airlock.callCancelFuncsLocked()
+	s.airlock.mu.Unlock()
+
 	return prevScore, prevLevel
 }
 
@@ -357,6 +375,7 @@ type SessionSnapshot struct {
 	ThreatScore     float64   `json:"threat_score"`
 	EscalationLevel string    `json:"escalation_level"`
 	BlockAll        bool      `json:"block_all"`
+	AirlockTier     string    `json:"airlock_tier"`
 	LastActivity    time.Time `json:"last_activity"`
 }
 
@@ -394,7 +413,9 @@ type SessionManager struct {
 
 	cfgPtr         atomic.Pointer[config.SessionProfiling]
 	adaptiveCfgPtr atomic.Pointer[config.AdaptiveEnforcement]
+	airlockCfgPtr  atomic.Pointer[config.Airlock]
 	metrics        *metrics.Metrics // nil-safe; used for gauge/counter updates
+	logger         *audit.Logger    // nil-safe; used for airlock de-escalation logging
 	done           chan struct{}
 	closed         sync.Once
 
@@ -404,10 +425,16 @@ type SessionManager struct {
 	baselineAction string // "warn", "ask", or "block" — cached from config
 }
 
+// SessionManagerOptions configures optional SessionManager behavior.
+type SessionManagerOptions struct {
+	AirlockCfg *config.Airlock
+	Logger     *audit.Logger
+}
+
 // NewSessionManager creates a session manager with background cleanup.
 // The metrics parameter is optional (nil disables gauge/counter updates).
 // The adaptiveCfg parameter is optional (nil when adaptive enforcement is disabled).
-func NewSessionManager(cfg *config.SessionProfiling, adaptiveCfg *config.AdaptiveEnforcement, m *metrics.Metrics) *SessionManager {
+func NewSessionManager(cfg *config.SessionProfiling, adaptiveCfg *config.AdaptiveEnforcement, m *metrics.Metrics, opts ...SessionManagerOptions) *SessionManager {
 	sm := &SessionManager{
 		sessions:        make(map[string]*SessionState),
 		ipDomains:       make(map[string][]domainEntry),
@@ -417,6 +444,12 @@ func NewSessionManager(cfg *config.SessionProfiling, adaptiveCfg *config.Adaptiv
 	}
 	sm.cfgPtr.Store(cfg)
 	sm.adaptiveCfgPtr.Store(adaptiveCfg)
+	if len(opts) > 0 {
+		if opts[0].AirlockCfg != nil {
+			sm.airlockCfgPtr.Store(opts[0].AirlockCfg)
+		}
+		sm.logger = opts[0].Logger
+	}
 
 	go sm.cleanupLoop()
 	go sm.deescalationLoop()
@@ -544,6 +577,7 @@ func (sm *SessionManager) GetOrCreate(key string) *SessionState {
 		created:          now,
 		lastActivity:     now,
 		currentThreshold: 0, // set by adaptive enforcement when enabled
+		airlock:          AirlockState{tier: config.AirlockTierNone},
 	}
 	sm.sessions[key] = sess
 	if sm.metrics != nil {
@@ -606,9 +640,10 @@ func (sm *SessionManager) RecordIPDomain(clientIP, domain string, cfg *config.Se
 // capacity, threshold, and cleanup interval changes take effect on the
 // next operation. Pass nil for adaptiveCfg to clear adaptive enforcement
 // (e.g., when it is disabled via hot reload).
-func (sm *SessionManager) UpdateConfig(cfg *config.SessionProfiling, adaptiveCfg *config.AdaptiveEnforcement) {
+func (sm *SessionManager) UpdateConfig(cfg *config.SessionProfiling, adaptiveCfg *config.AdaptiveEnforcement, airlockCfg *config.Airlock) {
 	sm.cfgPtr.Store(cfg)
 	sm.adaptiveCfgPtr.Store(adaptiveCfg)
+	sm.airlockCfgPtr.Store(airlockCfg)
 
 	// Recompute atBlockAll for all sessions from the new adaptive config.
 	// This handles three cases:
@@ -661,6 +696,7 @@ func (sm *SessionManager) Snapshot() []SessionSnapshot {
 			ThreatScore:     s.threatScore,
 			EscalationLevel: session.EscalationLabel(s.escalationLevel),
 			BlockAll:        s.atBlockAll,
+			AirlockTier:     s.airlock.Tier(),
 			LastActivity:    s.lastActivity,
 		}
 		s.mu.Unlock()
@@ -829,7 +865,15 @@ func (sm *SessionManager) cleanup() {
 		sess.mu.Lock()
 		idle := sess.lastActivity.Before(cutoff)
 		escLevel := sess.escalationLevel
+		airlockTier := sess.airlock.Tier()
 		sess.mu.Unlock()
+
+		// Airlock sessions are exempt from idle eviction. A session in
+		// quarantine must not be evicted or it would escape enforcement.
+		// Empty string is the zero value (equivalent to "none").
+		if airlockTier != config.AirlockTierNone && airlockTier != "" {
+			continue
+		}
 
 		if idle {
 			if escLevel > 0 {
@@ -928,6 +972,19 @@ func (sm *SessionManager) sweepDeescalation() {
 				}
 				if to > 0 {
 					sm.metrics.SetAdaptiveSessionLevel(toLabel, 1)
+				}
+			}
+		}
+
+		// Airlock timer-based de-escalation.
+		if airlockCfg := sm.airlockCfgPtr.Load(); airlockCfg != nil && airlockCfg.Enabled {
+			airlockChanged, airlockFrom, airlockTo := sess.airlock.TryDeescalate(&airlockCfg.Timers)
+			if airlockChanged {
+				if sm.metrics != nil {
+					sm.metrics.RecordAirlockTransition(airlockFrom, airlockTo, "timer")
+				}
+				if sm.logger != nil {
+					sm.logger.LogAirlockDeescalate(sess.key, airlockFrom, airlockTo, "", "")
 				}
 			}
 		}

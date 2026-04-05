@@ -23,6 +23,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/certgen"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
+	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
@@ -63,6 +64,7 @@ type InterceptContext struct {
 	SessionMgr     *SessionManager
 	Proxy          *Proxy
 	Recorder       session.Recorder
+	KillSwitch     *killswitch.Controller
 }
 
 // Validate checks that required fields are set. Returns an error if any
@@ -333,6 +335,15 @@ func newInterceptHandler(
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reqStart := time.Now()
 
+		// Kill switch re-check for intercepted CONNECT tunnels.
+		// Raw relay (relay.go) polls this per copy iteration. Intercepted
+		// tunnels must check per inner request.
+		if ic.KillSwitch != nil && ic.KillSwitch.IsActive() {
+			ic.Metrics.RecordKillSwitchDenial("intercept", r.URL.Path)
+			http.Error(w, "kill switch active", http.StatusServiceUnavailable)
+			return
+		}
+
 		// Authority check: Host must match CONNECT target (host:port).
 		// Prevents domain fronting where the agent CONNECTs to allowed.com
 		// but sends Host: evil.com inside the encrypted tunnel. Also prevents
@@ -360,6 +371,22 @@ func newInterceptHandler(
 			})
 			http.Error(w, "authority mismatch: blocked", http.StatusForbidden)
 			return
+		}
+
+		// Airlock classification of the inner request method.
+		if interceptSess, ok := ic.Recorder.(*SessionState); ok && interceptSess != nil {
+			tier := interceptSess.Airlock().Tier()
+			if tier != config.AirlockTierNone {
+				allowed, reason := ClassifyAction(tier, r.Method, TransportConnect, true)
+				if !allowed {
+					interceptSess.Airlock().ExtendTimer()
+					ic.Logger.LogAirlockDeny(interceptSess.key, tier, TransportConnect, r.Method, ic.ClientIP, ic.RequestID)
+					ic.Metrics.RecordAirlockDenial(tier, TransportConnect, r.Method)
+					ic.Metrics.RecordTLSRequestBlocked("airlock")
+					http.Error(w, "airlock: "+reason, http.StatusForbidden)
+					return
+				}
+			}
 		}
 
 		// URL reconstruction: origin-form to absolute.
@@ -1009,6 +1036,17 @@ func newInterceptHandler(
 			})
 			http.Error(w, "blocked: response too large for scanning", http.StatusForbidden)
 			return
+		}
+
+		// Browser Shield on intercepted response body.
+		if ic.Proxy != nil {
+			var shieldBlocked bool
+			respBody, shieldBlocked = ic.Proxy.applyShield(respBody, resp.Header.Get("Content-Type"), ic.TargetHost, resp.Header, ic.Config, actx, ic.ClientIP, ic.RequestID, TransportConnect)
+			if shieldBlocked {
+				ic.Metrics.RecordTLSResponseBlocked("shield_oversize")
+				http.Error(w, "blocked: response body exceeds browser shield size limit", http.StatusForbidden)
+				return
+			}
 		}
 
 		// A2A response body scanning: field-aware classification replaces

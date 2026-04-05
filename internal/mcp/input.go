@@ -344,6 +344,31 @@ func ForwardScannedInput(
 			})
 		}
 
+		// Frozen tool enforcement: when a session is in airlock hard tier,
+		// only tools in the frozen snapshot are permitted. This prevents
+		// tool injection after quarantine begins.
+		if opts.ToolFreezer != nil && toolCallName != "" && opts.FrozenToolStableKey != "" {
+			if opts.ToolFreezer.IsFrozen(opts.FrozenToolStableKey) && !opts.ToolFreezer.IsToolAllowed(opts.FrozenToolStableKey, toolCallName) {
+				frozenMsg := fmt.Sprintf("pipelock: input line %d: tools/call %q blocked by frozen tool inventory", lineNum, toolCallName)
+				_, _ = fmt.Fprintln(logW, frozenMsg)
+				if auditLogger != nil {
+					auditLogger.LogBlocked(audit.LogContext{Method: "MCP", URL: toolCallName}, "frozen_tool", "tool not in frozen inventory")
+				}
+				if m != nil {
+					m.RecordBlocked("mcp", "frozen_tool", 0, "")
+				}
+				recordAdaptiveSignal(session.SignalBlock)
+				blockedCh <- BlockedRequest{
+					ID:             verdict.ID,
+					IsNotification: isRPCNotification(verdict.ID),
+					LogMessage:     frozenMsg,
+					ErrorCode:      -32600,
+					ErrorMessage:   "pipelock: tool not in frozen inventory",
+				}
+				continue
+			}
+		}
+
 		// Chain detection: check if this tool call matches an attack pattern.
 		// Runs on every tools/call regardless of content scan results.
 		chainAction := ""

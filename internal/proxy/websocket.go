@@ -333,6 +333,15 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		wsRec = sm.GetOrCreate(sessionKey)
 	}
 
+	// Register airlock cancel for WebSocket connections. When the session
+	// escalates to hard/drain, closing both ends terminates the relay.
+	if wsSess, ok := wsRec.(*SessionState); ok && wsSess != nil {
+		wsSess.Airlock().RegisterCancel(func() {
+			safeClose(clientConn, "airlock.ws.clientConn", log)
+			safeClose(upstreamConn, "airlock.ws.upstreamConn", log)
+		})
+	}
+
 	// Deferred clean decay: only apply if the entire handshake was clean
 	// (no URL scan hit, no header DLP hit). This prevents same-handshake
 	// raise+decay when a header carries a secret but the URL is clean.

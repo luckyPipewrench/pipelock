@@ -691,7 +691,7 @@ Environment passthrough (subprocess mode only):
 					RedirectRT: buildRedirectRT(cfg), DoWCheck: dowCheck,
 					IntegrityCfg:        &cfg.MCPBinaryIntegrity,
 					ProvenanceCfg:       &cfg.MCPToolProvenance,
-					FrozenToolStableKey: strings.Join(serverCmd, "|"),
+					FrozenToolStableKey: "stdio\x00" + strings.Join(serverCmd, "\x00"),
 				}
 				if err := mcp.RunProxyWithSandbox(ctx, sandboxCmd, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), proxyOpts, mcpStrict); err != nil {
 					return handleProxyError(err, cmd.ErrOrStderr(), sentryClient)
@@ -794,7 +794,7 @@ Environment passthrough (subprocess mode only):
 				IntegrityCfg:  &cfg.MCPBinaryIntegrity,
 				ProvenanceCfg: &cfg.MCPToolProvenance,
 				Lineage:       lin, OnChildReady: onChildReady,
-				FrozenToolStableKey: strings.Join(serverCmd, "|"),
+				FrozenToolStableKey: "stdio\x00" + strings.Join(serverCmd, "\x00"),
 			}
 			if err := mcp.RunProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), logW, serverCmd, proxyOpts, extraEnv...); err != nil {
 				return handleProxyError(err, logW, sentryClient)

@@ -25,6 +25,7 @@ func newTestProxy(t *testing.T) *Proxy {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	t.Cleanup(func() { p.Close() })
 	return p
 }
 

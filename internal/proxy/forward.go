@@ -466,6 +466,8 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// Hard/drain tiers block unintercepted tunnels because we can't classify
 	// inner request methods without MITM. Intercepted tunnels handle airlock
 	// per-request inside interceptTunnel.
+	// Note: we've already sent "200 Connection Established" and hijacked, so
+	// http.Error won't work. Close both connections to terminate the tunnel.
 	if connectSess, ok := connectRec.(*SessionState); ok && connectSess != nil {
 		tier := connectSess.Airlock().Tier()
 		if tier == config.AirlockTierHard || tier == config.AirlockTierDrain {
@@ -473,7 +475,8 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			p.logger.LogAirlockDeny(connectSess.key, tier, TransportConnect, http.MethodConnect, clientIP, requestID)
 			p.metrics.RecordAirlockDenial(tier, TransportConnect, http.MethodConnect)
 			p.metrics.RecordTunnelBlocked(agentLabel)
-			http.Error(w, "airlock: CONNECT blocked during quarantine", http.StatusForbidden)
+			// Hijacked connection: close both ends (deferred Close handles clientConn).
+			safeClose(targetConn, "airlock.targetConn", p.logger)
 			return
 		}
 	}
@@ -1030,7 +1033,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	if sc.ResponseScanningEnabled() && fwdRespExempt {
 		p.logger.LogResponseScanExempt(actx, fwdRespHost)
 	}
-	if sc.ResponseScanningEnabled() {
+	if sc.ResponseScanningEnabled() || cfg.BrowserShield.Enabled {
 		// Fail-closed on compressed responses: regex can't match compressed content.
 		if hasNonIdentityEncoding(resp.Header.Get("Content-Encoding")) {
 			p.logger.LogBlocked(actx, "response_scan", "compressed response cannot be scanned")

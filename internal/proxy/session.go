@@ -836,12 +836,15 @@ func (sm *SessionManager) ResetSessionIfResettable(key string) (prev SessionSnap
 func (sm *SessionManager) ForceSetAirlockTier(key, tier string) (found, changed bool, from, to string) {
 	sm.mu.RLock()
 	sess, exists := sm.sessions[key]
-	sm.mu.RUnlock()
 	if !exists {
+		sm.mu.RUnlock()
 		return false, false, "", ""
 	}
-
+	// Hold RLock across the tier change so cleanup/eviction can't remove
+	// the session between lookup and mutation. ForceSetTier acquires its
+	// own mutex internally (lock ordering: sm.mu > airlock.mu).
 	changed, from, to = sess.Airlock().ForceSetTier(tier)
+	sm.mu.RUnlock()
 	return true, changed, from, to
 }
 
@@ -1071,7 +1074,13 @@ func (sm *SessionManager) evictOldest() *SessionState {
 		sess.mu.Lock()
 		la := sess.lastActivity
 		escLevel := sess.escalationLevel
+		airlockTier := sess.airlock.Tier()
 		sess.mu.Unlock()
+
+		// Skip quarantined sessions: evicting them would escape enforcement.
+		if airlockTier != config.AirlockTierNone && airlockTier != "" {
+			continue
+		}
 
 		if oldestKey == "" || la.Before(oldestTime) {
 			oldestKey = key

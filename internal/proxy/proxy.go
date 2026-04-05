@@ -418,6 +418,12 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
 		return
 	}
 
+	// Update receipt emitter hash BEFORE config swap so receipts
+	// always reflect the policy that governed the decision. Without
+	// this ordering, requests racing with reload could get signed
+	// with the previous policy hash.
+	p.receiptEmitter.UpdateConfigHash(cfg.Hash())
+
 	oldCfg := p.cfgPtr.Load()
 	p.cfgPtr.Store(cfg)
 	old := p.scannerPtr.Swap(sc)
@@ -467,10 +473,6 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
 		oldFB.Close()
 	}
 	p.updateCEEStats()
-
-	// Update receipt emitter with new config hash so receipts reflect
-	// the active policy. Nil-safe (no-op when emitter is disabled).
-	p.receiptEmitter.UpdateConfigHash(cfg.Hash())
 }
 
 // LoadCertCache creates or replaces the cert cache based on current config.

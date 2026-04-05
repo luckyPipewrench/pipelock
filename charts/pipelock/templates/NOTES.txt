@@ -5,7 +5,7 @@ Proxy endpoint:
 
 Test the scanner:
   export HTTPS_PROXY=http://127.0.0.1:{{ .Values.service.port }}
-  curl "https://example.com/?key=sk-ant-api03-fake1234567890"
+  pipelock check --url "https://example.com/?secret=test-exfil-attempt"
 
 Health check:
   curl http://127.0.0.1:{{ .Values.service.port }}/health

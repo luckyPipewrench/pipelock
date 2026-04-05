@@ -342,13 +342,19 @@ func TestInitCmd_ForceOverwrite(t *testing.T) {
 func TestInitCmd_UnwritablePath(t *testing.T) {
 	home := t.TempDir()
 
+	// Create a regular file, then try to use it as a directory.
+	blocker := filepath.Join(home, "not-a-dir")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
 	var buf bytes.Buffer
 	cmd := InitCmd()
 	cmd.SetOut(&buf)
 	cmd.SetErr(&buf)
 	cmd.SetArgs([]string{
 		"--scan-home", home,
-		"--output", "/proc/nonexistent/impossible/config.yaml",
+		"--output", filepath.Join(blocker, "config.yaml"),
 		"--skip-canary",
 		"--skip-validate",
 	})

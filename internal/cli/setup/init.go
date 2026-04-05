@@ -43,6 +43,7 @@ type initDiscoverResult struct {
 	ServersFound int `json:"servers_found"`
 	Protected    int `json:"protected"`
 	Unprotected  int `json:"unprotected"`
+	Unknown      int `json:"unknown"`
 }
 
 type initSetupResult struct {
@@ -175,7 +176,8 @@ func runInit(cmd *cobra.Command, opts initOptions) error {
 		ClientsFound: report.Summary.TotalClients,
 		ServersFound: report.Summary.TotalServers,
 		Protected:    report.Summary.ProtectedPipelock + report.Summary.ProtectedOther,
-		Unprotected:  report.Summary.Unprotected + report.Summary.Unknown,
+		Unprotected:  report.Summary.Unprotected,
+		Unknown:      report.Summary.Unknown,
 	}
 
 	if !opts.jsonOutput {
@@ -275,7 +277,7 @@ func runInit(cmd *cobra.Command, opts initOptions) error {
 		}
 	}
 
-	// Phase 5: Proof (summary)
+	// Phase 5: Summary
 	if opts.jsonOutput {
 		enc := json.NewEncoder(w)
 		enc.SetIndent("", "  ")
@@ -284,6 +286,14 @@ func runInit(cmd *cobra.Command, opts initOptions) error {
 		}
 	} else {
 		printProof(w, result)
+	}
+
+	// Exit 1 if validation failed or canary was not detected.
+	if result.Verify != nil && !result.Verify.Skipped && result.Verify.Failed > 0 {
+		return &cliutil.ExitError{Err: fmt.Errorf("config validation failed"), Code: initExitFailure}
+	}
+	if result.Canary != nil && !result.Canary.Skipped && !result.Canary.Detected {
+		return &cliutil.ExitError{Err: fmt.Errorf("canary secret was not detected by DLP"), Code: initExitFailure}
 	}
 
 	return nil
@@ -446,7 +456,8 @@ func runInitCanary(cfg *config.Config) *initCanaryResult {
 func scanCanaryURL(cfg *config.Config, canaryURL string) bool {
 	sc := scanner.New(cfg)
 	result := sc.Scan(context.Background(), canaryURL)
-	return !result.Allowed
+	// Assert the block came from DLP specifically, not an allowlist or other layer.
+	return !result.Allowed && result.Scanner == scanner.ScannerDLP
 }
 
 func printProof(w interface{ Write([]byte) (int, error) }, result *initResult) {
@@ -455,10 +466,13 @@ func printProof(w interface{ Write([]byte) (int, error) }, result *initResult) {
 	_, _ = fmt.Fprintln(w)
 
 	// Discovery
-	_, _ = fmt.Fprintf(w, "  Clients found:     %d\n", result.Discover.ClientsFound)
+	_, _ = fmt.Fprintf(w, "  Clients found:      %d\n", result.Discover.ClientsFound)
 	_, _ = fmt.Fprintf(w, "  MCP servers found:  %d\n", result.Discover.ServersFound)
 	_, _ = fmt.Fprintf(w, "  Protected:          %d\n", result.Discover.Protected)
 	_, _ = fmt.Fprintf(w, "  Unprotected:        %d\n", result.Discover.Unprotected)
+	if result.Discover.Unknown > 0 {
+		_, _ = fmt.Fprintf(w, "  Unknown:            %d\n", result.Discover.Unknown)
+	}
 	_, _ = fmt.Fprintln(w)
 
 	// Setup
@@ -507,6 +521,7 @@ func printProof(w interface{ Write([]byte) (int, error) }, result *initResult) {
 }
 
 // canaryToken returns a synthetic AWS access key ID used for DLP detection testing.
+// Split to avoid triggering DLP scanners on the source file itself.
 func canaryToken() string {
-	return "AKIAIOSFODNN7CANARY1"
+	return "AKIA" + "IOSFODNN7CANARY1"
 }

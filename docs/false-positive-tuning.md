@@ -39,9 +39,9 @@ Add suppressions to your config when you know a finding is safe. Each entry take
 
 ```yaml
 suppress:
-  - rule: "Environment Variable Secret"
+  - rule: "AWS Access ID"
     path: "api.example.com/v2/*"
-    reason: "API uses high-entropy path segments for request IDs"
+    reason: "Internal service uses AKIA-prefixed keys for test accounts"
   - rule: "AWS Access ID"
     path: "internal-testing.example.com/*"
     reason: "Test environment uses canary-format keys"
@@ -53,7 +53,7 @@ For inline suppression in git-scanned files, add a `pipelock:ignore` comment on 
 
 ```python
 # pipelock:ignore -- test fixture, not a real key
-TEST_KEY = "AKIAIOSFODNN7EXAMPLE"
+TEST_KEY = "AKIA..."  # your test key here
 ```
 
 See [docs/guides/suppression.md](guides/suppression.md) for the full suppression reference.

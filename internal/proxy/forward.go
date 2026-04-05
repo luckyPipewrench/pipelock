@@ -344,6 +344,24 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	defer sem.Release()
 
+	// Early airlock check for opaque CONNECT: reject before dialing/hijacking
+	// so the client gets a proper HTTP 403 (not a torn-down connection).
+	// TLS-intercepted tunnels handle airlock per inner request instead.
+	shouldIntercept := cfg.TLSInterception.Enabled && !isPassthrough(host, cfg.TLSInterception.PassthroughDomains)
+	if !shouldIntercept {
+		if connectSess, ok := connectRec.(*SessionState); ok && connectSess != nil {
+			tier := connectSess.Airlock().Tier()
+			if tier == config.AirlockTierHard || tier == config.AirlockTierDrain {
+				connectSess.Airlock().ExtendTimer()
+				p.logger.LogAirlockDeny(connectSess.key, tier, TransportConnect, http.MethodConnect, clientIP, requestID)
+				p.metrics.RecordAirlockDenial(tier, TransportConnect, http.MethodConnect)
+				p.metrics.RecordTunnelBlocked(agentLabel)
+				http.Error(w, "airlock: CONNECT blocked during quarantine", http.StatusForbidden)
+				return
+			}
+		}
+	}
+
 	// Compute absolute deadline once from start. This covers both dial and
 	// relay so the total tunnel lifetime never exceeds max_tunnel_seconds.
 	maxDuration := time.Duration(cfg.ForwardProxy.MaxTunnelSeconds) * time.Second
@@ -460,25 +478,6 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			p.logger.LogError(hostCtx, err)
 		}
 		return
-	}
-
-	// Airlock check for opaque CONNECT tunnels (after TLS interception decision).
-	// Hard/drain tiers block unintercepted tunnels because we can't classify
-	// inner request methods without MITM. Intercepted tunnels handle airlock
-	// per-request inside interceptTunnel.
-	// Note: we've already sent "200 Connection Established" and hijacked, so
-	// http.Error won't work. Close both connections to terminate the tunnel.
-	if connectSess, ok := connectRec.(*SessionState); ok && connectSess != nil {
-		tier := connectSess.Airlock().Tier()
-		if tier == config.AirlockTierHard || tier == config.AirlockTierDrain {
-			connectSess.Airlock().ExtendTimer()
-			p.logger.LogAirlockDeny(connectSess.key, tier, TransportConnect, http.MethodConnect, clientIP, requestID)
-			p.metrics.RecordAirlockDenial(tier, TransportConnect, http.MethodConnect)
-			p.metrics.RecordTunnelBlocked(agentLabel)
-			// Hijacked connection: close both ends (deferred Close handles clientConn).
-			safeClose(targetConn, "airlock.targetConn", p.logger)
-			return
-		}
 	}
 
 	// Flush any buffered data from the HTTP parsing layer
@@ -1049,11 +1048,12 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Browser Shield on forward proxy responses.
+		// Browser Shield on forward proxy responses. Use post-redirect host
+		// so exempt_domains checks match the actual response origin.
 		var shieldBlocked bool
-		respBody, shieldBlocked = p.applyShield(respBody, resp.Header.Get("Content-Type"), r.URL.Hostname(), resp.Header, cfg, actx, clientIP, requestID, TransportForward)
+		respBody, shieldBlocked = p.applyShield(respBody, resp.Header.Get("Content-Type"), fwdRespHost, resp.Header, cfg, actx, clientIP, requestID, TransportForward)
 		if shieldBlocked {
-			p.metrics.RecordBlocked(r.URL.Hostname(), "shield_oversize", time.Since(start), agentLabel)
+			p.metrics.RecordBlocked(fwdRespHost, "shield_oversize", time.Since(start), agentLabel)
 			http.Error(w, "blocked: response body exceeds browser shield size limit", http.StatusForbidden)
 			return
 		}

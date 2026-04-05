@@ -132,10 +132,18 @@ func (a *AirlockState) TryDeescalate(timers *config.AirlockTimers) (changed bool
 		duration = time.Duration(timers.HardMinutes) * time.Minute
 		nextTier = config.AirlockTierSoft
 	case config.AirlockTierDrain:
-		if timers.DrainMinutes <= 0 {
+		if timers.DrainMinutes <= 0 && timers.DrainTimeoutSeconds <= 0 {
 			return false, a.tier, a.tier
 		}
+		// Drain uses the shorter of DrainMinutes and DrainTimeoutSeconds.
+		// DrainTimeoutSeconds is the hard ceiling for in-flight completion.
 		duration = time.Duration(timers.DrainMinutes) * time.Minute
+		if timers.DrainTimeoutSeconds > 0 {
+			drainTimeout := time.Duration(timers.DrainTimeoutSeconds) * time.Second
+			if duration <= 0 || drainTimeout < duration {
+				duration = drainTimeout
+			}
+		}
 		nextTier = config.AirlockTierHard
 	default:
 		return false, a.tier, a.tier
@@ -161,7 +169,9 @@ func (a *AirlockState) ExtendTimer() {
 
 // RegisterCancel adds a cancel function for a long-lived connection.
 // Called when new connections are established so they can be torn down
-// on tier escalation.
+// on tier escalation. Stale entries (from normally-closed connections)
+// are harmless: cancel/close functions are idempotent, and the slice
+// is cleared on ForceSetTier to normal or on session reset.
 func (a *AirlockState) RegisterCancel(cancel context.CancelFunc) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

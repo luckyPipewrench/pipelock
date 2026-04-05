@@ -524,10 +524,9 @@ Environment passthrough (subprocess mode only):
 						InputCfg: inputCfg, ToolCfg: toolCfg, PolicyCfg: policyCfg,
 						KillSwitch: ks, ChainMatcher: chainMatcher,
 						CEE: cee, Store: store, AdaptiveCfgFn: adaptiveFn, Metrics: mcpMetrics,
-						RedirectRT:          buildRedirectRT(cfg),
-						ProvenanceCfg:       &cfg.MCPToolProvenance,
-						DoWCheck:            dowCheck,
-						FrozenToolStableKey: upstreamURL,
+						RedirectRT:    buildRedirectRT(cfg),
+						ProvenanceCfg: &cfg.MCPToolProvenance,
+						DoWCheck:      dowCheck,
 					}); err != nil {
 						if sentryClient != nil {
 							sentryClient.CaptureError(err)
@@ -559,11 +558,10 @@ Environment passthrough (subprocess mode only):
 					KillSwitch: ks, ChainMatcher: chainMatcher,
 					CEE: cee, Store: store,
 					AdaptiveCfg: adaptiveCfg, Metrics: mcpMetrics,
-					RedirectRT:          buildRedirectRT(cfg),
-					DoWCheck:            dowCheck,
-					IntegrityCfg:        &cfg.MCPBinaryIntegrity,
-					ProvenanceCfg:       &cfg.MCPToolProvenance,
-					FrozenToolStableKey: upstreamURL,
+					RedirectRT:    buildRedirectRT(cfg),
+					DoWCheck:      dowCheck,
+					IntegrityCfg:  &cfg.MCPBinaryIntegrity,
+					ProvenanceCfg: &cfg.MCPToolProvenance,
 				}
 				if err := mcp.RunHTTPProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, nil, httpOpts); err != nil {
 					if sentryClient != nil {
@@ -689,9 +687,8 @@ Environment passthrough (subprocess mode only):
 					CEE: cee, Store: store,
 					AdaptiveCfg: adaptiveCfg, Metrics: mcpMetrics,
 					RedirectRT: buildRedirectRT(cfg), DoWCheck: dowCheck,
-					IntegrityCfg:        &cfg.MCPBinaryIntegrity,
-					ProvenanceCfg:       &cfg.MCPToolProvenance,
-					FrozenToolStableKey: "stdio\x00" + strings.Join(serverCmd, "\x00"),
+					IntegrityCfg:  &cfg.MCPBinaryIntegrity,
+					ProvenanceCfg: &cfg.MCPToolProvenance,
 				}
 				if err := mcp.RunProxyWithSandbox(ctx, sandboxCmd, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), proxyOpts, mcpStrict); err != nil {
 					return handleProxyError(err, cmd.ErrOrStderr(), sentryClient)
@@ -794,7 +791,6 @@ Environment passthrough (subprocess mode only):
 				IntegrityCfg:  &cfg.MCPBinaryIntegrity,
 				ProvenanceCfg: &cfg.MCPToolProvenance,
 				Lineage:       lin, OnChildReady: onChildReady,
-				FrozenToolStableKey: "stdio\x00" + strings.Join(serverCmd, "\x00"),
 			}
 			if err := mcp.RunProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), logW, serverCmd, proxyOpts, extraEnv...); err != nil {
 				return handleProxyError(err, logW, sentryClient)

@@ -353,6 +353,9 @@ func (p *Proxy) recordDecision(verdict, layer, pattern, transport, requestID str
 // through the recorder mutex — same cost as recordDecision. Errors are logged
 // but not propagated.
 func (p *Proxy) emitReceipt(opts receipt.EmitOpts) {
+	if p.receiptEmitter == nil {
+		return
+	}
 	if err := p.receiptEmitter.Emit(opts); err != nil {
 		p.logger.LogError(audit.LogContext{RequestID: opts.RequestID}, err)
 	}

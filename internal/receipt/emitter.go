@@ -102,6 +102,18 @@ func (e *Emitter) Emit(opts EmitOpts) error {
 		reversibility = ReversibilityUnknown
 	}
 
+	// Chain integrity: lock covers stamp → sign → hash → persist → advance.
+	// The mutex must span from timestamp through persist so concurrent Emit
+	// calls produce monotonic timestamps in chain order. State is only
+	// advanced after successful write; a failed Record leaves the chain at
+	// the previous position.
+	e.chainMu.Lock()
+	defer e.chainMu.Unlock()
+
+	if e.rootEmitted {
+		return ErrChainSealed
+	}
+
 	ar := ActionRecord{
 		Version:         ActionRecordVersion,
 		ActionID:        opts.ActionID,
@@ -120,17 +132,9 @@ func (e *Emitter) Emit(opts EmitOpts) error {
 		Layer:           opts.Layer,
 		Pattern:         opts.Pattern,
 		RequestID:       opts.RequestID,
+		ChainPrevHash:   e.chainPrevHash,
+		ChainSeq:        e.chainSeq,
 	}
-
-	// Chain integrity: lock covers stamp → sign → hash → persist → advance.
-	// The mutex must span the recorder.Record call so concurrent Emit calls
-	// persist in chain order. State is only advanced after successful write;
-	// a failed Record leaves the chain at the previous position.
-	e.chainMu.Lock()
-	defer e.chainMu.Unlock()
-
-	ar.ChainPrevHash = e.chainPrevHash
-	ar.ChainSeq = e.chainSeq
 
 	rcpt, err := Sign(ar, e.privKey)
 	if err != nil {
@@ -214,6 +218,10 @@ const transcriptRootEntryType = "transcript_root"
 // ErrRootAlreadyEmitted is returned when EmitTranscriptRoot is called more
 // than once. Transcript roots are single-shot to prevent conflicting roots.
 var ErrRootAlreadyEmitted = fmt.Errorf("transcript root already emitted")
+
+// ErrChainSealed is returned when Emit is called after EmitTranscriptRoot.
+// Once a root is emitted, the chain is sealed and no more receipts can be added.
+var ErrChainSealed = fmt.Errorf("chain sealed: transcript root already emitted")
 
 // EmitTranscriptRoot computes and records the transcript root for the current chain.
 // Single-shot: returns ErrRootAlreadyEmitted on subsequent calls. This prevents

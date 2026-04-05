@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -121,7 +122,7 @@ func VerifyChain(receipts []Receipt, expectedKeyHex string) ChainResult {
 // ExtractReceipts reads a flight recorder JSONL file and extracts all
 // action_receipt entries as Receipt structs, in file order.
 func ExtractReceipts(path string) ([]Receipt, error) {
-	entries, err := recorder.ReadEntries(path)
+	entries, err := recorder.ReadEntries(filepath.Clean(path))
 	if err != nil {
 		return nil, fmt.Errorf("reading entries: %w", err)
 	}

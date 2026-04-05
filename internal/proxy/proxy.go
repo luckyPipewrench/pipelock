@@ -473,6 +473,10 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
 		oldFB.Close()
 	}
 	p.updateCEEStats()
+
+	// Update receipt emitter with new config hash so receipts reflect
+	// the active policy. Nil-safe (no-op when emitter is disabled).
+	p.receiptEmitter.UpdateConfigHash(cfg.Hash())
 }
 
 // LoadCertCache creates or replaces the cert cache based on current config.

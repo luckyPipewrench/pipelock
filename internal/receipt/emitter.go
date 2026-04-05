@@ -34,7 +34,9 @@ type Emitter struct {
 	chainMu       sync.Mutex
 	chainSeq      uint64
 	chainPrevHash string
-	rootEmitted   bool // true after EmitTranscriptRoot; prevents duplicate roots
+	chainStart    time.Time // timestamp of first receipt
+	chainEnd      time.Time // timestamp of most recent receipt
+	rootEmitted   bool      // true after EmitTranscriptRoot; prevents duplicate roots
 }
 
 // EmitterConfig holds the configuration for creating an Emitter.
@@ -164,6 +166,10 @@ func (e *Emitter) Emit(opts EmitOpts) error {
 	}
 
 	e.chainPrevHash = receiptHash
+	if e.chainSeq == 0 {
+		e.chainStart = ar.Timestamp
+	}
+	e.chainEnd = ar.Timestamp
 	e.chainSeq++
 	return nil
 }
@@ -248,6 +254,8 @@ func (e *Emitter) EmitTranscriptRoot(sessionID string) error {
 		FinalSeq:     e.chainSeq - 1,
 		RootHash:     e.chainPrevHash,
 		ReceiptCount: e.chainSeq,
+		StartTime:    e.chainStart,
+		EndTime:      e.chainEnd,
 	}
 
 	if err := e.recorder.Record(recorder.Entry{

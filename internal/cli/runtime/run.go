@@ -15,7 +15,6 @@ import (
 	"os"
 	"os/signal"
 	"slices"
-	"strings"
 	"syscall"
 	"time"
 
@@ -642,10 +641,14 @@ Examples:
 					)
 					apiMux.HandleFunc("/api/v1/sessions", sessionAPI.HandleList)
 					apiMux.HandleFunc("/api/v1/sessions/", func(w http.ResponseWriter, r *http.Request) {
-						if strings.HasSuffix(r.URL.EscapedPath(), "/airlock") {
+						path := r.URL.EscapedPath()
+						switch {
+						case killswitch.IsSessionActionPath(path, "airlock"):
 							sessionAPI.HandleAirlock(w, r)
-						} else {
+						case killswitch.IsSessionActionPath(path, "reset"):
 							sessionAPI.HandleReset(w, r)
+						default:
+							http.NotFound(w, r)
 						}
 					})
 				}

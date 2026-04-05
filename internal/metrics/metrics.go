@@ -18,6 +18,10 @@ import (
 
 const maxTopEntries = 100
 
+// airlockTierNone mirrors config.AirlockTierNone to avoid importing the
+// config package. Transitions from/to "none" must not adjust the gauge.
+const airlockTierNone = "none"
+
 // Metrics collects Prometheus counters and histograms for the fetch proxy.
 type Metrics struct {
 	registry *prometheus.Registry
@@ -1055,10 +1059,12 @@ func (m *Metrics) RecordAirlockTransition(from, to, trigger string) {
 		return
 	}
 	m.airlockTransitions.WithLabelValues(from, to, trigger).Inc()
-	if from != "" {
+	// Only adjust the gauge for actual airlock tiers. "none" is the normal
+	// (non-airlocked) state and should never appear in the gauge.
+	if from != "" && from != airlockTierNone {
 		m.airlockSessions.WithLabelValues(from).Dec()
 	}
-	if to != "" {
+	if to != "" && to != airlockTierNone {
 		m.airlockSessions.WithLabelValues(to).Inc()
 	}
 }

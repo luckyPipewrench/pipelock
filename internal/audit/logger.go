@@ -991,6 +991,10 @@ func (l *Logger) LogShieldRewrite(category string, hits int, transport, targetUR
 		optStr("client_ip", clientIP).
 		optStr("request_id", requestID)
 	e.msg("browser shield rewrote content")
+
+	if l.emitter != nil {
+		l.emitter.Emit(context.Background(), string(EventShieldRewrite), e.fields)
+	}
 }
 
 // With returns a sub-logger that includes the given key-value pair in every

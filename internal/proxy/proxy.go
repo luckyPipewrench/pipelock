@@ -1056,11 +1056,12 @@ func (p *Proxy) buildHandler(mux *http.ServeMux) http.Handler {
 func (p *Proxy) sessionAPIRouter(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.EscapedPath()
 	switch {
-	case strings.HasSuffix(path, "/airlock"):
+	case killswitch.IsSessionActionPath(path, "airlock"):
 		p.sessionAPI.HandleAirlock(w, r)
-	default:
-		// Fall through to reset handler (original behavior).
+	case killswitch.IsSessionActionPath(path, "reset"):
 		p.sessionAPI.HandleReset(w, r)
+	default:
+		http.NotFound(w, r)
 	}
 }
 

@@ -78,18 +78,20 @@ Examples:
   pipelock audit capsule --expires 168h`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			// Hash the config file BEFORE loading/scoring so that the hash
-			// and the scored config come from the same file contents (or as
-			// close as possible). A TOCTOU gap still exists between read-for-
-			// hash and read-for-parse, but the window is negligible for CLI use.
-			configHash, err := hashConfigFile(configFile)
-			if err != nil {
-				return fmt.Errorf("hashing config: %w", err)
-			}
-
+			// Load config and compute hash. For file configs, we read the raw
+			// bytes for hashing, then load/parse. The config loader re-reads the
+			// file, so a concurrent modification could cause the hash to diverge
+			// from the scored config. This is acceptable for a CLI tool: the
+			// capsule documents the config's state at generation time, not a
+			// cryptographic proof of exact correspondence. A future LoadFromBytes
+			// API would eliminate the gap entirely.
 			cfg, err := cliutil.LoadConfigOrDefault(configFile)
 			if err != nil {
 				return fmt.Errorf("loading config: %w", err)
+			}
+			configHash, err := hashConfigFile(configFile)
+			if err != nil {
+				return fmt.Errorf("hashing config: %w", err)
 			}
 
 			result := ScoreConfig(cfg, configFile)

@@ -144,8 +144,8 @@ func (c *Controller) IsActiveHTTP(r *http.Request) Decision {
 	if rt.apiExempt && !c.separatePort.Load() &&
 		(path == "/api/v1/killswitch" || path == "/api/v1/killswitch/status" ||
 			path == "/api/v1/sessions" ||
-			isSessionActionPath(path, "reset") ||
-			isSessionActionPath(path, "airlock")) {
+			IsSessionActionPath(path, "reset") ||
+			IsSessionActionPath(path, "airlock")) {
 		return Decision{}
 	}
 
@@ -177,11 +177,11 @@ func (c *Controller) ToggleSignal() bool {
 	}
 }
 
-// isSessionActionPath validates that path matches the exact route structure
+// IsSessionActionPath validates that path matches the exact route structure
 // /api/v1/sessions/{key}/{action} with exactly five segments and a non-empty
 // key that contains no path separators or null bytes. This prevents traversal
 // attacks like /api/v1/sessions/../../etc/passwd/airlock from matching.
-func isSessionActionPath(path, action string) bool {
+func IsSessionActionPath(path, action string) bool {
 	segs := strings.Split(strings.Trim(path, "/"), "/")
 	if len(segs) != 5 {
 		return false

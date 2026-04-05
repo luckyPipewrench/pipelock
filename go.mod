@@ -1,6 +1,6 @@
 module github.com/luckyPipewrench/pipelock
 
-go 1.25.0
+go 1.24.2
 
 require (
 	github.com/CycloneDX/cyclonedx-go v0.10.0

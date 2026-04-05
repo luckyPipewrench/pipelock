@@ -5,6 +5,7 @@ package runtime
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -35,11 +36,13 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/rules"
 	"github.com/luckyPipewrench/pipelock/internal/scanapi"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	plsentry "github.com/luckyPipewrench/pipelock/internal/sentry"
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 // Standard HTTP server timeouts. Used by all internal servers (kill switch API,
@@ -281,6 +284,10 @@ Examples:
 				proxyOpts = append(proxyOpts, proxy.WithCaptureObserver(cw))
 			}
 
+			// Receipt emitter: declared at this scope so both the HTTP
+			// proxy and MCP proxy can share the same emitter instance.
+			var receiptEmitter *receipt.Emitter
+
 			// Flight recorder: create a tamper-evident evidence recorder
 			// when enabled in YAML config. The --capture-output CLI flag
 			// uses a separate code path (capture.Writer above). This path
@@ -305,12 +312,39 @@ Examples:
 					redactFn = sc.ScanTextForDLP
 				}
 
-				rec, recErr := recorder.New(recCfg, redactFn, nil)
+				// Load signing key for checkpoint signing and action receipts.
+				// Optional: if no key path is configured, receipts are disabled.
+				var recPrivKey ed25519.PrivateKey
+				if cfg.FlightRecorder.SigningKeyPath != "" {
+					k, kErr := signing.LoadPrivateKeyFile(cfg.FlightRecorder.SigningKeyPath)
+					if kErr != nil {
+						return fmt.Errorf("loading flight recorder signing key: %w", kErr)
+					}
+					recPrivKey = k
+				}
+
+				rec, recErr := recorder.New(recCfg, redactFn, recPrivKey)
 				if recErr != nil {
 					return fmt.Errorf("creating flight recorder: %w", recErr)
 				}
 				defer func() { _ = rec.Close() }()
 				proxyOpts = append(proxyOpts, proxy.WithRecorder(rec))
+
+				// Action receipt emitter: signs every proxy decision with
+				// Ed25519 and writes to the flight recorder. Requires a
+				// signing key — nil emitter means receipts are disabled.
+				receiptEmitter = receipt.NewEmitter(receipt.EmitterConfig{
+					Recorder:   rec,
+					PrivKey:    recPrivKey,
+					ConfigHash: cfg.Hash(),
+					Principal:  "local",
+					Actor:      "pipelock",
+				})
+				if receiptEmitter != nil {
+					proxyOpts = append(proxyOpts, proxy.WithReceiptEmitter(receiptEmitter))
+					cmd.PrintErrf("  Receipts: enabled (action receipts signed)\n")
+				}
+
 				cmd.PrintErrf("  Recorder: %s (flight recorder enabled)\n", cfg.FlightRecorder.Dir)
 			}
 
@@ -833,9 +867,10 @@ Examples:
 						KillSwitch: ks, ChainMatcher: mcpChainMatcher,
 						AuditLogger: logger, CEE: mcpCEE,
 						Store: mcpStore, AdaptiveCfgFn: mcpAdaptiveFn, Metrics: m,
-						RedirectRT:    buildRedirectRT(cfg),
-						CaptureObs:    mcpCaptureObs,
-						ProvenanceCfg: &cfg.MCPToolProvenance,
+						RedirectRT:     buildRedirectRT(cfg),
+						CaptureObs:     mcpCaptureObs,
+						ProvenanceCfg:  &cfg.MCPToolProvenance,
+						ReceiptEmitter: receiptEmitter,
 					})
 				}()
 			}

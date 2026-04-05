@@ -11,6 +11,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
@@ -69,6 +70,10 @@ type MCPProxyOpts struct {
 	// Transport identifies the MCP transport for capture records.
 	// Set to "mcp_stdio" for stdio proxy or "mcp_http" for HTTP proxy.
 	Transport string
+
+	// ReceiptEmitter emits signed action receipts for MCP decisions.
+	// Nil-safe (no-op when nil).
+	ReceiptEmitter *receipt.Emitter
 
 	// Pre-spawn binary integrity verification (nil-safe).
 	IntegrityCfg *config.MCPBinaryIntegrity

@@ -24,6 +24,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
@@ -712,6 +713,18 @@ func ForwardScannedInput(
 			if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
 				rec.RecordClean(adaptiveCfg.DecayPerCleanRequest)
 			}
+		}
+
+		// Action receipt: emit for every MCP tool call decision.
+		if opts.ReceiptEmitter != nil {
+			_ = opts.ReceiptEmitter.Emit(receipt.EmitOpts{
+				ActionID:  receipt.NewActionID(),
+				Verdict:   effectiveAction,
+				Transport: opts.Transport,
+				Target:    toolCallName,
+				MCPMethod: verdict.Method,
+				ToolName:  toolCallName,
+			})
 		}
 
 		// Capture: record DLP/injection input verdict.

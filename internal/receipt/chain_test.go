@@ -273,7 +273,7 @@ func TestComputeTranscriptRoot_HappyPath(t *testing.T) {
 	_, priv := generateTestKey(t)
 	chain := buildChain(t, priv, 5)
 
-	root, err := ComputeTranscriptRoot(chainTestSession, chain)
+	root, err := ComputeTranscriptRoot(chainTestSession, chain, "")
 	if err != nil {
 		t.Fatalf("ComputeTranscriptRoot: %v", err)
 	}
@@ -301,7 +301,7 @@ func TestComputeTranscriptRoot_HappyPath(t *testing.T) {
 func TestComputeTranscriptRoot_EmptyChain(t *testing.T) {
 	t.Parallel()
 
-	_, err := ComputeTranscriptRoot(chainTestSession, nil)
+	_, err := ComputeTranscriptRoot(chainTestSession, nil, "")
 	if err == nil {
 		t.Fatal("ComputeTranscriptRoot with empty chain should return error")
 	}
@@ -316,7 +316,7 @@ func TestComputeTranscriptRoot_InvalidChain(t *testing.T) {
 	// Tamper to make the chain invalid.
 	chain[1].ActionRecord.Target = "https://evil.com/tampered"
 
-	_, err := ComputeTranscriptRoot(chainTestSession, chain)
+	_, err := ComputeTranscriptRoot(chainTestSession, chain, "")
 	if err == nil {
 		t.Fatal("ComputeTranscriptRoot with invalid chain should return error")
 	}

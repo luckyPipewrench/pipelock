@@ -163,14 +163,7 @@ Examples:
 				return nil
 			}
 
-			// Verify chain first
-			result := receipt.VerifyChain(receipts, expectedKey)
-			if !result.Valid {
-				_, _ = fmt.Fprintf(out, "CHAIN BROKEN: %s\n", result.Error)
-				return fmt.Errorf("chain verification failed")
-			}
-
-			root, err := receipt.ComputeTranscriptRoot("proxy", receipts)
+			root, err := receipt.ComputeTranscriptRoot("proxy", receipts, expectedKey)
 			if err != nil {
 				return fmt.Errorf("computing transcript root: %w", err)
 			}

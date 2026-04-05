@@ -7,6 +7,7 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -16,6 +17,10 @@ import (
 // recorderEntryType is the recorder entry type for action receipts.
 const recorderEntryType = "action_receipt"
 
+// recorderSessionID is the session ID used for all recorder entries from the emitter.
+// The recorder pins to the first session ID it sees, so all entries must use the same value.
+const recorderSessionID = "proxy"
+
 // Emitter produces signed action receipts and writes them to the flight recorder.
 // It is safe for concurrent use — the underlying recorder handles its own locking.
 type Emitter struct {
@@ -24,6 +29,12 @@ type Emitter struct {
 	configHash atomic.Value // stores string; updated on hot reload
 	principal  string
 	actor      string
+
+	// Chain state — mutex-protected, updated on each Emit.
+	chainMu       sync.Mutex
+	chainSeq      uint64
+	chainPrevHash string
+	rootEmitted   bool // true after EmitTranscriptRoot; prevents duplicate roots
 }
 
 // EmitterConfig holds the configuration for creating an Emitter.
@@ -45,10 +56,11 @@ func NewEmitter(cfg EmitterConfig) *Emitter {
 		return nil
 	}
 	e := &Emitter{
-		recorder:  cfg.Recorder,
-		privKey:   cfg.PrivKey,
-		principal: cfg.Principal,
-		actor:     cfg.Actor,
+		recorder:      cfg.Recorder,
+		privKey:       cfg.PrivKey,
+		principal:     cfg.Principal,
+		actor:         cfg.Actor,
+		chainPrevHash: GenesisHash,
 	}
 	e.configHash.Store(cfg.ConfigHash)
 	return e
@@ -110,24 +122,46 @@ func (e *Emitter) Emit(opts EmitOpts) error {
 		RequestID:       opts.RequestID,
 	}
 
-	receipt, err := Sign(ar, e.privKey)
+	// Chain integrity: lock covers stamp → sign → hash → persist → advance.
+	// The mutex must span the recorder.Record call so concurrent Emit calls
+	// persist in chain order. State is only advanced after successful write;
+	// a failed Record leaves the chain at the previous position.
+	e.chainMu.Lock()
+	defer e.chainMu.Unlock()
+
+	ar.ChainPrevHash = e.chainPrevHash
+	ar.ChainSeq = e.chainSeq
+
+	rcpt, err := Sign(ar, e.privKey)
 	if err != nil {
 		return fmt.Errorf("signing receipt: %w", err)
 	}
 
-	receiptJSON, err := Marshal(receipt)
+	receiptHash, err := ReceiptHash(rcpt)
+	if err != nil {
+		return fmt.Errorf("hashing receipt: %w", err)
+	}
+
+	receiptJSON, err := Marshal(rcpt)
 	if err != nil {
 		return fmt.Errorf("marshaling receipt: %w", err)
 	}
 
-	// Write to the flight recorder as a typed entry
-	return e.recorder.Record(recorder.Entry{
-		SessionID: "proxy",
+	// Persist before advancing chain state. On failure, the chain
+	// stays at the current position so the next Emit retries cleanly.
+	if err := e.recorder.Record(recorder.Entry{
+		SessionID: recorderSessionID,
 		Type:      recorderEntryType,
 		Transport: opts.Transport,
 		Summary:   fmt.Sprintf("receipt: %s %s %s", ar.Verdict, ar.ActionType, ar.Target),
 		Detail:    json.RawMessage(receiptJSON),
-	})
+	}); err != nil {
+		return fmt.Errorf("recording receipt: %w", err)
+	}
+
+	e.chainPrevHash = receiptHash
+	e.chainSeq++
+	return nil
 }
 
 // UpdateConfigHash sets the config hash for new receipts. Called on hot reload.
@@ -172,6 +206,53 @@ func sideEffectFromMCPAction(at ActionType) SideEffectClass {
 	default:
 		return SideEffectNone
 	}
+}
+
+// transcriptRootEntryType is the recorder entry type for transcript roots.
+const transcriptRootEntryType = "transcript_root"
+
+// ErrRootAlreadyEmitted is returned when EmitTranscriptRoot is called more
+// than once. Transcript roots are single-shot to prevent conflicting roots.
+var ErrRootAlreadyEmitted = fmt.Errorf("transcript root already emitted")
+
+// EmitTranscriptRoot computes and records the transcript root for the current chain.
+// Single-shot: returns ErrRootAlreadyEmitted on subsequent calls. This prevents
+// an attacker from emitting multiple conflicting roots for the same session.
+// Safe to call on a nil Emitter (no-op).
+func (e *Emitter) EmitTranscriptRoot(sessionID string) error {
+	if e == nil {
+		return nil
+	}
+
+	e.chainMu.Lock()
+	defer e.chainMu.Unlock()
+
+	if e.rootEmitted {
+		return ErrRootAlreadyEmitted
+	}
+
+	if e.chainSeq == 0 {
+		return nil // no receipts emitted
+	}
+
+	root := TranscriptRoot{
+		SessionID:    sessionID,
+		FinalSeq:     e.chainSeq - 1,
+		RootHash:     e.chainPrevHash,
+		ReceiptCount: e.chainSeq,
+	}
+
+	if err := e.recorder.Record(recorder.Entry{
+		SessionID: recorderSessionID,
+		Type:      transcriptRootEntryType,
+		Summary:   fmt.Sprintf("transcript_root: %d receipts, root=%s", root.ReceiptCount, root.RootHash[:16]),
+		Detail:    root,
+	}); err != nil {
+		return fmt.Errorf("recording transcript root: %w", err)
+	}
+
+	e.rootEmitted = true
+	return nil
 }
 
 // configHashString safely extracts a string from an atomic.Value.

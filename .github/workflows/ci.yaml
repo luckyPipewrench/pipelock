@@ -61,6 +61,7 @@ jobs:
             docs/guides/tls-interception.md
             examples/demo-readme.sh
             examples/sample-events.jsonl
+            examples/quickstart/docker-compose.yml
 
   test:
     needs: [security-scan]

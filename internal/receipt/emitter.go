@@ -101,7 +101,7 @@ func (e *Emitter) Emit(opts EmitOpts) error {
 		Target:          opts.Target,
 		SideEffectClass: sideEffect,
 		Reversibility:   reversibility,
-		PolicyHash:      e.configHash.Load().(string),
+		PolicyHash:      configHashString(e.configHash.Load()),
 		Verdict:         NormalizeVerdict(opts.Verdict),
 		Transport:       opts.Transport,
 		Method:          opts.Method,
@@ -172,4 +172,13 @@ func sideEffectFromMCPAction(at ActionType) SideEffectClass {
 	default:
 		return SideEffectNone
 	}
+}
+
+// configHashString safely extracts a string from an atomic.Value.
+// Returns empty string if the value is nil or not a string.
+func configHashString(v any) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
 }

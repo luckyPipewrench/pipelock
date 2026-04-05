@@ -458,6 +458,17 @@ func ForwardScannedInput(
 			if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
 				rec.RecordClean(adaptiveCfg.DecayPerCleanRequest)
 			}
+			// Action receipt: emit for clean MCP tool calls (allowed).
+			if opts.ReceiptEmitter != nil && verdict.Method == methodToolsCall {
+				_ = opts.ReceiptEmitter.Emit(receipt.EmitOpts{
+					ActionID:  receipt.NewActionID(),
+					Verdict:   config.ActionAllow,
+					Transport: opts.Transport,
+					Target:    toolCallName,
+					MCPMethod: verdict.Method,
+					ToolName:  toolCallName,
+				})
+			}
 			continue
 		}
 

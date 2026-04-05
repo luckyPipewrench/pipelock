@@ -21,6 +21,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
@@ -199,6 +200,17 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		}
 		if cfg.EnforceEnabled() {
 			p.logger.LogBlocked(targetCtx, result.Scanner, result.Reason)
+			p.emitReceipt(receipt.EmitOpts{
+				ActionID:  receipt.NewActionID(),
+				Verdict:   config.ActionBlock,
+				Layer:     result.Scanner,
+				Pattern:   result.Reason,
+				Transport: "connect",
+				Method:    http.MethodConnect,
+				Target:    syntheticURL,
+				RequestID: requestID,
+				Agent:     agent,
+			})
 			p.metrics.RecordTunnelBlocked(agentLabel)
 			if cfg.ExplainBlocksEnabled() && result.Hint != "" {
 				w.Header().Set("X-Pipelock-Hint", result.Hint)
@@ -463,6 +475,15 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	p.metrics.RecordTunnel(duration, totalBytes, agentLabel)
 	// Count successful tunnels in request totals so /stats reflects CONNECT traffic.
 	p.metrics.RecordAllowed(duration, agentLabel)
+	p.emitReceipt(receipt.EmitOpts{
+		ActionID:  receipt.NewActionID(),
+		Verdict:   config.ActionAllow,
+		Transport: "connect",
+		Method:    http.MethodConnect,
+		Target:    syntheticURL,
+		RequestID: requestID,
+		Agent:     agent,
+	})
 	p.logger.LogTunnelClose(targetCtx, target, totalBytes, duration)
 
 	// Record data budget for the target domain
@@ -570,6 +591,17 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if cfg.EnforceEnabled() {
 			p.logger.LogBlocked(actx, result.Scanner, result.Reason)
+			p.emitReceipt(receipt.EmitOpts{
+				ActionID:  receipt.NewActionID(),
+				Verdict:   config.ActionBlock,
+				Layer:     result.Scanner,
+				Pattern:   result.Reason,
+				Transport: "forward",
+				Method:    r.Method,
+				Target:    targetURL,
+				RequestID: requestID,
+				Agent:     agent,
+			})
 			p.metrics.RecordBlocked(r.URL.Hostname(), result.Scanner, time.Since(start), agentLabel)
 			if cfg.ExplainBlocksEnabled() && result.Hint != "" {
 				w.Header().Set("X-Pipelock-Hint", result.Hint)
@@ -924,6 +956,15 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		} else {
 			duration := time.Since(start)
 			p.metrics.RecordAllowed(duration, agentLabel)
+			p.emitReceipt(receipt.EmitOpts{
+				ActionID:  receipt.NewActionID(),
+				Verdict:   config.ActionAllow,
+				Transport: "forward",
+				Method:    r.Method,
+				Target:    targetURL,
+				RequestID: requestID,
+				Agent:     agent,
+			})
 			p.logger.LogForwardHTTP(actx, resp.StatusCode, 0, duration)
 			if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
 				forwardRec.RecordClean(cfg.AdaptiveEnforcement.DecayPerCleanRequest)
@@ -1127,6 +1168,15 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 		duration := time.Since(start)
 		p.metrics.RecordAllowed(duration, agentLabel)
+		p.emitReceipt(receipt.EmitOpts{
+			ActionID:  receipt.NewActionID(),
+			Verdict:   config.ActionAllow,
+			Transport: "forward",
+			Method:    r.Method,
+			Target:    targetURL,
+			RequestID: requestID,
+			Agent:     agent,
+		})
 		p.logger.LogForwardHTTP(actx, resp.StatusCode, int(written), duration)
 		if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
 			forwardRec.RecordClean(cfg.AdaptiveEnforcement.DecayPerCleanRequest)
@@ -1154,6 +1204,15 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 	duration := time.Since(start)
 	p.metrics.RecordAllowed(duration, agentLabel)
+	p.emitReceipt(receipt.EmitOpts{
+		ActionID:  receipt.NewActionID(),
+		Verdict:   config.ActionAllow,
+		Transport: "forward",
+		Method:    r.Method,
+		Target:    targetURL,
+		RequestID: requestID,
+		Agent:     agent,
+	})
 	p.logger.LogForwardHTTP(actx, resp.StatusCode, int(written), duration)
 	if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
 		forwardRec.RecordClean(cfg.AdaptiveEnforcement.DecayPerCleanRequest)

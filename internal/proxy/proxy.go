@@ -36,6 +36,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
@@ -144,6 +145,7 @@ type Proxy struct {
 	a2aCardBaseline   *mcp.CardBaseline // Agent Card drift detection across requests
 	captureObs        capture.CaptureObserver
 	recorder          *recorder.Recorder // flight recorder for tamper-evident evidence (nil = disabled)
+	receiptEmitter    *receipt.Emitter   // action receipt emitter (nil = disabled)
 }
 
 // Option configures optional Proxy behavior.
@@ -176,6 +178,13 @@ func WithCaptureObserver(obs capture.CaptureObserver) Option {
 // evidence log. Pass nil to disable (default).
 func WithRecorder(rec *recorder.Recorder) Option {
 	return func(p *Proxy) { p.recorder = rec }
+}
+
+// WithReceiptEmitter sets the action receipt emitter. When non-nil, the proxy
+// emits signed action receipts for every enforcement decision to the flight
+// recorder. Pass nil to disable (default).
+func WithReceiptEmitter(e *receipt.Emitter) Option {
+	return func(p *Proxy) { p.receiptEmitter = e }
 }
 
 // FetchResponse is the JSON response returned by the /fetch endpoint.
@@ -339,6 +348,19 @@ func (p *Proxy) recordDecision(verdict, layer, pattern, transport, requestID str
 	})
 }
 
+// emitReceipt creates and records a signed action receipt for a proxy decision.
+// Safe to call when the emitter is nil (no-op). The call is synchronous
+// through the recorder mutex — same cost as recordDecision. Errors are logged
+// but not propagated.
+func (p *Proxy) emitReceipt(opts receipt.EmitOpts) {
+	if p.receiptEmitter == nil {
+		return
+	}
+	if err := p.receiptEmitter.Emit(opts); err != nil {
+		p.logger.LogError(audit.LogContext{RequestID: opts.RequestID}, err)
+	}
+}
+
 // CurrentConfig returns the currently active config. Used for reload comparison.
 func (p *Proxy) CurrentConfig() *config.Config {
 	return p.cfgPtr.Load()
@@ -395,6 +417,12 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
 		sc.Close() // caller-allocated scanner must be closed since we're not using it
 		return
 	}
+
+	// Update receipt emitter hash BEFORE config swap so receipts
+	// always reflect the policy that governed the decision. Without
+	// this ordering, requests racing with reload could get signed
+	// with the previous policy hash.
+	p.receiptEmitter.UpdateConfigHash(cfg.Hash())
 
 	oldCfg := p.cfgPtr.Load()
 	p.cfgPtr.Store(cfg)
@@ -1069,6 +1097,17 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		if cfg.EnforceEnabled() {
 			log.LogBlocked(actx, result.Scanner, result.Reason)
 			p.recordDecision(config.ActionBlock, result.Scanner, result.Reason, "fetch", requestID)
+			p.emitReceipt(receipt.EmitOpts{
+				ActionID:  receipt.NewActionID(),
+				Verdict:   config.ActionBlock,
+				Layer:     result.Scanner,
+				Pattern:   result.Reason,
+				Transport: "fetch",
+				Method:    http.MethodGet,
+				Target:    displayURL,
+				RequestID: requestID,
+				Agent:     agent,
+			})
 			p.metrics.RecordBlocked(parsed.Hostname(), result.Scanner, time.Since(start), agentLabel)
 			status := http.StatusForbidden
 			if result.Scanner == scanner.ScannerRateLimit {
@@ -1507,6 +1546,15 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 	duration := time.Since(start)
 	p.metrics.RecordAllowed(duration, agentLabel)
+	p.emitReceipt(receipt.EmitOpts{
+		ActionID:  receipt.NewActionID(),
+		Verdict:   config.ActionAllow,
+		Transport: "fetch",
+		Method:    http.MethodGet,
+		Target:    displayURL,
+		RequestID: requestID,
+		Agent:     agent,
+	})
 	log.LogAllowed(actx, resp.StatusCode, len(body), duration)
 
 	writeJSON(w, http.StatusOK, FetchResponse{

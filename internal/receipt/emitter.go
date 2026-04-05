@@ -153,8 +153,19 @@ func (e *Emitter) Emit(opts EmitOpts) error {
 		return fmt.Errorf("marshaling receipt: %w", err)
 	}
 
-	// Persist before advancing chain state. On failure, the chain
-	// stays at the current position so the next Emit retries cleanly.
+	// Advance chain state BEFORE persist. Record may write the entry
+	// and then fail on checkpoint/rotation. If we left chain state
+	// unchanged, the next Emit would reuse the same prev_hash/seq,
+	// forking the chain. Advancing first means a failed Record
+	// leaves a gap (missing entry) rather than a fork (duplicate link),
+	// which is fail-closed: verify-chain detects gaps but not forks.
+	e.chainPrevHash = receiptHash
+	if e.chainSeq == 0 {
+		e.chainStart = ar.Timestamp
+	}
+	e.chainEnd = ar.Timestamp
+	e.chainSeq++
+
 	if err := e.recorder.Record(recorder.Entry{
 		SessionID: recorderSessionID,
 		Type:      recorderEntryType,
@@ -165,12 +176,6 @@ func (e *Emitter) Emit(opts EmitOpts) error {
 		return fmt.Errorf("recording receipt: %w", err)
 	}
 
-	e.chainPrevHash = receiptHash
-	if e.chainSeq == 0 {
-		e.chainStart = ar.Timestamp
-	}
-	e.chainEnd = ar.Timestamp
-	e.chainSeq++
 	return nil
 }
 

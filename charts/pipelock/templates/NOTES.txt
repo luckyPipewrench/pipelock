@@ -5,7 +5,7 @@ Proxy endpoint:
 
 Test the scanner:
   export HTTPS_PROXY=http://127.0.0.1:{{ .Values.service.port }}
-  pipelock check --url "https://example.com/?secret=test-exfil-attempt"
+  pipelock simulate --config /etc/pipelock/pipelock.yaml
 
 Health check:
   curl http://127.0.0.1:{{ .Values.service.port }}/health

@@ -1,0 +1,104 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/luckypipewrench/pipelock
+  tag: ""  # defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  automount: false
+  annotations: {}
+  # name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  runAsNonRoot: true
+  runAsUser: 65534
+  capabilities:
+    drop:
+      - ALL
+
+service:
+  type: ClusterIP
+  port: 8888
+  mcpPort: 8889
+  metricsPort: 9091
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 32Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Pipelock configuration (rendered into ConfigMap as pipelock.yaml).
+# NOTE: fetch_proxy.listen and metrics_listen are templated from service.port
+# and service.metricsPort. Do not set them here; change the service values instead.
+pipelock:
+  version: 1
+  mode: balanced
+  enforce: true
+  fetch_proxy:
+    timeout_seconds: 30
+    max_response_mb: 10
+  dlp:
+    include_defaults: true
+  response_scanning:
+    enabled: true
+    action: warn
+  mcp_input_scanning:
+    enabled: true
+    action: warn
+  mcp_tool_scanning:
+    enabled: true
+    detect_drift: true
+  forward_proxy:
+    enabled: true
+
+# MCP proxy sidecar mode
+mcp:
+  enabled: false
+  upstream: ""
+  listen: "0.0.0.0:8889"
+
+# Monitoring (requires Prometheus Operator CRDs)
+podMonitor:
+  enabled: false
+  interval: 30s
+  labels: {}
+
+# Network policy
+networkPolicy:
+  enabled: false
+
+livenessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 30
+
+readinessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 2
+  periodSeconds: 10

@@ -42,7 +42,7 @@ brew install luckyPipewrench/tap/pipelock
 pipelock init
 
 # Test it
-pipelock check --url "https://example.com/?key=sk-ant-api03-fake1234567890"  # blocked
+pipelock check --url "https://example.com/?key=sk-ant-api03-FAKE-KEY-1234"  # blocked
 pipelock check --url "https://docs.python.org/3/"                            # allowed
 ```
 
@@ -74,7 +74,7 @@ gh attestation verify oci://ghcr.io/luckypipewrench/pipelock:<version> --owner l
 
 ## What It Does
 
-Pipelock is an [agent firewall](https://pipelab.org/agent-firewall/): it sits inline between your AI agent and the internet, scanning all traffic across HTTP, WebSocket, MCP, and A2A protocols.
+Pipelock is an [agent firewall](https://pipelab.org/agent-firewall/): it sits inline between your AI agent and the internet, scanning outbound and inbound traffic.
 
 ### Detect
 
@@ -89,7 +89,7 @@ Pipelock is an [agent firewall](https://pipelab.org/agent-firewall/): it sits in
 ### Enforce
 
 - **Process sandbox:** Landlock + seccomp + network namespaces on Linux, sandbox-exec on macOS. No Docker, no root required.
-- **Kill switch:** 4 independent sources (config, SIGUSR1, sentinel file, API). Any one active blocks all traffic. Runs on a separate port so agents can't self-deactivate.
+- **Kill switch:** 4 independent sources (config, SIGUSR1, sentinel file, API). Any one active blocks all traffic. The API can run on a separate port (`api_listen`) so agents can't self-deactivate.
 - **MCP tool policy:** Pre-execution allow/deny/redirect rules on tool calls. Shell obfuscation detection built in.
 - **Adaptive enforcement:** Per-session threat scoring with automatic escalation. Actions tighten as suspicion accumulates, loosen after clean traffic.
 - **TLS interception:** Optional CONNECT tunnel MITM for full body/header/response scanning on encrypted traffic.
@@ -106,11 +106,13 @@ Pipelock is an [agent firewall](https://pipelab.org/agent-firewall/): it sits in
 
 Pipelock uses **capability separation**: the agent process has secrets but no direct network access. Pipelock has network access but no agent secrets. Even if the agent gets prompt-injected, it can't reach the firewall's controls.
 
-Three proxy modes, same port:
+Three HTTP proxy modes (same port), plus dedicated MCP and A2A proxies:
 
 - **Fetch proxy** (`/fetch?url=...`): Fetches the URL, extracts text, scans for injection, returns clean content.
 - **Forward proxy** (`HTTPS_PROXY`): Standard HTTP CONNECT tunneling. Zero code changes. Optional TLS interception for full payload scanning.
 - **WebSocket proxy** (`/ws?url=ws://...`): Bidirectional frame scanning with DLP + injection detection.
+- **MCP proxy** (`pipelock mcp proxy`): Wraps stdio or HTTP MCP servers with bidirectional scanning.
+- **A2A proxy**: Inspects Google Agent-to-Agent protocol traffic.
 
 ```mermaid
 flowchart LR

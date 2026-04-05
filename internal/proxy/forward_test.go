@@ -1342,7 +1342,7 @@ func TestConnectSessionBlocked(t *testing.T) {
 		cfg.SessionProfiling.Enabled = true
 		cfg.SessionProfiling.DomainBurst = 2
 		cfg.SessionProfiling.WindowMinutes = 5
-		cfg.SessionProfiling.AnomalyAction = "block"
+		cfg.SessionProfiling.AnomalyAction = config.ActionBlock
 		cfg.SessionProfiling.MaxSessions = 100
 		cfg.SessionProfiling.SessionTTLMinutes = 30
 		cfg.SessionProfiling.CleanupIntervalSeconds = 60
@@ -1410,7 +1410,7 @@ func TestForwardHTTPSessionBlocked(t *testing.T) {
 		cfg.SessionProfiling.Enabled = true
 		cfg.SessionProfiling.DomainBurst = 2
 		cfg.SessionProfiling.WindowMinutes = 5
-		cfg.SessionProfiling.AnomalyAction = "block"
+		cfg.SessionProfiling.AnomalyAction = config.ActionBlock
 		cfg.SessionProfiling.MaxSessions = 100
 		cfg.SessionProfiling.SessionTTLMinutes = 30
 		cfg.SessionProfiling.CleanupIntervalSeconds = 60

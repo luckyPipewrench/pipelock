@@ -3077,14 +3077,23 @@ func (c *Config) validateAirlock() error {
 		AirlockTierHard: 2, AirlockTierDrain: 3,
 	}
 
+	// Normalize empty tier strings to AirlockTierNone so runtime code never
+	// sees an empty string (which could bypass tier-based conditionals).
+	if c.Airlock.Triggers.OnElevated == "" {
+		c.Airlock.Triggers.OnElevated = AirlockTierNone
+	}
+	if c.Airlock.Triggers.OnHigh == "" {
+		c.Airlock.Triggers.OnHigh = AirlockTierNone
+	}
+	if c.Airlock.Triggers.OnCritical == "" {
+		c.Airlock.Triggers.OnCritical = AirlockTierNone
+	}
+
 	for _, pair := range []struct{ name, val string }{
 		{"on_elevated", c.Airlock.Triggers.OnElevated},
 		{"on_high", c.Airlock.Triggers.OnHigh},
 		{"on_critical", c.Airlock.Triggers.OnCritical},
 	} {
-		if pair.val == "" {
-			pair.val = AirlockTierNone
-		}
 		if !validTiers[pair.val] {
 			return fmt.Errorf("invalid airlock.triggers.%s %q: must be none, soft, hard, or drain", pair.name, pair.val)
 		}
@@ -3120,6 +3129,9 @@ func (c *Config) validateAirlock() error {
 
 	if c.Airlock.Triggers.AnomalyCount < 0 {
 		return fmt.Errorf("airlock.triggers.anomaly_count must be non-negative")
+	}
+	if c.Airlock.Triggers.AnomalyWindowMinutes < 0 {
+		return fmt.Errorf("airlock.triggers.anomaly_window_minutes must be non-negative")
 	}
 
 	return nil

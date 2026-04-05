@@ -877,11 +877,12 @@ Examples:
 						KillSwitch: ks, ChainMatcher: mcpChainMatcher,
 						AuditLogger: logger, CEE: mcpCEE,
 						Store: mcpStore, AdaptiveCfgFn: mcpAdaptiveFn, Metrics: m,
-						RedirectRT:     buildRedirectRT(cfg),
-						CaptureObs:     mcpCaptureObs,
-						ProvenanceCfg:  &cfg.MCPToolProvenance,
-						ReceiptEmitter: receiptEmitter,
-						ToolFreezer:    p.FrozenTools(),
+						RedirectRT:          buildRedirectRT(cfg),
+						CaptureObs:          mcpCaptureObs,
+						ProvenanceCfg:       &cfg.MCPToolProvenance,
+						ReceiptEmitter:      receiptEmitter,
+						ToolFreezer:         p.FrozenTools(),
+						FrozenToolStableKey: mcpUpstream,
 					})
 				}()
 			}

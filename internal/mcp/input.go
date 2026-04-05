@@ -347,8 +347,10 @@ func ForwardScannedInput(
 		// Frozen tool enforcement: when a session is in airlock hard tier,
 		// only tools in the frozen snapshot are permitted. This prevents
 		// tool injection after quarantine begins.
-		if opts.ToolFreezer != nil && toolCallName != "" && opts.FrozenToolStableKey != "" {
-			if opts.ToolFreezer.IsFrozen(opts.FrozenToolStableKey) && !opts.ToolFreezer.IsToolAllowed(opts.FrozenToolStableKey, toolCallName) {
+		if opts.ToolFreezer != nil && opts.FrozenToolStableKey != "" &&
+			opts.ToolFreezer.IsFrozen(opts.FrozenToolStableKey) {
+			// Fail-closed: block when tool name is empty (unparseable) or not in frozen set.
+			if toolCallName == "" || !opts.ToolFreezer.IsToolAllowed(opts.FrozenToolStableKey, toolCallName) {
 				frozenMsg := fmt.Sprintf("pipelock: input line %d: tools/call %q blocked by frozen tool inventory", lineNum, toolCallName)
 				_, _ = fmt.Fprintln(logW, frozenMsg)
 				if auditLogger != nil {

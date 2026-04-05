@@ -333,9 +333,21 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		wsRec = sm.GetOrCreate(sessionKey)
 	}
 
-	// Register airlock cancel for WebSocket connections. When the session
-	// escalates to hard/drain, closing both ends terminates the relay.
+	// Airlock admission check: deny new WebSocket connections to sessions
+	// already in hard/drain tier. Existing connections are torn down via
+	// RegisterCancel; this blocks new ones from being established.
 	if wsSess, ok := wsRec.(*SessionState); ok && wsSess != nil {
+		tier := wsSess.Airlock().Tier()
+		if tier == config.AirlockTierHard || tier == config.AirlockTierDrain {
+			wsSess.Airlock().ExtendTimer()
+			log.LogAirlockDeny(wsSess.key, tier, TransportWS, http.MethodGet, clientIP, requestID)
+			p.metrics.RecordAirlockDenial(tier, TransportWS, http.MethodGet)
+			p.metrics.RecordWSBlocked()
+			plwsutil.WriteCloseFrame(clientConn, ws.StatusPolicyViolation, "airlock: WebSocket blocked during quarantine")
+			return
+		}
+		// Register airlock cancel for WebSocket connections. When the session
+		// escalates to hard/drain, closing both ends terminates the relay.
 		wsSess.Airlock().RegisterCancel(func() {
 			safeClose(clientConn, "airlock.ws.clientConn", log)
 			safeClose(upstreamConn, "airlock.ws.upstreamConn", log)

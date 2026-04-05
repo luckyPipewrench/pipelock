@@ -22,8 +22,12 @@ const extensionFuncPattern = `(?i)\b(?:fetchExtensions|scanDOMForPrefix|fireExte
 
 // Tracking pixel / beacon patterns.
 
-// trackingPixelPattern matches 1x1 image tags (width/height in either order).
-const trackingPixelPattern = `(?i)<img[^>]+(?:width\s*=\s*["']?1["']?\s+height\s*=\s*["']?1["']?|height\s*=\s*["']?1["']?\s+width\s*=\s*["']?1["']?)[^>]*>`
+// trackingPixelPattern matches 1x1 image tags where width=1 and height=1
+// appear anywhere in the tag (not necessarily adjacent, other attributes
+// like src may appear between them).
+const trackingPixelPattern = `(?i)<img[^>]+\bwidth\s*=\s*["']?1["']?[^>]+\bheight\s*=\s*["']?1["']?[^>]*>` +
+	`|` +
+	`(?i)<img[^>]+\bheight\s*=\s*["']?1["']?[^>]+\bwidth\s*=\s*["']?1["']?[^>]*>`
 
 // sendBeaconPattern matches navigator.sendBeacon() calls.
 const sendBeaconPattern = `(?i)navigator\.sendBeacon\s*\(`
@@ -35,7 +39,7 @@ const prefetchPattern = `(?i)<link[^>]+rel\s*=\s*["']?prefetch["']?[^>]*>`
 
 // commentTrapPattern matches HTML comments containing instruction-like keywords
 // that could be prompt injections hidden from rendering.
-const commentTrapPattern = `<!--[\s\S]*?(?:ignore|disregard|forget|override|instead|instruction)[\s\S]*?-->`
+const commentTrapPattern = `(?i)<!--[\s\S]*?(?:ignore|disregard|forget|override|instead|instruction)[\s\S]*?-->`
 
 // hiddenElementPattern matches elements hidden via CSS that could contain
 // injected instructions invisible to the user but visible to an AI agent

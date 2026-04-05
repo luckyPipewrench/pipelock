@@ -876,8 +876,10 @@ func (p *Proxy) applyShield(body []byte, contentType, hostname string, respHeade
 		p.metrics.RecordShieldSkipped("oversize")
 		switch cfg.BrowserShield.OversizeAction {
 		case config.ShieldOversizeScanHead:
-			body = p.runShieldPipeline(body[:cfg.BrowserShield.MaxShieldBytes], contentType, respHeaders, cfg, actx, clientIP, requestID, transport)
-			return body, false
+			// Rewrite only the head; append the unshielded tail so the full
+			// response body is returned intact.
+			head := p.runShieldPipeline(body[:cfg.BrowserShield.MaxShieldBytes], contentType, respHeaders, cfg, actx, clientIP, requestID, transport)
+			return append(head, body[cfg.BrowserShield.MaxShieldBytes:]...), false
 		case config.ShieldOversizeWarn:
 			p.logger.LogAnomaly(actx, "shield_oversize", fmt.Sprintf("response body %d bytes exceeds max_shield_bytes %d", len(body), cfg.BrowserShield.MaxShieldBytes), 0)
 			return body, false
@@ -1653,7 +1655,10 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 	// Browser Shield: strip fingerprinting, extension probing, and agent traps
 	// before the content reaches readability extraction and response scanning.
-	body, shieldBlocked := p.applyShield(body, contentType, parsed.Hostname(), resp.Header, cfg, actx, clientIP, requestID, TransportFetch)
+	// Use the final response origin (after redirects), not the original request
+	// URL. An exempt origin that 302s to a non-exempt host must still be shielded.
+	shieldHost := resp.Request.URL.Hostname()
+	body, shieldBlocked := p.applyShield(body, contentType, shieldHost, resp.Header, cfg, actx, clientIP, requestID, TransportFetch)
 	if shieldBlocked {
 		p.metrics.RecordBlocked(parsed.Hostname(), "shield_oversize", time.Since(start), agentLabel)
 		writeJSON(w, http.StatusForbidden, FetchResponse{

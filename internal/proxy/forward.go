@@ -148,20 +148,6 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		connectRec = sm.GetOrCreate(connectSessionKey)
 	}
 
-	// Airlock check for opaque CONNECT tunnels. Hard/drain tiers block
-	// unintercepted tunnels (fail-closed: can't classify inner requests).
-	if connectSess, ok := connectRec.(*SessionState); ok && connectSess != nil {
-		tier := connectSess.Airlock().Tier()
-		if tier == config.AirlockTierHard || tier == config.AirlockTierDrain {
-			connectSess.Airlock().ExtendTimer()
-			p.logger.LogAirlockDeny(connectSess.key, tier, TransportConnect, http.MethodConnect, clientIP, requestID)
-			p.metrics.RecordAirlockDenial(tier, TransportConnect, http.MethodConnect)
-			p.metrics.RecordTunnelBlocked(agentLabel)
-			http.Error(w, "airlock: CONNECT blocked during quarantine", http.StatusForbidden)
-			return
-		}
-	}
-
 	// Scan CONNECT request headers for DLP patterns. The CONNECT handshake
 	// can carry Proxy-Authorization, Authorization, or custom headers that
 	// may contain secrets. Tunneled HTTP headers are only visible with TLS
@@ -474,6 +460,22 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			p.logger.LogError(hostCtx, err)
 		}
 		return
+	}
+
+	// Airlock check for opaque CONNECT tunnels (after TLS interception decision).
+	// Hard/drain tiers block unintercepted tunnels because we can't classify
+	// inner request methods without MITM. Intercepted tunnels handle airlock
+	// per-request inside interceptTunnel.
+	if connectSess, ok := connectRec.(*SessionState); ok && connectSess != nil {
+		tier := connectSess.Airlock().Tier()
+		if tier == config.AirlockTierHard || tier == config.AirlockTierDrain {
+			connectSess.Airlock().ExtendTimer()
+			p.logger.LogAirlockDeny(connectSess.key, tier, TransportConnect, http.MethodConnect, clientIP, requestID)
+			p.metrics.RecordAirlockDenial(tier, TransportConnect, http.MethodConnect)
+			p.metrics.RecordTunnelBlocked(agentLabel)
+			http.Error(w, "airlock: CONNECT blocked during quarantine", http.StatusForbidden)
+			return
+		}
 	}
 
 	// Flush any buffered data from the HTTP parsing layer

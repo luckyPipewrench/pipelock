@@ -362,6 +362,12 @@ func (a *AirlockState) ForceSetTier(newTier string) (changed bool, from, to stri
 	a.tier = newTier
 	a.enteredAt = time.Now()
 
+	// Tear down connections on hard/drain, matching SetTier behavior.
+	// ForceSetTier is used by the admin API; operators expect immediate effect.
+	if newTier == config.AirlockTierHard || newTier == config.AirlockTierDrain {
+		a.callCancelFuncsLocked()
+	}
+
 	// Clear cancel funcs when releasing to normal so stale connection
 	// teardown callbacks don't fire on future escalations.
 	if newTier == config.AirlockTierNone {

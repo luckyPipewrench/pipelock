@@ -829,6 +829,22 @@ func (sm *SessionManager) ResetSessionIfResettable(key string) (prev SessionSnap
 	return prev, true, nil
 }
 
+// ForceSetAirlockTier atomically looks up a session by key and sets the
+// airlock tier under sm.mu.RLock. This eliminates the TOCTOU race where a
+// session could be evicted between a separate lookup and ForceSetTier call.
+// Returns (found, changed, from, to).
+func (sm *SessionManager) ForceSetAirlockTier(key, tier string) (found, changed bool, from, to string) {
+	sm.mu.RLock()
+	sess, exists := sm.sessions[key]
+	sm.mu.RUnlock()
+	if !exists {
+		return false, false, "", ""
+	}
+
+	changed, from, to = sess.Airlock().ForceSetTier(tier)
+	return true, changed, from, to
+}
+
 // cleanupLoop runs periodic cleanup of expired sessions.
 // Uses a timer (not ticker) so that cleanup_interval_seconds changes
 // from UpdateConfig take effect on the next iteration.

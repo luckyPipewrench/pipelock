@@ -319,20 +319,15 @@ func (h *SessionAPIHandler) HandleAirlock(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	sm.mu.RLock()
-	sess, exists := sm.sessions[key]
-	sm.mu.RUnlock()
-
-	if !exists {
+	// Use ForceSetAirlockTier for atomic lookup+mutation under one lock,
+	// eliminating the TOCTOU race where a session could be evicted between
+	// lookup and ForceSetTier.
+	found, changed, from, to := sm.ForceSetAirlockTier(key, tier)
+	if !found {
 		h.logSessionAdmin("airlock_not_found", clientIP, key, "session not found", http.StatusNotFound)
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
-
-	// Use ForceSetTier instead of SetTier so operators can de-escalate
-	// and release sessions (downward transitions). SetTier only allows
-	// upward transitions as a safety measure for automated escalation.
-	changed, from, to := sess.Airlock().ForceSetTier(tier)
 
 	h.logSessionAdmin("airlock_ok", clientIP, key, from+"->"+to, http.StatusOK)
 

@@ -78,17 +78,21 @@ Examples:
   pipelock audit capsule --expires 168h`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			// Hash the config file BEFORE loading/scoring so that the hash
+			// and the scored config come from the same file contents (or as
+			// close as possible). A TOCTOU gap still exists between read-for-
+			// hash and read-for-parse, but the window is negligible for CLI use.
+			configHash, err := hashConfigFile(configFile)
+			if err != nil {
+				return fmt.Errorf("hashing config: %w", err)
+			}
+
 			cfg, err := cliutil.LoadConfigOrDefault(configFile)
 			if err != nil {
 				return fmt.Errorf("loading config: %w", err)
 			}
 
 			result := ScoreConfig(cfg, configFile)
-
-			configHash, err := hashConfigFile(configFile)
-			if err != nil {
-				return fmt.Errorf("hashing config: %w", err)
-			}
 
 			now := time.Now().UTC()
 			capsule := &PostureCapsule{
@@ -110,6 +114,9 @@ Examples:
 			}
 
 			wantFormats := parseFormats(formats)
+			if len(wantFormats) == 0 {
+				return fmt.Errorf("--format must specify at least one of: json, md, svg")
+			}
 
 			if err := os.MkdirAll(outputDir, 0o750); err != nil {
 				return fmt.Errorf("creating output directory: %w", err)

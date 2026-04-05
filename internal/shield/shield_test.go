@@ -1,6 +1,7 @@
 package shield
 
 import (
+	"net/http"
 	"strings"
 	"testing"
 
@@ -817,5 +818,31 @@ func TestPipelineTypeValues(t *testing.T) {
 	}
 	if PipelineSVG != 3 {
 		t.Error("PipelineSVG should be 3")
+	}
+}
+
+func TestExtractCSPNonce(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		headers http.Header
+		want    string
+	}{
+		{"no CSP header", http.Header{}, ""},
+		{"CSP with nonce", http.Header{"Content-Security-Policy": {"script-src 'nonce-abc123' 'strict-dynamic'"}}, "abc123"},
+		{"CSP without nonce", http.Header{"Content-Security-Policy": {"script-src 'self'"}}, ""},
+		{"nonce in script-src directive", http.Header{"Content-Security-Policy": {"default-src 'self'; script-src 'nonce-xyz789'"}}, "xyz789"},
+		{"base64 nonce with padding", http.Header{"Content-Security-Policy": {"script-src 'nonce-dGVzdA=='"}}, "dGVzdA=="},
+		{"base64 nonce with plus and slash", http.Header{"Content-Security-Policy": {"script-src 'nonce-a+b/c='"}}, "a+b/c="},
+		{"empty CSP value", http.Header{"Content-Security-Policy": {""}}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := ExtractCSPNonce(tt.headers)
+			if got != tt.want {
+				t.Errorf("ExtractCSPNonce() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }

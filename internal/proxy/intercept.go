@@ -1040,12 +1040,21 @@ func newInterceptHandler(
 
 		// Browser Shield on intercepted response body.
 		if ic.Proxy != nil {
+			originalLen := len(respBody)
 			var shieldBlocked bool
 			respBody, shieldBlocked = ic.Proxy.applyShield(respBody, resp.Header.Get("Content-Type"), ic.TargetHost, resp.Header, ic.Config, actx, ic.ClientIP, ic.RequestID, TransportConnect)
 			if shieldBlocked {
 				ic.Metrics.RecordTLSResponseBlocked("shield_oversize")
 				http.Error(w, "blocked: response body exceeds browser shield size limit", http.StatusForbidden)
 				return
+			}
+			// If shield modified the body, update Content-Length to prevent
+			// browser/client mismatch. Remove ETag and Digest since the
+			// body is no longer the original.
+			if len(respBody) != originalLen {
+				resp.Header.Set("Content-Length", strconv.Itoa(len(respBody)))
+				resp.Header.Del("ETag")
+				resp.Header.Del("Digest")
 			}
 		}
 

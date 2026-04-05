@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
@@ -32,6 +33,8 @@ type LoadOptions struct {
 	Disabled            []string            // namespaced rule IDs or glob patterns
 	TrustedKeys         []config.TrustedKey // additional trusted signing keys
 	PipelockVersion     string              // current binary version for min_pipelock check
+	AllowStale          bool                // accept expired bundles with warning
+	TierKeyMapping      map[string]string   // tier → expected signing key fingerprint
 }
 
 // LoadResult contains patterns extracted from all loaded bundles.
@@ -41,6 +44,8 @@ type LoadResult struct {
 	ToolPoison []CompiledToolPoisonRule
 	Errors     []BundleError
 	Loaded     []LoadedBundle
+	Degraded   bool     // standard pack failed to load — core-only mode
+	Warnings   []string // non-fatal warnings (expired bundles, etc.)
 }
 
 // CompiledToolPoisonRule is a pre-compiled regex for tool-poison detection.
@@ -61,18 +66,23 @@ type BundleError struct {
 
 // LoadedBundle describes a successfully loaded bundle (for diagnostics).
 type LoadedBundle struct {
-	Name       string
-	Version    string
-	Source     string
-	Rules      int // total rules loaded after filtering
-	DLP        int
-	Injection  int
-	ToolPoison int
-	Unsigned   bool
+	Name             string
+	Version          string
+	Tier             string // standard, community, pro (v2+)
+	MonotonicVersion uint64 // rollback-prevention counter (v2+)
+	Source           string
+	Rules            int // total rules loaded after filtering
+	DLP              int
+	Injection        int
+	ToolPoison       int
+	Unsigned         bool
+	Expired          bool // bundle is past expires_at but loaded in stale mode
 }
 
 // LoadBundles reads all bundles from rulesDir, verifies integrity,
-// filters by options, and returns merged patterns.
+// filters by options, and returns merged patterns. For v2+ bundles,
+// freshness checks (rollback prevention, expiry) are enforced.
+// If the standard pack fails to load, Degraded is set to true.
 func LoadBundles(rulesDir string, opts LoadOptions) *LoadResult {
 	result := &LoadResult{}
 
@@ -107,18 +117,53 @@ func LoadBundles(rulesDir string, opts LoadOptions) *LoadResult {
 		return dirs[i].Name() < dirs[j].Name()
 	})
 
+	// Load freshness state for rollback prevention (fail closed).
+	freshnessState, err := LoadFreshnessState(rulesDir)
+	if err != nil {
+		result.Errors = append(result.Errors, BundleError{
+			Name:   ".freshness.json",
+			Reason: err.Error(),
+		})
+		result.Degraded = true
+		// Continue loading v1 bundles (they skip freshness checks),
+		// but v2 bundles will fail CheckFreshness with empty state.
+		freshnessState = &FreshnessState{HighestSeen: make(map[string]uint64)}
+	}
+
 	minRank := confidenceRank[opts.MinConfidence]
+	now := time.Now()
 
 	for _, d := range dirs {
 		bundleDir := filepath.Join(rulesDir, d.Name())
-		loadOneBundle(bundleDir, d.Name(), opts, minRank, result)
+		loadOneBundle(bundleDir, d.Name(), opts, minRank, result, freshnessState, now)
+	}
+
+	// Save updated freshness state if any v2+ bundles were loaded.
+	for _, lb := range result.Loaded {
+		if lb.MonotonicVersion > 0 {
+			if saveErr := SaveFreshnessState(rulesDir, freshnessState); saveErr != nil {
+				result.Warnings = append(result.Warnings, fmt.Sprintf("saving freshness state: %v", saveErr))
+			}
+			break
+		}
+	}
+
+	// Detect standard pack degradation: if any bundle with the reserved
+	// prefix failed to load, set Degraded flag.
+	for _, be := range result.Errors {
+		if strings.HasPrefix(be.Name, "pipelock-") {
+			result.Degraded = true
+			result.Warnings = append(result.Warnings,
+				fmt.Sprintf("DEGRADED: standard pack %q failed to load: %s — running core-only", be.Name, be.Reason))
+			break
+		}
 	}
 
 	return result
 }
 
 // loadOneBundle loads a single bundle directory and appends results or errors.
-func loadOneBundle(bundleDir, dirName string, opts LoadOptions, minRank int, result *LoadResult) {
+func loadOneBundle(bundleDir, dirName string, opts LoadOptions, minRank int, result *LoadResult, freshnessState *FreshnessState, now time.Time) {
 	bundlePath := filepath.Join(bundleDir, bundleFilename)
 	lockPath := filepath.Join(bundleDir, lockFilename)
 
@@ -166,12 +211,39 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, minRank int, res
 		}
 	}
 
+	// V2+ freshness checks: rollback prevention, expiry, tier-key binding.
+	if bundle.FormatVersion >= 2 {
+		// Tier-key binding: verify the signing key matches the declared tier.
+		// Unsigned bundles skip this check (no signer to bind).
+		if !lock.Unsigned {
+			if err := CheckTierKeyBinding(bundle, lock.SignerFingerprint, opts.TierKeyMapping); err != nil {
+				result.Errors = append(result.Errors, BundleError{Name: dirName, Reason: err.Error()})
+				return
+			}
+		}
+
+		// Freshness: rollback prevention and expiry.
+		fr := CheckFreshness(bundle, freshnessState, now, opts.AllowStale)
+		if !fr.OK {
+			result.Errors = append(result.Errors, BundleError{Name: dirName, Reason: fr.Message})
+			return
+		}
+		if fr.Expired {
+			result.Warnings = append(result.Warnings, fr.Message)
+		}
+
+		// Record version for future rollback prevention.
+		RecordVersion(freshnessState, bundle.Tier, bundle.Name, bundle.MonotonicVersion)
+	}
+
 	// Filter and convert rules.
 	loaded := LoadedBundle{
-		Name:     bundle.Name,
-		Version:  bundle.Version,
-		Source:   lock.Source,
-		Unsigned: lock.Unsigned,
+		Name:             bundle.Name,
+		Version:          bundle.Version,
+		Tier:             bundle.Tier,
+		MonotonicVersion: bundle.MonotonicVersion,
+		Source:           lock.Source,
+		Unsigned:         lock.Unsigned,
 	}
 
 	for i := range bundle.Rules {
@@ -206,7 +278,6 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, minRank int, res
 				Name:          nsID,
 				Regex:         r.Pattern.Regex,
 				Severity:      r.Severity,
-				ExemptDomains: r.Pattern.ExemptDomains,
 				Bundle:        bundle.Name,
 				BundleVersion: bundle.Version,
 			})

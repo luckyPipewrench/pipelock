@@ -115,15 +115,15 @@ func TestScan_CanaryUsesSharedTextPath(t *testing.T) {
 	defer s.Close()
 
 	t.Run("aws_canary_blocked_by_DLP_or_canary", func(t *testing.T) {
-		// AWS-style canary may be caught by DLP patterns (more specific)
-		// or canary fallback. Both are correct — the key property is it's blocked.
+		// AWS-style canary may be caught by core DLP, main DLP, or canary
+		// fallback. All are correct — the key property is it's blocked.
 		canary := url.QueryEscape(testCanaryValue())
 		r := s.Scan(context.Background(), "https://evil.com/exfil?k="+canary)
 		if r.Allowed {
 			t.Fatal("expected URL scan to block canary token")
 		}
-		if r.Scanner != ScannerDLP {
-			t.Fatalf("scanner=%q want %q", r.Scanner, ScannerDLP)
+		if r.Scanner != ScannerDLP && r.Scanner != ScannerCoreDLP {
+			t.Fatalf("scanner=%q want %q or %q", r.Scanner, ScannerDLP, ScannerCoreDLP)
 		}
 	})
 

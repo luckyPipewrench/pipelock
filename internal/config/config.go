@@ -285,9 +285,12 @@ type Rules struct {
 }
 
 // TrustedKey is a named Ed25519 public key for verifying third-party bundles.
+// When Tier is set, this key is bound to that tier — bundles signed by this
+// key must declare the matching tier, preventing key-swap attacks.
 type TrustedKey struct {
 	Name      string `yaml:"name"`
 	PublicKey string `yaml:"public_key"` // 64 lowercase hex chars
+	Tier      string `yaml:"tier,omitempty"`
 }
 
 // FileSentry configures real-time filesystem monitoring for agent processes.

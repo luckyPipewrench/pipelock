@@ -34,11 +34,19 @@ type TextDLPResult struct {
 // from MCP tool arguments. It applies zero-width stripping, NFKC normalization,
 // and checks encoded variants (base64, hex, base32) of the text for patterns.
 func (s *Scanner) ScanTextForDLP(_ context.Context, text string) TextDLPResult {
+	// Core DLP runs FIRST — immutable safety floor. Core matches are
+	// prepended to results; main scanner also runs to capture additional
+	// findings (env leaks, seed phrases, non-core patterns).
+	coreMatches := s.scanCoreDLP(text)
+
 	if len(s.dlpPatterns) == 0 &&
 		len(s.canaryTokens) == 0 &&
 		len(s.envSecrets) == 0 &&
 		len(s.fileSecrets) == 0 &&
 		!s.seedEnabled {
+		if len(coreMatches) > 0 {
+			return TextDLPResult{Clean: false, Matches: coreMatches}
+		}
 		return TextDLPResult{Clean: true}
 	}
 
@@ -162,6 +170,12 @@ func (s *Scanner) ScanTextForDLP(_ context.Context, text string) TextDLPResult {
 
 	// Deduplicate matches by pattern name + encoding.
 	matches = deduplicateMatches(matches)
+
+	// Prepend core matches — core findings cannot be overridden.
+	if len(coreMatches) > 0 {
+		matches = append(coreMatches, matches...)
+		matches = deduplicateMatches(matches)
+	}
 
 	if len(matches) == 0 {
 		return TextDLPResult{Clean: true}

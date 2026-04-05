@@ -216,6 +216,12 @@ Examples:
 			for _, e := range bundleResult.Errors {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: warning: bundle %s: %s\n", e.Name, e.Reason)
 			}
+			for _, w := range bundleResult.Warnings {
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: %s\n", w)
+			}
+			if bundleResult.Degraded {
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: DEGRADED — standard pack failed, running core patterns only\n")
+			}
 
 			// Set up scanner, metrics, kill switch, and proxy
 			sc := scanner.New(cfg)
@@ -515,6 +521,12 @@ Examples:
 							reloadBundleResult := rules.MergeIntoConfig(newCfg, cliutil.Version)
 							for _, e := range reloadBundleResult.Errors {
 								cmd.PrintErrf("WARNING: config reload: bundle %s: %s\n", e.Name, e.Reason)
+							}
+							for _, w := range reloadBundleResult.Warnings {
+								cmd.PrintErrf("WARNING: config reload: %s\n", w)
+							}
+							if reloadBundleResult.Degraded {
+								cmd.PrintErrf("WARNING: DEGRADED — standard pack failed after reload, running core patterns only\n")
 							}
 							newSc := scanner.New(newCfg)
 							p.Reload(newCfg, newSc)

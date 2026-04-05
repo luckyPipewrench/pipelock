@@ -48,6 +48,29 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) ResponseScan
 			}},
 		}
 	}
+
+	// Core response patterns run FIRST — immutable safety floor.
+	// These run regardless of response_scanning.enabled.
+	if coreMatches := s.ScanCoreResponse(ctx, content); len(coreMatches) > 0 {
+		result := ResponseScanResult{
+			Clean:   false,
+			Matches: coreMatches,
+		}
+		// Support strip/ask actions on core matches so callers that
+		// configured strip still get TransformedContent.
+		if s.responseAction == config.ActionStrip || s.responseAction == config.ActionAsk {
+			transformed := normalize.ForMatching(content)
+			for _, p := range s.core.responsePatterns {
+				replacement := fmt.Sprintf("[REDACTED: %s]", p.name)
+				transformed = p.re.ReplaceAllString(transformed, replacement)
+			}
+			if transformed != normalize.ForMatching(content) {
+				result.TransformedContent = transformed
+			}
+		}
+		return result
+	}
+
 	if !s.responseEnabled {
 		return ResponseScanResult{Clean: true}
 	}

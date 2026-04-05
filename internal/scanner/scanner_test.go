@@ -126,8 +126,8 @@ func TestScan_BlocksDLPPatterns(t *testing.T) {
 		if result.Allowed {
 			t.Errorf("expected %s to be blocked (DLP: %s)", tt.url, tt.pattern)
 		}
-		if result.Scanner != ScannerDLP {
-			t.Errorf("expected scanner=dlp for %s, got %s", tt.url, result.Scanner)
+		if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+			t.Errorf("expected scanner dlp or core_dlp for %s, got %s", tt.url, result.Scanner)
 		}
 	}
 }
@@ -427,9 +427,12 @@ func TestScan_BlocksSSRF_HexOctalIP(t *testing.T) {
 func TestScan_AllowsHexOctalIP_WhenExternal(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = []string{"127.0.0.0/8", "10.0.0.0/8"}
+	// 8.8.8.8 is external, so add it to ip_allowlist so that when core CIDRs
+	// are merged into checkSSRF, the allowlist bypass lets it through.
+	cfg.SSRF.IPAllowlist = []string{"8.8.8.0/24"}
 	s := New(cfg)
 
-	// 8.8.8.8 in hex = 0x08080808 — should be allowed (not internal).
+	// 8.8.8.8 in hex = 0x08080808 — should be allowed (not internal, IP-allowlisted).
 	result := s.Scan(context.Background(), "http://0x08080808/")
 	if !result.Allowed {
 		t.Errorf("expected external hex IP to be allowed, got blocked: %s", result.Reason)
@@ -467,7 +470,11 @@ func TestScan_BlocklistBlocksAltIPNotation(t *testing.T) {
 
 func TestScan_AllowlistWithAltIPNotation(t *testing.T) {
 	cfg := testConfig()
-	cfg.Internal = nil
+	// Enable SSRF so the main checkSSRF handles resolution (core literal
+	// check only fires when internalCIDRs is nil, and would block all
+	// private IPs unconditionally). IP allowlist bypasses the SSRF block.
+	cfg.Internal = []string{"10.0.0.0/8"}
+	cfg.SSRF.IPAllowlist = []string{"10.0.0.1/32"}
 	cfg.Mode = config.ModeStrict
 	cfg.APIAllowlist = []string{"10.0.0.1"}
 	s := New(cfg)
@@ -705,11 +712,23 @@ func TestScan_SSRFDisabledWhenNilCIDRs(t *testing.T) {
 	cfg.Internal = nil
 	s := New(cfg)
 
-	// localhost should be allowed when SSRF is disabled
-	result := s.Scan(context.Background(), "http://127.0.0.1/test")
-	if !result.Allowed {
-		t.Errorf("expected 127.0.0.1 allowed with nil CIDRs, got blocked: %s", result.Reason)
-	}
+	// With nil CIDRs, SSRF is fully disabled — even private IP literals
+	// are allowed. Core SSRF only protects when SSRF is active (via
+	// mergedSSRFCIDRs ensuring private ranges can't be removed).
+	t.Run("private_ip_allowed_when_disabled", func(t *testing.T) {
+		result := s.Scan(context.Background(), "http://127.0.0.1/test")
+		if !result.Allowed {
+			t.Errorf("expected 127.0.0.1 allowed with nil CIDRs, got blocked: %s", result.Reason)
+		}
+	})
+
+	// Non-private IPs should still be allowed when SSRF is disabled.
+	t.Run("allows_external_ip", func(t *testing.T) {
+		result := s.Scan(context.Background(), "http://8.8.8.8/test")
+		if !result.Allowed {
+			t.Errorf("expected external IP allowed with nil CIDRs, got blocked: %s", result.Reason)
+		}
+	})
 }
 
 func TestScan_TrustedDomains_BypassesSSRF(t *testing.T) {
@@ -773,11 +792,13 @@ func TestScan_TrustedDomains_DLPStillApplies(t *testing.T) {
 func TestScan_SSRFIPAllowlist_BypassesBlock(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = []string{"127.0.0.0/8"}
-	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8"}
+	// localhost may resolve to both 127.0.0.1 and ::1. Core CIDRs include
+	// ::1/128, so the allowlist must cover both IPv4 and IPv6 loopback.
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	s := New(cfg)
 	defer s.Close()
 
-	// localhost resolves to 127.0.0.1 (internal) but is IP-allowlisted — should pass.
+	// localhost resolves to 127.0.0.1 (and ::1) — both IP-allowlisted.
 	result := s.Scan(context.Background(), "http://localhost/api")
 	if !result.Allowed {
 		t.Fatalf("expected IP-allowlisted address to bypass SSRF, got blocked: %s", result.Reason)
@@ -787,11 +808,13 @@ func TestScan_SSRFIPAllowlist_BypassesBlock(t *testing.T) {
 func TestScan_SSRFIPAllowlist_PartialCIDR(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = []string{"10.0.0.0/8", "127.0.0.0/8"}
-	cfg.SSRF.IPAllowlist = []string{"127.0.0.1/32"} // only loopback, not 10.x
+	// localhost resolves to both 127.0.0.1 and ::1. Core CIDRs include
+	// ::1/128, so the allowlist must cover both to let localhost through.
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.1/32", "::1/128"} // loopback only, not 10.x
 	s := New(cfg)
 	defer s.Close()
 
-	// localhost (127.0.0.1) is allowlisted — passes
+	// localhost (127.0.0.1 + ::1) is allowlisted — passes
 	result := s.Scan(context.Background(), "http://localhost/api")
 	if !result.Allowed {
 		t.Errorf("expected 127.0.0.1 to pass with IP allowlist 127.0.0.1/32, got: %s", result.Reason)
@@ -1075,8 +1098,8 @@ func TestScan_DLPCatchesURLEncodedSecrets(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected DLP to catch URL-encoded private key header")
 	}
-	if result.Scanner != ScannerDLP {
-		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+		t.Errorf("expected scanner dlp or core_dlp, got %s", result.Scanner)
 	}
 }
 
@@ -1319,8 +1342,8 @@ func TestScan_DLPInPath(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected DLP to catch AWS key in URL path")
 	}
-	if result.Scanner != ScannerDLP {
-		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+		t.Errorf("expected scanner dlp or core_dlp, got %s", result.Scanner)
 	}
 }
 
@@ -1397,8 +1420,8 @@ func TestScan_DLPSubdomainDotCollapse(t *testing.T) {
 			if !tt.blocked && !result.Allowed {
 				t.Errorf("expected normal URL to be allowed: %s (blocked: %s)", tt.url, result.Reason)
 			}
-			if tt.blocked && result.Scanner != ScannerDLP {
-				t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+			if tt.blocked && result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+				t.Errorf("expected scanner dlp or core_dlp, got %s", result.Scanner)
 			}
 		})
 	}
@@ -1459,11 +1482,26 @@ func TestScan_NoDLPPatterns(t *testing.T) {
 	cfg.DLP.Patterns = nil
 	s := New(cfg)
 
-	// Should not be blocked even with a secret-like string
-	result := s.Scan(context.Background(), "https://example.com/api?key=AKIAIOSFODNN7EXAMPLE")
-	if !result.Allowed {
-		t.Errorf("expected URL allowed with no DLP patterns, got: %s (%s)", result.Reason, result.Scanner)
-	}
+	// With no user DLP patterns, core DLP patterns still fire for core
+	// patterns (like AWS keys). Verify core catches the AWS key.
+	t.Run("core_dlp_still_catches_aws_key", func(t *testing.T) {
+		result := s.Scan(context.Background(), "https://example.com/api?key=AKIAIOSFODNN7EXAMPLE")
+		if result.Allowed {
+			t.Error("expected core DLP to block AWS key even with no user DLP patterns")
+		}
+		if result.Scanner != ScannerCoreDLP {
+			t.Errorf("expected scanner=core_dlp, got %s", result.Scanner)
+		}
+	})
+
+	// Non-core patterns (e.g., Anthropic key) should be allowed when user
+	// DLP patterns are nil.
+	t.Run("non_core_pattern_allowed", func(t *testing.T) {
+		result := s.Scan(context.Background(), "https://example.com/api?key=sk-ant-abcdefghijklmnopqrstu")
+		if !result.Allowed {
+			t.Errorf("expected non-core DLP pattern to be allowed with no user patterns, got: %s (%s)", result.Reason, result.Scanner)
+		}
+	})
 }
 
 func TestScan_EmptyBlocklist(t *testing.T) {
@@ -1594,8 +1632,8 @@ func TestScan_MultipleQueryParams_OneTriggering(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected URL with secret in one query param to be blocked")
 	}
-	if result.Scanner != ScannerDLP {
-		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+		t.Errorf("expected scanner dlp or core_dlp, got %s", result.Scanner)
 	}
 }
 
@@ -1778,8 +1816,8 @@ func TestScan_DLPCatchesMalformedPercentEncoding(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected DLP to catch AWS key even with malformed percent-encoding in query")
 	}
-	if result.Scanner != ScannerDLP {
-		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+		t.Errorf("expected scanner dlp or core_dlp, got %s", result.Scanner)
 	}
 }
 
@@ -2876,7 +2914,7 @@ func TestCheckSubdomainEntropy_AllowsNormalSubdomains(t *testing.T) {
 		{"no subdomain", "https://example.com/"},
 		{"short label", "https://ab.example.com/"},
 		{"normal multi-level", "https://api.us-east-1.example.com/"},
-		{"IP address", "https://192.168.1.1/"},
+		{"IP address", "https://93.184.215.14/"},
 	}
 
 	for _, tt := range tests {
@@ -4127,8 +4165,8 @@ func TestScanPopulatesHintOnBlock(t *testing.T) {
 	if result.Hint == "" {
 		t.Error("expected non-empty hint on blocked result")
 	}
-	if result.Scanner != ScannerDLP {
-		t.Errorf("expected scanner=dlp, got %q", result.Scanner)
+	if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+		t.Errorf("expected scanner dlp or core_dlp, got %q", result.Scanner)
 	}
 }
 
@@ -4648,8 +4686,8 @@ func TestDLP_GitLabPAT(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected GitLab PAT to be blocked by DLP")
 	}
-	if result.Scanner != ScannerDLP {
-		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+		t.Errorf("expected scanner dlp or core_dlp, got %s", result.Scanner)
 	}
 }
 

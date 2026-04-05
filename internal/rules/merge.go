@@ -38,10 +38,33 @@ func MergeIntoConfig(cfg *config.Config, pipelockVersion string) *LoadResult {
 		Disabled:            cfg.Rules.Disabled,
 		TrustedKeys:         cfg.Rules.TrustedKeys,
 		PipelockVersion:     pipelockVersion,
+		TierKeyMapping:      buildTierKeyMapping(cfg.Rules.TrustedKeys),
 	})
 	cfg.DLP.Patterns = append(cfg.DLP.Patterns, result.DLP...)
 	cfg.ResponseScanning.Patterns = append(cfg.ResponseScanning.Patterns, result.Injection...)
 	return result
+}
+
+// buildTierKeyMapping extracts tier→key_fingerprint bindings from trusted keys.
+// Only keys with a non-empty Tier field are included. The fingerprint format
+// matches KeyFingerprint (hex-encoded raw public key bytes).
+func buildTierKeyMapping(keys []config.TrustedKey) map[string]string {
+	mapping := make(map[string]string)
+	for _, k := range keys {
+		if k.Tier != "" {
+			// TrustedKey.PublicKey is already hex-encoded, same format
+			// as KeyFingerprint output.
+			mapping[k.Tier] = k.PublicKey
+		}
+	}
+	// Official (embedded) keys are NOT added here — they are verified
+	// separately by isOfficialFingerprint in the loader. Adding them
+	// would break key rotation when the keyring has multiple keys
+	// (last-writer-wins on the map).
+	if len(mapping) == 0 {
+		return nil
+	}
+	return mapping
 }
 
 // ConvertToolPoison converts CompiledToolPoisonRule slices to ExtraPoisonPattern

@@ -116,8 +116,8 @@ Pipelock applies these scanning layers to all traffic:
 | Layer | What it does | Applies to |
 |-------|-------------|------------|
 | **URL Scanner** | 11-layer pipeline: scheme, blocklist, DLP, path entropy, subdomain entropy, SSRF, rate limit, URL length, data budget | Forward proxy, fetch |
-| **DLP** | 46 credential patterns with checksum validators (Luhn, Mod97, ABA, WIF). Env variable leak detection. Case-insensitive with `(?i)` prefix. | All transports |
-| **Response Scanning** | 23 prompt injection / jailbreak patterns with 6-pass normalization (NFKC, invisible chars, leetspeak, optional whitespace, vowel folding, base64/hex decode) | Fetch responses, MCP tool results |
+| **DLP** | 48 credential patterns with checksum validators (Luhn, Mod97, ABA, WIF). Env variable leak detection. Case-insensitive with `(?i)` prefix. | All transports |
+| **Response Scanning** | 25 prompt injection / jailbreak patterns with 6-pass normalization (NFKC, invisible chars, leetspeak, optional whitespace, vowel folding, base64/hex decode) | Fetch responses, MCP tool results |
 | **Request Body** | DLP + injection scanning on outbound request bodies and headers | Forward proxy, fetch |
 | **Canary Tokens** | Synthetic secret detection — exact match, zero false positives by definition | All transports |
 | **MCP Tool Scanning** | Poisoned tool description detection with recursive schema walking. Rug-pull drift detection between sessions. | MCP proxy |

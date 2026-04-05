@@ -364,15 +364,56 @@ func TestVerifyReceiptCmd_ChainWithKey(t *testing.T) {
 	}
 }
 
-func TestTranscriptRootCmd_Valid(t *testing.T) {
+func TestVerifyReceiptCmd_ChainEmpty(t *testing.T) {
 	t.Parallel()
 
-	path, _ := buildChainJSONL(t, 4)
+	// Write an empty JSONL file (no receipts).
+	dir := t.TempDir()
+	emptyPath := filepath.Join(dir, "empty.jsonl")
+	if err := os.WriteFile(emptyPath, []byte{}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := VerifyReceiptCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{emptyPath})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for empty JSONL")
+	}
+}
+
+func TestTranscriptRootCmd_NoKey(t *testing.T) {
+	t.Parallel()
+
+	path, _ := buildChainJSONL(t, 3)
 
 	cmd := TranscriptRootCmd()
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
 	cmd.SetArgs([]string{path})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when --key not provided")
+	}
+	if !strings.Contains(err.Error(), "--key is required") {
+		t.Errorf("expected --key required error, got: %v", err)
+	}
+}
+
+func TestTranscriptRootCmd_Valid(t *testing.T) {
+	t.Parallel()
+
+	path, pub := buildChainJSONL(t, 4)
+	keyHex := hex.EncodeToString(pub)
+
+	cmd := TranscriptRootCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{"--key", keyHex, path})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}

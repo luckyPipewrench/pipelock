@@ -67,7 +67,7 @@ func verifySingleReceipt(out io.Writer, path, expectedKey string) error {
 
 	if err := receipt.VerifyWithKey(r, expectedKey); err != nil {
 		_, _ = fmt.Fprintf(out, "FAILED: %s: %v\n", path, err)
-		return fmt.Errorf("verification failed")
+		return fmt.Errorf("verification failed: %w", err)
 	}
 
 	_, _ = fmt.Fprintf(out, "OK: %s\n", path)
@@ -83,7 +83,7 @@ func verifyChainFromFile(out io.Writer, path, expectedKey string) error {
 
 	if len(receipts) == 0 {
 		_, _ = fmt.Fprintf(out, "No receipts found in %s\n", path)
-		return nil
+		return fmt.Errorf("no receipts in %s", path)
 	}
 
 	result := receipt.VerifyChain(receipts, expectedKey)
@@ -91,7 +91,7 @@ func verifyChainFromFile(out io.Writer, path, expectedKey string) error {
 		_, _ = fmt.Fprintf(out, "CHAIN BROKEN: %s\n", path)
 		_, _ = fmt.Fprintf(out, "  Error:    %s\n", result.Error)
 		_, _ = fmt.Fprintf(out, "  Broke at: seq %d\n", result.BrokenAtSeq)
-		return fmt.Errorf("chain verification failed at seq %d", result.BrokenAtSeq)
+		return fmt.Errorf("chain verification failed at seq %d: %s", result.BrokenAtSeq, result.Error)
 	}
 
 	_, _ = fmt.Fprintf(out, "CHAIN VALID: %s\n", path)
@@ -146,10 +146,12 @@ The transcript root is the hash of the final receipt in the chain,
 serving as a tamper-evident summary of the entire session.
 
 Examples:
-  pipelock transcript-root evidence-proxy-0.jsonl
   pipelock transcript-root evidence-proxy-0.jsonl --key 70b991eb...`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if expectedKey == "" {
+				return fmt.Errorf("--key is required: transcript roots must be verified against a trusted signer key")
+			}
 			path := args[0]
 			out := cmd.OutOrStdout()
 

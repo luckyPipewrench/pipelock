@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -270,10 +271,11 @@ func TestVerifyChain_TimestampOrdering(t *testing.T) {
 func TestComputeTranscriptRoot_HappyPath(t *testing.T) {
 	t.Parallel()
 
-	_, priv := generateTestKey(t)
+	pub, priv := generateTestKey(t)
+	keyHex := hex.EncodeToString(pub)
 	chain := buildChain(t, priv, 5)
 
-	root, err := ComputeTranscriptRoot(chainTestSession, chain, "")
+	root, err := ComputeTranscriptRoot(chainTestSession, chain, keyHex)
 	if err != nil {
 		t.Fatalf("ComputeTranscriptRoot: %v", err)
 	}
@@ -301,7 +303,7 @@ func TestComputeTranscriptRoot_HappyPath(t *testing.T) {
 func TestComputeTranscriptRoot_EmptyChain(t *testing.T) {
 	t.Parallel()
 
-	_, err := ComputeTranscriptRoot(chainTestSession, nil, "")
+	_, err := ComputeTranscriptRoot(chainTestSession, nil, "deadbeef")
 	if err == nil {
 		t.Fatal("ComputeTranscriptRoot with empty chain should return error")
 	}
@@ -310,15 +312,114 @@ func TestComputeTranscriptRoot_EmptyChain(t *testing.T) {
 func TestComputeTranscriptRoot_InvalidChain(t *testing.T) {
 	t.Parallel()
 
-	_, priv := generateTestKey(t)
+	pub, priv := generateTestKey(t)
+	keyHex := hex.EncodeToString(pub)
 	chain := buildChain(t, priv, 3)
 
 	// Tamper to make the chain invalid.
 	chain[1].ActionRecord.Target = "https://evil.com/tampered"
 
-	_, err := ComputeTranscriptRoot(chainTestSession, chain, "")
+	_, err := ComputeTranscriptRoot(chainTestSession, chain, keyHex)
 	if err == nil {
 		t.Fatal("ComputeTranscriptRoot with invalid chain should return error")
+	}
+}
+
+func TestComputeTranscriptRoot_RequiresKey(t *testing.T) {
+	t.Parallel()
+
+	_, priv := generateTestKey(t)
+	chain := buildChain(t, priv, 3)
+
+	_, err := ComputeTranscriptRoot(chainTestSession, chain, "")
+	if err == nil {
+		t.Fatal("ComputeTranscriptRoot with empty key should return error")
+	}
+}
+
+func TestExtractReceipts_HappyPath(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	pub, priv := generateTestKey(t)
+
+	rec, err := recorder.New(recorder.Config{
+		Enabled:            true,
+		Dir:                dir,
+		CheckpointInterval: 1000,
+	}, nil, priv)
+	if err != nil {
+		t.Fatalf("recorder.New: %v", err)
+	}
+
+	e := NewEmitter(EmitterConfig{
+		Recorder:   rec,
+		PrivKey:    priv,
+		ConfigHash: "testhash",
+		Principal:  "test-principal",
+	})
+
+	for i := 0; i < 3; i++ {
+		if err := e.Emit(EmitOpts{
+			ActionID:  NewActionID(),
+			Target:    chainTestTarget,
+			Verdict:   "block",
+			Transport: chainTestTransport,
+		}); err != nil {
+			t.Fatalf("Emit %d: %v", i, err)
+		}
+	}
+	_ = rec.Close()
+
+	// Find the JSONL file
+	entries, _ := os.ReadDir(dir)
+	var jsonlPath string
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".jsonl") {
+			jsonlPath = filepath.Join(dir, entry.Name())
+			break
+		}
+	}
+	if jsonlPath == "" {
+		t.Fatal("no JSONL file found")
+	}
+
+	receipts, err := ExtractReceipts(jsonlPath)
+	if err != nil {
+		t.Fatalf("ExtractReceipts: %v", err)
+	}
+	if len(receipts) != 3 {
+		t.Fatalf("expected 3 receipts, got %d", len(receipts))
+	}
+
+	// Verify the extracted chain
+	keyHex := hex.EncodeToString(pub)
+	result := VerifyChain(receipts, keyHex)
+	if !result.Valid {
+		t.Fatalf("extracted chain invalid: %s", result.Error)
+	}
+}
+
+func TestExtractReceipts_BadPath(t *testing.T) {
+	t.Parallel()
+
+	_, err := ExtractReceipts("/nonexistent/path.jsonl")
+	if err == nil {
+		t.Fatal("expected error for nonexistent path")
+	}
+}
+
+func TestConfigHashString(t *testing.T) {
+	t.Parallel()
+
+	if got := configHashString("hello"); got != "hello" {
+		t.Errorf("configHashString(string) = %q, want \"hello\"", got)
+	}
+	if got := configHashString(nil); got != "" {
+		t.Errorf("configHashString(nil) = %q, want empty", got)
+	}
+	if got := configHashString(42); got != "" {
+		t.Errorf("configHashString(int) = %q, want empty", got)
 	}
 }
 
@@ -505,6 +606,100 @@ func TestEmitter_ChainState(t *testing.T) {
 	if result.ReceiptCount != chainLen {
 		t.Errorf("VerifyChain receipt_count = %d, want %d", result.ReceiptCount, chainLen)
 	}
+}
+
+func TestEmit_ChainSealed(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	_, priv := generateTestKey(t)
+	rec := newTestRecorder(t, dir, priv)
+
+	e := NewEmitter(EmitterConfig{
+		Recorder:   rec,
+		PrivKey:    priv,
+		ConfigHash: testConfigHash,
+		Principal:  "test",
+	})
+
+	if err := e.Emit(EmitOpts{
+		ActionID:  NewActionID(),
+		Target:    chainTestTarget,
+		Verdict:   "block",
+		Transport: chainTestTransport,
+	}); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+
+	if err := e.EmitTranscriptRoot(chainTestSession); err != nil {
+		t.Fatalf("EmitTranscriptRoot: %v", err)
+	}
+
+	// Emit after root should fail with ErrChainSealed.
+	err := e.Emit(EmitOpts{
+		ActionID:  NewActionID(),
+		Target:    chainTestTarget,
+		Verdict:   "allow",
+		Transport: chainTestTransport,
+	})
+	if err == nil {
+		t.Fatal("expected ErrChainSealed after EmitTranscriptRoot")
+	}
+	if !errors.Is(err, ErrChainSealed) {
+		t.Errorf("expected ErrChainSealed, got: %v", err)
+	}
+}
+
+func TestEmitTranscriptRoot_TimeBounds(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	_, priv := generateTestKey(t)
+	rec := newTestRecorder(t, dir, priv)
+
+	e := NewEmitter(EmitterConfig{
+		Recorder:   rec,
+		PrivKey:    priv,
+		ConfigHash: testConfigHash,
+		Principal:  "test",
+	})
+
+	before := time.Now().UTC()
+	for i := 0; i < 3; i++ {
+		if err := e.Emit(EmitOpts{
+			ActionID:  NewActionID(),
+			Target:    chainTestTarget,
+			Verdict:   "block",
+			Transport: chainTestTransport,
+		}); err != nil {
+			t.Fatalf("Emit %d: %v", i, err)
+		}
+	}
+	after := time.Now().UTC()
+
+	if err := e.EmitTranscriptRoot(chainTestSession); err != nil {
+		t.Fatalf("EmitTranscriptRoot: %v", err)
+	}
+
+	entries := readAllEntriesFromDir(t, dir)
+	for _, entry := range entries {
+		if entry.Type != transcriptRootEntryType {
+			continue
+		}
+		detailJSON, _ := json.Marshal(entry.Detail)
+		var root TranscriptRoot
+		if err := json.Unmarshal(detailJSON, &root); err != nil {
+			t.Fatalf("unmarshal root: %v", err)
+		}
+		if root.StartTime.Before(before) || root.StartTime.After(after) {
+			t.Errorf("start_time %v outside [%v, %v]", root.StartTime, before, after)
+		}
+		if root.EndTime.Before(root.StartTime) {
+			t.Errorf("end_time %v before start_time %v", root.EndTime, root.StartTime)
+		}
+		return
+	}
+	t.Fatal("transcript_root entry not found")
 }
 
 // readAllEntriesFromDir reads all recorder entries from JSONL files in dir.

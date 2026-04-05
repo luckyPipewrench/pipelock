@@ -149,10 +149,10 @@ func ComputeTranscriptRoot(sessionID string, receipts []Receipt, expectedKeyHex 
 	if len(receipts) == 0 {
 		return TranscriptRoot{}, fmt.Errorf("empty receipt chain")
 	}
+	if expectedKeyHex == "" {
+		return TranscriptRoot{}, fmt.Errorf("trust anchor required: pass expected signer key hex")
+	}
 
-	// Verify chain integrity with the caller's trust anchor. When
-	// expectedKeyHex is empty, VerifyChain pins to the first receipt's
-	// embedded key — sufficient for self-consistency but not external trust.
 	result := VerifyChain(receipts, expectedKeyHex)
 	if !result.Valid {
 		return TranscriptRoot{}, fmt.Errorf("invalid chain: %s", result.Error)

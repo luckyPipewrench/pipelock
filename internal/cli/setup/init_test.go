@@ -56,7 +56,7 @@ func TestInitCmd_WritesConfig(t *testing.T) {
 		t.Fatal("config file was not written")
 	}
 
-	data, err := os.ReadFile(configPath) //nolint:gosec // test: path from t.TempDir()
+	data, err := os.ReadFile(filepath.Clean(configPath))
 	if err != nil {
 		t.Fatalf("reading config: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestInitCmd_StrictPreset(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	data, err := os.ReadFile(configPath) //nolint:gosec // test: path from t.TempDir()
+	data, err := os.ReadFile(filepath.Clean(configPath))
 	if err != nil {
 		t.Fatalf("reading config: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestInitCmd_AuditPreset(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	data, err := os.ReadFile(configPath) //nolint:gosec // test: path from t.TempDir()
+	data, err := os.ReadFile(filepath.Clean(configPath))
 	if err != nil {
 		t.Fatalf("reading config: %v", err)
 	}
@@ -292,7 +292,7 @@ func TestInitCmd_RefusesOverwrite(t *testing.T) {
 	}
 
 	// Original file should be preserved.
-	data, err := os.ReadFile(configPath) //nolint:gosec // test: path from t.TempDir()
+	data, err := os.ReadFile(filepath.Clean(configPath))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -330,7 +330,7 @@ func TestInitCmd_ForceOverwrite(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	data, err := os.ReadFile(configPath) //nolint:gosec // test: path from t.TempDir()
+	data, err := os.ReadFile(filepath.Clean(configPath))
 	if err != nil {
 		t.Fatal(err)
 	}

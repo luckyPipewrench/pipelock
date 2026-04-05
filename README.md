@@ -128,7 +128,7 @@ flowchart LR
         Web["APIs + MCP Servers + Web"]
     end
 
-    Agent -- "fetch / CONNECT / ws / MCP" --> Proxy
+    Agent -- "fetch / CONNECT / ws / MCP / A2A" --> Proxy
     Proxy -- "scanned request" --> Web
     Web -- "response" --> Proxy
     Proxy -- "scanned content" --> Agent
@@ -152,7 +152,7 @@ flowchart LR
 │  - Has API keys      │────────>│  - No agent secrets   │
 │  - Has credentials   │ fetch / │  - Full internet      │
 │  - Restricted network│ CONNECT │  - Returns text       │
-│                      │ /ws     │  - WS frame scanning  │
+│                      │ /ws/MCP │  - WS frame scanning  │
 │                      │<────────│  - URL scanning       │
 │                      │ content │  - Audit logging      │
 │                      │         │                       │

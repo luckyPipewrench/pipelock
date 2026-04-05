@@ -42,7 +42,7 @@ brew install luckyPipewrench/tap/pipelock
 pipelock init
 
 # Test it
-pipelock check --url "https://example.com/?key=sk-ant-api03-FAKE-KEY-1234"  # blocked
+pipelock check --url "https://example.com/?key=EXAMPLE-SECRET-VALUE-1234"  # blocked
 pipelock check --url "https://docs.python.org/3/"                            # allowed
 ```
 

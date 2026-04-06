@@ -442,7 +442,9 @@ internal/
   mcp/                 MCP proxy + bidirectional scanning + tool poisoning + chains
   discover/            IDE/agent config discovery (Claude Code, Cursor, VS Code, JetBrains)
   killswitch/          Emergency deny-all (4 sources) + port-isolated API
+  receipt/             Action receipt signing + hash-chained evidence
   sandbox/             Landlock, seccomp, netns, macOS sandbox-exec
+  shield/              Airlock, browser shield, posture capsule
   signing/             Ed25519 key management
   integrity/           SHA256 file integrity monitoring
   report/              HTML/JSON audit report generation
@@ -458,10 +460,10 @@ Pipelock is tested like a security product. The open-source core has thousands o
 
 | Metric | Value |
 |--------|-------|
-| Go tests (with `-race`) | 10,000+ |
+| Go tests (with `-race`) | 10,800+ |
 | Statement coverage | 88%+ |
 | Evasion techniques tested | 230+ |
-| Scanner pipeline overhead | ~32us per URL scan |
+| Scanner pipeline overhead | ~43us per URL scan |
 | CI matrix | Go 1.25 + 1.26, CodeQL, golangci-lint |
 | Supply chain | SLSA provenance, CycloneDX SBOM, cosign signatures |
 

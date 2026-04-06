@@ -5,6 +5,44 @@ All notable changes to Pipelock will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.2] - 2026-04-06
+
+### Highlights
+
+Every proxy decision now produces a cryptographically signed action receipt: verdict, policy hash, transport, and target recorded as a hash-chained evidence trail. New onboarding tools (`pipelock init`, Helm chart, false positive tuning guide) cut first-run setup to minutes. Runtime hardening adds connection-level admission control, browser-aware response scanning, and environment classification. An immutable core scanner layer runs before all configurable patterns and cannot be disabled.
+
+### New Features
+
+- **Action receipts:** every proxy decision produces an Ed25519-signed receipt recording the action type, verdict, policy hash, transport, method, and target. New `internal/receipt/` package. `pipelock verify-receipt` CLI command validates receipt signatures. Receipts are written to the flight recorder. (#351)
+- **Hash-chained receipts and transcript roots:** receipts link to their predecessor via `chain_prev_hash` and `chain_seq`, forming a tamper-evident chain. `EmitTranscriptRoot()` seals the chain with a transcript root entry. `pipelock verify-receipt` validates individual receipts and chain integrity. (#354)
+- **Onboarding stack:** `pipelock init` discovers IDE configs, generates a starter YAML config, and runs canary verification against the running proxy. Helm chart at `charts/pipelock/` for Kubernetes deployments. False positive tuning guide for common scanner adjustments. README restructured around getting-started flow. (#355)
+- **Airlock admission control:** connection-level admission with a drain tier for graceful shutdown. New connections are rejected when the proxy enters drain state, while in-flight requests complete. (#356)
+- **Browser Shield:** domain-aware response scanning exemptions for browser traffic. Domains serving rendered HTML (dashboards, documentation sites) skip injection scanning to avoid false positives on legitimate page content. (#356)
+- **Posture Capsule:** runtime environment classification detects whether pipelock runs in a container, on bare metal, or in a cloud instance. Classification is exposed via metrics and audit logs. (#356)
+- **Immutable core scanner:** built-in DLP and response injection patterns run before all configurable scanners and cannot be disabled or overridden by config. New `core_dlp` and `core_response` scanner labels. Bundle metadata v2 adds freshness checks, deprecation notices, and build-time pinning for pattern bundles. (#359)
+
+### Security Hardening
+
+- **TLS interception receipts:** TLS-intercepted traffic now produces action receipts across 19 emission points in the intercept pipeline. Previously, intercepted requests were scanned but not recorded in the receipt chain. (#362)
+- **Flight recorder DLP redaction:** receipt fields containing target URLs and matched patterns are scrubbed by the DLP pipeline before writing to the flight recorder. Receipt structure fields (signature, signer_key, chain hashes) are preserved. Summary field no longer includes raw matched content. (#362)
+- **Receipt emitter hot reload:** signing key can be added, removed, or rotated via SIGHUP without restarting the proxy. Receipt emission state survives config reloads. (#362)
+- **A2A SSE streaming receipts:** Server-Sent Event streams in the A2A protocol path now produce per-event receipts. (#362)
+- **Multipart body scanning:** all multipart part bodies are now scanned regardless of declared Content-Type. Parts declaring image/png or other binary types with text content are no longer skipped. Custom multipart part headers are scanned for DLP patterns. Content-Transfer-Encoding (base64, quoted-printable) is decoded before scanning. Structural header parameters (Content-Disposition, Content-Type values) are parsed and scanned. (#370)
+
+### Fixed
+
+- **Inline suppression in scan-diff:** `pipelock:ignore` inline comments are now respected in GitHub Action scan-diff mode. Previously, suppression comments were only processed in full-scan mode. (#365)
+- **Airlock drain timeout:** drain timeout now reads from config instead of using a hardcoded default. (#371)
+- **Browser Shield redirect hostname:** post-redirect hostname is used for domain matching instead of the original request hostname. (#371)
+- **Session manager lock TOCTOU:** time-of-check-to-time-of-use race in the session manager lock acquisition path is closed. (#371)
+- **Quarantined session eviction:** quarantined sessions are protected from LRU eviction. (#371)
+
+### Other
+
+- **Documentation cross-references:** README restored with full feature content, security matrix, and pipelab.org cross-references. OWASP coverage table added. (#363)
+- **CI dependency updates:** GitHub Actions bumped across CI workflows. (#358)
+- **Go dependency updates:** modernc.org/sqlite bumped from 1.48.0 to 1.48.1. (#357)
+
 ## [2.1.1] - 2026-04-03
 
 ### Highlights

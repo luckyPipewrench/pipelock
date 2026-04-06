@@ -3,7 +3,7 @@ name: pipelock
 description: Agent firewall for AI agents. Network scanning, process containment, and tool policy enforcement.
 type: application
 version: 0.1.0
-appVersion: "2.1.1"
+appVersion: "2.1.2"
 home: https://pipelab.org
 sources:
   - https://github.com/luckyPipewrench/pipelock

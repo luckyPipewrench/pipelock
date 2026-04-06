@@ -110,6 +110,7 @@ Quick start:
 		clisigning.TrustCmd(),
 		clisigning.TlsCmd(),
 		clisigning.VerifyReceiptCmd(),
+		clisigning.TranscriptRootCmd(),
 		// Version
 		versionCmd(),
 	)

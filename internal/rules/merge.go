@@ -4,6 +4,7 @@
 package rules
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -52,8 +53,13 @@ func buildTierKeyMapping(keys []config.TrustedKey) map[string]string {
 	mapping := make(map[string]string)
 	for _, k := range keys {
 		if k.Tier != "" {
-			// TrustedKey.PublicKey is already hex-encoded, same format
-			// as KeyFingerprint output.
+			if existing, dup := mapping[k.Tier]; dup {
+				// First key wins. Log but don't error — config validation
+				// is the right place for strict checks.
+				_, _ = fmt.Fprintf(os.Stderr, "pipelock: warning: duplicate tier binding for %q: key %q overridden by %q\n",
+					k.Tier, k.PublicKey, existing)
+				continue
+			}
 			mapping[k.Tier] = k.PublicKey
 		}
 	}

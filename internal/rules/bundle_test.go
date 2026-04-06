@@ -1014,6 +1014,9 @@ func TestValidate_V2Bundle_InvalidTier(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for invalid tier")
 	}
+	if !strings.Contains(err.Error(), "tier") {
+		t.Errorf("error %q should mention tier", err.Error())
+	}
 }
 
 func TestValidate_V2Bundle_ZeroMonotonicVersion(t *testing.T) {
@@ -1034,6 +1037,9 @@ func TestValidate_V2Bundle_ZeroMonotonicVersion(t *testing.T) {
 	err := b.Validate()
 	if err == nil {
 		t.Fatal("expected error for zero monotonic_version")
+	}
+	if !strings.Contains(err.Error(), "monotonic_version") {
+		t.Errorf("error %q should mention monotonic_version", err.Error())
 	}
 }
 

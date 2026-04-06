@@ -249,6 +249,12 @@ func TestBuildScenarios_PermissiveScanner(t *testing.T) {
 		"MCP Input Secret Leak":               "no leak detected",
 	}
 
+	// Scenarios that MUST block via core patterns even with permissive config.
+	expectBlock := map[string]bool{
+		"Prompt Injection":       true,
+		"MCP Response Injection": true,
+	}
+
 	for _, s := range scenarios {
 		t.Run(s.name, func(t *testing.T) {
 			blocked, detail := s.run(sc)
@@ -259,6 +265,9 @@ func TestBuildScenarios_PermissiveScanner(t *testing.T) {
 				if detail != expected {
 					t.Errorf("detail = %q, want %q", detail, expected)
 				}
+			}
+			if expectBlock[s.name] && !blocked {
+				t.Errorf("expected %q to be blocked by core patterns, got allowed: %s", s.name, detail)
 			}
 			// MCP Tool Description Attack still blocks (built-in poison heuristics)
 			if s.name == "MCP Tool Description Attack" && !blocked {

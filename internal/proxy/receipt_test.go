@@ -622,9 +622,8 @@ func TestProxy_ReloadReceiptEmitter_UpdatesHash(t *testing.T) {
 	}
 	defer func() { _ = rec.Close() }()
 
-	origEmitter := p.receiptEmitterPtr.Load()
-
-	// Reload with a different config (same key path) — should update hash, not replace emitter.
+	// Reload with a different config (same key path) — emitter is recreated
+	// (always re-reads key file to detect in-place rotation) but uses updated hash.
 	reloadCfg := config.Defaults()
 	reloadCfg.Internal = nil
 	reloadCfg.FlightRecorder.SigningKeyPath = keyPath
@@ -633,8 +632,8 @@ func TestProxy_ReloadReceiptEmitter_UpdatesHash(t *testing.T) {
 
 	p.Reload(reloadCfg, reloadSc)
 
-	if p.receiptEmitterPtr.Load() != origEmitter {
-		t.Fatal("expected same emitter instance after reload with existing key")
+	if p.receiptEmitterPtr.Load() == nil {
+		t.Fatal("expected non-nil emitter after reload with same key")
 	}
 
 	// Verify the updated hash is used in emitted receipts.

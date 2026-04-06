@@ -386,22 +386,19 @@ func (p *Proxy) reloadReceiptEmitter(cfg *config.Config) {
 		return
 	}
 
-	if cur := p.receiptEmitterPtr.Load(); cur != nil && keyPath == p.receiptKeyPath {
-		// Same key path, emitter exists — just update the config hash.
-		cur.UpdateConfigHash(cfg.Hash())
-		return
-	}
-
-	// Key path changed or emitter doesn't exist — (re)create.
-	// Failure is non-fatal: log and keep the prior emitter (if any) so
-	// receipts continue with the old key rather than going dark entirely.
+	// Always reload the key file to detect both path changes and
+	// in-place content changes (key rotation at the same path).
 	if p.recorder == nil {
 		return
 	}
 
 	privKey, err := signing.LoadPrivateKeyFile(filepath.Clean(keyPath))
 	if err != nil {
-		p.logger.LogError(audit.LogContext{Method: "RELOAD"}, fmt.Errorf("loading receipt signing key: %w", err))
+		// Failure is non-fatal: log and keep the prior emitter (if any) so
+		// receipts continue with the old key rather than going dark entirely.
+		if p.logger != nil {
+			p.logger.LogError(audit.LogContext{Method: "RELOAD"}, fmt.Errorf("loading receipt signing key: %w", err))
+		}
 		return
 	}
 
@@ -529,9 +526,9 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
 	}
 	p.updateCEEStats()
 
-	// Update receipt emitter with new config hash so receipts reflect
-	// the active policy. Nil-safe (no-op when emitter is disabled).
-	p.receiptEmitter.UpdateConfigHash(cfg.Hash())
+	// Receipt emitter hash is updated by reloadReceiptEmitter above.
+	// No separate UpdateConfigHash needed — emitter is always (re)created
+	// with the current cfg.Hash() when a signing key is configured.
 }
 
 // LoadCertCache creates or replaces the cert cache based on current config.

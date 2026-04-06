@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -40,6 +41,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 // contextKey is used for storing per-request values in context.
@@ -144,8 +146,9 @@ type Proxy struct {
 	approver          *hitl.Approver
 	a2aCardBaseline   *mcp.CardBaseline // Agent Card drift detection across requests
 	captureObs        capture.CaptureObserver
-	recorder          *recorder.Recorder // flight recorder for tamper-evident evidence (nil = disabled)
-	receiptEmitter    *receipt.Emitter   // action receipt emitter (nil = disabled)
+	recorder          *recorder.Recorder              // flight recorder for tamper-evident evidence (nil = disabled)
+	receiptEmitterPtr atomic.Pointer[receipt.Emitter] // action receipt emitter (nil = disabled)
+	receiptKeyPath    string                          // active signing key path, for reload comparison
 }
 
 // Option configures optional Proxy behavior.
@@ -184,7 +187,14 @@ func WithRecorder(rec *recorder.Recorder) Option {
 // emits signed action receipts for every enforcement decision to the flight
 // recorder. Pass nil to disable (default).
 func WithReceiptEmitter(e *receipt.Emitter) Option {
-	return func(p *Proxy) { p.receiptEmitter = e }
+	return func(p *Proxy) { p.receiptEmitterPtr.Store(e) }
+}
+
+// WithReceiptKeyPath sets the initial signing key path for reload comparison.
+// Must match the key used to construct the emitter passed to WithReceiptEmitter
+// so that reload can detect key rotation.
+func WithReceiptKeyPath(path string) Option {
+	return func(p *Proxy) { p.receiptKeyPath = path }
 }
 
 // FetchResponse is the JSON response returned by the /fetch endpoint.
@@ -353,12 +363,53 @@ func (p *Proxy) recordDecision(verdict, layer, pattern, transport, requestID str
 // through the recorder mutex — same cost as recordDecision. Errors are logged
 // but not propagated.
 func (p *Proxy) emitReceipt(opts receipt.EmitOpts) {
-	if p.receiptEmitter == nil {
+	e := p.receiptEmitterPtr.Load()
+	if e == nil {
 		return
 	}
-	if err := p.receiptEmitter.Emit(opts); err != nil {
+	if err := e.Emit(opts); err != nil {
 		p.logger.LogError(audit.LogContext{RequestID: opts.RequestID}, err)
 	}
+}
+
+// reloadReceiptEmitter handles receipt emitter lifecycle on config reload.
+// Creates a new emitter if a signing key appears, updates the config hash
+// if the emitter exists, or nils it if the key is removed. Must be called
+// under reloadMu.
+func (p *Proxy) reloadReceiptEmitter(cfg *config.Config) {
+	keyPath := cfg.FlightRecorder.SigningKeyPath
+
+	if keyPath == "" {
+		// No signing key configured — disable receipts if they were on.
+		p.receiptEmitterPtr.Store(nil)
+		p.receiptKeyPath = ""
+		return
+	}
+
+	// Always reload the key file to detect both path changes and
+	// in-place content changes (key rotation at the same path).
+	if p.recorder == nil {
+		return
+	}
+
+	privKey, err := signing.LoadPrivateKeyFile(filepath.Clean(keyPath))
+	if err != nil {
+		// Failure is non-fatal: log and keep the prior emitter (if any) so
+		// receipts continue with the old key rather than going dark entirely.
+		if p.logger != nil {
+			p.logger.LogError(audit.LogContext{Method: "RELOAD"}, fmt.Errorf("loading receipt signing key: %w", err))
+		}
+		return
+	}
+
+	p.receiptEmitterPtr.Store(receipt.NewEmitter(receipt.EmitterConfig{
+		Recorder:   p.recorder,
+		PrivKey:    privKey,
+		ConfigHash: cfg.Hash(),
+		Principal:  "local",
+		Actor:      "pipelock",
+	}))
+	p.receiptKeyPath = keyPath
 }
 
 // CurrentConfig returns the currently active config. Used for reload comparison.
@@ -418,11 +469,12 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
 		return
 	}
 
-	// Update receipt emitter hash BEFORE config swap so receipts
-	// always reflect the policy that governed the decision. Without
-	// this ordering, requests racing with reload could get signed
-	// with the previous policy hash.
-	p.receiptEmitter.UpdateConfigHash(cfg.Hash())
+	// Receipt emitter lifecycle: create on first signing key appearance,
+	// update config hash on existing, nil on key removal. Must run BEFORE
+	// config swap so receipts always reflect the policy that governed the
+	// decision. Without this ordering, requests racing with reload could
+	// get signed with the previous policy hash.
+	p.reloadReceiptEmitter(cfg)
 
 	oldCfg := p.cfgPtr.Load()
 	p.cfgPtr.Store(cfg)
@@ -474,9 +526,9 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
 	}
 	p.updateCEEStats()
 
-	// Update receipt emitter with new config hash so receipts reflect
-	// the active policy. Nil-safe (no-op when emitter is disabled).
-	p.receiptEmitter.UpdateConfigHash(cfg.Hash())
+	// Receipt emitter hash is updated by reloadReceiptEmitter above.
+	// No separate UpdateConfigHash needed — emitter is always (re)created
+	// with the current cfg.Hash() when a signing key is configured.
 }
 
 // LoadCertCache creates or replaces the cert cache based on current config.

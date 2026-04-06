@@ -342,6 +342,9 @@ Examples:
 				})
 				if receiptEmitter != nil {
 					proxyOpts = append(proxyOpts, proxy.WithReceiptEmitter(receiptEmitter))
+					if cfg.FlightRecorder.SigningKeyPath != "" {
+						proxyOpts = append(proxyOpts, proxy.WithReceiptKeyPath(cfg.FlightRecorder.SigningKeyPath))
+					}
 					cmd.PrintErrf("  Receipts: enabled (action receipts signed)\n")
 				}
 

@@ -1738,5 +1738,203 @@ func TestRecorder_VerifyChain_WithPubKey(t *testing.T) {
 	}
 }
 
+func TestRecorder_ReceiptRedaction(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	sc := scanner.New(cfg)
+	defer sc.Close()
+
+	// Build fake cred at runtime to avoid gosec G101
+	fakeKey := "AK" + "IA" + "IOSFODNN7EXAMPLE"
+
+	tests := []struct {
+		name      string
+		entryType string
+		detail    any
+		// For receipts: selective redaction (target/pattern only, structure preserved).
+		// For non-receipts: full redaction (entire detail replaced).
+		wantSelectiveRedact bool
+		wantFullRedact      bool
+	}{
+		{
+			name:      "receipt target field is redacted",
+			entryType: "action_receipt",
+			detail: map[string]any{
+				"version": 1,
+				"action_record": map[string]any{
+					"target":      "https://example.com/?key=" + fakeKey,
+					"verdict":     "block",
+					"action_type": "read",
+					"transport":   testTransport,
+					"action_id":   "test-id-123",
+				},
+				"signature":  "ed25519:deadbeef",
+				"signer_key": "cafebabe",
+			},
+			wantSelectiveRedact: true,
+		},
+		{
+			name:      "receipt without secrets is preserved",
+			entryType: "action_receipt",
+			detail: map[string]any{
+				"version": 1,
+				"action_record": map[string]any{
+					"target":      "https://example.com/safe",
+					"verdict":     "allow",
+					"action_type": "read",
+					"transport":   testTransport,
+					"action_id":   "test-id-456",
+				},
+				"signature":  "ed25519:deadbeef",
+				"signer_key": "cafebabe",
+			},
+		},
+		{
+			name:           "non-receipt entry gets full redaction",
+			entryType:      "request",
+			detail:         map[string]string{"url": "https://example.com/?key=" + fakeKey},
+			wantFullRedact: true,
+		},
+		{
+			name:      "receipt without action_record falls back to full redaction",
+			entryType: "action_receipt",
+			// Malformed receipt: missing action_record key triggers fallback
+			detail:         map[string]string{"target": "https://example.com/?key=" + fakeKey},
+			wantFullRedact: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			subDir := t.TempDir()
+			subCfg := recorder.Config{
+				Enabled:            true,
+				Dir:                subDir,
+				Redact:             true,
+				CheckpointInterval: 100,
+			}
+			subRec, err := recorder.New(subCfg, sc.ScanTextForDLP, nil)
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			defer func() { _ = subRec.Close() }()
+
+			err = subRec.Record(recorder.Entry{
+				SessionID: testSessionID,
+				Type:      tt.entryType,
+				Transport: testTransport,
+				Summary:   "test entry",
+				Detail:    tt.detail,
+			})
+			if err != nil {
+				t.Fatalf("Record: %v", err)
+			}
+			if err := subRec.Close(); err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+
+			entries, err := recorder.ReadEntries(filepath.Join(subDir, "evidence-test-session-0.jsonl"))
+			if err != nil {
+				t.Fatalf("ReadEntries: %v", err)
+			}
+			if len(entries) < 1 {
+				t.Fatal("expected at least 1 entry")
+			}
+
+			detailJSON, _ := json.Marshal(entries[0].Detail)
+			detailStr := string(detailJSON)
+
+			if tt.wantFullRedact {
+				// Non-receipt: entire detail replaced with redaction wrapper
+				if strings.Contains(detailStr, fakeKey) {
+					t.Error("secret should be redacted from non-receipt detail")
+				}
+				if !strings.Contains(detailStr, "[REDACTED:") {
+					t.Error("detail should contain redaction marker")
+				}
+				if !strings.Contains(detailStr, `"redacted":true`) {
+					t.Error("detail should be wrapped in redaction envelope")
+				}
+			}
+
+			if tt.wantSelectiveRedact {
+				// Receipt: target field redacted, structure preserved
+				detailMap, ok := entries[0].Detail.(map[string]any)
+				if !ok {
+					t.Fatal("receipt detail should be a map")
+				}
+
+				// Signature and signer_key preserved
+				if _, hasSig := detailMap["signature"]; !hasSig {
+					t.Error("receipt should preserve signature field")
+				}
+				if _, hasKey := detailMap["signer_key"]; !hasKey {
+					t.Error("receipt should preserve signer_key field")
+				}
+
+				// action_record structure preserved
+				ar, arOK := detailMap["action_record"].(map[string]any)
+				if !arOK {
+					t.Fatal("receipt should preserve action_record structure")
+				}
+
+				// Target is redacted
+				if target, ok := ar["target"].(string); !ok || target != "[REDACTED]" {
+					t.Errorf("target should be [REDACTED], got %v", ar["target"])
+				}
+
+				// Secret not present in serialized form
+				if strings.Contains(detailStr, fakeKey) {
+					t.Error("secret should not appear in receipt detail")
+				}
+
+				// Non-sensitive fields preserved
+				if verdict, ok := ar["verdict"].(string); !ok || verdict != "block" {
+					t.Errorf("verdict should be preserved, got %v", ar["verdict"])
+				}
+				if actionType, ok := ar["action_type"].(string); !ok || actionType != "read" {
+					t.Errorf("action_type should be preserved, got %v", ar["action_type"])
+				}
+				if transport, ok := ar["transport"].(string); !ok || transport != testTransport {
+					t.Errorf("transport should be preserved, got %v", ar["transport"])
+				}
+
+				// redacted_fields annotation present
+				rf, rfOK := ar["redacted_fields"].([]any)
+				if !rfOK {
+					t.Fatal("receipt should have redacted_fields annotation")
+				}
+				found := false
+				for _, f := range rf {
+					if f == "target" {
+						found = true
+					}
+				}
+				if !found {
+					t.Error("redacted_fields should include 'target'")
+				}
+			}
+
+			// Clean receipt (no secrets): no modifications
+			if !tt.wantSelectiveRedact && !tt.wantFullRedact && tt.entryType == "action_receipt" {
+				detailMap, ok := entries[0].Detail.(map[string]any)
+				if !ok {
+					t.Fatal("receipt detail should be a map")
+				}
+				ar, arOK := detailMap["action_record"].(map[string]any)
+				if !arOK {
+					t.Fatal("receipt should preserve action_record structure")
+				}
+				if _, hasRF := ar["redacted_fields"]; hasRF {
+					t.Error("clean receipt should not have redacted_fields")
+				}
+				if target, ok := ar["target"].(string); !ok || target != "https://example.com/safe" {
+					t.Errorf("clean receipt target should be preserved, got %v", ar["target"])
+				}
+			}
+		})
+	}
+}
+
 // filePermissions for test file creation.
 const filePermissions = 0o600

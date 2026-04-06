@@ -143,6 +143,11 @@ type ActionRecord struct {
 	Pattern   string `json:"pattern,omitempty"`
 	RequestID string `json:"request_id,omitempty"`
 
+	// Chain integrity — links receipts into a tamper-evident sequence.
+	// ChainPrevHash is "genesis" for the first receipt in a session.
+	ChainPrevHash string `json:"chain_prev_hash"`
+	ChainSeq      uint64 `json:"chain_seq"`
+
 	// Jurisdictional fields — present in schema for forward compatibility.
 	// Empty in v1; populated when jurisdiction engine ships.
 	Venue              string   `json:"venue,omitempty"`

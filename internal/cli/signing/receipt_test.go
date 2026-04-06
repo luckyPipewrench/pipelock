@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
 func TestVerifyReceiptCmd_ValidReceipt(t *testing.T) {
@@ -260,5 +261,195 @@ func TestVerifyReceiptCmd_ReceiptWithMethodShowsFullRecord(t *testing.T) {
 	// When method/layer are present, full record JSON is printed
 	if !strings.Contains(output, "Full record:") {
 		t.Errorf("expected full record in output, got: %s", output)
+	}
+}
+
+// buildChainJSONL creates a JSONL file with a valid receipt chain using the
+// emitter, which handles chain state (prev_hash, seq) automatically.
+func buildChainJSONL(t *testing.T, count int) (string, ed25519.PublicKey) {
+	t.Helper()
+
+	dir := t.TempDir()
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+
+	rec, err := recorder.New(recorder.Config{
+		Enabled:            true,
+		Dir:                dir,
+		CheckpointInterval: 1000,
+	}, nil, priv)
+	if err != nil {
+		t.Fatalf("recorder.New: %v", err)
+	}
+
+	emitter := receipt.NewEmitter(receipt.EmitterConfig{
+		Recorder:   rec,
+		PrivKey:    priv,
+		ConfigHash: "test-chain-hash",
+		Principal:  "test",
+		Actor:      "test",
+	})
+
+	for i := range count {
+		err := emitter.Emit(receipt.EmitOpts{
+			ActionID:  receipt.NewActionID(),
+			Verdict:   "allow",
+			Transport: "fetch",
+			Method:    "GET",
+			Target:    "https://example.com/" + string(rune('a'+i)),
+		})
+		if err != nil {
+			t.Fatalf("Emit %d: %v", i, err)
+		}
+	}
+
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+
+	// Find the JSONL file
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	for _, de := range entries {
+		if strings.HasSuffix(de.Name(), ".jsonl") {
+			return filepath.Join(dir, de.Name()), priv.Public().(ed25519.PublicKey)
+		}
+	}
+	t.Fatal("no JSONL file found")
+	return "", nil
+}
+
+func TestVerifyReceiptCmd_ChainValid(t *testing.T) {
+	t.Parallel()
+
+	path, _ := buildChainJSONL(t, 5)
+
+	cmd := VerifyReceiptCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{path})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "CHAIN VALID") {
+		t.Errorf("expected CHAIN VALID, got: %s", output)
+	}
+	if !strings.Contains(output, "Receipts:  5") {
+		t.Errorf("expected 5 receipts, got: %s", output)
+	}
+}
+
+func TestVerifyReceiptCmd_ChainWithKey(t *testing.T) {
+	t.Parallel()
+
+	path, pubKey := buildChainJSONL(t, 3)
+	keyHex := hex.EncodeToString(pubKey)
+
+	cmd := VerifyReceiptCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{path, "--key", keyHex})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	if !strings.Contains(buf.String(), "CHAIN VALID") {
+		t.Errorf("expected CHAIN VALID, got: %s", buf.String())
+	}
+}
+
+func TestVerifyReceiptCmd_ChainEmpty(t *testing.T) {
+	t.Parallel()
+
+	// Write an empty JSONL file (no receipts).
+	dir := t.TempDir()
+	emptyPath := filepath.Join(dir, "empty.jsonl")
+	if err := os.WriteFile(emptyPath, []byte{}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := VerifyReceiptCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{emptyPath})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for empty JSONL")
+	}
+}
+
+func TestTranscriptRootCmd_NoKey(t *testing.T) {
+	t.Parallel()
+
+	path, _ := buildChainJSONL(t, 3)
+
+	cmd := TranscriptRootCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{path})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when --key not provided")
+	}
+	if !strings.Contains(err.Error(), "--key is required") {
+		t.Errorf("expected --key required error, got: %v", err)
+	}
+}
+
+func TestTranscriptRootCmd_Valid(t *testing.T) {
+	t.Parallel()
+
+	path, pub := buildChainJSONL(t, 4)
+	keyHex := hex.EncodeToString(pub)
+
+	cmd := TranscriptRootCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{"--key", keyHex, path})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "Transcript Root") {
+		t.Errorf("expected Transcript Root header, got: %s", output)
+	}
+	if !strings.Contains(output, "Receipt count: 4") {
+		t.Errorf("expected 4 receipts, got: %s", output)
+	}
+	if !strings.Contains(output, "Root hash:") {
+		t.Errorf("expected root hash, got: %s", output)
+	}
+}
+
+func TestTranscriptRootCmd_NoArgs(t *testing.T) {
+	t.Parallel()
+
+	cmd := TranscriptRootCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{})
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("expected error for no args")
+	}
+}
+
+func TestTranscriptRootCmd_MissingFile(t *testing.T) {
+	t.Parallel()
+
+	cmd := TranscriptRootCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{"/nonexistent/file.jsonl"})
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("expected error for missing file")
 	}
 }

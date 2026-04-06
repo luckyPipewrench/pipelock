@@ -325,7 +325,7 @@ func TestCapsuleMDContent(t *testing.T) {
 			},
 		},
 		ConfigHash:  "sha256:abc123",
-		PipelockVer: "v2.1.1",
+		PipelockVer: "v2.1.2",
 	}
 
 	md := string(renderCapsuleMD(capsule))
@@ -339,7 +339,7 @@ func TestCapsuleMDContent(t *testing.T) {
 	if !strings.Contains(md, "sha256:abc123") {
 		t.Error("MD should contain config hash")
 	}
-	if !strings.Contains(md, "v2.1.1") {
+	if !strings.Contains(md, "v2.1.2") {
 		t.Error("MD should contain pipelock version")
 	}
 	if !strings.Contains(md, "| DLP | 15 | 15 |") {

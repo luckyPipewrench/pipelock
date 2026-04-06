@@ -350,6 +350,7 @@ func buildConfig(preset string, report *discover.Report) *config.Config {
 		cfg.MCPInputScanning.Enabled = true
 		cfg.MCPInputScanning.Action = config.ActionWarn
 		cfg.MCPToolScanning.Enabled = true
+		cfg.MCPToolScanning.Action = config.ActionWarn
 		cfg.MCPToolScanning.DetectDrift = true
 	}
 

@@ -60,8 +60,9 @@ type CompiledToolPoisonRule struct {
 
 // BundleError describes a per-bundle load failure.
 type BundleError struct {
-	Name   string
-	Reason string
+	Name     string
+	Reason   string
+	Official bool // true if bundle was signed by an official key (not just name-based)
 }
 
 // LoadedBundle describes a successfully loaded bundle (for diagnostics).
@@ -160,10 +161,12 @@ func LoadBundles(rulesDir string, opts LoadOptions) *LoadResult {
 		}
 	}
 
-	// Detect standard pack degradation: if any bundle with the reserved
-	// prefix failed to load, set Degraded flag.
+	// Detect standard pack degradation: if any official bundle failed
+	// to load, set Degraded flag. Uses verified signature status, not
+	// directory name, to prevent attacker-controlled names from triggering
+	// degraded mode.
 	for _, be := range result.Errors {
-		if strings.HasPrefix(be.Name, "pipelock-") {
+		if be.Official {
 			result.Degraded = true
 			result.Warnings = append(result.Warnings,
 				fmt.Sprintf("DEGRADED: standard pack %q failed to load: %s — running core-only", be.Name, be.Reason))
@@ -213,14 +216,15 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, minRank int, res
 	}
 
 	// Check pipelock-* name reservation: only official signers allowed.
-	if strings.HasPrefix(bundle.Name, reservedBundlePrefix) {
-		if !isOfficialFingerprint(lock.SignerFingerprint) {
-			result.Errors = append(result.Errors, BundleError{
-				Name:   dirName,
-				Reason: fmt.Sprintf("bundle name %q uses reserved prefix %q but signer is not official", bundle.Name, reservedBundlePrefix),
-			})
-			return
-		}
+	// Track official status for degraded-mode detection (based on verified
+	// signature, not directory name).
+	official := strings.HasPrefix(bundle.Name, reservedBundlePrefix) && isOfficialFingerprint(lock.SignerFingerprint)
+	if strings.HasPrefix(bundle.Name, reservedBundlePrefix) && !official {
+		result.Errors = append(result.Errors, BundleError{
+			Name:   dirName,
+			Reason: fmt.Sprintf("bundle name %q uses reserved prefix %q but signer is not official", bundle.Name, reservedBundlePrefix),
+		})
+		return
 	}
 
 	// V2+ freshness checks: rollback prevention, expiry, tier-key binding.
@@ -229,22 +233,23 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, minRank int, res
 		// tier/key_id and bypass tier-key binding entirely.
 		if lock.Unsigned {
 			result.Errors = append(result.Errors, BundleError{
-				Name:   dirName,
-				Reason: "format_version 2 bundles must be signed (unsigned v2 bundles are rejected)",
+				Name:     dirName,
+				Official: official,
+				Reason:   "format_version 2 bundles must be signed (unsigned v2 bundles are rejected)",
 			})
 			return
 		}
 
 		// Tier-key binding: verify the signing key matches the declared tier.
 		if err := CheckTierKeyBinding(bundle, lock.SignerFingerprint, opts.TierKeyMapping); err != nil {
-			result.Errors = append(result.Errors, BundleError{Name: dirName, Reason: err.Error()})
+			result.Errors = append(result.Errors, BundleError{Name: dirName, Official: official, Reason: err.Error()})
 			return
 		}
 
 		// Freshness: rollback prevention and expiry.
 		fr := CheckFreshness(bundle, freshnessState, now, opts.AllowStale)
 		if !fr.OK {
-			result.Errors = append(result.Errors, BundleError{Name: dirName, Reason: fr.Message})
+			result.Errors = append(result.Errors, BundleError{Name: dirName, Official: official, Reason: fr.Message})
 			return
 		}
 		if fr.Expired {

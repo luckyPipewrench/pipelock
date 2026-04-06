@@ -395,22 +395,12 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		return nil
 	}
 
-	// Browser Shield on reverse proxy responses.
+	// Browser Shield on reverse proxy responses — uses shared pipeline.
 	if rp.shieldEngine != nil && cfg.BrowserShield.Enabled {
 		revHost := resp.Request.URL.Hostname()
 		if !isShieldExempt(revHost, cfg.BrowserShield.ExemptDomains) {
 			if cfg.BrowserShield.MaxShieldBytes <= 0 || len(body) <= cfg.BrowserShield.MaxShieldBytes {
-				prefixLen := len(body)
-				if prefixLen > 512 {
-					prefixLen = 512
-				}
-				pipeline := shield.DetectPipeline(resp.Header.Get("Content-Type"), body[:prefixLen])
-				if pipeline != shield.PipelineNone {
-					shieldResult := rp.shieldEngine.Rewrite(string(body), pipeline, &cfg.BrowserShield)
-					if shieldResult.Rewritten {
-						body = []byte(shieldResult.Content)
-					}
-				}
+				body = runShieldPipelineShared(rp.shieldEngine, body, resp.Header.Get("Content-Type"), resp.Header, &cfg.BrowserShield, rp.metrics, rp.logger, "reverse", "", "", "")
 			}
 		}
 	}

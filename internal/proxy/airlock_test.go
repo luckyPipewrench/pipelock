@@ -769,19 +769,28 @@ func TestAirlockState_ForceSetTier_InvalidTier(t *testing.T) {
 func TestAirlockState_ForceSetTier_ClearsCancelOnNone(t *testing.T) {
 	a := NewAirlockState()
 	a.SetTier(config.AirlockTierSoft)
-	a.SetTier(config.AirlockTierHard)
 
+	// Register while at Soft (not Hard) so it's queued, not immediately cancelled.
 	var called bool
 	a.RegisterCancel(func() { called = true })
 
-	// Release to none should clear cancel funcs (not call them).
+	// Escalate to Hard fires the cancel.
+	a.SetTier(config.AirlockTierHard)
+	if !called {
+		t.Fatal("expected cancel to fire on Hard escalation")
+	}
+
+	// Release to none should clear cancel funcs.
+	called = false
 	a.ForceSetTier(config.AirlockTierNone)
 
-	// Verify cancel funcs were cleared by escalating again; they should not fire.
+	// Register a new cancel, escalate again — old cancel should not fire.
+	var calledAgain bool
+	a.RegisterCancel(func() { calledAgain = true })
 	a.SetTier(config.AirlockTierSoft)
-	a.SetTier(config.AirlockTierHard) // would call cancel funcs if still registered
-	if called {
-		t.Error("cancel funcs should have been cleared on ForceSetTier to none")
+	a.SetTier(config.AirlockTierHard)
+	if !calledAgain {
+		t.Error("new cancel should have fired on second Hard escalation")
 	}
 }
 

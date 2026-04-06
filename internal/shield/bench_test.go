@@ -19,7 +19,7 @@ func benchCfg() *config.BrowserShield {
 }
 
 func BenchmarkRewrite_CleanHTML(b *testing.B) {
-	e := NewEngine()
+	e := NewEngine(nil)
 	cfg := benchCfg()
 
 	// ~1 KB clean HTML page with no patterns to match.
@@ -36,7 +36,7 @@ func BenchmarkRewrite_CleanHTML(b *testing.B) {
 }
 
 func BenchmarkRewrite_BrowserGateJS(b *testing.B) {
-	e := NewEngine()
+	e := NewEngine(nil)
 	cfg := benchCfg()
 
 	// Realistic ~100 KB JS with extension probing patterns scattered throughout.
@@ -66,7 +66,7 @@ func BenchmarkRewrite_BrowserGateJS(b *testing.B) {
 }
 
 func BenchmarkRewrite_LargeHTML(b *testing.B) {
-	e := NewEngine()
+	e := NewEngine(nil)
 	cfg := benchCfg()
 
 	// 1 MB HTML page with a few patterns near the end.

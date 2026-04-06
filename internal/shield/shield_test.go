@@ -39,7 +39,7 @@ func defaultShieldCfg() *config.BrowserShield {
 }
 
 func TestNewEngine(t *testing.T) {
-	e := NewEngine()
+	e := NewEngine(nil)
 	if e == nil {
 		t.Fatal("NewEngine returned nil")
 	}
@@ -79,7 +79,7 @@ func TestDetectPipeline(t *testing.T) {
 }
 
 func TestRewrite_NilConfig(t *testing.T) {
-	e := NewEngine()
+	e := NewEngine(nil)
 	res := e.Rewrite("<html><head></head></html>", PipelineHTML, nil)
 	if res.Rewritten {
 		t.Error("expected no rewrite with nil config")
@@ -87,7 +87,7 @@ func TestRewrite_NilConfig(t *testing.T) {
 }
 
 func TestRewrite_PipelineNone(t *testing.T) {
-	e := NewEngine()
+	e := NewEngine(nil)
 	cfg := defaultShieldCfg()
 	res := e.Rewrite(`{"data": "value"}`, PipelineNone, cfg)
 	if res.Rewritten {
@@ -96,7 +96,7 @@ func TestRewrite_PipelineNone(t *testing.T) {
 }
 
 func TestStripExtensionProbing(t *testing.T) {
-	e := NewEngine()
+	e := NewEngine(nil)
 	cfg := defaultShieldCfg()
 	cfg.InjectFingerprintShims = false
 
@@ -161,7 +161,7 @@ func TestStripExtensionProbing(t *testing.T) {
 }
 
 func TestStripTrackingPixels(t *testing.T) {
-	e := NewEngine()
+	e := NewEngine(nil)
 	cfg := defaultShieldCfg()
 	cfg.StripExtensionProbing = false
 	cfg.StripHiddenTraps = false
@@ -211,7 +211,7 @@ func TestStripTrackingPixels(t *testing.T) {
 }
 
 func TestStripHiddenTraps(t *testing.T) {
-	e := NewEngine()
+	e := NewEngine(nil)
 	cfg := defaultShieldCfg()
 	cfg.StripExtensionProbing = false
 	cfg.StripTrackingPixels = false
@@ -266,7 +266,7 @@ func TestStripHiddenTraps(t *testing.T) {
 }
 
 func TestStripCommentTraps_MinimalStrictness(t *testing.T) {
-	e := NewEngine()
+	e := NewEngine(nil)
 	cfg := defaultShieldCfg()
 	cfg.Strictness = config.ShieldStrictnessMinimal
 	cfg.StripExtensionProbing = false
@@ -287,7 +287,7 @@ func TestStripCommentTraps_MinimalStrictness(t *testing.T) {
 }
 
 func TestStripCommentTraps_AggressiveStrictness(t *testing.T) {
-	e := NewEngine()
+	e := NewEngine(nil)
 	cfg := defaultShieldCfg()
 	cfg.Strictness = config.ShieldStrictnessAggressive
 	cfg.StripExtensionProbing = false
@@ -303,7 +303,7 @@ func TestStripCommentTraps_AggressiveStrictness(t *testing.T) {
 }
 
 func TestShimInjection_AfterHead(t *testing.T) {
-	e := NewEngine()
+	e := NewEngine(nil)
 	cfg := defaultShieldCfg()
 	cfg.StripTrackingPixels = false
 	cfg.StripHiddenTraps = false
@@ -338,7 +338,7 @@ func TestShimInjection_AfterHead(t *testing.T) {
 }
 
 func TestShimInjection_FallbackToHTML(t *testing.T) {
-	e := NewEngine()
+	e := NewEngine(nil)
 	cfg := defaultShieldCfg()
 	cfg.StripTrackingPixels = false
 	cfg.StripHiddenTraps = false
@@ -358,7 +358,7 @@ func TestShimInjection_FallbackToHTML(t *testing.T) {
 }
 
 func TestShimInjection_FallbackToPrepend(t *testing.T) {
-	e := NewEngine()
+	e := NewEngine(nil)
 	cfg := defaultShieldCfg()
 	cfg.StripTrackingPixels = false
 	cfg.StripHiddenTraps = false
@@ -376,7 +376,7 @@ func TestShimInjection_FallbackToPrepend(t *testing.T) {
 }
 
 func TestCSPNonceExtraction(t *testing.T) {
-	e := NewEngine()
+	e := NewEngine(nil)
 	cfg := defaultShieldCfg()
 	cfg.StripTrackingPixels = false
 	cfg.StripHiddenTraps = false
@@ -393,7 +393,7 @@ func TestCSPNonceExtraction(t *testing.T) {
 }
 
 func TestShimInjection_ExtensionOnly(t *testing.T) {
-	e := NewEngine()
+	e := NewEngine(nil)
 	cfg := defaultShieldCfg()
 	cfg.InjectFingerprintShims = false
 	cfg.StripTrackingPixels = false
@@ -413,7 +413,7 @@ func TestShimInjection_ExtensionOnly(t *testing.T) {
 }
 
 func TestShimInjection_FingerprintOnly(t *testing.T) {
-	e := NewEngine()
+	e := NewEngine(nil)
 	cfg := defaultShieldCfg()
 	cfg.StripExtensionProbing = false
 	cfg.StripTrackingPixels = false
@@ -433,7 +433,7 @@ func TestShimInjection_FingerprintOnly(t *testing.T) {
 }
 
 func TestJSPipeline_RegexOnly(t *testing.T) {
-	e := NewEngine()
+	e := NewEngine(nil)
 	cfg := defaultShieldCfg()
 
 	input := `var url = "` + testExtensionID + `"; fetchExtensions(); ` + testSendBeacon
@@ -460,7 +460,7 @@ func TestJSPipeline_RegexOnly(t *testing.T) {
 }
 
 func TestSVGPipeline(t *testing.T) {
-	e := NewEngine()
+	e := NewEngine(nil)
 	cfg := defaultShieldCfg()
 	cfg.InjectFingerprintShims = false
 
@@ -513,7 +513,7 @@ func TestBrowserGatePayload(t *testing.T) {
 		`scanDOMForPrefix("chrome-extension://");` +
 		`})();`
 
-	e := NewEngine()
+	e := NewEngine(nil)
 	cfg := defaultShieldCfg()
 
 	t.Run("JS pipeline", func(t *testing.T) {
@@ -554,7 +554,7 @@ func TestBrowserGatePayload(t *testing.T) {
 }
 
 func TestNoFalsePositives(t *testing.T) {
-	e := NewEngine()
+	e := NewEngine(nil)
 	cfg := defaultShieldCfg()
 	cfg.InjectFingerprintShims = false
 	cfg.StripExtensionProbing = false
@@ -601,7 +601,7 @@ func TestNoFalsePositives(t *testing.T) {
 }
 
 func TestLargeContent(t *testing.T) {
-	e := NewEngine()
+	e := NewEngine(nil)
 	cfg := defaultShieldCfg()
 
 	// 1MB+ HTML document with a trap near the end.
@@ -618,7 +618,7 @@ func TestLargeContent(t *testing.T) {
 }
 
 func TestRewritePreservesOriginal(t *testing.T) {
-	e := NewEngine()
+	e := NewEngine(nil)
 	cfg := defaultShieldCfg()
 
 	input := testHTMLPrefix + `<script>fetchExtensions();</script>` + testHTMLSuffix
@@ -633,7 +633,7 @@ func TestRewritePreservesOriginal(t *testing.T) {
 }
 
 func TestAllCategoriesDisabled(t *testing.T) {
-	e := NewEngine()
+	e := NewEngine(nil)
 	cfg := &config.BrowserShield{
 		Enabled:                true,
 		Strictness:             config.ShieldStrictnessStandard,
@@ -654,7 +654,7 @@ func TestAllCategoriesDisabled(t *testing.T) {
 }
 
 func TestSVGPipeline_NoScripts(t *testing.T) {
-	e := NewEngine()
+	e := NewEngine(nil)
 	cfg := defaultShieldCfg()
 	cfg.InjectFingerprintShims = false
 	cfg.StripExtensionProbing = false
@@ -701,7 +701,7 @@ func TestMediaTypeToPipeline(t *testing.T) {
 }
 
 func TestCountReplace(t *testing.T) {
-	re := NewEngine().extensionRe
+	re := NewEngine(nil).extensionRe
 	input := `"chrome-extension://aaaa1111bbbb2222" and "moz-extension://uuid-here"`
 	result, n := countReplace(re, input)
 	if n != 2 {
@@ -716,7 +716,7 @@ func TestCountReplace(t *testing.T) {
 }
 
 func TestCountReplace_NoMatch(t *testing.T) {
-	re := NewEngine().extensionRe
+	re := NewEngine(nil).extensionRe
 	input := "no extension URLs here"
 	result, n := countReplace(re, input)
 	if n != 0 {
@@ -779,7 +779,7 @@ func TestInjectShim_NoTags(t *testing.T) {
 }
 
 func TestMultipleHitsInOneDocument(t *testing.T) {
-	e := NewEngine()
+	e := NewEngine(nil)
 	cfg := defaultShieldCfg()
 	cfg.InjectFingerprintShims = false
 

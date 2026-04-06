@@ -3070,6 +3070,9 @@ func (c *Config) validateAirlock() error {
 	if !c.Airlock.Enabled {
 		return nil
 	}
+	if !c.SessionProfiling.Enabled {
+		return fmt.Errorf("airlock.enabled requires session_profiling.enabled")
+	}
 
 	validTiers := map[string]bool{
 		AirlockTierNone: true, AirlockTierSoft: true,

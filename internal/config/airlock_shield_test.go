@@ -20,6 +20,7 @@ func TestValidateAirlock_ValidDefaults(t *testing.T) {
 	t.Parallel()
 	cfg := Defaults()
 	cfg.Airlock.Enabled = true
+	cfg.SessionProfiling.Enabled = true
 	if err := cfg.validateAirlock(); err != nil {
 		t.Errorf("default airlock config should validate: %v", err)
 	}
@@ -29,6 +30,7 @@ func TestValidateAirlock_InvalidTier(t *testing.T) {
 	t.Parallel()
 	cfg := Defaults()
 	cfg.Airlock.Enabled = true
+	cfg.SessionProfiling.Enabled = true
 	cfg.Airlock.Triggers.OnElevated = "bogus"
 	if err := cfg.validateAirlock(); err == nil {
 		t.Error("invalid tier name should fail validation")
@@ -39,6 +41,7 @@ func TestValidateAirlock_NonMonotonic(t *testing.T) {
 	t.Parallel()
 	cfg := Defaults()
 	cfg.Airlock.Enabled = true
+	cfg.SessionProfiling.Enabled = true
 	cfg.Airlock.Triggers.OnElevated = AirlockTierHard
 	cfg.Airlock.Triggers.OnHigh = AirlockTierSoft // lower than elevated
 	cfg.Airlock.Triggers.OnCritical = AirlockTierDrain
@@ -51,6 +54,7 @@ func TestValidateAirlock_InvalidSeverity(t *testing.T) {
 	t.Parallel()
 	cfg := Defaults()
 	cfg.Airlock.Enabled = true
+	cfg.SessionProfiling.Enabled = true
 	cfg.Airlock.Triggers.OnSeverity = "low"
 	if err := cfg.validateAirlock(); err == nil {
 		t.Error("invalid severity should fail validation")
@@ -61,6 +65,7 @@ func TestValidateAirlock_ValidSeverity(t *testing.T) {
 	t.Parallel()
 	cfg := Defaults()
 	cfg.Airlock.Enabled = true
+	cfg.SessionProfiling.Enabled = true
 	cfg.Airlock.Triggers.OnSeverity = SeverityCritical
 	if err := cfg.validateAirlock(); err != nil {
 		t.Errorf("critical severity should validate: %v", err)
@@ -71,6 +76,7 @@ func TestValidateAirlock_NegativeTimers(t *testing.T) {
 	t.Parallel()
 	cfg := Defaults()
 	cfg.Airlock.Enabled = true
+	cfg.SessionProfiling.Enabled = true
 	cfg.Airlock.Timers.SoftMinutes = -1
 	if err := cfg.validateAirlock(); err == nil {
 		t.Error("negative timer should fail validation")
@@ -81,6 +87,7 @@ func TestValidateAirlock_NegativeDrainTimeout(t *testing.T) {
 	t.Parallel()
 	cfg := Defaults()
 	cfg.Airlock.Enabled = true
+	cfg.SessionProfiling.Enabled = true
 	cfg.Airlock.Timers.DrainTimeoutSeconds = -1
 	if err := cfg.validateAirlock(); err == nil {
 		t.Error("negative drain timeout should fail validation")
@@ -91,6 +98,7 @@ func TestValidateAirlock_NegativeAnomalyCount(t *testing.T) {
 	t.Parallel()
 	cfg := Defaults()
 	cfg.Airlock.Enabled = true
+	cfg.SessionProfiling.Enabled = true
 	cfg.Airlock.Triggers.AnomalyCount = -1
 	if err := cfg.validateAirlock(); err == nil {
 		t.Error("negative anomaly count should fail validation")

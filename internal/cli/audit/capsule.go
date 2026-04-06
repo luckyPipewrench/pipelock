@@ -96,6 +96,9 @@ Examples:
 
 			result := ScoreConfig(cfg, configFile)
 
+			if expires <= 0 {
+				return fmt.Errorf("--expires must be > 0")
+			}
 			now := time.Now().UTC()
 			capsule := &PostureCapsule{
 				Version:     capsuleVersion,

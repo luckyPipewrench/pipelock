@@ -22,6 +22,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/shield"
 )
 
 const (
@@ -50,14 +51,15 @@ type ReverseProxyBlockResponse struct {
 // to a configured upstream URL. Request bodies are scanned for DLP patterns
 // (secret exfiltration) and response bodies are scanned for prompt injection.
 type ReverseProxyHandler struct {
-	upstream   *url.URL
-	proxy      *httputil.ReverseProxy
-	cfgPtr     *atomic.Pointer[config.Config]
-	scPtr      *atomic.Pointer[scanner.Scanner]
-	logger     *audit.Logger
-	metrics    *metrics.Metrics
-	ks         *killswitch.Controller
-	captureObs capture.CaptureObserver
+	upstream     *url.URL
+	proxy        *httputil.ReverseProxy
+	cfgPtr       *atomic.Pointer[config.Config]
+	scPtr        *atomic.Pointer[scanner.Scanner]
+	logger       *audit.Logger
+	metrics      *metrics.Metrics
+	ks           *killswitch.Controller
+	captureObs   capture.CaptureObserver
+	shieldEngine *shield.Engine
 }
 
 // NewReverseProxy creates a reverse proxy handler that scans request and
@@ -72,18 +74,20 @@ func NewReverseProxy(
 	m *metrics.Metrics,
 	ks *killswitch.Controller,
 	captureObs capture.CaptureObserver,
+	shieldEngine *shield.Engine,
 ) *ReverseProxyHandler {
 	if captureObs == nil {
 		captureObs = capture.NopObserver{}
 	}
 	rp := &ReverseProxyHandler{
-		upstream:   upstream,
-		cfgPtr:     cfgPtr,
-		scPtr:      scPtr,
-		logger:     logger,
-		metrics:    m,
-		ks:         ks,
-		captureObs: captureObs,
+		upstream:     upstream,
+		cfgPtr:       cfgPtr,
+		scPtr:        scPtr,
+		logger:       logger,
+		metrics:      m,
+		ks:           ks,
+		captureObs:   captureObs,
+		shieldEngine: shieldEngine,
 	}
 
 	proxy := httputil.NewSingleHostReverseProxy(upstream)
@@ -389,6 +393,16 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		rp.metrics.RecordReverseProxyRequest(resp.Request.Method,
 			strconv.Itoa(resp.StatusCode))
 		return nil
+	}
+
+	// Browser Shield on reverse proxy responses — uses shared pipeline.
+	if rp.shieldEngine != nil && cfg.BrowserShield.Enabled {
+		revHost := resp.Request.URL.Hostname()
+		if !isShieldExempt(revHost, cfg.BrowserShield.ExemptDomains) {
+			if cfg.BrowserShield.MaxShieldBytes <= 0 || len(body) <= cfg.BrowserShield.MaxShieldBytes {
+				body = runShieldPipelineShared(rp.shieldEngine, body, resp.Header.Get("Content-Type"), resp.Header, &cfg.BrowserShield, rp.metrics, "reverse")
+			}
+		}
 	}
 
 	// Scan the response text for injection patterns.

@@ -26,6 +26,11 @@ const debounceDelay = 50 * time.Millisecond
 // Large enough to avoid blocking the watcher goroutine under burst writes.
 const findingsChanSize = 64
 
+// flushSendTimeout is the maximum time flushScan waits to deliver a finding
+// during Close(). Short enough to prevent test hangs when the consumer has
+// stopped reading, long enough to deliver findings under normal shutdown.
+const flushSendTimeout = 2 * time.Second
+
 // maxFileSize is the maximum file size to scan. Files larger than this are
 // skipped to avoid unbounded memory use from scanning large binaries.
 const maxFileSize = 10 * 1024 * 1024 // 10MB
@@ -299,13 +304,21 @@ func (w *fsWatcher) flushScan(path string, isAgent bool) {
 	}
 
 	for _, m := range result.Matches {
-		// Blocking send — consumer is still draining. No backpressure drop.
-		w.findings <- Finding{
+		select {
+		case w.findings <- Finding{
 			Path:        path,
 			PatternName: m.PatternName,
 			Severity:    m.Severity,
 			Encoded:     m.Encoded,
 			IsAgent:     isAgent,
+		}:
+		case <-time.After(flushSendTimeout):
+			// Timed out — consumer stopped reading. Log but don't block
+			// shutdown indefinitely. Buffer is 64, so this only fires
+			// when the consumer is truly gone.
+			if w.onError != nil {
+				w.onError(fmt.Errorf("filesentry: flush finding dropped (channel full, consumer stopped): %s", path))
+			}
 		}
 	}
 }

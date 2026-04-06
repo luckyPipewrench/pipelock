@@ -239,14 +239,20 @@ func TestBuildScenarios_PermissiveScanner(t *testing.T) {
 
 	scenarios := buildScenarios(nil)
 
-	// Scenarios that should NOT block with a permissive scanner
+	// Scenarios that should NOT block with a permissive scanner.
+	// Note: Prompt Injection and MCP Response Injection are detected by
+	// core patterns even with response scanning disabled — this is by design.
 	expectAllow := map[string]string{
 		"Credential Exfiltration":             demoScanAllowed,
-		"Prompt Injection":                    "no injection found",
 		"Data Exfiltration via Paste Service": demoScanAllowed,
 		"High-Entropy Data Smuggling":         demoScanAllowed,
-		"MCP Response Injection":              "no injection found",
 		"MCP Input Secret Leak":               "no leak detected",
+	}
+
+	// Scenarios that MUST block via core patterns even with permissive config.
+	expectBlock := map[string]bool{
+		"Prompt Injection":       true,
+		"MCP Response Injection": true,
 	}
 
 	for _, s := range scenarios {
@@ -259,6 +265,9 @@ func TestBuildScenarios_PermissiveScanner(t *testing.T) {
 				if detail != expected {
 					t.Errorf("detail = %q, want %q", detail, expected)
 				}
+			}
+			if expectBlock[s.name] && !blocked {
+				t.Errorf("expected %q to be blocked by core patterns, got allowed: %s", s.name, detail)
 			}
 			// MCP Tool Description Attack still blocks (built-in poison heuristics)
 			if s.name == "MCP Tool Description Attack" && !blocked {

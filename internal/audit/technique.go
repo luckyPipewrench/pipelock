@@ -71,6 +71,11 @@ var techniqueMap = map[string]string{
 
 	// Persistence techniques (policy + chain detection)
 	"persist": "T1053", // Scheduled Task/Job (cron, systemd, launchd)
+
+	// Core scanner (immutable safety floor — same techniques as main)
+	"core_dlp":      "T1048", // Exfiltration Over Alternative Protocol
+	"core_ssrf":     "T1046", // Network Service Discovery
+	"core_response": "T1059", // Command and Scripting Interpreter (prompt injection)
 }
 
 // TechniqueForScanner returns the MITRE ATT&CK technique ID for a scanner

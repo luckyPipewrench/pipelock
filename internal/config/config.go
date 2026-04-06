@@ -285,9 +285,12 @@ type Rules struct {
 }
 
 // TrustedKey is a named Ed25519 public key for verifying third-party bundles.
+// When Tier is set, this key is bound to that tier — bundles signed by this
+// key must declare the matching tier, preventing key-swap attacks.
 type TrustedKey struct {
 	Name      string `yaml:"name"`
 	PublicKey string `yaml:"public_key"` // 64 lowercase hex chars
+	Tier      string `yaml:"tier,omitempty"`
 }
 
 // FileSentry configures real-time filesystem monitoring for agent processes.
@@ -377,6 +380,8 @@ type Config struct {
 	MCPBinaryIntegrity    MCPBinaryIntegrity      `yaml:"mcp_binary_integrity"`
 	MCPToolProvenance     MCPToolProvenance       `yaml:"mcp_tool_provenance"`
 	BehavioralBaseline    BehavioralBaseline      `yaml:"behavioral_baseline"`
+	Airlock               Airlock                 `yaml:"airlock"`
+	BrowserShield         BrowserShield           `yaml:"browser_shield"`
 	A2AScanning           A2AScanning             `yaml:"a2a_scanning"`
 	Agents                map[string]AgentProfile `yaml:"agents,omitempty"`
 	LicenseKey            string                  `yaml:"license_key,omitempty"`        // signed license token (from pipelock license issue)
@@ -979,6 +984,79 @@ type BehavioralBaseline struct {
 	PoisonResistance bool     `yaml:"poison_resistance"` // trim outlier sessions (default true)
 	SeasonalityMode  string   `yaml:"seasonality_mode"`  // "none", "labeled", "time" (default "none")
 }
+
+// Airlock configures per-session quarantine with graduated tiers.
+// Airlock restricts action classes (read vs write) rather than just upgrading
+// scanner verdicts like adaptive enforcement does.
+type Airlock struct {
+	Enabled    bool              `yaml:"enabled"`
+	Triggers   AirlockTriggers   `yaml:"triggers"`
+	Timers     AirlockTimers     `yaml:"timers"`
+	ToolFreeze AirlockToolFreeze `yaml:"tool_freeze"`
+}
+
+// AirlockTriggers configures automatic airlock activation from adaptive
+// enforcement levels, scanner severity, or anomaly counts.
+type AirlockTriggers struct {
+	OnElevated           string `yaml:"on_elevated"`            // none|soft|hard|drain
+	OnHigh               string `yaml:"on_high"`                // none|soft|hard|drain
+	OnCritical           string `yaml:"on_critical"`            // none|soft|hard|drain
+	OnSeverity           string `yaml:"on_severity"`            // scanner severity threshold ("critical", "high", or "")
+	AnomalyCount         int    `yaml:"anomaly_count"`          // N anomalies in window triggers soft (0 = disabled)
+	AnomalyWindowMinutes int    `yaml:"anomaly_window_minutes"` // rolling window for anomaly count
+}
+
+// AirlockTimers configures per-tier duration before automatic de-escalation.
+type AirlockTimers struct {
+	SoftMinutes         int `yaml:"soft_minutes"`
+	HardMinutes         int `yaml:"hard_minutes"`
+	DrainMinutes        int `yaml:"drain_minutes"`
+	DrainTimeoutSeconds int `yaml:"drain_timeout_seconds"`
+}
+
+// AirlockToolFreeze configures MCP tool inventory freeze behavior in hard tier.
+type AirlockToolFreeze struct {
+	SnapshotOnEntry  bool `yaml:"snapshot_on_entry"`  // capture immutable tool set on hard entry
+	AllowCachedTools bool `yaml:"allow_cached_tools"` // allow calls to tools in the frozen snapshot
+}
+
+// AirlockTier constants for state machine transitions.
+const (
+	AirlockTierNone  = "none"
+	AirlockTierSoft  = "soft"
+	AirlockTierHard  = "hard"
+	AirlockTierDrain = "drain"
+)
+
+// BrowserShield configures inline HTML/JS rewriting for agent browser sessions.
+// Strips fingerprinting, extension probing, telemetry beacons, and agent traps
+// from response bodies flowing through the proxy.
+type BrowserShield struct {
+	Enabled                bool     `yaml:"enabled"`
+	Strictness             string   `yaml:"strictness"`               // minimal|standard|aggressive
+	MaxShieldBytes         int      `yaml:"max_shield_bytes"`         // size limit for shielding
+	OversizeAction         string   `yaml:"oversize_action"`          // block|scan_head|warn
+	ExemptDomains          []string `yaml:"exempt_domains"`           // hostnames only (validated, no paths)
+	StripExtensionProbing  bool     `yaml:"strip_extension_probing"`  // strip chrome-extension:// + runtime shims
+	StripHiddenTraps       bool     `yaml:"strip_hidden_traps"`       // strip hidden DOM elements with instructions
+	StripTrackingPixels    bool     `yaml:"strip_tracking_pixels"`    // strip 1x1 images and beacon calls
+	InjectFingerprintShims bool     `yaml:"inject_fingerprint_shims"` // canvas/WebGL/audio defense shims
+	TrackingDomains        []string `yaml:"tracking_domains"`         // hostnames (validated same as exempt)
+}
+
+// BrowserShield strictness constants.
+const (
+	ShieldStrictnessMinimal    = "minimal"
+	ShieldStrictnessStandard   = "standard"
+	ShieldStrictnessAggressive = "aggressive"
+)
+
+// BrowserShield oversize action constants.
+const (
+	ShieldOversizeBlock    = "block"
+	ShieldOversizeScanHead = "scan_head"
+	ShieldOversizeWarn     = "warn"
+)
 
 // ScanAPI configures the evaluation-plane HTTP listener.
 // Disabled by default (Listen: ""). When enabled, serves POST /api/v1/scan
@@ -1841,6 +1919,8 @@ func (c *Config) Validate() error {
 		c.validateMCPBinaryIntegrity,
 		c.validateMCPToolProvenance,
 		c.validateBehavioralBaseline,
+		c.validateAirlock,
+		c.validateBrowserShield,
 	}
 	for _, v := range validators {
 		if err := v(); err != nil {
@@ -2986,6 +3066,121 @@ func (c *Config) validateBehavioralBaseline() error {
 	return nil
 }
 
+func (c *Config) validateAirlock() error {
+	if !c.Airlock.Enabled {
+		return nil
+	}
+	if !c.SessionProfiling.Enabled {
+		return fmt.Errorf("airlock.enabled requires session_profiling.enabled")
+	}
+
+	validTiers := map[string]bool{
+		AirlockTierNone: true, AirlockTierSoft: true,
+		AirlockTierHard: true, AirlockTierDrain: true,
+	}
+	tierOrder := map[string]int{
+		AirlockTierNone: 0, AirlockTierSoft: 1,
+		AirlockTierHard: 2, AirlockTierDrain: 3,
+	}
+
+	// Normalize empty tier strings to AirlockTierNone so runtime code never
+	// sees an empty string (which could bypass tier-based conditionals).
+	if c.Airlock.Triggers.OnElevated == "" {
+		c.Airlock.Triggers.OnElevated = AirlockTierNone
+	}
+	if c.Airlock.Triggers.OnHigh == "" {
+		c.Airlock.Triggers.OnHigh = AirlockTierNone
+	}
+	if c.Airlock.Triggers.OnCritical == "" {
+		c.Airlock.Triggers.OnCritical = AirlockTierNone
+	}
+
+	for _, pair := range []struct{ name, val string }{
+		{"on_elevated", c.Airlock.Triggers.OnElevated},
+		{"on_high", c.Airlock.Triggers.OnHigh},
+		{"on_critical", c.Airlock.Triggers.OnCritical},
+	} {
+		if !validTiers[pair.val] {
+			return fmt.Errorf("invalid airlock.triggers.%s %q: must be none, soft, hard, or drain", pair.name, pair.val)
+		}
+	}
+
+	// Monotonicity: elevated <= high <= critical (tier severity must not decrease).
+	elev := tierOrder[c.Airlock.Triggers.OnElevated]
+	high := tierOrder[c.Airlock.Triggers.OnHigh]
+	crit := tierOrder[c.Airlock.Triggers.OnCritical]
+	if elev > high || high > crit {
+		return fmt.Errorf("airlock.triggers must be monotonic: on_elevated (%s) <= on_high (%s) <= on_critical (%s)",
+			c.Airlock.Triggers.OnElevated, c.Airlock.Triggers.OnHigh, c.Airlock.Triggers.OnCritical)
+	}
+
+	if c.Airlock.Triggers.OnSeverity != "" {
+		switch c.Airlock.Triggers.OnSeverity {
+		case SeverityCritical, SeverityHigh:
+			// valid
+		default:
+			return fmt.Errorf("invalid airlock.triggers.on_severity %q: must be critical, high, or empty", c.Airlock.Triggers.OnSeverity)
+		}
+	}
+
+	if c.Airlock.Timers.SoftMinutes < 0 || c.Airlock.Timers.HardMinutes < 0 || c.Airlock.Timers.DrainMinutes < 0 {
+		return fmt.Errorf("airlock timer values must be non-negative")
+	}
+
+	// Drain timeout below the de-escalation sweep interval (30s) is effectively
+	// the same as 30s. Warn but don't reject.
+	if c.Airlock.Timers.DrainTimeoutSeconds < 0 {
+		return fmt.Errorf("airlock.timers.drain_timeout_seconds must be non-negative")
+	}
+
+	if c.Airlock.Triggers.AnomalyCount < 0 {
+		return fmt.Errorf("airlock.triggers.anomaly_count must be non-negative")
+	}
+	if c.Airlock.Triggers.AnomalyWindowMinutes < 0 {
+		return fmt.Errorf("airlock.triggers.anomaly_window_minutes must be non-negative")
+	}
+
+	return nil
+}
+
+func (c *Config) validateBrowserShield() error {
+	if !c.BrowserShield.Enabled {
+		return nil
+	}
+
+	switch c.BrowserShield.Strictness {
+	case ShieldStrictnessMinimal, ShieldStrictnessStandard, ShieldStrictnessAggressive:
+		// valid
+	default:
+		return fmt.Errorf("invalid browser_shield.strictness %q: must be minimal, standard, or aggressive", c.BrowserShield.Strictness)
+	}
+
+	switch c.BrowserShield.OversizeAction {
+	case ShieldOversizeBlock, ShieldOversizeScanHead, ShieldOversizeWarn:
+		// valid
+	default:
+		return fmt.Errorf("invalid browser_shield.oversize_action %q: must be block, scan_head, or warn", c.BrowserShield.OversizeAction)
+	}
+
+	// warn is only appropriate for minimal strictness during rollout.
+	if c.BrowserShield.OversizeAction == ShieldOversizeWarn && c.BrowserShield.Strictness != ShieldStrictnessMinimal {
+		return fmt.Errorf("browser_shield.oversize_action \"warn\" is only allowed with strictness \"minimal\"")
+	}
+
+	if c.BrowserShield.MaxShieldBytes <= 0 {
+		return fmt.Errorf("browser_shield.max_shield_bytes must be positive")
+	}
+
+	if err := ValidateTrustedDomains(c.BrowserShield.ExemptDomains, "browser_shield.exempt_domains"); err != nil {
+		return err
+	}
+	if err := ValidateTrustedDomains(c.BrowserShield.TrackingDomains, "browser_shield.tracking_domains"); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 // ResolveCAPath returns resolved CA cert and key paths.
 // Empty config values resolve to ~/.pipelock/ca.pem and ~/.pipelock/ca-key.pem.
 // Returns an error if $HOME cannot be determined and paths are not set explicitly.
@@ -4084,6 +4279,37 @@ func Defaults() *Config {
 			SensitivitySigma: 2.0,
 			PoisonResistance: true, // trimmed-mean scoring resists adversarial training data
 			SeasonalityMode:  SeasonalityModeNone,
+		},
+		Airlock: Airlock{
+			Triggers: AirlockTriggers{
+				OnElevated:           AirlockTierNone,
+				OnHigh:               AirlockTierSoft,
+				OnCritical:           AirlockTierHard,
+				AnomalyWindowMinutes: 5,
+			},
+			Timers: AirlockTimers{
+				SoftMinutes:         10,
+				HardMinutes:         5,
+				DrainMinutes:        2,
+				DrainTimeoutSeconds: 30,
+			},
+			ToolFreeze: AirlockToolFreeze{
+				SnapshotOnEntry:  true,
+				AllowCachedTools: true,
+			},
+		},
+		BrowserShield: BrowserShield{
+			Strictness:            ShieldStrictnessStandard,
+			MaxShieldBytes:        5 * 1024 * 1024, // 5MB
+			OversizeAction:        ShieldOversizeBlock,
+			StripExtensionProbing: true,
+			StripHiddenTraps:      true,
+			StripTrackingPixels:   true,
+			ExemptDomains: []string{
+				"challenges.cloudflare.com",
+				"hcaptcha.com",
+				"www.recaptcha.net",
+			},
 		},
 	}
 	return cfg

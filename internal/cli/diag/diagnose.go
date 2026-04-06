@@ -279,7 +279,7 @@ func checkFetchBlocked(proxyURL, mockURL string, _ *config.Config) diagnoseResul
 	if !fr.Blocked {
 		return diagnoseResult{Status: statusFail, Detail: "expected blocked by DLP, but request was allowed"}
 	}
-	if !strings.HasPrefix(fr.BlockReason, "DLP") {
+	if !strings.Contains(fr.BlockReason, "DLP") && !strings.Contains(fr.BlockReason, "leak detected") {
 		return diagnoseResult{Status: statusFail, Detail: fmt.Sprintf("blocked by %q, expected DLP scanner", fr.BlockReason)}
 	}
 	return diagnoseResult{Status: statusPass, Detail: fmt.Sprintf("reason=%s", fr.BlockReason)}

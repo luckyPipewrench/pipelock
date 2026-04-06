@@ -600,8 +600,10 @@ func TestForwardHTTPContentLengthStripped(t *testing.T) {
 				// Read request (discard)
 				buf := make([]byte, 4096)
 				_, _ = conn.Read(buf)
-				// Send response with mismatched Content-Length
-				resp := "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 999999\r\n\r\nactual body"
+				// Send response with correct Content-Length (response scanning reads
+				// the full body, so mismatched lengths cause blocking reads).
+				body := "actual body"
+				resp := fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s", len(body), body)
 				_, _ = conn.Write([]byte(resp))
 			}()
 		}

@@ -17,6 +17,10 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
+// suppressRe matches inline suppression comments: // pipelock:ignore or # pipelock:ignore
+// Must stay in sync with cliutil.SuppressRe — duplicated here to avoid import cycle.
+var suppressRe = regexp.MustCompile(`(?://|#)\s*pipelock:ignore(?:\s+(.+?))?\s*$`)
+
 // Finding represents a secret detected in a git diff.
 type Finding struct {
 	File     string `json:"file"`
@@ -177,54 +181,82 @@ func (cp *CompiledDLPPattern) matches(text string) bool {
 // ErrNoDiffHeaders is returned when input contains no unified diff file headers.
 var ErrNoDiffHeaders = fmt.Errorf("no unified diff file headers found (expected '+++ b/filename' or '+++ filename')")
 
+// ScanDiffResult holds findings and suppressed findings from a diff scan.
+type ScanDiffResult struct {
+	Findings   []Finding
+	Suppressed []Finding // Findings suppressed by inline pipelock:ignore comments
+}
+
 // ScanDiff scans diff text for DLP pattern matches in added lines.
 // It returns findings sorted by file then line number, with redacted content —
 // the actual secret is replaced with [REDACTED] to prevent accidental exposure.
+// Inline pipelock:ignore comments are handled here (not deferred to the CLI layer)
+// because diff content is always available, unlike disk reads which can fail
+// when CWD doesn't match the repo root or lines have shifted.
 // Returns ErrNoDiffHeaders if the input contains no valid diff file headers,
 // indicating the caller may have passed non-diff content.
-func ScanDiff(diffText string, patterns []CompiledDLPPattern) ([]Finding, error) {
+func ScanDiff(diffText string, patterns []CompiledDLPPattern) (ScanDiffResult, error) {
 	addedLines := parseDiff(diffText)
 
 	// Check if input had content but no diff headers — likely not a diff.
 	if len(addedLines) == 0 && len(strings.TrimSpace(diffText)) > 0 && len(patterns) > 0 {
 		// Only error if the input has content — empty input is fine.
 		if !strings.Contains(diffText, "+++ ") {
-			return nil, ErrNoDiffHeaders
+			return ScanDiffResult{}, ErrNoDiffHeaders
 		}
 	}
 
 	if len(addedLines) == 0 || len(patterns) == 0 {
-		return nil, nil
+		return ScanDiffResult{}, nil
 	}
 
 	var findings []Finding
+	var suppressed []Finding
 	for file, lines := range addedLines {
 		for _, al := range lines {
+			// Respect pipelock:ignore inline comments.
+			// Bare "pipelock:ignore" suppresses all patterns on the line.
+			// "pipelock:ignore RuleName" suppresses only that specific pattern.
+			suppressMatch := suppressRe.FindStringSubmatch(al.content)
+			suppressAll := suppressMatch != nil && strings.TrimSpace(suppressMatch[1]) == ""
+			suppressRule := ""
+			if suppressMatch != nil && !suppressAll {
+				suppressRule = strings.TrimSpace(suppressMatch[1])
+			}
+
 			for _, cp := range patterns {
 				if !cp.matches(al.content) {
 					continue
 				}
 				redacted := cp.Re.ReplaceAllString(al.content, "[REDACTED]")
-				findings = append(findings, Finding{
+				f := Finding{
 					File:     file,
 					Line:     al.lineNum,
 					Content:  redacted,
 					Pattern:  cp.Name,
 					Severity: cp.Severity,
-				})
+				}
+				if suppressAll || (suppressRule != "" && strings.EqualFold(suppressRule, cp.Name)) {
+					suppressed = append(suppressed, f)
+				} else {
+					findings = append(findings, f)
+				}
 			}
 		}
 	}
 
-	// Sort by file, then by line number for deterministic output
-	sort.Slice(findings, func(i, j int) bool {
-		if findings[i].File != findings[j].File {
-			return findings[i].File < findings[j].File
-		}
-		return findings[i].Line < findings[j].Line
-	})
+	sortFindings := func(fs []Finding) {
+		sort.Slice(fs, func(i, j int) bool {
+			if fs[i].File != fs[j].File {
+				return fs[i].File < fs[j].File
+			}
+			return fs[i].Line < fs[j].Line
+		})
+	}
+	sortFindings(findings)
+	sortFindings(suppressed)
 
-	return findings, nil
+	return ScanDiffResult{Findings: findings, Suppressed: suppressed}, nil
 }
 
 // FindingsJSON returns the findings as a JSON-encoded byte slice.

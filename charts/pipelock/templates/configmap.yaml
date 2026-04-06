@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "pipelock.fullname" . }}
+  labels:
+    {{- include "pipelock.labels" . | nindent 4 }}
+data:
+  pipelock.yaml: |
+    {{- $cfg := deepCopy .Values.pipelock }}
+    {{- $_ := set $cfg "fetch_proxy" (merge (dict "listen" (printf "0.0.0.0:%d" (int .Values.service.port))) (default dict $cfg.fetch_proxy)) }}
+    {{- $_ := set $cfg "metrics_listen" (printf "0.0.0.0:%d" (int .Values.service.metricsPort)) }}
+    {{- toYaml $cfg | nindent 4 }}

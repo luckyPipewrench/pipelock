@@ -108,6 +108,24 @@ func (c *Controller) IsActive() bool {
 	return c.computeDecision(c.cfg.Load()).Active
 }
 
+// IsActiveForIP checks whether the kill switch should deny a request from
+// the given client IP. Only checks IP allowlist exemptions — no path/endpoint
+// exemptions. Use this inside intercepted CONNECT tunnels where request paths
+// belong to the upstream origin, not to pipelock's own endpoints.
+func (c *Controller) IsActiveForIP(clientIP string) Decision {
+	rt := c.cfg.Load()
+	if len(rt.allowlistNets) > 0 {
+		if ip := net.ParseIP(clientIP); ip != nil {
+			for _, ipNet := range rt.allowlistNets {
+				if ipNet.Contains(ip) {
+					return Decision{}
+				}
+			}
+		}
+	}
+	return c.computeDecision(rt)
+}
+
 // IsActiveHTTP checks whether the kill switch should deny an HTTP request.
 // Checks exemptions (health/metrics/API endpoints, allowlisted IPs) before
 // computing the active state from the four sources.
@@ -144,7 +162,8 @@ func (c *Controller) IsActiveHTTP(r *http.Request) Decision {
 	if rt.apiExempt && !c.separatePort.Load() &&
 		(path == "/api/v1/killswitch" || path == "/api/v1/killswitch/status" ||
 			path == "/api/v1/sessions" ||
-			(strings.HasPrefix(path, "/api/v1/sessions/") && strings.HasSuffix(path, "/reset"))) {
+			IsSessionActionPath(path, "reset") ||
+			IsSessionActionPath(path, "airlock")) {
 		return Decision{}
 	}
 
@@ -174,6 +193,20 @@ func (c *Controller) ToggleSignal() bool {
 			return !current
 		}
 	}
+}
+
+// IsSessionActionPath validates that path matches the exact route structure
+// /api/v1/sessions/{key}/{action} with exactly five segments and a non-empty
+// key that contains no path separators or null bytes. This prevents traversal
+// attacks like /api/v1/sessions/../../etc/passwd/airlock from matching.
+func IsSessionActionPath(path, action string) bool {
+	segs := strings.Split(strings.Trim(path, "/"), "/")
+	if len(segs) != 5 {
+		return false
+	}
+	return segs[0] == "api" && segs[1] == "v1" && segs[2] == "sessions" &&
+		segs[3] != "" && !strings.Contains(segs[3], "\x00") &&
+		segs[4] == action
 }
 
 // Reload updates the config-derived state atomically.

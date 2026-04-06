@@ -393,7 +393,8 @@ func (p *Proxy) reloadReceiptEmitter(cfg *config.Config) {
 	}
 
 	// Key path changed or emitter doesn't exist — (re)create.
-	// Failure is non-fatal: log and continue without receipts.
+	// Failure is non-fatal: log and keep the prior emitter (if any) so
+	// receipts continue with the old key rather than going dark entirely.
 	if p.recorder == nil {
 		return
 	}

@@ -452,6 +452,19 @@ func (r *Recorder) redactReceiptDetail(detail any) any {
 
 	ar["redacted_fields"] = redactedFields
 	m["action_record"] = ar
+
+	// Re-scan after selective redaction: if a secret was in both target
+	// AND an unexpected field (e.g., agent), the per-field loop caught
+	// target but the other field survives. Fall back to full redaction
+	// if the partially redacted receipt still has DLP matches.
+	partialJSON, err := json.Marshal(m)
+	if err != nil {
+		return r.redactDetail(detail)
+	}
+	if rescan := r.redactFn(context.Background(), string(partialJSON)); !rescan.Clean {
+		return r.redactDetail(detail)
+	}
+
 	return m
 }
 

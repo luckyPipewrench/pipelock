@@ -332,6 +332,7 @@ func TestProxy_ReloadCreatesReceiptEmitter(t *testing.T) {
 	if pErr != nil {
 		t.Fatalf("proxy.New: %v", pErr)
 	}
+	defer func() { _ = rec.Close() }()
 
 	if p.receiptEmitterPtr.Load() != nil {
 		t.Fatal("expected nil emitter before reload")
@@ -440,6 +441,7 @@ func TestProxy_ReloadRemovesReceiptEmitter(t *testing.T) {
 	if pErr != nil {
 		t.Fatalf("proxy.New: %v", pErr)
 	}
+	defer func() { _ = rec.Close() }()
 
 	if p.receiptEmitterPtr.Load() == nil {
 		t.Fatal("expected non-nil emitter before reload")
@@ -463,8 +465,8 @@ func TestProxy_ReloadRemovesReceiptEmitter(t *testing.T) {
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
-	if err := rec.Close(); err != nil {
-		t.Fatalf("recorder.Close: %v", err)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for blocklisted domain, got %d", w.Code)
 	}
 
 	entries := readAllEntries(t, recDir)
@@ -618,6 +620,7 @@ func TestProxy_ReloadReceiptEmitter_UpdatesHash(t *testing.T) {
 	if pErr != nil {
 		t.Fatalf("proxy.New: %v", pErr)
 	}
+	defer func() { _ = rec.Close() }()
 
 	origEmitter := p.receiptEmitterPtr.Load()
 
@@ -728,6 +731,7 @@ func TestProxy_ReloadRotatesSigningKey(t *testing.T) {
 	if pErr != nil {
 		t.Fatalf("proxy.New: %v", pErr)
 	}
+	defer func() { _ = rec.Close() }()
 
 	origEmitter := p.receiptEmitterPtr.Load()
 	if origEmitter == nil {

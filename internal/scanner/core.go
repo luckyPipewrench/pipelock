@@ -566,15 +566,54 @@ func (s *Scanner) checkCoreDLP(parsed *url.URL) Result {
 		decodedQuery,
 	}
 
+	// Individual query keys and values (decoded + encoding variants).
 	for key, values := range parsed.Query() {
-		targets = append(targets, IterativeDecode(key))
+		decodedKey := IterativeDecode(key)
+		targets = append(targets, decodedKey)
+		if stripped := stripURLNoise(decodedKey); stripped != decodedKey {
+			targets = append(targets, stripped)
+		}
 		for _, v := range values {
-			targets = append(targets, IterativeDecode(v))
+			decoded := IterativeDecode(v)
+			targets = append(targets, decoded)
+			if stripped := stripURLNoise(decoded); stripped != decoded {
+				targets = append(targets, stripped)
+			}
 		}
 	}
 
+	// Dot-collapse hostname.
 	if hostname := parsed.Hostname(); strings.Contains(hostname, ".") {
 		targets = append(targets, strings.ReplaceAll(hostname, ".", ""))
+	}
+
+	// Noise-stripped path.
+	if stripped := stripURLNoise(parsed.Path); stripped != parsed.Path {
+		targets = append(targets, stripped)
+	}
+
+	// Double-encoded raw path.
+	decodedPath := IterativeDecode(parsed.RawPath)
+	if decodedPath != "" && decodedPath != parsed.Path {
+		targets = append(targets, decodedPath)
+	}
+
+	// Path segment decoding (hex/base64/base32).
+	for _, segment := range strings.Split(parsed.Path, "/") {
+		if len(segment) >= 10 {
+			for _, d := range decodeEncodings(segment) {
+				targets = append(targets, d.text)
+			}
+		}
+	}
+
+	// Ordered query-value concatenation (catches secrets split across params).
+	if parsed.RawQuery != "" && strings.Contains(parsed.RawQuery, "&") {
+		concat := orderedQueryConcat(parsed.RawQuery)
+		targets = append(targets, concat)
+		if stripped := stripURLNoise(concat); stripped != concat {
+			targets = append(targets, stripped)
+		}
 	}
 
 	for _, target := range targets {
@@ -595,6 +634,82 @@ func (s *Scanner) checkCoreDLP(parsed *url.URL) Result {
 		}
 	}
 
+	// Subsequence scan: try ordered combinations of query values to catch
+	// secrets split across params with junk values interleaved.
+	if result := s.querySubsequenceCoreDLP(parsed.RawQuery); !result.Allowed {
+		return result
+	}
+
+	return Result{Allowed: true}
+}
+
+// querySubsequenceCoreDLP checks ordered combinations of query values against
+// core DLP patterns. Mirrors the main scanner's querySubsequenceDLP.
+func (s *Scanner) querySubsequenceCoreDLP(rawQuery string) Result {
+	if rawQuery == "" || !strings.Contains(rawQuery, "&") {
+		return Result{Allowed: true}
+	}
+	var values []string
+	for _, pair := range strings.Split(rawQuery, "&") {
+		_, value, _ := strings.Cut(pair, "=")
+		if value != "" {
+			values = append(values, IterativeDecode(value))
+		}
+	}
+	n := len(values)
+	if n < 3 {
+		return Result{Allowed: true}
+	}
+	if n > 20 {
+		values = values[:20]
+		n = 20
+	}
+	for size := 2; size <= 4 && size <= n; size++ {
+		if result := s.checkCoreDLPCombinations(values, n, size); !result.Allowed {
+			return result
+		}
+	}
+	return Result{Allowed: true}
+}
+
+// checkCoreDLPCombinations tries all ordered combinations of query values
+// of the given size against core DLP patterns.
+func (s *Scanner) checkCoreDLPCombinations(values []string, n, size int) Result {
+	indices := make([]int, size)
+	for i := range indices {
+		indices[i] = i
+	}
+	for {
+		var concat strings.Builder
+		for _, idx := range indices {
+			concat.WriteString(values[idx])
+		}
+		combined := concat.String()
+		cleaned := normalize.ForDLP(combined)
+		for _, idx := range s.core.dlpPreFilter.patternsToCheck(cleaned) {
+			p := s.core.dlpPatterns[idx]
+			if p.matches(cleaned) {
+				return Result{
+					Allowed: false,
+					Reason:  fmt.Sprintf("core DLP match: %s (%s)", p.name, p.severity),
+					Scanner: ScannerCoreDLP,
+					Score:   1.0,
+				}
+			}
+		}
+		// Advance to next combination in lexicographic order.
+		i := size - 1
+		for i >= 0 && indices[i] == n-size+i {
+			i--
+		}
+		if i < 0 {
+			break
+		}
+		indices[i]++
+		for j := i + 1; j < size; j++ {
+			indices[j] = indices[j-1] + 1
+		}
+	}
 	return Result{Allowed: true}
 }
 

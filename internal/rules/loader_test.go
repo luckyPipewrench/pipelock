@@ -1308,7 +1308,7 @@ func TestLoadBundles_ConfidenceFilterLow(t *testing.T) {
 	}
 }
 
-func TestLoadBundles_V2BundleMetadata(t *testing.T) {
+func TestLoadBundles_V2UnsignedRejected(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -1327,17 +1327,11 @@ func TestLoadBundles_V2BundleMetadata(t *testing.T) {
 		PipelockVersion: testPipelockVersion,
 	})
 
-	if len(result.Errors) > 0 {
-		t.Fatalf("unexpected errors: %v", result.Errors)
+	// V2 bundles MUST be signed. Unsigned v2 should be rejected.
+	if len(result.Errors) == 0 {
+		t.Fatal("expected unsigned v2 bundle to be rejected")
 	}
-	if len(result.Loaded) != 1 {
-		t.Fatalf("expected 1 loaded bundle, got %d", len(result.Loaded))
-	}
-	loaded := result.Loaded[0]
-	if loaded.Tier != TierCommunity {
-		t.Errorf("tier = %q, want %q", loaded.Tier, TierCommunity)
-	}
-	if loaded.MonotonicVersion != 5 {
-		t.Errorf("monotonic_version = %d, want 5", loaded.MonotonicVersion)
+	if len(result.Loaded) != 0 {
+		t.Errorf("expected 0 loaded bundles for unsigned v2, got %d", len(result.Loaded))
 	}
 }

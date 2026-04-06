@@ -486,8 +486,10 @@ func TestResponseScanningEnabled(t *testing.T) {
 	cfg2.ResponseScanning.Enabled = false
 	s2 := New(cfg2)
 
-	if s2.ResponseScanningEnabled() {
-		t.Error("expected response scanning to be disabled")
+	// With core patterns, ResponseScanningEnabled returns true even when
+	// response_scanning.enabled is false — core is the safety floor.
+	if !s2.ResponseScanningEnabled() {
+		t.Error("expected response scanning enabled (core patterns active)")
 	}
 }
 

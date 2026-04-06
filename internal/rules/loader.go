@@ -117,34 +117,46 @@ func LoadBundles(rulesDir string, opts LoadOptions) *LoadResult {
 		return dirs[i].Name() < dirs[j].Name()
 	})
 
-	// Load freshness state for rollback prevention (fail closed).
-	freshnessState, err := LoadFreshnessState(rulesDir)
-	if err != nil {
-		result.Errors = append(result.Errors, BundleError{
-			Name:   ".freshness.json",
-			Reason: err.Error(),
-		})
-		result.Degraded = true
-		// Continue loading v1 bundles (they skip freshness checks),
-		// but v2 bundles will fail CheckFreshness with empty state.
-		freshnessState = &FreshnessState{HighestSeen: make(map[string]uint64)}
-	}
-
 	minRank := confidenceRank[opts.MinConfidence]
 	now := time.Now()
 
-	for _, d := range dirs {
-		bundleDir := filepath.Join(rulesDir, d.Name())
-		loadOneBundle(bundleDir, d.Name(), opts, minRank, result, freshnessState, now)
-	}
+	// Load → check → record → save freshness state under flock to prevent
+	// concurrent processes from racing on .freshness.json.
+	freshnessState := &FreshnessState{HighestSeen: make(map[string]uint64)}
+	lockErr := WithFreshnessLock(rulesDir, func() error {
+		var err error
+		freshnessState, err = LoadFreshnessState(rulesDir)
+		if err != nil {
+			result.Errors = append(result.Errors, BundleError{
+				Name:   ".freshness.json",
+				Reason: err.Error(),
+			})
+			result.Degraded = true
+			freshnessState = &FreshnessState{HighestSeen: make(map[string]uint64)}
+		}
 
-	// Save updated freshness state if any v2+ bundles were loaded.
-	for _, lb := range result.Loaded {
-		if lb.MonotonicVersion > 0 {
-			if saveErr := SaveFreshnessState(rulesDir, freshnessState); saveErr != nil {
-				result.Warnings = append(result.Warnings, fmt.Sprintf("saving freshness state: %v", saveErr))
+		for _, d := range dirs {
+			bundleDir := filepath.Join(rulesDir, d.Name())
+			loadOneBundle(bundleDir, d.Name(), opts, minRank, result, freshnessState, now)
+		}
+
+		// Save updated freshness state if any v2+ bundles were loaded.
+		for _, lb := range result.Loaded {
+			if lb.MonotonicVersion > 0 {
+				if saveErr := SaveFreshnessState(rulesDir, freshnessState); saveErr != nil {
+					result.Warnings = append(result.Warnings, fmt.Sprintf("saving freshness state: %v", saveErr))
+				}
+				break
 			}
-			break
+		}
+		return nil
+	})
+	if lockErr != nil {
+		// Flock failure: load bundles without freshness protection.
+		result.Warnings = append(result.Warnings, fmt.Sprintf("freshness lock: %v (continuing without cross-process protection)", lockErr))
+		for _, d := range dirs {
+			bundleDir := filepath.Join(rulesDir, d.Name())
+			loadOneBundle(bundleDir, d.Name(), opts, minRank, result, freshnessState, now)
 		}
 	}
 
@@ -213,13 +225,20 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, minRank int, res
 
 	// V2+ freshness checks: rollback prevention, expiry, tier-key binding.
 	if bundle.FormatVersion >= 2 {
+		// V2 bundles MUST be signed. Unsigned v2 bundles could forge any
+		// tier/key_id and bypass tier-key binding entirely.
+		if lock.Unsigned {
+			result.Errors = append(result.Errors, BundleError{
+				Name:   dirName,
+				Reason: "format_version 2 bundles must be signed (unsigned v2 bundles are rejected)",
+			})
+			return
+		}
+
 		// Tier-key binding: verify the signing key matches the declared tier.
-		// Unsigned bundles skip this check (no signer to bind).
-		if !lock.Unsigned {
-			if err := CheckTierKeyBinding(bundle, lock.SignerFingerprint, opts.TierKeyMapping); err != nil {
-				result.Errors = append(result.Errors, BundleError{Name: dirName, Reason: err.Error()})
-				return
-			}
+		if err := CheckTierKeyBinding(bundle, lock.SignerFingerprint, opts.TierKeyMapping); err != nil {
+			result.Errors = append(result.Errors, BundleError{Name: dirName, Reason: err.Error()})
+			return
 		}
 
 		// Freshness: rollback prevention and expiry.

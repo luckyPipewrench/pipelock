@@ -1111,8 +1111,8 @@ func TestScan_DLPCatchesURLEncodedDashes(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected DLP to catch URL-encoded Anthropic key")
 	}
-	if result.Scanner != ScannerDLP {
-		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+		t.Errorf("expected scanner dlp or core_dlp, got %s", result.Scanner)
 	}
 }
 
@@ -1134,8 +1134,8 @@ func TestScan_DLPCatchesDoubleEncodedSecret(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected DLP to catch double-encoded Anthropic key")
 	}
-	if result.Scanner != ScannerDLP {
-		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+		t.Errorf("expected scanner dlp or core_dlp, got %s", result.Scanner)
 	}
 }
 
@@ -1354,8 +1354,8 @@ func TestScan_DLPInSubdomain(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected DLP to catch OpenAI key in subdomain")
 	}
-	if result.Scanner != ScannerDLP {
-		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+		t.Errorf("expected scanner dlp or core_dlp, got %s", result.Scanner)
 	}
 }
 
@@ -2436,8 +2436,8 @@ func TestScan_DLP_HexEncodedAPIKeyInQuery(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected hex-encoded API key in query param to be blocked")
 	}
-	if result.Scanner != ScannerDLP {
-		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+		t.Errorf("expected scanner dlp or core_dlp, got %s", result.Scanner)
 	}
 }
 
@@ -2454,8 +2454,8 @@ func TestScan_DLP_Base64EncodedAPIKeyInQuery(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected base64-encoded API key in query param to be blocked")
 	}
-	if result.Scanner != ScannerDLP {
-		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+		t.Errorf("expected scanner dlp or core_dlp, got %s", result.Scanner)
 	}
 }
 
@@ -2499,8 +2499,8 @@ func TestScan_DLP_HexEncodedAPIKeyInPath(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected hex-encoded API key in URL path to be blocked")
 	}
-	if result.Scanner != ScannerDLP {
-		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+		t.Errorf("expected scanner dlp or core_dlp, got %s", result.Scanner)
 	}
 }
 
@@ -2517,8 +2517,8 @@ func TestScan_DLP_Base64EncodedAPIKeyInPath(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected base64-encoded API key in URL path to be blocked")
 	}
-	if result.Scanner != ScannerDLP {
-		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+		t.Errorf("expected scanner dlp or core_dlp, got %s", result.Scanner)
 	}
 }
 
@@ -2534,8 +2534,8 @@ func TestScan_DLP_HexEncodedAWSKeyInPath(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected hex-encoded AWS key in URL path to be blocked")
 	}
-	if result.Scanner != ScannerDLP {
-		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+		t.Errorf("expected scanner dlp or core_dlp, got %s", result.Scanner)
 	}
 }
 
@@ -2601,8 +2601,8 @@ func TestScan_DLP_DelimiterHexInQuery(t *testing.T) {
 			if result.Allowed {
 				t.Errorf("expected delimiter-hex %s API key in query to be blocked", tt.name)
 			}
-			if result.Scanner != ScannerDLP {
-				t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+			if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+				t.Errorf("expected scanner dlp or core_dlp, got %s", result.Scanner)
 			}
 		})
 	}
@@ -2632,8 +2632,8 @@ func TestScan_DLP_DelimiterHexInPath(t *testing.T) {
 			if result.Allowed {
 				t.Errorf("expected delimiter-hex %s AWS key in path to be blocked", tt.name)
 			}
-			if result.Scanner != ScannerDLP {
-				t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+			if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+				t.Errorf("expected scanner dlp or core_dlp, got %s", result.Scanner)
 			}
 		})
 	}
@@ -2685,8 +2685,8 @@ func TestScan_EnvLeak_HexEncoded(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected hex-encoded env leak to be caught")
 	}
-	if result.Scanner != ScannerDLP {
-		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+		t.Errorf("expected scanner dlp or core_dlp, got %s", result.Scanner)
 	}
 }
 
@@ -2716,8 +2716,8 @@ func TestScan_EnvLeak_DelimiterHex(t *testing.T) {
 			if result.Allowed {
 				t.Errorf("expected %s hex-encoded env leak to be caught", tt.name)
 			}
-			if result.Scanner != ScannerDLP {
-				t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+			if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+				t.Errorf("expected scanner dlp or core_dlp, got %s", result.Scanner)
 			}
 		})
 	}
@@ -3000,8 +3000,8 @@ func TestDLP_GoogleOAuthToken(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected Google OAuth token to be blocked by DLP")
 	}
-	if result.Scanner != ScannerDLP {
-		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+		t.Errorf("expected scanner dlp or core_dlp, got %s", result.Scanner)
 	}
 }
 
@@ -3015,8 +3015,8 @@ func TestDLP_TwilioAPIKey(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected Twilio API key to be blocked by DLP")
 	}
-	if result.Scanner != ScannerDLP {
-		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+		t.Errorf("expected scanner dlp or core_dlp, got %s", result.Scanner)
 	}
 }
 
@@ -3030,8 +3030,8 @@ func TestDLP_SendGridAPIKey(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected SendGrid API key to be blocked by DLP")
 	}
-	if result.Scanner != ScannerDLP {
-		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+		t.Errorf("expected scanner dlp or core_dlp, got %s", result.Scanner)
 	}
 }
 
@@ -3045,8 +3045,8 @@ func TestDLP_MailgunAPIKey(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected Mailgun API key to be blocked by DLP")
 	}
-	if result.Scanner != ScannerDLP {
-		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+		t.Errorf("expected scanner dlp or core_dlp, got %s", result.Scanner)
 	}
 }
 
@@ -3061,8 +3061,8 @@ func TestDLP_HuggingFaceToken(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected Hugging Face token to be blocked by DLP")
 	}
-	if result.Scanner != ScannerDLP {
-		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+		t.Errorf("expected scanner dlp or core_dlp, got %s", result.Scanner)
 	}
 }
 
@@ -3075,8 +3075,8 @@ func TestDLP_DatabricksToken(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected Databricks token to be blocked by DLP")
 	}
-	if result.Scanner != ScannerDLP {
-		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+		t.Errorf("expected scanner dlp or core_dlp, got %s", result.Scanner)
 	}
 }
 
@@ -3089,8 +3089,8 @@ func TestDLP_ReplicateAPIToken(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected Replicate API token to be blocked by DLP")
 	}
-	if result.Scanner != ScannerDLP {
-		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+		t.Errorf("expected scanner dlp or core_dlp, got %s", result.Scanner)
 	}
 }
 
@@ -3103,8 +3103,8 @@ func TestDLP_TogetherAIKey(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected Together AI key to be blocked by DLP")
 	}
-	if result.Scanner != ScannerDLP {
-		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+		t.Errorf("expected scanner dlp or core_dlp, got %s", result.Scanner)
 	}
 }
 
@@ -3117,8 +3117,8 @@ func TestDLP_PineconeAPIKey(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected Pinecone API key to be blocked by DLP")
 	}
-	if result.Scanner != ScannerDLP {
-		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+		t.Errorf("expected scanner dlp or core_dlp, got %s", result.Scanner)
 	}
 }
 
@@ -3131,8 +3131,8 @@ func TestDLP_DigitalOceanToken(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected DigitalOcean token to be blocked by DLP")
 	}
-	if result.Scanner != ScannerDLP {
-		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+		t.Errorf("expected scanner dlp or core_dlp, got %s", result.Scanner)
 	}
 }
 
@@ -3145,8 +3145,8 @@ func TestDLP_VaultToken(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected Vault token to be blocked by DLP")
 	}
-	if result.Scanner != ScannerDLP {
-		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+		t.Errorf("expected scanner dlp or core_dlp, got %s", result.Scanner)
 	}
 }
 
@@ -3159,8 +3159,8 @@ func TestDLP_VercelToken(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected Vercel token to be blocked by DLP")
 	}
-	if result.Scanner != ScannerDLP {
-		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+		t.Errorf("expected scanner dlp or core_dlp, got %s", result.Scanner)
 	}
 }
 
@@ -3173,8 +3173,8 @@ func TestDLP_SupabaseServiceKey(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected Supabase service key to be blocked by DLP")
 	}
-	if result.Scanner != ScannerDLP {
-		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+		t.Errorf("expected scanner dlp or core_dlp, got %s", result.Scanner)
 	}
 }
 
@@ -3187,8 +3187,8 @@ func TestDLP_NpmToken(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected npm token to be blocked by DLP")
 	}
-	if result.Scanner != ScannerDLP {
-		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+		t.Errorf("expected scanner dlp or core_dlp, got %s", result.Scanner)
 	}
 }
 
@@ -3201,8 +3201,8 @@ func TestDLP_PyPIToken(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected PyPI token to be blocked by DLP")
 	}
-	if result.Scanner != ScannerDLP {
-		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+		t.Errorf("expected scanner dlp or core_dlp, got %s", result.Scanner)
 	}
 }
 
@@ -3215,8 +3215,8 @@ func TestDLP_LinearAPIKey(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected Linear API key to be blocked by DLP")
 	}
-	if result.Scanner != ScannerDLP {
-		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+		t.Errorf("expected scanner dlp or core_dlp, got %s", result.Scanner)
 	}
 }
 
@@ -3229,8 +3229,8 @@ func TestDLP_NotionAPIKey(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected Notion API key to be blocked by DLP")
 	}
-	if result.Scanner != ScannerDLP {
-		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+		t.Errorf("expected scanner dlp or core_dlp, got %s", result.Scanner)
 	}
 }
 
@@ -3243,8 +3243,8 @@ func TestDLP_SentryAuthToken(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected Sentry auth token to be blocked by DLP")
 	}
-	if result.Scanner != ScannerDLP {
-		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+		t.Errorf("expected scanner dlp or core_dlp, got %s", result.Scanner)
 	}
 }
 
@@ -4657,8 +4657,8 @@ func TestDLP_GroqAPIKey(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected Groq API key to be blocked by DLP")
 	}
-	if result.Scanner != ScannerDLP {
-		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+		t.Errorf("expected scanner dlp or core_dlp, got %s", result.Scanner)
 	}
 }
 
@@ -4672,8 +4672,8 @@ func TestDLP_XAIAPIKey(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected xAI API key to be blocked by DLP")
 	}
-	if result.Scanner != ScannerDLP {
-		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+		t.Errorf("expected scanner dlp or core_dlp, got %s", result.Scanner)
 	}
 }
 
@@ -4700,8 +4700,8 @@ func TestDLP_NewRelicAPIKey(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected New Relic API key to be blocked by DLP")
 	}
-	if result.Scanner != ScannerDLP {
-		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+		t.Errorf("expected scanner dlp or core_dlp, got %s", result.Scanner)
 	}
 }
 
@@ -4714,8 +4714,8 @@ func TestDLP_StripeWebhookSecret(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected Stripe webhook secret to be blocked by DLP")
 	}
-	if result.Scanner != ScannerDLP {
-		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+		t.Errorf("expected scanner dlp or core_dlp, got %s", result.Scanner)
 	}
 }
 
@@ -4728,8 +4728,8 @@ func TestDLP_CreditCardNumber(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected valid credit card number to be blocked by DLP")
 	}
-	if result.Scanner != ScannerDLP {
-		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+		t.Errorf("expected scanner dlp or core_dlp, got %s", result.Scanner)
 	}
 }
 
@@ -4792,8 +4792,8 @@ func TestDLP_IBAN(t *testing.T) {
 	if result.Allowed {
 		t.Error("expected valid IBAN to be blocked by DLP")
 	}
-	if result.Scanner != ScannerDLP {
-		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+		t.Errorf("expected scanner dlp or core_dlp, got %s", result.Scanner)
 	}
 }
 

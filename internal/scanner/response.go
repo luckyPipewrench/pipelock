@@ -453,11 +453,21 @@ func (s *Scanner) matchDecodedNormalized(decoded string) []ResponseMatch {
 }
 
 // ResponseScanningEnabled returns whether response scanning is active.
+// Always returns true when core response patterns exist, even if the
+// user disabled response_scanning.enabled — core is the safety floor.
 func (s *Scanner) ResponseScanningEnabled() bool {
+	if s.core != nil && len(s.core.responsePatterns) > 0 {
+		return true
+	}
 	return s.responseEnabled
 }
 
 // ResponseAction returns the configured response scanning action (strip, warn, block).
+// When main response scanning is disabled but core patterns are active,
+// defaults to "block" — core findings are non-negotiable.
 func (s *Scanner) ResponseAction() string {
+	if s.responseAction == "" && s.core != nil && len(s.core.responsePatterns) > 0 {
+		return config.ActionBlock
+	}
 	return s.responseAction
 }

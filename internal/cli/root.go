@@ -97,6 +97,7 @@ Quick start:
 		runtime.InternalRedirectCmd(),
 		runtime.HealthcheckCmd(),
 		// Setup (IDE integrations)
+		setup.InitCmd(),
 		setup.ClaudeCmd(),
 		setup.CursorCmd(),
 		setup.VscodeCmd(),

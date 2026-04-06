@@ -1,0 +1,23 @@
+Pipelock {{ .Chart.AppVersion }} deployed.
+
+Proxy endpoint:
+  kubectl port-forward svc/{{ include "pipelock.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+
+Test the scanner:
+  export HTTPS_PROXY=http://127.0.0.1:{{ .Values.service.port }}
+  pipelock simulate --config /etc/pipelock/pipelock.yaml
+
+Health check:
+  curl http://127.0.0.1:{{ .Values.service.port }}/health
+
+Logs:
+  kubectl logs -l app.kubernetes.io/name={{ include "pipelock.name" . }},app.kubernetes.io/instance={{ .Release.Name }} --tail=50
+{{- if and .Values.mcp.enabled .Values.mcp.upstream }}
+
+MCP proxy:
+  kubectl port-forward svc/{{ include "pipelock.fullname" . }} {{ .Values.service.mcpPort }}:{{ .Values.service.mcpPort }}
+{{- end }}
+
+Metrics (Prometheus):
+  kubectl port-forward svc/{{ include "pipelock.fullname" . }} {{ .Values.service.metricsPort }}:{{ .Values.service.metricsPort }}
+  curl http://127.0.0.1:{{ .Values.service.metricsPort }}/metrics

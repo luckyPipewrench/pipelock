@@ -1388,6 +1388,7 @@ func TestExtractMultipart_StructuralHeaderParams(t *testing.T) {
 	// scanner must parse parameter values from these headers, not skip them.
 	cfg := testScannerConfig()
 	sc := scanner.New(cfg)
+	defer sc.Close()
 
 	secret := fakeAnthropicKey()
 	body := "--BOUNDARY\r\n" +

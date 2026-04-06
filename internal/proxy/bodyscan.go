@@ -296,8 +296,14 @@ func extractMultipart(body []byte, boundary string, maxBytes int) ([]string, str
 			canonical := textproto.CanonicalMIMEHeaderKey(name)
 			if canonical == "Content-Type" || canonical == "Content-Disposition" {
 				// Parse parameter values from structural headers.
+				// On parse failure, fall back to scanning raw value
+				// so malformed headers don't bypass inspection.
 				for _, v := range values {
-					_, params, _ := mime.ParseMediaType(v)
+					_, params, parseErr := mime.ParseMediaType(v)
+					if parseErr != nil {
+						result = append(result, v)
+						continue
+					}
 					for _, pv := range params {
 						result = append(result, pv)
 					}
@@ -330,24 +336,36 @@ func extractMultipart(body []byte, boundary string, maxBytes int) ([]string, str
 		// patterns match the actual secret. If decoding fails, scan raw
 		// (fail-closed: don't skip, raw scan still catches plaintext).
 		cte := strings.ToLower(part.Header.Get("Content-Transfer-Encoding"))
+		rawBody := string(partBody)
 		switch cte {
 		case "base64":
-			// Strip MIME line breaks (RFC 2045: 76-char lines with CRLF).
-			cleaned := strings.NewReplacer("\r", "", "\n", "").Replace(string(partBody))
+			// Strip ALL ASCII whitespace (RFC 2045 allows 76-char lines + CRLF,
+			// but real-world MIME may include tabs/spaces).
+			cleaned := strings.Map(func(r rune) rune {
+				if r == '\r' || r == '\n' || r == ' ' || r == '\t' {
+					return -1
+				}
+				return r
+			}, rawBody)
 			decoded, err := base64.StdEncoding.DecodeString(cleaned)
 			if err == nil {
-				partBody = decoded
+				// Scan BOTH decoded (catches actual secrets) and raw
+				// (catches patterns visible in encoded form).
+				result = append(result, string(decoded))
 			}
-			// If decode fails, scan raw (still catches plaintext patterns).
+			// Always scan raw form too — fail-closed on decode failure,
+			// and catches patterns visible in encoded form.
+			result = append(result, rawBody)
 		case "quoted-printable":
 			decoded, err := io.ReadAll(quotedprintable.NewReader(bytes.NewReader(partBody)))
 			if err == nil {
-				partBody = decoded
+				result = append(result, string(decoded))
 			}
-		}
-
-		if len(partBody) > 0 {
-			result = append(result, string(partBody))
+			result = append(result, rawBody)
+		default:
+			if len(partBody) > 0 {
+				result = append(result, rawBody)
+			}
 		}
 
 		// Include field name and filename in extracted text (can carry exfil data).

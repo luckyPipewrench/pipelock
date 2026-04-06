@@ -20,6 +20,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/shield"
 )
 
 // testGet performs a GET request with a background context (noctx-safe).
@@ -78,7 +79,7 @@ func reverseTestSetup(t *testing.T, cfg *config.Config, upstreamHandler http.Han
 	m := metrics.New()
 	ks := killswitch.New(cfg)
 
-	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, logger, m, ks, nil)
+	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, logger, m, ks, nil, nil)
 	proxy := httptest.NewServer(handler)
 	t.Cleanup(proxy.Close)
 
@@ -288,7 +289,7 @@ func TestReverseProxy_UpstreamError(t *testing.T) {
 	m := metrics.New()
 	ks := killswitch.New(cfg)
 
-	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, logger, m, ks, nil)
+	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, logger, m, ks, nil, nil)
 	proxy := httptest.NewServer(handler)
 	defer proxy.Close()
 
@@ -555,7 +556,7 @@ func TestReverseProxy_HotReload(t *testing.T) {
 	m := metrics.New()
 	ks := killswitch.New(cfg)
 
-	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, logger, m, ks, nil)
+	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, logger, m, ks, nil, nil)
 	proxy := httptest.NewServer(handler)
 	defer proxy.Close()
 
@@ -1001,7 +1002,7 @@ func TestReverseProxy_ResponseReadErrorBlocked(t *testing.T) {
 	m := metrics.New()
 	ks := killswitch.New(cfg)
 
-	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, logger, m, ks, nil)
+	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, logger, m, ks, nil, nil)
 	proxy := httptest.NewServer(handler)
 	defer proxy.Close()
 
@@ -1375,5 +1376,59 @@ func TestReverseProxy_CleanURLPassthrough(t *testing.T) {
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 (clean URL passthrough), got %d", resp.StatusCode)
+	}
+}
+
+func TestReverseProxy_ShieldEnabled(t *testing.T) {
+	cfg := reverseTestConfig()
+	cfg.BrowserShield.Enabled = true
+	cfg.BrowserShield.Strictness = config.ShieldStrictnessStandard
+	cfg.BrowserShield.StripTrackingPixels = true
+
+	// Upstream returns clean JSON so response scanning passes. The test
+	// goal is to verify the shield engine is exercised without error.
+	upstream := func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	}
+
+	upstreamSrv := httptest.NewServer(http.HandlerFunc(upstream))
+	t.Cleanup(upstreamSrv.Close)
+
+	upstreamURL, err := url.Parse(upstreamSrv.URL)
+	if err != nil {
+		t.Fatalf("parse upstream URL: %v", err)
+	}
+
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+
+	var cfgPtr atomic.Pointer[config.Config]
+	var scPtr atomic.Pointer[scanner.Scanner]
+	cfgPtr.Store(cfg)
+	scPtr.Store(sc)
+
+	logger, _ := audit.New("json", "stdout", "", false, false)
+	t.Cleanup(logger.Close)
+
+	m := metrics.New()
+	ks := killswitch.New(cfg)
+	se := shield.NewEngine()
+
+	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, logger, m, ks, nil, se)
+	proxySrv := httptest.NewServer(handler)
+	t.Cleanup(proxySrv.Close)
+
+	resp := testGet(t, proxySrv.URL+"/page")
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "ok") {
+		t.Fatal("expected clean JSON passthrough with shield engine active")
 	}
 }

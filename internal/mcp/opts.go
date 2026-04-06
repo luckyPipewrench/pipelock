@@ -60,6 +60,15 @@ type MCPProxyOpts struct {
 	A2ACfg       *config.A2AScanning
 	CardBaseline *CardBaseline
 
+	// Frozen tool enforcement for airlock hard tier (nil-safe).
+	// When non-nil and a stable key is frozen, only tools in the frozen set
+	// are allowed. Injected from proxy.FrozenToolRegistry via the interface.
+	ToolFreezer session.ToolFreezer
+
+	// FrozenToolStableKey identifies the MCP instance for frozen tool lookups.
+	// Set by the proxy when constructing opts from the stable identity.
+	FrozenToolStableKey string
+
 	// Denial-of-wallet tracking (nil-safe).
 	DoWCheck DoWCheckFunc
 

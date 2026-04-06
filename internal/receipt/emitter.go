@@ -170,7 +170,7 @@ func (e *Emitter) Emit(opts EmitOpts) error {
 		SessionID: recorderSessionID,
 		Type:      recorderEntryType,
 		Transport: opts.Transport,
-		Summary:   fmt.Sprintf("receipt: %s %s %s", ar.Verdict, ar.ActionType, ar.Target),
+		Summary:   fmt.Sprintf("receipt: %s %s %s", ar.Verdict, ar.ActionType, ar.Transport),
 		Detail:    json.RawMessage(receiptJSON),
 	}); err != nil {
 		return fmt.Errorf("recording receipt: %w", err)

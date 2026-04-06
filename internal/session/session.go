@@ -63,6 +63,14 @@ type Store interface {
 	GetOrCreate(key string) Recorder
 }
 
+// ToolFreezer checks whether a tool call is permitted under a frozen tool
+// inventory. Used by MCP proxy paths to enforce airlock hard-tier restrictions
+// without importing the proxy package (which would create a circular dep).
+type ToolFreezer interface {
+	IsFrozen(stableKey string) bool
+	IsToolAllowed(stableKey, toolName string) bool
+}
+
 // invocationCounter provides unique per-invocation session keys for MCP
 // transports. A single atomic counter avoids lock contention when many stdio
 // subprocesses start concurrently.

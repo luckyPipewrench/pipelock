@@ -4,13 +4,17 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"mime"
 	"mime/multipart"
+	"mime/quotedprintable"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"sort"
 	"strings"
@@ -283,24 +287,39 @@ func extractMultipart(body []byte, boundary string, maxBytes int) ([]string, str
 			return nil, fmt.Sprintf("multipart filename exceeds %d bytes", maxFilenameBytes)
 		}
 
-		// Determine if this part is binary by checking its Content-Type.
-		// Binary part bodies are skipped (genuine file uploads), but metadata
-		// (formName, filename) is still scanned — an attacker can exfiltrate
-		// secrets via binary part filenames without the body being read.
-		partContentType := part.Header.Get("Content-Type")
-		if isBinaryContentType(partContentType) {
-			_ = part.Close()
-			// Still scan metadata from binary parts.
-			if formName != "" {
-				result = append(result, formName)
+		// Scan ALL part headers for secret exfiltration.
+		// Custom headers (X-Secret, etc.) are scanned as raw values.
+		// Structural headers (Content-Type, Content-Disposition) are parsed
+		// for parameter values — an attacker can hide secrets in non-standard
+		// params like Content-Disposition: form-data; x-data="<credential>".
+		for name, values := range part.Header {
+			canonical := textproto.CanonicalMIMEHeaderKey(name)
+			if canonical == "Content-Type" || canonical == "Content-Disposition" {
+				// Parse parameter values from structural headers.
+				// On parse failure, fall back to scanning raw value
+				// so malformed headers don't bypass inspection.
+				for _, v := range values {
+					_, params, parseErr := mime.ParseMediaType(v)
+					if parseErr != nil {
+						result = append(result, v)
+						continue
+					}
+					for _, pv := range params {
+						result = append(result, pv)
+					}
+				}
+				continue
 			}
-			if filename != "" {
-				result = append(result, filename)
+			if canonical == "Content-Transfer-Encoding" {
+				continue // Pure token (base64/7bit), no params, no exfil surface.
 			}
-			continue
+			result = append(result, values...)
 		}
 
-		// Read part body with size limit.
+		// Read ALL part bodies regardless of Content-Type. An attacker can
+		// set Content-Type: image/png on a part whose body is plaintext
+		// containing secrets. Real binary data (actual images) won't match
+		// DLP patterns (they're structured key prefixes like sk-ant-, AKIA).
 		partBody, readErr := io.ReadAll(io.LimitReader(part, int64(maxBytes)+1))
 		_ = part.Close()
 
@@ -311,8 +330,42 @@ func extractMultipart(body []byte, boundary string, maxBytes int) ([]string, str
 			return nil, fmt.Sprintf("multipart part exceeds max_body_bytes (%d)", maxBytes)
 		}
 
-		if len(partBody) > 0 {
-			result = append(result, string(partBody))
+		// Decode Content-Transfer-Encoding before scanning. Go's
+		// multipart.Reader does NOT decode CTE, so base64/QP content
+		// reaches the scanner as raw encoded text. Decode it so DLP
+		// patterns match the actual secret. If decoding fails, scan raw
+		// (fail-closed: don't skip, raw scan still catches plaintext).
+		cte := strings.ToLower(part.Header.Get("Content-Transfer-Encoding"))
+		rawBody := string(partBody)
+		switch cte {
+		case "base64":
+			// Strip ALL ASCII whitespace (RFC 2045 allows 76-char lines + CRLF,
+			// but real-world MIME may include tabs/spaces).
+			cleaned := strings.Map(func(r rune) rune {
+				if r == '\r' || r == '\n' || r == ' ' || r == '\t' {
+					return -1
+				}
+				return r
+			}, rawBody)
+			decoded, err := base64.StdEncoding.DecodeString(cleaned)
+			if err == nil {
+				// Scan BOTH decoded (catches actual secrets) and raw
+				// (catches patterns visible in encoded form).
+				result = append(result, string(decoded))
+			}
+			// Always scan raw form too — fail-closed on decode failure,
+			// and catches patterns visible in encoded form.
+			result = append(result, rawBody)
+		case "quoted-printable":
+			decoded, err := io.ReadAll(quotedprintable.NewReader(bytes.NewReader(partBody)))
+			if err == nil {
+				result = append(result, string(decoded))
+			}
+			result = append(result, rawBody)
+		default:
+			if len(partBody) > 0 {
+				result = append(result, rawBody)
+			}
 		}
 
 		// Include field name and filename in extracted text (can carry exfil data).

@@ -48,6 +48,21 @@ func TestNewEngine(t *testing.T) {
 	}
 }
 
+func TestNewEngine_WithTrackingDomains(t *testing.T) {
+	e := NewEngine([]string{"evil-tracker.example.com", "analytics.bad.net"})
+	if e == nil {
+		t.Fatal("NewEngine with extra domains returned nil")
+	}
+	// The merged regex should match the extra domain.
+	if !e.trackingPixelRe.MatchString(`<img src="https://evil-tracker.example.com/pixel.gif">`) {
+		t.Error("extra tracking domain not matched by merged regex")
+	}
+	// Built-in patterns should still work.
+	if !e.trackingPixelRe.MatchString(`navigator.sendBeacon("https://t.co/collect")`) {
+		t.Error("built-in tracking pattern broken after merge")
+	}
+}
+
 func TestDetectPipeline(t *testing.T) {
 	tests := []struct {
 		name        string

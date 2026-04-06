@@ -22,6 +22,8 @@ spec:
         - port: {{ .Values.service.mcpPort }}
           protocol: TCP
         {{- end }}
+        - port: {{ .Values.service.metricsPort }}
+          protocol: TCP
   egress:
     # DNS resolution required for all proxy modes
     - ports:

@@ -18,6 +18,10 @@ import (
 
 const maxTopEntries = 100
 
+// airlockTierNone mirrors config.AirlockTierNone to avoid importing the
+// config package. Transitions from/to "none" must not adjust the gauge.
+const airlockTierNone = "none"
+
 // Metrics collects Prometheus counters and histograms for the fetch proxy.
 type Metrics struct {
 	registry *prometheus.Registry
@@ -90,6 +94,20 @@ type Metrics struct {
 
 	// Capture system metrics.
 	CaptureDropped prometheus.Counter
+
+	// Airlock: graduated quarantine metrics.
+	airlockSessions       *prometheus.GaugeVec   // tier label
+	airlockTransitions    *prometheus.CounterVec // from, to, trigger labels
+	airlockDenials        *prometheus.CounterVec // tier, transport, action_class labels
+	airlockDrainCompleted prometheus.Counter
+	airlockDrainTimeout   prometheus.Counter
+
+	// Browser Shield: inline rewriting metrics.
+	shieldRewrites      *prometheus.CounterVec   // category, transport labels
+	shieldBytesStripped *prometheus.CounterVec   // category label
+	shieldShimsInjected *prometheus.CounterVec   // transport label
+	shieldSkipped       *prometheus.CounterVec   // reason label
+	shieldLatency       *prometheus.HistogramVec // transport label
 
 	wsConnectionCount int64
 
@@ -383,6 +401,61 @@ func New() *Metrics {
 		Help:      "Total capture entries dropped due to queue overflow.",
 	})
 
+	// Airlock metrics: graduated quarantine state tracking.
+	airlockSessions := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "pipelock",
+		Name:      "airlock_sessions",
+		Help:      "Current sessions in each airlock tier.",
+	}, []string{"tier"})
+	airlockTransitions := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "pipelock",
+		Name:      "airlock_transitions_total",
+		Help:      "Total airlock tier transitions.",
+	}, []string{"from", "to", "trigger"})
+	airlockDenials := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "pipelock",
+		Name:      "airlock_denials_total",
+		Help:      "Total requests denied by airlock enforcement.",
+	}, []string{"tier", "transport", "action_class"})
+	airlockDrainCompleted := prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: "pipelock",
+		Name:      "airlock_drain_completed_total",
+		Help:      "Sessions that completed drain (all in-flight requests finished).",
+	})
+	airlockDrainTimeout := prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: "pipelock",
+		Name:      "airlock_drain_timeout_total",
+		Help:      "Sessions where drain timed out before in-flight requests finished.",
+	})
+
+	// Browser Shield metrics: inline HTML/JS rewriting tracking.
+	shieldRewrites := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "pipelock",
+		Name:      "shield_rewrites_total",
+		Help:      "Total browser shield rewrites by category and transport.",
+	}, []string{"category", "transport"})
+	shieldBytesStripped := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "pipelock",
+		Name:      "shield_bytes_stripped_total",
+		Help:      "Total bytes stripped by browser shield by category.",
+	}, []string{"category"})
+	shieldShimsInjected := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "pipelock",
+		Name:      "shield_shims_injected_total",
+		Help:      "Total shim script injections by transport.",
+	}, []string{"transport"})
+	shieldSkipped := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "pipelock",
+		Name:      "shield_skipped_total",
+		Help:      "Total shield processing skips by reason.",
+	}, []string{"reason"})
+	shieldLatency := prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "pipelock",
+		Name:      "shield_latency_seconds",
+		Help:      "Browser shield rewriting latency in seconds.",
+		Buckets:   []float64{0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1},
+	}, []string{"transport"})
+
 	reg.MustRegister(requestsTotal, scannerHits, requestLatency,
 		tunnelsTotal, tunnelDuration, tunnelBytes, activeTunnels,
 		wsConnectionsTotal, wsDuration, wsBytes, activeWS, wsFrames, wsScanHits, wsRedirectHints,
@@ -397,7 +470,11 @@ func New() *Metrics {
 		adaptiveUpgrades, adaptiveSessionsCurrent,
 		sessionAutoDeescalations,
 		reverseProxyRequests, reverseProxyScanBlocked,
-		captureDropped)
+		captureDropped,
+		airlockSessions, airlockTransitions, airlockDenials,
+		airlockDrainCompleted, airlockDrainTimeout,
+		shieldRewrites, shieldBytesStripped, shieldShimsInjected,
+		shieldSkipped, shieldLatency)
 
 	return &Metrics{
 		registry:                    reg,
@@ -445,6 +522,16 @@ func New() *Metrics {
 		reverseProxyRequests:        reverseProxyRequests,
 		reverseProxyScanBlocked:     reverseProxyScanBlocked,
 		CaptureDropped:              captureDropped,
+		airlockSessions:             airlockSessions,
+		airlockTransitions:          airlockTransitions,
+		airlockDenials:              airlockDenials,
+		airlockDrainCompleted:       airlockDrainCompleted,
+		airlockDrainTimeout:         airlockDrainTimeout,
+		shieldRewrites:              shieldRewrites,
+		shieldBytesStripped:         shieldBytesStripped,
+		shieldShimsInjected:         shieldShimsInjected,
+		shieldSkipped:               shieldSkipped,
+		shieldLatency:               shieldLatency,
 		startTime:                   time.Now(),
 		topBlockedDomains:           make(map[string]int64),
 		topScannerHits:              make(map[string]int64),
@@ -963,4 +1050,85 @@ func (m *Metrics) RecordFileSentryFinding(pattern, severity string, isAgent bool
 		agent = "true"
 	}
 	m.FileSentryFindings.WithLabelValues(pattern, severity, agent).Inc()
+}
+
+// RecordAirlockTransition increments the airlock tier transition counter
+// and adjusts the per-tier session gauge.
+func (m *Metrics) RecordAirlockTransition(from, to, trigger string) {
+	if m == nil {
+		return
+	}
+	m.airlockTransitions.WithLabelValues(from, to, trigger).Inc()
+	// Only adjust the gauge for actual airlock tiers. "none" is the normal
+	// (non-airlocked) state and should never appear in the gauge.
+	if from != "" && from != airlockTierNone {
+		m.airlockSessions.WithLabelValues(from).Dec()
+	}
+	if to != "" && to != airlockTierNone {
+		m.airlockSessions.WithLabelValues(to).Inc()
+	}
+}
+
+// RecordAirlockDenial increments the airlock denial counter.
+func (m *Metrics) RecordAirlockDenial(tier, transport, actionClass string) {
+	if m == nil {
+		return
+	}
+	m.airlockDenials.WithLabelValues(tier, transport, actionClass).Inc()
+}
+
+// RecordAirlockDrainCompleted increments the completed drain counter.
+func (m *Metrics) RecordAirlockDrainCompleted() {
+	if m == nil {
+		return
+	}
+	m.airlockDrainCompleted.Inc()
+}
+
+// RecordAirlockDrainTimeout increments the drain timeout counter.
+func (m *Metrics) RecordAirlockDrainTimeout() {
+	if m == nil {
+		return
+	}
+	m.airlockDrainTimeout.Inc()
+}
+
+// RecordShieldRewrite increments the shield rewrite counter.
+func (m *Metrics) RecordShieldRewrite(category, transport string) {
+	if m == nil {
+		return
+	}
+	m.shieldRewrites.WithLabelValues(category, transport).Inc()
+}
+
+// RecordShieldBytesStripped increments the stripped bytes counter.
+func (m *Metrics) RecordShieldBytesStripped(category string, n int) {
+	if m == nil {
+		return
+	}
+	m.shieldBytesStripped.WithLabelValues(category).Add(float64(n))
+}
+
+// RecordShieldShimInjected increments the shim injection counter.
+func (m *Metrics) RecordShieldShimInjected(transport string) {
+	if m == nil {
+		return
+	}
+	m.shieldShimsInjected.WithLabelValues(transport).Inc()
+}
+
+// RecordShieldSkipped increments the shield skip counter.
+func (m *Metrics) RecordShieldSkipped(reason string) {
+	if m == nil {
+		return
+	}
+	m.shieldSkipped.WithLabelValues(reason).Inc()
+}
+
+// RecordShieldLatency observes shield rewriting latency.
+func (m *Metrics) RecordShieldLatency(transport string, d time.Duration) {
+	if m == nil {
+		return
+	}
+	m.shieldLatency.WithLabelValues(transport).Observe(d.Seconds())
 }

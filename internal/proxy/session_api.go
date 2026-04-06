@@ -24,6 +24,13 @@ const (
 	sessionAPIRateLimitMax    = 10
 )
 
+// API path segment constants used in URL validation.
+const (
+	apiPathSegment     = "api"
+	apiVersionSegment  = "v1"
+	apiSessionsSegment = "sessions"
+)
+
 // SessionAPIHandler handles the admin session management API.
 type SessionAPIHandler struct {
 	smPtr    *atomic.Pointer[SessionManager]
@@ -139,7 +146,7 @@ func (h *SessionAPIHandler) checkResetRateLimit() bool {
 func extractSessionKey(r *http.Request) (string, bool) {
 	segs := strings.Split(strings.Trim(r.URL.EscapedPath(), "/"), "/")
 	// Expect exactly: api/v1/sessions/{encoded-key}/reset
-	if len(segs) != 5 || segs[0] != "api" || segs[1] != "v1" || segs[2] != "sessions" || segs[4] != "reset" {
+	if len(segs) != 5 || segs[0] != apiPathSegment || segs[1] != apiVersionSegment || segs[2] != apiSessionsSegment || segs[4] != "reset" {
 		return "", false
 	}
 	key, err := url.PathUnescape(segs[3])
@@ -231,6 +238,109 @@ func (h *SessionAPIHandler) HandleReset(w http.ResponseWriter, r *http.Request) 
 		PreviousScore:   prev.ThreatScore,
 		IPStateCleared:  ip != "",
 		CEEStateCleared: ceeCleared,
+	})
+}
+
+// extractSessionKeyWithAction extracts the session key and trailing action from
+// /api/v1/sessions/{key}/{action}. Reusable for both /reset and /airlock paths.
+func extractSessionKeyWithAction(r *http.Request, action string) (string, bool) {
+	segs := strings.Split(strings.Trim(r.URL.EscapedPath(), "/"), "/")
+	// Expect exactly: api/v1/sessions/{encoded-key}/{action}
+	if len(segs) != 5 || segs[0] != apiPathSegment || segs[1] != apiVersionSegment || segs[2] != apiSessionsSegment || segs[4] != action {
+		return "", false
+	}
+	key, err := url.PathUnescape(segs[3])
+	if err != nil || key == "" || strings.ContainsAny(key, "/\x00") {
+		return "", false
+	}
+	return key, true
+}
+
+// airlockRequest is the JSON body for POST /api/v1/sessions/{key}/airlock.
+type airlockRequest struct {
+	Tier string `json:"tier"`
+}
+
+// airlockResponse is the JSON response for the airlock endpoint.
+type airlockResponse struct {
+	Key          string `json:"key"`
+	PreviousTier string `json:"previous_tier"`
+	NewTier      string `json:"new_tier"`
+	Changed      bool   `json:"changed"`
+}
+
+// HandleAirlock handles POST /api/v1/sessions/{key}/airlock.
+// Accepts {"tier": "soft|hard|drain|normal"} and transitions the session's
+// airlock state. "normal" is an alias for "none" (human-friendly).
+func (h *SessionAPIHandler) HandleAirlock(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !h.authenticate(w, r) {
+		return
+	}
+
+	clientIP, _ := requestMeta(r)
+
+	sm := h.loadManager(w)
+	if sm == nil {
+		return
+	}
+
+	key, ok := extractSessionKeyWithAction(r, "airlock")
+	if !ok {
+		h.logSessionAdmin("airlock_bad_key", clientIP, "", "invalid path", http.StatusBadRequest)
+		http.Error(w, "missing or invalid session key in URL path", http.StatusBadRequest)
+		return
+	}
+
+	var req airlockRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.logSessionAdmin("airlock_bad_body", clientIP, key, "invalid JSON", http.StatusBadRequest)
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+
+	// Accept "normal" as a human-friendly alias for "none".
+	tier := req.Tier
+	if tier == "normal" {
+		tier = "none"
+	}
+
+	// Validate tier value.
+	validTiers := map[string]bool{
+		"none": true, "soft": true, "hard": true, "drain": true,
+	}
+	if !validTiers[tier] {
+		h.logSessionAdmin("airlock_bad_tier", clientIP, key, "invalid tier: "+tier, http.StatusBadRequest)
+		http.Error(w, "invalid tier: must be none|soft|hard|drain|normal", http.StatusBadRequest)
+		return
+	}
+
+	// Use ForceSetAirlockTier for atomic lookup+mutation under one lock,
+	// eliminating the TOCTOU race where a session could be evicted between
+	// lookup and ForceSetTier.
+	found, changed, from, to := sm.ForceSetAirlockTier(key, tier)
+	if !found {
+		h.logSessionAdmin("airlock_not_found", clientIP, key, "session not found", http.StatusNotFound)
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+
+	h.logSessionAdmin("airlock_ok", clientIP, key, from+"->"+to, http.StatusOK)
+
+	if changed && h.metrics != nil {
+		h.metrics.RecordAirlockTransition(from, to, "api")
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(airlockResponse{
+		Key:          key,
+		PreviousTier: from,
+		NewTier:      to,
+		Changed:      changed,
 	})
 }
 

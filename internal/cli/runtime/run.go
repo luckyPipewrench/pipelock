@@ -640,7 +640,17 @@ Examples:
 						apiToken,
 					)
 					apiMux.HandleFunc("/api/v1/sessions", sessionAPI.HandleList)
-					apiMux.HandleFunc("/api/v1/sessions/", sessionAPI.HandleReset)
+					apiMux.HandleFunc("/api/v1/sessions/", func(w http.ResponseWriter, r *http.Request) {
+						path := r.URL.EscapedPath()
+						switch {
+						case killswitch.IsSessionActionPath(path, "airlock"):
+							sessionAPI.HandleAirlock(w, r)
+						case killswitch.IsSessionActionPath(path, "reset"):
+							sessionAPI.HandleReset(w, r)
+						default:
+							http.NotFound(w, r)
+						}
+					})
 				}
 
 				apiLn, lnErr := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.KillSwitch.APIListen)
@@ -870,10 +880,12 @@ Examples:
 						KillSwitch: ks, ChainMatcher: mcpChainMatcher,
 						AuditLogger: logger, CEE: mcpCEE,
 						Store: mcpStore, AdaptiveCfgFn: mcpAdaptiveFn, Metrics: m,
-						RedirectRT:     buildRedirectRT(cfg),
-						CaptureObs:     mcpCaptureObs,
-						ProvenanceCfg:  &cfg.MCPToolProvenance,
-						ReceiptEmitter: receiptEmitter,
+						RedirectRT:          buildRedirectRT(cfg),
+						CaptureObs:          mcpCaptureObs,
+						ProvenanceCfg:       &cfg.MCPToolProvenance,
+						ReceiptEmitter:      receiptEmitter,
+						ToolFreezer:         p.FrozenTools(),
+						FrozenToolStableKey: mcpUpstream,
 					})
 				}()
 			}
@@ -892,7 +904,7 @@ Examples:
 				}
 				rpHandler := proxy.NewReverseProxy(
 					rpUpstream, p.ConfigPtr(), p.ScannerPtr(),
-					logger, m, ks, rpCaptureObs,
+					logger, m, ks, rpCaptureObs, p.ShieldEngine(),
 				)
 
 				rpLn, lnErr := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.ReverseProxy.Listen)

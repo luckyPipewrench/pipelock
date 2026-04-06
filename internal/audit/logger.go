@@ -195,6 +195,11 @@ const (
 	EventToolRedirect       EventType = "tool_redirect"
 	EventSessionAdmin       EventType = "session_admin"
 	EventResponseScanExempt EventType = "response_scan_exempt"
+
+	EventAirlockEnter      EventType = "airlock_enter"
+	EventAirlockDeny       EventType = "airlock_deny"
+	EventAirlockDeescalate EventType = "airlock_deescalate"
+	EventShieldRewrite     EventType = "shield_rewrite"
 )
 
 // WebSocket frame direction constants used in audit log entries.
@@ -927,6 +932,68 @@ func (l *Logger) LogSessionAdmin(action, clientIP, sessionKey, result string, st
 
 	if l.emitter != nil {
 		l.emitter.Emit(context.Background(), string(EventSessionAdmin), e.fields)
+	}
+}
+
+// LogAirlockEnter logs that a session entered an airlock tier.
+func (l *Logger) LogAirlockEnter(sessionKey, tier, trigger, clientIP, requestID string) {
+	e := newLogEntry(l.zl.Warn(), EventAirlockEnter).
+		str("session", sessionKey).
+		str("tier", tier).
+		str("trigger", trigger).
+		optStr("client_ip", clientIP).
+		optStr("request_id", requestID)
+	e.msg("session entered airlock")
+
+	if l.emitter != nil {
+		l.emitter.Emit(context.Background(), string(EventAirlockEnter), e.fields)
+	}
+}
+
+// LogAirlockDeny logs a request denied by airlock enforcement.
+func (l *Logger) LogAirlockDeny(sessionKey, tier, transport, method, clientIP, requestID string) {
+	e := newLogEntry(l.zl.Warn(), EventAirlockDeny).
+		str("session", sessionKey).
+		str("tier", tier).
+		str("transport", transport).
+		str("method", method).
+		optStr("client_ip", clientIP).
+		optStr("request_id", requestID)
+	e.msg("airlock denied request")
+
+	if l.emitter != nil {
+		l.emitter.Emit(context.Background(), string(EventAirlockDeny), e.fields)
+	}
+}
+
+// LogAirlockDeescalate logs that a session's airlock tier was automatically reduced.
+func (l *Logger) LogAirlockDeescalate(sessionKey, from, to, clientIP, requestID string) {
+	e := newLogEntry(l.zl.Info(), EventAirlockDeescalate).
+		str("session", sessionKey).
+		str("from", from).
+		str("to", to).
+		optStr("client_ip", clientIP).
+		optStr("request_id", requestID)
+	e.msg("airlock de-escalated")
+
+	if l.emitter != nil {
+		l.emitter.Emit(context.Background(), string(EventAirlockDeescalate), e.fields)
+	}
+}
+
+// LogShieldRewrite logs that browser shield rewrote response content.
+func (l *Logger) LogShieldRewrite(category string, hits int, transport, targetURL, clientIP, requestID string) {
+	e := newLogEntry(l.zl.Info(), EventShieldRewrite).
+		str("category", category).
+		intField("hits", hits).
+		str("transport", transport).
+		str("url", targetURL).
+		optStr("client_ip", clientIP).
+		optStr("request_id", requestID)
+	e.msg("browser shield rewrote content")
+
+	if l.emitter != nil {
+		l.emitter.Emit(context.Background(), string(EventShieldRewrite), e.fields)
 	}
 }
 

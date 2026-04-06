@@ -41,6 +41,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
+	"github.com/luckyPipewrench/pipelock/internal/shield"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
@@ -149,6 +150,8 @@ type Proxy struct {
 	recorder          *recorder.Recorder              // flight recorder for tamper-evident evidence (nil = disabled)
 	receiptEmitterPtr atomic.Pointer[receipt.Emitter] // action receipt emitter (nil = disabled)
 	receiptKeyPath    string                          // active signing key path, for reload comparison
+	shieldEngine      *shield.Engine                  // browser shield HTML/JS rewriter (nil = not initialized)
+	frozenTools       *FrozenToolRegistry             // frozen tool inventories for airlock hard tier
 }
 
 // Option configures optional Proxy behavior.
@@ -240,12 +243,20 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 		if cfg.AdaptiveEnforcement.Enabled {
 			adaptiveCfg = &cfg.AdaptiveEnforcement
 		}
-		sm := NewSessionManager(&cfg.SessionProfiling, adaptiveCfg, m)
+		smOpts := SessionManagerOptions{Logger: logger}
+		if cfg.Airlock.Enabled {
+			smOpts.AirlockCfg = &cfg.Airlock
+		}
+		sm := NewSessionManager(&cfg.SessionProfiling, adaptiveCfg, m, smOpts)
 		if cfg.BehavioralBaseline.Enabled {
 			_ = sm.EnableBaseline(&cfg.BehavioralBaseline) // validated at Load time
 		}
 		p.sessionMgrPtr.Store(sm)
 	}
+
+	// Initialize shield engine and frozen tool registry.
+	p.shieldEngine = shield.NewEngine()
+	p.frozenTools = NewFrozenToolRegistry()
 
 	p.setupCEE(&cfg.CrossRequestDetection)
 
@@ -493,10 +504,15 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
 	if cfg.AdaptiveEnforcement.Enabled {
 		adaptiveCfg = &cfg.AdaptiveEnforcement
 	}
+	var airlockCfg *config.Airlock
+	if cfg.Airlock.Enabled {
+		airlockCfg = &cfg.Airlock
+	}
 	wasEnabled := oldCfg.SessionProfiling.Enabled
 	isEnabled := cfg.SessionProfiling.Enabled
 	if !wasEnabled && isEnabled {
-		sm := NewSessionManager(&cfg.SessionProfiling, adaptiveCfg, p.metrics)
+		smOpts := SessionManagerOptions{Logger: p.logger, AirlockCfg: airlockCfg}
+		sm := NewSessionManager(&cfg.SessionProfiling, adaptiveCfg, p.metrics, smOpts)
 		if cfg.BehavioralBaseline.Enabled {
 			_ = sm.EnableBaseline(&cfg.BehavioralBaseline)
 		}
@@ -509,7 +525,7 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
 		// Config values changed while profiling stays enabled — update in place
 		// so TTL/capacity thresholds take effect without losing session state.
 		if sm := p.sessionMgrPtr.Load(); sm != nil {
-			sm.UpdateConfig(&cfg.SessionProfiling, adaptiveCfg)
+			sm.UpdateConfig(&cfg.SessionProfiling, adaptiveCfg, airlockCfg)
 		}
 	}
 
@@ -801,6 +817,31 @@ func (p *Proxy) recordSessionActivity(clientIP, agent, hostname, requestID strin
 
 	level := sess.EscalationLevel()
 
+	// Airlock auto-triggers: map adaptive escalation levels to airlock tiers.
+	// Only fires when airlock is enabled. sess is already *SessionState from
+	// SessionManager.GetOrCreate, so Airlock() is directly accessible.
+	if cfg.Airlock.Enabled {
+		targetTier := ""
+		switch session.EscalationLabel(level) {
+		case "elevated":
+			targetTier = cfg.Airlock.Triggers.OnElevated
+		case "high":
+			targetTier = cfg.Airlock.Triggers.OnHigh
+		case "critical":
+			targetTier = cfg.Airlock.Triggers.OnCritical
+		}
+		if targetTier != "" && targetTier != config.AirlockTierNone {
+			if changed, from, to := sess.Airlock().SetTier(targetTier); changed {
+				if log != nil {
+					log.LogAirlockEnter(key, to, "adaptive_"+session.EscalationLabel(level), clientIP, requestID)
+				}
+				if p.metrics != nil {
+					p.metrics.RecordAirlockTransition(from, to, "adaptive")
+				}
+			}
+		}
+	}
+
 	for _, a := range anomalies {
 		log.LogSessionAnomaly(key, a.Type, a.Detail, clientIP, requestID, a.Score)
 		p.metrics.RecordSessionAnomaly(a.Type)
@@ -811,6 +852,101 @@ func (p *Proxy) recordSessionActivity(clientIP, agent, hostname, requestID strin
 	}
 
 	return SessionResult{Level: level}
+}
+
+// applyShield runs the Browser Shield rewriter on a response body when enabled
+// and the hostname is not exempt. Handles max_shield_bytes, oversize_action, and
+// exempt_domains config knobs. Returns the (possibly rewritten) body.
+// applyShield runs Browser Shield rewriting on a response body. Returns the
+// (possibly rewritten) body and a blocked flag. When blocked is true, the
+// caller must return 403 to the client (oversize response with block action).
+func (p *Proxy) applyShield(body []byte, contentType, hostname string, respHeaders http.Header, cfg *config.Config, actx audit.LogContext, clientIP, requestID, transport string) ([]byte, bool) {
+	if p.shieldEngine == nil || !cfg.BrowserShield.Enabled {
+		return body, false
+	}
+
+	// Exempt domains: skip shield entirely.
+	if isShieldExempt(hostname, cfg.BrowserShield.ExemptDomains) {
+		p.metrics.RecordShieldSkipped("exempt_domain")
+		return body, false
+	}
+
+	// Max shield bytes: enforce oversize action.
+	if cfg.BrowserShield.MaxShieldBytes > 0 && len(body) > cfg.BrowserShield.MaxShieldBytes {
+		p.metrics.RecordShieldSkipped("oversize")
+		switch cfg.BrowserShield.OversizeAction {
+		case config.ShieldOversizeScanHead:
+			// Rewrite only the head; append the unshielded tail so the full
+			// response body is returned intact.
+			head := p.runShieldPipeline(body[:cfg.BrowserShield.MaxShieldBytes], contentType, respHeaders, cfg, actx, clientIP, requestID, transport)
+			return append(head, body[cfg.BrowserShield.MaxShieldBytes:]...), false
+		case config.ShieldOversizeWarn:
+			p.logger.LogAnomaly(actx, "shield_oversize", fmt.Sprintf("response body %d bytes exceeds max_shield_bytes %d", len(body), cfg.BrowserShield.MaxShieldBytes), 0)
+			return body, false
+		default: // block: fail-closed, return 403
+			p.logger.LogBlocked(actx, "shield_oversize", fmt.Sprintf("response body %d bytes exceeds max_shield_bytes %d (action: block)", len(body), cfg.BrowserShield.MaxShieldBytes))
+			return nil, true
+		}
+	}
+
+	return p.runShieldPipeline(body, contentType, respHeaders, cfg, actx, clientIP, requestID, transport), false
+}
+
+// runShieldPipeline applies the shield detection and rewrite pipeline to body bytes.
+func (p *Proxy) runShieldPipeline(body []byte, contentType string, respHeaders http.Header, cfg *config.Config, actx audit.LogContext, clientIP, requestID, transport string) []byte {
+	shieldStart := time.Now()
+	prefixLen := len(body)
+	if prefixLen > 512 {
+		prefixLen = 512
+	}
+	pipeline := shield.DetectPipeline(contentType, body[:prefixLen])
+	if pipeline == shield.PipelineNone {
+		return body
+	}
+	// Extract CSP nonce from response headers (preferred over body extraction).
+	headerNonce := shield.ExtractCSPNonce(respHeaders)
+	shieldResult := p.shieldEngine.RewriteWithNonce(string(body), pipeline, &cfg.BrowserShield, headerNonce)
+	if shieldResult.Rewritten {
+		body = []byte(shieldResult.Content)
+		if shieldResult.ExtensionHits > 0 {
+			p.metrics.RecordShieldRewrite("extension", transport)
+			p.logger.LogShieldRewrite("extension", shieldResult.ExtensionHits, transport, actx.URL, clientIP, requestID)
+		}
+		if shieldResult.TrackingHits > 0 {
+			p.metrics.RecordShieldRewrite("tracking", transport)
+			p.logger.LogShieldRewrite("tracking", shieldResult.TrackingHits, transport, actx.URL, clientIP, requestID)
+		}
+		if shieldResult.TrapHits > 0 {
+			p.metrics.RecordShieldRewrite("trap", transport)
+			p.logger.LogShieldRewrite("trap", shieldResult.TrapHits, transport, actx.URL, clientIP, requestID)
+		}
+		if shieldResult.ShimInjected {
+			p.metrics.RecordShieldShimInjected(transport)
+		}
+	}
+	p.metrics.RecordShieldLatency(transport, time.Since(shieldStart))
+	return body
+}
+
+// ShieldEngine returns the proxy's browser shield engine for sharing with
+// other handlers (e.g., reverse proxy). Returns nil when shield is not initialized.
+// FrozenTools returns the frozen tool registry for MCP airlock enforcement.
+func (p *Proxy) FrozenTools() *FrozenToolRegistry {
+	return p.frozenTools
+}
+
+func (p *Proxy) ShieldEngine() *shield.Engine {
+	return p.shieldEngine
+}
+
+// isShieldExempt checks whether a hostname is in the browser shield exempt list.
+func isShieldExempt(hostname string, exempts []string) bool {
+	for _, d := range exempts {
+		if strings.EqualFold(hostname, d) {
+			return true
+		}
+	}
+	return false
 }
 
 // ssrfSafeDialContext resolves DNS and validates all IPs against internal
@@ -915,6 +1051,20 @@ func (p *Proxy) buildHandler(mux *http.ServeMux) http.Handler {
 	})
 }
 
+// sessionAPIRouter dispatches /api/v1/sessions/{key}/* requests to the
+// appropriate session API handler based on the trailing path segment.
+func (p *Proxy) sessionAPIRouter(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.EscapedPath()
+	switch {
+	case killswitch.IsSessionActionPath(path, "airlock"):
+		p.sessionAPI.HandleAirlock(w, r)
+	case killswitch.IsSessionActionPath(path, "reset"):
+		p.sessionAPI.HandleReset(w, r)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
 // buildMux constructs the route multiplexer for the proxy. Used by both
 // Start() and Handler() to ensure route registration is not duplicated.
 func (p *Proxy) buildMux() *http.ServeMux {
@@ -938,7 +1088,7 @@ func (p *Proxy) buildMux() *http.ServeMux {
 	// Register session admin API routes only when NOT on a separate port.
 	if p.sessionAPI != nil && cfg.KillSwitch.APIListen == "" {
 		mux.HandleFunc("/api/v1/sessions", p.sessionAPI.HandleList)
-		mux.HandleFunc("/api/v1/sessions/", p.sessionAPI.HandleReset)
+		mux.HandleFunc("/api/v1/sessions/", p.sessionAPIRouter)
 	}
 	return mux
 }
@@ -1141,6 +1291,20 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			fetchSessionKey = agent + "|" + clientIP
 		}
 		fetchRec = sm.GetOrCreate(fetchSessionKey)
+	}
+
+	// Airlock check: drain tier blocks all traffic including fetch.
+	if fetchSess, ok := fetchRec.(*SessionState); ok && fetchSess != nil {
+		tier := fetchSess.Airlock().Tier()
+		if tier == config.AirlockTierDrain {
+			p.logger.LogAirlockDeny(fetchSess.key, tier, TransportFetch, r.Method, clientIP, requestID)
+			p.metrics.RecordAirlockDenial(tier, TransportFetch, "read")
+			writeJSON(w, http.StatusForbidden, FetchResponse{
+				URL: displayURL, Agent: agent, Blocked: true,
+				BlockReason: "session in airlock drain",
+			})
+			return
+		}
 	}
 
 	// hasFinding tracks whether any scanning stage (header DLP, CEE, response)
@@ -1486,10 +1650,25 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	contentType := resp.Header.Get("Content-Type")
-	content := string(body)
 	title := ""
 
 	isHTML := strings.Contains(contentType, "text/html") || strings.Contains(contentType, "application/xhtml")
+
+	// Browser Shield: strip fingerprinting, extension probing, and agent traps
+	// before the content reaches readability extraction and response scanning.
+	// Use the final response origin (after redirects), not the original request
+	// URL. An exempt origin that 302s to a non-exempt host must still be shielded.
+	shieldHost := resp.Request.URL.Hostname()
+	body, shieldBlocked := p.applyShield(body, contentType, shieldHost, resp.Header, cfg, actx, clientIP, requestID, TransportFetch)
+	if shieldBlocked {
+		p.metrics.RecordBlocked(parsed.Hostname(), "shield_oversize", time.Since(start), agentLabel)
+		writeJSON(w, http.StatusForbidden, FetchResponse{
+			URL: displayURL, Agent: agent, Blocked: true,
+			BlockReason: "response body exceeds browser shield size limit",
+		})
+		return
+	}
+	content := string(body)
 
 	// Extract text from HTML hiding spots (comments, script/style bodies)
 	// that readability strips. Scan only those fragments for injection,

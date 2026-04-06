@@ -111,12 +111,22 @@ Examples:
 			}
 
 			patterns := gitprotect.CompileDLPPatterns(cfg.DLP.Patterns)
-			findings, scanErr := gitprotect.ScanDiff(string(diffData), patterns)
+			result, scanErr := gitprotect.ScanDiff(string(diffData), patterns)
 			if scanErr != nil {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Warning: %v\n", scanErr)
 			}
 
-			// Suppression: inline comments and config entries
+			// ScanDiff handles inline pipelock:ignore from the diff content
+			// (more reliable than disk reads which fail on CWD/path mismatch).
+			// Config-based suppression still runs here for suppress_findings entries.
+			findings := result.Findings
+			if verbose && len(result.Suppressed) > 0 {
+				for _, f := range result.Suppressed {
+					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "SUPPRESSED: %s:%d  %s (inline)\n", f.File, f.Line, f.Pattern)
+				}
+			}
+
+			// Config-based suppression (suppress_findings entries)
 			findings, suppressed, reasons := cliutil.SuppressGitFindings(findings, cfg.Suppress)
 			if verbose && len(suppressed) > 0 {
 				cliutil.PrintSuppressedGit(cmd.ErrOrStderr(), suppressed, reasons)

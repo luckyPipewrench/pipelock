@@ -79,9 +79,9 @@ func FuzzScanDiff(f *testing.F) {
 	f.Add("+++ b/file.go\n@@ -1,2 +1 @@\n-removed\n context\n")
 
 	f.Fuzz(func(t *testing.T, diffText string) {
-		findings, _ := ScanDiff(diffText, patterns)
+		result, _ := ScanDiff(diffText, patterns)
 
-		for _, finding := range findings {
+		for _, finding := range result.Findings {
 			if finding.File == "" {
 				t.Error("finding with empty file")
 			}

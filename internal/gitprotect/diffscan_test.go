@@ -194,7 +194,8 @@ func makeDiffWithSecret(file, line string) string {
 func TestScanDiff_FindsSecret(t *testing.T) {
 	key := fakeKey("EXAMPLE")
 	diff := makeDiffWithSecret("config.go", `var key = "`+key+`"`)
-	findings, _ := ScanDiff(diff, testPatterns())
+	result, _ := ScanDiff(diff, testPatterns())
+	findings := result.Findings
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding, got %d", len(findings))
 	}
@@ -226,14 +227,16 @@ func TestScanDiff_NoFindings(t *testing.T) {
 +import "fmt"
 
 `
-	findings, _ := ScanDiff(diff, testPatterns())
+	result, _ := ScanDiff(diff, testPatterns())
+	findings := result.Findings
 	if len(findings) != 0 {
 		t.Fatalf("expected 0 findings, got %d", len(findings))
 	}
 }
 
 func TestScanDiff_EmptyDiff(t *testing.T) {
-	findings, _ := ScanDiff("", testPatterns())
+	result, _ := ScanDiff("", testPatterns())
+	findings := result.Findings
 	if findings != nil {
 		t.Fatalf("expected nil findings, got %d", len(findings))
 	}
@@ -242,7 +245,8 @@ func TestScanDiff_EmptyDiff(t *testing.T) {
 func TestScanDiff_EmptyPatterns(t *testing.T) {
 	key := fakeKey("EXAMPLE")
 	diff := makeDiffWithSecret("x.go", `var key = "`+key+`"`)
-	findings, _ := ScanDiff(diff, nil)
+	result, _ := ScanDiff(diff, nil)
+	findings := result.Findings
 	if findings != nil {
 		t.Fatalf("expected nil findings, got %d", len(findings))
 	}
@@ -266,7 +270,8 @@ diff --git a/a.go b/a.go
 +var a = "%s"
 
 `, keyZ, keyA)
-	findings, _ := ScanDiff(diff, testPatterns())
+	result, _ := ScanDiff(diff, testPatterns())
+	findings := result.Findings
 	if len(findings) != 2 {
 		t.Fatalf("expected 2 findings, got %d", len(findings))
 	}
@@ -282,7 +287,8 @@ diff --git a/a.go b/a.go
 func TestScanDiff_RedactsContent(t *testing.T) {
 	key := fakeKey("EXAMPLE")
 	diff := makeDiffWithSecret("x.go", "export AWS_KEY="+key)
-	findings, _ := ScanDiff(diff, testPatterns())
+	result, _ := ScanDiff(diff, testPatterns())
+	findings := result.Findings
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding, got %d", len(findings))
 	}
@@ -383,7 +389,8 @@ func TestParseDiff_NoPrefixFormat(t *testing.T) {
  package main
 +var key = "%s"
 `, key)
-	findings, _ := ScanDiff(diff, testPatterns())
+	result, _ := ScanDiff(diff, testPatterns())
+	findings := result.Findings
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding with --no-prefix diff, got %d", len(findings))
 	}
@@ -396,7 +403,8 @@ func TestParseDiff_CRLFLineEndings(t *testing.T) {
 	// Windows-style \r\n line endings should not break parsing.
 	key := fakeKey("WINDOWS")
 	diff := "diff --git a/x.go b/x.go\r\n--- a/x.go\r\n+++ b/x.go\r\n@@ -1,2 +1,3 @@\r\n package x\r\n+var k = \"" + key + "\"\r\n\r\n"
-	findings, _ := ScanDiff(diff, testPatterns())
+	result, _ := ScanDiff(diff, testPatterns())
+	findings := result.Findings
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding with CRLF line endings, got %d", len(findings))
 	}
@@ -406,7 +414,8 @@ func TestParseDiff_CRLFLineEndings(t *testing.T) {
 }
 
 func TestScanDiff_ErrNoDiffHeaders(t *testing.T) {
-	findings, err := ScanDiff("random text without diff headers", testPatterns())
+	result, err := ScanDiff("random text without diff headers", testPatterns())
+	findings := result.Findings
 	if !errors.Is(err, ErrNoDiffHeaders) {
 		t.Errorf("expected ErrNoDiffHeaders, got %v", err)
 	}
@@ -451,7 +460,8 @@ func TestScanDiff_CreditCard_UUIDNotFlagged(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			diff := fmt.Sprintf("diff --git a/t.rb b/t.rb\n--- a/t.rb\n+++ b/t.rb\n@@ -0,0 +1 @@\n+security_id: \"%s\"\n", tc.uuid)
-			findings, err := ScanDiff(diff, patterns)
+			result, err := ScanDiff(diff, patterns)
+			findings := result.Findings
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -473,7 +483,8 @@ func TestScanDiff_CreditCard_RealCardFlagged(t *testing.T) {
 	card := "4532" + "015112830366"
 	diff := fmt.Sprintf("diff --git a/t.txt b/t.txt\n--- a/t.txt\n+++ b/t.txt\n@@ -0,0 +1 @@\n+card: \"%s\"\n", card)
 
-	findings, err := ScanDiff(diff, patterns)
+	result, err := ScanDiff(diff, patterns)
+	findings := result.Findings
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -497,7 +508,8 @@ func TestScanDiff_IBAN_ValidFlagged(t *testing.T) {
 	iban := "GB82WEST" + "12345698765432"
 	diff := fmt.Sprintf("diff --git a/t.txt b/t.txt\n--- a/t.txt\n+++ b/t.txt\n@@ -0,0 +1 @@\n+iban: %s\n", iban)
 
-	findings, err := ScanDiff(diff, patterns)
+	result, err := ScanDiff(diff, patterns)
+	findings := result.Findings
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -510,5 +522,94 @@ func TestScanDiff_IBAN_ValidFlagged(t *testing.T) {
 	}
 	if !found {
 		t.Error("expected valid IBAN to be flagged")
+	}
+}
+
+func TestScanDiff_InlineSuppressSkipsLine(t *testing.T) {
+	patterns := CompileDLPPatterns([]config.DLPPattern{
+		{Name: "TestSecret", Regex: `SECRET_KEY=\S+`, Severity: "critical"},
+	})
+
+	diff := "diff --git a/env b/env\n--- a/env\n+++ b/env\n@@ -0,0 +1,3 @@\n" +
+		"+SECRET_KEY=exposed\n" +
+		"+SECRET_KEY=suppressed # pipelock:ignore\n" +
+		"+SECRET_KEY=also_suppressed // pipelock:ignore\n"
+
+	result, err := ScanDiff(diff, patterns)
+	findings := result.Findings
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding (unsuppressed), got %d", len(findings))
+	}
+	if findings[0].Line != 1 {
+		t.Errorf("expected finding on line 1, got line %d", findings[0].Line)
+	}
+	// Verify suppressed findings are tracked for --verbose reporting
+	if len(result.Suppressed) != 2 {
+		t.Errorf("expected 2 suppressed findings, got %d", len(result.Suppressed))
+	}
+}
+
+func TestScanDiff_InlineSuppressWithRuleName(t *testing.T) {
+	patterns := CompileDLPPatterns([]config.DLPPattern{
+		{Name: "TestSecret", Regex: `SECRET_KEY=\S+`, Severity: "critical"},
+		{Name: "OtherPattern", Regex: `TOKEN=\S+`, Severity: "high"},
+	})
+
+	// pipelock:ignore with a specific rule name suppresses ONLY that pattern.
+	// Other patterns on the same line should still fire.
+	diff := "diff --git a/env b/env\n--- a/env\n+++ b/env\n@@ -0,0 +1,2 @@\n" +
+		"+SECRET_KEY=test_value # pipelock:ignore TestSecret\n" +
+		"+SECRET_KEY=leaked TOKEN=also_leaked\n"
+
+	result, err := ScanDiff(diff, patterns)
+	findings := result.Findings
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Line 1: TestSecret suppressed, no TOKEN on that line = 0 findings
+	// Line 2: no suppress comment, both patterns match = 2 findings
+	if len(findings) != 2 {
+		t.Fatalf("expected 2 findings (line 2 unsuppressed), got %d", len(findings))
+	}
+	for _, f := range findings {
+		if f.Line != 2 {
+			t.Errorf("expected findings on line 2, got line %d", f.Line)
+		}
+	}
+}
+
+func TestScanDiff_InlineSuppressRuleNameOnlyAffectsNamed(t *testing.T) {
+	patterns := CompileDLPPatterns([]config.DLPPattern{
+		{Name: "SecretA", Regex: `KEYA=\S+`, Severity: "critical"},
+		{Name: "SecretB", Regex: `KEYB=\S+`, Severity: "high"},
+	})
+
+	// Suppress only SecretA, SecretB should still fire on the same line
+	diff := "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -0,0 +1,1 @@\n" +
+		"+KEYA=xxx KEYB=yyy # pipelock:ignore SecretA\n"
+
+	result, err := ScanDiff(diff, patterns)
+	findings := result.Findings
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding (SecretB only), got %d", len(findings))
+	}
+	if findings[0].Pattern != "SecretB" {
+		t.Errorf("expected SecretB finding, got %s", findings[0].Pattern)
+	}
+	// SecretA was suppressed
+	if len(result.Suppressed) != 1 {
+		t.Fatalf("expected 1 suppressed, got %d", len(result.Suppressed))
+	}
+	if result.Suppressed[0].Pattern != "SecretA" {
+		t.Errorf("expected SecretA suppressed, got %s", result.Suppressed[0].Pattern)
 	}
 }

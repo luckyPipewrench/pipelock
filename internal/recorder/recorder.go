@@ -38,6 +38,12 @@ const (
 
 	// x25519KeySize is the expected size of an X25519 public key in bytes.
 	x25519KeySize = 32
+
+	// recorderTypeReceipt is the entry type for action receipts. These get
+	// selective field redaction (target/pattern only) instead of full detail
+	// replacement, preserving receipt structure for audit while preventing
+	// plaintext secrets in evidence files.
+	recorderTypeReceipt = "action_receipt"
 )
 
 // Config configures the flight recorder.
@@ -172,9 +178,16 @@ func (r *Recorder) Record(e Entry) error {
 		e.RawRef = filepath.Base(escrowPath)
 	}
 
-	// DLP redaction
+	// DLP redaction: receipts get selective field redaction (target, pattern
+	// only) to prevent plaintext secrets in evidence files while preserving
+	// receipt structure (signature, signer_key, verdict, action_type, transport).
+	// The raw escrow preserves originals for forensic replay regardless.
 	if r.cfg.Redact && r.redactFn != nil {
-		e.Detail = r.redactDetail(e.Detail)
+		if e.Type == recorderTypeReceipt {
+			e.Detail = r.redactReceiptDetail(e.Detail)
+		} else {
+			e.Detail = r.redactDetail(e.Detail)
+		}
 	}
 
 	e.Hash = ComputeHash(e)
@@ -376,6 +389,70 @@ func (r *Recorder) redactDetail(detail any) any {
 		"detected_patterns": markers,
 		"original_size":     len(raw),
 	}
+}
+
+// redactReceiptDetail selectively redacts sensitive fields (target, pattern)
+// in a receipt entry while preserving the receipt structure. The signature
+// will not verify against redacted content -- the escrow preserves the
+// verifiable original. Returns the detail unchanged if it is not a receipt
+// or if no DLP patterns match.
+func (r *Recorder) redactReceiptDetail(detail any) any {
+	if detail == nil {
+		return nil
+	}
+
+	raw, err := json.Marshal(detail)
+	if err != nil {
+		// Fail-closed: can't inspect, don't pass through unredacted.
+		return map[string]any{
+			"redacted": true,
+			"reason":   "marshal error",
+		}
+	}
+
+	// Quick check: does the whole detail contain any DLP matches?
+	result := r.redactFn(context.Background(), string(raw))
+	if result.Clean {
+		return detail // No secrets found, no redaction needed
+	}
+
+	// Parse as map to access nested fields
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return r.redactDetail(detail) // fallback to full redaction
+	}
+
+	ar, ok := m["action_record"].(map[string]any)
+	if !ok {
+		return r.redactDetail(detail) // not a receipt structure, fallback
+	}
+
+	// Redact sensitive fields that may contain secrets.
+	var redactedFields []string
+	for _, field := range []string{"target", "pattern"} {
+		if val, exists := ar[field]; exists {
+			valStr, isStr := val.(string)
+			if !isStr || valStr == "" {
+				continue
+			}
+			fieldResult := r.redactFn(context.Background(), valStr)
+			if !fieldResult.Clean {
+				ar[field] = "[REDACTED]"
+				redactedFields = append(redactedFields, field)
+			}
+		}
+	}
+
+	// Fail-closed: if the quick-check found DLP matches but none were in
+	// target/pattern, a secret is hiding in an unexpected field. Fall back
+	// to full redaction rather than letting it through.
+	if len(redactedFields) == 0 {
+		return r.redactDetail(detail)
+	}
+
+	ar["redacted_fields"] = redactedFields
+	m["action_record"] = ar
+	return m
 }
 
 // writeEscrow encrypts raw detail JSON with X25519 NaCl box and writes to sidecar.

@@ -41,8 +41,6 @@ rules:
       - credentials
     pattern:
       regex: "AKIA[0-9A-Z]{16}"
-      exempt_domains:
-        - docs.aws.amazon.com
   - id: injection-prompt-leak
     type: injection
     status: experimental
@@ -114,11 +112,6 @@ func TestParseBundle_Valid(t *testing.T) {
 	// Verify tool-poison scan_field.
 	if b.Rules[2].Pattern.ScanField != "description" {
 		t.Errorf("Rules[2].Pattern.ScanField = %q, want %q", b.Rules[2].Pattern.ScanField, "description")
-	}
-
-	// Verify exempt_domains on DLP rule.
-	if len(b.Rules[0].Pattern.ExemptDomains) != 1 {
-		t.Errorf("Rules[0].Pattern.ExemptDomains len = %d, want 1", len(b.Rules[0].Pattern.ExemptDomains))
 	}
 }
 
@@ -705,39 +698,6 @@ func TestValidate_ScanFieldToolPoison(t *testing.T) {
 	}
 }
 
-func TestValidate_ExemptDomainsOnlyForDLP(t *testing.T) {
-	t.Parallel()
-
-	// exempt_domains on injection type should fail.
-	b := &Bundle{
-		FormatVersion: 1,
-		Name:          testValidBundleName,
-		Version:       testValidVersion,
-		Author:        testValidAuthor,
-		Description:   testValidDesc,
-		Rules: []Rule{
-			{
-				ID: "injection-with-exempt", Type: RuleTypeInjection, Status: StatusStable,
-				Name: "Test", Description: "Test rule",
-				Severity: severityHigh, Confidence: confidenceHigh,
-				Pattern: RulePattern{
-					Regex:         "test",
-					ExemptDomains: []string{"example.com"},
-				},
-			},
-		},
-	}
-
-	err := b.Validate()
-	if err == nil {
-		t.Fatal("expected error for exempt_domains on non-DLP rule, got nil")
-	}
-
-	if !strings.Contains(err.Error(), "exempt_domains") {
-		t.Errorf("error %q should mention 'exempt_domains'", err.Error())
-	}
-}
-
 func TestNamespacedID(t *testing.T) {
 	t.Parallel()
 
@@ -981,10 +941,155 @@ func TestValidate_InvalidCalVer(t *testing.T) {
 	}
 }
 
-func TestValidate_ExemptDomainsOnToolPoison(t *testing.T) {
+func TestValidate_V2Bundle_Valid(t *testing.T) {
 	t.Parallel()
 
-	// exempt_domains on tool-poison type should also fail.
+	b := &Bundle{
+		FormatVersion:    2,
+		Name:             testValidBundleName,
+		Version:          testValidVersion,
+		Author:           testValidAuthor,
+		Description:      testValidDesc,
+		Tier:             TierStandard,
+		MonotonicVersion: 1,
+		PublishedAt:      "2026-04-01T00:00:00Z",
+		ExpiresAt:        "2026-06-01T00:00:00Z",
+		KeyID:            "sha256:test-key",
+		Rules: []Rule{
+			{
+				ID: "test-001", Type: RuleTypeDLP, Status: StatusStable,
+				Name: "Test", Description: "Test rule",
+				Severity: severityHigh, Confidence: confidenceHigh,
+				Pattern: RulePattern{Regex: "test"},
+			},
+		},
+	}
+
+	if err := b.Validate(); err != nil {
+		t.Errorf("valid v2 bundle should pass: %v", err)
+	}
+}
+
+func TestValidate_V2Bundle_MissingTier(t *testing.T) {
+	t.Parallel()
+
+	b := &Bundle{
+		FormatVersion:    2,
+		Name:             testValidBundleName,
+		Version:          testValidVersion,
+		Author:           testValidAuthor,
+		Description:      testValidDesc,
+		MonotonicVersion: 1,
+		PublishedAt:      "2026-04-01T00:00:00Z",
+		ExpiresAt:        "2026-06-01T00:00:00Z",
+		KeyID:            "sha256:test-key",
+	}
+
+	err := b.Validate()
+	if err == nil {
+		t.Fatal("expected error for missing tier")
+	}
+	if !strings.Contains(err.Error(), "tier") {
+		t.Errorf("error %q should mention tier", err.Error())
+	}
+}
+
+func TestValidate_V2Bundle_InvalidTier(t *testing.T) {
+	t.Parallel()
+
+	b := &Bundle{
+		FormatVersion:    2,
+		Name:             testValidBundleName,
+		Version:          testValidVersion,
+		Author:           testValidAuthor,
+		Description:      testValidDesc,
+		Tier:             "enterprise",
+		MonotonicVersion: 1,
+		PublishedAt:      "2026-04-01T00:00:00Z",
+		ExpiresAt:        "2026-06-01T00:00:00Z",
+		KeyID:            "sha256:test-key",
+	}
+
+	err := b.Validate()
+	if err == nil {
+		t.Fatal("expected error for invalid tier")
+	}
+	if !strings.Contains(err.Error(), "tier") {
+		t.Errorf("error %q should mention tier", err.Error())
+	}
+}
+
+func TestValidate_V2Bundle_ZeroMonotonicVersion(t *testing.T) {
+	t.Parallel()
+
+	b := &Bundle{
+		FormatVersion: 2,
+		Name:          testValidBundleName,
+		Version:       testValidVersion,
+		Author:        testValidAuthor,
+		Description:   testValidDesc,
+		Tier:          TierStandard,
+		PublishedAt:   "2026-04-01T00:00:00Z",
+		ExpiresAt:     "2026-06-01T00:00:00Z",
+		KeyID:         "sha256:test-key",
+	}
+
+	err := b.Validate()
+	if err == nil {
+		t.Fatal("expected error for zero monotonic_version")
+	}
+	if !strings.Contains(err.Error(), "monotonic_version") {
+		t.Errorf("error %q should mention monotonic_version", err.Error())
+	}
+}
+
+func TestValidate_V2Bundle_InvalidTimestamp(t *testing.T) {
+	t.Parallel()
+
+	b := &Bundle{
+		FormatVersion:    2,
+		Name:             testValidBundleName,
+		Version:          testValidVersion,
+		Author:           testValidAuthor,
+		Description:      testValidDesc,
+		Tier:             TierCommunity,
+		MonotonicVersion: 1,
+		PublishedAt:      "not-a-date",
+		ExpiresAt:        "2026-06-01T00:00:00Z",
+		KeyID:            "sha256:test-key",
+	}
+
+	err := b.Validate()
+	if err == nil {
+		t.Fatal("expected error for invalid published_at timestamp")
+	}
+}
+
+func TestValidate_V2Bundle_MissingKeyID(t *testing.T) {
+	t.Parallel()
+
+	b := &Bundle{
+		FormatVersion:    2,
+		Name:             testValidBundleName,
+		Version:          testValidVersion,
+		Author:           testValidAuthor,
+		Description:      testValidDesc,
+		Tier:             TierPro,
+		MonotonicVersion: 1,
+		PublishedAt:      "2026-04-01T00:00:00Z",
+		ExpiresAt:        "2026-06-01T00:00:00Z",
+	}
+
+	err := b.Validate()
+	if err == nil {
+		t.Fatal("expected error for missing key_id")
+	}
+}
+
+func TestValidate_V1Bundle_IgnoresV2Fields(t *testing.T) {
+	t.Parallel()
+
+	// V1 bundles should pass even without v2 fields.
 	b := &Bundle{
 		FormatVersion: 1,
 		Name:          testValidBundleName,
@@ -993,20 +1098,15 @@ func TestValidate_ExemptDomainsOnToolPoison(t *testing.T) {
 		Description:   testValidDesc,
 		Rules: []Rule{
 			{
-				ID: "toolpoison-with-exempt", Type: RuleTypeToolPoison, Status: StatusStable,
+				ID: "test-001", Type: RuleTypeDLP, Status: StatusStable,
 				Name: "Test", Description: "Test rule",
 				Severity: severityHigh, Confidence: confidenceHigh,
-				Pattern: RulePattern{
-					Regex:         "test",
-					ScanField:     "description",
-					ExemptDomains: []string{"example.com"},
-				},
+				Pattern: RulePattern{Regex: "test"},
 			},
 		},
 	}
 
-	err := b.Validate()
-	if err == nil {
-		t.Fatal("expected error for exempt_domains on tool-poison rule, got nil")
+	if err := b.Validate(); err != nil {
+		t.Errorf("v1 bundle without v2 fields should pass: %v", err)
 	}
 }

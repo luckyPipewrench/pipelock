@@ -94,6 +94,7 @@ func (r Result) IsConfigMismatch() bool {
 
 // Scanner checks URLs for suspicious content before fetching.
 type Scanner struct {
+	core                       *compiledCoreScanner // immutable safety floor — always runs, no config knobs
 	allowlist                  []string
 	blocklist                  []string
 	dlpPatterns                []*compiledPattern
@@ -171,6 +172,7 @@ func New(cfg *config.Config) *Scanner {
 	}
 
 	s := &Scanner{
+		core:                      initCoreScanner(),
 		allowlist:                 allowlist,
 		blocklist:                 cfg.FetchProxy.Monitoring.Blocklist,
 		entropyThreshold:          cfg.FetchProxy.Monitoring.EntropyThreshold,
@@ -484,6 +486,9 @@ var scannerHints = map[string]string{
 	ScannerContext:          "The request context was nil or cancelled before the scan completed.",
 	ScannerCRLF:             "CRLF injection sequence detected in URL. This is never legitimate in normal traffic.",
 	ScannerPathTraversal:    "Path traversal sequence detected. Review the URL for directory escape attempts.",
+	ScannerCoreDLP:          "Core DLP pattern matched. This is a critical credential detection that cannot be disabled.",
+	ScannerCoreSSRF:         "Core SSRF protection blocked this URL. Private IP ranges are always blocked.",
+	ScannerCoreResponse:     "Core response scanning detected a prompt injection pattern. This cannot be disabled.",
 }
 
 // HintForBlock returns actionable guidance for a blocked scan result.
@@ -574,6 +579,12 @@ func (s *Scanner) scan(ctx context.Context, rawURL string) Result {
 		return result
 	}
 
+	// Core DLP — immutable safety floor. Runs BEFORE main DLP, BEFORE DNS.
+	// Core findings are FINAL; the main scanner cannot override a core block.
+	if result := s.checkCoreDLP(parsed); !result.Allowed {
+		return result
+	}
+
 	// DLP + entropy on hostname BEFORE DNS resolution.
 	// Prevents secret exfiltration via DNS queries for domains like
 	// "sk-ant-xxxx.evil.com" where the subdomain encodes a secret.
@@ -591,6 +602,9 @@ func (s *Scanner) scan(ctx context.Context, rawURL string) Result {
 	}
 
 	// SSRF protection — DNS resolution happens here, safe after DLP.
+	// When active, core CIDRs are always included via mergedSSRFCIDRs()
+	// so private ranges (10.x, 172.16.x, 192.168.x, loopback, link-local)
+	// cannot be removed from the check set via config alone.
 	if result := s.checkSSRF(ctx, hostname); !result.Allowed {
 		return result
 	}
@@ -683,6 +697,7 @@ func parseAlternativeIP(hostname string) net.IP {
 // checkSSRF blocks requests to internal/private IP ranges.
 // When no internal CIDRs are configured (nil slice), SSRF protection is disabled.
 // To block loopback, link-local, etc., include those CIDRs in config.Internal.
+// When SSRF IS active, core CIDRs are always included in the check set.
 func (s *Scanner) checkSSRF(ctx context.Context, hostname string) Result {
 	// Check context before the SSRF-disabled fast path so cancelled requests
 	// don't slip through when internalCIDRs is empty.
@@ -698,6 +713,10 @@ func (s *Scanner) checkSSRF(ctx context.Context, hostname string) Result {
 		return Result{Allowed: true}
 	}
 
+	// When SSRF is active, merge core CIDRs so private ranges can never
+	// be removed from the check set via config alone.
+	allCIDRs := s.mergedSSRFCIDRs()
+
 	// Decode non-standard IP notations (hex, octal, decimal integer) BEFORE
 	// DNS resolution. Attackers use 0x7f000001, 0177.0.0.1, or 2130706433
 	// to reach 127.0.0.1 without net.ParseIP recognizing it. If the hostname
@@ -706,7 +725,7 @@ func (s *Scanner) checkSSRF(ctx context.Context, hostname string) Result {
 		if v4 := altIP.To4(); v4 != nil {
 			altIP = v4
 		}
-		for _, cidr := range s.internalCIDRs {
+		for _, cidr := range allCIDRs {
 			if cidr.Contains(altIP) {
 				return Result{
 					Allowed: false,
@@ -757,8 +776,8 @@ func (s *Scanner) checkSSRF(ctx context.Context, hostname string) Result {
 			ip = v4
 		}
 
-		// Check against internal CIDRs
-		for _, cidr := range s.internalCIDRs {
+		// Check against internal CIDRs (core + config)
+		for _, cidr := range allCIDRs {
 			if cidr.Contains(ip) {
 				// IP allowlist exemption: operator explicitly trusts this range.
 				if s.IsIPAllowlisted(ip) {

@@ -9,21 +9,28 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
 
 // Bundle represents a parsed and validated rule bundle.
 type Bundle struct {
-	FormatVersion int    `yaml:"format_version"`
-	Name          string `yaml:"name"`
-	Version       string `yaml:"version"`
-	Author        string `yaml:"author"`
-	Description   string `yaml:"description"`
-	Homepage      string `yaml:"homepage"`
-	MinPipelock   string `yaml:"min_pipelock"`
-	License       string `yaml:"license"`
-	Rules         []Rule `yaml:"rules"`
+	FormatVersion    int      `yaml:"format_version"`
+	Name             string   `yaml:"name"`
+	Version          string   `yaml:"version"`
+	Author           string   `yaml:"author"`
+	Description      string   `yaml:"description"`
+	Homepage         string   `yaml:"homepage"`
+	MinPipelock      string   `yaml:"min_pipelock"`
+	License          string   `yaml:"license"`
+	Tier             string   `yaml:"tier"`              // standard, community, pro (v2+)
+	MonotonicVersion uint64   `yaml:"monotonic_version"` // rollback-prevention counter (v2+)
+	PublishedAt      string   `yaml:"published_at"`      // RFC 3339 timestamp (v2+)
+	ExpiresAt        string   `yaml:"expires_at"`        // RFC 3339 timestamp (v2+)
+	RequiredFeatures []string `yaml:"required_features"` // engine features needed (v2+, parsed but not yet enforced)
+	KeyID            string   `yaml:"key_id"`            // signing key fingerprint (v2+)
+	Rules            []Rule   `yaml:"rules"`
 }
 
 // Rule represents a single detection rule within a bundle.
@@ -42,9 +49,12 @@ type Rule struct {
 
 // RulePattern holds type-specific detection payload.
 type RulePattern struct {
-	Regex         string   `yaml:"regex"`
+	Regex     string `yaml:"regex"`
+	ScanField string `yaml:"scan_field"`
+	// ExemptDomains is accepted for v1 parse compatibility but silently
+	// ignored at runtime. External bundle rules are deny-only — exemptions
+	// must be configured in the local pipelock config, not in bundles.
 	ExemptDomains []string `yaml:"exempt_domains"`
-	ScanField     string   `yaml:"scan_field"`
 }
 
 // Rule type constants.
@@ -78,6 +88,20 @@ const (
 	confidenceLow    = "low"
 )
 
+// Bundle tier constants.
+const (
+	TierStandard  = "standard"
+	TierCommunity = "community"
+	TierPro       = "pro"
+)
+
+// validTiers is the set of allowed tier values for v2+ bundles.
+var validTiers = map[string]bool{
+	TierStandard:  true,
+	TierCommunity: true,
+	TierPro:       true,
+}
+
 // Bundle size and count limits.
 const (
 	MaxBundleFileSize = 1 << 20 // 1 MB
@@ -87,7 +111,7 @@ const (
 	MaxRuleIDLen      = 96
 	MinNameLen        = 3
 	MinRuleIDLen      = 3
-	MaxFormatVersion  = 1
+	MaxFormatVersion  = 2
 )
 
 // Scan field constants for tool-poison rules.
@@ -158,9 +182,10 @@ func ParseBundle(data []byte) (*Bundle, error) {
 }
 
 // Validate performs comprehensive validation of a Bundle.
+// Accepts format_version 1 (original) and 2 (with tier, freshness, key binding).
 func (b *Bundle) Validate() error {
-	if b.FormatVersion != MaxFormatVersion {
-		return fmt.Errorf("validate bundle: format_version must be %d, got %d", MaxFormatVersion, b.FormatVersion)
+	if b.FormatVersion < 1 || b.FormatVersion > MaxFormatVersion {
+		return fmt.Errorf("validate bundle: format_version must be 1-%d, got %d", MaxFormatVersion, b.FormatVersion)
 	}
 
 	if err := ValidateBundleName(b.Name); err != nil {
@@ -179,6 +204,13 @@ func (b *Bundle) Validate() error {
 		return fmt.Errorf("validate bundle: description must not be empty")
 	}
 
+	// V2+ fields are required when format_version >= 2.
+	if b.FormatVersion >= 2 {
+		if err := b.validateV2Fields(); err != nil {
+			return err
+		}
+	}
+
 	if len(b.Rules) > MaxRuleCount {
 		return fmt.Errorf("validate bundle: %d rules exceeds maximum of %d", len(b.Rules), MaxRuleCount)
 	}
@@ -189,6 +221,37 @@ func (b *Bundle) Validate() error {
 		if err := validateRule(&b.Rules[i], seen); err != nil {
 			return fmt.Errorf("validate bundle: rule[%d]: %w", i, err)
 		}
+	}
+
+	return nil
+}
+
+// validateV2Fields validates fields introduced in format_version 2.
+func (b *Bundle) validateV2Fields() error {
+	if !validTiers[b.Tier] {
+		return fmt.Errorf("validate bundle: invalid tier %q (must be standard, community, or pro)", b.Tier)
+	}
+
+	if b.MonotonicVersion == 0 {
+		return fmt.Errorf("validate bundle: monotonic_version must be > 0")
+	}
+
+	if b.PublishedAt == "" {
+		return fmt.Errorf("validate bundle: published_at must not be empty")
+	}
+	if _, err := parseRFC3339(b.PublishedAt); err != nil {
+		return fmt.Errorf("validate bundle: published_at: %w", err)
+	}
+
+	if b.ExpiresAt == "" {
+		return fmt.Errorf("validate bundle: expires_at must not be empty")
+	}
+	if _, err := parseRFC3339(b.ExpiresAt); err != nil {
+		return fmt.Errorf("validate bundle: expires_at: %w", err)
+	}
+
+	if b.KeyID == "" {
+		return fmt.Errorf("validate bundle: key_id must not be empty for v2+ bundles")
 	}
 
 	return nil
@@ -248,11 +311,6 @@ func validatePattern(p *RulePattern, ruleType, ruleID string) error {
 
 	if _, err := regexp.Compile(p.Regex); err != nil {
 		return fmt.Errorf("invalid regex for rule %q: %w", ruleID, err)
-	}
-
-	// exempt_domains is only valid for DLP rules.
-	if len(p.ExemptDomains) > 0 && ruleType != RuleTypeDLP {
-		return fmt.Errorf("exempt_domains is only valid for %s rules, not %s (rule %q)", RuleTypeDLP, ruleType, ruleID)
 	}
 
 	// scan_field validation for tool-poison rules.
@@ -365,4 +423,13 @@ func compareSemver(aMajor, aMinor, aPatch, bMajor, bMinor, bPatch int) int {
 	}
 
 	return cmpInt(aPatch, bPatch)
+}
+
+// parseRFC3339 parses an RFC 3339 timestamp string into a time.Time.
+func parseRFC3339(s string) (time.Time, error) {
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("invalid RFC 3339 timestamp %q: %w", s, err)
+	}
+	return t, nil
 }

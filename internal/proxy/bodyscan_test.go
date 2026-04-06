@@ -5,6 +5,7 @@ package proxy
 
 import (
 	"context"
+	"encoding/base64"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -1308,6 +1309,185 @@ func TestIsBinaryContentType(t *testing.T) {
 				t.Errorf("isBinaryContentType(%q) = %v, want %v", tt.ct, got, tt.binary)
 			}
 		})
+	}
+}
+
+// fakeAnthropicKey builds a fake Anthropic API key at runtime to avoid
+// triggering DLP on the test source itself (gosec G101).
+func fakeAnthropicKey() string {
+	return "sk-ant-" + "api03-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+}
+
+// --- Multipart DLP bypass exploit tests ---
+//
+// These prove that multipart DLP scanning cannot be bypassed via
+// Content-Type spoofing, custom part headers, or Content-Transfer-Encoding.
+
+func TestExtractMultipart_BinaryContentTypePart(t *testing.T) {
+	// Bypass vector: attacker sets Content-Type: image/png on a multipart
+	// part whose body is actually a plaintext secret. The binary-type check
+	// must NOT skip scanning the part body.
+	cfg := testScannerConfig()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+
+	boundary := testMultipartBoundary
+	secret := fakeAnthropicKey()
+	body := "--" + boundary + "\r\n" +
+		"Content-Disposition: form-data; name=\"file\"; filename=\"avatar.png\"\r\n" +
+		"Content-Type: image/png\r\n\r\n" +
+		secret + "\r\n" +
+		"--" + boundary + "--\r\n"
+
+	_, result := scanRequestBody(context.Background(), BodyScanRequest{
+		Body:        strings.NewReader(body),
+		ContentType: "multipart/form-data; boundary=" + boundary,
+		MaxBytes:    cfg.RequestBodyScanning.MaxBodyBytes,
+		Scanner:     sc,
+	})
+	if result.Clean {
+		t.Fatal("expected DLP match: secret in part body with spoofed image/png Content-Type")
+	}
+	if len(result.DLPMatches) == 0 {
+		t.Fatal("expected non-empty DLP matches for binary content-type bypass")
+	}
+}
+
+func TestExtractMultipart_CustomPartHeaders(t *testing.T) {
+	// Bypass vector: attacker puts a secret in a custom part header
+	// (X-Secret) that is never extracted for DLP scanning.
+	cfg := testScannerConfig()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+
+	boundary := testMultipartBoundary
+	secret := fakeAnthropicKey()
+	body := "--" + boundary + "\r\n" +
+		"Content-Disposition: form-data; name=\"file\"\r\n" +
+		"X-Secret: " + secret + "\r\n\r\n" +
+		"clean body content\r\n" +
+		"--" + boundary + "--\r\n"
+
+	_, result := scanRequestBody(context.Background(), BodyScanRequest{
+		Body:        strings.NewReader(body),
+		ContentType: "multipart/form-data; boundary=" + boundary,
+		MaxBytes:    cfg.RequestBodyScanning.MaxBodyBytes,
+		Scanner:     sc,
+	})
+	if result.Clean {
+		t.Fatal("expected DLP match: secret in custom multipart part header X-Secret")
+	}
+	if len(result.DLPMatches) == 0 {
+		t.Fatal("expected non-empty DLP matches for custom part header bypass")
+	}
+}
+
+func TestExtractMultipart_StructuralHeaderParams(t *testing.T) {
+	// Bypass vector: attacker hides a secret in a non-standard parameter of
+	// a structural MIME header (Content-Disposition or Content-Type). The
+	// scanner must parse parameter values from these headers, not skip them.
+	cfg := testScannerConfig()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+
+	secret := fakeAnthropicKey()
+	body := "--BOUNDARY\r\n" +
+		"Content-Disposition: form-data; name=\"legit\"; x-secret=\"" + secret + "\"\r\n" +
+		"Content-Type: text/plain\r\n" +
+		"\r\nhello\r\n" +
+		"--BOUNDARY--\r\n"
+
+	_, result := scanRequestBody(context.Background(), BodyScanRequest{
+		Body:        strings.NewReader(body),
+		ContentType: "multipart/form-data; boundary=BOUNDARY",
+		MaxBytes:    1 << 20,
+		Scanner:     sc,
+	})
+	if result.Clean {
+		t.Fatal("expected DLP match for secret in Content-Disposition parameter")
+	}
+	if len(result.DLPMatches) == 0 {
+		t.Fatal("expected non-empty DLP matches for structural header param bypass")
+	}
+}
+
+func TestExtractMultipart_Base64TransferEncoding(t *testing.T) {
+	// Bypass vector: attacker sends Content-Transfer-Encoding: base64 with
+	// RFC 2045 line-wrapped base64. Go's multipart.Reader does NOT decode
+	// CTE, so the scanner sees raw base64 instead of the secret.
+	cfg := testScannerConfig()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+
+	boundary := testMultipartBoundary
+	secret := fakeAnthropicKey()
+
+	// Encode the secret as base64 with MIME line wrapping (76-char lines + CRLF).
+	encoded := base64Encode76(secret)
+
+	body := "--" + boundary + "\r\n" +
+		"Content-Disposition: form-data; name=\"data\"\r\n" +
+		"Content-Transfer-Encoding: base64\r\n\r\n" +
+		encoded + "\r\n" +
+		"--" + boundary + "--\r\n"
+
+	_, result := scanRequestBody(context.Background(), BodyScanRequest{
+		Body:        strings.NewReader(body),
+		ContentType: "multipart/form-data; boundary=" + boundary,
+		MaxBytes:    cfg.RequestBodyScanning.MaxBodyBytes,
+		Scanner:     sc,
+	})
+	if result.Clean {
+		t.Fatal("expected DLP match: base64-encoded secret with Content-Transfer-Encoding header")
+	}
+	if len(result.DLPMatches) == 0 {
+		t.Fatal("expected non-empty DLP matches for base64 transfer encoding bypass")
+	}
+}
+
+// base64Encode76 encodes data as base64 with RFC 2045 line wrapping
+// (76-character lines separated by CRLF), mimicking real MIME encoding.
+func base64Encode76(data string) string {
+	raw := base64.StdEncoding.EncodeToString([]byte(data))
+	var sb strings.Builder
+	for i := 0; i < len(raw); i += 76 {
+		end := i + 76
+		if end > len(raw) {
+			end = len(raw)
+		}
+		sb.WriteString(raw[i:end])
+		if end < len(raw) {
+			sb.WriteString("\r\n")
+		}
+	}
+	return sb.String()
+}
+
+// TestExtractMultipart_QuotedPrintableTransferEncoding verifies that
+// quoted-printable encoded secrets are decoded and caught by DLP.
+func TestExtractMultipart_QuotedPrintableTransferEncoding(t *testing.T) {
+	cfg := testScannerConfig()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+
+	boundary := testMultipartBoundary
+	// Quoted-printable encode: replace '-' with '=2D' to break the pattern.
+	qpEncoded := "sk=2Dant=2Dapi03=2DXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+
+	body := "--" + boundary + "\r\n" +
+		"Content-Disposition: form-data; name=\"data\"\r\n" +
+		"Content-Transfer-Encoding: quoted-printable\r\n\r\n" +
+		qpEncoded + "\r\n" +
+		"--" + boundary + "--\r\n"
+
+	_, result := scanRequestBody(context.Background(), BodyScanRequest{
+		Body:        strings.NewReader(body),
+		ContentType: "multipart/form-data; boundary=" + boundary,
+		MaxBytes:    cfg.RequestBodyScanning.MaxBodyBytes,
+		Scanner:     sc,
+	})
+	if result.Clean {
+		t.Fatal("expected DLP match: quoted-printable encoded secret with CTE header")
 	}
 }
 

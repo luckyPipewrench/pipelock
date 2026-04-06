@@ -27,12 +27,29 @@ const testBundleName = "test-bundle"
 // testBundle is a minimal valid bundle for test helpers.
 func testBundle(name string, rules []Rule) *Bundle {
 	return &Bundle{
-		FormatVersion: MaxFormatVersion,
+		FormatVersion: 1,
 		Name:          name,
 		Version:       "2026.03.0",
 		Author:        "Test Author",
 		Description:   "Test bundle for loader tests",
 		Rules:         rules,
+	}
+}
+
+// testBundleV2 creates a v2 bundle with tier, freshness, and key binding fields.
+func testBundleV2(name, tier string, monotonic uint64, rules []Rule) *Bundle {
+	return &Bundle{
+		FormatVersion:    2,
+		Name:             name,
+		Version:          "2026.04.0",
+		Author:           "Test Author",
+		Description:      "Test v2 bundle for loader tests",
+		Tier:             tier,
+		MonotonicVersion: monotonic,
+		PublishedAt:      "2026-04-01T00:00:00Z",
+		ExpiresAt:        "2026-06-01T00:00:00Z",
+		KeyID:            "sha256:test-key-id",
+		Rules:            rules,
 	}
 }
 
@@ -960,33 +977,6 @@ func TestLoadBundles_IntegrityFailure(t *testing.T) {
 	}
 }
 
-func TestLoadBundles_DLPExemptDomains(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	bundleDir := filepath.Join(dir, "exempt-test")
-	if err := os.MkdirAll(bundleDir, 0o750); err != nil {
-		t.Fatal(err)
-	}
-
-	rule := testDLPRule("dlp-exempt-001", confidenceHigh, StatusStable)
-	rule.Pattern.ExemptDomains = []string{"example.com", "test.org"}
-	b := testBundle("exempt-test", []Rule{rule})
-	writeUnsignedBundle(t, bundleDir, b)
-
-	result := LoadBundles(dir, LoadOptions{
-		MinConfidence:   confidenceLow,
-		PipelockVersion: testPipelockVersion,
-	})
-
-	if len(result.DLP) != 1 {
-		t.Fatalf("expected 1 DLP rule, got %d", len(result.DLP))
-	}
-	if len(result.DLP[0].ExemptDomains) != 2 {
-		t.Errorf("expected 2 exempt domains, got %d", len(result.DLP[0].ExemptDomains))
-	}
-}
-
 func TestLoadBundles_SkipsNonDirectoryEntries(t *testing.T) {
 	t.Parallel()
 
@@ -1315,5 +1305,33 @@ func TestLoadBundles_ConfidenceFilterLow(t *testing.T) {
 	// All three should pass with low minimum.
 	if len(result.DLP) != 3 {
 		t.Fatalf("expected 3 DLP rules with low confidence filter, got %d", len(result.DLP))
+	}
+}
+
+func TestLoadBundles_V2UnsignedRejected(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	bundleDir := filepath.Join(dir, "v2-test")
+	if err := os.MkdirAll(bundleDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	b := testBundleV2("v2-test", TierCommunity, 5, []Rule{
+		testDLPRule("dlp-v2-001", confidenceHigh, StatusStable),
+	})
+	writeUnsignedBundle(t, bundleDir, b)
+
+	result := LoadBundles(dir, LoadOptions{
+		MinConfidence:   confidenceLow,
+		PipelockVersion: testPipelockVersion,
+	})
+
+	// V2 bundles MUST be signed. Unsigned v2 should be rejected.
+	if len(result.Errors) == 0 {
+		t.Fatal("expected unsigned v2 bundle to be rejected")
+	}
+	if len(result.Loaded) != 0 {
+		t.Errorf("expected 0 loaded bundles for unsigned v2, got %d", len(result.Loaded))
 	}
 }

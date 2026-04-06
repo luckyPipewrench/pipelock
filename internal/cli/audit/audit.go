@@ -146,6 +146,7 @@ Examples:
 	cmd.MarkFlagsMutuallyExclusive("json", "format")
 
 	cmd.AddCommand(auditScoreCmd())
+	cmd.AddCommand(auditCapsuleCmd())
 
 	return cmd
 }

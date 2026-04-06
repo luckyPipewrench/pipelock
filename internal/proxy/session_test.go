@@ -1596,7 +1596,7 @@ func TestSessionManager_SweepAfterConfigReload(t *testing.T) {
 			Critical: config.EscalationActions{BlockAll: &blockAllTrue},
 		},
 	}
-	sm.UpdateConfig(cfg, newAdaptiveCfg)
+	sm.UpdateConfig(cfg, newAdaptiveCfg, nil)
 
 	// Sweep should use NEW config for blockAllCheck.
 	sm.sweepDeescalation()
@@ -1631,7 +1631,7 @@ func TestSessionManager_ClearBlockAllOnAdaptiveDisable(t *testing.T) {
 	}
 
 	// Hot-reload with adaptive disabled (nil).
-	sm.UpdateConfig(cfg, nil)
+	sm.UpdateConfig(cfg, nil, nil)
 
 	if sess.BlockAll() {
 		t.Error("expected atBlockAll cleared after adaptive enforcement disabled via nil")
@@ -1640,7 +1640,7 @@ func TestSessionManager_ClearBlockAllOnAdaptiveDisable(t *testing.T) {
 	// Reset for second variant: Enabled=false.
 	sess.SetBlockAll(true)
 	disabledCfg := &config.AdaptiveEnforcement{Enabled: false}
-	sm.UpdateConfig(cfg, disabledCfg)
+	sm.UpdateConfig(cfg, disabledCfg, nil)
 
 	if sess.BlockAll() {
 		t.Error("expected atBlockAll cleared after adaptive enforcement Enabled=false")
@@ -1680,7 +1680,7 @@ func TestSessionManager_RecomputeBlockAllOnConfigChange(t *testing.T) {
 			Critical: config.EscalationActions{BlockAll: &blockAllTrue},
 		},
 	}
-	sm.UpdateConfig(cfg, newAdaptiveCfg)
+	sm.UpdateConfig(cfg, newAdaptiveCfg, nil)
 
 	// atBlockAll should now be true for the level 2 session.
 	if !sess.BlockAll() {
@@ -1816,7 +1816,7 @@ func TestSessionManager_RecomputeBlockAllMultipleSessions(t *testing.T) {
 			Critical: config.EscalationActions{BlockAll: &blockAllTrue},
 		},
 	}
-	sm.UpdateConfig(cfg, newAdaptiveCfg)
+	sm.UpdateConfig(cfg, newAdaptiveCfg, nil)
 
 	if sess1.BlockAll() {
 		t.Error("level 1 should not be block_all")

@@ -350,6 +350,7 @@ func buildConfig(preset string, report *discover.Report) *config.Config {
 		cfg.MCPInputScanning.Enabled = true
 		cfg.MCPInputScanning.Action = config.ActionWarn
 		cfg.MCPToolScanning.Enabled = true
+		cfg.MCPToolScanning.Action = config.ActionWarn
 		cfg.MCPToolScanning.DetectDrift = true
 	}
 
@@ -457,7 +458,8 @@ func scanCanaryURL(cfg *config.Config, canaryURL string) bool {
 	sc := scanner.New(cfg)
 	result := sc.Scan(context.Background(), canaryURL)
 	// Assert the block came from DLP specifically, not an allowlist or other layer.
-	return !result.Allowed && result.Scanner == scanner.ScannerDLP
+	// Core DLP (immutable safety floor) also counts as DLP detection.
+	return !result.Allowed && (result.Scanner == scanner.ScannerDLP || result.Scanner == scanner.ScannerCoreDLP)
 }
 
 func printProof(w interface{ Write([]byte) (int, error) }, result *initResult) {

@@ -1635,6 +1635,7 @@ flight_recorder:
   retention_days: 90
   redact: true
   sign_checkpoints: true
+  signing_key_path: "/path/to/signing-key"
   max_entries_per_file: 10000
   raw_escrow: false
   escrow_public_key: ""
@@ -1646,13 +1647,14 @@ flight_recorder:
 | `dir` | (required if enabled) | Directory for evidence files |
 | `checkpoint_interval` | `1000` | Entries between signed checkpoints |
 | `retention_days` | `0` | Auto-expire files after N days (0 = keep forever) |
-| `redact` | `true` | DLP-redact evidence content before writing |
+| `redact` | `true` | DLP-redact evidence content before writing. Receipt entries get field-level redaction (target/pattern scrubbed, signature preserved). |
 | `sign_checkpoints` | `true` | Ed25519 sign checkpoint entries |
+| `signing_key_path` | (empty) | Ed25519 private key for action receipts. When set, every proxy decision produces a signed receipt. Generate a key with `pipelock keygen <name>`. Verify receipts with `pipelock verify-receipt <file>`. Hot-reloadable: add, remove, or rotate keys via SIGHUP. |
 | `max_entries_per_file` | `10000` | Rotate to a new file after this many entries |
 | `raw_escrow` | `false` | Encrypt raw (pre-redaction) detail to sidecar files |
 | `escrow_public_key` | (required if raw_escrow) | X25519 public key (hex) for escrow encryption |
 
-Evidence files are named `evidence-<session>-<seq>.jsonl`. Each entry contains a SHA-256 hash of its predecessor, forming a tamper-evident chain. Breaking the chain is detectable by `pipelock integrity verify`.
+Evidence files are named `evidence-<session>-<seq>.jsonl`. Each entry contains a SHA-256 hash of its predecessor, forming a tamper-evident chain. Action receipts form a second chain within the evidence log (each receipt links to the previous receipt via `chain_prev_hash`). Breaking either chain is detectable by `pipelock integrity verify`.
 
 ## A2A Scanning (v2.1)
 

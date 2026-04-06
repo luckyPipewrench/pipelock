@@ -384,10 +384,16 @@ mcp_tool_scanning:
 }
 
 func TestTestCmd_ExitCodeOnFailure(t *testing.T) {
-	// Config with incomplete DLP patterns -- only Anthropic pattern included.
-	// AWS, GitHub, and OpenAI key vectors will fail (no matching pattern).
+	// Config with incomplete DLP patterns — only Anthropic pattern included.
+	// Disable entropy so high-entropy tokens aren't caught by entropy scanner.
+	// Core DLP covers AWS and GitHub. OpenAI (sk-proj-) is NOT in core.
+	// With entropy disabled, OpenAI vector should fail (no matching pattern).
 	cfgYAML := `version: 1
 mode: balanced
+fetch_proxy:
+  monitoring:
+    entropy_threshold: 99
+    subdomain_entropy_threshold: 99
 dlp:
   include_defaults: false
   patterns:
@@ -413,6 +419,7 @@ mcp_tool_scanning:
 	cmd.SetArgs([]string{"test", "--config", cfgPath, "--category", "dlp"})
 
 	err := cmd.Execute()
+	output := buf.String()
 	if err == nil {
 		t.Error("expected error (exit code 1) for incomplete DLP config")
 	}
@@ -420,7 +427,6 @@ mcp_tool_scanning:
 		t.Errorf("expected ErrTestFailed, got: %v", err)
 	}
 
-	output := buf.String()
 	if !strings.Contains(output, "[FAIL]") {
 		t.Error("expected [FAIL] markers for missing DLP patterns")
 	}
@@ -428,9 +434,13 @@ mcp_tool_scanning:
 
 func TestTestCmd_JSONExitCodeOnFailure(t *testing.T) {
 	// JSON mode must also return ErrTestFailed when vectors fail.
-	// Same incomplete DLP config as text mode test.
+	// Same incomplete DLP config as text mode test (entropy disabled).
 	cfgYAML := `version: 1
 mode: balanced
+fetch_proxy:
+  monitoring:
+    entropy_threshold: 99
+    subdomain_entropy_threshold: 99
 dlp:
   include_defaults: false
   patterns:

@@ -110,14 +110,24 @@ type simScenario struct {
 
 // scanDetectedBy checks that a URL scan was blocked AND by the expected scanner layer.
 // Prevents false positives where an earlier layer (e.g., allowlist) masks a broken later layer.
+// Accepts core scanner variants (core_dlp for dlp, core_ssrf for ssrf) as equivalent.
+// coreEquivScanners maps main scanner labels to their core equivalents.
+var coreEquivScanners = map[string]string{
+	scanner.ScannerDLP:  scanner.ScannerCoreDLP,
+	scanner.ScannerSSRF: scanner.ScannerCoreSSRF,
+}
+
 func scanDetectedBy(r scanner.Result, expectedScanner string) (bool, string) {
 	if r.Allowed {
 		return false, "allowed"
 	}
-	if r.Scanner != expectedScanner {
-		return false, fmt.Sprintf("blocked by %s (expected %s)", r.Scanner, expectedScanner)
+	if r.Scanner == expectedScanner {
+		return true, r.Scanner
 	}
-	return true, r.Scanner
+	if coreScanner, ok := coreEquivScanners[expectedScanner]; ok && r.Scanner == coreScanner {
+		return true, r.Scanner
+	}
+	return false, fmt.Sprintf("blocked by %s (expected %s)", r.Scanner, expectedScanner)
 }
 
 // buildSimScenarios creates the full set of attack scenarios.

@@ -48,6 +48,29 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) ResponseScan
 			}},
 		}
 	}
+
+	// Core response patterns run FIRST — immutable safety floor.
+	// These run regardless of response_scanning.enabled.
+	if coreMatches := s.ScanCoreResponse(ctx, content); len(coreMatches) > 0 {
+		result := ResponseScanResult{
+			Clean:   false,
+			Matches: coreMatches,
+		}
+		// Support strip/ask actions on core matches so callers that
+		// configured strip still get TransformedContent.
+		if s.responseAction == config.ActionStrip || s.responseAction == config.ActionAsk {
+			transformed := normalize.ForMatching(content)
+			for _, p := range s.core.responsePatterns {
+				replacement := fmt.Sprintf("[REDACTED: %s]", p.name)
+				transformed = p.re.ReplaceAllString(transformed, replacement)
+			}
+			if transformed != normalize.ForMatching(content) {
+				result.TransformedContent = transformed
+			}
+		}
+		return result
+	}
+
 	if !s.responseEnabled {
 		return ResponseScanResult{Clean: true}
 	}
@@ -430,11 +453,21 @@ func (s *Scanner) matchDecodedNormalized(decoded string) []ResponseMatch {
 }
 
 // ResponseScanningEnabled returns whether response scanning is active.
+// Always returns true when core response patterns exist, even if the
+// user disabled response_scanning.enabled — core is the safety floor.
 func (s *Scanner) ResponseScanningEnabled() bool {
+	if s.core != nil && len(s.core.responsePatterns) > 0 {
+		return true
+	}
 	return s.responseEnabled
 }
 
 // ResponseAction returns the configured response scanning action (strip, warn, block).
+// When main response scanning is disabled but core patterns are active,
+// defaults to "block" — core findings are non-negotiable.
 func (s *Scanner) ResponseAction() string {
+	if s.responseAction == "" && s.core != nil && len(s.core.responsePatterns) > 0 {
+		return config.ActionBlock
+	}
 	return s.responseAction
 }

@@ -794,6 +794,29 @@ func TestAirlockState_ForceSetTier_ClearsCancelOnNone(t *testing.T) {
 	}
 }
 
+func TestAirlockState_RegisterCancel_ImmediateAtHard(t *testing.T) {
+	a := NewAirlockState()
+	a.SetTier(config.AirlockTierSoft)
+	a.SetTier(config.AirlockTierHard)
+
+	var immediatelyCalled bool
+	a.RegisterCancel(func() { immediatelyCalled = true })
+	if !immediatelyCalled {
+		t.Error("RegisterCancel at Hard tier should fire immediately")
+	}
+}
+
+func TestAirlockState_RegisterCancel_ImmediateAtDrain(t *testing.T) {
+	a := NewAirlockState()
+	a.ForceSetTier(config.AirlockTierDrain)
+
+	var immediatelyCalled bool
+	a.RegisterCancel(func() { immediatelyCalled = true })
+	if !immediatelyCalled {
+		t.Error("RegisterCancel at Drain tier should fire immediately")
+	}
+}
+
 func TestAirlockState_ForceSetTier_Upward(t *testing.T) {
 	a := NewAirlockState()
 	// ForceSetTier should also work for upward transitions.

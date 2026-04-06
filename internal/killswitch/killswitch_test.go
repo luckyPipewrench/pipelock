@@ -295,6 +295,23 @@ func TestController_AllowlistIP(t *testing.T) {
 	}
 }
 
+func TestController_IsActiveForIP(t *testing.T) {
+	cfg := testConfig()
+	cfg.KillSwitch.Enabled = true
+	cfg.KillSwitch.AllowlistIPs = []string{"192.168.1.0/24"}
+	ks := New(cfg)
+
+	d := ks.IsActiveForIP("192.168.1.50")
+	if d.Active {
+		t.Error("expected allowlisted IP to pass IsActiveForIP")
+	}
+
+	d = ks.IsActiveForIP("10.0.0.1")
+	if !d.Active {
+		t.Error("expected non-allowlisted IP to be blocked by IsActiveForIP")
+	}
+}
+
 func TestController_Reload(t *testing.T) {
 	cfg := testConfig()
 	cfg.KillSwitch.Enabled = true

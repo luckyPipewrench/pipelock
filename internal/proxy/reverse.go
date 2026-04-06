@@ -400,7 +400,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		revHost := resp.Request.URL.Hostname()
 		if !isShieldExempt(revHost, cfg.BrowserShield.ExemptDomains) {
 			if cfg.BrowserShield.MaxShieldBytes <= 0 || len(body) <= cfg.BrowserShield.MaxShieldBytes {
-				body = runShieldPipelineShared(rp.shieldEngine, body, resp.Header.Get("Content-Type"), resp.Header, &cfg.BrowserShield, rp.metrics, rp.logger, "reverse", "", "", "")
+				body = runShieldPipelineShared(rp.shieldEngine, body, resp.Header.Get("Content-Type"), resp.Header, &cfg.BrowserShield, rp.metrics, "reverse")
 			}
 		}
 	}

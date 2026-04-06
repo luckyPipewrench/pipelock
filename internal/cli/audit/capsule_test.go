@@ -163,6 +163,22 @@ func TestCapsuleCmd_CustomExpiration(t *testing.T) {
 	}
 }
 
+func TestCapsuleCmd_NegativeExpires(t *testing.T) {
+	cmd := testRoot()
+	var buf strings.Builder
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"audit", "capsule", "--json", "--expires", "-1h"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("negative --expires should fail")
+	}
+	if !strings.Contains(err.Error(), "--expires must be > 0") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
 func TestCapsuleCmd_ConfigHash(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "pipelock.yaml")

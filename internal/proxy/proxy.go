@@ -255,7 +255,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 	}
 
 	// Initialize shield engine and frozen tool registry.
-	p.shieldEngine = shield.NewEngine()
+	p.shieldEngine = shield.NewEngine(cfg.BrowserShield.TrackingDomains)
 	p.frozenTools = NewFrozenToolRegistry()
 
 	p.setupCEE(&cfg.CrossRequestDetection)
@@ -925,6 +925,38 @@ func (p *Proxy) runShieldPipeline(body []byte, contentType string, respHeaders h
 		}
 	}
 	p.metrics.RecordShieldLatency(transport, time.Since(shieldStart))
+	return body
+}
+
+// runShieldPipelineShared is the shared Browser Shield pipeline usable by
+// both Proxy and ReverseProxyHandler. Extracts CSP nonce from response
+// headers and runs the full rewrite + metrics pipeline.
+func runShieldPipelineShared(engine *shield.Engine, body []byte, contentType string, respHeaders http.Header, cfg *config.BrowserShield, m *metrics.Metrics, transport string) []byte {
+	prefixLen := len(body)
+	if prefixLen > 512 {
+		prefixLen = 512
+	}
+	pipeline := shield.DetectPipeline(contentType, body[:prefixLen])
+	if pipeline == shield.PipelineNone {
+		return body
+	}
+	headerNonce := shield.ExtractCSPNonce(respHeaders)
+	shieldResult := engine.RewriteWithNonce(string(body), pipeline, cfg, headerNonce)
+	if shieldResult.Rewritten {
+		body = []byte(shieldResult.Content)
+		if shieldResult.ExtensionHits > 0 {
+			m.RecordShieldRewrite("extension", transport)
+		}
+		if shieldResult.TrackingHits > 0 {
+			m.RecordShieldRewrite("tracking", transport)
+		}
+		if shieldResult.TrapHits > 0 {
+			m.RecordShieldRewrite("trap", transport)
+		}
+		if shieldResult.ShimInjected {
+			m.RecordShieldShimInjected(transport)
+		}
+	}
 	return body
 }
 

@@ -268,7 +268,10 @@ func TestProxy_RunShieldPipeline_CSPNonce(t *testing.T) {
 	// Check that the nonce from the CSP header is used.
 	// If a shim was injected (contains <script>), verify the CSP nonce is applied.
 	resultStr := string(result)
-	if containsSubstring(resultStr, "<script") && !containsSubstring(resultStr, "testNonce123") {
+	if !containsSubstring(resultStr, "<script") {
+		t.Fatal("expected shield shim to be injected")
+	}
+	if !containsSubstring(resultStr, "testNonce123") {
 		t.Error("shim injected without CSP nonce from header")
 	}
 }

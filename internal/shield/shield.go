@@ -56,9 +56,19 @@ type Engine struct {
 }
 
 // NewEngine compiles all shield patterns and returns a ready-to-use engine.
-// Panics if any pattern is invalid (programming error, caught at startup).
-func NewEngine() *Engine {
+// extraTrackingDomains are operator-supplied domains that are merged into
+// the tracking pixel regex. Panics if any pattern is invalid.
+func NewEngine(extraTrackingDomains []string) *Engine {
 	extRe, trackRe, trapRe, commentRe, funcRe := compilePatterns()
+	// Merge operator-supplied tracking domains into the compiled regex.
+	if len(extraTrackingDomains) > 0 {
+		extra := make([]string, 0, len(extraTrackingDomains))
+		for _, d := range extraTrackingDomains {
+			extra = append(extra, regexp.QuoteMeta(d))
+		}
+		merged := trackRe.String() + `|(?i)` + strings.Join(extra, "|")
+		trackRe = regexp.MustCompile(merged)
+	}
 	return &Engine{
 		extensionRe:     extRe,
 		trackingPixelRe: trackRe,
@@ -100,10 +110,6 @@ func DetectPipeline(contentType string, bodyPrefix []byte) PipelineType {
 func mediaTypeToPipeline(mt string) PipelineType {
 	switch mt {
 	case "text/html", "application/xhtml+xml":
-		return PipelineHTML
-	case "text/xml", "application/xml":
-		// XML can embed <script> tags that browsers execute. Treat as HTML
-		// to strip extension probing, tracking, and hidden traps.
 		return PipelineHTML
 	case "text/javascript", "application/javascript":
 		return PipelineJS

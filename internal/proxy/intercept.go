@@ -337,11 +337,16 @@ func newInterceptHandler(
 
 		// Kill switch re-check for intercepted CONNECT tunnels.
 		// Raw relay (relay.go) polls this per copy iteration. Intercepted
-		// tunnels must check per inner request.
-		if ic.KillSwitch != nil && ic.KillSwitch.IsActive() {
-			ic.Metrics.RecordKillSwitchDenial("intercept", r.URL.Path)
-			http.Error(w, "kill switch active", http.StatusServiceUnavailable)
-			return
+		// tunnels must check per inner request. Use IsActiveForIP (not
+		// IsActiveHTTP) because inner request paths belong to the upstream
+		// origin — /health and /metrics exemptions must not apply here.
+		if ic.KillSwitch != nil {
+			d := ic.KillSwitch.IsActiveForIP(ic.ClientIP)
+			if d.Active {
+				ic.Metrics.RecordKillSwitchDenial("intercept", r.URL.Path)
+				http.Error(w, "kill switch active", http.StatusServiceUnavailable)
+				return
+			}
 		}
 
 		// Authority check: Host must match CONNECT target (host:port).

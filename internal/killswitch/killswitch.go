@@ -108,6 +108,24 @@ func (c *Controller) IsActive() bool {
 	return c.computeDecision(c.cfg.Load()).Active
 }
 
+// IsActiveForIP checks whether the kill switch should deny a request from
+// the given client IP. Only checks IP allowlist exemptions — no path/endpoint
+// exemptions. Use this inside intercepted CONNECT tunnels where request paths
+// belong to the upstream origin, not to pipelock's own endpoints.
+func (c *Controller) IsActiveForIP(clientIP string) Decision {
+	rt := c.cfg.Load()
+	if len(rt.allowlistNets) > 0 {
+		if ip := net.ParseIP(clientIP); ip != nil {
+			for _, ipNet := range rt.allowlistNets {
+				if ipNet.Contains(ip) {
+					return Decision{}
+				}
+			}
+		}
+	}
+	return c.computeDecision(rt)
+}
+
 // IsActiveHTTP checks whether the kill switch should deny an HTTP request.
 // Checks exemptions (health/metrics/API endpoints, allowlisted IPs) before
 // computing the active state from the four sources.

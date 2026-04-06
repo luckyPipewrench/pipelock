@@ -1414,7 +1414,7 @@ func TestReverseProxy_ShieldEnabled(t *testing.T) {
 
 	m := metrics.New()
 	ks := killswitch.New(cfg)
-	se := shield.NewEngine()
+	se := shield.NewEngine(nil)
 
 	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, logger, m, ks, nil, se)
 	proxySrv := httptest.NewServer(handler)

@@ -472,6 +472,7 @@ type ResponseScanPattern struct {
 	Regex         string `yaml:"regex"`
 	Bundle        string `yaml:"-"` // set by rules loader, not from YAML
 	BundleVersion string `yaml:"-"` // set by rules loader, not from YAML
+	Compiled      bool   `yaml:"-"` // true for patterns from Defaults(), set by ApplyDefaults
 }
 
 // ForwardProxy configures HTTP CONNECT and absolute-URI forward proxy support.
@@ -594,6 +595,7 @@ type DLPPattern struct {
 	Action        string   `yaml:"action,omitempty"`    // reserved — not yet implemented; rejected at validation
 	Bundle        string   `yaml:"-"`                   // set by rules loader, not from YAML
 	BundleVersion string   `yaml:"-"`                   // set by rules loader, not from YAML
+	Compiled      bool     `yaml:"-"`                   // true for patterns from Defaults(), set by ApplyDefaults
 }
 
 // AddressProtection configures crypto address poisoning detection.
@@ -1799,6 +1801,11 @@ func mergeDLPPatterns(includeDefaults *bool, user, defaults []DLPPattern) []DLPP
 		// Explicit opt-out: user patterns only (old behavior).
 		return user
 	}
+	// Tag defaults with Compiled provenance so the standard tier source
+	// selector can distinguish them from user-supplied patterns.
+	for i := range defaults {
+		defaults[i].Compiled = true
+	}
 	if len(user) == 0 {
 		return defaults
 	}
@@ -1823,6 +1830,9 @@ func mergeDLPPatterns(includeDefaults *bool, user, defaults []DLPPattern) []DLPP
 func mergeResponsePatterns(includeDefaults *bool, user, defaults []ResponseScanPattern) []ResponseScanPattern {
 	if includeDefaults != nil && !*includeDefaults {
 		return user
+	}
+	for i := range defaults {
+		defaults[i].Compiled = true
 	}
 	if len(user) == 0 {
 		return defaults

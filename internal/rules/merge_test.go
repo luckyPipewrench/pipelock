@@ -254,24 +254,21 @@ func TestMergeIntoConfig_IncludeDefaultsFalse_StandardSourceNone(t *testing.T) {
 func TestRemoveStandardTierDLP(t *testing.T) {
 	t.Parallel()
 	patterns := []config.DLPPattern{
-		{Name: "AWS Access ID"},                                   // core compiled — kept
-		{Name: "Anthropic API Key"},                               // standard compiled — removed
-		{Name: "Stripe Key"},                                      // standard compiled — removed
-		{Name: "Custom User Pattern"},                             // user-defined (unknown name) — kept
+		{Name: "AWS Access ID", Compiled: true},                   // core compiled — kept (core name)
+		{Name: "Anthropic API Key", Compiled: true},               // standard compiled — removed
+		{Name: "Stripe Key", Compiled: true},                      // standard compiled — removed
+		{Name: "Stripe Key"},                                      // user override (same name, Compiled=false) — kept
+		{Name: "Custom User Pattern"},                             // user-defined — kept
 		{Name: "community:custom-rule", Bundle: "community-pack"}, // bundle — kept
 	}
 	result := removeStandardTierDLP(patterns)
-	if len(result) != 3 {
-		t.Fatalf("expected 3 patterns (core + user + bundle), got %d", len(result))
+	if len(result) != 4 {
+		t.Fatalf("expected 4 patterns (core + user override + user custom + bundle), got %d", len(result))
 	}
-	names := make([]string, len(result))
-	for i, p := range result {
-		names[i] = p.Name
-	}
-	want := []string{"AWS Access ID", "Custom User Pattern", "community:custom-rule"}
+	want := []string{"AWS Access ID", "Stripe Key", "Custom User Pattern", "community:custom-rule"}
 	for i, w := range want {
-		if names[i] != w {
-			t.Errorf("result[%d] = %q, want %q", i, names[i], w)
+		if result[i].Name != w {
+			t.Errorf("result[%d] = %q, want %q", i, result[i].Name, w)
 		}
 	}
 }
@@ -279,9 +276,9 @@ func TestRemoveStandardTierDLP(t *testing.T) {
 func TestRemoveStandardTierResponse(t *testing.T) {
 	t.Parallel()
 	patterns := []config.ResponseScanPattern{
-		{Name: "Prompt Injection"},                               // core compiled — kept
-		{Name: "New Instructions"},                               // standard compiled — removed
-		{Name: "CJK Jailbreak Mode"},                             // standard compiled — removed
+		{Name: "Prompt Injection", Compiled: true},               // core compiled — kept
+		{Name: "New Instructions", Compiled: true},               // standard compiled — removed
+		{Name: "CJK Jailbreak Mode", Compiled: true},             // standard compiled — removed
 		{Name: "My Custom Detection"},                            // user-defined — kept
 		{Name: "community:custom-inj", Bundle: "community-pack"}, // bundle — kept
 	}

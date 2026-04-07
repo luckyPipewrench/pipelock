@@ -31,7 +31,7 @@ func ResolveRulesDir(override string) string {
 // compiledStandardDLPNames is the set of DLP pattern names from
 // config.Defaults() that belong to the standard tier (non-core). When a
 // signed standard bundle loads, these are replaced by bundle patterns.
-// Must match the 40 non-core DLP names in config.Defaults().
+// Must match the 41 non-core DLP names in config.Defaults().
 var compiledStandardDLPNames = map[string]bool{
 	"Anthropic API Key":           true,
 	"OpenAI API Key":              true,
@@ -198,14 +198,10 @@ func MergeIntoConfig(cfg *config.Config, pipelockVersion string) *LoadResult {
 func removeStandardTierDLP(patterns []config.DLPPattern) []config.DLPPattern {
 	kept := make([]config.DLPPattern, 0, len(patterns))
 	for _, p := range patterns {
-		// Bundle-sourced patterns are never removed here.
-		if p.Bundle != "" {
-			kept = append(kept, p)
-			continue
-		}
-		// Only remove patterns whose names match compiled standard defaults.
-		// Core names and unknown names (user-defined) are preserved.
-		if compiledStandardDLPNames[p.Name] {
+		// Only remove patterns that are compiled defaults (p.Compiled=true)
+		// AND belong to the standard tier (not core). User-supplied patterns
+		// with the same name as a default are preserved (Compiled=false).
+		if p.Compiled && compiledStandardDLPNames[p.Name] {
 			continue // replaced by standard bundle
 		}
 		kept = append(kept, p)
@@ -217,11 +213,7 @@ func removeStandardTierDLP(patterns []config.DLPPattern) []config.DLPPattern {
 func removeStandardTierResponse(patterns []config.ResponseScanPattern) []config.ResponseScanPattern {
 	kept := make([]config.ResponseScanPattern, 0, len(patterns))
 	for _, p := range patterns {
-		if p.Bundle != "" {
-			kept = append(kept, p)
-			continue
-		}
-		if compiledStandardResponseNames[p.Name] {
+		if p.Compiled && compiledStandardResponseNames[p.Name] {
 			continue
 		}
 		kept = append(kept, p)

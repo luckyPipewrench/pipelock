@@ -10649,3 +10649,87 @@ func TestBudgetConfig_HasDoWFields(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateMediationEnvelope(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		cfg     func() *Config
+		wantErr string
+	}{
+		{
+			name: "disabled is valid with no key",
+			cfg: func() *Config {
+				c := Defaults()
+				c.MediationEnvelope.Enabled = false
+				return c
+			},
+		},
+		{
+			name: "enabled without sign is valid without key",
+			cfg: func() *Config {
+				c := Defaults()
+				c.MediationEnvelope.Enabled = true
+				return c
+			},
+		},
+		{
+			name: "sign requires signing_key_path",
+			cfg: func() *Config {
+				c := Defaults()
+				c.MediationEnvelope.Enabled = true
+				c.MediationEnvelope.Sign = true
+				return c
+			},
+			wantErr: "signing_key_path is required",
+		},
+		{
+			name: "spiffe requires trust_domain",
+			cfg: func() *Config {
+				c := Defaults()
+				c.MediationEnvelope.Enabled = true
+				c.MediationEnvelope.ActorFormat = ActorFormatSPIFFE
+				return c
+			},
+			wantErr: "trust_domain is required",
+		},
+		{
+			name: "spiffe with trust_domain is valid",
+			cfg: func() *Config {
+				c := Defaults()
+				c.MediationEnvelope.Enabled = true
+				c.MediationEnvelope.ActorFormat = ActorFormatSPIFFE
+				c.MediationEnvelope.TrustDomain = "example.com"
+				return c
+			},
+		},
+		{
+			name: "invalid actor_format rejected",
+			cfg: func() *Config {
+				c := Defaults()
+				c.MediationEnvelope.Enabled = true
+				c.MediationEnvelope.ActorFormat = "invalid"
+				return c
+			},
+			wantErr: "actor_format must be",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := tt.cfg().validateMediationEnvelope()
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error %q does not contain %q", err.Error(), tt.wantErr)
+			}
+		})
+	}
+}

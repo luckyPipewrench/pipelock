@@ -383,6 +383,7 @@ type Config struct {
 	Airlock               Airlock                 `yaml:"airlock"`
 	BrowserShield         BrowserShield           `yaml:"browser_shield"`
 	A2AScanning           A2AScanning             `yaml:"a2a_scanning"`
+	MediationEnvelope     MediationEnvelope       `yaml:"mediation_envelope"`
 	Agents                map[string]AgentProfile `yaml:"agents,omitempty"`
 	LicenseKey            string                  `yaml:"license_key,omitempty"`        // signed license token (from pipelock license issue)
 	LicenseFile           string                  `yaml:"license_file,omitempty"`       // path to file containing the license token (read at startup)
@@ -954,6 +955,24 @@ type FlightRecorder struct {
 	RawEscrow          bool   `yaml:"raw_escrow"`           // encrypted raw detail sidecar (default false)
 	EscrowPublicKey    string `yaml:"escrow_public_key"`    // X25519 public key for raw escrow encryption
 	SigningKeyPath     string `yaml:"signing_key_path"`     // Ed25519 private key for checkpoint signing and action receipts
+}
+
+// Actor format constants for MediationEnvelope.
+const (
+	ActorFormatLegacy = "legacy"
+	ActorFormatSPIFFE = "spiffe"
+)
+
+// MediationEnvelope configures sideband metadata on proxied requests.
+// When enabled, pipelock injects a Pipelock-Mediation header (HTTP) or
+// _meta["com.pipelock/mediation"] (MCP) carrying action type, verdict,
+// actor identity, and receipt correlation ID.
+type MediationEnvelope struct {
+	Enabled        bool   `yaml:"enabled"`
+	Sign           bool   `yaml:"sign"`
+	ActorFormat    string `yaml:"actor_format"`
+	TrustDomain    string `yaml:"trust_domain"`
+	SigningKeyPath string `yaml:"signing_key_path"`
 }
 
 // MCPBinaryIntegrity configures pre-spawn hash verification for MCP subprocesses.
@@ -1923,6 +1942,7 @@ func (c *Config) Validate() error {
 		c.validateBehavioralBaseline,
 		c.validateAirlock,
 		c.validateBrowserShield,
+		c.validateMediationEnvelope,
 	}
 	for _, v := range validators {
 		if err := v(); err != nil {
@@ -3183,6 +3203,23 @@ func (c *Config) validateBrowserShield() error {
 	return nil
 }
 
+func (c *Config) validateMediationEnvelope() error {
+	me := c.MediationEnvelope
+	if !me.Enabled {
+		return nil
+	}
+	if me.ActorFormat != "" && me.ActorFormat != ActorFormatLegacy && me.ActorFormat != ActorFormatSPIFFE {
+		return fmt.Errorf("mediation_envelope.actor_format must be %q or %q", ActorFormatLegacy, ActorFormatSPIFFE)
+	}
+	if me.ActorFormat == ActorFormatSPIFFE && me.TrustDomain == "" {
+		return fmt.Errorf("mediation_envelope.trust_domain is required when actor_format is %q", ActorFormatSPIFFE)
+	}
+	if me.Sign && me.SigningKeyPath == "" {
+		return fmt.Errorf("mediation_envelope.signing_key_path is required when sign is true")
+	}
+	return nil
+}
+
 // ResolveCAPath returns resolved CA cert and key paths.
 // Empty config values resolve to ~/.pipelock/ca.pem and ~/.pipelock/ca-key.pem.
 // Returns an error if $HOME cannot be determined and paths are not set explicitly.
@@ -4312,6 +4349,9 @@ func Defaults() *Config {
 				"hcaptcha.com",
 				"www.recaptcha.net",
 			},
+		},
+		MediationEnvelope: MediationEnvelope{
+			ActorFormat: ActorFormatLegacy,
 		},
 	}
 	// Mark all compiled defaults with provenance so the standard tier source

@@ -225,10 +225,12 @@ func TestMergeIntoConfig_NoBundles_StandardSourceCompiled(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Rules.RulesDir = t.TempDir()
 	result := MergeIntoConfig(cfg, "1.0.0")
-	if result.Standard != StandardSourceCompiled {
-		t.Errorf("expected StandardSourceCompiled, got %s", result.Standard)
+	if result.StandardDLP != StandardSourceCompiled {
+		t.Errorf("expected StandardSourceCompiled for DLP, got %s", result.StandardDLP)
 	}
-	// All 48 DLP patterns should still be present (compiled fallback).
+	if result.StandardResponse != StandardSourceCompiled {
+		t.Errorf("expected StandardSourceCompiled for response, got %s", result.StandardResponse)
+	}
 	if len(cfg.DLP.Patterns) != 48 {
 		t.Errorf("expected 48 DLP patterns (compiled fallback), got %d", len(cfg.DLP.Patterns))
 	}
@@ -241,8 +243,11 @@ func TestMergeIntoConfig_IncludeDefaultsFalse_StandardSourceNone(t *testing.T) {
 	cfg.ApplyDefaults()
 	cfg.Rules.RulesDir = t.TempDir()
 	result := MergeIntoConfig(cfg, "1.0.0")
-	if result.Standard != StandardSourceNone {
-		t.Errorf("expected StandardSourceNone, got %s", result.Standard)
+	if result.StandardDLP != StandardSourceNone {
+		t.Errorf("expected StandardSourceNone for DLP, got %s", result.StandardDLP)
+	}
+	if result.StandardResponse != StandardSourceNone {
+		t.Errorf("expected StandardSourceNone for response, got %s", result.StandardResponse)
 	}
 }
 

@@ -615,12 +615,20 @@ func (s *Scanner) checkCoreSSRFLiteral(hostname string) Result {
 	}
 
 	if s.isCoreCIDRBlocked(ip) {
-		return Result{
+		r := Result{
 			Allowed: false,
 			Reason:  fmt.Sprintf("core SSRF: %s is a private/internal IP address", hostname),
 			Scanner: ScannerCoreSSRF,
 			Score:   1.0,
 		}
+		// If the IP is in api_allowlist, this is a config mismatch (operator
+		// intended to allow it) rather than a real attack. Classify so
+		// adaptive enforcement doesn't escalate, and hint toward ip_allowlist.
+		if s.IsInAPIAllowlist(hostname) {
+			r.Hint = fmt.Sprintf("add %q to ssrf.ip_allowlist to allow this internal IP", hostname)
+			r.Class = ClassConfigMismatch
+		}
+		return r
 	}
 
 	return Result{Allowed: true}

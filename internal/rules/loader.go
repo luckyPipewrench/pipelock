@@ -56,14 +56,15 @@ const (
 
 // LoadResult contains patterns extracted from all loaded bundles.
 type LoadResult struct {
-	DLP        []config.DLPPattern
-	Injection  []config.ResponseScanPattern
-	ToolPoison []CompiledToolPoisonRule
-	Errors     []BundleError
-	Loaded     []LoadedBundle
-	Degraded   bool     // standard pack failed to load — core-only mode
-	Warnings   []string // non-fatal warnings (expired bundles, etc.)
-	Standard   StandardSource
+	DLP              []config.DLPPattern
+	Injection        []config.ResponseScanPattern
+	ToolPoison       []CompiledToolPoisonRule
+	Errors           []BundleError
+	Loaded           []LoadedBundle
+	Degraded         bool           // standard pack failed to load — core-only mode
+	Warnings         []string       // non-fatal warnings (expired bundles, etc.)
+	StandardDLP      StandardSource // where DLP standard tier came from
+	StandardResponse StandardSource // where response standard tier came from
 }
 
 // CompiledToolPoisonRule is a pre-compiled regex for tool-poison detection.

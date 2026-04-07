@@ -116,19 +116,15 @@ Uses the same config resolution as runtime for accurate reporting.`,
 			// Run the same merge path as runtime to get effective state.
 			result := domrules.MergeIntoConfig(cfg, cliutil.Version)
 
-			// Count effective patterns by source.
-			var compiledDLP, bundleDLP, compiledResp, bundleResp int
+			// Count compiled (non-bundle) patterns for standard tier fallback.
+			var compiledDLP, compiledResp int
 			for _, p := range cfg.DLP.Patterns {
-				if p.Bundle != "" {
-					bundleDLP++
-				} else {
+				if p.Bundle == "" {
 					compiledDLP++
 				}
 			}
 			for _, p := range cfg.ResponseScanning.Patterns {
-				if p.Bundle != "" {
-					bundleResp++
-				} else {
+				if p.Bundle == "" {
 					compiledResp++
 				}
 			}
@@ -139,44 +135,46 @@ Uses the same config resolution as runtime for accurate reporting.`,
 					DLP:      scanner.CoreDLPCount(),
 					Response: scanner.CoreResponseCount(),
 				},
-				StandardSource: string(result.Standard),
+				StandardDLPSource:      string(result.StandardDLP),
+				StandardResponseSource: string(result.StandardResponse),
 			}
 
-			// Standard tier details.
-			switch result.Standard {
+			// Standard tier DLP details.
+			switch result.StandardDLP {
 			case domrules.StandardSourceBundle:
 				for _, lb := range result.Loaded {
 					if lb.Name == domrules.StandardBundleName {
-						status.Standard = &tierStatus{
-							Source:   "bundle",
-							Version:  lb.Version,
-							DLP:      lb.DLP,
-							Response: lb.Injection,
-						}
+						status.StandardDLP = &tierDetail{Source: "bundle", Version: lb.Version, Count: lb.DLP}
 						break
 					}
 				}
 			case domrules.StandardSourceCompiled:
-				// Count compiled non-core patterns (clamp to zero defensively).
 				dlpCount := compiledDLP - scanner.CoreDLPCount()
 				if dlpCount < 0 {
 					dlpCount = 0
 				}
+				status.StandardDLP = &tierDetail{Source: "compiled fallback", Count: dlpCount}
+			case domrules.StandardSourceNone:
+				status.StandardDLP = &tierDetail{Source: "disabled"}
+			}
+
+			// Standard tier response details.
+			switch result.StandardResponse {
+			case domrules.StandardSourceBundle:
+				for _, lb := range result.Loaded {
+					if lb.Name == domrules.StandardBundleName {
+						status.StandardResponse = &tierDetail{Source: "bundle", Version: lb.Version, Count: lb.Injection}
+						break
+					}
+				}
+			case domrules.StandardSourceCompiled:
 				respCount := compiledResp - scanner.CoreResponseCount()
 				if respCount < 0 {
 					respCount = 0
 				}
-				status.Standard = &tierStatus{
-					Source:   "compiled fallback",
-					DLP:      dlpCount,
-					Response: respCount,
-				}
+				status.StandardResponse = &tierDetail{Source: "compiled fallback", Count: respCount}
 			case domrules.StandardSourceNone:
-				status.Standard = &tierStatus{
-					Source:   "disabled (include_defaults: false)",
-					DLP:      0,
-					Response: 0,
-				}
+				status.StandardResponse = &tierDetail{Source: "disabled"}
 			}
 
 			for _, lb := range result.Loaded {
@@ -207,11 +205,17 @@ Uses the same config resolution as runtime for accurate reporting.`,
 
 			_, _ = fmt.Fprintf(out, "Core:     %d DLP + %d response (compiled, immutable)\n",
 				status.Core.DLP, status.Core.Response)
-			if status.Standard != nil {
-				_, _ = fmt.Fprintf(out, "Standard: %d DLP + %d response (%s",
-					status.Standard.DLP, status.Standard.Response, status.Standard.Source)
-				if status.Standard.Version != "" {
-					_, _ = fmt.Fprintf(out, ", v%s", status.Standard.Version)
+			if d := status.StandardDLP; d != nil {
+				_, _ = fmt.Fprintf(out, "Std DLP:  %d patterns (%s", d.Count, d.Source)
+				if d.Version != "" {
+					_, _ = fmt.Fprintf(out, ", v%s", d.Version)
+				}
+				_, _ = fmt.Fprintln(out, ")")
+			}
+			if r := status.StandardResponse; r != nil {
+				_, _ = fmt.Fprintf(out, "Std Resp: %d patterns (%s", r.Count, r.Source)
+				if r.Version != "" {
+					_, _ = fmt.Fprintf(out, ", v%s", r.Version)
 				}
 				_, _ = fmt.Fprintln(out, ")")
 			}
@@ -244,19 +248,26 @@ Uses the same config resolution as runtime for accurate reporting.`,
 }
 
 type statusReport struct {
-	Core           tierStatus     `json:"core"`
-	Standard       *tierStatus    `json:"standard"`
-	StandardSource string         `json:"standard_source"`
-	Bundles        []bundleStatus `json:"bundles,omitempty"`
-	Errors         []string       `json:"errors,omitempty"`
-	Warnings       []string       `json:"warnings,omitempty"`
+	Core                   tierStatus     `json:"core"`
+	StandardDLP            *tierDetail    `json:"standard_dlp"`
+	StandardResponse       *tierDetail    `json:"standard_response"`
+	StandardDLPSource      string         `json:"standard_dlp_source"`
+	StandardResponseSource string         `json:"standard_response_source"`
+	Bundles                []bundleStatus `json:"bundles,omitempty"`
+	Errors                 []string       `json:"errors,omitempty"`
+	Warnings               []string       `json:"warnings,omitempty"`
 }
 
 type tierStatus struct {
 	Source   string `json:"source"`
-	Version  string `json:"version,omitempty"`
 	DLP      int    `json:"dlp"`
 	Response int    `json:"response"`
+}
+
+type tierDetail struct {
+	Source  string `json:"source"`
+	Version string `json:"version,omitempty"`
+	Count   int    `json:"count"`
 }
 
 type bundleStatus struct {

@@ -165,28 +165,24 @@ func MergeIntoConfig(cfg *config.Config, pipelockVersion string) *LoadResult {
 
 	// DLP subsystem.
 	if dlpDefaultsDisabled {
-		// Compiled standard DLP defaults already stripped by ApplyDefaults.
-		// Don't add bundle standard DLP patterns either.
+		result.StandardDLP = StandardSourceNone
 	} else if standardLoaded {
 		cfg.DLP.Patterns = removeStandardTierDLP(cfg.DLP.Patterns)
 		cfg.DLP.Patterns = append(cfg.DLP.Patterns, standardDLP...)
+		result.StandardDLP = StandardSourceBundle
+	} else {
+		result.StandardDLP = StandardSourceCompiled
 	}
 
 	// Response subsystem.
 	if responseDefaultsDisabled {
-		// Compiled standard response defaults already stripped by ApplyDefaults.
+		result.StandardResponse = StandardSourceNone
 	} else if standardLoaded {
 		cfg.ResponseScanning.Patterns = removeStandardTierResponse(cfg.ResponseScanning.Patterns)
 		cfg.ResponseScanning.Patterns = append(cfg.ResponseScanning.Patterns, standardInj...)
-	}
-
-	// Overall standard source for diagnostics.
-	if dlpDefaultsDisabled && responseDefaultsDisabled {
-		result.Standard = StandardSourceNone
-	} else if standardLoaded {
-		result.Standard = StandardSourceBundle
+		result.StandardResponse = StandardSourceBundle
 	} else {
-		result.Standard = StandardSourceCompiled
+		result.StandardResponse = StandardSourceCompiled
 	}
 
 	// Community and pro bundles are always additive.

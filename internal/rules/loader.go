@@ -37,6 +37,23 @@ type LoadOptions struct {
 	TierKeyMapping      map[string]string   // tier → expected signing key fingerprint
 }
 
+// StandardBundleName is the reserved name for the official standard pack.
+// When a bundle with this name loads, its patterns replace the compiled
+// standard-tier defaults (instead of being additive like community/pro).
+const StandardBundleName = "pipelock-standard"
+
+// StandardSource describes where the standard tier patterns came from.
+type StandardSource string
+
+const (
+	// StandardSourceBundle means patterns came from a signed standard bundle.
+	StandardSourceBundle StandardSource = "bundle"
+	// StandardSourceCompiled means patterns came from compiled defaults (fallback).
+	StandardSourceCompiled StandardSource = "compiled"
+	// StandardSourceNone means standard tier is disabled (include_defaults: false).
+	StandardSourceNone StandardSource = "none"
+)
+
 // LoadResult contains patterns extracted from all loaded bundles.
 type LoadResult struct {
 	DLP        []config.DLPPattern
@@ -46,6 +63,7 @@ type LoadResult struct {
 	Loaded     []LoadedBundle
 	Degraded   bool     // standard pack failed to load — core-only mode
 	Warnings   []string // non-fatal warnings (expired bundles, etc.)
+	Standard   StandardSource
 }
 
 // CompiledToolPoisonRule is a pre-compiled regex for tool-poison detection.
@@ -246,6 +264,12 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, minRank int, res
 			return
 		}
 
+		// Required features: reject bundles needing engine features we don't support.
+		if err := CheckRequiredFeatures(bundle.RequiredFeatures); err != nil {
+			result.Errors = append(result.Errors, BundleError{Name: dirName, Official: official, Reason: err.Error()})
+			return
+		}
+
 		// Freshness: rollback prevention and expiry.
 		fr := CheckFreshness(bundle, freshnessState, now, opts.AllowStale)
 		if !fr.OK {
@@ -295,11 +319,19 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, minRank int, res
 			continue
 		}
 
+		// Standard bundle uses canonical names (matching compiled defaults)
+		// so it can replace them 1:1 without duplicate scanning. Community
+		// and pro bundles use namespaced IDs to avoid collisions.
+		patternName := nsID
+		if bundle.Name == StandardBundleName {
+			patternName = r.Name
+		}
+
 		// Convert rule to config-compatible type.
 		switch r.Type {
 		case RuleTypeDLP:
 			result.DLP = append(result.DLP, config.DLPPattern{
-				Name:          nsID,
+				Name:          patternName,
 				Regex:         r.Pattern.Regex,
 				Severity:      r.Severity,
 				Bundle:        bundle.Name,
@@ -309,7 +341,7 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, minRank int, res
 
 		case RuleTypeInjection:
 			result.Injection = append(result.Injection, config.ResponseScanPattern{
-				Name:          nsID,
+				Name:          patternName,
 				Regex:         r.Pattern.Regex,
 				Bundle:        bundle.Name,
 				BundleVersion: bundle.Version,

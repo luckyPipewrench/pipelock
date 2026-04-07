@@ -487,6 +487,7 @@ func TestTestCmd_AllVectorsRunDefaultConfig(t *testing.T) {
 	// Run every vector directly with default config and verify expected outcomes.
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.DLP.ScanEnv = false
 
 	sc := scanner.New(cfg)
@@ -646,6 +647,7 @@ func TestTestCmd_FailOnGap_NoGaps(t *testing.T) {
 	// populate DLP patterns; config.Defaults does).
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.DLP.ScanEnv = false
 	cfg.ResponseScanning.Enabled = true
 	cfg.MCPInputScanning.Enabled = true
@@ -745,6 +747,7 @@ func TestTestCmd_ColorOutput(t *testing.T) {
 	// Run directly with color=true.
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.DLP.ScanEnv = false
 
 	vectors := buildTestVectors(nil)

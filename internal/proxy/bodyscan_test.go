@@ -28,6 +28,7 @@ const (
 func testScannerConfig() *config.Config {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.ForwardProxy.Enabled = true
 	cfg.RequestBodyScanning.Enabled = true
@@ -955,6 +956,7 @@ func TestFetchHandler_HeaderScan_SecretInAuth(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.RequestBodyScanning.Enabled = true
 	cfg.RequestBodyScanning.Action = config.ActionBlock
@@ -997,6 +999,7 @@ func TestFetchHandler_HeaderScan_WarnMode(t *testing.T) {
 	cfg.RequestBodyScanning.ScanHeaders = true
 	cfg.ApplyDefaults()
 	cfg.Internal = nil // disable SSRF after ApplyDefaults (avoids localhost block)
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)

@@ -1110,3 +1110,109 @@ func TestValidate_V1Bundle_IgnoresV2Fields(t *testing.T) {
 		t.Errorf("v1 bundle without v2 fields should pass: %v", err)
 	}
 }
+
+func TestCheckRequiredFeatures(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		features []string
+		wantErr  string
+	}{
+		{
+			name:     "empty features",
+			features: nil,
+		},
+		{
+			name:     "single known feature",
+			features: []string{"dlp"},
+		},
+		{
+			name:     "multiple known features",
+			features: []string{"dlp", "injection", "checksum", "encoding_aware"},
+		},
+		{
+			name:     "all known features",
+			features: []string{"dlp", "injection", "tool_poison", "chain", "ssrf", "response", "encoding_aware", "checksum"},
+		},
+		{
+			name:     "unknown feature",
+			features: []string{"quantum_crypto"},
+			wantErr:  "unknown feature",
+		},
+		{
+			name:     "one known one unknown",
+			features: []string{"dlp", "neural_scan"},
+			wantErr:  "unknown feature",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := CheckRequiredFeatures(tt.features)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("error %q should contain %q", err.Error(), tt.wantErr)
+				}
+			} else if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidate_V2Bundle_InvalidFeatureName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		features []string
+		wantErr  bool
+	}{
+		{name: "valid feature", features: []string{"dlp"}, wantErr: false},
+		{name: "valid underscore", features: []string{"encoding_aware"}, wantErr: false},
+		{name: "empty string", features: []string{""}, wantErr: true},
+		{name: "uppercase", features: []string{"DLP"}, wantErr: true},
+		{name: "spaces", features: []string{"my feature"}, wantErr: true},
+		{name: "special chars", features: []string{"dlp-v2"}, wantErr: true},
+		{name: "starts with number", features: []string{"2fast"}, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			b := &Bundle{
+				FormatVersion:    2,
+				Name:             testValidBundleName,
+				Version:          testValidVersion,
+				Author:           testValidAuthor,
+				Description:      testValidDesc,
+				Tier:             TierStandard,
+				MonotonicVersion: 1,
+				PublishedAt:      "2026-04-01T00:00:00Z",
+				ExpiresAt:        "2026-06-01T00:00:00Z",
+				KeyID:            "sha256:test-key",
+				RequiredFeatures: tt.features,
+				Rules: []Rule{
+					{
+						ID: "test-001", Type: RuleTypeDLP, Status: StatusStable,
+						Name: "Test", Description: "Test rule",
+						Severity: severityHigh, Confidence: confidenceHigh,
+						Pattern: RulePattern{Regex: "test"},
+					},
+				},
+			}
+			err := b.Validate()
+			if tt.wantErr && err == nil {
+				t.Fatal("expected validation error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}

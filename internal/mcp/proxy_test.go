@@ -58,6 +58,7 @@ func testScannerWithAction(t *testing.T, action string) *scanner.Scanner {
 	t.Helper()
 	cfg := config.Defaults()
 	cfg.Internal = nil // disable SSRF
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ResponseScanning.Action = action
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
@@ -2299,6 +2300,7 @@ func TestForwardScanned_ConfusedDeputy_NullIDResponsePassedThrough(t *testing.T)
 func TestForwardScanned_KillSwitchPreemptsOpenSession(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ApplyDefaults()
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
@@ -2424,6 +2426,7 @@ func TestIsRequest(t *testing.T) {
 func TestForwardScanned_KillSwitchDropsNotification(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ApplyDefaults()
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)

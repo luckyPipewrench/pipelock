@@ -13,6 +13,7 @@ import (
 func FuzzScanResponse(f *testing.F) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ResponseScanning.Enabled = true
 	cfg.ResponseScanning.Action = "warn"
 	sc := scanner.New(cfg)

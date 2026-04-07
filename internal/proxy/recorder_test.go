@@ -26,6 +26,7 @@ func TestFlightRecorder_BlockedRequestCreatesEvidence(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 
 	rec, err := recorder.New(recorder.Config{
@@ -123,6 +124,7 @@ func TestFlightRecorder_NilRecorder_NoOp(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
@@ -160,6 +162,7 @@ func TestFlightRecorder_DisabledRecorder_NoOp(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
@@ -195,6 +198,7 @@ func TestFlightRecorder_CleanRequest_NoEvidence(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.FetchProxy.TimeoutSeconds = 5
 

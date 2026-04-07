@@ -47,6 +47,7 @@ func testScannerForHTTP(t *testing.T) *scanner.Scanner {
 	t.Helper()
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 	return sc
@@ -99,6 +100,7 @@ func TestRunHTTPProxy_BlocksInjectedResponse(t *testing.T) {
 	// Create scanner with blocking response action.
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ResponseScanning.Action = config.ActionBlock
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
@@ -283,6 +285,7 @@ func TestRunHTTPProxy_InputDLPBlocking(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 
@@ -384,6 +387,7 @@ func TestRunHTTPProxy_ToolPoisoningDetection(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ResponseScanning.Action = "warn"
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
@@ -423,6 +427,7 @@ func TestRunHTTPProxy_InputScanWarnMode(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 
@@ -520,6 +525,7 @@ func TestUpstreamErrorResponse_NilID(t *testing.T) {
 func TestScanHTTPInput_ParseError(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 
@@ -542,6 +548,7 @@ func TestScanHTTPInput_ParseError(t *testing.T) {
 func TestScanHTTPInput_PolicyOnlyBlock(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 
@@ -565,6 +572,7 @@ func TestScanHTTPInput_PolicyOnlyBlock(t *testing.T) {
 func TestScanHTTPInput_PolicyRedirectMissingProfileBlocks(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 
@@ -601,6 +609,7 @@ func TestScanHTTPInput_PolicyRedirectSuccess(t *testing.T) {
 	}
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 
@@ -653,6 +662,7 @@ func TestScanHTTPInput_PolicyRedirectHandlerFailure(t *testing.T) {
 	}
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 
@@ -691,6 +701,7 @@ func TestScanHTTPInput_PolicyRedirectHandlerFailure(t *testing.T) {
 func TestScanHTTPInput_Disabled(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 
@@ -785,6 +796,7 @@ func TestRunHTTPProxy_BlockedNotificationSilent(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 
@@ -852,6 +864,7 @@ func TestRunHTTPProxy_SessionDeleteOnEOF(t *testing.T) {
 func TestScanHTTPInput_AskFallbackToBlock(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 
@@ -884,6 +897,7 @@ func TestScanHTTPInput_AskFallbackToBlock(t *testing.T) {
 func TestScanHTTPInput_PolicyAskFallbackToBlock(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 
@@ -919,6 +933,7 @@ func TestRunHTTPProxy_InputScanAskMode(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 
@@ -1118,6 +1133,7 @@ func TestRunHTTPProxy_GETStreamKillSwitchPause(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ApplyDefaults()
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
@@ -1189,6 +1205,7 @@ func TestRunHTTPProxy_ScanErrorPropagated(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ResponseScanning.Action = config.ActionBlock
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
@@ -1269,6 +1286,7 @@ func TestRunHTTPProxy_SSEResponseWithInjectionBlock(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ResponseScanning.Action = config.ActionBlock
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
@@ -1304,6 +1322,7 @@ func TestScanHTTPInput_InjectionInArgs(t *testing.T) {
 	// Exercise the inject-match reasons path (line 179-181 in scanHTTPInput).
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 
@@ -1419,6 +1438,7 @@ func TestRunHTTPProxy_NotificationBlocked(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 
@@ -1967,6 +1987,7 @@ func TestHTTPListener_BlocksInjectedResponse(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ResponseScanning.Action = config.ActionBlock
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
@@ -2000,6 +2021,7 @@ func TestHTTPListener_InputDLPBlocking(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 
@@ -2193,6 +2215,7 @@ func TestHTTPListener_BlockedNotification(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 
@@ -2345,6 +2368,7 @@ func TestHTTPListener_PolicyBlock(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 
@@ -2398,6 +2422,7 @@ func TestHTTPListener_PolicyOnlyBlock(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 
@@ -2444,6 +2469,7 @@ func TestScanHTTPInput_PolicyOnlyPreservesID(t *testing.T) {
 	// the RPC ID must be extracted from the raw message.
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 
@@ -2479,6 +2505,7 @@ func TestHTTPListener_ToolPoisoningBlock(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ResponseScanning.Action = config.ActionWarn
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
@@ -2571,6 +2598,7 @@ func TestHTTPListener_KillSwitchDeniesRequest(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.KillSwitch.Enabled = true
 	cfg.KillSwitch.Message = "emergency shutdown"
 	ks := killswitch.New(cfg)
@@ -2615,6 +2643,7 @@ func TestHTTPListener_KillSwitchDropsNotification(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.KillSwitch.Enabled = true
 	ks := killswitch.New(cfg)
 
@@ -2901,6 +2930,7 @@ func TestValidateRPCStructure(t *testing.T) {
 func TestScanHTTPInput_CEEBlocksClean(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 
@@ -2931,6 +2961,7 @@ func TestScanHTTPInput_CEEBlocksClean(t *testing.T) {
 func TestScanHTTPInput_CEEBlocksWarnMode(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 
@@ -2997,6 +3028,7 @@ func TestRunHTTPProxy_KillSwitchDeniesRequest(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.KillSwitch.Enabled = true
 	cfg.KillSwitch.Message = "kill switch test"
 	ks := killswitch.New(cfg)
@@ -3047,6 +3079,7 @@ func TestRunHTTPProxy_KillSwitchDropsNotification(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.KillSwitch.Enabled = true
 	ks := killswitch.New(cfg)
 
@@ -3724,6 +3757,7 @@ func TestHTTPListener_DoWBlock(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 

@@ -90,6 +90,7 @@ func TestBuildScenarios_DefaultConfig(t *testing.T) {
 func TestBuildScenarios_NoSSRFWithNilInternal(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil // disable SSRF
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.New(cfg)
 	defer sc.Close()
 

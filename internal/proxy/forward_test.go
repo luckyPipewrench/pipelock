@@ -55,6 +55,7 @@ func setupForwardProxyWithInstance(t *testing.T, cfgMod func(*config.Config)) (s
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.ForwardProxy.Enabled = true
 	cfg.ForwardProxy.MaxTunnelSeconds = 10
@@ -727,6 +728,7 @@ func TestConnectViaHTTPProxy(t *testing.T) {
 func TestHealthIncludesForwardProxy(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ForwardProxy.Enabled = true
 
 	logger := audit.NewNop()
@@ -816,6 +818,7 @@ func TestStartConnectViaProduction(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.ForwardProxy.Enabled = true
 	cfg.ForwardProxy.MaxTunnelSeconds = 10
@@ -850,6 +853,7 @@ func TestStartConnectViaProduction(t *testing.T) {
 func TestStartConnectDisabledViaProduction(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.ForwardProxy.Enabled = false
 
@@ -880,6 +884,7 @@ func TestStartForwardHTTPViaProduction(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.ForwardProxy.Enabled = true
 
@@ -901,6 +906,7 @@ func TestStartForwardHTTPViaProduction(t *testing.T) {
 func TestStartForwardHTTPDisabledViaProduction(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.ForwardProxy.Enabled = false
 
@@ -930,6 +936,7 @@ func TestStartFetchStillWorksWithForwardProxy(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.ForwardProxy.Enabled = true
 
@@ -1065,6 +1072,7 @@ func TestCopyWithIdleTimeoutRespectsDeadline(t *testing.T) {
 func TestCopyWithIdleTimeout_KillSwitchTerminatesTunnel(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	ks := killswitch.New(cfg)
 
 	// Create a TCP pipe. Server side will block on read forever.
@@ -1237,6 +1245,7 @@ func TestSSRFSafeDialContext_AllowedIP(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil // No SSRF checks
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
@@ -1842,6 +1851,7 @@ func setupForwardProxyWithTLS(t *testing.T, cfgMod func(*config.Config), upstrea
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.ForwardProxy.Enabled = true
 	cfg.ForwardProxy.MaxTunnelSeconds = 10
@@ -2211,6 +2221,7 @@ func TestForwardHTTPHeaderDLPAuditMode_NoCleanDecay(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.RequestBodyScanning.Enabled = true
@@ -2835,7 +2846,7 @@ func TestSSRFSafeDialContext_IPAllowlistDirectIPBypass(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = []string{"127.0.0.0/8"}
-	cfg.SSRF.IPAllowlist = []string{"127.0.0.1/32"}
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8"}
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
@@ -2861,7 +2872,7 @@ func TestSSRFSafeDialContext_IPAllowlistDirectIPBypass(t *testing.T) {
 func TestSSRFSafeDialContext_IPAllowlistPartialRange(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = []string{"127.0.0.0/8", "10.0.0.0/8"}
-	cfg.SSRF.IPAllowlist = []string{"127.0.0.1/32"} // only loopback, not 10.x
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8"} // only loopback, not 10.x
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)

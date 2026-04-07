@@ -925,6 +925,7 @@ func TestSessionManager_EvictOldest_EscalatedGaugeDecrement(t *testing.T) {
 func TestProxy_SessionStore_Disabled(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	// SessionProfiling is disabled by default in config.Defaults().
 	p, err := New(cfg, audit.NewNop(), scanner.New(cfg), metrics.New())
 	if err != nil {
@@ -966,6 +967,7 @@ func TestSessionManager_AsStore(t *testing.T) {
 func TestProxy_SessionStore_Enabled(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.SessionProfiling.Enabled = true
 	p, err := New(cfg, audit.NewNop(), scanner.New(cfg), metrics.New())
 	if err != nil {

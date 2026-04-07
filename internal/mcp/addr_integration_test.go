@@ -15,6 +15,7 @@ const testUnknownActionAllow = config.ActionAllow
 func TestScanRequestAddressPoisoning(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 
 	eth := true
 	f := false
@@ -55,6 +56,7 @@ func TestScanRequestAddressPoisoning(t *testing.T) {
 func TestScanRequestAddressExactMatch(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 
 	eth := true
 	f := false
@@ -88,6 +90,7 @@ func TestScanRequestAddressExactMatch(t *testing.T) {
 func TestScanRequestBatchAddressPoisoning(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 
 	eth := true
 	f := false
@@ -128,6 +131,7 @@ func TestScanRequestBatchAddressPoisoning(t *testing.T) {
 func TestScanRequestNoParamsAddressPolicyAction(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 
 	eth := true
 	f := false

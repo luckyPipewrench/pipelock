@@ -31,6 +31,7 @@ const (
 func testFragmentScanner() *Scanner {
 	cfg := config.Defaults()
 	cfg.Internal = nil // disable SSRF (no DNS in unit tests)
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	return New(cfg)
 }
 
@@ -359,6 +360,7 @@ func TestFragmentBuffer_OldFragmentSecretNotReported(t *testing.T) {
 	// only dedup wouldn't catch it, creating a false cross-request signal.
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := New(cfg)
 	defer sc.Close()
 

@@ -43,6 +43,7 @@ func testInterceptSetup(t *testing.T) (*certgen.CertCache, *x509.CertPool, *conf
 
 	cfg := config.Defaults()
 	cfg.Internal = nil // disable SSRF checks
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.TLSInterception.Enabled = true
 	cfg.TLSInterception.MaxResponseBytes = 1024 * 1024
 
@@ -1805,6 +1806,7 @@ func (r *interceptMockRecorder) ThreatScore() float64  { return 0 }
 func interceptRecordSignalCfg() *config.Config {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.AdaptiveEnforcement.Enabled = true
 	cfg.AdaptiveEnforcement.EscalationThreshold = 100.0
 	return cfg

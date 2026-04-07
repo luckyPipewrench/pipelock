@@ -495,6 +495,7 @@ func TestScanCanaryURL(t *testing.T) {
 			cfg.Mode = tc.preset
 			cfg.DLP.ScanEnv = false // Disable env scanning — CI has GITHUB_TOKEN etc.
 			cfg.Internal = nil      // Disable SSRF — no DNS in unit tests
+			cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 			got := scanCanaryURL(cfg, tc.url)
 			if got != tc.want {
 				t.Errorf("scanCanaryURL(%q) = %v, want %v", tc.url, got, tc.want)

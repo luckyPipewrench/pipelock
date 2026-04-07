@@ -25,6 +25,7 @@ func BenchmarkFragmentBuffer_Append(b *testing.B) {
 func BenchmarkFragmentBuffer_AppendAndScan(b *testing.B) {
 	cfg := config.Defaults()
 	cfg.Internal = nil // disable SSRF (no DNS in benchmarks)
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := New(cfg)
 	b.Cleanup(sc.Close)
 

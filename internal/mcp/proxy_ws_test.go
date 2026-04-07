@@ -32,6 +32,7 @@ func testScannerForWS(t *testing.T) *scanner.Scanner {
 	t.Helper()
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 	return sc
@@ -132,6 +133,7 @@ func TestRunWSProxy_BlocksInjectedResponse(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ResponseScanning.Action = config.ActionBlock
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
@@ -183,6 +185,7 @@ func TestRunWSProxy_InputDLPBlocking(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 
@@ -228,6 +231,7 @@ func TestRunWSProxy_KillSwitchDeniesAll(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.KillSwitch.Enabled = true
 	cfg.KillSwitch.Message = "test kill"
 	sc := scanner.New(cfg)
@@ -268,6 +272,7 @@ func TestRunWSProxy_KillSwitchDropsNotification(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.KillSwitch.Enabled = true
 	cfg.KillSwitch.Message = "test kill"
 	sc := scanner.New(cfg)
@@ -309,6 +314,7 @@ func TestRunWSProxy_ToolPolicyBlocks(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 
@@ -370,6 +376,7 @@ func TestRunWSProxy_ChainDetectionBlocks(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ToolChainDetection.Enabled = true
 	cfg.ToolChainDetection.WindowSize = 20
 	cfg.ToolChainDetection.WindowSeconds = 60
@@ -438,6 +445,7 @@ func TestRunWSProxy_InputDLPWithAuditLogger(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 
@@ -475,6 +483,7 @@ func TestRunWSProxy_ToolScanningDetectsPoison(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ResponseScanning.Action = config.ActionBlock
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
@@ -621,6 +630,7 @@ func TestRunWSProxy_InputScanWarnMode(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 
@@ -679,6 +689,7 @@ func TestRunWSProxy_BlockedNotificationSilent(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 
@@ -713,6 +724,7 @@ func TestRunWSProxy_BindingConfigWired(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 

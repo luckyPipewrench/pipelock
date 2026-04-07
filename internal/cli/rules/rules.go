@@ -23,6 +23,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	domrules "github.com/luckyPipewrench/pipelock/internal/rules"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
@@ -69,10 +70,11 @@ const (
 func Cmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "rules",
-		Short: "Manage community rule bundles",
-		Long:  "Install, update, list, verify, diff, and remove signed rule bundles.",
+		Short: "Manage rule bundles",
+		Long:  "Install, update, list, verify, diff, remove, and inspect rule bundles.",
 	}
 	cmd.AddCommand(
+		rulesStatusCmd(),
 		rulesInstallCmd(),
 		rulesUpdateCmd(),
 		rulesListCmd(),
@@ -81,6 +83,190 @@ func Cmd() *cobra.Command {
 		rulesRemoveCmd(),
 	)
 	return cmd
+}
+
+// ---------- rules status ----------
+
+func rulesStatusCmd() *cobra.Command {
+	var (
+		configFile string
+		jsonOut    bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "status",
+		Short: "Show rule tier status, versions, and health",
+		Long: `Display the effective state of all rule tiers: core (compiled),
+standard (bundle or compiled fallback), and community/pro bundles.
+Uses the same config resolution as runtime for accurate reporting.`,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			out := cmd.OutOrStdout()
+
+			// Load full config to respect rules_dir, include_defaults,
+			// min_confidence, disabled, and trusted_keys.
+			cfg, err := loadRulesConfig(configFile)
+			if err != nil {
+				return err
+			}
+			if cfg == nil {
+				cfg = config.Defaults()
+			}
+			cfg.ApplyDefaults()
+
+			// Run the same merge path as runtime to get effective state.
+			result := domrules.MergeIntoConfig(cfg, cliutil.Version)
+
+			// Count effective patterns by source.
+			var compiledDLP, bundleDLP, compiledResp, bundleResp int
+			for _, p := range cfg.DLP.Patterns {
+				if p.Bundle != "" {
+					bundleDLP++
+				} else {
+					compiledDLP++
+				}
+			}
+			for _, p := range cfg.ResponseScanning.Patterns {
+				if p.Bundle != "" {
+					bundleResp++
+				} else {
+					compiledResp++
+				}
+			}
+
+			status := statusReport{
+				Core: tierStatus{
+					Source:   "compiled",
+					DLP:      scanner.CoreDLPCount(),
+					Response: scanner.CoreResponseCount(),
+				},
+				StandardSource: string(result.Standard),
+			}
+
+			// Standard tier details.
+			switch result.Standard {
+			case domrules.StandardSourceBundle:
+				for _, lb := range result.Loaded {
+					if lb.Name == domrules.StandardBundleName {
+						status.Standard = &tierStatus{
+							Source:   "bundle",
+							Version:  lb.Version,
+							DLP:      lb.DLP,
+							Response: lb.Injection,
+						}
+						break
+					}
+				}
+			case domrules.StandardSourceCompiled:
+				// Count compiled non-core patterns (clamp to zero defensively).
+				dlpCount := compiledDLP - scanner.CoreDLPCount()
+				if dlpCount < 0 {
+					dlpCount = 0
+				}
+				respCount := compiledResp - scanner.CoreResponseCount()
+				if respCount < 0 {
+					respCount = 0
+				}
+				status.Standard = &tierStatus{
+					Source:   "compiled fallback",
+					DLP:      dlpCount,
+					Response: respCount,
+				}
+			case domrules.StandardSourceNone:
+				status.Standard = &tierStatus{
+					Source:   "disabled (include_defaults: false)",
+					DLP:      0,
+					Response: 0,
+				}
+			}
+
+			for _, lb := range result.Loaded {
+				if lb.Name == domrules.StandardBundleName {
+					continue
+				}
+				status.Bundles = append(status.Bundles, bundleStatus{
+					Name:    lb.Name,
+					Version: lb.Version,
+					Tier:    lb.Tier,
+					DLP:     lb.DLP,
+					Inj:     lb.Injection,
+					Poison:  lb.ToolPoison,
+					Signed:  !lb.Unsigned,
+				})
+			}
+
+			for _, e := range result.Errors {
+				status.Errors = append(status.Errors, e.Name+": "+e.Reason)
+			}
+			status.Warnings = result.Warnings
+
+			if jsonOut {
+				enc := json.NewEncoder(out)
+				enc.SetIndent("", "  ")
+				return enc.Encode(status)
+			}
+
+			_, _ = fmt.Fprintf(out, "Core:     %d DLP + %d response (compiled, immutable)\n",
+				status.Core.DLP, status.Core.Response)
+			if status.Standard != nil {
+				_, _ = fmt.Fprintf(out, "Standard: %d DLP + %d response (%s",
+					status.Standard.DLP, status.Standard.Response, status.Standard.Source)
+				if status.Standard.Version != "" {
+					_, _ = fmt.Fprintf(out, ", v%s", status.Standard.Version)
+				}
+				_, _ = fmt.Fprintln(out, ")")
+			}
+
+			for _, b := range status.Bundles {
+				_, _ = fmt.Fprintf(out, "Bundle:   %-25s v%-12s %s (%d DLP, %d inj, %d poison)\n",
+					b.Name, b.Version, b.Tier, b.DLP, b.Inj, b.Poison)
+			}
+
+			if len(status.Errors) > 0 {
+				_, _ = fmt.Fprintln(out, "\nErrors:")
+				for _, e := range status.Errors {
+					_, _ = fmt.Fprintf(out, "  %s\n", e)
+				}
+			}
+			if len(status.Warnings) > 0 {
+				_, _ = fmt.Fprintln(out, "\nWarnings:")
+				for _, w := range status.Warnings {
+					_, _ = fmt.Fprintf(out, "  %s\n", w)
+				}
+			}
+
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&configFile, "config", "", "config file (default: auto-discovery)")
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "output as JSON")
+	return cmd
+}
+
+type statusReport struct {
+	Core           tierStatus     `json:"core"`
+	Standard       *tierStatus    `json:"standard"`
+	StandardSource string         `json:"standard_source"`
+	Bundles        []bundleStatus `json:"bundles,omitempty"`
+	Errors         []string       `json:"errors,omitempty"`
+	Warnings       []string       `json:"warnings,omitempty"`
+}
+
+type tierStatus struct {
+	Source   string `json:"source"`
+	Version  string `json:"version,omitempty"`
+	DLP      int    `json:"dlp"`
+	Response int    `json:"response"`
+}
+
+type bundleStatus struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+	Tier    string `json:"tier"`
+	DLP     int    `json:"dlp"`
+	Inj     int    `json:"injection"`
+	Poison  int    `json:"tool_poison"`
+	Signed  bool   `json:"signed"`
 }
 
 // acquireRulesLock is defined in rules_lock_unix.go and rules_lock_windows.go.

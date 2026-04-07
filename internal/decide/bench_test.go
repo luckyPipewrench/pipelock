@@ -32,6 +32,7 @@ func BenchmarkColdStart(b *testing.B) {
 		cfg.ResponseScanning.Action = config.ActionBlock
 		cfg.ApplyDefaults()
 		cfg.Internal = nil // after ApplyDefaults to prevent overwrite
+		cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 
 		sc := scanner.New(cfg)
 		pc := policy.New(cfg.MCPToolPolicy)

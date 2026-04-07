@@ -91,6 +91,7 @@ func reverseTestSetup(t *testing.T, cfg *config.Config, upstreamHandler http.Han
 func reverseTestConfig() *config.Config {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.RequestBodyScanning.Enabled = true
 	cfg.RequestBodyScanning.Action = config.ActionBlock
@@ -1109,6 +1110,7 @@ func TestReverseProxy_BodyDLPDefaultActionChain(t *testing.T) {
 	// Build config from scratch to ensure Action stays empty.
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.RequestBodyScanning.Enabled = true
 	cfg.RequestBodyScanning.MaxBodyBytes = 1024 * 1024

@@ -42,6 +42,7 @@ func testConfig() *config.Config {
 	// Disable SSRF by default so tests don't depend on DNS resolution.
 	// SSRF-specific tests override this.
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	// Disable allowlist by default so tests don't depend on the default
 	// domain list. Allowlist-specific tests override this.
 	cfg.APIAllowlist = nil
@@ -262,6 +263,7 @@ func TestScan_InvalidURL(t *testing.T) {
 func TestScan_BlocksSSRF_Loopback(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = []string{"127.0.0.0/8", "10.0.0.0/8", "::1/128"}
+	cfg.SSRF.IPAllowlist = nil // clear test default; SSRF tests need real blocking
 	s := New(cfg)
 
 	tests := []string{
@@ -283,6 +285,7 @@ func TestScan_BlocksSSRF_Loopback(t *testing.T) {
 func TestScan_BlocksSSRF_IPv6ZoneID(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = []string{"::1/128", "fe80::/10", "fc00::/7"}
+	cfg.SSRF.IPAllowlist = nil // clear test default; SSRF tests need real blocking
 	s := New(cfg)
 
 	tests := []struct {
@@ -310,6 +313,7 @@ func TestScan_BlocksSSRF_IPv6ZoneID(t *testing.T) {
 func TestScan_BlocksSSRF_Multicast(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = []string{"224.0.0.0/4", "ff00::/8"}
+	cfg.SSRF.IPAllowlist = nil // clear test default; SSRF tests need real blocking
 	s := New(cfg)
 
 	tests := []struct {
@@ -395,6 +399,7 @@ func TestParseAlternativeIP(t *testing.T) {
 func TestScan_BlocksSSRF_HexOctalIP(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = []string{"127.0.0.0/8", "10.0.0.0/8", "169.254.0.0/16", "192.168.0.0/16"}
+	cfg.SSRF.IPAllowlist = nil // clear test default; SSRF tests need real blocking
 	s := New(cfg)
 
 	tests := []struct {
@@ -427,6 +432,7 @@ func TestScan_BlocksSSRF_HexOctalIP(t *testing.T) {
 func TestScan_AllowsHexOctalIP_WhenExternal(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = []string{"127.0.0.0/8", "10.0.0.0/8"}
+	cfg.SSRF.IPAllowlist = nil // clear test default; SSRF tests need real blocking
 	// 8.8.8.8 is external, so add it to ip_allowlist so that when core CIDRs
 	// are merged into checkSSRF, the allowlist bypass lets it through.
 	cfg.SSRF.IPAllowlist = []string{"8.8.8.0/24"}
@@ -442,6 +448,7 @@ func TestScan_AllowsHexOctalIP_WhenExternal(t *testing.T) {
 func TestScan_BlocklistBlocksAltIPNotation(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = nil // disable SSRF — we're testing blocklist, not SSRF
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.FetchProxy.Monitoring.Blocklist = []string{"127.0.0.1"}
 	s := New(cfg)
 
@@ -710,15 +717,32 @@ func TestScan_EntropyScoreClampedQueryParam(t *testing.T) {
 func TestScan_SSRFDisabledWhenNilCIDRs(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = nil // no exemptions — test core SSRF blocking
 	s := New(cfg)
 
-	// With nil CIDRs, SSRF is fully disabled — even private IP literals
-	// are allowed. Core SSRF only protects when SSRF is active (via
-	// mergedSSRFCIDRs ensuring private ranges can't be removed).
-	t.Run("private_ip_allowed_when_disabled", func(t *testing.T) {
+	// With nil CIDRs, DNS-based SSRF is disabled. However, core SSRF
+	// literal check still blocks private IP literals as an immutable
+	// safety floor (same as core DLP and core response scanning).
+	t.Run("private_ip_blocked_by_core", func(t *testing.T) {
 		result := s.Scan(context.Background(), "http://127.0.0.1/test")
+		if result.Allowed {
+			t.Error("expected 127.0.0.1 blocked by core SSRF even with nil CIDRs")
+		}
+		if result.Scanner != ScannerCoreSSRF {
+			t.Errorf("expected scanner=%s, got %s", ScannerCoreSSRF, result.Scanner)
+		}
+	})
+
+	// Private IPs can be exempted via ip_allowlist.
+	t.Run("private_ip_allowed_via_allowlist", func(t *testing.T) {
+		cfg2 := testConfig()
+		cfg2.Internal = nil
+		cfg2.SSRF.IPAllowlist = []string{"127.0.0.0/8"}
+		s2 := New(cfg2)
+		defer s2.Close()
+		result := s2.Scan(context.Background(), "http://127.0.0.1/test")
 		if !result.Allowed {
-			t.Errorf("expected 127.0.0.1 allowed with nil CIDRs, got blocked: %s", result.Reason)
+			t.Errorf("expected 127.0.0.1 allowed via ip_allowlist, got blocked: %s", result.Reason)
 		}
 	})
 
@@ -734,6 +758,7 @@ func TestScan_SSRFDisabledWhenNilCIDRs(t *testing.T) {
 func TestScan_TrustedDomains_BypassesSSRF(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = []string{"127.0.0.0/8", "10.0.0.0/8", "::1/128"}
+	cfg.SSRF.IPAllowlist = nil // clear test default; SSRF tests need real blocking
 	cfg.TrustedDomains = []string{"localhost", "*.internal.corp"}
 	s := New(cfg)
 
@@ -747,6 +772,7 @@ func TestScan_TrustedDomains_BypassesSSRF(t *testing.T) {
 func TestScan_TrustedDomains_NonTrustedStillBlocked(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = []string{"127.0.0.0/8", "10.0.0.0/8"}
+	cfg.SSRF.IPAllowlist = nil // clear test default; SSRF tests need real blocking
 	cfg.TrustedDomains = []string{"trusted.example.com"}
 	s := New(cfg)
 
@@ -774,6 +800,7 @@ func TestScan_TrustedDomains_WildcardMatch(t *testing.T) {
 func TestScan_TrustedDomains_DLPStillApplies(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = []string{"127.0.0.0/8"}
+	cfg.SSRF.IPAllowlist = nil // clear test default; SSRF tests need real blocking
 	cfg.TrustedDomains = []string{"localhost"}
 	s := New(cfg)
 
@@ -792,6 +819,7 @@ func TestScan_TrustedDomains_DLPStillApplies(t *testing.T) {
 func TestScan_SSRFIPAllowlist_BypassesBlock(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = []string{"127.0.0.0/8"}
+	cfg.SSRF.IPAllowlist = nil // clear test default; SSRF tests need real blocking
 	// localhost may resolve to both 127.0.0.1 and ::1. Core CIDRs include
 	// ::1/128, so the allowlist must cover both IPv4 and IPv6 loopback.
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
@@ -808,9 +836,10 @@ func TestScan_SSRFIPAllowlist_BypassesBlock(t *testing.T) {
 func TestScan_SSRFIPAllowlist_PartialCIDR(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = []string{"10.0.0.0/8", "127.0.0.0/8"}
+	cfg.SSRF.IPAllowlist = nil // clear test default; SSRF tests need real blocking
 	// localhost resolves to both 127.0.0.1 and ::1. Core CIDRs include
 	// ::1/128, so the allowlist must cover both to let localhost through.
-	cfg.SSRF.IPAllowlist = []string{"127.0.0.1/32", "::1/128"} // loopback only, not 10.x
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"} // loopback only, not 10.x
 	s := New(cfg)
 	defer s.Close()
 
@@ -848,6 +877,7 @@ func TestScan_SSRFIPAllowlist_DLPStillApplies(t *testing.T) {
 func TestScan_SSRFHint_AllowlistedDomain(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = []string{"127.0.0.0/8"}
+	cfg.SSRF.IPAllowlist = nil // clear test default; SSRF tests need real blocking
 	cfg.APIAllowlist = []string{"localhost"}
 	// No trusted_domains, no IP allowlist — SSRF should block with hint.
 	s := New(cfg)
@@ -874,6 +904,7 @@ func TestScan_SSRFHint_AllowlistedDomain(t *testing.T) {
 func TestScan_SSRFHint_NonAllowlisted_UsesStaticHint(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = []string{"127.0.0.0/8"}
+	cfg.SSRF.IPAllowlist = nil // clear test default; SSRF tests need real blocking
 	// No APIAllowlist — domain is not allowlisted, so use static SSRF hint.
 	s := New(cfg)
 	defer s.Close()
@@ -894,6 +925,7 @@ func TestScan_SSRFHint_NonAllowlisted_UsesStaticHint(t *testing.T) {
 func TestScan_SSRFHint_RawIPLiteral_PointsToIPAllowlist(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = []string{"127.0.0.0/8"}
+	cfg.SSRF.IPAllowlist = nil // clear test default; SSRF tests need real blocking
 	cfg.APIAllowlist = []string{"127.0.0.1"}
 	s := New(cfg)
 	defer s.Close()
@@ -918,6 +950,7 @@ func TestScan_SSRFHint_RawIPLiteral_PointsToIPAllowlist(t *testing.T) {
 func TestScan_SSRFConfigMismatch_ClassSet(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = []string{"127.0.0.0/8"}
+	cfg.SSRF.IPAllowlist = nil // clear test default; SSRF tests need real blocking
 	cfg.APIAllowlist = []string{"localhost"}
 	s := New(cfg)
 	defer s.Close()
@@ -937,6 +970,7 @@ func TestScan_SSRFConfigMismatch_ClassSet(t *testing.T) {
 func TestScan_SSRFNonAllowlisted_ClassThreat(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = []string{"127.0.0.0/8"}
+	cfg.SSRF.IPAllowlist = nil // clear test default; SSRF tests need real blocking
 	// No APIAllowlist — should be ClassThreat (zero value).
 	s := New(cfg)
 	defer s.Close()
@@ -1045,6 +1079,7 @@ func TestNew_PanicsOnInvalidDLPRegex(t *testing.T) {
 func TestScanner_IsTrustedDomain(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = []string{"127.0.0.0/8", "10.0.0.0/8"}
+	cfg.SSRF.IPAllowlist = nil // clear test default; SSRF tests need real blocking
 	cfg.TrustedDomains = []string{"localhost", "*.internal.corp", "api.example.com"}
 	s := New(cfg)
 	defer s.Close()
@@ -1079,6 +1114,7 @@ func TestScanner_IsTrustedDomain(t *testing.T) {
 func TestNew_PanicsOnInvalidCIDR(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = []string{"not-a-cidr"}
+	cfg.SSRF.IPAllowlist = nil // clear test default; SSRF tests need real blocking
 
 	defer func() {
 		if r := recover(); r == nil {
@@ -1673,6 +1709,7 @@ func TestScan_DataURIScheme(t *testing.T) {
 func TestScan_ScanOrderBlocklistBeforeSSRF(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = []string{"127.0.0.0/8"}
+	cfg.SSRF.IPAllowlist = nil // clear test default; SSRF tests need real blocking
 	cfg.FetchProxy.Monitoring.Blocklist = []string{"localhost"}
 	s := New(cfg)
 
@@ -1691,6 +1728,7 @@ func TestScan_DLPCatchesSecretInHostnameBeforeDNS(t *testing.T) {
 	cfg := testConfig()
 	// Enable SSRF so DNS resolution would happen — but DLP should fire first.
 	cfg.Internal = []string{"10.0.0.0/8"}
+	cfg.SSRF.IPAllowlist = nil // clear test default; SSRF tests need real blocking
 	s := New(cfg)
 
 	// Attacker encodes an Anthropic key as a subdomain: DNS query for this
@@ -1826,6 +1864,7 @@ func TestScan_DLPCatchesMalformedPercentEncoding(t *testing.T) {
 func TestIsInternalIP_MatchesConfiguredCIDR(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = []string{"10.0.0.0/8", "127.0.0.0/8"}
+	cfg.SSRF.IPAllowlist = nil // clear test default; SSRF tests need real blocking
 	s := New(cfg)
 
 	tests := []struct {
@@ -1851,6 +1890,7 @@ func TestIsInternalIP_MatchesConfiguredCIDR(t *testing.T) {
 func TestIsInternalIP_IPv4MappedIPv6(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = []string{"127.0.0.0/8", "10.0.0.0/8"}
+	cfg.SSRF.IPAllowlist = nil // clear test default; SSRF tests need real blocking
 	s := New(cfg)
 
 	// IPv4-mapped IPv6 addresses like ::ffff:127.0.0.1 must match IPv4 CIDRs.
@@ -1881,6 +1921,7 @@ func TestIsInternalIP_IPv4MappedIPv6(t *testing.T) {
 func TestIsInternalIP_DisabledReturnsAlwaysFalse(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	s := New(cfg)
 
 	if s.IsInternalIP(net.ParseIP("127.0.0.1")) {
@@ -4393,6 +4434,7 @@ func TestCheckSubdomainEntropy_Exclusions(t *testing.T) {
 			cfg := testConfig()
 			cfg.DLP.Patterns = nil
 			cfg.Internal = nil
+			cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 			cfg.APIAllowlist = nil
 			cfg.FetchProxy.Monitoring.Blocklist = nil
 			cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions = tt.exclusions
@@ -4424,6 +4466,7 @@ func TestScan_SubdomainEntropyExclusion_QueryEntropyStillChecked(t *testing.T) {
 	cfg := testConfig()
 	cfg.DLP.Patterns = nil
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.FetchProxy.Monitoring.Blocklist = nil
 	cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions = []string{"api.telegram.org"}
@@ -4588,6 +4631,7 @@ func TestScan_DLPExemptDomains(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := testConfig()
 			cfg.Internal = nil
+			cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 			cfg.FetchProxy.Monitoring.EntropyThreshold = 0 // disable entropy to isolate DLP
 			cfg.DLP.Patterns = []config.DLPPattern{
 				{
@@ -4616,6 +4660,7 @@ func TestScan_DLPExemptDomainsOtherPatternsStillFire(t *testing.T) {
 	// Exempt domain for one pattern should not affect other patterns.
 	cfg := testConfig()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.FetchProxy.Monitoring.EntropyThreshold = 0 // disable entropy to isolate DLP
 	cfg.DLP.Patterns = []config.DLPPattern{
 		{

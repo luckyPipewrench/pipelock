@@ -12,6 +12,7 @@ import (
 func TestAddressCheckerNilWhenDisabled(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := New(cfg)
 	defer sc.Close()
 
@@ -23,6 +24,7 @@ func TestAddressCheckerNilWhenDisabled(t *testing.T) {
 func TestAddressCheckerConstructed(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.AddressProtection.Enabled = true
 	cfg.AddressProtection.Action = config.ActionBlock
 	cfg.AddressProtection.UnknownAction = config.ActionAllow
@@ -42,6 +44,7 @@ func TestAddressCheckerConstructed(t *testing.T) {
 func TestAddressCheckerWithAgentAddresses(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.AddressProtection.Enabled = true
 	cfg.AddressProtection.Action = config.ActionBlock
 	cfg.AddressProtection.UnknownAction = config.ActionAllow

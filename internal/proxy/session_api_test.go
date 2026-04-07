@@ -442,6 +442,7 @@ func TestSessionState_IsResettable(t *testing.T) {
 func TestSessionAPI_IntegrationViaProxy(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.SessionProfiling.Enabled = true
 	cfg.SessionProfiling.MaxSessions = 100
@@ -556,6 +557,7 @@ func TestSessionAPI_HandleReset_ClearsCEEState(t *testing.T) {
 func TestSessionAPI_ResetUnderConcurrentTraffic(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.SessionProfiling.Enabled = true
 	cfg.SessionProfiling.MaxSessions = 100

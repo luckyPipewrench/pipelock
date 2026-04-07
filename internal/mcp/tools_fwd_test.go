@@ -190,6 +190,7 @@ func TestForwardScanned_ToolsListNotBlockedByGeneralScanner(t *testing.T) {
 	// and may report findings, but the general scanner is skipped.
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ResponseScanning.Enabled = true
 	cfg.ResponseScanning.Action = config.ActionBlock
 	sc := scanner.New(cfg)
@@ -222,6 +223,7 @@ func TestForwardScanned_ToolsListBlockedWithoutToolScanning(t *testing.T) {
 	// blocks the same tools/list response that the above test forwards.
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ResponseScanning.Enabled = true
 	cfg.ResponseScanning.Action = config.ActionBlock
 	sc := scanner.New(cfg)
@@ -251,6 +253,7 @@ func TestForwardScanned_SessionBinding_CapturesBaseline(t *testing.T) {
 	// Verify ForwardScanned captures tool names into baseline from tools/list.
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 

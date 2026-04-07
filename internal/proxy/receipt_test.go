@@ -79,6 +79,7 @@ func TestProxy_ReceiptEmission_FetchBlock(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.FetchProxy.Monitoring.Blocklist = []string{"evil.example.com"}
 
 	logger := audit.NewNop()
@@ -192,6 +193,7 @@ func TestProxy_ReceiptEmission_FetchAllow(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
@@ -263,6 +265,7 @@ func TestProxy_NilEmitter_NoReceipt(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.FetchProxy.Monitoring.Blocklist = []string{"evil.example.com"}
 
 	logger := audit.NewNop()
@@ -323,6 +326,7 @@ func TestProxy_ReloadCreatesReceiptEmitter(t *testing.T) {
 	// Start proxy WITHOUT receipt emitter (no signing key in initial config).
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
@@ -341,6 +345,7 @@ func TestProxy_ReloadCreatesReceiptEmitter(t *testing.T) {
 	// Reload with a config that includes a signing key.
 	reloadCfg := config.Defaults()
 	reloadCfg.Internal = nil
+	reloadCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	reloadCfg.FlightRecorder.SigningKeyPath = keyPath
 	reloadCfg.FetchProxy.Monitoring.Blocklist = []string{"evil.example.com"}
 	reloadSc := scanner.New(reloadCfg)
@@ -427,6 +432,7 @@ func TestProxy_ReloadRemovesReceiptEmitter(t *testing.T) {
 	// Start proxy WITH receipt emitter.
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.FlightRecorder.SigningKeyPath = keyPath
 
 	logger := audit.NewNop()
@@ -450,6 +456,7 @@ func TestProxy_ReloadRemovesReceiptEmitter(t *testing.T) {
 	// Reload with config that has NO signing key — should nil the emitter.
 	reloadCfg := config.Defaults()
 	reloadCfg.Internal = nil
+	reloadCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	reloadCfg.FetchProxy.Monitoring.Blocklist = []string{"evil.example.com"}
 	reloadSc := scanner.New(reloadCfg)
 
@@ -500,6 +507,7 @@ func TestProxy_ReloadReceiptEmitter_BadKeyPath(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
@@ -513,6 +521,7 @@ func TestProxy_ReloadReceiptEmitter_BadKeyPath(t *testing.T) {
 	// Reload with a non-existent key path.
 	reloadCfg := config.Defaults()
 	reloadCfg.Internal = nil
+	reloadCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	reloadCfg.FlightRecorder.SigningKeyPath = "/nonexistent/receipt.key"
 	reloadSc := scanner.New(reloadCfg)
 
@@ -544,6 +553,7 @@ func TestProxy_ReloadReceiptEmitter_NoRecorder(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
@@ -558,6 +568,7 @@ func TestProxy_ReloadReceiptEmitter_NoRecorder(t *testing.T) {
 	// Reload with a signing key but no recorder — emitter stays nil.
 	reloadCfg := config.Defaults()
 	reloadCfg.Internal = nil
+	reloadCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	reloadCfg.FlightRecorder.SigningKeyPath = keyPath
 	reloadSc := scanner.New(reloadCfg)
 
@@ -606,6 +617,7 @@ func TestProxy_ReloadReceiptEmitter_UpdatesHash(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.FlightRecorder.SigningKeyPath = keyPath
 
 	logger := audit.NewNop()
@@ -626,6 +638,7 @@ func TestProxy_ReloadReceiptEmitter_UpdatesHash(t *testing.T) {
 	// (always re-reads key file to detect in-place rotation) but uses updated hash.
 	reloadCfg := config.Defaults()
 	reloadCfg.Internal = nil
+	reloadCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	reloadCfg.FlightRecorder.SigningKeyPath = keyPath
 	reloadCfg.FetchProxy.Monitoring.Blocklist = []string{"evil.example.com"}
 	reloadSc := scanner.New(reloadCfg)
@@ -715,6 +728,7 @@ func TestProxy_ReloadRotatesSigningKey(t *testing.T) {
 	// Start proxy with key A.
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.FlightRecorder.SigningKeyPath = keyPathA
 	cfg.FetchProxy.Monitoring.Blocklist = []string{"evil.example.com"}
 
@@ -740,6 +754,7 @@ func TestProxy_ReloadRotatesSigningKey(t *testing.T) {
 	// Reload with key B — should replace the emitter.
 	reloadCfg := config.Defaults()
 	reloadCfg.Internal = nil
+	reloadCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	reloadCfg.FlightRecorder.SigningKeyPath = keyPathB
 	reloadCfg.FetchProxy.Monitoring.Blocklist = []string{"evil.example.com"}
 	reloadSc := scanner.New(reloadCfg)

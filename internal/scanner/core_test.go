@@ -74,6 +74,7 @@ func TestCore_RunsWithAllFeaturesDisabled(t *testing.T) {
 	cfg.DLP.SecretsFile = ""
 	cfg.SeedPhraseDetection.Enabled = ptrBool(false)
 	cfg.Internal = nil // SSRF disabled
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	s := New(cfg)
 	defer s.Close()
 
@@ -117,12 +118,128 @@ func TestCore_BlockCannotBeOverriddenByMainScanner(t *testing.T) {
 	}
 }
 
+func TestCore_SSRFLiteral_BlocksPrivateIPsWhenSSRFDisabled(t *testing.T) {
+	t.Parallel()
+	cfg := testConfig()
+	cfg.Internal = nil         // SSRF disabled
+	cfg.SSRF.IPAllowlist = nil // no exemptions — test real blocking
+	s := New(cfg)
+	defer s.Close()
+
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{"loopback", "http://127.0.0.1/"},
+		{"metadata endpoint", "http://169.254.169.254/latest/meta-data/"},
+		{"private 10.x", "http://10.0.0.1/"},
+		{"private 172.16.x", "http://172.16.0.1/"},
+		{"private 192.168.x", "http://192.168.1.1/"},
+		{"carrier-grade NAT", "http://100.64.0.1/"},
+		{"hex encoded loopback", "http://0x7f000001/"},
+		{"octal encoded loopback", "http://0177.0.0.1/"},
+		{"decimal integer loopback", "http://2130706433/"},
+		{"ipv6 loopback", "http://[::1]/"},
+		{"ipv6 loopback zone id", "http://[::1%25eth0]/"},
+		{"ipv6 link-local zone id", "http://[fe80::1%25eth0]/"},
+		{"ipv6 unique local", "http://[fc00::1]/"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := s.Scan(context.Background(), tt.url)
+			if result.Allowed {
+				t.Errorf("expected core SSRF to block %s with SSRF disabled", tt.url)
+			}
+			if result.Scanner != ScannerCoreSSRF {
+				t.Errorf("expected scanner=%s, got %s", ScannerCoreSSRF, result.Scanner)
+			}
+		})
+	}
+}
+
+func TestCore_SSRFLiteral_AllowsExternalIPs(t *testing.T) {
+	t.Parallel()
+	cfg := testConfig()
+	cfg.Internal = nil         // SSRF disabled
+	cfg.SSRF.IPAllowlist = nil // no exemptions
+	s := New(cfg)
+	defer s.Close()
+
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{"public IP", "http://8.8.8.8/"},
+		{"public IP hex", "http://0x08080808/"},
+		{"hostname", "http://example.com/"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := s.Scan(context.Background(), tt.url)
+			if !result.Allowed {
+				t.Errorf("expected %s to be allowed, got blocked: %s", tt.url, result.Reason)
+			}
+		})
+	}
+}
+
+func TestCore_SSRFLiteral_RespectsIPAllowlist(t *testing.T) {
+	t.Parallel()
+	cfg := testConfig()
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "10.0.0.0/24"}
+	s := New(cfg)
+	defer s.Close()
+
+	// Allowlisted private IPs should pass.
+	t.Run("loopback_allowed", func(t *testing.T) {
+		result := s.Scan(context.Background(), "http://127.0.0.1/test")
+		if !result.Allowed {
+			t.Errorf("expected allowlisted 127.0.0.1 to pass, got blocked: %s", result.Reason)
+		}
+	})
+	t.Run("private_10_allowed", func(t *testing.T) {
+		result := s.Scan(context.Background(), "http://10.0.0.5/test")
+		if !result.Allowed {
+			t.Errorf("expected allowlisted 10.0.0.5 to pass, got blocked: %s", result.Reason)
+		}
+	})
+
+	// Non-allowlisted private IPs should still be blocked.
+	t.Run("other_private_blocked", func(t *testing.T) {
+		result := s.Scan(context.Background(), "http://192.168.1.1/test")
+		if result.Allowed {
+			t.Error("expected non-allowlisted 192.168.1.1 to be blocked")
+		}
+	})
+}
+
+func TestCore_SSRFLiteral_SkipsWhenSSRFActive(t *testing.T) {
+	t.Parallel()
+	cfg := testConfig()
+	cfg.Internal = []string{"127.0.0.0/8"} // SSRF active
+	cfg.SSRF.IPAllowlist = nil
+	s := New(cfg)
+	defer s.Close()
+
+	// When SSRF is active, core SSRF literal defers to checkSSRF.
+	// The block should come from ScannerSSRF, not ScannerCoreSSRF.
+	result := s.Scan(context.Background(), "http://127.0.0.1/test")
+	if result.Allowed {
+		t.Error("expected 127.0.0.1 to be blocked")
+	}
+	if result.Scanner != ScannerSSRF {
+		t.Errorf("expected scanner=%s when SSRF active, got %s", ScannerSSRF, result.Scanner)
+	}
+}
+
 func TestCore_SSRFCIDRsAlwaysIncludedWhenSSRFActive(t *testing.T) {
 	t.Parallel()
 	cfg := testConfig()
 	// Enable SSRF with a single narrow CIDR. Core CIDRs should be
 	// merged in, so private ranges are always blocked.
 	cfg.Internal = []string{"203.0.113.0/24"} // TEST-NET-3 only
+	cfg.SSRF.IPAllowlist = nil
 	s := New(cfg)
 	defer s.Close()
 
@@ -245,6 +362,7 @@ func TestCore_SSRFPatterns_Regression(t *testing.T) {
 	cfg := testConfig()
 	// Enable SSRF with minimal config — core CIDRs should be merged in.
 	cfg.Internal = []string{"203.0.113.0/24"}
+	cfg.SSRF.IPAllowlist = nil
 	s := New(cfg)
 	defer s.Close()
 

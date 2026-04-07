@@ -109,7 +109,7 @@ func TestCheckCmd_ScanURLAllowed(t *testing.T) {
 	dir := t.TempDir()
 	cfgFile := filepath.Join(dir, "pipelock.yaml")
 	mockHost, _, _ := net.SplitHostPort(strings.TrimPrefix(mock.URL, "http://"))
-	cfgContent := fmt.Sprintf("mode: audit\ninternal: []\napi_allowlist:\n  - %s\n", mockHost)
+	cfgContent := fmt.Sprintf("mode: audit\ninternal: []\nssrf:\n  ip_allowlist:\n    - 127.0.0.0/8\napi_allowlist:\n  - %s\n", mockHost)
 	if err := os.WriteFile(cfgFile, []byte(cfgContent), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -243,6 +243,7 @@ func TestCheckFetchHint_SkipWhenDisabled(t *testing.T) {
 func TestCheckFetchHint_SkipWhenExplainBlocksEnabled(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.DLP.ScanEnv = false
 	explainTrue := true
 	cfg.ExplainBlocks = &explainTrue

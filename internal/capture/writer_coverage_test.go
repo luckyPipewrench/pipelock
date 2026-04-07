@@ -193,6 +193,7 @@ func TestWriterRedaction(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.DLP.ScanEnv = false
 	sc := scanner.New(cfg)
 	defer sc.Close()
@@ -374,6 +375,7 @@ func TestLoaderExtractCaptureSummary_CorruptEntry(t *testing.T) {
 	// Replay: should get 1 record, 0 skipped.
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.DLP.ScanEnv = false
 
 	records, _, skipped, _, err := capture.LoadAndReplay(cfg, dir)
@@ -554,6 +556,7 @@ func TestWriterRedactionWithFindings(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.DLP.ScanEnv = false
 	sc := scanner.New(cfg)
 	defer sc.Close()

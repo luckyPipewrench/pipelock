@@ -102,6 +102,7 @@ func setupWSProxy(t *testing.T, cfgMod func(*config.Config)) (string, func()) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.WebSocketProxy.Enabled = true
 	cfg.WebSocketProxy.MaxMessageBytes = 1048576
@@ -1169,6 +1170,7 @@ func TestIsExpectedCloseErr(t *testing.T) {
 func TestWSConfigDefaults(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	ws := cfg.WebSocketProxy
 
 	if ws.Enabled {
@@ -1254,6 +1256,7 @@ func TestWSConfigValidation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := config.Defaults()
 			cfg.Internal = nil
+			cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 			cfg.APIAllowlist = nil
 			tt.modify(cfg)
 			// Do NOT call ApplyDefaults() here: it would fill zero values
@@ -2387,6 +2390,7 @@ func TestWSProxyHeaderDLPAuditMode(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.WebSocketProxy.Enabled = true
 	cfg.WebSocketProxy.MaxMessageBytes = 1048576
@@ -2552,6 +2556,7 @@ func TestWSRelay_KillSwitch_ClientToUpstream(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.WebSocketProxy.Enabled = true
 	cfg.WebSocketProxy.MaxMessageBytes = 1048576
@@ -2670,6 +2675,7 @@ func TestWSRelay_KillSwitch_UpstreamToClient(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.WebSocketProxy.Enabled = true
 	cfg.WebSocketProxy.MaxMessageBytes = 1048576
@@ -2771,6 +2777,7 @@ func TestWSRelay_KillSwitch_UpstreamToClient(t *testing.T) {
 func TestWsRelayRecordSignal_NilRecorder(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.AdaptiveEnforcement.Enabled = true
 	m := metrics.New()
 	p, err := New(cfg, audit.NewNop(), scanner.New(cfg), m)
@@ -2792,6 +2799,7 @@ func TestWsRelayRecordSignal_NilRecorder(t *testing.T) {
 func TestWsRelayRecordSignal_AdaptiveDisabled(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.AdaptiveEnforcement.Enabled = false
 	m := metrics.New()
 	sc := scanner.New(cfg)
@@ -2829,6 +2837,7 @@ func TestWsRelayRecordSignal_AdaptiveDisabled(t *testing.T) {
 func TestWsRelayRecordSignal_RecordsSignal(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.AdaptiveEnforcement.Enabled = true
 	cfg.AdaptiveEnforcement.EscalationThreshold = 10.0
 	m := metrics.New()
@@ -2896,6 +2905,7 @@ func TestWsRelayEscalationLevel_WithRecorder(t *testing.T) {
 func TestWsRelayRecordSignal_AnonymousAgent(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.AdaptiveEnforcement.Enabled = true
 	cfg.AdaptiveEnforcement.EscalationThreshold = 10.0
 	m := metrics.New()

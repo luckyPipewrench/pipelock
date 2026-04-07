@@ -55,6 +55,10 @@ const (
 	testLicenseFileCfg = "mode: balanced\nlicense_file: license.token\n"
 )
 
+// testLoopbackAllowlist exempts loopback from core SSRF literal blocking in
+// tests that disable SSRF via cfg.Internal = nil but use localhost servers.
+var testLoopbackAllowlist = []string{"127.0.0.0/8", "::1/128"}
+
 func TestDefaults(t *testing.T) {
 	cfg := Defaults()
 
@@ -1724,7 +1728,7 @@ func TestValidate_AuditModeAllowsEmpty(t *testing.T) {
 	cfg.DLP.Patterns = nil
 	cfg.FetchProxy.Monitoring.Blocklist = nil
 	cfg.Internal = nil
-	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.SSRF.IPAllowlist = testLoopbackAllowlist
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("audit mode with empty lists should validate: %v", err)
 	}
@@ -3344,7 +3348,7 @@ func TestValidate_SecretsFileGroupReadAllowed(t *testing.T) {
 
 	cfg := Defaults()
 	cfg.Internal = nil
-	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.SSRF.IPAllowlist = testLoopbackAllowlist
 	cfg.DLP.SecretsFile = secretsPath
 
 	if err := cfg.Validate(); err != nil {
@@ -3366,7 +3370,7 @@ func TestValidate_SecretsFileGroupWriteRejected(t *testing.T) {
 
 	cfg := Defaults()
 	cfg.Internal = nil
-	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.SSRF.IPAllowlist = testLoopbackAllowlist
 	cfg.DLP.SecretsFile = secretsPath
 
 	err := cfg.Validate()
@@ -6147,7 +6151,7 @@ func TestTLSInterception_ValidateDisabledNoError(t *testing.T) {
 	cfg := Defaults()
 	cfg.TLSInterception.Enabled = false
 	cfg.Internal = nil
-	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.SSRF.IPAllowlist = testLoopbackAllowlist
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("disabled TLS interception should not error: %v", err)
 	}
@@ -6156,7 +6160,7 @@ func TestTLSInterception_ValidateDisabledNoError(t *testing.T) {
 func TestTLSInterception_ValidateBadTTL(t *testing.T) {
 	cfg := Defaults()
 	cfg.Internal = nil
-	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.SSRF.IPAllowlist = testLoopbackAllowlist
 	cfg.TLSInterception.Enabled = true
 	cfg.TLSInterception.CertTTL = "not-a-duration"
 	err := cfg.Validate()
@@ -6168,7 +6172,7 @@ func TestTLSInterception_ValidateBadTTL(t *testing.T) {
 func TestTLSInterception_ValidateBadCacheSize(t *testing.T) {
 	cfg := Defaults()
 	cfg.Internal = nil
-	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.SSRF.IPAllowlist = testLoopbackAllowlist
 	cfg.TLSInterception.Enabled = true
 	cfg.TLSInterception.CertCacheSize = 0
 	err := cfg.Validate()
@@ -6180,7 +6184,7 @@ func TestTLSInterception_ValidateBadCacheSize(t *testing.T) {
 func TestTLSInterception_ValidateBadMaxResponse(t *testing.T) {
 	cfg := Defaults()
 	cfg.Internal = nil
-	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.SSRF.IPAllowlist = testLoopbackAllowlist
 	cfg.TLSInterception.Enabled = true
 	cfg.TLSInterception.MaxResponseBytes = 0
 	err := cfg.Validate()
@@ -6192,7 +6196,7 @@ func TestTLSInterception_ValidateBadMaxResponse(t *testing.T) {
 func TestTLSInterception_ValidateMissingCert(t *testing.T) {
 	cfg := Defaults()
 	cfg.Internal = nil
-	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.SSRF.IPAllowlist = testLoopbackAllowlist
 	cfg.TLSInterception.Enabled = true
 	cfg.TLSInterception.CACertPath = "/nonexistent/ca.pem"
 	cfg.TLSInterception.CAKeyPath = "/nonexistent/ca-key.pem"
@@ -6205,7 +6209,7 @@ func TestTLSInterception_ValidateMissingCert(t *testing.T) {
 func TestTLSInterception_ValidateNegativeTTL(t *testing.T) {
 	cfg := Defaults()
 	cfg.Internal = nil
-	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.SSRF.IPAllowlist = testLoopbackAllowlist
 	cfg.TLSInterception.Enabled = true
 	cfg.TLSInterception.CertTTL = "-1h"
 	err := cfg.Validate()
@@ -6227,7 +6231,7 @@ func TestTLSInterception_ValidatePermissiveKey(t *testing.T) {
 
 	cfg := Defaults()
 	cfg.Internal = nil
-	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.SSRF.IPAllowlist = testLoopbackAllowlist
 	cfg.TLSInterception.Enabled = true
 	cfg.TLSInterception.CACertPath = certPath
 	cfg.TLSInterception.CAKeyPath = keyPath
@@ -6255,7 +6259,7 @@ func TestTLSInterception_ValidateGroupReadableKeyAllowed(t *testing.T) {
 
 	cfg := Defaults()
 	cfg.Internal = nil
-	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.SSRF.IPAllowlist = testLoopbackAllowlist
 	cfg.TLSInterception.Enabled = true
 	cfg.TLSInterception.CACertPath = certPath
 	cfg.TLSInterception.CAKeyPath = keyPath
@@ -6279,7 +6283,7 @@ func TestTLSInterception_ValidateOwnerExecuteKeyRejected(t *testing.T) {
 
 	cfg := Defaults()
 	cfg.Internal = nil
-	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.SSRF.IPAllowlist = testLoopbackAllowlist
 	cfg.TLSInterception.Enabled = true
 	cfg.TLSInterception.CACertPath = certPath
 	cfg.TLSInterception.CAKeyPath = keyPath
@@ -6419,7 +6423,7 @@ func TestTLSInterception_ValidateMissingKey(t *testing.T) {
 
 	cfg := Defaults()
 	cfg.Internal = nil
-	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.SSRF.IPAllowlist = testLoopbackAllowlist
 	cfg.TLSInterception.Enabled = true
 	cfg.TLSInterception.CACertPath = certPath
 	cfg.TLSInterception.CAKeyPath = keyPath
@@ -8802,7 +8806,7 @@ func TestSandboxFSChanged(t *testing.T) {
 func TestValidate_SandboxBestEffortAndStrictMutuallyExclusive(t *testing.T) {
 	cfg := Defaults()
 	cfg.Internal = nil
-	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.SSRF.IPAllowlist = testLoopbackAllowlist
 	cfg.Sandbox.BestEffort = true
 	cfg.Sandbox.Strict = true
 	if err := cfg.Validate(); err == nil {
@@ -8813,7 +8817,7 @@ func TestValidate_SandboxBestEffortAndStrictMutuallyExclusive(t *testing.T) {
 func TestValidate_SandboxBestEffortAlone(t *testing.T) {
 	cfg := Defaults()
 	cfg.Internal = nil
-	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.SSRF.IPAllowlist = testLoopbackAllowlist
 	cfg.Sandbox.BestEffort = true
 	cfg.Sandbox.Strict = false
 	if err := cfg.Validate(); err != nil {
@@ -8824,7 +8828,7 @@ func TestValidate_SandboxBestEffortAlone(t *testing.T) {
 func TestValidate_SandboxStrictAlone(t *testing.T) {
 	cfg := Defaults()
 	cfg.Internal = nil
-	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.SSRF.IPAllowlist = testLoopbackAllowlist
 	cfg.Sandbox.Strict = true
 	cfg.Sandbox.BestEffort = false
 	if err := cfg.Validate(); err != nil {
@@ -8835,7 +8839,7 @@ func TestValidate_SandboxStrictAlone(t *testing.T) {
 func TestDefaults_Rules(t *testing.T) {
 	cfg := Defaults()
 	cfg.Internal = nil
-	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.SSRF.IPAllowlist = testLoopbackAllowlist
 	if cfg.Rules.MinConfidence != ConfidenceMedium {
 		t.Errorf("expected default min_confidence %q, got %q", ConfidenceMedium, cfg.Rules.MinConfidence)
 	}
@@ -8860,7 +8864,7 @@ func TestValidate_RulesMinConfidence(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := Defaults()
 			cfg.Internal = nil
-			cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+			cfg.SSRF.IPAllowlist = testLoopbackAllowlist
 			cfg.Rules.MinConfidence = tt.value
 			err := cfg.Validate()
 			if tt.wantErr && err == nil {
@@ -8888,7 +8892,7 @@ func TestValidate_RulesDisabledFormat(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := Defaults()
 			cfg.Internal = nil
-			cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+			cfg.SSRF.IPAllowlist = testLoopbackAllowlist
 			cfg.Rules.Disabled = []string{tt.value}
 			err := cfg.Validate()
 			if tt.wantErr && err == nil {
@@ -8932,7 +8936,7 @@ func TestValidate_RulesTrustedKeyFormat(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := Defaults()
 			cfg.Internal = nil
-			cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+			cfg.SSRF.IPAllowlist = testLoopbackAllowlist
 			cfg.Rules.TrustedKeys = []TrustedKey{tt.key}
 			err := cfg.Validate()
 			if tt.wantErr && err == nil {
@@ -9012,7 +9016,7 @@ func TestValidate_RulesDisabledFormat_Tightened(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := Defaults()
 			cfg.Internal = nil
-			cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+			cfg.SSRF.IPAllowlist = testLoopbackAllowlist
 			cfg.Rules.Disabled = []string{tt.value}
 			err := cfg.Validate()
 			if tt.wantErr && err == nil {
@@ -9028,7 +9032,7 @@ func TestValidate_RulesDisabledFormat_Tightened(t *testing.T) {
 func TestValidate_RulesTrustedKeyValidHex(t *testing.T) {
 	cfg := Defaults()
 	cfg.Internal = nil
-	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.SSRF.IPAllowlist = testLoopbackAllowlist
 	cfg.Rules.TrustedKeys = []TrustedKey{
 		{Name: testCustomName, PublicKey: strings.Repeat("ab", 32)},
 	}

@@ -2403,3 +2403,96 @@ func TestRulesInstall_RemoteSignatureFailure(t *testing.T) {
 		t.Errorf("error should mention signature verification, got: %v", err)
 	}
 }
+
+// ---------- rules status ----------
+
+func TestRulesStatus_DefaultConfig(t *testing.T) {
+	root := &cobra.Command{Use: "pipelock"}
+	root.AddCommand(Cmd())
+
+	// Point to empty rules dir via config file.
+	dir := t.TempDir()
+	cfgFile := filepath.Join(dir, "pipelock.yaml")
+	cfgContent := "rules:\n  rules_dir: " + filepath.Join(dir, "rules") + "\n"
+	if err := os.WriteFile(cfgFile, []byte(cfgContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf strings.Builder
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	root.SetArgs([]string{"rules", "status", "--config", cfgFile})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("rules status failed: %v", err)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "Core:") {
+		t.Error("expected Core: line in status output")
+	}
+	if !strings.Contains(out, "compiled fallback") {
+		t.Error("expected 'compiled fallback' when no standard bundle installed")
+	}
+}
+
+func TestRulesStatus_JSON(t *testing.T) {
+	root := &cobra.Command{Use: "pipelock"}
+	root.AddCommand(Cmd())
+
+	dir := t.TempDir()
+	cfgFile := filepath.Join(dir, "pipelock.yaml")
+	cfgContent := "rules:\n  rules_dir: " + filepath.Join(dir, "rules") + "\n"
+	if err := os.WriteFile(cfgFile, []byte(cfgContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf strings.Builder
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	root.SetArgs([]string{"rules", "status", "--config", cfgFile, "--json"})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("rules status --json failed: %v", err)
+	}
+
+	var status statusReport
+	if err := json.Unmarshal([]byte(buf.String()), &status); err != nil {
+		t.Fatalf("invalid JSON output: %v", err)
+	}
+	if status.Core.DLP != 8 {
+		t.Errorf("expected 8 core DLP, got %d", status.Core.DLP)
+	}
+	if status.Core.Response != 8 {
+		t.Errorf("expected 8 core response, got %d", status.Core.Response)
+	}
+	if status.StandardDLPSource != "compiled" {
+		t.Errorf("expected standard DLP source 'compiled', got %q", status.StandardDLPSource)
+	}
+}
+
+func TestRulesStatus_IncludeDefaultsFalse(t *testing.T) {
+	root := &cobra.Command{Use: "pipelock"}
+	root.AddCommand(Cmd())
+
+	dir := t.TempDir()
+	cfgFile := filepath.Join(dir, "pipelock.yaml")
+	cfgContent := "rules:\n  rules_dir: " + filepath.Join(dir, "rules") + "\ndlp:\n  include_defaults: false\nresponse_scanning:\n  include_defaults: false\n"
+	if err := os.WriteFile(cfgFile, []byte(cfgContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf strings.Builder
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	root.SetArgs([]string{"rules", "status", "--config", cfgFile})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("rules status failed: %v", err)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "disabled") {
+		t.Error("expected 'disabled' when include_defaults: false")
+	}
+}

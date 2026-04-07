@@ -13,6 +13,7 @@ import (
 	"regexp"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -87,8 +88,9 @@ func (noopBudget) RemainingBytes() int64             { return -1 }
 
 // AgentIdentity carries the resolved agent name and profile key.
 type AgentIdentity struct {
-	Name    string // display name (sanitized header value or profile name)
-	Profile string // config key used for registry lookup
+	Name    string             // display name (sanitized header value or profile name)
+	Profile string             // config key used for registry lookup
+	Auth    envelope.ActorAuth // how the identity was determined (bound/matched/self-declared)
 }
 
 // ProfileDefault is the reserved name for the default agent profile.
@@ -176,17 +178,17 @@ func ExtractAgent(r *http.Request) string {
 // Unrecognized names get Profile=ProfileDefault (bounded cardinality).
 func ResolveAgentIdentity(r *http.Request, knownProfiles map[string]bool) AgentIdentity {
 	if profile, ok := AgentOverrideFromContext(r.Context()); ok {
-		return AgentIdentity{Name: profile, Profile: profile}
+		return AgentIdentity{Name: profile, Profile: profile, Auth: envelope.ActorAuthBound}
 	}
 
 	name := ExtractAgent(r)
 	if name == agentAnonymous {
-		return AgentIdentity{Name: "", Profile: ProfileDefault}
+		return AgentIdentity{Name: "", Profile: ProfileDefault, Auth: envelope.ActorAuthSelfDeclared}
 	}
 
 	if knownProfiles[name] {
-		return AgentIdentity{Name: name, Profile: name}
+		return AgentIdentity{Name: name, Profile: name, Auth: envelope.ActorAuthMatched}
 	}
 
-	return AgentIdentity{Name: name, Profile: ProfileDefault}
+	return AgentIdentity{Name: name, Profile: ProfileDefault, Auth: envelope.ActorAuthSelfDeclared}
 }

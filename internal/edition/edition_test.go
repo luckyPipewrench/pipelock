@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -271,6 +272,61 @@ func TestResolveAgentIdentity(t *testing.T) {
 			}
 			if id.Profile != tt.wantProfile {
 				t.Errorf("Profile = %q, want %q", id.Profile, tt.wantProfile)
+			}
+		})
+	}
+}
+
+func TestResolveAgentIdentity_ActorAuth(t *testing.T) {
+	t.Parallel()
+
+	knownProfiles := map[string]bool{"claude-code": true}
+
+	tests := []struct {
+		name     string
+		setup    func(r *http.Request) *http.Request
+		wantAuth envelope.ActorAuth
+	}{
+		{
+			name: "context override is bound",
+			setup: func(r *http.Request) *http.Request {
+				return r.WithContext(WithAgentOverride(r.Context(), "claude-code"))
+			},
+			wantAuth: envelope.ActorAuthBound,
+		},
+		{
+			name: "known profile from header is matched",
+			setup: func(r *http.Request) *http.Request {
+				r.Header.Set(AgentHeader, "claude-code")
+				return r
+			},
+			wantAuth: envelope.ActorAuthMatched,
+		},
+		{
+			name: "unknown name from header is self-declared",
+			setup: func(r *http.Request) *http.Request {
+				r.Header.Set(AgentHeader, "unknown-agent")
+				return r
+			},
+			wantAuth: envelope.ActorAuthSelfDeclared,
+		},
+		{
+			name: "no header is self-declared",
+			setup: func(r *http.Request) *http.Request {
+				return r
+			},
+			wantAuth: envelope.ActorAuthSelfDeclared,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			r := httptest.NewRequest(http.MethodGet, "http://example.com", nil)
+			r = tt.setup(r)
+			id := ResolveAgentIdentity(r, knownProfiles)
+			if id.Auth != tt.wantAuth {
+				t.Errorf("Auth = %q, want %q", id.Auth, tt.wantAuth)
 			}
 		})
 	}

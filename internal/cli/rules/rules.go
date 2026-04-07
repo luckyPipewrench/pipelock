@@ -196,6 +196,8 @@ Uses the same config resolution as runtime for accurate reporting.`,
 				status.Errors = append(status.Errors, e.Name+": "+e.Reason)
 			}
 			status.Warnings = result.Warnings
+			status.Degraded = result.Degraded || len(status.Errors) > 0
+			status.Healthy = !status.Degraded
 
 			if jsonOut {
 				enc := json.NewEncoder(out)
@@ -238,6 +240,11 @@ Uses the same config resolution as runtime for accurate reporting.`,
 				}
 			}
 
+			if status.Degraded {
+				_, _ = fmt.Fprintln(out, "\nDEGRADED: rule bundle verification/load failures detected. Protection may be reduced.")
+				return cliutil.ExitCodeError(1, fmt.Errorf("%d bundle error(s)", len(status.Errors)))
+			}
+
 			return nil
 		},
 	}
@@ -248,6 +255,8 @@ Uses the same config resolution as runtime for accurate reporting.`,
 }
 
 type statusReport struct {
+	Healthy                bool           `json:"healthy"`
+	Degraded               bool           `json:"degraded"`
 	Core                   tierStatus     `json:"core"`
 	StandardDLP            *tierDetail    `json:"standard_dlp"`
 	StandardResponse       *tierDetail    `json:"standard_response"`

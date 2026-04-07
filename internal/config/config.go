@@ -1801,11 +1801,6 @@ func mergeDLPPatterns(includeDefaults *bool, user, defaults []DLPPattern) []DLPP
 		// Explicit opt-out: user patterns only (old behavior).
 		return user
 	}
-	// Tag defaults with Compiled provenance so the standard tier source
-	// selector can distinguish them from user-supplied patterns.
-	for i := range defaults {
-		defaults[i].Compiled = true
-	}
 	if len(user) == 0 {
 		return defaults
 	}
@@ -1830,9 +1825,6 @@ func mergeDLPPatterns(includeDefaults *bool, user, defaults []DLPPattern) []DLPP
 func mergeResponsePatterns(includeDefaults *bool, user, defaults []ResponseScanPattern) []ResponseScanPattern {
 	if includeDefaults != nil && !*includeDefaults {
 		return user
-	}
-	for i := range defaults {
-		defaults[i].Compiled = true
 	}
 	if len(user) == 0 {
 		return defaults
@@ -4321,6 +4313,16 @@ func Defaults() *Config {
 				"www.recaptcha.net",
 			},
 		},
+	}
+	// Mark all compiled defaults with provenance so the standard tier source
+	// selector can distinguish them from user-supplied patterns. Set at
+	// creation time (not during merge) so provenance survives any code path
+	// that copies or reconstructs patterns.
+	for i := range cfg.DLP.Patterns {
+		cfg.DLP.Patterns[i].Compiled = true
+	}
+	for i := range cfg.ResponseScanning.Patterns {
+		cfg.ResponseScanning.Patterns[i].Compiled = true
 	}
 	return cfg
 }

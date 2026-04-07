@@ -214,6 +214,27 @@ func TestCore_SSRFLiteral_RespectsIPAllowlist(t *testing.T) {
 	})
 }
 
+func TestCore_SSRFLiteral_ConfigMismatch_APIAllowlisted(t *testing.T) {
+	t.Parallel()
+	cfg := testConfig()
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = nil
+	cfg.APIAllowlist = []string{"10.0.0.1"}
+	s := New(cfg)
+	defer s.Close()
+
+	result := s.Scan(context.Background(), "http://10.0.0.1/api")
+	if result.Allowed {
+		t.Fatal("expected core SSRF to block 10.0.0.1")
+	}
+	if result.Class != ClassConfigMismatch {
+		t.Errorf("expected ClassConfigMismatch for api_allowlisted IP, got %q", result.Class)
+	}
+	if result.Hint == "" {
+		t.Error("expected non-empty hint for config mismatch")
+	}
+}
+
 func TestCore_SSRFLiteral_SkipsWhenSSRFActive(t *testing.T) {
 	t.Parallel()
 	cfg := testConfig()

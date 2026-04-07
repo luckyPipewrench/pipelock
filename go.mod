@@ -4,6 +4,7 @@ go 1.25.0
 
 require (
 	github.com/CycloneDX/cyclonedx-go v0.10.0
+	github.com/dunglas/httpsfv v1.1.0
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/getsentry/sentry-go v0.44.1
 	github.com/go-shiori/go-readability v0.0.0-20251205110129-5db1dc9836f0

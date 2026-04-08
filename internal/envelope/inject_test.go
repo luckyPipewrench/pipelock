@@ -62,21 +62,23 @@ func TestStripInbound(t *testing.T) {
 		t.Errorf("StripInbound() did not remove %s: %q", HeaderName, got)
 	}
 
-	// Non-pipelock signatures must be preserved.
-	sigInput := h.Get("Signature-Input")
-	if sigInput == "" {
+	// Non-pipelock signatures must be preserved. Check ALL values, not just first.
+	for _, sigInput := range h.Values("Signature-Input") {
+		if strings.Contains(sigInput, "pipelock") {
+			t.Errorf("StripInbound() left pipelock member in Signature-Input: %q", sigInput)
+		}
+	}
+	if len(h.Values("Signature-Input")) == 0 {
 		t.Error("StripInbound() removed non-pipelock Signature-Input")
 	}
-	if strings.Contains(sigInput, "pipelock") {
-		t.Errorf("StripInbound() left pipelock member in Signature-Input: %q", sigInput)
-	}
 
-	sig := h.Get("Signature")
-	if sig == "" {
-		t.Error("StripInbound() removed non-pipelock Signature")
+	for _, sig := range h.Values("Signature") {
+		if strings.Contains(sig, "pipelock") {
+			t.Errorf("StripInbound() left pipelock member in Signature: %q", sig)
+		}
 	}
-	if strings.Contains(sig, "pipelock") {
-		t.Errorf("StripInbound() left pipelock member in Signature: %q", sig)
+	if len(h.Values("Signature")) == 0 {
+		t.Error("StripInbound() removed non-pipelock Signature")
 	}
 }
 

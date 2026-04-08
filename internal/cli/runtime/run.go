@@ -28,6 +28,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
 	"github.com/luckyPipewrench/pipelock/internal/emit"
+	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
@@ -294,6 +295,10 @@ Examples:
 			// proxy and MCP proxy can share the same emitter instance.
 			var receiptEmitter *receipt.Emitter
 
+			// Envelope emitter: declared at this scope so it can be stored
+			// on the proxy after construction.
+			var envEmitter *envelope.Emitter
+
 			// Flight recorder: create a tamper-evident evidence recorder
 			// when enabled in YAML config. The --capture-output CLI flag
 			// uses a separate code path (capture.Writer above). This path
@@ -355,6 +360,16 @@ Examples:
 				}
 
 				cmd.PrintErrf("  Recorder: %s (flight recorder enabled)\n", cfg.FlightRecorder.Dir)
+			}
+
+			// Envelope emitter: create when mediation_envelope.enabled=true.
+			// No signing key required — config hash is the only required field.
+			if cfg.MediationEnvelope.Enabled {
+				envEmitter = envelope.NewEmitter(envelope.EmitterConfig{
+					ConfigHash: cfg.Hash(),
+				})
+				proxyOpts = append(proxyOpts, proxy.WithEnvelopeEmitter(envEmitter))
+				cmd.PrintErrf("  Envelope: enabled (mediation envelopes injected)\n")
 			}
 
 			p, pErr := proxy.New(cfg, logger, sc, m, proxyOpts...)

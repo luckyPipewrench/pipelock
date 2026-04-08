@@ -33,6 +33,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
+	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
@@ -125,33 +126,34 @@ type editionSnapshot struct{ edition.Edition }
 
 // Proxy is the Pipelock fetch proxy server.
 type Proxy struct {
-	cfgPtr            atomic.Pointer[config.Config]
-	scannerPtr        atomic.Pointer[scanner.Scanner]
-	editionPtr        atomic.Pointer[editionSnapshot]
-	sessionMgrPtr     atomic.Pointer[SessionManager]         // nil when profiling disabled
-	certCachePtr      atomic.Pointer[certgen.CertCache]      // nil when TLS interception disabled
-	entropyTrackerPtr atomic.Pointer[scanner.EntropyTracker] // nil when entropy budget disabled
-	fragmentBufferPtr atomic.Pointer[scanner.FragmentBuffer] // nil when fragment reassembly disabled
-	logger            *audit.Logger
-	metrics           *metrics.Metrics
-	ks                *killswitch.Controller
-	ksAPI             *killswitch.APIHandler
-	sessionAPI        *SessionAPIHandler
-	dialer            *net.Dialer
-	client            *http.Client
-	tlsTransport      *http.Transport // shared Transport for TLS interception upstream connections
-	server            *http.Server
-	agentServers      []*http.Server // per-agent listeners (managed by CLI)
-	startTime         time.Time
-	reloadMu          sync.Mutex // serializes Reload calls
-	approver          *hitl.Approver
-	a2aCardBaseline   *mcp.CardBaseline // Agent Card drift detection across requests
-	captureObs        capture.CaptureObserver
-	recorder          *recorder.Recorder              // flight recorder for tamper-evident evidence (nil = disabled)
-	receiptEmitterPtr atomic.Pointer[receipt.Emitter] // action receipt emitter (nil = disabled)
-	receiptKeyPath    string                          // active signing key path, for reload comparison
-	shieldEngine      *shield.Engine                  // browser shield HTML/JS rewriter (nil = not initialized)
-	frozenTools       *FrozenToolRegistry             // frozen tool inventories for airlock hard tier
+	cfgPtr             atomic.Pointer[config.Config]
+	scannerPtr         atomic.Pointer[scanner.Scanner]
+	editionPtr         atomic.Pointer[editionSnapshot]
+	sessionMgrPtr      atomic.Pointer[SessionManager]         // nil when profiling disabled
+	certCachePtr       atomic.Pointer[certgen.CertCache]      // nil when TLS interception disabled
+	entropyTrackerPtr  atomic.Pointer[scanner.EntropyTracker] // nil when entropy budget disabled
+	fragmentBufferPtr  atomic.Pointer[scanner.FragmentBuffer] // nil when fragment reassembly disabled
+	logger             *audit.Logger
+	metrics            *metrics.Metrics
+	ks                 *killswitch.Controller
+	ksAPI              *killswitch.APIHandler
+	sessionAPI         *SessionAPIHandler
+	dialer             *net.Dialer
+	client             *http.Client
+	tlsTransport       *http.Transport // shared Transport for TLS interception upstream connections
+	server             *http.Server
+	agentServers       []*http.Server // per-agent listeners (managed by CLI)
+	startTime          time.Time
+	reloadMu           sync.Mutex // serializes Reload calls
+	approver           *hitl.Approver
+	a2aCardBaseline    *mcp.CardBaseline // Agent Card drift detection across requests
+	captureObs         capture.CaptureObserver
+	recorder           *recorder.Recorder               // flight recorder for tamper-evident evidence (nil = disabled)
+	receiptEmitterPtr  atomic.Pointer[receipt.Emitter]  // action receipt emitter (nil = disabled)
+	receiptKeyPath     string                           // active signing key path, for reload comparison
+	envelopeEmitterPtr atomic.Pointer[envelope.Emitter] // mediation envelope emitter (nil = disabled)
+	shieldEngine       *shield.Engine                   // browser shield HTML/JS rewriter (nil = not initialized)
+	frozenTools        *FrozenToolRegistry              // frozen tool inventories for airlock hard tier
 }
 
 // Option configures optional Proxy behavior.
@@ -198,6 +200,13 @@ func WithReceiptEmitter(e *receipt.Emitter) Option {
 // so that reload can detect key rotation.
 func WithReceiptKeyPath(path string) Option {
 	return func(p *Proxy) { p.receiptKeyPath = path }
+}
+
+// WithEnvelopeEmitter sets the mediation envelope emitter. When non-nil, the
+// proxy injects signed mediation envelopes into proxied requests. Pass nil to
+// disable (default).
+func WithEnvelopeEmitter(e *envelope.Emitter) Option {
+	return func(p *Proxy) { p.envelopeEmitterPtr.Store(e) }
 }
 
 // FetchResponse is the JSON response returned by the /fetch endpoint.
@@ -423,6 +432,26 @@ func (p *Proxy) reloadReceiptEmitter(cfg *config.Config) {
 	p.receiptKeyPath = keyPath
 }
 
+// reloadEnvelopeEmitter handles envelope emitter lifecycle on config reload.
+// Nils the emitter when disabled, updates the config hash when an emitter
+// already exists, or creates a new emitter when first enabled. Must be called
+// under reloadMu.
+func (p *Proxy) reloadEnvelopeEmitter(cfg *config.Config) {
+	if !cfg.MediationEnvelope.Enabled {
+		p.envelopeEmitterPtr.Store(nil)
+		return
+	}
+	existing := p.envelopeEmitterPtr.Load()
+	if existing != nil {
+		existing.UpdateConfigHash(cfg.Hash())
+		return
+	}
+	em := envelope.NewEmitter(envelope.EmitterConfig{
+		ConfigHash: cfg.Hash(),
+	})
+	p.envelopeEmitterPtr.Store(em)
+}
+
 // CurrentConfig returns the currently active config. Used for reload comparison.
 func (p *Proxy) CurrentConfig() *config.Config {
 	return p.cfgPtr.Load()
@@ -486,6 +515,7 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
 	// decision. Without this ordering, requests racing with reload could
 	// get signed with the previous policy hash.
 	p.reloadReceiptEmitter(cfg)
+	p.reloadEnvelopeEmitter(cfg)
 
 	oldCfg := p.cfgPtr.Load()
 	p.cfgPtr.Store(cfg)

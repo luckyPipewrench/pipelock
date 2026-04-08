@@ -625,7 +625,11 @@ func (s *Scanner) checkCoreSSRFLiteral(hostname string) Result {
 		// intended to allow it) rather than a real attack. Classify so
 		// adaptive enforcement doesn't escalate, and hint toward ip_allowlist.
 		if s.IsInAPIAllowlist(hostname) {
-			r.Hint = fmt.Sprintf("add %q to ssrf.ip_allowlist to allow this internal IP", hostname)
+			cidr := ip.String() + "/128"
+			if ip.To4() != nil {
+				cidr = ip.String() + "/32"
+			}
+			r.Hint = fmt.Sprintf("add %q to ssrf.ip_allowlist to allow this internal IP", cidr)
 			r.Class = ClassConfigMismatch
 		}
 		return r

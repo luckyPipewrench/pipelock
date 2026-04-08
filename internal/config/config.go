@@ -472,7 +472,7 @@ type ResponseScanPattern struct {
 	Regex         string `yaml:"regex"`
 	Bundle        string `yaml:"-"` // set by rules loader, not from YAML
 	BundleVersion string `yaml:"-"` // set by rules loader, not from YAML
-	Compiled      bool   `yaml:"-"` // true for patterns from Defaults(), set by ApplyDefaults
+	Compiled      bool   `yaml:"-"` // true for patterns created in Defaults()
 }
 
 // ForwardProxy configures HTTP CONNECT and absolute-URI forward proxy support.
@@ -595,7 +595,7 @@ type DLPPattern struct {
 	Action        string   `yaml:"action,omitempty"`    // reserved — not yet implemented; rejected at validation
 	Bundle        string   `yaml:"-"`                   // set by rules loader, not from YAML
 	BundleVersion string   `yaml:"-"`                   // set by rules loader, not from YAML
-	Compiled      bool     `yaml:"-"`                   // true for patterns from Defaults(), set by ApplyDefaults
+	Compiled      bool     `yaml:"-"`                   // true for patterns created in Defaults()
 }
 
 // AddressProtection configures crypto address poisoning detection.

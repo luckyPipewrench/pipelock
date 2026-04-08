@@ -166,12 +166,16 @@ func TestExtractEnvSecrets_SkipsNonSecretNames(t *testing.T) {
 	// Set well-known non-secret vars with values that would otherwise
 	// pass length and entropy filters.
 	highEntropyPath := "/home/testuser/dev/pipelock-project"
+	testPathVal := "/usr/local/bin:/usr/bin:/home/testuser/.local/bin:/opt/go/bin"
+	testLSColors := "rs=0:di=01;34:ln=01;36:mh=00:pi=40;33"
+	testXDGData := "/home/testuser/.local/share/data"
+	testLCAll := "en_US.UTF-8-something-long-enough"
 	t.Setenv("PWD", highEntropyPath)
 	t.Setenv("HOME", "/home/testuser/complex-dirname")
-	t.Setenv("PATH", "/usr/local/bin:/usr/bin:/home/testuser/.local/bin:/opt/go/bin")
-	t.Setenv("LS_COLORS", "rs=0:di=01;34:ln=01;36:mh=00:pi=40;33")
-	t.Setenv("XDG_DATA_HOME", "/home/testuser/.local/share/data")
-	t.Setenv("LC_ALL", "en_US.UTF-8-something-long-enough")
+	t.Setenv("PATH", testPathVal)
+	t.Setenv("LS_COLORS", testLSColors)
+	t.Setenv("XDG_DATA_HOME", testXDGData)
+	t.Setenv("LC_ALL", testLCAll)
 
 	// Also set a real secret to confirm those still get collected.
 	// Split at regex boundary to avoid self-scan false positive.
@@ -180,24 +184,19 @@ func TestExtractEnvSecrets_SkipsNonSecretNames(t *testing.T) {
 
 	secrets := extractEnvSecrets(16)
 
+	// Check exact values, not substrings. Other real env vars on the
+	// system may contain similar substrings without being skipped.
+	skipped := map[string]string{
+		highEntropyPath:                  "PWD",
+		"/home/testuser/complex-dirname": "HOME",
+		testPathVal:                      "PATH",
+		testLSColors:                     "LS_COLORS",
+		testXDGData:                      "XDG_DATA_HOME",
+		testLCAll:                        "LC_ALL",
+	}
 	for _, s := range secrets {
-		if s == highEntropyPath {
-			t.Error("PWD value should be skipped (non-secret env var name)")
-		}
-		if s == "/home/testuser/complex-dirname" {
-			t.Error("HOME value should be skipped")
-		}
-		if strings.Contains(s, "/usr/local/bin") {
-			t.Error("PATH value should be skipped")
-		}
-		if strings.Contains(s, "rs=0:di=01") {
-			t.Error("LS_COLORS value should be skipped")
-		}
-		if strings.Contains(s, ".local/share/data") {
-			t.Error("XDG_DATA_HOME value should be skipped (XDG_ prefix)")
-		}
-		if strings.Contains(s, "UTF-8-something") {
-			t.Error("LC_ALL value should be skipped (LC_ prefix)")
+		if name, ok := skipped[s]; ok {
+			t.Errorf("%s value should be skipped (non-secret env var name)", name)
 		}
 	}
 

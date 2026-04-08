@@ -897,19 +897,27 @@ func injectMCPEnvelope(msg []byte, emitter *envelope.Emitter, buildOpts envelope
 		return msg
 	}
 
-	// Get or create _meta. Re-initialize if _meta was JSON null
-	// (json.Unmarshal sets the map to nil for null values).
-	meta := make(map[string]any)
+	// Use json.RawMessage to preserve existing _meta members byte-for-byte.
+	// map[string]any would round-trip through encoding/json and lose precision
+	// on large integer values from other extensions.
+	meta := make(map[string]json.RawMessage)
 	if metaRaw, exists := params["_meta"]; exists {
-		_ = json.Unmarshal(metaRaw, &meta)
+		if err := json.Unmarshal(metaRaw, &meta); err != nil {
+			return msg // malformed _meta -- fail-open
+		}
 	}
 	if meta == nil {
-		meta = make(map[string]any)
+		meta = make(map[string]json.RawMessage)
 	}
 
 	// Strip any existing mediation key, then inject.
-	envelope.StripInboundMCP(meta)
-	emitter.InjectMCPEnvelope(meta, buildOpts)
+	delete(meta, envelope.MCPMetaKey)
+	envData := emitter.Build(buildOpts).ToMCPMeta()
+	envBytes, err := json.Marshal(envData)
+	if err != nil {
+		return msg
+	}
+	meta[envelope.MCPMetaKey] = envBytes
 
 	metaBytes, err := json.Marshal(meta)
 	if err != nil {

@@ -492,8 +492,8 @@ func ForwardScannedInput(
 				actionID := receipt.NewActionID()
 				fwdLine = injectMCPEnvelope(line, opts.EnvelopeEmitter, envelope.BuildOpts{
 					ActionID: actionID,
-					Action:   config.ActionAllow,
-					Verdict:  "clean",
+					Action:   "write",
+					Verdict:  config.ActionAllow,
 				})
 				if opts.ReceiptEmitter != nil {
 					_ = opts.ReceiptEmitter.Emit(receipt.EmitOpts{
@@ -757,8 +757,8 @@ func ForwardScannedInput(
 			if verdict.Method == methodToolsCall {
 				fwdLine = injectMCPEnvelope(line, opts.EnvelopeEmitter, envelope.BuildOpts{
 					ActionID: actionID,
-					Action:   config.ActionWarn,
-					Verdict:  "flagged",
+					Action:   "write",
+					Verdict:  config.ActionWarn,
 				})
 			}
 			// Forward anyway (warn mode).

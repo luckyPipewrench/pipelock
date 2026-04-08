@@ -19,6 +19,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/edition"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
@@ -222,7 +223,8 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 				Action:     string(receipt.ClassifyHTTP(r.Method)),
 				Verdict:    config.ActionAllow,
 				SideEffect: string(receipt.SideEffectFromMethod(r.Method)),
-				ActorAuth:  envelope.ActorAuthSelfDeclared,
+				Actor:      edition.ExtractAgent(r),
+				ActorAuth:  envelope.ActorAuthSelfDeclared, // Reverse proxy has no per-agent listener binding
 			})
 		}
 	}

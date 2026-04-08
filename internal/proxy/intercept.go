@@ -56,6 +56,7 @@ type InterceptContext struct {
 	ClientIP  string
 	RequestID string
 	Agent     string
+	ActorAuth envelope.ActorAuth
 
 	UpstreamRT http.RoundTripper
 	SafeDial   dialFunc
@@ -916,7 +917,7 @@ func newInterceptHandler(
 					Verdict:    config.ActionAllow,
 					SideEffect: string(receipt.SideEffectFromMethod(r.Method)),
 					Actor:      ic.Agent,
-					ActorAuth:  envelope.ActorAuthSelfDeclared,
+					ActorAuth:  ic.ActorAuth,
 				})
 			}
 		}

@@ -957,22 +957,15 @@ type FlightRecorder struct {
 	SigningKeyPath     string `yaml:"signing_key_path"`     // Ed25519 private key for checkpoint signing and action receipts
 }
 
-// Actor format constants for MediationEnvelope.
-const (
-	ActorFormatLegacy = "legacy"
-	ActorFormatSPIFFE = "spiffe"
-)
-
 // MediationEnvelope configures sideband metadata on proxied requests.
 // When enabled, pipelock injects a Pipelock-Mediation header (HTTP) or
 // _meta["com.pipelock/mediation"] (MCP) carrying action type, verdict,
 // actor identity, and receipt correlation ID.
+//
+// Envelope signing (RFC 9421), SPIFFE actor format, and key management
+// are planned for a follow-up PR. See mediation-envelope-design.md.
 type MediationEnvelope struct {
-	Enabled        bool   `yaml:"enabled"`
-	Sign           bool   `yaml:"sign"`
-	ActorFormat    string `yaml:"actor_format"`
-	TrustDomain    string `yaml:"trust_domain"`
-	SigningKeyPath string `yaml:"signing_key_path"`
+	Enabled bool `yaml:"enabled"`
 }
 
 // MCPBinaryIntegrity configures pre-spawn hash verification for MCP subprocesses.
@@ -3204,19 +3197,8 @@ func (c *Config) validateBrowserShield() error {
 }
 
 func (c *Config) validateMediationEnvelope() error {
-	me := c.MediationEnvelope
-	if !me.Enabled {
-		return nil
-	}
-	if me.ActorFormat != "" && me.ActorFormat != ActorFormatLegacy && me.ActorFormat != ActorFormatSPIFFE {
-		return fmt.Errorf("mediation_envelope.actor_format must be %q or %q", ActorFormatLegacy, ActorFormatSPIFFE)
-	}
-	if me.ActorFormat == ActorFormatSPIFFE && me.TrustDomain == "" {
-		return fmt.Errorf("mediation_envelope.trust_domain is required when actor_format is %q", ActorFormatSPIFFE)
-	}
-	if me.Sign && me.SigningKeyPath == "" {
-		return fmt.Errorf("mediation_envelope.signing_key_path is required when sign is true")
-	}
+	// Only field today is Enabled (bool). Signing, SPIFFE actor format,
+	// and key management will add validation when they ship.
 	return nil
 }
 
@@ -4350,9 +4332,7 @@ func Defaults() *Config {
 				"www.recaptcha.net",
 			},
 		},
-		MediationEnvelope: MediationEnvelope{
-			ActorFormat: ActorFormatLegacy,
-		},
+		MediationEnvelope: MediationEnvelope{},
 	}
 	// Mark all compiled defaults with provenance so the standard tier source
 	// selector can distinguish them from user-supplied patterns. Set at

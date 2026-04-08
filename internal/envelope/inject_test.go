@@ -38,8 +38,8 @@ func TestInjectHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse() error: %v", err)
 	}
-	if parsed.Action != "write" {
-		t.Errorf("Action = %q, want %q", parsed.Action, "write")
+	if parsed.Action != env.Action {
+		t.Errorf("Action = %q, want %q", parsed.Action, env.Action)
 	}
 	if parsed.ReceiptID != env.ReceiptID {
 		t.Errorf("ReceiptID = %q, want %q", parsed.ReceiptID, env.ReceiptID)

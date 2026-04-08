@@ -473,6 +473,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			ClientIP:       clientIP,
 			RequestID:      requestID,
 			Agent:          agent,
+			ActorAuth:      id.Auth,
 			UpstreamRT:     p.tlsTransport,
 			SafeDial:       p.ssrfSafeDialContext,
 			EntropyTracker: p.entropyTrackerPtr.Load(),

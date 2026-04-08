@@ -151,3 +151,30 @@ func TestEmitter_UpdateConfigHash_Nil(t *testing.T) {
 	var em *Emitter
 	em.UpdateConfigHash("test") // Must not panic.
 }
+
+func TestPolicyHashTruncated_EmptyString(t *testing.T) {
+	t.Parallel()
+	hash := policyHashTruncated("")
+	if len(hash) != 16 {
+		t.Fatalf("length = %d, want 16", len(hash))
+	}
+	// All zeros for empty input.
+	for i, b := range hash {
+		if b != 0 {
+			t.Fatalf("byte[%d] = %d, want 0", i, b)
+		}
+	}
+}
+
+func TestConfigHashString_NonString(t *testing.T) {
+	t.Parallel()
+	if got := configHashString(42); got != "" {
+		t.Errorf("configHashString(42) = %q, want empty", got)
+	}
+	if got := configHashString(nil); got != "" {
+		t.Errorf("configHashString(nil) = %q, want empty", got)
+	}
+	if got := configHashString("hello"); got != "hello" {
+		t.Errorf("configHashString(\"hello\") = %q, want \"hello\"", got)
+	}
+}

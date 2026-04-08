@@ -5,6 +5,7 @@ package envelope
 
 import (
 	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"sync/atomic"
 	"time"
@@ -89,13 +90,26 @@ func (e *Emitter) InjectMCPEnvelope(meta map[string]any, opts BuildOpts) {
 	InjectMCP(meta, env)
 }
 
-// policyHashTruncated returns the first 16 bytes of SHA-256 of the config hash string.
+// policyHashTruncated returns the first 16 bytes of the config's policy hash.
+// cfg.Hash() already returns a hex-encoded SHA-256 digest, so we decode and
+// truncate rather than hashing again.
 func policyHashTruncated(hash string) []byte {
 	if hash == "" {
 		return make([]byte, 16)
 	}
-	sum := sha256.Sum256([]byte(hash))
-	return sum[:16]
+	decoded, err := hex.DecodeString(hash)
+	if err != nil {
+		// Not valid hex (e.g. prefixed "sha256:..."). Hash and truncate.
+		sum := sha256.Sum256([]byte(hash))
+		return sum[:16]
+	}
+	if len(decoded) >= 16 {
+		return decoded[:16]
+	}
+	// Short hash -- pad to 16 bytes.
+	out := make([]byte, 16)
+	copy(out, decoded)
+	return out
 }
 
 func configHashString(v any) string {

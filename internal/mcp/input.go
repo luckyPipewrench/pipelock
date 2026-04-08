@@ -488,27 +488,30 @@ func ForwardScannedInput(
 			// shared by both so the envelope's receipt_id correlates with the
 			// action receipt log entry.
 			fwdLine := line
+			var actionID string
 			if verdict.Method == methodToolsCall {
-				actionID := receipt.NewActionID()
+				actionID = receipt.NewActionID()
 				fwdLine = injectMCPEnvelope(line, opts.EnvelopeEmitter, envelope.BuildOpts{
 					ActionID: actionID,
 					Action:   "write",
 					Verdict:  config.ActionAllow,
 				})
-				if opts.ReceiptEmitter != nil {
-					_ = opts.ReceiptEmitter.Emit(receipt.EmitOpts{
-						ActionID:  actionID,
-						Verdict:   config.ActionAllow,
-						Transport: opts.Transport,
-						Target:    toolCallName,
-						MCPMethod: verdict.Method,
-						ToolName:  toolCallName,
-					})
-				}
 			}
 			if err := writer.WriteMessage(fwdLine); err != nil {
 				_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
 				return
+			}
+			// Emit receipt AFTER successful forward so the receipt only
+			// records actions that actually reached the MCP server.
+			if actionID != "" && opts.ReceiptEmitter != nil {
+				_ = opts.ReceiptEmitter.Emit(receipt.EmitOpts{
+					ActionID:  actionID,
+					Verdict:   config.ActionAllow,
+					Transport: opts.Transport,
+					Target:    toolCallName,
+					MCPMethod: verdict.Method,
+					ToolName:  toolCallName,
+				})
 			}
 			if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
 				rec.RecordClean(adaptiveCfg.DecayPerCleanRequest)
@@ -894,10 +897,14 @@ func injectMCPEnvelope(msg []byte, emitter *envelope.Emitter, buildOpts envelope
 		return msg
 	}
 
-	// Get or create _meta.
+	// Get or create _meta. Re-initialize if _meta was JSON null
+	// (json.Unmarshal sets the map to nil for null values).
 	meta := make(map[string]any)
 	if metaRaw, exists := params["_meta"]; exists {
 		_ = json.Unmarshal(metaRaw, &meta)
+	}
+	if meta == nil {
+		meta = make(map[string]any)
 	}
 
 	// Strip any existing mediation key, then inject.

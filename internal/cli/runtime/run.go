@@ -911,6 +911,7 @@ Examples:
 						CaptureObs:          mcpCaptureObs,
 						ProvenanceCfg:       &cfg.MCPToolProvenance,
 						ReceiptEmitter:      receiptEmitter,
+						EnvelopeEmitter:     envEmitter,
 						ToolFreezer:         p.FrozenTools(),
 						FrozenToolStableKey: mcpUpstream,
 					})
@@ -933,6 +934,7 @@ Examples:
 					rpUpstream, p.ConfigPtr(), p.ScannerPtr(),
 					logger, m, ks, rpCaptureObs, p.ShieldEngine(),
 				)
+				rpHandler.SetEnvelopeEmitter(p.EnvelopeEmitterPtr())
 
 				rpLn, lnErr := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.ReverseProxy.Listen)
 				if lnErr != nil {

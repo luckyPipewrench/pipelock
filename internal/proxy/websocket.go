@@ -23,6 +23,8 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
+	"github.com/luckyPipewrench/pipelock/internal/envelope"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 	plwsutil "github.com/luckyPipewrench/pipelock/internal/wsutil"
@@ -104,6 +106,9 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 
 	clientIP, requestID := requestMeta(r)
+
+	// Strip inbound mediation envelope headers to prevent forgery.
+	envelope.StripInbound(r.Header)
 
 	// Resolve per-agent config and scanner from a single registry snapshot.
 	// This prevents TOCTOU races during hot-reload where knownProfiles()
@@ -306,6 +311,19 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer safeClose(clientConn, "ws.clientConn", log)
+
+	// Inject mediation envelope into upstream handshake headers on allow path.
+	actionID := receipt.NewActionID()
+	if envEmitter := p.envelopeEmitterPtr.Load(); envEmitter != nil {
+		_ = envEmitter.InjectHTTPEnvelope(fwdHeaders, envelope.BuildOpts{
+			ActionID:   actionID,
+			Action:     string(receipt.ActionDelegate),
+			Verdict:    config.ActionAllow,
+			SideEffect: string(receipt.SideEffectExternalWrite),
+			Actor:      agent,
+			ActorAuth:  id.Auth,
+		})
+	}
 
 	// Dial upstream via SSRF-safe dialer.
 	upstreamConn, dialErr := p.wsDialUpstream(r.Context(), targetURL, fwdHeaders, cfg)

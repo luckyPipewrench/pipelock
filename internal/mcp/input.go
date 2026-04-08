@@ -19,6 +19,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	decide "github.com/luckyPipewrench/pipelock/internal/decide"
+	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
@@ -199,6 +200,11 @@ func ForwardScannedInput(
 			return
 		}
 		lineNum++
+
+		// Strip any inbound com.pipelock/mediation from _meta before
+		// scanning. Prevents spoofed mediation metadata from an agent
+		// or upstream from passing through to the MCP server.
+		line = stripInboundMCPMeta(line)
 
 		// Kill switch: deny all messages when active.
 		if ks != nil {
@@ -478,23 +484,34 @@ func ForwardScannedInput(
 			// Must happen before write to prevent race: response could arrive
 			// before Track completes in concurrent stdio paths.
 			tracker.Track(verdict.ID)
-			if err := writer.WriteMessage(line); err != nil {
+			// Envelope + receipt for clean tool calls: generate one actionID
+			// shared by both so the envelope's receipt_id correlates with the
+			// action receipt log entry.
+			fwdLine := line
+			if verdict.Method == methodToolsCall {
+				actionID := receipt.NewActionID()
+				fwdLine = injectMCPEnvelope(line, opts.EnvelopeEmitter, envelope.BuildOpts{
+					ActionID: actionID,
+					Action:   config.ActionAllow,
+					Verdict:  "clean",
+				})
+				if opts.ReceiptEmitter != nil {
+					_ = opts.ReceiptEmitter.Emit(receipt.EmitOpts{
+						ActionID:  actionID,
+						Verdict:   config.ActionAllow,
+						Transport: opts.Transport,
+						Target:    toolCallName,
+						MCPMethod: verdict.Method,
+						ToolName:  toolCallName,
+					})
+				}
+			}
+			if err := writer.WriteMessage(fwdLine); err != nil {
 				_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
 				return
 			}
 			if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
 				rec.RecordClean(adaptiveCfg.DecayPerCleanRequest)
-			}
-			// Action receipt: emit for clean MCP tool calls (allowed).
-			if opts.ReceiptEmitter != nil && verdict.Method == methodToolsCall {
-				_ = opts.ReceiptEmitter.Emit(receipt.EmitOpts{
-					ActionID:  receipt.NewActionID(),
-					Verdict:   config.ActionAllow,
-					Transport: opts.Transport,
-					Target:    toolCallName,
-					MCPMethod: verdict.Method,
-					ToolName:  toolCallName,
-				})
 			}
 			continue
 		}
@@ -576,6 +593,10 @@ func ForwardScannedInput(
 				m.RecordAdaptiveUpgrade(originalAction, effectiveAction, session.EscalationLabel(rec.EscalationLevel()))
 			}
 		}
+
+		// Pre-generate actionID once for both receipt and envelope so
+		// the envelope's receipt_id correlates with the action receipt.
+		actionID := receipt.NewActionID()
 
 		redirectSucceeded := false
 		switch effectiveAction {
@@ -731,8 +752,17 @@ func ForwardScannedInput(
 			}
 			// Track ID before forwarding (warn mode still sends the request).
 			tracker.Track(verdict.ID)
+			// Inject envelope for warn-mode tool calls before forwarding.
+			fwdLine := line
+			if verdict.Method == methodToolsCall {
+				fwdLine = injectMCPEnvelope(line, opts.EnvelopeEmitter, envelope.BuildOpts{
+					ActionID: actionID,
+					Action:   config.ActionWarn,
+					Verdict:  "flagged",
+				})
+			}
 			// Forward anyway (warn mode).
-			if err := writer.WriteMessage(line); err != nil {
+			if err := writer.WriteMessage(fwdLine); err != nil {
 				_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
 				return
 			}
@@ -756,7 +786,7 @@ func ForwardScannedInput(
 		// Action receipt: emit for every MCP tool call decision.
 		if opts.ReceiptEmitter != nil {
 			_ = opts.ReceiptEmitter.Emit(receipt.EmitOpts{
-				ActionID:  receipt.NewActionID(),
+				ActionID:  actionID,
 				Verdict:   effectiveAction,
 				Transport: opts.Transport,
 				Target:    toolCallName,
@@ -838,4 +868,112 @@ func isRPCNotification(id json.RawMessage) bool {
 // joinStrings joins strings with newline separator, matching jsonrpc.ExtractText pattern.
 func joinStrings(ss []string) string {
 	return strings.Join(ss, "\n")
+}
+
+// injectMCPEnvelope injects a mediation envelope into a JSON-RPC message's
+// params._meta field. Returns the modified message bytes, or the original
+// message unmodified if parsing fails (fail-open for envelope injection --
+// the message was already allowed).
+func injectMCPEnvelope(msg []byte, emitter *envelope.Emitter, buildOpts envelope.BuildOpts) []byte {
+	if emitter == nil {
+		return msg
+	}
+
+	var rpc map[string]json.RawMessage
+	if err := json.Unmarshal(msg, &rpc); err != nil {
+		return msg
+	}
+
+	paramsRaw, ok := rpc["params"]
+	if !ok {
+		return msg
+	}
+
+	var params map[string]json.RawMessage
+	if err := json.Unmarshal(paramsRaw, &params); err != nil {
+		return msg
+	}
+
+	// Get or create _meta.
+	meta := make(map[string]any)
+	if metaRaw, exists := params["_meta"]; exists {
+		_ = json.Unmarshal(metaRaw, &meta)
+	}
+
+	// Strip any existing mediation key, then inject.
+	envelope.StripInboundMCP(meta)
+	emitter.InjectMCPEnvelope(meta, buildOpts)
+
+	metaBytes, err := json.Marshal(meta)
+	if err != nil {
+		return msg
+	}
+	params["_meta"] = metaBytes
+
+	paramsBytes, err := json.Marshal(params)
+	if err != nil {
+		return msg
+	}
+	rpc["params"] = paramsBytes
+
+	out, err := json.Marshal(rpc)
+	if err != nil {
+		return msg
+	}
+	return out
+}
+
+// stripInboundMCPMeta removes the com.pipelock/mediation key from a
+// JSON-RPC message's params._meta before scanning. Prevents spoofed
+// mediation metadata from passing through unmodified.
+// Returns the modified message or the original if parsing fails.
+func stripInboundMCPMeta(msg []byte) []byte {
+	var rpc map[string]json.RawMessage
+	if err := json.Unmarshal(msg, &rpc); err != nil {
+		return msg
+	}
+
+	paramsRaw, ok := rpc["params"]
+	if !ok {
+		return msg
+	}
+
+	var params map[string]json.RawMessage
+	if err := json.Unmarshal(paramsRaw, &params); err != nil {
+		return msg
+	}
+
+	metaRaw, ok := params["_meta"]
+	if !ok {
+		return msg
+	}
+
+	var meta map[string]any
+	if err := json.Unmarshal(metaRaw, &meta); err != nil {
+		return msg
+	}
+
+	if _, exists := meta[envelope.MCPMetaKey]; !exists {
+		return msg
+	}
+
+	envelope.StripInboundMCP(meta)
+
+	metaBytes, err := json.Marshal(meta)
+	if err != nil {
+		return msg
+	}
+	params["_meta"] = metaBytes
+
+	paramsBytes, err := json.Marshal(params)
+	if err != nil {
+		return msg
+	}
+	rpc["params"] = paramsBytes
+
+	out, err := json.Marshal(rpc)
+	if err != nil {
+		return msg
+	}
+	return out
 }

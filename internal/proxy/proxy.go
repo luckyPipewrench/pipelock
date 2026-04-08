@@ -487,6 +487,13 @@ func (p *Proxy) FragmentBufferPtr() *atomic.Pointer[scanner.FragmentBuffer] {
 	return &p.fragmentBufferPtr
 }
 
+// EnvelopeEmitterPtr returns the atomic pointer to the envelope emitter.
+// Used by the reverse proxy handler to share the emitter and receive
+// hot-reload updates.
+func (p *Proxy) EnvelopeEmitterPtr() *atomic.Pointer[envelope.Emitter] {
+	return &p.envelopeEmitterPtr
+}
+
 // Reload atomically swaps the config and scanner for hot-reload support.
 // The old scanner is closed to release its rate limiter goroutine.
 // Session manager lifecycle is toggled when session_profiling.enabled changes.
@@ -1251,6 +1258,12 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 	clientIP, requestID := requestMeta(r)
 
+	// Strip inbound mediation envelope headers to prevent forgery.
+	envelope.StripInbound(r.Header)
+
+	// Pre-generate a single ActionID for correlation between envelope and receipt.
+	actionID := receipt.NewActionID()
+
 	// Resolve per-agent config and scanner from a single registry snapshot.
 	// This prevents TOCTOU races during hot-reload where knownProfiles()
 	// and resolveAgent() could read different registries.
@@ -1380,7 +1393,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			log.LogBlocked(actx, result.Scanner, result.Reason)
 			p.recordDecision(config.ActionBlock, result.Scanner, result.Reason, "fetch", requestID)
 			p.emitReceipt(receipt.EmitOpts{
-				ActionID:  receipt.NewActionID(),
+				ActionID:  actionID,
 				Verdict:   config.ActionBlock,
 				Layer:     result.Scanner,
 				Pattern:   result.Reason,
@@ -1633,6 +1646,18 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	req.Header.Set("User-Agent", cfg.FetchProxy.UserAgent)
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain,*/*;q=0.8")
 
+	// Inject mediation envelope before forwarding on allow path.
+	if envEmitter := p.envelopeEmitterPtr.Load(); envEmitter != nil {
+		_ = envEmitter.InjectHTTPEnvelope(req.Header, envelope.BuildOpts{
+			ActionID:   actionID,
+			Action:     string(receipt.ActionRead),
+			Verdict:    config.ActionAllow,
+			SideEffect: string(receipt.SideEffectExternalRead),
+			Actor:      agent,
+			ActorAuth:  id.Auth,
+		})
+	}
+
 	resp, err := p.client.Do(req) //nolint:gosec // G704: URL validated by scanner pipeline before reaching here
 	if err != nil {
 		// Detect redirect blocks (from CheckRedirect) and report as blocked, not error.
@@ -1844,7 +1869,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	duration := time.Since(start)
 	p.metrics.RecordAllowed(duration, agentLabel)
 	p.emitReceipt(receipt.EmitOpts{
-		ActionID:  receipt.NewActionID(),
+		ActionID:  actionID,
 		Verdict:   config.ActionAllow,
 		Transport: "fetch",
 		Method:    http.MethodGet,

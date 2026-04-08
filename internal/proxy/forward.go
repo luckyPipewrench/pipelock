@@ -20,6 +20,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
+	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -89,6 +90,12 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	baseCtx.Agent = agent
 	agentLabel := id.Profile // bounded cardinality for Prometheus labels
+
+	// Strip inbound mediation envelope headers to prevent forgery.
+	envelope.StripInbound(r.Header)
+
+	// Pre-generate a single ActionID for correlation between envelope and receipt.
+	actionID := receipt.NewActionID()
 
 	target := r.Host
 	if target == "" {
@@ -201,7 +208,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		if cfg.EnforceEnabled() {
 			p.logger.LogBlocked(targetCtx, result.Scanner, result.Reason)
 			p.emitReceipt(receipt.EmitOpts{
-				ActionID:  receipt.NewActionID(),
+				ActionID:  actionID,
 				Verdict:   config.ActionBlock,
 				Layer:     result.Scanner,
 				Pattern:   result.Reason,
@@ -509,7 +516,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// Count successful tunnels in request totals so /stats reflects CONNECT traffic.
 	p.metrics.RecordAllowed(duration, agentLabel)
 	p.emitReceipt(receipt.EmitOpts{
-		ActionID:  receipt.NewActionID(),
+		ActionID:  actionID,
 		Verdict:   config.ActionAllow,
 		Transport: "connect",
 		Method:    http.MethodConnect,
@@ -535,6 +542,12 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 
 	clientIP, requestID := requestMeta(r)
+
+	// Strip inbound mediation envelope headers to prevent forgery.
+	envelope.StripInbound(r.Header)
+
+	// Pre-generate a single ActionID for correlation between envelope and receipt.
+	actionID := receipt.NewActionID()
 
 	// Resolve per-agent config and scanner from a single registry snapshot.
 	// This prevents TOCTOU races during hot-reload where knownProfiles()
@@ -641,7 +654,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		if cfg.EnforceEnabled() {
 			p.logger.LogBlocked(actx, result.Scanner, result.Reason)
 			p.emitReceipt(receipt.EmitOpts{
-				ActionID:  receipt.NewActionID(),
+				ActionID:  actionID,
 				Verdict:   config.ActionBlock,
 				Layer:     result.Scanner,
 				Pattern:   result.Reason,
@@ -961,6 +974,18 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	outReq.Header.Del(AgentHeader) // strip internal identity header before upstream
 	removeHopByHopHeaders(outReq.Header)
 
+	// Inject mediation envelope before forwarding on allow path.
+	if envEmitter := p.envelopeEmitterPtr.Load(); envEmitter != nil {
+		_ = envEmitter.InjectHTTPEnvelope(outReq.Header, envelope.BuildOpts{
+			ActionID:   actionID,
+			Action:     string(receipt.ClassifyHTTP(r.Method)),
+			Verdict:    config.ActionAllow,
+			SideEffect: string(receipt.SideEffectFromMethod(r.Method)),
+			Actor:      agent,
+			ActorAuth:  id.Auth,
+		})
+	}
+
 	resp, err := p.client.Do(outReq)
 	if err != nil {
 		p.logger.LogError(actx, err)
@@ -1006,7 +1031,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			duration := time.Since(start)
 			p.metrics.RecordAllowed(duration, agentLabel)
 			p.emitReceipt(receipt.EmitOpts{
-				ActionID:  receipt.NewActionID(),
+				ActionID:  actionID,
 				Verdict:   config.ActionAllow,
 				Transport: "forward",
 				Method:    r.Method,
@@ -1228,7 +1253,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		duration := time.Since(start)
 		p.metrics.RecordAllowed(duration, agentLabel)
 		p.emitReceipt(receipt.EmitOpts{
-			ActionID:  receipt.NewActionID(),
+			ActionID:  actionID,
 			Verdict:   config.ActionAllow,
 			Transport: "forward",
 			Method:    r.Method,
@@ -1264,7 +1289,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	duration := time.Since(start)
 	p.metrics.RecordAllowed(duration, agentLabel)
 	p.emitReceipt(receipt.EmitOpts{
-		ActionID:  receipt.NewActionID(),
+		ActionID:  actionID,
 		Verdict:   config.ActionAllow,
 		Transport: "forward",
 		Method:    r.Method,

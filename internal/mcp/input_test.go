@@ -18,6 +18,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
@@ -3326,5 +3327,201 @@ func TestScanRequest_HomoglyphCredPathBypass(t *testing.T) {
 	}
 	if len(verdict.Inject) == 0 {
 		t.Error("expected injection matches for credential path directive")
+	}
+}
+
+// --- Envelope injection / strip helpers ---
+
+func TestInjectMCPEnvelope_NilEmitter(t *testing.T) {
+	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read"}}`)
+	got := injectMCPEnvelope(msg, nil, envelope.BuildOpts{ActionID: "test-id"})
+	if !bytes.Equal(got, msg) {
+		t.Error("nil emitter should return message unmodified")
+	}
+}
+
+func TestInjectMCPEnvelope_InjectsMetaKey(t *testing.T) {
+	em := envelope.NewEmitter(envelope.EmitterConfig{ConfigHash: "test"})
+	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read"}}`)
+	got := injectMCPEnvelope(msg, em, envelope.BuildOpts{
+		ActionID: "aid-1",
+		Action:   "allow",
+		Verdict:  "clean",
+	})
+
+	// Verify the mediation key is present.
+	if !bytes.Contains(got, []byte(`"com.pipelock/mediation"`)) {
+		t.Fatalf("expected com.pipelock/mediation in output, got: %s", got)
+	}
+
+	// Verify the action and verdict are correct.
+	var parsed map[string]json.RawMessage
+	if err := json.Unmarshal(got, &parsed); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+	var params map[string]json.RawMessage
+	if err := json.Unmarshal(parsed["params"], &params); err != nil {
+		t.Fatalf("unmarshal params: %v", err)
+	}
+	var meta map[string]json.RawMessage
+	if err := json.Unmarshal(params["_meta"], &meta); err != nil {
+		t.Fatalf("unmarshal _meta: %v", err)
+	}
+	medRaw, ok := meta["com.pipelock/mediation"]
+	if !ok {
+		t.Fatal("com.pipelock/mediation key missing from _meta")
+	}
+	var med map[string]any
+	if err := json.Unmarshal(medRaw, &med); err != nil {
+		t.Fatalf("unmarshal mediation: %v", err)
+	}
+	if med["act"] != "allow" {
+		t.Errorf("act = %v, want allow", med["act"])
+	}
+	if med["vd"] != "clean" {
+		t.Errorf("vd = %v, want clean", med["vd"])
+	}
+	if med["rid"] != "aid-1" {
+		t.Errorf("rid = %v, want aid-1", med["rid"])
+	}
+}
+
+func TestInjectMCPEnvelope_PreservesExistingMeta(t *testing.T) {
+	em := envelope.NewEmitter(envelope.EmitterConfig{ConfigHash: "test"})
+	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read","_meta":{"other":"value"}}}`)
+	got := injectMCPEnvelope(msg, em, envelope.BuildOpts{
+		ActionID: "aid-2",
+		Action:   "allow",
+		Verdict:  "clean",
+	})
+
+	var parsed map[string]json.RawMessage
+	if err := json.Unmarshal(got, &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	var params map[string]json.RawMessage
+	if err := json.Unmarshal(parsed["params"], &params); err != nil {
+		t.Fatalf("unmarshal params: %v", err)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(params["_meta"], &meta); err != nil {
+		t.Fatalf("unmarshal _meta: %v", err)
+	}
+	// Existing key preserved.
+	if meta["other"] != "value" {
+		t.Errorf("existing _meta key lost: other = %v", meta["other"])
+	}
+	// Mediation key injected.
+	if _, ok := meta["com.pipelock/mediation"]; !ok {
+		t.Error("com.pipelock/mediation not injected")
+	}
+}
+
+func TestInjectMCPEnvelope_InvalidJSON(t *testing.T) {
+	em := envelope.NewEmitter(envelope.EmitterConfig{ConfigHash: "test"})
+	msg := []byte(`not json`)
+	got := injectMCPEnvelope(msg, em, envelope.BuildOpts{ActionID: "x"})
+	if !bytes.Equal(got, msg) {
+		t.Error("invalid JSON should return message unmodified")
+	}
+}
+
+func TestInjectMCPEnvelope_NoParams(t *testing.T) {
+	em := envelope.NewEmitter(envelope.EmitterConfig{ConfigHash: "test"})
+	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"ping"}`)
+	got := injectMCPEnvelope(msg, em, envelope.BuildOpts{ActionID: "x"})
+	if !bytes.Equal(got, msg) {
+		t.Error("message without params should be returned unmodified")
+	}
+}
+
+func TestInjectMCPEnvelope_StripsExistingSpoofedEnvelope(t *testing.T) {
+	em := envelope.NewEmitter(envelope.EmitterConfig{ConfigHash: "test"})
+	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read","_meta":{"com.pipelock/mediation":{"act":"spoofed"}}}}`)
+	got := injectMCPEnvelope(msg, em, envelope.BuildOpts{
+		ActionID: "real-id",
+		Action:   "allow",
+		Verdict:  "clean",
+	})
+
+	var parsed map[string]json.RawMessage
+	if err := json.Unmarshal(got, &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	var params map[string]json.RawMessage
+	if err := json.Unmarshal(parsed["params"], &params); err != nil {
+		t.Fatalf("unmarshal params: %v", err)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(params["_meta"], &meta); err != nil {
+		t.Fatalf("unmarshal _meta: %v", err)
+	}
+	medRaw, _ := json.Marshal(meta["com.pipelock/mediation"])
+	var med map[string]any
+	if err := json.Unmarshal(medRaw, &med); err != nil {
+		t.Fatalf("unmarshal mediation: %v", err)
+	}
+	if med["act"] == "spoofed" {
+		t.Error("spoofed envelope was not replaced")
+	}
+	if med["rid"] != "real-id" {
+		t.Errorf("rid = %v, want real-id", med["rid"])
+	}
+}
+
+func TestStripInboundMCPMeta_RemovesSpoofedKey(t *testing.T) {
+	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read","_meta":{"com.pipelock/mediation":{"act":"spoofed"},"other":"keep"}}}`)
+	got := stripInboundMCPMeta(msg)
+
+	var parsed map[string]json.RawMessage
+	if err := json.Unmarshal(got, &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	var params map[string]json.RawMessage
+	if err := json.Unmarshal(parsed["params"], &params); err != nil {
+		t.Fatalf("unmarshal params: %v", err)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(params["_meta"], &meta); err != nil {
+		t.Fatalf("unmarshal _meta: %v", err)
+	}
+	if _, exists := meta["com.pipelock/mediation"]; exists {
+		t.Error("com.pipelock/mediation should have been stripped")
+	}
+	if meta["other"] != "keep" {
+		t.Error("other _meta key should be preserved")
+	}
+}
+
+func TestStripInboundMCPMeta_NoMetaKey(t *testing.T) {
+	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read","_meta":{"other":"value"}}}`)
+	got := stripInboundMCPMeta(msg)
+	// No mediation key present -- message should be unmodified.
+	if !bytes.Equal(got, msg) {
+		t.Error("message without mediation key should be unmodified")
+	}
+}
+
+func TestStripInboundMCPMeta_NoMeta(t *testing.T) {
+	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read"}}`)
+	got := stripInboundMCPMeta(msg)
+	if !bytes.Equal(got, msg) {
+		t.Error("message without _meta should be unmodified")
+	}
+}
+
+func TestStripInboundMCPMeta_NoParams(t *testing.T) {
+	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"ping"}`)
+	got := stripInboundMCPMeta(msg)
+	if !bytes.Equal(got, msg) {
+		t.Error("message without params should be unmodified")
+	}
+}
+
+func TestStripInboundMCPMeta_InvalidJSON(t *testing.T) {
+	msg := []byte(`not json at all`)
+	got := stripInboundMCPMeta(msg)
+	if !bytes.Equal(got, msg) {
+		t.Error("invalid JSON should return message unmodified")
 	}
 }

@@ -3525,3 +3525,104 @@ func TestStripInboundMCPMeta_InvalidJSON(t *testing.T) {
 		t.Error("invalid JSON should return message unmodified")
 	}
 }
+
+func TestForwardScannedInput_EnvelopeInjectedOnCleanToolCall(t *testing.T) {
+	sc := testInputScanner(t)
+	em := envelope.NewEmitter(envelope.EmitterConfig{ConfigHash: "test-hash"})
+	clean := makeRequest(1, "tools/call", map[string]string{"name": "read_file"}) + "\n"
+
+	var serverIn bytes.Buffer
+	var logW bytes.Buffer
+	blockedCh := make(chan BlockedRequest, 10)
+
+	opts := buildTestOpts(sc, func(o *MCPProxyOpts) {
+		o.EnvelopeEmitter = em
+	})
+	ForwardScannedInput(
+		transport.NewStdioReader(strings.NewReader(clean)),
+		transport.NewStdioWriter(&serverIn),
+		&logW, "block", "block", blockedCh, nil, nil, opts,
+	)
+
+	output := serverIn.String()
+	if !strings.Contains(output, `"com.pipelock/mediation"`) {
+		t.Errorf("expected mediation envelope in forwarded message, got: %s", output)
+	}
+}
+
+func TestForwardScannedInput_EnvelopeInjectedOnWarnToolCall(t *testing.T) {
+	sc := testInputScanner(t)
+	em := envelope.NewEmitter(envelope.EmitterConfig{ConfigHash: "test-hash"})
+	dirty := makeRequest(2, "tools/call", map[string]string{
+		"key": testSecretPrefix + strings.Repeat("f", 25),
+	}) + "\n"
+
+	var serverIn bytes.Buffer
+	var logW bytes.Buffer
+	blockedCh := make(chan BlockedRequest, 10)
+
+	opts := buildTestOpts(sc, func(o *MCPProxyOpts) {
+		o.EnvelopeEmitter = em
+	})
+	ForwardScannedInput(
+		transport.NewStdioReader(strings.NewReader(dirty)),
+		transport.NewStdioWriter(&serverIn),
+		&logW, "warn", "block", blockedCh, nil, nil, opts,
+	)
+
+	output := serverIn.String()
+	if !strings.Contains(output, "tools/call") {
+		t.Fatal("expected warn-mode request to be forwarded")
+	}
+	if !strings.Contains(output, `"com.pipelock/mediation"`) {
+		t.Errorf("expected mediation envelope in forwarded warn-mode message, got: %s", output)
+	}
+}
+
+func TestForwardScannedInput_SpoofedEnvelopeStripped(t *testing.T) {
+	sc := testInputScanner(t)
+	// Build a clean tools/call with a spoofed mediation envelope in _meta.
+	msg := `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"read","_meta":{"com.pipelock/mediation":{"act":"spoofed"}}}}` + "\n"
+
+	var serverIn bytes.Buffer
+	var logW bytes.Buffer
+	blockedCh := make(chan BlockedRequest, 10)
+
+	// No envelope emitter -- just verify the spoofed key is stripped.
+	opts := testOpts(sc)
+	ForwardScannedInput(
+		transport.NewStdioReader(strings.NewReader(msg)),
+		transport.NewStdioWriter(&serverIn),
+		&logW, "warn", "block", blockedCh, nil, nil, opts,
+	)
+
+	output := serverIn.String()
+	if strings.Contains(output, `"spoofed"`) {
+		t.Errorf("spoofed mediation envelope should have been stripped, got: %s", output)
+	}
+}
+
+func TestForwardScannedInput_NoEnvelopeOnNonToolCall(t *testing.T) {
+	sc := testInputScanner(t)
+	em := envelope.NewEmitter(envelope.EmitterConfig{ConfigHash: "test-hash"})
+	// tools/list is not a tools/call -- should not get envelope.
+	clean := makeRequest(4, "tools/list", nil) + "\n"
+
+	var serverIn bytes.Buffer
+	var logW bytes.Buffer
+	blockedCh := make(chan BlockedRequest, 10)
+
+	opts := buildTestOpts(sc, func(o *MCPProxyOpts) {
+		o.EnvelopeEmitter = em
+	})
+	ForwardScannedInput(
+		transport.NewStdioReader(strings.NewReader(clean)),
+		transport.NewStdioWriter(&serverIn),
+		&logW, "block", "block", blockedCh, nil, nil, opts,
+	)
+
+	output := serverIn.String()
+	if strings.Contains(output, `"com.pipelock/mediation"`) {
+		t.Errorf("tools/list should not get mediation envelope, got: %s", output)
+	}
+}

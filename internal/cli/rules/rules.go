@@ -116,15 +116,16 @@ Uses the same config resolution as runtime for accurate reporting.`,
 			// Run the same merge path as runtime to get effective state.
 			result := domrules.MergeIntoConfig(cfg, cliutil.Version)
 
-			// Count compiled (non-bundle) patterns for standard tier fallback.
+			// Count compiled (non-bundle, non-user) patterns for standard tier fallback.
+			// Only count patterns with Compiled=true to exclude user-defined patterns.
 			var compiledDLP, compiledResp int
 			for _, p := range cfg.DLP.Patterns {
-				if p.Bundle == "" {
+				if p.Bundle == "" && p.Compiled {
 					compiledDLP++
 				}
 			}
 			for _, p := range cfg.ResponseScanning.Patterns {
-				if p.Bundle == "" {
+				if p.Bundle == "" && p.Compiled {
 					compiledResp++
 				}
 			}
@@ -202,7 +203,13 @@ Uses the same config resolution as runtime for accurate reporting.`,
 			if jsonOut {
 				enc := json.NewEncoder(out)
 				enc.SetIndent("", "  ")
-				return enc.Encode(status)
+				if err := enc.Encode(status); err != nil {
+					return err
+				}
+				if status.Degraded {
+					return cliutil.ExitCodeError(1, fmt.Errorf("%d bundle error(s)", len(status.Errors)))
+				}
+				return nil
 			}
 
 			_, _ = fmt.Fprintf(out, "Core:     %d DLP + %d response (compiled, immutable)\n",
